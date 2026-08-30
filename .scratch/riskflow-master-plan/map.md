@@ -49,12 +49,20 @@ Label: wayfinder:map
 - [完成完整产品界面 Demo 供汇报截图派生](issues/25-full-product-ui-demo.md) — `demo/` React 工程 25 条路由可运行，覆盖五张汇报页与七项导航 20 个核心页面；五屏 PNG 已取景导出，截图二定稿为全屏 Agent 工作台。
 - [定义 Agent-native 横切运行与治理契约](issues/26-agent-native-operating-contract.md) — 五类必经内嵌任务与交互式 Agent 共用一个受限任务模块；工具、硬预算、类型化增量、失败与审计统一，普通评估预警保持确定性且 RI-S57 后不做同模型自审。
 - [从完整产品设计派生汇报静态截图方案](issues/07-report-screenshot-design.md) — 五屏从 `demo/` 真实页面取景导出至 `demo/screenshots/`，页面到截图派生关系固定，经 Agent-native 契约终校准无需修订；第二屏定稿 Agent 全屏工作台。
+- [确定 MVP 工程工具链与关键依赖](issues/21-mvp-toolchain-dependencies.md) — 确定单一 pnpm TypeScript monorepo、React/Fastify/LangGraph 工程栈、共享版本化 Schema、数据与解析适配器、测试和边界检查，以及结构化日志派生的中文用户活动视图与离线依赖治理。
+- [确定外部系统、实时监测与 MCP 集成契约](issues/22-external-monitoring-mcp-integration.md) — 统一接入和版本化消息保障事实归属、冻结与审计；实时数据持续接入后按截止点形成快照，具体外部系统与 MCP 能力留待连接对象明确后单独决策。
+- [确定私有化部署与治理边界](issues/08-private-deployment-governance.md) — MVP 采用单台服务器内推理、应用、数据三虚拟机的离线部署，本地账号与两级资料访问范围；不承诺长期运维或高可用，人工同步冷备仅作为后续可选项。
+
+- [确定模型、检索与规则质量评测策略](issues/23-model-retrieval-rule-evaluation.md) — 22项评测决策全部确认：三层数据与来源隔离、MVP/专利最小覆盖、分层硬门槛、确定性重放、三次语义运行、LoRA 后置准入，以及统一质量评测模块。
+- [确定 MVP 测试、验收与交付证据](issues/24-mvp-verification-acceptance.md) — 28 项验收与交付决策全部确认：分层硬门槛、冻结基线、双向证据追踪、关键闭环与失败路径、私有部署、实机基准及六类交付物均纳入 MVP 验收。
+- [确定覆盖 MVP 的 OpenSpec 实现路线](issues/09-openspec-delivery-roadmap.md) — MVP 采用 39 个能力级 changes、G0～G5 阶段门和滚动 Orca 执行图；主 Agent 规划审阅，Luna max 实施验证，MiniMax-M3 high 仅机械归档，工作树按就绪前沿创建。
 
 ## Not yet specified
 
 - 甲方正式风险清单、指标体系、量化标准、风险矩阵、规范和脱敏工程资料到位后，实际数据差异可能继续展开格式适配、规则治理、样本治理与验收校准票据。
 - CAD 深度解析、LoRA/微调、高可用集群、多项目规模化运行等后续能力的实施优先级，需要根据 MVP 样例验证、硬件基准和甲方部署条件再展开。
 - 各 OpenSpec change 内部的任务颗粒度、工期与人员安排，在最终实施路线确定后逐项展开，不在 Wayfinder 决策票中提前拆成编码任务。
+- 甲方实际风险管理系统、监测平台、通知渠道和待选 MCP Server 及样例到位后，再分别确定字段映射、认证权限、连接能力、联调验收与上线优先级；具体 MCP 能力不在本地图提前封顶。
 
 ## Out of scope
 

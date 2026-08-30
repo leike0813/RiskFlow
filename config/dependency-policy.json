@@ -1,0 +1,149 @@
+{
+  "allowedLicenses": ["MIT", "Apache-2.0"],
+  "dependencies": [
+    {
+      "name": "react",
+      "version": "19.2.8",
+      "purpose": "Web 组件运行时",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/react",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "安全问题、React 19 停止维护或界面兼容性验证失败"
+    },
+    {
+      "name": "react-dom",
+      "version": "19.2.8",
+      "purpose": "Web DOM 挂载入口",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/react-dom",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "安全问题、React 19 停止维护或界面兼容性验证失败"
+    },
+    {
+      "name": "fastify",
+      "version": "5.12.1",
+      "purpose": "API 工厂与薄 HTTP 入口",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/fastify",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "安全问题、Node 24 不兼容或 API 验收失败"
+    },
+    {
+      "name": "typescript",
+      "version": "5.9.3",
+      "purpose": "TypeScript project references 编译",
+      "license": "Apache-2.0",
+      "source": "https://www.npmjs.com/package/typescript",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "安全问题或与固定 Node、构建工具不兼容"
+    },
+    {
+      "name": "@types/node",
+      "version": "24.13.3",
+      "purpose": "Node 24 类型定义",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/@types/node",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "Node 基线升级"
+    },
+    {
+      "name": "@types/react",
+      "version": "19.2.18",
+      "purpose": "React 类型定义",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/@types/react",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "React 类型兼容性失败"
+    },
+    {
+      "name": "@types/react-dom",
+      "version": "19.2.5",
+      "purpose": "React DOM 类型定义",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/@types/react-dom",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "React DOM 类型兼容性失败"
+    },
+    {
+      "name": "vite",
+      "version": "8.2.2",
+      "purpose": "Web 生产构建",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/vite",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "安全问题或与固定 Node、React 插件不兼容"
+    },
+    {
+      "name": "@vitejs/plugin-react",
+      "version": "6.1.1",
+      "purpose": "Vite React 转换",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/@vitejs/plugin-react",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "与固定 Vite、React 不兼容"
+    },
+    {
+      "name": "vitest",
+      "version": "4.1.11",
+      "purpose": "统一单元测试入口",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/vitest",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "安全问题或稳定行为测试能力不足"
+    },
+    {
+      "name": "eslint",
+      "version": "10.9.1",
+      "purpose": "ESLint Flat Config 执行器",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/eslint",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "安全问题或与 typescript-eslint 不兼容"
+    },
+    {
+      "name": "@eslint/js",
+      "version": "10.0.1",
+      "purpose": "JavaScript 基础静态规则",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/@eslint/js",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "安全问题或与 ESLint Flat Config 不兼容"
+    },
+    {
+      "name": "typescript-eslint",
+      "version": "8.68.0",
+      "purpose": "TypeScript ESLint 解析与规则",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/typescript-eslint",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "不支持固定 TypeScript 或 ESLint"
+    },
+    {
+      "name": "prettier",
+      "version": "3.9.6",
+      "purpose": "唯一代码格式化器",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/prettier",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "安全问题或不支持仓库所用语法"
+    },
+    {
+      "name": "dependency-cruiser",
+      "version": "17.1.0",
+      "purpose": "静态依赖边界检查",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/dependency-cruiser",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "无法识别实际模块图或维护停止"
+    },
+    {
+      "name": "@cyclonedx/cdxgen",
+      "version": "12.8.4",
+      "purpose": "从 pnpm 锁定工程生成 CycloneDX SBOM",
+      "license": "Apache-2.0",
+      "source": "https://www.npmjs.com/package/@cyclonedx/cdxgen",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "高危漏洞、pnpm 支持失效或交付平台提供等价工具"
+    }
+  ]
+}

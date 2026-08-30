@@ -1,0 +1,25 @@
+{
+  "name": "riskflow",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.10.0",
+  "engines": {
+    "node": ">=24.12.0 <25"
+  },
+  "devDependencies": {
+    "@cyclonedx/cdxgen": "12.8.4",
+    "@eslint/js": "10.9.1",
+    "@types/node": "24.13.3",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5",
+    "@vitejs/plugin-react": "6.1.1",
+    "dependency-cruiser": "17.1.0",
+    "eslint": "10.9.1",
+    "prettier": "3.9.6",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.68.0",
+    "vite": "8.2.2",
+    "vitest": "4.1.11"
+  }
+}

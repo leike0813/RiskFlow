@@ -1,0 +1,157 @@
+{
+  "source": "/home/joshua/Workspace/Code/JavaScript/RiskFlow/projects/riskflow_20260828_visual_rebuild_ppt169_20260828/sources/20260828变径盾构隧站一体化建造风险评估及安_系统设计汇报_优化版.pptx",
+  "slide_count": 19,
+  "canvas": {
+    "width_px": 960,
+    "height_px": 540,
+    "aspect": 1.7778
+  },
+  "theme": {
+    "palette": {
+      "background": "#FFFFFF",
+      "background_alt": "#EEECE1",
+      "text": "#000000",
+      "text_alt": "#1F497D",
+      "hyperlink": "#0000FF",
+      "accent1": "#4F81BD",
+      "accent2": "#C0504D",
+      "accent3": "#FFFFFF",
+      "accent4": "#000000",
+      "accent5": "#B2C1DB",
+      "accent6": "#AE4845",
+      "primary": "#4F81BD"
+    },
+    "fonts": {
+      "title": {
+        "latin": "微软雅黑",
+        "ea": "微软雅黑",
+        "cs": "微软雅黑"
+      },
+      "body": {
+        "latin": "微软雅黑",
+        "ea": "微软雅黑",
+        "cs": "微软雅黑"
+      }
+    },
+    "sizes": {
+      "title": 44.0,
+      "body": 32.0,
+      "body_levels": [
+        32.0,
+        28.0,
+        24.0,
+        20.0,
+        20.0,
+        20.0,
+        20.0,
+        20.0,
+        20.0
+      ]
+    }
+  },
+  "observed": {
+    "fonts": {
+      "latin": [
+        {
+          "value": "Microsoft YaHei",
+          "count": 326
+        },
+        {
+          "value": "微软雅黑",
+          "count": 96
+        },
+        {
+          "value": "Arial",
+          "count": 14
+        },
+        {
+          "value": "Calibri",
+          "count": 8
+        }
+      ],
+      "ea": [
+        {
+          "value": "Microsoft YaHei",
+          "count": 193
+        },
+        {
+          "value": "微软雅黑",
+          "count": 52
+        },
+        {
+          "value": "宋体",
+          "count": 7
+        }
+      ]
+    },
+    "sizes_pt": [
+      {
+        "value": 10.5,
+        "count": 83
+      },
+      {
+        "value": 11.5,
+        "count": 29
+      },
+      {
+        "value": 8.0,
+        "count": 22
+      },
+      {
+        "value": 8.8,
+        "count": 20
+      },
+      {
+        "value": 10.0,
+        "count": 19
+      },
+      {
+        "value": 14.0,
+        "count": 19
+      },
+      {
+        "value": 18.0,
+        "count": 19
+      },
+      {
+        "value": 9.0,
+        "count": 17
+      }
+    ],
+    "colors": [
+      {
+        "value": "#FFFFFF",
+        "count": 170
+      },
+      {
+        "value": "#163B63",
+        "count": 70
+      },
+      {
+        "value": "#1F5E96",
+        "count": 65
+      },
+      {
+        "value": "#1C2733",
+        "count": 57
+      },
+      {
+        "value": "#4A5568",
+        "count": 41
+      },
+      {
+        "value": "#2F8F7A",
+        "count": 39
+      },
+      {
+        "value": "#D5DCE4",
+        "count": 32
+      },
+      {
+        "value": "#F2994A",
+        "count": 30
+      }
+    ]
+  },
+  "layout_sizes_pt": []
+}

@@ -1,0 +1,69 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" data-pptx-page-role="content" font-family="Microsoft YaHei, Arial, sans-serif">
+  <defs>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><polygon points="0,0 10,5 0,10" fill="#163B63" /></marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><polygon points="0,0 10,5 0,10" fill="#F2994A" /></marker>
+    <marker id="arrow-teal" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><polygon points="0,0 10,5 0,10" fill="#2F8F7A" /></marker>
+  </defs>
+  <rect id="background" data-pptx-role="background" x="0" y="0" width="1280" height="720" fill="#FFFFFF" />
+  <g id="page-header" data-pptx-role="header" data-pptx-bounds="56 26 1168 50" font-family="Microsoft YaHei, Arial, sans-serif">
+    <text x="56" y="47" font-size="13" font-weight="700" fill="#2F8F7A">02 项目研发进展</text>
+    <text x="1224" y="47" text-anchor="end" font-size="11" fill="#4A5568">02.04 各子课题工作进展 · 子课题一（站隧一体化建造风险智能识别与评估技术）</text>
+    <line x1="56" y1="70" x2="1224" y2="70" stroke="#D5DCE4" stroke-width="1" />
+  </g>
+  <g id="title" data-pptx-bounds="56 86 1168 70">
+    <text x="56" y="118" font-size="25" font-weight="700" fill="#163B63">Agent、确定性计算与人工决策的职责边界</text>
+    <text x="56" y="146" font-size="14" fill="#4A5568">五类必经 Agent 任务聚焦语义判断；计算、校验、发布和采纳均由受控模块或人工完成。</text>
+  </g>
+  <g id="task-contract" data-pptx-bounds="56 164 1168 68">
+    <rect x="56" y="164" width="1168" height="68" rx="10" fill="#FFF7EC" />
+    <text x="78" y="207" font-size="16" font-weight="700" fill="#F2994A">统一任务契约：</text>
+    <text x="222" y="207" font-size="15" fill="#1C2733">发起者、工程、输入版本、模型与提示模板、工具白名单、资源预算、结构化增量、确定性校验和终态</text>
+  </g>
+  <g id="agent-role" data-pptx-bounds="56 244 336 230">
+    <rect x="56" y="244" width="336" height="230" rx="12" fill="#EEF4FA" stroke="#1F5E96" stroke-width="2" />
+    <use data-icon="tabler-outline/robot" x="80" y="266" width="32" height="32" fill="#1F5E96" stroke-width="2" />
+    <text x="126" y="290" font-size="19" font-weight="700" fill="#163B63">Agent 承担语义判断</text>
+    <text x="80" y="332" font-size="14" fill="#1C2733">• 数据清洗与部分可用判断</text>
+    <text x="80" y="362" font-size="14" fill="#1C2733">• 非结构化知识编制</text>
+    <text x="80" y="392" font-size="14" fill="#1C2733">• 识别检索审阅与有界补搜</text>
+    <text x="80" y="422" font-size="14" fill="#1C2733">• 处置建议组合与排序</text>
+    <text x="80" y="452" font-size="14" fill="#1C2733">• 偏差超限后的校准建议候选</text>
+  </g>
+  <g id="deterministic-role" data-pptx-bounds="472 244 336 230">
+    <rect x="472" y="244" width="336" height="230" rx="12" fill="#EEF7F4" stroke="#2F8F7A" stroke-width="2" />
+    <use data-icon="tabler-outline/shield-check" x="496" y="266" width="32" height="32" fill="#2F8F7A" stroke-width="2" />
+    <text x="542" y="290" font-size="19" font-weight="700" fill="#2F8F7A">确定性模块负责收口</text>
+    <text x="496" y="338" font-size="14" fill="#1C2733">• 字段格式与完整性校验</text>
+    <text x="496" y="374" font-size="14" fill="#1C2733">• 规则一致性与适用性校验</text>
+    <text x="496" y="410" font-size="14" fill="#1C2733">• P/C 评分、风险矩阵映射与阈值判断</text>
+    <text x="496" y="446" font-size="14" fill="#1C2733">• 业务入库、版本发布与审计记录</text>
+  </g>
+  <g id="human-role" data-pptx-bounds="888 244 336 230">
+    <rect x="888" y="244" width="336" height="230" rx="12" fill="#FFF7EC" stroke="#F2994A" stroke-width="2" />
+    <use data-icon="tabler-outline/user-check" x="912" y="266" width="32" height="32" fill="#F2994A" stroke-width="2" />
+    <text x="958" y="290" font-size="19" font-weight="700" fill="#F2994A">人工审核与决定</text>
+    <text x="912" y="346" font-size="14" fill="#1C2733">• 规则冲突裁决</text>
+    <text x="912" y="390" font-size="14" fill="#1C2733">• 知识与校准版本发布</text>
+    <text x="912" y="434" font-size="14" fill="#1C2733">• 处置建议采纳与执行</text>
+  </g>
+  <g id="role-links" data-pptx-bounds="392 284 496 150">
+    <line x1="392" y1="338" x2="472" y2="338" stroke="#163B63" stroke-width="3" marker-end="url(#arrow-blue)" />
+    <line x1="808" y1="338" x2="888" y2="338" stroke="#F2994A" stroke-width="3" marker-end="url(#arrow-orange)" />
+    <path d="M888 420 C854 450 836 452 808 432" fill="none" stroke="#2F8F7A" stroke-width="2" stroke-dasharray="6,3" marker-end="url(#arrow-teal)" />
+  </g>
+  <g id="governance" data-pptx-bounds="56 500 1168 116">
+    <rect x="56" y="500" width="274" height="116" rx="10" fill="#F4F7FA" />
+    <text x="78" y="530" font-size="15" font-weight="700" fill="#163B63">固定任务边界</text><text x="78" y="558" font-size="14" fill="#1C2733">发起者、工程和输入版本<tspan x="78" dy="22">在任务创建时确定</tspan></text>
+    <rect x="354" y="500" width="274" height="116" rx="10" fill="#F4F7FA" />
+    <text x="376" y="530" font-size="15" font-weight="700" fill="#163B63">限定工具范围</text><text x="376" y="558" font-size="14" fill="#1C2733">按任务类型配置领域<tspan x="376" dy="22">工具白名单</tspan></text>
+    <rect x="652" y="500" width="274" height="116" rx="10" fill="#F4F7FA" />
+    <text x="674" y="530" font-size="15" font-weight="700" fill="#163B63">执行资源预算</text><text x="674" y="558" font-size="14" fill="#1C2733">模型、工具、并发和墙钟<tspan x="674" dy="22">时间设硬预算</tspan></text>
+    <rect x="950" y="500" width="274" height="116" rx="10" fill="#F4F7FA" />
+    <text x="972" y="530" font-size="15" font-weight="700" fill="#163B63">保留审计证据</text><text x="972" y="558" font-size="14" fill="#1C2733">记录输入、工具行动、校验和<tspan x="972" dy="22">正式结果，不展示思维链</tspan></text>
+  </g>
+  <g id="page-footer" data-pptx-role="footer" data-pptx-bounds="56 648 1168 30">
+    <text x="56" y="672" font-size="11" fill="#4A5568">变径盾构站隧一体化建造风险智能识别与评估系统（RiskFlow）</text>
+    <text x="1224" y="672" text-anchor="end" font-size="11" font-family="Arial, sans-serif" fill="#4A5568">08</text>
+  </g>
+</svg>

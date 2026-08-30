@@ -1,0 +1,15 @@
+/* 监测序列详情页布局 */
+.pjmon-chart-row {
+  margin-bottom: 16px;
+}
+
+.pjmon-chart-row .card-extra {
+  gap: 12px;
+}
+
+.pjmon-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}

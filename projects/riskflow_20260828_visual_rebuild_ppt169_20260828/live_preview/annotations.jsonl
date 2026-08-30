@@ -1,0 +1,28 @@
+{"ts": 1787929868.8546307, "file": "06_system_architecture.svg", "element_id": "_edit_6", "action": "annotation_saved", "old": null, "new": "对齐/移动：文字、图标和背景区域没有对齐，下同"}
+{"ts": 1787929868.8546307, "file": "06_system_architecture.svg", "element_id": "_edit_5", "action": "annotation_saved", "old": null, "new": "数字和文字太小，而且数字采用plain text不是很漂亮，下同"}
+{"ts": 1787929971.2305882, "file": "06_system_architecture.svg", "element_id": "_edit_5", "action": "annotation_saved", "old": "数字和文字太小，而且数字采用plain text不是很漂亮，下同", "new": "数字和文字太小，而且数字采用plain text不是很漂亮，下同"}
+{"ts": 1787929971.2305882, "file": "06_system_architecture.svg", "element_id": "_edit_6", "action": "annotation_saved", "old": "对齐/移动：文字、图标和背景区域没有对齐，下同", "new": "对齐/移动：文字、图标和背景区域没有对齐，下同"}
+{"ts": 1787929971.2305882, "file": "06_system_architecture.svg", "element_id": "_edit_19", "action": "annotation_saved", "old": null, "new": "文字有点小，其他框内也一样"}
+{"ts": 1787929971.2330196, "file": "07_overall_approach.svg", "element_id": "_edit_20", "action": "annotation_saved", "old": null, "new": "这个箭头颜色应该和旁边的节点颜色对齐（橙色）"}
+{"ts": 1787929971.2330196, "file": "07_overall_approach.svg", "element_id": "_edit_17", "action": "annotation_saved", "old": null, "new": "这个箭头颜色应该和左边的节点颜色对齐（深蓝色）"}
+{"ts": 1787929971.2330196, "file": "07_overall_approach.svg", "element_id": "_edit_33", "action": "annotation_saved", "old": null, "new": "文字有点小，其他框内也一样"}
+{"ts": 1787930062.623661, "file": "08_integrated_architecture.svg", "element_id": "_edit_83", "action": "annotation_saved", "old": null, "new": "这个箭头覆盖到文字上方了"}
+{"ts": 1787930062.623661, "file": "08_integrated_architecture.svg", "element_id": "_edit_9", "action": "annotation_saved", "old": null, "new": "图标、文字和背景没有很好地对齐，下同"}
+{"ts": 1787930062.623661, "file": "08_integrated_architecture.svg", "element_id": "_edit_10", "action": "annotation_saved", "old": null, "new": "文字超出框了，下同"}
+{"ts": 1787930062.623661, "file": "08_integrated_architecture.svg", "element_id": "_edit_12", "action": "annotation_saved", "old": null, "new": "文字有点小，其他区域同理"}
+{"ts": 1787930062.623661, "file": "08_integrated_architecture.svg", "element_id": "_edit_88", "action": "annotation_saved", "old": null, "new": "文字有点小，其他类似区域同理"}
+{"ts": 1787930096.5837665, "file": "10_dual_engines.svg", "element_id": "_edit_46", "action": "annotation_saved", "old": null, "new": "这个箭头应该放在下方"}
+{"ts": 1787930139.4362502, "file": "13_risk_overview_demo.svg", "element_id": "_edit_10", "action": "annotation_saved", "old": null, "new": "缩略图大可不必吧，其他截图同理"}
+{"ts": 1787930208.8212621, "file": "18_next_plan.svg", "element_id": "_edit_26", "action": "annotation_saved", "old": null, "new": "第四项怎么少一个箭头"}
+{"ts": 1787930208.8212621, "file": "18_next_plan.svg", "element_id": "_edit_33", "action": "annotation_saved", "old": null, "new": "总体来说文字小了。此处标注不代表只有此处有问题，这是一个全局问题，我只是没有一一标注而已"}
+{"ts": 1787930985.863711, "file": "18_next_plan.svg", "element_id": "_edit_32", "action": "annotation_saved", "old": null, "new": "对齐/移动：几个箭头没有对齐，很奇怪啊"}
+{"ts": 1787931111.9666696, "file": "10_dual_engines.svg", "element_id": "_edit_28", "action": "annotation_saved", "old": null, "new": "对齐/移动：这个文字可以移到背景框内部的右上，就不会和箭头重合了"}
+{"ts": 1787931111.9666696, "file": "10_dual_engines.svg", "element_id": "_edit_47", "action": "annotation_saved", "old": null, "new": "这个文字应该加个背景并反色显示，同时下移一点，底下的三个框也下移避让，会好看很多"}
+{"ts": 1787931111.9689727, "file": "11_technical_assurance.svg", "element_id": "_edit_7", "action": "annotation_saved", "old": null, "new": "对齐/移动：只有这个文字没有和右边对齐，很奇怪。不过我觉得右边两个框里的对应文字大小可以和这个保持一致"}
+{"ts": 1787931214.9123707, "file": "06_system_architecture.svg", "element_id": "_edit_3", "action": "annotation_saved", "old": null, "new": "这一页整体和第八页重复了，我觉得可以删除这一页，如果有些内容还可用，可以整合到第八页里面"}
+{"ts": 1787931279.8639448, "file": "07_overall_approach.svg", "element_id": "_edit_8", "action": "annotation_saved", "old": null, "new": "这种框，我觉得标题可以上居中显示，文字也应该尽可能利用背景框的空间。总之，别让背景框空白太多，会更好看"}
+{"ts": 1787931328.6500685, "file": "09_agent_boundary.svg", "element_id": "_edit_10", "action": "annotation_saved", "old": null, "new": "这一行文字总体靠上了，而且太小"}
+{"ts": 1787931328.6500685, "file": "09_agent_boundary.svg", "element_id": "_edit_15", "action": "annotation_saved", "old": null, "new": "只有这里有编号，很奇怪。我觉得统一用dot列表会更好看"}
+{"ts": 1787931640.5081336, "file": "16_stage_results.svg", "element_id": "_edit_61", "action": "annotation_saved", "old": null, "new": "这里是否应该是个感叹号？现在不太对"}
+{"ts": 1787931699.7297502, "file": "10_technical_assurance.svg", "element_id": "_edit_15", "action": "annotation_saved", "old": null, "new": "分两行不太好，右边同理"}
+{"ts": 1787931743.7644956, "file": "08_agent_boundary.svg", "element_id": "_edit_7", "action": "annotation_saved", "old": null, "new": "这种带冒号的标题AI味太重，需要整体审核"}

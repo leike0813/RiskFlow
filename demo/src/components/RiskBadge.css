@@ -1,0 +1,32 @@
+.risk-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.risk-badge--I {
+  color: #fff;
+  background: var(--risk-1);
+}
+
+.risk-badge--II {
+  color: #fff;
+  background: var(--risk-2);
+}
+
+/* III 级：浅底深字 */
+.risk-badge--III {
+  color: #8a6604;
+  background: var(--risk-3-soft);
+  border: 1px solid var(--risk-3);
+}
+
+.risk-badge--IV {
+  color: #fff;
+  background: var(--risk-4);
+}

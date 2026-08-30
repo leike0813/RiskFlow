@@ -1,0 +1,65 @@
+{
+  "primary_language": "zh-CN",
+  "canvas": "",
+  "audience": "中国铁建项目管理层、课题评审专家，以及甲方业务与技术负责人；已了解课题背景，重点关心阶段成果、系统可行性、风险控制边界和下一阶段投入条件。",
+  "communication_intent": "汇报 RiskFlow 系统设计与演示原型进展，说明风险识别、评估、预警和处置闭环的技术边界，并推动各方确认下一阶段样例验证所需的业务配置、脱敏资料与评价方法。",
+  "audience_outcome": "听众能够准确理解系统已经形成的设计基线与演示能力，认可机理驱动识别、确定性评估和人工审核边界，并确认正式验证所需的甲方输入与后续工作顺序。",
+  "core_message": "RiskFlow 已形成贯通风险识别、评估、预警、处置和追溯的设计基线与演示原型，下一阶段应以甲方审核配置和脱敏工程样例进入可核对、可重放的正式验证。",
+  "delivery_context": "主要用于有主讲人的年度执行情况现场汇报，预计 15—20 分钟；同时作为会后技术评审、项目归档和后续联调沟通的独立阅读材料。",
+  "artifact_afterlife": "作为年度进展评审材料、系统设计沟通依据、下一阶段验证条件清单和项目归档记录。",
+  "content_divergence": "keep source wording and page structure verbatim",
+  "typography": {
+    "name": "微软雅黑 + Arial（源稿字号）",
+    "heading": {
+      "css": "'Microsoft YaHei', Arial, sans-serif",
+      "english": "Arial",
+      "primary": "Microsoft YaHei",
+      "sample_primary": "",
+      "sample_english": ""
+    },
+    "body": {
+      "css": "'Microsoft YaHei', Arial, sans-serif",
+      "english": "Arial",
+      "primary": "Microsoft YaHei",
+      "sample_primary": "",
+      "sample_english": ""
+    },
+    "body_size": 14,
+    "sizes": {
+      "title": 25,
+      "subtitle": 19,
+      "annotation": 11
+    },
+    "note": "",
+    "body_size_unit": "px"
+  },
+  "page_count": "19",
+  "mode": "custom",
+  "mode_behavior": "以 briefing 为主：保持原 19 页顺序、标题和正文逐字不变；每页先呈现结论层级，再用一至两个证据区承载原文。对系统架构、Agent 边界、双引擎和内网部署四页使用 instructional 的分步阅读逻辑，但不改变内容边界。",
+  "visual_style": "custom",
+  "visual_style_behavior": "swiss-minimal 负责精确栅格、留白和清晰的标题层级；soft-rounded 仅用于关键结论卡、状态标签与截图放大窗。保持白底和深蓝标题，青绿色只标记已形成能力，橙色只标记风险、待确认条件或下一步。",
+  "color": {
+    "name": "源稿深蓝·青绿",
+    "palette": {
+      "background": "#FFFFFF",
+      "secondary_bg": "#F4F7FA",
+      "primary": "#163B63",
+      "accent": "#2F8F7A",
+      "secondary_accent": "#F2994A",
+      "body_text": "#1C2733"
+    }
+  },
+  "icons": "tabler-outline",
+  "image_usage": [
+    "provided"
+  ],
+  "image_notes": "第 13—15 页的 RiskFlow 系统截图属于权威演示素材：保留完整总览，并从同一原图裁切关键区域做局部放大、编号和结论标注，不重绘或改写界面事实。第 8—10、12 页现有低清流程图只作结构参考，最终改用可编辑原生矢量图重绘。其余页面不新增 AI 或网络图片。",
+  "proactive_speaker_notes": true,
+  "proactive_custom_animations": false,
+  "proactive_narration_audio": false,
+  "generation_mode": "continuous",
+  "refine_spec": false,
+  "stage": "final",
+  "status": "confirmed",
+  "confirmed_at": "2026-08-28T22:47:19"
+}

@@ -1,0 +1,35 @@
+.status-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 18px;
+  padding: 1px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.status-tag--success {
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.status-tag--running {
+  color: var(--blue);
+  background: var(--blue-soft);
+}
+
+.status-tag--review {
+  color: var(--review);
+  background: var(--review-soft);
+}
+
+.status-tag--failed {
+  color: var(--risk-1);
+  background: var(--risk-1-soft);
+}
+
+.status-tag--neutral {
+  color: var(--text-2);
+  background: var(--bluegray-soft);
+}

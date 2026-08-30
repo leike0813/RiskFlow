@@ -1,0 +1,39 @@
+{
+  "schema": "ppt-master.source_to_md.profile.v1",
+  "converter": "ppt_to_md.py",
+  "conversion_type": "pptx",
+  "source": {
+    "path": "20260828变径盾构隧站一体化建造风险评估及安_系统设计汇报_优化版_2.pptx",
+    "name": "20260828变径盾构隧站一体化建造风险评估及安_系统设计汇报_优化版_2.pptx",
+    "suffix": ".pptx",
+    "kind": "file",
+    "exists": true,
+    "size_bytes": 6466665
+  },
+  "outputs": {
+    "markdown": "20260828变径盾构隧站一体化建造风险评估及安_系统设计汇报_优化版_2.md",
+    "asset_dir": "20260828变径盾构隧站一体化建造风险评估及安_系统设计汇报_优化版_2_files",
+    "image_manifest": "20260828变径盾构隧站一体化建造风险评估及安_系统设计汇报_优化版_2_files/image_manifest.json",
+    "image_count": 14
+  },
+  "markdown": {
+    "line_count": 809,
+    "char_count": 10137,
+    "heading_count": 33,
+    "table_count": 0,
+    "image_ref_count": 29,
+    "link_count": 0
+  },
+  "warnings": [
+    "Slide 7: SmartArt scan failed: Missing required PPTX part: ppt/slides/slide7.xml",
+    "Slide 8: SmartArt scan failed: Missing required PPTX part: ppt/slides/slide8.xml",
+    "Slide 9: SmartArt scan failed: Missing required PPTX part: ppt/slides/slide9.xml",
+    "Slide 10: SmartArt scan failed: Missing required PPTX part: ppt/slides/slide10.xml",
+    "Slide 11: SmartArt scan failed: Missing required PPTX part: ppt/slides/slide11.xml",
+    "Slide 12: SmartArt scan failed: Missing required PPTX part: ppt/slides/slide12.xml",
+    "Slide 13: SmartArt scan failed: Missing required PPTX part: ppt/slides/slide13.xml",
+    "Slide 14: SmartArt scan failed: Missing required PPTX part: ppt/slides/slide14.xml",
+    "Slide 15: SmartArt scan failed: Missing required PPTX part: ppt/slides/slide15.xml",
+    "Slide 17: SmartArt scan failed: Missing required PPTX part: ppt/slides/slide17.xml"
+  ]
+}

@@ -1,0 +1,320 @@
+{
+  "schema": "ppt-master.pptx-postflight-report.v1",
+  "status": "passed-with-warnings",
+  "output": {
+    "path": "/home/joshua/Workspace/Code/JavaScript/RiskFlow/projects/riskflow_20260828_visual_rebuild_ppt169_20260828/exports/riskflow_20260828_visual_rebuild_20260829_000412.pptx",
+    "bytes": 1422555
+  },
+  "source": {
+    "svg_slide_count": 18,
+    "layout_definition_count": 0,
+    "fingerprint": {
+      "algorithm": "sha256",
+      "digest": "5f135d4b95235d1605527f233c013e328b1f2a72d9f8f2bff71dde060dd3287e",
+      "file_count": 18,
+      "files": [
+        {
+          "file": "01_cover.svg",
+          "sha256": "eb2988d1b470cb50c06c47ee007a7b54c155d8bc735c17f82e4fbff28fec7cb3"
+        },
+        {
+          "file": "02_contents.svg",
+          "sha256": "e082923253289e0e31f357c35714c1556db61f71691d8f77900f003ece400a7d"
+        },
+        {
+          "file": "03_section_overview.svg",
+          "sha256": "5df808bce9db7444eae8fb997927e8adbb9b47d65ce4ecbcb9b83d436a332f7b"
+        },
+        {
+          "file": "04_section_progress.svg",
+          "sha256": "88b7932e607f850b4ab1024be06f3b2487647f792b48b1a88f926ef1e5259860"
+        },
+        {
+          "file": "05_research_route.svg",
+          "sha256": "91dbac48c1bb0c8b592f89ba5095aedc18fb355ae9494449e9d98ef83bb37ddb"
+        },
+        {
+          "file": "06_overall_approach.svg",
+          "sha256": "c4fe1dc6ea9b26c3bf63630e7fca9b9776fc32ddd2404e7cf771d82bd8899727"
+        },
+        {
+          "file": "07_integrated_architecture.svg",
+          "sha256": "0d7e164d3968ca2ac9e050edfc70f9b95d36540ed629a1aff8f9bdbf9c9995d2"
+        },
+        {
+          "file": "08_agent_boundary.svg",
+          "sha256": "163d439623120a13f5b866c6f642be2e1f411d98c1fe3d6d6c48d4e71578721d"
+        },
+        {
+          "file": "09_dual_engines.svg",
+          "sha256": "3b99fc3248dfae72c705fa55e3b88e70585236c74d6ebff0eeccc283bad1d70a"
+        },
+        {
+          "file": "10_technical_assurance.svg",
+          "sha256": "9fb67c3f004fedbc765c092bdab2991e9bdb2b11eb5641e745c355b73d618498"
+        },
+        {
+          "file": "11_intranet_deployment.svg",
+          "sha256": "56dadbac5485b4de8134e2f5f53fb759a495bf0652908d101e1aa2f38c3b9685"
+        },
+        {
+          "file": "12_risk_overview_demo.svg",
+          "sha256": "1563769624f2704be214a74657fdce564b3e0940d435a8aef8d069f7ed0027e5"
+        },
+        {
+          "file": "13_agent_and_identification_demo.svg",
+          "sha256": "ef865426d4a57198911d34faaa46d5b88e07db8f0ceea6b34e108284666e6c6b"
+        },
+        {
+          "file": "14_assessment_response_demo.svg",
+          "sha256": "d2cf270436e4c64963bda6854dbb1fab5cf5d90aa7a95fce9c62e2945aa13f75"
+        },
+        {
+          "file": "15_stage_results.svg",
+          "sha256": "9cdf75801e4bd7640e31da9bed43df1fa3f86a02d94f3390b1ced1262ab2b0ba"
+        },
+        {
+          "file": "16_section_next.svg",
+          "sha256": "ca1c7ed1bb1892f23087a7216b149b8b0c18a5f490201f754e21b2cfb29e808e"
+        },
+        {
+          "file": "17_next_plan.svg",
+          "sha256": "4ec7579ec56ed2850fca76a61fbc9c304d64b55bec1890b74e0c565ce126af73"
+        },
+        {
+          "file": "18_thanks.svg",
+          "sha256": "a01d76237f0d4cddf829c531852ded23c24667fd310c869885004533dc6a396f"
+        }
+      ]
+    }
+  },
+  "package": {
+    "zip_integrity": "passed",
+    "corrupt_member": null,
+    "slides": 18,
+    "notes": 18,
+    "masters": 1,
+    "layouts": 1
+  },
+  "checks": {
+    "zip_integrity": "passed",
+    "slide_count": "passed",
+    "internal_relationships": "enforced-at-build",
+    "structured_package": "not-applicable",
+    "transitions": "enforced-at-build",
+    "animations": "enforced-at-build",
+    "quality_gate": "passed",
+    "quality_warnings": "warning",
+    "template_tokens": "passed",
+    "external_images": "passed",
+    "font_portability": "passed"
+  },
+  "quality": {
+    "status": "loaded",
+    "path": "projects/riskflow_20260828_visual_rebuild_ppt169_20260828/validation/svg_quality_report.json",
+    "schema": "ppt-master.svg-quality-report.v1",
+    "stage": "final",
+    "source_match": "passed",
+    "source_fingerprint": {
+      "algorithm": "sha256",
+      "digest": "5f135d4b95235d1605527f233c013e328b1f2a72d9f8f2bff71dde060dd3287e",
+      "file_count": 18,
+      "files": [
+        {
+          "file": "01_cover.svg",
+          "sha256": "eb2988d1b470cb50c06c47ee007a7b54c155d8bc735c17f82e4fbff28fec7cb3"
+        },
+        {
+          "file": "02_contents.svg",
+          "sha256": "e082923253289e0e31f357c35714c1556db61f71691d8f77900f003ece400a7d"
+        },
+        {
+          "file": "03_section_overview.svg",
+          "sha256": "5df808bce9db7444eae8fb997927e8adbb9b47d65ce4ecbcb9b83d436a332f7b"
+        },
+        {
+          "file": "04_section_progress.svg",
+          "sha256": "88b7932e607f850b4ab1024be06f3b2487647f792b48b1a88f926ef1e5259860"
+        },
+        {
+          "file": "05_research_route.svg",
+          "sha256": "91dbac48c1bb0c8b592f89ba5095aedc18fb355ae9494449e9d98ef83bb37ddb"
+        },
+        {
+          "file": "06_overall_approach.svg",
+          "sha256": "c4fe1dc6ea9b26c3bf63630e7fca9b9776fc32ddd2404e7cf771d82bd8899727"
+        },
+        {
+          "file": "07_integrated_architecture.svg",
+          "sha256": "0d7e164d3968ca2ac9e050edfc70f9b95d36540ed629a1aff8f9bdbf9c9995d2"
+        },
+        {
+          "file": "08_agent_boundary.svg",
+          "sha256": "163d439623120a13f5b866c6f642be2e1f411d98c1fe3d6d6c48d4e71578721d"
+        },
+        {
+          "file": "09_dual_engines.svg",
+          "sha256": "3b99fc3248dfae72c705fa55e3b88e70585236c74d6ebff0eeccc283bad1d70a"
+        },
+        {
+          "file": "10_technical_assurance.svg",
+          "sha256": "9fb67c3f004fedbc765c092bdab2991e9bdb2b11eb5641e745c355b73d618498"
+        },
+        {
+          "file": "11_intranet_deployment.svg",
+          "sha256": "56dadbac5485b4de8134e2f5f53fb759a495bf0652908d101e1aa2f38c3b9685"
+        },
+        {
+          "file": "12_risk_overview_demo.svg",
+          "sha256": "1563769624f2704be214a74657fdce564b3e0940d435a8aef8d069f7ed0027e5"
+        },
+        {
+          "file": "13_agent_and_identification_demo.svg",
+          "sha256": "ef865426d4a57198911d34faaa46d5b88e07db8f0ceea6b34e108284666e6c6b"
+        },
+        {
+          "file": "14_assessment_response_demo.svg",
+          "sha256": "d2cf270436e4c64963bda6854dbb1fab5cf5d90aa7a95fce9c62e2945aa13f75"
+        },
+        {
+          "file": "15_stage_results.svg",
+          "sha256": "9cdf75801e4bd7640e31da9bed43df1fa3f86a02d94f3390b1ced1262ab2b0ba"
+        },
+        {
+          "file": "16_section_next.svg",
+          "sha256": "ca1c7ed1bb1892f23087a7216b149b8b0c18a5f490201f754e21b2cfb29e808e"
+        },
+        {
+          "file": "17_next_plan.svg",
+          "sha256": "4ec7579ec56ed2850fca76a61fbc9c304d64b55bec1890b74e0c565ce126af73"
+        },
+        {
+          "file": "18_thanks.svg",
+          "sha256": "a01d76237f0d4cddf829c531852ded23c24667fd310c869885004533dc6a396f"
+        }
+      ]
+    },
+    "summary": {
+      "total": 18,
+      "passed": 6,
+      "warnings": 12,
+      "errors": 0
+    },
+    "categories": {
+      "blocking": {
+        "count": 0,
+        "issues": []
+      },
+      "introduced": {
+        "count": 12,
+        "issues": [
+          {
+            "file": "01_cover.svg",
+            "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=70, y=222; text='变径盾构站隧一体化建造风险评估及安全控制…'); use supported explicit text positioning when page fit matters"
+          },
+          {
+            "file": "02_contents.svg",
+            "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=56, y=294; text='基于变径盾构的轨道交通隧站一体化建造技术…'); use supported explicit text positioning when page fit matters"
+          },
+          {
+            "file": "05_research_route.svg",
+            "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=528, y=458; text='明确了系统应用场景、输入资料范围、风险识…'), <text> (x=892, y=458; text='梳理了工程资料、工序信息、机理知识与风险…'), <text> (x=528, y=564; text='形成了数据接入、知识建模、智能推理、结果…'), +1 more; use supported explicit text positioning when page fit matters"
+          },
+          {
+            "file": "06_overall_approach.svg",
+            "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=237, y=538; text='按工序节点检索机理与证据，形成标准化风险…'), <text> (x=627, y=538; text='按适用规则计算 P/C 分值，再映射版本…'), <text> (x=1030, y=538; text='根据触发指标形成预警和处置建议，跟踪实际…'); use supported explicit text positioning when page fit matters"
+          },
+          {
+            "file": "07_integrated_architecture.svg",
+            "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=122, y=204; text='多源接入、标准化与适用性元数据绑定'), <text> (x=122, y=302; text='工程对象、机理知识与评估规则版本化'), <text> (x=122, y=400; text='风险识别与风险评估统一编排'), +5 more; use supported explicit text positioning when page fit matters"
+          },
+          {
+            "file": "08_agent_boundary.svg",
+            "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=78, y=558; text='发起者、工程和输入版本在任务创建时确定'), <text> (x=376, y=558; text='按任务类型配置领域工具白名单'), <text> (x=674, y=558; text='模型、工具、并发和墙钟时间设硬预算'), +1 more; use supported explicit text positioning when page fit matters"
+          },
+          {
+            "file": "09_dual_engines.svg",
+            "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=196, y=222; text='资料接入、格式转换与合规性校验'), <text> (x=486, y=222; text='站隧一体化施工工序模型风险机理库'), <text> (x=776, y=222; text='混合检索、关系检索机理驱动启发式推理'), +5 more; use supported explicit text positioning when page fit matters"
+          },
+          {
+            "file": "10_technical_assurance.svg",
+            "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=82, y=316; text='统一组织识别和评估流程，支持检查点、重试…'), <text> (x=480, y=316; text='模型用于工程文本抽取和受约束推理；双索引…'), <text> (x=878, y=316; text='界面承载业务闭环；Agent 只能调用按…'), +2 more; use supported explicit text positioning when page fit matters"
+          },
+          {
+            "file": "11_intranet_deployment.svg",
+            "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=770, y=420; text='知识库、图谱、索引与版本化配置'), <text> (x=78, y=576; text='工程资料和监测数据保留在项目内网，外部通…'), <text> (x=466, y=576; text='业务应用、流程编排、模型推理和数据存储各…'), +1 more; use supported explicit text positioning when page fit matters"
+          },
+          {
+            "file": "12_risk_overview_demo.svg",
+            "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=958, y=216; text='风险评估记录、预警信息和监测摘要按当前版…'), <text> (x=958, y=376; text='筛选项目与工程阶段，查看风险分布、监测趋…'), <text> (x=958, y=536; text='定位风险集中工序和越限指标，并进入评估、…'); use supported explicit text positioning when page fit matters"
+          },
+          {
+            "file": "15_stage_results.svg",
+            "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=118, y=356; text='明确 Agent、确定性计算和人工审核边…'), <text> (x=517, y=356; text='风险评估、预警处置与证据追溯'); use supported explicit text positioning when page fit matters"
+          },
+          {
+            "file": "17_next_plan.svg",
+            "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=836, y=462; text='多来源风险记录的判重、合并和综合置信度规…'), <text> (x=836, y=558; text='准确性、完整性、可解释性与可追溯性评价方…'); use supported explicit text positioning when page fit matters"
+          }
+        ]
+      },
+      "inherited": {
+        "count": 0,
+        "issues": []
+      },
+      "source-import": {
+        "count": 0,
+        "summary": {
+          "warning_count": 0,
+          "by_code": {}
+        }
+      }
+    }
+  },
+  "resources": {
+    "unresolved_template_tokens": [],
+    "fonts": {
+      "stacks": [
+        "Arial, sans-serif",
+        "Microsoft YaHei, Arial, sans-serif"
+      ],
+      "generic_only_stacks": [],
+      "unsafe_exported_faces": []
+    },
+    "images": {
+      "data_uri": 0,
+      "local": 7,
+      "external": 0,
+      "external_references": []
+    }
+  },
+  "deck_motion": {
+    "transition": {
+      "effect": "fade",
+      "effect_options": {},
+      "duration": 0.4,
+      "auto_advance": null,
+      "sound": null
+    },
+    "animation": {
+      "effect": "none",
+      "effect_request": null,
+      "duration": 0.4,
+      "stagger": 0.5,
+      "trigger": "after-previous"
+    },
+    "cli_overrides": {
+      "transition": false,
+      "transition_duration": false,
+      "auto_advance": false,
+      "transition_sound": false,
+      "animation": false,
+      "animation_duration": false,
+      "animation_stagger": false,
+      "animation_trigger": false
+    },
+    "narration_timings": false
+  },
+  "backup_path": "/home/joshua/Workspace/Code/JavaScript/RiskFlow/projects/riskflow_20260828_visual_rebuild_ppt169_20260828/backup/20260829_000412/svg_output",
+  "conversion_trace_path": null
+}

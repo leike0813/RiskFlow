@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" data-pptx-page-role="toc" font-family="Microsoft YaHei, Arial, sans-serif">
+  <rect id="background" data-pptx-role="background" x="0" y="0" width="1280" height="720" fill="#FFFFFF"/>
+  <rect id="toc-field" data-pptx-role="decoration" x="0" y="0" width="332" height="720" fill="#163B63"/>
+  <g id="toc-heading" data-pptx-bounds="56 76 230 150">
+    <text x="56" y="118" font-size="27" font-weight="700" fill="#FFFFFF">目录</text>
+    <text x="56" y="158" font-size="19" font-weight="700" fill="#8FCDBE">CONTENTS</text>
+    <line x1="56" y1="188" x2="178" y2="188" stroke="#F2994A" stroke-width="5"/>
+  </g>
+  <g id="toc-context" data-pptx-bounds="56 270 230 120">
+    <text x="56" y="294" font-size="14" fill="#FFFFFF">基于变径盾构的轨道交通<tspan x="56" dy="24">隧站一体化建造技术研究</tspan></text>
+    <text x="56" y="370" font-size="13" fill="#D5DCE4">2026年度执行情况汇报</text>
+  </g>
+  <g id="toc-item-1" data-pptx-bounds="390 104 820 104">
+    <rect x="390" y="104" width="820" height="104" rx="10" fill="#F4F7FA"/>
+    <text x="424" y="168" font-size="27" font-weight="700" fill="#2F8F7A">一</text>
+    <line x1="492" y1="130" x2="492" y2="182" stroke="#D5DCE4" stroke-width="1"/>
+    <text x="532" y="164" font-size="19" font-weight="700" fill="#163B63">课题总体情况</text>
+  </g>
+  <g id="toc-item-2" data-pptx-bounds="390 224 820 104">
+    <rect x="390" y="224" width="820" height="104" rx="10" fill="#FFFFFF" stroke="#D5DCE4" stroke-width="1"/>
+    <text x="424" y="288" font-size="27" font-weight="700" fill="#2F8F7A">二</text>
+    <line x1="492" y1="250" x2="492" y2="302" stroke="#D5DCE4" stroke-width="1"/>
+    <text x="532" y="284" font-size="19" font-weight="700" fill="#163B63">项目研发进展</text>
+  </g>
+  <g id="toc-item-3" data-pptx-bounds="390 344 820 104">
+    <rect x="390" y="344" width="820" height="104" rx="10" fill="#F4F7FA"/>
+    <text x="424" y="408" font-size="27" font-weight="700" fill="#F2994A">三</text>
+    <line x1="492" y1="370" x2="492" y2="422" stroke="#D5DCE4" stroke-width="1"/>
+    <text x="532" y="404" font-size="19" font-weight="700" fill="#163B63">经费使用情况</text>
+  </g>
+  <g id="toc-item-4" data-pptx-bounds="390 464 820 104">
+    <rect x="390" y="464" width="820" height="104" rx="10" fill="#FFFFFF" stroke="#D5DCE4" stroke-width="1"/>
+    <text x="424" y="528" font-size="27" font-weight="700" fill="#F2994A">四</text>
+    <line x1="492" y1="490" x2="492" y2="542" stroke="#D5DCE4" stroke-width="1"/>
+    <text x="532" y="524" font-size="19" font-weight="700" fill="#163B63">下一步工作计划</text>
+  </g>
+  <g id="page-number" data-pptx-bounds="1160 654 50 24">
+    <text x="1210" y="674" text-anchor="end" font-size="11" font-family="Arial, sans-serif" fill="#4A5568">02</text>
+  </g>
+</svg>

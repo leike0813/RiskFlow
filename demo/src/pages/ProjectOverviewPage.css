@@ -1,0 +1,211 @@
+/* 工程概览页布局 */
+.pjov-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.pjov-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 16px;
+  align-items: stretch;
+}
+
+.pjov-side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.pjov-meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 24px;
+}
+
+.pjov-meta-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.pjov-meta-row dt {
+  flex: none;
+  width: 64px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.pjov-meta-row dd {
+  font-size: 14px;
+  color: var(--text);
+}
+
+.pjov-block-label {
+  margin: 18px 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.pjov-dims {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pjov-dim {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.pjov-dim-label {
+  flex: none;
+  width: 96px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.pjov-dim-value {
+  font-size: 13px;
+  line-height: 18px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  color: var(--blue);
+  background: var(--blue-soft);
+  font-weight: 600;
+}
+
+.pjov-units {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pjov-unit {
+  font-size: 13px;
+  line-height: 18px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  background: var(--card);
+}
+
+/* 空间区段树 */
+.pjov-tree,
+.pjov-tree-children {
+  list-style: none;
+}
+
+.pjov-tree-project {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  padding-bottom: 8px;
+}
+
+.pjov-tree-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text);
+  padding: 4px 0 4px 20px;
+  border-left: 2px solid var(--border);
+  margin-left: 6px;
+}
+
+.pjov-tree-children {
+  margin-left: 6px;
+  border-left: 2px solid var(--border);
+  padding-left: 20px;
+}
+
+.pjov-tree-children li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-2);
+  padding: 5px 0;
+}
+
+.pjov-tree-children li.pjov-tree-current {
+  color: var(--blue);
+  font-weight: 600;
+}
+
+.pjov-tree-order {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  font-size: 11px;
+  background: var(--bluegray-soft);
+  color: var(--text-2);
+}
+
+.pjov-tree-current .pjov-tree-order {
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.pjov-tree-tag {
+  font-size: 11px;
+  line-height: 16px;
+  padding: 0 6px;
+  border-radius: 4px;
+  color: var(--blue);
+  background: var(--blue-soft);
+}
+
+/* 发布集合 */
+.pjov-sets {
+  list-style: none;
+}
+
+.pjov-set {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.pjov-set:last-child {
+  border-bottom: none;
+}
+
+.pjov-set-main {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.pjov-set-name {
+  font-size: 14px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.pjov-set-id {
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.pjov-set-note {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-2);
+}

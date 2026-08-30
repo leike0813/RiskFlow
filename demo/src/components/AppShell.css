@@ -1,0 +1,164 @@
+.shell {
+  min-height: 100vh;
+}
+
+/* ---- 左侧导航 ---- */
+.shell-nav {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--nav-width);
+  background: var(--nav-bg);
+  display: flex;
+  flex-direction: column;
+  z-index: 30;
+}
+
+.shell-brand {
+  height: var(--topbar-height);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.shell-brand-name {
+  font-size: 18px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: 0.4px;
+}
+
+.shell-brand-sub {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  margin-top: 2px;
+}
+
+.shell-menu {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.shell-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 42px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.shell-menu-item:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.shell-menu-item--active,
+.shell-menu-item--active:hover {
+  color: #fff;
+  background: var(--blue);
+}
+
+/* ---- 顶部工程上下文栏 ---- */
+.shell-topbar {
+  position: fixed;
+  left: var(--nav-width);
+  right: 0;
+  top: 0;
+  height: var(--topbar-height);
+  background: var(--topbar-bg);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  z-index: 30;
+}
+
+.shell-context {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.shell-context-item {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.85);
+  white-space: nowrap;
+}
+
+.shell-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: none;
+}
+
+.shell-icon-btn {
+  position: relative;
+  color: rgba(255, 255, 255, 0.85);
+  display: inline-flex;
+  padding: 6px;
+  border-radius: 6px;
+}
+
+.shell-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.shell-badge {
+  position: absolute;
+  top: 0;
+  right: -2px;
+  min-width: 16px;
+  height: 16px;
+  border-radius: 8px;
+  background: var(--risk-1);
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  padding: 0 4px;
+}
+
+.shell-agent-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.shell-agent-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.shell-agent-btn--active,
+.shell-agent-btn--active:hover {
+  background: var(--blue);
+  border-color: var(--blue);
+}
+
+/* ---- 主工作区 ---- */
+.shell-main {
+  margin-left: var(--nav-width);
+  padding-top: var(--topbar-height);
+  min-height: 100vh;
+  background: var(--page-bg);
+}

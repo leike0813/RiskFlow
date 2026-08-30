@@ -1,0 +1,728 @@
+[
+  {
+    "index": 1,
+    "filename": "image5.png",
+    "original_filename": "image5.png",
+    "asset_kind": "bitmap",
+    "svg_renderable": true,
+    "pptx_native_supported": true,
+    "source_kind": "pptx_picture",
+    "source_ext": ".png",
+    "source_target": "ppt/media/image5.png",
+    "content_type": "image/png",
+    "display_left_emu": 8260408,
+    "display_top_emu": 156366,
+    "display_width_emu": 590699,
+    "display_height_emu": 477315,
+    "display_width_in": 0.646,
+    "display_height_in": 0.522,
+    "display_ratio": 1.237545,
+    "pixel_width": 149,
+    "pixel_height": 120,
+    "pixel_ratio": 1.241667,
+    "occurrences": [
+      {
+        "slide_index": 1,
+        "shape_name": "Picture 2",
+        "display_left_emu": 8260408,
+        "display_top_emu": 156366,
+        "display_width_emu": 590699,
+        "display_height_emu": 477315,
+        "display_width_in": 0.646,
+        "display_height_in": 0.522,
+        "display_ratio": 1.237545
+      },
+      {
+        "slide_index": 19,
+        "shape_name": "Picture 2",
+        "display_left_emu": 2526642,
+        "display_top_emu": 3721763,
+        "display_width_emu": 464333,
+        "display_height_emu": 375205,
+        "display_width_in": 0.5078,
+        "display_height_in": 0.4103,
+        "display_ratio": 1.237545
+      }
+    ],
+    "usage_count": 2,
+    "display_ratio_variants": [
+      1.237545
+    ],
+    "source_namespace": "20260828变径盾构隧站一体化建造风险评估及安_系统设计汇报_优化版_2"
+  },
+  {
+    "index": 2,
+    "filename": "image10.jpeg",
+    "original_filename": "image10.jpeg",
+    "asset_kind": "bitmap",
+    "svg_renderable": true,
+    "pptx_native_supported": true,
+    "source_kind": "pptx_picture",
+    "source_ext": ".jpg",
+    "source_target": "ppt/media/image10.jpeg",
+    "content_type": "image/jpeg",
+    "display_left_emu": 0,
+    "display_top_emu": 0,
+    "display_width_emu": 9144000,
+    "display_height_emu": 2398904,
+    "display_width_in": 10.0,
+    "display_height_in": 2.6235,
+    "display_ratio": 3.811741,
+    "pixel_width": 2197,
+    "pixel_height": 577,
+    "pixel_ratio": 3.807626,
+    "occurrences": [
+      {
+        "slide_index": 2,
+        "shape_name": "图片 33",
+        "display_left_emu": 0,
+        "display_top_emu": 0,
+        "display_width_emu": 9144000,
+        "display_height_emu": 2398904,
+        "display_width_in": 10.0,
+        "display_height_in": 2.6235,
+        "display_ratio": 3.811741
+      }
+    ],
+    "usage_count": 1,
+    "display_ratio_variants": [
+      3.811741
+    ],
+    "source_namespace": "20260828变径盾构隧站一体化建造风险评估及安_系统设计汇报_优化版_2"
+  },
+  {
+    "index": 3,
+    "filename": "image11.jpeg",
+    "original_filename": "image11.jpeg",
+    "asset_kind": "bitmap",
+    "svg_renderable": true,
+    "pptx_native_supported": true,
+    "source_kind": "pptx_picture",
+    "source_ext": ".jpg",
+    "source_target": "ppt/media/image11.jpeg",
+    "content_type": "image/jpeg",
+    "display_left_emu": 0,
+    "display_top_emu": 0,
+    "display_width_emu": 9144000,
+    "display_height_emu": 2552700,
+    "display_width_in": 10.0,
+    "display_height_in": 2.7917,
+    "display_ratio": 3.58209,
+    "pixel_width": 2197,
+    "pixel_height": 615,
+    "pixel_ratio": 3.572358,
+    "occurrences": [
+      {
+        "slide_index": 3,
+        "shape_name": "图片 11",
+        "display_left_emu": 0,
+        "display_top_emu": 0,
+        "display_width_emu": 9144000,
+        "display_height_emu": 2552700,
+        "display_width_in": 10.0,
+        "display_height_in": 2.7917,
+        "display_ratio": 3.58209
+      },
+      {
+        "slide_index": 4,
+        "shape_name": "图片 11",
+        "display_left_emu": 0,
+        "display_top_emu": 0,
+        "display_width_emu": 9144000,
+        "display_height_emu": 2552700,
+        "display_width_in": 10.0,
+        "display_height_in": 2.7917,
+        "display_ratio": 3.58209
+      },
+      {
+        "slide_index": 17,
+        "shape_name": "图片 11",
+        "display_left_emu": 0,
+        "display_top_emu": 0,
+        "display_width_emu": 9144000,
+        "display_height_emu": 2552700,
+        "display_width_in": 10.0,
+        "display_height_in": 2.7917,
+        "display_ratio": 3.58209
+      }
+    ],
+    "usage_count": 3,
+    "display_ratio_variants": [
+      3.58209
+    ],
+    "source_namespace": "20260828变径盾构隧站一体化建造风险评估及安_系统设计汇报_优化版_2"
+  },
+  {
+    "index": 4,
+    "filename": "image9.jpeg",
+    "original_filename": "image9.jpeg",
+    "asset_kind": "bitmap",
+    "svg_renderable": true,
+    "pptx_native_supported": true,
+    "source_kind": "pptx_picture",
+    "source_ext": ".jpg",
+    "source_target": "ppt/media/image9.jpeg",
+    "content_type": "image/jpeg",
+    "display_left_emu": 2249260,
+    "display_top_emu": 0,
+    "display_width_emu": 6894740,
+    "display_height_emu": 5143500,
+    "display_width_in": 7.5402,
+    "display_height_in": 5.625,
+    "display_ratio": 1.340476,
+    "pixel_width": 1661,
+    "pixel_height": 1239,
+    "pixel_ratio": 1.340597,
+    "occurrences": [
+      {
+        "slide_index": 4,
+        "shape_name": "图片 18",
+        "display_left_emu": 2249260,
+        "display_top_emu": 0,
+        "display_width_emu": 6894740,
+        "display_height_emu": 5143500,
+        "display_width_in": 7.5402,
+        "display_height_in": 5.625,
+        "display_ratio": 1.340476
+      }
+    ],
+    "usage_count": 1,
+    "display_ratio_variants": [
+      1.340476
+    ],
+    "source_namespace": "20260828变径盾构隧站一体化建造风险评估及安_系统设计汇报_优化版_2"
+  },
+  {
+    "index": 5,
+    "filename": "image12.png",
+    "original_filename": "image12.png",
+    "asset_kind": "bitmap",
+    "svg_renderable": true,
+    "pptx_native_supported": true,
+    "source_kind": "pptx_picture",
+    "source_ext": ".png",
+    "source_target": "ppt/media/image12.png",
+    "content_type": "image/png",
+    "display_left_emu": 8643938,
+    "display_top_emu": 86398,
+    "display_width_emu": 374485,
+    "display_height_emu": 299378,
+    "display_width_in": 0.4095,
+    "display_height_in": 0.3274,
+    "display_ratio": 1.250877,
+    "pixel_width": 2500,
+    "pixel_height": 1998,
+    "pixel_ratio": 1.251251,
+    "occurrences": [
+      {
+        "slide_index": 5,
+        "shape_name": "图形 10",
+        "display_left_emu": 8643938,
+        "display_top_emu": 86398,
+        "display_width_emu": 374485,
+        "display_height_emu": 299378,
+        "display_width_in": 0.4095,
+        "display_height_in": 0.3274,
+        "display_ratio": 1.250877
+      },
+      {
+        "slide_index": 6,
+        "shape_name": "图形 10",
+        "display_left_emu": 8643938,
+        "display_top_emu": 86398,
+        "display_width_emu": 374485,
+        "display_height_emu": 299378,
+        "display_width_in": 0.4095,
+        "display_height_in": 0.3274,
+        "display_ratio": 1.250877
+      },
+      {
+        "slide_index": 7,
+        "shape_name": "Picture 6",
+        "display_left_emu": 8641080,
+        "display_top_emu": 82296,
+        "display_width_emu": 374904,
+        "display_height_emu": 301752,
+        "display_width_in": 0.41,
+        "display_height_in": 0.33,
+        "display_ratio": 1.242424
+      },
+      {
+        "slide_index": 8,
+        "shape_name": "Picture 6",
+        "display_left_emu": 8641080,
+        "display_top_emu": 82296,
+        "display_width_emu": 374904,
+        "display_height_emu": 301752,
+        "display_width_in": 0.41,
+        "display_height_in": 0.33,
+        "display_ratio": 1.242424
+      },
+      {
+        "slide_index": 9,
+        "shape_name": "Picture 6",
+        "display_left_emu": 8641080,
+        "display_top_emu": 82296,
+        "display_width_emu": 374904,
+        "display_height_emu": 301752,
+        "display_width_in": 0.41,
+        "display_height_in": 0.33,
+        "display_ratio": 1.242424
+      },
+      {
+        "slide_index": 10,
+        "shape_name": "Picture 6",
+        "display_left_emu": 8641080,
+        "display_top_emu": 82296,
+        "display_width_emu": 374904,
+        "display_height_emu": 301752,
+        "display_width_in": 0.41,
+        "display_height_in": 0.33,
+        "display_ratio": 1.242424
+      },
+      {
+        "slide_index": 11,
+        "shape_name": "Picture 6",
+        "display_left_emu": 8641080,
+        "display_top_emu": 82296,
+        "display_width_emu": 374904,
+        "display_height_emu": 301752,
+        "display_width_in": 0.41,
+        "display_height_in": 0.33,
+        "display_ratio": 1.242424
+      },
+      {
+        "slide_index": 12,
+        "shape_name": "Picture 6",
+        "display_left_emu": 8641080,
+        "display_top_emu": 82296,
+        "display_width_emu": 374904,
+        "display_height_emu": 301752,
+        "display_width_in": 0.41,
+        "display_height_in": 0.33,
+        "display_ratio": 1.242424
+      },
+      {
+        "slide_index": 13,
+        "shape_name": "Picture 6",
+        "display_left_emu": 8641080,
+        "display_top_emu": 82296,
+        "display_width_emu": 374904,
+        "display_height_emu": 301752,
+        "display_width_in": 0.41,
+        "display_height_in": 0.33,
+        "display_ratio": 1.242424
+      },
+      {
+        "slide_index": 14,
+        "shape_name": "Picture 6",
+        "display_left_emu": 8641080,
+        "display_top_emu": 82296,
+        "display_width_emu": 374904,
+        "display_height_emu": 301752,
+        "display_width_in": 0.41,
+        "display_height_in": 0.33,
+        "display_ratio": 1.242424
+      },
+      {
+        "slide_index": 15,
+        "shape_name": "Picture 6",
+        "display_left_emu": 8641080,
+        "display_top_emu": 82296,
+        "display_width_emu": 374904,
+        "display_height_emu": 301752,
+        "display_width_in": 0.41,
+        "display_height_in": 0.33,
+        "display_ratio": 1.242424
+      },
+      {
+        "slide_index": 16,
+        "shape_name": "Picture 6",
+        "display_left_emu": 8641080,
+        "display_top_emu": 82296,
+        "display_width_emu": 374904,
+        "display_height_emu": 301752,
+        "display_width_in": 0.41,
+        "display_height_in": 0.33,
+        "display_ratio": 1.242424
+      },
+      {
+        "slide_index": 18,
+        "shape_name": "Picture 6",
+        "display_left_emu": 8641080,
+        "display_top_emu": 82296,
+        "display_width_emu": 374904,
+        "display_height_emu": 301752,
+        "display_width_in": 0.41,
+        "display_height_in": 0.33,
+        "display_ratio": 1.242424
+      }
+    ],
+    "usage_count": 13,
+    "display_ratio_variants": [
+      1.242424,
+      1.250877
+    ],
+    "source_namespace": "20260828变径盾构隧站一体化建造风险评估及安_系统设计汇报_优化版_2"
+  },
+  {
+    "index": 6,
+    "filename": "image18.png",
+    "original_filename": "image18.png",
+    "asset_kind": "bitmap",
+    "svg_renderable": true,
+    "pptx_native_supported": true,
+    "source_kind": "pptx_picture",
+    "source_ext": ".png",
+    "source_target": "ppt/media/image18.png",
+    "content_type": "image/png",
+    "display_left_emu": 865829,
+    "display_top_emu": 1353312,
+    "display_width_emu": 4815445,
+    "display_height_emu": 3172968,
+    "display_width_in": 5.2662,
+    "display_height_in": 3.47,
+    "display_ratio": 1.517647,
+    "pixel_width": 1935,
+    "pixel_height": 1275,
+    "pixel_ratio": 1.517647,
+    "occurrences": [
+      {
+        "slide_index": 8,
+        "shape_name": "Picture 12",
+        "display_left_emu": 865829,
+        "display_top_emu": 1353312,
+        "display_width_emu": 4815445,
+        "display_height_emu": 3172968,
+        "display_width_in": 5.2662,
+        "display_height_in": 3.47,
+        "display_ratio": 1.517647
+      }
+    ],
+    "usage_count": 1,
+    "display_ratio_variants": [
+      1.517647
+    ],
+    "source_namespace": "20260828变径盾构隧站一体化建造风险评估及安_系统设计汇报_优化版_2"
+  },
+  {
+    "index": 7,
+    "filename": "image19.png",
+    "original_filename": "image19.png",
+    "asset_kind": "bitmap",
+    "svg_renderable": true,
+    "pptx_native_supported": true,
+    "source_kind": "pptx_picture",
+    "source_ext": ".png",
+    "source_target": "ppt/media/image19.png",
+    "content_type": "image/png",
+    "display_left_emu": 384048,
+    "display_top_emu": 1750884,
+    "display_width_emu": 8375904,
+    "display_height_emu": 1801750,
+    "display_width_in": 9.16,
+    "display_height_in": 1.9704,
+    "display_ratio": 4.64876,
+    "pixel_width": 1125,
+    "pixel_height": 242,
+    "pixel_ratio": 4.64876,
+    "occurrences": [
+      {
+        "slide_index": 9,
+        "shape_name": "Picture 14",
+        "display_left_emu": 384048,
+        "display_top_emu": 1750884,
+        "display_width_emu": 8375904,
+        "display_height_emu": 1801750,
+        "display_width_in": 9.16,
+        "display_height_in": 1.9704,
+        "display_ratio": 4.64876
+      }
+    ],
+    "usage_count": 1,
+    "display_ratio_variants": [
+      4.64876
+    ],
+    "source_namespace": "20260828变径盾构隧站一体化建造风险评估及安_系统设计汇报_优化版_2"
+  },
+  {
+    "index": 8,
+    "filename": "image20.png",
+    "original_filename": "image20.png",
+    "asset_kind": "bitmap",
+    "svg_renderable": true,
+    "pptx_native_supported": true,
+    "source_kind": "pptx_picture",
+    "source_ext": ".png",
+    "source_target": "ppt/media/image20.png",
+    "content_type": "image/png",
+    "display_left_emu": 384048,
+    "display_top_emu": 1368801,
+    "display_width_emu": 8375904,
+    "display_height_emu": 2712221,
+    "display_width_in": 9.16,
+    "display_height_in": 2.9661,
+    "display_ratio": 3.088209,
+    "pixel_width": 3326,
+    "pixel_height": 1077,
+    "pixel_ratio": 3.088208,
+    "occurrences": [
+      {
+        "slide_index": 10,
+        "shape_name": "Picture 12",
+        "display_left_emu": 384048,
+        "display_top_emu": 1368801,
+        "display_width_emu": 8375904,
+        "display_height_emu": 2712221,
+        "display_width_in": 9.16,
+        "display_height_in": 2.9661,
+        "display_ratio": 3.088209
+      }
+    ],
+    "usage_count": 1,
+    "display_ratio_variants": [
+      3.088209
+    ],
+    "source_namespace": "20260828变径盾构隧站一体化建造风险评估及安_系统设计汇报_优化版_2"
+  },
+  {
+    "index": 9,
+    "filename": "image21.png",
+    "original_filename": "image21.png",
+    "asset_kind": "bitmap",
+    "svg_renderable": true,
+    "pptx_native_supported": true,
+    "source_kind": "pptx_picture",
+    "source_ext": ".png",
+    "source_target": "ppt/media/image21.png",
+    "content_type": "image/png",
+    "display_left_emu": 384048,
+    "display_top_emu": 1495154,
+    "display_width_emu": 8375904,
+    "display_height_emu": 1782858,
+    "display_width_in": 9.16,
+    "display_height_in": 1.9498,
+    "display_ratio": 4.698021,
+    "pixel_width": 949,
+    "pixel_height": 202,
+    "pixel_ratio": 4.69802,
+    "occurrences": [
+      {
+        "slide_index": 12,
+        "shape_name": "Picture 12",
+        "display_left_emu": 384048,
+        "display_top_emu": 1495154,
+        "display_width_emu": 8375904,
+        "display_height_emu": 1782858,
+        "display_width_in": 9.16,
+        "display_height_in": 1.9498,
+        "display_ratio": 4.698021
+      }
+    ],
+    "usage_count": 1,
+    "display_ratio_variants": [
+      4.698021
+    ],
+    "source_namespace": "20260828变径盾构隧站一体化建造风险评估及安_系统设计汇报_优化版_2"
+  },
+  {
+    "index": 10,
+    "filename": "image13.png",
+    "original_filename": "image13.png",
+    "asset_kind": "bitmap",
+    "svg_renderable": true,
+    "pptx_native_supported": true,
+    "source_kind": "pptx_picture",
+    "source_ext": ".png",
+    "source_target": "ppt/media/image13.png",
+    "content_type": "image/png",
+    "display_left_emu": 384048,
+    "display_top_emu": 1358169,
+    "display_width_emu": 5623560,
+    "display_height_emu": 3163252,
+    "display_width_in": 6.15,
+    "display_height_in": 3.4594,
+    "display_ratio": 1.777778,
+    "pixel_width": 1920,
+    "pixel_height": 1080,
+    "pixel_ratio": 1.777778,
+    "occurrences": [
+      {
+        "slide_index": 13,
+        "shape_name": "Picture 12",
+        "display_left_emu": 384048,
+        "display_top_emu": 1358169,
+        "display_width_emu": 5623560,
+        "display_height_emu": 3163252,
+        "display_width_in": 6.15,
+        "display_height_in": 3.4594,
+        "display_ratio": 1.777778
+      }
+    ],
+    "usage_count": 1,
+    "display_ratio_variants": [
+      1.777778
+    ],
+    "source_namespace": "20260828变径盾构隧站一体化建造风险评估及安_系统设计汇报_优化版_2"
+  },
+  {
+    "index": 11,
+    "filename": "image14.png",
+    "original_filename": "image14.png",
+    "asset_kind": "bitmap",
+    "svg_renderable": true,
+    "pptx_native_supported": true,
+    "source_kind": "pptx_picture",
+    "source_ext": ".png",
+    "source_target": "ppt/media/image14.png",
+    "content_type": "image/png",
+    "display_left_emu": 389127,
+    "display_top_emu": 1353312,
+    "display_width_emu": 4031488,
+    "display_height_emu": 2267712,
+    "display_width_in": 4.4089,
+    "display_height_in": 2.48,
+    "display_ratio": 1.777778,
+    "pixel_width": 1920,
+    "pixel_height": 1080,
+    "pixel_ratio": 1.777778,
+    "occurrences": [
+      {
+        "slide_index": 14,
+        "shape_name": "Picture 12",
+        "display_left_emu": 389127,
+        "display_top_emu": 1353312,
+        "display_width_emu": 4031488,
+        "display_height_emu": 2267712,
+        "display_width_in": 4.4089,
+        "display_height_in": 2.48,
+        "display_ratio": 1.777778
+      }
+    ],
+    "usage_count": 1,
+    "display_ratio_variants": [
+      1.777778
+    ],
+    "source_namespace": "20260828变径盾构隧站一体化建造风险评估及安_系统设计汇报_优化版_2"
+  },
+  {
+    "index": 12,
+    "filename": "image15.png",
+    "original_filename": "image15.png",
+    "asset_kind": "bitmap",
+    "svg_renderable": true,
+    "pptx_native_supported": true,
+    "source_kind": "pptx_picture",
+    "source_ext": ".png",
+    "source_target": "ppt/media/image15.png",
+    "content_type": "image/png",
+    "display_left_emu": 4577080,
+    "display_top_emu": 1353312,
+    "display_width_emu": 4031488,
+    "display_height_emu": 2267712,
+    "display_width_in": 4.4089,
+    "display_height_in": 2.48,
+    "display_ratio": 1.777778,
+    "pixel_width": 1920,
+    "pixel_height": 1080,
+    "pixel_ratio": 1.777778,
+    "occurrences": [
+      {
+        "slide_index": 14,
+        "shape_name": "Picture 13",
+        "display_left_emu": 4577080,
+        "display_top_emu": 1353312,
+        "display_width_emu": 4031488,
+        "display_height_emu": 2267712,
+        "display_width_in": 4.4089,
+        "display_height_in": 2.48,
+        "display_ratio": 1.777778
+      }
+    ],
+    "usage_count": 1,
+    "display_ratio_variants": [
+      1.777778
+    ],
+    "source_namespace": "20260828变径盾构隧站一体化建造风险评估及安_系统设计汇报_优化版_2"
+  },
+  {
+    "index": 13,
+    "filename": "image16.png",
+    "original_filename": "image16.png",
+    "asset_kind": "bitmap",
+    "svg_renderable": true,
+    "pptx_native_supported": true,
+    "source_kind": "pptx_picture",
+    "source_ext": ".png",
+    "source_target": "ppt/media/image16.png",
+    "content_type": "image/png",
+    "display_left_emu": 389127,
+    "display_top_emu": 1353312,
+    "display_width_emu": 4031488,
+    "display_height_emu": 2267712,
+    "display_width_in": 4.4089,
+    "display_height_in": 2.48,
+    "display_ratio": 1.777778,
+    "pixel_width": 1920,
+    "pixel_height": 1080,
+    "pixel_ratio": 1.777778,
+    "occurrences": [
+      {
+        "slide_index": 15,
+        "shape_name": "Picture 12",
+        "display_left_emu": 389127,
+        "display_top_emu": 1353312,
+        "display_width_emu": 4031488,
+        "display_height_emu": 2267712,
+        "display_width_in": 4.4089,
+        "display_height_in": 2.48,
+        "display_ratio": 1.777778
+      }
+    ],
+    "usage_count": 1,
+    "display_ratio_variants": [
+      1.777778
+    ],
+    "source_namespace": "20260828变径盾构隧站一体化建造风险评估及安_系统设计汇报_优化版_2"
+  },
+  {
+    "index": 14,
+    "filename": "image17.png",
+    "original_filename": "image17.png",
+    "asset_kind": "bitmap",
+    "svg_renderable": true,
+    "pptx_native_supported": true,
+    "source_kind": "pptx_picture",
+    "source_ext": ".png",
+    "source_target": "ppt/media/image17.png",
+    "content_type": "image/png",
+    "display_left_emu": 4577080,
+    "display_top_emu": 1353312,
+    "display_width_emu": 4031488,
+    "display_height_emu": 2267712,
+    "display_width_in": 4.4089,
+    "display_height_in": 2.48,
+    "display_ratio": 1.777778,
+    "pixel_width": 1920,
+    "pixel_height": 1080,
+    "pixel_ratio": 1.777778,
+    "occurrences": [
+      {
+        "slide_index": 15,
+        "shape_name": "Picture 13",
+        "display_left_emu": 4577080,
+        "display_top_emu": 1353312,
+        "display_width_emu": 4031488,
+        "display_height_emu": 2267712,
+        "display_width_in": 4.4089,
+        "display_height_in": 2.48,
+        "display_ratio": 1.777778
+      }
+    ],
+    "usage_count": 1,
+    "display_ratio_variants": [
+      1.777778
+    ],
+    "source_namespace": "20260828变径盾构隧站一体化建造风险评估及安_系统设计汇报_优化版_2"
+  }
+]

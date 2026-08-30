@@ -1,0 +1,30 @@
+{
+  "stage": "stage1",
+  "lang": "zh",
+  "primary_language": "zh-CN",
+  "recommend": {
+    "canvas": "ppt169"
+  },
+  "audience": {
+    "value": "中国铁建项目管理层、课题评审专家，以及甲方业务与技术负责人；已了解课题背景，重点关心阶段成果、系统可行性、风险控制边界和下一阶段投入条件。"
+  },
+  "communication_intent": {
+    "value": "汇报 RiskFlow 系统设计与演示原型进展，说明风险识别、评估、预警和处置闭环的技术边界，并推动各方确认下一阶段样例验证所需的业务配置、脱敏资料与评价方法。"
+  },
+  "audience_outcome": {
+    "value": "听众能够准确理解系统已经形成的设计基线与演示能力，认可机理驱动识别、确定性评估和人工审核边界，并确认正式验证所需的甲方输入与后续工作顺序。"
+  },
+  "core_message": {
+    "value": "RiskFlow 已形成贯通风险识别、评估、预警、处置和追溯的设计基线与演示原型，下一阶段应以甲方审核配置和脱敏工程样例进入可核对、可重放的正式验证。"
+  },
+  "delivery_context": {
+    "value": "主要用于有主讲人的年度执行情况现场汇报，预计 15—20 分钟；同时作为会后技术评审、项目归档和后续联调沟通的独立阅读材料。"
+  },
+  "artifact_afterlife": {
+    "value": "作为年度进展评审材料、系统设计沟通依据、下一阶段验证条件清单和项目归档记录。"
+  },
+  "content_divergence": {
+    "value": "keep source wording and page structure verbatim",
+    "locked": true
+  }
+}

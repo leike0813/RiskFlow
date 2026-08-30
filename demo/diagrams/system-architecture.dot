@@ -1,0 +1,105 @@
+digraph RiskFlowArchitecture {
+  graph [
+    rankdir=BT,
+    bgcolor="transparent",
+    pad="0.10",
+    nodesep="0.20",
+    ranksep="0.34",
+    splines=ortho,
+    fontname="Noto Sans CJK SC"
+  ];
+  node [
+    shape=box,
+    style="rounded,filled",
+    fontname="Noto Sans CJK SC",
+    fontsize=12,
+    color="#C7D3E0",
+    penwidth=1.0,
+    margin="0.12,0.08"
+  ];
+  edge [color="#6F8296", penwidth=1.5, arrowsize=0.7];
+
+  subgraph cluster_data {
+    label="数据接入层  |  多源接入、标准化与适用性元数据绑定";
+    labelloc=t;
+    labeljust=l;
+    fontsize=14;
+    fontname="Noto Sans CJK SC";
+    fontcolor="#163B63";
+    color="#1F5E96";
+    penwidth=1.5;
+    style="rounded,filled";
+    fillcolor="#EAF4FF";
+    d1 [label="工程资料", fillcolor="#FFFFFF"];
+    d2 [label="专项施工方案", fillcolor="#FFFFFF"];
+    d3 [label="装备设计资料", fillcolor="#FFFFFF"];
+    d4 [label="地质勘察", fillcolor="#FFFFFF"];
+    d5 [label="监测量测数据", fillcolor="#FFFFFF"];
+    d6 [label="风险事件信息", fillcolor="#FFFFFF"];
+    {rank=same; d1; d2; d3; d4; d5; d6;}
+  }
+
+  subgraph cluster_knowledge {
+    label="知识建模层  |  工程对象、机理知识与评估规则版本化";
+    labelloc=t;
+    labeljust=l;
+    fontsize=14;
+    fontname="Noto Sans CJK SC";
+    fontcolor="#195A4F";
+    color="#2F8F7A";
+    penwidth=1.5;
+    style="rounded,filled";
+    fillcolor="#EEF8F4";
+    k1 [label="站隧一体化施工\n工序模型", fillcolor="#FFFFFF"];
+    k2 [label="风险机理库", fillcolor="#FFFFFF"];
+    k3 [label="检索证据库", fillcolor="#FFFFFF"];
+    k4 [label="风险评估标准库", fillcolor="#FFFFFF"];
+    k5 [label="指标体系与\n量化标准", fillcolor="#FFFFFF"];
+    k6 [label="措施库", fillcolor="#FFFFFF"];
+    {rank=same; k1; k2; k3; k4; k5; k6;}
+  }
+
+  subgraph cluster_reasoning {
+    label="智能推理层  |  风险识别与风险评估统一编排";
+    labelloc=t;
+    labeljust=l;
+    fontsize=14;
+    fontname="Noto Sans CJK SC";
+    fontcolor="#8A5100";
+    color="#F2994A";
+    penwidth=1.5;
+    style="rounded,filled";
+    fillcolor="#FFF6E4";
+    r1 [label="混合检索与\n关系检索", fillcolor="#FFFFFF"];
+    r2 [label="机理驱动\n启发式推理", fillcolor="#FFFFFF"];
+    r3 [label="结构化与\n约束校验", fillcolor="#FFFFFF"];
+    r4 [label="规则适配", fillcolor="#FFFFFF"];
+    r5 [label="P/C 确定性评分\n风险矩阵映射", fillcolor="#FFFFFF"];
+    r6 [label="预警触发与\n处置约束校验", fillcolor="#FFFFFF"];
+    {rank=same; r1; r2; r3; r4; r5; r6;}
+  }
+
+  subgraph cluster_output {
+    label="应用输出层  |  业务结果、人工复核与端到端追溯";
+    labelloc=t;
+    labeljust=l;
+    fontsize=14;
+    fontname="Noto Sans CJK SC";
+    fontcolor="#4D3A7A";
+    color="#6E55A5";
+    penwidth=1.5;
+    style="rounded,filled";
+    fillcolor="#F2EEFA";
+    o1 [label="标准化风险记录", fillcolor="#FFFFFF"];
+    o2 [label="工序风险\n关联图谱", fillcolor="#FFFFFF"];
+    o3 [label="风险评估记录", fillcolor="#FFFFFF"];
+    o4 [label="预警信息", fillcolor="#FFFFFF"];
+    o5 [label="处置建议", fillcolor="#FFFFFF"];
+    o6 [label="偏差记录与\n校准建议", fillcolor="#FFFFFF"];
+    {rank=same; o1; o2; o3; o4; o5; o6;}
+  }
+
+  d3 -> k3 [label=" 结构化数据", fontname="Noto Sans CJK SC", fontsize=10];
+  k3 -> r3 [label=" 版本与证据", fontname="Noto Sans CJK SC", fontsize=10];
+  r3 -> o3 [label=" 受控结果", fontname="Noto Sans CJK SC", fontsize=10];
+}

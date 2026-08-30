@@ -1,0 +1,173 @@
+{
+  "version": 1,
+  "defaults": {
+    "transition": {
+      "effect": "none",
+      "duration": 0.0
+    }
+  },
+  "slides": {
+    "slide_01": {
+      "transition": {
+        "effect": "fade",
+        "effect_options": {
+          "style": "smoothly"
+        },
+        "duration": 0.4
+      }
+    },
+    "slide_02": {
+      "transition": {
+        "effect": "fade",
+        "effect_options": {
+          "style": "smoothly"
+        },
+        "duration": 0.4
+      }
+    },
+    "slide_03": {
+      "transition": {
+        "effect": "fade",
+        "effect_options": {
+          "style": "smoothly"
+        },
+        "duration": 0.4
+      }
+    },
+    "slide_04": {
+      "transition": {
+        "effect": "fade",
+        "effect_options": {
+          "style": "smoothly"
+        },
+        "duration": 0.4
+      }
+    },
+    "slide_05": {
+      "transition": {
+        "effect": "fade",
+        "effect_options": {
+          "style": "smoothly"
+        },
+        "duration": 0.4
+      }
+    },
+    "slide_06": {
+      "transition": {
+        "effect": "fade",
+        "effect_options": {
+          "style": "smoothly"
+        },
+        "duration": 0.4
+      }
+    },
+    "slide_07": {
+      "transition": {
+        "effect": "fade",
+        "effect_options": {
+          "style": "smoothly"
+        },
+        "duration": 0.4
+      }
+    },
+    "slide_08": {
+      "transition": {
+        "effect": "fade",
+        "effect_options": {
+          "style": "smoothly"
+        },
+        "duration": 0.4
+      }
+    },
+    "slide_09": {
+      "transition": {
+        "effect": "fade",
+        "effect_options": {
+          "style": "smoothly"
+        },
+        "duration": 0.4
+      }
+    },
+    "slide_10": {
+      "transition": {
+        "effect": "fade",
+        "effect_options": {
+          "style": "smoothly"
+        },
+        "duration": 0.4
+      }
+    },
+    "slide_11": {
+      "transition": {
+        "effect": "fade",
+        "effect_options": {
+          "style": "smoothly"
+        },
+        "duration": 0.4
+      }
+    },
+    "slide_12": {
+      "transition": {
+        "effect": "fade",
+        "effect_options": {
+          "style": "smoothly"
+        },
+        "duration": 0.4
+      }
+    },
+    "slide_13": {
+      "transition": {
+        "effect": "fade",
+        "effect_options": {
+          "style": "smoothly"
+        },
+        "duration": 0.4
+      }
+    },
+    "slide_14": {
+      "transition": {
+        "effect": "fade",
+        "effect_options": {
+          "style": "smoothly"
+        },
+        "duration": 0.4
+      }
+    },
+    "slide_15": {
+      "transition": {
+        "effect": "fade",
+        "effect_options": {
+          "style": "smoothly"
+        },
+        "duration": 0.4
+      }
+    },
+    "slide_16": {
+      "transition": {
+        "effect": "fade",
+        "effect_options": {
+          "style": "smoothly"
+        },
+        "duration": 0.4
+      }
+    },
+    "slide_17": {
+      "transition": {
+        "effect": "fade",
+        "effect_options": {
+          "style": "smoothly"
+        },
+        "duration": 0.4
+      }
+    },
+    "slide_18": {
+      "transition": {
+        "effect": "fade",
+        "effect_options": {
+          "style": "smoothly"
+        },
+        "duration": 0.4
+      }
+    }
+  }
+}

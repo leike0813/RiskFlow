@@ -1,0 +1,219 @@
+/* LangGraph 智能识别中心（/identification/runs/RUN-20260827-001）
+ * 1920×1080 静态取景：标题 / 阶段条 / 图谱+风险记录 / 证据+置信度+运行
+ */
+
+.idrun-page {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 16px;
+  height: calc(100vh - 116px); /* 视口 - 顶栏 68 - 页面上下内边距 48 */
+  overflow: hidden;
+}
+
+.idrun-header {
+  margin-bottom: 0;
+}
+
+.idrun-header-tags {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+/* RI-S5 机理驱动推理：工程蓝描边强调（状态仍为绿色完成） */
+.idrun-stage .stage-item:nth-child(5) {
+  box-shadow: 0 0 0 1.5px var(--blue);
+  border-radius: 8px;
+}
+
+/* 中间行：图谱 1000 + 标准化风险记录 632 */
+.idrun-mid {
+  display: grid;
+  grid-template-columns: minmax(0, 1000fr) minmax(0, 632fr);
+  gap: 16px;
+  min-height: 0;
+}
+
+/* 底部行：证据命中 760 + 综合置信度 424 + 运行与复核 432 */
+.idrun-bottom {
+  display: grid;
+  grid-template-columns: minmax(0, 760fr) minmax(0, 424fr) minmax(0, 432fr);
+  gap: 16px;
+}
+
+/* 标准化风险记录：七字段 + 底部校验状态 */
+.idrun-mid > .card:last-child .card-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.idrun-record-id {
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.idrun-record-conf {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.idrun-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.idrun-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.idrun-field dt {
+  flex: none;
+  width: 88px;
+  font-size: 13px;
+  line-height: 22px;
+  color: var(--text-2);
+}
+
+.idrun-field dd {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text);
+}
+
+.idrun-clamp2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.idrun-field-ev {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.idrun-conf {
+  font-size: 18px;
+  line-height: 24px;
+  font-weight: 700;
+}
+
+.idrun-record-checks {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 8px;
+}
+
+/* 证据命中 */
+.idrun-hits {
+  display: flex;
+  flex-direction: column;
+}
+
+.idrun-hit {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.idrun-hit:last-child {
+  border-bottom: none;
+}
+
+.idrun-hit-type {
+  flex: none;
+  font-size: 12px;
+  line-height: 18px;
+  padding: 1px 8px;
+  border-radius: 4px;
+  color: var(--text-2);
+  background: var(--bluegray-soft);
+  white-space: nowrap;
+}
+
+/* 综合置信度 */
+.idrun-comp {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.idrun-comp-num {
+  font-size: 32px;
+  line-height: 40px;
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.idrun-comp-cap {
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.idrun-basis {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.idrun-basis-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.idrun-basis-label {
+  color: var(--text-2);
+}
+
+.idrun-basis-value {
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 运行与复核 */
+.idrun-run {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.idrun-run-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.idrun-run-key {
+  flex: none;
+  color: var(--text-2);
+}
+
+.idrun-run-value {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}

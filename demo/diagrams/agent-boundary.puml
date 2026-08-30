@@ -1,0 +1,36 @@
+@startuml
+skinparam backgroundColor transparent
+skinparam defaultFontName Noto Sans CJK SC
+skinparam defaultFontSize 13
+skinparam shadowing false
+skinparam roundcorner 14
+skinparam packageStyle rectangle
+skinparam ArrowColor #6F8296
+skinparam ArrowThickness 1.5
+skinparam package {
+  BorderThickness 1.5
+  FontStyle bold
+}
+left to right direction
+
+package "Agent 承担语义判断" as AgentLane {
+  rectangle "1  数据清洗与部分可用判断\n2  非结构化知识编制\n3  识别检索审阅与有界补搜\n4  处置建议组合与排序\n5  偏差超限后的校准建议候选" as A #EAF4FF
+}
+
+package "确定性模块负责收口" as DeterministicLane {
+  rectangle "字段格式与完整性校验\n规则一致性与适用性校验\nP/C 评分、风险矩阵映射与阈值判断\n业务入库、版本发布与审计记录" as D #EEF8F4
+}
+
+package "人工审核与决定" as HumanLane {
+  rectangle "规则冲突裁决\n知识与校准版本发布\n处置建议采纳与执行" as H #FFF6E4
+}
+
+A -[#1F5E96]-> D : 提交任务类型化增量
+D -[#F2994A]-> H : 冲突或需人工决定
+H -[#2F8F7A]-> D : 审核决定与发布授权
+
+note bottom of D
+统一任务契约：发起者、工程、输入版本、模型与提示模板、
+工具白名单、资源预算、结构化增量、确定性校验和终态
+end note
+@enduml

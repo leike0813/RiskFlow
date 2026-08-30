@@ -1,0 +1,37 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" data-pptx-page-role="content" font-family="Microsoft YaHei, Arial, sans-serif">
+  <defs>
+    <filter id="screen-shadow" x="-15%" y="-20%" width="130%" height="150%"><feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#163B63" flood-opacity="0.10" /></filter>
+  </defs>
+  <rect id="background" data-pptx-role="background" x="0" y="0" width="1280" height="720" fill="#FFFFFF" />
+  <g id="page-header" data-pptx-role="header" data-pptx-bounds="56 26 1168 50" font-family="Microsoft YaHei, Arial, sans-serif">
+    <text x="56" y="47" font-size="13" font-weight="700" fill="#2F8F7A">02 项目研发进展</text>
+    <text x="1224" y="47" text-anchor="end" font-size="11" fill="#4A5568">02.04 各子课题工作进展 · 子课题一（站隧一体化建造风险智能识别与评估技术）</text>
+    <line x1="56" y1="70" x2="1224" y2="70" stroke="#D5DCE4" stroke-width="1" />
+  </g>
+  <g id="title" data-pptx-bounds="56 82 1168 44"><text x="56" y="114" font-size="25" font-weight="700" fill="#163B63">系统演示（一）风险态势总览（演示原型）</text></g>
+  <g id="overview-screen" data-pptx-bounds="56 144 850 478">
+    <rect x="56" y="144" width="850" height="478" rx="10" fill="#FFFFFF" filter="url(#screen-shadow)" />
+    <image href="../images/image13.png" x="56" y="144" width="850" height="478" preserveAspectRatio="xMidYMid meet" />
+    <rect x="56" y="144" width="850" height="478" rx="10" fill="none" stroke="#D5DCE4" stroke-width="1" />
+  </g>
+  <g id="demo-entry" data-pptx-bounds="934 144 290 142">
+    <rect x="934" y="144" width="290" height="142" rx="10" fill="#F4F7FA" />
+    <text x="958" y="180" font-size="17" font-weight="700" fill="#163B63">数据入口</text>
+    <text x="958" y="216" font-size="14" fill="#1C2733">风险评估记录、预警信息和<tspan x="958" dy="23">监测摘要按当前版本汇总</tspan></text>
+  </g>
+  <g id="demo-operation" data-pptx-bounds="934 304 290 142">
+    <rect x="934" y="304" width="290" height="142" rx="10" fill="#EEF7F4" />
+    <text x="958" y="340" font-size="17" font-weight="700" fill="#2F8F7A">重点操作</text>
+    <text x="958" y="376" font-size="14" fill="#1C2733">筛选项目与工程阶段，查看<tspan x="958" dy="23">风险分布、监测趋势和待处置事项</tspan></text>
+  </g>
+  <g id="demo-output" data-pptx-bounds="934 464 290 158">
+    <rect x="934" y="464" width="290" height="158" rx="10" fill="#FFF7EC" />
+    <text x="958" y="500" font-size="17" font-weight="700" fill="#F2994A">业务输出</text>
+    <text x="958" y="536" font-size="14" fill="#1C2733">定位风险集中工序和越限指标，<tspan x="958" dy="23">并进入评估、预警或证据详情</tspan></text>
+  </g>
+  <g id="page-footer" data-pptx-role="footer" data-pptx-bounds="56 648 1168 30">
+    <text x="56" y="672" font-size="11" fill="#4A5568">变径盾构站隧一体化建造风险智能识别与评估系统（RiskFlow）</text>
+    <text x="1224" y="672" text-anchor="end" font-size="11" font-family="Arial, sans-serif" fill="#4A5568">12</text>
+  </g>
+</svg>

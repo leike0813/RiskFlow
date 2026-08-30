@@ -1,0 +1,58 @@
+.kmx-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 460px;
+  gap: 16px;
+  align-items: start;
+}
+
+.kmx-caption {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--text-2);
+  text-align: center;
+}
+
+.kmx-side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.kmx-version-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.kmx-version-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.kmx-version-name {
+  color: var(--text-2);
+}
+
+.kmx-version-tags {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.kmx-note {
+  margin-top: 12px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+
+.kmx-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

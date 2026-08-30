@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" data-pptx-page-role="content" font-family="Microsoft YaHei, Arial, sans-serif">
+  <defs>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <polygon points="0,0 10,5 0,10" fill="#163B63" />
+    </marker>
+    <marker id="arrow-teal" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <polygon points="0,0 10,5 0,10" fill="#2F8F7A" />
+    </marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <polygon points="0,0 10,5 0,10" fill="#F2994A" />
+    </marker>
+  </defs>
+  <rect id="background" data-pptx-role="background" x="0" y="0" width="1280" height="720" fill="#FFFFFF" />
+  <g id="page-header" data-pptx-role="header" data-pptx-bounds="56 26 1168 50" font-family="Microsoft YaHei, Arial, sans-serif">
+    <text x="56" y="47" font-size="13" font-weight="700" fill="#2F8F7A">02 项目研发进展</text>
+    <text x="1224" y="47" text-anchor="end" font-size="11" fill="#4A5568">02.04 各子课题工作进展 · 子课题一（站隧一体化建造风险智能识别与评估技术）</text>
+    <line x1="56" y1="70" x2="1224" y2="70" stroke="#D5DCE4" stroke-width="1" />
+  </g>
+  <g id="title" data-pptx-bounds="56 86 1168 46">
+    <text x="56" y="118" font-size="25" font-weight="700" fill="#163B63">机理驱动识别与规则约束评估</text>
+  </g>
+  <g id="problem-cases" data-pptx-bounds="56 148 1168 106">
+    <rect x="56" y="148" width="362" height="106" rx="10" fill="#FFF7EC" />
+    <text x="237" y="181" text-anchor="middle" font-size="17" font-weight="700" fill="#F2994A">同类型案例不足</text>
+    <text x="237" y="222" text-anchor="middle" font-size="15" fill="#1C2733">新装备、新工法难以直接套用历史风险清单</text>
+    <rect x="446" y="148" width="362" height="106" rx="10" fill="#F4F7FA" />
+    <text x="627" y="181" text-anchor="middle" font-size="17" font-weight="700" fill="#163B63">规则适用条件复杂</text>
+    <text x="627" y="222" text-anchor="middle" font-size="15" fill="#1C2733">工法、地层和工程阶段变化会影响规则选用</text>
+    <rect x="836" y="148" width="388" height="106" rx="10" fill="#F4F7FA" />
+    <text x="1030" y="181" text-anchor="middle" font-size="17" font-weight="700" fill="#163B63">人工排查难追溯</text>
+    <text x="1030" y="222" text-anchor="middle" font-size="15" fill="#1C2733">资料分散，识别依据和复核过程不易沉淀</text>
+  </g>
+  <g id="business-loop" data-pptx-bounds="56 278 1168 150">
+    <text x="56" y="300" font-size="16" font-weight="700" fill="#163B63">风险管理业务闭环</text>
+    <line x1="176" y1="356" x2="354" y2="356" stroke="#163B63" stroke-width="3" marker-end="url(#arrow-blue)" />
+    <line x1="406" y1="356" x2="584" y2="356" stroke="#2F8F7A" stroke-width="3" marker-end="url(#arrow-teal)" />
+    <line x1="636" y1="356" x2="814" y2="356" stroke="#2F8F7A" stroke-width="3" marker-end="url(#arrow-teal)" />
+    <line x1="866" y1="356" x2="1044" y2="356" stroke="#F2994A" stroke-width="3" marker-end="url(#arrow-orange)" />
+    <circle cx="142" cy="356" r="34" fill="#163B63" /><text x="142" y="362" text-anchor="middle" font-size="14" font-weight="700" fill="#FFFFFF">资料接入</text>
+    <circle cx="372" cy="356" r="34" fill="#2F8F7A" /><text x="372" y="362" text-anchor="middle" font-size="14" font-weight="700" fill="#FFFFFF">智能识别</text>
+    <circle cx="602" cy="356" r="34" fill="#2F8F7A" /><text x="602" y="362" text-anchor="middle" font-size="14" font-weight="700" fill="#FFFFFF">智能评估</text>
+    <circle cx="832" cy="356" r="34" fill="#F2994A" /><text x="832" y="362" text-anchor="middle" font-size="14" font-weight="700" fill="#FFFFFF">动态预警</text>
+    <circle cx="1062" cy="356" r="34" fill="#F2994A" /><text x="1062" y="362" text-anchor="middle" font-size="14" font-weight="700" fill="#FFFFFF">处置反馈</text>
+    <path d="M1062 397 V420 H142 V397" fill="none" stroke="#F2994A" stroke-width="2" stroke-dasharray="8,4" marker-end="url(#arrow-orange)" />
+    <text x="602" y="418" text-anchor="middle" font-size="14" fill="#F2994A">反馈复核：形成知识更新或校准建议，审核后发布新版本</text>
+  </g>
+  <g id="questions" data-pptx-bounds="56 460 1168 150">
+    <rect x="56" y="460" width="362" height="150" rx="10" fill="#F4F7FA" />
+    <text x="237" y="496" text-anchor="middle" font-size="17" font-weight="700" fill="#163B63">风险在哪里</text>
+    <text text-anchor="middle" fill="#1C2733" font-size="15" x="237" y="538">按工序节点检索机理与证据，</text><text text-anchor="middle" fill="#1C2733" font-size="15" x="237" y="563">形成标准化风险记录</text><rect x="446" y="460" width="362" height="150" rx="10" fill="#EEF7F4" />
+    <text x="627" y="496" text-anchor="middle" font-size="17" font-weight="700" fill="#2F8F7A">风险有多大</text>
+    <text text-anchor="middle" fill="#1C2733" font-size="15" x="627" y="538">按适用规则计算 P/C 分值，</text><text text-anchor="middle" fill="#1C2733" font-size="15" x="627" y="563">再映射版本化风险矩阵</text><rect x="836" y="460" width="388" height="150" rx="10" fill="#FFF7EC" />
+    <text x="1030" y="496" text-anchor="middle" font-size="17" font-weight="700" fill="#F2994A">风险如何处置</text>
+    <text text-anchor="middle" fill="#1C2733" font-size="15" x="1030" y="538">根据触发指标形成预警和处置建议，</text><text text-anchor="middle" fill="#1C2733" font-size="15" x="1030" y="563">跟踪实际效果</text></g>
+  <g id="page-footer" data-pptx-role="footer" data-pptx-bounds="56 648 1168 30">
+    <text x="56" y="672" font-size="11" fill="#4A5568">变径盾构站隧一体化建造风险智能识别与评估系统（RiskFlow）</text>
+    <text x="1224" y="672" text-anchor="end" font-size="11" font-family="Arial, sans-serif" fill="#4A5568">06</text>
+  </g>
+</svg>

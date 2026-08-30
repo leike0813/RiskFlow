@@ -1,0 +1,12 @@
+.rr-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.rr-actions .confirm-btn {
+  padding: 4px 12px;
+  font-size: 13px;
+  line-height: 20px;
+}

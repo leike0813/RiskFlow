@@ -1,0 +1,1566 @@
+{
+  "schema": "ppt-master.svg-quality-report.v1",
+  "stage": "final",
+  "target": "/home/joshua/Workspace/Code/JavaScript/RiskFlow/projects/riskflow_20260828_visual_rebuild_ppt169_20260828",
+  "source_fingerprint": {
+    "algorithm": "sha256",
+    "digest": "5f135d4b95235d1605527f233c013e328b1f2a72d9f8f2bff71dde060dd3287e",
+    "file_count": 18,
+    "files": [
+      {
+        "file": "01_cover.svg",
+        "sha256": "eb2988d1b470cb50c06c47ee007a7b54c155d8bc735c17f82e4fbff28fec7cb3"
+      },
+      {
+        "file": "02_contents.svg",
+        "sha256": "e082923253289e0e31f357c35714c1556db61f71691d8f77900f003ece400a7d"
+      },
+      {
+        "file": "03_section_overview.svg",
+        "sha256": "5df808bce9db7444eae8fb997927e8adbb9b47d65ce4ecbcb9b83d436a332f7b"
+      },
+      {
+        "file": "04_section_progress.svg",
+        "sha256": "88b7932e607f850b4ab1024be06f3b2487647f792b48b1a88f926ef1e5259860"
+      },
+      {
+        "file": "05_research_route.svg",
+        "sha256": "91dbac48c1bb0c8b592f89ba5095aedc18fb355ae9494449e9d98ef83bb37ddb"
+      },
+      {
+        "file": "06_overall_approach.svg",
+        "sha256": "c4fe1dc6ea9b26c3bf63630e7fca9b9776fc32ddd2404e7cf771d82bd8899727"
+      },
+      {
+        "file": "07_integrated_architecture.svg",
+        "sha256": "0d7e164d3968ca2ac9e050edfc70f9b95d36540ed629a1aff8f9bdbf9c9995d2"
+      },
+      {
+        "file": "08_agent_boundary.svg",
+        "sha256": "163d439623120a13f5b866c6f642be2e1f411d98c1fe3d6d6c48d4e71578721d"
+      },
+      {
+        "file": "09_dual_engines.svg",
+        "sha256": "3b99fc3248dfae72c705fa55e3b88e70585236c74d6ebff0eeccc283bad1d70a"
+      },
+      {
+        "file": "10_technical_assurance.svg",
+        "sha256": "9fb67c3f004fedbc765c092bdab2991e9bdb2b11eb5641e745c355b73d618498"
+      },
+      {
+        "file": "11_intranet_deployment.svg",
+        "sha256": "56dadbac5485b4de8134e2f5f53fb759a495bf0652908d101e1aa2f38c3b9685"
+      },
+      {
+        "file": "12_risk_overview_demo.svg",
+        "sha256": "1563769624f2704be214a74657fdce564b3e0940d435a8aef8d069f7ed0027e5"
+      },
+      {
+        "file": "13_agent_and_identification_demo.svg",
+        "sha256": "ef865426d4a57198911d34faaa46d5b88e07db8f0ceea6b34e108284666e6c6b"
+      },
+      {
+        "file": "14_assessment_response_demo.svg",
+        "sha256": "d2cf270436e4c64963bda6854dbb1fab5cf5d90aa7a95fce9c62e2945aa13f75"
+      },
+      {
+        "file": "15_stage_results.svg",
+        "sha256": "9cdf75801e4bd7640e31da9bed43df1fa3f86a02d94f3390b1ced1262ab2b0ba"
+      },
+      {
+        "file": "16_section_next.svg",
+        "sha256": "ca1c7ed1bb1892f23087a7216b149b8b0c18a5f490201f754e21b2cfb29e808e"
+      },
+      {
+        "file": "17_next_plan.svg",
+        "sha256": "4ec7579ec56ed2850fca76a61fbc9c304d64b55bec1890b74e0c565ce126af73"
+      },
+      {
+        "file": "18_thanks.svg",
+        "sha256": "a01d76237f0d4cddf829c531852ded23c24667fd310c869885004533dc6a396f"
+      }
+    ]
+  },
+  "summary": {
+    "total": 18,
+    "passed": 6,
+    "warnings": 12,
+    "errors": 0
+  },
+  "issue_types": {},
+  "categories": {
+    "blocking": {
+      "count": 0,
+      "issues": []
+    },
+    "introduced": {
+      "count": 12,
+      "issues": [
+        {
+          "file": "01_cover.svg",
+          "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=70, y=222; text='变径盾构站隧一体化建造风险评估及安全控制…'); use supported explicit text positioning when page fit matters"
+        },
+        {
+          "file": "02_contents.svg",
+          "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=56, y=294; text='基于变径盾构的轨道交通隧站一体化建造技术…'); use supported explicit text positioning when page fit matters"
+        },
+        {
+          "file": "05_research_route.svg",
+          "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=528, y=458; text='明确了系统应用场景、输入资料范围、风险识…'), <text> (x=892, y=458; text='梳理了工程资料、工序信息、机理知识与风险…'), <text> (x=528, y=564; text='形成了数据接入、知识建模、智能推理、结果…'), +1 more; use supported explicit text positioning when page fit matters"
+        },
+        {
+          "file": "06_overall_approach.svg",
+          "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=237, y=538; text='按工序节点检索机理与证据，形成标准化风险…'), <text> (x=627, y=538; text='按适用规则计算 P/C 分值，再映射版本…'), <text> (x=1030, y=538; text='根据触发指标形成预警和处置建议，跟踪实际…'); use supported explicit text positioning when page fit matters"
+        },
+        {
+          "file": "07_integrated_architecture.svg",
+          "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=122, y=204; text='多源接入、标准化与适用性元数据绑定'), <text> (x=122, y=302; text='工程对象、机理知识与评估规则版本化'), <text> (x=122, y=400; text='风险识别与风险评估统一编排'), +5 more; use supported explicit text positioning when page fit matters"
+        },
+        {
+          "file": "08_agent_boundary.svg",
+          "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=78, y=558; text='发起者、工程和输入版本在任务创建时确定'), <text> (x=376, y=558; text='按任务类型配置领域工具白名单'), <text> (x=674, y=558; text='模型、工具、并发和墙钟时间设硬预算'), +1 more; use supported explicit text positioning when page fit matters"
+        },
+        {
+          "file": "09_dual_engines.svg",
+          "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=196, y=222; text='资料接入、格式转换与合规性校验'), <text> (x=486, y=222; text='站隧一体化施工工序模型风险机理库'), <text> (x=776, y=222; text='混合检索、关系检索机理驱动启发式推理'), +5 more; use supported explicit text positioning when page fit matters"
+        },
+        {
+          "file": "10_technical_assurance.svg",
+          "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=82, y=316; text='统一组织识别和评估流程，支持检查点、重试…'), <text> (x=480, y=316; text='模型用于工程文本抽取和受约束推理；双索引…'), <text> (x=878, y=316; text='界面承载业务闭环；Agent 只能调用按…'), +2 more; use supported explicit text positioning when page fit matters"
+        },
+        {
+          "file": "11_intranet_deployment.svg",
+          "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=770, y=420; text='知识库、图谱、索引与版本化配置'), <text> (x=78, y=576; text='工程资料和监测数据保留在项目内网，外部通…'), <text> (x=466, y=576; text='业务应用、流程编排、模型推理和数据存储各…'), +1 more; use supported explicit text positioning when page fit matters"
+        },
+        {
+          "file": "12_risk_overview_demo.svg",
+          "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=958, y=216; text='风险评估记录、预警信息和监测摘要按当前版…'), <text> (x=958, y=376; text='筛选项目与工程阶段，查看风险分布、监测趋…'), <text> (x=958, y=536; text='定位风险集中工序和越限指标，并进入评估、…'); use supported explicit text positioning when page fit matters"
+        },
+        {
+          "file": "15_stage_results.svg",
+          "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=118, y=356; text='明确 Agent、确定性计算和人工审核边…'), <text> (x=517, y=356; text='风险评估、预警处置与证据追溯'); use supported explicit text positioning when page fit matters"
+        },
+        {
+          "file": "17_next_plan.svg",
+          "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=836, y=462; text='多来源风险记录的判重、合并和综合置信度规…'), <text> (x=836, y=558; text='准确性、完整性、可解释性与可追溯性评价方…'); use supported explicit text positioning when page fit matters"
+        }
+      ]
+    },
+    "inherited": {
+      "count": 0,
+      "issues": []
+    },
+    "source-import": {
+      "count": 0,
+      "summary": {
+        "warning_count": 0,
+        "by_code": {}
+      }
+    }
+  },
+  "drift": {
+    "colors": {
+      "#1D4B7C": [
+        "16_section_next.svg",
+        "18_thanks.svg"
+      ],
+      "#1F5E96": [
+        "07_integrated_architecture.svg",
+        "08_agent_boundary.svg",
+        "09_dual_engines.svg",
+        "11_intranet_deployment.svg",
+        "17_next_plan.svg"
+      ],
+      "#4A5568": [
+        "01_cover.svg",
+        "02_contents.svg",
+        "04_section_progress.svg",
+        "05_research_route.svg",
+        "06_overall_approach.svg",
+        "07_integrated_architecture.svg",
+        "08_agent_boundary.svg",
+        "09_dual_engines.svg",
+        "10_technical_assurance.svg",
+        "11_intranet_deployment.svg",
+        "12_risk_overview_demo.svg",
+        "13_agent_and_identification_demo.svg",
+        "14_assessment_response_demo.svg",
+        "15_stage_results.svg",
+        "17_next_plan.svg"
+      ],
+      "#547391": [
+        "16_section_next.svg"
+      ],
+      "#6A52A3": [
+        "07_integrated_architecture.svg",
+        "11_intranet_deployment.svg"
+      ],
+      "#8FCDBE": [
+        "02_contents.svg",
+        "03_section_overview.svg",
+        "05_research_route.svg"
+      ],
+      "#AFC3D5": [
+        "16_section_next.svg"
+      ],
+      "#B6C4D2": [
+        "17_next_plan.svg"
+      ],
+      "#C96B12": [
+        "15_stage_results.svg",
+        "17_next_plan.svg"
+      ],
+      "#C9D9E8": [
+        "16_section_next.svg",
+        "18_thanks.svg"
+      ],
+      "#C9DFD9": [
+        "10_technical_assurance.svg"
+      ],
+      "#CDE2DC": [
+        "17_next_plan.svg"
+      ],
+      "#DDF1EC": [
+        "07_integrated_architecture.svg"
+      ],
+      "#E9D4B5": [
+        "15_stage_results.svg"
+      ],
+      "#E9E2F7": [
+        "07_integrated_architecture.svg"
+      ],
+      "#EEF4FA": [
+        "07_integrated_architecture.svg",
+        "08_agent_boundary.svg",
+        "09_dual_engines.svg",
+        "11_intranet_deployment.svg",
+        "15_stage_results.svg"
+      ],
+      "#EEF7F4": [
+        "06_overall_approach.svg",
+        "07_integrated_architecture.svg",
+        "08_agent_boundary.svg",
+        "09_dual_engines.svg",
+        "10_technical_assurance.svg",
+        "11_intranet_deployment.svg",
+        "12_risk_overview_demo.svg",
+        "13_agent_and_identification_demo.svg",
+        "14_assessment_response_demo.svg",
+        "15_stage_results.svg",
+        "17_next_plan.svg"
+      ],
+      "#F0D7B5": [
+        "10_technical_assurance.svg"
+      ],
+      "#F3F0FA": [
+        "07_integrated_architecture.svg",
+        "11_intranet_deployment.svg"
+      ],
+      "#F8C885": [
+        "05_research_route.svg"
+      ],
+      "#FFF0D8": [
+        "07_integrated_architecture.svg"
+      ],
+      "#FFF7EC": [
+        "05_research_route.svg",
+        "06_overall_approach.svg",
+        "07_integrated_architecture.svg",
+        "08_agent_boundary.svg",
+        "09_dual_engines.svg",
+        "10_technical_assurance.svg",
+        "11_intranet_deployment.svg",
+        "12_risk_overview_demo.svg",
+        "13_agent_and_identification_demo.svg",
+        "14_assessment_response_demo.svg",
+        "15_stage_results.svg",
+        "17_next_plan.svg"
+      ]
+    },
+    "fonts": {
+      "Arial, sans-serif": [
+        "02_contents.svg",
+        "03_section_overview.svg",
+        "04_section_progress.svg",
+        "05_research_route.svg",
+        "06_overall_approach.svg",
+        "07_integrated_architecture.svg",
+        "08_agent_boundary.svg",
+        "09_dual_engines.svg",
+        "10_technical_assurance.svg",
+        "11_intranet_deployment.svg",
+        "12_risk_overview_demo.svg",
+        "13_agent_and_identification_demo.svg",
+        "14_assessment_response_demo.svg",
+        "15_stage_results.svg",
+        "16_section_next.svg",
+        "17_next_plan.svg"
+      ]
+    },
+    "sizes": {
+      "176": [
+        "16_section_next.svg"
+      ],
+      "44": [
+        "16_section_next.svg"
+      ],
+      "68": [
+        "04_section_progress.svg"
+      ],
+      "72": [
+        "01_cover.svg",
+        "03_section_overview.svg"
+      ],
+      "82": [
+        "18_thanks.svg"
+      ]
+    }
+  },
+  "carrier_receipt": {
+    "scope": "informational-not-a-quota",
+    "pages": 18,
+    "totals": {
+      "text_elements": 358,
+      "image_placements": 7,
+      "icons": 22,
+      "svg_geometry_elements": 255,
+      "preset_shapes": 0,
+      "page_frame_elements": 34,
+      "marker_uses": 26
+    },
+    "pages_with": {
+      "images": 5,
+      "icons": 6,
+      "presets": 0,
+      "charts": 0,
+      "tables": 0,
+      "formulas": 0
+    },
+    "geometry_elements": {
+      "circle": 31,
+      "ellipse": 0,
+      "line": 52,
+      "path": 9,
+      "polygon": 0,
+      "polyline": 0,
+      "rect": 163
+    },
+    "preset_names": {},
+    "native_objects": {
+      "chart": 0,
+      "formula_block": 0,
+      "formula_inline": 0,
+      "other": 0,
+      "table": 0
+    },
+    "image_page_max_frame_share_range": [
+      0.0092,
+      0.4409
+    ]
+  },
+  "project_issues": {
+    "template": [],
+    "animation": [],
+    "illustration": [],
+    "communication_trace": [],
+    "pptx_structure": []
+  },
+  "files": [
+    {
+      "file": "01_cover.svg",
+      "path": "projects/riskflow_20260828_visual_rebuild_ppt169_20260828/svg_output/01_cover.svg",
+      "exists": true,
+      "errors": [],
+      "warnings": [
+        "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=70, y=222; text='变径盾构站隧一体化建造风险评估及安全控制…'); use supported explicit text positioning when page fit matters"
+      ],
+      "info": {
+        "viewbox": "0 0 1280 720",
+        "carrier_receipt": {
+          "text_elements": 11,
+          "images": {
+            "placements": 1,
+            "files": [
+              "image5.png"
+            ],
+            "max_frame_share": 0.0161
+          },
+          "icons": 0,
+          "geometry": {
+            "svg_elements": {
+              "rect": 5,
+              "circle": 0,
+              "ellipse": 0,
+              "line": 2,
+              "polyline": 0,
+              "polygon": 0,
+              "path": 0
+            },
+            "preset_shapes": 0,
+            "preset_names": {},
+            "page_frame_elements": 3,
+            "marker_uses": {
+              "start": 0,
+              "mid": 0,
+              "end": 0
+            }
+          },
+          "native_objects": {
+            "chart": 0,
+            "table": 0,
+            "formula_block": 0,
+            "formula_inline": 0,
+            "other": 0
+          }
+        },
+        "fonts": [
+          "Microsoft YaHei, Arial, sans-serif"
+        ],
+        "text_elements": 11,
+        "tspan_elements": 1,
+        "contextual_values": {
+          "colors": [
+            "#4A5568"
+          ]
+        },
+        "sparse_typography_sizes": {
+          "72": 2
+        }
+      },
+      "passed": true,
+      "source_sha256": "eb2988d1b470cb50c06c47ee007a7b54c155d8bc735c17f82e4fbff28fec7cb3"
+    },
+    {
+      "file": "02_contents.svg",
+      "path": "projects/riskflow_20260828_visual_rebuild_ppt169_20260828/svg_output/02_contents.svg",
+      "exists": true,
+      "errors": [],
+      "warnings": [
+        "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=56, y=294; text='基于变径盾构的轨道交通隧站一体化建造技术…'); use supported explicit text positioning when page fit matters"
+      ],
+      "info": {
+        "viewbox": "0 0 1280 720",
+        "carrier_receipt": {
+          "text_elements": 13,
+          "images": {
+            "placements": 0,
+            "files": [],
+            "max_frame_share": 0.0
+          },
+          "icons": 0,
+          "geometry": {
+            "svg_elements": {
+              "rect": 6,
+              "circle": 0,
+              "ellipse": 0,
+              "line": 5,
+              "polyline": 0,
+              "polygon": 0,
+              "path": 0
+            },
+            "preset_shapes": 0,
+            "preset_names": {},
+            "page_frame_elements": 2,
+            "marker_uses": {
+              "start": 0,
+              "mid": 0,
+              "end": 0
+            }
+          },
+          "native_objects": {
+            "chart": 0,
+            "table": 0,
+            "formula_block": 0,
+            "formula_inline": 0,
+            "other": 0
+          }
+        },
+        "fonts": [
+          "Arial, sans-serif",
+          "Microsoft YaHei, Arial, sans-serif"
+        ],
+        "text_elements": 13,
+        "tspan_elements": 1,
+        "contextual_values": {
+          "colors": [
+            "#4A5568",
+            "#8FCDBE"
+          ],
+          "font_families": [
+            "Arial, sans-serif"
+          ]
+        }
+      },
+      "passed": true,
+      "source_sha256": "e082923253289e0e31f357c35714c1556db61f71691d8f77900f003ece400a7d"
+    },
+    {
+      "file": "03_section_overview.svg",
+      "path": "projects/riskflow_20260828_visual_rebuild_ppt169_20260828/svg_output/03_section_overview.svg",
+      "exists": true,
+      "errors": [],
+      "warnings": [],
+      "info": {
+        "viewbox": "0 0 1280 720",
+        "carrier_receipt": {
+          "text_elements": 7,
+          "images": {
+            "placements": 0,
+            "files": [],
+            "max_frame_share": 0.0
+          },
+          "icons": 0,
+          "geometry": {
+            "svg_elements": {
+              "rect": 2,
+              "circle": 1,
+              "ellipse": 0,
+              "line": 2,
+              "polyline": 0,
+              "polygon": 0,
+              "path": 0
+            },
+            "preset_shapes": 0,
+            "preset_names": {},
+            "page_frame_elements": 3,
+            "marker_uses": {
+              "start": 0,
+              "mid": 0,
+              "end": 0
+            }
+          },
+          "native_objects": {
+            "chart": 0,
+            "table": 0,
+            "formula_block": 0,
+            "formula_inline": 0,
+            "other": 0
+          }
+        },
+        "fonts": [
+          "Arial, sans-serif",
+          "Microsoft YaHei, Arial, sans-serif"
+        ],
+        "text_elements": 7,
+        "tspan_elements": 0,
+        "contextual_values": {
+          "colors": [
+            "#8FCDBE"
+          ],
+          "font_families": [
+            "Arial, sans-serif"
+          ]
+        },
+        "sparse_typography_sizes": {
+          "72": 2
+        }
+      },
+      "passed": true,
+      "source_sha256": "5df808bce9db7444eae8fb997927e8adbb9b47d65ce4ecbcb9b83d436a332f7b"
+    },
+    {
+      "file": "04_section_progress.svg",
+      "path": "projects/riskflow_20260828_visual_rebuild_ppt169_20260828/svg_output/04_section_progress.svg",
+      "exists": true,
+      "errors": [],
+      "warnings": [],
+      "info": {
+        "viewbox": "0 0 1280 720",
+        "carrier_receipt": {
+          "text_elements": 10,
+          "images": {
+            "placements": 0,
+            "files": [],
+            "max_frame_share": 0.0
+          },
+          "icons": 0,
+          "geometry": {
+            "svg_elements": {
+              "rect": 4,
+              "circle": 0,
+              "ellipse": 0,
+              "line": 1,
+              "polyline": 0,
+              "polygon": 0,
+              "path": 0
+            },
+            "preset_shapes": 0,
+            "preset_names": {},
+            "page_frame_elements": 4,
+            "marker_uses": {
+              "start": 0,
+              "mid": 0,
+              "end": 0
+            }
+          },
+          "native_objects": {
+            "chart": 0,
+            "table": 0,
+            "formula_block": 0,
+            "formula_inline": 0,
+            "other": 0
+          }
+        },
+        "fonts": [
+          "Arial, sans-serif",
+          "Microsoft YaHei, Arial, sans-serif"
+        ],
+        "text_elements": 10,
+        "tspan_elements": 0,
+        "contextual_values": {
+          "colors": [
+            "#4A5568"
+          ],
+          "font_families": [
+            "Arial, sans-serif"
+          ]
+        },
+        "sparse_typography_sizes": {
+          "68": 1
+        }
+      },
+      "passed": true,
+      "source_sha256": "88b7932e607f850b4ab1024be06f3b2487647f792b48b1a88f926ef1e5259860"
+    },
+    {
+      "file": "05_research_route.svg",
+      "path": "projects/riskflow_20260828_visual_rebuild_ppt169_20260828/svg_output/05_research_route.svg",
+      "exists": true,
+      "errors": [],
+      "warnings": [
+        "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=528, y=458; text='明确了系统应用场景、输入资料范围、风险识…'), <text> (x=892, y=458; text='梳理了工程资料、工序信息、机理知识与风险…'), <text> (x=528, y=564; text='形成了数据接入、知识建模、智能推理、结果…'), +1 more; use supported explicit text positioning when page fit matters"
+      ],
+      "info": {
+        "viewbox": "0 0 1280 720",
+        "carrier_receipt": {
+          "text_elements": 40,
+          "images": {
+            "placements": 0,
+            "files": [],
+            "max_frame_share": 0.0
+          },
+          "icons": 0,
+          "geometry": {
+            "svg_elements": {
+              "rect": 8,
+              "circle": 7,
+              "ellipse": 0,
+              "line": 5,
+              "polyline": 0,
+              "polygon": 0,
+              "path": 0
+            },
+            "preset_shapes": 0,
+            "preset_names": {},
+            "page_frame_elements": 1,
+            "marker_uses": {
+              "start": 0,
+              "mid": 0,
+              "end": 0
+            }
+          },
+          "native_objects": {
+            "chart": 0,
+            "table": 0,
+            "formula_block": 0,
+            "formula_inline": 0,
+            "other": 0
+          }
+        },
+        "fonts": [
+          "Arial, sans-serif",
+          "Microsoft YaHei, Arial, sans-serif"
+        ],
+        "text_elements": 40,
+        "tspan_elements": 4,
+        "contextual_values": {
+          "colors": [
+            "#4A5568",
+            "#8FCDBE",
+            "#F8C885",
+            "#FFF7EC"
+          ],
+          "font_families": [
+            "Arial, sans-serif"
+          ]
+        }
+      },
+      "passed": true,
+      "source_sha256": "91dbac48c1bb0c8b592f89ba5095aedc18fb355ae9494449e9d98ef83bb37ddb"
+    },
+    {
+      "file": "06_overall_approach.svg",
+      "path": "projects/riskflow_20260828_visual_rebuild_ppt169_20260828/svg_output/06_overall_approach.svg",
+      "exists": true,
+      "errors": [],
+      "warnings": [
+        "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=237, y=538; text='按工序节点检索机理与证据，形成标准化风险…'), <text> (x=627, y=538; text='按适用规则计算 P/C 分值，再映射版本…'), <text> (x=1030, y=538; text='根据触发指标形成预警和处置建议，跟踪实际…'); use supported explicit text positioning when page fit matters"
+      ],
+      "info": {
+        "viewbox": "0 0 1280 720",
+        "carrier_receipt": {
+          "text_elements": 24,
+          "images": {
+            "placements": 0,
+            "files": [],
+            "max_frame_share": 0.0
+          },
+          "icons": 0,
+          "geometry": {
+            "svg_elements": {
+              "rect": 7,
+              "circle": 5,
+              "ellipse": 0,
+              "line": 5,
+              "polyline": 0,
+              "polygon": 0,
+              "path": 1
+            },
+            "preset_shapes": 0,
+            "preset_names": {},
+            "page_frame_elements": 1,
+            "marker_uses": {
+              "start": 0,
+              "mid": 0,
+              "end": 5
+            }
+          },
+          "native_objects": {
+            "chart": 0,
+            "table": 0,
+            "formula_block": 0,
+            "formula_inline": 0,
+            "other": 0
+          }
+        },
+        "fonts": [
+          "Arial, sans-serif",
+          "Microsoft YaHei, Arial, sans-serif"
+        ],
+        "text_elements": 24,
+        "tspan_elements": 3,
+        "contextual_values": {
+          "colors": [
+            "#4A5568",
+            "#EEF7F4",
+            "#FFF7EC"
+          ],
+          "font_families": [
+            "Arial, sans-serif"
+          ]
+        }
+      },
+      "passed": true,
+      "source_sha256": "c4fe1dc6ea9b26c3bf63630e7fca9b9776fc32ddd2404e7cf771d82bd8899727"
+    },
+    {
+      "file": "07_integrated_architecture.svg",
+      "path": "projects/riskflow_20260828_visual_rebuild_ppt169_20260828/svg_output/07_integrated_architecture.svg",
+      "exists": true,
+      "errors": [],
+      "warnings": [
+        "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=122, y=204; text='多源接入、标准化与适用性元数据绑定'), <text> (x=122, y=302; text='工程对象、机理知识与评估规则版本化'), <text> (x=122, y=400; text='风险识别与风险评估统一编排'), +5 more; use supported explicit text positioning when page fit matters"
+      ],
+      "info": {
+        "viewbox": "0 0 1280 720",
+        "carrier_receipt": {
+          "text_elements": 45,
+          "images": {
+            "placements": 0,
+            "files": [],
+            "max_frame_share": 0.0
+          },
+          "icons": 4,
+          "geometry": {
+            "svg_elements": {
+              "rect": 37,
+              "circle": 0,
+              "ellipse": 0,
+              "line": 1,
+              "polyline": 0,
+              "polygon": 0,
+              "path": 0
+            },
+            "preset_shapes": 0,
+            "preset_names": {},
+            "page_frame_elements": 1,
+            "marker_uses": {
+              "start": 0,
+              "mid": 0,
+              "end": 0
+            }
+          },
+          "native_objects": {
+            "chart": 0,
+            "table": 0,
+            "formula_block": 0,
+            "formula_inline": 0,
+            "other": 0
+          }
+        },
+        "fonts": [
+          "Arial, sans-serif",
+          "Microsoft YaHei, Arial, sans-serif"
+        ],
+        "text_elements": 45,
+        "tspan_elements": 8,
+        "contextual_values": {
+          "colors": [
+            "#1F5E96",
+            "#4A5568",
+            "#6A52A3",
+            "#DDF1EC",
+            "#E9E2F7",
+            "#EEF4FA",
+            "#EEF7F4",
+            "#F3F0FA",
+            "#FFF0D8",
+            "#FFF7EC"
+          ],
+          "font_families": [
+            "Arial, sans-serif"
+          ]
+        }
+      },
+      "passed": true,
+      "source_sha256": "0d7e164d3968ca2ac9e050edfc70f9b95d36540ed629a1aff8f9bdbf9c9995d2"
+    },
+    {
+      "file": "08_agent_boundary.svg",
+      "path": "projects/riskflow_20260828_visual_rebuild_ppt169_20260828/svg_output/08_agent_boundary.svg",
+      "exists": true,
+      "errors": [],
+      "warnings": [
+        "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=78, y=558; text='发起者、工程和输入版本在任务创建时确定'), <text> (x=376, y=558; text='按任务类型配置领域工具白名单'), <text> (x=674, y=558; text='模型、工具、并发和墙钟时间设硬预算'), +1 more; use supported explicit text positioning when page fit matters"
+      ],
+      "info": {
+        "viewbox": "0 0 1280 720",
+        "carrier_receipt": {
+          "text_elements": 31,
+          "images": {
+            "placements": 0,
+            "files": [],
+            "max_frame_share": 0.0
+          },
+          "icons": 3,
+          "geometry": {
+            "svg_elements": {
+              "rect": 9,
+              "circle": 0,
+              "ellipse": 0,
+              "line": 3,
+              "polyline": 0,
+              "polygon": 0,
+              "path": 1
+            },
+            "preset_shapes": 0,
+            "preset_names": {},
+            "page_frame_elements": 1,
+            "marker_uses": {
+              "start": 0,
+              "mid": 0,
+              "end": 3
+            }
+          },
+          "native_objects": {
+            "chart": 0,
+            "table": 0,
+            "formula_block": 0,
+            "formula_inline": 0,
+            "other": 0
+          }
+        },
+        "fonts": [
+          "Arial, sans-serif",
+          "Microsoft YaHei, Arial, sans-serif"
+        ],
+        "text_elements": 31,
+        "tspan_elements": 4,
+        "contextual_values": {
+          "colors": [
+            "#1F5E96",
+            "#4A5568",
+            "#EEF4FA",
+            "#EEF7F4",
+            "#FFF7EC"
+          ],
+          "font_families": [
+            "Arial, sans-serif"
+          ]
+        }
+      },
+      "passed": true,
+      "source_sha256": "163d439623120a13f5b866c6f642be2e1f411d98c1fe3d6d6c48d4e71578721d"
+    },
+    {
+      "file": "09_dual_engines.svg",
+      "path": "projects/riskflow_20260828_visual_rebuild_ppt169_20260828/svg_output/09_dual_engines.svg",
+      "exists": true,
+      "errors": [],
+      "warnings": [
+        "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=196, y=222; text='资料接入、格式转换与合规性校验'), <text> (x=486, y=222; text='站隧一体化施工工序模型风险机理库'), <text> (x=776, y=222; text='混合检索、关系检索机理驱动启发式推理'), +5 more; use supported explicit text positioning when page fit matters"
+      ],
+      "info": {
+        "viewbox": "0 0 1280 720",
+        "carrier_receipt": {
+          "text_elements": 24,
+          "images": {
+            "placements": 0,
+            "files": [],
+            "max_frame_share": 0.0
+          },
+          "icons": 0,
+          "geometry": {
+            "svg_elements": {
+              "rect": 16,
+              "circle": 0,
+              "ellipse": 0,
+              "line": 7,
+              "polyline": 0,
+              "polygon": 0,
+              "path": 3
+            },
+            "preset_shapes": 0,
+            "preset_names": {},
+            "page_frame_elements": 1,
+            "marker_uses": {
+              "start": 0,
+              "mid": 0,
+              "end": 9
+            }
+          },
+          "native_objects": {
+            "chart": 0,
+            "table": 0,
+            "formula_block": 0,
+            "formula_inline": 0,
+            "other": 0
+          }
+        },
+        "fonts": [
+          "Arial, sans-serif",
+          "Microsoft YaHei, Arial, sans-serif"
+        ],
+        "text_elements": 24,
+        "tspan_elements": 8,
+        "contextual_values": {
+          "colors": [
+            "#1F5E96",
+            "#4A5568",
+            "#EEF4FA",
+            "#EEF7F4",
+            "#FFF7EC"
+          ],
+          "font_families": [
+            "Arial, sans-serif"
+          ]
+        }
+      },
+      "passed": true,
+      "source_sha256": "3b99fc3248dfae72c705fa55e3b88e70585236c74d6ebff0eeccc283bad1d70a"
+    },
+    {
+      "file": "10_technical_assurance.svg",
+      "path": "projects/riskflow_20260828_visual_rebuild_ppt169_20260828/svg_output/10_technical_assurance.svg",
+      "exists": true,
+      "errors": [],
+      "warnings": [
+        "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=82, y=316; text='统一组织识别和评估流程，支持检查点、重试…'), <text> (x=480, y=316; text='模型用于工程文本抽取和受约束推理；双索引…'), <text> (x=878, y=316; text='界面承载业务闭环；Agent 只能调用按…'), +2 more; use supported explicit text positioning when page fit matters"
+      ],
+      "info": {
+        "viewbox": "0 0 1280 720",
+        "carrier_receipt": {
+          "text_elements": 23,
+          "images": {
+            "placements": 0,
+            "files": [],
+            "max_frame_share": 0.0
+          },
+          "icons": 7,
+          "geometry": {
+            "svg_elements": {
+              "rect": 8,
+              "circle": 0,
+              "ellipse": 0,
+              "line": 4,
+              "polyline": 0,
+              "polygon": 0,
+              "path": 0
+            },
+            "preset_shapes": 0,
+            "preset_names": {},
+            "page_frame_elements": 1,
+            "marker_uses": {
+              "start": 0,
+              "mid": 0,
+              "end": 0
+            }
+          },
+          "native_objects": {
+            "chart": 0,
+            "table": 0,
+            "formula_block": 0,
+            "formula_inline": 0,
+            "other": 0
+          }
+        },
+        "fonts": [
+          "Arial, sans-serif",
+          "Microsoft YaHei, Arial, sans-serif"
+        ],
+        "text_elements": 23,
+        "tspan_elements": 5,
+        "contextual_values": {
+          "colors": [
+            "#4A5568",
+            "#C9DFD9",
+            "#EEF7F4",
+            "#F0D7B5",
+            "#FFF7EC"
+          ],
+          "font_families": [
+            "Arial, sans-serif"
+          ]
+        }
+      },
+      "passed": true,
+      "source_sha256": "9fb67c3f004fedbc765c092bdab2991e9bdb2b11eb5641e745c355b73d618498"
+    },
+    {
+      "file": "11_intranet_deployment.svg",
+      "path": "projects/riskflow_20260828_visual_rebuild_ppt169_20260828/svg_output/11_intranet_deployment.svg",
+      "exists": true,
+      "errors": [],
+      "warnings": [
+        "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=770, y=420; text='知识库、图谱、索引与版本化配置'), <text> (x=78, y=576; text='工程资料和监测数据保留在项目内网，外部通…'), <text> (x=466, y=576; text='业务应用、流程编排、模型推理和数据存储各…'), +1 more; use supported explicit text positioning when page fit matters"
+      ],
+      "info": {
+        "viewbox": "0 0 1280 720",
+        "carrier_receipt": {
+          "text_elements": 25,
+          "images": {
+            "placements": 0,
+            "files": [],
+            "max_frame_share": 0.0
+          },
+          "icons": 3,
+          "geometry": {
+            "svg_elements": {
+              "rect": 18,
+              "circle": 0,
+              "ellipse": 0,
+              "line": 3,
+              "polyline": 0,
+              "polygon": 0,
+              "path": 0
+            },
+            "preset_shapes": 0,
+            "preset_names": {},
+            "page_frame_elements": 1,
+            "marker_uses": {
+              "start": 0,
+              "mid": 0,
+              "end": 2
+            }
+          },
+          "native_objects": {
+            "chart": 0,
+            "table": 0,
+            "formula_block": 0,
+            "formula_inline": 0,
+            "other": 0
+          }
+        },
+        "fonts": [
+          "Arial, sans-serif",
+          "Microsoft YaHei, Arial, sans-serif"
+        ],
+        "text_elements": 25,
+        "tspan_elements": 4,
+        "contextual_values": {
+          "colors": [
+            "#1F5E96",
+            "#4A5568",
+            "#6A52A3",
+            "#EEF4FA",
+            "#EEF7F4",
+            "#F3F0FA",
+            "#FFF7EC"
+          ],
+          "font_families": [
+            "Arial, sans-serif"
+          ]
+        }
+      },
+      "passed": true,
+      "source_sha256": "56dadbac5485b4de8134e2f5f53fb759a495bf0652908d101e1aa2f38c3b9685"
+    },
+    {
+      "file": "12_risk_overview_demo.svg",
+      "path": "projects/riskflow_20260828_visual_rebuild_ppt169_20260828/svg_output/12_risk_overview_demo.svg",
+      "exists": true,
+      "errors": [],
+      "warnings": [
+        "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=958, y=216; text='风险评估记录、预警信息和监测摘要按当前版…'), <text> (x=958, y=376; text='筛选项目与工程阶段，查看风险分布、监测趋…'), <text> (x=958, y=536; text='定位风险集中工序和越限指标，并进入评估、…'); use supported explicit text positioning when page fit matters"
+      ],
+      "info": {
+        "viewbox": "0 0 1280 720",
+        "carrier_receipt": {
+          "text_elements": 11,
+          "images": {
+            "placements": 1,
+            "files": [
+              "image13.png"
+            ],
+            "max_frame_share": 0.4409
+          },
+          "icons": 0,
+          "geometry": {
+            "svg_elements": {
+              "rect": 6,
+              "circle": 0,
+              "ellipse": 0,
+              "line": 1,
+              "polyline": 0,
+              "polygon": 0,
+              "path": 0
+            },
+            "preset_shapes": 0,
+            "preset_names": {},
+            "page_frame_elements": 1,
+            "marker_uses": {
+              "start": 0,
+              "mid": 0,
+              "end": 0
+            }
+          },
+          "native_objects": {
+            "chart": 0,
+            "table": 0,
+            "formula_block": 0,
+            "formula_inline": 0,
+            "other": 0
+          }
+        },
+        "fonts": [
+          "Arial, sans-serif",
+          "Microsoft YaHei, Arial, sans-serif"
+        ],
+        "text_elements": 11,
+        "tspan_elements": 3,
+        "contextual_values": {
+          "colors": [
+            "#4A5568",
+            "#EEF7F4",
+            "#FFF7EC"
+          ],
+          "font_families": [
+            "Arial, sans-serif"
+          ]
+        }
+      },
+      "passed": true,
+      "source_sha256": "1563769624f2704be214a74657fdce564b3e0940d435a8aef8d069f7ed0027e5"
+    },
+    {
+      "file": "13_agent_and_identification_demo.svg",
+      "path": "projects/riskflow_20260828_visual_rebuild_ppt169_20260828/svg_output/13_agent_and_identification_demo.svg",
+      "exists": true,
+      "errors": [],
+      "warnings": [],
+      "info": {
+        "viewbox": "0 0 1280 720",
+        "carrier_receipt": {
+          "text_elements": 11,
+          "images": {
+            "placements": 2,
+            "files": [
+              "image14.png",
+              "image15.png"
+            ],
+            "max_frame_share": 0.1972
+          },
+          "icons": 0,
+          "geometry": {
+            "svg_elements": {
+              "rect": 7,
+              "circle": 0,
+              "ellipse": 0,
+              "line": 1,
+              "polyline": 0,
+              "polygon": 0,
+              "path": 0
+            },
+            "preset_shapes": 0,
+            "preset_names": {},
+            "page_frame_elements": 1,
+            "marker_uses": {
+              "start": 0,
+              "mid": 0,
+              "end": 0
+            }
+          },
+          "native_objects": {
+            "chart": 0,
+            "table": 0,
+            "formula_block": 0,
+            "formula_inline": 0,
+            "other": 0
+          }
+        },
+        "fonts": [
+          "Arial, sans-serif",
+          "Microsoft YaHei, Arial, sans-serif"
+        ],
+        "text_elements": 11,
+        "tspan_elements": 0,
+        "contextual_values": {
+          "colors": [
+            "#4A5568",
+            "#EEF7F4",
+            "#FFF7EC"
+          ],
+          "font_families": [
+            "Arial, sans-serif"
+          ]
+        }
+      },
+      "passed": true,
+      "source_sha256": "ef865426d4a57198911d34faaa46d5b88e07db8f0ceea6b34e108284666e6c6b"
+    },
+    {
+      "file": "14_assessment_response_demo.svg",
+      "path": "projects/riskflow_20260828_visual_rebuild_ppt169_20260828/svg_output/14_assessment_response_demo.svg",
+      "exists": true,
+      "errors": [],
+      "warnings": [],
+      "info": {
+        "viewbox": "0 0 1280 720",
+        "carrier_receipt": {
+          "text_elements": 11,
+          "images": {
+            "placements": 2,
+            "files": [
+              "image16.png",
+              "image17.png"
+            ],
+            "max_frame_share": 0.1972
+          },
+          "icons": 0,
+          "geometry": {
+            "svg_elements": {
+              "rect": 7,
+              "circle": 0,
+              "ellipse": 0,
+              "line": 1,
+              "polyline": 0,
+              "polygon": 0,
+              "path": 0
+            },
+            "preset_shapes": 0,
+            "preset_names": {},
+            "page_frame_elements": 1,
+            "marker_uses": {
+              "start": 0,
+              "mid": 0,
+              "end": 0
+            }
+          },
+          "native_objects": {
+            "chart": 0,
+            "table": 0,
+            "formula_block": 0,
+            "formula_inline": 0,
+            "other": 0
+          }
+        },
+        "fonts": [
+          "Arial, sans-serif",
+          "Microsoft YaHei, Arial, sans-serif"
+        ],
+        "text_elements": 11,
+        "tspan_elements": 0,
+        "contextual_values": {
+          "colors": [
+            "#4A5568",
+            "#EEF7F4",
+            "#FFF7EC"
+          ],
+          "font_families": [
+            "Arial, sans-serif"
+          ]
+        }
+      },
+      "passed": true,
+      "source_sha256": "d2cf270436e4c64963bda6854dbb1fab5cf5d90aa7a95fce9c62e2945aa13f75"
+    },
+    {
+      "file": "15_stage_results.svg",
+      "path": "projects/riskflow_20260828_visual_rebuild_ppt169_20260828/svg_output/15_stage_results.svg",
+      "exists": true,
+      "errors": [],
+      "warnings": [
+        "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=118, y=356; text='明确 Agent、确定性计算和人工审核边…'), <text> (x=517, y=356; text='风险评估、预警处置与证据追溯'); use supported explicit text positioning when page fit matters"
+      ],
+      "info": {
+        "viewbox": "0 0 1280 720",
+        "carrier_receipt": {
+          "text_elements": 33,
+          "images": {
+            "placements": 0,
+            "files": [],
+            "max_frame_share": 0.0
+          },
+          "icons": 3,
+          "geometry": {
+            "svg_elements": {
+              "rect": 12,
+              "circle": 10,
+              "ellipse": 0,
+              "line": 4,
+              "polyline": 0,
+              "polygon": 0,
+              "path": 0
+            },
+            "preset_shapes": 0,
+            "preset_names": {},
+            "page_frame_elements": 1,
+            "marker_uses": {
+              "start": 0,
+              "mid": 0,
+              "end": 3
+            }
+          },
+          "native_objects": {
+            "chart": 0,
+            "table": 0,
+            "formula_block": 0,
+            "formula_inline": 0,
+            "other": 0
+          }
+        },
+        "fonts": [
+          "Arial, sans-serif",
+          "Microsoft YaHei, Arial, sans-serif"
+        ],
+        "text_elements": 33,
+        "tspan_elements": 2,
+        "contextual_values": {
+          "colors": [
+            "#4A5568",
+            "#C96B12",
+            "#E9D4B5",
+            "#EEF4FA",
+            "#EEF7F4",
+            "#FFF7EC"
+          ],
+          "font_families": [
+            "Arial, sans-serif"
+          ]
+        }
+      },
+      "passed": true,
+      "source_sha256": "9cdf75801e4bd7640e31da9bed43df1fa3f86a02d94f3390b1ced1262ab2b0ba"
+    },
+    {
+      "file": "16_section_next.svg",
+      "path": "projects/riskflow_20260828_visual_rebuild_ppt169_20260828/svg_output/16_section_next.svg",
+      "exists": true,
+      "errors": [],
+      "warnings": [],
+      "info": {
+        "viewbox": "0 0 1280 720",
+        "carrier_receipt": {
+          "text_elements": 6,
+          "images": {
+            "placements": 0,
+            "files": [],
+            "max_frame_share": 0.0
+          },
+          "icons": 0,
+          "geometry": {
+            "svg_elements": {
+              "rect": 2,
+              "circle": 2,
+              "ellipse": 0,
+              "line": 1,
+              "polyline": 0,
+              "polygon": 0,
+              "path": 2
+            },
+            "preset_shapes": 0,
+            "preset_names": {},
+            "page_frame_elements": 5,
+            "marker_uses": {
+              "start": 0,
+              "mid": 0,
+              "end": 0
+            }
+          },
+          "native_objects": {
+            "chart": 0,
+            "table": 0,
+            "formula_block": 0,
+            "formula_inline": 0,
+            "other": 0
+          }
+        },
+        "fonts": [
+          "Arial, sans-serif",
+          "Microsoft YaHei, Arial, sans-serif"
+        ],
+        "text_elements": 6,
+        "tspan_elements": 0,
+        "contextual_values": {
+          "colors": [
+            "#1D4B7C",
+            "#547391",
+            "#AFC3D5",
+            "#C9D9E8"
+          ],
+          "font_families": [
+            "Arial, sans-serif"
+          ]
+        },
+        "sparse_typography_sizes": {
+          "176": 1,
+          "44": 1
+        }
+      },
+      "passed": true,
+      "source_sha256": "ca1c7ed1bb1892f23087a7216b149b8b0c18a5f490201f754e21b2cfb29e808e"
+    },
+    {
+      "file": "17_next_plan.svg",
+      "path": "projects/riskflow_20260828_visual_rebuild_ppt169_20260828/svg_output/17_next_plan.svg",
+      "exists": true,
+      "errors": [],
+      "warnings": [
+        "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=836, y=462; text='多来源风险记录的判重、合并和综合置信度规…'), <text> (x=836, y=558; text='准确性、完整性、可解释性与可追溯性评价方…'); use supported explicit text positioning when page fit matters"
+      ],
+      "info": {
+        "viewbox": "0 0 1280 720",
+        "carrier_receipt": {
+          "text_elements": 27,
+          "images": {
+            "placements": 0,
+            "files": [],
+            "max_frame_share": 0.0
+          },
+          "icons": 2,
+          "geometry": {
+            "svg_elements": {
+              "rect": 7,
+              "circle": 4,
+              "ellipse": 0,
+              "line": 6,
+              "polyline": 0,
+              "polygon": 0,
+              "path": 0
+            },
+            "preset_shapes": 0,
+            "preset_names": {},
+            "page_frame_elements": 1,
+            "marker_uses": {
+              "start": 0,
+              "mid": 0,
+              "end": 4
+            }
+          },
+          "native_objects": {
+            "chart": 0,
+            "table": 0,
+            "formula_block": 0,
+            "formula_inline": 0,
+            "other": 0
+          }
+        },
+        "fonts": [
+          "Arial, sans-serif",
+          "Microsoft YaHei, Arial, sans-serif"
+        ],
+        "text_elements": 27,
+        "tspan_elements": 2,
+        "contextual_values": {
+          "colors": [
+            "#1F5E96",
+            "#4A5568",
+            "#B6C4D2",
+            "#C96B12",
+            "#CDE2DC",
+            "#EEF7F4",
+            "#FFF7EC"
+          ],
+          "font_families": [
+            "Arial, sans-serif"
+          ]
+        }
+      },
+      "passed": true,
+      "source_sha256": "4ec7579ec56ed2850fca76a61fbc9c304d64b55bec1890b74e0c565ce126af73"
+    },
+    {
+      "file": "18_thanks.svg",
+      "path": "projects/riskflow_20260828_visual_rebuild_ppt169_20260828/svg_output/18_thanks.svg",
+      "exists": true,
+      "errors": [],
+      "warnings": [],
+      "info": {
+        "viewbox": "0 0 1280 720",
+        "carrier_receipt": {
+          "text_elements": 6,
+          "images": {
+            "placements": 1,
+            "files": [
+              "image5.png"
+            ],
+            "max_frame_share": 0.0092
+          },
+          "icons": 0,
+          "geometry": {
+            "svg_elements": {
+              "rect": 2,
+              "circle": 2,
+              "ellipse": 0,
+              "line": 0,
+              "polyline": 0,
+              "polygon": 0,
+              "path": 2
+            },
+            "preset_shapes": 0,
+            "preset_names": {},
+            "page_frame_elements": 5,
+            "marker_uses": {
+              "start": 0,
+              "mid": 0,
+              "end": 0
+            }
+          },
+          "native_objects": {
+            "chart": 0,
+            "table": 0,
+            "formula_block": 0,
+            "formula_inline": 0,
+            "other": 0
+          }
+        },
+        "fonts": [
+          "Microsoft YaHei, Arial, sans-serif"
+        ],
+        "text_elements": 6,
+        "tspan_elements": 0,
+        "contextual_values": {
+          "colors": [
+            "#1D4B7C",
+            "#C9D9E8"
+          ]
+        },
+        "sparse_typography_sizes": {
+          "82": 1
+        }
+      },
+      "passed": true,
+      "source_sha256": "a01d76237f0d4cddf829c531852ded23c24667fd310c869885004533dc6a396f"
+    }
+  ]
+}

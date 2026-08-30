@@ -1,0 +1,15 @@
+No,Filename,Width,Height,AspectRatio,PixelAspectRatio,SourceDisplayRatio,RatioSource,Format,HasTransparentPixels,UsageCount,DisplayRatioVariants,AssetKind,SvgRenderable,PptxNativeSupported,SizeKB,Category
+1,image10.jpeg,2197,577,3.81,3.81,3.81,native,JPEG,False,1,3.81,bitmap,True,True,597.1,Ultra-wide
+2,image11.jpeg,2197,615,3.57,3.57,3.58,native,JPEG,False,3,3.58,bitmap,True,True,630.3,Ultra-wide
+3,image12.png,2500,1998,1.25,1.25,1.25,native,PNG,True,13,1.24;1.25,bitmap,True,True,224.7,Standard landscape
+4,image13.png,1920,1080,1.78,1.78,1.78,native,PNG,False,1,1.78,bitmap,True,True,207.4,Wide landscape
+5,image14.png,1920,1080,1.78,1.78,1.78,native,PNG,False,1,1.78,bitmap,True,True,264.0,Wide landscape
+6,image15.png,1920,1080,1.78,1.78,1.78,native,PNG,False,1,1.78,bitmap,True,True,264.1,Wide landscape
+7,image16.png,1920,1080,1.78,1.78,1.78,native,PNG,False,1,1.78,bitmap,True,True,285.6,Wide landscape
+8,image17.png,1920,1080,1.78,1.78,1.78,native,PNG,False,1,1.78,bitmap,True,True,285.2,Wide landscape
+9,image18.png,1935,1275,1.52,1.52,1.52,native,PNG,True,1,1.52,bitmap,True,True,358.9,Wide landscape
+10,image19.png,1125,242,4.65,4.65,4.65,native,PNG,True,1,4.65,bitmap,True,True,62.1,Ultra-wide
+11,image20.png,3326,1077,3.09,3.09,3.09,native,PNG,True,1,3.09,bitmap,True,True,271.8,Ultra-wide
+12,image21.png,949,202,4.70,4.70,4.70,native,PNG,True,1,4.70,bitmap,True,True,38.0,Ultra-wide
+13,image5.png,149,120,1.24,1.24,1.24,native,PNG,True,2,1.24,bitmap,True,True,20.2,Standard landscape
+14,image9.jpeg,1661,1239,1.34,1.34,1.34,native,JPEG,False,1,1.34,bitmap,True,True,43.9,Standard landscape

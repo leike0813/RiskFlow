@@ -1,0 +1,71 @@
+digraph DualEngine {
+  graph [
+    rankdir=TB,
+    bgcolor="transparent",
+    pad="0.10",
+    nodesep="0.22",
+    ranksep="0.45",
+    splines=polyline,
+    fontname="Noto Sans CJK SC"
+  ];
+  node [
+    shape=box,
+    style="rounded,filled",
+    fontname="Noto Sans CJK SC",
+    fontsize=12,
+    color="#C7D3E0",
+    penwidth=1.0,
+    margin="0.13,0.10"
+  ];
+  edge [fontname="Noto Sans CJK SC", fontsize=10, color="#6F8296", penwidth=1.6, arrowsize=0.72];
+
+  subgraph cluster_identification {
+    label="风险智能识别  专利步骤 S1 至 S6";
+    labelloc=t;
+    labeljust=l;
+    fontsize=15;
+    fontname="Noto Sans CJK SC";
+    fontcolor="#163B63";
+    color="#1F5E96";
+    penwidth=1.6;
+    style="rounded,filled";
+    fillcolor="#EAF4FF";
+    i1 [label="资料接入、格式转换\n与合规性校验", fillcolor="#FFFFFF"];
+    i2 [label="站隧一体化施工工序模型\n风险机理库", fillcolor="#FFFFFF"];
+    i3 [label="混合检索、关系检索\n机理驱动启发式推理", fillcolor="#FFFFFF"];
+    i4 [label="结构化校验\n完整性检查", fillcolor="#FFFFFF"];
+    {rank=same; i1; i2; i3; i4;}
+    i1 -> i2 -> i3 -> i4;
+  }
+
+  bridge [
+    label="标准化风险记录\n识别与评估共享领域对象",
+    fillcolor="#1F5E96",
+    fontcolor="#FFFFFF",
+    color="#1F5E96",
+    penwidth=1.5
+  ];
+
+  subgraph cluster_assessment {
+    label="风险智能评估与预警  专利步骤 S1 至 S7";
+    labelloc=t;
+    labeljust=l;
+    fontsize=15;
+    fontname="Noto Sans CJK SC";
+    fontcolor="#195A4F";
+    color="#2F8F7A";
+    penwidth=1.6;
+    style="rounded,filled";
+    fillcolor="#EEF8F4";
+    a1 [label="适用性元数据快照\n规则一致性与适用性校验", fillcolor="#FFFFFF"];
+    a2 [label="指标实际取值\nP/C 确定性评分", fillcolor="#FFFFFF"];
+    a3 [label="版本化风险矩阵\n风险评估记录", fillcolor="#FFFFFF"];
+    a4 [label="预警信息、处置建议\n偏差记录与校准建议", fillcolor="#FFFFFF"];
+    {rank=same; a1; a2; a3; a4;}
+    a1 -> a2 -> a3 -> a4;
+  }
+
+  i4 -> bridge [label=" 完整性检查通过"];
+  bridge -> a1 [label=" 按记录标识引用"];
+  a4 -> a1 [label=" 监测与处置反馈形成新的评估输入", color="#F2994A", fontcolor="#8A5100", constraint=false];
+}

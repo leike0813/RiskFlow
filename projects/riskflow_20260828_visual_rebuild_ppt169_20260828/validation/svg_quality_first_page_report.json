@@ -1,0 +1,177 @@
+{
+  "schema": "ppt-master.svg-quality-report.v1",
+  "stage": "first-page",
+  "target": "/home/joshua/Workspace/Code/JavaScript/RiskFlow/projects/riskflow_20260828_visual_rebuild_ppt169_20260828",
+  "source_fingerprint": {
+    "algorithm": "sha256",
+    "digest": "601bcb02f80865e72ebed77743947c4a679b72ee21ffc922f2aff83e54c6c9c5",
+    "file_count": 1,
+    "files": [
+      {
+        "file": "01_cover.svg",
+        "sha256": "9c51f6594cbc37fee1d99171adbe5ccdf2aaca841c537fad4748a1e9c1a3a489"
+      }
+    ]
+  },
+  "summary": {
+    "total": 1,
+    "passed": 0,
+    "warnings": 1,
+    "errors": 0
+  },
+  "issue_types": {},
+  "categories": {
+    "blocking": {
+      "count": 0,
+      "issues": []
+    },
+    "introduced": {
+      "count": 1,
+      "issues": [
+        {
+          "file": "01_cover.svg",
+          "message": "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=70, y=222; text='变径盾构站隧一体化建造风险风险评估及安全…'); use supported explicit text positioning when page fit matters"
+        }
+      ]
+    },
+    "inherited": {
+      "count": 0,
+      "issues": []
+    },
+    "source-import": {
+      "count": 0,
+      "summary": {
+        "warning_count": 0,
+        "by_code": {}
+      }
+    }
+  },
+  "drift": {
+    "colors": {
+      "#4A5568": [
+        "01_cover.svg"
+      ]
+    },
+    "fonts": {},
+    "sizes": {
+      "72": [
+        "01_cover.svg"
+      ]
+    }
+  },
+  "carrier_receipt": {
+    "scope": "informational-not-a-quota",
+    "pages": 1,
+    "totals": {
+      "text_elements": 11,
+      "image_placements": 1,
+      "icons": 0,
+      "svg_geometry_elements": 7,
+      "preset_shapes": 0,
+      "page_frame_elements": 3,
+      "marker_uses": 0
+    },
+    "pages_with": {
+      "images": 1,
+      "icons": 0,
+      "presets": 0,
+      "charts": 0,
+      "tables": 0,
+      "formulas": 0
+    },
+    "geometry_elements": {
+      "circle": 0,
+      "ellipse": 0,
+      "line": 2,
+      "path": 0,
+      "polygon": 0,
+      "polyline": 0,
+      "rect": 5
+    },
+    "preset_names": {},
+    "native_objects": {
+      "chart": 0,
+      "formula_block": 0,
+      "formula_inline": 0,
+      "other": 0,
+      "table": 0
+    },
+    "image_page_max_frame_share_range": [
+      0.0161,
+      0.0161
+    ]
+  },
+  "project_issues": {
+    "template": [],
+    "animation": [],
+    "illustration": [],
+    "communication_trace": [],
+    "pptx_structure": []
+  },
+  "files": [
+    {
+      "file": "01_cover.svg",
+      "path": "/home/joshua/Workspace/Code/JavaScript/RiskFlow/projects/riskflow_20260828_visual_rebuild_ppt169_20260828/svg_output/01_cover.svg",
+      "exists": true,
+      "errors": [],
+      "warnings": [
+        "Cannot verify root viewBox bounds for visible text with unsupported or unresolved geometry: <text> (x=70, y=222; text='变径盾构站隧一体化建造风险风险评估及安全…'); use supported explicit text positioning when page fit matters"
+      ],
+      "info": {
+        "viewbox": "0 0 1280 720",
+        "carrier_receipt": {
+          "text_elements": 11,
+          "images": {
+            "placements": 1,
+            "files": [
+              "image5.png"
+            ],
+            "max_frame_share": 0.0161
+          },
+          "icons": 0,
+          "geometry": {
+            "svg_elements": {
+              "rect": 5,
+              "circle": 0,
+              "ellipse": 0,
+              "line": 2,
+              "polyline": 0,
+              "polygon": 0,
+              "path": 0
+            },
+            "preset_shapes": 0,
+            "preset_names": {},
+            "page_frame_elements": 3,
+            "marker_uses": {
+              "start": 0,
+              "mid": 0,
+              "end": 0
+            }
+          },
+          "native_objects": {
+            "chart": 0,
+            "table": 0,
+            "formula_block": 0,
+            "formula_inline": 0,
+            "other": 0
+          }
+        },
+        "fonts": [
+          "Microsoft YaHei, Arial, sans-serif"
+        ],
+        "text_elements": 11,
+        "tspan_elements": 1,
+        "contextual_values": {
+          "colors": [
+            "#4A5568"
+          ]
+        },
+        "sparse_typography_sizes": {
+          "72": 1
+        }
+      },
+      "passed": true,
+      "source_sha256": "9c51f6594cbc37fee1d99171adbe5ccdf2aaca841c537fad4748a1e9c1a3a489"
+    }
+  ]
+}

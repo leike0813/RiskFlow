@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1280 720" data-pptx-page-role="ending" font-family="Microsoft YaHei, Arial, sans-serif">
+  <rect id="background" data-pptx-role="background" x="0" y="0" width="1280" height="720" fill="#163B63"/>
+  <g id="decorations" data-pptx-role="decoration" data-pptx-bounds="0 0 1280 720">
+    <circle cx="1110" cy="70" r="270" fill="#1D4B7C"/>
+    <circle cx="1185" cy="-20" r="150" fill="#2F8F7A" opacity="0.34"/>
+    <path d="M0 568 C260 492 430 642 694 556 C932 479 1074 568 1280 498 L1280 720 L0 720 Z" fill="#1D4B7C"/>
+    <path d="M0 628 C262 552 448 686 704 614 C936 549 1080 626 1280 562" fill="none" stroke="#2F8F7A" stroke-width="4" opacity="0.8"/>
+  </g>
+  <g id="project-context" data-pptx-bounds="72 56 1136 72">
+    <text x="72" y="82" font-size="13" fill="#C9D9E8">中国铁建股份有限公司地下空间利用领域科研计划项目</text>
+    <text x="1208" y="82" text-anchor="end" font-size="13" fill="#C9D9E8">合同编号： 2024-W08</text>
+    <text x="72" y="118" font-size="16" font-weight="700" fill="#FFFFFF">变径盾构站隧一体化建造风险评估及安全控制技术研究</text>
+  </g>
+  <g id="thanks" data-pptx-bounds="72 206 760 180">
+    <rect x="72" y="212" width="78" height="6" rx="3" fill="#F2994A"/>
+    <text x="72" y="340" font-size="82" font-weight="700" fill="#FFFFFF">谢谢！</text>
+  </g>
+  <g id="brand" data-pptx-bounds="72 476 660 104">
+    <image x="72" y="468" width="92" height="92" preserveAspectRatio="xMidYMid meet" href="../images/image5.png"/>
+    <text x="188" y="512" font-size="18" font-weight="700" fill="#FFFFFF">中铁建华南建设有限公司</text>
+    <text x="188" y="542" font-size="12" fill="#C9D9E8">China Railway Construction South China Construction Co.,Ltd</text>
+  </g>
+</svg>

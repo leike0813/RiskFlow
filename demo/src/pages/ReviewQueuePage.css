@@ -1,0 +1,113 @@
+.rq-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.rq-filter-label {
+  font-size: 13px;
+  color: var(--text-2);
+  margin-right: 4px;
+}
+
+.rq-chip {
+  font-size: 13px;
+  line-height: 20px;
+  padding: 3px 12px;
+  border-radius: 13px;
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  background: var(--card);
+}
+
+.rq-chip:hover {
+  color: var(--text);
+}
+
+.rq-chip--active,
+.rq-chip--active:hover {
+  color: var(--blue);
+  border-color: var(--blue);
+  background: var(--blue-soft);
+  font-weight: 600;
+}
+
+.rq-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  background: var(--bluegray-soft);
+  border-radius: 6px;
+}
+
+.rq-toolbar-info {
+  font-size: 13px;
+  color: var(--text-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.rq-link-btn {
+  font-size: 13px;
+  color: var(--blue);
+}
+
+.rq-link-btn:hover {
+  text-decoration: underline;
+}
+
+.rq-btn-disabled {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 22px;
+  padding: 6px 16px;
+  border-radius: 6px;
+  color: var(--text-2);
+  background: var(--card);
+  border: 1px solid var(--border);
+  cursor: not-allowed;
+}
+
+.rq-check {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--blue);
+  cursor: pointer;
+}
+
+.rq-target {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rq-target-id {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.rq-row-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.rq-row-actions .confirm-btn {
+  padding: 4px 12px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+/* 行内"拒绝"为次级操作：描边样式，不使用风险色 */
+.rq-row-actions .confirm-btn--primary + .confirm-btn--primary {
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.rq-row-actions .confirm-btn--primary + .confirm-btn--primary:hover {
+  background: var(--bluegray-soft);
+}

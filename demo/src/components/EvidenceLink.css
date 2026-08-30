@@ -1,0 +1,22 @@
+.evidence-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  color: var(--blue);
+  font-size: 13px;
+  line-height: 20px;
+  text-align: left;
+}
+
+.evidence-link:hover .evidence-link-id {
+  text-decoration: underline;
+}
+
+.evidence-link-id {
+  font-size: 12px;
+}
+
+.evidence-link-name {
+  color: var(--text-2);
+}

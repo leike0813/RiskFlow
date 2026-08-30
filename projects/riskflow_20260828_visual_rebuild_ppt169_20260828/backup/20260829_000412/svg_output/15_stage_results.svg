@@ -1,0 +1,67 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" data-pptx-page-role="content" font-family="Microsoft YaHei, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><polygon points="0,0 9,4.5 0,9" fill="#163B63" /></marker>
+    <marker id="arrow-orange" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><polygon points="0,0 9,4.5 0,9" fill="#F2994A" /></marker>
+  </defs>
+  <rect id="background" data-pptx-role="background" x="0" y="0" width="1280" height="720" fill="#FFFFFF" />
+  <g id="page-header" data-pptx-role="header" data-pptx-bounds="56 26 1168 50" font-family="Microsoft YaHei, Arial, sans-serif">
+    <text x="56" y="47" font-size="13" font-weight="700" fill="#2F8F7A">02 项目研发进展</text>
+    <text x="1224" y="47" text-anchor="end" font-size="11" fill="#4A5568">02.04 各子课题工作进展 · 子课题一（站隧一体化建造风险智能识别与评估技术）</text>
+    <line x1="56" y1="70" x2="1224" y2="70" stroke="#D5DCE4" stroke-width="1" />
+  </g>
+  <g id="title" data-pptx-bounds="56 86 1168 44"><text x="56" y="118" font-size="25" font-weight="700" fill="#163B63">阶段成果与近期验证重点</text></g>
+  <g id="baseline" data-pptx-bounds="56 154 370 246">
+    <rect x="56" y="154" width="370" height="246" rx="12" fill="#EEF4FA" stroke="#D5DCE4" />
+    <rect x="56" y="154" width="370" height="8" rx="4" fill="#163B63" />
+    <use data-icon="tabler-outline/layers-linked" x="80" y="184" width="28" height="28" fill="#163B63" stroke-width="2" />
+    <text x="122" y="206" font-size="19" font-weight="700" fill="#163B63">已形成设计基线</text>
+    <circle cx="90" cy="256" r="15" fill="#163B63" /><text x="90" y="261" text-anchor="middle" font-size="12" font-weight="700" fill="#FFFFFF">1</text>
+    <text x="118" y="261" font-size="14" fill="#1C2733">统一领域术语与字段契约</text>
+    <circle cx="90" cy="310" r="15" fill="#163B63" /><text x="90" y="315" text-anchor="middle" font-size="12" font-weight="700" fill="#FFFFFF">2</text>
+    <text x="118" y="315" font-size="14" fill="#1C2733">对应两项专利的方法步骤</text>
+    <circle cx="90" cy="364" r="15" fill="#163B63" /><text x="90" y="369" text-anchor="middle" font-size="12" font-weight="700" fill="#FFFFFF">3</text>
+    <text x="118" y="356" font-size="14" fill="#1C2733">明确 Agent、确定性计算和<tspan x="118" dy="22">人工审核边界</tspan></text>
+  </g>
+  <g id="prototype" data-pptx-bounds="455 154 370 246">
+    <rect x="455" y="154" width="370" height="246" rx="12" fill="#EEF7F4" stroke="#D5DCE4" />
+    <rect x="455" y="154" width="370" height="8" rx="4" fill="#2F8F7A" />
+    <use data-icon="tabler-outline/device-desktop-analytics" x="479" y="184" width="28" height="28" fill="#2F8F7A" stroke-width="2" />
+    <text x="521" y="206" font-size="19" font-weight="700" fill="#2F8F7A">已完成演示原型</text>
+    <circle cx="489" cy="256" r="15" fill="#2F8F7A" /><text x="489" y="261" text-anchor="middle" font-size="12" font-weight="700" fill="#FFFFFF">1</text>
+    <text x="517" y="261" font-size="14" fill="#1C2733">风险态势与监测趋势</text>
+    <circle cx="489" cy="310" r="15" fill="#2F8F7A" /><text x="489" y="315" text-anchor="middle" font-size="12" font-weight="700" fill="#FFFFFF">2</text>
+    <text x="517" y="315" font-size="14" fill="#1C2733">智能 Agent 与智能识别</text>
+    <circle cx="489" cy="364" r="15" fill="#2F8F7A" /><text x="489" y="369" text-anchor="middle" font-size="12" font-weight="700" fill="#FFFFFF">3</text>
+    <text x="517" y="356" font-size="14" fill="#1C2733">风险评估、预警处置与<tspan x="517" dy="22">证据追溯</tspan></text>
+  </g>
+  <g id="validation" data-pptx-bounds="854 154 370 246">
+    <rect x="854" y="154" width="370" height="246" rx="12" fill="#FFF7EC" stroke="#E9D4B5" />
+    <rect x="854" y="154" width="370" height="8" rx="4" fill="#F2994A" />
+    <use data-icon="tabler-outline/checklist" x="878" y="184" width="28" height="28" fill="#F2994A" stroke-width="2" />
+    <text x="920" y="206" font-size="19" font-weight="700" fill="#C96B12">进入样例验证</text>
+    <circle cx="888" cy="256" r="15" fill="#F2994A" /><text x="888" y="261" text-anchor="middle" font-size="12" font-weight="700" fill="#FFFFFF">1</text>
+    <text x="916" y="261" font-size="14" fill="#1C2733">多源资料结构化转换</text>
+    <circle cx="888" cy="310" r="15" fill="#F2994A" /><text x="888" y="315" text-anchor="middle" font-size="12" font-weight="700" fill="#FFFFFF">2</text>
+    <text x="916" y="315" font-size="14" fill="#1C2733">检索与评分结果核对</text>
+    <circle cx="888" cy="364" r="15" fill="#F2994A" /><text x="888" y="369" text-anchor="middle" font-size="12" font-weight="700" fill="#FFFFFF">3</text>
+    <text x="916" y="369" font-size="14" fill="#1C2733">预警处置闭环联调</text>
+  </g>
+  <g id="path" data-pptx-bounds="56 430 1168 114">
+    <text x="56" y="452" font-size="14" font-weight="700" fill="#163B63">近期验证路径</text>
+    <rect x="56" y="474" width="244" height="58" rx="10" fill="#F4F7FA" /><text x="178" y="508" text-anchor="middle" font-size="14" fill="#1C2733">样例资料到位</text>
+    <line x1="300" y1="503" x2="352" y2="503" stroke="#163B63" stroke-width="2" marker-end="url(#arrow)" />
+    <rect x="364" y="474" width="244" height="58" rx="10" fill="#F4F7FA" /><text x="486" y="508" text-anchor="middle" font-size="14" fill="#1C2733">结构化与检索核对</text>
+    <line x1="608" y1="503" x2="660" y2="503" stroke="#163B63" stroke-width="2" marker-end="url(#arrow)" />
+    <rect x="672" y="474" width="244" height="58" rx="10" fill="#F4F7FA" /><text x="794" y="508" text-anchor="middle" font-size="14" fill="#1C2733">P/C 与矩阵结果核对</text>
+    <line x1="916" y1="503" x2="968" y2="503" stroke="#F2994A" stroke-width="2" marker-end="url(#arrow-orange)" />
+    <rect x="980" y="474" width="244" height="58" rx="10" fill="#FFF7EC" /><text x="1102" y="508" text-anchor="middle" font-size="14" fill="#1C2733">预警处置闭环联调</text>
+  </g>
+  <g id="caveat" data-pptx-bounds="56 566 1168 58">
+    <rect x="56" y="566" width="1168" height="58" rx="10" fill="#FFF7EC" stroke="#F2994A" />
+    <circle cx="91" cy="594" r="13" fill="#F2994A" />
+    <text x="91" y="600" text-anchor="middle" font-size="17" font-weight="700" fill="#FFFFFF">!</text>
+    <text x="120" y="602" font-size="14" fill="#1C2733">验证使用甲方提供或审核的配置与脱敏样例；当前演示数据不作为正式评估结果。</text>
+  </g>
+  <g id="page-footer" data-pptx-role="footer" data-pptx-bounds="56 648 1168 30"><text x="56" y="672" font-size="11" fill="#4A5568">变径盾构站隧一体化建造风险智能识别与评估系统（RiskFlow）</text><text x="1224" y="672" text-anchor="end" font-size="11" font-family="Arial, sans-serif" fill="#4A5568">15</text></g>
+</svg>

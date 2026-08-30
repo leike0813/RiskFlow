@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" data-pptx-page-role="section" font-family="Microsoft YaHei, Arial, sans-serif">
+  <rect id="background" data-pptx-role="background" x="0" y="0" width="1280" height="720" fill="#163B63"/>
+  <g id="decorations" data-pptx-role="decoration" data-pptx-bounds="0 0 1280 720">
+    <circle cx="1110" cy="110" r="230" fill="#1D4B7C" opacity="0.78"/>
+    <circle cx="1160" cy="40" r="120" fill="#2F8F7A" opacity="0.28"/>
+    <path d="M0 548 C230 468 448 590 672 520 C888 452 1056 536 1280 458 L1280 720 L0 720 Z" fill="#1D4B7C"/>
+    <path d="M0 604 C244 528 432 644 674 578 C906 514 1066 590 1280 526" fill="none" stroke="#2F8F7A" stroke-width="4" opacity="0.8"/>
+  </g>
+  <g id="context" data-pptx-bounds="72 56 1136 70">
+    <text x="72" y="80" font-size="13" fill="#C9D9E8">中国铁建股份有限公司科技研发计划项目重点课题</text>
+    <text x="72" y="108" font-size="15" font-weight="700" fill="#FFFFFF">基于变径盾构的轨道交通隧站一体化建造技术研究</text>
+  </g>
+  <g id="section-number" data-pptx-bounds="72 202 186 230">
+    <text x="72" y="364" font-size="176" font-family="Microsoft YaHei, Arial, sans-serif" font-weight="700" fill="#2F8F7A">四</text>
+    <rect x="76" y="390" width="96" height="6" rx="3" fill="#F2994A"/>
+  </g>
+  <g id="section-title" data-pptx-bounds="330 236 820 160">
+    <text x="330" y="302" font-size="19" fill="#C9D9E8">四</text>
+    <text x="330" y="362" font-size="44" font-weight="700" fill="#FFFFFF">四、下一步工作计划</text>
+  </g>
+  <g id="footer-line" data-pptx-bounds="72 642 1136 34">
+    <line x1="72" y1="642" x2="1208" y2="642" stroke="#547391" stroke-width="1"/>
+    <text x="1208" y="668" text-anchor="end" font-size="11" font-family="Arial, sans-serif" fill="#AFC3D5">16</text>
+  </g>
+</svg>

@@ -1,0 +1,253 @@
+{
+  "stage": "stage2",
+  "lang": "zh",
+  "recommend": {
+    "delivery_purpose": "balanced",
+    "mode": "custom",
+    "visual_style": "custom",
+    "image_strategy": "custom",
+    "image_usage": [
+      "provided"
+    ],
+    "generation_mode": "continuous"
+  },
+  "page_count": {
+    "value": "19"
+  },
+  "image_notes": {
+    "value": "第 13—15 页的 RiskFlow 系统截图属于权威演示素材：保留完整总览，并从同一原图裁切关键区域做局部放大、编号和结论标注，不重绘或改写界面事实。第 8—10、12 页现有低清流程图只作结构参考，最终改用可编辑原生矢量图重绘。其余页面不新增 AI 或网络图片。"
+  },
+  "proactive_speaker_notes": {
+    "value": true
+  },
+  "proactive_custom_animations": {
+    "value": false
+  },
+  "proactive_narration_audio": {
+    "value": false
+  },
+  "refine_spec": {
+    "value": false
+  },
+  "design_directions": {
+    "selected": 0,
+    "candidates": [
+      {
+        "id": "source-identity-refined",
+        "name_zh": "源稿识别度精修",
+        "name_zh_tw": "源稿識別度精修",
+        "name_en": "Source Identity Refined",
+        "name_ja": "原稿アイデンティティ精修",
+        "note_zh": "保留源稿白底、深蓝与青绿色识别度，以更严谨的栅格、轻圆角卡片和原生矢量图提升专业感。正文先按源稿主导字号 14 px 复刻，页面会明确提示它低于常规投影阅读值，可在此处改大。",
+        "note_zh_tw": "保留源稿白底、深藍與青綠色識別度，以更嚴謹的網格、輕圓角卡片和原生向量圖提升專業感。正文先按源稿主導字號 14 px 復刻，頁面會提示它低於一般投影閱讀值，可在此處調大。",
+        "note_en": "Preserves the source deck's white, navy, and teal identity while improving rigor with a precise grid, restrained rounded cards, and native vector diagrams. Body text starts at the source-dominant 14 px and can be enlarged in the confirmation page.",
+        "note_ja": "原稿の白・濃紺・青緑の識別性を保ち、厳密なグリッド、控えめな角丸カード、ネイティブベクター図で専門性を高めます。本文は原稿主流の 14 px から開始し、確認画面で拡大できます。",
+        "mode": "custom",
+        "mode_behavior_zh": "以 briefing 为主：保持原 19 页顺序、标题和正文逐字不变；每页先呈现结论层级，再用一至两个证据区承载原文。对系统架构、Agent 边界、双引擎和内网部署四页使用 instructional 的分步阅读逻辑，但不改变内容边界。",
+        "mode_behavior_zh_tw": "以 briefing 為主：保持原 19 頁順序、標題和正文逐字不變；每頁先呈現結論層級，再用一至兩個證據區承載原文。四張系統圖採 instructional 的分步閱讀邏輯，但不改變內容邊界。",
+        "mode_behavior_en": "Use briefing as the primary mode: preserve all 19 pages, order, titles, and wording; establish the conclusion hierarchy first and place source copy into one or two evidence zones. The four system-diagram pages use an instructional reading sequence without changing scope.",
+        "mode_behavior_ja": "briefing を中心に、19ページの順序・見出し・本文を変更せず、結論の階層を先に示して原文を1〜2個の証拠領域に配置します。4枚のシステム図は instructional の段階的な読み方を採用します。",
+        "visual_style": "custom",
+        "visual_style_behavior_zh": "swiss-minimal 负责精确栅格、留白和清晰的标题层级；soft-rounded 仅用于关键结论卡、状态标签与截图放大窗。保持白底和深蓝标题，青绿色只标记已形成能力，橙色只标记风险、待确认条件或下一步。",
+        "visual_style_behavior_zh_tw": "swiss-minimal 負責精確網格、留白和清晰標題層級；soft-rounded 僅用於關鍵結論卡、狀態標籤與截圖放大窗。保持白底和深藍標題，青綠色標記已形成能力，橙色標記風險、待確認條件或下一步。",
+        "visual_style_behavior_en": "Swiss minimal provides the precise grid, whitespace, and title hierarchy; soft rounded is restricted to conclusion cards, status tags, and screenshot zoom windows. Navy carries structure, teal marks established capability, and orange marks risks or pending actions.",
+        "visual_style_behavior_ja": "swiss-minimal で精密なグリッド、余白、見出し階層を作り、soft-rounded は結論カード、状態タグ、画面拡大窓に限定します。濃紺は構造、青緑は実装済み能力、橙はリスクや次工程に使います。",
+        "icons": "tabler-outline",
+        "color": {
+          "name_zh": "源稿深蓝·青绿",
+          "name_zh_tw": "源稿深藍·青綠",
+          "name_en": "Source Navy and Teal",
+          "name_ja": "原稿ネイビー・ティール",
+          "palette": {
+            "background": "#FFFFFF",
+            "secondary_bg": "#F4F7FA",
+            "primary": "#163B63",
+            "accent": "#2F8F7A",
+            "secondary_accent": "#F2994A",
+            "body_text": "#1C2733"
+          }
+        },
+        "typography": {
+          "name_zh": "微软雅黑 + Arial（源稿字号）",
+          "name_zh_tw": "微軟雅黑 + Arial（源稿字號）",
+          "name_en": "Microsoft YaHei + Arial (source scale)",
+          "name_ja": "Microsoft YaHei + Arial（原稿サイズ）",
+          "heading": {
+            "primary": "Microsoft YaHei",
+            "english": "Arial",
+            "css": "'Microsoft YaHei', Arial, sans-serif"
+          },
+          "body": {
+            "primary": "Microsoft YaHei",
+            "english": "Arial",
+            "css": "'Microsoft YaHei', Arial, sans-serif"
+          },
+          "body_size": 14
+        },
+        "image_strategy": {
+          "name_zh": "产品证据图 + 原生矢量",
+          "name_zh_tw": "產品證據圖 + 原生向量",
+          "name_en": "Product Evidence and Native Vectors",
+          "name_ja": "製品証拠図＋ネイティブベクター",
+          "rendering": "custom",
+          "visual_zh": "系统截图采用数字仪表盘式取景；流程与架构采用干净平面矢量图",
+          "visual_zh_tw": "系統截圖採數位儀表板式取景；流程與架構採乾淨平面向量圖",
+          "visual_en": "Digital-dashboard framing for system screenshots; clean flat vector diagrams for process and architecture",
+          "visual_ja": "システム画面はデジタルダッシュボード風に切り取り、プロセスと構成はフラットなベクター図で表現",
+          "mood_zh": "克制、可信、工程评审友好",
+          "mood_zh_tw": "克制、可信、工程評審友好",
+          "mood_en": "Restrained, credible, and engineering-review friendly",
+          "mood_ja": "抑制的で信頼感があり、技術審査に適した印象",
+          "behavior_zh": "digital-dashboard 负责截图的浏览器框、局部放大和统一轻阴影；vector-illustration 负责四张低清流程图的平面化原生重绘。两者共用当前六角色颜色，禁止无意义渐变、装饰性 3D 和不可编辑文字图。",
+          "behavior_zh_tw": "digital-dashboard 負責截圖的瀏覽器框、局部放大和統一輕陰影；vector-illustration 負責四張低清流程圖的平面原生重繪。兩者共用目前六角色色彩，避免無意義漸層、裝飾性 3D 和不可編輯文字圖。",
+          "behavior_en": "Digital dashboard governs browser framing, zoomed crops, and restrained shadows for screenshots; vector illustration governs native flat redraws of the four low-resolution diagrams. Both use the confirmed palette and avoid decorative 3D, gratuitous gradients, and text baked into images.",
+          "behavior_ja": "digital-dashboard で画面キャプチャのブラウザ枠、部分拡大、控えめな影を統一し、vector-illustration で4枚の低解像度図をネイティブに再描画します。装飾的3D、不要なグラデーション、画像化文字は使いません。"
+        }
+      },
+      {
+        "id": "engineering-blueprint-review",
+        "name_zh": "工程蓝图评审",
+        "name_zh_tw": "工程藍圖評審",
+        "name_en": "Engineering Blueprint Review",
+        "name_ja": "エンジニアリング設計審査",
+        "note_zh": "以深色工程蓝图强化系统边界、数据流和人机协同关系，四张核心嵌入图会成为整套汇报的视觉骨架。适合技术评审与架构讨论，阅读距离更友好。",
+        "note_zh_tw": "以深色工程藍圖強化系統邊界、資料流和人機協同關係，四張核心嵌入圖會成為整套簡報的視覺骨架。適合技術評審與架構討論，閱讀距離更友好。",
+        "note_en": "A dark engineering-blueprint system that makes boundaries, data flow, and human-agent collaboration the visual backbone. Optimized for technical review and projection readability.",
+        "note_ja": "濃色の技術ブループリントで、システム境界、データフロー、人とAgentの協働を全体の視覚骨格にします。技術審査と投影時の可読性に適します。",
+        "mode": "custom",
+        "mode_behavior_zh": "以 briefing 组织结论和评审问题，以 instructional 组织四张系统图的阅读顺序。原 19 页内容和顺序保持不变；正文压缩为更明确的分区与编号，所有因果和边界关系通过连接线与步骤标记呈现。",
+        "mode_behavior_zh_tw": "以 briefing 組織結論和評審問題，以 instructional 組織四張系統圖的閱讀順序。原 19 頁內容和順序保持不變；正文以清楚分區與編號承載，因果和邊界關係透過連接線與步驟標記呈現。",
+        "mode_behavior_en": "Use briefing for conclusions and review questions, and instructional sequencing for the four system diagrams. Preserve all 19 pages and wording while clarifying zones, numbering, causal links, and system boundaries.",
+        "mode_behavior_ja": "briefing で結論と審査論点を整理し、4枚のシステム図は instructional の順序で読ませます。19ページと原文を維持しつつ、領域、番号、因果、境界を明確にします。",
+        "visual_style": "custom",
+        "visual_style_behavior_zh": "blueprint 负责低透明度网格、正交连线和端点标记；swiss-minimal 负责标题尺度、对齐和留白。深蓝背景贯穿技术内容页，浅色文字与青绿色主路径形成清晰层级，橙色仅用于风险或人工审核闸门。",
+        "visual_style_behavior_zh_tw": "blueprint 負責低透明度網格、正交連線和端點標記；swiss-minimal 負責標題尺度、對齊和留白。深藍背景貫穿技術內容頁，淺色文字與青綠主路徑形成清晰層級，橙色僅用於風險或人工審核閘門。",
+        "visual_style_behavior_en": "Blueprint governs the low-opacity grid, orthogonal connectors, and anchor marks; Swiss minimal governs title scale, alignment, and whitespace. Teal marks the primary path and orange is reserved for risks and human-review gates.",
+        "visual_style_behavior_ja": "blueprint で薄いグリッド、直交コネクタ、端点を表し、swiss-minimal で見出しスケール、整列、余白を統制します。青緑は主経路、橙はリスクと人手審査ゲートに限定します。",
+        "icons": "tabler-outline",
+        "color": {
+          "name_zh": "深海工程蓝",
+          "name_zh_tw": "深海工程藍",
+          "name_en": "Deep Engineering Blue",
+          "name_ja": "ディープ・エンジニアリングブルー",
+          "palette": {
+            "background": "#0D2238",
+            "secondary_bg": "#132F4C",
+            "primary": "#4EA5D9",
+            "accent": "#35C6A4",
+            "secondary_accent": "#F6A84B",
+            "body_text": "#F4F8FC"
+          }
+        },
+        "typography": {
+          "name_zh": "微软雅黑 + Arial（投影阅读）",
+          "name_zh_tw": "微軟雅黑 + Arial（投影閱讀）",
+          "name_en": "Microsoft YaHei + Arial (projection)",
+          "name_ja": "Microsoft YaHei + Arial（投影向け）",
+          "heading": {
+            "primary": "Microsoft YaHei",
+            "english": "Arial",
+            "css": "'Microsoft YaHei', Arial, sans-serif"
+          },
+          "body": {
+            "primary": "Microsoft YaHei",
+            "english": "Arial",
+            "css": "'Microsoft YaHei', Arial, sans-serif"
+          },
+          "body_size": 24
+        },
+        "image_strategy": {
+          "name_zh": "蓝图示意 + 聚焦截图",
+          "name_zh_tw": "藍圖示意 + 聚焦截圖",
+          "name_en": "Blueprint Schematics and Focused Screens",
+          "name_ja": "ブループリント図＋フォーカス画面",
+          "rendering": "custom",
+          "visual_zh": "精确蓝图式结构图，截图置于深色设备框并用主路径连线解释",
+          "visual_zh_tw": "精確藍圖式結構圖，截圖置於深色設備框並用主路徑連線解釋",
+          "visual_en": "Precise blueprint schematics with screenshots mounted in dark device frames and explained by primary-path connectors",
+          "visual_ja": "精密なブループリント図と、濃色デバイス枠に収めた画面キャプチャを主経路で説明",
+          "mood_zh": "严谨、分析性强、工程感明确",
+          "mood_zh_tw": "嚴謹、分析性強、工程感明確",
+          "mood_en": "Rigorous, analytical, and distinctly engineered",
+          "mood_ja": "厳密で分析的、技術設計らしい印象",
+          "behavior_zh": "blueprint 负责四张架构与流程图的网格、正交连接和节点状态；digital-dashboard 负责界面截图的设备框、裁切放大与图例。截图始终保持原始像素和事实，示意图文字全部由可编辑 SVG 承载。",
+          "behavior_zh_tw": "blueprint 負責四張架構與流程圖的網格、正交連接和節點狀態；digital-dashboard 負責介面截圖的設備框、裁切放大與圖例。截圖保持原始像素和事實，示意圖文字全部由可編輯 SVG 承載。",
+          "behavior_en": "Blueprint governs the grid, orthogonal links, and node states in the four architecture/process diagrams; digital dashboard governs device frames, cropped zooms, and legends for screenshots. Source pixels and facts remain intact, while diagram text stays editable in SVG.",
+          "behavior_ja": "blueprint で4枚の構成・プロセス図のグリッド、直交接続、ノード状態を統一し、digital-dashboard で画面キャプチャの枠、拡大、凡例を設計します。画面の事実を保持し、図中文字は編集可能なSVGで扱います。"
+        }
+      },
+      {
+        "id": "product-demo-command-center",
+        "name_zh": "产品指挥中心",
+        "name_zh_tw": "產品指揮中心",
+        "name_en": "Product Command Center",
+        "name_ja": "プロダクト指令センター",
+        "note_zh": "以 RiskFlow 演示界面的深色导航和卡片语言为母体，让汇报更像一个成熟产品发布与阶段成果展示。视觉冲击更强，但整体仍保持工程项目的克制。",
+        "note_zh_tw": "以 RiskFlow 展示介面的深色導覽和卡片語言為母體，讓簡報更像成熟產品發表與階段成果展示。視覺衝擊較強，但仍維持工程專案的克制。",
+        "note_en": "Builds the deck from the dark navigation and card language of the RiskFlow demo, turning it into a polished product-progress showcase. More visual impact, still restrained enough for an engineering program.",
+        "note_ja": "RiskFlowデモの濃色ナビゲーションとカード表現を基調に、成熟した製品発表・成果展示へ仕立てます。視覚的な強さを持ちながら、技術プロジェクトらしい節度を保ちます。",
+        "mode": "custom",
+        "mode_behavior_zh": "以 showcase 突出第 13—15 页的系统演示，以 briefing 保证前后技术论证与下一阶段条件清晰。保留原 19 页顺序和文案，章节页形成明显节奏，关键能力以大数字、状态标签和界面证据串联。",
+        "mode_behavior_zh_tw": "以 showcase 突出第 13—15 頁的系統展示，以 briefing 保證前後技術論證與下一階段條件清楚。保留原 19 頁順序和文案，章節頁形成節奏，關鍵能力以大數字、狀態標籤和介面證據串聯。",
+        "mode_behavior_en": "Use showcase to elevate the system-demo pages and briefing to keep the technical argument and next-stage conditions clear. Preserve all 19 pages and wording, using section rhythm, large numerals, status tags, and interface evidence to connect capabilities.",
+        "mode_behavior_ja": "showcase でシステムデモ3ページを強調し、briefing で技術説明と次段階条件を明確にします。19ページと原文を保ち、章扉、大きな数値、状態タグ、画面証拠で能力をつなぎます。",
+        "visual_style": "custom",
+        "visual_style_behavior_zh": "dark-tech 提供深海军蓝背景、细网格和发光主路径；glassmorphism 只用于截图承载框、关键 KPI 与结论卡，避免全页半透明造成阅读疲劳。页面结构沿用产品界面的顶部导航节奏与白色内容卡。",
+        "visual_style_behavior_zh_tw": "dark-tech 提供深海軍藍背景、細網格和發光主路徑；glassmorphism 只用於截圖承載框、關鍵 KPI 與結論卡，避免全頁半透明造成閱讀疲勞。頁面結構沿用產品介面的頂部導覽節奏與白色內容卡。",
+        "visual_style_behavior_en": "Dark tech supplies the deep-navy canvas, fine grid, and luminous primary path; glassmorphism is limited to screenshot frames, key KPIs, and conclusion cards to avoid visual fatigue. Page rhythm borrows from the product's top navigation and white content cards.",
+        "visual_style_behavior_ja": "dark-tech で濃紺背景、細かなグリッド、発光する主経路を作り、glassmorphism は画面枠、主要KPI、結論カードに限定します。製品UIの上部ナビゲーションと白いカードのリズムを取り入れます。",
+        "icons": "phosphor-duotone",
+        "color": {
+          "name_zh": "RiskFlow 夜间界面",
+          "name_zh_tw": "RiskFlow 夜間介面",
+          "name_en": "RiskFlow Night Interface",
+          "name_ja": "RiskFlow ナイトUI",
+          "palette": {
+            "background": "#091A2C",
+            "secondary_bg": "#102A43",
+            "primary": "#2F80ED",
+            "accent": "#2ED3B7",
+            "secondary_accent": "#FF9F43",
+            "body_text": "#F5F8FC"
+          }
+        },
+        "typography": {
+          "name_zh": "微软雅黑 + Arial（产品展示）",
+          "name_zh_tw": "微軟雅黑 + Arial（產品展示）",
+          "name_en": "Microsoft YaHei + Arial (product showcase)",
+          "name_ja": "Microsoft YaHei + Arial（製品ショーケース）",
+          "heading": {
+            "primary": "Microsoft YaHei",
+            "english": "Arial",
+            "css": "'Microsoft YaHei', Arial, sans-serif"
+          },
+          "body": {
+            "primary": "Microsoft YaHei",
+            "english": "Arial",
+            "css": "'Microsoft YaHei', Arial, sans-serif"
+          },
+          "body_size": 24
+        },
+        "image_strategy": {
+          "name_zh": "数字仪表盘舞台",
+          "name_zh_tw": "數位儀表板舞台",
+          "name_en": "Digital Dashboard Stage",
+          "name_ja": "デジタルダッシュボード・ステージ",
+          "rendering": "custom",
+          "visual_zh": "产品界面主导的数字仪表盘构图，矢量流程图采用发光路径与半透明面板",
+          "visual_zh_tw": "產品介面主導的數位儀表板構圖，向量流程圖採發光路徑與半透明面板",
+          "visual_en": "Product-interface-led dashboard compositions with luminous paths and translucent panels for vector process diagrams",
+          "visual_ja": "製品UI主体のダッシュボード構図と、発光経路・半透明パネルを使うベクタープロセス図",
+          "mood_zh": "现代、成熟、具有发布感",
+          "mood_zh_tw": "現代、成熟、具發表感",
+          "mood_en": "Modern, mature, and launch-ready",
+          "mood_ja": "現代的で成熟し、発表にふさわしい印象",
+          "behavior_zh": "digital-dashboard 负责卡片系统、界面截图取景和 KPI 层级；glassmorphism 仅给关键截图浮层与跨引擎桥接节点增加轻微深度。所有真实界面截图保持原始内容，流程图用可编辑矢量构件复刻业务逻辑。",
+          "behavior_zh_tw": "digital-dashboard 負責卡片系統、介面截圖取景和 KPI 層級；glassmorphism 僅為關鍵截圖浮層與跨引擎橋接節點增加輕微深度。所有真實介面截圖保持原始內容，流程圖用可編輯向量構件重現業務邏輯。",
+          "behavior_en": "Digital dashboard governs the card system, screenshot framing, and KPI hierarchy; glassmorphism adds only restrained depth to key screenshot layers and the cross-engine bridge. All real UI captures retain their original content, and editable vectors reproduce process logic.",
+          "behavior_ja": "digital-dashboard でカード体系、画面キャプチャ、KPI階層を統一し、glassmorphism は重要な画面レイヤーとエンジン間ブリッジにだけ軽い奥行きを加えます。実画面の内容を保持し、編集可能なベクターで業務ロジックを再現します。"
+        }
+      }
+    ]
+  }
+}

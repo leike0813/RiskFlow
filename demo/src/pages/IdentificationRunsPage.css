@@ -1,0 +1,9 @@
+.runs-kpis {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+.runs-dim {
+  color: var(--text-2);
+}

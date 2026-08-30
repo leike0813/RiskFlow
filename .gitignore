@@ -1,0 +1,113 @@
+# ----------------------------------------------------------------------------
+# RiskFlow · 纯 TypeScript 项目根级 .gitignore
+# ----------------------------------------------------------------------------
+# 目标态: TypeScript 工程(Node 生态 + 强类型源码 + LangGraph 编排)。
+# 锁文件一律入库;不忽略 .d.ts(公共类型契约)。
+# ----------------------------------------------------------------------------
+
+# ---- Node / 包管理器 -------------------------------------------------------
+node_modules/
+jspm_packages/
+
+# 各包管理器临时目录(锁文件保留)
+.pnpm-store/
+.pnp.*
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+.pnpm-debug.log*
+
+# ---- TypeScript / 构建产物 -------------------------------------------------
+dist/
+build/
+out/
+lib/                  # 临时构建输出目录
+*.tsbuildinfo
+*.js.map              # 仅源码随项目发布时;由 tsconfig 的 sourceMap 决定
+*.mjs.map
+*.cjs.map
+
+# ---- 测试 / 覆盖率 --------------------------------------------------------
+coverage/
+.nyc_output/
+.nyc/
+*.lcov
+.noserc.json.bak
+
+# Vitest
+.vitest/
+.vitest-cache/
+
+# Playwright
+test-results/
+playwright-report/
+playwright/.cache/
+
+# ---- IDE / 编辑器 ----------------------------------------------------------
+# VS Code: 个人设置忽略,推荐将 .vscode/{extensions,settings}.*.json 通过
+# 仓库级 .vscode/* 共享提交;此处仅屏蔽工作区临时文件
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# JetBrains
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Sublime / Vim / Emacs
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+\#*\#
+.\#*
+
+# ---- 环境变量 / 密钥 -------------------------------------------------------
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# ---- 日志 -------------------------------------------------------------------
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+bun-debug.log*
+
+# ---- 操作系统 ---------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# ---- 本仓库局部:Agent 运行时 / 临时目录 ----------------------------------
+# 这些目录是 agent harness 的本地工作区,只对当前用户有意义,不入库
+.agents/
+.claude/
+.kilocode/
+.kimi-code/
+.omp/
+.opencode/
+.pi/
+
+# .scratch/ 为当前用户共享的本地临时工作区,保留入库(不忽略)
+
+# MinerU 工具产物(外部解析中间结果)
+/references/MinerU-Skill/
+
+# OpenSpec 归档本地副产物(如未来需要)
+/openspec/.cache/

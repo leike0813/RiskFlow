@@ -1,0 +1,30 @@
+@startuml
+skinparam backgroundColor transparent
+skinparam defaultFontName Noto Sans CJK SC
+skinparam defaultFontSize 13
+skinparam shadowing false
+skinparam roundcorner 14
+skinparam packageStyle rectangle
+skinparam ArrowColor #6F8296
+skinparam ArrowThickness 1.5
+skinparam package {
+  BorderThickness 1.5
+  FontStyle bold
+}
+left to right direction
+
+package "施工现场" as SiteLane {
+  rectangle "工程资料与专项施工方案\n监测仪器与传感器\n数据采集工作站" as site #EAF4FF
+}
+
+package "项目内网" as IntranetLane {
+  rectangle "数据接入与应用服务\n流程编排与检查点服务\n本地模型推理服务\n业务数据、审计与结果存储\n知识库、图谱、索引与版本化配置" as intranet #EEF8F4
+}
+
+package "用户侧" as UserLane {
+  rectangle "风险管理终端\n监控大屏\n移动终端" as users #F2EEFA
+}
+
+site -[#1F5E96]-> intranet : 文件上传 / 数据库直连 / API\n内网监测数据接口
+intranet -[#6E55A5]-> users : 业务应用、风险态势\n预警与处置
+@enduml

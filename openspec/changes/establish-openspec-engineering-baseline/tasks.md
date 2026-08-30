@@ -9,9 +9,9 @@
 
 ## 3. 最小可构建成员
 
-- [ ] 3.1 新增 `packages/{contracts,core,adapters}/{package.json,tsconfig.json,src/index.ts}`，只建立 design §1 的包名、project references、`.` exports 和合法 workspace 依赖；以 `pnpm exec tsc -b packages/contracts packages/core packages/adapters --pretty false` 成功且公开入口存在为条件；不得定义 C01/C02 所有的 DTO、Schema、interface、领域常量或 adapter。
-- [ ] 3.2 新增 `apps/api/{package.json,tsconfig.json,src/index.ts,src/app.ts}` 与 `apps/worker/{package.json,tsconfig.json,src/index.ts}`；API 只导出不监听端口的 `buildApi(): FastifyInstance`，Worker 只建立模块入口；以两应用通过 `tsc -b` 且导入模块不启动监听/循环为条件；不得添加业务路由、环境变量、数据库、队列、LangGraph 或 Mock。
-- [ ] 3.3 新增 `apps/web/{package.json,tsconfig.json,index.html,vite.config.ts,src/index.ts,src/main.tsx}`，React 入口只挂载空应用根节点并参加 project references；以 Web 的 TypeScript 检查与 Vite production build 成功为条件；不得迁移 Demo、添加路由、组件库、业务页面、样式系统或可见开发说明。
+- [x] 3.1 新增 `packages/{contracts,core,adapters}/{package.json,tsconfig.json,src/index.ts}`，只建立 design §1 的包名、project references、`.` exports 和合法 workspace 依赖；以 `pnpm exec tsc -b packages/contracts packages/core packages/adapters --pretty false` 成功且公开入口存在为条件；不得定义 C01/C02 所有的 DTO、Schema、interface、领域常量或 adapter。
+- [x] 3.2 新增 `apps/api/{package.json,tsconfig.json,src/index.ts,src/app.ts}` 与 `apps/worker/{package.json,tsconfig.json,src/index.ts}`；API 只导出不监听端口的 `buildApi(): FastifyInstance`，Worker 只建立模块入口；以两应用通过 `tsc -b` 且导入模块不启动监听/循环为条件；不得添加业务路由、环境变量、数据库、队列、LangGraph 或 Mock。
+- [x] 3.3 新增 `apps/web/{package.json,tsconfig.json,index.html,vite.config.ts,src/index.ts,src/main.tsx}`，React 入口只挂载空应用根节点并参加 project references；以 Web 的 TypeScript 检查与 Vite production build 成功为条件；不得迁移 Demo、添加路由、组件库、业务页面、样式系统或可见开发说明。
 
 ## 4. 质量与边界检查
 

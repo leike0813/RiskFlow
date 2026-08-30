@@ -5,7 +5,7 @@
 ## 2. 根 workspace 与冻结依赖
 
 - [x] 2.1 依据 design §1～§2 新增 `.node-version`、`.npmrc`、根 `package.json`、`pnpm-workspace.yaml`、`tsconfig.base.json` 与根 references `tsconfig.json`，只声明六个精确生产成员、Node `24.12.0`、pnpm `11.10.0`、ESM 和设计表中的精确直接依赖；以 `pnpm --version`、`pnpm list -r --depth -1` 与清单审查通过为条件；不得纳入或修改 `demo/**`，不得引入 design 未列依赖。
-- [ ] 2.2 使用固定 pnpm 解析 2.1 的清单并新增唯一 `pnpm-lock.yaml`，再执行 `pnpm install --frozen-lockfile`；以冻结安装成功且 `git diff --exit-code -- package.json 'apps/*/package.json' 'packages/*/package.json' pnpm-lock.yaml` 无二次改写为通过条件；不得升级包、使用范围版本、生成第二个锁文件或安装 Demo 依赖。
+- [x] 2.2 使用固定 pnpm 解析 2.1 的清单并新增唯一 `pnpm-lock.yaml`，再执行 `pnpm install --frozen-lockfile`；以冻结安装成功且 `git diff --exit-code -- package.json 'apps/*/package.json' 'packages/*/package.json' pnpm-lock.yaml` 无二次改写为通过条件；不得升级包、使用范围版本、生成第二个锁文件或安装 Demo 依赖。
 
 ## 3. 最小可构建成员
 

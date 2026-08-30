@@ -34,6 +34,13 @@ coverage/
 .nyc/
 *.lcov
 .noserc.json.bak
+.cache/
+
+# ---- SBOM / 交付工件 ------------------------------------------------------
+*.cdx.json
+*.bom.json
+bom.json
+sbom.json
 
 # Vitest
 .vitest/

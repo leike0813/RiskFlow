@@ -15,9 +15,9 @@
 
 ## 4. 质量与边界检查
 
-- [ ] 4.1 新增 `eslint.config.js`、`prettier.config.mjs`、`.prettierignore` 并补充 `.gitignore` 的生产输出/缓存/SBOM规则，连接根 `lint` 与 `format:check` 脚本；以 `pnpm lint` 和 `pnpm format:check` 通过为条件；不得覆盖已有忽略项或引入第二套 lint、格式化及 Git Hook 工具。
-- [ ] 4.2 新增 `dependency-cruiser.config.cjs` 与根 `deps:check` 脚本，落实 design §4 的应用/共享包方向、深层导入和 Demo 隔离规则；以合法六成员图通过，并用未提交的临时违规导入分别确认反向依赖和深层导入返回非零后恢复工作树为条件；不得把临时夹具或例外规则提交进仓库。
-- [ ] 4.3 新增 `config/dependency-policy.json`、`scripts/check-dependency-policy.mjs` 和 `scripts/check-dependency-policy.test.ts`，使用 Node 标准库对账所有直接第三方依赖的精确版本、用途、许可证、来源、离线方式与退出条件；连接 `deps:policy` 和 Vitest 单次 `test` 脚本；以 `pnpm deps:policy` 通过且表格驱动测试证明未登记依赖/缺字段失败为条件；不得手抄锁文件 integrity、引入校验库或精确断言完整错误文案。
+- [x] 4.1 新增 `eslint.config.js`、`prettier.config.mjs`、`.prettierignore` 并补充 `.gitignore` 的生产输出/缓存/SBOM规则，连接根 `lint` 与 `format:check` 脚本；以 `pnpm lint` 和 `pnpm format:check` 通过为条件；不得覆盖已有忽略项或引入第二套 lint、格式化及 Git Hook 工具。
+- [x] 4.2 新增 `dependency-cruiser.config.cjs` 与根 `deps:check` 脚本，落实 design §4 的应用/共享包方向、深层导入和 Demo 隔离规则；以合法六成员图通过，并用未提交的临时违规导入分别确认反向依赖和深层导入返回非零后恢复工作树为条件；不得把临时夹具或例外规则提交进仓库。
+- [x] 4.3 新增 `config/dependency-policy.json`、`scripts/check-dependency-policy.mjs` 和 `scripts/check-dependency-policy.test.ts`，使用 Node 标准库对账所有直接第三方依赖的精确版本、用途、许可证、来源、离线方式与退出条件；连接 `deps:policy` 和 Vitest 单次 `test` 脚本；以 `pnpm deps:policy` 通过且表格驱动测试证明未登记依赖/缺字段失败为条件；不得手抄锁文件 integrity、引入校验库或精确断言完整错误文案。
 
 ## 5. 聚合验证、SBOM 与 CI
 

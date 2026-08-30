@@ -1,0 +1,20 @@
+**/node_modules/**
+**/dist/**
+**/coverage/**
+.scratch/**
+demo/**
+openspec/**
+references/**
+**/*.md
+# 汇报项目生成的清单/报告，不属于生产源码或配置
+**/*.identity.json
+**/*.slide_library.json
+**/analysis/*.json
+**/confirm_ui/*.json
+**/image_manifest.json
+**/validation/*.json
+*.cdx.json
+*.bom.json
+bom.json
+sbom.json
+pnpm-lock.yaml

@@ -8,14 +8,17 @@
     "node": ">=24.12.0 <25"
   },
   "scripts": {
+    "build": "tsc -b && vite build apps/web",
+    "typecheck": "tsc -b --pretty false",
     "lint": "eslint .",
     "format:check": "prettier --check .",
     "test": "vitest run",
     "deps:check": "depcruise --config dependency-cruiser.config.cjs apps packages",
-    "deps:policy": "node scripts/check-dependency-policy.mjs"
+    "deps:policy": "node scripts/check-dependency-policy.mjs",
+    "openspec:validate": "openspec validate --all --strict --no-interactive",
+    "verify": "pnpm build && pnpm typecheck && pnpm lint && pnpm format:check && pnpm test && pnpm deps:check && pnpm deps:policy && pnpm openspec:validate"
   },
   "devDependencies": {
-    "@cyclonedx/cdxgen": "12.8.4",
     "@eslint/js": "10.0.1",
     "@types/node": "24.13.3",
     "@types/react": "19.2.18",

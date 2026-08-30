@@ -62,12 +62,12 @@
 | `pnpm deps:check` | dependency-cruiser 校验应用、共享包方向和跨包深层导入 |
 | `pnpm deps:policy` | Node 标准库脚本对账所有直接第三方依赖与治理清单 |
 | `pnpm openspec:validate` | `openspec validate --all --strict --no-interactive` |
-| `pnpm sbom` | cdxgen 从现有锁定安装生成 CycloneDX JSON，不重新安装依赖 |
+| `pnpm sbom --sbom-format cyclonedx --split --out 'bom-%s.cdx.json'` | pnpm 11 从现有锁定安装为根和六个成员分别生成 CycloneDX JSON，不重新安装依赖 |
 | `pnpm verify` | 顺序组合 build、typecheck、lint、format、test、两项依赖检查与 OpenSpec 校验，首个失败即返回非零 |
 
 build 与 typecheck 在 C00 有部分重复，但分别保留“产生交付产物”和“调用方检查入口”的稳定语义；以后可在不改变脚本契约的前提下优化缓存。空的应用/包不增加 smoke test；唯一新增测试对治理检查器输入缺失字段和未登记直接依赖使用表格驱动用例，避免锁定完整错误文案。
 
-CI 使用 `.node-version`、Corepack、`pnpm install --frozen-lockfile`、`pnpm verify` 和 `pnpm sbom`，上传 SBOM 工件；不复制子命令、不启动服务、不写回锁文件。
+CI 使用 `.node-version`、Corepack、`pnpm install --frozen-lockfile`、`pnpm verify` 和上表的 pnpm 原生 SBOM 命令，上传 SBOM 工件；不复制子命令、不启动服务、不写回锁文件。
 
 ### 4. 依赖边界由三个互补机制收口
 
@@ -97,11 +97,10 @@ CI 使用 `.node-version`、Corepack、`pnpm install --frozen-lockfile`、`pnpm 
 | `typescript-eslint` | `8.68.0` | TypeScript ESLint 解析与规则 | MIT | npm 官方包 | 同上 | 不支持固定 TypeScript/ESLint |
 | `prettier` | `3.9.6` | 唯一格式化器 | MIT | npm 官方包 | 同上 | 安全问题或不支持所用语法 |
 | `dependency-cruiser` | `17.1.0` | 静态依赖边界 | MIT | npm 官方包 | 同上 | 无法识别实际模块图或维护停止；优先改用已有编译器能力 |
-| `@cyclonedx/cdxgen` | `12.8.4` | 从 pnpm 锁定工程生成 CycloneDX SBOM | Apache-2.0 | npm 官方包与 CycloneDX/cdxgen 官方仓库 | 同上；运行时禁止自动安装 | 高危漏洞、pnpm 支持失效或交付平台提供更小的等价原生生成器 |
 
 `config/dependency-policy.json` 按单包精确记录上述元数据，因此组合行在实际文件中拆开。允许许可证初始只有 `MIT` 与 `Apache-2.0`。`scripts/check-dependency-policy.mjs` 使用 Node 标准库读取根及六个成员的 `dependencies`、`devDependencies`、`optionalDependencies`、`peerDependencies`：忽略 `workspace:` 内部依赖；拒绝范围版本、未登记项、陈旧登记、缺字段和不在允许列表的许可证。
 
-未选择 `@cyclonedx/cyclonedx-npm`，因为它面向 npm；未自写 CycloneDX 序列化器，因为 cdxgen 已原生支持 pnpm，少量自研代码无法可靠覆盖完整传递依赖。cdxgen 的传递体积是已知成本，C37 若能由交付平台生成等价 SBOM，可在独立依赖演进 change 中替换。
+不增加 CycloneDX 生成依赖，也不自写序列化器；固定的 pnpm 11 已原生支持按 workspace 拆分生成 CycloneDX 1.7，能直接覆盖六个生产成员及其锁定依赖。
 
 ### 6. 离线重放边界
 
@@ -164,7 +163,7 @@ C00 归档后，上述根工具链、锁文件、CI 与中央边界配置改为�
 | 构建与公开入口 | `tsc -b`、Vite、`exports` | 编译产物可重建 | build/typecheck | 不适用 |
 | 单向边界 | references、dependency-cruiser | 规则文件版本 | 合法图通过、违规夹具失败 | 支撑四层边界，不实现专利步骤 |
 | 质量与 CI | `pnpm verify` | CI workflow | 本地与 CI 同构输出 | 不适用 |
-| 依赖治理 | policy checker、cdxgen | lockfile + policy | 缺失登记失败、SBOM 工件 | 支撑私有交付，不实现专利步骤 |
+| 依赖治理 | policy checker、pnpm 原生 SBOM | lockfile + policy | 缺失登记失败、SBOM 工件 | 支撑私有交付，不实现专利步骤 |
 | OpenSpec context | `openspec/config.yaml` | Git 版本 | 后续 instructions 与 strict validate | 后续 RI/RA 工件继承追踪规则 |
 
 ### 11. Worktree setup hook
@@ -173,7 +172,6 @@ C00 工作树继续使用已经确认的 `--setup skip`，因为根锁文件尚�
 
 ## Risks / Trade-offs
 
-- [cdxgen 的传递依赖较大] → 只在开发/CI 安装，生成时禁止自动安装；C37 可在保持 CycloneDX 输出的前提下以交付平台原生工具替换。
 - [Node/pnpm 固定补丁会增加升级动作] → 换取开发、CI 与离线环境一致；升级只改四个明确事实源并重新冻结验证。
 - [最小应用暂时没有业务行为] → C00 只验证工具链，不制造假业务；C01/C02 归档后才允许实现业务能力。
 - [依赖边界静态检查无法发现任意运行时加载] → 当前不允许动态插件；真实需求出现时由所属 change 增加有界注册机制和验证。
@@ -182,7 +180,7 @@ C00 工作树继续使用已经确认的 `--setup skip`，因为根锁文件尚�
 ## Migration Plan
 
 1. 先更新 OpenSpec context，再建立根工具链、治理文件与六个成员入口。
-2. 使用固定 pnpm 生成唯一锁文件；依次执行 frozen install、`pnpm verify`、`pnpm sbom`，并额外用临时违规夹具确认边界和治理失败路径。
+2. 使用固定 pnpm 生成唯一锁文件；依次执行 frozen install、`pnpm verify`、pnpm 原生 CycloneDX SBOM 命令，并额外用临时违规夹具确认边界和治理失败路径。
 3. 运行 `openspec-verify-change`，主 Agent审阅文件所有权、依赖元数据和无网重放证据后归档 C00。
 4. 归档后初始化 CodeGraph（需用户另行授权），配置 Orca setup hook，并用新工作树验证 frozen setup；通过后才创建 C01 工作树。
 

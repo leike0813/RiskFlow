@@ -135,15 +135,6 @@
       "source": "https://www.npmjs.com/package/dependency-cruiser",
       "offline": "内网 npm 镜像或 pnpm fetch store",
       "exitCondition": "无法识别实际模块图或维护停止"
-    },
-    {
-      "name": "@cyclonedx/cdxgen",
-      "version": "12.8.4",
-      "purpose": "从 pnpm 锁定工程生成 CycloneDX SBOM",
-      "license": "Apache-2.0",
-      "source": "https://www.npmjs.com/package/@cyclonedx/cdxgen",
-      "offline": "内网 npm 镜像或 pnpm fetch store",
-      "exitCondition": "高危漏洞、pnpm 支持失效或交付平台提供等价工具"
     }
   ]
 }

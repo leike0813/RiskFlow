@@ -22,8 +22,8 @@
 ## 5. 聚合验证、SBOM 与 CI
 
 - [x] 5.1 在根 `package.json` 补齐 design §3 的 `build`、`typecheck`、`test`、`openspec:validate` 与 `verify` 组合脚本；以每个子命令可独立运行、`pnpm verify` 顺序执行全部检查且不启动服务为条件；不得用吞错、`|| true`、自动修复或锁文件改写掩盖失败。
-- [ ] 5.2 新增 `.github/workflows/verify.yml`，只使用 `.node-version`、Corepack、`pnpm install --frozen-lockfile`、`pnpm verify`、pnpm 11 原生 CycloneDX SBOM 命令和 SBOM 工件上传；以 workflow 静态审查与本地同构命令全部通过为条件；不得复制子检查逻辑、写入凭据、启动开发服务器或访问业务外部服务。
-- [ ] 5.3 运行 `pnpm fetch --frozen-lockfile` 后执行 `pnpm install --offline --frozen-lockfile`，再运行 `pnpm sbom --sbom-format cyclonedx --split --out 'bom-%s.cdx.json'` 并检查 CycloneDX JSON 覆盖六个 workspace 成员；以无公网回退、锁文件不变、SBOM 可解析且直接依赖均有治理记录为条件；不得提交 pnpm store、registry 凭据、构建输出或生成的 SBOM。
+- [x] 5.2 新增 `.github/workflows/verify.yml`，只使用 `.node-version`、Corepack、`pnpm install --frozen-lockfile`、`pnpm verify`、pnpm 11 原生 CycloneDX SBOM 命令和 SBOM 工件上传；以 workflow 静态审查与本地同构命令全部通过为条件；不得复制子检查逻辑、写入凭据、启动开发服务器或访问业务外部服务。
+- [x] 5.3 运行 `pnpm fetch --frozen-lockfile` 后执行 `pnpm install --offline --frozen-lockfile`，再运行 `pnpm sbom --sbom-format cyclonedx --split --out 'bom-%s.cdx.json'` 并检查 CycloneDX JSON 覆盖六个 workspace 成员；以无公网回退、锁文件不变、SBOM 可解析且直接依赖均有治理记录为条件；不得提交 pnpm store、registry 凭据、构建输出或生成的 SBOM。
 
 ## 6. 交付验证
 

@@ -92,7 +92,8 @@ CI 使用 `.node-version`、Corepack、`pnpm install --frozen-lockfile`、`pnpm 
 | `vite` | `8.2.2` | Web 生产构建 | MIT | npm 官方包 | 同上 | 安全问题、Node/React 插件不兼容或 C10 构建门槛不达标 |
 | `@vitejs/plugin-react` | `6.1.1` | Vite React 转换 | MIT | npm 官方包 | 同上 | 与固定 Vite/React 不兼容 |
 | `vitest` | `4.1.11` | 统一单元测试入口 | MIT | npm 官方包 | 同上 | 安全/兼容问题或稳定测试能力无法覆盖 |
-| `eslint` / `@eslint/js` | `10.9.1` | Flat Config 与基础静态规则 | MIT | npm 官方包 | 同上 | 安全问题或与 typescript-eslint 不兼容 |
+| `eslint` | `10.9.1` | Flat Config 执行器 | MIT | npm 官方包 | 同上 | 安全问题或与 typescript-eslint 不兼容 |
+| `@eslint/js` | `10.0.1` | ESLint JavaScript 基础规则 | MIT | npm 官方包 | 同上 | 安全问题或与 ESLint Flat Config 不兼容 |
 | `typescript-eslint` | `8.68.0` | TypeScript ESLint 解析与规则 | MIT | npm 官方包 | 同上 | 不支持固定 TypeScript/ESLint |
 | `prettier` | `3.9.6` | 唯一格式化器 | MIT | npm 官方包 | 同上 | 安全问题或不支持所用语法 |
 | `dependency-cruiser` | `17.1.0` | 静态依赖边界 | MIT | npm 官方包 | 同上 | 无法识别实际模块图或维护停止；优先改用已有编译器能力 |

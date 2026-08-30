@@ -27,5 +27,5 @@
 
 ## 6. 交付验证
 
-- [ ] 6.1 执行 `pnpm verify`、`git diff --check` 和 `openspec validate establish-openspec-engineering-baseline --strict --no-interactive`，逐项对账 proposal/spec/design 的文件所有权、Non-goals 和验收场景；以全部命令通过、无 `demo/**`/`references/**`/`.scratch/**` 改动且 `tasks.md` 状态真实为条件；不得扩大到 C01/C02、提交代码或启动开发服务器。
-- [ ] 6.2 使用 `openspec-verify-change` 审核实现与工件一致性，保存 frozen install、边界失败夹具、治理失败测试、offline install、SBOM 和 CI 同构命令的验证摘要；以 verify 无 CRITICAL/HIGH 遗留为条件；归档、CodeGraph 初始化和 Orca setup hook 配置留给主 Agent 在集成审阅后执行。
+- [x] 6.1 执行 `pnpm verify`、`git diff --check` 和 `openspec validate establish-openspec-engineering-baseline --strict --no-interactive`，逐项对账 proposal/spec/design 的文件所有权、Non-goals 和验收场景；以全部命令通过、无 `demo/**`/`references/**`/`.scratch/**` 改动且 `tasks.md` 状态真实为条件；不得扩大到 C01/C02、提交代码或启动开发服务器。
+- [x] 6.2 使用 `openspec-verify-change` 审核实现与工件一致性，保存 frozen install、边界失败夹具、治理失败测试、offline install、SBOM 和 CI 同构命令的验证摘要；以 verify 无 CRITICAL/HIGH 遗留为条件；归档、CodeGraph 初始化和 Orca setup hook 配置留给主 Agent 在集成审阅后执行。

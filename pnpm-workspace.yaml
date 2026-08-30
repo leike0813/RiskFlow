@@ -1,0 +1,7 @@
+packages:
+  - apps/web
+  - apps/api
+  - apps/worker
+  - packages/contracts
+  - packages/core
+  - packages/adapters

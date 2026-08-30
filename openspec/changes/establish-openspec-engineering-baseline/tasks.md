@@ -1,6 +1,6 @@
 ## 1. OpenSpec 项目约束
 
-- [ ] 1.1 按 design §7 修改 `openspec/config.yaml`，写入当前技术栈、四层边界、RI/RA 追踪、共享契约、测试及 proposal/specs/design/tasks/apply/archive 规则；以 `openspec validate --all --strict --no-interactive` 和后续工件 instructions 能返回项目 context 为通过条件；不得复制完整专利正文、39-change 路线或修改 `openspec/changes/**` 既有工件。
+- [x] 1.1 按 design §7 修改 `openspec/config.yaml`，写入当前技术栈、四层边界、RI/RA 追踪、共享契约、测试及 proposal/specs/design/tasks/apply/archive 规则；以 `openspec validate --all --strict --no-interactive` 和后续工件 instructions 能返回项目 context 为通过条件；不得复制完整专利正文、39-change 路线或修改 `openspec/changes/**` 既有工件。
 
 ## 2. 根 workspace 与冻结依赖
 

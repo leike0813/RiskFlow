@@ -1,32 +1,26 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+context: |
+  RiskFlow 当前以中文交付，生产栈为 Node.js 24、pnpm、TypeScript；生产 workspace 仅包含 apps/web、apps/api、apps/worker 与 packages/contracts、packages/core、packages/adapters。
+  四层边界固定为数据接入层、知识建模层、智能推理层、应用输出层，跨层通过显式接口契约沟通。
+  识别与评估分别沿 RI-S1–RI-S6、RA-S1–RA-S7 追踪；共享 Schema 是唯一事实源，版本、证据定位与审计信息贯穿可重放链路。
+  Agent-native 任务仅处理受限语义工作；Schema 校验、P/C 计算、风险矩阵、阈值判断、持久化与版本发布由确定性领域逻辑负责。测试验证稳定可观察行为，不锁定提示词或内部实现。
+  配置只描述当前有效约束，不复制完整专利正文、变更历史或 39-change 路线。
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+rules:
+  proposal:
+    - 明确范围、依赖、所有权、RI/RA 追踪和依赖治理。
+  specs:
+    - 场景描述可观察行为及适用的失败、权限、版本和幂等边界。
+  design:
+    - 固定接口、Schema、状态、持久化、权限、错误、可观测性、迁移、文件所有权与 RI/RA 追踪。
+  tasks:
+    - 写明目标文件、前置输入、产物、验证命令和禁止修改区。
 
-# Per-operation guidance (optional)
-# Add advisory guidance for how apply and archive work should be conducted.
-# This is separate from artifact rules above.
-# Example:
-#   operations:
-#     apply:
-#       guidance:
-#         - Keep test summaries concise
-#     archive:
-#       guidance:
-#         - Summarize the archive outcome before finishing
+operations:
+  apply:
+    guidance:
+      - 仅使用已归档 change 的直接依赖，并执行最小必要验证。
+  archive:
+    guidance:
+      - 归档前必须完成 verify、同步主 specs，并确认无活动下游引用未归档契约。

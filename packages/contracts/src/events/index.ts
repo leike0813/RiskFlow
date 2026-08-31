@@ -5,7 +5,6 @@ import {
   ApplicabilityMetadataSnapshotRefV1Schema,
   AssessmentInputSnapshotRefV1Schema,
   AssessmentPreparationSnapshotRefV1Schema,
-  AssessmentRunResultRefV1Schema,
   AuthorizationContextRefV1Schema,
   AuditTrailRefV1Schema,
   CalibrationSuggestionRefV1Schema,
@@ -16,7 +15,6 @@ import {
   FeedbackRefV1Schema,
   IdentificationInputSnapshotRefV1Schema,
   IdentificationPreparationSnapshotRefV1Schema,
-  IdentificationRunResultRefV1Schema,
   KnowledgeReleaseRefV1Schema,
   MonitoringSnapshotRefV1Schema,
   NotificationIntentRefV1Schema,
@@ -50,7 +48,7 @@ export const DomainEventMetadataV1Schema = z.strictObject({
 });
 export type DomainEventMetadataV1 = z.infer<typeof DomainEventMetadataV1Schema>;
 
-const eventSchema = <const T extends string>(eventType: T, payload: z.ZodType) =>
+const eventSchema = <const T extends string, const P extends z.ZodType>(eventType: T, payload: P) =>
   DomainEventMetadataV1Schema.extend({ eventType: z.literal(eventType), payload });
 
 const InputsReadyPayloadV1Schema = z.strictObject({
@@ -94,7 +92,7 @@ export const DomainEventV1Schema = z.discriminatedUnion("eventType", [
     z.strictObject({
       standardizedRiskRecordRef: StandardizedRiskRecordRefV1Schema,
       identificationInputSnapshotRef: IdentificationInputSnapshotRefV1Schema,
-      identificationRunRef: IdentificationRunResultRefV1Schema,
+      identificationRunRef: WorkflowRunRefV1Schema,
     }),
   ),
   eventSchema("engineering.assessment-input-changed.v1", AssessmentInputChangedPayloadV1Schema),
@@ -115,7 +113,7 @@ export const DomainEventV1Schema = z.discriminatedUnion("eventType", [
       riskInputRef: RiskInputVersionRefV1Schema,
       assessmentInputSnapshotRef: AssessmentInputSnapshotRefV1Schema,
       assessmentRecordRef: RiskAssessmentRecordRefV1Schema,
-      assessmentRunRef: AssessmentRunResultRefV1Schema,
+      assessmentRunRef: WorkflowRunRefV1Schema,
     }),
   ),
   eventSchema(

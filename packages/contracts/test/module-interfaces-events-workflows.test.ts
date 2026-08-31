@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  AgentTaskResultRefV1Schema,
   AgentTaskTypeV1Schema,
   AssessmentBasisReleaseSetRefV1Schema,
   AssessmentEvaluationCommandV1Schema,
+  AssessmentEvaluationResultV1Schema,
   AssessmentPreparationCommandV1Schema,
+  AssessmentPreparationResultV1Schema,
   AssessmentPreparationSnapshotRefV1Schema,
   AssessmentRunResultRefV1Schema,
   AuthorizationContextRefV1Schema,
@@ -15,16 +18,19 @@ import {
   ContractReferenceV1Schema,
   DomainEventRefV1Schema,
   EngineeringDataCommandV1Schema,
+  EngineeringDataApplySuccessV1Schema,
   EngineeringDataQueryV1Schema,
   EngineeringFreezeCommandV1Schema,
   ExternalRiskEventRefV1Schema,
   IdentificationAnalysisCommandV1Schema,
+  IdentificationAnalysisSuccessV1Schema,
   IdentificationFinalizationCommandV1Schema,
   IdentificationInputSnapshotRefV1Schema,
   IdentificationPlanCommandV1Schema,
   IdentificationPreparationSnapshotRefV1Schema,
   KnowledgeGovernanceCommandV1Schema,
   KnowledgeResolutionCommandV1Schema,
+  KnowledgeResolutionSuccessV1Schema,
   KnowledgeRetrievalQueryV1Schema,
   ModuleCapabilityV1Schema,
   ModuleErrorV1Schema,
@@ -34,6 +40,8 @@ import {
   RecommendationCommandV1Schema,
   ResumeAgentTaskCommandV1Schema,
   ResumeWorkflowRunCommandV1Schema,
+  ReviewDecisionCommandV1Schema,
+  ReviewDecisionV1Schema,
   ReviewRequestV1Schema,
   RiskAssessmentRecordRefV1Schema,
   RiskInputVersionRefV1Schema,
@@ -42,6 +50,7 @@ import {
   StartWorkflowRunCommandV1Schema,
   TraceQueryV1Schema,
   WarningResponseRecordCommandV1Schema,
+  WarningResponseRecordSuccessV1Schema,
   WorkflowRunStatusV1Schema,
 } from "../src/ports/index.js";
 import { APPLICABILITY_METADATA_DIMENSION_VALUES } from "../src/vocabulary/index.js";
@@ -50,6 +59,7 @@ import {
   AssessmentGraphStateV1Schema,
   AssessmentInputSnapshotV1Schema,
   AssessmentPreparationSnapshotV1Schema,
+  AssessmentStageResultV1Schema,
   AssessmentStageV1Schema,
   IdentificationGraphStateV1Schema,
   IdentificationInputSnapshotV1Schema,
@@ -73,6 +83,7 @@ const projectRevisionRef = version("project-revision");
 const spatialScopeRef = version("spatial-scope");
 const sourceVersionRef = version("source-version");
 const monitoringSnapshotRef = version("monitoring-snapshot");
+const applicabilityMetadataSnapshotRef = version("applicability-metadata-snapshot");
 const policyRef = { entityId: "policy", versionId: "v1" };
 
 const agentTaskRef = {
@@ -86,6 +97,7 @@ const agentTaskRef = {
   incrementSchemaRef: { entityId: "increment", versionId: "v1" },
   validationPolicyRef: { entityId: "validation", versionId: "v1" },
 };
+const interactiveAgentTaskRef = { ...agentTaskRef, triggerMode: "interactive" };
 
 const agentTaskResultRef = {
   ...version("agent-task-result"),
@@ -262,6 +274,7 @@ describe("module interface contracts", () => {
           riskInput,
           projectRevisionRef,
           spatialScopeRef,
+          applicabilityMetadataSnapshotRef,
         }),
       ],
       [
@@ -570,6 +583,111 @@ describe("module interface contracts", () => {
     ).toBe(false);
   });
 
+  it("keeps method success results aligned with every declared branch", () => {
+    const applyResults = [
+      {
+        kind: "register-source-delivery",
+        sourceDeliveryRef: version("source-delivery"),
+        sourceVersionRef: version("source-version"),
+      },
+      {
+        kind: "register-monitoring-batch",
+        monitoringBatchRef: version("monitoring-batch"),
+      },
+      {
+        kind: "register-external-risk-event",
+        externalRiskEventRef: version("external-risk-event"),
+      },
+    ];
+    for (const result of applyResults) {
+      expect(EngineeringDataApplySuccessV1Schema.safeParse(result).success).toBe(true);
+    }
+    expect(
+      EngineeringDataApplySuccessV1Schema.safeParse({
+        kind: "register-monitoring-batch",
+        sourceDeliveryRef: version("source-delivery"),
+        sourceVersionRef: version("source-version"),
+      }).success,
+    ).toBe(false);
+
+    expect(
+      KnowledgeResolutionSuccessV1Schema.safeParse({
+        kind: "identification-basis",
+        processModelReleaseRef: version("process-model-release"),
+        riskMechanismReleaseRef: version("risk-mechanism-release"),
+        retrievalEvidenceBaseReleaseRef: version("retrieval-evidence-base-release"),
+        identificationPolicySetRef: version("identification-policy-set"),
+      }).success,
+    ).toBe(true);
+    expect(
+      KnowledgeResolutionSuccessV1Schema.safeParse({
+        kind: "assessment-basis",
+        assessmentBasisReleaseSetRef: version("assessment-basis-release-set"),
+      }).success,
+    ).toBe(true);
+    expect(
+      KnowledgeResolutionSuccessV1Schema.safeParse({
+        kind: "assessment-basis",
+        processModelReleaseRef: version("process-model-release"),
+      }).success,
+    ).toBe(false);
+
+    expect(
+      IdentificationAnalysisSuccessV1Schema.safeParse({
+        kind: "assemble-and-infer",
+        modelContextArtifactSetRef: version("model-context-artifact-set"),
+        candidateSetRef: version("identification-candidate-set"),
+      }).success,
+    ).toBe(true);
+    expect(
+      IdentificationAnalysisSuccessV1Schema.safeParse({
+        kind: "repair-and-validate",
+        validatedCandidateSetRef: version("validated-candidate-set"),
+      }).success,
+    ).toBe(true);
+    expect(
+      IdentificationAnalysisSuccessV1Schema.safeParse({
+        kind: "repair-and-validate",
+        candidateSetRef: version("identification-candidate-set"),
+      }).success,
+    ).toBe(false);
+
+    expect(
+      WarningResponseRecordSuccessV1Schema.safeParse({
+        kind: "deviation",
+        deviationRecordRef: version("deviation-record"),
+      }).success,
+    ).toBe(true);
+    expect(
+      WarningResponseRecordSuccessV1Schema.safeParse({
+        kind: "unavailable",
+        reasonCode: "forecast-not-created",
+      }).success,
+    ).toBe(true);
+    expect(
+      WarningResponseRecordSuccessV1Schema.safeParse({
+        kind: "unavailable",
+      }).success,
+    ).toBe(false);
+
+    expect(
+      AssessmentPreparationResultV1Schema.safeParse({
+        kind: "succeeded",
+        result: { assessmentInputSnapshotRef: assessmentInputRef },
+      }).success,
+    ).toBe(true);
+    expect(
+      AssessmentEvaluationResultV1Schema.safeParse({
+        kind: "succeeded",
+        result: {
+          indicatorActualValueSetRef: version("indicator-actual-value-set"),
+          assessmentDecisionArtifactRef: version("assessment-decision-artifact"),
+          assessmentRecordRef,
+        },
+      }).success,
+    ).toBe(true);
+  });
+
   it("application ports: keeps lifecycle inputs closed and returns references only", () => {
     const startTask = command("start-task", {
       taskType: "retrieval-review",
@@ -610,25 +728,28 @@ describe("module interface contracts", () => {
     expect(
       ConfirmAgentCommandV1Schema.safeParse(
         command("confirm-command", {
-          agentTaskRef,
+          agentTaskRef: interactiveAgentTaskRef,
           commandProposalRef: version("command-proposal"),
           confirmation: "confirmed",
         }),
       ).success,
     ).toBe(true);
 
+    const assessStart = command("start-run", {
+      entryMode: "assess",
+      graphVersion: policyRef,
+      retryPolicyRef: policyRef,
+      riskInput: externalRiskInput,
+      applicabilityMetadataSnapshotRef,
+      spatialScopeRef,
+    });
+    expect(StartWorkflowRunCommandV1Schema.safeParse(assessStart).success).toBe(true);
     expect(
-      StartWorkflowRunCommandV1Schema.safeParse(
-        command("start-run", {
-          entryMode: "assess",
-          graphVersion: policyRef,
-          retryPolicyRef: policyRef,
-          riskInput: externalRiskInput,
-          applicabilityMetadataSnapshotRef: version("applicability-metadata-snapshot"),
-          spatialScopeRef,
-        }),
-      ).success,
-    ).toBe(true);
+      StartWorkflowRunCommandV1Schema.safeParse({
+        ...assessStart,
+        payload: { ...assessStart.payload, applicabilityMetadataSnapshotRef: undefined },
+      }).success,
+    ).toBe(false);
     expect(
       ResumeWorkflowRunCommandV1Schema.safeParse(
         command("resume-run", {
@@ -674,18 +795,59 @@ describe("module interface contracts", () => {
         }),
       ).success,
     ).toBe(true);
+
+    const sourceCommand = command("register-source-delivery", {
+      sourceConnectionRef: { entityId: "connection-1", versionId: "v1" },
+      deliveryKey: "delivery-1",
+      sourceArtifactRef: version("content-artifact", "source-artifact"),
+      metadataArtifactRef: version("content-artifact", "metadata-artifact"),
+      occurredAt: now,
+    });
+    expect(
+      EngineeringDataCommandV1Schema.safeParse({
+        ...sourceCommand,
+        authorization: {
+          ...authorization,
+          grantedCapabilities: authorization.grantedCapabilities.filter(
+            (capability) => capability !== "engineering-data.write",
+          ),
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      EngineeringDataCommandV1Schema.safeParse({
+        ...sourceCommand,
+        actorId: "different-actor",
+      }).success,
+    ).toBe(false);
   });
 
   it("uses three invocation forms and an eight-branch closed error", () => {
     for (const invocation of [
       { kind: "human" },
-      { kind: "system", systemActorId: "system-1", reasonCode: "event-trigger" },
-      { kind: "agent-task", agentTaskRef },
+      {
+        kind: "system",
+        systemActorId: "system-1",
+        reasonCode: "event-trigger",
+        causalRunRef: workflowRunRef,
+      },
+      { kind: "agent-task", agentTaskRef, causalRunRef: workflowRunRef },
     ]) {
-      expect(AuthorizationContextV1Schema.safeParse({ ...authorization, invocation }).success).toBe(
-        true,
-      );
+      const { causalRunRef, ...invocationValue } = invocation;
+      expect(
+        AuthorizationContextV1Schema.safeParse({
+          ...authorization,
+          ...(causalRunRef === undefined ? {} : { causalRunRef }),
+          invocation: invocationValue,
+        }).success,
+      ).toBe(true);
     }
+    expect(
+      AuthorizationContextV1Schema.safeParse({
+        ...authorization,
+        invocation: { kind: "system", systemActorId: "system-1", reasonCode: "event-trigger" },
+      }).success,
+    ).toBe(false);
     expect(
       AuthorizationContextV1Schema.safeParse({
         ...authorization,
@@ -776,6 +938,115 @@ describe("module interface contracts", () => {
     ).toBe(false);
   });
 
+  it("closes review decisions by subject and keeps agent results non-empty", () => {
+    const reviewDecisions = [
+      { reviewType: "identification-group", kind: "approve-unchanged" },
+      {
+        reviewType: "identification-group",
+        kind: "approve-revised-candidate",
+        revisedCandidateRef: version("identification-candidate-set"),
+      },
+      { reviewType: "identification-group", kind: "confirm-merge" },
+      { reviewType: "identification-group", kind: "keep-separate" },
+      { reviewType: "identification-group", kind: "reject" },
+      { reviewType: "identification-group", kind: "return-upstream" },
+      { reviewType: "knowledge-revision", kind: "approve-publication" },
+      { reviewType: "knowledge-revision", kind: "reject" },
+      { reviewType: "knowledge-revision", kind: "return-for-revision" },
+      { reviewType: "rule-conflict", kind: "approve-publication" },
+      { reviewType: "rule-conflict", kind: "reject" },
+      { reviewType: "rule-conflict", kind: "return-for-revision" },
+      {
+        reviewType: "response-candidate",
+        kind: "submit-revised-candidate",
+        revisedCandidateRef: version("recommendation-candidate"),
+      },
+      { reviewType: "response-candidate", kind: "return-upstream" },
+      { reviewType: "response-candidate", kind: "reject" },
+      { reviewType: "calibration-suggestion", kind: "approve-draft-creation" },
+      { reviewType: "calibration-suggestion", kind: "reject" },
+      { reviewType: "calibration-suggestion", kind: "return-for-revision" },
+    ];
+    for (const decision of reviewDecisions) {
+      expect(ReviewDecisionV1Schema.safeParse(decision).success).toBe(true);
+    }
+
+    const validReviewDecision = command("decide-review", {
+      reviewTaskRef,
+      targetRef: reviewTaskRef.targetRef,
+      decision: { reviewType: "identification-group", kind: "reject" },
+      reasonCode: "reviewed",
+    });
+    expect(ReviewDecisionCommandV1Schema.safeParse(validReviewDecision).success).toBe(true);
+    expect(
+      ReviewDecisionCommandV1Schema.safeParse({
+        ...validReviewDecision,
+        payload: {
+          ...validReviewDecision.payload,
+          decision: { reviewType: "knowledge-revision", kind: "reject" },
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      ReviewDecisionCommandV1Schema.safeParse({
+        ...validReviewDecision,
+        payload: {
+          ...validReviewDecision.payload,
+          targetRef: version("knowledge-revision"),
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      ReviewRequestV1Schema.safeParse(
+        command("request-review", {
+          reviewType: "knowledge-revision",
+          targetRef: reviewTaskRef.targetRef,
+          validationSnapshotRef: version("validation-snapshot"),
+          evidenceSnapshotRef: version("evidence-snapshot"),
+          waitingRunRef: workflowRunRef,
+          reviewPolicyRef: policyRef,
+        }),
+      ).success,
+    ).toBe(false);
+
+    expect(AgentTaskResultRefV1Schema.safeParse(agentTaskResultRef).success).toBe(true);
+    expect(
+      AgentTaskResultRefV1Schema.safeParse({
+        ...agentTaskResultRef,
+        incrementRef: undefined,
+      }).success,
+    ).toBe(false);
+    expect(
+      AgentTaskResultRefV1Schema.safeParse({
+        ...agentTaskResultRef,
+        candidateRef: version("recommendation-candidate"),
+      }).success,
+    ).toBe(false);
+    expect(
+      AgentTaskResultRefV1Schema.safeParse({
+        ...agentTaskResultRef,
+        status: "failed",
+      }).success,
+    ).toBe(false);
+    const responseAgentTaskRef = { ...agentTaskRef, taskType: "response-recommendation" };
+    expect(
+      AgentTaskResultRefV1Schema.safeParse({
+        ...agentTaskResultRef,
+        agentTaskRef: responseAgentTaskRef,
+        incrementRef: undefined,
+        candidateRef: version("recommendation-candidate"),
+      }).success,
+    ).toBe(true);
+    expect(
+      AgentTaskResultRefV1Schema.safeParse({
+        ...agentTaskResultRef,
+        agentTaskRef: responseAgentTaskRef,
+        incrementRef: undefined,
+        candidateRef: version("calibration-suggestion"),
+      }).success,
+    ).toBe(false);
+  });
+
   it("enforces versioned risk input XOR", () => {
     expect(RiskInputVersionRefV1Schema.safeParse(riskInput).success).toBe(true);
     expect(RiskInputVersionRefV1Schema.safeParse(externalRiskInput).success).toBe(true);
@@ -814,7 +1085,7 @@ describe("module interface contracts", () => {
         payload: {
           standardizedRiskRecordRef: version("standardized-risk-record"),
           identificationInputSnapshotRef: identificationInputRef,
-          identificationRunRef: version("identification-run-result"),
+          identificationRunRef: workflowRunRef,
         },
       },
       {
@@ -842,7 +1113,7 @@ describe("module interface contracts", () => {
           riskInputRef: riskInput,
           assessmentInputSnapshotRef: assessmentInputRef,
           assessmentRecordRef,
-          assessmentRunRef: version("assessment-run-result"),
+          assessmentRunRef: workflowRunRef,
         },
       },
       {
@@ -892,6 +1163,26 @@ describe("module interface contracts", () => {
       expect(DomainEventV1Schema.safeParse({ ...eventMetadata, ...event }).success).toBe(true);
     }
     expect(
+      DomainEventV1Schema.safeParse({
+        ...eventMetadata,
+        ...events[1],
+        payload: {
+          ...events[1].payload,
+          identificationRunRef: version("identification-run-result"),
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      DomainEventV1Schema.safeParse({
+        ...eventMetadata,
+        ...events[4],
+        payload: {
+          ...events[4].payload,
+          assessmentRunRef: version("assessment-run-result"),
+        },
+      }).success,
+    ).toBe(false);
+    expect(
       DomainEventRefV1Schema.safeParse({
         kind: "domain-event",
         eventId: "event-1",
@@ -921,7 +1212,7 @@ describe("module interface contracts", () => {
     expect(new Set(assessmentStages).size).toBe(10);
     const identificationStageOutputs = [
       { preparationSnapshotRef: identificationPreparationRef },
-      { inputSnapshotRef: identificationInputRef, reviewTaskRefs: [] },
+      { resultKind: "ready", inputSnapshotRef: identificationInputRef },
       {
         workPlanRef: version("identification-work-plan"),
         plannedWorkItemCount: 1,
@@ -942,9 +1233,79 @@ describe("module interface contracts", () => {
         ).success,
       ).toBe(true);
     }
-    for (const stage of assessmentStages) {
+    const assessmentStageOutputs = [
+      { preparationSnapshotRef: assessmentPreparationRef },
+      {
+        resultKind: "ready",
+        assessmentBasisReleaseSetRef: version("assessment-basis-release-set"),
+      },
+      { assessmentInputSnapshotRef: assessmentInputRef },
+      { indicatorActualValueSetRef: version("indicator-actual-value-set") },
+      { assessmentDecisionArtifactRef: version("assessment-decision-artifact") },
+      { assessmentRecordRef },
+      { warningRecordRefs: [], warningResponseTaskRefs: [], notificationIntentRefs: [] },
+      {
+        measureQueryResultRef: version("knowledge-query-result"),
+        agentTaskRefs: [],
+        recommendationCandidateRefs: [],
+      },
+      {
+        resultKind: "recorded",
+        responseRecommendationRef: version("response-recommendation"),
+      },
+      { assessmentRunResultRef: version("assessment-run-result") },
+    ];
+    for (const [index, stage] of assessmentStages.entries()) {
       expect(AssessmentStageV1Schema.safeParse(stage).success).toBe(true);
+      expect(
+        AssessmentStageResultV1Schema.safeParse(stageResult(stage, assessmentStageOutputs[index]))
+          .success,
+      ).toBe(true);
     }
+    expect(
+      IdentificationStageResultV1Schema.safeParse(
+        stageResult("I1", {
+          resultKind: "waiting",
+          waitingRef: { kind: "review", reviewTaskRef },
+        }),
+      ).success,
+    ).toBe(true);
+    expect(
+      IdentificationStageResultV1Schema.safeParse(
+        stageResult("I1", { inputSnapshotRef: identificationInputRef }),
+      ).success,
+    ).toBe(false);
+    expect(
+      AssessmentStageResultV1Schema.safeParse(
+        stageResult("A1", {
+          resultKind: "waiting",
+          waitingRef: {
+            kind: "knowledge-preparation",
+            knowledgePreparationTaskRef: version("knowledge-preparation-task"),
+          },
+        }),
+      ).success,
+    ).toBe(true);
+    expect(
+      AssessmentStageResultV1Schema.safeParse(stageResult("A1", { resultKind: "ready" })).success,
+    ).toBe(false);
+    expect(
+      AssessmentStageResultV1Schema.safeParse(
+        stageResult("A8", {
+          resultKind: "recorded",
+          responseRecommendationRef: version("response-recommendation"),
+          reviewTaskRef,
+        }),
+      ).success,
+    ).toBe(false);
+    expect(
+      AssessmentStageResultV1Schema.safeParse(
+        stageResult("A4", {
+          assessmentDecisionArtifactRef: version("assessment-decision-artifact"),
+          agentTaskRefs: [agentTaskRef],
+        }),
+      ).success,
+    ).toBe(false);
     expect(IdentificationInputSnapshotRefV1Schema.safeParse(identificationInputRef).success).toBe(
       true,
     );
@@ -977,6 +1338,7 @@ describe("module interface contracts", () => {
       inputSnapshotRef: identificationInputRef,
       status: "waiting",
       stage: "I7",
+      waitingRef: { kind: "review", reviewTaskRef },
       agentTaskRefs: [agentTaskRef],
       acceptedRiskRecordRefs: [version("standardized-risk-record")],
       reviewTaskRefs: [reviewTaskRef],
@@ -984,6 +1346,12 @@ describe("module interface contracts", () => {
       failedWorkItemRefs: [],
     };
     expect(IdentificationGraphStateV1Schema.safeParse(identificationState).success).toBe(true);
+    expect(
+      IdentificationGraphStateV1Schema.safeParse({
+        ...identificationState,
+        waitingRef: undefined,
+      }).success,
+    ).toBe(false);
     expect(
       IdentificationGraphStateV1Schema.safeParse({
         ...identificationState,
@@ -1031,13 +1399,21 @@ describe("module interface contracts", () => {
       authorizationContextRef,
       status: "completed",
       stage: "result-summary",
-      identificationRunRef: version("identification-run-result"),
-      assessmentRunRefs: [version("assessment-run-result")],
+      identificationRunRef: workflowRunRef,
+      assessmentRunRefs: [workflowRunRef],
       waitingRefs: [],
       resultRef: runResultRef,
     };
     expect(RiskFlowStageV1Schema.safeParse("result-summary").success).toBe(true);
     expect(RiskFlowGraphStateV1Schema.safeParse(topState).success).toBe(true);
+    expect(
+      RiskFlowGraphStateV1Schema.safeParse({
+        ...topState,
+        status: "waiting",
+        resultRef: undefined,
+        waitingRefs: [],
+      }).success,
+    ).toBe(false);
     expect(
       RiskFlowGraphStateV1Schema.safeParse({
         ...topState,
@@ -1093,6 +1469,7 @@ describe("module interface contracts", () => {
         projectRevisionRef,
         spatialScopeRef,
         riskInput,
+        applicabilityMetadataSnapshotRef,
         sourceEvidenceReferences: [
           {
             locator: { sourceSegmentId: "资料ID-章节ID-资料段ID" },

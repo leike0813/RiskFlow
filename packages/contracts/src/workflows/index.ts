@@ -32,7 +32,6 @@ import {
   IdentificationWorkPlanRefV1Schema,
   IdentificationPolicySetRefV1Schema,
   IndicatorActualValueSetRefV1Schema,
-  KnowledgePreparationTaskRefV1Schema,
   KnowledgeQueryResultRefV1Schema,
   MergePlanRefV1Schema,
   ModelContextArtifactSetRefV1Schema,
@@ -118,7 +117,7 @@ export const AssessmentPreparationSnapshotV1Schema = z.strictObject({
   projectRevisionRef: ProjectRevisionRefV1Schema,
   spatialScopeRef: SpatialScopeRefV1Schema,
   riskInput: RiskInputVersionRefV1Schema,
-  applicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema.optional(),
+  applicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
   monitoringSnapshotRef: MonitoringSnapshotRefV1Schema.optional(),
   sourceEvidenceReferences: z.array(EvidenceReferenceSchema).min(1),
   entryMode: WorkflowEntryModeV1Schema,
@@ -242,6 +241,21 @@ const identificationStageBase = {
   recordedAt: IsoDateTimeSchema,
 };
 
+const IdentificationI1StageResultV1Schema = z.discriminatedUnion("resultKind", [
+  z.strictObject({
+    ...identificationStageBase,
+    stage: z.literal("I1"),
+    resultKind: z.literal("ready"),
+    inputSnapshotRef: IdentificationInputSnapshotRefV1Schema,
+  }),
+  z.strictObject({
+    ...identificationStageBase,
+    stage: z.literal("I1"),
+    resultKind: z.literal("waiting"),
+    waitingRef: WaitingRefV1Schema,
+  }),
+]);
+
 export const IdentificationStageResultV1Schema = z.discriminatedUnion("stage", [
   z.strictObject({
     ...identificationStageBase,
@@ -249,13 +263,7 @@ export const IdentificationStageResultV1Schema = z.discriminatedUnion("stage", [
     preparationSnapshotRef: IdentificationPreparationSnapshotRefV1Schema,
     workflowErrorRef: WorkflowErrorRefV1Schema.optional(),
   }),
-  z.strictObject({
-    ...identificationStageBase,
-    stage: z.literal("I1"),
-    inputSnapshotRef: IdentificationInputSnapshotRefV1Schema.optional(),
-    knowledgePreparationTaskRef: KnowledgePreparationTaskRefV1Schema.optional(),
-    reviewTaskRefs: z.array(ReviewTaskRefV1Schema),
-  }),
+  IdentificationI1StageResultV1Schema,
   z.strictObject({
     ...identificationStageBase,
     stage: z.literal("I2"),
@@ -315,19 +323,43 @@ const assessmentStageBase = {
   recordedAt: IsoDateTimeSchema,
 };
 
-export const AssessmentStageResultV1Schema = z.union([
+const AssessmentA1StageResultV1Schema = z.discriminatedUnion("resultKind", [
+  z.strictObject({
+    ...assessmentStageBase,
+    stage: z.literal("A1"),
+    resultKind: z.literal("ready"),
+    assessmentBasisReleaseSetRef: AssessmentBasisReleaseSetRefV1Schema,
+  }),
+  z.strictObject({
+    ...assessmentStageBase,
+    stage: z.literal("A1"),
+    resultKind: z.literal("waiting"),
+    waitingRef: WaitingRefV1Schema,
+  }),
+]);
+
+const AssessmentA8StageResultV1Schema = z.discriminatedUnion("resultKind", [
+  z.strictObject({
+    ...assessmentStageBase,
+    stage: z.literal("A8"),
+    resultKind: z.literal("recorded"),
+    responseRecommendationRef: ResponseRecommendationRefV1Schema,
+  }),
+  z.strictObject({
+    ...assessmentStageBase,
+    stage: z.literal("A8"),
+    resultKind: z.literal("waiting-review"),
+    reviewTaskRef: ReviewTaskRefV1Schema,
+  }),
+]);
+
+export const AssessmentStageResultV1Schema = z.discriminatedUnion("stage", [
   z.strictObject({
     ...assessmentStageBase,
     stage: z.literal("A0"),
     preparationSnapshotRef: AssessmentPreparationSnapshotRefV1Schema,
   }),
-  z.strictObject({
-    ...assessmentStageBase,
-    stage: z.literal("A1"),
-    assessmentBasisReleaseSetRef: AssessmentBasisReleaseSetRefV1Schema.optional(),
-    knowledgePreparationTaskRef: KnowledgePreparationTaskRefV1Schema.optional(),
-    reviewTaskRefs: z.array(ReviewTaskRefV1Schema),
-  }),
+  AssessmentA1StageResultV1Schema,
   z.strictObject({
     ...assessmentStageBase,
     stage: z.literal("A2"),
@@ -362,18 +394,7 @@ export const AssessmentStageResultV1Schema = z.union([
     agentTaskRefs: z.array(AgentTaskRefV1Schema),
     recommendationCandidateRefs: z.array(RecommendationCandidateRefV1Schema),
   }),
-  z.strictObject({
-    ...assessmentStageBase,
-    stage: z.literal("A8"),
-    resultKind: z.literal("recorded"),
-    responseRecommendationRef: ResponseRecommendationRefV1Schema,
-  }),
-  z.strictObject({
-    ...assessmentStageBase,
-    stage: z.literal("A8"),
-    resultKind: z.literal("waiting-review"),
-    reviewTaskRef: ReviewTaskRefV1Schema,
-  }),
+  AssessmentA8StageResultV1Schema,
   z.strictObject({
     ...assessmentStageBase,
     stage: z.literal("A9"),
@@ -387,14 +408,34 @@ const lifecycleStateRefine = (
     status: string;
     resultRef?: unknown;
     lastErrorRef?: unknown;
+    waitingRef?: unknown;
+    waitingRefs?: unknown[];
   },
   context: z.RefinementCtx,
 ) => {
-  if (state.status === "waiting" && state.resultRef !== undefined) {
+  const hasWaitingRef =
+    state.waitingRef !== undefined ||
+    (state.waitingRefs !== undefined && state.waitingRefs.length > 0);
+  if (state.status === "waiting") {
+    if (!hasWaitingRef) {
+      context.addIssue({
+        code: "custom",
+        path: ["waitingRef"],
+        message: "waiting state requires a waiting reference",
+      });
+    }
+    if (state.resultRef !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["resultRef"],
+        message: "waiting state cannot have a result",
+      });
+    }
+  } else if (state.waitingRef !== undefined) {
     context.addIssue({
       code: "custom",
-      path: ["resultRef"],
-      message: "waiting state cannot have a result",
+      path: ["waitingRef"],
+      message: "only waiting state can have a waiting reference",
     });
   }
   if (
@@ -417,6 +458,17 @@ const lifecycleStateRefine = (
       message: "failure state requires an error",
     });
   }
+  if (
+    state.status !== "completed" &&
+    state.status !== "cancelled" &&
+    state.resultRef !== undefined
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["resultRef"],
+      message: "non-terminal state cannot have a result",
+    });
+  }
 };
 
 export const IdentificationGraphStateV1Schema = z
@@ -436,6 +488,7 @@ export const IdentificationGraphStateV1Schema = z
     workPlanRef: IdentificationWorkPlanRefV1Schema.optional(),
     candidateSetRef: IdentificationCandidateSetRefV1Schema.optional(),
     mergePlanRef: MergePlanRefV1Schema.optional(),
+    waitingRef: WaitingRefV1Schema.optional(),
     agentTaskRefs: z.array(AgentTaskRefV1Schema),
     acceptedRiskRecordRefs: z.array(StandardizedRiskRecordRefV1Schema),
     reviewTaskRefs: z.array(ReviewTaskRefV1Schema),
@@ -462,17 +515,13 @@ export const AssessmentGraphStateV1Schema = z
     status: WorkflowRunStatusV1Schema,
     stage: AssessmentStageV1Schema,
     assessmentInputSnapshotRef: AssessmentInputSnapshotRefV1Schema.optional(),
+    waitingRef: WaitingRefV1Schema.optional(),
     assessmentRecordRef: RiskAssessmentRecordRefV1Schema.optional(),
     warningRecordRefs: z.array(WarningRecordRefV1Schema),
     warningResponseTaskRefs: z.array(WarningResponseTaskRefV1Schema),
     recommendationCandidateRef: RecommendationCandidateRefV1Schema.optional(),
     agentTaskRefs: z.array(AgentTaskRefV1Schema),
-    responseRecommendationRef: z
-      .strictObject({
-        kind: z.literal("response-recommendation"),
-        reference: VersionReferenceSchema,
-      })
-      .optional(),
+    responseRecommendationRef: ResponseRecommendationRefV1Schema.optional(),
     effectForecastRef: EffectForecastRefV1Schema.optional(),
     executionRecordRef: ExecutionRecordRefV1Schema.optional(),
     feedbackRef: FeedbackRefV1Schema.optional(),
@@ -505,8 +554,8 @@ export const RiskFlowGraphStateV1Schema = z
     authorizationContextRef: AuthorizationContextRefV1Schema,
     status: WorkflowRunStatusV1Schema,
     stage: RiskFlowStageV1Schema,
-    identificationRunRef: IdentificationRunResultRefV1Schema.optional(),
-    assessmentRunRefs: z.array(AssessmentRunResultRefV1Schema),
+    identificationRunRef: WorkflowRunRefV1Schema.optional(),
+    assessmentRunRefs: z.array(WorkflowRunRefV1Schema),
     waitingRefs: z.array(WaitingRefV1Schema),
     lastStageResultRef: StageResultRefV1Schema.optional(),
     lastRouteDecisionRef: RouteDecisionRefV1Schema.optional(),
@@ -515,6 +564,13 @@ export const RiskFlowGraphStateV1Schema = z
   })
   .superRefine((state, context) => {
     lifecycleStateRefine(state, context);
+    if (state.status === "waiting" && state.waitingRefs.length === 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["waitingRefs"],
+        message: "waiting state requires at least one waiting reference",
+      });
+    }
     if (state.entryMode !== "identify-and-assess" && state.identificationRunRef !== undefined) {
       context.addIssue({
         code: "custom",

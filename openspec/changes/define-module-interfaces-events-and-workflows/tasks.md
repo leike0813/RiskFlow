@@ -19,7 +19,7 @@
 
 ## 5. 子路径导出
 
-- [x] 5.1 只修改 `packages/contracts/package.json`，输入为现有 root/vocabulary/common/records exports 和已生成的三个源码目录，输出新增 `./ports`、`./events`、`./workflows` 三个 `types`/`import` 子路径；不得修改依赖、scripts、版本或既有 exports，不得修改 `packages/contracts/src/index.ts`。执行 `pnpm exec tsc -b packages/contracts/tsconfig.json --pretty false` 后，用 `node --input-type=module -e 'await Promise.all([import("@riskflow/contracts/ports"), import("@riskflow/contracts/events"), import("@riskflow/contracts/workflows")])'` 验证构建产物三个子路径均可解析。禁止修改区域：除 `packages/contracts/package.json` 外的清单/锁文件、根配置、C01 三模块和根 barrel。
+- [x] 5.1 只修改 `packages/contracts/package.json`，输入为现有 root/vocabulary/common/records exports 和已生成的三个源码目录，输出新增 `./ports`、`./events`、`./workflows` 三个 `types`/`import` 子路径；不得修改依赖、scripts、版本或既有 exports，不得修改 `packages/contracts/src/index.ts`。执行 `pnpm exec tsc -b packages/contracts/tsconfig.json --pretty false` 后，在 `packages/contracts` 目录执行 `node --input-type=module -e 'await Promise.all([import("@riskflow/contracts/ports"), import("@riskflow/contracts/events"), import("@riskflow/contracts/workflows")])'`（从仓库根也可执行等价命令 `pnpm --dir packages/contracts exec node --input-type=module -e 'await Promise.all([import("@riskflow/contracts/ports"), import("@riskflow/contracts/events"), import("@riskflow/contracts/workflows")])'`）验证构建产物三个子路径均可解析。禁止修改区域：除 `packages/contracts/package.json` 外的清单/锁文件、根配置、C01 三模块和根 barrel。
 
 ## 6. 最小验证与范围复核
 

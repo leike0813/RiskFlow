@@ -341,7 +341,7 @@ export(request: ProjectionExportRequestV1)
 | `register-monitoring-batch` | `monitoringSeriesRef`、`deliveryKey`、`sampleArtifactRef: ContentArtifactRefV1`、`window: { from, to }`（to > from）、`relation: original | correction{priorBatchRef} | supplement{priorBatchRef}` |
 | `register-external-risk-event` | `externalSourceRef`、`externalEventKey`、`eventArtifactRef: ContentArtifactRefV1`、`evidenceReferences[]`（至少一项）、`occurredAt` |
 | `identification-preparation` | `projectRevisionRef`、`spatialScopeRefs[]`（至少一项）、`sourceVersionRefs[]`（至少一项）、`monitoringCutoff?`、`dataProcessingPolicyRef` |
-| `assessment-preparation` | `riskInput: RiskInputVersionRefV1`、`projectRevisionRef`、`spatialScopeRef`、`applicabilityMetadataSnapshotRef?`、`monitoringCutoff?` |
+| `assessment-preparation` | `riskInput: RiskInputVersionRefV1`、`projectRevisionRef`、`spatialScopeRef`、`applicabilityMetadataSnapshotRef`、`monitoringCutoff?` |
 | `monitoring-snapshot` | `monitoringSeriesRef`、`cutoff`、`availabilityPolicyRef` |
 
 工程查询 payload：`source-segments { sourceSegmentSetRef }`、`monitoring-snapshot { monitoringSnapshotRef }`、`evidence-access { evidenceReferences[]; purposeCode }`。
@@ -466,7 +466,7 @@ auditTrailRef: AuditTrailRefV1
 | 阶段 | 名称 / 追踪 | 必含输出引用 |
 | --- | --- | --- |
 | I0 | 资料准备与输入冻结 / RI-S1、RI-S2 | `IdentificationPreparationSnapshotRefV1`；阻断时 `WorkflowErrorRefV1` |
-| I1 | 知识就绪 / RI-S3、RI-S4 | ready 时 `IdentificationInputSnapshotRefV1`；waiting 时 `KnowledgePreparationTaskRefV1`、`ReviewTaskRefV1[]` |
+| I1 | 知识就绪 / RI-S3、RI-S4 | `resultKind: ready { IdentificationInputSnapshotRefV1 }` 或 `resultKind: waiting { WaitingRefV1 }` |
 | I2 | 工序工作项规划 / RI-S31～S34 | `IdentificationWorkPlanRefV1`、计划/排除数量 |
 | I3 | 混合/关系检索与 Agent 审阅 / RI-S52～S55 | `RetrievalArtifactSetRefV1[]`、`AgentTaskRefV1[]`、失败工作项引用 |
 | I4 | 五项上下文与专用 LLM / RI-S51、S56、S57 | `ModelContextArtifactSetRefV1[]`、`IdentificationCandidateSetRefV1` |
@@ -504,7 +504,7 @@ lastStageResultRef? + lastRouteDecisionRef? + lastErrorRef? + resultRef?
 | 阶段 | 名称 / 追踪 | 必含输出引用 |
 | --- | --- | --- |
 | A0 | 输入准备 / RA-S1 | `AssessmentPreparationSnapshotRefV1` |
-| A1 | 知识就绪 / RA-S2～S4 | ready 时 `AssessmentBasisReleaseSetRefV1`；waiting 时知识/复核任务 refs |
+| A1 | 知识就绪 / RA-S2～S4 | `resultKind: ready { AssessmentBasisReleaseSetRefV1 }` 或 `resultKind: waiting { WaitingRefV1 }` |
 | A2 | 输入冻结 / RA-S1～S4 | `AssessmentInputSnapshotRefV1` |
 | A3 | 指标取值 / RA-S5 | `IndicatorActualValueSetRefV1` |
 | A4 | 评分与触发判定 / RA-S5、S6 | `AssessmentDecisionArtifactRefV1` |
@@ -514,7 +514,7 @@ lastStageResultRef? + lastRouteDecisionRef? + lastErrorRef? + resultRef?
 | A8 | 约束校验与建议入库 / RA-S7 | recommendation ref 或 review task ref，互斥 |
 | A9 | 结果汇总 / RA-S1～S7 | `AssessmentRunResultRefV1` |
 
-`AssessmentPreparationSnapshotV1Schema` 固定 schemaVersion、project/project revision、spatial scope、`RiskInputVersionRefV1`、applicability/optional monitoring snapshot、source evidence refs、entryMode、trigger reason、optional previous assessment/causal run、authorization/audit、createdBy/createdAt。
+`AssessmentPreparationSnapshotV1Schema` 固定 schemaVersion、project/project revision、spatial scope、`RiskInputVersionRefV1`、required applicability metadata snapshot/optional monitoring snapshot、source evidence refs、entryMode、trigger reason、optional previous assessment/causal run、authorization/audit、createdBy/createdAt。
 
 `AssessmentInputSnapshotV1Schema` 在 preparation ref 上冻结 indicator definition/field mapping/applicable rule set/weight/scoring strategy/risk matrix/risk acceptance threshold/monitoring warning threshold/joint trigger/measure library/warning aggregation/notification/response generation/response validation/response Agent/effect forecast/deviation/calibration Agent/retry/review/model/prompt 精确版本。
 
@@ -540,7 +540,7 @@ lastErrorRef? + resultRef?
 | entryMode | 必含输入 |
 | --- | --- |
 | `identify-and-assess` | project/spatial/source version refs、optional monitoring snapshot ref |
-| `assess` | `RiskInputVersionRefV1`、applicability/optional monitoring snapshot、spatial scope |
+| `assess` | `RiskInputVersionRefV1`、required applicability metadata snapshot/optional monitoring snapshot、spatial scope |
 | `reassess` | previous assessment ref、reason（monitoring/metadata/rule-set/weight-strategy/matrix）、changed input refs |
 | `historical-backfill` | risk input、effective-at、explicit assessment basis refs |
 | `forecast-response` | adopted recommendation ref、pre-action monitoring snapshot ref |

@@ -292,6 +292,21 @@ export const ReviewTargetRefV1Schema = z.discriminatedUnion("kind", [
 ]);
 export type ReviewTargetRefV1 = z.infer<typeof ReviewTargetRefV1Schema>;
 
+const IdentificationReviewTargetRefV1Schema = z.discriminatedUnion("kind", [
+  IdentificationCandidateSetRefV1Schema,
+  IdentificationGroupRefV1Schema,
+]);
+const KnowledgeReviewTargetRefV1Schema = KnowledgeRevisionRefV1Schema;
+const RuleConflictReviewTargetRefV1Schema = z.strictObject({
+  kind: z.literal("rule-conflict"),
+  reference: VersionReferenceSchema,
+});
+const ResponseReviewTargetRefV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("response-candidate"), reference: VersionReferenceSchema }),
+  RecommendationCandidateRefV1Schema,
+]);
+const CalibrationReviewTargetRefV1Schema = CalibrationSuggestionRefV1Schema;
+
 export const AgentTaskRefV1Schema = z.strictObject({
   kind: z.literal("agent-task"),
   reference: VersionReferenceSchema,
@@ -306,13 +321,39 @@ export const AgentTaskRefV1Schema = z.strictObject({
 });
 export type AgentTaskRefV1 = z.infer<typeof AgentTaskRefV1Schema>;
 
-export const ReviewTaskRefV1Schema = z.strictObject({
+const reviewTaskBase = {
   kind: z.literal("review-task"),
   reference: VersionReferenceSchema,
-  reviewType: ReviewTypeV1Schema,
-  targetRef: ReviewTargetRefV1Schema,
   waitingRunRef: WorkflowRunRefV1Schema,
-});
+};
+
+export const ReviewTaskRefV1Schema = z.discriminatedUnion("reviewType", [
+  z.strictObject({
+    ...reviewTaskBase,
+    reviewType: z.literal("identification-group"),
+    targetRef: IdentificationReviewTargetRefV1Schema,
+  }),
+  z.strictObject({
+    ...reviewTaskBase,
+    reviewType: z.literal("knowledge-revision"),
+    targetRef: KnowledgeReviewTargetRefV1Schema,
+  }),
+  z.strictObject({
+    ...reviewTaskBase,
+    reviewType: z.literal("rule-conflict"),
+    targetRef: RuleConflictReviewTargetRefV1Schema,
+  }),
+  z.strictObject({
+    ...reviewTaskBase,
+    reviewType: z.literal("response-candidate"),
+    targetRef: ResponseReviewTargetRefV1Schema,
+  }),
+  z.strictObject({
+    ...reviewTaskBase,
+    reviewType: z.literal("calibration-suggestion"),
+    targetRef: CalibrationReviewTargetRefV1Schema,
+  }),
+]);
 export type ReviewTaskRefV1 = z.infer<typeof ReviewTaskRefV1Schema>;
 
 export const RiskInputVersionRefV1Schema = z.discriminatedUnion("kind", [
@@ -429,24 +470,88 @@ export const ModuleCapabilityV1_VALUES = [
 export const ModuleCapabilityV1Schema = z.enum(ModuleCapabilityV1_VALUES);
 export type ModuleCapabilityV1 = z.infer<typeof ModuleCapabilityV1Schema>;
 
+export const MODULE_BRANCH_CAPABILITY_V1 = {
+  "engineering-data.register-source-delivery": "engineering-data.write",
+  "engineering-data.register-monitoring-batch": "engineering-data.write",
+  "engineering-data.register-external-risk-event": "engineering-data.write",
+  "engineering-data.identification-preparation": "engineering-data.freeze",
+  "engineering-data.assessment-preparation": "engineering-data.freeze",
+  "engineering-data.monitoring-snapshot": "engineering-data.freeze",
+  "engineering-data.source-segments": "engineering-data.read",
+  "engineering-data.monitoring-snapshot-query": "engineering-data.read",
+  "engineering-data.evidence-access": "engineering-data.read",
+  "knowledge-modeling.submit-revision": "knowledge-modeling.govern",
+  "knowledge-modeling.request-review": "knowledge-modeling.govern",
+  "knowledge-modeling.publish-approved-release": "knowledge-modeling.govern",
+  "knowledge-modeling.deactivate-release": "knowledge-modeling.govern",
+  "knowledge-modeling.rollback-by-new-release": "knowledge-modeling.govern",
+  "knowledge-modeling.identification-basis": "knowledge-modeling.read",
+  "knowledge-modeling.assessment-basis": "knowledge-modeling.read",
+  "knowledge-modeling.hybrid-evidence": "knowledge-modeling.retrieve",
+  "knowledge-modeling.relationship-context": "knowledge-modeling.retrieve",
+  "knowledge-modeling.measure-candidates": "knowledge-modeling.retrieve",
+  "risk-identification.plan": "risk-identification.run",
+  "risk-identification.assemble-and-infer": "risk-identification.run",
+  "risk-identification.repair-and-validate": "risk-identification.run",
+  "risk-identification.merge-run-candidates": "risk-identification.finalize",
+  "risk-identification.route-acceptance": "risk-identification.finalize",
+  "risk-identification.accept-groups": "risk-identification.finalize",
+  "risk-assessment.initial": "risk-assessment.prepare",
+  "risk-assessment.reassessment": "risk-assessment.prepare",
+  "risk-assessment.historical-backfill": "risk-assessment.prepare",
+  "risk-assessment.evaluate": "risk-assessment.evaluate",
+  "warning-response.open": "warning-response.record",
+  "warning-response.create-candidate": "warning-response.recommend",
+  "warning-response.validate-and-record": "warning-response.recommend",
+  "warning-response.adopt-recommendation": "warning-response.record",
+  "warning-response.record-execution": "warning-response.record",
+  "warning-response.record-feedback": "warning-response.record",
+  "warning-response.calculate-deviation": "warning-response.record",
+  "warning-response.create-calibration-suggestion": "warning-response.record",
+  "review-audit.request-review": "review-audit.request",
+  "review-audit.decide-review": "review-audit.decide",
+  "review-audit.trace": "review-audit.read",
+  "agent-task.start-task": "agent-task.start",
+  "agent-task.resume-task": "agent-task.resume",
+  "agent-task.cancel-task": "agent-task.cancel",
+  "agent-task.confirm-command": "agent-task.confirm",
+  "workflow.start-run": "workflow.start",
+  "workflow.resume-run": "workflow.resume",
+  "workflow.cancel-run": "workflow.cancel",
+  "projection.query": "projection.query",
+  "projection.subscribe": "projection.subscribe",
+  "projection.export": "projection.export",
+} as const;
+export type ModuleBranchV1 = keyof typeof MODULE_BRANCH_CAPABILITY_V1;
+
+const branchCapability = <T extends ModuleBranchV1>(branch: T) =>
+  MODULE_BRANCH_CAPABILITY_V1[branch];
+
 const uniqueArray = <T extends ZodType>(schema: T) =>
   z
     .array(schema)
     .min(1)
     .refine((values) => new Set(values).size === values.length);
 
+const HumanAuthorizationInvocationV1Schema = z.strictObject({ kind: z.literal("human") });
+const SystemAuthorizationInvocationV1Schema = z.strictObject({
+  kind: z.literal("system"),
+  systemActorId: IdentifierSchema,
+  reasonCode: IdentifierSchema,
+});
+const AgentAuthorizationInvocationV1Schema = z.strictObject({
+  kind: z.literal("agent-task"),
+  agentTaskRef: AgentTaskRefV1Schema,
+});
+
 export const AuthorizationInvocationV1Schema = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("human") }),
-  z.strictObject({
-    kind: z.literal("system"),
-    systemActorId: IdentifierSchema,
-    reasonCode: IdentifierSchema,
-  }),
-  z.strictObject({ kind: z.literal("agent-task"), agentTaskRef: AgentTaskRefV1Schema }),
+  HumanAuthorizationInvocationV1Schema,
+  SystemAuthorizationInvocationV1Schema,
+  AgentAuthorizationInvocationV1Schema,
 ]);
 export type AuthorizationInvocationV1 = z.infer<typeof AuthorizationInvocationV1Schema>;
 
-export const AuthorizationContextV1Schema = z.strictObject({
+const authorizationContextBase = {
   schemaVersion: z.literal("1"),
   authorizationContextRef: AuthorizationContextRefV1Schema,
   actorId: IdentifierSchema,
@@ -456,9 +561,25 @@ export const AuthorizationContextV1Schema = z.strictObject({
   sourceAccessGrantRefs: z.array(SourceAccessGrantRefV1Schema),
   authorizationPolicyRef: VersionReferenceSchema,
   decidedAt: IsoDateTimeSchema,
-  causalRunRef: WorkflowRunRefV1Schema.optional(),
-  invocation: AuthorizationInvocationV1Schema,
-});
+};
+
+export const AuthorizationContextV1Schema = z.union([
+  z.strictObject({
+    ...authorizationContextBase,
+    causalRunRef: WorkflowRunRefV1Schema.optional(),
+    invocation: HumanAuthorizationInvocationV1Schema,
+  }),
+  z.strictObject({
+    ...authorizationContextBase,
+    causalRunRef: WorkflowRunRefV1Schema,
+    invocation: SystemAuthorizationInvocationV1Schema,
+  }),
+  z.strictObject({
+    ...authorizationContextBase,
+    causalRunRef: WorkflowRunRefV1Schema,
+    invocation: AgentAuthorizationInvocationV1Schema,
+  }),
+]);
 export type AuthorizationContextV1 = z.infer<typeof AuthorizationContextV1Schema>;
 
 export const WaitingRefV1Schema = z.discriminatedUnion("kind", [
@@ -548,38 +669,181 @@ export const ModuleErrorV1Schema = z.discriminatedUnion("code", [
 ]);
 export type ModuleErrorV1 = z.infer<typeof ModuleErrorV1Schema>;
 
-export const AgentTaskResultRefV1Schema = z.strictObject({
+const agentTaskResultBase = {
   kind: z.literal("agent-task-result"),
   reference: VersionReferenceSchema,
   agentTaskRef: AgentTaskRefV1Schema,
-  status: z.enum(["completed", "failed", "cancelled"]),
-  incrementRef: ContractReferenceV1Schema.optional(),
-  candidateRef: ContractReferenceV1Schema.optional(),
-  validationRef: ContractReferenceV1Schema.optional(),
-  errorRef: WorkflowErrorRefV1Schema.optional(),
-  formalResultRef: ContractReferenceV1Schema.optional(),
+};
+
+const AgentTaskCompletedResultV1Schema = z
+  .strictObject({
+    ...agentTaskResultBase,
+    status: z.literal("completed"),
+    incrementRef: ContractReferenceV1Schema.optional(),
+    candidateRef: ContractReferenceV1Schema.optional(),
+    validationRef: ContractReferenceV1Schema.optional(),
+    formalResultRef: ContractReferenceV1Schema.optional(),
+  })
+  .superRefine((result, context) => {
+    const outputRefs = [
+      result.incrementRef,
+      result.candidateRef,
+      result.validationRef,
+      result.formalResultRef,
+    ];
+    if (outputRefs.every((ref) => ref === undefined)) {
+      context.addIssue({
+        code: "custom",
+        path: ["status"],
+        message: "completed agent task requires an output reference",
+      });
+    }
+
+    const taskType = result.agentTaskRef.taskType;
+    const disallowed =
+      taskType === "retrieval-review" || taskType === "data-cleaning"
+        ? (result.candidateRef ?? result.formalResultRef)
+        : taskType === "knowledge-authoring"
+          ? result.formalResultRef
+          : taskType === "response-recommendation" || taskType === "calibration-suggestion"
+            ? result.incrementRef
+            : undefined;
+    if (disallowed !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["agentTaskRef", "taskType"],
+        message: "agent task output does not match task type",
+      });
+    }
+
+    const expectedCandidateKind =
+      taskType === "response-recommendation"
+        ? "recommendation-candidate"
+        : taskType === "calibration-suggestion"
+          ? "calibration-suggestion"
+          : undefined;
+    if (
+      expectedCandidateKind !== undefined &&
+      result.candidateRef !== undefined &&
+      result.candidateRef.kind !== expectedCandidateKind
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["candidateRef", "kind"],
+        message: "candidate reference does not match task type",
+      });
+    }
+
+    const expectedFormalResultKind =
+      taskType === "response-recommendation"
+        ? "response-recommendation"
+        : taskType === "calibration-suggestion"
+          ? "calibration-suggestion"
+          : undefined;
+    if (
+      expectedFormalResultKind !== undefined &&
+      result.formalResultRef !== undefined &&
+      result.formalResultRef.kind !== expectedFormalResultKind
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["formalResultRef", "kind"],
+        message: "formal result reference does not match task type",
+      });
+    }
+  });
+
+const AgentTaskFailedResultV1Schema = z.strictObject({
+  ...agentTaskResultBase,
+  status: z.literal("failed"),
+  errorRef: WorkflowErrorRefV1Schema,
 });
+
+const AgentTaskCancelledResultV1Schema = z.strictObject({
+  ...agentTaskResultBase,
+  status: z.literal("cancelled"),
+});
+
+export const AgentTaskResultRefV1Schema = z.discriminatedUnion("status", [
+  AgentTaskCompletedResultV1Schema,
+  AgentTaskFailedResultV1Schema,
+  AgentTaskCancelledResultV1Schema,
+]);
 export type AgentTaskResultRefV1 = z.infer<typeof AgentTaskResultRefV1Schema>;
 
-const commandSchema = <const T extends string>(kind: T, payload: ZodType) =>
+const commandSchema = <const T extends string, const P extends ZodType>(
+  kind: T,
+  payload: P,
+  requiredCapability: ModuleCapabilityV1,
+) =>
   CommandEnvelopeSchema.extend({
     kind: z.literal(kind),
     authorization: AuthorizationContextV1Schema,
     payload,
+  }).superRefine((command, context) => {
+    if (command.projectId !== command.authorization.projectId) {
+      context.addIssue({
+        code: "custom",
+        path: ["projectId"],
+        message: "command project does not match authorization context",
+      });
+    }
+    if (command.actorId !== command.authorization.actorId) {
+      context.addIssue({
+        code: "custom",
+        path: ["actorId"],
+        message: "command actor does not match authorization context",
+      });
+    }
+    if (!command.authorization.grantedCapabilities.includes(requiredCapability)) {
+      context.addIssue({
+        code: "custom",
+        path: ["authorization", "grantedCapabilities"],
+        message: "required capability is not granted",
+      });
+    }
   });
 
-const querySchema = <const T extends string>(kind: T, payload: ZodType) =>
-  z.strictObject({
-    queryId: IdentifierSchema,
-    projectId: IdentifierSchema,
-    actorId: IdentifierSchema,
-    requestedAt: IsoDateTimeSchema,
-    authorization: AuthorizationContextV1Schema,
-    kind: z.literal(kind),
-    payload,
-  });
+const querySchema = <const T extends string, const P extends ZodType>(
+  kind: T,
+  payload: P,
+  requiredCapability: ModuleCapabilityV1,
+) =>
+  z
+    .strictObject({
+      queryId: IdentifierSchema,
+      projectId: IdentifierSchema,
+      actorId: IdentifierSchema,
+      requestedAt: IsoDateTimeSchema,
+      authorization: AuthorizationContextV1Schema,
+      kind: z.literal(kind),
+      payload,
+    })
+    .superRefine((query, context) => {
+      if (query.projectId !== query.authorization.projectId) {
+        context.addIssue({
+          code: "custom",
+          path: ["projectId"],
+          message: "query project does not match authorization context",
+        });
+      }
+      if (query.actorId !== query.authorization.actorId) {
+        context.addIssue({
+          code: "custom",
+          path: ["actorId"],
+          message: "query actor does not match authorization context",
+        });
+      }
+      if (!query.authorization.grantedCapabilities.includes(requiredCapability)) {
+        context.addIssue({
+          code: "custom",
+          path: ["authorization", "grantedCapabilities"],
+          message: "required capability is not granted",
+        });
+      }
+    });
 
-const moduleResultSchema = (result: ZodType, allowWaiting = false) => {
+const moduleResultSchema = <const T extends ZodType>(result: T, allowWaiting = false) => {
   const succeeded = z.strictObject({ kind: z.literal("succeeded"), result });
   const failed = z.strictObject({ kind: z.literal("failed"), error: ModuleErrorV1Schema });
   if (allowWaiting) {
@@ -633,9 +897,21 @@ const RegisterExternalRiskEventPayloadV1Schema = z.strictObject({
 });
 
 export const EngineeringDataCommandV1Schema = z.discriminatedUnion("kind", [
-  commandSchema("register-source-delivery", RegisterSourceDeliveryPayloadV1Schema),
-  commandSchema("register-monitoring-batch", RegisterMonitoringBatchPayloadV1Schema),
-  commandSchema("register-external-risk-event", RegisterExternalRiskEventPayloadV1Schema),
+  commandSchema(
+    "register-source-delivery",
+    RegisterSourceDeliveryPayloadV1Schema,
+    branchCapability("engineering-data.register-source-delivery"),
+  ),
+  commandSchema(
+    "register-monitoring-batch",
+    RegisterMonitoringBatchPayloadV1Schema,
+    branchCapability("engineering-data.register-monitoring-batch"),
+  ),
+  commandSchema(
+    "register-external-risk-event",
+    RegisterExternalRiskEventPayloadV1Schema,
+    branchCapability("engineering-data.register-external-risk-event"),
+  ),
 ]);
 export type EngineeringDataCommandV1 = z.infer<typeof EngineeringDataCommandV1Schema>;
 
@@ -651,7 +927,7 @@ const AssessmentPreparationCommandPayloadV1Schema = z.strictObject({
   riskInput: RiskInputVersionRefV1Schema,
   projectRevisionRef: ProjectRevisionRefV1Schema,
   spatialScopeRef: SpatialScopeRefV1Schema,
-  applicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema.optional(),
+  applicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
   monitoringCutoff: IsoDateTimeSchema.optional(),
 });
 
@@ -662,9 +938,21 @@ const MonitoringSnapshotCommandPayloadV1Schema = z.strictObject({
 });
 
 export const EngineeringFreezeCommandV1Schema = z.discriminatedUnion("kind", [
-  commandSchema("identification-preparation", IdentificationPreparationCommandPayloadV1Schema),
-  commandSchema("assessment-preparation", AssessmentPreparationCommandPayloadV1Schema),
-  commandSchema("monitoring-snapshot", MonitoringSnapshotCommandPayloadV1Schema),
+  commandSchema(
+    "identification-preparation",
+    IdentificationPreparationCommandPayloadV1Schema,
+    branchCapability("engineering-data.identification-preparation"),
+  ),
+  commandSchema(
+    "assessment-preparation",
+    AssessmentPreparationCommandPayloadV1Schema,
+    branchCapability("engineering-data.assessment-preparation"),
+  ),
+  commandSchema(
+    "monitoring-snapshot",
+    MonitoringSnapshotCommandPayloadV1Schema,
+    branchCapability("engineering-data.monitoring-snapshot"),
+  ),
 ]);
 export type EngineeringFreezeCommandV1 = z.infer<typeof EngineeringFreezeCommandV1Schema>;
 
@@ -672,10 +960,12 @@ export const EngineeringDataQueryV1Schema = z.discriminatedUnion("kind", [
   querySchema(
     "source-segments",
     z.strictObject({ sourceSegmentSetRef: SourceSegmentSetRefV1Schema }),
+    branchCapability("engineering-data.source-segments"),
   ),
   querySchema(
     "monitoring-snapshot",
     z.strictObject({ monitoringSnapshotRef: MonitoringSnapshotRefV1Schema }),
+    branchCapability("engineering-data.monitoring-snapshot-query"),
   ),
   querySchema(
     "evidence-access",
@@ -683,6 +973,7 @@ export const EngineeringDataQueryV1Schema = z.discriminatedUnion("kind", [
       evidenceReferences: z.array(EvidenceReferenceSchema).min(1),
       purposeCode: IdentifierSchema,
     }),
+    branchCapability("engineering-data.evidence-access"),
   ),
 ]);
 export type EngineeringDataQueryV1 = z.infer<typeof EngineeringDataQueryV1Schema>;
@@ -716,13 +1007,18 @@ const SubmitRevisionPayloadV1Schema = z.strictObject({
 });
 
 export const KnowledgeGovernanceCommandV1Schema = z.discriminatedUnion("kind", [
-  commandSchema("submit-revision", SubmitRevisionPayloadV1Schema),
+  commandSchema(
+    "submit-revision",
+    SubmitRevisionPayloadV1Schema,
+    branchCapability("knowledge-modeling.submit-revision"),
+  ),
   commandSchema(
     "request-review",
     z.strictObject({
       revisionRef: KnowledgeRevisionRefV1Schema,
       reviewPolicyRef: VersionReferenceSchema,
     }),
+    branchCapability("knowledge-modeling.request-review"),
   ),
   commandSchema(
     "publish-approved-release",
@@ -731,10 +1027,12 @@ export const KnowledgeGovernanceCommandV1Schema = z.discriminatedUnion("kind", [
       reviewDecisionRef: ReviewDecisionRefV1Schema,
       effectiveFrom: IsoDateTimeSchema,
     }),
+    branchCapability("knowledge-modeling.publish-approved-release"),
   ),
   commandSchema(
     "deactivate-release",
     z.strictObject({ releaseRef: KnowledgeReleaseRefV1Schema, reasonCode: IdentifierSchema }),
+    branchCapability("knowledge-modeling.deactivate-release"),
   ),
   commandSchema(
     "rollback-by-new-release",
@@ -743,6 +1041,7 @@ export const KnowledgeGovernanceCommandV1Schema = z.discriminatedUnion("kind", [
       reviewDecisionRef: ReviewDecisionRefV1Schema,
       reasonCode: IdentifierSchema,
     }),
+    branchCapability("knowledge-modeling.rollback-by-new-release"),
   ),
 ]);
 export type KnowledgeGovernanceCommandV1 = z.infer<typeof KnowledgeGovernanceCommandV1Schema>;
@@ -754,6 +1053,7 @@ export const KnowledgeResolutionCommandV1Schema = z.discriminatedUnion("kind", [
       preparationSnapshotRef: IdentificationPreparationSnapshotRefV1Schema,
       requiredAt: IsoDateTimeSchema,
     }),
+    branchCapability("knowledge-modeling.identification-basis"),
   ),
   commandSchema(
     "assessment-basis",
@@ -761,6 +1061,7 @@ export const KnowledgeResolutionCommandV1Schema = z.discriminatedUnion("kind", [
       preparationSnapshotRef: AssessmentPreparationSnapshotRefV1Schema,
       requiredAt: IsoDateTimeSchema,
     }),
+    branchCapability("knowledge-modeling.assessment-basis"),
   ),
 ]);
 export type KnowledgeResolutionCommandV1 = z.infer<typeof KnowledgeResolutionCommandV1Schema>;
@@ -773,6 +1074,7 @@ export const KnowledgeRetrievalQueryV1Schema = z.discriminatedUnion("kind", [
       workItemRef: IdentificationWorkItemRefV1Schema,
       retrievalPolicyRef: VersionReferenceSchema,
     }),
+    branchCapability("knowledge-modeling.hybrid-evidence"),
   ),
   querySchema(
     "relationship-context",
@@ -780,6 +1082,7 @@ export const KnowledgeRetrievalQueryV1Schema = z.discriminatedUnion("kind", [
       inputSnapshotRef: IdentificationInputSnapshotRefV1Schema,
       workItemRef: IdentificationWorkItemRefV1Schema,
     }),
+    branchCapability("knowledge-modeling.relationship-context"),
   ),
   querySchema(
     "measure-candidates",
@@ -788,6 +1091,7 @@ export const KnowledgeRetrievalQueryV1Schema = z.discriminatedUnion("kind", [
       warningResponseTaskRef: WarningResponseTaskRefV1Schema,
       measureLibraryReleaseRef: MeasureLibraryReleaseRefV1Schema,
     }),
+    branchCapability("knowledge-modeling.measure-candidates"),
   ),
 ]);
 export type KnowledgeRetrievalQueryV1 = z.infer<typeof KnowledgeRetrievalQueryV1Schema>;
@@ -796,6 +1100,7 @@ export const IdentificationPlanCommandV1Schema = z.discriminatedUnion("kind", [
   commandSchema(
     "plan",
     z.strictObject({ inputSnapshotRef: IdentificationInputSnapshotRefV1Schema }),
+    branchCapability("risk-identification.plan"),
   ),
 ]);
 export type IdentificationPlanCommandV1 = z.infer<typeof IdentificationPlanCommandV1Schema>;
@@ -809,6 +1114,7 @@ export const IdentificationAnalysisCommandV1Schema = z.discriminatedUnion("kind"
       modelDeploymentRef: VersionReferenceSchema,
       promptTemplateRef: VersionReferenceSchema,
     }),
+    branchCapability("risk-identification.assemble-and-infer"),
   ),
   commandSchema(
     "repair-and-validate",
@@ -818,6 +1124,7 @@ export const IdentificationAnalysisCommandV1Schema = z.discriminatedUnion("kind"
       ruleValidationPolicyRef: VersionReferenceSchema,
       simulationConstraintPolicyRef: VersionReferenceSchema.optional(),
     }),
+    branchCapability("risk-identification.repair-and-validate"),
   ),
 ]);
 export type IdentificationAnalysisCommandV1 = z.infer<typeof IdentificationAnalysisCommandV1Schema>;
@@ -830,6 +1137,7 @@ export const IdentificationFinalizationCommandV1Schema = z.discriminatedUnion("k
       validatedCandidateSetRefs: z.array(ValidatedCandidateSetRefV1Schema).min(1),
       mergePolicyRef: VersionReferenceSchema,
     }),
+    branchCapability("risk-identification.merge-run-candidates"),
   ),
   commandSchema(
     "route-acceptance",
@@ -838,6 +1146,7 @@ export const IdentificationFinalizationCommandV1Schema = z.discriminatedUnion("k
       confidencePolicyRef: VersionReferenceSchema,
       forcedReviewPolicyRef: VersionReferenceSchema,
     }),
+    branchCapability("risk-identification.route-acceptance"),
   ),
   commandSchema(
     "accept-groups",
@@ -846,6 +1155,7 @@ export const IdentificationFinalizationCommandV1Schema = z.discriminatedUnion("k
       acceptedGroupRefs: z.array(IdentificationGroupRefV1Schema).min(1),
       decisionRefs: z.array(z.union([RouteDecisionRefV1Schema, ReviewDecisionRefV1Schema])).min(1),
     }),
+    branchCapability("risk-identification.accept-groups"),
   ),
 ]);
 export type IdentificationFinalizationCommandV1 = z.infer<
@@ -859,6 +1169,7 @@ export const AssessmentPreparationCommandV1Schema = z.discriminatedUnion("kind",
       preparationSnapshotRef: AssessmentPreparationSnapshotRefV1Schema,
       assessmentBasisReleaseSetRef: AssessmentBasisReleaseSetRefV1Schema,
     }),
+    branchCapability("risk-assessment.initial"),
   ),
   commandSchema(
     "reassessment",
@@ -874,6 +1185,7 @@ export const AssessmentPreparationCommandV1Schema = z.discriminatedUnion("kind",
         "risk-matrix",
       ]),
     }),
+    branchCapability("risk-assessment.reassessment"),
   ),
   commandSchema(
     "historical-backfill",
@@ -882,6 +1194,7 @@ export const AssessmentPreparationCommandV1Schema = z.discriminatedUnion("kind",
       assessmentBasisReleaseSetRef: AssessmentBasisReleaseSetRefV1Schema,
       effectiveAt: IsoDateTimeSchema,
     }),
+    branchCapability("risk-assessment.historical-backfill"),
   ),
 ]);
 export type AssessmentPreparationCommandV1 = z.infer<typeof AssessmentPreparationCommandV1Schema>;
@@ -890,6 +1203,7 @@ export const AssessmentEvaluationCommandV1Schema = z.discriminatedUnion("kind", 
   commandSchema(
     "evaluate",
     z.strictObject({ assessmentInputSnapshotRef: AssessmentInputSnapshotRefV1Schema }),
+    branchCapability("risk-assessment.evaluate"),
   ),
 ]);
 export type AssessmentEvaluationCommandV1 = z.infer<typeof AssessmentEvaluationCommandV1Schema>;
@@ -902,6 +1216,7 @@ export const OpenWarningCommandV1Schema = z.discriminatedUnion("kind", [
       warningAggregationPolicyRef: VersionReferenceSchema,
       notificationPolicyRef: VersionReferenceSchema,
     }),
+    branchCapability("warning-response.open"),
   ),
 ]);
 export type OpenWarningCommandV1 = z.infer<typeof OpenWarningCommandV1Schema>;
@@ -915,6 +1230,7 @@ export const RecommendationCommandV1Schema = z.discriminatedUnion("kind", [
       agentTaskResultRef: AgentTaskResultRefV1Schema,
       responseGenerationPolicyRef: VersionReferenceSchema,
     }),
+    branchCapability("warning-response.create-candidate"),
   ),
   commandSchema(
     "validate-and-record",
@@ -923,6 +1239,7 @@ export const RecommendationCommandV1Schema = z.discriminatedUnion("kind", [
       responseValidationPolicyRef: VersionReferenceSchema,
       siteContextRef: VersionReferenceSchema,
     }),
+    branchCapability("warning-response.validate-and-record"),
   ),
 ]);
 export type RecommendationCommandV1 = z.infer<typeof RecommendationCommandV1Schema>;
@@ -946,6 +1263,7 @@ export const WarningResponseRecordCommandV1Schema = z.discriminatedUnion("kind",
       decision: z.enum(["adopted", "declined"]),
       reasonCode: IdentifierSchema,
     }),
+    branchCapability("warning-response.adopt-recommendation"),
   ),
   commandSchema(
     "record-execution",
@@ -956,6 +1274,7 @@ export const WarningResponseRecordCommandV1Schema = z.discriminatedUnion("kind",
       occurredAt: IsoDateTimeSchema,
       evidenceReferences: z.array(EvidenceReferenceSchema).min(1),
     }),
+    branchCapability("warning-response.record-execution"),
   ),
   commandSchema(
     "record-feedback",
@@ -965,6 +1284,7 @@ export const WarningResponseRecordCommandV1Schema = z.discriminatedUnion("kind",
       feedbackArtifactRef: ContentArtifactRefV1Schema,
       occurredAt: IsoDateTimeSchema,
     }),
+    branchCapability("warning-response.record-feedback"),
   ),
   commandSchema(
     "calculate-deviation",
@@ -973,6 +1293,7 @@ export const WarningResponseRecordCommandV1Schema = z.discriminatedUnion("kind",
       feedbackRef: FeedbackRefV1Schema,
       frozenAssessmentBasisRef: AssessmentInputSnapshotRefV1Schema,
     }),
+    branchCapability("warning-response.calculate-deviation"),
   ),
   commandSchema(
     "create-calibration-suggestion",
@@ -981,6 +1302,7 @@ export const WarningResponseRecordCommandV1Schema = z.discriminatedUnion("kind",
       agentTaskResultRef: AgentTaskResultRefV1Schema,
       calibrationValidationPolicyRef: VersionReferenceSchema,
     }),
+    branchCapability("warning-response.create-calibration-suggestion"),
   ),
 ]);
 export type WarningResponseRecordCommandV1 = z.infer<typeof WarningResponseRecordCommandV1Schema>;
@@ -1063,7 +1385,7 @@ const StartWorkflowPayloadV1Schema = z.discriminatedUnion("entryMode", [
     ...workflowStartControlShape,
     entryMode: z.literal("assess"),
     riskInput: RiskInputVersionRefV1Schema,
-    applicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema.optional(),
+    applicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
     monitoringSnapshotRef: MonitoringSnapshotRefV1Schema.optional(),
     spatialScopeRef: SpatialScopeRefV1Schema,
   }),
@@ -1103,7 +1425,7 @@ const StartWorkflowPayloadV1Schema = z.discriminatedUnion("entryMode", [
 ]);
 
 export const StartWorkflowRunCommandV1Schema = z.discriminatedUnion("kind", [
-  commandSchema("start-run", StartWorkflowPayloadV1Schema),
+  commandSchema("start-run", StartWorkflowPayloadV1Schema, branchCapability("workflow.start-run")),
 ]);
 export type StartWorkflowRunCommandV1 = z.infer<typeof StartWorkflowRunCommandV1Schema>;
 
@@ -1115,6 +1437,7 @@ export const ResumeWorkflowRunCommandV1Schema = z.discriminatedUnion("kind", [
       expectedStateVersion: IdentifierSchema,
       resumeCause: ResumeCauseV1Schema,
     }),
+    branchCapability("workflow.resume-run"),
   ),
 ]);
 export type ResumeWorkflowRunCommandV1 = z.infer<typeof ResumeWorkflowRunCommandV1Schema>;
@@ -1127,6 +1450,7 @@ export const CancelWorkflowRunCommandV1Schema = z.discriminatedUnion("kind", [
       expectedStateVersion: IdentifierSchema,
       reasonCode: IdentifierSchema,
     }),
+    branchCapability("workflow.cancel-run"),
   ),
 ]);
 export type CancelWorkflowRunCommandV1 = z.infer<typeof CancelWorkflowRunCommandV1Schema>;
@@ -1146,6 +1470,7 @@ export const StartAgentTaskCommandV1Schema = z.discriminatedUnion("kind", [
       incrementSchemaRef: VersionReferenceSchema,
       validationPolicyRef: VersionReferenceSchema,
     }),
+    branchCapability("agent-task.start-task"),
   ),
 ]);
 export type StartAgentTaskCommandV1 = z.infer<typeof StartAgentTaskCommandV1Schema>;
@@ -1158,6 +1483,7 @@ export const ResumeAgentTaskCommandV1Schema = z.discriminatedUnion("kind", [
       resumeReason: z.enum(["transient-recovered", "user-confirmed"]),
       resumeEvidenceRef: DiagnosticArtifactRefV1Schema,
     }),
+    branchCapability("agent-task.resume-task"),
   ),
 ]);
 export type ResumeAgentTaskCommandV1 = z.infer<typeof ResumeAgentTaskCommandV1Schema>;
@@ -1166,6 +1492,7 @@ export const CancelAgentTaskCommandV1Schema = z.discriminatedUnion("kind", [
   commandSchema(
     "cancel-task",
     z.strictObject({ agentTaskRef: AgentTaskRefV1Schema, reasonCode: IdentifierSchema }),
+    branchCapability("agent-task.cancel-task"),
   ),
 ]);
 export type CancelAgentTaskCommandV1 = z.infer<typeof CancelAgentTaskCommandV1Schema>;
@@ -1173,11 +1500,22 @@ export type CancelAgentTaskCommandV1 = z.infer<typeof CancelAgentTaskCommandV1Sc
 export const ConfirmAgentCommandV1Schema = z.discriminatedUnion("kind", [
   commandSchema(
     "confirm-command",
-    z.strictObject({
-      agentTaskRef: AgentTaskRefV1Schema,
-      commandProposalRef: CommandProposalRefV1Schema,
-      confirmation: z.enum(["confirmed", "rejected"]),
-    }),
+    z
+      .strictObject({
+        agentTaskRef: AgentTaskRefV1Schema,
+        commandProposalRef: CommandProposalRefV1Schema,
+        confirmation: z.enum(["confirmed", "rejected"]),
+      })
+      .superRefine((command, context) => {
+        if (command.agentTaskRef.triggerMode !== "interactive") {
+          context.addIssue({
+            code: "custom",
+            path: ["agentTaskRef", "triggerMode"],
+            message: "only interactive agent tasks can confirm commands",
+          });
+        }
+      }),
+    branchCapability("agent-task.confirm-command"),
   ),
 ]);
 export type ConfirmAgentCommandV1 = z.infer<typeof ConfirmAgentCommandV1Schema>;
@@ -1212,7 +1550,7 @@ const ProjectionQueryPayloadV1Schema = z.discriminatedUnion("queryType", [
 ]);
 
 export const ProjectionQueryV1Schema = z.discriminatedUnion("kind", [
-  querySchema("query", ProjectionQueryPayloadV1Schema),
+  querySchema("query", ProjectionQueryPayloadV1Schema, branchCapability("projection.query")),
 ]);
 export type ProjectionQueryV1 = z.infer<typeof ProjectionQueryV1Schema>;
 
@@ -1223,6 +1561,7 @@ export const RunSubscriptionRequestV1Schema = z.discriminatedUnion("kind", [
       workflowRunRef: WorkflowRunRefV1Schema,
       afterEventId: IdentifierSchema.optional(),
     }),
+    branchCapability("projection.subscribe"),
   ),
 ]);
 export type RunSubscriptionRequestV1 = z.infer<typeof RunSubscriptionRequestV1Schema>;
@@ -1234,75 +1573,178 @@ export const ProjectionExportRequestV1Schema = z.discriminatedUnion("kind", [
       sourceRef: z.union([QueryResultRefV1Schema, ContractReferenceV1Schema]),
       exportPolicyRef: VersionReferenceSchema,
     }),
+    branchCapability("projection.export"),
   ),
 ]);
 export type ProjectionExportRequestV1 = z.infer<typeof ProjectionExportRequestV1Schema>;
 
 const IdentificationReviewDecisionV1Schema = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("approve-unchanged") }),
   z.strictObject({
+    reviewType: z.literal("identification-group"),
+    kind: z.literal("approve-unchanged"),
+  }),
+  z.strictObject({
+    reviewType: z.literal("identification-group"),
     kind: z.literal("approve-revised-candidate"),
     revisedCandidateRef: IdentificationCandidateSetRefV1Schema,
   }),
-  z.strictObject({ kind: z.literal("confirm-merge") }),
-  z.strictObject({ kind: z.literal("keep-separate") }),
-  z.strictObject({ kind: z.literal("reject") }),
-  z.strictObject({ kind: z.literal("return-upstream") }),
+  z.strictObject({
+    reviewType: z.literal("identification-group"),
+    kind: z.literal("confirm-merge"),
+  }),
+  z.strictObject({
+    reviewType: z.literal("identification-group"),
+    kind: z.literal("keep-separate"),
+  }),
+  z.strictObject({ reviewType: z.literal("identification-group"), kind: z.literal("reject") }),
+  z.strictObject({
+    reviewType: z.literal("identification-group"),
+    kind: z.literal("return-upstream"),
+  }),
 ]);
 
 const KnowledgeReviewDecisionV1Schema = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("approve-publication") }),
-  z.strictObject({ kind: z.literal("reject") }),
-  z.strictObject({ kind: z.literal("return-for-revision") }),
+  z.strictObject({
+    reviewType: z.literal("knowledge-revision"),
+    kind: z.literal("approve-publication"),
+  }),
+  z.strictObject({ reviewType: z.literal("knowledge-revision"), kind: z.literal("reject") }),
+  z.strictObject({
+    reviewType: z.literal("knowledge-revision"),
+    kind: z.literal("return-for-revision"),
+  }),
+]);
+
+const RuleConflictReviewDecisionV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    reviewType: z.literal("rule-conflict"),
+    kind: z.literal("approve-publication"),
+  }),
+  z.strictObject({ reviewType: z.literal("rule-conflict"), kind: z.literal("reject") }),
+  z.strictObject({
+    reviewType: z.literal("rule-conflict"),
+    kind: z.literal("return-for-revision"),
+  }),
 ]);
 
 const ResponseReviewDecisionV1Schema = z.discriminatedUnion("kind", [
   z.strictObject({
+    reviewType: z.literal("response-candidate"),
     kind: z.literal("submit-revised-candidate"),
     revisedCandidateRef: RecommendationCandidateRefV1Schema,
   }),
-  z.strictObject({ kind: z.literal("return-upstream") }),
-  z.strictObject({ kind: z.literal("reject") }),
+  z.strictObject({
+    reviewType: z.literal("response-candidate"),
+    kind: z.literal("return-upstream"),
+  }),
+  z.strictObject({ reviewType: z.literal("response-candidate"), kind: z.literal("reject") }),
 ]);
 
 const CalibrationReviewDecisionV1Schema = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("approve-draft-creation") }),
-  z.strictObject({ kind: z.literal("reject") }),
-  z.strictObject({ kind: z.literal("return-for-revision") }),
+  z.strictObject({
+    reviewType: z.literal("calibration-suggestion"),
+    kind: z.literal("approve-draft-creation"),
+  }),
+  z.strictObject({ reviewType: z.literal("calibration-suggestion"), kind: z.literal("reject") }),
+  z.strictObject({
+    reviewType: z.literal("calibration-suggestion"),
+    kind: z.literal("return-for-revision"),
+  }),
 ]);
 
-export const ReviewDecisionV1Schema = z.discriminatedUnion("kind", [
-  ...IdentificationReviewDecisionV1Schema.options,
-  ...KnowledgeReviewDecisionV1Schema.options,
-  ...ResponseReviewDecisionV1Schema.options,
-  ...CalibrationReviewDecisionV1Schema.options,
+export const ReviewDecisionV1Schema = z.discriminatedUnion("reviewType", [
+  IdentificationReviewDecisionV1Schema,
+  KnowledgeReviewDecisionV1Schema,
+  RuleConflictReviewDecisionV1Schema,
+  ResponseReviewDecisionV1Schema,
+  CalibrationReviewDecisionV1Schema,
 ]);
 export type ReviewDecisionV1 = z.infer<typeof ReviewDecisionV1Schema>;
+
+const reviewTargetMatchesType = (reviewType: ReviewTypeV1, targetKind: string) => {
+  switch (reviewType) {
+    case "identification-group":
+      return targetKind === "identification-candidate-set" || targetKind === "identification-group";
+    case "knowledge-revision":
+      return targetKind === "knowledge-revision";
+    case "rule-conflict":
+      return targetKind === "rule-conflict";
+    case "response-candidate":
+      return targetKind === "response-candidate" || targetKind === "recommendation-candidate";
+    case "calibration-suggestion":
+      return targetKind === "calibration-suggestion";
+  }
+};
+
+const matchingReviewTarget = (left: ReviewTargetRefV1, right: ReviewTargetRefV1) =>
+  left.kind === right.kind &&
+  left.reference.entityId === right.reference.entityId &&
+  left.reference.versionId === right.reference.versionId;
+
+const ReviewRequestPayloadV1Schema = z
+  .strictObject({
+    reviewType: ReviewTypeV1Schema,
+    targetRef: ReviewTargetRefV1Schema,
+    validationSnapshotRef: ContractReferenceV1Schema,
+    evidenceSnapshotRef: ContractReferenceV1Schema,
+    waitingRunRef: WorkflowRunRefV1Schema,
+    reviewPolicyRef: VersionReferenceSchema,
+  })
+  .superRefine((request, context) => {
+    if (!reviewTargetMatchesType(request.reviewType, request.targetRef.kind)) {
+      context.addIssue({
+        code: "custom",
+        path: ["targetRef"],
+        message: "review target does not match review type",
+      });
+    }
+  });
 
 export const ReviewRequestV1Schema = z.discriminatedUnion("kind", [
   commandSchema(
     "request-review",
-    z.strictObject({
-      reviewType: ReviewTypeV1Schema,
-      targetRef: ReviewTargetRefV1Schema,
-      validationSnapshotRef: ContractReferenceV1Schema,
-      evidenceSnapshotRef: ContractReferenceV1Schema,
-      waitingRunRef: WorkflowRunRefV1Schema,
-      reviewPolicyRef: VersionReferenceSchema,
-    }),
+    ReviewRequestPayloadV1Schema,
+    branchCapability("review-audit.request-review"),
   ),
 ]);
 export type ReviewRequestV1 = z.infer<typeof ReviewRequestV1Schema>;
 
+const ReviewDecisionCommandPayloadV1Schema = z
+  .strictObject({
+    reviewTaskRef: ReviewTaskRefV1Schema,
+    targetRef: ReviewTargetRefV1Schema,
+    decision: ReviewDecisionV1Schema,
+    reasonCode: IdentifierSchema,
+  })
+  .superRefine((command, context) => {
+    if (command.reviewTaskRef.reviewType !== command.decision.reviewType) {
+      context.addIssue({
+        code: "custom",
+        path: ["decision", "reviewType"],
+        message: "review decision does not match review task",
+      });
+    }
+    if (!reviewTargetMatchesType(command.decision.reviewType, command.targetRef.kind)) {
+      context.addIssue({
+        code: "custom",
+        path: ["targetRef"],
+        message: "review decision target does not match review type",
+      });
+    }
+    if (!matchingReviewTarget(command.reviewTaskRef.targetRef, command.targetRef)) {
+      context.addIssue({
+        code: "custom",
+        path: ["targetRef"],
+        message: "review decision target does not match review task target",
+      });
+    }
+  });
+
 export const ReviewDecisionCommandV1Schema = z.discriminatedUnion("kind", [
   commandSchema(
     "decide-review",
-    z.strictObject({
-      reviewTaskRef: ReviewTaskRefV1Schema,
-      targetRef: ReviewTargetRefV1Schema,
-      decision: ReviewDecisionV1Schema,
-      reasonCode: IdentifierSchema,
-    }),
+    ReviewDecisionCommandPayloadV1Schema,
+    branchCapability("review-audit.decide-review"),
   ),
 ]);
 export type ReviewDecisionCommandV1 = z.infer<typeof ReviewDecisionCommandV1Schema>;
@@ -1315,14 +1757,26 @@ export const TraceQueryV1Schema = z.discriminatedUnion("kind", [
       asOfRecordedAt: IsoDateTimeSchema.optional(),
       includeEvidenceSummary: z.boolean(),
     }),
+    branchCapability("review-audit.trace"),
   ),
 ]);
 export type TraceQueryV1 = z.infer<typeof TraceQueryV1Schema>;
 
-export const EngineeringDataApplySuccessV1Schema = z.strictObject({
-  sourceDeliveryRef: SourceDeliveryRefV1Schema,
-  sourceVersionRef: SourceVersionRefV1Schema,
-});
+export const EngineeringDataApplySuccessV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("register-source-delivery"),
+    sourceDeliveryRef: SourceDeliveryRefV1Schema,
+    sourceVersionRef: SourceVersionRefV1Schema,
+  }),
+  z.strictObject({
+    kind: z.literal("register-monitoring-batch"),
+    monitoringBatchRef: MonitoringBatchRefV1Schema,
+  }),
+  z.strictObject({
+    kind: z.literal("register-external-risk-event"),
+    externalRiskEventRef: ExternalRiskEventRefV1Schema,
+  }),
+]);
 export type EngineeringDataApplySuccessV1 = z.infer<typeof EngineeringDataApplySuccessV1Schema>;
 
 export const EngineeringFreezeSuccessV1Schema = z.discriminatedUnion("kind", [
@@ -1357,12 +1811,19 @@ export const KnowledgeGovernanceSuccessV1Schema = z.discriminatedUnion("kind", [
 ]);
 export type KnowledgeGovernanceSuccessV1 = z.infer<typeof KnowledgeGovernanceSuccessV1Schema>;
 
-export const KnowledgeResolutionSuccessV1Schema = z.strictObject({
-  processModelReleaseRef: ProcessModelReleaseRefV1Schema,
-  riskMechanismReleaseRef: RiskMechanismReleaseRefV1Schema,
-  retrievalEvidenceBaseReleaseRef: RetrievalEvidenceBaseReleaseRefV1Schema,
-  identificationPolicySetRef: IdentificationPolicySetRefV1Schema,
-});
+export const KnowledgeResolutionSuccessV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("identification-basis"),
+    processModelReleaseRef: ProcessModelReleaseRefV1Schema,
+    riskMechanismReleaseRef: RiskMechanismReleaseRefV1Schema,
+    retrievalEvidenceBaseReleaseRef: RetrievalEvidenceBaseReleaseRefV1Schema,
+    identificationPolicySetRef: IdentificationPolicySetRefV1Schema,
+  }),
+  z.strictObject({
+    kind: z.literal("assessment-basis"),
+    assessmentBasisReleaseSetRef: AssessmentBasisReleaseSetRefV1Schema,
+  }),
+]);
 export type KnowledgeResolutionSuccessV1 = z.infer<typeof KnowledgeResolutionSuccessV1Schema>;
 
 export const KnowledgeRetrievalSuccessV1Schema = z.strictObject({
@@ -1375,10 +1836,17 @@ export const IdentificationPlanSuccessV1Schema = z.strictObject({
 });
 export type IdentificationPlanSuccessV1 = z.infer<typeof IdentificationPlanSuccessV1Schema>;
 
-export const IdentificationAnalysisSuccessV1Schema = z.strictObject({
-  modelContextArtifactSetRef: ModelContextArtifactSetRefV1Schema,
-  candidateSetRef: IdentificationCandidateSetRefV1Schema,
-});
+export const IdentificationAnalysisSuccessV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("assemble-and-infer"),
+    modelContextArtifactSetRef: ModelContextArtifactSetRefV1Schema,
+    candidateSetRef: IdentificationCandidateSetRefV1Schema,
+  }),
+  z.strictObject({
+    kind: z.literal("repair-and-validate"),
+    validatedCandidateSetRef: ValidatedCandidateSetRefV1Schema,
+  }),
+]);
 export type IdentificationAnalysisSuccessV1 = z.infer<typeof IdentificationAnalysisSuccessV1Schema>;
 
 export const IdentificationFinalizationSuccessV1Schema = z.discriminatedUnion("kind", [
@@ -1436,6 +1904,7 @@ export const WarningResponseRecordSuccessV1Schema = z.discriminatedUnion("kind",
   z.strictObject({ kind: z.literal("execution"), executionRecordRef: ExecutionRecordRefV1Schema }),
   z.strictObject({ kind: z.literal("feedback"), feedbackRef: FeedbackRefV1Schema }),
   z.strictObject({ kind: z.literal("deviation"), deviationRecordRef: DeviationRecordRefV1Schema }),
+  z.strictObject({ kind: z.literal("unavailable"), reasonCode: IdentifierSchema }),
   z.strictObject({
     kind: z.literal("calibration"),
     calibrationSuggestionRef: CalibrationSuggestionRefV1Schema,

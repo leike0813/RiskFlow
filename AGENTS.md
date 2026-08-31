@@ -328,7 +328,13 @@
 - **任何能力/接口/模块级别的变更**必须先在 `openspec/changes/<name>/` 下创建 change（proposal → tasks → specs delta），通过 `openspec-apply-change` 应用，通过 `openspec-verify-change` 验证，通过 `openspec-archive-change` 归档。
 - **禁止**：在无对应 OpenSpec change 的情况下修改被规格覆盖的代码；将一次"修 bug"拆成与原任务语义不同的多个 change；将一次完整能力拆成过细的多个 change。
 - **冲突处理**：当代码与已归档 specs 不一致时，**以代码为准**，并在对应 specs 下开一个 drift 修正 change；不要静默忽略。
-- **`openspec/config.yaml`** 仍为空，需在合适的 change 中补充本项目的 tech stack / 领域知识上下文。
+- **`openspec/config.yaml`** 已由工程基线 change 固定当前技术栈、领域上下文与工件规则；后续仅在对应 OpenSpec change 中更新，禁止绕过规格直接改写。
+
+### 3.1 大型实现编排
+
+- 执行 39-change 路线前必须先读根目录 `IMPLEMENTATION-ORCHESTRATION-HANDBOOK.md`，并按其中的当前角色分工、滚动依赖图、worktree/提交检查点、Orca 生命周期和完成门推进。
+- 主调度 Agent 使用 Luna max；OpenSpec change 起草、任务规划和独立验证使用 Sol high；生产代码使用 Luna max；无判断冲突的简单杂活使用 OMP + MiniMax-M3 high。
+- Agent 之间不得用未提交文件传递实现状态。每次角色交接前由主调度 Agent审阅并形成 Git 检查点；Git 权限仍以用户在当前 session 的明确授权为准。
 
 ## 4. 代码组织约束
 

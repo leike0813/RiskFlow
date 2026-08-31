@@ -86,6 +86,9 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     .addColumn("lease_token", "text")
     .addColumn("lease_until", timestamptz)
     .addColumn("attempt_count", "integer", (column) => column.notNull().defaultTo(0))
+    .addColumn("delivery_policy_ref", jsonb)
+    .addColumn("delivery_policy_snapshot", jsonb)
+    .addColumn("delivery_policy_sha256", "char(64)")
     .addColumn("next_attempt_at", timestamptz, (column) => column.defaultTo(sql`clock_timestamp()`))
     .addColumn("published_at", timestamptz)
     .addColumn("last_error_code", "text")
@@ -107,6 +110,11 @@ export async function up(db: Kysely<unknown>): Promise<void> {
       sql`(status = 'published' AND published_at IS NOT NULL) OR (status <> 'published' AND published_at IS NULL)`,
     )
     .addCheckConstraint("events_attempt_ck", sql`attempt_count >= 0`)
+    .addCheckConstraint(
+      "events_delivery_policy_ck",
+      sql`(delivery_policy_ref IS NULL AND delivery_policy_snapshot IS NULL AND delivery_policy_sha256 IS NULL)
+        OR (delivery_policy_ref IS NOT NULL AND delivery_policy_snapshot IS NOT NULL AND delivery_policy_sha256 IS NOT NULL)`,
+    )
     .execute();
 
   await db.schema

@@ -24,7 +24,7 @@ export const runPostgresMigrations = async (
   config: PostgresMigrationRunConfig,
 ): Promise<PostgresMigrationRunResult> => {
   const connection = config.connection ?? config;
-  const runtime = createPostgresRuntime(connection);
+  const runtime = createPostgresRuntime(connection, "riskflow_migrator");
   try {
     const providerOptions = {
       migrationRoot: config.migrationRoot,

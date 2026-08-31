@@ -6,17 +6,21 @@ import {
   OutboxAcknowledgeV1Schema,
   OutboxClaimBatchRequestV1Schema,
   OutboxClaimBatchResultV1Schema,
+  OutboxDeliveryPolicyV1Schema,
   OutboxFailureV1Schema,
   OutboxOperationResultV1Schema,
   outboxBackoffDelayMs,
+  sha256CanonicalJson,
   type OutboxAcknowledgeV1,
   type OutboxClaimBatchRequestV1,
   type OutboxClaimBatchResultV1,
   type OutboxFailureV1,
   type OutboxOperationResultV1,
+  type OutboxDeliveryPolicyV1,
   type OutboxV1,
 } from "@riskflow/core/persistence";
 import { DomainEventV1Schema } from "@riskflow/contracts/events";
+import { VersionReferenceSchema } from "@riskflow/contracts/common";
 
 import { makePersistenceError, mapPostgresError } from "./pool.js";
 import type { PostgresDatabase } from "./types.js";
@@ -29,22 +33,30 @@ const asDate = (value: unknown): Date => {
 const asIso = (value: unknown): string => asDate(value).toISOString();
 
 const isLeaseLost = () => makePersistenceError("OUTBOX_LEASE_LOST", "outbox.lease", true);
+const policyConflict = () => makePersistenceError("TRANSACTION_FAILED", "outbox.policy");
+const jsonValue = (value: unknown) => value as never;
 
-const rowToClaimedEvent = (
-  row: {
-    event_id: string;
-    event_json: unknown;
-    lease_owner: string | null;
-    lease_token: string | null;
-    lease_until: unknown;
-    attempt_count: number;
-    payload_sha256: string;
-  },
-  request: OutboxClaimBatchRequestV1,
-): OutboxClaimBatchResultV1["events"][number] => {
+const parseFrozenPolicy = (value: unknown): OutboxDeliveryPolicyV1 => {
+  const parsed = OutboxDeliveryPolicyV1Schema.safeParse(value);
+  if (!parsed.success) throw policyConflict();
+  return parsed.data;
+};
+
+const rowToClaimedEvent = (row: {
+  event_id: string;
+  event_json: unknown;
+  lease_owner: string | null;
+  lease_token: string | null;
+  lease_until: unknown;
+  attempt_count: number;
+  payload_sha256: string;
+  delivery_policy_ref: unknown;
+}): OutboxClaimBatchResultV1["events"][number] => {
   const event = DomainEventV1Schema.safeParse(row.event_json);
+  const policyRef = VersionReferenceSchema.safeParse(row.delivery_policy_ref);
   if (
     !event.success ||
+    !policyRef.success ||
     row.lease_owner === null ||
     row.lease_token === null ||
     row.lease_until === null
@@ -58,7 +70,7 @@ const rowToClaimedEvent = (
     leaseToken: row.lease_token,
     leaseUntil: asIso(row.lease_until),
     attemptCount: row.attempt_count,
-    policyRef: request.policy.policyRef,
+    policyRef: policyRef.data,
     payloadSha256: row.payload_sha256,
   };
 };
@@ -76,6 +88,7 @@ export class PostgresOutbox implements OutboxV1 {
     const valid = parsed.data;
     const now = valid.now ?? new Date().toISOString();
     const nowDate = asDate(now);
+    const policySha256 = sha256CanonicalJson(valid.policy);
 
     try {
       return await this.#db.transaction().execute(async (transaction) => {
@@ -106,6 +119,27 @@ export class PostgresOutbox implements OutboxV1 {
         const leaseUntil = new Date(nowDate.getTime() + valid.policy.leaseDurationMs);
         const claimed = [] as OutboxClaimBatchResultV1["events"];
         for (const row of rows) {
+          const frozenPolicy =
+            row.delivery_policy_snapshot === null
+              ? valid.policy
+              : parseFrozenPolicy(row.delivery_policy_snapshot);
+          const frozenSha256 = row.delivery_policy_sha256 ?? policySha256;
+          if (frozenSha256 !== policySha256) throw policyConflict();
+          if (row.attempt_count >= frozenPolicy.maxAttempts) {
+            await transaction
+              .updateTable("outbox.events")
+              .set({
+                status: "exhausted",
+                lease_owner: null,
+                lease_token: null,
+                lease_until: null,
+                next_attempt_at: null,
+                updated_at: nowDate,
+              })
+              .where("event_id", "=", row.event_id)
+              .execute();
+            continue;
+          }
           const updated = await transaction
             .updateTable("outbox.events")
             .set({
@@ -114,12 +148,15 @@ export class PostgresOutbox implements OutboxV1 {
               lease_token: randomUUID(),
               lease_until: leaseUntil,
               attempt_count: row.attempt_count + 1,
+              delivery_policy_ref: jsonValue(frozenPolicy.policyRef),
+              delivery_policy_snapshot: jsonValue(frozenPolicy),
+              delivery_policy_sha256: frozenSha256,
               updated_at: nowDate,
             })
             .where("event_id", "=", row.event_id)
             .returningAll()
             .executeTakeFirstOrThrow();
-          claimed.push(rowToClaimedEvent(updated, valid));
+          claimed.push(rowToClaimedEvent(updated));
         }
         return OutboxClaimBatchResultV1Schema.parse({ events: claimed });
       });
@@ -180,7 +217,7 @@ export class PostgresOutbox implements OutboxV1 {
       return await this.#db.transaction().execute(async (transaction) => {
         const current = await transaction
           .selectFrom("outbox.events")
-          .select(["attempt_count"])
+          .select(["attempt_count", "delivery_policy_snapshot", "delivery_policy_sha256"])
           .where("event_id", "=", valid.eventId)
           .where("status", "=", "leased")
           .where("lease_owner", "=", valid.leaseOwner)
@@ -190,9 +227,14 @@ export class PostgresOutbox implements OutboxV1 {
           .executeTakeFirst();
         if (current === undefined) throw isLeaseLost();
 
-        const exhausted = current.attempt_count >= valid.policy.maxAttempts;
+        const frozenPolicy = parseFrozenPolicy(current.delivery_policy_snapshot);
+        if (current.delivery_policy_sha256 !== sha256CanonicalJson(valid.policy)) {
+          throw policyConflict();
+        }
+
+        const exhausted = current.attempt_count >= frozenPolicy.maxAttempts;
         const nextAttemptAt = new Date(
-          nowDate.getTime() + outboxBackoffDelayMs(valid.policy, current.attempt_count),
+          nowDate.getTime() + outboxBackoffDelayMs(frozenPolicy, current.attempt_count),
         );
         const updated = await transaction
           .updateTable("outbox.events")

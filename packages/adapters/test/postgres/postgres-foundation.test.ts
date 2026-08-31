@@ -1,10 +1,13 @@
-import { resolve } from "node:path";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { DomainEventV1 } from "@riskflow/contracts/events";
 import { DomainEventV1Schema } from "@riskflow/contracts/events";
+import type { ContractReferenceV1 } from "@riskflow/contracts/ports";
 import type {
   AtomicCommandV1,
   AtomicCommitV1,
@@ -23,7 +26,7 @@ import {
 import { getPostgresTransaction } from "../../src/postgres/transaction-unit.js";
 import { PostgresMigrationProvider } from "../../src/postgres/migrations/provider.js";
 import { runPostgresMigrations } from "../../src/postgres/migrations/run.js";
-import type { PostgresConnectionConfig } from "../../src/postgres/pool.js";
+import { mapPostgresError, type PostgresConnectionConfig } from "../../src/postgres/pool.js";
 import { startPostgresFixture, type PostgresTestFixture } from "./fixture.js";
 import * as foundationMigration from "../../src/postgres/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/000001_foundation.js";
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
@@ -47,6 +50,26 @@ const projectRevisionRef = (projectId: string) => ({
 const resultRef = (suffix: string) => ({
   kind: "risk-flow-run-result" as const,
   reference: { entityId: `result-${suffix}`, versionId: "v1" },
+});
+
+const workflowRunRef = (suffix: string) => ({
+  kind: "workflow-run" as const,
+  reference: { entityId: `workflow-run-${suffix}`, versionId: "v1" },
+});
+
+const riskFlowGraphState = (threadId: string, suffix: string) => ({
+  schemaVersion: "1" as const,
+  graphVersion: { entityId: "risk-flow-graph", versionId: "v1" },
+  runRef: workflowRunRef(suffix),
+  threadId,
+  entryMode: "identify-and-assess" as const,
+  authorizationContextRef: authorizationContextRef(suffix),
+  status: "completed" as const,
+  stage: "result-summary" as const,
+  identificationRunRef: workflowRunRef(`${suffix}-identification`),
+  assessmentRunRefs: [workflowRunRef(`${suffix}-assessment`)],
+  waitingRefs: [],
+  resultRef: resultRef(suffix),
 });
 
 const diagnosticRef = (suffix: string) => ({
@@ -184,6 +207,9 @@ describe("PostgreSQL foundation", () => {
   let outbox: ReturnType<typeof createPostgresOutbox> | undefined;
   let consumer: ReturnType<typeof createPostgresIdempotentConsumer> | undefined;
   let checkpointer: PostgresCheckpointer | undefined;
+  const unavailableReferenceIds = new Set<string>();
+  const validateReference = (reference: ContractReferenceV1) =>
+    !unavailableReferenceIds.has(reference.reference.entityId);
 
   const seedCommand = async (suffix: string, value: number) => {
     const command = makeCommand(suffix, value);
@@ -218,7 +244,10 @@ describe("PostgreSQL foundation", () => {
       ]),
     );
 
-    checkpointer = await setupPostgresCheckpointer(fixture.checkpointer);
+    checkpointer = await setupPostgresCheckpointer({
+      ...fixture.checkpointer,
+      validateReference,
+    });
     transactionUnit = createPostgresTransactionUnit(fixture.app);
     outbox = createPostgresOutbox(fixture.worker);
     consumer = createPostgresIdempotentConsumer(fixture.worker);
@@ -250,9 +279,40 @@ describe("PostgreSQL foundation", () => {
     );
     expect(publicCreate.rows.every((schema) => schema.can_create === false)).toBe(true);
 
+    const wrongOwners = await fixture!.adminPool.query(
+      `SELECT n.nspname, c.relname, pg_get_userbyid(c.relowner) AS owner
+       FROM pg_class c
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = ANY($1::text[])
+         AND c.relkind IN ('r', 'p')
+         AND pg_get_userbyid(c.relowner) <> CASE
+           WHEN n.nspname = 'langgraph_checkpoint' THEN 'riskflow_checkpointer'
+           ELSE 'riskflow_migrator'
+         END`,
+      [["business", "audit", "outbox", "langgraph_checkpoint"]],
+    );
+    expect(wrongOwners.rows).toEqual([]);
+
+    await fixture!.adminPool.query(
+      "CREATE ROLE riskflow_rotated_worker_login LOGIN PASSWORD 'riskflow-rotated-password' IN ROLE riskflow_app, riskflow_outbox_worker",
+    );
+    await fixture!.adminPool.query(
+      "CREATE ROLE riskflow_rotated_checkpointer_login LOGIN PASSWORD 'riskflow-rotated-password' IN ROLE riskflow_checkpointer",
+    );
+
     const appPool = userPool(fixture!.app);
     const workerPool = userPool(fixture!.worker);
     const checkpointPool = userPool(fixture!.checkpointer);
+    const rotatedWorkerPool = userPool({
+      ...fixture!.worker,
+      user: "riskflow_rotated_worker_login",
+      password: "riskflow-rotated-password",
+    });
+    const rotatedCheckpointPool = userPool({
+      ...fixture!.checkpointer,
+      user: "riskflow_rotated_checkpointer_login",
+      password: "riskflow-rotated-password",
+    });
     try {
       await expect(
         appPool.query("CREATE TABLE business.app_must_not_ddl (id text PRIMARY KEY)"),
@@ -277,10 +337,21 @@ describe("PostgreSQL foundation", () => {
       await expect(
         checkpointPool.query("SELECT count(*) FROM outbox.events"),
       ).rejects.toMatchObject({ code: "42501" });
+      await expect(
+        rotatedWorkerPool.query("SELECT count(*) FROM business.fixture_facts"),
+      ).resolves.toBeDefined();
+      await expect(
+        rotatedWorkerPool.query("SELECT count(*) FROM outbox.events"),
+      ).resolves.toBeDefined();
+      await expect(
+        rotatedCheckpointPool.query("SELECT count(*) FROM langgraph_checkpoint.checkpoints"),
+      ).resolves.toBeDefined();
     } finally {
       await appPool.end();
       await workerPool.end();
       await checkpointPool.end();
+      await rotatedWorkerPool.end();
+      await rotatedCheckpointPool.end();
     }
   });
 
@@ -324,6 +395,42 @@ describe("PostgreSQL foundation", () => {
       "000001_platform_deliver-postgresql-outbox-and-checkpoint-foundation_foundation",
       "900001_platform_deliver-postgresql-outbox-and-checkpoint-foundation_fixture_fact",
     ]);
+  });
+
+  it("discovers compiled migrations while ignoring generated sidecars", async () => {
+    const root = await mkdtemp(join(tmpdir(), "riskflow-migrations-"));
+    const migrationDir = join(
+      root,
+      "platform",
+      "deliver-postgresql-outbox-and-checkpoint-foundation",
+    );
+    await mkdir(migrationDir, { recursive: true });
+    await Promise.all([
+      writeFile(join(migrationDir, "000001_foundation.js"), "export default {}", "utf8"),
+      writeFile(join(migrationDir, "000001_foundation.d.ts"), "export {};", "utf8"),
+      writeFile(join(migrationDir, "000001_foundation.js.map"), "{}", "utf8"),
+      writeFile(join(migrationDir, "README.md"), "generated support file", "utf8"),
+    ]);
+    try {
+      const provider = new PostgresMigrationProvider({
+        migrationRoot: root,
+        loadModule: async () => ({ up: async () => undefined, down: async () => undefined }),
+      });
+      expect(Object.keys(await provider.getMigrations())).toEqual([
+        "000001_platform_deliver-postgresql-outbox-and-checkpoint-foundation_foundation",
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies PostgreSQL and network connection interruptions as retryable", () => {
+    for (const code of ["08001", "08P01", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT"]) {
+      expect(mapPostgresError({ code }, "connection.test")).toMatchObject({
+        code: "CONNECTION_FAILED",
+        retryable: true,
+      });
+    }
   });
 
   it("commits facts, audit, receipts and multiple events atomically", async () => {
@@ -651,6 +758,87 @@ describe("PostgreSQL foundation", () => {
     expect(exhaustedRow.rows[0]).toMatchObject({ status: "exhausted", next_attempt_at: null });
   });
 
+  it("freezes Outbox policy and exhausts leases after worker crashes", async () => {
+    await fixture!.adminPool.query("DELETE FROM outbox.events");
+    const driftSeed = await seedCommand(nextId("outbox-policy-drift"), 7);
+    const frozenPolicy = policy("frozen", {
+      batchSize: 1,
+      leaseDurationMs: 1,
+      maxAttempts: 3,
+    });
+    const driftedPolicy = { ...frozenPolicy, maxAttempts: 4 };
+    const firstClaim = await outbox!.claimBatch({
+      policy: frozenPolicy,
+      leaseOwner: "policy-worker-one",
+      now: timestamp,
+    });
+    expect(firstClaim.events[0]?.eventId).toBe(driftSeed.commit.events[0]?.eventId);
+    await expect(
+      outbox!.claimBatch({
+        policy: driftedPolicy,
+        leaseOwner: "policy-worker-two",
+        now: "2030-01-01T00:00:00.002Z",
+      }),
+    ).rejects.toMatchObject({ code: "TRANSACTION_FAILED", stage: "outbox.policy" });
+    const reclaimed = await outbox!.claimBatch({
+      policy: frozenPolicy,
+      leaseOwner: "policy-worker-two",
+      now: "2030-01-01T00:00:00.002Z",
+    });
+    await expect(
+      outbox!.recordFailure({
+        eventId: reclaimed.events[0]!.eventId,
+        leaseOwner: reclaimed.events[0]!.leaseOwner,
+        leaseToken: reclaimed.events[0]!.leaseToken,
+        policy: driftedPolicy,
+        errorCode: "policy-drift",
+        diagnosticRef: diagnosticRef("policy-drift"),
+        now: "2030-01-01T00:00:00.002Z",
+      }),
+    ).rejects.toMatchObject({ code: "TRANSACTION_FAILED", stage: "outbox.policy" });
+
+    await fixture!.adminPool.query("DELETE FROM outbox.events");
+    const crashSeed = await seedCommand(nextId("outbox-crash"), 8);
+    const crashPolicy = policy("crash", {
+      batchSize: 1,
+      leaseDurationMs: 1,
+      maxAttempts: 1,
+    });
+    const crashClaim = await outbox!.claimBatch({
+      policy: crashPolicy,
+      leaseOwner: "crash-worker",
+      now: timestamp,
+    });
+    expect(crashClaim.events[0]?.eventId).toBe(crashSeed.commit.events[0]?.eventId);
+    expect(
+      (
+        await outbox!.claimBatch({
+          policy: crashPolicy,
+          leaseOwner: "replacement-worker",
+          now: "2030-01-01T00:00:00.002Z",
+        })
+      ).events,
+    ).toEqual([]);
+    const exhausted = await fixture!.adminPool.query<{
+      status: string;
+      attempt_count: number;
+      delivery_policy_ref: unknown;
+      delivery_policy_snapshot: unknown;
+      delivery_policy_sha256: string | null;
+    }>(
+      `SELECT status, attempt_count, delivery_policy_ref, delivery_policy_snapshot, delivery_policy_sha256
+       FROM outbox.events WHERE event_id = $1`,
+      [crashSeed.commit.events[0]!.eventId],
+    );
+    expect(exhausted.rows[0]).toMatchObject({
+      status: "exhausted",
+      attempt_count: 1,
+      delivery_policy_ref: crashPolicy.policyRef,
+      delivery_policy_snapshot: crashPolicy,
+    });
+    expect(exhausted.rows[0]?.delivery_policy_sha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
   it("makes consumer facts and completion receipts idempotent", async () => {
     const seed = await seedCommand(nextId("consumer-success"), 7);
     const event = seed.commit.events[0]!;
@@ -748,14 +936,19 @@ describe("PostgreSQL foundation", () => {
   it("uses official PostgresSaver setup and isolates checkpoint state", async () => {
     expect(checkpointer).toBeDefined();
     const threadId = nextId("checkpoint-thread");
+    const checkpointSuffix = nextId("checkpoint-state");
     const config = { configurable: { thread_id: threadId, checkpoint_ns: "" } } as const;
+    const graphState = riskFlowGraphState(threadId, checkpointSuffix);
+    const channelVersions = Object.fromEntries(
+      Object.keys(graphState).map((channel) => [channel, 1]),
+    );
     const checkpoint = {
       v: 4,
       id: `1f000000-0000-6000-8000-${String(sequence).padStart(12, "0")}`,
       ts: timestamp,
-      channel_values: { state: "assessment" },
-      channel_versions: { state: 1 },
-      versions_seen: { input: { state: 1 } },
+      channel_values: graphState,
+      channel_versions: channelVersions,
+      versions_seen: { input: channelVersions },
     } as Parameters<PostgresCheckpointer["put"]>[1];
     const metadata = {
       source: "loop",
@@ -773,8 +966,8 @@ describe("PostgreSQL foundation", () => {
       },
       resultRef: resultRef("checkpoint"),
     } as Parameters<PostgresCheckpointer["put"]>[2];
-    const savedConfig = await checkpointer!.put(config, checkpoint, metadata, { state: 1 });
-    await checkpointer!.putWrites(savedConfig, [["state", "ready"]], "checkpoint-task");
+    const savedConfig = await checkpointer!.put(config, checkpoint, metadata, channelVersions);
+    await checkpointer!.putWrites(savedConfig, [["stage", "result-summary"]], "checkpoint-task");
     const tuple = await checkpointer!.getTuple(savedConfig);
     expect(tuple?.checkpoint.id).toBe(checkpoint.id);
     expect(tuple?.metadata).toMatchObject({ threadId, runId: metadata.runId });
@@ -786,9 +979,20 @@ describe("PostgreSQL foundation", () => {
     await expect(
       checkpointer!.put(
         config,
-        { ...checkpoint, channel_values: { messages: "forbidden" } },
+        { ...checkpoint, channel_values: { ...graphState, data: { secret: "forbidden" } } },
         metadata,
-        { state: 1 },
+        channelVersions,
+      ),
+    ).rejects.toMatchObject({ code: "CHECKPOINT_INCONSISTENT" });
+    await expect(
+      checkpointer!.putWrites(savedConfig, [["data", { secret: "forbidden" }]], "bad-write"),
+    ).rejects.toMatchObject({ code: "CHECKPOINT_INCONSISTENT" });
+    await expect(
+      checkpointer!.put(
+        config,
+        { ...checkpoint, channel_values: { ...graphState, threadId: "different-thread" } },
+        metadata,
+        channelVersions,
       ),
     ).rejects.toMatchObject({ code: "CHECKPOINT_INCONSISTENT" });
     await expect(
@@ -799,9 +1003,25 @@ describe("PostgreSQL foundation", () => {
           ...metadata,
           resultRef: { kind: "unknown", reference: { entityId: "bad", versionId: "v1" } },
         } as never,
-        { state: 1 },
+        channelVersions,
       ),
     ).rejects.toMatchObject({ code: "CHECKPOINT_INCONSISTENT" });
+
+    unavailableReferenceIds.add(graphState.resultRef.reference.entityId);
+    await expect(checkpointer!.getTuple(savedConfig)).rejects.toMatchObject({
+      code: "CHECKPOINT_INCONSISTENT",
+      stage: "checkpointer.reference",
+    });
+    const listWithMissingReference = async () => {
+      const items = [];
+      for await (const item of checkpointer!.list(config)) items.push(item);
+      return items;
+    };
+    await expect(listWithMissingReference()).rejects.toMatchObject({
+      code: "CHECKPOINT_INCONSISTENT",
+      stage: "checkpointer.reference",
+    });
+    unavailableReferenceIds.delete(graphState.resultRef.reference.entityId);
 
     const appPool = userPool(fixture!.app);
     const workerPool = userPool(fixture!.worker);
@@ -822,7 +1042,10 @@ describe("PostgreSQL foundation", () => {
     }
 
     await checkpointer!.end();
-    checkpointer = createPostgresCheckpointer(fixture!.checkpointer);
+    checkpointer = createPostgresCheckpointer({
+      ...fixture!.checkpointer,
+      validateReference,
+    });
     const restored = await checkpointer.getTuple(savedConfig);
     expect(restored?.checkpoint.id).toBe(checkpoint.id);
     await checkpointer.deleteThread(threadId);

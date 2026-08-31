@@ -12,7 +12,7 @@ export async function up(db: Kysely<unknown>): Promise<void> {
       column.notNull().defaultTo(sql`clock_timestamp()`),
     )
     .execute();
-  await sql`GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE business.fixture_facts TO riskflow_app, riskflow_outbox_worker`.execute(
+  await sql`GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE business.fixture_facts TO riskflow_app`.execute(
     db,
   );
 }

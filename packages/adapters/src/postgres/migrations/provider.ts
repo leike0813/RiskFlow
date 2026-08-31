@@ -23,6 +23,8 @@ const domainSet = new Set<string>(POSTGRES_MIGRATION_DOMAINS);
 const changeIdPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const migrationFilePattern = /^([0-9]{6})_([a-z0-9]+(?:[-_][a-z0-9]+)*)\.(ts|js|mjs|cjs)$/;
 const providerSupportFilePattern = /^(provider|run)\.(ts|js|mjs|cjs)$/;
+const generatedArtifactPattern = /(?:\.d\.(?:ts|mts|cts)|\.map)$/;
+const migrationSourcePattern = /\.(?:ts|js|mjs|cjs)$/;
 
 export interface PostgresMigrationModule {
   up: Migration["up"];
@@ -122,6 +124,12 @@ export class PostgresMigrationProvider implements MigrationProvider {
     const structural = files
       .filter(({ root, filePath }) => {
         const relativePath = relative(root, filePath);
+        if (
+          generatedArtifactPattern.test(relativePath) ||
+          !migrationSourcePattern.test(relativePath)
+        ) {
+          return false;
+        }
         return !(
           relativePath.split(sep).length === 1 && providerSupportFilePattern.test(relativePath)
         );

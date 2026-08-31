@@ -62,6 +62,9 @@ export interface OutboxEventRow {
   lease_token: string | null;
   lease_until: TimestampColumn | null;
   attempt_count: number;
+  delivery_policy_ref: JsonColumn | null;
+  delivery_policy_snapshot: JsonColumn | null;
+  delivery_policy_sha256: string | null;
   next_attempt_at: TimestampColumn | null;
   published_at: TimestampColumn | null;
   last_error_code: string | null;

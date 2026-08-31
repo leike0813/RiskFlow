@@ -14,10 +14,10 @@ const ROOT_PASSWORD = "riskflow-root-password";
 const ROLE_PASSWORD = "riskflow-role-password";
 
 const roleNames = [
-  ["riskflow_migrator_login", "riskflow_migrator"],
-  ["riskflow_app_login", "riskflow_app"],
-  ["riskflow_outbox_worker_login", "riskflow_outbox_worker"],
-  ["riskflow_checkpointer_login", "riskflow_checkpointer"],
+  ["riskflow_migrator_login", ["riskflow_migrator"]],
+  ["riskflow_app_login", ["riskflow_app"]],
+  ["riskflow_outbox_worker_login", ["riskflow_app", "riskflow_outbox_worker"]],
+  ["riskflow_checkpointer_login", ["riskflow_checkpointer"]],
 ] as const;
 
 export interface PostgresTestFixture {
@@ -57,9 +57,9 @@ export const startPostgresFixture = async (): Promise<PostgresTestFixture> => {
   const adminPool = new Pool(admin);
   try {
     await bootstrapPostgresFoundation(admin);
-    for (const [loginRole, groupRole] of roleNames) {
+    for (const [loginRole, groupRoles] of roleNames) {
       await adminPool.query(
-        `CREATE ROLE ${quoteIdentifier(loginRole)} LOGIN PASSWORD '${ROLE_PASSWORD}' IN ROLE ${quoteIdentifier(groupRole)}`,
+        `CREATE ROLE ${quoteIdentifier(loginRole)} LOGIN PASSWORD '${ROLE_PASSWORD}' IN ROLE ${groupRoles.map(quoteIdentifier).join(", ")}`,
       );
     }
   } catch (error) {

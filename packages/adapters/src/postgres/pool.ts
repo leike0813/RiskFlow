@@ -29,6 +29,8 @@ export interface PostgresRuntime {
   close(): Promise<void>;
 }
 
+export type PostgresSessionRole = "riskflow_migrator" | "riskflow_checkpointer";
+
 export class PostgresPersistenceError extends Error implements PersistenceErrorV1 {
   readonly code: PersistenceErrorCodeV1;
   readonly retryable: boolean;
@@ -77,7 +79,13 @@ export const mapPostgresError = (
     typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
       ? error.code
       : undefined;
-  if (code === "57P01" || code === "08000" || code === "08003" || code === "08006") {
+  if (
+    code === "57P01" ||
+    code?.startsWith("08") ||
+    code === "ECONNREFUSED" ||
+    code === "ECONNRESET" ||
+    code === "ETIMEDOUT"
+  ) {
     return makePersistenceError("CONNECTION_FAILED", stage, true);
   }
   if (code === "40001" || code === "40P01" || code === "55P03") {
@@ -86,15 +94,23 @@ export const mapPostgresError = (
   return makePersistenceError(fallbackCode, stage);
 };
 
-export const createPostgresPool = (config: PostgresConnectionConfig): pg.Pool => {
+export const createPostgresPool = (
+  config: PostgresConnectionConfig,
+  sessionRole?: PostgresSessionRole,
+): pg.Pool => {
   if (!config.connectionString && !config.host && !config.database) {
     throw makePersistenceError("CONNECTION_FAILED", "pool.create");
   }
-  return new pg.Pool(config as pg.PoolConfig);
+  return new pg.Pool(
+    sessionRole === undefined ? config : { ...config, options: `-c role=${sessionRole}` },
+  );
 };
 
-export const createPostgresRuntime = (config: PostgresConnectionConfig): PostgresRuntime => {
-  const pool = createPostgresPool(config);
+export const createPostgresRuntime = (
+  config: PostgresConnectionConfig,
+  sessionRole?: PostgresSessionRole,
+): PostgresRuntime => {
+  const pool = createPostgresPool(config, sessionRole);
   const db = new Kysely<PostgresDatabase>({ dialect: new PostgresDialect({ pool }) });
   return {
     pool,

@@ -1,6 +1,6 @@
 ## 1. 依赖检查点（主 Agent）
 
-- [ ] 1.1 在 `packages/contracts/package.json` 精确登记 `zod@4.5.4`，在 `config/dependency-policy.json` 登记 proposal/design 指定的用途、MIT 许可证、官方来源、离线方式和退出条件，更新 `pnpm-lock.yaml`；执行 `pnpm install --frozen-lockfile && pnpm deps:policy` 必须通过。除这三个文件外不得修改根工具链或依赖检查实现。
+- [x] 1.1 在 `packages/contracts/package.json` 精确登记 `zod@4.5.4`，在 `config/dependency-policy.json` 登记 proposal/design 指定的用途、MIT 许可证、官方来源、离线方式和退出条件，更新 `pnpm-lock.yaml`；执行 `pnpm install --frozen-lockfile && pnpm deps:policy` 必须通过。除这三个文件外不得修改根工具链或依赖检查实现。
 
 ## 2. 契约夹具
 

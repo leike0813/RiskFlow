@@ -29,6 +29,15 @@
       "exitCondition": "安全问题、Node 24 不兼容或 API 验收失败"
     },
     {
+      "name": "zod",
+      "version": "4.5.4",
+      "purpose": "共享领域 DTO 的运行时校验与 TypeScript 类型派生",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/zod",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "停止维护、Node 24 或 TypeScript 5.9 兼容性失败，或平台提供等价运行时与静态单一事实源"
+    },
+    {
       "name": "typescript",
       "version": "5.9.3",
       "purpose": "TypeScript project references 编译",

@@ -10,6 +10,18 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./vocabulary": {
+      "types": "./dist/vocabulary/index.d.ts",
+      "import": "./dist/vocabulary/index.js"
+    },
+    "./common": {
+      "types": "./dist/common/index.d.ts",
+      "import": "./dist/common/index.js"
+    },
+    "./records": {
+      "types": "./dist/records/index.d.ts",
+      "import": "./dist/records/index.js"
     }
   }
 }

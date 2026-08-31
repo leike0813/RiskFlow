@@ -672,99 +672,106 @@ export type ModuleErrorV1 = z.infer<typeof ModuleErrorV1Schema>;
 const agentTaskResultBase = {
   kind: z.literal("agent-task-result"),
   reference: VersionReferenceSchema,
-  agentTaskRef: AgentTaskRefV1Schema,
 };
 
-const AgentTaskCompletedResultV1Schema = z
-  .strictObject({
-    ...agentTaskResultBase,
-    status: z.literal("completed"),
-    incrementRef: ContractReferenceV1Schema.optional(),
-    candidateRef: ContractReferenceV1Schema.optional(),
-    validationRef: ContractReferenceV1Schema.optional(),
-    formalResultRef: ContractReferenceV1Schema.optional(),
-  })
-  .superRefine((result, context) => {
-    const outputRefs = [
-      result.incrementRef,
-      result.candidateRef,
-      result.validationRef,
-      result.formalResultRef,
-    ];
-    if (outputRefs.every((ref) => ref === undefined)) {
-      context.addIssue({
-        code: "custom",
-        path: ["status"],
-        message: "completed agent task requires an output reference",
-      });
-    }
+const agentTaskRefForType = <const T extends AgentTaskTypeV1>(taskType: T) =>
+  AgentTaskRefV1Schema.extend({ taskType: z.literal(taskType) });
 
-    const taskType = result.agentTaskRef.taskType;
-    const disallowed =
-      taskType === "retrieval-review" || taskType === "data-cleaning"
-        ? (result.candidateRef ?? result.formalResultRef)
-        : taskType === "knowledge-authoring"
-          ? result.formalResultRef
-          : taskType === "response-recommendation" || taskType === "calibration-suggestion"
-            ? result.incrementRef
-            : undefined;
-    if (disallowed !== undefined) {
-      context.addIssue({
-        code: "custom",
-        path: ["agentTaskRef", "taskType"],
-        message: "agent task output does not match task type",
-      });
-    }
+const refineAgentTaskCompletedResult = (
+  result: {
+    incrementRef?: unknown;
+    candidateRef?: unknown;
+    validationRef?: unknown;
+    formalResultRef?: unknown;
+  },
+  context: z.RefinementCtx,
+) => {
+  const primaryOutputCount = [
+    result.incrementRef,
+    result.candidateRef,
+    result.formalResultRef,
+  ].filter((ref) => ref !== undefined).length;
+  if (primaryOutputCount === 0 && result.validationRef === undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["status"],
+      message: "completed agent task requires an output reference",
+    });
+  }
+  if (primaryOutputCount > 1) {
+    context.addIssue({
+      code: "custom",
+      path: ["status"],
+      message: "completed agent task cannot combine primary output families",
+    });
+  }
+};
 
-    const expectedCandidateKind =
-      taskType === "response-recommendation"
-        ? "recommendation-candidate"
-        : taskType === "calibration-suggestion"
-          ? "calibration-suggestion"
-          : undefined;
-    if (
-      expectedCandidateKind !== undefined &&
-      result.candidateRef !== undefined &&
-      result.candidateRef.kind !== expectedCandidateKind
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["candidateRef", "kind"],
-        message: "candidate reference does not match task type",
-      });
-    }
-
-    const expectedFormalResultKind =
-      taskType === "response-recommendation"
-        ? "response-recommendation"
-        : taskType === "calibration-suggestion"
-          ? "calibration-suggestion"
-          : undefined;
-    if (
-      expectedFormalResultKind !== undefined &&
-      result.formalResultRef !== undefined &&
-      result.formalResultRef.kind !== expectedFormalResultKind
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["formalResultRef", "kind"],
-        message: "formal result reference does not match task type",
-      });
-    }
-  });
+const AgentTaskCompletedResultV1Schema = z.union([
+  z
+    .strictObject({
+      ...agentTaskResultBase,
+      status: z.literal("completed"),
+      agentTaskRef: agentTaskRefForType("data-cleaning"),
+      incrementRef: ContentArtifactRefV1Schema.optional(),
+      validationRef: ValidationSnapshotRefV1Schema.optional(),
+    })
+    .superRefine(refineAgentTaskCompletedResult),
+  z
+    .strictObject({
+      ...agentTaskResultBase,
+      status: z.literal("completed"),
+      agentTaskRef: agentTaskRefForType("knowledge-authoring"),
+      incrementRef: ContentArtifactRefV1Schema.optional(),
+      candidateRef: KnowledgeRevisionRefV1Schema.optional(),
+      validationRef: ValidationSnapshotRefV1Schema.optional(),
+    })
+    .superRefine(refineAgentTaskCompletedResult),
+  z
+    .strictObject({
+      ...agentTaskResultBase,
+      status: z.literal("completed"),
+      agentTaskRef: agentTaskRefForType("retrieval-review"),
+      incrementRef: RetrievalArtifactSetRefV1Schema.optional(),
+      validationRef: ValidationSnapshotRefV1Schema.optional(),
+    })
+    .superRefine(refineAgentTaskCompletedResult),
+  z
+    .strictObject({
+      ...agentTaskResultBase,
+      status: z.literal("completed"),
+      agentTaskRef: agentTaskRefForType("response-recommendation"),
+      candidateRef: RecommendationCandidateRefV1Schema.optional(),
+      validationRef: ValidationSnapshotRefV1Schema.optional(),
+      formalResultRef: ResponseRecommendationRefV1Schema.optional(),
+    })
+    .superRefine(refineAgentTaskCompletedResult),
+  z
+    .strictObject({
+      ...agentTaskResultBase,
+      status: z.literal("completed"),
+      agentTaskRef: agentTaskRefForType("calibration-suggestion"),
+      candidateRef: CalibrationSuggestionRefV1Schema.optional(),
+      validationRef: ValidationSnapshotRefV1Schema.optional(),
+      formalResultRef: CalibrationSuggestionRefV1Schema.optional(),
+    })
+    .superRefine(refineAgentTaskCompletedResult),
+]);
 
 const AgentTaskFailedResultV1Schema = z.strictObject({
   ...agentTaskResultBase,
+  agentTaskRef: AgentTaskRefV1Schema,
   status: z.literal("failed"),
   errorRef: WorkflowErrorRefV1Schema,
 });
 
 const AgentTaskCancelledResultV1Schema = z.strictObject({
   ...agentTaskResultBase,
+  agentTaskRef: AgentTaskRefV1Schema,
   status: z.literal("cancelled"),
 });
 
-export const AgentTaskResultRefV1Schema = z.discriminatedUnion("status", [
+export const AgentTaskResultRefV1Schema = z.union([
   AgentTaskCompletedResultV1Schema,
   AgentTaskFailedResultV1Schema,
   AgentTaskCancelledResultV1Schema,
@@ -1406,6 +1413,7 @@ const StartWorkflowPayloadV1Schema = z.discriminatedUnion("entryMode", [
     ...workflowStartControlShape,
     entryMode: z.literal("historical-backfill"),
     riskInput: RiskInputVersionRefV1Schema,
+    applicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
     effectiveAt: IsoDateTimeSchema,
     assessmentBasisReleaseSetRef: AssessmentBasisReleaseSetRefV1Schema,
   }),
@@ -1805,8 +1813,8 @@ export const KnowledgeGovernanceSuccessV1Schema = z.discriminatedUnion("kind", [
   }),
   z.strictObject({ kind: z.literal("release"), knowledgeReleaseRef: KnowledgeReleaseRefV1Schema }),
   z.strictObject({
-    kind: z.literal("preparation"),
-    knowledgePreparationTaskRef: KnowledgePreparationTaskRefV1Schema,
+    kind: z.literal("review-task"),
+    reviewTaskRef: ReviewTaskRefV1Schema,
   }),
 ]);
 export type KnowledgeGovernanceSuccessV1 = z.infer<typeof KnowledgeGovernanceSuccessV1Schema>;
@@ -1861,7 +1869,10 @@ export const IdentificationFinalizationSuccessV1Schema = z.discriminatedUnion("k
     standardizedRiskRecordRefs: z.array(StandardizedRiskRecordRefV1Schema).min(1),
     assessmentEventRefs: z.array(DomainEventRefV1Schema).min(1),
   }),
-  z.strictObject({ kind: z.literal("skipped"), skippedGroupRefs: z.array(MergePlanRefV1Schema) }),
+  z.strictObject({
+    kind: z.literal("skipped"),
+    skippedGroupRefs: z.array(IdentificationGroupRefV1Schema),
+  }),
 ]);
 export type IdentificationFinalizationSuccessV1 = z.infer<
   typeof IdentificationFinalizationSuccessV1Schema
@@ -1900,7 +1911,11 @@ export const RecommendationSuccessV1Schema = z.discriminatedUnion("kind", [
 export type RecommendationSuccessV1 = z.infer<typeof RecommendationSuccessV1Schema>;
 
 export const WarningResponseRecordSuccessV1Schema = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("adoption"), routeDecisionRef: RouteDecisionRefV1Schema }),
+  z.strictObject({
+    kind: z.literal("adoption"),
+    routeDecisionRef: RouteDecisionRefV1Schema,
+    forecastRunRef: WorkflowRunRefV1Schema,
+  }),
   z.strictObject({ kind: z.literal("execution"), executionRecordRef: ExecutionRecordRefV1Schema }),
   z.strictObject({ kind: z.literal("feedback"), feedbackRef: FeedbackRefV1Schema }),
   z.strictObject({ kind: z.literal("deviation"), deviationRecordRef: DeviationRecordRefV1Schema }),
@@ -1923,7 +1938,10 @@ export const ReviewDecisionSuccessV1Schema = z.strictObject({
 });
 export type ReviewDecisionSuccessV1 = z.infer<typeof ReviewDecisionSuccessV1Schema>;
 
-export const TraceSuccessV1Schema = z.strictObject({ auditTrailRef: AuditTrailRefV1Schema });
+export const TraceSuccessV1Schema = z.union([
+  z.strictObject({ auditTrailRef: AuditTrailRefV1Schema }),
+  z.strictObject({ queryResultRef: QueryResultRefV1Schema }),
+]);
 export type TraceSuccessV1 = z.infer<typeof TraceSuccessV1Schema>;
 
 export const AgentTaskStartSuccessV1Schema = z.strictObject({ agentTaskRef: AgentTaskRefV1Schema });

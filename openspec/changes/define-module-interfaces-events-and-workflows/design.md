@@ -83,7 +83,7 @@ ReviewTaskRefV1 = {
 }
 ```
 
-`ReviewTargetRefV1Schema` 只允许 identification candidate/group、knowledge revision/rule conflict、response candidate、calibration suggestion。`AgentTaskResultRefV1Schema` 固定 task ref、终态、增量/候选/校验/错误/正式结果引用中的合法组合；它不复制增量正文。事件和图状态只使用这些引用。
+`ReviewTargetRefV1Schema` 只允许 identification candidate/group、knowledge revision/rule conflict、response candidate、calibration suggestion。`AgentTaskResultRefV1Schema` 固定 task ref、终态、增量/候选/校验/错误/正式结果引用中的合法组合；完成态按五类任务只允许本任务的精确主产物族：data-cleaning 为 `ContentArtifactRefV1`，knowledge-authoring 为 `ContentArtifactRefV1` 或 `KnowledgeRevisionRefV1`，retrieval-review 为 `RetrievalArtifactSetRefV1`，response-recommendation 为 `RecommendationCandidateRefV1` 或 `ResponseRecommendationRefV1`，calibration-suggestion 为 `CalibrationSuggestionRefV1`；所有完成态可另带 `ValidationSnapshotRefV1`，但主产物族彼此互斥且至少有一个产物引用。失败态只允许错误引用，取消态不带产物。它不复制增量正文。事件和图状态只使用这些引用。
 
 **选项：**（A）所有字段都用裸 `VersionReferenceSchema`；（B）为每个实体手写 branded ID；（C）共享两字段形状、导出按事实类型辨识的命名引用。  
 **推荐：** C。  
@@ -204,7 +204,7 @@ retrieve(query: KnowledgeRetrievalQueryV1)
 
 | 方法 | `kind` 分支 | 输入 | 成功结果 | capability |
 | --- | --- | --- | --- | --- |
-| `govern` | `submit-revision`、`request-review`、`publish-approved-release`、`deactivate-release`、`rollback-by-new-release` | 定义类型、目标/基线精确版本、候选工件或决定引用 | 新修订/发布集合/任务引用 | `knowledge-modeling.govern` |
+| `govern` | `submit-revision`、`request-review`、`publish-approved-release`、`deactivate-release`、`rollback-by-new-release` | 定义类型、目标/基线精确版本、候选工件或决定引用 | `revision { knowledgeRevisionRef }`、`review-task { reviewTaskRef }` 或 `release { knowledgeReleaseRef }`，并与方法 kind 对齐 | `knowledge-modeling.govern` |
 | `resolve` | `identification-basis` | `IdentificationPreparationSnapshotRefV1` | 工序模型、机理库、检索证据库、策略集合精确引用；或知识准备等待 | `knowledge-modeling.read` |
 | `resolve` | `assessment-basis` | `AssessmentPreparationSnapshotRefV1` | `AssessmentBasisReleaseSetRefV1`；或知识准备等待 | `knowledge-modeling.read` |
 | `retrieve` | `hybrid-evidence` | 输入快照、工作项、检索策略 | `KnowledgeQueryResultRefV1` | `knowledge-modeling.retrieve` |
@@ -259,7 +259,7 @@ record(command: WarningResponseRecordCommandV1)
 | `open` | 单一用例 | 已入库评估记录 | 各触发类型预警引用、归集任务引用、通知意图引用；未触发返回显式空结果 | `warning-response.record` |
 | `recommend` | `create-candidate` | 任务、措施候选集、Agent 增量引用 | `RecommendationCandidateRefV1` | `warning-response.recommend` |
 | `recommend` | `validate-and-record` | 候选、三项策略/上下文引用 | 正式 `ResponseRecommendationRefV1` 或 `ReviewTaskRefV1` | `warning-response.recommend` |
-| `record` | `adopt-recommendation` | 正式建议版本、采纳决定 | 决定/预测运行入口引用 | `warning-response.record` |
+| `record` | `adopt-recommendation` | 正式建议版本、采纳决定 | `adoption { routeDecisionRef: RouteDecisionRefV1, forecastRunRef: WorkflowRunRefV1 }` | `warning-response.record` |
 | `record` | `record-execution` | 采纳来源或现场独立行动、执行者/录入者、发生时间、证据 | `ExecutionRecordRefV1` | `warning-response.record` |
 | `record` | `record-feedback` | 执行记录、处置后监测快照、现场反馈工件 | `FeedbackRefV1` | `warning-response.record` |
 | `record` | `calculate-deviation` | 预测、反馈及预测时冻结评分依据 | `DeviationRecordRefV1` 或显式 unavailable 结果 | `warning-response.record` |
@@ -548,7 +548,7 @@ lastErrorRef? + resultRef?
 
 每个 start 分支还固定 `graphVersion`、`retryPolicyRef`、`authorizationContext`、`commandId` 和 `idempotencyKey`。resume 固定 `workflowRunRef`、`expectedStateVersion` 和以下 `resumeCause` 联合：`review-resolved { reviewDecisionRef }`、`knowledge-ready { knowledgePreparationTaskRef }`、`agent-task-completed { agentTaskResultRef }`、`command-confirmed { commandProposalRef }`、`transient-recovered { workflowErrorRef, diagnosticArtifactRef }`、`user-confirmed { userConfirmationRef }`；cancel 固定 `workflowRunRef`、`expectedStateVersion`、`reasonCode`。三个调用都使用第 5 节 `succeeded | waiting | failed` 外层结果；start/resume 成功只返回 `workflowRunRef` 和 `disposition: created | existing`，cancel 成功只返回 `workflowRunRef` 和 `disposition: cancellation-recorded | already-cancelled`。
 
-`riskFlowGraph` 对 `identify-and-assess` 组合 identification → accepted risk events → 独立 assessment runs；无合格记录或等待复核时不伪造评估。其它 entryMode 只进入 assessmentGraph 的对应有限入口。预测、执行和反馈不得用一个跨日运行等待现场动作。
+`riskFlowGraph` 对 `identify-and-assess` 组合 identification → accepted risk events → 独立 assessment runs；无合格记录或等待复核时不伪造评估。其它 entryMode 只进入 assessmentGraph 的对应有限入口；`historical-backfill` 入口必须携带 `ApplicabilityMetadataSnapshotRefV1`，与风险输入、有效时间和评估依据集合一起冻结。预测、执行和反馈不得用一个跨日运行等待现场动作。
 
 `RiskFlowStageV1Schema` 固定 `preparing`、`identification`、`assessment`、`result-summary`。顶层 `RiskFlowGraphStateV1Schema` 固定：
 
@@ -562,7 +562,7 @@ lastStageResultRef? + lastRouteDecisionRef? + lastErrorRef?
 resultRef?: RiskFlowRunResultRefV1
 ```
 
-它只关联子运行和顶层路由，不复制任一子图状态；`identify-and-assess` 可同时具有一个 identification run 和多个 assessment run，其它入口不得具有 identification run。`RiskFlowRunResultRefV1` 指向另行持久化的汇总工件，汇总正文不进入图状态。
+它只关联子运行和顶层路由，不复制任一子图状态；`identify-and-assess` 可同时具有一个 identification run 和多个 assessment run，其它入口不得具有 identification run。`waitingRefs` 仅在 `waiting` 状态非空，其他状态必须为空；等待态不得带结果，非终态不得带结果。`RiskFlowRunResultRefV1` 指向另行持久化的汇总工件，汇总正文不进入图状态。
 
 **选项：**（A）把预测/反馈留在长期运行中等待；（B）另建绕过评估的第三张图；（C）使用同一 assessmentGraph 契约的独立 entryMode。  
 **推荐：** C。  

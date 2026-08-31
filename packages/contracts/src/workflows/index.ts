@@ -431,7 +431,7 @@ const lifecycleStateRefine = (
         message: "waiting state cannot have a result",
       });
     }
-  } else if (state.waitingRef !== undefined) {
+  } else if (hasWaitingRef) {
     context.addIssue({
       code: "custom",
       path: ["waitingRef"],

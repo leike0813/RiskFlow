@@ -25,10 +25,12 @@ import {
   IdentificationAnalysisCommandV1Schema,
   IdentificationAnalysisSuccessV1Schema,
   IdentificationFinalizationCommandV1Schema,
+  IdentificationFinalizationSuccessV1Schema,
   IdentificationInputSnapshotRefV1Schema,
   IdentificationPlanCommandV1Schema,
   IdentificationPreparationSnapshotRefV1Schema,
   KnowledgeGovernanceCommandV1Schema,
+  KnowledgeGovernanceSuccessV1Schema,
   KnowledgeResolutionCommandV1Schema,
   KnowledgeResolutionSuccessV1Schema,
   KnowledgeRetrievalQueryV1Schema,
@@ -49,6 +51,7 @@ import {
   StartAgentTaskCommandV1Schema,
   StartWorkflowRunCommandV1Schema,
   TraceQueryV1Schema,
+  TraceSuccessV1Schema,
   WarningResponseRecordCommandV1Schema,
   WarningResponseRecordSuccessV1Schema,
   WorkflowRunStatusV1Schema,
@@ -110,6 +113,12 @@ const reviewTaskRef = {
   ...version("review-task"),
   reviewType: "identification-group",
   targetRef: { kind: "identification-group", reference: { entityId: "group", versionId: "v1" } },
+  waitingRunRef: workflowRunRef,
+};
+const knowledgeReviewTaskRef = {
+  ...version("review-task", "knowledge-review"),
+  reviewType: "knowledge-revision",
+  targetRef: version("knowledge-revision"),
   waitingRunRef: workflowRunRef,
 };
 
@@ -631,6 +640,24 @@ describe("module interface contracts", () => {
         processModelReleaseRef: version("process-model-release"),
       }).success,
     ).toBe(false);
+    expect(
+      KnowledgeGovernanceSuccessV1Schema.safeParse({
+        kind: "revision",
+        knowledgeRevisionRef: version("knowledge-revision"),
+      }).success,
+    ).toBe(true);
+    expect(
+      KnowledgeGovernanceSuccessV1Schema.safeParse({
+        kind: "review-task",
+        reviewTaskRef: knowledgeReviewTaskRef,
+      }).success,
+    ).toBe(true);
+    expect(
+      KnowledgeGovernanceSuccessV1Schema.safeParse({
+        kind: "preparation",
+        knowledgePreparationTaskRef: version("knowledge-preparation-task"),
+      }).success,
+    ).toBe(false);
 
     expect(
       IdentificationAnalysisSuccessV1Schema.safeParse({
@@ -668,6 +695,41 @@ describe("module interface contracts", () => {
       WarningResponseRecordSuccessV1Schema.safeParse({
         kind: "unavailable",
       }).success,
+    ).toBe(false);
+    expect(
+      WarningResponseRecordSuccessV1Schema.safeParse({
+        kind: "adoption",
+        routeDecisionRef: version("route-decision"),
+        forecastRunRef: workflowRunRef,
+      }).success,
+    ).toBe(true);
+    expect(
+      WarningResponseRecordSuccessV1Schema.safeParse({
+        kind: "adoption",
+        routeDecisionRef: version("route-decision"),
+      }).success,
+    ).toBe(false);
+
+    expect(
+      IdentificationFinalizationSuccessV1Schema.safeParse({
+        kind: "skipped",
+        skippedGroupRefs: [version("identification-group")],
+      }).success,
+    ).toBe(true);
+    expect(
+      IdentificationFinalizationSuccessV1Schema.safeParse({
+        kind: "skipped",
+        skippedGroupRefs: [version("merge-plan")],
+      }).success,
+    ).toBe(false);
+
+    expect(TraceSuccessV1Schema.safeParse({ auditTrailRef }).success).toBe(true);
+    expect(
+      TraceSuccessV1Schema.safeParse({ queryResultRef: version("query-result") }).success,
+    ).toBe(true);
+    expect(
+      TraceSuccessV1Schema.safeParse({ auditTrailRef, queryResultRef: version("query-result") })
+        .success,
     ).toBe(false);
 
     expect(
@@ -750,6 +812,27 @@ describe("module interface contracts", () => {
         payload: { ...assessStart.payload, applicabilityMetadataSnapshotRef: undefined },
       }).success,
     ).toBe(false);
+
+    const historicalBackfillStart = command("start-run", {
+      entryMode: "historical-backfill",
+      graphVersion: policyRef,
+      retryPolicyRef: policyRef,
+      riskInput: externalRiskInput,
+      applicabilityMetadataSnapshotRef,
+      effectiveAt: now,
+      assessmentBasisReleaseSetRef: version("assessment-basis-release-set"),
+    });
+    expect(StartWorkflowRunCommandV1Schema.safeParse(historicalBackfillStart).success).toBe(true);
+    expect(
+      StartWorkflowRunCommandV1Schema.safeParse({
+        ...historicalBackfillStart,
+        payload: {
+          ...historicalBackfillStart.payload,
+          applicabilityMetadataSnapshotRef: undefined,
+        },
+      }).success,
+    ).toBe(false);
+
     expect(
       ResumeWorkflowRunCommandV1Schema.safeParse(
         command("resume-run", {
@@ -1009,40 +1092,94 @@ describe("module interface contracts", () => {
       ).success,
     ).toBe(false);
 
+    const completedAgentTaskResults = [
+      { taskType: "data-cleaning", incrementRef: version("content-artifact") },
+      { taskType: "knowledge-authoring", candidateRef: version("knowledge-revision") },
+      { taskType: "retrieval-review", incrementRef: version("retrieval-artifact-set") },
+      { taskType: "response-recommendation", candidateRef: version("recommendation-candidate") },
+      { taskType: "calibration-suggestion", candidateRef: version("calibration-suggestion") },
+    ];
+    for (const { taskType, ...output } of completedAgentTaskResults) {
+      expect(
+        AgentTaskResultRefV1Schema.safeParse({
+          ...version("agent-task-result", `result-${taskType}`),
+          agentTaskRef: { ...agentTaskRef, taskType },
+          status: "completed",
+          ...output,
+        }).success,
+      ).toBe(true);
+    }
     expect(AgentTaskResultRefV1Schema.safeParse(agentTaskResultRef).success).toBe(true);
     expect(
       AgentTaskResultRefV1Schema.safeParse({
         ...agentTaskResultRef,
-        incrementRef: undefined,
+        incrementRef: version("audit-trail"),
       }).success,
     ).toBe(false);
     expect(
       AgentTaskResultRefV1Schema.safeParse({
         ...agentTaskResultRef,
         candidateRef: version("recommendation-candidate"),
-      }).success,
-    ).toBe(false);
-    expect(
-      AgentTaskResultRefV1Schema.safeParse({
-        ...agentTaskResultRef,
-        status: "failed",
       }).success,
     ).toBe(false);
     const responseAgentTaskRef = { ...agentTaskRef, taskType: "response-recommendation" };
     expect(
       AgentTaskResultRefV1Schema.safeParse({
-        ...agentTaskResultRef,
+        ...version("agent-task-result", "response-validation"),
         agentTaskRef: responseAgentTaskRef,
-        incrementRef: undefined,
-        candidateRef: version("recommendation-candidate"),
+        status: "completed",
+        validationRef: version("validation-snapshot"),
       }).success,
     ).toBe(true);
     expect(
       AgentTaskResultRefV1Schema.safeParse({
-        ...agentTaskResultRef,
+        ...version("agent-task-result", "response-candidate-validation"),
         agentTaskRef: responseAgentTaskRef,
-        incrementRef: undefined,
-        candidateRef: version("calibration-suggestion"),
+        status: "completed",
+        candidateRef: version("recommendation-candidate"),
+        validationRef: version("validation-snapshot"),
+      }).success,
+    ).toBe(true);
+    expect(
+      AgentTaskResultRefV1Schema.safeParse({
+        ...version("agent-task-result", "response-two-products"),
+        agentTaskRef: responseAgentTaskRef,
+        status: "completed",
+        candidateRef: version("recommendation-candidate"),
+        formalResultRef: version("response-recommendation"),
+      }).success,
+    ).toBe(false);
+    expect(
+      AgentTaskResultRefV1Schema.safeParse({
+        ...version("agent-task-result", "response-wrong-validation"),
+        agentTaskRef: responseAgentTaskRef,
+        status: "completed",
+        validationRef: version("response-recommendation"),
+      }).success,
+    ).toBe(false);
+    const failedAgentTaskResult = {
+      ...version("agent-task-result", "failed-agent-task"),
+      agentTaskRef,
+      status: "failed",
+      errorRef: version("workflow-error"),
+    };
+    expect(AgentTaskResultRefV1Schema.safeParse(failedAgentTaskResult).success).toBe(true);
+    expect(
+      AgentTaskResultRefV1Schema.safeParse({
+        ...failedAgentTaskResult,
+        incrementRef: version("retrieval-artifact-set"),
+      }).success,
+    ).toBe(false);
+    const cancelledAgentTaskResult = {
+      ...version("agent-task-result", "cancelled-agent-task"),
+      agentTaskRef,
+      status: "cancelled",
+    };
+    expect(AgentTaskResultRefV1Schema.safeParse(cancelledAgentTaskResult).success).toBe(true);
+    expect(
+      AgentTaskResultRefV1Schema.safeParse({
+        ...cancelledAgentTaskResult,
+        candidateRef: version("recommendation-candidate"),
       }).success,
     ).toBe(false);
   });
@@ -1414,6 +1551,22 @@ describe("module interface contracts", () => {
         waitingRefs: [],
       }).success,
     ).toBe(false);
+    expect(
+      RiskFlowGraphStateV1Schema.safeParse({
+        ...topState,
+        status: "running",
+        resultRef: undefined,
+        waitingRefs: [{ kind: "review", reviewTaskRef }],
+      }).success,
+    ).toBe(false);
+    expect(
+      RiskFlowGraphStateV1Schema.safeParse({
+        ...topState,
+        status: "waiting",
+        resultRef: undefined,
+        waitingRefs: [{ kind: "review", reviewTaskRef }],
+      }).success,
+    ).toBe(true);
     expect(
       RiskFlowGraphStateV1Schema.safeParse({
         ...topState,

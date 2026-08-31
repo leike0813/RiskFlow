@@ -38,6 +38,51 @@
       "exitCondition": "停止维护、Node 24 或 TypeScript 5.9 兼容性失败，或平台提供等价运行时与静态单一事实源"
     },
     {
+      "name": "kysely",
+      "version": "0.29.5",
+      "purpose": "PostgreSQL 类型化查询、事务与迁移",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/kysely",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "Node 24/PostgreSQL 18 不兼容或迁移、事务验收失败"
+    },
+    {
+      "name": "pg",
+      "version": "8.23.0",
+      "purpose": "PostgreSQL TCP 驱动与连接池",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/pg",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "Node 24/PostgreSQL 18 不兼容或连接池、事务语义验收失败"
+    },
+    {
+      "name": "@types/pg",
+      "version": "8.23.1",
+      "purpose": "pg 的 TypeScript 类型定义",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/@types/pg",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "pg 提供等价内置类型或版本不再匹配"
+    },
+    {
+      "name": "@langchain/langgraph-checkpoint-postgres",
+      "version": "1.0.5",
+      "purpose": "官方 LangGraph PostgreSQL PostgresSaver",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/@langchain/langgraph-checkpoint-postgres",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "官方包不兼容冻结 LangGraph/PostgreSQL 基线或隔离、恢复验收失败"
+    },
+    {
+      "name": "@testcontainers/postgresql",
+      "version": "12.1.0",
+      "purpose": "使用真实 PostgreSQL 容器执行行为验收",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/@testcontainers/postgresql",
+      "offline": "内网 npm 镜像或 pnpm fetch store，并预拉取固定 OCI 镜像",
+      "exitCondition": "容器运行时不可用且没有同等真实、可重复的隔离数据库测试设施"
+    },
+    {
       "name": "typescript",
       "version": "5.9.3",
       "purpose": "TypeScript project references 编译",

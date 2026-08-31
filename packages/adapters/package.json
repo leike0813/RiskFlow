@@ -3,10 +3,24 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "dependencies": {
+    "@langchain/langgraph-checkpoint-postgres": "1.0.5",
+    "@riskflow/contracts": "workspace:*",
+    "@riskflow/core": "workspace:*",
+    "kysely": "0.29.5",
+    "pg": "8.23.0"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./postgres": {
+      "types": "./dist/postgres/index.d.ts",
+      "import": "./dist/postgres/index.js"
     }
   }
 }

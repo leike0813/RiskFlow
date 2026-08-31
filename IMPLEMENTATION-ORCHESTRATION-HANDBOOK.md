@@ -8,9 +8,10 @@
 
 - `main` 已完成并归档 C00 `establish-openspec-engineering-baseline`。
 - `main` 已完成并归档 C01 `define-domain-contract-kernel`。
+- `main` 已完成并归档 C02 `define-module-interfaces-events-and-workflows`。
 - C01 主 spec 位于 `openspec/specs/domain/contract-kernel/spec.md`。
-- 当前没有已批准的 C02 工件；下一项只能是 C02 `define-module-interfaces-events-and-workflows`。
-- G0 仍是串行闸门。C02 归档前不得开放业务并行 worktree。
+- C02 主 spec 位于 `openspec/specs/domain/module-interfaces-events-workflows/spec.md`。
+- G0 已通过；下一项按路线重新计算当前 frontier，不能预建长期 worktree。
 - 不推送远端；远端操作必须由用户另行授权。
 
 ## 2. 固定角色与模型
@@ -18,17 +19,17 @@
 | 角色 | 模型与强度 | 负责 | 不负责 |
 | --- | --- | --- | --- |
 | 主调度 Agent | `gpt-5.6-luna` / `max` | 维护执行图；创建 Run/Task/worktree；监控与问答；审阅范围；提交、合并、清理；处理依赖清单与锁文件 | 起草 OpenSpec change；替代验证 Agent 做正式验收；编写生产代码 |
-| 规划与验证 Agent | `gpt-5.6-sol` / `high` | 起草 proposal/specs/design/tasks；拆解执行任务；核对专利与主 specs；实现后独立验证并写 verification 报告 | 生产代码；依赖安装；归档；调度监控 |
-| 代码执行 Agent | `gpt-5.6-luna` / `max` | 按已批准 change 使用 `openspec-apply-change` 实现；运行最小验证；按反馈修复 | 更改规划、接口、依赖、范围；归档；Git 提交 |
+| 规划与验证 Agent | `gpt-5.6-sol` / `high` | 起草 proposal/specs/design/tasks；拆解执行任务；核对专利与主 specs；实现后独立验证并写 verification 报告；对自己发现的局部实现缺陷在原验证上下文内直接修复并复验 | 首轮生产实现；依赖安装；归档；调度监控；不得改变已批准目标、接口设计或范围 |
+| 代码执行 Agent | `gpt-5.6-luna` / `max` | 按已批准 change 使用 `openspec-apply-change` 实现；运行最小验证；当 Sol 无法在受限边界修复时承担升级修复 | 更改规划、接口、依赖、范围；归档；Git 提交 |
 | 简单杂活 Agent | OMP + `minimax-code-cn/MiniMax-M3` / `high` | 无判断冲突的机械归档、资料搜索、证据整理、tracker 更新 | change 起草、架构设计、任务规划、代码/测试/配置/迁移、冲突处理、验收判断 |
 
-角色以任务性质区分，同一模型不能借身份重叠绕过分工。主调度 Agent 若发现需要语义规划或正式验证，必须派给 Sol high；Sol 发现需要改代码，必须退回主调度 Agent，再派 Luna max。
+角色以任务性质区分，同一模型不能借身份重叠绕过分工。主调度 Agent 若发现需要语义规划或正式验证，必须派给 Sol high；Sol 复核发现已批准 change 内的局部实现缺陷时，先保留自己的验证上下文直接修复；只有超出修复边界时才退回主调度 Agent重新安排。
 
 ## 3. 授权与单写者原则
 
 - 新 session 开始时先确认用户已授权本轮 Git commit、分支、合并、worktree 和依赖操作；handbook 本身不授予权限。
-- 同一 worktree 同一时刻只有一个写者。验证 Agent 默认只读；若要写 `verification.md`，代码 Agent 必须已停止写入。
-- Worker 不执行 `git commit`、merge、rebase、archive 或 push。主调度 Agent 审阅后提交。
+- 同一 worktree 同一时刻只有一个写者。验证 Agent 默认只读；若验证失败属于已批准 change 内的局部实现缺陷，原 Sol 才可在代码 Agent 停止后临时写入允许范围，并在主调度 Agent形成新检查点后继续复验。
+- Worker 不执行 `git commit`、merge、rebase 或 push；按 5.5/7.4 明确派发的 M3 仅执行精确的机械归档移动，提交仍由主调度 Agent审阅后完成。
 - 不把未提交文件当作 worktree 间传递机制。任何角色交接前都必须由主调度 Agent形成提交检查点。
 - 不覆盖用户未提交改动。发现不属于当前 change 的改动立即停止并升级。
 
@@ -84,7 +85,16 @@ Luna max 实现 + 最小验证
   ↓
 主调度 Agent 审阅范围并提交 implementation checkpoint
   ↓
-Sol high 独立 verify；失败则返回 Luna max 修复
+Sol high 独立 verify
+  ↓
+失败且属于局部实现缺陷？──否──→ 主调度 Agent升级或重新规划（必要时才切 Luna）
+  │是
+  ↓
+原 Sol 在同一 session、上下文和 worktree 内直接修复 + 局部验证
+  ↓
+主调度 Agent 审阅并提交新的 implementation checkpoint
+  ↓
+原 Sol 继续 verify 新 checkpoint；仍属局部缺陷时在同一上下文循环
   ↓
 主调度 Agent 提交 verification checkpoint
   ↓
@@ -113,7 +123,7 @@ Sol high 必须先读：
 
 ### 5.3 实现门
 
-Luna max 只能实现 tasks 中已批准的文件和行为。它必须使用 `openspec-apply-change`，不启动开发服务器，不归档，不提交。发现 design 缺口时通过 Orca `ask` 升级；不能自行补字段、加依赖或扩大 Non-goals。
+Luna max 首轮只能实现 tasks 中已批准的文件和行为。它必须使用 `openspec-apply-change`，不启动开发服务器，不归档，不提交。发现 design 缺口时通过 Orca `ask` 升级；不能自行补字段、加依赖或扩大 Non-goals。若 Sol 复核确认是既有契约下的局部实现错误，主调度 Agent可在 Sol 修复失败或超出其受限边界后再派 Luna 接管升级修复。
 
 ### 5.4 验证门
 
@@ -122,8 +132,10 @@ Sol high 在 implementation checkpoint 后独立执行 `openspec-verify-change`�
 - 对照每条 requirement、scenario、RI/RA、权限、失败、幂等、版本、证据和审计语义；
 - 检查代码与 design 文件所有权、Non-goals、依赖方向；
 - 运行该 change 的最小验证，并判断是否需要根 `pnpm verify`；
-- 只写验证报告和任务状态，不修代码；
-- 发现缺陷时给出精确文件/行为/验证证据，由主调度 Agent创建 Luna 修复任务；修复后重新验证。
+- 首轮复核默认只读并写出精确报告；任务勾选和 Git 检查点由主调度 Agent负责；
+- 发现属于已批准契约内、文件范围内的局部实现缺陷时，原 Sol 直接在同一验证 session、上下文和 worktree 内修复，运行相关回归检查并报告修复差异；不得借修复改变需求、接口设计、依赖或 Non-goals；
+- 主调度 Agent审阅 Sol 修复并提交新的 implementation checkpoint，随后由同一 Sol 针对新 checkpoint 继续验证；普通验证失败不得直接切换到 Luna 或新建 Sol；
+- 若缺陷属于 proposal/spec/design 不一致、架构/范围/权限判断、依赖或工具故障，Sol 不自行改规划，立即通过 Orca `ask`/`escalation`交回主调度 Agent；只有主调度 Agent明确升级后才重新派发。
 
 验证通过不自动授权归档。主调度 Agent仍需审阅 diff、提交、合并并在 `main` 复验。
 
@@ -150,7 +162,7 @@ docs(openspec): 归档 <change>
 
 1. Sol 规划结束 → 主调度 Agent审阅、提交，工作树 clean。
 2. Luna 实现结束 → 主调度 Agent审阅、提交，工作树 clean。
-3. Sol 验证只针对固定 implementation commit；修复会产生新 commit，旧验证失效。
+3. Sol 验证只针对固定 implementation commit；若发现局部实现缺陷，原 Sol 直接修复，主调度 Agent形成新的 implementation commit 后由原 Sol复验，旧验证失效；不得默认切换 Agent。
 4. feature 合并前执行 `git diff --check`、确认无越界文件、确认所有提交均在 feature branch。
 5. archive 提交后用 `git merge-base --is-ancestor <feature-head> main` 确认实现已集成，再移除 worktree。
 
@@ -208,9 +220,10 @@ orca orchestration check --wait --types worker_done,escalation,question --timeou
 收到唯一 `worker_done` 后：
 
 1. 处理完整 Delivery；
-2. 决定复用 terminal 还是 `worker-release`；
-3. 外部 terminal 的 release 会返回 `retained / external_terminal`，确认 transcript 和结果后只关闭该 Dispatch 创建的精确 tab；
-4. 最后 acknowledge Delivery。
+2. 若 Sol 的验证结果为 FAIL，先分类：属于已批准 change 内的局部实现缺陷时，不释放原 Sol terminal；读取 `worker-show --dispatch` 返回的 `agent_terminal_handle`，创建有界修复 Task，并用 `worker-start --terminal <handle>` 将同一 terminal 转入修复，保留其验证上下文；
+3. 主调度 Agent审阅修复并形成新的 implementation checkpoint，再把同一 Sol terminal 转入复验；若属于规划、架构、范围或工具问题，才释放或升级，不得把普通实现缺陷自动改派给 Luna；
+4. 最终通过或明确升级后，再决定 `worker-release`；外部 terminal 的 release 可能返回 `retained / external_terminal`，确认 transcript 和结果后只关闭该 Dispatch 创建的精确 tab；
+5. 最后 acknowledge Delivery。
 
 ### 7.4 OMP + MiniMax-M3
 
@@ -235,6 +248,7 @@ M3 prompt 必须包含精确路径、确定步骤、禁止修改区域和升级�
 - 逐条验证命令与通过条件；
 - 何时使用 `ask` / `escalation`；
 - 是否允许写 verification 报告；
+- 验证失败时是否允许原验证 Agent在同一 terminal/context 内直接修复、允许修改的精确文件和新检查点责任；
 - 禁止提交、归档、扩大依赖与启动服务；
 - `worker_done` 的文件列表、验证摘要和剩余事项。
 
@@ -255,13 +269,19 @@ change 完成需要：
 
 同一阻塞连续三次且无法在既定权限内推进时，停止重试并向用户报告。难、慢、测试失败或需要修复不算阻塞；必须先用同一 change 和同一责任角色解决。
 
+验证失败按以下顺序处理：
+
+1. 原 Sol 先判断是局部实现缺陷，还是规划/架构/范围/权限/依赖/工具问题。
+2. 局部实现缺陷由原 Sol 在同一验证上下文直接修复并运行回归检查；主调度 Agent审阅后提交新的 implementation checkpoint。
+3. 同一 Sol 继续验证新 checkpoint；只有修复超出范围、无法在既定权限内完成或验证上下文失效时，主调度 Agent才创建升级任务并考虑派 Luna 或重新规划。
+
 ## 10. 下一 session 的首个动作
 
 1. 以 Luna max 启动新的主调度 session，先读 `AGENTS.md`、本 handbook 和路线文档。
-2. 确认 `main` clean，C00/C01 已归档，当前无活动 change/worker。
+2. 确认 `main` clean，C00/C01/C02 已归档，主 specs 与路线状态一致，当前无活动 change/worker。
 3. 用 `orca repo show` 确认 setup hook 仍与 §7.2 一致；若未变化，直接沿用已验证配置。
-4. 只创建 C02 `define-module-interfaces-events-and-workflows` worktree。
-5. 建立新 Run，把 C02 规划 task 派给 Sol high；主调度 Agent不自行起草 change。
-6. Sol 工件通过审阅并形成 planning checkpoint 后，才派 Luna max 实现。
+4. 根据路线重新计算当前 frontier，只为当前 change 创建 worktree 和 Run，不预建后续长期 worktree。
+5. 把新 change 的规划 task 派给 Sol high；主调度 Agent不自行起草 change。
+6. Sol 工件通过审阅并形成 planning checkpoint 后，才派 Luna max 实现；实现复核失败时沿 §5 的同一 Sol 修复回路推进。
 
-完成 C02 并归档后再重新计算 G1 frontier。不要提前建立 C03～C10 的长期工作树。
+完成当前 change 并归档后再重新计算下一 frontier。

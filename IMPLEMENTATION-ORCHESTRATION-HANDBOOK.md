@@ -172,15 +172,16 @@ orca worktree list --repo id:d4349f30-1c7e-4777-b16d-f259481b0121 --json
 
 不要复用旧 session 的 terminal handle、Run 或 Dispatch。用当前 Orca terminal 创建新 Run；所有协调命令显式传当前 `ORCA_TERMINAL_HANDLE`，所有 worker 使用完整 worktree ID。
 
-### 7.2 setup hook 当前门禁
+### 7.2 setup hook
 
-Orca repo 的有效 setup hook 应只有：
+Orca repo 当前配置为：
 
 ```bash
 pnpm install --frozen-lockfile
+openspec init --tools codex,oh-my-pi
 ```
 
-当前 `orca repo show` 仍显示第二行 `openspec init --tools codex,omp`；它无效，因为 OpenSpec CLI 不接受工具名 `omp`，并会令 setup 以非零状态结束。仓库也已初始化 OpenSpec，无需每个 worktree 重跑 init。创建下一个正式 worktree 前，先用 Orca UI 删除该行，再创建一次受控 worktree，以 `--setup run` 验证安装成功且 Git clean。Orca CLI 当前没有 repo hook setter。
+该 hook 已在一次全新受控 worktree 中以 `--setup run` 验证：冻结安装成功，OpenSpec 对 Codex 与 Oh My Pi 均完成 setup，Git 保持 clean。后续正式 worktree 继续使用 `--setup run`；只有 hook 内容变化或 setup 报错时才重新做一次受控验证。`oh-my-pi` 是 OpenSpec CLI 工具名，不能写成 `omp`。
 
 ### 7.3 精确 Agent 启动
 
@@ -258,7 +259,7 @@ change 完成需要：
 
 1. 以 Luna max 启动新的主调度 session，先读 `AGENTS.md`、本 handbook 和路线文档。
 2. 确认 `main` clean，C00/C01 已归档，当前无活动 change/worker。
-3. 请用户修正 setup hook，或确认已删除无效的 OpenSpec init 行；做一次受控 setup 验证。
+3. 用 `orca repo show` 确认 setup hook 仍与 §7.2 一致；若未变化，直接沿用已验证配置。
 4. 只创建 C02 `define-module-interfaces-events-and-workflows` worktree。
 5. 建立新 Run，把 C02 规划 task 派给 Sol high；主调度 Agent不自行起草 change。
 6. Sol 工件通过审阅并形成 planning checkpoint 后，才派 Luna max 实现。

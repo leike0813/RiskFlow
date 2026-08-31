@@ -30,6 +30,7 @@ import {
   IdentificationPlanCommandV1Schema,
   IdentificationPreparationSnapshotRefV1Schema,
   KnowledgeGovernanceCommandV1Schema,
+  KnowledgeGovernanceCommandResultV1Schema,
   KnowledgeGovernanceSuccessV1Schema,
   KnowledgeResolutionCommandV1Schema,
   KnowledgeResolutionSuccessV1Schema,
@@ -659,6 +660,31 @@ describe("module interface contracts", () => {
       }).success,
     ).toBe(false);
 
+    const requestReviewCommand = command("request-review", {
+      revisionRef: version("knowledge-revision"),
+      reviewPolicyRef: policyRef,
+    });
+    expect(
+      KnowledgeGovernanceCommandResultV1Schema.safeParse({
+        command: requestReviewCommand,
+        result: {
+          kind: "succeeded",
+          result: { kind: "review-task", reviewTaskRef: knowledgeReviewTaskRef },
+        },
+      }).success,
+    ).toBe(true);
+    for (const mismatchedResult of [
+      { kind: "revision", knowledgeRevisionRef: version("knowledge-revision") },
+      { kind: "release", knowledgeReleaseRef: version("knowledge-release") },
+    ]) {
+      expect(
+        KnowledgeGovernanceCommandResultV1Schema.safeParse({
+          command: requestReviewCommand,
+          result: { kind: "succeeded", result: mismatchedResult },
+        }).success,
+      ).toBe(false);
+    }
+
     expect(
       IdentificationAnalysisSuccessV1Schema.safeParse({
         kind: "assemble-and-infer",
@@ -1093,11 +1119,31 @@ describe("module interface contracts", () => {
     ).toBe(false);
 
     const completedAgentTaskResults = [
-      { taskType: "data-cleaning", incrementRef: version("content-artifact") },
-      { taskType: "knowledge-authoring", candidateRef: version("knowledge-revision") },
-      { taskType: "retrieval-review", incrementRef: version("retrieval-artifact-set") },
-      { taskType: "response-recommendation", candidateRef: version("recommendation-candidate") },
-      { taskType: "calibration-suggestion", candidateRef: version("calibration-suggestion") },
+      {
+        taskType: "data-cleaning",
+        incrementRef: version("content-artifact"),
+        validationRef: version("validation-snapshot"),
+      },
+      {
+        taskType: "knowledge-authoring",
+        candidateRef: version("knowledge-revision"),
+        validationRef: version("validation-snapshot"),
+      },
+      {
+        taskType: "retrieval-review",
+        incrementRef: version("retrieval-artifact-set"),
+        validationRef: version("validation-snapshot"),
+      },
+      {
+        taskType: "response-recommendation",
+        candidateRef: version("recommendation-candidate"),
+        validationRef: version("validation-snapshot"),
+      },
+      {
+        taskType: "calibration-suggestion",
+        candidateRef: version("calibration-suggestion"),
+        validationRef: version("validation-snapshot"),
+      },
     ];
     for (const { taskType, ...output } of completedAgentTaskResults) {
       expect(
@@ -1130,7 +1176,7 @@ describe("module interface contracts", () => {
         status: "completed",
         validationRef: version("validation-snapshot"),
       }).success,
-    ).toBe(true);
+    ).toBe(false);
     expect(
       AgentTaskResultRefV1Schema.safeParse({
         ...version("agent-task-result", "response-candidate-validation"),

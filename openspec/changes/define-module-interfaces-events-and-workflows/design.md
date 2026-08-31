@@ -83,7 +83,7 @@ ReviewTaskRefV1 = {
 }
 ```
 
-`ReviewTargetRefV1Schema` 只允许 identification candidate/group、knowledge revision/rule conflict、response candidate、calibration suggestion。`AgentTaskResultRefV1Schema` 固定 task ref、终态、增量/候选/校验/错误/正式结果引用中的合法组合；完成态按五类任务只允许本任务的精确主产物族：data-cleaning 为 `ContentArtifactRefV1`，knowledge-authoring 为 `ContentArtifactRefV1` 或 `KnowledgeRevisionRefV1`，retrieval-review 为 `RetrievalArtifactSetRefV1`，response-recommendation 为 `RecommendationCandidateRefV1` 或 `ResponseRecommendationRefV1`，calibration-suggestion 为 `CalibrationSuggestionRefV1`；所有完成态可另带 `ValidationSnapshotRefV1`，但主产物族彼此互斥且至少有一个产物引用。失败态只允许错误引用，取消态不带产物。它不复制增量正文。事件和图状态只使用这些引用。
+`ReviewTargetRefV1Schema` 只允许 identification candidate/group、knowledge revision/rule conflict、response candidate、calibration suggestion。`AgentTaskResultRefV1Schema` 固定 task ref、终态、增量/候选/校验/错误/正式结果引用中的合法组合；完成态按五类任务只允许本任务的精确主产物族：data-cleaning 为 `ContentArtifactRefV1`，knowledge-authoring 为 `ContentArtifactRefV1` 或 `KnowledgeRevisionRefV1`，retrieval-review 为 `RetrievalArtifactSetRefV1`，response-recommendation 为 `RecommendationCandidateRefV1` 或 `ResponseRecommendationRefV1`，calibration-suggestion 为 `CalibrationSuggestionRefV1`；所有完成态必须恰好有一个任务专属主产物引用，并可另带 `ValidationSnapshotRefV1`。失败态只允许错误引用，取消态不带产物。它不复制增量正文。事件和图状态只使用这些引用。
 
 **选项：**（A）所有字段都用裸 `VersionReferenceSchema`；（B）为每个实体手写 branded ID；（C）共享两字段形状、导出按事实类型辨识的命名引用。  
 **推荐：** C。  
@@ -212,6 +212,8 @@ retrieve(query: KnowledgeRetrievalQueryV1)
 | `retrieve` | `measure-candidates` | 评估/预警引用、措施库版本 | `KnowledgeQueryResultRefV1` | `knowledge-modeling.retrieve` |
 
 `resolve` 不发布缺失知识；它只返回 ready 或 `KnowledgePreparationTaskRefV1` 等待引用。`retrieve` 返回工件引用，不把检索片段正文放入调用结果。
+
+`KnowledgeGovernanceCommandResultV1Schema` 提供不增加业务字段的配对校验：`{ command, result }` 中，`submit-revision` 只能成功为 `revision`，`request-review` 只能成功为 `review-task`，其余三个治理命令只能成功为 `release`；失败结果可由任一治理命令返回。`KnowledgeModelingPortV1.govern` 使用同一映射的条件返回类型，实际返回值仍是该方法的 `{ kind: "succeeded" | "failed", ... }` 结果，不把 command 复制进结果。
 
 #### 6.3 `RiskIdentificationPortV1`
 

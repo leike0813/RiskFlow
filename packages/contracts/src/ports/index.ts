@@ -691,11 +691,11 @@ const refineAgentTaskCompletedResult = (
     result.candidateRef,
     result.formalResultRef,
   ].filter((ref) => ref !== undefined).length;
-  if (primaryOutputCount === 0 && result.validationRef === undefined) {
+  if (primaryOutputCount === 0) {
     context.addIssue({
       code: "custom",
       path: ["status"],
-      message: "completed agent task requires an output reference",
+      message: "completed agent task requires a primary output reference",
     });
   }
   if (primaryOutputCount > 1) {
@@ -1819,6 +1819,28 @@ export const KnowledgeGovernanceSuccessV1Schema = z.discriminatedUnion("kind", [
 ]);
 export type KnowledgeGovernanceSuccessV1 = z.infer<typeof KnowledgeGovernanceSuccessV1Schema>;
 
+const KNOWLEDGE_GOVERNANCE_SUCCESS_KIND_BY_COMMAND = {
+  "submit-revision": "revision",
+  "request-review": "review-task",
+  "publish-approved-release": "release",
+  "deactivate-release": "release",
+  "rollback-by-new-release": "release",
+} as const satisfies Record<
+  KnowledgeGovernanceCommandV1["kind"],
+  KnowledgeGovernanceSuccessV1["kind"]
+>;
+
+type KnowledgeGovernanceResultForSuccessKindV1<T extends KnowledgeGovernanceSuccessV1["kind"]> =
+  | { kind: "succeeded"; result: Extract<KnowledgeGovernanceSuccessV1, { kind: T }> }
+  | { kind: "failed"; error: ModuleErrorV1 };
+
+export type KnowledgeGovernanceResultForCommandV1<T extends KnowledgeGovernanceCommandV1> =
+  T extends { kind: infer K extends keyof typeof KNOWLEDGE_GOVERNANCE_SUCCESS_KIND_BY_COMMAND }
+    ? KnowledgeGovernanceResultForSuccessKindV1<
+        (typeof KNOWLEDGE_GOVERNANCE_SUCCESS_KIND_BY_COMMAND)[K]
+      >
+    : never;
+
 export const KnowledgeResolutionSuccessV1Schema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("identification-basis"),
@@ -2012,6 +2034,27 @@ export const KnowledgeGovernanceResultV1Schema = moduleResultSchema(
 );
 export type KnowledgeGovernanceResultV1 = z.infer<typeof KnowledgeGovernanceResultV1Schema>;
 
+export const KnowledgeGovernanceCommandResultV1Schema = z
+  .strictObject({
+    command: KnowledgeGovernanceCommandV1Schema,
+    result: KnowledgeGovernanceResultV1Schema,
+  })
+  .superRefine((pair, context) => {
+    if (
+      pair.result.kind === "succeeded" &&
+      pair.result.result.kind !== KNOWLEDGE_GOVERNANCE_SUCCESS_KIND_BY_COMMAND[pair.command.kind]
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["result", "result", "kind"],
+        message: "knowledge governance result does not match command",
+      });
+    }
+  });
+export type KnowledgeGovernanceCommandResultV1 = z.infer<
+  typeof KnowledgeGovernanceCommandResultV1Schema
+>;
+
 export const KnowledgeResolutionResultV1Schema = moduleResultSchema(
   KnowledgeResolutionSuccessV1Schema,
   true,
@@ -2114,7 +2157,9 @@ export interface EngineeringDataPortV1 {
 }
 
 export interface KnowledgeModelingPortV1 {
-  govern(command: KnowledgeGovernanceCommandV1): Promise<KnowledgeGovernanceResultV1>;
+  govern<T extends KnowledgeGovernanceCommandV1>(
+    command: T,
+  ): Promise<KnowledgeGovernanceResultForCommandV1<T>>;
   resolve(command: KnowledgeResolutionCommandV1): Promise<KnowledgeResolutionResultV1>;
   retrieve(query: KnowledgeRetrievalQueryV1): Promise<KnowledgeRetrievalResultV1>;
 }

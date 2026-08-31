@@ -38,39 +38,20 @@ export interface PostgresIdempotentConsumerHandle extends IdempotentConsumerV1 {
   close(): Promise<void>;
 }
 
-export interface PostgresFoundationHandle {
-  readonly transactionUnit: TransactionUnitV1;
-  readonly outbox: OutboxV1;
-  readonly consumer: IdempotentConsumerV1;
-  close(): Promise<void>;
-}
-
 const managed = <T extends object>(
   value: T,
   runtime: PostgresRuntime,
 ): T & { close(): Promise<void> } => Object.assign(value, { close: runtime.close });
 
-export const createPostgresFoundation = (
-  config: PostgresConnectionConfig,
-): PostgresFoundationHandle => {
-  const runtime = createPostgresRuntime(config);
-  return {
-    transactionUnit: new PostgresTransactionUnit(runtime.db),
-    outbox: new PostgresOutbox(runtime.db),
-    consumer: new PostgresIdempotentConsumer(runtime.db),
-    close: runtime.close,
-  };
-};
-
 export const createPostgresTransactionUnit = (
   config: PostgresConnectionConfig,
 ): PostgresTransactionUnitHandle => {
-  const runtime = createPostgresRuntime(config);
+  const runtime = createPostgresRuntime(config, "riskflow_app");
   return managed(new PostgresTransactionUnit(runtime.db), runtime);
 };
 
 export const createPostgresOutbox = (config: PostgresConnectionConfig): PostgresOutboxHandle => {
-  const runtime = createPostgresRuntime(config);
+  const runtime = createPostgresRuntime(config, "riskflow_outbox_worker");
   return managed(new PostgresOutbox(runtime.db), runtime);
 };
 

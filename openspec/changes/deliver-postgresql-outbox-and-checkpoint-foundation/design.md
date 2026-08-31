@@ -96,7 +96,7 @@ packages/adapters/test/postgres/
 | `riskflow_outbox_worker` | Outbox 领取/确认/失败和消费者收件箱 DML；无审计修改或 checkpointer 权限 |
 | `riskflow_checkpointer` | 只拥有并使用 `langgraph_checkpoint`；无前三个 schema 的访问权 |
 
-管理员运行幂等的 `bootstrapPostgresFoundation`，创建 NOLOGIN 角色和 schema、撤销 `PUBLIC CREATE`、设置默认权限。它不创建 LOGIN 主体、不接收或保存凭据；C37 再绑定真实部署/运行主体。需要在消费事务中写下游事实的运行主体同时加入 `riskflow_app` 与 `riskflow_outbox_worker`，不新建拥有额外权限的超级角色；纯投递主体只加入 Worker 角色。测试可以创建对应的容器内临时 LOGIN 主体，测试结束随容器销毁。
+管理员运行幂等的 `bootstrapPostgresFoundation`，创建 NOLOGIN 角色和 schema、撤销 `PUBLIC CREATE`，不设置会把未来表权限宽泛授予运行角色的默认权限；每个迁移在创建所属表后显式授予最小权限。它不创建 LOGIN 主体、不接收或保存凭据；C37 再绑定真实部署/运行主体。需要在消费事务中写下游事实的运行主体同时加入 `riskflow_app` 与 `riskflow_outbox_worker`，不新建拥有额外权限的超级角色；纯投递主体只加入 Worker 角色。测试可以创建对应的容器内临时 LOGIN 主体，测试结束随容器销毁。
 
 bootstrap 是受控部署入口，先于 Kysely 迁移；Kysely 历史表 `_riskflow_migration` 与 `_riskflow_migration_lock` 放在已 bootstrap 的 `business` schema 中。API、Worker 和 checkpointer 工厂都不得隐式 bootstrap、迁移或 setup。未部署完成时返回结构化错误，不以运行身份临时建表。
 
@@ -107,12 +107,12 @@ bootstrap 是受控部署入口，先于 Kysely 迁移；Kysely 历史表 `_risk
 生产迁移根固定为 `packages/adapters/src/postgres/migrations`。合法路径为：
 
 ```text
-<领域目录>/<change-id>/<6位全局序号>_<kebab-case名称>.ts
+<领域目录>/<change-id>/<6位全局序号>_<小写名称>.ts
 ```
 
 合法领域目录固定为 `platform`、`engineering-data`、`knowledge-modeling`、`risk-identification`、`risk-assessment`、`warning-response`、`review-audit`、`agent-task`、`workflow`、`query-projection`。`change-id` 必须匹配 OpenSpec kebab-case；序号由主调度 Agent 在路线滚动图中分配，跨全部目录唯一且只增不改。C03 使用 `platform/deliver-postgresql-outbox-and-checkpoint-foundation/000001_foundation.ts`。
 
-一个小型自定义 Kysely `MigrationProvider` 递归读取显式传入的根目录，排序并一次性校验：路径层级、领域目录、change ID、文件名、全局序号唯一、迁移名唯一，以及模块具有 `up` 和 `down` 导出。任何非法项在创建 `Migrator` 前整体失败，因此不会执行部分待处理迁移。Provider 生成稳定 Kysely key：`<序号>_<领域目录>_<change-id>_<名称>`，不维护中央数组、barrel 或注册表。
+一个小型自定义 Kysely `MigrationProvider` 递归读取显式传入的根目录，排序并一次性校验：路径层级、领域目录、change ID、文件名（名称段由小写字母/数字及 `-` 或 `_` 分隔）、全局序号唯一、迁移名唯一，以及模块具有 `up` 和 `down` 导出。任何非法项在创建 `Migrator` 前整体失败，因此不会执行部分待处理迁移。Provider 生成稳定 Kysely key：`<序号>_<领域目录>_<change-id>_<名称>`，不维护中央数组、barrel 或注册表。
 
 Provider 接受显式模块加载函数：部署从已编译 `.js` 目录使用标准 `import(fileURL)`；Vitest 从测试配置传入可加载 `.ts` 的函数。生产入口不扫描测试迁移。测试仅在第二个显式 root 中发现 `900001_fixture_fact.ts`，用于证明原子性；它不是生产事实源。
 
@@ -200,11 +200,12 @@ Provider 接受显式模块加载函数：部署从已编译 `.js` 目录使用�
 
 ### 10. LangGraph checkpointer 隔离
 
-`checkpointer.ts` 是官方 `PostgresSaver` 的薄装配，不复制其表结构或序列化逻辑：
+`checkpointer.ts` 是官方 `PostgresSaver` 的薄装配；RiskFlow 包装器直接继承官方 saver，保留 `BaseCheckpointSaver` 的完整公开契约，不复制其表结构或序列化逻辑：
 
 - `setupPostgresCheckpointer` 是单独部署动作，以专用 `riskflow_checkpointer` 连接和固定 `langgraph_checkpoint` schema 调用官方 setup。
 - `createPostgresCheckpointer` 只创建运行时 saver，不隐式 setup；缺表时映射 `CHECKPOINTER_SETUP_REQUIRED`。
 - checkpointer 使用独立连接池/身份，不共享 `riskflow_app` 的 Kysely transaction。
+- graph state 的业务通道必须通过 C02 strict Schema 校验；官方 `__error__`、`__scheduled__`、`__interrupt__`、`__resume__`、`__pregel_tasks` 协议通道保留给 LangGraph，不被误判为业务字段。
 - checkpoint metadata 只保存 C02 允许的小型 graph state 与 `runId/threadId/commandId/eventId` 引用；不放标准化风险记录、风险评估记录、证据正文、模型响应或秘密。
 
 恢复方必须通过领域 port 核对检查点引用的业务结果。引用不存在或已回滚时返回 `CHECKPOINT_INCONSISTENT`，不能从 checkpoint payload 补造事实。业务事务先提交、随后 checkpoint 写入失败时，业务结果保持有效；恢复使用原幂等键查询既有结果后继续。清理线程或重建 checkpointer schema 不级联、触发或调用前三个 schema。

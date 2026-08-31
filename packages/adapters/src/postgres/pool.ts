@@ -29,7 +29,8 @@ export interface PostgresRuntime {
   close(): Promise<void>;
 }
 
-export type PostgresSessionRole = "riskflow_migrator" | "riskflow_checkpointer";
+export type PostgresSessionRole =
+  "riskflow_migrator" | "riskflow_app" | "riskflow_outbox_worker" | "riskflow_checkpointer";
 
 export class PostgresPersistenceError extends Error implements PersistenceErrorV1 {
   readonly code: PersistenceErrorCodeV1;

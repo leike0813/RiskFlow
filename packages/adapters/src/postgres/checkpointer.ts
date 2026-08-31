@@ -2,7 +2,11 @@ import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 
 import { isJsonValue } from "@riskflow/core/persistence";
 import { ContractReferenceV1Schema, type ContractReferenceV1 } from "@riskflow/contracts/ports";
-import { IdentifierSchema, VersionReferenceSchema } from "@riskflow/contracts/common";
+import {
+  IdentifierSchema,
+  IsoDateTimeSchema,
+  VersionReferenceSchema,
+} from "@riskflow/contracts/common";
 import {
   AssessmentGraphStateV1Schema,
   IdentificationGraphStateV1Schema,
@@ -45,15 +49,30 @@ const graphStateSchemas = [
   RiskFlowGraphStateV1Schema,
 ] as const;
 
+const langGraphProtocolChannels = new Set([
+  "__error__",
+  "__scheduled__",
+  "__interrupt__",
+  "__resume__",
+  "__pregel_tasks",
+]);
+
+const withoutProtocolChannels = (value: Record<string, unknown>): Record<string, unknown> =>
+  Object.fromEntries(
+    Object.entries(value).filter(([channel]) => !langGraphProtocolChannels.has(channel)),
+  );
+
 const parseGraphState = (value: unknown) => {
   for (const schema of graphStateSchemas) {
-    const parsed = schema.safeParse(value);
-    if (parsed.success) return parsed.data;
+    const parsed = schema.safeParse(isRecord(value) ? withoutProtocolChannels(value) : value);
+    if (parsed.success) return { state: parsed.data, schema };
   }
   throw makePersistenceError("CHECKPOINT_INCONSISTENT", "checkpointer.graph-state");
 };
 
-const validateGraphStateWrites = (writes: unknown): void => {
+type GraphStateSchema = (typeof graphStateSchemas)[number];
+
+const validateGraphStateWrites = (writes: unknown, schema: GraphStateSchema): void => {
   if (!Array.isArray(writes)) {
     throw makePersistenceError("CHECKPOINT_INCONSISTENT", "checkpointer.writes");
   }
@@ -61,16 +80,43 @@ const validateGraphStateWrites = (writes: unknown): void => {
     if (!Array.isArray(write) || typeof write[0] !== "string") {
       throw makePersistenceError("CHECKPOINT_INCONSISTENT", "checkpointer.writes");
     }
-    const accepted = graphStateSchemas.some((schema) => {
-      const shape = schema.shape as Record<
-        string,
-        { safeParse(value: unknown): { success: boolean } }
-      >;
-      return shape[write[0]]?.safeParse(write[1]).success === true;
-    });
+    if (langGraphProtocolChannels.has(write[0])) continue;
+    const shape = schema.shape as Record<
+      string,
+      { safeParse(value: unknown): { success: boolean } }
+    >;
+    const accepted = shape[write[0]]?.safeParse(write[1]).success === true;
     if (!accepted) {
       throw makePersistenceError("CHECKPOINT_INCONSISTENT", "checkpointer.writes");
     }
+  }
+};
+
+const isChannelVersion = (value: unknown): value is number | string =>
+  (typeof value === "number" && Number.isFinite(value)) ||
+  (typeof value === "string" && value.length > 0);
+
+const validateChannelVersions = (value: unknown): boolean =>
+  isRecord(value) && Object.values(value).every(isChannelVersion);
+
+const validateVersionsSeen = (value: unknown): boolean =>
+  isRecord(value) && Object.values(value).every(validateChannelVersions);
+
+const validateCheckpointEnvelope = (checkpoint: unknown): void => {
+  if (!isRecord(checkpoint)) {
+    throw makePersistenceError("CHECKPOINT_INCONSISTENT", "checkpointer.checkpoint");
+  }
+  const allowed = new Set(["v", "id", "ts", "channel_values", "channel_versions", "versions_seen"]);
+  if (
+    Object.keys(checkpoint).some((key) => !allowed.has(key)) ||
+    checkpoint.v !== 4 ||
+    !IdentifierSchema.safeParse(checkpoint.id).success ||
+    !IsoDateTimeSchema.safeParse(checkpoint.ts).success ||
+    !isRecord(checkpoint.channel_values) ||
+    !validateChannelVersions(checkpoint.channel_versions) ||
+    !validateVersionsSeen(checkpoint.versions_seen)
+  ) {
+    throw makePersistenceError("CHECKPOINT_INCONSISTENT", "checkpointer.checkpoint");
   }
 };
 
@@ -143,6 +189,20 @@ const validateMetadata = (metadata: unknown): metadata is Record<string, unknown
   ) {
     return false;
   }
+  if (
+    metadata.counters_since_delta_snapshot !== undefined &&
+    (!isRecord(metadata.counters_since_delta_snapshot) ||
+      Object.values(metadata.counters_since_delta_snapshot).some(
+        (value) =>
+          !Array.isArray(value) ||
+          value.length !== 2 ||
+          value.some(
+            (counter) => typeof counter !== "number" || !Number.isInteger(counter) || counter < 0,
+          ),
+      ))
+  ) {
+    return false;
+  }
   if (metadata.schemaVersion !== undefined && metadata.schemaVersion !== "1") return false;
   for (const key of ["runId", "threadId", "commandId", "eventId"]) {
     if (metadata[key] !== undefined && !IdentifierSchema.safeParse(metadata[key]).success)
@@ -175,15 +235,13 @@ const validateCheckpointWrite = (
   if (typeof threadId !== "string" || !IdentifierSchema.safeParse(threadId).success) {
     throw makePersistenceError("CHECKPOINT_INCONSISTENT", "checkpointer.thread");
   }
-  if (typeof checkpoint !== "object" || checkpoint === null || typeof checkpoint.id !== "string") {
-    throw makePersistenceError("CHECKPOINT_INCONSISTENT", "checkpointer.checkpoint");
-  }
+  validateCheckpointEnvelope(checkpoint);
   if (!validateMetadata(metadata)) {
     throw makePersistenceError("CHECKPOINT_INCONSISTENT", "checkpointer.metadata");
   }
   const graphState = parseGraphState(checkpoint.channel_values);
   if (
-    graphState.threadId !== threadId ||
+    graphState.state.threadId !== threadId ||
     (metadata.threadId !== undefined && metadata.threadId !== threadId)
   ) {
     throw makePersistenceError("CHECKPOINT_INCONSISTENT", "checkpointer.thread");
@@ -198,18 +256,20 @@ const validateConfig = (config: SaverGetTupleArgument): void => {
   }
 };
 
-export class PostgresCheckpointer {
-  readonly #saver: PostgresSaver;
+export class PostgresCheckpointer extends PostgresSaver {
   readonly #validateReference: ContractReferenceValidator;
 
-  constructor(saver: PostgresSaver, validateReference: ContractReferenceValidator) {
-    this.#saver = saver;
+  constructor(
+    pool: ConstructorParameters<typeof PostgresSaver>[0],
+    validateReference: ContractReferenceValidator,
+  ) {
+    super(pool, undefined, { schema: CHECKPOINTER_SCHEMA });
     this.#validateReference = validateReference;
   }
 
-  async setup(): Promise<void> {
+  override async setup(): Promise<void> {
     try {
-      await this.#saver.setup();
+      await super.setup();
     } catch (error) {
       const code =
         typeof error === "object" &&
@@ -225,36 +285,50 @@ export class PostgresCheckpointer {
     }
   }
 
-  async put(...args: SaverPutArguments): Promise<Awaited<ReturnType<PostgresSaver["put"]>>> {
+  override async put(
+    ...args: SaverPutArguments
+  ): Promise<Awaited<ReturnType<PostgresSaver["put"]>>> {
     const graphState = validateCheckpointWrite(args[0], args[1], args[2]);
-    await validateReferences(this.#validateReference, graphState, args[2]);
+    await validateReferences(this.#validateReference, graphState.state, args[2]);
     try {
-      return await this.#saver.put(...args);
+      return await super.put(...args);
     } catch (error) {
       throw this.#mapCheckpointerError(error, "checkpointer.put");
     }
   }
 
-  async putWrites(...args: SaverPutWritesArguments): Promise<void> {
+  override async putWrites(...args: SaverPutWritesArguments): Promise<void> {
     validateConfig(args[0]);
-    validateGraphStateWrites(args[1]);
-    await validateReferences(this.#validateReference, args[1]);
     try {
-      await this.#saver.putWrites(...args);
+      const tuple = await super.getTuple(args[0]);
+      if (tuple === undefined) {
+        throw makePersistenceError("CHECKPOINT_INCONSISTENT", "checkpointer.writes");
+      }
+      const graphState = validateCheckpointWrite(tuple.config, tuple.checkpoint, tuple.metadata);
+      validateGraphStateWrites(args[1], graphState.schema);
+      await validateReferences(this.#validateReference, graphState.state, tuple.metadata, args[1]);
+      await super.putWrites(...args);
     } catch (error) {
       throw this.#mapCheckpointerError(error, "checkpointer.put-writes");
     }
   }
 
-  async getTuple(
+  override async getTuple(
     config: SaverGetTupleArgument,
   ): Promise<Awaited<ReturnType<PostgresSaver["getTuple"]>>> {
     validateConfig(config);
     try {
-      const tuple = await this.#saver.getTuple(config);
+      const tuple = await super.getTuple(config);
       if (tuple !== undefined) {
         const graphState = validateCheckpointWrite(tuple.config, tuple.checkpoint, tuple.metadata);
-        await validateReferences(this.#validateReference, graphState, tuple.metadata);
+        const pendingWrites = tuple.pendingWrites?.map(([, channel, value]) => [channel, value]);
+        if (pendingWrites !== undefined) validateGraphStateWrites(pendingWrites, graphState.schema);
+        await validateReferences(
+          this.#validateReference,
+          graphState.state,
+          tuple.metadata,
+          pendingWrites,
+        );
       }
       return tuple;
     } catch (error) {
@@ -262,12 +336,19 @@ export class PostgresCheckpointer {
     }
   }
 
-  async *list(...args: SaverListArguments): AsyncGenerator<SaverListItem> {
+  override async *list(...args: SaverListArguments): AsyncGenerator<SaverListItem> {
     validateConfig(args[0]);
     try {
-      for await (const tuple of this.#saver.list(...args)) {
+      for await (const tuple of super.list(...args)) {
         const graphState = validateCheckpointWrite(tuple.config, tuple.checkpoint, tuple.metadata);
-        await validateReferences(this.#validateReference, graphState, tuple.metadata);
+        const pendingWrites = tuple.pendingWrites?.map(([, channel, value]) => [channel, value]);
+        if (pendingWrites !== undefined) validateGraphStateWrites(pendingWrites, graphState.schema);
+        await validateReferences(
+          this.#validateReference,
+          graphState.state,
+          tuple.metadata,
+          pendingWrites,
+        );
         yield tuple;
       }
     } catch (error) {
@@ -275,20 +356,20 @@ export class PostgresCheckpointer {
     }
   }
 
-  async deleteThread(threadId: string): Promise<void> {
+  override async deleteThread(threadId: string): Promise<void> {
     if (!IdentifierSchema.safeParse(threadId).success) {
       throw makePersistenceError("CHECKPOINT_INCONSISTENT", "checkpointer.thread");
     }
     try {
-      await this.#saver.deleteThread(threadId);
+      await super.deleteThread(threadId);
     } catch (error) {
       throw this.#mapCheckpointerError(error, "checkpointer.delete-thread");
     }
   }
 
-  async end(): Promise<void> {
+  override async end(): Promise<void> {
     try {
-      await this.#saver.end();
+      await super.end();
     } catch (error) {
       throw this.#mapCheckpointerError(error, "checkpointer.close");
     }
@@ -340,7 +421,7 @@ const suppressRedundantSchemaCreate = <T extends object>(pool: T): T =>
     },
   });
 
-const createSaver = (config: PostgresCheckpointerConfig): PostgresSaver => {
+const createSaver = (config: PostgresCheckpointerConfig): PostgresCheckpointer => {
   if (config.schema !== undefined && config.schema !== CHECKPOINTER_SCHEMA) {
     throw makePersistenceError("CHECKPOINTER_SETUP_REQUIRED", "checkpointer.schema");
   }
@@ -348,14 +429,12 @@ const createSaver = (config: PostgresCheckpointerConfig): PostgresSaver => {
   void _validateReference;
   void _schema;
   const pool = createPostgresPool(connection, "riskflow_checkpointer");
-  return new PostgresSaver(suppressRedundantSchemaCreate(pool), undefined, {
-    schema: CHECKPOINTER_SCHEMA,
-  });
+  return new PostgresCheckpointer(suppressRedundantSchemaCreate(pool), config.validateReference);
 };
 
 export const createPostgresCheckpointer = (
   config: PostgresCheckpointerConfig,
-): PostgresCheckpointer => new PostgresCheckpointer(createSaver(config), config.validateReference);
+): PostgresCheckpointer => createSaver(config);
 
 export const setupPostgresCheckpointer = async (
   config: PostgresCheckpointerConfig,

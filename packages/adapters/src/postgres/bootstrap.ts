@@ -41,10 +41,6 @@ const bootstrapStatements = [
   "GRANT USAGE ON SCHEMA business, audit, outbox TO riskflow_app",
   "GRANT USAGE ON SCHEMA business, outbox TO riskflow_outbox_worker",
   "GRANT USAGE ON SCHEMA langgraph_checkpoint TO riskflow_checkpointer",
-  "ALTER DEFAULT PRIVILEGES FOR ROLE riskflow_migrator IN SCHEMA business GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO riskflow_app",
-  "ALTER DEFAULT PRIVILEGES FOR ROLE riskflow_migrator IN SCHEMA audit GRANT SELECT, INSERT ON TABLES TO riskflow_app",
-  "ALTER DEFAULT PRIVILEGES FOR ROLE riskflow_migrator IN SCHEMA outbox GRANT INSERT ON TABLES TO riskflow_app",
-  "ALTER DEFAULT PRIVILEGES FOR ROLE riskflow_migrator IN SCHEMA outbox GRANT SELECT, INSERT, UPDATE ON TABLES TO riskflow_outbox_worker",
 ];
 
 export const bootstrapPostgresFoundation = async (

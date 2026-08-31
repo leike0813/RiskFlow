@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 
 import type { DomainEventV1 } from "@riskflow/contracts/events";
 import { DomainEventV1Schema } from "@riskflow/contracts/events";
@@ -313,9 +314,18 @@ describe("PostgreSQL foundation", () => {
       user: "riskflow_rotated_checkpointer_login",
       password: "riskflow-rotated-password",
     });
+    const migratorPool = userPool(fixture!.migrator);
+    const migratorClient = await migratorPool.connect();
     try {
+      await migratorClient.query("SET ROLE riskflow_migrator");
+      await migratorClient.query(
+        "CREATE TABLE business.default_privilege_probe (id text PRIMARY KEY)",
+      );
       await expect(
         appPool.query("CREATE TABLE business.app_must_not_ddl (id text PRIMARY KEY)"),
+      ).rejects.toMatchObject({ code: "42501" });
+      await expect(
+        appPool.query("INSERT INTO business.default_privilege_probe (id) VALUES ('forbidden')"),
       ).rejects.toMatchObject({ code: "42501" });
       await expect(appPool.query("UPDATE audit.entries SET action = action")).rejects.toMatchObject(
         {
@@ -347,6 +357,11 @@ describe("PostgreSQL foundation", () => {
         rotatedCheckpointPool.query("SELECT count(*) FROM langgraph_checkpoint.checkpoints"),
       ).resolves.toBeDefined();
     } finally {
+      await migratorClient
+        .query("DROP TABLE IF EXISTS business.default_privilege_probe")
+        .catch(() => undefined);
+      migratorClient.release();
+      await migratorPool.end();
       await appPool.end();
       await workerPool.end();
       await checkpointPool.end();
@@ -483,6 +498,24 @@ describe("PostgreSQL foundation", () => {
     expect(events.rows[0]?.event_json.eventVersion).toBe(1);
     expect(events.rows[0]?.occurred_at.toISOString()).toBe(timestamp);
     expect(events.rows[0]?.recorded_at.toISOString()).toBe(laterTimestamp);
+  });
+
+  it("narrows a multi-role login to the application role for atomic commands", async () => {
+    const narrowedUnit = createPostgresTransactionUnit(fixture!.worker);
+    const command = makeCommand(nextId("narrowed-role"));
+    try {
+      await expect(
+        narrowedUnit.execute(command, async (context) => {
+          await getPostgresTransaction(context)
+            .selectFrom("outbox.consumer_receipts")
+            .select("event_id")
+            .executeTakeFirst();
+          return makeCommit(command, command.commandId);
+        }),
+      ).rejects.toMatchObject({ code: "TRANSACTION_FAILED" });
+    } finally {
+      await narrowedUnit.close();
+    }
   });
 
   it("supports zero-event commits and rolls back audit or outbox failures", async () => {
@@ -935,18 +968,23 @@ describe("PostgreSQL foundation", () => {
 
   it("uses official PostgresSaver setup and isolates checkpoint state", async () => {
     expect(checkpointer).toBeDefined();
+    const officialSaver: PostgresSaver = checkpointer!;
+    expect(officialSaver).toBeInstanceOf(PostgresSaver);
+    expect(officialSaver.getNextVersion(1)).toBe(2);
+    await seedCommand(nextId("checkpoint-business"), 1);
     const threadId = nextId("checkpoint-thread");
     const checkpointSuffix = nextId("checkpoint-state");
     const config = { configurable: { thread_id: threadId, checkpoint_ns: "" } } as const;
     const graphState = riskFlowGraphState(threadId, checkpointSuffix);
-    const channelVersions = Object.fromEntries(
-      Object.keys(graphState).map((channel) => [channel, 1]),
-    );
+    const channelVersions = {
+      ...Object.fromEntries(Object.keys(graphState).map((channel) => [channel, 1])),
+      __pregel_tasks: 1,
+    };
     const checkpoint = {
       v: 4,
       id: `1f000000-0000-6000-8000-${String(sequence).padStart(12, "0")}`,
       ts: timestamp,
-      channel_values: graphState,
+      channel_values: { ...graphState, __pregel_tasks: [] },
       channel_versions: channelVersions,
       versions_seen: { input: channelVersions },
     } as Parameters<PostgresCheckpointer["put"]>[1];
@@ -968,9 +1006,18 @@ describe("PostgreSQL foundation", () => {
     } as Parameters<PostgresCheckpointer["put"]>[2];
     const savedConfig = await checkpointer!.put(config, checkpoint, metadata, channelVersions);
     await checkpointer!.putWrites(savedConfig, [["stage", "result-summary"]], "checkpoint-task");
+    await checkpointer!.putWrites(
+      savedConfig,
+      [["__interrupt__", { reason: "paused" }]],
+      "checkpoint-interrupt",
+    );
     const tuple = await checkpointer!.getTuple(savedConfig);
     expect(tuple?.checkpoint.id).toBe(checkpoint.id);
     expect(tuple?.metadata).toMatchObject({ threadId, runId: metadata.runId });
+    expect(tuple?.pendingWrites?.map(([, channel]) => channel)).toEqual(
+      expect.arrayContaining(["stage", "__interrupt__"]),
+    );
+    expect((await officialSaver.get(savedConfig))?.id).toBe(checkpoint.id);
     const listed = [];
     for await (const item of checkpointer!.list(config)) listed.push(item);
     expect(listed).toHaveLength(1);
@@ -986,6 +1033,34 @@ describe("PostgreSQL foundation", () => {
     ).rejects.toMatchObject({ code: "CHECKPOINT_INCONSISTENT" });
     await expect(
       checkpointer!.putWrites(savedConfig, [["data", { secret: "forbidden" }]], "bad-write"),
+    ).rejects.toMatchObject({ code: "CHECKPOINT_INCONSISTENT" });
+    await expect(
+      checkpointer!.putWrites(savedConfig, [["stage", "I0"]], "wrong-graph-write"),
+    ).rejects.toMatchObject({ code: "CHECKPOINT_INCONSISTENT" });
+    const missingWriteRef = resultRef("missing-checkpoint-write");
+    unavailableReferenceIds.add(missingWriteRef.reference.entityId);
+    await expect(
+      checkpointer!.putWrites(savedConfig, [["resultRef", missingWriteRef]], "missing-ref-write"),
+    ).rejects.toMatchObject({
+      code: "CHECKPOINT_INCONSISTENT",
+      stage: "checkpointer.reference",
+    });
+    unavailableReferenceIds.delete(missingWriteRef.reference.entityId);
+    await expect(
+      checkpointer!.put(
+        config,
+        { ...checkpoint, password: "forbidden" } as never,
+        metadata,
+        channelVersions,
+      ),
+    ).rejects.toMatchObject({ code: "CHECKPOINT_INCONSISTENT" });
+    await expect(
+      checkpointer!.put(
+        config,
+        checkpoint,
+        { ...metadata, counters_since_delta_snapshot: { stage: [1, "secret"] } } as never,
+        channelVersions,
+      ),
     ).rejects.toMatchObject({ code: "CHECKPOINT_INCONSISTENT" });
     await expect(
       checkpointer!.put(

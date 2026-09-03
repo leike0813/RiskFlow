@@ -1172,6 +1172,9 @@ export const createPostgresLocalIdentityAccess = (
         atomicCommand(valid, actor, valid.projectId, jsonValue(valid) as Record<string, JsonValue>),
         preserveAccessErrorsInTransaction(async (context) => {
           const tx = asAccessTransaction(context);
+          await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`riskflow.project-access.${valid.projectId}`}, 0))`.execute(
+            tx,
+          );
           const txActor = await adminActorForProjectCommand(tx, valid, clock);
           if (txActor !== actor)
             throw makeAccessError("STALE_ACCESS_VERSION", "project.authorize", clock);
@@ -1256,7 +1259,11 @@ export const createPostgresLocalIdentityAccess = (
               .execute();
             await tx
               .insertInto("business.project_membership_revision_scopes")
-              .values({ revision_id: membershipRevisionId, scope_id: rootScopeId })
+              .values({
+                revision_id: membershipRevisionId,
+                project_id: valid.projectId,
+                scope_id: rootScopeId,
+              })
               .execute();
             if (valid.includeAdministrator === true && actor !== initialManager.account_id) {
               const adminMembershipId = randomId("membership");
@@ -1291,7 +1298,11 @@ export const createPostgresLocalIdentityAccess = (
                 .execute();
               await tx
                 .insertInto("business.project_membership_revision_scopes")
-                .values({ revision_id: adminRevisionId, scope_id: rootScopeId })
+                .values({
+                  revision_id: adminRevisionId,
+                  project_id: valid.projectId,
+                  scope_id: rootScopeId,
+                })
                 .execute();
             }
             return commitWithSecurityAudit(
@@ -1405,7 +1416,13 @@ export const createPostgresLocalIdentityAccess = (
                 .execute();
               await tx
                 .insertInto("business.project_membership_revision_scopes")
-                .values(scopeIds.map((scopeId) => ({ revision_id: revisionId, scope_id: scopeId })))
+                .values(
+                  scopeIds.map((scopeId) => ({
+                    revision_id: revisionId,
+                    project_id: valid.projectId,
+                    scope_id: scopeId,
+                  })),
+                )
                 .execute();
               return commitWithSecurityAudit(
                 tx,
@@ -1509,7 +1526,11 @@ export const createPostgresLocalIdentityAccess = (
             await tx
               .insertInto("business.project_membership_revision_scopes")
               .values(
-                scopeIds.map((scopeId) => ({ revision_id: nextRevisionId, scope_id: scopeId })),
+                scopeIds.map((scopeId) => ({
+                  revision_id: nextRevisionId,
+                  project_id: valid.projectId,
+                  scope_id: scopeId,
+                })),
               )
               .execute();
             const updated = await tx
@@ -1797,6 +1818,7 @@ export const createPostgresLocalIdentityAccess = (
                 .values(
                   sourceScopes.map((scope) => ({
                     revision_id: revisionId,
+                    project_id: valid.projectId,
                     scope_id: scope.reference.entityId,
                   })),
                 )
@@ -1857,6 +1879,7 @@ export const createPostgresLocalIdentityAccess = (
               .values(
                 sourceScopes.map((scope) => ({
                   revision_id: nextRevisionId,
+                  project_id: valid.projectId,
                   scope_id: scope.reference.entityId,
                 })),
               )
@@ -2133,8 +2156,7 @@ export const createPostgresLocalIdentityAccess = (
         redacted: false,
       };
     }
-    const requireBody =
-      branch === "engineering-data.evidence-access" || branch === "projection.export";
+    const requireBody = branch === "engineering-data.evidence-access";
     const sourceAccess = sourcePolicies.map((policy) =>
       evaluateSourceAccess({
         accountId: actorId,
@@ -2781,9 +2803,25 @@ export const createPostgresLocalIdentityAccess = (
             asDate(existing.expires_at).getTime() <= nowDate(clock).getTime()
           )
             throw makeAccessError("SESSION_EXPIRED", "authorize.context", clock);
+          const existingSnapshot = existing.revision_snapshot;
+          const existingSourceVersionRefs =
+            typeof existingSnapshot === "object" &&
+            existingSnapshot !== null &&
+            !Array.isArray(existingSnapshot) &&
+            "sourceVersionRefs" in existingSnapshot
+              ? existingSnapshot.sourceVersionRefs
+              : undefined;
           if (
             existingContext.context.actorId !== context.actorId ||
             existingContext.context.projectId !== context.projectId ||
+            sha256CanonicalJson(existingContext.context.invocation) !==
+              sha256CanonicalJson(context.invocation) ||
+            existing.parent_context_id !==
+              (parent?.authorizationContextRef.reference.entityId ?? null) ||
+            sha256CanonicalJson(existing.causal_run_ref) !==
+              sha256CanonicalJson(causalRunRef ?? null) ||
+            sha256CanonicalJson(existingSourceVersionRefs) !==
+              sha256CanonicalJson(valid.requestedSourceVersionRefs) ||
             JSON.stringify(existingContext.context.grantedCapabilities) !==
               JSON.stringify(context.grantedCapabilities) ||
             JSON.stringify(existingContext.context.spatialScopeRefs) !==

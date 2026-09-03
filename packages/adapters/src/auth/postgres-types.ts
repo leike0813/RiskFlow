@@ -124,6 +124,7 @@ export interface ProjectMembershipRevisionRoleRow {
 
 export interface ProjectMembershipRevisionScopeRow {
   revision_id: string;
+  project_id: string;
   scope_id: string;
 }
 
@@ -156,6 +157,7 @@ export interface SourceAccessPolicyRevisionAccountRow {
 
 export interface SourceAccessPolicyRevisionScopeRow {
   revision_id: string;
+  project_id: string;
   scope_id: string;
 }
 

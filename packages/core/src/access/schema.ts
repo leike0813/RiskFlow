@@ -52,7 +52,12 @@ export type SourceVisibilityV1 = z.infer<typeof SourceVisibilityV1Schema>;
 
 export const LoginNameInputV1Schema = z.string().min(1).max(96);
 export const CanonicalLoginNameV1Schema = z.string().regex(/^[a-z][a-z0-9._-]{2,63}$/);
-export const DisplayNameV1Schema = z.string().trim().min(1).max(100);
+export const DisplayNameV1Schema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(200)
+  .refine((value) => Array.from(value).length <= 100);
 
 export const PasswordV1Schema = z.string().superRefine((password, context) => {
   if (password.length > 512) {

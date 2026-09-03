@@ -5,6 +5,7 @@ import {
   PRESET_ROLE_BRANCHES_V1,
   AccessErrorV1Schema,
   AuthorizationRequestV1Schema,
+  DisplayNameV1Schema,
   LoginCommandV1Schema,
   PasswordV1Schema,
   PresetRoleV1Schema,
@@ -13,10 +14,10 @@ import {
   assertSpatialScopeTree,
   allSpatialScopesCovered,
   branchCapability,
+  evaluateSourceAccess,
   isAuthorizationSubset,
   isBranchAllowed,
   isSpatialScopeCovered,
-  intersectSourcePolicies,
   projectionAccess,
   type SpatialScopeNodeV1,
 } from "../src/access/index.js";
@@ -101,45 +102,51 @@ describe("access domain", () => {
   });
 
   it("authorization source intersection and redacted projection", () => {
-    const policy = (visibility: "project-shared" | "restricted", allowedAccountIds: string[]) => ({
+    const policy = (
+      sourceId: string,
+      visibility: "project-shared" | "restricted",
+      allowedAccountIds: string[],
+    ) => ({
       projectId: "project-a",
       sourceVersionRef: {
         kind: "source-version" as const,
-        reference: { entityId: "source", versionId: "1" },
+        reference: { entityId: sourceId, versionId: "1" },
       },
       revisionRef: {
         kind: "source-access-grant" as const,
-        reference: { entityId: `grant-${visibility}`, versionId: "1" },
+        reference: { entityId: `grant-${sourceId}`, versionId: "1" },
       },
       visibility,
       allowedAccountIds,
       spatialScopeRefs: [scope("root", "1")],
     });
-    const intersection = intersectSourcePolicies([
-      policy("project-shared", []),
-      policy("restricted", ["account-a", "account-b"]),
+    const scopeNodes: SpatialScopeNodeV1[] = [
+      { projectId: "project-a", scopeId: "root", revisionId: "1", status: "active" },
+    ];
+    const evaluate = (sourcePolicy: ReturnType<typeof policy>) =>
+      evaluateSourceAccess({
+        accountId: "account-a",
+        projectId: "project-a",
+        roles: ["business-viewer"],
+        branch: "projection.query",
+        membershipActive: true,
+        grantedScopeRefs: [scope("root", "1")],
+        policy: sourcePolicy,
+        scopeNodes,
+        requireBody: false,
+      });
+    const projection = projectionAccess([
+      evaluate(policy("source-shared", "project-shared", [])),
+      evaluate(policy("source-restricted", "restricted", ["account-b"])),
     ]);
-    expect(intersection?.visibility).toBe("restricted");
-    expect(intersection?.allowedAccountIds).toEqual(["account-a", "account-b"]);
-    expect(
-      projectionAccess([
-        { allowed: true, bodyAllowed: false, redacted: true, grantRefs: [], requiredScopeRefs: [] },
-      ]),
-    ).toEqual({ allowed: true, redacted: true, sourceAccessGrantRefs: [] });
-    const restrictedIntersection = intersectSourcePolicies([
-      policy("restricted", ["account-a", "account-b"]),
-      {
-        ...policy("restricted", ["account-a"]),
-        revisionRef: {
-          kind: "source-access-grant" as const,
-          reference: { entityId: "grant-second", versionId: "1" },
-        },
-      },
-    ]);
-    expect(restrictedIntersection?.allowedAccountIds).toEqual(["account-a"]);
+    expect(projection.allowed).toBe(true);
+    expect(projection.redacted).toBe(true);
+    expect(projection.sourceAccessGrantRefs).toHaveLength(0);
   });
 
   it("strict DTOs and bounded input", () => {
+    expect(DisplayNameV1Schema.safeParse("😀".repeat(100)).success).toBe(true);
+    expect(DisplayNameV1Schema.safeParse("😀".repeat(101)).success).toBe(false);
     expect(
       LoginCommandV1Schema.safeParse({
         kind: "login",

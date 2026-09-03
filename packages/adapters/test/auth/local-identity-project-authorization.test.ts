@@ -3,10 +3,16 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { SpatialScopeRefV1 } from "@riskflow/contracts/ports";
 
 import {
+  activePasswordDerivations,
   bootstrapInitialSystemAdministrator,
+  createSessionToken,
   createPostgresLocalIdentityAccess,
+  decodeAndVerifySessionToken,
+  derivePassword,
+  makeDummyCredential,
   PASSWORD_POLICY_V1,
   SESSION_TOKEN_POLICY_V1,
+  verifyPassword,
 } from "../../src/auth/index.js";
 import type { PostgresLocalIdentityAccess } from "../../src/auth/index.js";
 import { startAuthPostgresFixture, type AuthPostgresFixture } from "./fixture.js";
@@ -55,6 +61,7 @@ describe.sequential("local identity and project authorization", () => {
   let childScopeRef: SpatialScopeRefV1 | undefined;
   let sourceGrantId: string | undefined;
   let sourceTwoGrantId: string | undefined;
+  let projectBRootScopeId: string | undefined;
   let viewerProjectionDecision:
     Awaited<ReturnType<PostgresLocalIdentityAccess["authorize"]>> | undefined;
   const clock = mutableClock();
@@ -119,7 +126,7 @@ describe.sequential("local identity and project authorization", () => {
     }
   });
 
-  it("password and token primitives", () => {
+  it("password and token primitives", async () => {
     expect(PASSWORD_POLICY_V1).toMatchObject({
       algorithm: "scrypt",
       cost: 131072,
@@ -135,6 +142,29 @@ describe.sequential("local identity and project authorization", () => {
       nonceBytes: 16,
       macBytes: 32,
     });
+    const first = await derivePassword("primitive-password-v1");
+    const second = await derivePassword("primitive-password-v1");
+    expect(first.salt).not.toEqual(second.salt);
+    expect(await verifyPassword("riskflow-dummy-password-v1", await makeDummyCredential())).toBe(
+      true,
+    );
+    const tokenKey = { keyVersion: "key-v1", hmacKey: HMAC_KEY };
+    const generated = createSessionToken(tokenKey);
+    expect(generated.sessionId).toHaveLength(SESSION_TOKEN_POLICY_V1.sessionIdBytes);
+    expect(generated.nonce).toHaveLength(SESSION_TOKEN_POLICY_V1.nonceBytes);
+    expect(decodeAndVerifySessionToken(generated.token, tokenKey)).toMatchObject({
+      sessionId: generated.sessionId,
+      nonce: generated.nonce,
+    });
+    expect(
+      decodeAndVerifySessionToken(generated.token.replace(/^v1/, "v2"), tokenKey),
+    ).toBeUndefined();
+    const tamperedToken = `${generated.token.slice(0, -1)}${generated.token.endsWith("A") ? "B" : "A"}`;
+    expect(decodeAndVerifySessionToken(tamperedToken, tokenKey)).toBeUndefined();
+    const concurrent = Array.from({ length: 5 }, () => derivePassword("concurrent-password-v1"));
+    expect(activePasswordDerivations()).toBe(PASSWORD_POLICY_V1.maxConcurrent);
+    await Promise.all(concurrent);
+    expect(activePasswordDerivations()).toBe(0);
   });
 
   it("bootstrap|account administration", async () => {
@@ -469,6 +499,24 @@ describe.sequential("local identity and project authorization", () => {
     expect(agentChild.context.invocation.kind).toBe("agent-task");
     await expect(
       access!.authorize({
+        invocation: {
+          kind: "agent-task",
+          agentTaskRef: {
+            ...agentTaskRef,
+            reference: { entityId: "task-causal-other", versionId: "1" },
+          },
+        },
+        invocationId: "authorize-agent-child",
+        projectId: "project-a",
+        branch: "projection.query",
+        requestedSpatialScopeRefs: [parent.context.spatialScopeRefs[0]!],
+        requestedSourceVersionRefs: [],
+        parentContext: parent.context,
+        causalRunRef: workflowRunRef,
+      }),
+    ).rejects.toMatchObject({ details: { code: "IDEMPOTENCY_CONFLICT" } });
+    await expect(
+      access!.authorize({
         invocation: { kind: "agent-task", agentTaskRef },
         invocationId: "authorize-agent-widen",
         projectId: "project-a",
@@ -521,6 +569,7 @@ describe.sequential("local identity and project authorization", () => {
       "SELECT scope.scope_id, scope.current_revision_id AS revision_id FROM business.access_spatial_scopes scope WHERE scope.project_id = $1",
       ["project-b"],
     );
+    projectBRootScopeId = otherRoot.rows[0]!.scope_id;
     await expect(
       access!.administerProject({
         kind: "create-spatial-scope",
@@ -552,6 +601,21 @@ describe.sequential("local identity and project authorization", () => {
         parentScopeRef: childScopeRef,
       }),
     ).rejects.toMatchObject({ details: { code: "ACCESS_CONTRACT_INVALID" } });
+
+    const reviewerRevision = await fixture!.adminPool.query<{ current_revision_id: string }>(
+      "SELECT current_revision_id FROM business.project_memberships WHERE membership_id = 'membership-reviewer'",
+    );
+    const appPool = new Pool(fixture!.app);
+    try {
+      await expect(
+        appPool.query(
+          "INSERT INTO business.project_membership_revision_scopes (revision_id, project_id, scope_id) VALUES ($1, $2, $3)",
+          [reviewerRevision.rows[0]!.current_revision_id, "project-b", projectBRootScopeId],
+        ),
+      ).rejects.toBeDefined();
+    } finally {
+      await appPool.end();
+    }
 
     const concurrentResults = await Promise.allSettled([
       access!.administerProject({
@@ -585,6 +649,106 @@ describe.sequential("local identity and project authorization", () => {
     const rejected = concurrentResults.find((result) => result.status === "rejected");
     expect(rejected?.status === "rejected" ? rejected.reason : undefined).toMatchObject({
       details: { code: "STALE_ACCESS_VERSION" },
+    });
+
+    await access!.administerProject({
+      kind: "revise-membership",
+      projectId: "project-a",
+      commandId: "command-promote-reviewer-manager",
+      idempotencyKey: "idem-promote-reviewer-manager",
+      expectedVersion: { entityId: "membership-reviewer", versionId: "2" },
+      authorizationContextRef: managerRegistrationContext!.authorizationContextRef,
+      membershipId: "membership-reviewer",
+      accountId: roleAccountIds.reviewer!,
+      roles: ["project-risk-manager"],
+      spatialScopeRefs: [rootScopeRef!],
+      status: "active",
+    });
+    const originalManager = await fixture!.adminPool.query<{
+      membership_id: string;
+      revision_no: number;
+    }>(
+      "SELECT membership.membership_id, revision.revision_no FROM business.project_memberships membership JOIN business.project_membership_revisions revision ON revision.revision_id = membership.current_revision_id WHERE membership.project_id = 'project-a' AND membership.account_id = $1",
+      [userAccountId],
+    );
+    const lastManagerRace = await Promise.allSettled([
+      access!.administerProject({
+        kind: "revise-membership",
+        projectId: "project-a",
+        commandId: "command-remove-original-manager",
+        idempotencyKey: "idem-remove-original-manager",
+        expectedVersion: {
+          entityId: originalManager.rows[0]!.membership_id,
+          versionId: String(originalManager.rows[0]!.revision_no),
+        },
+        authorizationContextRef: managerRegistrationContext!.authorizationContextRef,
+        membershipId: originalManager.rows[0]!.membership_id,
+        accountId: userAccountId!,
+        roles: ["project-risk-manager"],
+        spatialScopeRefs: [rootScopeRef!],
+        status: "removed",
+      }),
+      access!.administerProject({
+        kind: "revise-membership",
+        projectId: "project-a",
+        commandId: "command-remove-promoted-manager",
+        idempotencyKey: "idem-remove-promoted-manager",
+        expectedVersion: { entityId: "membership-reviewer", versionId: "3" },
+        authorizationContextRef: managerRegistrationContext!.authorizationContextRef,
+        membershipId: "membership-reviewer",
+        accountId: roleAccountIds.reviewer!,
+        roles: ["project-risk-manager"],
+        spatialScopeRefs: [rootScopeRef!],
+        status: "removed",
+      }),
+    ]);
+    expect(lastManagerRace.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const membershipState = await fixture!.adminPool.query<{
+      membership_id: string;
+      account_id: string;
+      revision_no: number;
+      status: "active" | "removed";
+    }>(
+      "SELECT membership.membership_id, revision.account_id, revision.revision_no, revision.status FROM business.project_memberships membership JOIN business.project_membership_revisions revision ON revision.revision_id = membership.current_revision_id WHERE membership.project_id = 'project-a' AND membership.membership_id = ANY($1::text[])",
+      [[originalManager.rows[0]!.membership_id, "membership-reviewer"]],
+    );
+    const originalState = membershipState.rows.find((row) => row.account_id === userAccountId)!;
+    if (originalState.status === "removed") {
+      await access!.administerProject({
+        kind: "revise-membership",
+        projectId: "project-a",
+        commandId: "command-restore-original-manager",
+        idempotencyKey: "idem-restore-original-manager",
+        expectedVersion: {
+          entityId: originalState.membership_id,
+          versionId: String(originalState.revision_no),
+        },
+        authorizationContextRef: adminContext!,
+        membershipId: originalState.membership_id,
+        accountId: userAccountId!,
+        roles: ["project-risk-manager"],
+        spatialScopeRefs: [rootScopeRef!],
+        status: "active",
+      });
+    }
+    const reviewerState = membershipState.rows.find(
+      (row) => row.account_id === roleAccountIds.reviewer,
+    )!;
+    await access!.administerProject({
+      kind: "revise-membership",
+      projectId: "project-a",
+      commandId: "command-restore-reviewer-role",
+      idempotencyKey: "idem-restore-reviewer-role",
+      expectedVersion: {
+        entityId: reviewerState.membership_id,
+        versionId: String(reviewerState.revision_no),
+      },
+      authorizationContextRef: adminContext!,
+      membershipId: reviewerState.membership_id,
+      accountId: roleAccountIds.reviewer!,
+      roles: ["reviewer"],
+      spatialScopeRefs: [rootScopeRef!],
+      status: "active",
     });
   });
 
@@ -674,6 +838,31 @@ describe.sequential("local identity and project authorization", () => {
     });
     expect(derivedProjection.redacted).toBe(true);
     expect(derivedProjection.context.sourceAccessGrantRefs).toHaveLength(0);
+    const redactedExport = await access!.authorize({
+      invocation: { kind: "human-session", sessionToken: roleSessionTokens["business-viewer"]! },
+      invocationId: "authorize-viewer-redacted-export",
+      projectId: "project-a",
+      branch: "projection.export",
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [sourceTwo],
+    });
+    expect(redactedExport.redacted).toBe(true);
+    expect(redactedExport.context.sourceAccessGrantRefs).toHaveLength(0);
+    const sourceTwoRevision = await fixture!.adminPool.query<{ current_revision_id: string }>(
+      "SELECT current_revision_id FROM business.source_access_policies WHERE source_access_grant_id = $1",
+      [sourceTwoGrantId],
+    );
+    const appPool = new Pool(fixture!.app);
+    try {
+      await expect(
+        appPool.query(
+          "INSERT INTO business.source_access_policy_revision_scopes (revision_id, project_id, scope_id) VALUES ($1, $2, $3)",
+          [sourceTwoRevision.rows[0]!.current_revision_id, "project-b", projectBRootScopeId],
+        ),
+      ).rejects.toBeDefined();
+    } finally {
+      await appPool.end();
+    }
     await access!.administerProject({
       kind: "revise-source-access",
       projectId: "project-a",
@@ -977,12 +1166,59 @@ describe.sequential("local identity and project authorization", () => {
   });
 
   it("authorization performance", async () => {
-    expect(managerSessionToken).toBeDefined();
+    let sessionToken = managerSessionToken;
+    let projectId = "project-a";
+    if (sessionToken === undefined) {
+      projectId = "project-performance";
+      const adminLogin = await access!.login({
+        kind: "login",
+        loginAttemptId: "login-performance-admin",
+        loginName: "admin001",
+        password: ADMIN_PASSWORD,
+      });
+      const adminChanged = await access!.changePassword({
+        kind: "change-password",
+        sessionToken: adminLogin.sessionToken,
+        newPassword: "admin-performance-password-v1",
+      });
+      const performanceManager = await access!.administerIdentity({
+        kind: "create-account",
+        commandId: "command-create-performance-manager",
+        idempotencyKey: "idem-create-performance-manager",
+        expectedVersion: "none",
+        authorizationContextRef: adminChanged.systemAdministrationContextRef!,
+        loginName: "perform001",
+        displayName: "Performance manager",
+        password: "performance-manager-password-v1",
+      });
+      await access!.administerProject({
+        kind: "open-project",
+        projectId,
+        commandId: "command-open-performance-project",
+        idempotencyKey: "idem-open-performance-project",
+        expectedVersion: "none",
+        authorizationContextRef: adminChanged.systemAdministrationContextRef!,
+        initialRiskManagerAccountId: performanceManager.resultRef.entityId,
+      });
+      const managerLogin = await access!.login({
+        kind: "login",
+        loginAttemptId: "login-performance-manager",
+        loginName: "perform001",
+        password: "performance-manager-password-v1",
+      });
+      sessionToken = (
+        await access!.changePassword({
+          kind: "change-password",
+          sessionToken: managerLogin.sessionToken,
+          newPassword: "performance-manager-changed-v1",
+        })
+      ).sessionToken;
+    }
     for (let warmup = 0; warmup < 5; warmup += 1) {
       await access!.authorize({
-        invocation: { kind: "human-session", sessionToken: managerSessionToken! },
+        invocation: { kind: "human-session", sessionToken },
         invocationId: `authorize-performance-warmup-${warmup}`,
-        projectId: "project-a",
+        projectId,
         branch: "projection.query",
         requestedSpatialScopeRefs: [],
         requestedSourceVersionRefs: [],
@@ -993,9 +1229,9 @@ describe.sequential("local identity and project authorization", () => {
     for (let sample = 0; sample < 200; sample += 1) {
       const started = performance.now();
       const decision = await access!.authorize({
-        invocation: { kind: "human-session", sessionToken: managerSessionToken! },
+        invocation: { kind: "human-session", sessionToken },
         invocationId: `authorize-performance-${sample}`,
-        projectId: "project-a",
+        projectId,
         branch: "projection.query",
         requestedSpatialScopeRefs: [],
         requestedSourceVersionRefs: [],

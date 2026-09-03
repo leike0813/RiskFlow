@@ -157,42 +157,6 @@ export const spatialScopeClosure = (
   );
 };
 
-export const intersectSourcePolicies = (
-  policies: readonly SourceAccessPolicyV1[],
-): SourceAccessPolicyV1 | undefined => {
-  if (policies.length === 0) return undefined;
-  const [first] = policies;
-  if (first === undefined) return undefined;
-  const requiredScopes = new Map<string, SpatialScopeRefV1>();
-  for (const policy of policies) {
-    if (
-      policy.projectId !== first.projectId ||
-      policy.sourceVersionRef.reference.entityId !== first.sourceVersionRef.reference.entityId ||
-      policy.sourceVersionRef.reference.versionId !== first.sourceVersionRef.reference.versionId
-    ) {
-      throw new Error("source policies are not from one source");
-    }
-    for (const scope of policy.spatialScopeRefs) requiredScopes.set(scopeKey(scope), scope);
-  }
-
-  const restrictedPolicies = policies.filter((policy) => policy.visibility === "restricted");
-  const allowedAccounts = restrictedPolicies.reduce<Set<string> | undefined>(
-    (intersection, policy) => {
-      const current = new Set(policy.allowedAccountIds);
-      if (intersection === undefined) return current;
-      return new Set(Array.from(intersection).filter((accountId) => current.has(accountId)));
-    },
-    undefined,
-  );
-
-  return {
-    ...first,
-    visibility: restrictedPolicies.length > 0 ? "restricted" : "project-shared",
-    allowedAccountIds: Array.from(allowedAccounts ?? []),
-    spatialScopeRefs: Array.from(requiredScopes.values()),
-  };
-};
-
 export interface EvaluateSourceAccessInputV1 {
   readonly accountId: string;
   readonly projectId: string;

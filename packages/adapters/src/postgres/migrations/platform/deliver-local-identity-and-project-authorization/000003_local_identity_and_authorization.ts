@@ -367,6 +367,10 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     )
     .addColumn("recorded_by", "text", (column) => column.notNull())
     .addUniqueConstraint("project_membership_revision_unique", ["membership_id", "revision_no"])
+    .addUniqueConstraint("project_membership_revisions_revision_project_unique", [
+      "revision_id",
+      "project_id",
+    ])
     .addForeignKeyConstraint(
       "project_membership_revisions_membership_fk",
       ["membership_id"],
@@ -411,20 +415,21 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     .createTable("business.project_membership_revision_scopes")
     .ifNotExists()
     .addColumn("revision_id", "text", (column) => column.notNull())
+    .addColumn("project_id", "text", (column) => column.notNull())
     .addColumn("scope_id", "text", (column) => column.notNull())
     .addPrimaryKeyConstraint("project_membership_revision_scopes_pk", ["revision_id", "scope_id"])
     .addForeignKeyConstraint(
-      "project_membership_revision_scopes_revision_fk",
-      ["revision_id"],
+      "project_membership_revision_scopes_revision_project_fk",
+      ["revision_id", "project_id"],
       "business.project_membership_revisions",
-      ["revision_id"],
+      ["revision_id", "project_id"],
       (constraint) => constraint.onDelete("restrict"),
     )
     .addForeignKeyConstraint(
-      "project_membership_revision_scopes_scope_fk",
-      ["scope_id"],
+      "project_membership_revision_scopes_scope_project_fk",
+      ["scope_id", "project_id"],
       "business.access_spatial_scopes",
-      ["scope_id"],
+      ["scope_id", "project_id"],
       (constraint) => constraint.onDelete("restrict"),
     )
     .execute();
@@ -478,6 +483,10 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     .addUniqueConstraint("source_access_policy_revision_unique", [
       "source_access_grant_id",
       "revision_no",
+    ])
+    .addUniqueConstraint("source_access_policy_revisions_revision_project_unique", [
+      "revision_id",
+      "project_id",
     ])
     .addForeignKeyConstraint(
       "source_access_policy_revisions_grant_fk",
@@ -536,20 +545,21 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     .createTable("business.source_access_policy_revision_scopes")
     .ifNotExists()
     .addColumn("revision_id", "text", (column) => column.notNull())
+    .addColumn("project_id", "text", (column) => column.notNull())
     .addColumn("scope_id", "text", (column) => column.notNull())
     .addPrimaryKeyConstraint("source_access_policy_revision_scopes_pk", ["revision_id", "scope_id"])
     .addForeignKeyConstraint(
-      "source_access_policy_revision_scopes_revision_fk",
-      ["revision_id"],
+      "source_access_policy_revision_scopes_revision_project_fk",
+      ["revision_id", "project_id"],
       "business.source_access_policy_revisions",
-      ["revision_id"],
+      ["revision_id", "project_id"],
       (constraint) => constraint.onDelete("restrict"),
     )
     .addForeignKeyConstraint(
-      "source_access_policy_revision_scopes_scope_fk",
-      ["scope_id"],
+      "source_access_policy_revision_scopes_scope_project_fk",
+      ["scope_id", "project_id"],
       "business.access_spatial_scopes",
-      ["scope_id"],
+      ["scope_id", "project_id"],
       (constraint) => constraint.onDelete("restrict"),
     )
     .execute();

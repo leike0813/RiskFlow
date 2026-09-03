@@ -1,0 +1,3034 @@
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+
+import { sql, type Kysely, type Transaction } from "kysely";
+
+import {
+  ACCESS_POLICY_REF_V1,
+  AccessCommandResultV1Schema,
+  AccessErrorV1Schema,
+  AccessServiceError,
+  allSpatialScopesCovered,
+  assertSpatialScopeTree,
+  AuthorizationDecisionV1Schema,
+  AuthorizationRequestV1Schema,
+  AuthorizationVerificationRequestV1Schema,
+  branchCapability,
+  ChangePasswordCommandV1Schema,
+  CanonicalLoginNameV1Schema,
+  IdentityAdministrationCommandV1Schema,
+  isAuthorizationSubset,
+  isBranchAllowed,
+  LoginCommandV1Schema,
+  LogoutCommandV1Schema,
+  ModuleBranchV1Schema,
+  PasswordV1Schema,
+  ProjectAccessCommandV1Schema,
+  evaluateSourceAccess,
+  projectionAccess,
+  SessionResultV1Schema,
+  type AccessCommandResultV1,
+  type AccessErrorCodeV1,
+  type AuthorizationDecisionV1,
+  type AuthorizationRequestV1,
+  type AuthorizationVerificationRequestV1,
+  type ChangePasswordCommandV1,
+  type IdentityAdministrationCommandV1,
+  type LoginCommandV1,
+  type LogoutCommandV1,
+  type ProjectAccessCommandV1,
+  type SessionResultV1,
+  type SpatialScopeNodeV1,
+  type SourceAccessPolicyV1,
+  type LocalIdentityAccessV1,
+} from "@riskflow/core/access";
+import {
+  sha256CanonicalJson,
+  type AtomicCommitV1,
+  type JsonValue,
+  type TransactionContextV1,
+} from "@riskflow/core/persistence";
+import {
+  AuthorizationContextV1Schema,
+  type AuthorizationContextV1,
+  type AuthorizationContextRefV1,
+  type ContractReferenceV1,
+  type ModuleBranchV1,
+  type SourceAccessGrantRefV1,
+  type SourceVersionRefV1,
+  SourceVersionRefV1Schema,
+  type SpatialScopeRefV1,
+} from "@riskflow/contracts/ports";
+import { VersionReferenceSchema, type VersionReference } from "@riskflow/contracts/common";
+
+import {
+  createPostgresRuntime,
+  makePersistenceError,
+  mapPostgresError,
+  type PostgresConnectionConfig,
+} from "../postgres/pool.js";
+import { getPostgresTransaction, PostgresTransactionUnit } from "../postgres/transaction-unit.js";
+import type {
+  AccessDb,
+  AccessPostgresDatabase,
+  AccessProjectRow,
+  AccessSpatialScopeRevisionRow,
+  AuthorizationContextRow,
+  LocalAccountRow,
+  LocalCredentialRow,
+  LocalSessionRow,
+  SecurityAuditEventRow,
+} from "./postgres-types.js";
+import {
+  createSessionToken,
+  decodeAndVerifySessionToken,
+  derivePassword,
+  DUMMY_PASSWORD,
+  encodeSessionToken,
+  makeDummyCredential,
+  sessionTokenSha256,
+  type RandomBytes,
+  type SessionTokenKeyV1,
+  validatePassword,
+  verifyPassword,
+} from "./crypto.js";
+
+const SYSTEM_NAMESPACE = "riskflow-system";
+const SESSION_IDLE_MS = 30 * 60 * 1000;
+const SESSION_ABSOLUTE_MS = 12 * 60 * 60 * 1000;
+const CONTEXT_TTL_MS = 5 * 60 * 1000;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_LOCK_MS = 15 * 60 * 1000;
+const LOGIN_FAILURE_LIMIT = 5;
+
+type AccessTransaction = Transaction<AccessPostgresDatabase>;
+
+export interface LocalIdentityAccessConfig extends PostgresConnectionConfig {
+  readonly hmacKey: Uint8Array;
+  readonly keyVersion: string;
+  readonly now?: () => Date;
+  readonly randomBytes?: RandomBytes;
+}
+
+export interface BootstrapInitialSystemAdministratorConfig {
+  readonly connection: PostgresConnectionConfig;
+  readonly loginName: string;
+  readonly displayName: string;
+  readonly password: string;
+  readonly accountId?: string;
+  readonly now?: () => Date;
+  readonly randomBytes?: RandomBytes;
+}
+
+export interface PostgresLocalIdentityAccess extends LocalIdentityAccessV1 {
+  close(): Promise<void>;
+}
+
+const jsonValue = (value: unknown): JsonValue => value as JsonValue;
+
+const asAccessDb = (db: Kysely<import("../postgres/types.js").PostgresDatabase>): AccessDb =>
+  db as unknown as AccessDb;
+const asAccessTransaction = (context: TransactionContextV1): AccessTransaction =>
+  getPostgresTransaction(context) as unknown as AccessTransaction;
+
+const nowDate = (clock: () => Date): Date => {
+  const value = clock();
+  if (Number.isNaN(value.getTime())) throw new TypeError("clock returned an invalid date");
+  return new Date(value.getTime());
+};
+
+const iso = (date: Date): string => date.toISOString();
+const asDate = (value: Date | string): Date => (value instanceof Date ? value : new Date(value));
+const ref = (entityId: string, versionId: string): VersionReference => ({ entityId, versionId });
+const contextRef = (entityId: string, versionId = "1"): AuthorizationContextRefV1 => ({
+  kind: "authorization-context",
+  reference: ref(entityId, versionId),
+});
+const scopeRef = (scopeId: string, revisionId: string): SpatialScopeRefV1 => ({
+  kind: "spatial-scope",
+  reference: ref(scopeId, revisionId),
+});
+const sourceGrantRef = (grantId: string, revisionId: string): SourceAccessGrantRefV1 => ({
+  kind: "source-access-grant",
+  reference: ref(grantId, revisionId),
+});
+const projectRef = (projectId: string, versionId: string): ContractReferenceV1 => ({
+  kind: "project-revision",
+  reference: ref(projectId, versionId),
+});
+const targetRef = (entityId: string, versionId: string): ContractReferenceV1 => ({
+  kind: "authorization-context",
+  reference: ref(entityId, versionId),
+});
+
+const makeDiagnosticRef = (code: AccessErrorCodeV1): ContractReferenceV1 => ({
+  kind: "diagnostic-artifact",
+  reference: ref(`access-${code.toLowerCase()}`, "v1"),
+});
+
+const makeAccessError = (
+  code: AccessErrorCodeV1,
+  stage: string,
+  clock: () => Date,
+  extras: Record<string, unknown> = {},
+): AccessServiceError => {
+  const details = {
+    code,
+    retryable: code === "ACCESS_TRANSIENT_FAILURE",
+    stage,
+    occurredAt: iso(nowDate(clock)),
+    diagnosticRef: makeDiagnosticRef(code),
+    contextRefs: [],
+    ...(code === "AUTHORIZATION_DENIED"
+      ? {
+          requiredCapability: branchCapability("projection.query"),
+          authorizationPolicyRef: ACCESS_POLICY_REF_V1,
+        }
+      : {}),
+    ...(code === "STALE_ACCESS_VERSION" ? { targetRef: targetRef("access-version", "1") } : {}),
+    ...(code === "IDEMPOTENCY_CONFLICT"
+      ? { idempotencyKey: "unknown", priorCommandId: "unknown" }
+      : {}),
+    ...(code === "ACCESS_TRANSIENT_FAILURE" ? { attempt: 1 } : {}),
+    ...extras,
+  };
+  return new AccessServiceError(AccessErrorV1Schema.parse(details));
+};
+
+const asAccessError = (error: unknown, stage: string, clock: () => Date): AccessServiceError => {
+  if (error instanceof AccessServiceError) return error;
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "accessError" in error &&
+    (error as { accessError?: unknown }).accessError instanceof AccessServiceError
+  ) {
+    return (error as { accessError: AccessServiceError }).accessError;
+  }
+  const mapped = mapPostgresError(error, stage);
+  if (mapped.code === "IDEMPOTENCY_CONFLICT") {
+    return makeAccessError("IDEMPOTENCY_CONFLICT", stage, clock);
+  }
+  return makeAccessError(
+    mapped.retryable ? "ACCESS_TRANSIENT_FAILURE" : "ACCESS_TERMINAL_FAILURE",
+    stage,
+    clock,
+  );
+};
+
+const canonicalLoginName = (loginName: string): string => {
+  const canonical = loginName.trim().toLowerCase();
+  if (!CanonicalLoginNameV1Schema.safeParse(canonical).success) {
+    throw new TypeError("login name is not canonical");
+  }
+  return canonical;
+};
+
+const expectedVersionNumber = (value: unknown): number | undefined => {
+  if (value === "none") return 0;
+  const parsed = VersionReferenceSchema.safeParse(value);
+  if (!parsed.success) return undefined;
+  const number = Number(parsed.data.versionId);
+  return Number.isSafeInteger(number) && number > 0 && String(number) === parsed.data.versionId
+    ? number
+    : undefined;
+};
+
+const expectedVersionMatches = (value: unknown, entityId: string, current: number): boolean => {
+  if (value === "none") return current === 0;
+  const parsed = VersionReferenceSchema.safeParse(value);
+  return (
+    parsed.success &&
+    parsed.data.entityId === entityId &&
+    expectedVersionNumber(parsed.data) === current
+  );
+};
+
+const accessResult = (
+  kind: AccessCommandResultV1["kind"],
+  entityId: string,
+  versionId: string,
+  references: readonly VersionReference[] = [],
+): AccessCommandResultV1 =>
+  AccessCommandResultV1Schema.parse({
+    kind,
+    resultRef: ref(entityId, versionId),
+    references: [ref(entityId, versionId), ...references],
+  });
+
+const c02ResultRef = (entityId: string, versionId: string): ContractReferenceV1 =>
+  contextRef(entityId, versionId);
+
+const randomId = (prefix: string): string => `${prefix}-${randomUUID()}`;
+
+const accountRevisionRef = (accountId: string, version: number): VersionReference =>
+  ref(accountId, String(version));
+
+const sessionResult = (
+  session: LocalSessionRow,
+  token: string,
+  passwordChangeRequired: boolean,
+  restricted: boolean,
+  systemAdministrationContextRef?: AuthorizationContextRefV1,
+): SessionResultV1 =>
+  SessionResultV1Schema.parse({
+    sessionRef: ref(session.session_id, "1"),
+    accountRef: ref(session.account_id, String(session.credential_version)),
+    sessionToken: token,
+    passwordChangeRequired,
+    restricted,
+    expiresAt: iso(
+      new Date(
+        Math.min(
+          asDate(session.idle_expires_at).getTime(),
+          asDate(session.absolute_expires_at).getTime(),
+        ),
+      ),
+    ),
+    ...(systemAdministrationContextRef === undefined ? {} : { systemAdministrationContextRef }),
+  });
+
+const loginFingerprint = (canonical: string, key: Uint8Array): string =>
+  createHmac("sha256", key).update(canonical, "utf8").digest("hex");
+
+const queryAccount = async (
+  db: AccessDb,
+  accountId: string,
+  forUpdate = false,
+): Promise<LocalAccountRow | undefined> => {
+  const query = db
+    .selectFrom("business.local_accounts")
+    .selectAll()
+    .where("account_id", "=", accountId);
+  return (await (forUpdate ? query.forUpdate() : query).executeTakeFirst()) as
+    LocalAccountRow | undefined;
+};
+
+const queryAccountByLogin = async (
+  db: AccessDb,
+  loginName: string,
+  forUpdate = false,
+): Promise<LocalAccountRow | undefined> => {
+  const query = db
+    .selectFrom("business.local_accounts")
+    .selectAll()
+    .where("login_name", "=", loginName);
+  return (await (forUpdate ? query.forUpdate() : query).executeTakeFirst()) as
+    LocalAccountRow | undefined;
+};
+
+const queryCredential = async (
+  db: AccessDb,
+  account: LocalAccountRow,
+): Promise<LocalCredentialRow | undefined> =>
+  db
+    .selectFrom("business.local_credentials")
+    .selectAll()
+    .where("account_id", "=", account.account_id)
+    .where("credential_version", "=", account.current_credential_version)
+    .executeTakeFirst();
+
+const querySession = async (
+  db: AccessDb,
+  sessionId: string,
+  forUpdate = false,
+): Promise<LocalSessionRow | undefined> => {
+  const query = db
+    .selectFrom("business.local_sessions")
+    .selectAll()
+    .where("session_id", "=", sessionId);
+  return (forUpdate ? query.forUpdate() : query).executeTakeFirst();
+};
+
+const queryProject = async (
+  db: AccessDb,
+  projectId: string,
+  forUpdate = false,
+): Promise<AccessProjectRow | undefined> => {
+  const query = db
+    .selectFrom("business.access_projects")
+    .selectAll()
+    .where("project_id", "=", projectId);
+  return (forUpdate ? query.forUpdate() : query).executeTakeFirst();
+};
+
+const queryCurrentScopeRevisions = async (
+  db: AccessDb,
+  projectId: string,
+): Promise<AccessSpatialScopeRevisionRow[]> => {
+  const identities = await db
+    .selectFrom("business.access_spatial_scopes")
+    .select(["scope_id", "current_revision_id"])
+    .where("project_id", "=", projectId)
+    .execute();
+  const revisionIds = identities.map((item) => item.current_revision_id);
+  if (revisionIds.length === 0) return [];
+  return db
+    .selectFrom("business.access_spatial_scope_revisions")
+    .selectAll()
+    .where("revision_id", "in", revisionIds)
+    .execute();
+};
+
+const scopeNodes = async (db: AccessDb, projectId: string): Promise<SpatialScopeNodeV1[]> => {
+  const revisions = await queryCurrentScopeRevisions(db, projectId);
+  return revisions.map((revision) => ({
+    projectId: revision.project_id,
+    scopeId: revision.scope_id,
+    revisionId: revision.revision_id,
+    ...(revision.parent_scope_id === null ? {} : { parentScopeId: revision.parent_scope_id }),
+    status: revision.status,
+  }));
+};
+
+interface MembershipSnapshot {
+  readonly membershipId: string;
+  readonly revisionId: string;
+  readonly accountId: string;
+  readonly projectId: string;
+  readonly revisionNo: number;
+  readonly status: "active" | "removed";
+  readonly roles: readonly import("@riskflow/core/access").PresetRoleV1[];
+  readonly scopeIds: readonly string[];
+}
+
+const queryMembership = async (
+  db: AccessDb,
+  projectId: string,
+  accountId: string,
+  forUpdate = false,
+): Promise<MembershipSnapshot | undefined> => {
+  const membershipQuery = db
+    .selectFrom("business.project_memberships")
+    .selectAll()
+    .where("project_id", "=", projectId)
+    .where("account_id", "=", accountId);
+  const membership = await (
+    forUpdate ? membershipQuery.forUpdate() : membershipQuery
+  ).executeTakeFirst();
+  if (membership === undefined) return undefined;
+  const revisionQuery = db
+    .selectFrom("business.project_membership_revisions")
+    .selectAll()
+    .where("revision_id", "=", membership.current_revision_id);
+  const revision = await revisionQuery.executeTakeFirst();
+  if (revision === undefined) return undefined;
+  if (
+    revision.membership_id !== membership.membership_id ||
+    revision.project_id !== membership.project_id ||
+    revision.account_id !== membership.account_id
+  )
+    return undefined;
+  const [roles, scopes] = await Promise.all([
+    db
+      .selectFrom("business.project_membership_revision_roles")
+      .select("role")
+      .where("revision_id", "=", revision.revision_id)
+      .execute(),
+    db
+      .selectFrom("business.project_membership_revision_scopes")
+      .select("scope_id")
+      .where("revision_id", "=", revision.revision_id)
+      .execute(),
+  ]);
+  return {
+    membershipId: membership.membership_id,
+    revisionId: revision.revision_id,
+    accountId: revision.account_id,
+    projectId: revision.project_id,
+    revisionNo: revision.revision_no,
+    status: revision.status,
+    roles: roles.map((role) => role.role) as MembershipSnapshot["roles"],
+    scopeIds: scopes.map((scope) => scope.scope_id),
+  };
+};
+
+const currentScopeRefsForMembership = (
+  membership: MembershipSnapshot,
+  revisions: readonly AccessSpatialScopeRevisionRow[],
+): SpatialScopeRefV1[] => {
+  const byScope = new Map(revisions.map((revision) => [revision.scope_id, revision]));
+  return membership.scopeIds.flatMap((scopeId) => {
+    const revision = byScope.get(scopeId);
+    return revision === undefined || revision.status !== "active"
+      ? []
+      : [scopeRef(revision.scope_id, revision.revision_id)];
+  });
+};
+
+const querySourcePolicy = async (
+  db: AccessDb,
+  projectId: string,
+  sourceVersionRef: SourceVersionRefV1,
+  rootScopeRef: SpatialScopeRefV1,
+  currentScopes: readonly AccessSpatialScopeRevisionRow[] = [],
+): Promise<SourceAccessPolicyV1 | undefined> => {
+  const policy = await db
+    .selectFrom("business.source_access_policies")
+    .selectAll()
+    .where("project_id", "=", projectId)
+    .where("source_entity_id", "=", sourceVersionRef.reference.entityId)
+    .where("source_version_id", "=", sourceVersionRef.reference.versionId)
+    .executeTakeFirst();
+  if (policy === undefined) return undefined;
+  const revision = await db
+    .selectFrom("business.source_access_policy_revisions")
+    .selectAll()
+    .where("revision_id", "=", policy.current_revision_id)
+    .executeTakeFirst();
+  if (revision === undefined) return undefined;
+  const [accounts, scopes] = await Promise.all([
+    db
+      .selectFrom("business.source_access_policy_revision_accounts")
+      .select("account_id")
+      .where("revision_id", "=", revision.revision_id)
+      .execute(),
+    db
+      .selectFrom("business.source_access_policy_revision_scopes")
+      .select("scope_id")
+      .where("revision_id", "=", revision.revision_id)
+      .execute(),
+  ]);
+  const currentScopeById = new Map(currentScopes.map((item) => [item.scope_id, item]));
+  if (scopes.some((item) => !currentScopeById.has(item.scope_id))) return undefined;
+  return {
+    projectId,
+    sourceVersionRef,
+    revisionRef: sourceGrantRef(policy.source_access_grant_id, revision.revision_id),
+    visibility: revision.visibility,
+    allowedAccountIds: accounts.map((account) => account.account_id),
+    spatialScopeRefs:
+      scopes.length === 0
+        ? [rootScopeRef]
+        : scopes.flatMap((scope) => {
+            const revision = currentScopeById.get(scope.scope_id);
+            return revision === undefined ? [] : [scopeRef(scope.scope_id, revision.revision_id)];
+          }),
+  };
+};
+
+const appendSecurityAudit = async (
+  db: AccessDb,
+  details: Omit<SecurityAuditEventRow, "recorded_at"> & { recorded_at?: Date },
+): Promise<void> => {
+  await db
+    .insertInto("business.security_audit_events")
+    .values({
+      event_id: details.event_id,
+      event_kind: details.event_kind,
+      outcome: details.outcome,
+      reason_code: details.reason_code,
+      subject_ref: details.subject_ref,
+      project_ref: details.project_ref,
+      request_ref: details.request_ref,
+      policy_ref: details.policy_ref,
+      context_ref: details.context_ref,
+      diagnostic_ref: details.diagnostic_ref,
+      occurred_at: details.occurred_at,
+      recorded_at: (details.recorded_at ?? sql`clock_timestamp()`) as never,
+    })
+    .execute();
+};
+
+const securityAudit = (
+  eventKind: string,
+  outcome: "success" | "rejected" | "failure",
+  reasonCode: string,
+  occurredAt: Date,
+  details: Partial<
+    Pick<
+      SecurityAuditEventRow,
+      | "subject_ref"
+      | "project_ref"
+      | "request_ref"
+      | "policy_ref"
+      | "context_ref"
+      | "diagnostic_ref"
+    >
+  > = {},
+): Omit<SecurityAuditEventRow, "recorded_at"> => ({
+  event_id: randomId("security"),
+  event_kind: eventKind,
+  outcome,
+  reason_code: reasonCode,
+  subject_ref: details.subject_ref ?? null,
+  project_ref: details.project_ref ?? null,
+  request_ref: details.request_ref ?? null,
+  policy_ref: details.policy_ref ?? null,
+  context_ref: details.context_ref ?? null,
+  diagnostic_ref: details.diagnostic_ref ?? null,
+  occurred_at: occurredAt,
+});
+
+interface StoredContext {
+  readonly row: AuthorizationContextRow;
+  readonly context?: AuthorizationContextV1;
+}
+
+const loadStoredContext = async (
+  db: AccessDb,
+  authorizationContextRef: AuthorizationContextRefV1,
+): Promise<StoredContext | undefined> => {
+  const row = await db
+    .selectFrom("business.authorization_contexts")
+    .selectAll()
+    .where("context_id", "=", authorizationContextRef.reference.entityId)
+    .where("version_id", "=", authorizationContextRef.reference.versionId)
+    .executeTakeFirst();
+  if (row === undefined) return undefined;
+  if (row.context_kind === "system-administration") return { row };
+  if (row.context_json === null) return { row };
+  const parsed = AuthorizationContextV1Schema.safeParse(row.context_json);
+  return parsed.success ? { row, context: parsed.data } : { row };
+};
+
+const assertActiveAccount = (
+  account: LocalAccountRow | undefined,
+  stage: string,
+  clock: () => Date,
+): LocalAccountRow => {
+  if (account === undefined || account.status !== "active") {
+    throw makeAccessError("AUTHORIZATION_DENIED", stage, clock);
+  }
+  return account;
+};
+
+const isSystemAdministrator = (account: LocalAccountRow | undefined): boolean =>
+  account !== undefined && (account.system_administrator as unknown as boolean) === true;
+
+const currentAdminActor = async (
+  db: AccessDb,
+  authorizationContextRef: AuthorizationContextRefV1,
+  stage: string,
+  clock: () => Date,
+): Promise<string> => {
+  const stored = await loadStoredContext(db, authorizationContextRef);
+  if (stored === undefined) throw makeAccessError("AUTHORIZATION_DENIED", stage, clock);
+  const account = await queryAccount(db, stored.row.actor_id);
+  if (
+    stored.row.context_kind !== "system-administration" ||
+    stored.row.project_id !== SYSTEM_NAMESPACE ||
+    stored.row.branch !== "access-administration" ||
+    stored.row.context_json !== null ||
+    !isSystemAdministrator(account)
+  ) {
+    throw makeAccessError("AUTHORIZATION_DENIED", stage, clock);
+  }
+  const activeAccount = assertActiveAccount(account, stage, clock);
+  if (activeAccount.password_change_required) {
+    throw makeAccessError("PASSWORD_CHANGE_REQUIRED", stage, clock);
+  }
+  const snapshot = stored.row.revision_snapshot;
+  if (
+    typeof snapshot === "object" &&
+    snapshot !== null &&
+    !Array.isArray(snapshot) &&
+    "accountSecurityVersion" in snapshot &&
+    snapshot.accountSecurityVersion !== activeAccount.security_version
+  ) {
+    throw makeAccessError("SESSION_REVOKED", stage, clock);
+  }
+  if (asDate(stored.row.expires_at).getTime() <= nowDate(clock).getTime()) {
+    throw makeAccessError("SESSION_EXPIRED", stage, clock);
+  }
+  return activeAccount.account_id;
+};
+
+const currentProjectManagerActor = async (
+  db: AccessDb,
+  authorizationContextRef: AuthorizationContextRefV1,
+  projectId: string,
+  branch: ModuleBranchV1,
+  stage: string,
+  clock: () => Date,
+): Promise<string> => {
+  const stored = await loadStoredContext(db, authorizationContextRef);
+  if (stored === undefined || stored.context === undefined) {
+    throw makeAccessError("AUTHORIZATION_DENIED", stage, clock);
+  }
+  if (stored.context.projectId !== projectId || stored.context.actorId !== stored.row.actor_id) {
+    throw makeAccessError("AUTHORIZATION_DENIED", stage, clock);
+  }
+  if (
+    stored.row.branch !== branch ||
+    stored.context.authorizationPolicyRef.entityId !== ACCESS_POLICY_REF_V1.entityId ||
+    stored.context.authorizationPolicyRef.versionId !== ACCESS_POLICY_REF_V1.versionId ||
+    !stored.context.grantedCapabilities.includes(branchCapability(branch))
+  ) {
+    throw makeAccessError("AUTHORIZATION_DENIED", stage, clock);
+  }
+  if (asDate(stored.row.expires_at).getTime() <= nowDate(clock).getTime()) {
+    throw makeAccessError("SESSION_EXPIRED", stage, clock);
+  }
+  ModuleBranchV1Schema.parse(branch);
+  const account = assertActiveAccount(await queryAccount(db, stored.context.actorId), stage, clock);
+  const project = await queryProject(db, projectId);
+  if (project === undefined || project.status !== "active") {
+    throw makeAccessError("AUTHORIZATION_DENIED", stage, clock);
+  }
+  const membership = await queryMembership(db, projectId, account.account_id);
+  if (
+    membership === undefined ||
+    membership.status !== "active" ||
+    !membership.roles.includes("project-risk-manager") ||
+    !isBranchAllowed(membership.roles, branch)
+  ) {
+    throw makeAccessError("AUTHORIZATION_DENIED", stage, clock);
+  }
+  return account.account_id;
+};
+
+const adminActorForProjectCommand = async (
+  db: AccessDb,
+  command: ProjectAccessCommandV1,
+  clock: () => Date,
+): Promise<string> => {
+  if (command.kind === "open-project" || command.kind === "suspend-project") {
+    return currentAdminActor(db, command.authorizationContextRef, `project.${command.kind}`, clock);
+  }
+  if (command.kind === "revise-membership") {
+    const stored = await loadStoredContext(db, command.authorizationContextRef);
+    if (stored?.row.context_kind === "system-administration") {
+      return currentAdminActor(
+        db,
+        command.authorizationContextRef,
+        `project.${command.kind}`,
+        clock,
+      );
+    }
+  }
+  return currentProjectManagerActor(
+    db,
+    command.authorizationContextRef,
+    command.projectId,
+    "engineering-data.register-source-delivery",
+    `project.${command.kind}`,
+    clock,
+  );
+};
+
+const atomicCommand = (
+  command: IdentityAdministrationCommandV1 | ProjectAccessCommandV1,
+  actorRef: string,
+  projectId: string,
+  payload: JsonValue,
+) => ({
+  projectId,
+  commandKind: `access.${command.kind}`,
+  commandId: command.commandId,
+  idempotencyKey: command.idempotencyKey,
+  payload: jsonValue(payload) as Record<string, JsonValue>,
+  actorRef,
+  authorizationContextRef: command.authorizationContextRef,
+});
+
+const commitFor = (
+  command: IdentityAdministrationCommandV1 | ProjectAccessCommandV1,
+  actorRef: string,
+  target: ContractReferenceV1,
+  version: VersionReference,
+  clock: () => Date,
+) => {
+  const occurredAt = iso(nowDate(clock));
+  const auditEntryId = randomId("audit");
+  return {
+    resultRef: c02ResultRef(version.entityId, version.versionId),
+    audit: {
+      auditEntryId,
+      projectId:
+        command.kind.startsWith("create-account") ||
+        command.kind === "disable-account" ||
+        command.kind === "reset-password"
+          ? SYSTEM_NAMESPACE
+          : "projectId" in command
+            ? command.projectId
+            : SYSTEM_NAMESPACE,
+      action: `access.${command.kind}`,
+      targetRef: target,
+      actorRef,
+      authorizationContextRef: command.authorizationContextRef,
+      occurredAt,
+      recordedAt: occurredAt,
+      version,
+      commandId: command.commandId,
+      idempotencyKey: command.idempotencyKey,
+    },
+    events: [],
+  };
+};
+
+const commitWithSecurityAudit = async (
+  db: AccessDb,
+  command: IdentityAdministrationCommandV1 | ProjectAccessCommandV1,
+  actorRef: string,
+  target: ContractReferenceV1,
+  version: VersionReference,
+  clock: () => Date,
+): Promise<ReturnType<typeof commitFor>> => {
+  const commit = commitFor(command, actorRef, target, version, clock);
+  await appendSecurityAudit(
+    db,
+    securityAudit(`access.${command.kind}`, "success", "COMMITTED", nowDate(clock), {
+      subject_ref: actorRef,
+      project_ref: "projectId" in command ? command.projectId : null,
+      request_ref: command.commandId,
+      policy_ref: jsonValue(ACCESS_POLICY_REF_V1),
+      context_ref: jsonValue(command.authorizationContextRef),
+    }),
+  );
+  return commit;
+};
+
+const commandResultFromReceipt = (
+  receipt: { resultRef: ContractReferenceV1 },
+  kind: AccessCommandResultV1["kind"],
+): AccessCommandResultV1 => {
+  const value = receipt.resultRef as ContractReferenceV1 & { reference?: VersionReference };
+  const resultRef = value.reference ?? ref("access-result", "1");
+  return AccessCommandResultV1Schema.parse({ kind, resultRef, references: [resultRef] });
+};
+
+const insertCredential = async (
+  db: AccessDb,
+  accountId: string,
+  credentialVersion: number,
+  password: string,
+  randomBytes: RandomBytes | undefined,
+): Promise<void> => {
+  const credential = await derivePassword(password, undefined, randomBytes);
+  await db
+    .insertInto("business.local_credentials")
+    .values({
+      account_id: accountId,
+      credential_version: credentialVersion,
+      algorithm: credential.algorithm,
+      policy_version: credential.policyVersion,
+      cost: credential.cost,
+      block_size: credential.blockSize,
+      parallelization: credential.parallelization,
+      key_length: credential.keyLength,
+      salt: credential.salt,
+      derived_key: credential.derivedKey,
+      created_at: sql`clock_timestamp()`,
+    })
+    .execute();
+};
+
+const preserveAccessErrorsInTransaction =
+  (
+    handler: (context: TransactionContextV1) => Promise<AtomicCommitV1>,
+  ): ((context: TransactionContextV1) => Promise<AtomicCommitV1>) =>
+  async (context) => {
+    try {
+      return await handler(context);
+    } catch (error) {
+      if (!(error instanceof AccessServiceError)) throw error;
+      const wrapped = makePersistenceError("TRANSACTION_FAILED", "access.transaction");
+      Object.defineProperty(wrapped, "accessError", { value: error });
+      throw wrapped;
+    }
+  };
+
+export const bootstrapInitialSystemAdministrator = async (
+  config: BootstrapInitialSystemAdministratorConfig,
+): Promise<AccessCommandResultV1> => {
+  const clock = config.now ?? (() => new Date());
+  const runtime = createPostgresRuntime(config.connection, "riskflow_migrator");
+  const db = asAccessDb(runtime.db);
+  try {
+    const result = await db
+      .transaction()
+      .setIsolationLevel("serializable")
+      .execute(async (transaction) => {
+        const tx = transaction as unknown as AccessDb;
+        await sql`SELECT pg_advisory_xact_lock(hashtextextended('riskflow.local-identity.bootstrap', 0))`.execute(
+          tx,
+        );
+        const existing = await tx
+          .selectFrom("business.local_accounts")
+          .select("account_id")
+          .executeTakeFirst();
+        if (existing !== undefined) {
+          throw makeAccessError("ACCESS_TERMINAL_FAILURE", "bootstrap.exists", clock);
+        }
+        const accountId = config.accountId ?? randomId("account");
+        const canonical = canonicalLoginName(config.loginName);
+        validatePassword(config.password);
+        const now = nowDate(clock);
+        await tx
+          .insertInto("business.local_accounts")
+          .values({
+            account_id: accountId,
+            login_name: canonical,
+            display_name: config.displayName.trim(),
+            status: "active",
+            system_administrator: true,
+            security_version: 1,
+            current_credential_version: 1,
+            password_change_required: true,
+            created_at: now,
+            updated_at: now,
+            disabled_at: null,
+          })
+          .execute();
+        await insertCredential(tx, accountId, 1, config.password, config.randomBytes);
+        await appendSecurityAudit(
+          tx,
+          securityAudit("initial-bootstrap", "success", "BOOTSTRAP_CREATED", now, {
+            subject_ref: accountId,
+          }),
+        );
+        return accessResult("account", accountId, "1");
+      });
+    return result;
+  } catch (error) {
+    const mapped = asAccessError(error, "bootstrap", clock);
+    try {
+      await db.transaction().execute(async (transaction) => {
+        await appendSecurityAudit(
+          transaction as unknown as AccessDb,
+          securityAudit("initial-bootstrap", "rejected", mapped.details.code, nowDate(clock)),
+        );
+      });
+    } catch (auditError) {
+      throw asAccessError(auditError, "bootstrap.audit", clock);
+    }
+    throw mapped;
+  } finally {
+    await runtime.close().catch(() => undefined);
+  }
+};
+
+export const createPostgresLocalIdentityAccess = (
+  config: LocalIdentityAccessConfig,
+): PostgresLocalIdentityAccess => {
+  const { hmacKey, keyVersion, now: configuredClock, randomBytes, ...connection } = config;
+  if (
+    !(hmacKey instanceof Uint8Array) ||
+    hmacKey.byteLength < 32 ||
+    typeof keyVersion !== "string" ||
+    keyVersion.length === 0
+  ) {
+    throw makeAccessError(
+      "ACCESS_CONTRACT_INVALID",
+      "factory",
+      configuredClock ?? (() => new Date()),
+    );
+  }
+  const clock = configuredClock ?? (() => new Date());
+  const runtime = createPostgresRuntime(connection, "riskflow_app");
+  const db = asAccessDb(runtime.db);
+  const transactionUnit = new PostgresTransactionUnit(runtime.db);
+  const tokenKey: SessionTokenKeyV1 = { keyVersion, hmacKey };
+  let dummyCredentialPromise: Promise<Awaited<ReturnType<typeof makeDummyCredential>>> | undefined;
+
+  const dummyCredential = (): Promise<Awaited<ReturnType<typeof makeDummyCredential>>> => {
+    dummyCredentialPromise ??= makeDummyCredential(randomBytes);
+    return dummyCredentialPromise;
+  };
+
+  const identityCommand = async (
+    command: IdentityAdministrationCommandV1,
+  ): Promise<AccessCommandResultV1> => {
+    const parsed = IdentityAdministrationCommandV1Schema.safeParse(command);
+    if (!parsed.success)
+      throw makeAccessError("ACCESS_CONTRACT_INVALID", "identity.command", clock);
+    const valid = parsed.data;
+    const canonicalCreateLoginName =
+      valid.kind === "create-account" ? valid.loginName.trim().toLowerCase() : undefined;
+    const sanitizedPayload: JsonValue =
+      valid.kind === "create-account"
+        ? {
+            kind: valid.kind,
+            commandId: valid.commandId,
+            idempotencyKey: valid.idempotencyKey,
+            expectedVersion: valid.expectedVersion,
+            authorizationContextRef: valid.authorizationContextRef,
+            loginName: canonicalCreateLoginName ?? valid.loginName,
+            displayName: valid.displayName,
+            passwordProvided: true,
+          }
+        : valid.kind === "reset-password"
+          ? {
+              kind: valid.kind,
+              commandId: valid.commandId,
+              idempotencyKey: valid.idempotencyKey,
+              expectedVersion: valid.expectedVersion,
+              authorizationContextRef: valid.authorizationContextRef,
+              accountId: valid.accountId,
+              passwordProvided: true,
+            }
+          : {
+              kind: valid.kind,
+              commandId: valid.commandId,
+              idempotencyKey: valid.idempotencyKey,
+              expectedVersion: valid.expectedVersion,
+              authorizationContextRef: valid.authorizationContextRef,
+              accountId: valid.accountId,
+            };
+    try {
+      if (valid.kind === "create-account") {
+        try {
+          canonicalLoginName(valid.loginName);
+        } catch {
+          throw makeAccessError("ACCESS_CONTRACT_INVALID", "identity.create-account", clock);
+        }
+      }
+      const actor = await currentAdminActor(
+        db,
+        valid.authorizationContextRef,
+        "identity.authorize",
+        clock,
+      );
+      const receipt = await transactionUnit.execute(
+        atomicCommand(valid, actor, SYSTEM_NAMESPACE, sanitizedPayload),
+        preserveAccessErrorsInTransaction(async (context) => {
+          const tx = asAccessTransaction(context);
+          const txActor = await currentAdminActor(
+            tx,
+            valid.authorizationContextRef,
+            "identity.authorize",
+            clock,
+          );
+          if (txActor !== actor)
+            throw makeAccessError("STALE_ACCESS_VERSION", "identity.authorize", clock);
+          if (valid.kind === "create-account") {
+            if (valid.expectedVersion !== "none") {
+              throw makeAccessError("ACCESS_CONTRACT_INVALID", "identity.create-account", clock);
+            }
+            const canonical = canonicalLoginName(valid.loginName);
+            const existing = await queryAccountByLogin(tx, canonical);
+            if (existing !== undefined) {
+              throw makeAccessError("ACCESS_TERMINAL_FAILURE", "identity.create-account", clock);
+            }
+            const accountId = randomId("account");
+            const now = nowDate(clock);
+            await tx
+              .insertInto("business.local_accounts")
+              .values({
+                account_id: accountId,
+                login_name: canonical,
+                display_name: valid.displayName.trim(),
+                status: "active",
+                security_version: 1,
+                current_credential_version: 1,
+                password_change_required: true,
+                created_at: now,
+                updated_at: now,
+                disabled_at: null,
+              })
+              .execute();
+            await insertCredential(tx, accountId, 1, valid.password, randomBytes);
+            const commit = await commitWithSecurityAudit(
+              tx,
+              valid,
+              actor,
+              targetRef(accountId, "1"),
+              accountRevisionRef(accountId, 1),
+              clock,
+            );
+            return commit;
+          }
+
+          const account = await queryAccount(tx, valid.accountId, true);
+          if (account === undefined)
+            throw makeAccessError("AUTHORIZATION_DENIED", `identity.${valid.kind}`, clock);
+          if (
+            !expectedVersionMatches(
+              valid.expectedVersion,
+              account.account_id,
+              account.security_version,
+            )
+          ) {
+            throw makeAccessError("STALE_ACCESS_VERSION", `identity.${valid.kind}`, clock, {
+              targetRef: targetRef(account.account_id, String(account.security_version)),
+            });
+          }
+          if (valid.kind === "disable-account") {
+            if (account.status === "disabled") {
+              throw makeAccessError("ACCESS_TERMINAL_FAILURE", "identity.disable-account", clock);
+            }
+            if (account.system_administrator) {
+              const admins = await tx
+                .selectFrom("business.local_accounts")
+                .select("account_id")
+                .where("system_administrator", "=", true)
+                .where("status", "=", "active")
+                .execute();
+              if (admins.length <= 1) {
+                throw makeAccessError("ACCESS_TERMINAL_FAILURE", "identity.disable-account", clock);
+              }
+            }
+            const version = account.security_version + 1;
+            const now = nowDate(clock);
+            await tx
+              .updateTable("business.local_accounts")
+              .set({
+                status: "disabled",
+                security_version: version,
+                updated_at: now,
+                disabled_at: now,
+              })
+              .where("account_id", "=", account.account_id)
+              .execute();
+            await tx
+              .updateTable("business.local_sessions")
+              .set({ revoked_at: now, revocation_reason: "account-disabled" })
+              .where("account_id", "=", account.account_id)
+              .where("revoked_at", "is", null)
+              .execute();
+            return commitWithSecurityAudit(
+              tx,
+              valid,
+              actor,
+              targetRef(account.account_id, String(version)),
+              accountRevisionRef(account.account_id, version),
+              clock,
+            );
+          }
+
+          const version = account.security_version + 1;
+          await insertCredential(
+            tx,
+            account.account_id,
+            account.current_credential_version + 1,
+            valid.password,
+            randomBytes,
+          );
+          const now = nowDate(clock);
+          await tx
+            .updateTable("business.local_accounts")
+            .set({
+              security_version: version,
+              current_credential_version: account.current_credential_version + 1,
+              password_change_required: true,
+              updated_at: now,
+            })
+            .where("account_id", "=", account.account_id)
+            .execute();
+          await tx
+            .updateTable("business.local_sessions")
+            .set({ revoked_at: now, revocation_reason: "password-reset" })
+            .where("account_id", "=", account.account_id)
+            .where("revoked_at", "is", null)
+            .execute();
+          const resetAttemptId = randomId("password-reset");
+          await tx
+            .insertInto("business.local_login_attempts")
+            .values({
+              login_attempt_id: resetAttemptId,
+              canonical_login_name: account.login_name,
+              login_name_fingerprint: loginFingerprint(account.login_name, tokenKey.hmacKey),
+              account_id: account.account_id,
+              payload_sha256: sha256CanonicalJson({
+                kind: "password-reset",
+                accountId: account.account_id,
+              }),
+              attempt_count: 0,
+              window_started_at: now,
+              locked_until: null,
+              last_success_at: null,
+              last_reset_at: now,
+              last_result: "success",
+              last_reason_code: "PASSWORD_RESET",
+              last_attempt_at: now,
+            })
+            .execute();
+          return commitWithSecurityAudit(
+            tx,
+            valid,
+            actor,
+            targetRef(account.account_id, String(version)),
+            accountRevisionRef(account.account_id, version),
+            clock,
+          );
+        }),
+      );
+      return commandResultFromReceipt(
+        receipt,
+        valid.kind === "create-account" ? "account" : "account",
+      );
+    } catch (error) {
+      const mapped = asAccessError(error, `identity.${valid.kind}`, clock);
+      await appendSecurityOutcomeOrThrow("identity", "rejected", mapped.details.code, {
+        request_ref: valid.commandId,
+        policy_ref: jsonValue(ACCESS_POLICY_REF_V1),
+        diagnostic_ref: jsonValue(mapped.details.diagnosticRef),
+      });
+      throw mapped;
+    }
+  };
+
+  const projectCommand = async (
+    command: ProjectAccessCommandV1,
+  ): Promise<AccessCommandResultV1> => {
+    const parsed = ProjectAccessCommandV1Schema.safeParse(command);
+    if (!parsed.success || parsed.data.projectId === SYSTEM_NAMESPACE) {
+      throw makeAccessError("ACCESS_CONTRACT_INVALID", "project.command", clock);
+    }
+    const valid = parsed.data;
+    try {
+      const actor = await adminActorForProjectCommand(db, valid, clock);
+      const receipt = await transactionUnit.execute(
+        atomicCommand(valid, actor, valid.projectId, jsonValue(valid) as Record<string, JsonValue>),
+        preserveAccessErrorsInTransaction(async (context) => {
+          const tx = asAccessTransaction(context);
+          await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`riskflow.project-access.${valid.projectId}`}, 0))`.execute(
+            tx,
+          );
+          const txActor = await adminActorForProjectCommand(tx, valid, clock);
+          if (txActor !== actor)
+            throw makeAccessError("STALE_ACCESS_VERSION", "project.authorize", clock);
+          const now = nowDate(clock);
+
+          if (valid.kind === "open-project") {
+            if (valid.expectedVersion !== "none") {
+              throw makeAccessError("ACCESS_CONTRACT_INVALID", "project.open-project", clock);
+            }
+            const initialManager = await queryAccount(tx, valid.initialRiskManagerAccountId);
+            if (initialManager === undefined || initialManager.status !== "active") {
+              throw makeAccessError("AUTHORIZATION_DENIED", "project.open-project", clock);
+            }
+            const existing = await queryProject(tx, valid.projectId, true);
+            if (existing !== undefined)
+              throw makeAccessError("ACCESS_TERMINAL_FAILURE", "project.open-project", clock);
+            const rootScopeId = randomId("scope");
+            const rootRevisionId = randomId("scope-revision");
+            await tx
+              .insertInto("business.access_projects")
+              .values({
+                project_id: valid.projectId,
+                status: "active",
+                access_version: 1,
+                root_scope_id: rootScopeId,
+                created_at: now,
+                updated_at: now,
+              })
+              .execute();
+            await tx
+              .insertInto("business.access_spatial_scopes")
+              .values({
+                scope_id: rootScopeId,
+                project_id: valid.projectId,
+                current_revision_id: rootRevisionId,
+                created_at: now,
+              })
+              .execute();
+            await tx
+              .insertInto("business.access_spatial_scope_revisions")
+              .values({
+                revision_id: rootRevisionId,
+                scope_id: rootScopeId,
+                project_id: valid.projectId,
+                revision_no: 1,
+                parent_scope_id: null,
+                status: "active",
+                previous_revision_id: null,
+                created_at: now,
+                recorded_by: actor,
+              })
+              .execute();
+            const membershipId = randomId("membership");
+            const membershipRevisionId = randomId("membership-revision");
+            await tx
+              .insertInto("business.project_memberships")
+              .values({
+                membership_id: membershipId,
+                project_id: valid.projectId,
+                account_id: initialManager.account_id,
+                current_revision_id: membershipRevisionId,
+                created_at: now,
+              })
+              .execute();
+            await tx
+              .insertInto("business.project_membership_revisions")
+              .values({
+                revision_id: membershipRevisionId,
+                membership_id: membershipId,
+                project_id: valid.projectId,
+                account_id: initialManager.account_id,
+                revision_no: 1,
+                status: "active",
+                previous_revision_id: null,
+                created_at: now,
+                recorded_by: actor,
+              })
+              .execute();
+            await tx
+              .insertInto("business.project_membership_revision_roles")
+              .values({ revision_id: membershipRevisionId, role: "project-risk-manager" })
+              .execute();
+            await tx
+              .insertInto("business.project_membership_revision_scopes")
+              .values({
+                revision_id: membershipRevisionId,
+                project_id: valid.projectId,
+                scope_id: rootScopeId,
+              })
+              .execute();
+            if (valid.includeAdministrator === true && actor !== initialManager.account_id) {
+              const adminMembershipId = randomId("membership");
+              const adminRevisionId = randomId("membership-revision");
+              await tx
+                .insertInto("business.project_memberships")
+                .values({
+                  membership_id: adminMembershipId,
+                  project_id: valid.projectId,
+                  account_id: actor,
+                  current_revision_id: adminRevisionId,
+                  created_at: now,
+                })
+                .execute();
+              await tx
+                .insertInto("business.project_membership_revisions")
+                .values({
+                  revision_id: adminRevisionId,
+                  membership_id: adminMembershipId,
+                  project_id: valid.projectId,
+                  account_id: actor,
+                  revision_no: 1,
+                  status: "active",
+                  previous_revision_id: null,
+                  created_at: now,
+                  recorded_by: actor,
+                })
+                .execute();
+              await tx
+                .insertInto("business.project_membership_revision_roles")
+                .values({ revision_id: adminRevisionId, role: "system-administrator" })
+                .execute();
+              await tx
+                .insertInto("business.project_membership_revision_scopes")
+                .values({
+                  revision_id: adminRevisionId,
+                  project_id: valid.projectId,
+                  scope_id: rootScopeId,
+                })
+                .execute();
+            }
+            return commitWithSecurityAudit(
+              tx,
+              valid,
+              actor,
+              projectRef(valid.projectId, "1"),
+              ref(valid.projectId, "1"),
+              clock,
+            );
+          }
+
+          const project = await queryProject(tx, valid.projectId, true);
+          if (project === undefined)
+            throw makeAccessError("AUTHORIZATION_DENIED", `project.${valid.kind}`, clock);
+          if (valid.kind === "suspend-project") {
+            if (
+              !expectedVersionMatches(
+                valid.expectedVersion,
+                project.project_id,
+                project.access_version,
+              )
+            ) {
+              throw makeAccessError("STALE_ACCESS_VERSION", "project.suspend-project", clock, {
+                targetRef: projectRef(project.project_id, String(project.access_version)),
+              });
+            }
+            const nextVersion = project.access_version + 1;
+            await tx
+              .updateTable("business.access_projects")
+              .set({ status: "suspended", access_version: nextVersion, updated_at: now })
+              .where("project_id", "=", project.project_id)
+              .where("access_version", "=", project.access_version)
+              .execute();
+            return commitWithSecurityAudit(
+              tx,
+              valid,
+              actor,
+              projectRef(project.project_id, String(nextVersion)),
+              ref(project.project_id, String(nextVersion)),
+              clock,
+            );
+          }
+
+          const scopes = await queryCurrentScopeRevisions(tx, valid.projectId);
+          const rootScope = scopes.find((scope) => scope.scope_id === project.root_scope_id);
+          if (rootScope === undefined)
+            throw makeAccessError("ACCESS_TERMINAL_FAILURE", `project.${valid.kind}`, clock);
+
+          if (valid.kind === "revise-membership") {
+            const account = await queryAccount(tx, valid.accountId);
+            if (account === undefined || account.status !== "active") {
+              throw makeAccessError("AUTHORIZATION_DENIED", "project.revise-membership", clock);
+            }
+            const scopeIds = valid.spatialScopeRefs.map((scope) => scope.reference.entityId);
+            const scopeById = new Map(scopes.map((scope) => [scope.scope_id, scope]));
+            if (
+              valid.spatialScopeRefs.some(
+                (scope) =>
+                  scope.reference.versionId !==
+                    scopeById.get(scope.reference.entityId)?.revision_id ||
+                  scopeById.get(scope.reference.entityId)?.status !== "active",
+              )
+            ) {
+              throw makeAccessError("STALE_ACCESS_VERSION", "project.revise-membership", clock);
+            }
+            const existingMembership = await tx
+              .selectFrom("business.project_memberships")
+              .selectAll()
+              .where("membership_id", "=", valid.membershipId)
+              .where("project_id", "=", valid.projectId)
+              .forUpdate()
+              .executeTakeFirst();
+            if (existingMembership === undefined) {
+              if (valid.expectedVersion !== "none") {
+                throw makeAccessError("STALE_ACCESS_VERSION", "project.revise-membership", clock);
+              }
+              await tx
+                .insertInto("business.project_memberships")
+                .values({
+                  membership_id: valid.membershipId,
+                  project_id: valid.projectId,
+                  account_id: account.account_id,
+                  current_revision_id: randomId("membership-revision"),
+                  created_at: now,
+                })
+                .execute();
+              const inserted = await tx
+                .selectFrom("business.project_memberships")
+                .select("current_revision_id")
+                .where("membership_id", "=", valid.membershipId)
+                .executeTakeFirstOrThrow();
+              const revisionId = inserted.current_revision_id;
+              await tx
+                .insertInto("business.project_membership_revisions")
+                .values({
+                  revision_id: revisionId,
+                  membership_id: valid.membershipId,
+                  project_id: valid.projectId,
+                  account_id: account.account_id,
+                  revision_no: 1,
+                  status: valid.status,
+                  previous_revision_id: null,
+                  created_at: now,
+                  recorded_by: actor,
+                })
+                .execute();
+              await tx
+                .insertInto("business.project_membership_revision_roles")
+                .values(valid.roles.map((role) => ({ revision_id: revisionId, role })))
+                .execute();
+              await tx
+                .insertInto("business.project_membership_revision_scopes")
+                .values(
+                  scopeIds.map((scopeId) => ({
+                    revision_id: revisionId,
+                    project_id: valid.projectId,
+                    scope_id: scopeId,
+                  })),
+                )
+                .execute();
+              return commitWithSecurityAudit(
+                tx,
+                valid,
+                actor,
+                targetRef(valid.membershipId, "1"),
+                ref(valid.membershipId, "1"),
+                clock,
+              );
+            }
+            if (existingMembership.account_id !== account.account_id) {
+              throw makeAccessError("ACCESS_CONTRACT_INVALID", "project.revise-membership", clock);
+            }
+            const previous = await tx
+              .selectFrom("business.project_membership_revisions")
+              .selectAll()
+              .where("revision_id", "=", existingMembership.current_revision_id)
+              .executeTakeFirst();
+            if (
+              previous === undefined ||
+              !expectedVersionMatches(
+                valid.expectedVersion,
+                valid.membershipId,
+                previous.revision_no,
+              )
+            ) {
+              throw makeAccessError("STALE_ACCESS_VERSION", "project.revise-membership", clock, {
+                targetRef: targetRef(valid.membershipId, String(previous?.revision_no ?? 0)),
+              });
+            }
+            const duplicateMembership = await tx
+              .selectFrom("business.project_memberships")
+              .select("membership_id")
+              .where("project_id", "=", valid.projectId)
+              .where("account_id", "=", account.account_id)
+              .where("membership_id", "!=", valid.membershipId)
+              .executeTakeFirst();
+            if (duplicateMembership !== undefined) {
+              throw makeAccessError("ACCESS_TERMINAL_FAILURE", "project.revise-membership", clock);
+            }
+            const members = await tx
+              .selectFrom("business.project_memberships as membership")
+              .innerJoin(
+                "business.project_membership_revisions as revision",
+                "revision.revision_id",
+                "membership.current_revision_id",
+              )
+              .select([
+                "revision.account_id",
+                "revision.status",
+                "revision.revision_id",
+                "revision.revision_no",
+              ])
+              .where("membership.project_id", "=", valid.projectId)
+              .execute();
+            const candidateManager =
+              valid.status === "active" && valid.roles.includes("project-risk-manager");
+            const roleRows = await tx
+              .selectFrom("business.project_membership_revision_roles")
+              .select(["revision_id", "role"])
+              .where(
+                "revision_id",
+                "in",
+                members.map((member) => member.revision_id),
+              )
+              .execute();
+            const managerIds = new Set(
+              members
+                .filter((member) => member.status === "active")
+                .filter((member) =>
+                  roleRows.some(
+                    (row) =>
+                      row.revision_id === member.revision_id && row.role === "project-risk-manager",
+                  ),
+                )
+                .map((member) => member.account_id),
+            );
+            managerIds.delete(previous.account_id);
+            if (candidateManager) managerIds.add(account.account_id);
+            if (managerIds.size === 0)
+              throw makeAccessError("ACCESS_TERMINAL_FAILURE", "project.revise-membership", clock);
+            const nextRevisionId = randomId("membership-revision");
+            await tx
+              .insertInto("business.project_membership_revisions")
+              .values({
+                revision_id: nextRevisionId,
+                membership_id: valid.membershipId,
+                project_id: valid.projectId,
+                account_id: account.account_id,
+                revision_no: previous.revision_no + 1,
+                status: valid.status,
+                previous_revision_id: previous.revision_id,
+                created_at: now,
+                recorded_by: actor,
+              })
+              .execute();
+            await tx
+              .insertInto("business.project_membership_revision_roles")
+              .values(valid.roles.map((role) => ({ revision_id: nextRevisionId, role })))
+              .execute();
+            await tx
+              .insertInto("business.project_membership_revision_scopes")
+              .values(
+                scopeIds.map((scopeId) => ({
+                  revision_id: nextRevisionId,
+                  project_id: valid.projectId,
+                  scope_id: scopeId,
+                })),
+              )
+              .execute();
+            const updated = await tx
+              .updateTable("business.project_memberships")
+              .set({ current_revision_id: nextRevisionId })
+              .where("membership_id", "=", existingMembership.membership_id)
+              .where("current_revision_id", "=", previous.revision_id)
+              .executeTakeFirst();
+            if (Number(updated.numUpdatedRows) !== 1)
+              throw makeAccessError("STALE_ACCESS_VERSION", "project.revise-membership", clock);
+            return commitWithSecurityAudit(
+              tx,
+              valid,
+              actor,
+              targetRef(valid.membershipId, String(previous.revision_no + 1)),
+              ref(valid.membershipId, String(previous.revision_no + 1)),
+              clock,
+            );
+          }
+
+          if (valid.kind === "create-spatial-scope") {
+            if (valid.expectedVersion !== "none" || valid.parentScopeRef === undefined) {
+              throw makeAccessError(
+                "ACCESS_CONTRACT_INVALID",
+                "project.create-spatial-scope",
+                clock,
+              );
+            }
+            if (scopes.some((scope) => scope.scope_id === valid.scopeId)) {
+              throw makeAccessError(
+                "ACCESS_TERMINAL_FAILURE",
+                "project.create-spatial-scope",
+                clock,
+              );
+            }
+            const parent = scopes.find(
+              (scope) => scope.scope_id === valid.parentScopeRef!.reference.entityId,
+            );
+            if (
+              parent === undefined ||
+              parent.project_id !== valid.projectId ||
+              parent.revision_id !== valid.parentScopeRef!.reference.versionId ||
+              parent.status !== "active"
+            )
+              throw makeAccessError("AUTHORIZATION_DENIED", "project.create-spatial-scope", clock);
+            const revisionId = randomId("scope-revision");
+            await tx
+              .insertInto("business.access_spatial_scopes")
+              .values({
+                scope_id: valid.scopeId,
+                project_id: valid.projectId,
+                current_revision_id: revisionId,
+                created_at: now,
+              })
+              .execute();
+            await tx
+              .insertInto("business.access_spatial_scope_revisions")
+              .values({
+                revision_id: revisionId,
+                scope_id: valid.scopeId,
+                project_id: valid.projectId,
+                revision_no: 1,
+                parent_scope_id: parent.scope_id,
+                status: "active",
+                previous_revision_id: null,
+                created_at: now,
+                recorded_by: actor,
+              })
+              .execute();
+            return commitWithSecurityAudit(
+              tx,
+              valid,
+              actor,
+              scopeRef(valid.scopeId, revisionId),
+              ref(valid.scopeId, "1"),
+              clock,
+            );
+          }
+
+          if (valid.kind === "revise-spatial-scope") {
+            const identity = await tx
+              .selectFrom("business.access_spatial_scopes")
+              .selectAll()
+              .where("scope_id", "=", valid.scopeId)
+              .where("project_id", "=", valid.projectId)
+              .forUpdate()
+              .executeTakeFirst();
+            if (identity === undefined)
+              throw makeAccessError("AUTHORIZATION_DENIED", "project.revise-spatial-scope", clock);
+            const previous = scopes.find((scope) => scope.scope_id === valid.scopeId);
+            if (
+              previous === undefined ||
+              !expectedVersionMatches(valid.expectedVersion, valid.scopeId, previous.revision_no)
+            ) {
+              throw makeAccessError("STALE_ACCESS_VERSION", "project.revise-spatial-scope", clock, {
+                targetRef: scopeRef(valid.scopeId, previous?.revision_id ?? "unknown"),
+              });
+            }
+            const parentId = valid.parentScopeRef?.reference.entityId ?? null;
+            if (valid.scopeId === project.root_scope_id && parentId !== null) {
+              throw makeAccessError(
+                "ACCESS_CONTRACT_INVALID",
+                "project.revise-spatial-scope",
+                clock,
+              );
+            }
+            if (valid.scopeId !== project.root_scope_id && parentId === null) {
+              throw makeAccessError(
+                "ACCESS_CONTRACT_INVALID",
+                "project.revise-spatial-scope",
+                clock,
+              );
+            }
+            const parent =
+              parentId === null ? undefined : scopes.find((scope) => scope.scope_id === parentId);
+            if (
+              parentId !== null &&
+              (parent === undefined ||
+                parent.revision_id !== valid.parentScopeRef!.reference.versionId ||
+                parent.status !== "active")
+            )
+              throw makeAccessError("AUTHORIZATION_DENIED", "project.revise-spatial-scope", clock);
+            const candidateNodes: SpatialScopeNodeV1[] = scopes.map((scope) =>
+              scope.scope_id === valid.scopeId
+                ? {
+                    projectId: scope.project_id,
+                    scopeId: scope.scope_id,
+                    revisionId: randomId("scope-revision-check"),
+                    ...(parentId === null ? {} : { parentScopeId: parentId }),
+                    status: valid.status,
+                  }
+                : {
+                    projectId: scope.project_id,
+                    scopeId: scope.scope_id,
+                    revisionId: scope.revision_id,
+                    ...(scope.parent_scope_id === null
+                      ? {}
+                      : { parentScopeId: scope.parent_scope_id }),
+                    status: scope.status,
+                  },
+            );
+            try {
+              assertSpatialScopeTree(candidateNodes, valid.projectId);
+            } catch {
+              throw makeAccessError(
+                "ACCESS_CONTRACT_INVALID",
+                "project.revise-spatial-scope",
+                clock,
+              );
+            }
+            const nextRevisionId = randomId("scope-revision");
+            await tx
+              .insertInto("business.access_spatial_scope_revisions")
+              .values({
+                revision_id: nextRevisionId,
+                scope_id: valid.scopeId,
+                project_id: valid.projectId,
+                revision_no: previous.revision_no + 1,
+                parent_scope_id: parentId,
+                status: valid.status,
+                previous_revision_id: previous.revision_id,
+                created_at: now,
+                recorded_by: actor,
+              })
+              .execute();
+            const updated = await tx
+              .updateTable("business.access_spatial_scopes")
+              .set({ current_revision_id: nextRevisionId })
+              .where("scope_id", "=", valid.scopeId)
+              .where("current_revision_id", "=", previous.revision_id)
+              .executeTakeFirst();
+            if (Number(updated.numUpdatedRows) !== 1)
+              throw makeAccessError("STALE_ACCESS_VERSION", "project.revise-spatial-scope", clock);
+            return commitWithSecurityAudit(
+              tx,
+              valid,
+              actor,
+              scopeRef(valid.scopeId, nextRevisionId),
+              ref(valid.scopeId, String(previous.revision_no + 1)),
+              clock,
+            );
+          }
+
+          if (valid.kind === "revise-source-access") {
+            const registered = assertActiveAccount(
+              await queryAccount(tx, valid.registeredByAccountId),
+              "project.revise-source-access",
+              clock,
+            );
+            const registeredMembership = await queryMembership(
+              tx,
+              valid.projectId,
+              registered.account_id,
+            );
+            if (registeredMembership?.status !== "active")
+              throw makeAccessError("AUTHORIZATION_DENIED", "project.revise-source-access", clock);
+            const source = await tx
+              .selectFrom("business.source_access_policies")
+              .selectAll()
+              .where("project_id", "=", valid.projectId)
+              .where("source_entity_id", "=", valid.sourceVersionRef.reference.entityId)
+              .where("source_version_id", "=", valid.sourceVersionRef.reference.versionId)
+              .forUpdate()
+              .executeTakeFirst();
+            const requestedAccounts = new Set(valid.allowedAccountIds);
+            if (valid.visibility === "project-shared" && requestedAccounts.size > 0) {
+              throw makeAccessError(
+                "ACCESS_CONTRACT_INVALID",
+                "project.revise-source-access",
+                clock,
+              );
+            }
+            if (valid.visibility === "restricted") requestedAccounts.add(registered.account_id);
+            const sourceScopes =
+              valid.spatialScopeRefs.length === 0
+                ? [scopeRef(rootScope.scope_id, rootScope.revision_id)]
+                : valid.spatialScopeRefs;
+            const scopeById = new Map(scopes.map((scope) => [scope.scope_id, scope]));
+            if (
+              sourceScopes.some(
+                (scope) =>
+                  scopeById.get(scope.reference.entityId)?.project_id !== valid.projectId ||
+                  scopeById.get(scope.reference.entityId)?.revision_id !==
+                    scope.reference.versionId ||
+                  scopeById.get(scope.reference.entityId)?.status !== "active",
+              )
+            )
+              throw makeAccessError("STALE_ACCESS_VERSION", "project.revise-source-access", clock);
+            const revision =
+              source === undefined
+                ? undefined
+                : await tx
+                    .selectFrom("business.source_access_policy_revisions")
+                    .selectAll()
+                    .where("revision_id", "=", source.current_revision_id)
+                    .executeTakeFirst();
+            if (source === undefined) {
+              if (valid.expectedVersion !== "none")
+                throw makeAccessError(
+                  "STALE_ACCESS_VERSION",
+                  "project.revise-source-access",
+                  clock,
+                );
+              const grantId = randomId("source-grant");
+              const revisionId = randomId("source-access-revision");
+              await tx
+                .insertInto("business.source_access_policies")
+                .values({
+                  source_access_grant_id: grantId,
+                  project_id: valid.projectId,
+                  source_entity_id: valid.sourceVersionRef.reference.entityId,
+                  source_version_id: valid.sourceVersionRef.reference.versionId,
+                  current_revision_id: revisionId,
+                  created_at: now,
+                })
+                .execute();
+              await tx
+                .insertInto("business.source_access_policy_revisions")
+                .values({
+                  revision_id: revisionId,
+                  source_access_grant_id: grantId,
+                  project_id: valid.projectId,
+                  source_entity_id: valid.sourceVersionRef.reference.entityId,
+                  source_version_id: valid.sourceVersionRef.reference.versionId,
+                  revision_no: 1,
+                  visibility: valid.visibility,
+                  registered_by: registered.account_id,
+                  previous_revision_id: null,
+                  created_at: now,
+                })
+                .execute();
+              if (requestedAccounts.size > 0) {
+                await tx
+                  .insertInto("business.source_access_policy_revision_accounts")
+                  .values(
+                    Array.from(requestedAccounts).map((accountId) => ({
+                      revision_id: revisionId,
+                      account_id: accountId,
+                    })),
+                  )
+                  .execute();
+              }
+              await tx
+                .insertInto("business.source_access_policy_revision_scopes")
+                .values(
+                  sourceScopes.map((scope) => ({
+                    revision_id: revisionId,
+                    project_id: valid.projectId,
+                    scope_id: scope.reference.entityId,
+                  })),
+                )
+                .execute();
+              return commitWithSecurityAudit(
+                tx,
+                valid,
+                actor,
+                sourceGrantRef(grantId, revisionId),
+                ref(grantId, "1"),
+                clock,
+              );
+            }
+            if (
+              revision === undefined ||
+              !expectedVersionMatches(
+                valid.expectedVersion,
+                source.source_access_grant_id,
+                revision.revision_no,
+              )
+            ) {
+              throw makeAccessError("STALE_ACCESS_VERSION", "project.revise-source-access", clock, {
+                targetRef: sourceGrantRef(
+                  source.source_access_grant_id,
+                  String(revision?.revision_no ?? 0),
+                ),
+              });
+            }
+            const nextRevisionId = randomId("source-access-revision");
+            await tx
+              .insertInto("business.source_access_policy_revisions")
+              .values({
+                revision_id: nextRevisionId,
+                source_access_grant_id: source.source_access_grant_id,
+                project_id: valid.projectId,
+                source_entity_id: valid.sourceVersionRef.reference.entityId,
+                source_version_id: valid.sourceVersionRef.reference.versionId,
+                revision_no: revision.revision_no + 1,
+                visibility: valid.visibility,
+                registered_by: registered.account_id,
+                previous_revision_id: revision.revision_id,
+                created_at: now,
+              })
+              .execute();
+            if (requestedAccounts.size > 0) {
+              await tx
+                .insertInto("business.source_access_policy_revision_accounts")
+                .values(
+                  Array.from(requestedAccounts).map((accountId) => ({
+                    revision_id: nextRevisionId,
+                    account_id: accountId,
+                  })),
+                )
+                .execute();
+            }
+            await tx
+              .insertInto("business.source_access_policy_revision_scopes")
+              .values(
+                sourceScopes.map((scope) => ({
+                  revision_id: nextRevisionId,
+                  project_id: valid.projectId,
+                  scope_id: scope.reference.entityId,
+                })),
+              )
+              .execute();
+            const updated = await tx
+              .updateTable("business.source_access_policies")
+              .set({ current_revision_id: nextRevisionId })
+              .where("source_access_grant_id", "=", source.source_access_grant_id)
+              .where("current_revision_id", "=", revision.revision_id)
+              .executeTakeFirst();
+            if (Number(updated.numUpdatedRows) !== 1)
+              throw makeAccessError("STALE_ACCESS_VERSION", "project.revise-source-access", clock);
+            return commitWithSecurityAudit(
+              tx,
+              valid,
+              actor,
+              sourceGrantRef(source.source_access_grant_id, nextRevisionId),
+              ref(source.source_access_grant_id, String(revision.revision_no + 1)),
+              clock,
+            );
+          }
+
+          throw makeAccessError("ACCESS_CONTRACT_INVALID", "project.command", clock);
+        }),
+      );
+      const resultKind =
+        valid.kind === "revise-membership"
+          ? "membership"
+          : valid.kind === "create-spatial-scope" || valid.kind === "revise-spatial-scope"
+            ? "spatial-scope"
+            : valid.kind === "revise-source-access"
+              ? "source-access"
+              : "project";
+      const result = commandResultFromReceipt(receipt, resultKind);
+      if (valid.kind !== "open-project") return result;
+      const openedProject = await queryProject(db, valid.projectId);
+      if (openedProject === undefined) return result;
+      const openedScopes = await queryCurrentScopeRevisions(db, valid.projectId);
+      const openedRoot = openedScopes.find(
+        (scope) => scope.scope_id === openedProject.root_scope_id,
+      );
+      if (openedRoot === undefined) return result;
+      return AccessCommandResultV1Schema.parse({
+        ...result,
+        references: [
+          result.resultRef,
+          { entityId: openedRoot.scope_id, versionId: openedRoot.revision_id },
+        ],
+      });
+    } catch (error) {
+      const mapped = asAccessError(error, `project.${valid.kind}`, clock);
+      await appendSecurityOutcomeOrThrow("project", "rejected", mapped.details.code, {
+        project_ref: valid.projectId,
+        request_ref: valid.commandId,
+        policy_ref: jsonValue(ACCESS_POLICY_REF_V1),
+        diagnostic_ref: jsonValue(mapped.details.diagnosticRef),
+      });
+      throw mapped;
+    }
+  };
+
+  interface AuthenticatedSession {
+    readonly session: LocalSessionRow;
+    readonly account: LocalAccountRow;
+  }
+
+  const tokenSessionId = (token: string): string | undefined => {
+    const parts = token.split(".");
+    if (parts.length !== 4 || parts[0] !== "v1" || !/^[A-Za-z0-9_-]+$/.test(parts[1] ?? ""))
+      return undefined;
+    const value = Buffer.from(parts[1] ?? "", "base64url");
+    return value.length === 16 ? value.toString("base64url") : undefined;
+  };
+
+  const revokeKnownToken = async (token: string, reason: string): Promise<void> => {
+    const sessionId = tokenSessionId(token);
+    if (sessionId === undefined) return;
+    const row = await querySession(db, sessionId, true);
+    if (
+      row === undefined ||
+      row.token_sha256 !== sessionTokenSha256(token) ||
+      row.revoked_at !== null
+    )
+      return;
+    const now = nowDate(clock);
+    await db
+      .updateTable("business.local_sessions")
+      .set({ revoked_at: now, revocation_reason: reason })
+      .where("session_id", "=", row.session_id)
+      .where("revoked_at", "is", null)
+      .execute();
+  };
+
+  const readSession = async (
+    database: AccessDb,
+    token: string,
+    stage: string,
+    allowPasswordChange = false,
+  ): Promise<AuthenticatedSession> => {
+    const parts = decodeAndVerifySessionToken(token, tokenKey);
+    if (parts === undefined) {
+      if (tokenSessionId(token) !== undefined) {
+        const oldKeyRow = await querySession(database, tokenSessionId(token)!, false);
+        if (
+          oldKeyRow?.token_sha256 === sessionTokenSha256(token) &&
+          oldKeyRow.key_version !== tokenKey.keyVersion
+        ) {
+          throw makeAccessError("SESSION_REVOKED", stage, clock);
+        }
+      }
+      throw makeAccessError("SESSION_REVOKED", stage, clock);
+    }
+    const sessionId = parts.sessionId.toString("base64url");
+    const session = await querySession(database, sessionId, true);
+    if (session === undefined || session.token_sha256 !== sessionTokenSha256(token)) {
+      throw makeAccessError("SESSION_REVOKED", stage, clock);
+    }
+    const storedNonce = Buffer.from(session.nonce);
+    if (storedNonce.length !== parts.nonce.length || !timingSafeEqual(storedNonce, parts.nonce)) {
+      throw makeAccessError("SESSION_REVOKED", stage, clock);
+    }
+    if (session.key_version !== tokenKey.keyVersion)
+      throw makeAccessError("SESSION_REVOKED", stage, clock);
+    const account = assertActiveAccount(
+      await queryAccount(database, session.account_id),
+      stage,
+      clock,
+    );
+    const now = nowDate(clock).getTime();
+    if (session.revoked_at !== null) throw makeAccessError("SESSION_REVOKED", stage, clock);
+    if (
+      now >=
+      Math.min(
+        asDate(session.idle_expires_at).getTime(),
+        asDate(session.absolute_expires_at).getTime(),
+      )
+    ) {
+      throw makeAccessError("SESSION_EXPIRED", stage, clock);
+    }
+    if (
+      account.security_version !== session.account_security_version ||
+      account.current_credential_version !== session.credential_version
+    ) {
+      throw makeAccessError("SESSION_REVOKED", stage, clock);
+    }
+    if (account.password_change_required && !allowPasswordChange) {
+      throw makeAccessError("PASSWORD_CHANGE_REQUIRED", stage, clock);
+    }
+    return { session, account };
+  };
+
+  const touchSession = async (
+    database: AccessDb,
+    authenticated: AuthenticatedSession,
+  ): Promise<AuthenticatedSession> => {
+    const now = nowDate(clock);
+    const absolute = asDate(authenticated.session.absolute_expires_at);
+    const idle = new Date(now.getTime() + SESSION_IDLE_MS);
+    const nextIdle = idle.getTime() < absolute.getTime() ? idle : absolute;
+    if (nextIdle.getTime() <= now.getTime())
+      throw makeAccessError("SESSION_EXPIRED", "session.touch", clock);
+    await database
+      .updateTable("business.local_sessions")
+      .set({ last_seen_at: now, idle_expires_at: nextIdle })
+      .where("session_id", "=", authenticated.session.session_id)
+      .where("revoked_at", "is", null)
+      .execute();
+    return {
+      account: authenticated.account,
+      session: { ...authenticated.session, last_seen_at: now, idle_expires_at: nextIdle },
+    };
+  };
+
+  const insertSystemAdministrationContext = async (
+    database: AccessDb,
+    account: LocalAccountRow,
+    invocationId: string,
+    now: Date,
+  ): Promise<AuthorizationContextRefV1> => {
+    const context = contextRef(randomId("authorization-context"), "1");
+    await database
+      .insertInto("business.authorization_contexts")
+      .values({
+        context_id: context.reference.entityId,
+        version_id: context.reference.versionId,
+        invocation_id: invocationId,
+        project_id: SYSTEM_NAMESPACE,
+        actor_id: account.account_id,
+        branch: "access-administration",
+        context_kind: "system-administration",
+        context_json: null,
+        parent_context_id: null,
+        causal_run_ref: null,
+        policy_ref: jsonValue(ACCESS_POLICY_REF_V1),
+        revision_snapshot: jsonValue({ accountSecurityVersion: account.security_version }),
+        expires_at: new Date(now.getTime() + CONTEXT_TTL_MS),
+        decided_at: now,
+      })
+      .execute();
+    return context;
+  };
+
+  interface CurrentAccess {
+    readonly account: LocalAccountRow;
+    readonly project: AccessProjectRow;
+    readonly membership: MembershipSnapshot;
+    readonly scopeNodes: readonly SpatialScopeNodeV1[];
+    readonly spatialScopeRefs: readonly SpatialScopeRefV1[];
+    readonly sourceAccessGrantRefs: readonly SourceAccessGrantRefV1[];
+    readonly redacted: boolean;
+  }
+
+  const authorizationDenied = (stage: string, branch?: ModuleBranchV1): AccessServiceError =>
+    makeAccessError("AUTHORIZATION_DENIED", stage, clock, {
+      ...(branch === undefined ? {} : { requiredCapability: branchCapability(branch) }),
+      authorizationPolicyRef: ACCESS_POLICY_REF_V1,
+    });
+
+  const evaluateCurrentAccess = async (
+    database: AccessDb,
+    actorId: string,
+    projectId: string,
+    branch: ModuleBranchV1,
+    requestedSpatialScopeRefs: readonly SpatialScopeRefV1[],
+    requestedSourceVersionRefs: readonly SourceVersionRefV1[],
+    stage: string,
+  ): Promise<CurrentAccess> => {
+    ModuleBranchV1Schema.parse(branch);
+    if (projectId === SYSTEM_NAMESPACE) throw authorizationDenied(stage, branch);
+    const account = assertActiveAccount(await queryAccount(database, actorId), stage, clock);
+    const project = await queryProject(database, projectId);
+    if (project === undefined || project.status !== "active")
+      throw authorizationDenied(stage, branch);
+    const membership = await queryMembership(database, projectId, actorId);
+    if (
+      membership === undefined ||
+      membership.status !== "active" ||
+      !isBranchAllowed(membership.roles, branch)
+    )
+      throw authorizationDenied(stage, branch);
+    const currentScopeRevisions = await queryCurrentScopeRevisions(database, projectId);
+    const scopeGraph = await scopeNodes(database, projectId);
+    const membershipScopeRefs = currentScopeRefsForMembership(membership, currentScopeRevisions);
+    if (membershipScopeRefs.length === 0) throw authorizationDenied(stage, branch);
+    const spatialScopeRefs =
+      requestedSpatialScopeRefs.length === 0 ? membershipScopeRefs : requestedSpatialScopeRefs;
+    if (!allSpatialScopesCovered(membershipScopeRefs, spatialScopeRefs, scopeGraph)) {
+      throw authorizationDenied(stage, branch);
+    }
+    const rootNode = scopeGraph.find(
+      (scope) => scope.scopeId === project.root_scope_id && scope.status === "active",
+    );
+    if (rootNode === undefined) throw authorizationDenied(stage, branch);
+    const sourcePolicies: SourceAccessPolicyV1[] = [];
+    for (const sourceVersionRef of requestedSourceVersionRefs) {
+      const policy = await querySourcePolicy(
+        database,
+        projectId,
+        sourceVersionRef,
+        scopeRef(rootNode.scopeId, rootNode.revisionId),
+        currentScopeRevisions,
+      );
+      if (policy === undefined) throw authorizationDenied(stage, branch);
+      sourcePolicies.push(policy);
+    }
+    if (sourcePolicies.length === 0) {
+      return {
+        account,
+        project,
+        membership,
+        scopeNodes: scopeGraph,
+        spatialScopeRefs,
+        sourceAccessGrantRefs: [],
+        redacted: false,
+      };
+    }
+    const requireBody = branch === "engineering-data.evidence-access";
+    const sourceAccess = sourcePolicies.map((policy) =>
+      evaluateSourceAccess({
+        accountId: actorId,
+        projectId,
+        roles: membership.roles,
+        branch,
+        membershipActive: membership.status === "active",
+        grantedScopeRefs: membershipScopeRefs,
+        policy,
+        scopeNodes: scopeGraph,
+        requireBody,
+      }),
+    );
+    if (requireBody && sourceAccess.some((item) => !item.allowed)) {
+      throw authorizationDenied(stage, branch);
+    }
+    const projection = projectionAccess(sourceAccess);
+    if (!projection.allowed) throw authorizationDenied(stage, branch);
+    return {
+      account,
+      project,
+      membership,
+      scopeNodes: scopeGraph,
+      spatialScopeRefs,
+      sourceAccessGrantRefs: projection.sourceAccessGrantRefs,
+      redacted: projection.redacted,
+    };
+  };
+
+  const loadParentContext = async (
+    database: AccessDb,
+    supplied: AuthorizationContextV1,
+    projectId: string,
+    stage: string,
+  ): Promise<AuthorizationContextV1> => {
+    const parsed = AuthorizationContextV1Schema.safeParse(supplied);
+    if (!parsed.success) throw authorizationDenied(stage);
+    const stored = await loadStoredContext(database, parsed.data.authorizationContextRef);
+    if (stored?.context === undefined) throw authorizationDenied(stage);
+    if (
+      stored.context.authorizationContextRef.reference.entityId !==
+        parsed.data.authorizationContextRef.reference.entityId ||
+      stored.context.authorizationContextRef.reference.versionId !==
+        parsed.data.authorizationContextRef.reference.versionId ||
+      sha256CanonicalJson(stored.context) !== sha256CanonicalJson(parsed.data)
+    )
+      throw authorizationDenied(stage);
+    if (parsed.data.projectId !== projectId) throw authorizationDenied(stage);
+    if (asDate(stored.row.expires_at).getTime() <= nowDate(clock).getTime()) {
+      throw makeAccessError("SESSION_EXPIRED", stage, clock);
+    }
+    const account = assertActiveAccount(
+      await queryAccount(database, parsed.data.actorId),
+      stage,
+      clock,
+    );
+    const snapshot = stored.row.revision_snapshot;
+    if (
+      typeof snapshot === "object" &&
+      snapshot !== null &&
+      !Array.isArray(snapshot) &&
+      "accountSecurityVersion" in snapshot &&
+      snapshot.accountSecurityVersion !== account.security_version
+    )
+      throw makeAccessError("SESSION_REVOKED", stage, clock);
+    return parsed.data;
+  };
+
+  const persistAuthorizationContext = async (
+    database: AccessDb,
+    context: AuthorizationContextV1,
+    actorId: string,
+    invocationId: string,
+    branch: ModuleBranchV1,
+    revisionSnapshot: JsonValue,
+    parentContextId: string | null,
+    causalRunRef: JsonValue | null,
+    expiresAt: Date,
+    decidedAt: Date,
+  ): Promise<void> => {
+    await database
+      .insertInto("business.authorization_contexts")
+      .values({
+        context_id: context.authorizationContextRef.reference.entityId,
+        version_id: context.authorizationContextRef.reference.versionId,
+        invocation_id: invocationId,
+        project_id: context.projectId,
+        actor_id: actorId,
+        branch,
+        context_kind: "c02",
+        context_json: jsonValue(context),
+        parent_context_id: parentContextId,
+        causal_run_ref: causalRunRef,
+        policy_ref: jsonValue(context.authorizationPolicyRef),
+        revision_snapshot: revisionSnapshot,
+        expires_at: expiresAt,
+        decided_at: decidedAt,
+      })
+      .execute();
+  };
+
+  const issueSession = async (
+    database: AccessDb,
+    account: LocalAccountRow,
+    loginAttemptId: string,
+    canonical: string,
+    now: Date,
+  ): Promise<{ readonly session: LocalSessionRow; readonly token: string }> => {
+    const generated = createSessionToken(tokenKey, randomBytes);
+    const sessionId = generated.sessionId.toString("base64url");
+    const idleExpiresAt = new Date(now.getTime() + SESSION_IDLE_MS);
+    const absoluteExpiresAt = new Date(now.getTime() + SESSION_ABSOLUTE_MS);
+    const session: LocalSessionRow = {
+      session_id: sessionId,
+      nonce: generated.nonce,
+      token_sha256: sessionTokenSha256(generated.token),
+      key_version: tokenKey.keyVersion,
+      account_id: account.account_id,
+      login_attempt_id: loginAttemptId,
+      canonical_login_name: canonical,
+      credential_version: account.current_credential_version,
+      account_security_version: account.security_version,
+      created_at: now,
+      last_seen_at: now,
+      idle_expires_at: idleExpiresAt,
+      absolute_expires_at: absoluteExpiresAt,
+      revoked_at: null,
+      revocation_reason: null,
+    };
+    await database.insertInto("business.local_sessions").values(session).execute();
+    return { session, token: generated.token };
+  };
+
+  const login = async (command: LoginCommandV1): Promise<SessionResultV1> => {
+    const parsed = LoginCommandV1Schema.safeParse(command);
+    if (!parsed.success) throw makeAccessError("ACCESS_CONTRACT_INVALID", "login.command", clock);
+    const valid = parsed.data;
+    let canonical: string;
+    try {
+      canonical = canonicalLoginName(valid.loginName);
+    } catch {
+      try {
+        await db.transaction().execute(async (transaction) => {
+          await appendSecurityAudit(
+            transaction as unknown as AccessDb,
+            securityAudit("login", "rejected", "AUTHENTICATION_REJECTED", nowDate(clock), {
+              request_ref: valid.loginAttemptId,
+            }),
+          );
+        });
+      } catch (auditError) {
+        throw asAccessError(auditError, "login.audit", clock);
+      }
+      throw makeAccessError("AUTHENTICATION_REJECTED", "login", clock);
+    }
+    const payloadSha256 = sha256CanonicalJson({ kind: "login", loginName: canonical });
+    try {
+      const result = await db.transaction().execute(async (transaction) => {
+        const tx = transaction as unknown as AccessDb;
+        await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`riskflow.local-login.${canonical}`}, 0))`.execute(
+          tx,
+        );
+        const existing = await tx
+          .selectFrom("business.local_login_attempts")
+          .selectAll()
+          .where("login_attempt_id", "=", valid.loginAttemptId)
+          .executeTakeFirst();
+        if (existing !== undefined) {
+          if (
+            existing.canonical_login_name !== canonical ||
+            existing.payload_sha256 !== payloadSha256
+          ) {
+            throw makeAccessError("IDEMPOTENCY_CONFLICT", "login.idempotency", clock, {
+              idempotencyKey: valid.loginAttemptId,
+              priorCommandId: existing.login_attempt_id,
+            });
+          }
+          if (existing.last_result === "success") {
+            const session = await tx
+              .selectFrom("business.local_sessions")
+              .selectAll()
+              .where("login_attempt_id", "=", existing.login_attempt_id)
+              .executeTakeFirst();
+            const account =
+              existing.account_id === null
+                ? undefined
+                : await queryAccount(tx, existing.account_id);
+            const credential =
+              account === undefined ? undefined : await queryCredential(tx, account);
+            const passwordMatches =
+              account !== undefined &&
+              account.status === "active" &&
+              PasswordV1Schema.safeParse(valid.password).success &&
+              credential !== undefined
+                ? await verifyPassword(valid.password, {
+                    salt: credential.salt,
+                    derivedKey: credential.derived_key,
+                  })
+                : (await verifyPassword(DUMMY_PASSWORD, await dummyCredential()), false);
+            if (!passwordMatches) {
+              throw makeAccessError("AUTHENTICATION_REJECTED", "login.idempotency", clock);
+            }
+            const sessionActive =
+              session !== undefined &&
+              session.revoked_at === null &&
+              asDate(session.absolute_expires_at).getTime() > nowDate(clock).getTime() &&
+              asDate(session.idle_expires_at).getTime() > nowDate(clock).getTime();
+            if (
+              sessionActive &&
+              account !== undefined &&
+              account.status === "active" &&
+              session!.key_version === tokenKey.keyVersion &&
+              session!.account_security_version === account.security_version &&
+              session!.credential_version === account.current_credential_version
+            ) {
+              const token = encodeSessionToken(
+                {
+                  sessionId: Buffer.from(session.session_id, "base64url"),
+                  nonce: Buffer.from(session.nonce),
+                },
+                tokenKey,
+              );
+              return sessionResult(
+                session,
+                token,
+                account.password_change_required,
+                account.password_change_required,
+              );
+            }
+            throw makeAccessError("SESSION_REVOKED", "login.idempotency", clock);
+          }
+          await verifyPassword(DUMMY_PASSWORD, await dummyCredential());
+          return { rejected: true as const };
+        }
+
+        const now = nowDate(clock);
+        const account = await queryAccountByLogin(tx, canonical, true);
+        const resetMarkers = await tx
+          .selectFrom("business.local_login_attempts")
+          .select(["last_success_at", "last_reset_at"])
+          .where("canonical_login_name", "=", canonical)
+          .execute();
+        const windowFloor = now.getTime() - LOGIN_WINDOW_MS;
+        const resetFloor = resetMarkers.reduce((floor, marker) => {
+          const successAt =
+            marker.last_success_at === null
+              ? floor
+              : Math.max(floor, asDate(marker.last_success_at).getTime());
+          return marker.last_reset_at === null
+            ? successAt
+            : Math.max(successAt, asDate(marker.last_reset_at).getTime());
+        }, windowFloor);
+        const recentFailures = await tx
+          .selectFrom("business.local_login_attempts")
+          .select(["login_attempt_id", "locked_until"])
+          .where("canonical_login_name", "=", canonical)
+          .where("last_result", "=", "failure")
+          .where("last_attempt_at", ">", new Date(resetFloor))
+          .execute();
+        const locked = recentFailures.some(
+          (item) =>
+            item.locked_until !== null && asDate(item.locked_until).getTime() > now.getTime(),
+        );
+        const throttled = locked || recentFailures.length >= LOGIN_FAILURE_LIMIT;
+        const passwordWithinPolicy = PasswordV1Schema.safeParse(valid.password).success;
+        const accountEligible =
+          account !== undefined &&
+          account.status === "active" &&
+          !throttled &&
+          passwordWithinPolicy;
+        const credential =
+          accountEligible && account !== undefined ? await queryCredential(tx, account) : undefined;
+        const passwordMatches =
+          accountEligible && credential !== undefined
+            ? await verifyPassword(valid.password, {
+                salt: credential.salt,
+                derivedKey: credential.derived_key,
+              })
+            : (await verifyPassword(DUMMY_PASSWORD, await dummyCredential()), false);
+        if (passwordMatches) {
+          await tx
+            .insertInto("business.local_login_attempts")
+            .values({
+              login_attempt_id: valid.loginAttemptId,
+              canonical_login_name: canonical,
+              login_name_fingerprint: loginFingerprint(canonical, tokenKey.hmacKey),
+              account_id: account!.account_id,
+              payload_sha256: payloadSha256,
+              attempt_count: 0,
+              window_started_at: now,
+              locked_until: null,
+              last_success_at: now,
+              last_reset_at: null,
+              last_result: "success",
+              last_reason_code: "AUTHENTICATED",
+              last_attempt_at: now,
+            })
+            .execute();
+          const session = await issueSession(tx, account!, valid.loginAttemptId, canonical, now);
+          const adminContext = account!.system_administrator
+            ? await insertSystemAdministrationContext(tx, account!, valid.loginAttemptId, now)
+            : undefined;
+          await appendSecurityAudit(
+            tx,
+            securityAudit("login", "success", "AUTHENTICATED", now, {
+              subject_ref: account!.account_id,
+              request_ref: valid.loginAttemptId,
+              ...(adminContext === undefined ? {} : { context_ref: jsonValue(adminContext) }),
+            }),
+          );
+          return sessionResult(
+            session.session,
+            session.token,
+            account!.password_change_required,
+            account!.password_change_required,
+            adminContext,
+          );
+        }
+        const failures = recentFailures.length + 1;
+        const lockedUntil =
+          failures >= LOGIN_FAILURE_LIMIT ? new Date(now.getTime() + LOGIN_LOCK_MS) : null;
+        await tx
+          .insertInto("business.local_login_attempts")
+          .values({
+            login_attempt_id: valid.loginAttemptId,
+            canonical_login_name: canonical,
+            login_name_fingerprint: loginFingerprint(canonical, tokenKey.hmacKey),
+            account_id: account?.account_id ?? null,
+            payload_sha256: payloadSha256,
+            attempt_count: failures,
+            window_started_at: now,
+            locked_until: lockedUntil,
+            last_success_at: null,
+            last_reset_at: null,
+            last_result: "failure",
+            last_reason_code: throttled ? "THROTTLED" : "AUTHENTICATION_REJECTED",
+            last_attempt_at: now,
+          })
+          .execute();
+        await appendSecurityAudit(
+          tx,
+          securityAudit(
+            "login",
+            "rejected",
+            throttled ? "THROTTLED" : "AUTHENTICATION_REJECTED",
+            now,
+            {
+              subject_ref: account?.account_id ?? null,
+              request_ref: valid.loginAttemptId,
+            },
+          ),
+        );
+        return { rejected: true as const };
+      });
+      if ("rejected" in result) throw makeAccessError("AUTHENTICATION_REJECTED", "login", clock);
+      return result;
+    } catch (error) {
+      const mapped = asAccessError(error, "login", clock);
+      if (mapped.details.code !== "AUTHENTICATION_REJECTED") {
+        await appendSecurityOutcomeOrThrow("login", "rejected", mapped.details.code, {
+          request_ref: valid.loginAttemptId,
+          diagnostic_ref: jsonValue(mapped.details.diagnosticRef),
+        });
+      }
+      throw mapped;
+    }
+  };
+
+  const changePassword = async (command: ChangePasswordCommandV1): Promise<SessionResultV1> => {
+    const parsed = ChangePasswordCommandV1Schema.safeParse(command);
+    if (!parsed.success)
+      throw makeAccessError("ACCESS_CONTRACT_INVALID", "password-change.command", clock);
+    const valid = parsed.data;
+    try {
+      return await db.transaction().execute(async (transaction) => {
+        const tx = transaction as unknown as AccessDb;
+        const authenticated = await readSession(
+          tx,
+          valid.sessionToken,
+          "password-change.session",
+          true,
+        );
+        const lockedSession = await querySession(tx, authenticated.session.session_id, true);
+        if (lockedSession === undefined)
+          throw makeAccessError("SESSION_REVOKED", "password-change.session", clock);
+        const lockedAuthenticated = { ...authenticated, session: lockedSession };
+        const now = nowDate(clock);
+        validatePassword(valid.newPassword);
+        const nextCredentialVersion = lockedAuthenticated.account.current_credential_version + 1;
+        const nextSecurityVersion = lockedAuthenticated.account.security_version + 1;
+        await insertCredential(
+          tx,
+          lockedAuthenticated.account.account_id,
+          nextCredentialVersion,
+          valid.newPassword,
+          randomBytes,
+        );
+        await tx
+          .updateTable("business.local_accounts")
+          .set({
+            security_version: nextSecurityVersion,
+            current_credential_version: nextCredentialVersion,
+            password_change_required: false,
+            updated_at: now,
+          })
+          .where("account_id", "=", lockedAuthenticated.account.account_id)
+          .where("security_version", "=", lockedAuthenticated.account.security_version)
+          .execute();
+        await tx
+          .updateTable("business.local_sessions")
+          .set({ revoked_at: now, revocation_reason: "password-changed" })
+          .where("account_id", "=", lockedAuthenticated.account.account_id)
+          .where("revoked_at", "is", null)
+          .execute();
+        const attemptId = randomId("password-change");
+        const canonical = lockedAuthenticated.account.login_name;
+        await tx
+          .insertInto("business.local_login_attempts")
+          .values({
+            login_attempt_id: attemptId,
+            canonical_login_name: canonical,
+            login_name_fingerprint: loginFingerprint(canonical, tokenKey.hmacKey),
+            account_id: lockedAuthenticated.account.account_id,
+            payload_sha256: sha256CanonicalJson({
+              kind: "password-change",
+              sessionId: lockedSession.session_id,
+            }),
+            attempt_count: 0,
+            window_started_at: now,
+            locked_until: null,
+            last_success_at: now,
+            last_reset_at: now,
+            last_result: "success",
+            last_reason_code: "PASSWORD_CHANGED",
+            last_attempt_at: now,
+          })
+          .execute();
+        const nextAccount: LocalAccountRow = {
+          ...lockedAuthenticated.account,
+          security_version: nextSecurityVersion,
+          current_credential_version: nextCredentialVersion,
+          password_change_required: false,
+          updated_at: now,
+        };
+        const nextSession = await issueSession(tx, nextAccount, attemptId, canonical, now);
+        const adminContext = nextAccount.system_administrator
+          ? await insertSystemAdministrationContext(tx, nextAccount, attemptId, now)
+          : undefined;
+        await appendSecurityAudit(
+          tx,
+          securityAudit("password-change", "success", "PASSWORD_CHANGED", now, {
+            subject_ref: nextAccount.account_id,
+            request_ref: lockedSession.session_id,
+            ...(adminContext === undefined ? {} : { context_ref: jsonValue(adminContext) }),
+          }),
+        );
+        return sessionResult(nextSession.session, nextSession.token, false, false, adminContext);
+      });
+    } catch (error) {
+      const mapped = asAccessError(error, "password-change", clock);
+      if (mapped.details.code === "SESSION_REVOKED") {
+        await revokeKnownToken(valid.sessionToken, "session-invalid").catch(() => undefined);
+      }
+      await appendSecurityOutcomeOrThrow("password-change", "rejected", mapped.details.code, {
+        request_ref: sessionTokenSha256(valid.sessionToken),
+        diagnostic_ref: jsonValue(mapped.details.diagnosticRef),
+      });
+      throw mapped;
+    }
+  };
+
+  const logout = async (command: LogoutCommandV1): Promise<AccessCommandResultV1> => {
+    const parsed = LogoutCommandV1Schema.safeParse(command);
+    if (!parsed.success) throw makeAccessError("ACCESS_CONTRACT_INVALID", "logout.command", clock);
+    const valid = parsed.data;
+    try {
+      return await db.transaction().execute(async (transaction) => {
+        const tx = transaction as unknown as AccessDb;
+        const parts = decodeAndVerifySessionToken(valid.sessionToken, tokenKey);
+        const sessionId =
+          parts?.sessionId.toString("base64url") ?? tokenSessionId(valid.sessionToken);
+        if (sessionId === undefined) throw makeAccessError("SESSION_REVOKED", "logout", clock);
+        const session = await querySession(tx, sessionId, true);
+        if (
+          session === undefined ||
+          session.token_sha256 !== sessionTokenSha256(valid.sessionToken)
+        ) {
+          throw makeAccessError("SESSION_REVOKED", "logout", clock);
+        }
+        const now = nowDate(clock);
+        if (session.revoked_at === null) {
+          await tx
+            .updateTable("business.local_sessions")
+            .set({ revoked_at: now, revocation_reason: "logout" })
+            .where("session_id", "=", session.session_id)
+            .where("revoked_at", "is", null)
+            .execute();
+        }
+        await appendSecurityAudit(
+          tx,
+          securityAudit("logout", "success", "LOGGED_OUT", now, {
+            subject_ref: session.account_id,
+            request_ref: session.session_id,
+          }),
+        );
+        return accessResult("session", session.session_id, "1");
+      });
+    } catch (error) {
+      const mapped = asAccessError(error, "logout", clock);
+      await revokeKnownToken(valid.sessionToken, "session-invalid").catch(() => undefined);
+      await appendSecurityOutcomeOrThrow("logout", "rejected", mapped.details.code, {
+        request_ref: sessionTokenSha256(valid.sessionToken),
+        diagnostic_ref: jsonValue(mapped.details.diagnosticRef),
+      });
+      throw mapped;
+    }
+  };
+
+  type SecurityAuditDetails = Partial<
+    Pick<
+      SecurityAuditEventRow,
+      | "subject_ref"
+      | "project_ref"
+      | "request_ref"
+      | "policy_ref"
+      | "context_ref"
+      | "diagnostic_ref"
+    >
+  >;
+
+  const appendSecurityOutcome = async (
+    eventKind: string,
+    outcome: "success" | "rejected" | "failure",
+    reasonCode: string,
+    details: SecurityAuditDetails = {},
+  ): Promise<void> => {
+    const occurredAt = nowDate(clock);
+    await db.transaction().execute(async (transaction) => {
+      await appendSecurityAudit(
+        transaction as unknown as AccessDb,
+        securityAudit(eventKind, outcome, reasonCode, occurredAt, details),
+      );
+    });
+  };
+
+  const appendSecurityOutcomeOrThrow = async (
+    eventKind: string,
+    outcome: "success" | "rejected" | "failure",
+    reasonCode: string,
+    details: SecurityAuditDetails,
+  ): Promise<void> => {
+    try {
+      await appendSecurityOutcome(eventKind, outcome, reasonCode, details);
+    } catch (error) {
+      throw asAccessError(error, `${eventKind}.audit`, clock);
+    }
+  };
+
+  const authorize = async (request: AuthorizationRequestV1): Promise<AuthorizationDecisionV1> => {
+    const parsed = AuthorizationRequestV1Schema.safeParse(request);
+    if (!parsed.success)
+      throw makeAccessError("ACCESS_CONTRACT_INVALID", "authorize.command", clock);
+    const valid = parsed.data;
+    const parentContext = "parentContext" in valid ? valid.parentContext : undefined;
+    const causalRunRef = "causalRunRef" in valid ? valid.causalRunRef : undefined;
+    try {
+      return await db.transaction().execute(async (transaction) => {
+        const tx = transaction as unknown as AccessDb;
+        let actorId: string;
+        let parent: AuthorizationContextV1 | undefined;
+        let effectiveScopes = valid.requestedSpatialScopeRefs;
+        if (valid.invocation.kind === "human-session") {
+          const authenticated = await readSession(
+            tx,
+            valid.invocation.sessionToken,
+            "authorize.session",
+          );
+          const touched = await touchSession(tx, authenticated);
+          actorId = touched.account.account_id;
+        } else {
+          if (parentContext === undefined || causalRunRef === undefined) {
+            throw makeAccessError("ACCESS_CONTRACT_INVALID", "authorize.parent", clock);
+          }
+          parent = await loadParentContext(tx, parentContext, valid.projectId, "authorize.parent");
+          actorId = parent.actorId;
+          if (valid.invocation.kind === "system" && valid.invocation.systemActorId !== actorId) {
+            throw authorizationDenied("authorize.parent", valid.branch);
+          }
+          if (effectiveScopes.length === 0) effectiveScopes = parent.spatialScopeRefs;
+        }
+        const current = await evaluateCurrentAccess(
+          tx,
+          actorId,
+          valid.projectId,
+          valid.branch,
+          effectiveScopes,
+          valid.requestedSourceVersionRefs,
+          "authorize.current",
+        );
+        const contextRefValue = contextRef(randomId("authorization-context"), "1");
+        const invocation =
+          valid.invocation.kind === "human-session"
+            ? { kind: "human" as const }
+            : valid.invocation.kind === "system"
+              ? {
+                  kind: "system" as const,
+                  systemActorId: valid.invocation.systemActorId,
+                  reasonCode: valid.invocation.reasonCode,
+                }
+              : { kind: "agent-task" as const, agentTaskRef: valid.invocation.agentTaskRef };
+        const context = AuthorizationContextV1Schema.parse({
+          schemaVersion: "1",
+          authorizationContextRef: contextRefValue,
+          actorId,
+          projectId: valid.projectId,
+          grantedCapabilities: [branchCapability(valid.branch)],
+          spatialScopeRefs: current.spatialScopeRefs,
+          sourceAccessGrantRefs: current.sourceAccessGrantRefs,
+          authorizationPolicyRef: ACCESS_POLICY_REF_V1,
+          decidedAt: iso(nowDate(clock)),
+          invocation,
+          ...(causalRunRef === undefined ? {} : { causalRunRef }),
+        });
+        if (
+          parent !== undefined &&
+          !isAuthorizationSubset(parent, context, { scopeNodes: current.scopeNodes })
+        ) {
+          throw authorizationDenied("authorize.narrowing", valid.branch);
+        }
+        const existing = await tx
+          .selectFrom("business.authorization_contexts")
+          .selectAll()
+          .where("invocation_id", "=", valid.invocationId)
+          .where("project_id", "=", valid.projectId)
+          .where("branch", "=", valid.branch)
+          .executeTakeFirst();
+        if (existing !== undefined) {
+          const existingContext = await loadStoredContext(
+            tx,
+            contextRef(existing.context_id, existing.version_id),
+          );
+          if (
+            existingContext?.context === undefined ||
+            asDate(existing.expires_at).getTime() <= nowDate(clock).getTime()
+          )
+            throw makeAccessError("SESSION_EXPIRED", "authorize.context", clock);
+          const existingSnapshot = existing.revision_snapshot;
+          const existingSourceVersionRefs =
+            typeof existingSnapshot === "object" &&
+            existingSnapshot !== null &&
+            !Array.isArray(existingSnapshot) &&
+            "sourceVersionRefs" in existingSnapshot
+              ? existingSnapshot.sourceVersionRefs
+              : undefined;
+          if (
+            existingContext.context.actorId !== context.actorId ||
+            existingContext.context.projectId !== context.projectId ||
+            sha256CanonicalJson(existingContext.context.invocation) !==
+              sha256CanonicalJson(context.invocation) ||
+            existing.parent_context_id !==
+              (parent?.authorizationContextRef.reference.entityId ?? null) ||
+            sha256CanonicalJson(existing.causal_run_ref) !==
+              sha256CanonicalJson(causalRunRef ?? null) ||
+            sha256CanonicalJson(existingSourceVersionRefs) !==
+              sha256CanonicalJson(valid.requestedSourceVersionRefs) ||
+            JSON.stringify(existingContext.context.grantedCapabilities) !==
+              JSON.stringify(context.grantedCapabilities) ||
+            JSON.stringify(existingContext.context.spatialScopeRefs) !==
+              JSON.stringify(context.spatialScopeRefs) ||
+            JSON.stringify(existingContext.context.sourceAccessGrantRefs) !==
+              JSON.stringify(context.sourceAccessGrantRefs)
+          ) {
+            throw makeAccessError("IDEMPOTENCY_CONFLICT", "authorize.idempotency", clock, {
+              idempotencyKey: valid.invocationId,
+              priorCommandId: existing.invocation_id,
+            });
+          }
+          await appendSecurityAudit(
+            tx,
+            securityAudit("authorize", "success", "AUTHORIZED_REPLAY", nowDate(clock), {
+              subject_ref: actorId,
+              project_ref: valid.projectId,
+              request_ref: valid.invocationId,
+              context_ref: jsonValue(existingContext.context.authorizationContextRef),
+              policy_ref: jsonValue(ACCESS_POLICY_REF_V1),
+            }),
+          );
+          return AuthorizationDecisionV1Schema.parse({
+            context: existingContext.context,
+            contextRef: existingContext.context.authorizationContextRef,
+            redacted: current.redacted,
+          });
+        }
+        const sourceRefs = current.sourceAccessGrantRefs.map((grant) => grant.reference);
+        const revisionSnapshot: JsonValue = {
+          accountSecurityVersion: current.account.security_version,
+          projectAccessVersion: current.project.access_version,
+          membershipRevisionId: current.membership.revisionId,
+          scopeRevisionIds: current.scopeNodes.map((node) => node.revisionId),
+          sourceAccessGrantRefs: sourceRefs,
+          sourceVersionRefs: valid.requestedSourceVersionRefs,
+        };
+        await persistAuthorizationContext(
+          tx,
+          context,
+          actorId,
+          valid.invocationId,
+          valid.branch,
+          revisionSnapshot,
+          parent?.authorizationContextRef.reference.entityId ?? null,
+          causalRunRef === undefined ? null : jsonValue(causalRunRef),
+          new Date(new Date(context.decidedAt).getTime() + CONTEXT_TTL_MS),
+          new Date(context.decidedAt),
+        );
+        await appendSecurityAudit(
+          tx,
+          securityAudit("authorize", "success", "AUTHORIZED", new Date(context.decidedAt), {
+            subject_ref: actorId,
+            project_ref: valid.projectId,
+            request_ref: valid.invocationId,
+            context_ref: jsonValue(context.authorizationContextRef),
+            policy_ref: jsonValue(ACCESS_POLICY_REF_V1),
+          }),
+        );
+        return AuthorizationDecisionV1Schema.parse({
+          context,
+          contextRef: context.authorizationContextRef,
+          redacted: current.redacted,
+        });
+      });
+    } catch (error) {
+      const mapped = asAccessError(error, "authorize", clock);
+      if (valid.invocation.kind === "human-session" && mapped.details.code === "SESSION_REVOKED") {
+        await revokeKnownToken(valid.invocation.sessionToken, "session-invalid").catch(
+          () => undefined,
+        );
+      }
+      await appendSecurityOutcomeOrThrow("authorize", "rejected", mapped.details.code, {
+        project_ref: valid.projectId,
+        request_ref: valid.invocationId,
+        policy_ref: jsonValue(ACCESS_POLICY_REF_V1),
+        diagnostic_ref: jsonValue(mapped.details.diagnosticRef),
+      });
+      throw mapped;
+    }
+  };
+
+  const verify = async (
+    request: AuthorizationVerificationRequestV1,
+  ): Promise<AuthorizationDecisionV1> => {
+    const parsed = AuthorizationVerificationRequestV1Schema.safeParse(request);
+    if (!parsed.success) throw makeAccessError("ACCESS_CONTRACT_INVALID", "verify.command", clock);
+    const valid = parsed.data;
+    try {
+      return await db.transaction().execute(async (transaction) => {
+        const tx = transaction as unknown as AccessDb;
+        const stored = await loadStoredContext(tx, valid.authorizationContextRef);
+        if (stored?.context === undefined || stored.row.context_kind !== "c02") {
+          throw authorizationDenied("verify.context", valid.branch);
+        }
+        const context = stored.context;
+        if (
+          stored.row.invocation_id !== valid.invocationId ||
+          stored.row.project_id !== valid.projectId ||
+          stored.row.branch !== valid.branch ||
+          context.projectId !== valid.projectId ||
+          context.authorizationContextRef.reference.entityId !==
+            valid.authorizationContextRef.reference.entityId ||
+          context.authorizationContextRef.reference.versionId !==
+            valid.authorizationContextRef.reference.versionId
+        )
+          throw authorizationDenied("verify.binding", valid.branch);
+        if (
+          context.grantedCapabilities.length !== 1 ||
+          !context.grantedCapabilities.includes(branchCapability(valid.branch)) ||
+          context.authorizationPolicyRef.entityId !== ACCESS_POLICY_REF_V1.entityId ||
+          context.authorizationPolicyRef.versionId !== ACCESS_POLICY_REF_V1.versionId
+        )
+          throw authorizationDenied("verify.binding", valid.branch);
+        if (asDate(stored.row.expires_at).getTime() <= nowDate(clock).getTime()) {
+          throw makeAccessError("SESSION_EXPIRED", "verify.context", clock);
+        }
+        const requestedScopes =
+          valid.requestedSpatialScopeRefs.length === 0
+            ? context.spatialScopeRefs
+            : valid.requestedSpatialScopeRefs;
+        const snapshot = stored.row.revision_snapshot;
+        const snapshotSources =
+          typeof snapshot === "object" &&
+          snapshot !== null &&
+          !Array.isArray(snapshot) &&
+          "sourceVersionRefs" in snapshot &&
+          Array.isArray(snapshot.sourceVersionRefs)
+            ? snapshot.sourceVersionRefs.flatMap((value) => {
+                const parsedSource = SourceVersionRefV1Schema.safeParse(value);
+                return parsedSource.success ? [parsedSource.data] : [];
+              })
+            : [];
+        const requestedSources =
+          valid.requestedSourceVersionRefs.length === 0
+            ? snapshotSources
+            : valid.requestedSourceVersionRefs;
+        const current = await evaluateCurrentAccess(
+          tx,
+          context.actorId,
+          valid.projectId,
+          valid.branch,
+          requestedScopes,
+          requestedSources,
+          "verify.current",
+        );
+        if (
+          context.authorizationPolicyRef.entityId !== ACCESS_POLICY_REF_V1.entityId ||
+          context.authorizationPolicyRef.versionId !== ACCESS_POLICY_REF_V1.versionId
+        ) {
+          throw authorizationDenied("verify.policy", valid.branch);
+        }
+        if (
+          typeof snapshot === "object" &&
+          snapshot !== null &&
+          !Array.isArray(snapshot) &&
+          "accountSecurityVersion" in snapshot &&
+          snapshot.accountSecurityVersion !== current.account.security_version
+        ) {
+          throw makeAccessError("SESSION_REVOKED", "verify.current", clock);
+        }
+        const narrowed = AuthorizationContextV1Schema.parse({
+          ...context,
+          spatialScopeRefs: current.spatialScopeRefs,
+          sourceAccessGrantRefs: current.sourceAccessGrantRefs,
+          grantedCapabilities: [branchCapability(valid.branch)],
+        });
+        if (!isAuthorizationSubset(context, narrowed, { scopeNodes: current.scopeNodes })) {
+          throw authorizationDenied("verify.narrowing", valid.branch);
+        }
+        await appendSecurityAudit(
+          tx,
+          securityAudit("verify", "success", "AUTHORIZED", nowDate(clock), {
+            subject_ref: context.actorId,
+            project_ref: valid.projectId,
+            request_ref: valid.invocationId,
+            context_ref: jsonValue(valid.authorizationContextRef),
+            policy_ref: jsonValue(ACCESS_POLICY_REF_V1),
+          }),
+        );
+        return AuthorizationDecisionV1Schema.parse({
+          context: narrowed,
+          contextRef: valid.authorizationContextRef,
+          redacted: current.redacted,
+        });
+      });
+    } catch (error) {
+      const mapped = asAccessError(error, "verify", clock);
+      await appendSecurityOutcomeOrThrow("verify", "rejected", mapped.details.code, {
+        project_ref: valid.projectId,
+        request_ref: valid.invocationId,
+        context_ref: jsonValue(valid.authorizationContextRef),
+        policy_ref: jsonValue(ACCESS_POLICY_REF_V1),
+        diagnostic_ref: jsonValue(mapped.details.diagnosticRef),
+      });
+      throw mapped;
+    }
+  };
+
+  return {
+    administerIdentity: identityCommand,
+    administerProject: projectCommand,
+    login,
+    changePassword,
+    logout,
+    authorize,
+    verify,
+    close: runtime.close,
+  };
+};

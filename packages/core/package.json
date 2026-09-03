@@ -19,6 +19,10 @@
     "./access": {
       "types": "./dist/access/index.d.ts",
       "import": "./dist/access/index.js"
+    },
+    "./artifacts": {
+      "types": "./dist/artifacts/index.d.ts",
+      "import": "./dist/artifacts/index.js"
     }
   }
 }

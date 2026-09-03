@@ -22,6 +22,7 @@ import {
   ArtifactReadRequestV1Schema,
   ArtifactStoreError,
   ArtifactStorePolicyV1Schema,
+  type ArtifactAccessRecordV1,
   makeArtifactError,
   manifestSha256,
   type ArtifactHashV1,
@@ -34,12 +35,14 @@ import {
   type ArtifactStorePolicyV1,
 } from "@riskflow/core/artifacts";
 import type { ArtifactStoreV1 } from "@riskflow/core/artifacts";
+import { canonicalJson } from "@riskflow/core/persistence";
 import type { TransactionUnitV1 } from "@riskflow/core/persistence";
 
 import { PostgresArtifactRegistry } from "./postgres-artifact-registry.js";
 
 const HASH_PATTERN = /^[0-9a-f]{64}$/u;
 const CHUNK_SIZE = 1024 * 1024;
+const encoder = new TextEncoder();
 
 export type ArtifactFailpointV1 =
   | "staging.sync"
@@ -48,6 +51,7 @@ export type ArtifactFailpointV1 =
   | "registry.handler"
   | "audit"
   | "audit.commit"
+  | "quarantine.rename"
   | "database.commit"
   | "response";
 
@@ -182,7 +186,7 @@ export class FilesystemArtifactStore implements ArtifactStoreV1 {
   readonly #writeSlots: Semaphore;
   readonly #readSlots: Semaphore;
   readonly #pendingHandles = new Set<FileHandle>();
-  readonly #pendingActiveResolvers = new Map<FileHandle, () => void>();
+  readonly #pendingActiveResolvers = new Map<FileHandle, () => Promise<void>>();
   readonly #activeStreams = new Set<Promise<void>>();
   readonly #activeStagingPaths = new Set<string>();
   #stagingBytes = 0;
@@ -193,7 +197,11 @@ export class FilesystemArtifactStore implements ArtifactStoreV1 {
     this.#stagingDirectory = join(this.#rootDirectory, "staging");
     this.#objectsDirectory = join(this.#rootDirectory, "objects", "sha256");
     this.#quarantineDirectory = join(this.#rootDirectory, "quarantine");
-    this.#policy = ArtifactStorePolicyV1Schema.parse(options.policy);
+    const parsedPolicy = ArtifactStorePolicyV1Schema.parse(options.policy);
+    this.#policy = Object.freeze({
+      ...parsedPolicy,
+      policyRef: Object.freeze({ ...parsedPolicy.policyRef }),
+    });
     this.#registry = options.registry;
     this.#now = options.now ?? (() => new Date());
     this.#failpoint = options.failpoint ?? (() => undefined);
@@ -369,8 +377,25 @@ export class FilesystemArtifactStore implements ArtifactStoreV1 {
     }
   }
 
+  async #removeStaging(stagingPath: string, stagedBytes: number): Promise<void> {
+    let removed = false;
+    try {
+      await rm(stagingPath, { force: true });
+      removed = true;
+      await syncDirectory(this.#stagingDirectory);
+    } catch {
+      // A committed immutable object remains valid if cleanup is interrupted.
+    } finally {
+      if (removed) this.#releaseStaging(stagedBytes);
+    }
+  }
+
   async verifyObjectForMaintenance(content: ArtifactContentIdentityV1): Promise<void> {
     await this.#verifyObject(this.#objectPath(content.hash.value), content);
+  }
+
+  async verifyPathForMaintenance(path: string, content: ArtifactContentIdentityV1): Promise<void> {
+    await this.#verifyObject(path, content);
   }
 
   async put(
@@ -470,33 +495,29 @@ export class FilesystemArtifactStore implements ArtifactStoreV1 {
               ? "artifact.hash-manifest-created"
               : "artifact.put",
           );
-          return ArtifactPutResultV1Schema.parse({
+          const putResult = ArtifactPutResultV1Schema.parse({
             artifactRef: registration.manifest.artifactRef,
             manifest: registration.manifest,
             manifestSha256: registration.manifestSha256,
             replayed: registration.replayed,
             deduplicated,
           });
+          await this.#runFailpoint("response");
+          await this.#removeStaging(stagingPath!, stagedBytes);
+          return putResult;
         },
         "shared",
       );
-      await this.#runFailpoint("response");
-      let stagingRemoved = false;
-      try {
-        await rm(stagingPath, { force: true });
-        stagingRemoved = true;
-        await syncDirectory(this.#stagingDirectory);
-      } catch {
-        // A committed immutable object remains valid if cleanup is interrupted.
-      } finally {
-        if (stagingRemoved) this.#releaseStaging(stagedBytes);
-      }
       return result;
     } catch (error) {
       if (stagingPath !== undefined) {
-        await rm(stagingPath, { force: true }).catch(() => undefined);
-        await syncDirectory(this.#stagingDirectory).catch(() => undefined);
-        this.#releaseStaging(stagedBytes);
+        await this.#registry
+          .withAdvisoryLock(
+            this.#policy,
+            () => this.#removeStaging(stagingPath!, stagedBytes),
+            "shared",
+          )
+          .catch(() => undefined);
       }
       throw mapFileError(error, "put");
     } finally {
@@ -505,112 +526,192 @@ export class FilesystemArtifactStore implements ArtifactStoreV1 {
     }
   }
 
+  async #recordAccess(
+    request: ArtifactReadRequestV1,
+    outcome: ArtifactAccessRecordV1["outcome"],
+    stage: string,
+    diagnosticRef?: ArtifactAccessRecordV1["diagnosticRef"],
+  ): Promise<void> {
+    await this.#registry.recordAccessOutcome({
+      requestId: request.requestId,
+      idempotencyKey: request.idempotencyKey,
+      projectId: request.projectId,
+      actorId: request.actorId,
+      occurredAt: this.#now().toISOString(),
+      purposeCode: request.purposeCode,
+      authorizationContextRef: request.authorization.authorizationContextRef,
+      authorizationPolicyRef: request.authorization.authorizationPolicyRef,
+      outcome,
+      stage,
+      ...(diagnosticRef === undefined ? {} : { diagnosticRef }),
+    });
+  }
+
+  async #saveDiagnostic(
+    request: ArtifactReadRequestV1,
+    stage: string,
+    details: unknown,
+  ): Promise<ArtifactAccessRecordV1["diagnosticRef"]> {
+    const suffix = stage.replace(/[^A-Za-z0-9._-]/gu, "-");
+    const id = `diagnostic-${request.requestId}-${suffix}`;
+    const body = encoder.encode(canonicalJson({ schemaVersion: "1", stage, details }));
+    const command = ArtifactPutCommandV1Schema.parse({
+      schemaVersion: "1",
+      commandId: id,
+      idempotencyKey: id,
+      projectId: request.projectId,
+      actorId: request.actorId,
+      issuedAt: this.#now().toISOString(),
+      authorization: request.authorization,
+      requiredCapability: request.requiredCapability,
+      artifactId: id,
+      artifactKind: "diagnostic",
+      purposeCode: "artifact-diagnostic",
+      mediaType: "application/json",
+      parentArtifactRefs: [],
+      evidenceReferences: [],
+      additionalSpatialScopeRefs: [],
+      additionalSourceAccessGrantRefs: [],
+    });
+    const result = await this.put(
+      command,
+      (async function* () {
+        yield body;
+      })(),
+    );
+    return result.artifactRef.kind === "diagnostic-artifact" ? result.artifactRef : undefined;
+  }
+
+  async #recordDenied(request: ArtifactReadRequestV1, stage: string): Promise<void> {
+    await this.#recordAccess(request, "denied", stage);
+  }
+
+  async #recordIntegrityFailure(
+    request: ArtifactReadRequestV1,
+    stage: string,
+    error: unknown,
+  ): Promise<void> {
+    const diagnosticRef = await this.#saveDiagnostic(request, stage, {
+      code: error instanceof ArtifactStoreError ? error.code : "ARTIFACT_IO_FAILURE",
+    });
+    await this.#recordAccess(request, "integrity-failed", stage, diagnosticRef);
+  }
+
   async #readGenerator(
     file: FileHandle,
     request: ArtifactReadRequestV1,
     manifest: ArtifactManifestV1,
     resolveVerified: (receipt: ReturnType<typeof ArtifactReadReceiptV1Schema.parse>) => void,
     rejectVerified: (error: unknown) => void,
-    active: Promise<void>,
     resolveActive: () => void,
-    markStarted: () => void,
   ): Promise<AsyncIterable<Uint8Array>> {
-    const policy = this.#policy;
-    const now = this.#now;
     const pendingActiveResolvers = this.#pendingActiveResolvers;
-    const removeHandle = () => this.#pendingHandles.delete(file);
-    const releaseReadSlot = () => this.#readSlots.release();
     let started = false;
     let settled = false;
-    const abortBeforeStart = (): void => {
-      if (!settled) {
-        settled = true;
-        rejectVerified(makeArtifactError("ARTIFACT_INTEGRITY_FAILURE", "read.incomplete"));
-      }
+    let cancelled = false;
+    let cleaned = false;
+    const cleanup = (): void => {
+      if (cleaned) return;
+      cleaned = true;
       pendingActiveResolvers.delete(file);
-      removeHandle();
-      releaseReadSlot();
+      this.#pendingHandles.delete(file);
+      this.#readSlots.release();
       resolveActive();
     };
+    const settleCancelled = async (): Promise<void> => {
+      if (settled) return;
+      settled = true;
+      await this.#recordAccess(request, "cancelled", "read.cancelled");
+      rejectVerified(makeArtifactError("ARTIFACT_INTEGRITY_FAILURE", "read.cancelled"));
+    };
+    const abort = async (): Promise<void> => {
+      cancelled = true;
+      if (!started) {
+        await settleCancelled();
+        await file.close().catch(() => undefined);
+        cleanup();
+        return;
+      }
+      await file.close().catch(() => undefined);
+    };
+    const abortPending = (): Promise<void> => abort();
+    pendingActiveResolvers.set(file, abortPending);
+    const maxArtifactBytes = this.#policy.maxArtifactBytes;
+    const now = this.#now;
+    const recordAccess = this.#recordAccess.bind(this);
+    const recordIntegrityFailure = this.#recordIntegrityFailure.bind(this);
     async function* consume(): AsyncGenerator<Uint8Array> {
       started = true;
-      markStarted();
       const hash = createHash("sha256");
       const buffer = Buffer.allocUnsafe(CHUNK_SIZE);
       let byteLength = 0;
       let position = 0;
-      let completed = false;
       try {
         for (;;) {
           const result = await file.read(buffer, 0, buffer.byteLength, position);
           if (result.bytesRead === 0) break;
-          const chunk = buffer.slice(0, result.bytesRead);
+          const chunk = buffer.subarray(0, result.bytesRead);
           hash.update(chunk);
           byteLength += result.bytesRead;
           position += result.bytesRead;
-          if (!Number.isSafeInteger(byteLength) || byteLength > policy.maxArtifactBytes) {
+          if (!Number.isSafeInteger(byteLength) || byteLength > maxArtifactBytes)
             throw makeArtifactError("ARTIFACT_INTEGRITY_FAILURE", "read.length");
-          }
           yield chunk;
         }
         const digest = hash.digest("hex");
-        if (byteLength !== manifest.content.byteLength || digest !== manifest.content.hash.value) {
+        if (byteLength !== manifest.content.byteLength || digest !== manifest.content.hash.value)
           throw makeArtifactError("ARTIFACT_INTEGRITY_FAILURE", "read.hash");
-        }
-        resolveVerified(
-          ArtifactReadReceiptV1Schema.parse({
-            schemaVersion: "1",
-            requestId: request.requestId,
-            artifactRef: manifest.artifactRef,
-            content: manifest.content,
-            authorizationContextRef: request.authorization.authorizationContextRef,
-            verifiedAt: now().toISOString(),
-          }),
-        );
+        const receipt = ArtifactReadReceiptV1Schema.parse({
+          schemaVersion: "1",
+          requestId: request.requestId,
+          artifactRef: manifest.artifactRef,
+          content: manifest.content,
+          authorizationContextRef: request.authorization.authorizationContextRef,
+          verifiedAt: now().toISOString(),
+        });
+        await recordAccess(request, "succeeded", "read.succeeded");
         settled = true;
-        completed = true;
+        resolveVerified(receipt);
       } catch (error) {
         const mapped = mapFileError(error, "read.stream");
         if (!settled) {
-          settled = true;
-          rejectVerified(mapped);
+          if (cancelled) {
+            await settleCancelled();
+          } else {
+            settled = true;
+            try {
+              await recordIntegrityFailure(request, "read.integrity", mapped);
+            } catch (recordError) {
+              rejectVerified(recordError);
+              throw recordError;
+            }
+            rejectVerified(mapped);
+          }
         }
         throw mapped;
       } finally {
         await file.close().catch(() => undefined);
-        removeHandle();
-        pendingActiveResolvers.delete(file);
-        releaseReadSlot();
-        resolveActive();
-        void active;
-        if (!completed && !settled) {
-          settled = true;
-          rejectVerified(makeArtifactError("ARTIFACT_INTEGRITY_FAILURE", "read.incomplete"));
-        }
+        if (!settled) await settleCancelled();
+        cleanup();
       }
     }
     const iterator = consume();
     const wrapped: AsyncIterableIterator<Uint8Array> = {
       next: (value?: unknown) => {
         started = true;
-        markStarted();
         return iterator.next(value as undefined);
       },
       return: async (value?: unknown) => {
+        cancelled = true;
         if (!started) {
-          abortBeforeStart();
-          await file.close().catch(() => undefined);
+          await abort();
           return { done: true, value: value as undefined };
         }
         return iterator.return(value as undefined);
       },
-      throw: (error?: unknown) => {
-        if (!started) {
-          abortBeforeStart();
-          return Promise.reject(error);
-        }
-        started = true;
-        markStarted();
+      throw: async (error?: unknown) => {
+        cancelled = true;
+        if (!started) await abort();
         return iterator.throw(error);
       },
       [Symbol.asyncIterator]() {
@@ -625,32 +726,34 @@ export class FilesystemArtifactStore implements ArtifactStoreV1 {
     const parsed = ArtifactReadRequestV1Schema.safeParse(request);
     if (!parsed.success) throw makeArtifactError("ARTIFACT_INPUT_INVALID", "read.command");
     const value = parsed.data;
-    const manifest = await this.#registry.readManifest(value.projectId, value.artifactRef);
-    if (manifest === undefined)
-      throw makeArtifactError("ARTIFACT_ACCESS_DENIED", "read.authorization");
-    this.#registry.assertReadable(manifest, {
-      projectId: value.projectId,
-      purposeCode: value.purposeCode,
-      requiredCapability: value.requiredCapability,
-      authorization: value.authorization,
-    });
+    let manifest: ArtifactManifestV1 | undefined;
+    try {
+      manifest = await this.#registry.readManifest(value.projectId, value.artifactRef);
+      if (manifest === undefined)
+        throw makeArtifactError("ARTIFACT_ACCESS_DENIED", "read.authorization");
+      this.#registry.assertReadable(manifest, {
+        projectId: value.projectId,
+        purposeCode: value.purposeCode,
+        requiredCapability: value.requiredCapability,
+        authorization: value.authorization,
+      });
+    } catch (error) {
+      if (error instanceof ArtifactStoreError && error.code === "ARTIFACT_ACCESS_DENIED") {
+        await this.#recordDenied(value, "read.authorization");
+        throw error;
+      }
+      throw mapFileError(error, "read.authorization");
+    }
     const digest = await this.#registry.readManifestDigest(value.projectId, value.artifactRef);
-    if (digest === undefined)
+    if (digest === undefined) {
+      await this.#recordDenied(value, "read.authorization");
       throw makeArtifactError("ARTIFACT_ACCESS_DENIED", "read.authorization");
-    if (digest !== manifestSha256(manifest))
+    }
+    if (digest !== manifestSha256(manifest)) {
+      await this.#recordIntegrityFailure(value, "read.manifest-digest", "manifest digest");
       throw makeArtifactError("ARTIFACT_INTEGRITY_FAILURE", "read.manifest-digest");
-    await this.#registry.recordReadStarted({
-      requestId: value.requestId,
-      idempotencyKey: value.idempotencyKey,
-      projectId: value.projectId,
-      actorId: value.actorId,
-      requestedAt: value.requestedAt,
-      purposeCode: value.purposeCode,
-      requiredCapability: value.requiredCapability,
-      authorizationContextRef: value.authorization.authorizationContextRef,
-      artifactRef: value.artifactRef,
-      manifestSha256: digest,
-    });
+    }
+    await this.#recordAccess(value, "authorized", "read.authorized");
     await this.#readSlots.acquire();
     try {
       await assertNoSymlinkChain(this.#rootDirectory, "read.root");
@@ -697,39 +800,33 @@ export class FilesystemArtifactStore implements ArtifactStoreV1 {
       const active = new Promise<void>((resolvePromise) => {
         resolveActive = resolvePromise;
       });
-      const abortPending = () => {
-        if (!this.#pendingActiveResolvers.has(file)) return;
-        rejectVerified(makeArtifactError("ARTIFACT_INTEGRITY_FAILURE", "read.incomplete"));
-        this.#pendingActiveResolvers.delete(file);
-        this.#pendingHandles.delete(file);
-        this.#readSlots.release();
-        resolveActive();
-      };
-      this.#pendingActiveResolvers.set(file, abortPending);
       this.#activeStreams.add(active);
-      const markStarted = () => this.#pendingActiveResolvers.delete(file);
       const content = await this.#readGenerator(
         file,
         value,
         manifest,
         resolveVerified,
         rejectVerified,
-        active,
         resolveActive,
-        markStarted,
       );
       void active.finally(() => this.#activeStreams.delete(active));
       return { manifest, content, verified };
     } catch (error) {
       this.#readSlots.release();
-      throw mapFileError(error, "read");
+      const mapped = mapFileError(error, "read");
+      try {
+        await this.#recordIntegrityFailure(value, mapped.stage, mapped);
+      } catch (recordError) {
+        throw mapFileError(recordError, "read.audit");
+      }
+      throw mapped;
     }
   }
 
   async close(): Promise<void> {
     this.#closed = true;
     for (const file of [...this.#pendingHandles]) {
-      this.#pendingActiveResolvers.get(file)?.();
+      await this.#pendingActiveResolvers.get(file)?.();
       await file.close().catch(() => undefined);
     }
     await Promise.all([...this.#activeStreams]);

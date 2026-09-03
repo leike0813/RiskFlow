@@ -1,12 +1,19 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ArtifactAccessRecordV1Schema,
   ArtifactHashManifestEntryV1Schema,
+  ArtifactHashManifestCommandV1Schema,
+  ArtifactMaintenanceBatchV1Schema,
   ArtifactManifestV1Schema,
   ArtifactPutCommandV1Schema,
+  ArtifactReconcileRequestV1Schema,
+  ArtifactReconcileSummaryV1Schema,
   ArtifactStorePolicyV1Schema,
+  ArtifactSweepCommandV1Schema,
   ArtifactRefV1Schema,
   artifactError,
+  artifactPolicySha256,
   mapArtifactErrorToModuleError,
   manifestSha256,
   mergeArtifactAccessSnapshots,
@@ -32,6 +39,19 @@ const authorization = {
   authorizationPolicyRef: { entityId: "policy-1", versionId: "v1" },
   decidedAt: "2030-01-01T00:00:00.000Z",
   invocation: { kind: "human" as const },
+};
+
+const readAuthorization = {
+  ...authorization,
+  grantedCapabilities: [...authorization.grantedCapabilities, "engineering-data.read" as const],
+};
+
+const freezeAuthorization = {
+  ...readAuthorization,
+  grantedCapabilities: [
+    ...readAuthorization.grantedCapabilities,
+    "engineering-data.freeze" as const,
+  ],
 };
 
 const policy = {
@@ -142,6 +162,15 @@ describe("content-addressed artifact schemas", () => {
     expect(parse().success).toBe(false);
   });
 
+  it("rejects a put when the authorization lacks its required capability", () => {
+    expect(
+      ArtifactPutCommandV1Schema.safeParse({
+        ...makePut(),
+        authorization: { ...authorization, grantedCapabilities: ["engineering-data.read"] },
+      }).success,
+    ).toBe(false);
+  });
+
   it("keeps content and diagnostic references distinct", () => {
     expect(ArtifactRefV1Schema.safeParse(artifactRef).success).toBe(true);
     expect(
@@ -205,5 +234,157 @@ describe("content-addressed artifact schemas", () => {
         authorizationPolicyRef: authorization.authorizationPolicyRef,
       }).code,
     ).toBe("AUTHORIZATION_DENIED");
+  });
+
+  it("keeps maintenance commands closed and policy-reference based", () => {
+    const hashCommand = {
+      schemaVersion: "1" as const,
+      commandId: "hash-command",
+      idempotencyKey: "hash-idem",
+      projectId: "project-1",
+      actorId: "actor-1",
+      authorization: freezeAuthorization,
+      requiredCapability: "engineering-data.freeze" as const,
+      manifestId: "hash-manifest",
+      backupBatchRef: { entityId: "backup", versionId: "v1" },
+      databaseSnapshotRef: { entityId: "database", versionId: "v1" },
+      fileSnapshotRef: { entityId: "files", versionId: "v1" },
+      purposeCode: "artifact-hash-manifest",
+      generatedAt: "2030-01-01T00:00:00.000Z",
+      policyRef: policy.policyRef,
+    };
+    const reconcileRequest = {
+      schemaVersion: "1" as const,
+      runId: "reconcile-run",
+      projectId: "project-1",
+      mode: "audit" as const,
+      authorization: readAuthorization,
+      requiredCapability: "engineering-data.read" as const,
+      policyRef: policy.policyRef,
+      hashManifestRef: {
+        kind: "content-artifact" as const,
+        reference: { entityId: "hash-manifest", versionId: `sha256:${"c".repeat(64)}` },
+      },
+      databaseSnapshotRef: { entityId: "database", versionId: "v1" },
+      fileSnapshotRef: { entityId: "files", versionId: "v1" },
+    };
+    const sweepCommand = {
+      schemaVersion: "1" as const,
+      runId: "sweep-run",
+      commandId: "sweep-command",
+      idempotencyKey: "sweep-idem",
+      projectId: "project-1",
+      actorId: "actor-1",
+      authorization: freezeAuthorization,
+      requiredCapability: "engineering-data.freeze" as const,
+      policyRef: policy.policyRef,
+      dryRun: true,
+    };
+    expect(ArtifactHashManifestCommandV1Schema.safeParse(hashCommand).success).toBe(true);
+    expect(ArtifactReconcileRequestV1Schema.safeParse(reconcileRequest).success).toBe(true);
+    expect(ArtifactSweepCommandV1Schema.safeParse(sweepCommand).success).toBe(true);
+    expect(ArtifactHashManifestCommandV1Schema.safeParse({ ...hashCommand, policy }).success).toBe(
+      false,
+    );
+    expect(
+      ArtifactReconcileRequestV1Schema.safeParse({
+        ...reconcileRequest,
+        observedBefore: "2030-01-01T00:00:00.000Z",
+      }).success,
+    ).toBe(false);
+    expect(ArtifactSweepCommandV1Schema.safeParse({ ...sweepCommand, policy }).success).toBe(false);
+    expect(
+      ArtifactSweepCommandV1Schema.safeParse({
+        ...sweepCommand,
+        observedBefore: "2030-01-01T00:00:00.000Z",
+      }).success,
+    ).toBe(false);
+  });
+
+  it.each(["authorized", "succeeded", "denied", "cancelled", "integrity-failed"] as const)(
+    "accepts closed access outcome %s",
+    (outcome) => {
+      const record = ArtifactAccessRecordV1Schema.parse({
+        schemaVersion: "1",
+        requestId: "request-1",
+        projectId: "project-1",
+        actorId: "actor-1",
+        purposeCode: "engineering-input",
+        authorizationContextRef: authorization.authorizationContextRef,
+        authorizationPolicyRef: authorization.authorizationPolicyRef,
+        outcome,
+        stage: "read.state",
+        occurredAt: "2030-01-01T00:00:00.000Z",
+        auditTrailRef: { kind: "audit-trail", reference: { entityId: "audit-1", versionId: "v1" } },
+        ...(outcome === "integrity-failed"
+          ? {
+              diagnosticRef: {
+                kind: "diagnostic-artifact" as const,
+                reference: { entityId: "diagnostic-1", versionId: `sha256:${"d".repeat(64)}` },
+              },
+            }
+          : {}),
+      });
+      expect(record.outcome).toBe(outcome);
+      expect(ArtifactAccessRecordV1Schema.safeParse({ ...record, unexpected: true }).success).toBe(
+        false,
+      );
+    },
+  );
+
+  it("binds summary and maintenance batches to the frozen policy digest and bound", () => {
+    const summary = ArtifactReconcileSummaryV1Schema.parse({
+      schemaVersion: "1",
+      runId: "reconcile-run",
+      projectId: "project-1",
+      mode: "audit",
+      policyRef: policy.policyRef,
+      policySha256: artifactPolicySha256(policy),
+      runStartedAt: "2030-01-01T00:00:00.000Z",
+      cutoff: "2029-12-31T23:59:00.000Z",
+      counts: {
+        complete: 0,
+        missingObject: 0,
+        contentMismatch: 0,
+        manifestConflict: 0,
+        orphanObject: 0,
+        staleStaging: 0,
+        quarantinedObject: 0,
+      },
+      passed: true,
+      completedAt: "2030-01-01T00:00:01.000Z",
+    });
+    expect(summary.policySha256).toBe(artifactPolicySha256(policy));
+    const batch = ArtifactMaintenanceBatchV1Schema.parse({
+      schemaVersion: "1",
+      runId: "sweep-run",
+      batchNumber: 1,
+      projectId: "project-1",
+      commandId: "sweep-batch",
+      operation: "orphan-sweep",
+      policyRef: policy.policyRef,
+      policySha256: artifactPolicySha256(policy),
+      runStartedAt: "2030-01-01T00:00:00.000Z",
+      cutoff: "2029-12-31T23:59:00.000Z",
+      dryRun: true,
+      candidateHashes: [
+        { algorithm: "sha256", value: "a".repeat(64) },
+        { algorithm: "sha256", value: "b".repeat(64) },
+      ],
+      auditTrailRef: {
+        kind: "audit-trail",
+        reference: { entityId: "audit-batch", versionId: "v1" },
+      },
+      persistedAt: "2030-01-01T00:00:01.000Z",
+    });
+    expect(batch.candidateHashes).toHaveLength(2);
+    const tooManyHashes = Array.from({ length: 10_001 }, (_, index) => ({
+      algorithm: "sha256" as const,
+      value: index.toString(16).padStart(64, "0"),
+    }));
+    expect(
+      ArtifactMaintenanceBatchV1Schema.safeParse({ ...batch, candidateHashes: tooManyHashes })
+        .success,
+    ).toBe(false);
   });
 });

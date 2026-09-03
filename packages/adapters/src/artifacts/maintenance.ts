@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, opendir, open, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
@@ -7,13 +7,16 @@ import {
   ArtifactHashManifestEntryV1Schema,
   ArtifactHashManifestHeaderV1Schema,
   ArtifactHashManifestTrailerV1Schema,
+  ArtifactMaintenanceBatchV1Schema,
   ArtifactPutCommandV1Schema,
   ArtifactReconcileFindingV1Schema,
   ArtifactReconcileRequestV1Schema,
   ArtifactReconcileSummaryV1Schema,
   ArtifactStoreError,
+  ArtifactStorePolicyV1Schema,
   ArtifactSweepCommandV1Schema,
   ArtifactSweepResultV1Schema,
+  artifactPolicySha256,
   evidenceReferencesSha256,
   makeArtifactError,
   manifestSha256,
@@ -23,20 +26,23 @@ import {
   type ArtifactHashManifestHeaderV1,
   type ArtifactHashManifestTrailerV1,
   type ArtifactManifestV1,
+  type ArtifactMaintenanceV1,
   type ArtifactReconcileFindingV1,
   type ArtifactReconcileRequestV1,
   type ArtifactReconcileSummaryV1,
+  type ArtifactStorePolicyV1,
   type ArtifactSweepCommandV1,
   type ArtifactSweepResultV1,
-  type ArtifactMaintenanceV1,
 } from "@riskflow/core/artifacts";
 import { canonicalJson } from "@riskflow/core/persistence";
+import type { AuthorizationContextV1 } from "@riskflow/contracts/ports";
 
 import { FilesystemArtifactStore, type ArtifactFailpointV1 } from "./filesystem-artifact-store.js";
 import { PostgresArtifactRegistry } from "./postgres-artifact-registry.js";
 
 const HASH_PATTERN = /^[0-9a-f]{64}$/u;
 const HEX_PAIR_PATTERN = /^[0-9a-f]{2}$/u;
+const SAFE_DIRECTORY_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
 const encoder = new TextEncoder();
 
 const refKey = (value: ArtifactManifestV1["artifactRef"]): string =>
@@ -131,6 +137,31 @@ const syncDirectory = async (directory: string): Promise<void> => {
   }
 };
 
+type MaintenanceDirectoryEntry = {
+  readonly name: string;
+  readonly isDirectory: boolean;
+  readonly isFile: boolean;
+};
+
+const readDirectoryEntries = async (
+  directoryPath: string,
+): Promise<MaintenanceDirectoryEntry[]> => {
+  const directory = await opendir(directoryPath);
+  const entries: MaintenanceDirectoryEntry[] = [];
+  try {
+    for await (const entry of directory) {
+      entries.push({
+        name: entry.name,
+        isDirectory: entry.isDirectory(),
+        isFile: entry.isFile(),
+      });
+    }
+  } finally {
+    await directory.close().catch(() => undefined);
+  }
+  return entries;
+};
+
 const entryForManifest = (
   manifest: ArtifactManifestV1,
   digest: string,
@@ -153,9 +184,14 @@ const compareContent = (
   left.hash.algorithm === right.hash.algorithm &&
   left.hash.value === right.hash.value;
 
+const errorCode = (error: unknown): string =>
+  error instanceof ArtifactStoreError ? error.code : "ARTIFACT_RECOVERY_BLOCKED";
+
+type ArtifactSweepMetricsV1 = Omit<ArtifactSweepResultV1, "auditTrailRef" | "diagnosticRef">;
+
 export interface ArtifactMaintenanceOptionsV1 {
   readonly rootDirectory: string;
-  readonly policy: ArtifactHashManifestCommandV1["policy"];
+  readonly policy: ArtifactStorePolicyV1;
   readonly store: FilesystemArtifactStore;
   readonly registry: PostgresArtifactRegistry;
   readonly now?: () => Date;
@@ -168,6 +204,8 @@ export class ArtifactMaintenance implements ArtifactMaintenanceV1 {
   readonly #quarantineDirectory: string;
   readonly #store: FilesystemArtifactStore;
   readonly #registry: PostgresArtifactRegistry;
+  readonly #policy: ArtifactStorePolicyV1;
+  readonly #policySha256: string;
   readonly #failpoint: (point: ArtifactFailpointV1) => void | Promise<void>;
   readonly #now: () => Date;
 
@@ -177,6 +215,12 @@ export class ArtifactMaintenance implements ArtifactMaintenanceV1 {
     this.#quarantineDirectory = join(options.rootDirectory, "quarantine");
     this.#store = options.store;
     this.#registry = options.registry;
+    const parsedPolicy = ArtifactStorePolicyV1Schema.parse(options.policy);
+    this.#policy = Object.freeze({
+      ...parsedPolicy,
+      policyRef: Object.freeze({ ...parsedPolicy.policyRef }),
+    });
+    this.#policySha256 = artifactPolicySha256(this.#policy);
     this.#failpoint = options.failpoint ?? (() => undefined);
     this.#now = options.now ?? (() => new Date());
   }
@@ -185,8 +229,101 @@ export class ArtifactMaintenance implements ArtifactMaintenanceV1 {
     return this.#now().toISOString();
   }
 
+  #cutoff(startedAt: string): string {
+    return new Date(Date.parse(startedAt) - this.#policy.orphanGracePeriodMs).toISOString();
+  }
+
+  #assertPolicyRef(policyRef: ArtifactStorePolicyV1["policyRef"]): void {
+    if (
+      policyRef.entityId !== this.#policy.policyRef.entityId ||
+      policyRef.versionId !== this.#policy.policyRef.versionId
+    ) {
+      throw makeArtifactError("ARTIFACT_INPUT_INVALID", "maintenance.policy-ref");
+    }
+  }
+
+  #assertCapability(
+    authorization: AuthorizationContextV1,
+    capability: string,
+    stage: string,
+  ): void {
+    if (!authorization.grantedCapabilities.includes(capability as never))
+      throw makeArtifactError("ARTIFACT_ACCESS_DENIED", stage);
+  }
+
   async #runFailpoint(point: ArtifactFailpointV1): Promise<void> {
     await this.#failpoint(point);
+  }
+
+  async #saveDiagnostic(input: {
+    id: string;
+    stage: string;
+    projectId: string;
+    actorId: string;
+    authorization: AuthorizationContextV1;
+    requiredCapability: ArtifactHashManifestCommandV1["requiredCapability"];
+    details: unknown;
+  }): Promise<ArtifactSweepResultV1["diagnosticRef"]> {
+    const suffix = input.stage.replace(/[^A-Za-z0-9._-]/gu, "-");
+    const body = encoder.encode(
+      canonicalJson({ schemaVersion: "1", stage: input.stage, details: input.details }),
+    );
+    const command = ArtifactPutCommandV1Schema.parse({
+      schemaVersion: "1",
+      commandId: `diagnostic-${input.id}-${suffix}`,
+      idempotencyKey: `diagnostic-${input.id}-${suffix}`,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      issuedAt: this.#nowIso(),
+      authorization: input.authorization,
+      requiredCapability: input.requiredCapability,
+      artifactId: `diagnostic-${input.id}-${suffix}`,
+      artifactKind: "diagnostic",
+      purposeCode: "artifact-diagnostic",
+      mediaType: "application/json",
+      parentArtifactRefs: [],
+      evidenceReferences: [],
+      additionalSpatialScopeRefs: [],
+      additionalSourceAccessGrantRefs: [],
+    });
+    const result = await this.#store.put(
+      command,
+      (async function* () {
+        yield body;
+      })(),
+    );
+    return result.artifactRef.kind === "diagnostic-artifact" ? result.artifactRef : undefined;
+  }
+
+  async #assertProjectReadable(
+    projectId: string,
+    authorization: AuthorizationContextV1,
+    requiredCapability: ArtifactHashManifestCommandV1["requiredCapability"],
+  ): Promise<void> {
+    const snapshot = await this.#registry.openManifestSnapshot(projectId);
+    let committed = false;
+    try {
+      await this.#assertSnapshotReadable(snapshot, projectId, authorization, requiredCapability);
+      committed = true;
+    } finally {
+      await snapshot.close(committed);
+    }
+  }
+
+  async #assertSnapshotReadable(
+    snapshot: import("./postgres-artifact-registry.js").ArtifactManifestSnapshotReaderV1,
+    projectId: string,
+    authorization: AuthorizationContextV1,
+    requiredCapability: ArtifactHashManifestCommandV1["requiredCapability"],
+  ): Promise<void> {
+    for await (const manifest of snapshot.listManifests(this.#policy.maintenanceBatchSize)) {
+      this.#registry.assertReadable(manifest, {
+        projectId,
+        purposeCode: manifest.purposeCode,
+        requiredCapability,
+        authorization,
+      });
+    }
   }
 
   async createHashManifest(
@@ -195,9 +332,27 @@ export class ArtifactMaintenance implements ArtifactMaintenanceV1 {
     const parsed = ArtifactHashManifestCommandV1Schema.safeParse(command);
     if (!parsed.success) throw makeArtifactError("ARTIFACT_INPUT_INVALID", "manifest.command");
     const value = parsed.data;
-    if (value.purposeCode !== "artifact-hash-manifest") {
+    this.#assertPolicyRef(value.policyRef);
+    this.#assertCapability(
+      value.authorization,
+      "engineering-data.freeze",
+      "manifest.authorization",
+    );
+    if (value.requiredCapability !== "engineering-data.freeze")
+      throw makeArtifactError("ARTIFACT_ACCESS_DENIED", "manifest.capability");
+    if (value.purposeCode !== "artifact-hash-manifest")
       throw makeArtifactError("ARTIFACT_INPUT_INVALID", "manifest.purpose");
+    const replay = await this.#registry.readCompletedPutResult(value);
+    if (replay !== undefined) {
+      this.#registry.assertReadable(replay.manifest, {
+        projectId: value.projectId,
+        purposeCode: "artifact-hash-manifest",
+        requiredCapability: value.requiredCapability,
+        authorization: value.authorization,
+      });
+      return replay;
     }
+
     const header: ArtifactHashManifestHeaderV1 = ArtifactHashManifestHeaderV1Schema.parse({
       schemaVersion: "1",
       manifestId: value.manifestId,
@@ -207,45 +362,52 @@ export class ArtifactMaintenance implements ArtifactMaintenanceV1 {
       fileSnapshotRef: value.fileSnapshotRef,
       generatedAt: value.generatedAt,
     });
+    const snapshot = await this.#registry.openManifestSnapshot(value.projectId);
+    try {
+      await this.#assertSnapshotReadable(
+        snapshot,
+        value.projectId,
+        value.authorization,
+        value.requiredCapability,
+      );
+    } catch (error) {
+      await snapshot.close(false);
+      throw error;
+    }
     const content = (async function* (
       registry: PostgresArtifactRegistry,
+      maintenance: ArtifactMaintenance,
     ): AsyncGenerator<Uint8Array> {
-      yield lineBytes(header);
-      const entriesHash = createHash("sha256");
-      let entryCount = 0;
-      for await (const manifest of registry.listManifests(
-        value.projectId,
-        value.policy.maintenanceBatchSize,
-        value.manifestId,
-      )) {
-        try {
+      let committed = false;
+      try {
+        yield lineBytes(header);
+        const entriesHash = createHash("sha256");
+        let entryCount = 0;
+        for await (const manifest of snapshot.listManifests(
+          maintenance.#policy.maintenanceBatchSize,
+        )) {
           registry.assertReadable(manifest, {
             projectId: value.projectId,
             purposeCode: manifest.purposeCode,
             requiredCapability: value.requiredCapability,
             authorization: value.authorization,
           });
-        } catch (error) {
-          if (error instanceof ArtifactStoreError && error.code === "ARTIFACT_ACCESS_DENIED") {
-            continue;
-          }
-          throw error;
+          const digest = manifestSha256(manifest);
+          const line = lineBytes(entryForManifest(manifest, digest));
+          entriesHash.update(line);
+          entryCount += 1;
+          yield line;
         }
-        const digest = await registry.readManifestDigest(value.projectId, manifest.artifactRef);
-        if (digest === undefined || digest !== manifestSha256(manifest)) {
-          throw makeArtifactError("ARTIFACT_INTEGRITY_FAILURE", "manifest.source");
-        }
-        const line = lineBytes(entryForManifest(manifest, digest));
-        entriesHash.update(line);
-        entryCount += 1;
-        yield line;
+        const trailer: ArtifactHashManifestTrailerV1 = ArtifactHashManifestTrailerV1Schema.parse({
+          entryCount,
+          entriesSha256: entriesHash.digest("hex"),
+        });
+        yield lineBytes(trailer);
+        committed = true;
+      } finally {
+        await snapshot.close(committed);
       }
-      const trailer: ArtifactHashManifestTrailerV1 = ArtifactHashManifestTrailerV1Schema.parse({
-        entryCount,
-        entriesSha256: entriesHash.digest("hex"),
-      });
-      yield lineBytes(trailer);
-    })(this.#registry);
+    })(this.#registry, this);
     const putCommand = ArtifactPutCommandV1Schema.parse({
       schemaVersion: "1",
       commandId: value.commandId,
@@ -264,7 +426,12 @@ export class ArtifactMaintenance implements ArtifactMaintenanceV1 {
       additionalSpatialScopeRefs: [],
       additionalSourceAccessGrantRefs: [],
     });
-    return this.#store.put(putCommand, content);
+    try {
+      return await this.#store.put(putCommand, content);
+    } catch (error) {
+      await snapshot.close(false);
+      throw error;
+    }
   }
 
   reconcile(
@@ -276,13 +443,29 @@ export class ArtifactMaintenance implements ArtifactMaintenanceV1 {
       const error = makeArtifactError("ARTIFACT_INPUT_INVALID", "reconcile.command");
       return {
         findings: (async function* () {
-          yield* [];
           throw error;
+          yield* [] as never[];
         })(),
         summary: Promise.reject(error),
       };
     }
     const value = parsed.data;
+    try {
+      this.#assertPolicyRef(value.policyRef);
+      this.#assertCapability(
+        value.authorization,
+        value.mode === "recovery" ? "engineering-data.freeze" : "engineering-data.read",
+        "reconcile.authorization",
+      );
+    } catch (error) {
+      return {
+        findings: (async function* () {
+          throw error;
+          yield* [] as never[];
+        })(),
+        summary: Promise.reject(error),
+      };
+    }
     let resolveSummary!: (summary: ArtifactReconcileSummaryV1) => void;
     let rejectSummary!: (error: unknown) => void;
     const summary = new Promise<ArtifactReconcileSummaryV1>((resolvePromise, rejectPromise) => {
@@ -300,6 +483,7 @@ export class ArtifactMaintenance implements ArtifactMaintenanceV1 {
     rejectSummary: (error: unknown) => void,
   ): AsyncGenerator<ArtifactReconcileFindingV1> {
     const startedAt = this.#nowIso();
+    const cutoff = this.#cutoff(startedAt);
     const counts = emptyCounts();
     const seen = new Set<string>();
     let lastRef: ArtifactManifestV1["artifactRef"] | undefined;
@@ -309,6 +493,13 @@ export class ArtifactMaintenance implements ArtifactMaintenanceV1 {
       return finding;
     };
     try {
+      const requiredCapability =
+        request.mode === "recovery" ? "engineering-data.freeze" : "engineering-data.read";
+      await this.#assertProjectReadable(
+        request.projectId,
+        request.authorization,
+        requiredCapability,
+      );
       let content = manifestContent;
       let verified: Promise<unknown> | undefined;
       if (content === undefined) {
@@ -321,7 +512,7 @@ export class ArtifactMaintenance implements ArtifactMaintenanceV1 {
           actorId: request.authorization.actorId,
           requestedAt: startedAt,
           purposeCode: "artifact-hash-manifest",
-          requiredCapability: request.requiredCapability,
+          requiredCapability,
           authorization: request.authorization,
         });
         content = read.content;
@@ -333,14 +524,14 @@ export class ArtifactMaintenance implements ArtifactMaintenanceV1 {
       const entriesHash = createHash("sha256");
       const contentHash = createHash("sha256");
       for await (const line of readLines(content, contentHash)) {
-        let value: unknown;
+        let decoded: unknown;
         try {
-          value = JSON.parse(line) as unknown;
+          decoded = JSON.parse(line) as unknown;
         } catch {
           throw makeArtifactError("ARTIFACT_RECOVERY_BLOCKED", "reconcile.json");
         }
         if (header === undefined) {
-          header = ArtifactHashManifestHeaderV1Schema.parse(value);
+          header = ArtifactHashManifestHeaderV1Schema.parse(decoded);
           if (
             header.manifestId !== request.hashManifestRef.reference.entityId ||
             header.projectId !== request.projectId ||
@@ -354,26 +545,25 @@ export class ArtifactMaintenance implements ArtifactMaintenanceV1 {
           continue;
         }
         if (trailerSeen) throw makeArtifactError("ARTIFACT_RECOVERY_BLOCKED", "reconcile.trailing");
-        const maybeTrailer = ArtifactHashManifestTrailerV1Schema.safeParse(value);
+        const maybeTrailer = ArtifactHashManifestTrailerV1Schema.safeParse(decoded);
         if (maybeTrailer.success) {
-          if (trailerSeen)
-            throw makeArtifactError("ARTIFACT_RECOVERY_BLOCKED", "reconcile.trailing");
           const trailer = maybeTrailer.data;
-          const entriesDigest = entriesHash.digest("hex");
-          if (trailer.entryCount !== entryCount || trailer.entriesSha256 !== entriesDigest) {
+          if (
+            trailer.entryCount !== entryCount ||
+            trailer.entriesSha256 !== entriesHash.digest("hex")
+          ) {
             throw makeArtifactError("ARTIFACT_RECOVERY_BLOCKED", "reconcile.trailer");
           }
           trailerSeen = true;
           continue;
         }
-        const entry = ArtifactHashManifestEntryV1Schema.parse(value);
+        const entry = ArtifactHashManifestEntryV1Schema.parse(decoded);
         const key = refKey(entry.artifactRef);
         if (
           seen.has(key) ||
           (lastRef !== undefined && compareRefs(entry.artifactRef, lastRef) <= 0)
-        ) {
+        )
           throw makeArtifactError("ARTIFACT_RECOVERY_BLOCKED", "reconcile.order");
-        }
         seen.add(key);
         lastRef = entry.artifactRef;
         const entryLine = lineBytes(entry);
@@ -404,13 +594,15 @@ export class ArtifactMaintenance implements ArtifactMaintenanceV1 {
           await this.#store.verifyObjectForMaintenance(entry.content);
           yield emit(ArtifactReconcileFindingV1Schema.parse({ kind: "complete", ...base }));
         } catch (error) {
-          if (error instanceof ArtifactStoreError && error.code === "ARTIFACT_INTEGRITY_FAILURE") {
-            yield emit(
-              ArtifactReconcileFindingV1Schema.parse({ kind: "content-mismatch", ...base }),
-            );
-          } else {
-            yield emit(ArtifactReconcileFindingV1Schema.parse({ kind: "missing-object", ...base }));
-          }
+          yield emit(
+            ArtifactReconcileFindingV1Schema.parse({
+              kind:
+                errorCode(error) === "ARTIFACT_INTEGRITY_FAILURE"
+                  ? "content-mismatch"
+                  : "missing-object",
+              ...base,
+            }),
+          );
         }
       }
       if (header === undefined || !trailerSeen)
@@ -420,22 +612,15 @@ export class ArtifactMaintenance implements ArtifactMaintenanceV1 {
       if (verified !== undefined) await verified;
       for await (const manifest of this.#registry.listManifests(
         request.projectId,
-        request.policy.maintenanceBatchSize,
-        request.hashManifestRef.reference.entityId,
+        this.#policy.maintenanceBatchSize,
+        request.hashManifestRef,
       )) {
-        try {
-          this.#registry.assertReadable(manifest, {
-            projectId: request.projectId,
-            purposeCode: manifest.purposeCode,
-            requiredCapability: request.requiredCapability,
-            authorization: request.authorization,
-          });
-        } catch (error) {
-          if (error instanceof ArtifactStoreError && error.code === "ARTIFACT_ACCESS_DENIED") {
-            continue;
-          }
-          throw error;
-        }
+        this.#registry.assertReadable(manifest, {
+          projectId: request.projectId,
+          purposeCode: manifest.purposeCode,
+          requiredCapability,
+          authorization: request.authorization,
+        });
         if (!seen.has(refKey(manifest.artifactRef))) {
           yield emit(
             ArtifactReconcileFindingV1Schema.parse({
@@ -448,9 +633,26 @@ export class ArtifactMaintenance implements ArtifactMaintenanceV1 {
           );
         }
       }
-      yield* this.#scanOrphans(request, emit);
+      yield* this.#scanOrphans(request, cutoff, emit);
       const passed =
-        counts.missingObject === 0 && counts.contentMismatch === 0 && counts.manifestConflict === 0;
+        counts.missingObject === 0 &&
+        counts.contentMismatch === 0 &&
+        counts.manifestConflict === 0 &&
+        counts.orphanObject === 0 &&
+        counts.staleStaging === 0 &&
+        counts.quarantinedObject === 0;
+      const requiredForDiagnostic = requiredCapability;
+      const diagnosticRef = passed
+        ? undefined
+        : await this.#saveDiagnostic({
+            id: request.runId,
+            stage: "reconcile-findings",
+            projectId: request.projectId,
+            actorId: request.authorization.actorId,
+            authorization: request.authorization,
+            requiredCapability: requiredForDiagnostic,
+            details: counts,
+          });
       const auditTrail = await this.#registry.appendMaintenanceAudit({
         runId: request.runId,
         commandId: `reconcile-${request.runId}`,
@@ -460,25 +662,47 @@ export class ArtifactMaintenance implements ArtifactMaintenanceV1 {
         authorizationContextRef: request.authorization.authorizationContextRef,
         issuedAt: startedAt,
         action: "artifact.reconcile",
-        payload: { mode: request.mode, passed, counts },
+        payload: {
+          mode: request.mode,
+          policyRef: request.policyRef,
+          policySha256: this.#policySha256,
+          runStartedAt: startedAt,
+          cutoff,
+          passed,
+          counts,
+          ...(diagnosticRef === undefined ? {} : { diagnosticRef }),
+        },
       });
-      const result = ArtifactReconcileSummaryV1Schema.parse({
-        schemaVersion: "1",
-        runId: request.runId,
-        projectId: request.projectId,
-        mode: request.mode,
-        counts,
-        passed,
-        startedAt,
-        completedAt: this.#nowIso(),
-        auditTrailRef: auditTrail,
-      });
-      resolveSummary(result);
+      resolveSummary(
+        ArtifactReconcileSummaryV1Schema.parse({
+          schemaVersion: "1",
+          runId: request.runId,
+          projectId: request.projectId,
+          mode: request.mode,
+          policyRef: request.policyRef,
+          policySha256: this.#policySha256,
+          runStartedAt: startedAt,
+          cutoff,
+          counts,
+          passed,
+          completedAt: this.#nowIso(),
+          auditTrailRef: auditTrail,
+          ...(diagnosticRef === undefined ? {} : { diagnosticRef }),
+        }),
+      );
     } catch (error) {
       const failure =
-        error instanceof ArtifactStoreError
-          ? error
-          : makeArtifactError("ARTIFACT_RECOVERY_BLOCKED", "reconcile");
+        request.mode === "recovery" &&
+        error instanceof ArtifactStoreError &&
+        error.code === "ARTIFACT_ACCESS_DENIED"
+          ? makeArtifactError(
+              "ARTIFACT_RECOVERY_BLOCKED",
+              "reconcile.authorization",
+              error.contextRefs,
+            )
+          : error instanceof ArtifactStoreError
+            ? error
+            : makeArtifactError("ARTIFACT_RECOVERY_BLOCKED", "reconcile");
       rejectSummary(failure);
       throw failure;
     }
@@ -486,69 +710,107 @@ export class ArtifactMaintenance implements ArtifactMaintenanceV1 {
 
   async *#scanOrphans(
     request: ArtifactReconcileRequestV1,
+    cutoff: string,
     emit: (finding: ArtifactReconcileFindingV1) => ArtifactReconcileFindingV1,
   ): AsyncGenerator<ArtifactReconcileFindingV1> {
-    const first = await readdir(this.#objectsDirectory, { withFileTypes: true });
-    for (const aa of first) {
-      if (!aa.isDirectory() || !HEX_PAIR_PATTERN.test(aa.name)) continue;
-      const secondPath = join(this.#objectsDirectory, aa.name);
-      const second = await readdir(secondPath, { withFileTypes: true });
-      for (const bb of second) {
-        if (!bb.isDirectory() || !HEX_PAIR_PATTERN.test(bb.name)) continue;
-        const leafPath = join(secondPath, bb.name);
-        const leaves = await readdir(leafPath, { withFileTypes: true });
-        for (const leaf of leaves) {
-          if (!leaf.isFile() || !HASH_PATTERN.test(leaf.name)) continue;
-          const hash = leaf.name;
-          const path = join(leafPath, hash);
-          const details = await lstat(path);
-          if (details.mtimeMs > Date.parse(request.observedBefore)) continue;
-          const hasManifest = await this.#registry.hasContentHash(hash);
-          if (!hasManifest) {
+    let first: MaintenanceDirectoryEntry[] | undefined;
+    try {
+      first = await readDirectoryEntries(this.#objectsDirectory);
+    } catch {
+      first = undefined;
+    }
+    if (first !== undefined) {
+      for (const aa of first) {
+        if (!aa.isDirectory || !HEX_PAIR_PATTERN.test(aa.name)) continue;
+        let second: MaintenanceDirectoryEntry[];
+        try {
+          second = await readDirectoryEntries(join(this.#objectsDirectory, aa.name));
+        } catch {
+          continue;
+        }
+        for (const bb of second) {
+          if (!bb.isDirectory || !HEX_PAIR_PATTERN.test(bb.name)) continue;
+          let leafDirectory;
+          try {
+            leafDirectory = await opendir(join(this.#objectsDirectory, aa.name, bb.name));
+          } catch {
+            continue;
+          }
+          try {
+            for await (const leaf of leafDirectory) {
+              if (!leaf.isFile() || !HASH_PATTERN.test(leaf.name)) continue;
+              const path = join(this.#objectsDirectory, aa.name, bb.name, leaf.name);
+              const details = await lstat(path);
+              if (details.mtimeMs > Date.parse(cutoff)) continue;
+              if ((await this.#registry.countContentHash(leaf.name)) > 0) continue;
+              yield emit(
+                ArtifactReconcileFindingV1Schema.parse({
+                  kind: "orphan-object",
+                  contentHash: { algorithm: "sha256", value: leaf.name },
+                  byteLength: details.size,
+                  observedAt: this.#nowIso(),
+                }),
+              );
+            }
+          } finally {
+            await leafDirectory.close().catch(() => undefined);
+          }
+        }
+      }
+    }
+    let staging;
+    try {
+      staging = await opendir(this.#stagingDirectory);
+    } catch {
+      staging = undefined;
+    }
+    if (staging !== undefined) {
+      try {
+        for await (const entry of staging) {
+          if (!entry.isFile() || !entry.name.endsWith(".part")) continue;
+          const stagingId = entry.name.slice(0, -5);
+          if (this.#store.isStagingActiveForMaintenance(stagingId)) continue;
+          const details = await lstat(join(this.#stagingDirectory, entry.name));
+          if (details.mtimeMs <= Date.parse(cutoff)) {
             yield emit(
               ArtifactReconcileFindingV1Schema.parse({
-                kind: "orphan-object",
-                contentHash: { algorithm: "sha256", value: hash },
-                byteLength: details.size,
+                kind: "stale-staging",
+                stagingId,
                 observedAt: this.#nowIso(),
               }),
             );
           }
         }
+      } finally {
+        await staging.close().catch(() => undefined);
       }
     }
-    const staging = await readdir(this.#stagingDirectory, { withFileTypes: true });
-    const observedBefore = Date.parse(request.observedBefore);
-    for (const entry of staging) {
-      if (!entry.isFile() || !entry.name.endsWith(".part")) continue;
-      if (this.#store.isStagingActiveForMaintenance(entry.name.slice(0, -5))) continue;
-      const details = await lstat(join(this.#stagingDirectory, entry.name));
-      if (details.mtimeMs <= observedBefore) {
-        yield emit(
-          ArtifactReconcileFindingV1Schema.parse({
-            kind: "stale-staging",
-            stagingId: entry.name.slice(0, -5),
-            observedAt: this.#nowIso(),
-          }),
-        );
-      }
+    let quarantines: MaintenanceDirectoryEntry[] | undefined;
+    try {
+      quarantines = await readDirectoryEntries(this.#quarantineDirectory);
+    } catch {
+      quarantines = undefined;
     }
-    const quarantines = await readdir(this.#quarantineDirectory, { withFileTypes: true });
-    for (const run of quarantines) {
-      if (!run.isDirectory()) continue;
-      const entries = await readdir(join(this.#quarantineDirectory, run.name), {
-        withFileTypes: true,
-      });
-      for (const entry of entries) {
-        if (!entry.isFile() || !HASH_PATTERN.test(entry.name)) continue;
-        yield emit(
-          ArtifactReconcileFindingV1Schema.parse({
-            kind: "quarantined-object",
-            contentHash: { algorithm: "sha256", value: entry.name },
-            quarantineRunId: run.name,
-            observedAt: this.#nowIso(),
-          }),
-        );
+    if (quarantines !== undefined) {
+      for (const run of quarantines) {
+        if (!run.isDirectory || !SAFE_DIRECTORY_NAME.test(run.name)) continue;
+        let entries: MaintenanceDirectoryEntry[];
+        try {
+          entries = await readDirectoryEntries(join(this.#quarantineDirectory, run.name));
+        } catch {
+          continue;
+        }
+        for (const entry of entries) {
+          if (!entry.isFile || !HASH_PATTERN.test(entry.name)) continue;
+          yield emit(
+            ArtifactReconcileFindingV1Schema.parse({
+              kind: "quarantined-object",
+              contentHash: { algorithm: "sha256", value: entry.name },
+              quarantineRunId: run.name,
+              observedAt: this.#nowIso(),
+            }),
+          );
+        }
       }
     }
   }
@@ -557,125 +819,368 @@ export class ArtifactMaintenance implements ArtifactMaintenanceV1 {
     const parsed = ArtifactSweepCommandV1Schema.safeParse(command);
     if (!parsed.success) throw makeArtifactError("ARTIFACT_INPUT_INVALID", "sweep.command");
     const value = parsed.data;
-    return this.#registry.withAdvisoryLock(value.policy, async () => {
-      const result = await this.#sweepLocked(value);
-      return ArtifactSweepResultV1Schema.parse(result);
+    this.#assertPolicyRef(value.policyRef);
+    this.#assertCapability(value.authorization, "engineering-data.freeze", "sweep.authorization");
+    if (value.requiredCapability !== "engineering-data.freeze")
+      throw makeArtifactError("ARTIFACT_ACCESS_DENIED", "sweep.capability");
+    await this.#assertProjectReadable(
+      value.projectId,
+      value.authorization,
+      "engineering-data.freeze",
+    );
+    const result = await this.#registry.withAdvisoryLock(this.#policy, () =>
+      this.#sweepLocked(value),
+    );
+    const diagnosticRef =
+      result.retained > 0
+        ? await this.#saveDiagnostic({
+            id: value.runId,
+            stage: "sweep-retained",
+            projectId: value.projectId,
+            actorId: value.actorId,
+            authorization: value.authorization,
+            requiredCapability: value.requiredCapability,
+            details: {
+              orphanObserved: result.orphanObserved,
+              orphanRemoved: result.orphanRemoved,
+              retained: result.retained,
+            },
+          })
+        : undefined;
+    const auditTrailRef = await this.#registry.appendMaintenanceAudit({
+      runId: value.runId,
+      commandId: value.commandId,
+      idempotencyKey: value.idempotencyKey,
+      projectId: value.projectId,
+      actorId: value.actorId,
+      authorizationContextRef: value.authorization.authorizationContextRef,
+      issuedAt: result.runStartedAt,
+      action: "artifact.orphan-sweep",
+      payload: {
+        dryRun: value.dryRun,
+        policyRef: value.policyRef,
+        policySha256: this.#policySha256,
+        runStartedAt: result.runStartedAt,
+        cutoff: result.cutoff,
+        stagingObserved: result.stagingObserved,
+        stagingRemoved: result.stagingRemoved,
+        orphanObserved: result.orphanObserved,
+        orphanQuarantined: result.orphanQuarantined,
+        orphanRemoved: result.orphanRemoved,
+        retained: result.retained,
+        ...(diagnosticRef === undefined ? {} : { diagnosticRef }),
+      },
+    });
+    return ArtifactSweepResultV1Schema.parse({
+      ...result,
+      auditTrailRef,
+      ...(diagnosticRef === undefined ? {} : { diagnosticRef }),
     });
   }
 
-  async #sweepLocked(command: ArtifactSweepCommandV1): Promise<ArtifactSweepResultV1> {
-    const observedBefore = Date.parse(command.observedBefore);
-    const staging = await readdir(this.#stagingDirectory, { withFileTypes: true });
+  async *#candidateObjects(cutoff: string): AsyncGenerator<{ hash: string; path: string }> {
+    let first: MaintenanceDirectoryEntry[] | undefined;
+    try {
+      first = await readDirectoryEntries(this.#objectsDirectory);
+    } catch {
+      first = undefined;
+    }
+    if (first === undefined) return;
+    for (const aa of first) {
+      if (!aa.isDirectory || !HEX_PAIR_PATTERN.test(aa.name)) continue;
+      let second: MaintenanceDirectoryEntry[];
+      try {
+        second = await readDirectoryEntries(join(this.#objectsDirectory, aa.name));
+      } catch {
+        continue;
+      }
+      for (const bb of second) {
+        if (!bb.isDirectory || !HEX_PAIR_PATTERN.test(bb.name)) continue;
+        let leafDirectory;
+        try {
+          leafDirectory = await opendir(join(this.#objectsDirectory, aa.name, bb.name));
+        } catch {
+          continue;
+        }
+        try {
+          for await (const leaf of leafDirectory) {
+            if (!leaf.isFile() || !HASH_PATTERN.test(leaf.name)) continue;
+            const path = join(this.#objectsDirectory, aa.name, bb.name, leaf.name);
+            const details = await lstat(path);
+            if (
+              details.mtimeMs <= Date.parse(cutoff) &&
+              (await this.#registry.countContentHash(leaf.name)) === 0
+            ) {
+              yield { hash: leaf.name, path };
+            }
+          }
+        } finally {
+          await leafDirectory.close().catch(() => undefined);
+        }
+      }
+    }
+  }
+
+  async #recoverQuarantine(
+    command: ArtifactSweepCommandV1,
+    runStartedAt: string,
+    cutoff: string,
+  ): Promise<void> {
+    let runs: MaintenanceDirectoryEntry[];
+    try {
+      runs = await readDirectoryEntries(this.#quarantineDirectory);
+    } catch {
+      return;
+    }
+    for (const run of runs) {
+      if (!run.isDirectory || !SAFE_DIRECTORY_NAME.test(run.name))
+        throw makeArtifactError("ARTIFACT_RECOVERY_BLOCKED", "sweep.quarantine-name");
+      const runDirectory = join(this.#quarantineDirectory, run.name);
+      const batches = await this.#registry.listMaintenanceBatches(command.projectId, run.name);
+      let recoveryBatchNumber = Math.max(0, ...batches.map((batch) => batch.batchNumber));
+      let entries;
+      try {
+        entries = await opendir(runDirectory);
+      } catch {
+        throw makeArtifactError("ARTIFACT_RECOVERY_BLOCKED", "sweep.quarantine-open");
+      }
+      try {
+        for await (const entry of entries) {
+          if (!entry.isFile() || !HASH_PATTERN.test(entry.name))
+            throw makeArtifactError("ARTIFACT_RECOVERY_BLOCKED", "sweep.quarantine-hash");
+          const hash = entry.name;
+          const destination = join(runDirectory, hash);
+          const objectPath = this.#store.objectPathForTesting({ algorithm: "sha256", value: hash });
+          const committedBatch = batches.find((batch) =>
+            batch.candidateHashes.some((candidate) => candidate.value === hash),
+          );
+          const refs = await this.#registry.countContentHash(hash);
+          const hasObject = await lstat(objectPath)
+            .then(() => true)
+            .catch(() => false);
+          const quarantineDetails = await lstat(destination);
+          await this.#store.verifyPathForMaintenance(destination, {
+            hash: { algorithm: "sha256", value: hash },
+            byteLength: quarantineDetails.size,
+          });
+          if (hasObject) {
+            const objectDetails = await lstat(objectPath);
+            if (objectDetails.size !== quarantineDetails.size)
+              throw makeArtifactError("ARTIFACT_RECOVERY_BLOCKED", "sweep.quarantine-conflict");
+            await this.#store.verifyPathForMaintenance(objectPath, {
+              hash: { algorithm: "sha256", value: hash },
+              byteLength: objectDetails.size,
+            });
+            await rm(destination, { force: true });
+          } else if (committedBatch !== undefined && refs === 0) {
+            await rm(destination, { force: true });
+          } else {
+            await mkdir(join(objectPath, ".."), { recursive: true });
+            await rename(destination, objectPath);
+          }
+          recoveryBatchNumber += 1;
+          const recoveryBatch = ArtifactMaintenanceBatchV1Schema.parse({
+            schemaVersion: "1",
+            runId: run.name,
+            batchNumber: recoveryBatchNumber,
+            projectId: command.projectId,
+            commandId: `recovery-${run.name}-${hash}`,
+            operation: "quarantine-recovery",
+            policyRef: command.policyRef,
+            policySha256: this.#policySha256,
+            runStartedAt,
+            cutoff,
+            dryRun: false,
+            candidateHashes: [{ algorithm: "sha256", value: hash }],
+            auditTrailRef: {
+              kind: "audit-trail",
+              reference: { entityId: `recovery-audit-${run.name}-${hash}`, versionId: "v1" },
+            },
+            persistedAt: this.#nowIso(),
+          });
+          await this.#registry.recordMaintenanceBatch({
+            batch: recoveryBatch,
+            idempotencyKey: `recovery-${run.name}-${hash}`,
+            actorId: command.actorId,
+            authorizationContextRef: command.authorization.authorizationContextRef,
+          });
+        }
+      } finally {
+        await entries.close().catch(() => undefined);
+      }
+      await rm(runDirectory, { recursive: true, force: true });
+    }
+    await syncDirectory(this.#quarantineDirectory);
+  }
+
+  async #persistBatch(
+    command: ArtifactSweepCommandV1,
+    batchNumber: number,
+    hashes: readonly string[],
+    runStartedAt: string,
+    cutoff: string,
+  ): Promise<void> {
+    const candidateHashes = [...new Set(hashes)]
+      .sort()
+      .map((value) => ({ algorithm: "sha256" as const, value }));
+    if (candidateHashes.length === 0) return;
+    const batch = {
+      schemaVersion: "1" as const,
+      runId: command.runId,
+      batchNumber,
+      projectId: command.projectId,
+      commandId: `sweep-${command.runId}-${batchNumber}`,
+      operation: "orphan-sweep" as const,
+      policyRef: command.policyRef,
+      policySha256: this.#policySha256,
+      runStartedAt,
+      cutoff,
+      dryRun: command.dryRun,
+      candidateHashes,
+      auditTrailRef: {
+        kind: "audit-trail" as const,
+        reference: {
+          entityId: `sweep-batch-audit-${command.runId}-${batchNumber}`,
+          versionId: "v1",
+        },
+      },
+      persistedAt: this.#nowIso(),
+    };
+    await this.#registry.recordMaintenanceBatch({
+      batch,
+      idempotencyKey: `sweep-${command.runId}-${batchNumber}`,
+      actorId: command.actorId,
+      authorizationContextRef: command.authorization.authorizationContextRef,
+    });
+  }
+
+  async #sweepLocked(command: ArtifactSweepCommandV1): Promise<ArtifactSweepMetricsV1> {
+    const runStartedAt = this.#nowIso();
+    const cutoff = this.#cutoff(runStartedAt);
+    await this.#recoverQuarantine(command, runStartedAt, cutoff);
     let stagingObserved = 0;
     let stagingRemoved = 0;
-    for (const entry of staging) {
-      if (!entry.isFile() || !entry.name.endsWith(".part")) continue;
-      if (this.#store.isStagingActiveForMaintenance(entry.name.slice(0, -5))) continue;
-      const path = join(this.#stagingDirectory, entry.name);
-      const details = await lstat(path);
-      if (details.mtimeMs > observedBefore) continue;
-      stagingObserved += 1;
-      // Staging removal follows the maintenance audit so an audit failure
-      // leaves the cleanup candidate available for the next run.
+    let staging;
+    try {
+      staging = await opendir(this.#stagingDirectory);
+    } catch {
+      staging = undefined;
     }
-    const candidates: Array<{ hash: string; path: string }> = [];
-    const first = await readdir(this.#objectsDirectory, { withFileTypes: true });
-    for (const aa of first) {
-      if (!aa.isDirectory() || !HEX_PAIR_PATTERN.test(aa.name)) continue;
-      const second = await readdir(join(this.#objectsDirectory, aa.name), { withFileTypes: true });
-      for (const bb of second) {
-        if (!bb.isDirectory() || !HEX_PAIR_PATTERN.test(bb.name)) continue;
-        const leafPath = join(this.#objectsDirectory, aa.name, bb.name);
-        const leaves = await readdir(leafPath, { withFileTypes: true });
-        for (const leaf of leaves) {
-          if (!leaf.isFile() || !HASH_PATTERN.test(leaf.name)) continue;
-          const path = join(leafPath, leaf.name);
-          const details = await lstat(path);
-          if (
-            details.mtimeMs > observedBefore ||
-            (await this.#registry.countContentHash(leaf.name)) > 0
-          )
-            continue;
-          candidates.push({ hash: leaf.name, path });
-          if (candidates.length >= command.policy.maintenanceBatchSize) break;
+    if (staging !== undefined) {
+      try {
+        for await (const entry of staging) {
+          if (!entry.isFile() || !entry.name.endsWith(".part")) continue;
+          const stagingId = entry.name.slice(0, -5);
+          if (this.#store.isStagingActiveForMaintenance(stagingId)) continue;
+          const details = await lstat(join(this.#stagingDirectory, entry.name));
+          if (details.mtimeMs <= Date.parse(cutoff)) stagingObserved += 1;
         }
-        if (candidates.length >= command.policy.maintenanceBatchSize) break;
+      } finally {
+        await staging.close().catch(() => undefined);
       }
-      if (candidates.length >= command.policy.maintenanceBatchSize) break;
     }
+    let orphanObserved = 0;
     let orphanQuarantined = 0;
     let orphanRemoved = 0;
-    const quarantined: Array<{ source: string; destination: string; hash: string }> = [];
-    if (!command.dryRun && candidates.length > 0) {
+    let batchNumber = (
+      await this.#registry.listMaintenanceBatches(command.projectId, command.runId)
+    ).reduce((maximum, batch) => Math.max(maximum, batch.batchNumber), 0);
+    const candidates: Array<{ hash: string; path: string }> = [];
+    const flush = async (): Promise<void> => {
+      if (candidates.length === 0) return;
+      const current = candidates.splice(0, candidates.length);
+      orphanObserved += current.length;
+      if (command.dryRun) {
+        batchNumber += 1;
+        await this.#persistBatch(
+          command,
+          batchNumber,
+          current.map((candidate) => candidate.hash),
+          runStartedAt,
+          cutoff,
+        );
+        return;
+      }
       const runDirectory = join(this.#quarantineDirectory, command.runId);
       await mkdir(runDirectory, { recursive: true, mode: 0o700 });
-      for (const candidate of candidates) {
+      const quarantined: Array<{ hash: string; source: string; destination: string }> = [];
+      for (const candidate of current) {
+        const details = await lstat(candidate.path).catch(() => undefined);
+        if (details === undefined || details.mtimeMs > Date.parse(cutoff)) continue;
+        if ((await this.#registry.countContentHash(candidate.hash)) > 0) continue;
         const destination = join(runDirectory, candidate.hash);
         await rename(candidate.path, destination);
-        quarantined.push({ source: candidate.path, destination, hash: candidate.hash });
-        orphanQuarantined += 1;
+        await this.#runFailpoint("quarantine.rename");
+        quarantined.push({ hash: candidate.hash, source: candidate.path, destination });
       }
+      if (quarantined.length === 0) return;
       await syncDirectory(runDirectory);
       await syncDirectory(this.#quarantineDirectory);
-    }
-    let auditTrailRef: ArtifactSweepResultV1["auditTrailRef"];
-    try {
       await this.#runFailpoint("audit");
-      auditTrailRef = await this.#registry.appendMaintenanceAudit({
-        runId: command.runId,
-        commandId: command.commandId,
-        idempotencyKey: command.idempotencyKey,
-        projectId: command.projectId,
-        actorId: command.actorId,
-        authorizationContextRef: command.authorization.authorizationContextRef,
-        issuedAt: command.observedBefore,
-        action: "artifact.orphan-sweep",
-        payload: {
-          dryRun: command.dryRun,
-          stagingObserved,
-          orphanObserved: candidates.length,
-        },
-      });
-    } catch (error) {
-      for (const item of quarantined)
-        await rename(item.destination, item.source).catch(() => undefined);
-      throw error;
-    }
-    if (!command.dryRun) {
-      for (const entry of staging) {
-        if (!entry.isFile() || !entry.name.endsWith(".part")) continue;
-        if (this.#store.isStagingActiveForMaintenance(entry.name.slice(0, -5))) continue;
-        const path = join(this.#stagingDirectory, entry.name);
-        const details = await lstat(path);
-        if (details.mtimeMs <= observedBefore) {
-          await rm(path, { force: true });
-          stagingRemoved += 1;
-        }
-      }
-      await syncDirectory(this.#stagingDirectory);
-    }
-    if (!command.dryRun) {
+      batchNumber += 1;
+      await this.#persistBatch(
+        command,
+        batchNumber,
+        quarantined.map((item) => item.hash),
+        runStartedAt,
+        cutoff,
+      );
+      await this.#runFailpoint("response");
+      orphanQuarantined += quarantined.length;
       for (const item of quarantined) {
         await rm(item.destination, { force: true });
         orphanRemoved += 1;
       }
-      if (quarantined.length > 0) {
-        await syncDirectory(join(this.#quarantineDirectory, command.runId));
-        await syncDirectory(this.#quarantineDirectory);
+      await syncDirectory(runDirectory);
+      await syncDirectory(this.#quarantineDirectory);
+    };
+    for await (const candidate of this.#candidateObjects(cutoff)) {
+      candidates.push(candidate);
+      if (candidates.length >= this.#policy.maintenanceBatchSize) await flush();
+    }
+    await flush();
+    if (!command.dryRun && stagingObserved > 0) {
+      let currentStaging;
+      try {
+        currentStaging = await opendir(this.#stagingDirectory);
+      } catch {
+        currentStaging = undefined;
+      }
+      if (currentStaging !== undefined) {
+        try {
+          for await (const entry of currentStaging) {
+            if (!entry.isFile() || !entry.name.endsWith(".part")) continue;
+            const stagingId = entry.name.slice(0, -5);
+            if (this.#store.isStagingActiveForMaintenance(stagingId)) continue;
+            const path = join(this.#stagingDirectory, entry.name);
+            const details = await lstat(path).catch(() => undefined);
+            if (details !== undefined && details.mtimeMs <= Date.parse(cutoff)) {
+              await rm(path, { force: true });
+              stagingRemoved += 1;
+            }
+          }
+        } finally {
+          await currentStaging.close().catch(() => undefined);
+        }
+        await syncDirectory(this.#stagingDirectory);
       }
     }
+    const retained = Math.max(0, orphanObserved - orphanRemoved);
     return {
       schemaVersion: "1",
       runId: command.runId,
       projectId: command.projectId,
+      policyRef: command.policyRef,
+      policySha256: this.#policySha256,
+      runStartedAt,
+      cutoff,
       dryRun: command.dryRun,
       stagingObserved,
       stagingRemoved,
-      orphanObserved: candidates.length,
+      orphanObserved,
       orphanQuarantined,
       orphanRemoved,
-      retained: Math.max(0, candidates.length - orphanRemoved),
-      auditTrailRef,
+      retained,
     };
   }
 }

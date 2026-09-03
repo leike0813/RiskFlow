@@ -27,7 +27,11 @@ export const createContentAddressedArtifactStore = async (
   config: ContentAddressedArtifactStoreConfigV1,
 ): Promise<ContentAddressedArtifactStoreHandleV1> => {
   const { rootDirectory, policy: configuredPolicy, ...connection } = config;
-  const policy = ArtifactStorePolicyV1Schema.parse(configuredPolicy);
+  const parsedPolicy = ArtifactStorePolicyV1Schema.parse(configuredPolicy);
+  const policy = Object.freeze({
+    ...parsedPolicy,
+    policyRef: Object.freeze({ ...parsedPolicy.policyRef }),
+  });
   const runtime = createPostgresRuntime(connection, "riskflow_app");
   const transactionUnit = new PostgresTransactionUnit(runtime.db);
   const registry = new PostgresArtifactRegistry({
@@ -55,6 +59,7 @@ export const createContentAddressedArtifactStore = async (
       maintenance,
       async close() {
         await store.close();
+        await registry.close();
         await runtime.close();
       },
     };

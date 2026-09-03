@@ -1,10 +1,13 @@
 import { sql, type Kysely, type Transaction } from "kysely";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 
 import {
   ArtifactAccessSnapshotV1Schema,
+  ArtifactAccessRecordV1Schema,
   ArtifactManifestV1Schema,
+  ArtifactMaintenanceBatchV1Schema,
   ArtifactPutCommandV1Schema,
+  ArtifactPutResultV1Schema,
   ArtifactReferenceCheckRequestV1Schema,
   ArtifactReferenceCheckResultV1Schema,
   ArtifactRefV1Schema,
@@ -18,13 +21,17 @@ import {
   mergeEvidenceReferences,
   normalizeArtifactAccessSnapshot,
   type ArtifactAccessSnapshotV1,
+  type ArtifactAccessRecordV1,
   type ArtifactErrorV1,
   type ArtifactManifestV1,
+  type ArtifactMaintenanceBatchV1,
   type ArtifactPutCommandV1,
+  type ArtifactPutResultV1,
   type ArtifactReferenceCheckRequestV1,
   type ArtifactReferenceCheckResultV1,
   type ArtifactRefV1,
   type ArtifactStorePolicyV1,
+  type ArtifactAccessOutcomeV1,
 } from "@riskflow/core/artifacts";
 import type {
   AuthorizationContextV1,
@@ -74,8 +81,42 @@ type ArtifactManifestRow = {
   persisted_at: Date | string;
 };
 
+type ArtifactAccessRecordRow = {
+  schema_version: string;
+  request_id: string;
+  project_id: string;
+  actor_id: string;
+  purpose_code: string;
+  authorization_context_ref: JsonValue;
+  authorization_policy_ref: JsonValue;
+  outcome: ArtifactAccessRecordV1["outcome"];
+  stage: string;
+  occurred_at: Date | string;
+  audit_entry_id: string;
+  diagnostic_ref: JsonValue | null;
+};
+
+type ArtifactMaintenanceBatchRow = {
+  schema_version: string;
+  run_id: string;
+  batch_number: number;
+  project_id: string;
+  command_id: string;
+  operation: ArtifactMaintenanceBatchV1["operation"];
+  policy_ref: JsonValue;
+  policy_sha256: string;
+  run_started_at: Date | string;
+  cutoff: Date | string;
+  dry_run: boolean;
+  candidate_hashes: JsonValue;
+  audit_entry_id: string;
+  persisted_at: Date | string;
+};
+
 type ArtifactRegistryDatabase = PostgresDatabase & {
   "business.artifact_manifests": ArtifactManifestRow;
+  "business.artifact_access_records": ArtifactAccessRecordRow;
+  "business.artifact_maintenance_batches": ArtifactMaintenanceBatchRow;
 };
 type RegistryTransaction = Transaction<ArtifactRegistryDatabase>;
 
@@ -330,6 +371,41 @@ const assertAuthorized = (
   }
 };
 
+export interface ArtifactManifestSnapshotReaderV1 {
+  listManifests(batchSize: number, exclude?: ArtifactRefV1): AsyncGenerator<ArtifactManifestV1>;
+  close(committed?: boolean): Promise<void>;
+}
+
+const manifestColumns = [
+  "artifact_id",
+  "version_id",
+  "artifact_kind",
+  "content_sha256",
+  "byte_length",
+  "media_type",
+  "purpose_code",
+  "project_id",
+  "spatial_scope_refs",
+  "source_access_grant_refs",
+  "authorization_policy_refs",
+  "write_policy_ref",
+  "parent_artifact_refs",
+  "evidence_references",
+  "producer_command_id",
+  "authorization_context_ref",
+  "audit_entry_id",
+  "manifest_sha256",
+  "occurred_at",
+  "recorded_at",
+  "persisted_at",
+] as const;
+
+const accessAction = (outcome: ArtifactAccessOutcomeV1): string =>
+  outcome === "authorized" ? "artifact.read-started" : `artifact.read-${outcome}`;
+
+const accessCommandKind = (outcome: ArtifactAccessOutcomeV1): string =>
+  `artifact.read-${outcome}.v1`;
+
 export interface ArtifactPreparedMetadataV1 {
   readonly access: ArtifactAccessSnapshotV1;
   readonly evidenceReferences: ArtifactManifestV1["evidenceReferences"];
@@ -351,12 +427,106 @@ export class PostgresArtifactRegistry {
   readonly #failpoint: (
     point: "registry.handler" | "audit.commit" | "database.commit",
   ) => void | Promise<void>;
+  readonly #activeSnapshots = new Set<() => Promise<void>>();
+  readonly #activeTransactions = new Set<Promise<unknown>>();
+  #closed = false;
 
   constructor(options: ArtifactRegistryOptionsV1) {
     this.#db = options.db as unknown as Kysely<ArtifactRegistryDatabase>;
     this.#transactionUnit = options.transactionUnit;
     this.#pool = options.pool;
     this.#failpoint = options.failpoint ?? (() => undefined);
+  }
+
+  #trackTransaction<T>(operation: () => Promise<T>): Promise<T> {
+    const promise = operation();
+    this.#activeTransactions.add(promise);
+    void promise.then(
+      () => this.#activeTransactions.delete(promise),
+      () => this.#activeTransactions.delete(promise),
+    );
+    return promise;
+  }
+
+  async openManifestSnapshot(projectId: string): Promise<ArtifactManifestSnapshotReaderV1> {
+    if (this.#closed) throw makeArtifactError("ARTIFACT_REGISTRY_FAILURE", "registry.closed");
+    if (this.#pool === undefined)
+      throw makeArtifactError("ARTIFACT_REGISTRY_FAILURE", "registry.snapshot.pool");
+    const client: PoolClient = await this.#pool.connect();
+    let closed = false;
+    try {
+      await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    } catch (error) {
+      client.release();
+      throw readError(error, "registry.snapshot.begin");
+    }
+    const finish = async (committed = false): Promise<void> => {
+      if (closed) return;
+      closed = true;
+      this.#activeSnapshots.delete(finish);
+      try {
+        await client.query(committed ? "COMMIT" : "ROLLBACK");
+      } finally {
+        client.release();
+      }
+    };
+    this.#activeSnapshots.add(finish);
+    const reader: ArtifactManifestSnapshotReaderV1 = {
+      listManifests: async function* (batchSize: number, exclude?: ArtifactRefV1) {
+        if (closed)
+          throw makeArtifactError("ARTIFACT_REGISTRY_FAILURE", "registry.snapshot.closed");
+        if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 10_000) {
+          throw makeArtifactError("ARTIFACT_INPUT_INVALID", "registry.snapshot.batch");
+        }
+        let cursor:
+          | {
+              artifactKind: ArtifactManifestRow["artifact_kind"];
+              artifactId: string;
+              versionId: string;
+            }
+          | undefined;
+        for (;;) {
+          const parameters: unknown[] = [projectId];
+          const predicates = ["project_id = $1"];
+          if (exclude !== undefined) {
+            const kind = exclude.kind === "content-artifact" ? "content" : "diagnostic";
+            parameters.push(kind, exclude.reference.entityId, exclude.reference.versionId);
+            predicates.push(
+              `(artifact_kind, artifact_id, version_id) <> ($${parameters.length - 2}, $${parameters.length - 1}, $${parameters.length})`,
+            );
+          }
+          if (cursor !== undefined) {
+            parameters.push(cursor.artifactKind, cursor.artifactId, cursor.versionId);
+            predicates.push(
+              `(artifact_kind, artifact_id, version_id) > ($${parameters.length - 2}, $${parameters.length - 1}, $${parameters.length})`,
+            );
+          }
+          parameters.push(batchSize);
+          const query = `SELECT ${manifestColumns.join(", ")} FROM business.artifact_manifests WHERE ${predicates.join(" AND ")} ORDER BY artifact_kind, artifact_id, version_id LIMIT $${parameters.length}`;
+          let rows: ArtifactManifestRow[];
+          try {
+            const result = await client.query<ArtifactManifestRow>(query, parameters);
+            rows = result.rows;
+          } catch (error) {
+            throw readError(error, "registry.snapshot.list");
+          }
+          if (rows.length === 0) return;
+          for (const row of rows) {
+            const manifest = manifestFromRow(row);
+            assertManifestDigest(row, manifest);
+            cursor = {
+              artifactKind: row.artifact_kind,
+              artifactId: row.artifact_id,
+              versionId: row.version_id,
+            };
+            yield manifest;
+          }
+          if (rows.length < batchSize) return;
+        }
+      },
+      close: finish,
+    };
+    return reader;
   }
 
   async readManifest(
@@ -414,6 +584,40 @@ export class PostgresArtifactRegistry {
     }
   }
 
+  async readCompletedPutResult(
+    command: Pick<ArtifactPutCommandV1, "projectId" | "commandId" | "idempotencyKey">,
+  ): Promise<ArtifactPutResultV1 | undefined> {
+    try {
+      const receipt = await this.#db
+        .selectFrom("business.command_receipts")
+        .select(["command_id", "result_ref", "completed_at"])
+        .where("project_id", "=", command.projectId)
+        .where("command_kind", "=", "artifact.put.v1")
+        .where("idempotency_key", "=", command.idempotencyKey)
+        .executeTakeFirst();
+      if (receipt === undefined) return undefined;
+      if (receipt.command_id !== command.commandId)
+        throw makeArtifactError("ARTIFACT_IDEMPOTENCY_CONFLICT", "registry.put-replay");
+      if (receipt.completed_at === null || receipt.result_ref === null) return undefined;
+      const artifactRef = parseJson(ArtifactRefV1Schema, receipt.result_ref, "registry.replay-ref");
+      const manifest = await this.readManifest(command.projectId, artifactRef);
+      if (manifest === undefined)
+        throw makeArtifactError("ARTIFACT_INTEGRITY_FAILURE", "registry.replay-manifest");
+      const manifestDigest = await this.readManifestDigest(command.projectId, artifactRef);
+      if (manifestDigest === undefined || manifestDigest !== manifestSha256(manifest))
+        throw makeArtifactError("ARTIFACT_INTEGRITY_FAILURE", "registry.replay-digest");
+      return ArtifactPutResultV1Schema.parse({
+        artifactRef,
+        manifest,
+        manifestSha256: manifestDigest,
+        replayed: true,
+        deduplicated: true,
+      });
+    } catch (error) {
+      throw readError(error, "registry.put-replay");
+    }
+  }
+
   async preparePutMetadata(command: ArtifactPutCommandV1): Promise<ArtifactPreparedMetadataV1> {
     const parsed = ArtifactPutCommandV1Schema.safeParse(command);
     if (!parsed.success) throw makeArtifactError("ARTIFACT_INPUT_INVALID", "registry.put-command");
@@ -423,9 +627,7 @@ export class PostgresArtifactRegistry {
     for (const parentRef of value.parentArtifactRefs) {
       const parent = await this.readManifest(value.projectId, parentRef);
       if (parent === undefined) {
-        throw makeArtifactError("ARTIFACT_INHERITANCE_CONFLICT", "registry.parent-not-found", [
-          parentRef,
-        ]);
+        throw makeArtifactError("ARTIFACT_ACCESS_DENIED", "registry.parent-access", [parentRef]);
       }
       try {
         assertAuthorized(
@@ -437,11 +639,7 @@ export class PostgresArtifactRegistry {
         );
       } catch (error) {
         if (error instanceof ArtifactStoreError) {
-          throw makeArtifactError(
-            "ARTIFACT_INHERITANCE_CONFLICT",
-            "registry.parent-authorization",
-            [parentRef],
-          );
+          throw makeArtifactError("ARTIFACT_ACCESS_DENIED", "registry.parent-access", [parentRef]);
         }
         throw error;
       }
@@ -507,37 +705,75 @@ export class PostgresArtifactRegistry {
     const auditEntryId = validManifest.auditTrailRef.reference.entityId;
     let inserted = false;
     try {
-      const receipt = await this.#transactionUnit.execute(atomicCommand, async (context) => {
-        inserted = true;
-        await this.#failpoint("registry.handler");
-        const transaction = asRegistryTransaction(context);
-        await transaction
-          .insertInto("business.artifact_manifests")
-          .values({
-            ...rowFromManifest(validManifest, manifestDigest),
-            persisted_at: sql`clock_timestamp()`,
-          })
-          .execute();
-        const commit: AtomicCommitV1 = {
-          resultRef: validManifest.artifactRef,
-          audit: {
-            auditEntryId,
-            projectId: value.projectId,
-            action,
-            targetRef: validManifest.artifactRef,
-            actorRef: value.actorId,
-            authorizationContextRef: value.authorization.authorizationContextRef,
-            occurredAt: validManifest.occurredAt,
-            recordedAt: validManifest.recordedAt,
-            version: validManifest.artifactRef.reference,
-            commandId: value.commandId,
-            idempotencyKey: value.idempotencyKey,
-          },
-          events: [],
-        };
-        await this.#failpoint("audit.commit");
-        return commit;
-      });
+      const receipt = await this.#trackTransaction(() =>
+        this.#transactionUnit.execute(atomicCommand, async (context) => {
+          inserted = true;
+          await this.#failpoint("registry.handler");
+          const transaction = asRegistryTransaction(context);
+          for (const parentRef of validManifest.parentArtifactRefs) {
+            const parentRow = await transaction
+              .selectFrom("business.artifact_manifests")
+              .selectAll()
+              .where("project_id", "=", value.projectId)
+              .where("artifact_id", "=", parentRef.reference.entityId)
+              .where(
+                "artifact_kind",
+                "=",
+                parentRef.kind === "content-artifact" ? "content" : "diagnostic",
+              )
+              .where("version_id", "=", parentRef.reference.versionId)
+              .executeTakeFirst();
+            if (parentRow === undefined) {
+              throw makeArtifactError("ARTIFACT_ACCESS_DENIED", "registry.parent-access", [
+                parentRef,
+              ]);
+            }
+            const parent = manifestFromRow(parentRow);
+            try {
+              assertAuthorized(
+                parent,
+                value.projectId,
+                parent.purposeCode,
+                value.requiredCapability,
+                value.authorization,
+              );
+            } catch (error) {
+              if (error instanceof ArtifactStoreError)
+                throw makeArtifactError("ARTIFACT_ACCESS_DENIED", "registry.parent-access", [
+                  parentRef,
+                ]);
+              throw error;
+            }
+            assertManifestDigest(parentRow, parent);
+          }
+          await transaction
+            .insertInto("business.artifact_manifests")
+            .values({
+              ...rowFromManifest(validManifest, manifestDigest),
+              persisted_at: sql`clock_timestamp()`,
+            })
+            .execute();
+          const commit: AtomicCommitV1 = {
+            resultRef: validManifest.artifactRef,
+            audit: {
+              auditEntryId,
+              projectId: value.projectId,
+              action,
+              targetRef: validManifest.artifactRef,
+              actorRef: value.actorId,
+              authorizationContextRef: value.authorization.authorizationContextRef,
+              occurredAt: validManifest.occurredAt,
+              recordedAt: validManifest.recordedAt,
+              version: validManifest.artifactRef.reference,
+              commandId: value.commandId,
+              idempotencyKey: value.idempotencyKey,
+            },
+            events: [],
+          };
+          await this.#failpoint("audit.commit");
+          return commit;
+        }),
+      );
       await this.#failpoint("database.commit");
       const stored = await this.readManifest(value.projectId, validManifest.artifactRef);
       if (stored === undefined)
@@ -559,6 +795,113 @@ export class PostgresArtifactRegistry {
     }
   }
 
+  async recordAccessOutcome(request: {
+    requestId: string;
+    idempotencyKey: string;
+    projectId: string;
+    actorId: string;
+    occurredAt: string;
+    purposeCode: string;
+    authorizationContextRef: AuthorizationContextRefV1;
+    authorizationPolicyRef: ArtifactAccessRecordV1["authorizationPolicyRef"];
+    outcome: ArtifactAccessRecordV1["outcome"];
+    stage: string;
+    diagnosticRef?: ArtifactAccessRecordV1["diagnosticRef"];
+  }): Promise<ArtifactAccessRecordV1> {
+    const valid = ArtifactAccessRecordV1Schema.parse({
+      schemaVersion: "1",
+      requestId: request.requestId,
+      projectId: request.projectId,
+      actorId: request.actorId,
+      purposeCode: request.purposeCode,
+      authorizationContextRef: request.authorizationContextRef,
+      authorizationPolicyRef: request.authorizationPolicyRef,
+      outcome: request.outcome,
+      stage: request.stage,
+      occurredAt: request.occurredAt,
+      auditTrailRef: {
+        kind: "audit-trail",
+        reference: {
+          entityId: `artifact-access-${request.requestId}-${request.outcome}`,
+          versionId: "v1",
+        },
+      },
+      ...(request.diagnosticRef === undefined ? {} : { diagnosticRef: request.diagnosticRef }),
+    });
+    const auditEntryId = valid.auditTrailRef.reference.entityId;
+    const commandId = `${valid.requestId}-${valid.outcome}`;
+    const atomic = AtomicCommandV1Schema.parse({
+      projectId: valid.projectId,
+      commandKind: accessCommandKind(valid.outcome),
+      commandId,
+      idempotencyKey: request.idempotencyKey,
+      payload: {
+        schemaVersion: valid.schemaVersion,
+        requestId: valid.requestId,
+        projectId: valid.projectId,
+        actorId: valid.actorId,
+        purposeCode: valid.purposeCode,
+        authorizationContextRef: valid.authorizationContextRef,
+        authorizationPolicyRef: valid.authorizationPolicyRef,
+        outcome: valid.outcome,
+        stage: valid.stage,
+        occurredAt: valid.occurredAt,
+        ...(valid.diagnosticRef === undefined ? {} : { diagnosticRef: valid.diagnosticRef }),
+      },
+      actorRef: valid.actorId,
+      authorizationContextRef: valid.authorizationContextRef,
+      issuedAt: valid.occurredAt,
+    });
+    try {
+      await this.#trackTransaction(() =>
+        this.#transactionUnit.execute(atomic, async (context) => {
+          const transaction = asRegistryTransaction(context);
+          await transaction
+            .insertInto("business.artifact_access_records")
+            .values({
+              schema_version: valid.schemaVersion,
+              request_id: valid.requestId,
+              project_id: valid.projectId,
+              actor_id: valid.actorId,
+              purpose_code: valid.purposeCode,
+              authorization_context_ref: jsonValue(valid.authorizationContextRef),
+              authorization_policy_ref: jsonValue(valid.authorizationPolicyRef),
+              outcome: valid.outcome,
+              stage: valid.stage,
+              occurred_at: valid.occurredAt,
+              audit_entry_id: auditEntryId,
+              diagnostic_ref:
+                valid.diagnosticRef === undefined ? null : jsonValue(valid.diagnosticRef),
+            })
+            .onConflict((conflict) =>
+              conflict.columns(["project_id", "request_id", "outcome"]).doNothing(),
+            )
+            .execute();
+          return {
+            resultRef: valid.auditTrailRef,
+            audit: {
+              auditEntryId,
+              projectId: valid.projectId,
+              action: accessAction(valid.outcome),
+              targetRef: targetProject(valid.projectId),
+              actorRef: valid.actorId,
+              authorizationContextRef: valid.authorizationContextRef,
+              occurredAt: valid.occurredAt,
+              recordedAt: valid.occurredAt,
+              version: { entityId: valid.requestId, versionId: "v1" },
+              commandId,
+              idempotencyKey: request.idempotencyKey,
+            },
+            events: [],
+          };
+        }),
+      );
+      return valid;
+    } catch (error) {
+      throw readError(error, "registry.access-record");
+    }
+  }
+
   async recordReadStarted(request: {
     requestId: string;
     idempotencyKey: string;
@@ -566,53 +909,15 @@ export class PostgresArtifactRegistry {
     actorId: string;
     requestedAt: string;
     purposeCode: string;
-    requiredCapability: ArtifactReferenceCheckRequestV1["requiredCapability"];
     authorizationContextRef: AuthorizationContextRefV1;
-    artifactRef: ArtifactRefV1;
-    manifestSha256: string;
-  }): Promise<void> {
-    const auditEntryId = `artifact-read-audit-${request.requestId}`;
-    const command = AtomicCommandV1Schema.parse({
-      projectId: request.projectId,
-      commandKind: "artifact.read-started.v1",
-      commandId: request.requestId,
-      idempotencyKey: request.idempotencyKey,
-      payload: {
-        commandId: request.requestId,
-        idempotencyKey: request.idempotencyKey,
-        projectId: request.projectId,
-        actorId: request.actorId,
-        authorizationContextRef: request.authorizationContextRef,
-        requiredCapability: request.requiredCapability,
-        artifactRef: request.artifactRef,
-        manifestSha256: request.manifestSha256,
-        purposeCode: request.purposeCode,
-      },
-      actorRef: request.actorId,
-      authorizationContextRef: request.authorizationContextRef,
-      issuedAt: request.requestedAt,
+    authorizationPolicyRef: ArtifactAccessRecordV1["authorizationPolicyRef"];
+  }): Promise<ArtifactAccessRecordV1> {
+    return this.recordAccessOutcome({
+      ...request,
+      occurredAt: request.requestedAt,
+      outcome: "authorized",
+      stage: "read-authorized",
     });
-    try {
-      await this.#transactionUnit.execute(command, async () => ({
-        resultRef: request.artifactRef,
-        audit: {
-          auditEntryId,
-          projectId: request.projectId,
-          action: "artifact.read-started",
-          targetRef: request.artifactRef,
-          actorRef: request.actorId,
-          authorizationContextRef: request.authorizationContextRef,
-          occurredAt: request.requestedAt,
-          recordedAt: request.requestedAt,
-          version: request.artifactRef.reference,
-          commandId: request.requestId,
-          idempotencyKey: request.idempotencyKey,
-        },
-        events: [],
-      }));
-    } catch (error) {
-      throw readError(error, "registry.read-audit");
-    }
   }
 
   async assertUsable(
@@ -687,8 +992,10 @@ export class PostgresArtifactRegistry {
   async *listManifests(
     projectId: string,
     batchSize = 250,
-    excludeArtifactId?: string,
+    exclude?: ArtifactRefV1,
   ): AsyncGenerator<ArtifactManifestV1> {
+    if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 10_000)
+      throw makeArtifactError("ARTIFACT_INPUT_INVALID", "registry.list.batch");
     let cursor:
       | {
           artifactKind: ArtifactManifestRow["artifact_kind"];
@@ -706,8 +1013,12 @@ export class PostgresArtifactRegistry {
           .orderBy("artifact_id", "asc")
           .orderBy("version_id", "asc")
           .limit(batchSize);
-        if (excludeArtifactId !== undefined)
-          query = query.where("artifact_id", "<>", excludeArtifactId);
+        if (exclude !== undefined) {
+          const kind = exclude.kind === "content-artifact" ? "content" : "diagnostic";
+          query = query.where(
+            sql<boolean>`(artifact_kind, artifact_id, version_id) <> (${kind}, ${exclude.reference.entityId}, ${exclude.reference.versionId})`,
+          );
+        }
         if (cursor !== undefined) {
           query = query.where(
             sql<boolean>`(artifact_kind, artifact_id, version_id) > (${cursor.artifactKind}, ${cursor.artifactId}, ${cursor.versionId})`,
@@ -782,6 +1093,117 @@ export class PostgresArtifactRegistry {
     }
   }
 
+  async recordMaintenanceBatch(input: {
+    batch: ArtifactMaintenanceBatchV1;
+    idempotencyKey: string;
+    actorId: string;
+    authorizationContextRef: AuthorizationContextRefV1;
+  }): Promise<ArtifactMaintenanceBatchV1> {
+    const batch = ArtifactMaintenanceBatchV1Schema.parse(input.batch);
+    const atomic = AtomicCommandV1Schema.parse({
+      projectId: batch.projectId,
+      commandKind: `artifact.${batch.operation}.batch.v1`,
+      commandId: batch.commandId,
+      idempotencyKey: input.idempotencyKey,
+      payload: { schemaVersion: "1", batch },
+      actorRef: input.actorId,
+      authorizationContextRef: input.authorizationContextRef,
+      issuedAt: batch.persistedAt,
+      runId: batch.runId,
+    });
+    try {
+      await this.#trackTransaction(() =>
+        this.#transactionUnit.execute(atomic, async (context) => {
+          const transaction = asRegistryTransaction(context);
+          await transaction
+            .insertInto("business.artifact_maintenance_batches")
+            .values({
+              schema_version: batch.schemaVersion,
+              run_id: batch.runId,
+              batch_number: batch.batchNumber,
+              project_id: batch.projectId,
+              command_id: batch.commandId,
+              operation: batch.operation,
+              policy_ref: jsonValue(batch.policyRef),
+              policy_sha256: batch.policySha256,
+              run_started_at: batch.runStartedAt,
+              cutoff: batch.cutoff,
+              dry_run: batch.dryRun,
+              candidate_hashes: jsonValue(batch.candidateHashes),
+              audit_entry_id: batch.auditTrailRef.reference.entityId,
+              persisted_at: batch.persistedAt,
+            })
+            .onConflict((conflict) => conflict.columns(["run_id", "batch_number"]).doNothing())
+            .execute();
+          await this.#failpoint("audit.commit");
+          const auditAction =
+            batch.operation === "quarantine-recovery"
+              ? "artifact.orphan-sweep-recovered"
+              : "artifact.orphan-sweep";
+          return {
+            resultRef: batch.auditTrailRef,
+            audit: {
+              auditEntryId: batch.auditTrailRef.reference.entityId,
+              projectId: batch.projectId,
+              action: auditAction,
+              targetRef: targetProject(batch.projectId),
+              actorRef: input.actorId,
+              authorizationContextRef: input.authorizationContextRef,
+              occurredAt: batch.persistedAt,
+              recordedAt: batch.persistedAt,
+              version: { entityId: batch.runId, versionId: `batch-${batch.batchNumber}` },
+              commandId: batch.commandId,
+              idempotencyKey: input.idempotencyKey,
+              runId: batch.runId,
+            },
+            events: [],
+          };
+        }),
+      );
+      return batch;
+    } catch (error) {
+      throw readError(error, "registry.maintenance-batch");
+    }
+  }
+
+  async listMaintenanceBatches(
+    projectId: string,
+    runId: string,
+  ): Promise<ArtifactMaintenanceBatchV1[]> {
+    try {
+      const rows = await this.#db
+        .selectFrom("business.artifact_maintenance_batches")
+        .selectAll()
+        .where("project_id", "=", projectId)
+        .where("run_id", "=", runId)
+        .orderBy("batch_number", "asc")
+        .execute();
+      return rows.map((row) =>
+        ArtifactMaintenanceBatchV1Schema.parse({
+          schemaVersion: row.schema_version,
+          runId: row.run_id,
+          batchNumber: row.batch_number,
+          projectId: row.project_id,
+          commandId: row.command_id,
+          operation: row.operation,
+          policyRef: row.policy_ref,
+          policySha256: row.policy_sha256,
+          runStartedAt: asIso(row.run_started_at),
+          cutoff: asIso(row.cutoff),
+          dryRun: row.dry_run,
+          candidateHashes: row.candidate_hashes,
+          auditTrailRef: {
+            kind: "audit-trail",
+            reference: { entityId: row.audit_entry_id, versionId: "v1" },
+          },
+          persistedAt: asIso(row.persisted_at),
+        }),
+      );
+    } catch (error) {
+      throw readError(error, "registry.maintenance-batches");
+    }
+  }
+
   async appendMaintenanceAudit(command: {
     runId: string;
     commandId: string;
@@ -790,10 +1212,12 @@ export class PostgresArtifactRegistry {
     actorId: string;
     authorizationContextRef: AuthorizationContextRefV1;
     issuedAt: string;
-    action: "artifact.orphan-sweep" | "artifact.reconcile";
+    auditEntryId?: string;
+    action: "artifact.orphan-sweep" | "artifact.reconcile" | "artifact.orphan-sweep-recovered";
     payload: AtomicCommandV1["payload"];
   }): Promise<AuditTrailRefV1> {
-    const auditEntryId = `artifact-maintenance-audit-${command.runId}`;
+    const auditEntryId =
+      command.auditEntryId ?? `artifact-maintenance-audit-${command.runId}-${command.action}`;
     const targetRef = targetProject(command.projectId);
     const atomic = AtomicCommandV1Schema.parse({
       projectId: command.projectId,
@@ -816,24 +1240,29 @@ export class PostgresArtifactRegistry {
       runId: command.runId,
     });
     try {
-      await this.#transactionUnit.execute(atomic, async () => ({
-        resultRef: { kind: "audit-trail", reference: { entityId: auditEntryId, versionId: "v1" } },
-        audit: {
-          auditEntryId,
-          projectId: command.projectId,
-          action: command.action,
-          targetRef,
-          actorRef: command.actorId,
-          authorizationContextRef: command.authorizationContextRef,
-          occurredAt: command.issuedAt,
-          recordedAt: command.issuedAt,
-          version: { entityId: command.runId, versionId: "v1" },
-          commandId: command.commandId,
-          idempotencyKey: command.idempotencyKey,
-          runId: command.runId,
-        },
-        events: [],
-      }));
+      await this.#trackTransaction(() =>
+        this.#transactionUnit.execute(atomic, async () => ({
+          resultRef: {
+            kind: "audit-trail",
+            reference: { entityId: auditEntryId, versionId: "v1" },
+          },
+          audit: {
+            auditEntryId,
+            projectId: command.projectId,
+            action: command.action,
+            targetRef,
+            actorRef: command.actorId,
+            authorizationContextRef: command.authorizationContextRef,
+            occurredAt: command.issuedAt,
+            recordedAt: command.issuedAt,
+            version: { entityId: command.runId, versionId: "v1" },
+            commandId: command.commandId,
+            idempotencyKey: command.idempotencyKey,
+            runId: command.runId,
+          },
+          events: [],
+        })),
+      );
       return { kind: "audit-trail", reference: { entityId: auditEntryId, versionId: "v1" } };
     } catch (error) {
       throw readError(error, "registry.maintenance-audit");
@@ -842,6 +1271,12 @@ export class PostgresArtifactRegistry {
 
   async hasContentHash(contentHash: string): Promise<boolean> {
     return (await this.countContentHash(contentHash)) > 0;
+  }
+
+  async close(): Promise<void> {
+    this.#closed = true;
+    await Promise.allSettled([...this.#activeTransactions]);
+    await Promise.allSettled([...this.#activeSnapshots].map((finish) => finish()));
   }
 
   static manifestSha256(manifest: ArtifactManifestV1): string {

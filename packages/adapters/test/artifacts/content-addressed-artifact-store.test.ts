@@ -1,20 +1,33 @@
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, rm, statfs, truncate, utimes, writeFile } from "node:fs/promises";
+import { readdirSync } from "node:fs";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  rm,
+  stat,
+  statfs,
+  truncate,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import {
   ArtifactPutCommandV1Schema,
+  ArtifactManifestV1Schema,
   ArtifactReadRequestV1Schema,
   ArtifactStoreError,
   makeArtifactError,
+  manifestSha256,
   type ArtifactPutCommandV1,
   type ArtifactReadRequestV1,
 } from "@riskflow/core/artifacts";
-import {
-  canonicalJson,
-  type AtomicCommandV1,
-  type TransactionContextV1,
-} from "@riskflow/core/persistence";
+import { type AtomicCommandV1, type TransactionContextV1 } from "@riskflow/core/persistence";
 import { AuthorizationContextV1Schema } from "@riskflow/contracts/ports";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -24,8 +37,10 @@ import {
   startArtifactFixture,
   type ArtifactTestFixture,
 } from "./fixture.js";
+import { createContentAddressedArtifactStore } from "../../src/artifacts/index.js";
 import type { ArtifactFailpointV1 } from "../../src/artifacts/filesystem-artifact-store.js";
 import { createFilesystemArtifactStore } from "../../src/artifacts/filesystem-artifact-store.js";
+import { ArtifactMaintenance } from "../../src/artifacts/maintenance.js";
 import { getPostgresTransaction } from "../../src/postgres/transaction-unit.js";
 
 const encoder = new TextEncoder();
@@ -46,7 +61,9 @@ const authorization = (
     readonly project?: string;
     readonly scopes?: readonly ReturnType<typeof scope>[];
     readonly grants?: readonly ReturnType<typeof grant>[];
-    readonly capabilities?: readonly ("engineering-data.read" | "engineering-data.write")[];
+    readonly capabilities?: readonly (
+      "engineering-data.read" | "engineering-data.write" | "engineering-data.freeze"
+    )[];
     readonly policy?: { entityId: string; versionId: string };
   } = {},
 ) =>
@@ -61,9 +78,10 @@ const authorization = (
     grantedCapabilities: options.capabilities ?? [
       "engineering-data.read",
       "engineering-data.write",
+      "engineering-data.freeze",
     ],
-    spatialScopeRefs: options.scopes ?? [scope("all")],
-    sourceAccessGrantRefs: options.grants ?? [grant("all")],
+    spatialScopeRefs: options.scopes ?? [scope("all"), scope("parent")],
+    sourceAccessGrantRefs: options.grants ?? [grant("all"), grant("parent")],
     authorizationPolicyRef: options.policy ?? policyRef,
     decidedAt: ARTIFACT_TEST_TIMESTAMP,
     invocation: { kind: "human" },
@@ -136,6 +154,216 @@ const readRequest = (
 
 const digest = (value: Uint8Array): string => createHash("sha256").update(value).digest("hex");
 
+const seedSyntheticManifests = async (
+  fixture: ArtifactTestFixture,
+  syntheticProjectId: string,
+  seed: Awaited<ReturnType<ArtifactTestFixture["store"]["put"]>>,
+  count: number,
+): Promise<void> => {
+  const syntheticAuthorization = authorization("actor-artifacts", { project: syntheticProjectId });
+  const access = {
+    projectId: syntheticProjectId,
+    spatialScopeRefs: syntheticAuthorization.spatialScopeRefs,
+    sourceAccessGrantRefs: syntheticAuthorization.sourceAccessGrantRefs,
+    authorizationPolicyRefs: [policyRef],
+  } as const;
+  const arrays = {
+    artifactId: [] as string[],
+    versionId: [] as string[],
+    contentSha256: [] as string[],
+    byteLength: [] as number[],
+    mediaType: [] as string[],
+    purposeCode: [] as string[],
+    projectId: [] as string[],
+    spatialScopeRefs: [] as string[],
+    sourceAccessGrantRefs: [] as string[],
+    authorizationPolicyRefs: [] as string[],
+    writePolicyRef: [] as string[],
+    parentArtifactRefs: [] as string[],
+    evidenceReferences: [] as string[],
+    producerCommandId: [] as string[],
+    authorizationContextRef: [] as string[],
+    auditEntryId: [] as string[],
+    manifestSha256: [] as string[],
+    occurredAt: [] as string[],
+    recordedAt: [] as string[],
+    persistedAt: [] as string[],
+    auditTargetRef: [] as string[],
+    auditVersionRef: [] as string[],
+    commandId: [] as string[],
+    idempotencyKey: [] as string[],
+    resultRef: [] as string[],
+  };
+  const accessJson = {
+    spatialScopeRefs: JSON.stringify(access.spatialScopeRefs),
+    sourceAccessGrantRefs: JSON.stringify(access.sourceAccessGrantRefs),
+    authorizationPolicyRefs: JSON.stringify(access.authorizationPolicyRefs),
+    writePolicyRef: JSON.stringify(policyRef),
+    parentArtifactRefs: "[]",
+    evidenceReferences: "[]",
+    authorizationContextRef: JSON.stringify(syntheticAuthorization.authorizationContextRef),
+  };
+  const seedContent = seed.manifest.content;
+  const timestamp = ARTIFACT_TEST_TIMESTAMP;
+  for (let index = 0; index < count; index += 1) {
+    const artifactId = `synthetic-db-${String(index).padStart(5, "0")}`;
+    const commandId = `synthetic-db-command-${String(index).padStart(5, "0")}`;
+    const auditEntryId = `synthetic-db-audit-${String(index).padStart(5, "0")}`;
+    const artifactRef = {
+      kind: "content-artifact" as const,
+      reference: { entityId: artifactId, versionId: seed.manifest.artifactRef.reference.versionId },
+    };
+    const manifest = ArtifactManifestV1Schema.parse({
+      schemaVersion: "1",
+      artifactRef,
+      artifactKind: "content",
+      content: seedContent,
+      mediaType: "application/octet-stream",
+      purposeCode: "engineering-input",
+      access,
+      writePolicyRef: policyRef,
+      parentArtifactRefs: [],
+      evidenceReferences: [],
+      producerCommandId: commandId,
+      authorizationContextRef: syntheticAuthorization.authorizationContextRef,
+      auditTrailRef: {
+        kind: "audit-trail",
+        reference: { entityId: auditEntryId, versionId: "v1" },
+      },
+      occurredAt: timestamp,
+      recordedAt: timestamp,
+      persistedAt: timestamp,
+    });
+    arrays.artifactId.push(artifactId);
+    arrays.versionId.push(artifactRef.reference.versionId);
+    arrays.contentSha256.push(seedContent.hash.value);
+    arrays.byteLength.push(seedContent.byteLength);
+    arrays.mediaType.push(manifest.mediaType);
+    arrays.purposeCode.push(manifest.purposeCode);
+    arrays.projectId.push(syntheticProjectId);
+    arrays.spatialScopeRefs.push(accessJson.spatialScopeRefs);
+    arrays.sourceAccessGrantRefs.push(accessJson.sourceAccessGrantRefs);
+    arrays.authorizationPolicyRefs.push(accessJson.authorizationPolicyRefs);
+    arrays.writePolicyRef.push(accessJson.writePolicyRef);
+    arrays.parentArtifactRefs.push(accessJson.parentArtifactRefs);
+    arrays.evidenceReferences.push(accessJson.evidenceReferences);
+    arrays.producerCommandId.push(commandId);
+    arrays.authorizationContextRef.push(accessJson.authorizationContextRef);
+    arrays.auditEntryId.push(auditEntryId);
+    arrays.manifestSha256.push(manifestSha256(manifest));
+    arrays.occurredAt.push(timestamp);
+    arrays.recordedAt.push(timestamp);
+    arrays.persistedAt.push(timestamp);
+    arrays.auditTargetRef.push(JSON.stringify(artifactRef));
+    arrays.auditVersionRef.push(JSON.stringify(artifactRef.reference));
+    arrays.commandId.push(commandId);
+    arrays.idempotencyKey.push(`synthetic-db-idem-${String(index).padStart(5, "0")}`);
+    arrays.resultRef.push(JSON.stringify(artifactRef));
+  }
+  const client = await fixture.postgres.adminPool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `INSERT INTO audit.entries (
+         audit_entry_id, project_id, action, target_ref, actor_ref,
+         authorization_context_ref, version_ref, occurred_at, recorded_at,
+         command_id, idempotency_key
+       )
+       SELECT * FROM unnest(
+         $1::text[], $2::text[], $3::text[], $4::jsonb[], $5::text[],
+         $6::jsonb[], $7::jsonb[], $8::timestamptz[], $9::timestamptz[],
+         $10::text[], $11::text[]
+       )`,
+      [
+        arrays.auditEntryId,
+        arrays.projectId,
+        arrays.commandId.map(() => "artifact.put"),
+        arrays.auditTargetRef,
+        arrays.commandId.map(() => "actor-artifacts"),
+        arrays.authorizationContextRef,
+        arrays.auditVersionRef,
+        arrays.occurredAt,
+        arrays.recordedAt,
+        arrays.commandId,
+        arrays.idempotencyKey,
+      ],
+    );
+    await client.query(
+      `INSERT INTO business.command_receipts (
+         project_id, command_kind, idempotency_key, command_id, payload_sha256,
+         result_ref, audit_entry_id, actor_ref, authorization_context_ref,
+         completed_at
+       )
+       SELECT project_id, command_kind, idempotency_key, command_id, payload_sha256,
+              result_ref, audit_entry_id, actor_ref, authorization_context_ref,
+              clock_timestamp()
+       FROM unnest(
+         $1::text[], $2::text[], $3::text[], $4::text[], $5::char(64)[],
+         $6::jsonb[], $7::text[], $8::text[], $9::jsonb[]
+       ) AS rows(project_id, command_kind, idempotency_key, command_id,
+                 payload_sha256, result_ref, audit_entry_id, actor_ref,
+                 authorization_context_ref)`,
+      [
+        arrays.projectId,
+        arrays.commandId.map(() => "synthetic.artifact.put.v1"),
+        arrays.idempotencyKey,
+        arrays.commandId,
+        arrays.commandId.map(() => "0".repeat(64)),
+        arrays.resultRef,
+        arrays.auditEntryId,
+        arrays.commandId.map(() => "actor-artifacts"),
+        arrays.authorizationContextRef,
+      ],
+    );
+    await client.query(
+      `INSERT INTO business.artifact_manifests (
+         artifact_id, version_id, artifact_kind, content_sha256, byte_length,
+         media_type, purpose_code, project_id, spatial_scope_refs,
+         source_access_grant_refs, authorization_policy_refs, write_policy_ref,
+         parent_artifact_refs, evidence_references, producer_command_id,
+         authorization_context_ref, audit_entry_id, manifest_sha256,
+         occurred_at, recorded_at, persisted_at
+       )
+       SELECT * FROM unnest(
+         $1::text[], $2::text[], $3::text[], $4::char(64)[], $5::bigint[],
+         $6::text[], $7::text[], $8::text[], $9::jsonb[], $10::jsonb[],
+         $11::jsonb[], $12::jsonb[], $13::jsonb[], $14::jsonb[], $15::text[],
+         $16::jsonb[], $17::text[], $18::char(64)[], $19::timestamptz[],
+         $20::timestamptz[], $21::timestamptz[]
+       )`,
+      [
+        arrays.artifactId,
+        arrays.versionId,
+        arrays.commandId.map(() => "content"),
+        arrays.contentSha256,
+        arrays.byteLength,
+        arrays.mediaType,
+        arrays.purposeCode,
+        arrays.projectId,
+        arrays.spatialScopeRefs,
+        arrays.sourceAccessGrantRefs,
+        arrays.authorizationPolicyRefs,
+        arrays.writePolicyRef,
+        arrays.parentArtifactRefs,
+        arrays.evidenceReferences,
+        arrays.producerCommandId,
+        arrays.authorizationContextRef,
+        arrays.auditEntryId,
+        arrays.manifestSha256,
+        arrays.occurredAt,
+        arrays.recordedAt,
+        arrays.persistedAt,
+      ],
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
 const collect = async (stream: AsyncIterable<Uint8Array>): Promise<Uint8Array> => {
   const parts: Uint8Array[] = [];
   let size = 0;
@@ -152,6 +380,38 @@ const collect = async (stream: AsyncIterable<Uint8Array>): Promise<Uint8Array> =
   return result;
 };
 
+const startPerformanceSampling = (rootDirectory: string) => {
+  const metrics = { peakHeapBytes: 0, peakFileDescriptors: 0, peakStagingFiles: 0 };
+  const countEntries = (directory: string): number => {
+    try {
+      return readdirSync(directory).length;
+    } catch {
+      return 0;
+    }
+  };
+  const sample = (): void => {
+    metrics.peakHeapBytes = Math.max(metrics.peakHeapBytes, process.memoryUsage().heapUsed);
+    metrics.peakFileDescriptors = Math.max(
+      metrics.peakFileDescriptors,
+      countEntries("/proc/self/fd"),
+    );
+    metrics.peakStagingFiles = Math.max(
+      metrics.peakStagingFiles,
+      countEntries(join(rootDirectory, "staging")),
+    );
+  };
+  sample();
+  const timer = setInterval(sample, 50);
+  timer.unref();
+  return {
+    stop: () => {
+      clearInterval(timer);
+      sample();
+      return metrics;
+    },
+  };
+};
+
 const expectArtifactError = async (action: Promise<unknown>, code: string): Promise<void> => {
   try {
     await action;
@@ -161,6 +421,112 @@ const expectArtifactError = async (action: Promise<unknown>, code: string): Prom
     expect(error).toBeInstanceOf(ArtifactStoreError);
     expect((error as ArtifactStoreError).code).toBe(code);
   }
+};
+
+const killChildAtFailpoint = async (
+  phase: ArtifactFailpointV1,
+  connection: unknown,
+  rootDirectory: string,
+  policy: unknown,
+  command: unknown,
+  operation: "put" | "sweep" = "put",
+): Promise<void> => {
+  const modulePath = (name: string) =>
+    pathToFileURL(join(process.cwd(), "packages/adapters/dist", name)).href;
+  const script = `
+    import { createPostgresRuntime } from ${JSON.stringify(modulePath("postgres/pool.js"))};
+    import { PostgresTransactionUnit } from ${JSON.stringify(modulePath("postgres/transaction-unit.js"))};
+    import { PostgresArtifactRegistry } from ${JSON.stringify(modulePath("artifacts/postgres-artifact-registry.js"))};
+    import { createFilesystemArtifactStore } from ${JSON.stringify(modulePath("artifacts/filesystem-artifact-store.js"))};
+    import { ArtifactMaintenance } from ${JSON.stringify(modulePath("artifacts/maintenance.js"))};
+    const connection = JSON.parse(process.argv[1]);
+    const rootDirectory = process.argv[2];
+    const phase = process.argv[3];
+    const policy = JSON.parse(process.argv[4]);
+    const command = JSON.parse(process.argv[5]);
+    const operation = process.argv[6] ?? "put";
+    const runtime = createPostgresRuntime(connection, "riskflow_app");
+    const transactionUnit = new PostgresTransactionUnit(runtime.db);
+    const failpoint = async (point) => {
+      if (point === phase) {
+        process.stdout.write("C04-BOUNDARY:" + point + "\\n");
+        await new Promise(() => undefined);
+      }
+    };
+    const registry = new PostgresArtifactRegistry({ db: runtime.db, transactionUnit, pool: runtime.pool, failpoint });
+    const store = await createFilesystemArtifactStore({
+      rootDirectory,
+      policy,
+      registry,
+      transactionUnit,
+      failpoint,
+    });
+    if (operation === "put") {
+      await store.put(command, (async function* () {
+        yield new TextEncoder().encode("sigkill payload " + phase);
+      })());
+    } else {
+      const maintenance = new ArtifactMaintenance({ rootDirectory, policy, store, registry, failpoint });
+      await maintenance.sweepOrphans(command);
+    }
+  `;
+  const child = spawn(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      script,
+      JSON.stringify(connection),
+      rootDirectory,
+      phase,
+      JSON.stringify(policy),
+      JSON.stringify(command),
+      operation,
+    ],
+    { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let stdout = "";
+  let stderr = "";
+  let killed = false;
+  let settled = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      if (error === undefined) resolvePromise();
+      else rejectPromise(error);
+    };
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+      if (!killed && stdout.includes(`C04-BOUNDARY:${phase}`)) {
+        killed = true;
+        child.kill("SIGKILL");
+      }
+    });
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on("error", (error) => finish(error));
+    child.on("exit", (code, signal) => {
+      if (!killed) {
+        finish(
+          new Error(`SIGKILL child exited before ${phase}: ${code}/${signal}: ${stdout} ${stderr}`),
+        );
+      } else if (signal !== "SIGKILL") {
+        finish(new Error(`SIGKILL child ended with ${signal ?? code}: ${stdout} ${stderr}`));
+      } else {
+        finish();
+      }
+    });
+    timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(new Error(`SIGKILL child timed out at ${phase}: ${stdout} ${stderr}`));
+    }, 30_000);
+  });
 };
 
 describe("content-addressed artifact store", () => {
@@ -180,11 +546,23 @@ describe("content-addressed artifact store", () => {
   }, 120_000);
 
   it("migration permission lifecycle keeps the app manifest table append-only", async () => {
-    const constraints = await fixture.postgres.adminPool.query<{ name: string }>(
+    const constraints = await fixture.postgres.adminPool.query<{
+      table_name: string;
+      name: string;
+      deferrable: boolean;
+      deferred: boolean;
+    }>(
       `SELECT conname AS name
+              , conrelid::regclass::text AS table_name
+              , condeferrable AS deferrable
+              , condeferred AS deferred
        FROM pg_constraint
-       WHERE conrelid = 'business.artifact_manifests'::regclass
-       ORDER BY conname`,
+       WHERE conrelid IN (
+         'business.artifact_manifests'::regclass,
+         'business.artifact_access_records'::regclass,
+         'business.artifact_maintenance_batches'::regclass
+       )
+       ORDER BY table_name, name`,
     );
     expect(constraints.rows.map((row) => row.name)).toEqual(
       expect.arrayContaining([
@@ -194,13 +572,75 @@ describe("content-addressed artifact store", () => {
         "artifact_manifests_version_ck",
         "artifact_manifests_command_fk",
         "artifact_manifests_audit_fk",
+        "artifact_access_records_pk",
+        "artifact_access_records_outcome_ck",
+        "artifact_access_records_audit_fk",
+        "artifact_maintenance_batches_pk",
+        "artifact_maintenance_batches_operation_ck",
+        "artifact_maintenance_batches_audit_fk",
       ]),
+    );
+    expect(
+      constraints.rows
+        .filter((row) => row.name.endsWith("_audit_fk"))
+        .every((row) => row.deferrable && row.deferred),
+    ).toBe(true);
+    const indexes = await fixture.postgres.adminPool.query<{ indexname: string }>(
+      `SELECT indexname
+       FROM pg_indexes
+       WHERE schemaname = 'business'
+         AND tablename IN ('artifact_manifests', 'artifact_access_records', 'artifact_maintenance_batches')`,
+    );
+    expect(indexes.rows.map((row) => row.indexname)).toEqual(
+      expect.arrayContaining([
+        "artifact_manifests_project_artifact_idx",
+        "artifact_manifests_content_idx",
+        "artifact_access_records_request_idx",
+        "artifact_maintenance_batches_project_run_idx",
+      ]),
+    );
+    const privileges = await fixture.postgres.adminPool.query<{
+      table_name: string;
+      privilege_type: string;
+    }>(
+      `SELECT table_name, privilege_type
+       FROM information_schema.role_table_grants
+       WHERE grantee = 'riskflow_app'
+         AND table_schema = 'business'
+         AND table_name IN ('artifact_manifests', 'artifact_access_records', 'artifact_maintenance_batches')`,
+    );
+    expect(privileges.rows).toEqual(
+      expect.arrayContaining([
+        { table_name: "artifact_manifests", privilege_type: "SELECT" },
+        { table_name: "artifact_manifests", privilege_type: "INSERT" },
+        { table_name: "artifact_access_records", privilege_type: "SELECT" },
+        { table_name: "artifact_access_records", privilege_type: "INSERT" },
+        { table_name: "artifact_maintenance_batches", privilege_type: "SELECT" },
+        { table_name: "artifact_maintenance_batches", privilege_type: "INSERT" },
+      ]),
+    );
+    expect(privileges.rows.some((row) => ["UPDATE", "DELETE"].includes(row.privilege_type))).toBe(
+      false,
     );
     await expect(
       fixture.runtime.pool.query("UPDATE business.artifact_manifests SET purpose_code = 'x'"),
     ).rejects.toBeDefined();
     await expect(
       fixture.runtime.pool.query("DELETE FROM business.artifact_manifests"),
+    ).rejects.toBeDefined();
+    await expect(
+      fixture.runtime.pool.query("UPDATE business.artifact_access_records SET stage = 'x'"),
+    ).rejects.toBeDefined();
+    await expect(
+      fixture.runtime.pool.query("DELETE FROM business.artifact_access_records"),
+    ).rejects.toBeDefined();
+    await expect(
+      fixture.runtime.pool.query(
+        "UPDATE business.artifact_maintenance_batches SET dry_run = false",
+      ),
+    ).rejects.toBeDefined();
+    await expect(
+      fixture.runtime.pool.query("DELETE FROM business.artifact_maintenance_batches"),
     ).rejects.toBeDefined();
   }, 120_000);
 
@@ -237,6 +677,31 @@ describe("content-addressed artifact store", () => {
       "SELECT count(*)::text AS count FROM audit.entries WHERE action = 'artifact.put'",
     );
     expect(Number(audits.rows[0]?.count)).toBe(3);
+  });
+
+  it("keeps a dedicated read-only snapshot stable across keyset batches", async () => {
+    const countBefore = await fixture.postgres.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM business.artifact_manifests WHERE project_id = $1",
+      [projectId],
+    );
+    const snapshot = await fixture.registry.openManifestSnapshot(projectId);
+    const iterator = snapshot.listManifests(1);
+    let committed = false;
+    try {
+      const first = await iterator.next();
+      expect(first.done).toBe(false);
+      const late = await fixture.store.put(
+        putCommand("snapshot-late", { artifactId: "zz-snapshot-late" }),
+        textChunks("inserted after snapshot"),
+      );
+      const refs = first.value === undefined ? [] : [first.value.artifactRef];
+      for await (const manifest of iterator) refs.push(manifest.artifactRef);
+      expect(refs).toHaveLength(Number(countBefore.rows[0]?.count));
+      expect(refs).not.toContainEqual(late.artifactRef);
+      committed = true;
+    } finally {
+      await snapshot.close(committed);
+    }
   });
 
   it("put rejects expected digest/length errors before registration", async () => {
@@ -326,6 +791,87 @@ describe("content-addressed artifact store", () => {
     }
   });
 
+  it("recovers real SIGKILLs at each persistence boundary", async () => {
+    const phases = [
+      "staging.sync",
+      "object.link",
+      "registry.handler",
+      "audit.commit",
+      "database.commit",
+      "response",
+    ] as const;
+    for (const phase of phases) {
+      const command = putCommand(`sigkill-${phase}`, {
+        artifactId: `artifact-sigkill-${phase}`,
+      });
+      await killChildAtFailpoint(
+        phase,
+        fixture.postgres.app,
+        fixture.rootDirectory,
+        artifactPolicy(),
+        command,
+      );
+      const fresh = await createContentAddressedArtifactStore({
+        ...fixture.postgres.app,
+        rootDirectory: fixture.rootDirectory,
+        policy: artifactPolicy(),
+      });
+      try {
+        const replay = await fresh.put(command, textChunks(`sigkill payload ${phase}`));
+        expect(replay.replayed).toBe(phase === "database.commit" || phase === "response");
+      } finally {
+        await fresh.close();
+      }
+    }
+  }, 180_000);
+
+  it("closes quarantines after real SIGKILLs at maintenance boundaries", async () => {
+    const phases = ["quarantine.rename", "audit", "audit.commit", "response"] as const;
+    for (const phase of phases) {
+      const content = encoder.encode(`maintenance sigkill orphan ${phase}`);
+      const hash = digest(content);
+      const objectPath = fixture.store.objectPathForTesting({ algorithm: "sha256", value: hash });
+      await mkdir(dirname(objectPath), { recursive: true, mode: 0o700 });
+      await writeFile(objectPath, content, { mode: 0o600 });
+      const old = new Date("2020-01-01T00:00:00.000Z");
+      await utimes(objectPath, old, old);
+      const command = {
+        schemaVersion: "1" as const,
+        runId: `maintenance-sigkill-${phase}`,
+        commandId: `maintenance-sigkill-command-${phase}`,
+        idempotencyKey: `maintenance-sigkill-idem-${phase}`,
+        projectId,
+        actorId: "actor-artifacts",
+        authorization: authorization(),
+        requiredCapability: "engineering-data.freeze" as const,
+        policyRef,
+        dryRun: false,
+      };
+      await killChildAtFailpoint(
+        phase,
+        fixture.postgres.app,
+        fixture.rootDirectory,
+        artifactPolicy(),
+        command,
+        "sweep",
+      );
+      const fresh = await createContentAddressedArtifactStore({
+        ...fixture.postgres.app,
+        rootDirectory: fixture.rootDirectory,
+        policy: artifactPolicy(),
+      });
+      try {
+        await fresh.maintenance.sweepOrphans(command);
+      } finally {
+        await fresh.close();
+      }
+      await expect(stat(objectPath)).rejects.toBeDefined();
+      await expect(
+        stat(join(fixture.rootDirectory, "quarantine", command.runId, hash)),
+      ).rejects.toBeDefined();
+    }
+  }, 180_000);
+
   it("read only resolves verified after complete streaming reads", async () => {
     const content = encoder.encode("readable content");
     const result = await fixture.store.put(
@@ -340,6 +886,24 @@ describe("content-addressed artifact store", () => {
     const second = await fixture.store.open(readRequest("read-cancel", result.artifactRef));
     await second.content[Symbol.asyncIterator]().return?.();
     await expect(second.verified).rejects.toMatchObject({ code: "ARTIFACT_INTEGRITY_FAILURE" });
+    const accessRows = await fixture.postgres.adminPool.query<{
+      request_id: string;
+      outcome: string;
+      diagnostic_ref: unknown;
+    }>(
+      `SELECT request_id, outcome, diagnostic_ref
+       FROM business.artifact_access_records
+       WHERE request_id IN ('request-read', 'request-read-cancel')
+       ORDER BY request_id, outcome`,
+    );
+    expect(accessRows.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ request_id: "request-read", outcome: "authorized" }),
+        expect.objectContaining({ request_id: "request-read", outcome: "succeeded" }),
+        expect.objectContaining({ request_id: "request-read-cancel", outcome: "authorized" }),
+        expect.objectContaining({ request_id: "request-read-cancel", outcome: "cancelled" }),
+      ]),
+    );
   });
 
   it("access inheritance preserves parent evidence without widening it", async () => {
@@ -388,6 +952,12 @@ describe("content-addressed artifact store", () => {
       ),
       "ARTIFACT_ACCESS_DENIED",
     );
+    const denied = await fixture.postgres.adminPool.query<{ outcome: string }>(
+      `SELECT outcome
+       FROM business.artifact_access_records
+       WHERE request_id = 'request-child-denied'`,
+    );
+    expect(denied.rows).toEqual([{ outcome: "denied" }]);
   });
 
   it("reference guard runs in a transaction and hides missing objects", async () => {
@@ -493,23 +1063,161 @@ describe("content-addressed artifact store", () => {
     );
   });
 
+  it("maps missing, cross-project, and unauthorized parents to access denial before staging", async () => {
+    const missingBefore = await fixture.store.listObjectHashesForTesting();
+    await expectArtifactError(
+      fixture.store.put(
+        putCommand("parent-missing", {
+          artifactId: "artifact-parent-missing",
+          parentArtifactRefs: [
+            {
+              kind: "content-artifact",
+              reference: { entityId: "does-not-exist", versionId: `sha256:${"1".repeat(64)}` },
+            },
+          ],
+        }),
+        textChunks("must not stage"),
+      ),
+      "ARTIFACT_ACCESS_DENIED",
+    );
+    expect(await fixture.store.listObjectHashesForTesting()).toEqual(missingBefore);
+
+    const otherParent = await fixture.store.put(
+      putCommand("parent-other-project", {
+        artifactId: "artifact-parent-other-project",
+        authorization: authorization("actor-other-project", { project: "project-other" }),
+      }),
+      textChunks("other project parent"),
+    );
+    const crossProjectBefore = await fixture.store.listObjectHashesForTesting();
+    await expectArtifactError(
+      fixture.store.put(
+        putCommand("parent-cross-project", {
+          artifactId: "artifact-parent-cross-project",
+          parentArtifactRefs: [otherParent.artifactRef],
+        }),
+        textChunks("must not stage"),
+      ),
+      "ARTIFACT_ACCESS_DENIED",
+    );
+    expect(await fixture.store.listObjectHashesForTesting()).toEqual(crossProjectBefore);
+
+    const restrictedParent = await fixture.store.put(
+      putCommand("parent-restricted", {
+        artifactId: "artifact-parent-restricted",
+        authorization: authorization("actor-restricted", {
+          scopes: [scope("parent")],
+          grants: [grant("parent")],
+        }),
+      }),
+      textChunks("restricted parent"),
+    );
+    const unauthorizedBefore = await fixture.store.listObjectHashesForTesting();
+    await expectArtifactError(
+      fixture.store.put(
+        putCommand("parent-unauthorized", {
+          artifactId: "artifact-parent-unauthorized",
+          authorization: authorization("actor-without-parent", {
+            scopes: [scope("all")],
+            grants: [grant("all")],
+          }),
+          parentArtifactRefs: [restrictedParent.artifactRef],
+        }),
+        textChunks("must not stage"),
+      ),
+      "ARTIFACT_ACCESS_DENIED",
+    );
+    expect(await fixture.store.listObjectHashesForTesting()).toEqual(unauthorizedBefore);
+
+    const missingScopeParent = await fixture.store.put(
+      putCommand("parent-missing-scope", {
+        artifactId: "artifact-parent-missing-scope",
+        authorization: authorization("actor-parent-missing-scope", {
+          scopes: [scope("all"), scope("parent")],
+          grants: [grant("all"), grant("parent")],
+        }),
+      }),
+      textChunks("scope parent"),
+    );
+    await expectArtifactError(
+      fixture.store.put(
+        putCommand("parent-missing-scope-child", {
+          artifactId: "artifact-parent-missing-scope-child",
+          authorization: authorization("actor-missing-scope-child", {
+            scopes: [scope("all")],
+            grants: [grant("all"), grant("parent")],
+          }),
+          parentArtifactRefs: [missingScopeParent.artifactRef],
+        }),
+        textChunks("must not stage"),
+      ),
+      "ARTIFACT_ACCESS_DENIED",
+    );
+
+    const missingGrantParent = await fixture.store.put(
+      putCommand("parent-missing-grant", {
+        artifactId: "artifact-parent-missing-grant",
+        authorization: authorization("actor-parent-missing-grant", {
+          scopes: [scope("all"), scope("parent")],
+          grants: [grant("all"), grant("parent")],
+        }),
+      }),
+      textChunks("grant parent"),
+    );
+    await expectArtifactError(
+      fixture.store.put(
+        putCommand("parent-missing-grant-child", {
+          artifactId: "artifact-parent-missing-grant-child",
+          authorization: authorization("actor-missing-grant-child", {
+            scopes: [scope("all"), scope("parent")],
+            grants: [grant("all")],
+          }),
+          parentArtifactRefs: [missingGrantParent.artifactRef],
+        }),
+        textChunks("must not stage"),
+      ),
+      "ARTIFACT_ACCESS_DENIED",
+    );
+
+    await expectArtifactError(
+      fixture.maintenance.sweepOrphans({
+        schemaVersion: "1",
+        runId: "wrong-policy-sweep",
+        commandId: "wrong-policy-command",
+        idempotencyKey: "wrong-policy-idem",
+        projectId,
+        actorId: "actor-artifacts",
+        authorization: authorization(),
+        requiredCapability: "engineering-data.freeze",
+        policyRef: { entityId: "wrong-policy", versionId: "v1" },
+        dryRun: true,
+      }),
+      "ARTIFACT_INPUT_INVALID",
+    );
+  });
+
   it("hash manifest writes deterministically and reconciles database and files", async () => {
-    const result = await fixture.maintenance.createHashManifest({
+    await fixture.store.put(
+      putCommand("hash-source", { artifactId: "hash-source" }),
+      textChunks("hash source"),
+    );
+    const command = {
       schemaVersion: "1",
       commandId: "hash-manifest-command",
       idempotencyKey: "hash-manifest-idem",
       projectId,
       actorId: "actor-artifacts",
       authorization: authorization(),
-      requiredCapability: "engineering-data.read",
+      requiredCapability: "engineering-data.freeze",
       manifestId: "hash-manifest",
       backupBatchRef: { entityId: "backup", versionId: "v1" },
       databaseSnapshotRef: { entityId: "database", versionId: "v1" },
       fileSnapshotRef: { entityId: "files", versionId: "v1" },
       purposeCode: "artifact-hash-manifest",
       generatedAt: ARTIFACT_TEST_TIMESTAMP,
-      policy: artifactPolicy(),
-    });
+      policyRef,
+    } as const;
+    const result = await fixture.maintenance.createHashManifest(command);
     const request = {
       schemaVersion: "1" as const,
       runId: "reconcile-run",
@@ -517,11 +1225,10 @@ describe("content-addressed artifact store", () => {
       mode: "audit" as const,
       authorization: authorization(),
       requiredCapability: "engineering-data.read" as const,
-      policy: artifactPolicy(),
+      policyRef,
       hashManifestRef: result.artifactRef,
       databaseSnapshotRef: { entityId: "database", versionId: "v1" },
       fileSnapshotRef: { entityId: "files", versionId: "v1" },
-      observedBefore: "2040-01-01T00:00:00.000Z",
     };
     const handle = fixture.maintenance.reconcile(request);
     const findings = [];
@@ -529,6 +1236,121 @@ describe("content-addressed artifact store", () => {
     const summary = await handle.summary;
     expect(findings.filter((finding) => finding.kind === "complete").length).toBeGreaterThan(0);
     expect(summary.passed).toBe(true);
+    await fixture.store.put(
+      putCommand("hash-replay-marker", { artifactId: "hash-replay-marker" }),
+      textChunks("change the current snapshot"),
+    );
+    const replay = await fixture.maintenance.createHashManifest(command);
+    expect(replay.replayed).toBe(true);
+    expect(replay.artifactRef).toEqual(result.artifactRef);
+  });
+
+  it("keeps historical versions visible while excluding only the exact hash reference", async () => {
+    const first = await fixture.maintenance.createHashManifest({
+      schemaVersion: "1",
+      commandId: "hash-history-command-1",
+      idempotencyKey: "hash-history-idem-1",
+      projectId,
+      actorId: "actor-artifacts",
+      authorization: authorization(),
+      requiredCapability: "engineering-data.freeze",
+      manifestId: "hash-history-manifest",
+      backupBatchRef: { entityId: "backup-history", versionId: "v1" },
+      databaseSnapshotRef: { entityId: "database-history", versionId: "v1" },
+      fileSnapshotRef: { entityId: "files-history", versionId: "v1" },
+      purposeCode: "artifact-hash-manifest",
+      generatedAt: ARTIFACT_TEST_TIMESTAMP,
+      policyRef,
+    });
+    await fixture.store.put(
+      putCommand("hash-history-marker", { artifactId: "hash-history-marker" }),
+      textChunks("new historical input"),
+    );
+    const second = await fixture.maintenance.createHashManifest({
+      schemaVersion: "1",
+      commandId: "hash-history-command-2",
+      idempotencyKey: "hash-history-idem-2",
+      projectId,
+      actorId: "actor-artifacts",
+      authorization: authorization(),
+      requiredCapability: "engineering-data.freeze",
+      manifestId: "hash-history-manifest",
+      backupBatchRef: { entityId: "backup-history-2", versionId: "v1" },
+      databaseSnapshotRef: { entityId: "database-history-2", versionId: "v1" },
+      fileSnapshotRef: { entityId: "files-history-2", versionId: "v1" },
+      purposeCode: "artifact-hash-manifest",
+      generatedAt: ARTIFACT_TEST_TIMESTAMP,
+      policyRef,
+    });
+    expect(second.artifactRef.reference.versionId).not.toBe(first.artifactRef.reference.versionId);
+    const handle = fixture.maintenance.reconcile({
+      schemaVersion: "1",
+      runId: "hash-history-reconcile",
+      projectId,
+      mode: "audit",
+      authorization: authorization(),
+      requiredCapability: "engineering-data.read",
+      policyRef,
+      hashManifestRef: first.artifactRef,
+      databaseSnapshotRef: { entityId: "database-history", versionId: "v1" },
+      fileSnapshotRef: { entityId: "files-history", versionId: "v1" },
+    });
+    const findings = [];
+    for await (const finding of handle.findings) findings.push(finding);
+    await handle.summary;
+    expect(
+      findings.some(
+        (finding) =>
+          finding.kind === "manifest-conflict" &&
+          finding.artifactRef.reference.entityId === "hash-history-manifest" &&
+          finding.artifactRef.reference.versionId === second.artifactRef.reference.versionId,
+      ),
+    ).toBe(true);
+  });
+
+  it("blocks recovery before findings when any project manifest is unauthorized", async () => {
+    const hash = await fixture.maintenance.createHashManifest({
+      schemaVersion: "1",
+      commandId: "hash-recovery-auth-command",
+      idempotencyKey: "hash-recovery-auth-idem",
+      projectId,
+      actorId: "actor-artifacts",
+      authorization: authorization(),
+      requiredCapability: "engineering-data.freeze",
+      manifestId: "hash-recovery-auth-manifest",
+      backupBatchRef: { entityId: "backup-recovery-auth", versionId: "v1" },
+      databaseSnapshotRef: { entityId: "database-recovery-auth", versionId: "v1" },
+      fileSnapshotRef: { entityId: "files-recovery-auth", versionId: "v1" },
+      purposeCode: "artifact-hash-manifest",
+      generatedAt: ARTIFACT_TEST_TIMESTAMP,
+      policyRef,
+    });
+    const restrictedAuthorization = authorization("actor-recovery-restricted", {
+      scopes: [scope("all")],
+      grants: [grant("all")],
+      capabilities: ["engineering-data.freeze"],
+    });
+    const handle = fixture.maintenance.reconcile({
+      schemaVersion: "1",
+      runId: "recovery-auth-blocked",
+      projectId,
+      mode: "recovery",
+      authorization: restrictedAuthorization,
+      requiredCapability: "engineering-data.freeze",
+      policyRef,
+      hashManifestRef: hash.artifactRef,
+      databaseSnapshotRef: { entityId: "database-recovery-auth", versionId: "v1" },
+      fileSnapshotRef: { entityId: "files-recovery-auth", versionId: "v1" },
+    });
+    const findings: unknown[] = [];
+    await expectArtifactError(
+      (async () => {
+        for await (const finding of handle.findings) findings.push(finding);
+      })(),
+      "ARTIFACT_RECOVERY_BLOCKED",
+    );
+    expect(findings).toHaveLength(0);
+    await expect(handle.summary).rejects.toMatchObject({ code: "ARTIFACT_RECOVERY_BLOCKED" });
   });
 
   it("reconcile blocks missing content and reports stale staging", async () => {
@@ -544,14 +1366,14 @@ describe("content-addressed artifact store", () => {
       projectId,
       actorId: "actor-artifacts",
       authorization: authorization(),
-      requiredCapability: "engineering-data.read",
+      requiredCapability: "engineering-data.freeze",
       manifestId: "hash-manifest-edge",
       backupBatchRef: { entityId: "backup-edge", versionId: "v1" },
       databaseSnapshotRef: { entityId: "database-edge", versionId: "v1" },
       fileSnapshotRef: { entityId: "files-edge", versionId: "v1" },
       purposeCode: "artifact-hash-manifest",
       generatedAt: ARTIFACT_TEST_TIMESTAMP,
-      policy: artifactPolicy(),
+      policyRef,
     });
     await rm(fixture.store.objectPathForTesting(result.manifest.content.hash));
     const stalePath = join(fixture.rootDirectory, "staging", "stale-edge.part");
@@ -564,12 +1386,11 @@ describe("content-addressed artifact store", () => {
       projectId,
       mode: "recovery",
       authorization: authorization(),
-      requiredCapability: "engineering-data.read",
-      policy: artifactPolicy(),
+      requiredCapability: "engineering-data.freeze",
+      policyRef,
       hashManifestRef: hashManifest.artifactRef,
       databaseSnapshotRef: { entityId: "database-edge", versionId: "v1" },
       fileSnapshotRef: { entityId: "files-edge", versionId: "v1" },
-      observedBefore: "2040-01-01T00:00:00.000Z",
     });
     const findings = [];
     for await (const finding of handle.findings) findings.push(finding);
@@ -596,14 +1417,14 @@ describe("content-addressed artifact store", () => {
       projectId,
       actorId: "actor-artifacts",
       authorization: authorization(),
-      requiredCapability: "engineering-data.read",
+      requiredCapability: "engineering-data.freeze",
       manifestId: "hash-manifest-corrupt",
       backupBatchRef: { entityId: "backup-corrupt", versionId: "v1" },
       databaseSnapshotRef: { entityId: "database-corrupt", versionId: "v1" },
       fileSnapshotRef: { entityId: "files-corrupt", versionId: "v1" },
       purposeCode: "artifact-hash-manifest",
       generatedAt: ARTIFACT_TEST_TIMESTAMP,
-      policy: artifactPolicy(),
+      policyRef,
     });
     const objectPath = fixture.store.objectPathForTesting(result.manifest.content.hash);
     await writeFile(objectPath, encoder.encode("tampered corruption"), { mode: 0o600 });
@@ -614,11 +1435,10 @@ describe("content-addressed artifact store", () => {
       mode: "audit",
       authorization: authorization(),
       requiredCapability: "engineering-data.read",
-      policy: artifactPolicy(),
+      policyRef,
       hashManifestRef: hashManifest.artifactRef,
       databaseSnapshotRef: { entityId: "database-corrupt", versionId: "v1" },
       fileSnapshotRef: { entityId: "files-corrupt", versionId: "v1" },
-      observedBefore: "2040-01-01T00:00:00.000Z",
     });
     const findings = [];
     for await (const finding of handle.findings) findings.push(finding);
@@ -645,15 +1465,16 @@ describe("content-addressed artifact store", () => {
       projectId,
       actorId: "actor-artifacts",
       authorization: authorization(),
-      requiredCapability: "engineering-data.write" as const,
-      policy: artifactPolicy(),
-      observedBefore: "2030-01-01T00:00:01.000Z",
+      requiredCapability: "engineering-data.freeze" as const,
+      policyRef,
       dryRun: false,
     };
     failAt = "audit";
     await expectArtifactError(fixture.maintenance.sweepOrphans(command), "ARTIFACT_IO_FAILURE");
     failAt = undefined;
-    await expect(truncate(orphanPath, 0)).resolves.toBeUndefined();
+    const quarantinedPath = join(fixture.rootDirectory, "quarantine", command.runId, orphanHash);
+    await expect(stat(quarantinedPath)).resolves.toBeDefined();
+    await expect(truncate(orphanPath, 0)).rejects.toBeDefined();
     const swept = await fixture.maintenance.sweepOrphans({
       ...command,
       runId: "orphan-audit-restore-2",
@@ -677,9 +1498,8 @@ describe("content-addressed artifact store", () => {
           projectId,
           actorId: "actor-artifacts",
           authorization: authorization(),
-          requiredCapability: "engineering-data.write",
-          policy: artifactPolicy({ registrationTimeoutMs: 50, orphanGracePeriodMs: 1_000 }),
-          observedBefore: "2040-01-01T00:00:00.000Z",
+          requiredCapability: "engineering-data.freeze",
+          policyRef,
           dryRun: true,
         }),
         "ARTIFACT_MAINTENANCE_BUSY",
@@ -706,9 +1526,8 @@ describe("content-addressed artifact store", () => {
       projectId,
       actorId: "actor-artifacts",
       authorization: authorization(),
-      requiredCapability: "engineering-data.write" as const,
-      policy: artifactPolicy(),
-      observedBefore: "2030-01-01T00:00:01.000Z",
+      requiredCapability: "engineering-data.freeze" as const,
+      policyRef,
       dryRun: true,
     };
     const dryRun = await fixture.maintenance.sweepOrphans(command);
@@ -722,6 +1541,51 @@ describe("content-addressed artifact store", () => {
     });
     expect(swept.orphanRemoved).toBeGreaterThanOrEqual(1);
     await expect(truncate(path, 0)).rejects.toBeDefined();
+  });
+
+  it("continues through every bounded maintenance batch", async () => {
+    const boundedRoot = join(fixture.rootDirectory, "bounded-sweep");
+    const boundedPolicy = artifactPolicy({ maintenanceBatchSize: 2 });
+    const boundedStore = await createFilesystemArtifactStore({
+      rootDirectory: boundedRoot,
+      policy: boundedPolicy,
+      registry: fixture.registry,
+      transactionUnit: fixture.transactionUnit,
+    });
+    try {
+      const old = new Date("2020-01-01T00:00:00.000Z");
+      for (let index = 0; index < 5; index += 1) {
+        const content = encoder.encode(`bounded orphan ${index}`);
+        const objectPath = boundedStore.objectPathForTesting({
+          algorithm: "sha256",
+          value: digest(content),
+        });
+        await mkdir(dirname(objectPath), { recursive: true, mode: 0o700 });
+        await writeFile(objectPath, content, { mode: 0o600 });
+        await utimes(objectPath, old, old);
+      }
+      const runId = "bounded-sweep-run";
+      await new ArtifactMaintenance({
+        rootDirectory: boundedRoot,
+        policy: boundedPolicy,
+        store: boundedStore,
+        registry: fixture.registry,
+      }).sweepOrphans({
+        schemaVersion: "1",
+        runId,
+        commandId: "bounded-sweep-command",
+        idempotencyKey: "bounded-sweep-idem",
+        projectId,
+        actorId: "actor-artifacts",
+        authorization: authorization(),
+        requiredCapability: "engineering-data.freeze",
+        policyRef,
+        dryRun: false,
+      });
+      expect((await fixture.registry.listMaintenanceBatches(projectId, runId)).length).toBe(3);
+    } finally {
+      await boundedStore.close();
+    }
   });
 
   it("integrity rejects a symlink in the content-addressed object path", async () => {
@@ -739,12 +1603,104 @@ describe("content-addressed artifact store", () => {
       fixture.store.open(readRequest("symlink", result.artifactRef)),
       "ARTIFACT_INTEGRITY_FAILURE",
     );
-    await rm(path);
+    const integrity = await fixture.postgres.adminPool.query<{
+      outcome: string;
+      diagnostic_ref: unknown;
+    }>(
+      `SELECT outcome, diagnostic_ref
+       FROM business.artifact_access_records
+       WHERE request_id = 'request-symlink' AND outcome = 'integrity-failed'`,
+    );
+    expect(integrity.rows).toEqual([
+      expect.objectContaining({ outcome: "integrity-failed", diagnostic_ref: expect.anything() }),
+    ]);
+    await rm(path, { recursive: true });
     await rm(`${path}.outside`);
     await fixture.store.put(
       putCommand("symlink", { artifactId: "artifact-symlink" }),
       chunks(content),
     );
+    await rm(path);
+    await mkdir(path, { mode: 0o700 });
+    await expectArtifactError(
+      fixture.store.open(readRequest("directory", result.artifactRef)),
+      "ARTIFACT_INTEGRITY_FAILURE",
+    );
+    await rm(path, { recursive: true });
+    await fixture.store.put(
+      putCommand("symlink", { artifactId: "artifact-symlink" }),
+      chunks(content),
+    );
+    await chmod(path, 0o000);
+    await expectArtifactError(
+      fixture.store.open(readRequest("permissions", result.artifactRef)),
+      "ARTIFACT_IO_FAILURE",
+    );
+    await chmod(path, 0o600);
+  });
+
+  it("integrity rejects a Unix socket in the content-addressed object path", async () => {
+    const rootDirectory = await mkdtemp(join(tmpdir(), "c04-socket-"));
+    const store = await createFilesystemArtifactStore({
+      rootDirectory,
+      policy: artifactPolicy(),
+      registry: fixture.registry,
+      transactionUnit: fixture.transactionUnit,
+    });
+    let server: ReturnType<typeof createServer> | undefined;
+    try {
+      const result = await store.put(
+        putCommand("unix-socket", { artifactId: "artifact-unix-socket" }),
+        textChunks("unix socket target"),
+      );
+      const path = store.objectPathForTesting(result.manifest.content.hash);
+      await rm(path);
+      server = createServer();
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(path, resolve);
+      });
+      await expectArtifactError(
+        store.open(readRequest("unix-socket", result.artifactRef)),
+        "ARTIFACT_INTEGRITY_FAILURE",
+      );
+    } finally {
+      await new Promise<void>((resolve) => {
+        if (server === undefined) {
+          resolve();
+          return;
+        }
+        server.close(() => resolve());
+      });
+      await store.close();
+      await rm(rootDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("records a diagnostic before rejecting a truncated object", async () => {
+    const content = encoder.encode("truncate me");
+    const result = await fixture.store.put(
+      putCommand("truncated", { artifactId: "artifact-truncated" }),
+      textChunks("truncate me"),
+    );
+    const path = fixture.store.objectPathForTesting(result.manifest.content.hash);
+    await truncate(path, content.byteLength - 1);
+    await expectArtifactError(
+      fixture.store.open(readRequest("truncated", result.artifactRef)),
+      "ARTIFACT_INTEGRITY_FAILURE",
+    );
+    const records = await fixture.postgres.adminPool.query<{
+      outcome: string;
+      diagnostic_ref: unknown;
+    }>(
+      `SELECT outcome, diagnostic_ref
+       FROM business.artifact_access_records
+       WHERE request_id = 'request-truncated' AND outcome = 'integrity-failed'`,
+    );
+    expect(records.rows).toEqual([
+      expect.objectContaining({ outcome: "integrity-failed", diagnostic_ref: expect.anything() }),
+    ]);
+    await writeFile(path, content, { mode: 0o600 });
   });
 
   it("performance keeps large and concurrent transfers bounded to configured chunks", async () => {
@@ -752,17 +1708,15 @@ describe("content-addressed artifact store", () => {
     chunk.fill(17);
     const storageBefore = await statfs(fixture.rootDirectory);
     const initialObjects = await fixture.store.listObjectHashesForTesting();
-    let peakHeapBytes = process.memoryUsage().heapUsed;
-    const sampleHeap = () => {
-      peakHeapBytes = Math.max(peakHeapBytes, process.memoryUsage().heapUsed);
-    };
+    const sampler = startPerformanceSampling(fixture.rootDirectory);
+    const largeByteLength = 256 * 1024 * 1024;
     const largeHash = createHash("sha256");
     for (let index = 0; index < 256; index += 1) largeHash.update(chunk);
     const coldWriteStarted = performance.now();
     const large = await fixture.store.put(
       putCommand("large", {
         artifactId: "artifact-large",
-        expectedByteLength: 256 * 1024 * 1024,
+        expectedByteLength: largeByteLength,
         expectedHash: { algorithm: "sha256", value: largeHash.digest("hex") },
       }),
       (async function* () {
@@ -770,7 +1724,6 @@ describe("content-addressed artifact store", () => {
       })(),
     );
     const coldWriteMs = performance.now() - coldWriteStarted;
-    sampleHeap();
     const read = await fixture.store.open(readRequest("large", large.artifactRef));
     const readHash = createHash("sha256");
     let readLength = 0;
@@ -782,32 +1735,31 @@ describe("content-addressed artifact store", () => {
     }
     await read.verified;
     const hotReadMs = performance.now() - hotReadStarted;
-    sampleHeap();
-    expect(readLength).toBe(256 * 1024 * 1024);
+    expect(readLength).toBe(largeByteLength);
     expect(readHash.digest("hex")).toBe(large.manifest.content.hash.value);
 
     const concurrentStarted = performance.now();
     const concurrent = await Promise.all(
-      Array.from({ length: 8 }, (_, index) =>
+      Array.from({ length: 16 }, (_, index) =>
         fixture.store.put(
           putCommand(`concurrent-${index}`, { artifactId: `artifact-concurrent-${index}` }),
           (async function* () {
-            const payload = index < 4 ? chunk : new Uint8Array(chunk.length).fill(index + 17);
+            const payload = index < 8 ? chunk : new Uint8Array(chunk.length).fill(index + 17);
             for (let part = 0; part < 16; part += 1) yield payload;
           })(),
         ),
       ),
     );
     const concurrentWriteMs = performance.now() - concurrentStarted;
-    sampleHeap();
     expect(
-      new Set(concurrent.slice(0, 4).map((item) => item.artifactRef.reference.versionId)).size,
+      new Set(concurrent.slice(0, 8).map((item) => item.artifactRef.reference.versionId)).size,
     ).toBe(1);
     expect(
-      new Set(concurrent.slice(4).map((item) => item.artifactRef.reference.versionId)).size,
-    ).toBe(4);
+      new Set(concurrent.slice(8).map((item) => item.artifactRef.reference.versionId)).size,
+    ).toBe(8);
     const storageAfter = await statfs(fixture.rootDirectory);
     const finalObjects = await fixture.store.listObjectHashesForTesting();
+    const performanceMetrics = sampler.stop();
     const requests = 1 + concurrent.length;
     const uniqueObjects = finalObjects.length - initialObjects.length;
     console.info(
@@ -822,9 +1774,15 @@ describe("content-addressed artifact store", () => {
           freeBytesAfter: Number(storageAfter.bfree) * Number(storageAfter.bsize),
         },
         coldWriteMs,
+        coldWriteMiBPerSecond: largeByteLength / 1024 / 1024 / (coldWriteMs / 1000),
         hotReadMs,
+        hotReadMiBPerSecond: largeByteLength / 1024 / 1024 / (hotReadMs / 1000),
         concurrentWriteMs,
-        peakHeapBytes,
+        concurrentWriteMiBPerSecond:
+          (16 * 16 * 1024 * 1024) / 1024 / 1024 / (concurrentWriteMs / 1000),
+        peakHeapBytes: performanceMetrics.peakHeapBytes,
+        peakFileDescriptors: performanceMetrics.peakFileDescriptors,
+        peakStagingFiles: performanceMetrics.peakStagingFiles,
         requests,
         uniqueObjects,
         dedupRate: 1 - uniqueObjects / requests,
@@ -834,66 +1792,97 @@ describe("content-addressed artifact store", () => {
 
   it("performance reconciles a ten-thousand-entry streamed manifest on real PostgreSQL", async () => {
     const syntheticProjectId = "project-artifacts-synthetic";
-    const lines: string[] = [];
-    const header = {
-      schemaVersion: "1",
-      manifestId: "synthetic-manifest",
-      projectId: syntheticProjectId,
-      backupBatchRef: { entityId: "backup-large", versionId: "v1" },
-      databaseSnapshotRef: { entityId: "database-large", versionId: "v1" },
-      fileSnapshotRef: { entityId: "files-large", versionId: "v1" },
-      generatedAt: ARTIFACT_TEST_TIMESTAMP,
-    };
-    lines.push(`${canonicalJson(header)}\n`);
-    const entry = (index: number) => ({
-      artifactRef: {
-        kind: "content-artifact" as const,
-        reference: {
-          entityId: `synthetic-${String(index).padStart(5, "0")}`,
-          versionId: `sha256:${"a".repeat(64)}`,
-        },
-      },
-      artifactKind: "content" as const,
-      content: { hash: { algorithm: "sha256" as const, value: "a".repeat(64) }, byteLength: 1 },
-      mediaType: "application/octet-stream",
-      manifestSha256: "b".repeat(64),
-      authorizationPolicyRefs: [policyRef],
-      evidenceReferencesSha256: "c".repeat(64),
+    const syntheticAuthorization = authorization("actor-artifacts", {
+      project: syntheticProjectId,
     });
-    const entryHash = createHash("sha256");
-    for (let index = 0; index < 10_000; index += 1) {
-      const line = `${canonicalJson(entry(index))}\n`;
-      lines.push(line);
-      entryHash.update(encoder.encode(line));
+    const performanceRoot = await mkdtemp(join(tmpdir(), "c04-artifact-performance-"));
+    const performancePolicy = artifactPolicy();
+    const performanceStore = await createFilesystemArtifactStore({
+      rootDirectory: performanceRoot,
+      policy: performancePolicy,
+      registry: fixture.registry,
+      transactionUnit: fixture.transactionUnit,
+    });
+    const performanceMaintenance = new ArtifactMaintenance({
+      rootDirectory: performanceRoot,
+      policy: performancePolicy,
+      store: performanceStore,
+      registry: fixture.registry,
+    });
+    try {
+      const seed = await performanceStore.put(
+        putCommand("synthetic-seed", {
+          artifactId: "synthetic-seed",
+          authorization: syntheticAuthorization,
+        }),
+        textChunks("s"),
+      );
+      await seedSyntheticManifests(fixture, syntheticProjectId, seed, 10_000);
+      const storageBefore = await statfs(performanceRoot);
+      const sampler = startPerformanceSampling(performanceRoot);
+      const hashStarted = performance.now();
+      const hash = await performanceMaintenance.createHashManifest({
+        schemaVersion: "1",
+        commandId: "synthetic-hash-command",
+        idempotencyKey: "synthetic-hash-idem",
+        projectId: syntheticProjectId,
+        actorId: "actor-artifacts",
+        authorization: syntheticAuthorization,
+        requiredCapability: "engineering-data.freeze",
+        manifestId: "synthetic-manifest",
+        backupBatchRef: { entityId: "backup-large", versionId: "v1" },
+        databaseSnapshotRef: { entityId: "database-large", versionId: "v1" },
+        fileSnapshotRef: { entityId: "files-large", versionId: "v1" },
+        purposeCode: "artifact-hash-manifest",
+        generatedAt: ARTIFACT_TEST_TIMESTAMP,
+        policyRef,
+      });
+      const hashManifestMs = performance.now() - hashStarted;
+      const reconcileStarted = performance.now();
+      const request = {
+        schemaVersion: "1" as const,
+        runId: "synthetic-reconcile",
+        projectId: syntheticProjectId,
+        mode: "audit" as const,
+        authorization: syntheticAuthorization,
+        requiredCapability: "engineering-data.read" as const,
+        policyRef,
+        hashManifestRef: hash.artifactRef,
+        databaseSnapshotRef: { entityId: "database-large", versionId: "v1" },
+        fileSnapshotRef: { entityId: "files-large", versionId: "v1" },
+      };
+      const handle = performanceMaintenance.reconcile(request);
+      let count = 0;
+      for await (const finding of handle.findings) {
+        if (finding.kind === "complete") count += 1;
+      }
+      const summary = await handle.summary;
+      const reconcileMs = performance.now() - reconcileStarted;
+      const storageAfter = await statfs(performanceRoot);
+      const performanceMetrics = sampler.stop();
+      console.info(
+        "artifact 10k performance",
+        JSON.stringify({
+          node: process.version,
+          os: `${process.platform}/${process.arch}`,
+          count,
+          hashManifestMs,
+          hashManifestEntriesPerSecond: count / (hashManifestMs / 1000),
+          reconcileMs,
+          reconcileEntriesPerSecond: count / (reconcileMs / 1000),
+          peakHeapBytes: performanceMetrics.peakHeapBytes,
+          peakFileDescriptors: performanceMetrics.peakFileDescriptors,
+          peakStagingFiles: performanceMetrics.peakStagingFiles,
+          storageFreeBytesBefore: Number(storageBefore.bfree) * Number(storageBefore.bsize),
+          storageFreeBytesAfter: Number(storageAfter.bfree) * Number(storageAfter.bsize),
+        }),
+      );
+      expect(count).toBe(10_001);
+      expect(summary.counts.complete).toBe(10_001);
+      expect(summary.passed).toBe(true);
+    } finally {
+      await performanceStore.close();
+      await rm(performanceRoot, { recursive: true, force: true });
     }
-    lines.push(
-      `${canonicalJson({ entryCount: 10_000, entriesSha256: entryHash.digest("hex") })}\n`,
-    );
-    const bytes = encoder.encode(lines.join(""));
-    const request = {
-      schemaVersion: "1" as const,
-      runId: "synthetic-reconcile",
-      projectId: syntheticProjectId,
-      mode: "audit" as const,
-      authorization: authorization("actor-artifacts", { project: syntheticProjectId }),
-      requiredCapability: "engineering-data.read" as const,
-      policy: artifactPolicy(),
-      hashManifestRef: {
-        kind: "content-artifact" as const,
-        reference: { entityId: "synthetic-manifest", versionId: `sha256:${digest(bytes)}` },
-      },
-      databaseSnapshotRef: { entityId: "database-large", versionId: "v1" },
-      fileSnapshotRef: { entityId: "files-large", versionId: "v1" },
-      observedBefore: "2040-01-01T00:00:00.000Z",
-    };
-    const handle = fixture.maintenance.reconcile(request, chunks(bytes, 32 * 1024));
-    let count = 0;
-    for await (const finding of handle.findings) {
-      if (finding.kind === "manifest-conflict") count += 1;
-    }
-    const summary = await handle.summary;
-    expect(count).toBe(10_000);
-    expect(summary.counts.manifestConflict).toBe(10_000);
-    expect(summary.passed).toBe(false);
   }, 180_000);
 });

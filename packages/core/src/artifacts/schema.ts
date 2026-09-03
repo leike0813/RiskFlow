@@ -49,6 +49,7 @@ const evidenceKey = (value: {
   sourceVersion: { entityId: string; versionId: string };
 }) =>
   `${value.locator.sourceSegmentId}/${value.sourceVersion.entityId}/${value.sourceVersion.versionId}`;
+const hashKey = (value: { value: string }): string => value.value;
 
 const sortedUnique = <T>(schema: z.ZodType<T>, key: (value: T) => string, minimum = 0) =>
   z
@@ -351,7 +352,7 @@ export const ArtifactHashManifestCommandV1Schema = z
     fileSnapshotRef: VersionReferenceSchema,
     purposeCode: IdentifierSchema,
     generatedAt: IsoDateTimeSchema,
-    policy: ArtifactStorePolicyV1Schema,
+    policyRef: VersionReferenceSchema,
   })
   .superRefine((command, context) => {
     if (command.projectId !== command.authorization.projectId) {
@@ -435,11 +436,10 @@ export const ArtifactReconcileRequestV1Schema = z
     mode: ArtifactReconcileModeV1Schema,
     authorization: AuthorizationContextV1Schema,
     requiredCapability: ModuleCapabilityV1Schema,
-    policy: ArtifactStorePolicyV1Schema,
+    policyRef: VersionReferenceSchema,
     hashManifestRef: ArtifactRefV1Schema,
     databaseSnapshotRef: VersionReferenceSchema,
     fileSnapshotRef: VersionReferenceSchema,
-    observedBefore: IsoDateTimeSchema,
   })
   .superRefine((request, context) => {
     if (request.projectId !== request.authorization.projectId) {
@@ -524,19 +524,88 @@ export const ArtifactReconcileCountsV1Schema = z.strictObject({
 });
 export type ArtifactReconcileCountsV1 = z.infer<typeof ArtifactReconcileCountsV1Schema>;
 
-export const ArtifactReconcileSummaryV1Schema = z.strictObject({
+export const ArtifactReconcileSummaryV1Schema = z
+  .strictObject({
+    schemaVersion: z.literal("1"),
+    runId: IdentifierSchema,
+    projectId: IdentifierSchema,
+    mode: ArtifactReconcileModeV1Schema,
+    policyRef: VersionReferenceSchema,
+    policySha256: hashValue,
+    runStartedAt: IsoDateTimeSchema,
+    cutoff: IsoDateTimeSchema,
+    counts: ArtifactReconcileCountsV1Schema,
+    passed: z.boolean(),
+    completedAt: IsoDateTimeSchema,
+    auditTrailRef: AuditTrailRefV1Schema.optional(),
+    diagnosticRef: DiagnosticArtifactRefV1Schema.optional(),
+  })
+  .superRefine((summary, context) => {
+    if (!summary.passed && summary.diagnosticRef === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["diagnosticRef"],
+        message: "failed reconciliation requires a diagnostic reference",
+      });
+    }
+  });
+export type ArtifactReconcileSummaryV1 = z.infer<typeof ArtifactReconcileSummaryV1Schema>;
+
+export const ArtifactMaintenanceOperationV1Schema = z.enum(["orphan-sweep", "quarantine-recovery"]);
+export type ArtifactMaintenanceOperationV1 = z.infer<typeof ArtifactMaintenanceOperationV1Schema>;
+
+export const ArtifactAccessOutcomeV1Schema = z.enum([
+  "authorized",
+  "succeeded",
+  "denied",
+  "cancelled",
+  "integrity-failed",
+]);
+export type ArtifactAccessOutcomeV1 = z.infer<typeof ArtifactAccessOutcomeV1Schema>;
+
+export const ArtifactAccessRecordV1Schema = z
+  .strictObject({
+    schemaVersion: z.literal("1"),
+    requestId: IdentifierSchema,
+    projectId: IdentifierSchema,
+    actorId: IdentifierSchema,
+    purposeCode: IdentifierSchema,
+    authorizationContextRef: AuthorizationContextRefV1Schema,
+    authorizationPolicyRef: VersionReferenceSchema,
+    outcome: ArtifactAccessOutcomeV1Schema,
+    stage: IdentifierSchema,
+    occurredAt: IsoDateTimeSchema,
+    auditTrailRef: AuditTrailRefV1Schema,
+    diagnosticRef: DiagnosticArtifactRefV1Schema.optional(),
+  })
+  .superRefine((record, context) => {
+    if (record.outcome === "integrity-failed" && record.diagnosticRef === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["diagnosticRef"],
+        message: "integrity failures require a diagnostic reference",
+      });
+    }
+  });
+export type ArtifactAccessRecordV1 = z.infer<typeof ArtifactAccessRecordV1Schema>;
+
+export const ArtifactMaintenanceBatchV1Schema = z.strictObject({
   schemaVersion: z.literal("1"),
   runId: IdentifierSchema,
+  batchNumber: positiveSafeInteger,
   projectId: IdentifierSchema,
-  mode: ArtifactReconcileModeV1Schema,
-  counts: ArtifactReconcileCountsV1Schema,
-  passed: z.boolean(),
-  startedAt: IsoDateTimeSchema,
-  completedAt: IsoDateTimeSchema,
-  auditTrailRef: AuditTrailRefV1Schema.optional(),
-  diagnosticRef: DiagnosticArtifactRefV1Schema.optional(),
+  commandId: IdentifierSchema,
+  operation: ArtifactMaintenanceOperationV1Schema,
+  policyRef: VersionReferenceSchema,
+  policySha256: hashValue,
+  runStartedAt: IsoDateTimeSchema,
+  cutoff: IsoDateTimeSchema,
+  dryRun: z.boolean(),
+  candidateHashes: sortedUnique(ArtifactHashV1Schema, hashKey).max(10_000),
+  auditTrailRef: AuditTrailRefV1Schema,
+  persistedAt: IsoDateTimeSchema,
 });
-export type ArtifactReconcileSummaryV1 = z.infer<typeof ArtifactReconcileSummaryV1Schema>;
+export type ArtifactMaintenanceBatchV1 = z.infer<typeof ArtifactMaintenanceBatchV1Schema>;
 
 export const ArtifactSweepCommandV1Schema = z
   .strictObject({
@@ -548,8 +617,7 @@ export const ArtifactSweepCommandV1Schema = z
     actorId: IdentifierSchema,
     authorization: AuthorizationContextV1Schema,
     requiredCapability: ModuleCapabilityV1Schema,
-    policy: ArtifactStorePolicyV1Schema,
-    observedBefore: IsoDateTimeSchema,
+    policyRef: VersionReferenceSchema,
     dryRun: z.boolean().default(true),
   })
   .superRefine((command, context) => {
@@ -581,6 +649,10 @@ export const ArtifactSweepResultV1Schema = z.strictObject({
   schemaVersion: z.literal("1"),
   runId: IdentifierSchema,
   projectId: IdentifierSchema,
+  policyRef: VersionReferenceSchema,
+  policySha256: hashValue,
+  runStartedAt: IsoDateTimeSchema,
+  cutoff: IsoDateTimeSchema,
   dryRun: z.boolean(),
   stagingObserved: nonNegativeSafeInteger,
   stagingRemoved: nonNegativeSafeInteger,
@@ -764,6 +836,9 @@ export const manifestHashInput = (
 
 export const manifestSha256 = (manifest: ArtifactManifestV1): string =>
   sha256CanonicalJson(manifestHashInput(manifest));
+
+export const artifactPolicySha256 = (policy: ArtifactStorePolicyV1): string =>
+  sha256CanonicalJson(ArtifactStorePolicyV1Schema.parse(policy));
 
 export const evidenceReferencesSha256 = (
   references: ArtifactManifestV1["evidenceReferences"],

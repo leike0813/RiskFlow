@@ -372,6 +372,7 @@ const assertAuthorized = (
 };
 
 export interface ArtifactManifestSnapshotReaderV1 {
+  readManifest(artifactRef: ArtifactRefV1): Promise<ArtifactManifestV1 | undefined>;
   listManifests(batchSize: number, exclude?: ArtifactRefV1): AsyncGenerator<ArtifactManifestV1>;
   close(committed?: boolean): Promise<void>;
 }
@@ -472,6 +473,26 @@ export class PostgresArtifactRegistry {
     };
     this.#activeSnapshots.add(finish);
     const reader: ArtifactManifestSnapshotReaderV1 = {
+      readManifest: async (artifactRef) => {
+        if (closed)
+          throw makeArtifactError("ARTIFACT_REGISTRY_FAILURE", "registry.snapshot.closed");
+        const validRef = ArtifactRefV1Schema.parse(artifactRef);
+        const kind = validRef.kind === "content-artifact" ? "content" : "diagnostic";
+        try {
+          const result = await client.query<ArtifactManifestRow>(
+            `SELECT ${manifestColumns.join(", ")} FROM business.artifact_manifests
+             WHERE project_id = $1 AND artifact_kind = $2 AND artifact_id = $3 AND version_id = $4`,
+            [projectId, kind, validRef.reference.entityId, validRef.reference.versionId],
+          );
+          const row = result.rows[0];
+          if (row === undefined) return undefined;
+          const manifest = manifestFromRow(row);
+          assertManifestDigest(row, manifest);
+          return manifest;
+        } catch (error) {
+          throw readError(error, "registry.snapshot.read");
+        }
+      },
       listManifests: async function* (batchSize: number, exclude?: ArtifactRefV1) {
         if (closed)
           throw makeArtifactError("ARTIFACT_REGISTRY_FAILURE", "registry.snapshot.closed");

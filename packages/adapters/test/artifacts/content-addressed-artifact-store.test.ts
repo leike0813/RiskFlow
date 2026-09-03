@@ -883,6 +883,10 @@ describe("content-addressed artifact store", () => {
     const receipt = await handle.verified;
     expect(receipt.artifactRef).toEqual(result.artifactRef);
 
+    const replay = await fixture.store.open(readRequest("read", result.artifactRef));
+    expect(await collect(replay.content)).toEqual(content);
+    await expect(replay.verified).resolves.toMatchObject({ artifactRef: result.artifactRef });
+
     const second = await fixture.store.open(readRequest("read-cancel", result.artifactRef));
     await second.content[Symbol.asyncIterator]().return?.();
     await expect(second.verified).rejects.toMatchObject({ code: "ARTIFACT_INTEGRITY_FAILURE" });
@@ -904,6 +908,7 @@ describe("content-addressed artifact store", () => {
         expect.objectContaining({ request_id: "request-read-cancel", outcome: "cancelled" }),
       ]),
     );
+    expect(accessRows.rows.filter((row) => row.request_id === "request-read")).toHaveLength(2);
   });
 
   it("access inheritance preserves parent evidence without widening it", async () => {
@@ -1351,6 +1356,63 @@ describe("content-addressed artifact store", () => {
     );
     expect(findings).toHaveLength(0);
     await expect(handle.summary).rejects.toMatchObject({ code: "ARTIFACT_RECOVERY_BLOCKED" });
+  });
+
+  it("keeps recovery authorization and findings on one database snapshot", async () => {
+    const snapshotProjectId = "project-recovery-snapshot";
+    const snapshotAuthorization = authorization("actor-artifacts", {
+      project: snapshotProjectId,
+      scopes: [scope("all")],
+      grants: [grant("all")],
+    });
+    await fixture.store.put(
+      putCommand("recovery-snapshot-source", { authorization: snapshotAuthorization }),
+      textChunks("snapshot source"),
+    );
+    const hash = await fixture.maintenance.createHashManifest({
+      schemaVersion: "1",
+      commandId: "hash-recovery-snapshot-command",
+      idempotencyKey: "hash-recovery-snapshot-idem",
+      projectId: snapshotProjectId,
+      actorId: "actor-artifacts",
+      authorization: snapshotAuthorization,
+      requiredCapability: "engineering-data.freeze",
+      manifestId: "hash-recovery-snapshot-manifest",
+      backupBatchRef: { entityId: "backup-recovery-snapshot", versionId: "v1" },
+      databaseSnapshotRef: { entityId: "database-recovery-snapshot", versionId: "v1" },
+      fileSnapshotRef: { entityId: "files-recovery-snapshot", versionId: "v1" },
+      purposeCode: "artifact-hash-manifest",
+      generatedAt: ARTIFACT_TEST_TIMESTAMP,
+      policyRef,
+    });
+    const handle = fixture.maintenance.reconcile({
+      schemaVersion: "1",
+      runId: "recovery-snapshot",
+      projectId: snapshotProjectId,
+      mode: "recovery",
+      authorization: snapshotAuthorization,
+      requiredCapability: "engineering-data.freeze",
+      policyRef,
+      hashManifestRef: hash.artifactRef,
+      databaseSnapshotRef: { entityId: "database-recovery-snapshot", versionId: "v1" },
+      fileSnapshotRef: { entityId: "files-recovery-snapshot", versionId: "v1" },
+    });
+    const findings = handle.findings[Symbol.asyncIterator]();
+    expect((await findings.next()).done).toBe(false);
+    const privateAuthorization = authorization("actor-private", {
+      project: snapshotProjectId,
+      scopes: [scope("private")],
+      grants: [grant("private")],
+    });
+    await fixture.store.put(
+      putCommand("recovery-concurrent-private", { authorization: privateAuthorization }),
+      textChunks("concurrent private content"),
+    );
+    for (;;) {
+      const finding = await findings.next();
+      if (finding.done) break;
+    }
+    await expect(handle.summary).resolves.toMatchObject({ passed: true });
   });
 
   it("reconcile blocks missing content and reports stale staging", async () => {

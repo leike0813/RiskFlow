@@ -1,0 +1,1104 @@
+import { Pool } from "pg";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { SpatialScopeRefV1 } from "@riskflow/contracts/ports";
+
+import {
+  bootstrapInitialSystemAdministrator,
+  createPostgresLocalIdentityAccess,
+  PASSWORD_POLICY_V1,
+  SESSION_TOKEN_POLICY_V1,
+} from "../../src/auth/index.js";
+import type { PostgresLocalIdentityAccess } from "../../src/auth/index.js";
+import { startAuthPostgresFixture, type AuthPostgresFixture } from "./fixture.js";
+
+const ADMIN_PASSWORD = "admin-password-v1";
+const USER_PASSWORD = "user-password-v1";
+const USER_PASSWORD_CHANGED = "user-password-changed-v1";
+const REVIEWER_PASSWORD = "reviewer-password-v1";
+const RESPONDER_PASSWORD = "responder-password-v1";
+const VIEWER_PASSWORD = "viewer-password-v1";
+const CHILD_PASSWORD = "child-password-v1";
+const THROTTLE_PASSWORD = "throttle-password-v1";
+const HMAC_KEY = new Uint8Array(32).fill(7);
+
+const mutableClock = () => {
+  let current = new Date("2030-01-01T00:00:00.000Z");
+  return {
+    now: () => new Date(current),
+    advance(milliseconds: number) {
+      current = new Date(current.getTime() + milliseconds);
+    },
+  };
+};
+
+describe.sequential("local identity and project authorization", () => {
+  let fixture: AuthPostgresFixture | undefined;
+  let access: PostgresLocalIdentityAccess | undefined;
+  let adminContext:
+    | NonNullable<
+        Awaited<ReturnType<PostgresLocalIdentityAccess["login"]>>["systemAdministrationContextRef"]
+      >
+    | undefined;
+  let adminSessionToken: string | undefined;
+  let userAccountId: string | undefined;
+  let managerSessionToken: string | undefined;
+  let managerRegistrationContext:
+    | NonNullable<Awaited<ReturnType<PostgresLocalIdentityAccess["authorize"]>>>["context"]
+    | undefined;
+  const roleAccountIds: Partial<
+    Record<"reviewer" | "field-responder" | "business-viewer" | "child" | "throttle", string>
+  > = {};
+  const roleSessionTokens: Partial<
+    Record<"reviewer" | "field-responder" | "business-viewer" | "child", string>
+  > = {};
+  let rootScopeRef: SpatialScopeRefV1 | undefined;
+  let childScopeRef: SpatialScopeRefV1 | undefined;
+  let sourceGrantId: string | undefined;
+  let sourceTwoGrantId: string | undefined;
+  let viewerProjectionDecision:
+    Awaited<ReturnType<PostgresLocalIdentityAccess["authorize"]>> | undefined;
+  const clock = mutableClock();
+  const connection = () => ({
+    ...fixture!.app,
+    hmacKey: HMAC_KEY,
+    keyVersion: "key-v1",
+    now: clock.now,
+  });
+
+  beforeAll(async () => {
+    fixture = await startAuthPostgresFixture();
+    await bootstrapInitialSystemAdministrator({
+      connection: fixture.migrator,
+      loginName: "admin001",
+      displayName: "Initial administrator",
+      password: ADMIN_PASSWORD,
+      accountId: "account-admin",
+      now: clock.now,
+    });
+    access = createPostgresLocalIdentityAccess(connection());
+  }, 180_000);
+
+  afterAll(async () => {
+    await access?.close().catch(() => undefined);
+    await fixture?.close().catch(() => undefined);
+  });
+
+  it("migration and database privileges", async () => {
+    expect(fixture).toBeDefined();
+    const tables = await fixture!.adminPool.query<{ table_name: string }>(
+      "SELECT table_name FROM information_schema.tables WHERE table_schema = 'business' AND table_name LIKE 'local_%' ORDER BY table_name",
+    );
+    expect(tables.rows.map((row) => row.table_name)).toEqual(
+      expect.arrayContaining([
+        "local_accounts",
+        "local_credentials",
+        "local_login_attempts",
+        "local_sessions",
+      ]),
+    );
+    const grants = await fixture!.adminPool.query<{ privilege_type: string }>(
+      "SELECT privilege_type FROM information_schema.role_table_grants WHERE grantee = 'riskflow_app' AND table_schema = 'business' AND table_name = 'security_audit_events'",
+    );
+    expect(grants.rows.map((row) => row.privilege_type)).toEqual(["INSERT", "SELECT"]);
+    const appPool = new Pool(fixture!.app);
+    try {
+      await expect(
+        appPool.query("DELETE FROM business.security_audit_events"),
+      ).rejects.toBeDefined();
+      await expect(
+        appPool.query("ALTER TABLE business.local_accounts ADD COLUMN should_not_exist text"),
+      ).rejects.toBeDefined();
+      await expect(
+        appPool.query("UPDATE business.local_login_attempts SET attempt_count = attempt_count"),
+      ).rejects.toBeDefined();
+      await expect(
+        appPool.query("UPDATE business.authorization_contexts SET branch = branch"),
+      ).rejects.toBeDefined();
+    } finally {
+      await appPool.end();
+    }
+  });
+
+  it("password and token primitives", () => {
+    expect(PASSWORD_POLICY_V1).toMatchObject({
+      algorithm: "scrypt",
+      cost: 131072,
+      blockSize: 8,
+      parallelization: 1,
+      keyLength: 32,
+      saltLength: 16,
+      maxmem: 268435456,
+      maxConcurrent: 4,
+    });
+    expect(SESSION_TOKEN_POLICY_V1).toMatchObject({
+      sessionIdBytes: 16,
+      nonceBytes: 16,
+      macBytes: 32,
+    });
+  });
+
+  it("bootstrap|account administration", async () => {
+    const login = await access!.login({
+      kind: "login",
+      loginAttemptId: "login-admin-1",
+      loginName: " admin001 ",
+      password: ADMIN_PASSWORD,
+    });
+    expect(login.passwordChangeRequired).toBe(true);
+    expect(login.systemAdministrationContextRef).toBeDefined();
+    await expect(
+      access!.administerIdentity({
+        kind: "create-account",
+        commandId: "command-create-before-admin-password-change",
+        idempotencyKey: "idem-create-before-admin-password-change",
+        expectedVersion: "none",
+        authorizationContextRef: login.systemAdministrationContextRef!,
+        loginName: "blocked001",
+        displayName: "Blocked account",
+        password: USER_PASSWORD,
+      }),
+    ).rejects.toMatchObject({ details: { code: "PASSWORD_CHANGE_REQUIRED" } });
+    const changed = await access!.changePassword({
+      kind: "change-password",
+      sessionToken: login.sessionToken,
+      newPassword: "admin-password-changed-v1",
+    });
+    expect(changed.passwordChangeRequired).toBe(false);
+    adminContext = changed.systemAdministrationContextRef;
+    adminSessionToken = changed.sessionToken;
+    const created = await access!.administerIdentity({
+      kind: "create-account",
+      commandId: "command-create-user",
+      idempotencyKey: "idem-create-user",
+      expectedVersion: "none",
+      authorizationContextRef: changed.systemAdministrationContextRef!,
+      loginName: "user001",
+      displayName: "User One",
+      password: USER_PASSWORD,
+    });
+    expect(created.kind).toBe("account");
+    userAccountId = created.resultRef.entityId;
+    const duplicate = await access!.administerIdentity({
+      kind: "create-account",
+      commandId: "command-create-user",
+      idempotencyKey: "idem-create-user",
+      expectedVersion: "none",
+      authorizationContextRef: changed.systemAdministrationContextRef!,
+      loginName: " USER001 ",
+      displayName: "User One",
+      password: USER_PASSWORD,
+    });
+    expect(duplicate).toEqual(created);
+
+    const additionalAccounts = [
+      ["review001", "Reviewer One", REVIEWER_PASSWORD, "reviewer"],
+      ["respond001", "Responder One", RESPONDER_PASSWORD, "field-responder"],
+      ["viewer001", "Viewer One", VIEWER_PASSWORD, "business-viewer"],
+      ["child001", "Child Viewer", CHILD_PASSWORD, "child"],
+      ["throttle001", "Throttle User", THROTTLE_PASSWORD, "throttle"],
+    ] as const;
+    for (const [loginName, displayName, password, role] of additionalAccounts) {
+      const result = await access!.administerIdentity({
+        kind: "create-account",
+        commandId: `command-create-${role}`,
+        idempotencyKey: `idem-create-${role}`,
+        expectedVersion: "none",
+        authorizationContextRef: changed.systemAdministrationContextRef!,
+        loginName,
+        displayName,
+        password,
+      });
+      roleAccountIds[role] = result.resultRef.entityId;
+    }
+  });
+
+  it("project|membership|spatial|authorize|verify", async () => {
+    expect(adminContext).toBeDefined();
+    expect(userAccountId).toBeDefined();
+    const opened = await access!.administerProject({
+      kind: "open-project",
+      projectId: "project-a",
+      commandId: "command-open-project",
+      idempotencyKey: "idem-open-project",
+      expectedVersion: "none",
+      authorizationContextRef: adminContext!,
+      initialRiskManagerAccountId: userAccountId!,
+    });
+    expect(opened.kind).toBe("project");
+    const root = await fixture!.adminPool.query<{ scope_id: string; revision_id: string }>(
+      "SELECT scope.scope_id, scope.current_revision_id AS revision_id FROM business.access_spatial_scopes scope WHERE scope.project_id = $1",
+      ["project-a"],
+    );
+    rootScopeRef = {
+      kind: "spatial-scope",
+      reference: { entityId: root.rows[0]!.scope_id, versionId: root.rows[0]!.revision_id },
+    };
+    const userLogin = await access!.login({
+      kind: "login",
+      loginAttemptId: "login-user-project",
+      loginName: "user001",
+      password: USER_PASSWORD,
+    });
+    expect(userLogin.restricted).toBe(true);
+    const userChanged = await access!.changePassword({
+      kind: "change-password",
+      sessionToken: userLogin.sessionToken,
+      newPassword: USER_PASSWORD_CHANGED,
+    });
+    managerSessionToken = userChanged.sessionToken;
+    const managerRegistration = await access!.authorize({
+      invocation: { kind: "human-session", sessionToken: userChanged.sessionToken },
+      invocationId: "authorize-manager-registration",
+      projectId: "project-a",
+      branch: "engineering-data.register-source-delivery",
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [],
+    });
+    managerRegistrationContext = managerRegistration.context;
+    const decision = await access!.authorize({
+      invocation: { kind: "human-session", sessionToken: userChanged.sessionToken },
+      invocationId: "authorize-project-query",
+      projectId: "project-a",
+      branch: "projection.query",
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [],
+    });
+    expect(decision.context.grantedCapabilities).toEqual(["projection.query"]);
+    const verified = await access!.verify({
+      authorizationContextRef: decision.contextRef,
+      invocationId: "authorize-project-query",
+      projectId: "project-a",
+      branch: "projection.query",
+      requestedSpatialScopeRefs: decision.context.spatialScopeRefs,
+      requestedSourceVersionRefs: [],
+    });
+    expect(verified.contextRef).toEqual(decision.contextRef);
+  });
+
+  it("preset roles, project isolation, spatial closure, and causal narrowing", async () => {
+    expect(managerRegistrationContext).toBeDefined();
+    expect(rootScopeRef).toBeDefined();
+    const roleCases = [
+      ["reviewer", "review-audit.decide-review", "warning-response.record-execution"],
+      ["field-responder", "warning-response.record-execution", "review-audit.decide-review"],
+      ["business-viewer", "projection.export", "warning-response.record-execution"],
+    ] as const;
+    for (const [role, allowedBranch, deniedBranch] of roleCases) {
+      await access!.administerProject({
+        kind: "revise-membership",
+        projectId: "project-a",
+        commandId: `command-membership-${role}`,
+        idempotencyKey: `idem-membership-${role}`,
+        expectedVersion: "none",
+        authorizationContextRef: managerRegistrationContext!.authorizationContextRef,
+        membershipId: `membership-${role}`,
+        accountId: roleAccountIds[role]!,
+        roles: [role],
+        spatialScopeRefs: [rootScopeRef!],
+        status: "active",
+      });
+      const login = await access!.login({
+        kind: "login",
+        loginAttemptId: `login-${role}`,
+        loginName:
+          role === "reviewer"
+            ? "review001"
+            : role === "field-responder"
+              ? "respond001"
+              : "viewer001",
+        password:
+          role === "reviewer"
+            ? REVIEWER_PASSWORD
+            : role === "field-responder"
+              ? RESPONDER_PASSWORD
+              : VIEWER_PASSWORD,
+      });
+      const changed = await access!.changePassword({
+        kind: "change-password",
+        sessionToken: login.sessionToken,
+        newPassword:
+          role === "reviewer"
+            ? REVIEWER_PASSWORD
+            : role === "field-responder"
+              ? RESPONDER_PASSWORD
+              : VIEWER_PASSWORD,
+      });
+      roleSessionTokens[role] = changed.sessionToken;
+      const allowed = await access!.authorize({
+        invocation: { kind: "human-session", sessionToken: changed.sessionToken },
+        invocationId: `authorize-${role}-allowed`,
+        projectId: "project-a",
+        branch: allowedBranch,
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      });
+      expect(allowed.context.grantedCapabilities).toHaveLength(1);
+      await expect(
+        access!.authorize({
+          invocation: { kind: "human-session", sessionToken: changed.sessionToken },
+          invocationId: `authorize-${role}-denied`,
+          projectId: "project-a",
+          branch: deniedBranch,
+          requestedSpatialScopeRefs: [],
+          requestedSourceVersionRefs: [],
+        }),
+      ).rejects.toMatchObject({ details: { code: "AUTHORIZATION_DENIED" } });
+    }
+
+    const childScope = await access!.administerProject({
+      kind: "create-spatial-scope",
+      projectId: "project-a",
+      commandId: "command-create-child-scope",
+      idempotencyKey: "idem-create-child-scope",
+      expectedVersion: "none",
+      authorizationContextRef: managerRegistrationContext!.authorizationContextRef,
+      scopeId: "scope-child",
+      parentScopeRef: rootScopeRef,
+    });
+    childScopeRef = {
+      kind: "spatial-scope",
+      reference: { entityId: childScope.resultRef.entityId, versionId: "scope-child" },
+    };
+    const childRevision = await fixture!.adminPool.query<{ revision_id: string }>(
+      "SELECT current_revision_id AS revision_id FROM business.access_spatial_scopes WHERE scope_id = $1",
+      ["scope-child"],
+    );
+    childScopeRef = {
+      kind: "spatial-scope",
+      reference: { entityId: "scope-child", versionId: childRevision.rows[0]!.revision_id },
+    };
+    await access!.administerProject({
+      kind: "revise-membership",
+      projectId: "project-a",
+      commandId: "command-membership-child",
+      idempotencyKey: "idem-membership-child",
+      expectedVersion: "none",
+      authorizationContextRef: managerRegistrationContext!.authorizationContextRef,
+      membershipId: "membership-child",
+      accountId: roleAccountIds.child!,
+      roles: ["business-viewer"],
+      spatialScopeRefs: [childScopeRef],
+      status: "active",
+    });
+    const childLogin = await access!.login({
+      kind: "login",
+      loginAttemptId: "login-child",
+      loginName: "child001",
+      password: CHILD_PASSWORD,
+    });
+    const childChanged = await access!.changePassword({
+      kind: "change-password",
+      sessionToken: childLogin.sessionToken,
+      newPassword: CHILD_PASSWORD,
+    });
+    roleSessionTokens.child = childChanged.sessionToken;
+    await access!.authorize({
+      invocation: { kind: "human-session", sessionToken: childChanged.sessionToken },
+      invocationId: "authorize-child-scope",
+      projectId: "project-a",
+      branch: "projection.query",
+      requestedSpatialScopeRefs: [childScopeRef],
+      requestedSourceVersionRefs: [],
+    });
+    await expect(
+      access!.authorize({
+        invocation: { kind: "human-session", sessionToken: childChanged.sessionToken },
+        invocationId: "authorize-child-parent",
+        projectId: "project-a",
+        branch: "projection.query",
+        requestedSpatialScopeRefs: [rootScopeRef!],
+        requestedSourceVersionRefs: [],
+      }),
+    ).rejects.toMatchObject({ details: { code: "AUTHORIZATION_DENIED" } });
+
+    await expect(
+      access!.authorize({
+        invocation: { kind: "human-session", sessionToken: adminSessionToken! },
+        invocationId: "authorize-admin-no-membership",
+        projectId: "project-a",
+        branch: "projection.query",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      }),
+    ).rejects.toMatchObject({ details: { code: "AUTHORIZATION_DENIED" } });
+    await expect(
+      access!.authorize({
+        invocation: { kind: "human-session", sessionToken: roleSessionTokens["business-viewer"]! },
+        invocationId: "authorize-cross-project",
+        projectId: "project-missing",
+        branch: "projection.query",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      }),
+    ).rejects.toMatchObject({ details: { code: "AUTHORIZATION_DENIED" } });
+
+    const parent = await access!.authorize({
+      invocation: { kind: "human-session", sessionToken: roleSessionTokens.reviewer! },
+      invocationId: "authorize-reviewer-parent",
+      projectId: "project-a",
+      branch: "projection.query",
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [],
+    });
+    const workflowRunRef = {
+      kind: "workflow-run" as const,
+      reference: { entityId: "run-causal", versionId: "1" },
+    };
+    const agentTaskRef = {
+      kind: "agent-task" as const,
+      reference: { entityId: "task-causal", versionId: "1" },
+      taskType: "retrieval-review" as const,
+      triggerMode: "embedded" as const,
+      modelDeploymentRef: { entityId: "model", versionId: "1" },
+      promptTemplateRef: { entityId: "prompt", versionId: "1" },
+      toolPolicyRef: { entityId: "tool-policy", versionId: "1" },
+      budgetPolicyRef: { entityId: "budget", versionId: "1" },
+      incrementSchemaRef: { entityId: "increment", versionId: "1" },
+      validationPolicyRef: { entityId: "validation", versionId: "1" },
+    };
+    const agentChild = await access!.authorize({
+      invocation: { kind: "agent-task", agentTaskRef },
+      invocationId: "authorize-agent-child",
+      projectId: "project-a",
+      branch: "projection.query",
+      requestedSpatialScopeRefs: [parent.context.spatialScopeRefs[0]!],
+      requestedSourceVersionRefs: [],
+      parentContext: parent.context,
+      causalRunRef: workflowRunRef,
+    });
+    expect(agentChild.context.invocation.kind).toBe("agent-task");
+    await expect(
+      access!.authorize({
+        invocation: { kind: "agent-task", agentTaskRef },
+        invocationId: "authorize-agent-widen",
+        projectId: "project-a",
+        branch: "warning-response.record-execution",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+        parentContext: parent.context,
+        causalRunRef: workflowRunRef,
+      }),
+    ).rejects.toMatchObject({ details: { code: "AUTHORIZATION_DENIED" } });
+    const systemChild = await access!.authorize({
+      invocation: {
+        kind: "system",
+        systemActorId: parent.context.actorId,
+        reasonCode: "scheduled-query",
+      },
+      invocationId: "authorize-system-child",
+      projectId: "project-a",
+      branch: "projection.query",
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [],
+      parentContext: parent.context,
+      causalRunRef: workflowRunRef,
+    });
+    expect(systemChild.context.invocation.kind).toBe("system");
+    await expect(
+      access!.authorize({
+        invocation: { kind: "human-session", sessionToken: roleSessionTokens.reviewer! },
+        invocationId: "authorize-fake-client-capability",
+        projectId: "project-a",
+        branch: "projection.query",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+        grantedCapabilities: ["risk-assessment.evaluate"],
+      } as never),
+    ).rejects.toMatchObject({ details: { code: "ACCESS_CONTRACT_INVALID" } });
+  });
+
+  it("cross-project, invalid scope graph, and concurrent revision boundaries", async () => {
+    await access!.administerProject({
+      kind: "open-project",
+      projectId: "project-b",
+      commandId: "command-open-project-b",
+      idempotencyKey: "idem-open-project-b",
+      expectedVersion: "none",
+      authorizationContextRef: adminContext!,
+      initialRiskManagerAccountId: userAccountId!,
+    });
+    const otherRoot = await fixture!.adminPool.query<{ scope_id: string; revision_id: string }>(
+      "SELECT scope.scope_id, scope.current_revision_id AS revision_id FROM business.access_spatial_scopes scope WHERE scope.project_id = $1",
+      ["project-b"],
+    );
+    await expect(
+      access!.administerProject({
+        kind: "create-spatial-scope",
+        projectId: "project-a",
+        commandId: "command-cross-project-scope",
+        idempotencyKey: "idem-cross-project-scope",
+        expectedVersion: "none",
+        authorizationContextRef: managerRegistrationContext!.authorizationContextRef,
+        scopeId: "scope-cross-project",
+        parentScopeRef: {
+          kind: "spatial-scope",
+          reference: {
+            entityId: otherRoot.rows[0]!.scope_id,
+            versionId: otherRoot.rows[0]!.revision_id,
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ details: { code: "AUTHORIZATION_DENIED" } });
+    await expect(
+      access!.administerProject({
+        kind: "revise-spatial-scope",
+        projectId: "project-a",
+        commandId: "command-cycle-scope",
+        idempotencyKey: "idem-cycle-scope",
+        expectedVersion: { entityId: "scope-child", versionId: "1" },
+        authorizationContextRef: managerRegistrationContext!.authorizationContextRef,
+        scopeId: "scope-child",
+        status: "active",
+        parentScopeRef: childScopeRef,
+      }),
+    ).rejects.toMatchObject({ details: { code: "ACCESS_CONTRACT_INVALID" } });
+
+    const concurrentResults = await Promise.allSettled([
+      access!.administerProject({
+        kind: "revise-membership",
+        projectId: "project-a",
+        commandId: "command-concurrent-membership-a",
+        idempotencyKey: "idem-concurrent-membership-a",
+        expectedVersion: { entityId: "membership-reviewer", versionId: "1" },
+        authorizationContextRef: managerRegistrationContext!.authorizationContextRef,
+        membershipId: "membership-reviewer",
+        accountId: roleAccountIds.reviewer!,
+        roles: ["reviewer"],
+        spatialScopeRefs: [rootScopeRef!],
+        status: "active",
+      }),
+      access!.administerProject({
+        kind: "revise-membership",
+        projectId: "project-a",
+        commandId: "command-concurrent-membership-b",
+        idempotencyKey: "idem-concurrent-membership-b",
+        expectedVersion: { entityId: "membership-reviewer", versionId: "1" },
+        authorizationContextRef: managerRegistrationContext!.authorizationContextRef,
+        membershipId: "membership-reviewer",
+        accountId: roleAccountIds.reviewer!,
+        roles: ["field-responder"],
+        spatialScopeRefs: [rootScopeRef!],
+        status: "active",
+      }),
+    ]);
+    expect(concurrentResults.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = concurrentResults.find((result) => result.status === "rejected");
+    expect(rejected?.status === "rejected" ? rejected.reason : undefined).toMatchObject({
+      details: { code: "STALE_ACCESS_VERSION" },
+    });
+  });
+
+  it("source access, default restriction, derived intersection, and redacted projection", async () => {
+    expect(managerRegistrationContext).toBeDefined();
+    expect(rootScopeRef).toBeDefined();
+    const sourceOne = {
+      kind: "source-version" as const,
+      reference: { entityId: "source-a", versionId: "1" },
+    };
+    const sourceTwo = {
+      kind: "source-version" as const,
+      reference: { entityId: "source-b", versionId: "1" },
+    };
+    const sourceDefault = {
+      kind: "source-version" as const,
+      reference: { entityId: "source-default", versionId: "1" },
+    };
+    const sourceCreated = await access!.administerProject({
+      kind: "revise-source-access",
+      projectId: "project-a",
+      commandId: "command-source-one",
+      idempotencyKey: "idem-source-one",
+      expectedVersion: "none",
+      authorizationContextRef: managerRegistrationContext!.authorizationContextRef,
+      sourceVersionRef: sourceOne,
+      visibility: "restricted",
+      allowedAccountIds: [roleAccountIds["business-viewer"]!],
+      spatialScopeRefs: [rootScopeRef!],
+      registeredByAccountId: roleAccountIds["business-viewer"]!,
+    });
+    sourceGrantId = sourceCreated.resultRef.entityId;
+    const viewerEvidence = await access!.authorize({
+      invocation: { kind: "human-session", sessionToken: roleSessionTokens["business-viewer"]! },
+      invocationId: "authorize-viewer-source-one",
+      projectId: "project-a",
+      branch: "engineering-data.evidence-access",
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [sourceOne],
+    });
+    expect(viewerEvidence.context.sourceAccessGrantRefs).toHaveLength(1);
+    const responderProjection = await access!.authorize({
+      invocation: { kind: "human-session", sessionToken: roleSessionTokens["field-responder"]! },
+      invocationId: "authorize-responder-source-one-projection",
+      projectId: "project-a",
+      branch: "projection.query",
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [sourceOne],
+    });
+    expect(responderProjection.redacted).toBe(true);
+    expect(responderProjection.context.sourceAccessGrantRefs).toHaveLength(0);
+    await expect(
+      access!.authorize({
+        invocation: { kind: "human-session", sessionToken: roleSessionTokens["field-responder"]! },
+        invocationId: "authorize-responder-source-one-body",
+        projectId: "project-a",
+        branch: "engineering-data.evidence-access",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [sourceOne],
+      }),
+    ).rejects.toMatchObject({ details: { code: "AUTHORIZATION_DENIED" } });
+
+    await access!
+      .administerProject({
+        kind: "revise-source-access",
+        projectId: "project-a",
+        commandId: "command-source-two",
+        idempotencyKey: "idem-source-two",
+        expectedVersion: "none",
+        authorizationContextRef: managerRegistrationContext!.authorizationContextRef,
+        sourceVersionRef: sourceTwo,
+        visibility: "restricted",
+        allowedAccountIds: [userAccountId!],
+        spatialScopeRefs: [rootScopeRef!],
+        registeredByAccountId: userAccountId!,
+      })
+      .then((result) => {
+        sourceTwoGrantId = result.resultRef.entityId;
+      });
+    const derivedProjection = await access!.authorize({
+      invocation: { kind: "human-session", sessionToken: roleSessionTokens["business-viewer"]! },
+      invocationId: "authorize-viewer-derived-projection",
+      projectId: "project-a",
+      branch: "projection.query",
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [sourceOne, sourceTwo],
+    });
+    expect(derivedProjection.redacted).toBe(true);
+    expect(derivedProjection.context.sourceAccessGrantRefs).toHaveLength(0);
+    await access!.administerProject({
+      kind: "revise-source-access",
+      projectId: "project-a",
+      commandId: "command-source-default",
+      idempotencyKey: "idem-source-default",
+      expectedVersion: "none",
+      authorizationContextRef: managerRegistrationContext!.authorizationContextRef,
+      sourceVersionRef: sourceDefault,
+      visibility: "restricted",
+      allowedAccountIds: [],
+      spatialScopeRefs: [],
+      registeredByAccountId: roleAccountIds["business-viewer"]!,
+    });
+    const defaultSource = await access!.authorize({
+      invocation: { kind: "human-session", sessionToken: roleSessionTokens["business-viewer"]! },
+      invocationId: "authorize-viewer-default-source",
+      projectId: "project-a",
+      branch: "engineering-data.evidence-access",
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [sourceDefault],
+    });
+    expect(defaultSource.context.sourceAccessGrantRefs).toHaveLength(1);
+    await expect(
+      access!.administerProject({
+        kind: "revise-source-access",
+        projectId: "project-a",
+        commandId: "command-source-shared-accounts",
+        idempotencyKey: "idem-source-shared-accounts",
+        expectedVersion: "none",
+        authorizationContextRef: managerRegistrationContext!.authorizationContextRef,
+        sourceVersionRef: {
+          kind: "source-version",
+          reference: { entityId: "source-invalid", versionId: "1" },
+        },
+        visibility: "project-shared",
+        allowedAccountIds: [roleAccountIds["business-viewer"]!],
+        spatialScopeRefs: [rootScopeRef!],
+        registeredByAccountId: userAccountId!,
+      }),
+    ).rejects.toMatchObject({ details: { code: "ACCESS_CONTRACT_INVALID" } });
+
+    viewerProjectionDecision = await access!.authorize({
+      invocation: { kind: "human-session", sessionToken: roleSessionTokens["business-viewer"]! },
+      invocationId: "authorize-viewer-source-one-projection-before-shrink",
+      projectId: "project-a",
+      branch: "projection.query",
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [sourceOne],
+    });
+    expect(viewerProjectionDecision.redacted).toBe(false);
+    await access!.administerProject({
+      kind: "revise-source-access",
+      projectId: "project-a",
+      commandId: "command-source-one-shrink",
+      idempotencyKey: "idem-source-one-shrink",
+      expectedVersion: { entityId: sourceGrantId!, versionId: "1" },
+      authorizationContextRef: managerRegistrationContext!.authorizationContextRef,
+      sourceVersionRef: sourceOne,
+      visibility: "restricted",
+      allowedAccountIds: [userAccountId!],
+      spatialScopeRefs: [rootScopeRef!],
+      registeredByAccountId: userAccountId!,
+    });
+    const narrowed = await access!.verify({
+      authorizationContextRef: viewerProjectionDecision.contextRef,
+      invocationId: "authorize-viewer-source-one-projection-before-shrink",
+      projectId: "project-a",
+      branch: "projection.query",
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [],
+    });
+    expect(narrowed.redacted).toBe(true);
+    expect(narrowed.context.sourceAccessGrantRefs).toHaveLength(0);
+    await expect(
+      access!.verify({
+        authorizationContextRef: viewerEvidence.contextRef,
+        invocationId: "authorize-viewer-source-one",
+        projectId: "project-a",
+        branch: "engineering-data.evidence-access",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      }),
+    ).rejects.toMatchObject({ details: { code: "AUTHORIZATION_DENIED" } });
+    expect(sourceTwoGrantId).toBeDefined();
+  });
+
+  it("throttle, reset clearing, tamper rejection, and non-enumeration", async () => {
+    const unknown = access!.login({
+      kind: "login",
+      loginAttemptId: "login-unknown-account",
+      loginName: "unknown001",
+      password: "wrong-password-v1",
+    });
+    const unknownError = await unknown.catch((error: unknown) => error);
+    const wrong = await access!
+      .login({
+        kind: "login",
+        loginAttemptId: "login-user-wrong-password",
+        loginName: "user001",
+        password: "wrong-password-v1",
+      })
+      .catch((error: unknown) => error);
+    expect(unknownError).toMatchObject({ details: { code: "AUTHENTICATION_REJECTED" } });
+    expect(wrong).toMatchObject({ details: { code: "AUTHENTICATION_REJECTED" } });
+
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      await expect(
+        access!.login({
+          kind: "login",
+          loginAttemptId: `login-throttle-${attempt}`,
+          loginName: "throttle001",
+          password: "wrong-password-v1",
+        }),
+      ).rejects.toMatchObject({ details: { code: "AUTHENTICATION_REJECTED" } });
+    }
+    await expect(
+      access!.login({
+        kind: "login",
+        loginAttemptId: "login-throttle-locked",
+        loginName: "throttle001",
+        password: THROTTLE_PASSWORD,
+      }),
+    ).rejects.toMatchObject({ details: { code: "AUTHENTICATION_REJECTED" } });
+    await access!.administerIdentity({
+      kind: "reset-password",
+      commandId: "command-reset-throttle",
+      idempotencyKey: "idem-reset-throttle",
+      expectedVersion: { entityId: roleAccountIds.throttle!, versionId: "1" },
+      authorizationContextRef: adminContext!,
+      accountId: roleAccountIds.throttle!,
+      password: THROTTLE_PASSWORD,
+    });
+    const unlocked = await access!.login({
+      kind: "login",
+      loginAttemptId: "login-throttle-unlocked",
+      loginName: "throttle001",
+      password: THROTTLE_PASSWORD,
+    });
+    expect(unlocked.restricted).toBe(true);
+    await expect(
+      access!.authorize({
+        invocation: { kind: "human-session", sessionToken: unlocked.sessionToken },
+        invocationId: "authorize-restricted-before-change",
+        projectId: "project-a",
+        branch: "projection.query",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      }),
+    ).rejects.toMatchObject({ details: { code: "PASSWORD_CHANGE_REQUIRED" } });
+
+    const tampered =
+      roleSessionTokens.reviewer!.slice(0, -1) +
+      (roleSessionTokens.reviewer!.endsWith("A") ? "B" : "A");
+    await expect(
+      access!.authorize({
+        invocation: { kind: "human-session", sessionToken: tampered },
+        invocationId: "authorize-tampered-token",
+        projectId: "project-a",
+        branch: "projection.query",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      }),
+    ).rejects.toMatchObject({ details: { code: "SESSION_REVOKED" } });
+    const managerRefresh = await access!.login({
+      kind: "login",
+      loginAttemptId: "login-manager-refresh",
+      loginName: "user001",
+      password: USER_PASSWORD_CHANGED,
+    });
+    managerSessionToken = managerRefresh.sessionToken;
+  });
+
+  it("login|session|password change|throttle", async () => {
+    const userLogin = await access!.login({
+      kind: "login",
+      loginAttemptId: "login-user-1",
+      loginName: "USER001",
+      password: USER_PASSWORD_CHANGED,
+    });
+    expect(userLogin.restricted).toBe(false);
+    const replay = await access!.login({
+      kind: "login",
+      loginAttemptId: "login-user-1",
+      loginName: "user001",
+      password: USER_PASSWORD_CHANGED,
+    });
+    expect(replay.sessionToken).toBe(userLogin.sessionToken);
+    await expect(
+      access!.login({
+        kind: "login",
+        loginAttemptId: "login-user-1",
+        loginName: "user001",
+        password: "incorrect-password-v1",
+      }),
+    ).rejects.toMatchObject({ details: { code: "AUTHENTICATION_REJECTED" } });
+    const userChanged = await access!.changePassword({
+      kind: "change-password",
+      sessionToken: userLogin.sessionToken,
+      newPassword: USER_PASSWORD_CHANGED,
+    });
+    managerSessionToken = userChanged.sessionToken;
+    expect(userChanged.restricted).toBe(false);
+    await access!.logout({ kind: "logout", sessionToken: userChanged.sessionToken });
+    await expect(
+      access!.authorize({
+        invocation: { kind: "human-session", sessionToken: userChanged.sessionToken },
+        invocationId: "auth-after-logout",
+        projectId: "project-missing",
+        branch: "projection.query",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      }),
+    ).rejects.toMatchObject({ details: { code: "SESSION_REVOKED" } });
+    const managerRefresh = await access!.login({
+      kind: "login",
+      loginAttemptId: "login-manager-refresh-after-logout",
+      loginName: "user001",
+      password: USER_PASSWORD_CHANGED,
+    });
+    managerSessionToken = managerRefresh.sessionToken;
+  });
+
+  it("audit closure, sensitive-field filtering, and transactional rollback", async () => {
+    await expect(
+      bootstrapInitialSystemAdministrator({
+        connection: fixture!.migrator,
+        loginName: "second-admin",
+        displayName: "Second administrator",
+        password: "second-admin-password-v1",
+        accountId: "account-second-admin",
+        now: clock.now,
+      }),
+    ).rejects.toMatchObject({ details: { code: "ACCESS_TERMINAL_FAILURE" } });
+
+    const auditText = await fixture!.adminPool.query<{ value: string }>(
+      "SELECT coalesce(string_agg(concat_ws('|', event_kind, outcome, reason_code, subject_ref, project_ref, request_ref, context_ref::text, diagnostic_ref::text), E'\\n'), '') AS value FROM business.security_audit_events",
+    );
+    const receiptText = await fixture!.adminPool.query<{ value: string }>(
+      "SELECT coalesce(string_agg(payload_sha256 || ':' || coalesce(result_ref::text, ''), E'\\n'), '') AS value FROM business.command_receipts",
+    );
+    expect(auditText.rows[0]!.value).not.toContain(ADMIN_PASSWORD);
+    expect(auditText.rows[0]!.value).not.toContain(USER_PASSWORD);
+    expect(auditText.rows[0]!.value).not.toContain(USER_PASSWORD_CHANGED);
+    expect(auditText.rows[0]!.value).not.toContain("v1.");
+    expect(receiptText.rows[0]!.value).not.toContain(USER_PASSWORD);
+
+    await fixture!.adminPool.query("REVOKE INSERT ON TABLE audit.entries FROM riskflow_app");
+    await expect(
+      access!.administerIdentity({
+        kind: "create-account",
+        commandId: "command-audit-rollback-account",
+        idempotencyKey: "idem-audit-rollback-account",
+        expectedVersion: "none",
+        authorizationContextRef: adminContext!,
+        loginName: "rollback001",
+        displayName: "Rollback account",
+        password: "rollback-password-v1",
+      }),
+    ).rejects.toMatchObject({ details: { code: "ACCESS_TERMINAL_FAILURE" } });
+    await fixture!.adminPool.query("GRANT INSERT ON TABLE audit.entries TO riskflow_app");
+    const rolledBackAccount = await fixture!.adminPool.query<{ account_id: string }>(
+      "SELECT account_id FROM business.local_accounts WHERE login_name = 'rollback001'",
+    );
+    expect(rolledBackAccount.rows).toHaveLength(0);
+    await expect(
+      access!.administerIdentity({
+        kind: "create-account",
+        commandId: "command-audit-rollback-account",
+        idempotencyKey: "idem-audit-rollback-account",
+        expectedVersion: "none",
+        authorizationContextRef: adminContext!,
+        loginName: "rollback001",
+        displayName: "Rollback account",
+        password: "rollback-password-v1",
+      }),
+    ).resolves.toMatchObject({ kind: "account" });
+
+    const beforeContexts = await fixture!.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM business.authorization_contexts",
+    );
+    await fixture!.adminPool.query(
+      "REVOKE INSERT ON TABLE business.security_audit_events FROM riskflow_app",
+    );
+    await expect(
+      access!.authorize({
+        invocation: { kind: "human-session", sessionToken: managerSessionToken! },
+        invocationId: "authorize-audit-write-failure",
+        projectId: "project-a",
+        branch: "projection.query",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      }),
+    ).rejects.toMatchObject({ details: { code: "ACCESS_TERMINAL_FAILURE" } });
+    await fixture!.adminPool.query(
+      "GRANT INSERT ON TABLE business.security_audit_events TO riskflow_app",
+    );
+    const afterContexts = await fixture!.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM business.authorization_contexts",
+    );
+    expect(afterContexts.rows[0]!.count).toBe(beforeContexts.rows[0]!.count);
+  });
+
+  it("authorization performance", async () => {
+    expect(managerSessionToken).toBeDefined();
+    for (let warmup = 0; warmup < 5; warmup += 1) {
+      await access!.authorize({
+        invocation: { kind: "human-session", sessionToken: managerSessionToken! },
+        invocationId: `authorize-performance-warmup-${warmup}`,
+        projectId: "project-a",
+        branch: "projection.query",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      });
+    }
+    const durations: number[] = [];
+    const decisions: string[] = [];
+    for (let sample = 0; sample < 200; sample += 1) {
+      const started = performance.now();
+      const decision = await access!.authorize({
+        invocation: { kind: "human-session", sessionToken: managerSessionToken! },
+        invocationId: `authorize-performance-${sample}`,
+        projectId: "project-a",
+        branch: "projection.query",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      });
+      durations.push(performance.now() - started);
+      decisions.push(
+        JSON.stringify({
+          capabilities: decision.context.grantedCapabilities,
+          scopes: decision.context.spatialScopeRefs,
+          sources: decision.context.sourceAccessGrantRefs,
+        }),
+      );
+    }
+    const sorted = [...durations].sort((left, right) => left - right);
+    const p95 = sorted[Math.ceil(sorted.length * 0.95) - 1]!;
+    expect(durations).toHaveLength(200);
+    expect(new Set(decisions).size).toBe(1);
+    expect(p95).toBeLessThanOrEqual(100);
+  }, 180_000);
+
+  it("credential revocation, key-version invalidation, and session timeouts", async () => {
+    const resetAccount = await fixture!.adminPool.query<{ security_version: number }>(
+      "SELECT security_version FROM business.local_accounts WHERE account_id = $1",
+      [roleAccountIds.child!],
+    );
+    await access!.administerIdentity({
+      kind: "disable-account",
+      commandId: "command-disable-child",
+      idempotencyKey: "idem-disable-child",
+      expectedVersion: {
+        entityId: roleAccountIds.child!,
+        versionId: String(resetAccount.rows[0]!.security_version),
+      },
+      authorizationContextRef: adminContext!,
+      accountId: roleAccountIds.child!,
+    });
+    await expect(
+      access!.authorize({
+        invocation: { kind: "human-session", sessionToken: roleSessionTokens.child! },
+        invocationId: "authorize-disabled-child",
+        projectId: "project-a",
+        branch: "projection.query",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      }),
+    ).rejects.toMatchObject({ details: { code: "AUTHORIZATION_DENIED" } });
+    const disabled = await fixture!.adminPool.query<{ status: string; revoked: string }>(
+      "SELECT account.status, count(session.session_id)::text AS revoked FROM business.local_accounts account LEFT JOIN business.local_sessions session ON session.account_id = account.account_id AND session.revoked_at IS NOT NULL WHERE account.account_id = $1 GROUP BY account.status",
+      [roleAccountIds.child!],
+    );
+    expect(disabled.rows[0]!.status).toBe("disabled");
+    expect(Number(disabled.rows[0]!.revoked)).toBeGreaterThan(0);
+
+    const keyAccess = createPostgresLocalIdentityAccess({
+      ...fixture!.app,
+      hmacKey: new Uint8Array(32).fill(8),
+      keyVersion: "key-v2",
+      now: clock.now,
+    });
+    await expect(
+      keyAccess.authorize({
+        invocation: { kind: "human-session", sessionToken: roleSessionTokens.reviewer! },
+        invocationId: "authorize-key-version-invalidated",
+        projectId: "project-a",
+        branch: "projection.query",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      }),
+    ).rejects.toMatchObject({ details: { code: "SESSION_REVOKED" } });
+    await keyAccess.close();
+
+    const throttleLogin = await access!.login({
+      kind: "login",
+      loginAttemptId: "login-throttle-timeout",
+      loginName: "throttle001",
+      password: THROTTLE_PASSWORD,
+    });
+    const timeoutSession = await access!.changePassword({
+      kind: "change-password",
+      sessionToken: throttleLogin.sessionToken,
+      newPassword: THROTTLE_PASSWORD,
+    });
+    clock.advance(30 * 60 * 1000 + 1);
+    await expect(
+      access!.authorize({
+        invocation: { kind: "human-session", sessionToken: timeoutSession.sessionToken },
+        invocationId: "authorize-idle-timeout",
+        projectId: "project-a",
+        branch: "projection.query",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      }),
+    ).rejects.toMatchObject({ details: { code: "SESSION_EXPIRED" } });
+    clock.advance(11 * 60 * 60 * 1000 + 30 * 60 * 1000 + 1);
+    await expect(
+      access!.authorize({
+        invocation: { kind: "human-session", sessionToken: managerSessionToken! },
+        invocationId: "authorize-absolute-timeout",
+        projectId: "project-a",
+        branch: "projection.query",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      }),
+    ).rejects.toMatchObject({ details: { code: "SESSION_EXPIRED" } });
+  }, 180_000);
+});

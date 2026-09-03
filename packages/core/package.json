@@ -15,6 +15,10 @@
     "./persistence": {
       "types": "./dist/persistence/index.d.ts",
       "import": "./dist/persistence/index.js"
+    },
+    "./artifacts": {
+      "types": "./dist/artifacts/index.d.ts",
+      "import": "./dist/artifacts/index.js"
     }
   }
 }

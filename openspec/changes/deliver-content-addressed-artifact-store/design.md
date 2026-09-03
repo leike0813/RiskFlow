@@ -60,7 +60,7 @@ export interface ArtifactMaintenanceV1 {
 
 生产实现为 `@riskflow/adapters/artifacts`：本地文件对象、PostgreSQL 工件清单和维护操作在一个深层 adapter 内协作。不会为当前唯一实现增加 factory registry、对象存储抽象、provider 插件或通用 blob API。
 
-**选项：**（A）把文件读写塞入工程数据模块；（B）建立通用文件系统/URL port；（C）独立内容工件 port，领域只持有 C02 精确引用。  
+**选项：**（A）把文件读写塞入工程数据模块；（B）建立通用文件系统/URL port；（C）独立内容工件 port，领域只持有 C02 精确引用。
 **决定：** C。工件同时服务工程资料、模型、Agent、诊断和导出；放入单一领域会反转所有权，开放文件系统则违反 C02。
 
 ### 2. V1 Schema 与 TypeScript 类型
@@ -194,11 +194,11 @@ ArtifactReferenceCheckResultV1 = {
 }
 ```
 
-读取请求使用 C03 命令收据幂等追加一次 `artifact.read-started` 审计，审计失败不返回字节。读取完成收据不是业务事实，不进入 Outbox；结构化运行日志记录成功/完整性失败。
+读取请求使用 C03 命令收据幂等追加一次 `artifact.read-started` 审计，审计失败不返回字节。读取完成收据不是业务事实，不进入 Outbox；授权、成功、拒绝、取消和完整性失败通过下述只追加访问记录持久化，不以普通进程日志代替。
 
 #### 2.5 哈希清单、核对与孤儿 DTO
 
-`ArtifactHashManifestCommandV1` 固定 `schemaVersion`、命令/幂等/工程/主体/授权、`backupBatchRef`、`databaseSnapshotRef`、`fileSnapshotRef`、`purposeCode` 与 `requiredCapability`。输出内容为 UTF-8 NDJSON 工件：第一行 `ArtifactHashManifestHeaderV1`，后续每行一个 `ArtifactHashManifestEntryV1`，末行 `ArtifactHashManifestTrailerV1`。
+`ArtifactHashManifestCommandV1` 固定 `schemaVersion`、命令/幂等/工程/主体/授权、`backupBatchRef`、`databaseSnapshotRef`、`fileSnapshotRef`、`purposeCode`、`requiredCapability` 与 `policyRef`。命令不携完整策略或 PostgreSQL snapshot token；`policyRef` 必须精确等于 composition root 注入的冻结策略。输出内容为 UTF-8 NDJSON 工件：第一行 `ArtifactHashManifestHeaderV1`，后续每行一个 `ArtifactHashManifestEntryV1`，末行 `ArtifactHashManifestTrailerV1`。
 
 ```text
 header = {
@@ -213,13 +213,26 @@ entry = {
 trailer = { entryCount, entriesSha256 }
 ```
 
-条目按 `artifactRef.kind/entityId/versionId` 排序；`entriesSha256` 对规范 NDJSON 条目字节计算。哈希清单本身通过普通 `put` 保存为 `ContentArtifactRefV1`，但不递归加入本次已冻结输入集合。
+条目按 `artifactRef.kind/entityId/versionId` 排序；`entriesSha256` 对规范 NDJSON 条目字节计算。哈希清单本身通过普通 `put` 保存为 `ContentArtifactRefV1`。新建清单扫描时目标精确引用尚不存在，因此不排除任何既有行；命令重放直接返回首次结果。恢复核对只排除给定 `hashManifestRef` 的 kind/entityId/versionId 精确组合，同一 artifactId 的其它历史版本仍属于冻结输入集合。
 
-`ArtifactReconcileRequestV1` 固定运行、工程、模式（`audit|recovery`）、授权、策略、给定哈希清单引用/字节流和快照引用。`ArtifactReconcileFindingV1` 是闭合联合：`complete`、`missing-object`、`content-mismatch`、`manifest-conflict`、`orphan-object`、`stale-staging`、`quarantined-object`。`ArtifactReconcileSummaryV1` 给出各类计数、`passed`、开始/完成时间与诊断引用；任何前三类非零时 `passed=false`。
+`ArtifactReconcileRequestV1` 固定运行、工程、模式（`audit|recovery`）、授权、`policyRef`、给定哈希清单引用/字节流和快照引用。它不接受完整策略或调用方提供的 `observedBefore`。`ArtifactReconcileFindingV1` 是闭合联合：`complete`、`missing-object`、`content-mismatch`、`manifest-conflict`、`orphan-object`、`stale-staging`、`quarantined-object`。`ArtifactReconcileSummaryV1` 给出各类计数、`passed`、冻结策略引用/摘要、开始/完成时间、cutoff 与诊断引用；任何前三类非零时 `passed=false`，`recovery` 模式任一授权缺口也直接阻断而不产出部分通过结果。
 
-`ArtifactSweepCommandV1` 固定命令身份、授权、维护策略、`observedBefore` 与 `dryRun`。`ArtifactSweepResultV1` 只返回计数、处理摘要、审计引用和可选详情诊断工件引用，不返回正文或宿主路径。
+`ArtifactSweepCommandV1` 固定命令身份、授权、`policyRef` 与 `dryRun`，不接受宽限期、锁超时、批次大小或 `observedBefore`。adapter 从可信时钟取得 `runStartedAt`，以冻结策略计算 `cutoff = runStartedAt - orphanGracePeriodMs`。`ArtifactSweepResultV1` 返回冻结策略引用/摘要、`runStartedAt`、cutoff、计数、处理摘要、审计引用和可选详情诊断工件引用，不返回正文或宿主路径。
 
-**选项：**（A）把完整字节作为 Zod DTO；（B）DTO 与流分离；（C）接受调用方路径。  
+读取安全记录使用 strict 闭合 `ArtifactAccessRecordV1`：
+
+```text
+ArtifactAccessRecordV1 = {
+  schemaVersion: "1", requestId, projectId, actorId,
+  purposeCode, authorizationContextRef, authorizationPolicyRef,
+  outcome: "authorized" | "succeeded" | "denied" | "cancelled" | "integrity-failed",
+  stage, occurredAt, auditTrailRef, diagnosticRef?
+}
+```
+
+记录不含完整摘要、清单字段、正文、原始文件名或宿主路径。完整性失败与恢复失败必须先保存受保护诊断工件，再把精确 `DiagnosticArtifactRefV1` 写入记录/错误/summary；诊断写入失败时仍不得产生成功读取收据或恢复通过。
+
+**选项：**（A）把完整字节作为 Zod DTO；（B）DTO 与流分离；（C）接受调用方路径。
 **决定：** B。A 会使内存随文件增长，C 会暴露宿主文件系统；二进制流是受控能力，不是领域数据。
 
 ### 3. 物理布局与路径安全
@@ -237,7 +250,7 @@ trailer = { entryCount, entriesSha256 }
 
 选择两级 `aa/bb/hash`，避免单目录对象过多。数据库和公共 DTO 不保存绝对路径；规范存储键可由摘要重建，因此也不建立第二套可变 location 映射。
 
-**选项：**（A）原始文件名路径；（B）UUID 路径 + DB 映射；（C）SHA-256 分片目录。  
+**选项：**（A）原始文件名路径；（B）UUID 路径 + DB 映射；（C）SHA-256 分片目录。
 **决定：** C。它天然去重、可核对且不暴露原始名称；UUID 映射增加无价值状态。
 
 ### 4. 写入时序固定为 staging、耐久对象、事务清单
@@ -276,7 +289,7 @@ packages/adapters/src/postgres/migrations/
     000002_artifact_manifests.ts
 ```
 
-只新增 `business.artifact_manifests`：
+新增 `business.artifact_manifests`、只追加 `business.artifact_access_records` 与只追加 `business.artifact_maintenance_batches`。第一张表保存不可变工件清单：
 
 | 列 | 约束/语义 |
 | --- | --- |
@@ -298,13 +311,17 @@ packages/adapters/src/postgres/migrations/
 | `manifest_sha256` | 64 位小写 hex |
 | `occurred_at`, `recorded_at`, `persisted_at` | 三个 `timestamptz`，数据库时间不覆盖业务/系统时间 |
 
-索引只有 `(project_id, artifact_id, version_id)` 和 `(content_sha256)`；真实查询证明需要前不增加 GIN 或用途索引。表只允许 `riskflow_app` `SELECT/INSERT`，撤销 `UPDATE/DELETE`；清单不可原地修改。C04 不新增 role、schema、中央 migration index 或 C03 `PostgresDatabase` 表类型。
+`business.artifact_access_records` 保存 `ArtifactAccessRecordV1` 的稳定字段与延迟审计外键，按 `(project_id, request_id, outcome)` 唯一，和对应 C03 审计在同一事务提交；拒绝记录只保存请求身份与通用结果，不保存清单内容或对象存在性判断。`business.artifact_maintenance_batches` 每行记录一个已提交维护批次：`run_id`、`batch_number`、工程、命令、操作类型、冻结 `policy_ref` 与规范策略摘要、`run_started_at`、cutoff、dry-run 标志、排序去重的候选摘要、审计引用和数据库持久化时间；以 `(run_id, batch_number)` 为主键，候选数不得超过冻结 `maintenanceBatchSize`。维护批次与对应 C03 审计在同一事务提交，只允许 `SELECT/INSERT`，禁止 `UPDATE/DELETE`。隔离目录身份只能用于定位，删除授权必须来自这张表与其审计引用。
 
-`postgres-artifact-registry.ts` 在 C04 私有位置声明 `ArtifactManifestRow` 与 `ArtifactRegistryDatabase`，通过 C03 package-internal `getPostgresTransaction(context)` 获得受限事务并进行一次局部类型收窄。该 cast 不从 exports 暴露；不修改 `packages/adapters/src/postgres/types.ts` 或 `transaction-unit.ts`。
+工件清单索引只有 `(project_id, artifact_id, version_id)` 和 `(content_sha256)`；访问记录按 request/outcome 唯一；维护批次只增加恢复按 `(project_id, run_id)` 查询所需索引，真实查询证明需要前不增加 GIN 或用途索引。三表只允许 `riskflow_app` `SELECT/INSERT`，撤销 `UPDATE/DELETE`。C04 不新增 role、schema、中央 migration index 或 C03 `PostgresDatabase` 表类型。
+
+`postgres-artifact-registry.ts` 在 C04 私有位置声明 `ArtifactManifestRow`、`ArtifactAccessRecordRow`、`ArtifactMaintenanceBatchRow` 与 `ArtifactRegistryDatabase`，通过 C03 package-internal `getPostgresTransaction(context)` 获得受限事务并进行一次局部类型收窄。该 cast 不从 exports 暴露；不修改 `packages/adapters/src/postgres/types.ts` 或 `transaction-unit.ts`。
 
 `ArtifactReferenceGuardV1.assertUsable` 在领域事实同一事务中：按精确主键读取清单，strict 解析 JSONB，校验 project、required capability 和访问集合，返回只读摘要。失败抛出闭合工件错误，使 C03 回滚领域事实、审计、命令收据和 Outbox。它不重新读取/哈希物理文件；C04 无已登记对象删除路径，在线完整性由读取/定期 scrub 与恢复门保证。
 
 工件登记和读取审计使用 C03 原子提交，`events=[]`。没有 C02 `artifact-created` 事件，因此禁止自创；后续 `input-ready`、风险、评估、预警等事件由事实所属 change 在引用校验通过后按 C02 契约发布。
+
+哈希清单扫描不复用 C03 `TransactionContextV1`：该 context 只在 `TransactionUnitV1.execute` handler 内有效，而且 handler 前已经访问命令收据，不能再切换隔离级别。registry 使用现有 `pg.Pool` 借出专用 client，先执行 `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY`，再创建 package-private、不可序列化的 snapshot reader。reader 绑定 client、工程、`databaseSnapshotRef` 与 opened/closed 生命周期，只能由 `createHashManifest` 内部消费；全部 keyset 批次使用同一 client，成功 `COMMIT`，异常 `ROLLBACK`，两者最终都 release。快照关闭后才通过普通 `put` 登记 NDJSON；C04 不把 PostgreSQL snapshot token 放入 DTO，也不声称业务 `databaseSnapshotRef` 等同该 token。
 
 ### 6. 权限继承与证据传播
 
@@ -313,7 +330,7 @@ packages/adapters/src/postgres/migrations/
 1. 请求 `projectId`、`actorId` 必须与授权上下文一致；`requiredCapability` 必须出现在 `grantedCapabilities`。
 2. 请求工程必须等于清单工程。
 3. 清单每个 `spatialScopeRef` 必须存在于当前授权上下文；每个 `sourceAccessGrantRef` 也必须存在。
-4. 派生写入前，对所有父工件逐项执行相同检查；任一父无权、缺失、损坏标记或跨工程即整体失败。
+4. 派生写入在创建 staging 和消费正文前，对所有父工件逐项执行相同检查；任一父无权、缺失、损坏标记或跨工程即整体失败。普通调用方对“缺失 / 跨工程 / 无权”统一得到 `ARTIFACT_ACCESS_DENIED`，内部原因只进入受保护安全记录；`ARTIFACT_INHERITANCE_CONFLICT` 仅用于所有父引用均已授权后发现的限制扩大或丢失。
 5. 新快照 = 全部父工件空间/资料授权/策略版本 + 当前授权策略 + 当前显式附加限制的排序去重并集。显式附加空间/资料引用也必须已在当前授权中，不能凭空制造限制身份。
 6. 新证据 = 全部父清单证据 + 请求新证据的排序去重并集。证据 strict 校验失败时不写入；C04 不解释证据正文。
 
@@ -321,9 +338,11 @@ C06 后续实现授权决策事实与策略兼容性，但不能放宽 C04 已�
 
 无权、跨工程和不存在对象对普通读取统一映射到 `AUTHORIZATION_DENIED` 的外部语义，内部诊断只对获授权运维可见，避免存在性侧漏。已经通过工程/范围预检且明确获准诊断的系统维护调用才区分 `ARTIFACT_REFERENCE_NOT_FOUND`。
 
+哈希清单与 `recovery` 核对固定使用 C02 已有 `engineering-data.freeze` capability，不增加恢复通配能力。registry 必须扫描目标工程全部清单并逐项校验当前授权上下文覆盖其 capability、空间、资料授权和策略版本；这是一项工程级完整性前置条件。任一行不覆盖即停止，写入通用授权拒绝安全记录，并返回 `ARTIFACT_ACCESS_DENIED` 或 `ARTIFACT_RECOVERY_BLOCKED`；不得 `continue`、输出受限子集或把未见行计为完整。
+
 ### 7. 读取、完整性与路径攻击防护
 
-`open` 顺序：strict 请求 → 权限/清单查询 → 幂等 `artifact.read-started` 审计 → 从摘要重建路径 → `realpath/lstat` 与普通文件检查 → 长度预检 → 返回单次消费流。流对每块更新 SHA-256，EOF 时比较清单并 resolve `verified`；提早取消、长度不符或摘要不符 reject `verified` 并生成结构化完整性记录。
+`open` 顺序：strict 请求 → 权限/清单查询 → 幂等 `artifact.read-started` 审计与 `authorized` 访问记录 → 从摘要重建路径 → `realpath/lstat` 与普通文件检查 → 长度预检 → 返回单次消费流。授权拒绝在返回通用错误前写 `artifact.read-denied`，且记录中不包含目标清单字段。流对每块更新 SHA-256；EOF 校验成功后写 `artifact.read-succeeded`，只有记录提交后才 resolve `verified`。提早取消写 `artifact.read-cancelled`；长度或摘要不符先保存受保护诊断工件并写 `artifact.read-integrity-failed`，随后 reject `verified`。结构化记录失败不能变成读取成功或绕过授权。
 
 调用方不得在 `verified` 成功前提交派生工件或领域事实。adapter 不把失败流缓存、补零、换成同名文件或自动重写清单。对已登记对象的缺失/损坏，普通写入也不能覆盖；必须由恢复流程从可信备份恢复原摘要字节后重新核对。
 
@@ -338,26 +357,32 @@ C06 后续实现授权决策事实与策略兼容性，但不能放宽 C04 已�
 
 分类：
 
-- `stale-staging`：`.part` 修改时间早于 `observedBefore`，没有活动写句柄；
+- `stale-staging`：`.part` 修改时间早于本次冻结 cutoff，没有活动写句柄；
 - `orphan-object`：合法 SHA-256 对象，早于宽限期，`business.artifact_manifests` 中 `content_sha256` 引用数为 0；
 - `unreferenced-manifest`：清单存在但尚无领域事实引用，不是物理孤儿，C04 不删除；
 - `shared-object`：至少一个清单引用，始终保留；
 - `quarantined-object`：先前维护中断后的隔离文件。
 
-`sweepOrphans` 默认 `dryRun=true`。执行删除时获取与 put 相同 advisory key 的**排他 session lock**；锁超时返回可重试 `ARTIFACT_MAINTENANCE_BUSY`。锁内重新扫描候选、检查规范路径/mtime、查询摘要引用数；零引用且超期才原子移动到 `quarantine/<runId>/hash` 并刷新目录。随后以 C03 零事件事务追加维护审计；审计提交后删除隔离文件并刷新目录。审计失败则尽力还原，进程崩溃则下次依据数据库引用和维护 run/audit 身份决定还原或删除。
+composition root 构造 adapter 时 strict 解析并冻结唯一 `ArtifactStorePolicyV1`，maintenance 保存该不可变值；三个维护命令只携 `policyRef`。任何引用不一致或契约外 `observedBefore`、宽限期、批次、锁超时立即以 `ARTIFACT_INPUT_INVALID` 拒绝。每次运行从可信时钟取得一次 `runStartedAt`，计算并冻结 `cutoff = runStartedAt - orphanGracePeriodMs`，策略引用、规范策略摘要、时间与 cutoff 进入结果、维护批次和审计追溯。
 
-维护批次最多 `maintenanceBatchSize`；每批释放资源后继续。它不跟踪“领域引用计数”，因为任何清单本身就是文件存在的有效引用；领域保留/删除清单由 C11/C37 后续 change 规划。这个边界避免 C04 猜测业务保留政策。
+`sweepOrphans` 默认 `dryRun=true`。执行删除时获取与 put 相同 advisory key 的**排他 session lock**并持有至本次目录迭代完成；锁超时返回可重试 `ARTIFACT_MAINTENANCE_BUSY`。staging、objects 与 quarantine 均用 `opendir()` async iterator 遍历，不用一次载入整目录的 `readdir()`；任一时刻最多持有一个目录句柄，候选数组最多 `maintenanceBatchSize`。每批在锁内重新检查规范路径/mtime与摘要引用数；零引用且超期才原子移动到 `quarantine/<runId>/hash` 并刷新目录。随后以确定性内部批次幂等身份，在一个 C03 零事件事务中原子插入 `business.artifact_maintenance_batches` 并追加审计；提交后删除隔离文件并刷新目录。每批释放候选数组及对象句柄，沿用同一 iterator 和 cutoff 继续；迭代穷尽后关闭目录句柄并释放排他锁，批次已满不能提前结束整次 sweep。
+
+每次新 sweep 在处理新候选前先收口 quarantine。目录名必须通过 strict run/hash 校验，但只用于定位：若找不到覆盖该 hash 的已提交维护批次或审计引用，说明删除决定未耐久，恢复到规范对象位置并刷新目录；若记录已提交且摘要引用数仍为零，则完成删除；若出现任一清单引用，则恢复或保留规范对象。规范位置与隔离位置同时存在时必须完整核对同一摘要，冲突即停止并产生诊断。维护批次不可修改或删除，恢复动作追加审计；任何数据库/审计不可用、目录身份非法或对象冲突都 fail closed，不凭文件名猜测。
+
+维护不跟踪“领域引用计数”，因为任何清单本身就是文件存在的有效引用；领域保留/删除清单由 C11/C37 后续 change 规划。这个边界避免 C04 猜测业务保留政策。
 
 ### 9. 哈希清单、备份与恢复核对
 
-`createHashManifest` 在调用方已冻结的 PostgreSQL 读取快照下按主键游标流式扫描获准工程清单；每行 strict 解析并核对 `manifestSha256`，输出确定性 NDJSON 后通过普通 `put` 保存。`backupBatchRef`、`databaseSnapshotRef` 与 `fileSnapshotRef` 由 C37 提供；C04 不创建备份或声称快照原子。
+`createHashManifest` 由 registry 创建并持有 §5 的专用 `REPEATABLE READ READ ONLY` transaction 和 package-private snapshot reader，再把 reader 传给 maintenance 生成器。所有 keyset 批次使用同一 client；不得在普通连接上逐批查询，也不得把 C03 `TransactionContextV1` 跨 handler 保存。每行 strict 解析并核对 `manifestSha256`，工程级授权必须覆盖全部行；遇到无权行整体失败。扫描完成后关闭快照事务，再把确定性 NDJSON 通过普通 `put` 保存。`backupBatchRef`、`databaseSnapshotRef` 与 `fileSnapshotRef` 由 C37 提供用于业务追溯；C04 不创建备份、不导入/导出外部 PostgreSQL snapshot token，也不声称这些业务引用自动证明数据库与文件快照原子。
+
+新建哈希清单时其精确引用尚未登记，扫描不传排除条件，因此同一 manifestId 的全部历史版本正常进入本次清单。`reconcile` 的 registry 查询使用可选精确 tuple `(kind, entityId, versionId)`，只排除承载当前输入 NDJSON 的 `hashManifestRef`；禁止按 artifactId 排除全部版本。
 
 备份顺序由 C37 保证“文件快照是数据库恢复点引用集合的超集”。恢复时，C37 把哈希清单字节流与已恢复数据库/文件根交给 `reconcile`：
 
 1. strict/流式验证 header、每个 entry、排序、entryCount、`entriesSha256` 和快照引用；
-2. 对数据库每个已提交清单核对清单 entry、物理普通文件、长度、SHA-256 与 `manifestSha256`；
+2. 对数据库每个已提交清单核对清单 entry、物理普通文件、长度、SHA-256 与 `manifestSha256`；`recovery` 模式先证明授权覆盖工程全部清单，任一缺口直接阻断且不返回部分 summary；
 3. 扫描物理对象，把数据库无摘要引用的对象列为 orphan；
-4. 输出流式 findings 与最终 summary；`missing-object`、`content-mismatch`、`manifest-conflict` 任一存在即 `passed=false`；
+4. 输出流式 findings 与最终 summary；`missing-object`、`content-mismatch`、`manifest-conflict` 任一存在即 `passed=false`，并保存包含有限详情的受保护诊断工件，把 `diagnosticRef` 写入 summary 与结构化运维记录；
 5. 不从文件/清单 INSERT 数据库，不从 checkpoint、Outbox 或目录补造领域事实。
 
 恢复核对可以修复的唯一动作是由运维从可信备份恢复**同一 SHA-256 字节**后重新执行；改变摘要意味着新工件版本，不能修补旧引用。RPO/RTO、异机副本、备份介质和演练频率属于 C37。
@@ -383,19 +408,19 @@ ARTIFACT_UNSUPPORTED_VERSION        non-retryable
 
 `ArtifactErrorV1 = { code, retryable, stage, occurredAt, diagnosticRef, contextRefs }`，不含自由对象袋。映射：访问拒绝 → `AUTHORIZATION_DENIED`；已授权不存在 → `ENTITY_NOT_FOUND`；临时 I/O/数据库/维护锁 → `TRANSIENT_FAILURE`；Schema/完整性/继承/恢复阻断 → `TERMINAL_FAILURE`；未知 schema → `UNSUPPORTED_CONTRACT`；C03 幂等冲突保持 `IDEMPOTENCY_CONFLICT`。
 
-只追加审计动作固定为 `artifact.put`、`artifact.read-started`、`artifact.hash-manifest-created`、`artifact.orphan-sweep`、`artifact.reconcile`。写入/哈希清单/清理审计失败阻断其数据库提交；读取审计失败不返回字节。完整性失败和授权拒绝另写受保护安全/运维日志；不能因无法写普通日志而伪装成功。
+只追加审计动作固定为 `artifact.put`、`artifact.read-started`、`artifact.read-succeeded`、`artifact.read-denied`、`artifact.read-cancelled`、`artifact.read-integrity-failed`、`artifact.hash-manifest-created`、`artifact.orphan-sweep`、`artifact.orphan-sweep-recovered`、`artifact.reconcile`。写入/哈希清单/维护批次审计失败阻断其数据库提交；授权审计失败不返回字节，EOF 成功审计失败不 resolve `verified`。完整性与恢复失败必须附受保护诊断引用；不能因无法写记录而伪装成功。
 
 指标：写/读请求数与字节、成功/失败、去重命中、staging 占用、孤儿/隔离数量、完整性失败、维护锁等待、hash/reconcile 速率；维度只含阶段、结果、种类和受保护工程引用，禁止完整摘要形成高基数标签。日志/错误不含正文、原始文件名、绝对路径、连接串、token、模型响应或思维链。
 
 ### 11. 性能与资源上限
 
-所有字节、哈希清单和 findings 都使用 `AsyncIterable<Uint8Array>`/逐行流式处理；核心逻辑不得调用会把完整工件载入内存的 `readFile` 或无界 `Buffer.concat`。写入/读取信号量和 staging 字节预算来自冻结策略；超限通过背压或结构化错误返回，不跳过校验。
+所有字节、哈希清单和 findings 都使用 `AsyncIterable<Uint8Array>`/逐行流式处理；核心逻辑不得调用会把完整工件载入内存的 `readFile`、无界 `Buffer.concat` 或 `string[] + join`。PostgreSQL 清单使用同一 snapshot reader 的 keyset 批次；staging、objects 与 quarantine 使用 `opendir()` 异步迭代，任一时刻至多一个目录句柄，单批候选不超过 `maintenanceBatchSize`，处理后释放候选数组和对象句柄再继续。写入/读取信号量和 staging 字节预算来自冻结策略；超限通过背压或结构化错误返回，不跳过校验。
 
 C04 验收不冻结硬件 SLA，只证明实现形态：
 
 - 一个 256 MiB 确定性生成流，以不超过 1 MiB chunk 完成写入/读取/摘要往返；采集 peak heap，确认正文不以 256 MiB 整体缓冲。
 - 8 个并发 16 MiB 不同内容和 8 个并发相同内容完成，无损坏、无重复物理对象、无文件描述符泄漏。
-- 10,000 条合成清单的哈希清单与 reconcile 使用游标/批次，记录条目/秒和 heap。
+- 10,000 条真实 PostgreSQL 清单的 `createHashManifest` 与 reconcile 使用同一快照游标/批次，测试数据和 NDJSON 都按流生成，不预拼完整正文，记录条目/秒和运行中 peak heap。
 - 报告 Node/OS、存储类型、样本、并发、冷/热状态、wall time、吞吐、heap 和磁盘变化；不设置易受 CI 磁盘影响的毫秒硬断言。
 
 若真实目标硬件基准显示本地目录在容量、并发或运维上不足，由 C37 的量化结果另开对象存储 change；C04 不预建 S3 seam。
@@ -406,17 +431,17 @@ C04 验收不冻结硬件 SLA，只证明实现形态：
 
 `packages/adapters/test/artifacts/content-addressed-artifact-store.test.ts` 每文件启动一个固定 PostgreSQL Testcontainer并创建一个 `mkdtemp` 数据根；复用 C03 bootstrap/生产 migrations，再运行 C04 migration。测试结束关闭流/pg/Kysely 后移除精确临时目录并停止容器。容器不可用时明确失败，不回退内存 registry。
 
-同一集成文件覆盖：
+同一集成文件与测试子进程夹具覆盖：
 
 - 初次落位、相同内容去重、并发相同/不同内容、空文件、期望长度/摘要错误、大小上限；
-- 在 staging sync、object link、DB handler、audit commit、DB commit 后通过测试私有 failpoint 强杀/抛错，重启后证明只有孤儿、没有悬空清单；
+- 在 staging sync、object link、DB handler、audit commit、DB commit、quarantine rename、维护批次/审计提交与最终删除边界，由父测试进程观察真实持久状态后向子进程发送 `SIGKILL`，再以同一 PostgreSQL/目录新建进程和 adapter，证明只有可收口 staging/孤儿、没有悬空清单或无法决定的隔离对象；进程内 throw failpoint 只能补充局部错误覆盖，不能作为强杀证据；
 - 同命令重放、同键不同内容/权限冲突、不同命令同内容独立清单；
-- 直接权限快照、多父继承、跨工程、缺 grant/scope/能力、无权不存在不泄露；
-- 路径穿越输入无入口、对象/目录 symlink、非普通文件、截断/篡改、读取未完成和 verified 收据；
+- 直接权限快照、多父继承、跨工程，以及分别缺 grant、scope、capability、策略版本；父不存在/跨工程/无权统一授权语义，工程级 hash/recovery 任一清单无权整体失败；
+- 路径穿越输入无入口、存储根/分片目录/对象 symlink、目录/非普通文件、真实 POSIX 权限拒绝、截断/篡改、读取未完成和 verified 收据；校验读取成功/拒绝/取消/完整性失败记录及 reconcile 诊断引用；
 - 下游夹具事实 + 工件 guard + 审计 + Outbox 的同事务成功/回滚，未登记引用零部分事实；
-- dry-run、宽限期、共享对象、维护/put 竞争、隔离阶段崩溃与重启收口；
-- 确定哈希清单、完整恢复、缺失/损坏/冲突、额外孤儿、数据库点晚于文件快照；
-- §11 的流式/并发/10,000 条基准证据。
+- dry-run、未过宽限期、超期 staging、共享对象、跨进程维护/put 竞争、`2 * maintenanceBatchSize + 1` 持续分批与大目录有界迭代、隔离各阶段强杀和重启收口；
+- 确定哈希清单、完整恢复、缺失/损坏/冲突、额外孤儿、数据库点晚于文件快照；同一 artifactId 至少两个历史版本，证明新建时不排除旧版本、reconcile 只排除当前精确 ref；并发插入时证明同一 hash manifest 的所有批次来自同一 PostgreSQL snapshot；
+- §11 的 256 MiB 流式往返、8 个同内容 + 8 个异内容并发、运行中 heap/文件描述符/staging 采样，以及真实 PostgreSQL 10,000 清单 `createHashManifest` + reconcile 基准证据。
 
 测试 failpoint 与 fixture 表只存在 `packages/adapters/test/artifacts/**`，不进入生产 exports、migration root 或 API。
 
@@ -481,7 +506,8 @@ packages/adapters/src/postgres/migrations/platform/
 - **单卷故障仍会同时影响对象集合** → C04 用哈希清单发现损坏；C37 负责异故障域备份、恢复点与演练，不能把同盘目录称为灾备。
 - **文件与 PostgreSQL 无共同事务** → 严格采用文件先行、命令幂等、孤儿宽限期和恢复硬核对，绝不接受悬空引用。
 - **每次完整读取计算 SHA-256 增加 I/O/CPU** → 保持流式并记录性能；只有目标硬件基准证明不可接受才规划受审计 scrub/可信校验缓存。
-- **session advisory lock 使清理与最终登记互斥** → put 只在内容已 staging 后持共享锁，维护分批；观测锁等待后再考虑按摘要分片锁。
+- **session advisory lock 使清理与最终登记互斥** → put 只在内容已 staging 后持共享锁并覆盖 staging 收尾；维护持排他锁但使用有界 iterator/批次缩短单对象资源占用，观测锁等待后再考虑按摘要分片锁。
+- **一致快照会持有长只读事务** → 只在哈希清单生成期间使用专用连接和 keyset 批次，完成或失败立即关闭；真实 10,000 条证据不足时先优化批次和 I/O，不改用普通连接多快照拼接。
 - **C06 尚未实现策略解释** → C04 只做工程、能力与精确 scope/grant 集合的保守包含校验并保存策略版本；不自行推断角色或扩大权限。
 - **清单 JSONB 未来可能变大** → 父/证据引用只保存精确小引用并设策略上限；真实数据超限后再设计分页关系表，不预建。
 
@@ -491,7 +517,7 @@ packages/adapters/src/postgres/migrations/platform/
 2. 主调度 Agent只为两个 package 增加 `./artifacts` exports，冻结安装/锁文件不变，形成 export checkpoint。
 3. 实现 core Schema/ports 与纯函数测试。
 4. 实现 C04 migration、PostgreSQL registry、本地目录写读与引用 guard。
-5. 实现 hash manifest、reconcile、staging/orphan maintenance 和真实 PostgreSQL+临时目录测试。
+5. 实现一致快照 hash manifest、全工程授权 reconcile、冻结策略、只追加维护批次、staging/orphan/quarantine 恢复和真实 PostgreSQL+临时目录/子进程测试。
 6. 运行定向测试、类型/格式/依赖边界、全仓 `pnpm verify` 与独立 `openspec-verify-change`；不启动服务。
 
 部署时先以 C03 migrator 执行 `000002`，再以部署配置创建同卷根目录并校验权限/无符号链接，最后装配 adapter。migration 或根目录预检失败时应用不得启用工件引用路径。

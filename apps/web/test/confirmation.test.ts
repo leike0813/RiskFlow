@@ -76,7 +76,10 @@ describe("C10 命令确认原语", () => {
     expect(staleController.open(firstPlan, { kind: "allowed" })).toBe(true);
     const stale = makeSafeHttpError({ code: "STALE_VERSION" });
     expect(await staleController.confirm(async () => Promise.reject(stale))).toBe(false);
-    expect(staleController.getState().kind).toBe("closed");
+    expect(staleController.getState()).toMatchObject({
+      kind: "terminal-failure",
+      error: { code: "STALE_VERSION" },
+    });
   });
 
   it("blocks duplicate submission while a high-impact command is pending", async () => {
@@ -93,5 +96,25 @@ describe("C10 命令确认原语", () => {
     expect(await controller.confirm(async () => success("duplicate"))).toBe(false);
     resolveSubmit?.(success("result-3"));
     expect(await pending).toBe(true);
+  });
+
+  it("retries an already acknowledged high-impact plan with the same identity", async () => {
+    const highPlan = plan("high");
+    const controller = createConfirmationController<typeof highPlan>();
+    expect(controller.open(highPlan, { kind: "allowed" })).toBe(true);
+    expect(controller.acknowledge()).toBe(true);
+    expect(
+      await controller.confirm(async () =>
+        Promise.reject(makeSafeHttpError({ code: "TRANSIENT_FAILURE", retryable: true })),
+      ),
+    ).toBe(false);
+    expect(
+      await controller.retry(async (submitted) => {
+        expect(submitted).toBe(highPlan);
+        expect(submitted.commandId).toBe("command-1");
+        expect(submitted.idempotencyKey).toBe("idempotency-1");
+        return success("high-retry");
+      }),
+    ).toBe(true);
   });
 });

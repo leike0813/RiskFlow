@@ -145,6 +145,17 @@ describe("C10 路由、上下文与动作原语", () => {
         processNodeId: "ignored",
       }),
     ).toBe(INITIAL_WEB_CONTEXT_V1);
+    expect(
+      reduceWebContext(INITIAL_WEB_CONTEXT_V1, {
+        type: "replace",
+        context: {
+          revision: 1,
+          projectId: null,
+          spatialScopeRef: null,
+          processNodeId: "orphan-process",
+        },
+      }),
+    ).toBe(INITIAL_WEB_CONTEXT_V1);
     const frozen = freezeRunContext(process);
     expect(contextMatchesFrozenRun(process, frozen)).toBe(true);
     expect(contextMatchesFrozenRun(switched, frozen)).toBe(false);

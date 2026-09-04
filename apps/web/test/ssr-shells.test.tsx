@@ -182,7 +182,7 @@ describe("C10 Web shell SSR 结构", () => {
       <CommandConfirmationDialog
         state={state}
         availability={{ kind: "allowed" }}
-        requiredCapability="test.command"
+        requiredCapability="projection.query"
         onCancel={() => undefined}
       />,
     );
@@ -215,6 +215,20 @@ describe("C10 Web shell SSR 结构", () => {
       <RightDock initialPanel="agent" agentContribution={{ kind: "unavailable" }} />,
     );
     expect(agent).toContain('data-dock-state="unavailable"');
+    const readyAgent = renderToStaticMarkup(
+      <RightDock
+        initialPanel="agent"
+        agentContribution={{
+          kind: "ready",
+          taskRef: {
+            kind: "agent-task",
+            reference: { entityId: "agent-task-1", versionId: "v1" },
+          },
+          slot: ({ taskRef }) => <span data-agent-task={taskRef.kind}>已审计任务</span>,
+        }}
+      />,
+    );
+    expect(readyAgent).toContain('data-agent-task="agent-task"');
     const full = renderToStaticMarkup(
       <RightDock
         initialPanel="context"
@@ -230,5 +244,19 @@ describe("C10 Web shell SSR 结构", () => {
       />,
     );
     expect(full).not.toContain("secret source body");
+    const unscoped = renderToStaticMarkup(
+      <RightDock
+        initialPanel="context"
+        contextRevision={2}
+        evidence={{
+          kind: "full",
+          sourceName: "source-name",
+          chapterPath: "chapter/path",
+          sourceSegmentId: "source-1-chapter-1-segment-1",
+          body: "unscoped source body",
+        }}
+      />,
+    );
+    expect(unscoped).not.toContain("unscoped source body");
   });
 });

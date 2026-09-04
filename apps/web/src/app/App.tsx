@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 
 import type { ModuleCapabilityV1 } from "@riskflow/contracts/ports";
 
@@ -262,12 +262,16 @@ export const App = (props: AppPropsV1 = {}): ReactNode => {
       route={effectiveResolution}
       registry={registry}
       context={context}
-      routeContent={routeContentFor({
-        resolution: effectiveResolution,
-        context,
-        capabilities: props.capabilities,
-        routeContent: props.routeContent,
-      })}
+      routeContent={
+        <Fragment key={`${pathname}:${context.revision}`}>
+          {routeContentFor({
+            resolution: effectiveResolution,
+            context,
+            capabilities: props.capabilities,
+            routeContent: props.routeContent,
+          })}
+        </Fragment>
+      }
       capabilities={props.capabilities}
       projectOptions={props.projectOptions}
       spatialScopeOptions={props.spatialScopeOptions}

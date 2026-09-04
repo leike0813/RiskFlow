@@ -234,7 +234,7 @@ const isProjectRequestBody = (
 ): boolean => {
   if (
     body.schemaVersion !== HTTP_SCHEMA_VERSION_V1 ||
-    body.projectId !== projectId ||
+    (Object.hasOwn(body, "projectId") && body.projectId !== projectId) ||
     !Array.isArray(body.requestedSpatialScopeRefs) ||
     !Array.isArray(body.requestedSourceVersionRefs) ||
     !Object.hasOwn(body, "payload")
@@ -586,11 +586,19 @@ export const createC09Client = (input?: {
       (!isRecord(body) || !isProjectRequestBody(operation, body, projectId as string))
     )
       throw new C09HttpError(makeSafeHttpError({ code: "CONTRACT_INVALID" }));
+    const transportBody =
+      operation.mode === "session"
+        ? body
+        : (() => {
+            const envelope = { ...(body as Record<string, unknown>) };
+            delete envelope.projectId;
+            return envelope;
+          })();
     const { response, body: responseBody } = await requestJson({
       fetcher,
       path,
       method: operation.method,
-      body,
+      body: transportBody,
       signal,
     });
     let value: TResult;

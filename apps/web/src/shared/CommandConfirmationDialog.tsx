@@ -1,6 +1,6 @@
 import { useEffect, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 
-import type { ContractReferenceV1 } from "@riskflow/contracts/ports";
+import type { ContractReferenceV1, ModuleCapabilityV1 } from "@riskflow/contracts/ports";
 
 import type { SafeHttpErrorV1 } from "../api/errors.js";
 import { shouldCloseOnEscape, focusElement } from "./focus.js";
@@ -11,7 +11,7 @@ import { safeErrorFields } from "./page-shells/PageFrame.js";
 export type CommandConfirmationDialogPropsV1<TRequest> = Readonly<{
   state: ConfirmationStateV1<TRequest>;
   availability?: WebActionAvailabilityV1;
-  requiredCapability?: string;
+  requiredCapability: ModuleCapabilityV1;
   openerRef?: RefObject<HTMLElement | null>;
   onAcknowledge?: () => void;
   onConfirm?: (plan: CommandConfirmationPlanV1<TRequest>) => void | Promise<void>;
@@ -162,11 +162,9 @@ export const CommandConfirmationDialog = <TRequest,>({
               ))}
             </ul>
           </section>
-          {requiredCapability === undefined ? null : (
-            <p>
-              所需能力：<code>{requiredCapability}</code>
-            </p>
-          )}
+          <p>
+            所需能力：<code>{requiredCapability}</code>
+          </p>
           {plan.impact === "high" && state.kind === "reviewing" ? (
             <label>
               <input

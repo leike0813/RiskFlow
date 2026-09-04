@@ -128,7 +128,8 @@ export const finishConfirmation = <TRequest>(
       },
 ): ConfirmationStateV1<TRequest> => {
   if (result.kind === "succeeded") return Object.freeze(result);
-  if (isConfirmationInvalidationError(result.error)) return { kind: "closed" };
+  if (isConfirmationInvalidationError(result.error))
+    return Object.freeze({ kind: "terminal-failure", error: result.error });
   if (state.kind !== "submitting" && state.kind !== "retryable-failure") return state;
   return result.error.retryable
     ? Object.freeze({ kind: "retryable-failure", plan: state.plan, error: result.error })
@@ -212,7 +213,7 @@ export const createConfirmationController = <TRequest>(): ConfirmationController
       state = {
         kind: "reviewing",
         plan,
-        acknowledged: plan.impact !== "high",
+        acknowledged: true,
       };
       return (async () => {
         const next = beginConfirmationSubmit(state);

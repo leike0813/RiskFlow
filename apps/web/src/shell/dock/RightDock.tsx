@@ -24,12 +24,14 @@ export type EvidenceDockContentV1 =
     }>
   | Readonly<{ kind: "error"; error: SafeHttpErrorV1 }>;
 
-export type AgentContributionV1 = Readonly<{
-  kind: "ready" | "forbidden" | "unavailable";
-  taskRef?: ContractReferenceV1 | undefined;
-  content?: ReactNode | undefined;
-  slot?: AgentContributionSlotV1 | undefined;
-}>;
+export type AgentContributionV1 =
+  | Readonly<{ kind: "forbidden" }>
+  | Readonly<{ kind: "unavailable" }>
+  | Readonly<{
+      kind: "ready";
+      taskRef: ContractReferenceV1;
+      slot: AgentContributionSlotV1;
+    }>;
 
 export type AgentContributionSlotV1 = (
   input: Readonly<{
@@ -53,9 +55,8 @@ export const isEvidenceInContext = (
   evidenceContextRevision: number | undefined,
   contextRevision: number | undefined,
 ): boolean =>
-  evidenceContextRevision === undefined ||
-  contextRevision === undefined ||
-  evidenceContextRevision === contextRevision;
+  evidenceContextRevision === contextRevision &&
+  (evidenceContextRevision !== undefined || contextRevision === undefined);
 
 const SafeError = ({ error }: { error: SafeHttpErrorV1 }): ReactNode => {
   const safe = decodeSafeHttpError(error);
@@ -109,9 +110,8 @@ const AgentPanel = ({
   return (
     <div data-dock-state="ready">
       <p>Agent 任务摘要</p>
-      {contribution.taskRef === undefined ? null : <code>{contribution.taskRef.kind}</code>}
-      {contribution.slot?.({ taskRef: contribution.taskRef })}
-      {contribution.content}
+      <code>{contribution.taskRef.kind}</code>
+      {contribution.slot({ taskRef: contribution.taskRef })}
     </div>
   );
 };

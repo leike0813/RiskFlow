@@ -132,7 +132,13 @@ describe("C10 C09 HTTP 与 OpenAPI 边界", () => {
     const requestHeaders = new Headers(calls[1]?.init?.headers);
     expect(requestHeaders.get("content-type")).toBe("application/json");
     expect(requestHeaders.get("authorization")).toBeNull();
-    expect(() => JSON.parse(String(calls[1]?.init?.body))).not.toThrow();
+    const projectBody = JSON.parse(String(calls[1]?.init?.body));
+    expect(projectBody).not.toHaveProperty("projectId");
+    expect(projectBody).toMatchObject({
+      schemaVersion: "1",
+      commandId: "command-1",
+      idempotencyKey: "idempotency-1",
+    });
 
     const beforeUnknown = calls.length;
     const unknown = createCommandOperation<{ projectId: string }, ContractReferenceV1>({

@@ -129,6 +129,7 @@ export const reduceWebContext = (
     if (spatialScopeRef !== null && !validSpatialScopeRef(spatialScopeRef)) return current;
     if (spatialScopeRef !== null && projectId === null) return current;
     if (processNodeId !== null && !nonEmpty(processNodeId)) return current;
+    if (processNodeId !== null && projectId === null) return current;
     return changed(current, {
       projectId: projectId?.trim() ?? null,
       spatialScopeRef: spatialScopeRef === null ? null : freezeSpatialScopeRef(spatialScopeRef),

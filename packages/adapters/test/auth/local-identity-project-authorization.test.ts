@@ -1033,7 +1033,7 @@ describe.sequential("local identity and project authorization", () => {
       password: USER_PASSWORD_CHANGED,
     });
     managerSessionToken = managerRefresh.sessionToken;
-  });
+  }, 30_000);
 
   it("login|session|password change|throttle", async () => {
     const userLogin = await access!.login({

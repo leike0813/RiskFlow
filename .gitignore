@@ -118,3 +118,5 @@ Desktop.ini
 
 # OpenSpec 归档本地副产物(如未来需要)
 /openspec/.cache/
+
+.mattpack/

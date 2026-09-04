@@ -530,7 +530,9 @@ G2 后两条业务主干并行：
   {C32..C36} → C37 → C38
 ```
 
-这张静态图一次性完整维护，供主 Agent 计算 frontier 和判断 change 的直接依赖。Orca 采用滚动执行图，不把 39 个 changes 一次性物化为深链：每个 G0～G5 阶段建立一个 Run，只创建当前波次与相邻下一层任务，阶段门通过后再展开下一段。
+`config/orchestration/execution-graph.json` 是这张静态图的机器事实源，完整维护 C00～C38 与 G0～G5 的节点、直接依赖、wave/lane 和 gate。它供主 Agent 计算 frontier 和判断直接依赖；Orca 采用滚动执行图，不把 39 个 changes 一次性物化为深链：每个 G0～G5 阶段建立一个 Run，只创建当前波次与相邻下一层任务，阶段门通过后再展开下一段。
+
+活动 change 的 OpenSpec 和 Git 状态必须在 Orca 返回的对应 feature worktree 中按完整 `worktreeId` 读取；Orca Task/Run/worker 提供执行状态；`main` 只提供合并祖先、主线验证和归档事实。不得因 main 缺少某个 OpenSpec change 就推断该 change 未创建或未在执行。
 
 每个 change 的执行子图固定为：
 
@@ -543,6 +545,8 @@ archive（MiniMax-M3 high：机械归档 + tracker/证据更新）
         ↓
 下游 deliver
 ```
+
+每个 Orca Task 创建后立即以 `task-update --result` 写入结构化执行信封，至少固定 `changeId`、`taskKind`、完整 `worktreeId`、`baseHead`、`head`、`phase`、`outcome` 和 `evidenceRefs`；main 集成后追加 `mergeCommit`、`mainHead`、`verification`、`archiveCommit`。不得从 task 标题、报告正文或最近时间戳推断归属和阶段。
 
 `task-create --deps` 表达上述依赖，`task-list --ready` 只计算可派发项，不自动启动 worker。主 Agent 保留最终派发和归档授权。
 

@@ -16,7 +16,9 @@
     "deps:check": "depcruise --config dependency-cruiser.config.cjs apps packages",
     "deps:policy": "node scripts/check-dependency-policy.mjs",
     "openspec:validate": "openspec validate --all --strict --no-interactive",
-    "verify": "pnpm build && pnpm typecheck && pnpm lint && pnpm format:check && pnpm test && pnpm deps:check && pnpm deps:policy && pnpm openspec:validate"
+    "verify": "pnpm build && pnpm typecheck && pnpm lint && pnpm format:check && pnpm test && pnpm deps:check && pnpm deps:policy && pnpm openspec:validate",
+    "orchestration:status": "node scripts/orchestration/status.mjs",
+    "orchestration:check": "node scripts/orchestration/status.mjs --check"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

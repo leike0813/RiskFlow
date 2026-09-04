@@ -1,0 +1,366 @@
+{
+  "schemaVersion": 1,
+  "routeId": "riskflow-mvp-c00-c38",
+  "mainBranch": "main",
+  "nodes": [
+    {
+      "id": "C00",
+      "kind": "change",
+      "change": "establish-openspec-engineering-baseline",
+      "dependsOn": [],
+      "wave": "A",
+      "lane": "contract"
+    },
+    {
+      "id": "C01",
+      "kind": "change",
+      "change": "define-domain-contract-kernel",
+      "dependsOn": ["C00"],
+      "wave": "A",
+      "lane": "contract"
+    },
+    {
+      "id": "C02",
+      "kind": "change",
+      "change": "define-module-interfaces-events-and-workflows",
+      "dependsOn": ["C01"],
+      "wave": "A",
+      "lane": "contract"
+    },
+    { "id": "G0", "kind": "gate", "dependsOn": ["C00", "C01", "C02"], "wave": "A", "lane": "gate" },
+
+    {
+      "id": "C03",
+      "kind": "change",
+      "change": "deliver-postgresql-outbox-and-checkpoint-foundation",
+      "dependsOn": ["C02"],
+      "wave": "B",
+      "lane": "platform"
+    },
+    {
+      "id": "C04",
+      "kind": "change",
+      "change": "deliver-content-addressed-artifact-store",
+      "dependsOn": ["C02", "C03"],
+      "wave": "B",
+      "lane": "platform"
+    },
+    {
+      "id": "C05",
+      "kind": "change",
+      "change": "deliver-llamacpp-model-gateway",
+      "dependsOn": ["C02", "C04"],
+      "wave": "B",
+      "lane": "platform"
+    },
+    {
+      "id": "C06",
+      "kind": "change",
+      "change": "deliver-local-identity-and-project-authorization",
+      "dependsOn": ["C01", "C03"],
+      "wave": "B",
+      "lane": "access"
+    },
+    {
+      "id": "C07",
+      "kind": "change",
+      "change": "deliver-review-and-audit-runtime",
+      "dependsOn": ["C03", "C06"],
+      "wave": "B",
+      "lane": "review"
+    },
+    {
+      "id": "C08",
+      "kind": "change",
+      "change": "deliver-unified-bounded-agent-runtime",
+      "dependsOn": ["C03", "C04", "C05", "C06", "C07"],
+      "wave": "B",
+      "lane": "agent"
+    },
+    {
+      "id": "C09",
+      "kind": "change",
+      "change": "deliver-http-command-query-and-sse-shell",
+      "dependsOn": ["C02", "C03", "C06"],
+      "wave": "B",
+      "lane": "api"
+    },
+    {
+      "id": "C10",
+      "kind": "change",
+      "change": "deliver-web-shell-and-interaction-primitives",
+      "dependsOn": ["C01", "C09"],
+      "wave": "B",
+      "lane": "web"
+    },
+    {
+      "id": "G1",
+      "kind": "gate",
+      "dependsOn": ["C03", "C04", "C05", "C06", "C07", "C08", "C09", "C10"],
+      "wave": "B",
+      "lane": "gate"
+    },
+
+    {
+      "id": "C11",
+      "kind": "change",
+      "change": "deliver-engineering-context-and-source-registry",
+      "dependsOn": ["C03", "C04", "C06", "C07"],
+      "wave": "C",
+      "lane": "data"
+    },
+    {
+      "id": "C12",
+      "kind": "change",
+      "change": "deliver-structured-document-conversion",
+      "dependsOn": ["C11"],
+      "wave": "C",
+      "lane": "data"
+    },
+    {
+      "id": "C13",
+      "kind": "change",
+      "change": "deliver-scanned-document-ocr",
+      "dependsOn": ["C02", "C11"],
+      "wave": "C",
+      "lane": "data"
+    },
+    {
+      "id": "C14",
+      "kind": "change",
+      "change": "deliver-monitoring-batches-snapshots-and-features",
+      "dependsOn": ["C11"],
+      "wave": "C",
+      "lane": "data"
+    },
+    {
+      "id": "C15",
+      "kind": "change",
+      "change": "deliver-agent-cleaning-and-partial-availability",
+      "dependsOn": ["C08", "C11", "C12", "C13", "C14"],
+      "wave": "C",
+      "lane": "data"
+    },
+    {
+      "id": "C16",
+      "kind": "change",
+      "change": "deliver-governed-definition-lifecycle",
+      "dependsOn": ["C03", "C06", "C07"],
+      "wave": "C",
+      "lane": "governance"
+    },
+    {
+      "id": "C17",
+      "kind": "change",
+      "change": "deliver-process-model-mechanism-and-evidence-governance",
+      "dependsOn": ["C08", "C15", "C16"],
+      "wave": "C",
+      "lane": "knowledge"
+    },
+    {
+      "id": "C18",
+      "kind": "change",
+      "change": "deliver-assessment-configuration-and-measure-governance",
+      "dependsOn": ["C14", "C16"],
+      "wave": "C",
+      "lane": "governance"
+    },
+    {
+      "id": "C19",
+      "kind": "change",
+      "change": "deliver-structured-scoring-rules-and-applicable-rule-sets",
+      "dependsOn": ["C08", "C15", "C16", "C18"],
+      "wave": "C",
+      "lane": "governance"
+    },
+    {
+      "id": "G2",
+      "kind": "gate",
+      "dependsOn": ["C15", "C16", "C17", "C18", "C19"],
+      "wave": "C",
+      "lane": "gate"
+    },
+
+    {
+      "id": "C20",
+      "kind": "change",
+      "change": "deliver-versioned-dual-index-hybrid-retrieval",
+      "dependsOn": ["C03", "C05", "C17"],
+      "wave": "D",
+      "lane": "identification"
+    },
+    {
+      "id": "C21",
+      "kind": "change",
+      "change": "deliver-relationship-context-and-retrieval-agent-review",
+      "dependsOn": ["C08", "C17", "C20"],
+      "wave": "D",
+      "lane": "identification"
+    },
+    {
+      "id": "C22",
+      "kind": "change",
+      "change": "deliver-risk-candidate-validation-merge-and-acceptance",
+      "dependsOn": ["C01", "C05", "C07", "C21"],
+      "wave": "D",
+      "lane": "identification"
+    },
+    {
+      "id": "C23",
+      "kind": "change",
+      "change": "deliver-identification-human-review",
+      "dependsOn": ["C07", "C22"],
+      "wave": "D",
+      "lane": "identification"
+    },
+    {
+      "id": "C24",
+      "kind": "change",
+      "change": "deliver-identification-graph",
+      "dependsOn": ["C03", "C15", "C17", "C21", "C22", "C23"],
+      "wave": "D",
+      "lane": "identification"
+    },
+    {
+      "id": "C25",
+      "kind": "change",
+      "change": "deliver-deterministic-risk-assessment",
+      "dependsOn": ["C01", "C03", "C11", "C14", "C18", "C19"],
+      "wave": "D",
+      "lane": "assessment"
+    },
+    {
+      "id": "C26",
+      "kind": "change",
+      "change": "deliver-warning-tasks-and-in-app-notification",
+      "dependsOn": ["C07", "C09", "C25"],
+      "wave": "D",
+      "lane": "assessment"
+    },
+    {
+      "id": "C27",
+      "kind": "change",
+      "change": "deliver-response-recommendation",
+      "dependsOn": ["C07", "C08", "C18", "C26"],
+      "wave": "D",
+      "lane": "assessment"
+    },
+    {
+      "id": "C28",
+      "kind": "change",
+      "change": "deliver-execution-forecast-feedback-and-deviation",
+      "dependsOn": ["C07", "C14", "C25", "C27"],
+      "wave": "D",
+      "lane": "assessment"
+    },
+    {
+      "id": "C29",
+      "kind": "change",
+      "change": "deliver-calibration-suggestion-and-governance-loop",
+      "dependsOn": ["C07", "C08", "C18", "C19", "C28"],
+      "wave": "D",
+      "lane": "assessment"
+    },
+    {
+      "id": "C30",
+      "kind": "change",
+      "change": "deliver-assessment-and-riskflow-graphs",
+      "dependsOn": ["C03", "C07", "C24", "C25", "C26", "C27", "C28", "C29"],
+      "wave": "D",
+      "lane": "workflow"
+    },
+    {
+      "id": "C31",
+      "kind": "change",
+      "change": "deliver-graph-trace-and-report-projections",
+      "dependsOn": ["C03", "C22", "C25", "C26", "C28", "C29", "C30"],
+      "wave": "D",
+      "lane": "projection"
+    },
+    { "id": "G3", "kind": "gate", "dependsOn": ["C24", "C30"], "wave": "D", "lane": "gate" },
+
+    {
+      "id": "C32",
+      "kind": "change",
+      "change": "deliver-engineering-and-knowledge-ui",
+      "dependsOn": ["C10", "C15", "C17", "C18", "C19", "C31"],
+      "wave": "E",
+      "lane": "web"
+    },
+    {
+      "id": "C33",
+      "kind": "change",
+      "change": "deliver-identification-and-review-ui",
+      "dependsOn": ["C10", "C23", "C24", "C31"],
+      "wave": "E",
+      "lane": "web"
+    },
+    {
+      "id": "C34",
+      "kind": "change",
+      "change": "deliver-assessment-warning-and-response-ui",
+      "dependsOn": ["C10", "C25", "C26", "C27", "C28", "C29", "C30", "C31"],
+      "wave": "E",
+      "lane": "web"
+    },
+    {
+      "id": "C35",
+      "kind": "change",
+      "change": "deliver-agent-audit-and-operations-ui",
+      "dependsOn": ["C07", "C08", "C10", "C31"],
+      "wave": "E",
+      "lane": "web"
+    },
+    {
+      "id": "G4",
+      "kind": "gate",
+      "dependsOn": ["C32", "C33", "C34", "C35"],
+      "wave": "E",
+      "lane": "gate"
+    },
+
+    {
+      "id": "C36",
+      "kind": "change",
+      "change": "deliver-quality-evaluation-module",
+      "dependsOn": ["C15", "C17", "C20", "C21", "C22", "C25", "C27", "C29"],
+      "wave": "F",
+      "lane": "quality"
+    },
+    {
+      "id": "C37",
+      "kind": "change",
+      "change": "deliver-offline-private-deployment-and-operations",
+      "dependsOn": [
+        "C03",
+        "C04",
+        "C05",
+        "C06",
+        "C07",
+        "C08",
+        "C09",
+        "C10",
+        "C13",
+        "C20",
+        "C24",
+        "C30",
+        "C32",
+        "C33",
+        "C34",
+        "C35",
+        "C36"
+      ],
+      "wave": "F",
+      "lane": "operations"
+    },
+    {
+      "id": "C38",
+      "kind": "change",
+      "change": "deliver-mvp-acceptance-and-delivery-evidence",
+      "dependsOn": ["C24", "C30", "C31", "C32", "C33", "C34", "C35", "C36", "C37"],
+      "wave": "F",
+      "lane": "acceptance"
+    },
+    { "id": "G5", "kind": "gate", "dependsOn": ["C38"], "wave": "F", "lane": "gate" }
+  ]
+}

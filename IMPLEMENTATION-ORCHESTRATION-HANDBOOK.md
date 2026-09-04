@@ -106,7 +106,7 @@ feature → main（--no-ff），main 冻结安装 + pnpm verify
   ↓
 M3 high 机械 sync/archive；有冲突或判断项则升级 Sol high
   ↓
-主调度 Agent 复验 OpenSpec、提交 archive checkpoint、清理 worktree
+主调度 Agent 复验 OpenSpec、提交 archive checkpoint、按 §6.1 立即回收 worktree
 ```
 
 ### 5.1 规划门
@@ -168,9 +168,30 @@ docs(openspec): 归档 <change>
 2. Luna 实现结束 → 主调度 Agent审阅、提交，工作树 clean。
 3. Sol 验证只针对固定 implementation commit；若发现局部实现缺陷，必须在当前活动验证任务内直接修复并完成局部验证，主调度 Agent形成新的 implementation checkpoint 后由主调度 Agent收口；不得重置或复用已结束的 Sol session，也不再派 Sol 二次复检。
 4. feature 合并前执行 `git diff --check`、确认无越界文件、确认所有提交均在 feature branch。
-5. archive 提交后用 `git merge-base --is-ancestor <feature-head> main` 确认实现已集成，再移除 worktree。
+5. archive 提交后用 `git merge-base --is-ancestor <feature-head> main` 确认实现已集成；按 §6.1 完成 worker/terminal 收口和 worktree 回收。
 
-禁止使用 `git reset --hard`、`git checkout --`、强制清理或未解析变量的删除命令。主调度 Agent不从一个 worktree 复制未提交文件到另一个；需要共享时提交后 merge/cherry-pick，优先按既定分支合并。
+禁止使用 `git reset --hard`、`git checkout --`、`git clean` 或未解析变量的删除命令。worktree 回收默认不使用强制选项；只有用户明确授权丢弃已确认的临时/无效未提交产物时，才可按 §6.1 使用 Orca 的 `--force`，不得借此掩盖未知改动。主调度 Agent不从一个 worktree 复制未提交文件到另一个；需要共享时提交后 merge/cherry-pick，优先按既定分支合并。
+### 6.1 Worktree 回收
+
+一个 change 完成并合并回 `main` 后，不再为观察或保留验证上下文长期占用 feature worktree。满足以下条件即进入回收：
+
+1. feature 已使用 `--no-ff` 合并到 `main`，`main` 冻结安装与 `pnpm verify` 已通过。
+2. archive checkpoint 已提交，且 `git merge-base --is-ancestor <feature-head> main` 通过。
+3. worker 已收到最终 `worker_done`，Delivery 已 acknowledge；对应 Run、Dispatch 和 Agent session 已按 §7.3 收口，不得仍有活动写者。
+4. `git status --short` 已审阅。未知的未提交改动必须保留并升级；已明确确认可丢弃的临时/无效产物才可随回收删除。
+
+回收顺序固定为：
+
+```bash
+orca terminal list --worktree id:<full-worktree-id> --json
+orca terminal stop --worktree id:<full-worktree-id> --json   # 仅在任务已结束且仍有残留 terminal 时执行
+orca worktree rm --worktree id:<full-worktree-id> --json
+git worktree list --porcelain
+orca worktree list --repo id:d4349f30-1c7e-4777-b16d-f259481b0121 --json
+```
+
+回收必须使用完整 worktree ID，不能用 display name 猜测目标；回收后确认 Git 与 Orca 均无该 feature worktree。若存在已授权丢弃的已确认临时/无效产物，可将最后的 `worktree rm` 改为 `--force`，并在 Delivery 或协调记录中列出被丢弃内容；不得使用 `git clean` 或手工删除目录替代 Orca 回收。分支是否删除与 worktree 回收独立，按历史保留策略另行决定。
+
 
 ## 7. Orca 操作协议
 
@@ -181,14 +202,50 @@ docs(openspec): 归档 <change>
 ```bash
 git status --short
 git log --oneline --decorate -8
-openspec list --json
+openspec list --json                    # 仅作 main 基线/归档事实
 orca repo show --repo id:d4349f30-1c7e-4777-b16d-f259481b0121 --json
 orca worktree list --repo id:d4349f30-1c7e-4777-b16d-f259481b0121 --json
+pnpm orchestration:status --json        # 按每个 worktree cwd 汇总活动状态
 ```
+
+状态查询不能只读取 `main`。活动 change 的 OpenSpec、Git HEAD、Task/Run 和 worker 事实必须按 Orca 返回的完整 worktree ID，在对应 feature worktree 中采集；`main` 只提供合并祖先、主线验证和归档事实。根目录提供两个只读入口：
+
+```bash
+pnpm orchestration:status --json
+pnpm orchestration:check
+```
+
+查询结果以 `config/orchestration/execution-graph.json` 的静态 Manifest 为节点和依赖事实源，以结构化 Task result 为执行事实源。自然语言标题、报告正文和 main 缺失的 OpenSpec change 不得用于反推活动状态。
+
+### 7.2 Task 执行信封
+
+创建 planning、implementation、verification 或 archive Task 后，必须立即写入结构化 result 信封。最小身份键为：
+
+```json
+{
+  "schemaVersion": 1,
+  "changeId": "Cxx",
+  "taskKind": "implementation",
+  "phase": "implementation",
+  "worktreeId": "<repo-id>::<absolute-worktree-path>",
+  "baseHead": "<commit>",
+  "head": "<commit>",
+  "outcome": "succeeded",
+  "evidenceRefs": [],
+  "main": {
+    "mergeCommit": null,
+    "mainHead": null,
+    "verification": "pending",
+    "archiveCommit": null
+  }
+}
+```
+
+阶段收口、主线复验和归档后，用 `task-update --result` 更新同一信封；报告正文只补充证据，不承载状态字段。`head` 与当前 worktree HEAD 不一致时状态为 `unknown`，不得继续自动归档或回收。
 
 不要复用旧 session 的 terminal handle、Run 或 Dispatch。一个独立任务始终创建新的 Sol session；不要假定旧 context window 的剩余容量或缓存仍可用，尤其不要在长间隔后复用。当前活动验证任务内的直接修复是同一任务的连续执行，不是新任务复用。用当前 Orca terminal 创建新 Run；所有协调命令显式传当前 `ORCA_TERMINAL_HANDLE`，所有 worker 使用完整 worktree ID。
 
-### 7.2 setup hook
+### 7.3 setup hook
 
 Orca repo 当前配置为：
 
@@ -199,7 +256,7 @@ openspec init --tools codex,oh-my-pi
 
 该 hook 已在一次全新受控 worktree 中以 `--setup run` 验证：冻结安装成功，OpenSpec 对 Codex 与 Oh My Pi 均完成 setup，Git 保持 clean。后续正式 worktree 继续使用 `--setup run`；只有 hook 内容变化或 setup 报错时才重新做一次受控验证。`oh-my-pi` 是 OpenSpec CLI 工具名，不能写成 `omp`。
 
-### 7.3 精确 Agent 启动
+### 7.4 精确 Agent 启动
 
 需要自定义模型/强度时先创建 terminal，再纳入 Dispatch：
 
@@ -229,13 +286,13 @@ orca orchestration check --wait --types worker_done,escalation,question --timeou
 4. 主调度 Agent审阅最终 diff 并形成 implementation/verification checkpoint；运行必要门禁后，最终通过或明确升级，再决定 `worker-release`；外部 terminal 的 release 可能返回 `retained / external_terminal`，确认 transcript 和结果后只关闭该 Dispatch 创建的精确 tab；
 5. 最后 acknowledge Delivery。
 
-### 7.4 OMP + MiniMax-M3
+### 7.5 OMP + MiniMax-M3
 
 Orca 当前不能通过 `worker-start --agent omp --model ...` 选择 OMP 模型与思考强度。先在 OMP 配置/启动界面明确选中 `minimax-code-cn/MiniMax-M3` 和 `high`，用自定义 OMP terminal 启动，确认模型后再通过 `worker-start --terminal` 纳入 Dispatch。无法确认模型或 high 时不得把结果记为已验证；可继续做纯机械只读工作，但要在回报中标明限制。
 
 M3 prompt 必须包含精确路径、确定步骤、禁止修改区域和升级条件。不要让它“自行判断是否可归档”“完善 change”或“顺便修复”。
 
-### 7.5 computer-use 边界
+### 7.6 computer-use 边界
 
 当前 Orca 桌面窗口的 accessibility tree 只暴露顶层 frame，截图也不能可靠读取内部 TUI。不要用 computer-use 操作 Orca 内部终端、模型选择或设置；使用 Orca CLI。只有 CLI 不提供的 repo setup hook 仍由用户在 Orca UI 手动配置。
 
@@ -244,6 +301,8 @@ M3 prompt 必须包含精确路径、确定步骤、禁止修改区域和升级�
 每个 Orca Task 至少写清：
 
 - change 名、工作树完整路径/ID、base commit；
+- 创建 Task 后用 `orca orchestration task-update --result '<execution-envelope>'` 登记结构化执行信封；阶段收口时更新 `phase`、`head`、`outcome` 和 `evidenceRefs`，main 集成后再填写 `mergeCommit`、`mainHead`、`verification`、`archiveCommit`；
+- `taskKind` 只允许 `planning`、`implementation`、`verification`、`archive`，不得从 task 标题或 Delivery 正文解析阶段；
 - 必读工件和技能；
 - 允许修改的文件/目录；
 - 禁止修改的共享区域；
@@ -269,6 +328,7 @@ change 完成需要：
 - feature 和 `main` 复验通过；
 - 主 specs 已同步，change 已归档；
 - Git clean，feature commit 已是 `main` 祖先，worktree 已清理；
+- 回收前运行 `pnpm orchestration:check`；它只读检查 Manifest、各 worktree、本地 OpenSpec、Git、Orca Task/Run 和 main 归档事实，不自动修改或删除状态；
 - frontier 已重新计算，但只在用户要求继续时派发下一项。
 
 同一阻塞连续三次且无法在既定权限内推进时，停止重试并向用户报告。难、慢、测试失败或需要修复不算阻塞；必须先用同一 change 和同一责任角色解决。

@@ -194,6 +194,13 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
       "SELECT table_name FROM information_schema.views WHERE table_schema = 'audit' AND table_name = 'review_activity_v1'",
     );
     expect(view.rows).toHaveLength(1);
+    const triggerFunction = await fixture!.postgres.adminPool.query<{
+      app_execute: boolean;
+      public_execute: boolean;
+    }>(
+      "SELECT has_function_privilege('riskflow_app', 'business.reject_review_task_terminal_rewrite()', 'EXECUTE') AS app_execute, has_function_privilege('public', 'business.reject_review_task_terminal_rewrite()', 'EXECUTE') AS public_execute",
+    );
+    expect(triggerFunction.rows[0]).toEqual({ app_execute: false, public_execute: false });
 
     const appPool = new Pool(fixture!.postgres.app);
     try {
@@ -330,13 +337,29 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
     expect(decisionAuditCount.rows[0]!.count).toBe("1");
     expect(decisionEventCount.rows[0]!.count).toBe("1");
 
-    const stale = await adapter.decideReview(decisionFor(request, taskRef, "stale"));
+    const appPool = new Pool(fixture!.postgres.app);
+    try {
+      await expect(
+        appPool.query(
+          "UPDATE business.review_tasks SET status = 'pending', decision_ref = NULL, decided_at = NULL WHERE review_task_id = $1",
+          [taskRef.reference.entityId],
+        ),
+      ).rejects.toBeDefined();
+    } finally {
+      await appPool.end();
+    }
+
+    const staleCommand = ReviewDecisionCommandV1Schema.parse({
+      ...decisionFor(request, taskRef, "stale"),
+      issuedAt: "2030-01-01T00:00:00.500Z",
+    });
+    const stale = await adapter.decideReview(staleCommand);
     expect(stale).toMatchObject({ kind: "failed", error: { code: "STALE_VERSION" } });
-    const rejection = await fixture!.postgres.adminPool.query<{ count: string }>(
-      "SELECT count(*)::text AS count FROM audit.review_rejections WHERE project_id = $1 AND review_task_ref -> 'reference' ->> 'entityId' = $2",
-      [request.projectId, taskRef.reference.entityId],
+    const rejection = await fixture!.postgres.adminPool.query<{ occurred_at: Date }>(
+      "SELECT occurred_at FROM audit.review_rejections WHERE project_id = $1 AND command_id = $2",
+      [request.projectId, staleCommand.commandId],
     );
-    expect(Number(rejection.rows[0]!.count)).toBeGreaterThanOrEqual(1);
+    expect(rejection.rows[0]!.occurred_at.toISOString()).toBe(staleCommand.issuedAt);
 
     const trace = await adapter.trace({
       queryId: nextId("trace"),

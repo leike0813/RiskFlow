@@ -896,7 +896,7 @@ export class PostgresReviewAuditAdapter implements ReviewAuditPortV1 {
       authorizationContextRef: command.authorization.authorizationContextRef,
       resultCode: failure.resultCode,
       reasonCode: failure.reasonCode,
-      occurredAt: recordedAt,
+      occurredAt: command.issuedAt,
       recordedAt,
     });
     await this.#db.transaction().execute(async (transaction) => {

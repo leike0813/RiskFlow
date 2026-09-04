@@ -202,6 +202,26 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     .columns(["project_id", "recorded_at"])
     .execute();
 
+  await sql`CREATE OR REPLACE FUNCTION business.reject_review_task_terminal_rewrite()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+      IF OLD.status <> 'pending' THEN
+        RAISE EXCEPTION 'terminal review task is immutable';
+      END IF;
+      RETURN NEW;
+    END;
+    $$`.execute(db);
+  await sql`DROP TRIGGER IF EXISTS review_tasks_terminal_immutable
+    ON business.review_tasks`.execute(db);
+  await sql`CREATE TRIGGER review_tasks_terminal_immutable
+    BEFORE UPDATE ON business.review_tasks
+    FOR EACH ROW
+    EXECUTE FUNCTION business.reject_review_task_terminal_rewrite()`.execute(db);
+  await sql`REVOKE ALL PRIVILEGES ON FUNCTION business.reject_review_task_terminal_rewrite()
+    FROM PUBLIC, riskflow_app, riskflow_outbox_worker, riskflow_checkpointer`.execute(db);
+
   await sql`CREATE OR REPLACE VIEW audit.review_activity_v1 AS
     SELECT
       a.audit_entry_id AS activity_id,
@@ -339,6 +359,9 @@ export async function down(db: Kysely<unknown>): Promise<void> {
   await sql`DROP INDEX IF EXISTS review_tasks_project_status_idx`.execute(db);
   await sql`DROP INDEX IF EXISTS review_tasks_pending_stable_target_uidx`.execute(db);
   await sql`DROP INDEX IF EXISTS review_tasks_pending_identity_idx`.execute(db);
+  await sql`DROP TRIGGER IF EXISTS review_tasks_terminal_immutable
+    ON business.review_tasks`.execute(db);
+  await sql`DROP FUNCTION IF EXISTS business.reject_review_task_terminal_rewrite()`.execute(db);
   await db.schema.dropTable("audit.review_rejections").ifExists().execute();
   await db.schema.dropTable("business.review_decisions").ifExists().execute();
   await db.schema.dropTable("business.review_tasks").ifExists().execute();

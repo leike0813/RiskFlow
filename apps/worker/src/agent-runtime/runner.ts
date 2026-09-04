@@ -653,7 +653,11 @@ export class AgentRuntimeRunner {
           ...(rejectionClass === undefined ? {} : { rejectionClass }),
         };
         throwLeaseFailure();
-        await this.#options.store.recordCandidate(candidate);
+        await this.#options.store.recordCandidate({
+          candidate,
+          workerId: claim.workerId,
+          leaseToken: claim.leaseToken,
+        });
         throwLeaseFailure();
         if (validation.disposition === "rejected") {
           const failure = makeAgentError({

@@ -163,6 +163,22 @@ describe("postgres agent runtime adapter", () => {
       intentArtifactRef: artifact("diagnostic-artifact", "intent"),
     });
     const output = artifact("content-artifact", "cleaned-output");
+    await adapter.recordCandidate({
+      candidate: {
+        schemaVersion: "1",
+        taskRef: claim.task.envelope.agentTaskRef,
+        candidateVersion: 1,
+        candidateArtifactRef: output,
+        incrementArtifactRef: artifact("diagnostic-artifact", "increment"),
+        disposition: "accepted",
+        createdAt: "2030-01-01T00:00:02.500Z",
+      },
+      workerId: claim.workerId,
+      leaseToken: claim.leaseToken,
+    });
+    expect(
+      (await adapter.getTask(claim.task.envelope.agentTaskRef))?.state.latestCandidateVersion,
+    ).toBe(1);
     await adapter.completeAction({
       taskRef: claim.task.envelope.agentTaskRef,
       workerId: claim.workerId,

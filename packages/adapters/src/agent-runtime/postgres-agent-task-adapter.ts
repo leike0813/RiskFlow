@@ -358,24 +358,12 @@ export interface AgentTaskExecutionStoreV1 {
     readonly actionId: string;
     readonly reservationId: string;
     readonly actionType: AgentTaskActionV1["actionType"];
-    readonly sequence?: number;
-    readonly idempotencyKey?: string;
-    readonly intentArtifactRef?: AgentTaskActionV1["intentArtifactRef"];
+    readonly sequence: number;
+    readonly idempotencyKey: string;
+    readonly intentArtifactRef: AgentTaskActionV1["intentArtifactRef"];
     readonly amount?: Partial<AgentBudgetUsageV1>;
     readonly now?: string;
   }): Promise<AgentTaskActionReservationV1>;
-  recordActionIntent(input: {
-    readonly taskRef: AgentTaskRefV1;
-    readonly workerId: string;
-    readonly leaseToken: string;
-    readonly actionId: string;
-    readonly sequence: number;
-    readonly actionType: AgentTaskActionV1["actionType"];
-    readonly idempotencyKey: string;
-    readonly intentArtifactRef: AgentTaskActionV1["intentArtifactRef"];
-    readonly reservation: AgentBudgetReservationV1;
-    readonly now?: string;
-  }): Promise<AgentTaskActionV1>;
   findAction(taskRef: AgentTaskRefV1, actionId: string): Promise<AgentTaskActionV1 | undefined>;
   completeAction(input: {
     readonly taskRef: AgentTaskRefV1;
@@ -412,7 +400,11 @@ export interface AgentTaskExecutionStoreV1 {
     readonly proposalRef: ContractReferenceV1;
     readonly now?: string;
   }): Promise<AgentTaskSnapshotV1>;
-  recordCandidate(candidate: AgentCandidateVersionV1): Promise<void>;
+  recordCandidate(input: {
+    readonly candidate: AgentCandidateVersionV1;
+    readonly workerId: string;
+    readonly leaseToken: string;
+  }): Promise<void>;
   verifyWorker(task: AgentTaskSnapshotV1, invocationId: string): Promise<void>;
   readonly modelGateway?: ModelGatewayPortV1;
   readonly artifactStore?: ArtifactStoreV1;
@@ -1636,9 +1628,9 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
     readonly actionId: string;
     readonly reservationId: string;
     readonly actionType: AgentTaskActionV1["actionType"];
-    readonly sequence?: number;
-    readonly idempotencyKey?: string;
-    readonly intentArtifactRef?: AgentTaskActionV1["intentArtifactRef"];
+    readonly sequence: number;
+    readonly idempotencyKey: string;
+    readonly intentArtifactRef: AgentTaskActionV1["intentArtifactRef"];
     readonly amount?: Partial<AgentBudgetUsageV1>;
     readonly now?: string;
   }): Promise<AgentTaskActionReservationV1> {
@@ -1646,22 +1638,15 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
     const taskRef = AgentTaskRefV1Schema.parse(input.taskRef);
     const actionId = IdentifierSchema.parse(input.actionId);
     const reservationId = IdentifierSchema.parse(input.reservationId);
-    if (input.intentArtifactRef !== undefined && input.sequence === undefined)
+    const sequence = input.sequence;
+    const idempotencyKey = IdentifierSchema.parse(input.idempotencyKey);
+    const intentArtifactRef = input.intentArtifactRef;
+    if (intentArtifactRef === undefined)
       throw new AgentRuntimeError(
         makeAgentError({
           code: "AGENT_INPUT_INVALID",
           category: "input",
-          stage: "action.reserve.sequence",
-          taskRef,
-          actionId,
-        }),
-      );
-    if (input.intentArtifactRef !== undefined && input.idempotencyKey === undefined)
-      throw new AgentRuntimeError(
-        makeAgentError({
-          code: "AGENT_INPUT_INVALID",
-          category: "input",
-          stage: "action.reserve.idempotency",
+          stage: "action.reserve.intent",
           taskRef,
           actionId,
         }),
@@ -1685,9 +1670,9 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
         actionId,
         reservationId,
         actionType: input.actionType,
-        sequence: input.sequence ?? null,
-        idempotencyKey: input.idempotencyKey ?? null,
-        intentArtifactRef: input.intentArtifactRef ?? null,
+        sequence,
+        idempotencyKey,
+        intentArtifactRef,
         amount: input.amount ?? {},
         now,
       },
@@ -1764,9 +1749,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
           .set({
             attempt_number: lease.attempt.attempt_number,
             status: "started",
-            ...(input.intentArtifactRef === undefined
-              ? {}
-              : { intent_artifact_ref: jsonValue(input.intentArtifactRef) }),
+            intent_artifact_ref: jsonValue(intentArtifactRef),
             reservation: jsonValue(budget.reservation),
             usage: jsonValue(emptyAgentBudgetUsage()),
             error_code: null,
@@ -1813,41 +1796,39 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
             taskRef,
           }),
         );
-      if (input.intentArtifactRef !== undefined) {
-        const action = AgentTaskActionV1Schema.parse({
-          schemaVersion: "1",
-          taskRef,
-          actionId,
-          sequence: input.sequence,
-          actionType: input.actionType,
-          status: "started",
-          idempotencyKey: input.idempotencyKey,
-          intentArtifactRef: input.intentArtifactRef,
-          reservation: budget.reservation,
-          usage: emptyAgentBudgetUsage(),
-          recordedAt: now,
-        });
-        await transaction
-          .insertInto("business.agent_task_actions")
-          .values({
-            agent_task_id: taskId(taskRef),
-            action_id: action.actionId,
-            attempt_number: lease.attempt.attempt_number,
-            sequence: action.sequence,
-            action_type: action.actionType,
-            status: action.status,
-            idempotency_key: action.idempotencyKey,
-            intent_artifact_ref: jsonValue(action.intentArtifactRef),
-            result_ref: null,
-            result_artifact_ref: null,
-            reservation: jsonValue(action.reservation),
-            usage: jsonValue(action.usage),
-            error_code: null,
-            recorded_at: new Date(now),
-            completed_at: null,
-          })
-          .execute();
-      }
+      const action = AgentTaskActionV1Schema.parse({
+        schemaVersion: "1",
+        taskRef,
+        actionId,
+        sequence,
+        actionType: input.actionType,
+        status: "started",
+        idempotencyKey,
+        intentArtifactRef,
+        reservation: budget.reservation,
+        usage: emptyAgentBudgetUsage(),
+        recordedAt: now,
+      });
+      await transaction
+        .insertInto("business.agent_task_actions")
+        .values({
+          agent_task_id: taskId(taskRef),
+          action_id: action.actionId,
+          attempt_number: lease.attempt.attempt_number,
+          sequence: action.sequence,
+          action_type: action.actionType,
+          status: action.status,
+          idempotency_key: action.idempotencyKey,
+          intent_artifact_ref: jsonValue(action.intentArtifactRef),
+          result_ref: null,
+          result_artifact_ref: null,
+          reservation: jsonValue(action.reservation),
+          usage: jsonValue(action.usage),
+          error_code: null,
+          recorded_at: new Date(now),
+          completed_at: null,
+        })
+        .execute();
       result = { task: rowSnapshot(updated), reservation: budget.reservation };
       return commit({
         command,
@@ -1883,158 +1864,6 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
           }),
         );
       result = { task, reservation: action.reservation };
-    }
-    return result;
-  }
-
-  async recordActionIntent(input: {
-    readonly taskRef: AgentTaskRefV1;
-    readonly workerId: string;
-    readonly leaseToken: string;
-    readonly actionId: string;
-    readonly sequence: number;
-    readonly actionType: AgentTaskActionV1["actionType"];
-    readonly idempotencyKey: string;
-    readonly intentArtifactRef: AgentTaskActionV1["intentArtifactRef"];
-    readonly reservation: AgentBudgetReservationV1;
-    readonly now?: string;
-  }): Promise<AgentTaskActionV1> {
-    const now = IsoDateTimeSchema.parse(input.now ?? this.#now());
-    const taskRef = AgentTaskRefV1Schema.parse(input.taskRef);
-    const actionId = IdentifierSchema.parse(input.actionId);
-    const idempotencyKey = IdentifierSchema.parse(input.idempotencyKey);
-    const key = commandKey([
-      "agent-task",
-      "action-intent",
-      taskId(taskRef),
-      actionId,
-      idempotencyKey,
-    ]);
-    const command = await this.#taskCommand({
-      taskRef,
-      commandKind: "agent-task.action-intent",
-      idempotencyKey: key,
-      actorId: input.workerId,
-      payload: {
-        taskRef,
-        workerId: input.workerId,
-        leaseToken: input.leaseToken,
-        actionId,
-        sequence: input.sequence,
-        actionType: input.actionType,
-        idempotencyKey,
-        intentArtifactRef: input.intentArtifactRef,
-        reservation: input.reservation,
-        now,
-      },
-      issuedAt: now,
-    });
-    let result: AgentTaskActionV1 | undefined;
-    const receipt = await this.#transactionUnit.execute(command, async (context) => {
-      const transaction = asTransaction(context);
-      const lease = await this.#lockLease(
-        transaction,
-        taskRef,
-        input.workerId,
-        input.leaseToken,
-        now,
-      );
-      const existing = await transaction
-        .selectFrom("business.agent_task_actions")
-        .selectAll()
-        .where("agent_task_id", "=", taskId(taskRef))
-        .where("action_id", "=", actionId)
-        .forUpdate()
-        .executeTakeFirst();
-      if (existing !== undefined) {
-        const action = actionFromRow(lease.task.envelope.agentTaskRef, existing);
-        if (action.idempotencyKey !== idempotencyKey)
-          throw new AgentRuntimeError(
-            makeAgentError({
-              code: "AGENT_IDEMPOTENCY_CONFLICT",
-              category: "idempotency",
-              stage: "action.intent",
-              taskRef,
-              actionId,
-              idempotencyKey,
-              priorCommandId: action.idempotencyKey,
-            }),
-          );
-        result = action;
-        return commit({
-          command,
-          targetRef: taskRef,
-          version: taskRef.reference,
-          action: "agent-task.action-intent",
-          now,
-        });
-      }
-      const action = AgentTaskActionV1Schema.parse({
-        schemaVersion: "1",
-        taskRef: lease.task.envelope.agentTaskRef,
-        actionId,
-        sequence: input.sequence,
-        actionType: input.actionType,
-        status: "started",
-        idempotencyKey,
-        intentArtifactRef: input.intentArtifactRef,
-        reservation: input.reservation,
-        usage: emptyAgentBudgetUsage(),
-        recordedAt: now,
-      });
-      await transaction
-        .insertInto("business.agent_task_actions")
-        .values({
-          agent_task_id: taskId(taskRef),
-          action_id: action.actionId,
-          attempt_number: lease.attempt.attempt_number,
-          sequence: action.sequence,
-          action_type: action.actionType,
-          status: action.status,
-          idempotency_key: action.idempotencyKey,
-          intent_artifact_ref: jsonValue(action.intentArtifactRef),
-          result_ref: null,
-          result_artifact_ref: null,
-          reservation: jsonValue(action.reservation),
-          usage: jsonValue(action.usage),
-          error_code: null,
-          recorded_at: new Date(now),
-          completed_at: null,
-        })
-        .execute();
-      result = action;
-      return commit({
-        command,
-        targetRef: taskRef,
-        version: taskRef.reference,
-        action: "agent-task.action-intent",
-        now,
-      });
-    });
-    if (result === undefined) {
-      if (!receipt.replayed)
-        throw new AgentRuntimeError(
-          makeAgentError({
-            code: "AGENT_PERSISTENCE_FAILURE",
-            category: "persistence",
-            retryable: true,
-            stage: "action.intent.readback",
-            taskRef,
-            actionId,
-          }),
-        );
-      result = await this.findAction(taskRef, actionId);
-      if (result === undefined)
-        throw new AgentRuntimeError(
-          makeAgentError({
-            code: "AGENT_PERSISTENCE_FAILURE",
-            category: "persistence",
-            retryable: true,
-            stage: "action.intent.replay-readback",
-            taskRef,
-            actionId,
-          }),
-        );
     }
     return result;
   }
@@ -2448,8 +2277,12 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
     );
   }
 
-  async recordCandidate(candidate: AgentCandidateVersionV1): Promise<void> {
-    const value = AgentCandidateVersionV1Schema.parse(candidate);
+  async recordCandidate(input: {
+    readonly candidate: AgentCandidateVersionV1;
+    readonly workerId: string;
+    readonly leaseToken: string;
+  }): Promise<void> {
+    const value = AgentCandidateVersionV1Schema.parse(input.candidate);
     const taskRef = AgentTaskRefV1Schema.parse(value.taskRef);
     const command = await this.#taskCommand({
       taskRef,
@@ -2459,114 +2292,95 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
         "candidate-record",
         taskId(taskRef),
         String(value.candidateVersion),
+        input.leaseToken,
       ]),
-      payload: { candidate: value },
+      actorId: input.workerId,
+      payload: {
+        candidate: value,
+        workerId: input.workerId,
+        leaseToken: input.leaseToken,
+      },
       issuedAt: value.createdAt,
     });
-    await this.#transactionUnit.execute(command, async (context) => {
-      const transaction = asTransaction(context);
-      const row = await this.#selectTaskById(taskId(taskRef), transaction, true);
-      if (row === undefined)
-        throw new AgentRuntimeError(
-          makeAgentError({
-            code: "AGENT_TASK_NOT_FOUND",
-            category: "not-found",
-            stage: "candidate.task",
-            taskRef,
-          }),
-        );
-      const task = rowSnapshot(row);
-      if (!agentTaskRefEquals(task.envelope.agentTaskRef, taskRef))
-        throw new AgentRuntimeError(
-          makeAgentError({
-            code: "AGENT_INPUT_INVALID",
-            category: "input",
-            stage: "candidate.task-ref",
-            taskRef,
-          }),
-        );
-      if (["completed", "terminal-failure", "cancelled"].includes(task.state.status))
-        throw new AgentRuntimeError(
-          makeAgentError({
-            code: "AGENT_INPUT_INVALID",
-            category: "input",
-            stage: "candidate.terminal-task",
-            taskRef,
-          }),
-        );
-      const latestCandidateVersion = task.state.latestCandidateVersion ?? 0;
-      if (value.candidateVersion > 1 && value.parentCandidateVersion !== latestCandidateVersion)
-        throw new AgentRuntimeError(
-          makeAgentError({
-            code: "AGENT_STALE_VERSION",
-            category: "concurrency",
-            stage: "candidate.parent-version",
-            taskRef,
-          }),
-        );
-      if (value.candidateVersion < latestCandidateVersion)
-        return commit({
-          command,
-          targetRef: taskRef,
-          version: taskRef.reference,
-          action: "agent-task.candidate-record",
-          now: value.createdAt,
-        });
-      const inserted = await transaction
-        .insertInto("business.agent_task_candidates")
-        .values({
-          agent_task_id: taskId(taskRef),
-          candidate_version: value.candidateVersion,
-          parent_candidate_version: value.parentCandidateVersion ?? null,
-          candidate_artifact_ref: jsonValue(value.candidateArtifactRef),
-          increment_artifact_ref: jsonValue(value.incrementArtifactRef),
-          validation: value.validation === undefined ? null : jsonValue(value.validation),
-          result_ref: value.resultRef === undefined ? null : jsonValue(value.resultRef),
-          disposition: value.disposition,
-          rejection_class: value.rejectionClass ?? null,
-          created_at: new Date(value.createdAt),
-        })
-        .onConflict((conflict) =>
-          conflict.columns(["agent_task_id", "candidate_version"]).doNothing(),
-        )
-        .returning("candidate_version")
-        .executeTakeFirst();
-      if (inserted === undefined)
-        return commit({
-          command,
-          targetRef: taskRef,
-          version: taskRef.reference,
-          action: "agent-task.candidate-record",
-          now: value.createdAt,
-        });
-      const updated = await transaction
-        .updateTable("business.agent_tasks")
-        .set({
-          latest_candidate_version: value.candidateVersion,
-          task_version: sql`task_version + 1`,
-          updated_at: new Date(value.createdAt),
-        })
-        .where("agent_task_id", "=", taskId(taskRef))
-        .where("latest_candidate_version", "=", latestCandidateVersion)
-        .returning("agent_task_id")
-        .executeTakeFirst();
-      if (updated === undefined)
-        throw new AgentRuntimeError(
-          makeAgentError({
-            code: "AGENT_STALE_VERSION",
-            category: "concurrency",
-            stage: "candidate.version",
-            taskRef,
-          }),
-        );
-      return commit({
-        command,
-        targetRef: taskRef,
-        version: taskRef.reference,
-        action: "agent-task.candidate-record",
-        now: value.createdAt,
-      });
-    });
+    await this.#leaseTransaction(
+      command,
+      taskRef,
+      input.workerId,
+      input.leaseToken,
+      "agent-task.candidate-record",
+      async (transaction, task) => {
+        if (!agentTaskRefEquals(task.envelope.agentTaskRef, taskRef))
+          throw new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_INPUT_INVALID",
+              category: "input",
+              stage: "candidate.task-ref",
+              taskRef,
+            }),
+          );
+        if (["completed", "terminal-failure", "cancelled"].includes(task.state.status))
+          throw new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_INPUT_INVALID",
+              category: "input",
+              stage: "candidate.terminal-task",
+              taskRef,
+            }),
+          );
+        const latestCandidateVersion = task.state.latestCandidateVersion ?? 0;
+        if (value.candidateVersion > 1 && value.parentCandidateVersion !== latestCandidateVersion)
+          throw new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_STALE_VERSION",
+              category: "concurrency",
+              stage: "candidate.parent-version",
+              taskRef,
+            }),
+          );
+        if (value.candidateVersion < latestCandidateVersion) return;
+        const inserted = await transaction
+          .insertInto("business.agent_task_candidates")
+          .values({
+            agent_task_id: taskId(taskRef),
+            candidate_version: value.candidateVersion,
+            parent_candidate_version: value.parentCandidateVersion ?? null,
+            candidate_artifact_ref: jsonValue(value.candidateArtifactRef),
+            increment_artifact_ref: jsonValue(value.incrementArtifactRef),
+            validation: value.validation === undefined ? null : jsonValue(value.validation),
+            result_ref: value.resultRef === undefined ? null : jsonValue(value.resultRef),
+            disposition: value.disposition,
+            rejection_class: value.rejectionClass ?? null,
+            created_at: new Date(value.createdAt),
+          })
+          .onConflict((conflict) =>
+            conflict.columns(["agent_task_id", "candidate_version"]).doNothing(),
+          )
+          .returning("candidate_version")
+          .executeTakeFirst();
+        if (inserted === undefined) return;
+        const updated = await transaction
+          .updateTable("business.agent_tasks")
+          .set({
+            latest_candidate_version: value.candidateVersion,
+            task_version: sql`task_version + 1`,
+            updated_at: new Date(value.createdAt),
+          })
+          .where("agent_task_id", "=", taskId(taskRef))
+          .where("latest_candidate_version", "=", latestCandidateVersion)
+          .returning("agent_task_id")
+          .executeTakeFirst();
+        if (updated === undefined)
+          throw new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_STALE_VERSION",
+              category: "concurrency",
+              stage: "candidate.version",
+              taskRef,
+            }),
+          );
+      },
+      value.createdAt,
+    );
   }
 
   async verifyWorker(task: AgentTaskSnapshotV1, invocationId: string): Promise<void> {

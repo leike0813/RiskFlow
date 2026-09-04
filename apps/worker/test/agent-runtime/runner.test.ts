@@ -10,7 +10,6 @@ import {
   type AgentStructuredErrorV1,
 } from "@riskflow/core/agent-runtime";
 import { z } from "@riskflow/core/model";
-import type { AgentTaskActionV1 } from "@riskflow/core/agent-runtime";
 import type { AgentTaskRefV1 } from "@riskflow/contracts/ports";
 import { AgentRuntimeRunner, type AgentStepOutcomeV1 } from "../../src/agent-runtime/index.js";
 import type { AgentTaskClaimV1, AgentTaskExecutionStoreV1 } from "@riskflow/adapters/agent-runtime";
@@ -120,10 +119,6 @@ const makeStore = (overrides: Record<string, unknown> = {}) => {
     async reserveAction() {
       calls.push("reserve");
       return { task, reservation };
-    },
-    async recordActionIntent() {
-      calls.push("intent");
-      return {} as AgentTaskActionV1;
     },
     async heartbeat() {
       calls.push("heartbeat");

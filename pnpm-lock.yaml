@@ -63,7 +63,17 @@ importers:
         specifier: 19.2.8
         version: 19.2.8(react@19.2.8)
 
-  apps/worker: {}
+  apps/worker:
+    dependencies:
+      '@riskflow/adapters':
+        specifier: workspace:*
+        version: link:../../packages/adapters
+      '@riskflow/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@riskflow/core':
+        specifier: workspace:*
+        version: link:../../packages/core
 
   packages/adapters:
     dependencies:

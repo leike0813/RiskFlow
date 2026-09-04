@@ -1,6 +1,7 @@
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -29,7 +30,9 @@ import { PostgresMigrationProvider } from "../../src/postgres/migrations/provide
 import { runPostgresMigrations } from "../../src/postgres/migrations/run.js";
 import { mapPostgresError, type PostgresConnectionConfig } from "../../src/postgres/pool.js";
 import { startPostgresFixture, type PostgresTestFixture } from "./fixture.js";
+import * as artifactManifestsMigration from "../../src/postgres/migrations/platform/deliver-content-addressed-artifact-store/000002_artifact_manifests.js";
 import * as foundationMigration from "../../src/postgres/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/000001_foundation.js";
+import * as localIdentityMigration from "../../src/postgres/migrations/platform/deliver-local-identity-and-project-authorization/000003_local_identity_and_authorization.js";
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
 
 const timestamp = "2030-01-01T00:00:00.000Z";
@@ -194,9 +197,115 @@ const runMigrations = (fixture: PostgresTestFixture) =>
     loadModule: loadTestMigration,
   });
 
+const testMigrationRoots = {
+  production: resolve(dirname(fileURLToPath(import.meta.url)), "../../src/postgres/migrations"),
+  fixture: resolve(dirname(fileURLToPath(import.meta.url)), "fixtures/migrations"),
+} as const;
+
+type TestMigrationRoot = keyof typeof testMigrationRoots;
+type TestMigrationManifestEntry = {
+  readonly root: TestMigrationRoot;
+  readonly relativePath: string;
+  readonly migrationName: string;
+  readonly sequence: number;
+  readonly module: unknown;
+};
+
+const testMigrationManifest = [
+  {
+    root: "production",
+    relativePath:
+      "platform/deliver-postgresql-outbox-and-checkpoint-foundation/000001_foundation.ts",
+    migrationName: "000001_platform_deliver-postgresql-outbox-and-checkpoint-foundation_foundation",
+    sequence: 1,
+    module: foundationMigration,
+  },
+  {
+    root: "production",
+    relativePath: "platform/deliver-content-addressed-artifact-store/000002_artifact_manifests.ts",
+    migrationName: "000002_platform_deliver-content-addressed-artifact-store_artifact_manifests",
+    sequence: 2,
+    module: artifactManifestsMigration,
+  },
+  {
+    root: "production",
+    relativePath:
+      "platform/deliver-local-identity-and-project-authorization/000003_local_identity_and_authorization.ts",
+    migrationName:
+      "000003_platform_deliver-local-identity-and-project-authorization_local_identity_and_authorization",
+    sequence: 3,
+    module: localIdentityMigration,
+  },
+  {
+    root: "fixture",
+    relativePath:
+      "platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.ts",
+    migrationName:
+      "900001_platform_deliver-postgresql-outbox-and-checkpoint-foundation_fixture_fact",
+    sequence: 900001,
+    module: fixtureMigration,
+  },
+] as const satisfies readonly TestMigrationManifestEntry[];
+
+const migrationManifestPathPattern =
+  /^(platform)\/([a-z0-9]+(?:-[a-z0-9]+)*)\/([0-9]{6})_([a-z0-9]+(?:[-_][a-z0-9]+)*)\.ts$/u;
+
+const validateTestMigrationManifest = (): void => {
+  const paths = new Set<string>();
+  const names = new Set<string>();
+  const sequences = new Set<number>();
+  let previousSequence = -1;
+  for (const migration of testMigrationManifest) {
+    const match = migrationManifestPathPattern.exec(migration.relativePath);
+    const [, domain, changeId, sequenceText, name] = match ?? [];
+    if (
+      match === null ||
+      domain === undefined ||
+      changeId === undefined ||
+      sequenceText === undefined ||
+      name === undefined
+    ) {
+      throw new Error("invalid test migration manifest path");
+    }
+    const expectedMigrationName = `${sequenceText}_${domain}_${changeId}_${name}`;
+    if (
+      migration.sequence !== Number(sequenceText) ||
+      migration.migrationName !== expectedMigrationName
+    ) {
+      throw new Error("invalid test migration manifest metadata");
+    }
+    if (migration.sequence <= previousSequence)
+      throw new Error("test migration manifest is not ordered");
+    if (paths.has(migration.relativePath))
+      throw new Error("duplicate test migration manifest path");
+    if (names.has(migration.migrationName))
+      throw new Error("duplicate test migration manifest name");
+    if (sequences.has(migration.sequence))
+      throw new Error("duplicate test migration manifest sequence");
+    paths.add(migration.relativePath);
+    names.add(migration.migrationName);
+    sequences.add(migration.sequence);
+    previousSequence = migration.sequence;
+  }
+};
+
+validateTestMigrationManifest();
+
+const testMigrationModules: ReadonlyMap<string, unknown> = new Map(
+  testMigrationManifest.map(({ root, relativePath, module }) => [
+    resolve(testMigrationRoots[root], relativePath),
+    module,
+  ]),
+);
+
+const migrationNames = (root: keyof typeof testMigrationRoots) =>
+  testMigrationManifest
+    .filter((migration) => migration.root === root)
+    .map((migration) => migration.migrationName);
+
 const loadTestMigration = async (filePath: string): Promise<unknown> => {
-  if (filePath.endsWith("000001_foundation.ts")) return foundationMigration;
-  if (filePath.endsWith("900001_fixture_fact.ts")) return fixtureMigration;
+  const migration = testMigrationModules.get(filePath);
+  if (migration !== undefined) return migration;
   throw new Error(`unexpected test migration: ${filePath}`);
 };
 
@@ -239,10 +348,7 @@ describe("PostgreSQL foundation", () => {
 
     const migrationRuns = await Promise.all([runMigrations(fixture), runMigrations(fixture)]);
     expect(migrationRuns.flatMap((run) => run.applied)).toEqual(
-      expect.arrayContaining([
-        "000001_platform_deliver-postgresql-outbox-and-checkpoint-foundation_foundation",
-        "900001_platform_deliver-postgresql-outbox-and-checkpoint-foundation_fixture_fact",
-      ]),
+      expect.arrayContaining(testMigrationManifest.map((migration) => migration.migrationName)),
     );
 
     checkpointer = await setupPostgresCheckpointer({
@@ -376,9 +482,39 @@ describe("PostgreSQL foundation", () => {
       migrationRoot: fixture!.productionMigrationRoot,
       loadModule: loadTestMigration,
     });
-    expect(Object.keys(await productionProvider.getMigrations())).toEqual([
-      "000001_platform_deliver-postgresql-outbox-and-checkpoint-foundation_foundation",
-    ]);
+    expect(Object.keys(await productionProvider.getMigrations())).toEqual(
+      migrationNames("production"),
+    );
+    await expect(
+      loadTestMigration(
+        resolve(testMigrationRoots.production, testMigrationManifest[3]!.relativePath),
+      ),
+    ).rejects.toThrow();
+    await expect(
+      loadTestMigration(
+        resolve(testMigrationRoots.fixture, testMigrationManifest[0]!.relativePath),
+      ),
+    ).rejects.toThrow();
+
+    const undeclaredRoot = await mkdtemp(join(tmpdir(), "riskflow-migrations-undeclared-"));
+    const undeclaredMigrationDir = join(undeclaredRoot, "platform", "undeclared-test-migration");
+    await mkdir(undeclaredMigrationDir, { recursive: true });
+    await writeFile(
+      join(undeclaredMigrationDir, "000002_undeclared.ts"),
+      "export async function up() {}\nexport async function down() {}\n",
+      "utf8",
+    );
+    try {
+      const undeclaredProvider = new PostgresMigrationProvider({
+        migrationRoot: undeclaredRoot,
+        loadModule: loadTestMigration,
+      });
+      await expect(undeclaredProvider.getMigrations()).rejects.toMatchObject({
+        code: "MIGRATION_INVALID",
+      });
+    } finally {
+      await rm(undeclaredRoot, { recursive: true, force: true });
+    }
 
     const invalidProvider = new PostgresMigrationProvider({
       migrationRoot: resolve(fixture!.fixtureMigrationRoot, "platform"),
@@ -406,10 +542,9 @@ describe("PostgreSQL foundation", () => {
     const history = await fixture!.adminPool.query<{ migration_name: string }>(
       "SELECT name AS migration_name FROM business._riskflow_migration ORDER BY name",
     );
-    expect(history.rows.map((row) => row.migration_name)).toEqual([
-      "000001_platform_deliver-postgresql-outbox-and-checkpoint-foundation_foundation",
-      "900001_platform_deliver-postgresql-outbox-and-checkpoint-foundation_fixture_fact",
-    ]);
+    expect(history.rows.map((row) => row.migration_name)).toEqual(
+      testMigrationManifest.map((migration) => migration.migrationName),
+    );
   });
 
   it("discovers compiled migrations while ignoring generated sidecars", async () => {

@@ -1,7 +1,7 @@
 ## 1. 迁移测试夹具兼容性
 
 - [x] 1.1 以当前生产迁移根中的全部合法 platform migrations、现有 fixture migration 与 delta spec 为输入，仅修改 `packages/adapters/test/postgres/postgres-foundation.test.ts`：静态导入合法模块，用一个显式闭合清单同时生成精确路径 loader 和预期 migration names，使生产 provider 断言覆盖已声明的完整集合；未声明模块仍收口为 `MIGRATION_INVALID`，并保留非法路径、非法导出、重复全局序号及执行前完整校验的现有证据。运行 `pnpm exec vitest run packages/adapters/test/postgres/postgres-foundation.test.ts --testTimeout=120000` 验证；禁止修改 `packages/adapters/src/postgres/migrations/**`、增加任意动态导入或新建测试文件。
-- [x] 1.2 以 C04/C06/C07 合并后的生产迁移根和任务 1.1 的集合为输入，更新 `packages/adapters/test/auth/fixture.ts` 的闭合 loader：静态导入并许可 foundation、C04 `000002`、C06 `000003` 与 C07 `000004`，精确拒绝其它模块；运行授权测试验证合法迁移不会在执行前触发 `MIGRATION_INVALID`，禁止修改生产 provider、migration runner 或生产 migration。直接授权测试通过（12/12）。
+- [x] 1.2 以 C04/C06/C07/C08 合并后的生产迁移根和任务 1.1 的集合为输入，更新 `packages/adapters/test/auth/fixture.ts` 的闭合 loader：静态导入并许可 foundation、C04 `000002`、C06 `000003`、C07 `000004` 与 C08 `000005`，精确拒绝其它模块；同步更新 `packages/adapters/test/postgres/postgres-foundation.test.ts` 的生产迁移清单与 agent-task 域路径校验；运行授权与迁移测试验证合法迁移不会在执行前触发 `MIGRATION_INVALID`，禁止修改生产 provider、migration runner 或生产 migration。直接授权测试通过（12/12）。
 
 ## 2. 最小质量门禁
 

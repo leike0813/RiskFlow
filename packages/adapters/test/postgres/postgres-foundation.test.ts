@@ -34,7 +34,10 @@ import * as artifactManifestsMigration from "../../src/postgres/migrations/platf
 import * as foundationMigration from "../../src/postgres/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/000001_foundation.js";
 import * as localIdentityMigration from "../../src/postgres/migrations/platform/deliver-local-identity-and-project-authorization/000003_local_identity_and_authorization.js";
 import * as reviewAuditMigration from "../../src/postgres/migrations/platform/deliver-review-and-audit-runtime/000004_review_and_audit_runtime.js";
+import * as agentTaskRuntimeMigration from "../../src/postgres/migrations/agent-task/deliver-unified-bounded-agent-runtime/000005_agent_task_runtime.js";
+import * as agentProposalArtifactRefMigration from "../../src/postgres/migrations/agent-task/deliver-unified-bounded-agent-runtime/000006_agent_proposal_artifact_ref.js";
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
+import * as agentTaskFixtureMigration from "./fixtures/migrations/agent-task/deliver-unified-bounded-agent-runtime/900002_agent_task_fixture.js";
 
 const timestamp = "2030-01-01T00:00:00.000Z";
 const laterTimestamp = "2030-01-01T00:00:01.000Z";
@@ -245,6 +248,22 @@ const testMigrationManifest = [
     module: reviewAuditMigration,
   },
   {
+    root: "production",
+    relativePath: "agent-task/deliver-unified-bounded-agent-runtime/000005_agent_task_runtime.ts",
+    migrationName: "000005_agent-task_deliver-unified-bounded-agent-runtime_agent_task_runtime",
+    sequence: 5,
+    module: agentTaskRuntimeMigration,
+  },
+  {
+    root: "production",
+    relativePath:
+      "agent-task/deliver-unified-bounded-agent-runtime/000006_agent_proposal_artifact_ref.ts",
+    migrationName:
+      "000006_agent-task_deliver-unified-bounded-agent-runtime_agent_proposal_artifact_ref",
+    sequence: 6,
+    module: agentProposalArtifactRefMigration,
+  },
+  {
     root: "fixture",
     relativePath:
       "platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.ts",
@@ -253,10 +272,17 @@ const testMigrationManifest = [
     sequence: 900001,
     module: fixtureMigration,
   },
+  {
+    root: "fixture",
+    relativePath: "agent-task/deliver-unified-bounded-agent-runtime/900002_agent_task_fixture.ts",
+    migrationName: "900002_agent-task_deliver-unified-bounded-agent-runtime_agent_task_fixture",
+    sequence: 900002,
+    module: agentTaskFixtureMigration,
+  },
 ] as const satisfies readonly TestMigrationManifestEntry[];
 
 const migrationManifestPathPattern =
-  /^(platform)\/([a-z0-9]+(?:-[a-z0-9]+)*)\/([0-9]{6})_([a-z0-9]+(?:[-_][a-z0-9]+)*)\.ts$/u;
+  /^(platform|agent-task)\/([a-z0-9]+(?:-[a-z0-9]+)*)\/([0-9]{6})_([a-z0-9]+(?:[-_][a-z0-9]+)*)\.ts$/u;
 
 const validateTestMigrationManifest = (): void => {
   const paths = new Set<string>();
@@ -495,7 +521,7 @@ describe("PostgreSQL foundation", () => {
     );
     await expect(
       loadTestMigration(
-        resolve(testMigrationRoots.production, testMigrationManifest[4]!.relativePath),
+        resolve(testMigrationRoots.production, testMigrationManifest[6]!.relativePath),
       ),
     ).rejects.toThrow();
     await expect(

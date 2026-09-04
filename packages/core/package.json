@@ -31,6 +31,10 @@
     "./review-audit": {
       "types": "./dist/review-audit/index.d.ts",
       "import": "./dist/review-audit/index.js"
+    },
+    "./agent-runtime": {
+      "types": "./dist/agent-runtime/index.d.ts",
+      "import": "./dist/agent-runtime/index.js"
     }
   }
 }

@@ -50,9 +50,18 @@ importers:
 
   apps/api:
     dependencies:
+      '@riskflow/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@riskflow/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       fastify:
         specifier: 5.12.1
         version: 5.12.1
+      zod:
+        specifier: 4.5.4
+        version: 4.5.4
 
   apps/web:
     dependencies:

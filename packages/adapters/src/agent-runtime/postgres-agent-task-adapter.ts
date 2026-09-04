@@ -2535,13 +2535,8 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
           action.reservation,
           usage,
           now,
-          Math.min(
-            input.activeWallClockMs ?? 0,
-            Math.max(
-              0,
-              current.budgetPolicy.maxWallClockMs - current.budgetLedger.activeWallClockMs,
-            ),
-          ),
+          input.activeWallClockMs ?? 0,
+          { allowWallClockOverrun: error.code === "AGENT_WALL_CLOCK_EXCEEDED" },
         );
         const next = transitionAgentTask(
           current.state,
@@ -2741,9 +2736,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
             schemaVersion: "1",
             taskRef,
             candidateVersion: existing.candidate_version,
-            ...(existing.parent_candidate_version === null
-              ? {}
-              : { parentCandidateVersion: existing.parent_candidate_version }),
+            parentCandidateVersion: existing.parent_candidate_version ?? 0,
             candidateArtifactRef: existing.candidate_artifact_ref,
             incrementArtifactRef: existing.increment_artifact_ref,
             ...(existing.validation === null ? {} : { validation: existing.validation }),
@@ -2767,7 +2760,10 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
             );
           return;
         }
-        if (value.candidateVersion !== latestCandidateVersion + 1)
+        if (
+          value.candidateVersion !== latestCandidateVersion + 1 ||
+          value.parentCandidateVersion !== latestCandidateVersion
+        )
           throw new AgentRuntimeError(
             makeAgentError({
               code: "AGENT_STALE_VERSION",

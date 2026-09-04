@@ -111,6 +111,7 @@ const definition = (
     incrementSchema: schema,
     candidateSchema: schema,
     tools: [],
+    measureCandidateUsage: () => ({ candidates: 1, objects: 1 }),
     validateCandidate: () => ({
       schemaVersion: "1",
       items: [],
@@ -118,6 +119,15 @@ const definition = (
       validationArtifactRef: artifact("diagnostic-artifact", `${taskType}-validation-result`),
       validatedAt: "2030-01-01T00:00:00.000Z",
     }),
+    finalizeCandidate: (_candidate, context) =>
+      buildCompletedAgentTaskResult(
+        context.envelope.agentTaskRef,
+        artifact("content-artifact", `${taskType}-result`),
+        undefined,
+        context.envelope.agentTaskRef.taskType === "response-recommendation"
+          ? ["recommendation-candidate"]
+          : undefined,
+      ),
   };
 };
 
@@ -257,6 +267,51 @@ describe("agent runtime core", () => {
         amount: { modelInvocations: 1 },
       }),
     ).toThrow(AgentRuntimeError);
+  });
+
+  it("records the actual wall-clock overrun when settling a timeout failure", () => {
+    const taskPolicy = policy("data-cleaning");
+    const reserved = reserveAgentBudget(
+      taskPolicy,
+      {
+        schemaVersion: "1",
+        reserved: emptyAgentBudgetUsage(),
+        used: emptyAgentBudgetUsage(),
+        activeWallClockMs: taskPolicy.maxWallClockMs - 1,
+        currentConcurrency: 0,
+        ledgerVersion: 1,
+        changedAt: "2030-01-01T00:00:00.000Z",
+      },
+      {
+        actionType: "model-invocation",
+        actionId: "timeout-action",
+        reservationId: "timeout-reservation",
+        now: "2030-01-01T00:00:00.000Z",
+      },
+    );
+    const actual = { ...emptyAgentBudgetUsage(), modelInvocations: 1 };
+
+    expect(() =>
+      settleAgentBudget(
+        taskPolicy,
+        reserved.ledger,
+        reserved.reservation,
+        actual,
+        "2030-01-01T00:00:01.000Z",
+        2,
+      ),
+    ).toThrow(AgentRuntimeError);
+    expect(
+      settleAgentBudget(
+        taskPolicy,
+        reserved.ledger,
+        reserved.reservation,
+        actual,
+        "2030-01-01T00:00:01.000Z",
+        2,
+        { allowWallClockOverrun: true },
+      ).activeWallClockMs,
+    ).toBe(taskPolicy.maxWallClockMs + 1);
   });
 
   it("keeps state transitions versioned and classifies refusal boundaries", () => {

@@ -373,7 +373,7 @@ export const AgentCandidateVersionV1Schema = z
     schemaVersion: z.literal("1"),
     taskRef: AgentTaskRefV1Schema,
     candidateVersion: positiveInteger,
-    parentCandidateVersion: nonNegativeInteger.optional(),
+    parentCandidateVersion: nonNegativeInteger,
     candidateArtifactRef: ArtifactRefV1Schema,
     incrementArtifactRef: ArtifactRefV1Schema,
     validation: AgentValidationResultV1Schema.optional(),

@@ -75,6 +75,7 @@ const definition = new AgentTaskDefinitionRegistry([
     incrementSchema: z.strictObject({ operation: z.literal("candidate") }),
     candidateSchema: z.strictObject({ operation: z.literal("candidate") }),
     tools: [],
+    measureCandidateUsage: () => ({ candidates: 1, objects: 1 }),
     validateCandidate: () => ({
       schemaVersion: "1",
       items: [],
@@ -82,6 +83,11 @@ const definition = new AgentTaskDefinitionRegistry([
       validationArtifactRef: artifact("diagnostic-artifact", "validation"),
       validatedAt: "2030-01-01T00:00:00.000Z",
     }),
+    finalizeCandidate: (_candidate, context) =>
+      buildCompletedAgentTaskResult(
+        context.envelope.agentTaskRef,
+        artifact("content-artifact", "cleaned-result"),
+      ),
   },
 ]);
 const startCommand = {
@@ -219,6 +225,7 @@ describe("postgres agent runtime adapter", () => {
         schemaVersion: "1",
         taskRef: claim.task.envelope.agentTaskRef,
         candidateVersion: 1,
+        parentCandidateVersion: 0,
         candidateArtifactRef: output,
         incrementArtifactRef: increment,
         disposition: "accepted",

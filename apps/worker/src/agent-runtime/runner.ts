@@ -3,37 +3,56 @@ import {
   AgentRuntimeError,
   AgentCandidateVersionV1Schema,
   AgentValidationResultV1Schema,
+  agentTaskRefEquals,
   buildCompletedAgentTaskResult,
   classifyValidationFailure,
   completeAgentStructured,
   emptyAgentBudgetUsage,
   makeAgentError,
   normalizeAgentActionUsage,
+  primaryReferenceFromAgentTaskResult,
   type AgentBudgetUsageV1,
   type AgentCandidateVersionV1,
   type AgentDomainToolResultV1,
+  type AgentDomainToolV1,
   type AgentTaskActionV1,
   type AgentTaskDefinitionV1,
   type AgentTaskSnapshotV1,
   type AgentStructuredErrorV1,
 } from "@riskflow/core/agent-runtime";
-import type { ArtifactStoreV1 } from "@riskflow/core/artifacts";
-import type { ModelGatewayPortV1, StructuredCompletionResultV1 } from "@riskflow/core/model";
-import { type ContractReferenceV1, type AgentTaskRefV1 } from "@riskflow/contracts/ports";
+import {
+  ArtifactReadRequestV1Schema,
+  type ArtifactRefV1,
+  type ArtifactStoreV1,
+} from "@riskflow/core/artifacts";
+import type {
+  ModelGatewayPortV1,
+  StructuredCompletionRequestV1,
+  StructuredCompletionResultV1,
+} from "@riskflow/core/model";
+import {
+  AgentTaskResultRefV1Schema,
+  type AgentTaskRefV1,
+  type AgentTaskResultRefV1,
+  type ContractReferenceV1,
+} from "@riskflow/contracts/ports";
 import {
   IsoDateTimeSchema,
   VersionReferenceSchema,
   type VersionReference,
 } from "@riskflow/contracts/common";
-
 import type {
   AgentTaskActionReservationV1,
   AgentTaskClaimV1,
   AgentTaskExecutionStoreV1,
 } from "@riskflow/adapters/agent-runtime";
 
+export interface AgentModelStepContextV1 {
+  readonly previousObservationArtifactRef?: ArtifactRefV1;
+}
+
 export interface AgentModelStepRequestV1 {
-  readonly messages: import("@riskflow/core/model").StructuredCompletionRequestV1["messages"];
+  readonly messages: StructuredCompletionRequestV1["messages"];
   readonly maxOutputTokens: number;
   readonly outputSchemaRef?: VersionReference;
   readonly reservationAmount?: Partial<AgentBudgetUsageV1>;
@@ -44,14 +63,16 @@ export interface AgentModelStepRequestV1 {
 }
 
 export interface AgentStepOutcomeV1 {
-  readonly kind: "completed" | "waiting" | "failed" | "uncertain";
+  readonly kind: "completed" | "waiting" | "failed" | "uncertain" | "tool-request";
   readonly resultRef?: ContractReferenceV1;
-  readonly resultArtifactRef?: import("@riskflow/core/artifacts").ArtifactRefV1;
+  readonly resultArtifactRef?: ArtifactRefV1;
   readonly candidate?: AgentCandidateVersionV1;
   readonly candidatePayload?: unknown;
   readonly increment?: unknown;
   readonly proposalRef?: ContractReferenceV1;
-  readonly proposalArtifactRef?: import("@riskflow/core/artifacts").ArtifactRefV1;
+  readonly proposalArtifactRef?: ArtifactRefV1;
+  readonly toolRef?: VersionReference;
+  readonly toolInput?: unknown;
   readonly usage?: AgentBudgetUsageV1;
   readonly error?: AgentStructuredErrorV1;
 }
@@ -68,6 +89,7 @@ export interface AgentRuntimeRunnerOptionsV1 {
   readonly renderModelStep?: (
     task: AgentTaskSnapshotV1,
     definition: AgentTaskDefinitionV1,
+    context?: AgentModelStepContextV1,
   ) => Promise<AgentModelStepRequestV1> | AgentModelStepRequestV1;
   readonly interpretModelStep?: (
     response: StructuredCompletionResultV1<unknown>,
@@ -80,7 +102,7 @@ export interface AgentRuntimeRunnerOptionsV1 {
     readonly purposeCode: string;
     readonly value: unknown;
     readonly signal: AbortSignal;
-  }) => Promise<import("@riskflow/core/artifacts").ArtifactRefV1>;
+  }) => Promise<ArtifactRefV1>;
 }
 
 const nowIso = (): string => new Date().toISOString();
@@ -120,18 +142,61 @@ const asError = (
     actionId,
   });
 };
-const usageFromModel = (response: StructuredCompletionResultV1<unknown>): AgentBudgetUsageV1 => ({
-  ...emptyAgentBudgetUsage(),
-  modelInvocations: 1,
-  inputTokens: response.usage.inputTokens ?? 0,
-  outputTokens: response.usage.outputTokens ?? 0,
-});
+const jsonByteLength = (value: unknown): number =>
+  new TextEncoder().encode(JSON.stringify(value) ?? "").byteLength;
+const usageFromModel = (
+  response: StructuredCompletionResultV1<unknown>,
+  messages: StructuredCompletionRequestV1["messages"],
+  reserved: AgentBudgetUsageV1,
+): AgentBudgetUsageV1 => {
+  const inputTokens = response.usage.inputTokens ?? reserved.inputTokens;
+  const outputTokens = response.usage.outputTokens ?? reserved.outputTokens;
+  return {
+    ...emptyAgentBudgetUsage(),
+    modelInvocations: 1,
+    inputTokens,
+    outputTokens,
+    contextTokens:
+      response.usage.inputTokens === undefined || response.usage.outputTokens === undefined
+        ? reserved.contextTokens
+        : inputTokens + outputTokens,
+    inputBytes: jsonByteLength(messages),
+    outputBytes: jsonByteLength(response.value),
+  };
+};
+const usageKeys = Object.keys(emptyAgentBudgetUsage()) as Array<keyof AgentBudgetUsageV1>;
+const maxUsage = (
+  ...inputs: ReadonlyArray<Partial<AgentBudgetUsageV1> | undefined>
+): Partial<AgentBudgetUsageV1> => {
+  const result: Partial<AgentBudgetUsageV1> = {};
+  for (const key of usageKeys) {
+    const value = Math.max(...inputs.map((input) => input?.[key] ?? 0));
+    if (value > 0) result[key] = value;
+  }
+  return result;
+};
+const awaitWithAbort = async <T>(operation: Promise<T>, signal: AbortSignal): Promise<T> => {
+  if (signal.aborted) throw new DOMException("operation aborted", "AbortError");
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(new DOMException("operation aborted", "AbortError"));
+    signal.addEventListener("abort", abort, { once: true });
+    operation.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
+};
 const outcomeFromDomainTool = (
   result: AgentDomainToolResultV1,
+  input: unknown,
   taskRef: AgentTaskRefV1,
   actionId: string,
+  declaredUsage: Partial<AgentBudgetUsageV1> = {},
 ): AgentStepOutcomeV1 => {
-  const usage = normalizeAgentActionUsage("domain-tool", result.usage);
+  const usage = normalizeAgentActionUsage(
+    "domain-tool",
+    maxUsage(result.usage, declaredUsage, {
+      inputBytes: jsonByteLength(input),
+      outputBytes: jsonByteLength(result),
+    }),
+  );
   if (result.effect === "uncertain")
     return {
       kind: "uncertain",
@@ -147,10 +212,10 @@ const outcomeFromDomainTool = (
         actionId,
       }),
     };
-  if (result.effect === "committed" && result.resultRef !== undefined)
+  if (result.effect === "none" || (result.effect === "committed" && result.resultRef !== undefined))
     return {
       kind: "completed",
-      resultRef: result.resultRef,
+      ...(result.resultRef === undefined ? {} : { resultRef: result.resultRef }),
       resultArtifactRef: result.observationArtifactRef,
       usage,
     };
@@ -269,7 +334,6 @@ export class AgentRuntimeRunner {
     this.#options = options;
     this.#now = options.now ?? nowIso;
   }
-
   async runOnce(signal: AbortSignal = new AbortController().signal): Promise<number> {
     let processed = 0;
     for (let index = 0; index < this.#options.maxConcurrentTasks && !signal.aborted; index += 1) {
@@ -297,7 +361,7 @@ export class AgentRuntimeRunner {
     purposeCode: string,
     value: unknown,
     signal: AbortSignal,
-  ): Promise<import("@riskflow/core/artifacts").ArtifactRefV1> {
+  ): Promise<ArtifactRefV1> {
     if (this.#options.persistArtifact !== undefined)
       return this.#options.persistArtifact({ task, actionId, purposeCode, value, signal });
     const store = this.#options.artifactStore;
@@ -348,6 +412,65 @@ export class AgentRuntimeRunner {
       oneChunk(body),
     );
     return result.artifactRef;
+  }
+
+  async #readJson(
+    task: AgentTaskSnapshotV1,
+    actionId: string,
+    artifactRef: ArtifactRefV1,
+    purposeCode: string,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    const store = this.#options.artifactStore;
+    const requiredCapability = task.envelope.authorization.grantedCapabilities[0];
+    if (store === undefined || requiredCapability === undefined)
+      throw new AgentRuntimeError(
+        makeAgentError({
+          code: "AGENT_ACTION_UNCERTAIN",
+          category: "action",
+          retryable: false,
+          stage: "worker.recovery.artifact-store",
+          taskRef: task.envelope.agentTaskRef,
+          actionId,
+        }),
+      );
+    const now = IsoDateTimeSchema.parse(this.#now());
+    const handle = await awaitWithAbort(
+      store.open(
+        ArtifactReadRequestV1Schema.parse({
+          schemaVersion: "1",
+          requestId: `${actionId}:${purposeCode}:read`,
+          idempotencyKey: `${actionId}:${purposeCode}:read`,
+          artifactRef,
+          projectId: task.envelope.projectId,
+          actorId: task.envelope.actorId,
+          requestedAt: now,
+          purposeCode,
+          requiredCapability,
+          authorization: task.envelope.authorization,
+        }),
+      ),
+      signal,
+    );
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for await (const chunk of handle.content) {
+      size += chunk.byteLength;
+      if (size > 1_048_576)
+        throw new AgentRuntimeError(
+          makeAgentError({
+            code: "AGENT_ARTIFACT_FAILURE",
+            category: "artifact",
+            retryable: false,
+            stage: "worker.recovery.artifact-size",
+            taskRef: task.envelope.agentTaskRef,
+            actionId,
+          }),
+        );
+      chunks.push(chunk);
+    }
+    await awaitWithAbort(handle.verified, signal);
+    return JSON.parse(new TextDecoder().decode(Buffer.concat(chunks)));
   }
 
   async #executeModel(
@@ -410,9 +533,9 @@ export class AgentRuntimeRunner {
 
   async #runClaim(claim: AgentTaskClaimV1, signal: AbortSignal): Promise<void> {
     const taskRef = claim.task.envelope.agentTaskRef;
-    let sequence = (claim.task.state.latestCandidateVersion ?? 0) + 1;
+    let currentTask = claim.task;
+    let sequence = (currentTask.state.latestCandidateVersion ?? 0) + 1;
     let actionId = actionIdFor(taskRef, sequence);
-    let idempotencyKey = actionKeyFor(taskRef, sequence);
     let definition: AgentTaskDefinitionV1;
     let intentRecorded = false;
     const operationController = new AbortController();
@@ -425,6 +548,11 @@ export class AgentRuntimeRunner {
     let wallClockExceeded = false;
     const activeActionWallClockMs = () =>
       actionStartedAt === undefined ? 0 : Math.max(0, Date.now() - actionStartedAt);
+    const clearAction = () => {
+      if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+      deadlineTimer = undefined;
+      actionStartedAt = undefined;
+    };
     const throwLeaseFailure = () => {
       if (wallClockExceeded)
         throw new AgentRuntimeError(
@@ -451,24 +579,117 @@ export class AgentRuntimeRunner {
           }),
         );
     };
+    const startDeadline = (task: AgentTaskSnapshotV1): void => {
+      const remaining = task.budgetPolicy.maxWallClockMs - task.budgetLedger.activeWallClockMs;
+      if (!Number.isSafeInteger(remaining) || remaining <= 0)
+        throw new AgentRuntimeError(
+          makeAgentError({
+            code: "AGENT_WALL_CLOCK_EXCEEDED",
+            category: "budget",
+            retryable: false,
+            stage: "worker.wall-clock.reserve",
+            taskRef,
+            actionId,
+          }),
+        );
+      deadlineTimer = setTimeout(() => {
+        wallClockExceeded = true;
+        operationController.abort();
+      }, remaining);
+    };
+    const remaining = (
+      task: AgentTaskSnapshotV1,
+      key: keyof AgentBudgetUsageV1,
+      limit: number,
+    ): number => {
+      return Math.max(0, limit - task.budgetLedger.used[key] - task.budgetLedger.reserved[key]);
+    };
+    const resourceReservation = (
+      task: AgentTaskSnapshotV1,
+      actionType: AgentTaskActionV1["actionType"],
+      toolUsage: Partial<AgentBudgetUsageV1> | undefined,
+    ): Partial<AgentBudgetUsageV1> =>
+      actionType === "model-invocation"
+        ? {
+            inputTokens: remaining(
+              task,
+              "inputTokens",
+              task.budgetPolicy.maxInputTokens ?? task.budgetPolicy.maxContextTokens,
+            ),
+            contextTokens: remaining(task, "contextTokens", task.budgetPolicy.maxContextTokens),
+            inputBytes: remaining(task, "inputBytes", task.budgetPolicy.maxInputBytes),
+            outputBytes: remaining(task, "outputBytes", task.budgetPolicy.maxOutputBytes),
+            candidates: remaining(task, "candidates", task.budgetPolicy.maxCandidates),
+            objects: remaining(task, "objects", task.budgetPolicy.maxObjects),
+            corrections: remaining(task, "corrections", task.budgetPolicy.maxCorrections),
+          }
+        : maxUsage(toolUsage, {
+            inputBytes: remaining(task, "inputBytes", task.budgetPolicy.maxInputBytes),
+            outputBytes: remaining(task, "outputBytes", task.budgetPolicy.maxOutputBytes),
+            objects: remaining(task, "objects", task.budgetPolicy.maxObjects),
+            supplementarySearches: remaining(
+              task,
+              "supplementarySearches",
+              task.budgetPolicy.maxSupplementarySearches,
+            ),
+            corrections: remaining(task, "corrections", task.budgetPolicy.maxCorrections),
+            transientRetries: remaining(
+              task,
+              "transientRetries",
+              task.budgetPolicy.maxTransientRetries,
+            ),
+          });
     try {
       definition = this.#options.registry.get(taskRef.taskType);
-      await this.#options.store.verifyWorker(claim.task, claim.task.envelope.commandId);
-      if (operationController.signal.aborted || claim.task.state.cancelRequested) {
+      await this.#options.store.verifyWorker(currentTask, currentTask.envelope.commandId);
+      if (operationController.signal.aborted || currentTask.state.cancelRequested) {
         await this.#options.store.releaseLease({
           taskRef,
           workerId: claim.workerId,
           leaseToken: claim.leaseToken,
-          status: claim.task.state.cancelRequested ? "cancelled" : "released",
+          status: currentTask.state.cancelRequested ? "cancelled" : "released",
           now: this.#now(),
         });
         return;
       }
+      let pendingTool: { readonly toolRef: VersionReference; readonly input: unknown } | undefined;
+      let previousObservationArtifactRef: ArtifactRefV1 | undefined;
       let completed = await this.#options.store.findAction(taskRef, actionId);
       while (completed?.status === "completed" && completed.resultRef === undefined) {
+        if (
+          completed.actionType === "model-invocation" &&
+          completed.resultArtifactRef !== undefined
+        ) {
+          const recorded = await this.#readJson(
+            currentTask,
+            actionId,
+            completed.resultArtifactRef,
+            "agent-action-result",
+            operationController.signal,
+          );
+          if (
+            typeof recorded === "object" &&
+            recorded !== null &&
+            "disposition" in recorded &&
+            recorded.disposition === "tool-request" &&
+            "toolRef" in recorded &&
+            "toolInput" in recorded
+          ) {
+            const toolRef = VersionReferenceSchema.parse(recorded.toolRef);
+            const input = this.#options.registry.parseAction(taskRef.taskType, recorded.toolInput);
+            this.#options.registry.assertToolAllowed(
+              taskRef.taskType,
+              toolRef,
+              taskRef.toolPolicyRef,
+            );
+            pendingTool = { toolRef, input };
+          }
+        } else if (completed.actionType === "domain-tool") {
+          previousObservationArtifactRef = completed.resultArtifactRef;
+          pendingTool = undefined;
+        }
         sequence += 1;
         actionId = actionIdFor(taskRef, sequence);
-        idempotencyKey = actionKeyFor(taskRef, sequence);
         completed = await this.#options.store.findAction(taskRef, actionId);
       }
       if (completed?.status === "completed") {
@@ -505,463 +726,686 @@ export class AgentRuntimeRunner {
         intervalMs: Math.max(1, Math.floor(this.#options.leaseDurationMs / 3)),
         now: this.#now,
       });
-      let rendered: AgentModelStepRequestV1 | undefined;
-      let reservation: AgentTaskActionReservationV1;
-      let outcome: AgentStepOutcomeV1;
-      let modelRaw: StructuredCompletionResultV1<unknown> | undefined;
-      let actionType: AgentTaskActionV1["actionType"];
-      let typedToolInput: unknown;
-      let toolRef: VersionReference | undefined;
-      const startDeadline = (task: AgentTaskSnapshotV1): void => {
-        const remaining = task.budgetPolicy.maxWallClockMs - task.budgetLedger.activeWallClockMs;
-        if (!Number.isSafeInteger(remaining) || remaining <= 0)
-          throw new AgentRuntimeError(
-            makeAgentError({
-              code: "AGENT_WALL_CLOCK_EXCEEDED",
-              category: "budget",
-              retryable: false,
-              stage: "worker.wall-clock.reserve",
-              taskRef,
+      let recovering = completed?.status === "started";
+      while (true) {
+        let rendered: AgentModelStepRequestV1 | undefined;
+        let reservation: AgentTaskActionReservationV1;
+        let outcome: AgentStepOutcomeV1;
+        let modelRaw: StructuredCompletionResultV1<unknown> | undefined;
+        let actionType: AgentTaskActionV1["actionType"];
+        let typedToolInput: unknown;
+        let toolRef: VersionReference | undefined;
+        let tool: AgentDomainToolV1 | undefined;
+        const continueAfterTool = pendingTool !== undefined;
+        if (recovering) {
+          if (completed === undefined || completed.status !== "started")
+            throw new AgentRuntimeError(
+              makeAgentError({
+                code: "AGENT_ACTION_UNCERTAIN",
+                category: "action",
+                retryable: false,
+                stage: "worker.recovery.missing-action",
+                taskRef,
+                actionId,
+              }),
+            );
+          actionType = completed.actionType;
+          if (actionType !== "domain-tool")
+            throw new AgentRuntimeError(
+              makeAgentError({
+                code: "AGENT_ACTION_UNCERTAIN",
+                category: "action",
+                retryable: false,
+                stage: "worker.recovery.started-model",
+                taskRef,
+                actionId,
+              }),
+            );
+          try {
+            const intent = await this.#readJson(
+              currentTask,
               actionId,
-            }),
-          );
-        deadlineTimer = setTimeout(() => {
-          wallClockExceeded = true;
-          operationController.abort();
-        }, remaining);
-      };
-      if (completed?.status === "started") {
-        actionType = completed.actionType;
-        if (actionType !== "domain-tool")
-          throw new AgentRuntimeError(
-            makeAgentError({
-              code: "AGENT_ACTION_UNCERTAIN",
-              category: "action",
-              retryable: false,
-              stage: "worker.recovery.started-model",
-              taskRef,
-              actionId,
-            }),
-          );
-        const allowedToolRef = definition.metadata.allowedToolRefs[0];
-        if (allowedToolRef === undefined)
-          throw new AgentRuntimeError(
-            makeAgentError({
-              code: "AGENT_ACTION_UNCERTAIN",
-              category: "action",
-              retryable: false,
-              stage: "worker.recovery.tool-not-registered",
-              taskRef,
-              actionId,
-            }),
-          );
-        const tool = this.#options.registry.assertToolAllowed(
-          taskRef.taskType,
-          allowedToolRef,
-          taskRef.toolPolicyRef,
-        );
-        if (tool.recover === undefined)
-          throw new AgentRuntimeError(
-            makeAgentError({
-              code: "AGENT_ACTION_UNCERTAIN",
-              category: "action",
-              retryable: false,
-              stage: "worker.recovery.configuration",
-              taskRef,
-              actionId,
-            }),
-          );
-        reservation = { task: claim.task, reservation: completed.reservation };
-        intentRecorded = true;
-        await this.#options.store.heartbeat({
-          taskRef,
-          workerId: claim.workerId,
-          leaseToken: claim.leaseToken,
-          leaseDurationMs: this.#options.leaseDurationMs,
-          now: this.#now(),
-        });
-        await this.#options.store.verifyWorker(claim.task, claim.task.envelope.commandId);
-        throwLeaseFailure();
-        startDeadline(reservation.task);
-        actionStartedAt = Date.now();
-        const recovered = await tool.recover({
-          task: reservation.task,
-          taskRef,
-          actionId,
-          signal: operationController.signal,
-        });
-        if (recovered === undefined)
-          throw new AgentRuntimeError(
-            makeAgentError({
-              code: "AGENT_ACTION_UNCERTAIN",
-              category: "action",
-              retryable: false,
-              stage: "worker.recovery.unresolved",
-              taskRef,
-              actionId,
-            }),
-          );
-        outcome = outcomeFromDomainTool(recovered, taskRef, actionId);
-        throwLeaseFailure();
-      } else {
-        if (this.#options.renderModelStep === undefined)
-          throw new AgentRuntimeError(
-            makeAgentError({
-              code: "AGENT_INPUT_INVALID",
-              category: "input",
-              stage: "worker.action.configuration",
-              taskRef,
-            }),
-          );
-        rendered = await this.#options.renderModelStep(claim.task, definition);
-        toolRef =
-          rendered.domainTool === undefined
-            ? undefined
-            : VersionReferenceSchema.parse(rendered.domainTool.toolRef);
-        if (toolRef !== undefined) {
-          typedToolInput = this.#options.registry.parseAction(
-            taskRef.taskType,
-            rendered.domainTool?.input,
-          );
-          this.#options.registry.assertToolAllowed(
+              completed.intentArtifactRef,
+              "agent-action-intent",
+              operationController.signal,
+            );
+            if (
+              typeof intent !== "object" ||
+              intent === null ||
+              !("toolRef" in intent) ||
+              !("input" in intent)
+            )
+              throw new Error("invalid tool intent");
+            toolRef = VersionReferenceSchema.parse(intent.toolRef);
+            typedToolInput = this.#options.registry.parseAction(taskRef.taskType, intent.input);
+          } catch {
+            throw new AgentRuntimeError(
+              makeAgentError({
+                code: "AGENT_ACTION_UNCERTAIN",
+                category: "action",
+                retryable: false,
+                stage: "worker.recovery.intent",
+                taskRef,
+                actionId,
+              }),
+            );
+          }
+          tool = this.#options.registry.assertToolAllowed(
             taskRef.taskType,
             toolRef,
             taskRef.toolPolicyRef,
           );
-          actionType = "domain-tool";
-        } else {
-          actionType = "model-invocation";
-          if (
-            this.#options.modelGateway === undefined ||
-            this.#options.interpretModelStep === undefined
-          )
+          if (tool.recover === undefined)
             throw new AgentRuntimeError(
               makeAgentError({
-                code: "AGENT_INPUT_INVALID",
-                category: "input",
-                stage: "worker.model.configuration",
+                code: "AGENT_ACTION_UNCERTAIN",
+                category: "action",
+                retryable: false,
+                stage: "worker.recovery.configuration",
                 taskRef,
+                actionId,
               }),
             );
-        }
-        throwLeaseFailure();
-        if (operationController.signal.aborted) {
-          await this.#options.store.releaseLease({
+          reservation = { task: currentTask, reservation: completed.reservation };
+          intentRecorded = true;
+          await this.#options.store.heartbeat({
             taskRef,
             workerId: claim.workerId,
             leaseToken: claim.leaseToken,
-            status: "released",
+            leaseDurationMs: this.#options.leaseDurationMs,
             now: this.#now(),
           });
-          return;
-        }
-        await this.#options.store.verifyWorker(claim.task, claim.task.envelope.commandId);
-        const intentArtifactRef = await this.#persistJson(
-          claim.task,
-          actionId,
-          "agent-action-intent",
-          {
-            schemaVersion: "1",
-            taskRef,
-            actionId,
-            sequence,
-            actionType,
-            modelDeploymentRef: taskRef.modelDeploymentRef,
-            promptTemplateRef: taskRef.promptTemplateRef,
-            toolPolicyRef: taskRef.toolPolicyRef,
-            ...(toolRef === undefined ? {} : { toolRef, input: typedToolInput }),
-          },
-          operationController.signal,
-        );
-        throwLeaseFailure();
-        reservation = await this.#options.store.reserveAction({
-          taskRef,
-          workerId: claim.workerId,
-          leaseToken: claim.leaseToken,
-          actionId,
-          reservationId: `${actionId}:reservation:${claim.attemptNumber}`,
-          actionType,
-          sequence,
-          idempotencyKey,
-          intentArtifactRef,
-          amount: {
-            ...rendered.reservationAmount,
-            ...(claim.task.budgetPolicy.maxInputTokens === undefined
-              ? {}
-              : { inputTokens: claim.task.budgetPolicy.maxInputTokens }),
-            outputTokens: Math.max(
-              rendered.reservationAmount?.outputTokens ?? 0,
-              rendered.maxOutputTokens,
-            ),
-          },
-          now: this.#now(),
-        });
-        intentRecorded = true;
-        throwLeaseFailure();
-        startDeadline(reservation.task);
-        await this.#options.store.heartbeat({
-          taskRef,
-          workerId: claim.workerId,
-          leaseToken: claim.leaseToken,
-          leaseDurationMs: this.#options.leaseDurationMs,
-          now: this.#now(),
-        });
-        await this.#options.store.verifyWorker(claim.task, claim.task.envelope.commandId);
-        throwLeaseFailure();
-        actionStartedAt = Date.now();
-        if (toolRef !== undefined) {
-          const tool = this.#options.registry.assertToolAllowed(
-            taskRef.taskType,
-            toolRef,
-            taskRef.toolPolicyRef,
-          );
-          outcome = outcomeFromDomainTool(
-            await tool.execute(typedToolInput, {
+          await this.#options.store.verifyWorker(currentTask, currentTask.envelope.commandId);
+          throwLeaseFailure();
+          actionStartedAt = Date.now();
+          startDeadline(reservation.task);
+          const recovered = await awaitWithAbort(
+            tool.recover(typedToolInput, {
               task: reservation.task,
               taskRef,
               actionId,
               signal: operationController.signal,
             }),
-            taskRef,
-            actionId,
-          );
-        } else {
-          const model = await this.#executeModel(
-            reservation.task,
-            definition,
-            actionId,
             operationController.signal,
-            rendered,
           );
-          outcome = model.outcome;
-          modelRaw = model.raw;
-        }
-      }
-      await this.#options.store.heartbeat({
-        taskRef,
-        workerId: claim.workerId,
-        leaseToken: claim.leaseToken,
-        leaseDurationMs: this.#options.leaseDurationMs,
-        now: this.#now(),
-      });
-      throwLeaseFailure();
-      if (operationController.signal.aborted && outcome.kind === "completed")
-        throw new AgentRuntimeError(
-          makeAgentError({
-            code: "AGENT_CANCELLED",
-            category: "cancelled",
-            retryable: false,
-            stage: "worker.cancelled",
+          if (recovered === undefined)
+            throw new AgentRuntimeError(
+              makeAgentError({
+                code: "AGENT_ACTION_UNCERTAIN",
+                category: "action",
+                retryable: false,
+                stage: "worker.recovery.unresolved",
+                taskRef,
+                actionId,
+              }),
+            );
+          outcome = outcomeFromDomainTool(
+            recovered,
+            typedToolInput,
             taskRef,
             actionId,
-          }),
-        );
-      const evidenceRef = await this.#persistJson(
-        reservation.task,
-        actionId,
-        "agent-action-result",
-        {
-          schemaVersion: "1",
-          taskRef,
-          actionId,
-          disposition: outcome.kind,
-          ...(modelRaw === undefined ? {} : { rawResponseRef: modelRaw.rawResponseRef }),
-          ...(outcome.candidate === undefined
-            ? {}
-            : { candidateVersion: outcome.candidate.candidateVersion }),
-          ...(outcome.proposalRef === undefined ? {} : { proposalRef: outcome.proposalRef }),
-          ...(outcome.resultArtifactRef === undefined
-            ? {}
-            : { observationArtifactRef: outcome.resultArtifactRef }),
-        },
-        operationController.signal,
-      );
-      throwLeaseFailure();
-      const usage = normalizeAgentActionUsage(
-        actionType,
-        outcome.usage ?? (modelRaw === undefined ? undefined : usageFromModel(modelRaw)),
-      );
-      if (outcome.candidate !== undefined) {
-        let candidate: AgentCandidateVersionV1;
-        try {
-          candidate = AgentCandidateVersionV1Schema.parse(outcome.candidate);
-        } catch {
-          throw new AgentRuntimeError(
-            makeAgentError({
-              code: "AGENT_INPUT_INVALID",
-              category: "input",
-              stage: "worker.candidate.schema",
+            tool.budgetUsage,
+          );
+          recovering = false;
+        } else {
+          if (pendingTool === undefined) {
+            if (this.#options.renderModelStep === undefined)
+              throw new AgentRuntimeError(
+                makeAgentError({
+                  code: "AGENT_INPUT_INVALID",
+                  category: "input",
+                  stage: "worker.action.configuration",
+                  taskRef,
+                }),
+              );
+            rendered = await this.#options.renderModelStep(
+              currentTask,
+              definition,
+              previousObservationArtifactRef === undefined
+                ? {}
+                : { previousObservationArtifactRef },
+            );
+            toolRef =
+              rendered.domainTool === undefined
+                ? undefined
+                : VersionReferenceSchema.parse(rendered.domainTool.toolRef);
+            if (toolRef !== undefined) {
+              typedToolInput = this.#options.registry.parseAction(
+                taskRef.taskType,
+                rendered.domainTool?.input,
+              );
+              tool = this.#options.registry.assertToolAllowed(
+                taskRef.taskType,
+                toolRef,
+                taskRef.toolPolicyRef,
+              );
+              actionType = "domain-tool";
+            } else {
+              actionType = "model-invocation";
+              if (
+                this.#options.modelGateway === undefined ||
+                this.#options.interpretModelStep === undefined
+              )
+                throw new AgentRuntimeError(
+                  makeAgentError({
+                    code: "AGENT_INPUT_INVALID",
+                    category: "input",
+                    stage: "worker.model.configuration",
+                    taskRef,
+                  }),
+                );
+            }
+          } else {
+            ({ toolRef, input: typedToolInput } = pendingTool);
+            tool = this.#options.registry.assertToolAllowed(
+              taskRef.taskType,
+              toolRef,
+              taskRef.toolPolicyRef,
+            );
+            actionType = "domain-tool";
+          }
+          actionId = actionIdFor(taskRef, sequence);
+          throwLeaseFailure();
+          if (operationController.signal.aborted) {
+            await this.#options.store.releaseLease({
+              taskRef,
+              workerId: claim.workerId,
+              leaseToken: claim.leaseToken,
+              status: "released",
+              now: this.#now(),
+            });
+            return;
+          }
+          await this.#options.store.verifyWorker(currentTask, currentTask.envelope.commandId);
+          const intentArtifactRef = await this.#persistJson(
+            currentTask,
+            actionId,
+            "agent-action-intent",
+            {
+              schemaVersion: "1",
               taskRef,
               actionId,
-            }),
+              sequence,
+              actionType,
+              modelDeploymentRef: taskRef.modelDeploymentRef,
+              promptTemplateRef: taskRef.promptTemplateRef,
+              toolPolicyRef: taskRef.toolPolicyRef,
+              ...(toolRef === undefined ? {} : { toolRef, input: typedToolInput }),
+            },
+            operationController.signal,
           );
-        }
-        const candidatePayload = this.#options.registry.parseCandidate(
-          taskRef.taskType,
-          outcome.candidatePayload ?? candidate,
-        );
-        this.#options.registry.parseIncrement(
-          taskRef.taskType,
-          outcome.increment ?? candidatePayload,
-        );
-        const validation = AgentValidationResultV1Schema.parse(
-          await definition.validateCandidate(candidatePayload as never, reservation.task),
-        );
-        throwLeaseFailure();
-        const rejected = validation.items.find((item) => item.disposition === "rejected");
-        const rejectionClass =
-          validation.rejectionClass ??
-          (rejected === undefined
-            ? undefined
-            : classifyValidationFailure({ reasonCode: rejected.reasonCode }));
-        candidate = {
-          ...candidate,
-          validation,
-          disposition:
-            validation.disposition === "rejected"
-              ? "rejected"
-              : candidate.disposition === "completed"
-                ? "completed"
-                : "accepted",
-          ...(rejectionClass === undefined ? {} : { rejectionClass }),
-        };
-        throwLeaseFailure();
-        await this.#options.store.recordCandidate({
-          candidate,
-          workerId: claim.workerId,
-          leaseToken: claim.leaseToken,
-        });
-        throwLeaseFailure();
-        if (validation.disposition === "rejected") {
-          const failure = makeAgentError({
-            code: "AGENT_VALIDATION_REJECTED",
-            category: "validation",
-            retryable: rejectionClass === "repairable",
-            stage: "worker.candidate.validation",
-            taskRef,
-            actionId,
-            reasonCode: rejected?.reasonCode ?? "validation-rejected",
-          });
-          await this.#options.store.failAction({
+          throwLeaseFailure();
+          const requestedAmount = maxUsage(
+            rendered?.reservationAmount,
+            resourceReservation(currentTask, actionType, tool?.budgetUsage),
+            rendered === undefined || actionType !== "model-invocation"
+              ? undefined
+              : {
+                  ...(currentTask.budgetPolicy.maxInputTokens === undefined
+                    ? {}
+                    : { inputTokens: currentTask.budgetPolicy.maxInputTokens }),
+                  outputTokens: rendered.maxOutputTokens,
+                },
+          );
+          reservation = await this.#options.store.reserveAction({
             taskRef,
             workerId: claim.workerId,
             leaseToken: claim.leaseToken,
             actionId,
-            error: failure,
+            reservationId: `${actionId}:reservation:${claim.attemptNumber}`,
+            actionType,
+            sequence,
+            idempotencyKey: actionKeyFor(taskRef, sequence),
+            intentArtifactRef,
+            amount: requestedAmount,
+            now: this.#now(),
+          });
+          intentRecorded = true;
+          throwLeaseFailure();
+          actionStartedAt = Date.now();
+          startDeadline(reservation.task);
+          await this.#options.store.heartbeat({
+            taskRef,
+            workerId: claim.workerId,
+            leaseToken: claim.leaseToken,
+            leaseDurationMs: this.#options.leaseDurationMs,
+            now: this.#now(),
+          });
+          await this.#options.store.verifyWorker(
+            reservation.task,
+            reservation.task.envelope.commandId,
+          );
+          throwLeaseFailure();
+          if (toolRef !== undefined && tool !== undefined) {
+            outcome = outcomeFromDomainTool(
+              await awaitWithAbort(
+                tool.execute(typedToolInput, {
+                  task: reservation.task,
+                  taskRef,
+                  actionId,
+                  signal: operationController.signal,
+                }),
+                operationController.signal,
+              ),
+              typedToolInput,
+              taskRef,
+              actionId,
+              tool.budgetUsage,
+            );
+          } else {
+            const model = await awaitWithAbort(
+              this.#executeModel(
+                reservation.task,
+                definition,
+                actionId,
+                operationController.signal,
+                rendered,
+              ),
+              operationController.signal,
+            );
+            outcome = model.outcome;
+            modelRaw = model.raw;
+          }
+        }
+        await this.#options.store.heartbeat({
+          taskRef,
+          workerId: claim.workerId,
+          leaseToken: claim.leaseToken,
+          leaseDurationMs: this.#options.leaseDurationMs,
+          now: this.#now(),
+        });
+        throwLeaseFailure();
+        if (operationController.signal.aborted && outcome.kind === "completed")
+          throw new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_CANCELLED",
+              category: "cancelled",
+              retryable: false,
+              stage: "worker.cancelled",
+              taskRef,
+              actionId,
+            }),
+          );
+        let requestedTool:
+          { readonly toolRef: VersionReference; readonly input: unknown } | undefined;
+        if (actionType === "model-invocation" && outcome.kind === "tool-request") {
+          if (outcome.toolRef === undefined || outcome.toolInput === undefined)
+            throw new AgentRuntimeError(
+              makeAgentError({
+                code: "AGENT_INPUT_INVALID",
+                category: "input",
+                stage: "worker.model.tool-request",
+                taskRef,
+                actionId,
+              }),
+            );
+          requestedTool = {
+            toolRef: VersionReferenceSchema.parse(outcome.toolRef),
+            input: this.#options.registry.parseAction(taskRef.taskType, outcome.toolInput),
+          };
+          this.#options.registry.assertToolAllowed(
+            taskRef.taskType,
+            requestedTool.toolRef,
+            taskRef.toolPolicyRef,
+          );
+        }
+        const evidenceRef = await this.#persistJson(
+          reservation.task,
+          actionId,
+          "agent-action-result",
+          {
+            schemaVersion: "1",
+            taskRef,
+            actionId,
+            disposition: outcome.kind,
+            ...(modelRaw === undefined ? {} : { rawResponseRef: modelRaw.rawResponseRef }),
+            ...(outcome.candidate === undefined
+              ? {}
+              : { candidateVersion: outcome.candidate.candidateVersion }),
+            ...(outcome.proposalRef === undefined ? {} : { proposalRef: outcome.proposalRef }),
+            ...(outcome.resultArtifactRef === undefined
+              ? {}
+              : { observationArtifactRef: outcome.resultArtifactRef }),
+            ...(requestedTool === undefined
+              ? {}
+              : { toolRef: requestedTool.toolRef, toolInput: requestedTool.input }),
+          },
+          operationController.signal,
+        );
+        throwLeaseFailure();
+        let usage = normalizeAgentActionUsage(
+          actionType,
+          modelRaw === undefined
+            ? outcome.usage
+            : maxUsage(
+                outcome.usage,
+                usageFromModel(modelRaw, rendered?.messages ?? [], reservation.reservation.amount),
+              ),
+        );
+        if (actionType === "model-invocation" && outcome.kind === "tool-request") {
+          currentTask = await this.#options.store.completeAction({
+            taskRef,
+            workerId: claim.workerId,
+            leaseToken: claim.leaseToken,
+            actionId,
             resultArtifactRef: evidenceRef,
             usage,
             activeWallClockMs: activeActionWallClockMs(),
             now: this.#now(),
           });
-          await this.#options.store.releaseLease({
+          intentRecorded = false;
+          clearAction();
+          pendingTool = requestedTool;
+          previousObservationArtifactRef = evidenceRef;
+          sequence += 1;
+          recovering = false;
+          continue;
+        }
+        if (continueAfterTool) {
+          if (outcome.kind !== "completed")
+            throw new AgentRuntimeError(
+              outcome.error ??
+                makeAgentError({
+                  code: "AGENT_TOOL_FAILURE",
+                  category: "tool",
+                  retryable: false,
+                  stage: "worker.tool.observation",
+                  taskRef,
+                  actionId,
+                }),
+            );
+          currentTask = await this.#options.store.completeAction({
             taskRef,
             workerId: claim.workerId,
             leaseToken: claim.leaseToken,
-            status: "released",
+            actionId,
+            resultArtifactRef: outcome.resultArtifactRef ?? evidenceRef,
+            usage,
+            activeWallClockMs: activeActionWallClockMs(),
+            now: this.#now(),
+          });
+          intentRecorded = false;
+          clearAction();
+          previousObservationArtifactRef = outcome.resultArtifactRef ?? evidenceRef;
+          pendingTool = undefined;
+          sequence += 1;
+          recovering = false;
+          continue;
+        }
+        let finalizedResult: AgentTaskResultRefV1 | undefined;
+        if (outcome.candidate !== undefined) {
+          let candidate: AgentCandidateVersionV1;
+          try {
+            candidate = AgentCandidateVersionV1Schema.parse(outcome.candidate);
+          } catch {
+            throw new AgentRuntimeError(
+              makeAgentError({
+                code: "AGENT_INPUT_INVALID",
+                category: "input",
+                stage: "worker.candidate.schema",
+                taskRef,
+                actionId,
+              }),
+            );
+          }
+          const candidatePayload = this.#options.registry.parseCandidate(
+            taskRef.taskType,
+            outcome.candidatePayload ?? candidate,
+          );
+          this.#options.registry.parseIncrement(
+            taskRef.taskType,
+            outcome.increment ?? candidatePayload,
+          );
+          const measuredUsage = maxUsage(
+            definition.measureCandidateUsage(candidatePayload as never, reservation.task),
+            { candidates: 1 },
+            candidate.candidateVersion > 1 ? { corrections: 1 } : undefined,
+          );
+          usage = normalizeAgentActionUsage(actionType, maxUsage(usage, measuredUsage));
+          const validation = AgentValidationResultV1Schema.parse(
+            await awaitWithAbort(
+              Promise.resolve(
+                definition.validateCandidate(candidatePayload as never, reservation.task),
+              ),
+              operationController.signal,
+            ),
+          );
+          throwLeaseFailure();
+          const rejected = validation.items.find((item) => item.disposition === "rejected");
+          const rejectionClass =
+            validation.rejectionClass ??
+            (rejected === undefined
+              ? undefined
+              : classifyValidationFailure({ reasonCode: rejected.reasonCode }));
+          candidate = {
+            ...candidate,
+            validation,
+            disposition:
+              validation.disposition === "rejected"
+                ? "rejected"
+                : candidate.disposition === "completed"
+                  ? "completed"
+                  : "accepted",
+            ...(rejectionClass === undefined ? {} : { rejectionClass }),
+          };
+          if (
+            validation.disposition !== "rejected" &&
+            actionType === "model-invocation" &&
+            outcome.kind === "completed"
+          ) {
+            finalizedResult = AgentTaskResultRefV1Schema.parse(
+              await awaitWithAbort(
+                Promise.resolve(
+                  definition.finalizeCandidate(candidatePayload as never, reservation.task),
+                ),
+                operationController.signal,
+              ),
+            );
+            if (!agentTaskRefEquals(finalizedResult.agentTaskRef, taskRef))
+              throw new AgentRuntimeError(
+                makeAgentError({
+                  code: "AGENT_INPUT_INVALID",
+                  category: "input",
+                  stage: "worker.result.task-ref",
+                  taskRef,
+                  actionId,
+                }),
+              );
+            buildCompletedAgentTaskResult(
+              taskRef,
+              primaryReferenceFromAgentTaskResult(finalizedResult),
+              undefined,
+              definition.metadata.resultFamilies,
+            );
+            candidate = { ...candidate, disposition: "completed", resultRef: finalizedResult };
+          }
+          throwLeaseFailure();
+          await this.#options.store.recordCandidate({
+            candidate,
+            workerId: claim.workerId,
+            leaseToken: claim.leaseToken,
+          });
+          throwLeaseFailure();
+          if (validation.disposition === "rejected") {
+            const failure = makeAgentError({
+              code: "AGENT_VALIDATION_REJECTED",
+              category: "validation",
+              retryable: rejectionClass === "repairable",
+              stage: "worker.candidate.validation",
+              taskRef,
+              actionId,
+              reasonCode: rejected?.reasonCode ?? "validation-rejected",
+            });
+            await this.#options.store.failAction({
+              taskRef,
+              workerId: claim.workerId,
+              leaseToken: claim.leaseToken,
+              actionId,
+              error: failure,
+              resultArtifactRef: evidenceRef,
+              usage,
+              activeWallClockMs: activeActionWallClockMs(),
+              now: this.#now(),
+            });
+            await this.#options.store.releaseLease({
+              taskRef,
+              workerId: claim.workerId,
+              leaseToken: claim.leaseToken,
+              status: "released",
+              now: this.#now(),
+            });
+            return;
+          }
+        }
+        if (outcome.kind === "waiting") {
+          if (outcome.proposalRef === undefined || outcome.proposalArtifactRef === undefined)
+            throw new AgentRuntimeError(
+              makeAgentError({
+                code: "AGENT_INPUT_INVALID",
+                category: "input",
+                stage: "worker.proposal",
+                taskRef,
+                actionId,
+              }),
+            );
+          throwLeaseFailure();
+          currentTask = await this.#options.store.completeAction({
+            taskRef,
+            workerId: claim.workerId,
+            leaseToken: claim.leaseToken,
+            actionId,
+            resultArtifactRef: outcome.resultArtifactRef ?? evidenceRef,
+            usage,
+            activeWallClockMs: activeActionWallClockMs(),
+            now: this.#now(),
+          });
+          intentRecorded = false;
+          clearAction();
+          await this.#options.store.markWaiting({
+            taskRef,
+            workerId: claim.workerId,
+            leaseToken: claim.leaseToken,
+            proposalRef: outcome.proposalRef,
+            proposalArtifactRef: outcome.proposalArtifactRef,
             now: this.#now(),
           });
           return;
         }
-      }
-      if (outcome.kind === "waiting") {
-        if (outcome.proposalRef === undefined || outcome.proposalArtifactRef === undefined)
+        if (outcome.kind === "completed") {
+          if (actionType === "model-invocation") {
+            if (finalizedResult === undefined)
+              throw new AgentRuntimeError(
+                makeAgentError({
+                  code: "AGENT_INPUT_INVALID",
+                  category: "input",
+                  stage: "worker.result.finalizer",
+                  taskRef,
+                  actionId,
+                }),
+              );
+            const resultRef = primaryReferenceFromAgentTaskResult(finalizedResult);
+            currentTask = await this.#options.store.completeAction({
+              taskRef,
+              workerId: claim.workerId,
+              leaseToken: claim.leaseToken,
+              actionId,
+              resultRef,
+              resultArtifactRef: outcome.resultArtifactRef ?? evidenceRef,
+              usage,
+              activeWallClockMs: activeActionWallClockMs(),
+              now: this.#now(),
+            });
+            intentRecorded = false;
+            clearAction();
+            await this.#options.store.completeTask({
+              taskRef,
+              workerId: claim.workerId,
+              leaseToken: claim.leaseToken,
+              resultRef: finalizedResult,
+              now: this.#now(),
+            });
+            return;
+          }
+          if (outcome.resultRef === undefined)
+            throw new AgentRuntimeError(
+              makeAgentError({
+                code: "AGENT_INPUT_INVALID",
+                category: "input",
+                stage: "worker.result",
+                taskRef,
+                actionId,
+              }),
+            );
+          throwLeaseFailure();
+          currentTask = await this.#options.store.completeAction({
+            taskRef,
+            workerId: claim.workerId,
+            leaseToken: claim.leaseToken,
+            actionId,
+            resultRef: outcome.resultRef,
+            resultArtifactRef: outcome.resultArtifactRef ?? evidenceRef,
+            usage,
+            activeWallClockMs: activeActionWallClockMs(),
+            now: this.#now(),
+          });
+          intentRecorded = false;
+          clearAction();
+          const result = buildCompletedAgentTaskResult(
+            taskRef,
+            outcome.resultRef,
+            undefined,
+            definition.metadata.resultFamilies,
+          );
+          await this.#options.store.completeTask({
+            taskRef,
+            workerId: claim.workerId,
+            leaseToken: claim.leaseToken,
+            resultRef: result,
+            now: this.#now(),
+          });
+          return;
+        }
+        if (outcome.kind === "tool-request")
           throw new AgentRuntimeError(
             makeAgentError({
               code: "AGENT_INPUT_INVALID",
               category: "input",
-              stage: "worker.proposal",
+              stage: "worker.tool-request.action",
               taskRef,
               actionId,
             }),
           );
+        const failure =
+          outcome.error ??
+          makeAgentError({
+            code: outcome.kind === "uncertain" ? "AGENT_ACTION_UNCERTAIN" : "AGENT_MODEL_FAILURE",
+            category: outcome.kind === "uncertain" ? "action" : "model",
+            retryable: outcome.kind !== "uncertain",
+            stage: "worker.outcome",
+            taskRef,
+            actionId,
+          });
         throwLeaseFailure();
-        await this.#options.store.completeAction({
+        await this.#options.store.failAction({
           taskRef,
           workerId: claim.workerId,
           leaseToken: claim.leaseToken,
           actionId,
-          resultArtifactRef: outcome.resultArtifactRef ?? evidenceRef,
+          error: failure,
+          resultArtifactRef: evidenceRef,
           usage,
           activeWallClockMs: activeActionWallClockMs(),
           now: this.#now(),
         });
-        await this.#options.store.markWaiting({
+        await this.#options.store.releaseLease({
           taskRef,
           workerId: claim.workerId,
           leaseToken: claim.leaseToken,
-          proposalRef: outcome.proposalRef,
-          proposalArtifactRef: outcome.proposalArtifactRef,
+          status: "released",
           now: this.#now(),
         });
         return;
       }
-      if (outcome.kind === "completed") {
-        if (outcome.resultRef === undefined)
-          throw new AgentRuntimeError(
-            makeAgentError({
-              code: "AGENT_INPUT_INVALID",
-              category: "input",
-              stage: "worker.result",
-              taskRef,
-              actionId,
-            }),
-          );
-        throwLeaseFailure();
-        await this.#options.store.completeAction({
-          taskRef,
-          workerId: claim.workerId,
-          leaseToken: claim.leaseToken,
-          actionId,
-          resultRef: outcome.resultRef,
-          resultArtifactRef: outcome.resultArtifactRef ?? evidenceRef,
-          usage,
-          activeWallClockMs: activeActionWallClockMs(),
-          now: this.#now(),
-        });
-        const result = buildCompletedAgentTaskResult(
-          taskRef,
-          outcome.resultRef,
-          undefined,
-          definition.metadata.resultFamilies,
-        );
-        await this.#options.store.completeTask({
-          taskRef,
-          workerId: claim.workerId,
-          leaseToken: claim.leaseToken,
-          resultRef: result,
-          now: this.#now(),
-        });
-        return;
-      }
-      const failure =
-        outcome.error ??
-        makeAgentError({
-          code: outcome.kind === "uncertain" ? "AGENT_ACTION_UNCERTAIN" : "AGENT_MODEL_FAILURE",
-          category: outcome.kind === "uncertain" ? "action" : "model",
-          retryable: outcome.kind !== "uncertain",
-          stage: "worker.outcome",
-          taskRef,
-          actionId,
-        });
-      throwLeaseFailure();
-      await this.#options.store.failAction({
-        taskRef,
-        workerId: claim.workerId,
-        leaseToken: claim.leaseToken,
-        actionId,
-        error: failure,
-        resultArtifactRef: evidenceRef,
-        usage,
-        activeWallClockMs: activeActionWallClockMs(),
-        now: this.#now(),
-      });
-      await this.#options.store.releaseLease({
-        taskRef,
-        workerId: claim.workerId,
-        leaseToken: claim.leaseToken,
-        status: "released",
-        now: this.#now(),
-      });
     } catch (error) {
       if (leaseMonitor !== undefined) await leaseMonitor.stop().catch(() => undefined);
       const failure = wallClockExceeded

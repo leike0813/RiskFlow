@@ -49,4 +49,4 @@
 - [x] 7.2 运行 `pnpm lint`、`pnpm typecheck`、`pnpm test`、`pnpm build`，记录任何非 C08 基线失败。
 - [x] 7.3 运行 `openspec validate deliver-unified-bounded-agent-runtime --strict --no-interactive`。
 - [x] 7.4 运行 `git diff --check` 并确认没有修改生产实现、归档内容或无关文件。
-- [ ] 7.5 按项目 OpenSpec 流程执行独立 verify；只有实现任务全部完成、验证通过且主调度授权后才进入归档与 Git 检查点。
+- [x] 7.5 按项目 OpenSpec 流程执行独立 verify；只有实现任务全部完成、验证通过且主调度授权后才进入归档与 Git 检查点。

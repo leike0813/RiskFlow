@@ -107,7 +107,7 @@ C05 只提供 `completeStructured`、`embed`、`streamConversation`，没有工�
 
 ### 8. PostgreSQL 只保存运行时所需事实
 
-迁移归属 `agent-task/deliver-unified-bounded-agent-runtime/000005_agent_task_runtime.ts`，在现有 `business` schema 中建立最小表集：
+迁移归属 `agent-task/deliver-unified-bounded-agent-runtime/000005_agent_task_runtime.ts` 与 `000006_agent_proposal_artifact_ref.ts`，在现有 `business` schema 中建立最小表集：
 
 | 表 | 用途与关键约束 |
 |---|---|
@@ -161,6 +161,7 @@ Core 只依赖 contracts、Zod 和传入端口，不依赖 PostgreSQL、C05 HTTP
 - `packages/adapters/src/agent-runtime/postgres-agent-task-adapter.ts`
 - `packages/adapters/src/agent-runtime/index.ts`
 - `packages/adapters/src/postgres/migrations/agent-task/deliver-unified-bounded-agent-runtime/000005_agent_task_runtime.ts`
+- `packages/adapters/src/postgres/migrations/agent-task/deliver-unified-bounded-agent-runtime/000006_agent_proposal_artifact_ref.ts`
 - `packages/adapters/test/agent-runtime/postgres-agent-task-adapter.test.ts`
 - 对应迁移 fixture
 
@@ -218,7 +219,7 @@ Worker 只负责 claim/lease/execute/cancel/recovery，不包含下游业务 Sch
 ## Migration plan
 
 1. 前置确认 C03–C07 已归档，C05/C06 公共接口与迁移 `000001`–`000004` 保持一致。
-2. 主调度确认 `000005` 迁移号和共享包文件所有权。
+2. 主调度确认 `000005`、`000006` 迁移号和共享包文件所有权。
 3. 先实现 Core DTO、状态、预算和任务定义注册，再实现 migration/adapter，最后接入 Worker。
 4. 下游 C15/C17/C19/C21/C27/C29 分别注册自己的定义；在此之前 C08 可以独立完成合同和恢复测试，但不会创建模拟业务定义作为生产默认值。
 5. 完成相关 package 测试和全仓验证后，使用项目 OpenSpec apply/verify/archive 流程；本规划 change 不执行实现、归档或提交。

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   AgentTaskDefinitionRegistry,
   AgentRuntimeError,
+  buildCompletedAgentTaskResult,
   emptyAgentBudgetUsage,
   makeAgentError,
   type AgentTaskDefinitionV1,
@@ -10,6 +11,8 @@ import {
   type AgentTaskSnapshotV1,
 } from "@riskflow/core/agent-runtime";
 import { z } from "@riskflow/core/model";
+import type { ModelGatewayPortV1 } from "@riskflow/core/model";
+import type { ArtifactStoreV1 } from "@riskflow/core/artifacts";
 import type { AgentTaskActionV1 } from "@riskflow/core/agent-runtime";
 import type { AgentTaskRefV1 } from "@riskflow/contracts/ports";
 import { AgentRuntimeRunner } from "../../src/agent-runtime/index.js";
@@ -30,15 +33,96 @@ const taskRef: AgentTaskRefV1 = {
 
 const task = {
   envelope: {
+    schemaVersion: "1",
     agentTaskRef: taskRef,
     commandId: "command-1",
+    idempotencyKey: "task-idempotency-1",
+    taskType: "data-cleaning",
+    triggerMode: "embedded",
     projectId: "project-1",
     actorId: "actor-1",
-    authorization: { grantedCapabilities: ["agent-task.start"] },
+    parentRunRef: {
+      kind: "workflow-run",
+      reference: { entityId: "run-1", versionId: "1" },
+    },
+    frozenInputRef: {
+      kind: "content-artifact",
+      reference: { entityId: "input", versionId: `sha256:${"a".repeat(64)}` },
+    },
+    modelDeploymentRef: taskRef.modelDeploymentRef,
+    promptTemplateRef: taskRef.promptTemplateRef,
+    toolPolicyRef: taskRef.toolPolicyRef,
+    budgetPolicyRef: taskRef.budgetPolicyRef,
+    incrementSchemaRef: taskRef.incrementSchemaRef,
+    validationPolicyRef: taskRef.validationPolicyRef,
+    authorization: {
+      schemaVersion: "1",
+      authorizationContextRef: {
+        kind: "authorization-context",
+        reference: { entityId: "authorization", versionId: "1" },
+      },
+      actorId: "actor-1",
+      projectId: "project-1",
+      grantedCapabilities: ["agent-task.start"],
+      spatialScopeRefs: [],
+      sourceAccessGrantRefs: [],
+      authorizationPolicyRef: { entityId: "authorization-policy", versionId: "1" },
+      decidedAt: "2030-01-01T00:00:00.000Z",
+      invocation: { kind: "human" },
+    },
+    frozenAuthorization: {
+      schemaVersion: "1",
+      authorizationContextRef: {
+        kind: "authorization-context",
+        reference: { entityId: "authorization", versionId: "1" },
+      },
+      actorId: "actor-1",
+      projectId: "project-1",
+      grantedCapabilities: ["agent-task.start"],
+      spatialScopeRefs: [],
+      sourceAccessGrantRefs: [],
+      authorizationPolicyRef: { entityId: "authorization-policy", versionId: "1" },
+      capturedAt: "2030-01-01T00:00:00.000Z",
+    },
+    createdAt: "2030-01-01T00:00:00.000Z",
   },
-  state: { latestCandidateVersion: 0 },
-  budgetPolicy: { maxWallClockMs: 1_000 },
-  budgetLedger: { activeWallClockMs: 0 },
+  state: {
+    schemaVersion: "1",
+    agentTaskRef: taskRef,
+    status: "running",
+    taskVersion: 2,
+    cancelRequested: false,
+    latestCandidateVersion: 0,
+    updatedAt: "2030-01-01T00:00:00.000Z",
+  },
+  budgetPolicy: {
+    schemaVersion: "1",
+    policyRef: taskRef.budgetPolicyRef,
+    modelDeploymentRef: taskRef.modelDeploymentRef,
+    promptTemplateRef: taskRef.promptTemplateRef,
+    toolPolicyRef: taskRef.toolPolicyRef,
+    maxModelInvocations: 2,
+    maxToolInvocations: 1,
+    maxContextTokens: 100,
+    maxInputBytes: 1_000,
+    maxOutputBytes: 1_000,
+    maxCandidates: 1,
+    maxObjects: 1,
+    maxSupplementarySearches: 0,
+    maxCorrections: 0,
+    maxTransientRetries: 0,
+    maxConcurrentActions: 1,
+    maxWallClockMs: 1_000,
+  },
+  budgetLedger: {
+    schemaVersion: "1",
+    reserved: emptyAgentBudgetUsage(),
+    used: emptyAgentBudgetUsage(),
+    activeWallClockMs: 0,
+    currentConcurrency: 0,
+    ledgerVersion: 1,
+    changedAt: "2030-01-01T00:00:00.000Z",
+  },
 } as unknown as AgentTaskSnapshotV1;
 const toolRef = { entityId: "cleaning-tool", versionId: "1" };
 const definition = (
@@ -84,10 +168,12 @@ const definition = (
   tools: [
     {
       toolRef,
+      budgetUsage: {},
       execute: async (_input, context) => execute(context.signal!),
       ...(recover === undefined ? {} : { recover }),
     },
   ],
+  measureCandidateUsage: () => ({ candidates: 1, objects: 1 }),
   validateCandidate: () => ({
     schemaVersion: "1",
     items: [],
@@ -98,6 +184,8 @@ const definition = (
     },
     validatedAt: "2030-01-01T00:00:00.000Z",
   }),
+  finalizeCandidate: (_candidate, context) =>
+    buildCompletedAgentTaskResult(context.envelope.agentTaskRef, artifact),
 });
 
 const claim: AgentTaskClaimV1 = {
@@ -121,6 +209,18 @@ const artifact = {
   kind: "content-artifact" as const,
   reference: { entityId: "cleaned", versionId: `sha256:${"a".repeat(64)}` },
 };
+const recoveryIntent = new TextEncoder().encode(
+  JSON.stringify({ toolRef, input: { operation: "candidate" } }),
+);
+const recoveryArtifactStore = {
+  open: async () => ({
+    manifest: {} as never,
+    content: (async function* () {
+      yield recoveryIntent;
+    })(),
+    verified: Promise.resolve({} as never),
+  }),
+} as unknown as ArtifactStoreV1;
 
 const makeStore = (overrides: Record<string, unknown> = {}) => {
   const calls: string[] = [];
@@ -138,9 +238,25 @@ const makeStore = (overrides: Record<string, unknown> = {}) => {
     async findAction() {
       return undefined;
     },
-    async reserveAction() {
+    async reserveAction(input: {
+      actionId: string;
+      reservationId: string;
+      actionType: AgentTaskActionV1["actionType"];
+      amount?: Partial<typeof reservation.amount>;
+    }) {
       calls.push("reserve");
-      return { task, reservation };
+      const amount = { ...emptyAgentBudgetUsage(), ...input.amount };
+      if (input.actionType === "model-invocation") amount.modelInvocations = 1;
+      if (input.actionType === "domain-tool") amount.toolInvocations = 1;
+      return {
+        task,
+        reservation: {
+          ...reservation,
+          reservationId: input.reservationId,
+          actionId: input.actionId,
+          amount,
+        },
+      };
     },
     async heartbeat() {
       calls.push("heartbeat");
@@ -360,12 +476,192 @@ describe("agent runtime worker", () => {
         ),
       ]),
       persistArtifact: async () => artifact,
+      artifactStore: recoveryArtifactStore,
       now: () => "2030-01-01T00:00:01.000Z",
     });
     expect(await runner.runOnce()).toBe(1);
-    expect(recoverStep).toHaveBeenCalledOnce();
+    expect(recoverStep).toHaveBeenCalledWith(
+      { operation: "candidate" },
+      expect.objectContaining({ actionId: reservation.actionId }),
+    );
     expect(store.calls).toContain("complete-action");
     expect(store.calls).toContain("complete-task");
+  });
+
+  it("returns a read-only tool observation to the model before finalizing", async () => {
+    const actionRef = {
+      kind: "diagnostic-artifact" as const,
+      reference: { entityId: "raw-model-response", versionId: `sha256:${"b".repeat(64)}` },
+    };
+    const gateway = {
+      completeStructured: vi.fn(async (request) => ({
+        schemaVersion: "1" as const,
+        invocationId: request.invocationId,
+        modelDeploymentRef: request.modelDeploymentRef,
+        serverBuildRef: { entityId: "server", versionId: "1" },
+        modelVersionRef: { entityId: "model-version", versionId: "1" },
+        usage: { available: true, inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        rawResponseRef: actionRef,
+        promptTemplateRef: request.promptTemplateRef,
+        outputSchemaRef: request.outputSchemaRef,
+        value: { operation: "candidate" },
+        finishReason: "stop" as const,
+      })),
+    } as unknown as ModelGatewayPortV1;
+    const executeStep = vi.fn(async () => ({
+      observationArtifactRef: artifact,
+      effect: "none" as const,
+    }));
+    const interpretModelStep = vi
+      .fn()
+      .mockReturnValueOnce({
+        kind: "tool-request",
+        toolRef,
+        toolInput: { operation: "candidate" },
+      })
+      .mockReturnValueOnce({
+        kind: "completed",
+        candidate: {
+          schemaVersion: "1",
+          taskRef,
+          candidateVersion: 1,
+          parentCandidateVersion: 0,
+          candidateArtifactRef: artifact,
+          incrementArtifactRef: artifact,
+          disposition: "pending",
+          createdAt: "2030-01-01T00:00:02.000Z",
+        },
+        candidatePayload: { operation: "candidate" },
+        increment: { operation: "candidate" },
+      });
+    const renderModelStep = vi.fn(() => ({
+      messages: [{ role: "user" as const, content: "continue" }],
+      maxOutputTokens: 1,
+    }));
+    const store = makeStore();
+    const runner = new AgentRuntimeRunner({
+      store,
+      registry: new AgentTaskDefinitionRegistry([definition(executeStep)]),
+      workerId: "worker-1",
+      leaseDurationMs: 30_000,
+      maxConcurrentTasks: 1,
+      modelGateway: gateway,
+      renderModelStep,
+      interpretModelStep,
+      persistArtifact: async () => artifact,
+      now: () => "2030-01-01T00:00:01.000Z",
+    });
+
+    expect(await runner.runOnce()).toBe(1);
+    expect(gateway.completeStructured).toHaveBeenCalledTimes(2);
+    expect(executeStep).toHaveBeenCalledOnce();
+    expect(renderModelStep.mock.calls[1]?.[2]).toEqual({
+      previousObservationArtifactRef: artifact,
+    });
+    expect(store.calls.filter((call) => call === "complete-action")).toHaveLength(3);
+    expect(store.calls).toContain("candidate");
+    expect(store.calls).toContain("complete-task");
+  });
+
+  it("propagates the caller abort signal to the active tool", async () => {
+    const controller = new AbortController();
+    const executeStep = vi.fn(
+      (received: AbortSignal) =>
+        new Promise<AgentDomainToolResultV1>((_resolve, reject) => {
+          received.addEventListener(
+            "abort",
+            () => reject(new DOMException("cancelled", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+    const store = makeStore();
+    const runner = new AgentRuntimeRunner({
+      store,
+      registry: new AgentTaskDefinitionRegistry([definition(executeStep)]),
+      workerId: "worker-1",
+      leaseDurationMs: 30_000,
+      maxConcurrentTasks: 1,
+      renderModelStep: () => ({
+        messages: [],
+        maxOutputTokens: 1,
+        domainTool: { toolRef, input: { operation: "candidate" } },
+      }),
+      persistArtifact: async () => artifact,
+      now: () => "2030-01-01T00:00:01.000Z",
+    });
+
+    const running = runner.runOnce(controller.signal);
+    await vi.waitFor(() => expect(executeStep).toHaveBeenCalledOnce());
+    controller.abort();
+    expect(await running).toBe(1);
+    expect(store.calls).toContain("fail");
+    expect(store.calls).toContain("release");
+  });
+
+  it("aborts and records an action that reaches the hard wall-clock limit", async () => {
+    const timeoutTask = {
+      ...task,
+      budgetPolicy: { ...task.budgetPolicy, maxWallClockMs: 20 },
+    } as AgentTaskSnapshotV1;
+    const timeoutClaim = { ...claim, task: timeoutTask };
+    let capturedFailure:
+      | { readonly error: { readonly code: string }; readonly activeWallClockMs?: number }
+      | undefined;
+    const store = makeStore({
+      async claim() {
+        return timeoutClaim;
+      },
+      async reserveAction(input: {
+        actionId: string;
+        reservationId: string;
+        actionType: AgentTaskActionV1["actionType"];
+        amount?: Partial<typeof reservation.amount>;
+      }) {
+        const amount = { ...emptyAgentBudgetUsage(), ...input.amount, toolInvocations: 1 };
+        return {
+          task: timeoutTask,
+          reservation: {
+            ...reservation,
+            reservationId: input.reservationId,
+            actionId: input.actionId,
+            amount,
+          },
+        };
+      },
+      async failAction(input: typeof capturedFailure) {
+        capturedFailure = input;
+        return timeoutTask;
+      },
+    });
+    const executeStep = vi.fn(
+      (received: AbortSignal) =>
+        new Promise<AgentDomainToolResultV1>((_resolve, reject) => {
+          received.addEventListener(
+            "abort",
+            () => reject(new DOMException("timeout", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+    const runner = new AgentRuntimeRunner({
+      store,
+      registry: new AgentTaskDefinitionRegistry([definition(executeStep)]),
+      workerId: "worker-1",
+      leaseDurationMs: 30_000,
+      maxConcurrentTasks: 1,
+      renderModelStep: () => ({
+        messages: [],
+        maxOutputTokens: 1,
+        domainTool: { toolRef, input: { operation: "candidate" } },
+      }),
+      persistArtifact: async () => artifact,
+      now: () => "2030-01-01T00:00:01.000Z",
+    });
+
+    expect(await runner.runOnce()).toBe(1);
+    expect(capturedFailure?.error.code).toBe("AGENT_WALL_CLOCK_EXCEEDED");
+    expect(capturedFailure?.activeWallClockMs).toBeGreaterThanOrEqual(20);
   });
 
   it("does not leave an unauthorized claim retrying forever", async () => {

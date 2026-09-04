@@ -302,6 +302,7 @@ export const settleAgentBudget = (
   actualInput: AgentBudgetUsageV1,
   now = nowIso(),
   activeWallClockMs = 0,
+  options: { readonly allowWallClockOverrun?: boolean } = {},
 ): AgentBudgetLedgerV1 => {
   const policy = AgentTaskBudgetPolicyV1Schema.parse(policyInput);
   const ledger = AgentBudgetLedgerV1Schema.parse(ledgerInput);
@@ -329,7 +330,10 @@ export const settleAgentBudget = (
   }
   if (!Number.isSafeInteger(activeWallClockMs) || activeWallClockMs < 0)
     throwAgentError({ code: "AGENT_INPUT_INVALID", category: "input", stage: "budget.wall-clock" });
-  if (ledger.activeWallClockMs + activeWallClockMs > policy.maxWallClockMs)
+  if (
+    !options.allowWallClockOverrun &&
+    ledger.activeWallClockMs + activeWallClockMs > policy.maxWallClockMs
+  )
     throwAgentError({
       code: "AGENT_WALL_CLOCK_EXCEEDED",
       category: "budget",
@@ -421,11 +425,18 @@ export interface AgentDomainToolExecutionContextV1 {
 
 export interface AgentDomainToolV1<TInput = unknown> {
   readonly toolRef: VersionReference;
+  readonly budgetUsage: Partial<
+    Pick<
+      AgentBudgetUsageV1,
+      "objects" | "supplementarySearches" | "corrections" | "transientRetries"
+    >
+  >;
   execute(
     input: TInput,
     context: AgentDomainToolExecutionContextV1,
   ): Promise<AgentDomainToolResultV1>;
   recover?(
+    input: TInput,
     context: AgentDomainToolExecutionContextV1,
   ): Promise<AgentDomainToolResultV1 | undefined>;
 }
@@ -437,11 +448,15 @@ export interface AgentTaskDefinitionV1<TAction = unknown, TCandidate = unknown> 
   readonly incrementSchema: z.ZodType<unknown>;
   readonly candidateSchema: z.ZodType<TCandidate>;
   readonly tools: readonly AgentDomainToolV1[];
+  readonly measureCandidateUsage: (
+    candidate: TCandidate,
+    context: AgentTaskSnapshotV1,
+  ) => Partial<Pick<AgentBudgetUsageV1, "candidates" | "objects" | "corrections">>;
   readonly validateCandidate: (
     candidate: TCandidate,
     context: AgentTaskSnapshotV1,
   ) => Promise<AgentValidationResultV1> | AgentValidationResultV1;
-  readonly finalizeCandidate?: (
+  readonly finalizeCandidate: (
     candidate: TCandidate,
     context: AgentTaskSnapshotV1,
   ) => Promise<AgentTaskResultRefV1> | AgentTaskResultRefV1;
@@ -499,9 +514,18 @@ export class AgentTaskDefinitionRegistry {
         category: "idempotency",
         stage: "registry.duplicate",
       });
+    const tools = definition.tools.map((tool) =>
+      Object.freeze({
+        ...tool,
+        toolRef: { ...tool.toolRef },
+        budgetUsage: AgentBudgetUsageV1Schema.partial()
+          .strict()
+          .parse(tool.budgetUsage) as AgentDomainToolV1["budgetUsage"],
+      }),
+    );
     this.#definitions.set(
       metadata.taskType,
-      Object.freeze({ ...definition, metadata, budgetPolicy: policy }),
+      Object.freeze({ ...definition, metadata, budgetPolicy: policy, tools }),
     );
   }
 
@@ -1101,4 +1125,25 @@ export const buildCompletedAgentTaskResult = (
     ...(validationRef === undefined ? {} : { validationRef }),
   };
   return AgentTaskResultRefV1Schema.parse(result);
+};
+export const primaryReferenceFromAgentTaskResult = (
+  result: AgentTaskResultRefV1,
+): ContractReferenceV1 => {
+  if (result.status !== "completed")
+    throwAgentError({
+      code: "AGENT_INPUT_INVALID",
+      category: "input",
+      stage: "result.primary-reference",
+      taskRef: result.agentTaskRef,
+    });
+  if ("incrementRef" in result && result.incrementRef !== undefined) return result.incrementRef;
+  if ("candidateRef" in result && result.candidateRef !== undefined) return result.candidateRef;
+  if ("formalResultRef" in result && result.formalResultRef !== undefined)
+    return result.formalResultRef;
+  return throwAgentError({
+    code: "AGENT_INPUT_INVALID",
+    category: "input",
+    stage: "result.primary-reference",
+    taskRef: result.agentTaskRef,
+  });
 };

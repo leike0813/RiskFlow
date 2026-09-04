@@ -149,7 +149,8 @@ const base64Url = (value: Uint8Array): string => Buffer.from(value).toString("ba
 const fromBase64Url = (value: string): Buffer | undefined => {
   if (!/^[A-Za-z0-9_-]+$/.test(value)) return undefined;
   try {
-    return Buffer.from(value, "base64url");
+    const decoded = Buffer.from(value, "base64url");
+    return decoded.toString("base64url") === value ? decoded : undefined;
   } catch {
     return undefined;
   }

@@ -44,7 +44,9 @@ export interface ModelGatewayPortV1 {
 
 export interface ModelGatewayModuleErrorContextV1 {
   readonly causalRunId: string;
-  readonly requiredCapability: z.infer<typeof import("@riskflow/contracts/ports").ModuleCapabilityV1Schema>;
+  readonly requiredCapability: z.infer<
+    typeof import("@riskflow/contracts/ports").ModuleCapabilityV1Schema
+  >;
   readonly authorizationPolicyRef: z.infer<typeof VersionReferenceSchema>;
   readonly attempt?: number;
   readonly retryPolicyRef?: z.infer<typeof VersionReferenceSchema>;

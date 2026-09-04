@@ -162,16 +162,26 @@ export const ConversationTextDeltaV1Schema = z.strictObject({
 });
 export type ConversationTextDeltaV1 = z.infer<typeof ConversationTextDeltaV1Schema>;
 
-export const ModelDeploymentSnapshotV1Schema = z.strictObject({
-  schemaVersion: z.literal("1"),
-  deploymentRef: VersionReferenceSchema,
-  serverBuildRef: VersionReferenceSchema,
-  modelVersionRef: VersionReferenceSchema,
-  capabilities: z.array(ModelCapabilityV1Schema).min(1),
-  contextWindowTokens: positiveSafeInteger,
-  embeddingDimensions: positiveSafeInteger.optional(),
-  observedAt: IsoDateTimeSchema,
-});
+export const ModelDeploymentSnapshotV1Schema = z
+  .strictObject({
+    schemaVersion: z.literal("1"),
+    deploymentRef: VersionReferenceSchema,
+    serverBuildRef: VersionReferenceSchema,
+    modelVersionRef: VersionReferenceSchema,
+    capabilities: z.array(ModelCapabilityV1Schema).min(1),
+    contextWindowTokens: positiveSafeInteger,
+    embeddingDimensions: positiveSafeInteger.optional(),
+    observedAt: IsoDateTimeSchema,
+  })
+  .superRefine((value, context) => {
+    if (value.capabilities.includes("embed") !== (value.embeddingDimensions !== undefined)) {
+      context.addIssue({
+        code: "custom",
+        path: ["embeddingDimensions"],
+        message: "embedding dimensions must match the declared capability",
+      });
+    }
+  });
 export type ModelDeploymentSnapshotV1 = z.infer<typeof ModelDeploymentSnapshotV1Schema>;
 
 const resultBase = {
@@ -206,11 +216,21 @@ export type StructuredCompletionResultV1<T> = {
   readonly finishReason: "stop";
 };
 
-export const EmbeddingResultV1Schema = z.strictObject({
-  ...resultBase,
-  vectors: z.array(z.array(z.number().refine(Number.isFinite))).min(1),
-  dimensions: positiveSafeInteger,
-});
+export const EmbeddingResultV1Schema = z
+  .strictObject({
+    ...resultBase,
+    vectors: z.array(z.array(z.number().refine(Number.isFinite))).min(1),
+    dimensions: positiveSafeInteger,
+  })
+  .superRefine((value, context) => {
+    if (value.vectors.some((vector) => vector.length !== value.dimensions)) {
+      context.addIssue({
+        code: "custom",
+        path: ["vectors"],
+        message: "all vectors must match the declared dimensions",
+      });
+    }
+  });
 export type EmbeddingResultV1 = z.infer<typeof EmbeddingResultV1Schema>;
 
 export const ConversationReceiptV1Schema = z.strictObject({
@@ -276,21 +296,31 @@ export const ModelGatewayErrorCountsV1Schema = z.strictObject({
 });
 export type ModelGatewayErrorCountsV1 = z.infer<typeof ModelGatewayErrorCountsV1Schema>;
 
-export const ModelGatewayErrorV1Schema = z.strictObject({
-  schemaVersion: z.literal("1"),
-  code: ModelGatewayErrorCodeV1Schema,
-  category: ModelGatewayErrorCategoryV1Schema,
-  retryable: z.boolean(),
-  stage: IdentifierSchema,
-  occurredAt: IsoDateTimeSchema,
-  invocationId: IdentifierSchema,
-  modelDeploymentRef: VersionReferenceSchema,
-  rawResponseRef: DiagnosticArtifactRefV1Schema.optional(),
-  diagnosticRef: DiagnosticArtifactRefV1Schema.optional(),
-  counts: ModelGatewayErrorCountsV1Schema.optional(),
-  idempotencyKey: IdentifierSchema.optional(),
-  priorCommandId: IdentifierSchema.optional(),
-});
+export const ModelGatewayErrorV1Schema = z
+  .strictObject({
+    schemaVersion: z.literal("1"),
+    code: ModelGatewayErrorCodeV1Schema,
+    category: ModelGatewayErrorCategoryV1Schema,
+    retryable: z.boolean(),
+    stage: IdentifierSchema,
+    occurredAt: IsoDateTimeSchema,
+    invocationId: IdentifierSchema,
+    modelDeploymentRef: VersionReferenceSchema,
+    rawResponseRef: DiagnosticArtifactRefV1Schema.optional(),
+    diagnosticRef: DiagnosticArtifactRefV1Schema.optional(),
+    counts: ModelGatewayErrorCountsV1Schema.optional(),
+    idempotencyKey: IdentifierSchema.optional(),
+    priorCommandId: IdentifierSchema.optional(),
+  })
+  .superRefine((value, context) => {
+    if (value.category !== MODEL_GATEWAY_ERROR_CATEGORY_V1[value.code]) {
+      context.addIssue({
+        code: "custom",
+        path: ["category"],
+        message: "error category must match the error code",
+      });
+    }
+  });
 export type ModelGatewayErrorV1 = z.infer<typeof ModelGatewayErrorV1Schema>;
 
 export const MODEL_GATEWAY_ERROR_CATEGORY_V1: Readonly<
@@ -326,8 +356,7 @@ export const modelGatewayError = (
     ...details,
     schemaVersion: "1",
     category:
-      details.category ??
-      MODEL_GATEWAY_ERROR_CATEGORY_V1[details.code as ModelGatewayErrorCodeV1],
+      details.category ?? MODEL_GATEWAY_ERROR_CATEGORY_V1[details.code as ModelGatewayErrorCodeV1],
   });
 
 export const makeModelGatewayError = modelGatewayError;

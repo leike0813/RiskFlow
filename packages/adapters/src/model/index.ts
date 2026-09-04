@@ -5,6 +5,8 @@ export {
   type LlamaCppModelGatewayOptionsV1,
   type ModelGatewayObservationV1,
   type ModelGatewayObserverV1,
+  type ParentArtifactPreflightRequestV1,
+  type ParentArtifactPreflightV1,
 } from "./llamacpp-model-gateway.js";
 export {
   freezeLlamaCppDeploymentConfig,

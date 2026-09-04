@@ -6,13 +6,13 @@ import {
   emptyAgentBudgetUsage,
   makeAgentError,
   type AgentTaskDefinitionV1,
+  type AgentDomainToolResultV1,
   type AgentTaskSnapshotV1,
-  type AgentStructuredErrorV1,
 } from "@riskflow/core/agent-runtime";
 import { z } from "@riskflow/core/model";
 import type { AgentTaskActionV1 } from "@riskflow/core/agent-runtime";
 import type { AgentTaskRefV1 } from "@riskflow/contracts/ports";
-import { AgentRuntimeRunner, type AgentStepOutcomeV1 } from "../../src/agent-runtime/index.js";
+import { AgentRuntimeRunner } from "../../src/agent-runtime/index.js";
 import type { AgentTaskClaimV1, AgentTaskExecutionStoreV1 } from "@riskflow/adapters/agent-runtime";
 
 const taskRef: AgentTaskRefV1 = {
@@ -29,10 +29,25 @@ const taskRef: AgentTaskRefV1 = {
 };
 
 const task = {
-  envelope: { agentTaskRef: taskRef },
+  envelope: {
+    agentTaskRef: taskRef,
+    commandId: "command-1",
+    projectId: "project-1",
+    actorId: "actor-1",
+    authorization: { grantedCapabilities: ["agent-task.start"] },
+  },
   state: { latestCandidateVersion: 0 },
+  budgetPolicy: { maxWallClockMs: 1_000 },
+  budgetLedger: { activeWallClockMs: 0 },
 } as unknown as AgentTaskSnapshotV1;
-const definition = (): AgentTaskDefinitionV1 => ({
+const toolRef = { entityId: "cleaning-tool", versionId: "1" };
+const definition = (
+  execute: (signal: AbortSignal) => Promise<AgentDomainToolResultV1> = async () => ({
+    observationArtifactRef: artifact,
+    effect: "uncertain",
+  }),
+  recover?: AgentTaskDefinitionV1["tools"][number]["recover"],
+): AgentTaskDefinitionV1 => ({
   metadata: {
     schemaVersion: "1",
     definitionRef: { entityId: "definition", versionId: "1" },
@@ -41,7 +56,7 @@ const definition = (): AgentTaskDefinitionV1 => ({
     incrementSchemaRef: taskRef.incrementSchemaRef,
     validationPolicyRef: taskRef.validationPolicyRef,
     supportedTriggerModes: ["embedded"],
-    allowedToolRefs: [],
+    allowedToolRefs: [toolRef],
     resultFamilies: ["content-artifact"],
   },
   budgetPolicy: {
@@ -66,7 +81,13 @@ const definition = (): AgentTaskDefinitionV1 => ({
   actionSchema: z.strictObject({ operation: z.literal("candidate") }),
   incrementSchema: z.strictObject({ operation: z.literal("candidate") }),
   candidateSchema: z.strictObject({ operation: z.literal("candidate") }),
-  tools: [],
+  tools: [
+    {
+      toolRef,
+      execute: async (_input, context) => execute(context.signal!),
+      ...(recover === undefined ? {} : { recover }),
+    },
+  ],
   validateCandidate: () => ({
     schemaVersion: "1",
     items: [],
@@ -156,27 +177,24 @@ describe("agent runtime worker", () => {
   it("propagates cancellation and records uncertain effects without retry", async () => {
     const store = makeStore();
     const signal = new AbortController().signal;
-    const executeStep = vi.fn(async ({ signal: received }: { signal: AbortSignal }) => {
+    const executeStep = vi.fn(async (received: AbortSignal) => {
       expect(received.aborted).toBe(false);
       return {
-        kind: "uncertain" as const,
-        error: makeAgentError({
-          code: "AGENT_ACTION_UNCERTAIN",
-          category: "action",
-          retryable: false,
-          stage: "test",
-          taskRef,
-          actionId: "agent-task:project-1:task-1:action:1",
-        }),
+        observationArtifactRef: artifact,
+        effect: "uncertain" as const,
       };
     });
     const runner = new AgentRuntimeRunner({
       store,
-      registry: new AgentTaskDefinitionRegistry([definition()]),
       workerId: "worker-1",
       leaseDurationMs: 30_000,
       maxConcurrentTasks: 1,
-      executeStep,
+      renderModelStep: () => ({
+        messages: [],
+        maxOutputTokens: 1,
+        domainTool: { toolRef, input: { operation: "candidate" } },
+      }),
+      registry: new AgentTaskDefinitionRegistry([definition(executeStep)]),
       persistArtifact: async () => artifact,
       now: () => "2030-01-01T00:00:01.000Z",
     });
@@ -198,7 +216,11 @@ describe("agent runtime worker", () => {
       workerId: "worker-1",
       leaseDurationMs: 30_000,
       maxConcurrentTasks: 1,
-      executeStep: vi.fn(),
+      renderModelStep: () => ({
+        messages: [],
+        maxOutputTokens: 1,
+        domainTool: { toolRef, input: { operation: "candidate" } },
+      }),
       persistArtifact,
       now: () => "2030-01-01T00:00:01.000Z",
     });
@@ -214,24 +236,10 @@ describe("agent runtime worker", () => {
   it("renews the lease while a tool action is running", async () => {
     const store = makeStore();
     const executeStep = vi.fn(
-      ({ signal: received }: { signal: AbortSignal }) =>
-        new Promise<{
-          readonly kind: "uncertain";
-          readonly error: AgentStructuredErrorV1;
-        }>((resolve, reject) => {
+      (received: AbortSignal) =>
+        new Promise<AgentDomainToolResultV1>((resolve, reject) => {
           const timer = setTimeout(
-            () =>
-              resolve({
-                kind: "uncertain",
-                error: makeAgentError({
-                  code: "AGENT_ACTION_UNCERTAIN",
-                  category: "action",
-                  retryable: false,
-                  stage: "test",
-                  taskRef,
-                  actionId: "agent-task:project-1:task-1:action:1",
-                }),
-              }),
+            () => resolve({ observationArtifactRef: artifact, effect: "uncertain" }),
             50,
           );
           received.addEventListener(
@@ -246,11 +254,15 @@ describe("agent runtime worker", () => {
     );
     const runner = new AgentRuntimeRunner({
       store,
-      registry: new AgentTaskDefinitionRegistry([definition()]),
       workerId: "worker-1",
       leaseDurationMs: 30,
       maxConcurrentTasks: 1,
-      executeStep,
+      renderModelStep: () => ({
+        messages: [],
+        maxOutputTokens: 1,
+        domainTool: { toolRef, input: { operation: "candidate" } },
+      }),
+      registry: new AgentTaskDefinitionRegistry([definition(executeStep)]),
       persistArtifact: async () => artifact,
       now: () => "2030-01-01T00:00:01.000Z",
     });
@@ -270,32 +282,26 @@ describe("agent runtime worker", () => {
       },
     });
     const executeStep = vi.fn(
-      ({ signal: received }: { signal: AbortSignal }) =>
-        new Promise<AgentStepOutcomeV1>((resolve) => {
+      (received: AbortSignal) =>
+        new Promise<AgentDomainToolResultV1>((resolve) => {
           received.addEventListener(
             "abort",
-            () =>
-              resolve({
-                kind: "uncertain",
-                error: makeAgentError({
-                  code: "AGENT_CANCELLED",
-                  category: "cancelled",
-                  retryable: false,
-                  stage: "test.cancelled",
-                  taskRef,
-                }),
-              }),
+            () => resolve({ observationArtifactRef: artifact, effect: "uncertain" }),
             { once: true },
           );
         }),
     );
     const runner = new AgentRuntimeRunner({
       store,
-      registry: new AgentTaskDefinitionRegistry([definition()]),
       workerId: "worker-1",
       leaseDurationMs: 30,
       maxConcurrentTasks: 1,
-      executeStep,
+      renderModelStep: () => ({
+        messages: [],
+        maxOutputTokens: 1,
+        domainTool: { toolRef, input: { operation: "candidate" } },
+      }),
+      registry: new AgentTaskDefinitionRegistry([definition(executeStep)]),
       persistArtifact: async () => artifact,
       now: () => "2030-01-01T00:00:01.000Z",
     });
@@ -311,19 +317,16 @@ describe("agent runtime worker", () => {
         return { status: "completed", resultRef: artifact } as AgentTaskActionV1;
       },
     });
-    const executeStep = vi.fn();
     const runner = new AgentRuntimeRunner({
       store,
       registry: new AgentTaskDefinitionRegistry([definition()]),
       workerId: "worker-1",
       leaseDurationMs: 30_000,
       maxConcurrentTasks: 1,
-      executeStep,
       persistArtifact: async () => artifact,
       now: () => "2030-01-01T00:00:01.000Z",
     });
     expect(await runner.runOnce()).toBe(1);
-    expect(executeStep).not.toHaveBeenCalled();
     expect(store.calls).toContain("complete-task");
   });
   it("recovers an idempotent started action through the recovery port", async () => {
@@ -331,29 +334,36 @@ describe("agent runtime worker", () => {
       async findAction() {
         return {
           status: "started",
-          reservation: reservation.reservation,
+          actionType: "domain-tool",
+          reservation,
+          intentArtifactRef: artifact,
         } as AgentTaskActionV1;
       },
     });
-    const executeStep = vi.fn();
     const recoverStep = vi.fn(async () => ({
-      kind: "completed" as const,
+      observationArtifactRef: artifact,
+      effect: "committed" as const,
       resultRef: artifact,
     }));
     const runner = new AgentRuntimeRunner({
       store,
-      registry: new AgentTaskDefinitionRegistry([definition()]),
       workerId: "worker-1",
       leaseDurationMs: 30_000,
       maxConcurrentTasks: 1,
-      executeStep,
-      recoverStep,
+      registry: new AgentTaskDefinitionRegistry([
+        definition(
+          async () => ({
+            observationArtifactRef: artifact,
+            effect: "uncertain",
+          }),
+          recoverStep,
+        ),
+      ]),
       persistArtifact: async () => artifact,
       now: () => "2030-01-01T00:00:01.000Z",
     });
     expect(await runner.runOnce()).toBe(1);
     expect(recoverStep).toHaveBeenCalledOnce();
-    expect(executeStep).not.toHaveBeenCalled();
     expect(store.calls).toContain("complete-action");
     expect(store.calls).toContain("complete-task");
   });
@@ -377,7 +387,11 @@ describe("agent runtime worker", () => {
       workerId: "worker-1",
       leaseDurationMs: 30_000,
       maxConcurrentTasks: 1,
-      executeStep: vi.fn(),
+      renderModelStep: () => ({
+        messages: [],
+        maxOutputTokens: 1,
+        domainTool: { toolRef, input: { operation: "candidate" } },
+      }),
       now: () => "2030-01-01T00:00:01.000Z",
     });
     expect(await runner.runOnce()).toBe(1);

@@ -9,6 +9,7 @@ import * as foundationMigration from "../../src/postgres/migrations/platform/del
 import * as authorizationMigration from "../../src/postgres/migrations/platform/deliver-local-identity-and-project-authorization/000003_local_identity_and_authorization.js";
 import * as reviewAuditMigration from "../../src/postgres/migrations/platform/deliver-review-and-audit-runtime/000004_review_and_audit_runtime.js";
 import * as agentTaskRuntimeMigration from "../../src/postgres/migrations/agent-task/deliver-unified-bounded-agent-runtime/000005_agent_task_runtime.js";
+import * as agentProposalArtifactRefMigration from "../../src/postgres/migrations/agent-task/deliver-unified-bounded-agent-runtime/000006_agent_proposal_artifact_ref.js";
 
 export interface AuthPostgresFixture extends PostgresTestFixture {
   runMigrations(): Promise<void>;
@@ -51,6 +52,13 @@ export const startAuthPostgresFixture = async (): Promise<AuthPostgresFixture> =
         "agent-task/deliver-unified-bounded-agent-runtime/000005_agent_task_runtime.ts",
       ),
       agentTaskRuntimeMigration,
+    ],
+    [
+      resolve(
+        base.productionMigrationRoot,
+        "agent-task/deliver-unified-bounded-agent-runtime/000006_agent_proposal_artifact_ref.ts",
+      ),
+      agentProposalArtifactRefMigration,
     ],
   ]);
   const loadModule = async (filePath: string): Promise<unknown> => {

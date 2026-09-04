@@ -15,10 +15,12 @@ import {
   AgentStructuredErrorV1Schema,
   AgentCandidateVersionV1Schema,
   agentTaskRefEquals,
+  buildCompletedAgentTaskResult,
   canResumeAgentTask,
   emptyAgentBudgetUsage,
   makeAgentError,
   mapAgentError,
+  normalizeAgentActionUsage,
   prepareAgentTaskStart,
   requestAgentTaskCancellation,
   reserveAgentBudget,
@@ -28,6 +30,7 @@ import {
   type AgentBudgetReservationV1,
   type AgentBudgetUsageV1,
   type AgentCandidateVersionV1,
+  type AgentCommandExecutorV1,
   type AgentTaskActionV1,
   type AgentTaskDefinitionV1,
   type AgentTaskEnvelopeV1,
@@ -40,7 +43,12 @@ import {
   isAuthorizationSubset,
   type LocalIdentityAccessV1,
 } from "@riskflow/core/access";
-import type { ArtifactStoreV1 } from "@riskflow/core/artifacts";
+import {
+  ArtifactRefV1Schema,
+  ArtifactStoreError,
+  type ArtifactReferenceGuardV1,
+  type ArtifactStoreV1,
+} from "@riskflow/core/artifacts";
 import {
   sha256CanonicalJson,
   type AtomicCommandV1,
@@ -55,6 +63,7 @@ import {
   CancelAgentTaskCommandV1Schema,
   ConfirmAgentCommandV1Schema,
   ResumeAgentTaskCommandV1Schema,
+  ContractReferenceV1Schema,
   StartAgentTaskCommandV1Schema,
   AuthorizationContextRefV1Schema,
   type AgentTaskPortV1,
@@ -95,6 +104,7 @@ interface AgentTaskRow {
   result_ref: JsonColumn | null;
   error: JsonColumn | null;
   current_proposal_ref: JsonColumn | null;
+  current_proposal_artifact_ref: JsonColumn | null;
   latest_candidate_version: number;
   budget_policy_ref: JsonColumn;
   budget_policy: JsonColumn;
@@ -162,6 +172,7 @@ interface AgentCommandConfirmationRow {
   actor_id: string;
   authorization_context_ref: JsonColumn;
   target_version_ref: JsonColumn;
+  command_result_ref: JsonColumn | null;
   command_idempotency_key: string;
   decided_at: TimestampColumn;
 }
@@ -190,6 +201,22 @@ const authorizationWithinFrozenBoundary = (
 ): boolean =>
   frozen.projectId === current.projectId &&
   frozen.actorId === current.actorId &&
+  refEqual(frozen.authorizationPolicyRef, current.authorizationPolicyRef) &&
+  current.grantedCapabilities.every((capability) =>
+    frozen.grantedCapabilities.includes(capability),
+  ) &&
+  current.spatialScopeRefs.every((scope) =>
+    frozen.spatialScopeRefs.some((parent) => refEqual(parent.reference, scope.reference)),
+  ) &&
+  current.sourceAccessGrantRefs.every((grant) =>
+    frozen.sourceAccessGrantRefs.some((parent) => refEqual(parent.reference, grant.reference)),
+  );
+
+const authorizationWithinFrozenScope = (
+  frozen: AgentTaskEnvelopeV1["frozenAuthorization"],
+  current: AgentTaskEnvelopeV1["authorization"],
+): boolean =>
+  frozen.projectId === current.projectId &&
   refEqual(frozen.authorizationPolicyRef, current.authorizationPolicyRef) &&
   current.grantedCapabilities.every((capability) =>
     frozen.grantedCapabilities.includes(capability),
@@ -400,6 +427,7 @@ export interface AgentTaskExecutionStoreV1 {
     readonly workerId: string;
     readonly leaseToken: string;
     readonly proposalRef: ContractReferenceV1;
+    readonly proposalArtifactRef: AgentTaskActionV1["intentArtifactRef"];
     readonly now?: string;
   }): Promise<AgentTaskSnapshotV1>;
   recordCandidate(input: {
@@ -417,6 +445,7 @@ type AgentLeaseMutation = (
   current: AgentTaskSnapshotV1,
   attempt: AgentTaskAttemptRow,
   now: string,
+  context: TransactionContextV1,
 ) => Promise<void>;
 
 export interface PostgresAgentTaskAdapterOptions {
@@ -425,6 +454,8 @@ export interface PostgresAgentTaskAdapterOptions {
   readonly transactionUnit?: TransactionUnitV1;
   readonly authorization?: LocalIdentityAccessV1;
   readonly artifactStore?: ArtifactStoreV1;
+  readonly referenceGuard: ArtifactReferenceGuardV1;
+  readonly commandExecutor?: AgentCommandExecutorV1;
   readonly modelGateway?: ModelGatewayPortV1;
   readonly now?: () => string;
 }
@@ -433,7 +464,9 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
   readonly #db: Kysely<AgentRuntimeDatabase>;
   readonly #transactionUnit: TransactionUnitV1;
   readonly #registry: AgentTaskDefinitionRegistry;
+  readonly #commandExecutor?: AgentCommandExecutorV1;
   readonly #authorization?: LocalIdentityAccessV1;
+  readonly #referenceGuard: ArtifactReferenceGuardV1;
   readonly #now: () => string;
   readonly artifactStore?: ArtifactStoreV1;
   readonly modelGateway?: ModelGatewayPortV1;
@@ -442,10 +475,102 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
     this.#db = options.db as unknown as Kysely<AgentRuntimeDatabase>;
     this.#transactionUnit = options.transactionUnit ?? new PostgresTransactionUnit(options.db);
     this.#registry = options.registry;
+    this.#referenceGuard = options.referenceGuard;
     this.#now = options.now ?? (() => new Date().toISOString());
+    if (options.commandExecutor !== undefined) this.#commandExecutor = options.commandExecutor;
     if (options.authorization !== undefined) this.#authorization = options.authorization;
     if (options.artifactStore !== undefined) this.artifactStore = options.artifactStore;
     if (options.modelGateway !== undefined) this.modelGateway = options.modelGateway;
+  }
+
+  async #assertArtifactUsable(
+    context: TransactionContextV1,
+    task: AgentTaskSnapshotV1,
+    artifactRef: AgentTaskActionV1["intentArtifactRef"],
+    purposeCode: string,
+    authorization: AgentTaskEnvelopeV1["authorization"] = task.envelope.authorization,
+    requiredCapability?: AgentTaskEnvelopeV1["authorization"]["grantedCapabilities"][number],
+  ): Promise<void> {
+    const capability = requiredCapability ?? authorization.grantedCapabilities[0];
+    if (capability === undefined)
+      throw new AgentRuntimeError(
+        makeAgentError({
+          code: "AGENT_AUTHORIZATION_DENIED",
+          category: "authorization",
+          stage: "artifact.reference.capability",
+          taskRef: task.envelope.agentTaskRef,
+        }),
+      );
+    await this.#referenceGuard.assertUsable(context, {
+      schemaVersion: "1",
+      artifactRef: ArtifactRefV1Schema.parse(artifactRef),
+      projectId: task.envelope.projectId,
+      purposeCode,
+      requiredCapability: capability,
+      authorization,
+    });
+  }
+
+  async #readJsonArtifact(
+    task: AgentTaskSnapshotV1,
+    artifactRef: AgentTaskActionV1["intentArtifactRef"],
+    authorization: AgentTaskEnvelopeV1["authorization"],
+    purposeCode: string,
+    requiredCapability?: AgentTaskEnvelopeV1["authorization"]["grantedCapabilities"][number],
+  ): Promise<unknown> {
+    const store = this.artifactStore;
+    const capability = requiredCapability ?? authorization.grantedCapabilities[0];
+    if (store === undefined || capability === undefined)
+      throw new AgentRuntimeError(
+        makeAgentError({
+          code: store === undefined ? "AGENT_ARTIFACT_FAILURE" : "AGENT_AUTHORIZATION_DENIED",
+          category: store === undefined ? "artifact" : "authorization",
+          retryable: false,
+          stage: "task.confirm.proposal-read",
+          taskRef: task.envelope.agentTaskRef,
+        }),
+      );
+    const now = IsoDateTimeSchema.parse(this.#now());
+    const artifactVersion = artifactRef.reference.versionId;
+    const requestId = `${task.envelope.agentTaskRef.reference.entityId}:${purposeCode}:${artifactVersion}`;
+    const handle = await store.open({
+      schemaVersion: "1",
+      requestId,
+      idempotencyKey: `${requestId}:open`,
+      artifactRef: ArtifactRefV1Schema.parse(artifactRef),
+      projectId: task.envelope.projectId,
+      actorId: authorization.actorId,
+      requestedAt: now,
+      purposeCode,
+      requiredCapability: capability,
+      authorization,
+    });
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    for await (const chunk of handle.content) {
+      chunks.push(chunk);
+      length += chunk.byteLength;
+    }
+    await handle.verified;
+    const body = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+      body.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    try {
+      return JSON.parse(new TextDecoder().decode(body)) as unknown;
+    } catch {
+      throw new AgentRuntimeError(
+        makeAgentError({
+          code: "AGENT_ARTIFACT_FAILURE",
+          category: "artifact",
+          retryable: false,
+          stage: "task.confirm.proposal-json",
+          taskRef: task.envelope.agentTaskRef,
+        }),
+      );
+    }
   }
 
   async #verify(
@@ -492,6 +617,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
     readonly idempotencyKey: string;
     readonly payload: unknown;
     readonly actorId?: string;
+    readonly authorization?: AgentTaskEnvelopeV1["authorization"];
     readonly issuedAt?: string;
   }): Promise<AtomicCommandV1> {
     const taskRef = AgentTaskRefV1Schema.parse(input.taskRef);
@@ -512,7 +638,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
       idempotencyKey: input.idempotencyKey,
       projectId: task.envelope.projectId,
       actorId: input.actorId ?? task.envelope.actorId,
-      authorization: task.envelope.authorization,
+      authorization: input.authorization ?? task.envelope.authorization,
       payload: input.payload,
       issuedAt,
     });
@@ -622,6 +748,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
           error: state.error === undefined ? null : jsonValue(state.error),
           current_proposal_ref:
             state.currentProposalRef === undefined ? null : jsonValue(state.currentProposalRef),
+          current_proposal_artifact_ref: null,
           latest_candidate_version: state.latestCandidateVersion ?? 0,
           budget_policy_ref: jsonValue(budgetPolicy.policyRef),
           budget_policy: jsonValue(budgetPolicy),
@@ -714,6 +841,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
       transaction: AgentTransaction,
       current: AgentTaskSnapshotV1,
       now: string,
+      context: TransactionContextV1,
     ) => Promise<void>,
   ): Promise<AgentTaskSnapshotV1> {
     let result: AgentTaskSnapshotV1 | undefined;
@@ -743,7 +871,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
             taskRef,
           }),
         );
-      await operation(transaction, current, now);
+      await operation(transaction, current, now, context);
       result = await this.#selectTaskById(taskId(taskRef), transaction).then((next) =>
         next === undefined ? undefined : rowSnapshot(next),
       );
@@ -802,7 +930,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
             taskRef: parsedTaskRef,
           }),
         );
-      await operation(transaction, lease.task, lease.attempt, now);
+      await operation(transaction, lease.task, lease.attempt, now, context);
       const row = await this.#selectTaskById(taskId(parsedTaskRef), transaction);
       if (row === undefined) throw new Error("agent task disappeared before commit");
       result = rowSnapshot(row);
@@ -984,6 +1112,121 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
         valid.commandId,
       );
       const taskRef = valid.payload.agentTaskRef;
+      const task = await this.getTask(taskRef);
+      if (task === undefined)
+        throw new AgentRuntimeError(
+          makeAgentError({
+            code: "AGENT_TASK_NOT_FOUND",
+            category: "not-found",
+            stage: "task.confirm.task",
+            taskRef,
+          }),
+        );
+      const taskRow = await this.#selectTaskById(taskId(taskRef));
+      if (taskRow === undefined || taskRow.current_proposal_artifact_ref === null)
+        throw new AgentRuntimeError(
+          makeAgentError({
+            code: "AGENT_CONFIRMATION_STALE",
+            category: "confirmation",
+            stage: "task.confirm.proposal-reference",
+            taskRef,
+          }),
+        );
+      const proposalArtifactRef = ArtifactRefV1Schema.parse(taskRow.current_proposal_artifact_ref);
+      const proposal = AgentCommandProposalV1Schema.parse(
+        await this.#readJsonArtifact(
+          task,
+          proposalArtifactRef,
+          valid.authorization,
+          "agent-command-proposal",
+          "agent-task.confirm",
+        ),
+      );
+      const targetReference =
+        "reference" in proposal.targetRef ? proposal.targetRef.reference : undefined;
+      if (
+        !refEqual(
+          proposal.commandProposalRef.reference,
+          valid.payload.commandProposalRef.reference,
+        ) ||
+        !agentTaskRefEquals(proposal.taskRef, taskRef) ||
+        proposal.projectId !== valid.projectId ||
+        targetReference === undefined ||
+        targetReference.entityId !== proposal.expectedTargetVersion.entityId ||
+        targetReference.versionId !== proposal.expectedTargetVersion.versionId
+      )
+        throw new AgentRuntimeError(
+          makeAgentError({
+            code: "AGENT_CONFIRMATION_STALE",
+            category: "confirmation",
+            stage: "task.confirm.proposal-schema",
+            taskRef,
+          }),
+        );
+      if (!authorizationWithinFrozenScope(task.envelope.frozenAuthorization, valid.authorization))
+        throw new AgentRuntimeError(
+          makeAgentError({
+            code: "AGENT_AUTHORIZATION_DENIED",
+            category: "authorization",
+            stage: "task.confirm.frozen-boundary",
+            taskRef,
+          }),
+        );
+      let commandResultRef: ContractReferenceV1 | undefined;
+      let taskResultRef: AgentTaskResultRefV1 | undefined;
+      if (valid.payload.confirmation === "confirmed") {
+        const prior = await this.#db
+          .selectFrom("business.agent_command_confirmations")
+          .select(["decision", "command_result_ref"])
+          .where("agent_task_id", "=", taskId(taskRef))
+          .where("proposal_entity_id", "=", proposal.commandProposalRef.reference.entityId)
+          .where("proposal_version_id", "=", proposal.commandProposalRef.reference.versionId)
+          .executeTakeFirst();
+        if (prior?.decision === "confirmed")
+          return {
+            kind: "succeeded" as const,
+            result: { commandProposalRef: valid.payload.commandProposalRef },
+          };
+        if (prior?.decision === "rejected")
+          throw new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_CONFIRMATION_STALE",
+              category: "confirmation",
+              stage: "task.confirm.decision",
+              taskRef,
+            }),
+          );
+        if (this.#commandExecutor === undefined)
+          throw new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_INPUT_INVALID",
+              category: "input",
+              retryable: false,
+              stage: "task.confirm.executor",
+              taskRef,
+            }),
+          );
+        const command = await this.#readJsonArtifact(
+          task,
+          proposal.commandArtifactRef,
+          valid.authorization,
+          "agent-command",
+          "agent-task.confirm",
+        );
+        const executed = await this.#commandExecutor.execute({
+          task,
+          proposal,
+          command,
+          authorization: valid.authorization,
+        });
+        commandResultRef = ContractReferenceV1Schema.parse(executed.resultRef);
+        taskResultRef = buildCompletedAgentTaskResult(
+          taskRef,
+          commandResultRef,
+          undefined,
+          this.#registry.get(taskRef.taskType).metadata.resultFamilies,
+        );
+      }
       const atomic = commandFor({
         kind: "agent-task.confirm-command",
         commandId: valid.commandId,
@@ -998,7 +1241,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
         atomic,
         taskRef,
         "agent-task.confirm-command",
-        async (transaction, current, now) => {
+        async (transaction, current, now, context) => {
           if (
             current.state.status !== "waiting-user-confirmation" ||
             current.state.currentProposalRef === undefined ||
@@ -1016,13 +1259,54 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
               }),
             );
           }
-          const proposal = valid.payload.commandProposalRef;
+          const currentProposalRow = await this.#selectTaskById(taskId(taskRef), transaction, true);
+          if (
+            currentProposalRow === undefined ||
+            currentProposalRow.current_proposal_artifact_ref === null
+          )
+            throw new AgentRuntimeError(
+              makeAgentError({
+                code: "AGENT_CONFIRMATION_STALE",
+                category: "confirmation",
+                stage: "task.confirm.proposal-reference",
+                taskRef,
+              }),
+            );
+          const currentProposalArtifactRef = ArtifactRefV1Schema.parse(
+            currentProposalRow.current_proposal_artifact_ref,
+          );
+          if (!refEqual(currentProposalArtifactRef.reference, proposalArtifactRef.reference))
+            throw new AgentRuntimeError(
+              makeAgentError({
+                code: "AGENT_CONFIRMATION_STALE",
+                category: "confirmation",
+                stage: "task.confirm.proposal-version",
+                taskRef,
+              }),
+            );
+          await this.#assertArtifactUsable(
+            context,
+            current,
+            currentProposalArtifactRef,
+            "agent-command-proposal",
+            valid.authorization,
+            "agent-task.confirm",
+          );
+          await this.#assertArtifactUsable(
+            context,
+            current,
+            proposal.commandArtifactRef,
+            "agent-command",
+            valid.authorization,
+            "agent-task.confirm",
+          );
+          const proposalRef = proposal.commandProposalRef;
           const previous = await transaction
             .selectFrom("business.agent_command_confirmations")
             .selectAll()
             .where("agent_task_id", "=", taskId(taskRef))
-            .where("proposal_entity_id", "=", proposal.reference.entityId)
-            .where("proposal_version_id", "=", proposal.reference.versionId)
+            .where("proposal_entity_id", "=", proposalRef.reference.entityId)
+            .where("proposal_version_id", "=", proposalRef.reference.versionId)
             .executeTakeFirst();
           if (previous !== undefined && previous.decision !== valid.payload.confirmation) {
             throw new AgentRuntimeError(
@@ -1039,24 +1323,37 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
               .insertInto("business.agent_command_confirmations")
               .values({
                 agent_task_id: taskId(taskRef),
-                proposal_entity_id: proposal.reference.entityId,
-                proposal_version_id: proposal.reference.versionId,
+                proposal_entity_id: proposalRef.reference.entityId,
+                proposal_version_id: proposalRef.reference.versionId,
                 proposal_ref: jsonValue(proposal),
                 decision: valid.payload.confirmation,
                 actor_id: valid.actorId,
                 authorization_context_ref: jsonValue(valid.authorization.authorizationContextRef),
-                target_version_ref: jsonValue(proposal.reference),
-                command_idempotency_key: valid.idempotencyKey,
+                target_version_ref: jsonValue(proposal.expectedTargetVersion),
+                command_idempotency_key: proposal.commandIdempotencyKey,
+                command_result_ref:
+                  commandResultRef === undefined ? null : jsonValue(commandResultRef),
                 decided_at: new Date(now),
               })
               .execute();
           }
           if (valid.payload.confirmation === "confirmed") {
+            const completedResult = taskResultRef;
+            if (completedResult === undefined)
+              throw new AgentRuntimeError(
+                makeAgentError({
+                  code: "AGENT_INPUT_INVALID",
+                  category: "input",
+                  stage: "task.confirm.result",
+                  taskRef,
+                }),
+              );
             const next = transitionAgentTask(
               current.state,
-              "pending",
+              "completed",
               current.state.taskVersion,
               now,
+              { resultRef: completedResult },
             );
             await this.#updateTask(transaction, taskRef, next, current.state.taskVersion);
           } else {
@@ -1076,6 +1373,11 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
             );
             await this.#updateTask(transaction, taskRef, next, current.state.taskVersion);
           }
+          await transaction
+            .updateTable("business.agent_tasks")
+            .set({ current_proposal_artifact_ref: null })
+            .where("agent_task_id", "=", taskId(taskRef))
+            .execute();
         },
       );
       return {
@@ -1126,11 +1428,42 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
       return mapAgentError(new AgentRuntimeError(mapped), { causalRunId });
     }
     if (error instanceof PostgresPersistenceError) {
+      if (error.code === "IDEMPOTENCY_CONFLICT")
+        return mapAgentError(
+          new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_IDEMPOTENCY_CONFLICT",
+              category: "idempotency",
+              stage: error.stage,
+              idempotencyKey: causalRunId,
+              priorCommandId: causalRunId,
+              diagnosticRef: error.diagnosticRef,
+            }),
+          ),
+          { causalRunId },
+        );
       return mapAgentError(
         new AgentRuntimeError(
           makeAgentError({
             code: "AGENT_PERSISTENCE_FAILURE",
             category: "persistence",
+            retryable: error.retryable,
+            stage: error.stage,
+            diagnosticRef: error.diagnosticRef,
+          }),
+        ),
+        { causalRunId },
+      );
+    }
+    if (error instanceof ArtifactStoreError) {
+      return mapAgentError(
+        new AgentRuntimeError(
+          makeAgentError({
+            code:
+              error.code === "ARTIFACT_ACCESS_DENIED"
+                ? "AGENT_AUTHORIZATION_DENIED"
+                : "AGENT_ARTIFACT_FAILURE",
+            category: error.code === "ARTIFACT_ACCESS_DENIED" ? "authorization" : "artifact",
             retryable: error.retryable,
             stage: error.stage,
             diagnosticRef: error.diagnosticRef,
@@ -1256,6 +1589,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
               task_version: sql`task_version + 1`,
               error: null,
               current_proposal_ref: null,
+              current_proposal_artifact_ref: null,
               updated_at: nowDate,
             })
             .where("agent_task_id", "=", currentRow.agent_task_id)
@@ -1690,6 +2024,12 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
         input.leaseToken,
         now,
       );
+      await this.#assertArtifactUsable(
+        context,
+        lease.task,
+        intentArtifactRef,
+        "agent-action-intent",
+      );
       const existing = await transaction
         .selectFrom("business.agent_task_actions")
         .selectAll()
@@ -1902,7 +2242,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
     const now = IsoDateTimeSchema.parse(input.now ?? this.#now());
     const taskRef = AgentTaskRefV1Schema.parse(input.taskRef);
     const actionId = IdentifierSchema.parse(input.actionId);
-    const usage = AgentBudgetUsageV1Schema.parse(input.usage);
+    const requestedUsage = AgentBudgetUsageV1Schema.parse(input.usage);
     const key = commandKey([
       "agent-task",
       "action-complete",
@@ -1922,7 +2262,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
         actionId,
         resultRef: input.resultRef ?? null,
         resultArtifactRef: input.resultArtifactRef ?? null,
-        usage,
+        usage: requestedUsage,
         now,
       },
       issuedAt: now,
@@ -1933,7 +2273,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
       input.workerId,
       input.leaseToken,
       "agent-task.action-complete",
-      async (transaction, current) => {
+      async (transaction, current, _attempt, _now, context) => {
         const row = await transaction
           .selectFrom("business.agent_task_actions")
           .selectAll()
@@ -1984,6 +2324,16 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
               actionId,
             }),
           );
+        if (input.resultArtifactRef !== undefined)
+          await this.#assertArtifactUsable(
+            context,
+            current,
+            input.resultArtifactRef,
+            actionValue.actionType === "domain-tool"
+              ? "agent-tool-observation"
+              : "agent-action-result",
+          );
+        const usage = normalizeAgentActionUsage(actionValue.actionType, requestedUsage);
         const budget = settleAgentBudget(
           current.budgetPolicy,
           current.budgetLedger,
@@ -2116,7 +2466,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
     const taskRef = AgentTaskRefV1Schema.parse(input.taskRef);
     const actionId = IdentifierSchema.parse(input.actionId);
     const uncertain = input.uncertain === true || error.code === "AGENT_ACTION_UNCERTAIN";
-    const usage = AgentBudgetUsageV1Schema.parse(input.usage ?? emptyAgentBudgetUsage());
+    const requestedUsage = AgentBudgetUsageV1Schema.parse(input.usage ?? emptyAgentBudgetUsage());
     const key = commandKey([
       "agent-task",
       "action-fail",
@@ -2138,7 +2488,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
         actionId,
         error,
         resultArtifactRef: input.resultArtifactRef ?? null,
-        usage,
+        usage: requestedUsage,
         uncertain,
         now,
       },
@@ -2150,7 +2500,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
       input.workerId,
       input.leaseToken,
       "agent-task.action-fail",
-      async (transaction, current) => {
+      async (transaction, current, _attempt, _now, context) => {
         const row = await transaction
           .selectFrom("business.agent_task_actions")
           .selectAll()
@@ -2170,16 +2520,29 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
           );
         const action = actionFromRow(current.envelope.agentTaskRef, row);
         if (action.status === "completed") return;
-        let budgetLedger = current.budgetLedger;
-        if (!uncertain)
-          budgetLedger = settleAgentBudget(
-            current.budgetPolicy,
-            current.budgetLedger,
-            action.reservation,
-            usage,
-            now,
-            input.activeWallClockMs ?? 0,
+        if (action.status === "uncertain") return;
+        const usage = normalizeAgentActionUsage(action.actionType, requestedUsage);
+        if (input.resultArtifactRef !== undefined)
+          await this.#assertArtifactUsable(
+            context,
+            current,
+            input.resultArtifactRef,
+            action.actionType === "domain-tool" ? "agent-tool-observation" : "agent-action-result",
           );
+        const budgetLedger = settleAgentBudget(
+          current.budgetPolicy,
+          current.budgetLedger,
+          action.reservation,
+          usage,
+          now,
+          Math.min(
+            input.activeWallClockMs ?? 0,
+            Math.max(
+              0,
+              current.budgetPolicy.maxWallClockMs - current.budgetLedger.activeWallClockMs,
+            ),
+          ),
+        );
         const next = transitionAgentTask(
           current.state,
           uncertain || !error.retryable ? "terminal-failure" : "retryable-failure",
@@ -2227,6 +2590,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
     readonly workerId: string;
     readonly leaseToken: string;
     readonly proposalRef: ContractReferenceV1;
+    readonly proposalArtifactRef: AgentTaskActionV1["intentArtifactRef"];
     readonly now?: string;
   }): Promise<AgentTaskSnapshotV1> {
     const now = IsoDateTimeSchema.parse(input.now ?? this.#now());
@@ -2252,6 +2616,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
         workerId: input.workerId,
         leaseToken: input.leaseToken,
         proposalRef,
+        proposalArtifactRef: input.proposalArtifactRef,
         now,
       },
       issuedAt: now,
@@ -2262,7 +2627,13 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
       input.workerId,
       input.leaseToken,
       "agent-task.wait",
-      async (transaction, current, attempt) => {
+      async (transaction, current, attempt, _now, context) => {
+        await this.#assertArtifactUsable(
+          context,
+          current,
+          input.proposalArtifactRef,
+          "agent-command-proposal",
+        );
         const next = transitionAgentTask(
           current.state,
           "waiting-user-confirmation",
@@ -2271,6 +2642,11 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
           { currentProposalRef: proposalRef },
         );
         await this.#updateTask(transaction, taskRef, next, current.state.taskVersion);
+        await transaction
+          .updateTable("business.agent_tasks")
+          .set({ current_proposal_artifact_ref: jsonValue(input.proposalArtifactRef) })
+          .where("agent_task_id", "=", taskId(taskRef))
+          .execute();
         await transaction
           .updateTable("business.agent_task_attempts")
           .set({ status: "released", finished_at: new Date(now), lease_until: new Date(now) })
@@ -2290,21 +2666,21 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
   }): Promise<void> {
     const value = AgentCandidateVersionV1Schema.parse(input.candidate);
     const taskRef = AgentTaskRefV1Schema.parse(value.taskRef);
+    const candidateDigest = sha256CanonicalJson(value);
+    const candidateIdempotencyKey = commandKey([
+      "agent-task",
+      "candidate-record",
+      taskId(taskRef),
+      String(value.candidateVersion),
+      candidateDigest,
+    ]);
     const command = await this.#taskCommand({
       taskRef,
       commandKind: "agent-task.candidate-record",
-      idempotencyKey: commandKey([
-        "agent-task",
-        "candidate-record",
-        taskId(taskRef),
-        String(value.candidateVersion),
-        input.leaseToken,
-      ]),
+      idempotencyKey: candidateIdempotencyKey,
       actorId: input.workerId,
       payload: {
         candidate: value,
-        workerId: input.workerId,
-        leaseToken: input.leaseToken,
       },
       issuedAt: value.createdAt,
     });
@@ -2314,7 +2690,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
       input.workerId,
       input.leaseToken,
       "agent-task.candidate-record",
-      async (transaction, task) => {
+      async (transaction, task, _attempt, _now, context) => {
         if (!agentTaskRefEquals(task.envelope.agentTaskRef, taskRef))
           throw new AgentRuntimeError(
             makeAgentError({
@@ -2333,8 +2709,65 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
               taskRef,
             }),
           );
+        await this.#assertArtifactUsable(
+          context,
+          task,
+          value.candidateArtifactRef,
+          "agent-candidate",
+        );
+        await this.#assertArtifactUsable(
+          context,
+          task,
+          value.incrementArtifactRef,
+          "agent-increment",
+        );
+        if (value.validation !== undefined)
+          await this.#assertArtifactUsable(
+            context,
+            task,
+            value.validation.validationArtifactRef,
+            "agent-validation",
+          );
         const latestCandidateVersion = task.state.latestCandidateVersion ?? 0;
-        if (value.candidateVersion > 1 && value.parentCandidateVersion !== latestCandidateVersion)
+        const existing = await transaction
+          .selectFrom("business.agent_task_candidates")
+          .selectAll()
+          .where("agent_task_id", "=", taskId(taskRef))
+          .where("candidate_version", "=", value.candidateVersion)
+          .forUpdate()
+          .executeTakeFirst();
+        if (existing !== undefined) {
+          const existingCandidate = AgentCandidateVersionV1Schema.parse({
+            schemaVersion: "1",
+            taskRef,
+            candidateVersion: existing.candidate_version,
+            ...(existing.parent_candidate_version === null
+              ? {}
+              : { parentCandidateVersion: existing.parent_candidate_version }),
+            candidateArtifactRef: existing.candidate_artifact_ref,
+            incrementArtifactRef: existing.increment_artifact_ref,
+            ...(existing.validation === null ? {} : { validation: existing.validation }),
+            ...(existing.result_ref === null ? {} : { resultRef: existing.result_ref }),
+            disposition: existing.disposition,
+            ...(existing.rejection_class === null
+              ? {}
+              : { rejectionClass: existing.rejection_class }),
+            createdAt: asIso(existing.created_at),
+          });
+          if (sha256CanonicalJson(existingCandidate) !== candidateDigest)
+            throw new AgentRuntimeError(
+              makeAgentError({
+                code: "AGENT_IDEMPOTENCY_CONFLICT",
+                category: "idempotency",
+                stage: "candidate.version-conflict",
+                taskRef,
+                idempotencyKey: candidateIdempotencyKey,
+                priorCommandId: candidateIdempotencyKey,
+              }),
+            );
+          return;
+        }
+        if (value.candidateVersion !== latestCandidateVersion + 1)
           throw new AgentRuntimeError(
             makeAgentError({
               code: "AGENT_STALE_VERSION",
@@ -2343,7 +2776,6 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
               taskRef,
             }),
           );
-        if (value.candidateVersion < latestCandidateVersion) return;
         const inserted = await transaction
           .insertInto("business.agent_task_candidates")
           .values({
@@ -2358,12 +2790,18 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
             rejection_class: value.rejectionClass ?? null,
             created_at: new Date(value.createdAt),
           })
-          .onConflict((conflict) =>
-            conflict.columns(["agent_task_id", "candidate_version"]).doNothing(),
-          )
           .returning("candidate_version")
           .executeTakeFirst();
-        if (inserted === undefined) return;
+        if (inserted === undefined)
+          throw new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_PERSISTENCE_FAILURE",
+              category: "persistence",
+              retryable: true,
+              stage: "candidate.insert-readback",
+              taskRef,
+            }),
+          );
         const updated = await transaction
           .updateTable("business.agent_tasks")
           .set({

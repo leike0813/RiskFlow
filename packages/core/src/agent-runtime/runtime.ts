@@ -57,6 +57,7 @@ import {
   type AgentValidationResultV1,
   type AgentResultFamilyV1,
   type AgentRejectionClassV1,
+  type AgentCommandProposalV1,
 } from "./schema.js";
 import {
   AgentStateTransitionError,
@@ -177,6 +178,20 @@ const usageWith = (
   return AgentBudgetUsageV1Schema.parse(result);
 };
 
+export const normalizeAgentActionUsage = (
+  actionType: AgentTaskActionV1["actionType"],
+  actualInput?: Partial<AgentBudgetUsageV1> | AgentBudgetUsageV1,
+): AgentBudgetUsageV1 => {
+  const actual = AgentBudgetUsageV1Schema.parse({
+    ...emptyAgentBudgetUsage(),
+    ...(actualInput ?? {}),
+  });
+  if (actionType === "model-invocation")
+    actual.modelInvocations = Math.max(1, actual.modelInvocations);
+  if (actionType === "domain-tool") actual.toolInvocations = Math.max(1, actual.toolInvocations);
+  return AgentBudgetUsageV1Schema.parse(actual);
+};
+
 const limitFor = (
   policy: AgentTaskBudgetPolicyV1,
   key: keyof AgentBudgetUsageV1,
@@ -291,7 +306,13 @@ export const settleAgentBudget = (
   const policy = AgentTaskBudgetPolicyV1Schema.parse(policyInput);
   const ledger = AgentBudgetLedgerV1Schema.parse(ledgerInput);
   const reservation = AgentBudgetReservationV1Schema.parse(reservationInput);
-  const actual = AgentBudgetUsageV1Schema.parse(actualInput);
+  const actionType =
+    reservation.amount.modelInvocations > 0
+      ? "model-invocation"
+      : reservation.amount.toolInvocations > 0
+        ? "domain-tool"
+        : "deterministic-validation";
+  const actual = normalizeAgentActionUsage(actionType, actualInput);
   for (const key of usageKeys) {
     if (actual[key] > reservation.amount[key] || ledger.reserved[key] < reservation.amount[key])
       throwAgentError({
@@ -377,6 +398,19 @@ export interface AgentDomainToolResultV1 {
   readonly effect: "none" | "committed" | "uncertain";
   readonly usage?: Partial<AgentBudgetUsageV1>;
 }
+export interface AgentCommandExecutionResultV1 {
+  readonly resultRef: ContractReferenceV1;
+}
+
+export interface AgentCommandExecutorV1 {
+  execute(input: {
+    readonly task: AgentTaskSnapshotV1;
+    readonly proposal: AgentCommandProposalV1;
+    readonly command: unknown;
+    readonly authorization: AgentTaskEnvelopeV1["authorization"];
+    readonly signal?: AbortSignal;
+  }): Promise<AgentCommandExecutionResultV1>;
+}
 
 export interface AgentDomainToolExecutionContextV1 {
   readonly task: AgentTaskSnapshotV1;
@@ -391,6 +425,9 @@ export interface AgentDomainToolV1<TInput = unknown> {
     input: TInput,
     context: AgentDomainToolExecutionContextV1,
   ): Promise<AgentDomainToolResultV1>;
+  recover?(
+    context: AgentDomainToolExecutionContextV1,
+  ): Promise<AgentDomainToolResultV1 | undefined>;
 }
 
 export interface AgentTaskDefinitionV1<TAction = unknown, TCandidate = unknown> {
@@ -907,6 +944,8 @@ export const completeAgentStructured = async <T>(input: {
   readonly parentArtifactRefs?: readonly import("../artifacts/schema.js").ArtifactRefV1[];
   readonly outputSchema: z.ZodType<T>;
   readonly maxOutputTokens: number;
+  readonly remainingWallClockMs?: number;
+  readonly now?: string;
   readonly signal?: AbortSignal;
 }): Promise<StructuredCompletionResultV1<T>> => {
   const task = AgentTaskEnvelopeV1Schema.parse(input.task.envelope);
@@ -937,10 +976,18 @@ export const completeAgentStructured = async <T>(input: {
       stage: "model.max-output-tokens",
       taskRef: task.agentTaskRef,
     });
-  const issuedAt = IsoDateTimeSchema.parse(input.task.state.updatedAt);
-  const deadlineAt = new Date(
-    Date.parse(issuedAt) + Math.max(1_000, input.task.budgetPolicy.maxWallClockMs),
-  ).toISOString();
+  const remainingWallClockMs =
+    input.remainingWallClockMs ??
+    input.task.budgetPolicy.maxWallClockMs - input.task.budgetLedger.activeWallClockMs;
+  if (!Number.isSafeInteger(remainingWallClockMs) || remainingWallClockMs <= 0)
+    throwAgentError({
+      code: "AGENT_WALL_CLOCK_EXCEEDED",
+      category: "budget",
+      stage: "model.wall-clock",
+      taskRef: task.agentTaskRef,
+    });
+  const issuedAt = IsoDateTimeSchema.parse(input.now ?? nowIso());
+  const deadlineAt = new Date(Date.parse(issuedAt) + remainingWallClockMs).toISOString();
   const request = {
     schemaVersion: "1" as const,
     invocationId: input.actionId,

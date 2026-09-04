@@ -35,6 +35,7 @@ import * as foundationMigration from "../../src/postgres/migrations/platform/del
 import * as localIdentityMigration from "../../src/postgres/migrations/platform/deliver-local-identity-and-project-authorization/000003_local_identity_and_authorization.js";
 import * as reviewAuditMigration from "../../src/postgres/migrations/platform/deliver-review-and-audit-runtime/000004_review_and_audit_runtime.js";
 import * as agentTaskRuntimeMigration from "../../src/postgres/migrations/agent-task/deliver-unified-bounded-agent-runtime/000005_agent_task_runtime.js";
+import * as agentProposalArtifactRefMigration from "../../src/postgres/migrations/agent-task/deliver-unified-bounded-agent-runtime/000006_agent_proposal_artifact_ref.js";
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
 import * as agentTaskFixtureMigration from "./fixtures/migrations/agent-task/deliver-unified-bounded-agent-runtime/900002_agent_task_fixture.js";
 
@@ -252,6 +253,15 @@ const testMigrationManifest = [
     migrationName: "000005_agent-task_deliver-unified-bounded-agent-runtime_agent_task_runtime",
     sequence: 5,
     module: agentTaskRuntimeMigration,
+  },
+  {
+    root: "production",
+    relativePath:
+      "agent-task/deliver-unified-bounded-agent-runtime/000006_agent_proposal_artifact_ref.ts",
+    migrationName:
+      "000006_agent-task_deliver-unified-bounded-agent-runtime_agent_proposal_artifact_ref",
+    sequence: 6,
+    module: agentProposalArtifactRefMigration,
   },
   {
     root: "fixture",
@@ -511,7 +521,7 @@ describe("PostgreSQL foundation", () => {
     );
     await expect(
       loadTestMigration(
-        resolve(testMigrationRoots.production, testMigrationManifest[5]!.relativePath),
+        resolve(testMigrationRoots.production, testMigrationManifest[6]!.relativePath),
       ),
     ).rejects.toThrow();
     await expect(

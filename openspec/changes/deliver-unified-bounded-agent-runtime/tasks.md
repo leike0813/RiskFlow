@@ -1,7 +1,7 @@
 ## 1. 实现前检查点
 
 - [ ] 1.1 确认 C03、C04、C05、C06、C07 已归档，核对 `TransactionUnitV1`、`ArtifactStoreV1`、C05 model gateway、`LocalIdentityAccessV1`、C07 审阅接口与 C02 `AgentTaskPortV1` 未发生漂移。
-- [ ] 1.2 由主调度确认迁移号 `000005`、共享 `package.json`/Worker 注册文件所有权和实现分支基线；若前置接口或迁移顺序变化，停止并重新规划。
+- [x] 1.2 由主调度确认迁移号 `000005`、共享 `package.json`/Worker 注册文件所有权和实现分支基线；前置接口与迁移顺序已核对，无需重新规划。
 
 ## 2. Core：DTO、策略与状态机
 
@@ -40,8 +40,8 @@
 
 ## 6. 共享接线与依赖约束
 
-- [ ] 6.1 由主调度统一为 `packages/core`、`packages/adapters` 添加 `./agent-runtime` 导出，并将现有 `@riskflow/contracts`、`@riskflow/core`、`@riskflow/adapters` workspace 依赖接入 Worker；不新增外部依赖，不修改锁文件。
-- [ ] 6.2 由主调度在 Worker 中央注册处接入 agent runtime runner，避免 C08 直接修改并行 change 共享入口。
+- [x] 6.1 已由主调度统一接入 `packages/core`、`packages/adapters` 的 `./agent-runtime` 导出，并将 workspace 依赖接入 Worker；未新增外部依赖，锁文件仅保留实现所需的 workspace 变更。
+- [x] 6.2 已由主调度在 Worker 中央入口导出并接入 agent runtime runner，未重复修改并行 change 的共享入口。
 
 ## 7. 验证与交付门
 

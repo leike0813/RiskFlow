@@ -7,6 +7,7 @@ import {
   ConversationTextDeltaV1Schema,
   EmbeddingRequestV1Schema,
   ModelDeploymentSnapshotV1Schema,
+  EmbeddingResultV1Schema,
   ModelGatewayErrorV1Schema,
   ModelUsageV1Schema,
   StructuredCompletionRequestV1Schema,
@@ -87,9 +88,10 @@ describe("model gateway core contract", () => {
     ["actor", { actorId: "other-actor" }],
     ["capability", { requiredCapability: "risk-assessment.evaluate" }],
   ])("rejects an authorization %s mismatch", (_name, override) => {
-    expect(StructuredCompletionRequestV1Schema.safeParse({ ...structuredRequest(), ...override }).success).toBe(
-      false,
-    );
+    expect(
+      StructuredCompletionRequestV1Schema.safeParse({ ...structuredRequest(), ...override })
+        .success,
+    ).toBe(false);
   });
 
   it("keeps the schema factory and finite usage values type aligned", () => {
@@ -111,7 +113,9 @@ describe("model gateway core contract", () => {
       finishReason: "stop",
     });
     expect(result.value.risk).toBe("稳定");
-    expect(ModelUsageV1Schema.safeParse({ available: false, inputTokens: Number.NaN }).success).toBe(false);
+    expect(
+      ModelUsageV1Schema.safeParse({ available: false, inputTokens: Number.NaN }).success,
+    ).toBe(false);
   });
 
   it("keeps deployment dimensions and stream receipt closed", () => {
@@ -127,8 +131,34 @@ describe("model gateway core contract", () => {
     });
     expect(deployment.embeddingDimensions).toBe(768);
     expect(
-      ConversationTextDeltaV1Schema.safeParse({ schemaVersion: "1", sequence: 0, text: "片段", tool: true })
-        .success,
+      ModelDeploymentSnapshotV1Schema.safeParse({
+        ...deployment,
+        embeddingDimensions: undefined,
+      }).success,
+    ).toBe(false);
+    expect(
+      EmbeddingResultV1Schema.safeParse({
+        schemaVersion: "1",
+        invocationId: "invocation-model",
+        modelDeploymentRef: { entityId: "deployment", versionId: "v1" },
+        serverBuildRef: { entityId: "llama-build", versionId: "v1" },
+        modelVersionRef: { entityId: "model", versionId: "v1" },
+        usage: { available: false },
+        rawResponseRef: {
+          kind: "diagnostic-artifact",
+          reference: { entityId: "raw", versionId: "v1" },
+        },
+        vectors: [[1, 2]],
+        dimensions: 3,
+      }).success,
+    ).toBe(false);
+    expect(
+      ConversationTextDeltaV1Schema.safeParse({
+        schemaVersion: "1",
+        sequence: 0,
+        text: "片段",
+        tool: true,
+      }).success,
     ).toBe(false);
     expect(
       ConversationReceiptV1Schema.safeParse({
@@ -174,8 +204,11 @@ describe("model gateway core contract", () => {
     });
     expect(mapped.code).toBe("TRANSIENT_FAILURE");
     expect(mapped.retryable).toBe(true);
-    expect(
-      ModelGatewayErrorV1Schema.safeParse({ ...timeout, unexpected: true }).success,
-    ).toBe(false);
+    expect(ModelGatewayErrorV1Schema.safeParse({ ...timeout, unexpected: true }).success).toBe(
+      false,
+    );
+    expect(ModelGatewayErrorV1Schema.safeParse({ ...timeout, category: "embedding" }).success).toBe(
+      false,
+    );
   });
 });

@@ -29,6 +29,7 @@ import {
   type StructuredCompletionRequestV1,
   type StructuredCompletionResultV1,
   type ModelGatewayPortV1,
+  type ModelInvocationBaseV1,
   modelGatewayError,
   z,
   type ZodType,
@@ -164,10 +165,7 @@ const ModelsResponseSchema = z
   })
   .passthrough();
 
-type RequestValue =
-  | StructuredCompletionRequestV1
-  | EmbeddingRequestV1
-  | ConversationRequestV1;
+type RequestValue = StructuredCompletionRequestV1 | EmbeddingRequestV1 | ConversationRequestV1;
 type StreamRequest = ConversationRequestV1;
 
 export interface ModelGatewayObservationV1 {
@@ -185,9 +183,22 @@ export interface ModelGatewayObservationV1 {
 
 export type ModelGatewayObserverV1 = (observation: ModelGatewayObservationV1) => void;
 
+export interface ParentArtifactPreflightRequestV1 {
+  readonly projectId: ModelInvocationBaseV1["projectId"];
+  readonly authorization: ModelInvocationBaseV1["authorization"];
+  readonly requiredCapability: ModelInvocationBaseV1["requiredCapability"];
+  readonly parentArtifactRefs: ModelInvocationBaseV1["parentArtifactRefs"];
+  readonly purposeCode: "model-raw-response";
+}
+
+export type ParentArtifactPreflightV1 = (
+  request: ParentArtifactPreflightRequestV1,
+) => Promise<void>;
+
 export interface LlamaCppModelGatewayOptionsV1 {
   readonly deployments: readonly LlamaCppDeploymentConfigV1[];
   readonly artifactStore: ArtifactStoreV1;
+  readonly parentArtifactPreflight?: ParentArtifactPreflightV1;
   readonly fetchImpl?: typeof fetch;
   readonly now?: () => Date;
   readonly observe?: ModelGatewayObserverV1;
@@ -220,6 +231,8 @@ class OneSlotQueue<T> implements AsyncIterable<T> {
     readonly reject: (error: unknown) => void;
   }> = [];
   readonly #producers: Array<() => void> = [];
+
+  constructor(readonly onConsumerStop?: () => void) {}
 
   async push(value: T): Promise<void> {
     if (this.#closed) throw this.#closeError ?? new Error("queue closed");
@@ -269,10 +282,12 @@ class OneSlotQueue<T> implements AsyncIterable<T> {
     return {
       next: () => this.next(),
       return: async () => {
+        this.onConsumerStop?.();
         this.close(new ConsumerStoppedError());
         return { done: true, value: undefined };
       },
       throw: async (error?: unknown) => {
+        this.onConsumerStop?.();
         this.close(error ?? new ConsumerStoppedError());
         throw error;
       },
@@ -299,16 +314,22 @@ const refFromUnknown = (value: unknown): { entityId: string; versionId: string }
   if (isRecord(value) && isRecord(value.reference)) {
     const entityId = value.reference.entityId;
     const versionId = value.reference.versionId;
-    if (typeof entityId === "string" && typeof versionId === "string") return { entityId, versionId };
+    if (typeof entityId === "string" && typeof versionId === "string")
+      return { entityId, versionId };
   }
   return { entityId: "invalid", versionId: "invalid" };
 };
 
 const requestIdentity = (
   request: unknown,
-): { readonly invocationId: string; readonly modelDeploymentRef: { entityId: string; versionId: string } } => ({
+): {
+  readonly invocationId: string;
+  readonly modelDeploymentRef: { entityId: string; versionId: string };
+} => ({
   invocationId:
-    isRecord(request) && typeof request.invocationId === "string" ? request.invocationId : "invalid",
+    isRecord(request) && typeof request.invocationId === "string"
+      ? request.invocationId
+      : "invalid",
   modelDeploymentRef: refFromUnknown(isRecord(request) ? request.modelDeploymentRef : undefined),
 });
 
@@ -316,9 +337,7 @@ const chunksOf = async function* (bytes: Uint8Array): AsyncGenerator<Uint8Array>
   yield bytes;
 };
 
-const readStream = async function* (
-  body: ReadableStream<Uint8Array>,
-): AsyncGenerator<Uint8Array> {
+const readStream = async function* (body: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> {
   const reader = body.getReader();
   try {
     for (;;) {
@@ -331,10 +350,7 @@ const readStream = async function* (
   }
 };
 
-const readBoundedBytes = async (
-  response: Response,
-  maxBytes: number,
-): Promise<Uint8Array> => {
+const readBoundedBytes = async (response: Response, maxBytes: number): Promise<Uint8Array> => {
   if (response.body === null) return new Uint8Array();
   const parts: Uint8Array[] = [];
   let total = 0;
@@ -350,7 +366,10 @@ const readBoundedBytes = async (
   return concatBytes(parts, total);
 };
 
-const concatBytes = (parts: readonly Uint8Array[], total = parts.reduce((sum, part) => sum + part.byteLength, 0)): Uint8Array => {
+const concatBytes = (
+  parts: readonly Uint8Array[],
+  total = parts.reduce((sum, part) => sum + part.byteLength, 0),
+): Uint8Array => {
   const result = new Uint8Array(total);
   let offset = 0;
   for (const part of parts) {
@@ -360,7 +379,8 @@ const concatBytes = (parts: readonly Uint8Array[], total = parts.reduce((sum, pa
   return result;
 };
 
-const decodeUtf8 = (bytes: Uint8Array): string => new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+const decodeUtf8 = (bytes: Uint8Array): string =>
+  new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 const decodeJson = (bytes: Uint8Array): unknown => JSON.parse(decodeUtf8(bytes));
 
 const statusRetryable = (status: number): boolean =>
@@ -369,8 +389,11 @@ const statusRetryable = (status: number): boolean =>
 const usageFromWire = (value: unknown): ModelUsageV1 => {
   const parsed = UsageWireSchema.safeParse(value);
   if (!parsed.success) return { available: false };
-  const { prompt_tokens: inputTokens, completion_tokens: outputTokens, total_tokens: totalTokens } =
-    parsed.data;
+  const {
+    prompt_tokens: inputTokens,
+    completion_tokens: outputTokens,
+    total_tokens: totalTokens,
+  } = parsed.data;
   if (inputTokens === undefined && outputTokens === undefined && totalTokens === undefined)
     return { available: false };
   return {
@@ -405,6 +428,7 @@ const makeSseDelta = (sequence: number, text: string): ConversationTextDeltaV1 =
 export class LlamaCppModelGateway implements ModelGatewayPortV1 {
   readonly #deployments: ReadonlyMap<string, FrozenLlamaCppDeploymentConfigV1>;
   readonly #artifactStore: ArtifactStoreV1;
+  readonly #parentArtifactPreflight: ParentArtifactPreflightV1 | undefined;
   readonly #fetch: typeof fetch;
   readonly #now: () => Date;
   readonly #observe: ModelGatewayObserverV1 | undefined;
@@ -412,6 +436,7 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
 
   constructor(options: LlamaCppModelGatewayOptionsV1) {
     this.#artifactStore = options.artifactStore;
+    this.#parentArtifactPreflight = options.parentArtifactPreflight;
     this.#fetch = options.fetchImpl ?? fetch;
     this.#now = options.now ?? (() => new Date());
     this.#observe = options.observe;
@@ -440,8 +465,12 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
   streamConversation(
     request: ConversationRequestV1,
     signal?: AbortSignal,
-  ): { readonly deltas: AsyncIterable<ConversationTextDeltaV1>; readonly completed: Promise<ConversationReceiptV1> } {
-    const output = new OneSlotQueue<ConversationTextDeltaV1>();
+  ): {
+    readonly deltas: AsyncIterable<ConversationTextDeltaV1>;
+    readonly completed: Promise<ConversationReceiptV1>;
+  } {
+    const consumerController = new AbortController();
+    const output = new OneSlotQueue<ConversationTextDeltaV1>(() => consumerController.abort());
     const parsed = ConversationRequestV1Schema.safeParse(request);
     let resolveCompleted!: (value: ConversationReceiptV1) => void;
     let rejectCompleted!: (error: unknown) => void;
@@ -457,7 +486,13 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
       return { deltas: output, completed };
     }
     const value = parsed.data;
-    const run = this.#runStream(value, signal, output);
+    const run = this.#runStream(
+      value,
+      signal === undefined
+        ? consumerController.signal
+        : AbortSignal.any([signal, consumerController.signal]),
+      output,
+    );
     run.then(
       (receipt) => {
         output.close();
@@ -484,6 +519,7 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
       config = this.#deploymentFor(request, "completeStructured");
       this.#assertBudget(request, config, inputBytesForMessages(request.messages));
       const jsonSchema = this.#toJsonSchema(request, outputSchema);
+      await this.#preflightParentArtifacts(request);
       control = this.#createControl(request, config, callerSignal);
       if (control.reason() === "caller")
         throw this.#error(request, "MODEL_ABORTED", "request.cancelled", false);
@@ -512,7 +548,13 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
         bytes = await readBoundedBytes(response, config.maxResponseBytes);
       } catch (error) {
         if (error instanceof ResponseBodyLimitError) {
-          const raw = await this.#persistRaw(request, error.partial, "application/json", "complete");
+          const raw = await this.#persistRaw(
+            request,
+            error.partial,
+            "application/json",
+            "complete",
+            config.maxResponseBytes,
+          );
           throw this.#error(request, "MODEL_STRUCTURE_INVALID", "chat.response-size", false, {
             rawResponseRef: raw.ref,
             counts: { responseBytes: error.partial.byteLength },
@@ -520,8 +562,15 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
         }
         throw error;
       }
-      const raw = await this.#persistRaw(request, bytes, "application/json", "complete");
-      if (!response.ok) throw this.#httpError(request, response.status, "chat.http", raw.ref, raw.bytes.byteLength);
+      const raw = await this.#persistRaw(
+        request,
+        bytes,
+        "application/json",
+        "complete",
+        config.maxResponseBytes,
+      );
+      if (!response.ok)
+        throw this.#httpError(request, response.status, "chat.http", raw.ref, raw.bytes.byteLength);
       const parsed = this.#parseChatResponse(request, raw.bytes, raw.ref, "chat.complete");
       if (parsed.finishReason !== "stop") {
         throw this.#error(request, "MODEL_STRUCTURE_INVALID", "chat.finish", false, {
@@ -568,11 +617,7 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
     } catch (error) {
       const mapped = this.#mapError(error, request, control);
       this.#invalidateProbeAfterFailure(config, mapped);
-      const failure = await this.#failureWithDiagnostic(
-        request,
-        mapped,
-        "complete",
-      );
+      const failure = await this.#failureWithDiagnostic(request, mapped, "complete");
       this.#emit("completeStructured", "complete", failure.code, startedAt, {
         inputBytes: inputBytesForMessages(request.messages),
         rawResponseRef: failure.rawResponseRef,
@@ -596,6 +641,7 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
       config = this.#deploymentFor(request, "embed");
       const inputBytes = inputBytesForTexts(request.texts);
       this.#assertBudget(request, config, inputBytes);
+      await this.#preflightParentArtifacts(request);
       control = this.#createControl(request, config, callerSignal);
       if (control.reason() === "caller")
         throw this.#error(request, "MODEL_ABORTED", "request.cancelled", false);
@@ -619,7 +665,13 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
         bytes = await readBoundedBytes(response, config.maxResponseBytes);
       } catch (error) {
         if (error instanceof ResponseBodyLimitError) {
-          const raw = await this.#persistRaw(request, error.partial, "application/json", "embed");
+          const raw = await this.#persistRaw(
+            request,
+            error.partial,
+            "application/json",
+            "embed",
+            config.maxResponseBytes,
+          );
           throw this.#error(request, "MODEL_EMBEDDING_INVALID", "embedding.response-size", false, {
             rawResponseRef: raw.ref,
             counts: { responseBytes: error.partial.byteLength },
@@ -627,8 +679,21 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
         }
         throw error;
       }
-      const raw = await this.#persistRaw(request, bytes, "application/json", "embed");
-      if (!response.ok) throw this.#httpError(request, response.status, "embedding.http", raw.ref, raw.bytes.byteLength);
+      const raw = await this.#persistRaw(
+        request,
+        bytes,
+        "application/json",
+        "embed",
+        config.maxResponseBytes,
+      );
+      if (!response.ok)
+        throw this.#httpError(
+          request,
+          response.status,
+          "embedding.http",
+          raw.ref,
+          raw.bytes.byteLength,
+        );
       let wire: z.infer<typeof EmbeddingResponseSchema>;
       try {
         wire = EmbeddingResponseSchema.parse(decodeJson(raw.bytes));
@@ -638,9 +703,15 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
         });
       }
       if (config.embeddingDimensions === undefined) {
-        throw this.#error(request, "MODEL_DEPLOYMENT_MISMATCH", "embedding.dimension-config", false, {
-          rawResponseRef: raw.ref,
-        });
+        throw this.#error(
+          request,
+          "MODEL_DEPLOYMENT_MISMATCH",
+          "embedding.dimension-config",
+          false,
+          {
+            rawResponseRef: raw.ref,
+          },
+        );
       }
       const embeddingDimensions = config.embeddingDimensions;
       const indices = wire.data.map((item) => item.index);
@@ -717,6 +788,7 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
       config = this.#deploymentFor(request, "streamConversation");
       const inputBytes = inputBytesForMessages(request.messages);
       this.#assertBudget(request, config, inputBytes);
+      await this.#preflightParentArtifacts(request);
       control = this.#createControl(request, config, callerSignal);
       if (control.reason() === "caller")
         throw this.#error(request, "MODEL_ABORTED", "request.cancelled", false);
@@ -748,14 +820,26 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
           if (error instanceof ResponseBodyLimitError) bytes = error.partial;
           else throw error;
         }
-        const raw = await this.#persistRaw(request, bytes, "application/json", "stream");
+        const raw = await this.#persistRaw(
+          request,
+          bytes,
+          "application/json",
+          "stream",
+          config.maxResponseBytes,
+        );
         throw this.#httpError(request, response.status, "stream.http", raw.ref, bytes.byteLength);
       }
-      if (response.body === null) throw this.#error(request, "MODEL_STREAM_INTERRUPTED", "stream.body", true);
+      if (response.body === null)
+        throw this.#error(request, "MODEL_STREAM_INTERRUPTED", "stream.body", true);
 
       parserQueue = new OneSlotQueue<Uint8Array>();
       artifactQueue = new OneSlotQueue<Uint8Array>();
-      const putCommand = this.#artifactCommand(request, "model-raw-response", "model-raw-response", "text/event-stream");
+      const putCommand = this.#artifactCommand(
+        request,
+        "model-raw-response",
+        "model-raw-response",
+        "text/event-stream",
+      );
       putPromise = this.#artifactStore
         .put(putCommand, artifactQueue)
         .then((result) => ArtifactPutResultV1Schema.parse(result));
@@ -765,16 +849,12 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
         control?.abort("caller");
       });
       control.resetIdle();
-      const parserPromise = this.#parseSse(
-        parserQueue,
-        request,
-        config,
-        output,
-        control,
-      ).catch((error: unknown) => {
-        parserQueue?.close(error);
-        throw error;
-      });
+      const parserPromise = this.#parseSse(parserQueue, request, config, output, control).catch(
+        (error: unknown) => {
+          parserQueue?.close(error);
+          throw error;
+        },
+      );
       let responseBytes = 0;
       let streamFailure: unknown;
       try {
@@ -809,7 +889,8 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
         return undefined;
       });
       if (streamFailure !== undefined) {
-        if (artifactFailure !== undefined) throw this.#artifactFailureError(request, artifactFailure);
+        if (artifactFailure !== undefined)
+          throw this.#artifactFailureError(request, artifactFailure);
         if (persisted === undefined) throw streamFailure;
         const failure = this.#mapError(streamFailure, request, control);
         throw new ModelGatewayError(
@@ -829,7 +910,12 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
         });
       }
       if (persisted.artifactRef.kind !== "diagnostic-artifact") {
-        throw this.#error(request, "MODEL_ARTIFACT_PERSISTENCE_FAILED", "stream.artifact-kind", false);
+        throw this.#error(
+          request,
+          "MODEL_ARTIFACT_PERSISTENCE_FAILED",
+          "stream.artifact-kind",
+          false,
+        );
       }
       const persistedRef = persisted.artifactRef;
       const receipt = ConversationReceiptV1Schema.parse({
@@ -897,14 +983,16 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
     const processEvent = async (): Promise<void> => {
       if (dataLines.length === 0) return;
       eventCount += 1;
-      if (eventCount > config.maxResponseBytes) throw this.#error(request, "MODEL_PROTOCOL_ERROR", "stream.events", false);
+      if (eventCount > config.maxResponseBytes)
+        throw this.#error(request, "MODEL_PROTOCOL_ERROR", "stream.events", false);
       const data = dataLines.join("\n");
       dataLines = [];
       if (data === "[DONE]") {
         doneMarker = true;
         return;
       }
-      if (doneMarker) throw this.#error(request, "MODEL_PROTOCOL_ERROR", "stream.after-done", false);
+      if (doneMarker)
+        throw this.#error(request, "MODEL_PROTOCOL_ERROR", "stream.after-done", false);
       let parsed: z.infer<typeof ChatStreamResponseSchema>;
       try {
         parsed = ChatStreamResponseSchema.parse(JSON.parse(data));
@@ -912,17 +1000,24 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
         throw this.#error(request, "MODEL_PROTOCOL_ERROR", "stream.event", false);
       }
       if (parsed.usage !== undefined) usage = usageFromWire(parsed.usage);
-      if (parsed.choices.length > 1) throw this.#error(request, "MODEL_PROTOCOL_ERROR", "stream.choice-count", false);
+      if (parsed.choices.length > 1)
+        throw this.#error(request, "MODEL_PROTOCOL_ERROR", "stream.choice-count", false);
       const choice = parsed.choices[0];
       if (choice === undefined) return;
-      if (choice.index !== 0) throw this.#error(request, "MODEL_PROTOCOL_ERROR", "stream.choice-index", false);
+      if (choice.index !== 0)
+        throw this.#error(request, "MODEL_PROTOCOL_ERROR", "stream.choice-index", false);
       if (choice.finish_reason !== null) {
         if (finishReason !== undefined && finishReason !== choice.finish_reason)
           throw this.#error(request, "MODEL_PROTOCOL_ERROR", "stream.finish-repeat", false);
         finishReason = choice.finish_reason;
       }
       const content = choice.delta.content;
-      if (finishReason !== undefined && content !== undefined && content !== null && content.length > 0)
+      if (
+        finishReason !== undefined &&
+        content !== undefined &&
+        content !== null &&
+        content.length > 0
+      )
         throw this.#error(request, "MODEL_PROTOCOL_ERROR", "stream.after-finish", false);
       if (content !== undefined && content !== null && content.length > 0) {
         const delta = makeSseDelta(sequence, content);
@@ -948,7 +1043,13 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
     };
     try {
       for await (const chunk of chunks) {
-        if (control.reason() !== undefined) throw this.#error(request, "MODEL_ABORTED", "stream.cancelled", false);
+        const reason = control.reason();
+        if (reason === "caller")
+          throw this.#error(request, "MODEL_ABORTED", "stream.cancelled", false);
+        if (reason === "idle")
+          throw this.#error(request, "MODEL_STREAM_IDLE_TIMEOUT", "stream.idle", true);
+        if (reason === "deadline" || reason === "request-timeout")
+          throw this.#error(request, "MODEL_REQUEST_TIMEOUT", "stream.timeout", true);
         textBuffer += decoder.decode(chunk, { stream: true });
         if (textBuffer.length > maxEventChars && !textBuffer.includes("\n"))
           throw this.#error(request, "MODEL_PROTOCOL_ERROR", "stream.line-size", false);
@@ -978,8 +1079,10 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
       throw error;
     }
     if (finishReason === undefined || !doneMarker) {
-      if (control.reason() === "idle") throw this.#error(request, "MODEL_STREAM_IDLE_TIMEOUT", "stream.idle", true);
-      if (control.reason() === "caller") throw this.#error(request, "MODEL_ABORTED", "stream.cancelled", false);
+      if (control.reason() === "idle")
+        throw this.#error(request, "MODEL_STREAM_IDLE_TIMEOUT", "stream.idle", true);
+      if (control.reason() === "caller")
+        throw this.#error(request, "MODEL_ABORTED", "stream.cancelled", false);
       if (control.reason() === "deadline" || control.reason() === "request-timeout")
         throw this.#error(request, "MODEL_REQUEST_TIMEOUT", "stream.timeout", true);
       throw this.#error(request, "MODEL_STREAM_INTERRUPTED", "stream.eof", true);
@@ -1008,7 +1111,19 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
     code: ModelGatewayErrorCodeV1,
     stage: string,
     retryable: boolean,
-    extra: Partial<Omit<ModelGatewayErrorV1, "schemaVersion" | "code" | "category" | "retryable" | "stage" | "occurredAt" | "invocationId" | "modelDeploymentRef">> = {},
+    extra: Partial<
+      Omit<
+        ModelGatewayErrorV1,
+        | "schemaVersion"
+        | "code"
+        | "category"
+        | "retryable"
+        | "stage"
+        | "occurredAt"
+        | "invocationId"
+        | "modelDeploymentRef"
+      >
+    > = {},
   ): ModelGatewayError {
     return new ModelGatewayError(
       modelGatewayError({
@@ -1028,7 +1143,19 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
     code: ModelGatewayErrorCodeV1,
     stage: string,
     retryable: boolean,
-    extra: Partial<Omit<ModelGatewayErrorV1, "schemaVersion" | "code" | "category" | "retryable" | "stage" | "occurredAt" | "invocationId" | "modelDeploymentRef">> = {},
+    extra: Partial<
+      Omit<
+        ModelGatewayErrorV1,
+        | "schemaVersion"
+        | "code"
+        | "category"
+        | "retryable"
+        | "stage"
+        | "occurredAt"
+        | "invocationId"
+        | "modelDeploymentRef"
+      >
+    > = {},
   ): ModelGatewayError {
     return this.#errorFromIdentity(
       { invocationId: request.invocationId, modelDeploymentRef: request.modelDeploymentRef },
@@ -1044,7 +1171,8 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
     capability: "completeStructured" | "embed" | "streamConversation",
   ): FrozenLlamaCppDeploymentConfigV1 {
     const config = this.#deployments.get(llamaCppDeploymentKey(request.modelDeploymentRef));
-    if (config === undefined) throw this.#error(request, "MODEL_DEPLOYMENT_NOT_FOUND", "deployment.lookup", false);
+    if (config === undefined)
+      throw this.#error(request, "MODEL_DEPLOYMENT_NOT_FOUND", "deployment.lookup", false);
     if (!config.capabilities.includes(capability))
       throw this.#error(request, "MODEL_CAPABILITY_UNAVAILABLE", "deployment.capability", false);
     if (
@@ -1056,7 +1184,11 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
     return config;
   }
 
-  #assertBudget(request: RequestValue, config: FrozenLlamaCppDeploymentConfigV1, inputBytes: number): void {
+  #assertBudget(
+    request: RequestValue,
+    config: FrozenLlamaCppDeploymentConfigV1,
+    inputBytes: number,
+  ): void {
     if (Date.parse(request.deadlineAt) <= this.#now().getTime())
       throw this.#error(request, "MODEL_REQUEST_TIMEOUT", "request.deadline", true);
     if (inputBytes > config.maxInputBytes) {
@@ -1073,7 +1205,10 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
       }
     }
     if ("maxInputBytes" in request) {
-      if (request.maxInputBytes > config.maxInputBytes || request.maxBatchItems > config.maxBatchItems)
+      if (
+        request.maxInputBytes > config.maxInputBytes ||
+        request.maxBatchItems > config.maxBatchItems
+      )
         throw this.#error(request, "MODEL_INPUT_INVALID", "request.input-budget", false);
       if (request.texts.length > request.maxBatchItems) {
         throw this.#error(request, "MODEL_CONTEXT_EXCEEDED", "request.batch", false, {
@@ -1085,6 +1220,30 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
           counts: { inputBytes },
         });
       }
+    }
+  }
+
+  async #preflightParentArtifacts(request: RequestValue): Promise<void> {
+    if (request.parentArtifactRefs.length === 0) return;
+    if (this.#parentArtifactPreflight === undefined)
+      throw this.#error(request, "MODEL_AUTHORIZATION_DENIED", "parent-artifact.preflight", false);
+    try {
+      await this.#parentArtifactPreflight({
+        projectId: request.projectId,
+        authorization: request.authorization,
+        requiredCapability: request.requiredCapability,
+        parentArtifactRefs: request.parentArtifactRefs,
+        purposeCode: "model-raw-response",
+      });
+    } catch (error) {
+      if (error instanceof ModelGatewayError) throw error;
+      if (error instanceof ArtifactStoreError) throw this.#artifactError(request, error);
+      throw this.#error(
+        request,
+        "MODEL_ARTIFACT_PERSISTENCE_FAILED",
+        "parent-artifact.preflight",
+        false,
+      );
     }
   }
 
@@ -1109,7 +1268,10 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
     };
     if (callerSignal?.aborted) onCallerAbort();
     else callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
-    const signal = callerSignal === undefined ? internal.signal : AbortSignal.any([callerSignal, internal.signal]);
+    const signal =
+      callerSignal === undefined
+        ? internal.signal
+        : AbortSignal.any([callerSignal, internal.signal]);
     return {
       signal,
       reason: () => abortReason,
@@ -1184,31 +1346,64 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
     let health: Uint8Array;
     let propsEmbeddingDimensions: number | undefined;
     try {
-      const response = await this.#fetchResponse(request, config, control, "/health", undefined, "probe.health");
+      const response = await this.#fetchResponse(
+        request,
+        config,
+        control,
+        "/health",
+        undefined,
+        "probe.health",
+      );
       health = await readBoundedBytes(response, Math.min(config.maxResponseBytes, 256 * 1024));
-      if (!response.ok) throw this.#error(request, "MODEL_SERVICE_UNAVAILABLE", "probe.health", true);
+      if (!response.ok)
+        throw this.#error(request, "MODEL_SERVICE_UNAVAILABLE", "probe.health", true);
       if (health.byteLength > 0) HealthResponseSchema.parse(decodeJson(health));
     } catch (error) {
       throw this.#mapError(error, request, control);
     }
     void health;
     try {
-      const propsResponse = await this.#fetchResponse(request, config, control, "/props", undefined, "probe.props");
-      const propsBytes = await readBoundedBytes(propsResponse, Math.min(config.maxResponseBytes, 256 * 1024));
-      if (!propsResponse.ok) throw this.#error(request, "MODEL_SERVICE_UNAVAILABLE", "probe.props", true);
+      const propsResponse = await this.#fetchResponse(
+        request,
+        config,
+        control,
+        "/props",
+        undefined,
+        "probe.props",
+      );
+      const propsBytes = await readBoundedBytes(
+        propsResponse,
+        Math.min(config.maxResponseBytes, 256 * 1024),
+      );
+      if (!propsResponse.ok)
+        throw this.#error(request, "MODEL_SERVICE_UNAVAILABLE", "probe.props", true);
       const props = PropsResponseSchema.parse(decodeJson(propsBytes));
       propsEmbeddingDimensions = props.n_embd;
       const contextWindow = props.n_ctx ?? props.default_generation_settings?.n_ctx;
-      if (props.build_info !== config.expectedBuildInfo || contextWindow !== config.contextWindowTokens) {
+      if (
+        props.build_info !== config.expectedBuildInfo ||
+        contextWindow !== config.contextWindowTokens
+      ) {
         throw this.#error(request, "MODEL_DEPLOYMENT_MISMATCH", "probe.props", false);
       }
     } catch (error) {
       throw this.#mapError(error, request, control);
     }
     try {
-      const modelsResponse = await this.#fetchResponse(request, config, control, "/v1/models", undefined, "probe.models");
-      const modelsBytes = await readBoundedBytes(modelsResponse, Math.min(config.maxResponseBytes, 256 * 1024));
-      if (!modelsResponse.ok) throw this.#error(request, "MODEL_SERVICE_UNAVAILABLE", "probe.models", true);
+      const modelsResponse = await this.#fetchResponse(
+        request,
+        config,
+        control,
+        "/v1/models",
+        undefined,
+        "probe.models",
+      );
+      const modelsBytes = await readBoundedBytes(
+        modelsResponse,
+        Math.min(config.maxResponseBytes, 256 * 1024),
+      );
+      if (!modelsResponse.ok)
+        throw this.#error(request, "MODEL_SERVICE_UNAVAILABLE", "probe.models", true);
       const models = ModelsResponseSchema.parse(decodeJson(modelsBytes));
       const model = models.data.find((entry) => entry.id === config.modelAlias);
       if (model === undefined)
@@ -1243,16 +1438,28 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
       try {
         const envelope = HttpErrorEnvelopeSchema.parse(decodeJson(bytes));
         contextError =
-          envelope.error.code === "context_length_exceeded" || envelope.error.code === "context_window_exceeded";
+          envelope.error.code === "context_length_exceeded" ||
+          envelope.error.code === "context_window_exceeded";
       } catch {
         // The public error remains a closed protocol error when the envelope is not recognized.
       }
-      if (contextError) throw this.#error(request, "MODEL_CONTEXT_EXCEEDED", "chat.input-tokens", false);
-      throw this.#httpError(request, response.status, "chat.input-tokens", undefined, bytes.byteLength);
+      if (contextError)
+        throw this.#error(request, "MODEL_CONTEXT_EXCEEDED", "chat.input-tokens", false);
+      throw this.#httpError(
+        request,
+        response.status,
+        "chat.input-tokens",
+        undefined,
+        bytes.byteLength,
+      );
     }
     try {
       const result = InputTokensResponseSchema.parse(decodeJson(bytes));
-      return "tokens" in result ? result.tokens : "input_tokens" in result ? result.input_tokens : result.n_tokens;
+      return "tokens" in result
+        ? result.tokens
+        : "input_tokens" in result
+          ? result.input_tokens
+          : result.n_tokens;
     } catch {
       throw this.#error(request, "MODEL_PROTOCOL_ERROR", "chat.input-tokens", false);
     }
@@ -1278,13 +1485,20 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
         try {
           const envelope = HttpErrorEnvelopeSchema.parse(decodeJson(bytes));
           contextError =
-            envelope.error.code === "context_length_exceeded" || envelope.error.code === "context_window_exceeded";
+            envelope.error.code === "context_length_exceeded" ||
+            envelope.error.code === "context_window_exceeded";
         } catch {
           // The public error remains a closed protocol error when the envelope is not recognized.
         }
         if (contextError)
           throw this.#error(request, "MODEL_CONTEXT_EXCEEDED", "embedding.input-tokens", false);
-        throw this.#httpError(request, response.status, "embedding.input-tokens", undefined, bytes.byteLength);
+        throw this.#httpError(
+          request,
+          response.status,
+          "embedding.input-tokens",
+          undefined,
+          bytes.byteLength,
+        );
       }
       let tokenCount: number;
       try {
@@ -1326,7 +1540,10 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
     };
   }
 
-  #toJsonSchema<T>(request: StructuredCompletionRequestV1, schema: ZodType<T>): Record<string, unknown> {
+  #toJsonSchema<T>(
+    request: StructuredCompletionRequestV1,
+    schema: ZodType<T>,
+  ): Record<string, unknown> {
     try {
       const generated = z.toJSONSchema(schema as never) as Record<string, unknown>;
       const { $schema: _schema, ...withoutMeta } = generated;
@@ -1353,14 +1570,18 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
     try {
       return await this.#fetch(new URL(path, config.baseUrl), {
         method: payload === undefined ? "GET" : "POST",
-        ...(payload === undefined ? {} : { body: JSON.stringify(payload), headers: { "content-type": "application/json" } }),
+        ...(payload === undefined
+          ? {}
+          : { body: JSON.stringify(payload), headers: { "content-type": "application/json" } }),
         redirect: "error",
         signal: control.signal,
       });
     } catch {
       const reason = control.reason();
-      if (reason === "caller") throw this.#error(request, "MODEL_ABORTED", `${stage}.cancelled`, false);
-      if (reason === "idle") throw this.#error(request, "MODEL_STREAM_IDLE_TIMEOUT", `${stage}.idle`, true);
+      if (reason === "caller")
+        throw this.#error(request, "MODEL_ABORTED", `${stage}.cancelled`, false);
+      if (reason === "idle")
+        throw this.#error(request, "MODEL_STREAM_IDLE_TIMEOUT", `${stage}.idle`, true);
       if (reason === "deadline" || reason === "request-timeout")
         throw this.#error(request, "MODEL_REQUEST_TIMEOUT", `${stage}.timeout`, true);
       throw this.#error(request, "MODEL_SERVICE_UNAVAILABLE", `${stage}.unavailable`, true);
@@ -1372,19 +1593,34 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
     bytes: Uint8Array,
     rawResponseRef: DiagnosticArtifactRefV1,
     stage: string,
-  ): { readonly content: string; readonly finishReason: "stop" | "length"; readonly usage: ModelUsageV1 } {
+  ): {
+    readonly content: string;
+    readonly finishReason: "stop" | "length";
+    readonly usage: ModelUsageV1;
+  } {
     let parsed: z.infer<typeof ChatResponseSchema>;
     try {
       parsed = ChatResponseSchema.parse(decodeJson(bytes));
     } catch {
-      throw this.#error(request, "MODEL_PROTOCOL_ERROR", `${stage}.protocol`, false, { rawResponseRef });
+      throw this.#error(request, "MODEL_PROTOCOL_ERROR", `${stage}.protocol`, false, {
+        rawResponseRef,
+      });
     }
     if (parsed.choices.length !== 1) {
-      throw this.#error(request, "MODEL_STRUCTURE_INVALID", `${stage}.choice-count`, false, { rawResponseRef });
+      throw this.#error(request, "MODEL_STRUCTURE_INVALID", `${stage}.choice-count`, false, {
+        rawResponseRef,
+      });
     }
     const choice = parsed.choices[0]!;
-    if (choice.index !== 0 || choice.finish_reason === null || choice.message.content === undefined || choice.message.content === null) {
-      throw this.#error(request, "MODEL_STRUCTURE_INVALID", `${stage}.choice`, false, { rawResponseRef });
+    if (
+      choice.index !== 0 ||
+      choice.finish_reason === null ||
+      choice.message.content === undefined ||
+      choice.message.content === null
+    ) {
+      throw this.#error(request, "MODEL_STRUCTURE_INVALID", `${stage}.choice`, false, {
+        rawResponseRef,
+      });
     }
     return {
       content: choice.message.content,
@@ -1406,7 +1642,11 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
     });
   }
 
-  #mapError(error: unknown, request: RequestValue, control: CallControl | undefined): ModelGatewayError {
+  #mapError(
+    error: unknown,
+    request: RequestValue,
+    control: CallControl | undefined,
+  ): ModelGatewayError {
     if (error instanceof ModelGatewayError) return error;
     if (error instanceof ArtifactStoreError) return this.#artifactError(request, error);
     if (error instanceof ResponseBodyLimitError)
@@ -1416,8 +1656,10 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
     if (error instanceof ConsumerStoppedError)
       return this.#error(request, "MODEL_ABORTED", "stream.consumer", false);
     const reason = control?.reason();
-    if (reason === "caller") return this.#error(request, "MODEL_ABORTED", "request.cancelled", false);
-    if (reason === "idle") return this.#error(request, "MODEL_STREAM_IDLE_TIMEOUT", "stream.idle", true);
+    if (reason === "caller")
+      return this.#error(request, "MODEL_ABORTED", "request.cancelled", false);
+    if (reason === "idle")
+      return this.#error(request, "MODEL_STREAM_IDLE_TIMEOUT", "stream.idle", true);
     if (reason === "deadline" || reason === "request-timeout")
       return this.#error(request, "MODEL_REQUEST_TIMEOUT", "request.timeout", true);
     return this.#error(request, "MODEL_PROTOCOL_ERROR", "request.failure", false);
@@ -1433,9 +1675,15 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
         diagnosticRef: error.diagnosticRef,
         idempotencyKey: request.idempotencyKey,
       });
-    return this.#error(request, "MODEL_ARTIFACT_PERSISTENCE_FAILED", "artifact.persistence", error.retryable, {
-      diagnosticRef: error.diagnosticRef,
-    });
+    return this.#error(
+      request,
+      "MODEL_ARTIFACT_PERSISTENCE_FAILED",
+      "artifact.persistence",
+      error.retryable,
+      {
+        diagnosticRef: error.diagnosticRef,
+      },
+    );
   }
 
   #artifactFailureError(request: RequestValue, error: unknown): ModelGatewayError {
@@ -1459,17 +1707,19 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
       failure.code === "MODEL_DEPLOYMENT_MISMATCH" ||
       failure.code === "MODEL_SCHEMA_UNSUPPORTED" ||
       failure.code === "MODEL_CONTEXT_EXCEEDED" ||
-      failure.code === "MODEL_IDEMPOTENCY_CONFLICT"
+      failure.code === "MODEL_IDEMPOTENCY_CONFLICT" ||
+      failure.stage === "parent-artifact.preflight"
     )
       return failure;
     try {
       const diagnosticRef = await this.#persistDiagnostic(request, failure.code, operation);
-      return new ModelGatewayError(
-        ModelGatewayErrorV1Schema.parse({ ...failure, diagnosticRef }),
-      );
+      return new ModelGatewayError(ModelGatewayErrorV1Schema.parse({ ...failure, diagnosticRef }));
     } catch (error) {
-      const mapped = error instanceof ModelGatewayError ? error : this.#mapError(error, request, undefined);
-      return mapped.code === "MODEL_ARTIFACT_PERSISTENCE_FAILED" ? mapped : this.#error(request, "MODEL_ARTIFACT_PERSISTENCE_FAILED", "artifact.diagnostic", false);
+      const mapped =
+        error instanceof ModelGatewayError ? error : this.#mapError(error, request, undefined);
+      return mapped.code === "MODEL_ARTIFACT_PERSISTENCE_FAILED"
+        ? mapped
+        : this.#error(request, "MODEL_ARTIFACT_PERSISTENCE_FAILED", "artifact.diagnostic", false);
     }
   }
 
@@ -1524,10 +1774,17 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
     bytes: Uint8Array,
     mediaType: string,
     operation: string,
+    maxResponseBytes: number,
   ): Promise<{ readonly ref: DiagnosticArtifactRefV1; readonly bytes: Uint8Array }> {
     let result: ReturnType<typeof ArtifactPutResultV1Schema.parse>;
     try {
-      result = await this.#putArtifact(request, bytes, mediaType, "model-raw-response", "model-raw-response");
+      result = await this.#putArtifact(
+        request,
+        bytes,
+        mediaType,
+        "model-raw-response",
+        "model-raw-response",
+      );
     } catch (error) {
       throw this.#mapError(error, request, undefined);
     }
@@ -1547,7 +1804,7 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
         authorization: request.authorization,
       });
       const handle = await this.#artifactStore.open(readRequest);
-      const readBytes = await collectIterable(handle.content);
+      const readBytes = await collectIterable(handle.content, maxResponseBytes);
       await handle.verified;
       return { ref: result.artifactRef, bytes: readBytes };
     } catch (error) {
@@ -1564,12 +1821,21 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
     code: ModelGatewayErrorCodeV1,
     operation: string,
   ): Promise<DiagnosticArtifactRefV1> {
-    const body = encoder.encode(
-      JSON.stringify({ schemaVersion: "1", stage: operation, code }),
+    const body = encoder.encode(JSON.stringify({ schemaVersion: "1", stage: operation, code }));
+    const result = await this.#putArtifact(
+      request,
+      body,
+      "application/json",
+      "model-diagnostic",
+      `model-diagnostic-${operation}`,
     );
-    const result = await this.#putArtifact(request, body, "application/json", "model-diagnostic", `model-diagnostic-${operation}`);
     if (result.artifactRef.kind !== "diagnostic-artifact")
-      throw this.#error(request, "MODEL_ARTIFACT_PERSISTENCE_FAILED", "artifact.diagnostic-kind", false);
+      throw this.#error(
+        request,
+        "MODEL_ARTIFACT_PERSISTENCE_FAILED",
+        "artifact.diagnostic-kind",
+        false,
+      );
     return result.artifactRef;
   }
 
@@ -1595,11 +1861,16 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
   }
 }
 
-const collectIterable = async (content: AsyncIterable<Uint8Array>): Promise<Uint8Array> => {
+const collectIterable = async (
+  content: AsyncIterable<Uint8Array>,
+  maxBytes: number,
+): Promise<Uint8Array> => {
   const parts: Uint8Array[] = [];
   let total = 0;
   for await (const chunk of content) {
     total += chunk.byteLength;
+    if (!Number.isSafeInteger(total) || total > maxBytes)
+      throw new ResponseBodyLimitError(new Uint8Array());
     parts.push(chunk);
   }
   return concatBytes(parts, total);

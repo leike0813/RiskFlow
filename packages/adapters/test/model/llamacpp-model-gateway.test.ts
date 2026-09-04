@@ -74,9 +74,36 @@ describe("llama.cpp model gateway", () => {
     expect(store.commands[0]!.idempotencyKey).toContain("idempotency-model");
   });
 
+  it("bounds the C04 re-read before parsing a structured response", async () => {
+    const fetcher = new ScriptedFetch();
+    const store = new ArtifactStoreLatch();
+    store.appendBytesToNextOpen(testDeployment.maxResponseBytes + 1);
+    const { gateway } = gatewayWith(fetcher, store);
+    queueProbe(fetcher);
+    fetcher.enqueue(jsonResponse({ tokens: 5 }));
+    fetcher.enqueue(
+      jsonResponse({
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: '{"risk":"stable"}' },
+            finish_reason: "stop",
+          },
+        ],
+      }),
+    );
+
+    await expect(
+      gateway.completeStructured(structuredRequest(), z.strictObject({ risk: z.string() })),
+    ).rejects.toMatchObject({
+      code: "MODEL_ARTIFACT_PERSISTENCE_FAILED",
+      rawResponseRef: { kind: "diagnostic-artifact" },
+    });
+  });
+
   it("keeps embedding order and rejects an out-of-order batch without repair", async () => {
     const fetcher = new ScriptedFetch();
-    const { gateway, store } = gatewayWith(fetcher);
+    const { gateway } = gatewayWith(fetcher);
     queueProbe(fetcher);
     fetcher.enqueue(jsonResponse({ tokens: [1, 2] }));
     fetcher.enqueue(jsonResponse({ tokens: [3, 4] }));
@@ -180,6 +207,36 @@ describe("llama.cpp model gateway", () => {
     expect(fetcher.calls).toHaveLength(0);
   });
 
+  it("rejects inaccessible parent artifacts before fetch or put", async () => {
+    const fetcher = new ScriptedFetch();
+    const store = new ArtifactStoreLatch();
+    const gateway = createModelGateway({
+      deployments: [deployment()],
+      artifactStore: store,
+      fetchImpl: fetcher.fetch,
+      now: () => new Date("2030-01-01T00:00:01.000Z"),
+      parentArtifactPreflight: async (request) => {
+        expect(request.parentArtifactRefs).toHaveLength(1);
+        throw makeArtifactError("ARTIFACT_ACCESS_DENIED", "artifact.parent");
+      },
+    });
+    const request = {
+      ...structuredRequest(),
+      parentArtifactRefs: [
+        {
+          kind: "diagnostic-artifact" as const,
+          reference: { entityId: "parent", versionId: `sha256:${"0".repeat(64)}` },
+        },
+      ],
+    };
+
+    await expect(
+      gateway.completeStructured(request, z.strictObject({ risk: z.string() })),
+    ).rejects.toMatchObject({ code: "MODEL_AUTHORIZATION_DENIED" });
+    expect(fetcher.calls).toHaveLength(0);
+    expect(store.events).toHaveLength(0);
+  });
+
   it("returns a closed service error when the deployment cannot connect", async () => {
     const fetcher = new ScriptedFetch();
     const { gateway, store } = gatewayWith(fetcher);
@@ -199,6 +256,67 @@ describe("llama.cpp model gateway", () => {
     expect(error).toBeInstanceOf(ModelGatewayError);
     expect((error as ModelGatewayError).code).toBe("MODEL_SERVICE_UNAVAILABLE");
     expect(store.events).toEqual(["put:start", "put:done"]);
+  });
+
+  it("honors a caller abort before contacting the model service", async () => {
+    const fetcher = new ScriptedFetch();
+    const { gateway } = gatewayWith(fetcher);
+    const controller = new AbortController();
+    controller.abort("private abort reason");
+
+    await expect(
+      gateway.completeStructured(
+        structuredRequest(),
+        z.strictObject({ risk: z.string() }),
+        controller.signal,
+      ),
+    ).rejects.toMatchObject({ code: "MODEL_ABORTED" });
+    expect(fetcher.calls).toHaveLength(0);
+  });
+
+  it("keeps stream idle timeout distinct from caller cancellation", async () => {
+    const fetcher = new ScriptedFetch();
+    const store = new ArtifactStoreLatch();
+    const gateway = createModelGateway({
+      deployments: [
+        {
+          ...deployment(),
+          requestTimeoutMs: 100,
+          streamIdleTimeoutMs: 5,
+        },
+      ],
+      artifactStore: store,
+      fetchImpl: fetcher.fetch,
+      now: () => new Date("2030-01-01T00:00:01.000Z"),
+    });
+    queueProbe(fetcher);
+    fetcher.enqueue(jsonResponse({ tokens: 5 }));
+    fetcher.enqueue(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            setTimeout(() => {
+              controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+              controller.close();
+            }, 20);
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      ),
+    );
+
+    const handle = gateway.streamConversation({
+      ...testRequestBase,
+      conversationRef: { entityId: "conversation", versionId: "v1" },
+      promptTemplateRef: { entityId: "prompt", versionId: "v1" },
+      messages: [{ role: "user", content: "继续" }],
+      maxOutputTokens: 128,
+    });
+
+    await expect(handle.completed).rejects.toMatchObject({
+      code: "MODEL_STREAM_IDLE_TIMEOUT",
+      rawResponseRef: { kind: "diagnostic-artifact" },
+    });
   });
 
   it.each([
@@ -236,7 +354,9 @@ describe("llama.cpp model gateway", () => {
     queueProbe(invalidJsonFetcher);
     invalidJsonFetcher.enqueue(jsonResponse({ tokens: 5 }));
     invalidJsonFetcher.enqueue(
-      jsonResponse({ choices: [{ index: 0, message: { content: '{"risk":' }, finish_reason: "stop" }] }),
+      jsonResponse({
+        choices: [{ index: 0, message: { content: '{"risk":' }, finish_reason: "stop" }],
+      }),
     );
 
     const invalidJson = await invalidJsonGateway
@@ -295,7 +415,9 @@ describe("llama.cpp model gateway", () => {
     queueProbe(fetcher);
     fetcher.enqueue(jsonResponse({ tokens: 5 }));
     fetcher.enqueue(
-      streamResponse(['data: {"choices":[{"index":0,"delta":{"content":"部分"},"finish_reason":null}]}\n\n']),
+      streamResponse([
+        'data: {"choices":[{"index":0,"delta":{"content":"部分"},"finish_reason":null}]}\n\n',
+      ]),
     );
 
     const handle = gateway.streamConversation({
@@ -310,6 +432,35 @@ describe("llama.cpp model gateway", () => {
       code: "MODEL_STREAM_INTERRUPTED",
       rawResponseRef: { kind: "diagnostic-artifact" },
     });
+  });
+
+  it("rejects the terminal receipt when the consumer stops reading deltas", async () => {
+    const fetcher = new ScriptedFetch();
+    const { gateway } = gatewayWith(fetcher);
+    queueProbe(fetcher);
+    fetcher.enqueue(jsonResponse({ tokens: 5 }));
+    fetcher.enqueue(
+      streamResponse([
+        'data: {"choices":[{"index":0,"delta":{"content":"first"},"finish_reason":null}]}\n\n',
+        'data: {"choices":[{"index":0,"delta":{"content":"second"},"finish_reason":null}]}\n\n',
+        'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+        "data: [DONE]\n\n",
+      ]),
+    );
+
+    const handle = gateway.streamConversation({
+      ...testRequestBase,
+      conversationRef: { entityId: "conversation", versionId: "v1" },
+      promptTemplateRef: { entityId: "prompt", versionId: "v1" },
+      messages: [{ role: "user", content: "继续" }],
+      maxOutputTokens: 128,
+    });
+    for await (const delta of handle.deltas) {
+      expect(delta.sequence).toBe(0);
+      break;
+    }
+
+    await expect(handle.completed).rejects.toMatchObject({ code: "MODEL_ABORTED" });
   });
 
   it("fails closed when the streaming artifact cannot be persisted", async () => {

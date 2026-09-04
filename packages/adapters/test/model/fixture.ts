@@ -47,7 +47,8 @@ export class ScriptedFetch {
   }
 
   readonly fetch: typeof fetch = async (input, init): Promise<Response> => {
-    const url = input instanceof URL ? input.toString() : typeof input === "string" ? input : input.url;
+    const url =
+      input instanceof URL ? input.toString() : typeof input === "string" ? input : input.url;
     this.calls.push({
       url,
       method: init?.method ?? "GET",
@@ -67,7 +68,10 @@ export const jsonResponse = (value: unknown, status = 200): Response =>
     headers: { "content-type": "application/json" },
   });
 
-export const streamResponse = (chunks: readonly (string | Uint8Array)[], status = 200): Response => {
+export const streamResponse = (
+  chunks: readonly (string | Uint8Array)[],
+  status = 200,
+): Response => {
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       for (const chunk of chunks) controller.enqueue(bytesOf(chunk));
@@ -91,9 +95,14 @@ export class ArtifactStoreLatch implements ArtifactStoreV1 {
   readonly opened: ArtifactReadRequestV1[] = [];
   readonly artifacts = new Map<string, StoredArtifact>();
   #failPut: Error | undefined;
+  #extraOpenBytes = 0;
 
   failNextPut(error = new Error("artifact put failed")): void {
     this.#failPut = error;
+  }
+
+  appendBytesToNextOpen(byteLength: number): void {
+    this.#extraOpenBytes = byteLength;
   }
 
   async put(
@@ -146,7 +155,10 @@ export class ArtifactStoreLatch implements ArtifactStoreV1 {
       deduplicated: false,
     });
     this.commands.push(command);
-    this.artifacts.set(`${artifactRef.reference.entityId}/${artifactRef.reference.versionId}`, { bytes, result });
+    this.artifacts.set(`${artifactRef.reference.entityId}/${artifactRef.reference.versionId}`, {
+      bytes,
+      result,
+    });
     this.events.push("put:done");
     return result;
   }
@@ -157,6 +169,8 @@ export class ArtifactStoreLatch implements ArtifactStoreV1 {
     const key = `${request.artifactRef.reference.entityId}/${request.artifactRef.reference.versionId}`;
     const stored = this.artifacts.get(key);
     if (stored === undefined) throw new Error("artifact not found");
+    const extraOpenBytes = this.#extraOpenBytes;
+    this.#extraOpenBytes = 0;
     const verified: ArtifactReadReceiptV1 = {
       schemaVersion: "1",
       requestId: request.requestId,
@@ -169,6 +183,7 @@ export class ArtifactStoreLatch implements ArtifactStoreV1 {
       manifest: stored.result.manifest,
       content: (async function* (): AsyncGenerator<Uint8Array> {
         yield new Uint8Array(stored.bytes);
+        if (extraOpenBytes > 0) yield new Uint8Array(extraOpenBytes);
       })(),
       verified: Promise.resolve().then(() => {
         this.events.push("verified");
@@ -238,9 +253,9 @@ export const modelProbeResponses = (): readonly Response[] => [
 
 export const structuredRequest = () =>
   StructuredCompletionRequestV1Schema.parse({
-      ...testRequestBase,
-      promptTemplateRef: { entityId: "prompt", versionId: "v1" },
-      outputSchemaRef: { entityId: "schema", versionId: "v1" },
-      messages: [{ role: "user", content: "分析当前工序" }],
-      maxOutputTokens: 128,
-    });
+    ...testRequestBase,
+    promptTemplateRef: { entityId: "prompt", versionId: "v1" },
+    outputSchemaRef: { entityId: "schema", versionId: "v1" },
+    messages: [{ role: "user", content: "分析当前工序" }],
+    maxOutputTokens: 128,
+  });

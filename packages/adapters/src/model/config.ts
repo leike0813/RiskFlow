@@ -1,7 +1,4 @@
-import {
-  ModelCapabilityV1Schema,
-  type ModelCapabilityV1,
-} from "@riskflow/core/model";
+import { ModelCapabilityV1Schema, type ModelCapabilityV1 } from "@riskflow/core/model";
 import { IdentifierSchema, VersionReferenceSchema } from "@riskflow/contracts/common";
 import { z } from "@riskflow/core/model";
 
@@ -39,25 +36,28 @@ const capabilitiesSchema = z
   .max(3)
   .refine((values) => new Set(values).size === values.length, "capabilities must be unique");
 
-const originUrlSchema = z.string().url().superRefine((value, context) => {
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
-      context.addIssue({ code: "custom", message: "baseUrl must use http or https" });
+const originUrlSchema = z
+  .string()
+  .url()
+  .superRefine((value, context) => {
+    try {
+      const url = new URL(value);
+      if (url.protocol !== "http:" && url.protocol !== "https:") {
+        context.addIssue({ code: "custom", message: "baseUrl must use http or https" });
+      }
+      if (
+        url.username !== "" ||
+        url.password !== "" ||
+        url.search !== "" ||
+        url.hash !== "" ||
+        (url.pathname !== "" && url.pathname !== "/")
+      ) {
+        context.addIssue({ code: "custom", message: "baseUrl must be an origin" });
+      }
+    } catch {
+      context.addIssue({ code: "custom", message: "baseUrl must be a valid URL" });
     }
-    if (
-      url.username !== "" ||
-      url.password !== "" ||
-      url.search !== "" ||
-      url.hash !== "" ||
-      (url.pathname !== "" && url.pathname !== "/")
-    ) {
-      context.addIssue({ code: "custom", message: "baseUrl must be an origin" });
-    }
-  } catch {
-    context.addIssue({ code: "custom", message: "baseUrl must be a valid URL" });
-  }
-});
+  });
 
 export const LlamaCppDeploymentConfigV1Schema = z
   .strictObject({
@@ -113,14 +113,17 @@ export const LlamaCppDeploymentConfigV1Schema = z
 export type LlamaCppDeploymentConfigV1 = z.infer<typeof LlamaCppDeploymentConfigV1Schema>;
 
 export type FrozenLlamaCppDeploymentConfigV1 = Readonly<
-  Omit<LlamaCppDeploymentConfigV1, "serverBuildRef" | "modelVersionRef" | "deploymentRef" | "samplingPolicy">>
-  & {
-    readonly deploymentRef: Readonly<LlamaCppDeploymentConfigV1["deploymentRef"]>;
-    readonly serverBuildRef: Readonly<LlamaCppDeploymentConfigV1["serverBuildRef"]>;
-    readonly modelVersionRef: Readonly<LlamaCppDeploymentConfigV1["modelVersionRef"]>;
-    readonly samplingPolicy: Readonly<LlamaCppSamplingPolicyV1>;
-    readonly capabilities: readonly ModelCapabilityV1[];
-  };
+  Omit<
+    LlamaCppDeploymentConfigV1,
+    "serverBuildRef" | "modelVersionRef" | "deploymentRef" | "samplingPolicy"
+  >
+> & {
+  readonly deploymentRef: Readonly<LlamaCppDeploymentConfigV1["deploymentRef"]>;
+  readonly serverBuildRef: Readonly<LlamaCppDeploymentConfigV1["serverBuildRef"]>;
+  readonly modelVersionRef: Readonly<LlamaCppDeploymentConfigV1["modelVersionRef"]>;
+  readonly samplingPolicy: Readonly<LlamaCppSamplingPolicyV1>;
+  readonly capabilities: readonly ModelCapabilityV1[];
+};
 
 const deepFreeze = <T>(value: T): T => {
   if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
@@ -128,9 +131,7 @@ const deepFreeze = <T>(value: T): T => {
   return Object.freeze(value);
 };
 
-export const freezeLlamaCppDeploymentConfig = (
-  value: unknown,
-): FrozenLlamaCppDeploymentConfigV1 =>
+export const freezeLlamaCppDeploymentConfig = (value: unknown): FrozenLlamaCppDeploymentConfigV1 =>
   deepFreeze(LlamaCppDeploymentConfigV1Schema.parse(value)) as FrozenLlamaCppDeploymentConfigV1;
 
 export const parseLlamaCppDeploymentConfig = freezeLlamaCppDeploymentConfig;

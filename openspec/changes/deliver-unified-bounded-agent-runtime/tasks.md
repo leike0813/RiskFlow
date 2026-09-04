@@ -1,6 +1,6 @@
 ## 1. 实现前检查点
 
-- [ ] 1.1 确认 C03、C04、C05、C06、C07 已归档，核对 `TransactionUnitV1`、`ArtifactStoreV1`、C05 model gateway、`LocalIdentityAccessV1`、C07 审阅接口与 C02 `AgentTaskPortV1` 未发生漂移。
+- [x] 1.1 主调度已核对 C03/C04 已归档，C05/C06/C07 实现、共享接口和 C02 `AgentTaskPortV1` 无漂移，并已将 C05/C06/C07 纳入本轮统一批量归档；事务、工件、模型、授权与审阅边界满足 C08 接线前置条件。
 - [x] 1.2 由主调度确认迁移号 `000005`、共享 `package.json`/Worker 注册文件所有权和实现分支基线；前置接口与迁移顺序已核对，无需重新规划。
 
 ## 2. Core：DTO、策略与状态机

@@ -586,12 +586,7 @@ export class PostgresReviewAuditAdapter implements ReviewAuditPortV1 {
     }
     const valid = parsed.data;
     try {
-      await this.#verify(
-        valid.authorization,
-        valid.projectId,
-        valid.queryId,
-        "review-audit.trace",
-      );
+      await this.#verify(valid.authorization, valid.projectId, valid.queryId, "review-audit.trace");
       const asOf = valid.payload.asOfRecordedAt ?? (await this.#databaseNow());
       const subject = valid.payload.subjectRef;
       const subjectReference = referenceKey(subject);

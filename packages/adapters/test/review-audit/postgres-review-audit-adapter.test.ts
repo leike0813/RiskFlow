@@ -110,11 +110,12 @@ const decisionFor = (
   options: {
     readonly actorId?: string;
     readonly authorization?: AuthorizationContextV1;
+    readonly commandId?: string;
   } = {},
 ): ReviewDecisionCommandV1 =>
   ReviewDecisionCommandV1Schema.parse({
     kind: "decide-review",
-    commandId: nextId(`decide-${suffix}`),
+    commandId: options.commandId ?? nextId(`decide-${suffix}`),
     idempotencyKey: nextId(`idempotency-decide-${suffix}`),
     projectId: request.projectId,
     actorId: options.actorId ?? request.actorId,
@@ -653,6 +654,11 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
         managerSession.sessionToken,
         "review-audit.request-review",
       );
+      const managerSecondRequestAccess = await authorize(
+        "c07-auth-manager-request-2",
+        managerSession.sessionToken,
+        "review-audit.request-review",
+      );
       const managerDecisionAccess = await authorize(
         "c07-auth-manager-decide",
         managerSession.sessionToken,
@@ -682,6 +688,7 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
       const reviewerRequest = requestFor({
         suffix: "c06-reviewer-request",
         projectId,
+        commandId: "c07-auth-reviewer-decide",
         authorization: AuthorizationContextV1Schema.parse({
           ...reviewerDecisionAccess.context,
           grantedCapabilities: ["review-audit.request"],
@@ -695,6 +702,7 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
       const reviewerTaskRequest = requestFor({
         suffix: "c06-reviewer-task",
         projectId,
+        commandId: "c07-auth-manager-request",
         authorization: managerRequestAccess.context,
       });
       const reviewerTask = await adapter.requestReview(reviewerTaskRequest);
@@ -707,11 +715,12 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
         {
           actorId: reviewerDecisionAccess.context.actorId,
           authorization: reviewerDecisionAccess.context,
+          commandId: "c07-auth-reviewer-decide",
         },
       );
       expect(await adapter.decideReview(reviewerDecision)).toMatchObject({ kind: "succeeded" });
       const reviewerTrace = await adapter.trace({
-        queryId: "c07-auth-reviewer-trace-query",
+        queryId: "c07-auth-reviewer-trace",
         projectId,
         actorId: reviewerTraceAccess.context.actorId,
         requestedAt: REVIEW_TEST_TIMESTAMP,
@@ -727,7 +736,8 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
       const managerTaskRequest = requestFor({
         suffix: "c06-manager-task",
         projectId,
-        authorization: managerRequestAccess.context,
+        commandId: "c07-auth-manager-request-2",
+        authorization: managerSecondRequestAccess.context,
       });
       const managerTask = await adapter.requestReview(managerTaskRequest);
       expect(managerTask.kind).toBe("succeeded");
@@ -739,11 +749,12 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
         {
           actorId: managerDecisionAccess.context.actorId,
           authorization: managerDecisionAccess.context,
+          commandId: "c07-auth-manager-decide",
         },
       );
       expect(await adapter.decideReview(managerDecision)).toMatchObject({ kind: "succeeded" });
       const managerTrace = await adapter.trace({
-        queryId: "c07-auth-manager-trace-query",
+        queryId: "c07-auth-manager-trace",
         projectId,
         actorId: managerTraceAccess.context.actorId,
         requestedAt: REVIEW_TEST_TIMESTAMP,
@@ -759,6 +770,7 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
       const forgedBranchRequest = requestFor({
         suffix: "c06-forged-branch",
         projectId,
+        commandId: "c07-auth-manager-decide",
         authorization: AuthorizationContextV1Schema.parse({
           ...managerDecisionAccess.context,
           grantedCapabilities: ["review-audit.request"],
@@ -774,7 +786,7 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
       });
       expect(
         await adapter.trace({
-          queryId: "c07-auth-wrong-project-query",
+          queryId: "c07-auth-manager-trace",
           projectId: "project-c07-wrong",
           actorId: wrongProjectAuthorization.actorId,
           requestedAt: REVIEW_TEST_TIMESTAMP,
@@ -789,7 +801,7 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
       clock.advance(10 * 60 * 1000);
       expect(
         await adapter.trace({
-          queryId: "c07-auth-expired-query",
+          queryId: "c07-auth-manager-trace",
           projectId,
           actorId: managerTraceAccess.context.actorId,
           requestedAt: REVIEW_TEST_TIMESTAMP,

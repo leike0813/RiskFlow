@@ -33,6 +33,7 @@
     "./model": {
       "types": "./dist/model/index.d.ts",
       "import": "./dist/model/index.js"
+    },
     "./review-audit": {
       "types": "./dist/review-audit/index.d.ts",
       "import": "./dist/review-audit/index.js"

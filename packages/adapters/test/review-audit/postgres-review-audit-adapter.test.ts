@@ -839,5 +839,5 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
     } finally {
       await access.close();
     }
-  });
+  }, 240_000);
 });

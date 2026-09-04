@@ -7,6 +7,7 @@ import { startPostgresFixture, type PostgresTestFixture } from "../postgres/fixt
 import * as artifactManifestsMigration from "../../src/postgres/migrations/platform/deliver-content-addressed-artifact-store/000002_artifact_manifests.js";
 import * as foundationMigration from "../../src/postgres/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/000001_foundation.js";
 import * as authorizationMigration from "../../src/postgres/migrations/platform/deliver-local-identity-and-project-authorization/000003_local_identity_and_authorization.js";
+import * as reviewAuditMigration from "../../src/postgres/migrations/platform/deliver-review-and-audit-runtime/000004_review_and_audit_runtime.js";
 
 export interface AuthPostgresFixture extends PostgresTestFixture {
   runMigrations(): Promise<void>;
@@ -36,6 +37,13 @@ export const startAuthPostgresFixture = async (): Promise<AuthPostgresFixture> =
       ),
       authorizationMigration,
     ],
+    [
+      resolve(
+        base.productionMigrationRoot,
+        "platform/deliver-review-and-audit-runtime/000004_review_and_audit_runtime.ts",
+      ),
+      reviewAuditMigration,
+    ],
   ]);
   const loadModule = async (filePath: string): Promise<unknown> => {
     const migration = migrationModules.get(filePath);
@@ -50,8 +58,10 @@ export const startAuthPostgresFixture = async (): Promise<AuthPostgresFixture> =
     });
     const runtime = createPostgresRuntime(base.migrator, "riskflow_migrator");
     try {
+      await reviewAuditMigration.down(runtime.db);
       await authorizationMigration.down(runtime.db);
       await authorizationMigration.up(runtime.db);
+      await reviewAuditMigration.up(runtime.db);
     } finally {
       await runtime.close();
     }

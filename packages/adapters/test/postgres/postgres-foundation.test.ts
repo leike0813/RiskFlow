@@ -33,6 +33,7 @@ import { startPostgresFixture, type PostgresTestFixture } from "./fixture.js";
 import * as artifactManifestsMigration from "../../src/postgres/migrations/platform/deliver-content-addressed-artifact-store/000002_artifact_manifests.js";
 import * as foundationMigration from "../../src/postgres/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/000001_foundation.js";
 import * as localIdentityMigration from "../../src/postgres/migrations/platform/deliver-local-identity-and-project-authorization/000003_local_identity_and_authorization.js";
+import * as reviewAuditMigration from "../../src/postgres/migrations/platform/deliver-review-and-audit-runtime/000004_review_and_audit_runtime.js";
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
 
 const timestamp = "2030-01-01T00:00:00.000Z";
@@ -235,6 +236,13 @@ const testMigrationManifest = [
       "000003_platform_deliver-local-identity-and-project-authorization_local_identity_and_authorization",
     sequence: 3,
     module: localIdentityMigration,
+  },
+  {
+    root: "production",
+    relativePath: "platform/deliver-review-and-audit-runtime/000004_review_and_audit_runtime.ts",
+    migrationName: "000004_platform_deliver-review-and-audit-runtime_review_and_audit_runtime",
+    sequence: 4,
+    module: reviewAuditMigration,
   },
   {
     root: "fixture",
@@ -487,7 +495,7 @@ describe("PostgreSQL foundation", () => {
     );
     await expect(
       loadTestMigration(
-        resolve(testMigrationRoots.production, testMigrationManifest[3]!.relativePath),
+        resolve(testMigrationRoots.production, testMigrationManifest[4]!.relativePath),
       ),
     ).rejects.toThrow();
     await expect(

@@ -29,6 +29,10 @@
     "./artifacts": {
       "types": "./dist/artifacts/index.d.ts",
       "import": "./dist/artifacts/index.js"
+    },
+    "./review-audit": {
+      "types": "./dist/review-audit/index.d.ts",
+      "import": "./dist/review-audit/index.js"
     }
   }
 }

@@ -56,6 +56,7 @@ import {
   ConfirmAgentCommandV1Schema,
   ResumeAgentTaskCommandV1Schema,
   StartAgentTaskCommandV1Schema,
+  AuthorizationContextRefV1Schema,
   type AgentTaskPortV1,
   type AgentTaskResultRefV1,
   type AgentTaskRefV1,
@@ -252,6 +253,8 @@ const commandFor = (input: {
   ...(input.issuedAt === undefined ? {} : { issuedAt: input.issuedAt }),
 });
 
+const commandKey = (parts: readonly string[]): string => parts.join(":");
+
 const rowSnapshot = (row: AgentTaskRow): AgentTaskSnapshotV1 => {
   const envelope = AgentTaskEnvelopeV1Schema.parse(row.envelope);
   const state = AgentTaskStateV1Schema.parse({
@@ -321,6 +324,7 @@ export interface AgentTaskActionReservationV1 {
 }
 
 export interface AgentTaskExecutionStoreV1 {
+  readonly getTask?: (taskRef: AgentTaskRefV1) => Promise<AgentTaskSnapshotV1 | undefined>;
   claim(input: {
     readonly workerId: string;
     readonly leaseDurationMs: number;
@@ -354,6 +358,9 @@ export interface AgentTaskExecutionStoreV1 {
     readonly actionId: string;
     readonly reservationId: string;
     readonly actionType: AgentTaskActionV1["actionType"];
+    readonly sequence?: number;
+    readonly idempotencyKey?: string;
+    readonly intentArtifactRef?: AgentTaskActionV1["intentArtifactRef"];
     readonly amount?: Partial<AgentBudgetUsageV1>;
     readonly now?: string;
   }): Promise<AgentTaskActionReservationV1>;
@@ -410,6 +417,13 @@ export interface AgentTaskExecutionStoreV1 {
   readonly modelGateway?: ModelGatewayPortV1;
   readonly artifactStore?: ArtifactStoreV1;
 }
+
+type AgentLeaseMutation = (
+  transaction: AgentTransaction,
+  current: AgentTaskSnapshotV1,
+  attempt: AgentTaskAttemptRow,
+  now: string,
+) => Promise<void>;
 
 export interface PostgresAgentTaskAdapterOptions {
   readonly db: Kysely<PostgresDatabase>;
@@ -476,6 +490,38 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
       .selectAll()
       .where("agent_task_id", "=", id);
     return (forUpdate ? query.forUpdate() : query).executeTakeFirst();
+  }
+
+  async #taskCommand(input: {
+    readonly taskRef: AgentTaskRefV1;
+    readonly commandKind: string;
+    readonly idempotencyKey: string;
+    readonly payload: unknown;
+    readonly actorId?: string;
+    readonly issuedAt?: string;
+  }): Promise<AtomicCommandV1> {
+    const taskRef = AgentTaskRefV1Schema.parse(input.taskRef);
+    const task = await this.getTask(taskRef);
+    if (task === undefined)
+      throw new AgentRuntimeError(
+        makeAgentError({
+          code: "AGENT_TASK_NOT_FOUND",
+          category: "not-found",
+          stage: "task.command",
+          taskRef,
+        }),
+      );
+    const issuedAt = IsoDateTimeSchema.parse(input.issuedAt ?? this.#now());
+    return commandFor({
+      kind: input.commandKind,
+      commandId: input.idempotencyKey,
+      idempotencyKey: input.idempotencyKey,
+      projectId: task.envelope.projectId,
+      actorId: input.actorId ?? task.envelope.actorId,
+      authorization: task.envelope.authorization,
+      payload: input.payload,
+      issuedAt,
+    });
   }
 
   async getTask(taskRef: AgentTaskRefV1): Promise<AgentTaskSnapshotV1 | undefined> {
@@ -731,6 +777,59 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
             retryable: true,
             stage: "task.transaction.readback",
             taskRef,
+          }),
+        );
+      result = replayed;
+    }
+    return result;
+  }
+
+  async #leaseTransaction(
+    command: AtomicCommandV1,
+    taskRef: AgentTaskRefV1,
+    workerId: string,
+    leaseToken: string,
+    action: string,
+    operation: AgentLeaseMutation,
+    operationNow?: string,
+  ): Promise<AgentTaskSnapshotV1> {
+    let result: AgentTaskSnapshotV1 | undefined;
+    const parsedTaskRef = AgentTaskRefV1Schema.parse(taskRef);
+    const now = IsoDateTimeSchema.parse(operationNow ?? this.#now());
+    const receipt = await this.#transactionUnit.execute(command, async (context) => {
+      const transaction = asTransaction(context);
+      const lease = await this.#lockLease(transaction, parsedTaskRef, workerId, leaseToken, now);
+      if (lease.task.envelope.projectId !== command.projectId)
+        throw new AgentRuntimeError(
+          makeAgentError({
+            code: "AGENT_AUTHORIZATION_DENIED",
+            category: "authorization",
+            stage: "task.target",
+            taskRef: parsedTaskRef,
+          }),
+        );
+      await operation(transaction, lease.task, lease.attempt, now);
+      const row = await this.#selectTaskById(taskId(parsedTaskRef), transaction);
+      if (row === undefined) throw new Error("agent task disappeared before commit");
+      result = rowSnapshot(row);
+      return commit({
+        command,
+        targetRef: parsedTaskRef,
+        version: result.envelope.agentTaskRef.reference,
+        action,
+        now,
+      });
+    });
+    if (result === undefined) {
+      const replayed = await this.getTask(parsedTaskRef);
+      if (replayed === undefined || !receipt.replayed)
+        throw new AgentRuntimeError(
+          makeAgentError({
+            code: "AGENT_PERSISTENCE_FAILURE",
+            category: "persistence",
+            retryable: true,
+            stage: "task.lease-transaction.readback",
+            taskRef: parsedTaskRef,
           }),
         );
       result = replayed;
@@ -1062,39 +1161,94 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
     const now = IsoDateTimeSchema.parse(input.now ?? this.#now());
     const nowDate = new Date(now);
     try {
-      return await this.#db.transaction().execute(async (transaction) => {
-        const rows = await transaction
-          .selectFrom("business.agent_tasks")
-          .selectAll()
-          .where("status", "in", [...activeStatuses])
-          .where("cancel_requested", "=", false)
-          .orderBy("updated_at", "asc")
-          .orderBy("agent_task_id", "asc")
-          .limit(32)
-          .forUpdate()
-          .skipLocked()
-          .execute();
-        for (const row of rows) {
+      const rows = await this.#db
+        .selectFrom("business.agent_tasks")
+        .selectAll()
+        .where("status", "in", [...activeStatuses])
+        .where("cancel_requested", "=", false)
+        .orderBy("updated_at", "asc")
+        .orderBy("agent_task_id", "asc")
+        .limit(32)
+        .execute();
+      for (const row of rows) {
+        const candidate = rowSnapshot(row);
+        const key = commandKey(["agent-task", "claim", workerId, row.agent_task_id, now]);
+        const command = commandFor({
+          kind: "agent-task.claim",
+          commandId: key,
+          idempotencyKey: key,
+          projectId: row.project_id,
+          actorId: workerId,
+          authorization: {
+            authorizationContextRef: AuthorizationContextRefV1Schema.parse(
+              row.authorization_context_ref,
+            ),
+          },
+          payload: {
+            workerId,
+            taskRef: candidate.envelope.agentTaskRef,
+            leaseDurationMs: input.leaseDurationMs,
+            now,
+          },
+          issuedAt: now,
+        });
+        let claimed: AgentTaskClaimV1 | undefined;
+        const receipt = await this.#transactionUnit.execute(command, async (context) => {
+          const transaction = asTransaction(context);
+          const currentRow = await transaction
+            .selectFrom("business.agent_tasks")
+            .selectAll()
+            .where("agent_task_id", "=", row.agent_task_id)
+            .forUpdate()
+            .skipLocked()
+            .executeTakeFirst();
+          if (currentRow === undefined)
+            return commit({
+              command,
+              targetRef: candidate.envelope.agentTaskRef,
+              version: candidate.envelope.agentTaskRef.reference,
+              action: "agent-task.claim",
+              now,
+            });
+          const currentTask = rowSnapshot(currentRow);
+          if (
+            !activeStatuses.some((status) => status === currentTask.state.status) ||
+            currentTask.state.cancelRequested
+          )
+            return commit({
+              command,
+              targetRef: currentTask.envelope.agentTaskRef,
+              version: currentTask.envelope.agentTaskRef.reference,
+              action: "agent-task.claim",
+              now,
+            });
           const existingLease = await transaction
             .selectFrom("business.agent_task_attempts")
             .selectAll()
-            .where("agent_task_id", "=", row.agent_task_id)
+            .where("agent_task_id", "=", currentRow.agent_task_id)
             .where("status", "=", "active")
             .forUpdate()
             .executeTakeFirst();
-          if (existingLease !== undefined && asDate(existingLease.lease_until) > nowDate) continue;
+          if (existingLease !== undefined && asDate(existingLease.lease_until) > nowDate)
+            return commit({
+              command,
+              targetRef: currentTask.envelope.agentTaskRef,
+              version: currentTask.envelope.agentTaskRef.reference,
+              action: "agent-task.claim",
+              now,
+            });
           if (existingLease !== undefined) {
             await transaction
               .updateTable("business.agent_task_attempts")
               .set({ status: "expired", finished_at: nowDate, lease_until: nowDate })
-              .where("agent_task_id", "=", row.agent_task_id)
+              .where("agent_task_id", "=", currentRow.agent_task_id)
               .where("attempt_number", "=", existingLease.attempt_number)
               .execute();
           }
           const previousAttempt = await transaction
             .selectFrom("business.agent_task_attempts")
             .select("attempt_number")
-            .where("agent_task_id", "=", row.agent_task_id)
+            .where("agent_task_id", "=", currentRow.agent_task_id)
             .orderBy("attempt_number", "desc")
             .limit(1)
             .executeTakeFirst();
@@ -1110,16 +1264,23 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
               current_proposal_ref: null,
               updated_at: nowDate,
             })
-            .where("agent_task_id", "=", row.agent_task_id)
-            .where("task_version", "=", row.task_version)
+            .where("agent_task_id", "=", currentRow.agent_task_id)
+            .where("task_version", "=", currentRow.task_version)
             .where("status", "in", [...activeStatuses])
             .returningAll()
             .executeTakeFirst();
-          if (updated === undefined) continue;
+          if (updated === undefined)
+            return commit({
+              command,
+              targetRef: currentTask.envelope.agentTaskRef,
+              version: currentTask.envelope.agentTaskRef.reference,
+              action: "agent-task.claim",
+              now,
+            });
           await transaction
             .insertInto("business.agent_task_attempts")
             .values({
-              agent_task_id: row.agent_task_id,
+              agent_task_id: currentRow.agent_task_id,
               attempt_number: attemptNumber,
               worker_id: workerId,
               lease_token: leaseToken,
@@ -1132,16 +1293,44 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
             })
             .execute();
           const task = rowSnapshot(updated);
-          return {
+          claimed = {
             task,
             attemptNumber,
             workerId,
             leaseToken,
             leaseUntil: leaseUntil.toISOString(),
           };
+          return commit({
+            command,
+            targetRef: task.envelope.agentTaskRef,
+            version: task.envelope.agentTaskRef.reference,
+            action: "agent-task.claim",
+            now,
+          });
+        });
+        if (claimed === undefined && receipt.replayed) {
+          const replayedTask = await this.getTask(candidate.envelope.agentTaskRef);
+          const replayedAttempt = await this.#db
+            .selectFrom("business.agent_task_attempts")
+            .selectAll()
+            .where("agent_task_id", "=", row.agent_task_id)
+            .where("worker_id", "=", workerId)
+            .where("status", "=", "active")
+            .where("lease_until", ">", nowDate)
+            .orderBy("attempt_number", "desc")
+            .executeTakeFirst();
+          if (replayedTask !== undefined && replayedAttempt !== undefined)
+            claimed = {
+              task: replayedTask,
+              attemptNumber: replayedAttempt.attempt_number,
+              workerId,
+              leaseToken: replayedAttempt.lease_token,
+              leaseUntil: asIso(replayedAttempt.lease_until),
+            };
         }
-        return undefined;
-      });
+        if (claimed !== undefined) return claimed;
+      }
+      return undefined;
     } catch (error) {
       if (error instanceof AgentRuntimeError) throw error;
       throw new AgentRuntimeError(
@@ -1174,26 +1363,84 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
     const now = IsoDateTimeSchema.parse(input.now ?? this.#now());
     const nowDate = new Date(now);
     const leaseUntil = new Date(nowDate.getTime() + input.leaseDurationMs);
-    const updated = await this.#db
-      .updateTable("business.agent_task_attempts")
-      .set({ lease_until: leaseUntil, heartbeat_at: nowDate })
-      .where("agent_task_id", "=", taskId(AgentTaskRefV1Schema.parse(input.taskRef)))
-      .where("worker_id", "=", IdentifierSchema.parse(input.workerId))
-      .where("lease_token", "=", IdentifierSchema.parse(input.leaseToken))
-      .where("status", "=", "active")
-      .where("lease_until", ">", nowDate)
-      .returning("lease_until")
-      .executeTakeFirst();
-    if (updated === undefined)
-      throw new AgentRuntimeError(
-        makeAgentError({
-          code: "AGENT_STALE_VERSION",
-          category: "concurrency",
-          stage: "lease.heartbeat",
-          taskRef: input.taskRef,
-        }),
-      );
-    return asIso(updated.lease_until);
+    const taskRef = AgentTaskRefV1Schema.parse(input.taskRef);
+    const key = commandKey(["agent-task", "heartbeat", taskId(taskRef), input.leaseToken, now]);
+    const command = await this.#taskCommand({
+      taskRef,
+      commandKind: "agent-task.heartbeat",
+      idempotencyKey: key,
+      actorId: input.workerId,
+      payload: {
+        taskRef,
+        workerId: input.workerId,
+        leaseToken: input.leaseToken,
+        leaseDurationMs: input.leaseDurationMs,
+        now,
+      },
+      issuedAt: now,
+    });
+    let result: string | undefined;
+    const receipt = await this.#transactionUnit.execute(command, async (context) => {
+      const transaction = asTransaction(context);
+      await this.#lockLease(transaction, taskRef, input.workerId, input.leaseToken, now);
+      const updated = await transaction
+        .updateTable("business.agent_task_attempts")
+        .set({ lease_until: leaseUntil, heartbeat_at: nowDate })
+        .where("agent_task_id", "=", taskId(taskRef))
+        .where("worker_id", "=", IdentifierSchema.parse(input.workerId))
+        .where("lease_token", "=", IdentifierSchema.parse(input.leaseToken))
+        .where("status", "=", "active")
+        .where("lease_until", ">", nowDate)
+        .returning("lease_until")
+        .executeTakeFirst();
+      if (updated === undefined)
+        throw new AgentRuntimeError(
+          makeAgentError({
+            code: "AGENT_STALE_VERSION",
+            category: "concurrency",
+            stage: "lease.heartbeat",
+            taskRef,
+          }),
+        );
+      result = asIso(updated.lease_until);
+      return commit({
+        command,
+        targetRef: taskRef,
+        version: taskRef.reference,
+        action: "agent-task.heartbeat",
+        now,
+      });
+    });
+    if (result === undefined) {
+      if (!receipt.replayed)
+        throw new AgentRuntimeError(
+          makeAgentError({
+            code: "AGENT_PERSISTENCE_FAILURE",
+            category: "persistence",
+            retryable: true,
+            stage: "lease.heartbeat.readback",
+            taskRef,
+          }),
+        );
+      const replayed = await this.#db
+        .selectFrom("business.agent_task_attempts")
+        .select("lease_until")
+        .where("agent_task_id", "=", taskId(taskRef))
+        .where("worker_id", "=", IdentifierSchema.parse(input.workerId))
+        .where("lease_token", "=", IdentifierSchema.parse(input.leaseToken))
+        .executeTakeFirst();
+      if (replayed === undefined)
+        throw new AgentRuntimeError(
+          makeAgentError({
+            code: "AGENT_STALE_VERSION",
+            category: "concurrency",
+            stage: "lease.heartbeat.readback",
+            taskRef,
+          }),
+        );
+      result = asIso(replayed.lease_until);
+    }
+    return result;
   }
 
   async releaseLease(input: {
@@ -1203,25 +1450,52 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
     readonly status?: "released" | "cancelled" | "completed";
     readonly now?: string;
   }): Promise<void> {
-    const nowDate = new Date(IsoDateTimeSchema.parse(input.now ?? this.#now()));
-    const updated = await this.#db
-      .updateTable("business.agent_task_attempts")
-      .set({ status: input.status ?? "released", finished_at: nowDate, lease_until: nowDate })
-      .where("agent_task_id", "=", taskId(AgentTaskRefV1Schema.parse(input.taskRef)))
-      .where("worker_id", "=", IdentifierSchema.parse(input.workerId))
-      .where("lease_token", "=", IdentifierSchema.parse(input.leaseToken))
-      .where("status", "=", "active")
-      .returning("agent_task_id")
-      .executeTakeFirst();
-    if (updated === undefined)
-      throw new AgentRuntimeError(
-        makeAgentError({
-          code: "AGENT_STALE_VERSION",
-          category: "concurrency",
-          stage: "lease.release",
-          taskRef: input.taskRef,
-        }),
-      );
+    const now = IsoDateTimeSchema.parse(input.now ?? this.#now());
+    const taskRef = AgentTaskRefV1Schema.parse(input.taskRef);
+    const status = input.status ?? "released";
+    const key = commandKey([
+      "agent-task",
+      "lease-release",
+      taskId(taskRef),
+      input.leaseToken,
+      status,
+    ]);
+    const command = await this.#taskCommand({
+      taskRef,
+      commandKind: "agent-task.lease-release",
+      idempotencyKey: key,
+      actorId: input.workerId,
+      payload: { taskRef, workerId: input.workerId, leaseToken: input.leaseToken, status, now },
+      issuedAt: now,
+    });
+    await this.#transactionUnit.execute(command, async (context) => {
+      const transaction = asTransaction(context);
+      const updated = await transaction
+        .updateTable("business.agent_task_attempts")
+        .set({ status, finished_at: new Date(now), lease_until: new Date(now) })
+        .where("agent_task_id", "=", taskId(taskRef))
+        .where("worker_id", "=", IdentifierSchema.parse(input.workerId))
+        .where("lease_token", "=", IdentifierSchema.parse(input.leaseToken))
+        .where("status", "=", "active")
+        .returning("agent_task_id")
+        .executeTakeFirst();
+      if (updated === undefined)
+        throw new AgentRuntimeError(
+          makeAgentError({
+            code: "AGENT_STALE_VERSION",
+            category: "concurrency",
+            stage: "lease.release",
+            taskRef,
+          }),
+        );
+      return commit({
+        command,
+        targetRef: taskRef,
+        version: taskRef.reference,
+        action: "agent-task.lease-release",
+        now,
+      });
+    });
   }
 
   async failTask(input: {
@@ -1233,44 +1507,58 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
   }): Promise<AgentTaskSnapshotV1> {
     const now = IsoDateTimeSchema.parse(input.now ?? this.#now());
     const error = AgentStructuredErrorV1Schema.parse(input.error);
-    return this.#db.transaction().execute(async (transaction) => {
-      const lease = await this.#lockLease(
-        transaction,
-        input.taskRef,
-        input.workerId,
-        input.leaseToken,
-        now,
-      );
-      const nextStatus =
-        error.code === "AGENT_CANCELLED"
-          ? "cancelled"
-          : error.retryable
-            ? "retryable-failure"
-            : "terminal-failure";
-      const next = transitionAgentTask(
-        lease.task.state,
-        nextStatus,
-        lease.task.state.taskVersion,
-        now,
-        { error },
-      );
-      await this.#updateTask(transaction, input.taskRef, next, lease.task.state.taskVersion);
-      await transaction
-        .updateTable("business.agent_task_attempts")
-        .set({
-          status: nextStatus === "cancelled" ? "cancelled" : "released",
-          finished_at: new Date(now),
-          lease_until: new Date(now),
-          failure: jsonValue(error),
-        })
-        .where("agent_task_id", "=", taskId(input.taskRef))
-        .where("attempt_number", "=", lease.attempt.attempt_number)
-        .where("status", "=", "active")
-        .execute();
-      const row = await this.#selectTaskById(taskId(input.taskRef), transaction);
-      if (row === undefined) throw new Error("agent task disappeared after failure");
-      return rowSnapshot(row);
+    const taskRef = AgentTaskRefV1Schema.parse(input.taskRef);
+    const key = commandKey([
+      "agent-task",
+      "task-fail",
+      taskId(taskRef),
+      input.leaseToken,
+      error.code,
+    ]);
+    const command = await this.#taskCommand({
+      taskRef,
+      commandKind: "agent-task.task-fail",
+      idempotencyKey: key,
+      actorId: input.workerId,
+      payload: { taskRef, workerId: input.workerId, leaseToken: input.leaseToken, error, now },
+      issuedAt: now,
     });
+    return this.#leaseTransaction(
+      command,
+      taskRef,
+      input.workerId,
+      input.leaseToken,
+      "agent-task.task-fail",
+      async (transaction, current, attempt) => {
+        const nextStatus =
+          error.code === "AGENT_CANCELLED"
+            ? "cancelled"
+            : error.retryable
+              ? "retryable-failure"
+              : "terminal-failure";
+        const next = transitionAgentTask(
+          current.state,
+          nextStatus,
+          current.state.taskVersion,
+          now,
+          { error },
+        );
+        await this.#updateTask(transaction, taskRef, next, current.state.taskVersion);
+        await transaction
+          .updateTable("business.agent_task_attempts")
+          .set({
+            status: nextStatus === "cancelled" ? "cancelled" : "released",
+            finished_at: new Date(now),
+            lease_until: new Date(now),
+            failure: jsonValue(error),
+          })
+          .where("agent_task_id", "=", taskId(taskRef))
+          .where("attempt_number", "=", attempt.attempt_number)
+          .where("status", "=", "active")
+          .execute();
+      },
+      now,
+    );
   }
 
   async #lockLease(
@@ -1348,16 +1636,69 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
     readonly actionId: string;
     readonly reservationId: string;
     readonly actionType: AgentTaskActionV1["actionType"];
+    readonly sequence?: number;
+    readonly idempotencyKey?: string;
+    readonly intentArtifactRef?: AgentTaskActionV1["intentArtifactRef"];
     readonly amount?: Partial<AgentBudgetUsageV1>;
     readonly now?: string;
   }): Promise<AgentTaskActionReservationV1> {
     const now = IsoDateTimeSchema.parse(input.now ?? this.#now());
+    const taskRef = AgentTaskRefV1Schema.parse(input.taskRef);
     const actionId = IdentifierSchema.parse(input.actionId);
     const reservationId = IdentifierSchema.parse(input.reservationId);
-    const result = await this.#db.transaction().execute(async (transaction) => {
+    if (input.intentArtifactRef !== undefined && input.sequence === undefined)
+      throw new AgentRuntimeError(
+        makeAgentError({
+          code: "AGENT_INPUT_INVALID",
+          category: "input",
+          stage: "action.reserve.sequence",
+          taskRef,
+          actionId,
+        }),
+      );
+    if (input.intentArtifactRef !== undefined && input.idempotencyKey === undefined)
+      throw new AgentRuntimeError(
+        makeAgentError({
+          code: "AGENT_INPUT_INVALID",
+          category: "input",
+          stage: "action.reserve.idempotency",
+          taskRef,
+          actionId,
+        }),
+      );
+    const key = commandKey([
+      "agent-task",
+      "action-reserve",
+      taskId(taskRef),
+      actionId,
+      reservationId,
+    ]);
+    const command = await this.#taskCommand({
+      taskRef,
+      commandKind: "agent-task.action-reserve",
+      idempotencyKey: key,
+      actorId: input.workerId,
+      payload: {
+        taskRef,
+        workerId: input.workerId,
+        leaseToken: input.leaseToken,
+        actionId,
+        reservationId,
+        actionType: input.actionType,
+        sequence: input.sequence ?? null,
+        idempotencyKey: input.idempotencyKey ?? null,
+        intentArtifactRef: input.intentArtifactRef ?? null,
+        amount: input.amount ?? {},
+        now,
+      },
+      issuedAt: now,
+    });
+    let result: AgentTaskActionReservationV1 | undefined;
+    const receipt = await this.#transactionUnit.execute(command, async (context) => {
+      const transaction = asTransaction(context);
       const lease = await this.#lockLease(
         transaction,
-        input.taskRef,
+        taskRef,
         input.workerId,
         input.leaseToken,
         now,
@@ -1365,7 +1706,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
       const existing = await transaction
         .selectFrom("business.agent_task_actions")
         .selectAll()
-        .where("agent_task_id", "=", taskId(input.taskRef))
+        .where("agent_task_id", "=", taskId(taskRef))
         .where("action_id", "=", actionId)
         .forUpdate()
         .executeTakeFirst();
@@ -1378,54 +1719,71 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
               category: "action",
               retryable: false,
               stage: "budget.reserve.uncertain-action",
-              taskRef: input.taskRef,
+              taskRef,
               actionId,
             }),
           );
-        if (action.status === "failed") {
-          const budget = reserveAgentBudget(lease.task.budgetPolicy, lease.task.budgetLedger, {
-            actionType: input.actionType,
-            actionId,
-            reservationId,
-            amount: {
-              ...input.amount,
-              transientRetries: (input.amount?.transientRetries ?? 0) + 1,
-            },
+        if (action.status !== "failed") {
+          result = { task: lease.task, reservation: action.reservation };
+          return commit({
+            command,
+            targetRef: taskRef,
+            version: taskRef.reference,
+            action: "agent-task.action-reserve",
             now,
           });
-          const updated = await transaction
-            .updateTable("business.agent_tasks")
-            .set({ budget_ledger: jsonValue(budget.ledger), updated_at: new Date(now) })
-            .where("agent_task_id", "=", taskId(input.taskRef))
-            .where("task_version", "=", lease.task.state.taskVersion)
-            .returningAll()
-            .executeTakeFirst();
-          if (updated === undefined)
-            throw new AgentRuntimeError(
-              makeAgentError({
-                code: "AGENT_STALE_VERSION",
-                category: "concurrency",
-                stage: "budget.retry.cas",
-                taskRef: input.taskRef,
-              }),
-            );
-          await transaction
-            .updateTable("business.agent_task_actions")
-            .set({
-              attempt_number: lease.attempt.attempt_number,
-              status: "started",
-              reservation: jsonValue(budget.reservation),
-              usage: jsonValue(emptyAgentBudgetUsage()),
-              error_code: null,
-              recorded_at: new Date(now),
-              completed_at: null,
-            })
-            .where("agent_task_id", "=", taskId(input.taskRef))
-            .where("action_id", "=", actionId)
-            .execute();
-          return { task: rowSnapshot(updated), reservation: budget.reservation };
         }
-        return { task: lease.task, reservation: action.reservation };
+        const budget = reserveAgentBudget(lease.task.budgetPolicy, lease.task.budgetLedger, {
+          actionType: input.actionType,
+          actionId,
+          reservationId,
+          amount: {
+            ...input.amount,
+            transientRetries: (input.amount?.transientRetries ?? 0) + 1,
+          },
+          now,
+        });
+        const updated = await transaction
+          .updateTable("business.agent_tasks")
+          .set({ budget_ledger: jsonValue(budget.ledger), updated_at: new Date(now) })
+          .where("agent_task_id", "=", taskId(taskRef))
+          .where("task_version", "=", lease.task.state.taskVersion)
+          .returningAll()
+          .executeTakeFirst();
+        if (updated === undefined)
+          throw new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_STALE_VERSION",
+              category: "concurrency",
+              stage: "budget.retry.cas",
+              taskRef,
+            }),
+          );
+        await transaction
+          .updateTable("business.agent_task_actions")
+          .set({
+            attempt_number: lease.attempt.attempt_number,
+            status: "started",
+            ...(input.intentArtifactRef === undefined
+              ? {}
+              : { intent_artifact_ref: jsonValue(input.intentArtifactRef) }),
+            reservation: jsonValue(budget.reservation),
+            usage: jsonValue(emptyAgentBudgetUsage()),
+            error_code: null,
+            recorded_at: new Date(now),
+            completed_at: null,
+          })
+          .where("agent_task_id", "=", taskId(taskRef))
+          .where("action_id", "=", actionId)
+          .execute();
+        result = { task: rowSnapshot(updated), reservation: budget.reservation };
+        return commit({
+          command,
+          targetRef: taskRef,
+          version: taskRef.reference,
+          action: "agent-task.action-reserve",
+          now,
+        });
       }
       const budget = reserveAgentBudget(lease.task.budgetPolicy, lease.task.budgetLedger, {
         actionType: input.actionType,
@@ -1442,7 +1800,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
       const updated = await transaction
         .updateTable("business.agent_tasks")
         .set({ budget_ledger: jsonValue(budget.ledger), updated_at: new Date(now) })
-        .where("agent_task_id", "=", taskId(input.taskRef))
+        .where("agent_task_id", "=", taskId(taskRef))
         .where("task_version", "=", lease.task.state.taskVersion)
         .returningAll()
         .executeTakeFirst();
@@ -1452,11 +1810,80 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
             code: "AGENT_STALE_VERSION",
             category: "concurrency",
             stage: "budget.reserve",
-            taskRef: input.taskRef,
+            taskRef,
           }),
         );
-      return { task: rowSnapshot(updated), reservation: budget.reservation };
+      if (input.intentArtifactRef !== undefined) {
+        const action = AgentTaskActionV1Schema.parse({
+          schemaVersion: "1",
+          taskRef,
+          actionId,
+          sequence: input.sequence,
+          actionType: input.actionType,
+          status: "started",
+          idempotencyKey: input.idempotencyKey,
+          intentArtifactRef: input.intentArtifactRef,
+          reservation: budget.reservation,
+          usage: emptyAgentBudgetUsage(),
+          recordedAt: now,
+        });
+        await transaction
+          .insertInto("business.agent_task_actions")
+          .values({
+            agent_task_id: taskId(taskRef),
+            action_id: action.actionId,
+            attempt_number: lease.attempt.attempt_number,
+            sequence: action.sequence,
+            action_type: action.actionType,
+            status: action.status,
+            idempotency_key: action.idempotencyKey,
+            intent_artifact_ref: jsonValue(action.intentArtifactRef),
+            result_ref: null,
+            result_artifact_ref: null,
+            reservation: jsonValue(action.reservation),
+            usage: jsonValue(action.usage),
+            error_code: null,
+            recorded_at: new Date(now),
+            completed_at: null,
+          })
+          .execute();
+      }
+      result = { task: rowSnapshot(updated), reservation: budget.reservation };
+      return commit({
+        command,
+        targetRef: taskRef,
+        version: taskRef.reference,
+        action: "agent-task.action-reserve",
+        now,
+      });
     });
+    if (result === undefined) {
+      if (!receipt.replayed)
+        throw new AgentRuntimeError(
+          makeAgentError({
+            code: "AGENT_PERSISTENCE_FAILURE",
+            category: "persistence",
+            retryable: true,
+            stage: "action.reserve.readback",
+            taskRef,
+            actionId,
+          }),
+        );
+      const task = await this.getTask(taskRef);
+      const action = task === undefined ? undefined : await this.findAction(taskRef, actionId);
+      if (task === undefined || action === undefined)
+        throw new AgentRuntimeError(
+          makeAgentError({
+            code: "AGENT_PERSISTENCE_FAILURE",
+            category: "persistence",
+            retryable: true,
+            stage: "action.reserve.replay-readback",
+            taskRef,
+            actionId,
+          }),
+        );
+      result = { task, reservation: action.reservation };
+    }
     return result;
   }
 
@@ -1473,38 +1900,74 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
     readonly now?: string;
   }): Promise<AgentTaskActionV1> {
     const now = IsoDateTimeSchema.parse(input.now ?? this.#now());
-    return this.#db.transaction().execute(async (transaction) => {
+    const taskRef = AgentTaskRefV1Schema.parse(input.taskRef);
+    const actionId = IdentifierSchema.parse(input.actionId);
+    const idempotencyKey = IdentifierSchema.parse(input.idempotencyKey);
+    const key = commandKey([
+      "agent-task",
+      "action-intent",
+      taskId(taskRef),
+      actionId,
+      idempotencyKey,
+    ]);
+    const command = await this.#taskCommand({
+      taskRef,
+      commandKind: "agent-task.action-intent",
+      idempotencyKey: key,
+      actorId: input.workerId,
+      payload: {
+        taskRef,
+        workerId: input.workerId,
+        leaseToken: input.leaseToken,
+        actionId,
+        sequence: input.sequence,
+        actionType: input.actionType,
+        idempotencyKey,
+        intentArtifactRef: input.intentArtifactRef,
+        reservation: input.reservation,
+        now,
+      },
+      issuedAt: now,
+    });
+    let result: AgentTaskActionV1 | undefined;
+    const receipt = await this.#transactionUnit.execute(command, async (context) => {
+      const transaction = asTransaction(context);
       const lease = await this.#lockLease(
         transaction,
-        input.taskRef,
+        taskRef,
         input.workerId,
         input.leaseToken,
         now,
       );
-      const actionId = IdentifierSchema.parse(input.actionId);
       const existing = await transaction
         .selectFrom("business.agent_task_actions")
         .selectAll()
-        .where("agent_task_id", "=", taskId(input.taskRef))
+        .where("agent_task_id", "=", taskId(taskRef))
         .where("action_id", "=", actionId)
         .forUpdate()
         .executeTakeFirst();
       if (existing !== undefined) {
         const action = actionFromRow(lease.task.envelope.agentTaskRef, existing);
-        if (action.idempotencyKey !== input.idempotencyKey) {
+        if (action.idempotencyKey !== idempotencyKey)
           throw new AgentRuntimeError(
             makeAgentError({
               code: "AGENT_IDEMPOTENCY_CONFLICT",
               category: "idempotency",
               stage: "action.intent",
-              taskRef: input.taskRef,
+              taskRef,
               actionId,
-              idempotencyKey: input.idempotencyKey,
+              idempotencyKey,
               priorCommandId: action.idempotencyKey,
             }),
           );
-        }
-        return action;
+        result = action;
+        return commit({
+          command,
+          targetRef: taskRef,
+          version: taskRef.reference,
+          action: "agent-task.action-intent",
+          now,
+        });
       }
       const action = AgentTaskActionV1Schema.parse({
         schemaVersion: "1",
@@ -1513,7 +1976,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
         sequence: input.sequence,
         actionType: input.actionType,
         status: "started",
-        idempotencyKey: IdentifierSchema.parse(input.idempotencyKey),
+        idempotencyKey,
         intentArtifactRef: input.intentArtifactRef,
         reservation: input.reservation,
         usage: emptyAgentBudgetUsage(),
@@ -1522,7 +1985,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
       await transaction
         .insertInto("business.agent_task_actions")
         .values({
-          agent_task_id: taskId(input.taskRef),
+          agent_task_id: taskId(taskRef),
           action_id: action.actionId,
           attempt_number: lease.attempt.attempt_number,
           sequence: action.sequence,
@@ -1539,8 +2002,41 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
           completed_at: null,
         })
         .execute();
-      return action;
+      result = action;
+      return commit({
+        command,
+        targetRef: taskRef,
+        version: taskRef.reference,
+        action: "agent-task.action-intent",
+        now,
+      });
     });
+    if (result === undefined) {
+      if (!receipt.replayed)
+        throw new AgentRuntimeError(
+          makeAgentError({
+            code: "AGENT_PERSISTENCE_FAILURE",
+            category: "persistence",
+            retryable: true,
+            stage: "action.intent.readback",
+            taskRef,
+            actionId,
+          }),
+        );
+      result = await this.findAction(taskRef, actionId);
+      if (result === undefined)
+        throw new AgentRuntimeError(
+          makeAgentError({
+            code: "AGENT_PERSISTENCE_FAILURE",
+            category: "persistence",
+            retryable: true,
+            stage: "action.intent.replay-readback",
+            taskRef,
+            actionId,
+          }),
+        );
+    }
+    return result;
   }
 
   async findAction(
@@ -1572,102 +2068,129 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
     readonly now?: string;
   }): Promise<AgentTaskSnapshotV1> {
     const now = IsoDateTimeSchema.parse(input.now ?? this.#now());
-    return this.#db.transaction().execute(async (transaction) => {
-      const lease = await this.#lockLease(
-        transaction,
-        input.taskRef,
-        input.workerId,
-        input.leaseToken,
+    const taskRef = AgentTaskRefV1Schema.parse(input.taskRef);
+    const actionId = IdentifierSchema.parse(input.actionId);
+    const usage = AgentBudgetUsageV1Schema.parse(input.usage);
+    const key = commandKey([
+      "agent-task",
+      "action-complete",
+      taskId(taskRef),
+      actionId,
+      input.leaseToken,
+    ]);
+    const command = await this.#taskCommand({
+      taskRef,
+      commandKind: "agent-task.action-complete",
+      idempotencyKey: key,
+      actorId: input.workerId,
+      payload: {
+        taskRef,
+        workerId: input.workerId,
+        leaseToken: input.leaseToken,
+        actionId,
+        resultRef: input.resultRef ?? null,
+        resultArtifactRef: input.resultArtifactRef ?? null,
+        usage,
         now,
-      );
-      const row = await transaction
-        .selectFrom("business.agent_task_actions")
-        .selectAll()
-        .where("agent_task_id", "=", taskId(input.taskRef))
-        .where("action_id", "=", IdentifierSchema.parse(input.actionId))
-        .forUpdate()
-        .executeTakeFirst();
-      if (row === undefined)
-        throw new AgentRuntimeError(
-          makeAgentError({
-            code: "AGENT_TASK_NOT_FOUND",
-            category: "not-found",
-            stage: "action.complete",
-            taskRef: input.taskRef,
-            actionId: input.actionId,
-          }),
-        );
-      const action = actionFromRow(lease.task.envelope.agentTaskRef, row);
-      if (action.status === "completed") return lease.task;
-      if (action.status === "uncertain")
-        throw new AgentRuntimeError(
-          makeAgentError({
-            code: "AGENT_ACTION_UNCERTAIN",
-            category: "action",
-            retryable: false,
-            stage: "action.complete.uncertain",
-            taskRef: input.taskRef,
-            actionId: input.actionId,
-          }),
-        );
-      if (action.status !== "started")
-        throw new AgentRuntimeError(
-          makeAgentError({
-            code: "AGENT_INPUT_INVALID",
-            category: "input",
-            stage: "action.complete.status",
-            taskRef: input.taskRef,
-            actionId: input.actionId,
-          }),
-        );
-      if (input.resultRef === undefined && input.resultArtifactRef === undefined)
-        throw new AgentRuntimeError(
-          makeAgentError({
-            code: "AGENT_INPUT_INVALID",
-            category: "input",
-            stage: "action.complete.result",
-            taskRef: input.taskRef,
-            actionId: input.actionId,
-          }),
-        );
-      const budget = settleAgentBudget(
-        lease.task.budgetPolicy,
-        lease.task.budgetLedger,
-        action.reservation,
-        input.usage,
-        now,
-      );
-      await transaction
-        .updateTable("business.agent_task_actions")
-        .set({
-          status: "completed",
-          result_ref: input.resultRef === undefined ? null : jsonValue(input.resultRef),
-          result_artifact_ref:
-            input.resultArtifactRef === undefined ? null : jsonValue(input.resultArtifactRef),
-          usage: jsonValue(input.usage),
-          completed_at: new Date(now),
-        })
-        .where("agent_task_id", "=", taskId(input.taskRef))
-        .where("action_id", "=", action.actionId)
-        .execute();
-      const updated = await transaction
-        .updateTable("business.agent_tasks")
-        .set({ budget_ledger: jsonValue(budget), updated_at: new Date(now) })
-        .where("agent_task_id", "=", taskId(input.taskRef))
-        .where("task_version", "=", lease.task.state.taskVersion)
-        .returningAll()
-        .executeTakeFirst();
-      if (updated === undefined)
-        throw new AgentRuntimeError(
-          makeAgentError({
-            code: "AGENT_STALE_VERSION",
-            category: "concurrency",
-            stage: "action.complete.cas",
-            taskRef: input.taskRef,
-          }),
-        );
-      return rowSnapshot(updated);
+      },
+      issuedAt: now,
     });
+    return this.#leaseTransaction(
+      command,
+      taskRef,
+      input.workerId,
+      input.leaseToken,
+      "agent-task.action-complete",
+      async (transaction, current) => {
+        const row = await transaction
+          .selectFrom("business.agent_task_actions")
+          .selectAll()
+          .where("agent_task_id", "=", taskId(taskRef))
+          .where("action_id", "=", actionId)
+          .forUpdate()
+          .executeTakeFirst();
+        if (row === undefined)
+          throw new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_TASK_NOT_FOUND",
+              category: "not-found",
+              stage: "action.complete",
+              taskRef,
+              actionId,
+            }),
+          );
+        const actionValue = actionFromRow(current.envelope.agentTaskRef, row);
+        if (actionValue.status === "completed") return;
+        if (actionValue.status === "uncertain")
+          throw new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_ACTION_UNCERTAIN",
+              category: "action",
+              retryable: false,
+              stage: "action.complete.uncertain",
+              taskRef,
+              actionId,
+            }),
+          );
+        if (actionValue.status !== "started")
+          throw new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_INPUT_INVALID",
+              category: "input",
+              stage: "action.complete.status",
+              taskRef,
+              actionId,
+            }),
+          );
+        if (input.resultRef === undefined && input.resultArtifactRef === undefined)
+          throw new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_INPUT_INVALID",
+              category: "input",
+              stage: "action.complete.result",
+              taskRef,
+              actionId,
+            }),
+          );
+        const budget = settleAgentBudget(
+          current.budgetPolicy,
+          current.budgetLedger,
+          actionValue.reservation,
+          usage,
+          now,
+        );
+        await transaction
+          .updateTable("business.agent_task_actions")
+          .set({
+            status: "completed",
+            result_ref: input.resultRef === undefined ? null : jsonValue(input.resultRef),
+            result_artifact_ref:
+              input.resultArtifactRef === undefined ? null : jsonValue(input.resultArtifactRef),
+            usage: jsonValue(usage),
+            completed_at: new Date(now),
+          })
+          .where("agent_task_id", "=", taskId(taskRef))
+          .where("action_id", "=", actionValue.actionId)
+          .execute();
+        const updated = await transaction
+          .updateTable("business.agent_tasks")
+          .set({ budget_ledger: jsonValue(budget), updated_at: new Date(now) })
+          .where("agent_task_id", "=", taskId(taskRef))
+          .where("task_version", "=", current.state.taskVersion)
+          .returningAll()
+          .executeTakeFirst();
+        if (updated === undefined)
+          throw new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_STALE_VERSION",
+              category: "concurrency",
+              stage: "action.complete.cas",
+              taskRef,
+            }),
+          );
+      },
+      now,
+    );
   }
 
   async completeTask(input: {
@@ -1680,55 +2203,67 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
     const now = IsoDateTimeSchema.parse(input.now ?? this.#now());
     const resultRef = AgentTaskResultRefV1Schema.parse(input.resultRef);
     const taskRef = AgentTaskRefV1Schema.parse(input.taskRef);
-    const updated = await this.#db.transaction().execute(async (transaction) => {
-      const lease = await this.#lockLease(
-        transaction,
+    const key = commandKey(["agent-task", "task-complete", taskId(taskRef), input.leaseToken]);
+    const command = await this.#taskCommand({
+      taskRef,
+      commandKind: "agent-task.task-complete",
+      idempotencyKey: key,
+      actorId: input.workerId,
+      payload: {
         taskRef,
-        input.workerId,
-        input.leaseToken,
+        workerId: input.workerId,
+        leaseToken: input.leaseToken,
+        resultRef,
         now,
-      );
-      const completedAction = await transaction
-        .selectFrom("business.agent_task_actions")
-        .select("action_id")
-        .where("agent_task_id", "=", taskId(taskRef))
-        .where("status", "=", "completed")
-        .where((expression) =>
-          expression.or([
-            expression("result_ref", "is not", null),
-            expression("result_artifact_ref", "is not", null),
-          ]),
-        )
-        .executeTakeFirst();
-      if (completedAction === undefined)
-        throw new AgentRuntimeError(
-          makeAgentError({
-            code: "AGENT_INPUT_INVALID",
-            category: "input",
-            stage: "task.complete.action",
-            taskRef,
-          }),
-        );
-      const next = transitionAgentTask(
-        lease.task.state,
-        "completed",
-        lease.task.state.taskVersion,
-        now,
-        { resultRef },
-      );
-      await this.#updateTask(transaction, taskRef, next, lease.task.state.taskVersion);
-      await transaction
-        .updateTable("business.agent_task_attempts")
-        .set({ status: "completed", finished_at: new Date(now), lease_until: new Date(now) })
-        .where("agent_task_id", "=", taskId(taskRef))
-        .where("attempt_number", "=", lease.attempt.attempt_number)
-        .where("status", "=", "active")
-        .execute();
-      const row = await this.#selectTaskById(taskId(taskRef), transaction);
-      if (row === undefined) throw new Error("agent task disappeared after completion");
-      return rowSnapshot(row);
+      },
+      issuedAt: now,
     });
-    return updated;
+    return this.#leaseTransaction(
+      command,
+      taskRef,
+      input.workerId,
+      input.leaseToken,
+      "agent-task.task-complete",
+      async (transaction, current, attempt) => {
+        const completedAction = await transaction
+          .selectFrom("business.agent_task_actions")
+          .select("action_id")
+          .where("agent_task_id", "=", taskId(taskRef))
+          .where("status", "=", "completed")
+          .where((expression) =>
+            expression.or([
+              expression("result_ref", "is not", null),
+              expression("result_artifact_ref", "is not", null),
+            ]),
+          )
+          .executeTakeFirst();
+        if (completedAction === undefined)
+          throw new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_INPUT_INVALID",
+              category: "input",
+              stage: "task.complete.action",
+              taskRef,
+            }),
+          );
+        const next = transitionAgentTask(
+          current.state,
+          "completed",
+          current.state.taskVersion,
+          now,
+          { resultRef },
+        );
+        await this.#updateTask(transaction, taskRef, next, current.state.taskVersion);
+        await transaction
+          .updateTable("business.agent_task_attempts")
+          .set({ status: "completed", finished_at: new Date(now), lease_until: new Date(now) })
+          .where("agent_task_id", "=", taskId(taskRef))
+          .where("attempt_number", "=", attempt.attempt_number)
+          .where("status", "=", "active")
+          .execute();
+      },
+      now,
+    );
   }
 
   async failAction(input: {
@@ -1744,74 +2279,112 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
   }): Promise<AgentTaskSnapshotV1> {
     const now = IsoDateTimeSchema.parse(input.now ?? this.#now());
     const error = AgentStructuredErrorV1Schema.parse(input.error);
-    return this.#db.transaction().execute(async (transaction) => {
-      const lease = await this.#lockLease(
-        transaction,
-        input.taskRef,
-        input.workerId,
-        input.leaseToken,
+    const taskRef = AgentTaskRefV1Schema.parse(input.taskRef);
+    const actionId = IdentifierSchema.parse(input.actionId);
+    const uncertain = input.uncertain === true || error.code === "AGENT_ACTION_UNCERTAIN";
+    const usage = AgentBudgetUsageV1Schema.parse(input.usage ?? emptyAgentBudgetUsage());
+    const key = commandKey([
+      "agent-task",
+      "action-fail",
+      taskId(taskRef),
+      actionId,
+      input.leaseToken,
+      error.code,
+      uncertain ? "uncertain" : "settled",
+    ]);
+    const command = await this.#taskCommand({
+      taskRef,
+      commandKind: "agent-task.action-fail",
+      idempotencyKey: key,
+      actorId: input.workerId,
+      payload: {
+        taskRef,
+        workerId: input.workerId,
+        leaseToken: input.leaseToken,
+        actionId,
+        error,
+        resultArtifactRef: input.resultArtifactRef ?? null,
+        usage,
+        uncertain,
         now,
-      );
-      const row = await transaction
-        .selectFrom("business.agent_task_actions")
-        .selectAll()
-        .where("agent_task_id", "=", taskId(input.taskRef))
-        .where("action_id", "=", IdentifierSchema.parse(input.actionId))
-        .forUpdate()
-        .executeTakeFirst();
-      if (row === undefined)
-        throw new AgentRuntimeError(
-          makeAgentError({
-            code: "AGENT_TASK_NOT_FOUND",
-            category: "not-found",
-            stage: "action.fail",
-            taskRef: input.taskRef,
-            actionId: input.actionId,
-          }),
-        );
-      const action = actionFromRow(lease.task.envelope.agentTaskRef, row);
-      if (action.status === "completed") return lease.task;
-      const uncertain = input.uncertain === true || error.code === "AGENT_ACTION_UNCERTAIN";
-      const usage = AgentBudgetUsageV1Schema.parse(input.usage ?? emptyAgentBudgetUsage());
-      let budgetLedger = lease.task.budgetLedger;
-      if (!uncertain)
-        budgetLedger = settleAgentBudget(
-          lease.task.budgetPolicy,
-          lease.task.budgetLedger,
-          action.reservation,
-          usage,
-          now,
-        );
-      const next = transitionAgentTask(
-        lease.task.state,
-        uncertain || !error.retryable ? "terminal-failure" : "retryable-failure",
-        lease.task.state.taskVersion,
-        now,
-        { error },
-      );
-      await transaction
-        .updateTable("business.agent_task_actions")
-        .set({
-          status: uncertain ? "uncertain" : "failed",
-          result_artifact_ref:
-            input.resultArtifactRef === undefined ? null : jsonValue(input.resultArtifactRef),
-          error_code: error.code,
-          usage: jsonValue(usage),
-          completed_at: new Date(now),
-        })
-        .where("agent_task_id", "=", taskId(input.taskRef))
-        .where("action_id", "=", action.actionId)
-        .execute();
-      await transaction
-        .updateTable("business.agent_tasks")
-        .set({ ...taskStateUpdate(next), budget_ledger: jsonValue(budgetLedger) })
-        .where("agent_task_id", "=", taskId(input.taskRef))
-        .where("task_version", "=", lease.task.state.taskVersion)
-        .execute();
-      const updated = await this.#selectTaskById(taskId(input.taskRef), transaction);
-      if (updated === undefined) throw new Error("agent task disappeared after failure");
-      return rowSnapshot(updated);
+      },
+      issuedAt: now,
     });
+    return this.#leaseTransaction(
+      command,
+      taskRef,
+      input.workerId,
+      input.leaseToken,
+      "agent-task.action-fail",
+      async (transaction, current) => {
+        const row = await transaction
+          .selectFrom("business.agent_task_actions")
+          .selectAll()
+          .where("agent_task_id", "=", taskId(taskRef))
+          .where("action_id", "=", actionId)
+          .forUpdate()
+          .executeTakeFirst();
+        if (row === undefined)
+          throw new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_TASK_NOT_FOUND",
+              category: "not-found",
+              stage: "action.fail",
+              taskRef,
+              actionId,
+            }),
+          );
+        const action = actionFromRow(current.envelope.agentTaskRef, row);
+        if (action.status === "completed") return;
+        let budgetLedger = current.budgetLedger;
+        if (!uncertain)
+          budgetLedger = settleAgentBudget(
+            current.budgetPolicy,
+            current.budgetLedger,
+            action.reservation,
+            usage,
+            now,
+          );
+        const next = transitionAgentTask(
+          current.state,
+          uncertain || !error.retryable ? "terminal-failure" : "retryable-failure",
+          current.state.taskVersion,
+          now,
+          { error },
+        );
+        await transaction
+          .updateTable("business.agent_task_actions")
+          .set({
+            status: uncertain ? "uncertain" : "failed",
+            result_artifact_ref:
+              input.resultArtifactRef === undefined ? null : jsonValue(input.resultArtifactRef),
+            error_code: error.code,
+            usage: jsonValue(usage),
+            completed_at: new Date(now),
+          })
+          .where("agent_task_id", "=", taskId(taskRef))
+          .where("action_id", "=", action.actionId)
+          .execute();
+        const updated = await transaction
+          .updateTable("business.agent_tasks")
+          .set({ ...taskStateUpdate(next), budget_ledger: jsonValue(budgetLedger) })
+          .where("agent_task_id", "=", taskId(taskRef))
+          .where("task_version", "=", current.state.taskVersion)
+          .returning("agent_task_id")
+          .executeTakeFirst();
+        if (updated === undefined)
+          throw new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_STALE_VERSION",
+              category: "concurrency",
+              stage: "action.fail.cas",
+              taskRef,
+              actionId,
+            }),
+          );
+      },
+      now,
+    );
   }
 
   async markWaiting(input: {
@@ -1822,42 +2395,76 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
     readonly now?: string;
   }): Promise<AgentTaskSnapshotV1> {
     const now = IsoDateTimeSchema.parse(input.now ?? this.#now());
+    const taskRef = AgentTaskRefV1Schema.parse(input.taskRef);
     const proposalRef = AgentCommandProposalV1Schema.shape.commandProposalRef.parse(
       input.proposalRef,
     );
-    return this.#db.transaction().execute(async (transaction) => {
-      const lease = await this.#lockLease(
-        transaction,
-        input.taskRef,
-        input.workerId,
-        input.leaseToken,
+    const key = commandKey([
+      "agent-task",
+      "wait",
+      taskId(taskRef),
+      input.leaseToken,
+      proposalRef.reference.entityId,
+      proposalRef.reference.versionId,
+    ]);
+    const command = await this.#taskCommand({
+      taskRef,
+      commandKind: "agent-task.wait",
+      idempotencyKey: key,
+      actorId: input.workerId,
+      payload: {
+        taskRef,
+        workerId: input.workerId,
+        leaseToken: input.leaseToken,
+        proposalRef,
         now,
-      );
-      const next = transitionAgentTask(
-        lease.task.state,
-        "waiting-user-confirmation",
-        lease.task.state.taskVersion,
-        now,
-        { currentProposalRef: proposalRef },
-      );
-      await this.#updateTask(transaction, input.taskRef, next, lease.task.state.taskVersion);
-      await transaction
-        .updateTable("business.agent_task_attempts")
-        .set({ status: "released", finished_at: new Date(now), lease_until: new Date(now) })
-        .where("agent_task_id", "=", taskId(input.taskRef))
-        .where("attempt_number", "=", lease.attempt.attempt_number)
-        .where("status", "=", "active")
-        .execute();
-      const row = await this.#selectTaskById(taskId(input.taskRef), transaction);
-      if (row === undefined) throw new Error("agent task disappeared while waiting");
-      return rowSnapshot(row);
+      },
+      issuedAt: now,
     });
+    return this.#leaseTransaction(
+      command,
+      taskRef,
+      input.workerId,
+      input.leaseToken,
+      "agent-task.wait",
+      async (transaction, current, attempt) => {
+        const next = transitionAgentTask(
+          current.state,
+          "waiting-user-confirmation",
+          current.state.taskVersion,
+          now,
+          { currentProposalRef: proposalRef },
+        );
+        await this.#updateTask(transaction, taskRef, next, current.state.taskVersion);
+        await transaction
+          .updateTable("business.agent_task_attempts")
+          .set({ status: "released", finished_at: new Date(now), lease_until: new Date(now) })
+          .where("agent_task_id", "=", taskId(taskRef))
+          .where("attempt_number", "=", attempt.attempt_number)
+          .where("status", "=", "active")
+          .execute();
+      },
+      now,
+    );
   }
 
   async recordCandidate(candidate: AgentCandidateVersionV1): Promise<void> {
     const value = AgentCandidateVersionV1Schema.parse(candidate);
     const taskRef = AgentTaskRefV1Schema.parse(value.taskRef);
-    await this.#db.transaction().execute(async (transaction) => {
+    const command = await this.#taskCommand({
+      taskRef,
+      commandKind: "agent-task.candidate-record",
+      idempotencyKey: commandKey([
+        "agent-task",
+        "candidate-record",
+        taskId(taskRef),
+        String(value.candidateVersion),
+      ]),
+      payload: { candidate: value },
+      issuedAt: value.createdAt,
+    });
+    await this.#transactionUnit.execute(command, async (context) => {
+      const transaction = asTransaction(context);
       const row = await this.#selectTaskById(taskId(taskRef), transaction, true);
       if (row === undefined)
         throw new AgentRuntimeError(
@@ -1897,7 +2504,14 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
             taskRef,
           }),
         );
-      if (value.candidateVersion < latestCandidateVersion) return;
+      if (value.candidateVersion < latestCandidateVersion)
+        return commit({
+          command,
+          targetRef: taskRef,
+          version: taskRef.reference,
+          action: "agent-task.candidate-record",
+          now: value.createdAt,
+        });
       const inserted = await transaction
         .insertInto("business.agent_task_candidates")
         .values({
@@ -1917,7 +2531,14 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
         )
         .returning("candidate_version")
         .executeTakeFirst();
-      if (inserted === undefined) return;
+      if (inserted === undefined)
+        return commit({
+          command,
+          targetRef: taskRef,
+          version: taskRef.reference,
+          action: "agent-task.candidate-record",
+          now: value.createdAt,
+        });
       const updated = await transaction
         .updateTable("business.agent_tasks")
         .set({
@@ -1938,6 +2559,13 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
             taskRef,
           }),
         );
+      return commit({
+        command,
+        targetRef: taskRef,
+        version: taskRef.reference,
+        action: "agent-task.candidate-record",
+        now: value.createdAt,
+      });
     });
   }
 

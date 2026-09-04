@@ -247,10 +247,8 @@ const testMigrationManifest = [
   },
   {
     root: "production",
-    relativePath:
-      "agent-task/deliver-unified-bounded-agent-runtime/000005_agent_task_runtime.ts",
-    migrationName:
-      "000005_agent-task_deliver-unified-bounded-agent-runtime_agent_task_runtime",
+    relativePath: "agent-task/deliver-unified-bounded-agent-runtime/000005_agent_task_runtime.ts",
+    migrationName: "000005_agent-task_deliver-unified-bounded-agent-runtime_agent_task_runtime",
     sequence: 5,
     module: agentTaskRuntimeMigration,
   },

@@ -166,6 +166,12 @@ Worker SHALL 使用 PostgreSQL 有界批量 claim、租约令牌和 `FOR UPDATE 
 - **THEN** 运行时记录 `AGENT_ACTION_UNCERTAIN`
 - **AND** 不自动重新发起该动作
 
+#### Scenario: 长动作续租与数据库取消
+
+- **WHEN** 模型或领域工具动作持续时间超过一次租约心跳周期，或数据库中的任务出现取消请求
+- **THEN** Worker 在动作期间持续续租并检查耐久任务状态，将数据库取消或续租失败传播为当前动作的 cooperative `AbortSignal`
+- **AND** 续租失败、租约失效或取消确认后以 fail-closed 方式停止动作，不再提交新的预算、候选、结果或终态事实
+
 #### Scenario: 取消运行中任务
 
 - **WHEN** 已授权调用方取消非终态任务
@@ -189,6 +195,12 @@ LangGraph checkpoint SHALL 只保存任务引用、输入/输出版本和运行�
 - **WHEN** C03 事务无法写入对应命令审计
 - **THEN** 任务状态、预算预留、动作或结果引用一并回滚
 - **AND** 不出现有事实无审计的提交
+
+#### Scenario: 工件先于预算与动作意图
+
+- **WHEN** Worker 准备启动模型或领域工具动作
+- **THEN** 动作意图工件先经 C04 持久化，再由同一个 `TransactionUnitV1` 原子写入预算预留、动作意图、命令收据和审计
+- **AND** 工件持久化失败时不产生预算或动作事实，C03 收据或审计失败时预算与动作事实一并回滚
 
 #### Scenario: 没有对应领域事件
 

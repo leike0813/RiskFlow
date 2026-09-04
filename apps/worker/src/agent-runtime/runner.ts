@@ -129,6 +129,90 @@ const oneChunk = (value: Uint8Array): AsyncIterable<Uint8Array> =>
     yield value;
   })();
 
+interface LeaseMonitorV1 {
+  stop(): Promise<void>;
+  failure(): unknown;
+}
+
+const startLeaseMonitor = (input: {
+  readonly store: AgentTaskExecutionStoreV1;
+  readonly claim: AgentTaskClaimV1;
+  readonly controller: AbortController;
+  readonly leaseDurationMs: number;
+  readonly intervalMs: number;
+  readonly now: () => string;
+}): LeaseMonitorV1 => {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let inFlight: Promise<void> | undefined;
+  let failure: unknown;
+  const taskRef = input.claim.task.envelope.agentTaskRef;
+  const tick = async (): Promise<void> => {
+    if (stopped || input.controller.signal.aborted) return;
+    try {
+      if (input.store.getTask !== undefined) {
+        const current = await input.store.getTask(taskRef);
+        if (current === undefined)
+          throw new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_TASK_NOT_FOUND",
+              category: "not-found",
+              stage: "worker.lease.task",
+              taskRef,
+            }),
+          );
+        if (current.state.cancelRequested || current.state.status === "cancelled")
+          throw new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_CANCELLED",
+              category: "cancelled",
+              retryable: false,
+              stage: "worker.lease.cancelled",
+              taskRef,
+            }),
+          );
+        if (current.state.status !== "running")
+          throw new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_STALE_VERSION",
+              category: "concurrency",
+              retryable: false,
+              stage: "worker.lease.state",
+              taskRef,
+            }),
+          );
+      }
+      await input.store.heartbeat({
+        taskRef,
+        workerId: input.claim.workerId,
+        leaseToken: input.claim.leaseToken,
+        leaseDurationMs: input.leaseDurationMs,
+        now: input.now(),
+      });
+    } catch (error) {
+      if (stopped || input.controller.signal.aborted) return;
+      failure = error;
+      input.controller.abort();
+      return;
+    }
+    if (!stopped && !input.controller.signal.aborted)
+      timer = setTimeout(() => {
+        inFlight = tick();
+      }, input.intervalMs);
+  };
+  timer = setTimeout(() => {
+    inFlight = tick();
+  }, input.intervalMs);
+  return {
+    async stop() {
+      stopped = true;
+      if (timer !== undefined) clearTimeout(timer);
+      if (inFlight !== undefined) await inFlight;
+    },
+    failure: () => failure,
+  };
+};
+
 export class AgentRuntimeRunner {
   readonly #options: AgentRuntimeRunnerOptionsV1;
   readonly #now: () => string;
@@ -284,10 +368,30 @@ export class AgentRuntimeRunner {
     let idempotencyKey = actionKeyFor(taskRef, sequence);
     let definition: AgentTaskDefinitionV1;
     let intentRecorded = false;
+    const operationController = new AbortController();
+    const abortOperation = () => operationController.abort();
+    if (signal.aborted) operationController.abort();
+    else signal.addEventListener("abort", abortOperation, { once: true });
+    let leaseMonitor: LeaseMonitorV1 | undefined;
+    const throwLeaseFailure = () => {
+      const failure = leaseMonitor?.failure();
+      if (failure !== undefined) throw failure;
+      if (operationController.signal.aborted && signal.aborted)
+        throw new AgentRuntimeError(
+          makeAgentError({
+            code: "AGENT_CANCELLED",
+            category: "cancelled",
+            retryable: false,
+            stage: "worker.cancelled",
+            taskRef,
+            actionId,
+          }),
+        );
+    };
     try {
       definition = this.#options.registry.get(taskRef.taskType);
       await this.#options.store.verifyWorker(claim.task, claim.task.envelope.commandId);
-      if (signal.aborted || claim.task.state.cancelRequested) {
+      if (operationController.signal.aborted || claim.task.state.cancelRequested) {
         await this.#options.store.releaseLease({
           taskRef,
           workerId: claim.workerId,
@@ -358,6 +462,14 @@ export class AgentRuntimeRunner {
       }
       const actionType =
         this.#options.executeStep === undefined ? "model-invocation" : "domain-tool";
+      leaseMonitor = startLeaseMonitor({
+        store: this.#options.store,
+        claim,
+        controller: operationController,
+        leaseDurationMs: this.#options.leaseDurationMs,
+        intervalMs: Math.max(1, Math.floor(this.#options.leaseDurationMs / 3)),
+        now: this.#now,
+      });
       let rendered: AgentModelStepRequestV1 | undefined;
       if (actionType === "model-invocation") {
         if (
@@ -375,7 +487,8 @@ export class AgentRuntimeRunner {
           );
         rendered = await this.#options.renderModelStep(claim.task, definition);
       }
-      if (signal.aborted) {
+      throwLeaseFailure();
+      if (operationController.signal.aborted) {
         await this.#options.store.releaseLease({
           taskRef,
           workerId: claim.workerId,
@@ -386,13 +499,33 @@ export class AgentRuntimeRunner {
         return;
       }
       await this.#options.store.verifyWorker(claim.task, claim.task.envelope.commandId);
+      const intentArtifactRef = await this.#persistJson(
+        claim.task,
+        actionId,
+        "agent-action-intent",
+        {
+          schemaVersion: "1",
+          taskRef,
+          actionId,
+          sequence,
+          actionType,
+          modelDeploymentRef: taskRef.modelDeploymentRef,
+          promptTemplateRef: taskRef.promptTemplateRef,
+          toolPolicyRef: taskRef.toolPolicyRef,
+        },
+        operationController.signal,
+      );
+      throwLeaseFailure();
       const reservation = await this.#options.store.reserveAction({
         taskRef,
         workerId: claim.workerId,
         leaseToken: claim.leaseToken,
         actionId,
-        reservationId: `${actionId}:reservation`,
+        reservationId: `${actionId}:reservation:${claim.attemptNumber}`,
         actionType,
+        sequence,
+        idempotencyKey,
+        intentArtifactRef,
         ...(rendered === undefined
           ? {}
           : {
@@ -409,35 +542,8 @@ export class AgentRuntimeRunner {
             }),
         now: this.#now(),
       });
-      const intentArtifactRef = await this.#persistJson(
-        claim.task,
-        actionId,
-        "agent-action-intent",
-        {
-          schemaVersion: "1",
-          taskRef,
-          actionId,
-          sequence,
-          actionType,
-          modelDeploymentRef: taskRef.modelDeploymentRef,
-          promptTemplateRef: taskRef.promptTemplateRef,
-          toolPolicyRef: taskRef.toolPolicyRef,
-        },
-        signal,
-      );
-      await this.#options.store.recordActionIntent({
-        taskRef,
-        workerId: claim.workerId,
-        leaseToken: claim.leaseToken,
-        actionId,
-        sequence,
-        actionType,
-        idempotencyKey,
-        intentArtifactRef,
-        reservation: reservation.reservation,
-        now: this.#now(),
-      });
       intentRecorded = true;
+      throwLeaseFailure();
       await this.#options.store.heartbeat({
         taskRef,
         workerId: claim.workerId,
@@ -446,6 +552,7 @@ export class AgentRuntimeRunner {
         now: this.#now(),
       });
       await this.#options.store.verifyWorker(claim.task, claim.task.envelope.commandId);
+      throwLeaseFailure();
       let outcome: AgentStepOutcomeV1;
       let modelRaw: StructuredCompletionResultV1<unknown> | undefined;
       if (this.#options.executeStep !== undefined) {
@@ -453,14 +560,14 @@ export class AgentRuntimeRunner {
           claim,
           definition,
           action: reservation,
-          signal,
+          signal: operationController.signal,
         });
       } else {
         const model = await this.#executeModel(
           reservation.task,
           definition,
           actionId,
-          signal,
+          operationController.signal,
           rendered,
         );
         outcome = model.outcome;
@@ -473,7 +580,8 @@ export class AgentRuntimeRunner {
         leaseDurationMs: this.#options.leaseDurationMs,
         now: this.#now(),
       });
-      if (signal.aborted && outcome.kind === "completed")
+      throwLeaseFailure();
+      if (operationController.signal.aborted && outcome.kind === "completed")
         throw new AgentRuntimeError(
           makeAgentError({
             code: "AGENT_CANCELLED",
@@ -502,8 +610,9 @@ export class AgentRuntimeRunner {
             ? {}
             : { observationArtifactRef: outcome.resultArtifactRef }),
         },
-        signal,
+        operationController.signal,
       );
+      throwLeaseFailure();
       const usage =
         outcome.usage ??
         (modelRaw === undefined ? emptyAgentBudgetUsage() : usageFromModel(modelRaw));
@@ -525,6 +634,7 @@ export class AgentRuntimeRunner {
         const validation = AgentValidationResultV1Schema.parse(
           await definition.validateCandidate(candidate as never, reservation.task),
         );
+        throwLeaseFailure();
         const rejected = validation.items.find((item) => item.disposition === "rejected");
         const rejectionClass =
           validation.rejectionClass ??
@@ -542,7 +652,9 @@ export class AgentRuntimeRunner {
                 : "accepted",
           ...(rejectionClass === undefined ? {} : { rejectionClass }),
         };
+        throwLeaseFailure();
         await this.#options.store.recordCandidate(candidate);
+        throwLeaseFailure();
         if (validation.disposition === "rejected") {
           const failure = makeAgentError({
             code: "AGENT_VALIDATION_REJECTED",
@@ -584,6 +696,7 @@ export class AgentRuntimeRunner {
               actionId,
             }),
           );
+        throwLeaseFailure();
         await this.#options.store.completeAction({
           taskRef,
           workerId: claim.workerId,
@@ -613,6 +726,7 @@ export class AgentRuntimeRunner {
               actionId,
             }),
           );
+        throwLeaseFailure();
         await this.#options.store.completeAction({
           taskRef,
           workerId: claim.workerId,
@@ -648,6 +762,7 @@ export class AgentRuntimeRunner {
           taskRef,
           actionId,
         });
+      throwLeaseFailure();
       await this.#options.store.failAction({
         taskRef,
         workerId: claim.workerId,
@@ -667,7 +782,8 @@ export class AgentRuntimeRunner {
         now: this.#now(),
       });
     } catch (error) {
-      const failure = asError(error, taskRef, actionId);
+      if (leaseMonitor !== undefined) await leaseMonitor.stop().catch(() => undefined);
+      const failure = asError(leaseMonitor?.failure() ?? error, taskRef, actionId);
       if (!intentRecorded) {
         if (!failure.retryable && this.#options.store.failTask !== undefined)
           await this.#options.store
@@ -685,7 +801,7 @@ export class AgentRuntimeRunner {
               taskRef,
               workerId: claim.workerId,
               leaseToken: claim.leaseToken,
-              status: "released",
+              status: failure.code === "AGENT_CANCELLED" ? "cancelled" : "released",
               now: this.#now(),
             })
             .catch(() => undefined);
@@ -707,10 +823,13 @@ export class AgentRuntimeRunner {
           taskRef,
           workerId: claim.workerId,
           leaseToken: claim.leaseToken,
-          status: "released",
+          status: failure.code === "AGENT_CANCELLED" ? "cancelled" : "released",
           now: this.#now(),
         })
         .catch(() => undefined);
+    } finally {
+      signal.removeEventListener("abort", abortOperation);
+      if (leaseMonitor !== undefined) await leaseMonitor.stop().catch(() => undefined);
     }
   }
 }

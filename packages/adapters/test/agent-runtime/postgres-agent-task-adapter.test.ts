@@ -153,19 +153,14 @@ describe("postgres agent runtime adapter", () => {
       actionId: "action-1",
       reservationId: "reservation-1",
       actionType: "model-invocation",
-      now: "2030-01-01T00:00:02.000Z",
-    });
-    await adapter.recordActionIntent({
-      taskRef: claim.task.envelope.agentTaskRef,
-      workerId: claim.workerId,
-      leaseToken: claim.leaseToken,
-      actionId: "action-1",
       sequence: 1,
-      actionType: "model-invocation",
       idempotencyKey: "action-idempotency-1",
       intentArtifactRef: artifact("diagnostic-artifact", "intent"),
-      reservation: reserved.reservation,
       now: "2030-01-01T00:00:02.000Z",
+    });
+    expect(await adapter.findAction(claim.task.envelope.agentTaskRef, "action-1")).toMatchObject({
+      status: "started",
+      intentArtifactRef: artifact("diagnostic-artifact", "intent"),
     });
     const output = artifact("content-artifact", "cleaned-output");
     await adapter.completeAction({
@@ -192,5 +187,13 @@ describe("postgres agent runtime adapter", () => {
     expect(await adapter.findAction(claim.task.envelope.agentTaskRef, "action-1")).toMatchObject({
       status: "completed",
     });
+    const receipts = await fixture.adminPool.query(
+      `SELECT command_kind, audit_entry_id
+         FROM business.command_receipts
+        WHERE project_id = 'project-1'
+          AND command_kind LIKE 'agent-task.%'`,
+    );
+    expect(receipts.rows.length).toBeGreaterThanOrEqual(5);
+    expect(receipts.rows.every((row) => row.audit_entry_id !== null)).toBe(true);
   });
 });

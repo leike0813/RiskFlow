@@ -72,6 +72,14 @@ export interface AgentRuntimeRunnerOptionsV1 {
     definition: AgentTaskDefinitionV1,
   ) => Promise<AgentStepOutcomeV1> | AgentStepOutcomeV1;
   readonly executeStep?: (input: AgentStepExecutionInputV1) => Promise<AgentStepOutcomeV1>;
+  readonly recoverStep?: (input: {
+    readonly claim: AgentTaskClaimV1;
+    readonly definition: AgentTaskDefinitionV1;
+    readonly action: AgentTaskActionReservationV1;
+    readonly actionId: string;
+    readonly idempotencyKey: string;
+    readonly signal: AbortSignal;
+  }) => Promise<AgentStepOutcomeV1 | undefined>;
   readonly persistArtifact?: (input: {
     readonly task: AgentTaskSnapshotV1;
     readonly actionId: string;
@@ -373,6 +381,9 @@ export class AgentRuntimeRunner {
     if (signal.aborted) operationController.abort();
     else signal.addEventListener("abort", abortOperation, { once: true });
     let leaseMonitor: LeaseMonitorV1 | undefined;
+    let actionStartedAt: number | undefined;
+    const activeActionWallClockMs = () =>
+      actionStartedAt === undefined ? 0 : Math.max(0, Date.now() - actionStartedAt);
     const throwLeaseFailure = () => {
       const failure = leaseMonitor?.failure();
       if (failure !== undefined) throw failure;
@@ -434,7 +445,7 @@ export class AgentRuntimeRunner {
         }
         return;
       }
-      if (completed?.status === "started") {
+      if (completed?.status === "started" && this.#options.recoverStep === undefined) {
         await this.#options.store.failAction({
           taskRef,
           workerId: claim.workerId,
@@ -471,107 +482,157 @@ export class AgentRuntimeRunner {
         now: this.#now,
       });
       let rendered: AgentModelStepRequestV1 | undefined;
-      if (actionType === "model-invocation") {
-        if (
-          this.#options.modelGateway === undefined ||
-          this.#options.renderModelStep === undefined ||
-          this.#options.interpretModelStep === undefined
-        )
+      let reservation: AgentTaskActionReservationV1;
+      let outcome: AgentStepOutcomeV1;
+      let modelRaw: StructuredCompletionResultV1<unknown> | undefined;
+      if (completed?.status === "started") {
+        const recover = this.#options.recoverStep;
+        if (recover === undefined)
           throw new AgentRuntimeError(
             makeAgentError({
-              code: "AGENT_INPUT_INVALID",
-              category: "input",
-              stage: "worker.model.configuration",
+              code: "AGENT_ACTION_UNCERTAIN",
+              category: "action",
+              retryable: false,
+              stage: "worker.recovery.configuration",
               taskRef,
+              actionId,
             }),
           );
-        rendered = await this.#options.renderModelStep(claim.task, definition);
-      }
-      throwLeaseFailure();
-      if (operationController.signal.aborted) {
-        await this.#options.store.releaseLease({
+        reservation = { task: claim.task, reservation: completed.reservation };
+        intentRecorded = true;
+        await this.#options.store.heartbeat({
           taskRef,
           workerId: claim.workerId,
           leaseToken: claim.leaseToken,
-          status: "released",
+          leaseDurationMs: this.#options.leaseDurationMs,
           now: this.#now(),
         });
-        return;
-      }
-      await this.#options.store.verifyWorker(claim.task, claim.task.envelope.commandId);
-      const intentArtifactRef = await this.#persistJson(
-        claim.task,
-        actionId,
-        "agent-action-intent",
-        {
-          schemaVersion: "1",
-          taskRef,
-          actionId,
-          sequence,
-          actionType,
-          modelDeploymentRef: taskRef.modelDeploymentRef,
-          promptTemplateRef: taskRef.promptTemplateRef,
-          toolPolicyRef: taskRef.toolPolicyRef,
-        },
-        operationController.signal,
-      );
-      throwLeaseFailure();
-      const reservation = await this.#options.store.reserveAction({
-        taskRef,
-        workerId: claim.workerId,
-        leaseToken: claim.leaseToken,
-        actionId,
-        reservationId: `${actionId}:reservation:${claim.attemptNumber}`,
-        actionType,
-        sequence,
-        idempotencyKey,
-        intentArtifactRef,
-        ...(rendered === undefined
-          ? {}
-          : {
-              amount: {
-                ...rendered.reservationAmount,
-                ...(claim.task.budgetPolicy.maxInputTokens === undefined
-                  ? {}
-                  : { inputTokens: claim.task.budgetPolicy.maxInputTokens }),
-                outputTokens: Math.max(
-                  rendered.reservationAmount?.outputTokens ?? 0,
-                  rendered.maxOutputTokens,
-                ),
-              },
-            }),
-        now: this.#now(),
-      });
-      intentRecorded = true;
-      throwLeaseFailure();
-      await this.#options.store.heartbeat({
-        taskRef,
-        workerId: claim.workerId,
-        leaseToken: claim.leaseToken,
-        leaseDurationMs: this.#options.leaseDurationMs,
-        now: this.#now(),
-      });
-      await this.#options.store.verifyWorker(claim.task, claim.task.envelope.commandId);
-      throwLeaseFailure();
-      let outcome: AgentStepOutcomeV1;
-      let modelRaw: StructuredCompletionResultV1<unknown> | undefined;
-      if (this.#options.executeStep !== undefined) {
-        outcome = await this.#options.executeStep({
+        await this.#options.store.verifyWorker(claim.task, claim.task.envelope.commandId);
+        throwLeaseFailure();
+        actionStartedAt = Date.now();
+        const recovered = await recover({
           claim,
           definition,
           action: reservation,
+          actionId,
+          idempotencyKey,
           signal: operationController.signal,
         });
+        throwLeaseFailure();
+        if (recovered === undefined)
+          throw new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_ACTION_UNCERTAIN",
+              category: "action",
+              retryable: false,
+              stage: "worker.recovery.unresolved",
+              taskRef,
+              actionId,
+            }),
+          );
+        outcome = recovered;
       } else {
-        const model = await this.#executeModel(
-          reservation.task,
-          definition,
+        if (actionType === "model-invocation") {
+          if (
+            this.#options.modelGateway === undefined ||
+            this.#options.renderModelStep === undefined ||
+            this.#options.interpretModelStep === undefined
+          )
+            throw new AgentRuntimeError(
+              makeAgentError({
+                code: "AGENT_INPUT_INVALID",
+                category: "input",
+                stage: "worker.model.configuration",
+                taskRef,
+              }),
+            );
+          rendered = await this.#options.renderModelStep(claim.task, definition);
+        }
+        throwLeaseFailure();
+        if (operationController.signal.aborted) {
+          await this.#options.store.releaseLease({
+            taskRef,
+            workerId: claim.workerId,
+            leaseToken: claim.leaseToken,
+            status: "released",
+            now: this.#now(),
+          });
+          return;
+        }
+        await this.#options.store.verifyWorker(claim.task, claim.task.envelope.commandId);
+        const intentArtifactRef = await this.#persistJson(
+          claim.task,
           actionId,
+          "agent-action-intent",
+          {
+            schemaVersion: "1",
+            taskRef,
+            actionId,
+            sequence,
+            actionType,
+            modelDeploymentRef: taskRef.modelDeploymentRef,
+            promptTemplateRef: taskRef.promptTemplateRef,
+            toolPolicyRef: taskRef.toolPolicyRef,
+          },
           operationController.signal,
-          rendered,
         );
-        outcome = model.outcome;
-        modelRaw = model.raw;
+        throwLeaseFailure();
+        reservation = await this.#options.store.reserveAction({
+          taskRef,
+          workerId: claim.workerId,
+          leaseToken: claim.leaseToken,
+          actionId,
+          reservationId: `${actionId}:reservation:${claim.attemptNumber}`,
+          actionType,
+          sequence,
+          idempotencyKey,
+          intentArtifactRef,
+          ...(rendered === undefined
+            ? {}
+            : {
+                amount: {
+                  ...rendered.reservationAmount,
+                  ...(claim.task.budgetPolicy.maxInputTokens === undefined
+                    ? {}
+                    : { inputTokens: claim.task.budgetPolicy.maxInputTokens }),
+                  outputTokens: Math.max(
+                    rendered.reservationAmount?.outputTokens ?? 0,
+                    rendered.maxOutputTokens,
+                  ),
+                },
+              }),
+          now: this.#now(),
+        });
+        intentRecorded = true;
+        throwLeaseFailure();
+        await this.#options.store.heartbeat({
+          taskRef,
+          workerId: claim.workerId,
+          leaseToken: claim.leaseToken,
+          leaseDurationMs: this.#options.leaseDurationMs,
+          now: this.#now(),
+        });
+        await this.#options.store.verifyWorker(claim.task, claim.task.envelope.commandId);
+        throwLeaseFailure();
+        actionStartedAt = Date.now();
+        if (this.#options.executeStep !== undefined) {
+          outcome = await this.#options.executeStep({
+            claim,
+            definition,
+            action: reservation,
+            signal: operationController.signal,
+          });
+        } else {
+          const model = await this.#executeModel(
+            reservation.task,
+            definition,
+            actionId,
+            operationController.signal,
+            rendered,
+          );
+          outcome = model.outcome;
+          modelRaw = model.raw;
+        }
       }
       await this.#options.store.heartbeat({
         taskRef,
@@ -677,6 +738,7 @@ export class AgentRuntimeRunner {
             error: failure,
             resultArtifactRef: evidenceRef,
             usage,
+            activeWallClockMs: activeActionWallClockMs(),
             now: this.#now(),
           });
           await this.#options.store.releaseLease({
@@ -708,6 +770,7 @@ export class AgentRuntimeRunner {
           actionId,
           resultArtifactRef: outcome.resultArtifactRef ?? evidenceRef,
           usage,
+          activeWallClockMs: activeActionWallClockMs(),
           now: this.#now(),
         });
         await this.#options.store.markWaiting({
@@ -739,6 +802,7 @@ export class AgentRuntimeRunner {
           resultRef: outcome.resultRef,
           resultArtifactRef: outcome.resultArtifactRef ?? evidenceRef,
           usage,
+          activeWallClockMs: activeActionWallClockMs(),
           now: this.#now(),
         });
         const result = buildCompletedAgentTaskResult(
@@ -775,7 +839,7 @@ export class AgentRuntimeRunner {
         error: failure,
         resultArtifactRef: evidenceRef,
         usage,
-        uncertain: outcome.kind === "uncertain",
+        activeWallClockMs: activeActionWallClockMs(),
         now: this.#now(),
       });
       await this.#options.store.releaseLease({
@@ -819,6 +883,7 @@ export class AgentRuntimeRunner {
           actionId,
           error: failure,
           uncertain: failure.code === "AGENT_ACTION_UNCERTAIN",
+          activeWallClockMs: activeActionWallClockMs(),
           now: this.#now(),
         })
         .catch(() => undefined);

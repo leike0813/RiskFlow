@@ -187,8 +187,12 @@ describe("postgres agent runtime adapter", () => {
       resultRef: output,
       resultArtifactRef: output,
       usage: { ...reserved.reservation.amount, modelInvocations: 1 },
+      activeWallClockMs: 1_000,
       now: "2030-01-01T00:00:03.000Z",
     });
+    expect(
+      (await adapter.getTask(claim.task.envelope.agentTaskRef))?.budgetLedger.activeWallClockMs,
+    ).toBe(1_000);
     const result = buildCompletedAgentTaskResult(claim.task.envelope.agentTaskRef, output);
     await adapter.completeTask({
       taskRef: claim.task.envelope.agentTaskRef,

@@ -10,6 +10,7 @@ import {
   type AgentStructuredErrorV1,
 } from "@riskflow/core/agent-runtime";
 import { z } from "@riskflow/core/model";
+import type { AgentTaskActionV1 } from "@riskflow/core/agent-runtime";
 import type { AgentTaskRefV1 } from "@riskflow/contracts/ports";
 import { AgentRuntimeRunner, type AgentStepOutcomeV1 } from "../../src/agent-runtime/index.js";
 import type { AgentTaskClaimV1, AgentTaskExecutionStoreV1 } from "@riskflow/adapters/agent-runtime";
@@ -323,6 +324,37 @@ describe("agent runtime worker", () => {
     });
     expect(await runner.runOnce()).toBe(1);
     expect(executeStep).not.toHaveBeenCalled();
+    expect(store.calls).toContain("complete-task");
+  });
+  it("recovers an idempotent started action through the recovery port", async () => {
+    const store = makeStore({
+      async findAction() {
+        return {
+          status: "started",
+          reservation: reservation.reservation,
+        } as AgentTaskActionV1;
+      },
+    });
+    const executeStep = vi.fn();
+    const recoverStep = vi.fn(async () => ({
+      kind: "completed" as const,
+      resultRef: artifact,
+    }));
+    const runner = new AgentRuntimeRunner({
+      store,
+      registry: new AgentTaskDefinitionRegistry([definition()]),
+      workerId: "worker-1",
+      leaseDurationMs: 30_000,
+      maxConcurrentTasks: 1,
+      executeStep,
+      recoverStep,
+      persistArtifact: async () => artifact,
+      now: () => "2030-01-01T00:00:01.000Z",
+    });
+    expect(await runner.runOnce()).toBe(1);
+    expect(recoverStep).toHaveBeenCalledOnce();
+    expect(executeStep).not.toHaveBeenCalled();
+    expect(store.calls).toContain("complete-action");
     expect(store.calls).toContain("complete-task");
   });
 

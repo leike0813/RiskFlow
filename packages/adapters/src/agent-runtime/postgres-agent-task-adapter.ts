@@ -373,6 +373,7 @@ export interface AgentTaskExecutionStoreV1 {
     readonly resultRef?: ContractReferenceV1;
     readonly resultArtifactRef?: AgentTaskActionV1["resultArtifactRef"];
     readonly usage: AgentBudgetUsageV1;
+    readonly activeWallClockMs?: number;
     readonly now?: string;
   }): Promise<AgentTaskSnapshotV1>;
   completeTask(input: {
@@ -391,6 +392,7 @@ export interface AgentTaskExecutionStoreV1 {
     readonly resultArtifactRef?: AgentTaskActionV1["resultArtifactRef"];
     readonly usage?: AgentBudgetUsageV1;
     readonly uncertain?: boolean;
+    readonly activeWallClockMs?: number;
     readonly now?: string;
   }): Promise<AgentTaskSnapshotV1>;
   markWaiting(input: {
@@ -1894,6 +1896,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
     readonly resultRef?: ContractReferenceV1;
     readonly resultArtifactRef?: AgentTaskActionV1["resultArtifactRef"];
     readonly usage: AgentBudgetUsageV1;
+    readonly activeWallClockMs?: number;
     readonly now?: string;
   }): Promise<AgentTaskSnapshotV1> {
     const now = IsoDateTimeSchema.parse(input.now ?? this.#now());
@@ -1987,6 +1990,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
           actionValue.reservation,
           usage,
           now,
+          input.activeWallClockMs ?? 0,
         );
         await transaction
           .updateTable("business.agent_task_actions")
@@ -2103,6 +2107,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
     readonly error: AgentStructuredErrorV1;
     readonly resultArtifactRef?: AgentTaskActionV1["resultArtifactRef"];
     readonly usage?: AgentBudgetUsageV1;
+    readonly activeWallClockMs?: number;
     readonly uncertain?: boolean;
     readonly now?: string;
   }): Promise<AgentTaskSnapshotV1> {
@@ -2173,6 +2178,7 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
             action.reservation,
             usage,
             now,
+            input.activeWallClockMs ?? 0,
           );
         const next = transitionAgentTask(
           current.state,

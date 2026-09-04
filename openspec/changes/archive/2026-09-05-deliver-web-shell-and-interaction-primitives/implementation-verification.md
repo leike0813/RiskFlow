@@ -6,9 +6,9 @@
 - Task / Dispatch：`task_b218589c75bb` / `ctx_e09d67e6a493`
 - Worktree ID：`d4349f30-1c7e-4777-b16d-f259481b0121::/home/joshua/Workspace/Code/JavaScript/.orca/RiskFlow/c10-web-shell`
 - 分支：`leike0813/c10-web-shell`
-- 固定 implementation checkpoint / 当前 Git HEAD：`03e335a53659c1fb7cfed161ea2e19e1b350d54a`
+- 固定 implementation checkpoint / 验证修复 checkpoint：`01bd7bdfc68ae35a345c6a1af57205ccbda3c67b`
 - Task kind / phase / outcome：`verification` / `verification` / `succeeded`
-- Main：尚未合并、复验或归档；本报告不授权这些动作。
+- Main：已合并到 `main`（`3ff56df`），主线全量复验通过，尚未归档。
 
 ## 方法与范围
 
@@ -19,7 +19,7 @@
 3. 审阅 checkpoint 相对基线的路径、依赖、公开导出、生产代码和测试；
 4. 运行定向 Web 测试、typecheck、lint、production build、依赖政策/边界、OpenSpec strict 与空白检查。
 
-未启动开发服务器，未运行 project-wide `pnpm test` / `pnpm verify`，未修改 manifest、lockfile、根配置、主 specs、其它 change、API、Worker 或共享包，也未提交、合并或归档。
+独立验证 worker 未启动开发服务器，未运行 project-wide `pnpm test` / `pnpm verify`，未修改 manifest、lockfile、根配置、主 specs、其它 change、API、Worker 或共享包，也未提交、合并或归档；主调度随后完成提交、合并与主线复验。
 
 ## 逐条契约结论
 
@@ -74,8 +74,13 @@ C09 的 `HttpCommandRequestV1Schema` / `HttpQueryRequestV1Schema` 是 strict env
 
 首次并发运行定向测试时，`@riskflow/contracts/ports` 的 workspace dist 尚未由 typecheck 生成，4 个 suite 在 import 阶段失败；同轮 typecheck 生成已锁定 workspace 包产物后，定向测试重跑稳定通过。该过程没有安装或变更依赖，最终 production build、依赖边界和工作树状态均以修复后的结果为准。
 
+## 主线复验与浏览器验收
+
+- `git merge --no-ff leike0813/c10-web-shell` 已生成合并提交 `3ff56df`。
+- `pnpm install --frozen-lockfile --offline && pnpm verify` 通过：构建、类型、lint、格式、全量测试（25 files passed，1 skipped；231 passed，1 skipped）、依赖边界/政策和 12 项 OpenSpec strict 全部通过。
+- 使用 `vite preview` 提供 production build，浏览器实测匿名登录壳、登录名首 Tab 焦点，以及匿名访问 `/overview` 自动回到 `/login`；认证态和后端驱动状态由 SSR/行为测试覆盖，未启动开发服务器。
+
 ## 剩余主调度动作
 
-- 审阅本报告与 10 个未提交的 C10 局部修复/测试文件，形成新的 implementation / verification checkpoint。
-- 由主调度决定是否补做 production build 上的真实浏览器键盘验收以及根级 `pnpm verify`。
-- 合并到 main 后执行冻结安装和 main verification；通过后再同步、归档并回收 worktree。
+- 同步并归档 C10 change；归档前再次确认主线工作树干净、全量质量门和 OpenSpec 全量校验。
+- 归档完成后更新任务信封与 lane 总结，并按 handbook 条件回收无活动 writer 的 C10 worktree。

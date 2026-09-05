@@ -15,7 +15,6 @@ import * as engineeringContextSourceMigration from "../../src/postgres/migration
 import * as structuredDocumentConversionMigration from "../../src/postgres/migrations/engineering-data/deliver-structured-document-conversion/000009_structured_document_conversion.js";
 import * as monitoringMigration from "../../src/postgres/migrations/engineering-data/deliver-monitoring-batches-snapshots-and-features/000011_monitoring_batches_snapshots_features.js";
 
-
 export interface AuthPostgresFixture extends PostgresTestFixture {
   runMigrations(): Promise<void>;
 }

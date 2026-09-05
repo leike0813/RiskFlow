@@ -616,18 +616,33 @@ describe("C11 PostgreSQL context/source registry", () => {
       qualityPolicyRef: { entityId: "quality-policy", versionId: "v1" },
       converterDeploymentRef: { entityId: "converter", versionId: "v1" },
     });
+    let failCommit = true;
     const adapter = new StructuredDocumentConversionAdapter({
       db: fixture.runtime.db,
-      transactionUnit: fixture.transactionUnit,
+      transactionUnit: {
+        async execute(command, handler) {
+          if (failCommit) {
+            failCommit = false;
+            throw new Error("temporary conversion storage outage");
+          }
+          return fixture.transactionUnit.execute(command, handler);
+        },
+      },
       contextSource: fixture.registry,
       artifactStore: fixture.artifactStore,
       qualityPolicyRef: conversion.qualityPolicyRef,
       converterDeploymentRef: conversion.converterDeploymentRef,
     });
+    expect(await adapter.convert(conversion)).toMatchObject({
+      kind: "failed",
+      error: { code: "TRANSIENT_FAILURE", retryable: true },
+    });
     const first = await adapter.convert(conversion);
     expect(first).toMatchObject({ kind: "succeeded" });
     const second = await adapter.convert(conversion);
     expect(second).toEqual(first);
+    const conflict = await adapter.convert({ ...conversion, runId: "different-run" });
+    expect(conflict).toMatchObject({ kind: "failed", error: { code: "IDEMPOTENCY_CONFLICT" } });
     const persisted = await fixture.postgres.adminPool.query<{
       status: string;
       run_id: string;
@@ -645,21 +660,66 @@ describe("C11 PostgreSQL context/source registry", () => {
       [sourceVersionRef],
       "engineering-data.evidence-access",
     );
-    const read = await adapter.read(
-      StructuredDocumentConversionQueryV1Schema.parse({
-        schemaVersion: "1",
-        queryId: "c12-read",
-        projectId: state.projectId,
-        actorId: state.managerId,
-        requestedAt: "2030-01-01T01:00:00.000Z",
-        authorization: readAuthorization,
-        conversionRef: first.result.conversionRef,
-      }),
-    );
+    const readQuery = StructuredDocumentConversionQueryV1Schema.parse({
+      schemaVersion: "1",
+      queryId: "c12-read",
+      projectId: state.projectId,
+      actorId: state.managerId,
+      requestedAt: "2030-01-01T01:00:00.000Z",
+      authorization: readAuthorization,
+      conversionRef: first.result.conversionRef,
+    });
+    const read = await adapter.read(readQuery);
     expect(read).toMatchObject({
       kind: "succeeded",
       result: { conversion: { runId: "c12-run", threadId: "c12-thread" } },
     });
+    expect(await adapter.read({ ...readQuery, projectId: "other-project" })).toMatchObject({
+      kind: "failed",
+    });
+    for (const conversionRef of [
+      readQuery.conversionRef,
+      { ...readQuery.conversionRef, reference: { entityId: "missing-conversion", versionId: "1" } },
+    ]) {
+      expect(
+        await adapter.read({
+          ...readQuery,
+          conversionRef,
+          authorization: {
+            ...readAuthorization,
+            authorizationContextRef: {
+              ...readAuthorization.authorizationContextRef,
+              reference: { entityId: "missing-authorization", versionId: "1" },
+            },
+          },
+        }),
+      ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    }
+
+    const failedCommand = {
+      ...conversion,
+      conversionId: "c12-failed-conversion",
+      idempotencyKey: "c12-failed-conversion",
+      authorization: await state.authorize("c12-failed-conversion", [sourceVersionRef]),
+      input: { kind: "text-pdf" as const },
+    };
+    failCommit = true;
+    expect(await adapter.convert(failedCommand)).toMatchObject({
+      kind: "failed",
+      error: { code: "TRANSIENT_FAILURE", retryable: true },
+    });
+    const failure = await adapter.convert(failedCommand);
+    expect(failure).toMatchObject({ kind: "failed", error: { code: "TERMINAL_FAILURE" } });
+    if (failure.kind !== "failed") return;
+    expect(await adapter.convert(failedCommand)).toMatchObject({
+      kind: "failed",
+      error: { code: failure.error.code, diagnosticRef: failure.error.diagnosticRef },
+    });
+    const failedRows = await fixture.postgres.adminPool.query<{ status: string }>(
+      "SELECT status FROM business.structured_document_conversions WHERE project_id = $1 AND conversion_id = $2",
+      [state.projectId, failedCommand.conversionId],
+    );
+    expect(failedRows.rows).toEqual([{ status: "failed" }]);
   });
 
   it("rejects same-key source delivery conflicts without creating a second row", async () => {

@@ -805,7 +805,11 @@ const preflightXlsx = (
     const explicitCells = findXmlEntries(worksheet, "c").length;
     const dimension = findXmlEntries(worksheet, "dimension")[0]?.attributes["@_ref"];
     const dimensionCells = dimension === undefined ? 0 : cellRangeSize(dimension);
-    const cellCount = Math.max(explicitCells, dimensionCells);
+    const mergedCells = findXmlEntries(worksheet, "mergeCell").reduce(
+      (count, cell) => count + cellRangeSize(cell.attributes["@_ref"] ?? ""),
+      0,
+    );
+    const cellCount = Math.max(explicitCells, dimensionCells, mergedCells);
     totalCells += cellCount;
     totalBlocks += cellCount + 1;
     if (totalCells > policy.maxCells) {
@@ -903,8 +907,8 @@ export const parseXlsx = async (
   workbook.worksheets.forEach((sheet, sheetIndex) => {
     const sheetName = sheet.name || `sheet_${sheetIndex + 1}`;
     const tableId = `sheet_${sheetIndex + 1}`;
-    const rowCount = Math.max(1, sheet.actualRowCount);
-    const colCount = Math.max(1, sheet.actualColumnCount);
+    const rowCount = Math.max(1, sheet.rowCount);
+    const colCount = Math.max(1, sheet.columnCount);
     const merges = ((sheet.model.merges ?? []) as readonly string[]).slice();
     const tableLocator = {
       kind: "table" as const,

@@ -650,6 +650,19 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
       });
     }
     const valid = parsed.data;
+    const denied = StructuredDocumentConversionReadResultV1Schema.parse({
+      kind: "failed",
+      error: {
+        stageCode: "engineering-data.document-conversion.read",
+        occurredAt: new Date().toISOString(),
+        causalRunId: valid.queryId,
+        code: "AUTHORIZATION_DENIED",
+        category: "authorization",
+        retryable: false,
+        requiredCapability: "engineering-data.read",
+        authorizationPolicyRef: valid.authorization.authorizationPolicyRef,
+      },
+    });
     let record: StructuredDocumentConversionRecordV1 | undefined;
     try {
       record = await this.#readByRef(valid.projectId, valid.conversionRef);
@@ -660,18 +673,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
       });
     }
     if (record === undefined || record.sourceVersionRef === undefined) {
-      return StructuredDocumentConversionReadResultV1Schema.parse({
-        kind: "failed",
-        error: ModuleErrorV1Schema.parse({
-          stageCode: "engineering-data.document-conversion.read",
-          occurredAt: new Date().toISOString(),
-          causalRunId: valid.queryId,
-          code: "ENTITY_NOT_FOUND",
-          category: "not-found",
-          retryable: false,
-          targetRef: valid.conversionRef,
-        }),
-      });
+      return denied;
     }
     let authorizationResult: ContextSourceResultV1;
     try {
@@ -693,6 +695,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
       });
     }
     if (authorizationResult.kind === "failed") {
+      if (authorizationResult.error.code === "AUTHORIZATION_DENIED") return denied;
       return StructuredDocumentConversionReadResultV1Schema.parse(authorizationResult);
     }
     return StructuredDocumentConversionReadResultV1Schema.parse({
@@ -718,24 +721,6 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
       authorization: command.authorization,
     });
     const handle = await this.#artifactStore.open(request);
-    if (referenceKey(handle.manifest.artifactRef) !== referenceKey(source.sourceArtifactRef)) {
-      throw new DocumentParserError(
-        "ARTIFACT_REFERENCE_INVALID",
-        "input artifact reference mismatch",
-        false,
-        undefined,
-        handle.manifest.content.byteLength,
-      );
-    }
-    if (handle.manifest.mediaType !== command.mediaType) {
-      throw new DocumentParserError(
-        "MEDIA_TYPE_UNSUPPORTED",
-        "input artifact media type mismatch",
-        false,
-        undefined,
-        handle.manifest.content.byteLength,
-      );
-    }
     const chunks: Uint8Array[] = [];
     let size = 0;
     for await (const chunk of handle.content) {
@@ -753,6 +738,24 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
       chunks.push(chunk);
     }
     await handle.verified;
+    if (referenceKey(handle.manifest.artifactRef) !== referenceKey(source.sourceArtifactRef)) {
+      throw new DocumentParserError(
+        "ARTIFACT_REFERENCE_INVALID",
+        "input artifact reference mismatch",
+        false,
+        undefined,
+        size,
+      );
+    }
+    if (handle.manifest.mediaType !== command.mediaType) {
+      throw new DocumentParserError(
+        "MEDIA_TYPE_UNSUPPORTED",
+        "input artifact media type mismatch",
+        false,
+        undefined,
+        size,
+      );
+    }
     const bytes = new Uint8Array(size);
     let offset = 0;
     for (const chunk of chunks) {
@@ -808,8 +811,6 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
           reason instanceof DocumentParserError
             ? reason.sourceSegmentId
             : complianceIssue?.sourceSegmentId,
-        startedAt,
-        completedAt: iso(this.#now),
       };
       const bytes = new TextEncoder().encode(JSON.stringify(detail));
       const parentRefs = [source.sourceArtifactRef, ...parents];
@@ -882,7 +883,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
     try {
       await this.#persist(command, record);
     } catch {
-      return failed(error);
+      return failed(moduleError("TRANSIENT_FAILURE", command.runId, diagnosticRef));
     }
     return failed(error);
   }

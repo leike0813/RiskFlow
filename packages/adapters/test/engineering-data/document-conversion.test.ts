@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 import { Workbook } from "exceljs";
-import { strToU8, zipSync } from "fflate";
+import { strToU8, unzipSync, zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -203,6 +203,7 @@ describe("structured document format adapters", () => {
     sheet.getCell("B1").value = { formula: "1+1", result: 2 };
     sheet.mergeCells("A2:B2");
     sheet.getCell("A2").value = "合并值";
+    sheet.getCell("D5").value = false;
     const xlsx = new Uint8Array(await workbook.xlsx.writeBuffer());
     const parsedXlsx = await parseXlsx(
       xlsx,
@@ -210,9 +211,25 @@ describe("structured document format adapters", () => {
     );
     const formula = parsedXlsx.blocks.find((block) => block.formula !== undefined);
     expect(formula).toMatchObject({ formula: "1+1", cachedValue: 2, row: 1, column: 2 });
+    expect(parsedXlsx.blocks.find((block) => block.row === 5 && block.column === 4)).toMatchObject({
+      value: false,
+      text: "false",
+    });
     expect(parsedXlsx.blocks.some((block) => block.rowSpan === 1 && block.columnSpan === 2)).toBe(
       true,
     );
+    const oversizedMerge = unzipSync(xlsx);
+    oversizedMerge["xl/worksheets/sheet1.xml"] = strToU8(
+      new TextDecoder()
+        .decode(oversizedMerge["xl/worksheets/sheet1.xml"])
+        .replace('ref="A2:B2"', 'ref="A1:XFD1048576"'),
+    );
+    await expect(
+      parseXlsx(
+        zipSync(oversizedMerge),
+        context("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+      ),
+    ).rejects.toMatchObject({ code: "XLSX_LIMIT_EXCEEDED" });
 
     const csv = parseCsv(
       new TextEncoder().encode('\uFEFF指标,备注\n"值,一","第一行\n第二行"\n'),
@@ -309,6 +326,7 @@ describe("structured document format adapters", () => {
     let openCount = 0;
     let putCount = 0;
     let segmentCount = 0;
+    let completedReads = 0;
     let diagnostic: Record<string, unknown> | undefined;
     const artifactStore: ArtifactStoreV1 = {
       async open(): Promise<ArtifactReadHandleV1> {
@@ -320,6 +338,7 @@ describe("structured document format adapters", () => {
           },
           content: (async function* () {
             yield bytes;
+            completedReads += 1;
           })(),
           verified: Promise.resolve({} as never),
         } as unknown as ArtifactReadHandleV1;
@@ -418,6 +437,14 @@ describe("structured document format adapters", () => {
     });
     expect(segmentCount).toBe(1);
     expect(putCount).toBe(2);
+    const mismatchedMedia = await adapter.convert({
+      ...command,
+      conversionId: "conversion_media_mismatch",
+      idempotencyKey: "conversion_media_mismatch",
+      mediaType: "application/pdf",
+    });
+    expect(mismatchedMedia).toMatchObject({ kind: "failed" });
+    expect(completedReads).toBe(openCount);
     if (first.kind !== "succeeded") return;
     const read = await adapter.read(
       StructuredDocumentConversionQueryV1Schema.parse({

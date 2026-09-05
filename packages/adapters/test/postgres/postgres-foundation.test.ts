@@ -36,6 +36,7 @@ import * as localIdentityMigration from "../../src/postgres/migrations/platform/
 import * as reviewAuditMigration from "../../src/postgres/migrations/platform/deliver-review-and-audit-runtime/000004_review_and_audit_runtime.js";
 import * as agentTaskRuntimeMigration from "../../src/postgres/migrations/agent-task/deliver-unified-bounded-agent-runtime/000005_agent_task_runtime.js";
 import * as agentProposalArtifactRefMigration from "../../src/postgres/migrations/agent-task/deliver-unified-bounded-agent-runtime/000006_agent_proposal_artifact_ref.js";
+import * as governedDefinitionLifecycleMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-governed-definition-lifecycle/000007_governed_definition_lifecycle.js";
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
 import * as agentTaskFixtureMigration from "./fixtures/migrations/agent-task/deliver-unified-bounded-agent-runtime/900002_agent_task_fixture.js";
 
@@ -264,6 +265,15 @@ const testMigrationManifest = [
     module: agentProposalArtifactRefMigration,
   },
   {
+    root: "production",
+    relativePath:
+      "knowledge-modeling/deliver-governed-definition-lifecycle/000007_governed_definition_lifecycle.ts",
+    migrationName:
+      "000007_knowledge-modeling_deliver-governed-definition-lifecycle_governed_definition_lifecycle",
+    sequence: 7,
+    module: governedDefinitionLifecycleMigration,
+  },
+  {
     root: "fixture",
     relativePath:
       "platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.ts",
@@ -282,7 +292,7 @@ const testMigrationManifest = [
 ] as const satisfies readonly TestMigrationManifestEntry[];
 
 const migrationManifestPathPattern =
-  /^(platform|agent-task)\/([a-z0-9]+(?:-[a-z0-9]+)*)\/([0-9]{6})_([a-z0-9]+(?:[-_][a-z0-9]+)*)\.ts$/u;
+  /^(platform|agent-task|knowledge-modeling)\/([a-z0-9]+(?:-[a-z0-9]+)*)\/([0-9]{6})_([a-z0-9]+(?:[-_][a-z0-9]+)*)\.ts$/u;
 
 const validateTestMigrationManifest = (): void => {
   const paths = new Set<string>();
@@ -521,7 +531,7 @@ describe("PostgreSQL foundation", () => {
     );
     await expect(
       loadTestMigration(
-        resolve(testMigrationRoots.production, testMigrationManifest[6]!.relativePath),
+        resolve(testMigrationRoots.production, testMigrationManifest[7]!.relativePath),
       ),
     ).rejects.toThrow();
     await expect(

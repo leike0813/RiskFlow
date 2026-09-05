@@ -327,12 +327,10 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
     );
     expect(replacement).toMatchObject({ kind: "succeeded" });
     const superseded = await fixture!.adapter.govern(
-      publishFor(
-        projectId,
-        authorization,
-        submitted.result.knowledgeRevisionRef,
-        { kind: "review-decision", reference: { entityId: "superseded-decision", versionId: "1" } },
-      ),
+      publishFor(projectId, authorization, submitted.result.knowledgeRevisionRef, {
+        kind: "review-decision",
+        reference: { entityId: "superseded-decision", versionId: "1" },
+      }),
     );
     expect(superseded).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
   });
@@ -481,7 +479,8 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
         transactionUnit: fixture!.transactionUnit,
         access: actualAccess,
         reviewAudit: fixture!.reviewAudit,
-        reviewAuthorization: (command) => reviewAuthorizationFor(command.projectId, command.actorId),
+        reviewAuthorization: (command) =>
+          reviewAuthorizationFor(command.projectId, command.actorId),
         approvalAuthorization: (command) =>
           reviewAuthorizationFor(command.projectId, command.actorId),
         now: () => new Date("2030-01-01T00:00:01.000Z"),
@@ -556,7 +555,10 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
                 publishFor(
                   projectId,
                   forgedHuman,
-                  { kind: "knowledge-revision", reference: { entityId: "unknown", versionId: "1" } },
+                  {
+                    kind: "knowledge-revision",
+                    reference: { entityId: "unknown", versionId: "1" },
+                  },
                   { kind: "review-decision", reference: { entityId: "unknown", versionId: "1" } },
                 ),
               )

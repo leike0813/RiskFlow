@@ -1,5 +1,8 @@
 {
-  "allowedLicenses": ["MIT", "Apache-2.0"],
+  "allowedLicenses": [
+    "MIT",
+    "Apache-2.0"
+  ],
   "dependencies": [
     {
       "name": "react",
@@ -189,6 +192,51 @@
       "source": "https://www.npmjs.com/package/dependency-cruiser",
       "offline": "内网 npm 镜像或 pnpm fetch store",
       "exitCondition": "无法识别实际模块图或维护停止"
+    },
+    {
+      "name": "fflate",
+      "version": "0.8.3",
+      "purpose": "DOCX(OOXML) ZIP 容器解压",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/fflate",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "安全问题、Node 24 不兼容或 DOCX 结构验收失败"
+    },
+    {
+      "name": "fast-xml-parser",
+      "version": "5.11.1",
+      "purpose": "DOCX/OOXML XML 部件解析",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/fast-xml-parser",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "安全问题、Node 24 不兼容或 DOCX 结构验收失败"
+    },
+    {
+      "name": "pdfjs-dist",
+      "version": "6.3.289",
+      "purpose": "文本型 PDF 文本层与坐标提取",
+      "license": "Apache-2.0",
+      "source": "https://www.npmjs.com/package/pdfjs-dist",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "安全问题、Node 24 不兼容或 PDF 结构验收失败"
+    },
+    {
+      "name": "exceljs",
+      "version": "4.4.0",
+      "purpose": "XLSX 工作表结构/单元格解析",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/exceljs",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "安全问题、Node 24 不兼容或 XLSX 结构验收失败"
+    },
+    {
+      "name": "csv-parse",
+      "version": "7.0.2",
+      "purpose": "UTF-8 CSV 结构解析",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/csv-parse",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "安全问题、Node 24 不兼容或 CSV 结构验收失败"
     }
   ]
 }

@@ -58,20 +58,30 @@ export interface KnowledgeGovernancePostgresFixture {
   readonly access: LocalIdentityAccessV1;
   readonly reviewAudit: PostgresReviewAuditAdapter;
   readonly adapter: PostgresKnowledgeGovernanceAdapter;
+  setVerifiedContext(context: AuthorizationContextV1): void;
   close(): Promise<void>;
 }
 
 export const startKnowledgeGovernanceFixture =
   async (): Promise<KnowledgeGovernancePostgresFixture> => {
     const base = await startReviewAuditFixture();
+    const verifiedContexts = new Map<string, AuthorizationContextV1>();
+    const contextKey = (context: AuthorizationContextV1["authorizationContextRef"]) =>
+      `${context.reference.entityId}:${context.reference.versionId}`;
     const verify = vi.fn(
       async (request: {
         authorizationContextRef: AuthorizationContextV1["authorizationContextRef"];
-      }) => ({
-        context: governanceAuthorizationFor("verified-project"),
-        contextRef: request.authorizationContextRef,
-        redacted: false,
-      }),
+        projectId: string;
+      }) => {
+        const configured = verifiedContexts.get(contextKey(request.authorizationContextRef));
+        const context =
+          configured ??
+          Object.freeze({
+            ...governanceAuthorizationFor(request.projectId),
+            authorizationContextRef: request.authorizationContextRef,
+          });
+        return { context, contextRef: request.authorizationContextRef, redacted: false };
+      },
     );
     const access = { verify } as unknown as LocalIdentityAccessV1;
     const reviewAuditOptions: PostgresReviewAuditAdapterOptions = {
@@ -100,6 +110,9 @@ export const startKnowledgeGovernanceFixture =
       access,
       reviewAudit,
       adapter,
+      setVerifiedContext(context) {
+        verifiedContexts.set(contextKey(context.authorizationContextRef), context);
+      },
       async close() {
         await base.close();
       },

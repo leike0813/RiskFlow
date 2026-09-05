@@ -2,12 +2,19 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  AuthorizationContextV1Schema,
   KnowledgeGovernanceCommandV1Schema,
+  ReviewRequestV1Schema,
   ReviewDecisionCommandV1Schema,
   type AuthorizationContextV1,
   type KnowledgeGovernanceCommandV1,
   type ReviewTaskRefV1,
 } from "@riskflow/contracts/ports";
+import {
+  bootstrapInitialSystemAdministrator,
+  createPostgresLocalIdentityAccess,
+} from "../../src/auth/index.js";
+import { PostgresKnowledgeGovernanceAdapter } from "../../src/knowledge-governance/index.js";
 import { createPostgresRuntime } from "../../src/postgres/pool.js";
 import * as governanceMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-governed-definition-lifecycle/000007_governed_definition_lifecycle.js";
 import {
@@ -242,6 +249,363 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
       ),
     );
     expect(rejectedPublish).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+  });
+
+  it("rejects approval proofs with a wrong project, target, or superseded task", async () => {
+    const projectId = "governance-proof-boundaries";
+    const authorization = governanceAuthorizationFor(projectId);
+    const reviewAuthorization = reviewAuthorizationFor(projectId);
+    const submitted = await fixture!.adapter.govern(
+      submitFor(projectId, authorization, "proof-boundary"),
+    );
+    expect(submitted.kind).toBe("succeeded");
+    if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") return;
+    const requested = await fixture!.adapter.govern(
+      requestReviewFor(projectId, authorization, submitted.result.knowledgeRevisionRef),
+    );
+    expect(requested.kind).toBe("succeeded");
+    if (requested.kind !== "succeeded" || requested.result.kind !== "review-task") return;
+    const decision = await fixture!.reviewAudit.decideReview(
+      decideApproval(projectId, reviewAuthorization, requested.result.reviewTaskRef),
+    );
+    expect(decision.kind).toBe("succeeded");
+    if (decision.kind !== "succeeded") return;
+
+    const wrongProject = await fixture!.adapter.govern(
+      publishFor(
+        "governance-proof-other-project",
+        governanceAuthorizationFor("governance-proof-other-project"),
+        submitted.result.knowledgeRevisionRef,
+        decision.result.reviewDecisionRef,
+      ),
+    );
+    expect(wrongProject).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+
+    const wrongTarget = await fixture!.adapter.govern(
+      publishFor(
+        projectId,
+        authorization,
+        {
+          kind: "knowledge-revision",
+          reference: { entityId: "revision-not-approved", versionId: "1" },
+        },
+        decision.result.reviewDecisionRef,
+      ),
+    );
+    expect(wrongTarget).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+
+    const replacement = await fixture!.reviewAudit.requestReview(
+      ReviewRequestV1Schema.parse({
+        kind: "request-review",
+        commandId: nextId("supersede-review"),
+        idempotencyKey: nextId("supersede-review-key"),
+        projectId,
+        actorId: reviewAuthorization.actorId,
+        issuedAt: "2030-01-01T00:00:02.000Z",
+        authorization: reviewAuthorization,
+        payload: {
+          reviewType: "knowledge-revision",
+          targetRef: {
+            kind: "knowledge-revision",
+            reference: {
+              entityId: submitted.result.knowledgeRevisionRef.reference.entityId,
+              versionId: "2",
+            },
+          },
+          validationSnapshotRef: {
+            kind: "validation-snapshot",
+            reference: { entityId: "supersede-validation", versionId: "1" },
+          },
+          evidenceSnapshotRef: {
+            kind: "evidence-snapshot",
+            reference: { entityId: "supersede-evidence", versionId: "1" },
+          },
+          waitingRunRef: requested.result.reviewTaskRef.waitingRunRef,
+          reviewPolicyRef: { entityId: "review-policy", versionId: "1" },
+        },
+      }),
+    );
+    expect(replacement).toMatchObject({ kind: "succeeded" });
+    const superseded = await fixture!.adapter.govern(
+      publishFor(
+        projectId,
+        authorization,
+        submitted.result.knowledgeRevisionRef,
+        { kind: "review-decision", reference: { entityId: "superseded-decision", versionId: "1" } },
+      ),
+    );
+    expect(superseded).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+  });
+
+  it("uses the C06 verified invocation kind for human-only governance commands", async () => {
+    const projectId = "governance-authoritative-access";
+    const authorization = governanceAuthorizationFor(projectId);
+    const reviewAuthorization = reviewAuthorizationFor(projectId);
+    const submitted = await fixture!.adapter.govern(
+      submitFor(projectId, authorization, "authoritative-access"),
+    );
+    expect(submitted.kind).toBe("succeeded");
+    if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") return;
+    const requested = await fixture!.adapter.govern(
+      requestReviewFor(projectId, authorization, submitted.result.knowledgeRevisionRef),
+    );
+    expect(requested.kind).toBe("succeeded");
+    if (requested.kind !== "succeeded" || requested.result.kind !== "review-task") return;
+    const decision = await fixture!.reviewAudit.decideReview(
+      decideApproval(projectId, reviewAuthorization, requested.result.reviewTaskRef),
+    );
+    expect(decision.kind).toBe("succeeded");
+    if (decision.kind !== "succeeded") return;
+    const published = await fixture!.adapter.govern(
+      publishFor(
+        projectId,
+        authorization,
+        submitted.result.knowledgeRevisionRef,
+        decision.result.reviewDecisionRef,
+      ),
+    );
+    expect(published).toMatchObject({ kind: "succeeded", result: { kind: "release" } });
+    if (published.kind !== "succeeded" || published.result.kind !== "release") return;
+
+    const verifiedAsAgent = AuthorizationContextV1Schema.parse({
+      ...authorization,
+      causalRunRef: {
+        kind: "workflow-run",
+        reference: { entityId: `agent-run-${projectId}`, versionId: "1" },
+      },
+      invocation: {
+        kind: "agent-task",
+        agentTaskRef: {
+          kind: "agent-task",
+          reference: { entityId: `agent-task-${projectId}`, versionId: "1" },
+          taskType: "knowledge-authoring",
+          triggerMode: "embedded",
+          modelDeploymentRef: { entityId: "model-deployment", versionId: "1" },
+          promptTemplateRef: { entityId: "prompt-template", versionId: "1" },
+          toolPolicyRef: { entityId: "tool-policy", versionId: "1" },
+          budgetPolicyRef: { entityId: "budget-policy", versionId: "1" },
+          incrementSchemaRef: { entityId: "increment-schema", versionId: "1" },
+          validationPolicyRef: { entityId: "validation-policy", versionId: "1" },
+        },
+      },
+    });
+    fixture!.setVerifiedContext(verifiedAsAgent);
+
+    expect(
+      await fixture!.adapter.govern(
+        publishFor(
+          projectId,
+          authorization,
+          submitted.result.knowledgeRevisionRef,
+          decision.result.reviewDecisionRef,
+          "2030-01-01T00:00:10.000Z",
+        ),
+      ),
+    ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+
+    const deactivated = KnowledgeGovernanceCommandV1Schema.parse({
+      kind: "deactivate-release",
+      commandId: nextId("agent-deactivate"),
+      idempotencyKey: nextId("agent-deactivate-key"),
+      projectId,
+      actorId: authorization.actorId,
+      issuedAt: "2030-01-01T00:00:11.000Z",
+      authorization,
+      payload: { releaseRef: published.result.knowledgeReleaseRef, reasonCode: "agent-attempt" },
+    });
+    expect(await fixture!.adapter.govern(deactivated)).toMatchObject({
+      kind: "failed",
+      error: { code: "AUTHORIZATION_DENIED" },
+    });
+
+    const rollback = KnowledgeGovernanceCommandV1Schema.parse({
+      kind: "rollback-by-new-release",
+      commandId: nextId("agent-rollback"),
+      idempotencyKey: nextId("agent-rollback-key"),
+      projectId,
+      actorId: authorization.actorId,
+      issuedAt: "2030-01-01T00:00:12.000Z",
+      authorization,
+      payload: {
+        historicalReleaseRef: published.result.knowledgeReleaseRef,
+        reviewDecisionRef: decision.result.reviewDecisionRef,
+        reasonCode: "agent-attempt",
+      },
+    });
+    expect(await fixture!.adapter.govern(rollback)).toMatchObject({
+      kind: "failed",
+      error: { code: "AUTHORIZATION_DENIED" },
+    });
+  });
+
+  it("uses real C06 human and agent verification contexts", async () => {
+    const projectId = "governance-real-c06-authority";
+    const actualAccess = createPostgresLocalIdentityAccess({
+      ...fixture!.postgres.app,
+      hmacKey: new Uint8Array(32).fill(9),
+      keyVersion: "c16-real-c06-key",
+      now: () => new Date("2030-01-01T00:00:01.000Z"),
+    });
+    try {
+      await bootstrapInitialSystemAdministrator({
+        connection: fixture!.postgres.migrator,
+        loginName: "c16realadmin",
+        displayName: "C16 real C06 administrator",
+        password: "c16-real-c06-password-v1",
+        accountId: "c16-real-c06-admin",
+        now: () => new Date("2030-01-01T00:00:01.000Z"),
+      });
+      const login = await actualAccess.login({
+        kind: "login",
+        loginAttemptId: "c16-real-c06-login",
+        loginName: "c16realadmin",
+        password: "c16-real-c06-password-v1",
+      });
+      const session = await actualAccess.changePassword({
+        kind: "change-password",
+        sessionToken: login.sessionToken,
+        newPassword: "c16-real-c06-password-changed-v1",
+      });
+      await actualAccess.administerProject({
+        kind: "open-project",
+        projectId,
+        commandId: "c16-real-c06-open-project",
+        idempotencyKey: "c16-real-c06-open-project",
+        expectedVersion: "none",
+        authorizationContextRef: session.systemAdministrationContextRef!,
+        initialRiskManagerAccountId: "c16-real-c06-admin",
+      });
+
+      const adapter = new PostgresKnowledgeGovernanceAdapter({
+        db: fixture!.runtime.db,
+        transactionUnit: fixture!.transactionUnit,
+        access: actualAccess,
+        reviewAudit: fixture!.reviewAudit,
+        reviewAuthorization: (command) => reviewAuthorizationFor(command.projectId, command.actorId),
+        approvalAuthorization: (command) =>
+          reviewAuthorizationFor(command.projectId, command.actorId),
+        now: () => new Date("2030-01-01T00:00:01.000Z"),
+      });
+      const agentTaskRefFor = (suffix: string) => ({
+        kind: "agent-task" as const,
+        reference: { entityId: `c16-agent-task-${suffix}`, versionId: "1" },
+        taskType: "knowledge-authoring" as const,
+        triggerMode: "embedded" as const,
+        modelDeploymentRef: { entityId: "c16-model-deployment", versionId: "1" },
+        promptTemplateRef: { entityId: "c16-prompt-template", versionId: "1" },
+        toolPolicyRef: { entityId: "c16-tool-policy", versionId: "1" },
+        budgetPolicyRef: { entityId: "c16-budget-policy", versionId: "1" },
+        incrementSchemaRef: { entityId: "c16-increment-schema", versionId: "1" },
+        validationPolicyRef: { entityId: "c16-validation-policy", versionId: "1" },
+      });
+      const branches = [
+        ["publish", "knowledge-modeling.publish-approved-release"],
+        ["deactivate", "knowledge-modeling.deactivate-release"],
+        ["rollback", "knowledge-modeling.rollback-by-new-release"],
+      ] as const;
+      for (const [suffix, branch] of branches) {
+        const humanInvocationId = `c16-real-c06-human-${suffix}`;
+        const human = await actualAccess.authorize({
+          invocation: { kind: "human-session", sessionToken: session.sessionToken },
+          invocationId: humanInvocationId,
+          projectId,
+          branch,
+          requestedSpatialScopeRefs: [],
+          requestedSourceVersionRefs: [],
+        });
+        const agentInvocationId = `c16-real-c06-agent-${suffix}`;
+        const agent = await actualAccess.authorize({
+          invocation: { kind: "agent-task", agentTaskRef: agentTaskRefFor(suffix) },
+          invocationId: agentInvocationId,
+          projectId,
+          branch,
+          requestedSpatialScopeRefs: [],
+          requestedSourceVersionRefs: [],
+          parentContext: human.context,
+          causalRunRef: {
+            kind: "workflow-run",
+            reference: { entityId: `c16-real-c06-run-${suffix}`, versionId: "1" },
+          },
+        });
+        const verifiedHuman = await actualAccess.verify({
+          authorizationContextRef: human.context.authorizationContextRef,
+          invocationId: humanInvocationId,
+          projectId,
+          branch,
+          requestedSpatialScopeRefs: [],
+          requestedSourceVersionRefs: [],
+        });
+        const verifiedAgent = await actualAccess.verify({
+          authorizationContextRef: agent.context.authorizationContextRef,
+          invocationId: agentInvocationId,
+          projectId,
+          branch,
+          requestedSpatialScopeRefs: [],
+          requestedSourceVersionRefs: [],
+        });
+        expect(verifiedHuman.context.invocation.kind).toBe("human");
+        expect(verifiedAgent.context.invocation.kind).toBe("agent-task");
+
+        const forgedHuman = AuthorizationContextV1Schema.parse({
+          ...agent.context,
+          invocation: { kind: "human" },
+        });
+        const result =
+          suffix === "publish"
+            ? await adapter.govern(
+                publishFor(
+                  projectId,
+                  forgedHuman,
+                  { kind: "knowledge-revision", reference: { entityId: "unknown", versionId: "1" } },
+                  { kind: "review-decision", reference: { entityId: "unknown", versionId: "1" } },
+                ),
+              )
+            : suffix === "deactivate"
+              ? await adapter.govern(
+                  KnowledgeGovernanceCommandV1Schema.parse({
+                    kind: "deactivate-release",
+                    commandId: `c16-real-c06-${suffix}`,
+                    idempotencyKey: `c16-real-c06-${suffix}`,
+                    projectId,
+                    actorId: forgedHuman.actorId,
+                    issuedAt: "2030-01-01T00:00:02.000Z",
+                    authorization: forgedHuman,
+                    payload: {
+                      releaseRef: {
+                        kind: "knowledge-release",
+                        reference: { entityId: "unknown", versionId: "1" },
+                      },
+                      reasonCode: "agent-attempt",
+                    },
+                  }),
+                )
+              : await adapter.govern(
+                  KnowledgeGovernanceCommandV1Schema.parse({
+                    kind: "rollback-by-new-release",
+                    commandId: `c16-real-c06-${suffix}`,
+                    idempotencyKey: `c16-real-c06-${suffix}`,
+                    projectId,
+                    actorId: forgedHuman.actorId,
+                    issuedAt: "2030-01-01T00:00:02.000Z",
+                    authorization: forgedHuman,
+                    payload: {
+                      historicalReleaseRef: {
+                        kind: "knowledge-release",
+                        reference: { entityId: "unknown", versionId: "1" },
+                      },
+                      reviewDecisionRef: {
+                        kind: "review-decision",
+                        reference: { entityId: "unknown", versionId: "1" },
+                      },
+                      reasonCode: "agent-attempt",
+                    },
+                  }),
+                );
+        expect(result).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+      }
+    } finally {
+      await actualAccess.close();
+    }
   });
 
   it("publishes, deactivates, and keeps historical references resolvable by time", async () => {

@@ -1129,13 +1129,13 @@ export class PostgresKnowledgeGovernanceAdapter {
     command: Extract<KnowledgeGovernanceCommandV1, { kind: "publish-approved-release" }>,
   ): Promise<ReturnType<typeof KnowledgeGovernanceResultV1Schema.parse>> {
     try {
-      await this.#verifyAuthorization(
+      const verifiedAuthorization = await this.#verifyAuthorization(
         command.authorization,
         command.projectId,
         command.commandId,
         knowledgeBranch(command.kind),
       );
-      if (command.authorization.invocation.kind !== "human") {
+      if (verifiedAuthorization.invocation.kind !== "human") {
         return {
           kind: "failed",
           error: moduleError({
@@ -1352,13 +1352,13 @@ export class PostgresKnowledgeGovernanceAdapter {
     command: Extract<KnowledgeGovernanceCommandV1, { kind: "deactivate-release" }>,
   ): Promise<ReturnType<typeof KnowledgeGovernanceResultV1Schema.parse>> {
     try {
-      await this.#verifyAuthorization(
+      const verifiedAuthorization = await this.#verifyAuthorization(
         command.authorization,
         command.projectId,
         command.commandId,
         knowledgeBranch(command.kind),
       );
-      if (command.authorization.invocation.kind !== "human") {
+      if (verifiedAuthorization.invocation.kind !== "human") {
         return {
           kind: "failed",
           error: moduleError({
@@ -1453,13 +1453,13 @@ export class PostgresKnowledgeGovernanceAdapter {
     command: Extract<KnowledgeGovernanceCommandV1, { kind: "rollback-by-new-release" }>,
   ): Promise<ReturnType<typeof KnowledgeGovernanceResultV1Schema.parse>> {
     try {
-      await this.#verifyAuthorization(
+      const verifiedAuthorization = await this.#verifyAuthorization(
         command.authorization,
         command.projectId,
         command.commandId,
         knowledgeBranch(command.kind),
       );
-      if (command.authorization.invocation.kind !== "human") {
+      if (verifiedAuthorization.invocation.kind !== "human") {
         return {
           kind: "failed",
           error: moduleError({
@@ -1701,8 +1701,8 @@ export class PostgresKnowledgeGovernanceAdapter {
     projectId: string,
     invocationId: string,
     branch: ModuleBranchV1,
-  ): Promise<void> {
-    await this.#access.verify({
+  ): Promise<AuthorizationContextV1> {
+    const decision = await this.#access.verify({
       authorizationContextRef: authorization.authorizationContextRef,
       invocationId,
       projectId,
@@ -1711,6 +1711,7 @@ export class PostgresKnowledgeGovernanceAdapter {
       requestedSourceVersionRefs: [],
       requestedAt: authorization.decidedAt,
     });
+    return decision.context;
   }
 
   async #authorizationForReview(

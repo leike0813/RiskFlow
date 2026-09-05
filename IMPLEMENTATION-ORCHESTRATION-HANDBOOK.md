@@ -11,9 +11,9 @@
 - C01 主 spec 位于 `openspec/specs/domain/contract-kernel/spec.md`。
 - C02 主 spec 位于 `openspec/specs/domain/module-interfaces-events-workflows/spec.md`。
 - C03 主 spec 位于 `openspec/specs/platform/postgresql-outbox-checkpoint-foundation/spec.md`。
-- G0 已通过；G1 前置（C03–C10）已全部合并、归档；无活动 change/worker。下一项按路线重算 frontier（候选：C11 `deliver-engineering-context-and-source-registry`，其依赖 C03/C04/C06/C07 均已归档），不能预建长期 worktree。
+- G0、G1 已通过；C03–C10 已全部合并、归档；无活动 change/worker。当前完整 frontier 为 C11 `deliver-engineering-context-and-source-registry` 与 C16 `deliver-process-model-and-association-adapters`，由主调度按资源和路线选择派发，不能预建长期 worktree。
 - C09/C10 的 feature worktree 已按 §6.1 回收；Git 与 Orca 均无残留 feature worktree。
-- 已知工具缺陷（待走 OpenSpec change 修复，禁止直接改 `scripts/orchestration/status.mjs`）：`deliver-structured-orchestration-status` 的 worktree→change 关联对已归档 change 仍按"worktree 内 archive 文件存在"反推归属，导致 `pnpm orchestration:status` 把已归档节点误报为 `unknown`/violations、frontier 为空；C09/C10 的 Task envelope 亦缺 `mainVerification: passed` 主线验证摘要。手工复核以 git/归档为准。
+- 状态观察器以当前 `main` 提交中的 OpenSpec archive 作为持久完成事实；Orca 仅提供现存 feature worktree、worker 与 Dispatch 均非终态或关联 live terminal 的实时状态。已脱离实时对象的旧 Task 只进入 `diagnostics`，不得阻断 frontier 或 `orchestration:check`。
 - 不推送远端；远端操作必须由用户另行授权。
 
 ## 2. 固定角色与模型
@@ -208,14 +208,14 @@ orca worktree list --repo id:d4349f30-1c7e-4777-b16d-f259481b0121 --json
 pnpm orchestration:status --json        # 按每个 worktree cwd 汇总活动状态
 ```
 
-状态查询不能只读取 `main`。活动 change 的 OpenSpec、Git HEAD、Task/Run 和 worker 事实必须按 Orca 返回的完整 worktree ID，在对应 feature worktree 中采集；`main` 只提供合并祖先、主线验证和归档事实。根目录提供两个只读入口：
+状态查询不能只读取 `main`。活动 change 的 OpenSpec、Git HEAD、Task/Run 和 worker 事实必须按 Orca 返回的完整 worktree ID，在对应 feature worktree 中采集；feature worktree 继承的 archive 不用于关联 change。当前 `main` 提交中的 OpenSpec archive 是完成事实，活动集成信封中的旧 `mainHead` 只要仍是当前 HEAD 的祖先即有效。根目录提供两个只读入口：
 
 ```bash
 pnpm orchestration:status --json
 pnpm orchestration:check
 ```
 
-查询结果以 `config/orchestration/execution-graph.json` 的静态 Manifest 为节点和依赖事实源，以结构化 Task result 为执行事实源。自然语言标题、报告正文和 main 缺失的 OpenSpec change 不得用于反推活动状态。
+查询结果以 `config/orchestration/execution-graph.json` 的静态 Manifest 为节点和依赖事实源，以当前结构化 Task result 为实时执行事实源；Run 必须按 cursor 完整分页。自然语言标题、报告正文、历史孤立 Task 和 main 缺失的 OpenSpec change 不得用于反推活动状态。
 
 ### 7.2 Task 执行信封
 
@@ -241,7 +241,7 @@ pnpm orchestration:check
 }
 ```
 
-阶段收口、主线复验和归档后，用 `task-update --result` 更新同一信封；报告正文只补充证据，不承载状态字段。`head` 与当前 worktree HEAD 不一致时状态为 `unknown`，不得继续自动归档或回收。
+阶段收口、主线复验和归档后，用 `task-update --result` 更新同一信封；报告正文只补充证据，不承载状态字段。`main.verification` 只允许 `pending`、`passed` 或 `failed`。`head` 与当前 feature worktree HEAD 不一致时状态为 `unknown`，不得继续自动归档或回收。
 
 不要复用旧 session 的 terminal handle、Run 或 Dispatch。一个独立任务始终创建新的 Sol session；不要假定旧 context window 的剩余容量或缓存仍可用，尤其不要在长间隔后复用。当前活动验证任务内的直接修复是同一任务的连续执行，不是新任务复用。用当前 Orca terminal 创建新 Run；所有协调命令显式传当前 `ORCA_TERMINAL_HANDLE`，所有 worker 使用完整 worktree ID。
 

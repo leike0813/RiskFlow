@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { resolve } from "node:path";
@@ -10,6 +10,16 @@ const TASK_KINDS = new Set(["planning", "implementation", "verification", "archi
 const TASK_STATUSES = new Set(["pending", "ready", "dispatched", "completed", "failed", "blocked"]);
 const TERMINAL_TASK_STATUSES = new Set(["completed", "failed"]);
 const ACTIVE_TASK_STATUSES = new Set(["pending", "ready", "dispatched", "blocked"]);
+const TASK_OUTCOMES = new Set(["pending", "succeeded", "failed", "blocked"]);
+const MAIN_VERIFICATIONS = new Set(["pending", "passed", "failed"]);
+const TERMINAL_WORKER_STATES = new Set(["succeeded", "failed", "stopped", "abandoned"]);
+const TERMINAL_DISPATCH_STATUSES = new Set(["completed", "failed"]);
+const PHASE_ORDER = new Map([
+  ["planning", 1],
+  ["implementation", 2],
+  ["verification", 3],
+  ["archive", 4],
+]);
 
 export class CommandFailure extends Error {
   constructor(command, args, cause) {
@@ -94,6 +104,9 @@ export function parseTaskEnvelope(task) {
   const required = ["changeId", "taskKind", "worktreeId", "baseHead", "head"];
   const missing = required.filter((field) => !nonEmptyString(envelope[field]));
   if (missing.length > 0) return { valid: false, reason: "missing_fields", missing };
+  if (Number(envelope.schemaVersion) !== 1) {
+    return { valid: false, reason: "invalid_schema_version", value: envelope.schemaVersion };
+  }
   if (!TASK_KINDS.has(envelope.taskKind)) {
     return { valid: false, reason: "invalid_task_kind", value: envelope.taskKind };
   }
@@ -111,10 +124,42 @@ export function parseTaskEnvelope(task) {
       };
     }
   }
+  if (envelope.outcome !== undefined && !TASK_OUTCOMES.has(envelope.outcome)) {
+    return { valid: false, reason: "invalid_outcome", value: envelope.outcome };
+  }
+  for (const field of ["evidenceRefs", "filesModified"]) {
+    if (envelope[field] !== undefined && !Array.isArray(envelope[field])) {
+      return {
+        valid: false,
+        reason: `invalid_${field.replace(/[A-Z]/gu, (c) => `_${c.toLowerCase()}`)}`,
+      };
+    }
+  }
   if (envelope.main !== undefined && (!envelope.main || typeof envelope.main !== "object")) {
     return { valid: false, reason: "invalid_main_summary" };
   }
-  return { valid: true, ...envelope };
+  if (
+    envelope.main?.verification !== undefined &&
+    !MAIN_VERIFICATIONS.has(envelope.main.verification)
+  ) {
+    return {
+      valid: false,
+      reason: "invalid_main_verification",
+      value: envelope.main.verification,
+    };
+  }
+  for (const field of ["mergeCommit", "mainHead", "archiveCommit"]) {
+    const value = envelope.main?.[field];
+    if (value !== undefined && value !== null && !nonEmptyString(value)) {
+      return { valid: false, reason: "invalid_main_summary", field };
+    }
+  }
+  return {
+    valid: true,
+    ...envelope,
+    schemaVersion: 1,
+    evidenceRefs: envelope.evidenceRefs ?? [],
+  };
 }
 
 export function validateGraph(graph) {
@@ -122,7 +167,9 @@ export function validateGraph(graph) {
   if (!graph || typeof graph !== "object" || !Array.isArray(graph.nodes)) {
     return ["graph.nodes must be an array"];
   }
+  if (!nonEmptyString(graph.routeId)) issues.push("graph.routeId must be a non-empty string");
   const nodes = new Map();
+  const changes = new Set();
   for (const node of graph.nodes) {
     if (!node || !nonEmptyString(node.id)) {
       issues.push("node id must be a non-empty string");
@@ -131,8 +178,21 @@ export function validateGraph(graph) {
     if (nodes.has(node.id)) issues.push(`duplicate node id: ${node.id}`);
     nodes.set(node.id, node);
     if (!["change", "gate"].includes(node.kind)) issues.push(`${node.id}: invalid kind`);
+    if (node.kind === "change") {
+      if (!nonEmptyString(node.change))
+        issues.push(`${node.id}: change must be a non-empty string`);
+      else if (changes.has(node.change)) issues.push(`${node.id}: duplicate change ${node.change}`);
+      else changes.add(node.change);
+    }
     if (!Array.isArray(node.dependsOn)) issues.push(`${node.id}: dependsOn must be an array`);
+    if (new Set(node.dependsOn ?? []).size !== (node.dependsOn ?? []).length) {
+      issues.push(`${node.id}: duplicate dependency`);
+    }
     for (const dependency of node.dependsOn ?? []) {
+      if (!nonEmptyString(dependency)) {
+        issues.push(`${node.id}: dependency must be a non-empty string`);
+        continue;
+      }
       if (dependency === node.id) issues.push(`${node.id}: self dependency`);
       else if (!graph.nodes.some((candidate) => candidate?.id === dependency)) {
         issues.push(`${node.id}: unknown dependency ${dependency}`);
@@ -155,6 +215,20 @@ export function validateGraph(graph) {
   }
   for (const id of nodes.keys()) visit(id);
   return [...new Set(issues)];
+}
+
+function topologicalNodes(graph) {
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const visited = new Set();
+  const ordered = [];
+  function visit(node) {
+    if (visited.has(node.id)) return;
+    for (const dependency of node.dependsOn ?? []) visit(nodes.get(dependency));
+    visited.add(node.id);
+    ordered.push(node);
+  }
+  for (const node of graph.nodes) visit(node);
+  return ordered;
 }
 
 function resolveOrcaInvocation(value = process.env.ORCA_CLI_COMMAND) {
@@ -182,15 +256,22 @@ function extractOpenSpecChanges(payload) {
     .filter((record) => nonEmptyString(record.name));
 }
 
-async function archiveChangeNames(rootDir) {
-  const archiveDir = resolve(rootDir, "openspec/changes/archive");
-  try {
-    const entries = await readdir(archiveDir, { withFileTypes: true });
-    return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
-  } catch (error) {
-    if (error.code === "ENOENT") return [];
-    throw error;
-  }
+async function committedArchiveChangeNames(exec, rootDir) {
+  const prefix = "openspec/changes/archive/";
+  const output = await exec(
+    "git",
+    ["ls-tree", "-d", "--name-only", "-r", "HEAD", "--", "openspec/changes/archive"],
+    { cwd: rootDir },
+  );
+  return [
+    ...new Set(
+      String(output)
+        .split("\n")
+        .filter((path) => path.startsWith(prefix))
+        .map((path) => path.slice(prefix.length).split("/")[0])
+        .filter(nonEmptyString),
+    ),
+  ];
 }
 
 function archivedName(names, change) {
@@ -267,18 +348,14 @@ async function collectWorktree(exec, worktree, graph, tasks) {
   };
   if (!base.exists) return base;
 
-  const [git, openSpecPayload, archives] = await Promise.all([
+  const [git, openSpecPayload] = await Promise.all([
     collectGit(exec, worktree.path),
     readJsonCommand(exec, "openspec", ["list", "--json"], { cwd: worktree.path }),
-    archiveChangeNames(worktree.path),
   ]);
   const openSpec = extractOpenSpecChanges(openSpecPayload);
   const names = new Set(openSpec.map((record) => record.name));
   const openSpecNodeIds = graph.nodes
-    .filter(
-      (node) =>
-        node.kind === "change" && (names.has(node.change) || archivedName(archives, node.change)),
-    )
+    .filter((node) => node.kind === "change" && names.has(node.change))
     .map((node) => node.id);
   const localNodeIds = [...openSpecNodeIds];
   for (const task of base.tasks) {
@@ -290,7 +367,7 @@ async function collectWorktree(exec, worktree, graph, tasks) {
   return {
     ...base,
     git,
-    openSpec: { changes: openSpec, archiveNames: archives },
+    openSpec: { changes: openSpec },
     openSpecNodeIds: [...new Set(openSpecNodeIds)],
     localNodeIds: [...new Set(localNodeIds)],
   };
@@ -298,38 +375,60 @@ async function collectWorktree(exec, worktree, graph, tasks) {
 
 function taskSummary(tasks) {
   const valid = tasks.filter((task) => task.envelope.valid);
-  const failed = valid.find(
+  const maxPhase = Math.max(
+    0,
+    ...valid.map((task) => PHASE_ORDER.get(task.envelope.taskKind) ?? 0),
+  );
+  const phaseTasks = valid.filter(
+    (task) => (PHASE_ORDER.get(task.envelope.taskKind) ?? 0) === maxPhase,
+  );
+  const comparableCreationOrder = phaseTasks.every((task) => nonEmptyString(task.createdAt));
+  const maxCreatedAt = comparableCreationOrder
+    ? phaseTasks
+        .map((task) => task.createdAt)
+        .sort()
+        .at(-1)
+    : null;
+  const current = maxCreatedAt
+    ? phaseTasks.filter((task) => task.createdAt === maxCreatedAt)
+    : phaseTasks;
+  const signatures = new Set(
+    current.map((task) => {
+      const main = task.envelope.main;
+      return JSON.stringify([
+        task.status,
+        task.envelope.outcome ?? null,
+        main?.verification ?? null,
+        main?.mainHead ?? null,
+        main?.mergeCommit ?? null,
+        main?.archiveCommit ?? null,
+      ]);
+    }),
+  );
+  const failed = current.find(
     (task) => task.status === "failed" || task.envelope.outcome === "failed",
   );
-  const blocked = valid.find((task) => task.status === "blocked");
-  const active = valid.find((task) => ACTIVE_TASK_STATUSES.has(task.status));
-  const phaseOrder = new Map([
-    ["planning", 1],
-    ["implementation", 2],
-    ["verification", 3],
-    ["archive", 4],
-  ]);
-  const latest =
-    [...valid].sort((left, right) => {
-      const leftOrder = phaseOrder.get(left.envelope.taskKind) ?? 0;
-      const rightOrder = phaseOrder.get(right.envelope.taskKind) ?? 0;
-      return (
-        rightOrder - leftOrder || String(right.createdAt).localeCompare(String(left.createdAt))
-      );
-    })[0] ?? null;
+  const blocked = current.find((task) => task.status === "blocked");
+  const active = current.find((task) => ACTIVE_TASK_STATUSES.has(task.status));
+  const latest = current[0] ?? null;
   return {
+    current,
+    conflict: signatures.size > 1,
     failed,
     blocked,
     active,
     latest,
-    hasActive: valid.some((task) => ACTIVE_TASK_STATUSES.has(task.status)),
-    allSettled: valid.length > 0 && valid.every((task) => TERMINAL_TASK_STATUSES.has(task.status)),
+    hasActive: current.some((task) => ACTIVE_TASK_STATUSES.has(task.status)),
+    allSettled:
+      current.length > 0 && current.every((task) => TERMINAL_TASK_STATUSES.has(task.status)),
   };
 }
 
 function mainSummary(tasks, changeId, mainHead) {
-  const summaries = tasks
-    .filter((task) => task.envelope.valid && task.envelope.changeId === changeId)
+  const current = taskSummary(
+    tasks.filter((task) => task.envelope.valid && task.envelope.changeId === changeId),
+  );
+  const summaries = current.current
     .map((task) => task.envelope.main)
     .filter((summary) => summary && typeof summary === "object");
   const verifications = [
@@ -369,7 +468,8 @@ function mainSummary(tasks, changeId, mainHead) {
       verifications.length > 1 ||
       mainHeads.length > 1 ||
       mergeCommits.length > 1 ||
-      archiveCommits.length > 1,
+      archiveCommits.length > 1 ||
+      current.conflict,
   };
 }
 
@@ -444,9 +544,13 @@ export function deriveNodeState(node, context) {
     });
 
   const main = context.main ?? {};
+  const mainArchive = archivedName(main.archiveNames ?? [], node.change);
   const mainState = mainSummary(tasks, node.id, main.head);
   if (mainState.conflict) violations.push({ code: "main_summary_conflict" });
-  if (mainState.mainHead && main.head && mainState.mainHead !== main.head) {
+  const mainCheckpointMatches =
+    mainState.mainHead === main.head ||
+    context.mainCheckpointAncestry?.[mainState.mainHead] === true;
+  if (mainState.mainHead && main.head && !mainArchive && !mainCheckpointMatches) {
     violations.push({
       code: "main_checkpoint_mismatch",
       checkpointHead: mainState.mainHead,
@@ -465,16 +569,10 @@ export function deriveNodeState(node, context) {
       currentHead: worktree.git.head,
     });
   }
-  const mainArchive = archivedName(main.archiveNames ?? [], node.change);
-  if (mainArchive && context.ancestry?.[node.id] === false) {
-    violations.push({ code: "archived_main_but_feature_head_not_ancestor" });
-  }
-
   if (worktree && !worktree.exists)
     violations.push({ code: "worktree_missing", worktreeId: worktree.id });
   const featureMerged = mainArchive || Boolean(context.ancestry?.[node.id]);
-  const mainVerified = mainState.verification === "passed";
-  if (mainArchive && !mainVerified) violations.push({ code: "main_verification_missing" });
+  const mainVerified = mainArchive || mainState.verification === "passed";
   const archived = featureMerged && Boolean(mainArchive);
   const unknownDirty = Boolean(worktree?.git?.dirty);
   const activeTerminal = Number(worktree?.liveTerminalCount ?? 0) > 0;
@@ -578,7 +676,7 @@ export function deriveNodeState(node, context) {
     main: {
       head: main.head ?? null,
       merged: featureMerged,
-      verification: mainState.verification,
+      verification: mainVerified ? "passed" : mainState.verification,
       archive: archivedName(main.archiveNames ?? [], node.change),
       mergeCommit: mainState.mergeCommit,
       archiveCommit: mainState.archiveCommit,
@@ -590,30 +688,34 @@ export function deriveNodeState(node, context) {
 }
 
 export function deriveSnapshot(graph, facts) {
-  const changes = graph.nodes.filter((node) => node.kind === "change");
-  const changeIds = new Set(changes.map((node) => node.id));
+  const changeIds = new Set(
+    graph.nodes.filter((node) => node.kind === "change").map((node) => node.id),
+  );
   const dependencyState = new Map();
-  const changeStates = [];
-  for (const node of changes) {
-    const state = deriveNodeState(node, {
-      ...facts,
-      dependencyState,
-      worktrees: (facts.worktrees ?? []).filter(
-        (worktree) =>
-          worktree.localNodeIds.includes(node.id) ||
-          worktree.tasks.some((task) => task.envelope.valid && task.envelope.changeId === node.id),
-      ),
-      tasks: (facts.tasks ?? []).filter(
-        (task) => task.envelope.valid && task.envelope.changeId === node.id,
-      ),
-    });
-    changeStates.push(state);
+  const stateById = new Map();
+  for (const node of topologicalNodes(graph)) {
+    const state =
+      node.kind === "gate"
+        ? deriveNodeState(node, { dependencyState })
+        : deriveNodeState(node, {
+            ...facts,
+            dependencyState,
+            worktrees: (facts.worktrees ?? []).filter(
+              (worktree) =>
+                worktree.localNodeIds?.includes(node.id) ||
+                worktree.tasks?.some(
+                  (task) => task.envelope.valid && task.envelope.changeId === node.id,
+                ),
+            ),
+            tasks: (facts.tasks ?? []).filter(
+              (task) => task.envelope.valid && task.envelope.changeId === node.id,
+            ),
+          });
+    stateById.set(node.id, state);
     dependencyState.set(node.id, state.status);
   }
-  const gateStates = graph.nodes
-    .filter((node) => node.kind === "gate")
-    .map((node) => deriveNodeState(node, { dependencyState }));
-  const nodes = [...changeStates, ...gateStates];
+  const nodes = graph.nodes.map((node) => stateById.get(node.id));
+  const changeStates = nodes.filter((node) => node.kind === "change");
   const violations = [
     ...nodes.flatMap((node) =>
       node.violations.map((violation) => ({ nodeId: node.id, ...violation })),
@@ -658,6 +760,7 @@ export function deriveSnapshot(graph, facts) {
       status: task.status,
       runId: task.runId,
     })),
+    diagnostics: facts.diagnostics ?? [],
     violations,
   };
 }
@@ -717,6 +820,44 @@ function normalizeTerminal(record) {
   };
 }
 
+function cursorAt(payload) {
+  const value = unwrapResult(payload);
+  return nonEmptyString(value?.nextCursor) ? value.nextCursor : null;
+}
+
+async function collectRuns(exec, orcaInvocation, rootDir) {
+  const records = new Map();
+  const seenCursors = new Set();
+  let cursor = null;
+  do {
+    const args = [
+      ...orcaInvocation.prefix,
+      "orchestration",
+      "run-list",
+      "--limit",
+      "100",
+      ...(cursor ? ["--cursor", cursor] : []),
+      "--json",
+    ];
+    const payload = await readJsonCommand(exec, orcaInvocation.command, args, { cwd: rootDir });
+    for (const record of extractRuns(payload)) {
+      if (nonEmptyString(record?.id)) records.set(record.id, record);
+    }
+    const nextCursor = cursorAt(payload);
+    if (!nextCursor || seenCursors.has(nextCursor)) break;
+    seenCursors.add(nextCursor);
+    cursor = nextCursor;
+  } while (cursor);
+  return [...records.values()].map(normalizeRun);
+}
+
+function workerIsLive(worker) {
+  return (
+    !TERMINAL_WORKER_STATES.has(worker.workerState) &&
+    !TERMINAL_DISPATCH_STATUSES.has(worker.dispatchStatus)
+  );
+}
+
 async function collectFacts({ rootDir, graph, exec, orcaInvocation }) {
   const worktreePayload = await readJsonCommand(
     exec,
@@ -731,13 +872,8 @@ async function collectFacts({ rootDir, graph, exec, orcaInvocation }) {
     null;
   const worktrees = rawWorktrees.map((record) => normalizeWorktree(record, rootDir, repoId));
 
-  const [runPayload, workerPayload] = await Promise.all([
-    readJsonCommand(
-      exec,
-      orcaInvocation.command,
-      [...orcaInvocation.prefix, "orchestration", "run-list", "--limit", "100", "--json"],
-      { cwd: rootDir },
-    ),
+  const [allRuns, workerPayload] = await Promise.all([
+    collectRuns(exec, orcaInvocation, rootDir),
     readJsonCommand(
       exec,
       orcaInvocation.command,
@@ -745,16 +881,17 @@ async function collectFacts({ rootDir, graph, exec, orcaInvocation }) {
       { cwd: rootDir },
     ),
   ]);
-  const allRuns = extractRuns(runPayload).map(normalizeRun);
   const taskPayloads = await Promise.all(
-    allRuns.map((run) =>
-      readJsonCommand(
-        exec,
-        orcaInvocation.command,
-        [...orcaInvocation.prefix, "orchestration", "task-list", "--run", run.id, "--json"],
-        { cwd: rootDir },
+    allRuns
+      .filter((run) => nonEmptyString(run.id))
+      .map((run) =>
+        readJsonCommand(
+          exec,
+          orcaInvocation.command,
+          [...orcaInvocation.prefix, "orchestration", "task-list", "--run", run.id, "--json"],
+          { cwd: rootDir },
+        ),
       ),
-    ),
   );
   const tasks = [
     ...new Map(
@@ -800,40 +937,80 @@ async function collectFacts({ rootDir, graph, exec, orcaInvocation }) {
     };
   });
 
-  const liveWorktreeIds = new Set(worktreesWithTerminals.map((worktree) => worktree.id));
+  const liveWorktreeIds = new Set(
+    worktreesWithTerminals.filter((worktree) => !worktree.isMain).map((worktree) => worktree.id),
+  );
+  const liveTerminalHandles = new Set(terminals.map((terminal) => terminal.handle).filter(Boolean));
+  const liveWorkers = workers.filter(
+    (worker) => workerIsLive(worker) || liveTerminalHandles.has(worker.terminalHandle),
+  );
+  const liveWorkerTaskIds = new Set(liveWorkers.map((worker) => worker.taskId));
+  const taskIsLive = (task) =>
+    liveWorkerTaskIds.has(task.id) ||
+    (task.envelope.valid && liveWorktreeIds.has(task.envelope.worktreeId)) ||
+    (!task.envelope.valid &&
+      [...liveWorktreeIds].some((worktreeId) =>
+        String(task.raw?.created_by_process_incarnation ?? "").startsWith(worktreeId),
+      ));
+  const liveTasks = repoTasks.filter(taskIsLive);
+  const historicalTasks = repoTasks.filter((task) => !taskIsLive(task));
   const changeIds = new Set(
     graph.nodes.filter((node) => node.kind === "change").map((node) => node.id),
   );
-  const unknownTaskLinks = repoTasks
-    .filter(
-      (task) =>
-        task.envelope.valid &&
-        (!changeIds.has(task.envelope.changeId) ||
-          (ACTIVE_TASK_STATUSES.has(task.status) &&
-            !liveWorktreeIds.has(task.envelope.worktreeId))),
-    )
+  const unknownTaskLinks = liveTasks.flatMap((task) => {
+    if (!task.envelope.valid) return [];
+    const workerWorktreeIds = [
+      ...new Set(
+        liveWorkers
+          .filter((worker) => worker.taskId === task.id)
+          .map((worker) => worker.worktreeId)
+          .filter(nonEmptyString),
+      ),
+    ];
+    let reason = null;
+    if (!changeIds.has(task.envelope.changeId)) reason = "unknown_change";
+    else if (workerWorktreeIds.some((id) => id !== task.envelope.worktreeId)) {
+      reason = "worker_worktree_mismatch";
+    } else if (
+      ACTIVE_TASK_STATUSES.has(task.status) &&
+      !liveWorktreeIds.has(task.envelope.worktreeId)
+    ) {
+      reason = "worktree_missing";
+    }
+    return reason
+      ? [
+          {
+            taskId: task.id,
+            changeId: task.envelope.changeId,
+            worktreeId: task.envelope.worktreeId,
+            ...(workerWorktreeIds.length > 0 ? { workerWorktreeIds } : {}),
+            reason,
+          },
+        ]
+      : [];
+  });
+  const unlinkedTasks = liveTasks.filter(
+    (task) => !task.envelope.valid && ACTIVE_TASK_STATUSES.has(task.status),
+  );
+  const diagnostics = historicalTasks
+    .filter((task) => !task.envelope.valid || ACTIVE_TASK_STATUSES.has(task.status))
     .map((task) => ({
+      code: task.envelope.valid ? "historical_orphan_task" : "historical_unlinked_task",
       taskId: task.id,
-      changeId: task.envelope.changeId,
-      worktreeId: task.envelope.worktreeId,
-      reason: !changeIds.has(task.envelope.changeId) ? "unknown_change" : "worktree_missing",
+      runId: task.runId,
+      status: task.status,
+      ...(task.envelope.valid
+        ? { changeId: task.envelope.changeId, worktreeId: task.envelope.worktreeId }
+        : { reason: task.envelope.reason }),
     }));
-  const unlinkedTasks = repoTasks
-    .filter((task) => !task.envelope.valid && ACTIVE_TASK_STATUSES.has(task.status))
-    .filter((task) => {
-      const processRef = task.raw?.created_by_process_incarnation ?? "";
-      return (
-        !processRef || [...liveWorktreeIds].some((worktreeId) => processRef.startsWith(worktreeId))
-      );
-    });
   const mainWorktree =
     worktreesWithTerminals.find((worktree) => worktree.isMain) ??
     normalizeWorktree({ path: rootDir, isMainWorktree: true }, rootDir, repoId);
   const main = await collectGit(exec, rootDir);
-  const mainArchives = await archiveChangeNames(rootDir);
+  const mainArchives = await committedArchiveChangeNames(exec, rootDir);
   const nonMain = worktreesWithTerminals.filter((worktree) => !worktree.isMain);
   const collectedWorktrees = await Promise.all(
-    nonMain.map((worktree) => collectWorktree(exec, worktree, graph, repoTasks)),
+    nonMain.map((worktree) => collectWorktree(exec, worktree, graph, liveTasks)),
   );
   const ancestry = {};
   for (const worktree of collectedWorktrees) {
@@ -844,17 +1021,34 @@ async function collectFacts({ rootDir, graph, exec, orcaInvocation }) {
       ancestry[node.id] = await isAncestor(exec, worktree.git.head, main.head, rootDir);
     }
   }
+  const mainCheckpointAncestry = {};
+  const checkpointHeads = new Set(
+    liveTasks
+      .filter((task) => task.envelope.valid)
+      .map((task) => task.envelope.main?.mainHead)
+      .filter(nonEmptyString),
+  );
+  for (const checkpointHead of checkpointHeads) {
+    mainCheckpointAncestry[checkpointHead] = await isAncestor(
+      exec,
+      checkpointHead,
+      main.head,
+      rootDir,
+    );
+  }
   return {
     generatedAt: new Date().toISOString(),
     main: { ...main, worktree: mainWorktree, archiveNames: mainArchives },
     worktrees: collectedWorktrees,
-    tasks: repoTasks,
+    tasks: liveTasks,
     runs,
     workers,
     terminals,
     unknownTaskLinks,
     unlinkedTasks,
+    diagnostics,
     ancestry,
+    mainCheckpointAncestry,
   };
 }
 

@@ -177,6 +177,41 @@ const paragraphStyle = (node: unknown): string | undefined => {
   return undefined;
 };
 
+type DocxStyleInfo = {
+  readonly kind: NormalizedBlockV1["kind"];
+  readonly headingLevel?: number;
+};
+
+const docxStyleMap = (
+  entries: Record<string, Uint8Array>,
+  policy: DocumentConversionResourcePolicyV1,
+): ReadonlyMap<string, DocxStyleInfo> => {
+  if (entries["word/styles.xml"] === undefined) return new Map();
+  const parsed = parseXmlPart(entries, "word/styles.xml", policy, "XML_INVALID");
+  const result = new Map<string, DocxStyleInfo>();
+  for (const entry of findXmlEntries(parsed, "style")) {
+    const styleId = entry.attributes["@_w:styleId"] ?? entry.attributes["@_styleId"];
+    if (styleId === undefined) continue;
+    const name = findXmlEntries(entry.value, "name")[0]?.attributes["@_w:val"] ?? "";
+    const outline = findXmlEntries(entry.value, "outlineLvl")[0]?.attributes["@_w:val"];
+    const label = `${styleId} ${name}`.toLowerCase();
+    const headingLevel =
+      outline === undefined
+        ? Number(/(?:heading|标题)\s*([1-9][0-9]*)/iu.exec(label)?.[1] ?? 0)
+        : Number(outline) + 1;
+    const kind: DocxStyleInfo["kind"] =
+      headingLevel > 0
+        ? "heading"
+        : /caption|题注|图注|表注/iu.test(label)
+          ? "caption"
+          : /process|工序|步骤/iu.test(label)
+            ? "process-step"
+            : "paragraph";
+    result.set(styleId, { kind, ...(headingLevel > 0 ? { headingLevel } : {}) });
+  }
+  return result;
+};
+
 const validateXmlSecurity = (text: string): void => {
   if (/<!DOCTYPE|<!ENTITY/iu.test(text)) {
     throw new DocumentParserError(
@@ -197,11 +232,14 @@ const validateZip = (
   let entries: Record<string, Uint8Array>;
   try {
     let entryCount = 0;
+    let uncompressedBytes = 0;
     entries = unzipSync(bytes, {
       filter: (file) => {
         entryCount += 1;
+        uncompressedBytes += file.originalSize;
         if (
           entryCount > policy.maxZipEntries ||
+          uncompressedBytes > policy.maxZipUncompressedBytes ||
           file.originalSize > policy.maxZipUncompressedBytes ||
           (file.originalSize > 0 &&
             (file.size === 0 || file.originalSize / file.size > policy.maxZipCompressionRatio))
@@ -259,6 +297,64 @@ const validateZip = (
   return entries;
 };
 
+const parseXmlPart = (
+  entries: Record<string, Uint8Array>,
+  name: string,
+  policy: DocumentConversionResourcePolicyV1,
+  code: string,
+): unknown => {
+  const bytes = entries[name];
+  if (bytes === undefined) throw new DocumentParserError(code, `${name} is missing`);
+  const text = bytesText(bytes, policy.maxXmlBytes);
+  validateXmlSecurity(text);
+  try {
+    return new XMLParser(XML_OPTIONS).parse(text);
+  } catch {
+    throw new DocumentParserError("XML_INVALID", `${name} is invalid`);
+  }
+};
+
+const validateDocxStructure = (
+  entries: Record<string, Uint8Array>,
+  policy: DocumentConversionResourcePolicyV1,
+): void => {
+  const contentTypes = parseXmlPart(
+    entries,
+    "[Content_Types].xml",
+    policy,
+    "OOXML_STRUCTURE_INVALID",
+  );
+  const documentContentType = findXmlEntries(contentTypes, "Override").some(
+    (entry) =>
+      entry.attributes["@_PartName"] === "/word/document.xml" &&
+      entry.attributes["@_ContentType"] ===
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+  );
+  if (!documentContentType) {
+    throw new DocumentParserError(
+      "OOXML_STRUCTURE_INVALID",
+      "DOCX main document content type is missing",
+    );
+  }
+  const rootRelationships = parseXmlPart(entries, "_rels/.rels", policy, "OOXML_STRUCTURE_INVALID");
+  const officeDocumentRelationship = findXmlEntries(rootRelationships, "Relationship").some(
+    (entry) => {
+      const target = entry.attributes["@_Target"];
+      return (
+        entry.attributes["@_Type"]?.endsWith("/officeDocument") === true &&
+        target !== undefined &&
+        posix.normalize(posix.join(".", target)) === "word/document.xml"
+      );
+    },
+  );
+  if (!officeDocumentRelationship) {
+    throw new DocumentParserError(
+      "OOXML_STRUCTURE_INVALID",
+      "DOCX office document relationship is missing",
+    );
+  }
+};
+
 const validateRelationships = (
   entries: Record<string, Uint8Array>,
   policy: DocumentConversionResourcePolicyV1,
@@ -299,6 +395,17 @@ const validateRelationships = (
   }
 };
 
+const pushBlock = (
+  blocks: NormalizedBlockV1[],
+  block: NormalizedBlockV1,
+  policy: DocumentConversionResourcePolicyV1,
+): void => {
+  if (blocks.length >= policy.maxOutputBlocks) {
+    throw new DocumentParserError("OUTPUT_LIMIT_EXCEEDED", "document output exceeds policy limit");
+  }
+  blocks.push(block);
+};
+
 export const parseDocx = (
   bytes: Uint8Array,
   context: DocumentParserContextV1,
@@ -314,6 +421,8 @@ export const parseDocx = (
   }
   const entries = validateZip(bytes, policy, "word/document.xml");
   validateRelationships(entries, policy);
+  validateDocxStructure(entries, policy);
+  const styles = docxStyleMap(entries, policy);
   const xmlBytes = entries["word/document.xml"]!;
   const xmlText = bytesText(xmlBytes, policy.maxXmlBytes);
   validateXmlSecurity(xmlText);
@@ -335,16 +444,21 @@ export const parseDocx = (
   for (const entry of bodyEntries) {
     if (localName(entry.name) === "p") {
       const text = collectXmlText(entry.value);
-      const style = paragraphStyle(entry.value)?.toLowerCase() ?? "";
-      const kind: NormalizedBlockV1["kind"] = style.includes("caption")
-        ? "caption"
-        : style.startsWith("heading")
-          ? "heading"
-          : style.includes("process")
-            ? "process-step"
-            : "paragraph";
+      const styleId = paragraphStyle(entry.value);
+      const style = styleId?.toLowerCase() ?? "";
+      const styleInfo = styleId === undefined ? undefined : styles.get(styleId);
+      const kind: NormalizedBlockV1["kind"] =
+        styleInfo?.kind ??
+        (style.includes("caption")
+          ? "caption"
+          : style.startsWith("heading")
+            ? "heading"
+            : style.includes("process")
+              ? "process-step"
+              : "paragraph");
       const levelMatch = /heading\s*([1-9][0-9]*)/iu.exec(style);
-      const headingLevel = levelMatch?.[1] === undefined ? 0 : Number(levelMatch[1]);
+      const headingLevel =
+        styleInfo?.headingLevel ?? (levelMatch?.[1] === undefined ? 0 : Number(levelMatch[1]));
       if (kind === "heading" && headingLevel > 0) {
         while (headingStack.length < headingLevel - 1) {
           headingStack.push(`heading_${headingStack.length + 1}`);
@@ -358,15 +472,19 @@ export const parseDocx = (
         ? { kind: "document" as const, pageNumber, headingPath }
         : { kind: "record" as const, dataset: "docx", stableRecordKey: id };
       if (text.length > 0) {
-        blocks.push({
-          blockId: id,
-          kind,
-          text,
-          headingPath,
-          locator,
-          chapterId: stableComponent(headingPath[0] ?? "document", "chapter"),
-          segmentId: `segment_${blocks.length + 1}`,
-        });
+        pushBlock(
+          blocks,
+          {
+            blockId: id,
+            kind,
+            text,
+            headingPath,
+            locator,
+            chapterId: stableComponent(headingPath[0] ?? "document", "chapter"),
+            segmentId: `segment_${blocks.length + 1}`,
+          },
+          policy,
+        );
       }
       if (hasPageBreak(entry.value)) {
         if (!pageKnown) {
@@ -381,15 +499,19 @@ export const parseDocx = (
             }
           }
         }
-        blocks.push({
-          blockId: blockId("docx-page-break", blocks.length + 1),
-          kind: "page-break",
-          text: "",
-          headingPath,
-          locator: { kind: "document", pageNumber, headingPath },
-          chapterId: stableComponent(headingPath[0] ?? "document", "chapter"),
-          segmentId: `page_${pageNumber}`,
-        });
+        pushBlock(
+          blocks,
+          {
+            blockId: blockId("docx-page-break", blocks.length + 1),
+            kind: "page-break",
+            text: "",
+            headingPath,
+            locator: { kind: "document", pageNumber, headingPath },
+            chapterId: stableComponent(headingPath[0] ?? "document", "chapter"),
+            segmentId: `page_${pageNumber}`,
+          },
+          policy,
+        );
         pageNumber += 1;
       }
     } else if (localName(entry.name) === "tbl") {
@@ -410,53 +532,59 @@ export const parseDocx = (
         rowRange: { start: 1, end: Math.max(1, rowCount) },
         columnRange: { start: 1, end: Math.max(1, colCount) },
       };
-      blocks.push({
-        blockId: blockId("docx-table", tableNumber),
-        kind: "table",
-        text: "",
-        headingPath: [tableId],
-        locator: tableLocator,
-        chapterId,
-        segmentId,
-        tableId,
-        sheet: "docx",
-      });
+      pushBlock(
+        blocks,
+        {
+          blockId: blockId("docx-table", tableNumber),
+          kind: "table",
+          text: "",
+          headingPath: [tableId],
+          locator: tableLocator,
+          chapterId,
+          segmentId,
+          tableId,
+          sheet: "docx",
+        },
+        policy,
+      );
       rows.forEach((row, rowIndex) => {
         const cells = findXmlChildren(row, "tc");
         cells.forEach((cell, columnIndex) => {
           const cellBlockId = blockId("docx-cell", tableNumber, rowIndex + 1, columnIndex + 1);
-          blocks.push({
-            blockId: cellBlockId,
-            kind: "cell",
-            text: collectXmlText(cell),
-            headingPath: [tableId],
-            locator: {
-              ...tableLocator,
-              rowRange: { start: rowIndex + 1, end: rowIndex + 1 },
-              columnRange: { start: columnIndex + 1, end: columnIndex + 1 },
-            },
-            coordinate: {
+          pushBlock(
+            blocks,
+            {
+              blockId: cellBlockId,
               kind: "cell",
+              text: collectXmlText(cell),
+              headingPath: [tableId],
+              locator: {
+                ...tableLocator,
+                rowRange: { start: rowIndex + 1, end: rowIndex + 1 },
+                columnRange: { start: columnIndex + 1, end: columnIndex + 1 },
+              },
+              coordinate: {
+                kind: "cell",
+                sheet: "docx",
+                row: rowIndex + 1,
+                column: columnIndex + 1,
+                rowSpan: 1,
+                columnSpan: 1,
+              },
+              chapterId,
+              segmentId,
+              tableId,
               sheet: "docx",
               row: rowIndex + 1,
               column: columnIndex + 1,
               rowSpan: 1,
               columnSpan: 1,
             },
-            chapterId,
-            segmentId,
-            tableId,
-            sheet: "docx",
-            row: rowIndex + 1,
-            column: columnIndex + 1,
-            rowSpan: 1,
-            columnSpan: 1,
-          });
+            policy,
+          );
         });
       });
     }
-    if (blocks.length > policy.maxOutputBlocks)
-      throw new DocumentParserError("OUTPUT_LIMIT_EXCEEDED", "DOCX output exceeds policy limit");
   }
   return base(context, blocks, bytes.byteLength);
 };
@@ -528,30 +656,34 @@ export const parseTextPdf = async (
           typeof value.width === "number"
             ? Math.abs(value.width)
             : Math.abs(Number(transform[0] ?? 0));
-        const id = blockId("pdf", pageNumber, blocks.length + 1);
-        blocks.push({
-          blockId: id,
-          kind: "paragraph",
-          text: value.str,
-          headingPath: [`page_${pageNumber}`],
-          locator: { kind: "document", pageNumber, headingPath: [`page_${pageNumber}`] },
-          coordinate: {
-            kind: "page",
-            pageNumber,
-            x,
-            y: viewport.height - baseline - height,
-            width,
-            height,
-          },
-          chapterId: `page_${pageNumber}`,
-          segmentId: `item_${blocks.length + 1}`,
-        });
-        if (blocks.length > policy.maxPdfTextItems || blocks.length > policy.maxOutputBlocks) {
+        if (blocks.length >= policy.maxPdfTextItems) {
           throw new DocumentParserError(
             "PDF_LIMIT_EXCEEDED",
             "PDF text item count exceeds policy limit",
           );
         }
+        const id = blockId("pdf", pageNumber, blocks.length + 1);
+        pushBlock(
+          blocks,
+          {
+            blockId: id,
+            kind: "paragraph",
+            text: value.str,
+            headingPath: [`page_${pageNumber}`],
+            locator: { kind: "document", pageNumber, headingPath: [`page_${pageNumber}`] },
+            coordinate: {
+              kind: "page",
+              pageNumber,
+              x,
+              y: viewport.height - baseline - height,
+              width,
+              height,
+            },
+            chapterId: `page_${pageNumber}`,
+            segmentId: `item_${blocks.length + 1}`,
+          },
+          policy,
+        );
       }
       page.cleanup();
     }
@@ -567,15 +699,38 @@ export const parseTextPdf = async (
   return base(context, blocks, bytes.byteLength);
 };
 
-const valueText = (value: unknown): string => {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (typeof value === "object" && value !== null && "text" in value) {
-    const text = (value as { text?: unknown }).text;
-    return typeof text === "string" ? text : "";
+type ScalarValue = string | number | boolean | null;
+
+const scalarValue = (value: unknown): ScalarValue => {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return value;
   }
-  return "";
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value !== "object") return null;
+  const object = value as Record<string, unknown>;
+  if ("result" in object) return scalarValue(object.result);
+  if (Array.isArray(object.richText)) {
+    return object.richText
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (typeof part === "object" && part !== null && "text" in part) {
+          return typeof (part as { text?: unknown }).text === "string"
+            ? (part as { text: string }).text
+            : "";
+        }
+        return "";
+      })
+      .join("");
+  }
+  if (typeof object.text === "string") return object.text;
+  if (typeof object.error === "string") return object.error;
+  return null;
+};
+
+const valueText = (value: unknown): string => {
+  const normalized = scalarValue(value);
+  return normalized === null ? "" : String(normalized);
 };
 
 const mergedRangeFor = (
@@ -603,6 +758,119 @@ const columnNumber = (letters: string): number => {
   return result;
 };
 
+const cellRangeSize = (range: string): number => {
+  const match = /^([A-Z]+)([0-9]+)(?::([A-Z]+)([0-9]+))?$/u.exec(range.toUpperCase());
+  if (match === null) return 0;
+  const startColumn = columnNumber(match[1]!);
+  const startRow = Number(match[2]);
+  const endColumn = columnNumber(match[3] ?? match[1]!);
+  const endRow = Number(match[4] ?? match[2]);
+  const size = (endColumn - startColumn + 1) * (endRow - startRow + 1);
+  return Number.isSafeInteger(size) && size > 0 ? size : Number.MAX_SAFE_INTEGER;
+};
+
+const preflightXlsx = (
+  entries: Record<string, Uint8Array>,
+  policy: DocumentConversionResourcePolicyV1,
+): void => {
+  const workbook = parseXmlPart(entries, "xl/workbook.xml", policy, "XLSX_INVALID");
+  const sheets = findXmlEntries(workbook, "sheet");
+  if (sheets.length < 1 || sheets.length > policy.maxSheets) {
+    throw new DocumentParserError("XLSX_LIMIT_EXCEEDED", "XLSX sheet count exceeds policy limit");
+  }
+  const relationships = parseXmlPart(entries, "xl/_rels/workbook.xml.rels", policy, "XLSX_INVALID");
+  const targets = new Map<string, string>();
+  for (const relationship of findXmlEntries(relationships, "Relationship")) {
+    const id = relationship.attributes["@_Id"];
+    const target = relationship.attributes["@_Target"];
+    if (id === undefined || target === undefined) continue;
+    const targetPath = posix.normalize(posix.join("xl", target));
+    if (targetPath.startsWith("../") || entries[targetPath] === undefined) {
+      throw new DocumentParserError(
+        "XLSX_INVALID",
+        "XLSX worksheet relationship target is missing",
+      );
+    }
+    targets.set(id, targetPath);
+  }
+  let totalCells = 0;
+  let totalBlocks = 0;
+  for (const sheet of sheets) {
+    const relationshipId = sheet.attributes["@_r:id"] ?? sheet.attributes["@_id"];
+    const targetPath = relationshipId === undefined ? undefined : targets.get(relationshipId);
+    if (targetPath === undefined) {
+      throw new DocumentParserError("XLSX_INVALID", "XLSX worksheet relationship is missing");
+    }
+    const worksheet = parseXmlPart(entries, targetPath, policy, "XLSX_INVALID");
+    const explicitCells = findXmlEntries(worksheet, "c").length;
+    const dimension = findXmlEntries(worksheet, "dimension")[0]?.attributes["@_ref"];
+    const dimensionCells = dimension === undefined ? 0 : cellRangeSize(dimension);
+    const cellCount = Math.max(explicitCells, dimensionCells);
+    totalCells += cellCount;
+    totalBlocks += cellCount + 1;
+    if (totalCells > policy.maxCells) {
+      throw new DocumentParserError("XLSX_LIMIT_EXCEEDED", "XLSX cell count exceeds policy limit");
+    }
+    if (totalBlocks > policy.maxOutputBlocks) {
+      throw new DocumentParserError("OUTPUT_LIMIT_EXCEEDED", "XLSX output exceeds policy limit");
+    }
+  }
+};
+
+const preflightCsv = (text: string, policy: DocumentConversionResourcePolicyV1): void => {
+  if (text.length === 0) return;
+  let recordCount = 1;
+  let totalFields = 0;
+  let fieldCount = 1;
+  let inQuotes = false;
+  let fieldStart = true;
+  let endedAfterRecord = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (inQuotes) {
+      if (character === '"') {
+        if (text[index + 1] === '"') index += 1;
+        else inQuotes = false;
+      }
+      endedAfterRecord = false;
+      continue;
+    }
+    if (character === '"' && fieldStart) {
+      inQuotes = true;
+      fieldStart = false;
+      endedAfterRecord = false;
+    } else if (character === ",") {
+      fieldCount += 1;
+      fieldStart = true;
+      endedAfterRecord = false;
+    } else if (character === "\n" || character === "\r") {
+      if (fieldCount > policy.maxCsvFields) {
+        throw new DocumentParserError("CSV_LIMIT_EXCEEDED", "CSV field count exceeds policy limit");
+      }
+      totalFields += fieldCount;
+      recordCount += 1;
+      fieldCount = 1;
+      fieldStart = true;
+      endedAfterRecord = true;
+      if (character === "\r" && text[index + 1] === "\n") index += 1;
+    } else {
+      fieldStart = false;
+      endedAfterRecord = false;
+    }
+  }
+  if (endedAfterRecord) recordCount -= 1;
+  else totalFields += fieldCount;
+  if (fieldCount > policy.maxCsvFields || recordCount > policy.maxCsvRecords) {
+    throw new DocumentParserError(
+      "CSV_LIMIT_EXCEEDED",
+      "CSV record or field count exceeds policy limit",
+    );
+  }
+  if (totalFields + 1 > policy.maxOutputBlocks) {
+    throw new DocumentParserError("CSV_LIMIT_EXCEEDED", "CSV output exceeds policy limit");
+  }
+};
+
 export const parseXlsx = async (
   bytes: Uint8Array,
   context: DocumentParserContextV1,
@@ -618,6 +886,7 @@ export const parseXlsx = async (
   }
   const entries = validateZip(bytes, policy, "xl/workbook.xml");
   validateRelationships(entries, policy);
+  preflightXlsx(entries, policy);
   const workbook = new Workbook();
   try {
     await workbook.xlsx.load(
@@ -644,17 +913,21 @@ export const parseXlsx = async (
       rowRange: { start: 1, end: rowCount },
       columnRange: { start: 1, end: colCount },
     };
-    blocks.push({
-      blockId: blockId("xlsx-table", sheetIndex + 1),
-      kind: "table",
-      text: "",
-      headingPath: [sheetName],
-      locator: tableLocator,
-      tableId,
-      sheet: sheetName,
-      chapterId: stableComponent(tableId, "sheet"),
-      segmentId: stableComponent(tableId, "table"),
-    });
+    pushBlock(
+      blocks,
+      {
+        blockId: blockId("xlsx-table", sheetIndex + 1),
+        kind: "table",
+        text: "",
+        headingPath: [sheetName],
+        locator: tableLocator,
+        tableId,
+        sheet: sheetName,
+        chapterId: stableComponent(tableId, "sheet"),
+        segmentId: stableComponent(tableId, "table"),
+      },
+      policy,
+    );
     for (let row = 1; row <= rowCount; row += 1) {
       for (let column = 1; column <= colCount; column += 1) {
         cellCount += 1;
@@ -666,20 +939,14 @@ export const parseXlsx = async (
         const cell = sheet.getCell(row, column);
         const raw = cell.value as unknown;
         let formula: string | undefined;
-        let cachedValue: string | number | boolean | null | undefined;
+        let cachedValue: ScalarValue | undefined;
         if (typeof raw === "object" && raw !== null && "formula" in raw) {
           formula =
             typeof (raw as { formula?: unknown }).formula === "string"
               ? (raw as { formula: string }).formula
               : "";
           const result = (raw as { result?: unknown }).result;
-          cachedValue =
-            result === null ||
-            typeof result === "string" ||
-            typeof result === "number" ||
-            typeof result === "boolean"
-              ? (result as string | number | boolean | null | undefined)
-              : null;
+          cachedValue = scalarValue(result);
         }
         const text = formula === undefined ? valueText(raw) : valueText(cachedValue);
         const mergedRange = mergedRangeFor(merges, row, column);
@@ -687,32 +954,32 @@ export const parseXlsx = async (
           mergedRange === undefined ? 1 : mergedRange.endRow - mergedRange.startRow + 1;
         const columnSpan =
           mergedRange === undefined ? 1 : mergedRange.endColumn - mergedRange.startColumn + 1;
-        blocks.push({
-          blockId: blockId("xlsx-cell", sheetIndex + 1, row, column),
-          kind: "cell",
-          text,
-          headingPath: [sheetName],
-          locator: {
-            ...tableLocator,
-            rowRange: { start: row, end: row },
-            columnRange: { start: column, end: column },
+        pushBlock(
+          blocks,
+          {
+            blockId: blockId("xlsx-cell", sheetIndex + 1, row, column),
+            kind: "cell",
+            text,
+            headingPath: [sheetName],
+            locator: {
+              ...tableLocator,
+              rowRange: { start: row, end: row },
+              columnRange: { start: column, end: column },
+            },
+            coordinate: { kind: "cell", sheet: sheetName, row, column, rowSpan, columnSpan },
+            tableId,
+            sheet: sheetName,
+            row,
+            column,
+            rowSpan,
+            columnSpan,
+            value: formula === undefined ? scalarValue(raw) : (cachedValue ?? null),
+            ...(formula === undefined ? {} : { formula, cachedValue: cachedValue ?? null }),
+            chapterId: stableComponent(tableId, "sheet"),
+            segmentId: stableComponent(tableId, "table"),
           },
-          coordinate: { kind: "cell", sheet: sheetName, row, column, rowSpan, columnSpan },
-          tableId,
-          sheet: sheetName,
-          row,
-          column,
-          rowSpan,
-          columnSpan,
-          ...(formula === undefined ? {} : { formula, cachedValue: cachedValue ?? null }),
-          chapterId: stableComponent(tableId, "sheet"),
-          segmentId: stableComponent(tableId, "table"),
-        });
-        if (blocks.length > policy.maxOutputBlocks)
-          throw new DocumentParserError(
-            "OUTPUT_LIMIT_EXCEEDED",
-            "XLSX output exceeds policy limit",
-          );
+          policy,
+        );
       }
     }
   });
@@ -727,6 +994,7 @@ export const parseCsv = (
   ensureContext(context);
   const policy = parseResourcePolicy(configuredPolicy);
   const text = bytesText(bytes, policy.maxInputBytes);
+  preflightCsv(text, policy);
   let records: unknown[][];
   try {
     records = parseCsvRecords(text, {
@@ -754,50 +1022,57 @@ export const parseCsv = (
     rowRange: { start: 1, end: rowCount },
     columnRange: { start: 1, end: columnCount },
   };
-  blocks.push({
-    blockId: "csv-table-1",
-    kind: "table",
-    text: "",
-    headingPath: ["csv"],
-    locator: tableLocator,
-    tableId,
-    sheet: "csv",
-    chapterId: tableId,
-    segmentId: tableId,
-  });
+  pushBlock(
+    blocks,
+    {
+      blockId: "csv-table-1",
+      kind: "table",
+      text: "",
+      headingPath: ["csv"],
+      locator: tableLocator,
+      tableId,
+      sheet: "csv",
+      chapterId: tableId,
+      segmentId: tableId,
+    },
+    policy,
+  );
   records.forEach((record, rowIndex) => {
     record.forEach((value, columnIndex) => {
-      blocks.push({
-        blockId: blockId("csv-cell", rowIndex + 1, columnIndex + 1),
-        kind: "cell",
-        text: valueText(value),
-        headingPath: ["csv"],
-        locator: {
-          ...tableLocator,
-          rowRange: { start: rowIndex + 1, end: rowIndex + 1 },
-          columnRange: { start: columnIndex + 1, end: columnIndex + 1 },
-        },
-        coordinate: {
+      pushBlock(
+        blocks,
+        {
+          blockId: blockId("csv-cell", rowIndex + 1, columnIndex + 1),
           kind: "cell",
+          text: valueText(value),
+          headingPath: ["csv"],
+          locator: {
+            ...tableLocator,
+            rowRange: { start: rowIndex + 1, end: rowIndex + 1 },
+            columnRange: { start: columnIndex + 1, end: columnIndex + 1 },
+          },
+          coordinate: {
+            kind: "cell",
+            sheet: "csv",
+            row: rowIndex + 1,
+            column: columnIndex + 1,
+            rowSpan: 1,
+            columnSpan: 1,
+          },
+          tableId,
           sheet: "csv",
           row: rowIndex + 1,
           column: columnIndex + 1,
           rowSpan: 1,
           columnSpan: 1,
+          value: scalarValue(value),
+          chapterId: tableId,
+          segmentId: tableId,
         },
-        tableId,
-        sheet: "csv",
-        row: rowIndex + 1,
-        column: columnIndex + 1,
-        rowSpan: 1,
-        columnSpan: 1,
-        chapterId: tableId,
-        segmentId: tableId,
-      });
+        policy,
+      );
     });
   });
-  if (blocks.length > policy.maxOutputBlocks)
-    throw new DocumentParserError("OUTPUT_LIMIT_EXCEEDED", "CSV output exceeds policy limit");
   return base(context, blocks, bytes.byteLength);
 };
 

@@ -493,6 +493,8 @@ export type ResolveSourceProcessingInputQueryV1 = z.infer<
 >;
 export const SourceProcessingInputQueryV1Schema = ResolveSourceProcessingInputQueryV1Schema;
 export type SourceProcessingInputQueryV1 = ResolveSourceProcessingInputQueryV1;
+export const ResolveSourceVersionForReadQueryV1Schema = ResolveSourceProcessingInputQueryV1Schema;
+export type ResolveSourceVersionForReadQueryV1 = ResolveSourceProcessingInputQueryV1;
 
 export const ContextSourceSuccessV1Schema = z.discriminatedUnion("kind", [
   z.strictObject({

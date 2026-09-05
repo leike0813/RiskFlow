@@ -18,7 +18,9 @@ import {
   type SourceProcessingInputV1,
   type SourceSegmentV1,
   type ResolveSourceProcessingInputQueryV1,
+  type ResolveSourceVersionForReadQueryV1,
   ResolveSourceProcessingInputQueryV1Schema,
+  ResolveSourceVersionForReadQueryV1Schema,
   SourceSegmentIdV1Schema,
 } from "@riskflow/core/engineering-data/context-source";
 import {
@@ -86,6 +88,8 @@ type ConversionRow = {
   command_id: string;
   idempotency_key: string;
   actor_id: string;
+  run_id: string;
+  thread_id: string;
   statistics: JsonColumn;
   started_at: Timestamp;
   completed_at: Timestamp;
@@ -99,6 +103,8 @@ type ConversionDatabase = PostgresDatabase & {
 type ConversionTransaction = Transaction<ConversionDatabase>;
 
 const COMMAND_KIND = "engineering-data.structured-document-conversion.v1";
+const recordCommandId = (conversionId: string): string => `${conversionId}:record`;
+const recordAuditEntryId = (conversionId: string): string => `audit-record-${conversionId}`;
 const PURPOSE = "engineering-data.structured-document-conversion";
 const SCHEMA_VERSION = "1" as const;
 
@@ -115,6 +121,11 @@ const referenceKey = (value: {
 
 const versionKey = (value: { entityId: string; versionId: string }): string =>
   `${value.entityId}/${value.versionId}`;
+
+const sameVersion = (
+  left: { entityId: string; versionId: string },
+  right: { entityId: string; versionId: string },
+): boolean => versionKey(left) === versionKey(right);
 
 const iso = (clock: () => Date): string => {
   const value = clock();
@@ -236,10 +247,10 @@ const artifactCommand = (
     const rightKey = `${right.locator.sourceSegmentId}/${versionKey(right.sourceVersion)}`;
     return leftKey.localeCompare(rightKey);
   });
-  const spatialScopeRefs = [...source.spatialScopeRefs].sort((left, right) =>
+  const spatialScopeRefs = [...command.authorization.spatialScopeRefs].sort((left, right) =>
     referenceKey(left).localeCompare(referenceKey(right)),
   );
-  const sourceAccessGrantRefs = [source.sourceAccessGrantRef];
+  const sourceAccessGrantRefs = [...command.authorization.sourceAccessGrantRefs];
   return ArtifactPutCommandV1Schema.parse({
     schemaVersion: SCHEMA_VERSION,
     commandId: `${command.conversionId}:${artifactKind}`,
@@ -268,16 +279,19 @@ const auditTrailRef = (auditEntryId: string) => ({
 const atomicCommand = (
   command: StructuredDocumentConversionCommandV1,
   payload: object,
+  commandId = command.conversionId,
 ): AtomicCommandV1 =>
   AtomicCommandV1Schema.parse({
     projectId: command.projectId,
     commandKind: COMMAND_KIND,
-    commandId: command.conversionId,
+    commandId,
     idempotencyKey: command.idempotencyKey,
     payload: JSON.parse(JSON.stringify(payload)) as Record<string, JsonValue>,
     actorRef: command.actorId,
     authorizationContextRef: command.authorization.authorizationContextRef,
     issuedAt: command.issuedAt,
+    runId: command.runId,
+    threadId: command.threadId,
   });
 
 const conversionCommit = (
@@ -286,7 +300,7 @@ const conversionCommit = (
 ): AtomicCommitV1 => ({
   resultRef: record.conversionRef,
   audit: {
-    auditEntryId: `audit-${command.conversionId}`,
+    auditEntryId: record.auditTrailRef.reference.entityId,
     projectId: command.projectId,
     action: PURPOSE,
     targetRef: record.conversionRef,
@@ -295,8 +309,10 @@ const conversionCommit = (
     occurredAt: command.issuedAt,
     recordedAt: record.completedAt,
     version: record.conversionRef.reference,
-    commandId: command.conversionId,
+    commandId: record.commandId,
     idempotencyKey: command.idempotencyKey,
+    runId: command.runId,
+    threadId: command.threadId,
   },
   events: [],
 });
@@ -330,6 +346,8 @@ const rowToRecord = (row: ConversionRow): StructuredDocumentConversionRecordV1 =
     commandId: row.command_id,
     idempotencyKey: row.idempotency_key,
     actorId: row.actor_id,
+    runId: row.run_id,
+    threadId: row.thread_id,
     startedAt: asIso(row.started_at),
     completedAt: asIso(row.completed_at),
     auditTrailRef: auditTrailRef(row.audit_entry_id),
@@ -346,6 +364,8 @@ export interface StructuredDocumentConversionAdapterOptionsV1 {
   readonly contextSource: EngineeringContextSourceRegistryV1;
   readonly artifactStore: ArtifactStoreV1;
   readonly resourcePolicy?: DocumentConversionResourcePolicyV1;
+  readonly qualityPolicyRef: StructuredDocumentConversionCommandV1["qualityPolicyRef"];
+  readonly converterDeploymentRef: StructuredDocumentConversionCommandV1["converterDeploymentRef"];
   readonly now?: () => Date;
 }
 
@@ -355,6 +375,8 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
   readonly #contextSource: EngineeringContextSourceRegistryV1;
   readonly #artifactStore: ArtifactStoreV1;
   readonly #policy: DocumentConversionResourcePolicyV1;
+  readonly #qualityPolicyRef: StructuredDocumentConversionCommandV1["qualityPolicyRef"];
+  readonly #converterDeploymentRef: StructuredDocumentConversionCommandV1["converterDeploymentRef"];
   readonly #now: () => Date;
   readonly #memoryRecords = new Map<
     string,
@@ -366,6 +388,8 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
     this.#transactionUnit = options.transactionUnit;
     this.#contextSource = options.contextSource;
     this.#artifactStore = options.artifactStore;
+    this.#qualityPolicyRef = options.qualityPolicyRef;
+    this.#converterDeploymentRef = options.converterDeploymentRef;
     this.#policy = parseResourcePolicy(
       options.resourcePolicy ?? DEFAULT_DOCUMENT_CONVERSION_RESOURCE_POLICY_V1,
     );
@@ -393,9 +417,16 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
       );
     }
     const command = parsed.data;
+    if (
+      !sameVersion(command.conversionPolicyRef, this.#policy.policyRef) ||
+      !sameVersion(command.qualityPolicyRef, this.#qualityPolicyRef) ||
+      !sameVersion(command.converterDeploymentRef, this.#converterDeploymentRef)
+    ) {
+      return failed(moduleError("BUSINESS_BLOCKED", command.runId));
+    }
     const sourceQuery: ResolveSourceProcessingInputQueryV1 =
       ResolveSourceProcessingInputQueryV1Schema.parse({
-        queryId: `${command.conversionId}:source`,
+        queryId: command.conversionId,
         projectId: command.projectId,
         actorId: command.actorId,
         requestedAt: command.issuedAt,
@@ -410,20 +441,20 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
       if ("code" in sourceResult) return failed(sourceResult);
       source = sourceResult;
     } catch {
-      return failed(moduleError("TERMINAL_FAILURE", command.conversionId));
+      return failed(moduleError("TERMINAL_FAILURE", command.runId));
     }
     if (
       referenceKey(source.sourceArtifactRef) !== referenceKey(command.sourceArtifactRef) ||
       referenceKey(source.sourceVersionRef) !== referenceKey(command.sourceVersionRef)
     ) {
-      return failed(moduleError("BUSINESS_BLOCKED", command.conversionId));
+      return failed(moduleError("BUSINESS_BLOCKED", command.runId));
     }
 
     let existing: ExistingConversion;
     try {
       existing = await this.#readExisting(command);
     } catch {
-      return failed(moduleError("TRANSIENT_FAILURE", command.conversionId));
+      return failed(moduleError("TRANSIENT_FAILURE", command.runId));
     }
     if (existing.conflict === true) return failed(existing.error);
     if (existing.record !== undefined) {
@@ -433,7 +464,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
         existing.record.sourceSegmentSetRef === undefined
       ) {
         return failed(
-          moduleError("TERMINAL_FAILURE", command.conversionId, existing.record.diagnosticRef),
+          moduleError("TERMINAL_FAILURE", command.runId, existing.record.diagnosticRef),
         );
       }
       return existing.record.status === "succeeded"
@@ -445,9 +476,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
               sourceSegmentSetRef: existing.record.sourceSegmentSetRef,
             },
           })
-        : failed(
-            moduleError("TERMINAL_FAILURE", command.conversionId, existing.record.diagnosticRef),
-          );
+        : failed(moduleError("TERMINAL_FAILURE", command.runId, existing.record.diagnosticRef));
     }
 
     const startedAt = iso(this.#now);
@@ -467,7 +496,13 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
       };
       const parsedDocument = await parseStructuredDocument(bytes, context, this.#policy);
       const strategy: DocumentConversionStrategyV1 = {
-        strategyVersion: `${command.conversionPolicyRef.entityId}@${command.conversionPolicyRef.versionId}`,
+        strategyVersion: [
+          command.conversionPolicyRef,
+          command.qualityPolicyRef,
+          command.converterDeploymentRef,
+        ]
+          .map((reference) => `${reference.entityId}@${reference.versionId}`)
+          .join("|"),
       };
       converted = convertParsedDocument(parsedDocument, strategy);
       if (converted.document.textBlocks.length > this.#policy.maxOutputBlocks) {
@@ -477,7 +512,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
         );
       }
     } catch (error) {
-      return this.#finishFailure(command, source, startedAt, "parse", error);
+      return this.#finishFailure(command, source, startedAt, "parse", error, [], bytes.byteLength);
     }
 
     const evidenceReferences = toEvidenceReferences(
@@ -498,11 +533,11 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
       );
       jsonLdArtifact = await this.#artifactStore.put(putCommand, one(bytesOut));
     } catch (error) {
-      return this.#finishFailure(command, source, startedAt, "output", error);
+      return this.#finishFailure(command, source, startedAt, "output", error, [], bytes.byteLength);
     }
 
     const segmentCommand = {
-      commandId: `${command.conversionId}:segments`,
+      commandId: command.conversionId,
       idempotencyKey: `${command.idempotencyKey}:segments`,
       projectId: command.projectId,
       actorId: command.actorId,
@@ -516,14 +551,26 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
     try {
       segmentResult = await this.#contextSource.registerSegments(segmentCommand);
     } catch (error) {
-      return this.#finishFailure(command, source, startedAt, "segments", error, [
-        ContentArtifactRefV1Schema.parse(jsonLdArtifact.artifactRef),
-      ]);
+      return this.#finishFailure(
+        command,
+        source,
+        startedAt,
+        "segments",
+        error,
+        [ContentArtifactRefV1Schema.parse(jsonLdArtifact.artifactRef)],
+        bytes.byteLength,
+      );
     }
     if (segmentResult.kind === "failed") {
-      return this.#finishFailure(command, source, startedAt, "segments", segmentResult.error, [
-        ContentArtifactRefV1Schema.parse(jsonLdArtifact.artifactRef),
-      ]);
+      return this.#finishFailure(
+        command,
+        source,
+        startedAt,
+        "segments",
+        segmentResult.error,
+        [ContentArtifactRefV1Schema.parse(jsonLdArtifact.artifactRef)],
+        bytes.byteLength,
+      );
     }
     if (segmentResult.result.kind !== "source-segment-set") {
       return this.#finishFailure(
@@ -533,6 +580,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
         "segments",
         new Error("source segment registration returned an unexpected result"),
         [ContentArtifactRefV1Schema.parse(jsonLdArtifact.artifactRef)],
+        bytes.byteLength,
       );
     }
 
@@ -559,12 +607,14 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
       jsonLdArtifactRef: ContentArtifactRefV1Schema.parse(jsonLdArtifact.artifactRef),
       sourceSegmentSetRef: segmentResult.result.segmentSet.sourceSegmentSetRef,
       authorizationPolicyRef: command.authorization.authorizationPolicyRef,
-      commandId: command.conversionId,
+      commandId: recordCommandId(command.conversionId),
       idempotencyKey: command.idempotencyKey,
+      runId: command.runId,
+      threadId: command.threadId,
       actorId: command.actorId,
       startedAt,
       completedAt,
-      auditTrailRef: auditTrailRef(`audit-${command.conversionId}`),
+      auditTrailRef: auditTrailRef(recordAuditEntryId(command.conversionId)),
     });
     try {
       const persisted = await this.#persist(command, record);
@@ -577,7 +627,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
         },
       });
     } catch {
-      return failed(moduleError("TRANSIENT_FAILURE", command.conversionId));
+      return failed(moduleError("TRANSIENT_FAILURE", command.runId));
     }
   }
 
@@ -625,14 +675,17 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
     }
     let authorizationResult: ContextSourceResultV1;
     try {
-      authorizationResult = await this.#contextSource.resolveSourceProcessingInput({
-        queryId: `${valid.queryId}:authorize`,
-        projectId: valid.projectId,
-        actorId: valid.actorId,
-        requestedAt: valid.requestedAt,
-        authorization: valid.authorization,
-        sourceVersionRef: record.sourceVersionRef,
-      });
+      const authorizationQuery: ResolveSourceVersionForReadQueryV1 =
+        ResolveSourceVersionForReadQueryV1Schema.parse({
+          queryId: valid.queryId,
+          projectId: valid.projectId,
+          actorId: valid.actorId,
+          requestedAt: valid.requestedAt,
+          authorization: valid.authorization,
+          sourceVersionRef: record.sourceVersionRef,
+        });
+      authorizationResult =
+        await this.#contextSource.resolveSourceVersionForRead(authorizationQuery);
     } catch {
       return StructuredDocumentConversionReadResultV1Schema.parse({
         kind: "failed",
@@ -660,7 +713,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
       projectId: command.projectId,
       actorId: command.actorId,
       requestedAt: command.issuedAt,
-      purposeCode: PURPOSE,
+      purposeCode: "engineering-data.register-source-delivery",
       requiredCapability: "engineering-data.write",
       authorization: command.authorization,
     });
@@ -669,10 +722,19 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
       throw new DocumentParserError(
         "ARTIFACT_REFERENCE_INVALID",
         "input artifact reference mismatch",
+        false,
+        undefined,
+        handle.manifest.content.byteLength,
       );
     }
     if (handle.manifest.mediaType !== command.mediaType) {
-      throw new DocumentParserError("MEDIA_TYPE_UNSUPPORTED", "input artifact media type mismatch");
+      throw new DocumentParserError(
+        "MEDIA_TYPE_UNSUPPORTED",
+        "input artifact media type mismatch",
+        false,
+        undefined,
+        handle.manifest.content.byteLength,
+      );
     }
     const chunks: Uint8Array[] = [];
     let size = 0;
@@ -681,7 +743,13 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
         throw new DocumentParserError("ARTIFACT_INVALID", "input artifact chunk is invalid");
       size += chunk.byteLength;
       if (size > this.#policy.maxInputBytes)
-        throw new DocumentParserError("INPUT_LIMIT_EXCEEDED", "input exceeds policy limit");
+        throw new DocumentParserError(
+          "INPUT_LIMIT_EXCEEDED",
+          "input exceeds policy limit",
+          false,
+          undefined,
+          size,
+        );
       chunks.push(chunk);
     }
     await handle.verified;
@@ -701,6 +769,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
     stage: string,
     reason: unknown,
     parents: readonly ContentArtifactRefV1[] = [],
+    inputBytes = 0,
   ): Promise<StructuredDocumentConversionResultV1> {
     let diagnosticRef: DiagnosticArtifactRefV1 | undefined;
     try {
@@ -713,10 +782,26 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
             (typeof reason === "object" && reason !== null && "code" in reason
               ? String((reason as { code: unknown }).code)
               : "CONVERSION_FAILED"));
+      const retryable =
+        reason instanceof DocumentParserError
+          ? reason.retryable
+          : typeof reason === "object" && reason !== null && "retryable" in reason
+            ? Boolean((reason as { retryable?: unknown }).retryable)
+            : false;
+      const failureReason = reason instanceof Error ? reason.message : reasonCode;
       const detail = {
         schemaVersion: SCHEMA_VERSION,
         stage,
         reasonCode,
+        failureReason,
+        retryable,
+        ...(reasonCode.includes("LIMIT") ? { limitCode: reasonCode } : {}),
+        inputBytes:
+          inputBytes > 0
+            ? inputBytes
+            : reason instanceof DocumentParserError
+              ? (reason.observedBytes ?? 0)
+              : 0,
         inputKind: command.input.kind,
         sourceVersionRef: source.sourceVersionRef,
         sourceSegmentId:
@@ -746,9 +831,9 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
       diagnosticRef = undefined;
     }
     if (diagnosticRef === undefined) {
-      return failed(moduleError("TRANSIENT_FAILURE", command.conversionId));
+      return failed(moduleError("TRANSIENT_FAILURE", command.runId));
     }
-    const error = moduleError("TERMINAL_FAILURE", command.conversionId, diagnosticRef);
+    const error = moduleError("TERMINAL_FAILURE", command.runId, diagnosticRef);
     const completedAt = iso(this.#now);
     const record = StructuredDocumentConversionRecordV1Schema.parse({
       schemaVersion: SCHEMA_VERSION,
@@ -766,7 +851,12 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
       converterDeploymentRef: command.converterDeploymentRef,
       status: "failed",
       statistics: {
-        inputBytes: 0,
+        inputBytes:
+          inputBytes > 0
+            ? inputBytes
+            : reason instanceof DocumentParserError
+              ? (reason.observedBytes ?? 0)
+              : 0,
         outputBytes: 0,
         textBlockCount: 0,
         sourceSegmentCount: 0,
@@ -774,15 +864,20 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
         tableCount: 0,
         cellCount: 0,
         durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(startedAt)),
+        ...(reason instanceof DocumentParserError && reason.code.includes("LIMIT")
+          ? { limitCode: reason.code }
+          : {}),
       },
       ...(diagnosticRef === undefined ? {} : { diagnosticRef }),
       authorizationPolicyRef: command.authorization.authorizationPolicyRef,
-      commandId: command.conversionId,
+      commandId: recordCommandId(command.conversionId),
       idempotencyKey: command.idempotencyKey,
+      runId: command.runId,
+      threadId: command.threadId,
       actorId: command.actorId,
       startedAt,
       completedAt,
-      auditTrailRef: auditTrailRef(`audit-${command.conversionId}`),
+      auditTrailRef: auditTrailRef(recordAuditEntryId(command.conversionId)),
     });
     try {
       await this.#persist(command, record);
@@ -807,7 +902,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
     }
     const db = this.#db;
     const transactionUnit = this.#transactionUnit;
-    const atomic = atomicCommand(command, command);
+    const atomic = atomicCommand(command, command, record.commandId);
     await transactionUnit.execute(atomic, async (context) => {
       const transaction = getPostgresTransaction(context) as unknown as ConversionTransaction;
       await transaction
@@ -837,10 +932,12 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
           command_id: record.commandId,
           idempotency_key: record.idempotencyKey,
           actor_id: record.actorId,
+          run_id: record.runId,
+          thread_id: record.threadId,
           statistics: jsonValue(record.statistics),
           started_at: record.startedAt,
           completed_at: record.completedAt,
-          audit_entry_id: `audit-${record.conversionRef.reference.entityId}`,
+          audit_entry_id: record.auditTrailRef.reference.entityId,
           created_at: sql`clock_timestamp()`,
         } satisfies InsertObject<ConversionDatabase, "business.structured_document_conversions">)
         .execute();

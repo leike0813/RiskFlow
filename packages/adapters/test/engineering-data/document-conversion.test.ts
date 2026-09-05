@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+
 import { Workbook } from "exceljs";
 import { strToU8, zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
@@ -103,18 +105,78 @@ const codeOf = (run: () => unknown): string => {
   throw new Error("expected parser to fail");
 };
 
+const fixture = async (name: string): Promise<Uint8Array> =>
+  new Uint8Array(
+    await readFile(new URL(`../fixtures/structured-document-conversion/${name}`, import.meta.url)),
+  );
+
 describe("structured document format adapters", () => {
+  it("parses the on-disk DOCX, PDF, XLSX and CSV fixtures", async () => {
+    const [docx, pdf, xlsx, csv] = await Promise.all([
+      fixture("sample.docx"),
+      fixture("sample.pdf"),
+      fixture("sample.xlsx"),
+      fixture("sample.csv"),
+    ]);
+    const parsedDocx = parseDocx(
+      docx,
+      context("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    );
+    expect(parsedDocx.blocks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "heading", text: "工序标题" }),
+        expect.objectContaining({ kind: "cell", text: "表格值" }),
+      ]),
+    );
+    const parsedPdf = await parseTextPdf(pdf, context("text-pdf", "application/pdf"));
+    expect(parsedPdf.blocks).toEqual(
+      expect.arrayContaining([expect.objectContaining({ text: "C12 fixture PDF" })]),
+    );
+    const parsedXlsx = await parseXlsx(
+      xlsx,
+      context("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    );
+    expect(parsedXlsx.blocks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ text: "指标" }),
+        expect.objectContaining({ formula: "1+1", cachedValue: 2 }),
+        expect.objectContaining({ value: 1.2 }),
+      ]),
+    );
+    const parsedCsv = parseCsv(csv, context("csv", "text/csv"));
+    expect(parsedCsv.blocks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ row: 2, column: 1, text: "地表沉降" }),
+        expect.objectContaining({ row: 2, column: 2, text: "第一行\n第二行" }),
+      ]),
+    );
+  });
+
   it("keeps DOCX structure, caption, table values and explicit page breaks", () => {
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
       <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
         <w:body>
-          <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>标题</w:t></w:r></w:p>
+          <w:p><w:pPr><w:pStyle w:val="heading_custom"/></w:pPr><w:r><w:t>标题</w:t></w:r></w:p>
           <w:p><w:pPr><w:pStyle w:val="Caption"/></w:pPr><w:r><w:t>图注</w:t></w:r></w:p>
           <w:p><w:r><w:t>第一页</w:t><w:br w:type="page"/></w:r></w:p>
           <w:tbl><w:tr><w:tc><w:p><w:r><w:t>表格值</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
         </w:body>
       </w:document>`;
-    const bytes = zipSync({ "word/document.xml": strToU8(xml) });
+    const bytes = zipSync({
+      "[Content_Types].xml": strToU8(`<?xml version="1.0"?>
+        <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+          <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+        </Types>`),
+      "_rels/.rels": strToU8(`<?xml version="1.0"?>
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+        </Relationships>`),
+      "word/styles.xml": strToU8(`<?xml version="1.0"?>
+        <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:style w:type="paragraph" w:styleId="heading_custom"><w:name w:val="标题1"/></w:style>
+        </w:styles>`),
+      "word/document.xml": strToU8(xml),
+    });
     const document = parseDocx(
       bytes,
       context("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
@@ -223,6 +285,10 @@ describe("structured document format adapters", () => {
         kind: "succeeded",
         result: { kind: "source-processing-input", input },
       }),
+      resolveSourceVersionForRead: async (): Promise<ContextSourceResultV1> => ({
+        kind: "succeeded",
+        result: { kind: "source-processing-input", input },
+      }),
       registerSegments: async (): Promise<ContextSourceResultV1> => {
         segmentCount += 1;
         return {
@@ -243,6 +309,7 @@ describe("structured document format adapters", () => {
     let openCount = 0;
     let putCount = 0;
     let segmentCount = 0;
+    let diagnostic: Record<string, unknown> | undefined;
     const artifactStore: ArtifactStoreV1 = {
       async open(): Promise<ArtifactReadHandleV1> {
         openCount += 1;
@@ -257,8 +324,22 @@ describe("structured document format adapters", () => {
           verified: Promise.resolve({} as never),
         } as unknown as ArtifactReadHandleV1;
       },
-      async put(command: ArtifactPutCommandV1): Promise<ArtifactPutResultV1> {
+      async put(
+        command: ArtifactPutCommandV1,
+        content: AsyncIterable<Uint8Array>,
+      ): Promise<ArtifactPutResultV1> {
         putCount += 1;
+        if (command.artifactKind === "diagnostic") {
+          const chunks: Uint8Array[] = [];
+          for await (const chunk of content) chunks.push(chunk);
+          const bytes = new Uint8Array(chunks.reduce((size, chunk) => size + chunk.byteLength, 0));
+          let offset = 0;
+          for (const chunk of chunks) {
+            bytes.set(chunk, offset);
+            offset += chunk.byteLength;
+          }
+          diagnostic = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
+        }
         const artifactRef =
           command.artifactKind === "diagnostic"
             ? {
@@ -282,6 +363,8 @@ describe("structured document format adapters", () => {
       schemaVersion: "1",
       conversionId: "conversion_1",
       idempotencyKey: "conversion_idempotency_1",
+      runId: "run_1",
+      threadId: "thread_1",
       issuedAt: "2030-01-01T00:00:00.000Z",
       deadlineAt: "2030-01-01T01:00:00.000Z",
       projectId: "project_1",
@@ -291,11 +374,26 @@ describe("structured document format adapters", () => {
       sourceArtifactRef: source.sourceArtifactRef,
       mediaType: "text/csv",
       input: { kind: "csv" },
-      conversionPolicyRef: { entityId: "conversion-policy", versionId: "v1" },
+      conversionPolicyRef: { entityId: "document-conversion-policy", versionId: "1" },
       qualityPolicyRef: { entityId: "quality-policy", versionId: "v1" },
       converterDeploymentRef: { entityId: "converter", versionId: "v1" },
     });
-    const adapter = new StructuredDocumentConversionAdapter({ contextSource, artifactStore });
+    const adapter = new StructuredDocumentConversionAdapter({
+      contextSource,
+      artifactStore,
+      qualityPolicyRef: { entityId: "quality-policy", versionId: "v1" },
+      converterDeploymentRef: { entityId: "converter", versionId: "v1" },
+    });
+    const blocked = await adapter.convert(
+      StructuredDocumentConversionCommandV1Schema.parse({
+        ...command,
+        conversionId: "conversion_blocked",
+        idempotencyKey: "conversion_idempotency_blocked",
+        conversionPolicyRef: { entityId: "wrong-policy", versionId: "1" },
+      }),
+    );
+    expect(blocked).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+    expect(openCount).toBe(0);
     const first = await adapter.convert(command);
     expect(first.kind).toBe("succeeded");
     const second = await adapter.convert(command);
@@ -308,11 +406,16 @@ describe("structured document format adapters", () => {
         ...command,
         conversionId: "conversion_2",
         idempotencyKey: "conversion_idempotency_2",
-        mediaType: "application/pdf",
+        mediaType: "text/csv",
         input: { kind: "text-pdf" },
       }),
     );
     expect(failedConversion).toMatchObject({ kind: "failed", error: { code: "TERMINAL_FAILURE" } });
+    expect(diagnostic).toMatchObject({
+      reasonCode: "MEDIA_TYPE_UNSUPPORTED",
+      retryable: false,
+      inputBytes: bytes.byteLength,
+    });
     expect(segmentCount).toBe(1);
     expect(putCount).toBe(2);
     if (first.kind !== "succeeded") return;
@@ -329,7 +432,7 @@ describe("structured document format adapters", () => {
     );
     expect(read).toMatchObject({
       kind: "succeeded",
-      result: { conversion: { status: "succeeded" } },
+      result: { conversion: { status: "succeeded", runId: "run_1", threadId: "thread_1" } },
     });
   });
 });

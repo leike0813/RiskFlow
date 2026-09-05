@@ -77,6 +77,7 @@ export const NormalizedBlockV1Schema = z
     blockId: nonEmptyIdentifier,
     kind: NormalizedBlockKindV1Schema,
     text: boundedText,
+    value: scalarValue.optional(),
     chapterId: identifierPart.optional(),
     segmentId: identifierPart.optional(),
     headingPath: z.array(nonEmptyIdentifier).max(64),

@@ -1,6 +1,7 @@
 import { z } from "@riskflow/core/model";
 
 import {
+  DOCUMENT_CONVERSION_MAX_BLOCKS,
   ParsedDocumentV1Schema,
   type DocumentInputKindV1,
   type ParsedDocumentV1,
@@ -34,6 +35,13 @@ export const DocumentConversionResourcePolicyV1Schema = z
         message: "zip compression ratio must be at least one",
       });
     }
+    if (policy.maxOutputBlocks > DOCUMENT_CONVERSION_MAX_BLOCKS) {
+      context.addIssue({
+        code: "custom",
+        path: ["maxOutputBlocks"],
+        message: "output block limit exceeds the core document limit",
+      });
+    }
   });
 export type DocumentConversionResourcePolicyV1 = z.infer<
   typeof DocumentConversionResourcePolicyV1Schema
@@ -54,7 +62,7 @@ export const DEFAULT_DOCUMENT_CONVERSION_RESOURCE_POLICY_V1 = Object.freeze(
     maxCells: 1_000_000,
     maxCsvRecords: 1_000_000,
     maxCsvFields: 10_000,
-    maxOutputBlocks: 100_000,
+    maxOutputBlocks: DOCUMENT_CONVERSION_MAX_BLOCKS,
   }),
 );
 
@@ -68,13 +76,21 @@ export class DocumentParserError extends Error {
   readonly code: string;
   readonly retryable: boolean;
   readonly sourceSegmentId: string | undefined;
+  readonly observedBytes: number | undefined;
 
-  constructor(code: string, message: string, retryable = false, sourceSegmentId?: string) {
+  constructor(
+    code: string,
+    message: string,
+    retryable = false,
+    sourceSegmentId?: string,
+    observedBytes?: number,
+  ) {
     super(message);
     this.name = "DocumentParserError";
     this.code = code;
     this.retryable = retryable;
     this.sourceSegmentId = sourceSegmentId;
+    this.observedBytes = observedBytes;
   }
 }
 

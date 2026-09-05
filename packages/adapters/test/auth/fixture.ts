@@ -12,6 +12,7 @@ import * as agentTaskRuntimeMigration from "../../src/postgres/migrations/agent-
 import * as agentProposalArtifactRefMigration from "../../src/postgres/migrations/agent-task/deliver-unified-bounded-agent-runtime/000006_agent_proposal_artifact_ref.js";
 import * as governedDefinitionLifecycleMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-governed-definition-lifecycle/000007_governed_definition_lifecycle.js";
 import * as engineeringContextSourceMigration from "../../src/postgres/migrations/engineering-data/deliver-engineering-context-and-source-registry/000008_engineering_context_source_registry.js";
+import * as structuredDocumentConversionMigration from "../../src/postgres/migrations/engineering-data/deliver-structured-document-conversion/000009_structured_document_conversion.js";
 
 export interface AuthPostgresFixture extends PostgresTestFixture {
   runMigrations(): Promise<void>;
@@ -75,6 +76,13 @@ export const startAuthPostgresFixture = async (): Promise<AuthPostgresFixture> =
         "engineering-data/deliver-engineering-context-and-source-registry/000008_engineering_context_source_registry.ts",
       ),
       engineeringContextSourceMigration,
+    ],
+    [
+      resolve(
+        base.productionMigrationRoot,
+        "engineering-data/deliver-structured-document-conversion/000009_structured_document_conversion.ts",
+      ),
+      structuredDocumentConversionMigration,
     ],
   ]);
   const loadModule = async (filePath: string): Promise<unknown> => {

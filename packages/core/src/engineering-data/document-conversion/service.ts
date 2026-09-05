@@ -215,6 +215,11 @@ const buildSegments = (
   textBlocks: readonly TextBlockV1[],
 ): SourceSegmentDraftV1[] => {
   const blocksById = new Map(parsed.blocks.map((block) => [block.blockId, block]));
+  const tableBlocks = new Map(
+    parsed.blocks
+      .filter((block) => block.kind === "table" && block.tableId !== undefined)
+      .map((block) => [block.tableId!, block]),
+  );
   const groups = new Map<string, { block: NormalizedBlockV1; textBlockIds: string[] }>();
   for (const textBlock of textBlocks) {
     const block = blocksById.get(textBlock.sourceBlockId);
@@ -225,6 +230,10 @@ const buildSegments = (
     else current.textBlockIds.push(textBlock.blockId);
   }
   return [...groups.entries()].map(([sourceSegmentId, group]) => {
+    const locatorBlock =
+      group.block.kind === "cell" && group.block.tableId !== undefined
+        ? (tableBlocks.get(group.block.tableId) ?? group.block)
+        : group.block;
     const chapterId =
       group.block.chapterId ?? stablePart(group.block.headingPath[0] ?? "document", "chapter");
     const segmentId = group.block.segmentId ?? stablePart(group.block.blockId, "segment");
@@ -241,15 +250,16 @@ const buildSegments = (
       sourceId: parsed.sourceId,
       chapterId,
       segmentId,
-      kind: segmentKindFor(group.block),
+      kind: segmentKindFor(locatorBlock),
       spatialScopeRefs: parsed.spatialScopeRefs,
-      locator: segmentLocatorFor(group.block),
+      locator: segmentLocatorFor(locatorBlock),
       textBlockIds: group.textBlockIds,
     };
   });
 };
 
-const scalarFromBlock = (block: NormalizedBlockV1): TableFieldV1["value"] => block.text;
+const scalarFromBlock = (block: NormalizedBlockV1): TableFieldV1["value"] =>
+  block.value === undefined ? block.text : block.value;
 
 const buildTableFields = (parsed: ParsedDocumentV1): TableFieldV1[] =>
   parsed.blocks

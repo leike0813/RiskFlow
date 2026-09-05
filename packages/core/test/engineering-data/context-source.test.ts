@@ -4,6 +4,7 @@ import {
   EngineeringContextSourceService,
   EngineeringContextRevisionCommandV1Schema,
   ResolveSourceProcessingInputQueryV1Schema,
+  ResolveSourceVersionForReadQueryV1Schema,
   SourceSegmentV1Schema,
   SourceVersionV1Schema,
   makeSourceSegmentId,
@@ -265,6 +266,17 @@ describe("engineering context and source registry core", () => {
     expect(await stale.resolveSourceProcessingInput(query)).toMatchObject({
       kind: "failed",
       error: { code: "STALE_VERSION" },
+    });
+    expect(
+      await stale.resolveSourceVersionForRead(
+        ResolveSourceVersionForReadQueryV1Schema.parse({
+          ...query,
+          queryId: "source-version-read-historical",
+        }),
+      ),
+    ).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "source-processing-input" },
     });
   });
 

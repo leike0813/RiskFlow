@@ -88,6 +88,70 @@ describe("structured document conversion core", () => {
     ).toBe(false);
   });
 
+  it("preserves scalar table values and uses the table locator for cell segments", () => {
+    const table = parsed("表格值");
+    const result = convertParsedDocument(
+      {
+        ...table,
+        blocks: [
+          {
+            blockId: "table_1",
+            kind: "table",
+            text: "",
+            chapterId: "table_1",
+            segmentId: "table_1",
+            headingPath: ["table_1"],
+            locator: {
+              kind: "table",
+              sheet: "sheet_1",
+              table: "table_1",
+              rowRange: { start: 1, end: 2 },
+              columnRange: { start: 1, end: 3 },
+            },
+            tableId: "table_1",
+            sheet: "sheet_1",
+          },
+          {
+            blockId: "cell_1",
+            kind: "cell",
+            text: "42",
+            value: 42,
+            chapterId: "table_1",
+            segmentId: "table_1",
+            headingPath: ["table_1"],
+            locator: {
+              kind: "table",
+              sheet: "sheet_1",
+              table: "table_1",
+              rowRange: { start: 1, end: 1 },
+              columnRange: { start: 2, end: 2 },
+            },
+            coordinate: {
+              kind: "cell",
+              sheet: "sheet_1",
+              row: 1,
+              column: 2,
+              rowSpan: 1,
+              columnSpan: 1,
+            },
+            tableId: "table_1",
+            sheet: "sheet_1",
+            row: 1,
+            column: 2,
+            rowSpan: 1,
+            columnSpan: 1,
+          },
+        ],
+      },
+      { strategyVersion: "strategy-v1" },
+    );
+    expect(result.document.tableFields?.[0]?.value).toBe(42);
+    expect(result.document.sourceSegments[0]?.locator).toMatchObject({
+      rowRange: { start: 1, end: 2 },
+      columnRange: { start: 1, end: 3 },
+    });
+  });
+
   it("rejects dangling relations and cross-version pointers as one failed batch", () => {
     const result = convertParsedDocument(parsed("正文"), { strategyVersion: "strategy-v1" });
     const invalidRelation = {

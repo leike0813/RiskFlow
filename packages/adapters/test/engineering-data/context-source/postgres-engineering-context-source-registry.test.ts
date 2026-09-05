@@ -11,8 +11,13 @@ import type {
   SourceVersionRefV1,
   SpatialScopeRefV1,
 } from "@riskflow/contracts/ports";
+import {
+  StructuredDocumentConversionCommandV1Schema,
+  StructuredDocumentConversionQueryV1Schema,
+} from "@riskflow/contracts/ports";
 import { bootstrapInitialSystemAdministrator } from "../../../src/auth/index.js";
 import { PostgresEngineeringContextSourceRegistry } from "../../../src/engineering-data/context-source/postgres-engineering-context-source-registry.js";
+import { StructuredDocumentConversionAdapter } from "../../../src/engineering-data/document-conversion/structured-document-converter.js";
 import { createPostgresRuntime } from "../../../src/postgres/pool.js";
 import * as contextSourceMigration from "../../../src/postgres/migrations/engineering-data/deliver-engineering-context-and-source-registry/000008_engineering_context_source_registry.js";
 import {
@@ -48,6 +53,7 @@ describe("C11 PostgreSQL context/source registry", () => {
         projectId: string;
         managerId: string;
         projectRevisionRef: ProjectRevisionRefV1;
+        sourceVersionRef: SourceVersionRefV1;
         businessSpatialScopeRef: SpatialScopeRefV1;
         snapshotRef: {
           kind: "applicability-metadata-snapshot";
@@ -58,6 +64,8 @@ describe("C11 PostgreSQL context/source registry", () => {
         authorize(
           invocationId: string,
           requestedSourceVersionRefs?: readonly SourceVersionRefV1[],
+          branch?: "engineering-data.register-source-delivery" | "engineering-data.evidence-access",
+          requestedSpatialScopeRefs?: readonly SpatialScopeRefV1[],
         ): Promise<AuthorizationContextV1>;
       }
     | undefined;
@@ -77,7 +85,14 @@ describe("C11 PostgreSQL context/source registry", () => {
     return e2eState;
   };
 
-  const createDelivery = async (suffix: string) => {
+  const createDelivery = async (
+    suffix: string,
+    options: {
+      readonly sourceContent?: string;
+      readonly mediaType?: string;
+      readonly spatialScopeRefs?: readonly SpatialScopeRefV1[];
+    } = {},
+  ) => {
     const state = requireE2eState();
     const now = "2030-01-01T00:00:00.000Z";
     const commandId = `c11-${suffix}`;
@@ -106,14 +121,18 @@ describe("C11 PostgreSQL context/source registry", () => {
           yield new TextEncoder().encode(content);
         })(),
       );
-    const sourceContent = `source body ${suffix}`;
-    const sourceArtifact = await put(`${suffix}-source`, sourceContent, "text/plain");
+    const sourceContent = options.sourceContent ?? `source body ${suffix}`;
+    const sourceArtifact = await put(
+      `${suffix}-source`,
+      sourceContent,
+      options.mediaType ?? "text/plain",
+    );
     const metadataArtifact = await put(
       `${suffix}-metadata`,
       JSON.stringify({
         schemaVersion: "1",
         projectRevisionRef: state.projectRevisionRef,
-        spatialScopeRefs: [state.businessSpatialScopeRef],
+        spatialScopeRefs: [...(options.spatialScopeRefs ?? [state.businessSpatialScopeRef])],
         registeredByAccountId: state.managerId,
         sourceItemId: `c11-source-item-${suffix}`,
         sourceItemName: `施工方案-${suffix}`,
@@ -540,6 +559,7 @@ describe("C11 PostgreSQL context/source registry", () => {
       projectId: project,
       managerId: manager.resultRef.entityId,
       projectRevisionRef: projectResult.result.revision.projectRevisionRef,
+      sourceVersionRef,
       businessSpatialScopeRef,
       snapshotRef: snapshotResult.result.snapshot.snapshotRef,
       metadataArtifactRef: metadataArtifact.artifactRef,
@@ -547,18 +567,99 @@ describe("C11 PostgreSQL context/source registry", () => {
       authorize: async (
         invocationId: string,
         requestedSourceVersionRefs: readonly SourceVersionRefV1[] = [],
+        branch:
+          | "engineering-data.register-source-delivery"
+          | "engineering-data.evidence-access" = "engineering-data.register-source-delivery",
+        requestedSpatialScopeRefs: readonly SpatialScopeRefV1[] = [spatialScopeRef],
       ) =>
         (
           await fixture.access.authorize({
             invocation: { kind: "human-session", sessionToken: managerChanged.sessionToken },
             invocationId,
             projectId: project,
-            branch: "engineering-data.register-source-delivery",
-            requestedSpatialScopeRefs: [spatialScopeRef],
+            branch,
+            requestedSpatialScopeRefs,
             requestedSourceVersionRefs,
           })
         ).context,
     };
+  });
+
+  it("persists and replays a C12 conversion through PostgreSQL", async () => {
+    const state = requireE2eState();
+    const { command: deliveryCommand } = await createDelivery("c12-conversion", {
+      sourceContent: "指标,备注\n盾构,稳定\n",
+      mediaType: "text/csv",
+      spatialScopeRefs: [state.businessSpatialScopeRef],
+    });
+    const delivery = await fixture.registry.apply(deliveryCommand);
+    expect(delivery).toMatchObject({ kind: "succeeded" });
+    if (delivery.kind !== "succeeded") return;
+    const sourceVersionRef = delivery.result.sourceVersionRef;
+    const authorization = await state.authorize("c12-conversion-record", [sourceVersionRef]);
+    const conversion = StructuredDocumentConversionCommandV1Schema.parse({
+      schemaVersion: "1",
+      conversionId: "c12-conversion-record",
+      idempotencyKey: "c12-conversion-idempotency",
+      runId: "c12-run",
+      threadId: "c12-thread",
+      issuedAt: "2030-01-01T00:00:00.000Z",
+      deadlineAt: "2030-01-01T01:00:00.000Z",
+      projectId: state.projectId,
+      actorId: state.managerId,
+      authorization,
+      sourceVersionRef,
+      sourceArtifactRef: deliveryCommand.payload.sourceArtifactRef,
+      mediaType: "text/csv",
+      input: { kind: "csv" },
+      conversionPolicyRef: { entityId: "document-conversion-policy", versionId: "1" },
+      qualityPolicyRef: { entityId: "quality-policy", versionId: "v1" },
+      converterDeploymentRef: { entityId: "converter", versionId: "v1" },
+    });
+    const adapter = new StructuredDocumentConversionAdapter({
+      db: fixture.runtime.db,
+      transactionUnit: fixture.transactionUnit,
+      contextSource: fixture.registry,
+      artifactStore: fixture.artifactStore,
+      qualityPolicyRef: conversion.qualityPolicyRef,
+      converterDeploymentRef: conversion.converterDeploymentRef,
+    });
+    const first = await adapter.convert(conversion);
+    expect(first).toMatchObject({ kind: "succeeded" });
+    const second = await adapter.convert(conversion);
+    expect(second).toEqual(first);
+    const persisted = await fixture.postgres.adminPool.query<{
+      status: string;
+      run_id: string;
+      thread_id: string;
+    }>(
+      "SELECT status, run_id, thread_id FROM business.structured_document_conversions WHERE project_id = $1 AND conversion_id = $2",
+      [state.projectId, conversion.conversionId],
+    );
+    expect(persisted.rows).toEqual([
+      { status: "succeeded", run_id: "c12-run", thread_id: "c12-thread" },
+    ]);
+    if (first.kind !== "succeeded") return;
+    const readAuthorization = await state.authorize(
+      "c12-read",
+      [sourceVersionRef],
+      "engineering-data.evidence-access",
+    );
+    const read = await adapter.read(
+      StructuredDocumentConversionQueryV1Schema.parse({
+        schemaVersion: "1",
+        queryId: "c12-read",
+        projectId: state.projectId,
+        actorId: state.managerId,
+        requestedAt: "2030-01-01T01:00:00.000Z",
+        authorization: readAuthorization,
+        conversionRef: first.result.conversionRef,
+      }),
+    );
+    expect(read).toMatchObject({
+      kind: "succeeded",
+      result: { conversion: { runId: "c12-run", threadId: "c12-thread" } },
+    });
   });
 
   it("rejects same-key source delivery conflicts without creating a second row", async () => {
@@ -824,5 +925,50 @@ describe("C11 PostgreSQL context/source registry", () => {
     expect(afterFailure.rows[0]?.count).toBe(before.rows[0]?.count);
     const retry = await fixture.registry.reviseContext(command);
     expect(retry).toMatchObject({ kind: "succeeded", result: { kind: "spatial-revision" } });
+  });
+
+  it("reads an exact historical source version after the project revision advances", async () => {
+    const state = requireE2eState();
+    const commandId = "c11-historical-project-revision";
+    const authorization = await state.authorize(commandId);
+    const revised = await fixture.registry.reviseContext({
+      commandId,
+      idempotencyKey: commandId,
+      projectId: state.projectId,
+      actorId: state.managerId,
+      issuedAt: "2030-01-01T00:00:00.000Z",
+      authorization,
+      kind: "project",
+      expectedVersion: state.projectRevisionRef.reference,
+      name: "C11 历史读取验证",
+      lifecycle: "active",
+      applicabilityMetadata: {
+        constructionMethod: "variable-diameter-shield",
+        stratumCondition: "soft-soil",
+        engineeringStage: "shield-expansion",
+      },
+      effectivePeriod: { validFrom: "2030-01-01T00:00:00.000Z" },
+    });
+    expect(revised).toMatchObject({ kind: "succeeded", result: { kind: "project-revision" } });
+    const readAuthorization = await state.authorize(
+      "c11-historical-source-read",
+      [state.sourceVersionRef],
+      "engineering-data.evidence-access",
+    );
+    const read = await fixture.registry.resolveSourceVersionForRead({
+      queryId: "c11-historical-source-read",
+      projectId: state.projectId,
+      actorId: state.managerId,
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      authorization: readAuthorization,
+      sourceVersionRef: state.sourceVersionRef,
+    });
+    expect(read).toMatchObject({
+      kind: "succeeded",
+      result: {
+        kind: "source-processing-input",
+        input: { sourceVersionRef: state.sourceVersionRef },
+      },
+    });
   });
 });

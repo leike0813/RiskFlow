@@ -45,6 +45,7 @@ import {
   EngineeringContextRevisionCommandV1Schema,
   ProjectBusinessRevisionV1Schema,
   RegisterSourceSegmentSetCommandV1Schema,
+  ResolveSourceVersionForReadQueryV1Schema,
   ResolveSourceProcessingInputQueryV1Schema,
   SourceDeliveryMetadataEnvelopeV1Schema,
   SourceProcessingInputV1Schema,
@@ -59,6 +60,7 @@ import {
   type ProjectBusinessRevisionV1,
   type RegisterSourceSegmentSetCommandV1,
   type ResolveSourceProcessingInputQueryV1,
+  type ResolveSourceVersionForReadQueryV1,
   type SourceProcessingInputV1,
   type SourceDeliveryMetadataEnvelopeV1,
   type SourceSegmentSetV1,
@@ -527,6 +529,20 @@ const toSourceVersion = (row: Selectable<SourceVersionRow>): SourceVersionV1 =>
     },
   });
 
+const sourceProcessingInput = (sourceVersion: SourceVersionV1): SourceProcessingInputV1 =>
+  SourceProcessingInputV1Schema.parse({
+    sourceVersionRef: sourceVersion.sourceVersionRef,
+    projectId: sourceVersion.projectId,
+    sourceId: sourceVersion.sourceId,
+    sourceItemId: sourceVersion.sourceItemId,
+    projectRevisionRef: sourceVersion.projectRevisionRef,
+    spatialScopeRefs: sourceVersion.spatialScopeRefs,
+    sourceArtifactRef: sourceVersion.sourceArtifactRef,
+    metadataArtifactRef: sourceVersion.metadataArtifactRef,
+    sourceAccessGrantRef: sourceVersion.sourceAccessGrantRef,
+    applicabilityMetadataSnapshotRef: sourceVersion.applicabilityMetadataSnapshotRef,
+  });
+
 const sourceSegmentSetResult = (set: SourceSegmentSetV1): ContextSourceResultV1 =>
   resultSuccess({ kind: "source-segment-set", segmentSet: set });
 
@@ -760,22 +776,37 @@ export class PostgresEngineeringContextSourceRegistry
           moduleError("STALE_VERSION", valid.queryId, { targetRef: valid.sourceVersionRef }),
         );
       }
-      const input: SourceProcessingInputV1 = SourceProcessingInputV1Schema.parse({
-        sourceVersionRef: sourceVersion.sourceVersionRef,
-        projectId: sourceVersion.projectId,
-        sourceId: sourceVersion.sourceId,
-        sourceItemId: sourceVersion.sourceItemId,
-        projectRevisionRef: sourceVersion.projectRevisionRef,
-        spatialScopeRefs: sourceVersion.spatialScopeRefs,
-        sourceArtifactRef: sourceVersion.sourceArtifactRef,
-        metadataArtifactRef: sourceVersion.metadataArtifactRef,
-        sourceAccessGrantRef: sourceVersion.sourceAccessGrantRef,
-        applicabilityMetadataSnapshotRef: sourceVersion.applicabilityMetadataSnapshotRef,
-      });
+      const input = sourceProcessingInput(sourceVersion);
       return resultSuccess({ kind: "source-processing-input", input });
     } catch (error) {
       return resultFailure(
         this.#mapError(error, valid.queryId, "engineering-data.source-processing-input"),
+      );
+    }
+  }
+
+  async resolveSourceVersionForRead(
+    query: ResolveSourceVersionForReadQueryV1,
+  ): Promise<ContextSourceResultV1> {
+    const parsed = ResolveSourceVersionForReadQueryV1Schema.safeParse(query);
+    if (!parsed.success)
+      return resultFailure(moduleError("UNSUPPORTED_CONTRACT", "source-version-read"));
+    const valid = parsed.data;
+    try {
+      await this.#verifyRead(valid, valid.authorization.spatialScopeRefs, [valid.sourceVersionRef]);
+      const sourceVersion = await this.#readSourceVersion(valid.projectId, valid.sourceVersionRef);
+      if (
+        sourceVersion === undefined ||
+        sourceVersion.accessStatus !== "ready" ||
+        sourceVersion.sourceAccessGrantRef === undefined
+      ) {
+        return resultFailure(moduleError("AUTHORIZATION_DENIED", valid.queryId));
+      }
+      const input = sourceProcessingInput(sourceVersion);
+      return resultSuccess({ kind: "source-processing-input", input });
+    } catch (error) {
+      return resultFailure(
+        this.#mapError(error, valid.queryId, "engineering-data.source-version-read"),
       );
     }
   }
@@ -1101,7 +1132,9 @@ export class PostgresEngineeringContextSourceRegistry
       authorizationContextRef: query.authorization.authorizationContextRef,
       invocationId: query.queryId,
       projectId: query.projectId,
-      branch: "engineering-data.evidence-access",
+      branch: query.authorization.grantedCapabilities.includes("engineering-data.write")
+        ? "engineering-data.register-source-delivery"
+        : "engineering-data.evidence-access",
       requestedSpatialScopeRefs: [...requestedSpatialScopeRefs],
       requestedSourceVersionRefs: [...requestedSourceVersionRefs],
       requestedAt: query.authorization.decidedAt,

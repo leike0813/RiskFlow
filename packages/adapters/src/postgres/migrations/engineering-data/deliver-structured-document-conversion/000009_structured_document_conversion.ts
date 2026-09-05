@@ -29,6 +29,8 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     .addColumn("command_id", "text", (column) => column.notNull())
     .addColumn("idempotency_key", "text", (column) => column.notNull())
     .addColumn("actor_id", "text", (column) => column.notNull())
+    .addColumn("run_id", "text", (column) => column.notNull())
+    .addColumn("thread_id", "text", (column) => column.notNull())
     .addColumn("statistics", jsonb, (column) => column.notNull())
     .addColumn("started_at", timestamptz, (column) => column.notNull())
     .addColumn("completed_at", timestamptz, (column) => column.notNull())
@@ -84,6 +86,8 @@ export async function up(db: Kysely<unknown>): Promise<void> {
         AND length(trim(command_id)) > 0
         AND length(trim(idempotency_key)) > 0
         AND length(trim(actor_id)) > 0
+        AND length(trim(run_id)) > 0
+        AND length(trim(thread_id)) > 0
         AND length(trim(media_type)) > 0
         AND length(trim(parser_set_version)) > 0`,
     )

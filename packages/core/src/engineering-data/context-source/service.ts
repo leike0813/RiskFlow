@@ -14,6 +14,7 @@ import {
   EngineeringContextRevisionCommandV1Schema,
   ProjectBusinessRevisionV1Schema,
   RegisterSourceSegmentSetCommandV1Schema,
+  ResolveSourceVersionForReadQueryV1Schema,
   ResolveSourceProcessingInputQueryV1Schema,
   SourceSegmentSetV1Schema,
   SourceProcessingInputV1Schema,
@@ -28,6 +29,7 @@ import {
   type ProjectBusinessRevisionV1,
   type RegisterSourceSegmentSetCommandV1,
   type ResolveSourceProcessingInputQueryV1,
+  type ResolveSourceVersionForReadQueryV1,
   type SourceProcessingInputV1,
   type SourceSegmentSetV1,
   type SourceVersionV1,
@@ -275,6 +277,22 @@ const sourceGrantIsCovered = (
       item.reference.versionId === requested.reference.versionId,
   );
 
+const processingInputFromSourceVersion = (
+  sourceVersion: SourceVersionV1,
+): SourceProcessingInputV1 =>
+  SourceProcessingInputV1Schema.parse({
+    sourceVersionRef: sourceVersion.sourceVersionRef,
+    projectId: sourceVersion.projectId,
+    sourceId: sourceVersion.sourceId,
+    sourceItemId: sourceVersion.sourceItemId,
+    projectRevisionRef: sourceVersion.projectRevisionRef,
+    spatialScopeRefs: sourceVersion.spatialScopeRefs,
+    sourceArtifactRef: sourceVersion.sourceArtifactRef,
+    metadataArtifactRef: sourceVersion.metadataArtifactRef,
+    sourceAccessGrantRef: sourceVersion.sourceAccessGrantRef,
+    applicabilityMetadataSnapshotRef: sourceVersion.applicabilityMetadataSnapshotRef,
+  });
+
 const segmentSetFromCommand = (
   command: RegisterSourceSegmentSetCommandV1,
   sourceVersion: SourceVersionV1,
@@ -388,6 +406,9 @@ export interface EngineeringContextSourceRegistryV1 {
   registerSegments(command: RegisterSourceSegmentSetCommandV1): Promise<ContextSourceResultV1>;
   resolveSourceProcessingInput(
     query: ResolveSourceProcessingInputQueryV1,
+  ): Promise<ContextSourceResultV1>;
+  resolveSourceVersionForRead(
+    query: ResolveSourceVersionForReadQueryV1,
   ): Promise<ContextSourceResultV1>;
   createApplicabilitySnapshot(
     command: CreateApplicabilitySnapshotCommandV1,
@@ -601,18 +622,44 @@ export class EngineeringContextSourceService implements EngineeringContextSource
         }),
       );
     }
-    const input: SourceProcessingInputV1 = SourceProcessingInputV1Schema.parse({
-      sourceVersionRef: sourceVersion.sourceVersionRef,
-      projectId: sourceVersion.projectId,
-      sourceId: sourceVersion.sourceId,
-      sourceItemId: sourceVersion.sourceItemId,
-      projectRevisionRef: sourceVersion.projectRevisionRef,
-      spatialScopeRefs: sourceVersion.spatialScopeRefs,
-      sourceArtifactRef: sourceVersion.sourceArtifactRef,
-      metadataArtifactRef: sourceVersion.metadataArtifactRef,
-      sourceAccessGrantRef: sourceVersion.sourceAccessGrantRef,
-      applicabilityMetadataSnapshotRef: sourceVersion.applicabilityMetadataSnapshotRef,
-    });
+    const input = processingInputFromSourceVersion(sourceVersion);
+    return succeeded({ kind: "source-processing-input", input });
+  }
+
+  async resolveSourceVersionForRead(
+    query: ResolveSourceVersionForReadQueryV1,
+  ): Promise<ContextSourceResultV1> {
+    const parsed = ResolveSourceVersionForReadQueryV1Schema.safeParse(query);
+    if (!parsed.success)
+      return failure(
+        moduleError({ code: "UNSUPPORTED_CONTRACT", causalRunId: "source-version-read" }),
+      );
+    const valid = parsed.data;
+    if (
+      valid.projectId !== valid.authorization.projectId ||
+      valid.actorId !== valid.authorization.actorId ||
+      (!valid.authorization.grantedCapabilities.includes("engineering-data.read") &&
+        !valid.authorization.grantedCapabilities.includes("engineering-data.write"))
+    ) {
+      return failure(moduleError({ code: "AUTHORIZATION_DENIED", causalRunId: valid.queryId }));
+    }
+    const sourceVersion = this.#sourceVersions.get(
+      `${valid.sourceVersionRef.reference.entityId}/${valid.sourceVersionRef.reference.versionId}`,
+    );
+    if (
+      sourceVersion === undefined ||
+      sourceVersion.projectId !== valid.projectId ||
+      sourceVersion.accessStatus !== "ready" ||
+      sourceVersion.sourceAccessGrantRef === undefined ||
+      !sourceGrantIsCovered(
+        sourceVersion.sourceAccessGrantRef,
+        valid.authorization.sourceAccessGrantRefs,
+      ) ||
+      !scopeIsCovered(sourceVersion.spatialScopeRefs, valid.authorization.spatialScopeRefs)
+    ) {
+      return failure(moduleError({ code: "AUTHORIZATION_DENIED", causalRunId: valid.queryId }));
+    }
+    const input = processingInputFromSourceVersion(sourceVersion);
     return succeeded({ kind: "source-processing-input", input });
   }
 

@@ -249,6 +249,8 @@ describe("module interface contracts", () => {
       schemaVersion: "1" as const,
       conversionId: "conversion-1",
       idempotencyKey: "conversion-idempotency-1",
+      runId: "run-1",
+      threadId: "thread-1",
       issuedAt: now,
       deadlineAt: later,
       projectId: "project-1",

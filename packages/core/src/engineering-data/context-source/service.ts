@@ -14,7 +14,9 @@ import {
   EngineeringContextRevisionCommandV1Schema,
   ProjectBusinessRevisionV1Schema,
   RegisterSourceSegmentSetCommandV1Schema,
+  ResolveSourceProcessingInputQueryV1Schema,
   SourceSegmentSetV1Schema,
+  SourceProcessingInputV1Schema,
   SourceVersionV1Schema,
   SpatialBusinessRevisionV1Schema,
   type ApplicabilityMetadataSnapshotV1,
@@ -25,6 +27,8 @@ import {
   type EngineeringContextRevisionCommandV1,
   type ProjectBusinessRevisionV1,
   type RegisterSourceSegmentSetCommandV1,
+  type ResolveSourceProcessingInputQueryV1,
+  type SourceProcessingInputV1,
   type SourceSegmentSetV1,
   type SourceVersionV1,
   type SpatialBusinessRevisionV1,
@@ -261,6 +265,16 @@ const scopeIsCovered = (
   );
 };
 
+const sourceGrantIsCovered = (
+  requested: { reference: { entityId: string; versionId: string } },
+  allowed: readonly { reference: { entityId: string; versionId: string } }[],
+): boolean =>
+  allowed.some(
+    (item) =>
+      item.reference.entityId === requested.reference.entityId &&
+      item.reference.versionId === requested.reference.versionId,
+  );
+
 const segmentSetFromCommand = (
   command: RegisterSourceSegmentSetCommandV1,
   sourceVersion: SourceVersionV1,
@@ -372,6 +386,9 @@ const applicabilitySnapshotFromParts = (
 export interface EngineeringContextSourceRegistryV1 {
   reviseContext(command: EngineeringContextRevisionCommandV1): Promise<ContextSourceResultV1>;
   registerSegments(command: RegisterSourceSegmentSetCommandV1): Promise<ContextSourceResultV1>;
+  resolveSourceProcessingInput(
+    query: ResolveSourceProcessingInputQueryV1,
+  ): Promise<ContextSourceResultV1>;
   createApplicabilitySnapshot(
     command: CreateApplicabilitySnapshotCommandV1,
   ): Promise<ContextSourceResultV1>;
@@ -536,6 +553,67 @@ export class EngineeringContextSourceService implements EngineeringContextSource
       this.#idempotency.set(key, { hash, commandId: valid.commandId, result });
       return result;
     }
+  }
+
+  async resolveSourceProcessingInput(
+    query: ResolveSourceProcessingInputQueryV1,
+  ): Promise<ContextSourceResultV1> {
+    const parsed = ResolveSourceProcessingInputQueryV1Schema.safeParse(query);
+    if (!parsed.success)
+      return failure(
+        moduleError({ code: "UNSUPPORTED_CONTRACT", causalRunId: "source-processing-input" }),
+      );
+    const valid = parsed.data;
+    if (
+      valid.projectId !== valid.authorization.projectId ||
+      valid.actorId !== valid.authorization.actorId ||
+      (!valid.authorization.grantedCapabilities.includes("engineering-data.read") &&
+        !valid.authorization.grantedCapabilities.includes("engineering-data.write"))
+    ) {
+      return failure(moduleError({ code: "AUTHORIZATION_DENIED", causalRunId: valid.queryId }));
+    }
+    const sourceVersion = this.#sourceVersions.get(
+      `${valid.sourceVersionRef.reference.entityId}/${valid.sourceVersionRef.reference.versionId}`,
+    );
+    if (
+      sourceVersion === undefined ||
+      sourceVersion.projectId !== valid.projectId ||
+      sourceVersion.accessStatus !== "ready" ||
+      sourceVersion.sourceAccessGrantRef === undefined ||
+      !sourceGrantIsCovered(
+        sourceVersion.sourceAccessGrantRef,
+        valid.authorization.sourceAccessGrantRefs,
+      ) ||
+      !scopeIsCovered(sourceVersion.spatialScopeRefs, valid.authorization.spatialScopeRefs)
+    ) {
+      return failure(moduleError({ code: "AUTHORIZATION_DENIED", causalRunId: valid.queryId }));
+    }
+    const project = this.#projects.get(valid.projectId);
+    if (
+      project === undefined ||
+      !versionReferenceEquals(project.projectRevisionRef, sourceVersion.projectRevisionRef)
+    ) {
+      return failure(
+        moduleError({
+          code: "STALE_VERSION",
+          causalRunId: valid.queryId,
+          targetRef: targetRef("source-version", valid.sourceVersionRef),
+        }),
+      );
+    }
+    const input: SourceProcessingInputV1 = SourceProcessingInputV1Schema.parse({
+      sourceVersionRef: sourceVersion.sourceVersionRef,
+      projectId: sourceVersion.projectId,
+      sourceId: sourceVersion.sourceId,
+      sourceItemId: sourceVersion.sourceItemId,
+      projectRevisionRef: sourceVersion.projectRevisionRef,
+      spatialScopeRefs: sourceVersion.spatialScopeRefs,
+      sourceArtifactRef: sourceVersion.sourceArtifactRef,
+      metadataArtifactRef: sourceVersion.metadataArtifactRef,
+      sourceAccessGrantRef: sourceVersion.sourceAccessGrantRef,
+      applicabilityMetadataSnapshotRef: sourceVersion.applicabilityMetadataSnapshotRef,
+    });
+    return succeeded({ kind: "source-processing-input", input });
   }
 
   async createApplicabilitySnapshot(

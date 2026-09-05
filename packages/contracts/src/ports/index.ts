@@ -40,6 +40,13 @@ export type SourceVersionRefV1 = z.infer<typeof SourceVersionRefV1Schema>;
 export const SourceSegmentSetRefV1Schema = versionedRef("source-segment-set");
 export type SourceSegmentSetRefV1 = z.infer<typeof SourceSegmentSetRefV1Schema>;
 
+export const StructuredDocumentConversionRefV1Schema = versionedRef(
+  "structured-document-conversion",
+);
+export type StructuredDocumentConversionRefV1 = z.infer<
+  typeof StructuredDocumentConversionRefV1Schema
+>;
+
 export const MonitoringSeriesRefV1Schema = versionedRef("monitoring-series");
 export type MonitoringSeriesRefV1 = z.infer<typeof MonitoringSeriesRefV1Schema>;
 
@@ -372,6 +379,7 @@ export const ContractReferenceV1Schema = z.discriminatedUnion("kind", [
   SourceDeliveryRefV1Schema,
   SourceVersionRefV1Schema,
   SourceSegmentSetRefV1Schema,
+  StructuredDocumentConversionRefV1Schema,
   MonitoringSeriesRefV1Schema,
   MonitoringBatchRefV1Schema,
   MonitoringSnapshotRefV1Schema,
@@ -985,6 +993,232 @@ export const EngineeringDataQueryV1Schema = z.discriminatedUnion("kind", [
   ),
 ]);
 export type EngineeringDataQueryV1 = z.infer<typeof EngineeringDataQueryV1Schema>;
+
+export const STRUCTURED_DOCUMENT_CONVERSION_SCHEMA_VERSION_V1 = "1" as const;
+export const StructuredDocumentInputV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("docx") }),
+  z.strictObject({ kind: z.literal("text-pdf") }),
+  z.strictObject({ kind: z.literal("xlsx") }),
+  z.strictObject({ kind: z.literal("csv") }),
+  z.strictObject({ kind: z.literal("ocr-layout") }),
+]);
+export type StructuredDocumentInputV1 = z.infer<typeof StructuredDocumentInputV1Schema>;
+export const StructuredDocumentConversionInputV1Schema = StructuredDocumentInputV1Schema;
+export type StructuredDocumentConversionInputV1 = StructuredDocumentInputV1;
+
+const conversionMediaType = z.string().trim().min(1).max(200);
+const conversionCommandBase = {
+  schemaVersion: z.literal(STRUCTURED_DOCUMENT_CONVERSION_SCHEMA_VERSION_V1),
+  conversionId: IdentifierSchema,
+  idempotencyKey: IdentifierSchema,
+  issuedAt: IsoDateTimeSchema,
+  deadlineAt: IsoDateTimeSchema,
+  projectId: IdentifierSchema,
+  actorId: IdentifierSchema,
+  authorization: AuthorizationContextV1Schema,
+  sourceVersionRef: SourceVersionRefV1Schema,
+  sourceArtifactRef: ContentArtifactRefV1Schema,
+  mediaType: conversionMediaType,
+  input: StructuredDocumentInputV1Schema,
+  conversionPolicyRef: VersionReferenceSchema,
+  qualityPolicyRef: VersionReferenceSchema,
+  converterDeploymentRef: VersionReferenceSchema,
+};
+
+export const StructuredDocumentConversionCommandV1Schema = z
+  .strictObject(conversionCommandBase)
+  .superRefine((command, context) => {
+    if (Date.parse(command.deadlineAt) <= Date.parse(command.issuedAt)) {
+      context.addIssue({
+        code: "custom",
+        path: ["deadlineAt"],
+        message: "deadlineAt must be later than issuedAt",
+      });
+    }
+    if (command.projectId !== command.authorization.projectId) {
+      context.addIssue({
+        code: "custom",
+        path: ["projectId"],
+        message: "conversion project does not match authorization",
+      });
+    }
+    if (command.actorId !== command.authorization.actorId) {
+      context.addIssue({
+        code: "custom",
+        path: ["actorId"],
+        message: "conversion actor does not match authorization",
+      });
+    }
+    if (!command.authorization.grantedCapabilities.includes("engineering-data.write")) {
+      context.addIssue({
+        code: "custom",
+        path: ["authorization", "grantedCapabilities"],
+        message: "structured conversion requires engineering-data.write",
+      });
+    }
+  });
+export type StructuredDocumentConversionCommandV1 = z.infer<
+  typeof StructuredDocumentConversionCommandV1Schema
+>;
+export const StructuredDocumentConversionRequestV1Schema =
+  StructuredDocumentConversionCommandV1Schema;
+export type StructuredDocumentConversionRequestV1 = StructuredDocumentConversionCommandV1;
+
+export const StructuredDocumentConversionQueryV1Schema = z
+  .strictObject({
+    schemaVersion: z.literal(STRUCTURED_DOCUMENT_CONVERSION_SCHEMA_VERSION_V1),
+    queryId: IdentifierSchema,
+    projectId: IdentifierSchema,
+    actorId: IdentifierSchema,
+    requestedAt: IsoDateTimeSchema,
+    authorization: AuthorizationContextV1Schema,
+    conversionRef: StructuredDocumentConversionRefV1Schema,
+  })
+  .superRefine((query, context) => {
+    if (query.projectId !== query.authorization.projectId) {
+      context.addIssue({
+        code: "custom",
+        path: ["projectId"],
+        message: "conversion query project does not match authorization",
+      });
+    }
+    if (query.actorId !== query.authorization.actorId) {
+      context.addIssue({
+        code: "custom",
+        path: ["actorId"],
+        message: "conversion query actor does not match authorization",
+      });
+    }
+    if (!query.authorization.grantedCapabilities.includes("engineering-data.read")) {
+      context.addIssue({
+        code: "custom",
+        path: ["authorization", "grantedCapabilities"],
+        message: "structured conversion query requires engineering-data.read",
+      });
+    }
+  });
+export type StructuredDocumentConversionQueryV1 = z.infer<
+  typeof StructuredDocumentConversionQueryV1Schema
+>;
+
+export const StructuredDocumentConversionStatisticsV1Schema = z.strictObject({
+  inputBytes: z.number().int().nonnegative().safe(),
+  outputBytes: z.number().int().nonnegative().safe(),
+  textBlockCount: z.number().int().nonnegative().safe(),
+  sourceSegmentCount: z.number().int().nonnegative().safe(),
+  pageCount: z.number().int().nonnegative().safe(),
+  tableCount: z.number().int().nonnegative().safe(),
+  cellCount: z.number().int().nonnegative().safe(),
+  durationMs: z.number().int().nonnegative().safe(),
+  limitCode: IdentifierSchema.optional(),
+});
+export type StructuredDocumentConversionStatisticsV1 = z.infer<
+  typeof StructuredDocumentConversionStatisticsV1Schema
+>;
+
+export const StructuredDocumentConversionStatusV1Schema = z.enum(["succeeded", "failed"]);
+export type StructuredDocumentConversionStatusV1 = z.infer<
+  typeof StructuredDocumentConversionStatusV1Schema
+>;
+
+export const StructuredDocumentConversionRecordV1Schema = z
+  .strictObject({
+    schemaVersion: z.literal(STRUCTURED_DOCUMENT_CONVERSION_SCHEMA_VERSION_V1),
+    conversionRef: StructuredDocumentConversionRefV1Schema,
+    projectId: IdentifierSchema,
+    sourceVersionRef: SourceVersionRefV1Schema,
+    sourceArtifactRef: ContentArtifactRefV1Schema,
+    input: StructuredDocumentInputV1Schema,
+    mediaType: conversionMediaType,
+    conversionPolicyRef: VersionReferenceSchema,
+    qualityPolicyRef: VersionReferenceSchema,
+    converterDeploymentRef: VersionReferenceSchema,
+    status: StructuredDocumentConversionStatusV1Schema,
+    statistics: StructuredDocumentConversionStatisticsV1Schema,
+    jsonLdArtifactRef: ContentArtifactRefV1Schema.optional(),
+    sourceSegmentSetRef: SourceSegmentSetRefV1Schema.optional(),
+    diagnosticRef: DiagnosticArtifactRefV1Schema.optional(),
+    authorizationPolicyRef: VersionReferenceSchema,
+    commandId: IdentifierSchema,
+    idempotencyKey: IdentifierSchema,
+    actorId: IdentifierSchema,
+    startedAt: IsoDateTimeSchema,
+    completedAt: IsoDateTimeSchema,
+    auditTrailRef: AuditTrailRefV1Schema,
+  })
+  .superRefine((record, context) => {
+    if (record.status === "succeeded") {
+      if (record.jsonLdArtifactRef === undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["jsonLdArtifactRef"],
+          message: "successful conversion requires a JSON-LD artifact",
+        });
+      }
+      if (record.sourceSegmentSetRef === undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["sourceSegmentSetRef"],
+          message: "successful conversion requires a source segment set",
+        });
+      }
+      if (record.diagnosticRef !== undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["diagnosticRef"],
+          message: "successful conversion cannot have a diagnostic artifact",
+        });
+      }
+    } else if (record.diagnosticRef === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["diagnosticRef"],
+        message: "failed conversion requires a diagnostic artifact",
+      });
+    }
+  });
+export type StructuredDocumentConversionRecordV1 = z.infer<
+  typeof StructuredDocumentConversionRecordV1Schema
+>;
+
+export const StructuredDocumentConversionSuccessV1Schema = z.strictObject({
+  conversionRef: StructuredDocumentConversionRefV1Schema,
+  jsonLdArtifactRef: ContentArtifactRefV1Schema,
+  sourceSegmentSetRef: SourceSegmentSetRefV1Schema,
+});
+export type StructuredDocumentConversionSuccessV1 = z.infer<
+  typeof StructuredDocumentConversionSuccessV1Schema
+>;
+
+export const StructuredDocumentConversionResultV1Schema = moduleResultSchema(
+  StructuredDocumentConversionSuccessV1Schema,
+);
+export type StructuredDocumentConversionResultV1 = z.infer<
+  typeof StructuredDocumentConversionResultV1Schema
+>;
+
+export const StructuredDocumentConversionReadSuccessV1Schema = z.strictObject({
+  conversion: StructuredDocumentConversionRecordV1Schema,
+});
+export type StructuredDocumentConversionReadSuccessV1 = z.infer<
+  typeof StructuredDocumentConversionReadSuccessV1Schema
+>;
+
+export const StructuredDocumentConversionReadResultV1Schema = moduleResultSchema(
+  StructuredDocumentConversionReadSuccessV1Schema,
+);
+export type StructuredDocumentConversionReadResultV1 = z.infer<
+  typeof StructuredDocumentConversionReadResultV1Schema
+>;
+
+export interface StructuredDocumentConversionPortV1 {
+  convert(
+    request: StructuredDocumentConversionCommandV1,
+  ): Promise<StructuredDocumentConversionResultV1>;
+  read(
+    query: StructuredDocumentConversionQueryV1,
+  ): Promise<StructuredDocumentConversionReadResultV1>;
+}
 
 const KnowledgeDefinitionTypeValues = [
   "process-model",

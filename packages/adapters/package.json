@@ -54,6 +54,10 @@
     "./engineering-data/context-source": {
       "types": "./dist/engineering-data/context-source/index.d.ts",
       "import": "./dist/engineering-data/context-source/index.js"
+    },
+    "./engineering-data/document-conversion": {
+      "types": "./dist/engineering-data/document-conversion/index.d.ts",
+      "import": "./dist/engineering-data/document-conversion/index.js"
     }
   }
 }

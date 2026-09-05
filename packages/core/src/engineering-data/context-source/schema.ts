@@ -272,6 +272,20 @@ export const SourceVersionV1Schema = z
   });
 export type SourceVersionV1 = z.infer<typeof SourceVersionV1Schema>;
 
+export const SourceProcessingInputV1Schema = z.strictObject({
+  sourceVersionRef: SourceVersionRefV1Schema,
+  projectId: IdentifierSchema,
+  sourceId: component,
+  sourceItemId: IdentifierSchema,
+  projectRevisionRef: ProjectRevisionRefV1Schema,
+  spatialScopeRefs: SpatialScopeRefSetV1Schema,
+  sourceArtifactRef: ContentArtifactRefV1Schema,
+  metadataArtifactRef: ContentArtifactRefV1Schema,
+  sourceAccessGrantRef: SourceAccessGrantRefV1Schema,
+  applicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
+});
+export type SourceProcessingInputV1 = z.infer<typeof SourceProcessingInputV1Schema>;
+
 export const SegmentIndexRangeV1Schema = z
   .strictObject({ start: z.number().int().nonnegative(), end: z.number().int().nonnegative() })
   .superRefine((value, context) => {
@@ -466,6 +480,20 @@ export type CreateApplicabilitySnapshotCommandV1 = z.infer<
   typeof CreateApplicabilitySnapshotCommandV1Schema
 >;
 
+export const ResolveSourceProcessingInputQueryV1Schema = z.strictObject({
+  queryId: IdentifierSchema,
+  projectId: IdentifierSchema,
+  actorId: IdentifierSchema,
+  requestedAt: IsoDateTimeSchema,
+  authorization: AuthorizationContextV1Schema,
+  sourceVersionRef: SourceVersionRefV1Schema,
+});
+export type ResolveSourceProcessingInputQueryV1 = z.infer<
+  typeof ResolveSourceProcessingInputQueryV1Schema
+>;
+export const SourceProcessingInputQueryV1Schema = ResolveSourceProcessingInputQueryV1Schema;
+export type SourceProcessingInputQueryV1 = ResolveSourceProcessingInputQueryV1;
+
 export const ContextSourceSuccessV1Schema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("project-revision"),
@@ -476,6 +504,10 @@ export const ContextSourceSuccessV1Schema = z.discriminatedUnion("kind", [
     revision: SpatialBusinessRevisionV1Schema,
   }),
   z.strictObject({ kind: z.literal("source-segment-set"), segmentSet: SourceSegmentSetV1Schema }),
+  z.strictObject({
+    kind: z.literal("source-processing-input"),
+    input: SourceProcessingInputV1Schema,
+  }),
   z.strictObject({
     kind: z.literal("applicability-snapshot"),
     snapshot: ApplicabilityMetadataSnapshotV1Schema,

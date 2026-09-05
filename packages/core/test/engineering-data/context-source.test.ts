@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   EngineeringContextSourceService,
   EngineeringContextRevisionCommandV1Schema,
+  ResolveSourceProcessingInputQueryV1Schema,
   SourceSegmentV1Schema,
   SourceVersionV1Schema,
   makeSourceSegmentId,
@@ -166,6 +167,104 @@ describe("engineering context and source registry core", () => {
           },
         },
       },
+    });
+  });
+
+  it("resolves only a ready, current source version for authorized processing", async () => {
+    const service = new EngineeringContextSourceService();
+    const project = await service.reviseContext(projectCommand());
+    if (project.kind !== "succeeded" || project.result.kind !== "project-revision")
+      throw new Error("project setup failed");
+    const sourceVersion = SourceVersionV1Schema.parse({
+      sourceVersionRef: {
+        kind: "source-version",
+        reference: { entityId: "source_1", versionId: "v1" },
+      },
+      projectId,
+      sourceId: "source_1",
+      sourceItemId: "item_1",
+      sourceDeliveryRef: {
+        kind: "source-delivery",
+        reference: { entityId: "delivery_1", versionId: "v1" },
+      },
+      projectRevisionRef: project.result.revision.projectRevisionRef,
+      spatialScopeRefs: [scopeRef],
+      sourceArtifactRef: {
+        kind: "content-artifact",
+        reference: { entityId: "content_1", versionId: `sha256:${"a".repeat(64)}` },
+      },
+      metadataArtifactRef: {
+        kind: "content-artifact",
+        reference: { entityId: "metadata_1", versionId: `sha256:${"b".repeat(64)}` },
+      },
+      sourceAccessGrantRef: {
+        kind: "source-access-grant",
+        reference: { entityId: "grant_1", versionId: "v1" },
+      },
+      accessStatus: "ready",
+      applicabilityMetadataSnapshotRef: {
+        kind: "applicability-metadata-snapshot",
+        reference: { entityId: "snapshot_1", versionId: "v1" },
+      },
+      recordedAt: "2030-01-01T00:00:00.000Z",
+      audit: { actorId: "account-1", action: "source", recordedAt: "2030-01-01T00:00:00.000Z" },
+    });
+    const seeded = new EngineeringContextSourceService({
+      projects: [project.result.revision],
+      sourceVersions: [sourceVersion],
+    });
+    const query = ResolveSourceProcessingInputQueryV1Schema.parse({
+      queryId: "source-processing-input-1",
+      projectId,
+      actorId: "account-1",
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      authorization: {
+        ...authorization,
+        grantedCapabilities: ["engineering-data.read" as const],
+        sourceAccessGrantRefs: [sourceVersion.sourceAccessGrantRef!],
+      },
+      sourceVersionRef: sourceVersion.sourceVersionRef,
+    });
+    const resolved = await seeded.resolveSourceProcessingInput(query);
+    expect(resolved).toMatchObject({
+      kind: "succeeded",
+      result: {
+        kind: "source-processing-input",
+        input: {
+          sourceVersionRef: sourceVersion.sourceVersionRef,
+          sourceArtifactRef: sourceVersion.sourceArtifactRef,
+          metadataArtifactRef: sourceVersion.metadataArtifactRef,
+        },
+      },
+    });
+    expect(
+      await seeded.resolveSourceProcessingInput({
+        ...query,
+        queryId: "source-processing-input-no-body",
+        authorization: {
+          ...query.authorization,
+          grantedCapabilities: ["engineering-data.freeze" as const],
+        },
+      }),
+    ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+
+    const advanced = await service.reviseContext(
+      projectCommand({
+        commandId: "project-2",
+        idempotencyKey: "project-2",
+        expectedVersion: project.result.revision.projectRevisionRef.reference,
+        name: "示例工程二期",
+      }),
+    );
+    if (advanced.kind !== "succeeded" || advanced.result.kind !== "project-revision")
+      throw new Error("project revision setup failed");
+    const stale = new EngineeringContextSourceService({
+      projects: [advanced.result.revision],
+      sourceVersions: [sourceVersion],
+    });
+    expect(await stale.resolveSourceProcessingInput(query)).toMatchObject({
+      kind: "failed",
+      error: { code: "STALE_VERSION" },
     });
   });
 

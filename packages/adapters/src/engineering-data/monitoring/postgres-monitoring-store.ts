@@ -329,6 +329,16 @@ const nowIso = (clock: () => Date): string => {
   return value.toISOString();
 };
 
+const databaseClock = async (db: MonitoringTransaction): Promise<string> => {
+  const result = await sql<{
+    recorded_at: TimestampColumn;
+  }>`SELECT clock_timestamp() AS recorded_at`.execute(db);
+  const recordedAt = result.rows[0]?.recorded_at;
+  if (recordedAt === undefined)
+    throw makePersistenceError("TRANSACTION_FAILED", "monitoring.clock");
+  return asIso(recordedAt);
+};
+
 const sameVersion = (
   left: { entityId: string; versionId: string },
   right: { entityId: string; versionId: string },
@@ -571,6 +581,11 @@ interface SampleArtifactReadV1 {
   readonly fingerprint: string;
 }
 
+interface MonitoringSnapshotSourceRowsV1 {
+  readonly batches: readonly MonitoringBatchRow[];
+  readonly samples: readonly MonitoringSampleVersionRow[];
+}
+
 const success = (
   result: import("@riskflow/core/engineering-data/monitoring").MonitoringSuccessV1,
 ): MonitoringResultV1 => ({
@@ -734,58 +749,83 @@ export class PostgresMonitoringStoreV1 {
     }
     const valid = parsed.data;
     try {
-      const revision = await this.#readSeriesRevision(
-        valid.projectId,
-        valid.payload.monitoringSeriesRef,
-      );
-      if (revision === undefined)
-        return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", valid.commandId) };
-      const policy = await this.#readPolicy(valid.projectId, valid.payload.availabilityPolicyRef);
-      if (
-        policy === undefined ||
-        !sameVersion(policy.monitoringSeriesRef.reference, revision.monitoringSeriesRef.reference)
-      ) {
-        return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", valid.commandId) };
-      }
-      const freezeRecordedAt = nowIso(this.#now);
-      const sourceRows = await this.#db
-        .selectFrom("business.monitoring_sample_versions")
-        .selectAll()
-        .where("project_id", "=", valid.projectId)
-        .where(
-          "series_revision_id",
-          "=",
-          `${revision.monitoringSeriesRef.reference.entityId}:${revision.monitoringSeriesRef.reference.versionId}`,
-        )
-        .where(
-          "sampled_at",
-          ">",
-          new Date(Date.parse(valid.payload.cutoff) - policy.windowDurationMs),
-        )
-        .where("sampled_at", "<=", valid.payload.cutoff)
-        .where("recorded_at", "<=", freezeRecordedAt)
-        .execute();
-      const sourceRowsByTime = new Map<number, MonitoringSampleVersionRow[]>();
-      for (const row of sourceRows) {
-        const time = new Date(row.sampled_at as Date | string).getTime();
-        const rows = sourceRowsByTime.get(time) ?? [];
-        rows.push(row);
-        sourceRowsByTime.set(time, rows);
-      }
-      await this.#verify(
-        valid,
-        "engineering-data.freeze",
-        [revision.spatialScopeRef],
-        sourceVersionRefsFromJson(
-          [...sourceRowsByTime.values()]
-            .map((rows) => latestSample(rows))
-            .filter((row): row is MonitoringSampleVersionRow => row !== undefined)
-            .map((row) => row.source_version_ref),
-        ),
-      );
       const atomic = atomicCommand(valid, "engineering-data.monitoring-snapshot.v1", valid);
-      const receipt = await this.#transactionUnit.execute(atomic, async (context) =>
-        this.#freezeInTransaction(context, valid, revision, policy, freezeRecordedAt),
+      const receipt = await this.#transactionUnit.execute(
+        atomic,
+        async (context) => {
+          const db = transaction(context);
+          const freezeRecordedAt = await databaseClock(db);
+          const revision = await this.#readSeriesRevisionFromDb(
+            db,
+            valid.projectId,
+            valid.payload.monitoringSeriesRef,
+          );
+          if (revision === undefined)
+            throw domainFailure(moduleError("AUTHORIZATION_DENIED", valid.commandId));
+          const policy = await this.#readPolicyFromDb(
+            db,
+            valid.projectId,
+            valid.payload.availabilityPolicyRef,
+          );
+          if (
+            policy === undefined ||
+            !sameVersion(
+              policy.monitoringSeriesRef.reference,
+              revision.monitoringSeriesRef.reference,
+            )
+          ) {
+            throw domainFailure(moduleError("AUTHORIZATION_DENIED", valid.commandId));
+          }
+          const sourceRows = await this.#selectSnapshotSourceRows(
+            db,
+            valid.projectId,
+            revision,
+            policy,
+            valid.payload.cutoff,
+            freezeRecordedAt,
+          );
+          const sourceRowsByTime = new Map<number, MonitoringSampleVersionRow[]>();
+          for (const row of sourceRows.samples) {
+            const time = new Date(row.sampled_at as Date | string).getTime();
+            const rows = sourceRowsByTime.get(time) ?? [];
+            rows.push(row);
+            sourceRowsByTime.set(time, rows);
+          }
+          try {
+            await this.#verify(
+              valid,
+              "engineering-data.freeze",
+              [revision.spatialScopeRef],
+              sourceVersionRefsFromJson(
+                [...sourceRowsByTime.values()]
+                  .map((rows) => latestSample(rows))
+                  .filter((row): row is MonitoringSampleVersionRow => row !== undefined)
+                  .map((row) => row.source_version_ref),
+              ),
+            );
+          } catch (error) {
+            if (error instanceof AccessServiceError) {
+              throw domainFailure(
+                this.#mapError(
+                  error,
+                  valid.commandId,
+                  "monitoring.freeze",
+                  "engineering-data.freeze",
+                ),
+              );
+            }
+            throw error;
+          }
+          return this.#freezeInTransaction(
+            context,
+            valid,
+            revision,
+            policy,
+            freezeRecordedAt,
+            sourceRows,
+          );
+        },
+        { isolationLevel: "repeatable read" },
       );
       const snapshot = await this.#readSnapshot(valid.projectId, receipt.resultRef);
       return snapshot === undefined
@@ -886,6 +926,11 @@ export class PostgresMonitoringStoreV1 {
           kind: "failed",
           error: moduleError("AUTHORIZATION_DENIED", parsed.data.queryResultRef.reference.entityId),
         };
+      if (row.project_id !== parsed.data.projectId)
+        return {
+          kind: "failed",
+          error: moduleError("AUTHORIZATION_DENIED", parsed.data.queryResultRef.reference.entityId),
+        };
       const snapshot = await this.#readSnapshot(
         row.project_id,
         row.monitoring_snapshot_ref as MonitoringSnapshotRefV1,
@@ -895,6 +940,17 @@ export class PostgresMonitoringStoreV1 {
           kind: "failed",
           error: moduleError("AUTHORIZATION_DENIED", parsed.data.queryResultRef.reference.entityId),
         };
+      await this.#verify(
+        { ...parsed.data, commandId: parsed.data.invocationId },
+        "engineering-data.read",
+        snapshot.authorizationSnapshot.spatialScopeRefs,
+        sourceVersionRefsFromJson(
+          snapshot.evidenceReferences.map((evidence) => ({
+            kind: "source-version",
+            reference: evidence.sourceVersion,
+          })),
+        ),
+      );
       const result = MonitoringSnapshotQueryV1Schema.parse({
         queryResultRef: parsed.data.queryResultRef,
         monitoringSnapshotRef: snapshot.monitoringSnapshotRef,
@@ -1044,13 +1100,16 @@ export class PostgresMonitoringStoreV1 {
         previous_revision_id: previous?.revision_id ?? null,
       } satisfies InsertObject<MonitoringDatabase, "business.monitoring_series_revisions">)
       .execute();
-    const updated = await db
+    const pointerUpdate = db
       .updateTable("business.monitoring_series")
       .set({ current_revision_id: revisionId })
       .where("project_id", "=", command.projectId)
-      .where("series_id", "=", command.monitoringSeriesRef.reference.entityId)
-      .where("current_revision_id", "is", previous?.revision_id ?? null)
-      .executeTakeFirst();
+      .where("series_id", "=", command.monitoringSeriesRef.reference.entityId);
+    const updated = await (
+      previous === undefined
+        ? pointerUpdate.where("current_revision_id", "is", null)
+        : pointerUpdate.where("current_revision_id", "=", previous.revision_id)
+    ).executeTakeFirst();
     if (Number(updated.numUpdatedRows) !== 1) {
       throw domainFailure(
         moduleError("STALE_VERSION", command.commandId, command.monitoringSeriesRef),
@@ -1252,6 +1311,42 @@ export class PostgresMonitoringStoreV1 {
     ) {
       throw domainFailure(moduleError("STALE_VERSION", command.commandId, priorRef));
     }
+    const priorBatchIds = new Set<string>();
+    let priorCursor = prior;
+    while (priorCursor !== undefined) {
+      if (priorBatchIds.has(priorCursor.batch_id)) {
+        throw domainFailure(moduleError("BUSINESS_BLOCKED", command.commandId, priorRef));
+      }
+      priorBatchIds.add(priorCursor.batch_id);
+      if (priorCursor.prior_batch_id === null) break;
+      priorCursor = await db
+        .selectFrom("business.monitoring_batches")
+        .selectAll()
+        .where("project_id", "=", command.projectId)
+        .where("batch_id", "=", priorCursor.prior_batch_id)
+        .where("series_id", "=", revision.monitoringSeriesRef.reference.entityId)
+        .executeTakeFirst();
+      if (priorCursor === undefined) {
+        throw domainFailure(moduleError("STALE_VERSION", command.commandId, priorRef));
+      }
+    }
+    const priorSampleTimes = new Set(
+      priorBatchIds.size === 0
+        ? []
+        : (
+            await db
+              .selectFrom("business.monitoring_sample_versions")
+              .select("sampled_at")
+              .where("project_id", "=", command.projectId)
+              .where(
+                "series_revision_id",
+                "=",
+                `${revision.monitoringSeriesRef.reference.entityId}:${revision.monitoringSeriesRef.reference.versionId}`,
+              )
+              .where("batch_id", "in", [...priorBatchIds])
+              .execute()
+          ).map((row) => new Date(row.sampled_at as Date | string).getTime()),
+    );
     const sampledAt = artifact.samples.map((sample) => Date.parse(sample.sampledAt));
     const existingSamples =
       sampledAt.length === 0
@@ -1291,7 +1386,9 @@ export class PostgresMonitoringStoreV1 {
       const current = latestSample(old);
       if (
         command.payload.relation.kind === "correction" &&
-        (current === undefined || current.canonical_value === sample.canonicalValue)
+        (current === undefined ||
+          current.canonical_value === sample.canonicalValue ||
+          !priorSampleTimes.has(Date.parse(sample.sampledAt)))
       ) {
         throw domainFailure(
           moduleError(
@@ -1335,7 +1432,7 @@ export class PostgresMonitoringStoreV1 {
     }
     const batchId = `monitoring-batch:${revision.monitoringSeriesRef.reference.entityId}:${artifact.fingerprint.slice(0, 32)}`;
     const batchRef = ref("monitoring-batch", batchId, "1") as MonitoringBatchRefV1;
-    const recordedAt = nowIso(this.#now);
+    const recordedAt = await databaseClock(db);
     const batch = MonitoringBatchV1Schema.parse({
       monitoringBatchRef: batchRef,
       projectId: command.projectId,
@@ -1447,56 +1544,30 @@ export class PostgresMonitoringStoreV1 {
     revision: MonitoringSeriesRevisionV1,
     policy: MonitoringAvailabilityPolicyV1,
     recordedAt: string,
+    sourceRows: MonitoringSnapshotSourceRowsV1,
   ): Promise<AtomicCommitV1> {
     const db = transaction(context);
     const seriesRevisionId = `${revision.monitoringSeriesRef.reference.entityId}:${revision.monitoringSeriesRef.reference.versionId}`;
     const cutoffMillis = Date.parse(command.payload.cutoff);
     const fromMillis = cutoffMillis - policy.windowDurationMs;
-    const batches = await db
-      .selectFrom("business.monitoring_batches")
-      .selectAll()
-      .where("project_id", "=", command.projectId)
-      .where("series_revision_id", "=", seriesRevisionId)
-      .where("recorded_at", "<=", recordedAt)
-      .execute();
+    const batches = sourceRows.batches;
     const batchById = new Map(batches.map((batch) => [batch.batch_id, batch]));
-    const samples =
-      batches.length === 0
-        ? []
-        : await db
-            .selectFrom("business.monitoring_sample_versions")
-            .selectAll()
-            .where("project_id", "=", command.projectId)
-            .where("series_revision_id", "=", seriesRevisionId)
-            .where("sampled_at", ">", new Date(fromMillis))
-            .where("sampled_at", "<=", new Date(cutoffMillis))
-            .where(
-              "batch_id",
-              "in",
-              batches.map((batch) => batch.batch_id),
-            )
-            .where("recorded_at", "<=", recordedAt)
-            .execute();
-    const byTime = new Map<number, MonitoringSampleVersionRow>();
+    const byTime = new Map<number, MonitoringSampleVersionRow[]>();
+    const samples = sourceRows.samples;
     for (const sample of samples) {
       const time = new Date(sample.sampled_at as Date | string).getTime();
-      const previous = byTime.get(time);
-      if (
-        previous === undefined ||
-        new Date(sample.recorded_at as Date | string).getTime() >
-          new Date(previous.recorded_at as Date | string).getTime() ||
-        (new Date(sample.recorded_at as Date | string).getTime() ===
-          new Date(previous.recorded_at as Date | string).getTime() &&
-          sample.sample_version_id > previous.sample_version_id)
-      ) {
-        byTime.set(time, sample);
-      }
+      const rows = byTime.get(time) ?? [];
+      rows.push(sample);
+      byTime.set(time, rows);
     }
-    const selected = [...byTime.values()].sort(
-      (left, right) =>
-        new Date(left.sampled_at as Date | string).getTime() -
-        new Date(right.sampled_at as Date | string).getTime(),
-    );
+    const selected = [...byTime.values()]
+      .map((rows) => latestSample(rows))
+      .filter((sample): sample is MonitoringSampleVersionRow => sample !== undefined)
+      .sort(
+        (left, right) =>
+          new Date(left.sampled_at as Date | string).getTime() -
+          new Date(right.sampled_at as Date | string).getTime(),
+      );
     const featureSamples: MonitoringFeatureSampleV1[] = selected.map((sample) => ({
       sampledAt: asIso(sample.sampled_at),
       value: sample.value,
@@ -1668,6 +1739,44 @@ export class PostgresMonitoringStoreV1 {
     );
   }
 
+  async #selectSnapshotSourceRows(
+    db: MonitoringTransaction,
+    projectId: string,
+    revision: MonitoringSeriesRevisionV1,
+    policy: MonitoringAvailabilityPolicyV1,
+    cutoff: string,
+    recordedAt: string,
+  ): Promise<MonitoringSnapshotSourceRowsV1> {
+    const seriesRevisionId = `${revision.monitoringSeriesRef.reference.entityId}:${revision.monitoringSeriesRef.reference.versionId}`;
+    const cutoffMillis = Date.parse(cutoff);
+    const fromMillis = cutoffMillis - policy.windowDurationMs;
+    const batches = await db
+      .selectFrom("business.monitoring_batches")
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where("series_revision_id", "=", seriesRevisionId)
+      .where("recorded_at", "<=", recordedAt)
+      .execute();
+    const samples =
+      batches.length === 0
+        ? []
+        : await db
+            .selectFrom("business.monitoring_sample_versions")
+            .selectAll()
+            .where("project_id", "=", projectId)
+            .where("series_revision_id", "=", seriesRevisionId)
+            .where("sampled_at", ">", new Date(fromMillis))
+            .where("sampled_at", "<=", new Date(cutoffMillis))
+            .where(
+              "batch_id",
+              "in",
+              batches.map((batch) => batch.batch_id),
+            )
+            .where("recorded_at", "<=", recordedAt)
+            .execute();
+    return { batches, samples };
+  }
+
   async #registerQueryInTransaction(
     context: TransactionContextV1,
     query: Extract<EngineeringDataQueryV1, { kind: "monitoring-snapshot" }>,
@@ -1834,8 +1943,16 @@ export class PostgresMonitoringStoreV1 {
     projectId: string,
     seriesRef: MonitoringSeriesRefV1 | ContractReferenceV1,
   ): Promise<MonitoringSeriesRevisionV1 | undefined> {
+    return this.#readSeriesRevisionFromDb(this.#db, projectId, seriesRef);
+  }
+
+  async #readSeriesRevisionFromDb(
+    db: Kysely<MonitoringDatabase>,
+    projectId: string,
+    seriesRef: MonitoringSeriesRefV1 | ContractReferenceV1,
+  ): Promise<MonitoringSeriesRevisionV1 | undefined> {
     if (seriesRef.kind !== "monitoring-series") return undefined;
-    const row = await this.#db
+    const row = await db
       .selectFrom("business.monitoring_series_revisions")
       .selectAll()
       .where("project_id", "=", projectId)
@@ -1877,7 +1994,15 @@ export class PostgresMonitoringStoreV1 {
     projectId: string,
     policyRef: VersionReference,
   ): Promise<MonitoringAvailabilityPolicyV1 | undefined> {
-    const row = await this.#db
+    return this.#readPolicyFromDb(this.#db, projectId, policyRef);
+  }
+
+  async #readPolicyFromDb(
+    db: Kysely<MonitoringDatabase>,
+    projectId: string,
+    policyRef: VersionReference,
+  ): Promise<MonitoringAvailabilityPolicyV1 | undefined> {
+    const row = await db
       .selectFrom("business.monitoring_availability_policies")
       .selectAll()
       .where("project_id", "=", projectId)
@@ -2089,6 +2214,8 @@ export class PostgresMonitoringStoreV1 {
     if (monitoringError !== undefined) return monitoringError as ModuleErrorV1;
     if (error instanceof AccessServiceError) {
       if (error.details.code === "AUTHORIZATION_DENIED")
+        return moduleError("AUTHORIZATION_DENIED", causalRunId, undefined, requiredCapability);
+      if (error.details.code === "SESSION_EXPIRED" || error.details.code === "SESSION_REVOKED")
         return moduleError("AUTHORIZATION_DENIED", causalRunId, undefined, requiredCapability);
       if (error.details.code === "STALE_ACCESS_VERSION")
         return moduleError("STALE_VERSION", causalRunId, error.details.targetRef);

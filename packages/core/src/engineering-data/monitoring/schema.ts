@@ -254,6 +254,27 @@ export const MonitoringAvailabilityPolicyV1Schema = z
     audit: AuditInfoSchema,
   })
   .superRefine((value, context) => {
+    if (value.slopeWindowSize < 2) {
+      context.addIssue({
+        code: "custom",
+        path: ["slopeWindowSize"],
+        message: "slope window requires at least two points",
+      });
+    }
+    if (value.accelerationWindowSize < 3) {
+      context.addIssue({
+        code: "custom",
+        path: ["accelerationWindowSize"],
+        message: "acceleration window requires at least three points",
+      });
+    }
+    if (value.frequencyWindowSize < 2) {
+      context.addIssue({
+        code: "custom",
+        path: ["frequencyWindowSize"],
+        message: "frequency window requires at least two points",
+      });
+    }
     if (value.anomalyScaleFloor <= 0) {
       context.addIssue({
         code: "custom",
@@ -535,6 +556,11 @@ export type RegisterMonitoringAvailabilityPolicyCommandV1 = z.infer<
 
 export const ResolveMonitoringSnapshotQueryV1Schema = z.strictObject({
   queryResultRef: QueryResultRefV1Schema,
+  invocationId: IdentifierSchema,
+  projectId: IdentifierSchema,
+  actorId: IdentifierSchema,
+  requestedAt: IsoDateTimeSchema,
+  authorization: AuthorizationContextV1Schema,
 });
 export type ResolveMonitoringSnapshotQueryV1 = z.infer<
   typeof ResolveMonitoringSnapshotQueryV1Schema

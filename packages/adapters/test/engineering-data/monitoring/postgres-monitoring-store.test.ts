@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { QueryResultRefV1 } from "@riskflow/contracts/ports";
 
 import { ArtifactPutCommandV1Schema } from "@riskflow/core/artifacts";
 import type {
@@ -29,6 +30,9 @@ describe("C14 PostgreSQL monitoring store", () => {
     kind: "source-segment-set";
     reference: { entityId: string; versionId: string };
   };
+  let managerSessionToken: string;
+  let queryResultRef: QueryResultRefV1;
+  let queryAuthorization: AuthorizationContextV1;
   let authorization: (
     id: string,
     branch:
@@ -85,6 +89,7 @@ describe("C14 PostgreSQL monitoring store", () => {
       sessionToken: managerLogin.sessionToken,
       newPassword: "c14-manager-password-changed",
     });
+    managerSessionToken = managerChanged.sessionToken;
     await fixture.access.administerProject({
       kind: "open-project",
       projectId,
@@ -457,6 +462,7 @@ describe("C14 PostgreSQL monitoring store", () => {
       "engineering-data.monitoring-snapshot-query",
       [sourceVersionRef],
     );
+    queryAuthorization = queryAuth;
     const query = await fixture.registry.read({
       queryId: "c14-query",
       projectId,
@@ -471,8 +477,14 @@ describe("C14 PostgreSQL monitoring store", () => {
       result: { queryResultRef: { kind: "query-result" } },
     });
     if (query.kind !== "succeeded") return;
+    queryResultRef = query.result.queryResultRef;
     const resolved = await fixture.monitoringStore.resolveSnapshotQuery({
       queryResultRef: query.result.queryResultRef,
+      invocationId: "c14-query",
+      projectId,
+      actorId: managerId,
+      requestedAt: now,
+      authorization: queryAuth,
     });
     expect(resolved).toMatchObject({
       kind: "succeeded",
@@ -487,5 +499,173 @@ describe("C14 PostgreSQL monitoring store", () => {
       "SELECT (SELECT count(*)::text FROM business.monitoring_batches) AS batches, (SELECT count(*)::text FROM business.monitoring_sample_versions) AS samples, (SELECT count(*)::text FROM business.monitoring_snapshots) AS snapshots, (SELECT count(*)::text FROM outbox.events WHERE event_type LIKE 'engineering.%') AS events",
     );
     expect(counts.rows[0]).toEqual({ batches: "1", samples: "5", snapshots: "1", events: "0" });
+  });
+
+  it("requires a correction predecessor to contain the corrected sample time", async () => {
+    const evidence = {
+      locator: { sourceSegmentId: `${sourceVersionRef.reference.entityId}-chapter_1-segment_1` },
+      sourceVersion: sourceVersionRef.reference,
+    };
+    const putSampleArtifact = async (suffix: string, second: number, value: number) => {
+      const artifactAuth = await authorization(
+        `c14-${suffix}-artifact`,
+        "engineering-data.register-monitoring-batch",
+        [sourceVersionRef],
+      );
+      const content = [
+        JSON.stringify({
+          schemaVersion: "1",
+          mediaType: "application/x-ndjson",
+          monitoringSeriesRef: {
+            kind: "monitoring-series",
+            reference: { entityId: "c14-series", versionId: "1" },
+          },
+          projectRevisionRef,
+          spatialScopeRef,
+          sourceVersionRef,
+          sourceSegmentSetRef,
+          productionStrategyRef: { entityId: "monitoring-production", versionId: "1" },
+          sampleCount: 1,
+        }),
+        JSON.stringify({
+          sourceSampleKey: `${suffix}-sample`,
+          sampledAt: `2030-01-01T00:00:${String(second).padStart(2, "0")}.000Z`,
+          value,
+          unit: "mm",
+          evidenceReferences: [evidence],
+        }),
+      ].join("\n");
+      return fixture.artifactStore.put(
+        ArtifactPutCommandV1Schema.parse({
+          schemaVersion: "1",
+          commandId: `c14-${suffix}-put`,
+          idempotencyKey: `c14-${suffix}-put`,
+          projectId,
+          actorId: managerId,
+          issuedAt: now,
+          authorization: artifactAuth,
+          requiredCapability: "engineering-data.write",
+          artifactId: `c14-${suffix}`,
+          artifactKind: "content",
+          purposeCode: "engineering-data.register-monitoring-batch",
+          mediaType: "application/x-ndjson",
+          parentArtifactRefs: [],
+          evidenceReferences: [evidence],
+          additionalSpatialScopeRefs: [],
+          additionalSourceAccessGrantRefs: [],
+        }),
+        (async function* () {
+          yield new TextEncoder().encode(content);
+        })(),
+      );
+    };
+
+    const predecessorArtifact = await putSampleArtifact("predecessor", 12, 24);
+    const predecessorAuth = await authorization(
+      "c14-predecessor",
+      "engineering-data.register-monitoring-batch",
+      [sourceVersionRef],
+    );
+    const predecessor = await fixture.registry.apply({
+      commandId: "c14-predecessor",
+      idempotencyKey: "c14-predecessor",
+      projectId,
+      actorId: managerId,
+      issuedAt: now,
+      authorization: predecessorAuth,
+      kind: "register-monitoring-batch",
+      payload: {
+        monitoringSeriesRef: {
+          kind: "monitoring-series",
+          reference: { entityId: "c14-series", versionId: "1" },
+        },
+        deliveryKey: "c14-predecessor",
+        sampleArtifactRef: predecessorArtifact.artifactRef,
+        window: { from: "2030-01-01T00:00:11.000Z", to: "2030-01-01T00:00:13.000Z" },
+        relation: { kind: "original" },
+      },
+    });
+    expect(predecessor.kind).toBe("succeeded");
+    if (predecessor.kind !== "succeeded") return;
+
+    const correctionArtifact = await putSampleArtifact("correction", 9, 999);
+    const correctionAuth = await authorization(
+      "c14-correction",
+      "engineering-data.register-monitoring-batch",
+      [sourceVersionRef],
+    );
+    const correction = await fixture.registry.apply({
+      commandId: "c14-correction",
+      idempotencyKey: "c14-correction",
+      projectId,
+      actorId: managerId,
+      issuedAt: now,
+      authorization: correctionAuth,
+      kind: "register-monitoring-batch",
+      payload: {
+        monitoringSeriesRef: {
+          kind: "monitoring-series",
+          reference: { entityId: "c14-series", versionId: "1" },
+        },
+        deliveryKey: "c14-correction",
+        sampleArtifactRef: correctionArtifact.artifactRef,
+        window: { from: "2030-01-01T00:00:08.000Z", to: "2030-01-01T00:00:10.000Z" },
+        relation: { kind: "correction", priorBatchRef: predecessor.result.monitoringBatchRef },
+      },
+    });
+    expect(correction).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+  });
+
+  it("rejects a database current pointer rollback", async () => {
+    const seriesAuth = await authorization(
+      "c14-series-v2",
+      "engineering-data.register-monitoring-batch",
+      [sourceVersionRef],
+    );
+    const revised = await fixture.monitoringStore.reviseSeries({
+      commandId: "c14-series-v2",
+      idempotencyKey: "c14-series-v2",
+      projectId,
+      actorId: managerId,
+      issuedAt: now,
+      authorization: seriesAuth,
+      monitoringSeriesRef: {
+        kind: "monitoring-series",
+        reference: { entityId: "c14-series", versionId: "2" },
+      },
+      expectedVersion: { entityId: "c14-series", versionId: "1" },
+      projectRevisionRef,
+      spatialScopeRef,
+      monitoringObject: "settlement sensor",
+      monitoringIndicator: "地表沉降",
+      parameterCode: "settlement-v2",
+      canonicalUnit: "mm",
+      unitConversions: [{ fromUnit: "cm", scale: 10, offset: 0 }],
+      effectivePeriod: { validFrom: now },
+    });
+    expect(revised.kind).toBe("succeeded");
+    await expect(
+      fixture.runtime.pool.query(
+        "UPDATE business.monitoring_series SET current_revision_id = $1 WHERE project_id = $2 AND series_id = $3",
+        ["c14-series:1", projectId, "c14-series"],
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+  });
+
+  it("rechecks current authorization before resolving a stored query", async () => {
+    await fixture.access.changePassword({
+      kind: "change-password",
+      sessionToken: managerSessionToken,
+      newPassword: "c14-manager-password-revoked",
+    });
+    const resolved = await fixture.monitoringStore.resolveSnapshotQuery({
+      queryResultRef,
+      invocationId: "c14-query",
+      projectId,
+      actorId: managerId,
+      requestedAt: now,
+      authorization: queryAuthorization,
+    });
+    expect(resolved).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
   });
 });

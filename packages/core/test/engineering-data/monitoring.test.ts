@@ -84,6 +84,16 @@ describe("C14 monitoring features", () => {
     );
   });
 
+  it.each([
+    ["slopeWindowSize", 1],
+    ["accelerationWindowSize", 2],
+    ["frequencyWindowSize", 1],
+  ] as const)("rejects an uncomputable %s", (field, value) => {
+    expect(
+      MonitoringAvailabilityPolicyV1Schema.safeParse({ ...policy, [field]: value }).success,
+    ).toBe(false);
+  });
+
   it("aligns with bounded interpolation and computes deterministic features", () => {
     const samples = Array.from({ length: 10 }, (_, index) => sampleAt(index + 1, (index + 1) * 2));
     const computed = computeMonitoringFeatures({

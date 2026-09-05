@@ -81,6 +81,46 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     });
 
   await sql`
+    CREATE OR REPLACE FUNCTION business.monitoring_series_current_revision_forward_only()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    AS $function$
+    DECLARE
+      previous_revision_no integer;
+      next_revision_no integer;
+    BEGIN
+      IF NEW.current_revision_id IS DISTINCT FROM OLD.current_revision_id
+         AND OLD.current_revision_id IS NOT NULL THEN
+        SELECT revision_no
+          INTO previous_revision_no
+          FROM business.monitoring_series_revisions
+         WHERE revision_id = OLD.current_revision_id
+           AND series_id = OLD.series_id;
+        SELECT revision_no
+          INTO next_revision_no
+          FROM business.monitoring_series_revisions
+         WHERE revision_id = NEW.current_revision_id
+           AND series_id = NEW.series_id;
+        IF previous_revision_no IS NULL
+           OR next_revision_no IS NULL
+           OR next_revision_no <= previous_revision_no THEN
+          RAISE EXCEPTION 'monitoring series current revision must move forward'
+            USING ERRCODE = 'check_violation';
+        END IF;
+      END IF;
+      RETURN NEW;
+    END;
+    $function$`.execute(db);
+  await sql`
+    DROP TRIGGER IF EXISTS monitoring_series_current_revision_forward_only_trigger
+      ON business.monitoring_series`.execute(db);
+  await sql`
+    CREATE TRIGGER monitoring_series_current_revision_forward_only_trigger
+      BEFORE UPDATE OF current_revision_id ON business.monitoring_series
+      FOR EACH ROW
+      EXECUTE FUNCTION business.monitoring_series_current_revision_forward_only()`.execute(db);
+
+  await sql`
     CREATE TABLE IF NOT EXISTS business.monitoring_batches (
       batch_id text PRIMARY KEY,
       version_id text NOT NULL,
@@ -284,5 +324,10 @@ export async function up(db: Kysely<unknown>): Promise<void> {
 export async function down(db: Kysely<unknown>): Promise<void> {
   await sql`REVOKE ALL PRIVILEGES ON TABLE ${sql.raw(tables.join(", "))}
     FROM PUBLIC, riskflow_app, riskflow_outbox_worker, riskflow_checkpointer`.execute(db);
+  await sql`DROP TRIGGER IF EXISTS monitoring_series_current_revision_forward_only_trigger
+    ON business.monitoring_series`.execute(db);
+  await sql`DROP FUNCTION IF EXISTS business.monitoring_series_current_revision_forward_only()`.execute(
+    db,
+  );
   for (const table of tables) await sql`DROP TABLE IF EXISTS ${sql.raw(table)} CASCADE`.execute(db);
 }

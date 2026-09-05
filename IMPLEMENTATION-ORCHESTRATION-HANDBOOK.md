@@ -6,14 +6,14 @@
 
 当前接管点：
 
-- `main` 已完成并归档 C00 `establish-openspec-engineering-baseline`。
-- `main` 已完成并归档 C01 `define-domain-contract-kernel`。
-- `main` 已完成并归档 C02 `define-module-interfaces-events-and-workflows`。
-- `main` 已完成并归档 C03 `deliver-postgresql-outbox-and-checkpoint-foundation`。
+- `main` 已完成并归档 C00–C10（C00 `establish-openspec-engineering-baseline`、C01 `define-domain-contract-kernel`、C02 `define-module-interfaces-events-and-workflows`、C03 `deliver-postgresql-outbox-and-checkpoint-foundation`、C04 `deliver-content-addressed-artifact-store`、C05 `deliver-llamacpp-model-gateway`、C06 `deliver-local-identity-and-project-authorization`、C07 `deliver-review-and-audit-runtime`、C08 `deliver-unified-bounded-agent-runtime`、C09 `deliver-http-command-query-and-sse-shell`、C10 `deliver-web-shell-and-interaction-primitives`）。
+- `openspec/changes/archive/` 共 14 项 = C00–C10 + 4 个辅助/修复 change（`configure-pnpm-build-script-policy`、`fix-postgresql-test-migration-loader-compatibility`、`deliver-structured-orchestration-status` 等）。
 - C01 主 spec 位于 `openspec/specs/domain/contract-kernel/spec.md`。
 - C02 主 spec 位于 `openspec/specs/domain/module-interfaces-events-workflows/spec.md`。
 - C03 主 spec 位于 `openspec/specs/platform/postgresql-outbox-checkpoint-foundation/spec.md`。
-- G0 已通过；下一项按路线重新计算当前 frontier，不能预建长期 worktree。
+- G0 已通过；G1 前置（C03–C10）已全部合并、归档；无活动 change/worker。下一项按路线重算 frontier（候选：C11 `deliver-engineering-context-and-source-registry`，其依赖 C03/C04/C06/C07 均已归档），不能预建长期 worktree。
+- C09/C10 的 feature worktree 已按 §6.1 回收；Git 与 Orca 均无残留 feature worktree。
+- 已知工具缺陷（待走 OpenSpec change 修复，禁止直接改 `scripts/orchestration/status.mjs`）：`deliver-structured-orchestration-status` 的 worktree→change 关联对已归档 change 仍按"worktree 内 archive 文件存在"反推归属，导致 `pnpm orchestration:status` 把已归档节点误报为 `unknown`/violations、frontier 为空；C09/C10 的 Task envelope 亦缺 `mainVerification: passed` 主线验证摘要。手工复核以 git/归档为准。
 - 不推送远端；远端操作必须由用户另行授权。
 
 ## 2. 固定角色与模型
@@ -343,7 +343,7 @@ change 完成需要：
 ## 10. 下一 session 的首个动作
 
 1. 以 Luna max 启动新的主调度 session，先读 `AGENTS.md`、本 handbook 和路线文档。
-2. 确认 `main` clean，C00/C01/C02 已归档，主 specs 与路线状态一致，当前无活动 change/worker。
+2. 确认 `main` clean，C00–C10 已归档（archive 目录 14 项），主 specs 与路线状态一致，当前无活动 change/worker。
 3. 用 `orca repo show` 确认 setup hook 仍与 §7.2 一致；若未变化，直接沿用已验证配置。
 4. 根据路线重新计算当前 frontier，只为当前 change 创建 worktree 和 Run，不预建后续长期 worktree。
 5. 把新 change 的规划 task 派给 Sol high；主调度 Agent不自行起草 change。

@@ -97,6 +97,7 @@ import {
   type PostgresPersistenceError,
 } from "../../postgres/pool.js";
 import type { PostgresDatabase } from "../../postgres/types.js";
+import type { PostgresMonitoringStoreV1 } from "../monitoring/postgres-monitoring-store.js";
 
 type JsonColumn = ColumnType<JsonValue, JsonValue, JsonValue>;
 type TimestampColumn = ColumnType<Date, Date | string | undefined, Date | string>;
@@ -633,6 +634,7 @@ export interface PostgresEngineeringContextSourceRegistryOptions {
     readonly store: ArtifactStoreV1;
     readonly referenceGuard: ArtifactReferenceGuardV1;
   };
+  readonly monitoringStore?: PostgresMonitoringStoreV1;
   readonly now?: () => Date;
 }
 
@@ -644,6 +646,7 @@ export class PostgresEngineeringContextSourceRegistry
   readonly #access: LocalIdentityAccessV1;
   readonly #artifactStore: ArtifactStoreV1;
   readonly #artifactGuard: ArtifactReferenceGuardV1;
+  readonly #monitoringStore: PostgresMonitoringStoreV1 | undefined;
   readonly #now: () => Date;
 
   constructor(options: PostgresEngineeringContextSourceRegistryOptions) {
@@ -657,6 +660,7 @@ export class PostgresEngineeringContextSourceRegistry
     this.#access = options.access;
     this.#artifactStore = store;
     this.#artifactGuard = guard;
+    this.#monitoringStore = options.monitoringStore;
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -851,6 +855,9 @@ export class PostgresEngineeringContextSourceRegistry
       };
     }
     const valid = parsed.data;
+    if (valid.kind === "register-monitoring-batch" && this.#monitoringStore !== undefined) {
+      return this.#monitoringStore.registerBatch(valid);
+    }
     if (valid.kind !== "register-source-delivery") {
       return {
         kind: "failed",
@@ -862,16 +869,28 @@ export class PostgresEngineeringContextSourceRegistry
 
   async freeze(command: EngineeringFreezeCommandV1): Promise<EngineeringFreezeResultV1> {
     const parsed = EngineeringFreezeCommandV1Schema.safeParse(command);
-    return parsed.success
-      ? { kind: "failed", error: moduleError("UNSUPPORTED_CONTRACT", parsed.data.commandId) }
-      : { kind: "failed", error: moduleError("UNSUPPORTED_CONTRACT", "engineering-data.freeze") };
+    if (!parsed.success)
+      return {
+        kind: "failed",
+        error: moduleError("UNSUPPORTED_CONTRACT", "engineering-data.freeze"),
+      };
+    if (parsed.data.kind === "monitoring-snapshot" && this.#monitoringStore !== undefined) {
+      return this.#monitoringStore.freezeSnapshot(parsed.data);
+    }
+    return { kind: "failed", error: moduleError("UNSUPPORTED_CONTRACT", parsed.data.commandId) };
   }
 
   async read(query: EngineeringDataQueryV1): Promise<EngineeringDataReadResultV1> {
     const parsed = EngineeringDataQueryV1Schema.safeParse(query);
-    return parsed.success
-      ? { kind: "failed", error: moduleError("UNSUPPORTED_CONTRACT", parsed.data.queryId) }
-      : { kind: "failed", error: moduleError("UNSUPPORTED_CONTRACT", "engineering-data.read") };
+    if (!parsed.success)
+      return {
+        kind: "failed",
+        error: moduleError("UNSUPPORTED_CONTRACT", "engineering-data.read"),
+      };
+    if (parsed.data.kind === "monitoring-snapshot" && this.#monitoringStore !== undefined) {
+      return this.#monitoringStore.readSnapshot(parsed.data);
+    }
+    return { kind: "failed", error: moduleError("UNSUPPORTED_CONTRACT", parsed.data.queryId) };
   }
 
   async #registerSourceDelivery(

@@ -13,6 +13,8 @@ import * as agentProposalArtifactRefMigration from "../../src/postgres/migration
 import * as governedDefinitionLifecycleMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-governed-definition-lifecycle/000007_governed_definition_lifecycle.js";
 import * as engineeringContextSourceMigration from "../../src/postgres/migrations/engineering-data/deliver-engineering-context-and-source-registry/000008_engineering_context_source_registry.js";
 import * as structuredDocumentConversionMigration from "../../src/postgres/migrations/engineering-data/deliver-structured-document-conversion/000009_structured_document_conversion.js";
+import * as monitoringMigration from "../../src/postgres/migrations/engineering-data/deliver-monitoring-batches-snapshots-and-features/000011_monitoring_batches_snapshots_features.js";
+
 
 export interface AuthPostgresFixture extends PostgresTestFixture {
   runMigrations(): Promise<void>;
@@ -21,6 +23,13 @@ export interface AuthPostgresFixture extends PostgresTestFixture {
 export const startAuthPostgresFixture = async (): Promise<AuthPostgresFixture> => {
   const base = await startPostgresFixture();
   const migrationModules = new Map<string, unknown>([
+    [
+      resolve(
+        base.productionMigrationRoot,
+        "engineering-data/deliver-monitoring-batches-snapshots-and-features/000011_monitoring_batches_snapshots_features.ts",
+      ),
+      monitoringMigration,
+    ],
     [
       resolve(
         base.productionMigrationRoot,

@@ -198,6 +198,14 @@ describe("C11 PostgreSQL context/source registry", () => {
   });
 
   it("keeps C02 public branches closed until their owning change is installed", async () => {
+    const closedRegistry = new PostgresEngineeringContextSourceRegistry({
+      db: fixture.runtime.db,
+      transactionUnit: fixture.transactionUnit,
+      access: fixture.access,
+      artifactStore: fixture.artifactStore,
+      artifactReferenceGuard: fixture.artifactRegistry,
+      now: () => new Date("2030-01-01T00:00:00.000Z"),
+    });
     const monitoringCommand = {
       commandId: "monitoring-command",
       idempotencyKey: "monitoring-command",
@@ -220,7 +228,7 @@ describe("C11 PostgreSQL context/source registry", () => {
         relation: { kind: "original" as const },
       },
     } satisfies EngineeringDataCommandV1;
-    expect(await fixture.registry.apply(monitoringCommand)).toMatchObject({
+    expect(await closedRegistry.apply(monitoringCommand)).toMatchObject({
       kind: "failed",
       error: { code: "UNSUPPORTED_CONTRACT" },
     });
@@ -245,7 +253,7 @@ describe("C11 PostgreSQL context/source registry", () => {
         availabilityPolicyRef: { entityId: "availability", versionId: "1" },
       },
     } satisfies EngineeringFreezeCommandV1;
-    expect(await fixture.registry.freeze(freeze)).toMatchObject({
+    expect(await closedRegistry.freeze(freeze)).toMatchObject({
       kind: "failed",
       error: { code: "UNSUPPORTED_CONTRACT" },
     });

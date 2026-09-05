@@ -37,6 +37,7 @@ import * as reviewAuditMigration from "../../src/postgres/migrations/platform/de
 import * as agentTaskRuntimeMigration from "../../src/postgres/migrations/agent-task/deliver-unified-bounded-agent-runtime/000005_agent_task_runtime.js";
 import * as agentProposalArtifactRefMigration from "../../src/postgres/migrations/agent-task/deliver-unified-bounded-agent-runtime/000006_agent_proposal_artifact_ref.js";
 import * as governedDefinitionLifecycleMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-governed-definition-lifecycle/000007_governed_definition_lifecycle.js";
+import * as engineeringContextSourceMigration from "../../src/postgres/migrations/engineering-data/deliver-engineering-context-and-source-registry/000008_engineering_context_source_registry.js";
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
 import * as agentTaskFixtureMigration from "./fixtures/migrations/agent-task/deliver-unified-bounded-agent-runtime/900002_agent_task_fixture.js";
 
@@ -274,6 +275,15 @@ const testMigrationManifest = [
     module: governedDefinitionLifecycleMigration,
   },
   {
+    root: "production",
+    relativePath:
+      "engineering-data/deliver-engineering-context-and-source-registry/000008_engineering_context_source_registry.ts",
+    migrationName:
+      "000008_engineering-data_deliver-engineering-context-and-source-registry_engineering_context_source_registry",
+    sequence: 8,
+    module: engineeringContextSourceMigration,
+  },
+  {
     root: "fixture",
     relativePath:
       "platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.ts",
@@ -292,7 +302,7 @@ const testMigrationManifest = [
 ] as const satisfies readonly TestMigrationManifestEntry[];
 
 const migrationManifestPathPattern =
-  /^(platform|agent-task|knowledge-modeling)\/([a-z0-9]+(?:-[a-z0-9]+)*)\/([0-9]{6})_([a-z0-9]+(?:[-_][a-z0-9]+)*)\.ts$/u;
+  /^(platform|agent-task|knowledge-modeling|engineering-data)\/([a-z0-9]+(?:-[a-z0-9]+)*)\/([0-9]{6})_([a-z0-9]+(?:[-_][a-z0-9]+)*)\.ts$/u;
 
 const validateTestMigrationManifest = (): void => {
   const paths = new Set<string>();
@@ -529,9 +539,12 @@ describe("PostgreSQL foundation", () => {
     expect(Object.keys(await productionProvider.getMigrations())).toEqual(
       migrationNames("production"),
     );
+    const undeclaredFixtureEntry = testMigrationManifest.findLast(
+      (migration) => migration.root === "fixture",
+    );
     await expect(
       loadTestMigration(
-        resolve(testMigrationRoots.production, testMigrationManifest[7]!.relativePath),
+        resolve(testMigrationRoots.production, undeclaredFixtureEntry!.relativePath),
       ),
     ).rejects.toThrow();
     await expect(

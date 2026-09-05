@@ -14,7 +14,7 @@ import type {
 import { bootstrapInitialSystemAdministrator } from "../../../src/auth/index.js";
 import { PostgresEngineeringContextSourceRegistry } from "../../../src/engineering-data/context-source/postgres-engineering-context-source-registry.js";
 import { createPostgresRuntime } from "../../../src/postgres/pool.js";
-import * as contextSourceMigration from "../../../src/postgres/migrations/engineering-data/deliver-engineering-context-and-source-registry/000007_engineering_context_source_registry.js";
+import * as contextSourceMigration from "../../../src/postgres/migrations/engineering-data/deliver-engineering-context-and-source-registry/000008_engineering_context_source_registry.js";
 import {
   startEngineeringContextSourceFixture,
   type EngineeringContextSourcePostgresFixture,
@@ -147,7 +147,7 @@ describe("C11 PostgreSQL context/source registry", () => {
     return { command };
   };
 
-  it("loads migration 000007 and keeps C11 tables inaccessible to worker/checkpointer roles", async () => {
+  it("loads migration 000008 and keeps C11 tables inaccessible to worker/checkpointer roles", async () => {
     const tableResult = await fixture.postgres.adminPool.query<{ table_name: string }>(
       `SELECT table_name FROM information_schema.tables WHERE table_schema = 'business' AND table_name IN ('engineering_projects', 'source_versions', 'source_segments', 'applicability_metadata_snapshots') ORDER BY table_name`,
     );

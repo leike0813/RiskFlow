@@ -304,6 +304,11 @@ const sameVersion = (
   return leftRef.entityId === rightRef.entityId && leftRef.versionId === rightRef.versionId;
 };
 
+const sameEntity = (
+  left: { reference: { entityId: string } },
+  right: { reference: { entityId: string } },
+): boolean => left.reference.entityId === right.reference.entityId;
+
 const versionIdFromReference = (value: ContractReferenceV1): string =>
   "reference" in value ? value.reference.versionId : String(value.eventVersion);
 
@@ -643,7 +648,19 @@ export class PostgresEngineeringContextSourceRegistry
       return resultFailure(moduleError("UNSUPPORTED_CONTRACT", "context-revision"));
     const valid = parsed.data;
     try {
-      await this.#verify(valid, valid.kind === "project" ? [] : [valid.spatialScopeRef], []);
+      if (
+        valid.kind === "spatial" &&
+        !valid.authorization.spatialScopeRefs.some((scope) =>
+          sameEntity(scope, valid.spatialScopeRef),
+        )
+      ) {
+        return resultFailure(moduleError("AUTHORIZATION_DENIED", valid.commandId));
+      }
+      await this.#verify(
+        valid,
+        valid.kind === "project" ? [] : valid.authorization.spatialScopeRefs,
+        [],
+      );
       const atomic = atomicCommand(valid, "engineering-data.context-revision.v1", valid);
       const receipt = await this.#transactionUnit.execute(atomic, async (context) =>
         valid.kind === "project"
@@ -713,7 +730,14 @@ export class PostgresEngineeringContextSourceRegistry
       return resultFailure(moduleError("UNSUPPORTED_CONTRACT", "applicability-snapshot"));
     const valid = parsed.data;
     try {
-      await this.#verify(valid, [valid.spatialScopeRef], []);
+      if (
+        !valid.authorization.spatialScopeRefs.some((scope) =>
+          sameEntity(scope, valid.spatialScopeRef),
+        )
+      ) {
+        return resultFailure(moduleError("AUTHORIZATION_DENIED", valid.commandId));
+      }
+      await this.#verify(valid, valid.authorization.spatialScopeRefs, []);
       const atomic = atomicCommand(valid, "engineering-data.applicability-snapshot.v1", valid);
       const receipt = await this.#transactionUnit.execute(atomic, async (context) =>
         this.#createSnapshotInTransaction(context, valid),
@@ -774,7 +798,7 @@ export class PostgresEngineeringContextSourceRegistry
       if (
         envelope.projectRevisionRef.reference.entityId !== command.projectId ||
         !envelope.spatialScopeRefs.every((scope) =>
-          command.authorization.spatialScopeRefs.some((item) => sameVersion(scope, item)),
+          command.authorization.spatialScopeRefs.some((item) => sameEntity(scope, item)),
         )
       ) {
         return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", command.commandId) };
@@ -809,12 +833,16 @@ export class PostgresEngineeringContextSourceRegistry
       const sourceVersionRef = SourceVersionV1Schema.shape.sourceVersionRef.parse(
         receipt.resultRef,
       );
-      await this.#verify(command, envelope.spatialScopeRefs, []);
+      await this.#verify(command, command.authorization.spatialScopeRefs, []);
       const sourceVersion = await this.#readSourceVersion(command.projectId, sourceVersionRef);
       if (sourceVersion === undefined) {
         return { kind: "failed", error: moduleError("TERMINAL_FAILURE", command.commandId) };
       }
-      await this.#ensureSourceAccess(command, sourceVersion, envelope.spatialScopeRefs);
+      await this.#ensureSourceAccess(
+        command,
+        sourceVersion,
+        command.authorization.spatialScopeRefs,
+      );
       return {
         kind: "succeeded",
         result: {
@@ -1354,12 +1382,12 @@ export class PostgresEngineeringContextSourceRegistry
       );
     }
     const lockedSourceVersion = toSourceVersion(lockedSourceRow);
-    const authorizedScopeKeys = new Set(
-      command.authorization.spatialScopeRefs.map((scope) => refKey(scope)),
+    const authorizedScopeIds = new Set(
+      command.authorization.spatialScopeRefs.map((scope) => scope.reference.entityId),
     );
     if (
       command.segments.some((segment) =>
-        segment.spatialScopeRefs.some((scope) => !authorizedScopeKeys.has(refKey(scope))),
+        segment.spatialScopeRefs.some((scope) => !authorizedScopeIds.has(scope.reference.entityId)),
       )
     ) {
       throw preserveDomainError(moduleError("AUTHORIZATION_DENIED", command.commandId));

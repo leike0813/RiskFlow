@@ -82,6 +82,35 @@ describe("engineering context and source registry core", () => {
       }),
     );
     expect(spatial.kind).toBe("succeeded");
+    if (spatial.kind !== "succeeded" || spatial.result.kind !== "spatial-revision") return;
+
+    const spatialRevision = await service.reviseContext(
+      EngineeringContextRevisionCommandV1Schema.parse({
+        ...spatialCommandBase({ commandId: "spatial-2", idempotencyKey: "spatial-2" }),
+        kind: "spatial",
+        spatialScopeRef: scopeRef,
+        projectRevisionRef: first.result.revision.projectRevisionRef,
+        expectedVersion: spatial.result.revision.spatialScopeRef.reference,
+        name: "区间一修订",
+        worksiteLocation: "左线中点",
+        applicabilityOverrides: { engineeringStage: "shield-expansion" },
+        status: "active",
+        effectivePeriod: { validFrom: "2030-01-01T00:00:00.000Z" },
+      }),
+    );
+    expect(spatialRevision).toMatchObject({
+      kind: "succeeded",
+      result: {
+        kind: "spatial-revision",
+        revision: {
+          spatialScopeRef: {
+            kind: "spatial-scope",
+            reference: { entityId: scopeRef.reference.entityId, versionId: "2" },
+          },
+          previousRevisionRef: spatial.result.revision.spatialScopeRef,
+        },
+      },
+    });
 
     const stale = await service.reviseContext(
       projectCommand({

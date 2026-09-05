@@ -222,9 +222,19 @@ const projectRevisionFromCommand = (
 const spatialRevisionFromCommand = (
   command: Extract<EngineeringContextRevisionCommandV1, { kind: "spatial" }>,
   previous: SpatialBusinessRevisionV1 | undefined,
-): SpatialBusinessRevisionV1 =>
-  SpatialBusinessRevisionV1Schema.parse({
-    spatialScopeRef: command.spatialScopeRef,
+): SpatialBusinessRevisionV1 => {
+  const spatialScopeRef =
+    previous === undefined
+      ? command.spatialScopeRef
+      : {
+          kind: "spatial-scope" as const,
+          reference: {
+            entityId: command.spatialScopeRef.reference.entityId,
+            versionId: nextVersionId(previous.spatialScopeRef),
+          },
+        };
+  return SpatialBusinessRevisionV1Schema.parse({
+    spatialScopeRef,
     projectRevisionRef: command.projectRevisionRef,
     ...(command.parentScopeRef === undefined ? {} : { parentScopeRef: command.parentScopeRef }),
     name: command.name,
@@ -237,6 +247,7 @@ const spatialRevisionFromCommand = (
     ...(previous === undefined ? {} : { previousRevisionRef: previous.spatialScopeRef }),
     audit: auditFor(command, "engineering-data.revise-spatial-context"),
   });
+};
 
 const scopeIsCovered = (
   requested: readonly SpatialScopeRefV1[],

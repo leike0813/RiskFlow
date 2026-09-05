@@ -41,6 +41,10 @@
     "./agent-runtime": {
       "types": "./dist/agent-runtime/index.d.ts",
       "import": "./dist/agent-runtime/index.js"
+    },
+    "./engineering-data/context-source": {
+      "types": "./dist/engineering-data/context-source/index.d.ts",
+      "import": "./dist/engineering-data/context-source/index.js"
     }
   }
 }

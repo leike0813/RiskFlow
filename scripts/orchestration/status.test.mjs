@@ -512,16 +512,23 @@ describe("command boundaries", () => {
 
     expect(result.snapshot.orca.runs.map((run) => run.id)).toEqual(["run-1", "run-2"]);
     expect(calls.some((call) => call.includes("--cursor") && call.includes("page-2"))).toBe(true);
-    const completed = result.snapshot.nodes.filter((node) => /^C(?:0[0-9]|10)$/u.test(node.id));
-    expect(completed).toHaveLength(11);
-    expect(completed.every((node) => node.status === "completed")).toBe(true);
+    const earlyChanges = result.snapshot.nodes.filter((node) =>
+      /^C(?:0[0-9]|10|11)$/u.test(node.id),
+    );
+    expect(earlyChanges).toHaveLength(12);
+    expect(earlyChanges.every((node) => node.status === "completed")).toBe(true);
     expect(result.snapshot.nodes.find((node) => node.id === "G0")?.status).toBe("completed");
     expect(result.snapshot.nodes.find((node) => node.id === "G1")?.status).toBe("completed");
-    expect(result.snapshot.frontier).toContain("C11");
+    expect(result.snapshot.frontier.length).toBeGreaterThan(0);
     expect(
       result.snapshot.nodes
         .filter((node) => result.snapshot.frontier.includes(node.id))
         .every((node) => node.status === "ready"),
+    ).toBe(true);
+    expect(
+      result.snapshot.nodes
+        .filter((node) => node.status === "completed")
+        .every((node) => !result.snapshot.frontier.includes(node.id)),
     ).toBe(true);
     expect(result.snapshot.unlinkedTasks).toEqual([]);
     expect(result.snapshot.violations).toEqual([]);

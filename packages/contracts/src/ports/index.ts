@@ -511,6 +511,7 @@ export const MODULE_BRANCH_CAPABILITY_V1 = {
   "review-audit.request-review": "review-audit.request",
   "review-audit.decide-review": "review-audit.decide",
   "review-audit.trace": "review-audit.read",
+  "review-audit.verify-knowledge-revision-approval": "review-audit.read",
   "agent-task.start-task": "agent-task.start",
   "agent-task.resume-task": "agent-task.resume",
   "agent-task.cancel-task": "agent-task.cancel",
@@ -1770,6 +1771,20 @@ export const TraceQueryV1Schema = z.discriminatedUnion("kind", [
 ]);
 export type TraceQueryV1 = z.infer<typeof TraceQueryV1Schema>;
 
+export const KnowledgeRevisionApprovalProofQueryV1Schema = z.discriminatedUnion("kind", [
+  querySchema(
+    "verify-knowledge-revision-approval",
+    z.strictObject({
+      revisionRef: KnowledgeRevisionRefV1Schema,
+      reviewDecisionRef: ReviewDecisionRefV1Schema,
+    }),
+    branchCapability("review-audit.verify-knowledge-revision-approval"),
+  ),
+]);
+export type KnowledgeRevisionApprovalProofQueryV1 = z.infer<
+  typeof KnowledgeRevisionApprovalProofQueryV1Schema
+>;
+
 export const EngineeringDataApplySuccessV1Schema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("register-source-delivery"),
@@ -1960,6 +1975,23 @@ export const ReviewDecisionSuccessV1Schema = z.strictObject({
 });
 export type ReviewDecisionSuccessV1 = z.infer<typeof ReviewDecisionSuccessV1Schema>;
 
+export const KnowledgeRevisionApprovalProofV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("approved"),
+    revisionRef: KnowledgeRevisionRefV1Schema,
+    reviewTaskRef: ReviewTaskRefV1Schema,
+    reviewDecisionRef: ReviewDecisionRefV1Schema,
+    decidedAt: IsoDateTimeSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("not-approved"),
+    reason: z.enum(["decision-not-found", "target-mismatch", "decision-not-approval"]),
+  }),
+]);
+export type KnowledgeRevisionApprovalProofV1 = z.infer<
+  typeof KnowledgeRevisionApprovalProofV1Schema
+>;
+
 export const TraceSuccessV1Schema = z.union([
   z.strictObject({ auditTrailRef: AuditTrailRefV1Schema }),
   z.strictObject({ queryResultRef: QueryResultRefV1Schema }),
@@ -2111,6 +2143,13 @@ export type ReviewRequestResultV1 = z.infer<typeof ReviewRequestResultV1Schema>;
 export const ReviewDecisionResultV1Schema = moduleResultSchema(ReviewDecisionSuccessV1Schema);
 export type ReviewDecisionResultV1 = z.infer<typeof ReviewDecisionResultV1Schema>;
 
+export const KnowledgeRevisionApprovalProofResultV1Schema = moduleResultSchema(
+  KnowledgeRevisionApprovalProofV1Schema,
+);
+export type KnowledgeRevisionApprovalProofResultV1 = z.infer<
+  typeof KnowledgeRevisionApprovalProofResultV1Schema
+>;
+
 export const TraceResultV1Schema = moduleResultSchema(TraceSuccessV1Schema);
 export type TraceResultV1 = z.infer<typeof TraceResultV1Schema>;
 
@@ -2186,6 +2225,9 @@ export interface WarningResponsePortV1 {
 export interface ReviewAuditPortV1 {
   requestReview(request: ReviewRequestV1): Promise<ReviewRequestResultV1>;
   decideReview(command: ReviewDecisionCommandV1): Promise<ReviewDecisionResultV1>;
+  verifyKnowledgeRevisionApproval(
+    query: KnowledgeRevisionApprovalProofQueryV1,
+  ): Promise<KnowledgeRevisionApprovalProofResultV1>;
   trace(query: TraceQueryV1): Promise<TraceResultV1>;
 }
 

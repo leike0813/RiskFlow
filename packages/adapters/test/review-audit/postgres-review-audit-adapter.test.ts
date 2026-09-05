@@ -4,9 +4,11 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/access";
 import {
   AuthorizationContextV1Schema,
+  KnowledgeRevisionApprovalProofQueryV1Schema,
   ReviewDecisionCommandV1Schema,
   ReviewRequestV1Schema,
   type AuthorizationContextV1,
+  type KnowledgeRevisionApprovalProofQueryV1,
   type ReviewDecisionCommandV1,
   type ReviewRequestV1,
   type ReviewTaskRefV1,
@@ -111,6 +113,7 @@ const decisionFor = (
     readonly actorId?: string;
     readonly authorization?: AuthorizationContextV1;
     readonly commandId?: string;
+    readonly knowledgeDecisionKind?: "approve-publication" | "reject" | "return-for-revision";
   } = {},
 ): ReviewDecisionCommandV1 =>
   ReviewDecisionCommandV1Schema.parse({
@@ -127,15 +130,75 @@ const decisionFor = (
       decision:
         request.payload.reviewType === "identification-group"
           ? { reviewType: "identification-group", kind: "approve-unchanged" }
-          : request.payload.reviewType === "knowledge-revision" ||
-              request.payload.reviewType === "rule-conflict"
-            ? { reviewType: request.payload.reviewType, kind: "approve-publication" }
-            : request.payload.reviewType === "response-candidate"
-              ? { reviewType: "response-candidate", kind: "return-upstream" }
-              : { reviewType: "calibration-suggestion", kind: "approve-draft-creation" },
+          : request.payload.reviewType === "knowledge-revision"
+            ? {
+                reviewType: "knowledge-revision",
+                kind: options.knowledgeDecisionKind ?? "approve-publication",
+              }
+            : request.payload.reviewType === "rule-conflict"
+              ? { reviewType: request.payload.reviewType, kind: "approve-publication" }
+              : request.payload.reviewType === "response-candidate"
+                ? { reviewType: "response-candidate", kind: "return-upstream" }
+                : { reviewType: "calibration-suggestion", kind: "approve-draft-creation" },
       reasonCode: "reviewed",
     },
   });
+
+const approvalQueryFor = (options: {
+  readonly suffix: string;
+  readonly projectId: string;
+  readonly authorization: AuthorizationContextV1;
+  readonly queryId?: string;
+  readonly revisionEntityId: string;
+  readonly revisionVersionId?: string;
+  readonly decisionEntityId: string;
+  readonly decisionVersionId?: string;
+}): KnowledgeRevisionApprovalProofQueryV1 =>
+  KnowledgeRevisionApprovalProofQueryV1Schema.parse({
+    queryId: options.queryId ?? nextId(`approval-query-${options.suffix}`),
+    projectId: options.projectId,
+    actorId: options.authorization.actorId,
+    requestedAt: REVIEW_TEST_TIMESTAMP,
+    authorization: options.authorization,
+    kind: "verify-knowledge-revision-approval",
+    payload: {
+      revisionRef: {
+        kind: "knowledge-revision",
+        reference: {
+          entityId: options.revisionEntityId,
+          versionId: options.revisionVersionId ?? "1",
+        },
+      },
+      reviewDecisionRef: {
+        kind: "review-decision",
+        reference: {
+          entityId: options.decisionEntityId,
+          versionId: options.decisionVersionId ?? "1",
+        },
+      },
+    },
+  });
+
+const reviewAuditCounts = async (fixture: ReviewAuditPostgresFixture, projectId: string) => {
+  const result = await fixture.postgres.adminPool.query<{
+    tasks: string;
+    decisions: string;
+    rejections: string;
+    businessAudit: string;
+    receipts: string;
+    outbox: string;
+  }>(
+    `SELECT
+       (SELECT count(*)::text FROM business.review_tasks WHERE project_id = $1) AS tasks,
+       (SELECT count(*)::text FROM business.review_decisions WHERE project_id = $1) AS decisions,
+       (SELECT count(*)::text FROM audit.review_rejections WHERE project_id = $1) AS rejections,
+       (SELECT count(*)::text FROM audit.entries WHERE project_id = $1) AS "businessAudit",
+       (SELECT count(*)::text FROM business.command_receipts WHERE project_id = $1) AS receipts,
+       (SELECT count(*)::text FROM outbox.events WHERE project_id = $1) AS outbox`,
+    [projectId],
+  );
+  return result.rows[0]!;
+};
 
 const makeAccess = (authorization: AuthorizationContextV1) => {
   const verify = vi.fn(async () => ({
@@ -406,6 +469,274 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
     });
   });
 
+  it("verifies knowledge revision approval proof with closed outcomes and no writes", async () => {
+    const projectId = "project-approval-proof";
+    const authorization = authorizationFor(projectId);
+    const { adapter } = adapterFor(fixture!, authorization);
+    const cases = [
+      {
+        suffix: "approved",
+        decisionKind: "approve-publication" as const,
+        expected: "approved" as const,
+      },
+      {
+        suffix: "rejected",
+        decisionKind: "reject" as const,
+        expected: "decision-not-approval" as const,
+      },
+      {
+        suffix: "returned",
+        decisionKind: "return-for-revision" as const,
+        expected: "decision-not-approval" as const,
+      },
+      {
+        suffix: "target-mismatch",
+        decisionKind: "approve-publication" as const,
+        expected: "target-mismatch" as const,
+      },
+    ];
+    const decidedCases: Array<{
+      readonly suffix: string;
+      readonly expected: (typeof cases)[number]["expected"];
+      readonly taskRef: ReviewTaskRefV1;
+      readonly decisionRef: {
+        kind: "review-decision";
+        reference: { entityId: string; versionId: string };
+      };
+    }> = [];
+
+    for (const testCase of cases) {
+      const request = requestFor({
+        suffix: `approval-${testCase.suffix}`,
+        projectId,
+        reviewType: "knowledge-revision",
+        targetEntityId: `revision-${testCase.suffix}`,
+        authorization,
+      });
+      const requested = await adapter.requestReview(request);
+      expect(requested.kind).toBe("succeeded");
+      if (requested.kind !== "succeeded") return;
+      const decided = await adapter.decideReview(
+        decisionFor(request, requested.result.reviewTaskRef, `approval-${testCase.suffix}`, {
+          knowledgeDecisionKind: testCase.decisionKind,
+        }),
+      );
+      expect(decided.kind).toBe("succeeded");
+      if (decided.kind !== "succeeded") return;
+      decidedCases.push({
+        suffix: testCase.suffix,
+        expected: testCase.expected,
+        taskRef: requested.result.reviewTaskRef,
+        decisionRef: decided.result.reviewDecisionRef,
+      });
+    }
+
+    const inconsistentRequest = requestFor({
+      suffix: "approval-inconsistent",
+      projectId,
+      reviewType: "knowledge-revision",
+      targetEntityId: "revision-inconsistent",
+      authorization,
+    });
+    const inconsistentTask = await adapter.requestReview(inconsistentRequest);
+    expect(inconsistentTask.kind).toBe("succeeded");
+    if (inconsistentTask.kind !== "succeeded") return;
+    const inconsistentDecisionRef = {
+      kind: "review-decision" as const,
+      reference: { entityId: "approval-inconsistent-decision", versionId: "1" },
+    };
+    await fixture!.postgres.adminPool.query(
+      `INSERT INTO business.review_decisions
+        (review_decision_id, version_id, review_task_id, review_decision_ref, project_id,
+         review_type, review_task_ref, target_ref, decision, reason_code,
+         validation_snapshot_ref, evidence_snapshot_ref, waiting_run_ref, review_policy_ref,
+         actor_ref, authorization_context_ref, decided_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+      [
+        inconsistentDecisionRef.reference.entityId,
+        inconsistentDecisionRef.reference.versionId,
+        inconsistentTask.result.reviewTaskRef.reference.entityId,
+        inconsistentDecisionRef,
+        projectId,
+        "knowledge-revision",
+        inconsistentTask.result.reviewTaskRef,
+        inconsistentRequest.payload.targetRef,
+        { reviewType: "knowledge-revision", kind: "approve-publication" },
+        "reviewed",
+        inconsistentRequest.payload.validationSnapshotRef,
+        inconsistentRequest.payload.evidenceSnapshotRef,
+        inconsistentRequest.payload.waitingRunRef,
+        inconsistentRequest.payload.reviewPolicyRef,
+        "inconsistent-actor",
+        authorization.authorizationContextRef,
+        REVIEW_TEST_TIMESTAMP,
+      ],
+    );
+
+    const before = await reviewAuditCounts(fixture!, projectId);
+    for (const testCase of decidedCases) {
+      const result = await adapter.verifyKnowledgeRevisionApproval(
+        approvalQueryFor({
+          suffix: `approval-${testCase.suffix}`,
+          projectId,
+          authorization,
+          revisionEntityId:
+            testCase.expected === "target-mismatch"
+              ? "revision-other"
+              : `revision-${testCase.suffix}`,
+          decisionEntityId: testCase.decisionRef.reference.entityId,
+        }),
+      );
+      if (testCase.expected === "approved") {
+        expect(result).toMatchObject({
+          kind: "succeeded",
+          result: {
+            kind: "approved",
+            revisionRef: {
+              kind: "knowledge-revision",
+              reference: { entityId: "revision-approved", versionId: "1" },
+            },
+            reviewTaskRef: testCase.taskRef,
+            reviewDecisionRef: testCase.decisionRef,
+            decidedAt: expect.any(String),
+          },
+        });
+        expect(result).not.toHaveProperty("result.decision");
+        expect(result).not.toHaveProperty("result.reasonCode");
+      } else {
+        expect(result).toMatchObject({
+          kind: "succeeded",
+          result: { kind: "not-approved", reason: testCase.expected },
+        });
+      }
+    }
+
+    const missing = await adapter.verifyKnowledgeRevisionApproval(
+      approvalQueryFor({
+        suffix: "approval-missing",
+        projectId,
+        authorization,
+        revisionEntityId: "revision-approved",
+        decisionEntityId: "approval-missing-decision",
+      }),
+    );
+    expect(missing).toEqual({
+      kind: "succeeded",
+      result: { kind: "not-approved", reason: "decision-not-found" },
+    });
+
+    const projectTwo = "project-approval-proof-two";
+    const projectTwoAuthorization = authorizationFor(projectTwo);
+    const projectTwoAdapter = adapterFor(fixture!, projectTwoAuthorization).adapter;
+    const projectTwoRequest = requestFor({
+      suffix: "approval-project-two",
+      projectId: projectTwo,
+      reviewType: "knowledge-revision",
+      targetEntityId: "revision-project-two",
+      authorization: projectTwoAuthorization,
+    });
+    const projectTwoTask = await projectTwoAdapter.requestReview(projectTwoRequest);
+    expect(projectTwoTask.kind).toBe("succeeded");
+    if (projectTwoTask.kind !== "succeeded") return;
+    const projectTwoDecision = await projectTwoAdapter.decideReview(
+      decisionFor(projectTwoRequest, projectTwoTask.result.reviewTaskRef, "approval-project-two"),
+    );
+    expect(projectTwoDecision.kind).toBe("succeeded");
+    if (projectTwoDecision.kind !== "succeeded") return;
+    const crossProject = await adapter.verifyKnowledgeRevisionApproval(
+      approvalQueryFor({
+        suffix: "approval-cross-project",
+        projectId,
+        authorization,
+        revisionEntityId: "revision-project-two",
+        decisionEntityId: projectTwoDecision.result.reviewDecisionRef.reference.entityId,
+      }),
+    );
+    expect(crossProject).toEqual(missing);
+
+    const inconsistent = await adapter.verifyKnowledgeRevisionApproval(
+      approvalQueryFor({
+        suffix: "approval-inconsistent",
+        projectId,
+        authorization,
+        revisionEntityId: "revision-inconsistent",
+        decisionEntityId: inconsistentDecisionRef.reference.entityId,
+      }),
+    );
+    expect(inconsistent).toMatchObject({
+      kind: "failed",
+      error: { code: "TERMINAL_FAILURE" },
+    });
+    expect(await reviewAuditCounts(fixture!, projectId)).toEqual(before);
+  });
+
+  it("rejects approval proof before lookup for invalid or unauthorized queries", async () => {
+    const projectId = "project-approval-auth";
+    const authorization = authorizationFor(projectId);
+    const valid = approvalQueryFor({
+      suffix: "auth",
+      projectId,
+      authorization,
+      revisionEntityId: "revision-auth",
+      decisionEntityId: "decision-auth",
+    });
+    const denial = new AccessServiceError({
+      code: "AUTHORIZATION_DENIED",
+      stage: "verify",
+      occurredAt: REVIEW_TEST_TIMESTAMP,
+      diagnosticRef: {
+        kind: "diagnostic-artifact",
+        reference: { entityId: "diagnostic-approval-denied", versionId: "1" },
+      },
+      contextRefs: [],
+      retryable: false,
+      requiredCapability: "review-audit.read",
+      authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+    });
+    const verify = vi.fn(async () => {
+      throw denial;
+    });
+    const { adapter, verify: verifySpy } = adapterFor(fixture!, authorization, verify);
+    await fixture!.postgres.adminPool.query(
+      "REVOKE SELECT ON TABLE business.review_decisions FROM riskflow_app",
+    );
+    try {
+      expect(await adapter.verifyKnowledgeRevisionApproval(valid)).toMatchObject({
+        kind: "failed",
+        error: { code: "AUTHORIZATION_DENIED" },
+      });
+    } finally {
+      await fixture!.postgres.adminPool.query(
+        "GRANT SELECT ON TABLE business.review_decisions TO riskflow_app",
+      );
+    }
+    expect(verifySpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        branch: "review-audit.verify-knowledge-revision-approval",
+        invocationId: valid.queryId,
+      }),
+    );
+
+    const invalidQueries = [
+      { ...valid, kind: "trace" },
+      {
+        ...valid,
+        authorization: { ...valid.authorization, grantedCapabilities: ["review-audit.request"] },
+      },
+      { ...valid, projectId: "project-approval-auth-other" },
+      { ...valid, actorId: "actor-other" },
+      { ...valid, extra: true },
+    ] as unknown[];
+    const schemaAdapter = adapterFor(fixture!, authorization).adapter;
+    for (const invalid of invalidQueries) {
+      expect(
+        await schemaAdapter.verifyKnowledgeRevisionApproval(
+          invalid as KnowledgeRevisionApprovalProofQueryV1,
+        ),
+      ).toMatchObject({ kind: "failed", error: { code: "UNSUPPORTED_CONTRACT" } });
+    }
+  });
+
   it("concurrent decisions and independent multiple decisions with partial failure", async () => {
     const authorization = authorizationFor("project-1", "reviewer-2");
     const { adapter } = adapterFor(fixture!, authorization);
@@ -660,7 +991,11 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
       const authorize = async (
         invocationId: string,
         sessionToken: string,
-        branch: "review-audit.request-review" | "review-audit.decide-review" | "review-audit.trace",
+        branch:
+          | "review-audit.request-review"
+          | "review-audit.decide-review"
+          | "review-audit.trace"
+          | "review-audit.verify-knowledge-revision-approval",
       ) => {
         const decision = await access.authorize({
           invocation: { kind: "human-session", sessionToken },
@@ -691,6 +1026,21 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
         "c07-auth-manager-trace",
         managerSession.sessionToken,
         "review-audit.trace",
+      );
+      const managerApprovalAccess = await authorize(
+        "c07-auth-manager-approval",
+        managerSession.sessionToken,
+        "review-audit.verify-knowledge-revision-approval",
+      );
+      const managerApprovalRequestAccess = await authorize(
+        "c07-auth-manager-approval-request",
+        managerSession.sessionToken,
+        "review-audit.request-review",
+      );
+      const managerApprovalDecisionAccess = await authorize(
+        "c07-auth-manager-approval-decision",
+        managerSession.sessionToken,
+        "review-audit.decide-review",
       );
       const reviewerDecisionAccess = await authorize(
         "c07-auth-reviewer-decide",
@@ -789,6 +1139,47 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
         },
       });
       expect(managerTrace).toMatchObject({ kind: "succeeded" });
+
+      const approvalRequest = requestFor({
+        suffix: "c06-approval-proof",
+        projectId,
+        commandId: "c07-auth-manager-approval-request",
+        reviewType: "knowledge-revision",
+        targetEntityId: "c06-approval-revision",
+        authorization: managerApprovalRequestAccess.context,
+      });
+      const approvalTask = await adapter.requestReview(approvalRequest);
+      expect(approvalTask.kind).toBe("succeeded");
+      if (approvalTask.kind !== "succeeded") return;
+      const approvalDecision = await adapter.decideReview(
+        decisionFor(approvalRequest, approvalTask.result.reviewTaskRef, "c06-approval-proof", {
+          actorId: managerApprovalDecisionAccess.context.actorId,
+          authorization: managerApprovalDecisionAccess.context,
+          commandId: "c07-auth-manager-approval-decision",
+        }),
+      );
+      expect(approvalDecision.kind).toBe("succeeded");
+      if (approvalDecision.kind !== "succeeded") return;
+      expect(
+        await adapter.verifyKnowledgeRevisionApproval(
+          approvalQueryFor({
+            suffix: "c06-approval-proof",
+            projectId,
+            authorization: managerApprovalAccess.context,
+            queryId: "c07-auth-manager-approval",
+            revisionEntityId: "c06-approval-revision",
+            decisionEntityId: approvalDecision.result.reviewDecisionRef.reference.entityId,
+          }),
+        ),
+      ).toMatchObject({ kind: "succeeded", result: { kind: "approved" } });
+
+      await expect(
+        authorize(
+          "c07-auth-reviewer-approval",
+          reviewerSession.sessionToken,
+          "review-audit.verify-knowledge-revision-approval",
+        ),
+      ).rejects.toBeInstanceOf(AccessServiceError);
 
       const forgedBranchRequest = requestFor({
         suffix: "c06-forged-branch",

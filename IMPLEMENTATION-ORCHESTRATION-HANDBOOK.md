@@ -272,6 +272,16 @@ codex --model gpt-5.6-sol -c model_reasoning_effort="high" -a never -s danger-fu
 
 等待 `tui-idle`，并从状态栏确认模型与强度。新目录出现信任提示时，分开发送 `1` 和 Enter。随后：
 
+> **经验：新建 worktree 后的首次 codex 启动必须先信任工作区。**
+> 新建 worktree（`orca worktree create` / `orca terminal create --command "codex ..."`）后，codex 会先弹工作区信任选项再进入 idle；未批准前状态栏停在 `model: loading / directory: loading`，`orca orchestration worker-start` 会报 `agent_prompt_blocked`，且 task 被标记 `failed`（需 `task-update --status ready` 重置后才能重启）。正确处理：
+>
+> 1. 用 `orca terminal create --worktree <full-id> --command 'codex --model <model> ...'` 启动 codex（不要直接 worker-start 自动建 terminal）。
+> 2. 等待状态栏出现 codex TUI 且停在 `model: loading` / `directory: loading`，此时实际是在等信任确认。
+> 3. 用 `orca terminal send --terminal <handle> --enter` 发送回车批准信任；必要时先发 `1` 再发 Enter。
+> 4. 状态栏应从 `loading` 变为实际模型与目录（如 `model: gpt-5.6-sol high`、`directory: ~/…/<worktree>`、`permissions: YOLO mode`），MCP servers 启动完成后进入 idle。
+> 5. 再用 `orca orchestration worker-start --task <task-id> --worktree <full-id> --terminal <handle>` 纳入 Dispatch，否则会重复触发 `agent_prompt_blocked` 并再次把 task 置为 failed。
+> 6. 若 worker-start 已把 task 置 failed，先 `task-update --id <task-id> --status ready` 重置，勿直接重试已 failed 的 task。
+
 ```bash
 orca orchestration task-create --spec '<bounded task>' --json
 orca orchestration worker-start --task <task-id> --worktree <full-worktree-id> --terminal <handle> --json

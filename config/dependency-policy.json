@@ -1,8 +1,5 @@
 {
-  "allowedLicenses": [
-    "MIT",
-    "Apache-2.0"
-  ],
+  "allowedLicenses": ["MIT", "Apache-2.0"],
   "dependencies": [
     {
       "name": "react",

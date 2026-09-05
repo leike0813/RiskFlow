@@ -15,6 +15,8 @@ import type {
 } from "@riskflow/contracts/ports";
 
 import { bootstrapInitialSystemAdministrator } from "../../../src/auth/index.js";
+import { createPostgresRuntime } from "../../../src/postgres/pool.js";
+import * as monitoringMigration from "../../../src/postgres/migrations/engineering-data/deliver-monitoring-batches-snapshots-and-features/000011_monitoring_batches_snapshots_features.js";
 import { startMonitoringFixture, type MonitoringPostgresFixture } from "./fixture.js";
 
 const now = "2030-01-01T00:00:00.000Z";
@@ -45,6 +47,27 @@ describe("C14 PostgreSQL monitoring store", () => {
 
   beforeAll(async () => {
     fixture = await startMonitoringFixture({ now: () => new Date(now) });
+    const migrator = createPostgresRuntime(fixture.postgres.migrator, "riskflow_migrator");
+    try {
+      await monitoringMigration.down(migrator.db);
+      await monitoringMigration.up(migrator.db);
+    } finally {
+      await migrator.db.destroy();
+    }
+    const privileges = await fixture.postgres.adminPool.query<{
+      role: string;
+      read: boolean;
+      write: boolean;
+      remove: boolean;
+    }>(
+      "SELECT role, has_table_privilege(role, 'business.monitoring_batches', 'SELECT') AS read, has_table_privilege(role, 'business.monitoring_batches', 'INSERT') AS write, has_table_privilege(role, 'business.monitoring_batches', 'DELETE') AS remove FROM unnest($1::text[]) AS role",
+      [["riskflow_app", "riskflow_outbox_worker", "riskflow_checkpointer"]],
+    );
+    expect(privileges.rows).toEqual([
+      { role: "riskflow_app", read: true, write: true, remove: false },
+      { role: "riskflow_outbox_worker", read: false, write: false, remove: false },
+      { role: "riskflow_checkpointer", read: false, write: false, remove: false },
+    ]);
     projectId = "project-c14-e2e";
     const admin = await bootstrapInitialSystemAdministrator({
       connection: fixture.postgres.migrator,
@@ -278,6 +301,14 @@ describe("C14 PostgreSQL monitoring store", () => {
           spatialScopeRefs: [spatialScopeRef],
           locator: { kind: "document", pageNumber: 1, headingPath: ["监测"] },
         },
+        {
+          sourceSegmentId: `${sourceVersionRef.reference.entityId}-chapter_1-segment_2` as never,
+          chapterId: "chapter_1",
+          segmentId: "segment_2",
+          kind: "chapter",
+          spatialScopeRefs: [spatialScopeRef],
+          locator: { kind: "document", pageNumber: 2, headingPath: ["监测"] },
+        },
       ],
     });
     if (segments.kind !== "succeeded" || segments.result.kind !== "source-segment-set")
@@ -499,6 +530,237 @@ describe("C14 PostgreSQL monitoring store", () => {
       "SELECT (SELECT count(*)::text FROM business.monitoring_batches) AS batches, (SELECT count(*)::text FROM business.monitoring_sample_versions) AS samples, (SELECT count(*)::text FROM business.monitoring_snapshots) AS snapshots, (SELECT count(*)::text FROM outbox.events WHERE event_type LIKE 'engineering.%') AS events",
     );
     expect(counts.rows[0]).toEqual({ batches: "1", samples: "5", snapshots: "1", events: "0" });
+
+    const register = async (
+      id: string,
+      sampleLines: string[],
+      relation: Extract<
+        EngineeringDataCommandV1,
+        { kind: "register-monitoring-batch" }
+      >["payload"]["relation"],
+      rawContent?: Uint8Array,
+    ) => {
+      const auth = await authorization(id, "engineering-data.register-monitoring-batch", [
+        sourceVersionRef,
+      ]);
+      const envelope = { ...JSON.parse(lines.split("\n")[0]!), sampleCount: sampleLines.length };
+      const stored = await fixture.artifactStore.put(
+        ArtifactPutCommandV1Schema.parse({
+          schemaVersion: "1",
+          commandId: `${id}-put`,
+          idempotencyKey: `${id}-put`,
+          projectId,
+          actorId: managerId,
+          issuedAt: now,
+          authorization: auth,
+          requiredCapability: "engineering-data.write",
+          artifactId: id,
+          artifactKind: "content",
+          purposeCode: "engineering-data.register-monitoring-batch",
+          mediaType: "application/x-ndjson",
+          parentArtifactRefs: [],
+          evidenceReferences: [evidence],
+          additionalSpatialScopeRefs: [],
+          additionalSourceAccessGrantRefs: [],
+        }),
+        (async function* () {
+          yield rawContent ??
+            new TextEncoder().encode([JSON.stringify(envelope), ...sampleLines].join("\n"));
+        })(),
+      );
+      const command = {
+        commandId: id,
+        idempotencyKey: id,
+        projectId,
+        actorId: managerId,
+        issuedAt: now,
+        authorization: auth,
+        kind: "register-monitoring-batch" as const,
+        payload: {
+          monitoringSeriesRef: seriesRef,
+          deliveryKey: id,
+          sampleArtifactRef: stored.artifactRef,
+          window: { from: "2030-01-01T00:00:00.000Z", to: "2030-01-01T00:00:11.000Z" },
+          relation,
+        },
+      };
+      return { command, result: await fixture.registry.apply(command) };
+    };
+    const sample = (second: number, value: number, extra = {}) =>
+      JSON.stringify({
+        sourceSampleKey: `s-${second}`,
+        sampledAt: `2030-01-01T00:00:${String(second).padStart(2, "0")}.000Z`,
+        value,
+        unit: "mm",
+        evidenceReferences: [evidence],
+        ...extra,
+      });
+    if (batch.kind !== "succeeded") throw new Error("missing original batch");
+    const correction = await register("c14-valid-correction", [sample(9, 99)], {
+      kind: "correction",
+      priorBatchRef: batch.result.monitoringBatchRef,
+    });
+    expect(correction.result.kind).toBe("succeeded");
+    expect(await fixture.registry.apply(correction.command)).toEqual(correction.result);
+    const concurrent = await Promise.all([
+      fixture.registry.apply(correction.command),
+      fixture.registry.apply(correction.command),
+    ]);
+    expect(concurrent).toEqual([correction.result, correction.result]);
+    const duplicateAuth = await authorization(
+      "c14-correction-duplicate",
+      "engineering-data.register-monitoring-batch",
+      [sourceVersionRef],
+    );
+    expect(
+      await fixture.registry.apply({
+        ...correction.command,
+        commandId: "c14-correction-duplicate",
+        idempotencyKey: "c14-correction-duplicate",
+        authorization: duplicateAuth,
+      }),
+    ).toEqual(correction.result);
+    expect(
+      await fixture.registry.apply({
+        ...correction.command,
+        payload: {
+          ...correction.command.payload,
+          deliveryKey: "different",
+        },
+      }),
+    ).toMatchObject({ kind: "failed", error: { code: "IDEMPOTENCY_CONFLICT" } });
+    const supplement = await register("c14-supplement", [sample(5, 10)], {
+      kind: "supplement",
+      priorBatchRef: batch.result.monitoringBatchRef,
+    });
+    expect(supplement.result.kind).toBe("succeeded");
+    const independentEvidence = await register(
+      "c14-independent-evidence",
+      [
+        sample(6, 12, {
+          evidenceReferences: [
+            {
+              ...evidence,
+              locator: {
+                sourceSegmentId: `${sourceVersionRef.reference.entityId}-chapter_1-segment_2`,
+              },
+            },
+          ],
+        }),
+      ],
+      { kind: "original" },
+    );
+    expect(independentEvidence.result.kind).toBe("succeeded");
+    expect(independentEvidence.result).not.toEqual(batch);
+    // 固定记录时间碰撞，冻结仍应采用后登记的更正版本。
+    await fixture.postgres.adminPool.query(
+      "UPDATE business.monitoring_sample_versions SET recorded_at = (SELECT min(recorded_at) FROM business.monitoring_sample_versions) WHERE sampled_at = $1",
+      ["2030-01-01T00:00:09.000Z"],
+    );
+    await fixture.postgres.adminPool.query(
+      "ALTER TABLE audit.entries ADD CONSTRAINT c14_reject_audit CHECK (command_id <> 'c14-audit-failure')",
+    );
+    try {
+      const failed = await register("c14-audit-failure", [sample(3, 6)], {
+        kind: "supplement",
+        priorBatchRef: batch.result.monitoringBatchRef,
+      });
+      expect(failed.result.kind).toBe("failed");
+      const facts = await fixture.postgres.adminPool.query(
+        "SELECT (SELECT count(*)::int FROM business.monitoring_batches WHERE delivery_key = 'c14-audit-failure') AS batches, (SELECT count(*)::int FROM business.command_receipts WHERE command_id = 'c14-audit-failure') AS receipts",
+      );
+      expect(facts.rows).toEqual([{ batches: 0, receipts: 0 }]);
+    } finally {
+      await fixture.postgres.adminPool.query(
+        "ALTER TABLE audit.entries DROP CONSTRAINT c14_reject_audit",
+      );
+    }
+    const beforeInvalid = await fixture.postgres.adminPool.query(
+      "SELECT count(*)::int AS count FROM business.monitoring_batches",
+    );
+    for (const [id, invalid] of [
+      ["unknown-field", [sample(4, 8, { unknown: true })]],
+      ["duplicate-time", [sample(4, 8), sample(4, 8)]],
+      ["unordered", [sample(4, 8), sample(3, 6)]],
+      ["unknown-unit", [sample(4, 8, { unit: "unknown" })]],
+      ["no-evidence", [sample(4, 8, { evidenceReferences: [] })]],
+      ["out-of-window", [sample(12, 24)]],
+      ["non-finite", [sample(4, Number.POSITIVE_INFINITY)]],
+      ["line-limit", [sample(4, 8, { sourceSampleKey: "x".repeat(16_385) })]],
+    ] as const) {
+      const rejected = await register(`c14-invalid-${id}`, [...invalid], { kind: "original" });
+      expect(rejected.result.kind).toBe("failed");
+    }
+    expect(
+      (
+        await register(
+          "c14-invalid-utf8",
+          [sample(4, 8)],
+          { kind: "original" },
+          new Uint8Array([0xc0, 0xaf]),
+        )
+      ).result.kind,
+    ).toBe("failed");
+    expect(
+      (
+        await fixture.postgres.adminPool.query(
+          "SELECT count(*)::int AS count FROM business.monitoring_batches",
+        )
+      ).rows,
+    ).toEqual(beforeInvalid.rows);
+    const nextAuth = await authorization(
+      "c14-freeze-after",
+      "engineering-data.monitoring-snapshot",
+      [sourceVersionRef],
+    );
+    const nextCommand = {
+      commandId: "c14-freeze-after",
+      idempotencyKey: "c14-freeze-after",
+      projectId,
+      actorId: managerId,
+      issuedAt: now,
+      authorization: nextAuth,
+      kind: "monitoring-snapshot" as const,
+      payload: {
+        monitoringSeriesRef: seriesRef,
+        cutoff: "2030-01-01T00:00:10.000Z",
+        availabilityPolicyRef: { entityId: "c14-policy", versionId: "1" },
+      },
+    };
+    const next = await fixture.registry.freeze(nextCommand);
+    expect(next.kind).toBe("succeeded");
+    expect(await fixture.registry.freeze(nextCommand)).toEqual(next);
+    const after = await fixture.monitoringStore.resolveSnapshotQuery({
+      queryResultRef,
+      invocationId: "c14-query",
+      projectId,
+      actorId: managerId,
+      requestedAt: now,
+      authorization: queryAuth,
+    });
+    expect(after).toEqual(resolved);
+    if (next.kind !== "succeeded") throw new Error("missing new snapshot");
+    const points = await fixture.postgres.adminPool.query<{ value: number }>(
+      "SELECT canonical_value AS value FROM business.monitoring_sample_versions s JOIN business.monitoring_snapshot_members m ON m.sample_version_id = s.sample_version_id WHERE m.snapshot_id = $1 AND s.sampled_at = $2",
+      [next.result.monitoringSnapshotRef.reference.entityId, "2030-01-01T00:00:09.000Z"],
+    );
+    expect(points.rows).toEqual([{ value: 99 }]);
+    const empty = await fixture.registry.freeze({
+      ...nextCommand,
+      commandId: "c14-empty",
+      idempotencyKey: "c14-empty",
+      authorization: await authorization("c14-empty", "engineering-data.monitoring-snapshot", [
+        sourceVersionRef,
+      ]),
+      payload: { ...nextCommand.payload, cutoff: "2029-12-31T23:59:59.000Z" },
+    });
+    expect(empty.kind).toBe("succeeded");
+    if (empty.kind !== "succeeded") throw new Error("missing empty snapshot");
+    const emptyRow = await fixture.postgres.adminPool.query(
+      "SELECT availability FROM business.monitoring_snapshots WHERE snapshot_id = $1",
+      [empty.result.monitoringSnapshotRef.reference.entityId],
+    );
+    expect(emptyRow.rows).toEqual([{ availability: "unavailable" }]);
   });
 
   it("requires a correction predecessor to contain the corrected sample time", async () => {

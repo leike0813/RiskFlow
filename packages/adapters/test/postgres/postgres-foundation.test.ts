@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { Pool } from "pg";
+import { sql } from "kysely";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 
@@ -394,6 +395,25 @@ describe("PostgreSQL foundation", () => {
     });
     return { command, commit };
   };
+
+  it.each(["read committed", "repeatable read", "serializable"] as const)(
+    "uses the requested %s transaction isolation",
+    async (isolationLevel) => {
+      const suffix = nextId("isolation");
+      const command = makeCommand(suffix);
+      await transactionUnit!.execute(
+        command,
+        async (context) => {
+          const result = await sql<{
+            transaction_isolation: string;
+          }>`SHOW transaction_isolation`.execute(getPostgresTransaction(context));
+          expect(result.rows[0]?.transaction_isolation).toBe(isolationLevel);
+          return makeCommit(command, suffix, 0);
+        },
+        { isolationLevel },
+      );
+    },
+  );
 
   beforeAll(async () => {
     fixture = await startPostgresFixture();

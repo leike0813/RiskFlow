@@ -120,9 +120,9 @@ export class PostgresTransactionUnit implements TransactionUnitV1 {
     const payloadSha256 = sha256CanonicalJson(validCommand.payload);
 
     try {
-      const transactionBuilder = this.#db.transaction();
+      let transactionBuilder = this.#db.transaction();
       if (options?.isolationLevel !== undefined) {
-        transactionBuilder.setIsolationLevel(options.isolationLevel);
+        transactionBuilder = transactionBuilder.setIsolationLevel(options.isolationLevel);
       }
       return await transactionBuilder.execute(async (transaction) => {
         await transaction

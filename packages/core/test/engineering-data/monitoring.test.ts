@@ -130,4 +130,64 @@ describe("C14 monitoring features", () => {
     expect(computed.availability).toBe("unavailable");
     expect(computed.features.shortTermSlope.status).toBe("unavailable");
   });
+
+  it.each([1, 2])("cross-checks the four features for a quadratic scaled by %s", (scale) => {
+    const input = {
+      samples: [1, 2, 3, 4, 5].map((t) => sampleAt(t, scale * t * t)),
+      cutoff: "2030-01-01T00:00:05.000Z",
+      canonicalUnit: "mm",
+      policy: MonitoringAvailabilityPolicyV1Schema.parse({ ...policy, windowDurationMs: 5_000 }),
+    };
+    const result = computeMonitoringFeatures(input);
+    // t²: OLS 斜率 = 6；相邻斜率 3,5,7,9 的 OLS 斜率 = 2。
+    expect(result.features.shortTermSlope.value).toBeCloseTo(6 * scale, 10);
+    expect(result.features.acceleration.value).toBeCloseTo(2 * scale, 10);
+    // 去均值后 Hann 窗序列为 [0,-3.5,-2,2.5,0]，正频率主峰为 k=1。
+    expect(result.features.dominantFrequency.value).toBeCloseTo(1 / 5, 10);
+    // 前序基线 [9,16]：median=12.5，MAD=3.5；当前值 25。
+    expect(result.features.anomalyScore.value).toBeCloseTo(12.5 / (1.4826 * 3.5), 10);
+    expect(computeMonitoringFeatures(input)).toEqual(result);
+  });
+
+  it("keeps constant values and uses the MAD floor while reporting partial availability", () => {
+    const constant = computeMonitoringFeatures({
+      samples: [1, 2, 3, 4, 5].map((t) => sampleAt(t, 7)),
+      cutoff: "2030-01-01T00:00:05.000Z",
+      canonicalUnit: "mm",
+      policy: MonitoringAvailabilityPolicyV1Schema.parse({ ...policy, windowDurationMs: 5_000 }),
+    });
+    expect(constant.availability).toBe("partial");
+    expect(constant.features.dominantFrequency.reasonCode).toBe("no-dominant-frequency");
+    expect(constant.features.anomalyScore.value).toBe(0);
+    const short = computeMonitoringFeatures({
+      samples: [sampleAt(3, 7), sampleAt(4, 7), sampleAt(5, 8)],
+      cutoff: "2030-01-01T00:00:05.000Z",
+      canonicalUnit: "mm",
+      policy: MonitoringAvailabilityPolicyV1Schema.parse({
+        ...policy,
+        windowDurationMs: 5_000,
+        slopeWindowSize: 2,
+      }),
+    });
+    expect(short.availability).toBe("partial");
+    expect(short.features.shortTermSlope.value).toBe(1);
+    expect(short.features.acceleration.status).toBe("unavailable");
+    expect(short.features.anomalyScore.value).toBe(10);
+    expect(short.alignedPoints.at(-1)?.value).toBe(8);
+  });
+
+  it("chooses the lowest frequency when positive-frequency powers tie", () => {
+    const result = computeMonitoringFeatures({
+      // 去均值、Hann 加窗后只有一个非零项，全部频点功率相同。
+      samples: [0, 2, 1, 1].map((value, index) => sampleAt(index + 1, value)),
+      cutoff: "2030-01-01T00:00:04.000Z",
+      canonicalUnit: "mm",
+      policy: MonitoringAvailabilityPolicyV1Schema.parse({
+        ...policy,
+        windowDurationMs: 4_000,
+        frequencyWindowSize: 4,
+      }),
+    });
+    expect(result.features.dominantFrequency.value).toBe(1 / 4);
+  });
 });

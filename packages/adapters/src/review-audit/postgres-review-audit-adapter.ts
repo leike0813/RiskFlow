@@ -17,6 +17,7 @@ import {
 import {
   createPendingReviewTask,
   reviewTargetEquals,
+  reviewTaskRefEquals,
   supersedeReviewTask,
   validateReviewDecision,
   ReviewRejectionAuditV1Schema,
@@ -34,16 +35,22 @@ import {
 } from "@riskflow/core/persistence";
 import {
   MODULE_BRANCH_CAPABILITY_V1,
+  KnowledgeRevisionApprovalProofQueryV1Schema,
+  KnowledgeRevisionApprovalProofResultV1Schema,
   ReviewDecisionCommandV1Schema,
   ReviewDecisionResultV1Schema,
   ReviewDecisionRefV1Schema,
+  ReviewDecisionV1Schema,
   ReviewRequestResultV1Schema,
   ReviewRequestV1Schema,
+  ReviewTargetRefV1Schema,
   ReviewTaskRefV1Schema,
   TraceQueryV1Schema,
   TraceResultV1Schema,
   type AuthorizationContextV1,
   type ContractReferenceV1,
+  type KnowledgeRevisionApprovalProofQueryV1,
+  type KnowledgeRevisionApprovalProofResultV1,
   type ModuleBranchV1,
   type ModuleErrorV1,
   type ReviewAuditPortV1,
@@ -185,6 +192,13 @@ const referenceKey = (reference: ContractReferenceV1): { entityId: string; versi
   "reference" in reference
     ? reference.reference
     : { entityId: reference.eventId, versionId: String(reference.eventVersion) };
+
+const versionedRefEquals = (
+  left: { readonly reference: { readonly entityId: string; readonly versionId: string } },
+  right: { readonly reference: { readonly entityId: string; readonly versionId: string } },
+): boolean =>
+  left.reference.entityId === right.reference.entityId &&
+  left.reference.versionId === right.reference.versionId;
 
 const taskFromRow = (row: Selectable<ReviewTaskRow>): ReviewTaskStateV1 =>
   ReviewTaskStateV1Schema.parse({
@@ -571,6 +585,150 @@ export class PostgresReviewAuditAdapter implements ReviewAuditPortV1 {
           branch: "review-audit.decide-review",
           causalRunId,
           command: valid,
+        }),
+      };
+    }
+  }
+
+  async verifyKnowledgeRevisionApproval(
+    query: KnowledgeRevisionApprovalProofQueryV1,
+  ): Promise<KnowledgeRevisionApprovalProofResultV1> {
+    const parsed = KnowledgeRevisionApprovalProofQueryV1Schema.safeParse(query);
+    if (!parsed.success) {
+      return {
+        kind: "failed",
+        error: moduleError({ code: "UNSUPPORTED_CONTRACT", causalRunId: "review-approval-proof" }),
+      };
+    }
+    const valid = parsed.data;
+    try {
+      await this.#verify(
+        valid.authorization,
+        valid.projectId,
+        valid.queryId,
+        "review-audit.verify-knowledge-revision-approval",
+      );
+      const row = await this.#db
+        .selectFrom("business.review_decisions as decision")
+        .innerJoin("business.review_tasks as task", (join) =>
+          join
+            .onRef("task.review_task_id", "=", "decision.review_task_id")
+            .onRef("task.project_id", "=", "decision.project_id"),
+        )
+        .select([
+          "decision.review_decision_id as decisionId",
+          "decision.version_id as decisionVersionId",
+          "decision.project_id as decisionProjectId",
+          "decision.review_task_id as decisionTaskId",
+          "decision.review_decision_ref as decisionRef",
+          "decision.review_type as decisionType",
+          "decision.review_task_ref as decisionTaskRef",
+          "decision.target_ref as decisionTargetRef",
+          "decision.decision as decision",
+          "decision.decided_at as decisionAt",
+          "task.review_task_id as taskId",
+          "task.version_id as taskVersionId",
+          "task.project_id as taskProjectId",
+          "task.review_type as taskType",
+          "task.target_kind as taskTargetKind",
+          "task.target_entity_id as taskTargetEntityId",
+          "task.target_version_id as taskTargetVersionId",
+          "task.review_task_ref as taskRef",
+          "task.target_ref as taskTargetRef",
+          "task.status as taskStatus",
+          "task.decision_ref as taskDecisionRef",
+          "task.decided_at as taskDecidedAt",
+        ])
+        .where("decision.project_id", "=", valid.projectId)
+        .where(
+          "decision.review_decision_id",
+          "=",
+          valid.payload.reviewDecisionRef.reference.entityId,
+        )
+        .where("decision.version_id", "=", valid.payload.reviewDecisionRef.reference.versionId)
+        .executeTakeFirst();
+
+      if (row === undefined) {
+        return KnowledgeRevisionApprovalProofResultV1Schema.parse({
+          kind: "succeeded",
+          result: { kind: "not-approved", reason: "decision-not-found" },
+        });
+      }
+
+      const decisionRef = ReviewDecisionRefV1Schema.parse(row.decisionRef);
+      const taskRef = ReviewTaskRefV1Schema.parse(row.taskRef);
+      const decisionTaskRef = ReviewTaskRefV1Schema.parse(row.decisionTaskRef);
+      const decisionTargetRef = ReviewTargetRefV1Schema.parse(row.decisionTargetRef);
+      const taskTargetRef = ReviewTargetRefV1Schema.parse(row.taskTargetRef);
+      const decision = ReviewDecisionV1Schema.parse(row.decision);
+      const taskDecisionRef =
+        row.taskDecisionRef === null
+          ? undefined
+          : ReviewDecisionRefV1Schema.parse(row.taskDecisionRef);
+      if (taskDecisionRef === undefined) {
+        throw new TypeError("decided review task lacks a decision reference");
+      }
+
+      if (
+        row.decisionId !== valid.payload.reviewDecisionRef.reference.entityId ||
+        row.decisionVersionId !== valid.payload.reviewDecisionRef.reference.versionId ||
+        row.decisionProjectId !== valid.projectId ||
+        row.taskProjectId !== valid.projectId ||
+        row.decisionTaskId !== row.taskId ||
+        row.taskId !== taskRef.reference.entityId ||
+        row.taskVersionId !== taskRef.reference.versionId ||
+        row.taskType !== taskRef.reviewType ||
+        row.taskTargetKind !== taskRef.targetRef.kind ||
+        row.taskTargetEntityId !== taskRef.targetRef.reference.entityId ||
+        row.taskTargetVersionId !== taskRef.targetRef.reference.versionId ||
+        row.decisionType !== decision.reviewType ||
+        row.taskStatus !== "decided" ||
+        row.taskDecidedAt === null ||
+        row.taskDecisionRef === null ||
+        !versionedRefEquals(decisionRef, valid.payload.reviewDecisionRef) ||
+        !versionedRefEquals(taskDecisionRef, valid.payload.reviewDecisionRef) ||
+        !reviewTaskRefEquals(decisionTaskRef, taskRef) ||
+        !reviewTargetEquals(taskTargetRef, taskRef.targetRef) ||
+        !reviewTargetEquals(decisionTargetRef, taskTargetRef) ||
+        asIso(row.taskDecidedAt) !== asIso(row.decisionAt)
+      ) {
+        throw new TypeError("review approval proof facts are inconsistent");
+      }
+      if (!reviewTargetEquals(taskTargetRef, valid.payload.revisionRef)) {
+        return KnowledgeRevisionApprovalProofResultV1Schema.parse({
+          kind: "succeeded",
+          result: { kind: "not-approved", reason: "target-mismatch" },
+        });
+      }
+      if (
+        taskRef.reviewType !== "knowledge-revision" ||
+        decision.reviewType !== "knowledge-revision"
+      ) {
+        throw new TypeError("review approval proof type is inconsistent");
+      }
+      if (decision.kind !== "approve-publication") {
+        return KnowledgeRevisionApprovalProofResultV1Schema.parse({
+          kind: "succeeded",
+          result: { kind: "not-approved", reason: "decision-not-approval" },
+        });
+      }
+
+      return KnowledgeRevisionApprovalProofResultV1Schema.parse({
+        kind: "succeeded",
+        result: {
+          kind: "approved",
+          revisionRef: valid.payload.revisionRef,
+          reviewTaskRef: taskRef,
+          reviewDecisionRef: decisionRef,
+          decidedAt: asIso(row.decisionAt),
+        },
+      });
+    } catch (error) {
+      return {
+        kind: "failed",
+        error: await this.#mapError(error, {
+          branch: "review-audit.verify-knowledge-revision-approval",
+          causalRunId: valid.queryId,
         }),
       };
     }

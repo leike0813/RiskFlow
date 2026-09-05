@@ -32,9 +32,13 @@ import {
   KnowledgeGovernanceCommandV1Schema,
   KnowledgeGovernanceCommandResultV1Schema,
   KnowledgeGovernanceSuccessV1Schema,
+  KnowledgeRevisionApprovalProofQueryV1Schema,
+  KnowledgeRevisionApprovalProofResultV1Schema,
+  KnowledgeRevisionApprovalProofV1Schema,
   KnowledgeResolutionCommandV1Schema,
   KnowledgeResolutionSuccessV1Schema,
   KnowledgeRetrievalQueryV1Schema,
+  MODULE_BRANCH_CAPABILITY_V1,
   ModuleCapabilityV1Schema,
   ModuleErrorV1Schema,
   OpenWarningCommandV1Schema,
@@ -46,6 +50,7 @@ import {
   ReviewDecisionCommandV1Schema,
   ReviewDecisionV1Schema,
   ReviewRequestV1Schema,
+  type ReviewAuditPortV1,
   RiskAssessmentRecordRefV1Schema,
   RiskInputVersionRefV1Schema,
   RunSubscriptionRequestV1Schema,
@@ -570,6 +575,13 @@ describe("module interface contracts", () => {
           includeEvidenceSummary: true,
         }),
       ],
+      [
+        KnowledgeRevisionApprovalProofQueryV1Schema,
+        query("verify-knowledge-revision-approval", {
+          revisionRef: version("knowledge-revision"),
+          reviewDecisionRef: version("review-decision"),
+        }),
+      ],
     ] as const;
 
     for (const [schema, input] of domainCases) {
@@ -591,6 +603,76 @@ describe("module interface contracts", () => {
         }),
       }).success,
     ).toBe(false);
+  });
+
+  it("keeps knowledge revision approval proof strict and closed", () => {
+    const validQuery = query("verify-knowledge-revision-approval", {
+      revisionRef: version("knowledge-revision"),
+      reviewDecisionRef: version("review-decision"),
+    });
+    expect(MODULE_BRANCH_CAPABILITY_V1["review-audit.verify-knowledge-revision-approval"]).toBe(
+      "review-audit.read",
+    );
+    expect(KnowledgeRevisionApprovalProofQueryV1Schema.safeParse(validQuery).success).toBe(true);
+    expect(
+      KnowledgeRevisionApprovalProofQueryV1Schema.safeParse({
+        ...validQuery,
+        extra: true,
+      }).success,
+    ).toBe(false);
+    expect(
+      KnowledgeRevisionApprovalProofQueryV1Schema.safeParse({
+        ...validQuery,
+        projectId: "project-2",
+      }).success,
+    ).toBe(false);
+    expect(
+      KnowledgeRevisionApprovalProofQueryV1Schema.safeParse({
+        ...validQuery,
+        actorId: "actor-2",
+      }).success,
+    ).toBe(false);
+    expect(
+      KnowledgeRevisionApprovalProofQueryV1Schema.safeParse({
+        ...validQuery,
+        authorization: {
+          ...validQuery.authorization,
+          grantedCapabilities: ["review-audit.request"],
+        },
+      }).success,
+    ).toBe(false);
+
+    const approved = {
+      kind: "approved" as const,
+      revisionRef: version("knowledge-revision"),
+      reviewTaskRef: knowledgeReviewTaskRef,
+      reviewDecisionRef: version("review-decision"),
+      decidedAt: later,
+    };
+    expect(KnowledgeRevisionApprovalProofV1Schema.safeParse(approved).success).toBe(true);
+    expect(
+      KnowledgeRevisionApprovalProofResultV1Schema.safeParse({
+        kind: "succeeded",
+        result: approved,
+      }).success,
+    ).toBe(true);
+    expect(
+      KnowledgeRevisionApprovalProofResultV1Schema.safeParse({
+        kind: "succeeded",
+        result: { ...approved, decision: { kind: "approve-publication" } },
+      }).success,
+    ).toBe(false);
+    expect(
+      KnowledgeRevisionApprovalProofResultV1Schema.safeParse({
+        kind: "succeeded",
+        result: { kind: "not-approved", reason: "decision-not-found", extra: true },
+      }).success,
+    ).toBe(false);
+
+    const requiresApprovalProofPort = (
+      port: ReviewAuditPortV1,
+    ): ReviewAuditPortV1["verifyKnowledgeRevisionApproval"] => port.verifyKnowledgeRevisionApproval;
+    expect(requiresApprovalProofPort).toBeTypeOf("function");
   });
 
   it("keeps method success results aligned with every declared branch", () => {

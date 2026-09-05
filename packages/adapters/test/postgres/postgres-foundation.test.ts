@@ -39,7 +39,9 @@ import * as agentTaskRuntimeMigration from "../../src/postgres/migrations/agent-
 import * as agentProposalArtifactRefMigration from "../../src/postgres/migrations/agent-task/deliver-unified-bounded-agent-runtime/000006_agent_proposal_artifact_ref.js";
 import * as governedDefinitionLifecycleMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-governed-definition-lifecycle/000007_governed_definition_lifecycle.js";
 import * as engineeringContextSourceMigration from "../../src/postgres/migrations/engineering-data/deliver-engineering-context-and-source-registry/000008_engineering_context_source_registry.js";
+import * as structuredDocumentConversionMigration from "../../src/postgres/migrations/engineering-data/deliver-structured-document-conversion/000009_structured_document_conversion.js";
 import * as monitoringBatchesMigration from "../../src/postgres/migrations/engineering-data/deliver-monitoring-batches-snapshots-and-features/000011_monitoring_batches_snapshots_features.js";
+
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
 import * as agentTaskFixtureMigration from "./fixtures/migrations/agent-task/deliver-unified-bounded-agent-runtime/900002_agent_task_fixture.js";
 
@@ -284,6 +286,15 @@ const testMigrationManifest = [
       "000008_engineering-data_deliver-engineering-context-and-source-registry_engineering_context_source_registry",
     sequence: 8,
     module: engineeringContextSourceMigration,
+  },
+  {
+    root: "production",
+    relativePath:
+      "engineering-data/deliver-structured-document-conversion/000009_structured_document_conversion.ts",
+    migrationName:
+      "000009_engineering-data_deliver-structured-document-conversion_structured_document_conversion",
+    sequence: 9,
+    module: structuredDocumentConversionMigration,
   },
   {
     root: "production",

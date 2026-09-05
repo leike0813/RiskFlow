@@ -56,6 +56,10 @@ import {
   RunSubscriptionRequestV1Schema,
   StartAgentTaskCommandV1Schema,
   StartWorkflowRunCommandV1Schema,
+  StructuredDocumentConversionCommandV1Schema,
+  StructuredDocumentConversionInputV1Schema,
+  StructuredDocumentConversionRefV1Schema,
+  StructuredDocumentConversionResultV1Schema,
   TraceQueryV1Schema,
   TraceSuccessV1Schema,
   WarningResponseRecordCommandV1Schema,
@@ -235,6 +239,65 @@ describe("module interface contracts", () => {
     expect(ModuleCapabilityV1Schema.safeParse("database.query").success).toBe(false);
     expect(AgentTaskTypeV1Schema.safeParse("retrieval-review").success).toBe(true);
     expect(AgentTaskTypeV1Schema.safeParse("free-form").success).toBe(false);
+  });
+
+  it("keeps structured conversion inputs and results closed", () => {
+    const conversionRef = StructuredDocumentConversionRefV1Schema.parse(
+      version("structured-document-conversion", "conversion-1"),
+    );
+    const base = {
+      schemaVersion: "1" as const,
+      conversionId: "conversion-1",
+      idempotencyKey: "conversion-idempotency-1",
+      runId: "run-1",
+      threadId: "thread-1",
+      issuedAt: now,
+      deadlineAt: later,
+      projectId: "project-1",
+      actorId: "actor-1",
+      authorization,
+      sourceVersionRef,
+      sourceArtifactRef: version("content-artifact", "source-artifact"),
+      mediaType: "application/octet-stream",
+      conversionPolicyRef: policyRef,
+      qualityPolicyRef: policyRef,
+      converterDeploymentRef: policyRef,
+    };
+    for (const kind of ["docx", "text-pdf", "xlsx", "csv", "ocr-layout"] as const) {
+      expect(
+        StructuredDocumentConversionCommandV1Schema.safeParse({ ...base, input: { kind } }).success,
+      ).toBe(true);
+      expect(StructuredDocumentConversionInputV1Schema.safeParse({ kind }).success).toBe(true);
+    }
+    expect(
+      StructuredDocumentConversionCommandV1Schema.safeParse({
+        ...base,
+        input: { kind: "cad" },
+      }).success,
+    ).toBe(false);
+    expect(
+      StructuredDocumentConversionCommandV1Schema.safeParse({
+        ...base,
+        input: { kind: "csv", extra: true },
+      }).success,
+    ).toBe(false);
+    const result = {
+      kind: "succeeded" as const,
+      result: {
+        conversionRef,
+        jsonLdArtifactRef: version("content-artifact", "jsonld-artifact"),
+        sourceSegmentSetRef: version("source-segment-set", "segments-1"),
+      },
+    };
+    expect(StructuredDocumentConversionResultV1Schema.safeParse(result).success).toBe(true);
+    for (const extra of ["body", "jsonLd", "url"] as const) {
+      expect(
+        StructuredDocumentConversionResultV1Schema.safeParse({
+          ...result,
+          result: { ...result.result, [extra]: "forbidden" },
+        }).success,
+      ).toBe(false);
+    }
   });
 
   it("domain ports: accepts every declared branch and rejects open actions", () => {

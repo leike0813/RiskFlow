@@ -18,12 +18,14 @@
 
 ## 2. 固定角色与模型
 
-| 角色 | 模型与强度 | 负责 | 不负责 |
-| --- | --- | --- | --- |
-| 主调度 Agent | `gpt-5.6-luna` / `max` | 维护执行图；创建 Run/Task/worktree；监控与问答；审阅范围；提交、合并、清理；处理依赖清单与锁文件 | 起草 OpenSpec change；替代验证 Agent 做正式验收；编写生产代码 |
-| 规划与验证 Agent | `gpt-5.6-sol` / `high` | 起草 proposal/specs/design/tasks；拆解执行任务；核对专利与主 specs；实现后独立验证并写 verification 报告；对自己发现的局部实现缺陷在当前未结束的验证任务内直接修复并完成局部验证 | 首轮生产实现；依赖安装；归档；调度监控；不得改变已批准目标、接口设计或范围 |
-| 代码执行 Agent | `gpt-5.6-luna` / `max` | 按已批准 change 使用 `openspec-apply-change` 实现；运行最小验证；当 Sol 无法在受限边界修复时承担升级修复 | 更改规划、接口、依赖、范围；归档；Git 提交 |
-| 简单杂活 Agent | OMP + `minimax-code-cn/MiniMax-M3` / `high` | 无判断冲突的机械归档、资料搜索、证据整理、tracker 更新 | change 起草、架构设计、任务规划、代码/测试/配置/迁移、冲突处理、验收判断 |
+
+| 角色          | 模型与强度                                       | 负责                                                                                                               | 不负责                                        |
+| ----------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| 主调度 Agent   | 推荐：`gpt-5.6-luna`/ `max`（非固定，可以是任何有长程agent能力的模型）                   | 维护执行图；创建 Run/Task/worktree；监控与问答；审阅范围；提交、合并、清理；处理依赖清单与锁文件                                                        | 起草 OpenSpec change；替代验证 Agent 做正式验收；编写生产代码 |
+| 规划与验证 Agent | `gpt-5.6-sol` / `high`                      | 起草 proposal/specs/design/tasks；拆解执行任务；核对专利与主 specs；实现后独立验证并写 verification 报告；对自己发现的局部实现缺陷在当前未结束的验证任务内直接修复并完成局部验证 | 首轮生产实现；依赖安装；归档；调度监控；不得改变已批准目标、接口设计或范围      |
+| 代码执行 Agent  | `gpt-5.6-luna` / `max`                      | 按已批准 change 使用 `openspec-apply-change` 实现；运行最小验证；当 Sol 无法在受限边界修复时承担升级修复                                          | 更改规划、接口、依赖、范围；归档；Git 提交                    |
+| 简单杂活 Agent  | OMP + `minimax-code-cn/MiniMax-M3` / `high` | 无判断冲突的机械归档、资料搜索、证据整理、tracker 更新                                                                                  | change 起草、架构设计、任务规划、代码/测试/配置/迁移、冲突处理、验收判断  |
+
 
 角色以任务性质区分，同一模型不能借身份重叠绕过分工。主调度 Agent 若发现需要语义规划或正式验证，必须派给 Sol high；Sol 复核发现已批准 change 内的局部实现缺陷时，必须在当前尚未结束的验证任务中直接修复并完成局部验证，随后由主调度 Agent审阅和收口；只有超出修复边界时才退回主调度 Agent重新安排，不再派 Sol 做第二次复检。
 
@@ -171,6 +173,7 @@ docs(openspec): 归档 <change>
 5. archive 提交后用 `git merge-base --is-ancestor <feature-head> main` 确认实现已集成；按 §6.1 完成 worker/terminal 收口和 worktree 回收。
 
 禁止使用 `git reset --hard`、`git checkout --`、`git clean` 或未解析变量的删除命令。worktree 回收默认不使用强制选项；只有用户明确授权丢弃已确认的临时/无效未提交产物时，才可按 §6.1 使用 Orca 的 `--force`，不得借此掩盖未知改动。主调度 Agent不从一个 worktree 复制未提交文件到另一个；需要共享时提交后 merge/cherry-pick，优先按既定分支合并。
+
 ### 6.1 Worktree 回收
 
 一个 change 完成并合并回 `main` 后，不再为观察或保留验证上下文长期占用 feature worktree。满足以下条件即进入回收：
@@ -191,7 +194,6 @@ orca worktree list --repo id:d4349f30-1c7e-4777-b16d-f259481b0121 --json
 ```
 
 回收必须使用完整 worktree ID，不能用 display name 猜测目标；回收后确认 Git 与 Orca 均无该 feature worktree。若存在已授权丢弃的已确认临时/无效产物，可将最后的 `worktree rm` 改为 `--force`，并在 Delivery 或协调记录中列出被丢弃内容；不得使用 `git clean` 或手工删除目录替代 Orca 回收。分支是否删除与 worktree 回收独立，按历史保留策略另行决定。
-
 
 ## 7. Orca 操作协议
 

@@ -32,6 +32,10 @@
       "types": "./dist/review-audit/index.d.ts",
       "import": "./dist/review-audit/index.js"
     },
+    "./knowledge-governance": {
+      "types": "./dist/knowledge-governance/index.d.ts",
+      "import": "./dist/knowledge-governance/index.js"
+    },
     "./agent-runtime": {
       "types": "./dist/agent-runtime/index.d.ts",
       "import": "./dist/agent-runtime/index.js"

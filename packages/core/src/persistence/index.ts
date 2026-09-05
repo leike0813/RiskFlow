@@ -5,5 +5,7 @@ export * from "./schema.js";
 export type {
   TransactionContextV1,
   TransactionHandlerV1,
+  TransactionIsolationLevelV1,
+  TransactionOptionsV1,
   TransactionUnitV1,
 } from "./transaction.js";

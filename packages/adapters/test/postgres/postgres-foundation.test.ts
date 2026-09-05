@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { Pool } from "pg";
+import { sql } from "kysely";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 
@@ -38,6 +39,7 @@ import * as agentTaskRuntimeMigration from "../../src/postgres/migrations/agent-
 import * as agentProposalArtifactRefMigration from "../../src/postgres/migrations/agent-task/deliver-unified-bounded-agent-runtime/000006_agent_proposal_artifact_ref.js";
 import * as governedDefinitionLifecycleMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-governed-definition-lifecycle/000007_governed_definition_lifecycle.js";
 import * as engineeringContextSourceMigration from "../../src/postgres/migrations/engineering-data/deliver-engineering-context-and-source-registry/000008_engineering_context_source_registry.js";
+import * as monitoringBatchesMigration from "../../src/postgres/migrations/engineering-data/deliver-monitoring-batches-snapshots-and-features/000011_monitoring_batches_snapshots_features.js";
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
 import * as agentTaskFixtureMigration from "./fixtures/migrations/agent-task/deliver-unified-bounded-agent-runtime/900002_agent_task_fixture.js";
 
@@ -284,6 +286,15 @@ const testMigrationManifest = [
     module: engineeringContextSourceMigration,
   },
   {
+    root: "production",
+    relativePath:
+      "engineering-data/deliver-monitoring-batches-snapshots-and-features/000011_monitoring_batches_snapshots_features.ts",
+    migrationName:
+      "000011_engineering-data_deliver-monitoring-batches-snapshots-and-features_monitoring_batches_snapshots_features",
+    sequence: 11,
+    module: monitoringBatchesMigration,
+  },
+  {
     root: "fixture",
     relativePath:
       "platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.ts",
@@ -384,6 +395,25 @@ describe("PostgreSQL foundation", () => {
     });
     return { command, commit };
   };
+
+  it.each(["read committed", "repeatable read", "serializable"] as const)(
+    "uses the requested %s transaction isolation",
+    async (isolationLevel) => {
+      const suffix = nextId("isolation");
+      const command = makeCommand(suffix);
+      await transactionUnit!.execute(
+        command,
+        async (context) => {
+          const result = await sql<{
+            transaction_isolation: string;
+          }>`SHOW transaction_isolation`.execute(getPostgresTransaction(context));
+          expect(result.rows[0]?.transaction_isolation).toBe(isolationLevel);
+          return makeCommit(command, suffix, 0);
+        },
+        { isolationLevel },
+      );
+    },
+  );
 
   beforeAll(async () => {
     fixture = await startPostgresFixture();

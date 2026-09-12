@@ -1227,6 +1227,8 @@ export interface StructuredDocumentConversionPortV1 {
 const KnowledgeDefinitionTypeValues = [
   "process-model",
   "risk-mechanism",
+  "standard-library",
+  "case-library",
   "retrieval-evidence-base",
   "indicator-system",
   "indicator-field-mapping",

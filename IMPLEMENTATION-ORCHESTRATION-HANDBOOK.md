@@ -21,7 +21,7 @@
 | 角色          | 模型与强度                                       | 负责                                                                                                               | 不负责                                        |
 | ----------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
 | 主调度 Agent   | 推荐：`commandcode/deepseek/deepseek-v4.1-flash`/ `high`                   | 维护执行图；创建 Run/Task/worktree；监控与问答；审阅范围；提交、合并、清理；处理依赖清单与锁文件                                                        | 起草 OpenSpec change；替代验证 Agent 做正式验收；编写生产代码 |
-| 规划与验证 Agent | Codex + `gpt-5.6-sol` / `high`                      | 起草 proposal/specs/design/implementation-plan/tasks；把已批准设计映射为代码施工图；核对专利与主 specs；实现后独立验证并写 verification 报告；对自己发现的局部实现缺陷在当前未结束的验证任务内直接修复并完成局部验证 | 首轮生产实现；依赖安装；归档；调度监控；不得改变已批准目标、接口设计或范围      |
+| 规划与验证 Agent | Codex + `gpt-5.6-sol` / `high`                      | 起草 proposal/specs/design/implementation-plan/tasks；把已批准设计映射为代码施工图；规划时核对项目来源约束与主 specs；实现后仅依据已批准 change、代码和证据独立验证并写 verification 报告；对自己发现的局部实现缺陷在当前未结束的验证任务内直接修复并完成局部验证 | 首轮生产实现；依赖安装；归档；调度监控；不得改变已批准目标、接口设计或范围      |
 | 代码执行 Agent  | OMP + `commandcode/deepseek/deepseek-v4.1-flash` / `max`                      | 按已批准 change 使用 `openspec-apply-change` 实现；运行最小验证；当 Sol 无法在受限边界修复时承担升级修复                                          | 更改规划、接口、依赖、范围；归档；Git 提交                    |
 | 简单杂活 Agent  | OMP + `minimax-code-cn/MiniMax-M3` / `high` | 无判断冲突的机械归档、资料搜索、证据整理、tracker 更新                                                                                  | change 起草、架构设计、任务规划、代码/测试/配置/迁移、冲突处理、验收判断  |
 
@@ -139,8 +139,7 @@ Sol high 必须先读：
 1. `AGENTS.md` 和本 handbook；
 2. 当前主 specs、直接依赖的归档 change；
 3. 路线中该 change 的行、依赖和所有权；
-4. 相关专利与研究方案；
-5. OpenSpec artifact instructions。
+4. OpenSpec artifact instructions。
 
 Sol 还必须读取本 change 将触及的生产代码、所有受影响接口调用方和现有测试，不能从规划文档推测代码现状。大型交付 change 使用 `riskflow-delivery`；`implementation-plan.md` 固定 base commit，并以 IP-ID 将每个 Requirement/Scenario、计划文件、现有符号、实现动作和可运行验证一一映射。module interface、Schema、状态、错误、权限、事务、审计、文件清单、依赖版本和测试层次仍在 design 中作出决定，施工图只说明这些决定如何落到当前代码。
 
@@ -381,7 +380,9 @@ M3 prompt 必须包含精确路径、确定步骤、禁止修改区域和升级�
 你是 Sol high 规划 Agent，只创建规划工件，不实现、不提交。固定输入为 <base-head>。
 先运行 openspec new change <change> --schema riskflow-delivery --json，再按该 workflow
 创建全部工件；先读取 AGENTS、handbook、路线、
-专利、主 specs、直接依赖归档 change、相关生产代码、全部受影响调用方和现有测试。
+`references/风险识别与评估规划事实源摘要.md`、主 specs、直接依赖归档 change、
+相关生产代码、全部受影响调用方和现有测试。项目技术来源只读取该摘要；
+原始 Office 文件和五份逐篇转换材料不进入任务上下文，发现摘要与主 specs 或代码冲突时 escalation。
 创建后运行 openspec status --change <change> --json，并确认 schemaName 为 riskflow-delivery。
 
 implementation-plan.md 是代码施工图。为每个实施切片分配 IP-ID，并映射精确文件、

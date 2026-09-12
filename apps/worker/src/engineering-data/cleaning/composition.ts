@@ -98,13 +98,13 @@ export const createPostgresDataCleaningComposition = (
   const access = storeOptions.access;
   const registry = new AgentTaskDefinitionRegistry();
   const agentTaskAdapter = new PostgresAgentTaskAdapter({
+    ...options.agentTask,
     db: storeOptions.db,
     registry,
     transactionUnit: storeOptions.transactionUnit,
     artifactStore: storeOptions.artifactStore,
     referenceGuard: storeOptions.artifactReferenceGuard,
     authorization: access,
-    ...options.agentTask,
   });
 
   const startCleaningTask = async (

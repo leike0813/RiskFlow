@@ -2,7 +2,7 @@
 
 见 [proposal.md](./proposal.md) 与 [扫描文档 OCR delta spec](./specs/data/scanned-document-ocr/spec.md)。C02 已冻结授权上下文、闭合错误、幂等和应用边界；C04 提供受权限保护的不可变内容/诊断工件；C05 的 llama.cpp 网关提供可参照但不可复用的部署、预算和协议隔离模式；C06 负责当前工程、空间和资料正文授权；C11 提供不可变资料版本、`SourceSegmentSetV1` 和 `registerSegments` 窄能力。
 
-固定规划基线 `290bc39616d5f6021cd1585305c815b14e866297` 已包含归档 C12 `deliver-structured-document-conversion`：`StructuredDocumentConversionPortV1` 已声明 `ocr-layout` 输入，`StructuredDocumentConversionAdapter.convert` 集中完成 C11 授权解析、C04 原始资料读取、业务幂等、JSON-LD/≤512 字符分块、结果工件写入、C11 `registerSegments`、事务、审计和结果重放。缺口位于 adapter 内部：`convert` 仍硬编码调用 `parseStructuredDocument`，而该函数对 `ocr-layout` 固定抛出 `OCR_DELEGATED_TO_C13`，没有把 OCR 私有 parser 送回同一 finalizer 的接缝。
+固定实现范围基线 `e0c928105de371668f7619145eb87a2272854b12` 已包含归档 C12 `deliver-structured-document-conversion`：`StructuredDocumentConversionPortV1` 已声明 `ocr-layout` 输入，`StructuredDocumentConversionAdapter.convert` 集中完成 C11 授权解析、C04 原始资料读取、业务幂等、JSON-LD/≤512 字符分块、结果工件写入、C11 `registerSegments`、事务、审计和结果重放。实现检查点 `66809f56d9e57428d0dd09c9b181643e9f409459` 已补入 OCR 私有 parser/finalizer 接缝，独立验证者的批准范围修复检查点为 `49ddda7b34a26569beae505153d72bcda3179fe7`；当前剩余缺口是 OCR 前授权归一、成功诊断耐久化和像素级中文样例证据。
 
 协调裁决允许 C13 在本 change 内对 C12 adapter 做最小非公共重构；进一步核对发现 C12 `NormalizedBlockV1`/`TextBlockV1`/JSON-LD 没有文本置信度，空 page-break 也无法把页面尺寸穿透到 JSON-LD，不能满足本 delta 已有 Scenario。协调随后裁决在本 change 内对 core DTO 增加向后兼容的可选 `confidence` 与 `pageExtents` 并由既有转换函数透传，不拆新 change；不得伪造正文，`packages/contracts/**` 与数据库仍不变。
 
@@ -33,6 +33,8 @@ C13 不实现第二个 `StructuredDocumentConversionPortV1`。composition root �
 
 `StructuredDocumentConversionAdapter.convert` 的既有顺序保持：严格解析和版本引用核对 → C11 `resolveSourceProcessingInput` 授权解析 → 资料/工件精确引用核对 → `#readExisting` 幂等预检与重放 → `#readInput` 受权读取并等待 C04 `verified`。只有完成这些步骤且 `input.kind === "ocr-layout"` 后才调用注入 parser；其它格式继续走 `parseStructuredDocument`，不得经过 OCR 网络、并发或质量逻辑。
 
+该顺序内增加一个只对 `ocr-layout` 生效的私有 `ocrAuthorizationDenied(command)` 拒绝归一：C11 返回的 `AUTHORIZATION_DENIED` 保持原类别；C11 已返回 source 后发现 command 与 source 的 source/version/artifact 精确引用不符、`ArtifactStore.open` 返回 `ARTIFACT_REFERENCE_NOT_FOUND`/`ARTIFACT_ACCESS_DENIED`，或打开后的 manifest artifact ref 不等于已授权 source artifact ref 时，均在 OCR 调用前返回同一不可重试 `AUTHORIZATION_DENIED` 公共类别，不写包含存在性细节的诊断。其它 `ArtifactStoreError` 继续按其可重试性和工件失败语义收口，media 不匹配仍是输入失败，非 OCR 格式完全保持 C12 既有错误行为。实现只复用现有 `ModuleErrorV1` 授权分支与 `ArtifactStoreError` 闭合码，不修改公共错误联合。
+
 **选项：**（A）C12/C13 各自定义转换接口；（B）C13 修改公共 contracts；（C）C12 唯一拥有入口和收口，C13 仅注入 parser。
 **决定：** C。它让新增代码停在协议边界，并保留一套授权、幂等、审计和持久化事实。
 
@@ -53,13 +55,17 @@ OCR parser output
   safeDiagnostic = 版本引用、计数、质量逐项结果
 
 C12 finalizer（唯一实现）
-  convertParsedDocument -> maxOutputBlocks -> JSON-LD content put
+  convertParsedDocument -> maxOutputBlocks
+  -> OCR normalization diagnostic put/open/verified
+  -> JSON-LD content put（parents 含 normalization diagnostic）
   -> C11 registerSegments -> conversion record/audit transaction -> result/replay
 ```
 
 `persistRawResponse` 是 C12 绑定当前 command/source/artifactStore 的闭包：它对每个收到的 HTTP 响应（含可重试服务错误）使用当前授权构造 C04 diagnostic put，parent 为原始 content 工件；写入成功后再以相同工程、主体与授权 `open`，在响应上限内读取并等待 `verified`，只把重读字节交给 OCR 私有 Schema。raw 工件使用 `ocr-raw-response-<conversionId>-attempt-<n>`，command/idempotency 后缀固定为 `:ocr-raw:<n>`，不得与最终失败诊断的 `:diagnostic` 键冲突。为让 JSON-LD/失败诊断引用全部已成立 raw 工件，现有 `artifactCommand` 的 parent 参数只从 `ContentArtifactRefV1[]` 最小放宽为 C04 已支持的 `ArtifactRefV1[]`；Schema、排序和去重仍由 C04 处理。C13 不自行拼 C04 命令、不直接调用 C11，也不持久化转换记录。
 
-现有 post-parse 代码只抽成 adapter 私有 `#finalizeParsedDocument`，接收 parser output 并继续使用 `convertParsedDocument`、`artifactCommand`、`toEvidenceReferences`、`toSourceSegments`、`#persist`。其 JSON-LD parent 合并原始 content 与 raw diagnostic；evidence 合并 finalizer 从 source segments 派生的引用和 parser 额外引用，均复用 C04 的排序去重函数。parser 完成但 finalizer 失败时，C12 失败诊断同时继承 raw diagnostic 和已成立 content 工件；不能把 raw diagnostic 填进成功记录的 `diagnosticRef`，因为该闭合联合明确禁止成功记录携带失败诊断。
+现有 post-parse 代码只抽成 adapter 私有 `#finalizeParsedDocument`，接收 parser output 并继续使用 `convertParsedDocument`、`artifactCommand`、`toEvidenceReferences`、`toSourceSegments`、`#persist`。仅当 `input.kind === "ocr-layout"` 时，finalizer 通过新私有 `#persistOcrNormalizationDiagnostic` 把 command 的 converter deployment/quality policy 引用和 parser 的 `safeDiagnostic` 原样封装为既有 C04 `diagnostic` 工件 `ocr-normalization-diagnostic-<conversionId>`，command/idempotency 后缀固定为 `:ocr-normalization-diagnostic`；页/区域/表格/单元格计数和质量逐项结果来自现有 `parsed.diagnostic`，完整 service/pipeline/model/resource 引用继续由 raw diagnostic parents 提供。该工件的 parents 为原始 content 与全部 raw diagnostics，并必须经新私有 `#readVerifiedDiagnostic` 以相同授权 `open`、有界读取和 `verified` 后，才能与原始 content、raw diagnostics 一起成为 JSON-LD parents；持久化或复验失败按 `OCR_ARTIFACT_PERSISTENCE_FAILED` 收口，不发布 JSON-LD 或登记资料段。非 OCR parser 的内存 diagnostic 不新增工件，保持 C12 行为。
+
+evidence 合并 finalizer 从 source segments 派生的引用和 parser 额外引用，parents/evidence 均复用 C04 的排序去重函数。parser 完成但 finalizer 失败时，C12 最终失败诊断继承全部已成立 raw/normalization diagnostic 和 content 工件；不能把这些 diagnostic 填进成功记录的 `diagnosticRef`，因为该闭合联合明确禁止成功记录携带失败诊断。成功诊断只由 JSON-LD parent 链到达，不新增成功记录字段、JSON-LD 字段、工件种类、数据库列或第二事实源。
 
 parser 抛出的错误只允许携带闭合 `code`、`retryable`、安全阶段、可选 `sourceSegmentId`、已成立 parent/evidence 和经过白名单的版本/计数/质量字段。`#finishFailure` 读取这些字段并生成唯一对外诊断；原始 HTTP 消息、响应正文和堆栈只留在 raw diagnostic。若 raw response 尚未耐久成立，则失败诊断只指向原始 content；若已成立，则 raw diagnostic 必须成为 parent。取消不回滚任何已成立工件。
 
@@ -115,7 +121,7 @@ C13 仓库不增加 Python/npm 依赖。TypeScript adapter 使用 Node.js 24 原
 
 C12 `#readInput` 已先校验来源工件与授权。官方 `/layout-parsing` 要求 JSON 内 Base64 文件，因此 OCR parser 只接收该方法在 `maxInputBytes` 内完成并等待 C04 `verified` 的字节，然后编码一次；超限在网络前失败。响应同样在 `maxResponseBytes` 内读取，立即交给 D-02 的 `persistRawResponse`，待 C12 写入并受权重读成功后才解析；规范化 C12 结果另存 content 工件、登记资料段并提交记录后才返回成功。
 
-默认请求关闭 `outputImages`、Markdown 图片等 C13 不消费的大型返回物，只请求结构化结果。PDF 页数在服务结果返回后必须小于等于 `maxPages` 并与 `dataInfo`/输入页数证据一致；无法证明完整页数时质量门失败。
+默认请求按 PaddleX 3.7 serving 请求 Schema 设置 `visualize: false` 与 `returnMarkdownImages: false`，关闭 C13 不消费的大型图片返回，只请求结构化结果。`outputImages` 是响应字段，不是请求开关，禁止发送。PDF 页数在服务结果返回后必须小于等于 `maxPages` 并与 `dataInfo`/输入页数证据一致；无法证明完整页数时质量门失败。
 
 **选项：**（A）新增自定义 multipart 代理；（B）无上限读入内存；（C）遵循官方 Base64 协议并设置严格输入/响应上限。  
 **决定：** C。已有官方服务即可满足目标；有界内存是明确上限，真实样例超过上限时再评估分片协议，不预建代理。
@@ -140,7 +146,7 @@ C12 `#readInput` 已先校验来源工件与授权。官方 `/layout-parsing` �
 
 实现不硬编码业务阈值。生产通用门只评估结构、置信度与非空覆盖；关键字段覆盖由验收 fixture 的版本化清单提供，清单项包含稳定字段 identity、规范化期望值和页/区域定位。比较只做 Unicode NFKC、首尾/连续空白规范化与全角半角归一，不做模糊猜词、LLM 修复或数值改写。每项输出 `passed/failed`、观测值、阈值和页/区域引用；失败保持原始响应/规范化候选工件，供 C15 后续判断，但不返回业务可用结果。
 
-真实脱敏样例优先。仓库暂缺甲方样例时，提交最小合成中文 PDF、PNG、JPEG 和同一份机器可读验收清单，并标注“合成样例、待甲方复核”；甲方样例到达后通过新的 fixture/策略版本补充，不覆盖旧证据。
+真实脱敏样例优先。仓库暂缺甲方样例时，测试内以手写 16×16 CJK 位图数据确定性绘制至少“扫描”两个汉字，并让 PDF、PNG、JPEG 三个构造器消费同一 320×200 灰度/RGB 扫描栅格；现有最小 baseline JPEG 只扩展为编码 8×8 常量灰度块的 DC 差值与 EOB，不引入字体、图像库或外部下载。验收清单固定字形集版本、文字、像素区域和三媒体尺寸，并把 JPEG 尺寸从占位的 16×16 校正为 320×200；fixture 测试同时断言字形笔画/留白像素、三个构造器确实消费该栅格、已提交文件逐字节等于构造结果，并继续标注“合成样例、待甲方复核”。甲方样例到达后通过新的 fixture/策略版本补充，不覆盖旧证据。
 
 ### D-09. 错误闭合映射到 C12，技术诊断只进工件
 
@@ -150,15 +156,17 @@ C13 adapter 内部错误码固定为：
 | --- | ---: | --- |
 | `OCR_AUTHORIZATION_DENIED` | false | `authorization` |
 | `OCR_INPUT_INVALID` / `OCR_MEDIA_TYPE_UNSUPPORTED` | false | `input` |
-| `OCR_DEPLOYMENT_NOT_FOUND` / `OCR_DEPLOYMENT_MISMATCH` | false | `deployment` |
+| `OCR_DEPLOYMENT_NOT_FOUND` | false | `deployment` |
+| `OCR_DEPLOYMENT_MISMATCH` | false | `deployment` |
 | `OCR_BUDGET_EXCEEDED` | false | `budget` |
 | `OCR_SERVICE_UNAVAILABLE` / `OCR_SERVICE_RATE_LIMITED` / `OCR_TIMEOUT` | true | `service` |
-| `OCR_PROTOCOL_INVALID` / `OCR_OUTPUT_INVALID` | false | `protocol` / `normalize` |
+| `OCR_PROTOCOL_INVALID` | false | `protocol` |
+| `OCR_OUTPUT_INVALID` | false | `normalize` |
 | `OCR_QUALITY_BLOCKED` | false | `quality` |
 | `OCR_ARTIFACT_PERSISTENCE_FAILED` | true | `artifact` |
 | `OCR_CANCELLED` | false | `control` |
 
-它们确定性映射为 C12 闭合转换错误；HTTP 状态、服务 `errorCode`、堆栈和原始消息只写诊断工件。授权/不存在对外不可区分。相同 `(projectId, conversionKind, idempotencyKey)` 与规范化 strict payload 哈希重放原结果；同键异载荷冲突。服务不可用、限流与超时只在单次 `convert` 内按冻结 `retryPolicyRef/maxAttempts/retryDelayMs` 重试，且每次保持原资料、部署、模型、策略、deadline 与资源引用；预算耗尽后由 C12 持久化最终失败，同键重放不再次联网。取消不重试，也不回滚已耐久工件。
+它们确定性映射为 C12 闭合转换错误；请求引用与冻结 deployment/quality 配置不匹配，或 C37 smoke 证据不能证明预置服务身份时，使用 `OCR_DEPLOYMENT_MISMATCH → deployment → false`。身份已匹配但 HTTP/JSON/响应 Schema 或服务协议级成功码违反冻结协议时，使用 `OCR_PROTOCOL_INVALID → protocol → false`；结构可以解析但页、区域、坐标、阅读顺序或表格不满足规范化不变量时，使用 `OCR_OUTPUT_INVALID → normalize → false`。HTTP 状态、服务 `errorCode`、堆栈和原始消息只写受保护诊断工件。授权/不存在按 D-01 对外不可区分。相同 `(projectId, conversionKind, idempotencyKey)` 与规范化 strict payload 哈希重放原结果；同键异载荷冲突。服务不可用、限流与超时只在单次 `convert` 内按冻结 `retryPolicyRef/maxAttempts/retryDelayMs` 重试，且每次保持原资料、部署、模型、策略、deadline 与资源引用；预算耗尽后由 C12 持久化最终失败，同键重放不再次联网。取消不重试，也不回滚已耐久工件。
 
 ### D-10. OCR 与 llama.cpp 使用独立实例级并发状态
 
@@ -168,7 +176,7 @@ C13 adapter 内部错误码固定为：
 
 ### D-11. 工件、权限、日志和指标不形成第二套事实
 
-原始响应使用 `diagnostic` 工件，body 是含版本引用、attempt、计数与原始响应的闭合 envelope，parent 为原始 content 工件；C12 JSON-LD `content` 工件的 parents 为原始 content 与本次调用全部已成立 raw diagnostics，evidence 为规范化后可成立的资料段引用。最终失败诊断把全部 raw diagnostics、已成立 JSON-LD content 等额外 parent/evidence 继续穿透。写入命令继承请求授权中的空间与资料 grant，不允许扩大。C04 清单、哈希与访问审计是耐久事实，C13 不增加数据库表、审计表或事件。
+原始响应使用 `diagnostic` 工件，body 是含版本引用、attempt、计数与原始响应的闭合 envelope，parent 为原始 content 工件；通过协议、结构和质量门后的 parser diagnostic 另写为 D-02 的 normalization `diagnostic` 工件，parents 为原始 content 与全部 raw diagnostics。C12 JSON-LD `content` 工件的 parents 为原始 content、全部 raw diagnostics 与 normalization diagnostic，evidence 为规范化后可成立的资料段引用。最终失败诊断把全部已成立 raw/normalization diagnostics、JSON-LD content 等额外 parent/evidence 继续穿透。写入命令继承请求授权中的空间与资料 grant，不允许扩大。C04 清单、哈希与访问审计是耐久事实，C13 不增加工件种类、数据库表、审计表或事件。
 
 允许低基数观测：按部署引用规范化标签、阶段、结果码的请求数与耗时，以及输入/响应字节、页、区域、单元格、质量指标和并发拒绝计数。禁止记录文件名、base64、OCR 文本、表格内容、原始服务消息、模型路径、完整 URL 或高基数工件 identity。日志失败不能把业务失败变成功；C04 工件/审计失败必须阻断成功。
 
@@ -213,7 +221,7 @@ packages/core/test/engineering-data/document-conversion.test.ts
 - [C12 adapter 没有 OCR 注入点] → 只增加 D-02 parser→finalizer 私有接缝，非 OCR parser 和公共端口不变；现有 C12 adapter/PostgreSQL 测试继续作为回归门。
 - [C12 core 不保留页面尺寸与文本置信度] → 按协调裁决实施 D-03 两个可选字段透传并增加 core 行为测试；若实现发现还必须改变 contracts、持久化 Schema 或 migration，立即停止并升级。
 - [官方 Base64 协议放大内存与请求体] → 配置严格输入/响应上限并关闭图片返回；只有真实扫描资料超过上限时再评估服务侧分片，不预建代理。
-- [服务版本无法由官方端点主动证明] → 由 C37 的受控部署清单和真实 smoke 提供精确版本证据，C13 记录引用且不声称自动探测；服务将来提供稳定元数据端点时另行演进。
+- [服务版本无法由官方端点主动证明] → C13 保留显式启用且缺证据即失败的 smoke；C37 的受控部署清单和真实 smoke 提供精确版本、三媒体实测与资源隔离证据，该证据缺口不阻塞 C13；服务将来提供稳定元数据端点时另行演进。
 - [PP-StructureV3 多模型组合可能随发行版变化] → 配置固定非空模型引用集合与管线配置摘要，任何升级形成新部署版本并重新 smoke，不使用“最新版”。
 - [合成中文样例不能证明现场准确率] → 只用于结构、关键字段与错误回归，明确待甲方复核；C36/C37/C38 使用真实脱敏样例与目标硬件证据。
 - [OCR 与 llama.cpp 可能共享同一物理 GPU] → C13 隔离软件状态并记录资源引用，C37 负责容器/设备配额和压力基准；未取得物理隔离证据时不宣称硬件隔离完成。
@@ -223,7 +231,7 @@ packages/core/test/engineering-data/document-conversion.test.ts
 1. 在固定基线复验 C12 当前符号与全部调用方；先完成 D-03 可选页面范围/置信度和 D-02 私有接缝，并以既有 core/adapter/PostgreSQL 测试证明非 OCR 行为、审计、事务与幂等未变。
 2. 完成 PaddleOCR/PaddleX 3.7.0 的依赖/许可证审阅并登记服务制品责任边界；C13 不修改 Node manifest 或 lockfile。
 3. 实现 adapter 私有 Schema、配置、协议映射与协议替身测试，再在 C12 既有出口汇总；默认配置不启用任何服务，不提供云端地址或自动回退。
-4. 由操作者预置内网服务、全部模型和资源清单后显式运行真实 smoke；结果只记录精确引用、指标和工件证据。
+4. C13 交付 fail-closed 的真实 smoke 入口并验证显式启用但配置/服务/证据缺失时失败；C37 预置内网服务、全部模型和资源清单后运行三媒体 smoke，保存精确引用、指标、工件与资源隔离证据。
 5. 部署回滚只移除 OCR parser 注入或切回已验证的旧部署配置版本；可选 core 字段不会改变无该字段的旧文档。既有 C04 工件、资料版本和段集合不删除、不覆盖，未知 OCR 版本的历史工件不得由旧 adapter 重新解释为新成功结果。
 
 ## Open Questions

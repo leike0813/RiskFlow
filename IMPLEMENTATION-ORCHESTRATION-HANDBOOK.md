@@ -7,11 +7,13 @@
 当前接管点：
 
 - `main` 已完成并归档 15 个路线 change：C00–C12、C14、C16。
-- `openspec/changes/archive/` 共 20 项 = 15 个路线 change + 5 个辅助/修复 change（`configure-pnpm-build-script-policy`、`deliver-structured-orchestration-status`、`evolve-review-audit-approval-proof`、`fix-postgresql-test-migration-loader-compatibility`、`fix-orchestration-execution-status-reliability`）。
+- `openspec/changes/archive/` 共 21 项 = 15 个路线 change + 6 个辅助/修复 change（`configure-pnpm-build-script-policy`、`deliver-structured-orchestration-status`、`evolve-review-audit-approval-proof`、`fix-postgresql-test-migration-loader-compatibility`、`fix-orchestration-execution-status-reliability`、`strengthen-implementation-planning-workflow`）。
 - C01 主 spec 位于 `openspec/specs/domain/contract-kernel/spec.md`。
 - C02 主 spec 位于 `openspec/specs/domain/module-interfaces-events-workflows/spec.md`。
 - C03 主 spec 位于 `openspec/specs/platform/postgresql-outbox-checkpoint-foundation/spec.md`。
-- G0、G1 已通过；当前静态依赖图的 frontier 为 C13 `deliver-scanned-document-ocr` 与 C18 `deliver-assessment-configuration-and-measure-governance`。活动 change、worker 与 feature worktree 状态必须在接管时按 §10 实查，不能由本段历史快照推断。
+- G0、G1 已通过；当前静态依赖图的 frontier 为 C13 `deliver-scanned-document-ocr` 与 C18 `deliver-assessment-configuration-and-measure-governance`。
+- C13 已准备到实现阶段：现有 Orca worktree 为 `d4349f30-1c7e-4777-b16d-f259481b0121::/home/joshua/Workspace/Code/JavaScript/.orca/RiskFlow/c13-scanned-doc-ocr`，分支 `c13-scanned-doc-ocr`，Git 检查点 `69ebbca7c7c9f27685937b50dc79d9b19549c1be`。该检查点已包含当前 `main` 的五工件 schema 基线，`deliver-scanned-document-ocr` 使用 `riskflow-delivery`，proposal/specs/design/implementation-plan/tasks 均完成，apply 状态为 ready、任务为 0/13。implementation Run `run_4e82315340bc` 与 ready Task `task_9ed3df9648b2` 已预建且未派发。接管者命中该精确状态时不得重建 worktree、change、Run/Task 或重新派 Sol 起草，核验后直接把既有 Task 派给实现 Agent。
+- C18 尚未预建长期 worktree 或 change，仍按标准“创建 worktree → `openspec new change ... --schema riskflow-delivery` → Sol 五工件规划”路径启动。活动 change、worker 与 feature worktree 状态仍必须在接管时按 §10 实查，不能只依赖本段快照。
 - 状态观察器以当前 `main` 提交中的 OpenSpec archive 作为持久完成事实；Orca 仅提供现存 feature worktree、worker 与 Dispatch 均非终态或关联 live terminal 的实时状态。已脱离实时对象的旧 Task 只进入 `diagnostics`，不得阻断 frontier 或 `orchestration:check`。
 - 不推送远端；远端操作必须由用户另行授权。
 
@@ -440,10 +442,10 @@ change 完成需要：
 ## 10. 下一 session 的首个动作
 
 1. 以 commandcode/deepseek/deepseek-v4.1-flash high 启动新的主调度 session，先读 `AGENTS.md`、本 handbook 和路线文档。
-2. 确认 `main` clean，C00–C12、C14、C16 已归档（archive 目录共 20 项），主 specs 与路线状态一致；再读取本地 OpenSpec、Git 与 Orca 实时状态，不预设当前无活动 change/worker。
+2. 确认 `main` clean，C00–C12、C14、C16 已归档（archive 目录共 21 项，其中包含 `strengthen-implementation-planning-workflow`），主 specs 与路线状态一致；再读取本地 OpenSpec、Git 与 Orca 实时状态，不预设当前无活动 change/worker。
 3. 用 `orca repo show` 确认 setup hook 仍与 §7.2 一致；若未变化，直接沿用已验证配置。
-4. 根据路线重新计算当前 frontier；在上述归档事实未变化时应为 C13/C18。只为选中的当前 change 创建 worktree 和 Run，不预建后续长期 worktree。
-5. 运行 `openspec new change <change> --schema riskflow-delivery --json` 创建新 change，确认返回的 `change.schema` 后把规划 task 派给 Sol high；主调度 Agent不自行起草 change。
-6. Sol 的五类工件和 implementation plan 覆盖门通过审阅并形成 planning checkpoint 后，才派 deepseek-v4.1-flash max 实现；实现复核若发现批准范围内局部缺陷，由当前仍活动的 Sol 任务直接修复并做局部验证，随后主调度 Agent门禁收口，不再派 Sol 二次复检；已结束 session 不复用。
+4. 根据路线重新计算当前 frontier；在上述归档事实未变化时应为 C13/C18。先按完整 Orca worktree ID 定位 C13，并在其目录核验：`git rev-parse HEAD` 精确等于 `69ebbca7c7c9f27685937b50dc79d9b19549c1be`、工作区 clean、`openspec status --change deliver-scanned-document-ocr --json` 返回 `schemaName=riskflow-delivery` 且五工件 done、`openspec instructions apply --change deliver-scanned-document-ocr --json` 返回 ready、0/13 且 `contextFiles` 包含 implementation-plan。任一项不符时停止实现派发，先修复同步或规划漂移；不要静默重建 change。
+5. C13 核验通过后，用 `orca orchestration run-use --id run_4e82315340bc` 接管既有 implementation Run，确认 `task_9ed3df9648b2` 仍为 `ready` 且结构化信封的 `head/baseHead` 均指向规划检查点，再将该 Task 派给 deepseek-v4.1-flash max；不要重建 Task 或再派 Sol 起草。C18 或其它尚未物化的 frontier 才创建新 worktree，并运行 `openspec new change <change> --schema riskflow-delivery --json`，确认返回的 `change.schema` 后把规划 task 派给 Sol high。
+6. 对新起草的 change，Sol 五类工件和 implementation plan 覆盖门通过审阅并形成 planning checkpoint 后，才派实现；C13 直接使用上述既有 planning checkpoint。实现复核若发现批准范围内局部缺陷，由当前仍活动的 Sol 任务直接修复并做局部验证，随后主调度 Agent门禁收口，不再派 Sol 二次复检；已结束 session 不复用。
 
 完成当前 change 并归档后再重新计算下一 frontier。

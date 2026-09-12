@@ -23,6 +23,7 @@
 | IP-07 | `apps/worker/src/agent-runtime/runner.ts` 的 `renderModelStep`/`interpretModelStep` callbacks | 以组合函数接入 C19 renderer/interpreter，仍使用同一 Runner | 不创建全局 registry、第二 Runner、模型网关或自然语言写命令 |
 | IP-08 | C16/C18/PostgreSQL 测试 fixture 和 API 通用知识路由 | 一条集成主链验证治理、冲突、筛选、发布、解析、事务和重放 | 不为文案/内部顺序加断言，不增加 C19 API/Web 入口 |
 | IP-09 | 根 `typecheck`、`lint`、`format:check`、`deps:check`、`deps:policy` 与 OpenSpec CLI | 执行最小全局静态/边界/规格校验并形成验收证据 | 不启动开发服务器、不安装依赖、不提交或归档 |
+| IP-10 | contracts `AssessmentBasisReleaseSetRefV1Schema`/`AuthorizationContextV1Schema`/`ModuleErrorV1Schema`；C06 `LocalIdentityAccessV1.verify`；C18 `AssessmentConfigurationMemberV1Schema`；本计划 IP-02 的 `AssessmentBasisReleaseSetV1Schema` 与 IP-05 的 `PostgresScoringRulesAdapter.resolve`/`business.assessment_basis_release_sets` | 在 C19 core 内组合既有叶子引用形成 strict 成员投影和 reader 接口；由同一 C19 adapter 按当前授权单点读取已物化集合 | 不修改 C02/contracts/C18/C25，不返回正文，不增加 list/search/HTTP/repository 抽象，不让幂等回执绕过撤权 |
 
 ## 3. 代码变更映射
 
@@ -37,8 +38,9 @@
 | IP-07 | Worker 接入同一 C08 Runner | `有界规范知识编制 Agent` 两场景；D-05 | **新增** `apps/worker/src/scoring-rules/runtime.ts`：`withScoringRuleAuthoringModelStep`、`interpretScoringRuleAuthoringModelStep`；**新增** `apps/worker/test/scoring-rules/runtime.test.ts`；**修改** `apps/worker/src/index.ts` 导出组合函数 | 只对 metadata/policy 精确匹配的 C19 knowledge-authoring 任务渲染 manifest/观察引用与解析 tool-request/candidate；其它任务委派原 callback；协议测试覆盖工具→候选→校验→finalize、预算/模型/工具/权限失败 | 不注册 C17、不吞 C08 错误、不硬编码模型文案、不创建全局 worker 实例 |
 | IP-08 | PostgreSQL 端到端与公共接口回归 | 所有 Requirement/Scenario，重点 RA-S3/S4、冲突/不适用全拦截、筛除原因、人工发布和 basis resolve | **新增** `packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts`；复用 IP-01 adapter fixture；不修改 API/Web | testcontainers 主链：真实 C15 input→C08 candidate→C16 revision→冲突 C07→修订/人工 publish rule→三维 assembly→人工 publish set→public resolve；另覆盖 unauthorized/stale/idempotency/concurrency/audit/outbox/rollback、缺 C18/reader waiting；执行现有 API/C16/C18/Worker 回归 | 不增加 UI、HTTP 分支或 snapshot；不精确断言错误全文/SQL 顺序 |
 | IP-09 | 最小全局验证与 OpenSpec 交接 | 全部验证义务；D-13 | 无生产文件；仅运行 §6/§7 命令并核对 `openspec instructions apply --json` | core→adapter→worker 定向测试后运行类型、lint、format、依赖边界、C16/C18/API 回归与 OpenSpec strict；行为/证据完成后才勾 tasks | 不运行全量 `pnpm verify` 替代有界故障定位；不启动 dev server、不提交/归档 |
+| IP-10 | C19 评估依据成员有界读取 | `评估依据发布集合成员的有界读取` 全部场景；D-10/D-11/D-12/D-14 | **扩展 IP-02 新增文件** `packages/core/src/scoring-rules/schema.ts`：`ReadAssessmentBasisReleaseSetV1Schema`、`AssessmentBasisReleaseSetMembersV1Schema`、`AssessmentBasisReleaseSetReadResultV1Schema`；**扩展 IP-03 新增文件** `packages/core/src/scoring-rules/service.ts`：`AssessmentBasisReleaseSetReaderV1.readAssessmentBasisReleaseSet`；`packages/core/src/scoring-rules/index.ts` 继续统一导出；**扩展 IP-04 迁移** `000028_structured_scoring_rules.ts`：`business.assessment_basis_release_sets.member_snapshot` strict JSONB；**扩展 IP-05 新增文件** `postgres-scoring-rules-adapter.ts`：options 注入 `Pick<LocalIdentityAccessV1, "verify">`，`PostgresScoringRulesAdapter.readAssessmentBasisReleaseSet`、精确集合/audit 单点查询和错误映射；**扩展 IP-03/IP-08 测试** core 与 PostgreSQL 既定测试文件 | 请求只用精确 set ref、authorization 及 C03 request 元数据；当前授权复验先于回执和 DB 查询；成功只投影 set ref/schema version/member digest/applicable release 与规范排序的 11 个 `{definitionType, revisionRef, artifactRef}`；写集合时同事务保存 strict `member_snapshot`，读时复验摘要；成功/不可用共用请求 set ref 作为 C03 resultRef，以闭合 audit action 经 `auditEntryId` 重建幂等结果；C04 正文由消费方另行受权读取 | 不改公共 resolve 形状，不返回 release/config/rule 正文、自由字段或未发布成员；不存在/成员缺失/撤权/跨工程/不可见不得返回差异化 code/payload；不增加结果表、迁移文件或占用 `000029–000031` |
 
-无删除文件。每个计划文件仅归属上表一个 IP-ID；测试命令/验收义务归属 IP-03、IP-06、IP-07、IP-08 或 IP-09。
+无删除文件。IP-10 只扩展 IP-02～IP-05/IP-08 已规划文件，不新增文件；其余计划文件仍各归属一个 IP-ID。测试命令/验收义务归属 IP-03、IP-06、IP-07、IP-08、IP-09 或 IP-10。
 
 ## 4. 调用与副作用顺序
 
@@ -69,6 +71,14 @@
 4. 尚未发布/准备完成返回 waiting；授权/跨工程/停用/stale/incompatible 返回脱敏 failed。不得回退或部分返回。
 5. 成功时以规范成员摘要生成 deterministic basis set ref，在一个 C03 事务写 immutable set、receipt 和 audit；相同命令重放同一 ref。返回公共 `{kind: assessment-basis, assessmentBasisReleaseSetRef}`，正文仍在 C04/C18/C16。
 
+### 4.4 评估依据成员有界读取（IP-10）
+
+1. C25 等进程内消费方提交 strict 请求：精确 `assessmentBasisReleaseSetRef`、C06 `authorization`、`requestId`、`idempotencyKey` 和 `requestedAt`；没有 project/name/latest/list 参数。
+2. adapter 先调用注入的 `LocalIdentityAccessV1.verify`，按 `knowledge-modeling.assessment-basis` 和当前时间复验授权上下文引用、工程与 `knowledge-modeling.read`；验证失败直接映射统一不可用结果并由 C06 记录安全拒绝，不读取 C19 表或历史成功回执。
+3. 授权通过后，adapter 以验证结果的 `projectId` 和精确 set ref 单点查询 `business.assessment_basis_release_sets`，strict parse `member_snapshot`，复验 schema 版本、set ref、member digest、applicable release 及规范排序的 11 类配置成员。零行、跨工程、成员缺失或不可见对调用方均为同一个不可重试 `AUTHORIZATION_DENIED` 形状；瞬时数据库失败保持 `TRANSIENT_FAILURE`。
+4. 成功只返回 strict 成员投影，不打开 C04 工件；消费方必须以各配置 `artifactRef` 另行调用 C04 并接受其当前授权与访问审计，适用规则集只返回精确 C16 release ref。
+5. 授权后的成功或统一不可用结果以 `knowledge.read-assessment-basis-release-set.v1` 规范载荷进入既有 C03 transaction/receipt/audit，两者都以请求 set ref 作为 `resultRef`，audit action 分别固定为 `.succeeded`/`.unavailable`。回执重放按 `auditEntryId` 单点读取闭合 action 并重建原结果；同键同载荷不重复 audit，同键异载荷冲突。瞬时失败不完成回执，reader 无业务 update/delete/event 副作用。
+
 ## 5. Schema、状态与持久化落实
 
 ### 5.1 Schema 与版本（IP-02、IP-03）
@@ -77,6 +87,7 @@
 - 公共 `StructuredScoringRuleSchema`、`ApplicabilityMetadataSchema`、Evidence/Knowledge/Review/Agent refs 直接导入；C18 `AssessmentConfigurationReleaseSetV1Schema` 直接导入，不建立兼容镜像。
 - `reviewStatus` 只允许 pending；正式准入从 C16 release+decision 读取。实现前后用 `rg -n "reviewStatus" packages apps` 检查没有新增消费门禁。
 - 文档 digest 包含 schema、工程修订、C15/C18/规则/适用性/策略精确版本和规范内容；任何输入或策略变化生成新 artifact/revision/set，不复用旧结果。
+- IP-10 的读请求、成员投影和结果由同一 C19 `schema.ts` strict 导出；成员投影恰好覆盖 C18 `ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1`，只组合既有 ref 类型，不在 contracts 建镜像。
 
 ### 5.2 领域状态（IP-03、IP-05、IP-06）
 
@@ -84,10 +95,11 @@
 - rule relation 状态从 immutable relation + append-only review link/decision 推导：`pending | approved | rejected | returned`；只有 exact approved 允许进入 knowledge review，任何新 rule version 产生新 relation。
 - 规则和规则集 revision/release/deactivation/rollback 状态完全由 C16 管理。C19 metadata 只证明内容已校验，不持有“当前发布”指针。
 - basis set 为 immutable query/result fact，不提供 update/delete；版本变化由新 command/ref 表达。
+- basis member reader 只读 immutable set；授权先于幂等重放，reader 自身不产生新 set、release、revision 或正文工件。
 
 ### 5.3 表、约束与权限（IP-04）
 
-- 五表及正文边界按 D-11。每表保存 project、精确 version refs、规范 digest、`occurred_at/recorded_at/persisted_at` 和必要 audit/command 身份。
+- 五表及正文边界按 D-11。每表保存 project、精确 version refs、规范 digest、`occurred_at/recorded_at/persisted_at` 和必要 audit/command 身份；`assessment_basis_release_sets.member_snapshot` 保存由 `AssessmentBasisReleaseSetMembersV1Schema` 校验的引用投影，不保存正文。
 - relation 以 `(project_id, relation_id, version_id)` 主键并唯一约束双方规范 identity+policy+overlap digest；review link 唯一约束 relation+attempt 和 review task ref；basis set 唯一约束 project+preparation ref+required/as-of+member digest。
 - FK 只指向同迁移表或已有 C16 revision/release；C04/C07/C08 公共 ref 以 strict JSONB+分解 identity 保存，读取时反向 parse。规则/筛选正文不展开列。
 - app role 只获 SELECT/INSERT；迁移 `down` 逆序 revoke/drop 本对象。provider 递归发现 `000028`，不更新注册表。
@@ -98,6 +110,7 @@
 - 授权/来源/冲突/版本失败不可修正；C04/DB/C07/C08 暂态错误可按原策略重试但不得换模型、扩大预算或跳过 Agent/人工门禁。
 - 日志、错误、audit、receipt、event 只含引用、reason code、摘要和计数；原文、规则/config 正文、凭据、模型响应和内部 SQL 错误不复制。
 - 可观测证据以现有 C03 audit/outbox、C08 action/usage 和 C19 relation/metadata refs 组成，不新建日志表或事件类型。
+- IP-10 读取复用 C06 `verify` 与 C03 transaction/receipt/audit；授权拒绝由 C06 安全审计，授权后的成功/不可用结果由 C19 只追加 audit 记录。当前授权复验总在 receipt replay 前执行。
 
 ## 6. 验收证据矩阵
 
@@ -121,6 +134,11 @@
 | 不可变适用规则集组装与人工发布 / 配置或冲突不完整时整体失败 | IP-03、IP-05、IP-08 | adapter test | missing C18 / incompatible / pending conflict | no partial artifact/release/basis | `pnpm exec vitest run packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts -t '规则集门禁'` |
 | 公共评估依据解析 / 精确依据可供后续评估冻结 | IP-05、IP-08 | adapter test + API regression | reader returns exact prep; valid releases | public strict success ref; stored members exact | `pnpm exec vitest run packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts -t 'assessment-basis' && pnpm exec vitest run apps/api/test/http-shell.test.ts` |
 | 公共评估依据解析 / 未准备完成时不返回默认依据 | IP-05、IP-08 | adapter test | missing set/member/reader waiting | waiting/failed; no fallback/partial | 同上 |
+| 评估依据发布集合成员的有界读取 / 当前授权读取精确集合 | IP-10 | adapter test | exact basis ref + current C06 read grant | verify-before-query；strict success；one append-only audit | `pnpm exec vitest run packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts -t 'basis 成员读取'` |
+| 评估依据发布集合成员的有界读取 / 不可用目标不可枚举 | IP-10 | adapter test | missing member / revoked context / foreign-project ref / nonexistent ref | identical non-retryable code and public shape；no members/existence leak；revoked replay cannot hit old success | `pnpm exec vitest run packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts -t 'basis 不可枚举'` |
+| 评估依据发布集合成员的有界读取 / 成员清单固定精确引用 | IP-10 | core + adapter tests | persisted strict member snapshot | exact set/version/digest/applicable release + 11 sorted definition revision/artifact refs | `pnpm exec vitest run packages/core/test/scoring-rules/scoring-rules.test.ts packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts -t 'basis 成员清单'` |
+| 评估依据发布集合成员的有界读取 / 成员读取不返回正文 | IP-10 | core + adapter tests | snapshot plus attempted unknown/body fields | strict parse rejects extra fields；success has refs only；C04 open count 0 | `pnpm exec vitest run packages/core/test/scoring-rules/scoring-rules.test.ts packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts -t 'basis 无正文'` |
+| 评估依据发布集合成员的有界读取 / 读取重放保持幂等且不绕过撤权 | IP-10 | adapter test | same/different payload key + unavailable first result + grant revoked after success | audit action reconstructs same success/unavailable result and stable audit count；payload conflict；post-revocation unified denial | `pnpm exec vitest run packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts -t 'basis 读取幂等'` |
 | 授权、事务、幂等与可重放审计 / 重放返回同一结果 | IP-04～IP-06、IP-08 | adapter test | same/different payload key, concurrent calls | same refs/counts; mismatch conflict | `pnpm exec vitest run packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts -t '幂等'` |
 | 授权、事务、幂等与可重放审计 / 任一原子副作用失败即回滚 | IP-04～IP-06、IP-08 | adapter test | audit/outbox/metadata/basis insert fault | zero partial DB facts/events; sanitized failure | `pnpm exec vitest run packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts -t '回滚'` |
 
@@ -131,12 +149,12 @@
 ### 7.1 新增文件
 
 - IP-01：`packages/core/test/scoring-rules/fixture.ts`、`packages/adapters/test/scoring-rules/fixture.ts`
-- IP-02：`packages/core/src/scoring-rules/schema.ts`、`packages/core/src/scoring-rules/index.ts`
-- IP-03：`packages/core/src/scoring-rules/validation.ts`、`packages/core/src/scoring-rules/service.ts`、`packages/core/test/scoring-rules/scoring-rules.test.ts`
-- IP-04：`packages/adapters/src/postgres/migrations/knowledge-modeling/deliver-structured-scoring-rules-and-applicable-rule-sets/000028_structured_scoring_rules.ts`
-- IP-05：`packages/adapters/src/scoring-rules/postgres-scoring-rules-adapter.ts`、`packages/adapters/src/scoring-rules/index.ts`
+- IP-02、IP-10：`packages/core/src/scoring-rules/schema.ts`、`packages/core/src/scoring-rules/index.ts`
+- IP-03、IP-10：`packages/core/src/scoring-rules/validation.ts`、`packages/core/src/scoring-rules/service.ts`、`packages/core/test/scoring-rules/scoring-rules.test.ts`
+- IP-04、IP-10：`packages/adapters/src/postgres/migrations/knowledge-modeling/deliver-structured-scoring-rules-and-applicable-rule-sets/000028_structured_scoring_rules.ts`
+- IP-05、IP-10：`packages/adapters/src/scoring-rules/postgres-scoring-rules-adapter.ts`、`packages/adapters/src/scoring-rules/index.ts`
 - IP-07：`apps/worker/src/scoring-rules/runtime.ts`、`apps/worker/test/scoring-rules/runtime.test.ts`
-- IP-08：`packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts`
+- IP-08、IP-10：`packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts`
 
 ### 7.2 修改文件
 
@@ -171,6 +189,7 @@
 ```bash
 pnpm exec vitest run packages/core/test/scoring-rules/scoring-rules.test.ts
 pnpm exec vitest run packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts packages/adapters/test/knowledge-governance/postgres-knowledge-governance-adapter.test.ts
+pnpm exec vitest run packages/core/test/scoring-rules/scoring-rules.test.ts packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts -t 'basis 成员读取|basis 不可枚举|basis 成员清单|basis 无正文|basis 读取幂等'
 pnpm exec vitest run apps/worker/test/scoring-rules/runtime.test.ts apps/worker/test/agent-runtime/runner.test.ts
 pnpm exec vitest run packages/adapters/test/assessment-config/postgres-assessment-configuration-adapter.test.ts apps/api/test/http-shell.test.ts
 ```

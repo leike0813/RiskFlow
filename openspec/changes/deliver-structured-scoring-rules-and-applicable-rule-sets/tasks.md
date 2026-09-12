@@ -15,6 +15,7 @@
 - [ ] 3.2 [IP-05] 实现 `PostgresScoringRulesAdapter` 的 C15/C04/C18 有界读取、authoring 工具/finalizer、冲突补链、规则集组装、C16 policy 和公共 basis resolve，增加 adapter 子路径导出；运行 `pnpm exec prettier --check packages/adapters/src/scoring-rules packages/adapters/package.json` 验证格式。
 - [ ] 3.3 [IP-06] 在 C16 adapter 四个既有 policy 接缝加入 C19 两类定义分派并保留 C18 原实现；运行 `pnpm exec vitest run packages/adapters/test/knowledge-governance/postgres-knowledge-governance-adapter.test.ts` 验证缺策略阻断、C19 调用及既有类型回归。
 - [ ] 3.4 [IP-05、IP-08] 完成 PostgreSQL 集成测试，覆盖真实规范→C08→C16/C07→规则发布→三维筛选→规则集人工发布→公共 basis resolve，以及来源/冲突/配置/权限/幂等/并发/事务失败；运行 `pnpm exec vitest run packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts` 验证。
+- [ ] 3.5 [IP-10] 在既定 C19 core schema/service、`000028` 迁移和 `PostgresScoringRulesAdapter` 中实现 `AssessmentBasisReleaseSetReaderV1.readAssessmentBasisReleaseSet`，覆盖当前 C06 授权复验、精确 11 成员引用、无正文、统一不可枚举拒绝与不绕过撤权的幂等审计；运行 `pnpm exec vitest run packages/core/test/scoring-rules/scoring-rules.test.ts packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts -t 'basis 成员读取|basis 不可枚举|basis 成员清单|basis 无正文|basis 读取幂等'` 验证。
 
 ## 4. API / Worker
 
@@ -27,14 +28,14 @@
 
 ## 6. 最小验证
 
-- [ ] 6.1 [IP-03、IP-05、IP-06、IP-07、IP-08] 运行 `pnpm exec vitest run packages/core/test/scoring-rules/scoring-rules.test.ts packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts packages/adapters/test/knowledge-governance/postgres-knowledge-governance-adapter.test.ts apps/worker/test/scoring-rules/runtime.test.ts` 验证 C19 core→adapter→worker 主链。
+- [ ] 6.1 [IP-03、IP-05、IP-06、IP-07、IP-08、IP-10] 运行 `pnpm exec vitest run packages/core/test/scoring-rules/scoring-rules.test.ts packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts packages/adapters/test/knowledge-governance/postgres-knowledge-governance-adapter.test.ts apps/worker/test/scoring-rules/runtime.test.ts` 验证 C19 core→adapter→worker 主链。
 - [ ] 6.2 [IP-08、IP-09] 运行 `pnpm exec vitest run packages/adapters/test/assessment-config/postgres-assessment-configuration-adapter.test.ts apps/worker/test/agent-runtime/runner.test.ts apps/api/test/http-shell.test.ts` 验证 C18、C08 Worker 与 API 代表性回归。
-- [ ] 6.3 [IP-02、IP-04～IP-07、IP-09] 运行 `pnpm exec tsc -b packages/core/tsconfig.json packages/adapters/tsconfig.json apps/worker/tsconfig.json --pretty false`，验证所有新导出和注入接口类型闭合。
-- [ ] 6.4 [IP-02～IP-09] 运行 implementation-plan §8 列出的定向 `eslint` 与 `prettier --check` 命令，修复本 change 文件的静态和格式问题。
+- [ ] 6.3 [IP-02、IP-04～IP-07、IP-09、IP-10] 运行 `pnpm exec tsc -b packages/core/tsconfig.json packages/adapters/tsconfig.json apps/worker/tsconfig.json --pretty false`，验证所有新导出和注入接口类型闭合。
+- [ ] 6.4 [IP-02～IP-10] 运行 implementation-plan §8 列出的定向 `eslint` 与 `prettier --check` 命令，修复本 change 文件的静态和格式问题。
 - [ ] 6.5 [IP-09] 运行 `pnpm deps:check && pnpm deps:policy`，确认分层依赖与既有许可证/依赖策略通过且锁文件未变化。
 - [ ] 6.6 [IP-03、IP-05、IP-09] 运行 `rg -n "reviewStatus" packages apps` 并审阅全部生产命中，确认已发布消费方只认 C16 release+C07 decision；发现任何状态门禁立即升级。
 
 ## 7. OpenSpec verify
 
-- [ ] 7.1 [IP-01～IP-09] 逐项核对 implementation-plan 的 Requirement/Scenario、文件、迁移、命令与证据映射并回填本清单；运行 `openspec validate deliver-structured-scoring-rules-and-applicable-rule-sets --type change --strict --no-interactive` 确认 change 严格通过。
-- [ ] 7.2 [IP-09] 运行 `openspec instructions apply --change deliver-structured-scoring-rules-and-applicable-rule-sets --json`，确认 `schemaName`、全部 `contextFiles` 和完成进度正确后交由 `openspec-verify-change` 独立验收；本任务不提交、不归档。
+- [ ] 7.1 [IP-01～IP-10] 逐项核对 implementation-plan 的 Requirement/Scenario、文件、迁移、命令与证据映射并回填本清单；运行 `openspec validate deliver-structured-scoring-rules-and-applicable-rule-sets --type change --strict --no-interactive` 确认 change 严格通过。
+- [ ] 7.2 [IP-09、IP-10] 运行 `openspec instructions apply --change deliver-structured-scoring-rules-and-applicable-rule-sets --json`，确认 `schemaName`、全部 `contextFiles` 和完成进度正确后交由 `openspec-verify-change` 独立验收；本任务不提交、不归档。

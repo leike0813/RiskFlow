@@ -27,7 +27,7 @@ C01/C02 已冻结 `StructuredScoringRuleSchema`、三维 `ApplicabilityMetadataS
 
 核心模块位于 `packages/core/src/scoring-rules/`，适配器位于 `packages/adapters/src/scoring-rules/`，分别由 `@riskflow/core/scoring-rules` 和 `@riskflow/adapters/scoring-rules` 导出。模块直接复用 contracts 的规则、适用性、证据、知识/审阅/Agent 引用，以及 C18 的私有配置集合类型；不在 C19 重新声明公共 DTO 或枚举。
 
-生产入口只暴露三个窄能力：创建 C19 `knowledge-authoring` definition、作为 C16 的 C19 内容治理策略、实现 `Pick<KnowledgeModelingPortV1, "resolve">` 的 `assessment-basis` 分支。API 已有通用知识路由，Worker 已有通用 runner，因此不新增 API/Web 行为。
+生产入口只暴露四个窄能力：创建 C19 `knowledge-authoring` definition、作为 C16 的 C19 内容治理策略、实现 `Pick<KnowledgeModelingPortV1, "resolve">` 的 `assessment-basis` 分支，以及从 C19 core 子路径导出的评估依据发布集合成员 reader。API 已有通用知识路由，Worker 已有通用 runner；reader 只供受控的进程内消费方注入，因此不新增 API/Web 行为。
 
 **替代方案：**扩展 `packages/contracts` 会违反 change 边界；按校验、冲突、筛选拆成多个横向 util 会增加事实源和调用顺序耦合。
 
@@ -108,6 +108,8 @@ C19 policy 复用 C18 的四阶段范式：事务前 `prepareRevision` 有界读
 
 resolver 有界读取该规则集工件，要求其适用性快照、工程修订、规则 release、C18 集合和兼容身份全部相符，然后以规范摘要生成不可变 `AssessmentBasisReleaseSetV1` 内部记录并返回公共 `AssessmentBasisReleaseSetRefV1`。该记录只含精确成员引用/摘要，不复制正文。未准备完成或成员未发布可返回公共 waiting；错工程、停用、时间/版本/兼容冲突返回 failed。调用相同命令只命中同一集合引用。
 
+内部记录的后续读取由 D-14 的 C19 自有 reader 承担；公共 resolve 结果继续只返回冻结引用。
+
 **替代方案：**C19 直接查询 C11/C25 私表违反层边界；在公共命令增加快照正文违反禁止修改 contracts；仅返回即时散列而不保存集合将失去可重建依据。
 
 ### D-11：一项 `000028` 迁移覆盖 C19 只追加关系事实
@@ -118,7 +120,7 @@ resolver 有界读取该规则集工件，要求其适用性快照、工程修�
 - `business.rule_relations`：不可变 conflict/overlap ref、双方规则版本、拟保留/拟筛除规则版本、相交域/证据/策略摘要和创建事实；
 - `business.rule_conflict_review_links`：精确 relation、C07 task/decision、状态及三时态，按 relation+attempt 幂等；
 - `business.applicable_rule_set_revision_metadata`：C16 revision、适用性快照、规则 release、C18 set、artifact、decision digest 和三时态；
-- `business.assessment_basis_release_sets`：公共 set ref、准备/适用性快照、applicable rule set release、C18 set、工程/时点、成员/身份摘要和三时态。
+- `business.assessment_basis_release_sets`：公共 set ref、准备/适用性快照、applicable rule set release、C18 set、工程/时点、strict 成员快照、成员/身份摘要和三时态。
 
 所有正文/逐项筛选仍在 C04；表只存引用和规范摘要。主键、外键、工程/类型 check、精确 ref 唯一约束和必要的工程+类型+时间索引在数据库收口。应用角色只获 SELECT/INSERT；需要链接 C07 决定时追加新行，不更新原 relation。迁移 provider 已递归发现文件，不修改中央注册或测试清单。
 
@@ -139,6 +141,18 @@ C16 revision metadata/relations 与 revision/audit/receipt 在同一事务；适
 新增 core/adapters/worker 的 `scoring-rules` 子目录、一个迁移和三类行为测试；只修改两个 package export、C16 PostgreSQL adapter 的 C19 policy 分派和 Worker 根导出。API 通用路由、Web、contracts、C18、根 workspace、锁文件、迁移 provider 与中央测试清单不改。测试以表格驱动覆盖规则校验/冲突/三维筛选，用一条 PostgreSQL 集成主链覆盖 C15→C08→C16/C07→C19→C18→public resolve，并保留 C16/C18/Worker 代表性回归。
 
 **替代方案：**为每个原因码写独立测试会锁定内部结构；只保留根因、权限、事务、幂等、真实规范出口和公共解析契约的代表性边界。
+
+### D-14：C19 导出狭窄成员 reader，不扩展 C02 或 contracts
+
+`packages/core/src/scoring-rules/schema.ts` 定义 strict `ReadAssessmentBasisReleaseSetV1Schema`、`AssessmentBasisReleaseSetMembersV1Schema` 和 `AssessmentBasisReleaseSetReadResultV1Schema`。请求的领域选择字段只有精确 `assessmentBasisReleaseSetRef` 与 C06 `authorization`，另携带 C03 所需的 `requestId`、`idempotencyKey`、`requestedAt`。成功值固定为 `assessmentBasisReleaseSetRef`、`schemaVersion: "1"`、`memberDigest`、`applicableRuleSetReleaseRef` 和 `configurationMembers`；后者必须按定义类型规范排序且恰好覆盖 C18 的 11 类，每项只含 `definitionType`、`revisionRef`、`artifactRef`。所有对象 strict parse，不允许正文、显示名称、扩展元数据或自由字段。
+
+`packages/core/src/scoring-rules/service.ts` 导出 `AssessmentBasisReleaseSetReaderV1`，其唯一方法 `readAssessmentBasisReleaseSet(input)` 返回上述类型化结果。`PostgresScoringRulesAdapter` 实现该方法，并注入 C06 `LocalIdentityAccessV1.verify`：先按 `knowledge-modeling.assessment-basis` 对授权上下文引用做当前事实复验，再以验证后的 `projectId + assessmentBasisReleaseSetRef` 单点查询 `business.assessment_basis_release_sets`，strict parse `member_snapshot` 并复验引用、11 类成员、摘要和版本。没有 list、search、按名称、按“最新”或跨工程查询；reader 不打开任何 C04 工件，C25 等消费方必须拿 `artifactRef` 另行通过 C04 当前授权读取正文并留下 C04 访问记录。
+
+不存在、成员缺失、撤权、跨工程和不可见统一映射为同一个不可重试 `ModuleErrorV1` `AUTHORIZATION_DENIED` 公开形状，调用方不能从 code 或 payload 枚举目标；内部 C06 安全审计或脱敏诊断可保留实际失败类别。授权复验先于 C03 幂等回执查询，避免旧成功回执绕过撤权。授权通过后，读取结果或统一不可用结果以 `knowledge.read-assessment-basis-release-set.v1` 的规范载荷写入既有 C03 回执与只追加 audit：两类提交的 `resultRef` 都使用调用方给出的精确集合引用，audit action 只允许 `knowledge.read-assessment-basis-release-set.succeeded` 或 `knowledge.read-assessment-basis-release-set.unavailable`。回执重放通过 `auditEntryId` 读取该闭合 action 重建原成功/拒绝结果，不新增结果表；相同键同载荷不重复 audit，同键异载荷冲突。瞬时数据库故障不提交完成回执，仍使用现有 `TRANSIENT_FAILURE`，不伪装为权限结果。
+
+该入口不放入 C02 `KnowledgeModelingPortV1`：C02 的 `resolve(assessment-basis)` 是跨层冻结入口，只承诺返回公共集合引用；成员投影由 C19 私有物化结构拥有，只供确定性评估组合时注入。扩展 C02 会迫使无此存储的公共端口实现成员读取并暴露 C19 内部集合布局。也不修改 `packages/contracts`：输入、成员和错误的叶子类型全部复用既有公共引用与 `AuthorizationContextV1`/`ModuleErrorV1`，聚合 Schema 留在 `@riskflow/core/scoring-rules` 即可满足 C19→C25 的显式模块接口。
+
+**替代方案：**C25 直读 C19 表违反模块所有权；把成员塞进公共 resolve 响应会改变 C02 wire contract；新增通用 repository 或 HTTP query 会扩大权限面。一个 C19 自有、精确引用驱动的 reader 是最小边界。
 
 ## Risks / Trade-offs
 

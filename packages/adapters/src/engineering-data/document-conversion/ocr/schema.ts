@@ -1,6 +1,10 @@
 import { z } from "@riskflow/core/model";
 
-import { IdentifierSchema, IsoDateTimeSchema, VersionReferenceSchema } from "@riskflow/contracts/common";
+import {
+  IdentifierSchema,
+  IsoDateTimeSchema,
+  VersionReferenceSchema,
+} from "@riskflow/contracts/common";
 import type { ArtifactRefV1 } from "@riskflow/core/artifacts";
 import type { JsonValue } from "@riskflow/core/persistence";
 
@@ -94,6 +98,7 @@ export type PaddleOcrDeploymentConfigV1 = z.infer<typeof PaddleOcrDeploymentConf
 export const OcrKeyFieldV1Schema = z.strictObject({
   fieldId: IdentifierSchema,
   pageNumber: positiveSafeInteger,
+  regionId: IdentifierSchema,
   expectedText: z.string().trim().min(1).max(200),
 });
 export type OcrKeyFieldV1 = z.infer<typeof OcrKeyFieldV1Schema>;
@@ -101,7 +106,7 @@ export type OcrKeyFieldV1 = z.infer<typeof OcrKeyFieldV1Schema>;
 export const OcrQualityPolicyV1Schema = z.strictObject({
   schemaVersion: z.literal(OCR_SCHEMA_VERSION_V1),
   policyRef: VersionReferenceSchema,
-  requiredPageCoverage: unitInterval,
+  requiredPageCoverage: z.literal(1),
   minimumNonEmptyPageRatio: unitInterval,
   minimumValidRegionRatio: unitInterval,
   minimumReadingOrderRatio: unitInterval,
@@ -134,17 +139,12 @@ export type PaddleOcrLayoutConfigV1 = z.infer<typeof PaddleOcrLayoutConfigV1Sche
 export const PaddleLayoutRequestV1Schema = z.strictObject({
   file: z.string().min(1),
   fileType: z.union([z.literal(0), z.literal(1)]),
-  outputImages: z.literal(false),
+  visualize: z.literal(false),
   returnMarkdownImages: z.literal(false),
 });
 export type PaddleLayoutRequestV1 = z.infer<typeof PaddleLayoutRequestV1Schema>;
 
-const boundingBoxSchema = z.tuple([
-  finiteNumber,
-  finiteNumber,
-  finiteNumber,
-  finiteNumber,
-]);
+const boundingBoxSchema = z.tuple([finiteNumber, finiteNumber, finiteNumber, finiteNumber]);
 export type PaddleBoundingBoxV1 = z.infer<typeof boundingBoxSchema>;
 
 /** PaddleX 响应含大量非业务字段：只解析消费字段，其余显式丢弃。 */
@@ -161,8 +161,24 @@ export const PaddleTableResultV1Schema = z.object({
   table_ocr_pred: z
     .object({
       rec_texts: z.array(z.string().max(200_000)),
-      rec_scores: z.array(finiteNumber),
+      rec_scores: z.array(unitInterval),
       rec_boxes: z.array(boundingBoxSchema).optional(),
+    })
+    .superRefine((result, context) => {
+      if (result.rec_scores.length !== result.rec_texts.length) {
+        context.addIssue({
+          code: "custom",
+          path: ["rec_scores"],
+          message: "OCR scores must align with text",
+        });
+      }
+      if (result.rec_boxes !== undefined && result.rec_boxes.length !== result.rec_texts.length) {
+        context.addIssue({
+          code: "custom",
+          path: ["rec_boxes"],
+          message: "OCR boxes must align with text",
+        });
+      }
     })
     .optional(),
   pred_html: z.string().optional(),
@@ -182,9 +198,32 @@ export const PaddleLayoutPageV1Schema = z.object({
     overall_ocr_res: z
       .object({
         rec_texts: z.array(z.string().max(200_000)),
-        rec_scores: z.array(finiteNumber),
+        rec_scores: z.array(unitInterval),
         rec_boxes: z.array(boundingBoxSchema).optional(),
         rec_polys: z.array(z.array(z.tuple([finiteNumber, finiteNumber])).min(3)).optional(),
+      })
+      .superRefine((result, context) => {
+        if (result.rec_scores.length !== result.rec_texts.length) {
+          context.addIssue({
+            code: "custom",
+            path: ["rec_scores"],
+            message: "OCR scores must align with text",
+          });
+        }
+        if (result.rec_boxes !== undefined && result.rec_boxes.length !== result.rec_texts.length) {
+          context.addIssue({
+            code: "custom",
+            path: ["rec_boxes"],
+            message: "OCR boxes must align with text",
+          });
+        }
+        if (result.rec_polys !== undefined && result.rec_polys.length !== result.rec_texts.length) {
+          context.addIssue({
+            code: "custom",
+            path: ["rec_polys"],
+            message: "OCR polygons must align with text",
+          });
+        }
       })
       .optional(),
   }),
@@ -197,12 +236,18 @@ export const PaddleLayoutResponseV1Schema = z.object({
   errorMsg: z.string().max(2000).optional(),
   result: z.object({
     layoutParsingResults: z.array(PaddleLayoutPageV1Schema).min(1),
-    dataInfo: z
-      .object({
-        numPages: positiveSafeInteger.optional(),
-        type: z.string().max(64).optional(),
-      })
-      .optional(),
+    dataInfo: z.discriminatedUnion("type", [
+      z.object({
+        type: z.literal("image"),
+        width: finitePositive,
+        height: finitePositive,
+      }),
+      z.object({
+        type: z.literal("pdf"),
+        numPages: positiveSafeInteger,
+        pages: z.array(z.object({ width: finitePositive, height: finitePositive })).min(1),
+      }),
+    ]),
   }),
 });
 export type PaddleLayoutResponseV1 = z.infer<typeof PaddleLayoutResponseV1Schema>;
@@ -213,6 +258,7 @@ export const OcrQualityMetricV1Schema = z.strictObject({
   observed: finiteNumber.nonnegative(),
   threshold: finiteNumber.nonnegative(),
   pageNumber: positiveSafeInteger.optional(),
+  regionId: IdentifierSchema.optional(),
 });
 export type OcrQualityMetricV1 = z.infer<typeof OcrQualityMetricV1Schema>;
 
@@ -273,7 +319,10 @@ export const toJsonValue = (value: unknown): JsonValue =>
   JSON.parse(JSON.stringify(value)) as JsonValue;
 
 /** 错误码、可重试性与阶段的唯一映射出口，避免各调用点自定重试语义。 */
-export const ocrFailure = (code: OcrErrorCodeV1, context: OcrFailureContextV1 = {}): OcrLayoutParserError => {
+export const ocrFailure = (
+  code: OcrErrorCodeV1,
+  context: OcrFailureContextV1 = {},
+): OcrLayoutParserError => {
   const definition = OCR_ERROR_CODES_V1[code];
   return new OcrLayoutParserError({
     code,
@@ -287,4 +336,3 @@ export const ocrFailure = (code: OcrErrorCodeV1, context: OcrFailureContextV1 = 
     ...(context.observedBytes === undefined ? {} : { observedBytes: context.observedBytes }),
   });
 };
-

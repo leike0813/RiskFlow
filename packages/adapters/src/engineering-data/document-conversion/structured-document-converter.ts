@@ -591,7 +591,14 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
     bytes: Uint8Array,
     control: StructuredDocumentConversionControlV1,
   ): Promise<OcrLayoutParserOutcomeV1> {
-    if (command.input.kind === "ocr-layout" && this.#ocrLayoutParser !== undefined) {
+    if (command.input.kind === "ocr-layout") {
+      if (this.#ocrLayoutParser === undefined) {
+        throw new OcrLayoutParserError({
+          code: "OCR_DEPLOYMENT_NOT_FOUND",
+          stage: "deployment",
+          retryable: false,
+        });
+      }
       return this.#ocrLayoutParser.parse({
         command,
         source,
@@ -954,7 +961,13 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
     const artifactRef = ArtifactRefV1Schema.parse(result.artifactRef);
     return {
       artifactRef,
-      bytes: await this.#readRawResponse(command, artifactRef, response.attempt, response.maxBytes),
+      bytes: await this.#readRawResponse(
+        command,
+        artifactRef,
+        response.attempt,
+        bytes.byteLength,
+        response.maxBytes,
+      ),
     };
   }
 
@@ -962,9 +975,9 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
     command: StructuredDocumentConversionCommandV1,
     artifactRef: ArtifactRefV1,
     attempt: number,
+    envelopeByteLength: number,
     maxBytes: number,
   ): Promise<Uint8Array> {
-    const limit = Math.min(maxBytes * 2 + 8_192, this.#policy.maxInputBytes);
     const handle: ArtifactReadHandleV1 = await this.#artifactStore.open(
       ArtifactReadRequestV1Schema.parse({
         schemaVersion: SCHEMA_VERSION,
@@ -984,10 +997,15 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
     for await (const chunk of handle.content) {
       if (!(chunk instanceof Uint8Array)) throw new TypeError("raw response chunk is invalid");
       size += chunk.byteLength;
-      if (size > limit) throw new RangeError("raw response envelope exceeds the frozen read limit");
+      if (size > envelopeByteLength) {
+        throw new RangeError("raw response envelope exceeds its persisted byte length");
+      }
       chunks.push(chunk);
     }
     await handle.verified;
+    if (size !== envelopeByteLength) {
+      throw new RangeError("raw response envelope byte length changed after persistence");
+    }
     if (referenceKey(handle.manifest.artifactRef) !== referenceKey(artifactRef)) {
       throw new TypeError("raw response artifact reference mismatch");
     }

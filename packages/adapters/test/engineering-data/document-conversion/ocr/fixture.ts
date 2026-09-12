@@ -39,7 +39,8 @@ const crcTable = ((): Uint32Array => {
   const table = new Uint32Array(256);
   for (let index = 0; index < 256; index += 1) {
     let value = index;
-    for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    for (let bit = 0; bit < 8; bit += 1)
+      value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
     table[index] = value >>> 0;
   }
   return table;
@@ -107,7 +108,10 @@ export const buildSyntheticScannedPng = (): Uint8Array => {
   const raw = new Uint8Array(SCAN_HEIGHT * (1 + SCAN_WIDTH * 3));
   for (let y = 0; y < SCAN_HEIGHT; y += 1) {
     raw[y * (1 + SCAN_WIDTH * 3)] = 0;
-    raw.set(rgb.subarray(y * SCAN_WIDTH * 3, (y + 1) * SCAN_WIDTH * 3), y * (1 + SCAN_WIDTH * 3) + 1);
+    raw.set(
+      rgb.subarray(y * SCAN_WIDTH * 3, (y + 1) * SCAN_WIDTH * 3),
+      y * (1 + SCAN_WIDTH * 3) + 1,
+    );
   }
   return concat([
     Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
@@ -131,19 +135,41 @@ export const buildSyntheticScannedJpeg = (): Uint8Array => {
   ];
   const quantization = [0x00, ...new Array<number>(64).fill(1)];
   const frame = [0x08, 0x00, 0x10, 0x00, 0x10, 0x01, 0x01, 0x11, 0x00];
-  const dcTable = [0x00, ...new Array<number>(3).fill(0), 12, ...new Array<number>(12).fill(0), 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+  const dcTable = [
+    0x00,
+    ...new Array<number>(3).fill(0),
+    12,
+    ...new Array<number>(12).fill(0),
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+  ];
   const acTable = [0x10, 1, ...new Array<number>(15).fill(0), 0x00];
   const scan = [0x01, 0x01, 0x00, 0x00, 0x3f, 0x00];
   return Uint8Array.from([
-    0xff, 0xd8,
-    ...marker(0xe0, [0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00]),
+    0xff,
+    0xd8,
+    ...marker(
+      0xe0,
+      [0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00],
+    ),
     ...marker(0xdb, quantization),
     ...marker(0xc0, frame),
     ...marker(0xc4, dcTable),
     ...marker(0xc4, acTable),
     ...marker(0xda, scan),
     0x07,
-    0xff, 0xd9,
+    0xff,
+    0xd9,
   ]);
 };
 
@@ -155,14 +181,18 @@ export const buildSyntheticScannedPdf = (): Uint8Array => {
   const pages = [1, 2];
   const objects: Uint8Array[] = [
     ascii("<< /Type /Catalog /Pages 2 0 R >>"),
-    ascii(`<< /Type /Pages /Kids [${pages.map((page) => `${3 + (page - 1) * 2} 0 R`).join(" ")}] /Count ${pages.length} >>`),
+    ascii(
+      `<< /Type /Pages /Kids [${pages.map((page) => `${3 + (page - 1) * 2} 0 R`).join(" ")}] /Count ${pages.length} >>`,
+    ),
   ];
   for (const page of pages) {
     objects.push(
       ascii(
         `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 320 200] /Resources << /XObject << /Im0 4 0 R >> >> /Contents ${4 + (page - 1) * 2} 0 R >>`,
       ),
-      ascii(`<< /Length ${content.byteLength} >>\nstream\n${new TextDecoder().decode(content)}\nendstream`),
+      ascii(
+        `<< /Length ${content.byteLength} >>\nstream\n${new TextDecoder().decode(content)}\nendstream`,
+      ),
     );
   }
   objects.push(
@@ -210,6 +240,7 @@ export interface AcceptanceManifestV1 {
   readonly keyFields: ReadonlyArray<{
     readonly fieldId: string;
     readonly pageNumber: number;
+    readonly regionId: string;
     readonly expectedText: string;
   }>;
   readonly qualityPolicyRef: { readonly entityId: string; readonly versionId: string };
@@ -224,23 +255,51 @@ export const buildAcceptanceManifest = (): AcceptanceManifestV1 => ({
   awaitingClientReview: true,
   note: "合成样例、待甲方复核；真实识别准确率由 C37 预置服务与甲方脱敏样例验证。",
   samples: [
-    { fileName: "synthetic-scanned.pdf", mediaType: "application/pdf", pageCount: 2, width: 320, height: 200 },
-    { fileName: "synthetic-scanned.png", mediaType: "image/png", pageCount: 1, width: 320, height: 200 },
-    { fileName: "synthetic-scanned.jpeg", mediaType: "image/jpeg", pageCount: 1, width: 16, height: 16 },
+    {
+      fileName: "synthetic-scanned.pdf",
+      mediaType: "application/pdf",
+      pageCount: 2,
+      width: 320,
+      height: 200,
+    },
+    {
+      fileName: "synthetic-scanned.png",
+      mediaType: "image/png",
+      pageCount: 1,
+      width: 320,
+      height: 200,
+    },
+    {
+      fileName: "synthetic-scanned.jpeg",
+      mediaType: "image/jpeg",
+      pageCount: 1,
+      width: 16,
+      height: 16,
+    },
   ],
   keyFields: [
-    { fieldId: "page_1_heading", pageNumber: 1, expectedText: "合成扫描样例第一页标题" },
-    { fieldId: "page_2_span_value", pageNumber: 2, expectedText: "监测值12.5" },
+    {
+      fieldId: "page_1_heading",
+      pageNumber: 1,
+      regionId: "ocr_page_1_region_1",
+      expectedText: "合成扫描样例第一页标题",
+    },
+    {
+      fieldId: "page_2_span_value",
+      pageNumber: 2,
+      regionId: "ocr_page_2_region_2",
+      expectedText: "监测值12.5",
+    },
   ],
   qualityPolicyRef: { entityId: "ocr-quality-policy", versionId: "1" },
   deploymentRef: { entityId: "ocr-deployment", versionId: "1" },
 });
 
-const fixtureUrl = (name: string): URL =>
-  new URL(`./fixtures/${name}`, import.meta.url);
+const fixtureUrl = (name: string): URL => new URL(`./fixtures/${name}`, import.meta.url);
 
-export const loadOcrFixture = async (name: keyof typeof OCR_FIXTURE_MEDIA_TYPES): Promise<Uint8Array> =>
-  new Uint8Array(await readFile(fixtureUrl(name)));
+export const loadOcrFixture = async (
+  name: keyof typeof OCR_FIXTURE_MEDIA_TYPES,
+): Promise<Uint8Array> => new Uint8Array(await readFile(fixtureUrl(name)));
 
 export const loadAcceptanceManifest = async (): Promise<AcceptanceManifestV1> =>
   JSON.parse(
@@ -259,7 +318,9 @@ export const ocrTestAuthorization = (overrides: Record<string, unknown> = {}) =>
     actorId: "actor-ocr",
     projectId: "project-ocr",
     grantedCapabilities: ["engineering-data.read", "engineering-data.write"],
-    spatialScopeRefs: [{ kind: "spatial-scope", reference: { entityId: "scope-ocr", versionId: "1" } }],
+    spatialScopeRefs: [
+      { kind: "spatial-scope", reference: { entityId: "scope-ocr", versionId: "1" } },
+    ],
     sourceAccessGrantRefs: [
       { kind: "source-access-grant", reference: { entityId: "grant-ocr", versionId: "1" } },
     ],
@@ -423,7 +484,10 @@ export const startOcrProtocolStub = async (): Promise<OcrProtocolStubV1> => {
         }
         if (request.socket.destroyed) return;
         const payload =
-          script.rawBody ?? JSON.stringify(script.body ?? { logId: "stub", errorCode: 0, result: { layoutParsingResults: [] } });
+          script.rawBody ??
+          JSON.stringify(
+            script.body ?? { logId: "stub", errorCode: 0, result: { layoutParsingResults: [] } },
+          );
         response.writeHead(script.status ?? 200, { "content-type": "application/json" });
         response.end(payload);
       } finally {
@@ -525,7 +589,10 @@ export const createOcrArtifactStoreLatch = (): OcrArtifactStoreLatchV1 => {
           kind: "authorization-context",
           reference: { entityId: "auth-ocr", versionId: "1" },
         },
-        auditTrailRef: { kind: "audit-trail", reference: { entityId: "audit-seed", versionId: "1" } },
+        auditTrailRef: {
+          kind: "audit-trail",
+          reference: { entityId: "audit-seed", versionId: "1" },
+        },
         occurredAt: OCR_TEST_TIMESTAMP,
         recordedAt: OCR_TEST_TIMESTAMP,
         persistedAt: OCR_TEST_TIMESTAMP,
@@ -568,7 +635,10 @@ export const createOcrArtifactStoreLatch = (): OcrArtifactStoreLatchV1 => {
         schemaVersion: "1",
         artifactRef,
         artifactKind: command.artifactKind,
-        content: { hash: { algorithm: "sha256", value: contentHash }, byteLength: bytes.byteLength },
+        content: {
+          hash: { algorithm: "sha256", value: contentHash },
+          byteLength: bytes.byteLength,
+        },
         mediaType: command.mediaType,
         purposeCode: command.purposeCode,
         access: {
@@ -693,6 +763,7 @@ export interface OcrTestHarnessOptionsV1 {
   readonly command?: Partial<StructuredDocumentConversionCommandV1>;
   readonly config?: Record<string, unknown>;
   readonly now?: () => Date;
+  readonly fetchImpl?: typeof fetch;
   readonly artifactStore?: OcrArtifactStoreLatchV1;
   readonly contextSource?: ContextSourceLatchV1;
 }
@@ -721,6 +792,7 @@ export const createOcrTestHarness = (options: OcrTestHarnessOptionsV1): OcrTestH
           baseUrl: options.baseUrl,
         },
       }),
+      fetchImpl: options.fetchImpl,
       now: options.now ?? (() => new Date(OCR_TEST_TIMESTAMP)),
     }),
   });
@@ -739,7 +811,12 @@ export const ocrTextRegion = (
   text: string,
   bbox: readonly [number, number, number, number],
   blockId: number,
-): OcrStubRegionV1 => ({ block_label: label, block_content: text, block_bbox: bbox, block_id: blockId });
+): OcrStubRegionV1 => ({
+  block_label: label,
+  block_content: text,
+  block_bbox: bbox,
+  block_id: blockId,
+});
 
 export const ocrPage = (
   pageIndex: number,
@@ -789,6 +866,13 @@ export const layoutResponse = (
   logId: "stub-log",
   errorCode: 0,
   errorMsg: "Success",
-  result: { layoutParsingResults: pages, ...extras },
+  result: {
+    layoutParsingResults: pages,
+    dataInfo: {
+      type: "pdf",
+      numPages: pages.length,
+      pages: pages.map(() => ({ width: 320, height: 200 })),
+    },
+    ...extras,
+  },
 });
-

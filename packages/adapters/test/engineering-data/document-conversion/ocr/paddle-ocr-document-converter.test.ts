@@ -1,4 +1,4 @@
-import { describe, expect, it, afterEach } from "vitest";
+import { describe, expect, it, afterEach, vi } from "vitest";
 
 import { z } from "@riskflow/core/model";
 import { ModuleErrorV1Schema } from "@riskflow/contracts/ports";
@@ -88,9 +88,10 @@ describe("paddle ocr layout parser", () => {
     const requestBody = stub.requests[0]!.body as Record<string, unknown>;
     expect(requestBody).toMatchObject({
       fileType: 0,
-      outputImages: false,
+      visualize: false,
       returnMarkdownImages: false,
     });
+    expect(requestBody).not.toHaveProperty("outputImages");
     expect(Buffer.from(String(requestBody.file), "base64")).toEqual(Buffer.from(bytes));
 
     const rawEnvelope = artifactStore.bodyFor("ocr-raw-response-conversion-ocr-attempt-1");
@@ -103,7 +104,14 @@ describe("paddle ocr layout parser", () => {
       protocolVersion: "pp-structurev3-layout-parsing-1",
     });
     expect(Array.isArray(trace.modelVersionRefs)).toBe(true);
-    expect(JSON.parse(String(rawEnvelope!.responseBodyBase64 && Buffer.from(String(rawEnvelope!.responseBodyBase64), "base64").toString("utf8")))).toMatchObject({
+    expect(
+      JSON.parse(
+        String(
+          rawEnvelope!.responseBodyBase64 &&
+            Buffer.from(String(rawEnvelope!.responseBodyBase64), "base64").toString("utf8"),
+        ),
+      ),
+    ).toMatchObject({
       errorCode: 0,
     });
 
@@ -112,10 +120,7 @@ describe("paddle ocr layout parser", () => {
       { pageNumber: 1, width: 320, height: 200, coordinateSystem: "pixel-top-left" },
     ]);
     const textBlocks = jsonLd.textBlocks as Array<Record<string, unknown>>;
-    expect(textBlocks.map((block) => block.text)).toEqual([
-      "合成扫描样例第一页标题",
-      "监测值12.5",
-    ]);
+    expect(textBlocks.map((block) => block.text)).toEqual(["合成扫描样例第一页标题", "监测值12.5"]);
     expect(textBlocks.every((block) => typeof block.confidence === "number")).toBe(true);
     expect(textBlocks[0]!.coordinate).toMatchObject({ kind: "page", pageNumber: 1 });
     const rawRef = artifactStore.commandsFor("ocr-raw-response-conversion-ocr-attempt-1")[0]!
@@ -158,9 +163,9 @@ describe("paddle ocr layout parser", () => {
       ocrStage: "input",
     });
     expect(stub.requests).toHaveLength(0);
-    expect(
-      ocrWithWrongMedia.artifactStore.commandsFor("conversion-conversion-ocr"),
-    ).toHaveLength(0);
+    expect(ocrWithWrongMedia.artifactStore.commandsFor("conversion-conversion-ocr")).toHaveLength(
+      0,
+    );
   });
 
   it("returns the same non-enumerable authorization denial before contacting the service", async () => {
@@ -241,6 +246,11 @@ describe("paddle ocr layout parser", () => {
       reasonCode: "OCR_OUTPUT_INVALID",
     },
     {
+      name: "missing first page index",
+      pages: [ocrPage(1, PDF_PAGE_1)],
+      reasonCode: "OCR_OUTPUT_INVALID",
+    },
+    {
       name: "unknown layout label",
       pages: [ocrPage(0, [ocrTextRegion("image", "", [10, 10, 100, 100], 1)])],
       reasonCode: "OCR_OUTPUT_INVALID",
@@ -251,17 +261,42 @@ describe("paddle ocr layout parser", () => {
       reasonCode: "OCR_OUTPUT_INVALID",
     },
     {
+      name: "zero-area region",
+      pages: [ocrPage(0, [ocrTextRegion("text", "正文", [10, 10, 10, 40], 1)])],
+      reasonCode: "OCR_OUTPUT_INVALID",
+    },
+    {
       name: "declared page count mismatch",
       pages: [ocrPage(0, PDF_PAGE_1)],
-      extras: { dataInfo: { numPages: 2 } },
+      extras: {
+        dataInfo: {
+          type: "pdf",
+          numPages: 2,
+          pages: [
+            { width: 320, height: 200 },
+            { width: 320, height: 200 },
+          ],
+        },
+      },
       reasonCode: "OCR_OUTPUT_INVALID",
     },
     {
       name: "cell outside the table region",
-      pages: [
-        ocrTablePage(0, [[10, 10, 120, 60]] as unknown as never, ["表头"]),
-      ],
+      pages: [ocrTablePage(0, [[10, 10, 120, 60]] as unknown as never, ["表头"])],
       reasonCode: "OCR_OUTPUT_INVALID",
+    },
+    {
+      name: "service confidence outside the closed unit interval",
+      pages: [
+        ocrPage(0, PDF_PAGE_1, {
+          overall_ocr_res: {
+            rec_texts: ["合成扫描样例第一页标题", "监测值12.5"],
+            rec_scores: [1.2, 0.93],
+            rec_boxes: PDF_PAGE_1.map((region) => region.block_bbox),
+          },
+        }),
+      ],
+      reasonCode: "OCR_PROTOCOL_INVALID",
     },
   ])("rejects illegal service structure: $name", async ({ pages, extras, reasonCode }) => {
     const stub = await startStub();
@@ -283,10 +318,10 @@ describe("paddle ocr layout parser", () => {
   it("keeps table cells addressable back to their page and reading order", async () => {
     const stub = await startStub();
     const cells = [
-      [20, 20, 160, 100],
-      [160, 20, 300, 100],
-      [20, 100, 160, 180],
-      [160, 100, 300, 180],
+      [20, 20, 300, 80],
+      [20, 80, 160, 180],
+      [160, 80, 300, 130],
+      [160, 130, 300, 180],
     ] as const;
     stub.enqueue({
       body: layoutResponse([
@@ -305,8 +340,19 @@ describe("paddle ocr layout parser", () => {
     const jsonLd = jsonLdBody(artifactStore);
     const tableFields = jsonLd.tableFields as Array<Record<string, unknown>>;
     expect(tableFields).toHaveLength(4);
-    expect(tableFields[1]).toMatchObject({ row: 1, column: 2, value: "监测点" });
-    expect(tableFields[3]).toMatchObject({ row: 2, column: 2, value: "12.5" });
+    expect(tableFields[0]).toMatchObject({
+      row: 1,
+      column: 1,
+      mergedRange: { startRow: 1, endRow: 1, startColumn: 1, endColumn: 2 },
+      value: "指标",
+    });
+    expect(tableFields[1]).toMatchObject({
+      row: 2,
+      column: 1,
+      mergedRange: { startRow: 2, endRow: 3, startColumn: 1, endColumn: 1 },
+      value: "监测点",
+    });
+    expect(tableFields[3]).toMatchObject({ row: 3, column: 2, value: "12.5" });
     const cellBlocks = (jsonLd.textBlocks as Array<Record<string, unknown>>).filter((block) =>
       ["指标", "监测点", "地表沉降", "12.5"].includes(String(block.text)),
     );
@@ -316,8 +362,8 @@ describe("paddle ocr layout parser", () => {
       pageNumber: 1,
       x: 20,
       y: 20,
-      width: 140,
-      height: 80,
+      width: 280,
+      height: 60,
     });
     const registration = contextSource.registered[0] as {
       segments: Array<Record<string, unknown>>;
@@ -335,10 +381,57 @@ describe("paddle ocr layout parser", () => {
     );
   });
 
+  it("keeps table cells adjacent to their table in the service reading order", async () => {
+    const stub = await startStub();
+    const before = ocrTextRegion("text", "表前正文", [20, 5, 300, 15], 1);
+    const table = ocrTablePage(
+      0,
+      [
+        [20, 20, 160, 100],
+        [160, 20, 300, 100],
+      ],
+      ["指标", "监测值"],
+    );
+    const after = ocrTextRegion("text", "表后正文", [20, 185, 300, 195], 3);
+    stub.enqueue({
+      body: layoutResponse([
+        {
+          prunedResult: {
+            ...table.prunedResult,
+            parsing_res_list: [before, table.prunedResult.parsing_res_list[0], after],
+            overall_ocr_res: {
+              rec_texts: ["表前正文", "指标", "监测值", "表后正文"],
+              rec_scores: [0.93, 0.91, 0.91, 0.93],
+              rec_boxes: [
+                before.block_bbox,
+                [20, 20, 160, 100],
+                [160, 20, 300, 100],
+                after.block_bbox,
+              ],
+            },
+          },
+        },
+      ]),
+    });
+    const harness = createOcrTestHarness({
+      baseUrl: stub.origin,
+      inputBytes: buildSyntheticScannedPdf(),
+    });
+
+    expect((await harness.adapter.convert(harness.command)).kind).toBe("succeeded");
+    expect(
+      (jsonLdBody(harness.artifactStore).textBlocks as Array<{ text: string }>).map(
+        (block) => block.text,
+      ),
+    ).toEqual(["表前正文", "指标", "监测值", "表后正文"]);
+  });
+
   it("blocks empty or uncovered pages with a quality gate instead of returning an empty success", async () => {
     const stub = await startStub();
     stub.enqueue({
-      body: layoutResponse([ocrPage(0, [ocrTextRegion("text", "", [20, 20, 300, 44], 1)])]),
+      body: layoutResponse([ocrPage(0, [ocrTextRegion("text", "", [20, 20, 300, 44], 1)])], {
+        dataInfo: { type: "image", width: 320, height: 200 },
+      }),
     });
     const { adapter, artifactStore, contextSource, command } = createOcrTestHarness({
       baseUrl: stub.origin,
@@ -367,12 +460,43 @@ describe("paddle ocr layout parser", () => {
       baseUrl: stub.origin,
       inputBytes: buildSyntheticScannedPdf(),
       config: {
-        keyFields: [{ fieldId: "page_1_heading", pageNumber: 1, expectedText: "第一页标题" }],
+        keyFields: [
+          {
+            fieldId: "page_1_heading",
+            pageNumber: 1,
+            regionId: "ocr_page_1_region_1",
+            expectedText: "第一页标题",
+          },
+        ],
         quality: { minimumKeyFieldCoverage: 1 },
       },
     });
 
     expect((await adapter.convert(command)).kind).toBe("succeeded");
+
+    stub.enqueue({ body: layoutResponse([ocrPage(0, PDF_PAGE_1)]) });
+    const partial = createOcrTestHarness({
+      baseUrl: stub.origin,
+      inputBytes: buildSyntheticScannedPdf(),
+      config: {
+        keyFields: [
+          {
+            fieldId: "page_1_heading",
+            pageNumber: 1,
+            regionId: "ocr_page_1_region_1",
+            expectedText: "第一页标题",
+          },
+          {
+            fieldId: "page_2_span",
+            pageNumber: 2,
+            regionId: "ocr_page_2_region_1",
+            expectedText: "监测值12.5",
+          },
+        ],
+        quality: { minimumKeyFieldCoverage: 0.5 },
+      },
+    });
+    expect((await partial.adapter.convert(partial.command)).kind).toBe("succeeded");
 
     const missingStub = await startStub();
     missingStub.enqueue({ body: layoutResponse([ocrPage(0, PDF_PAGE_1)]) });
@@ -380,15 +504,24 @@ describe("paddle ocr layout parser", () => {
       baseUrl: missingStub.origin,
       inputBytes: buildSyntheticScannedPdf(),
       config: {
-        keyFields: [{ fieldId: "page_2_span", pageNumber: 2, expectedText: "监测值12.5" }],
+        keyFields: [
+          {
+            fieldId: "page_2_span",
+            pageNumber: 2,
+            regionId: "ocr_page_2_region_1",
+            expectedText: "监测值12.5",
+          },
+        ],
         quality: { minimumKeyFieldCoverage: 1 },
       },
     });
     const blocked = await missing.adapter.convert(missing.command);
     expect(blocked).toMatchObject({ kind: "failed" });
-    const metrics = (failureBody(missing.artifactStore)!.ocrDiagnostic as {
-      metrics: Array<Record<string, unknown>>;
-    }).metrics;
+    const metrics = (
+      failureBody(missing.artifactStore)!.ocrDiagnostic as {
+        metrics: Array<Record<string, unknown>>;
+      }
+    ).metrics;
     expect(metrics).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ metricId: "key-field-coverage", passed: false, observed: 0 }),
@@ -415,6 +548,32 @@ describe("paddle ocr layout parser", () => {
     const parents = artifactStore.commandsFor("conversion-conversion-ocr")[0]!.parentArtifactRefs;
     const rawParents = parents.filter((ref) => ref.kind === "diagnostic-artifact");
     expect(rawParents).toHaveLength(3);
+  });
+
+  it("keeps an earlier raw response parent when the final retry cannot reach the service", async () => {
+    const stub = await startStub();
+    stub.enqueue({ status: 503, body: { errorCode: 1, errorMsg: "busy" } });
+    stub.enqueue({ drop: true });
+    const harness = createOcrTestHarness({
+      baseUrl: stub.origin,
+      inputBytes: buildSyntheticScannedPdf(),
+      config: { deployment: { maxAttempts: 2 } },
+    });
+
+    expect(await harness.adapter.convert(harness.command)).toMatchObject({ kind: "failed" });
+    expect(
+      harness.artifactStore.commandsFor("conversion-diagnostic-conversion-ocr")[0]!
+        .parentArtifactRefs,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "diagnostic-artifact",
+          reference: expect.objectContaining({
+            entityId: "ocr-raw-response-conversion-ocr-attempt-1",
+          }),
+        }),
+      ]),
+    );
   });
 
   it.each([
@@ -463,29 +622,32 @@ describe("paddle ocr layout parser", () => {
       stage: "service",
       hasRaw: false,
     },
-  ])("closes the failure deterministically: $name", async ({ script, config, reasonCode, retryable, stage, hasRaw }) => {
-    const stub = await startStub();
-    stub.enqueue(script);
-    const { adapter, artifactStore, contextSource, command } = createOcrTestHarness({
-      baseUrl: stub.origin,
-      inputBytes: buildSyntheticScannedPdf(),
-      config,
-    });
+  ])(
+    "closes the failure deterministically: $name",
+    async ({ script, config, reasonCode, retryable, stage, hasRaw }) => {
+      const stub = await startStub();
+      stub.enqueue(script);
+      const { adapter, artifactStore, contextSource, command } = createOcrTestHarness({
+        baseUrl: stub.origin,
+        inputBytes: buildSyntheticScannedPdf(),
+        config,
+      });
 
-    const result = await adapter.convert(command);
+      const result = await adapter.convert(command);
 
-    expect(result).toMatchObject({ kind: "failed" });
-    expect(failureBody(artifactStore)).toMatchObject({
-      reasonCode,
-      retryable,
-      ocrStage: stage,
-    });
-    expect(contextSource.registered).toHaveLength(0);
-    expect(artifactStore.commandsFor("conversion-conversion-ocr")).toHaveLength(0);
-    const rawEnvelope = artifactStore.bodyFor("ocr-raw-response-conversion-ocr-attempt-1");
-    if (hasRaw) expect(rawEnvelope).toMatchObject({ attempt: 1 });
-    else expect(rawEnvelope).toBeUndefined();
-  });
+      expect(result).toMatchObject({ kind: "failed" });
+      expect(failureBody(artifactStore)).toMatchObject({
+        reasonCode,
+        retryable,
+        ocrStage: stage,
+      });
+      expect(contextSource.registered).toHaveLength(0);
+      expect(artifactStore.commandsFor("conversion-conversion-ocr")).toHaveLength(0);
+      const rawEnvelope = artifactStore.bodyFor("ocr-raw-response-conversion-ocr-attempt-1");
+      if (hasRaw) expect(rawEnvelope).toMatchObject({ attempt: 1 });
+      else expect(rawEnvelope).toBeUndefined();
+    },
+  );
 
   it("keeps caller cancellation and queue saturation inside their own failure domain", async () => {
     const stub = await startStub();
@@ -527,13 +689,53 @@ describe("paddle ocr layout parser", () => {
     expect(stub.requests).toHaveLength(1);
   });
 
+  it("removes a cancelled request from the bounded queue without waiting for the active call", async () => {
+    let releaseActive: ((response: Response) => void) | undefined;
+    const fetchImpl = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          releaseActive = resolve;
+        }),
+    ) as unknown as typeof fetch;
+    const harness = createOcrTestHarness({
+      baseUrl: "http://ocr-service.test",
+      inputBytes: buildSyntheticScannedPdf(),
+      fetchImpl,
+      config: { deployment: { maxConcurrentRequests: 1, maxQueuedRequests: 1, maxAttempts: 1 } },
+    });
+    const active = harness.adapter.convert(harness.command);
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+    const controller = new AbortController();
+    const queued = harness.adapter.convert(
+      {
+        ...harness.command,
+        conversionId: "conversion-ocr-queued",
+        idempotencyKey: "conversion-ocr-key-queued",
+      },
+      { signal: controller.signal },
+    );
+    controller.abort();
+
+    expect(await queued).toMatchObject({ kind: "failed" });
+    expect(failureBody(harness.artifactStore, "conversion-ocr-queued")).toMatchObject({
+      reasonCode: "OCR_CANCELLED",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    releaseActive?.(
+      new Response(JSON.stringify(layoutResponse([ocrPage(0, PDF_PAGE_1)])), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    expect((await active).kind).toBe("succeeded");
+  });
+
   it("keeps established raw artifacts when a later artifact stage fails", async () => {
     const rawFailureStub = await startStub();
     rawFailureStub.enqueue({ body: layoutResponse([ocrPage(0, PDF_PAGE_1)]) });
     const rawFailure = createOcrTestHarness({
       baseUrl: rawFailureStub.origin,
       inputBytes: buildSyntheticScannedPdf(),
-      config: { deployment: { maxAttempts: 1 } },
     });
     rawFailure.artifactStore.failPutFor("ocr-raw-response-conversion-ocr-attempt-1");
     const rawResult = await rawFailure.adapter.convert(rawFailure.command);
@@ -545,6 +747,7 @@ describe("paddle ocr layout parser", () => {
     });
     expect(rawFailure.artifactStore.commandsFor("conversion-conversion-ocr")).toHaveLength(0);
     expect(rawFailure.contextSource.registered).toHaveLength(0);
+    expect(rawFailureStub.requests).toHaveLength(1);
 
     const jsonLdStub = await startStub();
     jsonLdStub.enqueue({ body: layoutResponse([ocrPage(0, PDF_PAGE_1)]) });
@@ -555,8 +758,9 @@ describe("paddle ocr layout parser", () => {
     jsonLdFailure.artifactStore.failPutFor("conversion-conversion-ocr");
     const jsonLdResult = await jsonLdFailure.adapter.convert(jsonLdFailure.command);
     expect(jsonLdResult).toMatchObject({ kind: "failed" });
-    const parents = jsonLdFailure.artifactStore.commandsFor("conversion-diagnostic-conversion-ocr")[0]!
-      .parentArtifactRefs;
+    const parents = jsonLdFailure.artifactStore.commandsFor(
+      "conversion-diagnostic-conversion-ocr",
+    )[0]!.parentArtifactRefs;
     expect(parents).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -757,6 +961,11 @@ describe("paddle ocr layout parser", () => {
     ).toThrow();
     expect(() =>
       createPaddleOcrLayoutParser({
+        config: ocrTestConfig({ quality: { requiredPageCoverage: 0.9 } }),
+      }),
+    ).toThrow();
+    expect(() =>
+      createPaddleOcrLayoutParser({
         config: ocrTestConfig({
           quality: { minimumKeyFieldCoverage: 1 },
         }),
@@ -790,6 +999,11 @@ describe("paddle ocr layout parser", () => {
   it("constructs the parser through its public factory only", () => {
     const parser = createPaddleOcrLayoutParser({ config: ocrTestConfig() });
     expect(typeof parser.parse).toBe("function");
-    expect(Object.keys(ocrTestConfig())).toEqual(["schemaVersion", "deployment", "quality", "keyFields"]);
+    expect(Object.keys(ocrTestConfig())).toEqual([
+      "schemaVersion",
+      "deployment",
+      "quality",
+      "keyFields",
+    ]);
   });
 });

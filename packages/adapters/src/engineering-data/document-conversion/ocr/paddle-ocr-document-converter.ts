@@ -78,7 +78,6 @@ interface NormalizedTableV1 {
   readonly blocks: readonly NormalizedBlockV1[];
   readonly cellCount: number;
   readonly complete: boolean;
-  readonly hasText: boolean;
 }
 
 interface NormalizedPageV1 {
@@ -118,7 +117,8 @@ const centerInside = (bbox: BoundingBox, outer: BoundingBox): boolean => {
 };
 const mean = (values: readonly number[]): number =>
   values.length === 0 ? 0 : values.reduce((total, value) => total + value, 0) / values.length;
-const normalizeText = (value: string): string => value.normalize("NFKC").replace(/\s+/gu, "");
+const normalizeText = (value: string): string =>
+  value.normalize("NFKC").trim().replace(/\s+/gu, " ");
 
 /** 服务四点多边形按外包矩形无损映射；非轴对齐多边形不在此协议视图中出现。 */
 const polygonBounds = (points: readonly (readonly [number, number])[]): BoundingBox => {
@@ -199,7 +199,6 @@ const normalizeTable = (
       ],
       cellCount: 0,
       complete: false,
-      hasText: false,
     };
   }
   for (const cell of cellBoxes) {
@@ -224,9 +223,7 @@ const normalizeTable = (
       .join("")
       .trim();
     const confidence =
-      cellItems.length === 0
-        ? undefined
-        : Math.min(1, Math.max(0, mean(cellItems.map((item) => item.score))));
+      cellItems.length === 0 ? undefined : mean(cellItems.map((item) => item.score));
     const rowSpan = rowRange.end - rowRange.start + 1;
     const columnSpan = columnRange.end - columnRange.start + 1;
     const segmentId = `${tableId}_r${rowRange.start}_c${columnRange.start}`;
@@ -292,7 +289,6 @@ const normalizeTable = (
     ],
     cellCount: cells.length,
     complete: cells.every((cell) => cell.text.trim().length > 0),
-    hasText: cells.some((cell) => cell.text.trim().length > 0),
   };
 };
 
@@ -321,7 +317,7 @@ const normalizePage = (page: PaddleLayoutPageV1, position: number): NormalizedPa
       });
     }
     const bbox = block.block_bbox;
-    if (!withinPage(bbox, width, height) || boxWidth(bbox) < 0 || boxHeight(bbox) < 0) {
+    if (!withinPage(bbox, width, height) || boxWidth(bbox) <= 0 || boxHeight(bbox) <= 0) {
       throw ocrFailure("OCR_OUTPUT_INVALID", {
         message: "layout region coordinates fall outside the page",
         diagnostic: { pageNumber, readingOrder: index + 1 },
@@ -333,7 +329,7 @@ const normalizePage = (page: PaddleLayoutPageV1, position: number): NormalizedPa
       tables.push(table);
       regions.push({
         block: table.blocks[0]!,
-        hasText: table.hasText,
+        hasText: false,
         confidence: undefined,
       });
       continue;
@@ -355,12 +351,12 @@ const normalizePage = (page: PaddleLayoutPageV1, position: number): NormalizedPa
           width: boxWidth(bbox),
           height: boxHeight(bbox),
         },
-        ...(scores.length === 0 ? {} : { confidence: Math.min(1, Math.max(0, mean(scores))) }),
+        ...(scores.length === 0 ? {} : { confidence: mean(scores) }),
         chapterId,
         segmentId: `region_${pageNumber}_${regionNumber}`,
       },
       hasText: block.block_content.trim().length > 0,
-      confidence: scores.length === 0 ? undefined : Math.min(1, Math.max(0, mean(scores))),
+      confidence: scores.length === 0 ? undefined : mean(scores),
     });
   }
   return {
@@ -376,12 +372,14 @@ const toPageResults = (
 ): { readonly blocks: NormalizedBlockV1[]; readonly identities: SegmentIdentityV1[] } => {
   const blocks: NormalizedBlockV1[] = [];
   const identities: SegmentIdentityV1[] = [];
+  const tables = new Map(page.tables.map((table) => [table.blocks[0]!.tableId!, table] as const));
   for (const region of page.regions) {
     blocks.push(region.block);
-    if (!region.hasText) continue;
-    identities.push({ chapterId: region.block.chapterId!, segmentId: region.block.segmentId! });
-  }
-  for (const table of page.tables) {
+    if (region.hasText) {
+      identities.push({ chapterId: region.block.chapterId!, segmentId: region.block.segmentId! });
+    }
+    const table = region.block.tableId === undefined ? undefined : tables.get(region.block.tableId);
+    if (table === undefined) continue;
     for (const cell of table.blocks.slice(1)) {
       blocks.push(cell);
       if (cell.text.trim().length === 0) continue;
@@ -403,18 +401,24 @@ const normalizeLayout = (
     });
   }
   const normalized = pages.map((page, position) => normalizePage(page, position));
-  for (let index = 1; index < normalized.length; index += 1) {
-    if (normalized[index]!.pageNumber <= normalized[index - 1]!.pageNumber) {
+  for (const [index, page] of normalized.entries()) {
+    if (page.pageNumber !== index + 1) {
       throw ocrFailure("OCR_OUTPUT_INVALID", {
         message: "page results are duplicated, missing or out of order",
-        diagnostic: { pageNumber: normalized[index]!.pageNumber },
+        diagnostic: { pageNumber: page.pageNumber },
       });
     }
   }
-  if (fileType === 0 && result.dataInfo?.numPages !== undefined && result.dataInfo.numPages !== pages.length) {
+  const expectedType = fileType === 0 ? "pdf" : "image";
+  const declaredPageCount = result.dataInfo.type === "pdf" ? result.dataInfo.numPages : 1;
+  if (
+    result.dataInfo.type !== expectedType ||
+    declaredPageCount !== pages.length ||
+    (result.dataInfo.type === "pdf" && result.dataInfo.pages.length !== result.dataInfo.numPages)
+  ) {
     throw ocrFailure("OCR_OUTPUT_INVALID", {
-      message: "declared page count does not match the returned page results",
-      diagnostic: { pageCount: pages.length, declaredPageCount: result.dataInfo.numPages },
+      message: "input type or declared page count does not match the returned page results",
+      diagnostic: { pageCount: pages.length, declaredPageCount, inputType: result.dataInfo.type },
     });
   }
   const blocks: NormalizedBlockV1[] = [];
@@ -447,7 +451,7 @@ const normalizeLayout = (
         .map((block) => block.text)
         .join(""),
     ),
-    declaredPageCount: result.dataInfo?.numPages,
+    declaredPageCount,
   };
 };
 
@@ -456,13 +460,18 @@ const qualityCheck = (
   keyFields: readonly OcrKeyFieldV1[],
   layout: LayoutNormalizationV1,
   items: readonly OcrItemV1[],
-): { readonly metrics: OcrQualityMetricV1[]; readonly failures: OcrQualityMetricV1[] } => {
+): {
+  readonly metrics: OcrQualityMetricV1[];
+  readonly failures: OcrQualityMetricV1[];
+  readonly failedKeyFields: OcrKeyFieldV1[];
+} => {
   const metrics: OcrQualityMetricV1[] = [];
   const record = (
     metricId: string,
     observed: number,
     threshold: number,
     pageNumber?: number,
+    regionId?: string,
   ): void => {
     metrics.push({
       metricId,
@@ -470,6 +479,7 @@ const qualityCheck = (
       observed: Number.isFinite(observed) ? observed : 0,
       threshold,
       ...(pageNumber === undefined ? {} : { pageNumber }),
+      ...(regionId === undefined ? {} : { regionId }),
     });
   };
   const pageNumbers = layout.pages.map((page) => page.pageNumber);
@@ -486,12 +496,15 @@ const qualityCheck = (
     "valid-region-ratio",
     regions.length === 0
       ? 0
-      : regions.filter((region) => region.block.coordinate?.kind === "page").length / regions.length,
+      : regions.filter((region) => region.block.coordinate?.kind === "page").length /
+          regions.length,
     policy.minimumValidRegionRatio,
   );
   record(
     "reading-order-ratio",
-    regions.length === 0 ? 0 : regions.filter((region) => region.block.locator !== undefined).length / regions.length,
+    regions.length === 0
+      ? 0
+      : regions.filter((region) => region.block.locator !== undefined).length / regions.length,
     policy.minimumReadingOrderRatio,
   );
   record(
@@ -515,27 +528,48 @@ const qualityCheck = (
       1,
     );
   }
+  const failedKeyFields = keyFields.filter((field) => {
+    const block = layout.blocks.find(
+      (candidate) =>
+        candidate.blockId === field.regionId &&
+        candidate.coordinate?.kind === "page" &&
+        candidate.coordinate.pageNumber === field.pageNumber,
+    );
+    const matched =
+      block !== undefined && normalizeText(block.text).includes(normalizeText(field.expectedText));
+    return !matched;
+  });
   if (keyFields.length > 0) {
-    const matched = keyFields.filter((field) =>
-      normalizeText(layout.perPageText[field.pageNumber - 1] ?? "").includes(
-        normalizeText(field.expectedText),
-      ),
-    ).length;
-    record("key-field-coverage", matched / keyFields.length, policy.minimumKeyFieldCoverage);
+    record(
+      "key-field-coverage",
+      (keyFields.length - failedKeyFields.length) / keyFields.length,
+      policy.minimumKeyFieldCoverage,
+      failedKeyFields[0]?.pageNumber,
+      failedKeyFields[0]?.regionId,
+    );
   }
-  return { metrics, failures: metrics.filter((metric) => !metric.passed) };
+  return {
+    metrics,
+    failures: metrics.filter((metric) => !metric.passed),
+    failedKeyFields,
+  };
 };
 
 interface SlotsV1 {
-  acquire(): Promise<void>;
+  acquire(signal: AbortSignal, callerSignal: AbortSignal | undefined): Promise<void>;
   release(): void;
 }
 
 const createSlots = (maxConcurrent: number, maxQueued: number): SlotsV1 => {
   let active = 0;
-  const waiting: Array<() => void> = [];
+  const waiting: Array<{ readonly resume: () => void; readonly cancel: () => void }> = [];
   return {
-    async acquire(): Promise<void> {
+    async acquire(signal, callerSignal): Promise<void> {
+      const controlFailure = () =>
+        callerSignal?.aborted === true
+          ? ocrFailure("OCR_CANCELLED", { message: "ocr request was cancelled by the caller" })
+          : ocrFailure("OCR_TIMEOUT", { message: "ocr request exceeded the frozen timeout" });
+      if (signal.aborted) throw controlFailure();
       if (active < maxConcurrent) {
         active += 1;
         return;
@@ -545,12 +579,26 @@ const createSlots = (maxConcurrent: number, maxQueued: number): SlotsV1 => {
           message: "ocr request queue is saturated",
         });
       }
-      await new Promise<void>((resolve) => waiting.push(resolve));
-      active += 1;
+      await new Promise<void>((resolve, reject) => {
+        const waiter = {
+          resume: () => {
+            signal.removeEventListener("abort", waiter.cancel);
+            resolve();
+          },
+          cancel: () => {
+            const index = waiting.indexOf(waiter);
+            if (index >= 0) waiting.splice(index, 1);
+            reject(controlFailure());
+          },
+        };
+        waiting.push(waiter);
+        signal.addEventListener("abort", waiter.cancel, { once: true });
+      });
     },
     release(): void {
-      active -= 1;
-      waiting.shift()?.();
+      const next = waiting.shift();
+      if (next === undefined) active -= 1;
+      else next.resume();
     },
   };
 };
@@ -646,8 +694,10 @@ class PaddleOcrLayoutParser implements OcrLayoutParserV1 {
   async parse(request: OcrLayoutParserRequestV1): Promise<OcrLayoutParserOutcomeV1> {
     const { command } = request;
     const deployment = this.#deployment;
-    const matches = (left: { entityId: string; versionId: string }, right: { entityId: string; versionId: string }): boolean =>
-      left.entityId === right.entityId && left.versionId === right.versionId;
+    const matches = (
+      left: { entityId: string; versionId: string },
+      right: { entityId: string; versionId: string },
+    ): boolean => left.entityId === right.entityId && left.versionId === right.versionId;
     if (
       !matches(command.converterDeploymentRef, deployment.deploymentRef) ||
       !matches(command.qualityPolicyRef, this.#config.quality.policyRef)
@@ -657,7 +707,9 @@ class PaddleOcrLayoutParser implements OcrLayoutParserV1 {
       });
     }
     if (command.input.kind !== "ocr-layout") {
-      throw ocrFailure("OCR_INPUT_INVALID", { message: "ocr parser received a non-OCR input kind" });
+      throw ocrFailure("OCR_INPUT_INVALID", {
+        message: "ocr parser received a non-OCR input kind",
+      });
     }
     const fileType = MEDIA_TYPE_FILE_TYPES[command.mediaType];
     if (fileType === undefined) {
@@ -678,10 +730,12 @@ class PaddleOcrLayoutParser implements OcrLayoutParserV1 {
         message: "conversion deadline has already elapsed",
       });
     }
-    const signals: AbortSignal[] = [AbortSignal.timeout(Math.min(deployment.requestTimeoutMs, remainingMs))];
+    const signals: AbortSignal[] = [
+      AbortSignal.timeout(Math.min(deployment.requestTimeoutMs, remainingMs)),
+    ];
     if (request.signal !== undefined) signals.push(request.signal);
     const signal = AbortSignal.any(signals);
-    await this.#slots.acquire();
+    await this.#slots.acquire(signal, request.signal);
     try {
       const parents: PersistedOcrRawResponseV1[] = [];
       let lastFailure: unknown;
@@ -689,14 +743,34 @@ class PaddleOcrLayoutParser implements OcrLayoutParserV1 {
         try {
           return await this.#attempt(request, fileType, attempt, signal, parents);
         } catch (error) {
-          if (!(error instanceof Error) || !("retryable" in error) || error.retryable !== true) throw error;
-          lastFailure = error;
+          if (
+            !(error instanceof OcrLayoutParserError) ||
+            error.stage !== "service" ||
+            !error.retryable
+          ) {
+            throw error;
+          }
+          lastFailure = new OcrLayoutParserError({
+            code: error.code,
+            stage: error.stage,
+            retryable: true,
+            message: error.message,
+            parents: [...parents.map((item) => item.artifactRef), ...error.parents],
+            evidence: error.evidence,
+            ...(error.diagnostic === undefined ? {} : { diagnostic: error.diagnostic }),
+            ...(error.sourceSegmentId === undefined
+              ? {}
+              : { sourceSegmentId: error.sourceSegmentId }),
+            ...(error.observedBytes === undefined ? {} : { observedBytes: error.observedBytes }),
+          });
           if (attempt < deployment.maxAttempts) {
             await holdFor(deployment.retryDelayMs, signal, request.signal);
           }
         }
       }
-      throw lastFailure ?? ocrFailure("OCR_SERVICE_UNAVAILABLE", { message: "ocr attempts exhausted" });
+      throw (
+        lastFailure ?? ocrFailure("OCR_SERVICE_UNAVAILABLE", { message: "ocr attempts exhausted" })
+      );
     } finally {
       this.#slots.release();
     }
@@ -734,7 +808,7 @@ class PaddleOcrLayoutParser implements OcrLayoutParserV1 {
     const body = PaddleLayoutRequestV1Schema.parse({
       file: Buffer.from(request.bytes).toString("base64"),
       fileType,
-      outputImages: false,
+      visualize: false,
       returnMarkdownImages: false,
     });
     const { response, bytes: responseBytes } = await this.#send(body, signal, request.signal);
@@ -745,29 +819,31 @@ class PaddleOcrLayoutParser implements OcrLayoutParserV1 {
         httpStatus: response.status,
         maxBytes: deployment.maxResponseBytes,
         bytes: responseBytes,
-        trace: toJsonValue(OcrTraceV1Schema.parse({
-          schemaVersion: "1",
-          conversionId: command.conversionId,
-          deploymentRef: deployment.deploymentRef,
-          serviceBuildRef: deployment.serviceBuildRef,
-          pipelineRef: deployment.pipelineRef,
-          modelVersionRefs: deployment.modelVersionRefs,
-          resourceAllocationRef: deployment.resourceAllocationRef,
-          retryPolicyRef: deployment.retryPolicyRef,
-          qualityPolicyRef: this.#config.quality.policyRef,
-          protocolVersion: OCR_LAYOUT_PROTOCOL_VERSION_V1,
-          attempt,
-          httpStatus: response.status,
-          inputBytes: request.bytes.byteLength,
-          responseBytes: responseBytes.byteLength,
-          pageCount: 0,
-          regionCount: 0,
-          tableCount: 0,
-          cellCount: 0,
-          startedAt,
-          completedAt: this.#now().toISOString(),
-          metrics: [],
-        })),
+        trace: toJsonValue(
+          OcrTraceV1Schema.parse({
+            schemaVersion: "1",
+            conversionId: command.conversionId,
+            deploymentRef: deployment.deploymentRef,
+            serviceBuildRef: deployment.serviceBuildRef,
+            pipelineRef: deployment.pipelineRef,
+            modelVersionRefs: deployment.modelVersionRefs,
+            resourceAllocationRef: deployment.resourceAllocationRef,
+            retryPolicyRef: deployment.retryPolicyRef,
+            qualityPolicyRef: this.#config.quality.policyRef,
+            protocolVersion: OCR_LAYOUT_PROTOCOL_VERSION_V1,
+            attempt,
+            httpStatus: response.status,
+            inputBytes: request.bytes.byteLength,
+            responseBytes: responseBytes.byteLength,
+            pageCount: 0,
+            regionCount: 0,
+            tableCount: 0,
+            cellCount: 0,
+            startedAt,
+            completedAt: this.#now().toISOString(),
+            metrics: [],
+          }),
+        ),
       });
     } catch {
       throw ocrFailure("OCR_ARTIFACT_PERSISTENCE_FAILED", {
@@ -827,7 +903,7 @@ class PaddleOcrLayoutParser implements OcrLayoutParserV1 {
       throw ocrFailure("OCR_QUALITY_BLOCKED", {
         message: "ocr output did not reach the frozen quality policy",
         parents: parentRefs,
-        diagnostic: { metrics: quality.metrics },
+        diagnostic: { metrics: quality.metrics, failedKeyFields: quality.failedKeyFields },
       });
     }
     return {
@@ -868,6 +944,7 @@ class PaddleOcrLayoutParser implements OcrLayoutParserV1 {
         attempt,
         httpStatus: response.status,
         metrics: quality.metrics,
+        failedKeyFields: quality.failedKeyFields,
       }),
     };
   }

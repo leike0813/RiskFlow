@@ -46,6 +46,9 @@ const SmokeConfigSchema = z.strictObject({
     )
     .min(3),
   evidence: z.strictObject({
+    deploymentRef: VersionReferenceSchema,
+    serviceBuildRef: VersionReferenceSchema,
+    pipelineRef: VersionReferenceSchema,
     serviceBuildInfo: IdentifierSchema,
     capturedAt: IsoDateTimeSchema,
     modelVersionRefs: z.array(VersionReferenceSchema).min(1),
@@ -70,6 +73,10 @@ describe.skipIf(!enabled)("paddle ocr real-service smoke", () => {
   it("converts the three frozen scanned samples through the production adapter", async () => {
     const { configDir, config } = await smokeConfig();
     const { deployment, quality } = config.layout;
+    const sameRef = (
+      left: { entityId: string; versionId: string },
+      right: { entityId: string; versionId: string },
+    ): boolean => left.entityId === right.entityId && left.versionId === right.versionId;
     for (const required of ["application/pdf", "image/png", "image/jpeg"] as const) {
       if (!config.samples.some((sample) => sample.mediaType === required)) {
         throw new Error(`smoke samples must cover ${required}`);
@@ -84,11 +91,19 @@ describe.skipIf(!enabled)("paddle ocr real-service smoke", () => {
     if (evidenceKeys.join("|") !== deploymentKeys.join("|")) {
       throw new Error("service evidence does not prove the frozen model version set");
     }
-    if (
-      config.evidence.resourceAllocationRef.entityId !== deployment.resourceAllocationRef.entityId ||
-      config.evidence.resourceAllocationRef.versionId !== deployment.resourceAllocationRef.versionId
-    ) {
-      throw new Error("service evidence does not prove the frozen resource allocation");
+    for (const [actual, expected, label] of [
+      [config.evidence.deploymentRef, deployment.deploymentRef, "deployment"],
+      [config.evidence.serviceBuildRef, deployment.serviceBuildRef, "service build"],
+      [config.evidence.pipelineRef, deployment.pipelineRef, "pipeline"],
+      [
+        config.evidence.resourceAllocationRef,
+        deployment.resourceAllocationRef,
+        "resource allocation",
+      ],
+    ] as const) {
+      if (!sameRef(actual, expected)) {
+        throw new Error(`service evidence does not prove the frozen ${label}`);
+      }
     }
 
     const artifactFixture = await startArtifactFixture();
@@ -147,7 +162,10 @@ describe.skipIf(!enabled)("paddle ocr real-service smoke", () => {
                 segmentSet: {
                   sourceSegmentSetRef: {
                     kind: "source-segment-set",
-                    reference: { entityId: `smoke-ocr-segments-${command.commandId}`, versionId: "1" },
+                    reference: {
+                      entityId: `smoke-ocr-segments-${command.commandId}`,
+                      versionId: "1",
+                    },
                   },
                 },
               },
@@ -157,12 +175,20 @@ describe.skipIf(!enabled)("paddle ocr real-service smoke", () => {
           createApplicabilitySnapshot: async (): Promise<ContextSourceResultV1> =>
             ({ kind: "failed", error: new Error("not used") }) as unknown as ContextSourceResultV1,
         } as unknown as EngineeringContextSourceRegistryV1;
+        let parserDiagnostic: unknown;
+        const parser = createPaddleOcrLayoutParser({ config: config.layout });
         const adapter = new StructuredDocumentConversionAdapter({
           contextSource,
           artifactStore: artifactFixture.store,
           qualityPolicyRef: quality.policyRef,
           converterDeploymentRef: deployment.deploymentRef,
-          ocrLayoutParser: createPaddleOcrLayoutParser({ config: config.layout }),
+          ocrLayoutParser: {
+            parse: async (request) => {
+              const outcome = await parser.parse(request);
+              parserDiagnostic = outcome.diagnostic;
+              return outcome;
+            },
+          },
         });
         const result = await adapter.convert({
           schemaVersion: "1",
@@ -184,7 +210,9 @@ describe.skipIf(!enabled)("paddle ocr real-service smoke", () => {
           converterDeploymentRef: deployment.deploymentRef,
         });
         if (result.kind !== "succeeded") {
-          throw new Error(`production adapter rejected a frozen smoke sample: ${result.error.code}`);
+          throw new Error(
+            `production adapter rejected a frozen smoke sample: ${result.error.code}`,
+          );
         }
         const openArtifact = async (artifactRef: ArtifactRefV1) => {
           const handle = await artifactFixture.store.open(
@@ -213,15 +241,15 @@ describe.skipIf(!enabled)("paddle ocr real-service smoke", () => {
         if (rawRef === undefined) {
           throw new Error("smoke JSON-LD artifact is missing its raw OCR response parent");
         }
-        const rawEnvelope = JSON.parse((await openArtifact(rawRef)).text) as {
-          trace?: { metrics?: unknown[] };
-        };
+        await openArtifact(rawRef);
         const jsonLd = JSON.parse(jsonLdArtifact.text) as {
           pageExtents?: unknown[];
           textBlocks: unknown[];
         };
         expect(jsonLd.textBlocks.length).toBeGreaterThan(0);
         expect(jsonLd.pageExtents?.length ?? 0).toBeGreaterThan(0);
+        const qualityMetrics = (parserDiagnostic as { metrics?: unknown[] } | undefined)?.metrics;
+        expect(qualityMetrics?.length ?? 0).toBeGreaterThan(0);
         report.push({
           sample: { mediaType: sample.mediaType, byteLength: bytes.byteLength },
           deploymentRef: deployment.deploymentRef,
@@ -230,9 +258,10 @@ describe.skipIf(!enabled)("paddle ocr real-service smoke", () => {
           modelVersionRefs: deployment.modelVersionRefs,
           resourceAllocationRef: deployment.resourceAllocationRef,
           serviceBuildInfo: config.evidence.serviceBuildInfo,
+          evidenceCapturedAt: config.evidence.capturedAt,
           pageCount: jsonLd.pageExtents?.length ?? 0,
           textBlockCount: jsonLd.textBlocks.length,
-          qualityMetrics: rawEnvelope.trace?.metrics ?? [],
+          qualityMetrics,
           jsonLdArtifactRef: result.result.jsonLdArtifactRef,
           sourceSegmentSetRef: result.result.sourceSegmentSetRef,
         });

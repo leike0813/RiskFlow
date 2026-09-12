@@ -32,11 +32,13 @@
     {
       "fieldId": "page_1_heading",
       "pageNumber": 1,
+      "regionId": "ocr_page_1_region_1",
       "expectedText": "合成扫描样例第一页标题"
     },
     {
       "fieldId": "page_2_span_value",
       "pageNumber": 2,
+      "regionId": "ocr_page_2_region_2",
       "expectedText": "监测值12.5"
     }
   ],

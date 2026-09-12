@@ -1,7 +1,4 @@
-import {
-  PaddleOcrLayoutConfigV1Schema,
-  type PaddleOcrLayoutConfigV1,
-} from "./schema.js";
+import { PaddleOcrLayoutConfigV1Schema, type PaddleOcrLayoutConfigV1 } from "./schema.js";
 
 /**
  * OCR 部署/质量配置由 composition root 注入后 strict 解析并深冻结；业务输入

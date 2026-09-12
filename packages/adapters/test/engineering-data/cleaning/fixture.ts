@@ -35,16 +35,19 @@ import type {
   SourceSegmentSetRefV1,
   SourceVersionRefV1,
   SpatialScopeRefV1,
-  StartAgentTaskCommandV1,
   StructuredDocumentConversionCommandV1,
   StructuredDocumentConversionRefV1,
 } from "@riskflow/contracts/ports";
-import { StructuredDocumentConversionCommandV1Schema } from "@riskflow/contracts/ports";
+import {
+  StartAgentTaskCommandV1Schema,
+  StructuredDocumentConversionCommandV1Schema,
+} from "@riskflow/contracts/ports";
 
 import { PostgresAgentTaskAdapter } from "../../../src/agent-runtime/index.js";
 import { bootstrapInitialSystemAdministrator } from "../../../src/auth/index.js";
 import {
   createPostgresDataCleaningStore,
+  type DataCleaningAgentTaskStartRequestV1,
   type PostgresDataCleaningStore,
 } from "../../../src/engineering-data/cleaning/postgres-data-cleaning-store.js";
 import {
@@ -440,8 +443,8 @@ export interface DataCleaningPostgresFixture {
   readonly policy: DataCleaningPolicyV1;
   readonly store: PostgresDataCleaningStore;
   readonly agentTaskAdapter: PostgresAgentTaskAdapter;
-  /** Raw start commands C15 handed to the injected start port, oldest first. */
-  readonly recordedStartCommands: readonly StartAgentTaskCommandV1[];
+  /** Raw start-seam requests C15 handed to the composition, oldest first. */
+  readonly recordedStartCommands: readonly DataCleaningAgentTaskStartRequestV1[];
   createPipeline(options?: {
     readonly policy?: DataCleaningPolicyV1;
     readonly transactionUnit?: TransactionUnitV1;
@@ -527,8 +530,11 @@ export const startDataCleaningFixture = async (
 
   const uploader = await createManager("c15-uploader");
   const freezer = await createManager("c15-freezer");
+  /** 启动接缝的受信调用来源：按启动命令的 actor 取该成员的 C06 会话，token 不出现在接缝输入里。 */
+  const sessionTokenFor = (accountId: string): string | undefined =>
+    [uploader, freezer].find((member) => member.accountId === accountId)?.sessionToken;
 
-  const recordedStartCommands: StartAgentTaskCommandV1[] = [];
+  const recordedStartCommands: DataCleaningAgentTaskStartRequestV1[] = [];
   const createAgentTaskAdapter = (values: {
     readonly store: PostgresDataCleaningStore;
     readonly transactionUnit: TransactionUnitV1;
@@ -539,6 +545,8 @@ export const startDataCleaningFixture = async (
       transactionUnit: values.transactionUnit,
       referenceGuard: base.artifactRegistry,
       artifactStore: base.artifactStore,
+      // C08 必须用同一个 C06 verifier 在创建和执行时复验授权，否则冻结上下文无从校验。
+      authorization: base.access,
       now: () => CLEANING_TEST_TIMESTAMP,
     });
 
@@ -558,28 +566,29 @@ export const startDataCleaningFixture = async (
       artifactStore: base.artifactStore,
       artifactReferenceGuard: base.artifactRegistry,
       monitoringStore: base.monitoringStore,
-      // C15 hands this port its own `engineering-data.freeze` preparation authorization, while the
-      // C08 `start-task` contract demands the `agent-task.start` capability
-      // (contracts/src/ports/index.ts:1722 with the superRefine at 809-815) and the frozen task
-      // authorization is later re-read with `engineering-data.freeze`. C02 issues exactly one
-      // capability per branch and a child context can only narrow, so no C02-issued context
-      // satisfies both: the start port stays an injected composition-root seam outside this
-      // change, and the fixture widens the real C02 context by that one capability before
-      // delegating to the real C08 adapter. The seam is pinned by the
-      // "cannot hand C15's own start command to the real C08 adapter" test.
-      startAgentTask: (command) => {
-        const startCommand = command as StartAgentTaskCommandV1;
-        recordedStartCommands.push(startCommand);
-        return holder.adapter!.startTask({
-          ...startCommand,
-          authorization: {
-            ...startCommand.authorization,
-            grantedCapabilities: [
-              ...startCommand.authorization.grantedCapabilities,
-              "agent-task.start" as const,
-            ],
-          },
+      // 生产组合根（apps/worker/src/engineering-data/cleaning/composition.ts）按 D-13 用服务端
+      // 受信来源经 C06 的 `agent-task.start-task` exact branch 签发独立上下文；这里用同一个
+      // C06 会话授权和同一个 C08 adapter 走同一条路径，不再扩写冻结命令的 capability。
+      startAgentTask: async (request) => {
+        recordedStartCommands.push(request);
+        const sessionToken = sessionTokenFor(request.command.actorId);
+        if (sessionToken === undefined)
+          throw new Error("the C15 fixture has no C06 session for the start actor");
+        const decision = await base.access.authorize({
+          invocation: { kind: "human-session", sessionToken },
+          invocationId: request.command.commandId,
+          projectId: request.command.projectId,
+          branch: "agent-task.start-task",
+          requestedSpatialScopeRefs: [...request.requestedSpatialScopeRefs],
+          requestedSourceVersionRefs: [...request.requestedSourceVersionRefs],
+          requestedAt: request.command.issuedAt,
         });
+        return holder.adapter!.startTask(
+          StartAgentTaskCommandV1Schema.parse({
+            ...request.command,
+            authorization: decision.context,
+          }),
+        );
       },
       policy: pipelinePolicy,
       now: () => new Date(CLEANING_TEST_TIMESTAMP),

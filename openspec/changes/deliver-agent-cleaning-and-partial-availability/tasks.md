@@ -19,7 +19,7 @@
 
 - [x] 4.1 [IP-07] 保持 API 通用 freeze 传输不变；运行 `pnpm exec vitest run apps/api/test/http-shell.test.ts` 验证无需新增路由且错误/成功联合仍透传。
 - [x] 4.2 [IP-06] 为现有 C08 runner 增加 data-cleaning 渲染/解释组合函数和协议测试，覆盖工具、候选、预算/模型/授权失败及自动收口；运行 `pnpm exec vitest run apps/worker/test/engineering-data/cleaning/runtime.test.ts apps/worker/test/agent-runtime/runner.test.ts` 验证仍使用同一 runner。
-- [ ] 4.3 [IP-09] 在 Worker 唯一生产组合根实现 `createPostgresDataCleaningComposition()`：让 store 提交无授权启动草案与精确 scope/source refs，经真实 C06 exact branch 签发唯一 `agent-task.start` 上下文后 strict 调用同一 C08 adapter，并给 adapter 注入同一个 C06 verifier；删除 adapter fixture 手工追加 capability，运行 `pnpm exec vitest run apps/worker/test/engineering-data/cleaning/composition.test.ts packages/adapters/test/engineering-data/cleaning/postgres-data-cleaning-store.test.ts`，断言授权请求、任务信封、C06/C03 审计成立且授权拒绝时 C08 task 数为 0。
+- [x] 4.3 [IP-09] 在 Worker 唯一生产组合根实现 `createPostgresDataCleaningComposition()`：让 store 提交无授权启动草案与精确 scope/source refs，经真实 C06 exact branch 签发唯一 `agent-task.start` 上下文后 strict 调用同一 C08 adapter，并给 adapter 注入同一个 C06 verifier；删除 adapter fixture 手工追加 capability，运行 `pnpm exec vitest run apps/worker/test/engineering-data/cleaning/composition.test.ts packages/adapters/test/engineering-data/cleaning/postgres-data-cleaning-store.test.ts`，断言授权请求、任务信封、C06/C03 审计成立且授权拒绝时 C08 task 数为 0。
 
 ## 5. Web
 
@@ -30,9 +30,9 @@
 - [x] 6.1 [IP-02、IP-03、IP-04、IP-05、IP-06] 运行 `pnpm exec vitest run packages/core/test/engineering-data/cleaning.test.ts packages/adapters/test/engineering-data/cleaning/postgres-data-cleaning-store.test.ts apps/worker/test/engineering-data/cleaning/runtime.test.ts`，验证 C15 core→adapter→worker 主链。
 - [x] 6.2 [IP-07] 运行 implementation-plan §6 的 contracts/C08/C11/C12/C14/PostgreSQL/API 回归命令，确认公共解析、任务状态机、迁移、文档转换、监测值/特征和通用 freeze 无漂移。
 - [x] 6.3 [IP-08] 依次运行 `pnpm typecheck`、`pnpm lint`、implementation-plan §7.3 的 scoped Prettier 命令、`pnpm deps:check`、`pnpm deps:policy`、`pnpm test` 与 `git diff --check`；全部通过后核对实际改动仍在 allowlist 内。
-- [ ] 6.4 [IP-09] 运行 `pnpm typecheck`、`pnpm lint`、`pnpm exec prettier --check apps/worker/src/engineering-data/cleaning apps/worker/test/engineering-data/cleaning packages/adapters/src/engineering-data/cleaning/postgres-data-cleaning-store.ts packages/adapters/test/engineering-data/cleaning`、`pnpm deps:check` 与 `git diff --check`，确认新组合保持 worker→adapters→core/contracts 单向依赖且无新增依赖。
+- [x] 6.4 [IP-09] 运行 `pnpm typecheck`、`pnpm lint`、`pnpm exec prettier --check apps/worker/src/engineering-data/cleaning apps/worker/test/engineering-data/cleaning packages/adapters/src/engineering-data/cleaning/postgres-data-cleaning-store.ts packages/adapters/test/engineering-data/cleaning`、`pnpm deps:check` 与 `git diff --check`，确认新组合保持 worker→adapters→core/contracts 单向依赖且无新增依赖。
 
 ## 7. OpenSpec verify
 
 - [x] 7.1 [IP-08] 运行 `openspec validate deliver-agent-cleaning-and-partial-availability --type change --strict --no-interactive` 和 `openspec instructions apply --change deliver-agent-cleaning-and-partial-availability --json`，确认 change 严格通过、全部 `contextFiles` 可读且每项实现证据已回填后，再交由 `openspec-verify-change` 独立验收；本任务不归档、不提交。
-- [ ] 7.2 [IP-09] 运行 `openspec validate deliver-agent-cleaning-and-partial-availability --type change --strict --no-interactive`、`openspec instructions apply --change deliver-agent-cleaning-and-partial-availability --json` 及 implementation-plan §7.3 的两个 `86ad03b...` 范围命令，确认新增 Scenario/IP/task 可追溯、生产/测试改动仅在 IP-09 allowlist、保护区命令无输出；本任务不归档、不提交。
+- [x] 7.2 [IP-09] 运行 `openspec validate deliver-agent-cleaning-and-partial-availability --type change --strict --no-interactive`、`openspec instructions apply --change deliver-agent-cleaning-and-partial-availability --json` 及 implementation-plan §7.3 的两个 `86ad03b...` 范围命令，确认新增 Scenario/IP/task 可追溯、生产/测试改动仅在 IP-09 allowlist、保护区命令无输出；本任务不归档、不提交。

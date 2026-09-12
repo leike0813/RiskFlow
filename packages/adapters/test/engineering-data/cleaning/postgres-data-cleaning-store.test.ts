@@ -1,6 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import type { AgentTaskClaimV1, AgentTaskSnapshotV1 } from "@riskflow/core/agent-runtime";
+import {
+  AgentTaskEnvelopeV1Schema,
+  type AgentTaskClaimV1,
+  type AgentTaskSnapshotV1,
+} from "@riskflow/core/agent-runtime";
 import type { TransactionUnitV1 } from "@riskflow/core/persistence";
 import { StartAgentTaskCommandV1Schema } from "@riskflow/contracts/ports";
 import type {
@@ -155,9 +159,9 @@ describe("C15 PostgreSQL data cleaning store", () => {
   };
 
   const frozenInputRefOf = (index: number) => {
-    const command = fixture.recordedStartCommands[index];
-    if (command === undefined) throw new Error(`start command ${index} was not recorded`);
-    return command.payload.frozenInputRef as {
+    const request = fixture.recordedStartCommands[index];
+    if (request === undefined) throw new Error(`start request ${index} was not recorded`);
+    return request.command.payload.frozenInputRef as {
       readonly kind: "content-artifact";
       readonly reference: VersionReference;
     };
@@ -1307,19 +1311,111 @@ describe("C15 PostgreSQL data cleaning store", () => {
     });
   }, 120_000);
 
-  it("cannot hand C15's own start command to the real C08 adapter", async () => {
-    const raw = fixture.recordedStartCommands[0]!;
-    expect(raw.kind).toBe("start-task");
-    expect(raw.authorization.grantedCapabilities).toEqual(["engineering-data.freeze"]);
-    const parsed = StartAgentTaskCommandV1Schema.safeParse(raw);
-    expect(parsed.success).toBe(false);
-    if (!parsed.success) {
-      expect(parsed.error.issues.map((issue) => issue.message)).toContain(
-        "required capability is not granted",
-      );
-    }
-    const direct = await main.pipeline.agentTaskAdapter.startTask(raw);
-    expect(direct).toMatchObject({ kind: "failed", error: { category: "technical" } });
+  it("starts the C08 task from a draft plus a C06-issued agent-task.start context", async () => {
+    const request = fixture.recordedStartCommands[0]!;
+    const draft = request.command;
+    // store 只提交草案与命令的精确范围：草案里没有授权上下文，也不能直接交给 C08。
+    expect(draft).not.toHaveProperty("authorization");
+    expect(request.requestedSpatialScopeRefs).toEqual([main.spatialScopeRef]);
+    expect(request.requestedSourceVersionRefs).toEqual([...main.sourceVersionRefs()]);
+
+    const tasks = await fixture.postgres.adminPool.query<{
+      envelope: unknown;
+      authorization_context_ref: { readonly reference: VersionReference };
+    }>(
+      `SELECT envelope, authorization_context_ref FROM business.agent_tasks
+        WHERE project_id = $1 AND command_id = $2`,
+      [main.projectId, draft.commandId],
+    );
+    expect(tasks.rows).toHaveLength(1);
+    const envelope = AgentTaskEnvelopeV1Schema.parse(tasks.rows[0]!.envelope);
+    // 任务信封只携带 C06 为 exact branch 签发的唯一 capability，没有被扩写过的冻结上下文。
+    expect(envelope.authorization.grantedCapabilities).toEqual(["agent-task.start"]);
+    expect(envelope.authorization.actorId).toBe(main.freezerId);
+    expect(envelope.authorization.authorizationContextRef).toEqual(
+      tasks.rows[0]!.authorization_context_ref,
+    );
+
+    const contexts = await fixture.postgres.adminPool.query<{
+      branch: string;
+      invocation_id: string;
+      actor_id: string;
+      revision_snapshot: { readonly sourceVersionRefs?: readonly SourceVersionRefV1[] };
+    }>(
+      `SELECT branch, invocation_id, actor_id, revision_snapshot
+         FROM business.authorization_contexts
+        WHERE project_id = $1 AND branch = 'agent-task.start-task' AND invocation_id = $2`,
+      [main.projectId, draft.commandId],
+    );
+    expect(contexts.rows).toHaveLength(1);
+    expect(contexts.rows[0]).toMatchObject({
+      invocation_id: draft.commandId,
+      actor_id: main.freezerId,
+    });
+    expect(contexts.rows[0]!.revision_snapshot.sourceVersionRefs).toEqual([
+      ...main.sourceVersionRefs(),
+    ]);
+
+    const securityAudits = await fixture.postgres.adminPool.query<{
+      event_kind: string;
+      outcome: string;
+    }>(
+      `SELECT event_kind, outcome FROM business.security_audit_events
+        WHERE project_ref = $1 AND request_ref = $2`,
+      [main.projectId, draft.commandId],
+    );
+    // C06 的签发与 C08 adapter 注入的同一个 verifier 都留下成功安全审计；无 verifier 的
+    // adapter 不会产生 verify 审计，因此这条断言同时钉住了 C06 校验的注入。
+    expect(new Set(securityAudits.rows.map((row) => row.event_kind))).toEqual(
+      new Set(["authorize", "verify"]),
+    );
+    expect(securityAudits.rows.every((row) => row.outcome === "success")).toBe(true);
+
+    const factAudits = await fixture.postgres.adminPool.query<{ action: string }>(
+      "SELECT action FROM audit.entries WHERE project_id = $1 AND command_id = $2",
+      [main.projectId, draft.commandId],
+    );
+    expect(factAudits.rows.map((row) => row.action)).toEqual(["agent-task.start-task"]);
+  }, 120_000);
+
+  it("refuses the freeze context as a C08 start authorization", async () => {
+    const draft = fixture.recordedStartCommands[0]!.command;
+    if (firstFrozen === undefined) throw new Error("the first freeze was not recorded");
+    // 冻结命令的 `engineering-data.freeze` 上下文不是启动授权：C08 契约与 C06 都会拒绝它。
+    const denied = await main.pipeline.agentTaskAdapter.startTask({
+      ...draft,
+      authorization: firstFrozen.command.authorization,
+    });
+    expect(denied).toMatchObject({ kind: "failed", error: { category: "technical" } });
+    expect(StartAgentTaskCommandV1Schema.safeParse(draft).success).toBe(false);
+  }, 120_000);
+
+  it("refuses the freeze context as a C06 system parent for the start branch", async () => {
+    if (firstFrozen === undefined) throw new Error("the first freeze was not recorded");
+    // 生产组合的 system 调用者必须带 C06 已为同一 capability 签发的父上下文；冻结命令的
+    // `engineering-data.freeze` 上下文因 capability 不同不得作为父上下文。
+    await expect(
+      fixture.access.authorize({
+        invocation: {
+          kind: "system",
+          systemActorId: main.freezerId,
+          reasonCode: "c15-cleaning-start",
+        },
+        invocationId: "c15-cleaning-system-parent-1",
+        projectId: main.projectId,
+        branch: "agent-task.start-task",
+        requestedSpatialScopeRefs: [main.spatialScopeRef],
+        requestedSourceVersionRefs: [...main.sourceVersionRefs()],
+        parentContext: firstFrozen.command.authorization,
+        causalRunRef: {
+          kind: "workflow-run",
+          reference: { entityId: "c15-cleaning-run-digest", versionId: "1" },
+        },
+      }),
+    ).rejects.toMatchObject({
+      // 拒绝必须发生在父子能力收窄处，而不是父上下文缺失或过期。
+      details: { code: "AUTHORIZATION_DENIED", stage: "authorize.narrowing" },
+    });
   }, 120_000);
 
   it("keeps the allowed C15 refs aligned with the refs the C12 adapter writes", async () => {

@@ -9,6 +9,8 @@ import type {
   MonitoringSeriesRefV1,
   MonitoringSnapshotRefV1,
   SourceVersionRefV1,
+  SpatialScopeRefV1,
+  StartAgentTaskCommandV1,
   StartAgentTaskResultV1,
 } from "@riskflow/contracts/ports";
 import type { VersionReference } from "@riskflow/contracts/common";
@@ -213,6 +215,16 @@ type CleaningDatabase = PostgresDatabase & {
 
 type CleaningTransaction = Transaction<CleaningDatabase>;
 
+/**
+ * 启动接缝的输入：C15 只提交缺少 `authorization` 的 C08 启动草案，以及冻结命令的精确
+ * 空间/资料范围。授权上下文由组合根经 C06 签发，store 不持有也不能扩写 capability。
+ */
+export interface DataCleaningAgentTaskStartRequestV1 {
+  readonly command: Omit<StartAgentTaskCommandV1, "authorization">;
+  readonly requestedSpatialScopeRefs: readonly SpatialScopeRefV1[];
+  readonly requestedSourceVersionRefs: readonly SourceVersionRefV1[];
+}
+
 export interface PostgresDataCleaningStoreOptions {
   readonly db: Kysely<PostgresDatabase>;
   readonly transactionUnit: TransactionUnitV1;
@@ -220,7 +232,9 @@ export interface PostgresDataCleaningStoreOptions {
   readonly artifactStore: ArtifactStoreV1;
   readonly artifactReferenceGuard: ArtifactReferenceGuardV1;
   readonly monitoringStore: PostgresMonitoringStoreV1;
-  readonly startAgentTask: (command: unknown) => Promise<StartAgentTaskResultV1>;
+  readonly startAgentTask: (
+    request: DataCleaningAgentTaskStartRequestV1,
+  ) => Promise<StartAgentTaskResultV1>;
   readonly policy: DataCleaningPolicyV1;
   readonly now?: () => Date;
 }
@@ -236,6 +250,16 @@ const referenceKey = (value: { reference: { entityId: string; versionId: string 
 
 const sameVersion = (left: VersionReference, right: VersionReference): boolean =>
   left.entityId === right.entityId && left.versionId === right.versionId;
+
+/**
+ * C04 工件读写只接受调用方上下文自带的能力。C06 每个上下文只签发一个 capability：冻结准备
+ * 用 `engineering-data.freeze`，任务读写用 C06 为 `agent-task.start-task` 签发的
+ * `agent-task.start`，因此这里不能再写死冻结能力。
+ */
+const authorizedCapability = (
+  authorization: EngineeringFreezeCommandV1["authorization"],
+): EngineeringFreezeCommandV1["authorization"]["grantedCapabilities"][number] =>
+  authorization.grantedCapabilities[0]!;
 
 const artifactSortKey = (value: {
   kind: string;
@@ -360,7 +384,9 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
   readonly #artifactStore: ArtifactStoreV1;
   readonly #artifactGuard: ArtifactReferenceGuardV1;
   readonly #monitoringStore: PostgresMonitoringStoreV1;
-  readonly #startAgentTask: (command: unknown) => Promise<StartAgentTaskResultV1>;
+  readonly #startAgentTask: (
+    request: DataCleaningAgentTaskStartRequestV1,
+  ) => Promise<StartAgentTaskResultV1>;
   readonly #policy: DataCleaningPolicyV1;
   readonly #now: () => Date;
 
@@ -436,7 +462,7 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
         value: manifest,
         parentArtifactRefs: [],
       });
-      const started = await this.#startCleaningTask(context, digest, manifestArtifactRef);
+      const started = await this.#startCleaningTask(context, digest, manifest, manifestArtifactRef);
       if (started.kind === "error") return failed(started.error);
       return await this.#finalizePreparation(
         context,
@@ -857,7 +883,7 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
             artifactRef: decisionRef,
             projectId: context.projectId,
             purposeCode: DECISION_PURPOSE,
-            requiredCapability: FREEZE_CAPABILITY,
+            requiredCapability: authorizedCapability(context.authorization),
             authorization: context.authorization,
           });
         }
@@ -1131,6 +1157,7 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
   async #startCleaningTask(
     context: CleaningCommandContext,
     digest: string,
+    manifest: CleaningPreparationManifestV1,
     manifestArtifactRef: ContentArtifactRefV1,
   ): Promise<
     | { readonly kind: "ok"; readonly taskRef: AgentTaskRefV1 }
@@ -1139,28 +1166,33 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
     const agent = this.#policy.agent;
     const started = StartAgentTaskResultV1Schema.parse(
       await this.#startAgentTask({
-        commandId: `data-cleaning-start-${digest.slice(0, 40)}`,
-        idempotencyKey: `data-cleaning-task-${digest.slice(0, 40)}`,
-        projectId: context.projectId,
-        actorId: context.actorId,
-        issuedAt: context.issuedAt,
-        authorization: context.authorization,
-        kind: "start-task",
-        payload: {
-          taskType: "data-cleaning",
-          triggerMode: "embedded",
-          parentRunRef: {
-            kind: "workflow-run",
-            reference: { entityId: `data-cleaning-run-${digest.slice(0, 40)}`, versionId: "1" },
+        command: {
+          commandId: `data-cleaning-start-${digest.slice(0, 40)}`,
+          idempotencyKey: `data-cleaning-task-${digest.slice(0, 40)}`,
+          projectId: context.projectId,
+          actorId: context.actorId,
+          issuedAt: context.issuedAt,
+          kind: "start-task",
+          payload: {
+            taskType: "data-cleaning",
+            triggerMode: "embedded",
+            parentRunRef: {
+              kind: "workflow-run",
+              reference: { entityId: `data-cleaning-run-${digest.slice(0, 40)}`, versionId: "1" },
+            },
+            frozenInputRef: manifestArtifactRef,
+            modelDeploymentRef: agent.modelDeploymentRef,
+            promptTemplateRef: agent.promptTemplateRef,
+            toolPolicyRef: agent.toolPolicyRef,
+            budgetPolicyRef: agent.budgetPolicyRef,
+            incrementSchemaRef: agent.incrementSchemaRef,
+            validationPolicyRef: agent.validationPolicyRef,
           },
-          frozenInputRef: manifestArtifactRef,
-          modelDeploymentRef: agent.modelDeploymentRef,
-          promptTemplateRef: agent.promptTemplateRef,
-          toolPolicyRef: agent.toolPolicyRef,
-          budgetPolicyRef: agent.budgetPolicyRef,
-          incrementSchemaRef: agent.incrementSchemaRef,
-          validationPolicyRef: agent.validationPolicyRef,
         },
+        // 清单按命令顺序由逐项成功的转换解析而来，其空间范围与资料版本就是命令的精确范围；
+        // 组合根用同一批 refs 调用 C06 的 `agent-task.start-task` exact branch。
+        requestedSpatialScopeRefs: manifest.spatialScopeRefs,
+        requestedSourceVersionRefs: manifest.documents.map((document) => document.sourceVersionRef),
       }),
     );
     if (started.kind === "failed") {
@@ -1492,7 +1524,7 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
         actorId: context.actorId,
         issuedAt: context.issuedAt,
         authorization: context.authorization,
-        requiredCapability: FREEZE_CAPABILITY,
+        requiredCapability: authorizedCapability(context.authorization),
         artifactId: spec.artifactId,
         artifactKind: spec.artifactKind,
         purposeCode: spec.purposeCode,
@@ -1536,7 +1568,7 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
         actorId: authorization.actorId,
         requestedAt: authorization.decidedAt,
         purposeCode,
-        requiredCapability: FREEZE_CAPABILITY,
+        requiredCapability: authorizedCapability(authorization),
         authorization,
       }),
     );

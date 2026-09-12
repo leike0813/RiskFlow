@@ -38,7 +38,9 @@ import {
   MonitoringSampleVersionV1Schema,
   MonitoringSnapshotQueryV1Schema,
   MonitoringSnapshotV1Schema,
+  MonitoringSeriesRevisionReadV1Schema,
   MonitoringSeriesRevisionV1Schema,
+  ReadMonitoringSeriesRevisionQueryV1Schema,
   RegisterMonitoringAvailabilityPolicyCommandV1Schema,
   ResolveMonitoringSnapshotQueryV1Schema,
   ReviseMonitoringSeriesCommandV1Schema,
@@ -48,8 +50,12 @@ import {
   type MonitoringSampleInputV1,
   type MonitoringSampleVersionV1,
   type MonitoringSnapshotV1,
+  type MonitoringSeriesReaderV1,
+  type MonitoringSeriesReadResultV1,
+  type MonitoringSeriesRevisionStatusV1,
   type MonitoringSeriesRevisionV1,
   type MonitoringResultV1,
+  type ReadMonitoringSeriesRevisionQueryV1,
   type RegisterMonitoringAvailabilityPolicyCommandV1,
   type ResolveMonitoringSnapshotQueryV1,
   type ReviseMonitoringSeriesCommandV1,
@@ -602,7 +608,7 @@ export interface PostgresMonitoringStoreOptions {
   readonly now?: () => Date;
 }
 
-export class PostgresMonitoringStoreV1 {
+export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
   readonly #db: Kysely<MonitoringDatabase>;
   readonly #transactionUnit: TransactionUnitV1;
   readonly #access: LocalIdentityAccessV1;
@@ -973,6 +979,85 @@ export class PostgresMonitoringStoreV1 {
           error,
           query.queryResultRef.reference.entityId,
           "monitoring.query",
+          "engineering-data.read",
+        ),
+      };
+    }
+  }
+
+  async readSeriesRevision(
+    query: ReadMonitoringSeriesRevisionQueryV1,
+  ): Promise<MonitoringSeriesReadResultV1> {
+    const parsed = ReadMonitoringSeriesRevisionQueryV1Schema.safeParse(query);
+    if (!parsed.success)
+      return {
+        kind: "failed",
+        error: moduleError("UNSUPPORTED_CONTRACT", "monitoring.series-read"),
+      };
+    const valid = parsed.data;
+    try {
+      const revision = await this.#readSeriesRevision(valid.projectId, valid.monitoringSeriesRef);
+      if (
+        revision === undefined ||
+        !sameVersion(revision.monitoringSeriesRef.reference, valid.monitoringSeriesRef.reference)
+      ) {
+        return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", valid.queryId) };
+      }
+      await this.#verify(
+        { ...valid, commandId: valid.queryId },
+        "engineering-data.read",
+        [revision.spatialScopeRef],
+        [],
+      );
+      const status = await this.#readSeriesRevisionStatus(
+        valid.projectId,
+        valid.monitoringSeriesRef,
+      );
+      if (status === undefined)
+        return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", valid.queryId) };
+      const atomic = atomicCommand(
+        {
+          commandId: valid.queryId,
+          idempotencyKey: valid.queryId,
+          projectId: valid.projectId,
+          actorId: valid.actorId,
+          issuedAt: valid.requestedAt,
+          authorization: valid.authorization,
+        },
+        "engineering-data.monitoring-series-read.v1",
+        valid,
+      );
+      await this.#transactionUnit.execute(atomic, async () =>
+        this.#registerSeriesReadInTransaction(valid),
+      );
+      return {
+        kind: "succeeded",
+        result: MonitoringSeriesRevisionReadV1Schema.parse({
+          monitoringSeriesRef: revision.monitoringSeriesRef,
+          seriesId: revision.seriesId,
+          projectId: revision.projectId,
+          projectRevisionRef: revision.projectRevisionRef,
+          spatialScopeRef: revision.spatialScopeRef,
+          monitoringObject: revision.monitoringObject,
+          monitoringIndicator: revision.monitoringIndicator,
+          parameterCode: revision.parameterCode,
+          canonicalUnit: revision.canonicalUnit,
+          unitConversions: revision.unitConversions,
+          effectivePeriod: revision.effectivePeriod,
+          recordedAt: revision.recordedAt,
+          ...(revision.previousRevisionRef === undefined
+            ? {}
+            : { previousRevisionRef: revision.previousRevisionRef }),
+          status,
+        }),
+      };
+    } catch (error) {
+      return {
+        kind: "failed",
+        error: this.#mapError(
+          error,
+          valid.queryId,
+          "monitoring.series-read",
           "engineering-data.read",
         ),
       };
@@ -1819,6 +1904,26 @@ export class PostgresMonitoringStoreV1 {
     );
   }
 
+  async #registerSeriesReadInTransaction(
+    query: ReadMonitoringSeriesRevisionQueryV1,
+  ): Promise<AtomicCommitV1> {
+    const recordedAt = nowIso(this.#now);
+    return commit(
+      {
+        commandId: query.queryId,
+        idempotencyKey: query.queryId,
+        projectId: query.projectId,
+        actorId: query.actorId,
+        issuedAt: query.requestedAt,
+        authorization: query.authorization,
+      },
+      "engineering-data.monitoring-series-read",
+      query.monitoringSeriesRef,
+      query.monitoringSeriesRef.reference,
+      recordedAt,
+    );
+  }
+
   async #readSampleArtifact(
     command: Extract<EngineeringDataCommandV1, { kind: "register-monitoring-batch" }>,
     revision: MonitoringSeriesRevisionV1,
@@ -1988,6 +2093,21 @@ export class PostgresMonitoringStoreV1 {
         recordedAt: asIso(row.recorded_at),
       },
     });
+  }
+
+  async #readSeriesRevisionStatus(
+    projectId: string,
+    seriesRef: MonitoringSeriesRefV1,
+  ): Promise<MonitoringSeriesRevisionStatusV1 | undefined> {
+    const row = await this.#db
+      .selectFrom("business.monitoring_series")
+      .select(["current_revision_id"])
+      .where("project_id", "=", projectId)
+      .where("series_id", "=", seriesRef.reference.entityId)
+      .executeTakeFirst();
+    if (row === undefined) return undefined;
+    const revisionId = `${seriesRef.reference.entityId}:${seriesRef.reference.versionId}`;
+    return row.current_revision_id === revisionId ? "current" : "superseded";
   }
 
   async #readPolicy(

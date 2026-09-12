@@ -325,7 +325,11 @@
 
 本项目以 `openspec/` 为规格驱动的单一事实源。
 
-- **任何能力/接口/模块级别的变更**必须先在 `openspec/changes/<name>/` 下创建 change（proposal → tasks → specs delta），通过 `openspec-apply-change` 应用，通过 `openspec-verify-change` 验证，通过 `openspec-archive-change` 归档。
+- **任何能力/接口/模块级别的变更**必须先在 `openspec/changes/<name>/` 下创建 change，通过 `openspec-apply-change` 应用，通过 `openspec-verify-change` 验证，通过 `openspec-archive-change` 归档。
+- 大型交付 change 使用项目级 `riskflow-delivery` workflow，工件顺序固定为 proposal → specs → design → implementation-plan → tasks。`implementation-plan.md` 是基于固定 base commit 的代码施工图：每个 Requirement/Scenario、计划文件、现有符号、实现动作和验证证据必须映射到稳定 IP-ID；公共接口、Schema、事务、依赖或范围决定仍归 design，不得只写在施工图中。
+- 实现 Agent 必须读取 `openspec instructions apply --json` 返回的全部 `contextFiles`，按 IP-ID 实施并在行为与证据均完成后勾选 task。工件冲突、代码漂移、计划外公共契约/依赖/迁移/文件或不存在的验证命令必须升级，不得自行补设计。
+- 创建或操作 change 前必须按 `IMPLEMENTATION-ORCHESTRATION-HANDBOOK.md` §5.0 使用 OpenSpec CLI；以 change 创建结果的 `change.schema` 或 status 的 `schemaName` 为准，不从 CLI 帮助中的默认值推断实际 schema。
+- 小型机械、纯文档或紧急 drift change 可显式使用内置 `spec-driven`；不得以此绕过本应先闭合的实现设计。
 - **禁止**：在无对应 OpenSpec change 的情况下修改被规格覆盖的代码；将一次"修 bug"拆成与原任务语义不同的多个 change；将一次完整能力拆成过细的多个 change。
 - **冲突处理**：当代码与已归档 specs 不一致时，**以代码为准**，并在对应 specs 下开一个 drift 修正 change；不要静默忽略。
 - **`openspec/config.yaml`** 已由工程基线 change 固定当前技术栈、领域上下文与工件规则；后续仅在对应 OpenSpec change 中更新，禁止绕过规格直接改写。
@@ -333,7 +337,7 @@
 ### 3.1 大型实现编排
 
 - 执行 39-change 路线前必须先读根目录 `IMPLEMENTATION-ORCHESTRATION-HANDBOOK.md`，并按其中的当前角色分工、滚动依赖图、worktree/提交检查点、Orca 生命周期和完成门推进。
-- 主调度 Agent 使用 Luna max；OpenSpec change 起草、任务规划和独立验证使用 Sol high；生产代码使用 Luna max；无判断冲突的简单杂活使用 OMP + MiniMax-M3 high。
+- 大型实现的角色、模型与强度以 `IMPLEMENTATION-ORCHESTRATION-HANDBOOK.md` §2 为唯一事实源；OpenSpec change、implementation plan 起草、任务规划和独立验证固定由其中的规划与验证 Agent 承担。
 - Agent 之间不得用未提交文件传递实现状态。每次角色交接前由主调度 Agent审阅并形成 Git 检查点；Git 权限仍以用户在当前 session 的明确授权为准。
 
 ## 4. 代码组织约束

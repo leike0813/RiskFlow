@@ -55,7 +55,7 @@ Label: wayfinder:map
 
 - [确定模型、检索与规则质量评测策略](issues/23-model-retrieval-rule-evaluation.md) — 22项评测决策全部确认：三层数据与来源隔离、MVP/专利最小覆盖、分层硬门槛、确定性重放、三次语义运行、LoRA 后置准入，以及统一质量评测模块。
 - [确定 MVP 测试、验收与交付证据](issues/24-mvp-verification-acceptance.md) — 28 项验收与交付决策全部确认：分层硬门槛、冻结基线、双向证据追踪、关键闭环与失败路径、私有部署、实机基准及六类交付物均纳入 MVP 验收。
-- [确定覆盖 MVP 的 OpenSpec 实现路线](issues/09-openspec-delivery-roadmap.md) — MVP 采用 39 个能力级 changes、G0～G5 阶段门和滚动 Orca 执行图；主 Agent 规划审阅，Luna max 实施验证，MiniMax-M3 high 仅机械归档，工作树按就绪前沿创建。
+- [确定覆盖 MVP 的 OpenSpec 实现路线](issues/09-openspec-delivery-roadmap.md) — MVP 采用 39 个能力级 changes、G0～G5 阶段门和滚动 Orca 执行图；Sol high 负责五工件规划和独立验证，DeepSeek max 实现，MiniMax-M3 high 仅机械归档，主调度 Agent 负责检查点与就绪前沿。
 
 ## Not yet specified
 

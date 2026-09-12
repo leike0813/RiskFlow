@@ -8,9 +8,9 @@
 
 事实基线如下：
 
-- 当前 OpenSpec CLI 为 `1.11.0`，使用 `spec-driven` schema，工件顺序为 `proposal → specs → design → tasks`。
-- `openspec/specs/`、活动 changes 和归档 changes 均为空；`openspec/config.yaml` 仍是模板，尚未写入项目上下文和工件规则。
-- 生产代码是 greenfield。现有 `demo/` 是 React 18 + npm 的汇报原型，不是生产模块；正式基线已经确定为 React 19 + pnpm workspace。
+- 当前 OpenSpec CLI 为 `1.13.0`；大型交付 change 默认使用项目级 `riskflow-delivery` schema，工件顺序为 `proposal → specs → design → implementation-plan → tasks`。
+- `openspec/specs/`、归档 changes 与 `openspec/config.yaml` 已形成工程事实；后续规划以当前代码、主 specs、直接依赖归档 change 与本路线共同为输入。
+- 生产代码已按本路线滚动交付；现有 `demo/` 仍是汇报原型，不是生产模块，正式基线为 React 19 + pnpm workspace。
 - 正式目录采用三个应用 `apps/web`、`apps/api`、`apps/worker`，以及三个深层共享包 `packages/contracts`、`packages/core`、`packages/adapters`。早期宏观架构原型中更细的多包示意已被后续工具链决策修订。
 - PostgreSQL 是业务事实源，Qdrant 是可重建的双索引投影，本地内容寻址目录保存不可变工件；LangGraph checkpointer 与业务事实分离。
 - 模型统一经 `llama.cpp` 网关调用；MVP 硬件候选为 Qwen3.8-27B `Q4_K_M`、单槽、32K、F16 KV、关闭 MTP。
@@ -243,7 +243,7 @@
 
 **推荐：规划可提前两个波次，实现等待直接依赖归档。**
 
-条件结论：主 Agent 可以在上游实现期间准备下游 proposal/specs/design/tasks，但不据此提前派发实现；Luna 只能进入基于已归档依赖创建的 worktree。需要修改上游契约时先建独立契约演进 change，受影响分支暂停。
+条件结论：主调度 Agent 可以在上游实现期间派 Sol high 准备下游 proposal/specs/design/implementation-plan/tasks，但不据此提前派发实现；代码执行 Agent 只能进入基于已归档依赖创建的 worktree。需要修改上游契约时先建独立契约演进 change，受影响分支暂停。
 
 ### 问题 19：worktree 与 change 怎样对应？
 
@@ -274,24 +274,24 @@
 可选方向：
 
 - 每个执行 Agent 自行归档；
-- Luna 完成 verify，主 Agent 审阅后由 M3 串行 archive；
+- 代码执行 Agent 实现，Sol high 独立 verify，主调度 Agent 审阅后由 M3 串行 archive；
 - 累积多个 changes 后批量归档。
 
-**推荐：Luna 交付并验证，主 Agent 审阅，M3 在批准后机械归档。**
+**推荐：DeepSeek 交付、Sol high 验证，主调度 Agent 审阅，M3 在批准后机械归档。**
 
-条件结论：Luna 完成 apply、最小验证和 `openspec-verify-change`，在 `worker_done` 前请求主 Agent 审阅；主 Agent 批准并完成必要集成后，MiniMax-M3 才能执行既定的 archive 和 tracker 更新。依赖方只认主分支中已归档的契约。
+条件结论：DeepSeek 代码执行 Agent 完成 apply 与最小验证；主调度 Agent 形成 implementation checkpoint 后，由新的 Sol high 任务独立执行 `openspec-verify-change`。主调度 Agent 批准并完成必要集成后，MiniMax-M3 才能执行既定的 archive 和 tracker 更新。依赖方只认主分支中已归档的契约。
 
 ### 问题 22：详细设计应厚到什么程度？
 
 可选方向：
 
 - 只写目标和技术选型；
-- 写到 Luna 无需再决定字段、接口、错误、事务、权限、文件归属和验证方式；
+- 写到代码执行 Agent 无需再决定字段、接口、错误、事务、权限、文件归属和验证方式；
 - 在 design 中直接粘贴完整实现代码。
 
 **推荐：消除实施判断，但不预写实现。**
 
-条件结论：每个 design 必须给出精确接口、Schema、状态/时序、事务、错误、权限、审计、文件清单和验收；tasks 必须逐项写目标文件、输入、输出和命令。算法实现可留给执行 Agent，架构和契约选择不可留白。
+条件结论：每个 design 必须闭合接口、Schema、状态/时序、事务、错误、权限和审计决策；`implementation-plan.md` 再把这些决策映射到固定基线上的文件、符号、执行顺序和证据；tasks 只引用 IP-ID 记录执行进度。算法语法可留给执行 Agent，架构和契约选择不可留白。
 
 ### 问题 23：是否提前 scaffold MVP 后续扩展？
 
@@ -395,19 +395,23 @@
 11. 性能、资源、日志、指标、链路、审计和秘密要求；
 12. 版本迁移、历史重放、发布、回滚与删除/重建语义；
 13. RI/RA → interface → DTO → 持久化 → 验收证据追踪表；
-14. 精确新增/修改/删除文件清单与禁止修改区域；
+14. 模块所有权与禁止修改区域；
 15. 被否决方案及重新评估触发条件；
 16. 所有新待决问题的“问题、全部选项、推荐、按推荐继续后的影响”。
 
-Luna 读完 design 后，不应再需要决定模块归属、字段名称、数据库模型、错误策略、权限、第三方依赖或测试层次。
+代码执行 Agent 读完 design 后，不应再需要决定模块归属、字段名称、数据库模型、错误策略、权限、第三方依赖或测试层次。
 
-### 4.4 `tasks.md`
+### 4.4 `implementation-plan.md`
+
+施工图必须固定 base commit，并为每个实施切片分配 IP-ID。每个 Requirement/Scenario、计划文件和验证义务都要能反向定位到 IP-ID；每个切片写明现有符号与调用方、精确改动、执行与副作用顺序、Schema/状态/持久化落实、失败与权限边界，以及可运行命令和关键断言。不得复制 design 的理由，也不得预写整段生产代码。
+
+### 4.5 `tasks.md`
 
 任务按 `契约夹具 → core → adapter → API/Worker → Web → 最小验证 → OpenSpec verify` 排列。每项写明：
 
-- 目标文件或目录；
+- 对应 IP-ID；
 - 输入工件和直接前置任务；
-- 要产生的行为或文件；
+- 要产生的行为；
 - 验证命令与通过条件；
 - 不得修改的共享区域。
 
@@ -415,7 +419,7 @@ Luna 读完 design 后，不应再需要决定模块归属、字段名称、数�
 
 ## 5. 39 个 OpenSpec changes
 
-表中依赖只列直接依赖。每个 change 都必须在自己的 specs 中承诺表列验收出口，并在 design 中展开全部接口和文件。
+表中依赖只列直接依赖。每个 change 都必须在自己的 specs 中承诺表列验收出口，在 design 中闭合接口决策，并在 implementation plan 中展开文件、符号和验证证据。
 
 ### Wave A：工程、契约与接口闸门
 
@@ -537,10 +541,12 @@ G2 后两条业务主干并行：
 每个 change 的执行子图固定为：
 
 ```text
-主 Agent 工件闸门
+Sol high 五工件规划 → 主调度 Agent planning checkpoint
         ↓
-deliver（Luna max：apply + 最小验证 + verify + 请求主 Agent 审阅）
-        ↓ 主 Agent 批准
+DeepSeek max apply + 最小验证 → 主调度 Agent implementation checkpoint
+        ↓
+Sol high 独立 verify → 主调度 Agent verification checkpoint
+        ↓ 主调度 Agent 批准
 archive（MiniMax-M3 high：机械归档 + tracker/证据更新）
         ↓
 下游 deliver
@@ -555,7 +561,7 @@ archive（MiniMax-M3 high：机械归档 + tracker/证据更新）
 - G0 前只允许一个串行契约 lane；G0 后才开放业务 worktree。
 - 同一波次优先同时领取不同所有权目录的 change；并发数不足时优先选择关键路径和可解锁最多后续项的 change。
 - C12/C13/C14、C17/C19、识别/评估两主干、C32～C35 分别是主要并行组。
-- 主 Agent 可以提前两个波次准备 OpenSpec 工件；Luna 不得基于未归档依赖写生产代码。
+- 主调度 Agent 可以提前两个波次派发 OpenSpec 规划；代码执行 Agent 不得基于未归档依赖写生产代码。
 - 工作树按就绪前沿滚动预建，只覆盖直接依赖已归档且目录所有权互不冲突的 change；记录完整 worktree ID、实际分支和 base HEAD，不预建全部 39 个长期阻塞工作树。
 - G2.5 在识别长链仍运行时提前验证右半闭环，避免全部问题堆到 G3。
 
@@ -563,18 +569,16 @@ archive（MiniMax-M3 high：机械归档 + tracker/证据更新）
 
 ### 7.1 角色
 
-- **主 Agent**：维护静态依赖图和滚动 Orca 图，计算 frontier，准备工作树，起草并审阅 proposal/specs/design/tasks，审阅 Luna 交付，处理必要集成并授权归档。
-- **Luna 实施 Agent**：固定使用 `gpt-5.6-luna` / `max`，承担全部实质开发、最小验证和 `openspec-verify-change`。不得擅自改接口、增加依赖或扩大范围；发现设计缺口时返回主 Agent 更新工件。
-- **M3 杂活 Agent**：固定使用 OMP + `minimax-code-cn/MiniMax-M3` / `high`，只做资料搜索、证据整理、已批准 change 的机械归档和 tracker 更新，不承担规划或实质开发。
+角色、模型、强度与修复边界以根目录 `IMPLEMENTATION-ORCHESTRATION-HANDBOOK.md` §2 为唯一当前事实源：主调度 Agent 负责编排与检查点，Sol high 负责五工件规划和独立验证，DeepSeek max 负责生产实现，MiniMax-M3 high 只负责机械归档等简单杂活。
 
 ### 7.2 领取与完成
 
 1. 主 Agent 依据已归档主 specs 和静态依赖图计算当前 frontier；按 G0～G5 建立或推进当期 Orca Run，只物化当前波次和相邻下一层。
 2. 仅为 frontier 中目录所有权互不冲突的 change 创建独立 worktree；记录完整 worktree ID、实际分支、base commit、直接依赖和所有权目录，不从分支名反推 change 身份。
-3. 主 Agent 在派发前完成并审阅全部 OpenSpec artifacts；规划闸门未通过时不创建 `deliver` Dispatch。
-4. Luna 在该工作树使用 `openspec-apply-change` 实现，运行最小必要验证和 `openspec-verify-change`，不启动开发服务器。
-5. Luna 在发送 `worker_done` 前通过 Orca `ask` 请求主 Agent 审阅。需要修改时继续同一 Dispatch；主 Agent 明确批准后才确认交付完成。
-6. 经批准的 `deliver` 解锁 `archive`。MiniMax-M3 只按既定步骤归档、同步 tracker 和整理证据；遇到冲突、规格漂移或需要判断的结果立即升级给主 Agent。
+3. 主调度 Agent 将五工件规划派给 Sol high，按 handbook §5.1 审阅通过并形成 planning checkpoint；规划闸门未通过时不创建 implementation Dispatch。
+4. DeepSeek max 在该工作树使用 `openspec-apply-change`，逐个 IP-ID 实现并运行最小必要验证，不启动开发服务器；主调度 Agent 审阅后形成 implementation checkpoint。
+5. 新的 Sol high 任务按 handbook §5.4 独立执行 `openspec-verify-change`；批准范围内局部缺陷只在当前活动验证任务内修复，规划或范围问题升级。
+6. 主调度 Agent 门禁通过后解锁 `archive`。MiniMax-M3 只按既定步骤归档、同步 tracker 和整理证据；遇到冲突、规格漂移或需要判断的结果立即升级给主调度 Agent。
 7. `archive` 完成后解锁下游 `deliver`；主 Agent 重新计算 frontier，并为新就绪项滚动创建工作树和任务。
 
 ### 7.3 冲突热点
@@ -589,30 +593,30 @@ archive（MiniMax-M3 high：机械归档 + tracker/证据更新）
 
 ### 7.4 Orca 编排预检
 
-第四轮探测已把原有阻塞改写为可执行协议。C00 仍保持单 lane；C00 归档并验证真实 setup hook 后，才开放 G0 后的业务并行：
+具体启动命令、状态栏核验、等待、释放与 terminal 生命周期以根目录 handbook §7.2～§7.5 为准。本路线只保留以下不随模型变化的边界：
 
 - 协调 Agent 绑定真实 Orca terminal identity，并在外部调用中显式传递 `ORCA_TERMINAL_HANDLE` 或 `--from`。
 - `worktreeBasePath` 可用；新工作树记录完整 ID 和 base HEAD；复用 terminal 时同时传递其完整 worktree ID。
 - C00 创建工作树时显式 `--setup skip`。C00 建立正式 pnpm workspace 和冻结锁文件后，把项目 setup hook 配置为 `pnpm install --frozen-lockfile`，并在下一个受控工作树用 `--setup run` 验证；不添加空 hook，也不安装 Demo 依赖。
-- 新目录首次 Codex 启动若出现信任提示，拆分执行 `terminal send --text 1` 与 `terminal send --enter`，随后等待 `tui-idle` 再派发。computer-use 目前只能发现 Orca 顶层窗口，无法读取或操作内部 TUI，因此不作为该门禁的实现方式。
-- Luna 固定先用精确 argv 创建 Codex terminal：`--model gpt-5.6-luna -c model_reasoning_effort="max"`，等待 TUI 状态栏显示 `gpt-5.6-luna max` 后，再以完整 worktree ID 执行 `worker-start --terminal`。正式执行不额外传入会触发宿主 `bwrap` 错误的 `--sandbox read-only`。
+- 新 terminal 就绪并核实模型与强度后再纳入 Dispatch；computer-use 不作为 Orca 内部终端操作方式。
 - `check --wait` 能跨 keepalive 收到唯一 `worker_done`，不留下 waiter；第二轮探测已通过。
-- Luna terminal 与 OMP terminal 均按 `external_terminal` 管理。协调端先处理 transcript、唯一 `worker_done` 和 delivery，再调用 `worker-release` 取得 `retained / external_terminal`，确认账面状态后只关闭本 Dispatch 创建的精确 tab；不再使用会进入 `release_unknown / tab_not_found` 的原生 owned terminal 路线。
+- 外部 terminal 的回收按 handbook 执行；只关闭当前 Dispatch 创建的精确 tab。
 
 ### 7.5 非开发杂活的低成本模型通道
 
 - OMP + `minimax-code-cn/MiniMax-M3` 固定请求 `--thinking high`，只用于资料搜索、证据整理、已批准 change 的机械归档和 tracker 更新。
-- M3 不得起草 proposal/specs/design/tasks，不得编写或修改代码、测试、配置、依赖、迁移，也不负责解决冲突或判断 `openspec-verify-change` 是否可接受。
+- M3 不得起草 proposal/specs/design/implementation-plan/tasks，不得编写或修改代码、测试、配置、依赖、迁移，也不负责解决冲突或判断 `openspec-verify-change` 是否可接受。
 - Orca 当前不能通过 `worker-start --agent omp --model ...` 选择 OMP 模型。固定流程为：用精确 argv 创建 OMP terminal → 等待 `tui-idle` → 以完整 worktree ID 和 `worker-start --terminal` 纳入 Dispatch → 等待并确认唯一 `worker_done`。
 - 自定义 OMP terminal 属于 `external_terminal`。`worker-release` 只完成 retained 记账；协调端在 transcript/结果检查完成后关闭自己创建的精确 terminal，不使用宽泛 terminal 清理。
 - 第三轮只读探测已验证 MiniMax-M3 能正确读取当前工作树、完成确定性小任务并遵守 `worker_done` 协议；归档写入仍必须以主 Agent 已批准的 change 和确定步骤为输入。
 
 ## 8. Definition of Ready / Done
 
-### 8.1 Change 可交给 Luna 实施的条件
+### 8.1 Change 可交给代码执行 Agent 实施的条件
 
 - 所有直接依赖已归档到主 specs；
-- proposal/specs/design/tasks 均由主 Agent 完成并通过复核；
+- proposal/specs/design/implementation-plan/tasks 均由 Sol high 完成，并由主调度 Agent 通过复核；
+- 每个 Requirement/Scenario、计划文件和验证义务均可反向定位到 IP-ID，tasks 逐项引用 IP-ID；
 - interface、Schema、状态机、错误、事务、权限、审计和文件清单无待决项；
 - 所有问题均有选项、推荐和条件化结论；
 - 所有新增依赖已固定版本、许可证、离线来源和退出条件；

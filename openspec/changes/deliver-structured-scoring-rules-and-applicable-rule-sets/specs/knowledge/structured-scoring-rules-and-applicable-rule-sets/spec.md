@@ -27,7 +27,9 @@
 - **THEN** 系统拒绝该动作、保留失败证据与预算消耗且不产生正式规则发布
 
 ### Requirement: 结构化评分规则唯一内容契约
-结构化评分规则 MUST 使用 C02 `structured-scoring-rule` 定义类型和既有 `StructuredScoringRuleV1` 字段，固定规则身份、三维适用条件、指标项、评分阈值、分级区间、例外条款、证据定位、规则版本与审核状态。Agent 编制候选正文中的 `reviewStatus` MUST 固定为 `pending`，只表示候选工件在编制阶段的自述状态；不得由 Agent 预写 `approved` 或 `rejected`。规则的审核事实 MUST 仅来自 C16 精确发布及其相符的 C07 人工决定；发布不得改写不可变正文，已发布消费方不得以正文 `reviewStatus` 作为准入门禁或未审核证据。三维适用条件 MUST 同时包含 `constructionMethod`、`stratumCondition` 和 `engineeringStage` 的非空规范身份集合；指标 MUST 存在于同一兼容集合的 C18 指标体系；阈值、区间、例外和证据 MUST 可确定性校验。规则正文 MUST 留在内容寻址工件中，治理事实、审计、错误和事件不得复制正文或模型原始响应。
+结构化评分规则 MUST 使用 C02 `structured-scoring-rule` 定义类型和既有 `StructuredScoringRuleV1` 字段，固定规则身份、三维适用条件、指标项、评分阈值、分级区间、例外条款、证据定位、规则版本与审核状态。Agent 编制候选正文中的 `reviewStatus` MUST 固定为 `pending`，只表示候选工件在编制阶段的自述状态；不得由 Agent 预写 `approved` 或 `rejected`。规则的审核事实 MUST 仅来自 C16 精确发布及其相符的 C07 人工决定；发布不得改写不可变正文，已发布消费方不得以正文 `reviewStatus` 作为准入门禁或未审核证据。三维适用条件 MUST 同时包含 `constructionMethod`、`stratumCondition` 和 `engineeringStage` 的非空规范身份集合；指标 MUST 存在于同一兼容集合的 C18 指标体系；阈值、区间、例外和证据 MUST 可确定性校验。
+
+数值型 `scoringThresholds` 的闭合语义固定为：`lt` 是 `(-∞, value)`，`lte` 是 `(-∞, value]`，`eq` 是闭合单点 `[value, value]`，`gte` 是 `[value, +∞)`，`gt` 是 `(value, +∞)`，`between(value, upperValue)` 是 `[value, upperValue)`；非数值 `eq` 只匹配同类型同值。规范排序后的同一规则数值阈值不得重叠或留下内部空洞，重复的非数值 `eq` 也 MUST 被拒绝。`gradeIntervals` 固定为左闭右开 `[lowerBound, upperBound)`；缺少 `lowerBound` 表示 `(-∞, upperBound)` 且 `upperBound` 仍为开边界，缺少 `upperBound` 表示 `[lowerBound, +∞)` 且 `lowerBound` 仍为闭边界。同一规则的等级区间按下界规范排序后 MUST 首尾相接、互不重叠且无内部空洞；有限最小或最大外边界之外的取值不得猜测等级，必须返回结构化越界失败。C19 的冲突/重叠检测与下游评分 MUST 复用 C19 导出的同一确定性边界归一和求值能力，不得各自解释端点。若未来需要逐规则自定义闭合性，MUST 通过独立公共契约演进 change 增加字段；本 change 不向 contracts 增加闭合性字段。规则正文 MUST 留在内容寻址工件中，治理事实、审计、错误和事件不得复制正文或模型原始响应。
 
 #### Scenario: 完整规则通过内容校验
 - **WHEN** 候选规则三维条件完整、指标存在、阈值与区间有效且证据定位指向冻结规范资料段
@@ -36,6 +38,14 @@
 #### Scenario: 不完整或悬空规则被拒绝
 - **WHEN** 候选缺少任一适用性维度、引用不存在的指标、阈值或区间有空洞/重叠、例外引用悬空或证据不指向冻结资料段
 - **THEN** 系统拒绝该项并记录稳定原因码，且该项不得进入送审、发布或适用规则集
+
+#### Scenario: 端点与无穷边界唯一求值
+- **WHEN** 数值恰好落在 `between` 或等级区间的共享端点，或落在缺少下界/上界的区间
+- **THEN** 系统按左闭右开、负无穷上界开、正无穷下界闭的固定语义得到唯一评分与等级，C19 冲突检测和下游评分结果一致
+
+#### Scenario: 不连续或越界取值被拒绝
+- **WHEN** 同一规则的规范化阈值或等级区间发生重叠、内部空洞，或求值落在声明的有限外边界之外
+- **THEN** 系统返回结构化失败且不按相邻区间、数组顺序或默认等级补值
 
 ### Requirement: 冲突与重叠确定性检测
 系统 MUST 在同一工程、兼容集合、指标和相交三维适用域内比较候选规则与可适用的既有规则。相同取值域产生不同评分或等级、例外关系互相矛盾时 MUST 标记为冲突；取值域相交但结论一致时 MUST 标记为重叠并保留双方证据与覆盖关系。每个冲突/重叠事实 MUST 固定参与规则版本、交叠域、检测策略版本、证据和状态；任何未决冲突 MUST 阻止相关规则及规则集发布，系统不得按顺序、置信度或“最新版本”静默选边。
@@ -104,7 +114,7 @@
 - **THEN** 系统返回结构化等待或失败且不使用默认规则、缓存候选或旧版本冒充正式依据
 
 ### Requirement: 评估依据发布集合成员的有界读取
-系统 MUST 由 C19 提供一个只接受精确 `AssessmentBasisReleaseSetRefV1`、C06 授权上下文和标准请求幂等身份的狭窄读取入口。入口 MUST 在查询集合前按当前事实复验授权上下文及 `knowledge-modeling.read` 能力，只允许读取同一工程中已经物化的不可变评估依据发布集合。成功结果 MUST 是 strict 且无自由字段的成员清单，只包含集合引用与 schema 版本、成员摘要、精确 `applicable-rule-set` 发布引用，以及按定义类型规范排序的 11 个 C18 配置成员；每个配置成员只包含定义类型、精确修订引用和 C04 内容工件引用。入口 MUST NOT 返回配置正文、规则正文、显示名称、任意元数据或未发布成员，消费方读取正文时 MUST 另行通过 C04 当前授权与留痕。集合或必需成员缺失、授权已撤、跨工程、引用不存在或调用方不可见时 MUST 返回同一种不可重试类型化拒绝，外部结果不得泄露目标是否存在。读取及拒绝 MUST 使用只追加审计；仍具当前授权的相同幂等身份与规范载荷重放 MUST 返回原结果且不重复追加领域审计，同键异载荷 MUST 冲突，授权复验不得被历史成功回执绕过。
+系统 MUST 由 C19 提供一个只接受精确 `AssessmentBasisReleaseSetRefV1`、C06 授权上下文和标准请求幂等身份的狭窄读取入口。入口 MUST 在查询集合前按当前事实复验授权上下文及 `knowledge-modeling.read` 能力，只允许读取同一工程中已经物化的不可变评估依据发布集合。成功结果 MUST 是 strict 且无自由字段的成员清单，只包含集合引用与 schema 版本、`memberDigest`、`applicableRuleSetMember`、`scoringRuleMembers` 和 `configurationMembers`。`applicableRuleSetMember` MUST 包含精确 `releaseRef`、`revisionRef`、C04 `artifactRef` 与 `contentDigest`；`scoringRuleMembers` 的每项 MUST 包含同样四个字段，按发布引用规范排序，并与适用规则集正文中全部 `included refs` 所引用的规则发布成员去重后的规范投影完全一致，不得缺失、重复或额外加入成员；`configurationMembers` MUST 按定义类型规范排序且恰好覆盖 C18 的 11 类，每项包含 `definitionType`、精确 `releaseRef`、`revisionRef`、C04 `artifactRef` 与 `contentDigest`。每个 `contentDigest` MUST 等于对应 strict 正文的规范 JSON SHA-256 摘要，使 C25 在经 C04 当前授权读取正文后可以复算并核对；`memberDigest` MUST 覆盖上述三个成员集合的完整规范投影。入口 MUST NOT 返回适用规则集、评分规则或配置正文、显示名称、任意元数据或未发布成员，消费方读取正文时 MUST 另行通过 C04 当前授权与留痕。集合或必需成员缺失、规则成员与 `included refs` 不一致、摘要不一致、授权已撤、跨工程、引用不存在或调用方不可见时 MUST 整体返回同一种不可重试类型化拒绝，外部结果不得泄露目标是否存在或返回部分成员。读取及拒绝 MUST 使用只追加审计；仍具当前授权的相同幂等身份与规范载荷重放 MUST 返回原结果且不重复追加领域审计，同键异载荷 MUST 冲突，授权复验不得被历史成功回执绕过。
 
 #### Scenario: 当前授权读取精确集合
 - **WHEN** 调用方提交当前仍有效且具备读取能力的 C06 授权上下文和同工程精确评估依据发布集合引用
@@ -116,11 +126,15 @@
 
 #### Scenario: 成员清单固定精确引用
 - **WHEN** 一个有效集合被成功读取
-- **THEN** 结果固定集合引用与版本、成员摘要、精确适用规则集发布引用，以及 11 类配置各自的定义类型、精确修订引用和 C04 内容工件引用
+- **THEN** 结果固定集合引用与版本、成员摘要，适用规则集的发布/修订/工件/内容摘要，与其 `included refs` 完全一致且规范排序的评分规则成员，以及 11 类配置各自的定义类型、发布/修订/工件/内容摘要
+
+#### Scenario: 规则成员与内容摘要可复验
+- **WHEN** C25 使用成功结果中的工件引用经 C04 当前授权读取适用规则集、评分规则和 11 类配置正文
+- **THEN** C25 对 strict 正文复算的每个 `contentDigest` 与结果相等，适用规则集 `included refs` 的规则发布成员规范投影与 `scoringRuleMembers` 完全一致；任一缺失、额外成员或摘要不符均不得作为有效评估依据
 
 #### Scenario: 成员读取不返回正文
 - **WHEN** 消费方取得评估依据发布集合成员清单
-- **THEN** 结果不包含任一配置或规则正文、显示名称、自由字段或未发布成员，正文只能由消费方使用返回的 C04 工件引用另行受权读取并留痕
+- **THEN** 结果不包含适用规则集、配置或评分规则正文、显示名称、自由字段或未发布成员，正文只能由消费方使用返回的 C04 工件引用另行受权读取并留痕
 
 #### Scenario: 读取重放保持幂等且不绕过撤权
 - **WHEN** 当前授权仍有效的调用方以相同幂等身份和规范载荷重放读取

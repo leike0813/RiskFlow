@@ -5,8 +5,8 @@
 
 ## 2. Core
 
-- [ ] 2.1 [IP-02] 实现 C19 strict 文档、manifest、规则操作、组装/解析命令及闭合原因 Schema，增加 `@riskflow/core/scoring-rules` 子路径；运行 `pnpm exec prettier --check packages/core/src/scoring-rules packages/core/package.json` 验证格式。
-- [ ] 2.2 [IP-03] 实现规则级逐项校验、materialize、三维适用性、冲突/重叠检测和确定性筛选；运行 `pnpm exec vitest run packages/core/test/scoring-rules/scoring-rules.test.ts -t '内容校验|三维适用性|冲突|重叠'` 验证根因边界。
+- [ ] 2.1 [IP-02] 实现 C19 strict 文档、manifest、规则操作、`ScoringRuleEvaluationResultV1Schema`、组装/解析命令及闭合原因 Schema，增加 `@riskflow/core/scoring-rules` 子路径且不修改 contracts；运行 `pnpm exec prettier --check packages/core/src/scoring-rules packages/core/package.json` 验证格式。
+- [ ] 2.2 [IP-03] 在 `validation.ts` 实现并由 core 子路径导出 `normalizeScoringThresholds`、`normalizeGradeIntervals`、`evaluateScoringRule`，让规则校验与冲突/重叠检测共用固定开闭边界，再完成 materialize、三维适用性和确定性筛选；运行 `pnpm exec vitest run packages/core/test/scoring-rules/scoring-rules.test.ts -t '内容校验|评分边界|三维适用性|冲突|重叠'` 验证端点、无穷边界、连续性与越界拒绝。
 - [ ] 2.3 [IP-03] 实现两个只读领域工具协议、`createScoringRuleAuthoringTaskDefinition`、准备快照 reader 与 C16 policy 输入接口，证明 Agent 候选固定 `pending` 且不可发布；运行 `pnpm exec vitest run packages/core/test/scoring-rules/scoring-rules.test.ts` 验证 core 全部场景。
 
 ## 3. Adapter 与持久化
@@ -15,7 +15,7 @@
 - [ ] 3.2 [IP-05] 实现 `PostgresScoringRulesAdapter` 的 C15/C04/C18 有界读取、authoring 工具/finalizer、冲突补链、规则集组装、C16 policy 和公共 basis resolve，增加 adapter 子路径导出；运行 `pnpm exec prettier --check packages/adapters/src/scoring-rules packages/adapters/package.json` 验证格式。
 - [ ] 3.3 [IP-06] 在 C16 adapter 四个既有 policy 接缝加入 C19 两类定义分派并保留 C18 原实现；运行 `pnpm exec vitest run packages/adapters/test/knowledge-governance/postgres-knowledge-governance-adapter.test.ts` 验证缺策略阻断、C19 调用及既有类型回归。
 - [ ] 3.4 [IP-05、IP-08] 完成 PostgreSQL 集成测试，覆盖真实规范→C08→C16/C07→规则发布→三维筛选→规则集人工发布→公共 basis resolve，以及来源/冲突/配置/权限/幂等/并发/事务失败；运行 `pnpm exec vitest run packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts` 验证。
-- [ ] 3.5 [IP-10] 在既定 C19 core schema/service、`000028` 迁移和 `PostgresScoringRulesAdapter` 中实现 `AssessmentBasisReleaseSetReaderV1.readAssessmentBasisReleaseSet`，覆盖当前 C06 授权复验、精确 11 成员引用、无正文、统一不可枚举拒绝与不绕过撤权的幂等审计；运行 `pnpm exec vitest run packages/core/test/scoring-rules/scoring-rules.test.ts packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts -t 'basis 成员读取|basis 不可枚举|basis 成员清单|basis 无正文|basis 读取幂等'` 验证。
+- [ ] 3.5 [IP-10] 在既定 C19 core schema/service、`000028` 迁移和 `PostgresScoringRulesAdapter` 中实现 `AssessmentBasisReleaseSetReaderV1.readAssessmentBasisReleaseSet`：成功值含适用规则集完整成员、与 included refs 精确一致的规范排序评分规则成员、带 release/content digest 的 11 类配置成员和可复算 `memberDigest`，同时保持当前 C06 授权复验、无正文、统一不可枚举拒绝与不绕过撤权的幂等审计；运行 `pnpm exec vitest run packages/core/test/scoring-rules/scoring-rules.test.ts packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts -t 'basis 成员读取|basis 不可枚举|basis 成员清单|basis 规则成员与摘要|basis 无正文|basis 读取幂等'` 验证成员双向完备及 C04 正文摘要复算。
 
 ## 4. API / Worker
 

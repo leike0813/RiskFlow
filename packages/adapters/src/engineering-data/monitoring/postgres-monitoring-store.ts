@@ -5,6 +5,7 @@ import { sql, type InsertObject, type Kysely, type Transaction } from "kysely";
 import {
   ACCESS_POLICY_REF_V1,
   AccessServiceError,
+  type AuthorizationDecisionV1,
   type LocalIdentityAccessV1,
 } from "@riskflow/core/access";
 import {
@@ -1003,12 +1004,19 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
       ) {
         return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", valid.queryId) };
       }
-      await this.#verify(
+      // 固定顺序：先按本次调用方授权上下文完成 C06 verify（授权与不可枚举拒绝优先），
+      // 通过后才进入 C03 幂等；同键异载荷在授权通过后返回既有 IDEMPOTENCY_CONFLICT。
+      const verified = await this.#verify(
         { ...valid, commandId: valid.queryId },
         "engineering-data.read",
         [revision.spatialScopeRef],
         [],
       );
+      // 操作者身份只能取自 C06 已验证的授权上下文，载荷 actor 仅是一致性声明。
+      if (verified.context.actorId !== valid.actorId) {
+        return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", valid.queryId) };
+      }
+      const actorId = verified.context.actorId;
       const status = await this.#readSeriesRevisionStatus(
         valid.projectId,
         valid.monitoringSeriesRef,
@@ -1020,7 +1028,7 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
           commandId: valid.queryId,
           idempotencyKey: valid.queryId,
           projectId: valid.projectId,
-          actorId: valid.actorId,
+          actorId,
           issuedAt: valid.requestedAt,
           authorization: valid.authorization,
         },
@@ -1028,7 +1036,7 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
         valid,
       );
       await this.#transactionUnit.execute(atomic, async () =>
-        this.#registerSeriesReadInTransaction(valid),
+        this.#registerSeriesReadInTransaction(valid, actorId),
       );
       return {
         kind: "succeeded",
@@ -1074,7 +1082,7 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
     branch: "engineering-data.write" | "engineering-data.freeze" | "engineering-data.read",
     requestedSpatialScopeRefs: readonly SpatialScopeRefV1[],
     requestedSourceVersionRefs: readonly SourceVersionRefV1[],
-  ): Promise<void> {
+  ): Promise<AuthorizationDecisionV1> {
     if (
       command.projectId !== command.authorization.projectId ||
       command.actorId !== command.authorization.actorId ||
@@ -1082,7 +1090,7 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
     ) {
       throw domainFailure(moduleError("AUTHORIZATION_DENIED", command.commandId));
     }
-    await this.#access.verify({
+    return this.#access.verify({
       authorizationContextRef: command.authorization.authorizationContextRef,
       invocationId: command.commandId,
       projectId: command.projectId,
@@ -1906,6 +1914,7 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
 
   async #registerSeriesReadInTransaction(
     query: ReadMonitoringSeriesRevisionQueryV1,
+    actorId: string,
   ): Promise<AtomicCommitV1> {
     const recordedAt = nowIso(this.#now);
     return commit(
@@ -1913,7 +1922,7 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
         commandId: query.queryId,
         idempotencyKey: query.queryId,
         projectId: query.projectId,
-        actorId: query.actorId,
+        actorId,
         issuedAt: query.requestedAt,
         authorization: query.authorization,
       },

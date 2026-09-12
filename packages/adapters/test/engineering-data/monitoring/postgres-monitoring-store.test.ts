@@ -946,6 +946,127 @@ describe("C14 PostgreSQL monitoring store", () => {
     ]);
   });
 
+  it("keeps authorization ahead of idempotency and writes only the verified actor", async () => {
+    const seriesRef = {
+      kind: "monitoring-series" as const,
+      reference: { entityId: "c14-series", versionId: "1" },
+    };
+    const queryId = "c14-read-precedence";
+    const query: ReadMonitoringSeriesRevisionQueryV1 = {
+      queryId,
+      projectId,
+      actorId: managerId,
+      requestedAt: now,
+      authorization: await authorization(queryId, "engineering-data.monitoring-snapshot-query"),
+      monitoringSeriesRef: seriesRef,
+    };
+    const readEvidence = async (id: string) =>
+      (
+        await fixture.postgres.adminPool.query<{
+          receipts: number;
+          audits: number;
+          receipt_actor: string | null;
+          audit_actor: string | null;
+        }>(
+          `SELECT (SELECT count(*)::int FROM business.command_receipts WHERE command_id = $1) AS receipts,
+                  (SELECT count(*)::int FROM audit.entries WHERE command_id = $1) AS audits,
+                  (SELECT actor_ref FROM business.command_receipts WHERE command_id = $1) AS receipt_actor,
+                  (SELECT actor_ref FROM audit.entries WHERE command_id = $1) AS audit_actor`,
+          [id],
+        )
+      ).rows[0];
+    // 同 queryId 同载荷重放：返回同一结果并复用既有收据与审计。
+    const first = await fixture.monitoringStore.readSeriesRevision(query);
+    expect(first).toMatchObject({ kind: "succeeded", result: { monitoringSeriesRef: seriesRef } });
+    expect(await fixture.monitoringStore.readSeriesRevision(query)).toEqual(first);
+    expect(await readEvidence(queryId)).toEqual({
+      receipts: 1,
+      audits: 1,
+      receipt_actor: managerId,
+      audit_actor: managerId,
+    });
+    // 同 queryId 异载荷：授权校验通过后由 C03 幂等键拒绝，收据与审计保持不变。
+    const changedAuthorization = {
+      ...query.authorization,
+      decidedAt: "2030-01-01T00:00:01.000Z",
+    };
+    expect(
+      await fixture.monitoringStore.readSeriesRevision({
+        ...query,
+        authorization: changedAuthorization,
+      }),
+    ).toMatchObject({ kind: "failed", error: { code: "IDEMPOTENCY_CONFLICT" } });
+    expect(await readEvidence(queryId)).toEqual({
+      receipts: 1,
+      audits: 1,
+      receipt_actor: managerId,
+      audit_actor: managerId,
+    });
+    // 同 queryId 改授权上下文：当前授权拒绝优先于既有收据。
+    const otherAuthorization = await authorization(
+      "c14-read-other-invocation",
+      "engineering-data.monitoring-snapshot-query",
+    );
+    expect(
+      await fixture.monitoringStore.readSeriesRevision({
+        ...query,
+        authorization: otherAuthorization,
+      }),
+    ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    expect(await readEvidence(queryId)).toEqual({
+      receipts: 1,
+      audits: 1,
+      receipt_actor: managerId,
+      audit_actor: managerId,
+    });
+    // 伪造载荷 actor：当前授权通过也不得进入收据、审计或任何事实。
+    const factsBefore = await fixture.postgres.adminPool.query<{
+      series: number;
+      revisions: number;
+      events: number;
+    }>(
+      `SELECT (SELECT count(*)::int FROM business.monitoring_series) AS series,
+              (SELECT count(*)::int FROM business.monitoring_series_revisions) AS revisions,
+              (SELECT count(*)::int FROM outbox.events WHERE event_type LIKE 'engineering.%') AS events`,
+    );
+    const forgedQueryId = "c14-read-forged-actor";
+    const forgedAuthorization = await authorization(
+      forgedQueryId,
+      "engineering-data.monitoring-snapshot-query",
+    );
+    expect(
+      await fixture.monitoringStore.readSeriesRevision({
+        queryId: forgedQueryId,
+        projectId,
+        actorId: "c14-forged-actor",
+        requestedAt: now,
+        authorization: { ...forgedAuthorization, actorId: "c14-forged-actor" },
+        monitoringSeriesRef: seriesRef,
+      }),
+    ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    expect(await readEvidence(forgedQueryId)).toEqual({
+      receipts: 0,
+      audits: 0,
+      receipt_actor: null,
+      audit_actor: null,
+    });
+    const forgedActorRows = await fixture.postgres.adminPool.query<{ rows: number }>(
+      `SELECT (SELECT count(*)::int FROM business.command_receipts WHERE actor_ref = 'c14-forged-actor') +
+              (SELECT count(*)::int FROM audit.entries WHERE actor_ref = 'c14-forged-actor') AS rows`,
+    );
+    expect(forgedActorRows.rows).toEqual([{ rows: 0 }]);
+    const factsAfter = await fixture.postgres.adminPool.query<{
+      series: number;
+      revisions: number;
+      events: number;
+    }>(
+      `SELECT (SELECT count(*)::int FROM business.monitoring_series) AS series,
+              (SELECT count(*)::int FROM business.monitoring_series_revisions) AS revisions,
+              (SELECT count(*)::int FROM outbox.events WHERE event_type LIKE 'engineering.%') AS events`,
+    );
+    expect(factsAfter.rows).toEqual(factsBefore.rows);
+  });
+
   it("requires a correction predecessor to contain the corrected sample time", async () => {
     const evidence = {
       locator: { sourceSegmentId: `${sourceVersionRef.reference.entityId}-chapter_1-segment_1` },

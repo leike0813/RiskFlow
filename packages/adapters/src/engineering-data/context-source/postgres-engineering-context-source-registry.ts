@@ -45,28 +45,44 @@ import {
   ApplicabilityMetadataSnapshotV1Schema,
   CreateApplicabilitySnapshotCommandV1Schema,
   EngineeringContextRevisionCommandV1Schema,
+  EngineeringDataReadBranchQueryV1Schema,
+  EngineeringDataReadQueryRecordV1Schema,
+  EvidenceAccessItemV1Schema,
+  EvidenceAccessReadResultV1Schema,
   ProjectBusinessRevisionV1Schema,
   RegisterSourceSegmentSetCommandV1Schema,
+  ResolveEngineeringDataReadQueryV1Schema,
   ResolveSourceVersionForReadQueryV1Schema,
   ResolveSourceProcessingInputQueryV1Schema,
   SourceDeliveryMetadataEnvelopeV1Schema,
   SourceProcessingInputV1Schema,
+  SourceSegmentReadResultV1Schema,
   SourceSegmentSetV1Schema,
+  SourceSegmentV1Schema,
   SourceVersionV1Schema,
   SpatialBusinessRevisionV1Schema,
   SpatialScopeRefSetV1Schema,
+  normalizeSpatialScopeRefs,
   type ApplicabilityMetadataSnapshotV1,
   type ContextSourceResultV1,
   type ContextSourceSuccessV1,
   type CreateApplicabilitySnapshotCommandV1,
   type EngineeringContextRevisionCommandV1,
+  type EngineeringDataReadBranchQueryV1,
+  type EngineeringDataReadQueryRecordV1,
+  type EngineeringDataReadResolutionResultV1,
+  type EvidenceAccessItemV1,
+  type EvidenceAccessReadResultV1,
   type ProjectBusinessRevisionV1,
   type RegisterSourceSegmentSetCommandV1,
+  type ResolveEngineeringDataReadQueryV1,
   type ResolveSourceProcessingInputQueryV1,
   type ResolveSourceVersionForReadQueryV1,
   type SourceProcessingInputV1,
   type SourceDeliveryMetadataEnvelopeV1,
+  type SourceSegmentReadResultV1,
   type SourceSegmentSetV1,
+  type SourceSegmentV1,
   type SourceVersionV1,
   type SpatialBusinessRevisionV1,
   type EngineeringContextSourceRegistryV1,
@@ -76,6 +92,7 @@ import {
   EngineeringDataQueryV1Schema,
   EngineeringFreezeCommandV1Schema,
   ExternalRiskEventRefV1Schema,
+  MODULE_BRANCH_CAPABILITY_V1,
   type AuthorizationContextV1,
   type ContractReferenceV1,
   type ContentArtifactRefV1,
@@ -88,8 +105,10 @@ import {
   type EngineeringFreezeResultV1,
   type ModuleBranchV1,
   type ModuleErrorV1,
+  type QueryResultRefV1,
   type SourceAccessGrantRefV1,
   type SourceDeliveryRefV1,
+  type SourceSegmentSetRefV1,
   type SourceVersionRefV1,
   type SpatialScopeRefV1,
 } from "@riskflow/contracts/ports";
@@ -288,6 +307,20 @@ interface ExternalRiskEventRow {
   audit_entry_id: string;
 }
 
+interface ReadQueryResultRow {
+  query_result_id: string;
+  version_id: string;
+  project_id: string;
+  branch: "source-segments" | "evidence-access";
+  query_result_ref: JsonColumn;
+  query_payload: JsonColumn;
+  authorization_context_ref: JsonColumn;
+  requested_by: string;
+  recorded_at: TimestampColumn;
+  persisted_at: TimestampColumn;
+  audit_entry_id: string;
+}
+
 type ContextSourceDatabase = PostgresDatabase & {
   "business.engineering_projects": ProjectIdentityRow;
   "business.engineering_project_revisions": ProjectRevisionRow;
@@ -300,6 +333,7 @@ type ContextSourceDatabase = PostgresDatabase & {
   "business.source_segments": SegmentRow;
   "business.applicability_metadata_snapshots": ApplicabilitySnapshotRow;
   "business.external_risk_events": ExternalRiskEventRow;
+  "business.engineering_data_read_query_results": ReadQueryResultRow;
 };
 
 type ContextTransaction = Transaction<ContextSourceDatabase>;
@@ -490,6 +524,11 @@ const moduleError = (
   } as ContextSourceError;
 };
 
+const readAuthorizationDenied = (causalRunId: string): ContextSourceError =>
+  moduleError("AUTHORIZATION_DENIED", causalRunId, {
+    requiredCapability: "engineering-data.read",
+  });
+
 const resultFailure = (error: ContextSourceError): ContextSourceResultV1 =>
   ContextSourceResultV1Schema.parse({ kind: "failed", error });
 
@@ -593,6 +632,106 @@ const sourceProcessingInput = (sourceVersion: SourceVersionV1): SourceProcessing
 
 const sourceSegmentSetResult = (set: SourceSegmentSetV1): ContextSourceResultV1 =>
   resultSuccess({ kind: "source-segment-set", segmentSet: set });
+
+type EngineeringDataReadBranch = "source-segments" | "evidence-access";
+
+const READ_BRANCH = {
+  "source-segments": "engineering-data.source-segments",
+  "evidence-access": "engineering-data.evidence-access",
+} as const satisfies Record<EngineeringDataReadBranch, ModuleBranchV1>;
+
+const READ_QUERY_COMMAND_KIND = {
+  "source-segments": "engineering-data.source-segments-query.v1",
+  "evidence-access": "engineering-data.evidence-access-query.v1",
+} as const satisfies Record<EngineeringDataReadBranch, string>;
+
+const READ_QUERY_ACTION = {
+  "source-segments": "engineering-data.source-segments-query",
+  "evidence-access": "engineering-data.evidence-access-query",
+} as const satisfies Record<EngineeringDataReadBranch, string>;
+
+const readBranchOfQueryResultRef = (entityId: string): EngineeringDataReadBranch | undefined =>
+  entityId.startsWith("source-segments-")
+    ? "source-segments"
+    : entityId.startsWith("evidence-access-")
+      ? "evidence-access"
+      : undefined;
+
+const readQueryResultRef = (branch: EngineeringDataReadBranch, queryId: string): QueryResultRefV1 =>
+  ref("query-result", `${branch}-${queryId}`, "1") as QueryResultRefV1;
+
+/**
+ * A read request that names another project, actor, or requests no
+ * `engineering-data.read` capability is an authorization failure before it is
+ * a contract failure, so malformed requests cannot probe the difference.
+ */
+const readRequestDenied = (value: unknown): boolean => {
+  if (typeof value !== "object" || value === null) return false;
+  const request = value as Record<string, unknown>;
+  const authorization = request.authorization;
+  if (typeof authorization !== "object" || authorization === null) return false;
+  const context = authorization as Record<string, unknown>;
+  if (
+    typeof request.projectId === "string" &&
+    typeof context.projectId === "string" &&
+    request.projectId !== context.projectId
+  ) {
+    return true;
+  }
+  if (
+    typeof request.actorId === "string" &&
+    typeof context.actorId === "string" &&
+    request.actorId !== context.actorId
+  ) {
+    return true;
+  }
+  const capabilities = context.grantedCapabilities;
+  return Array.isArray(capabilities) && !capabilities.includes("engineering-data.read");
+};
+
+const readCausalRunId = (value: unknown, fallback: string): string => {
+  if (typeof value !== "object" || value === null) return fallback;
+  const request = value as Record<string, unknown>;
+  for (const key of ["queryId", "invocationId"]) {
+    const candidate = request[key];
+    if (typeof candidate === "string" && candidate.trim() !== "") return candidate;
+  }
+  return fallback;
+};
+
+const dedupeSourceVersionRefs = (refs: readonly SourceVersionRefV1[]): SourceVersionRefV1[] => {
+  const seen = new Map<string, SourceVersionRefV1>();
+  for (const item of refs) seen.set(refKey(item), item);
+  return [...seen.values()];
+};
+
+const toSourceSegment = (row: Selectable<SegmentRow>): SourceSegmentV1 =>
+  SourceSegmentV1Schema.parse({
+    sourceSegmentId: row.source_segment_id,
+    chapterId: row.chapter_id,
+    segmentId: row.segment_id,
+    kind: row.kind,
+    spatialScopeRefs: row.spatial_scope_refs,
+    locator: row.locator,
+  });
+
+const dedupeSpatialScopeRefs = (
+  groups: ReadonlyArray<readonly SpatialScopeRefV1[]>,
+): SpatialScopeRefV1[] =>
+  normalizeSpatialScopeRefs([
+    ...new Map(groups.flat().map((scope) => [refKey(scope), scope] as const)).values(),
+  ]);
+
+interface SourceSegmentReadTarget {
+  readonly sourceVersion: SourceVersionV1;
+  readonly segmentSet: SourceSegmentSetV1;
+  readonly spatialScopeRefs: SpatialScopeRefV1[];
+}
+
+interface EvidenceAccessReadTarget {
+  readonly items: EvidenceAccessItemV1[];
+  readonly spatialScopeRefs: SpatialScopeRefV1[];
+}
 
 const preserveDomainError = (error: ContextSourceError): PostgresPersistenceError => {
   const wrapped = makePersistenceError("TRANSACTION_FAILED", "context-source.domain");
@@ -801,7 +940,14 @@ export class PostgresEngineeringContextSourceRegistry
       return resultFailure(moduleError("UNSUPPORTED_CONTRACT", "source-processing-input"));
     const valid = parsed.data;
     try {
-      await this.#verifyRead(valid, valid.authorization.spatialScopeRefs, [valid.sourceVersionRef]);
+      await this.#verifyRead(
+        valid,
+        valid.authorization.grantedCapabilities.includes("engineering-data.write")
+          ? "engineering-data.register-source-delivery"
+          : "engineering-data.evidence-access",
+        valid.authorization.spatialScopeRefs,
+        [valid.sourceVersionRef],
+      );
       const sourceVersion = await this.#readSourceVersion(valid.projectId, valid.sourceVersionRef);
       if (
         sourceVersion === undefined ||
@@ -844,7 +990,14 @@ export class PostgresEngineeringContextSourceRegistry
       return resultFailure(moduleError("UNSUPPORTED_CONTRACT", "source-version-read"));
     const valid = parsed.data;
     try {
-      await this.#verifyRead(valid, valid.authorization.spatialScopeRefs, [valid.sourceVersionRef]);
+      await this.#verifyRead(
+        valid,
+        valid.authorization.grantedCapabilities.includes("engineering-data.write")
+          ? "engineering-data.register-source-delivery"
+          : "engineering-data.evidence-access",
+        valid.authorization.spatialScopeRefs,
+        [valid.sourceVersionRef],
+      );
       const sourceVersion = await this.#readSourceVersion(valid.projectId, valid.sourceVersionRef);
       if (
         sourceVersion === undefined ||
@@ -931,15 +1084,395 @@ export class PostgresEngineeringContextSourceRegistry
 
   async read(query: EngineeringDataQueryV1): Promise<EngineeringDataReadResultV1> {
     const parsed = EngineeringDataQueryV1Schema.safeParse(query);
-    if (!parsed.success)
+    if (!parsed.success) {
       return {
         kind: "failed",
-        error: moduleError("UNSUPPORTED_CONTRACT", "engineering-data.read"),
+        error: readRequestDenied(query)
+          ? readAuthorizationDenied(readCausalRunId(query, "engineering-data.read"))
+          : moduleError("UNSUPPORTED_CONTRACT", readCausalRunId(query, "engineering-data.read")),
       };
-    if (parsed.data.kind === "monitoring-snapshot" && this.#monitoringStore !== undefined) {
-      return this.#monitoringStore.readSnapshot(parsed.data);
     }
-    return { kind: "failed", error: moduleError("UNSUPPORTED_CONTRACT", parsed.data.queryId) };
+    const valid = parsed.data;
+    if (valid.kind === "monitoring-snapshot") {
+      return this.#monitoringStore === undefined
+        ? { kind: "failed", error: moduleError("UNSUPPORTED_CONTRACT", valid.queryId) }
+        : this.#monitoringStore.readSnapshot(valid);
+    }
+    return valid.kind === "source-segments"
+      ? this.#readSourceSegments(valid)
+      : this.#readEvidenceAccess(valid);
+  }
+
+  async #readSourceSegments(
+    query: Extract<EngineeringDataQueryV1, { kind: "source-segments" }>,
+  ): Promise<EngineeringDataReadResultV1> {
+    const branchQuery = { kind: query.kind, ...query.payload };
+    const queryResultRef = readQueryResultRef("source-segments", query.queryId);
+    try {
+      await this.#verifyRead(query, READ_BRANCH["source-segments"], [], []);
+      const target = await this.#resolveSourceSegmentTarget(
+        query.projectId,
+        branchQuery.sourceSegmentSetRef,
+      );
+      if (target === undefined) {
+        return { kind: "failed", error: readAuthorizationDenied(query.queryId) };
+      }
+      await this.#verifyRead(query, READ_BRANCH["source-segments"], target.spatialScopeRefs, [
+        target.sourceVersion.sourceVersionRef,
+      ]);
+      await this.#registerReadQuery(query, {
+        branch: "source-segments",
+        branchQuery,
+        queryResultRef,
+      });
+      return { kind: "succeeded", result: { queryResultRef } };
+    } catch (error) {
+      return {
+        kind: "failed",
+        error: this.#mapError(
+          error,
+          query.queryId,
+          "engineering-data.read",
+          "engineering-data.read",
+        ),
+      };
+    }
+  }
+
+  async #readEvidenceAccess(
+    query: Extract<EngineeringDataQueryV1, { kind: "evidence-access" }>,
+  ): Promise<EngineeringDataReadResultV1> {
+    const branchQuery = { kind: query.kind, ...query.payload };
+    const queryResultRef = readQueryResultRef("evidence-access", query.queryId);
+    try {
+      const declaredSourceVersionRefs = dedupeSourceVersionRefs(
+        branchQuery.evidenceReferences.map((evidence) =>
+          SourceVersionV1Schema.shape.sourceVersionRef.parse({
+            kind: "source-version",
+            reference: evidence.sourceVersion,
+          }),
+        ),
+      );
+      await this.#verifyRead(query, READ_BRANCH["evidence-access"], [], declaredSourceVersionRefs);
+      const target = await this.#resolveEvidenceAccessTargets(
+        query.projectId,
+        branchQuery.evidenceReferences,
+      );
+      if (target === undefined) {
+        return { kind: "failed", error: readAuthorizationDenied(query.queryId) };
+      }
+      await this.#verifyRead(
+        query,
+        READ_BRANCH["evidence-access"],
+        target.spatialScopeRefs,
+        declaredSourceVersionRefs,
+      );
+      await this.#registerReadQuery(query, {
+        branch: "evidence-access",
+        branchQuery,
+        queryResultRef,
+      });
+      return { kind: "succeeded", result: { queryResultRef } };
+    } catch (error) {
+      return {
+        kind: "failed",
+        error: this.#mapError(
+          error,
+          query.queryId,
+          "engineering-data.read",
+          "engineering-data.read",
+        ),
+      };
+    }
+  }
+
+  async #registerReadQuery(
+    query: {
+      queryId: string;
+      projectId: string;
+      actorId: string;
+      requestedAt: string;
+      authorization: AuthorizationContextV1;
+    },
+    input: {
+      readonly branch: EngineeringDataReadBranch;
+      readonly branchQuery: EngineeringDataReadBranchQueryV1;
+      readonly queryResultRef: QueryResultRefV1;
+    },
+  ): Promise<void> {
+    const command = {
+      commandId: query.queryId,
+      idempotencyKey: query.queryId,
+      projectId: query.projectId,
+      actorId: query.actorId,
+      issuedAt: query.requestedAt,
+      authorization: query.authorization,
+    };
+    await this.#transactionUnit.execute(
+      atomicCommand(command, READ_QUERY_COMMAND_KIND[input.branch], input.branchQuery),
+      async (context) => {
+        const transaction = asTransaction(context);
+        const recordedAt = nowIso(this.#now);
+        await transaction
+          .insertInto("business.engineering_data_read_query_results")
+          .values({
+            query_result_id: input.queryResultRef.reference.entityId,
+            version_id: input.queryResultRef.reference.versionId,
+            project_id: query.projectId,
+            branch: input.branch,
+            query_result_ref: jsonValue(input.queryResultRef),
+            query_payload: jsonValue(
+              EngineeringDataReadBranchQueryV1Schema.parse(input.branchQuery),
+            ),
+            authorization_context_ref: jsonValue(query.authorization.authorizationContextRef),
+            requested_by: query.actorId,
+            recorded_at: recordedAt,
+            persisted_at: sql`clock_timestamp()`,
+            audit_entry_id: auditEntryIdFor(query.queryId),
+          } satisfies InsertObject<
+            ContextSourceDatabase,
+            "business.engineering_data_read_query_results"
+          >)
+          .onConflict((conflict) =>
+            conflict.columns(["project_id", "query_result_ref"]).doNothing(),
+          )
+          .execute();
+        return commit(
+          command,
+          READ_QUERY_ACTION[input.branch],
+          input.queryResultRef,
+          input.queryResultRef.reference,
+          recordedAt,
+        );
+      },
+    );
+  }
+
+  async resolveReadQuery(
+    query: ResolveEngineeringDataReadQueryV1,
+  ): Promise<EngineeringDataReadResolutionResultV1> {
+    const parsed = ResolveEngineeringDataReadQueryV1Schema.safeParse(query);
+    if (!parsed.success) {
+      return {
+        kind: "failed",
+        error: readRequestDenied(query)
+          ? readAuthorizationDenied(readCausalRunId(query, "engineering-data.resolve-read-query"))
+          : moduleError(
+              "UNSUPPORTED_CONTRACT",
+              readCausalRunId(query, "engineering-data.resolve-read-query"),
+            ),
+      };
+    }
+    const valid = parsed.data;
+    const branch = readBranchOfQueryResultRef(valid.queryResultRef.reference.entityId);
+    if (branch === undefined) {
+      return { kind: "failed", error: readAuthorizationDenied(valid.invocationId) };
+    }
+    try {
+      await this.#verifyRead(
+        { ...valid, queryId: valid.invocationId },
+        READ_BRANCH[branch],
+        [],
+        [],
+      );
+      const row = await this.#db
+        .selectFrom("business.engineering_data_read_query_results")
+        .selectAll()
+        .where("query_result_id", "=", valid.queryResultRef.reference.entityId)
+        .where("version_id", "=", valid.queryResultRef.reference.versionId)
+        .executeTakeFirst();
+      if (row === undefined || row.project_id !== valid.projectId || row.branch !== branch) {
+        return { kind: "failed", error: readAuthorizationDenied(valid.invocationId) };
+      }
+      const record = EngineeringDataReadQueryRecordV1Schema.safeParse({
+        queryResultRef: row.query_result_ref,
+        projectId: row.project_id,
+        query: row.query_payload,
+        requestedBy: row.requested_by,
+        authorizationContextRef: row.authorization_context_ref,
+        recordedAt: asIso(row.recorded_at),
+        audit: {
+          actorId: row.requested_by,
+          action: READ_QUERY_ACTION[row.branch],
+          recordedAt: asIso(row.recorded_at),
+        },
+      });
+      if (!record.success || record.data.query.kind !== branch) {
+        return { kind: "failed", error: readAuthorizationDenied(valid.invocationId) };
+      }
+      const result = await this.#projectReadQuery(valid, record.data);
+      return result === undefined
+        ? { kind: "failed", error: readAuthorizationDenied(valid.invocationId) }
+        : { kind: "succeeded", result };
+    } catch (error) {
+      return {
+        kind: "failed",
+        error: this.#mapError(
+          error,
+          valid.invocationId,
+          "engineering-data.resolve-read-query",
+          "engineering-data.read",
+        ),
+      };
+    }
+  }
+
+  async #projectReadQuery(
+    query: ResolveEngineeringDataReadQueryV1,
+    record: EngineeringDataReadQueryRecordV1,
+  ): Promise<SourceSegmentReadResultV1 | EvidenceAccessReadResultV1 | undefined> {
+    const verify = {
+      queryId: query.invocationId,
+      projectId: query.projectId,
+      actorId: query.actorId,
+      authorization: query.authorization,
+    };
+    if (record.query.kind === "source-segments") {
+      const target = await this.#resolveSourceSegmentTarget(
+        query.projectId,
+        record.query.sourceSegmentSetRef,
+      );
+      if (target === undefined || target.sourceVersion.sourceAccessGrantRef === undefined) {
+        return undefined;
+      }
+      await this.#verifyRead(verify, READ_BRANCH["source-segments"], target.spatialScopeRefs, [
+        target.sourceVersion.sourceVersionRef,
+      ]);
+      return SourceSegmentReadResultV1Schema.parse({
+        kind: "source-segments",
+        queryResultRef: record.queryResultRef,
+        segmentSet: target.segmentSet,
+        sourceAccessGrantRef: target.sourceVersion.sourceAccessGrantRef,
+      });
+    }
+    const declaredSourceVersionRefs = dedupeSourceVersionRefs(
+      record.query.evidenceReferences.map((evidence) =>
+        SourceVersionV1Schema.shape.sourceVersionRef.parse({
+          kind: "source-version",
+          reference: evidence.sourceVersion,
+        }),
+      ),
+    );
+    const target = await this.#resolveEvidenceAccessTargets(
+      query.projectId,
+      record.query.evidenceReferences,
+    );
+    if (target === undefined) return undefined;
+    await this.#verifyRead(
+      verify,
+      READ_BRANCH["evidence-access"],
+      target.spatialScopeRefs,
+      declaredSourceVersionRefs,
+    );
+    return EvidenceAccessReadResultV1Schema.parse({
+      kind: "evidence-access",
+      queryResultRef: record.queryResultRef,
+      purposeCode: record.query.purposeCode,
+      items: target.items,
+    });
+  }
+
+  async #resolveSourceSegmentTarget(
+    projectId: string,
+    sourceSegmentSetRef: SourceSegmentSetRefV1,
+  ): Promise<SourceSegmentReadTarget | undefined> {
+    const segmentSet = await this.#readSegmentSet(projectId, sourceSegmentSetRef);
+    if (segmentSet === undefined) return undefined;
+    const sourceVersion = await this.#readSourceVersion(projectId, segmentSet.sourceVersionRef);
+    if (
+      sourceVersion === undefined ||
+      sourceVersion.accessStatus !== "ready" ||
+      sourceVersion.sourceAccessGrantRef === undefined
+    ) {
+      return undefined;
+    }
+    return {
+      sourceVersion,
+      segmentSet,
+      spatialScopeRefs: dedupeSpatialScopeRefs([
+        sourceVersion.spatialScopeRefs,
+        ...segmentSet.segments.map((segment) => segment.spatialScopeRefs),
+      ]),
+    };
+  }
+
+  async #resolveEvidenceAccessTargets(
+    projectId: string,
+    evidenceReferences: readonly EvidenceReference[],
+  ): Promise<EvidenceAccessReadTarget | undefined> {
+    const sourceVersionIds = [
+      ...new Set(evidenceReferences.map((evidence) => evidence.sourceVersion.entityId)),
+    ];
+    const sourceVersionRows = await this.#db
+      .selectFrom("business.source_versions")
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where("source_version_id", "in", sourceVersionIds)
+      .execute();
+    const sourceVersionByStorageId = new Map(
+      sourceVersionRows.map((row) => [`${row.source_version_id}/${row.version_id}`, row] as const),
+    );
+    const segmentSetRows = await this.#db
+      .selectFrom("business.source_segment_sets")
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where("source_version_id", "in", sourceVersionIds)
+      .execute();
+    const segmentSetBySourceVersion = new Map(
+      segmentSetRows.map((row) => [row.source_version_id, row] as const),
+    );
+    const segmentRows = await this.#db
+      .selectFrom("business.source_segments")
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where("source_segment_id", "in", [
+        ...new Set(evidenceReferences.map((evidence) => evidence.locator.sourceSegmentId)),
+      ])
+      .execute();
+    const segmentBySegmentId = new Map(
+      segmentRows.map((row) => [row.source_segment_id, row] as const),
+    );
+    const items: EvidenceAccessItemV1[] = [];
+    const resolvedScopeRefs: SpatialScopeRefV1[][] = [];
+    for (const evidence of evidenceReferences) {
+      const sourceVersionRow = sourceVersionByStorageId.get(
+        `${evidence.sourceVersion.entityId}/${evidence.sourceVersion.versionId}`,
+      );
+      if (sourceVersionRow === undefined) return undefined;
+      const sourceVersion = toSourceVersion(sourceVersionRow);
+      if (
+        sourceVersion.accessStatus !== "ready" ||
+        sourceVersion.sourceAccessGrantRef === undefined
+      ) {
+        return undefined;
+      }
+      const segmentSetRow = segmentSetBySourceVersion.get(sourceVersionRow.source_version_id);
+      const segmentRow = segmentBySegmentId.get(evidence.locator.sourceSegmentId);
+      if (
+        segmentSetRow === undefined ||
+        segmentRow === undefined ||
+        segmentRow.source_version_id !== sourceVersionRow.source_version_id ||
+        segmentRow.source_segment_set_id !== segmentSetRow.source_segment_set_id
+      ) {
+        return undefined;
+      }
+      const segment = toSourceSegment(segmentRow);
+      resolvedScopeRefs.push(sourceVersion.spatialScopeRefs, segment.spatialScopeRefs);
+      items.push(
+        EvidenceAccessItemV1Schema.parse({
+          evidenceReference: evidence,
+          sourceVersionRef: sourceVersion.sourceVersionRef,
+          sourceSegmentSetRef: segmentSetRow.source_segment_set_ref,
+          sourceAccessGrantRef: sourceVersion.sourceAccessGrantRef,
+          segment,
+        }),
+      );
+    }
+    if (items.length === 0) return undefined;
+    return {
+      items,
+      spatialScopeRefs: dedupeSpatialScopeRefs(resolvedScopeRefs),
+    };
   }
 
   async #registerExternalRiskEvent(
@@ -1372,6 +1905,13 @@ export class PostgresEngineeringContextSourceRegistry
     });
   }
 
+  /**
+   * Resolved C11 targets carry business spatial revisions, while the C06
+   * authorization and its current-access evaluation only know access scope
+   * revisions. Both spaces share the scope identity, so an exact re-verify
+   * projects each resolved scope onto the authorization's own ref and refuses
+   * anything the caller's context does not name.
+   */
   async #verifyRead(
     query: {
       queryId: string;
@@ -1379,7 +1919,8 @@ export class PostgresEngineeringContextSourceRegistry
       actorId: string;
       authorization: AuthorizationContextV1;
     },
-    requestedSpatialScopeRefs: readonly SpatialScopeRefV1[],
+    branch: ModuleBranchV1,
+    resolvedSpatialScopeRefs: readonly SpatialScopeRefV1[],
     requestedSourceVersionRefs: readonly SourceVersionRefV1[],
   ): Promise<void> {
     if (
@@ -1388,16 +1929,32 @@ export class PostgresEngineeringContextSourceRegistry
       (!query.authorization.grantedCapabilities.includes("engineering-data.read") &&
         !query.authorization.grantedCapabilities.includes("engineering-data.write"))
     ) {
-      throw preserveDomainError(moduleError("AUTHORIZATION_DENIED", query.queryId));
+      throw preserveDomainError(
+        moduleError("AUTHORIZATION_DENIED", query.queryId, {
+          requiredCapability: MODULE_BRANCH_CAPABILITY_V1[branch],
+        }),
+      );
+    }
+    const requestedSpatialScopeRefs = new Map<string, SpatialScopeRefV1>();
+    for (const resolved of resolvedSpatialScopeRefs) {
+      const authorized = query.authorization.spatialScopeRefs.find(
+        (scope) => scope.reference.entityId === resolved.reference.entityId,
+      );
+      if (authorized === undefined) {
+        throw preserveDomainError(
+          moduleError("AUTHORIZATION_DENIED", query.queryId, {
+            requiredCapability: MODULE_BRANCH_CAPABILITY_V1[branch],
+          }),
+        );
+      }
+      requestedSpatialScopeRefs.set(refKey(authorized), authorized);
     }
     await this.#access.verify({
       authorizationContextRef: query.authorization.authorizationContextRef,
       invocationId: query.queryId,
       projectId: query.projectId,
-      branch: query.authorization.grantedCapabilities.includes("engineering-data.write")
-        ? "engineering-data.register-source-delivery"
-        : "engineering-data.evidence-access",
-      requestedSpatialScopeRefs: [...requestedSpatialScopeRefs],
+      branch,
+      requestedSpatialScopeRefs: [...requestedSpatialScopeRefs.values()],
       requestedSourceVersionRefs: [...requestedSourceVersionRefs],
       requestedAt: query.authorization.decidedAt,
     });
@@ -2214,16 +2771,7 @@ export class PostgresEngineeringContextSourceRegistry
       .where("source_segment_set_id", "=", setId)
       .orderBy("source_segment_id")
       .execute();
-    return rows.map((row) => ({
-      sourceSegmentId:
-        row.source_segment_id as SourceSegmentSetV1["segments"][number]["sourceSegmentId"],
-      chapterId: row.chapter_id,
-      segmentId: row.segment_id,
-      kind: row.kind as SourceSegmentSetV1["segments"][number]["kind"],
-      spatialScopeRefs:
-        row.spatial_scope_refs as SourceSegmentSetV1["segments"][number]["spatialScopeRefs"],
-      locator: row.locator as SourceSegmentSetV1["segments"][number]["locator"],
-    }));
+    return rows.map(toSourceSegment);
   }
 
   async #readProjectRevision(
@@ -2328,7 +2876,13 @@ export class PostgresEngineeringContextSourceRegistry
     });
   }
 
-  #mapError(error: unknown, causalRunId: string, stage: string): ModuleErrorV1 {
+  #mapError(
+    error: unknown,
+    causalRunId: string,
+    stage: string,
+    requiredCapability:
+      "engineering-data.read" | "engineering-data.write" = "engineering-data.write",
+  ): ModuleErrorV1 {
     const contextError =
       error instanceof Error
         ? (error as Error & { contextSourceError?: unknown }).contextSourceError
@@ -2338,7 +2892,7 @@ export class PostgresEngineeringContextSourceRegistry
       error instanceof Error ? (error as Error & { accessError?: unknown }).accessError : undefined;
     if (accessError instanceof AccessServiceError) {
       if (accessError.details.code === "AUTHORIZATION_DENIED")
-        return moduleError("AUTHORIZATION_DENIED", causalRunId);
+        return moduleError("AUTHORIZATION_DENIED", causalRunId, { requiredCapability });
       if (accessError.details.code === "STALE_ACCESS_VERSION")
         return moduleError("STALE_VERSION", causalRunId, {
           targetRef: accessError.details.targetRef,
@@ -2354,14 +2908,13 @@ export class PostgresEngineeringContextSourceRegistry
       );
     }
     if (error instanceof AccessServiceError)
-      return moduleError(
-        error.details.code === "AUTHORIZATION_DENIED" ? "AUTHORIZATION_DENIED" : "TERMINAL_FAILURE",
-        causalRunId,
-      );
+      return error.details.code === "AUTHORIZATION_DENIED"
+        ? moduleError("AUTHORIZATION_DENIED", causalRunId, { requiredCapability })
+        : moduleError("TERMINAL_FAILURE", causalRunId);
     if (error instanceof ArtifactStoreError)
       return mapArtifactErrorToModuleError(error, {
         causalRunId,
-        requiredCapability: "engineering-data.write",
+        requiredCapability,
         authorizationPolicyRef: ACCESS_POLICY_REF_V1,
         schemaVersion: "1",
       });

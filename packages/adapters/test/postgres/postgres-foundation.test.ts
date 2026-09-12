@@ -41,6 +41,7 @@ import * as governedDefinitionLifecycleMigration from "../../src/postgres/migrat
 import * as engineeringContextSourceMigration from "../../src/postgres/migrations/engineering-data/deliver-engineering-context-and-source-registry/000008_engineering_context_source_registry.js";
 import * as structuredDocumentConversionMigration from "../../src/postgres/migrations/engineering-data/deliver-structured-document-conversion/000009_structured_document_conversion.js";
 import * as monitoringBatchesMigration from "../../src/postgres/migrations/engineering-data/deliver-monitoring-batches-snapshots-and-features/000011_monitoring_batches_snapshots_features.js";
+import * as assessmentConfigurationMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-assessment-configuration-and-measure-governance/000012_assessment_configuration.js";
 
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
 import * as agentTaskFixtureMigration from "./fixtures/migrations/agent-task/deliver-unified-bounded-agent-runtime/900002_agent_task_fixture.js";
@@ -304,6 +305,15 @@ const testMigrationManifest = [
       "000011_engineering-data_deliver-monitoring-batches-snapshots-and-features_monitoring_batches_snapshots_features",
     sequence: 11,
     module: monitoringBatchesMigration,
+  },
+  {
+    root: "production",
+    relativePath:
+      "knowledge-modeling/deliver-assessment-configuration-and-measure-governance/000012_assessment_configuration.ts",
+    migrationName:
+      "000012_knowledge-modeling_deliver-assessment-configuration-and-measure-governance_assessment_configuration",
+    sequence: 12,
+    module: assessmentConfigurationMigration,
   },
   {
     root: "fixture",

@@ -29,11 +29,24 @@ import {
   KnowledgeRevisionV1Schema,
   KnowledgeReviewLinkV1Schema,
   ResolveGovernedReleasesRequestV1Schema,
+  type KnowledgeRevisionV1,
 } from "@riskflow/core/knowledge-governance";
+import {
+  AssessmentConfigurationError,
+  assessmentConfigurationFailureFrom,
+  isAssessmentConfigurationDefinitionTypeV1,
+  type AssessmentConfigurationGovernancePolicyV1,
+  type AssessmentConfigurationReleaseAppendV1,
+  type AssessmentConfigurationRevisionAppendV1,
+  type PreparedAssessmentConfigurationV1,
+  type SubmitAssessmentConfigurationRevisionV1,
+} from "@riskflow/core/assessment-config";
 import {
   ContractReferenceV1Schema,
   KnowledgeDefinitionTypeV1Schema,
   KnowledgeGovernanceCommandV1Schema,
+  type ContentArtifactRefV1,
+  type KnowledgeDefinitionTypeV1,
   KnowledgeRevisionApprovalProofResultV1Schema,
   KnowledgeRevisionApprovalProofQueryV1Schema,
   KnowledgeRevisionRefV1Schema,
@@ -55,6 +68,7 @@ import {
   type ReviewTaskRefV1,
 } from "@riskflow/contracts/ports";
 import { IdentifierSchema, IsoDateTimeSchema } from "@riskflow/contracts/common";
+import type { DomainEventV1 } from "@riskflow/contracts/events";
 
 import { makePersistenceError, mapPostgresError } from "../postgres/pool.js";
 import { getPostgresTransaction } from "../postgres/transaction-unit.js";
@@ -218,6 +232,15 @@ const asContractReference = (value: unknown): ContractReferenceV1 =>
 const lifecycleDomainError = (error: KnowledgeLifecycleError) => {
   const mapped = makePersistenceError("TRANSACTION_FAILED", "knowledge-governance.domain");
   Object.defineProperty(mapped, "knowledgeFailure", { value: error.failure });
+  return mapped;
+};
+
+const assessmentConfigurationDomainError = (error: AssessmentConfigurationError) => {
+  const mapped = makePersistenceError(
+    "TRANSACTION_FAILED",
+    "knowledge-governance.assessment-configuration",
+  );
+  Object.defineProperty(mapped, "assessmentConfigurationFailure", { value: error.failure });
   return mapped;
 };
 
@@ -524,6 +547,8 @@ export interface PostgresKnowledgeGovernanceAdapterOptionsV1 {
   readonly access: LocalIdentityAccessV1;
   readonly reviewAudit: ReviewAuditPortV1;
   readonly now?: () => Date;
+  /** Optional C18 content policy; C18 definition types are blocked without it. */
+  readonly assessmentConfigurationPolicy?: AssessmentConfigurationGovernancePolicyV1;
   readonly reviewAuthorization?: (
     command: KnowledgeGovernanceCommandV1,
     link: ReturnType<typeof reviewLinkFromRow>,
@@ -539,6 +564,7 @@ export class PostgresKnowledgeGovernanceAdapter {
   readonly #access: LocalIdentityAccessV1;
   readonly #reviewAudit: ReviewAuditPortV1;
   readonly #now: () => Date;
+  readonly #assessmentConfigurationPolicy: AssessmentConfigurationGovernancePolicyV1 | undefined;
   readonly #reviewAuthorization:
     PostgresKnowledgeGovernanceAdapterOptionsV1["reviewAuthorization"] | undefined;
   readonly #approvalAuthorization:
@@ -550,6 +576,7 @@ export class PostgresKnowledgeGovernanceAdapter {
     this.#access = options.access;
     this.#reviewAudit = options.reviewAudit;
     this.#now = options.now ?? (() => new Date());
+    this.#assessmentConfigurationPolicy = options.assessmentConfigurationPolicy;
     this.#reviewAuthorization = options.reviewAuthorization;
     this.#approvalAuthorization = options.approvalAuthorization;
   }
@@ -651,15 +678,48 @@ export class PostgresKnowledgeGovernanceAdapter {
               }),
         };
       });
+      const selection = selectGovernedReleaseCandidates({
+        projectId: valid.projectId,
+        requiredDefinitionTypes: requiredTypes,
+        requiredAt,
+        asOfRecordedAt,
+        candidates,
+      });
+      const members: Array<{
+        readonly definitionType: KnowledgeDefinitionTypeV1;
+        readonly releaseRef: KnowledgeReleaseRefV1;
+        readonly revisionRef: KnowledgeRevisionRefV1;
+        readonly candidateArtifactRef: ContentArtifactRefV1;
+      }> = [];
+      for (const releaseRef of selection.releaseRefs) {
+        const selected = candidates.find((candidate) =>
+          versionedReferenceEquals(candidate.release.releaseRef, releaseRef),
+        );
+        const revision =
+          selected === undefined
+            ? undefined
+            : await this.#findRevision(this.#db, valid.projectId, selected.release.revisionRef);
+        if (revision === undefined) {
+          return {
+            kind: "failed" as const,
+            error: moduleError({
+              code: "BUSINESS_BLOCKED",
+              blockerKind: "required-release-unavailable",
+              blockerRef: asContractReference(releaseRef),
+              causalRunId: `knowledge-resolve-${valid.projectId}`,
+            }),
+          };
+        }
+        members.push({
+          definitionType: revision.definitionType,
+          releaseRef,
+          revisionRef: revision.revisionRef,
+          candidateArtifactRef: revision.candidateArtifactRef,
+        });
+      }
       return {
         kind: "succeeded" as const,
-        result: selectGovernedReleaseCandidates({
-          projectId: valid.projectId,
-          requiredDefinitionTypes: requiredTypes,
-          requiredAt,
-          asOfRecordedAt,
-          candidates,
-        }),
+        result: { ...selection, members },
       };
     } catch (error) {
       return {
@@ -676,13 +736,14 @@ export class PostgresKnowledgeGovernanceAdapter {
     command: Extract<KnowledgeGovernanceCommandV1, { kind: "submit-revision" }>,
   ): Promise<ReturnType<typeof KnowledgeGovernanceResultV1Schema.parse>> {
     try {
-      await this.#verifyAuthorization(
+      const verifiedAuthorization = await this.#verifyAuthorization(
         command.authorization,
         command.projectId,
         command.commandId,
         knowledgeBranch(command.kind),
       );
-      const receipt = await this.#runTransaction(command, async (tx, atomic) => {
+      const prepared = await this.#prepareAssessmentConfiguration(command, verifiedAuthorization);
+      const receipt = await this.#runTransaction(command, async (tx, atomic, context) => {
         const identityKey = `${command.projectId}:${command.payload.definitionType}`;
         const artifactKey = `${command.projectId}:${refKey(command.payload.candidateArtifactRef)}`;
         for (const key of [identityKey, artifactKey].sort()) {
@@ -836,6 +897,14 @@ export class PostgresKnowledgeGovernanceAdapter {
             persisted_at: recordedAt,
           })
           .execute();
+        if (prepared !== undefined) {
+          await this.#appendAssessmentConfigurationRevision(context, {
+            revision: parsedRevision,
+            prepared,
+            auditEntryId: audit.auditEntryId,
+            persistedAt: recordedAt,
+          });
+        }
         return {
           resultRef: targetForRevision(parsedRevision.revisionRef),
           audit,
@@ -863,12 +932,24 @@ export class PostgresKnowledgeGovernanceAdapter {
     command: Extract<KnowledgeGovernanceCommandV1, { kind: "request-review" }>,
   ): Promise<ReturnType<typeof KnowledgeGovernanceResultV1Schema.parse>> {
     try {
-      await this.#verifyAuthorization(
+      const verifiedAuthorization = await this.#verifyAuthorization(
         command.authorization,
         command.projectId,
         command.commandId,
         knowledgeBranch(command.kind),
       );
+      const checkedRevision = await this.#findRevision(
+        this.#db,
+        command.projectId,
+        command.payload.revisionRef,
+      );
+      if (checkedRevision !== undefined) {
+        await this.#assertAssessmentConfigurationMetadata(
+          command,
+          checkedRevision,
+          verifiedAuthorization,
+        );
+      }
       const reviewAttemptId = `knowledge-review-attempt-${sha256CanonicalJson({
         projectId: command.projectId,
         revisionRef: command.payload.revisionRef,
@@ -1188,7 +1269,7 @@ export class PostgresKnowledgeGovernanceAdapter {
         reviewDecisionRef: command.payload.reviewDecisionRef,
         proof: approvedProof,
       });
-      const receipt = await this.#runTransaction(command, async (tx, atomic) => {
+      const receipt = await this.#runTransaction(command, async (tx, atomic, context) => {
         await this.#lock(tx, `${command.projectId}:${refKey(command.payload.revisionRef)}`);
         const revisionCandidate = await this.#findRevision(
           tx,
@@ -1329,7 +1410,15 @@ export class PostgresKnowledgeGovernanceAdapter {
             .where("project_id", "=", command.projectId)
             .execute();
         }
-        return { resultRef: targetForRelease(releaseRef), audit, events: [] };
+        const events = await this.#appendAssessmentConfigurationRelease(context, {
+          command,
+          atomic,
+          revision,
+          releaseRef,
+          audit,
+          recordedAt,
+        });
+        return { resultRef: targetForRelease(releaseRef), audit, events };
       });
       const knowledgeReleaseRef = KnowledgeReleaseRefV1Schema.parse(receipt.resultRef);
       return KnowledgeGovernanceResultV1Schema.parse({
@@ -1535,7 +1624,7 @@ export class PostgresKnowledgeGovernanceAdapter {
         reviewDecisionRef: command.payload.reviewDecisionRef,
         proof: approvedProof,
       });
-      const receipt = await this.#runTransaction(command, async (tx, atomic) => {
+      const receipt = await this.#runTransaction(command, async (tx, atomic, context) => {
         await this.#lock(tx, `${command.projectId}:${historical.definitionRef.reference.entityId}`);
         const currentHistoricalCandidate = await this.#findRelease(
           tx,
@@ -1662,7 +1751,15 @@ export class PostgresKnowledgeGovernanceAdapter {
             .where("project_id", "=", command.projectId)
             .execute();
         }
-        return { resultRef: targetForRelease(releaseRef), audit, events: [] };
+        const events = await this.#appendAssessmentConfigurationRelease(context, {
+          command,
+          atomic,
+          revision,
+          releaseRef,
+          audit,
+          recordedAt,
+        });
+        return { resultRef: targetForRelease(releaseRef), audit, events };
       });
       const knowledgeReleaseRef = KnowledgeReleaseRefV1Schema.parse(receipt.resultRef);
       return KnowledgeGovernanceResultV1Schema.parse({
@@ -1683,14 +1780,20 @@ export class PostgresKnowledgeGovernanceAdapter {
 
   async #runTransaction(
     command: KnowledgeGovernanceCommandV1,
-    handler: (tx: KnowledgeTransaction, atomic: AtomicCommandV1) => Promise<AtomicCommitV1>,
+    handler: (
+      tx: KnowledgeTransaction,
+      atomic: AtomicCommandV1,
+      context: TransactionContextV1,
+    ) => Promise<AtomicCommitV1>,
     atomic = atomicCommand(command),
   ) {
     return this.#transactionUnit.execute(atomic, async (context) => {
       try {
-        return await handler(asKnowledgeTransaction(context), atomic);
+        return await handler(asKnowledgeTransaction(context), atomic, context);
       } catch (error) {
         if (error instanceof KnowledgeLifecycleError) throw lifecycleDomainError(error);
+        if (error instanceof AssessmentConfigurationError)
+          throw assessmentConfigurationDomainError(error);
         throw error;
       }
     });
@@ -1729,6 +1832,107 @@ export class PostgresKnowledgeGovernanceAdapter {
     return this.#approvalAuthorization === undefined
       ? command.authorization
       : this.#approvalAuthorization(command);
+  }
+
+  async #prepareAssessmentConfiguration(
+    command: Extract<KnowledgeGovernanceCommandV1, { kind: "submit-revision" }>,
+    authorization: AuthorizationContextV1,
+  ): Promise<PreparedAssessmentConfigurationV1 | undefined> {
+    if (!isAssessmentConfigurationDefinitionTypeV1(command.payload.definitionType)) {
+      return undefined;
+    }
+    const policy = this.#assessmentConfigurationPolicy;
+    if (policy === undefined) {
+      throw new AssessmentConfigurationError({
+        code: "BUSINESS_BLOCKED",
+        reasonCode: "assessment-configuration-policy-required",
+        targetRef: asContractReference(command.payload.candidateArtifactRef),
+      });
+    }
+    const submission: SubmitAssessmentConfigurationRevisionV1 = {
+      projectId: command.projectId,
+      definitionType: command.payload.definitionType,
+      candidateArtifactRef: command.payload.candidateArtifactRef,
+      authorization,
+    };
+    return policy.prepareRevision(submission);
+  }
+
+  async #appendAssessmentConfigurationRevision(
+    context: TransactionContextV1,
+    input: AssessmentConfigurationRevisionAppendV1,
+  ): Promise<void> {
+    const policy = this.#assessmentConfigurationPolicy;
+    if (policy === undefined) {
+      throw new AssessmentConfigurationError({
+        code: "BUSINESS_BLOCKED",
+        reasonCode: "assessment-configuration-policy-required",
+        targetRef: asContractReference(input.revision.revisionRef),
+      });
+    }
+    await policy.appendPreparedRevision(context, input);
+  }
+
+  async #assertAssessmentConfigurationMetadata(
+    command: KnowledgeGovernanceCommandV1,
+    revision: KnowledgeRevisionV1,
+    authorization: AuthorizationContextV1,
+  ): Promise<void> {
+    if (!isAssessmentConfigurationDefinitionTypeV1(revision.definitionType)) return;
+    const policy = this.#assessmentConfigurationPolicy;
+    if (policy === undefined) {
+      throw new AssessmentConfigurationError({
+        code: "BUSINESS_BLOCKED",
+        reasonCode: "assessment-configuration-policy-required",
+        targetRef: asContractReference(revision.revisionRef),
+      });
+    }
+    await policy.assertRevisionMetadata({
+      projectId: command.projectId,
+      revisionRef: revision.revisionRef,
+      authorization,
+    });
+  }
+
+  async #appendAssessmentConfigurationRelease(
+    context: TransactionContextV1,
+    input: {
+      readonly command: Extract<
+        KnowledgeGovernanceCommandV1,
+        { kind: "publish-approved-release" | "rollback-by-new-release" }
+      >;
+      readonly atomic: AtomicCommandV1;
+      readonly revision: KnowledgeRevisionV1;
+      readonly releaseRef: KnowledgeReleaseRefV1;
+      readonly audit: AtomicCommitV1["audit"];
+      readonly recordedAt: string;
+    },
+  ): Promise<DomainEventV1[]> {
+    if (!isAssessmentConfigurationDefinitionTypeV1(input.revision.definitionType)) return [];
+    const policy = this.#assessmentConfigurationPolicy;
+    if (policy === undefined) {
+      throw new AssessmentConfigurationError({
+        code: "BUSINESS_BLOCKED",
+        reasonCode: "assessment-configuration-policy-required",
+        targetRef: asContractReference(input.releaseRef),
+      });
+    }
+    const release: AssessmentConfigurationReleaseAppendV1 = {
+      command: {
+        kind: input.command.kind,
+        commandId: input.command.commandId,
+        idempotencyKey: input.command.idempotencyKey,
+        projectId: input.command.projectId,
+        actorId: input.command.actorId,
+        issuedAt: input.command.issuedAt,
+        authorizationContextRef: input.atomic.authorizationContextRef,
+      },
+      revision: input.revision,
+      releaseRef: input.releaseRef,
+      audit: input.audit,
+      recordedAt: input.recordedAt,
+    };
+    return policy.appendRelease(context, release);
   }
 
   async #lock(tx: KnowledgeTransaction, key: string): Promise<void> {
@@ -1887,6 +2091,43 @@ export class PostgresKnowledgeGovernanceAdapter {
         code: failure.code,
         targetRef: failure.targetRef,
         ...(failure.currentRef === undefined ? {} : { currentRef: failure.currentRef }),
+        causalRunId: context.causalRunId,
+      });
+    }
+    const assessmentFailure = assessmentConfigurationFailureFrom(error);
+    if (assessmentFailure !== undefined) {
+      if (assessmentFailure.code === "AUTHORIZATION_DENIED") {
+        return moduleError({
+          code: assessmentFailure.code,
+          branch: context.branch,
+          causalRunId: context.causalRunId,
+        });
+      }
+      if (assessmentFailure.code === "BUSINESS_BLOCKED") {
+        return moduleError({
+          code: assessmentFailure.code,
+          blockerKind: assessmentFailure.reasonCode,
+          blockerRef: assessmentFailure.targetRef,
+          causalRunId: context.causalRunId,
+        });
+      }
+      if (assessmentFailure.code === "IDEMPOTENCY_CONFLICT") {
+        return moduleError({
+          code: assessmentFailure.code,
+          idempotencyKey: context.command?.idempotencyKey ?? "unknown-idempotency",
+          priorCommandId: "unknown-command",
+          causalRunId: context.causalRunId,
+        });
+      }
+      if (
+        assessmentFailure.code === "TRANSIENT_FAILURE" ||
+        assessmentFailure.code === "TERMINAL_FAILURE"
+      ) {
+        return moduleError({ code: assessmentFailure.code, causalRunId: context.causalRunId });
+      }
+      return moduleError({
+        code: assessmentFailure.code,
+        targetRef: assessmentFailure.targetRef,
         causalRunId: context.causalRunId,
       });
     }

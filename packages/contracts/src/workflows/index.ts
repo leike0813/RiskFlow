@@ -128,7 +128,7 @@ export const AssessmentPreparationSnapshotV1Schema = z.strictObject({
   spatialScopeRef: SpatialScopeRefV1Schema,
   riskInput: RiskInputVersionRefV1Schema,
   applicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
-  monitoringSnapshotRef: MonitoringSnapshotRefV1Schema.optional(),
+  monitoringSnapshotRefs: z.array(MonitoringSnapshotRefV1Schema).min(1).optional(),
   sourceEvidenceReferences: z.array(EvidenceReferenceSchema).min(1),
   entryMode: WorkflowEntryModeV1Schema,
   triggerReasonCode: IdentifierSchema,

@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   AuditInfoSchema,
+  EvidenceReferenceSchema,
   IdentifierSchema,
   IsoDateTimeSchema,
   VersionReferenceSchema,
@@ -13,6 +14,7 @@ import {
   AuthorizationContextRefV1Schema,
   ContentArtifactRefV1Schema,
   ProjectRevisionRefV1Schema,
+  QueryResultRefV1Schema,
   SourceAccessGrantRefV1Schema,
   SourceDeliveryRefV1Schema,
   SourceSegmentSetRefV1Schema,
@@ -525,6 +527,85 @@ export const ContextSourceResultV1Schema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("failed"), error: ContextSourceErrorV1Schema }),
 ]);
 export type ContextSourceResultV1 = z.infer<typeof ContextSourceResultV1Schema>;
+
+export const EngineeringDataReadBranchQueryV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("source-segments"),
+    sourceSegmentSetRef: SourceSegmentSetRefV1Schema,
+  }),
+  z.strictObject({
+    kind: z.literal("evidence-access"),
+    evidenceReferences: z.array(EvidenceReferenceSchema).min(1),
+    purposeCode: IdentifierSchema,
+  }),
+]);
+export type EngineeringDataReadBranchQueryV1 = z.infer<
+  typeof EngineeringDataReadBranchQueryV1Schema
+>;
+
+export const EngineeringDataReadQueryRecordV1Schema = z.strictObject({
+  queryResultRef: QueryResultRefV1Schema,
+  projectId: IdentifierSchema,
+  query: EngineeringDataReadBranchQueryV1Schema,
+  requestedBy: IdentifierSchema,
+  authorizationContextRef: AuthorizationContextRefV1Schema,
+  recordedAt: IsoDateTimeSchema,
+  audit: ContextAuditV1Schema,
+});
+export type EngineeringDataReadQueryRecordV1 = z.infer<
+  typeof EngineeringDataReadQueryRecordV1Schema
+>;
+
+export const SourceSegmentReadResultV1Schema = z.strictObject({
+  kind: z.literal("source-segments"),
+  queryResultRef: QueryResultRefV1Schema,
+  segmentSet: SourceSegmentSetV1Schema,
+  sourceAccessGrantRef: SourceAccessGrantRefV1Schema,
+});
+export type SourceSegmentReadResultV1 = z.infer<typeof SourceSegmentReadResultV1Schema>;
+
+export const EvidenceAccessItemV1Schema = z.strictObject({
+  evidenceReference: EvidenceReferenceSchema,
+  sourceVersionRef: SourceVersionRefV1Schema,
+  sourceSegmentSetRef: SourceSegmentSetRefV1Schema,
+  sourceAccessGrantRef: SourceAccessGrantRefV1Schema,
+  segment: SourceSegmentV1Schema,
+});
+export type EvidenceAccessItemV1 = z.infer<typeof EvidenceAccessItemV1Schema>;
+
+export const EvidenceAccessReadResultV1Schema = z.strictObject({
+  kind: z.literal("evidence-access"),
+  queryResultRef: QueryResultRefV1Schema,
+  purposeCode: IdentifierSchema,
+  items: z.array(EvidenceAccessItemV1Schema).min(1),
+});
+export type EvidenceAccessReadResultV1 = z.infer<typeof EvidenceAccessReadResultV1Schema>;
+
+export const ResolveEngineeringDataReadQueryV1Schema = z.strictObject({
+  queryResultRef: QueryResultRefV1Schema,
+  invocationId: IdentifierSchema,
+  projectId: IdentifierSchema,
+  actorId: IdentifierSchema,
+  requestedAt: IsoDateTimeSchema,
+  authorization: AuthorizationContextV1Schema,
+});
+export type ResolveEngineeringDataReadQueryV1 = z.infer<
+  typeof ResolveEngineeringDataReadQueryV1Schema
+>;
+
+export const EngineeringDataReadResolutionResultV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("succeeded"),
+    result: z.discriminatedUnion("kind", [
+      SourceSegmentReadResultV1Schema,
+      EvidenceAccessReadResultV1Schema,
+    ]),
+  }),
+  z.strictObject({ kind: z.literal("failed"), error: ModuleErrorV1Schema }),
+]);
+export type EngineeringDataReadResolutionResultV1 = z.infer<
+  typeof EngineeringDataReadResolutionResultV1Schema
+>;
 
 const referenceKey = (value: {
   kind: string;

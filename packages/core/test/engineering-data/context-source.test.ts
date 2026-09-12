@@ -3,8 +3,16 @@ import { describe, expect, it } from "vitest";
 import {
   EngineeringContextSourceService,
   EngineeringContextRevisionCommandV1Schema,
+  EngineeringDataReadBranchQueryV1Schema,
+  EngineeringDataReadQueryRecordV1Schema,
+  EngineeringDataReadResolutionResultV1Schema,
+  EvidenceAccessItemV1Schema,
+  EvidenceAccessReadResultV1Schema,
+  ResolveEngineeringDataReadQueryV1Schema,
   ResolveSourceProcessingInputQueryV1Schema,
   ResolveSourceVersionForReadQueryV1Schema,
+  SourceSegmentReadResultV1Schema,
+  SourceSegmentSetV1Schema,
   SourceSegmentV1Schema,
   SourceVersionV1Schema,
   makeSourceSegmentId,
@@ -332,5 +340,244 @@ describe("engineering context and source registry core", () => {
         audit: { actorId: "account-1", action: "source", recordedAt: "2030-01-01T00:00:00.000Z" },
       }).success,
     ).toBe(true);
+  });
+});
+
+const recordedAt = "2030-01-01T00:00:00.000Z";
+const sourceVersionRef = {
+  kind: "source-version" as const,
+  reference: { entityId: "source_1", versionId: "1" },
+};
+const sourceAccessGrantRef = {
+  kind: "source-access-grant" as const,
+  reference: { entityId: "grant_1", versionId: "1" },
+};
+const segmentSet = SourceSegmentSetV1Schema.parse({
+  sourceSegmentSetRef: {
+    kind: "source-segment-set",
+    reference: { entityId: "set_1", versionId: "1" },
+  },
+  sourceVersionRef,
+  sourceId: "source_1",
+  segments: [
+    {
+      sourceSegmentId: makeSourceSegmentId("source_1", "chapter_1", "segment_1"),
+      chapterId: "chapter_1",
+      segmentId: "segment_1",
+      kind: "chapter",
+      spatialScopeRefs: [scopeRef],
+      locator: { kind: "document", pageNumber: 2, headingPath: ["风险识别"] },
+    },
+  ],
+  recordedAt,
+  audit: {
+    actorId: "account-1",
+    action: "engineering-data.register-source-segments",
+    recordedAt,
+  },
+});
+const evidenceReference = {
+  locator: { sourceSegmentId: "source_1-chapter_1-segment_1" },
+  sourceVersion: { entityId: "source_1", versionId: "1" },
+};
+
+const readQueryRecord = (query: Record<string, unknown>) =>
+  EngineeringDataReadQueryRecordV1Schema.parse({
+    queryResultRef: {
+      kind: "query-result",
+      reference: { entityId: "source-segments-read-1", versionId: "1" },
+    },
+    projectId,
+    query,
+    requestedBy: "account-1",
+    authorizationContextRef: {
+      kind: "authorization-context",
+      reference: { entityId: "auth-1", versionId: "1" },
+    },
+    recordedAt,
+    audit: {
+      actorId: "account-1",
+      action: "engineering-data.source-segments-query",
+      recordedAt,
+    },
+  });
+
+describe("engineering data read query schemas", () => {
+  it.each([
+    [
+      "source-segments",
+      {
+        kind: "source-segments",
+        sourceSegmentSetRef: {
+          kind: "source-segment-set",
+          reference: { entityId: "set_1", versionId: "1" },
+        },
+      },
+    ],
+    [
+      "evidence-access",
+      {
+        kind: "evidence-access",
+        evidenceReferences: [evidenceReference],
+        purposeCode: "engineering-data.evidence-access",
+      },
+    ],
+  ])("closes the %s query record and rejects extra fields", (_branch, query) => {
+    const record = readQueryRecord(query);
+    expect(record.query.kind).toBe(query.kind);
+    expect(EngineeringDataReadQueryRecordV1Schema.safeParse(record).success).toBe(true);
+    expect(
+      EngineeringDataReadQueryRecordV1Schema.safeParse({ ...record, body: "资料正文" }).success,
+    ).toBe(false);
+    expect(
+      EngineeringDataReadQueryRecordV1Schema.safeParse({
+        ...record,
+        query: { ...query, sourceArtifactRef: segmentSet.sourceVersionRef },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("requires a non-empty evidence list and a known read branch", () => {
+    expect(
+      EngineeringDataReadBranchQueryV1Schema.safeParse({
+        kind: "evidence-access",
+        evidenceReferences: [],
+        purposeCode: "engineering-data.evidence-access",
+      }).success,
+    ).toBe(false);
+    expect(
+      EngineeringDataReadBranchQueryV1Schema.safeParse({
+        kind: "monitoring-snapshot",
+        monitoringSnapshotRef: {
+          kind: "monitoring-snapshot",
+          reference: { entityId: "snapshot-1", versionId: "1" },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("projects only localized C11 facts in safe read results", () => {
+    const segmentResult = {
+      kind: "source-segments",
+      queryResultRef: readQueryRecord({
+        kind: "source-segments",
+        sourceSegmentSetRef: segmentSet.sourceSegmentSetRef,
+      }).queryResultRef,
+      segmentSet,
+      sourceAccessGrantRef,
+    };
+    expect(SourceSegmentReadResultV1Schema.safeParse(segmentResult).success).toBe(true);
+    expect(
+      SourceSegmentReadResultV1Schema.safeParse({
+        ...segmentResult,
+        segmentSet: { ...segmentSet, sourceArtifactRef: segmentSet.sourceVersionRef },
+      }).success,
+    ).toBe(false);
+    expect(
+      SourceSegmentReadResultV1Schema.safeParse({
+        ...segmentResult,
+        content: "资料正文",
+      }).success,
+    ).toBe(false);
+
+    const evidenceResult = {
+      kind: "evidence-access",
+      queryResultRef: {
+        kind: "query-result",
+        reference: { entityId: "evidence-access-read-1", versionId: "1" },
+      },
+      purposeCode: "engineering-data.evidence-access",
+      items: [
+        {
+          evidenceReference,
+          sourceVersionRef,
+          sourceSegmentSetRef: segmentSet.sourceSegmentSetRef,
+          sourceAccessGrantRef,
+          segment: segmentSet.segments[0]!,
+        },
+      ],
+    };
+    expect(EvidenceAccessReadResultV1Schema.safeParse(evidenceResult).success).toBe(true);
+    expect(
+      EvidenceAccessReadResultV1Schema.safeParse({ ...evidenceResult, items: [] }).success,
+    ).toBe(false);
+    expect(
+      EvidenceAccessItemV1Schema.safeParse({
+        ...evidenceResult.items[0],
+        sourceArtifactRef: segmentSet.sourceVersionRef,
+      }).success,
+    ).toBe(false);
+    expect(
+      EvidenceAccessReadResultV1Schema.safeParse({
+        ...evidenceResult,
+        items: [{ ...evidenceResult.items[0], jsonLd: { "@id": "risk-1" } }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("closes resolve input and the resolution result", () => {
+    const resolveInput = {
+      queryResultRef: {
+        kind: "query-result",
+        reference: { entityId: "source-segments-read-1", versionId: "1" },
+      },
+      invocationId: "source-segments-read-1",
+      projectId,
+      actorId: "account-1",
+      requestedAt: recordedAt,
+      authorization,
+    };
+    const parsed = ResolveEngineeringDataReadQueryV1Schema.safeParse(resolveInput);
+    expect(parsed.success).toBe(true);
+    expect(
+      ResolveEngineeringDataReadQueryV1Schema.safeParse({ ...resolveInput, body: "资料正文" })
+        .success,
+    ).toBe(false);
+    const withoutInvocation: Record<string, unknown> = { ...resolveInput };
+    delete withoutInvocation.invocationId;
+    expect(ResolveEngineeringDataReadQueryV1Schema.safeParse(withoutInvocation).success).toBe(
+      false,
+    );
+
+    expect(
+      EngineeringDataReadResolutionResultV1Schema.safeParse({
+        kind: "succeeded",
+        result: {
+          kind: "evidence-access",
+          queryResultRef: resolveInput.queryResultRef,
+          purposeCode: "engineering-data.evidence-access",
+          items: [
+            {
+              evidenceReference,
+              sourceVersionRef,
+              sourceSegmentSetRef: segmentSet.sourceSegmentSetRef,
+              sourceAccessGrantRef,
+              segment: segmentSet.segments[0]!,
+            },
+          ],
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      EngineeringDataReadResolutionResultV1Schema.safeParse({
+        kind: "failed",
+        error: {
+          code: "AUTHORIZATION_DENIED",
+          category: "authorization",
+          retryable: false,
+          requiredCapability: "engineering-data.read",
+          authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+          stageCode: "engineering-data.context-source",
+          occurredAt: recordedAt,
+          causalRunId: "source-segments-read-1",
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      EngineeringDataReadResolutionResultV1Schema.safeParse({
+        kind: "succeeded",
+        result: { kind: "source-segments", segmentSet },
+      }).success,
+    ).toBe(false);
   });
 });

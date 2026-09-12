@@ -25,5 +25,5 @@ RiskFlow 已能治理评估配置，但仍缺少从合格规范条文形成结�
 - 受影响代码：`packages/core` 的评分规则领域模块，`packages/adapters` 的 PostgreSQL 治理扩展、规则查询与迁移，`apps/worker` 的 C19 `knowledge-authoring` 定义和组合入口，以及对应测试与包导出。
 - 接口：复用 `KnowledgeModelingPortV1`、`ReviewAuditPortV1`、`AgentTaskPortV1`、`StructuredScoringRuleV1`、`ApplicabilityMetadataSnapshotV1` 和既有定义类型/枚举，并从 C19 core 子路径导出狭窄的评估依据成员 reader；不修改 `packages/contracts` 或 C02 公共端口。
 - 审核语义：Agent 候选正文中的 `reviewStatus` 固定保留为 `pending`；已发布准入只认 C16 精确发布及其 C07 人工决定，不在发布时改写不可变正文，也不复制第二套审核状态。
-- 依赖：直接依赖 C08、C16、C18 已归档能力，并以 C15 已完成的数据清洗结果作为规范条文输入；不新增第三方依赖，不修改根 workspace、锁文件或中央迁移注册。
+- 依赖：直接依赖 C08、C15、C16、C18 已归档能力，并以 C15 已完成的数据清洗结果作为规范条文输入；不新增第三方依赖，不修改根 workspace、锁文件或生产 migration provider/runner；仅机械同步两处测试迁移清单的 `000028` 条目。
 - 所有权：本 change 拥有 `knowledge/rules`；不实现 C17 识别知识、C18 配置治理、C25 评估输入准备或后续 P/C、矩阵和预警计算。

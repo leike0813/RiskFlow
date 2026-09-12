@@ -2,7 +2,7 @@
 
 动机见 [proposal.md](./proposal.md#why)，行为契约见 [specs/knowledge/structured-scoring-rules-and-applicable-rule-sets/spec.md](./specs/knowledge/structured-scoring-rules-and-applicable-rule-sets/spec.md)。当前基线已经具备 C04 内容寻址工件、C06 授权、C07 审阅、C08 有界 Agent 运行时、C16 定义生命周期和 C18 评估配置解析，但尚无 C19 规则正文、冲突事实、筛选决定或最终评估依据解析。
 
-C01/C02 已冻结 `StructuredScoringRuleSchema`、三维 `ApplicabilityMetadataSchema`/`ApplicabilityConditionsSchema`、`structured-scoring-rule`、`applicable-rule-set`、`rule-conflict`、`knowledge-authoring`、`KnowledgeModelingPortV1.resolve(assessment-basis)` 与 `AssessmentBasisReleaseSetRefV1`。本 change 不修改公共契约。C15 尚未实现，只以检查点 `ba13a0d6f19609fcb4c6f0f40fc4dd035516effc` 的五工件为接口输入；实现开始前必须确认其 `DataCleaningResultV1`、结果工件读取和资料段集合契约已集成且未漂移。
+C01/C02 已冻结 `StructuredScoringRuleSchema`、三维 `ApplicabilityMetadataSchema`/`ApplicabilityConditionsSchema`、`structured-scoring-rule`、`applicable-rule-set`、`rule-conflict`、`knowledge-authoring`、`KnowledgeModelingPortV1.resolve(assessment-basis)` 与 `AssessmentBasisReleaseSetRefV1`。本 change 不修改公共契约。C15 已归档实现 `DataCleaningResultV1Schema`、只追加结果索引和结果工件读取，但结果读取只存在于 `PostgresDataCleaningStore.#readBoundResult` 私有路径；类公共面和只服务 C08 任务执行的 `DataCleaningTaskPortV1` 均没有 C19 可消费的入口。
 
 代码调查确认：C08 `AgentTaskDefinitionRegistry` 在一个实例内按任务类型唯一注册，C16 PostgreSQL adapter 目前只为 C18 提供专用内容策略接缝，C18 私有 `AssessmentConfigurationReleaseSetV1` 是最终评估依据的必要成员但不是公共 `AssessmentBasisReleaseSetRefV1`。`AssessmentPreparationSnapshotV1` 包含适用性快照引用，公共知识解析命令只传准备快照引用；C19 因此使用注入式只读解析接口，不越层读取 C11/C25 私有表。
 
@@ -51,7 +51,7 @@ Agent 的 `ScoringRuleAuthoringCandidateV1` 只允许 `add-rule` 与 `replace-ru
 
 ### D-04：C15 结果工件与 C18 指标体系共同冻结 Authoring Manifest
 
-`ScoringRuleAuthoringManifestV1` 保存到 C04，固定工程/父运行/授权、C15 `DataCleaningResultV1` 的精确结果工件、被保留的来源版本与资料段标识、受控标准来源类别、C18 配置集合和其中唯一 `indicator-system` 成员、可选 base 规则 release，以及模型/提示/工具/预算/增量/校验策略引用。适配器通过 C15 计划公开的 `readBoundResult` 读取并复验任务—结果双向绑定，只接受 `available | partial` 中未被排除的资料段；通过 C18 `resolveConfigurationSet` 固定完整配置集合，再从其指标体系工件做有界读取。
+`ScoringRuleAuthoringManifestV1` 保存到 C04，固定工程/父运行/授权、C15 `DataCleaningResultV1` 的精确结果工件、被保留的来源版本与资料段标识、受控标准来源类别、C18 配置集合和其中唯一 `indicator-system` 成员、可选 base 规则 release，以及模型/提示/工具/预算/增量/校验策略引用。适配器通过 D-15 在 C15 concrete store 上补充的公共 `readBoundResult` 读取并复验任务—结果双向绑定，只接受 `available | partial` 中未被排除的资料段；通过 C18 `resolveConfigurationSet` 固定完整配置集合，再从其指标体系工件做有界读取。
 
 验收 fixture 必须使用一条有可核验标准名称、来源版本和资料段定位的真实规范条文，经 C15 结果标记为保留；测试代码只保存获准的最小资料段/摘要和精确引用。若实施基线没有这种合格 fixture 或 C15 尚未集成，实现停在契约夹具门并升级，不以合成规则冒充出口验收。
 
@@ -126,7 +126,7 @@ resolver 有界读取该规则集工件，要求其适用性快照、工程修�
 - `business.applicable_rule_set_revision_metadata`：C16 revision、适用性快照、规则 release、C18 set、artifact、decision digest 和三时态；
 - `business.assessment_basis_release_sets`：公共 set ref、准备/适用性快照、applicable rule set release、C18 set、工程/时点、覆盖适用规则集/纳入规则发布/11 类配置的 strict 成员快照、成员/身份摘要和三时态。
 
-所有正文/逐项筛选仍在 C04；表只存引用和规范摘要。主键、外键、工程/类型 check、精确 ref 唯一约束和必要的工程+类型+时间索引在数据库收口。应用角色只获 SELECT/INSERT；需要链接 C07 决定时追加新行，不更新原 relation。迁移 provider 已递归发现文件，不修改中央注册或测试清单。
+所有正文/逐项筛选仍在 C04；表只存引用和规范摘要。主键、外键、工程/类型 check、精确 ref 唯一约束和必要的工程+类型+时间索引在数据库收口。应用角色只获 SELECT/INSERT；需要链接 C07 决定时追加新行，不更新原 relation。生产 migration provider/runner 继续递归发现文件；测试侧按既有显式 module loader/manifest 机制，在 `packages/adapters/test/postgres/postgres-foundation.test.ts` 与 `packages/adapters/test/auth/fixture.ts` 机械登记 `000028`，不改变发现算法或生产迁移行为。
 
 **替代方案：**四个连续迁移会增加部署/回滚面；修改 C16/C18 旧表会耦合所有权且难以独立回退。
 
@@ -142,7 +142,7 @@ C16 revision metadata/relations 与 revision/audit/receipt 在同一事务；适
 
 ### D-13：文件所有权和验证保持最小
 
-新增 core/adapters/worker 的 `scoring-rules` 子目录、一个迁移和三类行为测试；只修改两个 package export、C16 PostgreSQL adapter 的 C19 policy 分派和 Worker 根导出。API 通用路由、Web、contracts、C18、根 workspace、锁文件、迁移 provider 与中央测试清单不改。测试以表格驱动覆盖规则校验/冲突/三维筛选，用一条 PostgreSQL 集成主链覆盖 C15→C08→C16/C07→C19→C18→public resolve，并保留 C16/C18/Worker 代表性回归。
+新增 core/adapters/worker 的 `scoring-rules` 子目录、一个迁移和三类行为测试；只修改两个 package export、C16 PostgreSQL adapter 的 C19 policy 分派、Worker 根导出、C15 concrete store 的一个公共只读包装及其既有测试，并机械同步两处测试迁移清单。API 通用路由、Web、contracts、C15 core task port、C18、根 workspace、锁文件与生产 migration provider/runner 不改。测试以表格驱动覆盖规则校验/冲突/三维筛选，用一条 PostgreSQL 集成主链覆盖 C15→C08→C16/C07→C19→C18→public resolve，并保留 C15/C16/C18/Worker 代表性回归。
 
 **替代方案：**为每个原因码写独立测试会锁定内部结构；只保留根因、权限、事务、幂等、真实规范出口和公共解析契约的代表性边界。
 
@@ -166,9 +166,39 @@ C16 revision metadata/relations 与 revision/audit/receipt 在同一事务；适
 
 **替代方案：**C25 直读 C19 表违反模块所有权；把成员塞进公共 resolve 响应会改变 C02 wire contract；新增通用 repository 或 HTTP query 会扩大权限面。一个 C19 自有、精确引用驱动的 reader 是最小边界。
 
+### D-15：C19 在 C15 concrete store 上补一个薄的清洗结果 reader
+
+`PostgresDataCleaningStore` 新增公共只读方法：
+
+```ts
+readBoundResult(input: {
+  projectId: string;
+  actorId: string;
+  requestId: string;
+  requestedAt: string;
+  authorization: EngineeringFreezeCommandV1["authorization"];
+  taskRef: AgentTaskRefV1;
+}): Promise<
+  | { kind: "ok"; result: DataCleaningResultV1; resultArtifactRef: ContentArtifactRefV1 }
+  | { kind: "error"; error: Record<string, unknown> }
+>;
+```
+
+该方法是对既有 `#readBoundResult` 的公共薄包装，不另写查询、结果解析或任务—结果绑定逻辑。包装先校验 `projectId`/`actorId` 与授权上下文一致，并固定通过 C06 `engineering-data.evidence-access`/`engineering-data.read` 当前事实复验；不得枚举 capability 对应的多个 branch 或尝试到某个分支成功为止。随后才调用私有实现，以 `projectId + taskRef` 单点读取索引，并继续经 C04 `open` 读取 `engineering-data.data-cleaning-result` 工件。公共返回只含 strict `DataCleaningResultV1` 与 `resultArtifactRef`，不暴露 `#readJson`/`#readBytes`、C04 handle、原始资料正文、列表、搜索或按名称/最新值读取。
+
+`requestId` 同时作为 C03 command/idempotency identity，`requestedAt` 是业务发生时刻；规范载荷只含工程、actor、授权上下文引用和 task ref。授权复验必须先于历史回执重放。私有读取成功后，公共包装通过既有 `TransactionUnitV1` 原子提交一条 `engineering-data.read-data-cleaning-result` 领域读取审计和命令回执，不新增表、迁移或事件；C04 `open` 仍按自身稳定读键保留工件访问审计。相同请求身份与规范载荷重放返回同一 result/artifact ref，C03 领域审计和 C04 访问审计都不重复；同一请求身份改传其它 task ref 返回 `IDEMPOTENCY_CONFLICT`，撤权后返回统一拒绝而不重放旧成功。领域审计提交失败时公共读取不返回成功，瞬时故障保持 `TRANSIENT_FAILURE`。
+
+授权撤销、actor/工程不符、跨工程、零行、工件不可见和任务—结果绑定失配在公共包装统一映射为同一个不可重试 `AUTHORIZATION_DENIED` 公开形状；内部 `#finalizePreparation` 继续直接调用私有方法并保留原 `BUSINESS_BLOCKED` 诊断，因此 C15 既有冻结行为、表、迁移、结果 Schema、审计和错误语义不变。瞬时 C04/数据库错误仍保持可重试技术失败，不伪装成目标不可用。
+
+C19 的 `PostgresScoringRulesAdapterOptionsV1` 只注入 `Pick<PostgresDataCleaningStore, "readBoundResult">`，authoring prepare 必须经该方法取得结果和工件引用，不得读取 `business.data_cleaning_results`、调用 C15 私有 helper 或另开 C04 结果工件。`DataCleaningTaskPortV1` 只拥有 C08 task load/persist/tool 生命周期，加入跨任务消费读取会混淆端口职责；`packages/contracts` 是跨层 wire contract，而该 reader 是 adapters 内 C15→C19 的进程内接缝，所以两者都不改。
+
+**不变量：**授权复验先于目标查询和回执重放；固定 read branch，不枚举授权分支；工程与 taskRef 同时限界；结果 strict parse 且 taskRef 双向绑定；成功只返回结果与工件引用；不可用目标不可枚举；C03/C04 读取审计只追加且重放不重复；同键异载荷冲突；C19 不取得原始资料正文旁路；C15 内部冻结路径行为不变。
+
+**替代方案：**把方法加入 `DataCleaningTaskPortV1` 会把下游消费耦合进 C08 执行端口；扩展 contracts 会增加无 wire 消费方的公共契约；C19 直读 C15 表会复制权限、解析和绑定规则。复用既有私有实现的 concrete-store 包装是最小修补。
+
 ## Risks / Trade-offs
 
-- [C15 尚未实现且其接口可能漂移] → 实现第一步按固定检查点核对导出符号、结果双向绑定和资料段语义；任何公共/内部接口变化立即升级，不复制 C15 私有结构。
+- [C15 已归档但读取符号为私有] → 由 D-15 只增加公共薄包装并锁定测试；若必须改变 C15 Schema、表、迁移、私有冻结行为或 core task port，立即升级。
 - [公共 `reviewStatus` 容易被误读] → 候选固定 `pending`，发布消费只认 C16 release+C07 decision，并以仓库级搜索门检查新增生产消费者。
 - [C08 Registry 按 task type 唯一] → C19 只提供 definition 和组合函数，不创建全局 registry；跨 C17 的部署组合由拥有 composition 的后续 change 决定。
 - [阈值公共类型使用 JavaScript number 且没有逐规则闭合字段] → C19 只在公共类型允许范围内按 D-06 的固定闭合语义比较并拒绝非有限值，不宣称高于契约的十进制精度；若业务要求精确十进制或自定义闭合性，另开公共契约 change。
@@ -178,7 +208,7 @@ C16 revision metadata/relations 与 revision/audit/receipt 在同一事务；适
 
 ## Migration Plan
 
-1. 在实现基线确认 C08/C16/C18 已归档集成、C15 检查点对应接口已实现、contracts 未漂移、生产代码无 `reviewStatus` 门禁，并准备一条获准真实规范 fixture；任一失败立即升级。
+1. 在实现基线确认 C08/C15/C16/C18 已归档集成、C15 `DataCleaningResultV1Schema` 与私有 `#readBoundResult` 未漂移、contracts 未漂移、生产代码无 `reviewStatus` 门禁，并准备一条获准真实规范 fixture；先按 D-15 增加并验证公共薄包装，再实现 C19 消费，任一超出 D-15 的变化立即升级。
 2. 部署 `000028_structured_scoring_rules` 的新表、约束、索引和最小角色权限；无回填、无旧表修改。
 3. 发布 core/adapters/worker 代码并先导入一份候选规则文档；通过 C07/C16 人工审核后发布结构化规则，再组装并人工发布适用规则集。
 4. 以真实规范、冲突规则和三维不适用规则运行 RA-S3/S4 验收，确认 basis resolve 返回精确集合引用后才允许后续 C25 消费。
@@ -186,4 +216,4 @@ C16 revision metadata/relations 与 revision/audit/receipt 在同一事务；适
 
 ## Open Questions
 
-无。`reviewStatus`、reader 成员投影和评分边界语义已由协调者裁决；C15 集成和真实规范 fixture 是实现前可判定的硬门，不是可延后设计决定。
+无。`reviewStatus`、C15 结果读取接缝、reader 成员投影和评分边界语义已由协调者裁决；真实规范 fixture 是实现前可判定的硬门，不是可延后设计决定。

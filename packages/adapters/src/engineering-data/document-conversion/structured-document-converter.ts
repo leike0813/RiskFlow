@@ -3,7 +3,13 @@ import { sql, type InsertObject, type Kysely, type Transaction } from "kysely";
 import {
   ArtifactPutCommandV1Schema,
   ArtifactReadRequestV1Schema,
+  ArtifactRefV1Schema,
+  mergeEvidenceReferences,
+  normalizeArtifactReferences,
+  normalizeEvidenceReferences,
   type ArtifactPutResultV1,
+  type ArtifactReadHandleV1,
+  type ArtifactRefV1,
   type ArtifactStoreV1,
 } from "@riskflow/core/artifacts";
 import {
@@ -11,6 +17,7 @@ import {
   DocumentConversionValidationError,
   type DocumentConversionStrategyV1,
   type NormalizedDocumentResultV1,
+  type ParsedDocumentV1,
 } from "@riskflow/core/engineering-data/document-conversion";
 import {
   type EngineeringContextSourceRegistryV1,
@@ -41,7 +48,6 @@ import {
   StructuredDocumentConversionRecordV1Schema,
   StructuredDocumentConversionResultV1Schema,
   StructuredDocumentConversionRefV1Schema,
-  type ContentArtifactRefV1,
   type DiagnosticArtifactRefV1,
   type ModuleErrorV1,
   type StructuredDocumentConversionCommandV1,
@@ -121,6 +127,9 @@ const referenceKey = (value: {
 
 const versionKey = (value: { entityId: string; versionId: string }): string =>
   `${value.entityId}/${value.versionId}`;
+
+const compareKeys = (left: string, right: string): number =>
+  left < right ? -1 : left > right ? 1 : 0;
 
 const sameVersion = (
   left: { entityId: string; versionId: string },
@@ -236,25 +245,20 @@ const artifactCommand = (
   artifactId: string,
   artifactKind: "content" | "diagnostic",
   mediaType: string,
-  parentArtifactRefs: readonly ContentArtifactRefV1[],
+  parentArtifactRefs: readonly ArtifactRefV1[],
   evidenceReferences: readonly EvidenceReference[],
+  keySuffix: string = artifactKind,
 ): Parameters<ArtifactStoreV1["put"]>[0] => {
-  const parents = [...parentArtifactRefs].sort((left, right) =>
-    referenceKey(left).localeCompare(referenceKey(right)),
-  );
-  const evidence = [...evidenceReferences].sort((left, right) => {
-    const leftKey = `${left.locator.sourceSegmentId}/${versionKey(left.sourceVersion)}`;
-    const rightKey = `${right.locator.sourceSegmentId}/${versionKey(right.sourceVersion)}`;
-    return leftKey.localeCompare(rightKey);
-  });
+  const parents = normalizeArtifactReferences(parentArtifactRefs);
+  const evidence = normalizeEvidenceReferences(evidenceReferences);
   const spatialScopeRefs = [...command.authorization.spatialScopeRefs].sort((left, right) =>
-    referenceKey(left).localeCompare(referenceKey(right)),
+    compareKeys(referenceKey(left), referenceKey(right)),
   );
   const sourceAccessGrantRefs = [...command.authorization.sourceAccessGrantRefs];
   return ArtifactPutCommandV1Schema.parse({
     schemaVersion: SCHEMA_VERSION,
-    commandId: `${command.conversionId}:${artifactKind}`,
-    idempotencyKey: `${command.idempotencyKey}:${artifactKind}`,
+    commandId: `${command.conversionId}:${keySuffix}`,
+    idempotencyKey: `${command.idempotencyKey}:${keySuffix}`,
     projectId: command.projectId,
     actorId: command.actorId,
     issuedAt: command.issuedAt,
@@ -358,6 +362,81 @@ type ExistingConversion =
   | { record?: StructuredDocumentConversionRecordV1; conflict?: false }
   | { conflict: true; error: ModuleErrorV1 };
 
+export interface OcrRawHttpResponseV1 {
+  readonly attempt: number;
+  readonly httpStatus: number;
+  readonly maxBytes: number;
+  readonly bytes: Uint8Array;
+  readonly trace: JsonValue;
+}
+
+export interface PersistedOcrRawResponseV1 {
+  readonly artifactRef: ArtifactRefV1;
+  readonly bytes: Uint8Array;
+}
+
+export type PersistOcrRawResponseV1 = (
+  response: OcrRawHttpResponseV1,
+) => Promise<PersistedOcrRawResponseV1>;
+
+export interface OcrLayoutParserRequestV1 {
+  readonly command: StructuredDocumentConversionCommandV1;
+  readonly source: SourceProcessingInputV1;
+  readonly bytes: Uint8Array;
+  readonly resourcePolicy: DocumentConversionResourcePolicyV1;
+  readonly signal: AbortSignal | undefined;
+  readonly persistRawResponse: PersistOcrRawResponseV1;
+}
+
+export interface OcrLayoutParserOutcomeV1 {
+  readonly parsedDocument: ParsedDocumentV1;
+  readonly additionalParentArtifactRefs: readonly ArtifactRefV1[];
+  readonly additionalEvidenceReferences: readonly EvidenceReference[];
+  readonly diagnostic: JsonValue;
+}
+
+export interface OcrLayoutParserV1 {
+  parse(request: OcrLayoutParserRequestV1): Promise<OcrLayoutParserOutcomeV1>;
+}
+
+export interface OcrLayoutParserFailureV1 {
+  readonly code: string;
+  readonly stage: string;
+  readonly retryable: boolean;
+  readonly message?: string;
+  readonly parents?: readonly ArtifactRefV1[];
+  readonly evidence?: readonly EvidenceReference[];
+  readonly diagnostic?: JsonValue;
+  readonly sourceSegmentId?: string;
+  readonly observedBytes?: number;
+}
+
+export class OcrLayoutParserError extends DocumentParserError {
+  readonly stage: string;
+  readonly parents: readonly ArtifactRefV1[];
+  readonly evidence: readonly EvidenceReference[];
+  readonly diagnostic: JsonValue | undefined;
+
+  constructor(failure: OcrLayoutParserFailureV1) {
+    super(
+      failure.code,
+      failure.message ?? `ocr layout parser failed at ${failure.stage}`,
+      failure.retryable,
+      failure.sourceSegmentId,
+      failure.observedBytes,
+    );
+    this.name = "OcrLayoutParserError";
+    this.stage = failure.stage;
+    this.parents = [...(failure.parents ?? [])];
+    this.evidence = [...(failure.evidence ?? [])];
+    this.diagnostic = failure.diagnostic;
+  }
+}
+
+export interface StructuredDocumentConversionControlV1 {
+  readonly signal?: AbortSignal;
+}
+
 export interface StructuredDocumentConversionAdapterOptionsV1 {
   readonly db?: Kysely<PostgresDatabase>;
   readonly transactionUnit?: TransactionUnitV1;
@@ -366,6 +445,7 @@ export interface StructuredDocumentConversionAdapterOptionsV1 {
   readonly resourcePolicy?: DocumentConversionResourcePolicyV1;
   readonly qualityPolicyRef: StructuredDocumentConversionCommandV1["qualityPolicyRef"];
   readonly converterDeploymentRef: StructuredDocumentConversionCommandV1["converterDeploymentRef"];
+  readonly ocrLayoutParser?: OcrLayoutParserV1;
   readonly now?: () => Date;
 }
 
@@ -377,6 +457,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
   readonly #policy: DocumentConversionResourcePolicyV1;
   readonly #qualityPolicyRef: StructuredDocumentConversionCommandV1["qualityPolicyRef"];
   readonly #converterDeploymentRef: StructuredDocumentConversionCommandV1["converterDeploymentRef"];
+  readonly #ocrLayoutParser: OcrLayoutParserV1 | undefined;
   readonly #now: () => Date;
   readonly #memoryRecords = new Map<
     string,
@@ -390,6 +471,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
     this.#artifactStore = options.artifactStore;
     this.#qualityPolicyRef = options.qualityPolicyRef;
     this.#converterDeploymentRef = options.converterDeploymentRef;
+    this.#ocrLayoutParser = options.ocrLayoutParser;
     this.#policy = parseResourcePolicy(
       options.resourcePolicy ?? DEFAULT_DOCUMENT_CONVERSION_RESOURCE_POLICY_V1,
     );
@@ -401,6 +483,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
 
   async convert(
     request: StructuredDocumentConversionCommandV1,
+    control: StructuredDocumentConversionControlV1 = {},
   ): Promise<StructuredDocumentConversionResultV1> {
     const parsed = StructuredDocumentConversionCommandV1Schema.safeParse(request);
     if (!parsed.success) {
@@ -487,14 +570,60 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
       return this.#finishFailure(command, source, startedAt, "input", error);
     }
 
+    let parsedDocument: OcrLayoutParserOutcomeV1;
+    try {
+      parsedDocument = await this.#parseDocument(command, source, bytes, control);
+    } catch (error) {
+      return this.#finishFailure(command, source, startedAt, "parse", error, [], bytes.byteLength);
+    }
+    return this.#finalizeParsedDocument(
+      command,
+      source,
+      startedAt,
+      bytes.byteLength,
+      parsedDocument,
+    );
+  }
+
+  async #parseDocument(
+    command: StructuredDocumentConversionCommandV1,
+    source: SourceProcessingInputV1,
+    bytes: Uint8Array,
+    control: StructuredDocumentConversionControlV1,
+  ): Promise<OcrLayoutParserOutcomeV1> {
+    if (command.input.kind === "ocr-layout" && this.#ocrLayoutParser !== undefined) {
+      return this.#ocrLayoutParser.parse({
+        command,
+        source,
+        bytes,
+        resourcePolicy: this.#policy,
+        signal: control.signal,
+        persistRawResponse: (response) => this.#persistRawResponse(command, source, response),
+      });
+    }
+    const context: DocumentParserContextV1 = {
+      source,
+      inputKind: command.input.kind,
+      mediaType: command.mediaType,
+    };
+    const document = await parseStructuredDocument(bytes, context, this.#policy);
+    return {
+      parsedDocument: document,
+      additionalParentArtifactRefs: [],
+      additionalEvidenceReferences: [],
+      diagnostic: { schemaVersion: SCHEMA_VERSION, parser: command.input.kind },
+    };
+  }
+
+  async #finalizeParsedDocument(
+    command: StructuredDocumentConversionCommandV1,
+    source: SourceProcessingInputV1,
+    startedAt: string,
+    inputBytes: number,
+    parsed: OcrLayoutParserOutcomeV1,
+  ): Promise<StructuredDocumentConversionResultV1> {
     let converted: NormalizedDocumentResultV1;
     try {
-      const context: DocumentParserContextV1 = {
-        source,
-        inputKind: command.input.kind,
-        mediaType: command.mediaType,
-      };
-      const parsedDocument = await parseStructuredDocument(bytes, context, this.#policy);
       const strategy: DocumentConversionStrategyV1 = {
         strategyVersion: [
           command.conversionPolicyRef,
@@ -504,7 +633,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
           .map((reference) => `${reference.entityId}@${reference.versionId}`)
           .join("|"),
       };
-      converted = convertParsedDocument(parsedDocument, strategy);
+      converted = convertParsedDocument(parsed.parsedDocument, strategy);
       if (converted.document.textBlocks.length > this.#policy.maxOutputBlocks) {
         throw new DocumentParserError(
           "OUTPUT_LIMIT_EXCEEDED",
@@ -512,13 +641,25 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
         );
       }
     } catch (error) {
-      return this.#finishFailure(command, source, startedAt, "parse", error, [], bytes.byteLength);
+      return this.#finishFailure(
+        command,
+        source,
+        startedAt,
+        "parse",
+        error,
+        parsed.additionalParentArtifactRefs,
+        inputBytes,
+      );
     }
 
-    const evidenceReferences = toEvidenceReferences(
-      source.sourceVersionRef,
-      converted.document.sourceSegments,
-    );
+    const evidenceReferences = mergeEvidenceReferences([
+      toEvidenceReferences(source.sourceVersionRef, converted.document.sourceSegments),
+      parsed.additionalEvidenceReferences,
+    ]);
+    const parentArtifactRefs = normalizeArtifactReferences([
+      source.sourceArtifactRef,
+      ...parsed.additionalParentArtifactRefs,
+    ]);
     let jsonLdArtifact: ArtifactPutResultV1;
     try {
       const bytesOut = new TextEncoder().encode(JSON.stringify(converted.jsonLd));
@@ -528,12 +669,20 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
         `conversion-${command.conversionId}`,
         "content",
         "application/ld+json",
-        [source.sourceArtifactRef],
+        parentArtifactRefs,
         evidenceReferences,
       );
       jsonLdArtifact = await this.#artifactStore.put(putCommand, one(bytesOut));
     } catch (error) {
-      return this.#finishFailure(command, source, startedAt, "output", error, [], bytes.byteLength);
+      return this.#finishFailure(
+        command,
+        source,
+        startedAt,
+        "output",
+        error,
+        parentArtifactRefs,
+        inputBytes,
+      );
     }
 
     const segmentCommand = {
@@ -558,7 +707,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
         "segments",
         error,
         [ContentArtifactRefV1Schema.parse(jsonLdArtifact.artifactRef)],
-        bytes.byteLength,
+        inputBytes,
       );
     }
     if (segmentResult.kind === "failed") {
@@ -569,7 +718,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
         "segments",
         segmentResult.error,
         [ContentArtifactRefV1Schema.parse(jsonLdArtifact.artifactRef)],
-        bytes.byteLength,
+        inputBytes,
       );
     }
     if (segmentResult.result.kind !== "source-segment-set") {
@@ -580,7 +729,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
         "segments",
         new Error("source segment registration returned an unexpected result"),
         [ContentArtifactRefV1Schema.parse(jsonLdArtifact.artifactRef)],
-        bytes.byteLength,
+        inputBytes,
       );
     }
 
@@ -765,17 +914,114 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
     return bytes;
   }
 
+  async #persistRawResponse(
+    command: StructuredDocumentConversionCommandV1,
+    source: SourceProcessingInputV1,
+    response: OcrRawHttpResponseV1,
+  ): Promise<PersistedOcrRawResponseV1> {
+    const envelope = {
+      schemaVersion: SCHEMA_VERSION,
+      stage: "ocr-raw-response",
+      conversionRef: {
+        kind: "structured-document-conversion",
+        reference: { entityId: command.conversionId, versionId: "1" },
+      },
+      projectId: command.projectId,
+      sourceVersionRef: source.sourceVersionRef,
+      sourceArtifactRef: source.sourceArtifactRef,
+      converterDeploymentRef: command.converterDeploymentRef,
+      qualityPolicyRef: command.qualityPolicyRef,
+      attempt: response.attempt,
+      httpStatus: response.httpStatus,
+      responseBytes: response.bytes.byteLength,
+      trace: response.trace,
+      responseBodyBase64: Buffer.from(response.bytes).toString("base64"),
+    };
+    const bytes = new TextEncoder().encode(JSON.stringify(envelope));
+    const result = await this.#artifactStore.put(
+      artifactCommand(
+        command,
+        source,
+        `ocr-raw-response-${command.conversionId}-attempt-${response.attempt}`,
+        "diagnostic",
+        "application/json",
+        [source.sourceArtifactRef],
+        [],
+        `ocr-raw:${response.attempt}`,
+      ),
+      one(bytes),
+    );
+    const artifactRef = ArtifactRefV1Schema.parse(result.artifactRef);
+    return {
+      artifactRef,
+      bytes: await this.#readRawResponse(command, artifactRef, response.attempt, response.maxBytes),
+    };
+  }
+
+  async #readRawResponse(
+    command: StructuredDocumentConversionCommandV1,
+    artifactRef: ArtifactRefV1,
+    attempt: number,
+    maxBytes: number,
+  ): Promise<Uint8Array> {
+    const limit = Math.min(maxBytes * 2 + 8_192, this.#policy.maxInputBytes);
+    const handle: ArtifactReadHandleV1 = await this.#artifactStore.open(
+      ArtifactReadRequestV1Schema.parse({
+        schemaVersion: SCHEMA_VERSION,
+        requestId: `${command.conversionId}:ocr-raw:${attempt}`,
+        idempotencyKey: `${command.idempotencyKey}:ocr-raw:${attempt}`,
+        artifactRef,
+        projectId: command.projectId,
+        actorId: command.actorId,
+        requestedAt: command.issuedAt,
+        purposeCode: PURPOSE,
+        requiredCapability: "engineering-data.write",
+        authorization: command.authorization,
+      }),
+    );
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for await (const chunk of handle.content) {
+      if (!(chunk instanceof Uint8Array)) throw new TypeError("raw response chunk is invalid");
+      size += chunk.byteLength;
+      if (size > limit) throw new RangeError("raw response envelope exceeds the frozen read limit");
+      chunks.push(chunk);
+    }
+    await handle.verified;
+    if (referenceKey(handle.manifest.artifactRef) !== referenceKey(artifactRef)) {
+      throw new TypeError("raw response artifact reference mismatch");
+    }
+    const envelopeBytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      envelopeBytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    const envelope = JSON.parse(new TextDecoder().decode(envelopeBytes)) as {
+      readonly responseBodyBase64?: unknown;
+    };
+    if (typeof envelope.responseBodyBase64 !== "string") {
+      throw new TypeError("raw response envelope is missing its response body");
+    }
+    const bytes = new Uint8Array(Buffer.from(envelope.responseBodyBase64, "base64"));
+    if (bytes.byteLength > maxBytes) {
+      throw new RangeError("raw response exceeds the frozen response limit");
+    }
+    return bytes;
+  }
+
   async #finishFailure(
     command: StructuredDocumentConversionCommandV1,
     source: SourceProcessingInputV1,
     startedAt: string,
     stage: string,
     reason: unknown,
-    parents: readonly ContentArtifactRefV1[] = [],
+    parents: readonly ArtifactRefV1[] = [],
     inputBytes = 0,
   ): Promise<StructuredDocumentConversionResultV1> {
     let diagnosticRef: DiagnosticArtifactRefV1 | undefined;
     try {
+      const ocrFailure = reason instanceof OcrLayoutParserError ? reason : undefined;
       const complianceIssue =
         reason instanceof DocumentConversionValidationError ? reason.report.issues[0] : undefined;
       const reasonCode =
@@ -807,14 +1053,24 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
               : 0,
         inputKind: command.input.kind,
         sourceVersionRef: source.sourceVersionRef,
+        ...(ocrFailure === undefined
+          ? {}
+          : { ocrStage: ocrFailure.stage, ocrDiagnostic: ocrFailure.diagnostic }),
         sourceSegmentId:
           reason instanceof DocumentParserError
             ? reason.sourceSegmentId
             : complianceIssue?.sourceSegmentId,
       };
       const bytes = new TextEncoder().encode(JSON.stringify(detail));
-      const parentRefs = [source.sourceArtifactRef, ...parents];
-      const evidence = toEvidenceReferences(source.sourceVersionRef, []);
+      const parentRefs = normalizeArtifactReferences([
+        source.sourceArtifactRef,
+        ...parents,
+        ...(ocrFailure?.parents ?? []),
+      ]);
+      const evidence = mergeEvidenceReferences([
+        toEvidenceReferences(source.sourceVersionRef, []),
+        ocrFailure?.evidence ?? [],
+      ]);
       const result = await this.#artifactStore.put(
         artifactCommand(
           command,

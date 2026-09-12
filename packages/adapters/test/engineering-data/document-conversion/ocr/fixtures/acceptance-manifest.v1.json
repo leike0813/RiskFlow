@@ -1,0 +1,51 @@
+{
+  "schemaVersion": "1",
+  "manifestId": "c13-synthetic-scanned-acceptance",
+  "manifestVersion": "1",
+  "synthetic": true,
+  "awaitingClientReview": true,
+  "note": "合成样例、待甲方复核；真实识别准确率由 C37 预置服务与甲方脱敏样例验证。",
+  "samples": [
+    {
+      "fileName": "synthetic-scanned.pdf",
+      "mediaType": "application/pdf",
+      "pageCount": 2,
+      "width": 320,
+      "height": 200
+    },
+    {
+      "fileName": "synthetic-scanned.png",
+      "mediaType": "image/png",
+      "pageCount": 1,
+      "width": 320,
+      "height": 200
+    },
+    {
+      "fileName": "synthetic-scanned.jpeg",
+      "mediaType": "image/jpeg",
+      "pageCount": 1,
+      "width": 16,
+      "height": 16
+    }
+  ],
+  "keyFields": [
+    {
+      "fieldId": "page_1_heading",
+      "pageNumber": 1,
+      "expectedText": "合成扫描样例第一页标题"
+    },
+    {
+      "fieldId": "page_2_span_value",
+      "pageNumber": 2,
+      "expectedText": "监测值12.5"
+    }
+  ],
+  "qualityPolicyRef": {
+    "entityId": "ocr-quality-policy",
+    "versionId": "1"
+  },
+  "deploymentRef": {
+    "entityId": "ocr-deployment",
+    "versionId": "1"
+  }
+}

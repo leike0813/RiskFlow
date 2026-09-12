@@ -17,6 +17,17 @@ import {
 import { PostgresKnowledgeGovernanceAdapter } from "../../src/knowledge-governance/index.js";
 import { createPostgresRuntime } from "../../src/postgres/pool.js";
 import * as governanceMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-governed-definition-lifecycle/000007_governed_definition_lifecycle.js";
+import * as assessmentConfigurationMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-assessment-configuration-and-measure-governance/000012_assessment_configuration.js";
+import { DomainEventV1Schema, type DomainEventV1 } from "@riskflow/contracts/events";
+import type { TransactionContextV1 } from "@riskflow/core/persistence";
+import {
+  AssessmentConfigurationDefinitionTypeV1Schema,
+  type AssessmentConfigurationGovernancePolicyV1,
+  type AssessmentConfigurationReleaseAppendV1,
+  type AssessmentConfigurationSetResultV1,
+  type PreparedAssessmentConfigurationV1,
+} from "@riskflow/core/assessment-config";
+import { vi } from "vitest";
 import {
   GOVERNANCE_TEST_TIMESTAMP,
   governanceAuthorizationFor,
@@ -167,11 +178,17 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
     }
   });
 
-  it("supports migration down and up", async () => {
+  it("supports migration down and up in reverse dependency order", async () => {
     const migrator = createPostgresRuntime(fixture!.postgres.migrator, "riskflow_migrator");
     try {
+      await assessmentConfigurationMigration.down(migrator.db);
       await governanceMigration.down(migrator.db);
       await governanceMigration.up(migrator.db);
+      await assessmentConfigurationMigration.up(migrator.db);
+      const restored = await fixture!.postgres.adminPool.query<{ name: string | null }>(
+        "SELECT to_regclass('business.assessment_config_revision_metadata') AS name",
+      );
+      expect(restored.rows[0]?.name).not.toBeNull();
     } finally {
       await migrator.close();
     }
@@ -695,5 +712,195 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
       kind: "succeeded",
       result: { releaseRefs: [restored.result.knowledgeReleaseRef] },
     });
+  });
+});
+
+describe.sequential("PostgreSQL knowledge-governance adapter with a C18 content policy", () => {
+  const preparedFor = (definitionType: string): PreparedAssessmentConfigurationV1 =>
+    ({
+      definitionType: AssessmentConfigurationDefinitionTypeV1Schema.parse(definitionType),
+      projectRevisionRef: {
+        kind: "project-revision",
+        reference: { entityId: "project-revision-stub", versionId: "1" },
+      },
+      configurationSetRef: { entityId: "configuration-set-stub", versionId: "1" },
+      contentDigest: "a".repeat(64),
+      summary: { itemCount: 1, identityIds: ["stub-identity"] },
+      document: {} as PreparedAssessmentConfigurationV1["document"],
+    }) satisfies PreparedAssessmentConfigurationV1;
+
+  const policyStub = () => {
+    const prepareRevision = vi.fn(async () => preparedFor("risk-matrix"));
+    const appendPreparedRevision = vi.fn(async () => undefined);
+    const assertRevisionMetadata = vi.fn(async () => undefined);
+    const appendRelease = vi.fn(
+      async (
+        context: TransactionContextV1,
+        input: AssessmentConfigurationReleaseAppendV1,
+      ): Promise<DomainEventV1[]> => {
+        // The C18 seam must receive the C16 transaction context and the release facts.
+        expect(context).toBeDefined();
+        return [
+          DomainEventV1Schema.parse({
+            schemaVersion: "1",
+            eventId: `stub-assessment-basis-${input.releaseRef.reference.entityId}`,
+            eventVersion: 1,
+            projectId: input.command.projectId,
+            aggregateRef: input.releaseRef,
+            occurredAt: input.command.issuedAt,
+            recordedAt: input.recordedAt,
+            causationId: input.command.commandId,
+            correlationId: input.command.idempotencyKey,
+            producerCommandId: input.command.commandId,
+            idempotencyKey: input.command.idempotencyKey,
+            authorizationContextRef: input.command.authorizationContextRef,
+            auditTrailRef: {
+              kind: "audit-trail",
+              reference: {
+                entityId: input.audit.auditEntryId,
+                versionId: input.audit.version.versionId,
+              },
+            },
+            eventType: "knowledge.assessment-basis-published.v1",
+            payload: {
+              basisKind: "assessment-basis",
+              newKnowledgeReleaseRef: input.releaseRef,
+              affectedProjectRevisionRef: {
+                kind: "project-revision",
+                reference: { entityId: "project-revision-stub", versionId: "1" },
+              },
+            },
+          }),
+        ];
+      },
+    );
+    const resolveConfigurationSet = vi.fn(async (): Promise<AssessmentConfigurationSetResultV1> => {
+      throw new Error("resolution is not exercised here");
+    });
+    const policy: AssessmentConfigurationGovernancePolicyV1 = {
+      prepareRevision,
+      appendPreparedRevision,
+      assertRevisionMetadata,
+      appendRelease,
+      resolveConfigurationSet,
+    };
+    return {
+      policy,
+      prepareRevision,
+      appendPreparedRevision,
+      assertRevisionMetadata,
+      appendRelease,
+    };
+  };
+
+  let fixture: KnowledgeGovernancePostgresFixture | undefined;
+  let stub: ReturnType<typeof policyStub> | undefined;
+
+  beforeAll(async () => {
+    stub = policyStub();
+    fixture = await startKnowledgeGovernanceFixture({
+      assessmentConfigurationPolicy: stub.policy,
+    });
+  }, 180_000);
+
+  afterAll(async () => {
+    await fixture?.close().catch(() => undefined);
+  });
+
+  it("keeps non C18 governance behavior unchanged and never calls the policy", async () => {
+    const projectId = "governance-c18-seam-non-c18";
+    const authorization = governanceAuthorizationFor(projectId);
+    const submitted = await fixture!.adapter.govern(
+      submitFor(projectId, authorization, "seam-non-c18"),
+    );
+    expect(submitted).toMatchObject({ kind: "succeeded", result: { kind: "revision" } });
+    expect(stub!.prepareRevision).not.toHaveBeenCalled();
+    expect(stub!.appendPreparedRevision).not.toHaveBeenCalled();
+    expect(stub!.appendRelease).not.toHaveBeenCalled();
+  });
+
+  it("runs C18 content verification inside the C16 revision transaction", async () => {
+    const projectId = "governance-c18-seam-submit";
+    const authorization = governanceAuthorizationFor(projectId);
+    const reviewAuthorization = reviewAuthorizationFor(projectId);
+    const definitionType = "risk-matrix";
+    const artifactRef = artifactFor("c18-seam");
+    const submitted = await fixture!.adapter.govern(
+      KnowledgeGovernanceCommandV1Schema.parse({
+        kind: "submit-revision",
+        commandId: nextId("c18-submit"),
+        idempotencyKey: nextId("c18-submit-key"),
+        projectId,
+        actorId: authorization.actorId,
+        issuedAt: GOVERNANCE_TEST_TIMESTAMP,
+        authorization,
+        payload: {
+          definitionType,
+          candidateArtifactRef: artifactRef,
+          evidenceReferences: [
+            {
+              locator: { sourceSegmentId: "segment-c18-seam" },
+              sourceVersion: { entityId: "source-c18-seam", versionId: "1" },
+            },
+          ],
+        },
+      }),
+    );
+    expect(submitted).toMatchObject({ kind: "succeeded", result: { kind: "revision" } });
+    if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") return;
+    expect(stub!.prepareRevision).toHaveBeenCalledTimes(1);
+    expect(stub!.appendPreparedRevision).toHaveBeenCalledTimes(1);
+    const appendInput = stub!.appendPreparedRevision.mock.calls[0]![1];
+    expect(appendInput.prepared.contentDigest).toBe("a".repeat(64));
+
+    const revisionRow = await fixture!.postgres.adminPool.query<{
+      audit_entry_id: string;
+      definition_type: string;
+    }>(
+      `SELECT audit_entry_id, definition_type FROM business.knowledge_revisions
+        WHERE revision_id = $1`,
+      [submitted.result.knowledgeRevisionRef.reference.entityId],
+    );
+    expect(revisionRow.rows[0]?.audit_entry_id).toBe(appendInput.auditEntryId);
+    expect(revisionRow.rows[0]?.definition_type).toBe(definitionType);
+
+    const requested = await fixture!.adapter.govern(
+      requestReviewFor(projectId, authorization, submitted.result.knowledgeRevisionRef),
+    );
+    expect(requested).toMatchObject({ kind: "succeeded", result: { kind: "review-task" } });
+    expect(stub!.assertRevisionMetadata).toHaveBeenCalledTimes(1);
+    if (requested.kind !== "succeeded" || requested.result.kind !== "review-task") return;
+
+    const decision = await fixture!.reviewAudit.decideReview(
+      decideApproval(projectId, reviewAuthorization, requested.result.reviewTaskRef),
+    );
+    expect(decision.kind).toBe("succeeded");
+    if (decision.kind !== "succeeded") return;
+    const published = await fixture!.adapter.govern(
+      publishFor(
+        projectId,
+        authorization,
+        submitted.result.knowledgeRevisionRef,
+        decision.result.reviewDecisionRef,
+      ),
+    );
+    expect(published).toMatchObject({ kind: "succeeded", result: { kind: "release" } });
+    expect(stub!.appendRelease).toHaveBeenCalledTimes(1);
+    if (published.kind !== "succeeded" || published.result.kind !== "release") return;
+
+    const events = await fixture!.postgres.adminPool.query<{ event_type: string }>(
+      `SELECT event_type FROM outbox.events WHERE producer_command_id = $1`,
+      [
+        (
+          await fixture!.postgres.adminPool.query<{ command_id: string }>(
+            `SELECT command_id FROM business.knowledge_releases WHERE release_id = $1`,
+            [published.result.knowledgeReleaseRef.reference.entityId],
+          )
+        ).rows[0]?.command_id ?? "missing",
+      ],
+    );
+    expect(events.rows.map((row) => row.event_type)).toEqual([
+      "knowledge.assessment-basis-published.v1",
+    ]);
   });
 });

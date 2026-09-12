@@ -1,0 +1,21 @@
+## 1. PostgreSQL 不可变事实
+
+- [x] 1.1 [D-03、D-04] 新增 `packages/adapters/src/postgres/migrations/engineering-data/implement-external-risk-event-registration/000036_external_risk_event_registration.ts`，只创建 `business.external_risk_events` 及 design 固定的字段、唯一/FK/check、`(project_id, occurred_at)` 索引和 `riskflow_app` SELECT/INSERT 权限；`down` 只撤权、删索引并删本表，不改任何既有 migration。运行 `pnpm exec prettier --check packages/adapters/src/postgres/migrations/engineering-data/implement-external-risk-event-registration/000036_external_risk_event_registration.ts`，并在 3.1 的真实 PostgreSQL 用例中验证 `up/down/up`、约束和 worker/checkpointer/PUBLIC 无权。
+
+## 2. C11 apply 分支
+
+- [x] 2.1 [D-01～D-06] 修改 `packages/adapters/src/engineering-data/context-source/postgres-engineering-context-source-registry.ts`：新增 `ExternalRiskEventRow`/数据库映射、确定性 external ref helper、`apply(register-external-risk-event)` 路由、`#registerExternalRiskEvent` 和 `#registerExternalRiskEventInTransaction`；仅以默认参数泛化既有 `#verify`/`#assertArtifact`/错误映射接缝，保持来源交付、监测委派和 unsupported 兜底不变。实现必须先以精确 branch/project/source 调 C06，再在单个 C03 handler 中校验 C04 工件、当前工程生命周期、同工程 ready 资料版本、资料段归属与空间覆盖，最后写单行不可变事实并返回零事件 `AtomicCommit`。运行 `pnpm typecheck`，并以 3.1 的目标测试确认成功 ref、不可枚举拒绝、幂等/覆盖拒绝、原子审计和零 Outbox。
+
+## 3. 真实 PostgreSQL 行为测试
+
+- [x] 3.1 [D-02～D-07] 修改 `packages/adapters/test/engineering-data/context-source/postgres-engineering-context-source-registry.test.ts`，复用现有 `startEngineeringContextSourceFixture` 和已建立的真实工程/资料版本/资料段，只扩展 e2e state 与事件工件辅助数据；覆盖 `000036 up/down/up`、表/列无正文或 metadata、角色权限、成功工程/外部来源/资料版本/空间绑定、`RiskInputVersionRefV1Schema` external ref、同命令重放、同键异载荷、另一幂等键覆盖拒绝、事件工件/资料版本/资料段缺失与跨工程/越权同类拒绝、审计 INSERT 失败整笔回滚及零 Outbox。运行 `pnpm exec vitest run packages/adapters/test/engineering-data/context-source/postgres-engineering-context-source-registry.test.ts`；必须使用 Testcontainers PostgreSQL 并全部通过，不得回退内存 adapter 或把 fixture 当生产来源。
+
+## 4. 协调端迁移清单
+
+- [x] 4.1 [D-07] 仅由主调度 Agent 修改 `packages/adapters/test/postgres/postgres-foundation.test.ts`：增加 design D-07 给出的 `externalRiskEventRegistrationMigration` import，并在 sequence 12 与 900001 之间增加 sequence 36 manifest 条目；不得修改 production migration provider/runner。运行 `pnpm exec vitest run packages/adapters/test/postgres/postgres-foundation.test.ts -t "discovers recursive migrations without a central registry"`，通过条件为 production provider 自动发现 `000036`、测试 loader 接受精确 manifest、迁移历史顺序包含该名称且无序号冲突。
+
+## 5. 回归与范围门禁
+
+- [x] 5.1 [D-01、D-08] 运行 `pnpm exec vitest run packages/contracts/test/contract-kernel.test.ts packages/contracts/test/module-interfaces-events-workflows.test.ts packages/adapters/test/engineering-data/context-source/postgres-engineering-context-source-registry.test.ts packages/adapters/test/postgres/postgres-foundation.test.ts`；通过条件为既有风险输入 XOR/C02 分支契约、C11 全部既有 PostgreSQL 行为和递归迁移发现均通过，且 external 分支不改变 contracts。
+- [x] 5.2 [D-03、D-08] 运行 `pnpm typecheck`、`pnpm lint`、`pnpm deps:check`、`pnpm deps:policy`；再运行 `pnpm exec prettier --check packages/adapters/src/engineering-data/context-source/postgres-engineering-context-source-registry.ts packages/adapters/src/postgres/migrations/engineering-data/implement-external-risk-event-registration/000036_external_risk_event_registration.ts packages/adapters/test/engineering-data/context-source/postgres-engineering-context-source-registry.test.ts packages/adapters/test/postgres/postgres-foundation.test.ts openspec/changes/implement-external-risk-event-registration/proposal.md openspec/changes/implement-external-risk-event-registration/design.md openspec/changes/implement-external-risk-event-registration/tasks.md openspec/changes/implement-external-risk-event-registration/specs/domain/engineering-context-source-registry/spec.md`；所有命令必须零退出，不得安装或变更依赖/lockfile。
+- [x] 5.3 [D-08] 运行 `openspec validate implement-external-risk-event-registration --strict --no-interactive`，通过条件为 `spec-driven` 四工件及 delta 严格有效；再运行 `git diff --check`、`git diff --name-only 01b2df23194c6203a1104fa2c898e266109d8365...HEAD`、`git diff --name-only` 与 `git status --short`。两组文件范围并集只允许本 change 四工件、2.1/1.1/3.1 三个实现文件以及主调度负责的 `packages/adapters/test/postgres/postgres-foundation.test.ts`；必须确认 `packages/contracts/**`、`apps/**`、C15/C19/C25 生产代码、现有 migration、provider/runner、fixture、根 workspace/锁文件/依赖政策、`openspec/config.yaml`、主 specs、归档和其它 change 无改动，发现越界立即停止且不得 reset/checkout/clean。

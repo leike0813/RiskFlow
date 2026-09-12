@@ -939,12 +939,27 @@ const IdentificationPreparationCommandPayloadV1Schema = z.strictObject({
   dataProcessingPolicyRef: VersionReferenceSchema,
 });
 
+export const WorkflowEntryModeV1_VALUES = [
+  "identify-and-assess",
+  "assess",
+  "reassess",
+  "historical-backfill",
+  "forecast-response",
+  "record-response-feedback",
+] as const;
+export const WorkflowEntryModeV1Schema = z.enum(WorkflowEntryModeV1_VALUES);
+export type WorkflowEntryModeV1 = z.infer<typeof WorkflowEntryModeV1Schema>;
+
 const AssessmentPreparationCommandPayloadV1Schema = z.strictObject({
   riskInput: RiskInputVersionRefV1Schema,
   projectRevisionRef: ProjectRevisionRefV1Schema,
   spatialScopeRef: SpatialScopeRefV1Schema,
   applicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
-  monitoringCutoff: IsoDateTimeSchema.optional(),
+  entryMode: WorkflowEntryModeV1Schema,
+  triggerReasonCode: IdentifierSchema,
+  previousAssessmentRecordRef: RiskAssessmentRecordRefV1Schema.optional(),
+  causalRunRef: WorkflowRunRefV1Schema.optional(),
+  monitoringSnapshotRefs: z.array(MonitoringSnapshotRefV1Schema).min(1).optional(),
 });
 
 const MonitoringSnapshotCommandPayloadV1Schema = z.strictObject({
@@ -1227,6 +1242,8 @@ export interface StructuredDocumentConversionPortV1 {
 const KnowledgeDefinitionTypeValues = [
   "process-model",
   "risk-mechanism",
+  "standard-library",
+  "case-library",
   "retrieval-evidence-base",
   "indicator-system",
   "indicator-field-mapping",
@@ -1552,17 +1569,6 @@ export const WarningResponseRecordCommandV1Schema = z.discriminatedUnion("kind",
   ),
 ]);
 export type WarningResponseRecordCommandV1 = z.infer<typeof WarningResponseRecordCommandV1Schema>;
-
-export const WorkflowEntryModeV1_VALUES = [
-  "identify-and-assess",
-  "assess",
-  "reassess",
-  "historical-backfill",
-  "forecast-response",
-  "record-response-feedback",
-] as const;
-export const WorkflowEntryModeV1Schema = z.enum(WorkflowEntryModeV1_VALUES);
-export type WorkflowEntryModeV1 = z.infer<typeof WorkflowEntryModeV1Schema>;
 
 export const WorkflowRunStatusV1_VALUES = [
   "pending",

@@ -58,6 +58,32 @@ export const DocumentCoordinateV1Schema = z.discriminatedUnion("kind", [
 ]);
 export type DocumentCoordinateV1 = z.infer<typeof DocumentCoordinateV1Schema>;
 
+export const DocumentPageExtentV1Schema = z.strictObject({
+  pageNumber: positiveInteger,
+  width: finiteNumber.positive(),
+  height: finiteNumber.positive(),
+  coordinateSystem: z.literal("pixel-top-left"),
+});
+export type DocumentPageExtentV1 = z.infer<typeof DocumentPageExtentV1Schema>;
+
+const pageExtentsSchema = z
+  .array(DocumentPageExtentV1Schema)
+  .min(1)
+  .max(DOCUMENT_CONVERSION_MAX_BLOCKS)
+  .superRefine((extents, context) => {
+    for (let index = 1; index < extents.length; index += 1) {
+      if (extents[index]!.pageNumber <= extents[index - 1]!.pageNumber) {
+        context.addIssue({
+          code: "custom",
+          path: [index, "pageNumber"],
+          message: "page extents must be unique and ascending by page number",
+        });
+      }
+    }
+  });
+
+const confidenceSchema = z.number().finite().min(0).max(1);
+
 export const NormalizedBlockKindV1Schema = z.enum([
   "heading",
   "paragraph",
@@ -83,6 +109,7 @@ export const NormalizedBlockV1Schema = z
     headingPath: z.array(nonEmptyIdentifier).max(64),
     locator: SourceSegmentLocatorV1Schema,
     coordinate: DocumentCoordinateV1Schema.optional(),
+    confidence: confidenceSchema.optional(),
     tableId: nonEmptyIdentifier.optional(),
     sheet: nonEmptyIdentifier.optional(),
     row: positiveInteger.optional(),
@@ -137,6 +164,7 @@ export const ParsedDocumentV1Schema = z.strictObject({
   spatialScopeRefs: SpatialScopeRefSetV1Schema,
   metadata: DocumentMetadataV1Schema,
   blocks: z.array(NormalizedBlockV1Schema).min(1).max(DOCUMENT_CONVERSION_MAX_BLOCKS),
+  pageExtents: pageExtentsSchema.optional(),
   inputBytes: safeInteger.nonnegative(),
 });
 export type ParsedDocumentV1 = z.infer<typeof ParsedDocumentV1Schema>;
@@ -153,6 +181,7 @@ export const TextBlockV1Schema = z
     nextBlockId: nonEmptyIdentifier.optional(),
     headingPath: z.array(nonEmptyIdentifier).max(64),
     coordinate: DocumentCoordinateV1Schema.optional(),
+    confidence: confidenceSchema.optional(),
   })
   .superRefine((block, context) => {
     if (Array.from(block.text).length > DOCUMENT_CONVERSION_MAX_BLOCK_CODE_POINTS) {
@@ -298,6 +327,7 @@ export const NormalizedDocumentV1Schema = z.strictObject({
     .min(1)
     .max(DOCUMENT_CONVERSION_MAX_TEXT_BLOCKS),
   sourceSegments: z.array(SourceSegmentDraftV1Schema).min(1).max(DOCUMENT_CONVERSION_MAX_BLOCKS),
+  pageExtents: pageExtentsSchema.optional(),
   tableFields: z.array(TableFieldV1Schema).max(DOCUMENT_CONVERSION_MAX_BLOCKS).optional(),
   processSteps: z.array(ProcessStepV1Schema).max(DOCUMENT_CONVERSION_MAX_BLOCKS).optional(),
   statistics: DocumentConversionStatisticsV1Schema,
@@ -319,6 +349,7 @@ export const StructuredDocumentJsonLdV1Schema = z.strictObject({
   evidenceFragments: z.array(EvidenceFragmentV1Schema).min(1),
   entities: z.array(StructureEntityV1Schema).min(1),
   relations: z.array(StructureRelationV1Schema),
+  pageExtents: pageExtentsSchema.optional(),
   tableFields: z.array(TableFieldV1Schema).optional(),
   processSteps: z.array(ProcessStepV1Schema).optional(),
 });

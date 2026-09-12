@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   MonitoringAvailabilityPolicyV1Schema,
+  MonitoringSeriesReadResultV1Schema,
+  MonitoringSeriesRevisionReadV1Schema,
   MonitoringSeriesRevisionV1Schema,
+  ReadMonitoringSeriesRevisionQueryV1Schema,
   alignMonitoringSamples,
   computeMonitoringFeatures,
   convertMonitoringValue,
@@ -189,5 +192,112 @@ describe("C14 monitoring features", () => {
       }),
     });
     expect(result.features.dominantFrequency.value).toBe(1 / 4);
+  });
+});
+
+describe("C14 monitoring series reader contract", () => {
+  const revisionRef = {
+    kind: "monitoring-series" as const,
+    reference: { entityId: "series-1", versionId: "2" },
+  };
+  const projection = {
+    monitoringSeriesRef: revisionRef,
+    seriesId: "series-1",
+    projectId: "project-1",
+    projectRevisionRef: {
+      kind: "project-revision" as const,
+      reference: { entityId: "project-1", versionId: "1" },
+    },
+    spatialScopeRef: scopeRef,
+    monitoringObject: "settlement sensor",
+    monitoringIndicator: "地表沉降",
+    parameterCode: "settlement",
+    canonicalUnit: "mm",
+    unitConversions: [{ fromUnit: "cm", scale: 10, offset: 0 }],
+    effectivePeriod: { validFrom: "2030-01-01T00:00:00.000Z" },
+    recordedAt: "2030-01-01T00:00:00.000Z",
+    previousRevisionRef: {
+      kind: "monitoring-series" as const,
+      reference: { entityId: "series-1", versionId: "1" },
+    },
+    status: "current" as const,
+  };
+  const authorization = {
+    schemaVersion: "1" as const,
+    authorizationContextRef: {
+      kind: "authorization-context" as const,
+      reference: { entityId: "auth-read", versionId: "1" },
+    },
+    actorId: "account-1",
+    projectId: "project-1",
+    grantedCapabilities: ["engineering-data.read" as const],
+    spatialScopeRefs: [scopeRef],
+    sourceAccessGrantRefs: [],
+    authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+    decidedAt: "2030-01-01T00:00:00.000Z",
+    invocation: { kind: "human" as const },
+  };
+  const query = {
+    queryId: "read-1",
+    projectId: "project-1",
+    actorId: "account-1",
+    requestedAt: "2030-01-01T00:00:00.000Z",
+    authorization,
+    monitoringSeriesRef: revisionRef,
+  };
+
+  it("accepts only the bounded revision projection", () => {
+    expect(MonitoringSeriesRevisionReadV1Schema.safeParse(projection).success).toBe(true);
+    expect(
+      MonitoringSeriesReadResultV1Schema.safeParse({ kind: "succeeded", result: projection })
+        .success,
+    ).toBe(true);
+    for (const forbidden of [
+      "audit",
+      "value",
+      "canonicalValue",
+      "samples",
+      "alignedPoints",
+      "features",
+      "evidenceReferences",
+    ]) {
+      expect(
+        MonitoringSeriesRevisionReadV1Schema.safeParse({ ...projection, [forbidden]: [] }).success,
+      ).toBe(false);
+    }
+    expect(
+      MonitoringSeriesRevisionReadV1Schema.safeParse({ ...projection, status: "archived" }).success,
+    ).toBe(false);
+    expect(
+      MonitoringSeriesRevisionReadV1Schema.safeParse({ ...projection, seriesId: "series-2" })
+        .success,
+    ).toBe(false);
+    expect(
+      MonitoringSeriesRevisionReadV1Schema.safeParse({
+        ...projection,
+        canonicalUnit: "cm",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("binds the reader query to the authorization context and read capability", () => {
+    expect(ReadMonitoringSeriesRevisionQueryV1Schema.safeParse(query).success).toBe(true);
+    expect(
+      ReadMonitoringSeriesRevisionQueryV1Schema.safeParse({ ...query, actorId: "account-2" })
+        .success,
+    ).toBe(false);
+    expect(
+      ReadMonitoringSeriesRevisionQueryV1Schema.safeParse({ ...query, projectId: "project-2" })
+        .success,
+    ).toBe(false);
+    expect(
+      ReadMonitoringSeriesRevisionQueryV1Schema.safeParse({
+        ...query,
+        authorization: { ...authorization, grantedCapabilities: ["engineering-data.write"] },
+      }).success,
+    ).toBe(false);
+    expect(
+      ReadMonitoringSeriesRevisionQueryV1Schema.safeParse({ ...query, unexpected: true }).success,
+    ).toBe(false);
   });
 });

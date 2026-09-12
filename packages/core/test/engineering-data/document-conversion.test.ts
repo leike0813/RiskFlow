@@ -88,6 +88,80 @@ describe("structured document conversion core", () => {
     ).toBe(false);
   });
 
+  it("carries OCR page extents and block confidence into normalized and JSON-LD output", () => {
+    const scanned = {
+      ...parsed("第一页正文"),
+      inputKind: "ocr-layout" as const,
+      pageExtents: [
+        { pageNumber: 1, width: 1240, height: 1754, coordinateSystem: "pixel-top-left" as const },
+        { pageNumber: 2, width: 1240, height: 1754, coordinateSystem: "pixel-top-left" as const },
+      ],
+      blocks: [
+        {
+          blockId: "ocr_1",
+          kind: "paragraph" as const,
+          text: "第一页正文",
+          chapterId: "page_1",
+          segmentId: "region_1",
+          headingPath: ["page_1"],
+          locator: { kind: "document" as const, pageNumber: 1, headingPath: ["page_1"] },
+          coordinate: {
+            kind: "page" as const,
+            pageNumber: 1,
+            x: 10,
+            y: 20,
+            width: 200,
+            height: 40,
+          },
+          confidence: 0.87,
+        },
+      ],
+    };
+    const result = convertParsedDocument(scanned, { strategyVersion: "strategy-v1" });
+    expect(result.document.pageExtents).toEqual(scanned.pageExtents);
+    expect(result.jsonLd.pageExtents).toEqual(scanned.pageExtents);
+    expect(result.document.textBlocks.every((block) => block.confidence === 0.87)).toBe(true);
+    expect(result.jsonLd.textBlocks.every((block) => block.confidence === 0.87)).toBe(true);
+  });
+
+  it("rejects unordered or duplicate page extents and out-of-range confidence", () => {
+    const extent = { width: 1240, height: 1754, coordinateSystem: "pixel-top-left" as const };
+    expect(() =>
+      convertParsedDocument(
+        {
+          ...parsed("正文"),
+          pageExtents: [
+            { pageNumber: 2, ...extent },
+            { pageNumber: 1, ...extent },
+          ],
+        },
+        { strategyVersion: "strategy-v1" },
+      ),
+    ).toThrow();
+    expect(() =>
+      convertParsedDocument(
+        {
+          ...parsed("正文"),
+          pageExtents: [
+            { pageNumber: 1, ...extent },
+            { pageNumber: 1, ...extent },
+          ],
+        },
+        { strategyVersion: "strategy-v1" },
+      ),
+    ).toThrow();
+    const withConfidence = parsed("正文");
+    expect(() =>
+      convertParsedDocument(
+        {
+          ...withConfidence,
+          blocks: [{ ...withConfidence.blocks[0]!, confidence: 1.5 }],
+        },
+        { strategyVersion: "strategy-v1" },
+      ),
+    ).toThrow();
+  });
+
   it("preserves scalar table values and uses the table locator for cell segments", () => {
     const table = parsed("表格值");
     const result = convertParsedDocument(

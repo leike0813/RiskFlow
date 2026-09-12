@@ -68,8 +68,8 @@ const AssessmentInputChangedPayloadV1Schema = z.strictObject({
   change: z.discriminatedUnion("kind", [
     z.strictObject({
       kind: z.literal("monitoring-snapshot"),
-      previousMonitoringSnapshotRef: MonitoringSnapshotRefV1Schema,
-      newMonitoringSnapshotRef: MonitoringSnapshotRefV1Schema,
+      previousMonitoringSnapshotRefs: z.array(MonitoringSnapshotRefV1Schema),
+      newMonitoringSnapshotRefs: z.array(MonitoringSnapshotRefV1Schema),
     }),
     z.strictObject({
       kind: z.literal("applicability-metadata"),

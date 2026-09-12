@@ -131,6 +131,7 @@ export const chunkNormalizedBlocks = (
         sequence: chunks.length + 1,
         text,
         ...(block.coordinate === undefined ? {} : { coordinate: block.coordinate }),
+        ...(block.confidence === undefined ? {} : { confidence: block.confidence }),
         headingPath: block.headingPath,
       });
     }
@@ -371,6 +372,7 @@ export const normalizeStructuredDocument = (
       textBlockIds: segment.textBlockIds,
     })),
     sourceSegments,
+    ...(parsed.pageExtents === undefined ? {} : { pageExtents: parsed.pageExtents }),
     ...(tableFields.length === 0 ? {} : { tableFields }),
     ...(processSteps.length === 0 ? {} : { processSteps }),
     statistics: buildStatistics(parsed, textBlocks, sourceSegments, tableFields),
@@ -550,6 +552,7 @@ export const buildStructuredDocumentJsonLd = (document: unknown): StructuredDocu
     evidenceFragments: parsed.evidenceFragments,
     entities: parsed.entities,
     relations: parsed.relations,
+    ...(parsed.pageExtents === undefined ? {} : { pageExtents: parsed.pageExtents }),
     ...(parsed.tableFields === undefined ? {} : { tableFields: parsed.tableFields }),
     ...(parsed.processSteps === undefined ? {} : { processSteps: parsed.processSteps }),
   });

@@ -14,6 +14,10 @@ import * as governedDefinitionLifecycleMigration from "../../src/postgres/migrat
 import * as engineeringContextSourceMigration from "../../src/postgres/migrations/engineering-data/deliver-engineering-context-and-source-registry/000008_engineering_context_source_registry.js";
 import * as structuredDocumentConversionMigration from "../../src/postgres/migrations/engineering-data/deliver-structured-document-conversion/000009_structured_document_conversion.js";
 import * as monitoringMigration from "../../src/postgres/migrations/engineering-data/deliver-monitoring-batches-snapshots-and-features/000011_monitoring_batches_snapshots_features.js";
+import * as assessmentConfigurationMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-assessment-configuration-and-measure-governance/000012_assessment_configuration.js";
+import * as agentCleaningPartialAvailabilityMigration from "../../src/postgres/migrations/engineering-data/deliver-agent-cleaning-and-partial-availability/000016_agent_cleaning_partial_availability.js";
+import * as engineeringDataReadQueryResultsMigration from "../../src/postgres/migrations/engineering-data/implement-engineering-data-read-branches/000024_engineering_data_read_query_results.js";
+import * as externalRiskEventRegistrationMigration from "../../src/postgres/migrations/engineering-data/implement-external-risk-event-registration/000036_external_risk_event_registration.js";
 
 export interface AuthPostgresFixture extends PostgresTestFixture {
   runMigrations(): Promise<void>;
@@ -25,9 +29,37 @@ export const startAuthPostgresFixture = async (): Promise<AuthPostgresFixture> =
     [
       resolve(
         base.productionMigrationRoot,
+        "engineering-data/deliver-agent-cleaning-and-partial-availability/000016_agent_cleaning_partial_availability.ts",
+      ),
+      agentCleaningPartialAvailabilityMigration,
+    ],
+    [
+      resolve(
+        base.productionMigrationRoot,
         "engineering-data/deliver-monitoring-batches-snapshots-and-features/000011_monitoring_batches_snapshots_features.ts",
       ),
       monitoringMigration,
+    ],
+    [
+      resolve(
+        base.productionMigrationRoot,
+        "knowledge-modeling/deliver-assessment-configuration-and-measure-governance/000012_assessment_configuration.ts",
+      ),
+      assessmentConfigurationMigration,
+    ],
+    [
+      resolve(
+        base.productionMigrationRoot,
+        "engineering-data/implement-engineering-data-read-branches/000024_engineering_data_read_query_results.ts",
+      ),
+      engineeringDataReadQueryResultsMigration,
+    ],
+    [
+      resolve(
+        base.productionMigrationRoot,
+        "engineering-data/implement-external-risk-event-registration/000036_external_risk_event_registration.ts",
+      ),
+      externalRiskEventRegistrationMigration,
     ],
     [
       resolve(

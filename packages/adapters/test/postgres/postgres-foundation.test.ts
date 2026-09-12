@@ -43,6 +43,7 @@ import * as structuredDocumentConversionMigration from "../../src/postgres/migra
 import * as monitoringBatchesMigration from "../../src/postgres/migrations/engineering-data/deliver-monitoring-batches-snapshots-and-features/000011_monitoring_batches_snapshots_features.js";
 import * as assessmentConfigurationMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-assessment-configuration-and-measure-governance/000012_assessment_configuration.js";
 import * as engineeringDataReadQueryResultsMigration from "../../src/postgres/migrations/engineering-data/implement-engineering-data-read-branches/000024_engineering_data_read_query_results.js";
+import * as externalRiskEventRegistrationMigration from "../../src/postgres/migrations/engineering-data/implement-external-risk-event-registration/000036_external_risk_event_registration.js";
 
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
 import * as agentTaskFixtureMigration from "./fixtures/migrations/agent-task/deliver-unified-bounded-agent-runtime/900002_agent_task_fixture.js";
@@ -324,6 +325,15 @@ const testMigrationManifest = [
       "000024_engineering-data_implement-engineering-data-read-branches_engineering_data_read_query_results",
     sequence: 24,
     module: engineeringDataReadQueryResultsMigration,
+  },
+  {
+    root: "production",
+    relativePath:
+      "engineering-data/implement-external-risk-event-registration/000036_external_risk_event_registration.ts",
+    migrationName:
+      "000036_engineering-data_implement-external-risk-event-registration_external_risk_event_registration",
+    sequence: 36,
+    module: externalRiskEventRegistrationMigration,
   },
   {
     root: "fixture",

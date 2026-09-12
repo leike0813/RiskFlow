@@ -1512,6 +1512,8 @@ export class PostgresEngineeringContextSourceRegistry
           error,
           command.commandId,
           "engineering-data.register-external-risk-event",
+          "engineering-data.write",
+          true,
         ),
       };
     }
@@ -1625,7 +1627,7 @@ export class PostgresEngineeringContextSourceRegistry
         external_source_ref: jsonValue(command.payload.externalSourceRef),
         external_event_key: command.payload.externalEventKey,
         event_artifact_ref: jsonValue(command.payload.eventArtifactRef),
-        evidence_references: jsonValue(evidence),
+        evidence_references: jsonValue(command.payload.evidenceReferences),
         source_version_refs: jsonValue(normalizeVersionedRefs(evidenceSourceVersions)),
         spatial_scope_refs: jsonValue(normalizeVersionedRefs(evidenceSpatialScopes)),
         occurred_at: command.payload.occurredAt,
@@ -1659,12 +1661,16 @@ export class PostgresEngineeringContextSourceRegistry
       );
     } catch (error) {
       if (!(error instanceof ArtifactStoreError)) throw error;
-      throw preserveDomainError(
-        moduleError(
-          error.retryable ? "TRANSIENT_FAILURE" : "AUTHORIZATION_DENIED",
-          command.commandId,
-        ),
-      );
+      if (error.code !== "ARTIFACT_REFERENCE_NOT_FOUND" && error.code !== "ARTIFACT_ACCESS_DENIED")
+        throw preserveDomainError(
+          mapArtifactErrorToModuleError(error, {
+            causalRunId: command.commandId,
+            requiredCapability: "engineering-data.write",
+            authorizationPolicyRef: ACCESS_POLICY_REF_V1,
+            schemaVersion: "1",
+          }),
+        );
+      throw preserveDomainError(moduleError("AUTHORIZATION_DENIED", command.commandId));
     }
   }
 
@@ -2882,6 +2888,7 @@ export class PostgresEngineeringContextSourceRegistry
     stage: string,
     requiredCapability:
       "engineering-data.read" | "engineering-data.write" = "engineering-data.write",
+    concealAuthorizationTarget = false,
   ): ModuleErrorV1 {
     const contextError =
       error instanceof Error
@@ -2891,7 +2898,13 @@ export class PostgresEngineeringContextSourceRegistry
     const accessError =
       error instanceof Error ? (error as Error & { accessError?: unknown }).accessError : undefined;
     if (accessError instanceof AccessServiceError) {
-      if (accessError.details.code === "AUTHORIZATION_DENIED")
+      if (
+        accessError.details.code === "AUTHORIZATION_DENIED" ||
+        (concealAuthorizationTarget &&
+          ["SESSION_EXPIRED", "SESSION_REVOKED", "STALE_ACCESS_VERSION"].includes(
+            accessError.details.code,
+          ))
+      )
         return moduleError("AUTHORIZATION_DENIED", causalRunId, { requiredCapability });
       if (accessError.details.code === "STALE_ACCESS_VERSION")
         return moduleError("STALE_VERSION", causalRunId, {
@@ -2908,7 +2921,11 @@ export class PostgresEngineeringContextSourceRegistry
       );
     }
     if (error instanceof AccessServiceError)
-      return error.details.code === "AUTHORIZATION_DENIED"
+      return error.details.code === "AUTHORIZATION_DENIED" ||
+        (concealAuthorizationTarget &&
+          ["SESSION_EXPIRED", "SESSION_REVOKED", "STALE_ACCESS_VERSION"].includes(
+            error.details.code,
+          ))
         ? moduleError("AUTHORIZATION_DENIED", causalRunId, { requiredCapability })
         : moduleError("TERMINAL_FAILURE", causalRunId);
     if (error instanceof ArtifactStoreError)

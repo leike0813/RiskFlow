@@ -1062,8 +1062,12 @@ describe("C11 PostgreSQL context/source registry", () => {
       kind: "source-version",
       reference: { entityId: "c11-missing-source-version", versionId: "1" },
     };
+    const mismatchedSourceVersionRef: SourceVersionRefV1 = {
+      ...state.sourceVersionRef,
+      reference: { ...state.sourceVersionRef.reference, versionId: "2" },
+    };
     const uncovered = await state.authorize(
-      "c11-external-uncovered",
+      "c11-external-denied-uncovered",
       [],
       "engineering-data.register-external-risk-event",
     );
@@ -1113,6 +1117,24 @@ describe("C11 PostgreSQL context/source registry", () => {
       JSON.stringify({ eventType: "other-project" }),
       otherAuthorization,
     );
+    const crossProjectSourceAuthorization = (
+      await fixture.access.authorize({
+        invocation: { kind: "human-session", sessionToken: state.managerSessionToken },
+        invocationId: "c11-external-denied-cross-project-source",
+        projectId: otherProjectId,
+        branch: "engineering-data.register-external-risk-event",
+        requestedSpatialScopeRefs: [
+          {
+            kind: "spatial-scope",
+            reference: {
+              entityId: otherRoot.rows[0]!.scope_id,
+              versionId: otherRoot.rows[0]!.revision_id,
+            },
+          },
+        ],
+        requestedSourceVersionRefs: [],
+      })
+    ).context;
 
     // A delivery whose access closure fails leaves a real pending-access source version with a
     // registered source access policy, so the external branch must reject it as not ready.
@@ -1152,9 +1174,15 @@ describe("C11 PostgreSQL context/source registry", () => {
       reference: { entityId: pendingSourceVersion.rows[0]!.source_version_id, versionId: "1" },
     };
     const notReadyAuthorization = await state.authorize(
-      "c11-external-not-ready",
+      "c11-external-denied-not-ready",
       [notReadySourceVersionRef],
       "engineering-data.register-external-risk-event",
+    );
+    const notReadyArtifact = await putExternalEventArtifact(
+      state,
+      "external-event-not-ready",
+      JSON.stringify({ eventType: "not-ready" }),
+      notReadyAuthorization,
     );
 
     const childScopeId = "c11-external-child-scope";
@@ -1269,7 +1297,7 @@ describe("C11 PostgreSQL context/source registry", () => {
     expect(outsideSegments).toMatchObject({ kind: "succeeded" });
     const outsideEvidence = await externalEvidence(state.projectId, outsideSourceVersionRef);
     const rootOnlyAuthorization = await state.authorize(
-      "c11-external-outside-scope",
+      "c11-external-denied-spatial-scope",
       [outsideSourceVersionRef],
       "engineering-data.register-external-risk-event",
     );
@@ -1279,13 +1307,37 @@ describe("C11 PostgreSQL context/source registry", () => {
       JSON.stringify({ eventType: "outside-scope" }),
       rootOnlyAuthorization,
     );
+    const expiredAuthorization = await state.authorize(
+      "c11-external-denied-expired",
+      [state.sourceVersionRef],
+      "engineering-data.register-external-risk-event",
+    );
+    const expiredArtifact = await putExternalEventArtifact(
+      state,
+      "external-event-expired",
+      JSON.stringify({ eventType: "expired-authorization" }),
+      expiredAuthorization,
+    );
+    await fixture.postgres.adminPool.query(
+      "UPDATE business.authorization_contexts SET decided_at = $1, expires_at = $2 WHERE context_id = $3 AND version_id = $4",
+      [
+        "2029-12-31T23:58:00.000Z",
+        "2029-12-31T23:59:00.000Z",
+        expiredAuthorization.authorizationContextRef.reference.entityId,
+        expiredAuthorization.authorizationContextRef.reference.versionId,
+      ],
+    );
 
     const attempts: [string, EngineeringDataCommandV1][] = [
       [
         "missing event artifact",
         externalRiskEventCommand(state, {
           suffix: "denied-artifact",
-          authorization: covered,
+          authorization: await state.authorize(
+            "c11-external-denied-artifact",
+            [state.sourceVersionRef],
+            "engineering-data.register-external-risk-event",
+          ),
           eventArtifactRef: missingArtifactRef,
           sourceVersionRef: state.sourceVersionRef,
           sourceSegmentId: evidence.source_segment_id,
@@ -1295,11 +1347,29 @@ describe("C11 PostgreSQL context/source registry", () => {
         "event artifact belongs to another project",
         externalRiskEventCommand(state, {
           suffix: "denied-cross-project-artifact",
-          authorization: covered,
+          authorization: await state.authorize(
+            "c11-external-denied-cross-project-artifact",
+            [state.sourceVersionRef],
+            "engineering-data.register-external-risk-event",
+          ),
           eventArtifactRef: otherProjectArtifact.artifactRef,
           sourceVersionRef: state.sourceVersionRef,
           sourceSegmentId: evidence.source_segment_id,
         }),
+      ],
+      [
+        "evidence source version belongs to another project",
+        {
+          ...externalRiskEventCommand(state, {
+            suffix: "denied-cross-project-source",
+            authorization: crossProjectSourceAuthorization,
+            eventArtifactRef: otherProjectArtifact.artifactRef,
+            sourceVersionRef: state.sourceVersionRef,
+            sourceSegmentId: evidence.source_segment_id,
+          }),
+          projectId: otherProjectId,
+          authorization: crossProjectSourceAuthorization,
+        },
       ],
       [
         "authorization does not cover the evidence source version",
@@ -1315,9 +1385,27 @@ describe("C11 PostgreSQL context/source registry", () => {
         "evidence source version does not exist",
         externalRiskEventCommand(state, {
           suffix: "denied-source-version",
-          authorization: covered,
+          authorization: await state.authorize(
+            "c11-external-denied-source-version",
+            [state.sourceVersionRef],
+            "engineering-data.register-external-risk-event",
+          ),
           eventArtifactRef: eventArtifact.artifactRef,
           sourceVersionRef: missingSourceVersionRef,
+          sourceSegmentId: evidence.source_segment_id,
+        }),
+      ],
+      [
+        "evidence source version does not match the authorized exact version",
+        externalRiskEventCommand(state, {
+          suffix: "denied-source-version-mismatch",
+          authorization: await state.authorize(
+            "c11-external-denied-source-version-mismatch",
+            [state.sourceVersionRef],
+            "engineering-data.register-external-risk-event",
+          ),
+          eventArtifactRef: eventArtifact.artifactRef,
+          sourceVersionRef: mismatchedSourceVersionRef,
           sourceSegmentId: evidence.source_segment_id,
         }),
       ],
@@ -1325,10 +1413,28 @@ describe("C11 PostgreSQL context/source registry", () => {
         "evidence segment does not exist",
         externalRiskEventCommand(state, {
           suffix: "denied-segment",
-          authorization: covered,
+          authorization: await state.authorize(
+            "c11-external-denied-segment",
+            [state.sourceVersionRef],
+            "engineering-data.register-external-risk-event",
+          ),
           eventArtifactRef: eventArtifact.artifactRef,
           sourceVersionRef: state.sourceVersionRef,
           sourceSegmentId: "c11-missing-segment-1",
+        }),
+      ],
+      [
+        "evidence segment belongs to another source version",
+        externalRiskEventCommand(state, {
+          suffix: "denied-segment-source-mismatch",
+          authorization: await state.authorize(
+            "c11-external-denied-segment-source-mismatch",
+            [state.sourceVersionRef],
+            "engineering-data.register-external-risk-event",
+          ),
+          eventArtifactRef: eventArtifact.artifactRef,
+          sourceVersionRef: state.sourceVersionRef,
+          sourceSegmentId: outsideEvidence.source_segment_id,
         }),
       ],
       [
@@ -1336,9 +1442,19 @@ describe("C11 PostgreSQL context/source registry", () => {
         externalRiskEventCommand(state, {
           suffix: "denied-not-ready",
           authorization: notReadyAuthorization,
-          eventArtifactRef: eventArtifact.artifactRef,
+          eventArtifactRef: notReadyArtifact.artifactRef,
           sourceVersionRef: notReadySourceVersionRef,
           sourceSegmentId: notReadySourceVersionRef.reference.entityId,
+        }),
+      ],
+      [
+        "authorization context is expired",
+        externalRiskEventCommand(state, {
+          suffix: "denied-expired",
+          authorization: expiredAuthorization,
+          eventArtifactRef: expiredArtifact.artifactRef,
+          sourceVersionRef: state.sourceVersionRef,
+          sourceSegmentId: evidence.source_segment_id,
         }),
       ],
       [
@@ -1373,6 +1489,81 @@ describe("C11 PostgreSQL context/source registry", () => {
       [state.projectId, deniedIds],
     );
     expect(deniedAudit.rows[0]?.count).toBe("0");
+  });
+
+  it("reports event artifact integrity failures as technical and rolls back the command", async () => {
+    const state = requireE2eState();
+    const before = await countExternalRiskEvents(state.projectId);
+    const evidence = await externalEvidence(state.projectId, state.sourceVersionRef);
+    const authorization = await state.authorize(
+      "c11-external-integrity",
+      [state.sourceVersionRef],
+      "engineering-data.register-external-risk-event",
+    );
+    const eventArtifact = await putExternalEventArtifact(
+      state,
+      "external-event-integrity",
+      JSON.stringify({ eventType: "integrity-failure" }),
+      authorization,
+    );
+    const command = externalRiskEventCommand(state, {
+      suffix: "integrity",
+      authorization,
+      eventArtifactRef: eventArtifact.artifactRef,
+      sourceVersionRef: state.sourceVersionRef,
+      sourceSegmentId: evidence.source_segment_id,
+    });
+    const manifest = await fixture.postgres.adminPool.query<{ manifest_sha256: string }>(
+      "SELECT manifest_sha256 FROM business.artifact_manifests WHERE project_id = $1 AND artifact_id = $2 AND version_id = $3",
+      [
+        state.projectId,
+        eventArtifact.artifactRef.reference.entityId,
+        eventArtifact.artifactRef.reference.versionId,
+      ],
+    );
+    await fixture.postgres.adminPool.query(
+      "UPDATE business.artifact_manifests SET manifest_sha256 = $1 WHERE project_id = $2 AND artifact_id = $3 AND version_id = $4",
+      [
+        "0".repeat(64),
+        state.projectId,
+        eventArtifact.artifactRef.reference.entityId,
+        eventArtifact.artifactRef.reference.versionId,
+      ],
+    );
+    let result: EngineeringDataApplyResultV1;
+    try {
+      result = await fixture.registry.apply(command);
+    } finally {
+      await fixture.postgres.adminPool.query(
+        "UPDATE business.artifact_manifests SET manifest_sha256 = $1 WHERE project_id = $2 AND artifact_id = $3 AND version_id = $4",
+        [
+          manifest.rows[0]!.manifest_sha256,
+          state.projectId,
+          eventArtifact.artifactRef.reference.entityId,
+          eventArtifact.artifactRef.reference.versionId,
+        ],
+      );
+    }
+    expect(result!).toMatchObject({
+      kind: "failed",
+      error: { code: "TERMINAL_FAILURE", category: "technical", retryable: false },
+    });
+    expect(await countExternalRiskEvents(state.projectId)).toBe(before);
+    const receiptAndAudit = await fixture.postgres.adminPool.query<{
+      receipts: string;
+      audits: string;
+    }>(
+      `SELECT
+         (SELECT count(*)::text FROM business.command_receipts WHERE project_id = $1 AND command_kind = $2 AND idempotency_key = $3) AS receipts,
+         (SELECT count(*)::text FROM audit.entries WHERE project_id = $1 AND command_id = $4) AS audits`,
+      [
+        state.projectId,
+        "engineering-data.register-external-risk-event.v1",
+        command.idempotencyKey,
+        command.commandId,
+      ],
+    );
+    expect(receiptAndAudit.rows[0]).toEqual({ receipts: "0", audits: "0" });
   });
 
   it("rolls back the external risk event registration when the audit append fails and allows retry", async () => {

@@ -24,10 +24,48 @@
       "fileName": "synthetic-scanned.jpeg",
       "mediaType": "image/jpeg",
       "pageCount": 1,
-      "width": 16,
-      "height": 16
+      "width": 320,
+      "height": 200
     }
   ],
+  "glyphs": {
+    "fontVersion": "c13-synthetic-handwritten-16x16.v1",
+    "text": "扫描",
+    "sourcePixels": 16,
+    "scale": 8,
+    "entries": [
+      {
+        "text": "扫",
+        "x": 24,
+        "y": 32,
+        "width": 128,
+        "height": 128,
+        "strokePixel": {
+          "x": 48,
+          "y": 56
+        },
+        "blankPixel": {
+          "x": 24,
+          "y": 32
+        }
+      },
+      {
+        "text": "描",
+        "x": 168,
+        "y": 32,
+        "width": 128,
+        "height": 128,
+        "strokePixel": {
+          "x": 192,
+          "y": 56
+        },
+        "blankPixel": {
+          "x": 168,
+          "y": 32
+        }
+      }
+    ]
+  },
   "keyFields": [
     {
       "fieldId": "page_1_heading",

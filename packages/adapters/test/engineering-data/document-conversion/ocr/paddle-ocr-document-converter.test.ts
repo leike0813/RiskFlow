@@ -1,7 +1,13 @@
+import { inflateSync } from "node:zlib";
+
 import { describe, expect, it, afterEach, vi } from "vitest";
 
 import { z } from "@riskflow/core/model";
-import { ModuleErrorV1Schema } from "@riskflow/contracts/ports";
+import type { ArtifactErrorCodeV1, ArtifactRefV1 } from "@riskflow/core/artifacts";
+import {
+  ModuleErrorV1Schema,
+  type StructuredDocumentConversionCommandV1,
+} from "@riskflow/contracts/ports";
 
 import { createModelGateway } from "../../../../src/model/index.js";
 
@@ -26,6 +32,7 @@ import {
   buildSyntheticScannedPng,
   createContextSourceLatch,
   createOcrTestHarness,
+  decodeJpegBlockValues,
   layoutResponse,
   loadAcceptanceManifest,
   loadOcrFixture,
@@ -34,6 +41,9 @@ import {
   ocrTestConfig,
   ocrTestSource,
   ocrTextRegion,
+  scanPixels,
+  SCAN_HEIGHT,
+  SCAN_WIDTH,
   startOcrProtocolStub,
   type OcrProtocolStubV1,
 } from "./fixture.js";
@@ -41,6 +51,50 @@ import {
 const PDF_PAGE_1 = [
   ocrTextRegion("title", "合成扫描样例第一页标题", [20, 20, 300, 44], 1),
   ocrTextRegion("text", "监测值12.5", [20, 60, 300, 90], 2),
+];
+
+const FOREIGN_ARTIFACT_REF: ArtifactRefV1 = {
+  kind: "content-artifact",
+  reference: { entityId: "source_other", versionId: `sha256:${"c".repeat(64)}` },
+};
+
+const FOREIGN_SOURCE_VERSION_REF = {
+  kind: "source-version" as const,
+  reference: { entityId: "source_other", versionId: "1" },
+};
+
+const authorizationCases: ReadonlyArray<{
+  readonly name: string;
+  readonly command?: Partial<StructuredDocumentConversionCommandV1>;
+  readonly openOverride?: {
+    readonly errorCode?: ArtifactErrorCodeV1;
+    readonly manifestArtifactRef?: ArtifactRefV1;
+  };
+  readonly opened?: number;
+}> = [
+  {
+    name: "a source artifact reference that is not the authorized one",
+    command: { sourceArtifactRef: FOREIGN_ARTIFACT_REF },
+  },
+  {
+    name: "a source version reference that is not the authorized one",
+    command: { sourceVersionRef: FOREIGN_SOURCE_VERSION_REF },
+  },
+  {
+    name: "an input artifact the store cannot find",
+    openOverride: { errorCode: "ARTIFACT_REFERENCE_NOT_FOUND" },
+    opened: 1,
+  },
+  {
+    name: "an input artifact the store denies access to",
+    openOverride: { errorCode: "ARTIFACT_ACCESS_DENIED" },
+    opened: 1,
+  },
+  {
+    name: "a manifest reference that differs from the authorized artifact",
+    openOverride: { manifestArtifactRef: FOREIGN_ARTIFACT_REF },
+    opened: 1,
+  },
 ];
 
 const stubs: OcrProtocolStubV1[] = [];
@@ -126,12 +180,40 @@ describe("paddle ocr layout parser", () => {
     const rawRef = artifactStore.commandsFor("ocr-raw-response-conversion-ocr-attempt-1")[0]!
       .artifactId;
     const jsonLdCommand = artifactStore.commandsFor("conversion-conversion-ocr")[0]!;
-    expect(jsonLdCommand.parentArtifactRefs).toEqual(
-      expect.arrayContaining([
+    const normalizationEnvelope = artifactStore.bodyFor(
+      "ocr-normalization-diagnostic-conversion-ocr",
+    );
+    expect(normalizationEnvelope).toMatchObject({
+      stage: "ocr-normalization-diagnostic",
+      converterDeploymentRef: { entityId: "ocr-deployment", versionId: "1" },
+      qualityPolicyRef: { entityId: "ocr-quality-policy", versionId: "1" },
+      diagnostic: { pageCount: 1, regionCount: 2, attempt: 1, httpStatus: 200 },
+    });
+    const normalizationCommand = artifactStore.commandsFor(
+      "ocr-normalization-diagnostic-conversion-ocr",
+    )[0]!;
+    expect(normalizationCommand).toMatchObject({
+      artifactKind: "diagnostic",
+      commandId: "conversion-ocr:ocr-normalization-diagnostic",
+      idempotencyKey: "conversion-ocr-key:ocr-normalization-diagnostic",
+      parentArtifactRefs: [
         expect.objectContaining({ kind: "content-artifact" }),
         expect.objectContaining({
           kind: "diagnostic-artifact",
           reference: expect.objectContaining({ entityId: rawRef }),
+        }),
+      ],
+    });
+    expect(artifactStore.opened.map((request) => request.artifactRef.reference.entityId)).toContain(
+      "ocr-normalization-diagnostic-conversion-ocr",
+    );
+    expect(jsonLdCommand.parentArtifactRefs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "diagnostic-artifact",
+          reference: expect.objectContaining({
+            entityId: "ocr-normalization-diagnostic-conversion-ocr",
+          }),
         }),
       ]),
     );
@@ -201,6 +283,49 @@ describe("paddle ocr layout parser", () => {
     expect(stub.requests).toHaveLength(0);
     expect(artifactStore.commands).toHaveLength(0);
     expect(artifactStore.opened).toHaveLength(0);
+  });
+
+  it.each(authorizationCases)(
+    "returns the same non-enumerable authorization denial for $name",
+    async (item) => {
+      const stub = await startStub();
+      stub.enqueue({ body: layoutResponse([ocrPage(0, PDF_PAGE_1)]) });
+      const harness = createOcrTestHarness({
+        baseUrl: stub.origin,
+        inputBytes: buildSyntheticScannedPdf(),
+        ...(item.command === undefined ? {} : { command: item.command }),
+      });
+      if (item.openOverride !== undefined) {
+        harness.artifactStore.overrideOpenFor("source_ocr", item.openOverride);
+      }
+
+      const result = await harness.adapter.convert(harness.command);
+
+      expect(result).toMatchObject({
+        kind: "failed",
+        error: { code: "AUTHORIZATION_DENIED", retryable: false },
+      });
+      expect(stub.requests).toHaveLength(0);
+      expect(harness.artifactStore.commands).toHaveLength(0);
+      expect(harness.artifactStore.opened).toHaveLength(item.opened ?? 0);
+      expect(harness.contextSource.registered).toHaveLength(0);
+    },
+  );
+
+  it("keeps the non-OCR reference mismatch on the existing error path (authorization)", async () => {
+    const stub = await startStub();
+    const harness = createOcrTestHarness({
+      baseUrl: stub.origin,
+      inputBytes: new TextEncoder().encode("指标,备注\n地表沉降,稳定\n"),
+      mediaType: "text/csv",
+      command: { input: { kind: "csv" }, sourceArtifactRef: FOREIGN_ARTIFACT_REF },
+    });
+
+    const result = await harness.adapter.convert(harness.command);
+
+    expect(result).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+    expect(stub.requests).toHaveLength(0);
+    expect(harness.artifactStore.opened).toHaveLength(0);
   });
 
   it("rejects an unfrozen deployment or quality reference before any network call", async () => {
@@ -546,8 +671,19 @@ describe("paddle ocr layout parser", () => {
     expect(stub.requests).toHaveLength(3);
     expect(artifactStore.commandsFor("ocr-raw-response-conversion-ocr-attempt-2")).toHaveLength(1);
     const parents = artifactStore.commandsFor("conversion-conversion-ocr")[0]!.parentArtifactRefs;
-    const rawParents = parents.filter((ref) => ref.kind === "diagnostic-artifact");
+    const rawParents = parents.filter((ref) =>
+      ref.reference.entityId.startsWith("ocr-raw-response-"),
+    );
     expect(rawParents).toHaveLength(3);
+    expect(parents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reference: expect.objectContaining({
+            entityId: "ocr-normalization-diagnostic-conversion-ocr",
+          }),
+        }),
+      ]),
+    );
   });
 
   it("keeps an earlier raw response parent when the final retry cannot reach the service", async () => {
@@ -772,6 +908,43 @@ describe("paddle ocr layout parser", () => {
       ]),
     );
     expect(jsonLdFailure.contextSource.registered).toHaveLength(0);
+
+    const normalizationStub = await startStub();
+    normalizationStub.enqueue({ body: layoutResponse([ocrPage(0, PDF_PAGE_1)]) });
+    const normalizationFailure = createOcrTestHarness({
+      baseUrl: normalizationStub.origin,
+      inputBytes: buildSyntheticScannedPdf(),
+    });
+    normalizationFailure.artifactStore.failPutFor("ocr-normalization-diagnostic-conversion-ocr");
+    const normalizationResult = await normalizationFailure.adapter.convert(
+      normalizationFailure.command,
+    );
+    expect(normalizationResult).toMatchObject({ kind: "failed" });
+    expect(failureBody(normalizationFailure.artifactStore)).toMatchObject({
+      reasonCode: "OCR_ARTIFACT_PERSISTENCE_FAILED",
+      retryable: true,
+      ocrStage: "artifact",
+    });
+    expect(
+      normalizationFailure.artifactStore.commandsFor("conversion-conversion-ocr"),
+    ).toHaveLength(0);
+    expect(normalizationFailure.contextSource.registered).toHaveLength(0);
+    expect(
+      normalizationFailure.artifactStore.bodyFor("ocr-raw-response-conversion-ocr-attempt-1"),
+    ).toMatchObject({ stage: "ocr-raw-response" });
+    expect(
+      normalizationFailure.artifactStore.commandsFor("conversion-diagnostic-conversion-ocr")[0]!
+        .parentArtifactRefs,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "diagnostic-artifact",
+          reference: expect.objectContaining({
+            entityId: "ocr-raw-response-conversion-ocr-attempt-1",
+          }),
+        }),
+      ]),
+    );
   });
 
   it("replays a successful conversion and conflicts on a reused idempotency key with a different payload", async () => {
@@ -821,6 +994,78 @@ describe("paddle ocr layout parser", () => {
         Buffer.from(magic).toString("latin1"),
       ),
     ).toEqual(["%PDF", "\x89PNG", "\u00ff\u00d8"]);
+  });
+
+  it("keeps the handwritten CJK fixture raster identical across PDF, PNG, JPEG and the manifest", async () => {
+    const [pdf, png, jpeg, manifest] = await Promise.all([
+      loadOcrFixture("synthetic-scanned.pdf"),
+      loadOcrFixture("synthetic-scanned.png"),
+      loadOcrFixture("synthetic-scanned.jpeg"),
+      loadAcceptanceManifest(),
+    ]);
+    const { rgb, gray } = scanPixels();
+
+    expect(manifest.glyphs).toMatchObject({
+      fontVersion: "c13-synthetic-handwritten-16x16.v1",
+      text: "扫描",
+      sourcePixels: 16,
+      scale: 8,
+    });
+    expect(manifest.samples.map((sample) => [sample.width, sample.height])).toEqual([
+      [SCAN_WIDTH, SCAN_HEIGHT],
+      [SCAN_WIDTH, SCAN_HEIGHT],
+      [SCAN_WIDTH, SCAN_HEIGHT],
+    ]);
+    for (const entry of manifest.glyphs.entries) {
+      expect(entry).toMatchObject({ width: 128, height: 128 });
+      const stroke = entry.strokePixel.y * SCAN_WIDTH + entry.strokePixel.x;
+      const blank = entry.blankPixel.y * SCAN_WIDTH + entry.blankPixel.x;
+      expect(gray[stroke]).toBe(32);
+      expect(gray[blank]).toBe(240);
+      expect(rgb[stroke * 3]).toBe(32);
+      expect(rgb[blank * 3]).toBe(240);
+    }
+
+    const pngBytes = Buffer.from(png);
+    const idatAt = pngBytes.indexOf("IDAT");
+    const pngRaster = new Uint8Array(SCAN_WIDTH * SCAN_HEIGHT * 3);
+    const inflated = new Uint8Array(
+      inflateSync(pngBytes.subarray(idatAt + 4, idatAt + 4 + pngBytes.readUInt32BE(idatAt - 4))),
+    );
+    for (let y = 0; y < SCAN_HEIGHT; y += 1) {
+      expect(inflated[y * (1 + SCAN_WIDTH * 3)]).toBe(0);
+      pngRaster.set(
+        inflated.subarray(y * (1 + SCAN_WIDTH * 3) + 1, (y + 1) * (1 + SCAN_WIDTH * 3)),
+        y * SCAN_WIDTH * 3,
+      );
+    }
+    expect(pngRaster).toEqual(rgb);
+
+    const pdfBytes = Buffer.from(pdf);
+    const imageAt = pdfBytes.indexOf("/Subtype /Image");
+    const streamAt = pdfBytes.indexOf("stream\n", imageAt);
+    const imageLength = Number(
+      pdfBytes
+        .subarray(pdfBytes.indexOf("/Length ", imageAt), streamAt)
+        .toString("latin1")
+        .match(/\d+/)![0],
+    );
+    expect(
+      new Uint8Array(inflateSync(pdfBytes.subarray(streamAt + 7, streamAt + 7 + imageLength))),
+    ).toEqual(rgb);
+    expect(pdfBytes.toString("latin1")).toContain(`/MediaBox [0 0 ${SCAN_WIDTH} ${SCAN_HEIGHT}]`);
+
+    const decoded = decodeJpegBlockValues(jpeg);
+    expect({ width: decoded.width, height: decoded.height }).toEqual({
+      width: SCAN_WIDTH,
+      height: SCAN_HEIGHT,
+    });
+    const expectedBlocks: number[] = [];
+    for (let y = 0; y < SCAN_HEIGHT; y += 8) {
+      for (let x = 0; x < SCAN_WIDTH; x += 8) expectedBlocks.push(gray[y * SCAN_WIDTH + x]!);
+    }
+    expect(decoded.values).toEqual(expectedBlocks);
+    expect([...new Set(decoded.values)].sort((left, right) => left - right)).toEqual([32, 240]);
   });
 
   it("keeps OCR resource isolation from llama.cpp calls under saturation, cancel and crash (isolation)", async () => {

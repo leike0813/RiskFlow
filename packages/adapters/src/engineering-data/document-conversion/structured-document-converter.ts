@@ -4,6 +4,7 @@ import {
   ArtifactPutCommandV1Schema,
   ArtifactReadRequestV1Schema,
   ArtifactRefV1Schema,
+  ArtifactStoreError,
   mergeEvidenceReferences,
   normalizeArtifactReferences,
   normalizeEvidenceReferences,
@@ -530,7 +531,11 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
       referenceKey(source.sourceArtifactRef) !== referenceKey(command.sourceArtifactRef) ||
       referenceKey(source.sourceVersionRef) !== referenceKey(command.sourceVersionRef)
     ) {
-      return failed(moduleError("BUSINESS_BLOCKED", command.runId));
+      return failed(
+        command.input.kind === "ocr-layout"
+          ? this.#ocrAuthorizationDenied(command)
+          : moduleError("BUSINESS_BLOCKED", command.runId),
+      );
     }
 
     let existing: ExistingConversion;
@@ -567,6 +572,15 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
     try {
       bytes = await this.#readInput(command, source);
     } catch (error) {
+      if (command.input.kind === "ocr-layout") {
+        const unauthorized =
+          error instanceof ArtifactStoreError
+            ? error.code === "ARTIFACT_REFERENCE_NOT_FOUND" ||
+              error.code === "ARTIFACT_ACCESS_DENIED"
+            : error instanceof DocumentParserError && error.code === "ARTIFACT_REFERENCE_INVALID";
+        // 缺失、跨工程或引用不符的工件在联系 OCR 前与 C11 拒绝同形，不写存在性细节。
+        if (unauthorized) return failed(this.#ocrAuthorizationDenied(command));
+      }
       return this.#finishFailure(command, source, startedAt, "input", error);
     }
 
@@ -583,6 +597,23 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
       bytes.byteLength,
       parsedDocument,
     );
+  }
+
+  /**
+   * D-01 OCR 前的授权归一：缺失、跨工程或引用不符的 source/artifact/manifest
+   * 与 C11 的 AUTHORIZATION_DENIED 对调用方不可区分，且不写存在性细节。
+   */
+  #ocrAuthorizationDenied(command: StructuredDocumentConversionCommandV1): ModuleErrorV1 {
+    return ModuleErrorV1Schema.parse({
+      stageCode: "engineering-data.document-conversion.authorization",
+      occurredAt: new Date().toISOString(),
+      causalRunId: command.runId,
+      code: "AUTHORIZATION_DENIED",
+      category: "authorization",
+      retryable: false,
+      requiredCapability: "engineering-data.write",
+      authorizationPolicyRef: command.authorization.authorizationPolicyRef,
+    });
   }
 
   async #parseDocument(
@@ -663,9 +694,36 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
       toEvidenceReferences(source.sourceVersionRef, converted.document.sourceSegments),
       parsed.additionalEvidenceReferences,
     ]);
+    let normalizationDiagnosticRef: ArtifactRefV1 | undefined;
+    if (command.input.kind === "ocr-layout") {
+      try {
+        normalizationDiagnosticRef = await this.#persistOcrNormalizationDiagnostic(
+          command,
+          source,
+          parsed,
+        );
+      } catch {
+        return this.#finishFailure(
+          command,
+          source,
+          startedAt,
+          "output",
+          new OcrLayoutParserError({
+            code: "OCR_ARTIFACT_PERSISTENCE_FAILED",
+            stage: "artifact",
+            retryable: true,
+            message: "ocr normalization diagnostic could not be durably stored and re-read",
+            parents: parsed.additionalParentArtifactRefs,
+          }),
+          parsed.additionalParentArtifactRefs,
+          inputBytes,
+        );
+      }
+    }
     const parentArtifactRefs = normalizeArtifactReferences([
       source.sourceArtifactRef,
       ...parsed.additionalParentArtifactRefs,
+      ...(normalizationDiagnosticRef === undefined ? [] : [normalizationDiagnosticRef]),
     ]);
     let jsonLdArtifact: ArtifactPutResultV1;
     try {
@@ -1026,6 +1084,91 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
       throw new RangeError("raw response exceeds the frozen response limit");
     }
     return bytes;
+  }
+
+  /**
+   * D-02/D-11：把 parser 的成功诊断以既有 C04 normalization `diagnostic` 耐久
+   * 保存并受权复验；完整服务版本仍由 raw diagnostic parents 提供。
+   */
+  async #persistOcrNormalizationDiagnostic(
+    command: StructuredDocumentConversionCommandV1,
+    source: SourceProcessingInputV1,
+    parsed: OcrLayoutParserOutcomeV1,
+  ): Promise<ArtifactRefV1> {
+    const bytes = new TextEncoder().encode(
+      JSON.stringify({
+        schemaVersion: SCHEMA_VERSION,
+        stage: "ocr-normalization-diagnostic",
+        conversionRef: {
+          kind: "structured-document-conversion",
+          reference: { entityId: command.conversionId, versionId: "1" },
+        },
+        projectId: command.projectId,
+        sourceVersionRef: source.sourceVersionRef,
+        sourceArtifactRef: source.sourceArtifactRef,
+        converterDeploymentRef: command.converterDeploymentRef,
+        qualityPolicyRef: command.qualityPolicyRef,
+        diagnostic: parsed.diagnostic,
+      }),
+    );
+    const result = await this.#artifactStore.put(
+      artifactCommand(
+        command,
+        source,
+        `ocr-normalization-diagnostic-${command.conversionId}`,
+        "diagnostic",
+        "application/json",
+        [source.sourceArtifactRef, ...parsed.additionalParentArtifactRefs],
+        [],
+        "ocr-normalization-diagnostic",
+      ),
+      one(bytes),
+    );
+    const artifactRef = ArtifactRefV1Schema.parse(result.artifactRef);
+    await this.#readVerifiedDiagnostic(
+      command,
+      artifactRef,
+      "ocr-normalization-diagnostic",
+      bytes.byteLength,
+    );
+    return artifactRef;
+  }
+
+  async #readVerifiedDiagnostic(
+    command: StructuredDocumentConversionCommandV1,
+    artifactRef: ArtifactRefV1,
+    keySuffix: string,
+    byteLength: number,
+  ): Promise<void> {
+    const handle: ArtifactReadHandleV1 = await this.#artifactStore.open(
+      ArtifactReadRequestV1Schema.parse({
+        schemaVersion: SCHEMA_VERSION,
+        requestId: `${command.conversionId}:${keySuffix}`,
+        idempotencyKey: `${command.idempotencyKey}:${keySuffix}`,
+        artifactRef,
+        projectId: command.projectId,
+        actorId: command.actorId,
+        requestedAt: command.issuedAt,
+        purposeCode: PURPOSE,
+        requiredCapability: "engineering-data.write",
+        authorization: command.authorization,
+      }),
+    );
+    let size = 0;
+    for await (const chunk of handle.content) {
+      if (!(chunk instanceof Uint8Array)) throw new TypeError("diagnostic chunk is invalid");
+      size += chunk.byteLength;
+      if (size > byteLength) {
+        throw new RangeError("diagnostic exceeds its persisted byte length");
+      }
+    }
+    await handle.verified;
+    if (size !== byteLength) {
+      throw new RangeError("diagnostic byte length changed after persistence");
+    }
+    if (referenceKey(handle.manifest.artifactRef) !== referenceKey(artifactRef)) {
+      throw new TypeError("diagnostic artifact reference mismatch");
+    }
   }
 
   async #finishFailure(

@@ -1767,24 +1767,50 @@ describe("module interface contracts", () => {
   });
 
   it("uses strict snapshots and allows only resumable references", () => {
+    const preparationSnapshotBase = {
+      schemaVersion: "1",
+      projectRevisionRef,
+      spatialScopeRefs: [spatialScopeRef],
+      sourceVersionRefs: [sourceVersionRef, version("source-version", "source-version-2")],
+      excludedSegmentDecisionRefs: [],
+      dataProcessingPolicyRef: policyRef,
+      dataProcessingToolRef: policyRef,
+      dataProcessingModelRef: policyRef,
+      coverageDecisionRef: version("route-decision"),
+      authorizationContextRef,
+      auditTrailRef,
+      createdBy: "actor-1",
+      createdAt: now,
+    };
+    const segmentSetRefs = [
+      version("source-segment-set", "source-segment-set-1"),
+      version("source-segment-set", "source-segment-set-2"),
+    ];
     expect(
       IdentificationPreparationSnapshotV1Schema.safeParse({
-        schemaVersion: "1",
-        projectRevisionRef,
-        spatialScopeRefs: [spatialScopeRef],
-        sourceVersionRefs: [sourceVersionRef],
-        includedSourceSegmentSetRef: version("source-segment-set"),
-        excludedSegmentDecisionRefs: [],
-        dataProcessingPolicyRef: policyRef,
-        dataProcessingToolRef: policyRef,
-        dataProcessingModelRef: policyRef,
-        coverageDecisionRef: version("route-decision"),
-        authorizationContextRef,
-        auditTrailRef,
-        createdBy: "actor-1",
-        createdAt: now,
+        ...preparationSnapshotBase,
+        includedSourceSegmentSetRefs: segmentSetRefs,
       }).success,
     ).toBe(true);
+    expect(
+      IdentificationPreparationSnapshotV1Schema.safeParse({
+        ...preparationSnapshotBase,
+        includedSourceSegmentSetRefs: [],
+      }).success,
+    ).toBe(false);
+    expect(
+      IdentificationPreparationSnapshotV1Schema.safeParse({
+        ...preparationSnapshotBase,
+        sourceVersionRefs: [sourceVersionRef],
+        includedSourceSegmentSetRefs: segmentSetRefs,
+      }).success,
+    ).toBe(false);
+    expect(
+      IdentificationPreparationSnapshotV1Schema.safeParse({
+        ...preparationSnapshotBase,
+        includedSourceSegmentSetRef: segmentSetRefs[0],
+      }).success,
+    ).toBe(false);
     expect(
       IdentificationInputSnapshotV1Schema.safeParse({
         schemaVersion: "1",

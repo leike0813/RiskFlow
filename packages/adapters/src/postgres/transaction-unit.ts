@@ -7,6 +7,7 @@ import {
   type AtomicCommitReceiptV1,
   type AtomicCommandV1,
   type TransactionContextV1,
+  type TransactionOptionsV1,
   type TransactionHandlerV1,
   type TransactionUnitV1,
 } from "@riskflow/core/persistence";
@@ -110,6 +111,7 @@ export class PostgresTransactionUnit implements TransactionUnitV1 {
   async execute(
     command: AtomicCommandV1,
     handler: TransactionHandlerV1,
+    options?: TransactionOptionsV1,
   ): Promise<AtomicCommitReceiptV1> {
     const parsedCommand = AtomicCommandV1Schema.safeParse(command);
     if (!parsedCommand.success)
@@ -118,7 +120,11 @@ export class PostgresTransactionUnit implements TransactionUnitV1 {
     const payloadSha256 = sha256CanonicalJson(validCommand.payload);
 
     try {
-      return await this.#db.transaction().execute(async (transaction) => {
+      let transactionBuilder = this.#db.transaction();
+      if (options?.isolationLevel !== undefined) {
+        transactionBuilder = transactionBuilder.setIsolationLevel(options.isolationLevel);
+      }
+      return await transactionBuilder.execute(async (transaction) => {
         await transaction
           .insertInto("business.command_receipts")
           .values({

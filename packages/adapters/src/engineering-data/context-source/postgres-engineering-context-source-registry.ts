@@ -45,7 +45,10 @@ import {
   EngineeringContextRevisionCommandV1Schema,
   ProjectBusinessRevisionV1Schema,
   RegisterSourceSegmentSetCommandV1Schema,
+  ResolveSourceVersionForReadQueryV1Schema,
+  ResolveSourceProcessingInputQueryV1Schema,
   SourceDeliveryMetadataEnvelopeV1Schema,
+  SourceProcessingInputV1Schema,
   SourceSegmentSetV1Schema,
   SourceVersionV1Schema,
   SpatialBusinessRevisionV1Schema,
@@ -56,6 +59,9 @@ import {
   type EngineeringContextRevisionCommandV1,
   type ProjectBusinessRevisionV1,
   type RegisterSourceSegmentSetCommandV1,
+  type ResolveSourceProcessingInputQueryV1,
+  type ResolveSourceVersionForReadQueryV1,
+  type SourceProcessingInputV1,
   type SourceDeliveryMetadataEnvelopeV1,
   type SourceSegmentSetV1,
   type SourceVersionV1,
@@ -91,6 +97,7 @@ import {
   type PostgresPersistenceError,
 } from "../../postgres/pool.js";
 import type { PostgresDatabase } from "../../postgres/types.js";
+import type { PostgresMonitoringStoreV1 } from "../monitoring/postgres-monitoring-store.js";
 
 type JsonColumn = ColumnType<JsonValue, JsonValue, JsonValue>;
 type TimestampColumn = ColumnType<Date, Date | string | undefined, Date | string>;
@@ -523,6 +530,20 @@ const toSourceVersion = (row: Selectable<SourceVersionRow>): SourceVersionV1 =>
     },
   });
 
+const sourceProcessingInput = (sourceVersion: SourceVersionV1): SourceProcessingInputV1 =>
+  SourceProcessingInputV1Schema.parse({
+    sourceVersionRef: sourceVersion.sourceVersionRef,
+    projectId: sourceVersion.projectId,
+    sourceId: sourceVersion.sourceId,
+    sourceItemId: sourceVersion.sourceItemId,
+    projectRevisionRef: sourceVersion.projectRevisionRef,
+    spatialScopeRefs: sourceVersion.spatialScopeRefs,
+    sourceArtifactRef: sourceVersion.sourceArtifactRef,
+    metadataArtifactRef: sourceVersion.metadataArtifactRef,
+    sourceAccessGrantRef: sourceVersion.sourceAccessGrantRef,
+    applicabilityMetadataSnapshotRef: sourceVersion.applicabilityMetadataSnapshotRef,
+  });
+
 const sourceSegmentSetResult = (set: SourceSegmentSetV1): ContextSourceResultV1 =>
   resultSuccess({ kind: "source-segment-set", segmentSet: set });
 
@@ -613,6 +634,7 @@ export interface PostgresEngineeringContextSourceRegistryOptions {
     readonly store: ArtifactStoreV1;
     readonly referenceGuard: ArtifactReferenceGuardV1;
   };
+  readonly monitoringStore?: PostgresMonitoringStoreV1;
   readonly now?: () => Date;
 }
 
@@ -624,6 +646,7 @@ export class PostgresEngineeringContextSourceRegistry
   readonly #access: LocalIdentityAccessV1;
   readonly #artifactStore: ArtifactStoreV1;
   readonly #artifactGuard: ArtifactReferenceGuardV1;
+  readonly #monitoringStore: PostgresMonitoringStoreV1 | undefined;
   readonly #now: () => Date;
 
   constructor(options: PostgresEngineeringContextSourceRegistryOptions) {
@@ -637,6 +660,7 @@ export class PostgresEngineeringContextSourceRegistry
     this.#access = options.access;
     this.#artifactStore = store;
     this.#artifactGuard = guard;
+    this.#monitoringStore = options.monitoringStore;
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -722,6 +746,75 @@ export class PostgresEngineeringContextSourceRegistry
     }
   }
 
+  async resolveSourceProcessingInput(
+    query: ResolveSourceProcessingInputQueryV1,
+  ): Promise<ContextSourceResultV1> {
+    const parsed = ResolveSourceProcessingInputQueryV1Schema.safeParse(query);
+    if (!parsed.success)
+      return resultFailure(moduleError("UNSUPPORTED_CONTRACT", "source-processing-input"));
+    const valid = parsed.data;
+    try {
+      await this.#verifyRead(valid, valid.authorization.spatialScopeRefs, [valid.sourceVersionRef]);
+      const sourceVersion = await this.#readSourceVersion(valid.projectId, valid.sourceVersionRef);
+      if (
+        sourceVersion === undefined ||
+        sourceVersion.accessStatus !== "ready" ||
+        sourceVersion.sourceAccessGrantRef === undefined
+      ) {
+        return resultFailure(moduleError("AUTHORIZATION_DENIED", valid.queryId));
+      }
+      const project = await this.#db
+        .selectFrom("business.engineering_projects")
+        .select(["current_revision_id"])
+        .where("project_id", "=", valid.projectId)
+        .executeTakeFirst();
+      if (
+        project === undefined ||
+        project.current_revision_id !==
+          projectRevisionStorageId(
+            valid.projectId,
+            sourceVersion.projectRevisionRef.reference.versionId,
+          )
+      ) {
+        return resultFailure(
+          moduleError("STALE_VERSION", valid.queryId, { targetRef: valid.sourceVersionRef }),
+        );
+      }
+      const input = sourceProcessingInput(sourceVersion);
+      return resultSuccess({ kind: "source-processing-input", input });
+    } catch (error) {
+      return resultFailure(
+        this.#mapError(error, valid.queryId, "engineering-data.source-processing-input"),
+      );
+    }
+  }
+
+  async resolveSourceVersionForRead(
+    query: ResolveSourceVersionForReadQueryV1,
+  ): Promise<ContextSourceResultV1> {
+    const parsed = ResolveSourceVersionForReadQueryV1Schema.safeParse(query);
+    if (!parsed.success)
+      return resultFailure(moduleError("UNSUPPORTED_CONTRACT", "source-version-read"));
+    const valid = parsed.data;
+    try {
+      await this.#verifyRead(valid, valid.authorization.spatialScopeRefs, [valid.sourceVersionRef]);
+      const sourceVersion = await this.#readSourceVersion(valid.projectId, valid.sourceVersionRef);
+      if (
+        sourceVersion === undefined ||
+        sourceVersion.accessStatus !== "ready" ||
+        sourceVersion.sourceAccessGrantRef === undefined
+      ) {
+        return resultFailure(moduleError("AUTHORIZATION_DENIED", valid.queryId));
+      }
+      const input = sourceProcessingInput(sourceVersion);
+      return resultSuccess({ kind: "source-processing-input", input });
+    } catch (error) {
+      return resultFailure(
+        this.#mapError(error, valid.queryId, "engineering-data.source-version-read"),
+      );
+    }
+  }
+
   async createApplicabilitySnapshot(
     command: CreateApplicabilitySnapshotCommandV1,
   ): Promise<ContextSourceResultV1> {
@@ -762,6 +855,9 @@ export class PostgresEngineeringContextSourceRegistry
       };
     }
     const valid = parsed.data;
+    if (valid.kind === "register-monitoring-batch" && this.#monitoringStore !== undefined) {
+      return this.#monitoringStore.registerBatch(valid);
+    }
     if (valid.kind !== "register-source-delivery") {
       return {
         kind: "failed",
@@ -773,16 +869,28 @@ export class PostgresEngineeringContextSourceRegistry
 
   async freeze(command: EngineeringFreezeCommandV1): Promise<EngineeringFreezeResultV1> {
     const parsed = EngineeringFreezeCommandV1Schema.safeParse(command);
-    return parsed.success
-      ? { kind: "failed", error: moduleError("UNSUPPORTED_CONTRACT", parsed.data.commandId) }
-      : { kind: "failed", error: moduleError("UNSUPPORTED_CONTRACT", "engineering-data.freeze") };
+    if (!parsed.success)
+      return {
+        kind: "failed",
+        error: moduleError("UNSUPPORTED_CONTRACT", "engineering-data.freeze"),
+      };
+    if (parsed.data.kind === "monitoring-snapshot" && this.#monitoringStore !== undefined) {
+      return this.#monitoringStore.freezeSnapshot(parsed.data);
+    }
+    return { kind: "failed", error: moduleError("UNSUPPORTED_CONTRACT", parsed.data.commandId) };
   }
 
   async read(query: EngineeringDataQueryV1): Promise<EngineeringDataReadResultV1> {
     const parsed = EngineeringDataQueryV1Schema.safeParse(query);
-    return parsed.success
-      ? { kind: "failed", error: moduleError("UNSUPPORTED_CONTRACT", parsed.data.queryId) }
-      : { kind: "failed", error: moduleError("UNSUPPORTED_CONTRACT", "engineering-data.read") };
+    if (!parsed.success)
+      return {
+        kind: "failed",
+        error: moduleError("UNSUPPORTED_CONTRACT", "engineering-data.read"),
+      };
+    if (parsed.data.kind === "monitoring-snapshot" && this.#monitoringStore !== undefined) {
+      return this.#monitoringStore.readSnapshot(parsed.data);
+    }
+    return { kind: "failed", error: moduleError("UNSUPPORTED_CONTRACT", parsed.data.queryId) };
   }
 
   async #registerSourceDelivery(
@@ -1018,6 +1126,37 @@ export class PostgresEngineeringContextSourceRegistry
       requestedSpatialScopeRefs: [...requestedSpatialScopeRefs],
       requestedSourceVersionRefs: [...requestedSourceVersionRefs],
       requestedAt: command.authorization.decidedAt,
+    });
+  }
+
+  async #verifyRead(
+    query: {
+      queryId: string;
+      projectId: string;
+      actorId: string;
+      authorization: AuthorizationContextV1;
+    },
+    requestedSpatialScopeRefs: readonly SpatialScopeRefV1[],
+    requestedSourceVersionRefs: readonly SourceVersionRefV1[],
+  ): Promise<void> {
+    if (
+      query.projectId !== query.authorization.projectId ||
+      query.actorId !== query.authorization.actorId ||
+      (!query.authorization.grantedCapabilities.includes("engineering-data.read") &&
+        !query.authorization.grantedCapabilities.includes("engineering-data.write"))
+    ) {
+      throw preserveDomainError(moduleError("AUTHORIZATION_DENIED", query.queryId));
+    }
+    await this.#access.verify({
+      authorizationContextRef: query.authorization.authorizationContextRef,
+      invocationId: query.queryId,
+      projectId: query.projectId,
+      branch: query.authorization.grantedCapabilities.includes("engineering-data.write")
+        ? "engineering-data.register-source-delivery"
+        : "engineering-data.evidence-access",
+      requestedSpatialScopeRefs: [...requestedSpatialScopeRefs],
+      requestedSourceVersionRefs: [...requestedSourceVersionRefs],
+      requestedAt: query.authorization.decidedAt,
     });
   }
 

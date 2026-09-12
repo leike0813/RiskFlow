@@ -21,6 +21,10 @@ import {
   PostgresEngineeringContextSourceRegistry,
   type PostgresEngineeringContextSourceRegistryOptions,
 } from "../../../src/engineering-data/context-source/postgres-engineering-context-source-registry.js";
+import {
+  createPostgresMonitoringStore,
+  type PostgresMonitoringStoreV1,
+} from "../../../src/engineering-data/monitoring/postgres-monitoring-store.js";
 
 export const CONTEXT_SOURCE_TEST_TIMESTAMP = "2030-01-01T00:00:00.000Z";
 
@@ -33,6 +37,7 @@ export interface EngineeringContextSourcePostgresFixture {
   readonly artifactStore: FilesystemArtifactStore;
   readonly access: PostgresLocalIdentityAccess;
   readonly registry: PostgresEngineeringContextSourceRegistry;
+  readonly monitoringStore: PostgresMonitoringStoreV1;
   close(): Promise<void>;
 }
 
@@ -81,12 +86,21 @@ export const startEngineeringContextSourceFixture = async (
         keyVersion: "test-key-v1",
         now: options.now,
       });
+      const monitoringStore = createPostgresMonitoringStore({
+        db: runtime.db,
+        transactionUnit,
+        access,
+        artifactStore,
+        artifactReferenceGuard: artifactRegistry,
+        now: options.now,
+      });
       const registry = new PostgresEngineeringContextSourceRegistry({
         db: runtime.db,
         transactionUnit,
         access,
         artifactStore,
         artifactReferenceGuard: artifactRegistry,
+        monitoringStore,
         now: options.now,
         ...options.registryOptions,
       });
@@ -99,6 +113,7 @@ export const startEngineeringContextSourceFixture = async (
         artifactStore,
         access,
         registry,
+        monitoringStore,
         async close() {
           await artifactStore.close();
           await access.close();

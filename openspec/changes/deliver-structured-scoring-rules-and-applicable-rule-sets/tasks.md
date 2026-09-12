@@ -1,0 +1,40 @@
+## 1. 契约门与夹具
+
+- [ ] 1.1 [IP-01] 在任何生产改动前确认 HEAD/branch、C08/C16/C18 已集成、C15 计划导出已真实落地且生产代码没有 `reviewStatus` 准入消费者；运行 `git rev-parse HEAD && git branch --show-current && rg -n "DataCleaningResultV1Schema|readBoundResult" packages/core packages/adapters && rg -n "reviewStatus" packages apps`，任一硬门不符立即升级。
+- [ ] 1.2 [IP-01] 新增 core/adapter 共用夹具，并接入一条获准、可核验来源版本和资料段定位的真实规范 C15 completed-result 输入；运行 `pnpm exec prettier --check packages/core/test/scoring-rules/fixture.ts packages/adapters/test/scoring-rules/fixture.ts` 验证格式，禁止以合成条文替代 RA-S3/S4 出口。
+
+## 2. Core
+
+- [ ] 2.1 [IP-02] 实现 C19 strict 文档、manifest、规则操作、组装/解析命令及闭合原因 Schema，增加 `@riskflow/core/scoring-rules` 子路径；运行 `pnpm exec prettier --check packages/core/src/scoring-rules packages/core/package.json` 验证格式。
+- [ ] 2.2 [IP-03] 实现规则级逐项校验、materialize、三维适用性、冲突/重叠检测和确定性筛选；运行 `pnpm exec vitest run packages/core/test/scoring-rules/scoring-rules.test.ts -t '内容校验|三维适用性|冲突|重叠'` 验证根因边界。
+- [ ] 2.3 [IP-03] 实现两个只读领域工具协议、`createScoringRuleAuthoringTaskDefinition`、准备快照 reader 与 C16 policy 输入接口，证明 Agent 候选固定 `pending` 且不可发布；运行 `pnpm exec vitest run packages/core/test/scoring-rules/scoring-rules.test.ts` 验证 core 全部场景。
+
+## 3. Adapter 与持久化
+
+- [ ] 3.1 [IP-04] 新增 `000028_structured_scoring_rules` 迁移的五张只追加关系表、约束、索引和 SELECT/INSERT 权限；运行 `pnpm exec prettier --check packages/adapters/src/postgres/migrations/knowledge-modeling/deliver-structured-scoring-rules-and-applicable-rule-sets/000028_structured_scoring_rules.ts` 验证格式，并由后续 PostgreSQL 集成测试验证 up/down。
+- [ ] 3.2 [IP-05] 实现 `PostgresScoringRulesAdapter` 的 C15/C04/C18 有界读取、authoring 工具/finalizer、冲突补链、规则集组装、C16 policy 和公共 basis resolve，增加 adapter 子路径导出；运行 `pnpm exec prettier --check packages/adapters/src/scoring-rules packages/adapters/package.json` 验证格式。
+- [ ] 3.3 [IP-06] 在 C16 adapter 四个既有 policy 接缝加入 C19 两类定义分派并保留 C18 原实现；运行 `pnpm exec vitest run packages/adapters/test/knowledge-governance/postgres-knowledge-governance-adapter.test.ts` 验证缺策略阻断、C19 调用及既有类型回归。
+- [ ] 3.4 [IP-05、IP-08] 完成 PostgreSQL 集成测试，覆盖真实规范→C08→C16/C07→规则发布→三维筛选→规则集人工发布→公共 basis resolve，以及来源/冲突/配置/权限/幂等/并发/事务失败；运行 `pnpm exec vitest run packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts` 验证。
+
+## 4. API / Worker
+
+- [ ] 4.1 [IP-07] 为现有 C08 Runner 增加 C19 render/interpret 组合函数及根导出，覆盖工具、候选、预算、模型、权限和 finalize 协议；运行 `pnpm exec vitest run apps/worker/test/scoring-rules/runtime.test.ts apps/worker/test/agent-runtime/runner.test.ts` 验证仍使用同一 Runner。
+- [ ] 4.2 [IP-05、IP-08] 保持既有 API 通用 `knowledge-modeling.assessment-basis` 路由不变，并用 C19 resolver 结果契约运行回归；执行 `pnpm exec vitest run apps/api/test/http-shell.test.ts` 验证无新增 C19 HTTP 分支。
+
+## 5. Web
+
+- [ ] 5.1 [IP-08] 确认 C19 不修改 Web 或新增未授权 UI；运行 `git diff --exit-code -- apps/web` 验证 Web 目录无差异。
+
+## 6. 最小验证
+
+- [ ] 6.1 [IP-03、IP-05、IP-06、IP-07、IP-08] 运行 `pnpm exec vitest run packages/core/test/scoring-rules/scoring-rules.test.ts packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts packages/adapters/test/knowledge-governance/postgres-knowledge-governance-adapter.test.ts apps/worker/test/scoring-rules/runtime.test.ts` 验证 C19 core→adapter→worker 主链。
+- [ ] 6.2 [IP-08、IP-09] 运行 `pnpm exec vitest run packages/adapters/test/assessment-config/postgres-assessment-configuration-adapter.test.ts apps/worker/test/agent-runtime/runner.test.ts apps/api/test/http-shell.test.ts` 验证 C18、C08 Worker 与 API 代表性回归。
+- [ ] 6.3 [IP-02、IP-04～IP-07、IP-09] 运行 `pnpm exec tsc -b packages/core/tsconfig.json packages/adapters/tsconfig.json apps/worker/tsconfig.json --pretty false`，验证所有新导出和注入接口类型闭合。
+- [ ] 6.4 [IP-02～IP-09] 运行 implementation-plan §8 列出的定向 `eslint` 与 `prettier --check` 命令，修复本 change 文件的静态和格式问题。
+- [ ] 6.5 [IP-09] 运行 `pnpm deps:check && pnpm deps:policy`，确认分层依赖与既有许可证/依赖策略通过且锁文件未变化。
+- [ ] 6.6 [IP-03、IP-05、IP-09] 运行 `rg -n "reviewStatus" packages apps` 并审阅全部生产命中，确认已发布消费方只认 C16 release+C07 decision；发现任何状态门禁立即升级。
+
+## 7. OpenSpec verify
+
+- [ ] 7.1 [IP-01～IP-09] 逐项核对 implementation-plan 的 Requirement/Scenario、文件、迁移、命令与证据映射并回填本清单；运行 `openspec validate deliver-structured-scoring-rules-and-applicable-rule-sets --type change --strict --no-interactive` 确认 change 严格通过。
+- [ ] 7.2 [IP-09] 运行 `openspec instructions apply --change deliver-structured-scoring-rules-and-applicable-rule-sets --json`，确认 `schemaName`、全部 `contextFiles` 和完成进度正确后交由 `openspec-verify-change` 独立验收；本任务不提交、不归档。

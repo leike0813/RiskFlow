@@ -383,6 +383,7 @@ export const buildSyntheticScannedPdf = (): Uint8Array => {
   const image = new Uint8Array(deflateSync(rgb));
   const content = ascii(`q ${SCAN_WIDTH} 0 0 ${SCAN_HEIGHT} 0 0 cm /Im0 Do Q`);
   const pages = [1, 2];
+  const imageObjectId = 3 + pages.length * 2;
   const objects: Uint8Array[] = [
     ascii("<< /Type /Catalog /Pages 2 0 R >>"),
     ascii(
@@ -392,7 +393,7 @@ export const buildSyntheticScannedPdf = (): Uint8Array => {
   for (const page of pages) {
     objects.push(
       ascii(
-        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${SCAN_WIDTH} ${SCAN_HEIGHT}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents ${4 + (page - 1) * 2} 0 R >>`,
+        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${SCAN_WIDTH} ${SCAN_HEIGHT}] /Resources << /XObject << /Im0 ${imageObjectId} 0 R >> >> /Contents ${4 + (page - 1) * 2} 0 R >>`,
       ),
       concat([
         ascii(`<< /Length ${content.byteLength} >>\nstream\n`),

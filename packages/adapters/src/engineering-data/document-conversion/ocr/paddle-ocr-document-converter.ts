@@ -120,11 +120,28 @@ const mean = (values: readonly number[]): number =>
 const normalizeText = (value: string): string =>
   value.normalize("NFKC").trim().replace(/\s+/gu, " ");
 
-/** 服务四点多边形按外包矩形无损映射；非轴对齐多边形不在此协议视图中出现。 */
+/** 服务四点多边形仅在四个点恰为轴对齐矩形顶点时无损映射。 */
 const polygonBounds = (points: readonly (readonly [number, number])[]): BoundingBox => {
   const xs = points.map((point) => point[0]);
   const ys = points.map((point) => point[1]);
-  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  const bounds: BoundingBox = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  const corners = new Set([
+    `${bounds[0]}\u0000${bounds[1]}`,
+    `${bounds[0]}\u0000${bounds[3]}`,
+    `${bounds[2]}\u0000${bounds[1]}`,
+    `${bounds[2]}\u0000${bounds[3]}`,
+  ]);
+  const vertices = new Set(points.map(([x, y]) => `${x}\u0000${y}`));
+  if (
+    points.length !== 4 ||
+    vertices.size !== 4 ||
+    [...vertices].some((point) => !corners.has(point))
+  ) {
+    throw ocrFailure("OCR_OUTPUT_INVALID", {
+      message: "ocr polygon cannot be losslessly represented as an axis-aligned rectangle",
+    });
+  }
+  return bounds;
 };
 
 const ocrItems = (page: PaddleLayoutPageV1): OcrItemV1[] => {
@@ -305,6 +322,19 @@ const normalizePage = (page: PaddleLayoutPageV1, position: number): NormalizedPa
   const width = shape[1];
   const chapterId = pageChapterId(pageNumber);
   const items = ocrItems(page);
+  if (
+    items.some(
+      (item) =>
+        !withinPage(item.bbox, width, height) ||
+        boxWidth(item.bbox) <= 0 ||
+        boxHeight(item.bbox) <= 0,
+    )
+  ) {
+    throw ocrFailure("OCR_OUTPUT_INVALID", {
+      message: "ocr text coordinates fall outside the page",
+      diagnostic: { pageNumber },
+    });
+  }
   const regions: NormalizedRegionV1[] = [];
   const tables: NormalizedTableV1[] = [];
   let tableRegions = 0;

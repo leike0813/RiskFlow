@@ -386,6 +386,39 @@ describe("paddle ocr layout parser", () => {
       reasonCode: "OCR_OUTPUT_INVALID",
     },
     {
+      name: "OCR text box outside the page",
+      pages: [
+        ocrPage(0, PDF_PAGE_1, {
+          overall_ocr_res: {
+            rec_texts: ["正文"],
+            rec_scores: [0.93],
+            rec_boxes: [[-10, 10, 20, 30]],
+          },
+        }),
+      ],
+      reasonCode: "OCR_OUTPUT_INVALID",
+    },
+    {
+      name: "non-axis-aligned OCR polygon",
+      pages: [
+        ocrPage(0, PDF_PAGE_1, {
+          overall_ocr_res: {
+            rec_texts: ["正文"],
+            rec_scores: [0.93],
+            rec_polys: [
+              [
+                [10, 10],
+                [30, 5],
+                [40, 20],
+                [20, 25],
+              ],
+            ],
+          },
+        }),
+      ],
+      reasonCode: "OCR_OUTPUT_INVALID",
+    },
+    {
       name: "zero-area region",
       pages: [ocrPage(0, [ocrTextRegion("text", "正文", [10, 10, 10, 40], 1)])],
       reasonCode: "OCR_OUTPUT_INVALID",
@@ -1043,6 +1076,13 @@ describe("paddle ocr layout parser", () => {
 
     const pdfBytes = Buffer.from(pdf);
     const imageAt = pdfBytes.indexOf("/Subtype /Image");
+    const pdfText = pdfBytes.toString("latin1");
+    const imageObjectId = [...pdfText.slice(0, imageAt).matchAll(/(\d+) 0 obj\n/g)].at(-1)?.[1];
+    expect(imageObjectId).toBeDefined();
+    expect([...pdfText.matchAll(/\/Im0 (\d+) 0 R/g)].map((match) => match[1])).toEqual([
+      imageObjectId,
+      imageObjectId,
+    ]);
     const streamAt = pdfBytes.indexOf("stream\n", imageAt);
     const imageLength = Number(
       pdfBytes
@@ -1053,7 +1093,7 @@ describe("paddle ocr layout parser", () => {
     expect(
       new Uint8Array(inflateSync(pdfBytes.subarray(streamAt + 7, streamAt + 7 + imageLength))),
     ).toEqual(rgb);
-    expect(pdfBytes.toString("latin1")).toContain(`/MediaBox [0 0 ${SCAN_WIDTH} ${SCAN_HEIGHT}]`);
+    expect(pdfText).toContain(`/MediaBox [0 0 ${SCAN_WIDTH} ${SCAN_HEIGHT}]`);
 
     const decoded = decodeJpegBlockValues(jpeg);
     expect({ width: decoded.width, height: decoded.height }).toEqual({

@@ -1176,6 +1176,51 @@ describe("C11 PostgreSQL context/source registry", () => {
     });
   });
 
+  it("projects distinct C11 revisions of one scope to one exact C06 reference", async () => {
+    const state = requireE2eState();
+    const revisions = await fixture.postgres.adminPool.query<{
+      spatial_scope_ref: SpatialScopeRefV1;
+    }>(
+      "SELECT spatial_scope_ref FROM business.engineering_spatial_segment_revisions WHERE project_id = $1 AND scope_id = $2 ORDER BY revision_no",
+      [state.projectId, state.businessSpatialScopeRef.reference.entityId],
+    );
+    const historicalScopeRef = revisions.rows.find(
+      ({ spatial_scope_ref }) =>
+        spatial_scope_ref.reference.versionId !== state.businessSpatialScopeRef.reference.versionId,
+    )?.spatial_scope_ref;
+    if (historicalScopeRef === undefined)
+      throw new Error("historical C11 scope revision is missing");
+    const segmentId = state.segmentIds[0]!;
+    const original = await fixture.postgres.adminPool.query<{ spatial_scope_refs: unknown }>(
+      "SELECT spatial_scope_refs FROM business.source_segments WHERE project_id = $1 AND source_segment_id = $2",
+      [state.projectId, segmentId],
+    );
+    const queryId = "c11-read-mixed-spatial-revisions";
+    const authorization = await state.authorize(
+      queryId,
+      [state.sourceVersionRef],
+      "engineering-data.source-segments",
+    );
+    await fixture.postgres.adminPool.query(
+      "UPDATE business.source_segments SET spatial_scope_refs = $3::jsonb WHERE project_id = $1 AND source_segment_id = $2",
+      [state.projectId, segmentId, JSON.stringify([historicalScopeRef])],
+    );
+    const result = await fixture.registry.read({
+      queryId,
+      projectId: state.projectId,
+      actorId: state.managerId,
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      authorization,
+      kind: "source-segments",
+      payload: { sourceSegmentSetRef: state.segmentSetRef },
+    });
+    await fixture.postgres.adminPool.query(
+      "UPDATE business.source_segments SET spatial_scope_refs = $3::jsonb WHERE project_id = $1 AND source_segment_id = $2",
+      [state.projectId, segmentId, JSON.stringify(original.rows[0]!.spatial_scope_refs)],
+    );
+    expect(result).toMatchObject({ kind: "succeeded" });
+  });
+
   it("records both read branches once, replays the same reference, and resolves safe projections", async () => {
     const state = requireE2eState();
     const segmentsQueryId = "c11-read-source-segments";
@@ -1370,7 +1415,15 @@ describe("C11 PostgreSQL context/source registry", () => {
       authorization: evidenceAuthorization,
       kind: "evidence-access" as const,
     };
-    const results: Array<[string, { kind: string; error?: { code: string; category: string } }]> = [
+    const results: Array<
+      [
+        string,
+        {
+          kind: string;
+          error?: { code: string; category: string; requiredCapability?: string };
+        },
+      ]
+    > = [
       [
         "missing-segment-set",
         await fixture.registry.read({
@@ -1478,8 +1531,13 @@ describe("C11 PostgreSQL context/source registry", () => {
       });
     }
     expect(
-      new Set(results.map(([, result]) => `${result.error?.code}/${result.error?.category}`)),
-    ).toEqual(new Set(["AUTHORIZATION_DENIED/authorization"]));
+      new Set(
+        results.map(
+          ([, result]) =>
+            `${result.error?.code}/${result.error?.category}/${result.error?.requiredCapability}`,
+        ),
+      ),
+    ).toEqual(new Set(["AUTHORIZATION_DENIED/authorization/engineering-data.read"]));
     for (const deniedQueryId of [queryId, evidenceQueryId]) {
       const deniedRows = await fixture.postgres.adminPool.query<{ count: string }>(
         "SELECT count(*)::text AS count FROM business.engineering_data_read_query_results WHERE query_result_id LIKE $1",

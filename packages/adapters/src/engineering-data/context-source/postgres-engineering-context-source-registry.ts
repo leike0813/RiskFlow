@@ -88,6 +88,7 @@ import {
   EngineeringDataCommandV1Schema,
   EngineeringDataQueryV1Schema,
   EngineeringFreezeCommandV1Schema,
+  MODULE_BRANCH_CAPABILITY_V1,
   type AuthorizationContextV1,
   type ContractReferenceV1,
   type ContentArtifactRefV1,
@@ -476,6 +477,11 @@ const moduleError = (
     ...extras,
   } as ContextSourceError;
 };
+
+const readAuthorizationDenied = (causalRunId: string): ContextSourceError =>
+  moduleError("AUTHORIZATION_DENIED", causalRunId, {
+    requiredCapability: "engineering-data.read",
+  });
 
 const resultFailure = (error: ContextSourceError): ContextSourceResultV1 =>
   ContextSourceResultV1Schema.parse({ kind: "failed", error });
@@ -1033,10 +1039,9 @@ export class PostgresEngineeringContextSourceRegistry
     if (!parsed.success) {
       return {
         kind: "failed",
-        error: moduleError(
-          readRequestDenied(query) ? "AUTHORIZATION_DENIED" : "UNSUPPORTED_CONTRACT",
-          readCausalRunId(query, "engineering-data.read"),
-        ),
+        error: readRequestDenied(query)
+          ? readAuthorizationDenied(readCausalRunId(query, "engineering-data.read"))
+          : moduleError("UNSUPPORTED_CONTRACT", readCausalRunId(query, "engineering-data.read")),
       };
     }
     const valid = parsed.data;
@@ -1062,7 +1067,7 @@ export class PostgresEngineeringContextSourceRegistry
         branchQuery.sourceSegmentSetRef,
       );
       if (target === undefined) {
-        return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", query.queryId) };
+        return { kind: "failed", error: readAuthorizationDenied(query.queryId) };
       }
       await this.#verifyRead(query, READ_BRANCH["source-segments"], target.spatialScopeRefs, [
         target.sourceVersion.sourceVersionRef,
@@ -1076,7 +1081,12 @@ export class PostgresEngineeringContextSourceRegistry
     } catch (error) {
       return {
         kind: "failed",
-        error: this.#mapError(error, query.queryId, "engineering-data.read"),
+        error: this.#mapError(
+          error,
+          query.queryId,
+          "engineering-data.read",
+          "engineering-data.read",
+        ),
       };
     }
   }
@@ -1101,7 +1111,7 @@ export class PostgresEngineeringContextSourceRegistry
         branchQuery.evidenceReferences,
       );
       if (target === undefined) {
-        return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", query.queryId) };
+        return { kind: "failed", error: readAuthorizationDenied(query.queryId) };
       }
       await this.#verifyRead(
         query,
@@ -1118,7 +1128,12 @@ export class PostgresEngineeringContextSourceRegistry
     } catch (error) {
       return {
         kind: "failed",
-        error: this.#mapError(error, query.queryId, "engineering-data.read"),
+        error: this.#mapError(
+          error,
+          query.queryId,
+          "engineering-data.read",
+          "engineering-data.read",
+        ),
       };
     }
   }
@@ -1192,16 +1207,18 @@ export class PostgresEngineeringContextSourceRegistry
     if (!parsed.success) {
       return {
         kind: "failed",
-        error: moduleError(
-          readRequestDenied(query) ? "AUTHORIZATION_DENIED" : "UNSUPPORTED_CONTRACT",
-          readCausalRunId(query, "engineering-data.resolve-read-query"),
-        ),
+        error: readRequestDenied(query)
+          ? readAuthorizationDenied(readCausalRunId(query, "engineering-data.resolve-read-query"))
+          : moduleError(
+              "UNSUPPORTED_CONTRACT",
+              readCausalRunId(query, "engineering-data.resolve-read-query"),
+            ),
       };
     }
     const valid = parsed.data;
     const branch = readBranchOfQueryResultRef(valid.queryResultRef.reference.entityId);
     if (branch === undefined) {
-      return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", valid.invocationId) };
+      return { kind: "failed", error: readAuthorizationDenied(valid.invocationId) };
     }
     try {
       await this.#verifyRead(
@@ -1217,7 +1234,7 @@ export class PostgresEngineeringContextSourceRegistry
         .where("version_id", "=", valid.queryResultRef.reference.versionId)
         .executeTakeFirst();
       if (row === undefined || row.project_id !== valid.projectId || row.branch !== branch) {
-        return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", valid.invocationId) };
+        return { kind: "failed", error: readAuthorizationDenied(valid.invocationId) };
       }
       const record = EngineeringDataReadQueryRecordV1Schema.safeParse({
         queryResultRef: row.query_result_ref,
@@ -1233,16 +1250,21 @@ export class PostgresEngineeringContextSourceRegistry
         },
       });
       if (!record.success || record.data.query.kind !== branch) {
-        return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", valid.invocationId) };
+        return { kind: "failed", error: readAuthorizationDenied(valid.invocationId) };
       }
       const result = await this.#projectReadQuery(valid, record.data);
       return result === undefined
-        ? { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", valid.invocationId) }
+        ? { kind: "failed", error: readAuthorizationDenied(valid.invocationId) }
         : { kind: "succeeded", result };
     } catch (error) {
       return {
         kind: "failed",
-        error: this.#mapError(error, valid.invocationId, "engineering-data.resolve-read-query"),
+        error: this.#mapError(
+          error,
+          valid.invocationId,
+          "engineering-data.resolve-read-query",
+          "engineering-data.read",
+        ),
       };
     }
   }
@@ -1665,24 +1687,32 @@ export class PostgresEngineeringContextSourceRegistry
       (!query.authorization.grantedCapabilities.includes("engineering-data.read") &&
         !query.authorization.grantedCapabilities.includes("engineering-data.write"))
     ) {
-      throw preserveDomainError(moduleError("AUTHORIZATION_DENIED", query.queryId));
+      throw preserveDomainError(
+        moduleError("AUTHORIZATION_DENIED", query.queryId, {
+          requiredCapability: MODULE_BRANCH_CAPABILITY_V1[branch],
+        }),
+      );
     }
-    const requestedSpatialScopeRefs: SpatialScopeRefV1[] = [];
+    const requestedSpatialScopeRefs = new Map<string, SpatialScopeRefV1>();
     for (const resolved of resolvedSpatialScopeRefs) {
       const authorized = query.authorization.spatialScopeRefs.find(
         (scope) => scope.reference.entityId === resolved.reference.entityId,
       );
       if (authorized === undefined) {
-        throw preserveDomainError(moduleError("AUTHORIZATION_DENIED", query.queryId));
+        throw preserveDomainError(
+          moduleError("AUTHORIZATION_DENIED", query.queryId, {
+            requiredCapability: MODULE_BRANCH_CAPABILITY_V1[branch],
+          }),
+        );
       }
-      requestedSpatialScopeRefs.push(authorized);
+      requestedSpatialScopeRefs.set(refKey(authorized), authorized);
     }
     await this.#access.verify({
       authorizationContextRef: query.authorization.authorizationContextRef,
       invocationId: query.queryId,
       projectId: query.projectId,
       branch,
-      requestedSpatialScopeRefs,
+      requestedSpatialScopeRefs: [...requestedSpatialScopeRefs.values()],
       requestedSourceVersionRefs: [...requestedSourceVersionRefs],
       requestedAt: query.authorization.decidedAt,
     });
@@ -2603,7 +2633,13 @@ export class PostgresEngineeringContextSourceRegistry
     });
   }
 
-  #mapError(error: unknown, causalRunId: string, stage: string): ModuleErrorV1 {
+  #mapError(
+    error: unknown,
+    causalRunId: string,
+    stage: string,
+    requiredCapability:
+      "engineering-data.read" | "engineering-data.write" = "engineering-data.write",
+  ): ModuleErrorV1 {
     const contextError =
       error instanceof Error
         ? (error as Error & { contextSourceError?: unknown }).contextSourceError
@@ -2613,7 +2649,7 @@ export class PostgresEngineeringContextSourceRegistry
       error instanceof Error ? (error as Error & { accessError?: unknown }).accessError : undefined;
     if (accessError instanceof AccessServiceError) {
       if (accessError.details.code === "AUTHORIZATION_DENIED")
-        return moduleError("AUTHORIZATION_DENIED", causalRunId);
+        return moduleError("AUTHORIZATION_DENIED", causalRunId, { requiredCapability });
       if (accessError.details.code === "STALE_ACCESS_VERSION")
         return moduleError("STALE_VERSION", causalRunId, {
           targetRef: accessError.details.targetRef,
@@ -2629,14 +2665,13 @@ export class PostgresEngineeringContextSourceRegistry
       );
     }
     if (error instanceof AccessServiceError)
-      return moduleError(
-        error.details.code === "AUTHORIZATION_DENIED" ? "AUTHORIZATION_DENIED" : "TERMINAL_FAILURE",
-        causalRunId,
-      );
+      return error.details.code === "AUTHORIZATION_DENIED"
+        ? moduleError("AUTHORIZATION_DENIED", causalRunId, { requiredCapability })
+        : moduleError("TERMINAL_FAILURE", causalRunId);
     if (error instanceof ArtifactStoreError)
       return mapArtifactErrorToModuleError(error, {
         causalRunId,
-        requiredCapability: "engineering-data.write",
+        requiredCapability,
         authorizationPolicyRef: ACCESS_POLICY_REF_V1,
         schemaVersion: "1",
       });

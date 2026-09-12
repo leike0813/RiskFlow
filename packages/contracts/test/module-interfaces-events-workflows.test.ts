@@ -357,6 +357,14 @@ describe("module interface contracts", () => {
           projectRevisionRef,
           spatialScopeRef,
           applicabilityMetadataSnapshotRef,
+          entryMode: "reassess",
+          triggerReasonCode: "new-monitoring-data",
+          previousAssessmentRecordRef: assessmentRecordRef,
+          causalRunRef: workflowRunRef,
+          monitoringSnapshotRefs: [
+            monitoringSnapshotRef,
+            version("monitoring-snapshot", "monitoring-snapshot-2"),
+          ],
         }),
       ],
       [
@@ -669,6 +677,58 @@ describe("module interface contracts", () => {
           extra: "reject",
         }),
       }).success,
+    ).toBe(false);
+
+    const assessmentPreparationBase = {
+      riskInput,
+      projectRevisionRef,
+      spatialScopeRef,
+      applicabilityMetadataSnapshotRef,
+    };
+    expect(
+      EngineeringFreezeCommandV1Schema.safeParse(
+        command("assessment-preparation", {
+          ...assessmentPreparationBase,
+          entryMode: "assess",
+          triggerReasonCode: "manual",
+        }),
+      ).success,
+    ).toBe(true);
+    expect(
+      EngineeringFreezeCommandV1Schema.safeParse(
+        command("assessment-preparation", {
+          ...assessmentPreparationBase,
+          triggerReasonCode: "manual",
+        }),
+      ).success,
+    ).toBe(false);
+    expect(
+      EngineeringFreezeCommandV1Schema.safeParse(
+        command("assessment-preparation", {
+          ...assessmentPreparationBase,
+          entryMode: "assess",
+        }),
+      ).success,
+    ).toBe(false);
+    expect(
+      EngineeringFreezeCommandV1Schema.safeParse(
+        command("assessment-preparation", {
+          ...assessmentPreparationBase,
+          entryMode: "assess",
+          triggerReasonCode: "manual",
+          monitoringSnapshotRefs: [],
+        }),
+      ).success,
+    ).toBe(false);
+    expect(
+      EngineeringFreezeCommandV1Schema.safeParse(
+        command("assessment-preparation", {
+          ...assessmentPreparationBase,
+          entryMode: "assess",
+          triggerReasonCode: "manual",
+          monitoringCutoff: now,
+        }),
+      ).success,
     ).toBe(false);
   });
 
@@ -1425,8 +1485,8 @@ describe("module interface contracts", () => {
         payload: {
           change: {
             kind: "monitoring-snapshot",
-            previousMonitoringSnapshotRef: version("monitoring-snapshot", "old"),
-            newMonitoringSnapshotRef: monitoringSnapshotRef,
+            previousMonitoringSnapshotRefs: [version("monitoring-snapshot", "old")],
+            newMonitoringSnapshotRefs: [monitoringSnapshotRef],
           },
           reasonCode: "new-monitoring-data",
         },
@@ -1533,6 +1593,66 @@ describe("module interface contracts", () => {
         ...eventMetadata,
         ...events[4],
         extra: "reject",
+      }).success,
+    ).toBe(false);
+
+    const monitoringSnapshotChanges = [
+      {
+        kind: "monitoring-snapshot",
+        previousMonitoringSnapshotRefs: [],
+        newMonitoringSnapshotRefs: [monitoringSnapshotRef],
+      },
+      {
+        kind: "monitoring-snapshot",
+        previousMonitoringSnapshotRefs: [version("monitoring-snapshot", "old-1")],
+        newMonitoringSnapshotRefs: [],
+      },
+      {
+        kind: "monitoring-snapshot",
+        previousMonitoringSnapshotRefs: [
+          version("monitoring-snapshot", "old-1"),
+          version("monitoring-snapshot", "old-2"),
+        ],
+        newMonitoringSnapshotRefs: [monitoringSnapshotRef, version("monitoring-snapshot", "new-2")],
+      },
+    ];
+    for (const change of monitoringSnapshotChanges) {
+      expect(
+        DomainEventV1Schema.safeParse({
+          ...eventMetadata,
+          eventType: "engineering.assessment-input-changed.v1",
+          payload: { change, reasonCode: "new-monitoring-data" },
+        }).success,
+        JSON.stringify(change),
+      ).toBe(true);
+    }
+    expect(
+      DomainEventV1Schema.safeParse({
+        ...eventMetadata,
+        eventType: "engineering.assessment-input-changed.v1",
+        payload: {
+          change: {
+            kind: "monitoring-snapshot",
+            previousMonitoringSnapshotRef: version("monitoring-snapshot", "old"),
+            newMonitoringSnapshotRef: monitoringSnapshotRef,
+          },
+          reasonCode: "new-monitoring-data",
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      DomainEventV1Schema.safeParse({
+        ...eventMetadata,
+        eventType: "engineering.assessment-input-changed.v1",
+        payload: {
+          change: {
+            kind: "monitoring-snapshot",
+            previousMonitoringSnapshotRefs: [],
+            newMonitoringSnapshotRefs: [monitoringSnapshotRef],
+            samples: [{ value: 1 }],
+          },
+          reasonCode: "new-monitoring-data",
+        },
       }).success,
     ).toBe(false);
   });
@@ -1837,27 +1957,49 @@ describe("module interface contracts", () => {
         createdAt: now,
       }).success,
     ).toBe(true);
+    const assessmentPreparationSnapshotBase = {
+      schemaVersion: "1",
+      projectRevisionRef,
+      spatialScopeRef,
+      riskInput,
+      applicabilityMetadataSnapshotRef,
+      sourceEvidenceReferences: [
+        {
+          locator: { sourceSegmentId: "资料ID-章节ID-资料段ID" },
+          sourceVersion: { entityId: "source", versionId: "v1" },
+        },
+      ],
+      entryMode: "assess",
+      triggerReasonCode: "manual",
+      authorizationContextRef,
+      auditTrailRef,
+      createdBy: "actor-1",
+      createdAt: now,
+    };
+    expect(
+      AssessmentPreparationSnapshotV1Schema.safeParse(assessmentPreparationSnapshotBase).success,
+    ).toBe(true);
     expect(
       AssessmentPreparationSnapshotV1Schema.safeParse({
-        schemaVersion: "1",
-        projectRevisionRef,
-        spatialScopeRef,
-        riskInput,
-        applicabilityMetadataSnapshotRef,
-        sourceEvidenceReferences: [
-          {
-            locator: { sourceSegmentId: "资料ID-章节ID-资料段ID" },
-            sourceVersion: { entityId: "source", versionId: "v1" },
-          },
+        ...assessmentPreparationSnapshotBase,
+        monitoringSnapshotRefs: [
+          monitoringSnapshotRef,
+          version("monitoring-snapshot", "monitoring-snapshot-2"),
         ],
-        entryMode: "assess",
-        triggerReasonCode: "manual",
-        authorizationContextRef,
-        auditTrailRef,
-        createdBy: "actor-1",
-        createdAt: now,
       }).success,
     ).toBe(true);
+    expect(
+      AssessmentPreparationSnapshotV1Schema.safeParse({
+        ...assessmentPreparationSnapshotBase,
+        monitoringSnapshotRefs: [],
+      }).success,
+    ).toBe(false);
+    expect(
+      AssessmentPreparationSnapshotV1Schema.safeParse({
+        ...assessmentPreparationSnapshotBase,
+        monitoringSnapshotRef,
+      }).success,
+    ).toBe(false);
     expect(
       AssessmentInputSnapshotV1Schema.safeParse({
         schemaVersion: "1",

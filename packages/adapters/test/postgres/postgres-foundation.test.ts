@@ -42,6 +42,7 @@ import * as engineeringContextSourceMigration from "../../src/postgres/migration
 import * as structuredDocumentConversionMigration from "../../src/postgres/migrations/engineering-data/deliver-structured-document-conversion/000009_structured_document_conversion.js";
 import * as monitoringBatchesMigration from "../../src/postgres/migrations/engineering-data/deliver-monitoring-batches-snapshots-and-features/000011_monitoring_batches_snapshots_features.js";
 import * as assessmentConfigurationMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-assessment-configuration-and-measure-governance/000012_assessment_configuration.js";
+import * as agentCleaningPartialAvailabilityMigration from "../../src/postgres/migrations/engineering-data/deliver-agent-cleaning-and-partial-availability/000016_agent_cleaning_partial_availability.js";
 
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
 import * as agentTaskFixtureMigration from "./fixtures/migrations/agent-task/deliver-unified-bounded-agent-runtime/900002_agent_task_fixture.js";
@@ -314,6 +315,15 @@ const testMigrationManifest = [
       "000012_knowledge-modeling_deliver-assessment-configuration-and-measure-governance_assessment_configuration",
     sequence: 12,
     module: assessmentConfigurationMigration,
+  },
+  {
+    root: "production",
+    relativePath:
+      "engineering-data/deliver-agent-cleaning-and-partial-availability/000016_agent_cleaning_partial_availability.ts",
+    migrationName:
+      "000016_engineering-data_deliver-agent-cleaning-and-partial-availability_agent_cleaning_partial_availability",
+    sequence: 16,
+    module: agentCleaningPartialAvailabilityMigration,
   },
   {
     root: "fixture",

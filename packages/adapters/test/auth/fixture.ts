@@ -15,6 +15,7 @@ import * as engineeringContextSourceMigration from "../../src/postgres/migration
 import * as structuredDocumentConversionMigration from "../../src/postgres/migrations/engineering-data/deliver-structured-document-conversion/000009_structured_document_conversion.js";
 import * as monitoringMigration from "../../src/postgres/migrations/engineering-data/deliver-monitoring-batches-snapshots-and-features/000011_monitoring_batches_snapshots_features.js";
 import * as assessmentConfigurationMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-assessment-configuration-and-measure-governance/000012_assessment_configuration.js";
+import * as agentCleaningPartialAvailabilityMigration from "../../src/postgres/migrations/engineering-data/deliver-agent-cleaning-and-partial-availability/000016_agent_cleaning_partial_availability.js";
 
 export interface AuthPostgresFixture extends PostgresTestFixture {
   runMigrations(): Promise<void>;
@@ -23,6 +24,13 @@ export interface AuthPostgresFixture extends PostgresTestFixture {
 export const startAuthPostgresFixture = async (): Promise<AuthPostgresFixture> => {
   const base = await startPostgresFixture();
   const migrationModules = new Map<string, unknown>([
+    [
+      resolve(
+        base.productionMigrationRoot,
+        "engineering-data/deliver-agent-cleaning-and-partial-availability/000016_agent_cleaning_partial_availability.ts",
+      ),
+      agentCleaningPartialAvailabilityMigration,
+    ],
     [
       resolve(
         base.productionMigrationRoot,

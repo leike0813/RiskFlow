@@ -98,6 +98,7 @@ import {
 } from "../../postgres/pool.js";
 import type { PostgresDatabase } from "../../postgres/types.js";
 import type { PostgresMonitoringStoreV1 } from "../monitoring/postgres-monitoring-store.js";
+import type { PostgresDataCleaningStore } from "../cleaning/postgres-data-cleaning-store.js";
 
 type JsonColumn = ColumnType<JsonValue, JsonValue, JsonValue>;
 type TimestampColumn = ColumnType<Date, Date | string | undefined, Date | string>;
@@ -635,6 +636,7 @@ export interface PostgresEngineeringContextSourceRegistryOptions {
     readonly referenceGuard: ArtifactReferenceGuardV1;
   };
   readonly monitoringStore?: PostgresMonitoringStoreV1;
+  readonly dataCleaningStore?: PostgresDataCleaningStore;
   readonly now?: () => Date;
 }
 
@@ -647,6 +649,7 @@ export class PostgresEngineeringContextSourceRegistry
   readonly #artifactStore: ArtifactStoreV1;
   readonly #artifactGuard: ArtifactReferenceGuardV1;
   readonly #monitoringStore: PostgresMonitoringStoreV1 | undefined;
+  readonly #dataCleaningStore: PostgresDataCleaningStore | undefined;
   readonly #now: () => Date;
 
   constructor(options: PostgresEngineeringContextSourceRegistryOptions) {
@@ -661,6 +664,7 @@ export class PostgresEngineeringContextSourceRegistry
     this.#artifactStore = store;
     this.#artifactGuard = guard;
     this.#monitoringStore = options.monitoringStore;
+    this.#dataCleaningStore = options.dataCleaningStore;
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -876,6 +880,12 @@ export class PostgresEngineeringContextSourceRegistry
       };
     if (parsed.data.kind === "monitoring-snapshot" && this.#monitoringStore !== undefined) {
       return this.#monitoringStore.freezeSnapshot(parsed.data);
+    }
+    if (
+      parsed.data.kind === "identification-preparation" &&
+      this.#dataCleaningStore !== undefined
+    ) {
+      return this.#dataCleaningStore.freezeIdentificationPreparation(parsed.data);
     }
     return { kind: "failed", error: moduleError("UNSUPPORTED_CONTRACT", parsed.data.commandId) };
   }

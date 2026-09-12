@@ -38,8 +38,8 @@ C14 `readSeriesRevision` 中现有调用点局部比对随之删除，仅保留�
 
 每个会产生副作用的入口取得 decision 后，以原 strict 输入浅复制出局部 `verifiedCommand` 或 `verifiedQuery`，只把 `actorId` 设为 `decision.context.actorId`。由于 D-01 已证明三个主体值相同，这不会改变命令载荷语义或 C03 摘要，但使下游唯一主体来源可直接审计：
 
-- C14：`reviseSeries`、`registerAvailabilityPolicy`、`registerBatch`、`freezeSnapshot`、`readSnapshot`、`readSeriesRevision` 将 verified 对象传给 `atomicCommand`、事务 handler、领域 `audit.actorId`、`actor_id`、`requested_by` 与 `commit`；`resolveSnapshotQuery` 只做当前复验，不改已保存请求者。
-- C11：`reviseContext`、`registerSegments`、`createApplicabilitySnapshot`、`#registerSourceDelivery` 将 verified 对象传给 `atomicCommand`、事务 handler和 `#ensureSourceAccess`；因此工程/空间修订、资料段集合、适用性快照、资料项/交付/版本、收据、审计、`allowedAccountIds` 与 `registeredByAccountId` 都来自验证主体。`#readSourceSegments`、`#readEvidenceAccess` 将 verified query 传给 `#registerReadQuery`，从而固定 `requested_by`、收据与审计主体。
+- C14：`reviseSeries`、`registerAvailabilityPolicy`、`registerBatch`、`freezeSnapshot`、`readSnapshot`、`readSeriesRevision` 将 verified 对象传给 `atomicCommand`、事务 handler、领域 `audit.actorId`、`actor_id`、`requested_by` 与 `commit`；`registerBatch` 也将其传给 `#readSampleArtifact`，使工件读取请求沿用同一验证主体；`resolveSnapshotQuery` 只做当前复验，不改已保存请求者。
+- C11：`reviseContext`、`registerSegments`、`createApplicabilitySnapshot`、`#registerSourceDelivery` 将 verified 对象传给 `atomicCommand`、事务 handler和 `#ensureSourceAccess`；`#registerSourceDelivery` 也将其传给 `#readDeliveryMetadata`，使元数据读取请求沿用同一验证主体；因此工程/空间修订、资料段集合、适用性快照、资料项/交付/版本、收据、审计、`allowedAccountIds` 与 `registeredByAccountId` 都来自验证主体。`#readSourceSegments`、`#readEvidenceAccess` 将 verified query 传给 `#registerReadQuery`，从而固定 `requested_by`、收据与审计主体。
 
 纯读取入口 `resolveSourceProcessingInput`、`resolveSourceVersionForRead`、`resolveReadQuery` 及 `#projectReadQuery` 不新增写入，但仍必须通过返回 decision 的 `#verifyRead`；任何调用点都不得绕过 D-01。多次精确复验可继续使用 verified 对象，其主体保持不变。
 

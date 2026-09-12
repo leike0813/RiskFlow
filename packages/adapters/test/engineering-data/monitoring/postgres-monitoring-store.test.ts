@@ -1670,6 +1670,26 @@ describe("C14 PostgreSQL monitoring store", () => {
       receipt_actor: managerId,
       audit_actor: managerId,
     });
+    const forgedReplayAuthorization = await forgedAuthorization(
+      seriesReadControlId,
+      "engineering-data.monitoring-snapshot-query",
+    );
+    expect(
+      await fixture.monitoringStore.readSeriesRevision({
+        queryId: seriesReadControlId,
+        projectId,
+        actorId: forgedActorId,
+        requestedAt: now,
+        authorization: forgedReplayAuthorization,
+        monitoringSeriesRef: seriesRef,
+      }),
+    ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    expect(await commandEvidence(seriesReadControlId)).toMatchObject({
+      receipts: 1,
+      audits: 1,
+      receipt_actor: managerId,
+      audit_actor: managerId,
+    });
   });
 
   it("requires a correction predecessor to contain the corrected sample time", async () => {

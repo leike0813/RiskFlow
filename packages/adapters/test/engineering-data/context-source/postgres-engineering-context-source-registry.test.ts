@@ -1957,6 +1957,29 @@ describe("C11 PostgreSQL context/source registry", () => {
       },
     });
 
+    const forgedReplayAuthorization = await forged(
+      segmentsReadId,
+      "engineering-data.source-segments",
+      [state.sourceVersionRef],
+    );
+    expect(
+      await fixture.registry.read({
+        queryId: segmentsReadId,
+        projectId: state.projectId,
+        actorId: forgedActorId,
+        requestedAt: timestamp,
+        authorization: forgedReplayAuthorization,
+        kind: "source-segments",
+        payload: { sourceSegmentSetRef: state.segmentSetRef },
+      }),
+    ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    expect(await evidenceFor(segmentsReadId)).toMatchObject({
+      receipts: 1,
+      audits: 1,
+      receipt_actor: state.managerId,
+      audit_actor: state.managerId,
+    });
+
     const projectControlId = "c11-binding-project-control";
     const projectControl = await fixture.registry.reviseContext({
       commandId: projectControlId,

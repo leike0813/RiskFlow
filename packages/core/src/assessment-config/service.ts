@@ -164,6 +164,12 @@ const artifactFailure = (
   };
 };
 
+const rethrowArtifactFailure = (error: unknown, targetRef: ContractReferenceV1): never => {
+  if (assessmentConfigurationFailureFrom(error) !== undefined) throw error;
+  const failure = artifactFailure(error, targetRef);
+  return failAssessmentConfiguration(failure.reasonCode, targetRef, failure.code);
+};
+
 const readBoundedContent = async (handle: ArtifactReadHandleV1): Promise<Uint8Array> => {
   const chunks: Uint8Array[] = [];
   let byteLength = 0;
@@ -223,13 +229,11 @@ export const readPreparedAssessmentConfiguration = async (
       const failure = artifactFailure(error, targetRef);
       return failAssessmentConfiguration(failure.reasonCode, targetRef, failure.code);
     });
-  const bytes = await readBoundedContent(handle);
-  const receipt = await handle.verified.catch((): never =>
-    failAssessmentConfiguration(
-      "assessment-configuration-artifact-unavailable",
-      targetRef,
-      "TERMINAL_FAILURE",
-    ),
+  const bytes = await readBoundedContent(handle).catch((error: unknown): never =>
+    rethrowArtifactFailure(error, targetRef),
+  );
+  const receipt = await handle.verified.catch((error: unknown): never =>
+    rethrowArtifactFailure(error, targetRef),
   );
   if (
     receipt.content.hash.value !== handle.manifest.content.hash.value ||

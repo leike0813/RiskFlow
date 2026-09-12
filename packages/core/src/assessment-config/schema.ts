@@ -14,6 +14,7 @@ import {
   MODULE_BRANCH_CAPABILITY_V1,
   ModuleErrorV1Schema,
   ProjectRevisionRefV1Schema,
+  type KnowledgeDefinitionTypeV1,
   type ModuleErrorV1,
 } from "@riskflow/contracts/ports";
 import {
@@ -49,7 +50,7 @@ export const ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1 = [
   "measure-library",
   "forecast-policy",
   "deviation-policy",
-] as const;
+] as const satisfies readonly KnowledgeDefinitionTypeV1[];
 
 export type AssessmentConfigurationDefinitionTypeV1 =
   (typeof ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1)[number];

@@ -566,7 +566,7 @@ export class PostgresAssessmentConfigurationAdapter implements AssessmentConfigu
         actor_ref: input.command.actorRef,
         authorization_context_ref: jsonbValue(input.command.authorizationContextRef),
         audit_entry_id: input.auditEntryId,
-        occurred_at: configurationSet.recordedAt,
+        occurred_at: input.command.issuedAt,
         recorded_at: configurationSet.recordedAt,
         persisted_at: configurationSet.recordedAt,
       })

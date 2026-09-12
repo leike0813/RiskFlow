@@ -626,6 +626,7 @@ describe("local document validation", () => {
 
   it("rejects undeclared unit conversions and C14 feature unit drift", () => {
     const mapping = assessmentConfigurationDocumentOf(set, "indicator-field-mapping");
+    const warning = assessmentConfigurationDocumentOf(set, "monitoring-warning-threshold");
     expectFailure(
       () =>
         validateAssessmentConfigurationDocument({
@@ -661,6 +662,17 @@ describe("local document validation", () => {
                 targetUnit: "mm",
               },
             ],
+          },
+        }),
+      "assessment-configuration-unit-mapping-invalid",
+    );
+    expectFailure(
+      () =>
+        validateAssessmentConfigurationDocument({
+          ...warning,
+          content: {
+            ...warning.content,
+            thresholds: [{ ...warning.content.thresholds[0], unit: "mm" }],
           },
         }),
       "assessment-configuration-unit-mapping-invalid",
@@ -1117,6 +1129,24 @@ describe("bounded artifact read and immutable set resolution", () => {
     ).rejects.toMatchObject({
       failure: { reasonCode: "assessment-configuration-content-invalid" },
     });
+  });
+
+  it("keeps transient C04 verification failures retryable", async () => {
+    const base = fullStore();
+    const store = {
+      ...base,
+      open: async (...args: Parameters<ArtifactStoreV1["open"]>) => ({
+        ...(await base.open(...args)),
+        verified: Promise.reject(
+          Object.assign(new Error("temporary artifact read failure"), {
+            code: "ARTIFACT_IO_FAILURE",
+          }),
+        ),
+      }),
+    };
+    await expect(
+      readPreparedAssessmentConfiguration(readInput("risk-matrix", store)),
+    ).rejects.toMatchObject({ failure: { code: "TRANSIENT_FAILURE" } });
   });
 
   it("resolves the exact eleven member set with a stable identity", async () => {

@@ -216,6 +216,15 @@ export const validateAssessmentConfigurationDocument = (
     case "risk-matrix":
       validateRiskMatrix(document.content, targetRef);
       return;
+    case "monitoring-warning-threshold":
+      if (
+        document.content.thresholds.some(
+          (threshold) => !metricUnitMatches(threshold.metric, threshold.unit),
+        )
+      ) {
+        failAssessmentConfiguration("assessment-configuration-unit-mapping-invalid", targetRef);
+      }
+      return;
     default:
       return;
   }

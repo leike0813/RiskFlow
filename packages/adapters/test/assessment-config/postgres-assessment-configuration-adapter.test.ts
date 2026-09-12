@@ -572,6 +572,26 @@ describe.sequential("PostgreSQL assessment-configuration adapter", () => {
       );
     }
 
+    const futureAsKnown = await fixture!.configuration.resolveConfigurationSet(
+      resolveRequest(projectId, "future-as-known", {
+        requiredAt: REQUIRED_AT,
+        asOfRecordedAt: PUBLISH_AT,
+      }),
+    );
+    expect(futureAsKnown).toMatchObject({ kind: "succeeded" });
+    const setTimes = await fixture!.postgres.adminPool.query<{
+      occurred_at: Date;
+      recorded_at: Date;
+    }>(
+      `SELECT occurred_at, recorded_at
+        FROM business.assessment_configuration_release_sets
+        WHERE project_id = $1 AND as_of_recorded_at = $2`,
+      [projectId, PUBLISH_AT],
+    );
+    expect(setTimes.rows).toHaveLength(1);
+    expect(setTimes.rows[0]?.occurred_at.toISOString()).toBe(REQUIRED_AT);
+    expect(setTimes.rows[0]?.recorded_at.toISOString()).toBe("2030-01-01T00:00:01.000Z");
+
     const replay = await fixture!.configuration.resolveConfigurationSet(
       resolveRequest(projectId, "replay"),
     );
@@ -594,8 +614,16 @@ describe.sequential("PostgreSQL assessment-configuration adapter", () => {
         WHERE project_id = $1`,
       [projectId],
     );
-    expect(setRows.rows).toHaveLength(1);
-    const frozenIdentity = setRows.rows[0]!.identity_digest;
+    expect(setRows.rows).toHaveLength(2);
+    expect(setRows.rows.map((row) => row.identity_digest)).toEqual(
+      expect.arrayContaining([
+        first.configurationSet.identityDigest,
+        futureAsKnown.kind === "succeeded"
+          ? futureAsKnown.configurationSet.identityDigest
+          : "missing-future-set",
+      ]),
+    );
+    const frozenIdentity = first.configurationSet.identityDigest;
     const memberKeys = (
       members: readonly {
         definitionType: string;

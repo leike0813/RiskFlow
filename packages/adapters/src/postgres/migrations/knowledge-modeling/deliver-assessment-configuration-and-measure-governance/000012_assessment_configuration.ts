@@ -108,10 +108,6 @@ export async function up(db: Kysely<unknown>): Promise<void> {
         AND command_id <> '' AND actor_ref <> ''`,
     )
     .addCheckConstraint(
-      "assessment_configuration_release_sets_time_ck",
-      sql`as_of_recorded_at >= required_at`,
-    )
-    .addCheckConstraint(
       "assessment_configuration_release_sets_digest_ck",
       sql`member_digest ~ '^[0-9a-f]{64}$' AND identity_digest ~ '^[0-9a-f]{64}$'`,
     )

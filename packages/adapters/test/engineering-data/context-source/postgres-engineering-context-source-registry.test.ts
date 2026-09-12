@@ -2,12 +2,14 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { ArtifactPutCommandV1Schema } from "@riskflow/core/artifacts";
 import type {
+  AuthorizationContextRefV1,
   AuthorizationContextV1,
   ContentArtifactRefV1,
   EngineeringDataCommandV1,
   EngineeringDataQueryV1,
   EngineeringFreezeCommandV1,
   ProjectRevisionRefV1,
+  SourceSegmentSetRefV1,
   SourceVersionRefV1,
   SpatialScopeRefV1,
 } from "@riskflow/contracts/ports";
@@ -20,6 +22,7 @@ import { PostgresEngineeringContextSourceRegistry } from "../../../src/engineeri
 import { StructuredDocumentConversionAdapter } from "../../../src/engineering-data/document-conversion/structured-document-converter.js";
 import { createPostgresRuntime } from "../../../src/postgres/pool.js";
 import * as contextSourceMigration from "../../../src/postgres/migrations/engineering-data/deliver-engineering-context-and-source-registry/000008_engineering_context_source_registry.js";
+import * as readQueryResultsMigration from "../../../src/postgres/migrations/engineering-data/implement-engineering-data-read-branches/000024_engineering_data_read_query_results.js";
 import {
   startEngineeringContextSourceFixture,
   type EngineeringContextSourcePostgresFixture,
@@ -52,6 +55,7 @@ describe("C11 PostgreSQL context/source registry", () => {
     | {
         projectId: string;
         managerId: string;
+        adminContextRef: AuthorizationContextRefV1;
         projectRevisionRef: ProjectRevisionRefV1;
         sourceVersionRef: SourceVersionRefV1;
         businessSpatialScopeRef: SpatialScopeRefV1;
@@ -61,10 +65,15 @@ describe("C11 PostgreSQL context/source registry", () => {
         };
         metadataArtifactRef: ContentArtifactRefV1;
         deliveryCommand: Extract<EngineeringDataCommandV1, { kind: "register-source-delivery" }>;
+        segmentSetRef: SourceSegmentSetRefV1;
+        segmentIds: readonly string[];
         authorize(
           invocationId: string,
           requestedSourceVersionRefs?: readonly SourceVersionRefV1[],
-          branch?: "engineering-data.register-source-delivery" | "engineering-data.evidence-access",
+          branch?:
+            | "engineering-data.register-source-delivery"
+            | "engineering-data.evidence-access"
+            | "engineering-data.source-segments",
           requestedSpatialScopeRefs?: readonly SpatialScopeRefV1[],
         ): Promise<AuthorizationContextV1>;
       }
@@ -197,6 +206,44 @@ describe("C11 PostgreSQL context/source registry", () => {
     }
   });
 
+  it("discovers migration 000024 and keeps read query results read-only for service roles", async () => {
+    const tableResult = await fixture.postgres.adminPool.query<{ table_name: string }>(
+      `SELECT table_name FROM information_schema.tables WHERE table_schema = 'business' AND table_name = 'engineering_data_read_query_results'`,
+    );
+    expect(tableResult.rows.map((row) => row.table_name)).toEqual([
+      "engineering_data_read_query_results",
+    ]);
+    const privilegeResult = await fixture.postgres.adminPool.query<{
+      app_select: boolean;
+      app_update: boolean;
+      worker: boolean;
+      checkpointer: boolean;
+    }>(
+      `SELECT has_table_privilege('riskflow_app', 'business.engineering_data_read_query_results', 'SELECT') AS app_select, has_table_privilege('riskflow_app', 'business.engineering_data_read_query_results', 'UPDATE') AS app_update, has_table_privilege('riskflow_outbox_worker', 'business.engineering_data_read_query_results', 'SELECT') AS worker, has_table_privilege('riskflow_checkpointer', 'business.engineering_data_read_query_results', 'SELECT') AS checkpointer`,
+    );
+    expect(privilegeResult.rows[0]).toEqual({
+      app_select: true,
+      app_update: false,
+      worker: false,
+      checkpointer: false,
+    });
+    const migratorRuntime = createPostgresRuntime(fixture.postgres.migrator, "riskflow_migrator");
+    try {
+      await readQueryResultsMigration.down(migratorRuntime.db);
+      const dropped = await fixture.postgres.adminPool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM information_schema.tables WHERE table_schema = 'business' AND table_name = 'engineering_data_read_query_results'",
+      );
+      expect(dropped.rows[0]?.count).toBe("0");
+      await readQueryResultsMigration.up(migratorRuntime.db);
+    } finally {
+      await migratorRuntime.close();
+    }
+    const restored = await fixture.postgres.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM information_schema.tables WHERE table_schema = 'business' AND table_name = 'engineering_data_read_query_results'",
+    );
+    expect(restored.rows[0]?.count).toBe("1");
+  });
+
   it("keeps C02 public branches closed until their owning change is installed", async () => {
     const closedRegistry = new PostgresEngineeringContextSourceRegistry({
       db: fixture.runtime.db,
@@ -272,9 +319,27 @@ describe("C11 PostgreSQL context/source registry", () => {
         },
       },
     } satisfies EngineeringDataQueryV1;
-    expect(await fixture.registry.read(query)).toMatchObject({
+    const unownedQuery = {
+      ...query,
+      queryId: "monitoring-snapshot-query",
+      kind: "monitoring-snapshot" as const,
+      payload: {
+        monitoringSnapshotRef: {
+          kind: "monitoring-snapshot" as const,
+          reference: { entityId: "snapshot-1", versionId: "1" },
+        },
+      },
+    } satisfies EngineeringDataQueryV1;
+    expect(await closedRegistry.read(unownedQuery)).toMatchObject({
       kind: "failed",
       error: { code: "UNSUPPORTED_CONTRACT" },
+    });
+    expect(
+      await closedRegistry.read({ ...query, payload: {} } as EngineeringDataQueryV1),
+    ).toMatchObject({ kind: "failed", error: { code: "UNSUPPORTED_CONTRACT" } });
+    expect(await fixture.registry.read(unownedQuery)).toMatchObject({
+      kind: "failed",
+      error: { code: "AUTHORIZATION_DENIED" },
     });
   });
 
@@ -552,9 +617,18 @@ describe("C11 PostgreSQL context/source registry", () => {
           spatialScopeRefs: [businessSpatialScopeRef],
           locator: { kind: "document", pageNumber: 1, headingPath: ["施工方案"] },
         },
+        {
+          sourceSegmentId: `${sourceId}-chapter_2-segment_1` as never,
+          chapterId: "chapter_2",
+          segmentId: "segment_1",
+          kind: "chapter",
+          spatialScopeRefs: [businessSpatialScopeRef],
+          locator: { kind: "document", pageNumber: 3, headingPath: ["风险源"] },
+        },
       ],
     });
     expect(segments).toMatchObject({ kind: "succeeded", result: { kind: "source-segment-set" } });
+    if (segments.kind !== "succeeded" || segments.result.kind !== "source-segment-set") return;
     const persisted = await fixture.postgres.adminPool.query<{
       access_status: string;
       segment_count: string;
@@ -562,22 +636,28 @@ describe("C11 PostgreSQL context/source registry", () => {
       "SELECT v.access_status, (SELECT count(*)::text FROM business.source_segments s WHERE s.source_version_id = v.source_version_id) AS segment_count FROM business.source_versions v WHERE v.source_version_id = $1",
       [sourceId],
     );
-    expect(persisted.rows[0]).toEqual({ access_status: "ready", segment_count: "1" });
+    expect(persisted.rows[0]).toEqual({ access_status: "ready", segment_count: "2" });
     e2eState = {
       projectId: project,
       managerId: manager.resultRef.entityId,
+      adminContextRef: adminChanged.systemAdministrationContextRef!,
       projectRevisionRef: projectResult.result.revision.projectRevisionRef,
       sourceVersionRef,
       businessSpatialScopeRef,
       snapshotRef: snapshotResult.result.snapshot.snapshotRef,
       metadataArtifactRef: metadataArtifact.artifactRef,
       deliveryCommand,
+      segmentSetRef: segments.result.segmentSet.sourceSegmentSetRef,
+      segmentIds: [...segments.result.segmentSet.segments]
+        .map((segment) => segment.sourceSegmentId as string)
+        .sort(),
       authorize: async (
         invocationId: string,
         requestedSourceVersionRefs: readonly SourceVersionRefV1[] = [],
         branch:
           | "engineering-data.register-source-delivery"
-          | "engineering-data.evidence-access" = "engineering-data.register-source-delivery",
+          | "engineering-data.evidence-access"
+          | "engineering-data.source-segments" = "engineering-data.register-source-delivery",
         requestedSpatialScopeRefs: readonly SpatialScopeRefV1[] = [spatialScopeRef],
       ) =>
         (
@@ -1038,5 +1118,551 @@ describe("C11 PostgreSQL context/source registry", () => {
         input: { sourceVersionRef: state.sourceVersionRef },
       },
     });
+  });
+
+  it("rolls back read query persistence after a storage failure and recovers on retry", async () => {
+    const state = requireE2eState();
+    const queryId = "c11-read-rollback";
+    const query = {
+      queryId,
+      projectId: state.projectId,
+      actorId: state.managerId,
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      authorization: await state.authorize(
+        queryId,
+        [state.sourceVersionRef],
+        "engineering-data.source-segments",
+      ),
+      kind: "source-segments",
+      payload: { sourceSegmentSetRef: state.segmentSetRef },
+    } satisfies EngineeringDataQueryV1;
+    let failNext = true;
+    const failingRegistry = new PostgresEngineeringContextSourceRegistry({
+      db: fixture.runtime.db,
+      transactionUnit: {
+        async execute(command, handler) {
+          if (failNext) {
+            failNext = false;
+            throw new Error("temporary read query storage outage");
+          }
+          return fixture.transactionUnit.execute(command, handler);
+        },
+      },
+      access: fixture.access,
+      artifactStore: fixture.artifactStore,
+      artifactReferenceGuard: fixture.artifactRegistry,
+      monitoringStore: fixture.monitoringStore,
+      now: () => new Date("2030-01-01T00:00:00.000Z"),
+    });
+    expect(await failingRegistry.read(query)).toMatchObject({ kind: "failed" });
+    const persisted = await fixture.postgres.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM business.engineering_data_read_query_results WHERE query_result_id = $1",
+      [`source-segments-${queryId}`],
+    );
+    expect(persisted.rows[0]?.count).toBe("0");
+    const audited = await fixture.postgres.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM audit.entries WHERE command_id = $1",
+      [queryId],
+    );
+    expect(audited.rows[0]?.count).toBe("0");
+    expect(await fixture.registry.read(query)).toEqual({
+      kind: "succeeded",
+      result: {
+        queryResultRef: {
+          kind: "query-result",
+          reference: { entityId: `source-segments-${queryId}`, versionId: "1" },
+        },
+      },
+    });
+  });
+
+  it("projects distinct C11 revisions of one scope to one exact C06 reference", async () => {
+    const state = requireE2eState();
+    const revisions = await fixture.postgres.adminPool.query<{
+      spatial_scope_ref: SpatialScopeRefV1;
+    }>(
+      "SELECT spatial_scope_ref FROM business.engineering_spatial_segment_revisions WHERE project_id = $1 AND scope_id = $2 ORDER BY revision_no",
+      [state.projectId, state.businessSpatialScopeRef.reference.entityId],
+    );
+    const historicalScopeRef = revisions.rows.find(
+      ({ spatial_scope_ref }) =>
+        spatial_scope_ref.reference.versionId !== state.businessSpatialScopeRef.reference.versionId,
+    )?.spatial_scope_ref;
+    if (historicalScopeRef === undefined)
+      throw new Error("historical C11 scope revision is missing");
+    const segmentId = state.segmentIds[0]!;
+    const original = await fixture.postgres.adminPool.query<{ spatial_scope_refs: unknown }>(
+      "SELECT spatial_scope_refs FROM business.source_segments WHERE project_id = $1 AND source_segment_id = $2",
+      [state.projectId, segmentId],
+    );
+    const queryId = "c11-read-mixed-spatial-revisions";
+    const authorization = await state.authorize(
+      queryId,
+      [state.sourceVersionRef],
+      "engineering-data.source-segments",
+    );
+    await fixture.postgres.adminPool.query(
+      "UPDATE business.source_segments SET spatial_scope_refs = $3::jsonb WHERE project_id = $1 AND source_segment_id = $2",
+      [state.projectId, segmentId, JSON.stringify([historicalScopeRef])],
+    );
+    const result = await fixture.registry.read({
+      queryId,
+      projectId: state.projectId,
+      actorId: state.managerId,
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      authorization,
+      kind: "source-segments",
+      payload: { sourceSegmentSetRef: state.segmentSetRef },
+    });
+    await fixture.postgres.adminPool.query(
+      "UPDATE business.source_segments SET spatial_scope_refs = $3::jsonb WHERE project_id = $1 AND source_segment_id = $2",
+      [state.projectId, segmentId, JSON.stringify(original.rows[0]!.spatial_scope_refs)],
+    );
+    expect(result).toMatchObject({ kind: "succeeded" });
+  });
+
+  it("records both read branches once, replays the same reference, and resolves safe projections", async () => {
+    const state = requireE2eState();
+    const segmentsQueryId = "c11-read-source-segments";
+    const segmentsQuery = {
+      queryId: segmentsQueryId,
+      projectId: state.projectId,
+      actorId: state.managerId,
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      authorization: await state.authorize(
+        segmentsQueryId,
+        [state.sourceVersionRef],
+        "engineering-data.source-segments",
+      ),
+      kind: "source-segments",
+      payload: { sourceSegmentSetRef: state.segmentSetRef },
+    } satisfies EngineeringDataQueryV1;
+    const segmentsResultRef = {
+      kind: "query-result" as const,
+      reference: { entityId: `source-segments-${segmentsQueryId}`, versionId: "1" },
+    };
+    expect(await fixture.registry.read(segmentsQuery)).toEqual({
+      kind: "succeeded",
+      result: { queryResultRef: segmentsResultRef },
+    });
+    expect(await fixture.registry.read(segmentsQuery)).toEqual({
+      kind: "succeeded",
+      result: { queryResultRef: segmentsResultRef },
+    });
+    const segmentsRows = await fixture.postgres.adminPool.query<{ query_payload: unknown }>(
+      "SELECT query_payload FROM business.engineering_data_read_query_results WHERE query_result_id = $1",
+      [`source-segments-${segmentsQueryId}`],
+    );
+    expect(segmentsRows.rows).toEqual([
+      { query_payload: { kind: "source-segments", sourceSegmentSetRef: state.segmentSetRef } },
+    ]);
+    const segmentsAudit = await fixture.postgres.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM audit.entries WHERE command_id = $1",
+      [segmentsQueryId],
+    );
+    expect(segmentsAudit.rows[0]?.count).toBe("1");
+
+    const segmentsResolveId = "c11-resolve-source-segments";
+    const segmentsResolved = await fixture.registry.resolveReadQuery({
+      queryResultRef: segmentsResultRef,
+      invocationId: segmentsResolveId,
+      projectId: state.projectId,
+      actorId: state.managerId,
+      requestedAt: "2030-01-01T00:00:01.000Z",
+      authorization: await state.authorize(
+        segmentsResolveId,
+        [state.sourceVersionRef],
+        "engineering-data.source-segments",
+      ),
+    });
+    expect(segmentsResolved).toMatchObject({
+      kind: "succeeded",
+      result: {
+        kind: "source-segments",
+        queryResultRef: segmentsResultRef,
+        segmentSet: { sourceSegmentSetRef: state.segmentSetRef },
+        sourceAccessGrantRef: { kind: "source-access-grant" },
+      },
+    });
+    if (
+      segmentsResolved.kind !== "succeeded" ||
+      segmentsResolved.result.kind !== "source-segments"
+    ) {
+      throw new Error("source-segments resolve did not succeed");
+    }
+    expect(
+      segmentsResolved.result.segmentSet.segments.map((segment) => segment.sourceSegmentId),
+    ).toEqual(state.segmentIds);
+    expect(JSON.stringify(segmentsResolved)).not.toContain("content-artifact");
+    expect(JSON.stringify(segmentsResolved)).not.toContain("sha256:");
+
+    const evidenceQueryId = "c11-read-evidence-access";
+    const evidenceReferences = state.segmentIds.map((segmentId) => ({
+      locator: { sourceSegmentId: segmentId },
+      sourceVersion: {
+        entityId: state.sourceVersionRef.reference.entityId,
+        versionId: state.sourceVersionRef.reference.versionId,
+      },
+    }));
+    const evidenceQuery = {
+      queryId: evidenceQueryId,
+      projectId: state.projectId,
+      actorId: state.managerId,
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      authorization: await state.authorize(
+        evidenceQueryId,
+        [state.sourceVersionRef],
+        "engineering-data.evidence-access",
+      ),
+      kind: "evidence-access",
+      payload: {
+        evidenceReferences,
+        purposeCode: "risk-identification.evidence-access",
+      },
+    } satisfies EngineeringDataQueryV1;
+    const evidenceResultRef = {
+      kind: "query-result" as const,
+      reference: { entityId: `evidence-access-${evidenceQueryId}`, versionId: "1" },
+    };
+    expect(await fixture.registry.read(evidenceQuery)).toEqual({
+      kind: "succeeded",
+      result: { queryResultRef: evidenceResultRef },
+    });
+    expect(
+      await fixture.registry.read({
+        ...evidenceQuery,
+        payload: { ...evidenceQuery.payload, purposeCode: "engineering-data.evidence-access" },
+      }),
+    ).toMatchObject({ kind: "failed", error: { code: "IDEMPOTENCY_CONFLICT" } });
+    const evidenceRows = await fixture.postgres.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM business.engineering_data_read_query_results WHERE query_result_id = $1",
+      [`evidence-access-${evidenceQueryId}`],
+    );
+    expect(evidenceRows.rows[0]?.count).toBe("1");
+
+    const evidenceResolveId = "c11-resolve-evidence-access";
+    const evidenceResolved = await fixture.registry.resolveReadQuery({
+      queryResultRef: evidenceResultRef,
+      invocationId: evidenceResolveId,
+      projectId: state.projectId,
+      actorId: state.managerId,
+      requestedAt: "2030-01-01T00:00:01.000Z",
+      authorization: await state.authorize(
+        evidenceResolveId,
+        [state.sourceVersionRef],
+        "engineering-data.evidence-access",
+      ),
+    });
+    expect(evidenceResolved).toMatchObject({
+      kind: "succeeded",
+      result: {
+        kind: "evidence-access",
+        queryResultRef: evidenceResultRef,
+        purposeCode: "risk-identification.evidence-access",
+      },
+    });
+    if (
+      evidenceResolved.kind !== "succeeded" ||
+      evidenceResolved.result.kind !== "evidence-access"
+    ) {
+      throw new Error("evidence-access resolve did not succeed");
+    }
+    expect(evidenceResolved.result.items.map((item) => item.segment.sourceSegmentId)).toEqual(
+      state.segmentIds,
+    );
+    expect(
+      evidenceResolved.result.items.map((item) => item.evidenceReference.locator.sourceSegmentId),
+    ).toEqual(state.segmentIds);
+    expect(
+      evidenceResolved.result.items.every(
+        (item) =>
+          item.sourceAccessGrantRef.kind === "source-access-grant" &&
+          item.sourceSegmentSetRef.reference.entityId === state.segmentSetRef.reference.entityId &&
+          item.sourceSegmentSetRef.reference.versionId === state.segmentSetRef.reference.versionId,
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(evidenceResolved)).not.toContain("content-artifact");
+    expect(JSON.stringify(evidenceResolved)).not.toContain("sha256:");
+  });
+
+  it("returns one indistinguishable denial for every unresolvable read target", async () => {
+    const state = requireE2eState();
+    const queryId = "c11-read-denied";
+    const authorization = await state.authorize(
+      queryId,
+      [state.sourceVersionRef],
+      "engineering-data.source-segments",
+    );
+    const segmentsQueryBase = {
+      queryId,
+      projectId: state.projectId,
+      actorId: state.managerId,
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      authorization,
+      kind: "source-segments" as const,
+    };
+    const evidenceQueryId = "c11-read-denied-evidence";
+    const evidenceAuthorization = await state.authorize(
+      evidenceQueryId,
+      [state.sourceVersionRef],
+      "engineering-data.evidence-access",
+    );
+    const evidenceQueryBase = {
+      queryId: evidenceQueryId,
+      projectId: state.projectId,
+      actorId: state.managerId,
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      authorization: evidenceAuthorization,
+      kind: "evidence-access" as const,
+    };
+    const results: Array<
+      [
+        string,
+        {
+          kind: string;
+          error?: { code: string; category: string; requiredCapability?: string };
+        },
+      ]
+    > = [
+      [
+        "missing-segment-set",
+        await fixture.registry.read({
+          ...segmentsQueryBase,
+          payload: {
+            sourceSegmentSetRef: {
+              kind: "source-segment-set",
+              reference: { entityId: "c11-missing-set", versionId: "1" },
+            },
+          },
+        }),
+      ],
+      [
+        "unknown-segment-set-version",
+        await fixture.registry.read({
+          ...segmentsQueryBase,
+          payload: {
+            sourceSegmentSetRef: {
+              ...state.segmentSetRef,
+              reference: {
+                entityId: state.segmentSetRef.reference.entityId,
+                versionId: "9",
+              },
+            },
+          },
+        }),
+      ],
+      [
+        "cross-project-query",
+        await fixture.registry.read({ ...segmentsQueryBase, projectId: "c11-other-project" }),
+      ],
+      [
+        "unknown-actor",
+        await fixture.registry.read({ ...segmentsQueryBase, actorId: "c11-other-account" }),
+      ],
+      [
+        "capability-not-granted",
+        await fixture.registry.read({
+          ...segmentsQueryBase,
+          authorization: {
+            ...authorization,
+            grantedCapabilities: ["engineering-data.write" as const],
+          },
+        }),
+      ],
+      [
+        "one-unresolvable-evidence",
+        await fixture.registry.read({
+          ...evidenceQueryBase,
+          payload: {
+            evidenceReferences: [
+              {
+                locator: { sourceSegmentId: state.segmentIds[0]! },
+                sourceVersion: state.sourceVersionRef.reference,
+              },
+              {
+                locator: { sourceSegmentId: "c11-missing-segment" },
+                sourceVersion: state.sourceVersionRef.reference,
+              },
+            ],
+            purposeCode: "risk-identification.evidence-access",
+          },
+        }),
+      ],
+      [
+        "unknown-source-version",
+        await fixture.registry.read({
+          ...evidenceQueryBase,
+          payload: {
+            evidenceReferences: [
+              {
+                locator: { sourceSegmentId: state.segmentIds[0]! },
+                sourceVersion: {
+                  entityId: state.sourceVersionRef.reference.entityId,
+                  versionId: "9",
+                },
+              },
+            ],
+            purposeCode: "risk-identification.evidence-access",
+          },
+        }),
+      ],
+      [
+        "unmanaged-source-version",
+        await fixture.registry.read({
+          ...evidenceQueryBase,
+          payload: {
+            evidenceReferences: [
+              {
+                locator: {
+                  sourceSegmentId: `${state.sourceVersionRef.reference.entityId}-chapter_1-segment_1`,
+                },
+                sourceVersion: { entityId: "c11-unmanaged-source", versionId: "1" },
+              },
+            ],
+            purposeCode: "risk-identification.evidence-access",
+          },
+        }),
+      ],
+    ];
+    for (const [label, result] of results) {
+      expect(result, label).toMatchObject({
+        kind: "failed",
+        error: { code: "AUTHORIZATION_DENIED", category: "authorization" },
+      });
+    }
+    expect(
+      new Set(
+        results.map(
+          ([, result]) =>
+            `${result.error?.code}/${result.error?.category}/${result.error?.requiredCapability}`,
+        ),
+      ),
+    ).toEqual(new Set(["AUTHORIZATION_DENIED/authorization/engineering-data.read"]));
+    for (const deniedQueryId of [queryId, evidenceQueryId]) {
+      const deniedRows = await fixture.postgres.adminPool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM business.engineering_data_read_query_results WHERE query_result_id LIKE $1",
+        [`%-${deniedQueryId}`],
+      );
+      expect(deniedRows.rows[0]?.count).toBe("0");
+      const deniedAudit = await fixture.postgres.adminPool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM audit.entries WHERE command_id = $1",
+        [deniedQueryId],
+      );
+      expect(deniedAudit.rows[0]?.count).toBe("0");
+    }
+  });
+
+  it("denies historical read resolutions once current authorization is revoked", async () => {
+    const state = requireE2eState();
+    const segmentsQueryId = "c11-revoked-source-segments";
+    const segmentsQuery = {
+      queryId: segmentsQueryId,
+      projectId: state.projectId,
+      actorId: state.managerId,
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      authorization: await state.authorize(
+        segmentsQueryId,
+        [state.sourceVersionRef],
+        "engineering-data.source-segments",
+      ),
+      kind: "source-segments",
+      payload: { sourceSegmentSetRef: state.segmentSetRef },
+    } satisfies EngineeringDataQueryV1;
+    const segmentsResultRef = {
+      kind: "query-result" as const,
+      reference: { entityId: `source-segments-${segmentsQueryId}`, versionId: "1" },
+    };
+    expect(await fixture.registry.read(segmentsQuery)).toEqual({
+      kind: "succeeded",
+      result: { queryResultRef: segmentsResultRef },
+    });
+    const segmentsResolveId = "c11-revoked-resolve-source-segments";
+    const segmentsResolveAuthorization = await state.authorize(
+      segmentsResolveId,
+      [state.sourceVersionRef],
+      "engineering-data.source-segments",
+    );
+    const evidenceQueryId = "c11-revoked-evidence-access";
+    const evidenceQuery = {
+      queryId: evidenceQueryId,
+      projectId: state.projectId,
+      actorId: state.managerId,
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      authorization: await state.authorize(
+        evidenceQueryId,
+        [state.sourceVersionRef],
+        "engineering-data.evidence-access",
+      ),
+      kind: "evidence-access",
+      payload: {
+        evidenceReferences: [
+          {
+            locator: { sourceSegmentId: state.segmentIds[0]! },
+            sourceVersion: state.sourceVersionRef.reference,
+          },
+        ],
+        purposeCode: "risk-identification.evidence-access",
+      },
+    } satisfies EngineeringDataQueryV1;
+    const evidenceResultRef = {
+      kind: "query-result" as const,
+      reference: { entityId: `evidence-access-${evidenceQueryId}`, versionId: "1" },
+    };
+    expect(await fixture.registry.read(evidenceQuery)).toEqual({
+      kind: "succeeded",
+      result: { queryResultRef: evidenceResultRef },
+    });
+    const evidenceResolveId = "c11-revoked-resolve-evidence-access";
+    const evidenceResolveAuthorization = await state.authorize(
+      evidenceResolveId,
+      [state.sourceVersionRef],
+      "engineering-data.evidence-access",
+    );
+    const projectRow = await fixture.postgres.adminPool.query<{ access_version: number }>(
+      "SELECT access_version FROM business.access_projects WHERE project_id = $1",
+      [state.projectId],
+    );
+    const suspension = await fixture.access.administerProject({
+      kind: "suspend-project",
+      projectId: state.projectId,
+      commandId: "c11-suspend-project",
+      idempotencyKey: "c11-suspend-project",
+      expectedVersion: {
+        entityId: state.projectId,
+        versionId: String(projectRow.rows[0]!.access_version),
+      },
+      authorizationContextRef: state.adminContextRef,
+    });
+    expect(suspension.kind).toBe("project");
+
+    expect(
+      await fixture.registry.resolveReadQuery({
+        queryResultRef: segmentsResultRef,
+        invocationId: segmentsResolveId,
+        projectId: state.projectId,
+        actorId: state.managerId,
+        requestedAt: "2030-01-01T00:00:02.000Z",
+        authorization: segmentsResolveAuthorization,
+      }),
+    ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    expect(
+      await fixture.registry.resolveReadQuery({
+        queryResultRef: evidenceResultRef,
+        invocationId: evidenceResolveId,
+        projectId: state.projectId,
+        actorId: state.managerId,
+        requestedAt: "2030-01-01T00:00:02.000Z",
+        authorization: evidenceResolveAuthorization,
+      }),
+    ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    expect(await fixture.registry.read(segmentsQuery)).toMatchObject({
+      kind: "failed",
+      error: { code: "AUTHORIZATION_DENIED" },
+    });
+    const retained = await fixture.postgres.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM business.engineering_data_read_query_results WHERE query_result_id IN ($1, $2)",
+      [`source-segments-${segmentsQueryId}`, `evidence-access-${evidenceQueryId}`],
+    );
+    expect(retained.rows[0]?.count).toBe("2");
   });
 });

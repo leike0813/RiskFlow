@@ -15,6 +15,7 @@ import * as engineeringContextSourceMigration from "../../src/postgres/migration
 import * as structuredDocumentConversionMigration from "../../src/postgres/migrations/engineering-data/deliver-structured-document-conversion/000009_structured_document_conversion.js";
 import * as monitoringMigration from "../../src/postgres/migrations/engineering-data/deliver-monitoring-batches-snapshots-and-features/000011_monitoring_batches_snapshots_features.js";
 import * as assessmentConfigurationMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-assessment-configuration-and-measure-governance/000012_assessment_configuration.js";
+import * as engineeringDataReadQueryResultsMigration from "../../src/postgres/migrations/engineering-data/implement-engineering-data-read-branches/000024_engineering_data_read_query_results.js";
 
 export interface AuthPostgresFixture extends PostgresTestFixture {
   runMigrations(): Promise<void>;
@@ -36,6 +37,13 @@ export const startAuthPostgresFixture = async (): Promise<AuthPostgresFixture> =
         "knowledge-modeling/deliver-assessment-configuration-and-measure-governance/000012_assessment_configuration.ts",
       ),
       assessmentConfigurationMigration,
+    ],
+    [
+      resolve(
+        base.productionMigrationRoot,
+        "engineering-data/implement-engineering-data-read-branches/000024_engineering_data_read_query_results.ts",
+      ),
+      engineeringDataReadQueryResultsMigration,
     ],
     [
       resolve(

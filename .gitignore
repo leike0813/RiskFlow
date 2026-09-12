@@ -116,6 +116,11 @@ Desktop.ini
 # MinerU 工具产物(外部解析中间结果)
 /references/MinerU-Skill/
 
+# 研究资料 Office 原件仅保留在本地，不进入 Git worktree
+/references/originals/
+/references/*.docx
+/references/*.pptx
+
 # OpenSpec 归档本地副产物(如未来需要)
 /openspec/.cache/
 

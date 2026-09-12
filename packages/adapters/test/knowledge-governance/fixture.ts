@@ -17,6 +17,7 @@ import {
   type KnowledgeGovernanceCommandV1,
 } from "@riskflow/contracts/ports";
 import type { LocalIdentityAccessV1 } from "@riskflow/core/access";
+import type { AssessmentConfigurationGovernancePolicyV1 } from "@riskflow/core/assessment-config";
 
 export const GOVERNANCE_TEST_TIMESTAMP = "2030-01-01T00:00:00.000Z";
 
@@ -62,59 +63,63 @@ export interface KnowledgeGovernancePostgresFixture {
   close(): Promise<void>;
 }
 
-export const startKnowledgeGovernanceFixture =
-  async (): Promise<KnowledgeGovernancePostgresFixture> => {
-    const base = await startReviewAuditFixture();
-    const verifiedContexts = new Map<string, AuthorizationContextV1>();
-    const contextKey = (context: AuthorizationContextV1["authorizationContextRef"]) =>
-      `${context.reference.entityId}:${context.reference.versionId}`;
-    const verify = vi.fn(
-      async (request: {
-        authorizationContextRef: AuthorizationContextV1["authorizationContextRef"];
-        projectId: string;
-      }) => {
-        const configured = verifiedContexts.get(contextKey(request.authorizationContextRef));
-        const context =
-          configured ??
-          Object.freeze({
-            ...governanceAuthorizationFor(request.projectId),
-            authorizationContextRef: request.authorizationContextRef,
-          });
-        return { context, contextRef: request.authorizationContextRef, redacted: false };
-      },
-    );
-    const access = { verify } as unknown as LocalIdentityAccessV1;
-    const reviewAuditOptions: PostgresReviewAuditAdapterOptions = {
-      db: base.runtime.db,
-      transactionUnit: base.transactionUnit,
-      access,
-      now: () => new Date("2030-01-01T00:00:01.000Z"),
-    };
-    const reviewAudit = new PostgresReviewAuditAdapter(reviewAuditOptions);
-    const reviewAuthorization = (command: KnowledgeGovernanceCommandV1) =>
-      reviewAuthorizationFor(command.projectId, command.actorId);
-    const adapterOptions: PostgresKnowledgeGovernanceAdapterOptionsV1 = {
-      db: base.runtime.db,
-      transactionUnit: base.transactionUnit,
-      access,
-      reviewAudit,
-      now: () => new Date("2030-01-01T00:00:01.000Z"),
-      reviewAuthorization,
-      approvalAuthorization: reviewAuthorization,
-    };
-    const adapter = new PostgresKnowledgeGovernanceAdapter(adapterOptions);
-    return {
-      postgres: base.postgres,
-      runtime: base.runtime,
-      transactionUnit: base.transactionUnit,
-      access,
-      reviewAudit,
-      adapter,
-      setVerifiedContext(context) {
-        verifiedContexts.set(contextKey(context.authorizationContextRef), context);
-      },
-      async close() {
-        await base.close();
-      },
-    };
+export const startKnowledgeGovernanceFixture = async (options?: {
+  readonly assessmentConfigurationPolicy?: AssessmentConfigurationGovernancePolicyV1;
+}): Promise<KnowledgeGovernancePostgresFixture> => {
+  const base = await startReviewAuditFixture();
+  const verifiedContexts = new Map<string, AuthorizationContextV1>();
+  const contextKey = (context: AuthorizationContextV1["authorizationContextRef"]) =>
+    `${context.reference.entityId}:${context.reference.versionId}`;
+  const verify = vi.fn(
+    async (request: {
+      authorizationContextRef: AuthorizationContextV1["authorizationContextRef"];
+      projectId: string;
+    }) => {
+      const configured = verifiedContexts.get(contextKey(request.authorizationContextRef));
+      const context =
+        configured ??
+        Object.freeze({
+          ...governanceAuthorizationFor(request.projectId),
+          authorizationContextRef: request.authorizationContextRef,
+        });
+      return { context, contextRef: request.authorizationContextRef, redacted: false };
+    },
+  );
+  const access = { verify } as unknown as LocalIdentityAccessV1;
+  const reviewAuditOptions: PostgresReviewAuditAdapterOptions = {
+    db: base.runtime.db,
+    transactionUnit: base.transactionUnit,
+    access,
+    now: () => new Date("2030-01-01T00:00:01.000Z"),
   };
+  const reviewAudit = new PostgresReviewAuditAdapter(reviewAuditOptions);
+  const reviewAuthorization = (command: KnowledgeGovernanceCommandV1) =>
+    reviewAuthorizationFor(command.projectId, command.actorId);
+  const adapterOptions: PostgresKnowledgeGovernanceAdapterOptionsV1 = {
+    db: base.runtime.db,
+    transactionUnit: base.transactionUnit,
+    access,
+    reviewAudit,
+    now: () => new Date("2030-01-01T00:00:01.000Z"),
+    reviewAuthorization,
+    approvalAuthorization: reviewAuthorization,
+    ...(options?.assessmentConfigurationPolicy === undefined
+      ? {}
+      : { assessmentConfigurationPolicy: options.assessmentConfigurationPolicy }),
+  };
+  const adapter = new PostgresKnowledgeGovernanceAdapter(adapterOptions);
+  return {
+    postgres: base.postgres,
+    runtime: base.runtime,
+    transactionUnit: base.transactionUnit,
+    access,
+    reviewAudit,
+    adapter,
+    setVerifiedContext(context) {
+      verifiedContexts.set(contextKey(context.authorizationContextRef), context);
+    },
+    async close() {
+      await base.close();
+    },
+  };
+};

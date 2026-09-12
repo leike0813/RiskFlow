@@ -6,14 +6,14 @@
 
 当前接管点：
 
-- `main` 已完成并归档 15 个路线 change：C00–C12、C14、C16。
-- `openspec/changes/archive/` 共 21 项 = 15 个路线 change + 6 个辅助/修复 change（`configure-pnpm-build-script-policy`、`deliver-structured-orchestration-status`、`evolve-review-audit-approval-proof`、`fix-postgresql-test-migration-loader-compatibility`、`fix-orchestration-execution-status-reliability`、`strengthen-implementation-planning-workflow`）。
+- `main` 已完成并归档 16 个路线 change：C00–C12、C14、C16、C18。
+- `openspec/changes/archive/` 共 24 项 = 16 个路线 change + 8 个辅助/修复/契约演进 change（`configure-pnpm-build-script-policy`、`deliver-structured-orchestration-status`、`evolve-review-audit-approval-proof`、`fix-postgresql-test-migration-loader-compatibility`、`fix-orchestration-execution-status-reliability`、`strengthen-implementation-planning-workflow`、`evolve-identification-preparation-segment-set-refs`、`evolve-knowledge-definition-types`）。
 - C01 主 spec 位于 `openspec/specs/domain/contract-kernel/spec.md`。
 - C02 主 spec 位于 `openspec/specs/domain/module-interfaces-events-workflows/spec.md`。
 - C03 主 spec 位于 `openspec/specs/platform/postgresql-outbox-checkpoint-foundation/spec.md`。
-- G0、G1 已通过；当前静态依赖图的 frontier 为 C13 `deliver-scanned-document-ocr` 与 C18 `deliver-assessment-configuration-and-measure-governance`。
-- C13 已准备到实现阶段：现有 Orca worktree 为 `d4349f30-1c7e-4777-b16d-f259481b0121::/home/joshua/Workspace/Code/JavaScript/.orca/RiskFlow/c13-scanned-doc-ocr`，分支 `c13-scanned-doc-ocr`，Git 检查点 `e0c928105de371668f7619145eb87a2272854b12`（在 `69ebbca7c7c9f27685937b50dc79d9b19549c1be` 之上合入 `main` 的同步提交）。检查点事实源是 `task_9ed3df9648b2` 的结构化信封 `head/baseHead`，Task spec 内记录的 SHA 只是规划时点。该检查点已包含当前 `main` 的五工件 schema 基线，`deliver-scanned-document-ocr` 使用 `riskflow-delivery`，proposal/specs/design/implementation-plan/tasks 均完成，apply 状态为 ready、任务为 0/13。implementation Run `run_4e82315340bc` 与 ready Task `task_9ed3df9648b2` 已预建且未派发。接管者命中该精确状态时不得重建 worktree、change、Run/Task 或重新派 Sol 起草，核验后直接把既有 Task 派给实现 Agent。
-- C18 尚未预建长期 worktree 或 change，仍按标准“创建 worktree → `openspec new change ... --schema riskflow-delivery` → Sol 五工件规划”路径启动。活动 change、worker 与 feature worktree 状态仍必须在接管时按 §10 实查，不能只依赖本段快照。
+- G0、G1 已通过；下一 frontier 为 C13 `deliver-scanned-document-ocr`、C15 `deliver-agent-cleaning-and-partial-availability`、C17 `deliver-process-model-mechanism-and-evidence-governance` 与前置 change `implement-engineering-data-read-branches`。
+- 进行中状态（接管时仍须按 §10 实查）：C13 已完成实现与两轮修复，第二轮独立复验进行中，验证通过后需合并 main、复验并归档；C15 五工件规划已提交，实现等待 C13 归档；C17 五工件规划已提交，实现等待 C15 归档、`evolve-knowledge-definition-types`（已归档）与 `implement-engineering-data-read-branches`；`implement-engineering-data-read-branches` 正在规划。迁移号段已分配：C18 用 000012、C15 用 000016、C17 用 000020、读取分支 change 从 000024 起。
+- 前置契约演进：`evolve-identification-preparation-segment-set-refs`（识别准备快照复数资料段集合引用）与 `evolve-knowledge-definition-types`（新增 `standard-library`、`case-library` 定义类型）均已归档并集成，C15/C17 规划已按此建模。
 - 状态观察器以当前 `main` 提交中的 OpenSpec archive 作为持久完成事实；Orca 仅提供现存 feature worktree、worker 与 Dispatch 均非终态或关联 live terminal 的实时状态。已脱离实时对象的旧 Task 只进入 `diagnostics`，不得阻断 frontier 或 `orchestration:check`。
 - 不推送远端；远端操作必须由用户另行授权。
 

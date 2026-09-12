@@ -29,6 +29,7 @@ import {
   IdentificationInputSnapshotRefV1Schema,
   IdentificationPlanCommandV1Schema,
   IdentificationPreparationSnapshotRefV1Schema,
+  KnowledgeDefinitionTypeV1Schema,
   KnowledgeGovernanceCommandV1Schema,
   KnowledgeGovernanceCommandResultV1Schema,
   KnowledgeGovernanceSuccessV1Schema,
@@ -239,6 +240,9 @@ describe("module interface contracts", () => {
     expect(ModuleCapabilityV1Schema.safeParse("database.query").success).toBe(false);
     expect(AgentTaskTypeV1Schema.safeParse("retrieval-review").success).toBe(true);
     expect(AgentTaskTypeV1Schema.safeParse("free-form").success).toBe(false);
+    for (const definitionType of ["standard-library", "case-library"]) {
+      expect(KnowledgeDefinitionTypeV1Schema.safeParse(definitionType).success).toBe(true);
+    }
   });
 
   it("keeps structured conversion inputs and results closed", () => {
@@ -1767,24 +1771,50 @@ describe("module interface contracts", () => {
   });
 
   it("uses strict snapshots and allows only resumable references", () => {
+    const preparationSnapshotBase = {
+      schemaVersion: "1",
+      projectRevisionRef,
+      spatialScopeRefs: [spatialScopeRef],
+      sourceVersionRefs: [sourceVersionRef, version("source-version", "source-version-2")],
+      excludedSegmentDecisionRefs: [],
+      dataProcessingPolicyRef: policyRef,
+      dataProcessingToolRef: policyRef,
+      dataProcessingModelRef: policyRef,
+      coverageDecisionRef: version("route-decision"),
+      authorizationContextRef,
+      auditTrailRef,
+      createdBy: "actor-1",
+      createdAt: now,
+    };
+    const segmentSetRefs = [
+      version("source-segment-set", "source-segment-set-1"),
+      version("source-segment-set", "source-segment-set-2"),
+    ];
     expect(
       IdentificationPreparationSnapshotV1Schema.safeParse({
-        schemaVersion: "1",
-        projectRevisionRef,
-        spatialScopeRefs: [spatialScopeRef],
-        sourceVersionRefs: [sourceVersionRef],
-        includedSourceSegmentSetRef: version("source-segment-set"),
-        excludedSegmentDecisionRefs: [],
-        dataProcessingPolicyRef: policyRef,
-        dataProcessingToolRef: policyRef,
-        dataProcessingModelRef: policyRef,
-        coverageDecisionRef: version("route-decision"),
-        authorizationContextRef,
-        auditTrailRef,
-        createdBy: "actor-1",
-        createdAt: now,
+        ...preparationSnapshotBase,
+        includedSourceSegmentSetRefs: segmentSetRefs,
       }).success,
     ).toBe(true);
+    expect(
+      IdentificationPreparationSnapshotV1Schema.safeParse({
+        ...preparationSnapshotBase,
+        includedSourceSegmentSetRefs: [],
+      }).success,
+    ).toBe(false);
+    expect(
+      IdentificationPreparationSnapshotV1Schema.safeParse({
+        ...preparationSnapshotBase,
+        sourceVersionRefs: [sourceVersionRef],
+        includedSourceSegmentSetRefs: segmentSetRefs,
+      }).success,
+    ).toBe(false);
+    expect(
+      IdentificationPreparationSnapshotV1Schema.safeParse({
+        ...preparationSnapshotBase,
+        includedSourceSegmentSetRef: segmentSetRefs[0],
+      }).success,
+    ).toBe(false);
     expect(
       IdentificationInputSnapshotV1Schema.safeParse({
         schemaVersion: "1",

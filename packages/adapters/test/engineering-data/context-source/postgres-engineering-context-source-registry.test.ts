@@ -1176,6 +1176,831 @@ describe("C11 PostgreSQL context/source registry", () => {
     });
   });
 
+  it("denies forged actor declarations across context writes, reads, and resolutions", async () => {
+    const state = requireE2eState();
+    // 既有用例已推进空间修订指针；先对齐数据库当前指针，使伪造与合规用例都落在真实当前修订上。
+    state.projectRevisionRef = (
+      await fixture.postgres.adminPool.query<{ project_revision_ref: ProjectRevisionRefV1 }>(
+        `SELECT r.project_revision_ref
+           FROM business.engineering_projects p
+           JOIN business.engineering_project_revisions r
+             ON r.project_id = p.project_id AND r.revision_id = p.current_revision_id
+          WHERE p.project_id = $1`,
+        [state.projectId],
+      )
+    ).rows[0]!.project_revision_ref;
+    state.businessSpatialScopeRef = (
+      await fixture.postgres.adminPool.query<{ spatial_scope_ref: SpatialScopeRefV1 }>(
+        `SELECT r.spatial_scope_ref
+           FROM business.engineering_spatial_segments s
+           JOIN business.engineering_spatial_segment_revisions r
+             ON r.project_id = s.project_id
+            AND r.scope_id = s.scope_id
+            AND r.revision_id = s.current_revision_id
+          WHERE s.project_id = $1 AND s.scope_id = $2`,
+        [state.projectId, state.businessSpatialScopeRef.reference.entityId],
+      )
+    ).rows[0]!.spatial_scope_ref;
+    const forgedActorId = "c11-forged-actor-binding";
+    const timestamp = "2030-01-01T00:00:00.000Z";
+    const forged = async (
+      invocationId: string,
+      branch:
+        | "engineering-data.register-source-delivery"
+        | "engineering-data.evidence-access"
+        | "engineering-data.source-segments" = "engineering-data.register-source-delivery",
+      sourceRefs: readonly SourceVersionRefV1[] = [],
+    ): Promise<AuthorizationContextV1> => ({
+      ...(await state.authorize(invocationId, sourceRefs, branch)),
+      actorId: forgedActorId,
+    });
+    const putArtifact = async (
+      suffix: string,
+      authorizationContext: AuthorizationContextV1,
+      content: string,
+      mediaType: string,
+    ) =>
+      fixture.artifactStore.put(
+        ArtifactPutCommandV1Schema.parse({
+          schemaVersion: "1",
+          commandId: `c11-binding-${suffix}`,
+          idempotencyKey: `c11-binding-${suffix}`,
+          projectId: state.projectId,
+          actorId: state.managerId,
+          issuedAt: timestamp,
+          authorization: authorizationContext,
+          requiredCapability: "engineering-data.write",
+          artifactId: `c11-binding-${suffix}`,
+          artifactKind: "content",
+          purposeCode: "engineering-data.register-source-delivery",
+          mediaType,
+          parentArtifactRefs: [],
+          evidenceReferences: [],
+          additionalSpatialScopeRefs: [],
+          additionalSourceAccessGrantRefs: [],
+        }),
+        (async function* () {
+          yield new TextEncoder().encode(content);
+        })(),
+      );
+    const evidenceFor = async (id: string) =>
+      (
+        await fixture.postgres.adminPool.query<{
+          receipts: number;
+          audits: number;
+          receipt_actor: string | null;
+          audit_actor: string | null;
+        }>(
+          `SELECT (SELECT count(*)::int FROM business.command_receipts WHERE command_id = $1) AS receipts,
+                  (SELECT count(*)::int FROM audit.entries WHERE command_id = $1) AS audits,
+                  (SELECT actor_ref FROM business.command_receipts WHERE command_id = $1) AS receipt_actor,
+                  (SELECT actor_ref FROM audit.entries WHERE command_id = $1) AS audit_actor`,
+          [id],
+        )
+      ).rows[0]!;
+    const factsFor = async () =>
+      (
+        await fixture.postgres.adminPool.query<Record<string, number | string | null>>(
+          `SELECT (SELECT count(*)::int FROM business.engineering_projects) AS projects,
+                  (SELECT count(*)::int FROM business.engineering_project_revisions) AS project_revisions,
+                  (SELECT count(*)::int FROM business.engineering_spatial_segment_revisions) AS spatial_revisions,
+                  (SELECT count(*)::int FROM business.source_items) AS source_items,
+                  (SELECT count(*)::int FROM business.source_deliveries) AS source_deliveries,
+                  (SELECT count(*)::int FROM business.source_versions) AS source_versions,
+                  (SELECT count(*)::int FROM business.source_segment_sets) AS source_segment_sets,
+                  (SELECT count(*)::int FROM business.source_segments) AS source_segments,
+                  (SELECT count(*)::int FROM business.applicability_metadata_snapshots) AS snapshots,
+                  (SELECT count(*)::int FROM business.engineering_data_read_query_results) AS read_query_results,
+                  (SELECT count(*)::int FROM business.source_access_policies) AS access_policies,
+                  (SELECT count(*)::int FROM business.source_access_policy_revisions) AS access_revisions,
+                  (SELECT count(*)::int FROM business.source_access_policy_revision_accounts) AS access_accounts,
+                  (SELECT count(*)::int FROM business.source_access_policy_revision_scopes) AS access_scopes,
+                  (SELECT count(*)::int FROM outbox.events WHERE event_type LIKE 'engineering.%') AS events,
+                  (SELECT current_revision_id FROM business.engineering_projects WHERE project_id = $1) AS project_pointer,
+                  (SELECT current_revision_id FROM business.engineering_spatial_segments WHERE project_id = $1 AND scope_id = $2) AS spatial_pointer`,
+          [state.projectId, state.businessSpatialScopeRef.reference.entityId],
+        )
+      ).rows[0]!;
+    const forgedActorRows = async () =>
+      (
+        await fixture.postgres.adminPool.query<{ rows: number }>(
+          `SELECT (SELECT count(*)::int FROM business.command_receipts WHERE actor_ref = $1) +
+                  (SELECT count(*)::int FROM audit.entries WHERE actor_ref = $1) +
+                  (SELECT count(*)::int FROM business.engineering_project_revisions WHERE actor_id = $1) +
+                  (SELECT count(*)::int FROM business.engineering_spatial_segment_revisions WHERE actor_id = $1) +
+                  (SELECT count(*)::int FROM business.source_items WHERE actor_id = $1) +
+                  (SELECT count(*)::int FROM business.source_deliveries WHERE registered_by = $1) +
+                  (SELECT count(*)::int FROM business.source_versions WHERE registered_by = $1) +
+                  (SELECT count(*)::int FROM business.source_segment_sets WHERE actor_id = $1) +
+                  (SELECT count(*)::int FROM business.applicability_metadata_snapshots WHERE actor_id = $1) +
+                  (SELECT count(*)::int FROM business.engineering_data_read_query_results WHERE requested_by = $1) +
+                  (SELECT count(*)::int FROM business.source_access_policy_revisions WHERE registered_by = $1) +
+                  (SELECT count(*)::int FROM business.source_access_policy_revision_accounts WHERE account_id = $1) AS rows`,
+          [forgedActorId],
+        )
+      ).rows[0]!;
+    const stableError = (result: unknown): string => {
+      if (typeof result !== "object" || result === null || !("error" in result)) return "";
+      const { error } = result;
+      if (typeof error !== "object" || error === null) return "";
+      const shape: Record<string, unknown> = { ...error };
+      delete shape.occurredAt;
+      delete shape.causalRunId;
+      return JSON.stringify(shape);
+    };
+
+    // 先用合规主体建立真实目标：空间修订、适用性快照、来源交付、资料段集合与两类读取。
+    const spatialControlId = "c11-binding-spatial-control";
+    const spatialControl = await fixture.registry.reviseContext({
+      commandId: spatialControlId,
+      idempotencyKey: spatialControlId,
+      projectId: state.projectId,
+      actorId: state.managerId,
+      issuedAt: timestamp,
+      authorization: await state.authorize(spatialControlId),
+      kind: "spatial",
+      spatialScopeRef: state.businessSpatialScopeRef,
+      projectRevisionRef: state.projectRevisionRef,
+      expectedVersion: state.businessSpatialScopeRef.reference,
+      name: "主体绑定空间修订",
+      worksiteLocation: "左线绑定",
+      applicabilityOverrides: { engineeringStage: "shield-expansion" },
+      status: "active",
+      effectivePeriod: { validFrom: timestamp },
+    });
+    expect(spatialControl, "spatial control").toMatchObject({
+      kind: "succeeded",
+      result: { kind: "spatial-revision" },
+    });
+    if (spatialControl.kind !== "succeeded" || spatialControl.result.kind !== "spatial-revision")
+      throw new Error("binding spatial control failed");
+    state.businessSpatialScopeRef = spatialControl.result.revision.spatialScopeRef;
+    expect(
+      (
+        await fixture.postgres.adminPool.query<{ actor_id: string }>(
+          "SELECT actor_id FROM business.engineering_spatial_segment_revisions WHERE project_id = $1 AND scope_id = $2 AND revision_id = $3",
+          [
+            state.projectId,
+            state.businessSpatialScopeRef.reference.entityId,
+            `${state.businessSpatialScopeRef.reference.entityId}:${state.businessSpatialScopeRef.reference.versionId}`,
+          ],
+        )
+      ).rows,
+    ).toEqual([{ actor_id: state.managerId }]);
+    expect(await evidenceFor(spatialControlId)).toMatchObject({
+      receipts: 1,
+      audits: 1,
+      receipt_actor: state.managerId,
+      audit_actor: state.managerId,
+    });
+
+    const snapshotControlId = "c11-binding-snapshot-control";
+    const snapshotControl = await fixture.registry.createApplicabilitySnapshot({
+      commandId: snapshotControlId,
+      idempotencyKey: snapshotControlId,
+      projectId: state.projectId,
+      actorId: state.managerId,
+      issuedAt: timestamp,
+      authorization: await state.authorize(snapshotControlId),
+      projectRevisionRef: state.projectRevisionRef,
+      spatialScopeRef: state.businessSpatialScopeRef,
+      formedAt: timestamp,
+    });
+    expect(snapshotControl, "snapshot control").toMatchObject({
+      kind: "succeeded",
+      result: { kind: "applicability-snapshot" },
+    });
+    if (
+      snapshotControl.kind !== "succeeded" ||
+      snapshotControl.result.kind !== "applicability-snapshot"
+    )
+      throw new Error("binding snapshot control failed");
+    const bindingSnapshotRef = snapshotControl.result.snapshot.snapshotRef;
+    expect(
+      (
+        await fixture.postgres.adminPool.query<{ actor_id: string }>(
+          "SELECT actor_id FROM business.applicability_metadata_snapshots WHERE snapshot_id = $1 AND version_id = $2",
+          [bindingSnapshotRef.reference.entityId, bindingSnapshotRef.reference.versionId],
+        )
+      ).rows,
+    ).toEqual([{ actor_id: state.managerId }]);
+    expect(await evidenceFor(snapshotControlId)).toMatchObject({
+      receipts: 1,
+      audits: 1,
+      receipt_actor: state.managerId,
+      audit_actor: state.managerId,
+    });
+
+    const deliveryControlId = "c11-binding-delivery-control";
+    const deliveryAuthorization = await state.authorize(deliveryControlId);
+    const sourceContent = "binding source body";
+    const sourceArtifact = await putArtifact(
+      "delivery-source",
+      deliveryAuthorization,
+      sourceContent,
+      "text/plain",
+    );
+    const metadataArtifact = await putArtifact(
+      "delivery-metadata",
+      deliveryAuthorization,
+      JSON.stringify({
+        schemaVersion: "1",
+        projectRevisionRef: state.projectRevisionRef,
+        spatialScopeRefs: [state.businessSpatialScopeRef],
+        registeredByAccountId: state.managerId,
+        sourceItemId: "c11-binding-source-item",
+        sourceItemName: "施工方案-主体绑定",
+        sourceCategory: "engineering-document",
+        sourceMetadata: {
+          documentType: "施工方案",
+          formedAt: timestamp,
+          sourceOrganization: "甲方",
+        },
+        descriptor: { kind: "file-upload", contentFingerprint: sourceContent },
+        applicabilityMetadataSnapshotRef: bindingSnapshotRef,
+      }),
+      "application/json",
+    );
+    const deliveryControl = await fixture.registry.apply({
+      commandId: deliveryControlId,
+      idempotencyKey: deliveryControlId,
+      projectId: state.projectId,
+      actorId: state.managerId,
+      issuedAt: timestamp,
+      authorization: deliveryAuthorization,
+      kind: "register-source-delivery",
+      payload: {
+        sourceConnectionRef: { entityId: "file-upload", versionId: "1" },
+        deliveryKey: "c11-binding-delivery",
+        sourceArtifactRef: sourceArtifact.artifactRef,
+        metadataArtifactRef: metadataArtifact.artifactRef,
+        occurredAt: timestamp,
+      },
+    });
+    if (deliveryControl.kind !== "succeeded") throw new Error("binding delivery control failed");
+    const bindingSourceVersionRef = deliveryControl.result.sourceVersionRef;
+    const bindingSourceId = bindingSourceVersionRef.reference.entityId;
+    expect(await evidenceFor(deliveryControlId)).toMatchObject({
+      receipts: 1,
+      audits: 1,
+      receipt_actor: state.managerId,
+      audit_actor: state.managerId,
+    });
+    // 资料权限收口只登记 C06 已验证主体。
+    expect(
+      (
+        await fixture.postgres.adminPool.query<{ registered_by: string; accounts: string }>(
+          `SELECT r.registered_by AS registered_by,
+                  (SELECT string_agg(a.account_id, ',' ORDER BY a.account_id)
+                     FROM business.source_access_policy_revision_accounts a
+                    WHERE a.revision_id = r.revision_id) AS accounts
+             FROM business.source_access_policy_revisions r
+             JOIN business.source_access_policies p
+               ON p.source_access_grant_id = r.source_access_grant_id
+            WHERE p.project_id = $1 AND p.source_entity_id = $2`,
+          [state.projectId, bindingSourceId],
+        )
+      ).rows,
+    ).toEqual([{ registered_by: state.managerId, accounts: state.managerId }]);
+
+    const segmentsControlId = "c11-binding-segments-control";
+    const segmentsControl = await fixture.registry.registerSegments({
+      commandId: segmentsControlId,
+      idempotencyKey: segmentsControlId,
+      projectId: state.projectId,
+      actorId: state.managerId,
+      issuedAt: timestamp,
+      authorization: await state.authorize(segmentsControlId, [bindingSourceVersionRef]),
+      sourceVersionRef: bindingSourceVersionRef,
+      sourceId: bindingSourceId,
+      segments: [
+        {
+          sourceSegmentId: `${bindingSourceId}-chapter_1-segment_1` as never,
+          chapterId: "chapter_1",
+          segmentId: "segment_1",
+          kind: "chapter",
+          spatialScopeRefs: [state.businessSpatialScopeRef],
+          locator: { kind: "document", pageNumber: 1, headingPath: ["主体绑定"] },
+        },
+      ],
+    });
+    expect(segmentsControl).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "source-segment-set" },
+    });
+    expect(
+      (
+        await fixture.postgres.adminPool.query<{ actor_id: string }>(
+          "SELECT actor_id FROM business.source_segment_sets WHERE project_id = $1 AND source_version_id = $2",
+          [state.projectId, bindingSourceId],
+        )
+      ).rows,
+    ).toEqual([{ actor_id: state.managerId }]);
+    expect(await evidenceFor(segmentsControlId)).toMatchObject({
+      receipts: 1,
+      audits: 1,
+      receipt_actor: state.managerId,
+      audit_actor: state.managerId,
+    });
+
+    const processingInputControlId = "c11-binding-processing-input-control";
+    expect(
+      await fixture.registry.resolveSourceProcessingInput({
+        queryId: processingInputControlId,
+        projectId: state.projectId,
+        actorId: state.managerId,
+        requestedAt: timestamp,
+        authorization: await state.authorize(processingInputControlId, [bindingSourceVersionRef]),
+        sourceVersionRef: bindingSourceVersionRef,
+      }),
+    ).toMatchObject({
+      kind: "succeeded",
+      result: {
+        kind: "source-processing-input",
+        input: { sourceVersionRef: bindingSourceVersionRef },
+      },
+    });
+
+    const versionReadControlId = "c11-binding-version-read-control";
+    expect(
+      await fixture.registry.resolveSourceVersionForRead({
+        queryId: versionReadControlId,
+        projectId: state.projectId,
+        actorId: state.managerId,
+        requestedAt: timestamp,
+        authorization: await state.authorize(
+          versionReadControlId,
+          [state.sourceVersionRef],
+          "engineering-data.evidence-access",
+        ),
+        sourceVersionRef: state.sourceVersionRef,
+      }),
+    ).toMatchObject({
+      kind: "succeeded",
+      result: {
+        kind: "source-processing-input",
+        input: { sourceVersionRef: state.sourceVersionRef },
+      },
+    });
+
+    const segmentsReadId = "c11-binding-segments-read-control";
+    const segmentsReadRef = {
+      kind: "query-result" as const,
+      reference: { entityId: `source-segments-${segmentsReadId}`, versionId: "1" },
+    };
+    expect(
+      await fixture.registry.read({
+        queryId: segmentsReadId,
+        projectId: state.projectId,
+        actorId: state.managerId,
+        requestedAt: timestamp,
+        authorization: await state.authorize(
+          segmentsReadId,
+          [state.sourceVersionRef],
+          "engineering-data.source-segments",
+        ),
+        kind: "source-segments",
+        payload: { sourceSegmentSetRef: state.segmentSetRef },
+      }),
+    ).toEqual({ kind: "succeeded", result: { queryResultRef: segmentsReadRef } });
+    expect(
+      (
+        await fixture.postgres.adminPool.query<{ requested_by: string }>(
+          "SELECT requested_by FROM business.engineering_data_read_query_results WHERE query_result_id = $1",
+          [`source-segments-${segmentsReadId}`],
+        )
+      ).rows,
+    ).toEqual([{ requested_by: state.managerId }]);
+
+    const evidenceReadId = "c11-binding-evidence-read-control";
+    const evidenceReadRef = {
+      kind: "query-result" as const,
+      reference: { entityId: `evidence-access-${evidenceReadId}`, versionId: "1" },
+    };
+    const evidenceReferences = state.segmentIds.map((segmentId) => ({
+      locator: { sourceSegmentId: segmentId },
+      sourceVersion: {
+        entityId: state.sourceVersionRef.reference.entityId,
+        versionId: state.sourceVersionRef.reference.versionId,
+      },
+    }));
+    expect(
+      await fixture.registry.read({
+        queryId: evidenceReadId,
+        projectId: state.projectId,
+        actorId: state.managerId,
+        requestedAt: timestamp,
+        authorization: await state.authorize(
+          evidenceReadId,
+          [state.sourceVersionRef],
+          "engineering-data.evidence-access",
+        ),
+        kind: "evidence-access",
+        payload: { evidenceReferences, purposeCode: "risk-identification.evidence-access" },
+      }),
+    ).toEqual({ kind: "succeeded", result: { queryResultRef: evidenceReadRef } });
+    expect(
+      (
+        await fixture.postgres.adminPool.query<{ requested_by: string }>(
+          "SELECT requested_by FROM business.engineering_data_read_query_results WHERE query_result_id = $1",
+          [`evidence-access-${evidenceReadId}`],
+        )
+      ).rows,
+    ).toEqual([{ requested_by: state.managerId }]);
+
+    const forgedProjectRevision = await forged("c11-forged-project-revision");
+    const forgedSpatialRevision = await forged("c11-forged-spatial-revision");
+    const forgedSegments = await forged(
+      "c11-forged-segments",
+      "engineering-data.register-source-delivery",
+      [state.sourceVersionRef],
+    );
+    const forgedSnapshot = await forged("c11-forged-snapshot");
+    const forgedDelivery = await forged("c11-forged-delivery");
+    const forgedProcessingInput = await forged(
+      "c11-forged-processing-input",
+      "engineering-data.register-source-delivery",
+      [bindingSourceVersionRef],
+    );
+    const forgedVersionRead = await forged(
+      "c11-forged-version-read",
+      "engineering-data.evidence-access",
+      [state.sourceVersionRef],
+    );
+    const forgedSegmentsRead = await forged(
+      "c11-forged-segments-read",
+      "engineering-data.source-segments",
+      [state.sourceVersionRef],
+    );
+    const forgedEvidenceRead = await forged(
+      "c11-forged-evidence-read",
+      "engineering-data.evidence-access",
+      [state.sourceVersionRef],
+    );
+    const forgedSegmentsResolve = await forged(
+      "c11-forged-segments-resolve",
+      "engineering-data.source-segments",
+      [state.sourceVersionRef],
+    );
+    const forgedEvidenceResolve = await forged(
+      "c11-forged-evidence-resolve",
+      "engineering-data.evidence-access",
+      [state.sourceVersionRef],
+    );
+    const forgedArtifactAuthorization = await state.authorize("c11-forged-delivery");
+    const forgedSourceArtifact = await putArtifact(
+      "forged-delivery-source",
+      forgedArtifactAuthorization,
+      "forged source body",
+      "text/plain",
+    );
+    const forgedMetadataArtifact = await putArtifact(
+      "forged-delivery-metadata",
+      forgedArtifactAuthorization,
+      JSON.stringify({
+        schemaVersion: "1",
+        projectRevisionRef: state.projectRevisionRef,
+        spatialScopeRefs: [state.businessSpatialScopeRef],
+        registeredByAccountId: forgedActorId,
+        sourceItemId: "c11-forged-source-item",
+        sourceItemName: "施工方案-伪造主体",
+        sourceCategory: "engineering-document",
+        sourceMetadata: {
+          documentType: "施工方案",
+          formedAt: timestamp,
+          sourceOrganization: "甲方",
+        },
+        descriptor: { kind: "file-upload", contentFingerprint: "forged source body" },
+        applicabilityMetadataSnapshotRef: bindingSnapshotRef,
+      }),
+      "application/json",
+    );
+    const forgedCases: ReadonlyArray<{
+      readonly label: string;
+      readonly commandId: string;
+      readonly group: "write" | "read";
+      readonly run: () => Promise<{ kind: string }>;
+    }> = [
+      {
+        label: "project-revision",
+        commandId: "c11-forged-project-revision",
+        group: "write",
+        run: () =>
+          fixture.registry.reviseContext({
+            commandId: "c11-forged-project-revision",
+            idempotencyKey: "c11-forged-project-revision",
+            projectId: state.projectId,
+            actorId: forgedActorId,
+            issuedAt: timestamp,
+            authorization: forgedProjectRevision,
+            kind: "project",
+            expectedVersion: state.projectRevisionRef.reference,
+            name: "伪造工程修订",
+            lifecycle: "active",
+            applicabilityMetadata: {
+              constructionMethod: "variable-diameter-shield",
+              stratumCondition: "soft-soil",
+              engineeringStage: "shield-expansion",
+            },
+            effectivePeriod: { validFrom: timestamp },
+          }),
+      },
+      {
+        label: "spatial-revision",
+        commandId: "c11-forged-spatial-revision",
+        group: "write",
+        run: () =>
+          fixture.registry.reviseContext({
+            commandId: "c11-forged-spatial-revision",
+            idempotencyKey: "c11-forged-spatial-revision",
+            projectId: state.projectId,
+            actorId: forgedActorId,
+            issuedAt: timestamp,
+            authorization: forgedSpatialRevision,
+            kind: "spatial",
+            spatialScopeRef: state.businessSpatialScopeRef,
+            projectRevisionRef: state.projectRevisionRef,
+            expectedVersion: state.businessSpatialScopeRef.reference,
+            name: "伪造空间修订",
+            worksiteLocation: "左线伪造",
+            applicabilityOverrides: { engineeringStage: "shield-expansion" },
+            status: "active",
+            effectivePeriod: { validFrom: timestamp },
+          }),
+      },
+      {
+        label: "source-segment-set",
+        commandId: "c11-forged-segments",
+        group: "write",
+        run: () =>
+          fixture.registry.registerSegments({
+            commandId: "c11-forged-segments",
+            idempotencyKey: "c11-forged-segments",
+            projectId: state.projectId,
+            actorId: forgedActorId,
+            issuedAt: timestamp,
+            authorization: forgedSegments,
+            sourceVersionRef: state.sourceVersionRef,
+            sourceId: state.sourceVersionRef.reference.entityId,
+            segments: [
+              {
+                sourceSegmentId:
+                  `${state.sourceVersionRef.reference.entityId}-chapter_9-segment_1` as never,
+                chapterId: "chapter_9",
+                segmentId: "segment_1",
+                kind: "chapter",
+                spatialScopeRefs: [state.businessSpatialScopeRef],
+                locator: { kind: "document", pageNumber: 9, headingPath: ["伪造"] },
+              },
+            ],
+          }),
+      },
+      {
+        label: "applicability-snapshot",
+        commandId: "c11-forged-snapshot",
+        group: "write",
+        run: () =>
+          fixture.registry.createApplicabilitySnapshot({
+            commandId: "c11-forged-snapshot",
+            idempotencyKey: "c11-forged-snapshot",
+            projectId: state.projectId,
+            actorId: forgedActorId,
+            issuedAt: timestamp,
+            authorization: forgedSnapshot,
+            projectRevisionRef: state.projectRevisionRef,
+            spatialScopeRef: state.businessSpatialScopeRef,
+            formedAt: timestamp,
+          }),
+      },
+      {
+        label: "source-delivery",
+        commandId: "c11-forged-delivery",
+        group: "write",
+        run: () =>
+          fixture.registry.apply({
+            commandId: "c11-forged-delivery",
+            idempotencyKey: "c11-forged-delivery",
+            projectId: state.projectId,
+            actorId: forgedActorId,
+            issuedAt: timestamp,
+            authorization: forgedDelivery,
+            kind: "register-source-delivery",
+            payload: {
+              sourceConnectionRef: { entityId: "file-upload", versionId: "1" },
+              deliveryKey: "c11-forged-delivery",
+              sourceArtifactRef: forgedSourceArtifact.artifactRef,
+              metadataArtifactRef: forgedMetadataArtifact.artifactRef,
+              occurredAt: timestamp,
+            },
+          }),
+      },
+      {
+        label: "source-processing-input",
+        commandId: "c11-forged-processing-input",
+        group: "write",
+        run: () =>
+          fixture.registry.resolveSourceProcessingInput({
+            queryId: "c11-forged-processing-input",
+            projectId: state.projectId,
+            actorId: forgedActorId,
+            requestedAt: timestamp,
+            authorization: forgedProcessingInput,
+            sourceVersionRef: bindingSourceVersionRef,
+          }),
+      },
+      {
+        label: "source-version-read",
+        commandId: "c11-forged-version-read",
+        group: "read",
+        run: () =>
+          fixture.registry.resolveSourceVersionForRead({
+            queryId: "c11-forged-version-read",
+            projectId: state.projectId,
+            actorId: forgedActorId,
+            requestedAt: timestamp,
+            authorization: forgedVersionRead,
+            sourceVersionRef: state.sourceVersionRef,
+          }),
+      },
+      {
+        label: "source-segments-read",
+        commandId: "c11-forged-segments-read",
+        group: "read",
+        run: () =>
+          fixture.registry.read({
+            queryId: "c11-forged-segments-read",
+            projectId: state.projectId,
+            actorId: forgedActorId,
+            requestedAt: timestamp,
+            authorization: forgedSegmentsRead,
+            kind: "source-segments",
+            payload: { sourceSegmentSetRef: state.segmentSetRef },
+          }),
+      },
+      {
+        label: "evidence-access-read",
+        commandId: "c11-forged-evidence-read",
+        group: "read",
+        run: () =>
+          fixture.registry.read({
+            queryId: "c11-forged-evidence-read",
+            projectId: state.projectId,
+            actorId: forgedActorId,
+            requestedAt: timestamp,
+            authorization: forgedEvidenceRead,
+            kind: "evidence-access",
+            payload: { evidenceReferences, purposeCode: "risk-identification.evidence-access" },
+          }),
+      },
+      {
+        label: "source-segments-resolve",
+        commandId: "c11-forged-segments-resolve",
+        group: "read",
+        run: () =>
+          fixture.registry.resolveReadQuery({
+            queryResultRef: segmentsReadRef,
+            invocationId: "c11-forged-segments-resolve",
+            projectId: state.projectId,
+            actorId: forgedActorId,
+            requestedAt: timestamp,
+            authorization: forgedSegmentsResolve,
+          }),
+      },
+      {
+        label: "evidence-access-resolve",
+        commandId: "c11-forged-evidence-resolve",
+        group: "read",
+        run: () =>
+          fixture.registry.resolveReadQuery({
+            queryResultRef: evidenceReadRef,
+            invocationId: "c11-forged-evidence-resolve",
+            projectId: state.projectId,
+            actorId: forgedActorId,
+            requestedAt: timestamp,
+            authorization: forgedEvidenceResolve,
+          }),
+      },
+    ];
+    const factsBefore = await factsFor();
+    const forgedErrors = new Map<"write" | "read", string[]>();
+    for (const forgedCase of forgedCases) {
+      const result = await forgedCase.run();
+      expect(result, forgedCase.label).toMatchObject({
+        kind: "failed",
+        error: { code: "AUTHORIZATION_DENIED", category: "authorization" },
+      });
+      expect(result, forgedCase.label).not.toHaveProperty("error.targetRef");
+      forgedErrors.set(forgedCase.group, [
+        ...(forgedErrors.get(forgedCase.group) ?? []),
+        stableError(result),
+      ]);
+    }
+    expect([...forgedErrors.values()].every((errors) => errors.length > 0)).toBe(true);
+    for (const errors of forgedErrors.values()) {
+      expect(errors[0]).toContain("AUTHORIZATION_DENIED");
+      expect(new Set(errors).size).toBe(1);
+    }
+    for (const forgedCase of forgedCases) {
+      expect(await evidenceFor(forgedCase.commandId), forgedCase.label).toEqual({
+        receipts: 0,
+        audits: 0,
+        receipt_actor: null,
+        audit_actor: null,
+      });
+    }
+    expect(await forgedActorRows()).toEqual({ rows: 0 });
+    expect(await factsFor()).toEqual(factsBefore);
+
+    // 合规主体的同类控制调用：resolve 与修订只写 C06 已验证主体。
+    const segmentsResolveControlId = "c11-binding-segments-resolve-control";
+    expect(
+      await fixture.registry.resolveReadQuery({
+        queryResultRef: segmentsReadRef,
+        invocationId: segmentsResolveControlId,
+        projectId: state.projectId,
+        actorId: state.managerId,
+        requestedAt: timestamp,
+        authorization: await state.authorize(
+          segmentsResolveControlId,
+          [state.sourceVersionRef],
+          "engineering-data.source-segments",
+        ),
+      }),
+    ).toMatchObject({
+      kind: "succeeded",
+      result: {
+        kind: "source-segments",
+        queryResultRef: segmentsReadRef,
+        sourceAccessGrantRef: { kind: "source-access-grant" },
+      },
+    });
+    const evidenceResolveControlId = "c11-binding-evidence-resolve-control";
+    expect(
+      await fixture.registry.resolveReadQuery({
+        queryResultRef: evidenceReadRef,
+        invocationId: evidenceResolveControlId,
+        projectId: state.projectId,
+        actorId: state.managerId,
+        requestedAt: timestamp,
+        authorization: await state.authorize(
+          evidenceResolveControlId,
+          [state.sourceVersionRef],
+          "engineering-data.evidence-access",
+        ),
+      }),
+    ).toMatchObject({
+      kind: "succeeded",
+      result: {
+        kind: "evidence-access",
+        queryResultRef: evidenceReadRef,
+        purposeCode: "risk-identification.evidence-access",
+      },
+    });
+
+    const projectControlId = "c11-binding-project-control";
+    const projectControl = await fixture.registry.reviseContext({
+      commandId: projectControlId,
+      idempotencyKey: projectControlId,
+      projectId: state.projectId,
+      actorId: state.managerId,
+      issuedAt: timestamp,
+      authorization: await state.authorize(projectControlId),
+      kind: "project",
+      expectedVersion: state.projectRevisionRef.reference,
+      name: "主体绑定工程修订",
+      lifecycle: "active",
+      applicabilityMetadata: {
+        constructionMethod: "variable-diameter-shield",
+        stratumCondition: "soft-soil",
+        engineeringStage: "shield-expansion",
+      },
+      effectivePeriod: { validFrom: timestamp },
+    });
+    expect(projectControl).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "project-revision" },
+    });
+    if (projectControl.kind !== "succeeded" || projectControl.result.kind !== "project-revision")
+      return;
+    expect(
+      (
+        await fixture.postgres.adminPool.query<{ actor_id: string }>(
+          "SELECT actor_id FROM business.engineering_project_revisions WHERE project_id = $1 AND revision_id = $2",
+          [
+            state.projectId,
+            `${state.projectId}:${projectControl.result.revision.projectRevisionRef.reference.versionId}`,
+          ],
+        )
+      ).rows,
+    ).toEqual([{ actor_id: state.managerId }]);
+    expect(await evidenceFor(projectControlId)).toMatchObject({
+      receipts: 1,
+      audits: 1,
+      receipt_actor: state.managerId,
+      audit_actor: state.managerId,
+    });
+  });
+
   it("projects distinct C11 revisions of one scope to one exact C06 reference", async () => {
     const state = requireE2eState();
     const revisions = await fixture.postgres.adminPool.query<{

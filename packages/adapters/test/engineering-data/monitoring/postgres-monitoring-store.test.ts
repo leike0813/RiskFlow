@@ -1067,6 +1067,611 @@ describe("C14 PostgreSQL monitoring store", () => {
     expect(factsAfter.rows).toEqual(factsBefore.rows);
   });
 
+  it("denies forged actor declarations across monitoring writes, reads, and resolution", async () => {
+    const seriesRef = {
+      kind: "monitoring-series" as const,
+      reference: { entityId: "c14-series", versionId: "1" },
+    };
+    const forgedActorId = "c14-forged-actor-binding";
+    const evidence = {
+      locator: { sourceSegmentId: `${sourceVersionRef.reference.entityId}-chapter_1-segment_1` },
+      sourceVersion: sourceVersionRef.reference,
+    };
+    const forgedAuthorization = async (
+      id: string,
+      branch:
+        | "engineering-data.register-monitoring-batch"
+        | "engineering-data.monitoring-snapshot"
+        | "engineering-data.monitoring-snapshot-query",
+      sourceRefs: readonly SourceVersionRefV1[] = [],
+    ): Promise<AuthorizationContextV1> => ({
+      ...(await authorization(id, branch, sourceRefs)),
+      actorId: forgedActorId,
+    });
+    const putSamples = async (
+      id: string,
+      authorizationContext: AuthorizationContextV1,
+      samples: readonly { readonly second: number; readonly value: number }[],
+    ) =>
+      fixture.artifactStore.put(
+        ArtifactPutCommandV1Schema.parse({
+          schemaVersion: "1",
+          commandId: `${id}-put`,
+          idempotencyKey: `${id}-put`,
+          projectId,
+          actorId: managerId,
+          issuedAt: now,
+          authorization: authorizationContext,
+          requiredCapability: "engineering-data.write",
+          artifactId: id,
+          artifactKind: "content",
+          purposeCode: "engineering-data.register-monitoring-batch",
+          mediaType: "application/x-ndjson",
+          parentArtifactRefs: [],
+          evidenceReferences: [evidence],
+          additionalSpatialScopeRefs: [],
+          additionalSourceAccessGrantRefs: [],
+        }),
+        (async function* () {
+          yield new TextEncoder().encode(
+            [
+              JSON.stringify({
+                schemaVersion: "1",
+                mediaType: "application/x-ndjson",
+                monitoringSeriesRef: seriesRef,
+                projectRevisionRef,
+                spatialScopeRef,
+                sourceVersionRef,
+                sourceSegmentSetRef,
+                productionStrategyRef: { entityId: "monitoring-production", versionId: "1" },
+                sampleCount: samples.length,
+              }),
+              ...samples.map((sample) =>
+                JSON.stringify({
+                  sourceSampleKey: `${id}-${sample.second}`,
+                  sampledAt: `2030-01-01T00:00:${String(sample.second).padStart(2, "0")}.000Z`,
+                  value: sample.value,
+                  unit: "mm",
+                  evidenceReferences: [evidence],
+                }),
+              ),
+            ].join("\n"),
+          );
+        })(),
+      );
+    const monitoringFacts = async () =>
+      (
+        await fixture.postgres.adminPool.query<{
+          series: number;
+          revisions: number;
+          policies: number;
+          batches: number;
+          samples: number;
+          snapshots: number;
+          queries: number;
+          events: number;
+          current_revision_id: string | null;
+        }>(
+          `SELECT (SELECT count(*)::int FROM business.monitoring_series) AS series,
+                  (SELECT count(*)::int FROM business.monitoring_series_revisions) AS revisions,
+                  (SELECT count(*)::int FROM business.monitoring_availability_policies) AS policies,
+                  (SELECT count(*)::int FROM business.monitoring_batches) AS batches,
+                  (SELECT count(*)::int FROM business.monitoring_sample_versions) AS samples,
+                  (SELECT count(*)::int FROM business.monitoring_snapshots) AS snapshots,
+                  (SELECT count(*)::int FROM business.monitoring_snapshot_query_results) AS queries,
+                  (SELECT count(*)::int FROM outbox.events WHERE event_type LIKE 'engineering.%') AS events,
+                  (SELECT current_revision_id FROM business.monitoring_series WHERE project_id = $1 AND series_id = 'c14-series') AS current_revision_id`,
+          [projectId],
+        )
+      ).rows[0]!;
+    const commandEvidence = async (id: string) =>
+      (
+        await fixture.postgres.adminPool.query<{
+          receipts: number;
+          audits: number;
+          receipt_actor: string | null;
+          audit_actor: string | null;
+        }>(
+          `SELECT (SELECT count(*)::int FROM business.command_receipts WHERE command_id = $1) AS receipts,
+                  (SELECT count(*)::int FROM audit.entries WHERE command_id = $1) AS audits,
+                  (SELECT actor_ref FROM business.command_receipts WHERE command_id = $1) AS receipt_actor,
+                  (SELECT actor_ref FROM audit.entries WHERE command_id = $1) AS audit_actor`,
+          [id],
+        )
+      ).rows[0]!;
+    const forgedActorRows = async () =>
+      (
+        await fixture.postgres.adminPool.query<{ rows: number }>(
+          `SELECT (SELECT count(*)::int FROM business.command_receipts WHERE actor_ref = $1) +
+                  (SELECT count(*)::int FROM audit.entries WHERE actor_ref = $1) +
+                  (SELECT count(*)::int FROM business.monitoring_series_revisions WHERE actor_id = $1) +
+                  (SELECT count(*)::int FROM business.monitoring_availability_policies WHERE actor_id = $1) +
+                  (SELECT count(*)::int FROM business.monitoring_batches WHERE actor_id = $1) +
+                  (SELECT count(*)::int FROM business.monitoring_snapshots WHERE actor_id = $1) +
+                  (SELECT count(*)::int FROM business.monitoring_snapshot_query_results WHERE requested_by = $1) AS rows`,
+          [forgedActorId],
+        )
+      ).rows[0]!;
+    const stableError = (result: unknown): string => {
+      if (typeof result !== "object" || result === null || !("error" in result)) return "";
+      const { error } = result;
+      if (typeof error !== "object" || error === null) return "";
+      const shape: Record<string, unknown> = { ...error };
+      delete shape.occurredAt;
+      delete shape.causalRunId;
+      return JSON.stringify(shape);
+    };
+
+    // 先用合规主体冻结一个真实快照，供热/读/解析的伪造用例定位到既有目标。
+    const freezeControlId = "c14-binding-freeze-control";
+    const freezeControl = await fixture.registry.freeze({
+      commandId: freezeControlId,
+      idempotencyKey: freezeControlId,
+      projectId,
+      actorId: managerId,
+      issuedAt: now,
+      authorization: await authorization(freezeControlId, "engineering-data.monitoring-snapshot", [
+        sourceVersionRef,
+      ]),
+      kind: "monitoring-snapshot",
+      payload: {
+        monitoringSeriesRef: seriesRef,
+        cutoff: "2030-01-01T00:00:10.000Z",
+        availabilityPolicyRef: { entityId: "c14-policy", versionId: "1" },
+      },
+    });
+    if (freezeControl.kind !== "succeeded") throw new Error("binding freeze control failed");
+    const bindingSnapshotRef = freezeControl.result.monitoringSnapshotRef;
+    expect(
+      (
+        await fixture.postgres.adminPool.query<{ actor_id: string }>(
+          "SELECT actor_id FROM business.monitoring_snapshots WHERE snapshot_id = $1",
+          [bindingSnapshotRef.reference.entityId],
+        )
+      ).rows,
+    ).toEqual([{ actor_id: managerId }]);
+
+    const batchArtifactId = "c14-binding-batch-artifact";
+    const batchArtifactAuth = await authorization(
+      batchArtifactId,
+      "engineering-data.register-monitoring-batch",
+      [sourceVersionRef],
+    );
+    const forgedBatchArtifact = await putSamples(batchArtifactId, batchArtifactAuth, [
+      { second: 40, value: 80 },
+    ]);
+    const forgedContextSeriesRevision = await forgedAuthorization(
+      "c14-forged-series-revision",
+      "engineering-data.register-monitoring-batch",
+      [sourceVersionRef],
+    );
+    const forgedContextPolicy = await forgedAuthorization(
+      "c14-forged-policy",
+      "engineering-data.register-monitoring-batch",
+      [sourceVersionRef],
+    );
+    const forgedContextBatch = await forgedAuthorization(
+      "c14-forged-batch",
+      "engineering-data.register-monitoring-batch",
+      [sourceVersionRef],
+    );
+    const forgedContextFreeze = await forgedAuthorization(
+      "c14-forged-freeze",
+      "engineering-data.monitoring-snapshot",
+      [sourceVersionRef],
+    );
+    const forgedContextSnapshotRead = await forgedAuthorization(
+      "c14-forged-snapshot-read",
+      "engineering-data.monitoring-snapshot-query",
+      [sourceVersionRef],
+    );
+    const forgedContextResolve = await forgedAuthorization(
+      "c14-forged-resolve",
+      "engineering-data.monitoring-snapshot-query",
+      [sourceVersionRef],
+    );
+    const forgedContextSeriesRead = await forgedAuthorization(
+      "c14-forged-series-read",
+      "engineering-data.monitoring-snapshot-query",
+    );
+    const forgedCases: ReadonlyArray<{
+      readonly label: string;
+      readonly commandId: string;
+      readonly run: () => Promise<{ kind: string }>;
+    }> = [
+      {
+        label: "series-revision",
+        commandId: "c14-forged-series-revision",
+        run: () =>
+          fixture.monitoringStore.reviseSeries({
+            commandId: "c14-forged-series-revision",
+            idempotencyKey: "c14-forged-series-revision",
+            projectId,
+            actorId: forgedActorId,
+            issuedAt: now,
+            authorization: forgedContextSeriesRevision,
+            monitoringSeriesRef: {
+              kind: "monitoring-series",
+              reference: { entityId: "c14-forged-series", versionId: "1" },
+            },
+            expectedVersion: "none",
+            projectRevisionRef,
+            spatialScopeRef,
+            monitoringObject: "settlement sensor",
+            monitoringIndicator: "地表沉降",
+            parameterCode: "forged",
+            canonicalUnit: "mm",
+            unitConversions: [{ fromUnit: "cm", scale: 10, offset: 0 }],
+            effectivePeriod: { validFrom: now },
+          }),
+      },
+      {
+        label: "availability-policy",
+        commandId: "c14-forged-policy",
+        run: () =>
+          fixture.monitoringStore.registerAvailabilityPolicy({
+            commandId: "c14-forged-policy",
+            idempotencyKey: "c14-forged-policy",
+            projectId,
+            actorId: forgedActorId,
+            issuedAt: now,
+            authorization: forgedContextPolicy,
+            policy: {
+              availabilityPolicyRef: { entityId: "c14-forged-policy", versionId: "1" },
+              projectId,
+              monitoringSeriesRef: seriesRef,
+              windowDurationMs: 10_000,
+              intervalMs: 1_000,
+              maxInterpolationGapMs: 2_000,
+              slopeWindowSize: 5,
+              accelerationWindowSize: 5,
+              frequencyWindowSize: 5,
+              anomalyBaselineSize: 2,
+              anomalyScaleFloor: 0.1,
+              frequencyPowerFloor: 0,
+              minimumCoverageRatio: 0.5,
+              maxFrequencySamples: 32,
+              algorithmVersions: {
+                alignment: "a1",
+                slope: "s1",
+                acceleration: "g1",
+                frequency: "f1",
+                anomaly: "n1",
+              },
+              recordedAt: now,
+              audit: { actorId: forgedActorId, action: "policy", recordedAt: now },
+            },
+          }),
+      },
+      {
+        label: "monitoring-batch",
+        commandId: "c14-forged-batch",
+        run: () =>
+          fixture.registry.apply({
+            commandId: "c14-forged-batch",
+            idempotencyKey: "c14-forged-batch",
+            projectId,
+            actorId: forgedActorId,
+            issuedAt: now,
+            authorization: forgedContextBatch,
+            kind: "register-monitoring-batch",
+            payload: {
+              monitoringSeriesRef: seriesRef,
+              deliveryKey: "c14-forged-batch",
+              sampleArtifactRef: forgedBatchArtifact.artifactRef,
+              window: { from: "2030-01-01T00:00:30.000Z", to: "2030-01-01T00:00:41.000Z" },
+              relation: { kind: "original" },
+            },
+          }),
+      },
+      {
+        label: "monitoring-freeze",
+        commandId: "c14-forged-freeze",
+        run: () =>
+          fixture.registry.freeze({
+            commandId: "c14-forged-freeze",
+            idempotencyKey: "c14-forged-freeze",
+            projectId,
+            actorId: forgedActorId,
+            issuedAt: now,
+            authorization: forgedContextFreeze,
+            kind: "monitoring-snapshot",
+            payload: {
+              monitoringSeriesRef: seriesRef,
+              cutoff: "2030-01-01T00:00:10.000Z",
+              availabilityPolicyRef: { entityId: "c14-policy", versionId: "1" },
+            },
+          }),
+      },
+      {
+        label: "monitoring-snapshot-read",
+        commandId: "c14-forged-snapshot-read",
+        run: () =>
+          fixture.registry.read({
+            queryId: "c14-forged-snapshot-read",
+            projectId,
+            actorId: forgedActorId,
+            requestedAt: now,
+            authorization: forgedContextSnapshotRead,
+            kind: "monitoring-snapshot",
+            payload: { monitoringSnapshotRef: bindingSnapshotRef },
+          }),
+      },
+      {
+        label: "monitoring-snapshot-resolve",
+        commandId: "c14-forged-resolve",
+        run: () =>
+          fixture.monitoringStore.resolveSnapshotQuery({
+            queryResultRef,
+            invocationId: "c14-forged-resolve",
+            projectId,
+            actorId: forgedActorId,
+            requestedAt: now,
+            authorization: forgedContextResolve,
+          }),
+      },
+      {
+        label: "series-revision-read",
+        commandId: "c14-forged-series-read",
+        run: () =>
+          fixture.monitoringStore.readSeriesRevision({
+            queryId: "c14-forged-series-read",
+            projectId,
+            actorId: forgedActorId,
+            requestedAt: now,
+            authorization: forgedContextSeriesRead,
+            monitoringSeriesRef: seriesRef,
+          }),
+      },
+    ];
+    const factsBefore = await monitoringFacts();
+    const forgedErrors: string[] = [];
+    for (const forgedCase of forgedCases) {
+      const result = await forgedCase.run();
+      expect(result, forgedCase.label).toMatchObject({
+        kind: "failed",
+        error: {
+          code: "AUTHORIZATION_DENIED",
+          category: "authorization",
+          retryable: false,
+        },
+      });
+      forgedErrors.push(stableError(result));
+    }
+    expect(forgedErrors[0]).toContain("AUTHORIZATION_DENIED");
+    expect(new Set(forgedErrors).size).toBe(1);
+    for (const forgedCase of forgedCases) {
+      expect(await commandEvidence(forgedCase.commandId), forgedCase.label).toEqual({
+        receipts: 0,
+        audits: 0,
+        receipt_actor: null,
+        audit_actor: null,
+      });
+    }
+    expect(await forgedActorRows()).toEqual({ rows: 0 });
+    expect(await monitoringFacts()).toEqual(factsBefore);
+
+    // 合规主体的同类控制调用：主体、收据与审计只写 C06 已验证主体。
+    const seriesControlId = "c14-binding-series-control";
+    expect(
+      await fixture.monitoringStore.reviseSeries({
+        commandId: seriesControlId,
+        idempotencyKey: seriesControlId,
+        projectId,
+        actorId: managerId,
+        issuedAt: now,
+        authorization: await authorization(
+          seriesControlId,
+          "engineering-data.register-monitoring-batch",
+          [sourceVersionRef],
+        ),
+        monitoringSeriesRef: {
+          kind: "monitoring-series",
+          reference: { entityId: "c14-binding-series", versionId: "1" },
+        },
+        expectedVersion: "none",
+        projectRevisionRef,
+        spatialScopeRef,
+        monitoringObject: "settlement sensor",
+        monitoringIndicator: "地表沉降",
+        parameterCode: "binding",
+        canonicalUnit: "mm",
+        unitConversions: [{ fromUnit: "cm", scale: 10, offset: 0 }],
+        effectivePeriod: { validFrom: now },
+      }),
+    ).toMatchObject({ kind: "succeeded" });
+    expect(
+      (
+        await fixture.postgres.adminPool.query<{ actor_id: string }>(
+          "SELECT actor_id FROM business.monitoring_series_revisions WHERE series_id = 'c14-binding-series'",
+        )
+      ).rows,
+    ).toEqual([{ actor_id: managerId }]);
+    expect(await commandEvidence(seriesControlId)).toMatchObject({
+      receipts: 1,
+      audits: 1,
+      receipt_actor: managerId,
+      audit_actor: managerId,
+    });
+
+    const policyControlId = "c14-binding-policy-control";
+    expect(
+      await fixture.monitoringStore.registerAvailabilityPolicy({
+        commandId: policyControlId,
+        idempotencyKey: policyControlId,
+        projectId,
+        actorId: managerId,
+        issuedAt: now,
+        authorization: await authorization(
+          policyControlId,
+          "engineering-data.register-monitoring-batch",
+          [sourceVersionRef],
+        ),
+        policy: {
+          availabilityPolicyRef: { entityId: "c14-binding-policy", versionId: "1" },
+          projectId,
+          monitoringSeriesRef: seriesRef,
+          windowDurationMs: 10_000,
+          intervalMs: 1_000,
+          maxInterpolationGapMs: 2_000,
+          slopeWindowSize: 5,
+          accelerationWindowSize: 5,
+          frequencyWindowSize: 5,
+          anomalyBaselineSize: 2,
+          anomalyScaleFloor: 0.1,
+          frequencyPowerFloor: 0,
+          minimumCoverageRatio: 0.5,
+          maxFrequencySamples: 32,
+          algorithmVersions: {
+            alignment: "a1",
+            slope: "s1",
+            acceleration: "g1",
+            frequency: "f1",
+            anomaly: "n1",
+          },
+          recordedAt: now,
+          audit: { actorId: managerId, action: "policy", recordedAt: now },
+        },
+      }),
+    ).toMatchObject({ kind: "succeeded" });
+    expect(
+      (
+        await fixture.postgres.adminPool.query<{ actor_id: string }>(
+          "SELECT actor_id FROM business.monitoring_availability_policies WHERE policy_id = $1",
+          ["c14-binding-policy:1"],
+        )
+      ).rows,
+    ).toEqual([{ actor_id: managerId }]);
+    expect(await commandEvidence(policyControlId)).toMatchObject({
+      receipts: 1,
+      audits: 1,
+      receipt_actor: managerId,
+      audit_actor: managerId,
+    });
+
+    const batchControlId = "c14-binding-batch-control";
+    const batchControlAuth = await authorization(
+      batchControlId,
+      "engineering-data.register-monitoring-batch",
+      [sourceVersionRef],
+    );
+    const batchControlArtifact = await putSamples(
+      "c14-binding-batch-artifact-control",
+      batchControlAuth,
+      [{ second: 50, value: 100 }],
+    );
+    expect(
+      await fixture.registry.apply({
+        commandId: batchControlId,
+        idempotencyKey: batchControlId,
+        projectId,
+        actorId: managerId,
+        issuedAt: now,
+        authorization: batchControlAuth,
+        kind: "register-monitoring-batch",
+        payload: {
+          monitoringSeriesRef: seriesRef,
+          deliveryKey: "c14-binding-batch",
+          sampleArtifactRef: batchControlArtifact.artifactRef,
+          window: { from: "2030-01-01T00:00:40.000Z", to: "2030-01-01T00:00:51.000Z" },
+          relation: { kind: "original" },
+        },
+      }),
+    ).toMatchObject({ kind: "succeeded", result: { kind: "register-monitoring-batch" } });
+    expect(
+      (
+        await fixture.postgres.adminPool.query<{ actor_id: string }>(
+          "SELECT actor_id FROM business.monitoring_batches WHERE delivery_key = 'c14-binding-batch'",
+        )
+      ).rows,
+    ).toEqual([{ actor_id: managerId }]);
+    expect(await commandEvidence(batchControlId)).toMatchObject({
+      receipts: 1,
+      audits: 1,
+      receipt_actor: managerId,
+      audit_actor: managerId,
+    });
+    expect(await commandEvidence(freezeControlId)).toMatchObject({
+      receipts: 1,
+      audits: 1,
+      receipt_actor: managerId,
+      audit_actor: managerId,
+    });
+
+    const snapshotReadControlId = "c14-binding-snapshot-read-control";
+    expect(
+      await fixture.registry.read({
+        queryId: snapshotReadControlId,
+        projectId,
+        actorId: managerId,
+        requestedAt: now,
+        authorization: await authorization(
+          snapshotReadControlId,
+          "engineering-data.monitoring-snapshot-query",
+          [sourceVersionRef],
+        ),
+        kind: "monitoring-snapshot",
+        payload: { monitoringSnapshotRef: bindingSnapshotRef },
+      }),
+    ).toMatchObject({ kind: "succeeded" });
+    expect(
+      (
+        await fixture.postgres.adminPool.query<{ requested_by: string }>(
+          "SELECT requested_by FROM business.monitoring_snapshot_query_results WHERE query_result_id = $1",
+          [`monitoring-${snapshotReadControlId}`],
+        )
+      ).rows,
+    ).toEqual([{ requested_by: managerId }]);
+    expect(await commandEvidence(snapshotReadControlId)).toMatchObject({
+      receipts: 1,
+      audits: 1,
+      receipt_actor: managerId,
+      audit_actor: managerId,
+    });
+
+    const resolveControlId = "c14-binding-resolve-control";
+    const resolvedControl = await fixture.monitoringStore.resolveSnapshotQuery({
+      queryResultRef,
+      invocationId: resolveControlId,
+      projectId,
+      actorId: managerId,
+      requestedAt: now,
+      authorization: await authorization(
+        resolveControlId,
+        "engineering-data.monitoring-snapshot-query",
+        [sourceVersionRef],
+      ),
+    });
+    expect(resolvedControl).toMatchObject({
+      kind: "succeeded",
+      result: {
+        kind: "snapshot-query",
+        query: { requestedBy: managerId, audit: { actorId: managerId } },
+      },
+    });
+
+    const seriesReadControlId = "c14-binding-series-read-control";
+    expect(
+      await fixture.monitoringStore.readSeriesRevision({
+        queryId: seriesReadControlId,
+        projectId,
+        actorId: managerId,
+        requestedAt: now,
+        authorization: await authorization(
+          seriesReadControlId,
+          "engineering-data.monitoring-snapshot-query",
+        ),
+        monitoringSeriesRef: seriesRef,
+      }),
+    ).toMatchObject({ kind: "succeeded", result: { monitoringSeriesRef: seriesRef } });
+    expect(await commandEvidence(seriesReadControlId)).toMatchObject({
+      receipts: 1,
+      audits: 1,
+      receipt_actor: managerId,
+      audit_actor: managerId,
+    });
+  });
+
   it("requires a correction predecessor to contain the corrected sample time", async () => {
     const evidence = {
       locator: { sourceSegmentId: `${sourceVersionRef.reference.entityId}-chapter_1-segment_1` },

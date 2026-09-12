@@ -12,7 +12,9 @@ import {
   type MonitoringSnapshotQueryV1,
   type MonitoringSnapshotV1,
   type MonitoringSeriesRevisionV1,
+  type MonitoringSeriesReadResultV1,
   type MonitoringSampleVersionV1,
+  type ReadMonitoringSeriesRevisionQueryV1,
   type RegisterMonitoringAvailabilityPolicyCommandV1,
   type ResolveMonitoringSnapshotQueryV1,
   type ReviseMonitoringSeriesCommandV1,
@@ -26,6 +28,12 @@ export interface MonitoringRegistryV1 {
     command: RegisterMonitoringAvailabilityPolicyCommandV1,
   ): Promise<MonitoringResultV1>;
   resolveSnapshotQuery(query: ResolveMonitoringSnapshotQueryV1): Promise<MonitoringResultV1>;
+}
+
+export interface MonitoringSeriesReaderV1 {
+  readSeriesRevision(
+    query: ReadMonitoringSeriesRevisionQueryV1,
+  ): Promise<MonitoringSeriesReadResultV1>;
 }
 
 export const parseMonitoringSeriesRevision = (value: unknown): MonitoringSeriesRevisionV1 =>

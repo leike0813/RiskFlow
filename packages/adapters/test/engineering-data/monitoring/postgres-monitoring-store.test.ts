@@ -3,6 +3,8 @@ import type { QueryResultRefV1 } from "@riskflow/contracts/ports";
 
 import { ArtifactPutCommandV1Schema } from "@riskflow/core/artifacts";
 import type {
+  MonitoringSeriesReadResultV1,
+  ReadMonitoringSeriesRevisionQueryV1,
   RegisterMonitoringAvailabilityPolicyCommandV1,
   ReviseMonitoringSeriesCommandV1,
 } from "@riskflow/core/engineering-data/monitoring";
@@ -35,6 +37,7 @@ describe("C14 PostgreSQL monitoring store", () => {
   let managerSessionToken: string;
   let queryResultRef: QueryResultRefV1;
   let queryAuthorization: AuthorizationContextV1;
+  let seriesReadAuthorization: AuthorizationContextV1;
   let authorization: (
     id: string,
     branch:
@@ -763,6 +766,307 @@ describe("C14 PostgreSQL monitoring store", () => {
     expect(emptyRow.rows).toEqual([{ availability: "unavailable" }]);
   });
 
+  it("reads one exact series revision with bounded fields, receipts, and stable denials", async () => {
+    const seriesRef = {
+      kind: "monitoring-series" as const,
+      reference: { entityId: "c14-series", versionId: "1" },
+    };
+    seriesReadAuthorization = await authorization(
+      "c14-series-read",
+      "engineering-data.monitoring-snapshot-query",
+    );
+    const query: ReadMonitoringSeriesRevisionQueryV1 = {
+      queryId: "c14-series-read",
+      projectId,
+      actorId: managerId,
+      requestedAt: now,
+      authorization: seriesReadAuthorization,
+      monitoringSeriesRef: seriesRef,
+    };
+    const evidenceFor = async (queryId: string) =>
+      fixture.postgres.adminPool.query<{
+        receipts: number;
+        audits: number;
+        command_kind: string | null;
+        result_ref: unknown;
+      }>(
+        `SELECT (SELECT count(*)::int FROM business.command_receipts WHERE command_id = $1) AS receipts,
+                (SELECT count(*)::int FROM audit.entries WHERE command_id = $1) AS audits,
+                (SELECT command_kind FROM business.command_receipts WHERE command_id = $1) AS command_kind,
+                (SELECT result_ref FROM business.command_receipts WHERE command_id = $1) AS result_ref`,
+        [queryId],
+      );
+    const stableErrorShape = (error: unknown): Record<string, unknown> => {
+      const shape = { ...(error as Record<string, unknown>) };
+      delete shape.occurredAt;
+      delete shape.causalRunId;
+      return shape;
+    };
+    const errorOf = (result: MonitoringSeriesReadResultV1): Record<string, unknown> => {
+      if (result.kind !== "failed") throw new Error("expected a failed series read");
+      return stableErrorShape(result.error);
+    };
+    const read = await fixture.monitoringStore.readSeriesRevision(query);
+    expect(read).toEqual({
+      kind: "succeeded",
+      result: {
+        monitoringSeriesRef: seriesRef,
+        seriesId: "c14-series",
+        projectId,
+        projectRevisionRef,
+        spatialScopeRef,
+        monitoringObject: "settlement sensor",
+        monitoringIndicator: "地表沉降",
+        parameterCode: "settlement",
+        canonicalUnit: "mm",
+        unitConversions: [{ fromUnit: "cm", scale: 10, offset: 0 }],
+        effectivePeriod: { validFrom: now },
+        recordedAt: now,
+        status: "current",
+      },
+    });
+    expect((await evidenceFor("c14-series-read")).rows).toEqual([
+      {
+        receipts: 1,
+        audits: 1,
+        command_kind: "engineering-data.monitoring-series-read.v1",
+        result_ref: seriesRef,
+      },
+    ]);
+    expect(await fixture.monitoringStore.readSeriesRevision(query)).toEqual(read);
+    expect((await evidenceFor("c14-series-read")).rows).toEqual([
+      {
+        receipts: 1,
+        audits: 1,
+        command_kind: "engineering-data.monitoring-series-read.v1",
+        result_ref: seriesRef,
+      },
+    ]);
+    expect(
+      await fixture.monitoringStore.readSeriesRevision({
+        ...query,
+        requestedAt: "2030-01-01T00:00:01.000Z",
+      }),
+    ).toMatchObject({ kind: "failed", error: { code: "IDEMPOTENCY_CONFLICT" } });
+    const facts = await fixture.postgres.adminPool.query<{
+      series: number;
+      revisions: number;
+      events: number;
+    }>(
+      `SELECT (SELECT count(*)::int FROM business.monitoring_series) AS series,
+              (SELECT count(*)::int FROM business.monitoring_series_revisions) AS revisions,
+              (SELECT count(*)::int FROM outbox.events WHERE event_type LIKE 'engineering.%') AS events`,
+    );
+    expect(facts.rows).toEqual([{ series: 1, revisions: 1, events: 0 }]);
+    // 其它工程已存在同版本序列修订，读取仍必须与"缺失/版本不匹配"同构拒绝。
+    await fixture.postgres.adminPool.query(
+      `INSERT INTO business.monitoring_series (series_id, project_id, current_revision_id)
+       VALUES ('c14-other-series', 'project-c14-other', NULL)`,
+    );
+    await fixture.postgres.adminPool.query(
+      `INSERT INTO audit.entries (audit_entry_id, project_id, action, target_ref, actor_ref, authorization_context_ref, version_ref, occurred_at, recorded_at, command_id, idempotency_key)
+       VALUES ('audit:c14-other-series', 'project-c14-other', 'engineering-data.monitoring-series-revision',
+               '{"kind":"monitoring-series","reference":{"entityId":"c14-other-series","versionId":"1"}}'::jsonb,
+               $1,
+               '{"kind":"authorization-context","reference":{"entityId":"c14-other-series","versionId":"1"}}'::jsonb,
+               '{"entityId":"c14-other-series","versionId":"1"}'::jsonb,
+               $2::timestamptz, $2::timestamptz, 'c14-other-series', 'c14-other-series')`,
+      [managerId, now],
+    );
+    await fixture.postgres.adminPool.query(
+      `INSERT INTO business.monitoring_series_revisions (revision_id, series_id, project_id, revision_no, version_id, monitoring_series_ref, project_revision_ref, spatial_scope_ref, monitoring_object, monitoring_indicator, parameter_code, canonical_unit, unit_conversions, effective_period, recorded_at, actor_id, authorization_context_ref, audit_entry_id, occurred_at)
+       VALUES ('c14-other-series:1', 'c14-other-series', 'project-c14-other', 1, '1',
+               '{"kind":"monitoring-series","reference":{"entityId":"c14-other-series","versionId":"1"}}'::jsonb,
+               '{"kind":"project-revision","reference":{"entityId":"project-c14-other","versionId":"1"}}'::jsonb,
+               '{"kind":"spatial-scope","reference":{"entityId":"c14-other-scope","versionId":"1"}}'::jsonb,
+               'settlement sensor', '地表沉降', 'settlement', 'mm', '[]'::jsonb,
+               '{"validFrom":"2030-01-01T00:00:00.000Z"}'::jsonb,
+               $1::timestamptz, $2,
+               '{"kind":"authorization-context","reference":{"entityId":"c14-other-series","versionId":"1"}}'::jsonb,
+               'audit:c14-other-series', $1::timestamptz)`,
+      [now, managerId],
+    );
+    await fixture.postgres.adminPool.query(
+      `UPDATE business.monitoring_series SET current_revision_id = 'c14-other-series:1' WHERE series_id = 'c14-other-series'`,
+    );
+    const denied = await Promise.all([
+      fixture.monitoringStore.readSeriesRevision({
+        ...query,
+        queryId: "c14-read-missing",
+        monitoringSeriesRef: {
+          kind: "monitoring-series",
+          reference: { entityId: "c14-missing-series", versionId: "1" },
+        },
+        authorization: await authorization(
+          "c14-read-missing",
+          "engineering-data.monitoring-snapshot-query",
+        ),
+      }),
+      fixture.monitoringStore.readSeriesRevision({
+        ...query,
+        queryId: "c14-read-wrong-version",
+        monitoringSeriesRef: {
+          kind: "monitoring-series",
+          reference: { entityId: "c14-series", versionId: "9" },
+        },
+        authorization: await authorization(
+          "c14-read-wrong-version",
+          "engineering-data.monitoring-snapshot-query",
+        ),
+      }),
+      fixture.monitoringStore.readSeriesRevision({
+        ...query,
+        queryId: "c14-read-foreign",
+        monitoringSeriesRef: {
+          kind: "monitoring-series",
+          reference: { entityId: "c14-other-series", versionId: "1" },
+        },
+        authorization: await authorization(
+          "c14-read-foreign",
+          "engineering-data.monitoring-snapshot-query",
+        ),
+      }),
+    ]);
+    for (const failure of denied) {
+      expect(failure).toMatchObject({
+        kind: "failed",
+        error: {
+          code: "AUTHORIZATION_DENIED",
+          category: "authorization",
+          requiredCapability: "engineering-data.read",
+          retryable: false,
+        },
+      });
+      expect(errorOf(failure)).not.toHaveProperty("targetRef");
+    }
+    expect(errorOf(denied[0]!)).toEqual(errorOf(denied[1]!));
+    expect(errorOf(denied[0]!)).toEqual(errorOf(denied[2]!));
+    expect((await evidenceFor("c14-read-missing")).rows).toEqual([
+      { receipts: 0, audits: 0, command_kind: null, result_ref: null },
+    ]);
+  });
+
+  it("keeps authorization ahead of idempotency and writes only the verified actor", async () => {
+    const seriesRef = {
+      kind: "monitoring-series" as const,
+      reference: { entityId: "c14-series", versionId: "1" },
+    };
+    const queryId = "c14-read-precedence";
+    const query: ReadMonitoringSeriesRevisionQueryV1 = {
+      queryId,
+      projectId,
+      actorId: managerId,
+      requestedAt: now,
+      authorization: await authorization(queryId, "engineering-data.monitoring-snapshot-query"),
+      monitoringSeriesRef: seriesRef,
+    };
+    const readEvidence = async (id: string) =>
+      (
+        await fixture.postgres.adminPool.query<{
+          receipts: number;
+          audits: number;
+          receipt_actor: string | null;
+          audit_actor: string | null;
+        }>(
+          `SELECT (SELECT count(*)::int FROM business.command_receipts WHERE command_id = $1) AS receipts,
+                  (SELECT count(*)::int FROM audit.entries WHERE command_id = $1) AS audits,
+                  (SELECT actor_ref FROM business.command_receipts WHERE command_id = $1) AS receipt_actor,
+                  (SELECT actor_ref FROM audit.entries WHERE command_id = $1) AS audit_actor`,
+          [id],
+        )
+      ).rows[0];
+    // 同 queryId 同载荷重放：返回同一结果并复用既有收据与审计。
+    const first = await fixture.monitoringStore.readSeriesRevision(query);
+    expect(first).toMatchObject({ kind: "succeeded", result: { monitoringSeriesRef: seriesRef } });
+    expect(await fixture.monitoringStore.readSeriesRevision(query)).toEqual(first);
+    expect(await readEvidence(queryId)).toEqual({
+      receipts: 1,
+      audits: 1,
+      receipt_actor: managerId,
+      audit_actor: managerId,
+    });
+    // 同 queryId 异载荷：授权校验通过后由 C03 幂等键拒绝，收据与审计保持不变。
+    const changedAuthorization = {
+      ...query.authorization,
+      decidedAt: "2030-01-01T00:00:01.000Z",
+    };
+    expect(
+      await fixture.monitoringStore.readSeriesRevision({
+        ...query,
+        authorization: changedAuthorization,
+      }),
+    ).toMatchObject({ kind: "failed", error: { code: "IDEMPOTENCY_CONFLICT" } });
+    expect(await readEvidence(queryId)).toEqual({
+      receipts: 1,
+      audits: 1,
+      receipt_actor: managerId,
+      audit_actor: managerId,
+    });
+    // 同 queryId 改授权上下文：当前授权拒绝优先于既有收据。
+    const otherAuthorization = await authorization(
+      "c14-read-other-invocation",
+      "engineering-data.monitoring-snapshot-query",
+    );
+    expect(
+      await fixture.monitoringStore.readSeriesRevision({
+        ...query,
+        authorization: otherAuthorization,
+      }),
+    ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    expect(await readEvidence(queryId)).toEqual({
+      receipts: 1,
+      audits: 1,
+      receipt_actor: managerId,
+      audit_actor: managerId,
+    });
+    // 伪造载荷 actor：当前授权通过也不得进入收据、审计或任何事实。
+    const factsBefore = await fixture.postgres.adminPool.query<{
+      series: number;
+      revisions: number;
+      events: number;
+    }>(
+      `SELECT (SELECT count(*)::int FROM business.monitoring_series) AS series,
+              (SELECT count(*)::int FROM business.monitoring_series_revisions) AS revisions,
+              (SELECT count(*)::int FROM outbox.events WHERE event_type LIKE 'engineering.%') AS events`,
+    );
+    const forgedQueryId = "c14-read-forged-actor";
+    const forgedAuthorization = await authorization(
+      forgedQueryId,
+      "engineering-data.monitoring-snapshot-query",
+    );
+    expect(
+      await fixture.monitoringStore.readSeriesRevision({
+        queryId: forgedQueryId,
+        projectId,
+        actorId: "c14-forged-actor",
+        requestedAt: now,
+        authorization: { ...forgedAuthorization, actorId: "c14-forged-actor" },
+        monitoringSeriesRef: seriesRef,
+      }),
+    ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    expect(await readEvidence(forgedQueryId)).toEqual({
+      receipts: 0,
+      audits: 0,
+      receipt_actor: null,
+      audit_actor: null,
+    });
+    const forgedActorRows = await fixture.postgres.adminPool.query<{ rows: number }>(
+      `SELECT (SELECT count(*)::int FROM business.command_receipts WHERE actor_ref = 'c14-forged-actor') +
+              (SELECT count(*)::int FROM audit.entries WHERE actor_ref = 'c14-forged-actor') AS rows`,
+    );
+    expect(forgedActorRows.rows).toEqual([{ rows: 0 }]);
+    const factsAfter = await fixture.postgres.adminPool.query<{
+      series: number;
+      revisions: number;
+      events: number;
+    }>(
+      `SELECT (SELECT count(*)::int FROM business.monitoring_series) AS series,
+              (SELECT count(*)::int FROM business.monitoring_series_revisions) AS revisions,
+              (SELECT count(*)::int FROM outbox.events WHERE event_type LIKE 'engineering.%') AS events`,
+    );
+    expect(factsAfter.rows).toEqual(factsBefore.rows);
+  });
+
   it("requires a correction predecessor to contain the corrected sample time", async () => {
     const evidence = {
       locator: { sourceSegmentId: `${sourceVersionRef.reference.entityId}-chapter_1-segment_1` },
@@ -914,6 +1218,92 @@ describe("C14 PostgreSQL monitoring store", () => {
     ).rejects.toMatchObject({ code: "23514" });
   });
 
+  it("reports current and superseded status for exact revisions without changing series facts", async () => {
+    const readRevision = async (
+      queryId: string,
+      versionId: string,
+      authorizationContext: AuthorizationContextV1,
+    ) =>
+      fixture.monitoringStore.readSeriesRevision({
+        queryId,
+        projectId,
+        actorId: managerId,
+        requestedAt: now,
+        authorization: authorizationContext,
+        monitoringSeriesRef: {
+          kind: "monitoring-series",
+          reference: { entityId: "c14-series", versionId },
+        },
+      });
+    const supersededAuthorization = await authorization(
+      "c14-read-v1-superseded",
+      "engineering-data.monitoring-snapshot-query",
+    );
+    const currentAuthorization = await authorization(
+      "c14-read-v2-current",
+      "engineering-data.monitoring-snapshot-query",
+    );
+    const factsBefore = await fixture.postgres.adminPool.query<{
+      revisions: number;
+      series: number;
+    }>(
+      `SELECT (SELECT count(*)::int FROM business.monitoring_series_revisions) AS revisions,
+              (SELECT count(*)::int FROM business.monitoring_series) AS series`,
+    );
+    expect(
+      await readRevision("c14-read-v1-superseded", "1", supersededAuthorization),
+    ).toMatchObject({
+      kind: "succeeded",
+      result: {
+        parameterCode: "settlement",
+        status: "superseded",
+        effectivePeriod: { validFrom: now },
+      },
+    });
+    expect(await readRevision("c14-read-v2-current", "2", currentAuthorization)).toEqual({
+      kind: "succeeded",
+      result: {
+        monitoringSeriesRef: {
+          kind: "monitoring-series",
+          reference: { entityId: "c14-series", versionId: "2" },
+        },
+        seriesId: "c14-series",
+        projectId,
+        projectRevisionRef,
+        spatialScopeRef,
+        monitoringObject: "settlement sensor",
+        monitoringIndicator: "地表沉降",
+        parameterCode: "settlement-v2",
+        canonicalUnit: "mm",
+        unitConversions: [{ fromUnit: "cm", scale: 10, offset: 0 }],
+        effectivePeriod: { validFrom: now },
+        recordedAt: now,
+        previousRevisionRef: {
+          kind: "monitoring-series",
+          reference: { entityId: "c14-series", versionId: "1" },
+        },
+        status: "current",
+      },
+    });
+    expect(
+      await readRevision("c14-read-v1-superseded", "1", supersededAuthorization),
+    ).toMatchObject({
+      kind: "succeeded",
+      result: { status: "superseded" },
+    });
+    expect(
+      await readRevision("c14-read-v1-superseded", "2", supersededAuthorization),
+    ).toMatchObject({ kind: "failed", error: { code: "IDEMPOTENCY_CONFLICT" } });
+    const factsAfter = await fixture.postgres.adminPool.query<{
+      revisions: number;
+      series: number;
+    }>(
+      `SELECT (SELECT count(*)::int FROM business.monitoring_series_revisions) AS revisions,
+              (SELECT count(*)::int FROM business.monitoring_series) AS series`,
+    );
+    expect(factsAfter.rows).toEqual(factsBefore.rows);
+  });
+
   it("rechecks current authorization before resolving a stored query", async () => {
     await fixture.access.changePassword({
       kind: "change-password",
@@ -929,5 +1319,17 @@ describe("C14 PostgreSQL monitoring store", () => {
       authorization: queryAuthorization,
     });
     expect(resolved).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    const reread = await fixture.monitoringStore.readSeriesRevision({
+      queryId: "c14-series-read",
+      projectId,
+      actorId: managerId,
+      requestedAt: now,
+      authorization: seriesReadAuthorization,
+      monitoringSeriesRef: {
+        kind: "monitoring-series",
+        reference: { entityId: "c14-series", versionId: "1" },
+      },
+    });
+    expect(reread).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
   });
 });

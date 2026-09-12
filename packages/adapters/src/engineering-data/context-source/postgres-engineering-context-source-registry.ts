@@ -20,7 +20,9 @@ import {
   ArtifactStoreError,
   mapArtifactErrorToModuleError,
   manifestSha256,
+  normalizeEvidenceReferences,
   type ArtifactManifestV1,
+  type ArtifactReferenceCheckResultV1,
   type ArtifactReferenceGuardV1,
   type ArtifactStoreV1,
 } from "@riskflow/core/artifacts";
@@ -52,6 +54,7 @@ import {
   SourceSegmentSetV1Schema,
   SourceVersionV1Schema,
   SpatialBusinessRevisionV1Schema,
+  SpatialScopeRefSetV1Schema,
   type ApplicabilityMetadataSnapshotV1,
   type ContextSourceResultV1,
   type ContextSourceSuccessV1,
@@ -72,6 +75,7 @@ import {
   EngineeringDataCommandV1Schema,
   EngineeringDataQueryV1Schema,
   EngineeringFreezeCommandV1Schema,
+  ExternalRiskEventRefV1Schema,
   type AuthorizationContextV1,
   type ContractReferenceV1,
   type ContentArtifactRefV1,
@@ -82,13 +86,14 @@ import {
   type EngineeringDataQueryV1,
   type EngineeringFreezeCommandV1,
   type EngineeringFreezeResultV1,
+  type ModuleBranchV1,
   type ModuleErrorV1,
   type SourceAccessGrantRefV1,
   type SourceDeliveryRefV1,
   type SourceVersionRefV1,
   type SpatialScopeRefV1,
 } from "@riskflow/contracts/ports";
-import type { VersionReference } from "@riskflow/contracts/common";
+import type { EvidenceReference, VersionReference } from "@riskflow/contracts/common";
 
 import { getPostgresTransaction } from "../../postgres/transaction-unit.js";
 import {
@@ -262,6 +267,27 @@ interface ApplicabilitySnapshotRow {
   audit_entry_id: string;
 }
 
+interface ExternalRiskEventRow {
+  external_risk_event_id: string;
+  version_id: string;
+  project_id: string;
+  external_risk_event_ref: JsonColumn;
+  external_source_entity_id: string;
+  external_source_version_id: string;
+  external_source_ref: JsonColumn;
+  external_event_key: string;
+  event_artifact_ref: JsonColumn;
+  evidence_references: JsonColumn;
+  source_version_refs: JsonColumn;
+  spatial_scope_refs: JsonColumn;
+  occurred_at: TimestampColumn;
+  recorded_at: TimestampColumn;
+  persisted_at: TimestampColumn;
+  actor_id: string;
+  authorization_context_ref: JsonColumn;
+  audit_entry_id: string;
+}
+
 type ContextSourceDatabase = PostgresDatabase & {
   "business.engineering_projects": ProjectIdentityRow;
   "business.engineering_project_revisions": ProjectRevisionRow;
@@ -273,6 +299,7 @@ type ContextSourceDatabase = PostgresDatabase & {
   "business.source_segment_sets": SegmentSetRow;
   "business.source_segments": SegmentRow;
   "business.applicability_metadata_snapshots": ApplicabilitySnapshotRow;
+  "business.external_risk_events": ExternalRiskEventRow;
 };
 
 type ContextTransaction = Transaction<ContextSourceDatabase>;
@@ -331,6 +358,26 @@ const deliveryIdFor = (command: EngineeringDataCommandV1): string =>
 
 const sourceVersionRefFor = (sourceId: string): SourceVersionRefV1 =>
   ref("source-version", sourceId, "1") as SourceVersionRefV1;
+const externalRiskEventIdFor = (command: {
+  readonly projectId: string;
+  readonly payload: {
+    readonly externalSourceRef: VersionReference;
+    readonly externalEventKey: string;
+  };
+}): string =>
+  `external-risk-event:${sha256CanonicalJson({
+    projectId: command.projectId,
+    externalSourceRef: command.payload.externalSourceRef,
+    externalEventKey: command.payload.externalEventKey,
+  }).slice(0, 40)}`;
+const normalizeVersionedRefs = <
+  T extends { kind: string; reference: { entityId: string; versionId: string } },
+>(
+  values: readonly T[],
+): T[] =>
+  [...new Map(values.map((value) => [refKey(value), value])).entries()]
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([, value]) => value);
 const sourceDeliveryRefFor = (deliveryId: string): SourceDeliveryRefV1 =>
   ref("source-delivery", deliveryId, "1") as SourceDeliveryRefV1;
 const projectRevisionStorageId = (projectId: string, versionId: string): string =>
@@ -858,6 +905,8 @@ export class PostgresEngineeringContextSourceRegistry
     if (valid.kind === "register-monitoring-batch" && this.#monitoringStore !== undefined) {
       return this.#monitoringStore.registerBatch(valid);
     }
+    if (valid.kind === "register-external-risk-event")
+      return this.#registerExternalRiskEvent(valid);
     if (valid.kind !== "register-source-delivery") {
       return {
         kind: "failed",
@@ -891,6 +940,199 @@ export class PostgresEngineeringContextSourceRegistry
       return this.#monitoringStore.readSnapshot(parsed.data);
     }
     return { kind: "failed", error: moduleError("UNSUPPORTED_CONTRACT", parsed.data.queryId) };
+  }
+
+  async #registerExternalRiskEvent(
+    command: Extract<EngineeringDataCommandV1, { kind: "register-external-risk-event" }>,
+  ): Promise<EngineeringDataApplyResultV1> {
+    try {
+      const evidence = normalizeEvidenceReferences(command.payload.evidenceReferences);
+      await this.#verify(
+        command,
+        command.authorization.spatialScopeRefs,
+        normalizeVersionedRefs(
+          evidence.map((item) =>
+            ref("source-version", item.sourceVersion.entityId, item.sourceVersion.versionId),
+          ),
+        ),
+        "engineering-data.register-external-risk-event",
+      );
+      const atomic = atomicCommand(
+        command,
+        "engineering-data.register-external-risk-event.v1",
+        command,
+      );
+      const receipt = await this.#transactionUnit.execute(atomic, async (context) =>
+        this.#registerExternalRiskEventInTransaction(context, command, evidence),
+      );
+      return {
+        kind: "succeeded",
+        result: {
+          kind: "register-external-risk-event",
+          externalRiskEventRef: ExternalRiskEventRefV1Schema.parse(receipt.resultRef),
+        },
+      };
+    } catch (error) {
+      return {
+        kind: "failed",
+        error: this.#mapError(
+          error,
+          command.commandId,
+          "engineering-data.register-external-risk-event",
+        ),
+      };
+    }
+  }
+
+  async #registerExternalRiskEventInTransaction(
+    context: TransactionContextV1,
+    command: Extract<EngineeringDataCommandV1, { kind: "register-external-risk-event" }>,
+    evidence: readonly EvidenceReference[],
+  ): Promise<AtomicCommitV1> {
+    const transaction = asTransaction(context);
+    const externalRiskEventId = externalRiskEventIdFor(command);
+    const externalRiskEventRef = ExternalRiskEventRefV1Schema.parse(
+      ref("external-risk-event", externalRiskEventId, "1"),
+    );
+    await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`riskflow.c11.external-risk-event.${command.projectId}.${externalRiskEventId}`}, 0))`.execute(
+      transaction,
+    );
+    const artifact = await this.#assertExternalRiskEventArtifact(context, command);
+    if (refKey(artifact.artifactRef) !== refKey(command.payload.eventArtifactRef))
+      throw preserveDomainError(moduleError("AUTHORIZATION_DENIED", command.commandId));
+    const project = await transaction
+      .selectFrom("business.engineering_projects")
+      .selectAll()
+      .where("project_id", "=", command.projectId)
+      .forUpdate()
+      .executeTakeFirst();
+    if (project === undefined)
+      throw preserveDomainError(moduleError("AUTHORIZATION_DENIED", command.commandId));
+    const projectRevision = await transaction
+      .selectFrom("business.engineering_project_revisions")
+      .selectAll()
+      .where("project_id", "=", command.projectId)
+      .where("revision_id", "=", project.current_revision_id)
+      .executeTakeFirst();
+    if (projectRevision === undefined)
+      throw preserveDomainError(moduleError("AUTHORIZATION_DENIED", command.commandId));
+    if (projectRevision.lifecycle === "ended" || projectRevision.lifecycle === "archived")
+      throw preserveDomainError(
+        moduleError("BUSINESS_BLOCKED", command.commandId, {
+          blockerRef: ref(
+            "project-revision",
+            command.projectId,
+            versionIdFromReference(projectRevision.project_revision_ref as never),
+          ),
+          blockerKind: "project-lifecycle",
+        }),
+      );
+    const priorRegistration = await transaction
+      .selectFrom("business.external_risk_events")
+      .select(["external_risk_event_id"])
+      .where("external_risk_event_id", "=", externalRiskEventId)
+      .executeTakeFirst();
+    if (priorRegistration !== undefined)
+      throw preserveDomainError(
+        moduleError("BUSINESS_BLOCKED", command.commandId, {
+          blockerRef: externalRiskEventRef,
+          blockerKind: "external-risk-event",
+        }),
+      );
+    const authorizedScopeIds = new Set(
+      command.authorization.spatialScopeRefs.map((scope) => scope.reference.entityId),
+    );
+    const evidenceSourceVersions: SourceVersionRefV1[] = [];
+    const evidenceSpatialScopes: SpatialScopeRefV1[] = [];
+    for (const item of evidence) {
+      const sourceVersionRef = ref(
+        "source-version",
+        item.sourceVersion.entityId,
+        item.sourceVersion.versionId,
+      ) as SourceVersionRefV1;
+      const sourceVersion = await transaction
+        .selectFrom("business.source_versions")
+        .select(["access_status"])
+        .where("project_id", "=", command.projectId)
+        .where("source_version_id", "=", sourceVersionRef.reference.entityId)
+        .where("version_id", "=", sourceVersionRef.reference.versionId)
+        .executeTakeFirst();
+      if (sourceVersion === undefined || sourceVersion.access_status !== "ready")
+        throw preserveDomainError(moduleError("AUTHORIZATION_DENIED", command.commandId));
+      const segment = await transaction
+        .selectFrom("business.source_segments")
+        .select(["spatial_scope_refs"])
+        .where("project_id", "=", command.projectId)
+        .where("source_version_id", "=", sourceVersionRef.reference.entityId)
+        .where("source_segment_id", "=", item.locator.sourceSegmentId)
+        .executeTakeFirst();
+      const segmentSpatialScopes =
+        segment === undefined
+          ? undefined
+          : SpatialScopeRefSetV1Schema.safeParse(segment.spatial_scope_refs);
+      if (
+        segmentSpatialScopes === undefined ||
+        !segmentSpatialScopes.success ||
+        segmentSpatialScopes.data.some((scope) => !authorizedScopeIds.has(scope.reference.entityId))
+      )
+        throw preserveDomainError(moduleError("AUTHORIZATION_DENIED", command.commandId));
+      evidenceSourceVersions.push(sourceVersionRef);
+      evidenceSpatialScopes.push(...segmentSpatialScopes.data);
+    }
+    const auditId = auditEntryIdFor(command.commandId);
+    await transaction
+      .insertInto("business.external_risk_events")
+      .values({
+        external_risk_event_id: externalRiskEventId,
+        version_id: externalRiskEventRef.reference.versionId,
+        project_id: command.projectId,
+        external_risk_event_ref: jsonValue(externalRiskEventRef),
+        external_source_entity_id: command.payload.externalSourceRef.entityId,
+        external_source_version_id: command.payload.externalSourceRef.versionId,
+        external_source_ref: jsonValue(command.payload.externalSourceRef),
+        external_event_key: command.payload.externalEventKey,
+        event_artifact_ref: jsonValue(command.payload.eventArtifactRef),
+        evidence_references: jsonValue(evidence),
+        source_version_refs: jsonValue(normalizeVersionedRefs(evidenceSourceVersions)),
+        spatial_scope_refs: jsonValue(normalizeVersionedRefs(evidenceSpatialScopes)),
+        occurred_at: command.payload.occurredAt,
+        recorded_at: command.issuedAt,
+        persisted_at: sql`clock_timestamp()`,
+        actor_id: command.actorId,
+        authorization_context_ref: jsonValue(command.authorization.authorizationContextRef),
+        audit_entry_id: auditId,
+      } satisfies InsertObject<ContextSourceDatabase, "business.external_risk_events">)
+      .execute();
+    return commit(
+      command,
+      "engineering-data.register-external-risk-event",
+      externalRiskEventRef,
+      externalRiskEventRef.reference,
+      command.issuedAt,
+      auditId,
+    );
+  }
+
+  async #assertExternalRiskEventArtifact(
+    context: TransactionContextV1,
+    command: Extract<EngineeringDataCommandV1, { kind: "register-external-risk-event" }>,
+  ): Promise<ArtifactReferenceCheckResultV1> {
+    try {
+      return await this.#assertArtifact(
+        context,
+        command,
+        command.payload.eventArtifactRef,
+        "engineering-data.register-external-risk-event",
+      );
+    } catch (error) {
+      if (!(error instanceof ArtifactStoreError)) throw error;
+      throw preserveDomainError(
+        moduleError(
+          error.retryable ? "TRANSIENT_FAILURE" : "AUTHORIZATION_DENIED",
+          command.commandId,
+        ),
+      );
+    }
   }
 
   async #registerSourceDelivery(
@@ -1110,6 +1352,7 @@ export class PostgresEngineeringContextSourceRegistry
     },
     requestedSpatialScopeRefs: readonly SpatialScopeRefV1[],
     requestedSourceVersionRefs: readonly SourceVersionRefV1[],
+    branch: ModuleBranchV1 = "engineering-data.register-source-delivery",
   ): Promise<void> {
     if (
       command.projectId !== command.authorization.projectId ||
@@ -1122,7 +1365,7 @@ export class PostgresEngineeringContextSourceRegistry
       authorizationContextRef: command.authorization.authorizationContextRef,
       invocationId: command.commandId,
       projectId: command.projectId,
-      branch: "engineering-data.register-source-delivery",
+      branch,
       requestedSpatialScopeRefs: [...requestedSpatialScopeRefs],
       requestedSourceVersionRefs: [...requestedSourceVersionRefs],
       requestedAt: command.authorization.decidedAt,
@@ -1946,14 +2189,15 @@ export class PostgresEngineeringContextSourceRegistry
 
   async #assertArtifact(
     context: TransactionContextV1,
-    command: Extract<EngineeringDataCommandV1, { kind: "register-source-delivery" }>,
+    command: { readonly projectId: string; readonly authorization: AuthorizationContextV1 },
     artifactRef: ContentArtifactRefV1,
+    purposeCode = "engineering-data.register-source-delivery",
   ) {
     const request = ArtifactReferenceCheckRequestV1Schema.parse({
       schemaVersion: "1",
       artifactRef,
       projectId: command.projectId,
-      purposeCode: "engineering-data.register-source-delivery",
+      purposeCode,
       requiredCapability: "engineering-data.write",
       authorization: command.authorization,
     });

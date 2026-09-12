@@ -2,8 +2,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { ArtifactPutCommandV1Schema } from "@riskflow/core/artifacts";
 import type {
+  ApplicabilityMetadataSnapshotRefV1,
+  AuthorizationContextRefV1,
   AuthorizationContextV1,
   ContentArtifactRefV1,
+  EngineeringDataApplyResultV1,
   EngineeringDataCommandV1,
   EngineeringDataQueryV1,
   EngineeringFreezeCommandV1,
@@ -12,6 +15,8 @@ import type {
   SpatialScopeRefV1,
 } from "@riskflow/contracts/ports";
 import {
+  RiskInputVersionRefV1Schema,
+  StandardizedRiskRecordRefV1Schema,
   StructuredDocumentConversionCommandV1Schema,
   StructuredDocumentConversionQueryV1Schema,
 } from "@riskflow/contracts/ports";
@@ -20,6 +25,7 @@ import { PostgresEngineeringContextSourceRegistry } from "../../../src/engineeri
 import { StructuredDocumentConversionAdapter } from "../../../src/engineering-data/document-conversion/structured-document-converter.js";
 import { createPostgresRuntime } from "../../../src/postgres/pool.js";
 import * as contextSourceMigration from "../../../src/postgres/migrations/engineering-data/deliver-engineering-context-and-source-registry/000008_engineering_context_source_registry.js";
+import * as externalRiskEventRegistrationMigration from "../../../src/postgres/migrations/engineering-data/implement-external-risk-event-registration/000036_external_risk_event_registration.js";
 import {
   startEngineeringContextSourceFixture,
   type EngineeringContextSourcePostgresFixture,
@@ -55,6 +61,9 @@ describe("C11 PostgreSQL context/source registry", () => {
         projectRevisionRef: ProjectRevisionRefV1;
         sourceVersionRef: SourceVersionRefV1;
         businessSpatialScopeRef: SpatialScopeRefV1;
+        accessRootScopeRef: SpatialScopeRefV1;
+        systemAdministrationContextRef: AuthorizationContextRefV1;
+        managerSessionToken: string;
         snapshotRef: {
           kind: "applicability-metadata-snapshot";
           reference: { entityId: string; versionId: string };
@@ -64,7 +73,10 @@ describe("C11 PostgreSQL context/source registry", () => {
         authorize(
           invocationId: string,
           requestedSourceVersionRefs?: readonly SourceVersionRefV1[],
-          branch?: "engineering-data.register-source-delivery" | "engineering-data.evidence-access",
+          branch?:
+            | "engineering-data.register-source-delivery"
+            | "engineering-data.register-external-risk-event"
+            | "engineering-data.evidence-access",
           requestedSpatialScopeRefs?: readonly SpatialScopeRefV1[],
         ): Promise<AuthorizationContextV1>;
       }
@@ -91,12 +103,19 @@ describe("C11 PostgreSQL context/source registry", () => {
       readonly sourceContent?: string;
       readonly mediaType?: string;
       readonly spatialScopeRefs?: readonly SpatialScopeRefV1[];
+      readonly authorizationSpatialScopeRefs?: readonly SpatialScopeRefV1[];
+      readonly applicabilityMetadataSnapshotRef?: ApplicabilityMetadataSnapshotRefV1;
     } = {},
   ) => {
     const state = requireE2eState();
     const now = "2030-01-01T00:00:00.000Z";
     const commandId = `c11-${suffix}`;
-    const authorization = await state.authorize(commandId);
+    const authorization = await state.authorize(
+      commandId,
+      [],
+      undefined,
+      options.authorizationSpatialScopeRefs,
+    );
     const put = async (id: string, content: string, mediaType: string) =>
       fixture.artifactStore.put(
         ArtifactPutCommandV1Schema.parse({
@@ -143,7 +162,8 @@ describe("C11 PostgreSQL context/source registry", () => {
           sourceOrganization: "甲方",
         },
         descriptor: { kind: "file-upload", contentFingerprint: sourceContent },
-        applicabilityMetadataSnapshotRef: state.snapshotRef,
+        applicabilityMetadataSnapshotRef:
+          options.applicabilityMetadataSnapshotRef ?? state.snapshotRef,
       }),
       "application/json",
     );
@@ -166,6 +186,116 @@ describe("C11 PostgreSQL context/source registry", () => {
     return { command };
   };
 
+  const putExternalEventArtifact = async (
+    owner: { readonly projectId: string; readonly managerId: string },
+    artifactId: string,
+    content: string,
+    authorization: AuthorizationContextV1,
+  ) =>
+    fixture.artifactStore.put(
+      ArtifactPutCommandV1Schema.parse({
+        schemaVersion: "1",
+        commandId: `c11-put-${artifactId}`,
+        idempotencyKey: `c11-put-${artifactId}`,
+        projectId: owner.projectId,
+        actorId: owner.managerId,
+        issuedAt: "2030-01-01T00:00:00.000Z",
+        authorization,
+        requiredCapability: "engineering-data.write",
+        artifactId: `c11-${artifactId}`,
+        artifactKind: "content",
+        purposeCode: "engineering-data.register-external-risk-event",
+        mediaType: "application/json",
+        parentArtifactRefs: [],
+        evidenceReferences: [],
+        additionalSpatialScopeRefs: [],
+        additionalSourceAccessGrantRefs: [],
+      }),
+      (async function* () {
+        yield new TextEncoder().encode(content);
+      })(),
+    );
+
+  const externalRiskEventCommand = (
+    state: NonNullable<typeof e2eState>,
+    input: {
+      readonly suffix: string;
+      readonly authorization: AuthorizationContextV1;
+      readonly eventArtifactRef: ContentArtifactRefV1;
+      readonly sourceVersionRef: SourceVersionRefV1;
+      readonly sourceSegmentId: string;
+      readonly externalEventKey?: string;
+      readonly occurredAt?: string;
+    },
+  ) =>
+    ({
+      commandId: `c11-external-${input.suffix}`,
+      idempotencyKey: `c11-external-${input.suffix}`,
+      projectId: state.projectId,
+      actorId: state.managerId,
+      issuedAt: "2030-01-01T00:00:00.000Z",
+      authorization: input.authorization,
+      kind: "register-external-risk-event",
+      payload: {
+        externalSourceRef: { entityId: "external-monitoring-platform", versionId: "1" },
+        externalEventKey: input.externalEventKey ?? `external-event-${input.suffix}`,
+        eventArtifactRef: input.eventArtifactRef,
+        evidenceReferences: [
+          {
+            locator: { sourceSegmentId: input.sourceSegmentId },
+            sourceVersion: {
+              entityId: input.sourceVersionRef.reference.entityId,
+              versionId: input.sourceVersionRef.reference.versionId,
+            },
+          },
+        ],
+        occurredAt: input.occurredAt ?? "2029-12-31T23:00:00.000Z",
+      },
+    }) satisfies Extract<EngineeringDataCommandV1, { kind: "register-external-risk-event" }>;
+
+  const externalEvidence = async (projectId: string, sourceVersionRef: SourceVersionRefV1) => {
+    const rows = await fixture.postgres.adminPool.query<{
+      source_segment_id: string;
+      spatial_scope_refs: unknown;
+    }>(
+      "SELECT source_segment_id, spatial_scope_refs FROM business.source_segments WHERE project_id = $1 AND source_version_id = $2 ORDER BY source_segment_id",
+      [projectId, sourceVersionRef.reference.entityId],
+    );
+    const segment = rows.rows[0];
+    if (segment === undefined) throw new Error("external evidence segment is missing");
+    return segment;
+  };
+
+  const externalRiskEventRow = async (projectId: string, entityId: string) => {
+    const rows = await fixture.postgres.adminPool.query<{
+      project_id: string;
+      external_risk_event_ref: { reference: { entityId: string; versionId: string } };
+      external_source_entity_id: string;
+      external_source_version_id: string;
+      external_event_key: string;
+      event_artifact_ref: unknown;
+      evidence_references: unknown;
+      source_version_refs: unknown;
+      spatial_scope_refs: unknown;
+      occurred_at: Date;
+      recorded_at: Date;
+      actor_id: string;
+      row_json: string;
+    }>(
+      `SELECT project_id, external_risk_event_ref, external_source_entity_id, external_source_version_id, external_event_key, event_artifact_ref, evidence_references, source_version_refs, spatial_scope_refs, occurred_at, recorded_at, actor_id, to_jsonb(e)::text AS row_json FROM business.external_risk_events e WHERE project_id = $1 AND external_risk_event_id = $2`,
+      [projectId, entityId],
+    );
+    return rows.rows[0];
+  };
+
+  const countExternalRiskEvents = async (projectId: string) => {
+    const rows = await fixture.postgres.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM business.external_risk_events WHERE project_id = $1",
+      [projectId],
+    );
+    return rows.rows[0]?.count;
+  };
+
   it("loads migration 000008 and keeps C11 tables inaccessible to worker/checkpointer roles", async () => {
     const tableResult = await fixture.postgres.adminPool.query<{ table_name: string }>(
       `SELECT table_name FROM information_schema.tables WHERE table_schema = 'business' AND table_name IN ('engineering_projects', 'source_versions', 'source_segments', 'applicability_metadata_snapshots') ORDER BY table_name`,
@@ -186,15 +316,100 @@ describe("C11 PostgreSQL context/source registry", () => {
     expect(privilegeResult.rows[0]).toEqual({ app: true, worker: false, checkpointer: false });
     const migratorRuntime = createPostgresRuntime(fixture.postgres.migrator, "riskflow_migrator");
     try {
+      // 000036 holds a foreign key onto business.engineering_projects, so it rolls back first.
+      await externalRiskEventRegistrationMigration.down(migratorRuntime.db);
       await contextSourceMigration.down(migratorRuntime.db);
       const dropped = await fixture.postgres.adminPool.query<{ count: string }>(
         "SELECT count(*)::text AS count FROM information_schema.tables WHERE table_schema = 'business' AND table_name = 'engineering_projects'",
       );
       expect(dropped.rows[0]?.count).toBe("0");
       await contextSourceMigration.up(migratorRuntime.db);
+      await externalRiskEventRegistrationMigration.up(migratorRuntime.db);
     } finally {
       await migratorRuntime.close();
     }
+  });
+
+  it("loads migration 000036, restores it through down/up, and keeps it closed to worker/checkpointer/PUBLIC roles", async () => {
+    const expectedColumns = [
+      "actor_id",
+      "audit_entry_id",
+      "authorization_context_ref",
+      "event_artifact_ref",
+      "evidence_references",
+      "external_event_key",
+      "external_risk_event_id",
+      "external_risk_event_ref",
+      "external_source_entity_id",
+      "external_source_ref",
+      "external_source_version_id",
+      "occurred_at",
+      "persisted_at",
+      "project_id",
+      "recorded_at",
+      "source_version_refs",
+      "spatial_scope_refs",
+      "version_id",
+    ];
+    const expectedConstraints = [
+      "external_risk_events_audit_fk",
+      "external_risk_events_identity_ck",
+      "external_risk_events_identity_unique",
+      "external_risk_events_json_ck",
+      "external_risk_events_pkey",
+      "external_risk_events_project_fk",
+      "external_risk_events_ref_unique",
+      "external_risk_events_source_key_unique",
+    ];
+    const readSchema = async () => {
+      const columns = await fixture.postgres.adminPool.query<{ column_name: string }>(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema = 'business' AND table_name = 'external_risk_events'",
+      );
+      const constraints = await fixture.postgres.adminPool.query<{ conname: string }>(
+        "SELECT conname FROM pg_constraint WHERE conrelid = 'business.external_risk_events'::regclass AND contype <> 'n'",
+      );
+      const privileges = await fixture.postgres.adminPool.query<{
+        app_select: boolean;
+        app_insert: boolean;
+        app_update: boolean;
+        worker_select: boolean;
+        checkpointer_select: boolean;
+        public_acl: string;
+      }>(
+        `SELECT has_table_privilege('riskflow_app', 'business.external_risk_events', 'SELECT') AS app_select, has_table_privilege('riskflow_app', 'business.external_risk_events', 'INSERT') AS app_insert, has_table_privilege('riskflow_app', 'business.external_risk_events', 'UPDATE') AS app_update, has_table_privilege('riskflow_outbox_worker', 'business.external_risk_events', 'SELECT') AS worker_select, has_table_privilege('riskflow_checkpointer', 'business.external_risk_events', 'SELECT') AS checkpointer_select, (SELECT count(*)::text FROM pg_class c, aclexplode(c.relacl) acl WHERE c.oid = 'business.external_risk_events'::regclass AND acl.grantee = 0) AS public_acl`,
+      );
+      return {
+        columns: columns.rows.map((row) => row.column_name).sort(),
+        constraints: constraints.rows.map((row) => row.conname).sort(),
+        privileges: privileges.rows[0],
+      };
+    };
+    const expectSchema = async () => {
+      const schema = await readSchema();
+      expect(schema.columns).toEqual(expectedColumns);
+      expect(schema.constraints).toEqual(expectedConstraints);
+      expect(schema.privileges).toEqual({
+        app_select: true,
+        app_insert: true,
+        app_update: false,
+        worker_select: false,
+        checkpointer_select: false,
+        public_acl: "0",
+      });
+    };
+    await expectSchema();
+    const migratorRuntime = createPostgresRuntime(fixture.postgres.migrator, "riskflow_migrator");
+    try {
+      await externalRiskEventRegistrationMigration.down(migratorRuntime.db);
+      const dropped = await fixture.postgres.adminPool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM information_schema.tables WHERE table_schema = 'business' AND table_name = 'external_risk_events'",
+      );
+      expect(dropped.rows[0]?.count).toBe("0");
+      await externalRiskEventRegistrationMigration.up(migratorRuntime.db);
+    } finally {
+      await migratorRuntime.close();
+    }
+    await expectSchema();
   });
 
   it("keeps C02 public branches closed until their owning change is installed", async () => {
@@ -569,6 +784,9 @@ describe("C11 PostgreSQL context/source registry", () => {
       projectRevisionRef: projectResult.result.revision.projectRevisionRef,
       sourceVersionRef,
       businessSpatialScopeRef,
+      accessRootScopeRef: spatialScopeRef,
+      systemAdministrationContextRef: adminChanged.systemAdministrationContextRef!,
+      managerSessionToken: managerChanged.sessionToken,
       snapshotRef: snapshotResult.result.snapshot.snapshotRef,
       metadataArtifactRef: metadataArtifact.artifactRef,
       deliveryCommand,
@@ -577,6 +795,7 @@ describe("C11 PostgreSQL context/source registry", () => {
         requestedSourceVersionRefs: readonly SourceVersionRefV1[] = [],
         branch:
           | "engineering-data.register-source-delivery"
+          | "engineering-data.register-external-risk-event"
           | "engineering-data.evidence-access" = "engineering-data.register-source-delivery",
         requestedSpatialScopeRefs: readonly SpatialScopeRefV1[] = [spatialScopeRef],
       ) =>
@@ -591,6 +810,534 @@ describe("C11 PostgreSQL context/source registry", () => {
           })
         ).context,
     };
+  });
+
+  it("registers an immutable external risk event bound to project, source, evidence and spatial scope", async () => {
+    const state = requireE2eState();
+    const evidence = await externalEvidence(state.projectId, state.sourceVersionRef);
+    const authorization = await state.authorize(
+      "c11-external-register",
+      [state.sourceVersionRef],
+      "engineering-data.register-external-risk-event",
+    );
+    const eventBody = JSON.stringify({ eventType: "support-pressure-alarm", value: 1.25 });
+    const eventArtifact = await putExternalEventArtifact(
+      state,
+      "external-event",
+      eventBody,
+      authorization,
+    );
+    const command = externalRiskEventCommand(state, {
+      suffix: "register",
+      authorization,
+      eventArtifactRef: eventArtifact.artifactRef,
+      sourceVersionRef: state.sourceVersionRef,
+      sourceSegmentId: evidence.source_segment_id,
+    });
+    const result = await fixture.registry.apply(command);
+    expect(result.kind).toBe("succeeded");
+    if (result.kind !== "succeeded") return;
+    const externalRiskEventRef = result.result.externalRiskEventRef;
+    expect(result.result.kind).toBe("register-external-risk-event");
+    expect(externalRiskEventRef.kind).toBe("external-risk-event");
+    expect(externalRiskEventRef.reference.versionId).toBe("1");
+
+    // C25 selects the risk input XOR external branch with this exact reference and nothing else.
+    expect(RiskInputVersionRefV1Schema.safeParse(externalRiskEventRef).success).toBe(true);
+    expect(StandardizedRiskRecordRefV1Schema.safeParse(externalRiskEventRef).success).toBe(false);
+
+    const row = await externalRiskEventRow(
+      state.projectId,
+      externalRiskEventRef.reference.entityId,
+    );
+    expect(row).toMatchObject({
+      project_id: state.projectId,
+      external_risk_event_ref: externalRiskEventRef,
+      external_source_entity_id: command.payload.externalSourceRef.entityId,
+      external_source_version_id: command.payload.externalSourceRef.versionId,
+      external_event_key: command.payload.externalEventKey,
+      event_artifact_ref: command.payload.eventArtifactRef,
+      evidence_references: command.payload.evidenceReferences,
+      source_version_refs: [
+        {
+          kind: "source-version",
+          reference: {
+            entityId: state.sourceVersionRef.reference.entityId,
+            versionId: "1",
+          },
+        },
+      ],
+      spatial_scope_refs: evidence.spatial_scope_refs,
+      actor_id: state.managerId,
+    });
+    expect(row?.occurred_at.toISOString()).toBe(command.payload.occurredAt);
+    expect(row?.recorded_at.toISOString()).toBe(command.issuedAt);
+    expect(row?.row_json).not.toContain("support-pressure-alarm");
+    expect(row?.row_json).not.toContain(eventBody);
+
+    const receipt = await fixture.postgres.adminPool.query<{
+      command_kind: string;
+      result_ref: unknown;
+      completed: boolean;
+    }>(
+      "SELECT command_kind, result_ref, (completed_at IS NOT NULL) AS completed FROM business.command_receipts WHERE project_id = $1 AND idempotency_key = $2",
+      [state.projectId, command.idempotencyKey],
+    );
+    expect(receipt.rows).toEqual([
+      {
+        command_kind: "engineering-data.register-external-risk-event.v1",
+        result_ref: externalRiskEventRef,
+        completed: true,
+      },
+    ]);
+    const audit = await fixture.postgres.adminPool.query<{
+      action: string;
+      target_ref: unknown;
+      actor_ref: string;
+      command_id: string;
+    }>(
+      "SELECT action, target_ref, actor_ref, command_id FROM audit.entries WHERE project_id = $1 AND command_id = $2",
+      [state.projectId, command.commandId],
+    );
+    expect(audit.rows).toEqual([
+      {
+        action: "engineering-data.register-external-risk-event",
+        target_ref: externalRiskEventRef,
+        actor_ref: state.managerId,
+        command_id: command.commandId,
+      },
+    ]);
+
+    const outbox = await fixture.postgres.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM outbox.events WHERE producer_command_id = $1",
+      [command.commandId],
+    );
+    expect(outbox.rows[0]?.count).toBe("0");
+
+    const replay = await fixture.registry.apply(command);
+    expect(replay).toEqual(result);
+    expect(await countExternalRiskEvents(state.projectId)).toBe("1");
+    const replayAudit = await fixture.postgres.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM audit.entries WHERE project_id = $1 AND command_id = $2",
+      [state.projectId, command.commandId],
+    );
+    expect(replayAudit.rows[0]?.count).toBe("1");
+
+    const conflict = await fixture.registry.apply({
+      ...command,
+      payload: { ...command.payload, occurredAt: "2029-12-31T22:00:00.000Z" },
+    });
+    expect(conflict).toMatchObject({ kind: "failed", error: { code: "IDEMPOTENCY_CONFLICT" } });
+    expect(
+      (
+        await externalRiskEventRow(state.projectId, externalRiskEventRef.reference.entityId)
+      )?.occurred_at.toISOString(),
+    ).toBe(command.payload.occurredAt);
+
+    const overwriteAuthorization = await state.authorize(
+      "c11-external-overwrite",
+      [state.sourceVersionRef],
+      "engineering-data.register-external-risk-event",
+    );
+    const overwriteArtifact = await putExternalEventArtifact(
+      state,
+      "external-event-overwrite",
+      JSON.stringify({ eventType: "overwritten" }),
+      overwriteAuthorization,
+    );
+    const overwrite = await fixture.registry.apply(
+      externalRiskEventCommand(state, {
+        suffix: "overwrite",
+        authorization: overwriteAuthorization,
+        eventArtifactRef: overwriteArtifact.artifactRef,
+        sourceVersionRef: state.sourceVersionRef,
+        sourceSegmentId: evidence.source_segment_id,
+        externalEventKey: command.payload.externalEventKey,
+        occurredAt: "2029-12-30T10:00:00.000Z",
+      }),
+    );
+    expect(overwrite).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+    expect(await countExternalRiskEvents(state.projectId)).toBe("1");
+    const unchanged = await externalRiskEventRow(
+      state.projectId,
+      externalRiskEventRef.reference.entityId,
+    );
+    expect(unchanged?.event_artifact_ref).toEqual(command.payload.eventArtifactRef);
+    expect(unchanged?.occurred_at.toISOString()).toBe(command.payload.occurredAt);
+  });
+
+  it("hides missing, unauthorized, not-ready and out-of-scope event targets behind one denial", async () => {
+    const state = requireE2eState();
+    const before = await countExternalRiskEvents(state.projectId);
+    const covered = await state.authorize(
+      "c11-external-denied",
+      [state.sourceVersionRef],
+      "engineering-data.register-external-risk-event",
+    );
+    const eventArtifact = await putExternalEventArtifact(
+      state,
+      "external-event-denied",
+      JSON.stringify({ eventType: "denied" }),
+      covered,
+    );
+    const evidence = await externalEvidence(state.projectId, state.sourceVersionRef);
+    const missingSourceVersionRef: SourceVersionRefV1 = {
+      kind: "source-version",
+      reference: { entityId: "c11-missing-source-version", versionId: "1" },
+    };
+    const uncovered = await state.authorize(
+      "c11-external-uncovered",
+      [],
+      "engineering-data.register-external-risk-event",
+    );
+    const missingArtifactRef: ContentArtifactRefV1 = {
+      kind: "content-artifact",
+      reference: { entityId: "c11-missing-external-event", versionId: `sha256:${"d".repeat(64)}` },
+    };
+    // A real artifact owned by another project must be indistinguishable from a missing one.
+    const otherProjectId = "project-c11-external-other";
+    await fixture.access.administerProject({
+      kind: "open-project",
+      projectId: otherProjectId,
+      commandId: "c11-external-other-project",
+      idempotencyKey: "c11-external-other-project",
+      expectedVersion: "none",
+      authorizationContextRef: state.systemAdministrationContextRef,
+      initialRiskManagerAccountId: state.managerId,
+    });
+    const otherRoot = await fixture.postgres.adminPool.query<{
+      scope_id: string;
+      revision_id: string;
+    }>(
+      "SELECT scope_id, current_revision_id AS revision_id FROM business.access_spatial_scopes WHERE project_id = $1",
+      [otherProjectId],
+    );
+    const otherAuthorization = (
+      await fixture.access.authorize({
+        invocation: { kind: "human-session", sessionToken: state.managerSessionToken },
+        invocationId: "c11-external-other-project",
+        projectId: otherProjectId,
+        branch: "engineering-data.register-external-risk-event",
+        requestedSpatialScopeRefs: [
+          {
+            kind: "spatial-scope",
+            reference: {
+              entityId: otherRoot.rows[0]!.scope_id,
+              versionId: otherRoot.rows[0]!.revision_id,
+            },
+          },
+        ],
+        requestedSourceVersionRefs: [],
+      })
+    ).context;
+    const otherProjectArtifact = await putExternalEventArtifact(
+      { projectId: otherProjectId, managerId: state.managerId },
+      "external-event-other-project",
+      JSON.stringify({ eventType: "other-project" }),
+      otherAuthorization,
+    );
+
+    // A delivery whose access closure fails leaves a real pending-access source version with a
+    // registered source access policy, so the external branch must reject it as not ready.
+    const notReadyDelivery = await createDelivery("external-not-ready");
+    const pendingAccessRegistry = new PostgresEngineeringContextSourceRegistry({
+      db: fixture.runtime.db,
+      transactionUnit: fixture.transactionUnit,
+      access: {
+        verify: fixture.access.verify.bind(fixture.access),
+        administerProject: async (command: never) => {
+          await fixture.access.administerProject(command);
+          throw new Error("forced access closure failure after source access policy creation");
+        },
+      } as unknown as typeof fixture.access,
+      artifactStore: fixture.artifactStore,
+      artifactReferenceGuard: fixture.artifactRegistry,
+      now: () => new Date("2030-01-01T00:00:00.000Z"),
+    });
+    const notReadyApply = await pendingAccessRegistry.apply(notReadyDelivery.command);
+    expect(notReadyApply).toMatchObject({ kind: "failed" });
+    const pendingSourceVersion = await fixture.postgres.adminPool.query<{
+      source_version_id: string;
+      access_status: string;
+    }>(
+      `SELECT v.source_version_id, v.access_status
+       FROM business.source_versions v
+       JOIN business.source_deliveries d
+         ON d.source_delivery_id = v.source_delivery_id AND d.project_id = v.project_id
+       WHERE d.project_id = $1 AND d.delivery_key = $2`,
+      [state.projectId, notReadyDelivery.command.payload.deliveryKey],
+    );
+    expect(pendingSourceVersion.rows).toEqual([
+      { source_version_id: expect.any(String), access_status: "pending-access" },
+    ]);
+    const notReadySourceVersionRef: SourceVersionRefV1 = {
+      kind: "source-version",
+      reference: { entityId: pendingSourceVersion.rows[0]!.source_version_id, versionId: "1" },
+    };
+    const notReadyAuthorization = await state.authorize(
+      "c11-external-not-ready",
+      [notReadySourceVersionRef],
+      "engineering-data.register-external-risk-event",
+    );
+
+    const childScopeId = "c11-external-child-scope";
+    await fixture.access.administerProject({
+      kind: "create-spatial-scope",
+      projectId: state.projectId,
+      commandId: "c11-external-child-scope",
+      idempotencyKey: "c11-external-child-scope",
+      expectedVersion: "none",
+      authorizationContextRef: (await state.authorize("c11-external-child-scope-actor"))
+        .authorizationContextRef,
+      scopeId: childScopeId,
+      parentScopeRef: state.accessRootScopeRef,
+    });
+    const childScopeRevision = await fixture.postgres.adminPool.query<{ revision_id: string }>(
+      "SELECT current_revision_id AS revision_id FROM business.access_spatial_scopes WHERE project_id = $1 AND scope_id = $2",
+      [state.projectId, childScopeId],
+    );
+    const childAccessScopeRef: SpatialScopeRefV1 = {
+      kind: "spatial-scope",
+      reference: { entityId: childScopeId, versionId: childScopeRevision.rows[0]!.revision_id },
+    };
+    const childBusinessScopeRef: SpatialScopeRefV1 = {
+      kind: "spatial-scope",
+      reference: { entityId: childScopeId, versionId: "1" },
+    };
+    // The child scope exists as a real C11 spatial scope, so evidence may legally belong to it
+    // while an external registration authorization that only covers the root scope cannot include it.
+    const childContext = await fixture.registry.reviseContext({
+      commandId: "c11-external-child-scope-context",
+      idempotencyKey: "c11-external-child-scope-context",
+      projectId: state.projectId,
+      actorId: state.managerId,
+      issuedAt: "2030-01-01T00:00:00.000Z",
+      authorization: await state.authorize(
+        "c11-external-child-scope-context",
+        [],
+        "engineering-data.register-source-delivery",
+        [childAccessScopeRef],
+      ),
+      kind: "spatial",
+      spatialScopeRef: childBusinessScopeRef,
+      projectRevisionRef: state.projectRevisionRef,
+      expectedVersion: "none",
+      name: "外部事件子区段",
+      worksiteLocation: "左线子区段",
+      applicabilityOverrides: { engineeringStage: "shield-expansion" },
+      status: "active",
+      effectivePeriod: { validFrom: "2030-01-01T00:00:00.000Z" },
+    });
+    expect(childContext).toMatchObject({ kind: "succeeded", result: { kind: "spatial-revision" } });
+    const childSnapshot = await fixture.registry.createApplicabilitySnapshot({
+      commandId: "c11-external-child-scope-snapshot",
+      idempotencyKey: "c11-external-child-scope-snapshot",
+      projectId: state.projectId,
+      actorId: state.managerId,
+      issuedAt: "2030-01-01T00:00:00.000Z",
+      authorization: await state.authorize(
+        "c11-external-child-scope-snapshot",
+        [],
+        "engineering-data.register-source-delivery",
+        [childAccessScopeRef],
+      ),
+      projectRevisionRef: state.projectRevisionRef,
+      spatialScopeRef: childBusinessScopeRef,
+      formedAt: "2030-01-01T00:00:00.000Z",
+    });
+    expect(childSnapshot).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "applicability-snapshot" },
+    });
+    if (
+      childSnapshot.kind !== "succeeded" ||
+      childSnapshot.result.kind !== "applicability-snapshot"
+    )
+      return;
+    const outside = await createDelivery("external-outside-scope", {
+      spatialScopeRefs: [childBusinessScopeRef],
+      authorizationSpatialScopeRefs: [childAccessScopeRef],
+      applicabilityMetadataSnapshotRef: childSnapshot.result.snapshot.snapshotRef,
+    });
+    const outsideDelivery = await fixture.registry.apply(outside.command);
+    expect(outsideDelivery.kind).toBe("succeeded");
+    if (outsideDelivery.kind !== "succeeded") return;
+    const outsideSourceVersionRef = outsideDelivery.result.sourceVersionRef;
+    const outsideSegments = await fixture.registry.registerSegments({
+      commandId: "c11-external-outside-scope-segments",
+      idempotencyKey: "c11-external-outside-scope-segments",
+      projectId: state.projectId,
+      actorId: state.managerId,
+      issuedAt: "2030-01-01T00:00:00.000Z",
+      authorization: await state.authorize(
+        "c11-external-outside-scope-segments",
+        [outsideSourceVersionRef],
+        "engineering-data.register-source-delivery",
+        [childAccessScopeRef],
+      ),
+      sourceVersionRef: outsideSourceVersionRef,
+      sourceId: outsideSourceVersionRef.reference.entityId,
+      segments: [
+        {
+          sourceSegmentId:
+            `${outsideSourceVersionRef.reference.entityId}-child_1-segment_1` as never,
+          chapterId: "child_1",
+          segmentId: "segment_1",
+          kind: "chapter",
+          spatialScopeRefs: [childBusinessScopeRef],
+          locator: { kind: "document", pageNumber: 1, headingPath: ["外部证据"] },
+        },
+      ],
+    });
+    expect(outsideSegments).toMatchObject({ kind: "succeeded" });
+    const outsideEvidence = await externalEvidence(state.projectId, outsideSourceVersionRef);
+    const rootOnlyAuthorization = await state.authorize(
+      "c11-external-outside-scope",
+      [outsideSourceVersionRef],
+      "engineering-data.register-external-risk-event",
+    );
+    const outsideArtifact = await putExternalEventArtifact(
+      state,
+      "external-event-outside-scope",
+      JSON.stringify({ eventType: "outside-scope" }),
+      rootOnlyAuthorization,
+    );
+
+    const attempts: [string, EngineeringDataCommandV1][] = [
+      [
+        "missing event artifact",
+        externalRiskEventCommand(state, {
+          suffix: "denied-artifact",
+          authorization: covered,
+          eventArtifactRef: missingArtifactRef,
+          sourceVersionRef: state.sourceVersionRef,
+          sourceSegmentId: evidence.source_segment_id,
+        }),
+      ],
+      [
+        "event artifact belongs to another project",
+        externalRiskEventCommand(state, {
+          suffix: "denied-cross-project-artifact",
+          authorization: covered,
+          eventArtifactRef: otherProjectArtifact.artifactRef,
+          sourceVersionRef: state.sourceVersionRef,
+          sourceSegmentId: evidence.source_segment_id,
+        }),
+      ],
+      [
+        "authorization does not cover the evidence source version",
+        externalRiskEventCommand(state, {
+          suffix: "denied-uncovered",
+          authorization: uncovered,
+          eventArtifactRef: eventArtifact.artifactRef,
+          sourceVersionRef: state.sourceVersionRef,
+          sourceSegmentId: evidence.source_segment_id,
+        }),
+      ],
+      [
+        "evidence source version does not exist",
+        externalRiskEventCommand(state, {
+          suffix: "denied-source-version",
+          authorization: covered,
+          eventArtifactRef: eventArtifact.artifactRef,
+          sourceVersionRef: missingSourceVersionRef,
+          sourceSegmentId: evidence.source_segment_id,
+        }),
+      ],
+      [
+        "evidence segment does not exist",
+        externalRiskEventCommand(state, {
+          suffix: "denied-segment",
+          authorization: covered,
+          eventArtifactRef: eventArtifact.artifactRef,
+          sourceVersionRef: state.sourceVersionRef,
+          sourceSegmentId: "c11-missing-segment-1",
+        }),
+      ],
+      [
+        "evidence source version is not ready",
+        externalRiskEventCommand(state, {
+          suffix: "denied-not-ready",
+          authorization: notReadyAuthorization,
+          eventArtifactRef: eventArtifact.artifactRef,
+          sourceVersionRef: notReadySourceVersionRef,
+          sourceSegmentId: notReadySourceVersionRef.reference.entityId,
+        }),
+      ],
+      [
+        "evidence spatial scope is outside the authorization",
+        externalRiskEventCommand(state, {
+          suffix: "denied-spatial-scope",
+          authorization: rootOnlyAuthorization,
+          eventArtifactRef: outsideArtifact.artifactRef,
+          sourceVersionRef: outsideSourceVersionRef,
+          sourceSegmentId: outsideEvidence.source_segment_id,
+        }),
+      ],
+    ];
+    for (const [label, command] of attempts) {
+      const result = await fixture.registry.apply(command);
+      expect(result.kind, label).toBe("failed");
+      if (result.kind !== "failed") continue;
+      expect(result.error.code, label).toBe("AUTHORIZATION_DENIED");
+      expect(result.error.category, label).toBe("authorization");
+      expect((result.error as { targetRef?: unknown }).targetRef, label).toBeUndefined();
+      expect(result.error, label).not.toHaveProperty("message");
+    }
+    expect(await countExternalRiskEvents(state.projectId)).toBe(before);
+    const deniedIds = attempts.map(([, command]) => command.commandId);
+    const deniedReceipts = await fixture.postgres.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM business.command_receipts WHERE project_id = $1 AND command_kind = $2 AND command_id = ANY($3)",
+      [state.projectId, "engineering-data.register-external-risk-event.v1", deniedIds],
+    );
+    expect(deniedReceipts.rows[0]?.count).toBe("0");
+    const deniedAudit = await fixture.postgres.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM audit.entries WHERE project_id = $1 AND command_id = ANY($2)",
+      [state.projectId, deniedIds],
+    );
+    expect(deniedAudit.rows[0]?.count).toBe("0");
+  });
+
+  it("rolls back the external risk event registration when the audit append fails and allows retry", async () => {
+    const state = requireE2eState();
+    const before = await countExternalRiskEvents(state.projectId);
+    const evidence = await externalEvidence(state.projectId, state.sourceVersionRef);
+    const authorization = await state.authorize(
+      "c11-external-audit-rollback",
+      [state.sourceVersionRef],
+      "engineering-data.register-external-risk-event",
+    );
+    const eventArtifact = await putExternalEventArtifact(
+      state,
+      "external-event-audit-rollback",
+      JSON.stringify({ eventType: "audit-rollback" }),
+      authorization,
+    );
+    const command = externalRiskEventCommand(state, {
+      suffix: "audit-rollback",
+      authorization,
+      eventArtifactRef: eventArtifact.artifactRef,
+      sourceVersionRef: state.sourceVersionRef,
+      sourceSegmentId: evidence.source_segment_id,
+    });
+    await fixture.postgres.adminPool.query(
+      "REVOKE INSERT ON TABLE audit.entries FROM riskflow_app",
+    );
+    let failed: EngineeringDataApplyResultV1;
+    try {
+      failed = await fixture.registry.apply(command);
+    } finally {
+      await fixture.postgres.adminPool.query("GRANT INSERT ON TABLE audit.entries TO riskflow_app");
+    }
+    expect(failed!).toMatchObject({ kind: "failed" });
+    expect(await countExternalRiskEvents(state.projectId)).toBe(before);
+
+    const retry = await fixture.registry.apply(command);
+    expect(retry).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "register-external-risk-event" },
+    });
+    expect(await countExternalRiskEvents(state.projectId)).toBe(String(Number(before) + 1));
   });
 
   it("persists and replays a C12 conversion through PostgreSQL", async () => {

@@ -7,7 +7,7 @@
 当前接管点：
 
 - `main` 已完成并归档 15 个路线 change：C00–C12、C14、C16。
-- `openspec/changes/archive/` 共 21 项 = 15 个路线 change + 6 个辅助/修复 change（`configure-pnpm-build-script-policy`、`deliver-structured-orchestration-status`、`evolve-review-audit-approval-proof`、`fix-postgresql-test-migration-loader-compatibility`、`fix-orchestration-execution-status-reliability`、`strengthen-implementation-planning-workflow`）。
+- `openspec/changes/archive/` 共 22 项 = 15 个路线 change + 7 个辅助/修复/契约演进 change（`configure-pnpm-build-script-policy`、`deliver-structured-orchestration-status`、`evolve-review-audit-approval-proof`、`fix-postgresql-test-migration-loader-compatibility`、`fix-orchestration-execution-status-reliability`、`strengthen-implementation-planning-workflow`、`evolve-identification-preparation-segment-set-refs`）。
 - C01 主 spec 位于 `openspec/specs/domain/contract-kernel/spec.md`。
 - C02 主 spec 位于 `openspec/specs/domain/module-interfaces-events-workflows/spec.md`。
 - C03 主 spec 位于 `openspec/specs/platform/postgresql-outbox-checkpoint-foundation/spec.md`。

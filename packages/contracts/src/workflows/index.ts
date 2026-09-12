@@ -69,23 +69,33 @@ import {
 
 const policyRef = VersionReferenceSchema;
 
-export const IdentificationPreparationSnapshotV1Schema = z.strictObject({
-  schemaVersion: z.literal("1"),
-  projectRevisionRef: ProjectRevisionRefV1Schema,
-  spatialScopeRefs: z.array(SpatialScopeRefV1Schema).min(1),
-  sourceVersionRefs: z.array(SourceVersionRefV1Schema).min(1),
-  includedSourceSegmentSetRef: SourceSegmentSetRefV1Schema,
-  excludedSegmentDecisionRefs: z.array(RouteDecisionRefV1Schema),
-  monitoringSnapshotRef: MonitoringSnapshotRefV1Schema.optional(),
-  dataProcessingPolicyRef: policyRef,
-  dataProcessingToolRef: policyRef,
-  dataProcessingModelRef: policyRef,
-  coverageDecisionRef: RouteDecisionRefV1Schema,
-  authorizationContextRef: AuthorizationContextRefV1Schema,
-  auditTrailRef: AuditTrailRefV1Schema,
-  createdBy: IdentifierSchema,
-  createdAt: IsoDateTimeSchema,
-});
+export const IdentificationPreparationSnapshotV1Schema = z
+  .strictObject({
+    schemaVersion: z.literal("1"),
+    projectRevisionRef: ProjectRevisionRefV1Schema,
+    spatialScopeRefs: z.array(SpatialScopeRefV1Schema).min(1),
+    sourceVersionRefs: z.array(SourceVersionRefV1Schema).min(1),
+    includedSourceSegmentSetRefs: z.array(SourceSegmentSetRefV1Schema).min(1),
+    excludedSegmentDecisionRefs: z.array(RouteDecisionRefV1Schema),
+    monitoringSnapshotRef: MonitoringSnapshotRefV1Schema.optional(),
+    dataProcessingPolicyRef: policyRef,
+    dataProcessingToolRef: policyRef,
+    dataProcessingModelRef: policyRef,
+    coverageDecisionRef: RouteDecisionRefV1Schema,
+    authorizationContextRef: AuthorizationContextRefV1Schema,
+    auditTrailRef: AuditTrailRefV1Schema,
+    createdBy: IdentifierSchema,
+    createdAt: IsoDateTimeSchema,
+  })
+  .superRefine((snapshot, context) => {
+    if (snapshot.includedSourceSegmentSetRefs.length !== snapshot.sourceVersionRefs.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["includedSourceSegmentSetRefs"],
+        message: "includedSourceSegmentSetRefs must have one reference per source version",
+      });
+    }
+  });
 export type IdentificationPreparationSnapshotV1 = z.infer<
   typeof IdentificationPreparationSnapshotV1Schema
 >;

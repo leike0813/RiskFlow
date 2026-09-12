@@ -30,6 +30,12 @@
 
 系统 MUST 通过 C08 `AgentTaskPortV1` 创建 `embedded`、`data-cleaning` 任务，并注册严格的任务动作、候选、增量、确定性校验器和结果收口器。该任务的领域工具白名单 MUST 仅允许在冻结输入和授权范围内有界读取文档资料段切片或监测快照切片；工具 MUST 复验任务类型、策略版本、工程、空间、资料授权、输入版本、对象上限和当前授权撤销。工具不得提供 SQL、Shell、文件系统、自由联网、任意对象查询或业务写入。（RI-S14、RI-S21）
 
+#### Scenario: 清洗任务经生产组合根以受权能力启动
+
+- **WHEN** 清洗准备已形成冻结清单，且服务端授权来源可为同一发起者、工程、空间和资料范围签发 `agent-task.start-task` 的当前有效授权
+- **THEN** 生产组合根通过 C06 取得仅含 `agent-task.start` 能力的授权上下文，并以该上下文调用既有 `AgentTaskPortV1.startTask` 创建 `embedded/data-cleaning` 任务
+- **AND** 系统不复用、扩写或伪造原 `engineering-data.freeze` 上下文，不新增公共命令字段或第二套运行时；授权签发或 C08 启动失败时不创建可运行任务，并分别保留 C06 安全审计与 C08/C03 已可靠成立的失败证据
+
 #### Scenario: 读取获准的文档资料段切片
 
 - **WHEN** Agent 请求冻结 JSON-LD 中存在、属于获准资料版本且数量不超过工具策略上限的资料段

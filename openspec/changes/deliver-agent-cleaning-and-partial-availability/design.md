@@ -25,7 +25,7 @@
 
 ### D-01：以现有冻结命令作为唯一业务入口
 
-`PostgresEngineeringContextSourceRegistry.freeze()` 在 `kind === "identification-preparation"` 时委派给 C15 的 `PostgresDataCleaningStore.freezeIdentificationPreparation()`。首次调用解析并冻结输入、创建或重放一项 C08 `embedded/data-cleaning` 任务，然后返回带该任务引用的 `BUSINESS_BLOCKED`；任务仍运行、失败或取消时继续阻断。相同命令在任务完成后复验结果并原子提交识别准备快照。
+`PostgresEngineeringContextSourceRegistry.freeze()` 在 `kind === "identification-preparation"` 时委派给 C15 的 `PostgresDataCleaningStore.freezeIdentificationPreparation()`。首次调用解析并冻结输入，再经 D-13 的 Worker 生产组合取得独立的 `agent-task.start-task` 授权并创建或重放一项 C08 `embedded/data-cleaning` 任务，然后返回带该任务引用的 `BUSINESS_BLOCKED`；任务仍运行、失败或取消时继续阻断。相同命令在任务完成后复验结果并原子提交识别准备快照。
 
 选择该方式是因为 `EngineeringFreezeCommandV1`、API 通用传输和 C08 任务端口已经覆盖所需外部契约。备选方案是在 contracts 增加清洗命令或专用 HTTP 路由；它会扩大公共面且不是 C15 验收所需，因此不采用。
 
@@ -92,29 +92,45 @@ C14 `unavailable` 是不可提升下界；C14 `available | partial` 仍需通过
 
 准备身份为 `(projectId, commandId)`，业务幂等为 `(projectId, idempotencyKey, canonical command + policy + resolved input refs)`；同键异载荷返回 `IDEMPOTENCY_CONFLICT`。C08 任务 ID 从该规范化摘要派生，首次 freeze 创建任务，后续 freeze 只读取/重放同一任务。转换缺失/歧义、覆盖不足、任务未完成映射为 `BUSINESS_BLOCKED`；契约/版本不兼容映射为 `UNSUPPORTED_CONTRACT`；权限失败为 `AUTHORIZATION_DENIED`；可重试存储/工件故障为 `TRANSIENT_FAILURE`；已进入不可恢复终态为 `TERMINAL_FAILURE`。
 
-模型、工具、预算、租约和修正失败完全由 C08 保存与恢复；C15 不换模型、不扩预算、不建立旁路。C03 收据与唯一约束确保重复 freeze 不重复任务、清洗事实、决定、审计或事件。
+模型、工具、预算、租约和修正失败完全由 C08 保存与恢复；C15 不换模型、不扩预算、不建立旁路。任务启动授权由 D-13 通过 C06 独立签发：授权来源缺失、过期、撤销、越权或与命令 actor/project 不一致时，组合根关闭失败且不调用 C08；C06 的授权成功或拒绝安全审计照常成立。C08 返回结构化失败时原样交回 C15 错误映射，不用旧任务、缓存上下文或伪造成功替代。C03 收据与唯一约束确保重复 freeze 不重复任务、清洗事实、决定、审计或事件。
 
 ### D-10：文件所有权保持在现有模块边界内
 
 - `packages/core/src/engineering-data/cleaning/{schema,service,index}.ts`：内部 Schema、确定性校验/收口和 C08 定义/工具协议；`packages/core/package.json` 只增加该子路径导出。
-- `packages/adapters/src/engineering-data/cleaning/{postgres-data-cleaning-store,index}.ts`：C12/C13/C14/C04/C08/C03 组合、工具读取和持久化；`packages/adapters/package.json` 只增加该子路径导出。
+- `packages/adapters/src/engineering-data/cleaning/{postgres-data-cleaning-store,index}.ts`：C12/C13/C14/C04/C08/C03 组合、工具读取和持久化；store 向组合根提交不含授权上下文的启动草案及精确空间/资料范围，不自行扩写 capability；`packages/adapters/package.json` 只增加该子路径导出。
 - `packages/adapters/src/engineering-data/context-source/postgres-engineering-context-source-registry.ts`：只增加可选 cleaning store 依赖与 `identification-preparation` 分派；不复制清洗逻辑。
 - `packages/adapters/src/postgres/migrations/engineering-data/deliver-agent-cleaning-and-partial-availability/000016_agent_cleaning_partial_availability.ts`：C15 表、约束、索引和迁移注册；序号来自协调端为 C15 预留的 `000016–000019` 号段。
 - `packages/adapters/test/postgres/postgres-foundation.test.ts`：把自动发现序列的既有期望推进到 `000016`，证明未引入手写中央迁移注册。
-- `apps/worker/src/engineering-data/cleaning/runtime.ts`：把 C15 定义的渲染/解释器接到既有 Runner 的 task-type 分派；`apps/worker/src/index.ts` 仅导出组合函数，不创建第二个 runner 或全局单例。
+- `apps/worker/src/engineering-data/cleaning/runtime.ts`：把 C15 定义的渲染/解释器接到既有 Runner 的 task-type 分派。
+- `apps/worker/src/engineering-data/cleaning/composition.ts`：唯一生产组合位置，组装 C15 store、既有 `AgentTaskDefinitionRegistry` 与 `PostgresAgentTaskAdapter`，通过 C06 签发启动授权后调用既有 C08 `startTask`；`apps/worker/src/engineering-data/cleaning/index.ts` 与根 `index.ts` 只导出该组合，不创建第二个 runner 或全局单例。
 - 对应测试文件只覆盖跨层稳定行为；不修改 `packages/contracts`、根 workspace/锁文件、`openspec/config.yaml`、API/Web 或中央注册文件。
 
 备选方案是把所有逻辑塞进 C11 registry 或 C08 runner；那会混合领域判断、持久化与通用运行时，增加隐式耦合，不采用。
 
 ### D-11：测试使用确定性夹具，不把 LLM 文案当期望
 
-核心表格驱动测试覆盖四类文档、OCR 兼容结构、监测快照、非法改值/越权排除、关键数值保护及三级可用性。适配器集成测试复用现有 PostgreSQL/C04/C03/C08/C11/C12/C14 fixture，验证唯一转换解析、只追加结果、任务/结果双向绑定、事务回滚、幂等、授权撤销和 Outbox。Worker 测试给 Runner 注入协议级模型脚本，只断言 strict 候选、工具路由、失败封闭和正式结果，不断言提示词或模型自然语言。
+核心表格驱动测试覆盖四类文档、OCR 兼容结构、监测快照、非法改值/越权排除、关键数值保护及三级可用性。适配器集成测试复用现有 PostgreSQL/C04/C03/C08/C11/C12/C14 fixture，验证唯一转换解析、只追加结果、任务/结果双向绑定、事务回滚、幂等、授权撤销和 Outbox。Worker 测试给 Runner 注入协议级模型脚本，只断言 strict 候选、工具路由、失败封闭和正式结果，不断言提示词或模型自然语言。组合测试断言 C06 授权请求固定为 `agent-task.start-task`、最终命令只有 `agent-task.start`、授权失败不触达 C08；PostgreSQL 集成测试使用真实 C06 会话/授权与 C08 adapter，删除测试内手工追加 capability 的旁路，并核对授权安全审计、任务事实审计及任务信封中的授权引用。
 
 API 现有通用 `invokeEngineeringFreeze` 回归测试证明无需新增路由；Web 无用户可见变更，因此不新增 UI 或脆弱文案测试。
 
 ### D-12：前置依赖是实现门，不在 C15 内兼容旧契约
 
 开始实现前必须满足：`evolve-identification-preparation-segment-set-refs` 与 C13 均已归档并集成；生成类型为复数，C13 仍输出相同 C12 公共转换记录，C08/C11/C12/C14 均在实现基线。实现者从固定 base `5c49f20e615c6507be40b5cc74f734fba4b4fb80` 检查集成后的符号漂移；不添加单复数字段兼容分支，不读取 C13 私有 PaddleX 结构。
+
+### D-13：Worker 组合根经 C06 签发独立启动授权
+
+`apps/worker/src/engineering-data/cleaning/composition.ts` 新增唯一生产工厂 `createPostgresDataCleaningComposition()`。其输入固定为：去掉 `startAgentTask` 的 `PostgresDataCleaningStoreOptions`；去掉 `db/registry/transactionUnit/referenceGuard/authorization/artifactStore` 的既有 `PostgresAgentTaskAdapterOptions`；以及 `resolveStartAuthorizationInvocation()`。后者只能返回 C06 `AuthorizationRequestV1` 已有的受信调用来源：请求作用域内的 `human-session`，或携带 C06 已签发父上下文和同一 causal run 的 `system` 调用；它不得返回自造的 `AuthorizationContextV1`。
+
+store 把启动接缝收窄为内部 `DataCleaningAgentTaskStartRequestV1`：`command` 是缺少 `authorization` 的既有 `StartAgentTaskCommandV1` 草案，另带清洗命令的精确 `requestedSpatialScopeRefs` 与 `requestedSourceVersionRefs`。工厂收到请求后按以下顺序执行：
+
+1. 调用 `resolveStartAuthorizationInvocation()` 取得服务端持有的调用来源；该来源不得来自任务信封、客户端 capability 字段或对冻结上下文的复制。
+2. 以启动 `commandId` 作为 `invocationId`，固定 branch 为 `agent-task.start-task`，并携带草案的工程、时间及精确空间/资料范围调用同一个 `LocalIdentityAccessV1.authorize()`。`human-session` 由 C06 认证同一发起者；`system` 的父上下文必须已由 C06 对同一 actor/project 和 `agent-task.start-task` 签发，原 `engineering-data.freeze` 上下文因 capability 不同不得作为父上下文。
+3. 校验 C06 决定的 actor/project 与草案相等、能力集合恰为 `agent-task.start`，再注入该上下文并通过 `StartAgentTaskCommandV1Schema` strict parse；任一不一致均关闭失败。
+4. 调用工厂组装的同一个 `PostgresAgentTaskAdapter.startTask()`。该 adapter 必须注入同一个 `LocalIdentityAccessV1`，使 C08 在创建和 Worker 执行时按原 `commandId`、branch 与冻结范围复验；不得使用无授权 verifier 的 adapter。
+
+C06 是 capability 的唯一签发者：角色/branch 映射、父上下文子集、当前成员/空间/资料修订和 context 生命周期仍由 `access-policy/v1` 与 PostgreSQL 授权事实治理，C15 不新增角色、能力或授权缓存。C06 为授权成功与拒绝写安全审计；C08 以 C03 事务写任务及 `agent-task.start-task` 事实审计，并把新授权引用冻结进任务信封；C15 后续清洗结果和准备审计继续引用任务与原 freeze 授权，因此两段授权可沿任务引用重建。来源解析失败、C06 拒绝或返回不一致上下文时不调用 C08；C08 结构化失败由 store 按 D-09 映射且不得降级。
+
+选择 Worker 工厂而非把授权写进 store，是因为 store 不拥有身份凭据或 capability 签发权，C08/C06 已分别拥有任务和授权事实。备选的测试内追加 `agent-task.start`、修改 C08 capability、让 store 接受两个公共授权字段或另建运行时都会扩大或伪造边界，因此不采用。
 
 ## Risks / Trade-offs
 
@@ -124,15 +140,16 @@ API 现有通用 `invokeEngineeringFreeze` 回归测试证明无需新增路由�
 - [数据处理策略目前没有公共治理仓库] → 由组合根注入唯一版本对象并校验引用；只有出现多租户动态治理需求时再开独立 change。
 - [准备提交后授权立即撤销] → 工具、最终收口和返回前均复验；历史事实保留审计，但后续读取继续受当前授权约束。
 - [C12/C13 对同一资料版本产生多条允许转换] → 要求策略过滤后恰好一条，否则业务阻断，避免任意选择。
+- [部署未提供受信的启动授权调用来源] → IP-09 关闭失败并阻断清洗准备；不得退回 freeze 上下文或手工 capability。协调端必须把请求作用域 human session 或已有 C06 同能力父上下文接入 `resolveStartAuthorizationInvocation()`。
 
 ## Migration Plan
 
 1. 确认前置契约 change 与 C13 已归档并集成，在集成分支重新核对 C08/C11/C12/C13/C14 符号。
 2. 部署 `000016_agent_cleaning_partial_availability` 的只追加表、唯一约束与索引；迁移不回填历史准备，也不改旧表语义。
-3. 部署 core/adapters/worker 后注入一份经审核、引用完全匹配的清洗策略；先用合成四文档和地表沉降快照跑确定性验收，再允许新识别准备进入。
+3. 部署 core/adapters/worker 后注入一份经审核、引用完全匹配的清洗策略，并把服务端受信调用来源接入 `resolveStartAuthorizationInvocation()`；先用合成四文档和地表沉降快照跑确定性验收，再允许新识别准备进入。
 4. 旧识别准备快照保持可读；新冻结请求必须走 C15，不能降级到未清洗路径。
 5. 回滚应用时停止创建新 C15 任务并恢复上一应用版本；保留 `000016` 表和已成立事实以供审计，不执行破坏性 down migration。重新部署同版本后依据 C03/C08 身份继续恢复。
 
 ## Open Questions
 
-无。公共复数资料段集合问题已由协调决策移至前置 change；C13 未归档是已知实现门，不改变本 change 的规格、设计或任务拆分。
+无。公共复数资料段集合问题已由协调决策移至前置 change；启动授权的 capability、签发者、组合位置、调用输入与失败语义已由 D-13 固定，协调端只需提供受信调用来源的部署绑定，不再决定公共接口或授权方向。

@@ -3,6 +3,7 @@
 ## 1. 实施基线与权威来源
 
 - 固定代码基线：`5c49f20e615c6507be40b5cc74f734fba4b4fb80`；当前规划分支为 `leike0813/c15-cleaning-partial`。
+- 本次有界规划修补基线：`86ad03b367ae85cb1c9741633d418af0ddaaa0a4`；IP-01～IP-08 已在该检查点实现，剩余生产授权组合仅由 IP-09 承担。IP-09 实施前须以该 HEAD 重新读取现有符号，禁止重做既有实现。
 - change：`deliver-agent-cleaning-and-partial-availability`；`openspec status --change ... --json` 确认为 `schemaName: riskflow-delivery`。
 - 行为事实源：本 change 的 proposal、`data/agent-cleaning-and-partial-availability` delta spec 和 `design.md`；领域术语依据相关主 specs。实现不得重新解释研究原件。
 - 直接实现依赖：已归档 C08 `deliver-unified-bounded-agent-runtime`、C11 `deliver-engineering-context-and-source-registry`、C12 `deliver-structured-document-conversion`、C14 `deliver-monitoring-batches-snapshots-and-features`。
@@ -12,7 +13,7 @@
 
 实施前执行 `git diff --name-only 5c49f20e615c6507be40b5cc74f734fba4b4fb80 -- <本计划文件清单>` 并逐个读取集成后的受影响符号。若前置集成改变本计划引用的公共契约、事务、授权、C08 runner 接缝或 C12/C14 结果结构，停止并升级，不凭计划文本覆盖代码事实。
 
-设计决定到实施切片的固定映射：IP-01 → D-11/D-12；IP-02 → D-02/D-05/D-06/D-11；IP-03 → D-02/D-03/D-04/D-07/D-09/D-10；IP-04 → D-07/D-08/D-09/D-11；IP-05 → D-01/D-08/D-09/D-10/D-12；IP-06 → D-04/D-05/D-09/D-10/D-11；IP-07 → D-10/D-11；IP-08 → D-12。
+设计决定到实施切片的固定映射：IP-01 → D-11/D-12；IP-02 → D-02/D-05/D-06/D-11；IP-03 → D-02/D-03/D-04/D-07/D-09/D-10；IP-04 → D-07/D-08/D-09/D-11；IP-05 → D-01/D-08/D-09/D-10/D-12；IP-06 → D-04/D-05/D-09/D-10/D-11；IP-07 → D-10/D-11；IP-08 → D-12；IP-09 → D-01/D-09/D-10/D-11/D-13。
 
 ## 2. 复用与接缝
 
@@ -26,6 +27,7 @@
 | IP-06 | `apps/worker/src/agent-runtime/runner.ts` 的 `AgentRuntimeRunnerOptionsV1.renderModelStep`、`interpretModelStep` 和 runner | 为 `data-cleaning` 增加组合函数，仍运行同一 C08 runner | 不建立第二套 runner、模型网关、任务注册表或预算循环 |
 | IP-07 | `apps/api/test/http-shell.test.ts`、现有 C08/C11/C12/C14 回归测试 | 验证通用 API 分派未漂移、直接依赖行为仍成立 | 不新增 C15 HTTP/Web 契约或 UI 文案测试 |
 | IP-08 | 根 scripts 与 OpenSpec CLI | 执行最小验证、依赖边界和 change 严格校验 | 不新增脚本或修改全局配置 |
+| IP-09 | `LocalIdentityAccessV1.authorize()`、`AgentTaskDefinitionRegistry`、`PostgresAgentTaskAdapter.startTask()` 与 `PostgresDataCleaningStoreOptions.startAgentTask` | 在 Worker 唯一生产组合根中让 C06 按 `agent-task.start-task` 签发独立上下文，再调用同一 C08 adapter；store 只提供无授权草案和精确范围 | 不复制/扩写 `engineering-data.freeze` capability，不绕过 C06，不改 `AgentTaskPortV1`，不创建第二套 runtime/registry |
 
 ## 3. 代码变更映射
 
@@ -39,6 +41,7 @@
 | IP-06 | Worker 接入同一 C08 runner | `必经 Agent 失败不得静默跳过` 全部场景；`data-cleaning 任务只使用版本化只读领域工具 / 越权或越界工具请求被拒绝`；`清洗结果经确定性收口自动生效并完整留痕 / 合格候选自动形成正式清洗结果` | **新增** `apps/worker/src/engineering-data/cleaning/runtime.ts`：`withDataCleaningModelStep`、`interpretDataCleaningModelStep`；**修改** `apps/worker/src/index.ts` 导出组合函数；**新增** `apps/worker/test/engineering-data/cleaning/runtime.test.ts` | 仅对 `taskType === data-cleaning` 构造有界消息和解析 tool-request/candidate；其它类型委派原 callback；协议脚本驱动同一 runner 验证工具→候选→校验→finalize，以及预算/模型/工具失败终态 | 不硬编码自然语言期望、不吞 C08 错误、不换模型/预算、不创建 worker 全局单例 |
 | IP-07 | 回归边界 | 所有 Requirement 的公共边界；重点为“关键数值无有害修改”“Agent 失败不得跳过”“四类文档与监测数据形成业务可用结果” | **不修改** `apps/api/test/http-shell.test.ts`、`apps/worker/test/agent-runtime/runner.test.ts`、C11/C12/C14 现有测试 | 运行既有回归，确认 API generic freeze、C08 状态机、C12 转换、C14 样本/特征和 C11 monitoring 分派无漂移 | 不为 C15 增 API/Web 测试文件，不更新 snapshots/文案来掩盖回归 |
 | IP-08 | 完成门 | 全部 Requirement/Scenario 与 D-01～D-12 | 本 change 五工件与所有 IP 文件 | 执行格式、类型、lint、定向/回归测试、依赖边界、迁移发现、OpenSpec strict validate；最后运行 apply instructions 检查全部 `contextFiles` 可解析 | 不勾选无证据 task，不归档、不提交 |
+| IP-09 | 生产授权组合与真实启动证据 | `data-cleaning 任务只使用版本化只读领域工具 / 清洗任务经生产组合根以受权能力启动` | **修改** `packages/adapters/src/engineering-data/cleaning/postgres-data-cleaning-store.ts`：`PostgresDataCleaningStoreOptions.startAgentTask`、`#startCleaningTask`；**新增** `apps/worker/src/engineering-data/cleaning/composition.ts`：`createPostgresDataCleaningComposition`、`resolveStartAuthorizationInvocation` 输入类型；**修改** `apps/worker/src/engineering-data/cleaning/index.ts` 导出；**新增** `apps/worker/test/engineering-data/cleaning/composition.test.ts`；**修改** `packages/adapters/test/engineering-data/cleaning/fixture.ts` 与 `postgres-data-cleaning-store.test.ts` | store 传出缺少 `authorization` 的 C08 启动草案及精确 scope/source refs；Worker 工厂用服务端调用来源调用 C06 exact branch，校验 actor/project/唯一 capability 后 strict parse 并调用所组装的 C08 adapter，且 adapter 注入同一个 C06 verifier；单测证明拒绝不触达 C08，真实 PostgreSQL fixture 删除 capability 拼接并证明 C06/C08 审计和任务信封引用成立 | 不接受调用方直接返回 authorization context，不把 freeze context 当 system parent，不改 contracts/C08 capability/C06 policy，不把测试造假保留为生产接缝 |
 
 ## 4. 调用与副作用顺序
 
@@ -48,7 +51,7 @@
 2. C15 校验注入的 `DataCleaningPolicyV1.policyRef` 与命令一致，按命令顺序逐项读取精确 source version；按允许转换策略/质量策略/部署引用筛选成功 C12/C13 记录，要求每项恰好一个。
 3. 策略有监测序列时，以命令 `monitoringCutoff`、策略序列和 C14 可用性策略调用 `freezeSnapshot()`；缺 cutoff、版本/范围不符或 C14 失败则结构化阻断，不猜测快照。
 4. 生成 canonical manifest，写 C04 内容工件；工件只存引用、版本与授权边界，不存正文/监测值。工件写失败不创建任务。
-5. 从规范化命令+策略+精确输入摘要派生 task identity，调用 C08 `startTask()`；相同身份重放原任务，同键异载荷由 C03/C08 返回冲突。
+5. 从规范化命令+策略+精确输入摘要派生 task identity，store 向 IP-09 组合根提交不含 `authorization` 的启动草案以及命令的精确空间/资料范围。组合根从服务端 `resolveStartAuthorizationInvocation()` 取得 C06 调用来源，以同一 `commandId`、`agent-task.start-task` exact branch 和精确范围调用 `LocalIdentityAccessV1.authorize()`；只在 actor/project 相等且能力恰为 `agent-task.start` 时 strict 组装 `StartAgentTaskCommandV1`，再调用注入 C06 verifier 的同一个 `PostgresAgentTaskAdapter.startTask()`。相同身份由 C06/C08 幂等重放，同键异载荷返回冲突。
 6. C08 未完成时 freeze 返回 `BUSINESS_BLOCKED` 与 `agentTaskRef`；不写识别准备，不发事件。manifest 写成孤儿时内容寻址可去重，不是业务成功。
 
 ### 4.2 Worker 工具、候选与清洗结果（IP-02、IP-03、IP-04、IP-06）
@@ -71,11 +74,12 @@
 
 - `UNSUPPORTED_CONTRACT`：strict 输入或前置契约版本不兼容，不可重试。
 - `AUTHORIZATION_DENIED`：当前工程/空间/资料授权失败；不存在与未授权同形，不读取目标内容。
+- 启动授权来源缺失、C06 拒绝、返回上下文与命令身份不符或能力不是唯一 `agent-task.start`：IP-09 不调用 C08，由 store 映射为 `AUTHORIZATION_DENIED` 或对应结构化技术失败；不得拼接 capability、改用 freeze 上下文或跳过任务。
 - `BUSINESS_BLOCKED`：转换缺失/歧义、监测准备失败、任务未完成、覆盖不足；返回稳定 blocker ref。
 - `IDEMPOTENCY_CONFLICT`：同作用域幂等键载荷不同，不可重试。
 - `TRANSIENT_FAILURE`：C04/PostgreSQL/可恢复执行故障；沿用同 task、action key 和累计预算。
 - `TERMINAL_FAILURE`：不可恢复任务终态或已提交事实无法复读；禁止 fallback。
-- C08 保存原始模型响应、工具行动、候选版本、验证和预算；C15 审计保存输入/策略/result/preparation 引用和稳定结果，不保存思维链。日志只写引用和原因码，不写正文或监测值。
+- C06 为 IP-09 的授权成功/拒绝写安全审计；C08 保存启动事实审计、授权引用、原始模型响应、工具行动、候选版本、验证和预算；C15 审计保存原 freeze 授权、输入/策略/result/preparation 引用和稳定结果，不保存思维链。两段授权经 `agentTaskRef` 与规范摘要关联，日志只写引用和原因码，不写 session token、正文或监测值。
 
 ## 5. Schema、状态与持久化落实
 
@@ -98,9 +102,11 @@
 - 排除/覆盖决定为 C04 内容工件，snapshot 保存 contracts route decision refs；正文、原始 Agent 响应和监测值不入两表。
 - `000016` 由现有 provider 自动发现；`up` 建表/约束/索引，`down` 仅按逆依赖顺序删除本迁移新表，生产回滚不执行 down 并保留审计事实。
 
-### 5.4 文件所有权与无变更面（IP-01～IP-08）
+### 5.4 文件所有权与无变更面（IP-01～IP-09）
 
 新增 11 个文件：3 个 core 生产文件、1 个 core 测试、2 个 adapter 生产文件、1 个迁移、2 个 adapter 测试/fixture、1 个 worker 生产文件、1 个 worker 测试。修改 5 个文件：两个包 manifest、C11 registry、worker root export、PostgreSQL 迁移发现回归测试。删除 0 个文件。API/Web 只有回归验证，无文件变更。
+
+IP-09 在 `86ad03b367ae85cb1c9741633d418af0ddaaa0a4` 之后仅新增 Worker `composition.ts` 与对应测试，修改现有 C15 store、Worker cleaning barrel、adapter cleaning fixture/test；不改原迁移、中央迁移清单、根 workspace、锁文件、依赖政策或任何 contracts 文件。
 
 ## 6. 验收证据矩阵
 
@@ -109,6 +115,7 @@
 | 清洗准备冻结精确文档与监测输入 / 四类结构化文档与地表沉降快照进入同一准备 | IP-01、IP-03 | adapter cleaning test | DOCX/text-PDF/XLSX/CSV 成功转换 + settlement snapshot | 一个 manifest 按序含四组转换/JSON-LD/segment-set 和精确 snapshot ref；无正文/值 | `pnpm exec vitest run packages/adapters/test/engineering-data/cleaning/postgres-data-cleaning-store.test.ts` |
 | 同 Requirement / OCR 结果复用同一清洗契约 | IP-01、IP-03 | adapter cleaning test | C13 `ocr-layout` record（C13 归档后） | 与其它 inputKind 同路由，页/版面/置信度证据可读且无 PaddleX 私有字段 | 同上 |
 | 同 Requirement / 输入版本不完整或不一致时拒绝准备 | IP-03 | adapter cleaning test | 缺失/双重转换、错工程 snapshot、错策略 | task 数为 0；稳定 blocked/stale/auth error | 同上 |
+| data-cleaning 任务只使用版本化只读领域工具 / 清洗任务经生产组合根以受权能力启动 | IP-09 | worker composition + adapter PostgreSQL cleaning tests | 服务端 human-session 与 C06 签发；另设拒绝/错 actor/错 capability 表 | 授权请求 exact branch/scopes/sources；任务信封仅含 C06 `agent-task.start` context；C08 adapter 注入 C06 verifier；拒绝时 C08 task 数为 0；安全审计与任务事实审计可查；无 capability 拼接 | `pnpm exec vitest run apps/worker/test/engineering-data/cleaning/composition.test.ts packages/adapters/test/engineering-data/cleaning/postgres-data-cleaning-store.test.ts` |
 | data-cleaning 任务只使用版本化只读领域工具 / 读取获准的文档资料段切片 | IP-03、IP-06 | worker cleaning test | manifest 内 2 个 segment | observation 只含请求成员；`effect:none`；usage 计数正确 | `pnpm exec vitest run apps/worker/test/engineering-data/cleaning/runtime.test.ts` |
 | 同 Requirement / 读取获准的监测快照切片 | IP-03、IP-06 | worker cleaning test | snapshot 成员/对齐点/四特征 | 值、单位、状态、特征与 C14 原值深相等，无重算 | 同上 |
 | 同 Requirement / 越权或越界工具请求被拒绝 | IP-03、IP-06 | worker + adapter cleaning tests | 冻结外 ref、对象超限、撤销授权 | C08 记录稳定 tool/budget/auth failure；无目标读取/扩容 | `pnpm exec vitest run apps/worker/test/engineering-data/cleaning/runtime.test.ts packages/adapters/test/engineering-data/cleaning/postgres-data-cleaning-store.test.ts` |
@@ -145,6 +152,7 @@
 - IP-03：`packages/adapters/src/engineering-data/cleaning/postgres-data-cleaning-store.ts`、`packages/adapters/src/engineering-data/cleaning/index.ts`
 - IP-04：`packages/adapters/src/postgres/migrations/engineering-data/deliver-agent-cleaning-and-partial-availability/000016_agent_cleaning_partial_availability.ts`；`packages/adapters/test/engineering-data/cleaning/postgres-data-cleaning-store.test.ts`
 - IP-06：`apps/worker/src/engineering-data/cleaning/runtime.ts`；`apps/worker/test/engineering-data/cleaning/runtime.test.ts`
+- IP-09：`apps/worker/src/engineering-data/cleaning/composition.ts`；`apps/worker/test/engineering-data/cleaning/composition.test.ts`
 
 **修改（IP 所有权）：**
 
@@ -153,12 +161,13 @@
 - IP-05：`packages/adapters/src/engineering-data/context-source/postgres-engineering-context-source-registry.ts`
 - IP-06：`apps/worker/src/index.ts`
 - IP-04：`packages/adapters/test/postgres/postgres-foundation.test.ts`
+- IP-09：`packages/adapters/src/engineering-data/cleaning/postgres-data-cleaning-store.ts`、`apps/worker/src/engineering-data/cleaning/index.ts`、`packages/adapters/test/engineering-data/cleaning/fixture.ts`、`packages/adapters/test/engineering-data/cleaning/postgres-data-cleaning-store.test.ts`
 
 **删除：**无。
 
 **只读回归：**IP-07 矩阵列出的现有 tests 与其生产实现。
 
-**保护区：**`packages/contracts/**`、根 `package.json`/workspace、`pnpm-lock.yaml`、`openspec/config.yaml`、`apps/api/src/**`、`apps/web/src/**`、C13 worktree、其它 change、迁移 provider/runner、中央运行时注册文件。
+**保护区：**`packages/contracts/**`、根 `package.json`/workspace、`pnpm-lock.yaml`、`config/dependency-policy.json`、`openspec/config.yaml`、`apps/api/src/**`、`apps/web/src/**`、C13 worktree、其它 change、全部既有 migration、迁移 provider/中央迁移清单、C08 runner、中央运行时注册文件。
 
 ### 7.2 具体升级条件
 
@@ -171,6 +180,7 @@
 5. 需要新公共 Schema、迁移既有数据、改变授权/事务/错误语义、增 API/Web、修改保护区或新增依赖。
 6. 协调端预留的 C15 号段 `000016–000019` 与集成分支冲突，或任何计划命令在实现时不存在。
 7. 测试只能通过 Mock 后端、默认 fallback、占位实现、降低审计或忽略用户未提交改动。
+8. 无法从服务端受信调用来源经 C06 为同一 actor/project 与精确 scope/source refs 签发 `agent-task.start-task` 上下文，必须修改 C06 policy/C08 capability/contracts 才能继续，或生产组合只能依赖手工拼接 capability。
 
 ### 7.3 已核实存在的可运行命令（IP-08）
 
@@ -180,6 +190,7 @@
 pnpm exec vitest run packages/core/test/engineering-data/cleaning.test.ts
 pnpm exec vitest run packages/adapters/test/engineering-data/cleaning/postgres-data-cleaning-store.test.ts
 pnpm exec vitest run apps/worker/test/engineering-data/cleaning/runtime.test.ts
+pnpm exec vitest run apps/worker/test/engineering-data/cleaning/composition.test.ts packages/adapters/test/engineering-data/cleaning/postgres-data-cleaning-store.test.ts
 pnpm exec vitest run packages/contracts/test/module-interfaces-events-workflows.test.ts apps/worker/test/agent-runtime/runner.test.ts packages/core/test/engineering-data/context-source.test.ts packages/core/test/engineering-data/document-conversion.test.ts packages/core/test/engineering-data/monitoring.test.ts packages/adapters/test/postgres/postgres-foundation.test.ts packages/adapters/test/engineering-data/context-source/postgres-engineering-context-source-registry.test.ts packages/adapters/test/engineering-data/document-conversion.test.ts packages/adapters/test/engineering-data/monitoring/postgres-monitoring-store.test.ts apps/api/test/http-shell.test.ts
 pnpm typecheck
 pnpm lint
@@ -191,6 +202,8 @@ openspec validate deliver-agent-cleaning-and-partial-availability --type change 
 openspec instructions apply --change deliver-agent-cleaning-and-partial-availability --json
 git diff --check
 git diff --name-only 5c49f20e615c6507be40b5cc74f734fba4b4fb80
+git diff --name-only 86ad03b367ae85cb1c9741633d418af0ddaaa0a4 -- apps/worker/src/engineering-data/cleaning apps/worker/test/engineering-data/cleaning packages/adapters/src/engineering-data/cleaning/postgres-data-cleaning-store.ts packages/adapters/test/engineering-data/cleaning
+git diff --name-only 86ad03b367ae85cb1c9741633d418af0ddaaa0a4 -- packages/contracts packages/adapters/src/postgres/migrations config/dependency-policy.json package.json pnpm-workspace.yaml pnpm-lock.yaml
 ```
 
-定向测试先于全量 `pnpm test`；只有代码、行为和证据完成后才勾选对应 task。最终只交 `openspec-verify-change` 验证，不在本 change 的 apply 阶段归档或提交。
+最后一条保护区命令必须无输出。定向测试先于全量 `pnpm test`；只有代码、行为和证据完成后才勾选对应 task。最终只交 `openspec-verify-change` 验证，不在本 change 的 apply 阶段归档或提交。

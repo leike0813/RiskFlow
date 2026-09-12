@@ -7,16 +7,16 @@
 当前接管点：
 
 - `main` 已完成并归档 17 个路线 change：C00–C12、C13、C14、C16、C18。
-- `openspec/changes/archive/` 共 25 项 = 17 个路线 change + 8 个辅助/修复/契约演进 change（`configure-pnpm-build-script-policy`、`deliver-structured-orchestration-status`、`evolve-review-audit-approval-proof`、`fix-postgresql-test-migration-loader-compatibility`、`fix-orchestration-execution-status-reliability`、`strengthen-implementation-planning-workflow`、`evolve-identification-preparation-segment-set-refs`、`evolve-knowledge-definition-types`）；另有 `implement-engineering-data-read-branches`（C11 公共读取分支）已合并归档，合并后按 25 项核算时它计入辅助/实现类 change。
+- `openspec/changes/archive/` 共 29 项 = 17 个路线 change + 12 个辅助/实现/契约演进 change（前 8 项与上表相同，另有 `implement-engineering-data-read-branches`、`evolve-assessment-preparation-entry-fields`、`implement-monitoring-series-reader`、`implement-external-risk-event-registration`）。
 - C01 主 spec 位于 `openspec/specs/domain/contract-kernel/spec.md`。
 - C02 主 spec 位于 `openspec/specs/domain/module-interfaces-events-workflows/spec.md`。
 - C03 主 spec 位于 `openspec/specs/platform/postgresql-outbox-checkpoint-foundation/spec.md`。
-- G0、G1 已通过；C13 已归档，frontier 现为 C15 `deliver-agent-cleaning-and-partial-availability`（实现中），其后 C17、C19、C25 均已规划完成、等待前置归档。
-- 迁移号段分配：C18 = 000012、C15 = 000016–000019、C17 = 000020–000023、C11 读取分支 = 000024、C19 = 000028–000031、C25 = 000032–000035、后续前置 change = 000036 起。
-- 规划已完成并已提交规划的 change：C15（规划检查点 ba13a0d 之上的同步点 8f86392）、C17（fddb3f3）、C19（6ea078c + 两次有界修订 b592dd2、15720d9）、C25（2578973）。
-- 前置契约/接口 change：`evolve-assessment-preparation-entry-fields`（评估准备入口字段与监测快照集合复数化）、`implement-monitoring-series-reader`（C14 序列修订有界读取）、`implement-external-risk-event-registration`（C11 register-external-risk-event 公共分支）——C19/C25 的实现门禁依赖这三者与 C15 归档。
+- G0、G1 已通过；C13 已归档并回收 worktree，frontier 现为 C15 `deliver-agent-cleaning-and-partial-availability`（IP-09 已实现，第二轮独立复验进行中），其后 C17、C19、C25 均已规划、等待前置归档。
+- 迁移号段分配：C18 = 000012、C15 = 000016–000019、C17 = 000020–000023、C11 读取分支 = 000024、C19 = 000028–000031、C25 = 000032–000035、外部风险事件 = 000036、后续 change（含 `enforce-verified-actor-authority-binding`）= 000040 起。
+- 已完成规划并提交的 change：C15（规划修补后检查点 9648bc3 + IP-09 实现 c0eca22）、C17（fddb3f3）、C19（15720d9，含两次有界修订）、C25（2578973）、`enforce-verified-actor-authority-binding`（ffc9a32，实现中）。
+- C19/C25 的实现门禁依赖：C15 归档、`evolve-assessment-preparation-entry-fields`（已归档）、`implement-monitoring-series-reader`（已归档）、`implement-external-risk-event-registration`（已归档）。
 - 状态观察器以当前 `main` 提交中的 OpenSpec archive 作为持久完成事实；Orca 仅提供现存 feature worktree、worker 与 Dispatch 均非终态或关联 live terminal 的实时状态。已脱离实时对象的旧 Task 只进入 `diagnostics`，不得阻断 frontier 或 `orchestration:check`。
-- 运行注意：Orca `reset --tasks` 会清空该项目全部 Run 的 Task（不是仅当前绑定 Run），禁止使用；dispatch 到 OMP 终端时若 TUI 停在欢迎界面，注入内容会滞留为待提交输入并触发 `agent_prompt_stalled`，需先向新终端发送一次回车再注入。
+- 运行注意：Orca `reset --tasks` 会清空该项目全部 Run 的 Task（不是仅当前绑定 Run），禁止使用；dispatch 到新 OMP 终端前先向该终端发送一次回车，否则注入会滞留为待提交输入并触发 `agent_prompt_stalled`；新增迁移必须在 `packages/adapters/test/postgres/postgres-foundation.test.ts` 与 `packages/adapters/test/auth/fixture.ts` 两处中央清单追加登记（主调度所有权），否则相关 PostgreSQL 测试会以 `MIGRATION_INVALID` 失败并 skip。
 - 不推送远端；远端操作必须由用户另行授权。
 
 ## 2. 固定角色与模型

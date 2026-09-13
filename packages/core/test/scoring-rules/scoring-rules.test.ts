@@ -830,6 +830,48 @@ describe("C19 结构化评分规则与适用规则集", () => {
       });
       expect(bound.relationDigest).toMatch(/^[0-9a-f]{64}$/u);
     });
+
+    it("关系贡献冲突：相邻域的结论变化必须保留为两个事实", () => {
+      const snapshot = detectRuleRelations({
+        policyRef: { entityId: "rule-conflict-priority", versionId: "1" },
+        candidateContentDigest: "c".repeat(64),
+        candidates: [
+          {
+            rule: makeScoringRule({
+              ruleId: "rule-conclusion-a",
+              scoringThresholds: [
+                { thresholdId: "a-1", score: 1, operator: "between", value: 0, upperValue: 10 },
+                { thresholdId: "a-2", score: 3, operator: "between", value: 10, upperValue: 20 },
+              ],
+              gradeIntervals: [
+                { grade: "grade-a-1", lowerBound: 0, upperBound: 10 },
+                { grade: "grade-a-2", lowerBound: 10 },
+              ],
+            }),
+            sourceVersionRef: REAL_STANDARD_SOURCE_VERSION,
+          },
+          {
+            rule: makeScoringRule({
+              ruleId: "rule-conclusion-b",
+              scoringThresholds: [
+                { thresholdId: "b-1", score: 2, operator: "between", value: 0, upperValue: 10 },
+                { thresholdId: "b-2", score: 4, operator: "between", value: 10, upperValue: 20 },
+              ],
+              gradeIntervals: [
+                { grade: "grade-b-1", lowerBound: 0, upperBound: 10 },
+                { grade: "grade-b-2", lowerBound: 10 },
+              ],
+            }),
+            sourceVersionRef: SECOND_STANDARD_SOURCE_VERSION,
+          },
+        ],
+      });
+
+      expect(snapshot.relations.map(({ overlap }) => [overlap.lower, overlap.upper])).toEqual([
+        [0, 10],
+        [10, 20],
+      ]);
+    });
   });
 
   describe("basis 成员清单", () => {
@@ -987,6 +1029,15 @@ describe("C19 结构化评分规则与适用规则集", () => {
         },
       };
       expect(ReadAssessmentBasisReleaseSetV1Schema.safeParse(requestPayload).success).toBe(true);
+      expect(
+        ReadAssessmentBasisReleaseSetV1Schema.safeParse({
+          ...requestPayload,
+          authorization: {
+            ...requestPayload.authorization,
+            grantedCapabilities: ["knowledge-modeling.govern"],
+          },
+        }).success,
+      ).toBe(true);
       // 工程与 actor 只能来自 C06 验证结果；latest/列表选择器一律拒绝。
       for (const forbidden of [
         { projectId: "project-1" },
@@ -1054,6 +1105,25 @@ describe("C19 结构化评分规则与适用规则集", () => {
         AssessmentBasisReleaseSetReadResultV1Schema.safeParse({
           kind: "failed",
           error: moduleError,
+        }).success,
+      ).toBe(false);
+      expect(
+        AssessmentBasisReleaseSetReadResultV1Schema.safeParse({
+          kind: "failed",
+          error: {
+            code: "TRANSIENT_FAILURE",
+            category: "technical",
+            retryable: true,
+            stageCode: "scoring-rules.transient_failure",
+            occurredAt: "2030-01-01T00:00:00.000Z",
+            causalRunId: "request-1",
+            attempt: 1,
+            retryPolicyRef: { entityId: "retry-policy", versionId: "1" },
+            diagnosticRef: {
+              kind: "diagnostic-artifact",
+              reference: { entityId: "diagnostic-1", versionId: "1" },
+            },
+          },
         }).success,
       ).toBe(true);
       expect(AssessmentBasisReleaseSetReadResultV1Schema.safeParse({ kind: "other" }).success).toBe(

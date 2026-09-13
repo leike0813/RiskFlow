@@ -557,7 +557,7 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
     }
   }, 180_000);
 
-  it("真实规范：GB 50911-2013 条文段经 C15→C19→C16/C07 形成 RA-S3/S4 适用规则集与公共 assessment-basis（basis 成员读取）", async () => {
+  it("真实规范：GB 50911-2013 条文段经 C15→C19→C16/C07 形成 RA-S3/S4 适用规则集与公共 assessment-basis（basis 成员读取、basis 运行时边界、basis 历史成功完整性、basis 冻结集合、basis 瞬时失败）", async () => {
     const project = await startProjectWorld("c19-real-standard");
     const { cleaning, world } = project;
     const handoff = await startRuleAuthoring({
@@ -1408,6 +1408,45 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
       error: { code: "UNSUPPORTED_CONTRACT", retryable: false },
     });
     expect(verify.mock.calls).toHaveLength(callsBefore);
+
+    const deniedRequestId = `c19-basis-capability-denied-${chain!.projectId}`;
+    verify.mockRejectedValueOnce(
+      new AccessServiceError({
+        stage: "access.verify",
+        occurredAt: SCORING_RULES_TEST_ISSUED_AT,
+        diagnosticRef: {
+          kind: "diagnostic-artifact",
+          reference: { entityId: "c19-access-denied", versionId: "1" },
+        },
+        contextRefs: [],
+        code: "AUTHORIZATION_DENIED",
+        retryable: false,
+        requiredCapability: "knowledge-modeling.read",
+        authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+      }),
+    );
+    const denied = await requireFixture().scoringRules.readAssessmentBasisReleaseSet(
+      basisReadInput({
+        requestId: deniedRequestId,
+        authorization: requireFixture().authorize({
+          projectId: chain!.projectId,
+          actorId: authoringActor,
+          branch: "knowledge-modeling.deactivate-release",
+          entityId: deniedRequestId,
+        }),
+        assessmentBasisReleaseSetRef: chain!.basisReleaseSetRef,
+      }),
+    );
+    expect(denied).toMatchObject({
+      kind: "unavailable",
+      error: { code: "AUTHORIZATION_DENIED", retryable: false },
+    });
+    expect(
+      await countRows(
+        `SELECT count(*)::text AS count FROM business.command_receipts WHERE command_id = $1`,
+        [deniedRequestId],
+      ),
+    ).toBe(0);
 
     const reorderedRequestId = `c19-basis-capability-order-${chain!.projectId}`;
     const reorderedAuthorization = basisAuthorization(chain!.projectId, reorderedRequestId);

@@ -849,8 +849,6 @@ export const AssessmentBasisReleaseSetV1Schema = z.strictObject({
 });
 export type AssessmentBasisReleaseSetV1 = z.infer<typeof AssessmentBasisReleaseSetV1Schema>;
 
-const requiredReadCapability = MODULE_BRANCH_CAPABILITY_V1["knowledge-modeling.assessment-basis"];
-
 /** 精确集合引用；不接受名称、列表或 latest 选择器。 */
 const assessmentBasisReleaseSetRefSchema = z.strictObject({
   kind: z.literal(ASSESSMENT_BASIS_RELEASE_SET_REF_KIND_V1),
@@ -860,24 +858,27 @@ const assessmentBasisReleaseSetRefSchema = z.strictObject({
 /**
  * 成员读取请求：工程与 actor 只来自 C06 当前验证结果，调用方不得另传。
  */
-export const ReadAssessmentBasisReleaseSetV1Schema = z
-  .strictObject({
-    requestId: IdentifierSchema,
-    idempotencyKey: IdentifierSchema,
-    requestedAt: IsoDateTimeSchema,
-    authorization: AuthorizationContextV1Schema,
-    assessmentBasisReleaseSetRef: assessmentBasisReleaseSetRefSchema,
-  })
-  .superRefine((request, context) => {
-    if (!request.authorization.grantedCapabilities.includes(requiredReadCapability)) {
-      context.addIssue({
-        code: "custom",
-        path: ["authorization", "grantedCapabilities"],
-        message: "the assessment read capability is required",
-      });
-    }
-  });
+export const ReadAssessmentBasisReleaseSetV1Schema = z.strictObject({
+  requestId: IdentifierSchema,
+  idempotencyKey: IdentifierSchema,
+  requestedAt: IsoDateTimeSchema,
+  authorization: AuthorizationContextV1Schema,
+  assessmentBasisReleaseSetRef: assessmentBasisReleaseSetRefSchema,
+});
 export type ReadAssessmentBasisReleaseSetV1 = z.infer<typeof ReadAssessmentBasisReleaseSetV1Schema>;
+
+const assessmentBasisUnavailableErrorSchema = ModuleErrorV1Schema.refine(
+  (error) => error.code === "AUTHORIZATION_DENIED" && !error.retryable,
+);
+
+const assessmentBasisFailedErrorSchema = ModuleErrorV1Schema.refine((error) =>
+  [
+    "UNSUPPORTED_CONTRACT",
+    "IDEMPOTENCY_CONFLICT",
+    "TRANSIENT_FAILURE",
+    "TERMINAL_FAILURE",
+  ].includes(error.code),
+);
 
 /**
  * 顶层 strict 判别结果：成功直接给出三个成员投影，不包装内部集合；
@@ -893,8 +894,8 @@ export const AssessmentBasisReleaseSetReadResultV1Schema = z.discriminatedUnion(
     scoringRuleMembers,
     configurationMembers,
   }),
-  z.strictObject({ kind: z.literal("unavailable"), error: ModuleErrorV1Schema }),
-  z.strictObject({ kind: z.literal("failed"), error: ModuleErrorV1Schema }),
+  z.strictObject({ kind: z.literal("unavailable"), error: assessmentBasisUnavailableErrorSchema }),
+  z.strictObject({ kind: z.literal("failed"), error: assessmentBasisFailedErrorSchema }),
 ]);
 export type AssessmentBasisReleaseSetReadResultV1 = z.infer<
   typeof AssessmentBasisReleaseSetReadResultV1Schema

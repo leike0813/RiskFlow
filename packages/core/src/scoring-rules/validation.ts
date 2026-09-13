@@ -892,6 +892,7 @@ interface RelationContribution {
   readonly domainType: "numeric" | "discrete";
   readonly discreteValue?: ScalarValue;
   readonly relationKind: ScoringRuleRelationKindV1;
+  readonly conclusionDigest: string;
   readonly overlap: ScoringRuleOverlapDomainV1;
 }
 
@@ -931,6 +932,12 @@ const relationContributions = (input: {
           contributions.push({
             domainType: "numeric",
             relationKind,
+            conclusionDigest: sha256CanonicalJson({
+              leftScore: leftThreshold.score,
+              leftGrade: leftGrade.grade,
+              rightScore: rightThreshold.score,
+              rightGrade: rightGrade.grade,
+            }),
             overlap: ScoringRuleOverlapDomainV1Schema.parse({
               indicatorItem: input.left.indicatorItem,
               ...domain,
@@ -971,6 +978,12 @@ const relationContributions = (input: {
             leftDiscreteGrade.grade !== rightDiscreteGrade.grade
               ? "conflict"
               : "overlap",
+          conclusionDigest: sha256CanonicalJson({
+            leftScore: leftThreshold.score,
+            leftGrade: leftDiscreteGrade.grade,
+            rightScore: rightThreshold.score,
+            rightGrade: rightDiscreteGrade.grade,
+          }),
           overlap: ScoringRuleOverlapDomainV1Schema.parse({
             indicatorItem: input.left.indicatorItem,
             lower: null,
@@ -1006,7 +1019,9 @@ const mergeRelationContributions = (
   const merged: RelationContribution[] = [];
   for (const contribution of ordered) {
     const previous = merged.at(-1);
-    const sameSemantics = previous?.relationKind === contribution.relationKind;
+    const sameSemantics =
+      previous?.relationKind === contribution.relationKind &&
+      previous.conclusionDigest === contribution.conclusionDigest;
     if (
       previous !== undefined &&
       sameSemantics &&
@@ -1019,6 +1034,7 @@ const mergeRelationContributions = (
       merged[merged.length - 1] = {
         domainType: "numeric",
         relationKind: previous.relationKind,
+        conclusionDigest: previous.conclusionDigest,
         overlap: ScoringRuleOverlapDomainV1Schema.parse({
           ...previous.overlap,
           ...union,

@@ -6,10 +6,15 @@ import {
   KnowledgeResolutionCommandV1Schema,
   ReviewDecisionCommandV1Schema,
   type AuthorizationContextV1,
+  type KnowledgeDefinitionTypeV1,
   type KnowledgeGovernanceResultV1,
+  type KnowledgeReleaseRefV1,
+  type KnowledgeRevisionRefV1,
+  type ReviewDecisionRefV1,
   type ReviewTaskRefV1,
 } from "@riskflow/contracts/ports";
 
+import { governedReleaseResolutionInvocationId } from "../../src/knowledge-governance/index.js";
 import {
   IDENTIFICATION_KNOWLEDGE_CANDIDATE_PURPOSE_V1,
   PostgresIdentificationKnowledgeAdapter,
@@ -23,15 +28,39 @@ import {
   standardLibraryPackage,
   startIdentificationKnowledgeFixture,
   type IdentificationKnowledgeFixtureV1,
+  type IdentificationPreparationWorldV1,
 } from "./fixture.js";
-
-// 命令时刻晚于夹具的准备与发布记录时间，保证双时间与生效时间线单调。
-const SUBMIT_TIMESTAMP = "2030-01-01T00:01:00.000Z";
-const DECISION_TIMESTAMP = "2030-01-01T00:01:30.000Z";
-const PUBLISH_TIMESTAMP = "2030-01-01T00:02:00.000Z";
 
 let sequence = 0;
 const nextId = (prefix: string): string => `${prefix}-${++sequence}`;
+
+// 双时间必须单调：每次提交、复核与发布都晚于前一步的记录时刻，否则 C16 会正确拒绝过期基线。
+let clockMs = Date.parse("2030-01-02T01:00:00.000Z");
+const tick = (): string => new Date((clockMs += 60_000)).toISOString();
+
+/**
+ * 关键路径不允许条件早退：任何未达期望的中间结果都必须让测试失败，而不是静默跳过断言。
+ */
+const revisionOf = (result: KnowledgeGovernanceResultV1, label: string): KnowledgeRevisionRefV1 => {
+  if (result.kind !== "succeeded" || result.result.kind !== "revision") {
+    throw new Error(`${label} did not produce a revision: ${JSON.stringify(result)}`);
+  }
+  return result.result.knowledgeRevisionRef;
+};
+
+const releaseOf = (result: KnowledgeGovernanceResultV1, label: string): KnowledgeReleaseRefV1 => {
+  if (result.kind !== "succeeded" || result.result.kind !== "release") {
+    throw new Error(`${label} did not produce a release: ${JSON.stringify(result)}`);
+  }
+  return result.result.knowledgeReleaseRef;
+};
+
+const reviewTaskOf = (result: KnowledgeGovernanceResultV1, label: string): ReviewTaskRefV1 => {
+  if (result.kind !== "succeeded" || result.result.kind !== "review-task") {
+    throw new Error(`${label} did not produce a review task: ${JSON.stringify(result)}`);
+  }
+  return result.result.reviewTaskRef;
+};
 
 describe.sequential("PostgreSQL identification-knowledge adapter", () => {
   let fixture: IdentificationKnowledgeFixtureV1;
@@ -46,32 +75,71 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
 
   const adapterFor = (options?: {
     readonly withPolicySet?: boolean;
-    readonly withPreparationReader?: boolean;
-  }) =>
-    new PostgresIdentificationKnowledgeAdapter({
-      db: fixture.cleaning.runtime.db,
-      transactionUnit: fixture.transactionUnit,
-      access: fixture.access,
-      artifactStore: fixture.cleaning.artifactStore,
-      artifactReferenceGuard: fixture.cleaning.artifactRegistry,
-      governance: fixture.governance,
-      preparationReader: fixture.preparationReader,
-      policy: fixture.policy,
-      ...(options?.withPolicySet === false
-        ? {}
-        : {
-            policySetProvider: {
-              resolveExact: async (input) => ({
-                kind: "identification-policy-set" as const,
-                reference: {
-                  entityId: `policy-set-${input.projectId}`,
-                  versionId: "1",
-                },
-              }),
-            },
-          }),
-      now: () => new Date(IDENTIFICATION_KNOWLEDGE_TEST_TIMESTAMP),
+    readonly releasePolicyFault?: "before-binding" | "after-binding";
+  }): PostgresIdentificationKnowledgeAdapter =>
+    fixture.createIdentificationKnowledgeAdapter(options).adapter;
+
+  const countBinding = async (table: string, where: string, params: readonly unknown[]) => {
+    const rows = await fixture.cleaning.postgres.adminPool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM ${table} WHERE ${where}`,
+      [...params],
+    );
+    return rows.rows[0]?.count;
+  };
+
+  const identificationBasisEvents = async (): Promise<
+    readonly {
+      aggregate_ref: { reference: { entityId: string; versionId: string } };
+      event_json: {
+        payload: {
+          publishedReleases: readonly { definitionType: string; releaseRef: unknown }[];
+          retrievalEvidenceBaseReleaseRef: { reference: { entityId: string; versionId: string } };
+        };
+      };
+    }[]
+  > => {
+    const rows = await fixture.cleaning.postgres.adminPool.query<{
+      aggregate_ref: { reference: { entityId: string; versionId: string } };
+      event_json: {
+        payload: {
+          publishedReleases: readonly { definitionType: string; releaseRef: unknown }[];
+          retrievalEvidenceBaseReleaseRef: { reference: { entityId: string; versionId: string } };
+        };
+      };
+    }>(
+      `SELECT aggregate_ref, event_json FROM outbox.events
+        WHERE project_id = $1 AND event_type = 'knowledge.identification-basis-published.v1'
+        ORDER BY persisted_at, event_id`,
+      [fixture.world.projectId],
+    );
+    return rows.rows;
+  };
+
+  /**
+   * C16 当前生效发布：只经公共解析取得（停用/未生效的发布不作为修订基线）。
+   */
+  const resolveCurrentRelease = async (
+    definitionType: KnowledgeDefinitionTypeV1,
+  ): Promise<KnowledgeReleaseRefV1 | undefined> => {
+    const requiredDefinitionTypes = [definitionType];
+    const requiredAt = tick();
+    const asOfRecordedAt = requiredAt;
+    const resolution = await fixture.governance.resolveGovernedReleases({
+      projectId: fixture.world.projectId,
+      requiredDefinitionTypes,
+      requiredAt,
+      asOfRecordedAt,
+      authorization: await fixture.authorizationFor(
+        governedReleaseResolutionInvocationId({
+          requiredDefinitionTypes,
+          requiredAt,
+          asOfRecordedAt,
+        }),
+        "knowledge-modeling.identification-basis",
+      ),
     });
+    return resolution.kind === "succeeded" ? resolution.result.releaseRefs[0] : undefined;
+  };
 
   const submitPackage = async (
     adapter: PostgresIdentificationKnowledgeAdapter,
@@ -96,26 +164,11 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       ...(value as Record<string, unknown>),
       generatedAt: new Date(Date.parse("2030-01-01T00:00:00.000Z") + sequence * 1000).toISOString(),
     };
-    // 已有发布时必须显式给出当前基线发布，C16 才允许形成下一个修订。
-    const currentRelease = await fixture.cleaning.postgres.adminPool.query<{
-      release_id: string;
-      release_version_id: string;
-    }>(
-      `SELECT release_id, release_version_id FROM business.identification_knowledge_release_bindings
-        WHERE project_id = $1 AND definition_type = $2
-        ORDER BY bound_at DESC LIMIT 1`,
-      [projectId, definitionType],
-    );
+    // 已有发布时必须显式给出当前生效基线发布，C16 才允许形成下一个修订。
     const baseReleaseRef =
-      currentRelease.rows[0] === undefined
-        ? undefined
-        : {
-            kind: "knowledge-release" as const,
-            reference: {
-              entityId: currentRelease.rows[0].release_id,
-              versionId: currentRelease.rows[0].release_version_id,
-            },
-          };
+      options?.projectId === undefined || projectId === fixture.world.projectId
+        ? await resolveCurrentRelease(definitionType)
+        : undefined;
     const candidateArtifactRef = await fixture.putArtifact(
       unique,
       IDENTIFICATION_KNOWLEDGE_CANDIDATE_PURPOSE_V1,
@@ -128,7 +181,7 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
         idempotencyKey: commandId,
         projectId,
         actorId: authorization.actorId,
-        issuedAt: SUBMIT_TIMESTAMP,
+        issuedAt: tick(),
         authorization,
         payload: {
           definitionType,
@@ -144,15 +197,16 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
     reviewTaskRef: ReviewTaskRefV1,
     authorization: AuthorizationContextV1,
     commandId: string,
+    projectId: string,
   ) =>
     await fixture.reviewAudit.decideReview(
       ReviewDecisionCommandV1Schema.parse({
         kind: "decide-review",
         commandId,
         idempotencyKey: `${commandId}-key`,
-        projectId: fixture.world.projectId,
+        projectId,
         actorId: authorization.actorId,
-        issuedAt: DECISION_TIMESTAMP,
+        issuedAt: tick(),
         authorization,
         payload: {
           reviewTaskRef,
@@ -163,9 +217,9 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       }),
     );
 
-  const publishRevision = async (
+  const requestAndApprove = async (
     adapter: PostgresIdentificationKnowledgeAdapter,
-    revisionRef: { readonly reference: { readonly entityId: string; readonly versionId: string } },
+    revisionRef: KnowledgeRevisionRefV1,
     projectId: string = fixture.world.projectId,
   ) => {
     const requestCommandId = nextId("c17-request");
@@ -181,7 +235,7 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
         idempotencyKey: requestCommandId,
         projectId,
         actorId: requestAuthorization.actorId,
-        issuedAt: SUBMIT_TIMESTAMP,
+        issuedAt: tick(),
         authorization: requestAuthorization,
         payload: {
           revisionRef,
@@ -189,43 +243,65 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
         },
       }),
     );
-    expect(requested).toMatchObject({ kind: "succeeded", result: { kind: "review-task" } });
-    if (requested.kind !== "succeeded" || requested.result.kind !== "review-task") return undefined;
+    const taskRef = reviewTaskOf(requested, "request-review");
     const decideCommandId = nextId("c17-decide");
     const decideAuthorization = await fixture.authorizationFor(
       decideCommandId,
       "review-audit.decide-review",
       projectId,
     );
-    const decision = await decideReview(
-      requested.result.reviewTaskRef,
-      decideAuthorization,
-      decideCommandId,
-    );
-    expect(decision.kind).toBe("succeeded");
-    if (decision.kind !== "succeeded") return undefined;
+    const decision = await decideReview(taskRef, decideAuthorization, decideCommandId, projectId);
+    if (decision.kind !== "succeeded") {
+      throw new Error(`review decision failed: ${JSON.stringify(decision)}`);
+    }
+    return decision.result.reviewDecisionRef;
+  };
+
+  const publishRevision = async (
+    adapter: PostgresIdentificationKnowledgeAdapter,
+    revisionRef: KnowledgeRevisionRefV1,
+    projectId: string = fixture.world.projectId,
+  ): Promise<{
+    readonly releaseRef: KnowledgeReleaseRefV1;
+    readonly reviewDecisionRef: ReviewDecisionRefV1;
+  }> => {
+    const reviewDecisionRef = await requestAndApprove(adapter, revisionRef, projectId);
     const publishCommandId = nextId("c17-publish");
     const publishAuthorization = await fixture.authorizationFor(
       publishCommandId,
       "knowledge-modeling.publish-approved-release",
       projectId,
     );
-    return await adapter.govern(
+    const published = (await adapter.govern(
       KnowledgeGovernanceCommandV1Schema.parse({
         kind: "publish-approved-release",
         commandId: publishCommandId,
         idempotencyKey: publishCommandId,
         projectId,
         actorId: publishAuthorization.actorId,
-        issuedAt: PUBLISH_TIMESTAMP,
+        issuedAt: tick(),
         authorization: publishAuthorization,
         payload: {
           revisionRef,
-          reviewDecisionRef: decision.result.reviewDecisionRef,
-          effectiveFrom: PUBLISH_TIMESTAMP,
+          reviewDecisionRef,
+          effectiveFrom: tick(),
         },
       }),
+    )) as KnowledgeGovernanceResultV1;
+    return { releaseRef: releaseOf(published, "publish"), reviewDecisionRef };
+  };
+
+  /** 提交并发布一个新包，返回其精确发布引用。 */
+  const submitAndPublish = async (
+    adapter: PostgresIdentificationKnowledgeAdapter,
+    definitionType: Parameters<typeof submitPackage>[1],
+    value: unknown,
+  ): Promise<KnowledgeReleaseRefV1> => {
+    const revisionRef = revisionOf(
+      await submitPackage(adapter, definitionType, value),
+      `${definitionType} submit`,
     );
+    return (await publishRevision(adapter, revisionRef)).releaseRef;
   };
 
   it("accepts a complete process-model package, records validation and binds the revision", async () => {
@@ -235,8 +311,8 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       "process-model",
       processModelPackage(fixture.builderInput()),
     );
-    expect(submitted).toMatchObject({ kind: "succeeded", result: { kind: "revision" } });
-    if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") return;
+    const revisionRef = revisionOf(submitted, "process-model submit");
+
     const rows = await fixture.cleaning.postgres.adminPool.query<{
       disposition: string;
       definition_type: string;
@@ -247,36 +323,30 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
          JOIN business.identification_knowledge_revision_bindings b
            ON b.validation_id = v.validation_id AND b.validation_version_id = v.version_id
         WHERE v.project_id = $1 AND b.revision_id = $2`,
-      [fixture.world.projectId, submitted.result.knowledgeRevisionRef.reference.entityId],
+      [fixture.world.projectId, revisionRef.reference.entityId],
     );
     expect(rows.rows[0]).toMatchObject({
       disposition: "accepted",
       definition_type: "process-model",
       binding_kind: "validated",
     });
-    const c16 = await fixture.cleaning.postgres.adminPool.query<{ count: string }>(
-      `SELECT count(*)::text AS count FROM business.knowledge_revisions
-        WHERE project_id = $1 AND revision_id = $2`,
-      [fixture.world.projectId, submitted.result.knowledgeRevisionRef.reference.entityId],
-    );
-    expect(c16.rows[0]?.count).toBe("1");
+    expect(
+      await countBinding("business.knowledge_revisions", "project_id = $1 AND revision_id = $2", [
+        fixture.world.projectId,
+        revisionRef.reference.entityId,
+      ]),
+    ).toBe("1");
 
-    const published = await publishRevision(adapter, submitted.result.knowledgeRevisionRef);
-    expect(published).toMatchObject({ kind: "succeeded", result: { kind: "release" } });
-    if (
-      published === undefined ||
-      published.kind !== "succeeded" ||
-      published.result.kind !== "release"
-    ) {
-      return;
-    }
-    const releaseRef = published.result.knowledgeReleaseRef;
-    const releaseBinding = await fixture.cleaning.postgres.adminPool.query<{ count: string }>(
-      `SELECT count(*)::text AS count FROM business.identification_knowledge_release_bindings
-        WHERE project_id = $1 AND release_id = $2`,
-      [fixture.world.projectId, releaseRef.reference.entityId],
-    );
-    expect(releaseBinding.rows[0]?.count).toBe("1");
+    const releaseRef = (await publishRevision(adapter, revisionRef)).releaseRef;
+    expect(
+      await countBinding(
+        "business.identification_knowledge_release_bindings",
+        "project_id = $1 AND release_id = $2",
+        [fixture.world.projectId, releaseRef.reference.entityId],
+      ),
+    ).toBe("1");
+    // 四类成员发布不产生识别基础事件。
+    expect(await identificationBasisEvents()).toHaveLength(0);
 
     const readCommandId = nextId("c17-read-exact");
     const read = await adapter.readExact({
@@ -291,7 +361,7 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       ),
     });
     expect(read.kind).toBe("succeeded");
-    if (read.kind !== "succeeded") return;
+    if (read.kind === "failed") throw new Error(JSON.stringify(read.error));
     expect(read.read.package.definitionType).toBe("process-model");
     expect(read.read.validation.disposition).toBe("accepted");
     expect(read.read.releaseBinding.releaseRef).toEqual(releaseRef);
@@ -346,6 +416,13 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       kind: "failed",
       error: { code: "BUSINESS_BLOCKED" },
     });
+    const rejected = await countBinding(
+      "business.identification_knowledge_revision_bindings",
+      "project_id = $1 AND binding_kind = 'validated' AND definition_type = 'process-model'",
+      [fixture.world.projectId],
+    );
+    // 只有本文件首个用例的 process-model 修订被绑定，其余拒绝项没有形成修订。
+    expect(rejected).toBe("1");
   }, 240_000);
 
   it("requires a validated binding before publishing and blocks failure-only revisions", async () => {
@@ -355,14 +432,7 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       missingCommandId,
       "knowledge-modeling.publish-approved-release",
     );
-    const publishedEventsBefore = await fixture.cleaning.postgres.adminPool.query<{
-      count: string;
-    }>(
-      `SELECT count(*)::text AS count FROM outbox.events
-        WHERE project_id = $1 AND event_type = 'knowledge.identification-basis-published.v1'`,
-      [fixture.world.projectId],
-    );
-    const publishedEventsCount = publishedEventsBefore.rows[0]?.count;
+    const eventsBefore = await identificationBasisEvents();
     const missing = await adapter.govern(
       KnowledgeGovernanceCommandV1Schema.parse({
         kind: "publish-approved-release",
@@ -390,140 +460,70 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       error: { code: "BUSINESS_BLOCKED", blockerKind: "identification-knowledge-binding-required" },
     });
     // 发布失败：事实、绑定与 Outbox 均不落地。
-    const failedState = await fixture.cleaning.postgres.adminPool.query<{
-      releases: string;
-      bindings: string;
-      events: string;
-    }>(
-      `SELECT
-         (SELECT count(*)::text FROM business.knowledge_releases
-           WHERE project_id = $1 AND revision_id = 'unknown-revision') AS releases,
-         (SELECT count(*)::text FROM business.identification_knowledge_release_bindings
-           WHERE project_id = $1 AND revision_id = 'unknown-revision') AS bindings,
-         (SELECT count(*)::text FROM outbox.events
-           WHERE project_id = $1 AND event_type = 'knowledge.identification-basis-published.v1') AS events`,
-      [fixture.world.projectId],
-    );
-    expect(failedState.rows[0]).toEqual({
-      releases: "0",
-      bindings: "0",
-      events: String(publishedEventsCount ?? 0),
-    });
+    expect(
+      await countBinding(
+        "business.knowledge_releases",
+        "project_id = $1 AND revision_id = 'unknown-revision'",
+        [fixture.world.projectId],
+      ),
+    ).toBe("0");
+    expect(
+      await countBinding(
+        "business.identification_knowledge_release_bindings",
+        "project_id = $1 AND revision_id = 'unknown-revision'",
+        [fixture.world.projectId],
+      ),
+    ).toBe("0");
+    expect(await identificationBasisEvents()).toHaveLength(eventsBefore.length);
   }, 240_000);
 
-  it("resolves the exact identification basis from three main releases, composite members and policy set", async () => {
+  it("publishes, rolls back and keeps the composite release binding and event atomic", async () => {
     const adapter = adapterFor();
-    const processModel = await submitPackage(
+    const world = fixture.world;
+    const processModelRelease = await submitAndPublish(
       adapter,
       "process-model",
       processModelPackage(fixture.builderInput()),
     );
-    if (processModel.kind !== "succeeded" || processModel.result.kind !== "revision") return;
-    const publishedProcessModel = await publishRevision(
-      adapter,
-      processModel.result.knowledgeRevisionRef,
-    );
-    if (
-      publishedProcessModel === undefined ||
-      publishedProcessModel.kind !== "succeeded" ||
-      publishedProcessModel.result.kind !== "release"
-    ) {
-      return;
-    }
-    const processModelReleaseRef = publishedProcessModel.result.knowledgeReleaseRef;
-    const mechanism = await submitPackage(
+    const mechanismRelease = await submitAndPublish(
       adapter,
       "risk-mechanism",
       riskMechanismPackage({
         ...fixture.builderInput(),
-        processModelReleaseRef: processModelReleaseRef.reference,
+        processModelReleaseRef: processModelRelease.reference,
       }),
     );
-    if (mechanism.kind !== "succeeded" || mechanism.result.kind !== "revision") return;
-    const publishedMechanism = await publishRevision(
-      adapter,
-      mechanism.result.knowledgeRevisionRef,
-    );
-    if (
-      publishedMechanism === undefined ||
-      publishedMechanism.kind !== "succeeded" ||
-      publishedMechanism.result.kind !== "release"
-    ) {
-      return;
-    }
-    const standard = await submitPackage(
+    const standardRelease = await submitAndPublish(
       adapter,
       "standard-library",
       standardLibraryPackage(fixture.builderInput()),
     );
-    if (standard.kind !== "succeeded" || standard.result.kind !== "revision") return;
-    const publishedStandard = await publishRevision(adapter, standard.result.knowledgeRevisionRef);
-    if (
-      publishedStandard === undefined ||
-      publishedStandard.kind !== "succeeded" ||
-      publishedStandard.result.kind !== "release"
-    ) {
-      return;
-    }
-    const caseLibrary = await submitPackage(
+    const caseRelease = await submitAndPublish(
       adapter,
       "case-library",
       caseLibraryPackage(fixture.builderInput()),
     );
-    if (caseLibrary.kind !== "succeeded" || caseLibrary.result.kind !== "revision") return;
-    const publishedCase = await publishRevision(adapter, caseLibrary.result.knowledgeRevisionRef);
-    if (
-      publishedCase === undefined ||
-      publishedCase.kind !== "succeeded" ||
-      publishedCase.result.kind !== "release"
-    ) {
-      return;
-    }
-    const composite = await submitPackage(
-      adapter,
+    const compositeRevision = revisionOf(
+      await submitPackage(
+        adapter,
+        "retrieval-evidence-base",
+        retrievalEvidenceBasePackage({
+          ...fixture.builderInput(),
+          riskMechanismReleaseRef: mechanismRelease,
+          standardLibraryReleaseRef: standardRelease,
+          caseLibraryReleaseRef: caseRelease,
+        }),
+      ),
       "retrieval-evidence-base",
-      retrievalEvidenceBasePackage({
-        ...fixture.builderInput(),
-        riskMechanismReleaseRef: publishedMechanism.result.knowledgeReleaseRef,
-        standardLibraryReleaseRef: publishedStandard.result.knowledgeReleaseRef,
-        caseLibraryReleaseRef: publishedCase.result.knowledgeReleaseRef,
-      }),
     );
-    if (composite.kind !== "succeeded" || composite.result.kind !== "revision") return;
-    const publishedComposite = await publishRevision(
-      adapter,
-      composite.result.knowledgeRevisionRef,
-    );
-    if (
-      publishedComposite === undefined ||
-      publishedComposite.kind !== "succeeded" ||
-      publishedComposite.result.kind !== "release"
-    ) {
-      return;
-    }
+    const compositePublished = await publishRevision(adapter, compositeRevision);
+    const compositeRelease = compositePublished.releaseRef;
 
-    // 组合发布必须与 C16 发布事务同事务发出识别基础发布事件，且载荷只含精确引用。
-    const publishedEvents = await fixture.cleaning.postgres.adminPool.query<{
-      event_type: string;
-      aggregate_ref: unknown;
-      payload: {
-        basisKind: string;
-        publishedReleases: readonly { definitionType: string; releaseRef: unknown }[];
-        retrievalEvidenceBaseReleaseRef: { reference: { entityId: string; versionId: string } };
-      };
-    }>(
-      `SELECT event_type, aggregate_ref, payload FROM outbox.events
-        WHERE project_id = $1 AND event_type = 'knowledge.identification-basis-published.v1'
-        ORDER BY created_at`,
-      [fixture.world.projectId],
-    );
-    expect(publishedEvents.rows).toHaveLength(1);
-    expect(publishedEvents.rows[0]?.aggregate_ref).toEqual(
-      publishedComposite.result.knowledgeReleaseRef,
-    );
-    expect(publishedEvents.rows[0]?.payload.basisKind).toBe("identification-basis");
+    const events = await identificationBasisEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]?.aggregate_ref.reference).toEqual(compositeRelease.reference);
     expect(
-      publishedEvents.rows[0]?.payload.publishedReleases.map((entry) => entry.definitionType),
+      events[0]?.event_json.payload.publishedReleases.map((entry) => entry.definitionType),
     ).toEqual([
       "process-model",
       "risk-mechanism",
@@ -531,20 +531,155 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       "case-library",
       "retrieval-evidence-base",
     ]);
-    expect(publishedEvents.rows[0]?.payload.publishedReleases[0]?.releaseRef).toEqual(
-      processModelReleaseRef,
+    expect(events[0]?.event_json.payload.publishedReleases[0]?.releaseRef).toEqual(
+      processModelRelease,
     );
-    expect(publishedEvents.rows[0]?.payload.publishedReleases[1]?.releaseRef).toEqual(
-      publishedMechanism.result.knowledgeReleaseRef,
+    expect(events[0]?.event_json.payload.publishedReleases[1]?.releaseRef).toEqual(
+      mechanismRelease,
     );
-    expect(publishedEvents.rows[0]?.payload.publishedReleases[3]?.releaseRef).toEqual(
-      publishedCase.result.knowledgeReleaseRef,
+    expect(events[0]?.event_json.payload.publishedReleases[2]?.releaseRef).toEqual(standardRelease);
+    expect(events[0]?.event_json.payload.publishedReleases[3]?.releaseRef).toEqual(caseRelease);
+    expect(events[0]?.event_json.payload.retrievalEvidenceBaseReleaseRef.reference).toEqual(
+      compositeRelease.reference,
     );
-    expect(publishedEvents.rows[0]?.payload.retrievalEvidenceBaseReleaseRef.reference).toEqual(
-      publishedComposite.result.knowledgeReleaseRef.reference,
+    const bindingAudit = await fixture.cleaning.postgres.adminPool.query<{
+      audit_entry_id: string;
+      release_audit: string;
+    }>(
+      `SELECT b.audit_entry_id,
+              (SELECT release.audit_entry_id FROM business.knowledge_releases release
+                WHERE release.release_id = b.release_id
+                  AND release.version_id = b.release_version_id) AS release_audit
+         FROM business.identification_knowledge_release_bindings b
+        WHERE b.project_id = $1 AND b.release_id = $2`,
+      [world.projectId, compositeRelease.reference.entityId],
     );
+    expect(bindingAudit.rows).toHaveLength(1);
+    // 同一发布事务里 C16 与 C17 事实共用一个审计条目，且该条目真实落库。
+    expect(bindingAudit.rows[0]?.audit_entry_id).toBe(bindingAudit.rows[0]?.release_audit);
+    expect(
+      await countBinding("audit.entries", "audit_entry_id = $1", [
+        bindingAudit.rows[0]?.audit_entry_id ?? "missing",
+      ]),
+    ).toBe("1");
 
-    const resolveCommand = async (commandId: string) => {
+    // 回滚到组合修订：新 release 在同一回滚事务内绑定到历史 revision 并重新发出事件。
+    const rollbackCommandId = nextId("c17-rollback");
+    const rollbackAuthorization = await fixture.authorizationFor(
+      rollbackCommandId,
+      "knowledge-modeling.rollback-by-new-release",
+      world.projectId,
+    );
+    const rolledBack = releaseOf(
+      await adapter.govern(
+        KnowledgeGovernanceCommandV1Schema.parse({
+          kind: "rollback-by-new-release",
+          commandId: rollbackCommandId,
+          idempotencyKey: rollbackCommandId,
+          projectId: world.projectId,
+          actorId: rollbackAuthorization.actorId,
+          issuedAt: tick(),
+          authorization: rollbackAuthorization,
+          payload: {
+            historicalReleaseRef: compositeRelease,
+            reviewDecisionRef: compositePublished.reviewDecisionRef,
+            reasonCode: "restore-composite",
+          },
+        }),
+      ),
+      "composite rollback",
+    );
+    expect(
+      await countBinding(
+        "business.identification_knowledge_release_bindings",
+        "project_id = $1 AND release_id = $2 AND revision_id = $3",
+        [world.projectId, rolledBack.reference.entityId, compositeRevision.reference.entityId],
+      ),
+    ).toBe("1");
+    expect(await identificationBasisEvents()).toHaveLength(2);
+
+    expect(await identificationBasisEvents()).toHaveLength(2);
+  }, 600_000);
+
+  it("rolls back binding and event faults inside the C16 publish transaction", async () => {
+    const world = fixture.world;
+    for (const fault of ["before-binding", "after-binding"] as const) {
+      const adapter = adapterFor({ releasePolicyFault: fault });
+      const eventsBefore = (await identificationBasisEvents()).length;
+      const revisionRef = revisionOf(
+        await submitPackage(adapter, "process-model", processModelPackage(fixture.builderInput())),
+        `process-model for ${fault}`,
+      );
+      const reviewDecisionRef = await requestAndApprove(adapter, revisionRef, world.projectId);
+      const publishCommandId = nextId(`c17-publish-${fault}`);
+      const publishAuthorization = await fixture.authorizationFor(
+        publishCommandId,
+        "knowledge-modeling.publish-approved-release",
+        world.projectId,
+      );
+      const published = await adapter.govern(
+        KnowledgeGovernanceCommandV1Schema.parse({
+          kind: "publish-approved-release",
+          commandId: publishCommandId,
+          idempotencyKey: publishCommandId,
+          projectId: world.projectId,
+          actorId: publishAuthorization.actorId,
+          issuedAt: tick(),
+          authorization: publishAuthorization,
+          payload: {
+            revisionRef,
+            reviewDecisionRef,
+            effectiveFrom: tick(),
+          },
+        }),
+      );
+      // 发布事务整体回滚：C16 release、C17 绑定、审计、回执与 Outbox 均不落地。
+      expect(published).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+      expect(
+        await countBinding("business.knowledge_releases", "project_id = $1 AND revision_id = $2", [
+          world.projectId,
+          revisionRef.reference.entityId,
+        ]),
+      ).toBe("0");
+      expect(
+        await countBinding(
+          "business.identification_knowledge_release_bindings",
+          "project_id = $1 AND revision_id = $2",
+          [world.projectId, revisionRef.reference.entityId],
+        ),
+      ).toBe("0");
+      expect(
+        await countBinding(
+          "business.command_receipts",
+          "project_id = $1 AND command_id = $2 AND completed_at IS NOT NULL",
+          [world.projectId, publishCommandId],
+        ),
+      ).toBe("0");
+      expect(
+        await countBinding("audit.entries", "project_id = $1 AND command_id = $2", [
+          world.projectId,
+          publishCommandId,
+        ]),
+      ).toBe("0");
+      expect(await identificationBasisEvents()).toHaveLength(eventsBefore);
+    }
+  }, 600_000);
+
+  it("resolves the exact identification basis from three main releases, composite members and policy set", async () => {
+    const adapter = adapterFor();
+    const currentReleaseRef = async (
+      definitionType: KnowledgeDefinitionTypeV1,
+    ): Promise<KnowledgeReleaseRefV1> => {
+      const ref = await resolveCurrentRelease(definitionType);
+      if (ref === undefined) throw new Error(`no effective ${definitionType} release`);
+      return ref;
+    };
+    const processModelRef = await currentReleaseRef("process-model");
+    const mechanismRef = await currentReleaseRef("risk-mechanism");
+    const compositeRef = await currentReleaseRef("retrieval-evidence-base");
+
+    const resolveCommand = async () => {
+      const commandId = nextId("c17-resolve");
       const authorization = await fixture.authorizationFor(
         commandId,
         "knowledge-modeling.identification-basis",
@@ -556,47 +691,57 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
           idempotencyKey: commandId,
           projectId: fixture.world.projectId,
           actorId: authorization.actorId,
-          issuedAt: "2030-01-01T00:00:03.000Z",
+          issuedAt: tick(),
           authorization,
           payload: {
             preparationSnapshotRef: fixture.world.snapshotRef,
-            requiredAt: "2030-01-01T00:00:03.000Z",
+            requiredAt: tick(),
           },
         }),
       );
     };
 
-    const resolved = await resolveCommand(nextId("c17-resolve"));
-    expect(resolved).toMatchObject({
+    const resolved = await resolveCommand();
+    if (resolved.kind === "failed") throw new Error(JSON.stringify(resolved.error));
+    if (resolved.result.kind !== "identification-basis") {
+      throw new Error(`unexpected resolution kind ${resolved.result.kind}`);
+    }
+    expect(resolved.result.processModelReleaseRef.reference).toEqual(processModelRef.reference);
+    expect(resolved.result.riskMechanismReleaseRef.reference).toEqual(mechanismRef.reference);
+    expect(resolved.result.retrievalEvidenceBaseReleaseRef.reference).toEqual(
+      compositeRef.reference,
+    );
+    expect(resolved.result.identificationPolicySetRef.reference.entityId).toBe(
+      `policy-set-${fixture.world.projectId}`,
+    );
+    // 相同请求重放返回同一四个精确引用。
+    const replayed = await resolveCommand();
+    expect(replayed).toMatchObject({
       kind: "succeeded",
       result: {
-        kind: "identification-basis",
-        processModelReleaseRef: { reference: processModelReleaseRef.reference },
-        riskMechanismReleaseRef: {
-          reference: publishedMechanism.result.knowledgeReleaseRef.reference,
-        },
-        retrievalEvidenceBaseReleaseRef: {
-          reference: publishedComposite.result.knowledgeReleaseRef.reference,
-        },
+        processModelReleaseRef: { reference: processModelRef.reference },
+        riskMechanismReleaseRef: { reference: mechanismRef.reference },
+        retrievalEvidenceBaseReleaseRef: { reference: compositeRef.reference },
       },
     });
 
     const withoutPolicySet = adapterFor({ withPolicySet: false });
+    const noPolicyCommandId = nextId("c17-resolve-no-policy");
     const missingPolicy = await withoutPolicySet.resolve(
       KnowledgeResolutionCommandV1Schema.parse({
         kind: "identification-basis",
-        commandId: nextId("c17-resolve-no-policy"),
-        idempotencyKey: nextId("c17-resolve-no-policy-key"),
+        commandId: noPolicyCommandId,
+        idempotencyKey: noPolicyCommandId,
         projectId: fixture.world.projectId,
         actorId: fixture.world.readAuthorization.actorId,
-        issuedAt: "2030-01-01T00:00:03.000Z",
+        issuedAt: tick(),
         authorization: await fixture.authorizationFor(
-          nextId("c17-resolve-no-policy-auth"),
+          noPolicyCommandId,
           "knowledge-modeling.identification-basis",
         ),
         payload: {
           preparationSnapshotRef: fixture.world.snapshotRef,
-          requiredAt: "2030-01-01T00:00:03.000Z",
+          requiredAt: tick(),
         },
       }),
     );
@@ -605,6 +750,161 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       error: { code: "BUSINESS_BLOCKED", blockerKind: "identification-policy-set-unavailable" },
     });
   }, 600_000);
+
+  it("rejects a composite release whose member is no longer effective", async () => {
+    const adapter = adapterFor();
+    const currentReleaseRef = async (
+      definitionType: KnowledgeDefinitionTypeV1,
+    ): Promise<KnowledgeReleaseRefV1> => {
+      const ref = await resolveCurrentRelease(definitionType);
+      if (ref === undefined) throw new Error(`no effective ${definitionType} release`);
+      return ref;
+    };
+    const mechanismRef = await currentReleaseRef("risk-mechanism");
+    const standardRef = await currentReleaseRef("standard-library");
+    const caseRef = await currentReleaseRef("case-library");
+    // 成员缺失或类型不匹配在读取正文前由确定性成员解析拒绝，不替换、不补齐。
+    const swappedTypes = await submitPackage(
+      adapter,
+      "retrieval-evidence-base",
+      retrievalEvidenceBasePackage({
+        ...fixture.builderInput(),
+        riskMechanismReleaseRef: mechanismRef,
+        standardLibraryReleaseRef: caseRef,
+        caseLibraryReleaseRef: standardRef,
+      }),
+    );
+    expect(swappedTypes).toMatchObject({
+      kind: "failed",
+      error: { code: "BUSINESS_BLOCKED", blockerKind: "identification-knowledge-terminal" },
+    });
+    const missingMember = await submitPackage(
+      adapter,
+      "retrieval-evidence-base",
+      retrievalEvidenceBasePackage({
+        ...fixture.builderInput(),
+        riskMechanismReleaseRef: mechanismRef,
+        standardLibraryReleaseRef: {
+          kind: "knowledge-release",
+          reference: { entityId: "knowledge-release-missing", versionId: "1" },
+        },
+        caseLibraryReleaseRef: caseRef,
+      }),
+    );
+    expect(missingMember).toMatchObject({
+      kind: "failed",
+      error: { code: "BUSINESS_BLOCKED", blockerKind: "identification-knowledge-terminal" },
+    });
+    const deactivateCommandId = nextId("c17-deactivate");
+    const deactivateAuthorization = await fixture.authorizationFor(
+      deactivateCommandId,
+      "knowledge-modeling.deactivate-release",
+      fixture.world.projectId,
+    );
+    const deactivated = await adapter.govern(
+      KnowledgeGovernanceCommandV1Schema.parse({
+        kind: "deactivate-release",
+        commandId: deactivateCommandId,
+        idempotencyKey: deactivateCommandId,
+        projectId: fixture.world.projectId,
+        actorId: deactivateAuthorization.actorId,
+        issuedAt: tick(),
+        authorization: deactivateAuthorization,
+        payload: { releaseRef: mechanismRef, reasonCode: "superseded" },
+      }),
+    );
+    expect(deactivated).toMatchObject({ kind: "succeeded", result: { kind: "release" } });
+    const eventsBefore = (await identificationBasisEvents()).length;
+    const supersededRevision = revisionOf(
+      await submitPackage(
+        adapter,
+        "retrieval-evidence-base",
+        retrievalEvidenceBasePackage({
+          ...fixture.builderInput(),
+          riskMechanismReleaseRef: mechanismRef,
+          standardLibraryReleaseRef: standardRef,
+          caseLibraryReleaseRef: caseRef,
+        }),
+      ),
+      "retrieval-evidence-base after deactivation",
+    );
+    // 提交阶段的成员解析只要求绑定存在，因此修订已成立；发布阶段再复验双时间有效性。
+    const reviewDecisionRef = await requestAndApprove(
+      adapter,
+      supersededRevision,
+      fixture.world.projectId,
+    );
+    const failedPublishCommandId = nextId("c17-publish-inactive-member");
+    const failedPublishAuthorization = await fixture.authorizationFor(
+      failedPublishCommandId,
+      "knowledge-modeling.publish-approved-release",
+      fixture.world.projectId,
+    );
+    const failedPublish = await adapter.govern(
+      KnowledgeGovernanceCommandV1Schema.parse({
+        kind: "publish-approved-release",
+        commandId: failedPublishCommandId,
+        idempotencyKey: failedPublishCommandId,
+        projectId: fixture.world.projectId,
+        actorId: failedPublishAuthorization.actorId,
+        issuedAt: tick(),
+        authorization: failedPublishAuthorization,
+        payload: {
+          revisionRef: supersededRevision,
+          reviewDecisionRef,
+          effectiveFrom: tick(),
+        },
+      }),
+    );
+    expect(failedPublish).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+    // 失败发布整体回滚：没有新的 C16 release、没有 C17 绑定、没有新事件。
+    expect(
+      await countBinding("business.knowledge_releases", "project_id = $1 AND revision_id = $2", [
+        fixture.world.projectId,
+        supersededRevision.reference.entityId,
+      ]),
+    ).toBe("0");
+    expect(
+      await countBinding(
+        "business.identification_knowledge_release_bindings",
+        "project_id = $1 AND revision_id = $2",
+        [fixture.world.projectId, supersededRevision.reference.entityId],
+      ),
+    ).toBe("0");
+    expect(await identificationBasisEvents()).toHaveLength(eventsBefore);
+  }, 600_000);
+
+  const declareNodeOperations = (world: IdentificationPreparationWorldV1) =>
+    (
+      [
+        ["node-authoring-1", "扩径准备"],
+        ["node-authoring-2", "变径空间扩挖"],
+        ["node-authoring-3", "刀盘扩径"],
+        ["node-authoring-4", "盾体扩径"],
+        ["node-authoring-5", "缩径转换"],
+      ] as const
+    ).map(([nodeId, processKind], index) => ({
+      operation: "declare-node" as const,
+      expectedBaselineDigest: "0".repeat(64),
+      reasonCode: "declare-node",
+      evidence: [world.evidence[0]],
+      node: {
+        nodeId,
+        processKind,
+        inputs: [`input-${index + 1}`],
+        outputs: [`output-${index + 1}`],
+        equipmentRefs: ["小盾构"],
+        structuralComponentRefs: [],
+        stateParameters: ["土仓/泥水压力"],
+        monitoringIndicators: ["地表沉降"],
+        applicability: {
+          constructionMethod: ["variable-diameter-shield"],
+          stratumCondition: ["soft-soil"],
+          engineeringStage: ["expansion-preparation"],
+        },
+        evidence: [world.evidence[0]],
+      },
+    }));
 
   it("prepares a bounded authoring task, reads observations and finalizes a revision", async () => {
     const { adapter, agentTaskAdapter } = fixture.createIdentificationKnowledgeAdapter();
@@ -630,7 +930,7 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       idempotencyKey: commandId,
     });
     expect(prepared.kind).toBe("succeeded");
-    if (prepared.kind !== "succeeded") return;
+    if (prepared.kind !== "succeeded") throw new Error(JSON.stringify(prepared.error));
     const attempt = await fixture.cleaning.postgres.adminPool.query<{ stage: string }>(
       `SELECT stage FROM business.identification_knowledge_authoring_attempts
         WHERE project_id = $1 AND agent_task_ref->'reference'->>'entityId' = $2`,
@@ -640,10 +940,19 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
     const task = await agentTaskAdapter.getTask(prepared.agentTaskRef);
     expect(task?.envelope.taskType).toBe("knowledge-authoring");
     expect(task?.envelope.frozenInputRef).toEqual(prepared.manifestArtifactRef);
-    if (task === undefined) return;
+    if (task === undefined) throw new Error("the prepared authoring task is missing");
+    // 清单冻结 strict 准备、正式清洗结果与逐来源保留/排除资料段。
+    expect(prepared.manifest.members.length).toBeGreaterThanOrEqual(1);
+    expect(prepared.manifest.members[0]?.retainedSegmentIds.length).toBeGreaterThanOrEqual(1);
+    expect(prepared.manifest.preparation.includedSourceSegmentSetRefs.length).toBe(
+      prepared.manifest.preparation.sourceVersionRefs.length,
+    );
 
     const definition = adapter.createTaskDefinition();
-    const sliceTool = definition.tools[0]!;
+    const [sliceTool, baselineTool] = definition.tools;
+    if (sliceTool === undefined || baselineTool === undefined) {
+      throw new Error("the authoring definition does not expose both read-only tools");
+    }
     const observation = await sliceTool.execute(
       {
         kind: "read-knowledge-segment-slice",
@@ -656,147 +965,89 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
     expect(observation.effect).toBe("none");
     expect(observation.observationArtifactRef).toMatchObject({ kind: "content-artifact" });
 
+    // 越界成员必须在目标读取前拒绝：清单外集合、清单外资料段与清单外基线。
+    const foreignSetRef = {
+      kind: "source-segment-set" as const,
+      reference: { entityId: "segment-set-not-frozen", versionId: "1" },
+    };
+    const foreignSetObservations = await countBinding(
+      "business.engineering_data_read_query_results",
+      "project_id = $1",
+      [isolated.projectId],
+    );
+    await expect(
+      sliceTool.execute(
+        {
+          kind: "read-knowledge-segment-slice",
+          sourceSegmentSetRef: foreignSetRef,
+          sourceSegmentIds: [isolated.evidence[0]!.locator.sourceSegmentId],
+          limit: 2,
+        },
+        { task, taskRef: prepared.agentTaskRef, actionId: "c17-authoring-action-2" },
+      ),
+    ).rejects.toMatchObject({ details: { code: "AGENT_INPUT_INVALID" } });
+    await expect(
+      sliceTool.execute(
+        {
+          kind: "read-knowledge-segment-slice",
+          sourceSegmentSetRef: isolated.sourceSegmentSetRef,
+          sourceSegmentIds: ["segment-not-retained"],
+          limit: 2,
+        },
+        { task, taskRef: prepared.agentTaskRef, actionId: "c17-authoring-action-3" },
+      ),
+    ).rejects.toMatchObject({ details: { code: "AGENT_INPUT_INVALID" } });
+    await expect(
+      sliceTool.execute(
+        {
+          kind: "read-knowledge-segment-slice",
+          sourceSegmentSetRef: isolated.sourceSegmentSetRef,
+          sourceSegmentIds: [isolated.evidence[0]!.locator.sourceSegmentId],
+          limit: 4096,
+        },
+        { task, taskRef: prepared.agentTaskRef, actionId: "c17-authoring-action-4" },
+      ),
+    ).rejects.toMatchObject({ details: { code: "AGENT_INPUT_INVALID" } });
+    await expect(
+      baselineTool.execute(
+        {
+          kind: "read-exact-knowledge",
+          definitionType: "process-model",
+          releaseRef: {
+            kind: "knowledge-release",
+            reference: { entityId: "release-not-frozen", versionId: "1" },
+          },
+        },
+        { task, taskRef: prepared.agentTaskRef, actionId: "c17-authoring-action-5" },
+      ),
+    ).rejects.toMatchObject({ details: { code: "AGENT_INPUT_INVALID" } });
+    // 越界请求没有产生任何新的目标读取（C02 查询结果计数不变）。
+    expect(
+      await countBinding("business.engineering_data_read_query_results", "project_id = $1", [
+        isolated.projectId,
+      ]),
+    ).toBe(foreignSetObservations);
+
     const candidate = {
       schemaVersion: "1",
       candidateVersion: 1,
       definitionType: "process-model",
-      operations: [
-        {
-          operation: "declare-node",
-          expectedBaselineDigest: "0".repeat(64),
-          reasonCode: "declare-node",
-          evidence: [isolated.evidence[0]],
-          node: {
-            nodeId: "node-authoring-1",
-            processKind: "扩径准备",
-            inputs: ["input-1"],
-            outputs: ["output-1"],
-            equipmentRefs: ["小盾构"],
-            structuralComponentRefs: [],
-            stateParameters: ["土仓/泥水压力"],
-            monitoringIndicators: ["地表沉降"],
-            applicability: {
-              constructionMethod: ["variable-diameter-shield"],
-              stratumCondition: ["soft-soil"],
-              engineeringStage: ["expansion-preparation"],
-            },
-            evidence: [isolated.evidence[0]],
-          },
-        },
-        {
-          operation: "declare-node",
-          expectedBaselineDigest: "0".repeat(64),
-          reasonCode: "declare-node",
-          evidence: [isolated.evidence[0]],
-          node: {
-            nodeId: "node-authoring-2",
-            processKind: "变径空间扩挖",
-            inputs: ["input-2"],
-            outputs: ["output-2"],
-            equipmentRefs: ["小盾构"],
-            structuralComponentRefs: [],
-            stateParameters: ["土仓/泥水压力"],
-            monitoringIndicators: ["地表沉降"],
-            applicability: {
-              constructionMethod: ["variable-diameter-shield"],
-              stratumCondition: ["soft-soil"],
-              engineeringStage: ["expansion-preparation"],
-            },
-            evidence: [isolated.evidence[0]],
-          },
-        },
-        {
-          operation: "declare-node",
-          expectedBaselineDigest: "0".repeat(64),
-          reasonCode: "declare-node",
-          evidence: [isolated.evidence[0]],
-          node: {
-            nodeId: "node-authoring-3",
-            processKind: "刀盘扩径",
-            inputs: ["input-3"],
-            outputs: ["output-3"],
-            equipmentRefs: ["小盾构"],
-            structuralComponentRefs: [],
-            stateParameters: ["土仓/泥水压力"],
-            monitoringIndicators: ["地表沉降"],
-            applicability: {
-              constructionMethod: ["variable-diameter-shield"],
-              stratumCondition: ["soft-soil"],
-              engineeringStage: ["expansion-preparation"],
-            },
-            evidence: [isolated.evidence[0]],
-          },
-        },
-        {
-          operation: "declare-node",
-          expectedBaselineDigest: "0".repeat(64),
-          reasonCode: "declare-node",
-          evidence: [isolated.evidence[0]],
-          node: {
-            nodeId: "node-authoring-4",
-            processKind: "盾体扩径",
-            inputs: ["input-4"],
-            outputs: ["output-4"],
-            equipmentRefs: ["小盾构"],
-            structuralComponentRefs: [],
-            stateParameters: ["土仓/泥水压力"],
-            monitoringIndicators: ["地表沉降"],
-            applicability: {
-              constructionMethod: ["variable-diameter-shield"],
-              stratumCondition: ["soft-soil"],
-              engineeringStage: ["expansion-preparation"],
-            },
-            evidence: [isolated.evidence[0]],
-          },
-        },
-        {
-          operation: "declare-node",
-          expectedBaselineDigest: "0".repeat(64),
-          reasonCode: "declare-node",
-          evidence: [isolated.evidence[0]],
-          node: {
-            nodeId: "node-authoring-5",
-            processKind: "缩径转换",
-            inputs: ["input-5"],
-            outputs: ["output-5"],
-            equipmentRefs: ["小盾构"],
-            structuralComponentRefs: [],
-            stateParameters: ["土仓/泥水压力"],
-            monitoringIndicators: ["地表沉降"],
-            applicability: {
-              constructionMethod: ["variable-diameter-shield"],
-              stratumCondition: ["soft-soil"],
-              engineeringStage: ["expansion-preparation"],
-            },
-            evidence: [isolated.evidence[0]],
-          },
-        },
-      ],
+      operations: declareNodeOperations(isolated),
     };
     const validation = await definition.validateCandidate(candidate, task);
-    if (validation.disposition !== "accepted") {
-      console.error(
-        "C17_VALIDATION_ITEMS",
-        JSON.stringify(validation.items.filter((item) => item.disposition === "rejected")).slice(
-          0,
-          800,
-        ),
-      );
-    }
     expect(validation.disposition).toBe("accepted");
-
     const result = await definition.finalizeCandidate(candidate, task);
     expect(result).toMatchObject({ kind: "agent-task-result", status: "completed" });
-    const binding = await fixture.cleaning.postgres.adminPool.query<{ binding_kind: string }>(
-      `SELECT binding_kind FROM business.identification_knowledge_revision_bindings
-        WHERE project_id = $1 AND revision_id = $2`,
-      [
-        isolated.projectId,
-        (result as { candidateRef?: { reference: { entityId: string } } }).candidateRef?.reference
-          .entityId ?? "missing",
-      ],
-    );
-    expect(binding.rows[0]?.binding_kind).toBe("validated");
+    const revisionRef = (result as { candidateRef?: { reference: KnowledgeRevisionRefV1 } })
+      .candidateRef;
+    if (revisionRef === undefined) throw new Error("the finalizer did not return a revision ref");
+    expect(
+      await countBinding(
+        "business.identification_knowledge_revision_bindings",
+        "project_id = $1 AND revision_id = $2 AND binding_kind = 'validated'",
+        [isolated.projectId, revisionRef.reference.entityId],
+      ),
+    ).toBe("1");
   }, 300_000);
 
   it("settles a cancelled authoring task into a failure-only revision and one review", async () => {
@@ -822,7 +1073,7 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       idempotencyKey: commandId,
     });
     expect(prepared.kind).toBe("succeeded");
-    if (prepared.kind !== "succeeded") return;
+    if (prepared.kind !== "succeeded") throw new Error(JSON.stringify(prepared.error));
     const cancelCommandId = nextId("c17-authoring-cancel");
     await agentTaskAdapter.cancelTask(
       CancelAgentTaskCommandV1Schema.parse({
@@ -854,11 +1105,59 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
         WHERE a.project_id = $1 AND a.agent_task_ref->'reference'->>'entityId' = $2`,
       [isolated.projectId, prepared.agentTaskRef.reference.entityId],
     );
-    expect(rows.rows[0] ?? rows.rows, JSON.stringify(rows.rows)).toMatchObject({
+    expect(rows.rows[0]).toMatchObject({
       binding_kind: "failure-review-only",
       stage: "review-linked",
     });
     expect(rows.rows[0]?.review_task_ref).not.toBeNull();
+    // 失败修订永不通过发布门：按失败绑定的精确 revision 重新发布也被拒。
+    const failureBinding = await fixture.cleaning.postgres.adminPool.query<{
+      revision_id: string;
+      revision_version_id: string;
+    }>(
+      `SELECT revision_id, revision_version_id
+         FROM business.identification_knowledge_revision_bindings
+        WHERE project_id = $1 AND binding_kind = 'failure-review-only'`,
+      [isolated.projectId],
+    );
+    const failureRevision = failureBinding.rows[0];
+    if (failureRevision === undefined) throw new Error("the failure binding is missing");
+    const failureRelease = await adapter.govern(
+      KnowledgeGovernanceCommandV1Schema.parse({
+        kind: "publish-approved-release",
+        commandId: nextId("c17-publish-failure"),
+        idempotencyKey: nextId("c17-publish-failure"),
+        projectId: isolated.projectId,
+        actorId: isolated.readAuthorization.actorId,
+        issuedAt: "2030-01-02T00:01:00.000Z",
+        authorization: await fixture.authorizationFor(
+          nextId("c17-publish-failure-auth"),
+          "knowledge-modeling.publish-approved-release",
+          isolated.projectId,
+        ),
+        payload: {
+          revisionRef: {
+            kind: "knowledge-revision",
+            reference: {
+              entityId: failureRevision.revision_id,
+              versionId: failureRevision.revision_version_id,
+            },
+          },
+          reviewDecisionRef: {
+            kind: "review-decision",
+            reference: { entityId: "failure-decision-unknown", versionId: "1" },
+          },
+          effectiveFrom: "2030-01-02T00:01:00.000Z",
+        },
+      }),
+    );
+    expect(failureRelease).toMatchObject({
+      kind: "failed",
+      error: {
+        code: "BUSINESS_BLOCKED",
+        blockerKind: "identification-knowledge-binding-required",
+      },
+    });
     await adapter.settleAuthoringFailures();
     // D-09 幂等：重放不创建第二个失败修订，也不重复挂复核任务。
     const replayRows = await fixture.cleaning.postgres.adminPool.query<{

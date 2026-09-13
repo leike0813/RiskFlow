@@ -43,7 +43,7 @@ import {
 } from "@riskflow/core/assessment-config";
 import {
   isIdentificationKnowledgeDefinitionTypeV1,
-  type IdentificationKnowledgeReleasePolicyV1,
+  type IdentificationKnowledgeGovernancePolicyV1,
 } from "@riskflow/core/identification-knowledge";
 import {
   ContractReferenceV1Schema,
@@ -545,6 +545,23 @@ const decisionFromRow = (row: Selectable<KnowledgeReleaseDecisionRow>) =>
     persistedAt: asIso(row.persisted_at),
   });
 
+/**
+ * C16 组合解析的稳定调用身份：解析调用方（含 C17 发布策略）必须用同一派生为 C06 上下文
+ * 授权，否则 `resolveGovernedReleases` 会按 invocationId 绑定拒绝。
+ */
+export const governedReleaseResolutionInvocationId = (input: {
+  readonly requiredDefinitionTypes: readonly string[];
+  readonly requiredAt: string;
+  readonly asOfRecordedAt: string;
+}): string =>
+  `knowledge-resolve-${sha256CanonicalJson({
+    requiredTypes: input.requiredDefinitionTypes.map((value) =>
+      KnowledgeDefinitionTypeV1Schema.parse(value),
+    ),
+    requiredAt: input.requiredAt,
+    asOfRecordedAt: input.asOfRecordedAt,
+  })}`;
+
 export interface PostgresKnowledgeGovernanceAdapterOptionsV1 {
   readonly db: Kysely<PostgresDatabase>;
   readonly transactionUnit: TransactionUnitV1;
@@ -553,8 +570,8 @@ export interface PostgresKnowledgeGovernanceAdapterOptionsV1 {
   readonly now?: () => Date;
   /** Optional C18 content policy; C18 definition types are blocked without it. */
   readonly assessmentConfigurationPolicy?: AssessmentConfigurationGovernancePolicyV1;
-  /** C17 识别知识发布事件接缝：与 C18 的策略同构，在发布事务内产出领域事件。 */
-  readonly identificationKnowledgeReleasePolicy?: IdentificationKnowledgeReleasePolicyV1;
+  /** C17 识别知识治理接缝：与 C18 的策略同构，在发布/回滚事务内写绑定并产出领域事件。 */
+  readonly identificationKnowledgePolicy?: IdentificationKnowledgeGovernancePolicyV1;
   readonly reviewAuthorization?: (
     command: KnowledgeGovernanceCommandV1,
     link: ReturnType<typeof reviewLinkFromRow>,
@@ -571,8 +588,7 @@ export class PostgresKnowledgeGovernanceAdapter {
   readonly #reviewAudit: ReviewAuditPortV1;
   readonly #now: () => Date;
   readonly #assessmentConfigurationPolicy: AssessmentConfigurationGovernancePolicyV1 | undefined;
-  readonly #identificationKnowledgeReleasePolicy:
-    IdentificationKnowledgeReleasePolicyV1 | undefined;
+  readonly #identificationKnowledgePolicy: IdentificationKnowledgeGovernancePolicyV1 | undefined;
   readonly #reviewAuthorization:
     PostgresKnowledgeGovernanceAdapterOptionsV1["reviewAuthorization"] | undefined;
   readonly #approvalAuthorization:
@@ -585,7 +601,7 @@ export class PostgresKnowledgeGovernanceAdapter {
     this.#reviewAudit = options.reviewAudit;
     this.#now = options.now ?? (() => new Date());
     this.#assessmentConfigurationPolicy = options.assessmentConfigurationPolicy;
-    this.#identificationKnowledgeReleasePolicy = options.identificationKnowledgeReleasePolicy;
+    this.#identificationKnowledgePolicy = options.identificationKnowledgePolicy;
     this.#reviewAuthorization = options.reviewAuthorization;
     this.#approvalAuthorization = options.approvalAuthorization;
   }
@@ -653,7 +669,11 @@ export class PostgresKnowledgeGovernanceAdapter {
       await this.#verifyAuthorization(
         valid.authorization,
         valid.projectId,
-        `knowledge-resolve-${sha256CanonicalJson({ requiredTypes, requiredAt, asOfRecordedAt })}`,
+        governedReleaseResolutionInvocationId({
+          requiredDefinitionTypes: requiredTypes,
+          requiredAt,
+          asOfRecordedAt,
+        }),
         branch,
       );
       const rows = await this.#db
@@ -1966,25 +1986,39 @@ export class PostgresKnowledgeGovernanceAdapter {
     },
   ): Promise<DomainEventV1[]> {
     if (!isIdentificationKnowledgeDefinitionTypeV1(input.revision.definitionType)) return [];
-    const policy = this.#identificationKnowledgeReleasePolicy;
-    if (policy === undefined) return [];
+    const policy = this.#identificationKnowledgePolicy;
+    if (policy === undefined) {
+      throw new KnowledgeLifecycleError({
+        code: "BUSINESS_BLOCKED",
+        reasonCode: "identification-knowledge-policy-required",
+        targetRef: asContractReference(input.releaseRef),
+      });
+    }
     return [
-      ...(await policy.appendRelease({
-        projectId: input.command.projectId,
-        definitionType: input.revision.definitionType,
-        releaseRef: input.releaseRef,
-        revisionRef: input.revision.revisionRef,
-        candidateArtifactRef: input.revision.candidateArtifactRef,
+      ...(await policy.appendRelease(context, {
         command: {
-          projectId: input.command.projectId,
+          kind: input.command.kind,
           commandId: input.command.commandId,
           idempotencyKey: input.command.idempotencyKey,
+          projectId: input.command.projectId,
           actorId: input.command.actorId,
           issuedAt: input.command.issuedAt,
           authorizationContextRef: input.atomic.authorizationContextRef,
         },
+        revision: {
+          projectId: input.revision.projectId,
+          definitionType: input.revision.definitionType,
+          revisionRef: input.revision.revisionRef,
+          candidateArtifactRef: input.revision.candidateArtifactRef,
+        },
+        releaseRef: input.releaseRef,
+        audit: { auditEntryId: input.audit.auditEntryId },
         recordedAt: input.recordedAt,
-        auditEntryId: input.audit.auditEntryId,
+        requiredAt:
+          input.command.kind === "publish-approved-release"
+            ? input.command.payload.effectiveFrom
+            : input.command.issuedAt,
+        authorization: input.command.authorization,
       })),
     ];
   }

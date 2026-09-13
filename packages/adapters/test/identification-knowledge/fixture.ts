@@ -1,11 +1,8 @@
 import {
   ContentArtifactRefV1Schema,
   type ModuleBranchV1,
-  IdentificationPreparationSnapshotRefV1Schema,
   ProcessModelReleaseRefV1Schema,
-  SourceSegmentSetRefV1Schema,
-  SourceVersionRefV1Schema,
-  SpatialScopeRefV1Schema,
+  RiskMechanismReleaseRefV1Schema,
   type AuthorizationContextV1,
   type ContentArtifactRefV1,
   type EvidenceReference,
@@ -14,9 +11,10 @@ import {
   type SourceSegmentSetRefV1,
   type SpatialScopeRefV1,
 } from "@riskflow/contracts/ports";
+import type { IdentificationPreparationSnapshotV1 } from "@riskflow/contracts/workflows";
+import { KnowledgeLifecycleError } from "@riskflow/core/knowledge-governance";
 import {
   IdentificationKnowledgeValidationPolicyV1Schema,
-  type IdentificationEvidenceDecisionV1,
   type IdentificationKnowledgeValidationPolicyV1,
   type IdentificationPreparationKnowledgeReaderV1,
 } from "@riskflow/core/identification-knowledge";
@@ -29,8 +27,9 @@ import type { AgentTaskPortV1, AgentTaskRefV1 } from "@riskflow/contracts/ports"
 
 import { PostgresAgentTaskAdapter } from "../../src/agent-runtime/index.js";
 import {
-  IdentificationKnowledgeReleaseEventRecorder,
   PostgresIdentificationKnowledgeAdapter,
+  PostgresIdentificationKnowledgeReleasePolicy,
+  PostgresIdentificationPreparationKnowledgeReader,
   type PostgresIdentificationKnowledgeAdapterOptionsV1,
 } from "../../src/identification-knowledge/index.js";
 import { PostgresKnowledgeGovernanceAdapter } from "../../src/knowledge-governance/index.js";
@@ -44,7 +43,6 @@ import {
 } from "../engineering-data/cleaning/fixture.js";
 
 export const IDENTIFICATION_KNOWLEDGE_TEST_TIMESTAMP = "2030-01-01T00:00:00.000Z";
-const EXCLUSION_PURPOSE = "engineering-data.data-cleaning-decision";
 const PREPARATION_READ_BRANCH = "engineering-data.evidence-access" as const;
 
 const POLICY_REF = { entityId: "c17-identification-knowledge-policy", versionId: "1" };
@@ -243,38 +241,14 @@ export const retrievalEvidenceBasePackage = (
   validationPolicyRef: input.validationPolicyRef,
   preparationSnapshotRef: input.preparationSnapshotRef,
   generatedAt: input.generatedAt,
-  riskMechanismReleaseRef: input.riskMechanismReleaseRef,
+  // 组合槽位使用 contracts 的类型化引用，成员发布本身仍是 C16 generic 发布引用。
+  riskMechanismReleaseRef: RiskMechanismReleaseRefV1Schema.parse({
+    kind: "risk-mechanism-release",
+    reference: input.riskMechanismReleaseRef.reference,
+  }),
   standardLibraryReleaseRef: input.standardLibraryReleaseRef,
   caseLibraryReleaseRef: input.caseLibraryReleaseRef,
 });
-
-/**
- * C15 写入 `snapshot_payload` 时把覆盖/排除决定保存为 `content-artifact` 引用，
- * 而 contracts 的 `IdentificationPreparationSnapshotV1Schema` 要求 `route-decision`。
- * 夹具只消费 C17 需要的三个字段，不掩盖该上游差异（见实施报告）。
- */
-const preparationPayloadView = (payload: unknown): IdentificationPreparationPayloadViewV1 => {
-  const record = (payload ?? {}) as {
-    readonly sourceVersionRefs?: unknown;
-    readonly includedSourceSegmentSetRefs?: unknown;
-    readonly excludedSegmentDecisionRefs?: unknown;
-  };
-  return {
-    sourceVersionRefs: SourceVersionRefV1Schema.array().min(1).parse(record.sourceVersionRefs),
-    includedSourceSegmentSetRefs: SourceSegmentSetRefV1Schema.array()
-      .min(1)
-      .parse(record.includedSourceSegmentSetRefs),
-    excludedSegmentDecisionRefs: Array.isArray(record.excludedSegmentDecisionRefs)
-      ? record.excludedSegmentDecisionRefs
-      : [],
-  };
-};
-
-export interface IdentificationPreparationPayloadViewV1 {
-  readonly sourceVersionRefs: readonly SourceVersionRefV1[];
-  readonly includedSourceSegmentSetRefs: readonly SourceSegmentSetRefV1[];
-  readonly excludedSegmentDecisionRefs: readonly unknown[];
-}
 
 export interface IdentificationKnowledgeWorldContextV1 {
   readonly projectId: string;
@@ -284,7 +258,7 @@ export interface IdentificationKnowledgeWorldContextV1 {
 
 export interface IdentificationPreparationWorldV1 extends IdentificationKnowledgeWorldContextV1 {
   readonly snapshotRef: IdentificationPreparationSnapshotRefV1;
-  readonly snapshot: IdentificationPreparationPayloadViewV1;
+  readonly snapshot: IdentificationPreparationSnapshotV1;
   readonly cleaningResultArtifactRef: ContentArtifactRefV1;
   readonly sourceSegmentSetRef: SourceSegmentSetRefV1;
   readonly evidence: readonly EvidenceReference[];
@@ -304,7 +278,11 @@ export interface IdentificationKnowledgeFixtureV1 {
   readonly preparationReader: IdentificationPreparationKnowledgeReaderV1;
   readonly reviewAudit: PostgresReviewAuditAdapter;
   /** C17 façade + 其绑定到同一 C08 adapter 的启动/读取接缝，用于编制与失败收口场景。 */
-  createIdentificationKnowledgeAdapter(options?: { readonly withPolicySet?: boolean }): {
+  createIdentificationKnowledgeAdapter(options?: {
+    readonly withPolicySet?: boolean;
+    /** 发布事务故障注入：在 C16 发布事务内、写 C17 绑定之前/之后关闭失败。 */
+    readonly releasePolicyFault?: "before-binding" | "after-binding";
+  }): {
     readonly adapter: PostgresIdentificationKnowledgeAdapter;
     readonly agentTaskAdapter: PostgresAgentTaskAdapter;
   };
@@ -368,78 +346,53 @@ const loginAsUploader = async (
 
 const readPreparationWorld = async (
   cleaning: DataCleaningPostgresFixture,
-  credential: SessionCredentialV1,
-  projectId: string,
+  world: CleaningWorldV1,
+  snapshotRef: IdentificationPreparationSnapshotRefV1,
 ): Promise<IdentificationPreparationWorldV1> => {
-  const rows = await cleaning.postgres.adminPool.query<{
-    snapshot_ref: unknown;
-    snapshot_payload: unknown;
-    cleaning_result_artifact_ref: unknown;
-  }>(
-    `SELECT snapshot_ref, snapshot_payload, cleaning_result_artifact_ref
-       FROM business.identification_preparation_snapshots
-      WHERE project_id = $1`,
-    [projectId],
-  );
-  const row = rows.rows[0];
-  if (row === undefined) throw new Error(`no preparation snapshot for ${projectId}`);
-  const snapshotRef = IdentificationPreparationSnapshotRefV1Schema.parse(row.snapshot_ref);
-  const snapshot = preparationPayloadView(row.snapshot_payload);
-  const cleaningResultArtifactRef = ContentArtifactRefV1Schema.parse(
-    row.cleaning_result_artifact_ref,
-  );
+  // 只经 C15 公开精确窄读：strict 准备聚合、绑定任务与正式清洗结果，绝不读取准备表。
+  const authorization = await world.authorizeEvidenceAccess(`c17-read-${world.projectId}`);
+  const read = await cleaning.store.readExactPreparation({
+    projectId: world.projectId,
+    actorId: authorization.actorId,
+    requestId: `c17-read-${world.projectId}`,
+    requestedAt: IDENTIFICATION_KNOWLEDGE_TEST_TIMESTAMP,
+    authorization,
+    preparationSnapshotRef: snapshotRef,
+  });
+  if (read.kind !== "ok") {
+    throw new Error(
+      `C17 preparation read failed for ${world.projectId}: ${JSON.stringify(read.error)}`,
+    );
+  }
+  const snapshot = read.snapshot;
   const sourceSegmentSetRef = snapshot.includedSourceSegmentSetRefs[0];
   if (sourceSegmentSetRef === undefined) {
-    throw new Error(`preparation ${projectId} has no included source segment set`);
+    throw new Error(`preparation ${world.projectId} has no included source segment set`);
   }
-  const scopes = await cleaning.postgres.adminPool.query<{
-    scope_id: string;
-    revision_id: string;
-  }>(
-    `SELECT scope_id, current_revision_id AS revision_id
-       FROM business.access_spatial_scopes WHERE project_id = $1`,
-    [projectId],
-  );
-  const context: IdentificationKnowledgeWorldContextV1 = {
-    projectId,
-    spatialScopeRefs: scopes.rows.map((scope) => ({
-      kind: "spatial-scope" as const,
-      reference: { entityId: scope.scope_id, versionId: scope.revision_id },
-    })),
-    sourceVersionRefs: snapshot.sourceVersionRefs,
-  };
-  const authorization = await authorizeBranch(
-    cleaning,
-    credential,
-    projectId,
-    `c17-read-${projectId}`,
-    PREPARATION_READ_BRANCH,
-    context,
-  );
-  const segments = await cleaning.postgres.adminPool.query<{ source_segment_id: string }>(
-    `SELECT source_segment_id FROM business.source_segments
-      WHERE project_id = $1 AND source_segment_set_id = $2 ORDER BY source_segment_id`,
-    [projectId, sourceSegmentSetRef.reference.entityId],
-  );
-  const exclusions = await readExcludedSegmentIds(
-    cleaning,
-    authorization,
-    snapshot.excludedSegmentDecisionRefs,
-  );
-  const segmentIds = segments.rows.map((segment) => segment.source_segment_id);
+  const excludedSegmentIds = [
+    ...new Set(read.result.inputs.flatMap((status) => status.excludedSegmentIds)),
+  ];
+  const excluded = new Set(excludedSegmentIds);
+  const segmentIds = [
+    ...new Set(read.result.inputs.flatMap((status) => status.retainedSegmentIds)),
+  ];
   const evidenceSource = snapshot.sourceVersionRefs[0]!;
+  const context: IdentificationKnowledgeWorldContextV1 = {
+    projectId: world.projectId,
+    spatialScopeRefs: [...snapshot.spatialScopeRefs],
+    sourceVersionRefs: [...snapshot.sourceVersionRefs],
+  };
   return {
     ...context,
-    projectId,
     snapshotRef,
     snapshot,
-    cleaningResultArtifactRef,
+    cleaningResultArtifactRef: read.resultArtifactRef,
     sourceSegmentSetRef,
     segmentIds,
-    excludedSegmentIds: [...exclusions],
+    excludedSegmentIds,
     readAuthorization: authorization,
     evidence: segmentIds
-      .filter((segmentId) => !exclusions.has(segmentId))
+      .filter((segmentId) => !excluded.has(segmentId))
       .slice(0, 4)
       .map((segmentId) => ({
         locator: { sourceSegmentId: segmentId },
@@ -448,27 +401,8 @@ const readPreparationWorld = async (
   };
 };
 
-const readExcludedSegmentIds = async (
-  cleaning: DataCleaningPostgresFixture,
-  authorization: AuthorizationContextV1,
-  decisionRefs: readonly unknown[],
-): Promise<ReadonlySet<string>> => {
-  const excluded = new Set<string>();
-  for (const decisionRef of decisionRefs) {
-    const ref = ContentArtifactRefV1Schema.safeParse(decisionRef);
-    if (!ref.success) continue;
-    const payload = (await cleaning.readArtifact(ref.data, authorization, EXCLUSION_PURPOSE)) as
-      { decisions?: readonly { sourceSegmentId?: string }[] } | undefined;
-    for (const decision of payload?.decisions ?? []) {
-      if (typeof decision.sourceSegmentId === "string") excluded.add(decision.sourceSegmentId);
-    }
-  }
-  return excluded;
-};
-
 const prepareWorld = async (
   cleaning: DataCleaningPostgresFixture,
-  credential: SessionCredentialV1,
   options: CleaningWorldOptionsV1,
 ): Promise<IdentificationPreparationWorldV1> => {
   const world = await cleaning.createWorld({ documentKinds: ["csv"], ...options });
@@ -499,18 +433,21 @@ const prepareWorld = async (
       `C17 preparation failed for ${options.suffix}: ${JSON.stringify(frozen.result)}`,
     );
   }
-  return await readPreparationWorld(cleaning, credential, world.projectId);
+  return await readPreparationWorld(
+    cleaning,
+    world,
+    frozen.result.result.identificationPreparationSnapshotRef,
+  );
 };
 
 /**
- * C17 夹具：真实 C03/C04/C06/C07/C08/C15/C02 read 组合。`readExactPreparation` 目前由本夹具
- * 以快照行 + C04 复读绑定，等待 C15 提供正式公开窄读（见实施报告的建议签名）后替换。
+ * C17 夹具：真实 C03/C04/C06/C07/C08/C15/C02 read 组合，准备世界只经 C15 公开精确窄读。
  */
 export const startIdentificationKnowledgeFixture =
   async (): Promise<IdentificationKnowledgeFixtureV1> => {
     const cleaning = await startDataCleaningFixture();
     const credential = await loginAsUploader(cleaning);
-    const world = await prepareWorld(cleaning, credential, {
+    const world = await prepareWorld(cleaning, {
       suffix: "c17",
       documentKinds: ["csv"],
     });
@@ -521,13 +458,66 @@ export const startIdentificationKnowledgeFixture =
       access: cleaning.access,
       now: () => new Date(IDENTIFICATION_KNOWLEDGE_TEST_TIMESTAMP),
     });
-    const governanceRecorder = new IdentificationKnowledgeReleaseEventRecorder();
+    const holder: {
+      governance?: PostgresKnowledgeGovernanceAdapter;
+      port?: AgentTaskPortV1;
+      store?: {
+        getTask(ref: AgentTaskRefV1): Promise<unknown>;
+        cancelTask(input: { taskRef: AgentTaskRefV1; reasonCode: string }): Promise<unknown>;
+      };
+    } = {};
+    let artifactSequence = 0;
+    const readingCache = new Map<string, IdentificationPreparationWorldV1>([
+      [world.projectId, world],
+    ]);
+    /**
+     * 组合根的 C06 授权来源：按请求工程自己的准备范围签发 exact branch 上下文，并复验
+     * actor/project 绑定；不返回调用方自造的上下文。
+     */
+    const authorize: PostgresIdentificationKnowledgeAdapterOptionsV1["authorize"] = async (
+      input,
+    ) => {
+      const known = readingCache.get(input.projectId);
+      const context = await authorizeBranch(
+        cleaning,
+        credential,
+        input.projectId,
+        input.invocationId,
+        input.branch,
+        {
+          spatialScopeRefs: input.requestedSpatialScopeRefs ?? known?.spatialScopeRefs ?? [],
+          sourceVersionRefs: input.requestedSourceVersionRefs ?? known?.sourceVersionRefs ?? [],
+        },
+      );
+      if (context.actorId !== input.actorId || context.projectId !== input.projectId) {
+        throw new Error(`C06 context binding mismatch for ${input.invocationId}`);
+      }
+      return context;
+    };
+    const preparationReader = new PostgresIdentificationPreparationKnowledgeReader({
+      narrowRead: {
+        preparationRead: cleaning.store,
+        engineeringData: cleaning.registry,
+      },
+      authorize,
+    });
+    const releasePolicy = new PostgresIdentificationKnowledgeReleasePolicy({
+      db: cleaning.runtime.db,
+      artifactStore: cleaning.artifactStore,
+      governance: () => {
+        if (holder.governance === undefined) {
+          throw new Error("the C16 governance adapter is not constructed yet");
+        }
+        return holder.governance;
+      },
+      authorize,
+    });
     const governance = new PostgresKnowledgeGovernanceAdapter({
       db: cleaning.runtime.db,
       transactionUnit: cleaning.transactionUnit,
       access: cleaning.access,
       reviewAudit,
-      identificationKnowledgeReleasePolicy: governanceRecorder,
+      identificationKnowledgePolicy: releasePolicy,
       now: () => new Date(IDENTIFICATION_KNOWLEDGE_TEST_TIMESTAMP),
       // C16/C07 的 verify 绑定在各自调用身份上：评审请求用评审尝试 id，批准证明用命令派生 queryId。
       reviewAuthorization: (command, link) =>
@@ -547,228 +537,7 @@ export const startIdentificationKnowledgeFixture =
           "review-audit.verify-knowledge-revision-approval",
         ),
     });
-    let artifactSequence = 0;
-    const readingCache = new Map<string, IdentificationPreparationWorldV1>([
-      [world.projectId, world],
-    ]);
-    const parseScopeRefs = (value: unknown): readonly SpatialScopeRefV1[] =>
-      Array.isArray(value)
-        ? value.flatMap((entry) => {
-            const parsed = SpatialScopeRefV1Schema.safeParse(entry);
-            return parsed.success ? [parsed.data] : [];
-          })
-        : [];
-    const dedupeScopes = (refs: readonly SpatialScopeRefV1[]): readonly SpatialScopeRefV1[] => {
-      const seen = new Map<string, SpatialScopeRefV1>();
-      for (const ref of refs) {
-        seen.set(`${ref.reference.entityId}:${ref.reference.versionId}`, ref);
-      }
-      return [...seen.values()];
-    };
-    const engineeringContexts = new Map<string, AuthorizationContextV1>();
-    // C11 每次读取使用新的查询身份：C03 回执按命令身份唯一，不能跨工程/跨调用复用。
-    let readSequence = 0;
-    const engineeringContextFor = async (
-      projectId: string,
-      invocationId: string,
-      branch: ModuleBranchV1 = PREPARATION_READ_BRANCH,
-      requestedScopes?: readonly SpatialScopeRefV1[],
-    ): Promise<AuthorizationContextV1> => {
-      const cacheKey = `${projectId}:${branch}:${invocationId}:${requestedScopes?.length ?? 0}`;
-      const cached = engineeringContexts.get(cacheKey);
-      if (cached !== undefined) return cached;
-      // 每个工程的授权必须携带该工程自己的空间范围与资料版本，不能沿用主工程的引用。
-      const world = readingCache.get(projectId);
-      const context = await authorizeBranch(cleaning, credential, projectId, invocationId, branch, {
-        spatialScopeRefs: requestedScopes ?? world?.spatialScopeRefs ?? [],
-        sourceVersionRefs: world?.sourceVersionRefs ?? [],
-      });
-      engineeringContexts.set(cacheKey, context);
-      return context;
-    };
-    const preparationReader: IdentificationPreparationKnowledgeReaderV1 = {
-      readExactPreparation: async (input) => {
-        const candidate =
-          readingCache.get(input.projectId) ??
-          (await readPreparationWorld(cleaning, credential, input.projectId));
-        readingCache.set(input.projectId, candidate);
-        if (
-          candidate.snapshotRef.reference.entityId !==
-            input.preparationSnapshotRef.reference.entityId ||
-          candidate.snapshotRef.reference.versionId !==
-            input.preparationSnapshotRef.reference.versionId
-        ) {
-          return {
-            kind: "failed",
-            error: {
-              code: "AUTHORIZATION_DENIED",
-              category: "authorization",
-              retryable: false,
-              causalRunId: `c17-preparation-${input.projectId}`,
-            },
-          };
-        }
-        return {
-          kind: "succeeded",
-          view: {
-            sourceVersionRefs: candidate.snapshot.sourceVersionRefs,
-            includedSourceSegmentSetRefs: candidate.snapshot.includedSourceSegmentSetRefs,
-            cleaningResultArtifactRef: candidate.cleaningResultArtifactRef,
-            excludedSegmentDecisionRefs: candidate.snapshot.excludedSegmentDecisionRefs,
-          },
-        };
-      },
-      readSegmentSlice: async (input) => {
-        // C11 `source-segments` 以「来源版本 + 集合内全部资料段」的空间范围复验授权，
-        // 因此这里按同一范围签发 engineering-data 分支上下文。
-        const scopeRows = await cleaning.postgres.adminPool.query<{ spatial_scope_refs: unknown }>(
-          `SELECT spatial_scope_refs FROM business.source_segments
-            WHERE project_id = $1 AND source_segment_set_id = $2`,
-          [input.projectId, input.sourceSegmentSetRef.reference.entityId],
-        );
-        const versionRows = await cleaning.postgres.adminPool.query<{
-          spatial_scope_refs: unknown;
-        }>(`SELECT spatial_scope_refs FROM business.source_versions WHERE project_id = $1`, [
-          input.projectId,
-        ]);
-        const requestedScopes = dedupeScopes([
-          ...scopeRows.rows.flatMap((row) => parseScopeRefs(row.spatial_scope_refs)),
-          ...versionRows.rows.flatMap((row) => parseScopeRefs(row.spatial_scope_refs)),
-        ]);
-        readSequence += 1;
-        const sliceQueryId = `c17-slice-${readSequence}`;
-        const readContext = await engineeringContextFor(
-          input.projectId,
-          sliceQueryId,
-          "engineering-data.source-segments",
-          requestedScopes,
-        );
-        const read = await cleaning.registry.read({
-          kind: "source-segments",
-          queryId: sliceQueryId,
-          projectId: input.projectId,
-          actorId: readContext.actorId,
-          requestedAt: input.requestedAt,
-          authorization: readContext,
-          payload: { sourceSegmentSetRef: input.sourceSegmentSetRef },
-        });
-        if (read.kind !== "succeeded") {
-          return { kind: "failed", error: read.error };
-        }
-        // resolve 使用自己的调用身份（C06 verify 按 invocationId 绑定）。
-        const resolveInvocationId = `c17-slice-resolve-${readSequence}`;
-        const resolveContext = await engineeringContextFor(
-          input.projectId,
-          resolveInvocationId,
-          "engineering-data.source-segments",
-          requestedScopes,
-        );
-        const resolved = await cleaning.registry.resolveReadQuery({
-          queryResultRef: read.result.queryResultRef,
-          invocationId: resolveInvocationId,
-          projectId: input.projectId,
-          actorId: resolveContext.actorId,
-          requestedAt: input.requestedAt,
-          authorization: resolveContext,
-        });
-        if (resolved.kind !== "succeeded" || resolved.result.kind !== "source-segments") {
-          return {
-            kind: "failed",
-            error:
-              resolved.kind === "failed"
-                ? resolved.error
-                : {
-                    code: "TERMINAL_FAILURE",
-                    category: "terminal-failure",
-                    retryable: false,
-                    causalRunId: `c17-slice-${input.projectId}`,
-                  },
-          };
-        }
-        const requested = new Set(input.segmentIds);
-        const excluded = readingCache.get(input.projectId)?.excludedSegmentIds ?? [];
-        return {
-          kind: "succeeded",
-          observation: {
-            queryResultRef: resolved.result.queryResultRef,
-            sourceSegmentSetRef: resolved.result.segmentSet.sourceSegmentSetRef,
-            segments: resolved.result.segmentSet.segments
-              .filter((segment) => requested.has(segment.sourceSegmentId))
-              .slice(0, input.limit)
-              .map((segment) => ({
-                sourceSegmentId: segment.sourceSegmentId,
-                kind: segment.kind,
-                locator: segment.locator,
-                excluded: excluded.includes(segment.sourceSegmentId),
-              })),
-          },
-        };
-      },
-      checkEvidence: async (input) => {
-        const excluded = new Set(readingCache.get(input.projectId)?.excludedSegmentIds ?? []);
-        readSequence += 1;
-        const readInvocationId = `c17-evidence-${input.purposeCode}-${readSequence}`;
-        const readContext = await engineeringContextFor(
-          input.projectId,
-          readInvocationId,
-          "engineering-data.evidence-access",
-        );
-        const read = await cleaning.registry.read({
-          kind: "evidence-access",
-          queryId: readInvocationId,
-          projectId: input.projectId,
-          actorId: readContext.actorId,
-          requestedAt: input.requestedAt,
-          authorization: readContext,
-          payload: {
-            evidenceReferences: [...input.evidenceReferences],
-            purposeCode: input.purposeCode,
-          },
-        });
-        const readable = new Set<string>();
-        if (read.kind === "succeeded") {
-          const resolveInvocationId = `c17-evidence-resolve-${input.purposeCode}-${readSequence}`;
-          const resolveContext = await engineeringContextFor(
-            input.projectId,
-            resolveInvocationId,
-            "engineering-data.evidence-access",
-          );
-          const resolved = await cleaning.registry.resolveReadQuery({
-            queryResultRef: read.result.queryResultRef,
-            invocationId: resolveInvocationId,
-            projectId: input.projectId,
-            actorId: resolveContext.actorId,
-            requestedAt: input.requestedAt,
-            authorization: resolveContext,
-          });
-          if (resolved.kind === "succeeded" && resolved.result.kind === "evidence-access") {
-            for (const item of resolved.result.items) {
-              readable.add(item.segment.sourceSegmentId);
-            }
-          }
-        }
-        const items: IdentificationEvidenceDecisionV1[] = input.evidenceReferences.map(
-          (reference) => {
-            const segmentId = reference.locator.sourceSegmentId;
-            if (excluded.has(segmentId)) {
-              return {
-                evidenceReference: reference,
-                disposition: "rejected",
-                reasonCode: "segment-excluded-by-cleaning",
-              };
-            }
-            return readable.has(segmentId)
-              ? { evidenceReference: reference, disposition: "eligible", reasonCode: "eligible" }
-              : {
-                  evidenceReference: reference,
-                  disposition: "rejected",
-                  reasonCode: "segment-not-readable",
-                };
-          },
-        );
-        return { kind: "succeeded", items };
-      },
-    };
+    holder.governance = governance;
     return {
       cleaning,
       world,
@@ -779,24 +548,65 @@ export const startIdentificationKnowledgeFixture =
       preparationReader,
       reviewAudit,
       createIdentificationKnowledgeAdapter: (options) => {
-        const releaseEventRecorder = governanceRecorder;
-        const holder: {
-          port?: AgentTaskPortV1;
-          store?: {
-            getTask(ref: AgentTaskRefV1): Promise<unknown>;
-            cancelTask(input: { taskRef: AgentTaskRefV1; reasonCode: string }): Promise<unknown>;
-          };
-        } = {};
+        const fault = options?.releasePolicyFault;
+        const adapterGovernance =
+          fault === undefined
+            ? governance
+            : new PostgresKnowledgeGovernanceAdapter({
+                db: cleaning.runtime.db,
+                transactionUnit: cleaning.transactionUnit,
+                access: cleaning.access,
+                reviewAudit,
+                identificationKnowledgePolicy: {
+                  appendRelease: async (context, appendInput) => {
+                    if (fault === "before-binding") {
+                      throw new KnowledgeLifecycleError({
+                        code: "BUSINESS_BLOCKED",
+                        reasonCode: "c17-injected-binding-fault",
+                        targetRef: appendInput.releaseRef,
+                      });
+                    }
+                    const events = await releasePolicy.appendRelease(context, appendInput);
+                    if (fault === "after-binding") {
+                      throw new KnowledgeLifecycleError({
+                        code: "BUSINESS_BLOCKED",
+                        reasonCode: "c17-injected-event-fault",
+                        targetRef: appendInput.releaseRef,
+                      });
+                    }
+                    return events;
+                  },
+                },
+                now: () => new Date(IDENTIFICATION_KNOWLEDGE_TEST_TIMESTAMP),
+                reviewAuthorization: (command, link) =>
+                  authorizeBranch(
+                    cleaning,
+                    credential,
+                    command.projectId,
+                    `${link.reviewAttemptId}:review`,
+                    "review-audit.request-review",
+                  ),
+                approvalAuthorization: (command) =>
+                  authorizeBranch(
+                    cleaning,
+                    credential,
+                    command.projectId,
+                    `${command.commandId}:approval`,
+                    "review-audit.verify-knowledge-revision-approval",
+                  ),
+              });
         const adapterOptions: PostgresIdentificationKnowledgeAdapterOptionsV1 = {
           db: cleaning.runtime.db,
           transactionUnit: cleaning.transactionUnit,
           access: cleaning.access,
           artifactStore: cleaning.artifactStore,
           artifactReferenceGuard: cleaning.artifactRegistry,
-          governance,
-          preparationReader,
+          governance: adapterGovernance,
+          narrowRead: {
+            preparationRead: cleaning.store,
+            engineeringData: cleaning.registry,
+          },
           policy,
-          releaseEventRecorder,
           ...(options?.withPolicySet === false
             ? {}
             : {
@@ -825,21 +635,7 @@ export const startIdentificationKnowledgeFixture =
               throw new Error("not used by C17");
             },
           },
-          authoringAuthorization: async (input) => {
-            // 收口授权同样必须使用目标工程自己的空间范围与资料版本。
-            const known = readingCache.get(input.projectId) ?? world;
-            return await authorizeBranch(
-              cleaning,
-              credential,
-              input.projectId,
-              input.invocationId,
-              input.branch,
-              {
-                spatialScopeRefs: known.spatialScopeRefs,
-                sourceVersionRefs: known.sourceVersionRefs,
-              },
-            );
-          },
+          authorize,
           // 收口动作的时钟晚于夹具准备与测试发布时刻，保证发布集合对收口命令已生效。
           now: () => new Date("2030-01-02T00:00:00.000Z"),
         };
@@ -902,7 +698,7 @@ export const startIdentificationKnowledgeFixture =
       authorizationFor: async (invocationId, branch, projectId) => {
         const target = projectId ?? world.projectId;
         const known = target === world.projectId ? world : readingCache.get(target);
-        return await authorizeBranch(
+        const context = await authorizeBranch(
           cleaning,
           credential,
           target,
@@ -915,6 +711,8 @@ export const startIdentificationKnowledgeFixture =
                 sourceVersionRefs: known.sourceVersionRefs,
               },
         );
+        if (known !== undefined) readingCache.set(target, known);
+        return context;
       },
       builderInput: () => ({
         projectId: world.projectId,
@@ -924,7 +722,7 @@ export const startIdentificationKnowledgeFixture =
         evidence: world.evidence,
       }),
       async createPreparationWorld(suffix) {
-        const extra = await prepareWorld(cleaning, credential, {
+        const extra = await prepareWorld(cleaning, {
           suffix,
           documentKinds: ["csv"],
         });

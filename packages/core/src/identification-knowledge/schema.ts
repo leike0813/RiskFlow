@@ -20,6 +20,8 @@ import {
   SourceSegmentSetRefV1Schema,
   SourceVersionRefV1Schema,
   WorkflowRunRefV1Schema,
+  type AgentTaskRefV1,
+  type AuthorizationContextRefV1,
   type AuthorizationContextV1,
   type IdentificationPreparationSnapshotRefV1,
   type IdentificationPolicySetRefV1,
@@ -28,6 +30,10 @@ import {
   type ModuleErrorV1,
 } from "@riskflow/contracts/ports";
 import { ApplicabilityConditionsSchema } from "@riskflow/contracts/records";
+import {
+  IdentificationPreparationSnapshotV1Schema,
+  type IdentificationPreparationSnapshotV1,
+} from "@riskflow/contracts/workflows";
 import {
   EquipmentComponentSchema,
   MonitoringIndicatorSchema,
@@ -42,6 +48,8 @@ import {
   AgentTaskBudgetPolicyV1Schema,
   AgentBudgetUsageV1Schema,
 } from "../agent-runtime/schema.js";
+import type { DataCleaningResultV1 } from "../engineering-data/cleaning/schema.js";
+import type { TransactionContextV1 } from "../persistence/index.js";
 
 export const IDENTIFICATION_KNOWLEDGE_SCHEMA_VERSION_V1 = "1" as const;
 export const IDENTIFICATION_KNOWLEDGE_MAX_ENTRIES_V1 = 512;
@@ -312,12 +320,30 @@ export type IdentificationKnowledgeReleaseBindingV1 = z.infer<
 
 // ------------------------------------------------------------------- authoring
 
+/**
+ * D-08 编制清单的冻结成员：正式准备快照的每个来源版本与其保留资料段集合一一对应，
+ * 保留/排除资料段标识取自正式清洗结果，后续工具请求只能落在这些成员之内。
+ */
+export const KnowledgeAuthoringManifestMemberV1Schema = z.strictObject({
+  sourceVersionRef: SourceVersionRefV1Schema,
+  sourceSegmentSetRef: SourceSegmentSetRefV1Schema,
+  retainedSegmentIds: z.array(IdentifierSchema),
+  excludedSegmentIds: z.array(IdentifierSchema),
+});
+export type KnowledgeAuthoringManifestMemberV1 = z.infer<
+  typeof KnowledgeAuthoringManifestMemberV1Schema
+>;
+
 export const KnowledgeAuthoringManifestV1Schema = z.strictObject({
   schemaVersion: z.literal(IDENTIFICATION_KNOWLEDGE_SCHEMA_VERSION_V1),
   manifestId: IdentifierSchema,
   projectId: IdentifierSchema,
   targetDefinitionType: IdentificationKnowledgeDefinitionTypeV1Schema,
   preparationSnapshotRef: IdentificationPreparationSnapshotRefV1Schema,
+  /** D-08：冻结 D-04 读到的 strict 准备快照与正式清洗结果工件，正文不进清单。 */
+  preparation: IdentificationPreparationSnapshotV1Schema,
+  cleaningResultArtifactRef: ContentArtifactRefV1Schema,
+  members: z.array(KnowledgeAuthoringManifestMemberV1Schema).min(1),
   validationPolicyRef: VersionReferenceSchema,
   baseReleaseRef: KnowledgeReleaseRefV1Schema.optional(),
   baseArtifactRef: ContentArtifactRefV1Schema.optional(),
@@ -551,34 +577,37 @@ export const KnowledgeAuthoringActionV1Schema = z.discriminatedUnion("kind", [
 ]);
 export type KnowledgeAuthoringActionV1 = z.infer<typeof KnowledgeAuthoringActionV1Schema>;
 
-/** C16 发布事务内由 C17 提供的识别知识发布事件接缝（与 C18 appendRelease 对称）。 */
-export interface IdentificationKnowledgeReleasePolicyV1 {
+/** C16 发布事务内由 C17 提供的治理接缝：与 C18 `appendRelease(context, input)` 同构。 */
+export interface IdentificationKnowledgeGovernancePolicyV1 {
   appendRelease(
-    input: IdentificationKnowledgeReleaseEventInputV1,
+    context: TransactionContextV1,
+    input: IdentificationKnowledgeReleaseAppendV1,
   ): Promise<readonly DomainEventV1[]>;
 }
 
-export interface IdentificationKnowledgeReleaseEventInputV1 {
-  readonly projectId: string;
-  readonly definitionType: IdentificationKnowledgeDefinitionTypeV1;
-  readonly releaseRef: KnowledgeReleaseRefV1;
-  readonly revisionRef: KnowledgeRevisionRefV1;
-  readonly candidateArtifactRef: ContentArtifactRefV1;
-  /** 由 C17 策略在事件构造时补齐（组合发布的四个成员发布）。 */
-  readonly compositeMemberReleaseRefs?: readonly KnowledgeReleaseRefV1[];
+export interface IdentificationKnowledgeReleaseAppendV1 {
   readonly command: {
-    readonly projectId: string;
+    readonly kind: "publish-approved-release" | "rollback-by-new-release";
     readonly commandId: string;
     readonly idempotencyKey: string;
+    readonly projectId: string;
     readonly actorId: string;
     readonly issuedAt: string;
-    readonly authorizationContextRef: {
-      readonly kind: "authorization-context";
-      readonly reference: { readonly entityId: string; readonly versionId: string };
-    };
+    readonly authorizationContextRef: AuthorizationContextRefV1;
   };
+  readonly revision: {
+    readonly projectId: string;
+    readonly definitionType: IdentificationKnowledgeDefinitionTypeV1;
+    readonly revisionRef: KnowledgeRevisionRefV1;
+    readonly candidateArtifactRef: ContentArtifactRefV1;
+  };
+  readonly releaseRef: KnowledgeReleaseRefV1;
+  readonly audit: { readonly auditEntryId: string };
   readonly recordedAt: string;
-  readonly auditEntryId: string;
+  /** 发布要求的业务时刻：`publish` 用 `effectiveFrom`，`rollback` 用命令时刻。 */
+  readonly requiredAt: string;
+  /** 发布命令的 C06 上下文：策略只用于按发布引用复读已冻结内容与解析组合成员。 */
+  readonly authorization: AuthorizationContextV1;
 }
 
 // ------------------------------------------------------- injected policy inputs
@@ -633,12 +662,19 @@ export interface IdentificationPolicySetProviderV1 {
   }): Promise<IdentificationPolicySetRefV1 | undefined>;
 }
 
-export interface IdentificationPreparationExactViewV1 {
-  readonly sourceVersionRefs: readonly SourceVersionRefV1[];
-  readonly includedSourceSegmentSetRefs: readonly SourceSegmentSetRefV1[];
-  readonly cleaningResultArtifactRef: ContentArtifactRefV1;
-  readonly excludedSegmentDecisionRefs: readonly ContentArtifactRefV1[];
-}
+/**
+ * D-04 精确准备读取结果：与 C15 公开窄读 `readExactPreparation` 同形的 strict 聚合
+ * （strict 准备快照、绑定任务、正式清洗结果与结果工件引用），错误已是 C17 领域错误。
+ */
+export type IdentificationPreparationExactReadV1 =
+  | {
+      readonly kind: "ok";
+      readonly snapshot: IdentificationPreparationSnapshotV1;
+      readonly agentTaskRef: AgentTaskRefV1;
+      readonly result: DataCleaningResultV1;
+      readonly resultArtifactRef: ContentArtifactRefV1;
+    }
+  | { readonly kind: "error"; readonly error: ModuleErrorV1 };
 
 export interface IdentificationEvidenceDecisionV1 {
   readonly evidenceReference: EvidenceReferenceV1;
@@ -646,18 +682,15 @@ export interface IdentificationEvidenceDecisionV1 {
   readonly reasonCode: string;
 }
 
-/** C17 本地窄读接口：只组合精确准备、查询结果引用、切片和证据资格（D-04）。 */
+/** C17 本地窄读接口：只组合 C15 精确准备窄读、C02 查询结果引用、切片和证据资格（D-04）。 */
 export interface IdentificationPreparationKnowledgeReaderV1 {
   readExactPreparation(input: {
     readonly projectId: string;
     readonly preparationSnapshotRef: IdentificationPreparationSnapshotRefV1;
     readonly actorId: string;
+    readonly requestId: string;
     readonly requestedAt: string;
-    readonly authorization: AuthorizationContextV1;
-  }): Promise<
-    | { readonly kind: "succeeded"; readonly view: IdentificationPreparationExactViewV1 }
-    | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
-  >;
+  }): Promise<IdentificationPreparationExactReadV1>;
   readSegmentSlice(input: {
     readonly projectId: string;
     readonly preparationSnapshotRef: IdentificationPreparationSnapshotRefV1;
@@ -665,8 +698,8 @@ export interface IdentificationPreparationKnowledgeReaderV1 {
     readonly segmentIds: readonly string[];
     readonly limit: number;
     readonly actorId: string;
+    readonly requestId: string;
     readonly requestedAt: string;
-    readonly authorization: AuthorizationContextV1;
   }): Promise<
     | { readonly kind: "succeeded"; readonly observation: JsonObjectV1 }
     | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
@@ -677,8 +710,8 @@ export interface IdentificationPreparationKnowledgeReaderV1 {
     readonly evidenceReferences: readonly EvidenceReferenceV1[];
     readonly purposeCode: string;
     readonly actorId: string;
+    readonly requestId: string;
     readonly requestedAt: string;
-    readonly authorization: AuthorizationContextV1;
   }): Promise<
     | {
         readonly kind: "succeeded";
@@ -710,7 +743,6 @@ export interface IdentificationKnowledgeExactReadV1 {
   readonly releaseBinding: IdentificationKnowledgeReleaseBindingV1;
 }
 
-type SourceVersionRefV1 = z.infer<typeof SourceVersionRefV1Schema>;
 type SourceSegmentSetRefV1 = z.infer<typeof SourceSegmentSetRefV1Schema>;
 type EvidenceReferenceV1 = z.infer<typeof EvidenceReferenceSchema>;
 type ContentArtifactRefV1 = z.infer<typeof ContentArtifactRefV1Schema>;

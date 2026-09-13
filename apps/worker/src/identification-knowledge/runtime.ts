@@ -162,6 +162,12 @@ export const interpretKnowledgeAuthoringModelStep = async (
   };
 };
 
+/** 组合根接给共享 runner 的模型步回调：编制任务走 C17 渲染/解释，其它任务按注入回退。 */
+export interface KnowledgeAuthoringModelStepCallbacksV1 {
+  readonly renderModelStep: NonNullable<AgentRuntimeRunnerOptionsV1["renderModelStep"]>;
+  readonly interpretModelStep: NonNullable<AgentRuntimeRunnerOptionsV1["interpretModelStep"]>;
+}
+
 /**
  * 组装 `knowledge-authoring` 的模型步回调；其他任务类型必须显式注入 `inner` 回退，
  * 否则关闭失败，避免静默地给出与任务类型无关的步骤。
@@ -173,10 +179,7 @@ export const withKnowledgeAuthoringModelStep = (
       readonly interpretModelStep?: AgentRuntimeRunnerOptionsV1["interpretModelStep"];
     };
   },
-): {
-  readonly renderModelStep: NonNullable<AgentRuntimeRunnerOptionsV1["renderModelStep"]>;
-  readonly interpretModelStep: NonNullable<AgentRuntimeRunnerOptionsV1["interpretModelStep"]>;
-} => {
+): KnowledgeAuthoringModelStepCallbacksV1 => {
   const step: KnowledgeAuthoringModelStepOptionsV1 = {
     policy: IdentificationKnowledgeValidationPolicyV1Schema.parse(options.policy),
     persistArtifact: options.persistArtifact,

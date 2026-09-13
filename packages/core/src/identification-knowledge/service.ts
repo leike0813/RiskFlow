@@ -31,7 +31,7 @@ import {
   type IdentificationKnowledgePackageV1,
   type IdentificationKnowledgeValidationItemV1,
   type IdentificationKnowledgeValidationPolicyV1,
-  type IdentificationKnowledgeReleaseEventInputV1,
+  type IdentificationKnowledgeReleaseAppendV1,
   type KnowledgeAuthoringIncrementV1,
   type ProcessModelPackageV1,
   type RiskMechanismPackageV1,
@@ -1162,7 +1162,7 @@ export const createKnowledgeAuthoringTaskDefinition = (
 export const identificationBasisPublishedEvent = (input: {
   readonly releaseRef: KnowledgeReleaseRefV1;
   readonly compositeMemberReleaseRefs: readonly KnowledgeReleaseRefV1[];
-  readonly command: IdentificationKnowledgeReleaseEventInputV1["command"];
+  readonly command: IdentificationKnowledgeReleaseAppendV1["command"];
   readonly recordedAt: string;
   readonly auditEntryId: string;
 }): DomainEventV1 => {

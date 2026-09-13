@@ -27,6 +27,7 @@ import {
   type AgentTaskStoreV1,
   type AgentTaskSnapshotV1,
 } from "@riskflow/core/agent-runtime";
+import { KnowledgeLifecycleError } from "@riskflow/core/knowledge-governance";
 import {
   AtomicCommandV1Schema,
   sha256CanonicalJson,
@@ -43,21 +44,28 @@ import {
   KnowledgeAuthoringSegmentSliceRequestV1Schema,
   applyKnowledgeAuthoringIncrement,
   createKnowledgeAuthoringTaskDefinition,
+  IdentificationKnowledgePackageV1Schema,
   identificationBasisPublishedEvent,
   identificationKnowledgePackageDigest,
   isIdentificationKnowledgeDefinitionTypeV1,
   validateIdentificationKnowledgePackage,
+  type IdentificationEvidenceDecisionV1,
   type IdentificationKnowledgeDefinitionTypeV1,
+  type IdentificationKnowledgeGovernancePolicyV1,
   type IdentificationKnowledgePackageV1,
+  type IdentificationKnowledgeReleaseAppendV1,
   type IdentificationKnowledgeValidationPolicyV1,
   type IdentificationKnowledgeValidationReceiptV1,
   type IdentificationPolicySetProviderV1,
-  type IdentificationKnowledgeReleaseEventInputV1,
-  type IdentificationKnowledgeReleasePolicyV1,
+  type IdentificationPreparationExactReadV1,
   type IdentificationPreparationKnowledgeReaderV1,
   type KnowledgeAuthoringManifestV1,
   type KnowledgeAuthoringTaskPortV1,
 } from "@riskflow/core/identification-knowledge";
+import type {
+  EngineeringDataReadResolutionResultV1,
+  ResolveEngineeringDataReadQueryV1,
+} from "@riskflow/core/engineering-data/context-source";
 import type { DomainEventV1 } from "@riskflow/contracts/events";
 import {
   ContentArtifactRefV1Schema as ContractCandidateArtifactRefV1Schema,
@@ -68,12 +76,16 @@ import {
   KnowledgeReleaseRefV1Schema,
   KnowledgeResolutionCommandV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
+  ModuleErrorV1Schema,
   StartAgentTaskCommandV1Schema,
   ProcessModelReleaseRefV1Schema,
   RetrievalEvidenceBaseReleaseRefV1Schema,
   RiskMechanismReleaseRefV1Schema,
   type AuthorizationContextV1,
   type ContractReferenceV1,
+  type EngineeringDataQueryV1,
+  type EngineeringDataReadResultV1,
+  type KnowledgeDefinitionTypeV1,
   type KnowledgeGovernanceCommandV1,
   type KnowledgeGovernanceResultForCommandV1,
   type KnowledgeResolutionCommandV1,
@@ -83,14 +95,24 @@ import {
   type AgentTaskPortV1,
   type AgentTaskResultRefV1,
   type AgentTaskRefV1,
+  type IdentificationPreparationSnapshotRefV1,
   type ModuleBranchV1,
   type ModuleErrorV1,
   type ReviewTaskRefV1,
+  type SourceSegmentSetRefV1,
+  type SourceVersionRefV1,
+  type SpatialScopeRefV1,
 } from "@riskflow/contracts/ports";
-import { IdentifierSchema } from "@riskflow/contracts/common";
+import { IdentifierSchema, type EvidenceReference } from "@riskflow/contracts/common";
 
+import type { DataCleaningResultV1 } from "@riskflow/core/engineering-data/cleaning";
+
+import type { PostgresDataCleaningStore } from "../engineering-data/cleaning/index.js";
 import { getPostgresTransaction } from "../postgres/transaction-unit.js";
-import type { PostgresKnowledgeGovernanceAdapter } from "../knowledge-governance/index.js";
+import {
+  governedReleaseResolutionInvocationId,
+  type PostgresKnowledgeGovernanceAdapter,
+} from "../knowledge-governance/index.js";
 
 const SCHEMA_VERSION = "1";
 export const IDENTIFICATION_KNOWLEDGE_VALIDATION_PURPOSE_V1 = "identification-knowledge-validation";
@@ -209,6 +231,32 @@ type ValidationRowSelect = Selectable<
   IdentificationKnowledgeDatabase["business.identification_knowledge_validations"]
 >;
 
+/**
+ * D-04 生产窄读的注入面：`readExactPreparation` 直接来自 C15 公开精确窄读，
+ * `read`/`resolveReadQuery` 只使用 C02 公共读取分支。
+ */
+export interface IdentificationPreparationNarrowReadV1 {
+  readonly preparationRead: Pick<PostgresDataCleaningStore, "readExactPreparation">;
+  readonly engineeringData: {
+    read(query: EngineeringDataQueryV1): Promise<EngineeringDataReadResultV1>;
+    resolveReadQuery(
+      query: ResolveEngineeringDataReadQueryV1,
+    ): Promise<EngineeringDataReadResolutionResultV1>;
+  };
+}
+
+/** 组合根的 C06 受信授权来源：只为 exact branch 签发内部控制台上下文。 */
+export type IdentificationKnowledgeAuthorizationRequestV1 = {
+  readonly taskRef?: AgentTaskRefV1;
+  readonly projectId: string;
+  readonly actorId: string;
+  readonly invocationId: string;
+  readonly branch: ModuleBranchV1;
+  readonly requestedAt: string;
+  readonly requestedSpatialScopeRefs?: readonly SpatialScopeRefV1[];
+  readonly requestedSourceVersionRefs?: readonly SourceVersionRefV1[];
+};
+
 export interface PostgresIdentificationKnowledgeAdapterOptionsV1 {
   readonly db: unknown;
   readonly transactionUnit: TransactionUnitV1;
@@ -216,22 +264,21 @@ export interface PostgresIdentificationKnowledgeAdapterOptionsV1 {
   readonly artifactStore: ArtifactStoreV1;
   readonly artifactReferenceGuard: ArtifactReferenceGuardV1;
   readonly governance: PostgresKnowledgeGovernanceAdapter;
-  readonly preparationReader: IdentificationPreparationKnowledgeReaderV1;
+  /** D-04：C15 公开精确窄读与 C02 公共读取端口，禁止读取上游私有表。 */
+  readonly narrowRead: IdentificationPreparationNarrowReadV1;
   readonly policy: IdentificationKnowledgeValidationPolicyV1;
   readonly policySetProvider?: IdentificationPolicySetProviderV1;
-  /** 组合发布的成员登记与事件接缝；由组合根注入并同时交给 C16。 */
-  readonly releaseEventRecorder?: IdentificationKnowledgeReleaseEventRecorder;
   /** C08 启动接缝：只有编制入口需要。 */
   readonly agentTaskPort?: AgentTaskPortV1;
   /** C08 执行存储：失败收口按精确任务引用读取状态。 */
   readonly agentTaskStore?: AgentTaskStoreV1;
-  /** 组合根提供的冻结收窄授权：finalizer 与失败收口以 submit/review 能力收口。 */
-  readonly authoringAuthorization?: (input: {
-    readonly taskRef?: AgentTaskRefV1;
-    readonly projectId: string;
-    readonly invocationId: string;
-    readonly branch: ModuleBranchV1;
-  }) => Promise<AuthorizationContextV1>;
+  /**
+   * 组合根的 C06 授权来源：工具读取、baseline 读取、finalizer 与失败收口只为
+   * exact branch 签发新上下文；不接受调用方 capability 或任务信封授权回退。
+   */
+  readonly authorize: (
+    input: IdentificationKnowledgeAuthorizationRequestV1,
+  ) => Promise<AuthorizationContextV1>;
   readonly now?: () => Date;
 }
 
@@ -259,13 +306,6 @@ const asIso = (value: Date | string): string =>
 const refKey = (value: {
   readonly reference: { readonly entityId: string; readonly versionId: string };
 }): string => `${value.reference.entityId}:${value.reference.versionId}`;
-
-const versionedReferenceEquals = (
-  left: { readonly reference: { readonly entityId: string; readonly versionId: string } },
-  right: { readonly reference: { readonly entityId: string; readonly versionId: string } },
-): boolean =>
-  left.reference.entityId === right.reference.entityId &&
-  left.reference.versionId === right.reference.versionId;
 
 const asContractReference = (value: unknown): ContractReferenceV1 => value as ContractReferenceV1;
 
@@ -422,48 +462,618 @@ const validationReceiptFromRow = (
   };
 };
 
-/**
- * 识别知识发布事件记录器：组合发布前登记四个成员精确引用，C16 发布事务内据此发出
- * `knowledge.identification-basis-published.v1`；成员未知时保持 fail-closed 不发事件。
- */
-export class IdentificationKnowledgeReleaseEventRecorder implements IdentificationKnowledgeReleasePolicyV1 {
-  readonly #members = new Map<string, readonly unknown[]>();
+/** C16 generic 发布引用：事件与发布绑定只保存精确引用，不复制正文。 */
+type GenericReleaseRefV1 = {
+  readonly kind: "knowledge-release";
+  readonly reference: { readonly entityId: string; readonly versionId: string };
+};
 
-  record(input: {
+const EVIDENCE_ACCESS_BRANCH = "engineering-data.evidence-access" as const;
+const SOURCE_SEGMENTS_BRANCH = "engineering-data.source-segments" as const;
+const IDENTIFICATION_BASIS_BRANCH = "knowledge-modeling.identification-basis" as const;
+
+const versionedEquals = (
+  left: { readonly reference: { readonly entityId: string; readonly versionId: string } },
+  right: { readonly reference: { readonly entityId: string; readonly versionId: string } },
+): boolean =>
+  left.reference.entityId === right.reference.entityId &&
+  left.reference.versionId === right.reference.versionId;
+
+/** C15 公开窄读的错误已是 C17 领域错误形状；非 strict 形状关闭为终止失败。 */
+const preparationReadError = (causalRunId: string, error: unknown): ModuleErrorV1 => {
+  const parsed = ModuleErrorV1Schema.safeParse(error);
+  return parsed.success ? parsed.data : moduleError({ code: "TERMINAL_FAILURE", causalRunId });
+};
+
+const excludedSegmentsFor = (result: DataCleaningResultV1): ReadonlySet<string> =>
+  new Set(result.inputs.flatMap((input) => input.excludedSegmentIds));
+
+const retainedSegmentsFor = (
+  result: DataCleaningResultV1,
+  sourceVersionRef: { readonly reference: { readonly entityId: string } },
+): readonly string[] =>
+  result.inputs.find(
+    (input) => input.sourceVersionRef?.reference.entityId === sourceVersionRef.reference.entityId,
+  )?.retainedSegmentIds ?? [];
+
+/**
+ * 提交命令的证据引用：优先取包内首个条目的证据；组合包没有条目证据时使用清单冻结的
+ * 保留资料段，绝不用自由文本或伪造引用占位。
+ */
+const submissionEvidenceReferences = (
+  packageValue: IdentificationKnowledgePackageV1,
+  manifest: KnowledgeAuthoringManifestV1,
+): readonly EvidenceReference[] => {
+  const fromPackage =
+    packageValue.definitionType === "process-model"
+      ? packageValue.nodes[0]?.evidence[0]
+      : packageValue.definitionType === "risk-mechanism"
+        ? packageValue.mechanisms[0]?.evidence[0]
+        : packageValue.definitionType === "standard-library" ||
+            packageValue.definitionType === "case-library"
+          ? packageValue.entries[0]?.evidence[0]
+          : undefined;
+  if (fromPackage !== undefined) return [fromPackage];
+  const member = manifest.members[0];
+  const segmentId = member?.retainedSegmentIds[0];
+  if (member === undefined || segmentId === undefined) {
+    throw new Error("the frozen manifest has no retained preparation segment for submission");
+  }
+  return [
+    {
+      locator: { sourceSegmentId: segmentId },
+      sourceVersion: { ...member.sourceVersionRef.reference },
+    },
+  ];
+};
+
+/**
+ * C04 内容读取：读取不是幂等业务动作，每次使用新的访问身份，并按上限关闭有界读取。
+ * 需要 C06 上下文与调用身份，正文只经工件存储返回。
+ */
+const readContentArtifact = async (
+  artifactStore: ArtifactStoreV1,
+  input: {
     readonly projectId: string;
-    readonly revisionRef: {
-      readonly reference: { readonly entityId: string; readonly versionId: string };
-    };
-    readonly compositeMemberReleaseRefs: readonly unknown[];
-  }): void {
-    this.#members.set(
-      `${input.projectId}:${input.revisionRef.reference.entityId}:${input.revisionRef.reference.versionId}`,
-      input.compositeMemberReleaseRefs,
-    );
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly artifactRef: ReturnType<typeof ContractCandidateArtifactRefV1Schema.parse>;
+    readonly purposeCode: string;
+  },
+): Promise<unknown> => {
+  const readId = randomId("c17-read");
+  const handle: ArtifactReadHandleV1 = await artifactStore.open(
+    ArtifactReadRequestV1Schema.parse({
+      schemaVersion: SCHEMA_VERSION,
+      requestId: readId,
+      idempotencyKey: readId,
+      artifactRef: input.artifactRef,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      requestedAt: input.requestedAt,
+      purposeCode: input.purposeCode,
+      requiredCapability: input.authorization.grantedCapabilities[0],
+      authorization: input.authorization,
+    }),
+  );
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of handle.content) {
+    size += chunk.byteLength;
+    if (size > MAX_PACKAGE_BYTES) throw new RangeError("artifact exceeds the bounded read limit");
+    chunks.push(chunk);
+  }
+  await handle.verified;
+  const buffer = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    buffer.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(buffer)) as unknown;
+};
+
+/**
+ * D-04 生产精确准备窄读：只组合 C15 公开 `readExactPreparation`、C02 公共读取分支和
+ * 已冻结清洗结果；不读 C15/C11 私有表，也不接受调用方提供的授权上下文。
+ */
+export interface PostgresIdentificationPreparationKnowledgeReaderOptionsV1 {
+  readonly narrowRead: IdentificationPreparationNarrowReadV1;
+  readonly authorize: PostgresIdentificationKnowledgeAdapterOptionsV1["authorize"];
+}
+
+export class PostgresIdentificationPreparationKnowledgeReader implements IdentificationPreparationKnowledgeReaderV1 {
+  readonly #narrowRead: IdentificationPreparationNarrowReadV1;
+  readonly #authorize: PostgresIdentificationKnowledgeAdapterOptionsV1["authorize"];
+
+  constructor(options: PostgresIdentificationPreparationKnowledgeReaderOptionsV1) {
+    this.#narrowRead = options.narrowRead;
+    this.#authorize = options.authorize;
   }
 
-  async appendRelease(
-    input: IdentificationKnowledgeReleaseEventInputV1,
-  ): Promise<readonly DomainEventV1[]> {
-    if (input.definitionType !== "retrieval-evidence-base") return [];
-    const key = `${input.projectId}:${input.revisionRef.reference.entityId}:${input.revisionRef.reference.versionId}`;
-    const members = this.#members.get(key);
-    this.#members.delete(key);
-    if (members === undefined) return [];
-    return [
-      identificationBasisPublishedEvent({
-        releaseRef: input.releaseRef,
-        compositeMemberReleaseRefs: members as never,
-        command: input.command,
-        recordedAt: input.recordedAt,
-        auditEntryId: input.auditEntryId,
-      }),
-    ];
+  async readExactPreparation(input: {
+    readonly projectId: string;
+    readonly preparationSnapshotRef: IdentificationPreparationSnapshotRefV1;
+    readonly actorId: string;
+    readonly requestId: string;
+    readonly requestedAt: string;
+  }): Promise<IdentificationPreparationExactReadV1> {
+    const authorization = await this.#authorize({
+      projectId: input.projectId,
+      actorId: input.actorId,
+      invocationId: input.requestId,
+      branch: EVIDENCE_ACCESS_BRANCH,
+      requestedAt: input.requestedAt,
+    });
+    const result = await this.#narrowRead.preparationRead.readExactPreparation({
+      projectId: input.projectId,
+      actorId: input.actorId,
+      requestId: input.requestId,
+      requestedAt: input.requestedAt,
+      authorization,
+      preparationSnapshotRef: IdentificationPreparationSnapshotRefV1Schema.parse(
+        input.preparationSnapshotRef,
+      ),
+    });
+    return result.kind === "ok"
+      ? result
+      : { kind: "error", error: preparationReadError(input.requestId, result.error) };
+  }
+
+  async readSegmentSlice(input: {
+    readonly projectId: string;
+    readonly preparationSnapshotRef: IdentificationPreparationSnapshotRefV1;
+    readonly sourceSegmentSetRef: SourceSegmentSetRefV1;
+    readonly segmentIds: readonly string[];
+    readonly limit: number;
+    readonly actorId: string;
+    readonly requestId: string;
+    readonly requestedAt: string;
+  }): Promise<
+    | { readonly kind: "succeeded"; readonly observation: { readonly [key: string]: unknown } }
+    | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
+  > {
+    const preparation = await this.readExactPreparation({
+      projectId: input.projectId,
+      preparationSnapshotRef: input.preparationSnapshotRef,
+      actorId: input.actorId,
+      requestId: `${input.requestId}:preparation`,
+      requestedAt: input.requestedAt,
+    });
+    if (preparation.kind === "error") return { kind: "failed", error: preparation.error };
+    // 只复读该准备保留集合内的请求切片：集合属于准备，资料段属于该集合的保留结果。
+    const memberIndex = preparation.snapshot.includedSourceSegmentSetRefs.findIndex((candidate) =>
+      versionedEquals(candidate, input.sourceSegmentSetRef),
+    );
+    if (memberIndex === -1) {
+      return {
+        kind: "failed",
+        error: moduleError({
+          code: "AUTHORIZATION_DENIED",
+          branch: SOURCE_SEGMENTS_BRANCH,
+          causalRunId: input.requestId,
+        }),
+      };
+    }
+    const retained = new Set(
+      retainedSegmentsFor(preparation.result, preparation.snapshot.sourceVersionRefs[memberIndex]!),
+    );
+    if (!input.segmentIds.every((segmentId) => retained.has(segmentId))) {
+      return {
+        kind: "failed",
+        error: moduleError({
+          code: "AUTHORIZATION_DENIED",
+          branch: SOURCE_SEGMENTS_BRANCH,
+          causalRunId: input.requestId,
+        }),
+      };
+    }
+    const authorization = await this.#authorize({
+      projectId: input.projectId,
+      actorId: input.actorId,
+      invocationId: input.requestId,
+      branch: SOURCE_SEGMENTS_BRANCH,
+      requestedAt: input.requestedAt,
+      requestedSpatialScopeRefs: [...preparation.snapshot.spatialScopeRefs],
+      requestedSourceVersionRefs: [...preparation.snapshot.sourceVersionRefs],
+    });
+    const read = await this.#narrowRead.engineeringData.read({
+      kind: "source-segments",
+      queryId: input.requestId,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      requestedAt: input.requestedAt,
+      authorization,
+      payload: { sourceSegmentSetRef: input.sourceSegmentSetRef },
+    });
+    if (read.kind === "waiting") {
+      return {
+        kind: "failed",
+        error: moduleError({
+          code: "BUSINESS_BLOCKED",
+          blockerKind: "source-segments-waiting",
+          blockerRef: asContractReference(input.sourceSegmentSetRef),
+          causalRunId: input.requestId,
+        }),
+      };
+    }
+    if (read.kind !== "succeeded") return { kind: "failed", error: read.error };
+    const resolved = await this.#narrowRead.engineeringData.resolveReadQuery({
+      queryResultRef: read.result.queryResultRef,
+      invocationId: input.requestId,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      requestedAt: input.requestedAt,
+      authorization,
+    });
+    if (resolved.kind !== "succeeded" || resolved.result.kind !== "source-segments") {
+      return {
+        kind: "failed",
+        error:
+          resolved.kind === "failed"
+            ? resolved.error
+            : moduleError({ code: "TERMINAL_FAILURE", causalRunId: input.requestId }),
+      };
+    }
+    const requested = new Set(input.segmentIds);
+    const excluded = excludedSegmentsFor(preparation.result);
+    return {
+      kind: "succeeded",
+      observation: {
+        queryResultRef: resolved.result.queryResultRef,
+        sourceSegmentSetRef: resolved.result.segmentSet.sourceSegmentSetRef,
+        segments: resolved.result.segmentSet.segments
+          .filter((segment) => requested.has(segment.sourceSegmentId))
+          .slice(0, input.limit)
+          .map((segment) => ({
+            sourceSegmentId: segment.sourceSegmentId,
+            kind: segment.kind,
+            locator: segment.locator,
+            excluded: excluded.has(segment.sourceSegmentId),
+          })),
+      },
+    };
+  }
+
+  async checkEvidence(input: {
+    readonly projectId: string;
+    readonly preparationSnapshotRef: IdentificationPreparationSnapshotRefV1;
+    readonly evidenceReferences: readonly EvidenceReference[];
+    readonly purposeCode: string;
+    readonly actorId: string;
+    readonly requestId: string;
+    readonly requestedAt: string;
+  }): Promise<
+    | {
+        readonly kind: "succeeded";
+        readonly items: readonly IdentificationEvidenceDecisionV1[];
+      }
+    | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
+  > {
+    const preparation = await this.readExactPreparation({
+      projectId: input.projectId,
+      preparationSnapshotRef: input.preparationSnapshotRef,
+      actorId: input.actorId,
+      requestId: `${input.requestId}:preparation`,
+      requestedAt: input.requestedAt,
+    });
+    if (preparation.kind === "error") return { kind: "failed", error: preparation.error };
+    const authorization = await this.#authorize({
+      projectId: input.projectId,
+      actorId: input.actorId,
+      invocationId: input.requestId,
+      branch: EVIDENCE_ACCESS_BRANCH,
+      requestedAt: input.requestedAt,
+      requestedSpatialScopeRefs: [...preparation.snapshot.spatialScopeRefs],
+      requestedSourceVersionRefs: [...preparation.snapshot.sourceVersionRefs],
+    });
+    const read = await this.#narrowRead.engineeringData.read({
+      kind: "evidence-access",
+      queryId: input.requestId,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      requestedAt: input.requestedAt,
+      authorization,
+      payload: {
+        evidenceReferences: [...input.evidenceReferences],
+        purposeCode: input.purposeCode,
+      },
+    });
+    const readable = new Set<string>();
+    if (read.kind === "succeeded") {
+      const resolved = await this.#narrowRead.engineeringData.resolveReadQuery({
+        queryResultRef: read.result.queryResultRef,
+        invocationId: input.requestId,
+        projectId: input.projectId,
+        actorId: input.actorId,
+        requestedAt: input.requestedAt,
+        authorization,
+      });
+      if (resolved.kind === "succeeded" && resolved.result.kind === "evidence-access") {
+        for (const item of resolved.result.items) {
+          readable.add(item.segment.sourceSegmentId);
+        }
+      }
+    }
+    const excluded = excludedSegmentsFor(preparation.result);
+    return {
+      kind: "succeeded",
+      items: input.evidenceReferences.map((reference) =>
+        excluded.has(reference.locator.sourceSegmentId)
+          ? {
+              evidenceReference: reference,
+              disposition: "rejected" as const,
+              reasonCode: "segment-excluded-by-cleaning",
+            }
+          : readable.has(reference.locator.sourceSegmentId)
+            ? {
+                evidenceReference: reference,
+                disposition: "eligible" as const,
+                reasonCode: "eligible",
+              }
+            : {
+                evidenceReference: reference,
+                disposition: "rejected" as const,
+                reasonCode: "segment-not-readable",
+              },
+      ),
+    };
   }
 }
 
 /**
- * C17 façade：在 C16 生命周期之前设置内容门，在之后追加 C17 绑定；正文始终保存在 C04，
+ * C17 发布/回滚治理策略：在 C16 发布事务内复验 validated binding/package，先写
+ * `identification_knowledge_release_bindings`，再为组合发布构造唯一识别基础事件（D-05）。
+ */
+export interface PostgresIdentificationKnowledgeReleasePolicyOptionsV1 {
+  readonly db: unknown;
+  readonly artifactStore: ArtifactStoreV1;
+  /** 组合成员解析复用 C16 公共解析；构造顺序上 C16 晚于本策略，因此按需读取。 */
+  readonly governance: () => PostgresKnowledgeGovernanceAdapter;
+  readonly authorize: PostgresIdentificationKnowledgeAdapterOptionsV1["authorize"];
+}
+
+export class PostgresIdentificationKnowledgeReleasePolicy implements IdentificationKnowledgeGovernancePolicyV1 {
+  readonly #db: Kysely<IdentificationKnowledgeDatabase>;
+  readonly #options: PostgresIdentificationKnowledgeReleasePolicyOptionsV1;
+
+  constructor(options: PostgresIdentificationKnowledgeReleasePolicyOptionsV1) {
+    this.#db = options.db as unknown as Kysely<IdentificationKnowledgeDatabase>;
+    this.#options = options;
+  }
+
+  async appendRelease(
+    context: TransactionContextV1,
+    input: IdentificationKnowledgeReleaseAppendV1,
+  ): Promise<readonly DomainEventV1[]> {
+    const tx = asKnowledgeTransaction(context);
+    const revisionRef = input.revision.revisionRef;
+    const binding = await tx
+      .selectFrom("business.identification_knowledge_revision_bindings")
+      .selectAll()
+      .where("project_id", "=", input.command.projectId)
+      .where("revision_id", "=", revisionRef.reference.entityId)
+      .where("revision_version_id", "=", revisionRef.reference.versionId)
+      .executeTakeFirst();
+    if (binding === undefined || binding.binding_kind !== "validated") {
+      throw new KnowledgeLifecycleError({
+        code: "BUSINESS_BLOCKED",
+        reasonCode: "identification-knowledge-binding-required",
+        targetRef: asContractReference(revisionRef),
+      });
+    }
+    const validationRow = await this.#findValidation(
+      input.command.projectId,
+      binding.validation_id,
+      binding.validation_version_id,
+    );
+    if (validationRow === undefined) {
+      throw new KnowledgeLifecycleError({
+        code: "ENTITY_NOT_FOUND",
+        reasonCode: "identification-knowledge-validation-not-found",
+        targetRef: asContractReference(revisionRef),
+      });
+    }
+    const members =
+      input.revision.definitionType === "retrieval-evidence-base"
+        ? await this.#resolveCompositeMembers(input, validationRow)
+        : undefined;
+    await tx
+      .insertInto("business.identification_knowledge_release_bindings")
+      .values({
+        release_id: input.releaseRef.reference.entityId,
+        release_version_id: input.releaseRef.reference.versionId,
+        schema_version: SCHEMA_VERSION,
+        project_id: input.command.projectId,
+        definition_type: input.revision.definitionType,
+        revision_id: revisionRef.reference.entityId,
+        revision_version_id: revisionRef.reference.versionId,
+        candidate_artifact_ref: jsonbValue(input.revision.candidateArtifactRef),
+        composite_member_release_refs:
+          members === undefined ? null : jsonbValue(members.bindingMembers),
+        bound_at: new Date(input.recordedAt),
+        command_id: input.command.commandId,
+        idempotency_key: `${input.command.idempotencyKey}:bind-release`,
+        actor_ref: input.command.actorId,
+        audit_entry_id: input.audit.auditEntryId,
+        occurred_at: new Date(input.command.issuedAt),
+        recorded_at: new Date(input.recordedAt),
+        persisted_at: new Date(input.recordedAt),
+      } as never)
+      .onConflict((conflict) => conflict.columns(["project_id", "idempotency_key"]).doNothing())
+      .execute();
+    if (members === undefined) return [];
+    return [
+      identificationBasisPublishedEvent({
+        releaseRef: input.releaseRef,
+        compositeMemberReleaseRefs: members.eventMembers,
+        command: input.command,
+        recordedAt: input.recordedAt,
+        auditEntryId: input.audit.auditEntryId,
+      }),
+    ];
+  }
+
+  async #findValidation(
+    projectId: string,
+    validationId: string | null,
+    versionId: string | null,
+  ): Promise<ValidationRowSelect | undefined> {
+    if (validationId === null || versionId === null) return undefined;
+    return await this.#db
+      .selectFrom("business.identification_knowledge_validations")
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where("validation_id", "=", validationId)
+      .where("version_id", "=", versionId)
+      .executeTakeFirst();
+  }
+
+  async #resolveCompositeMembers(
+    input: IdentificationKnowledgeReleaseAppendV1,
+    validationRow: ValidationRowSelect,
+  ): Promise<{
+    readonly eventMembers: readonly GenericReleaseRefV1[];
+    readonly bindingMembers: readonly GenericReleaseRefV1[];
+  }> {
+    const projectId = input.command.projectId;
+    const blocked: (reasonCode: string) => never = (reasonCode) => {
+      throw new KnowledgeLifecycleError({
+        code: "BUSINESS_BLOCKED",
+        reasonCode,
+        targetRef: asContractReference(input.releaseRef),
+      });
+    };
+    const resolutionInvocationId = governedReleaseResolutionInvocationId({
+      requiredDefinitionTypes: [
+        "process-model",
+        "risk-mechanism",
+        "standard-library",
+        "case-library",
+      ],
+      requiredAt: input.requiredAt,
+      asOfRecordedAt: input.command.issuedAt,
+    });
+    const authorization = await this.#options.authorize({
+      projectId,
+      actorId: input.command.actorId,
+      invocationId: resolutionInvocationId,
+      branch: IDENTIFICATION_BASIS_BRANCH,
+      requestedAt: input.command.issuedAt,
+    });
+    const composite = await readContentArtifact(this.#options.artifactStore, {
+      projectId,
+      actorId: input.command.actorId,
+      requestedAt: input.command.issuedAt,
+      authorization,
+      artifactRef: ContractCandidateArtifactRefV1Schema.parse(validationRow.candidate_artifact_ref),
+      purposeCode: CANDIDATE_PURPOSE,
+    });
+    const compositeParsed = IdentificationKnowledgePackageV1Schema.safeParse(composite);
+    if (!compositeParsed.success) blocked("retrieval-evidence-base-package-invalid");
+    const parsedPackage = compositeParsed.data;
+    if (parsedPackage.definitionType !== "retrieval-evidence-base") {
+      blocked("retrieval-evidence-base-package-invalid");
+    }
+    const compositePackage = parsedPackage;
+    const mechanismRef: GenericReleaseRefV1 = {
+      kind: "knowledge-release",
+      reference: { ...compositePackage.riskMechanismReleaseRef.reference },
+    };
+    const mechanismPackage = await this.#readBoundPackage(
+      projectId,
+      mechanismRef,
+      input.command.actorId,
+      input.command.issuedAt,
+      authorization,
+    );
+    if (mechanismPackage.definitionType !== "risk-mechanism") {
+      blocked("retrieval-evidence-base-mechanism-type-mismatch");
+    }
+    const processModelRef: GenericReleaseRefV1 = {
+      kind: "knowledge-release",
+      reference: { ...mechanismPackage.processModelReleaseRef.reference },
+    };
+    const resolved = await this.#options.governance().resolveGovernedReleases({
+      projectId,
+      requiredDefinitionTypes: [
+        "process-model",
+        "risk-mechanism",
+        "standard-library",
+        "case-library",
+      ],
+      requiredAt: input.requiredAt,
+      asOfRecordedAt: input.command.issuedAt,
+      authorization,
+    });
+    if (resolved.kind !== "succeeded") blocked("retrieval-evidence-base-members-unavailable");
+    const effective = new Map(
+      resolved.result.members.map((member) => [member.definitionType, member.releaseRef]),
+    );
+    const standardLibraryRef: GenericReleaseRefV1 = {
+      kind: "knowledge-release",
+      reference: { ...compositePackage.standardLibraryReleaseRef.reference },
+    };
+    const caseLibraryRef: GenericReleaseRefV1 = {
+      kind: "knowledge-release",
+      reference: { ...compositePackage.caseLibraryReleaseRef.reference },
+    };
+    const expected: readonly (readonly [KnowledgeDefinitionTypeV1, GenericReleaseRefV1])[] = [
+      ["process-model", processModelRef],
+      ["risk-mechanism", mechanismRef],
+      ["standard-library", standardLibraryRef],
+      ["case-library", caseLibraryRef],
+    ];
+    for (const [definitionType, releaseRef] of expected) {
+      const actual = effective.get(definitionType);
+      if (actual === undefined || !versionedEquals(actual, releaseRef)) {
+        blocked("retrieval-evidence-base-members-invalid");
+      }
+    }
+    return {
+      eventMembers: [processModelRef, mechanismRef, standardLibraryRef, caseLibraryRef],
+      bindingMembers: [mechanismRef, standardLibraryRef, caseLibraryRef],
+    };
+  }
+
+  async #readBoundPackage(
+    projectId: string,
+    releaseRef: GenericReleaseRefV1,
+    actorId: string,
+    requestedAt: string,
+    authorization: AuthorizationContextV1,
+  ): Promise<IdentificationKnowledgePackageV1> {
+    const binding = await this.#db
+      .selectFrom("business.identification_knowledge_release_bindings")
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where("release_id", "=", releaseRef.reference.entityId)
+      .where("release_version_id", "=", releaseRef.reference.versionId)
+      .executeTakeFirst();
+    if (binding === undefined) {
+      throw new KnowledgeLifecycleError({
+        code: "ENTITY_NOT_FOUND",
+        reasonCode: "identification-knowledge-release-binding-not-found",
+        targetRef: asContractReference(releaseRef),
+      });
+    }
+    return IdentificationKnowledgePackageV1Schema.parse(
+      await readContentArtifact(this.#options.artifactStore, {
+        projectId,
+        actorId,
+        requestedAt,
+        authorization,
+        artifactRef: ContractCandidateArtifactRefV1Schema.parse(binding.candidate_artifact_ref),
+        purposeCode: CANDIDATE_PURPOSE,
+      }),
+    );
+  }
+}
+
+/**
+ * C17 façade：在 C16 生命周期之前设置内容门，发布绑定与事件由注入 C16 的
+ * `PostgresIdentificationKnowledgeReleasePolicy` 在同一事务提交；正文始终保存在 C04，
  * 数据库只保存受约束的索引事实（D-05、D-07、D-10、D-12）。
  */
 export class PostgresIdentificationKnowledgeAdapter {
@@ -476,11 +1086,9 @@ export class PostgresIdentificationKnowledgeAdapter {
   readonly #preparationReader: IdentificationPreparationKnowledgeReaderV1;
   readonly #policy: IdentificationKnowledgeValidationPolicyV1;
   readonly #policySetProvider: IdentificationPolicySetProviderV1 | undefined;
-  readonly #releaseEventRecorder: IdentificationKnowledgeReleaseEventRecorder;
   readonly #agentTaskPort: AgentTaskPortV1 | undefined;
   readonly #agentTaskStore: AgentTaskStoreV1 | undefined;
-  readonly #authoringAuthorization:
-    PostgresIdentificationKnowledgeAdapterOptionsV1["authoringAuthorization"] | undefined;
+  readonly #authorize: PostgresIdentificationKnowledgeAdapterOptionsV1["authorize"];
   readonly #now: () => Date;
 
   constructor(options: PostgresIdentificationKnowledgeAdapterOptionsV1) {
@@ -490,14 +1098,15 @@ export class PostgresIdentificationKnowledgeAdapter {
     this.#artifactStore = options.artifactStore;
     this.#artifactReferenceGuard = options.artifactReferenceGuard;
     this.#governance = options.governance;
-    this.#preparationReader = options.preparationReader;
+    this.#preparationReader = new PostgresIdentificationPreparationKnowledgeReader({
+      narrowRead: options.narrowRead,
+      authorize: options.authorize,
+    });
     this.#policy = options.policy;
     this.#policySetProvider = options.policySetProvider;
-    this.#releaseEventRecorder =
-      options.releaseEventRecorder ?? new IdentificationKnowledgeReleaseEventRecorder();
     this.#agentTaskPort = options.agentTaskPort;
     this.#agentTaskStore = options.agentTaskStore;
-    this.#authoringAuthorization = options.authoringAuthorization;
+    this.#authorize = options.authorize;
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -720,12 +1329,18 @@ export class PostgresIdentificationKnowledgeAdapter {
               purposeCode: input.purposeCode,
               actorId: command.actorId,
               requestedAt: command.issuedAt,
-              authorization: command.authorization,
+              requestId: `${command.commandId}:evidence`,
             });
             return checked.kind === "succeeded" ? checked.items : [];
           },
           resolveProcessModel: (releaseRef) =>
-            this.#resolveProcessModelNodes(command.projectId, releaseRef, command),
+            this.#resolveProcessModelNodes(command.projectId, releaseRef, {
+              actorId: command.actorId,
+              issuedAt: command.issuedAt,
+              invocationId: `${command.commandId}:process-model`,
+            }),
+          resolveCompositeMembers: async (members) =>
+            await this.#resolveCompositeMembers(command.projectId, members),
         },
       });
       const packageValue = rawCandidate as IdentificationKnowledgePackageV1;
@@ -894,7 +1509,7 @@ export class PostgresIdentificationKnowledgeAdapter {
     command: {
       readonly actorId: string;
       readonly issuedAt: string;
-      readonly authorization: AuthorizationContextV1;
+      readonly invocationId: string;
     },
   ): Promise<
     | {
@@ -907,12 +1522,21 @@ export class PostgresIdentificationKnowledgeAdapter {
       kind: "knowledge-release",
       reference: releaseRef.reference,
     });
+    // 校验期读取同样由组合根签发 identification-basis 上下文，不借用调用方命令能力。
+    const authorization = await this.#authorize({
+      projectId,
+      actorId: command.actorId,
+      invocationId: command.invocationId,
+      branch: IDENTIFICATION_BASIS_BRANCH,
+      requestedAt: command.issuedAt,
+    });
     const read = await this.readExact({
       projectId,
       releaseRef: release,
       actorId: command.actorId,
       requestedAt: command.issuedAt,
-      authorization: command.authorization,
+      invocationId: command.invocationId,
+      authorization,
     });
     if (read.kind === "failed") return undefined;
     if (read.read.package.definitionType !== "process-model") return undefined;
@@ -923,6 +1547,49 @@ export class PostgresIdentificationKnowledgeAdapter {
         processKind: node.processKind as never,
       })),
     };
+  }
+
+  /**
+   * 组合成员确定性校验：三个成员必须是本工程已绑定的精确 C17 发布，且类型与组合槽位一致；
+   * 任一项不可解析即拒绝，不在读取正文前替换或补齐成员。
+   */
+  async #resolveCompositeMembers(
+    projectId: string,
+    members: {
+      readonly riskMechanismReleaseRef: {
+        readonly reference: { readonly entityId: string; readonly versionId: string };
+      };
+      readonly standardLibraryReleaseRef: {
+        readonly reference: { readonly entityId: string; readonly versionId: string };
+      };
+      readonly caseLibraryReleaseRef: {
+        readonly reference: { readonly entityId: string; readonly versionId: string };
+      };
+    },
+  ): Promise<boolean> {
+    const expected = [
+      ["risk-mechanism", members.riskMechanismReleaseRef],
+      ["standard-library", members.standardLibraryReleaseRef],
+      ["case-library", members.caseLibraryReleaseRef],
+    ] as const;
+    for (const [definitionType, releaseRef] of expected) {
+      const release = KnowledgeReleaseRefV1Schema.safeParse({
+        kind: "knowledge-release",
+        reference: releaseRef.reference,
+      });
+      if (!release.success) return false;
+      const binding = await this.#findReleaseBindingByRef(projectId, release.data);
+      if (binding === undefined || binding.definition_type !== definitionType) return false;
+      const revisionBinding = await this.#findRevisionBinding(
+        projectId,
+        binding.revision_id,
+        binding.revision_version_id,
+      );
+      if (revisionBinding === undefined || revisionBinding.binding_kind !== "validated") {
+        return false;
+      }
+    }
+    return true;
   }
 
   async #delegateGovern(
@@ -963,204 +1630,16 @@ export class PostgresIdentificationKnowledgeAdapter {
             }),
           });
         }
-        const published = await this.#governance.govern(command);
-        if (published.kind !== "succeeded" || published.result.kind !== "release") {
-          console.error("C17_PUBLISH_RESULT", JSON.stringify(published).slice(0, 600));
-          return published;
-        }
-        const validationRow = await this.#findValidation(
-          command.projectId,
-          binding.validation_id,
-          binding.validation_version_id,
-        );
-        if (validationRow === undefined) return published;
-        const candidateArtifactRef = ContractCandidateArtifactRefV1Schema.parse(
-          validationRow.candidate_artifact_ref,
-        );
-        const packageValue = (await this.#readArtifact(
-          command.authorization,
-          candidateArtifactRef,
-          CANDIDATE_PURPOSE,
-        )) as IdentificationKnowledgePackageV1;
-        const releaseRef = published.result.knowledgeReleaseRef;
-        const compositeMembers =
-          packageValue.definitionType === "retrieval-evidence-base"
-            ? [
-                packageValue.riskMechanismReleaseRef,
-                packageValue.standardLibraryReleaseRef,
-                packageValue.caseLibraryReleaseRef,
-              ]
-            : undefined;
-        if (compositeMembers !== undefined) {
-          const resolved = await this.#governance.resolveGovernedReleases({
-            projectId: command.projectId,
-            requiredDefinitionTypes: [
-              "process-model",
-              "risk-mechanism",
-              "standard-library",
-              "case-library",
-            ],
-            requiredAt: command.payload.effectiveFrom,
-            asOfRecordedAt: command.issuedAt,
-            authorization: command.authorization,
-          });
-          if (resolved.kind !== "succeeded") return published;
-          const selected = resolved.result.releaseRefs;
-          const processModelResolution = await this.#governance.resolveGovernedReleases({
-            projectId: command.projectId,
-            requiredDefinitionTypes: ["process-model"],
-            requiredAt: command.payload.effectiveFrom,
-            asOfRecordedAt: command.issuedAt,
-            authorization: command.authorization,
-          });
-          const processModelReleaseRef =
-            processModelResolution.kind === "succeeded"
-              ? processModelResolution.result.releaseRefs[0]
-              : undefined;
-          // 事件载荷顺序固定为 process-model → risk-mechanism → standard-library → case-library，
-          // 最后一项由 C16 发布事务补上组合发布本身。
-          if (
-            processModelReleaseRef !== undefined &&
-            compositeMembers.every((member) =>
-              selected.some((candidate) => versionedReferenceEquals(candidate, member as never)),
-            )
-          ) {
-            this.#releaseEventRecorder.record({
-              projectId: command.projectId,
-              revisionRef: command.payload.revisionRef,
-              compositeMemberReleaseRefs: [processModelReleaseRef, ...compositeMembers],
-            });
-          }
-          if (
-            !compositeMembers.every((member) =>
-              selected.some((candidate) => versionedReferenceEquals(candidate, member as never)),
-            )
-          ) {
-            return KnowledgeGovernanceResultV1Schema.parse({
-              kind: "failed",
-              error: moduleError({
-                code: "BUSINESS_BLOCKED",
-                causalRunId: command.commandId,
-                blockerKind: "retrieval-evidence-base-members-invalid",
-                blockerRef: asContractReference(releaseRef),
-              }),
-            });
-          }
-        }
-        await this.#bindRelease(command, {
-          releaseRef,
-          definitionType: binding.definition_type,
-          revisionId: binding.revision_id,
-          revisionVersionId: binding.revision_version_id,
-          candidateArtifactRef,
-          compositeMembers,
-        });
-        return published;
-      }
-      if (command.kind === "rollback-by-new-release") {
-        const historical = await this.#findReleaseBindingByRef(
-          command.projectId,
-          command.payload.historicalReleaseRef,
-        );
-        const rolledBack = await this.#governance.govern(command);
-        if (
-          historical === undefined ||
-          rolledBack.kind !== "succeeded" ||
-          rolledBack.result.kind !== "release"
-        ) {
-          return rolledBack;
-        }
-        await this.#bindRelease(command, {
-          releaseRef: rolledBack.result.knowledgeReleaseRef,
-          definitionType: historical.definition_type,
-          revisionId: historical.revision_id,
-          revisionVersionId: historical.revision_version_id,
-          candidateArtifactRef: ContractCandidateArtifactRefV1Schema.parse(
-            historical.candidate_artifact_ref,
-          ),
-          compositeMembers:
-            historical.composite_member_release_refs === null
-              ? undefined
-              : (historical.composite_member_release_refs as never),
-        });
-        return rolledBack;
+        // 发布绑定与组合事件由注入 C16 的 release policy 在同一事务提交；façade 不补写。
+        return await this.#governance.govern(command);
       }
       return await this.#governance.govern(command);
     } catch (error) {
-      console.error(
-        "C17_DELEGATE_ERROR",
-        JSON.stringify(error, Object.getOwnPropertyNames(error ?? {})).slice(0, 600),
-      );
       return KnowledgeGovernanceResultV1Schema.parse({
         kind: "failed",
         error: await this.#mapError(error, command.commandId),
       });
     }
-  }
-
-  async #bindRelease(
-    command: Extract<
-      KnowledgeGovernanceCommandV1,
-      { kind: "publish-approved-release" | "rollback-by-new-release" }
-    >,
-    input: {
-      readonly releaseRef: {
-        readonly reference: { readonly entityId: string; readonly versionId: string };
-      };
-      readonly definitionType: string;
-      readonly revisionId: string;
-      readonly revisionVersionId: string;
-      readonly candidateArtifactRef: ReturnType<typeof ContractCandidateArtifactRefV1Schema.parse>;
-      readonly compositeMembers: readonly unknown[] | undefined;
-    },
-  ): Promise<void> {
-    const recordedAt = nowIso(this.#now);
-    const auditEntryId = randomId("audit");
-    const atomic = atomicCommand(command)({
-      commandKind: "knowledge.identification-knowledge.bind-release.v1",
-      commandId: `${command.commandId}:bind-release`,
-      idempotencyKey: `${command.idempotencyKey}:bind-release`,
-      payload: { releaseRef: input.releaseRef },
-    });
-    await this.#transactionUnit.execute(atomic, async (context) => {
-      const tx = asKnowledgeTransaction(context);
-      await tx
-        .insertInto("business.identification_knowledge_release_bindings")
-        .values({
-          release_id: input.releaseRef.reference.entityId,
-          release_version_id: input.releaseRef.reference.versionId,
-          schema_version: SCHEMA_VERSION,
-          project_id: command.projectId,
-          definition_type: input.definitionType,
-          revision_id: input.revisionId,
-          revision_version_id: input.revisionVersionId,
-          candidate_artifact_ref: jsonbValue(input.candidateArtifactRef),
-          composite_member_release_refs:
-            input.compositeMembers === undefined ? null : jsonbValue(input.compositeMembers),
-          bound_at: new Date(recordedAt),
-          command_id: atomic.commandId,
-          idempotency_key: atomic.idempotencyKey,
-          actor_ref: atomic.actorRef,
-          audit_entry_id: auditEntryId,
-          occurred_at: new Date(command.issuedAt),
-          recorded_at: new Date(recordedAt),
-          persisted_at: new Date(recordedAt),
-        })
-        .onConflict((conflict) => conflict.columns(["project_id", "idempotency_key"]).doNothing())
-        .execute();
-      return {
-        resultRef: asContractReference(input.releaseRef),
-        audit: auditFor({
-          command: atomic,
-          targetRef: asContractReference(input.releaseRef),
-          action: "identification-knowledge.bind-release",
-          occurredAt: command.issuedAt,
-          recordedAt,
-          auditEntryId,
-        }),
-        events: [],
-      } satisfies AtomicCommitV1;
-    });
   }
 
   async #resolveIdentificationBasis(
@@ -1177,21 +1656,43 @@ export class PostgresIdentificationKnowledgeAdapter {
         projectId: command.projectId,
         preparationSnapshotRef: command.payload.preparationSnapshotRef,
         actorId: command.actorId,
+        requestId: `${command.commandId}:preparation`,
         requestedAt: command.issuedAt,
-        authorization: command.authorization,
       });
-      if (preparation.kind === "failed") {
+      if (preparation.kind === "error") {
         return { kind: "failed", error: preparation.error };
       }
       const requiredAt = command.payload.requiredAt;
       const asOfRecordedAt = command.issuedAt;
-      const resolved = await this.#governance.resolveGovernedReleases({
-        projectId: command.projectId,
-        requiredDefinitionTypes: ["process-model", "risk-mechanism", "retrieval-evidence-base"],
-        requiredAt,
-        asOfRecordedAt,
-        authorization: command.authorization,
-      });
+      // C16 解析按派生 invocationId 绑定 C06：每次解析都由组合根为同一派生签发上下文。
+      const resolveGovernedReleases = async (
+        requiredDefinitionTypes: readonly KnowledgeDefinitionTypeV1[],
+      ) => {
+        const invocationId = governedReleaseResolutionInvocationId({
+          requiredDefinitionTypes,
+          requiredAt,
+          asOfRecordedAt,
+        });
+        const authorization = await this.#authorize({
+          projectId: command.projectId,
+          actorId: command.actorId,
+          invocationId,
+          branch: IDENTIFICATION_BASIS_BRANCH,
+          requestedAt: command.issuedAt,
+        });
+        return await this.#governance.resolveGovernedReleases({
+          projectId: command.projectId,
+          requiredDefinitionTypes,
+          requiredAt,
+          asOfRecordedAt,
+          authorization,
+        });
+      };
+      const resolved = await resolveGovernedReleases([
+        "process-model",
+        "risk-mechanism",
+        "retrieval-evidence-base",
+      ]);
       if (resolved.kind !== "succeeded") return resolved;
       const processModel = resolved.result.members.find(
         (member) => member.definitionType === "process-model",
@@ -1231,23 +1732,40 @@ export class PostgresIdentificationKnowledgeAdapter {
           }),
         };
       }
-      const members = compositeBinding.composite_member_release_refs as unknown as readonly {
-        readonly reference: { readonly entityId: string; readonly versionId: string };
-      }[];
-      const memberResolution = await this.#governance.resolveGovernedReleases({
-        projectId: command.projectId,
-        requiredDefinitionTypes: ["standard-library", "case-library"],
-        requiredAt,
-        asOfRecordedAt,
-        authorization: command.authorization,
+      const storedMembers = Array.isArray(compositeBinding.composite_member_release_refs)
+        ? compositeBinding.composite_member_release_refs
+        : [];
+      const members = storedMembers.flatMap((value) => {
+        const parsed = KnowledgeReleaseRefV1Schema.safeParse(value);
+        return parsed.success ? [parsed.data] : [];
       });
+      if (members.length !== 3) {
+        return {
+          kind: "failed",
+          error: moduleError({
+            code: "BUSINESS_BLOCKED",
+            causalRunId: command.commandId,
+            blockerKind: "retrieval-evidence-base-unbound",
+            blockerRef: asContractReference(composite.releaseRef),
+          }),
+        };
+      }
+      const memberResolution = await resolveGovernedReleases(["standard-library", "case-library"]);
       if (memberResolution.kind !== "succeeded") return memberResolution;
+      const compositeReadInvocationId = `knowledge-read-${refKey(composite.releaseRef)}`;
       const compositeRead = await this.readExact({
         projectId: command.projectId,
         releaseRef: composite.releaseRef,
         actorId: command.actorId,
         requestedAt: command.issuedAt,
-        authorization: command.authorization,
+        invocationId: compositeReadInvocationId,
+        authorization: await this.#authorize({
+          projectId: command.projectId,
+          actorId: command.actorId,
+          invocationId: compositeReadInvocationId,
+          branch: IDENTIFICATION_BASIS_BRANCH,
+          requestedAt: command.issuedAt,
+        }),
       });
       if (compositeRead.kind === "failed") return { kind: "failed", error: compositeRead.error };
       const compositePackage = compositeRead.read.package;
@@ -1263,12 +1781,9 @@ export class PostgresIdentificationKnowledgeAdapter {
         };
       }
       if (
-        !versionedReferenceEquals(
-          compositePackage.riskMechanismReleaseRef,
-          riskMechanism.releaseRef as never,
-        ) ||
+        !versionedEquals(compositePackage.riskMechanismReleaseRef, riskMechanism.releaseRef) ||
         !memberResolution.result.releaseRefs.every((resolvedMember) =>
-          members.some((member) => versionedReferenceEquals(member, resolvedMember as never)),
+          members.some((member) => versionedEquals(member, resolvedMember)),
         )
       ) {
         return {
@@ -1377,11 +1892,45 @@ export class PostgresIdentificationKnowledgeAdapter {
         projectId: input.projectId,
         preparationSnapshotRef,
         actorId: input.actorId,
+        requestId: `${input.commandId}:preparation`,
         requestedAt: input.issuedAt,
-        authorization: input.authorization,
       });
-      if (preparation.kind === "failed") {
+      if (preparation.kind === "error") {
         return { kind: "failed", error: preparation.error };
+      }
+      // D-08：把 D-04 strict 准备、正式清洗结果与逐来源保留/排除资料段冻结进清单。
+      const members = preparation.snapshot.sourceVersionRefs.flatMap((sourceVersionRef, index) => {
+        const sourceSegmentSetRef = preparation.snapshot.includedSourceSegmentSetRefs[index];
+        if (sourceSegmentSetRef === undefined) return [];
+        return [
+          {
+            sourceVersionRef,
+            sourceSegmentSetRef,
+            retainedSegmentIds: [...retainedSegmentsFor(preparation.result, sourceVersionRef)],
+            excludedSegmentIds: [
+              ...new Set(
+                preparation.result.inputs
+                  .filter(
+                    (status) =>
+                      status.sourceVersionRef?.reference.entityId ===
+                      sourceVersionRef.reference.entityId,
+                  )
+                  .flatMap((status) => status.excludedSegmentIds),
+              ),
+            ],
+          },
+        ];
+      });
+      if (members.length !== preparation.snapshot.sourceVersionRefs.length) {
+        return {
+          kind: "failed",
+          error: moduleError({
+            code: "BUSINESS_BLOCKED",
+            causalRunId: input.commandId,
+            blockerKind: "identification-preparation-members-incomplete",
+            blockerRef: asContractReference(preparationSnapshotRef),
+          }),
+        };
       }
       const manifest = KnowledgeAuthoringManifestV1Schema.parse({
         schemaVersion: SCHEMA_VERSION,
@@ -1389,6 +1938,9 @@ export class PostgresIdentificationKnowledgeAdapter {
         projectId: input.projectId,
         targetDefinitionType: input.definitionType,
         preparationSnapshotRef,
+        preparation: preparation.snapshot,
+        cleaningResultArtifactRef: preparation.resultArtifactRef,
+        members,
         validationPolicyRef: this.#policy.policyRef,
         ...(input.baseReleaseRef === undefined
           ? {}
@@ -1436,12 +1988,13 @@ export class PostgresIdentificationKnowledgeAdapter {
       // C08 启动需要 `agent-task.start` 能力：由组合根的冻结收窄授权提供，而不是调用方的知识分支上下文。
       // 启动身份必须与调用方命令区分：C06 每个 invocationId 只对应一个分支。
       const startCommandId = `${input.commandId}:start-task`;
-      const startAuthorization =
-        (await this.#authoringAuthorization?.({
-          projectId: input.projectId,
-          invocationId: startCommandId,
-          branch: "agent-task.start-task",
-        })) ?? input.authorization;
+      const startAuthorization = await this.#authorize({
+        projectId: input.projectId,
+        actorId: input.actorId,
+        invocationId: startCommandId,
+        branch: "agent-task.start-task",
+        requestedAt: input.issuedAt,
+      });
       const started = await taskPort.startTask(
         StartAgentTaskCommandV1Schema.parse({
           commandId: startCommandId,
@@ -1553,12 +2106,49 @@ export class PostgresIdentificationKnowledgeAdapter {
     );
   }
 
+  /**
+   * 工具成员双层校验：C08 已按任务定义校验 tool ref，这里在目标读取前再校验请求对象
+   * 属于清单冻结成员，越界请求不触达任何目标端口。
+   */
+  #assertSliceMember(
+    manifest: KnowledgeAuthoringManifestV1,
+    request: {
+      readonly sourceSegmentSetRef: SourceSegmentSetRefV1;
+      readonly sourceSegmentIds: readonly string[];
+      readonly limit: number;
+    },
+    context: AgentDomainToolExecutionContextV1,
+  ): void {
+    const member = manifest.members.find((candidate) =>
+      versionedEquals(candidate.sourceSegmentSetRef, request.sourceSegmentSetRef),
+    );
+    const retained = new Set(member?.retainedSegmentIds ?? []);
+    const withinBudget = request.limit <= this.#policy.agent.budgetPolicy.maxObjects;
+    if (
+      member === undefined ||
+      !withinBudget ||
+      !request.sourceSegmentIds.every((segmentId) => retained.has(segmentId))
+    ) {
+      throw new AgentRuntimeError(
+        makeAgentError({
+          code: "AGENT_INPUT_INVALID",
+          category: "input",
+          retryable: false,
+          stage: "worker.knowledge-authoring.tool.segment-slice.member",
+          taskRef: context.taskRef,
+          actionId: context.actionId,
+        }),
+      );
+    }
+  }
+
   async #readSegmentSliceTool(
     input: unknown,
     context: AgentDomainToolExecutionContextV1,
   ): Promise<AgentDomainToolResultV1> {
     const request = KnowledgeAuthoringSegmentSliceRequestV1Schema.parse(input);
     const manifest = await this.#readManifest(context.task);
+    this.#assertSliceMember(manifest, request, context);
     const read = await this.#preparationReader.readSegmentSlice({
       projectId: manifest.projectId,
       preparationSnapshotRef: manifest.preparationSnapshotRef,
@@ -1566,8 +2156,8 @@ export class PostgresIdentificationKnowledgeAdapter {
       segmentIds: request.sourceSegmentIds,
       limit: request.limit,
       actorId: context.task.envelope.actorId,
+      requestId: `${context.actionId}:segment-slice`,
       requestedAt: context.task.envelope.createdAt,
-      authorization: context.task.envelope.authorization,
     });
     if (read.kind === "failed") {
       throw new AgentRuntimeError(
@@ -1595,12 +2185,14 @@ export class PostgresIdentificationKnowledgeAdapter {
         parentArtifactRefs: [],
       },
     );
-    const segments =
-      (read.observation as { readonly segments?: readonly unknown[] }).segments ?? [];
+    const segments = read.observation.segments;
     return {
       observationArtifactRef,
       effect: "none",
-      usage: { ...emptyAgentBudgetUsage(), objects: segments.length },
+      usage: {
+        ...emptyAgentBudgetUsage(),
+        objects: Array.isArray(segments) ? segments.length : 0,
+      },
     };
   }
 
@@ -1610,13 +2202,39 @@ export class PostgresIdentificationKnowledgeAdapter {
   ): Promise<AgentDomainToolResultV1> {
     const request = KnowledgeAuthoringBaselineReadRequestV1Schema.parse(input);
     const manifest = await this.#readManifest(context.task);
+    const baseline = manifest.baseReleaseRef;
+    // 基线读取必须精确等于清单冻结的类型与发布，不把“工具在白名单”当作任意对象读取权。
+    if (
+      baseline === undefined ||
+      request.definitionType !== manifest.targetDefinitionType ||
+      !versionedEquals(baseline, request.releaseRef)
+    ) {
+      throw new AgentRuntimeError(
+        makeAgentError({
+          code: "AGENT_INPUT_INVALID",
+          category: "input",
+          retryable: false,
+          stage: "worker.knowledge-authoring.tool.baseline-read.member",
+          taskRef: context.taskRef,
+          actionId: context.actionId,
+        }),
+      );
+    }
+    const invocationId = `${context.actionId}:baseline-read`;
     const read = await this.readExact({
       projectId: manifest.projectId,
       releaseRef: request.releaseRef,
       actorId: context.task.envelope.actorId,
       requestedAt: context.task.envelope.createdAt,
-      invocationId: `${context.actionId}:baseline-read`,
-      authorization: context.task.envelope.authorization,
+      invocationId,
+      authorization: await this.#authorize({
+        taskRef: context.taskRef,
+        projectId: manifest.projectId,
+        actorId: context.task.envelope.actorId,
+        invocationId,
+        branch: IDENTIFICATION_BASIS_BRANCH,
+        requestedAt: context.task.envelope.createdAt,
+      }),
     });
     if (read.kind === "failed") {
       throw new AgentRuntimeError(
@@ -1708,13 +2326,21 @@ export class PostgresIdentificationKnowledgeAdapter {
     | undefined
   > {
     if (manifest.baseReleaseRef === undefined) return undefined;
+    const invocationId = `${task.envelope.commandId}:baseline`;
     const read = await this.readExact({
       projectId: manifest.projectId,
       releaseRef: manifest.baseReleaseRef,
       actorId: task.envelope.actorId,
       requestedAt: task.envelope.createdAt,
-      invocationId: `${task.envelope.commandId}:baseline`,
-      authorization: task.envelope.authorization,
+      invocationId,
+      authorization: await this.#authorize({
+        taskRef: task.envelope.agentTaskRef,
+        projectId: manifest.projectId,
+        actorId: task.envelope.actorId,
+        invocationId,
+        branch: IDENTIFICATION_BASIS_BRANCH,
+        requestedAt: task.envelope.createdAt,
+      }),
     });
     if (read.kind === "failed") return undefined;
     return {
@@ -1801,8 +2427,8 @@ export class PostgresIdentificationKnowledgeAdapter {
             evidenceReferences: input.evidenceReferences,
             purposeCode: input.purposeCode,
             actorId: task.envelope.actorId,
+            requestId: `${task.envelope.commandId}:evidence`,
             requestedAt: task.envelope.createdAt,
-            authorization: task.envelope.authorization,
           });
           return checked.kind === "succeeded" ? checked.items : [];
         },
@@ -1810,8 +2436,10 @@ export class PostgresIdentificationKnowledgeAdapter {
           await this.#resolveProcessModelNodes(packageValue.projectId, releaseRef, {
             actorId: task.envelope.actorId,
             issuedAt: task.envelope.createdAt,
-            authorization: task.envelope.authorization,
+            invocationId: `${task.envelope.commandId}:process-model`,
           }),
+        resolveCompositeMembers: async (members) =>
+          await this.#resolveCompositeMembers(packageValue.projectId, members),
       },
     });
   }
@@ -1861,13 +2489,14 @@ export class PostgresIdentificationKnowledgeAdapter {
       },
     );
     const submitCommandId = `${task.envelope.agentTaskRef.reference.entityId}:submit`;
-    const authorization =
-      (await this.#authoringAuthorization?.({
-        taskRef: task.envelope.agentTaskRef,
-        projectId: task.envelope.projectId,
-        invocationId: submitCommandId,
-        branch: "knowledge-modeling.submit-revision",
-      })) ?? task.envelope.authorization;
+    const authorization = await this.#authorize({
+      taskRef: task.envelope.agentTaskRef,
+      projectId: task.envelope.projectId,
+      actorId: task.envelope.actorId,
+      invocationId: submitCommandId,
+      branch: "knowledge-modeling.submit-revision",
+      requestedAt: nowIso(this.#now),
+    });
     const submitted = await this.#submitIdentificationRevision(
       KnowledgeGovernanceCommandV1Schema.parse({
         kind: "submit-revision",
@@ -1880,13 +2509,7 @@ export class PostgresIdentificationKnowledgeAdapter {
         payload: {
           definitionType: applied.manifest.targetDefinitionType,
           candidateArtifactRef,
-          evidenceReferences: [
-            (applied.package as { nodes?: readonly { evidence: readonly unknown[] }[] }).nodes?.[0]
-              ?.evidence?.[0] ?? {
-              locator: { sourceSegmentId: "identification-knowledge-failure" },
-              sourceVersion: { entityId: "identification-knowledge", versionId: "1" },
-            },
-          ],
+          evidenceReferences: [...submissionEvidenceReferences(applied.package, applied.manifest)],
         },
       }) as Extract<KnowledgeGovernanceCommandV1, { kind: "submit-revision" }>,
     );
@@ -1945,20 +2568,18 @@ export class PostgresIdentificationKnowledgeAdapter {
     const rows = await this.#db
       .selectFrom("business.identification_knowledge_authoring_attempts")
       .selectAll()
-      .where("stage", "in", ["prepared", "task-started"])
+      // 停在 `failure-revision-bound` 的尝试只补未完成阶段；已成立的事实不会重复创建。
+      .where("stage", "in", ["prepared", "task-started", "failure-revision-bound"])
       .execute();
     let settled = 0;
-    console.error("C17_SETTLE_SCAN", rows.length, store === undefined ? "no-store" : "store");
     for (const row of rows) {
       const taskRef = row.agent_task_ref as unknown as AgentTaskRefV1;
       const task = await store.getTask(taskRef);
       if (task === undefined) continue;
       const status = task.state.status;
-      console.error("C17_SETTLE_STATUS", status);
       if (status !== "terminal-failure" && status !== "cancelled") continue;
       try {
-        await this.#settleOneFailure(row, task, taskRef);
-        settled += 1;
+        if (await this.#settleOneFailure(row, task, taskRef)) settled += 1;
       } catch {
         continue;
       }
@@ -1970,7 +2591,7 @@ export class PostgresIdentificationKnowledgeAdapter {
     row: AuthoringAttemptRow,
     task: AgentTaskSnapshotV1,
     taskRef: AgentTaskRefV1,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const failureArtifactRef = await this.#putArtifact(
       {
         projectId: row.project_id,
@@ -2010,13 +2631,14 @@ export class PostgresIdentificationKnowledgeAdapter {
       },
     );
     const failureCommandId = `${taskRef.reference.entityId}:failure-revision`;
-    const authorization =
-      (await this.#authoringAuthorization?.({
-        taskRef,
-        projectId: row.project_id,
-        invocationId: failureCommandId,
-        branch: "knowledge-modeling.submit-revision",
-      })) ?? task.envelope.authorization;
+    const authorization = await this.#authorize({
+      taskRef,
+      projectId: row.project_id,
+      actorId: task.envelope.actorId,
+      invocationId: failureCommandId,
+      branch: "knowledge-modeling.submit-revision",
+      requestedAt: nowIso(this.#now),
+    });
     const failureCommand: KnowledgeGovernanceCommandV1 = KnowledgeGovernanceCommandV1Schema.parse({
       kind: "submit-revision",
       commandId: failureCommandId,
@@ -2037,7 +2659,7 @@ export class PostgresIdentificationKnowledgeAdapter {
       },
     });
     const submitted = await this.#governance.govern(failureCommand);
-    if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") return;
+    if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") return false;
     const revisionRef = submitted.result.knowledgeRevisionRef;
     const bindingAuditId = randomId("audit");
     const bindingAtomic = atomicCommand({
@@ -2090,22 +2712,35 @@ export class PostgresIdentificationKnowledgeAdapter {
         events: [],
       } satisfies AtomicCommitV1;
     });
+    // 逐阶段 CAS：失败修订绑定成立后先停到 `failure-revision-bound`，授权或复核失败不回退该事实。
+    await this.#db
+      .updateTable("business.identification_knowledge_authoring_attempts")
+      .set({
+        stage: "failure-revision-bound",
+        failure_artifact_ref: jsonbValue(failureArtifactRef),
+        persisted_at: new Date(nowIso(this.#now)),
+      } as never)
+      .where("project_id", "=", row.project_id)
+      .where("attempt_id", "=", row.attempt_id)
+      .where("stage", "in", ["prepared", "task-started"])
+      .execute();
     const reviewCommandId = `${taskRef.reference.entityId}:failure-review`;
-    const reviewAuthorization =
-      (await this.#authoringAuthorization?.({
-        taskRef,
-        projectId: row.project_id,
-        invocationId: reviewCommandId,
-        // C16 复核分支（C07 的评审请求由 C16 内部按其自身接缝签发）。
-        branch: "knowledge-modeling.request-review",
-      })) ?? authorization;
+    const reviewAuthorization = await this.#authorize({
+      taskRef,
+      projectId: row.project_id,
+      actorId: task.envelope.actorId,
+      invocationId: reviewCommandId,
+      // C16 复核分支（C07 的评审请求由 C16 内部按其自身接缝签发）。
+      branch: "knowledge-modeling.request-review",
+      requestedAt: nowIso(this.#now),
+    });
     const review = await this.#requestFailureReview(
       row,
       revisionRef,
       reviewCommandId,
       reviewAuthorization,
     );
-    if (review === undefined) return;
+    if (review === undefined) return false;
     await this.#db
       .updateTable("business.identification_knowledge_authoring_attempts")
       .set({
@@ -2116,8 +2751,9 @@ export class PostgresIdentificationKnowledgeAdapter {
       } as never)
       .where("project_id", "=", row.project_id)
       .where("attempt_id", "=", row.attempt_id)
-      .where("stage", "in", ["prepared", "task-started"])
+      .where("stage", "=", "failure-revision-bound")
       .execute();
+    return true;
   }
 
   /** D-09：失败修订由 C16 转 C07 复核，绑定 failure-review-only 永不可发布。 */
@@ -2269,37 +2905,14 @@ export class PostgresIdentificationKnowledgeAdapter {
     artifactRef: ReturnType<typeof ContractCandidateArtifactRefV1Schema.parse>,
     purposeCode: string,
   ): Promise<unknown> {
-    // 读取不是幂等业务动作：每次使用新的访问身份，避免同一工件的重复读取互相冲突。
-    const readId = randomId("c17-read");
-    const handle: ArtifactReadHandleV1 = await this.#artifactStore.open(
-      ArtifactReadRequestV1Schema.parse({
-        schemaVersion: SCHEMA_VERSION,
-        requestId: readId,
-        idempotencyKey: readId,
-        artifactRef,
-        projectId: authorization.projectId,
-        actorId: authorization.actorId,
-        requestedAt: authorization.decidedAt,
-        purposeCode,
-        requiredCapability: authorization.grantedCapabilities[0],
-        authorization,
-      }),
-    );
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    for await (const chunk of handle.content) {
-      size += chunk.byteLength;
-      if (size > MAX_PACKAGE_BYTES) throw new RangeError("artifact exceeds the bounded read limit");
-      chunks.push(chunk);
-    }
-    await handle.verified;
-    const buffer = new Uint8Array(size);
-    let offset = 0;
-    for (const chunk of chunks) {
-      buffer.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return JSON.parse(new TextDecoder().decode(buffer)) as unknown;
+    return await readContentArtifact(this.#artifactStore, {
+      projectId: authorization.projectId,
+      actorId: authorization.actorId,
+      requestedAt: authorization.decidedAt,
+      authorization,
+      artifactRef,
+      purposeCode,
+    });
   }
 
   async #mapError(error: unknown, causalRunId: string): Promise<ModuleErrorV1> {

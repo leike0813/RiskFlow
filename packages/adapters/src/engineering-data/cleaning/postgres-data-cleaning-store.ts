@@ -6,6 +6,7 @@ import type {
   ContentArtifactRefV1,
   EngineeringFreezeCommandV1,
   EngineeringFreezeResultV1,
+  IdentificationPreparationSnapshotRefV1,
   MonitoringSeriesRefV1,
   MonitoringSnapshotRefV1,
   SourceVersionRefV1,
@@ -18,12 +19,18 @@ import {
   AgentTaskRefV1Schema,
   ContentArtifactRefV1Schema,
   EngineeringFreezeResultV1Schema,
+  IdentificationPreparationSnapshotRefV1Schema,
   MonitoringSeriesRefV1Schema,
+  RouteDecisionRefV1Schema,
   SourceSegmentSetRefV1Schema,
   SourceVersionRefV1Schema,
   StartAgentTaskResultV1Schema,
   StructuredDocumentConversionRefV1Schema,
 } from "@riskflow/contracts/ports";
+import {
+  IdentificationPreparationSnapshotV1Schema,
+  type IdentificationPreparationSnapshotV1,
+} from "@riskflow/contracts/workflows";
 import { canonicalJson, sha256CanonicalJson } from "@riskflow/core/persistence";
 import type {
   AtomicCommitV1,
@@ -89,6 +96,7 @@ import type { PostgresMonitoringStoreV1 } from "../monitoring/postgres-monitorin
 const SCHEMA_VERSION = "1" as const;
 const RESULT_COMMAND_KIND = "engineering-data.data-cleaning-result.v1";
 const PREPARATION_COMMAND_KIND = "engineering-data.identification-preparation.v1";
+const PREPARATION_READ_COMMAND_KIND = "engineering-data.read-identification-preparation.v1";
 const MANIFEST_PURPOSE = "engineering-data.data-cleaning-preparation-manifest";
 /** C04 读取按工件自身的 purposeCode 授权，C12 的 JSON-LD 必须用其写入时的用途码读取。 */
 const CONVERSION_PURPOSE = "engineering-data.structured-document-conversion";
@@ -98,6 +106,7 @@ const OBSERVATION_PURPOSE = "engineering-data.data-cleaning-observation";
 const VALIDATION_PURPOSE = "agent-validation";
 const RESULT_PURPOSE = "engineering-data.data-cleaning-result";
 const PREPARATION_BRANCH = "engineering-data.identification-preparation" as const;
+const EVIDENCE_ACCESS_BRANCH = "engineering-data.evidence-access" as const;
 const MONITORING_BRANCH = "engineering-data.monitoring-snapshot" as const;
 const FREEZE_CAPABILITY = "engineering-data.freeze" as const;
 const MAX_MANIFEST_BYTES = 1_048_576;
@@ -199,6 +208,9 @@ interface PreparationSnapshotRow {
   version_id: string;
   project_id: string;
   snapshot_ref: unknown;
+  snapshot_payload: unknown;
+  agent_task_ref: unknown;
+  cleaning_result_artifact_ref: unknown;
 }
 
 type CleaningDatabase = PostgresDatabase & {
@@ -238,6 +250,34 @@ export interface PostgresDataCleaningStoreOptions {
   readonly policy: DataCleaningPolicyV1;
   readonly now?: () => Date;
 }
+
+/**
+ * 精确准备读取（D-02）的输入：调用方提交自身命令身份、当前授权上下文与精确准备快照引用。
+ * 没有列表、搜索、名称或“最新值”参数，目标只在方法内部按引用定位。
+ */
+export interface IdentificationPreparationReadRequestV1 {
+  readonly projectId: string;
+  readonly actorId: string;
+  readonly requestId: string;
+  readonly requestedAt: string;
+  readonly authorization: EngineeringFreezeCommandV1["authorization"];
+  readonly preparationSnapshotRef: IdentificationPreparationSnapshotRefV1;
+}
+
+/**
+ * 精确准备读取的结果：成功只含 strict 准备聚合、其绑定任务、strict 清洗结果与结果工件引用；
+ * 失败是统一不可枚举的授权拒绝（缺失/跨工程/撤权/未授权/绑定失配同形），瞬时技术失败保留
+ * 可重试语义。
+ */
+export type IdentificationPreparationReadResultV1 =
+  | {
+      readonly kind: "ok";
+      readonly snapshot: IdentificationPreparationSnapshotV1;
+      readonly agentTaskRef: AgentTaskRefV1;
+      readonly result: DataCleaningResultV1;
+      readonly resultArtifactRef: ContentArtifactRefV1;
+    }
+  | { readonly kind: "error"; readonly error: Record<string, unknown> };
 
 const asTransaction = (context: TransactionContextV1): CleaningTransaction =>
   getPostgresTransaction(context) as unknown as CleaningTransaction;
@@ -372,6 +412,13 @@ const resolveAccessFailure = (error: unknown): AccessServiceError | undefined =>
 
 const failed = (error: Record<string, unknown>): EngineeringFreezeResultV1 =>
   EngineeringFreezeResultV1Schema.parse({ kind: "failed", error });
+
+/** 缺失、跨工程、撤权与未授权共用的不可枚举拒绝（精确读取接缝共用）。 */
+function boundResultDenied(causalRunId: string): never {
+  throw Object.assign(new Error("data cleaning bound result is unavailable"), {
+    dataCleaningError: moduleError("AUTHORIZATION_DENIED", causalRunId),
+  });
+}
 
 /**
  * C15 数据清洗与识别准备收口的事实存储：组合 C03 事务、C04 工件、C08 任务、
@@ -740,6 +787,141 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
     };
   }
 
+  // ------------------------------------------------- exact preparation read
+
+  /**
+   * 精确准备读取（D-02）：按精确准备引用返回 strict 准备聚合、其绑定任务与清洗结果。结果
+   * 索引查询、C04 受权读取与任务—结果绑定复用私有 `#readBoundResult`，不建立第二个结果读取
+   * 实现；读取身份按本请求隔离，避免与冻结收口的 C04 访问记录相互占位。
+   *
+   * 顺序固定：当前授权复验 → 按 project + 准备引用单点读取准备行 → strict parse 准备/
+   * 任务/结果引用 → 以快照精确范围复验 C06 → 绑定读取清洗结果 → requestId/规范载荷原子写
+   * 完成回执与一条只追加审计（零事件）。缺失、跨工程、撤权、未授权、非 strict payload 与
+   * 绑定失配统一为同一不可枚举拒绝；数据库、C04、审计与回执的瞬时故障保持可重试语义。
+   */
+  async readExactPreparation(
+    input: IdentificationPreparationReadRequestV1,
+  ): Promise<IdentificationPreparationReadResultV1> {
+    const context: CleaningCommandContext = {
+      commandId: input.requestId,
+      idempotencyKey: `${input.requestId}:read-exact-preparation`,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      issuedAt: input.requestedAt,
+      authorization: input.authorization,
+    };
+    try {
+      if (
+        input.projectId !== input.authorization.projectId ||
+        input.actorId !== input.authorization.actorId
+      ) {
+        boundResultDenied(input.requestId);
+      }
+      // 授权复验先于目标定位：撤销或范围不符时不产生任何可观察的存在性差异。
+      await this.#access.verify({
+        authorizationContextRef: input.authorization.authorizationContextRef,
+        invocationId: input.requestId,
+        projectId: input.projectId,
+        branch: EVIDENCE_ACCESS_BRANCH,
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+        requestedAt: input.requestedAt,
+      });
+      const row = await this.#db
+        .selectFrom("business.identification_preparation_snapshots")
+        .selectAll()
+        .where("project_id", "=", input.projectId)
+        .where("snapshot_id", "=", input.preparationSnapshotRef.reference.entityId)
+        .where("version_id", "=", input.preparationSnapshotRef.reference.versionId)
+        .executeTakeFirst();
+      if (row === undefined) boundResultDenied(input.requestId);
+      const snapshotRef = IdentificationPreparationSnapshotRefV1Schema.safeParse(row.snapshot_ref);
+      const snapshotParsed = IdentificationPreparationSnapshotV1Schema.safeParse(
+        row.snapshot_payload,
+      );
+      const taskRefParsed = AgentTaskRefV1Schema.safeParse(row.agent_task_ref);
+      const resultRefParsed = ContentArtifactRefV1Schema.safeParse(
+        row.cleaning_result_artifact_ref,
+      );
+      if (
+        !snapshotRef.success ||
+        !sameVersion(snapshotRef.data.reference, input.preparationSnapshotRef.reference) ||
+        !snapshotParsed.success ||
+        !taskRefParsed.success ||
+        !resultRefParsed.success
+      ) {
+        boundResultDenied(input.requestId);
+      }
+      const snapshot = snapshotParsed.data;
+      const agentTaskRef = taskRefParsed.data;
+      const preparationResultRef = resultRefParsed.data;
+      // 以快照自身的精确空间/资料范围复验当前授权，拒绝请求范围大于当前授权的读取。
+      const exact = await this.#access.verify({
+        authorizationContextRef: input.authorization.authorizationContextRef,
+        invocationId: input.requestId,
+        projectId: input.projectId,
+        branch: EVIDENCE_ACCESS_BRANCH,
+        requestedSpatialScopeRefs: [...snapshot.spatialScopeRefs],
+        requestedSourceVersionRefs: [...snapshot.sourceVersionRefs],
+        requestedAt: input.requestedAt,
+      });
+      const bound = await this.#readBoundResult(
+        { ...context, authorization: exact.context },
+        agentTaskRef,
+        input.requestId,
+      );
+      if (bound.kind === "error") boundResultDenied(input.requestId);
+      if (!sameVersion(preparationResultRef.reference, bound.resultArtifactRef.reference)) {
+        boundResultDenied(input.requestId);
+      }
+      const recordedAt = this.#now().toISOString();
+      await this.#transactionUnit.execute(
+        atomicCommandFor(context, PREPARATION_READ_COMMAND_KIND, {
+          projectId: input.projectId,
+          actorId: input.actorId,
+          authorizationContextRef: input.authorization.authorizationContextRef,
+          requestedAt: input.requestedAt,
+          preparationSnapshotRef: input.preparationSnapshotRef,
+        }),
+        async (): Promise<AtomicCommitV1> => ({
+          resultRef: input.preparationSnapshotRef,
+          audit: {
+            auditEntryId: `${input.requestId}:read-exact-preparation`,
+            projectId: input.projectId,
+            action: "engineering-data.read-identification-preparation",
+            targetRef: input.preparationSnapshotRef,
+            actorRef: input.actorId,
+            authorizationContextRef: input.authorization.authorizationContextRef,
+            occurredAt: input.requestedAt,
+            recordedAt,
+            version: input.preparationSnapshotRef.reference,
+            commandId: input.requestId,
+            idempotencyKey: context.idempotencyKey,
+          },
+          events: [],
+        }),
+        { isolationLevel: "repeatable read" },
+      );
+      return {
+        kind: "ok",
+        snapshot,
+        agentTaskRef,
+        result: bound.result,
+        resultArtifactRef: bound.resultArtifactRef,
+      };
+    } catch (error) {
+      const errorCode = (error as Error & { code?: unknown }).code;
+      // 工件不可见与行/绑定失配同形；同请求改传其它载荷保持幂等冲突语义。
+      if (errorCode === "ARTIFACT_ACCESS_DENIED") {
+        return { kind: "error", error: moduleError("AUTHORIZATION_DENIED", input.requestId) };
+      }
+      if (errorCode === "IDEMPOTENCY_CONFLICT") {
+        return { kind: "error", error: moduleError("IDEMPOTENCY_CONFLICT", input.requestId) };
+      }
+      return { kind: "error", error: this.#mapError(error, input.requestId) };
+    }
+  }
+
   // ----------------------------------------------------------- preparation tail
 
   async #finalizePreparation(
@@ -802,7 +984,7 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
         ? manifest.monitoring.monitoringSnapshotRef
         : undefined;
 
-    const coverageDecisionRef = await this.#putContent(context, {
+    const coverageDecisionArtifactRef = await this.#putContent(context, {
       artifactId: `data-cleaning-coverage-${digest.slice(0, 40)}`,
       purposeCode: DECISION_PURPOSE,
       value: {
@@ -829,7 +1011,7 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
       },
       parentArtifactRefs: [manifestArtifactRef, bound.resultArtifactRef],
     });
-    const excludedSegmentDecisionRef = await this.#putContent(context, {
+    const excludedSegmentDecisionArtifactRef = await this.#putContent(context, {
       artifactId: `data-cleaning-exclusions-${digest.slice(0, 40)}`,
       purposeCode: DECISION_PURPOSE,
       value: {
@@ -840,6 +1022,16 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
       },
       parentArtifactRefs: [manifestArtifactRef, bound.resultArtifactRef],
     });
+    // D-01：C04 内容工件仍是决定内容的唯一正文与精确版本身份；公开快照只保存同版本身份的
+    // `route-decision` 投影，因为公共 strict Schema 不接受 `ContentArtifactRefV1` 冒充路由决定。
+    const coverageDecisionRef = RouteDecisionRefV1Schema.parse({
+      kind: "route-decision",
+      reference: coverageDecisionArtifactRef.reference,
+    });
+    const excludedSegmentDecisionRef = RouteDecisionRefV1Schema.parse({
+      kind: "route-decision",
+      reference: excludedSegmentDecisionArtifactRef.reference,
+    });
 
     const snapshotRef = {
       kind: "identification-preparation-snapshot" as const,
@@ -847,7 +1039,9 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
     };
     const recordedAt = this.#now().toISOString();
     const auditEntryId = `audit-${command.commandId}`;
-    const snapshot = {
+    // 完整快照在进入事务前必须通过公共 strict Schema：route kind、资料段集合、数组等长及
+    // 全部既有字段都在这里被校验，不产生无法被下游解析的 `snapshot_payload`。
+    const snapshot = IdentificationPreparationSnapshotV1Schema.parse({
       schemaVersion: SCHEMA_VERSION,
       projectRevisionRef: manifest.projectRevisionRef,
       spatialScopeRefs: manifest.spatialScopeRefs,
@@ -868,7 +1062,7 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
       },
       createdBy: context.actorId,
       createdAt: recordedAt,
-    };
+    });
 
     await this.#transactionUnit.execute(
       atomicCommandFor(context, PREPARATION_COMMAND_KIND, {
@@ -877,10 +1071,14 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
         sourceVersionRefs: snapshot.sourceVersionRefs,
       }),
       async (transactionContext) => {
-        for (const decisionRef of [coverageDecisionRef, excludedSegmentDecisionRef]) {
+        // 工件 guard 继续校验原 C04 内容工件身份；公开快照只保存上文的 route-decision 投影。
+        for (const decisionArtifactRef of [
+          coverageDecisionArtifactRef,
+          excludedSegmentDecisionArtifactRef,
+        ]) {
           await this.#artifactGuard.assertUsable(transactionContext, {
             schemaVersion: SCHEMA_VERSION,
-            artifactRef: decisionRef,
+            artifactRef: decisionArtifactRef,
             projectId: context.projectId,
             purposeCode: DECISION_PURPOSE,
             requiredCapability: authorizedCapability(context.authorization),
@@ -1207,6 +1405,12 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
   async #readBoundResult(
     context: CleaningCommandContext,
     taskRef: AgentTaskRefV1,
+    /**
+     * C04 读取身份作用域：缺省按任务身份读取，冻结收口与既有调用方行为不变。精确准备读取
+     * 必须传入自身 `requestId`，否则同一个结果工件已被冻结路径以同一读取身份占位，C04
+     * 访问记录会以幂等冲突拒绝第二次不同上下文的读取。
+     */
+    readScope: string = taskRef.reference.entityId,
   ): Promise<
     | {
         readonly kind: "ok";
@@ -1238,6 +1442,7 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
         context.authorization,
         RESULT_PURPOSE,
         MAX_MANIFEST_BYTES,
+        readScope,
       ),
     );
     if (!sameVersion(result.agentTaskRef.reference, taskRef.reference)) {
@@ -1545,9 +1750,17 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
     authorization: EngineeringFreezeCommandV1["authorization"],
     purposeCode: string,
     maxBytes: number,
+    readScope: string = taskRef.reference.entityId,
   ): Promise<unknown> {
     return JSON.parse(
-      await this.#readBytes(taskRef, artifactRefValue, authorization, purposeCode, maxBytes),
+      await this.#readBytes(
+        taskRef,
+        artifactRefValue,
+        authorization,
+        purposeCode,
+        maxBytes,
+        readScope,
+      ),
     ) as unknown;
   }
 
@@ -1557,12 +1770,13 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
     authorization: EngineeringFreezeCommandV1["authorization"],
     purposeCode: string,
     maxBytes: number,
+    readScope: string = taskRef.reference.entityId,
   ): Promise<string> {
     const handle: ArtifactReadHandleV1 = await this.#artifactStore.open(
       ArtifactReadRequestV1Schema.parse({
         schemaVersion: SCHEMA_VERSION,
-        requestId: `${taskRef.reference.entityId}:${purposeCode}:read`,
-        idempotencyKey: `${taskRef.reference.entityId}:${purposeCode}:read`,
+        requestId: `${readScope}:${purposeCode}:read`,
+        idempotencyKey: `${readScope}:${purposeCode}:read`,
         artifactRef: artifactRefValue,
         projectId: authorization.projectId,
         actorId: authorization.actorId,

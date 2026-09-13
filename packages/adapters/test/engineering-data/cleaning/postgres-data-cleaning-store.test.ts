@@ -9,10 +9,16 @@ import type { TransactionUnitV1 } from "@riskflow/core/persistence";
 import { StartAgentTaskCommandV1Schema } from "@riskflow/contracts/ports";
 import type {
   AuthorizationContextV1,
+  ContentArtifactRefV1,
   EngineeringFreezeCommandV1,
+  IdentificationPreparationSnapshotRefV1,
   SourceVersionRefV1,
   VersionReference,
 } from "@riskflow/contracts/ports";
+import {
+  IdentificationPreparationSnapshotV1Schema,
+  type IdentificationPreparationSnapshotV1,
+} from "@riskflow/contracts/workflows";
 
 import {
   CLEANING_CONVERSION_POLICY_REF,
@@ -31,6 +37,7 @@ import {
 
 const MANIFEST_PURPOSE = "engineering-data.data-cleaning-preparation-manifest";
 const CONVERSION_PURPOSE = "engineering-data.structured-document-conversion";
+const DECISION_PURPOSE = "engineering-data.data-cleaning-decision";
 const OBSERVATION_PURPOSE = "engineering-data.data-cleaning-observation";
 const RESULT_PURPOSE = "engineering-data.data-cleaning-result";
 const PREPARATION_COMMAND_KIND = "engineering-data.identification-preparation.v1";
@@ -71,15 +78,6 @@ interface CleaningManifestViewV1 {
     readonly availability: string;
   };
   readonly dataProcessingPolicyRef: VersionReference;
-}
-
-interface PreparationSnapshotViewV1 {
-  readonly sourceVersionRefs: readonly SourceVersionRefV1[];
-  readonly includedSourceSegmentSetRefs: readonly {
-    readonly reference: VersionReference;
-  }[];
-  readonly monitoringSnapshotRef?: { readonly reference: VersionReference };
-  readonly coverageDecisionRef: { readonly reference: VersionReference };
 }
 
 interface DocumentObservationViewV1 {
@@ -628,7 +626,7 @@ describe("C15 PostgreSQL data cleaning store", () => {
 
     const snapshotRows = await fixture.postgres.adminPool.query<{
       snapshot_ref: unknown;
-      snapshot_payload: PreparationSnapshotViewV1;
+      snapshot_payload: unknown;
       audit_entry_id: string;
       cleaning_result_artifact_ref: unknown;
     }>(
@@ -637,7 +635,9 @@ describe("C15 PostgreSQL data cleaning store", () => {
     );
     expect(snapshotRows.rows).toHaveLength(1);
     expect(snapshotRows.rows[0]?.snapshot_ref).toEqual(snapshotRef);
-    const snapshotPayload = snapshotRows.rows[0]!.snapshot_payload;
+    // 入库 payload 必须能被公共 strict Schema 直接解析：旧写入的 content-artifact 决定会在这里失败。
+    const snapshotPayload: IdentificationPreparationSnapshotV1 =
+      IdentificationPreparationSnapshotV1Schema.parse(snapshotRows.rows[0]!.snapshot_payload);
     expect(snapshotPayload.sourceVersionRefs).toEqual([
       ...firstFreeze.command.payload.sourceVersionRefs,
     ]);
@@ -648,7 +648,6 @@ describe("C15 PostgreSQL data cleaning store", () => {
       new Set(snapshotPayload.includedSourceSegmentSetRefs.map((ref) => ref.reference.entityId))
         .size,
     ).toBe(snapshotPayload.includedSourceSegmentSetRefs.length);
-    expect(snapshotPayload.coverageDecisionRef.reference.entityId).toBeTruthy();
 
     const manifest = await readManifestOfTask(
       world.projectId,
@@ -661,6 +660,32 @@ describe("C15 PostgreSQL data cleaning store", () => {
     expect(snapshotPayload.monitoringSnapshotRef).toEqual(
       manifest?.monitoring?.monitoringSnapshotRef,
     );
+
+    // route-decision 投影仍以原 C04 精确身份追溯到决定内容，且内容绑定同一份清洗结果。
+    const resultRows = await resultRowsOf(world.projectId);
+    expect(resultRows).toHaveLength(1);
+    const resultArtifactRef = resultRows[0]!.result_artifact_ref;
+    expect(snapshotRows.rows[0]?.cleaning_result_artifact_ref).toEqual(resultArtifactRef);
+    const decisionRefs = [
+      snapshotPayload.coverageDecisionRef,
+      ...snapshotPayload.excludedSegmentDecisionRefs,
+    ];
+    expect(decisionRefs.map((decisionRef) => decisionRef.kind)).toEqual([
+      "route-decision",
+      "route-decision",
+    ]);
+    for (const decisionRef of decisionRefs) {
+      const decision = (await fixture.readArtifact(
+        { kind: "content-artifact", reference: decisionRef.reference },
+        firstFreeze.command.authorization,
+        DECISION_PURPOSE,
+      )) as {
+        readonly manifestDigest: string;
+        readonly cleaningResultArtifactRef: ContentArtifactRefV1;
+      };
+      expect(decision.cleaningResultArtifactRef).toEqual(resultArtifactRef);
+      expect(decision.manifestDigest).toMatch(/^[0-9a-f]{64}$/u);
+    }
 
     const receipts = await fixture.postgres.adminPool.query<{
       event_ids: string[];
@@ -716,6 +741,303 @@ describe("C15 PostgreSQL data cleaning store", () => {
     expect(payloadJson).not.toContain("monitoringSnapshotRef");
     expect(payloadJson).not.toContain("includedSourceSegmentSetRefs");
   }, 120_000);
+
+  // ------------------------------------------------ exact preparation read
+
+  let exactReadWorld: CleaningWorldV1 | undefined;
+  let exactReadSnapshotRef: IdentificationPreparationSnapshotRefV1 | undefined;
+  let exactReadSecondRef: IdentificationPreparationSnapshotRefV1 | undefined;
+
+  /** 读取接缝的副作用计数：C03 领域审计、读取回执、C04 访问记录与 Outbox 事件。 */
+  const exactReadCounts = async (
+    projectId: string,
+    requestId: string,
+  ): Promise<{
+    readonly audits: string;
+    readonly receipts: string;
+    readonly accessRecords: string;
+    readonly events: string;
+  }> => {
+    const rows = await fixture.postgres.adminPool.query<{
+      audits: string;
+      receipts: string;
+      accessRecords: string;
+      events: string;
+    }>(
+      `SELECT
+         (SELECT count(*)::text FROM audit.entries WHERE project_id = $1 AND action = $2) AS audits,
+         (SELECT count(*)::text FROM business.command_receipts WHERE project_id = $1 AND command_kind = $3) AS receipts,
+         (SELECT count(*)::text FROM business.artifact_access_records WHERE project_id = $1 AND request_id LIKE $4) AS "accessRecords",
+         (SELECT count(*)::text FROM outbox.events WHERE project_id = $1 AND producer_command_id LIKE $5) AS events`,
+      [
+        projectId,
+        "engineering-data.read-identification-preparation",
+        "engineering-data.read-identification-preparation.v1",
+        `${requestId}:%`,
+        `${requestId}%`,
+      ],
+    );
+    return rows.rows[0]!;
+  };
+
+  const exactRead = (
+    world: CleaningWorldV1,
+    requestId: string,
+    authorization: AuthorizationContextV1,
+    preparationSnapshotRef: IdentificationPreparationSnapshotRefV1,
+    overrides: { readonly actorId?: string } = {},
+  ) =>
+    world.pipeline.store.readExactPreparation({
+      projectId: world.projectId,
+      actorId: overrides.actorId ?? world.uploaderId,
+      requestId,
+      requestedAt: authorization.decidedAt,
+      authorization,
+      preparationSnapshotRef,
+    });
+
+  const commitExactReadPreparation = async (
+    world: CleaningWorldV1,
+    commandId: string,
+  ): Promise<IdentificationPreparationSnapshotRefV1> => {
+    // uploader 是资料递送注册人：只有其启动授权携带 C06 资料访问授予，C08 任务才能读到
+    // JSON-LD 工件并完成定义校验；freezer 的启动上下文没有这些授予。
+    await freezeIdentificationPreparation(world.pipeline.store, world, {
+      commandId,
+      actor: "uploader",
+    });
+    await completeCleaningTask(world.pipeline, fixture, {
+      workerId: `${commandId}-worker`,
+      projectId: world.projectId,
+    });
+    const committed = await freezeIdentificationPreparation(world.pipeline.store, world, {
+      commandId,
+      actor: "uploader",
+    });
+    if (
+      committed.result.kind !== "succeeded" ||
+      committed.result.result.kind !== "identification-preparation"
+    ) {
+      throw new Error(`the exact-read world did not commit ${commandId}`);
+    }
+    return committed.result.result.identificationPreparationSnapshotRef;
+  };
+
+  const prepareExactReadWorld = async (): Promise<{
+    readonly world: CleaningWorldV1;
+    readonly snapshotRef: IdentificationPreparationSnapshotRefV1;
+  }> => {
+    if (exactReadWorld !== undefined && exactReadSnapshotRef !== undefined) {
+      return { world: exactReadWorld, snapshotRef: exactReadSnapshotRef };
+    }
+    const world = await fixture.createWorld({ suffix: "exact-read", documentKinds: ["csv"] });
+    exactReadWorld = world;
+    exactReadSnapshotRef = await commitExactReadPreparation(world, "c15-exact-read-freeze");
+    return { world, snapshotRef: exactReadSnapshotRef };
+  };
+
+  it("识别准备精确读取：当前授权按引用返回 strict 准备、绑定任务与清洗结果", async () => {
+    const { world, snapshotRef } = await prepareExactReadWorld();
+    const authorization = await world.authorizeEvidenceAccess(
+      "c15-exact-read-1",
+      world.sourceVersionRefs(),
+    );
+    const read = await exactRead(world, "c15-exact-read-1", authorization, snapshotRef);
+    expect(read.kind).toBe("ok");
+    if (read.kind !== "ok") return;
+    // 成功只返回签名列出的五项：strict 准备聚合、绑定任务、strict 清洗结果与结果工件引用。
+    expect(Object.keys(read).sort()).toEqual([
+      "agentTaskRef",
+      "kind",
+      "result",
+      "resultArtifactRef",
+      "snapshot",
+    ]);
+    expect(read.snapshot.coverageDecisionRef.kind).toBe("route-decision");
+    expect(read.snapshot.excludedSegmentDecisionRefs.map((ref) => ref.kind)).toEqual([
+      "route-decision",
+    ]);
+    expect(read.snapshot.sourceVersionRefs).toEqual([...world.sourceVersionRefs()]);
+    expect(read.snapshot.includedSourceSegmentSetRefs).toHaveLength(
+      read.snapshot.sourceVersionRefs.length,
+    );
+    expect(read.result.agentTaskRef.reference).toEqual(read.agentTaskRef.reference);
+    expect(read.resultArtifactRef.kind).toBe("content-artifact");
+    // 无正文、工件句柄或资料段细节旁路；返回值不携带任何正文标记。
+    const serialized = JSON.stringify(read);
+    for (const forbidden of [
+      "textBlocks",
+      "jsonLd",
+      "readHandle",
+      "locator",
+      "sourceSegmentIds",
+      "Shield tunnel construction plan",
+    ]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+
+    const counts = await exactReadCounts(world.projectId, "c15-exact-read-1");
+    expect(counts.audits).toBe("1");
+    expect(counts.receipts).toBe("1");
+    expect(Number(counts.accessRecords)).toBeGreaterThan(0);
+    expect(counts.events).toBe("0");
+    const audits = await fixture.postgres.adminPool.query<{ target_ref: unknown }>(
+      "SELECT target_ref FROM audit.entries WHERE project_id = $1 AND action = $2",
+      [world.projectId, "engineering-data.read-identification-preparation"],
+    );
+    expect(audits.rows[0]?.target_ref).toEqual(snapshotRef);
+  }, 240_000);
+
+  it("识别准备精确读取不可枚举：缺失、跨工程、actor 不符、旧 payload 与绑定失配同形", async () => {
+    const { world, snapshotRef } = await prepareExactReadWorld();
+    const authorization = await world.authorizeEvidenceAccess(
+      "c15-exact-read-denied",
+      world.sourceVersionRefs(),
+    );
+    const before = await exactReadCounts(world.projectId, "c15-exact-read-denied");
+    const missingRef: IdentificationPreparationSnapshotRefV1 = {
+      kind: "identification-preparation-snapshot",
+      reference: { entityId: "identification-preparation-missing", versionId: "1" },
+    };
+    const missing = await exactRead(world, "c15-exact-read-missing", authorization, missingRef);
+    // 跨工程：持有 main 工程授权的调用方提交确属其它工程的准备引用，不得返回目标存在性。
+    const foreignAuthorization = await main.authorizeEvidenceAccess(
+      "c15-exact-read-foreign-session",
+      main.sourceVersionRefs(),
+    );
+    const foreign = await exactRead(
+      main,
+      "c15-exact-read-foreign",
+      foreignAuthorization,
+      snapshotRef,
+    );
+    const actorMismatch = await exactRead(
+      world,
+      "c15-exact-read-actor",
+      authorization,
+      snapshotRef,
+      { actorId: world.freezerId },
+    );
+
+    const original = (
+      await fixture.postgres.adminPool.query<{
+        snapshot_payload: unknown;
+        cleaning_result_artifact_ref: unknown;
+      }>(
+        "SELECT snapshot_payload, cleaning_result_artifact_ref FROM business.identification_preparation_snapshots WHERE project_id = $1",
+        [world.projectId],
+      )
+    ).rows[0]!;
+    // 历史错误 payload（旧写入把决定存成 content-artifact）必须 fail-closed，不做读时兼容投影。
+    await fixture.postgres.adminPool.query(
+      `UPDATE business.identification_preparation_snapshots
+          SET snapshot_payload = jsonb_set(snapshot_payload, '{coverageDecisionRef,kind}', '"content-artifact"')
+        WHERE project_id = $1`,
+      [world.projectId],
+    );
+    const drifted = await exactRead(world, "c15-exact-read-drifted", authorization, snapshotRef);
+    await fixture.postgres.adminPool.query(
+      "UPDATE business.identification_preparation_snapshots SET snapshot_payload = $2 WHERE project_id = $1",
+      [world.projectId, original.snapshot_payload],
+    );
+    // 绑定失配：准备行结果引用与任务/结果索引不一致时同样不返回部分准备。
+    await fixture.postgres.adminPool.query(
+      "UPDATE business.identification_preparation_snapshots SET cleaning_result_artifact_ref = $2 WHERE project_id = $1",
+      [
+        world.projectId,
+        {
+          kind: "content-artifact",
+          reference: { entityId: "c15-exact-read-other-result", versionId: "1" },
+        },
+      ],
+    );
+    const mismatched = await exactRead(
+      world,
+      "c15-exact-read-mismatch",
+      authorization,
+      snapshotRef,
+    );
+    await fixture.postgres.adminPool.query(
+      "UPDATE business.identification_preparation_snapshots SET cleaning_result_artifact_ref = $2 WHERE project_id = $1",
+      [world.projectId, original.cleaning_result_artifact_ref],
+    );
+
+    for (const denied of [missing, foreign, actorMismatch, drifted, mismatched]) {
+      expect(denied.kind).toBe("error");
+      if (denied.kind !== "error") continue;
+      expect(denied.error["code"]).toBe("AUTHORIZATION_DENIED");
+      expect(denied.error["retryable"]).toBe(false);
+      expect(Object.keys(denied.error).sort()).toEqual(
+        [
+          "authorizationPolicyRef",
+          "causalRunId",
+          "category",
+          "code",
+          "occurredAt",
+          "requiredCapability",
+          "retryable",
+          "stageCode",
+        ].sort(),
+      );
+      const serialized = JSON.stringify(denied.error);
+      expect(serialized).not.toContain(missingRef.reference.entityId);
+      expect(serialized).not.toContain(snapshotRef.reference.entityId);
+      expect(serialized).not.toContain("c15-exact-read-other-result");
+    }
+    expect(await exactReadCounts(world.projectId, "c15-exact-read-denied")).toEqual(before);
+  }, 300_000);
+
+  it("识别准备精确读取幂等：同载荷不重复审计、同键异准备冲突且成功撤权后不重放", async () => {
+    const { world, snapshotRef } = await prepareExactReadWorld();
+    if (exactReadSecondRef === undefined) {
+      exactReadSecondRef = await commitExactReadPreparation(world, "c15-exact-read-freeze-2");
+    }
+    const requestId = "c15-exact-read-dup";
+    const authorization = await world.authorizeEvidenceAccess(requestId, world.sourceVersionRefs());
+    const first = await exactRead(world, requestId, authorization, snapshotRef);
+    expect(first.kind).toBe("ok");
+    if (first.kind !== "ok") return;
+    const afterFirst = await exactReadCounts(world.projectId, requestId);
+
+    const replay = await exactRead(world, requestId, authorization, snapshotRef);
+    expect(replay.kind).toBe("ok");
+    if (replay.kind !== "ok") return;
+    expect(replay.snapshot).toEqual(first.snapshot);
+    expect(replay.agentTaskRef).toEqual(first.agentTaskRef);
+    expect(replay.resultArtifactRef).toEqual(first.resultArtifactRef);
+    expect(await exactReadCounts(world.projectId, requestId)).toEqual(afterFirst);
+
+    // 同一请求身份改传同工程的另一份真实准备引用：幂等冲突且无新审计、回执或访问记录。
+    const conflict = await exactRead(world, requestId, authorization, exactReadSecondRef);
+    expect(conflict.kind).toBe("error");
+    if (conflict.kind !== "error") return;
+    expect(conflict.error["code"]).toBe("IDEMPOTENCY_CONFLICT");
+    expect(conflict.error["retryable"]).toBe(false);
+    expect(await exactReadCounts(world.projectId, requestId)).toEqual(afterFirst);
+
+    // 授权复验先于历史回执重放：首次成功后撤权，同键同载荷仍拒绝且不追加审计。
+    const project = await fixture.postgres.adminPool.query<{ access_version: number }>(
+      "SELECT access_version FROM business.access_projects WHERE project_id = $1",
+      [world.projectId],
+    );
+    await fixture.access.administerProject({
+      kind: "suspend-project",
+      projectId: world.projectId,
+      commandId: "c15-exact-read-suspend",
+      idempotencyKey: "c15-exact-read-suspend",
+      expectedVersion: {
+        entityId: world.projectId,
+        versionId: String(project.rows[0]!.access_version),
+      },
+      authorizationContextRef: fixture.administrationContextRef,
+    });
+    const revoked = await exactRead(world, requestId, authorization, snapshotRef);
+    expect(revoked.kind).toBe("error");
+    if (revoked.kind !== "error") return;
+    expect(revoked.error["code"]).toBe("AUTHORIZATION_DENIED");
+    expect(Object.keys(revoked.error)).not.toContain("snapshot");
+    expect(await exactReadCounts(world.projectId, requestId)).toEqual(afterFirst);
+  }, 300_000);
 
   it("replays the committed freeze with equal refs and keeps the old snapshot and result for new inputs", async () => {
     if (tail === undefined || tailTaskRef === undefined || tailSnapshotRef === undefined)
@@ -1275,24 +1597,25 @@ describe("C15 PostgreSQL data cleaning store", () => {
 
     const snapshotRows = await fixture.postgres.adminPool.query<{
       snapshot_ref: unknown;
-      snapshot_payload: PreparationSnapshotViewV1;
+      snapshot_payload: unknown;
     }>(
       "SELECT snapshot_ref, snapshot_payload FROM business.identification_preparation_snapshots WHERE project_id = $1",
       [world.projectId],
     );
     expect(snapshotRows.rows).toHaveLength(1);
     expect(snapshotRows.rows[0]?.snapshot_ref).toEqual(snapshotRef);
-    const snapshotPayload = snapshotRows.rows[0]!.snapshot_payload;
+    const snapshotPayload: IdentificationPreparationSnapshotV1 =
+      IdentificationPreparationSnapshotV1Schema.parse(snapshotRows.rows[0]!.snapshot_payload);
     expect(snapshotPayload.sourceVersionRefs).toEqual([
       ...firstFreeze.command.payload.sourceVersionRefs,
     ]);
     expect(snapshotPayload.includedSourceSegmentSetRefs).toHaveLength(
       snapshotPayload.sourceVersionRefs.length,
     );
-    expect(
-      new Set(snapshotPayload.includedSourceSegmentSetRefs.map((ref) => ref.reference.entityId))
-        .size,
-    ).toBe(snapshotPayload.includedSourceSegmentSetRefs.length);
+    expect(snapshotPayload.coverageDecisionRef.kind).toBe("route-decision");
+    expect(snapshotPayload.excludedSegmentDecisionRefs.map((ref) => ref.kind)).toEqual([
+      "route-decision",
+    ]);
 
     const events = await fixture.postgres.adminPool.query<{
       event_type: string;

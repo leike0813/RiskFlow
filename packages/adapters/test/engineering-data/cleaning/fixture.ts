@@ -414,6 +414,11 @@ export interface CleaningWorldV1 {
     invocationId: string,
     sourceVersionRefs?: readonly SourceVersionRefV1[],
   ): Promise<AuthorizationContextV1>;
+  /** C15 精确准备读取接缝所需的 `engineering-data.evidence-access` 分支授权。 */
+  authorizeEvidenceAccess(
+    invocationId: string,
+    sourceVersionRefs?: readonly SourceVersionRefV1[],
+  ): Promise<AuthorizationContextV1>;
   freezeCommand(
     commandId: string,
     overrides?: {
@@ -654,7 +659,8 @@ export const startDataCleaningFixture = async (
       branch:
         | "engineering-data.register-source-delivery"
         | "engineering-data.register-monitoring-batch"
-        | "engineering-data.identification-preparation",
+        | "engineering-data.identification-preparation"
+        | "engineering-data.evidence-access",
       spatialScopeRefs: readonly SpatialScopeRefV1[],
       sourceVersionRefs: readonly SourceVersionRefV1[],
     ) =>
@@ -1129,6 +1135,14 @@ export const startDataCleaningFixture = async (
           freezer,
           invocationId,
           "engineering-data.identification-preparation",
+          [spatialScopeRef],
+          sourceVersionRefs ?? allSourceVersionRefs,
+        ),
+      authorizeEvidenceAccess: (invocationId, sourceVersionRefs) =>
+        authorizeFor(
+          uploader,
+          invocationId,
+          "engineering-data.evidence-access",
           [spatialScopeRef],
           sourceVersionRefs ?? allSourceVersionRefs,
         ),

@@ -23,8 +23,9 @@ import {
   AgentRuntimeError,
   type AgentDomainToolExecutionContextV1,
   type AgentDomainToolResultV1,
+  type AgentTaskFailureEvidenceReaderV1,
+  type AgentTaskFailureEvidenceV1,
   type AgentValidationResultV1,
-  type AgentTaskStoreV1,
   type AgentTaskSnapshotV1,
 } from "@riskflow/core/agent-runtime";
 import { KnowledgeLifecycleError } from "@riskflow/core/knowledge-governance";
@@ -68,6 +69,7 @@ import type {
 } from "@riskflow/core/engineering-data/context-source";
 import type { DomainEventV1 } from "@riskflow/contracts/events";
 import {
+  AgentTaskRefV1Schema,
   ContentArtifactRefV1Schema as ContractCandidateArtifactRefV1Schema,
   ContentArtifactRefV1Schema,
   IdentificationPreparationSnapshotRefV1Schema,
@@ -75,6 +77,7 @@ import {
   KnowledgeGovernanceResultV1Schema,
   KnowledgeReleaseRefV1Schema,
   KnowledgeResolutionCommandV1Schema,
+  KnowledgeRevisionRefV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
   ModuleErrorV1Schema,
   StartAgentTaskCommandV1Schema,
@@ -82,6 +85,7 @@ import {
   RetrievalEvidenceBaseReleaseRefV1Schema,
   RiskMechanismReleaseRefV1Schema,
   type AuthorizationContextV1,
+  type ContentArtifactRefV1,
   type ContractReferenceV1,
   type EngineeringDataQueryV1,
   type EngineeringDataReadResultV1,
@@ -90,6 +94,7 @@ import {
   type KnowledgeGovernanceResultForCommandV1,
   type KnowledgeResolutionCommandV1,
   type KnowledgeResolutionResultV1,
+  type KnowledgeRevisionRefV1,
   type KnowledgeRetrievalQueryV1,
   type KnowledgeRetrievalResultV1,
   type AgentTaskPortV1,
@@ -270,8 +275,11 @@ export interface PostgresIdentificationKnowledgeAdapterOptionsV1 {
   readonly policySetProvider?: IdentificationPolicySetProviderV1;
   /** C08 启动接缝：只有编制入口需要。 */
   readonly agentTaskPort?: AgentTaskPortV1;
-  /** C08 执行存储：失败收口按精确任务引用读取状态。 */
-  readonly agentTaskStore?: AgentTaskStoreV1;
+  /**
+   * D-09 失败证据窄读：失败收口只按 C17 attempt 的精确任务引用经该公共读取取证，
+   * 不注入 C08 执行存储，也不调用 `getTask()`。
+   */
+  readonly agentTaskFailureEvidenceReader: AgentTaskFailureEvidenceReaderV1;
   /**
    * 组合根的 C06 授权来源：工具读取、baseline 读取、finalizer 与失败收口只为
    * exact branch 签发新上下文；不接受调用方 capability 或任务信封授权回退。
@@ -484,6 +492,20 @@ const preparationReadError = (causalRunId: string, error: unknown): ModuleErrorV
   const parsed = ModuleErrorV1Schema.safeParse(error);
   return parsed.success ? parsed.data : moduleError({ code: "TERMINAL_FAILURE", causalRunId });
 };
+
+/**
+ * C08 失败证据窄读的非同形失败（瞬时持久化、幂等冲突等）：必须可验上抛，
+ * 不得被收口循环吞掉后把任务当成已收口。
+ */
+class IdentificationKnowledgeFailureEvidenceError extends Error {
+  readonly error: ModuleErrorV1;
+
+  constructor(error: ModuleErrorV1) {
+    super(`identification-knowledge failure evidence read failed: ${error.code}`);
+    this.name = "IdentificationKnowledgeFailureEvidenceError";
+    this.error = error;
+  }
+}
 
 const excludedSegmentsFor = (result: DataCleaningResultV1): ReadonlySet<string> =>
   new Set(result.inputs.flatMap((input) => input.excludedSegmentIds));
@@ -1095,7 +1117,7 @@ export class PostgresIdentificationKnowledgeAdapter {
   readonly #policy: IdentificationKnowledgeValidationPolicyV1;
   readonly #policySetProvider: IdentificationPolicySetProviderV1 | undefined;
   readonly #agentTaskPort: AgentTaskPortV1 | undefined;
-  readonly #agentTaskStore: AgentTaskStoreV1 | undefined;
+  readonly #agentTaskFailureEvidenceReader: AgentTaskFailureEvidenceReaderV1;
   readonly #authorize: PostgresIdentificationKnowledgeAdapterOptionsV1["authorize"];
   readonly #now: () => Date;
 
@@ -1113,7 +1135,7 @@ export class PostgresIdentificationKnowledgeAdapter {
     this.#policy = options.policy;
     this.#policySetProvider = options.policySetProvider;
     this.#agentTaskPort = options.agentTaskPort;
-    this.#agentTaskStore = options.agentTaskStore;
+    this.#agentTaskFailureEvidenceReader = options.agentTaskFailureEvidenceReader;
     this.#authorize = options.authorize;
     this.#now = options.now ?? (() => new Date());
   }
@@ -2586,10 +2608,8 @@ export class PostgresIdentificationKnowledgeAdapter {
     );
   }
 
-  /** D-09 失败收口：只扫描 C17 未收口的编制尝试，再按 C08 存储读取精确任务状态。 */
+  /** D-09 失败收口：只扫描 C17 未收口的编制尝试，再经 C08 公共窄读取精确任务的终态失败证据。 */
   async settleAuthoringFailures(): Promise<number> {
-    const store = this.#agentTaskStore;
-    if (store === undefined) return 0;
     const rows = await this.#db
       .selectFrom("business.identification_knowledge_authoring_attempts")
       .selectAll()
@@ -2598,31 +2618,115 @@ export class PostgresIdentificationKnowledgeAdapter {
       .execute();
     let settled = 0;
     for (const row of rows) {
-      const taskRef = row.agent_task_ref as unknown as AgentTaskRefV1;
-      const task = await store.getTask(taskRef);
-      if (task === undefined) continue;
-      const status = task.state.status;
-      if (status !== "terminal-failure" && status !== "cancelled") continue;
-      try {
-        if (await this.#settleOneFailure(row, task, taskRef)) settled += 1;
-      } catch {
-        continue;
-      }
+      if (await this.#settleOneFailure(row)) settled += 1;
     }
     return settled;
   }
 
-  async #settleOneFailure(
+  async #settleOneFailure(row: AuthoringAttemptRow): Promise<boolean> {
+    const taskRef = AgentTaskRefV1Schema.parse(row.agent_task_ref);
+    // 失败修订绑定是上一步的稳定事实：已有绑定时只补未完成的复核阶段，不重复读取或创建。
+    let bound = await this.#findFailureBinding(row.project_id, taskRef);
+    if (bound === undefined) {
+      const evidence = await this.#readTerminalFailureEvidence(row, taskRef);
+      if (evidence === undefined) return false;
+      bound = await this.#bindFailureRevision(row, taskRef, evidence);
+      if (bound === undefined) return false;
+    }
+    const reviewCommandId = `${taskRef.reference.entityId}:failure-review`;
+    const reviewAuthorization = await this.#authorize({
+      projectId: row.project_id,
+      actorId: row.actor_ref,
+      invocationId: reviewCommandId,
+      // C16 复核分支（C07 的评审请求由 C16 内部按其自身接缝签发）。
+      branch: "knowledge-modeling.request-review",
+      requestedAt: nowIso(this.#now),
+    });
+    const review = await this.#requestFailureReview(
+      row,
+      bound.revisionRef,
+      reviewCommandId,
+      reviewAuthorization,
+    );
+    if (review === undefined) return false;
+    // 逐阶段 CAS：授权或复核失败保留上一阶段事实，重放只向前补未完成阶段。
+    await this.#advanceAuthoringAttempt({
+      projectId: row.project_id,
+      actorId: row.actor_ref,
+      authorization: reviewAuthorization,
+      taskRef,
+      commandSuffix: "link-failure-review",
+      commandKind: "knowledge.identification-knowledge.link-authoring-review.v1",
+      action: "identification-knowledge.link-authoring-review",
+      expectedStages: ["failure-revision-bound"],
+      stage: "review-linked",
+      resultRef: asContractReference(review),
+      values: {
+        failure_artifact_ref: jsonbValue(bound.failureArtifactRef),
+        review_task_ref: jsonbValue(review),
+      },
+    });
+    return true;
+  }
+
+  /**
+   * D-09：以 C17 attempt 的精确任务引用和新鲜 C06 授权调用 C08 公共窄读。不存在、跨工程、
+   * 错类型、未终态和未授权对 C17 呈现同形拒绝，未终态不收口；其它窄读失败可验上抛，
+   * 不得 catch 后当作已收口。
+   */
+  async #readTerminalFailureEvidence(
     row: AuthoringAttemptRow,
-    task: AgentTaskSnapshotV1,
     taskRef: AgentTaskRefV1,
-  ): Promise<boolean> {
+  ): Promise<AgentTaskFailureEvidenceV1 | undefined> {
+    const requestId = `${taskRef.reference.entityId}:failure-evidence`;
+    const requestedAt = nowIso(this.#now);
+    const authorization = await this.#authorize({
+      projectId: row.project_id,
+      actorId: row.actor_ref,
+      invocationId: requestId,
+      branch: "agent-task.read-failure-evidence",
+      requestedAt,
+    });
+    const read = await this.#agentTaskFailureEvidenceReader.readTerminalFailure({
+      projectId: row.project_id,
+      actorId: authorization.actorId,
+      requestId,
+      requestedAt,
+      taskRef,
+      expectedTaskType: "knowledge-authoring",
+      authorization,
+    });
+    if (read.kind === "succeeded") return read.evidence;
+    if (read.error.code === "AUTHORIZATION_DENIED") return undefined;
+    throw new IdentificationKnowledgeFailureEvidenceError(read.error);
+  }
+
+  /** D-09 第 1、2 步：写不可发布的失败诊断工件，经 C16 提交失败修订并写 failure-review-only 绑定。 */
+  async #bindFailureRevision(
+    row: AuthoringAttemptRow,
+    taskRef: AgentTaskRefV1,
+    evidence: AgentTaskFailureEvidenceV1,
+  ): Promise<
+    | {
+        readonly revisionRef: KnowledgeRevisionRefV1;
+        readonly failureArtifactRef: ContentArtifactRefV1;
+      }
+    | undefined
+  > {
+    const failureCommandId = `${taskRef.reference.entityId}:failure-revision`;
+    const authorization = await this.#authorize({
+      projectId: row.project_id,
+      actorId: row.actor_ref,
+      invocationId: failureCommandId,
+      branch: "knowledge-modeling.submit-revision",
+      requestedAt: nowIso(this.#now),
+    });
     const failureArtifactRef = await this.#putArtifact(
       {
         projectId: row.project_id,
-        actorId: task.envelope.actorId,
+        actorId: authorization.actorId,
         issuedAt: nowIso(this.#now),
-        authorization: task.envelope.authorization,
+        authorization,
       },
       {
         artifactId: `${taskRef.reference.entityId}:failure`,
@@ -2634,12 +2738,14 @@ export class PostgresIdentificationKnowledgeAdapter {
           preparationSnapshotRef: row.preparation_snapshot_ref,
           manifestArtifactRef: row.manifest_artifact_ref,
           taskRef,
-          terminalStatus: task.state.status,
-          errorCodes: [task.state.error?.code ?? task.state.cancelReasonCode ?? "AGENT_CANCELLED"],
-          actionRefs: [],
-          candidateRefs: [],
-          validationRefs: [],
-          usage: task.budgetLedger.used,
+          terminalStatus: evidence.terminalStatus,
+          errorCodes: [evidence.error?.code ?? evidence.cancelReasonCode ?? "AGENT_CANCELLED"],
+          actionRefs: [...evidence.actionRefs],
+          candidateRefs: evidence.candidateArtifactRefs.map((ref) =>
+            ContentArtifactRefV1Schema.parse(ref),
+          ),
+          validationRefs: evidence.validationArtifactRefs.map((ref) => ref.reference),
+          usage: evidence.usage,
           diagnosticArtifactRef: {
             kind: "diagnostic-artifact",
             reference: {
@@ -2653,15 +2759,6 @@ export class PostgresIdentificationKnowledgeAdapter {
         parentArtifactRefs: [],
       },
     );
-    const failureCommandId = `${taskRef.reference.entityId}:failure-revision`;
-    const authorization = await this.#authorize({
-      taskRef,
-      projectId: row.project_id,
-      actorId: task.envelope.actorId,
-      invocationId: failureCommandId,
-      branch: "knowledge-modeling.submit-revision",
-      requestedAt: nowIso(this.#now),
-    });
     const failureCommand: KnowledgeGovernanceCommandV1 = KnowledgeGovernanceCommandV1Schema.parse({
       kind: "submit-revision",
       commandId: failureCommandId,
@@ -2682,12 +2779,12 @@ export class PostgresIdentificationKnowledgeAdapter {
       },
     });
     const submitted = await this.#governance.govern(failureCommand);
-    if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") return false;
+    if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") return undefined;
     const revisionRef = submitted.result.knowledgeRevisionRef;
     const bindingAuditId = randomId("audit");
     const bindingAtomic = atomicCommand({
       projectId: row.project_id,
-      actorId: task.envelope.actorId,
+      actorId: authorization.actorId,
       issuedAt: nowIso(this.#now),
       authorization,
     })({
@@ -2738,7 +2835,7 @@ export class PostgresIdentificationKnowledgeAdapter {
     // 逐阶段 CAS：失败修订绑定成立后先停到 `failure-revision-bound`，授权或复核失败不回退该事实。
     await this.#advanceAuthoringAttempt({
       projectId: row.project_id,
-      actorId: task.envelope.actorId,
+      actorId: authorization.actorId,
       authorization,
       taskRef,
       commandSuffix: "record-failure-attempt",
@@ -2749,40 +2846,7 @@ export class PostgresIdentificationKnowledgeAdapter {
       resultRef: asContractReference(failureArtifactRef),
       values: { failure_artifact_ref: jsonbValue(failureArtifactRef) },
     });
-    const reviewCommandId = `${taskRef.reference.entityId}:failure-review`;
-    const reviewAuthorization = await this.#authorize({
-      taskRef,
-      projectId: row.project_id,
-      actorId: task.envelope.actorId,
-      invocationId: reviewCommandId,
-      // C16 复核分支（C07 的评审请求由 C16 内部按其自身接缝签发）。
-      branch: "knowledge-modeling.request-review",
-      requestedAt: nowIso(this.#now),
-    });
-    const review = await this.#requestFailureReview(
-      row,
-      revisionRef,
-      reviewCommandId,
-      reviewAuthorization,
-    );
-    if (review === undefined) return false;
-    await this.#advanceAuthoringAttempt({
-      projectId: row.project_id,
-      actorId: task.envelope.actorId,
-      authorization: reviewAuthorization,
-      taskRef,
-      commandSuffix: "link-failure-review",
-      commandKind: "knowledge.identification-knowledge.link-authoring-review.v1",
-      action: "identification-knowledge.link-authoring-review",
-      expectedStages: ["failure-revision-bound"],
-      stage: "review-linked",
-      resultRef: asContractReference(review),
-      values: {
-        failure_artifact_ref: jsonbValue(failureArtifactRef),
-        review_task_ref: jsonbValue(review),
-      },
-    });
-    return true;
+    return { revisionRef, failureArtifactRef };
   }
 
   async #advanceAuthoringAttempt(input: {
@@ -2927,6 +2991,37 @@ export class PostgresIdentificationKnowledgeAdapter {
       revisionRef.reference.entityId,
       revisionRef.reference.versionId,
     );
+  }
+
+  /**
+   * `failure-revision-bound` 的稳定事实：按精确任务引用取回失败修订绑定，重放不重复读取
+   * C08 证据、不创建第二个修订。
+   */
+  async #findFailureBinding(
+    projectId: string,
+    taskRef: AgentTaskRefV1,
+  ): Promise<
+    | {
+        readonly revisionRef: KnowledgeRevisionRefV1;
+        readonly failureArtifactRef: ContentArtifactRefV1;
+      }
+    | undefined
+  > {
+    const row = await this.#db
+      .selectFrom("business.identification_knowledge_revision_bindings")
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where("binding_kind", "=", "failure-review-only")
+      .where("agent_task_ref", "=", jsonbValue(taskRef))
+      .executeTakeFirst();
+    if (row === undefined) return undefined;
+    return {
+      revisionRef: KnowledgeRevisionRefV1Schema.parse({
+        kind: "knowledge-revision",
+        reference: { entityId: row.revision_id, versionId: row.revision_version_id },
+      }),
+      failureArtifactRef: ContentArtifactRefV1Schema.parse(row.failure_artifact_ref),
+    };
   }
 
   async #findReleaseBindingByRef(

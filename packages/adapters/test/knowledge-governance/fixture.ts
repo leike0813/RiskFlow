@@ -2,6 +2,7 @@ import { vi } from "vitest";
 
 import {
   PostgresKnowledgeGovernanceAdapter,
+  type KnowledgeGovernanceReviewAuthorizationProviderV1,
   type PostgresKnowledgeGovernanceAdapterOptionsV1,
 } from "../../src/knowledge-governance/index.js";
 import {
@@ -13,12 +14,13 @@ import {
   type ReviewAuditPostgresFixture,
 } from "../review-audit/fixture.js";
 import {
+  MODULE_BRANCH_CAPABILITY_V1,
   type AuthorizationContextV1,
-  type KnowledgeGovernanceCommandV1,
 } from "@riskflow/contracts/ports";
 import type { LocalIdentityAccessV1 } from "@riskflow/core/access";
 import type { AssessmentConfigurationGovernancePolicyV1 } from "@riskflow/core/assessment-config";
 import type { ScoringRulesGovernancePolicyV1 } from "@riskflow/core/scoring-rules";
+import type { IdentificationKnowledgeGovernancePolicyV1 } from "@riskflow/core/identification-knowledge";
 
 export const GOVERNANCE_TEST_TIMESTAMP = "2030-01-01T00:00:00.000Z";
 
@@ -53,6 +55,16 @@ export const reviewAuthorizationFor = (projectId: string, actorId = "manager-1")
     "review-audit.decide",
   ]);
 
+/**
+ * D-11：C16→C07 结构化授权 provider。它只按请求中的精确分支签发唯一能力，不改写
+ * invocationId、工程或 actor；provider 缺失时 C16 在 C07 读取前关闭失败。
+ */
+export const reviewAuthorizationProviderFor =
+  (): KnowledgeGovernanceReviewAuthorizationProviderV1 => ({
+    authorize: async (input) =>
+      contextFor(input.projectId, input.actorId, [MODULE_BRANCH_CAPABILITY_V1[input.branch]]),
+  });
+
 export interface KnowledgeGovernancePostgresFixture {
   readonly postgres: ReviewAuditPostgresFixture["postgres"];
   readonly runtime: ReviewAuditPostgresFixture["runtime"];
@@ -67,6 +79,7 @@ export interface KnowledgeGovernancePostgresFixture {
 export const startKnowledgeGovernanceFixture = async (options?: {
   readonly assessmentConfigurationPolicy?: AssessmentConfigurationGovernancePolicyV1;
   readonly scoringRulesPolicy?: ScoringRulesGovernancePolicyV1;
+  readonly identificationKnowledgePolicy?: IdentificationKnowledgeGovernancePolicyV1;
 }): Promise<KnowledgeGovernancePostgresFixture> => {
   const base = await startReviewAuditFixture();
   const verifiedContexts = new Map<string, AuthorizationContextV1>();
@@ -95,22 +108,22 @@ export const startKnowledgeGovernanceFixture = async (options?: {
     now: () => new Date("2030-01-01T00:00:01.000Z"),
   };
   const reviewAudit = new PostgresReviewAuditAdapter(reviewAuditOptions);
-  const reviewAuthorization = (command: KnowledgeGovernanceCommandV1) =>
-    reviewAuthorizationFor(command.projectId, command.actorId);
   const adapterOptions: PostgresKnowledgeGovernanceAdapterOptionsV1 = {
     db: base.runtime.db,
     transactionUnit: base.transactionUnit,
     access,
     reviewAudit,
     now: () => new Date("2030-01-01T00:00:01.000Z"),
-    reviewAuthorization,
-    approvalAuthorization: reviewAuthorization,
+    reviewAuthorizationProvider: reviewAuthorizationProviderFor(),
     ...(options?.assessmentConfigurationPolicy === undefined
       ? {}
       : { assessmentConfigurationPolicy: options.assessmentConfigurationPolicy }),
     ...(options?.scoringRulesPolicy === undefined
       ? {}
       : { scoringRulesPolicy: options.scoringRulesPolicy }),
+    ...(options?.identificationKnowledgePolicy === undefined
+      ? {}
+      : { identificationKnowledgePolicy: options.identificationKnowledgePolicy }),
   };
   const adapter = new PostgresKnowledgeGovernanceAdapter(adapterOptions);
   return {

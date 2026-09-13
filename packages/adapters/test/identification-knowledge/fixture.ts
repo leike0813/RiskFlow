@@ -23,16 +23,19 @@ import { ArtifactPutCommandV1Schema } from "@riskflow/core/artifacts";
 import type { TransactionUnitV1 } from "@riskflow/core/persistence";
 
 import { AgentTaskDefinitionRegistry } from "@riskflow/core/agent-runtime";
-import type { AgentTaskPortV1, AgentTaskRefV1 } from "@riskflow/contracts/ports";
+import type { AgentTaskFailureEvidenceReaderV1 } from "@riskflow/core/agent-runtime";
+import type { AgentTaskPortV1 } from "@riskflow/contracts/ports";
 
 import { PostgresAgentTaskAdapter } from "../../src/agent-runtime/index.js";
 import {
   PostgresIdentificationKnowledgeAdapter,
   PostgresIdentificationKnowledgeReleasePolicy,
   PostgresIdentificationPreparationKnowledgeReader,
+  type IdentificationKnowledgeAuthorizationRequestV1,
   type PostgresIdentificationKnowledgeAdapterOptionsV1,
 } from "../../src/identification-knowledge/index.js";
 import { PostgresKnowledgeGovernanceAdapter } from "../../src/knowledge-governance/index.js";
+import type { KnowledgeGovernanceReviewAuthorizationProviderV1 } from "../../src/knowledge-governance/index.js";
 import { PostgresReviewAuditAdapter } from "../../src/review-audit/index.js";
 import {
   completeCleaningTask,
@@ -282,6 +285,10 @@ export interface IdentificationKnowledgeFixtureV1 {
     readonly withPolicySet?: boolean;
     /** 发布事务故障注入：在 C16 发布事务内、写 C17 绑定之前/之后关闭失败。 */
     readonly releasePolicyFault?: "before-binding" | "after-binding";
+    /** 失败证据窄读替身：用于断言收口只按精确任务引用和新鲜授权调用 C08 公共接缝。 */
+    readonly failureEvidenceReader?: AgentTaskFailureEvidenceReaderV1;
+    /** 授权故障注入：命中请求时按 C06 语义在副作用前关闭失败。 */
+    readonly authorizeDenial?: (input: IdentificationKnowledgeAuthorizationRequestV1) => boolean;
   }): {
     readonly adapter: PostgresIdentificationKnowledgeAdapter;
     readonly agentTaskAdapter: PostgresAgentTaskAdapter;
@@ -461,10 +468,7 @@ export const startIdentificationKnowledgeFixture =
     const holder: {
       governance?: PostgresKnowledgeGovernanceAdapter;
       port?: AgentTaskPortV1;
-      store?: {
-        getTask(ref: AgentTaskRefV1): Promise<unknown>;
-        cancelTask(input: { taskRef: AgentTaskRefV1; reasonCode: string }): Promise<unknown>;
-      };
+      reader?: AgentTaskFailureEvidenceReaderV1;
     } = {};
     let artifactSequence = 0;
     const readingCache = new Map<string, IdentificationPreparationWorldV1>([
@@ -512,6 +516,20 @@ export const startIdentificationKnowledgeFixture =
       },
       authorize,
     });
+    /**
+     * D-11：C16→C07 的结构化授权 provider。C16 给出精确调用身份与分支，这里只按该身份
+     * 请求 C06；返回上下文必须携带该分支的唯一能力。
+     */
+    const reviewAuthorizationProvider: KnowledgeGovernanceReviewAuthorizationProviderV1 = {
+      authorize: async (input) =>
+        await authorizeBranch(
+          cleaning,
+          credential,
+          input.projectId,
+          input.invocationId,
+          input.branch,
+        ),
+    };
     const governance = new PostgresKnowledgeGovernanceAdapter({
       db: cleaning.runtime.db,
       transactionUnit: cleaning.transactionUnit,
@@ -519,23 +537,7 @@ export const startIdentificationKnowledgeFixture =
       reviewAudit,
       identificationKnowledgePolicy: releasePolicy,
       now: () => new Date(IDENTIFICATION_KNOWLEDGE_TEST_TIMESTAMP),
-      // C16/C07 的 verify 绑定在各自调用身份上：评审请求用评审尝试 id，批准证明用命令派生 queryId。
-      reviewAuthorization: (command, link) =>
-        authorizeBranch(
-          cleaning,
-          credential,
-          command.projectId,
-          `${link.reviewAttemptId}:review`,
-          "review-audit.request-review",
-        ),
-      approvalAuthorization: (command) =>
-        authorizeBranch(
-          cleaning,
-          credential,
-          command.projectId,
-          `${command.commandId}:approval`,
-          "review-audit.verify-knowledge-revision-approval",
-        ),
+      reviewAuthorizationProvider,
     });
     holder.governance = governance;
     return {
@@ -578,22 +580,7 @@ export const startIdentificationKnowledgeFixture =
                   },
                 },
                 now: () => new Date(IDENTIFICATION_KNOWLEDGE_TEST_TIMESTAMP),
-                reviewAuthorization: (command, link) =>
-                  authorizeBranch(
-                    cleaning,
-                    credential,
-                    command.projectId,
-                    `${link.reviewAttemptId}:review`,
-                    "review-audit.request-review",
-                  ),
-                approvalAuthorization: (command) =>
-                  authorizeBranch(
-                    cleaning,
-                    credential,
-                    command.projectId,
-                    `${command.commandId}:approval`,
-                    "review-audit.verify-knowledge-revision-approval",
-                  ),
+                reviewAuthorizationProvider,
               });
         const adapterOptions: PostgresIdentificationKnowledgeAdapterOptionsV1 = {
           db: cleaning.runtime.db,
@@ -620,22 +607,20 @@ export const startIdentificationKnowledgeFixture =
           agentTaskPort: {
             startTask: async (command) => await holder.port!.startTask(command),
           } as AgentTaskPortV1,
-          agentTaskStore: {
-            createTask: async () => {
-              throw new Error("not used by C17");
-            },
-            getTask: async (ref) => (await holder.store!.getTask(ref)) as never,
-            resumeTask: async () => {
-              throw new Error("not used by C17");
-            },
-            cancelTask: async () => {
-              throw new Error("not used by C17");
-            },
-            confirmCommand: async () => {
-              throw new Error("not used by C17");
+          agentTaskFailureEvidenceReader: options?.failureEvidenceReader ?? {
+            readTerminalFailure: async (request) => {
+              if (holder.reader === undefined) {
+                throw new Error("the C08 task adapter is not constructed yet");
+              }
+              return await holder.reader.readTerminalFailure(request);
             },
           },
-          authorize,
+          authorize: async (input) => {
+            if (options?.authorizeDenial?.(input) === true) {
+              throw new Error(`C06 denied the ${input.branch} invocation`);
+            }
+            return await authorize(input);
+          },
           // 收口动作的时钟晚于夹具准备与测试发布时刻，保证发布集合对收口命令已生效。
           now: () => new Date("2030-01-02T00:00:00.000Z"),
         };
@@ -650,7 +635,7 @@ export const startIdentificationKnowledgeFixture =
           now: () => IDENTIFICATION_KNOWLEDGE_TEST_TIMESTAMP,
         });
         holder.port = agentTaskAdapter as unknown as AgentTaskPortV1;
-        holder.store = agentTaskAdapter as unknown as typeof holder.store;
+        holder.reader = agentTaskAdapter;
         return { adapter, agentTaskAdapter };
       },
       putArtifact: async (value, purposeCode, projectId) => {

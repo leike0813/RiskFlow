@@ -15,10 +15,13 @@ import {
   bootstrapInitialSystemAdministrator,
   createPostgresLocalIdentityAccess,
 } from "../../src/auth/index.js";
-import { PostgresKnowledgeGovernanceAdapter } from "../../src/knowledge-governance/index.js";
+import {
+  PostgresKnowledgeGovernanceAdapter,
+  type KnowledgeGovernanceReviewAuthorizationProviderV1,
+  type KnowledgeGovernanceReviewAuthorizationRequestV1,
+} from "../../src/knowledge-governance/index.js";
 import { getPostgresTransaction } from "../../src/postgres/transaction-unit.js";
 import { createPostgresRuntime } from "../../src/postgres/pool.js";
-import { getPostgresTransaction } from "../../src/postgres/transaction-unit.js";
 import * as governanceMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-governed-definition-lifecycle/000007_governed_definition_lifecycle.js";
 import * as assessmentConfigurationMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-assessment-configuration-and-measure-governance/000012_assessment_configuration.js";
 import * as structuredScoringRulesMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-structured-scoring-rules-and-applicable-rule-sets/000028_structured_scoring_rules.js";
@@ -48,6 +51,7 @@ import {
   GOVERNANCE_TEST_TIMESTAMP,
   governanceAuthorizationFor,
   reviewAuthorizationFor,
+  reviewAuthorizationProviderFor,
   startKnowledgeGovernanceFixture,
   type KnowledgeGovernancePostgresFixture,
 } from "./fixture.js";
@@ -60,7 +64,11 @@ const artifactFor = (suffix: string) => ({
   reference: { entityId: `artifact-${suffix}`, versionId: `sha256:${suffix}` },
 });
 
-const GENERIC_DEFINITION_TYPE = "structured-scoring-rule" as const;
+/**
+ * 通用治理流程的定义类型：C17 族的提交路径不设内容门，只有发布/回滚接缝需要识别知识策略，
+ * 因此基础用例统一使用 `process-model` 并注入 C17 策略替身。
+ */
+const GENERIC_DEFINITION_TYPE = "process-model" as const;
 
 const submitFor = (
   projectId: string,
@@ -195,7 +203,7 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
   };
 
   beforeAll(async () => {
-    fixture = await startKnowledgeGovernanceFixture();
+    fixture = await startKnowledgeGovernanceFixture({ identificationKnowledgePolicy });
   }, 180_000);
 
   afterAll(async () => {
@@ -548,10 +556,7 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
         transactionUnit: fixture!.transactionUnit,
         access: actualAccess,
         reviewAudit: fixture!.reviewAudit,
-        reviewAuthorization: (command) =>
-          reviewAuthorizationFor(command.projectId, command.actorId),
-        approvalAuthorization: (command) =>
-          reviewAuthorizationFor(command.projectId, command.actorId),
+        reviewAuthorizationProvider: reviewAuthorizationProviderFor(),
         now: () => new Date("2030-01-01T00:00:01.000Z"),
       });
       const agentTaskRefFor = (suffix: string) => ({
@@ -833,8 +838,7 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
       access: fixture!.access,
       reviewAudit: fixture!.reviewAudit,
       now: () => new Date(GOVERNANCE_TEST_TIMESTAMP),
-      reviewAuthorization: () => reviewAuthorizationFor(projectId),
-      approvalAuthorization: () => reviewAuthorizationFor(projectId),
+      reviewAuthorizationProvider: reviewAuthorizationProviderFor(),
       identificationKnowledgePolicy,
     });
     const submitted = await adapter.govern(
@@ -911,13 +915,22 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
     const projectId = "governance-c17-policy-missing";
     const authorization = governanceAuthorizationFor(projectId);
     const reviewAuthorization = reviewAuthorizationFor(projectId);
-    const submitted = await fixture!.adapter.govern(
+    // 未注入识别知识策略的 C16 实例：发布路径必须对 C17 类型关闭失败。
+    const withoutPolicy = new PostgresKnowledgeGovernanceAdapter({
+      db: fixture!.runtime.db,
+      transactionUnit: fixture!.transactionUnit,
+      access: fixture!.access,
+      reviewAudit: fixture!.reviewAudit,
+      now: () => new Date(GOVERNANCE_TEST_TIMESTAMP),
+      reviewAuthorizationProvider: reviewAuthorizationProviderFor(),
+    });
+    const submitted = await withoutPolicy.govern(
       submitFor(projectId, authorization, "missing-policy", undefined, "process-model"),
     );
     if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") {
       throw new Error(`submit failed: ${JSON.stringify(submitted)}`);
     }
-    const requested = await fixture!.adapter.govern(
+    const requested = await withoutPolicy.govern(
       requestReviewFor(projectId, authorization, submitted.result.knowledgeRevisionRef),
     );
     if (requested.kind !== "succeeded" || requested.result.kind !== "review-task") {
@@ -927,7 +940,7 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
       decideApproval(projectId, reviewAuthorization, requested.result.reviewTaskRef),
     );
     if (decision.kind !== "succeeded") throw new Error("review decision failed");
-    const published = await fixture!.adapter.govern(
+    const published = await withoutPolicy.govern(
       publishFor(
         projectId,
         authorization,
@@ -972,8 +985,7 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
       access: fixture!.access,
       reviewAudit: fixture!.reviewAudit,
       now: () => new Date(GOVERNANCE_TEST_TIMESTAMP),
-      reviewAuthorization: () => reviewAuthorizationFor(projectId),
-      approvalAuthorization: () => reviewAuthorizationFor(projectId),
+      reviewAuthorizationProvider: reviewAuthorizationProviderFor(),
       identificationKnowledgePolicy: {
         appendRelease: async () => {
           throw new KnowledgeLifecycleError({
@@ -1052,8 +1064,7 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
       access,
       reviewAudit: fixture!.reviewAudit,
       now: () => new Date(GOVERNANCE_TEST_TIMESTAMP),
-      reviewAuthorization: () => reviewAuthorizationFor(projectId),
-      approvalAuthorization: () => reviewAuthorizationFor(projectId),
+      reviewAuthorizationProvider: reviewAuthorizationProviderFor(),
     });
 
     const resolveFor = (requiredDefinitionTypes: readonly string[]) =>
@@ -1089,6 +1100,147 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
       "knowledge-modeling.assessment-basis",
     ]);
   });
+
+  it("derives the exact structured authorization DTOs for review requests and approval proofs", async () => {
+    const projectId = "governance-structured-authorization";
+    const authorization = governanceAuthorizationFor(projectId);
+    const reviewAuthorization = reviewAuthorizationFor(projectId);
+    const requests: KnowledgeGovernanceReviewAuthorizationRequestV1[] = [];
+    const baseProvider = reviewAuthorizationProviderFor();
+    const adapter = new PostgresKnowledgeGovernanceAdapter({
+      db: fixture!.runtime.db,
+      transactionUnit: fixture!.transactionUnit,
+      access: fixture!.access,
+      reviewAudit: fixture!.reviewAudit,
+      now: () => new Date(GOVERNANCE_TEST_TIMESTAMP),
+      identificationKnowledgePolicy,
+      reviewAuthorizationProvider: {
+        authorize: async (input) => {
+          requests.push(input);
+          return await baseProvider.authorize(input);
+        },
+      },
+    });
+    const submitted = await adapter.govern(submitFor(projectId, authorization, "structured"));
+    if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") {
+      throw new Error(`submit failed: ${JSON.stringify(submitted)}`);
+    }
+    const requested = await adapter.govern(
+      requestReviewFor(projectId, authorization, submitted.result.knowledgeRevisionRef),
+    );
+    if (requested.kind !== "succeeded" || requested.result.kind !== "review-task") {
+      throw new Error(`review request failed: ${JSON.stringify(requested)}`);
+    }
+    const reviewRequest = requests[0];
+    expect(reviewRequest).toMatchObject({
+      task: "request-review",
+      projectId,
+      actorId: authorization.actorId,
+      branch: "review-audit.request-review",
+      requestedAt: GOVERNANCE_TEST_TIMESTAMP,
+      revisionRef: submitted.result.knowledgeRevisionRef,
+    });
+    // C16 派生精确调用身份：invocationId 必须与评审尝试 id 唯一对应。
+    if (reviewRequest?.task !== "request-review") throw new Error("review DTO is missing");
+    expect(reviewRequest.invocationId).toBe(`${reviewRequest.reviewAttemptId}:review`);
+    const decision = await fixture!.reviewAudit.decideReview(
+      decideApproval(projectId, reviewAuthorization, requested.result.reviewTaskRef),
+    );
+    if (decision.kind !== "succeeded") throw new Error("review decision failed");
+    const publishCommand = publishFor(
+      projectId,
+      authorization,
+      submitted.result.knowledgeRevisionRef,
+      decision.result.reviewDecisionRef,
+    );
+    expect(await adapter.govern(publishCommand)).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "release" },
+    });
+    expect(requests[1]).toMatchObject({
+      task: "verify-knowledge-revision-approval",
+      projectId,
+      actorId: authorization.actorId,
+      invocationId: `${publishCommand.commandId}:approval`,
+      branch: "review-audit.verify-knowledge-revision-approval",
+      revisionRef: submitted.result.knowledgeRevisionRef,
+      reviewDecisionRef: decision.result.reviewDecisionRef,
+    });
+  }, 240_000);
+
+  it("closes the failure before C07 when the structured authorization binding differs", async () => {
+    const baseProvider = reviewAuthorizationProviderFor();
+    const mutatedProvider = (
+      change: (context: AuthorizationContextV1) => AuthorizationContextV1,
+    ): KnowledgeGovernanceReviewAuthorizationProviderV1 => ({
+      authorize: async (input) => change(await baseProvider.authorize(input)),
+    });
+    const runDenied = async (
+      name: string,
+      provider: KnowledgeGovernanceReviewAuthorizationProviderV1 | undefined,
+    ) => {
+      const projectId = `governance-structured-denied-${name}`;
+      const authorization = governanceAuthorizationFor(projectId);
+      const adapter = new PostgresKnowledgeGovernanceAdapter({
+        db: fixture!.runtime.db,
+        transactionUnit: fixture!.transactionUnit,
+        access: fixture!.access,
+        reviewAudit: fixture!.reviewAudit,
+        now: () => new Date(GOVERNANCE_TEST_TIMESTAMP),
+        ...(provider === undefined ? {} : { reviewAuthorizationProvider: provider }),
+      });
+      const submitted = await adapter.govern(submitFor(projectId, authorization, name));
+      if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") {
+        throw new Error(`${name}: submit failed: ${JSON.stringify(submitted)}`);
+      }
+      const requestReview = vi.spyOn(fixture!.reviewAudit, "requestReview");
+      const requested = await adapter.govern(
+        requestReviewFor(projectId, authorization, submitted.result.knowledgeRevisionRef),
+      );
+      expect(requested, name).toMatchObject({
+        kind: "failed",
+        error: { code: "AUTHORIZATION_DENIED" },
+      });
+      // C07 读取前关闭失败：评审端口零调用、评审绑定零行。
+      expect(requestReview, name).not.toHaveBeenCalled();
+      requestReview.mockRestore();
+      const links = await fixture!.postgres.adminPool.query<{ reviews: string }>(
+        `SELECT count(*)::text AS reviews FROM business.knowledge_review_links
+          WHERE project_id = $1 AND review_task_ref IS NOT NULL`,
+        [projectId],
+      );
+      expect(links.rows[0]?.reviews, name).toBe("0");
+    };
+    await runDenied("missing-provider", undefined);
+    await runDenied(
+      "wrong-project",
+      mutatedProvider((context) => ({
+        ...context,
+        projectId: "governance-structured-denied-elsewhere",
+      })),
+    );
+    await runDenied(
+      "wrong-actor",
+      mutatedProvider((context) => ({
+        ...context,
+        actorId: "governance-structured-denied-other-actor",
+      })),
+    );
+    await runDenied(
+      "wrong-capability",
+      mutatedProvider((context) => ({
+        ...context,
+        grantedCapabilities: ["review-audit.read"],
+      })),
+    );
+    await runDenied(
+      "extra-capability",
+      mutatedProvider((context) => ({
+        ...context,
+        grantedCapabilities: [...context.grantedCapabilities, "review-audit.decide"],
+      })),
+    );
+  }, 240_000);
 
   it("blocks C19 scoring-rule submissions while the scoring-rule policy is missing", async () => {
     const projectId = "governance-c19-policy-missing";

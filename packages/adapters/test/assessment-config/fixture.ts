@@ -30,7 +30,7 @@ import {
 import {
   GOVERNANCE_TEST_TIMESTAMP,
   governanceAuthorizationFor,
-  reviewAuthorizationFor,
+  reviewAuthorizationProviderFor,
 } from "../knowledge-governance/fixture.js";
 
 export const ASSESSMENT_CONFIGURATION_TEST_TIMESTAMP = GOVERNANCE_TEST_TIMESTAMP;
@@ -147,16 +147,13 @@ export const startAssessmentConfigurationFixture =
         governedReleases,
         now,
       });
-      const reviewAuthorization = (command: { projectId: string; actorId: string }) =>
-        reviewAuthorizationFor(command.projectId, command.actorId);
       const governance = new PostgresKnowledgeGovernanceAdapter({
         db: base.runtime.db,
         transactionUnit: base.transactionUnit,
         access,
         reviewAudit,
         now,
-        reviewAuthorization,
-        approvalAuthorization: reviewAuthorization,
+        reviewAuthorizationProvider: reviewAuthorizationProviderFor(),
         assessmentConfigurationPolicy: configuration,
       });
       governanceRef.current = governance;

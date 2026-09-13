@@ -44,7 +44,6 @@ import {
   type AuthorizationContextV1,
   type EngineeringDataQueryV1,
   type EngineeringDataReadResultV1,
-  type KnowledgeGovernanceCommandV1,
   type ReviewAuditPortV1,
 } from "@riskflow/contracts/ports";
 import type { VersionReference } from "@riskflow/contracts/common";
@@ -244,23 +243,17 @@ export const createPostgresIdentificationKnowledgeComposition = (
     access: options.access,
     reviewAudit: options.reviewAudit,
     identificationKnowledgePolicy: releasePolicy,
-    // C16→C07 的评审请求与批准证明各自使用组合根按调用身份签发的独立上下文。
-    reviewAuthorization: (command: KnowledgeGovernanceCommandV1, link) =>
-      authorize({
-        projectId: command.projectId,
-        actorId: command.actorId,
-        invocationId: `${link.reviewAttemptId}:review`,
-        branch: "review-audit.request-review",
-        requestedAt: command.issuedAt,
-      }),
-    approvalAuthorization: (command: KnowledgeGovernanceCommandV1) =>
-      authorize({
-        projectId: command.projectId,
-        actorId: command.actorId,
-        invocationId: `${command.commandId}:approval`,
-        branch: "review-audit.verify-knowledge-revision-approval",
-        requestedAt: command.issuedAt,
-      }),
+    // D-11：C16→C07 的评审请求与批准证明各自使用组合根按 C16 派生的精确调用身份签发的独立上下文。
+    reviewAuthorizationProvider: {
+      authorize: (input) =>
+        authorize({
+          projectId: input.projectId,
+          actorId: input.actorId,
+          invocationId: input.invocationId,
+          branch: input.branch,
+          requestedAt: input.requestedAt,
+        }),
+    },
     now,
   });
   holders.governance = governance;
@@ -303,24 +296,12 @@ export const createPostgresIdentificationKnowledgeComposition = (
       ? {}
       : { policySetProvider: options.policySetProvider }),
     agentTaskPort,
-    agentTaskStore: {
-      createTask: async () => {
-        throw new TypeError("the C17 façade never creates C08 tasks directly");
-      },
-      getTask: async (ref) => {
+    agentTaskFailureEvidenceReader: {
+      readTerminalFailure: async (request) => {
         if (holders.taskAdapter === undefined) {
           throw new TypeError("the C08 task adapter is not constructed yet");
         }
-        return (await holders.taskAdapter.getTask(ref)) as never;
-      },
-      resumeTask: async () => {
-        throw new TypeError("the C17 façade never resumes C08 tasks directly");
-      },
-      cancelTask: async () => {
-        throw new TypeError("the C17 façade never cancels C08 tasks directly");
-      },
-      confirmCommand: async () => {
-        throw new TypeError("the C17 façade never confirms C08 commands directly");
+        return await holders.taskAdapter.readTerminalFailure(request);
       },
     },
     authorize,

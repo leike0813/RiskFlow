@@ -80,6 +80,7 @@ import {
   type ModuleBranchV1,
   type ModuleErrorV1,
   type ReviewAuditPortV1,
+  type ReviewDecisionRefV1,
   type ReviewTaskRefV1,
 } from "@riskflow/contracts/ports";
 import { IdentifierSchema, IsoDateTimeSchema } from "@riskflow/contracts/common";
@@ -573,6 +574,38 @@ export const governedReleaseResolutionInvocationId = (input: {
     asOfRecordedAt: input.asOfRecordedAt,
   })}`;
 
+/**
+ * C16→C07 的结构化授权请求：C16 派生精确 `invocationId`、`branch` 和目标引用，
+ * provider 只把请求交给受信来源与 C06，不得改写调用身份或能力。
+ */
+export type KnowledgeGovernanceReviewAuthorizationRequestV1 =
+  | {
+      readonly task: "request-review";
+      readonly projectId: string;
+      readonly actorId: string;
+      readonly invocationId: string;
+      readonly requestedAt: string;
+      readonly branch: "review-audit.request-review";
+      readonly reviewAttemptId: string;
+      readonly revisionRef: KnowledgeRevisionRefV1;
+    }
+  | {
+      readonly task: "verify-knowledge-revision-approval";
+      readonly projectId: string;
+      readonly actorId: string;
+      readonly invocationId: string;
+      readonly requestedAt: string;
+      readonly branch: "review-audit.verify-knowledge-revision-approval";
+      readonly revisionRef: KnowledgeRevisionRefV1;
+      readonly reviewDecisionRef: ReviewDecisionRefV1;
+    };
+
+export interface KnowledgeGovernanceReviewAuthorizationProviderV1 {
+  authorize(
+    input: KnowledgeGovernanceReviewAuthorizationRequestV1,
+  ): Promise<AuthorizationContextV1>;
+}
+
 export interface PostgresKnowledgeGovernanceAdapterOptionsV1 {
   readonly db: Kysely<PostgresDatabase>;
   readonly transactionUnit: TransactionUnitV1;
@@ -585,13 +618,11 @@ export interface PostgresKnowledgeGovernanceAdapterOptionsV1 {
   readonly identificationKnowledgePolicy?: IdentificationKnowledgeGovernancePolicyV1;
   /** Optional C19 content policy; C19 definition types are blocked without it. */
   readonly scoringRulesPolicy?: ScoringRulesGovernancePolicyV1;
-  readonly reviewAuthorization?: (
-    command: KnowledgeGovernanceCommandV1,
-    link: ReturnType<typeof reviewLinkFromRow>,
-  ) => AuthorizationContextV1 | Promise<AuthorizationContextV1>;
-  readonly approvalAuthorization?: (
-    command: KnowledgeGovernanceCommandV1,
-  ) => AuthorizationContextV1 | Promise<AuthorizationContextV1>;
+  /**
+   * D-11：C16→C07 结构化授权来源。C16 派生精确调用身份与分支，provider 返回上下文后
+   * C16 复验工程/actor/唯一能力；缺失或绑定不符在 C07 读取前关闭失败。
+   */
+  readonly reviewAuthorizationProvider?: KnowledgeGovernanceReviewAuthorizationProviderV1;
 }
 
 export class PostgresKnowledgeGovernanceAdapter {
@@ -603,10 +634,8 @@ export class PostgresKnowledgeGovernanceAdapter {
   readonly #assessmentConfigurationPolicy: AssessmentConfigurationGovernancePolicyV1 | undefined;
   readonly #identificationKnowledgePolicy: IdentificationKnowledgeGovernancePolicyV1 | undefined;
   readonly #scoringRulesPolicy: ScoringRulesGovernancePolicyV1 | undefined;
-  readonly #reviewAuthorization:
-    PostgresKnowledgeGovernanceAdapterOptionsV1["reviewAuthorization"] | undefined;
-  readonly #approvalAuthorization:
-    PostgresKnowledgeGovernanceAdapterOptionsV1["approvalAuthorization"] | undefined;
+  readonly #reviewAuthorizationProvider:
+    KnowledgeGovernanceReviewAuthorizationProviderV1 | undefined;
 
   constructor(options: PostgresKnowledgeGovernanceAdapterOptionsV1) {
     this.#db = options.db as unknown as Kysely<KnowledgeGovernanceDatabase>;
@@ -617,8 +646,7 @@ export class PostgresKnowledgeGovernanceAdapter {
     this.#assessmentConfigurationPolicy = options.assessmentConfigurationPolicy;
     this.#identificationKnowledgePolicy = options.identificationKnowledgePolicy;
     this.#scoringRulesPolicy = options.scoringRulesPolicy;
-    this.#reviewAuthorization = options.reviewAuthorization;
-    this.#approvalAuthorization = options.approvalAuthorization;
+    this.#reviewAuthorizationProvider = options.reviewAuthorizationProvider;
   }
 
   async govern<T extends KnowledgeGovernanceCommandV1>(
@@ -1187,7 +1215,30 @@ export class PostgresKnowledgeGovernanceAdapter {
       const link = reviewLinkFromRow(linkRow as NonNullable<typeof linkRow>);
       let reviewTaskRef = link.reviewTaskRef;
       if (reviewTaskRef === undefined) {
-        const reviewAuthorization = await this.#authorizationForReview(command, link);
+        // D-11：C16 派生精确调用身份与分支，provider 只解析受信来源与 C06 授权。
+        const reviewAuthorization = await this.#reviewAuthorization(
+          {
+            task: "request-review",
+            projectId: command.projectId,
+            actorId: command.actorId,
+            invocationId: `${reviewAttemptId}:review`,
+            requestedAt: command.issuedAt,
+            branch: "review-audit.request-review",
+            reviewAttemptId,
+            revisionRef: link.revisionRef,
+          },
+          "review-audit.request",
+        );
+        if (reviewAuthorization === undefined) {
+          return {
+            kind: "failed",
+            error: moduleError({
+              code: "AUTHORIZATION_DENIED",
+              branch: knowledgeBranch(command.kind),
+              causalRunId: command.commandId,
+            }),
+          };
+        }
         const request = ReviewRequestV1Schema.parse({
           kind: "request-review",
           commandId: `${reviewAttemptId}:review`,
@@ -1311,7 +1362,29 @@ export class PostgresKnowledgeGovernanceAdapter {
           }),
         };
       }
-      const approvalAuthorization = await this.#authorizationForApproval(command);
+      const approvalAuthorization = await this.#reviewAuthorization(
+        {
+          task: "verify-knowledge-revision-approval",
+          projectId: command.projectId,
+          actorId: command.actorId,
+          invocationId: `${command.commandId}:approval`,
+          requestedAt: command.issuedAt,
+          branch: "review-audit.verify-knowledge-revision-approval",
+          revisionRef: command.payload.revisionRef,
+          reviewDecisionRef: command.payload.reviewDecisionRef,
+        },
+        "review-audit.read",
+      );
+      if (approvalAuthorization === undefined) {
+        return {
+          kind: "failed",
+          error: moduleError({
+            code: "AUTHORIZATION_DENIED",
+            branch: knowledgeBranch(command.kind),
+            causalRunId: command.commandId,
+          }),
+        };
+      }
       const proofResult = await this.#reviewAudit.verifyKnowledgeRevisionApproval(
         KnowledgeRevisionApprovalProofQueryV1Schema.parse({
           queryId: `${command.commandId}:approval`,
@@ -1688,7 +1761,30 @@ export class PostgresKnowledgeGovernanceAdapter {
         initialFacts.decisions,
         command.issuedAt,
       );
-      const approvalAuthorization = await this.#authorizationForApproval(command);
+      // 回滚的批准证明针对待恢复的历史修订，不是命令载荷中的 release。
+      const approvalAuthorization = await this.#reviewAuthorization(
+        {
+          task: "verify-knowledge-revision-approval",
+          projectId: command.projectId,
+          actorId: command.actorId,
+          invocationId: `${command.commandId}:approval`,
+          requestedAt: command.issuedAt,
+          branch: "review-audit.verify-knowledge-revision-approval",
+          revisionRef: historical.revisionRef,
+          reviewDecisionRef: command.payload.reviewDecisionRef,
+        },
+        "review-audit.read",
+      );
+      if (approvalAuthorization === undefined) {
+        return {
+          kind: "failed",
+          error: moduleError({
+            code: "AUTHORIZATION_DENIED",
+            branch: knowledgeBranch(command.kind),
+            causalRunId: command.commandId,
+          }),
+        };
+      }
       const proofResult = await this.#reviewAudit.verifyKnowledgeRevisionApproval(
         KnowledgeRevisionApprovalProofQueryV1Schema.parse({
           queryId: `${command.commandId}:approval`,
@@ -1945,21 +2041,23 @@ export class PostgresKnowledgeGovernanceAdapter {
     return decision.context;
   }
 
-  async #authorizationForReview(
-    command: KnowledgeGovernanceCommandV1,
-    link: ReturnType<typeof reviewLinkFromRow>,
-  ): Promise<AuthorizationContextV1> {
-    return this.#reviewAuthorization === undefined
-      ? command.authorization
-      : this.#reviewAuthorization(command, link);
-  }
-
-  async #authorizationForApproval(
-    command: KnowledgeGovernanceCommandV1,
-  ): Promise<AuthorizationContextV1> {
-    return this.#approvalAuthorization === undefined
-      ? command.authorization
-      : this.#approvalAuthorization(command);
+  /** provider 缺失、未返回上下文或绑定不符都关闭失败，不使用命令 authorization 回退。 */
+  async #reviewAuthorization(
+    request: KnowledgeGovernanceReviewAuthorizationRequestV1,
+    requiredCapability: "review-audit.request" | "review-audit.read",
+  ): Promise<AuthorizationContextV1 | undefined> {
+    const provider = this.#reviewAuthorizationProvider;
+    if (provider === undefined) return undefined;
+    const context = await provider.authorize(request);
+    if (
+      context.projectId !== request.projectId ||
+      context.actorId !== request.actorId ||
+      context.grantedCapabilities.length !== 1 ||
+      context.grantedCapabilities[0] !== requiredCapability
+    ) {
+      return undefined;
+    }
+    return context;
   }
 
   async #prepareAssessmentConfiguration(

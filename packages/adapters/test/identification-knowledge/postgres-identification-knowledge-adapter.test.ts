@@ -4,15 +4,21 @@ import {
   CancelAgentTaskCommandV1Schema,
   KnowledgeGovernanceCommandV1Schema,
   KnowledgeResolutionCommandV1Schema,
+  ModuleErrorV1Schema,
   ReviewDecisionCommandV1Schema,
   type AuthorizationContextV1,
   type KnowledgeDefinitionTypeV1,
   type KnowledgeGovernanceResultV1,
   type KnowledgeReleaseRefV1,
   type KnowledgeRevisionRefV1,
+  type ModuleErrorV1,
   type ReviewDecisionRefV1,
   type ReviewTaskRefV1,
 } from "@riskflow/contracts/ports";
+import type {
+  AgentTaskFailureEvidenceReadRequestV1,
+  AgentTaskFailureEvidenceReaderV1,
+} from "@riskflow/core/agent-runtime";
 
 import { governedReleaseResolutionInvocationId } from "../../src/knowledge-governance/index.js";
 import {
@@ -55,6 +61,36 @@ const releaseOf = (result: KnowledgeGovernanceResultV1, label: string): Knowledg
   return result.result.knowledgeReleaseRef;
 };
 
+/** C08 不可枚举拒绝形状：与前置 change 的 `readTerminalFailure()` 完全一致。 */
+const evidenceDenied = (requestId: string): ModuleErrorV1 =>
+  ModuleErrorV1Schema.parse({
+    stageCode: "agent-task.read-failure-evidence",
+    occurredAt: IDENTIFICATION_KNOWLEDGE_TEST_TIMESTAMP,
+    causalRunId: requestId,
+    code: "AUTHORIZATION_DENIED",
+    category: "authorization",
+    retryable: false,
+    requiredCapability: "agent-task.read",
+    authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+  });
+
+/** 窄读的同形拒绝之外的失败：收口必须可验上抛，不得当作已收口。 */
+const evidenceTransient = (requestId: string): ModuleErrorV1 =>
+  ModuleErrorV1Schema.parse({
+    stageCode: "agent-task.read-failure-evidence",
+    occurredAt: IDENTIFICATION_KNOWLEDGE_TEST_TIMESTAMP,
+    causalRunId: requestId,
+    code: "TRANSIENT_FAILURE",
+    category: "technical",
+    retryable: true,
+    attempt: 1,
+    retryPolicyRef: { entityId: "agent-task-read-retry", versionId: "1" },
+    diagnosticRef: {
+      kind: "diagnostic-artifact",
+      reference: { entityId: "agent-task-read-failure", versionId: "v1" },
+    },
+  });
+
 const reviewTaskOf = (result: KnowledgeGovernanceResultV1, label: string): ReviewTaskRefV1 => {
   if (result.kind !== "succeeded" || result.result.kind !== "review-task") {
     throw new Error(`${label} did not produce a review task: ${JSON.stringify(result)}`);
@@ -78,6 +114,40 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
     readonly releasePolicyFault?: "before-binding" | "after-binding";
   }): PostgresIdentificationKnowledgeAdapter =>
     fixture.createIdentificationKnowledgeAdapter(options).adapter;
+
+  /** 编制入口的成功前置：任何未达成功的准备都必须让测试失败，而不是让后续断言静默跳过。 */
+  const prepareAuthoring = async (
+    adapter: PostgresIdentificationKnowledgeAdapter,
+    suffix: string,
+    world?: IdentificationPreparationWorldV1,
+  ) => {
+    const isolated = world ?? (await fixture.createPreparationWorld(suffix));
+    const commandId = nextId(`c17-${suffix}-prepare`);
+    const prepared = await adapter.prepareOrReplayAuthoringTask({
+      projectId: isolated.projectId,
+      actorId: isolated.readAuthorization.actorId,
+      issuedAt: "2030-01-02T00:00:00.000Z",
+      authorization: await fixture.authorizationFor(
+        commandId,
+        "knowledge-modeling.submit-revision",
+        isolated.projectId,
+      ),
+      definitionType: "standard-library",
+      preparationSnapshotRef: isolated.snapshotRef,
+      parentRunRef: {
+        kind: "workflow-run",
+        reference: { entityId: `c17-${suffix}-run`, versionId: "1" },
+      },
+      commandId,
+      idempotencyKey: commandId,
+    });
+    if (prepared.kind !== "succeeded") {
+      throw new Error(
+        `authoring preparation failed for ${suffix}: ${JSON.stringify(prepared.error)}`,
+      );
+    }
+    return { isolated, prepared };
+  };
 
   const countBinding = async (table: string, where: string, params: readonly unknown[]) => {
     const rows = await fixture.cleaning.postgres.adminPool.query<{ count: string }>(
@@ -1079,29 +1149,48 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
   }, 300_000);
 
   it("settles a cancelled authoring task into a failure-only revision and one review", async () => {
-    const { adapter, agentTaskAdapter } = fixture.createIdentificationKnowledgeAdapter();
-    const isolated = await fixture.createPreparationWorld("settlement");
-    const commandId = nextId("c17-settlement-prepare");
-    const prepared = await adapter.prepareOrReplayAuthoringTask({
-      projectId: isolated.projectId,
-      actorId: isolated.readAuthorization.actorId,
-      issuedAt: "2030-01-02T00:00:00.000Z",
-      authorization: await fixture.authorizationFor(
-        commandId,
-        "knowledge-modeling.submit-revision",
-        isolated.projectId,
-      ),
-      definitionType: "standard-library",
-      preparationSnapshotRef: isolated.snapshotRef,
-      parentRunRef: {
-        kind: "workflow-run",
-        reference: { entityId: "c17-settlement-run", versionId: "1" },
+    const reads: AgentTaskFailureEvidenceReadRequestV1[] = [];
+    const readerHolder: { reader?: AgentTaskFailureEvidenceReaderV1 } = {};
+    // 收口只允许经注入的 C08 公共窄读：转发的仍是同一 adapter 的真实实现。
+    const { adapter, agentTaskAdapter } = fixture.createIdentificationKnowledgeAdapter({
+      failureEvidenceReader: {
+        readTerminalFailure: async (request) => {
+          reads.push(request);
+          if (readerHolder.reader === undefined) throw new Error("the reader is not wired");
+          return await readerHolder.reader.readTerminalFailure(request);
+        },
       },
-      commandId,
-      idempotencyKey: commandId,
     });
-    expect(prepared.kind).toBe("succeeded");
-    if (prepared.kind !== "succeeded") throw new Error(JSON.stringify(prepared.error));
+    readerHolder.reader = agentTaskAdapter;
+    const { isolated, prepared } = await prepareAuthoring(adapter, "settlement");
+    const taskEntityId = prepared.agentTaskRef.reference.entityId;
+    // 任务仍在运行时 C08 窄读按「非终态」同形拒绝：不停留在收口循环外，也不写任何失败事实。
+    await expect(adapter.settleAuthoringFailures()).resolves.toBe(0);
+    expect(reads).toHaveLength(1);
+    expect(reads[0]).toMatchObject({
+      projectId: isolated.projectId,
+      taskRef: prepared.agentTaskRef,
+      expectedTaskType: "knowledge-authoring",
+      requestId: `${taskEntityId}:failure-evidence`,
+      actorId: reads[0]?.authorization.actorId,
+    });
+    // 失败证据读取必须使用新鲜签发的唯一 `agent-task.read` 能力，不回退任务信封授权。
+    expect(reads[0]?.authorization.grantedCapabilities).toEqual(["agent-task.read"]);
+    const pending = await fixture.cleaning.postgres.adminPool.query<{
+      stage: string;
+      bindings: string;
+      receipts: string;
+    }>(
+      `SELECT
+         (SELECT stage FROM business.identification_knowledge_authoring_attempts
+           WHERE project_id = $1 AND agent_task_ref->'reference'->>'entityId' = $2) AS stage,
+         (SELECT count(*)::text FROM business.identification_knowledge_revision_bindings
+           WHERE project_id = $1 AND binding_kind = 'failure-review-only') AS bindings,
+         (SELECT count(*)::text FROM business.command_receipts
+           WHERE project_id = $1 AND command_id = $3) AS receipts`,
+      [isolated.projectId, taskEntityId, `${taskEntityId}:failure-revision`],
+    );
+    expect(pending.rows[0]).toEqual({ stage: "task-started", bindings: "0", receipts: "0" });
     const cancelCommandId = nextId("c17-authoring-cancel");
     await agentTaskAdapter.cancelTask(
       CancelAgentTaskCommandV1Schema.parse({
@@ -1120,7 +1209,9 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       }),
     );
     const settled = await adapter.settleAuthoringFailures();
-    expect(settled).toBeGreaterThanOrEqual(1);
+    expect(settled).toBe(1);
+    expect(reads).toHaveLength(2);
+    expect(reads[1]?.taskRef).toEqual(prepared.agentTaskRef);
     const rows = await fixture.cleaning.postgres.adminPool.query<{
       binding_kind: string;
       stage: string;
@@ -1186,7 +1277,7 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
         blockerKind: "identification-knowledge-binding-required",
       },
     });
-    await adapter.settleAuthoringFailures();
+    await expect(adapter.settleAuthoringFailures()).resolves.toBe(0);
     // D-09 幂等：重放不创建第二个失败修订，也不重复挂复核任务。
     const replayRows = await fixture.cleaning.postgres.adminPool.query<{
       bindings: string;
@@ -1216,6 +1307,175 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       ],
     );
     expect(stageFacts.rows[0]).toEqual({ receipts: "2", audits: "2" });
+  }, 300_000);
+
+  it("keeps the attempt pending and writes nothing when the failure evidence read is denied", async () => {
+    const reads: AgentTaskFailureEvidenceReadRequestV1[] = [];
+    const { adapter } = fixture.createIdentificationKnowledgeAdapter({
+      failureEvidenceReader: {
+        readTerminalFailure: async (request) => {
+          reads.push(request);
+          return { kind: "failed", error: evidenceDenied(request.requestId) };
+        },
+      },
+    });
+    const { isolated, prepared } = await prepareAuthoring(adapter, "settlement-denied");
+    const taskEntityId = prepared.agentTaskRef.reference.entityId;
+    await expect(adapter.settleAuthoringFailures()).resolves.toBe(0);
+    expect(reads).toHaveLength(1);
+    expect(reads[0]?.taskRef).toEqual(prepared.agentTaskRef);
+    // 拒绝只停在最后成立阶段：没有诊断工件、失败修订、绑定、复核或命令回执。
+    const state = await fixture.cleaning.postgres.adminPool.query<{
+      stage: string;
+      diagnostics: string;
+      revisions: string;
+      bindings: string;
+      reviews: string;
+      receipts: string;
+    }>(
+      `SELECT
+         (SELECT stage FROM business.identification_knowledge_authoring_attempts
+           WHERE project_id = $1 AND agent_task_ref->'reference'->>'entityId' = $2) AS stage,
+         (SELECT count(*)::text FROM business.artifact_manifests
+           WHERE project_id = $1 AND purpose_code = $3) AS diagnostics,
+         (SELECT count(*)::text FROM business.knowledge_revisions
+           WHERE project_id = $1) AS revisions,
+         (SELECT count(*)::text FROM business.identification_knowledge_revision_bindings
+           WHERE project_id = $1) AS bindings,
+         (SELECT count(*)::text FROM business.identification_knowledge_authoring_attempts
+           WHERE project_id = $1 AND review_task_ref IS NOT NULL) AS reviews,
+         (SELECT count(*)::text FROM business.command_receipts
+           WHERE project_id = $1 AND command_id IN ($4, $5)) AS receipts`,
+      [
+        isolated.projectId,
+        taskEntityId,
+        "identification-knowledge-authoring-failure",
+        `${taskEntityId}:failure-revision`,
+        `${taskEntityId}:failure-review`,
+      ],
+    );
+    expect(state.rows[0]).toEqual({
+      stage: "task-started",
+      diagnostics: "0",
+      revisions: "0",
+      bindings: "0",
+      reviews: "0",
+      receipts: "0",
+    });
+  }, 300_000);
+
+  it("surfaces a non-denial failure evidence read instead of settling the failure", async () => {
+    const { adapter } = fixture.createIdentificationKnowledgeAdapter({
+      failureEvidenceReader: {
+        readTerminalFailure: async (request) => ({
+          kind: "failed",
+          error: evidenceTransient(request.requestId),
+        }),
+      },
+    });
+    const { isolated, prepared } = await prepareAuthoring(adapter, "settlement-transient");
+    const taskEntityId = prepared.agentTaskRef.reference.entityId;
+    await expect(adapter.settleAuthoringFailures()).rejects.toMatchObject({
+      error: { code: "TRANSIENT_FAILURE" },
+    });
+    const state = await fixture.cleaning.postgres.adminPool.query<{
+      stage: string;
+      diagnostics: string;
+      bindings: string;
+    }>(
+      `SELECT
+         (SELECT stage FROM business.identification_knowledge_authoring_attempts
+           WHERE project_id = $1 AND agent_task_ref->'reference'->>'entityId' = $2) AS stage,
+         (SELECT count(*)::text FROM business.artifact_manifests
+           WHERE project_id = $1 AND purpose_code = $3) AS diagnostics,
+         (SELECT count(*)::text FROM business.identification_knowledge_revision_bindings
+           WHERE project_id = $1) AS bindings`,
+      [isolated.projectId, taskEntityId, "identification-knowledge-authoring-failure"],
+    );
+    expect(state.rows[0]).toEqual({ stage: "task-started", diagnostics: "0", bindings: "0" });
+  }, 300_000);
+
+  it("completes only the missing failure review stage on replay", async () => {
+    const isolated = await fixture.createPreparationWorld("settlement-recovery");
+    const reads: AgentTaskFailureEvidenceReadRequestV1[] = [];
+    const readerHolder: { reader?: AgentTaskFailureEvidenceReaderV1 } = {};
+    const spyingReader: AgentTaskFailureEvidenceReaderV1 = {
+      readTerminalFailure: async (request) => {
+        reads.push(request);
+        if (readerHolder.reader === undefined) throw new Error("the reader is not wired");
+        return await readerHolder.reader.readTerminalFailure(request);
+      },
+    };
+    // 只拒绝本工程自己的复核授权：失败修订绑定必须保留，复核留到下一次重放补做。
+    const { adapter, agentTaskAdapter } = fixture.createIdentificationKnowledgeAdapter({
+      failureEvidenceReader: spyingReader,
+      authorizeDenial: (input) =>
+        input.branch === "knowledge-modeling.request-review" &&
+        input.projectId === isolated.projectId,
+    });
+    readerHolder.reader = agentTaskAdapter;
+    const { prepared } = await prepareAuthoring(adapter, "settlement-recovery", isolated);
+    const taskEntityId = prepared.agentTaskRef.reference.entityId;
+    const cancelCommandId = nextId("c17-recovery-cancel");
+    await agentTaskAdapter.cancelTask(
+      CancelAgentTaskCommandV1Schema.parse({
+        kind: "cancel-task",
+        commandId: cancelCommandId,
+        idempotencyKey: cancelCommandId,
+        projectId: isolated.projectId,
+        actorId: isolated.readAuthorization.actorId,
+        issuedAt: "2030-01-02T00:00:00.000Z",
+        authorization: await fixture.authorizationFor(
+          cancelCommandId,
+          "agent-task.cancel-task",
+          isolated.projectId,
+        ),
+        payload: { agentTaskRef: prepared.agentTaskRef, reasonCode: "operator-cancelled" },
+      }),
+    );
+    const countState = async () =>
+      (
+        await fixture.cleaning.postgres.adminPool.query<{
+          revisions: string;
+          bindings: string;
+          reviews: string;
+          stage: string;
+        }>(
+          `SELECT
+             (SELECT count(*)::text FROM business.knowledge_revisions
+               WHERE project_id = $1 AND definition_type = 'standard-library') AS revisions,
+             (SELECT count(*)::text FROM business.identification_knowledge_revision_bindings
+               WHERE project_id = $1 AND binding_kind = 'failure-review-only') AS bindings,
+             (SELECT count(*)::text FROM business.identification_knowledge_authoring_attempts
+               WHERE project_id = $1 AND review_task_ref IS NOT NULL) AS reviews,
+             (SELECT stage FROM business.identification_knowledge_authoring_attempts
+               WHERE project_id = $1 AND agent_task_ref->'reference'->>'entityId' = $2) AS stage`,
+          [isolated.projectId, taskEntityId],
+        )
+      ).rows[0];
+    const evidenceReads = () =>
+      reads.filter((request) => request.taskRef.reference.entityId === taskEntityId).length;
+    await expect(adapter.settleAuthoringFailures()).rejects.toBeDefined();
+    // 授权失败停在最后已成立阶段：诊断与失败修订绑定已耐久，复核未创建。
+    expect(await countState()).toEqual({
+      revisions: "1",
+      bindings: "1",
+      reviews: "0",
+      stage: "failure-revision-bound",
+    });
+    const readsBeforeReplay = evidenceReads();
+    // 下一次只补未完成阶段：不重复读取本任务的 C08 证据、不创建第二个修订或复核。
+    const recovering = fixture.createIdentificationKnowledgeAdapter({
+      failureEvidenceReader: spyingReader,
+    });
+    await expect(recovering.adapter.settleAuthoringFailures()).resolves.toBeGreaterThanOrEqual(1);
+    expect(evidenceReads()).toBe(readsBeforeReplay);
+    expect(await countState()).toEqual({
+      revisions: "1",
+      bindings: "1",
+      reviews: "1",
+      stage: "review-linked",
+    });
   }, 300_000);
 
   it("keeps non C17 governance definitions on the delegated C16 path", async () => {

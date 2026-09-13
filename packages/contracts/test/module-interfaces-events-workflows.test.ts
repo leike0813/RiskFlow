@@ -51,9 +51,11 @@ import {
   ReviewDecisionCommandV1Schema,
   ReviewDecisionV1Schema,
   ReviewRequestV1Schema,
+  ReviewTaskRefV1Schema,
   type ReviewAuditPortV1,
   RiskAssessmentRecordRefV1Schema,
   RiskInputVersionRefV1Schema,
+  RuleConflictRefV1Schema,
   RunSubscriptionRequestV1Schema,
   StartAgentTaskCommandV1Schema,
   StartWorkflowRunCommandV1Schema,
@@ -132,6 +134,7 @@ const knowledgeReviewTaskRef = {
   targetRef: version("knowledge-revision"),
   waitingRunRef: workflowRunRef,
 };
+const ruleConflictRef = version("rule-conflict", "rule-relation-1");
 
 const authorization = {
   schemaVersion: "1",
@@ -1435,6 +1438,76 @@ describe("module interface contracts", () => {
       AgentTaskResultRefV1Schema.safeParse({
         ...cancelledAgentTaskResult,
         candidateRef: version("recommendation-candidate"),
+      }).success,
+    ).toBe(false);
+  });
+
+  it("closes rule conflict references across review request, task and event", () => {
+    const ruleConflictReviewTaskRef = {
+      ...version("review-task", "rule-conflict-review"),
+      reviewType: "rule-conflict",
+      targetRef: ruleConflictRef,
+      waitingRunRef: workflowRunRef,
+    };
+    const ruleConflictRequest = command("request-review", {
+      reviewType: "rule-conflict",
+      targetRef: ruleConflictRef,
+      validationSnapshotRef: version("validation-snapshot"),
+      evidenceSnapshotRef: version("evidence-snapshot"),
+      waitingRunRef: workflowRunRef,
+      reviewPolicyRef: policyRef,
+    });
+
+    expect(RuleConflictRefV1Schema.safeParse(ruleConflictRef).success).toBe(true);
+    expect(ContractReferenceV1Schema.safeParse(ruleConflictRef).success).toBe(true);
+    expect(ReviewTaskRefV1Schema.safeParse(ruleConflictReviewTaskRef).success).toBe(true);
+    expect(ReviewRequestV1Schema.safeParse(ruleConflictRequest).success).toBe(true);
+    expect(
+      DomainEventV1Schema.safeParse({
+        ...eventMetadata,
+        eventType: "review.review-requested.v1",
+        payload: {
+          reviewTaskRef: ruleConflictReviewTaskRef,
+          targetRef: ruleConflictRef,
+          waitingRunRef: workflowRunRef,
+        },
+      }).success,
+    ).toBe(true);
+
+    expect(
+      RuleConflictRefV1Schema.safeParse({
+        kind: "rule-conflict",
+        reference: { entityId: "rule-relation-1" },
+      }).success,
+    ).toBe(false);
+    expect(
+      RuleConflictRefV1Schema.safeParse({
+        kind: "rule-conflict",
+        reference: { entityId: " ", versionId: "v1" },
+      }).success,
+    ).toBe(false);
+    expect(
+      ContractReferenceV1Schema.safeParse({ ...ruleConflictRef, conflictBody: "冲突正文" }).success,
+    ).toBe(false);
+    expect(
+      ContractReferenceV1Schema.safeParse({
+        ...ruleConflictRef,
+        reference: { ...ruleConflictRef.reference, currentVersion: true },
+      }).success,
+    ).toBe(false);
+    expect(
+      ContractReferenceV1Schema.safeParse({ ...ruleConflictRef, kind: "rule-conflicts" }).success,
+    ).toBe(false);
+    expect(
+      ReviewRequestV1Schema.safeParse({
+        ...ruleConflictRequest,
+        payload: { ...ruleConflictRequest.payload, targetRef: version("knowledge-revision") },
+      }).success,
+    ).toBe(false);
+    expect(
+      ReviewTaskRefV1Schema.safeParse({
+        ...ruleConflictReviewTaskRef,
+        targetRef: version("knowledge-revision"),
       }).success,
     ).toBe(false);
   });

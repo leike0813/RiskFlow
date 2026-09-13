@@ -211,6 +211,9 @@ export type CalibrationSuggestionRefV1 = z.infer<typeof CalibrationSuggestionRef
 export const AssessmentRunResultRefV1Schema = versionedRef("assessment-run-result");
 export type AssessmentRunResultRefV1 = z.infer<typeof AssessmentRunResultRefV1Schema>;
 
+export const RuleConflictRefV1Schema = versionedRef("rule-conflict");
+export type RuleConflictRefV1 = z.infer<typeof RuleConflictRefV1Schema>;
+
 export const ReviewDecisionRefV1Schema = versionedRef("review-decision");
 export type ReviewDecisionRefV1 = z.infer<typeof ReviewDecisionRefV1Schema>;
 
@@ -292,7 +295,7 @@ export const ReviewTargetRefV1Schema = z.discriminatedUnion("kind", [
   IdentificationCandidateSetRefV1Schema,
   IdentificationGroupRefV1Schema,
   KnowledgeRevisionRefV1Schema,
-  z.strictObject({ kind: z.literal("rule-conflict"), reference: VersionReferenceSchema }),
+  RuleConflictRefV1Schema,
   z.strictObject({ kind: z.literal("response-candidate"), reference: VersionReferenceSchema }),
   RecommendationCandidateRefV1Schema,
   CalibrationSuggestionRefV1Schema,
@@ -304,10 +307,6 @@ const IdentificationReviewTargetRefV1Schema = z.discriminatedUnion("kind", [
   IdentificationGroupRefV1Schema,
 ]);
 const KnowledgeReviewTargetRefV1Schema = KnowledgeRevisionRefV1Schema;
-const RuleConflictReviewTargetRefV1Schema = z.strictObject({
-  kind: z.literal("rule-conflict"),
-  reference: VersionReferenceSchema,
-});
 const ResponseReviewTargetRefV1Schema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("response-candidate"), reference: VersionReferenceSchema }),
   RecommendationCandidateRefV1Schema,
@@ -348,7 +347,7 @@ export const ReviewTaskRefV1Schema = z.discriminatedUnion("reviewType", [
   z.strictObject({
     ...reviewTaskBase,
     reviewType: z.literal("rule-conflict"),
-    targetRef: RuleConflictReviewTargetRefV1Schema,
+    targetRef: RuleConflictRefV1Schema,
   }),
   z.strictObject({
     ...reviewTaskBase,
@@ -426,6 +425,7 @@ export const ContractReferenceV1Schema = z.discriminatedUnion("kind", [
   DeviationRecordRefV1Schema,
   CalibrationSuggestionRefV1Schema,
   AssessmentRunResultRefV1Schema,
+  RuleConflictRefV1Schema,
   ReviewDecisionRefV1Schema,
   AuditTrailRefV1Schema,
   ValidationSnapshotRefV1Schema,

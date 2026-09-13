@@ -56,6 +56,7 @@ import {
   WarningRecordSchema,
   WarningTriggerTypeSchema,
 } from "../src/index.js";
+import type { RiskInputReference } from "../src/index.js";
 
 const vocabularyCases = [
   ["工序节点", PROCESS_NODE_VALUES, ProcessNodeSchema],
@@ -411,35 +412,81 @@ describe("评估记录", () => {
   });
 
   it("以可辨识联合类型强制风险输入 XOR", () => {
-    expect(RiskInputReferenceSchema.safeParse({ riskRecordId: "risk-1" }).success).toBe(true);
-    expect(
-      RiskInputReferenceSchema.safeParse({ externalRiskEventId: "external-risk-1" }).success,
-    ).toBe(true);
-    expect(
-      RiskInputReferenceSchema.safeParse({
+    const riskRecordInput: RiskInputReference = {
+      kind: "standardized-risk-record",
+      riskRecordId: "risk-1",
+    };
+    const externalRiskEventInput: RiskInputReference = {
+      kind: "external-risk-event",
+      externalRiskEventId: "external-risk-1",
+    };
+
+    expect(RiskInputReferenceSchema.safeParse(riskRecordInput).success).toBe(true);
+    expect(RiskInputReferenceSchema.safeParse(externalRiskEventInput).success).toBe(true);
+
+    const ambiguousRiskInputs = [
+      {},
+      { riskRecordId: "risk-1" },
+      { kind: "unknown-risk-input", riskRecordId: "risk-1" },
+      { kind: "standardized-risk-record", externalRiskEventId: "external-risk-1" },
+      { kind: "external-risk-event", riskRecordId: "risk-1" },
+      { kind: "standardized-risk-record" },
+      {
+        kind: "standardized-risk-record",
         riskRecordId: "risk-1",
         externalRiskEventId: "external-risk-1",
-      }).success,
-    ).toBe(false);
-    expect(RiskInputReferenceSchema.safeParse({}).success).toBe(false);
+      },
+      {
+        kind: "standardized-risk-record",
+        riskRecordId: "risk-1",
+        externalRiskEventId: undefined,
+      },
+      { kind: "standardized-risk-record", riskRecordId: "risk-1", undeclaredField: true },
+    ];
+
+    for (const ambiguousRiskInput of ambiguousRiskInputs) {
+      expect(RiskInputReferenceSchema.safeParse(ambiguousRiskInput).success).toBe(false);
+      expect(
+        RiskAssessmentRecordSchema.safeParse({ ...assessmentBase, ...ambiguousRiskInput }).success,
+      ).toBe(false);
+    }
+
+    const parsedRiskRecordInput = RiskInputReferenceSchema.parse(riskRecordInput);
+    const parsedExternalRiskEventInput = RiskInputReferenceSchema.parse(externalRiskEventInput);
+    const selectedRiskInputIds = [
+      parsedRiskRecordInput.kind === "standardized-risk-record"
+        ? parsedRiskRecordInput.riskRecordId
+        : parsedRiskRecordInput.externalRiskEventId,
+      parsedExternalRiskEventInput.kind === "standardized-risk-record"
+        ? parsedExternalRiskEventInput.riskRecordId
+        : parsedExternalRiskEventInput.externalRiskEventId,
+    ];
+    expect(selectedRiskInputIds).toEqual(["risk-1", "external-risk-1"]);
+
+    const ambiguousRiskInput = {
+      kind: "standardized-risk-record",
+      riskRecordId: "risk-1",
+      externalRiskEventId: "external-risk-1",
+    } as const;
+    // @ts-expect-error 同时携带两个标识的对象不得赋给共享风险输入引用
+    const rejectedRiskInput: RiskInputReference = ambiguousRiskInput;
+    expect(RiskInputReferenceSchema.safeParse(rejectedRiskInput).success).toBe(false);
 
     expect(IndicatorResultSchema.safeParse(indicatorResult).success).toBe(true);
     expect(
-      RiskAssessmentRecordSchema.safeParse({ ...assessmentBase, riskRecordId: "risk-1" }).success,
-    ).toBe(true);
-    expect(
       RiskAssessmentRecordSchema.safeParse({
         ...assessmentBase,
-        externalRiskEventId: "external-risk-1",
-      }).success,
-    ).toBe(true);
-    expect(
-      RiskAssessmentRecordSchema.safeParse({
-        ...assessmentBase,
+        kind: "standardized-risk-record",
         riskRecordId: "risk-1",
+      }).success,
+    ).toBe(true);
+    expect(
+      RiskAssessmentRecordSchema.safeParse({
+        ...assessmentBase,
+        kind: "external-risk-event",
         externalRiskEventId: "external-risk-1",
       }).success,
-    ).toBe(false);
+    ).toBe(true);
     expect(RiskAssessmentRecordSchema.safeParse(assessmentBase).success).toBe(false);
   });
 });

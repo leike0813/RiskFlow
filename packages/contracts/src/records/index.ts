@@ -153,15 +153,31 @@ export const StructuredScoringRuleSchema = z.strictObject({
 });
 export type StructuredScoringRule = z.infer<typeof StructuredScoringRuleSchema>;
 
-const RiskRecordInputSchema = z.strictObject({ riskRecordId: IdentifierSchema });
+const rejectPresentOppositeRiskInputField = (
+  input: { kind: "standardized-risk-record" | "external-risk-event" },
+  context: z.core.$RefinementCtx,
+) => {
+  const oppositeField =
+    input.kind === "standardized-risk-record" ? "externalRiskEventId" : "riskRecordId";
+  if (Object.hasOwn(input, oppositeField)) {
+    context.addIssue({ code: "custom", path: [oppositeField], message: "conflicting risk input" });
+  }
+};
+
+const RiskRecordInputSchema = z.strictObject({
+  kind: z.literal("standardized-risk-record"),
+  riskRecordId: IdentifierSchema,
+  externalRiskEventId: z.never().optional(),
+});
 const ExternalRiskEventInputSchema = z.strictObject({
+  kind: z.literal("external-risk-event"),
   externalRiskEventId: IdentifierSchema,
+  riskRecordId: z.never().optional(),
 });
 
-export const RiskInputReferenceSchema = z.union([
-  RiskRecordInputSchema,
-  ExternalRiskEventInputSchema,
-]);
+export const RiskInputReferenceSchema = z
+  .discriminatedUnion("kind", [RiskRecordInputSchema, ExternalRiskEventInputSchema])
+  .superRefine(rejectPresentOppositeRiskInputField);
 export type RiskInputReference = z.infer<typeof RiskInputReferenceSchema>;
 
 export const IndicatorResultSchema = z.strictObject({
@@ -196,10 +212,12 @@ const RiskAssessmentRecordBaseShape = {
   audit: AuditInfoSchema,
 };
 
-export const RiskAssessmentRecordSchema = z.union([
-  RiskRecordInputSchema.extend(RiskAssessmentRecordBaseShape).strict(),
-  ExternalRiskEventInputSchema.extend(RiskAssessmentRecordBaseShape).strict(),
-]);
+export const RiskAssessmentRecordSchema = z
+  .discriminatedUnion("kind", [
+    RiskRecordInputSchema.extend(RiskAssessmentRecordBaseShape).strict(),
+    ExternalRiskEventInputSchema.extend(RiskAssessmentRecordBaseShape).strict(),
+  ])
+  .superRefine(rejectPresentOppositeRiskInputField);
 export type RiskAssessmentRecord = z.infer<typeof RiskAssessmentRecordSchema>;
 
 export const WarningRecordSchema = z.strictObject({

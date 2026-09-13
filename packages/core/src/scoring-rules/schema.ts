@@ -21,6 +21,7 @@ import {
   ProjectRevisionRefV1Schema,
   SourceVersionRefV1Schema,
   WaitingRefV1Schema,
+  type KnowledgeRevisionRefV1,
 } from "@riskflow/contracts/ports";
 import { ApplicabilityMetadataDimensionSchema } from "@riskflow/contracts/vocabulary";
 import {
@@ -34,6 +35,7 @@ import {
   ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1,
   AssessmentConfigurationDefinitionTypeV1Schema,
 } from "../assessment-config/index.js";
+import { sha256CanonicalJson } from "../persistence/canonical-json.js";
 
 export const SCORING_RULES_SCHEMA_VERSION_V1 = "1" as const;
 export const STRUCTURED_SCORING_RULE_MEDIA_TYPE_V1 =
@@ -212,20 +214,68 @@ export const ScoringRuleOverlapDomainV1Schema = z.strictObject({
 export type ScoringRuleOverlapDomainV1 = z.infer<typeof ScoringRuleOverlapDomainV1Schema>;
 
 /** 不可变冲突/重叠事实：双方规则版本、交叠域、策略与闭合拟议处置。 */
-export const ScoringRuleRelationV1Schema = z.strictObject({
-  relationId: IdentifierSchema,
-  relationKind: ScoringRuleRelationKindV1Schema,
-  policyRef: VersionReferenceSchema,
-  leftRuleVersion: VersionReferenceSchema,
-  rightRuleVersion: VersionReferenceSchema,
-  leftRuleId: IdentifierSchema,
-  rightRuleId: IdentifierSchema,
-  overlap: ScoringRuleOverlapDomainV1Schema,
-  overlapDigest: hashSchema,
-  retainedRuleVersionRef: VersionReferenceSchema.optional(),
-  excludedRuleVersionRef: VersionReferenceSchema.optional(),
-  evidenceReferences: z.array(EvidenceReferenceSchema).max(SCORING_RULES_MAX_RELATION_EVIDENCE_V1),
-});
+export const scoringRuleIdentityKey = (ruleId: string, version: VersionReference): string =>
+  JSON.stringify([ruleId, version.entityId, version.versionId]);
+
+const sameVersionReference = (left: VersionReference, right: VersionReference): boolean =>
+  left.entityId === right.entityId && left.versionId === right.versionId;
+
+export const ScoringRuleRelationV1Schema = z
+  .strictObject({
+    relationId: IdentifierSchema,
+    relationKind: ScoringRuleRelationKindV1Schema,
+    policyRef: VersionReferenceSchema,
+    leftRuleVersion: VersionReferenceSchema,
+    rightRuleVersion: VersionReferenceSchema,
+    leftRuleId: IdentifierSchema,
+    rightRuleId: IdentifierSchema,
+    overlap: ScoringRuleOverlapDomainV1Schema,
+    overlapDigest: hashSchema,
+    retainedRuleVersionRef: VersionReferenceSchema,
+    excludedRuleVersionRef: VersionReferenceSchema,
+    evidenceReferences: z
+      .array(EvidenceReferenceSchema)
+      .max(SCORING_RULES_MAX_RELATION_EVIDENCE_V1),
+  })
+  .superRefine((relation, context) => {
+    if (
+      relation.leftRuleId !== relation.leftRuleVersion.entityId ||
+      relation.rightRuleId !== relation.rightRuleVersion.entityId
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["leftRuleId"],
+        message: "rule ids must match their version entity ids",
+      });
+    }
+    if (
+      scoringRuleIdentityKey(relation.leftRuleId, relation.leftRuleVersion) >=
+      scoringRuleIdentityKey(relation.rightRuleId, relation.rightRuleVersion)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["rightRuleVersion"],
+        message: "rule relation endpoints must use canonical identity order",
+      });
+    }
+    const retainedIsEndpoint =
+      sameVersionReference(relation.retainedRuleVersionRef, relation.leftRuleVersion) ||
+      sameVersionReference(relation.retainedRuleVersionRef, relation.rightRuleVersion);
+    const excludedIsEndpoint =
+      sameVersionReference(relation.excludedRuleVersionRef, relation.leftRuleVersion) ||
+      sameVersionReference(relation.excludedRuleVersionRef, relation.rightRuleVersion);
+    if (
+      !retainedIsEndpoint ||
+      !excludedIsEndpoint ||
+      sameVersionReference(relation.retainedRuleVersionRef, relation.excludedRuleVersionRef)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["retainedRuleVersionRef"],
+        message: "relation disposition must retain and exclude distinct endpoints",
+      });
+    }
+  });
 export type ScoringRuleRelationV1 = z.infer<typeof ScoringRuleRelationV1Schema>;
 
 export const ScoringRuleRelationStatusV1Schema = z.enum([
@@ -238,7 +288,7 @@ export type ScoringRuleRelationStatusV1 = z.infer<typeof ScoringRuleRelationStat
 
 /**
  * 一次确定性冲突/重叠检测的完整快照：绑定候选正文摘要、精确比较基线与全部关系事实。
- * 快照在 structured-scoring-rule 提交前算完，随该 C16 修订在同一事务内耐久化。
+ * 检测先形成无 owner 模板；C16 生成 revision 后绑定关系身份和本快照，再同事务耐久化。
  */
 export const ScoringRuleRelationSnapshotV1Schema = z.strictObject({
   policyRef: VersionReferenceSchema,
@@ -850,22 +900,28 @@ export type AssessmentBasisReleaseSetReadResultV1 = z.infer<
   typeof AssessmentBasisReleaseSetReadResultV1Schema
 >;
 
-/** 关系事实的规范身份：策略版本 + 双方规则版本 + 交叠域摘要。 */
+/** 耐久关系身份：闭合关系语义再绑定工程与唯一候选修订 owner。 */
 export const buildScoringRuleRelationIdentity = (input: {
+  readonly projectId: string;
+  readonly candidateRevisionRef: KnowledgeRevisionRefV1;
   readonly relationKind: ScoringRuleRelationKindV1;
   readonly policyRef: VersionReference;
+  readonly leftRuleId: string;
   readonly leftRuleVersion: VersionReference;
+  readonly rightRuleId: string;
   readonly rightRuleVersion: VersionReference;
   readonly overlapDigest: string;
-}): string => {
-  const pair = [input.leftRuleVersion, input.rightRuleVersion]
-    .map((ref) => `${ref.entityId}@${ref.versionId}`)
-    .sort();
-  return [
-    input.relationKind,
-    `${input.policyRef.entityId}@${input.policyRef.versionId}`,
-    pair[0],
-    pair[1],
-    input.overlapDigest,
-  ].join(":");
-};
+  readonly retainedRuleVersionRef: VersionReference;
+  readonly excludedRuleVersionRef: VersionReference;
+}): string =>
+  sha256CanonicalJson({
+    projectId: input.projectId,
+    candidateRevisionRef: input.candidateRevisionRef,
+    relationKind: input.relationKind,
+    policyRef: input.policyRef,
+    leftRuleIdentity: [input.leftRuleId, input.leftRuleVersion],
+    rightRuleIdentity: [input.rightRuleId, input.rightRuleVersion],
+    overlapDigest: input.overlapDigest,
+    retainedRuleVersionRef: input.retainedRuleVersionRef,
+    excludedRuleVersionRef: input.excludedRuleVersionRef,
+  });

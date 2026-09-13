@@ -85,12 +85,12 @@ import {
   AssessmentPreparationProjectionV1Schema,
   AssembleApplicableRuleSetResultV1Schema,
   PrepareScoringRuleAuthoringResultV1Schema,
+  ReadAssessmentBasisReleaseSetV1Schema,
   ScoringRuleAuthoringCandidateV1Schema,
   ScoringRuleAuthoringManifestV1Schema,
   ScoringRuleError,
   ScoringRuleRelationV1Schema,
   SCORING_RULES_ASSEMBLY_TARGET_REF_V1,
-  SCORING_RULES_BASIS_TARGET_REF_V1,
   SCORING_RULES_MAX_ARTIFACT_BYTES_V1,
   SCORING_RULES_SCHEMA_VERSION_V1,
   SCORING_RULE_AUTHORING_MANIFEST_PURPOSE_CODE_V1,
@@ -102,6 +102,8 @@ import {
   assembleApplicableRuleSet,
   assertScoringRuleMembersMatchApplicableRuleSet,
   assessmentBasisMemberDigest,
+  bindScoringRuleRelationsToRevision,
+  buildScoringRuleRelationIdentity,
   buildAssessmentBasisMembers,
   detectRuleRelations,
   failScoringRule,
@@ -1203,14 +1205,19 @@ export class PostgresScoringRulesAdapter
   ): Promise<void> {
     const transaction = asTransaction(context);
     if (input.definitionType === "structured-scoring-rule") {
-      const snapshot = input.prepared.relationSnapshot;
+      const templateSnapshot = input.prepared.relationSnapshot;
       if (
-        snapshot === undefined ||
-        snapshot.candidateContentDigest !== input.prepared.contentDigest ||
-        !sameVersion(snapshot.policyRef, this.#policy.conflictPriorityPolicyRef)
+        templateSnapshot === undefined ||
+        templateSnapshot.candidateContentDigest !== input.prepared.contentDigest ||
+        !sameVersion(templateSnapshot.policyRef, this.#policy.conflictPriorityPolicyRef)
       ) {
         failScoringRule("scoring-rule-revision-unverified", asContractReference(input.revisionRef));
       }
+      const snapshot = bindScoringRuleRelationsToRevision({
+        projectId: input.projectId,
+        candidateRevisionRef: input.revisionRef,
+        snapshot: templateSnapshot,
+      });
       await transaction
         .insertInto("business.scoring_rule_revision_metadata")
         .values({
@@ -1238,7 +1245,6 @@ export class PostgresScoringRulesAdapter
           recorded_at: input.persistedAt,
           persisted_at: input.persistedAt,
         })
-        .onConflict((conflict) => conflict.columns(["revision_id", "version_id"]).doNothing())
         .execute();
       // 全部关系事实与 C16 revision 同事务耐久；同一 revision+关系身份只写一次。
       for (const relation of snapshot.relations) {
@@ -1279,7 +1285,6 @@ export class PostgresScoringRulesAdapter
             recorded_at: input.persistedAt,
             persisted_at: input.persistedAt,
           } as never)
-          .onConflict((conflict) => conflict.columns(["relation_id", "version_id"]).doNothing())
           .execute();
       }
       return;
@@ -1935,16 +1940,30 @@ export class PostgresScoringRulesAdapter
   async readAssessmentBasisReleaseSet(
     input: ReadAssessmentBasisReleaseSetV1,
   ): Promise<AssessmentBasisReleaseSetReadResultV1> {
+    const parsed = ReadAssessmentBasisReleaseSetV1Schema.safeParse(input);
+    if (!parsed.success) {
+      return AssessmentBasisReleaseSetReadResultV1Schema.parse({
+        kind: "failed",
+        error: moduleError({
+          code: "UNSUPPORTED_CONTRACT",
+          causalRunId: "assessment-basis-read",
+        }),
+      });
+    }
+    input = parsed.data;
     let authorization: AuthorizationContextV1;
     try {
       authorization = await this.#verifyReaderAuthorization(input);
     } catch (error) {
       const access = resolveAccessFailure(error);
-      if (access !== undefined && access.details.retryable) {
-        return AssessmentBasisReleaseSetReadResultV1Schema.parse({
-          kind: "failed",
-          error: moduleError({ code: "TRANSIENT_FAILURE", causalRunId: input.requestId }),
-        });
+      if (access?.details.code === "ACCESS_TRANSIENT_FAILURE") {
+        return this.#basisReadFailed(input.requestId, "TRANSIENT_FAILURE");
+      }
+      if (error instanceof ScoringRuleError && error.failure.code === "AUTHORIZATION_DENIED") {
+        return this.#basisUnavailable(input);
+      }
+      if (access?.details.code === "ACCESS_TERMINAL_FAILURE" || access === undefined) {
+        return this.#basisReadFailed(input.requestId, "TERMINAL_FAILURE");
       }
       // 授权复验失败只由 C06 记录安全拒绝：C19 不以未验证身份写领域审计或回执。
       return this.#basisUnavailable(input);
@@ -1976,7 +1995,7 @@ export class PostgresScoringRulesAdapter
         return this.#basisUnavailable(input);
       }
       if (auditRow?.action !== BASIS_READ_SUCCEEDED_ACTION) {
-        return this.#basisReadFailed(input.requestId, "TRANSIENT_FAILURE");
+        return this.#basisReadFailed(input.requestId, "TERMINAL_FAILURE");
       }
       const row = await this.#db
         .selectFrom("business.assessment_basis_release_sets")
@@ -1990,7 +2009,7 @@ export class PostgresScoringRulesAdapter
           ? undefined
           : basisMemberProjection(row, input.assessmentBasisReleaseSetRef);
       if (projection === undefined) {
-        return this.#basisReadFailed(input.requestId, "TRANSIENT_FAILURE");
+        return this.#basisReadFailed(input.requestId, "TERMINAL_FAILURE");
       }
       return AssessmentBasisReleaseSetReadResultV1Schema.parse(projection);
     } catch (error) {
@@ -2085,14 +2104,6 @@ export class PostgresScoringRulesAdapter
   async #verifyReaderAuthorization(
     input: ReadAssessmentBasisReleaseSetV1,
   ): Promise<AuthorizationContextV1> {
-    const capability = input.authorization.grantedCapabilities[0];
-    if (capability !== MODULE_BRANCH_CAPABILITY_V1["knowledge-modeling.assessment-basis"]) {
-      throw new ScoringRuleError({
-        code: "AUTHORIZATION_DENIED",
-        reasonCode: "scoring-rule-capability-required",
-        targetRef: SCORING_RULES_BASIS_TARGET_REF_V1,
-      });
-    }
     const decision = await this.#access.verify({
       authorizationContextRef: input.authorization.authorizationContextRef,
       invocationId: input.requestId,
@@ -2236,6 +2247,27 @@ export class PostgresScoringRulesAdapter
       input.revisionRef,
       input.db,
     );
+    for (const relation of relations) {
+      if (
+        !sameVersion(relation.policyRef, this.#policy.conflictPriorityPolicyRef) ||
+        relation.relationId !==
+          buildScoringRuleRelationIdentity({
+            projectId: input.projectId,
+            candidateRevisionRef: input.revisionRef,
+            relationKind: relation.relationKind,
+            policyRef: relation.policyRef,
+            leftRuleId: relation.leftRuleId,
+            leftRuleVersion: relation.leftRuleVersion,
+            rightRuleId: relation.rightRuleId,
+            rightRuleVersion: relation.rightRuleVersion,
+            overlapDigest: relation.overlapDigest,
+            retainedRuleVersionRef: relation.retainedRuleVersionRef,
+            excludedRuleVersionRef: relation.excludedRuleVersionRef,
+          })
+      ) {
+        failScoringRule("scoring-rule-relation-unresolved", asContractReference(input.revisionRef));
+      }
+    }
     const recomputed = scoringRuleRelationSnapshotDigest({
       policyRef: this.#policy.conflictPriorityPolicyRef,
       candidateContentDigest: metadata.contentDigest,

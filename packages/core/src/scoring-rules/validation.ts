@@ -20,6 +20,7 @@ import {
   ApplicableRuleSetDocumentV1Schema,
   ApplicableRuleSetIncludedMemberV1Schema,
   AssessmentBasisReleaseSetMembersV1Schema,
+  buildScoringRuleRelationIdentity,
   ScoringRuleAuthoringCandidateV1Schema,
   ScoringRuleOverlapDomainV1Schema,
   ScoringRuleOperationV1Schema,
@@ -31,6 +32,7 @@ import {
   NormalizedScoringThresholdV1Schema,
   SCORING_RULES_MAX_RELATION_EVIDENCE_V1,
   SCORING_RULES_MAX_RULES_V1,
+  scoringRuleIdentityKey,
   ScoringRuleRelationSnapshotV1Schema,
   type ApplicableRuleSetDecisionV1,
   type ApplicableRuleSetDocumentV1,
@@ -45,6 +47,7 @@ import {
   type ScoringRuleEvaluationResultV1,
   type ScoringRuleExclusionReasonV1,
   type ScoringRuleOperationV1,
+  type ScoringRuleOverlapDomainV1,
   type ScoringRuleRelationKindV1,
   type ScoringRuleRelationSnapshotV1,
   type ScoringRuleRelationV1,
@@ -794,6 +797,16 @@ export interface ScoringRuleRelationCandidateV1 {
   readonly standardKind?: string;
 }
 
+export type ScoringRuleRelationTemplateV1 = Omit<ScoringRuleRelationV1, "relationId">;
+
+export interface ScoringRuleRelationTemplateSnapshotV1 {
+  readonly policyRef: VersionReference;
+  readonly candidateContentDigest: string;
+  readonly baseReleaseRef?: KnowledgeReleaseRefV1;
+  readonly baseRevisionRef?: KnowledgeRevisionRefV1;
+  readonly relations: readonly ScoringRuleRelationTemplateV1[];
+}
+
 const applicabilityIntersects = (
   left: StructuredScoringRule,
   right: StructuredScoringRule,
@@ -811,63 +824,271 @@ const applicabilityIntersects = (
   );
 };
 
-const intervalDomainOverlap = (
-  left: readonly NormalizedScoringThresholdV1[],
-  right: readonly NormalizedScoringThresholdV1[],
-): readonly {
-  readonly left: NormalizedScoringThresholdV1;
-  readonly right: NormalizedScoringThresholdV1;
-}[] => {
-  const numeric = (
-    values: readonly NormalizedScoringThresholdV1[],
-  ): readonly (NormalizedScoringThresholdV1 & { kind: "numeric" })[] =>
-    values.filter(
-      (value): value is NormalizedScoringThresholdV1 & { kind: "numeric" } =>
-        value.kind === "numeric",
-    );
-  const pairs: { left: NormalizedScoringThresholdV1; right: NormalizedScoringThresholdV1 }[] = [];
-  for (const leftValue of numeric(left)) {
-    for (const rightValue of numeric(right)) {
-      if (intervalsOverlap(leftValue, rightValue)) {
-        pairs.push({ left: leftValue, right: rightValue });
-      }
-    }
+const intersectIntervals = (values: readonly IntervalShape[]): IntervalShape | undefined => {
+  const lowerValue = Math.max(...values.map((value) => value.lower ?? Number.NEGATIVE_INFINITY));
+  const upperValue = Math.min(...values.map((value) => value.upper ?? Number.POSITIVE_INFINITY));
+  const lowerInclusive = values.every(
+    (value) => (value.lower ?? Number.NEGATIVE_INFINITY) !== lowerValue || value.lowerInclusive,
+  );
+  const upperInclusive = values.every(
+    (value) => (value.upper ?? Number.POSITIVE_INFINITY) !== upperValue || value.upperInclusive,
+  );
+  if (
+    lowerValue > upperValue ||
+    (lowerValue === upperValue && !(lowerInclusive && upperInclusive))
+  ) {
+    return undefined;
   }
-  const discrete = (values: readonly NormalizedScoringThresholdV1[]) =>
-    values.filter(
-      (value): value is NormalizedScoringThresholdV1 & { kind: "discrete" } =>
-        value.kind === "discrete",
-    );
-  for (const leftValue of discrete(left)) {
-    for (const rightValue of discrete(right)) {
-      if (leftValue.value === rightValue.value) pairs.push({ left: leftValue, right: rightValue });
-    }
-  }
-  return pairs;
+  return {
+    lower: Number.isFinite(lowerValue) ? lowerValue : null,
+    lowerInclusive,
+    upper: Number.isFinite(upperValue) ? upperValue : null,
+    upperInclusive,
+  };
 };
 
-const sameConclusion = (
-  leftPairs: readonly {
-    readonly left: NormalizedScoringThresholdV1;
-    readonly right: NormalizedScoringThresholdV1;
-  }[],
-  leftGrades: readonly NormalizedGradeIntervalV1[],
-  rightGrades: readonly NormalizedGradeIntervalV1[],
+const mergeIds = (left: readonly string[], right: readonly string[]): string[] =>
+  [...new Set([...left, ...right])].sort();
+
+const unionIntervals = (left: IntervalShape, right: IntervalShape): IntervalShape => {
+  const leftUpper = left.upper ?? Number.POSITIVE_INFINITY;
+  const rightUpper = right.upper ?? Number.POSITIVE_INFINITY;
+  if (rightUpper > leftUpper) {
+    return { ...left, upper: right.upper, upperInclusive: right.upperInclusive };
+  }
+  if (rightUpper === leftUpper) {
+    return { ...left, upperInclusive: left.upperInclusive || right.upperInclusive };
+  }
+  return left;
+};
+
+const versionKey = (value: VersionReference): string =>
+  JSON.stringify([value.entityId, value.versionId]);
+
+const sameRuleIdentity = (
+  left: ScoringRuleRelationCandidateV1,
+  right: ScoringRuleRelationCandidateV1,
 ): boolean =>
-  leftPairs.every((pair) => {
-    const probe = (() => {
-      if (pair.left.kind === "numeric") {
-        const candidate = pair.left.lower ?? pair.left.upper;
-        if (candidate !== null) return candidate;
-        return pair.right.kind === "numeric" ? (pair.right.lower ?? pair.right.upper) : null;
+  scoringRuleIdentityKey(left.rule.ruleId, left.rule.ruleVersion) ===
+  scoringRuleIdentityKey(right.rule.ruleId, right.rule.ruleVersion);
+
+const assertUniqueRuleIdentities = (
+  candidates: readonly ScoringRuleRelationCandidateV1[],
+): void => {
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (candidate.rule.ruleId !== candidate.rule.ruleVersion.entityId) {
+      failScoringRule("scoring-rule-content-invalid", scoringRuleTargetRef(candidate.rule.ruleId));
+    }
+    const key = scoringRuleIdentityKey(candidate.rule.ruleId, candidate.rule.ruleVersion);
+    if (seen.has(key)) {
+      failScoringRule("scoring-rule-content-invalid", scoringRuleTargetRef(candidate.rule.ruleId));
+    }
+    seen.add(key);
+  }
+};
+
+interface RelationContribution {
+  readonly domainType: "numeric" | "discrete";
+  readonly discreteValue?: ScalarValue;
+  readonly relationKind: ScoringRuleRelationKindV1;
+  readonly overlap: ScoringRuleOverlapDomainV1;
+}
+
+const relationContributions = (input: {
+  readonly left: StructuredScoringRule;
+  readonly right: StructuredScoringRule;
+  readonly exceptionsConflict: boolean;
+}): RelationContribution[] => {
+  const leftRef = scoringRuleTargetRef(input.left.ruleId, input.left.ruleVersion.versionId);
+  const rightRef = scoringRuleTargetRef(input.right.ruleId, input.right.ruleVersion.versionId);
+  const leftThresholds = normalizeScoringThresholds(input.left.scoringThresholds, leftRef);
+  const rightThresholds = normalizeScoringThresholds(input.right.scoringThresholds, rightRef);
+  const leftGrades = normalizeGradeIntervals(input.left.gradeIntervals, leftRef);
+  const rightGrades = normalizeGradeIntervals(input.right.gradeIntervals, rightRef);
+  const contributions: RelationContribution[] = [];
+  const leftNumeric = leftThresholds.filter(
+    (value): value is NormalizedScoringThresholdV1 & { kind: "numeric" } =>
+      value.kind === "numeric",
+  );
+  const rightNumeric = rightThresholds.filter(
+    (value): value is NormalizedScoringThresholdV1 & { kind: "numeric" } =>
+      value.kind === "numeric",
+  );
+  for (const leftThreshold of leftNumeric) {
+    for (const rightThreshold of rightNumeric) {
+      if (!intervalsOverlap(leftThreshold, rightThreshold)) continue;
+      for (const leftGrade of leftGrades) {
+        for (const rightGrade of rightGrades) {
+          const domain = intersectIntervals([leftThreshold, rightThreshold, leftGrade, rightGrade]);
+          if (domain === undefined) continue;
+          const relationKind =
+            input.exceptionsConflict ||
+            leftThreshold.score !== rightThreshold.score ||
+            leftGrade.grade !== rightGrade.grade
+              ? "conflict"
+              : "overlap";
+          contributions.push({
+            domainType: "numeric",
+            relationKind,
+            overlap: ScoringRuleOverlapDomainV1Schema.parse({
+              indicatorItem: input.left.indicatorItem,
+              ...domain,
+              leftThresholdIds: [leftThreshold.thresholdId],
+              rightThresholdIds: [rightThreshold.thresholdId],
+              leftGradeIds: [leftGrade.grade],
+              rightGradeIds: [rightGrade.grade],
+            }),
+          });
+        }
       }
-      return null;
-    })();
-    if (probe === null) return pair.left.score === pair.right.score;
-    const leftGrade = gradeFor(leftGrades, probe);
-    const rightGrade = gradeFor(rightGrades, probe);
-    return pair.left.score === pair.right.score && leftGrade === rightGrade;
+    }
+  }
+  const leftDiscrete = leftThresholds.filter(
+    (value): value is NormalizedScoringThresholdV1 & { kind: "discrete" } =>
+      value.kind === "discrete",
+  );
+  const rightDiscrete = rightThresholds.filter(
+    (value): value is NormalizedScoringThresholdV1 & { kind: "discrete" } =>
+      value.kind === "discrete",
+  );
+  const leftDiscreteGrade = leftGrades.find(
+    (grade) => grade.lower === null && grade.upper === null,
+  );
+  const rightDiscreteGrade = rightGrades.find(
+    (grade) => grade.lower === null && grade.upper === null,
+  );
+  if (leftDiscreteGrade !== undefined && rightDiscreteGrade !== undefined) {
+    for (const leftThreshold of leftDiscrete) {
+      for (const rightThreshold of rightDiscrete) {
+        if (leftThreshold.value !== rightThreshold.value) continue;
+        contributions.push({
+          domainType: "discrete",
+          discreteValue: leftThreshold.value,
+          relationKind:
+            input.exceptionsConflict ||
+            leftThreshold.score !== rightThreshold.score ||
+            leftDiscreteGrade.grade !== rightDiscreteGrade.grade
+              ? "conflict"
+              : "overlap",
+          overlap: ScoringRuleOverlapDomainV1Schema.parse({
+            indicatorItem: input.left.indicatorItem,
+            lower: null,
+            lowerInclusive: false,
+            upper: null,
+            upperInclusive: false,
+            leftThresholdIds: [leftThreshold.thresholdId],
+            rightThresholdIds: [rightThreshold.thresholdId],
+            leftGradeIds: [leftDiscreteGrade.grade],
+            rightGradeIds: [rightDiscreteGrade.grade],
+          }),
+        });
+      }
+    }
+  }
+  return contributions;
+};
+
+const mergeRelationContributions = (
+  contributions: readonly RelationContribution[],
+): RelationContribution[] => {
+  const ordered = [...contributions].sort((left, right) => {
+    if (left.domainType !== right.domainType) return left.domainType < right.domainType ? -1 : 1;
+    if (left.domainType === "discrete") {
+      return sha256CanonicalJson(left.discreteValue) < sha256CanonicalJson(right.discreteValue)
+        ? -1
+        : 1;
+    }
+    const leftLower = left.overlap.lower ?? Number.NEGATIVE_INFINITY;
+    const rightLower = right.overlap.lower ?? Number.NEGATIVE_INFINITY;
+    return leftLower - rightLower;
   });
+  const merged: RelationContribution[] = [];
+  for (const contribution of ordered) {
+    const previous = merged.at(-1);
+    const sameSemantics = previous?.relationKind === contribution.relationKind;
+    if (
+      previous !== undefined &&
+      sameSemantics &&
+      previous.domainType === "numeric" &&
+      contribution.domainType === "numeric" &&
+      (intervalsOverlap(previous.overlap, contribution.overlap) ||
+        intervalsTouch(previous.overlap, contribution.overlap))
+    ) {
+      const union = unionIntervals(previous.overlap, contribution.overlap);
+      merged[merged.length - 1] = {
+        domainType: "numeric",
+        relationKind: previous.relationKind,
+        overlap: ScoringRuleOverlapDomainV1Schema.parse({
+          ...previous.overlap,
+          ...union,
+          leftThresholdIds: mergeIds(
+            previous.overlap.leftThresholdIds,
+            contribution.overlap.leftThresholdIds,
+          ),
+          rightThresholdIds: mergeIds(
+            previous.overlap.rightThresholdIds,
+            contribution.overlap.rightThresholdIds,
+          ),
+          leftGradeIds: mergeIds(previous.overlap.leftGradeIds, contribution.overlap.leftGradeIds),
+          rightGradeIds: mergeIds(
+            previous.overlap.rightGradeIds,
+            contribution.overlap.rightGradeIds,
+          ),
+        }),
+      };
+      continue;
+    }
+    merged.push(contribution);
+  }
+  return merged;
+};
+
+const closeRelationTemplates = (
+  relations: readonly ScoringRuleRelationTemplateV1[],
+): ScoringRuleRelationTemplateV1[] => {
+  const byDomain = new Map<string, ScoringRuleRelationTemplateV1>();
+  for (const relation of relations) {
+    const domainKey = sha256CanonicalJson({
+      policyRef: relation.policyRef,
+      leftRuleId: relation.leftRuleId,
+      leftRuleVersion: relation.leftRuleVersion,
+      rightRuleId: relation.rightRuleId,
+      rightRuleVersion: relation.rightRuleVersion,
+      overlapDigest: relation.overlapDigest,
+    });
+    const existing = byDomain.get(domainKey);
+    if (existing === undefined) {
+      byDomain.set(domainKey, relation);
+      continue;
+    }
+    if (
+      existing.relationKind !== relation.relationKind ||
+      versionKey(existing.retainedRuleVersionRef) !== versionKey(relation.retainedRuleVersionRef) ||
+      versionKey(existing.excludedRuleVersionRef) !== versionKey(relation.excludedRuleVersionRef) ||
+      sha256CanonicalJson(existing.overlap) !== sha256CanonicalJson(relation.overlap)
+    ) {
+      failScoringRule("scoring-rule-content-invalid", SCORING_RULES_AUTHORING_TARGET_REF_V1);
+    }
+    byDomain.set(domainKey, {
+      ...existing,
+      evidenceReferences: [...existing.evidenceReferences, ...relation.evidenceReferences]
+        .filter(
+          (reference, index, all) =>
+            all.findIndex(
+              (candidate) => sha256CanonicalJson(candidate) === sha256CanonicalJson(reference),
+            ) === index,
+        )
+        .sort((left, right) => (sha256CanonicalJson(left) < sha256CanonicalJson(right) ? -1 : 1))
+        .slice(0, SCORING_RULES_MAX_RELATION_EVIDENCE_V1),
+    });
+  }
+  return [...byDomain.values()].sort((left, right) => {
+    const leftKey = sha256CanonicalJson(left);
+    const rightKey = sha256CanonicalJson(right);
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+  });
+};
 
 /** 关系快照摘要：候选正文、精确比较基线与全部关系事实的唯一身份。 */
 export const scoringRuleRelationSnapshotDigest = (input: {
@@ -908,106 +1129,78 @@ export interface ScoringRuleRelationDetectionInputV1 {
  */
 export const detectRuleRelations = (
   input: ScoringRuleRelationDetectionInputV1,
-): ScoringRuleRelationSnapshotV1 => {
+): ScoringRuleRelationTemplateSnapshotV1 => {
+  assertUniqueRuleIdentities(input.candidates);
+  assertUniqueRuleIdentities(input.baseline ?? []);
   const rankOf = (candidate: ScoringRuleRelationCandidateV1): number => {
     const rank = input.standardKindRank?.indexOf(candidate.standardKind ?? "");
     return rank === undefined || rank < 0 ? Number.MAX_SAFE_INTEGER : rank;
   };
-  const relations: ScoringRuleRelationV1[] = [];
+  const relations: ScoringRuleRelationTemplateV1[] = [];
   const compare = (
-    leftCandidate: ScoringRuleRelationCandidateV1,
-    rightCandidate: ScoringRuleRelationCandidateV1,
+    firstCandidate: ScoringRuleRelationCandidateV1,
+    secondCandidate: ScoringRuleRelationCandidateV1,
   ): void => {
-    const left = leftCandidate.rule;
-    const right = rightCandidate.rule;
-    // 修订从基线继承的同一规则版本不与自己比较：候选与基线按规则版本身份去重。
-    if (
-      left.ruleId === right.ruleId &&
-      left.ruleVersion.entityId === right.ruleVersion.entityId &&
-      left.ruleVersion.versionId === right.ruleVersion.versionId
-    ) {
+    if (sameRuleIdentity(firstCandidate, secondCandidate)) {
+      if (sha256CanonicalJson(firstCandidate.rule) !== sha256CanonicalJson(secondCandidate.rule)) {
+        failScoringRule(
+          "scoring-rule-content-invalid",
+          scoringRuleTargetRef(firstCandidate.rule.ruleId),
+        );
+      }
       return;
     }
+    const [leftCandidate, rightCandidate] = [firstCandidate, secondCandidate].sort((left, right) =>
+      scoringRuleIdentityKey(left.rule.ruleId, left.rule.ruleVersion) <
+      scoringRuleIdentityKey(right.rule.ruleId, right.rule.ruleVersion)
+        ? -1
+        : 1,
+    );
+    const left = leftCandidate!.rule;
+    const right = rightCandidate!.rule;
     if (left.indicatorItem !== right.indicatorItem) return;
     if (!applicabilityIntersects(left, right)) return;
-    const leftRef = scoringRuleTargetRef(left.ruleId, left.ruleVersion.versionId);
-    const leftThresholds = normalizeScoringThresholds(left.scoringThresholds, leftRef);
-    const rightThresholds = normalizeScoringThresholds(right.scoringThresholds, leftRef);
-    const leftGrades = normalizeGradeIntervals(left.gradeIntervals, leftRef);
-    const rightGrades = normalizeGradeIntervals(right.gradeIntervals, leftRef);
-    const pairs = intervalDomainOverlap(leftThresholds, rightThresholds);
-    if (pairs.length === 0) return;
     const exceptionsConflict =
       left.exceptionClauses.length > 0 &&
       right.exceptionClauses.length > 0 &&
       left.exceptionClauses.every((clause) => !right.exceptionClauses.includes(clause));
-    const conclusionsAgree = sameConclusion(pairs, leftGrades, rightGrades);
-    const relationKind: ScoringRuleRelationKindV1 =
-      !conclusionsAgree || exceptionsConflict ? "conflict" : "overlap";
-    const lower = pairs.reduce<number | null>((current, pair) => {
-      const value = minLower(pair.left, pair.right);
-      if (value === null) return current;
-      return current === null ? value : Math.max(current, value);
-    }, null);
-    const upper = pairs.reduce<number | null>((current, pair) => {
-      const value = maxUpper(pair.left, pair.right);
-      if (value === null) return current;
-      return current === null ? value : Math.min(current, value);
-    }, null);
-    const overlap = ScoringRuleOverlapDomainV1Schema.parse({
-      indicatorItem: left.indicatorItem,
-      lower,
-      lowerInclusive: true,
-      upper,
-      upperInclusive: false,
-      leftThresholdIds: [...new Set(pairs.map((pair) => pair.left.thresholdId))].sort(),
-      rightThresholdIds: [...new Set(pairs.map((pair) => pair.right.thresholdId))].sort(),
-      leftGradeIds: leftGrades.map((grade) => grade.grade).sort(),
-      rightGradeIds: rightGrades.map((grade) => grade.grade).sort(),
-    });
-    const overlapDigest = sha256CanonicalJson(overlap);
-    const ordered = [leftCandidate, rightCandidate]
-      .map((candidate, index) => ({ candidate, index }))
+    const priority = [leftCandidate!, rightCandidate!]
       .sort((first, second) => {
-        if (relationKind !== "conflict") return first.index - second.index;
-        const rankDelta = rankOf(first.candidate) - rankOf(second.candidate);
+        const rankDelta = rankOf(first) - rankOf(second);
         if (rankDelta !== 0) return rankDelta;
-        const firstKey = `${first.candidate.sourceVersionRef.reference.entityId}@${first.candidate.sourceVersionRef.reference.versionId}:${first.candidate.rule.ruleId}`;
-        const secondKey = `${second.candidate.sourceVersionRef.reference.entityId}@${second.candidate.sourceVersionRef.reference.versionId}:${second.candidate.rule.ruleId}`;
+        const firstKey = `${versionKey(first.sourceVersionRef.reference)}:${scoringRuleIdentityKey(first.rule.ruleId, first.rule.ruleVersion)}`;
+        const secondKey = `${versionKey(second.sourceVersionRef.reference)}:${scoringRuleIdentityKey(second.rule.ruleId, second.rule.ruleVersion)}`;
         return firstKey < secondKey ? -1 : firstKey > secondKey ? 1 : 0;
       })
-      .map((entry) => entry.candidate);
-    const retained = ordered[0]!;
-    const excluded = ordered[1]!;
-    relations.push(
-      ScoringRuleRelationV1Schema.parse({
-        relationId: sha256CanonicalJson({
-          relationKind,
-          policyRef: input.policyRef,
-          left: left.ruleVersion,
-          right: right.ruleVersion,
-          overlapDigest,
-        }),
-        relationKind,
+      .map((candidate) => candidate.rule.ruleVersion);
+    const retainedRuleVersionRef = priority[0]!;
+    const excludedRuleVersionRef = priority[1]!;
+    for (const contribution of mergeRelationContributions(
+      relationContributions({ left, right, exceptionsConflict }),
+    )) {
+      const overlapDigest = sha256CanonicalJson({
+        overlap: contribution.overlap,
+        ...(contribution.domainType === "discrete"
+          ? { discreteValue: contribution.discreteValue }
+          : {}),
+      });
+      relations.push({
+        relationKind: contribution.relationKind,
         policyRef: input.policyRef,
         leftRuleVersion: left.ruleVersion,
         rightRuleVersion: right.ruleVersion,
         leftRuleId: left.ruleId,
         rightRuleId: right.ruleId,
-        overlap,
+        overlap: contribution.overlap,
         overlapDigest,
-        ...(relationKind === "conflict"
-          ? {
-              retainedRuleVersionRef: retained.rule.ruleVersion,
-              excludedRuleVersionRef: excluded.rule.ruleVersion,
-            }
-          : {}),
+        retainedRuleVersionRef,
+        excludedRuleVersionRef,
         evidenceReferences: [...(input.evidenceReferences ?? [])].slice(
           0,
           SCORING_RULES_MAX_RELATION_EVIDENCE_V1,
         ),
-      }),
-    );
+      });
+    }
   };
   for (let leftIndex = 0; leftIndex < input.candidates.length; leftIndex += 1) {
     for (let rightIndex = leftIndex + 1; rightIndex < input.candidates.length; rightIndex += 1) {
@@ -1019,41 +1212,49 @@ export const detectRuleRelations = (
       compare(candidate, baselineCandidate);
     }
   }
-  const sorted = relations.sort((left, right) => (left.relationId < right.relationId ? -1 : 1));
-  return ScoringRuleRelationSnapshotV1Schema.parse({
+  const sorted = closeRelationTemplates(relations);
+  return {
     policyRef: input.policyRef,
     candidateContentDigest: input.candidateContentDigest,
     ...(input.baseReleaseRef === undefined ? {} : { baseReleaseRef: input.baseReleaseRef }),
     ...(input.baseRevisionRef === undefined ? {} : { baseRevisionRef: input.baseRevisionRef }),
     relations: sorted,
+  };
+};
+
+export const bindScoringRuleRelationsToRevision = (input: {
+  readonly projectId: string;
+  readonly candidateRevisionRef: KnowledgeRevisionRefV1;
+  readonly snapshot: ScoringRuleRelationTemplateSnapshotV1;
+}): ScoringRuleRelationSnapshotV1 => {
+  const relations = closeRelationTemplates(input.snapshot.relations)
+    .map((relation) =>
+      ScoringRuleRelationV1Schema.parse({
+        ...relation,
+        relationId: buildScoringRuleRelationIdentity({
+          projectId: input.projectId,
+          candidateRevisionRef: input.candidateRevisionRef,
+          relationKind: relation.relationKind,
+          policyRef: relation.policyRef,
+          leftRuleId: relation.leftRuleId,
+          leftRuleVersion: relation.leftRuleVersion,
+          rightRuleId: relation.rightRuleId,
+          rightRuleVersion: relation.rightRuleVersion,
+          overlapDigest: relation.overlapDigest,
+          retainedRuleVersionRef: relation.retainedRuleVersionRef,
+          excludedRuleVersionRef: relation.excludedRuleVersionRef,
+        }),
+      }),
+    )
+    .sort((left, right) => (left.relationId < right.relationId ? -1 : 1));
+  return ScoringRuleRelationSnapshotV1Schema.parse({
+    ...input.snapshot,
+    relations,
     relationDigest: scoringRuleRelationSnapshotDigest({
-      policyRef: input.policyRef,
-      candidateContentDigest: input.candidateContentDigest,
-      ...(input.baseReleaseRef === undefined ? {} : { baseReleaseRef: input.baseReleaseRef }),
-      ...(input.baseRevisionRef === undefined ? {} : { baseRevisionRef: input.baseRevisionRef }),
-      relations: sorted,
+      ...input.snapshot,
+      relations,
     }),
   });
-};
-
-const minLower = (
-  left: NormalizedScoringThresholdV1,
-  right: NormalizedScoringThresholdV1,
-): number | null => {
-  const leftLower = left.kind === "numeric" ? left.lower : null;
-  const rightLower = right.kind === "numeric" ? right.lower : null;
-  if (leftLower === null || rightLower === null) return null;
-  return Math.max(leftLower, rightLower);
-};
-
-const maxUpper = (
-  left: NormalizedScoringThresholdV1,
-  right: NormalizedScoringThresholdV1,
-): number | null => {
-  const leftUpper = left.kind === "numeric" ? left.upper : null;
-  const rightUpper = right.kind === "numeric" ? right.upper : null;
-  if (leftUpper === null || rightUpper === null) return null;
-  return Math.min(leftUpper, rightUpper);
 };
 
 /* -------------------------------------------------------------------------- */
@@ -1217,30 +1418,16 @@ export const assembleApplicableRuleSet = (
         `${entry.excludedRuleVersionRef.entityId}@${entry.excludedRuleVersionRef.versionId}`,
     ),
   );
-  const excludedByOverlap = new Map<string, string>();
-  const overlapExclusions = new Set<string>();
-  for (const relation of input.relations) {
-    if (relation.relationKind !== "overlap") continue;
-    const retained = [...input.candidates]
-      .filter((candidate) => candidate.member.rule.ruleId === relation.leftRuleId)
-      .at(0);
-    const other = [...input.candidates]
-      .filter((candidate) => candidate.member.rule.ruleId === relation.rightRuleId)
-      .at(0);
-    if (retained === undefined || other === undefined) continue;
-    const ordered = [retained, other].sort((left, right) =>
-      left.member.rule.ruleId < right.member.rule.ruleId ? -1 : 1,
-    );
-    const kept = ordered[0]!;
-    const dropped = ordered[1]!;
-    excludedByOverlap.set(dropped.member.rule.ruleId, "superseded-overlap");
-    overlapExclusions.add(kept.member.rule.ruleId);
-  }
+  const overlapExclusions = new Set(
+    input.relations
+      .filter((relation) => relation.relationKind === "overlap")
+      .map((relation) => versionKey(relation.excludedRuleVersionRef)),
+  );
   const decisions: ApplicableRuleSetDecisionV1[] = [];
   const included: ApplicableRuleSetIncludedMemberV1[] = [];
   for (const candidate of input.candidates) {
     const rule = candidate.member.rule;
-    const versionKey = `${rule.ruleVersion.entityId}@${rule.ruleVersion.versionId}`;
+    const ruleVersionKey = versionKey(rule.ruleVersion);
     const match =
       input.applicabilityMatches?.[rule.ruleId] ?? matchesApplicability(rule, input.applicability);
     const relationRefs = input.relations
@@ -1264,12 +1451,12 @@ export const assembleApplicableRuleSet = (
           (relation.rightRuleVersion.entityId === rule.ruleVersion.entityId &&
             relation.rightRuleVersion.versionId === rule.ruleVersion.versionId),
       );
-      if (pending !== undefined && !resolved.has(versionKey)) return "conflict-unresolved";
-      if (pending !== undefined && resolved.has(versionKey)) return "approved-conflict-resolution";
-      const overlapReason = excludedByOverlap.get(rule.ruleId);
-      if (overlapReason !== undefined && !overlapExclusions.has(rule.ruleId)) {
-        return overlapReason as ScoringRuleExclusionReasonV1;
+      if (pending !== undefined) {
+        const excludedKey = versionKey(pending.excludedRuleVersionRef);
+        if (!resolved.has(excludedKey)) return "conflict-unresolved";
+        if (excludedKey === ruleVersionKey) return "approved-conflict-resolution";
       }
+      if (overlapExclusions.has(ruleVersionKey)) return "superseded-overlap";
       return undefined;
     })();
     const matchedDimensions = (

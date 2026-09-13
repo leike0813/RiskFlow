@@ -16,6 +16,7 @@ import {
 } from "../../src/auth/index.js";
 import { PostgresKnowledgeGovernanceAdapter } from "../../src/knowledge-governance/index.js";
 import { createPostgresRuntime } from "../../src/postgres/pool.js";
+import { getPostgresTransaction } from "../../src/postgres/transaction-unit.js";
 import * as governanceMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-governed-definition-lifecycle/000007_governed_definition_lifecycle.js";
 import * as assessmentConfigurationMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-assessment-configuration-and-measure-governance/000012_assessment_configuration.js";
 import * as structuredScoringRulesMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-structured-scoring-rules-and-applicable-rule-sets/000028_structured_scoring_rules.js";
@@ -1021,7 +1022,7 @@ describe.sequential(
       expect(stub!.appendRelease).not.toHaveBeenCalled();
     });
 
-    it("runs C19 scoring-rule verification across the submit, review, and publish seams", async () => {
+    it("C19 发布门禁先于 release insert：发布真实顺序跨 submit、review、publish 接缝", async () => {
       const projectId = "governance-c19-seam-submit";
       const authorization = governanceAuthorizationFor(projectId);
       const reviewAuthorization = reviewAuthorizationFor(projectId);
@@ -1084,6 +1085,36 @@ describe.sequential(
       );
       expect(decision.kind).toBe("succeeded");
       if (decision.kind !== "succeeded") return;
+      stub!.appendRelease.mockImplementationOnce(async (context, input) => {
+        const releaseInTransaction = await getPostgresTransaction(context)
+          .selectFrom("business.knowledge_releases")
+          .select(({ fn }) => fn.countAll<string>().as("count"))
+          .where("project_id", "=", projectId)
+          .where("revision_id", "=", submitted.result.knowledgeRevisionRef.reference.entityId)
+          .executeTakeFirstOrThrow();
+        expect(releaseInTransaction.count).toBe("0");
+        const [audit, receipt, outbox] = await Promise.all([
+          fixture!.postgres.adminPool.query<{ count: string }>(
+            `SELECT count(*)::text AS count FROM audit.entries
+              WHERE project_id = $1 AND action = 'knowledge.publish-approved-release'`,
+            [projectId],
+          ),
+          fixture!.postgres.adminPool.query<{ count: string }>(
+            `SELECT count(*)::text AS count FROM business.command_receipts WHERE command_id = $1`,
+            [input.command.commandId],
+          ),
+          fixture!.postgres.adminPool.query<{ count: string }>(
+            `SELECT count(*)::text AS count FROM outbox.events WHERE producer_command_id = $1`,
+            [input.command.commandId],
+          ),
+        ]);
+        expect([audit, receipt, outbox].map((result) => result.rows[0]?.count)).toEqual([
+          "0",
+          "0",
+          "0",
+        ]);
+        return [];
+      });
       const published = await fixture!.adapter.govern(
         publishFor(
           projectId,
@@ -1098,6 +1129,27 @@ describe.sequential(
         definitionType,
         revisionRef: submitted.result.knowledgeRevisionRef,
       });
+      const committed = await Promise.all([
+        fixture!.postgres.adminPool.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM business.knowledge_releases
+            WHERE project_id = $1 AND revision_id = $2`,
+          [projectId, submitted.result.knowledgeRevisionRef.reference.entityId],
+        ),
+        fixture!.postgres.adminPool.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM audit.entries
+            WHERE project_id = $1 AND action = 'knowledge.publish-approved-release'`,
+          [projectId],
+        ),
+        fixture!.postgres.adminPool.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM business.command_receipts WHERE command_id = $1`,
+          [stub!.appendRelease.mock.calls[0]![1].command.commandId],
+        ),
+        fixture!.postgres.adminPool.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM outbox.events WHERE producer_command_id = $1`,
+          [stub!.appendRelease.mock.calls[0]![1].command.commandId],
+        ),
+      ]);
+      expect(committed.map((result) => result.rows[0]?.count)).toEqual(["1", "1", "1", "0"]);
     });
 
     it("maps a non BUSINESS_BLOCKED scoring-rule failure instead of degrading it", async () => {

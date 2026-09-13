@@ -17,6 +17,7 @@ import {
   applicableRuleSetDocumentDigest,
   assembleApplicableRuleSet,
   assertScoringRuleMembersMatchApplicableRuleSet,
+  bindScoringRuleRelationsToRevision,
   buildAssessmentBasisMembers,
   detectRuleRelations,
   evaluateScoringRule,
@@ -615,7 +616,7 @@ describe("C19 结构化评分规则与适用规则集", () => {
       sourceVersionRef,
     });
 
-    it("发布前冲突规则全部被拦截并绑定候选正文与比较基线", () => {
+    it("关系身份：发布前冲突规则被拦截并在修订生成后绑定", () => {
       const candidateContentDigest = "a".repeat(64);
       const snapshot = detectRuleRelations({
         policyRef: { entityId: "rule-conflict-priority", versionId: "1" },
@@ -638,7 +639,6 @@ describe("C19 结构化评分规则与适用规则集", () => {
 
       expect(snapshot.candidateContentDigest).toBe(candidateContentDigest);
       expect(snapshot.baseReleaseRef).toBeUndefined();
-      expect(snapshot.relationDigest).toMatch(/^[0-9a-f]{64}$/u);
       const relations = snapshot.relations;
       expect(relations).toHaveLength(1);
       const conflict = relations[0]!;
@@ -647,7 +647,13 @@ describe("C19 结构化评分规则与适用规则集", () => {
       expect(conflict.excludedRuleVersionRef?.entityId).toBe("rule-b");
       expect(conflict.overlap.lower).toBe(0);
       expect(conflict.overlap.upper).toBe(20);
-      expect(conflict.relationId).toMatch(/^[0-9a-f]{64}$/u);
+      const bound = bindScoringRuleRelationsToRevision({
+        projectId: "project-c19",
+        candidateRevisionRef: revisionFor("candidate-a"),
+        snapshot,
+      });
+      expect(bound.relationDigest).toMatch(/^[0-9a-f]{64}$/u);
+      expect(bound.relations[0]!.relationId).toMatch(/^[0-9a-f]{64}$/u);
     });
 
     it("候选与精确比较基线相交时仍产生绑定该基线的冲突事实", () => {
@@ -697,10 +703,80 @@ describe("C19 结构化评分规则与适用规则集", () => {
         [snapshot.relations[0]!.leftRuleId, snapshot.relations[0]!.rightRuleId].sort(),
       ).toEqual(["rule-candidate", "rule-published"]);
     });
+
+    it("修订归属：相同语义在不同候选修订中获得不同关系身份", () => {
+      const candidates = [
+        relationCandidate(
+          "rule-z",
+          [{ thresholdId: "z-1", score: 1, operator: "between", value: 0, upperValue: 20 }],
+          [{ grade: "grade-z", lowerBound: 0 }],
+        ),
+        relationCandidate(
+          "rule-a",
+          [{ thresholdId: "a-1", score: 2, operator: "between", value: 0, upperValue: 20 }],
+          [{ grade: "grade-a", lowerBound: 0 }],
+          SECOND_STANDARD_SOURCE_VERSION,
+        ),
+      ];
+      const detect = (values: readonly ScoringRuleRelationCandidateV1[]) =>
+        detectRuleRelations({
+          policyRef: { entityId: "rule-conflict-priority", versionId: "1" },
+          candidateContentDigest: "d".repeat(64),
+          candidates: values,
+        });
+      const revisionA = revisionFor("candidate-a");
+      const first = bindScoringRuleRelationsToRevision({
+        projectId: "project-c19",
+        candidateRevisionRef: revisionA,
+        snapshot: detect(candidates),
+      });
+      const replay = bindScoringRuleRelationsToRevision({
+        projectId: "project-c19",
+        candidateRevisionRef: revisionA,
+        snapshot: detect([...candidates].reverse()),
+      });
+      const next = bindScoringRuleRelationsToRevision({
+        projectId: "project-c19",
+        candidateRevisionRef: revisionFor("candidate-b"),
+        snapshot: detect(candidates),
+      });
+
+      expect(first.relations[0]!.leftRuleId).toBe("rule-a");
+      expect(replay).toEqual(first);
+      expect(next.relations[0]!.relationId).not.toBe(first.relations[0]!.relationId);
+    });
+
+    it("关系贡献冲突：重复规则身份或同身份异文整体失败", () => {
+      const candidate = relationCandidate(
+        "rule-duplicate",
+        [{ thresholdId: "d-1", score: 1, operator: "between", value: 0, upperValue: 20 }],
+        [{ grade: "grade-d", lowerBound: 0 }],
+      );
+      expect(() =>
+        detectRuleRelations({
+          policyRef: { entityId: "rule-conflict-priority", versionId: "1" },
+          candidateContentDigest: "e".repeat(64),
+          candidates: [candidate, candidate],
+        }),
+      ).toThrow();
+      expect(() =>
+        detectRuleRelations({
+          policyRef: { entityId: "rule-conflict-priority", versionId: "1" },
+          candidateContentDigest: "f".repeat(64),
+          candidates: [candidate],
+          baseline: [
+            {
+              ...candidate,
+              rule: { ...candidate.rule, exceptionClauses: ["different-content"] },
+            },
+          ],
+        }),
+      ).toThrow();
+    });
   });
 
   describe("重叠", () => {
-    it("等价重叠被完整记录并按闭合优先级确定保留成员", () => {
+    it("重叠事实去重：等价相邻贡献合并并按闭合优先级确定处置", () => {
       const snapshot = detectRuleRelations({
         policyRef: { entityId: "rule-conflict-priority", versionId: "1" },
         candidateContentDigest: "b".repeat(64),
@@ -709,7 +785,14 @@ describe("C19 结构化评分规则与适用规则集", () => {
             rule: makeScoringRule({
               ruleId: "rule-overlap-settlement-a",
               scoringThresholds: [
-                { thresholdId: "a-1", score: 3, operator: "between", value: 0, upperValue: 20 },
+                { thresholdId: "a-1", score: 3, operator: "between", value: 0, upperValue: 10 },
+                {
+                  thresholdId: "a-2",
+                  score: 3,
+                  operator: "between",
+                  value: 10,
+                  upperValue: 20,
+                },
               ],
               gradeIntervals: [{ grade: "grade-b", lowerBound: 0 }],
             }),
@@ -730,12 +813,22 @@ describe("C19 结构化评分规则与适用规则集", () => {
 
       expect(snapshot.relations).toHaveLength(1);
       expect(snapshot.relations[0]!.relationKind).toBe("overlap");
-      expect(snapshot.relations[0]!.retainedRuleVersionRef).toBeUndefined();
-      expect(snapshot.relations[0]!.overlap.leftThresholdIds).toEqual(["a-1"]);
+      expect(snapshot.relations[0]!.retainedRuleVersionRef.entityId).toBe(
+        "rule-overlap-settlement-a",
+      );
+      expect(snapshot.relations[0]!.excludedRuleVersionRef.entityId).toBe(
+        "rule-overlap-settlement-b",
+      );
+      expect(snapshot.relations[0]!.overlap.leftThresholdIds).toEqual(["a-1", "a-2"]);
       expect(snapshot.relations[0]!.overlap.rightThresholdIds).toEqual(["b-1"]);
       expect(snapshot.relations[0]!.overlap.lower).toBe(5);
       expect(snapshot.relations[0]!.overlap.upper).toBe(15);
-      expect(snapshot.relationDigest).toMatch(/^[0-9a-f]{64}$/u);
+      const bound = bindScoringRuleRelationsToRevision({
+        projectId: "project-c19",
+        candidateRevisionRef: revisionFor("overlap"),
+        snapshot,
+      });
+      expect(bound.relationDigest).toMatch(/^[0-9a-f]{64}$/u);
     });
   });
 

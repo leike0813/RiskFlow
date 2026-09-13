@@ -17,6 +17,7 @@ import {
 import type { VersionReference } from "@riskflow/contracts/common";
 import type { StructuredScoringRule } from "@riskflow/contracts/records";
 import type { AgentTaskSnapshotV1 } from "@riskflow/core/agent-runtime";
+import { AccessServiceError } from "@riskflow/core/access";
 import {
   evaluateScoringRule,
   type AssembleApplicableRuleSetV1,
@@ -120,8 +121,11 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
         left_rule_id: string;
         right_rule_id: string;
         overlap_digest: string;
+        retained_rule_id: string | null;
+        excluded_rule_id: string | null;
       }>(
-        `SELECT relation_id, relation_kind, revision_id, left_rule_id, right_rule_id, overlap_digest
+        `SELECT relation_id, relation_kind, revision_id, left_rule_id, right_rule_id, overlap_digest,
+                retained_rule_id, excluded_rule_id
            FROM business.rule_relations WHERE project_id = $1 ORDER BY relation_id`,
         [projectId],
       )
@@ -836,7 +840,109 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
     reader.mockRestore();
   }, 300_000);
 
-  it("发布前冲突：关系事实与 C07 补链先于规则发布，未决冲突阻断 C16 审核", async () => {
+  it("重叠事实去重：同一规则对只持久化一个带闭合处置的关系事实", async () => {
+    const project = await startProjectWorld("c19-overlap-dedup");
+    const handoff = await startRuleAuthoring({
+      project,
+      requestId: `c19-overlap-dedup-authoring-${project.projectId}`,
+    });
+    const sameConclusionRule = (ruleId: string) =>
+      ruleOperation(handoff, {
+        ruleId,
+        indicatorItem: project.indicatorIds[0]!,
+        scoringThresholds: [
+          { thresholdId: `${ruleId}-t`, score: 3, operator: "between", value: 15, upperValue: 25 },
+        ],
+        gradeIntervals: [{ grade: "grade-shared", lowerBound: 15 }],
+      });
+    const revisionRef = await finalizeRuleCandidate({
+      handoff,
+      operations: [
+        sameConclusionRule("rule-c19-overlap-a"),
+        sameConclusionRule("rule-c19-overlap-b"),
+      ],
+    });
+
+    const relations = await relationRows(project.projectId);
+    expect(relations).toHaveLength(1);
+    expect(relations[0]).toMatchObject({
+      relation_kind: "overlap",
+      revision_id: revisionRef.reference.entityId,
+      retained_rule_id: "rule-c19-overlap-a",
+      excluded_rule_id: "rule-c19-overlap-b",
+    });
+    expect(await reviewLinkRows(project.projectId)).toHaveLength(0);
+  }, 300_000);
+
+  it("关系碰撞回滚：关系唯一性失败不留下修订、元数据、关系、审计或回执", async () => {
+    const project = await startProjectWorld("c19-relation-collision");
+    const handoff = await startRuleAuthoring({
+      project,
+      requestId: `c19-relation-collision-authoring-${project.projectId}`,
+    });
+    const counts = () =>
+      Promise.all([
+        countRows(
+          `SELECT count(*)::text AS count FROM business.knowledge_revisions
+            WHERE project_id = $1 AND definition_type = 'structured-scoring-rule'`,
+          [project.projectId],
+        ),
+        countRows(
+          `SELECT count(*)::text AS count FROM business.scoring_rule_revision_metadata
+            WHERE project_id = $1`,
+          [project.projectId],
+        ),
+        countRows(
+          `SELECT count(*)::text AS count FROM business.rule_relations WHERE project_id = $1`,
+          [project.projectId],
+        ),
+        countRows(
+          `SELECT count(*)::text AS count FROM audit.entries
+            WHERE project_id = $1 AND action = 'knowledge.submit-revision'`,
+          [project.projectId],
+        ),
+        countRows(
+          `SELECT count(*)::text AS count FROM business.command_receipts
+            WHERE project_id = $1 AND command_kind = 'knowledge.submit-revision.v1'`,
+          [project.projectId],
+        ),
+      ]);
+    const before = await counts();
+    await adminPool().query(`
+      CREATE OR REPLACE FUNCTION business.c19_test_relation_collision() RETURNS trigger
+      LANGUAGE plpgsql AS $$ BEGIN RAISE unique_violation USING MESSAGE = 'c19 relation collision'; END; $$;
+      CREATE TRIGGER c19_test_relation_collision
+      BEFORE INSERT ON business.rule_relations
+      FOR EACH ROW EXECUTE FUNCTION business.c19_test_relation_collision();
+    `);
+    try {
+      await expect(
+        finalizeRuleCandidate({
+          handoff,
+          operations: [
+            conflictingRule(handoff, {
+              ruleId: "rule-c19-collision-a",
+              indicatorItem: project.indicatorIds[0]!,
+              score: 1,
+            }),
+            conflictingRule(handoff, {
+              ruleId: "rule-c19-collision-b",
+              indicatorItem: project.indicatorIds[0]!,
+              score: 5,
+            }),
+          ],
+        }),
+      ).rejects.toThrow();
+      expect(await counts()).toEqual(before);
+    } finally {
+      await adminPool().query(
+        `DROP TRIGGER IF EXISTS c19_test_relation_collision ON business.rule_relations`,
+      );
+      await adminPool().query(`DROP FUNCTION IF EXISTS business.c19_test_relation_collision()`);
+    }
+  }, 300_000);
+
+  it("发布前冲突（修订归属、审计顺序准备）：关系事实与 C07 补链先于规则发布", async () => {
     const project = await startProjectWorld("c19-conflict");
     const { world } = project;
     const handoff = await startRuleAuthoring({
@@ -951,10 +1057,10 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
     ).toBe(1);
   }, 300_000);
 
-  it("冲突审阅：精确 approve-publication 解除门禁并形成不可变规则发布", async () => {
+  it("冲突审阅、修订归属与审计顺序：精确两级决定解除门禁并形成不可变规则发布", async () => {
     expect(conflict).toBeDefined();
     const { projectId } = conflict!;
-    await requireFixture().decideConflictReview({
+    const conflictDecisionRef = await requireFixture().decideConflictReview({
       projectId,
       relationId: conflict!.relationId,
       kind: "approve-publication",
@@ -969,6 +1075,7 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
       reviewDecisionRef,
     });
     expect(published.kind).toBe("succeeded");
+    if (published.kind !== "succeeded" || published.result.kind !== "release") return;
     expect(
       await countRows(
         `SELECT count(*)::text AS count FROM business.knowledge_releases
@@ -979,11 +1086,41 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
     // 决定链可重建：冲突事实与链接仍在，未被决定改写。
     expect(await relationRows(projectId)).toHaveLength(1);
     expect(await reviewLinkRows(projectId)).toHaveLength(1);
+    const release = await adminPool().query<{
+      revision_ref: unknown;
+      review_decision_ref: unknown;
+    }>(
+      `SELECT revision_ref, review_decision_ref FROM business.knowledge_releases
+        WHERE project_id = $1 AND release_id = $2`,
+      [projectId, published.result.knowledgeReleaseRef.reference.entityId],
+    );
+    expect(release.rows[0]).toMatchObject({
+      revision_ref: conflict!.ruleRevisionRef,
+      review_decision_ref: reviewDecisionRef,
+    });
+    const audits = await adminPool().query<{ action: string; target_ref: unknown }>(
+      `SELECT action, target_ref FROM audit.entries
+        WHERE project_id = $1 AND action IN ('knowledge.submit-revision', 'knowledge.publish-approved-release')`,
+      [projectId],
+    );
+    expect(audits.rows).toEqual(
+      expect.arrayContaining([
+        { action: "knowledge.submit-revision", target_ref: conflict!.ruleRevisionRef },
+        {
+          action: "knowledge.publish-approved-release",
+          target_ref: published.result.knowledgeReleaseRef,
+        },
+      ]),
+    );
+    expect(conflictDecisionRef.kind).toBe("review-decision");
   }, 300_000);
 
-  it("过期决定不能放行：新规则修订必须有自己的精确冲突决定", async () => {
+  it("修订归属与过期决定：新规则修订必须有自己的精确冲突决定", async () => {
     expect(conflict).toBeDefined();
     const { projectId } = conflict!;
+    const originalRelation = (await relationRows(projectId)).find(
+      (row) => row.relation_id === conflict!.relationId,
+    )!;
     const baseReleaseRef = await approvedRuleReleaseRef(projectId);
     expect(baseReleaseRef.kind).toBe("knowledge-release");
     const handoff = await startRuleAuthoring({
@@ -1007,6 +1144,16 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
     );
     expect(newRelations.length).toBeGreaterThan(0);
     expect(newRelations.every((row) => row.relation_kind === "conflict")).toBe(true);
+    const repeatedSemanticRelation = newRelations.find(
+      (row) =>
+        row.left_rule_id === originalRelation.left_rule_id &&
+        row.right_rule_id === originalRelation.right_rule_id &&
+        row.overlap_digest === originalRelation.overlap_digest,
+    );
+    expect(repeatedSemanticRelation).toBeDefined();
+    expect(repeatedSemanticRelation!.relation_id).not.toBe(originalRelation.relation_id);
+    expect(repeatedSemanticRelation!.revision_id).toBe(revisionRef.reference.entityId);
+    expect(originalRelation.revision_id).toBe(conflict!.ruleRevisionRef.reference.entityId);
 
     // 旧冲突决定只批准旧 relation：新修订仍被门禁阻断，规则发布数不变。
     const blockedBeforeDecision = await requestRuleReview({ projectId, revisionRef });
@@ -1207,6 +1354,18 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
       }),
     );
     expect(beforeRevocation.kind).toBe("succeeded");
+    const [auditBeforeRevocation, receiptBeforeRevocation] = await Promise.all([
+      countRows(
+        `SELECT count(*)::text AS count FROM audit.entries
+          WHERE project_id = $1 AND action LIKE 'knowledge.read-assessment-basis-release-set%'`,
+        [projectId],
+      ),
+      countRows(
+        `SELECT count(*)::text AS count FROM business.command_receipts
+          WHERE project_id = $1 AND command_kind = 'knowledge.read-assessment-basis-release-set.v1'`,
+        [projectId],
+      ),
+    ]);
     requireFixture().revokeAuthorization(revokedAuthorization.authorizationContextRef);
     const replayAfterRevocation = await requireFixture().scoringRules.readAssessmentBasisReleaseSet(
       basisReadInput({
@@ -1221,6 +1380,84 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
       expect(replayAfterRevocation.error.code).toBe("AUTHORIZATION_DENIED");
       expect(JSON.stringify(replayAfterRevocation)).not.toContain("scoringRuleMembers");
     }
+    expect(
+      await Promise.all([
+        countRows(
+          `SELECT count(*)::text AS count FROM audit.entries
+            WHERE project_id = $1 AND action LIKE 'knowledge.read-assessment-basis-release-set%'`,
+          [projectId],
+        ),
+        countRows(
+          `SELECT count(*)::text AS count FROM business.command_receipts
+            WHERE project_id = $1 AND command_kind = 'knowledge.read-assessment-basis-release-set.v1'`,
+          [projectId],
+        ),
+      ]),
+    ).toEqual([auditBeforeRevocation, receiptBeforeRevocation]);
+  }, 180_000);
+
+  it("basis 运行时边界：strict 输入与 C06 瞬时失败均不查询目标或完成回执", async () => {
+    expect(chain).toBeDefined();
+    const verify = vi.mocked(requireFixture().access.verify);
+    const callsBefore = verify.mock.calls.length;
+    const malformed = await requireFixture().scoringRules.readAssessmentBasisReleaseSet({
+      requestId: "c19-basis-malformed",
+    } as never);
+    expect(malformed).toMatchObject({
+      kind: "failed",
+      error: { code: "UNSUPPORTED_CONTRACT", retryable: false },
+    });
+    expect(verify.mock.calls).toHaveLength(callsBefore);
+
+    const reorderedRequestId = `c19-basis-capability-order-${chain!.projectId}`;
+    const reorderedAuthorization = basisAuthorization(chain!.projectId, reorderedRequestId);
+    const reordered = await requireFixture().scoringRules.readAssessmentBasisReleaseSet(
+      basisReadInput({
+        requestId: reorderedRequestId,
+        authorization: {
+          ...reorderedAuthorization,
+          grantedCapabilities: [
+            "engineering-data.read",
+            ...reorderedAuthorization.grantedCapabilities,
+          ],
+        },
+        assessmentBasisReleaseSetRef: chain!.basisReleaseSetRef,
+      }),
+    );
+    expect(reordered.kind).toBe("succeeded");
+
+    const requestId = `c19-basis-access-transient-${chain!.projectId}`;
+    verify.mockRejectedValueOnce(
+      new AccessServiceError({
+        stage: "access.verify",
+        occurredAt: SCORING_RULES_TEST_ISSUED_AT,
+        diagnosticRef: {
+          kind: "diagnostic-artifact",
+          reference: { entityId: "c19-access-transient", versionId: "1" },
+        },
+        contextRefs: [],
+        code: "ACCESS_TRANSIENT_FAILURE",
+        retryable: true,
+        attempt: 1,
+      }),
+    );
+    const transient = await requireFixture().scoringRules.readAssessmentBasisReleaseSet(
+      basisReadInput({
+        requestId,
+        authorization: basisAuthorization(chain!.projectId, requestId),
+        assessmentBasisReleaseSetRef: chain!.basisReleaseSetRef,
+      }),
+    );
+    expect(transient).toMatchObject({
+      kind: "failed",
+      error: { code: "TRANSIENT_FAILURE", retryable: true },
+    });
+    expect(
+      await countRows(
+        `SELECT count(*)::text AS count FROM business.command_receipts WHERE command_id = $1`,
+        [requestId],
+      ),
+    ).toBe(0);
   }, 180_000);
 
   it("幂等与并发：同一组装请求重放返回同一修订且不新增事实", async () => {
@@ -1452,6 +1689,173 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
     // 原键可重试并成功。
     const retried = await requireFixture().scoringRules.readAssessmentBasisReleaseSet(request);
     expect(retried.kind).toBe("succeeded");
+  }, 180_000);
+
+  it("basis 历史成功完整性：success 回执对应快照损坏时失败关闭", async () => {
+    expect(chain).toBeDefined();
+    const requestId = `c19-basis-integrity-${chain!.projectId}`;
+    const request = basisReadInput({
+      requestId,
+      authorization: basisAuthorization(chain!.projectId, requestId),
+      assessmentBasisReleaseSetRef: chain!.basisReleaseSetRef,
+    });
+    const first = await requireFixture().scoringRules.readAssessmentBasisReleaseSet(request);
+    expect(first.kind).toBe("succeeded");
+    const original = await adminPool().query<{ member_snapshot: unknown }>(
+      `SELECT member_snapshot FROM business.assessment_basis_release_sets
+        WHERE project_id = $1 AND set_id = $2 AND version_id = $3`,
+      [
+        chain!.projectId,
+        chain!.basisReleaseSetRef.reference.entityId,
+        chain!.basisReleaseSetRef.reference.versionId,
+      ],
+    );
+    const unavailableBefore = await countRows(
+      `SELECT count(*)::text AS count FROM audit.entries
+        WHERE project_id = $1 AND action = 'knowledge.read-assessment-basis-release-set.unavailable'`,
+      [chain!.projectId],
+    );
+    await adminPool().query(
+      `UPDATE business.assessment_basis_release_sets SET member_snapshot = $4::jsonb
+        WHERE project_id = $1 AND set_id = $2 AND version_id = $3`,
+      [
+        chain!.projectId,
+        chain!.basisReleaseSetRef.reference.entityId,
+        chain!.basisReleaseSetRef.reference.versionId,
+        JSON.stringify({ damaged: true }),
+      ],
+    );
+    try {
+      const replay = await requireFixture().scoringRules.readAssessmentBasisReleaseSet(request);
+      expect(replay).toMatchObject({
+        kind: "failed",
+        error: { code: "TERMINAL_FAILURE", retryable: false },
+      });
+      expect(
+        await countRows(
+          `SELECT count(*)::text AS count FROM audit.entries
+            WHERE project_id = $1 AND action = 'knowledge.read-assessment-basis-release-set.unavailable'`,
+          [chain!.projectId],
+        ),
+      ).toBe(unavailableBefore);
+    } finally {
+      await adminPool().query(
+        `UPDATE business.assessment_basis_release_sets SET member_snapshot = $4::jsonb
+          WHERE project_id = $1 AND set_id = $2 AND version_id = $3`,
+        [
+          chain!.projectId,
+          chain!.basisReleaseSetRef.reference.entityId,
+          chain!.basisReleaseSetRef.reference.versionId,
+          JSON.stringify(original.rows[0]!.member_snapshot),
+        ],
+      );
+    }
+
+    const hiddenSetId = `${chain!.basisReleaseSetRef.reference.entityId}-hidden`;
+    await adminPool().query(
+      `UPDATE business.assessment_basis_release_sets SET set_id = $4
+        WHERE project_id = $1 AND set_id = $2 AND version_id = $3`,
+      [
+        chain!.projectId,
+        chain!.basisReleaseSetRef.reference.entityId,
+        chain!.basisReleaseSetRef.reference.versionId,
+        hiddenSetId,
+      ],
+    );
+    try {
+      const missingReplay =
+        await requireFixture().scoringRules.readAssessmentBasisReleaseSet(request);
+      expect(missingReplay).toMatchObject({
+        kind: "failed",
+        error: { code: "TERMINAL_FAILURE", retryable: false },
+      });
+    } finally {
+      await adminPool().query(
+        `UPDATE business.assessment_basis_release_sets SET set_id = $4
+          WHERE project_id = $1 AND set_id = $2 AND version_id = $3`,
+        [
+          chain!.projectId,
+          hiddenSetId,
+          chain!.basisReleaseSetRef.reference.versionId,
+          chain!.basisReleaseSetRef.reference.entityId,
+        ],
+      );
+    }
+
+    const receipt = await adminPool().query<{ audit_entry_id: string }>(
+      `SELECT audit_entry_id FROM business.command_receipts WHERE command_id = $1`,
+      [requestId],
+    );
+    await adminPool().query(`UPDATE audit.entries SET action = $2 WHERE audit_entry_id = $1`, [
+      receipt.rows[0]!.audit_entry_id,
+      "knowledge.read-assessment-basis-release-set.unknown",
+    ]);
+    try {
+      const unknownAuditReplay =
+        await requireFixture().scoringRules.readAssessmentBasisReleaseSet(request);
+      expect(unknownAuditReplay).toMatchObject({
+        kind: "failed",
+        error: { code: "TERMINAL_FAILURE", retryable: false },
+      });
+      expect(
+        await countRows(
+          `SELECT count(*)::text AS count FROM audit.entries
+            WHERE project_id = $1 AND action = 'knowledge.read-assessment-basis-release-set.unavailable'`,
+          [chain!.projectId],
+        ),
+      ).toBe(unavailableBefore);
+    } finally {
+      await adminPool().query(`UPDATE audit.entries SET action = $2 WHERE audit_entry_id = $1`, [
+        receipt.rows[0]!.audit_entry_id,
+        "knowledge.read-assessment-basis-release-set.succeeded",
+      ]);
+    }
+  }, 180_000);
+
+  it("basis 冻结集合：成员停用后仍返回原精确快照", async () => {
+    expect(chain).toBeDefined();
+    const firstRequestId = `c19-basis-frozen-before-${chain!.projectId}`;
+    const before = await requireFixture().scoringRules.readAssessmentBasisReleaseSet(
+      basisReadInput({
+        requestId: firstRequestId,
+        authorization: basisAuthorization(chain!.projectId, firstRequestId),
+        assessmentBasisReleaseSetRef: chain!.basisReleaseSetRef,
+      }),
+    );
+    if (before.kind !== "succeeded") throw new Error("frozen basis setup failed");
+    const memberReleaseRef = before.scoringRuleMembers[0]!.releaseRef;
+    const deactivated = await requireFixture().governance.govern(
+      KnowledgeGovernanceCommandV1Schema.parse({
+        kind: "deactivate-release",
+        commandId: `c19-basis-deactivate-${chain!.projectId}`,
+        idempotencyKey: `c19-basis-deactivate-${chain!.projectId}`,
+        projectId: chain!.projectId,
+        actorId: authoringActor,
+        issuedAt: "2030-01-01T00:00:04.000Z",
+        authorization: requireFixture().authorize({
+          projectId: chain!.projectId,
+          actorId: authoringActor,
+          branch: "knowledge-modeling.deactivate-release",
+          entityId: `c19-basis-deactivate-${chain!.projectId}`,
+        }),
+        payload: { releaseRef: memberReleaseRef, reasonCode: "superseded" },
+      }),
+    );
+    expect(deactivated.kind).toBe("succeeded");
+    const nextRequestId = `c19-basis-frozen-after-${chain!.projectId}`;
+    const after = await requireFixture().scoringRules.readAssessmentBasisReleaseSet({
+      ...basisReadInput({
+        requestId: nextRequestId,
+        authorization: basisAuthorization(chain!.projectId, nextRequestId),
+        assessmentBasisReleaseSetRef: chain!.basisReleaseSetRef,
+      }),
+      requestedAt: "2030-01-01T00:00:05.000Z",
+    });
+    expect(after.kind).toBe("succeeded");
+    if (after.kind === "succeeded") {
+      expect(after.memberDigest).toBe(before.memberDigest);
+      expect(after.scoringRuleMembers).toEqual(before.scoringRuleMembers);
+    }
   }, 180_000);
 
   it("规则集门禁：配置或冲突不完整时整体失败，不启动编制任务、不落 manifest 与修订", async () => {

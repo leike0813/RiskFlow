@@ -1408,6 +1408,16 @@ export class PostgresKnowledgeGovernanceAdapter {
           occurredAt: command.issuedAt,
           recordedAt,
         });
+        // C19 最终关系/C07 门禁必须在 release INSERT 前观察同一事务状态。
+        const scoringEvents = await this.#appendScoringRuleRelease(context, {
+          command,
+          authorization: verifiedAuthorization,
+          atomic,
+          revision,
+          releaseRef,
+          audit,
+          recordedAt,
+        });
         await tx
           .insertInto("business.knowledge_releases")
           .values({
@@ -1444,15 +1454,6 @@ export class PostgresKnowledgeGovernanceAdapter {
         }
         const events = await this.#appendAssessmentConfigurationRelease(context, {
           command,
-          atomic,
-          revision,
-          releaseRef,
-          audit,
-          recordedAt,
-        });
-        const scoringEvents = await this.#appendScoringRuleRelease(context, {
-          command,
-          authorization: verifiedAuthorization,
           atomic,
           revision,
           releaseRef,

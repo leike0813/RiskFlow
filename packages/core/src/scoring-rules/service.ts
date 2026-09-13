@@ -40,8 +40,8 @@ import {
   type ScoringRuleStandardSegmentSliceRequestV1,
   type ScoringRuleValidationViewV1,
   type ScoringRulesPolicyV1,
-  type ScoringRuleRelationSnapshotV1,
 } from "./schema.js";
+import type { ScoringRuleRelationTemplateSnapshotV1 } from "./validation.js";
 
 /* -------------------------------------------------------------------------- */
 /* C19 governance policy seam (D-08)                                          */
@@ -75,7 +75,7 @@ export interface PreparedScoringRuleV1 {
   readonly contentDigest: string;
   readonly itemCount: number;
   /** `structured-scoring-rule` 的发布前冲突/重叠快照；该类型之外为空。 */
-  readonly relationSnapshot?: ScoringRuleRelationSnapshotV1;
+  readonly relationSnapshot?: ScoringRuleRelationTemplateSnapshotV1;
 }
 
 export interface ScoringRuleRevisionAppendV1 {

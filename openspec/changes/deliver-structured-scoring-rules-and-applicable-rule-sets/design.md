@@ -84,9 +84,19 @@ C19 只导出 definition 及 Worker 的 render/interpret 组合函数，不创�
 
 ### D-07：冲突和重叠使用同一相交算法，结论不同才形成发布门禁
 
-`detectRuleRelations()` 仅比较同工程、同兼容集合、同指标且三维条件集合逐维有交集的规则。它必须调用 D-06 的 `normalizeScoringThresholds()`、`normalizeGradeIntervals()` 和同源求值语义产生交叠域，不得重新解释 operator、端点或无穷边界。交叠域结论不同或例外相互否定为 `conflict`，结论相同为 `overlap`。每个事实身份由策略版本、双方规范排序后的精确规则版本和交叠域摘要确定，避免左右顺序产生重复。
+`detectRuleRelations()` 仅比较同工程、同兼容集合、同指标且三维条件集合逐维有交集的规则。规则版本身份固定为 `(ruleId, ruleVersion.entityId, ruleVersion.versionId)`；候选和基线先分别校验身份唯一，再按该 tuple 规范排序双方。候选与候选形成无序组合，候选与精确基线逐项比较，基线与基线不重复比较。候选继承基线中身份与 strict 正文摘要均相同的规则时只消除该自比较；身份相同但正文摘要不同是版本身份冲突，整个检测失败。
 
-关系检测位于结构化规则发布之前：materialize 后以候选文档和提交时精确 base/current 规则发布为输入，产生绑定候选 C16 revision 的完整 conflict/overlap 快照；C16 提交修订事务原子保存 revision、C19 metadata、关系事实、audit 与 receipt。每个 conflict 事实还固定闭合优先级策略给出的 `retainedRuleVersionRef` 与 `excludedRuleVersionRef`；优先级仅按来源类别、标准业务版本和规则身份比较，不读取模型置信度或输入顺序。提交成功后才幂等创建 C07 `rule-conflict` task 并追加 link；创建失败时已提交修订仍被门禁，后续重试只补同一 task/link，不重复 relation 或审计。C19 在 C16 `request-review` 前从 C07 决定事实核对精确目标，只有人工 `approve-publication` 可批准拟议处置；C16 publish 事务提交前再次核对同一关系摘要、base/current 版本与 C07 决定。`reject`/`return-for-revision` 要求新规则修订并重新检测。重叠不自动阻断，按闭合优先级形成确定性 retained/excluded 事实；适用规则集组装只消费这些发布前已闭合的关系事实，不再检测关系或创建 C07 任务。
+相交算法必须调用 D-06 的 `normalizeScoringThresholds()`、`normalizeGradeIntervals()` 和同源求值语义，不得重新解释 operator、端点或无穷边界。它先按精确边界把阈值对贡献规范化，再合并为“结论、关系类型和拟议处置均不变”的极大连通交叠域；非数值 `eq` 的精确标量进入 `overlapDigest`，无需增加公共字段。一个无序规则版本对在一个该交叠域上至多产生一个事实：结论不同或例外相互否定为 `conflict`，结论相同为 `overlap`。左右字段始终使用规则版本 identity 的规范顺序；阈值/等级身份与证据去重并规范排序。
+
+关系采用三级键，避免把域内矛盾或跨修订相同语义误当成同一事实：
+
+1. `relationDomainKey = sha256(policyRef, canonicalRulePair, overlapDigest)`，标识一个 pair/domain 占位；
+2. `semanticRelationKey = sha256(relationDomainKey, relationKind, retainedRuleVersionRef, excludedRuleVersionRef)`，标识闭合关系语义；
+3. 耐久 `relationId = sha256(projectId, candidateRevisionRef, semanticRelationKey)`，`versionId` 固定为 `1`，只归属该 `KnowledgeRevisionRefV1`。
+
+`prepareRevision` 在 C16 生成 revision 前只形成规范化 relation templates；`appendPreparedRevision` 收到实际 `revisionRef` 后调用单一绑定 helper 生成最终 `relationId`、按 identity 排序的关系集合及包含 owner revision 的 `relationDigest`，再与 C16 revision/metadata/audit/receipt 同事务写入。同一 semantic key 的重复贡献合并证据引用和阈值/等级身份并规范排序，只保留一个事实；同一 domain key 出现不同 relationKind 或拟议处置，或相同 `overlapDigest` 对应不同 overlap 载荷时失败关闭。数据库身份碰撞不得 `ON CONFLICT DO NOTHING`：正常幂等重放由 C03 receipt 在 handler 外返回原结果，handler 内碰撞一律回滚，防止关系被错误归入旧修订。
+
+`conflict` 和 `overlap` 都保存版本化闭合优先级策略给出的 `retainedRuleVersionRef` 与 `excludedRuleVersionRef`；优先级只按来源类别、标准业务版本和规范规则身份比较，不读取模型置信度或输入顺序。冲突提交成功后，以最终 owner-bound `relationId` 幂等创建 C07 `rule-conflict` task 并追加 link；创建失败时已提交修订仍被门禁，后续重试只补同一 task/link。C19 在 C16 `request-review` 前从 C07 决定事实核对精确 relation target，只有人工 `approve-publication` 可批准拟议处置；新修订因 `relationId` 不同，旧任务或决定天然不匹配。`reject`/`return-for-revision` 要求新规则修订并重新检测。重叠不创建 C07 任务，适用规则集组装直接消费其 retained/excluded；若关系重复、归属不符、摘要不符，或同一无序规则版本对的交叠域互相重叠且处置不一致，则整体阻断，不按 `ruleId` 重算或静默选边。
 
 **替代方案：**对所有规则 O(n²) 扫描没有必要；按指标+三维倒排候选后只比较相交集合。引入外部规则引擎也无必要且会新增依赖。
 
@@ -126,7 +136,7 @@ resolver 有界读取该规则集工件，要求其适用性快照、工程修�
 - `business.applicable_rule_set_revision_metadata`：C16 revision、适用性快照、规则 release、C18 set、artifact、decision digest 和三时态；
 - `business.assessment_basis_release_sets`：公共 set ref、准备/适用性快照、applicable rule set release、C18 set、工程/时点、覆盖适用规则集/纳入规则发布/11 类配置的 strict 成员快照、成员/身份摘要和三时态。
 
-所有正文/逐项筛选仍在 C04；表只存引用和规范摘要。主键、外键、工程/类型 check、精确 ref 唯一约束和必要的工程+类型+时间索引在数据库收口。应用角色只获 SELECT/INSERT；需要链接 C07 决定时追加新行，不更新原 relation。生产 migration provider/runner 继续递归发现文件；测试侧按既有显式 module loader/manifest 机制，在 `packages/adapters/test/postgres/postgres-foundation.test.ts` 与 `packages/adapters/test/auth/fixture.ts` 机械登记 `000028`，不改变发现算法或生产迁移行为。
+所有正文/逐项筛选仍在 C04；表只存引用和规范摘要。本轮不修改迁移：既有 `rule_relations` 主键 `(relation_id, version_id)` 在 D-07 将 revision 纳入 `relationId` 后成为 owner-bound 唯一键；既有 `rule_relations_identity_uidx(project_id, revision_id, left_rule_version_id, right_rule_version_id, overlap_digest)` 在两端强制规范排序后，作为同一候选 revision 的 domain collision gate，阻止不同 kind/处置写成第二行。一个 C16 revision 只绑定一份 scoring policy，完整三元规则身份、policy、overlap 载荷与 retained/excluded 继续由 strict core Schema、写入前绑定 helper和发布门禁逐项复验。`appendPreparedRevision` 对 relation insert 不使用静默 `do nothing`，任何主键或 domain collision 都回滚。其它现有主键、外键、工程/类型 check、权限和索引保持不变；无需修改 `000028`、测试迁移清单、生产 provider/runner 或历史数据。
 
 **替代方案：**四个连续迁移会增加部署/回滚面；修改 C16/C18 旧表会耦合所有权且难以独立回退。
 
@@ -134,7 +144,9 @@ resolver 有界读取该规则集工件，要求其适用性快照、工程修�
 
 所有公共 govern/resolve 入口先按 `MODULE_BRANCH_CAPABILITY_V1` 校验工程、actor 和精确能力；工具动作进一步复验资料授权和冻结目标。authoring prepare、relation snapshot、conflict task/link、规则集 assembly、basis resolution 和 basis read 各自使用规范 command/input digest，`(project_id, command_kind, idempotency_key)` 同载荷重放、异载荷 `IDEMPOTENCY_CONFLICT`。并发 revision/release 继续由 C16 definition lock、expected base 与数据库约束收口。
 
-结构化规则生命周期固定为：① Agent 只编制候选，C19 确定性校验并 materialize；② C19 对候选与精确 base/current 发布执行确定性 conflict/overlap 检测；③ C16 submit 事务原子写 revision、C19 metadata、全部关系事实、audit 和 receipt；④ 对每个 conflict 以 relation identity 派生稳定幂等键创建 C07 task 并只追加 link，失败只留下仍被门禁的候选修订，原键重试只补缺失 link；⑤ C19 在 C16 `request-review` 前从 C07 事实读取精确决定，缺失、pending、reject、return、过期或错目标均阻断；⑥ C16 完成人工 `knowledge-revision` 审核；⑦ C16 publish 事务在写 release 前调用 C19 最终门禁，重新核对 relation digest、base/current 未漂移和全部 C07 决定，然后与 release/audit/receipt/outbox 原子提交。任一最终门禁或事务副作用失败均回滚本次发布，不删除已提交 revision、relation 或 C07 决定；需要改变候选或处理被拒绝/退回决定时创建新修订，不原地修补。
+结构化规则生命周期固定为：① Agent 只编制候选，C19 确定性校验并 materialize；② C19 对候选与精确 base/current 发布生成规范 relation templates；③ C16 submit 事务先生成 revision，再由 D-07 绑定 owner identity，并原子写 revision、C19 metadata、全部关系事实、audit 和 receipt；④ 对每个 conflict 以 owner-bound relation identity 派生稳定幂等键创建 C07 task并只追加 link，失败只留下仍被门禁的候选修订，原键重试只补缺失 link；⑤ C19 在 C16 `request-review` 创建任何 knowledge review link/task/audit 前，从 C07 事实读取精确冲突决定，缺失、pending、reject、return、过期或错目标均阻断；⑥ C16 完成人工 `knowledge-revision` 审核；⑦ 发布入口先完成 C06 人工授权和 C07 knowledge-revision 批准证明；⑧ C16 publish 事务锁定 revision/definition，复验审核链接、base/current 和 timeline；⑨ 同一事务在 `business.knowledge_releases` INSERT 前调用 C19 `appendRelease` 最终门禁，重新核对每行 owner identity、relation digest、base/current 和全部 C07 冲突决定；⑩ 门禁通过后才插入 release，并与 review link、publish audit、receipt 和 outbox 原子提交。任一最终门禁或事务副作用失败均回滚本次发布，不删除已提交 revision、relation 或 C07 决定；需要改变候选或处理被拒绝/退回决定时创建新修订，不原地修补。
+
+可观测顺序以已存在事实而非日志文案证明：submit 检查点只有一个候选 revision、其 owner-bound relations 和 `knowledge.submit-revision` audit，知识审核/发布 audit 均为零；全部 conflict 的 C07 决定事实必须先于 `knowledge.request-review` 成功 audit；knowledge-revision 批准事实必须先于发布命令；最终门禁执行时同一事务内 release 行数仍为零。门禁失败后该命令对应 release、`knowledge.publish-approved-release` audit、completed receipt 和 outbox 均零新增；成功时 release、publish audit、completed receipt 各新增一次，outbox 增量严格等于该 definition policy 返回的事件数（当前 structured-scoring-rule 为零），并共享命令/审核/修订引用。测试不依赖可能相同的墙钟时间排序，而以事务检查点、引用前置关系和行计数断言顺序。
 
 适用规则集 metadata 与 revision 同事务；applicable release/metadata 校验/audit/receipt/outbox 同事务；basis set/audit/receipt 同事务。适用规则集组装只读取已发布且已通过上述门禁的规则和持久化关系事实，不调用 `detectRuleRelations`、不创建 C07 task。工件先耐久再写引用，孤儿工件不构成正式结果。
 
@@ -164,7 +176,15 @@ resolver 有界读取该规则集工件，要求其适用性快照、工程修�
 
 **持久化不变量：**basis resolve 创建记录时先 strict 读取适用规则集正文，从其 `included refs` 推导唯一 `scoringRuleMembers`，逐个解析精确 C16 release→revision→C04 artifact/content digest，并复用 C18 已校验的 11 成员；任一 included ref 无对应发布元数据、存在额外/重复规则成员或任一摘要不一致时整体失败，不写部分集合。由于 release、revision 和 C04 工件均不可变，reader 只需复验该原子保存的 strict 快照与 `memberDigest`，无需在读取路径打开正文。C25 随后从 C04 复算各 `contentDigest`，并再次断言适用规则集 `included refs` 的规范投影与 `scoringRuleMembers` 完全一致。
 
-当前授权通过后，不存在、成员缺失/重复/额外、摘要不符、跨工程和不可见统一映射为同一个不可重试 `ModuleErrorV1` `AUTHORIZATION_DENIED` 公开形状，调用方不能从 code 或 payload 枚举目标；该 `unavailable` 与成功一样必须原子提交一条 C19 audit 和 C03 完成回执。授权撤销或上下文无效也返回同形 unavailable，但验证失败只由 C06 写安全拒绝，C19 不得以未验证 project/actor 写领域审计或回执。授权复验先于 C03 幂等回执查询，避免旧成功回执绕过撤权。授权通过后，以 `knowledge.read-assessment-basis-release-set.v1` 的规范载荷调用一次 `TransactionUnitV1.execute`：handler 内单点读取并形成成功或 unavailable；两类提交的 `resultRef` 都使用请求集合引用，audit action 只允许 `knowledge.read-assessment-basis-release-set.succeeded` 或 `knowledge.read-assessment-basis-release-set.unavailable`。重放使用 receipt 的 `auditEntryId` 单点读取 audit action；成功再按不可变 `resultRef` 读取 strict 成员快照，无需正文，不可用直接重建同形结果。相同键同载荷不重复查询 handler 或 audit，同键异载荷由 C03 拒绝。数据库、审计或回执瞬时故障返回 strict failed/`TRANSIENT_FAILURE`，事务不完成，因此原键可重试。
+运行时边界按失败发生位置闭合：
+
+1. `ReadAssessmentBasisReleaseSetV1Schema` 在入口先 strict parse；契约错误为 `failed/UNSUPPORTED_CONTRACT`，不调用 C06 或数据库。
+2. C06 当前事实明确拒绝、过期、撤权、能力或工程不符为同形 `unavailable/AUTHORIZATION_DENIED`；只保留 C06 安全审计，不查询 C19 target/receipt，不写 C19 audit/receipt。C06 自身连接、超时等可重试故障为 `failed/TRANSIENT_FAILURE`，副作用同样为零。
+3. 当前授权通过后，首次读取的零行、跨工程、strict member snapshot 失败、成员缺失/重复/额外或摘要不符统一为不可枚举 `unavailable/AUTHORIZATION_DENIED`。success 与该 unavailable 都在一个 C03 事务中各写一条固定 action 的 C19 audit 和完成 receipt；同键同载荷由 receipt 重放，同键异载荷为 `failed/IDEMPOTENCY_CONFLICT`。
+4. 历史 success receipt 重放时，reader 先复验 C06，再按 receipt 的 `auditEntryId` 核对 `.succeeded` action，最后单点读取同一 immutable snapshot。查询发生可重试故障为 `failed/TRANSIENT_FAILURE`；audit action 缺失/未知，或 success receipt 对应集合行/strict snapshot/digest 已缺失或损坏，说明不可变事实被破坏，返回 `failed/TERMINAL_FAILURE`，不得改写成 unavailable、追加第二 audit 或完成第二 receipt。历史 `.unavailable` action 直接重建原 unavailable，不重查目标。
+5. C03/audit/receipt 事务的连接、超时、死锁/序列化等可重试故障为 `failed/TRANSIENT_FAILURE`，整体回滚且原键可重试；其它不可重试技术完整性故障为 `failed/TERMINAL_FAILURE`。二者都不伪装成 unavailable。
+
+reader 的运行时责任止于冻结成员投影：它不打开 C04 正文、不重新解析 C16 “当前发布”，也不因集合形成后的成员停用或新发布而改写历史集合。新评估必须重新走 `resolve(assessment-basis)`；历史重放仍返回原精确成员。消费方使用成员 `artifactRef` 时另行接受 C04 当前授权和留痕，失败不得回退成员。首次 authorized unavailable 已形成完成 receipt 后，即使目标随后出现，同一幂等身份仍重放原 unavailable，调用方只能以新请求身份重试；撤权发生在任何历史 receipt 之前，恢复授权后才可按原 receipt 语义继续。
 
 该入口不放入 C02 `KnowledgeModelingPortV1`：C02 的 `resolve(assessment-basis)` 是跨层冻结入口，只承诺返回公共集合引用；成员投影由 C19 私有物化结构拥有，只供确定性评估组合时注入。扩展 C02 会迫使无此存储的公共端口实现成员读取并暴露 C19 内部集合布局。也不修改 `packages/contracts`：输入、成员和错误的叶子类型全部复用既有公共引用与 `AuthorizationContextV1`/`ModuleErrorV1`，聚合 Schema 留在 `@riskflow/core/scoring-rules` 即可满足 C19→C25 的显式模块接口。
 

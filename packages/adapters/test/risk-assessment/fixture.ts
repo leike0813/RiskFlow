@@ -91,6 +91,21 @@ export interface RiskAssessmentEngineFixtureV1 {
   preinsertAuditConflict(commandId: string): Promise<void>;
   /** 恢复风险输入事实（事实不可用用例之后）。 */
   resetFacts(): void;
+  /** 正式登记外部风险事件（C11 外部分支），返回可用于风险输入的精确引用。 */
+  registerExternalRiskEvent(suffix: string): Promise<{
+    readonly kind: "external-risk-event";
+    readonly reference: { readonly entityId: string; readonly versionId: string };
+  }>;
+  /** 同一监测序列的后续修订：单位或样本数不同的快照，用于单位/缺值用例。 */
+  seriesVariant(input: {
+    readonly seriesId: string;
+    readonly seriesVersion: string;
+    readonly canonicalUnit: string;
+    readonly values: readonly number[];
+  }): Promise<{
+    readonly kind: "monitoring-snapshot";
+    readonly reference: { readonly entityId: string; readonly versionId: string };
+  }>;
   /** 同一序列的第二个冻结快照（不同截止点），用于替换/新增监测集合用例。 */
   extraMonitoringSnapshotRef(): Promise<{
     readonly kind: "monitoring-snapshot";
@@ -642,6 +657,33 @@ export const startRiskAssessmentEngineFixture =
     };
 
     // ---------------------------------------------------------------- 监测序列与快照
+    const monitoringSeriesDefinitions = [
+      {
+        seriesId: "c25-series-settlement",
+        monitoringObject: "地表沉降监测点",
+        monitoringIndicator: "地表沉降",
+        parameterCode: "ground-settlement",
+        canonicalUnit: "mm",
+        values: [5, 5.5, 6, 6.5, 7],
+      },
+      {
+        seriesId: "c25-series-water-level",
+        monitoringObject: "地下水位观测井",
+        monitoringIndicator: "地下水位",
+        parameterCode: "water-level",
+        canonicalUnit: "m",
+        values: [10, 10.4, 10.2, 10.8, 11],
+      },
+      {
+        seriesId: "c25-series-cutter-frequency",
+        monitoringObject: "盾构姿态监测",
+        monitoringIndicator: "盾构姿态参数",
+        parameterCode: "cutter-frequency",
+        canonicalUnit: "Hz",
+        values: [0.2, 0.25, 0.3, 0.35, 0.4],
+      },
+    ] as const;
+
     const registerMonitoringSeries = async (input: {
       readonly seriesId: string;
       readonly monitoringObject: string;
@@ -649,27 +691,37 @@ export const startRiskAssessmentEngineFixture =
       readonly parameterCode: string;
       readonly canonicalUnit: string;
       readonly values: readonly number[];
+      /** 序列修订号：同一序列修订出单位/样本数不同的新版本用于单位与缺值用例。 */
+      readonly seriesVersion?: string;
     }): Promise<{
       readonly kind: "monitoring-snapshot";
       readonly reference: { readonly entityId: string; readonly versionId: string };
     }> => {
+      const seriesVersion = input.seriesVersion ?? "1";
+      const commandSuffix = `${input.seriesId}@${seriesVersion}`;
       const seriesRef = {
         kind: "monitoring-series" as const,
-        reference: { entityId: input.seriesId, versionId: "1" },
+        reference: { entityId: input.seriesId, versionId: seriesVersion },
       };
       const series = await postgres.monitoringStore.reviseSeries({
-        commandId: `c25-series-${input.seriesId}`,
-        idempotencyKey: `c25-series-${input.seriesId}`,
+        commandId: `c25-series-${commandSuffix}`,
+        idempotencyKey: `c25-series-${commandSuffix}`,
         projectId: PROJECT_ID,
         actorId: managerId,
         issuedAt: T0,
         authorization: await authorize({
-          invocationId: `c25-series-${input.seriesId}`,
+          invocationId: `c25-series-${commandSuffix}`,
           branch: "engineering-data.register-monitoring-batch",
           sourceVersionRefs: [sourceVersionRef],
         }),
         monitoringSeriesRef: seriesRef,
-        expectedVersion: "none",
+        expectedVersion:
+          seriesVersion === "1"
+            ? "none"
+            : {
+                entityId: input.seriesId,
+                versionId: String(Number(seriesVersion) - 1),
+              },
         projectRevisionRef,
         spatialScopeRef: businessSpatialScopeRef,
         monitoringObject: input.monitoringObject,
@@ -683,18 +735,18 @@ export const startRiskAssessmentEngineFixture =
         throw new Error(`C25 series failed: ${JSON.stringify(series).slice(0, 400)}`);
       }
       const policy = await postgres.monitoringStore.registerAvailabilityPolicy({
-        commandId: `c25-policy-${input.seriesId}`,
-        idempotencyKey: `c25-policy-${input.seriesId}`,
+        commandId: `c25-policy-${commandSuffix}`,
+        idempotencyKey: `c25-policy-${commandSuffix}`,
         projectId: PROJECT_ID,
         actorId: managerId,
         issuedAt: T0,
         authorization: await authorize({
-          invocationId: `c25-policy-${input.seriesId}`,
+          invocationId: `c25-policy-${commandSuffix}`,
           branch: "engineering-data.register-monitoring-batch",
           sourceVersionRefs: [sourceVersionRef],
         }),
         policy: {
-          availabilityPolicyRef: { entityId: `c25-policy-${input.seriesId}`, versionId: "1" },
+          availabilityPolicyRef: { entityId: `c25-policy-${commandSuffix}`, versionId: "1" },
           projectId: PROJECT_ID,
           monitoringSeriesRef: seriesRef,
           windowDurationMs: 10_000,
@@ -736,7 +788,7 @@ export const startRiskAssessmentEngineFixture =
         }),
         ...input.values.map((value, index) =>
           JSON.stringify({
-            sourceSampleKey: `c25-${input.seriesId}-${index}`,
+            sourceSampleKey: `c25-${commandSuffix}-${index}`,
             sampledAt: `2030-01-01T00:00:${String(6 + index).padStart(2, "0")}.000Z`,
             value,
             unit: input.canonicalUnit,
@@ -745,7 +797,7 @@ export const startRiskAssessmentEngineFixture =
         ),
       ].join("\n");
       const sampleArtifactRef = await putRaw({
-        artifactId: `samples-${input.seriesId}`,
+        artifactId: `samples-${commandSuffix}`,
         purposeCode: "engineering-data.register-monitoring-batch",
         mediaType: "application/x-ndjson",
         body: lines,
@@ -753,20 +805,20 @@ export const startRiskAssessmentEngineFixture =
         evidenceReferences: [evidenceReference],
       });
       const batch = await postgres.monitoringStore.registerBatch({
-        commandId: `c25-batch-${input.seriesId}`,
-        idempotencyKey: `c25-batch-${input.seriesId}`,
+        commandId: `c25-batch-${commandSuffix}`,
+        idempotencyKey: `c25-batch-${commandSuffix}`,
         projectId: PROJECT_ID,
         actorId: managerId,
         issuedAt: T0,
         authorization: await authorize({
-          invocationId: `c25-batch-${input.seriesId}`,
+          invocationId: `c25-batch-${commandSuffix}`,
           branch: "engineering-data.register-monitoring-batch",
           sourceVersionRefs: [sourceVersionRef],
         }),
         kind: "register-monitoring-batch",
         payload: {
           monitoringSeriesRef: seriesRef,
-          deliveryKey: `c25-batch-${input.seriesId}`,
+          deliveryKey: `c25-batch-${commandSuffix}`,
           sampleArtifactRef,
           window: { from: "2030-01-01T00:00:05.000Z", to: "2030-01-01T00:00:11.000Z" },
           relation: { kind: "original" },
@@ -776,13 +828,13 @@ export const startRiskAssessmentEngineFixture =
         throw new Error(`C25 batch failed: ${JSON.stringify(batch).slice(0, 400)}`);
       }
       const frozen = await postgres.registry.freeze({
-        commandId: `c25-snapshot-${input.seriesId}`,
-        idempotencyKey: `c25-snapshot-${input.seriesId}`,
+        commandId: `c25-snapshot-${commandSuffix}`,
+        idempotencyKey: `c25-snapshot-${commandSuffix}`,
         projectId: PROJECT_ID,
         actorId: managerId,
         issuedAt: T0,
         authorization: await authorize({
-          invocationId: `c25-snapshot-${input.seriesId}`,
+          invocationId: `c25-snapshot-${commandSuffix}`,
           branch: "engineering-data.monitoring-snapshot",
           sourceVersionRefs: [sourceVersionRef],
         }),
@@ -790,7 +842,7 @@ export const startRiskAssessmentEngineFixture =
         payload: {
           monitoringSeriesRef: seriesRef,
           cutoff: "2030-01-01T00:00:10.000Z",
-          availabilityPolicyRef: { entityId: `c25-policy-${input.seriesId}`, versionId: "1" },
+          availabilityPolicyRef: { entityId: `c25-policy-${commandSuffix}`, versionId: "1" },
         },
       });
       if (frozen.kind !== "succeeded" || frozen.result.kind !== "monitoring-snapshot") {
@@ -800,34 +852,16 @@ export const startRiskAssessmentEngineFixture =
     };
 
     const monitoringSnapshotRefs = [
-      await registerMonitoringSeries({
-        seriesId: "c25-series-settlement",
-        monitoringObject: "地表沉降监测点",
-        monitoringIndicator: "地表沉降",
-        parameterCode: "ground-settlement",
-        canonicalUnit: "mm",
-        values: [5, 5.5, 6, 6.5, 7],
-      }),
-      await registerMonitoringSeries({
-        seriesId: "c25-series-water-level",
-        monitoringObject: "地下水位观测井",
-        monitoringIndicator: "地下水位",
-        parameterCode: "water-level",
-        canonicalUnit: "m",
-        values: [10, 10.4, 10.2, 10.8, 11],
-      }),
-      await registerMonitoringSeries({
-        seriesId: "c25-series-cutter-frequency",
-        monitoringObject: "盾构姿态监测",
-        monitoringIndicator: "盾构姿态参数",
-        parameterCode: "cutter-frequency",
-        canonicalUnit: "Hz",
-        values: [0.2, 0.25, 0.3, 0.35, 0.4],
-      }),
+      await registerMonitoringSeries(monitoringSeriesDefinitions[0]!),
+      await registerMonitoringSeries(monitoringSeriesDefinitions[1]!),
+      await registerMonitoringSeries(monitoringSeriesDefinitions[2]!),
     ];
 
-    const factsFor = () => {
-      const base = c25Facts({ projectId: PROJECT_ID });
+    const factsFor = (riskInput?: unknown) => {
+      const base = c25Facts({
+        projectId: PROJECT_ID,
+        ...(riskInput === undefined ? {} : { riskInput: riskInput as never }),
+      });
       return {
         ...base,
         fields: base.fields.map((field) => ({ ...field, evidenceReferences: [evidenceReference] })),
@@ -902,6 +936,7 @@ export const startRiskAssessmentEngineFixture =
       return variantBasisRefValue;
     };
 
+    const registeredExternalRiskEvents = new Set<string>();
     let facts: unknown | undefined = factsFor();
     let policySet: unknown | undefined = c25RuntimePolicySet({ projectId: PROJECT_ID });
     let driftAfterFirstBasisRead = false;
@@ -918,11 +953,21 @@ export const startRiskAssessmentEngineFixture =
       notificationPolicyRef: c25Version("notification-policy", "2"),
     });
     const riskInputFacts: RiskInputFactsReaderV1 = {
-      readRiskInputFacts: async () => {
+      readRiskInputFacts: async (input) => {
+        // 外部风险事件必须已正式登记，否则事实读取不可用（与 C24 窄读同语义）。
+        const riskInput = (input as { readonly riskInput?: Record<string, unknown> }).riskInput;
+        const unavailableExternal =
+          riskInput?.kind === "external-risk-event" &&
+          !registeredExternalRiskEvents.has(
+            `${(riskInput.reference as { entityId: string }).entityId}@${(riskInput.reference as { versionId: string }).versionId}`,
+          );
         const result =
-          facts === undefined
+          facts === undefined || unavailableExternal
             ? { kind: "failed" as const, error: precondition("c25-fixture-facts") }
-            : { kind: "succeeded" as const, facts: facts as never };
+            : {
+                kind: "succeeded" as const,
+                facts: (riskInput === undefined ? facts : factsFor(riskInput as never)) as never,
+              };
         if (revokeOnFacts) {
           // 读取已返回、提交尚未开始：此刻失效必须在提交前复验被拒绝。
           revokeOnFacts = false;
@@ -987,6 +1032,8 @@ export const startRiskAssessmentEngineFixture =
       readonly previousAssessmentRecordRef?: unknown;
       readonly effectiveAt?: string;
       readonly withCausalRun?: boolean;
+      /** 风险输入覆盖：外部风险事件分支用正式登记的外部事件引用。 */
+      readonly riskInput?: unknown;
     }) => {
       const frozen = await registry.freeze({
         commandId: `c25-engine-preparation-${input.suffix}`,
@@ -1006,7 +1053,7 @@ export const startRiskAssessmentEngineFixture =
         ).context,
         kind: "assessment-preparation",
         payload: {
-          riskInput: c25Facts().riskInput,
+          riskInput: input.riskInput ?? c25Facts().riskInput,
           projectRevisionRef,
           spatialScopeRef: businessSpatialScopeRef,
           applicabilityMetadataSnapshotRef: applicabilitySnapshotRef,
@@ -1139,6 +1186,58 @@ export const startRiskAssessmentEngineFixture =
       },
       preparationRef(kind) {
         return preparations[kind];
+      },
+      async registerExternalRiskEvent(suffix) {
+        const eventArtifactRef = await putRaw({
+          artifactId: `external-event-${suffix}`,
+          purposeCode: "engineering-data.register-external-risk-event",
+          mediaType: "application/json",
+          body: JSON.stringify({ eventType: "external-risk-event", suffix }),
+          sourceVersionRefs: [sourceVersionRef],
+          evidenceReferences: [
+            { locator: { sourceSegmentId }, sourceVersion: sourceVersionRef.reference },
+          ],
+        });
+        const external = await postgres.registry.apply({
+          commandId: `c25-external-${suffix}`,
+          idempotencyKey: `c25-external-${suffix}`,
+          projectId: PROJECT_ID,
+          actorId: managerId,
+          issuedAt: T0,
+          authorization: await authorize({
+            invocationId: `c25-external-${suffix}`,
+            branch: "engineering-data.register-external-risk-event",
+            sourceVersionRefs: [sourceVersionRef],
+          }),
+          kind: "register-external-risk-event",
+          payload: {
+            externalSourceRef: { entityId: "external-risk-platform", versionId: "1" },
+            externalEventKey: `external-event-${suffix}`,
+            eventArtifactRef,
+            evidenceReferences: [
+              { locator: { sourceSegmentId }, sourceVersion: sourceVersionRef.reference },
+            ],
+            occurredAt: T0,
+          },
+        } as never);
+        if (external.kind !== "succeeded") {
+          throw new Error(`C25 external event failed: ${JSON.stringify(external).slice(0, 400)}`);
+        }
+        const ref = external.result.externalRiskEventRef;
+        registeredExternalRiskEvents.add(`${ref.reference.entityId}@${ref.reference.versionId}`);
+        return ref;
+      },
+      async seriesVariant(input) {
+        const definition = monitoringSeriesDefinitions.find(
+          (entry) => entry.seriesId === input.seriesId,
+        );
+        if (definition === undefined) throw new Error(`unknown series ${input.seriesId}`);
+        return registerMonitoringSeries({
+          ...definition,
+          seriesVersion: input.seriesVersion,
+          canonicalUnit: input.canonicalUnit,
+          values: input.values,
+        });
       },
       async extraMonitoringSnapshotRef() {
         return registerMonitoringSeries({

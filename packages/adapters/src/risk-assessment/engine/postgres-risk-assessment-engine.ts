@@ -1527,8 +1527,8 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
       change:
         | {
             readonly kind: "monitoring-snapshot";
-            readonly previousMonitoringSnapshotRefs: readonly unknown[];
-            readonly newMonitoringSnapshotRefs: readonly unknown[];
+            readonly previousMonitoringSnapshotRefs?: readonly unknown[];
+            readonly newMonitoringSnapshotRefs?: readonly unknown[];
           }
         | {
             readonly kind: "applicability-metadata";
@@ -1563,14 +1563,14 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
       const currentRefs = preparation.monitoringSnapshotRefs ?? [];
       const previousKeys = new Set(previousRefs.map((ref) => refKey(ref)));
       const currentKeys = new Set(currentRefs.map((ref) => refKey(ref)));
-      const changed =
-        previousKeys.size !== currentKeys.size ||
-        [...previousKeys].some((key) => !currentKeys.has(key));
-      if (!changed) throw notObserved();
+      // 事件表达的是变化本身：纯新增只给新侧、纯删除只给前侧、替换同时给两侧，空侧省略。
+      const removed = previousRefs.filter((ref) => !currentKeys.has(refKey(ref)));
+      const added = currentRefs.filter((ref) => !previousKeys.has(refKey(ref)));
+      if (removed.length === 0 && added.length === 0) throw notObserved();
       return event("monitoring-snapshot", {
         kind: "monitoring-snapshot",
-        previousMonitoringSnapshotRefs: [...previousRefs],
-        newMonitoringSnapshotRefs: [...currentRefs],
+        ...(removed.length === 0 ? {} : { previousMonitoringSnapshotRefs: removed }),
+        ...(added.length === 0 ? {} : { newMonitoringSnapshotRefs: added }),
       });
     }
     if (command.payload.reason === "applicability-metadata") {

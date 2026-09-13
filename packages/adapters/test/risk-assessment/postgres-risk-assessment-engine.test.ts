@@ -1,5 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { DomainEventV1Schema } from "@riskflow/contracts/events";
+
+import { c25RuntimePolicySet } from "../../../core/test/risk-assessment/fixture.js";
+
 import { startRiskAssessmentEngineFixture, type RiskAssessmentEngineFixtureV1 } from "./fixture.js";
 
 const countRows = async (
@@ -612,7 +616,7 @@ describe("C25 PostgreSQL risk assessment engine", () => {
     }
   }, 180_000);
 
-  it("重评变更事件：纯删除、替换、纯新增与策略单独变化", async () => {
+  it("重评变更事件：纯新增只给新侧、纯删除只给前侧、替换两侧都给", async () => {
     const evaluatePreparation = async (suffix: string) => {
       const prepared = await fixture.engine.prepare(
         (await fixture.prepareCommand({
@@ -632,18 +636,49 @@ describe("C25 PostgreSQL risk assessment engine", () => {
       if (evaluated.kind !== "succeeded") throw new Error("evaluate failed");
       return evaluated.result.assessmentRecordRef;
     };
-    const changeEventOf = async (commandId: string) => {
-      const result = await fixture.postgres.postgres.adminPool.query<{
-        event_json: { payload: { change: Record<string, unknown>; reasonCode: string } };
-      }>(
+    // 事件行按新契约解析，证明空侧省略与 min(1) 约束同时成立。
+    const changeOf = async (commandId: string) => {
+      const result = await fixture.postgres.postgres.adminPool.query<{ event_json: unknown }>(
         "SELECT event_json FROM outbox.events WHERE event_type = $1 AND producer_command_id = $2",
         ["engineering.assessment-input-changed.v1", commandId],
       );
-      return result.rows[0]?.event_json.payload;
+      if (result.rows.length === 0) return undefined;
+      // 用合并后的公共事件 Schema 解析：空侧省略与「至少一侧存在」约束都由此裁定。
+      return DomainEventV1Schema.parse(result.rows[0]!.event_json).payload.change;
     };
+    const reassess = async (
+      suffix: string,
+      input: {
+        readonly reason: "monitoring-snapshot" | "weight-or-strategy";
+        readonly monitoringSnapshotRefs?: typeof fixture.monitoringSnapshotRefs;
+        readonly previous: unknown;
+        readonly basisRef?: unknown;
+      },
+    ) =>
+      fixture.engine.prepare(
+        (await fixture.prepareCommand({
+          commandId: `c25-change-${suffix}`,
+          kind: "reassessment",
+          reason: input.reason,
+          preparation: await fixture.freezePreparation({
+            suffix,
+            entryMode: "reassess",
+            triggerReasonCode: input.reason,
+            ...(input.monitoringSnapshotRefs === undefined
+              ? {}
+              : { monitoringSnapshotRefs: input.monitoringSnapshotRefs }),
+            previousAssessmentRecordRef: input.previous,
+          }),
+          ...(input.basisRef === undefined ? {} : { basisRef: input.basisRef }),
+          previousAssessmentRecordRef: input.previous,
+        })) as never,
+      );
 
     const fullSet = fixture.monitoringSnapshotRefs;
-    const sorted = (
+    const settlementSwap = await fixture.extraMonitoringSnapshotRef();
+    const baseRecord = await evaluatePreparation("base");
+    // 准备快照内的引用按引用身份规范排序，事件两侧沿用同一顺序。
+    const canonical = (
       refs: readonly {
         readonly kind: "monitoring-snapshot";
         readonly reference: { readonly entityId: string; readonly versionId: string };
@@ -655,171 +690,273 @@ describe("C25 PostgreSQL risk assessment engine", () => {
           ? -1
           : 1,
       );
-    const settlementSwap = await fixture.extraMonitoringSnapshotRef();
 
-    // 基准记录：完整 3 快照集合。
-    const baseRecord = await evaluatePreparation("base");
-
-    // 纯删除：新集合清空，事件新侧是真正的空集合。
-    const cleared = await fixture.engine.prepare(
-      (await fixture.prepareCommand({
-        commandId: "c25-change-clear",
-        kind: "reassessment",
-        reason: "monitoring-snapshot",
-        preparation: await fixture.freezePreparation({
-          suffix: "clear",
-          entryMode: "reassess",
-          triggerReasonCode: "monitoring-cleared",
-          previousAssessmentRecordRef: baseRecord,
-        }),
-        previousAssessmentRecordRef: baseRecord,
-      })) as never,
-    );
-    expect(cleared).toMatchObject({ kind: "succeeded" });
-    const clearedEvent = await changeEventOf("c25-change-clear");
-    expect(clearedEvent?.change).toMatchObject({
-      kind: "monitoring-snapshot",
-      previousMonitoringSnapshotRefs: sorted(fullSet),
-      newMonitoringSnapshotRefs: [],
+    // 纯新增：前集合是后集合的真子集 ⇒ 只给新侧。
+    const additionSet = [settlementSwap, ...fullSet];
+    const added = await reassess("add", {
+      reason: "monitoring-snapshot",
+      monitoringSnapshotRefs: additionSet,
+      previous: baseRecord,
     });
-
-    // 纯删除：新集合是基准集合的真子集。
-    const deleted = await fixture.engine.prepare(
-      (await fixture.prepareCommand({
-        commandId: "c25-change-delete",
-        kind: "reassessment",
-        reason: "monitoring-snapshot",
-        preparation: await fixture.freezePreparation({
-          suffix: "delete",
-          entryMode: "reassess",
-          triggerReasonCode: "monitoring-deleted",
-          monitoringSnapshotRefs: fullSet.slice(0, 2),
-          previousAssessmentRecordRef: baseRecord,
-        }),
-        previousAssessmentRecordRef: baseRecord,
-      })) as never,
-    );
-    expect(deleted).toMatchObject({ kind: "succeeded" });
-    const deletion = await changeEventOf("c25-change-delete");
-    expect(deletion?.change).toMatchObject({
-      kind: "monitoring-snapshot",
-      previousMonitoringSnapshotRefs: sorted(fullSet),
-      newMonitoringSnapshotRefs: sorted(fullSet.slice(0, 2)),
-    });
-
-    // 替换：同一序列换成另一截止点快照。
-    const replacedSet = [settlementSwap, ...fullSet.slice(1)];
-    const replaced = await fixture.engine.prepare(
-      (await fixture.prepareCommand({
-        commandId: "c25-change-replace",
-        kind: "reassessment",
-        reason: "monitoring-snapshot",
-        preparation: await fixture.freezePreparation({
-          suffix: "replace",
-          entryMode: "reassess",
-          triggerReasonCode: "monitoring-replaced",
-          monitoringSnapshotRefs: replacedSet,
-          previousAssessmentRecordRef: baseRecord,
-        }),
-        previousAssessmentRecordRef: baseRecord,
-      })) as never,
-    );
-    expect(replaced).toMatchObject({ kind: "succeeded" });
-    const replacement = await changeEventOf("c25-change-replace");
-    expect(replacement?.change).toMatchObject({
-      kind: "monitoring-snapshot",
-      previousMonitoringSnapshotRefs: sorted(fullSet),
-      newMonitoringSnapshotRefs: sorted(replacedSet),
-    });
-
-    // 纯新增：以替换后的记录为前次，新集合是并集。
-    // 以替换后的集合产生一份正式记录，作为纯新增用例的前次事实。
-    const replacedPreparation = await fixture.freezePreparation({
-      suffix: "replace-record",
-      entryMode: "assess",
-      triggerReasonCode: "monitoring-replaced-record",
-      monitoringSnapshotRefs: replacedSet,
-    });
-    const replacedPrepared = await fixture.engine.prepare(
-      (await fixture.prepareCommand({
-        commandId: "c25-change-replace-record",
-        preparation: replacedPreparation,
-      })) as never,
-    );
-    expect(replacedPrepared).toMatchObject({ kind: "succeeded" });
-    if (replacedPrepared.kind !== "succeeded") return;
-    const replacedEvaluated = await fixture.engine.evaluate(
-      (await fixture.evaluateCommand({
-        commandId: "c25-change-replace-record-evaluate",
-        inputSnapshotRef: replacedPrepared.result.assessmentInputSnapshotRef,
-      })) as never,
-    );
-    expect(replacedEvaluated).toMatchObject({ kind: "succeeded" });
-    if (replacedEvaluated.kind !== "succeeded") return;
-    const replacedRecord = replacedEvaluated.result.assessmentRecordRef;
-    const unionSet = [settlementSwap, ...fullSet];
-    const added = await fixture.engine.prepare(
-      (await fixture.prepareCommand({
-        commandId: "c25-change-add",
-        kind: "reassessment",
-        reason: "monitoring-snapshot",
-        preparation: await fixture.freezePreparation({
-          suffix: "add",
-          entryMode: "reassess",
-          triggerReasonCode: "monitoring-added",
-          monitoringSnapshotRefs: unionSet,
-          previousAssessmentRecordRef: replacedRecord,
-        }),
-        previousAssessmentRecordRef: replacedRecord,
-      })) as never,
-    );
     expect(added).toMatchObject({ kind: "succeeded" });
-    const addition = await changeEventOf("c25-change-add");
-    expect(addition?.change).toMatchObject({
+    const additionChange = await changeOf("c25-change-add");
+    expect(additionChange).toStrictEqual({
       kind: "monitoring-snapshot",
-      previousMonitoringSnapshotRefs: sorted(replacedSet),
-      newMonitoringSnapshotRefs: sorted(unionSet),
+      newMonitoringSnapshotRefs: [settlementSwap],
+    });
+    expect("previousMonitoringSnapshotRefs" in additionChange!).toBe(false);
+
+    // 纯删除（子集）：去掉一条 ⇒ 只给前侧，且只列被移除的引用。
+    const subset = await reassess("delete", {
+      reason: "monitoring-snapshot",
+      monitoringSnapshotRefs: fullSet.slice(0, 2),
+      previous: baseRecord,
+    });
+    expect(subset).toMatchObject({ kind: "succeeded" });
+    expect(await changeOf("c25-change-delete")).toStrictEqual({
+      kind: "monitoring-snapshot",
+      previousMonitoringSnapshotRefs: [fullSet[2]!],
     });
 
-    // 策略单独变化：监测集合不变，仅 scoring-strategy 版本变化。
-    const variantBasisRef = await fixture.variantBasisRef();
-    const strategyOnly = await fixture.engine.prepare(
-      (await fixture.prepareCommand({
-        commandId: "c25-change-strategy",
-        kind: "reassessment",
-        reason: "weight-or-strategy",
-        preparation: await fixture.freezePreparation({
-          suffix: "strategy",
-          entryMode: "reassess",
-          triggerReasonCode: "scoring-strategy-changed",
-          monitoringSnapshotRefs: fullSet,
-          previousAssessmentRecordRef: baseRecord,
-        }),
-        basisRef: variantBasisRef,
-        previousAssessmentRecordRef: baseRecord,
-      })) as never,
-    );
-    expect(strategyOnly).toMatchObject({ kind: "succeeded" });
-    expect(await changeEventOf("c25-change-strategy")).toBeUndefined();
+    // 纯删除：清空监测引用 ⇒ 只给前侧。
+    const cleared = await reassess("clear", {
+      reason: "monitoring-snapshot",
+      previous: baseRecord,
+    });
+    expect(cleared).toMatchObject({ kind: "succeeded" });
+    const deletionChange = await changeOf("c25-change-clear");
+    expect(deletionChange).toStrictEqual({
+      kind: "monitoring-snapshot",
+      previousMonitoringSnapshotRefs: canonical(fullSet),
+    });
+    expect("newMonitoringSnapshotRefs" in deletionChange!).toBe(false);
+
+    // 替换：同时给两侧（各为被移除/被新增的引用）。
+    const replacedSet = [settlementSwap, ...fullSet.slice(1)];
+    const replaced = await reassess("replace", {
+      reason: "monitoring-snapshot",
+      monitoringSnapshotRefs: replacedSet,
+      previous: baseRecord,
+    });
+    expect(replaced).toMatchObject({ kind: "succeeded" });
+    expect(await changeOf("c25-change-replace")).toStrictEqual({
+      kind: "monitoring-snapshot",
+      previousMonitoringSnapshotRefs: [fullSet[0]!],
+      newMonitoringSnapshotRefs: [settlementSwap],
+    });
 
     // 集合与策略都未变化时必须闭合拒绝，而不是伪装成有效变更。
-    const unchanged = await fixture.engine.prepare(
-      (await fixture.prepareCommand({
-        commandId: "c25-change-none",
-        kind: "reassessment",
-        reason: "monitoring-snapshot",
-        preparation: await fixture.freezePreparation({
-          suffix: "none",
-          entryMode: "reassess",
-          triggerReasonCode: "no-change",
-          monitoringSnapshotRefs: fullSet,
-          previousAssessmentRecordRef: baseRecord,
-        }),
-        previousAssessmentRecordRef: baseRecord,
-      })) as never,
-    );
+    const unchanged = await reassess("none", {
+      reason: "monitoring-snapshot",
+      monitoringSnapshotRefs: fullSet,
+      previous: baseRecord,
+    });
     expect(unchanged).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
     expect(JSON.stringify(unchanged)).toContain("change-not-observed");
+
+    // 策略单独变化：监测集合不变，仅 scoring-strategy 版本变化 ⇒ 无变更事件。
+    const variantBasisRef = await fixture.variantBasisRef();
+    const strategyOnly = await reassess("strategy", {
+      reason: "weight-or-strategy",
+      monitoringSnapshotRefs: fullSet,
+      previous: baseRecord,
+      basisRef: variantBasisRef,
+    });
+    expect(strategyOnly).toMatchObject({ kind: "succeeded" });
+    expect(await changeOf("c25-change-strategy")).toBeUndefined();
+  }, 300_000);
+
+  it("正式登记的外部风险事件走外部分支且与标准化记录互斥", async () => {
+    const externalRef = await fixture.registerExternalRiskEvent("registered");
+    const preparation = await fixture.freezePreparation({
+      suffix: "external",
+      entryMode: "assess",
+      triggerReasonCode: "external-risk-event",
+      monitoringSnapshotRefs: fixture.monitoringSnapshotRefs,
+      riskInput: externalRef,
+    });
+    const prepared = await fixture.engine.prepare(
+      (await fixture.prepareCommand({ commandId: "c25-prepare-external", preparation })) as never,
+    );
+    expect(prepared).toMatchObject({ kind: "succeeded" });
+    if (prepared.kind !== "succeeded") return;
+    const evaluated = await fixture.engine.evaluate(
+      (await fixture.evaluateCommand({
+        commandId: "c25-evaluate-external",
+        inputSnapshotRef: prepared.result.assessmentInputSnapshotRef,
+      })) as never,
+    );
+    expect(evaluated).toMatchObject({ kind: "succeeded" });
+    if (evaluated.kind !== "succeeded") return;
+
+    const record = await fixture.postgres.postgres.adminPool.query<{
+      record_payload: Record<string, unknown>;
+      risk_input_kind: string;
+      external_risk_event_id: string | null;
+      risk_record_id: string | null;
+    }>(
+      "SELECT record_payload, risk_input_kind, external_risk_event_id, risk_record_id FROM business.risk_assessment_records WHERE record_id = $1",
+      [evaluated.result.assessmentRecordRef.reference.entityId],
+    );
+    expect(record.rows[0]!.risk_input_kind).toBe("external-risk-event");
+    expect(record.rows[0]!.risk_record_id).toBeNull();
+    expect(record.rows[0]!.external_risk_event_id).toBe(externalRef.reference.entityId);
+    expect(record.rows[0]!.record_payload).toMatchObject({
+      externalRiskEventId: externalRef.reference.entityId,
+    });
+    expect("riskRecordId" in record.rows[0]!.record_payload).toBe(false);
+  }, 180_000);
+
+  it("未登记的外部风险事件在冻结准备快照时即闭合拒绝且零正式事实", async () => {
+    const snapshotsBefore = await countRows(
+      fixture,
+      "business.assessment_input_snapshots",
+      fixture.projectId,
+    );
+    const recordsBefore = await countRows(
+      fixture,
+      "business.risk_assessment_records",
+      fixture.projectId,
+    );
+    // 事实读取与 C11 冻结共用窄读：未登记的外部事件在冻结阶段就必须闭合。
+    await expect(
+      fixture.freezePreparation({
+        suffix: "external-missing",
+        entryMode: "assess",
+        triggerReasonCode: "external-risk-event",
+        monitoringSnapshotRefs: fixture.monitoringSnapshotRefs,
+        riskInput: {
+          kind: "external-risk-event",
+          reference: { entityId: "external-risk-event-never-registered", versionId: "1" },
+        },
+      }),
+    ).rejects.toThrow(/risk-assessment/i);
+    expect(await countRows(fixture, "business.assessment_input_snapshots", fixture.projectId)).toBe(
+      snapshotsBefore,
+    );
+    expect(await countRows(fixture, "business.risk_assessment_records", fixture.projectId)).toBe(
+      recordsBefore,
+    );
+  }, 180_000);
+
+  it("运行时策略缺失时读策略阶段闭合且零正式事实", async () => {
+    const prepared = await fixture.engine.prepare(
+      (await fixture.prepareCommand({
+        commandId: "c25-prepare-no-policy",
+        preparation: await freshPreparation("no-policy"),
+      })) as never,
+    );
+    expect(prepared).toMatchObject({ kind: "succeeded" });
+    if (prepared.kind !== "succeeded") return;
+    const commandId = "c25-evaluate-no-policy";
+    const recordsBefore = await countRows(
+      fixture,
+      "business.risk_assessment_records",
+      fixture.projectId,
+    );
+    const receiptsBefore = await countReceipts(fixture, commandId);
+    fixture.setPolicies(undefined);
+    try {
+      const evaluated = await fixture.engine.evaluate(
+        (await fixture.evaluateCommand({
+          commandId,
+          inputSnapshotRef: prepared.result.assessmentInputSnapshotRef,
+        })) as never,
+      );
+      expect(evaluated.kind).toBe("failed");
+      if (evaluated.kind !== "failed") return;
+      expect(JSON.stringify(evaluated.error)).toContain("policy");
+      expect(await countRows(fixture, "business.risk_assessment_records", fixture.projectId)).toBe(
+        recordsBefore,
+      );
+      expect(await countReceipts(fixture, commandId)).toBe(receiptsBefore);
+    } finally {
+      fixture.setPolicies(c25RuntimePolicySet({ projectId: fixture.projectId }));
+    }
+  }, 180_000);
+
+  it("监测序列样本不足在计算前闭合且无正式事实", async () => {
+    const fullSet = fixture.monitoringSnapshotRefs;
+    const recordsBefore = await countRows(
+      fixture,
+      "business.risk_assessment_records",
+      fixture.projectId,
+    );
+    // 同一水位序列的最新修订只有一个样本：特征不可用，评估必须在计算前闭合。
+    const thinVariant = await fixture.seriesVariant({
+      seriesId: "c25-series-water-level",
+      seriesVersion: "2",
+      canonicalUnit: "m",
+      values: [10],
+    });
+    const preparation = await fixture.freezePreparation({
+      suffix: "missing-value",
+      entryMode: "assess",
+      triggerReasonCode: "missing-value",
+      monitoringSnapshotRefs: [fullSet[0]!, thinVariant, fullSet[2]!],
+    });
+    const prepared = await fixture.engine.prepare(
+      (await fixture.prepareCommand({
+        commandId: "c25-prepare-missing-value",
+        preparation,
+      })) as never,
+    );
+    expect(prepared).toMatchObject({ kind: "succeeded" });
+    if (prepared.kind !== "succeeded") return;
+    const evaluated = await fixture.engine.evaluate(
+      (await fixture.evaluateCommand({
+        commandId: "c25-evaluate-missing-value",
+        inputSnapshotRef: prepared.result.assessmentInputSnapshotRef,
+      })) as never,
+    );
+    expect(evaluated.kind).toBe("failed");
+    if (evaluated.kind !== "failed") return;
+    expect(JSON.stringify(evaluated.error)).toMatch(/unavailable|coverage|missing/u);
+    expect(await countRows(fixture, "business.risk_assessment_records", fixture.projectId)).toBe(
+      recordsBefore,
+    );
+  }, 240_000);
+
+  it("监测序列单位与规则映射不一致时在计算前闭合且无正式事实", async () => {
+    const fullSet = fixture.monitoringSnapshotRefs;
+    const recordsBefore = await countRows(
+      fixture,
+      "business.risk_assessment_records",
+      fixture.projectId,
+    );
+    // 同一沉降序列的最新修订以米记录：斜率特征单位随之变化，与规则映射的 mm/s 冲突。
+    const unitVariant = await fixture.seriesVariant({
+      seriesId: "c25-series-settlement",
+      seriesVersion: "2",
+      canonicalUnit: "m",
+      values: [5, 5.5, 6, 6.5, 7],
+    });
+    const preparation = await fixture.freezePreparation({
+      suffix: "unit-conflict",
+      entryMode: "assess",
+      triggerReasonCode: "unit-conflict",
+      monitoringSnapshotRefs: [unitVariant, ...fullSet.slice(1)],
+    });
+    const prepared = await fixture.engine.prepare(
+      (await fixture.prepareCommand({
+        commandId: "c25-prepare-unit-conflict",
+        preparation,
+      })) as never,
+    );
+    expect(prepared).toMatchObject({ kind: "succeeded" });
+    if (prepared.kind !== "succeeded") return;
+    const evaluated = await fixture.engine.evaluate(
+      (await fixture.evaluateCommand({
+        commandId: "c25-evaluate-unit-conflict",
+        inputSnapshotRef: prepared.result.assessmentInputSnapshotRef,
+      })) as never,
+    );
+    expect(evaluated.kind).toBe("failed");
+    if (evaluated.kind !== "failed") return;
+    expect(JSON.stringify(evaluated.error)).toContain("unit-conflict");
+    expect(await countRows(fixture, "business.risk_assessment_records", fixture.projectId)).toBe(
+      recordsBefore,
+    );
   }, 240_000);
 
   it("历史回填以 effectiveAt 作为业务有效时点，审计仍用命令 issuedAt", async () => {

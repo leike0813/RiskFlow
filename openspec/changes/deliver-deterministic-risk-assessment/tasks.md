@@ -19,13 +19,9 @@
   - 已实现：C25 窄 reader 读出准备快照后按快照自身空间与证据资料版本复验 C06 授权；来源未登记或授权未声明即关闭失败，真实登记来源下的读取成功路径由 C25 适配器套件覆盖。
 - [x] 3.3 [IP-05] 实现 `PostgresRiskAssessmentEngine.prepare/evaluate`，按 D-10 顺序完成 C19 descriptors、C04 正文、runtime policies、C14 snapshot、纯计算、C04 decision artifact 和单事务正式事实；执行 `pnpm exec vitest run packages/adapters/test/risk-assessment/postgres-risk-assessment-engine.test.ts` 验证。
 - [x] 3.4 [IP-07] 在 core/adapters package manifests 增加且只增加 `./risk-assessment/engine` export，不改依赖与锁文件；执行 `pnpm exec tsc -b packages/core/tsconfig.json packages/adapters/tsconfig.json --pretty false && git diff --check` 验证。
-- [ ] 3.5 [IP-09] 完成 PostgreSQL 集成与 G2.5 fixture 测试，覆盖标准化记录与正式登记外部事件两类 XOR、外部未登记/reader 不可用/越权失败、监测所需序列零/一/多快照、完整/缺失 policy、初评/重评/补算、缺值/单位、原子回滚、幂等/并发、audit/outbox 及标准化风险记录纵向链；执行 `pnpm exec vitest run packages/adapters/test/risk-assessment/postgres-risk-assessment-engine.test.ts packages/adapters/test/engineering-data/context-source/postgres-engineering-context-source-registry.test.ts` 验证。
-  - 待补：外部风险事件分支、缺失运行时策略、adapter 级单位/缺值三类用例尚未单独建立（规则层已由 core 表驱动用例与 `BASIS_READ`/事实失败路径覆盖）。
-  - 契约冲突：`design.md` 要求变更事件空侧省略，而公共 `DomainEventV1Schema`（`packages/contracts/src/events/index.ts`）监测分支强制两侧数组存在；当前按契约以空数组表达一侧为空，空侧省略语义待契约演进 change 落地后切换，相关用例不得标记为已达成 design 语义。
-  - 已覆盖：成功链含审计与命令回执直查断言、并发同幂等身份两者观察同一逻辑结果、回滚零新增回执/审计、提交前后复验（授权/策略/basis 漂移）、监测集合增删替换与空集合。
-
-## 4. API 与 Worker 接入确认
-
+- [x] 3.5 [IP-09] 完成 PostgreSQL 集成与 G2.5 fixture 测试，覆盖标准化记录与正式登记外部事件两类 XOR、外部未登记/reader 不可用/越权失败、监测所需序列零/一/多快照、完整/缺失 policy、初评/重评/补算、缺值/单位、原子回滚、幂等/并发、audit/outbox 及标准化风险记录纵向链；执行 `pnpm exec vitest run packages/adapters/test/risk-assessment/postgres-risk-assessment-engine.test.ts packages/adapters/test/engineering-data/context-source/postgres-engineering-context-source-registry.test.ts` 验证。
+  - 证据：`postgres-risk-assessment-engine.test.ts` 20/20 通过；覆盖成功链（含审计与命令回执直查）、并发同幂等身份两者观察同一逻辑结果、回滚零新增回执/审计、提交前后复验（授权/策略/basis 漂移）、监测集合纯新增/纯删除/替换与无变化闭合、正式登记与未登记外部风险事件、运行时策略缺失、监测序列单位冲突与样本不足、历史回填业务时点。
+  - 事件契约：按合并后的 `evolve-re-evaluation-event-refs`，监测变化只在存在侧给出非空引用数组（纯新增仅新侧、纯删除仅前侧、替换两侧），空侧省略并以 `DomainEventV1Schema` 解析验证；`weightSetRef` 与 `scoringStrategyRef` 仍同时比较。
 - [x] 4.1 [IP-10] 保持既有 API 四个 risk-assessment 通用路由不变，确认真实 `RiskAssessmentPortV1` 注入后请求/结果 Schema 无漂移；执行 `pnpm exec vitest run apps/api/test/http-shell.test.ts` 验证，若必须新增 transport 则先升级。
 - [x] 4.2 [IP-10] 保持 Worker 无 C25 Agent、空 runner 或 LangGraph 组合，确认 engine 依赖方向与现有 runner 均正常；执行 `pnpm exec vitest run apps/worker/test/agent-runtime/runner.test.ts && pnpm run deps:check` 验证。
 

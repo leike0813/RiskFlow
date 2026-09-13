@@ -457,8 +457,13 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
     );
     expect(missing).toMatchObject({
       kind: "failed",
-      error: { code: "BUSINESS_BLOCKED", blockerKind: "identification-knowledge-binding-required" },
+      error: { code: "BUSINESS_BLOCKED" },
     });
+    if (missing.kind !== "failed")
+      throw new Error("unknown revision publication unexpectedly passed");
+    expect((missing.error as { blockerKind?: string }).blockerKind).not.toBe(
+      "identification-knowledge-binding-required",
+    );
     // 发布失败：事实、绑定与 Outbox 均不落地。
     expect(
       await countBinding(
@@ -596,8 +601,6 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
         [world.projectId, rolledBack.reference.entityId, compositeRevision.reference.entityId],
       ),
     ).toBe("1");
-    expect(await identificationBasisEvents()).toHaveLength(2);
-
     expect(await identificationBasisEvents()).toHaveLength(2);
   }, 600_000);
 
@@ -1048,6 +1051,31 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
         [isolated.projectId, revisionRef.reference.entityId],
       ),
     ).toBe("1");
+    const completedAttempt = await fixture.cleaning.postgres.adminPool.query<{
+      stage: string;
+      result_revision_ref: { reference: { entityId: string } };
+      receipts: string;
+      audits: string;
+    }>(
+      `SELECT a.stage, a.result_revision_ref,
+         (SELECT count(*)::text FROM business.command_receipts
+           WHERE project_id = a.project_id AND command_id = $3 AND completed_at IS NOT NULL) AS receipts,
+         (SELECT count(*)::text FROM audit.entries
+           WHERE project_id = a.project_id AND command_id = $3) AS audits
+       FROM business.identification_knowledge_authoring_attempts a
+       WHERE a.project_id = $1 AND a.agent_task_ref->'reference'->>'entityId' = $2`,
+      [
+        isolated.projectId,
+        prepared.agentTaskRef.reference.entityId,
+        `${prepared.agentTaskRef.reference.entityId}:complete-attempt`,
+      ],
+    );
+    expect(completedAttempt.rows[0]).toEqual({
+      stage: "completed",
+      result_revision_ref: revisionRef,
+      receipts: "1",
+      audits: "1",
+    });
   }, 300_000);
 
   it("settles a cancelled authoring task into a failure-only revision and one review", async () => {
@@ -1172,6 +1200,22 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       [isolated.projectId],
     );
     expect(replayRows.rows[0]).toEqual({ bindings: "1", reviews: "1" });
+    const stageFacts = await fixture.cleaning.postgres.adminPool.query<{
+      receipts: string;
+      audits: string;
+    }>(
+      `SELECT
+         (SELECT count(*)::text FROM business.command_receipts
+           WHERE project_id = $1 AND completed_at IS NOT NULL AND command_id IN ($2, $3)) AS receipts,
+         (SELECT count(*)::text FROM audit.entries
+           WHERE project_id = $1 AND command_id IN ($2, $3)) AS audits`,
+      [
+        isolated.projectId,
+        `${prepared.agentTaskRef.reference.entityId}:record-failure-attempt`,
+        `${prepared.agentTaskRef.reference.entityId}:link-failure-review`,
+      ],
+    );
+    expect(stageFacts.rows[0]).toEqual({ receipts: "2", audits: "2" });
   }, 300_000);
 
   it("keeps non C17 governance definitions on the delegated C16 path", async () => {

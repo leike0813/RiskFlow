@@ -15,6 +15,7 @@ import {
   type IdentificationKnowledgeValidationPolicyV1,
 } from "@riskflow/core/identification-knowledge";
 import {
+  MODULE_BRANCH_CAPABILITY_V1,
   type AuthorizationContextV1,
   type EngineeringDataQueryV1,
 } from "@riskflow/contracts/ports";
@@ -201,6 +202,7 @@ const startHarness = (behavior: {
     | Promise<IdentificationKnowledgeAuthorizationSourceV1>;
   readonly authorize: (request: AuthorizationRequestV1) => AuthorizationContextV1;
   readonly preparationReadResult?: { readonly kind: "error"; readonly error: unknown } | undefined;
+  readonly manifest?: typeof manifest;
 }): CompositionHarnessV1 => {
   const authorizeRequests: AuthorizationRequestV1[] = [];
   const narrowReadCalls: string[] = [];
@@ -238,7 +240,7 @@ const startHarness = (behavior: {
       artifactReads.push(input.artifactRef.reference.entityId);
       return {
         content: (async function* () {
-          yield new TextEncoder().encode(JSON.stringify(manifest));
+          yield new TextEncoder().encode(JSON.stringify(behavior.manifest ?? manifest));
         })(),
         verified: Promise.resolve(),
       };
@@ -576,6 +578,95 @@ describe("C17 worker identification knowledge composition root", () => {
     // 清单读取发生了，但越界请求没有触发任何 C15/C02 目标读取。
     expect(harness.artifactReads).toEqual(["manifest-c17"]);
     expect(harness.narrowReadCalls).toEqual([]);
+    expect(harness.engineeringDataCalls).toEqual([]);
+  });
+
+  it("binds an in-manifest tool authorization to the trusted system parent task", async () => {
+    const baseReleaseRef = {
+      kind: "knowledge-release" as const,
+      reference: ref("release:process-model"),
+    };
+    const parentContext: AuthorizationContextV1 = {
+      ...commandAuthorization("agent-parent"),
+      grantedCapabilities: ["knowledge-modeling.read"],
+      invocation: {
+        kind: "agent-task",
+        agentTaskRef: identificationTask.envelope.agentTaskRef,
+        actionId: "action:parent",
+      },
+    };
+    const harness = startHarness({
+      manifest: KnowledgeAuthoringManifestV1Schema.parse({
+        ...manifest,
+        baseReleaseRef,
+        baseArtifactRef: { kind: "content-artifact", reference: ref("artifact:base") },
+      }),
+      resolve: () => ({
+        kind: "system",
+        systemActorId: "system:c17-worker",
+        reasonCode: "knowledge-authoring-tool",
+        parentContext,
+        causalRunRef: identificationTask.envelope.parentRunRef,
+      }),
+      authorize: (request) => ({
+        ...issuedContext(request),
+        grantedCapabilities: [MODULE_BRANCH_CAPABILITY_V1[request.branch]],
+      }),
+    });
+    const [sliceTool, baselineTool] = harness.composition.adapter.createTaskDefinition().tools;
+    if (sliceTool === undefined || baselineTool === undefined) throw new Error("tools are missing");
+    await expect(
+      baselineTool.execute(
+        {
+          kind: "read-exact-knowledge",
+          definitionType: "process-model",
+          releaseRef: baseReleaseRef,
+        },
+        {
+          task: identificationTask,
+          taskRef: identificationTask.envelope.agentTaskRef,
+          actionId: "action:baseline",
+        },
+      ),
+    ).rejects.toMatchObject({ details: { code: "AGENT_TOOL_FAILURE" } });
+    await expect(
+      sliceTool.execute(
+        {
+          kind: "read-knowledge-segment-slice",
+          sourceSegmentSetRef: manifest.members[0]!.sourceSegmentSetRef,
+          sourceSegmentIds: [manifest.members[0]!.retainedSegmentIds[0]!],
+          limit: 1,
+        },
+        {
+          task: identificationTask,
+          taskRef: identificationTask.envelope.agentTaskRef,
+          actionId: "action:slice",
+        },
+      ),
+    ).rejects.toMatchObject({ details: { code: "AGENT_TOOL_FAILURE" } });
+    expect(harness.authorizeRequests).toEqual([
+      expect.objectContaining({
+        invocationId: "action:baseline:baseline-read",
+        branch: "knowledge-modeling.identification-basis",
+        parentContext: expect.objectContaining({
+          invocation: expect.objectContaining({
+            kind: "agent-task",
+            agentTaskRef: identificationTask.envelope.agentTaskRef,
+          }),
+        }),
+      }),
+      expect.objectContaining({
+        invocationId: "action:slice:segment-slice:preparation",
+        branch: "engineering-data.evidence-access",
+        parentContext: expect.objectContaining({
+          invocation: expect.objectContaining({
+            kind: "agent-task",
+            agentTaskRef: identificationTask.envelope.agentTaskRef,
+          }),
+        }),
+      }),
+    ]);
+    expect(harness.narrowReadCalls).toEqual(["readExactPreparation"]);
     expect(harness.engineeringDataCalls).toEqual([]);
   });
 });

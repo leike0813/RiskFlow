@@ -358,7 +358,7 @@ export async function up(db: Kysely<unknown>): Promise<void> {
           OR (stage <> 'completed' AND result_revision_ref IS NULL)
         )
         AND (
-          (stage IN ('prepared', 'task-started') AND failure_artifact_ref IS NULL AND review_task_ref IS NULL)
+          (stage IN ('prepared', 'task-started', 'completed') AND failure_artifact_ref IS NULL AND review_task_ref IS NULL)
           OR (stage = 'failure-revision-bound' AND failure_artifact_ref IS NOT NULL AND review_task_ref IS NULL)
           OR (stage = 'review-linked' AND failure_artifact_ref IS NOT NULL AND review_task_ref IS NOT NULL)
         )`,

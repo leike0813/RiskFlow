@@ -593,6 +593,7 @@ export class PostgresIdentificationPreparationKnowledgeReader implements Identif
   }
 
   async readExactPreparation(input: {
+    readonly taskRef?: AgentTaskRefV1;
     readonly projectId: string;
     readonly preparationSnapshotRef: IdentificationPreparationSnapshotRefV1;
     readonly actorId: string;
@@ -600,6 +601,7 @@ export class PostgresIdentificationPreparationKnowledgeReader implements Identif
     readonly requestedAt: string;
   }): Promise<IdentificationPreparationExactReadV1> {
     const authorization = await this.#authorize({
+      ...(input.taskRef === undefined ? {} : { taskRef: input.taskRef }),
       projectId: input.projectId,
       actorId: input.actorId,
       invocationId: input.requestId,
@@ -622,6 +624,7 @@ export class PostgresIdentificationPreparationKnowledgeReader implements Identif
   }
 
   async readSegmentSlice(input: {
+    readonly taskRef?: AgentTaskRefV1;
     readonly projectId: string;
     readonly preparationSnapshotRef: IdentificationPreparationSnapshotRefV1;
     readonly sourceSegmentSetRef: SourceSegmentSetRefV1;
@@ -635,6 +638,7 @@ export class PostgresIdentificationPreparationKnowledgeReader implements Identif
     | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
   > {
     const preparation = await this.readExactPreparation({
+      ...(input.taskRef === undefined ? {} : { taskRef: input.taskRef }),
       projectId: input.projectId,
       preparationSnapshotRef: input.preparationSnapshotRef,
       actorId: input.actorId,
@@ -670,6 +674,7 @@ export class PostgresIdentificationPreparationKnowledgeReader implements Identif
       };
     }
     const authorization = await this.#authorize({
+      ...(input.taskRef === undefined ? {} : { taskRef: input.taskRef }),
       projectId: input.projectId,
       actorId: input.actorId,
       invocationId: input.requestId,
@@ -737,6 +742,7 @@ export class PostgresIdentificationPreparationKnowledgeReader implements Identif
   }
 
   async checkEvidence(input: {
+    readonly taskRef?: AgentTaskRefV1;
     readonly projectId: string;
     readonly preparationSnapshotRef: IdentificationPreparationSnapshotRefV1;
     readonly evidenceReferences: readonly EvidenceReference[];
@@ -752,6 +758,7 @@ export class PostgresIdentificationPreparationKnowledgeReader implements Identif
     | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
   > {
     const preparation = await this.readExactPreparation({
+      ...(input.taskRef === undefined ? {} : { taskRef: input.taskRef }),
       projectId: input.projectId,
       preparationSnapshotRef: input.preparationSnapshotRef,
       actorId: input.actorId,
@@ -760,6 +767,7 @@ export class PostgresIdentificationPreparationKnowledgeReader implements Identif
     });
     if (preparation.kind === "error") return { kind: "failed", error: preparation.error };
     const authorization = await this.#authorize({
+      ...(input.taskRef === undefined ? {} : { taskRef: input.taskRef }),
       projectId: input.projectId,
       actorId: input.actorId,
       invocationId: input.requestId,
@@ -1619,7 +1627,7 @@ export class PostgresIdentificationKnowledgeAdapter {
           command.projectId,
           command.payload.revisionRef,
         );
-        if (binding === undefined || binding.binding_kind !== "validated") {
+        if (binding !== undefined && binding.binding_kind !== "validated") {
           return KnowledgeGovernanceResultV1Schema.parse({
             kind: "failed",
             error: moduleError({
@@ -2150,6 +2158,7 @@ export class PostgresIdentificationKnowledgeAdapter {
     const manifest = await this.#readManifest(context.task);
     this.#assertSliceMember(manifest, request, context);
     const read = await this.#preparationReader.readSegmentSlice({
+      taskRef: context.taskRef,
       projectId: manifest.projectId,
       preparationSnapshotRef: manifest.preparationSnapshotRef,
       sourceSegmentSetRef: request.sourceSegmentSetRef,
@@ -2422,6 +2431,7 @@ export class PostgresIdentificationKnowledgeAdapter {
         policy: this.#policy,
         checkEvidence: async (input) => {
           const checked = await this.#preparationReader.checkEvidence({
+            taskRef: task.envelope.agentTaskRef,
             projectId: packageValue.projectId,
             preparationSnapshotRef: packageValue.preparationSnapshotRef,
             evidenceReferences: input.evidenceReferences,
@@ -2549,6 +2559,21 @@ export class PostgresIdentificationKnowledgeAdapter {
         }),
       );
     }
+    await this.#advanceAuthoringAttempt({
+      projectId: task.envelope.projectId,
+      actorId: task.envelope.actorId,
+      authorization,
+      taskRef: task.envelope.agentTaskRef,
+      commandSuffix: "complete-attempt",
+      commandKind: "knowledge.identification-knowledge.complete-authoring.v1",
+      action: "identification-knowledge.complete-authoring",
+      expectedStages: ["task-started"],
+      stage: "completed",
+      resultRef: asContractReference(submitted.result.knowledgeRevisionRef),
+      values: {
+        result_revision_ref: jsonbValue(submitted.result.knowledgeRevisionRef),
+      },
+    });
     // C08 完成结果要求 validation-snapshot 校验引用，而不是候选工件引用。
     return buildCompletedAgentTaskResult(
       task.envelope.agentTaskRef,
@@ -2610,13 +2635,11 @@ export class PostgresIdentificationKnowledgeAdapter {
           manifestArtifactRef: row.manifest_artifact_ref,
           taskRef,
           terminalStatus: task.state.status,
-          errorCodes: [
-            (task.state as { lastError?: { code?: string } }).lastError?.code ?? "AGENT_CANCELLED",
-          ],
+          errorCodes: [task.state.error?.code ?? task.state.cancelReasonCode ?? "AGENT_CANCELLED"],
           actionRefs: [],
           candidateRefs: [],
           validationRefs: [],
-          usage: emptyAgentBudgetUsage(),
+          usage: task.budgetLedger.used,
           diagnosticArtifactRef: {
             kind: "diagnostic-artifact",
             reference: {
@@ -2713,17 +2736,19 @@ export class PostgresIdentificationKnowledgeAdapter {
       } satisfies AtomicCommitV1;
     });
     // 逐阶段 CAS：失败修订绑定成立后先停到 `failure-revision-bound`，授权或复核失败不回退该事实。
-    await this.#db
-      .updateTable("business.identification_knowledge_authoring_attempts")
-      .set({
-        stage: "failure-revision-bound",
-        failure_artifact_ref: jsonbValue(failureArtifactRef),
-        persisted_at: new Date(nowIso(this.#now)),
-      } as never)
-      .where("project_id", "=", row.project_id)
-      .where("attempt_id", "=", row.attempt_id)
-      .where("stage", "in", ["prepared", "task-started"])
-      .execute();
+    await this.#advanceAuthoringAttempt({
+      projectId: row.project_id,
+      actorId: task.envelope.actorId,
+      authorization,
+      taskRef,
+      commandSuffix: "record-failure-attempt",
+      commandKind: "knowledge.identification-knowledge.record-authoring-failure.v1",
+      action: "identification-knowledge.record-authoring-failure",
+      expectedStages: ["prepared", "task-started"],
+      stage: "failure-revision-bound",
+      resultRef: asContractReference(failureArtifactRef),
+      values: { failure_artifact_ref: jsonbValue(failureArtifactRef) },
+    });
     const reviewCommandId = `${taskRef.reference.entityId}:failure-review`;
     const reviewAuthorization = await this.#authorize({
       taskRef,
@@ -2741,19 +2766,80 @@ export class PostgresIdentificationKnowledgeAdapter {
       reviewAuthorization,
     );
     if (review === undefined) return false;
-    await this.#db
-      .updateTable("business.identification_knowledge_authoring_attempts")
-      .set({
-        stage: "review-linked",
+    await this.#advanceAuthoringAttempt({
+      projectId: row.project_id,
+      actorId: task.envelope.actorId,
+      authorization: reviewAuthorization,
+      taskRef,
+      commandSuffix: "link-failure-review",
+      commandKind: "knowledge.identification-knowledge.link-authoring-review.v1",
+      action: "identification-knowledge.link-authoring-review",
+      expectedStages: ["failure-revision-bound"],
+      stage: "review-linked",
+      resultRef: asContractReference(review),
+      values: {
         failure_artifact_ref: jsonbValue(failureArtifactRef),
         review_task_ref: jsonbValue(review),
-        persisted_at: new Date(nowIso(this.#now)),
-      } as never)
-      .where("project_id", "=", row.project_id)
-      .where("attempt_id", "=", row.attempt_id)
-      .where("stage", "=", "failure-revision-bound")
-      .execute();
+      },
+    });
     return true;
+  }
+
+  async #advanceAuthoringAttempt(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly taskRef: AgentTaskRefV1;
+    readonly commandSuffix: string;
+    readonly commandKind: string;
+    readonly action: string;
+    readonly expectedStages: readonly string[];
+    readonly stage: string;
+    readonly resultRef: ContractReferenceV1;
+    readonly values: Partial<AuthoringAttemptRow>;
+  }): Promise<void> {
+    const commandId = `${input.taskRef.reference.entityId}:${input.commandSuffix}`;
+    const changedAt = nowIso(this.#now);
+    const atomic = atomicCommand({
+      projectId: input.projectId,
+      actorId: input.actorId,
+      issuedAt: changedAt,
+      authorization: input.authorization,
+    })({
+      commandKind: input.commandKind,
+      commandId,
+      idempotencyKey: commandId,
+      payload: { taskRef: input.taskRef, stage: input.stage, ...input.values },
+    });
+    await this.#transactionUnit.execute(atomic, async (context) => {
+      const updated = await asKnowledgeTransaction(context)
+        .updateTable("business.identification_knowledge_authoring_attempts")
+        .set({ ...input.values, stage: input.stage, persisted_at: new Date(changedAt) } as never)
+        .where("project_id", "=", input.projectId)
+        .where("agent_task_ref", "=", jsonbValue(input.taskRef))
+        .where("stage", "in", [...input.expectedStages])
+        .executeTakeFirst();
+      if (Number(updated.numUpdatedRows) !== 1) {
+        throw new KnowledgeLifecycleError({
+          code: "STALE_VERSION",
+          reasonCode: "identification-authoring-attempt-stage-mismatch",
+          targetRef: asContractReference(input.taskRef),
+        });
+      }
+      const auditEntryId = randomId("audit");
+      return {
+        resultRef: input.resultRef,
+        audit: auditFor({
+          command: atomic,
+          targetRef: input.resultRef,
+          action: input.action,
+          occurredAt: changedAt,
+          recordedAt: changedAt,
+          auditEntryId,
+        }),
+        events: [],
+      } satisfies AtomicCommitV1;
+    });
   }
 
   /** D-09：失败修订由 C16 转 C07 复核，绑定 failure-review-only 永不可发布。 */

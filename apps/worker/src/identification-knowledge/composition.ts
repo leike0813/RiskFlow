@@ -207,7 +207,9 @@ export const createPostgresIdentificationKnowledgeComposition = (
     const decision = await options.access.authorize(authorizationRequest);
     const context = decision.context;
     const boundTaskRef =
-      context.invocation.kind === "agent-task" ? context.invocation.agentTaskRef : undefined;
+      source.kind === "system" && source.parentContext.invocation.kind === "agent-task"
+        ? source.parentContext.invocation.agentTaskRef
+        : undefined;
     if (
       context.actorId !== request.actorId ||
       context.projectId !== request.projectId ||

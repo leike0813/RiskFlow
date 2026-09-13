@@ -685,6 +685,7 @@ export interface IdentificationEvidenceDecisionV1 {
 /** C17 本地窄读接口：只组合 C15 精确准备窄读、C02 查询结果引用、切片和证据资格（D-04）。 */
 export interface IdentificationPreparationKnowledgeReaderV1 {
   readExactPreparation(input: {
+    readonly taskRef?: AgentTaskRefV1;
     readonly projectId: string;
     readonly preparationSnapshotRef: IdentificationPreparationSnapshotRefV1;
     readonly actorId: string;
@@ -692,6 +693,7 @@ export interface IdentificationPreparationKnowledgeReaderV1 {
     readonly requestedAt: string;
   }): Promise<IdentificationPreparationExactReadV1>;
   readSegmentSlice(input: {
+    readonly taskRef?: AgentTaskRefV1;
     readonly projectId: string;
     readonly preparationSnapshotRef: IdentificationPreparationSnapshotRefV1;
     readonly sourceSegmentSetRef: SourceSegmentSetRefV1;
@@ -705,6 +707,7 @@ export interface IdentificationPreparationKnowledgeReaderV1 {
     | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
   >;
   checkEvidence(input: {
+    readonly taskRef?: AgentTaskRefV1;
     readonly projectId: string;
     readonly preparationSnapshotRef: IdentificationPreparationSnapshotRefV1;
     readonly evidenceReferences: readonly EvidenceReferenceV1[];

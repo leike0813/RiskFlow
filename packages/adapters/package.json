@@ -63,9 +63,17 @@
       "types": "./dist/engineering-data/monitoring/index.d.ts",
       "import": "./dist/engineering-data/monitoring/index.js"
     },
+    "./engineering-data/cleaning": {
+      "types": "./dist/engineering-data/cleaning/index.d.ts",
+      "import": "./dist/engineering-data/cleaning/index.js"
+    },
     "./assessment-config": {
       "types": "./dist/assessment-config/index.d.ts",
       "import": "./dist/assessment-config/index.js"
+    },
+    "./scoring-rules": {
+      "types": "./dist/scoring-rules/index.d.ts",
+      "import": "./dist/scoring-rules/index.js"
     }
   }
 }

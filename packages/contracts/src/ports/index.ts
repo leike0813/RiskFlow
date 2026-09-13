@@ -211,6 +211,9 @@ export type CalibrationSuggestionRefV1 = z.infer<typeof CalibrationSuggestionRef
 export const AssessmentRunResultRefV1Schema = versionedRef("assessment-run-result");
 export type AssessmentRunResultRefV1 = z.infer<typeof AssessmentRunResultRefV1Schema>;
 
+export const RuleConflictRefV1Schema = versionedRef("rule-conflict");
+export type RuleConflictRefV1 = z.infer<typeof RuleConflictRefV1Schema>;
+
 export const ReviewDecisionRefV1Schema = versionedRef("review-decision");
 export type ReviewDecisionRefV1 = z.infer<typeof ReviewDecisionRefV1Schema>;
 
@@ -292,7 +295,7 @@ export const ReviewTargetRefV1Schema = z.discriminatedUnion("kind", [
   IdentificationCandidateSetRefV1Schema,
   IdentificationGroupRefV1Schema,
   KnowledgeRevisionRefV1Schema,
-  z.strictObject({ kind: z.literal("rule-conflict"), reference: VersionReferenceSchema }),
+  RuleConflictRefV1Schema,
   z.strictObject({ kind: z.literal("response-candidate"), reference: VersionReferenceSchema }),
   RecommendationCandidateRefV1Schema,
   CalibrationSuggestionRefV1Schema,
@@ -304,10 +307,6 @@ const IdentificationReviewTargetRefV1Schema = z.discriminatedUnion("kind", [
   IdentificationGroupRefV1Schema,
 ]);
 const KnowledgeReviewTargetRefV1Schema = KnowledgeRevisionRefV1Schema;
-const RuleConflictReviewTargetRefV1Schema = z.strictObject({
-  kind: z.literal("rule-conflict"),
-  reference: VersionReferenceSchema,
-});
 const ResponseReviewTargetRefV1Schema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("response-candidate"), reference: VersionReferenceSchema }),
   RecommendationCandidateRefV1Schema,
@@ -348,7 +347,7 @@ export const ReviewTaskRefV1Schema = z.discriminatedUnion("reviewType", [
   z.strictObject({
     ...reviewTaskBase,
     reviewType: z.literal("rule-conflict"),
-    targetRef: RuleConflictReviewTargetRefV1Schema,
+    targetRef: RuleConflictRefV1Schema,
   }),
   z.strictObject({
     ...reviewTaskBase,
@@ -426,6 +425,7 @@ export const ContractReferenceV1Schema = z.discriminatedUnion("kind", [
   DeviationRecordRefV1Schema,
   CalibrationSuggestionRefV1Schema,
   AssessmentRunResultRefV1Schema,
+  RuleConflictRefV1Schema,
   ReviewDecisionRefV1Schema,
   AuditTrailRefV1Schema,
   ValidationSnapshotRefV1Schema,
@@ -511,6 +511,7 @@ export const MODULE_BRANCH_CAPABILITY_V1 = {
   "warning-response.open": "warning-response.record",
   "warning-response.create-candidate": "warning-response.recommend",
   "warning-response.validate-and-record": "warning-response.recommend",
+  "warning-response.acknowledge": "warning-response.record",
   "warning-response.adopt-recommendation": "warning-response.record",
   "warning-response.record-execution": "warning-response.record",
   "warning-response.record-feedback": "warning-response.record",
@@ -939,12 +940,27 @@ const IdentificationPreparationCommandPayloadV1Schema = z.strictObject({
   dataProcessingPolicyRef: VersionReferenceSchema,
 });
 
+export const WorkflowEntryModeV1_VALUES = [
+  "identify-and-assess",
+  "assess",
+  "reassess",
+  "historical-backfill",
+  "forecast-response",
+  "record-response-feedback",
+] as const;
+export const WorkflowEntryModeV1Schema = z.enum(WorkflowEntryModeV1_VALUES);
+export type WorkflowEntryModeV1 = z.infer<typeof WorkflowEntryModeV1Schema>;
+
 const AssessmentPreparationCommandPayloadV1Schema = z.strictObject({
   riskInput: RiskInputVersionRefV1Schema,
   projectRevisionRef: ProjectRevisionRefV1Schema,
   spatialScopeRef: SpatialScopeRefV1Schema,
   applicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
-  monitoringCutoff: IsoDateTimeSchema.optional(),
+  entryMode: WorkflowEntryModeV1Schema,
+  triggerReasonCode: IdentifierSchema,
+  previousAssessmentRecordRef: RiskAssessmentRecordRefV1Schema.optional(),
+  causalRunRef: WorkflowRunRefV1Schema.optional(),
+  monitoringSnapshotRefs: z.array(MonitoringSnapshotRefV1Schema).min(1).optional(),
 });
 
 const MonitoringSnapshotCommandPayloadV1Schema = z.strictObject({
@@ -1505,6 +1521,14 @@ const ActionSourceV1Schema = z.discriminatedUnion("kind", [
 
 export const WarningResponseRecordCommandV1Schema = z.discriminatedUnion("kind", [
   commandSchema(
+    "acknowledge",
+    z.strictObject({
+      warningRecordRef: WarningRecordRefV1Schema,
+      warningResponseTaskRef: WarningResponseTaskRefV1Schema,
+    }),
+    branchCapability("warning-response.acknowledge"),
+  ),
+  commandSchema(
     "adopt-recommendation",
     z.strictObject({
       responseRecommendationRef: ResponseRecommendationRefV1Schema,
@@ -1554,17 +1578,6 @@ export const WarningResponseRecordCommandV1Schema = z.discriminatedUnion("kind",
   ),
 ]);
 export type WarningResponseRecordCommandV1 = z.infer<typeof WarningResponseRecordCommandV1Schema>;
-
-export const WorkflowEntryModeV1_VALUES = [
-  "identify-and-assess",
-  "assess",
-  "reassess",
-  "historical-backfill",
-  "forecast-response",
-  "record-response-feedback",
-] as const;
-export const WorkflowEntryModeV1Schema = z.enum(WorkflowEntryModeV1_VALUES);
-export type WorkflowEntryModeV1 = z.infer<typeof WorkflowEntryModeV1Schema>;
 
 export const WorkflowRunStatusV1_VALUES = [
   "pending",
@@ -2188,6 +2201,12 @@ export const RecommendationSuccessV1Schema = z.discriminatedUnion("kind", [
 export type RecommendationSuccessV1 = z.infer<typeof RecommendationSuccessV1Schema>;
 
 export const WarningResponseRecordSuccessV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("acknowledgement"),
+    status: z.literal("acknowledged"),
+    warningRecordRef: WarningRecordRefV1Schema,
+    warningResponseTaskRef: WarningResponseTaskRefV1Schema,
+  }),
   z.strictObject({
     kind: z.literal("adoption"),
     routeDecisionRef: RouteDecisionRefV1Schema,

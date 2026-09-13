@@ -92,12 +92,17 @@
 
 系统 MUST 使用版本化事务领域事件表达已可靠成立的跨阶段事实。事件信封 MUST 固定事件身份、事件类型、契约版本、工程、聚合身份与版本、业务发生时间、系统记录时间、因果/关联运行、生产命令和业务幂等键；事件载荷只包含下游所需的精确事实引用和原因，不复制完整业务记录。业务事实、审计和待发布事件 MUST 原子提交；事件至少一次投递时，消费者 MUST 幂等处理。
 
-事件至少覆盖：资料输入已就绪、标准化风险记录已验收入库、评估输入变化、受治理评估版本已发布、风险评估记录已入库、预警信息已入库、处置反馈已记录、校准建议已创建、复核已请求和复核已解决。（RI-S14、RI-S62～RI-S65；RA-S4～RA-S7）
+事件至少覆盖：资料输入已就绪、标准化风险记录已验收入库、评估输入变化、受治理识别知识基础已发布、受治理评估版本已发布、风险评估记录已入库、预警信息已入库、处置反馈已记录、校准建议已创建、复核已请求和复核已解决。（RI-S14、RI-S53～RI-S56、RI-S62～RI-S65；RA-S4～RA-S7）
 
 #### Scenario: 风险记录事件启动评估候选
 - **WHEN** 标准化风险记录通过 RI-S61 完整性检查并与事务事件原子入库
 - **THEN** 评估消费者只使用风险记录身份与精确版本创建评估候选
 - **AND** 不从事件载荷复制风险事件定义
+
+#### Scenario: 识别知识基础发布事件只携带精确引用
+- **WHEN** `retrieval-evidence-base` 经 C16 发布或历史版本重新发布，并形成覆盖 `process-model`、`risk-mechanism`、`standard-library`、`case-library`、`retrieval-evidence-base` 的完整唯一识别知识发布集合
+- **THEN** 系统在同一发布事务中产生 `knowledge.identification-basis-published.v1`，以事件信封固定工程、聚合、审计、命令、幂等和版本，并在载荷中固定五类定义及其精确 `KnowledgeReleaseRefV1` 和精确 `RetrievalEvidenceBaseReleaseRefV1`
+- **AND** 事件不包含知识正文、证据正文、检索片段、模型响应或契约外自由字段
 
 #### Scenario: 事件发布失败不伪装成功
 - **WHEN** 业务事务无法同时保存事实、审计和待发布事件
@@ -107,7 +112,7 @@
 #### Scenario: 重复投递不重复产生事实
 - **WHEN** 同一事件因至少一次投递语义被重复消费
 - **THEN** 消费者以事件身份和业务幂等键返回原处理结果
-- **AND** 不重复创建评估、预警、处置任务或通知意图
+- **AND** 不重复创建评估、预警、处置任务、索引代际或通知意图
 
 ### Requirement: 识别工作流具有 I0 至 I9 的版本化阶段契约
 
@@ -251,3 +256,111 @@ A0～A9 MUST 完整追踪 RA-S1～RA-S7。A3～A6 不创建必经 Agent 任务�
 - **WHEN** 依赖边界检查分析 contracts、core、adapters 与三个应用
 - **THEN** contracts 不依赖 core、adapters、apps、LangGraph 或基础设施客户端
 - **AND** 领域模块不反向依赖应用模块
+
+### Requirement: 评估准备入口显式冻结入口语义与多序列监测引用
+
+系统 MUST 让 `assessment-preparation` 命令显式携带 `entryMode` 与 `triggerReasonCode`，并可携带 `previousAssessmentRecordRef` 与 `causalRunRef`；调用方不得从风险输入种类或其它上下文推导入口模式和触发原因，也不得依靠默认值补全。命令和 A0 `AssessmentPreparationSnapshotV1` MUST 使用同名、同形状的可选 `monitoringSnapshotRefs`：未提供表示本次评估不使用监测输入，提供时必须是至少含一个 `MonitoringSnapshotRefV1` 的集合，并引用调用方预先按监测序列冻结且当前授权允许使用的精确快照。每个 C14 监测快照仍只属于一个监测序列，评估准备只聚合引用，不复制监测正文或改变 C14/C18 事实。
+
+`engineering.assessment-input-changed.v1` 的 monitoring-snapshot 变化 MUST 通过 `previousMonitoringSnapshotRefs` 与 `newMonitoringSnapshotRefs` 两个精确引用数组表达；任一侧可以为空，以表达监测序列新增或删除，两侧也可同时包含多个引用以表达多序列变化。事件 MUST 只携带前后监测快照引用和既有原因码，不得包含监测正文，也不得成为平行于 C14 监测快照的第二套变更事实。（RA-S1、RA-S5～RA-S7）
+
+#### Scenario: 调用方显式提交评估入口语义
+
+- **WHEN** 调用方提交合法风险输入、入口模式、触发原因以及按需提供的前次评估和因果运行精确引用
+- **THEN** `assessment-preparation` 命令接受这些显式字段，A0 准备快照原样保留相应语义和引用
+- **AND** 系统不从风险输入种类或运行上下文推导或默认入口模式与触发原因
+
+#### Scenario: 缺少必填入口字段时拒绝
+
+- **WHEN** `assessment-preparation` 命令缺少 `entryMode` 或 `triggerReasonCode`
+- **THEN** strict 公共契约拒绝该命令
+- **AND** 不创建入口语义不完整的 A0 准备快照
+
+#### Scenario: 不使用监测输入
+
+- **WHEN** 本次评估不需要任何监测输入且调用方不提供 `monitoringSnapshotRefs`
+- **THEN** 命令与 A0 准备快照均可省略该字段
+- **AND** 系统不根据截止点、风险输入或其它上下文自动选择监测快照
+
+#### Scenario: 聚合多个已冻结监测序列
+
+- **WHEN** C18 字段映射、监测阈值或联合规则需要多个监测序列，且调用方已逐序列冻结获准使用的精确监测快照
+- **THEN** 调用方以非空 `monitoringSnapshotRefs` 提交全部所需引用，A0 准备快照保留该引用集合
+- **AND** 每个被引用的 C14 快照仍固定单个 `monitoringSeriesRef`，评估准备不复制其监测正文
+
+#### Scenario: 拒绝空监测引用集合和旧输入形状
+
+- **WHEN** 命令或 A0 准备快照显式提供空的 `monitoringSnapshotRefs`，或使用旧 `monitoringCutoff`、`monitoringSnapshotRef` 字段
+- **THEN** strict 公共契约拒绝该输入
+- **AND** 不把空集合解释为自动选取快照或无监测输入
+
+#### Scenario: 事件表达监测序列新增和删除
+
+- **WHEN** 一次评估输入变化只新增监测序列、只删除监测序列，或同时新增和删除多个序列
+- **THEN** monitoring-snapshot 事件分支分别允许前数组为空、后数组为空，或两个数组均包含多个精确监测快照引用
+- **AND** 消费方从前后引用集合判断变化，不读取监测正文或第二套变更事实
+
+#### Scenario: 事件拒绝旧单数载荷和监测正文
+
+- **WHEN** monitoring-snapshot 事件分支提交旧单数快照字段、监测样本、特征或其它未声明内容
+- **THEN** strict 事件契约拒绝该载荷
+- **AND** 不把契约外内容透传给重评估消费方
+
+### Requirement: 公共引用必须闭合覆盖规则冲突复核目标
+
+系统 MUST 在公共契约引用中提供 `rule-conflict` 分支。该分支 MUST 只包含固定 kind、规则冲突实体标识和精确版本标识，并与 `reviewType=rule-conflict` 的复核目标、复核任务和决定使用同一引用语义；不得携带冲突正文、规则正文、自由字段或第二套冲突身份。新增分支 MUST 不改变既有公共引用 kind 的字段与语义，公共引用仍须拒绝未知 kind 和契约外字段。（RA-S3、RA-S4）
+
+#### Scenario: 规则冲突进入引用式复核链
+
+- **WHEN** 调用方以 `rule-conflict` kind、非空实体标识和精确版本标识提交规则冲突复核目标
+- **THEN** 公共引用、`reviewType=rule-conflict` 的复核请求与复核任务 Schema 接受同一目标引用
+- **AND** 复核请求事务事件、审计和追溯链可以保存该精确目标引用而不复制冲突正文
+
+#### Scenario: 拒绝不精确或夹带正文的规则冲突引用
+
+- **WHEN** 规则冲突引用缺少实体标识或版本标识，或附带冲突详情、规则内容及任意未声明字段
+- **THEN** 公共引用与复核契约拒绝该输入
+- **AND** 系统不得以自由字段、空字符串或可变“当前版本”补足引用
+
+#### Scenario: 既有闭合引用保持兼容
+
+- **WHEN** 调用方提交任一既有公共引用 kind 或未声明的新 kind
+- **THEN** 既有 kind 仍按原字段与语义完成校验，未声明 kind 仍被拒绝
+- **AND** 新增 `rule-conflict` 分支不放宽其它判别联合或枚举
+
+### Requirement: 预警确认必须以独立的已读接管命令表达
+
+系统 MUST 在既有预警处置 `record` interface 中提供 `acknowledge` 写命令分支。该分支的 strict payload MUST 且只能包含 `warningRecordRef` 与 `warningResponseTaskRef` 两个精确版本引用，并 MUST 沿用公共命令信封的命令标识、业务幂等键、工程、操作者、发起时间和版本化授权上下文；两个引用 MUST 属于同一获授权工程和空间，且任务精确版本 MUST 归集该预警精确版本。成功结果 MUST 是 `{ kind: "acknowledgement", status: "acknowledged", warningRecordRef, warningResponseTaskRef }` 的 strict 分支，只返回已确认配对的精确引用与确认状态。（RA-S6、RA-S7）
+
+预警确认只表示工程风险管理员已读并接管已入库生效的预警。系统 MUST NOT 因确认而解除风险、关闭预警处置任务、改变风险等级或触发状态、改写预警信息或风险评估记录，也 MUST NOT 把确认解释为处置建议采纳、现场执行、处置反馈、偏差结论或校准生效。建议采纳、执行、反馈、偏差和校准 MUST 继续使用各自既有 `record` 分支；`open` 与通知投递语义保持不变。
+
+系统 MUST 在确认事实、审计和待发布事件原子成立时产生 `warning.warning-acknowledged.v1`。事件信封 MUST 沿用既有版本、工程、时间、因果、生产命令、幂等、授权和审计字段，`aggregateRef` MUST 是结果中的精确 `warningResponseTaskRef`；事件 payload MUST 且只能包含结果中的 `warningRecordRef` 与 `warningResponseTaskRef`，不得复制预警、评估、任务、通知或处置正文。
+
+#### Scenario: 获授权管理员确认精确预警任务配对
+- **WHEN** 工程风险管理员以具备 `warning-response.record` 能力的授权上下文、唯一命令标识和业务幂等键，提交同一工程内仍可确认且相互关联的预警与处置任务精确引用
+- **THEN** `record` interface 返回 `kind=acknowledgement`、`status=acknowledged` 及该预警和任务的精确引用
+- **AND** 系统原子保存确认事实、只追加审计和 `warning.warning-acknowledged.v1` 待发布事件
+
+#### Scenario: 确认不改变风险与处置结论
+- **WHEN** 一个已入库生效的预警被成功确认
+- **THEN** 预警事实、其风险评估记录、风险等级和触发依据保持原精确版本与内容
+- **AND** 任务不因确认而关闭，也不产生建议采纳、执行、反馈、偏差、校准或风险解除结果
+
+#### Scenario: 不可枚举地拒绝无权或不匹配目标
+- **WHEN** 调用方无确认能力、引用跨工程或越出获准空间，或者预警/任务任一不存在、精确版本不再可确认或任务未归集该预警
+- **THEN** 系统在任何确认事实、审计成功记录或事件副作用前拒绝命令
+- **AND** 对无权调用方使用与目标不存在不可区分的安全失败，不泄露预警、任务或关联关系是否存在
+
+#### Scenario: 相同确认命令幂等重放
+- **WHEN** 调用方以相同工程、`acknowledge` kind、业务幂等键和完全相同的精确引用 payload 重试已成功命令
+- **THEN** 系统返回首次提交的同一逻辑确认结果
+- **AND** 不重复保存确认事实、审计或事件
+
+#### Scenario: 冲突重放与并发接管不覆盖原决定
+- **WHEN** 调用方复用同一业务幂等键但改变任一精确引用，或多个不同命令竞争确认同一尚未确认的任务精确版本
+- **THEN** 同键异载荷返回不可重试的幂等冲突，并发竞争只有一个命令可建立确认事实，其余命令返回类型化陈旧版本或业务冲突
+- **AND** 系统不覆盖首次确认及其操作者、审计或事件
+
+#### Scenario: strict 契约拒绝确认越权字段和伪处置状态
+- **WHEN** 确认命令、结果或事件携带风险解除、任务关闭、处置结论、客户端操作者/授权覆盖、业务正文或其它契约外字段
+- **THEN** 对应 strict 公共 Schema 拒绝该对象
+- **AND** 既有建议采纳、执行、反馈、偏差、不可用和校准结果分支仍按原字段与语义通过校验

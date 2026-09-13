@@ -45,6 +45,7 @@ import {
   ReviewRequestV1Schema,
   ReviewTargetRefV1Schema,
   ReviewTaskRefV1Schema,
+  RuleConflictRefV1Schema,
   TraceQueryV1Schema,
   TraceResultV1Schema,
   type AuthorizationContextV1,
@@ -61,6 +62,7 @@ import {
   type ReviewRequestResultV1,
   type ReviewTaskRefV1,
   type ReviewTargetRefV1,
+  type RuleConflictRefV1,
   type TraceResultV1,
   type TraceQueryV1,
 } from "@riskflow/contracts/ports";
@@ -379,6 +381,12 @@ const moduleError = (
         readonly causalRunId: string;
       }
     | {
+        readonly code: "BUSINESS_BLOCKED";
+        readonly causalRunId: string;
+        readonly blockerKind?: string;
+        readonly blockerRef?: ContractReferenceV1;
+      }
+    | {
         readonly code: "IDEMPOTENCY_CONFLICT";
         readonly idempotencyKey: string;
         readonly priorCommandId: string;
@@ -421,6 +429,21 @@ const moduleError = (
       category: "concurrency",
       retryable: false,
       targetRef: value.targetRef,
+    };
+  }
+  if (value.code === "BUSINESS_BLOCKED") {
+    // 冲突门禁的读取失败不携带调用方上下文：blockerKind/blockerRef 仅用于满足 ModuleErrorV1 形状，
+    // 默认指向 review-audit 自身的稳定占位引用，避免回显被查询的规则冲突目标。
+    return {
+      ...common,
+      code: value.code,
+      category: "business-blocked",
+      retryable: false,
+      blockerKind: IdentifierSchema.parse(value.blockerKind ?? "rule-conflict"),
+      blockerRef: value.blockerRef ?? {
+        kind: "rule-conflict",
+        reference: { entityId: "review-audit-rule-conflict-decision-read", versionId: "1" },
+      },
     };
   }
   if (value.code === "IDEMPOTENCY_CONFLICT") {
@@ -474,6 +497,24 @@ export interface PostgresReviewAuditAdapterOptions {
   readonly access: LocalIdentityAccessV1;
   readonly now?: () => Date;
 }
+
+/**
+ * C19 规则冲突门禁专用的窄读取结果。
+ *
+ * 该类型只服务 C19 冲突门禁按当前事实复核后的放行判断，属于适配器层面的窄读取接口，
+ * 不进入公共 `ReviewAuditPortV1`：它不写审计、不发事件、不改任务状态，只做只读单点查询。
+ * - `pending`：任务存在且事实一致，但尚未裁决（含 `pending`/`superseded`）。
+ * - `failed`：授权失败或任务/决定事实不一致；错误不暴露目标是否存在。
+ */
+export type RuleConflictDecisionReadV1 =
+  | {
+      readonly kind: "decided";
+      readonly decision: "approve-publication" | "reject" | "return-for-revision";
+      readonly reviewDecisionRef: ReviewDecisionRefV1;
+      readonly decidedAt: string;
+    }
+  | { readonly kind: "pending" }
+  | { readonly kind: "failed"; readonly error: ModuleErrorV1 };
 
 export class PostgresReviewAuditAdapter implements ReviewAuditPortV1 {
   readonly #db: Kysely<ReviewAuditDatabase>;
@@ -814,6 +855,113 @@ export class PostgresReviewAuditAdapter implements ReviewAuditPortV1 {
         error: await this.#mapError(error, {
           branch: "review-audit.trace",
           causalRunId: valid.queryId,
+        }),
+      };
+    }
+  }
+
+  /**
+   * C19 规则冲突门禁专用的窄读取：以当前事实复核 `business.review_tasks` / `business.review_decisions`
+   * 的单点记录，供门禁判断是否放行。授权分支沿用 `review-audit.trace`，只读、不写审计、不发事件。
+   * 任何事实不一致都折叠为 BUSINESS_BLOCKED（不带 reviewTaskId / relationId），避免泄露目标存在性。
+   */
+  async readRuleConflictDecision(input: {
+    readonly projectId: string;
+    readonly relationRef: RuleConflictRefV1;
+    readonly reviewTaskRef: ReviewTaskRefV1;
+    readonly authorization: AuthorizationContextV1;
+    readonly invocationId: string;
+    readonly requestedAt: string;
+  }): Promise<RuleConflictDecisionReadV1> {
+    const blocked = (): RuleConflictDecisionReadV1 => ({
+      kind: "failed",
+      error: moduleError({ code: "BUSINESS_BLOCKED", causalRunId: input.invocationId }),
+    });
+    try {
+      await this.#verify(
+        input.authorization,
+        input.projectId,
+        input.invocationId,
+        "review-audit.trace",
+      );
+      const task = await this.#db
+        .selectFrom("business.review_tasks")
+        .select([
+          "review_type",
+          "target_kind",
+          "target_entity_id",
+          "target_version_id",
+          "target_ref",
+          "review_task_ref",
+          "status",
+          "decision_ref",
+        ])
+        .where("project_id", "=", input.projectId)
+        .where("review_task_id", "=", input.reviewTaskRef.reference.entityId)
+        .where("version_id", "=", input.reviewTaskRef.reference.versionId)
+        .executeTakeFirst();
+      if (task === undefined) return blocked();
+
+      const storedTaskRef = ReviewTaskRefV1Schema.parse(task.review_task_ref);
+      const storedTargetRef = RuleConflictRefV1Schema.parse(task.target_ref);
+      if (
+        task.review_type !== "rule-conflict" ||
+        task.review_type !== input.reviewTaskRef.reviewType ||
+        task.target_kind !== "rule-conflict" ||
+        task.target_entity_id !== input.relationRef.reference.entityId ||
+        task.target_version_id !== input.relationRef.reference.versionId ||
+        !reviewTaskRefEquals(storedTaskRef, input.reviewTaskRef) ||
+        !versionedRefEquals(storedTargetRef, input.relationRef)
+      ) {
+        return blocked();
+      }
+      if (task.status !== "decided") return { kind: "pending" };
+
+      const decisionRow = await this.#db
+        .selectFrom("business.review_decisions")
+        .select([
+          "review_decision_ref",
+          "review_type",
+          "review_task_ref",
+          "target_ref",
+          "decision",
+          "decided_at",
+        ])
+        .where("project_id", "=", input.projectId)
+        .where("review_task_id", "=", input.reviewTaskRef.reference.entityId)
+        .executeTakeFirst();
+      if (decisionRow === undefined || task.decision_ref === null) return blocked();
+
+      const storedDecisionRef = ReviewDecisionRefV1Schema.parse(decisionRow.review_decision_ref);
+      const storedTaskDecisionRef = ReviewDecisionRefV1Schema.parse(task.decision_ref);
+      const decisionTaskRef = ReviewTaskRefV1Schema.parse(decisionRow.review_task_ref);
+      const decisionTargetRef = RuleConflictRefV1Schema.parse(decisionRow.target_ref);
+      const decision = ReviewDecisionV1Schema.parse(decisionRow.decision);
+      if (
+        decisionRow.review_type !== "rule-conflict" ||
+        decision.reviewType !== "rule-conflict" ||
+        !versionedRefEquals(storedDecisionRef, storedTaskDecisionRef) ||
+        !reviewTaskRefEquals(decisionTaskRef, storedTaskRef) ||
+        !versionedRefEquals(decisionTargetRef, input.relationRef) ||
+        (decision.kind !== "approve-publication" &&
+          decision.kind !== "reject" &&
+          decision.kind !== "return-for-revision")
+      ) {
+        return blocked();
+      }
+
+      return {
+        kind: "decided",
+        decision: decision.kind,
+        reviewDecisionRef: storedDecisionRef,
+        decidedAt: asIso(decisionRow.decided_at),
+      };
+    } catch (error) {
+      return {
+        kind: "failed",
+        error: await this.#mapError(error, {
+          branch: "review-audit.trace",
+          causalRunId: input.invocationId,
         }),
       };
     }

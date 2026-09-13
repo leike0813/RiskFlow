@@ -83,63 +83,88 @@ export type MonitoringUnitConversionV1 = z.infer<typeof MonitoringUnitConversion
 export const MonitoringUnitConversionRuleV1Schema = MonitoringUnitConversionV1Schema;
 export type MonitoringUnitConversionRuleV1 = MonitoringUnitConversionV1;
 
+const monitoringSeriesRevisionShapeV1 = {
+  monitoringSeriesRef: MonitoringSeriesRefV1Schema,
+  seriesId: IdentifierSchema,
+  projectId: IdentifierSchema,
+  projectRevisionRef: ProjectRevisionRefV1Schema,
+  spatialScopeRef: SpatialScopeRefV1Schema,
+  monitoringObject: text,
+  monitoringIndicator: MonitoringIndicatorSchema,
+  parameterCode: text,
+  canonicalUnit: unit,
+  unitConversions: uniqueBy(MonitoringUnitConversionV1Schema, (value) => value.fromUnit, 32),
+  effectivePeriod: z.strictObject({
+    validFrom: IsoDateTimeSchema,
+    validTo: IsoDateTimeSchema.optional(),
+  }),
+  recordedAt: IsoDateTimeSchema,
+  previousRevisionRef: MonitoringSeriesRefV1Schema.optional(),
+};
+
+const validateMonitoringSeriesRevision = (value: unknown, context: z.RefinementCtx): void => {
+  const revision = value as {
+    monitoringSeriesRef: { reference: { entityId: string } };
+    seriesId: string;
+    canonicalUnit: string;
+    unitConversions: readonly { fromUnit: string }[];
+    effectivePeriod: { validFrom: string; validTo?: string };
+    previousRevisionRef?: { reference: { entityId: string } };
+  };
+  if (revision.seriesId !== revision.monitoringSeriesRef.reference.entityId) {
+    context.addIssue({
+      code: "custom",
+      path: ["seriesId"],
+      message: "series id must match the reference",
+    });
+  }
+  if (revision.unitConversions.some((item) => item.fromUnit === revision.canonicalUnit)) {
+    context.addIssue({
+      code: "custom",
+      path: ["unitConversions"],
+      message: "canonical unit must not have a conversion rule",
+    });
+  }
+  if (
+    revision.effectivePeriod.validTo !== undefined &&
+    Date.parse(revision.effectivePeriod.validTo) <= Date.parse(revision.effectivePeriod.validFrom)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["effectivePeriod", "validTo"],
+      message: "validTo must be later than validFrom",
+    });
+  }
+  if (
+    revision.previousRevisionRef !== undefined &&
+    revision.previousRevisionRef.reference.entityId !==
+      revision.monitoringSeriesRef.reference.entityId
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["previousRevisionRef"],
+      message: "previous revision must belong to the same series",
+    });
+  }
+};
+
 export const MonitoringSeriesRevisionV1Schema = z
-  .strictObject({
-    monitoringSeriesRef: MonitoringSeriesRefV1Schema,
-    seriesId: IdentifierSchema,
-    projectId: IdentifierSchema,
-    projectRevisionRef: ProjectRevisionRefV1Schema,
-    spatialScopeRef: SpatialScopeRefV1Schema,
-    monitoringObject: text,
-    monitoringIndicator: MonitoringIndicatorSchema,
-    parameterCode: text,
-    canonicalUnit: unit,
-    unitConversions: uniqueBy(MonitoringUnitConversionV1Schema, (value) => value.fromUnit, 32),
-    effectivePeriod: z.strictObject({
-      validFrom: IsoDateTimeSchema,
-      validTo: IsoDateTimeSchema.optional(),
-    }),
-    recordedAt: IsoDateTimeSchema,
-    previousRevisionRef: MonitoringSeriesRefV1Schema.optional(),
-    audit: AuditInfoSchema,
-  })
-  .superRefine((value, context) => {
-    if (value.seriesId !== value.monitoringSeriesRef.reference.entityId) {
-      context.addIssue({
-        code: "custom",
-        path: ["seriesId"],
-        message: "series id must match the reference",
-      });
-    }
-    if (value.unitConversions.some((item) => item.fromUnit === value.canonicalUnit)) {
-      context.addIssue({
-        code: "custom",
-        path: ["unitConversions"],
-        message: "canonical unit must not have a conversion rule",
-      });
-    }
-    if (
-      value.effectivePeriod.validTo !== undefined &&
-      Date.parse(value.effectivePeriod.validTo) <= Date.parse(value.effectivePeriod.validFrom)
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["effectivePeriod", "validTo"],
-        message: "validTo must be later than validFrom",
-      });
-    }
-    if (
-      value.previousRevisionRef !== undefined &&
-      value.previousRevisionRef.reference.entityId !== value.monitoringSeriesRef.reference.entityId
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["previousRevisionRef"],
-        message: "previous revision must belong to the same series",
-      });
-    }
-  });
+  .strictObject({ ...monitoringSeriesRevisionShapeV1, audit: AuditInfoSchema })
+  .superRefine(validateMonitoringSeriesRevision);
 export type MonitoringSeriesRevisionV1 = z.infer<typeof MonitoringSeriesRevisionV1Schema>;
+
+export const MonitoringSeriesRevisionStatusV1Schema = z.enum(["current", "superseded"]);
+export type MonitoringSeriesRevisionStatusV1 = z.infer<
+  typeof MonitoringSeriesRevisionStatusV1Schema
+>;
+
+export const MonitoringSeriesRevisionReadV1Schema = z
+  .strictObject({
+    ...monitoringSeriesRevisionShapeV1,
+    status: MonitoringSeriesRevisionStatusV1Schema,
+  })
+  .superRefine(validateMonitoringSeriesRevision);
+export type MonitoringSeriesRevisionReadV1 = z.infer<typeof MonitoringSeriesRevisionReadV1Schema>;
 
 export const MonitoringSampleInputV1Schema = z.strictObject({
   sourceSampleKey: text,
@@ -566,6 +591,42 @@ export type ResolveMonitoringSnapshotQueryV1 = z.infer<
   typeof ResolveMonitoringSnapshotQueryV1Schema
 >;
 
+export const ReadMonitoringSeriesRevisionQueryV1Schema = z
+  .strictObject({
+    queryId: IdentifierSchema,
+    projectId: IdentifierSchema,
+    actorId: IdentifierSchema,
+    requestedAt: IsoDateTimeSchema,
+    authorization: AuthorizationContextV1Schema,
+    monitoringSeriesRef: MonitoringSeriesRefV1Schema,
+  })
+  .superRefine((query, context) => {
+    if (query.projectId !== query.authorization.projectId) {
+      context.addIssue({
+        code: "custom",
+        path: ["projectId"],
+        message: "query project does not match authorization context",
+      });
+    }
+    if (query.actorId !== query.authorization.actorId) {
+      context.addIssue({
+        code: "custom",
+        path: ["actorId"],
+        message: "query actor does not match authorization context",
+      });
+    }
+    if (!query.authorization.grantedCapabilities.includes("engineering-data.read")) {
+      context.addIssue({
+        code: "custom",
+        path: ["authorization", "grantedCapabilities"],
+        message: "required capability is not granted",
+      });
+    }
+  });
+export type ReadMonitoringSeriesRevisionQueryV1 = z.infer<
+  typeof ReadMonitoringSeriesRevisionQueryV1Schema
+>;
+
 export const MonitoringSuccessV1Schema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("series-revision"),
@@ -587,4 +648,11 @@ export const MonitoringResultV1Schema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("failed"), error: ModuleErrorV1Schema }),
 ]);
 export type MonitoringResultV1 = z.infer<typeof MonitoringResultV1Schema>;
+
+export const MonitoringSeriesReadResultV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("succeeded"), result: MonitoringSeriesRevisionReadV1Schema }),
+  z.strictObject({ kind: z.literal("failed"), error: ModuleErrorV1Schema }),
+]);
+export type MonitoringSeriesReadResultV1 = z.infer<typeof MonitoringSeriesReadResultV1Schema>;
+
 export type MonitoringErrorV1 = ModuleErrorV1;

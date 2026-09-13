@@ -4,9 +4,11 @@
  *
  * 知识侧（C16/C18/C19/C08 authoring）使用确定性的 C06 桩复验接口；C15 链路保留真实
  * C06 会话与冻结流程，因此“规范资料段 → C15 保留 → C19 编制”的出口是真实链路。
- * 合成样本、待甲方复核：来源文档为夹具合成内容，仅标准身份与资料段定位语义按真实
- * 规范建模；不保存、不伪造甲方规范正文。
+ * 规范来源为 GB 50911-2013《城市轨道交通工程监测技术规范》的真实条文摘录
+ * （`packages/core/test/scoring-rules/fixtures/`，真实公开来源、非甲方审核资料；
+ * 甲方正式输入到位后需复核）；控制值表以外的用例值仍为确定性测试值。
  */
+import { strToU8, zipSync } from "fflate";
 import { vi } from "vitest";
 
 import {
@@ -21,7 +23,14 @@ import {
   type StartAgentTaskResultV1,
 } from "@riskflow/contracts/ports";
 import { makeAssessmentConfigurationFixtureSet } from "../../../core/test/assessment-config/fixture.js";
-import type { LocalIdentityAccessV1 } from "@riskflow/core/access";
+import {
+  GB50911_CLAUSES,
+  GB50911_CONTROL_VALUES,
+  GB50911_EXCEPTIONS,
+  GB50911_SOFT_SOIL_BANDS,
+  GB50911_STANDARD,
+} from "../../../core/test/scoring-rules/standard-fixture.js";
+import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/access";
 import type { ArtifactStoreV1 } from "@riskflow/core/artifacts";
 import {
   AgentTaskDefinitionRegistry,
@@ -33,6 +42,7 @@ import {
   type AssessmentConfigurationDocumentV1,
 } from "@riskflow/core/assessment-config";
 import type { AssessmentConfigurationGovernancePolicyV1 } from "@riskflow/core/assessment-config";
+import type { TransactionUnitV1 } from "@riskflow/core/persistence";
 import {
   PostgresScoringRulesAdapter,
   type PostgresScoringRulesAdapterOptionsV1,
@@ -44,6 +54,7 @@ import { PostgresReviewAuditAdapter } from "../../src/review-audit/index.js";
 import { PostgresAgentTaskAdapter } from "../../src/agent-runtime/index.js";
 import {
   startDataCleaningFixture,
+  type CleaningDocumentInputV1,
   type CleaningWorldV1 as DataCleaningWorldLikeV1,
   type DataCleaningPostgresFixture,
   completeCleaningTask,
@@ -59,6 +70,77 @@ import {
 export const SCORING_RULES_TEST_TIMESTAMP = "2030-01-01T00:00:00.000Z";
 export const SCORING_RULES_TEST_ISSUED_AT = "2030-01-01T00:00:01.000Z";
 export const SCORING_RULES_TEST_PUBLISH_AT = "2030-01-01T00:00:02.000Z";
+
+const REAL_STANDARD_DOCX_MEDIA_TYPE =
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+const escapeXmlText = (value: string): string =>
+  value
+    .replace(/&/gu, "&amp;")
+    .replace(/</gu, "&lt;")
+    .replace(/>/gu, "&gt;")
+    .replace(/"/gu, "&quot;");
+
+const docxParagraph = (styleId: string, text: string): string =>
+  `<w:p><w:pPr><w:pStyle w:val="${styleId}"/></w:pPr><w:r><w:t xml:space="preserve">${escapeXmlText(text)}</w:t></w:r></w:p>`;
+
+/**
+ * 分页符段落：只有出现分页后 C12 才把段落定位写成 `document(pageNumber, headingPath)`，
+ * 段落定位因此带上章节号标题（与真实规范的「章—节—条」定位语义一致）。
+ */
+const DOCX_PAGE_BREAK = `<w:p><w:r><w:br w:type="page"/></w:r></w:p>`;
+
+const docxTableRow = (values: readonly (string | number)[]): string =>
+  `<w:tr>${values
+    .map((value) => `<w:tc><w:p><w:r><w:t>${escapeXmlText(String(value))}</w:t></w:r></w:p></w:tc>`)
+    .join("")}</w:tr>`;
+
+/**
+ * GB 50911-2013 真实条文摘录构成的 C15 输入文档：每个条文一个二级标题（标题文本带章节号，
+ * 转换后进入资料段 `headingPath`），控制值表单独成为受保护的表格段。
+ */
+const realStandardDocxContent = (): Uint8Array => {
+  const clauseBlocks = GB50911_CLAUSES.flatMap((clause) => [
+    docxParagraph(
+      "Heading2",
+      `${clause.clauseNumber} ${clause.kind}（PDF 第 ${clause.pdfPage} 页）`,
+    ),
+    docxParagraph("Paragraph", `${clause.clauseNumber} ${clause.quote}`),
+  ]);
+  const exceptionBlocks = GB50911_EXCEPTIONS.flatMap((exception) => [
+    docxParagraph("Heading2", `${exception.clauseNumber} 例外条款`),
+    docxParagraph("Paragraph", `${exception.clauseNumber} ${exception.quote}`),
+  ]);
+  const tableRows = GB50911_SOFT_SOIL_BANDS.map((band) =>
+    docxTableRow([band.grade, band.cumulative[0], band.cumulative[1], band.rate]),
+  );
+  return zipSync({
+    "[Content_Types].xml": strToU8(
+      `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
+    ),
+    "_rels/.rels": strToU8(
+      `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`,
+    ),
+    "word/document.xml": strToU8(
+      `<?xml version="1.0" encoding="UTF-8"?>
+      <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+        ${docxParagraph("Heading1", `${GB50911_STANDARD.code} ${GB50911_STANDARD.title}`)}
+        ${DOCX_PAGE_BREAK}
+        ${clauseBlocks.join("\n")}
+        ${exceptionBlocks.join("\n")}
+        ${docxParagraph("Heading2", `${GB50911_CONTROL_VALUES.tableNumber} ${GB50911_CONTROL_VALUES.monitoringItem}控制值（PDF 第 ${GB50911_CONTROL_VALUES.pdfPage} 页）`)}
+        <w:tbl>${tableRows.join("\n")}</w:tbl>
+      </w:body></w:document>`,
+    ),
+  });
+};
+
+/** C15 输入：真实公开规范条文（GB 50911-2013），替换合成 CSV 文档。 */
+export const realStandardCleaningDocument = (): CleaningDocumentInputV1 => ({
+  inputKind: "docx",
+  mediaType: REAL_STANDARD_DOCX_MEDIA_TYPE,
+  content: realStandardDocxContent(),
+});
 
 const stubContext = (
   projectId: string,
@@ -123,12 +205,29 @@ export interface ScoringRulesPostgresFixtureV1 {
     readonly documents: Readonly<Record<string, unknown>>;
   }): Promise<void>;
   close(): Promise<void>;
+  /** 注入事务故障（按 commandId 片段），传 undefined 复位。 */
+  injectTransactionFailure(fragment?: string): void;
+  /** 撤权一个授权上下文引用：其后的 C06 复验按拒绝返回，传 undefined 复位。 */
+  revokeAuthorization(
+    authorizationContextRef: AuthorizationContextV1["authorizationContextRef"],
+  ): void;
+  restoreAuthorizations(): void;
 }
 
 export const startScoringRulesFixture = async (): Promise<ScoringRulesPostgresFixtureV1> => {
   const cleaning = await startDataCleaningFixture();
   const db = cleaning.runtime.db;
-  const transactionUnit = cleaning.transactionUnit;
+  /** 事务故障注入：命中 commandId 片段的下一次原子提交直接失败（回滚用例用）。 */
+  let transactionFailureFragment: string | undefined;
+  const transactionUnit: TransactionUnitV1 = {
+    execute: (command, handler, options) =>
+      transactionFailureFragment !== undefined &&
+      command.commandId.includes(transactionFailureFragment)
+        ? Promise.reject(new Error("injected scoring-rules transaction failure"))
+        : cleaning.transactionUnit.execute(command, handler, options),
+  };
+  /** 已撤权的授权上下文引用：下一次复验按 C06 同语义拒绝（撤权用例用）。 */
+  const revokedAuthorizationRefs = new Set<string>();
   const artifactStore: ArtifactStoreV1 = cleaning.artifactStore;
   const verifiedContexts = new Map<string, AuthorizationContextV1>();
   const contextKey = (ref: AuthorizationContextV1["authorizationContextRef"]) =>
@@ -142,6 +241,21 @@ export const startScoringRulesFixture = async (): Promise<ScoringRulesPostgresFi
         invocationId: string;
         requestedAt?: string;
       }) => {
+        if (revokedAuthorizationRefs.has(contextKey(request.authorizationContextRef))) {
+          throw new AccessServiceError({
+            stage: "access.verify",
+            occurredAt: SCORING_RULES_TEST_ISSUED_AT,
+            diagnosticRef: {
+              kind: "diagnostic-artifact",
+              reference: { entityId: "c19-revoked-authorization", versionId: "1" },
+            },
+            contextRefs: [],
+            code: "AUTHORIZATION_DENIED",
+            retryable: false,
+            requiredCapability: MODULE_BRANCH_CAPABILITY_V1[request.branch],
+            authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+          });
+        }
         const configured = verifiedContexts.get(contextKey(request.authorizationContextRef));
         const context =
           configured ??
@@ -168,7 +282,8 @@ export const startScoringRulesFixture = async (): Promise<ScoringRulesPostgresFi
   const configurationRef: { current?: PostgresAssessmentConfigurationAdapter } = {};
   const scoringRef: { current?: PostgresScoringRulesAdapter } = {};
   const projectionRef: { current?: AssessmentPreparationProjectionV1 } = {};
-  let activeWorld: DataCleaningWorldLikeV1 | undefined;
+  /** 按工程绑定当前 C06 会话：同一夹具串联多个工程时互不串用授权。 */
+  const activeWorlds = new Map<string, DataCleaningWorldLikeV1>();
 
   const preparationSnapshot: AssessmentPreparationSnapshotReaderV1 = {
     readAssessmentPreparationSnapshot: async () => {
@@ -349,8 +464,9 @@ export const startScoringRulesFixture = async (): Promise<ScoringRulesPostgresFi
       submitRevision: async (input) => {
         const governance = governanceRef.current;
         if (governance === undefined) throw new Error("governance adapter is not assembled");
+        const world = activeWorlds.get(input.projectId);
         const authorization =
-          activeWorld === undefined
+          world === undefined
             ? stubContext(
                 input.projectId,
                 input.task?.envelope.actorId ?? "manager-1",
@@ -361,10 +477,7 @@ export const startScoringRulesFixture = async (): Promise<ScoringRulesPostgresFi
                 },
                 input.issuedAt,
               )
-            : await activeWorld.authorizeBranch(
-                input.commandId,
-                "knowledge-modeling.submit-revision",
-              );
+            : await world.authorizeBranch(input.commandId, "knowledge-modeling.submit-revision");
         verifiedContexts.set(contextKey(authorization.authorizationContextRef), authorization);
         const submitted = await governance.govern(
           KnowledgeGovernanceCommandV1Schema.parse({
@@ -498,7 +611,7 @@ export const startScoringRulesFixture = async (): Promise<ScoringRulesPostgresFi
     putJson,
     authorize,
     setActiveWorld(world) {
-      activeWorld = world;
+      activeWorlds.set(world.projectId, world);
     },
     evidenceAccessAuthorization: async (world, invocationId) => {
       const authorization = await world.authorizeEvidenceAccess(
@@ -701,6 +814,15 @@ export const startScoringRulesFixture = async (): Promise<ScoringRulesPostgresFi
     },
     async close() {
       await cleaning.close();
+    },
+    injectTransactionFailure(fragment) {
+      transactionFailureFragment = fragment;
+    },
+    revokeAuthorization(authorizationContextRef) {
+      revokedAuthorizationRefs.add(contextKey(authorizationContextRef));
+    },
+    restoreAuthorizations() {
+      revokedAuthorizationRefs.clear();
     },
   };
   return fixture;

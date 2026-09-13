@@ -34,6 +34,7 @@ import {
 import {
   isScoringRulesDefinitionTypeV1,
   ScoringRuleError,
+  scoringRuleFailureFrom,
   type PreparedScoringRuleV1,
   type ScoringRuleReleaseAppendV1,
   type ScoringRuleRevisionAppendV1,
@@ -2284,6 +2285,46 @@ export class PostgresKnowledgeGovernanceAdapter {
       return moduleError({
         code: assessmentFailure.code,
         targetRef: assessmentFailure.targetRef,
+        causalRunId: context.causalRunId,
+      });
+    }
+    const scoringFailure = scoringRuleFailureFrom(error);
+    if (scoringFailure !== undefined) {
+      if (scoringFailure.code === "AUTHORIZATION_DENIED") {
+        return moduleError({
+          code: scoringFailure.code,
+          branch: context.branch,
+          causalRunId: context.causalRunId,
+        });
+      }
+      if (scoringFailure.code === "BUSINESS_BLOCKED") {
+        return moduleError({
+          code: scoringFailure.code,
+          blockerKind: scoringFailure.reasonCode,
+          blockerRef: scoringFailure.targetRef,
+          causalRunId: context.causalRunId,
+        });
+      }
+      if (scoringFailure.code === "IDEMPOTENCY_CONFLICT") {
+        return moduleError({
+          code: scoringFailure.code,
+          idempotencyKey: context.command?.idempotencyKey ?? "unknown-idempotency",
+          priorCommandId: "unknown-command",
+          causalRunId: context.causalRunId,
+        });
+      }
+      if (
+        scoringFailure.code === "TRANSIENT_FAILURE" ||
+        scoringFailure.code === "TERMINAL_FAILURE"
+      ) {
+        return moduleError({ code: scoringFailure.code, causalRunId: context.causalRunId });
+      }
+      if (scoringFailure.code === "UNSUPPORTED_CONTRACT") {
+        return moduleError({ code: "UNSUPPORTED_CONTRACT", causalRunId: context.causalRunId });
+      }
+      return moduleError({
+        code: scoringFailure.code,
+        targetRef: scoringFailure.targetRef,
         causalRunId: context.causalRunId,
       });
     }

@@ -647,17 +647,19 @@ export class PostgresScoringRulesAdapter
         idempotencyKey: request.idempotencyKey,
         manifest,
       });
-      const manifestArtifactRef = await this.#put({
-        projectId: request.projectId,
-        actorId: request.actorId,
-        issuedAt: request.requestedAt,
-        authorization,
-        artifactId: `scoring-rule-manifest-${manifestDigest.slice(0, 40)}`,
-        purposeCode: SCORING_RULE_AUTHORING_MANIFEST_PURPOSE_CODE_V1,
-        mediaType: "application/json",
-        value: manifest,
-        parentArtifactRefs: [],
-      });
+      const manifestArtifactRef = ContentArtifactRefV1Schema.parse(
+        await this.#put({
+          projectId: request.projectId,
+          actorId: request.actorId,
+          issuedAt: request.requestedAt,
+          authorization,
+          artifactId: `scoring-rule-manifest-${manifestDigest.slice(0, 40)}`,
+          purposeCode: SCORING_RULE_AUTHORING_MANIFEST_PURPOSE_CODE_V1,
+          mediaType: "application/json",
+          value: manifest,
+          parentArtifactRefs: [],
+        }),
+      );
       const started = StartAgentTaskResultV1Schema.parse(
         await this.#startAgentTask({
           command: {
@@ -933,26 +935,28 @@ export class PostgresScoringRulesAdapter
       compatibilityRef: this.#policy.compatibilityRef,
       existingRules,
     });
-    const validationArtifactRef = await this.#put({
-      projectId: input.task.envelope.projectId,
-      actorId: input.task.envelope.actorId,
-      issuedAt: input.task.envelope.createdAt,
-      authorization: input.task.envelope.authorization,
-      artifactId: `${input.task.envelope.commandId}:validation:${sha256CanonicalJson(
-        input.candidate,
-      ).slice(0, 32)}`,
-      purposeCode: "agent-validation",
-      mediaType: "application/json",
-      artifactKind: "content",
-      value: {
-        schemaVersion: SCORING_RULES_SCHEMA_VERSION_V1,
-        candidateDigest: sha256CanonicalJson(
-          ScoringRuleAuthoringCandidateV1Schema.parse(input.candidate),
-        ),
-        validation: outcome.validation,
-      },
-      parentArtifactRefs: [],
-    });
+    const validationArtifactRef = ContentArtifactRefV1Schema.parse(
+      await this.#put({
+        projectId: input.task.envelope.projectId,
+        actorId: input.task.envelope.actorId,
+        issuedAt: input.task.envelope.createdAt,
+        authorization: input.task.envelope.authorization,
+        artifactId: `${input.task.envelope.commandId}:validation:${sha256CanonicalJson(
+          input.candidate,
+        ).slice(0, 32)}`,
+        purposeCode: "agent-validation",
+        mediaType: "application/json",
+        artifactKind: "content",
+        value: {
+          schemaVersion: SCORING_RULES_SCHEMA_VERSION_V1,
+          candidateDigest: sha256CanonicalJson(
+            ScoringRuleAuthoringCandidateV1Schema.parse(input.candidate),
+          ),
+          validation: outcome.validation,
+        },
+        parentArtifactRefs: [],
+      }),
+    );
     return {
       validation: outcome.validation,
       validationArtifactRef: ArtifactRefV1Schema.parse(validationArtifactRef),
@@ -999,17 +1003,19 @@ export class PostgresScoringRulesAdapter
       members: [...members, ...outcome.acceptedMembers],
     });
     const contentDigest = structuredScoringRuleDocumentDigest(document);
-    const candidateArtifactRef = await this.#put({
-      projectId: input.task.envelope.projectId,
-      actorId: input.task.envelope.actorId,
-      issuedAt: input.task.envelope.createdAt,
-      authorization: input.task.envelope.authorization,
-      artifactId: `structured-scoring-rule-${contentDigest.slice(0, 40)}`,
-      purposeCode: STRUCTURED_SCORING_RULE_ARTIFACT_PURPOSE_CODE_V1,
-      mediaType: STRUCTURED_SCORING_RULE_MEDIA_TYPE_V1,
-      value: document,
-      parentArtifactRefs: [],
-    });
+    const candidateArtifactRef = ContentArtifactRefV1Schema.parse(
+      await this.#put({
+        projectId: input.task.envelope.projectId,
+        actorId: input.task.envelope.actorId,
+        issuedAt: input.task.envelope.createdAt,
+        authorization: input.task.envelope.authorization,
+        artifactId: `structured-scoring-rule-${contentDigest.slice(0, 40)}`,
+        purposeCode: STRUCTURED_SCORING_RULE_ARTIFACT_PURPOSE_CODE_V1,
+        mediaType: STRUCTURED_SCORING_RULE_MEDIA_TYPE_V1,
+        value: document,
+        parentArtifactRefs: [],
+      }),
+    );
     const submitted = await this.#submitRevision.submitRevision({
       projectId: input.task.envelope.projectId,
       definitionType: "structured-scoring-rule",
@@ -1347,17 +1353,19 @@ export class PostgresScoringRulesAdapter
         resolvedConflicts: approvedConflicts,
       });
       const contentDigest = applicableRuleSetDocumentDigest(document);
-      const candidateArtifactRef = await this.#put({
-        projectId: request.projectId,
-        actorId: request.actorId,
-        issuedAt: request.requestedAt,
-        authorization,
-        artifactId: `applicable-rule-set-${contentDigest.slice(0, 40)}`,
-        purposeCode: APPLICABLE_RULE_SET_ARTIFACT_PURPOSE_CODE_V1,
-        mediaType: APPLICABLE_RULE_SET_MEDIA_TYPE_V1,
-        value: document,
-        parentArtifactRefs: [],
-      });
+      const candidateArtifactRef = ContentArtifactRefV1Schema.parse(
+        await this.#put({
+          projectId: request.projectId,
+          actorId: request.actorId,
+          issuedAt: request.requestedAt,
+          authorization,
+          artifactId: `applicable-rule-set-${contentDigest.slice(0, 40)}`,
+          purposeCode: APPLICABLE_RULE_SET_ARTIFACT_PURPOSE_CODE_V1,
+          mediaType: APPLICABLE_RULE_SET_MEDIA_TYPE_V1,
+          value: document,
+          parentArtifactRefs: [],
+        }),
+      );
       const submitted = await this.#submitRevision.submitRevision({
         projectId: request.projectId,
         definitionType: "applicable-rule-set",
@@ -2158,7 +2166,7 @@ export class PostgresScoringRulesAdapter
     readonly value: unknown;
     readonly artifactKind?: "content" | "diagnostic";
     readonly parentArtifactRefs: readonly ContentArtifactRefV1[];
-  }): Promise<ContentArtifactRefV1> {
+  }): Promise<ArtifactRefV1> {
     const capability = input.authorization.grantedCapabilities[0]!;
     const result = await this.#artifactStore.put(
       ArtifactPutCommandV1Schema.parse({
@@ -2181,7 +2189,7 @@ export class PostgresScoringRulesAdapter
       }),
       one(new TextEncoder().encode(canonicalJson(input.value))),
     );
-    return ContentArtifactRefV1Schema.parse(result.artifactRef);
+    return ArtifactRefV1Schema.parse(result.artifactRef);
   }
 
   async #readJson(

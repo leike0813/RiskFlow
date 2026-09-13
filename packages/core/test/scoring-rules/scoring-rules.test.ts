@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import type { KnowledgeReleaseRefV1, KnowledgeRevisionRefV1 } from "@riskflow/contracts/ports";
@@ -32,6 +35,7 @@ import {
   SCORING_RULES_FIXTURE_CONFIGURATION_SET_REF,
   SCORING_RULES_FIXTURE_INDICATOR_IDS,
   SCORING_RULES_FIXTURE_PROJECT_REVISION,
+  SECOND_STANDARD_SOURCE_VERSION,
   makeApplicabilityConditions,
   makeScoringRule,
   makeScoringRuleCandidate,
@@ -40,6 +44,18 @@ import {
   makeScoringRulesFixturePolicy,
   scoringRulesFixtureAgentTaskRef,
 } from "./fixture.js";
+import {
+  GB50911_CLAUSE_SEGMENT_ID,
+  GB50911_CLAUSES,
+  GB50911_CONTROL_VALUES,
+  GB50911_EXCEPTIONS,
+  GB50911_FIXTURE,
+  GB50911_INDICATOR_ITEMS,
+  GB50911_SOFT_SOIL_BANDS,
+  GB50911_SOURCE_METADATA,
+  GB50911_STANDARD,
+  GB50911_STIFF_SOIL_BANDS,
+} from "./standard-fixture.js";
 
 const baseInput = () => ({
   manifest: makeScoringRulesFixtureManifest(),
@@ -61,6 +77,109 @@ const revisionFor = (ruleId: string): KnowledgeRevisionRefV1 => ({
 });
 
 describe("C19 结构化评分规则与适用规则集", () => {
+  describe("真实规范夹具（GB 50911-2013）", () => {
+    it("夹具锚定仓库内公开来源原件，章节号与页映射逐条一致", () => {
+      const artifact = readFileSync(
+        new URL(`../../../../${GB50911_SOURCE_METADATA.repositoryArtifact}`, import.meta.url),
+      );
+      expect(artifact.byteLength).toBe(GB50911_SOURCE_METADATA.artifactBytes);
+      expect(createHash("sha256").update(artifact).digest("hex")).toBe(
+        GB50911_SOURCE_METADATA.sha256,
+      );
+      expect(GB50911_SOURCE_METADATA.sha256).toBe(
+        "1328780ab4d16871187a791262b6e6e31777bfb1cc34a22d3972c228449e4795",
+      );
+      expect(GB50911_STANDARD.code).toBe("GB 50911-2013");
+      expect(GB50911_STANDARD.standardKind).toBe("国家规范");
+      expect(GB50911_STANDARD.mandatoryClauses).toEqual(["3.1.1", "9.1.1", "9.1.5"]);
+      expect(GB50911_FIXTURE.reviewNotice).toBe(GB50911_SOURCE_METADATA.reviewNotice);
+      expect(GB50911_FIXTURE.reviewNotice).toContain("非甲方审核资料");
+      for (const clause of GB50911_CLAUSES) {
+        expect(GB50911_SOURCE_METADATA.clausePageMap[clause.clauseNumber]).toBe(clause.pdfPage);
+      }
+      expect(GB50911_CLAUSES.map((clause) => clause.clauseNumber)).toEqual([
+        "3.1.1",
+        "3.2.5",
+        "3.3.5",
+        "4.2.2",
+        "9.1.1",
+        "9.1.3",
+        "9.1.5",
+        "9.2.2",
+      ]);
+      expect(
+        GB50911_CLAUSES.filter((clause) => clause.mandatory).map((clause) => clause.clauseNumber),
+      ).toEqual(GB50911_STANDARD.mandatoryClauses);
+      expect(GB50911_CLAUSE_SEGMENT_ID).toEqual({
+        mandatoryMonitoring: "GB 50911-2013/3.1.1",
+        indicatorItems: "GB 50911-2013/4.2.2/表 4.2.2",
+        controlValues: "GB 50911-2013/9.2.2/表 9.2.2-2",
+        mandatoryWarning: "GB 50911-2013/9.1.5",
+      });
+      expect(REAL_STANDARD_SEGMENT_ID).toBe(GB50911_CLAUSE_SEGMENT_ID.controlValues);
+    });
+
+    it("表 9.2.2-2 控制值、变化速率与例外条款按原文数值登记", () => {
+      expect(GB50911_CONTROL_VALUES.tableNumber).toBe("表 9.2.2-2");
+      expect(GB50911_CONTROL_VALUES.pdfPage).toBe(65);
+      expect(
+        GB50911_SOFT_SOIL_BANDS.map((band) => [band.grade, band.cumulative, band.rate]),
+      ).toEqual([
+        ["一级", [15, 25], 3],
+        ["二级", [25, 35], 4],
+        ["三级", [35, 45], 5],
+      ]);
+      expect(
+        GB50911_STIFF_SOIL_BANDS.map((band) => [band.grade, band.cumulative, band.rate]),
+      ).toEqual([
+        ["一级", [10, 20], 3],
+        ["二级", [20, 30], 4],
+        ["三级", [30, 40], 4],
+      ]);
+      expect(GB50911_CONTROL_VALUES.upliftBand).toMatchObject({
+        monitoringItem: "地表隆起",
+        cumulative: 10,
+        rate: 3,
+      });
+      expect(GB50911_CONTROL_VALUES.notes).toEqual(["本表主要适用于标准断面的盾构法隧道工程。"]);
+      expect(
+        GB50911_INDICATOR_ITEMS.find((item) => item.indicatorItem === "地表沉降"),
+      ).toMatchObject({
+        clauseNumber: "4.2.2",
+        requiredByGrade: { 一级: true, 二级: true, 三级: true },
+      });
+      expect(GB50911_EXCEPTIONS.map((exception) => exception.clauseNumber)).toEqual([
+        "9.2.2",
+        "表 9.2.2-2 注",
+        "9.1.2 第 4 款",
+        "9.1.2 第 6 款",
+        "3.2.4",
+      ]);
+    });
+
+    it("由真实控制值派生的规则证据反查到同一条文段定位", () => {
+      const rule = makeScoringRule();
+      expect(rule.evidenceLocator.sourceSegmentId).toBe("GB 50911-2013/9.2.2/表 9.2.2-2");
+      expect(rule.scoringThresholds.map((threshold) => threshold.thresholdId)).toEqual([
+        "gb50911-monitoring-grade-1-cumulative",
+        "gb50911-monitoring-grade-2-cumulative",
+        "gb50911-monitoring-grade-3-cumulative",
+        "gb50911-over-control-value",
+      ]);
+      const member = validateScoringRuleOperations({
+        ...baseInput(),
+        candidate: makeScoringRuleCandidate(),
+      }).acceptedMembers[0]!;
+      expect(member.binding.evidenceReferences.map((reference) => reference.locator)).toEqual([
+        { sourceSegmentId: "GB 50911-2013/9.2.2/表 9.2.2-2" },
+      ]);
+      expect(member.binding.sourceVersionRef.reference).toEqual({
+        entityId: "GB 50911-2013",
+        versionId: "2014-05-01",
+      });
+    });
+  });
+
   describe("内容校验", () => {
     it("完整规则通过内容校验并记录内容摘要、兼容集合与精确证据引用", () => {
       const outcome = validateScoringRuleOperations({
@@ -229,31 +348,43 @@ describe("C19 结构化评分规则与适用规则集", () => {
   });
 
   describe("评分边界", () => {
-    it("between 与等级区间共享端点按左闭右开唯一求值", () => {
+    it("GB 50911-2013 表 9.2.2-2 端点按左闭右开唯一求值", () => {
+      // 中软~软弱土行：一级 15~25、二级 25~35、三级 35~45（mm），变化速率 3/4/5（mm/d）。
       const rule = makeScoringRule();
-      expect(evaluateScoringRule(rule, 9.99)).toEqual({
-        kind: "evaluated",
-        thresholdId: "settlement-low",
-        score: 1,
-        grade: "grade-c",
+      expect(evaluateScoringRule(rule, 14.9)).toEqual({
+        kind: "rejected",
+        reasonCode: "scoring-value-out-of-range",
       });
-      expect(evaluateScoringRule(rule, 10)).toEqual({
+      expect(evaluateScoringRule(rule, 15)).toEqual({
         kind: "evaluated",
-        thresholdId: "settlement-mid",
+        thresholdId: "gb50911-monitoring-grade-1-cumulative",
+        score: 1,
+        grade: "gb50911-monitoring-grade-1",
+      });
+      expect(evaluateScoringRule(rule, 24.9)).toEqual({
+        kind: "evaluated",
+        thresholdId: "gb50911-monitoring-grade-1-cumulative",
+        score: 1,
+        grade: "gb50911-monitoring-grade-1",
+      });
+      expect(evaluateScoringRule(rule, 25)).toEqual({
+        kind: "evaluated",
+        thresholdId: "gb50911-monitoring-grade-2-cumulative",
+        score: 2,
+        grade: "gb50911-monitoring-grade-2",
+      });
+      expect(evaluateScoringRule(rule, 35)).toEqual({
+        kind: "evaluated",
+        thresholdId: "gb50911-monitoring-grade-3-cumulative",
         score: 3,
-        grade: "grade-c",
+        grade: "gb50911-monitoring-grade-3",
       });
-      expect(evaluateScoringRule(rule, 2.5)).toEqual({
+      // 45 是表中最大控制值上限：超出即按 9.1.5 强制性条文进入警情报送档。
+      expect(evaluateScoringRule(rule, 45)).toEqual({
         kind: "evaluated",
-        thresholdId: "settlement-low",
-        score: 1,
-        grade: "grade-b",
-      });
-      expect(evaluateScoringRule(rule, 4.5)).toEqual({
-        kind: "evaluated",
-        thresholdId: "settlement-low",
-        score: 1,
-        grade: "grade-c",
+        thresholdId: "gb50911-over-control-value",
+        score: 5,
+        grade: "gb50911-control-limit-exceeded",
       });
 
       const unbounded = makeScoringRule({
@@ -282,13 +413,17 @@ describe("C19 结构化评分规则与适用规则集", () => {
 
       const normalized = normalizeScoringThresholds(rule.scoringThresholds);
       expect(normalized.map((value) => value.thresholdId)).toEqual([
-        "settlement-low",
-        "settlement-mid",
-        "settlement-high",
+        "gb50911-monitoring-grade-1-cumulative",
+        "gb50911-monitoring-grade-2-cumulative",
+        "gb50911-monitoring-grade-3-cumulative",
+        "gb50911-over-control-value",
       ]);
       const grades = normalizeGradeIntervals(rule.gradeIntervals);
-      expect(grades[0]).toMatchObject({ grade: "grade-a", upperInclusive: false });
-      expect(grades[2]).toMatchObject({ grade: "grade-c", upper: null });
+      expect(grades[0]).toMatchObject({
+        grade: "gb50911-monitoring-grade-1",
+        upperInclusive: false,
+      });
+      expect(grades[3]).toMatchObject({ grade: "gb50911-control-limit-exceeded", upper: null });
     });
 
     it("不连续或越界取值被拒绝且不按相邻区间或默认等级补值", () => {
@@ -368,6 +503,12 @@ describe("C19 结构化评分规则与适用规则集", () => {
     });
 
     it("不适用规则全部筛除并给出维度或例外原因", () => {
+      // 表 9.2.2-2 的通用行只适用于「无地方经验且标准断面」：项目若落在该表之外，
+      // 由 9.1.2 第 4 款的专项评估规则接管，通用规则以 exception-applies 被筛除。
+      const specialAssessmentRuleId = "rule-gb50911-2013-9.1.2-special-assessment";
+      const specialAssessmentExceptionId = GB50911_EXCEPTIONS.find((exception) =>
+        exception.exceptionId.includes("9.1.2-special-assessment"),
+      )!.exceptionId;
       const mismatched = candidateFor(
         "rule-method-mismatch",
         makeScoringRule({
@@ -376,9 +517,13 @@ describe("C19 结构化评分规则与适用规则集", () => {
         }),
       );
       const exceptionCase = candidateFor(
-        "rule-exception",
-        makeScoringRule({ ruleId: "rule-exception" }),
+        "rule-gb50911-2013-9.2.2-2-settlement-general",
+        makeScoringRule({
+          ruleId: "rule-gb50911-2013-9.2.2-2-settlement-general",
+          exceptionClauses: [specialAssessmentRuleId],
+        }),
       );
+      expect(specialAssessmentExceptionId).toBe("gb50911-2013-9.1.2-special-assessment");
       expect(() =>
         assembleApplicableRuleSet({
           projectRevisionRef: SCORING_RULES_FIXTURE_PROJECT_REVISION,
@@ -400,34 +545,56 @@ describe("C19 结构化评分规则与适用规则集", () => {
         }),
       ).toThrowError(/BUSINESS_BLOCKED/u);
 
-      const mixed = assembleApplicableRuleSet({
-        projectRevisionRef: SCORING_RULES_FIXTURE_PROJECT_REVISION,
-        applicabilitySnapshotRef: {
-          kind: "applicability-metadata-snapshot",
-          reference: { entityId: "applicability-snapshot", versionId: "1" },
+      const cases = [
+        {
+          // 例外未触发：调用方按项目实际声明该规则没有生效中的例外规则。
+          exceptionsByRuleId: {
+            "rule-gb50911-2013-9.2.2-2-settlement-general": [] as readonly string[],
+          },
+          expectedGeneralReason: "three-dimensional-match",
         },
-        applicability: {
-          constructionMethod: "盾构法",
-          stratumCondition: "软土地层",
-          engineeringStage: "盾构掘进",
+        {
+          // 例外触发：重要/特殊/风险较高的环境对象改用 9.1.2 第 4 款专项评估控制值。
+          exceptionsByRuleId: undefined,
+          expectedGeneralReason: "exception-applies",
         },
-        configurationSetRef: SCORING_RULES_FIXTURE_CONFIGURATION_SET_REF,
-        compatibilityRef: { entityId: "compatibility-fixture", versionId: "1" },
-        policy: makeScoringRulesFixturePolicy(),
-        requiredAt: "2030-01-01T00:00:00.000Z",
-        candidates: [candidateFor("rule-ground-settlement"), mismatched, exceptionCase],
-        relations: [],
-        exceptionsByRuleId: { "rule-exception": ["clause-protection"] },
-      });
-      const byRule = new Map(
-        mixed.decisions.map((decision) => [decision.ruleId, decision] as const),
-      );
-      expect(byRule.get("rule-method-mismatch")?.reasonCode).toBe("construction-method-mismatch");
-      expect(byRule.get("rule-exception")?.reasonCode).toBe("exception-applies");
-      expect(mixed.includedMembers.map((member) => member.ruleId)).toEqual([
-        "rule-ground-settlement",
-      ]);
-      expect(mixed.decisions).toHaveLength(3);
+      ] as const;
+      for (const testCase of cases) {
+        const mixed = assembleApplicableRuleSet({
+          projectRevisionRef: SCORING_RULES_FIXTURE_PROJECT_REVISION,
+          applicabilitySnapshotRef: {
+            kind: "applicability-metadata-snapshot",
+            reference: { entityId: "applicability-snapshot", versionId: "1" },
+          },
+          applicability: {
+            constructionMethod: "盾构法",
+            stratumCondition: "软土地层",
+            engineeringStage: "盾构掘进",
+          },
+          configurationSetRef: SCORING_RULES_FIXTURE_CONFIGURATION_SET_REF,
+          compatibilityRef: { entityId: "compatibility-fixture", versionId: "1" },
+          policy: makeScoringRulesFixturePolicy(),
+          requiredAt: "2030-01-01T00:00:00.000Z",
+          candidates: [candidateFor("rule-ground-settlement"), mismatched, exceptionCase],
+          relations: [],
+          ...(testCase.exceptionsByRuleId === undefined
+            ? {}
+            : { exceptionsByRuleId: testCase.exceptionsByRuleId }),
+        });
+        const reasonForMismatch = mixed.decisions.find(
+          (decision) => decision.ruleId === "rule-method-mismatch",
+        )?.reasonCode;
+        const reasonForGeneral = mixed.decisions.find(
+          (decision) => decision.ruleId === "rule-gb50911-2013-9.2.2-2-settlement-general",
+        )?.reasonCode;
+        expect(reasonForMismatch).toBe("construction-method-mismatch");
+        expect(reasonForGeneral).toBe(testCase.expectedGeneralReason);
+        expect(
+          mixed.decisions.find((decision) => decision.ruleId === "rule-ground-settlement")
+            ?.reasonCode,
+        ).toBe("three-dimensional-match");
+        expect(mixed.decisions).toHaveLength(3);
+      }
     });
   });
 
@@ -455,19 +622,13 @@ describe("C19 结构化评分规则与适用规则集", () => {
             "rule-a",
             [{ thresholdId: "a-1", score: 1, operator: "between", value: 0, upperValue: 20 }],
             [{ grade: "grade-a", lowerBound: 0 }],
-            {
-              kind: "source-version",
-              reference: { entityId: "GB50446-2017", versionId: "2017-08-01" },
-            },
+            REAL_STANDARD_SOURCE_VERSION,
           ),
           relationCandidate(
             "rule-b",
             [{ thresholdId: "b-1", score: 5, operator: "between", value: 0, upperValue: 20 }],
             [{ grade: "grade-c", lowerBound: 0 }],
-            {
-              kind: "source-version",
-              reference: { entityId: "GB50911-2013", versionId: "2014-05-01" },
-            },
+            SECOND_STANDARD_SOURCE_VERSION,
           ),
         ],
       });

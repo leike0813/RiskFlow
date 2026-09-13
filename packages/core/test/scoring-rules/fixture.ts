@@ -1,9 +1,10 @@
 /**
- * C19 core 夹具：公共规则/三维/阈值构造器、冻结来源（含一条获准真实规范资料段）、
+ * C19 core 夹具：公共规则/三维/阈值构造器、冻结来源（GB 50911-2013 真实条文段）、
  * 策略与 manifest 构造器。
  *
- * 合成样本、待甲方复核：标准身份只用于来源类别与证据定位语义，阈值/等级与资料段
- * 内容均为确定性用例值，不冒充甲方量化标准或规范正文；真实条文出口待甲方提供获准片段。
+ * 阈值、等级区间与资料段定位来自 `standard-fixture.ts` 的 GB 50911-2013 真实条文夹具
+ * （真实公开来源，非甲方审核资料；甲方正式输入到位后需复核）；二级来源为待甲方输入的
+ * 企业规程占位，仅用于来源类别/优先级语义，不冒充规范或甲方量化标准。
  */
 import type {
   AgentTaskRefV1,
@@ -22,6 +23,13 @@ import {
   AgentTaskBudgetPolicyV1Schema,
   type AgentTaskBudgetPolicyV1,
 } from "../../src/agent-runtime/index.js";
+import {
+  GB50911_CLAUSE_SEGMENT_ID,
+  GB50911_SOFT_SOIL_BANDS,
+  GB50911_SOURCE_VERSION_REF,
+  gb50911GradeIntervals,
+  gb50911ScoringThresholds,
+} from "./standard-fixture.js";
 import {
   StructuredScoringRuleDocumentV1Schema,
   type ScoringRuleAuthoringCandidateV1,
@@ -50,35 +58,34 @@ export const SCORING_RULES_FIXTURE_COMPATIBILITY_REF: VersionReference = {
 };
 
 /**
- * 获准真实规范来源：GB 50446-2017《盾构法隧道施工及验收规范》与中国铁建企业规程
- * 中与「盾构掘进参数控制」「管片拼装质量」「地表沉降监测」相关的保留资料段。
+ * 获准真实规范来源：GB 50911-2013《城市轨道交通工程监测技术规范》中与「施工阶段监测
+ * 适用条件」「盾构法监测项目」「地表沉降控制值」相关的保留资料段（真实公开来源，
+ * 见 `fixtures/gb50911-2013-clauses.source.json`）。
  * 只登记标准身份、来源版本与资料段定位，正文留在 C04。
  */
-export const REAL_STANDARD_SOURCE_VERSION = {
-  kind: "source-version",
-  reference: { entityId: "GB50446-2017", versionId: "2017-08-01" },
-} as const;
+export const REAL_STANDARD_SOURCE_VERSION = GB50911_SOURCE_VERSION_REF;
 
+/** 待甲方正式输入的二级来源（企业规程）占位：只承载来源类别与优先级语义。 */
 export const SECOND_STANDARD_SOURCE_VERSION = {
   kind: "source-version",
-  reference: { entityId: "GB50911-2013", versionId: "2014-05-01" },
+  reference: { entityId: "enterprise-standard-pending-client-input", versionId: "1" },
 } as const;
 
-export const REAL_STANDARD_SEGMENT_ID = "GB50446-2017/掘进参数控制/土仓压力与推进速度" as const;
-export const REAL_STANDARD_MONITORING_SEGMENT_ID =
-  "GB50911-2013/监测项目/盾构法隧道地表沉降" as const;
+export const REAL_STANDARD_SEGMENT_ID = GB50911_CLAUSE_SEGMENT_ID.controlValues;
+export const REAL_STANDARD_MONITORING_SEGMENT_ID = GB50911_CLAUSE_SEGMENT_ID.mandatoryWarning;
 
 export const REAL_STANDARD_RETAINED_SEGMENTS = [
   {
     sourceVersionRef: REAL_STANDARD_SOURCE_VERSION,
-    sourceSegmentIds: [REAL_STANDARD_SEGMENT_ID, "GB50446-2017/壁后注浆/同步注浆量与压力"],
+    sourceSegmentIds: [
+      GB50911_CLAUSE_SEGMENT_ID.mandatoryMonitoring,
+      GB50911_CLAUSE_SEGMENT_ID.indicatorItems,
+      GB50911_CLAUSE_SEGMENT_ID.controlValues,
+    ],
   },
   {
     sourceVersionRef: SECOND_STANDARD_SOURCE_VERSION,
-    sourceSegmentIds: [
-      REAL_STANDARD_MONITORING_SEGMENT_ID,
-      "GB50911-2013/监测频率/掘进面距监测断面距离",
-    ],
+    sourceSegmentIds: [REAL_STANDARD_MONITORING_SEGMENT_ID],
   },
 ] as const;
 
@@ -251,16 +258,9 @@ export const makeScoringRule = (overrides?: {
   ruleId: overrides?.ruleId ?? "rule-ground-settlement",
   applicabilityConditions: overrides?.applicabilityConditions ?? makeApplicabilityConditions(),
   indicatorItem: overrides?.indicatorItem ?? SCORING_RULES_FIXTURE_INDICATOR_IDS[0],
-  scoringThresholds: overrides?.scoringThresholds ?? [
-    { thresholdId: "settlement-low", score: 1, operator: "between", value: 0, upperValue: 10 },
-    { thresholdId: "settlement-mid", score: 3, operator: "between", value: 10, upperValue: 20 },
-    { thresholdId: "settlement-high", score: 5, operator: "gte", value: 20 },
-  ],
-  gradeIntervals: overrides?.gradeIntervals ?? [
-    { grade: "grade-a", lowerBound: 0, upperBound: 2.5 },
-    { grade: "grade-b", lowerBound: 2.5, upperBound: 4.5 },
-    { grade: "grade-c", lowerBound: 4.5 },
-  ],
+  scoringThresholds:
+    overrides?.scoringThresholds ?? gb50911ScoringThresholds(GB50911_SOFT_SOIL_BANDS),
+  gradeIntervals: overrides?.gradeIntervals ?? gb50911GradeIntervals(GB50911_SOFT_SOIL_BANDS),
   exceptionClauses: overrides?.exceptionClauses ?? [],
   evidenceLocator: overrides?.evidenceLocator ?? { sourceSegmentId: REAL_STANDARD_SEGMENT_ID },
   ruleVersion: { entityId: overrides?.ruleId ?? "rule-ground-settlement", versionId: "pending" },

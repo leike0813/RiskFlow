@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { DataCleaningResultV1Schema } from "@riskflow/core/engineering-data/cleaning";
 import {
   AgentTaskEnvelopeV1Schema,
   type AgentTaskClaimV1,
@@ -8,6 +9,7 @@ import {
 import type { TransactionUnitV1 } from "@riskflow/core/persistence";
 import { StartAgentTaskCommandV1Schema } from "@riskflow/contracts/ports";
 import type {
+  AgentTaskRefV1,
   AuthorizationContextV1,
   ContentArtifactRefV1,
   EngineeringFreezeCommandV1,
@@ -130,6 +132,8 @@ describe("C15 PostgreSQL data cleaning store", () => {
   let firstFrozen: { readonly command: FreezeCommandV1 } | undefined;
   let mainClaim: AgentTaskClaimV1 | undefined;
   let tail: CleaningWorldV1 | undefined;
+  let readWorld: CleaningWorldV1 | undefined;
+  let readTaskRef: AgentTaskRefV1 | undefined;
   let tailTaskRef: { readonly reference: VersionReference } | undefined;
   let tailSnapshotRef: { readonly reference: VersionReference } | undefined;
 
@@ -1037,6 +1041,260 @@ describe("C15 PostgreSQL data cleaning store", () => {
     expect(revoked.error["code"]).toBe("AUTHORIZATION_DENIED");
     expect(Object.keys(revoked.error)).not.toContain("snapshot");
     expect(await exactReadCounts(world.projectId, requestId)).toEqual(afterFirst);
+  }, 300_000);
+
+  const prepareBoundReadWorld = async (): Promise<{
+    readonly world: CleaningWorldV1;
+    readonly taskRef: AgentTaskRefV1;
+  }> => {
+    if (readWorld !== undefined && readTaskRef !== undefined) {
+      return { world: readWorld, taskRef: readTaskRef };
+    }
+    const world = await fixture.createWorld({ suffix: "read", documentKinds: ["csv"] });
+    await freezeIdentificationPreparation(world.pipeline.store, world, {
+      commandId: "c15-read-freeze",
+      actor: "uploader",
+    });
+    const completion = await completeCleaningTask(world.pipeline, fixture, {
+      workerId: "c15-read-worker",
+      projectId: world.projectId,
+    });
+    readWorld = world;
+    readTaskRef = completion.taskRef;
+    return { world, taskRef: completion.taskRef };
+  };
+
+  it("清洗结果有界读取：当前 evidence-access 授权返回 strict 结果与工件引用（清洗结果无正文旁路）", async () => {
+    const { world, taskRef } = await prepareBoundReadWorld();
+    const authorization = await world.authorizeEvidenceAccess(
+      "c15-read-1",
+      world.sourceVersionRefs(),
+    );
+    const read = await world.pipeline.store.readBoundResult({
+      projectId: world.projectId,
+      actorId: world.uploaderId,
+      requestId: "c15-read-1",
+      requestedAt: authorization.decidedAt,
+      authorization,
+      taskRef,
+    });
+    expect(read.kind).toBe("ok");
+    if (read.kind !== "ok") return;
+    expect(read.result.agentTaskRef.reference).toEqual(taskRef.reference);
+    expect(read.resultArtifactRef.kind).toBe("content-artifact");
+    expect(read.result.inputs.length).toBeGreaterThan(0);
+
+    const audits = await fixture.postgres.adminPool.query<{ action: string; target_ref: unknown }>(
+      "SELECT action, target_ref FROM audit.entries WHERE project_id = $1 AND action = $2",
+      [world.projectId, "engineering-data.read-data-cleaning-result"],
+    );
+    expect(audits.rows).toHaveLength(1);
+    expect(audits.rows[0]?.target_ref).toEqual(read.resultArtifactRef);
+
+    expect(Object.keys(read).sort()).toEqual(["kind", "result", "resultArtifactRef"]);
+    const serialized = JSON.stringify(read.result);
+    expect(serialized).not.toContain("textBlocks");
+    expect(serialized).not.toContain("jsonLd");
+    expect(serialized).not.toContain("readHandle");
+    expect(serialized).not.toContain("locator");
+    expect(serialized).not.toContain("sourceSegmentIds");
+    expect(Object.keys(read.result).sort()).toEqual(
+      Object.keys(DataCleaningResultV1Schema.shape).sort(),
+    );
+  }, 240_000);
+
+  it("清洗结果不可枚举：缺失、跨工程与 actor 不符返回同一不可重试拒绝", async () => {
+    const { world, taskRef } = await prepareBoundReadWorld();
+    const other = await fixture.createWorld({ suffix: "read-other", documentKinds: ["csv"] });
+    await freezeIdentificationPreparation(other.pipeline.store, other, {
+      commandId: "c15-read-other-freeze",
+      actor: "uploader",
+    });
+    const otherCompletion = await completeCleaningTask(other.pipeline, fixture, {
+      workerId: "c15-read-other-worker",
+      projectId: other.projectId,
+    });
+    const authorization = await world.authorizeEvidenceAccess(
+      "c15-read-denied",
+      world.sourceVersionRefs(),
+    );
+    const base = {
+      projectId: world.projectId,
+      actorId: world.uploaderId,
+      requestId: "c15-read-denied",
+      requestedAt: authorization.decidedAt,
+      authorization,
+    };
+    const missing = await world.pipeline.store.readBoundResult({
+      ...base,
+      requestId: "c15-read-missing",
+      taskRef: otherCompletion.taskRef,
+    });
+    const foreign = await world.pipeline.store.readBoundResult({
+      ...base,
+      requestId: "c15-read-foreign",
+      taskRef: otherCompletion.taskRef,
+    });
+    const actorMismatch = await world.pipeline.store.readBoundResult({
+      ...base,
+      actorId: world.uploaderId,
+      requestId: "c15-read-actor",
+      taskRef,
+    });
+    for (const denied of [missing, foreign, actorMismatch]) {
+      expect(denied.kind).toBe("error");
+      if (denied.kind !== "error") continue;
+      expect(denied.error["code"]).toBe("AUTHORIZATION_DENIED");
+      expect(denied.error["retryable"]).toBe(false);
+      expect(Object.keys(denied.error).sort()).toEqual(
+        [
+          "authorizationPolicyRef",
+          "causalRunId",
+          "category",
+          "code",
+          "occurredAt",
+          "requiredCapability",
+          "retryable",
+          "stageCode",
+        ].sort(),
+      );
+      const serialized = JSON.stringify(denied.error);
+      expect(serialized).not.toContain(world.projectId);
+      expect(serialized).not.toContain(other.projectId);
+      expect(serialized).not.toContain(taskRef.reference.entityId);
+      expect(serialized).not.toContain(otherCompletion.taskRef.reference.entityId);
+    }
+  }, 240_000);
+
+  it("清洗结果读取幂等：同载荷重放不重复审计且撤权不重放历史成功", async () => {
+    const world = await fixture.createWorld({ suffix: "read-dup", documentKinds: ["csv"] });
+    await freezeIdentificationPreparation(world.pipeline.store, world, {
+      commandId: "c15-read-dup-freeze",
+      actor: "uploader",
+    });
+    const completion = await completeCleaningTask(world.pipeline, fixture, {
+      workerId: "c15-read-dup-worker",
+      projectId: world.projectId,
+    });
+    const taskRef = completion.taskRef;
+    const authorization = await world.authorizeEvidenceAccess(
+      "c15-read-dup",
+      world.sourceVersionRefs(),
+    );
+    const readCount = async (): Promise<string> => {
+      const rows = await fixture.postgres.adminPool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM audit.entries WHERE project_id = $1 AND action = $2",
+        [world.projectId, "engineering-data.read-data-cleaning-result"],
+      );
+      return rows.rows[0]!.count;
+    };
+    const first = await world.pipeline.store.readBoundResult({
+      projectId: world.projectId,
+      actorId: world.uploaderId,
+      requestId: "c15-read-dup",
+      requestedAt: authorization.decidedAt,
+      authorization,
+      taskRef,
+    });
+    expect(first.kind).toBe("ok");
+    if (first.kind !== "ok") return;
+    const afterFirst = await readCount();
+
+    const replay = await world.pipeline.store.readBoundResult({
+      projectId: world.projectId,
+      actorId: world.uploaderId,
+      requestId: "c15-read-dup",
+      requestedAt: authorization.decidedAt,
+      authorization,
+      taskRef,
+    });
+    expect(replay.kind).toBe("ok");
+    if (replay.kind !== "ok") return;
+    expect(replay.resultArtifactRef).toEqual(first.resultArtifactRef);
+    expect(replay.result.agentTaskRef.reference).toEqual(first.result.agentTaskRef.reference);
+    expect(await readCount()).toBe(afterFirst);
+
+    // 同一任务、同一授权、同一查询身份改传不同载荷（此处由请求时刻代表）必须冲突且无写入。
+    const receiptsBefore = await fixture.postgres.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM business.command_receipts WHERE project_id = $1 AND command_kind = $2",
+      [world.projectId, "engineering-data.read-data-cleaning-result.v1"],
+    );
+    const conflict = await world.pipeline.store.readBoundResult({
+      projectId: world.projectId,
+      actorId: world.uploaderId,
+      requestId: "c15-read-dup",
+      requestedAt: new Date(Date.parse(authorization.decidedAt) + 1_000).toISOString(),
+      authorization,
+      taskRef,
+    });
+    expect(conflict.kind).toBe("error");
+    if (conflict.kind !== "error") return;
+    expect(conflict.error["code"]).toBe("IDEMPOTENCY_CONFLICT");
+    expect(await readCount()).toBe(afterFirst);
+    const receiptsAfter = await fixture.postgres.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM business.command_receipts WHERE project_id = $1 AND command_kind = $2",
+      [world.projectId, "engineering-data.read-data-cleaning-result.v1"],
+    );
+    expect(receiptsAfter.rows[0]?.count).toBe(receiptsBefore.rows[0]?.count);
+
+    // 读键空间按任务隔离：跨任务复用同一查询身份返回同一类型化拒绝，不泄露目标存在性。
+    const foreign = await world.pipeline.store.readBoundResult({
+      projectId: world.projectId,
+      actorId: world.uploaderId,
+      requestId: "c15-read-dup",
+      requestedAt: authorization.decidedAt,
+      authorization,
+      taskRef: {
+        ...taskRef,
+        reference: { entityId: `${taskRef.reference.entityId}:other`, versionId: "1" },
+      },
+    });
+    expect(foreign.kind).toBe("error");
+    if (foreign.kind !== "error") return;
+    expect(foreign.error["code"]).toBe("AUTHORIZATION_DENIED");
+    expect(Object.keys(foreign.error).sort()).toEqual(
+      [
+        "authorizationPolicyRef",
+        "causalRunId",
+        "category",
+        "code",
+        "occurredAt",
+        "requiredCapability",
+        "retryable",
+        "stageCode",
+      ].sort(),
+    );
+    expect(JSON.stringify(foreign.error)).not.toContain("other");
+
+    // 撤权后先复验再放行：同键同载荷不得重放历史成功。
+    const project = await fixture.postgres.adminPool.query<{ access_version: number }>(
+      "SELECT access_version FROM business.access_projects WHERE project_id = $1",
+      [world.projectId],
+    );
+    await fixture.access.administerProject({
+      kind: "suspend-project",
+      projectId: world.projectId,
+      commandId: "c15-read-suspend",
+      idempotencyKey: "c15-read-suspend",
+      expectedVersion: {
+        entityId: world.projectId,
+        versionId: String(project.rows[0]!.access_version),
+      },
+      authorizationContextRef: fixture.administrationContextRef,
+    });
+    const revoked = await world.pipeline.store.readBoundResult({
+      projectId: world.projectId,
+      actorId: world.uploaderId,
+      requestId: "c15-read-dup",
+      requestedAt: authorization.decidedAt,
+      authorization,
+      taskRef,
+    });
+    expect(revoked.kind).toBe("error");
+    if (revoked.kind !== "error") return;
+    expect(revoked.error["code"]).toBe("AUTHORIZATION_DENIED");
+    expect(Object.keys(revoked.error)).not.toContain("resultArtifactRef");
+    expect(await readCount()).toBe(afterFirst);
   }, 300_000);
 
   it("replays the committed freeze with equal refs and keeps the old snapshot and result for new inputs", async () => {

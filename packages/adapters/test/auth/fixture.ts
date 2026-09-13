@@ -18,6 +18,7 @@ import * as assessmentConfigurationMigration from "../../src/postgres/migrations
 import * as identificationKnowledgeGovernanceMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-process-model-mechanism-and-evidence-governance/000020_identification_knowledge_governance.js";
 import * as agentCleaningPartialAvailabilityMigration from "../../src/postgres/migrations/engineering-data/deliver-agent-cleaning-and-partial-availability/000016_agent_cleaning_partial_availability.js";
 import * as engineeringDataReadQueryResultsMigration from "../../src/postgres/migrations/engineering-data/implement-engineering-data-read-branches/000024_engineering_data_read_query_results.js";
+import * as structuredScoringRulesMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-structured-scoring-rules-and-applicable-rule-sets/000028_structured_scoring_rules.js";
 import * as externalRiskEventRegistrationMigration from "../../src/postgres/migrations/engineering-data/implement-external-risk-event-registration/000036_external_risk_event_registration.js";
 
 export interface AuthPostgresFixture extends PostgresTestFixture {
@@ -61,6 +62,13 @@ export const startAuthPostgresFixture = async (): Promise<AuthPostgresFixture> =
         "engineering-data/implement-engineering-data-read-branches/000024_engineering_data_read_query_results.ts",
       ),
       engineeringDataReadQueryResultsMigration,
+    ],
+    [
+      resolve(
+        base.productionMigrationRoot,
+        "knowledge-modeling/deliver-structured-scoring-rules-and-applicable-rule-sets/000028_structured_scoring_rules.ts",
+      ),
+      structuredScoringRulesMigration,
     ],
     [
       resolve(

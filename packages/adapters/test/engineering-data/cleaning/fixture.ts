@@ -381,6 +381,8 @@ export interface CleaningMonitoringSetV1 {
 export interface CleaningWorldOptionsV1 {
   readonly suffix: string;
   readonly documentKinds?: readonly DocumentInputKindV1[];
+  /** Overrides the shared synthetic document set (used by C19's real-standard source). */
+  readonly documents?: readonly CleaningDocumentInputV1[];
   readonly monitoring?: boolean;
   /** Input kinds whose delivery is registered but whose C12 conversion is never run. */
   readonly unconverted?: readonly DocumentInputKindV1[];
@@ -414,7 +416,16 @@ export interface CleaningWorldV1 {
     invocationId: string,
     sourceVersionRefs?: readonly SourceVersionRefV1[],
   ): Promise<AuthorizationContextV1>;
-  /** C15 精确准备读取接缝所需的 `engineering-data.evidence-access` 分支授权。 */
+  /** 任意 C06 分支的真实会话授权（测试组合根用）。 */
+  authorizeBranch(
+    invocationId: string,
+    branch:
+      | "engineering-data.evidence-access"
+      | "knowledge-modeling.assessment-basis"
+      | "knowledge-modeling.submit-revision",
+    sourceVersionRefs?: readonly SourceVersionRefV1[],
+  ): Promise<AuthorizationContextV1>;
+  /** C15 精确准备与清洗结果读取接缝共用的 `engineering-data.evidence-access` 分支授权。 */
   authorizeEvidenceAccess(
     invocationId: string,
     sourceVersionRefs?: readonly SourceVersionRefV1[],
@@ -802,12 +813,10 @@ export const startDataCleaningFixture = async (
       now: () => new Date(CLEANING_TEST_TIMESTAMP),
     });
 
+    const availableDocuments = worldOptions.documents ?? (await cleaningDocumentInputs());
     const requestedKinds =
-      worldOptions.documentKinds ??
-      (await cleaningDocumentInputs()).map((input) => input.inputKind);
-    const inputs = (await cleaningDocumentInputs()).filter((input) =>
-      requestedKinds.includes(input.inputKind),
-    );
+      worldOptions.documentKinds ?? availableDocuments.map((input) => input.inputKind);
+    const inputs = availableDocuments.filter((input) => requestedKinds.includes(input.inputKind));
     const documents: ConvertedCleaningDocumentV1[] = [];
     const allSourceVersionRefs: SourceVersionRefV1[] = [];
     for (const input of inputs) {
@@ -1135,6 +1144,14 @@ export const startDataCleaningFixture = async (
           freezer,
           invocationId,
           "engineering-data.identification-preparation",
+          [spatialScopeRef],
+          sourceVersionRefs ?? allSourceVersionRefs,
+        ),
+      authorizeBranch: (invocationId, branch, sourceVersionRefs) =>
+        authorizeFor(
+          uploader,
+          invocationId,
+          branch,
           [spatialScopeRef],
           sourceVersionRefs ?? allSourceVersionRefs,
         ),

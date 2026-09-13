@@ -3,16 +3,22 @@ import type { ColumnType, Kysely, Selectable, Transaction } from "kysely";
 import type {
   AgentTaskResultRefV1,
   ContentArtifactRefV1,
+  ReviewDecisionRefV1,
   ReviewTaskRefV1,
+  RuleConflictRefV1,
   StartAgentTaskResultV1,
 } from "@riskflow/contracts/ports";
 import { DomainEventV1Schema, type DomainEventV1 } from "@riskflow/contracts/events";
 import {
   ContentArtifactRefV1Schema,
   ContractReferenceV1Schema,
+  KnowledgeReleaseRefV1Schema,
   KnowledgeResolutionResultV1Schema,
+  KnowledgeRevisionRefV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
   ModuleErrorV1Schema,
+  ReviewTaskRefV1Schema,
+  RuleConflictRefV1Schema,
   StartAgentTaskResultV1Schema,
   type AuthorizationContextV1,
   type ContractReferenceV1,
@@ -73,6 +79,7 @@ import type {
 import {
   APPLICABLE_RULE_SET_ARTIFACT_PURPOSE_CODE_V1,
   APPLICABLE_RULE_SET_MEDIA_TYPE_V1,
+  AssessmentBasisReleaseSetMembersV1Schema,
   AssessmentBasisReleaseSetV1Schema,
   AssessmentBasisReleaseSetReadResultV1Schema,
   AssessmentPreparationProjectionV1Schema,
@@ -81,7 +88,9 @@ import {
   ScoringRuleAuthoringCandidateV1Schema,
   ScoringRuleAuthoringManifestV1Schema,
   ScoringRuleError,
+  ScoringRuleRelationV1Schema,
   SCORING_RULES_ASSEMBLY_TARGET_REF_V1,
+  SCORING_RULES_BASIS_TARGET_REF_V1,
   SCORING_RULES_MAX_ARTIFACT_BYTES_V1,
   SCORING_RULES_SCHEMA_VERSION_V1,
   SCORING_RULE_AUTHORING_MANIFEST_PURPOSE_CODE_V1,
@@ -99,6 +108,7 @@ import {
   materializeScoringRuleDocument,
   projectApplicableRuleSetMembers,
   scoringRuleFailureFrom,
+  scoringRuleRelationSnapshotDigest,
   structuredScoringRuleDocumentDigest,
   validateScoringRuleOperations,
   type AssessmentBasisConfigurationMemberV1,
@@ -140,6 +150,11 @@ interface ScoringRuleRevisionMetadataRow {
   artifact_version_id: string;
   artifact_ref: JsonColumn;
   content_digest: string;
+  relation_digest: string;
+  base_release_id: string | null;
+  base_release_version_id: string | null;
+  base_release_ref: JsonColumn | null;
+  base_revision_ref: JsonColumn | null;
   item_count: number;
   command_id: string;
   audit_entry_id: string;
@@ -152,10 +167,21 @@ interface RuleRelationRow {
   relation_id: string;
   version_id: string;
   project_id: string;
+  revision_id: string;
+  revision_version_id: string;
   relation_kind: string;
   policy_ref: JsonColumn;
+  left_rule_id: string;
+  left_rule_version_id: string;
+  left_rule_version_ref: JsonColumn;
+  right_rule_id: string;
+  right_rule_version_id: string;
+  right_rule_version_ref: JsonColumn;
+  overlap: JsonColumn;
   overlap_digest: string;
-  status: string;
+  retained_rule_version_ref: JsonColumn | null;
+  excluded_rule_version_ref: JsonColumn | null;
+  evidence_references: JsonColumn;
   command_id: string;
   audit_entry_id: string;
   occurred_at: TimestampColumn;
@@ -171,8 +197,6 @@ interface RuleConflictReviewLinkRow {
   attempt: number;
   review_attempt_id: string;
   review_task_ref: JsonColumn;
-  decision_ref: JsonColumn | null;
-  status: string;
   command_id: string;
   audit_entry_id: string;
   occurred_at: TimestampColumn;
@@ -228,8 +252,8 @@ type ScoringRulesTransaction = Transaction<ScoringRulesDatabase>;
 
 const jsonbValue = (value: unknown): unknown => JSON.stringify(value) as unknown;
 
-const asIso = (value: Date | string): string =>
-  value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+const BASIS_READ_SUCCEEDED_ACTION = "knowledge.read-assessment-basis-release-set.succeeded";
+const BASIS_READ_UNAVAILABLE_ACTION = "knowledge.read-assessment-basis-release-set.unavailable";
 
 const asTransaction = (context: TransactionContextV1): ScoringRulesTransaction =>
   getPostgresTransaction(context) as unknown as ScoringRulesTransaction;
@@ -244,30 +268,38 @@ const asContractReference = (value: unknown): ContractReferenceV1 =>
 
 const moduleError = (
   value:
-    | { code: "AUTHORIZATION_DENIED"; branch: ModuleBranchV1; causalRunId: string }
-    | {
+    | ({
+        code: "AUTHORIZATION_DENIED";
+        branch: ModuleBranchV1;
+        causalRunId: string;
+      } & { occurredAt?: string })
+    | ({
         code: "ENTITY_NOT_FOUND" | "STALE_VERSION";
         targetRef: ContractReferenceV1;
         causalRunId: string;
-      }
-    | {
+      } & { occurredAt?: string })
+    | ({
         code: "BUSINESS_BLOCKED";
         blockerKind: string;
         blockerRef: ContractReferenceV1;
         causalRunId: string;
-      }
-    | {
+      } & { occurredAt?: string })
+    | ({
         code: "IDEMPOTENCY_CONFLICT";
         idempotencyKey: string;
         priorCommandId: string;
         causalRunId: string;
-      }
-    | { code: "UNSUPPORTED_CONTRACT"; causalRunId: string }
-    | { code: "TRANSIENT_FAILURE" | "TERMINAL_FAILURE"; causalRunId: string },
+      } & { occurredAt?: string })
+    | ({ code: "UNSUPPORTED_CONTRACT"; causalRunId: string } & { occurredAt?: string })
+    | ({
+        code: "TRANSIENT_FAILURE" | "TERMINAL_FAILURE";
+        causalRunId: string;
+      } & { occurredAt?: string }),
 ): ModuleErrorV1 => {
   const common = {
     stageCode: `scoring-rules.${value.code.toLowerCase()}`,
-    occurredAt: new Date().toISOString(),
+    // 同一请求重放必须得到逐字一致的结果：调用方可固定发生时刻（如请求时刻）。
+    occurredAt: value.occurredAt ?? new Date().toISOString(),
     causalRunId: IdentifierSchema.parse(value.causalRunId),
   };
   switch (value.code) {
@@ -425,6 +457,30 @@ export interface ScoringRulesConflictReviewLinkerV1 {
   >;
 }
 
+/**
+ * C07 精确规则冲突决定的读取接缝：由组合根注入 C07 concrete adapter 的窄读取方法，
+ * 不扩展公共 `ReviewAuditPortV1`，也不缓存 link 状态作为批准事实。
+ */
+export interface ScoringRulesConflictDecisionReaderV1 {
+  readRuleConflictDecision(input: {
+    readonly projectId: string;
+    readonly relationRef: RuleConflictRefV1;
+    readonly reviewTaskRef: ReviewTaskRefV1;
+    readonly authorization: AuthorizationContextV1;
+    readonly invocationId: string;
+    readonly requestedAt: string;
+  }): Promise<
+    | {
+        readonly kind: "decided";
+        readonly decision: "approve-publication" | "reject" | "return-for-revision";
+        readonly reviewDecisionRef: ReviewDecisionRefV1;
+        readonly decidedAt: string;
+      }
+    | { readonly kind: "pending" }
+    | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
+  >;
+}
+
 export interface PostgresScoringRulesAdapterOptionsV1 {
   readonly db: Kysely<PostgresDatabase>;
   readonly transactionUnit: TransactionUnitV1;
@@ -438,6 +494,7 @@ export interface PostgresScoringRulesAdapterOptionsV1 {
   readonly preparationSnapshot: AssessmentPreparationSnapshotReaderV1;
   readonly submitRevision: ScoringRulesRevisionSubmitterV1;
   readonly conflictReview?: ScoringRulesConflictReviewLinkerV1;
+  readonly conflictDecisions?: ScoringRulesConflictDecisionReaderV1;
   readonly startAgentTask: (
     request: ScoringRulesAgentTaskStartRequestV1,
   ) => Promise<StartAgentTaskResultV1>;
@@ -491,6 +548,7 @@ export class PostgresScoringRulesAdapter
   readonly #preparationSnapshot: AssessmentPreparationSnapshotReaderV1;
   readonly #submitRevision: ScoringRulesRevisionSubmitterV1;
   readonly #conflictReview: ScoringRulesConflictReviewLinkerV1 | undefined;
+  readonly #conflictDecisions: ScoringRulesConflictDecisionReaderV1 | undefined;
   readonly #startAgentTask: PostgresScoringRulesAdapterOptionsV1["startAgentTask"];
   readonly #policy: ScoringRulesPolicyV1;
   readonly #now: () => Date;
@@ -519,6 +577,7 @@ export class PostgresScoringRulesAdapter
     this.#preparationSnapshot = options.preparationSnapshot;
     this.#submitRevision = options.submitRevision;
     this.#conflictReview = options.conflictReview;
+    this.#conflictDecisions = options.conflictDecisions;
     this.#startAgentTask = options.startAgentTask;
     this.#policy = options.policy;
     this.#now = options.now ?? (() => new Date());
@@ -922,7 +981,8 @@ export class PostgresScoringRulesAdapter
         authorization: input.task.envelope.authorization,
       })
     ).map((indicatorId) => indicatorId);
-    const baseDocument = await this.#readBaseDocument(manifest, input.task);
+    const baseline = await this.#readBaselineRules({ manifest, task: input.task });
+    const baseDocument = baseline?.document;
     const existingRules = [...(baseDocument?.members ?? [])].map((member) => member.rule);
     const outcome = validateScoringRuleOperations({
       manifest,
@@ -975,7 +1035,7 @@ export class PostgresScoringRulesAdapter
       requestId: `${input.task.envelope.commandId}:finalize-indicators`,
       authorization: input.task.envelope.authorization,
     });
-    const baseDocument = await this.#readBaseDocument(manifest, input.task);
+    const baseDocument = (await this.#readBaselineRules({ manifest, task: input.task }))?.document;
     const outcome = validateScoringRuleOperations({
       manifest,
       policy: this.#policy,
@@ -1031,6 +1091,13 @@ export class PostgresScoringRulesAdapter
         asContractReference(input.task.envelope.agentTaskRef),
       );
     }
+    // 修订与全部关系事实已随 C16 提交事务耐久；此处只按稳定身份补 C07 task/link。
+    await this.#ensureConflictReviewLinks({
+      projectId: input.task.envelope.projectId,
+      revisionRef: submitted.revisionRef,
+      authorization: input.task.envelope.authorization,
+      issuedAt: input.task.envelope.createdAt,
+    });
     return {
       kind: "agent-task-result",
       reference: {
@@ -1053,25 +1120,69 @@ export class PostgresScoringRulesAdapter
         await this.#readJson(artifactRef, {
           projectId: command.projectId,
           actorId: command.authorization.actorId,
-          requestId: `${command.projectId}:scoring-rule-revision`,
+          requestId: `${command.projectId}:scoring-rule-revision:${artifactRef.reference.entityId}:${artifactRef.reference.versionId}`,
           requestedAt: authorization.decidedAt,
           authorization,
           purposeCode: STRUCTURED_SCORING_RULE_ARTIFACT_PURPOSE_CODE_V1,
         }),
       );
+      const contentDigest = structuredScoringRuleDocumentDigest(document);
+      const task = await this.#taskStore.getTask(document.agentTaskRef);
+      if (task === undefined) {
+        failScoringRule(
+          "scoring-rule-source-unavailable",
+          asContractReference(document.agentTaskRef),
+          "TERMINAL_FAILURE",
+        );
+      }
+      const { manifest } = await this.loadAuthoringManifest(task);
+      const declaredBase = manifest.baseRuleReleaseRef;
+      if (
+        (command.baseReleaseRef === undefined) !== (declaredBase === undefined) ||
+        (command.baseReleaseRef !== undefined &&
+          declaredBase !== undefined &&
+          !sameVersion(command.baseReleaseRef.reference, declaredBase.reference))
+      ) {
+        failScoringRule(
+          "scoring-rule-base-version-conflict",
+          asContractReference(command.baseReleaseRef ?? command.candidateArtifactRef),
+          "STALE_VERSION",
+        );
+      }
+      const baseline = await this.#readBaselineRules({ manifest, task });
+      const relationSnapshot = detectRuleRelations({
+        policyRef: this.#policy.conflictPriorityPolicyRef,
+        candidateContentDigest: contentDigest,
+        candidates: document.members.map((member) => ({
+          rule: member.rule,
+          sourceVersionRef: member.binding.sourceVersionRef,
+        })),
+        ...(baseline === undefined
+          ? {}
+          : {
+              baseline: baseline.document.members.map((member) => ({
+                rule: member.rule,
+                sourceVersionRef: member.binding.sourceVersionRef,
+              })),
+              baseReleaseRef: baseline.releaseRef,
+              baseRevisionRef: baseline.revisionRef,
+            }),
+        standardKindRank: [...this.#policy.allowedSourceStandardKinds],
+      });
       return {
         definitionType: command.definitionType,
         projectRevisionRef: document.projectRevisionRef,
         compatibilityRef: document.compatibilityRef,
-        contentDigest: structuredScoringRuleDocumentDigest(document),
+        contentDigest,
         itemCount: document.members.length,
+        relationSnapshot,
       };
     }
     const document = ApplicableRuleSetDocumentV1Schema.parse(
       await this.#readJson(artifactRef, {
         projectId: command.projectId,
         actorId: command.authorization.actorId,
-        requestId: `${command.projectId}:applicable-rule-set-revision`,
+        requestId: `${command.projectId}:applicable-rule-set-revision:${artifactRef.reference.entityId}:${artifactRef.reference.versionId}`,
         requestedAt: authorization.decidedAt,
         authorization,
         purposeCode: APPLICABLE_RULE_SET_ARTIFACT_PURPOSE_CODE_V1,
@@ -1092,6 +1203,14 @@ export class PostgresScoringRulesAdapter
   ): Promise<void> {
     const transaction = asTransaction(context);
     if (input.definitionType === "structured-scoring-rule") {
+      const snapshot = input.prepared.relationSnapshot;
+      if (
+        snapshot === undefined ||
+        snapshot.candidateContentDigest !== input.prepared.contentDigest ||
+        !sameVersion(snapshot.policyRef, this.#policy.conflictPriorityPolicyRef)
+      ) {
+        failScoringRule("scoring-rule-revision-unverified", asContractReference(input.revisionRef));
+      }
       await transaction
         .insertInto("business.scoring_rule_revision_metadata")
         .values({
@@ -1105,6 +1224,13 @@ export class PostgresScoringRulesAdapter
           artifact_version_id: input.candidateArtifactRef.reference.versionId,
           artifact_ref: jsonbValue(input.candidateArtifactRef),
           content_digest: input.prepared.contentDigest,
+          relation_digest: snapshot.relationDigest,
+          base_release_id: snapshot.baseReleaseRef?.reference.entityId ?? null,
+          base_release_version_id: snapshot.baseReleaseRef?.reference.versionId ?? null,
+          base_release_ref:
+            snapshot.baseReleaseRef === undefined ? null : jsonbValue(snapshot.baseReleaseRef),
+          base_revision_ref:
+            snapshot.baseRevisionRef === undefined ? null : jsonbValue(snapshot.baseRevisionRef),
           item_count: input.prepared.itemCount,
           command_id: input.commandId,
           audit_entry_id: input.auditEntryId,
@@ -1114,6 +1240,48 @@ export class PostgresScoringRulesAdapter
         })
         .onConflict((conflict) => conflict.columns(["revision_id", "version_id"]).doNothing())
         .execute();
+      // 全部关系事实与 C16 revision 同事务耐久；同一 revision+关系身份只写一次。
+      for (const relation of snapshot.relations) {
+        await transaction
+          .insertInto("business.rule_relations")
+          .values({
+            relation_id: relation.relationId,
+            version_id: "1",
+            project_id: input.projectId,
+            revision_id: input.revisionRef.reference.entityId,
+            revision_version_id: input.revisionRef.reference.versionId,
+            relation_kind: relation.relationKind,
+            policy_ref: jsonbValue(relation.policyRef),
+            left_rule_id: relation.leftRuleId,
+            left_rule_version_id: relation.leftRuleVersion.entityId,
+            left_rule_version_ref: jsonbValue(relation.leftRuleVersion),
+            right_rule_id: relation.rightRuleId,
+            right_rule_version_id: relation.rightRuleVersion.entityId,
+            right_rule_version_ref: jsonbValue(relation.rightRuleVersion),
+            overlap: jsonbValue(relation.overlap),
+            overlap_digest: relation.overlapDigest,
+            retained_rule_id: relation.retainedRuleVersionRef?.entityId ?? null,
+            retained_rule_version_id: relation.retainedRuleVersionRef?.versionId ?? null,
+            retained_rule_version_ref:
+              relation.retainedRuleVersionRef === undefined
+                ? null
+                : jsonbValue(relation.retainedRuleVersionRef),
+            excluded_rule_id: relation.excludedRuleVersionRef?.entityId ?? null,
+            excluded_rule_version_id: relation.excludedRuleVersionRef?.versionId ?? null,
+            excluded_rule_version_ref:
+              relation.excludedRuleVersionRef === undefined
+                ? null
+                : jsonbValue(relation.excludedRuleVersionRef),
+            evidence_references: jsonbValue(relation.evidenceReferences),
+            command_id: input.commandId,
+            audit_entry_id: input.auditEntryId,
+            occurred_at: input.persistedAt,
+            recorded_at: input.persistedAt,
+            persisted_at: input.persistedAt,
+          } as never)
+          .onConflict((conflict) => conflict.columns(["relation_id", "version_id"]).doNothing())
+          .execute();
+      }
       return;
     }
     await transaction
@@ -1161,13 +1329,34 @@ export class PostgresScoringRulesAdapter
         targetRef: asContractReference(input.revisionRef),
       });
     }
+    // 进入 C16 人工审核前：关系事实、快照摘要、比较基线与全部 C07 决定必须精确闭合。
+    if (metadata.definitionType === "structured-scoring-rule") {
+      await this.#assertRelationGate({
+        projectId: input.projectId,
+        revisionRef: input.revisionRef,
+        authorization: input.authorization,
+        db: this.#db,
+        requestedAt: this.#now().toISOString(),
+        ...(input.baseReleaseRef === undefined
+          ? {}
+          : { declaredBaseReleaseRef: input.baseReleaseRef }),
+        ...(input.baseRevisionRef === undefined
+          ? {}
+          : { declaredBaseRevisionRef: input.baseRevisionRef }),
+      });
+    }
   }
 
   async appendRelease(
-    _context: TransactionContextV1,
+    context: TransactionContextV1,
     input: ScoringRuleReleaseAppendV1,
   ): Promise<DomainEventV1[]> {
-    const metadata = await this.#findRevisionMetadata(input.command.projectId, input.revisionRef);
+    const transaction = asTransaction(context);
+    const metadata = await this.#findRevisionMetadata(
+      input.command.projectId,
+      input.revisionRef,
+      transaction,
+    );
     if (
       metadata === undefined ||
       metadata.definitionType !== input.definitionType ||
@@ -1179,6 +1368,25 @@ export class PostgresScoringRulesAdapter
         reasonCode: "scoring-rule-revision-unverified",
         targetRef: asContractReference(input.revisionRef),
       });
+    }
+    if (input.definitionType === "structured-scoring-rule") {
+      // 只有发布新 release 才重跑最终门禁：回滚复用既有已闭合修订，重新按基线漂移判断会误拦回滚。
+      if (input.command.kind === "publish-approved-release") {
+        await this.#assertRelationGate({
+          projectId: input.command.projectId,
+          revisionRef: input.revisionRef,
+          authorization: input.command.authorization,
+          db: transaction,
+          requestedAt: input.command.issuedAt,
+          ...(input.command.baseReleaseRef === undefined
+            ? {}
+            : { declaredBaseReleaseRef: input.command.baseReleaseRef }),
+          ...(input.command.baseRevisionRef === undefined
+            ? {}
+            : { declaredBaseRevisionRef: input.command.baseRevisionRef }),
+        });
+      }
+      return [];
     }
     if (input.definitionType !== "applicable-rule-set") return [];
     return [
@@ -1278,6 +1486,11 @@ export class PostgresScoringRulesAdapter
         });
       }
       const candidates = [];
+      const relations: ScoringRuleRelationV1[] = [];
+      const approvedConflicts: {
+        retainedRuleVersionRef: VersionReference;
+        excludedRuleVersionRef: VersionReference;
+      }[] = [];
       for (const member of releases.result.members) {
         if (member.definitionType !== "structured-scoring-rule") {
           failScoringRule(
@@ -1324,22 +1537,74 @@ export class PostgresScoringRulesAdapter
             contentDigest: metadata.contentDigest,
           });
         }
+        // 组装只消费发布前已闭合的关系事实：正文不再触发检测，也不再创建 C07 任务。
+        const persistedRelations = await this.#findRevisionRelations(
+          request.projectId,
+          member.revisionRef,
+        );
+        if (
+          metadata.relationDigest === undefined ||
+          scoringRuleRelationSnapshotDigest({
+            policyRef: this.#policy.conflictPriorityPolicyRef,
+            candidateContentDigest: metadata.contentDigest,
+            ...(metadata.baseReleaseRef === undefined
+              ? {}
+              : { baseReleaseRef: metadata.baseReleaseRef }),
+            ...(metadata.baseRevisionRef === undefined
+              ? {}
+              : { baseRevisionRef: metadata.baseRevisionRef }),
+            relations: persistedRelations,
+          }) !== metadata.relationDigest
+        ) {
+          failScoringRule(
+            "scoring-rule-relation-unresolved",
+            asContractReference(member.releaseRef),
+          );
+        }
+        for (const relation of persistedRelations) {
+          relations.push(relation);
+          if (relation.relationKind !== "conflict") continue;
+          // 已发布修订的冲突都必须有精确批准：仍从 C07 当前决定事实逐条复验。
+          if (
+            relation.retainedRuleVersionRef === undefined ||
+            relation.excludedRuleVersionRef === undefined
+          ) {
+            failScoringRule(
+              "scoring-rule-relation-unresolved",
+              asContractReference(member.releaseRef),
+            );
+          }
+          const link = await this.#findReviewLink(request.projectId, relation.relationId);
+          const reader = this.#conflictDecisions;
+          if (link === undefined || reader === undefined) {
+            failScoringRule(
+              "scoring-rule-relation-unresolved",
+              asContractReference(member.releaseRef),
+            );
+          }
+          const decision = await reader.readRuleConflictDecision({
+            projectId: request.projectId,
+            relationRef: RuleConflictRefV1Schema.parse(link.reviewTaskRef.targetRef),
+            reviewTaskRef: link.reviewTaskRef,
+            authorization,
+            invocationId: `scoring-rule-conflict-assembly-${relation.relationId.slice(0, 32)}`,
+            requestedAt: request.requestedAt,
+          });
+          if (decision.kind !== "decided" || decision.decision !== "approve-publication") {
+            failScoringRule(
+              "scoring-rule-relation-unresolved",
+              asContractReference(member.releaseRef),
+            );
+          }
+          approvedConflicts.push({
+            retainedRuleVersionRef: relation.retainedRuleVersionRef,
+            excludedRuleVersionRef: relation.excludedRuleVersionRef,
+          });
+        }
       }
       if (candidates.length === 0) {
         failScoringRule("scoring-rule-set-incomplete", SCORING_RULES_ASSEMBLY_TARGET_REF_V1);
       }
-      const relations = detectRuleRelations({
-        policyRef: this.#policy.conflictPriorityPolicyRef,
-        candidates: candidates.map((candidate) => ({
-          rule: candidate.member.rule,
-          sourceVersionRef: candidate.member.binding.sourceVersionRef,
-        })),
-      });
-      const approvedConflicts = await this.#ensureConflictReviewLinks({
-        request,
-        authorization,
-        relations,
-      });
       const document = assembleApplicableRuleSet({
         projectRevisionRef: request.projectRevisionRef,
         applicabilitySnapshotRef: request.applicabilitySnapshotRef,
@@ -1394,69 +1659,6 @@ export class PostgresScoringRulesAdapter
         }),
       });
     }
-  }
-
-  /** 每个未决冲突都先耐久记录，再由 C07 幂等创建审阅任务并回填链接。 */
-  async #ensureConflictReviewLinks(input: {
-    readonly request: AssembleApplicableRuleSetV1;
-    readonly authorization: AuthorizationContextV1;
-    readonly relations: readonly ScoringRuleRelationV1[];
-  }): Promise<
-    readonly {
-      retainedRuleVersionRef: VersionReference;
-      excludedRuleVersionRef: VersionReference;
-    }[]
-  > {
-    const approved: {
-      retainedRuleVersionRef: VersionReference;
-      excludedRuleVersionRef: VersionReference;
-    }[] = [];
-    for (const relation of input.relations) {
-      if (relation.relationKind !== "conflict") continue;
-      const existing = await this.#findReviewLink(input.request.projectId, relation.relationId);
-      if (existing === undefined) {
-        await this.#appendRelation(input.request, input.authorization, relation);
-        if (this.#conflictReview === undefined) {
-          failScoringRule(
-            "scoring-rule-relation-unresolved",
-            asContractReference(input.request.projectRevisionRef),
-          );
-        }
-        const created = await this.#conflictReview.ensureConflictReviewTask({
-          projectId: input.request.projectId,
-          relation,
-          authorization: input.authorization,
-          commandId: `${input.request.requestId}:conflict:${relation.relationId}`,
-          idempotencyKey: `${input.request.idempotencyKey}:conflict:${relation.relationId}`,
-          issuedAt: input.request.requestedAt,
-        });
-        if (created.kind === "failed") {
-          failScoringRule(
-            "scoring-rule-relation-unresolved",
-            asContractReference(input.request.projectRevisionRef),
-          );
-        }
-        await this.#appendReviewLink(input.request, input.authorization, relation, created);
-      }
-      const link =
-        existing ?? (await this.#findReviewLink(input.request.projectId, relation.relationId));
-      if (link?.status !== "approved") {
-        failScoringRule(
-          "scoring-rule-relation-unresolved",
-          asContractReference(input.request.projectRevisionRef),
-        );
-      }
-      const retained = relation.retainedRuleVersionRef;
-      const excluded = relation.excludedRuleVersionRef;
-      if (retained === undefined || excluded === undefined) {
-        failScoringRule(
-          "scoring-rule-relation-unresolved",
-          asContractReference(input.request.projectRevisionRef),
-        );
-      }
-      approved.push({ retainedRuleVersionRef: retained, excludedRuleVersionRef: excluded });
-    }
-    return approved;
   }
 
   // ------------------------------------------------------ public basis resolve
@@ -1727,82 +1929,140 @@ export class PostgresScoringRulesAdapter
   // ------------------------------------------------------ bounded member read
 
   /**
-   * D-14 成员读取：授权复验先于单点查询；缺失/跨工程/撤权/不存在统一不可枚举拒绝，
-   * 成功与不可用结果都以只追加审计进入既有 C03 回执。
+   * D-14 成员读取：授权复验先于 C03 回执查询与单点读取；工程与 actor 只取 C06 验证结果，
+   * 缺失/跨工程/成员不符/撤权统一不可枚举拒绝；成功与不可用结果各自以一条只追加审计进入 C03 回执。
    */
   async readAssessmentBasisReleaseSet(
     input: ReadAssessmentBasisReleaseSetV1,
   ): Promise<AssessmentBasisReleaseSetReadResultV1> {
-    const requestedAt = input.requestedAt;
+    let authorization: AuthorizationContextV1;
     try {
-      const authorization = await this.#verifyAuthorization({
-        authorization: input.authorization,
-        projectId: input.projectId,
-        requestId: input.requestId,
-        requestedAt,
-      });
-      const row = await this.#db
-        .selectFrom("business.assessment_basis_release_sets")
-        .selectAll()
-        .where("project_id", "=", input.projectId)
-        .where("set_id", "=", input.assessmentBasisReleaseSetRef.reference.entityId)
-        .where("version_id", "=", input.assessmentBasisReleaseSetRef.reference.versionId)
-        .executeTakeFirst();
-      if (row === undefined) {
-        return this.#basisUnavailable(input);
-      }
-      const releaseSet = AssessmentBasisReleaseSetV1Schema.parse({
-        schemaVersion: "1",
-        projectId: row.project_id,
-        assessmentBasisReleaseSetRef: input.assessmentBasisReleaseSetRef,
-        preparationSnapshotRef: row.preparation_snapshot_ref,
-        applicabilitySnapshotRef: row.applicability_snapshot_ref,
-        applicableRuleSetReleaseRef: row.applicable_rule_set_release_ref,
-        configurationSetRef: row.configuration_set_ref,
-        requiredAt: asIso(row.required_at),
-        issuedAt: asIso(row.issued_at),
-        memberDigest: row.member_digest,
-        members:
-          typeof row.member_snapshot === "string"
-            ? JSON.parse(row.member_snapshot)
-            : row.member_snapshot,
-        recordedAt: asIso(row.recorded_at),
-      });
-      if (
-        releaseSet.projectId !== input.projectId ||
-        assessmentBasisMemberDigest(releaseSet.members) !== row.member_digest
-      ) {
-        return this.#basisUnavailable(input);
-      }
-      const recordedAt = this.#now().toISOString();
-      const resultRef = input.assessmentBasisReleaseSetRef;
-      const action = "knowledge.read-assessment-basis-release-set.succeeded";
-      await this.#appendReadReceipt({
-        input,
-        authorization,
-        resultRef,
-        action,
-        recordedAt,
-        payload: {
-          assessmentBasisReleaseSetRef: input.assessmentBasisReleaseSetRef,
-          memberDigest: releaseSet.memberDigest,
-        },
-      });
-      return AssessmentBasisReleaseSetReadResultV1Schema.parse({
-        kind: "succeeded",
-        releaseSet,
-      });
+      authorization = await this.#verifyReaderAuthorization(input);
     } catch (error) {
-      const failure = scoringRuleFailureFrom(error);
       const access = resolveAccessFailure(error);
-      if (failure === undefined && access === undefined) {
+      if (access !== undefined && access.details.retryable) {
         return AssessmentBasisReleaseSetReadResultV1Schema.parse({
-          kind: "unavailable",
+          kind: "failed",
           error: moduleError({ code: "TRANSIENT_FAILURE", causalRunId: input.requestId }),
         });
       }
+      // 授权复验失败只由 C06 记录安全拒绝：C19 不以未验证身份写领域审计或回执。
       return this.#basisUnavailable(input);
     }
+    try {
+      const atomic = atomicCommandFor(
+        {
+          requestId: input.requestId,
+          idempotencyKey: input.idempotencyKey,
+          projectId: authorization.projectId,
+          actorId: authorization.actorId,
+          issuedAt: input.requestedAt,
+          authorization,
+        },
+        "knowledge.read-assessment-basis-release-set.v1",
+        { assessmentBasisReleaseSetRef: input.assessmentBasisReleaseSetRef },
+      );
+      const receipt = await this.#transactionUnit.execute(
+        atomic,
+        async (context): Promise<AtomicCommitV1> =>
+          this.#basisReadCommit(context, input, authorization),
+      );
+      const auditRow = await this.#db
+        .selectFrom("audit.entries")
+        .select(["action"])
+        .where("audit_entry_id", "=", receipt.auditEntryId)
+        .executeTakeFirst();
+      if (auditRow?.action === BASIS_READ_UNAVAILABLE_ACTION) {
+        return this.#basisUnavailable(input);
+      }
+      if (auditRow?.action !== BASIS_READ_SUCCEEDED_ACTION) {
+        return this.#basisReadFailed(input.requestId, "TRANSIENT_FAILURE");
+      }
+      const row = await this.#db
+        .selectFrom("business.assessment_basis_release_sets")
+        .selectAll()
+        .where("project_id", "=", authorization.projectId)
+        .where("set_id", "=", input.assessmentBasisReleaseSetRef.reference.entityId)
+        .where("version_id", "=", input.assessmentBasisReleaseSetRef.reference.versionId)
+        .executeTakeFirst();
+      const projection =
+        row === undefined
+          ? undefined
+          : basisMemberProjection(row, input.assessmentBasisReleaseSetRef);
+      if (projection === undefined) {
+        return this.#basisReadFailed(input.requestId, "TRANSIENT_FAILURE");
+      }
+      return AssessmentBasisReleaseSetReadResultV1Schema.parse(projection);
+    } catch (error) {
+      const mapped = mapPostgresError(error, "scoring-rules.basis-read");
+      if (mapped.code === "IDEMPOTENCY_CONFLICT") {
+        return AssessmentBasisReleaseSetReadResultV1Schema.parse({
+          kind: "failed",
+          error: moduleError({
+            code: "IDEMPOTENCY_CONFLICT",
+            idempotencyKey: input.idempotencyKey,
+            priorCommandId: input.requestId,
+            causalRunId: input.requestId,
+          }),
+        });
+      }
+      return this.#basisReadFailed(
+        input.requestId,
+        mapped.retryable || mapped.code === "CONNECTION_FAILED"
+          ? "TRANSIENT_FAILURE"
+          : "TERMINAL_FAILURE",
+      );
+    }
+  }
+
+  /** 首次执行或重放都由同一事务形成结果；回放时 C03 直接返回既有回执。 */
+  async #basisReadCommit(
+    context: TransactionContextV1,
+    input: ReadAssessmentBasisReleaseSetV1,
+    authorization: AuthorizationContextV1,
+  ): Promise<AtomicCommitV1> {
+    const transaction = asTransaction(context);
+    const recordedAt = this.#now().toISOString();
+    const row = await transaction
+      .selectFrom("business.assessment_basis_release_sets")
+      .selectAll()
+      .where("project_id", "=", authorization.projectId)
+      .where("set_id", "=", input.assessmentBasisReleaseSetRef.reference.entityId)
+      .where("version_id", "=", input.assessmentBasisReleaseSetRef.reference.versionId)
+      .executeTakeFirst();
+    const projection =
+      row === undefined
+        ? undefined
+        : basisMemberProjection(row, input.assessmentBasisReleaseSetRef);
+    const action =
+      projection === undefined ? BASIS_READ_UNAVAILABLE_ACTION : BASIS_READ_SUCCEEDED_ACTION;
+    return {
+      resultRef: input.assessmentBasisReleaseSetRef,
+      audit: {
+        auditEntryId: `${input.requestId}:${action}`,
+        projectId: authorization.projectId,
+        action,
+        targetRef: input.assessmentBasisReleaseSetRef,
+        actorRef: authorization.actorId,
+        authorizationContextRef: authorization.authorizationContextRef,
+        occurredAt: input.requestedAt,
+        recordedAt,
+        version: input.assessmentBasisReleaseSetRef.reference,
+        commandId: input.requestId,
+        idempotencyKey: input.idempotencyKey,
+      },
+      events: [],
+    };
+  }
+
+  #basisReadFailed(
+    causalRunId: string,
+    code: "TRANSIENT_FAILURE" | "TERMINAL_FAILURE",
+  ): AssessmentBasisReleaseSetReadResultV1 {
+    return AssessmentBasisReleaseSetReadResultV1Schema.parse({
+      kind: "failed",
+      error: moduleError({ code, causalRunId }),
+    });
   }
 
   #basisUnavailable(input: ReadAssessmentBasisReleaseSetV1): AssessmentBasisReleaseSetReadResultV1 {
@@ -1812,39 +2072,37 @@ export class PostgresScoringRulesAdapter
         code: "AUTHORIZATION_DENIED",
         branch: "knowledge-modeling.assessment-basis",
         causalRunId: input.requestId,
+        // 同一请求载荷重放必须逐字一致：不可用结果固定以请求时刻为准。
+        occurredAt: input.requestedAt,
       }),
     });
   }
 
-  async #appendReadReceipt(input: {
-    readonly input: ReadAssessmentBasisReleaseSetV1;
-    readonly authorization: AuthorizationContextV1;
-    readonly resultRef: ReadAssessmentBasisReleaseSetV1["assessmentBasisReleaseSetRef"];
-    readonly action: string;
-    readonly recordedAt: string;
-    readonly payload: Record<string, unknown>;
-  }): Promise<void> {
-    const atomic = atomicCommandFor(input.input, "knowledge.read-assessment-basis-release-set.v1", {
-      ...input.payload,
-      action: input.action,
+  /**
+   * 成员读取固定按 `knowledge-modeling.assessment-basis` 对授权上下文做当前事实复验；
+   * 不枚举 capability 对应的其它 branch，也不接受调用方自报工程或 actor。
+   */
+  async #verifyReaderAuthorization(
+    input: ReadAssessmentBasisReleaseSetV1,
+  ): Promise<AuthorizationContextV1> {
+    const capability = input.authorization.grantedCapabilities[0];
+    if (capability !== MODULE_BRANCH_CAPABILITY_V1["knowledge-modeling.assessment-basis"]) {
+      throw new ScoringRuleError({
+        code: "AUTHORIZATION_DENIED",
+        reasonCode: "scoring-rule-capability-required",
+        targetRef: SCORING_RULES_BASIS_TARGET_REF_V1,
+      });
+    }
+    const decision = await this.#access.verify({
+      authorizationContextRef: input.authorization.authorizationContextRef,
+      invocationId: input.requestId,
+      projectId: input.authorization.projectId,
+      branch: "knowledge-modeling.assessment-basis",
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [],
+      requestedAt: input.requestedAt,
     });
-    await this.#transactionUnit.execute(atomic, async (): Promise<AtomicCommitV1> => ({
-      resultRef: input.resultRef,
-      audit: {
-        auditEntryId: `${input.input.requestId}:${input.action}`,
-        projectId: input.input.projectId,
-        action: input.action,
-        targetRef: input.resultRef,
-        actorRef: input.input.actorId,
-        authorizationContextRef: input.authorization.authorizationContextRef,
-        occurredAt: input.input.requestedAt,
-        recordedAt: input.recordedAt,
-        version: input.resultRef.reference,
-        commandId: input.input.requestId,
-        idempotencyKey: input.input.idempotencyKey,
-      },
-      events: [],
-    }));
+    return decision.context;
   }
 
   // ------------------------------------------------------------------ helpers
@@ -1904,25 +2162,28 @@ export class PostgresScoringRulesAdapter
   async #findRevisionMetadata(
     projectId: string,
     revisionRef: KnowledgeRevisionRefV1,
-  ): Promise<
-    | {
-        readonly definitionType: string;
-        readonly artifactRef: ContentArtifactRefV1;
-        readonly contentDigest: string;
-        readonly projectRevisionRef: JsonColumn;
-        readonly compatibilityRef: VersionReference;
-      }
-    | undefined
-  > {
-    const ruleRow = await this.#db
+    db: Kysely<ScoringRulesDatabase> = this.#db,
+  ): Promise<RevisionMetadataView | undefined> {
+    const ruleRow = await db
       .selectFrom("business.scoring_rule_revision_metadata")
       .selectAll()
       .where("project_id", "=", projectId)
       .where("revision_id", "=", revisionRef.reference.entityId)
       .where("version_id", "=", revisionRef.reference.versionId)
       .executeTakeFirst();
-    if (ruleRow !== undefined) return revisionMetadataFromRow(ruleRow);
-    const setRow = await this.#db
+    if (ruleRow !== undefined) {
+      return {
+        ...revisionMetadataFromRow(ruleRow),
+        relationDigest: ruleRow.relation_digest,
+        ...(ruleRow.base_release_ref === null
+          ? {}
+          : { baseReleaseRef: KnowledgeReleaseRefV1Schema.parse(ruleRow.base_release_ref) }),
+        ...(ruleRow.base_revision_ref === null
+          ? {}
+          : { baseRevisionRef: KnowledgeRevisionRefV1Schema.parse(ruleRow.base_revision_ref) }),
+      };
+    }
+    const setRow = await db
       .selectFrom("business.applicable_rule_set_revision_metadata")
       .selectAll()
       .where("project_id", "=", projectId)
@@ -1932,103 +2193,179 @@ export class PostgresScoringRulesAdapter
     return setRow === undefined ? undefined : revisionMetadataFromRow(setRow);
   }
 
-  async #appendRelation(
-    request: AssembleApplicableRuleSetV1,
-    authorization: AuthorizationContextV1,
-    relation: ScoringRuleRelationV1,
-  ): Promise<void> {
-    const recordedAt = this.#now().toISOString();
-    const auditEntryId = `${request.requestId}:relation:${relation.relationId}`;
-    const atomic = atomicCommandFor(request, "knowledge.record-rule-relation.v1", {
-      relationId: relation.relationId,
-      relationKind: relation.relationKind,
-      overlapDigest: relation.overlapDigest,
-    });
-    await this.#transactionUnit.execute(atomic, async (context): Promise<AtomicCommitV1> => {
-      const transaction = asTransaction(context);
-      await transaction
-        .insertInto("business.rule_relations")
-        .values({
-          relation_id: relation.relationId,
-          version_id: "1",
-          project_id: request.projectId,
-          relation_kind: relation.relationKind,
-          policy_ref: jsonbValue(relation.policyRef),
-          left_rule_id: relation.leftRuleId,
-          left_rule_version_id: relation.leftRuleVersion.entityId,
-          left_rule_version_ref: jsonbValue(relation.leftRuleVersion),
-          right_rule_id: relation.rightRuleId,
-          right_rule_version_id: relation.rightRuleVersion.entityId,
-          right_rule_version_ref: jsonbValue(relation.rightRuleVersion),
-          overlap: jsonbValue(relation.overlap),
-          overlap_digest: relation.overlapDigest,
-          retained_rule_id: relation.retainedRuleVersionRef?.entityId ?? null,
-          retained_rule_version_id: relation.retainedRuleVersionRef?.versionId ?? null,
-          retained_rule_version_ref:
-            relation.retainedRuleVersionRef === undefined
-              ? null
-              : jsonbValue(relation.retainedRuleVersionRef),
-          excluded_rule_id: relation.excludedRuleVersionRef?.entityId ?? null,
-          excluded_rule_version_id: relation.excludedRuleVersionRef?.versionId ?? null,
-          excluded_rule_version_ref:
-            relation.excludedRuleVersionRef === undefined
-              ? null
-              : jsonbValue(relation.excludedRuleVersionRef),
-          evidence_references: jsonbValue(relation.evidenceReferences),
-          status: "pending",
-          command_id: request.requestId,
-          audit_entry_id: auditEntryId,
-          occurred_at: request.requestedAt,
-          recorded_at: recordedAt,
-          persisted_at: recordedAt,
-        } as never)
-        .onConflict((conflict) => conflict.columns(["relation_id", "version_id"]).doNothing())
-        .execute();
-      return {
-        resultRef: {
-          kind: "knowledge-revision",
-          reference: { entityId: `relation:${relation.relationId}`, versionId: "1" },
-        },
-        audit: {
-          auditEntryId,
-          projectId: request.projectId,
-          action: "knowledge.record-rule-relation",
-          targetRef: {
-            kind: "knowledge-revision",
-            reference: { entityId: `relation:${relation.relationId}`, versionId: "1" },
-          },
-          actorRef: request.actorId,
-          authorizationContextRef: authorization.authorizationContextRef,
-          occurredAt: request.requestedAt,
-          recordedAt,
-          version: { entityId: `relation:${relation.relationId}`, versionId: "1" },
-          commandId: request.requestId,
-          idempotencyKey: atomic.idempotencyKey,
-        },
-        events: [],
-      };
-    });
+  /** 结构化规则修订的关系事实：只读单点，供门禁与组装共用。 */
+  async #findRevisionRelations(
+    projectId: string,
+    revisionRef: KnowledgeRevisionRefV1,
+    db: Kysely<ScoringRulesDatabase> = this.#db,
+  ): Promise<readonly ScoringRuleRelationV1[]> {
+    const rows = await db
+      .selectFrom("business.rule_relations")
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where("revision_id", "=", revisionRef.reference.entityId)
+      .where("revision_version_id", "=", revisionRef.reference.versionId)
+      .orderBy("relation_id", "asc")
+      .execute();
+    return rows.map((row) => relationFromRow(row));
   }
 
-  async #appendReviewLink(
-    request: AssembleApplicableRuleSetV1,
-    authorization: AuthorizationContextV1,
-    relation: ScoringRuleRelationV1,
-    created: { readonly reviewTaskRef: ReviewTaskRefV1; readonly reviewAttemptId: string },
-  ): Promise<void> {
+  /**
+   * C16 审核/发布前的关系门禁：复验快照摘要、比较基线一致与全部精确 C07 决定。
+   * 任一缺失、未决、错目标、非批准或基线不符都抛错，让调用方事务整体失败。
+   */
+  async #assertRelationGate(input: {
+    readonly projectId: string;
+    readonly revisionRef: KnowledgeRevisionRefV1;
+    readonly authorization: AuthorizationContextV1;
+    readonly db: Kysely<ScoringRulesDatabase>;
+    readonly requestedAt: string;
+    readonly declaredBaseReleaseRef?: KnowledgeReleaseRefV1;
+    readonly declaredBaseRevisionRef?: KnowledgeRevisionRefV1;
+  }): Promise<void> {
+    const metadata = await this.#findRevisionMetadata(input.projectId, input.revisionRef, input.db);
+    if (
+      metadata === undefined ||
+      metadata.definitionType !== "structured-scoring-rule" ||
+      metadata.relationDigest === undefined
+    ) {
+      failScoringRule("scoring-rule-revision-unverified", asContractReference(input.revisionRef));
+    }
+    const relations = await this.#findRevisionRelations(
+      input.projectId,
+      input.revisionRef,
+      input.db,
+    );
+    const recomputed = scoringRuleRelationSnapshotDigest({
+      policyRef: this.#policy.conflictPriorityPolicyRef,
+      candidateContentDigest: metadata.contentDigest,
+      ...(metadata.baseReleaseRef === undefined ? {} : { baseReleaseRef: metadata.baseReleaseRef }),
+      ...(metadata.baseRevisionRef === undefined
+        ? {}
+        : { baseRevisionRef: metadata.baseRevisionRef }),
+      relations,
+    });
+    if (recomputed !== metadata.relationDigest) {
+      failScoringRule("scoring-rule-relation-unresolved", asContractReference(input.revisionRef));
+    }
+    // 检测基线与 C16 已校验的 revision 基线必须逐字一致：C16 在提交/发布时已确认它是当前版本。
+    const declaredBase = input.declaredBaseReleaseRef;
+    const baseMatches =
+      (declaredBase === undefined) === (metadata.baseReleaseRef === undefined) &&
+      (declaredBase === undefined ||
+        (metadata.baseReleaseRef !== undefined &&
+          sameVersion(metadata.baseReleaseRef.reference, declaredBase.reference) &&
+          metadata.baseRevisionRef !== undefined &&
+          input.declaredBaseRevisionRef !== undefined &&
+          sameVersion(
+            metadata.baseRevisionRef.reference,
+            input.declaredBaseRevisionRef.reference,
+          )));
+    if (!baseMatches) {
+      failScoringRule(
+        "scoring-rule-base-version-conflict",
+        asContractReference(input.revisionRef),
+        "STALE_VERSION",
+      );
+    }
+    for (const relation of relations) {
+      if (relation.relationKind !== "conflict") continue;
+      if (
+        relation.retainedRuleVersionRef === undefined ||
+        relation.excludedRuleVersionRef === undefined
+      ) {
+        failScoringRule("scoring-rule-relation-unresolved", asContractReference(input.revisionRef));
+      }
+      const link = await this.#findReviewLink(input.projectId, relation.relationId);
+      if (link === undefined || link.reviewTaskRef.reviewType !== "rule-conflict") {
+        failScoringRule("scoring-rule-relation-unresolved", asContractReference(input.revisionRef));
+      }
+      const reader = this.#conflictDecisions;
+      if (reader === undefined) {
+        failScoringRule("scoring-rule-relation-unresolved", asContractReference(input.revisionRef));
+      }
+      const decision = await reader.readRuleConflictDecision({
+        projectId: input.projectId,
+        relationRef: RuleConflictRefV1Schema.parse(link.reviewTaskRef.targetRef),
+        reviewTaskRef: link.reviewTaskRef,
+        authorization: input.authorization,
+        invocationId: `scoring-rule-conflict-gate-${relation.relationId.slice(0, 32)}`,
+        requestedAt: input.requestedAt,
+      });
+      if (decision.kind !== "decided" || decision.decision !== "approve-publication") {
+        failScoringRule("scoring-rule-relation-unresolved", asContractReference(input.revisionRef));
+      }
+    }
+  }
+
+  /** 提交成功后按稳定身份补链：失败只留下仍被门禁的候选修订，重试只补缺失事实。 */
+  async #ensureConflictReviewLinks(input: {
+    readonly projectId: string;
+    readonly revisionRef: KnowledgeRevisionRefV1;
+    readonly authorization: AuthorizationContextV1;
+    readonly issuedAt: string;
+  }): Promise<void> {
+    const relations = await this.#findRevisionRelations(input.projectId, input.revisionRef);
+    for (const relation of relations) {
+      if (relation.relationKind !== "conflict") continue;
+      if ((await this.#findReviewLink(input.projectId, relation.relationId)) !== undefined) {
+        continue;
+      }
+      const linker = this.#conflictReview;
+      if (linker === undefined) {
+        failScoringRule("scoring-rule-relation-unresolved", asContractReference(input.revisionRef));
+      }
+      const identity = sha256CanonicalJson({
+        projectId: input.projectId,
+        revisionRef: input.revisionRef,
+        relationId: relation.relationId,
+      });
+      const created = await linker.ensureConflictReviewTask({
+        projectId: input.projectId,
+        relation,
+        authorization: input.authorization,
+        commandId: `rule-conflict-${identity}`,
+        idempotencyKey: `rule-conflict-${identity}`,
+        issuedAt: input.issuedAt,
+      });
+      if (created.kind === "failed" || created.reviewTaskRef.reviewType !== "rule-conflict") {
+        failScoringRule("scoring-rule-relation-unresolved", asContractReference(input.revisionRef));
+      }
+      await this.#appendReviewLink({
+        projectId: input.projectId,
+        actorId: input.authorization.actorId,
+        relation,
+        authorization: input.authorization,
+        created,
+        issuedAt: input.issuedAt,
+      });
+    }
+  }
+
+  /** relation→C07 task 的只追加链接；同键同载荷重放不重复，异载荷冲突。 */
+  async #appendReviewLink(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly relation: ScoringRuleRelationV1;
+    readonly authorization: AuthorizationContextV1;
+    readonly created: { readonly reviewTaskRef: ReviewTaskRefV1; readonly reviewAttemptId: string };
+    readonly issuedAt: string;
+  }): Promise<void> {
     const recordedAt = this.#now().toISOString();
-    const auditEntryId = `${request.requestId}:link:${relation.relationId}`;
-    // 补链是关系事实之后的独立原子命令；C03 回执按 command_id 唯一，不能复用组装请求身份。
+    const auditEntryId = `${input.created.reviewAttemptId}:link`;
     const atomic = atomicCommandFor(
       {
-        ...request,
-        requestId: `${request.requestId}:link:${relation.relationId}`,
-        idempotencyKey: `${request.idempotencyKey}:link:${relation.relationId}`,
+        commandId: `${input.created.reviewAttemptId}:link`,
+        idempotencyKey: `${input.created.reviewAttemptId}:link`,
+        projectId: input.projectId,
+        actorId: input.actorId,
+        issuedAt: input.issuedAt,
+        authorization: input.authorization,
       },
       "knowledge.link-rule-conflict-review.v1",
       {
-        relationId: relation.relationId,
-        reviewAttemptId: created.reviewAttemptId,
+        relationId: input.relation.relationId,
+        reviewAttemptId: input.created.reviewAttemptId,
       },
     );
     await this.#transactionUnit.execute(atomic, async (context): Promise<AtomicCommitV1> => {
@@ -2036,35 +2373,33 @@ export class PostgresScoringRulesAdapter
       await transaction
         .insertInto("business.rule_conflict_review_links")
         .values({
-          link_id: `${relation.relationId}:${created.reviewAttemptId}`,
-          relation_id: relation.relationId,
+          link_id: `${input.relation.relationId}:${input.created.reviewAttemptId}`,
+          relation_id: input.relation.relationId,
           version_id: "1",
-          project_id: request.projectId,
+          project_id: input.projectId,
           attempt: 1,
-          review_attempt_id: created.reviewAttemptId,
-          review_task_ref: jsonbValue(created.reviewTaskRef),
-          decision_ref: null,
-          status: "pending",
+          review_attempt_id: input.created.reviewAttemptId,
+          review_task_ref: jsonbValue(input.created.reviewTaskRef),
           command_id: atomic.commandId,
           audit_entry_id: auditEntryId,
-          occurred_at: request.requestedAt,
+          occurred_at: input.issuedAt,
           recorded_at: recordedAt,
           persisted_at: recordedAt,
         } as never)
         .onConflict((conflict) => conflict.columns(["link_id"]).doNothing())
         .execute();
       return {
-        resultRef: created.reviewTaskRef,
+        resultRef: input.created.reviewTaskRef,
         audit: {
           auditEntryId,
-          projectId: request.projectId,
+          projectId: input.projectId,
           action: "knowledge.link-rule-conflict-review",
-          targetRef: created.reviewTaskRef,
-          actorRef: request.actorId,
-          authorizationContextRef: authorization.authorizationContextRef,
-          occurredAt: request.requestedAt,
+          targetRef: input.created.reviewTaskRef,
+          actorRef: input.actorId,
+          authorizationContextRef: input.authorization.authorizationContextRef,
+          occurredAt: input.issuedAt,
           recordedAt,
-          version: created.reviewTaskRef.reference,
+          version: input.created.reviewTaskRef.reference,
           commandId: atomic.commandId,
           idempotencyKey: atomic.idempotencyKey,
         },
@@ -2076,7 +2411,7 @@ export class PostgresScoringRulesAdapter
   async #findReviewLink(
     projectId: string,
     relationId: string,
-  ): Promise<{ readonly status: string; readonly decisionRef: unknown } | undefined> {
+  ): Promise<{ readonly reviewTaskRef: ReviewTaskRefV1 } | undefined> {
     const row = await this.#db
       .selectFrom("business.rule_conflict_review_links")
       .selectAll()
@@ -2085,38 +2420,71 @@ export class PostgresScoringRulesAdapter
       .where("version_id", "=", "1")
       .orderBy("attempt", "desc")
       .executeTakeFirst();
-    return row === undefined ? undefined : { status: row.status, decisionRef: row.decision_ref };
+    return row === undefined
+      ? undefined
+      : { reviewTaskRef: ReviewTaskRefV1Schema.parse(row.review_task_ref) };
   }
 
-  async #readBaseDocument(
-    manifest: ScoringRuleAuthoringManifestV1,
-    task: AgentTaskSnapshotV1,
-  ): Promise<StructuredScoringRuleDocumentV1 | undefined> {
-    if (manifest.baseRuleReleaseRef === undefined) return undefined;
+  /**
+   * 读取 manifest 声明的精确比较基线（已发布规则文档）。
+   * 未声明基线时返回 `undefined`；声明了但不可解析/不可读一律失败，不静默跳过检测。
+   */
+  async #readBaselineRules(input: {
+    readonly manifest: ScoringRuleAuthoringManifestV1;
+    readonly task: AgentTaskSnapshotV1;
+  }): Promise<
+    | {
+        readonly releaseRef: KnowledgeReleaseRefV1;
+        readonly revisionRef: KnowledgeRevisionRefV1;
+        readonly document: StructuredScoringRuleDocumentV1;
+      }
+    | undefined
+  > {
+    const declaredReleaseRef = input.manifest.baseRuleReleaseRef;
+    if (declaredReleaseRef === undefined) return undefined;
+    const projectId = input.task.envelope.projectId;
     const releases = await this.#governedReleases.resolveGovernedReleases({
-      projectId: task.envelope.projectId,
+      projectId,
       requiredDefinitionTypes: ["structured-scoring-rule"],
-      requiredAt: task.envelope.createdAt,
-      asOfRecordedAt: task.envelope.createdAt,
-      authorization: task.envelope.authorization,
+      requiredAt: input.task.envelope.createdAt,
+      asOfRecordedAt: input.task.envelope.createdAt,
+      authorization: input.task.envelope.authorization,
     });
-    if (releases.kind === "failed") return undefined;
-    const base = releases.result.members.find((member) =>
-      sameVersion(member.releaseRef.reference, manifest.baseRuleReleaseRef!.reference),
-    );
-    if (base === undefined) return undefined;
-    const metadata = await this.#findRevisionMetadata(task.envelope.projectId, base.revisionRef);
-    if (metadata === undefined) return undefined;
-    return StructuredScoringRuleDocumentV1Schema.parse(
+    const base =
+      releases.kind === "succeeded"
+        ? releases.result.members.find((member) =>
+            sameVersion(member.releaseRef.reference, declaredReleaseRef.reference),
+          )
+        : undefined;
+    if (base === undefined) {
+      failScoringRule(
+        "scoring-rule-base-version-conflict",
+        asContractReference(declaredReleaseRef),
+        "STALE_VERSION",
+      );
+    }
+    const metadata = await this.#findRevisionMetadata(projectId, base.revisionRef);
+    if (metadata === undefined || metadata.definitionType !== "structured-scoring-rule") {
+      failScoringRule(
+        "scoring-rule-base-version-conflict",
+        asContractReference(declaredReleaseRef),
+        "STALE_VERSION",
+      );
+    }
+    const document = StructuredScoringRuleDocumentV1Schema.parse(
       await this.#readJson(metadata.artifactRef, {
-        projectId: task.envelope.projectId,
-        actorId: task.envelope.actorId,
-        requestId: `${task.envelope.commandId}:base-document`,
-        requestedAt: task.envelope.createdAt,
-        authorization: task.envelope.authorization,
+        projectId,
+        actorId: input.task.envelope.actorId,
+        requestId: `${input.task.envelope.commandId}:base-document`,
+        requestedAt: input.task.envelope.createdAt,
+        authorization: input.task.envelope.authorization,
         purposeCode: STRUCTURED_SCORING_RULE_ARTIFACT_PURPOSE_CODE_V1,
       }),
     );
+    if (structuredScoringRuleDocumentDigest(document) !== metadata.contentDigest) {
+      failScoringRule("scoring-rule-artifact-mismatch", asContractReference(metadata.artifactRef));
+    }
+    return { releaseRef: base.releaseRef, revisionRef: base.revisionRef, document };
   }
 
   async #readIndicatorIds(input: {
@@ -2304,6 +2672,9 @@ interface RevisionMetadataView {
   readonly contentDigest: string;
   readonly projectRevisionRef: JsonColumn;
   readonly compatibilityRef: VersionReference;
+  readonly relationDigest?: string;
+  readonly baseReleaseRef?: KnowledgeReleaseRefV1;
+  readonly baseRevisionRef?: KnowledgeRevisionRefV1;
 }
 
 const revisionMetadataFromRow = (
@@ -2317,9 +2688,76 @@ const revisionMetadataFromRow = (
   compatibilityRef: (row as Selectable<ScoringRuleRevisionMetadataRow>).compatibility_ref as never,
 });
 
+/** 关系事实行 → strict 领域对象；正文与决定事实都不在此表。 */
+const relationFromRow = (row: Selectable<RuleRelationRow>): ScoringRuleRelationV1 =>
+  ScoringRuleRelationV1Schema.parse({
+    relationId: row.relation_id,
+    relationKind: row.relation_kind,
+    policyRef: row.policy_ref,
+    leftRuleVersion: row.left_rule_version_ref,
+    rightRuleVersion: row.right_rule_version_ref,
+    leftRuleId: row.left_rule_id,
+    rightRuleId: row.right_rule_id,
+    overlap: row.overlap,
+    overlapDigest: row.overlap_digest,
+    ...(row.retained_rule_version_ref === null
+      ? {}
+      : { retainedRuleVersionRef: row.retained_rule_version_ref }),
+    ...(row.excluded_rule_version_ref === null
+      ? {}
+      : { excludedRuleVersionRef: row.excluded_rule_version_ref }),
+    evidenceReferences: row.evidence_references,
+  });
+
 export const createPostgresScoringRulesAdapter = (
   options: PostgresScoringRulesAdapterOptionsV1,
 ): PostgresScoringRulesAdapter => new PostgresScoringRulesAdapter(options);
+
+/**
+ * 持久化成员快照 → 顶层 success 投影：strict parse、摘要复算与集合引用一致全部通过才返回，
+ * 否则调用方按统一不可枚举拒绝处理。不打开任何 C04 工件，也不返回内部集合字段。
+ */
+const basisMemberProjection = (
+  row: Selectable<AssessmentBasisReleaseSetRow>,
+  requestedRef: ReadAssessmentBasisReleaseSetV1["assessmentBasisReleaseSetRef"],
+): AssessmentBasisReleaseSetReadResultV1 | undefined => {
+  try {
+    if (
+      row.set_id !== requestedRef.reference.entityId ||
+      row.version_id !== requestedRef.reference.versionId
+    ) {
+      return undefined;
+    }
+    const raw =
+      typeof row.member_snapshot === "string"
+        ? (JSON.parse(row.member_snapshot) as unknown)
+        : row.member_snapshot;
+    const members = AssessmentBasisReleaseSetMembersV1Schema.parse(raw);
+    if (assessmentBasisMemberDigest(members) !== row.member_digest) return undefined;
+    const applicableReleaseRef = KnowledgeReleaseRefV1Schema.parse(
+      row.applicable_rule_set_release_ref,
+    );
+    if (
+      !sameVersion(
+        members.applicableRuleSetMember.releaseRef.reference,
+        applicableReleaseRef.reference,
+      )
+    ) {
+      return undefined;
+    }
+    return AssessmentBasisReleaseSetReadResultV1Schema.parse({
+      kind: "succeeded",
+      schemaVersion: "1",
+      assessmentBasisReleaseSetRef: requestedRef,
+      memberDigest: row.member_digest,
+      applicableRuleSetMember: members.applicableRuleSetMember,
+      scoringRuleMembers: members.scoringRuleMembers,
+      configurationMembers: members.configurationMembers,
+    });
+  } catch {
+    return undefined;
+  }
+};
 
 /** C02 命令的规范原子命令包装：只带引用与摘要，不含正文。 */
 const atomicCommandFor = (

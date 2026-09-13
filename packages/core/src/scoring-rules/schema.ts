@@ -54,6 +54,7 @@ export const SCORING_RULES_MAX_RULES_V1 = 512;
 export const SCORING_RULES_MAX_OPERATIONS_V1 = 64;
 export const SCORING_RULES_MAX_EVIDENCE_REFERENCES_V1 = 16;
 export const SCORING_RULES_MAX_RELATION_EVIDENCE_V1 = 16;
+export const SCORING_RULES_MAX_RELATIONS_V1 = 512;
 export const SCORING_RULES_MAX_SOURCE_SEGMENTS_V1 = 256;
 export const SCORING_RULE_AUTHORING_TASK_TYPE_V1 = "knowledge-authoring" as const;
 
@@ -234,6 +235,20 @@ export const ScoringRuleRelationStatusV1Schema = z.enum([
   "returned",
 ]);
 export type ScoringRuleRelationStatusV1 = z.infer<typeof ScoringRuleRelationStatusV1Schema>;
+
+/**
+ * 一次确定性冲突/重叠检测的完整快照：绑定候选正文摘要、精确比较基线与全部关系事实。
+ * 快照在 structured-scoring-rule 提交前算完，随该 C16 修订在同一事务内耐久化。
+ */
+export const ScoringRuleRelationSnapshotV1Schema = z.strictObject({
+  policyRef: VersionReferenceSchema,
+  candidateContentDigest: hashSchema,
+  baseReleaseRef: KnowledgeReleaseRefV1Schema.optional(),
+  baseRevisionRef: KnowledgeRevisionRefV1Schema.optional(),
+  relations: z.array(ScoringRuleRelationV1Schema).max(SCORING_RULES_MAX_RELATIONS_V1),
+  relationDigest: hashSchema,
+});
+export type ScoringRuleRelationSnapshotV1 = z.infer<typeof ScoringRuleRelationSnapshotV1Schema>;
 
 /** 来源绑定：只增加追溯关系，不复制条文正文。 */
 export const ScoringRuleSourceBindingV1Schema = z.strictObject({
@@ -786,34 +801,24 @@ export type AssessmentBasisReleaseSetV1 = z.infer<typeof AssessmentBasisReleaseS
 
 const requiredReadCapability = MODULE_BRANCH_CAPABILITY_V1["knowledge-modeling.assessment-basis"];
 
+/** 精确集合引用；不接受名称、列表或 latest 选择器。 */
+const assessmentBasisReleaseSetRefSchema = z.strictObject({
+  kind: z.literal(ASSESSMENT_BASIS_RELEASE_SET_REF_KIND_V1),
+  reference: VersionReferenceSchema,
+});
+
+/**
+ * 成员读取请求：工程与 actor 只来自 C06 当前验证结果，调用方不得另传。
+ */
 export const ReadAssessmentBasisReleaseSetV1Schema = z
   .strictObject({
     requestId: IdentifierSchema,
     idempotencyKey: IdentifierSchema,
-    projectId: IdentifierSchema,
-    actorId: IdentifierSchema,
     requestedAt: IsoDateTimeSchema,
     authorization: AuthorizationContextV1Schema,
-    assessmentBasisReleaseSetRef: z.strictObject({
-      kind: z.literal(ASSESSMENT_BASIS_RELEASE_SET_REF_KIND_V1),
-      reference: VersionReferenceSchema,
-    }),
+    assessmentBasisReleaseSetRef: assessmentBasisReleaseSetRefSchema,
   })
   .superRefine((request, context) => {
-    if (request.projectId !== request.authorization.projectId) {
-      context.addIssue({
-        code: "custom",
-        path: ["projectId"],
-        message: "request project does not match the authorization context",
-      });
-    }
-    if (request.actorId !== request.authorization.actorId) {
-      context.addIssue({
-        code: "custom",
-        path: ["actorId"],
-        message: "request actor does not match the authorization context",
-      });
-    }
     if (!request.authorization.grantedCapabilities.includes(requiredReadCapability)) {
       context.addIssue({
         code: "custom",
@@ -824,12 +829,22 @@ export const ReadAssessmentBasisReleaseSetV1Schema = z
   });
 export type ReadAssessmentBasisReleaseSetV1 = z.infer<typeof ReadAssessmentBasisReleaseSetV1Schema>;
 
+/**
+ * 顶层 strict 判别结果：成功直接给出三个成员投影，不包装内部集合；
+ * 授权有效但目标不可用统一为不可枚举的 `unavailable`，技术失败走独立 `failed`。
+ */
 export const AssessmentBasisReleaseSetReadResultV1Schema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("succeeded"),
-    releaseSet: AssessmentBasisReleaseSetV1Schema,
+    schemaVersion: z.literal(ASSESSMENT_BASIS_RELEASE_SET_SCHEMA_VERSION_V1),
+    assessmentBasisReleaseSetRef: assessmentBasisReleaseSetRefSchema,
+    memberDigest: hashSchema,
+    applicableRuleSetMember: AssessmentBasisReleaseSetMemberV1Schema,
+    scoringRuleMembers,
+    configurationMembers,
   }),
   z.strictObject({ kind: z.literal("unavailable"), error: ModuleErrorV1Schema }),
+  z.strictObject({ kind: z.literal("failed"), error: ModuleErrorV1Schema }),
 ]);
 export type AssessmentBasisReleaseSetReadResultV1 = z.infer<
   typeof AssessmentBasisReleaseSetReadResultV1Schema

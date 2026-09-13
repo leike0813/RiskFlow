@@ -18,6 +18,7 @@ import { PostgresKnowledgeGovernanceAdapter } from "../../src/knowledge-governan
 import { createPostgresRuntime } from "../../src/postgres/pool.js";
 import * as governanceMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-governed-definition-lifecycle/000007_governed_definition_lifecycle.js";
 import * as assessmentConfigurationMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-assessment-configuration-and-measure-governance/000012_assessment_configuration.js";
+import * as structuredScoringRulesMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-structured-scoring-rules-and-applicable-rule-sets/000028_structured_scoring_rules.js";
 import { DomainEventV1Schema, type DomainEventV1 } from "@riskflow/contracts/events";
 import type { TransactionContextV1 } from "@riskflow/core/persistence";
 import {
@@ -187,10 +188,13 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
   it("supports migration down and up in reverse dependency order", async () => {
     const migrator = createPostgresRuntime(fixture!.postgres.migrator, "riskflow_migrator");
     try {
+      // 逆依赖顺序：C19 关系事实外键绑定 C16 revision，必须先于 C16 迁移回退。
+      await structuredScoringRulesMigration.down(migrator.db);
       await assessmentConfigurationMigration.down(migrator.db);
       await governanceMigration.down(migrator.db);
       await governanceMigration.up(migrator.db);
       await assessmentConfigurationMigration.up(migrator.db);
+      await structuredScoringRulesMigration.up(migrator.db);
       const restored = await fixture!.postgres.adminPool.query<{ name: string | null }>(
         "SELECT to_regclass('business.assessment_config_revision_metadata') AS name",
       );

@@ -14,11 +14,13 @@ import { vi } from "vitest";
 import {
   KnowledgeGovernanceCommandV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
+  ReviewTaskRefV1Schema,
   StartAgentTaskCommandV1Schema,
   type AuthorizationContextV1,
   type ContentArtifactRefV1,
   type KnowledgeGovernanceCommandV1,
   type ModuleBranchV1,
+  type ReviewDecisionRefV1,
   type ReviewTaskRefV1,
   type StartAgentTaskResultV1,
 } from "@riskflow/contracts/ports";
@@ -48,6 +50,7 @@ import {
   type PostgresScoringRulesAdapterOptionsV1,
   type ScoringRulesConflictReviewLinkerV1,
 } from "../../src/scoring-rules/index.js";
+import { makePersistenceError } from "../../src/postgres/pool.js";
 import { PostgresAssessmentConfigurationAdapter } from "../../src/assessment-config/index.js";
 import { PostgresKnowledgeGovernanceAdapter } from "../../src/knowledge-governance/index.js";
 import { PostgresReviewAuditAdapter } from "../../src/review-audit/index.js";
@@ -199,6 +202,14 @@ export interface ScoringRulesPostgresFixtureV1 {
     readonly projectId: string;
     readonly revisionRef: KnowledgeRevisionRefV1;
   }): Promise<KnowledgeReleaseRefV1>;
+  /** 让下一次 C07 冲突任务创建失败一次（补链补偿用例）。 */
+  failNextConflictReview(): void;
+  /** 以 link 绑定的精确 C07 `rule-conflict` task 提交人工决定。 */
+  decideConflictReview(input: {
+    readonly projectId: string;
+    readonly relationId: string;
+    readonly kind?: "approve-publication" | "reject" | "return-for-revision";
+  }): Promise<ReviewDecisionRefV1>;
   /** 通过 C16 治理提交并人工批准一份 C18 配置文档（十一类集合的逐类调用）。 */
   publishConfigurationSet(input: {
     readonly projectId: string;
@@ -223,7 +234,9 @@ export const startScoringRulesFixture = async (): Promise<ScoringRulesPostgresFi
     execute: (command, handler, options) =>
       transactionFailureFragment !== undefined &&
       command.commandId.includes(transactionFailureFragment)
-        ? Promise.reject(new Error("injected scoring-rules transaction failure"))
+        ? Promise.reject(
+            makePersistenceError("TRANSACTION_FAILED", "scoring-rules.injected-fault", true),
+          )
         : cleaning.transactionUnit.execute(command, handler, options),
   };
   /** 已撤权的授权上下文引用：下一次复验按 C06 同语义拒绝（撤权用例用）。 */
@@ -284,6 +297,7 @@ export const startScoringRulesFixture = async (): Promise<ScoringRulesPostgresFi
   const projectionRef: { current?: AssessmentPreparationProjectionV1 } = {};
   /** 按工程绑定当前 C06 会话：同一夹具串联多个工程时互不串用授权。 */
   const activeWorlds = new Map<string, DataCleaningWorldLikeV1>();
+  let failNextConflictReviewFlag = false;
 
   const preparationSnapshot: AssessmentPreparationSnapshotReaderV1 = {
     readAssessmentPreparationSnapshot: async () => {
@@ -297,6 +311,26 @@ export const startScoringRulesFixture = async (): Promise<ScoringRulesPostgresFi
 
   const conflictReview: ScoringRulesConflictReviewLinkerV1 = {
     ensureConflictReviewTask: async (input) => {
+      if (failNextConflictReviewFlag) {
+        failNextConflictReviewFlag = false;
+        return {
+          kind: "failed",
+          error: {
+            code: "TRANSIENT_FAILURE",
+            category: "technical",
+            retryable: true,
+            stageCode: "c19.conflict-review",
+            occurredAt: SCORING_RULES_TEST_ISSUED_AT,
+            causalRunId: input.commandId,
+            attempt: 1,
+            retryPolicyRef: { entityId: "c19-retry-policy", versionId: "1" },
+            diagnosticRef: {
+              kind: "diagnostic-artifact",
+              reference: { entityId: "c19-conflict-review-failure", versionId: "1" },
+            },
+          },
+        } as never;
+      }
       const governance = governanceRef.current;
       if (governance === undefined) throw new Error("governance adapter is not assembled");
       const relationRef = {
@@ -479,6 +513,11 @@ export const startScoringRulesFixture = async (): Promise<ScoringRulesPostgresFi
               )
             : await world.authorizeBranch(input.commandId, "knowledge-modeling.submit-revision");
         verifiedContexts.set(contextKey(authorization.authorizationContextRef), authorization);
+        // C16 submit 的精确比较基线来自 authoring manifest；第二次起修订必须声明当前发布。
+        const baseReleaseRef =
+          input.task === undefined || input.definitionType !== "structured-scoring-rule"
+            ? undefined
+            : (await scoringRules.loadAuthoringManifest(input.task)).manifest.baseRuleReleaseRef;
         const submitted = await governance.govern(
           KnowledgeGovernanceCommandV1Schema.parse({
             kind: "submit-revision",
@@ -491,6 +530,7 @@ export const startScoringRulesFixture = async (): Promise<ScoringRulesPostgresFi
             payload: {
               definitionType: input.definitionType,
               candidateArtifactRef: input.candidateArtifactRef,
+              ...(baseReleaseRef === undefined ? {} : { baseReleaseRef }),
               evidenceReferences: [
                 {
                   locator: { sourceSegmentId: "c19-submit-evidence" },
@@ -524,6 +564,9 @@ export const startScoringRulesFixture = async (): Promise<ScoringRulesPostgresFi
       },
     },
     conflictReview,
+    conflictDecisions: {
+      readRuleConflictDecision: (input) => reviewAudit.readRuleConflictDecision(input),
+    },
     startAgentTask: async (request): Promise<StartAgentTaskResultV1> => {
       const authorization = stubContext(
         request.command.projectId,
@@ -695,6 +738,47 @@ export const startScoringRulesFixture = async (): Promise<ScoringRulesPostgresFi
         throw new Error(`publish failed: ${JSON.stringify(published)}`);
       }
       return published.result.knowledgeReleaseRef;
+    },
+    failNextConflictReview() {
+      failNextConflictReviewFlag = true;
+    },
+    async decideConflictReview(input) {
+      const link = await cleaning.postgres.adminPool.query<{ review_task_ref: unknown }>(
+        `SELECT review_task_ref FROM business.rule_conflict_review_links
+          WHERE project_id = $1 AND relation_id = $2 ORDER BY attempt DESC LIMIT 1`,
+        [input.projectId, input.relationId],
+      );
+      const linkRow = link.rows[0];
+      if (linkRow === undefined) throw new Error("no conflict review link was persisted");
+      const reviewTaskRef = ReviewTaskRefV1Schema.parse(linkRow.review_task_ref);
+      const decided = await reviewAudit.decideReview({
+        kind: "decide-review",
+        commandId: `${reviewTaskRef.reference.entityId}:decision:${input.kind ?? "approve-publication"}`,
+        idempotencyKey: `${reviewTaskRef.reference.entityId}:decision:${input.kind ?? "approve-publication"}`,
+        projectId: input.projectId,
+        actorId: "manager-1",
+        issuedAt: SCORING_RULES_TEST_ISSUED_AT,
+        authorization: stubContext(
+          input.projectId,
+          "manager-1",
+          ["review-audit.request-review", "review-audit.trace", "review-audit.decide-review"],
+          {
+            kind: "authorization-context",
+            reference: { entityId: `${reviewTaskRef.reference.entityId}:decide`, versionId: "1" },
+          },
+          SCORING_RULES_TEST_ISSUED_AT,
+        ),
+        payload: {
+          reviewTaskRef,
+          targetRef: reviewTaskRef.targetRef,
+          decision: { reviewType: "rule-conflict", kind: input.kind ?? "approve-publication" },
+          reasonCode: "client-reviewed",
+        },
+      } as never);
+      if (decided.kind !== "succeeded") {
+        throw new Error(`conflict review decision failed: ${JSON.stringify(decided)}`);
+      }
+      return decided.result.reviewDecisionRef;
     },
     async publishConfigurationSet(input) {
       for (const definitionType of Object.keys(input.documents).sort()) {

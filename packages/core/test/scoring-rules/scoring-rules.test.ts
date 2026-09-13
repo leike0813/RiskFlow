@@ -11,6 +11,7 @@ import {
 } from "../../src/assessment-config/index.js";
 import {
   AssessmentBasisReleaseSetMembersV1Schema,
+  AssessmentBasisReleaseSetReadResultV1Schema,
   ReadAssessmentBasisReleaseSetV1Schema,
   ScoringRuleAuthoringCandidateV1Schema,
   applicableRuleSetDocumentDigest,
@@ -614,9 +615,11 @@ describe("C19 结构化评分规则与适用规则集", () => {
       sourceVersionRef,
     });
 
-    it("冲突规则全部被拦截并给出闭合拟议处置", () => {
-      const relations = detectRuleRelations({
+    it("发布前冲突规则全部被拦截并绑定候选正文与比较基线", () => {
+      const candidateContentDigest = "a".repeat(64);
+      const snapshot = detectRuleRelations({
         policyRef: { entityId: "rule-conflict-priority", versionId: "1" },
+        candidateContentDigest,
         candidates: [
           relationCandidate(
             "rule-a",
@@ -633,6 +636,10 @@ describe("C19 结构化评分规则与适用规则集", () => {
         ],
       });
 
+      expect(snapshot.candidateContentDigest).toBe(candidateContentDigest);
+      expect(snapshot.baseReleaseRef).toBeUndefined();
+      expect(snapshot.relationDigest).toMatch(/^[0-9a-f]{64}$/u);
+      const relations = snapshot.relations;
       expect(relations).toHaveLength(1);
       const conflict = relations[0]!;
       expect(conflict.relationKind).toBe("conflict");
@@ -642,12 +649,61 @@ describe("C19 结构化评分规则与适用规则集", () => {
       expect(conflict.overlap.upper).toBe(20);
       expect(conflict.relationId).toMatch(/^[0-9a-f]{64}$/u);
     });
+
+    it("候选与精确比较基线相交时仍产生绑定该基线的冲突事实", () => {
+      const baseReleaseRef = {
+        kind: "knowledge-release" as const,
+        reference: { entityId: "release-rule-base", versionId: "1" },
+      };
+      const baseRevisionRef = {
+        kind: "knowledge-revision" as const,
+        reference: { entityId: "revision-rule-base", versionId: "1" },
+      };
+      const snapshot = detectRuleRelations({
+        policyRef: { entityId: "rule-conflict-priority", versionId: "1" },
+        candidateContentDigest: "c".repeat(64),
+        candidates: [
+          relationCandidate(
+            "rule-candidate",
+            [{ thresholdId: "c-1", score: 1, operator: "between", value: 0, upperValue: 20 }],
+            [{ grade: "grade-c", lowerBound: 0 }],
+            REAL_STANDARD_SOURCE_VERSION,
+          ),
+        ],
+        baseline: [
+          relationCandidate(
+            "rule-published",
+            [{ thresholdId: "p-1", score: 5, operator: "between", value: 0, upperValue: 20 }],
+            [{ grade: "grade-p", lowerBound: 0 }],
+            SECOND_STANDARD_SOURCE_VERSION,
+          ),
+          // 从基线继承的同一规则版本不与自己比较。
+          relationCandidate(
+            "rule-candidate",
+            [{ thresholdId: "c-1", score: 1, operator: "between", value: 0, upperValue: 20 }],
+            [{ grade: "grade-c", lowerBound: 0 }],
+            REAL_STANDARD_SOURCE_VERSION,
+          ),
+        ],
+        baseReleaseRef,
+        baseRevisionRef,
+      });
+
+      expect(snapshot.baseReleaseRef).toEqual(baseReleaseRef);
+      expect(snapshot.baseRevisionRef).toEqual(baseRevisionRef);
+      expect(snapshot.relations).toHaveLength(1);
+      expect(snapshot.relations[0]!.relationKind).toBe("conflict");
+      expect(
+        [snapshot.relations[0]!.leftRuleId, snapshot.relations[0]!.rightRuleId].sort(),
+      ).toEqual(["rule-candidate", "rule-published"]);
+    });
   });
 
   describe("重叠", () => {
     it("等价重叠被完整记录并按闭合优先级确定保留成员", () => {
-      const relations = detectRuleRelations({
+      const snapshot = detectRuleRelations({
         policyRef: { entityId: "rule-conflict-priority", versionId: "1" },
+        candidateContentDigest: "b".repeat(64),
         candidates: [
           {
             rule: makeScoringRule({
@@ -672,13 +728,14 @@ describe("C19 结构化评分规则与适用规则集", () => {
         ],
       });
 
-      expect(relations).toHaveLength(1);
-      expect(relations[0]!.relationKind).toBe("overlap");
-      expect(relations[0]!.retainedRuleVersionRef).toBeUndefined();
-      expect(relations[0]!.overlap.leftThresholdIds).toEqual(["a-1"]);
-      expect(relations[0]!.overlap.rightThresholdIds).toEqual(["b-1"]);
-      expect(relations[0]!.overlap.lower).toBe(5);
-      expect(relations[0]!.overlap.upper).toBe(15);
+      expect(snapshot.relations).toHaveLength(1);
+      expect(snapshot.relations[0]!.relationKind).toBe("overlap");
+      expect(snapshot.relations[0]!.retainedRuleVersionRef).toBeUndefined();
+      expect(snapshot.relations[0]!.overlap.leftThresholdIds).toEqual(["a-1"]);
+      expect(snapshot.relations[0]!.overlap.rightThresholdIds).toEqual(["b-1"]);
+      expect(snapshot.relations[0]!.overlap.lower).toBe(5);
+      expect(snapshot.relations[0]!.overlap.upper).toBe(15);
+      expect(snapshot.relationDigest).toMatch(/^[0-9a-f]{64}$/u);
     });
   });
 
@@ -721,7 +778,7 @@ describe("C19 结构化评分规则与适用规则集", () => {
     it("basis 成员清单固定精确引用且配置成员恰好 11 类", () => {
       const members = buildAssessmentBasisMembers({
         applicableRuleSetMember: member("applicable-rule-set"),
-        scoringRuleMembers: [member("rule-b"), member("rule-a"), member("rule-a")],
+        scoringRuleMembers: [member("rule-b"), member("rule-a")],
         configurationMembers: [...ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1]
           .sort()
           .map(configurationMember),
@@ -733,6 +790,16 @@ describe("C19 结构化评分规则与适用规则集", () => {
       expect(
         members.scoringRuleMembers.map((entry) => entry.releaseRef.reference.entityId),
       ).toEqual(["release-rule-a", "release-rule-b"]);
+      // 重复成员是整体失败，不得静默去重或部分返回。
+      expect(() =>
+        buildAssessmentBasisMembers({
+          applicableRuleSetMember: member("applicable-rule-set"),
+          scoringRuleMembers: [member("rule-a"), member("rule-a")],
+          configurationMembers: [...ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1]
+            .sort()
+            .map(configurationMember),
+        }),
+      ).toThrowError(/BUSINESS_BLOCKED/u);
     });
 
     it("basis 规则成员与摘要与适用规则集 included refs 双向完备", () => {
@@ -785,9 +852,16 @@ describe("C19 结构化评分规则与适用规则集", () => {
           scoringRuleMembers: [...projected, member("rule-extra")],
         }),
       ).toThrowError(/BUSINESS_BLOCKED/u);
+      // 重复成员同样整体失败：不允许去重后伪装成一致。
+      expect(() =>
+        assertScoringRuleMembersMatchApplicableRuleSet({
+          document,
+          scoringRuleMembers: [...projected, member("rule-a")],
+        }),
+      ).toThrowError(/BUSINESS_BLOCKED/u);
     });
 
-    it("basis 无正文：strict 成员与请求不接受正文、显示名或枚举字段", () => {
+    it("basis 无正文：strict 请求与顶层三分支结果不接受正文、包装或伪身份", () => {
       const parsed = AssessmentBasisReleaseSetMembersV1Schema.safeParse({
         applicableRuleSetMember: { ...member("applicable-rule-set"), displayName: "规则集" },
         scoringRuleMembers: [member("rule-a")],
@@ -795,11 +869,9 @@ describe("C19 结构化评分规则与适用规则集", () => {
       });
       expect(parsed.success).toBe(false);
 
-      const request = ReadAssessmentBasisReleaseSetV1Schema.safeParse({
+      const requestPayload = {
         requestId: "request-1",
         idempotencyKey: "idempotency-1",
-        projectId: "project-1",
-        actorId: "actor-1",
         requestedAt: "2030-01-01T00:00:00.000Z",
         authorization: {
           schemaVersion: "1",
@@ -820,9 +892,80 @@ describe("C19 结构化评分规则与适用规则集", () => {
           kind: "assessment-basis-release-set",
           reference: { entityId: "basis-1", versionId: "1" },
         },
-        latest: true,
+      };
+      expect(ReadAssessmentBasisReleaseSetV1Schema.safeParse(requestPayload).success).toBe(true);
+      // 工程与 actor 只能来自 C06 验证结果；latest/列表选择器一律拒绝。
+      for (const forbidden of [
+        { projectId: "project-1" },
+        { actorId: "actor-1" },
+        { latest: true },
+        { name: "basis" },
+      ]) {
+        expect(
+          ReadAssessmentBasisReleaseSetV1Schema.safeParse({ ...requestPayload, ...forbidden })
+            .success,
+        ).toBe(false);
+      }
+
+      const members = AssessmentBasisReleaseSetMembersV1Schema.parse({
+        applicableRuleSetMember: member("applicable-rule-set"),
+        scoringRuleMembers: [member("rule-a")],
+        configurationMembers: [...ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1]
+          .sort()
+          .map(configurationMember),
       });
-      expect(request.success).toBe(false);
+      const succeeded = AssessmentBasisReleaseSetReadResultV1Schema.safeParse({
+        kind: "succeeded",
+        schemaVersion: "1",
+        assessmentBasisReleaseSetRef: requestPayload.assessmentBasisReleaseSetRef,
+        memberDigest: "a".repeat(64),
+        ...members,
+      });
+      expect(succeeded.success).toBe(true);
+      if (succeeded.success) {
+        expect(Object.keys(succeeded.data).sort()).toEqual([
+          "applicableRuleSetMember",
+          "assessmentBasisReleaseSetRef",
+          "configurationMembers",
+          "kind",
+          "memberDigest",
+          "schemaVersion",
+          "scoringRuleMembers",
+        ]);
+      }
+      // 旧的 `{releaseSet}` 包装与内部字段名不再被接受。
+      expect(
+        AssessmentBasisReleaseSetReadResultV1Schema.safeParse({
+          kind: "succeeded",
+          releaseSet: { memberDigest: "a".repeat(64) },
+        }).success,
+      ).toBe(false);
+
+      const moduleError = {
+        code: "AUTHORIZATION_DENIED",
+        category: "authorization",
+        retryable: false,
+        stageCode: "scoring-rules.authorization_denied",
+        occurredAt: "2030-01-01T00:00:00.000Z",
+        causalRunId: "request-1",
+        requiredCapability: "knowledge-modeling.read",
+        authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+      };
+      expect(
+        AssessmentBasisReleaseSetReadResultV1Schema.safeParse({
+          kind: "unavailable",
+          error: moduleError,
+        }).success,
+      ).toBe(true);
+      expect(
+        AssessmentBasisReleaseSetReadResultV1Schema.safeParse({
+          kind: "failed",
+          error: moduleError,
+        }).success,
+      ).toBe(true);
+      expect(AssessmentBasisReleaseSetReadResultV1Schema.safeParse({ kind: "other" }).success).toBe(
+        false,
+      );
     });
 
     it("basis 读取幂等：相同规范载荷解析为同一请求与同一成员摘要", () => {

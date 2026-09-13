@@ -1452,6 +1452,7 @@ export class PostgresKnowledgeGovernanceAdapter {
         });
         const scoringEvents = await this.#appendScoringRuleRelease(context, {
           command,
+          authorization: verifiedAuthorization,
           atomic,
           revision,
           releaseRef,
@@ -1805,6 +1806,7 @@ export class PostgresKnowledgeGovernanceAdapter {
         });
         const scoringEvents = await this.#appendScoringRuleRelease(context, {
           command,
+          authorization: verifiedAuthorization,
           atomic,
           revision,
           releaseRef,
@@ -2009,6 +2011,9 @@ export class PostgresKnowledgeGovernanceAdapter {
       definitionType: command.payload.definitionType,
       candidateArtifactRef: command.payload.candidateArtifactRef,
       authorization,
+      ...(command.payload.baseReleaseRef === undefined
+        ? {}
+        : { baseReleaseRef: command.payload.baseReleaseRef }),
     };
     return policy.prepareRevision(submission);
   }
@@ -2046,6 +2051,10 @@ export class PostgresKnowledgeGovernanceAdapter {
       projectId: command.projectId,
       revisionRef: revision.revisionRef,
       authorization,
+      ...(revision.baseReleaseRef === undefined ? {} : { baseReleaseRef: revision.baseReleaseRef }),
+      ...(revision.baseRevisionRef === undefined
+        ? {}
+        : { baseRevisionRef: revision.baseRevisionRef }),
     });
   }
 
@@ -2056,6 +2065,7 @@ export class PostgresKnowledgeGovernanceAdapter {
         KnowledgeGovernanceCommandV1,
         { kind: "publish-approved-release" | "rollback-by-new-release" }
       >;
+      readonly authorization: AuthorizationContextV1;
       readonly atomic: AtomicCommandV1;
       readonly revision: KnowledgeRevisionV1;
       readonly releaseRef: KnowledgeReleaseRefV1;
@@ -2081,6 +2091,13 @@ export class PostgresKnowledgeGovernanceAdapter {
         actorId: input.command.actorId,
         issuedAt: input.command.issuedAt,
         authorizationContextRef: input.atomic.authorizationContextRef,
+        authorization: input.authorization,
+        ...(input.revision.baseReleaseRef === undefined
+          ? {}
+          : { baseReleaseRef: input.revision.baseReleaseRef }),
+        ...(input.revision.baseRevisionRef === undefined
+          ? {}
+          : { baseRevisionRef: input.revision.baseRevisionRef }),
       },
       revisionRef: input.revision.revisionRef,
       definitionType: input.revision.definitionType as ScoringRulesDefinitionTypeV1,

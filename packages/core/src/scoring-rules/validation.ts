@@ -29,7 +29,9 @@ import {
   ScoringRuleEvaluationResultV1Schema,
   NormalizedGradeIntervalV1Schema,
   NormalizedScoringThresholdV1Schema,
+  SCORING_RULES_MAX_RELATION_EVIDENCE_V1,
   SCORING_RULES_MAX_RULES_V1,
+  ScoringRuleRelationSnapshotV1Schema,
   type ApplicableRuleSetDecisionV1,
   type ApplicableRuleSetDocumentV1,
   type ApplicableRuleSetIncludedMemberV1,
@@ -44,6 +46,7 @@ import {
   type ScoringRuleExclusionReasonV1,
   type ScoringRuleOperationV1,
   type ScoringRuleRelationKindV1,
+  type ScoringRuleRelationSnapshotV1,
   type ScoringRuleRelationV1,
   type ScoringRuleSourceBindingV1,
   type ScoringRuleValidationItemV1,
@@ -866,110 +869,171 @@ const sameConclusion = (
     return pair.left.score === pair.right.score && leftGrade === rightGrade;
   });
 
-/**
- * 同一工程、兼容集合、指标与相交三维域内检测：结论不同或例外互否为 conflict，其余相交为 overlap。
- * 复用 `normalizeScoringThresholds`/`normalizeGradeIntervals`/`evaluateScoringRule` 的语义。
- */
-export const detectRuleRelations = (input: {
-  readonly policyRef: { readonly entityId: string; readonly versionId: string };
+/** 关系快照摘要：候选正文、精确比较基线与全部关系事实的唯一身份。 */
+export const scoringRuleRelationSnapshotDigest = (input: {
+  readonly policyRef: VersionReference;
+  readonly candidateContentDigest: string;
+  readonly baseReleaseRef?: KnowledgeReleaseRefV1;
+  readonly baseRevisionRef?: KnowledgeRevisionRefV1;
+  readonly relations: readonly ScoringRuleRelationV1[];
+}): string =>
+  sha256CanonicalJson({
+    policyRef: input.policyRef,
+    candidateContentDigest: input.candidateContentDigest,
+    baseReleaseRef: input.baseReleaseRef ?? null,
+    baseRevisionRef: input.baseRevisionRef ?? null,
+    relations: input.relations,
+  });
+
+export interface ScoringRuleRelationDetectionInputV1 {
+  readonly policyRef: VersionReference;
+  /** 候选正文规范摘要；快照必须绑定被检测的那一份正文。 */
+  readonly candidateContentDigest: string;
   readonly candidates: readonly ScoringRuleRelationCandidateV1[];
+  /** 精确比较基线的已发布规则；只与候选比较，不互相比较。 */
+  readonly baseline?: readonly ScoringRuleRelationCandidateV1[];
+  readonly baseReleaseRef?: KnowledgeReleaseRefV1;
+  readonly baseRevisionRef?: KnowledgeRevisionRefV1;
   readonly standardKindRank?: readonly string[];
   readonly evidenceReferences?: readonly {
     readonly locator: { readonly sourceSegmentId: string };
     readonly sourceVersion: { readonly entityId: string; readonly versionId: string };
   }[];
-}): readonly ScoringRuleRelationV1[] => {
+}
+
+/**
+ * 同一工程、兼容集合、指标与相交三维域内检测：结论不同或例外互否为 conflict，其余相交为 overlap。
+ * 复用 `normalizeScoringThresholds`/`normalizeGradeIntervals`/`evaluateScoringRule` 的语义，
+ * 输出绑定候选正文摘要、比较基线发布与全部关系事实的完整快照。
+ */
+export const detectRuleRelations = (
+  input: ScoringRuleRelationDetectionInputV1,
+): ScoringRuleRelationSnapshotV1 => {
   const rankOf = (candidate: ScoringRuleRelationCandidateV1): number => {
     const rank = input.standardKindRank?.indexOf(candidate.standardKind ?? "");
     return rank === undefined || rank < 0 ? Number.MAX_SAFE_INTEGER : rank;
   };
   const relations: ScoringRuleRelationV1[] = [];
-  for (let leftIndex = 0; leftIndex < input.candidates.length; leftIndex += 1) {
-    for (let rightIndex = leftIndex + 1; rightIndex < input.candidates.length; rightIndex += 1) {
-      const leftCandidate = input.candidates[leftIndex]!;
-      const rightCandidate = input.candidates[rightIndex]!;
-      const left = leftCandidate.rule;
-      const right = rightCandidate.rule;
-      if (left.indicatorItem !== right.indicatorItem) continue;
-      if (!applicabilityIntersects(left, right)) continue;
-      const leftRef = scoringRuleTargetRef(left.ruleId, left.ruleVersion.versionId);
-      const leftThresholds = normalizeScoringThresholds(left.scoringThresholds, leftRef);
-      const rightThresholds = normalizeScoringThresholds(right.scoringThresholds, leftRef);
-      const leftGrades = normalizeGradeIntervals(left.gradeIntervals, leftRef);
-      const rightGrades = normalizeGradeIntervals(right.gradeIntervals, leftRef);
-      const pairs = intervalDomainOverlap(leftThresholds, rightThresholds);
-      if (pairs.length === 0) continue;
-      const exceptionsConflict =
-        left.exceptionClauses.length > 0 &&
-        right.exceptionClauses.length > 0 &&
-        left.exceptionClauses.every((clause) => !right.exceptionClauses.includes(clause));
-      const conclusionsAgree = sameConclusion(pairs, leftGrades, rightGrades);
-      const relationKind: ScoringRuleRelationKindV1 =
-        !conclusionsAgree || exceptionsConflict ? "conflict" : "overlap";
-      const lower = pairs.reduce<number | null>((current, pair) => {
-        const value = minLower(pair.left, pair.right);
-        if (value === null) return current;
-        return current === null ? value : Math.max(current, value);
-      }, null);
-      const upper = pairs.reduce<number | null>((current, pair) => {
-        const value = maxUpper(pair.left, pair.right);
-        if (value === null) return current;
-        return current === null ? value : Math.min(current, value);
-      }, null);
-      const overlap = ScoringRuleOverlapDomainV1Schema.parse({
-        indicatorItem: left.indicatorItem,
-        lower,
-        lowerInclusive: true,
-        upper,
-        upperInclusive: false,
-        leftThresholdIds: [...new Set(pairs.map((pair) => pair.left.thresholdId))].sort(),
-        rightThresholdIds: [...new Set(pairs.map((pair) => pair.right.thresholdId))].sort(),
-        leftGradeIds: leftGrades.map((grade) => grade.grade).sort(),
-        rightGradeIds: rightGrades.map((grade) => grade.grade).sort(),
-      });
-      const overlapDigest = sha256CanonicalJson(overlap);
-      const ordered = [leftCandidate, rightCandidate]
-        .map((candidate, index) => ({ candidate, index }))
-        .sort((first, second) => {
-          if (relationKind !== "conflict") return first.index - second.index;
-          const rankDelta = rankOf(first.candidate) - rankOf(second.candidate);
-          if (rankDelta !== 0) return rankDelta;
-          const firstKey = `${first.candidate.sourceVersionRef.reference.entityId}@${first.candidate.sourceVersionRef.reference.versionId}:${first.candidate.rule.ruleId}`;
-          const secondKey = `${second.candidate.sourceVersionRef.reference.entityId}@${second.candidate.sourceVersionRef.reference.versionId}:${second.candidate.rule.ruleId}`;
-          return firstKey < secondKey ? -1 : firstKey > secondKey ? 1 : 0;
-        })
-        .map((entry) => entry.candidate);
-      const retained = ordered[0]!;
-      const excluded = ordered[1]!;
-      relations.push(
-        ScoringRuleRelationV1Schema.parse({
-          relationId: sha256CanonicalJson({
-            relationKind,
-            policyRef: input.policyRef,
-            left: left.ruleVersion,
-            right: right.ruleVersion,
-            overlapDigest,
-          }),
+  const compare = (
+    leftCandidate: ScoringRuleRelationCandidateV1,
+    rightCandidate: ScoringRuleRelationCandidateV1,
+  ): void => {
+    const left = leftCandidate.rule;
+    const right = rightCandidate.rule;
+    // 修订从基线继承的同一规则版本不与自己比较：候选与基线按规则版本身份去重。
+    if (
+      left.ruleId === right.ruleId &&
+      left.ruleVersion.entityId === right.ruleVersion.entityId &&
+      left.ruleVersion.versionId === right.ruleVersion.versionId
+    ) {
+      return;
+    }
+    if (left.indicatorItem !== right.indicatorItem) return;
+    if (!applicabilityIntersects(left, right)) return;
+    const leftRef = scoringRuleTargetRef(left.ruleId, left.ruleVersion.versionId);
+    const leftThresholds = normalizeScoringThresholds(left.scoringThresholds, leftRef);
+    const rightThresholds = normalizeScoringThresholds(right.scoringThresholds, leftRef);
+    const leftGrades = normalizeGradeIntervals(left.gradeIntervals, leftRef);
+    const rightGrades = normalizeGradeIntervals(right.gradeIntervals, leftRef);
+    const pairs = intervalDomainOverlap(leftThresholds, rightThresholds);
+    if (pairs.length === 0) return;
+    const exceptionsConflict =
+      left.exceptionClauses.length > 0 &&
+      right.exceptionClauses.length > 0 &&
+      left.exceptionClauses.every((clause) => !right.exceptionClauses.includes(clause));
+    const conclusionsAgree = sameConclusion(pairs, leftGrades, rightGrades);
+    const relationKind: ScoringRuleRelationKindV1 =
+      !conclusionsAgree || exceptionsConflict ? "conflict" : "overlap";
+    const lower = pairs.reduce<number | null>((current, pair) => {
+      const value = minLower(pair.left, pair.right);
+      if (value === null) return current;
+      return current === null ? value : Math.max(current, value);
+    }, null);
+    const upper = pairs.reduce<number | null>((current, pair) => {
+      const value = maxUpper(pair.left, pair.right);
+      if (value === null) return current;
+      return current === null ? value : Math.min(current, value);
+    }, null);
+    const overlap = ScoringRuleOverlapDomainV1Schema.parse({
+      indicatorItem: left.indicatorItem,
+      lower,
+      lowerInclusive: true,
+      upper,
+      upperInclusive: false,
+      leftThresholdIds: [...new Set(pairs.map((pair) => pair.left.thresholdId))].sort(),
+      rightThresholdIds: [...new Set(pairs.map((pair) => pair.right.thresholdId))].sort(),
+      leftGradeIds: leftGrades.map((grade) => grade.grade).sort(),
+      rightGradeIds: rightGrades.map((grade) => grade.grade).sort(),
+    });
+    const overlapDigest = sha256CanonicalJson(overlap);
+    const ordered = [leftCandidate, rightCandidate]
+      .map((candidate, index) => ({ candidate, index }))
+      .sort((first, second) => {
+        if (relationKind !== "conflict") return first.index - second.index;
+        const rankDelta = rankOf(first.candidate) - rankOf(second.candidate);
+        if (rankDelta !== 0) return rankDelta;
+        const firstKey = `${first.candidate.sourceVersionRef.reference.entityId}@${first.candidate.sourceVersionRef.reference.versionId}:${first.candidate.rule.ruleId}`;
+        const secondKey = `${second.candidate.sourceVersionRef.reference.entityId}@${second.candidate.sourceVersionRef.reference.versionId}:${second.candidate.rule.ruleId}`;
+        return firstKey < secondKey ? -1 : firstKey > secondKey ? 1 : 0;
+      })
+      .map((entry) => entry.candidate);
+    const retained = ordered[0]!;
+    const excluded = ordered[1]!;
+    relations.push(
+      ScoringRuleRelationV1Schema.parse({
+        relationId: sha256CanonicalJson({
           relationKind,
           policyRef: input.policyRef,
-          leftRuleVersion: left.ruleVersion,
-          rightRuleVersion: right.ruleVersion,
-          leftRuleId: left.ruleId,
-          rightRuleId: right.ruleId,
-          overlap,
+          left: left.ruleVersion,
+          right: right.ruleVersion,
           overlapDigest,
-          ...(relationKind === "conflict"
-            ? {
-                retainedRuleVersionRef: retained.rule.ruleVersion,
-                excludedRuleVersionRef: excluded.rule.ruleVersion,
-              }
-            : {}),
-          evidenceReferences: [...(input.evidenceReferences ?? [])].slice(0, 16),
         }),
-      );
+        relationKind,
+        policyRef: input.policyRef,
+        leftRuleVersion: left.ruleVersion,
+        rightRuleVersion: right.ruleVersion,
+        leftRuleId: left.ruleId,
+        rightRuleId: right.ruleId,
+        overlap,
+        overlapDigest,
+        ...(relationKind === "conflict"
+          ? {
+              retainedRuleVersionRef: retained.rule.ruleVersion,
+              excludedRuleVersionRef: excluded.rule.ruleVersion,
+            }
+          : {}),
+        evidenceReferences: [...(input.evidenceReferences ?? [])].slice(
+          0,
+          SCORING_RULES_MAX_RELATION_EVIDENCE_V1,
+        ),
+      }),
+    );
+  };
+  for (let leftIndex = 0; leftIndex < input.candidates.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < input.candidates.length; rightIndex += 1) {
+      compare(input.candidates[leftIndex]!, input.candidates[rightIndex]!);
     }
   }
-  return relations.sort((left, right) => (left.relationId < right.relationId ? -1 : 1));
+  for (const candidate of input.candidates) {
+    for (const baselineCandidate of input.baseline ?? []) {
+      compare(candidate, baselineCandidate);
+    }
+  }
+  const sorted = relations.sort((left, right) => (left.relationId < right.relationId ? -1 : 1));
+  return ScoringRuleRelationSnapshotV1Schema.parse({
+    policyRef: input.policyRef,
+    candidateContentDigest: input.candidateContentDigest,
+    ...(input.baseReleaseRef === undefined ? {} : { baseReleaseRef: input.baseReleaseRef }),
+    ...(input.baseRevisionRef === undefined ? {} : { baseRevisionRef: input.baseRevisionRef }),
+    relations: sorted,
+    relationDigest: scoringRuleRelationSnapshotDigest({
+      policyRef: input.policyRef,
+      candidateContentDigest: input.candidateContentDigest,
+      ...(input.baseReleaseRef === undefined ? {} : { baseReleaseRef: input.baseReleaseRef }),
+      ...(input.baseRevisionRef === undefined ? {} : { baseRevisionRef: input.baseRevisionRef }),
+      relations: sorted,
+    }),
+  });
 };
 
 const minLower = (
@@ -1002,22 +1066,32 @@ const releaseIdentityKey = (member: {
   };
 }): string => `${member.releaseRef.reference.entityId}@${member.releaseRef.reference.versionId}`;
 
-/** 适用规则集 `included refs` 的规范投影：按发布身份去重并规范排序。 */
+/**
+ * 适用规则集 `included refs` 的规范投影：逐项派生、不合并来源。
+ * 成员已由 `ApplicableRuleSetDocumentV1Schema` 保证身份唯一且规范排序。
+ */
 export const projectApplicableRuleSetMembers = (
   document: ApplicableRuleSetDocumentV1,
-): readonly AssessmentBasisReleaseSetMemberV1[] => {
-  const byRelease = new Map<string, AssessmentBasisReleaseSetMemberV1>();
-  for (const member of document.includedMembers) {
-    byRelease.set(releaseIdentityKey(member), {
+): readonly AssessmentBasisReleaseSetMemberV1[] =>
+  document.includedMembers
+    .map((member) => ({
       releaseRef: member.releaseRef,
       revisionRef: member.revisionRef,
       artifactRef: member.artifactRef,
       contentDigest: member.contentDigest,
-    });
+    }))
+    .sort((left, right) => (releaseIdentityKey(left) < releaseIdentityKey(right) ? -1 : 1));
+
+/** 规则成员重复即整体失败；不提供静默去重路径。 */
+const assertUniqueRuleMembers = (members: readonly AssessmentBasisReleaseSetMemberV1[]): void => {
+  const seen = new Set<string>();
+  for (const member of members) {
+    const key = releaseIdentityKey(member);
+    if (seen.has(key)) {
+      failScoringRule("scoring-rule-basis-unavailable", SCORING_RULES_BASIS_TARGET_REF_V1);
+    }
+    seen.add(key);
   }
-  return [...byRelease.entries()]
-    .sort(([left], [right]) => (left < right ? -1 : 1))
-    .map(([, member]) => member);
 };
 
 export const buildAssessmentBasisMembers = (input: {
@@ -1025,16 +1099,12 @@ export const buildAssessmentBasisMembers = (input: {
   readonly scoringRuleMembers: readonly AssessmentBasisReleaseSetMemberV1[];
   readonly configurationMembers: readonly AssessmentBasisConfigurationMemberV1[];
 }): AssessmentBasisReleaseSetMembersV1 => {
-  const byRelease = new Map<string, AssessmentBasisReleaseSetMemberV1>();
-  for (const member of input.scoringRuleMembers) {
-    const key = releaseIdentityKey(member);
-    if (!byRelease.has(key)) byRelease.set(key, member);
-  }
+  assertUniqueRuleMembers(input.scoringRuleMembers);
   return AssessmentBasisReleaseSetMembersV1Schema.parse({
     applicableRuleSetMember: input.applicableRuleSetMember,
-    scoringRuleMembers: [...byRelease.entries()]
-      .sort(([left], [right]) => (left < right ? -1 : 1))
-      .map(([, member]) => member),
+    scoringRuleMembers: [...input.scoringRuleMembers].sort((left, right) =>
+      releaseIdentityKey(left) < releaseIdentityKey(right) ? -1 : 1,
+    ),
     configurationMembers: [...input.configurationMembers].sort((left, right) =>
       left.definitionType < right.definitionType ? -1 : 1,
     ),
@@ -1049,6 +1119,7 @@ export const assertScoringRuleMembersMatchApplicableRuleSet = (input: {
   readonly document: ApplicableRuleSetDocumentV1;
   readonly scoringRuleMembers: readonly AssessmentBasisReleaseSetMemberV1[];
 }): void => {
+  assertUniqueRuleMembers(input.scoringRuleMembers);
   const expected = projectApplicableRuleSetMembers(input.document);
   const actual = [...input.scoringRuleMembers].sort((left, right) =>
     releaseIdentityKey(left) < releaseIdentityKey(right) ? -1 : 1,

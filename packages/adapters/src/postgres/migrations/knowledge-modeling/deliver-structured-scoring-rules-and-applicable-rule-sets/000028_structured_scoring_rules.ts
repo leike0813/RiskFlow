@@ -5,7 +5,6 @@ const timestamptz = sql`timestamp with time zone`;
 const digestPattern = sql`'^[0-9a-f]{64}$'`;
 const structuredScoringRuleDefinitionType = "structured-scoring-rule";
 const applicableRuleSetDefinitionType = "applicable-rule-set";
-const relationStatuses = sql`('pending', 'approved', 'rejected', 'returned')`;
 
 const tables = [
   "business.scoring_rule_revision_metadata",
@@ -29,6 +28,10 @@ const grantApp = async (db: Kysely<unknown>): Promise<void> => {
 /**
  * C19 只存不可变关系事实：正文与逐项筛选仍在 C04，C16 仍是发布生命周期 SSOT。
  * 全部表只追加，应用角色仅 SELECT/INSERT。
+ *
+ * 事实粒度：发布前检测的候选正文摘要、比较基线与快照摘要属于「修订级」事实，
+ * 单点保存在 `scoring_rule_revision_metadata`；`rule_relations` 只保存逐条关系事实
+ * 并外键绑定该候选 C16 revision，避免在每行重复同一次检测的基线。
  */
 export async function up(db: Kysely<unknown>): Promise<void> {
   await db.schema
@@ -44,6 +47,11 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     .addColumn("artifact_version_id", "text", (column) => column.notNull())
     .addColumn("artifact_ref", jsonb, (column) => column.notNull())
     .addColumn("content_digest", "char(64)", (column) => column.notNull())
+    .addColumn("relation_digest", "char(64)", (column) => column.notNull())
+    .addColumn("base_release_id", "text")
+    .addColumn("base_release_version_id", "text")
+    .addColumn("base_release_ref", jsonb)
+    .addColumn("base_revision_ref", jsonb)
     .addColumn("item_count", "integer", (column) => column.notNull())
     .addColumn("command_id", "text", (column) => column.notNull())
     .addColumn("audit_entry_id", "text", (column) => column.notNull())
@@ -67,14 +75,23 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     )
     .addCheckConstraint(
       "scoring_rule_revision_metadata_digest_ck",
-      sql`content_digest ~ ${digestPattern}`,
+      sql`content_digest ~ ${digestPattern} AND relation_digest ~ ${digestPattern}`,
+    )
+    .addCheckConstraint(
+      "scoring_rule_revision_metadata_base_ck",
+      sql`(base_release_id IS NULL AND base_release_version_id IS NULL
+          AND base_release_ref IS NULL AND base_revision_ref IS NULL)
+        OR (base_release_id IS NOT NULL AND base_release_version_id IS NOT NULL
+          AND base_release_ref IS NOT NULL AND base_revision_ref IS NOT NULL)`,
     )
     .addCheckConstraint("scoring_rule_revision_metadata_item_count_ck", sql`item_count >= 0`)
     .addCheckConstraint(
       "scoring_rule_revision_metadata_json_ck",
       sql`jsonb_typeof(project_revision_ref) = 'object'
         AND jsonb_typeof(compatibility_ref) = 'object'
-        AND jsonb_typeof(artifact_ref) = 'object'`,
+        AND jsonb_typeof(artifact_ref) = 'object'
+        AND (base_release_ref IS NULL OR jsonb_typeof(base_release_ref) = 'object')
+        AND (base_revision_ref IS NULL OR jsonb_typeof(base_revision_ref) = 'object')`,
     )
     .execute();
 
@@ -92,6 +109,8 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     .addColumn("relation_id", "text", (column) => column.notNull())
     .addColumn("version_id", "text", (column) => column.notNull())
     .addColumn("project_id", "text", (column) => column.notNull())
+    .addColumn("revision_id", "text", (column) => column.notNull())
+    .addColumn("revision_version_id", "text", (column) => column.notNull())
     .addColumn("relation_kind", "text", (column) => column.notNull())
     .addColumn("policy_ref", jsonb, (column) => column.notNull())
     .addColumn("left_rule_id", "text", (column) => column.notNull())
@@ -109,7 +128,6 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     .addColumn("excluded_rule_version_id", "text")
     .addColumn("excluded_rule_version_ref", jsonb)
     .addColumn("evidence_references", jsonb, (column) => column.notNull())
-    .addColumn("status", "text", (column) => column.notNull().defaultTo("pending"))
     .addColumn("command_id", "text", (column) => column.notNull())
     .addColumn("audit_entry_id", "text", (column) => column.notNull())
     .addColumn("occurred_at", timestamptz, (column) => column.notNull())
@@ -120,10 +138,18 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     .addPrimaryKeyConstraint("rule_relations_pk", ["relation_id", "version_id"])
     .addUniqueConstraint("rule_relations_identity_uidx", [
       "project_id",
+      "revision_id",
       "left_rule_version_id",
       "right_rule_version_id",
       "overlap_digest",
     ])
+    .addForeignKeyConstraint(
+      "rule_relations_revision_fk",
+      ["revision_id", "revision_version_id"],
+      "business.knowledge_revisions",
+      ["revision_id", "version_id"],
+      (constraint) => constraint.onDelete("restrict"),
+    )
     .addForeignKeyConstraint(
       "rule_relations_command_fk",
       ["command_id"],
@@ -133,12 +159,12 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     .addCheckConstraint(
       "rule_relations_identity_ck",
       sql`relation_id <> '' AND version_id <> '' AND project_id <> ''
+        AND revision_id <> '' AND revision_version_id <> ''
         AND relation_kind IN ('conflict', 'overlap')
         AND left_rule_id <> '' AND left_rule_version_id <> ''
         AND right_rule_id <> '' AND right_rule_version_id <> ''
         AND command_id <> ''`,
     )
-    .addCheckConstraint("rule_relations_status_ck", sql`status IN ${relationStatuses}`)
     .addCheckConstraint("rule_relations_digest_ck", sql`overlap_digest ~ ${digestPattern}`)
     .addCheckConstraint(
       "rule_relations_json_ck",
@@ -184,8 +210,6 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     .addColumn("attempt", "integer", (column) => column.notNull())
     .addColumn("review_attempt_id", "text", (column) => column.notNull())
     .addColumn("review_task_ref", jsonb, (column) => column.notNull())
-    .addColumn("decision_ref", jsonb)
-    .addColumn("status", "text", (column) => column.notNull())
     .addColumn("command_id", "text", (column) => column.notNull())
     .addColumn("audit_entry_id", "text", (column) => column.notNull())
     .addColumn("occurred_at", timestamptz, (column) => column.notNull())
@@ -221,11 +245,9 @@ export async function up(db: Kysely<unknown>): Promise<void> {
         AND review_attempt_id <> '' AND command_id <> ''`,
     )
     .addCheckConstraint("rule_conflict_review_links_attempt_ck", sql`attempt >= 1`)
-    .addCheckConstraint("rule_conflict_review_links_status_ck", sql`status IN ${relationStatuses}`)
     .addCheckConstraint(
       "rule_conflict_review_links_json_ck",
-      sql`jsonb_typeof(review_task_ref) = 'object'
-        AND (decision_ref IS NULL OR jsonb_typeof(decision_ref) = 'object')`,
+      sql`jsonb_typeof(review_task_ref) = 'object'`,
     )
     .execute();
 
@@ -381,7 +403,7 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     .createIndex("rule_relations_project_kind_idx")
     .ifNotExists()
     .on("business.rule_relations")
-    .columns(["project_id", "relation_kind", "recorded_at"])
+    .columns(["project_id", "revision_id", "relation_kind", "recorded_at"])
     .execute();
   await db.schema
     .createIndex("rule_relations_left_rule_idx")
@@ -399,7 +421,7 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     .createIndex("rule_conflict_review_links_project_idx")
     .ifNotExists()
     .on("business.rule_conflict_review_links")
-    .columns(["project_id", "relation_id", "version_id", "status"])
+    .columns(["project_id", "relation_id", "version_id"])
     .execute();
   await db.schema
     .createIndex("applicable_rule_set_revision_metadata_project_idx")

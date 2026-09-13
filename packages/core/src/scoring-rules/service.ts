@@ -40,6 +40,7 @@ import {
   type ScoringRuleStandardSegmentSliceRequestV1,
   type ScoringRuleValidationViewV1,
   type ScoringRulesPolicyV1,
+  type ScoringRuleRelationSnapshotV1,
 } from "./schema.js";
 
 /* -------------------------------------------------------------------------- */
@@ -62,6 +63,8 @@ export interface SubmitScoringRuleRevisionV1 {
   readonly definitionType: ScoringRulesDefinitionTypeV1;
   readonly candidateArtifactRef: ContentArtifactRefV1;
   readonly authorization: AuthorizationContextV1;
+  /** C16 命令声明的精确比较基线；缺省表示按当前有效发布解析。 */
+  readonly baseReleaseRef?: KnowledgeReleaseRefV1;
 }
 
 /** C04 校验后冻结的内容摘要；正文只存在于工件中。 */
@@ -71,6 +74,8 @@ export interface PreparedScoringRuleV1 {
   readonly compatibilityRef: VersionReference;
   readonly contentDigest: string;
   readonly itemCount: number;
+  /** `structured-scoring-rule` 的发布前冲突/重叠快照；该类型之外为空。 */
+  readonly relationSnapshot?: ScoringRuleRelationSnapshotV1;
 }
 
 export interface ScoringRuleRevisionAppendV1 {
@@ -88,6 +93,9 @@ export interface ScoringRuleRevisionMetadataAssertionV1 {
   readonly projectId: string;
   readonly revisionRef: KnowledgeRevisionRefV1;
   readonly authorization: AuthorizationContextV1;
+  /** C16 revision 行上精确的比较基线；C19 用它核对检测快照的基线。 */
+  readonly baseReleaseRef?: KnowledgeReleaseRefV1;
+  readonly baseRevisionRef?: KnowledgeRevisionRefV1;
 }
 
 export interface PublishOrRollbackScoringRuleV1 {
@@ -98,6 +106,11 @@ export interface PublishOrRollbackScoringRuleV1 {
   readonly actorId: string;
   readonly issuedAt: string;
   readonly authorizationContextRef: AuthorizationContextRefV1;
+  /** 已由 C16 按当前事实复验的授权：仅用于发布门禁内的 C07 决定读取。 */
+  readonly authorization: AuthorizationContextV1;
+  /** C16 revision 行上精确的比较基线；C19 用它核对检测快照的基线。 */
+  readonly baseReleaseRef?: KnowledgeReleaseRefV1;
+  readonly baseRevisionRef?: KnowledgeRevisionRefV1;
 }
 
 export interface ScoringRuleReleaseAppendV1 {

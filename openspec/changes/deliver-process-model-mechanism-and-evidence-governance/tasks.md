@@ -1,6 +1,6 @@
 ## 1. 契约门与验收夹具
 
-- [x] 1.1 [IP-01] 在实现前确认独立 C15 drift change（公开 `readBoundResult()` + strict `route-decision` 快照）及 D-01 其它依赖均已归档集成，运行 implementation-plan V-01；任一门不满足立即升级，不在 C17 修改 C15/C11/contracts。
+- [x] 1.1 [IP-01] 在实现前确认独立 C15 drift change（公开 `PostgresDataCleaningStore.readExactPreparation()` + strict `route-decision` 快照）及 D-01 其它既有依赖均已归档集成，运行当时的 implementation-plan V-01；任一门不满足立即升级，不在 C17 修改 C15/C11/contracts。
 - [x] 1.2 [IP-01] 把 C17 fixture 改为只消费 C15 public reader，删除准备表私有 SQL/宽松 payload view，并把关键路径早退改为会失败的 narrowing helper；运行 `pnpm exec vitest run --reporter=verbose packages/adapters/test/identification-knowledge/postgres-identification-knowledge-adapter.test.ts` 证明失败前置不能得到绿色结果。
 
 ## 2. Core 契约与确定性逻辑
@@ -11,11 +11,11 @@
 
 ## 3. Adapter、迁移与治理组合
 
-- [x] 3.1 [IP-03] 收口 C16 resolver 分支及发布/回滚 transaction policy：同一 context 调 C17 policy，C17 policy 缺失关闭失败；运行 implementation-plan V-04 证明真实 C06 识别授权、既有评估逐字段行为及事务接缝。
+- [x] 3.1 [IP-03] 收口 C16 `#knowledgeResolutionBranch()` 及发布/回滚 transaction policy：同一 context 调 C17 policy，C17 policy 缺失关闭失败；运行当时的 implementation-plan V-04 证明真实 C06 识别授权、既有评估逐字段行为及事务接缝。
 - [x] 3.2 [IP-04] 新增自动发现的 `000020_identification_knowledge_governance` 四表迁移、约束和最小角色权限，并更新迁移发现期望；运行 `pnpm exec vitest run packages/adapters/test/postgres/postgres-foundation.test.ts` 验证 up/down、顺序和权限，保持 `000021`～`000023` 未使用。
 - [x] 3.3 [IP-05] 实现正式准备 reader 和 `PostgresIdentificationKnowledgeReleasePolicy`，把 C17 release binding/组合事件移入 C16 publish/rollback 同一事务，删除内存 recorder 与 façade 发布后绑定；运行 implementation-plan V-03 验证人类发布、四成员零事件、组合唯一事件、失败全回滚、Agent 拒绝和下游窄读。
 - [x] 3.4 [IP-06] 实现精确准备→C16 双时间三发布→组合三成员→C21/C24 policy provider 的 `identification-basis` 解析，运行 `pnpm exec vitest run packages/adapters/test/identification-knowledge/postgres-identification-knowledge-adapter.test.ts packages/adapters/test/knowledge-governance/postgres-knowledge-governance-adapter.test.ts` 验证成功四引用、成员停用/错工程/错类型、策略缺失和机理不一致均 fail-closed。
-- [x] 3.5 [IP-07] 实现 manifest 成员冻结、tool-ref + 对象成员双层校验，以及 C06 独立 start/read/submit/request-review/C07 授权下的失败阶段 CAS；运行 implementation-plan V-03/V-05 验证越界零读取、授权拒绝停在精确状态、重放一次复核及失败不可发布。
+- [x] 3.5 [IP-07] 实现 manifest 成员冻结、tool-ref + 对象成员双层校验，以及既有 C06 start/read/submit/request-review 下的失败阶段 CAS；运行当时的 implementation-plan V-03/V-05 验证越界零读取、授权拒绝停在精确状态、重放一次复核及失败不可发布。第二轮规划新增的 C08/C16 公共接缝收口见 7.1。
 
 ## 4. API / Worker 接入
 
@@ -34,5 +34,5 @@
 
 ## 7. OpenSpec verify
 
-- [ ] 7.1 [IP-10] 运行 `openspec validate deliver-process-model-mechanism-and-evidence-governance --strict --no-interactive && openspec instructions apply --change deliver-process-model-mechanism-and-evidence-governance --json`，完整读取返回的全部 `contextFiles`，逐项核对每个 Requirement/Scenario、允许文件和验证义务均可反向定位到 IP-01～IP-10。
+- [ ] 7.1 [IP-01、IP-03、IP-07、IP-08、IP-10] 协调端先归档 C08 `AgentTaskFailureEvidenceReaderV1.readTerminalFailure()` 前置 change，实施端再以该 reader 替换 C17 的 `AgentTaskStoreV1.getTask()`，并以 `KnowledgeGovernanceReviewAuthorizationProviderV1` 替换 C16 的 `reviewAuthorization/approvalAuthorization` 内联回调；随后运行 V-01、V-03～V-05 及 `openspec validate deliver-process-model-mechanism-and-evidence-governance --strict --no-interactive && openspec instructions apply --change deliver-process-model-mechanism-and-evidence-governance --json`，完整读取全部 `contextFiles`，逐项核对每个 Requirement/Scenario、允许文件和验证义务均可反向定位到 IP-01～IP-10。
 - [ ] 7.2 [IP-10] 在全部实现任务、命令证据和 checkbox 完成后使用项目 `openspec-verify-change` 流程独立验收；未验证通过不得归档，本任务本身不提交或归档。

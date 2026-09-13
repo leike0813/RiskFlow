@@ -1,8 +1,8 @@
 ## Context
 
-动机见 [proposal.md](./proposal.md#why)，行为边界见 [spec.md](./specs/identification/process-model-mechanism-and-evidence-governance/spec.md)。当前实现检查点已包含 C17 Schema、校验、PostgreSQL façade、C08 Worker 包装和 C16 识别发布接缝；但测试 fixture 仍绕过 C15 正式读取，发布绑定仍晚于 C16 事务，Worker 也只有 runtime 导出而没有生产组合根。API 已有 generic knowledge/agent 路由，不需要新增 HTTP 路径，当前也没有需要接入的 Web 页面。
+动机见 [proposal.md](./proposal.md#why)，行为边界见 [spec.md](./specs/identification/process-model-mechanism-and-evidence-governance/spec.md)。当前实现已包含 C17 Schema、校验、PostgreSQL façade、Worker 生产组合和 C16 识别发布事务接缝。第二轮验证确认剩余缺口是规划 API 名称漂移、C08 终态失败证据没有授权公共窄读，以及 C16→C07 仍由两个可选内联回调拼装授权。API 已有 generic knowledge/agent 路由，不需要新增 HTTP 路径，当前也没有需要接入的 Web 页面。
 
-初始规划基线为 `1e51bec508ddad8e2ccdd5af9a9d17b593458af9`，本次规划修补核对的实现检查点为 `ef617859100c96e2ec3b808e90e0f107a6dde4a7`。实现暴露了三处规划缺口：C15 没有供 C17 使用的正式窄读且准备快照把覆盖/排除内容工件引用保存为公共契约要求的 `route-decision` 字段；C17 发布事件成员在 C16 发布后才登记；生产组合根及其 C06 授权来源未闭合。已归档 `evolve-identification-basis-published-event` D-04 已固定发布事务接缝，本设计按其收口。迁移号段仍为 `000020`～`000023`，只使用 `000020`。
+初始规划基线为 `1e51bec508ddad8e2ccdd5af9a9d17b593458af9`，本次规划修补核对的实现检查点为 `e3172c6ff65b8ba4a75e8f794626cc53d410d606`。当前 C15 公共方法实际为 `PostgresDataCleaningStore.readExactPreparation(input: IdentificationPreparationReadRequestV1): Promise<IdentificationPreparationReadResultV1>`；C08 当前只有无授权的内部执行存储 `AgentTaskStoreV1.getTask(taskRef)` / `PostgresAgentTaskAdapter.getTask(taskRef)`；C16 当前 options 是 `reviewAuthorization`、`approvalAuthorization` 两个可选回调。后两项不足以形成独立验收证据，本设计在不增加 C17 迁移或依赖的前提下补公共窄接缝。迁移号段仍为 `000020`～`000023`，只使用 `000020`。
 
 ## Goals / Non-Goals
 
@@ -17,6 +17,8 @@
 - 不实现 C20 的 Qdrant/BM25、索引代际、RRF 或检索结果，不实现 C21～C24 的上下文审阅、候选识别和识别图。
 - 不定义 C21/C24 拥有的识别策略集，不增加知识定义类型，不修改 `packages/contracts`、主 specs、根 workspace、锁文件或现有迁移 provider。
 - 不实现第二套治理状态机、Agent 循环、审计表或工件仓库，不给 C17 增加 API 专用路由或 Web 页面。
+- 不在 C17 修复“唯一发布停用后 `currentRelease` 为空且 `validateRevisionBase` 要求 base=current，导致该定义类型可能无法再提交新修订”的 C16 生命周期语义；建议另开 C16 change，不在本 change 增加特判。
+- 不在 C17 修改 C08 私表、执行存储或 contracts；C08 失败证据公共窄读由独立前置 change 交付。
 
 ## Decisions
 
@@ -25,10 +27,10 @@
 实施首项按集成后代码而非 change 名称检查：
 
 1. `KnowledgeDefinitionTypeV1Schema` 能 strict parse `standard-library`、`case-library`，既有类型保持不变；
-2. 独立 C15 drift change 已归档：公开 `PostgresDataCleaningStore.readBoundResult({ projectId, preparationSnapshotRef, actorId, requestedAt, authorization })` 按精确 `IdentificationPreparationSnapshotRefV1` 返回 strict 准备快照、正式清洗结果工件和决定引用，且快照中的 `coverageDecisionRef`、`excludedSegmentDecisionRefs[]` 均是 `route-decision`；`implement-engineering-data-read-branches` 已使 C02 `source-segments`、`evidence-access` 返回可经 C04 复读的 `queryResultRef` 并执行当前授权检查；
-3. C08、C16 归档能力及复数 `includedSourceSegmentSetRefs` 已集成。
+2. 独立 C15 drift change 已归档：公开 `PostgresDataCleaningStore.readExactPreparation(input: IdentificationPreparationReadRequestV1): Promise<IdentificationPreparationReadResultV1>` 按精确 `preparationSnapshotRef` 返回 `kind: "ok"` 的 strict `snapshot`、`agentTaskRef`、`result`、`resultArtifactRef`，且快照中的 `coverageDecisionRef`、`excludedSegmentDecisionRefs[]` 均是 `route-decision`；`implement-engineering-data-read-branches` 已使 C02 `EngineeringDataPortV1.read()` 与 adapter 的 `resolveReadQuery()` 对 `source-segments`、`evidence-access` 返回可经 C04 复读的 `queryResultRef` 并执行当前授权检查；
+3. 独立 C08 失败证据窄读 change 已归档并提供 D-09 所列 `AgentTaskFailureEvidenceReaderV1.readTerminalFailure()`；C16 归档能力及复数 `includedSourceSegmentSetRefs` 已集成。
 
-任一门不满足即停止实现并升级；C17 不在本 change 修复 C15、补 contracts 或读取上游表。C15 drift 的最小范围只有正式精确窄读、`route-decision` 写入/复读契约及对应行为测试；不改变清洗算法、任务、迁移或公共 C02 字段。
+任一门不满足即停止实现并升级；C17 不在本 change 修复 C15/C08、补 contracts 或读取上游表。C08 前置 change 若因当前没有 task read branch/capability 而必须演进 contracts，由该 change 单独完成；C17 只注入 reader。
 
 ### D-02：一个严格判别联合是识别知识正文的唯一事实模型
 
@@ -56,13 +58,13 @@
 
 ### D-04：上游准备与证据只通过一个窄读接口消费
 
-C17 adapter 以本地结构接口 `IdentificationPreparationKnowledgeReaderV1` 组合 C15 正式 `readBoundResult`、C02 `EngineeringDataPortV1.read` 与 C04；该接口不要求上游新增公共字段：
+C17 adapter 以 `IdentificationPreparationNarrowReadV1` 注入 C15 正式 `preparationRead: Pick<PostgresDataCleaningStore, "readExactPreparation">` 和 C02 `engineeringData.read/resolveReadQuery`，再由 `PostgresIdentificationPreparationKnowledgeReader` 实现 core `IdentificationPreparationKnowledgeReaderV1`；该接口不要求上游新增公共字段：
 
-- `readExactPreparation({ projectId, preparationSnapshotRef, actorId, requestedAt, authorization })`：按精确引用返回 `IdentificationPreparationSnapshotV1`、C15 正式清洗结果工件引用及其可用性/保留范围摘要；必须证明 C08 清洗任务完成、结果双向绑定、`sourceVersionRefs[]` 与 `includedSourceSegmentSetRefs[]` 同序一一对应；读取行为形成上游查询结果/审计引用；
-- `readSegmentSlice({ projectId, preparationSnapshotRef, sourceSegmentSetRef, segmentIds, limit, actorId, requestedAt, authorization })`：调用 `source-segments`，取得 `queryResultRef` 后经 C04 只复读该准备保留集合内的请求切片；
-- `checkEvidence({ projectId, preparationSnapshotRef, evidenceReferences, purposeCode, actorId, requestedAt, authorization })`：调用 `evidence-access`，取得 `queryResultRef` 后逐项复读 `eligible | rejected`、稳定原因码及上游审计引用，不返回未授权正文。
+- `readExactPreparation({ taskRef?, projectId, preparationSnapshotRef, actorId, requestId, requestedAt }): Promise<IdentificationPreparationExactReadV1>`：内部用 `requestId` 签发 `engineering-data.evidence-access` 授权后调用 C15 `readExactPreparation()`；成功返回 `snapshot`、`agentTaskRef`、`result`、`resultArtifactRef`，并证明 C08 清洗任务完成、结果双向绑定及 `sourceVersionRefs[]` 与 `includedSourceSegmentSetRefs[]` 同序；
+- `readSegmentSlice({ taskRef?, projectId, preparationSnapshotRef, sourceSegmentSetRef, segmentIds, limit, actorId, requestId, requestedAt })`：调用 C02 `EngineeringDataPortV1.read({ kind: "source-segments", ... })`，再以 adapter `resolveReadQuery()` 取得 `queryResultRef` 并只返回该准备保留集合内的请求切片；
+- `checkEvidence({ taskRef?, projectId, preparationSnapshotRef, evidenceReferences, purposeCode, actorId, requestId, requestedAt })`：调用 `EngineeringDataPortV1.read({ kind: "evidence-access", ... })` 及 `resolveReadQuery()`，逐项返回 `eligible | rejected` 和稳定原因码，不返回未授权正文。
 
-三方法均要求 `engineering-data.read`、精确工程/空间/来源范围及 C06 当前决定；不存在和未授权对 C17 呈现同形失败。C17 只持有注入的 C15 正式 reader、`EngineeringDataPortV1` 和 `ArtifactStoreV1`，不知道其表或 adapter 私有方法。
+三方法的授权由 `PostgresIdentificationPreparationKnowledgeReader` 经注入的 `authorize(IdentificationKnowledgeAuthorizationRequestV1)` 为精确 branch 签发，不从调用方接收 `authorization` 字段；不存在和未授权对 C17 呈现同形失败。C17 只持有 `IdentificationPreparationNarrowReadV1`，不知道 C15/C02 的表或 adapter 私有方法。
 
 ### D-05：C17 façade 设置内容门，发布绑定与事件由 C16 同一事务提交
 
@@ -109,11 +111,51 @@ Worker 新增 `withKnowledgeAuthoringModelStep()`/`interpretKnowledgeAuthoringMo
 
 候选通过后 finalizer 把类型化操作应用到冻结基线、执行 D-03 完整包校验、写 C04 包，并走 D-05 submit 路径创建待审 revision；C08 保存每版候选和逐项验证。Agent 不获得 C16 publish/deactivate/rollback 工具。
 
-### D-09：终态失败生成不可发布修订并幂等请求复核
+### D-09：终态失败经 C08 公共窄读生成不可发布修订并幂等请求复核
 
-`settleAuthoringFailures()` 只扫描 C17 `authoring_attempts` 中未收口的精确 task refs，再通过 C08 store 读取这些任务，不做全库 Agent 投影。对 `terminal-failure | cancelled` 且无合格 result 的任务，每个阶段先由组合根取得 C06 为目标工程、actor、调用身份和 exact branch 签发的独立上下文，再按以下顺序执行：
+独立 C08 前置 change 必须新增下列公共窄接缝；名称和签名是 C17 集成事实，不得再用 `AgentTaskStoreV1.getTask()` 或 `PostgresAgentTaskAdapter.getTask()` 代替：
 
-1. 以 C08 error、动作、候选、validation 和 usage 引用构造 `KnowledgeAuthoringFailureV1`，写 C04 diagnostic artifact；
+```ts
+export interface AgentTaskFailureEvidenceReaderV1 {
+  readTerminalFailure(
+    input: AgentTaskFailureEvidenceReadRequestV1,
+  ): Promise<AgentTaskFailureEvidenceReadResultV1>;
+}
+
+export interface AgentTaskFailureEvidenceReadRequestV1 {
+  readonly projectId: string;
+  readonly actorId: string;
+  readonly requestId: string;
+  readonly requestedAt: string;
+  readonly taskRef: AgentTaskRefV1;
+  readonly expectedTaskType: AgentTaskTypeV1;
+  readonly authorization: AuthorizationContextV1;
+}
+
+export type AgentTaskFailureEvidenceReadResultV1 =
+  | { readonly kind: "succeeded"; readonly evidence: AgentTaskFailureEvidenceV1 }
+  | { readonly kind: "failed"; readonly error: ModuleErrorV1 };
+
+export interface AgentTaskFailureEvidenceV1 {
+  readonly taskRef: AgentTaskRefV1;
+  readonly taskType: AgentTaskTypeV1;
+  readonly terminalStatus: "terminal-failure" | "cancelled";
+  readonly error?: AgentStructuredErrorV1;
+  readonly cancelReasonCode?: string;
+  readonly usage: AgentBudgetUsageV1;
+  readonly actionRefs: readonly VersionReference[];
+  readonly candidateArtifactRefs: readonly ArtifactRefV1[];
+  readonly validationArtifactRefs: readonly ArtifactRefV1[];
+}
+```
+
+C08 reader 只按 `(projectId, taskRef)` 单点查询任务及其动作/候选表，先复验当前 `agent-task.read-failure-evidence` 授权，再定位目标；不存在、跨工程、错类型、非终态和未授权返回同形 `AUTHORIZATION_DENIED`，不返回 envelope、模型响应、正文或列表。当前 contracts 没有该分支和读取能力，C08 前置 change 必须最小新增 branch `agent-task.read-failure-evidence` 及 capability `agent-task.read`，并由 C06 精确映射；C17 不修改 contracts 或 C08 表且不需要迁移。
+
+返回投影不新增持久化：`actionRefs` 按动作 `sequence` 升序，以 `actionId` 为 `entityId`、`String(sequence)` 为 `versionId` 确定性映射 `VersionReference`；`candidateArtifactRefs` 直接取候选工件引用并按候选版本升序；`validationArtifactRefs` 取校验工件引用并按首次出现去重。成功读取以 `requestId` 幂等追加 C03 命令回执和事实审计，同键异目标冲突；授权拒绝由 C06 留下授权决定审计，且所有失败形状均不泄露目标是否存在。
+
+`settleAuthoringFailures()` 只扫描 C17 `business.identification_knowledge_authoring_attempts` 中未收口的精确 task refs，再调用注入的 `AgentTaskFailureEvidenceReaderV1.readTerminalFailure()`，不做全库 Agent 投影。对成功返回的终态失败证据，每个阶段先由组合根取得 C06 为目标工程、actor、调用身份和 exact branch 签发的独立上下文，再按以下顺序执行：
+
+1. 以 `evidence.error/cancelReasonCode/actionRefs/candidateArtifactRefs/validationArtifactRefs/usage` 构造 `KnowledgeAuthoringFailureV1`：候选引用须 strict parse 为 `ContentArtifactRefV1`，校验引用映射为各工件的 `reference`；随后写 C04 diagnostic artifact。窄读失败必须返回可验错误，不得 catch 后静默跳过；
 2. 用 `knowledge-modeling.submit-revision` 上下文和稳定派生键直接调用 C16 提交一个目标定义类型的 failure revision，并写 `failure-review-only` binding；该正文是失败诊断，不伪装为有效知识包；
 3. 用独立 `knowledge-modeling.request-review` 上下文调用 C16；C16 再用组合根提供的 `review-audit.request-review` 上下文创建 C07 `knowledge-revision` 任务，并把 review ref 绑定回 attempt。
 
@@ -123,7 +165,7 @@ D-05 发布门永久拒绝 `failure-review-only`。复核只用于人决定补�
 
 ### D-10：识别基础解析组合 C15、C16 与外部策略提供者
 
-`resolveIdentificationBasis()` 的顺序固定为：
+`#resolveIdentificationBasis()` 的顺序固定为：
 
 1. strict parse C02 命令，以 `issuedAt` 作为 `asOfRecordedAt`；
 2. 调用 D-04 `readExactPreparation`，复验工程和当前资料授权；
@@ -138,12 +180,45 @@ provider 不返回精确引用、准备不可读、任一发布/绑定/成员无
 - C17 public govern/resolve 在读取目标存在性前验证命令工程/actor 与 authorization 一致，并使用 C02 声明的 knowledge branch；资料读取另由 D-04 使用 engineering-data branch 复验当前来源范围。
 - `apps/worker/src/identification-knowledge/composition.ts` 是唯一生产组合根。它必须注入同一 `db`/`TransactionUnitV1`、C04 store/guard、C06 access、C07 review port、C08 adapter/store/registry、C15 正式 reader、C02 engineering-data port、完整 validation policy、C21/C24 policy provider 接缝、shared runner/model callbacks 和受信授权来源解析器；工厂先以这些共享依赖构造 `PostgresIdentificationKnowledgeReleasePolicy` 并注入 C16，再把同一个 C16 adapter 注入 C17 façade。除尚未上线的 C21/C24 provider 缺失时只阻断 `identification-basis` 外，其它必需项不得 optional；缺失时工厂拒绝构造。
 - 受信来源只允许请求作用域 `human-session`，或携带 C06 已签发父上下文和同一 causal run 的 `system` 调用。组合根按操作分别请求 `agent-task.start-task`、`engineering-data.source-segments`/`engineering-data.evidence-access`、`knowledge-modeling.identification-basis`、`knowledge-modeling.submit-revision`、`knowledge-modeling.request-review` 和 `review-audit.request-review`，并复验返回上下文的 actor/project、exact capability、空间/来源范围和调用身份。Agent 工具只持有读能力；finalizer/失败收口只取得对应 submit/review 能力；C16 的 human invocation 检查继续独占 publish/deactivate/rollback。
+- C16 adapter 新增并导出以下本地公共接缝，`PostgresKnowledgeGovernanceAdapterOptionsV1` 以 `reviewAuthorizationProvider?: KnowledgeGovernanceReviewAuthorizationProviderV1` 替换 `reviewAuthorization`/`approvalAuthorization`；C17 生产组合必须注入 provider，不能使用命令 authorization fallback：
+
+```ts
+export type KnowledgeGovernanceReviewAuthorizationRequestV1 =
+  | {
+      readonly task: "request-review";
+      readonly projectId: string;
+      readonly actorId: string;
+      readonly invocationId: string;
+      readonly requestedAt: string;
+      readonly branch: "review-audit.request-review";
+      readonly reviewAttemptId: string;
+      readonly revisionRef: KnowledgeRevisionRefV1;
+    }
+  | {
+      readonly task: "verify-knowledge-revision-approval";
+      readonly projectId: string;
+      readonly actorId: string;
+      readonly invocationId: string;
+      readonly requestedAt: string;
+      readonly branch: "review-audit.verify-knowledge-revision-approval";
+      readonly revisionRef: KnowledgeRevisionRefV1;
+      readonly reviewDecisionRef: ReviewDecisionRefV1;
+    };
+
+export interface KnowledgeGovernanceReviewAuthorizationProviderV1 {
+  authorize(
+    input: KnowledgeGovernanceReviewAuthorizationRequestV1,
+  ): Promise<AuthorizationContextV1>;
+}
+```
+
+C16 自己派生 request-review 的 `${reviewAttemptId}:review` 和 publish/rollback 的 `${command.commandId}:approval`，填入精确 branch/目标引用；provider 只把结构化请求交给受信来源与 C06。C16 在调用 `ReviewAuditPortV1.requestReview()` 或 `verifyKnowledgeRevisionApproval()` 前复验返回上下文的 project、actor、invocation 和唯一能力分别为 `review-audit.request`/`review-audit.read`。授权失败不触达 C07，发布/回滚仍由 C16 先验证 human invocation。
 - C04 工件先耐久，随后每个非发布 C17 阶段通过 `TransactionUnitV1` 原子写业务事实、命令回执和一条事实审计；普通修订和四类成员发布提交零识别基础事件。D-05 的组合发布/回滚在 C16 同一事务提交 release、binding、审计、回执和唯一 Outbox 事件。
 - 内部错误映射到 C02 既有 `AUTHORIZATION_DENIED`、`ENTITY_NOT_FOUND`、`STALE_VERSION`、`BUSINESS_BLOCKED`、`IDEMPOTENCY_CONFLICT`、`UNSUPPORTED_CONTRACT`、`TRANSIENT_FAILURE`、`TERMINAL_FAILURE`。日志和错误只带原因码与引用，不带正文、凭据、模型响应或数据库错误。
 
 ### D-12：显式窄读接口是 C20/C24 的唯一消费面
 
-core 导出 `IdentificationKnowledgeReleaseReaderV1.readExact({ projectId, releaseRef, actorId, requestedAt, authorization })`，返回 discriminated strict 包、validation receipt 和 release binding；adapter 实现先校验 C16/C17 binding、工程、定义类型和当前 C06 权限，再打开 C04 artifact。C20 只能用它构建索引，C24 通过 public `resolve()` 冻结识别基础；两者都不能读取 C17/C16 表。
+core 导出 `IdentificationKnowledgeReleaseReaderV1.readExact({ projectId, releaseRef, actorId, requestedAt, invocationId?, authorization })`，返回 discriminated strict 包、validation receipt 和 release binding；adapter 实现先校验 C16/C17 binding、工程、定义类型和当前 C06 权限，再打开 C04 artifact。C20 只能用它构建索引，C24 通过 public `resolve()` 冻结识别基础；两者都不能读取 C17/C16 表。
 
 这条接口有两个明确下游且隔离存储实现，符合跨层契约边界。当前不增加列表、全文搜索、批量 projection 或“当前版本”查询。
 
@@ -157,11 +232,13 @@ core 导出 `IdentificationKnowledgeReleaseReaderV1.readExact({ projectId, relea
 - [策略 provider 在 C21/C24 上线前无实现] → 组合根可以明确标记该能力未就绪，但 `identification-basis` 必须 `BUSINESS_BLOCKED`；C17 无默认策略，知识治理其它命令仍可独立使用。
 - [工具白名单存在但成员范围未校验] → D-08 以 manifest 精确成员做第二层确定性校验；越界在目标读取前失败。
 - [终态失败没有独立 submit/review/C07 授权] → D-09/D-11 停在最后成立阶段并可幂等恢复，不借用任务信封能力。
+- [C08 无公共失败证据读取] → 独立 C08 change 先交付 D-09 的 reader、不可枚举授权和审计；未归档时 C17 失败收口不得使用 `getTask()` 或私有 SQL。
+- [C16 唯一发布停用后无法建立新修订基线] → 建议另开 C16 change 修复 `currentRelease`/`validateRevisionBase` 生命周期语义；本 change 将其列为 Non-goal，不特判。
 - [内容工件成功、后续事务失败产生孤儿] → 内容寻址写入可安全重放，只有 C17 binding 才可消费，孤儿交给 C04 既有保留/清理策略。
 
 ## Migration Plan
 
-1. 先由独立 C15 drift change 交付正式精确窄读和 `route-decision` 契约修正并归档；确认 D-01 其余前置和基线 drift，运行 contracts、C15/C11、C08、C16 定向回归。
+1. 先由独立 C15 drift change 交付 `PostgresDataCleaningStore.readExactPreparation()` 和 `route-decision` 契约修正，并由独立 C08 change 交付 `AgentTaskFailureEvidenceReaderV1.readTerminalFailure()`；两者归档后确认 D-01 其余前置和基线 drift，运行 contracts、C15/C11、C08、C16 定向回归。
 2. 运行 provider 自动发现的 `000020_identification_knowledge_governance`，验证 app/worker/checkpointer 权限和 down/up；不占用 `000021`～`000023`。
 3. 部署 core Schema/校验、C17 release policy、adapter façade 和 C16 branch/事务接缝；生产组合只暴露 façade。先以审核夹具导入五类 draft/revision，再验证四类成员发布零事件、组合发布/回滚的 release-binding-event 原子性及失败回滚。
 4. 部署 Worker 生产组合、工具成员校验和失败收口；逐项验证 C06 exact branch、授权缺失关闭失败，再由人工完成送审/发布。最后验证双时间解析、历史重放和 C20 窄读夹具。

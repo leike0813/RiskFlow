@@ -168,6 +168,13 @@
 - **THEN** 系统进入显式失败终态，保存诊断引用并创建一个知识修订复核任务
 - **AND** 重放失败收口不创建第二个修订或复核任务
 
+#### Scenario: 失败收口只读取精确任务证据
+
+- **WHEN** C17 对其编制尝试绑定的精确 C08 任务执行失败收口
+- **THEN** 系统经 C08 公共失败证据窄读返回该任务的终态、结构化错误或取消原因、累计预算及动作、候选和校验引用
+- **AND** 读取先验证当前工程、actor、精确任务和读取授权，成功读取留下幂等命令回执与事实审计
+- **AND** 任务不存在、跨工程、错类型、未终态或未授权均返回不可枚举的同形失败，不暴露完整任务快照、其它任务或 C08 私有表
+
 #### Scenario: 失败不触发替代结果
 
 - **WHEN** 模型、工具或恢复失败且缓存中存在旧候选或基线发布
@@ -176,8 +183,14 @@
 #### Scenario: 失败复核使用独立工程授权
 
 - **WHEN** 终态失败需要创建不可发布修订并请求 `knowledge-revision` 人工复核
-- **THEN** 组合根分别通过 C06 为 `knowledge-modeling.submit-revision`、`knowledge-modeling.request-review` 和 C16 内部的 `review-audit.request-review` 签发同工程、同 actor、精确调用身份的授权上下文
+- **THEN** 组合根分别通过 C06 为 `knowledge-modeling.submit-revision`、`knowledge-modeling.request-review` 签发同工程、同 actor、精确调用身份的授权上下文，C16 再通过公开结构化授权 provider 请求 `review-audit.request-review`
 - **AND** 任一授权缺失、过期、撤销、工程或 actor 不一致时停在最后已成立阶段，后续重放只补未完成阶段且不重复修订或复核
+
+#### Scenario: 发布与回滚使用精确批准证明授权
+
+- **WHEN** C16 为 `publish-approved-release` 或 `rollback-by-new-release` 校验 C07 知识修订批准证明
+- **THEN** C16 通过同一公开结构化授权 provider 传入 `verify-knowledge-revision-approval` 任务、精确 invocation、`review-audit.verify-knowledge-revision-approval` 分支、修订和决定引用
+- **AND** provider 返回的上下文必须绑定同一工程、actor、invocation 及唯一 `review-audit.read` 能力，否则在 C07 读取前关闭失败
 
 ### Requirement: 识别基础按准备快照和双时间精确解析
 

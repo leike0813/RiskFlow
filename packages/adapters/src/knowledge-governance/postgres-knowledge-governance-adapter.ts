@@ -41,6 +41,7 @@ import {
   type PreparedAssessmentConfigurationV1,
   type SubmitAssessmentConfigurationRevisionV1,
 } from "@riskflow/core/assessment-config";
+import { isIdentificationKnowledgeDefinitionTypeV1 } from "@riskflow/core/identification-knowledge";
 import {
   ContractReferenceV1Schema,
   KnowledgeDefinitionTypeV1Schema,
@@ -621,7 +622,6 @@ export class PostgresKnowledgeGovernanceAdapter {
     readonly authorization: AuthorizationContextV1;
   }) {
     const parsed = ResolveGovernedReleasesRequestV1Schema.safeParse(input);
-    const branch = "knowledge-modeling.assessment-basis" as const;
     if (!parsed.success) {
       return {
         kind: "failed" as const,
@@ -632,6 +632,13 @@ export class PostgresKnowledgeGovernanceAdapter {
     const requiredTypes = valid.requiredDefinitionTypes.map((value) =>
       KnowledgeDefinitionTypeV1Schema.parse(value),
     );
+    const branch = this.#knowledgeResolutionBranch(requiredTypes);
+    if (branch === undefined) {
+      return {
+        kind: "failed" as const,
+        error: moduleError({ code: "UNSUPPORTED_CONTRACT", causalRunId: "knowledge-resolve" }),
+      };
+    }
     const requiredAt = IsoDateTimeSchema.parse(valid.requiredAt);
     const asOfRecordedAt = IsoDateTimeSchema.parse(valid.asOfRecordedAt);
     try {
@@ -730,6 +737,24 @@ export class PostgresKnowledgeGovernanceAdapter {
         }),
       };
     }
+  }
+
+  /**
+   * 纯识别族使用 `knowledge-modeling.identification-basis`，纯评估族保持
+   * `knowledge-modeling.assessment-basis`；混合族、空集或未知类型在访问数据库前关闭失败。
+   */
+  #knowledgeResolutionBranch(
+    requiredDefinitionTypes: readonly KnowledgeDefinitionTypeV1[],
+  ): ModuleBranchV1 | undefined {
+    if (requiredDefinitionTypes.length === 0) return undefined;
+    const identificationCount = requiredDefinitionTypes.filter((definitionType) =>
+      isIdentificationKnowledgeDefinitionTypeV1(definitionType),
+    ).length;
+    if (identificationCount === requiredDefinitionTypes.length) {
+      return "knowledge-modeling.identification-basis";
+    }
+    if (identificationCount === 0) return "knowledge-modeling.assessment-basis";
+    return undefined;
   }
 
   async #submit(

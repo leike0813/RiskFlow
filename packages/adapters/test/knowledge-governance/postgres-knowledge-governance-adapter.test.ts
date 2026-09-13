@@ -19,7 +19,7 @@ import { createPostgresRuntime } from "../../src/postgres/pool.js";
 import * as governanceMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-governed-definition-lifecycle/000007_governed_definition_lifecycle.js";
 import * as assessmentConfigurationMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-assessment-configuration-and-measure-governance/000012_assessment_configuration.js";
 import { DomainEventV1Schema, type DomainEventV1 } from "@riskflow/contracts/events";
-import type { TransactionContextV1 } from "@riskflow/core/persistence";
+import { sha256CanonicalJson, type TransactionContextV1 } from "@riskflow/core/persistence";
 import {
   AssessmentConfigurationDefinitionTypeV1Schema,
   type AssessmentConfigurationGovernancePolicyV1,
@@ -28,6 +28,7 @@ import {
   type PreparedAssessmentConfigurationV1,
 } from "@riskflow/core/assessment-config";
 import { vi } from "vitest";
+import type { LocalIdentityAccessV1 } from "@riskflow/core/access";
 import {
   GOVERNANCE_TEST_TIMESTAMP,
   governanceAuthorizationFor,
@@ -622,6 +623,64 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
                 );
         expect(result).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
       }
+
+      // C06 的 verify 要求调用方按同一 invocationId 授权；resolve 使用由请求派生的稳定身份。
+      const resolveInvocationId = (
+        requiredTypes: readonly string[],
+        requiredAt: string,
+        asOfRecordedAt: string,
+      ) =>
+        `knowledge-resolve-${sha256CanonicalJson({ requiredTypes, requiredAt, asOfRecordedAt })}`;
+      const resolveWith = (requiredTypes: readonly string[], context: AuthorizationContextV1) =>
+        adapter.resolveGovernedReleases({
+          projectId,
+          requiredDefinitionTypes: requiredTypes,
+          requiredAt: GOVERNANCE_TEST_TIMESTAMP,
+          asOfRecordedAt: GOVERNANCE_TEST_TIMESTAMP,
+          authorization: context,
+        });
+
+      const identificationTypes = ["process-model"];
+      const identificationInvocationId = resolveInvocationId(
+        identificationTypes,
+        GOVERNANCE_TEST_TIMESTAMP,
+        GOVERNANCE_TEST_TIMESTAMP,
+      );
+      const identification = await actualAccess.authorize({
+        invocation: { kind: "human-session", sessionToken: session.sessionToken },
+        invocationId: identificationInvocationId,
+        projectId,
+        branch: "knowledge-modeling.identification-basis",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      });
+      expect(await resolveWith(identificationTypes, identification.context)).toMatchObject({
+        kind: "failed",
+        error: { code: "BUSINESS_BLOCKED" },
+      });
+
+      const crossTypes = ["indicator-system"];
+      const crossInvocationId = resolveInvocationId(
+        crossTypes,
+        GOVERNANCE_TEST_TIMESTAMP,
+        GOVERNANCE_TEST_TIMESTAMP,
+      );
+      const crossAuthorized = await actualAccess.authorize({
+        invocation: { kind: "human-session", sessionToken: session.sessionToken },
+        invocationId: crossInvocationId,
+        projectId,
+        branch: "knowledge-modeling.assessment-basis",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      });
+      expect(await resolveWith(crossTypes, crossAuthorized.context)).toMatchObject({
+        kind: "failed",
+        error: { code: "BUSINESS_BLOCKED" },
+      });
+      expect(await resolveWith(identificationTypes, crossAuthorized.context)).toMatchObject({
+        kind: "failed",
+        error: { code: "AUTHORIZATION_DENIED" },
+      });
     } finally {
       await actualAccess.close();
     }
@@ -712,6 +771,63 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
       kind: "succeeded",
       result: { releaseRefs: [restored.result.knowledgeReleaseRef] },
     });
+  });
+  it("selects the resolver branch by knowledge family before any database access", async () => {
+    const projectId = "governance-family-branch";
+    const authorization = governanceAuthorizationFor(projectId);
+    const verifiedBranches: string[] = [];
+    const access = {
+      verify: async (request: { branch: string }) => {
+        verifiedBranches.push(request.branch);
+        return {
+          context: authorization,
+          contextRef: authorization.authorizationContextRef,
+          redacted: false,
+        };
+      },
+    } as unknown as LocalIdentityAccessV1;
+    const adapter = new PostgresKnowledgeGovernanceAdapter({
+      db: fixture!.runtime.db,
+      transactionUnit: fixture!.transactionUnit,
+      access,
+      reviewAudit: fixture!.reviewAudit,
+      now: () => new Date(GOVERNANCE_TEST_TIMESTAMP),
+      reviewAuthorization: () => reviewAuthorizationFor(projectId),
+      approvalAuthorization: () => reviewAuthorizationFor(projectId),
+    });
+
+    const resolveFor = (requiredDefinitionTypes: readonly string[]) =>
+      adapter.resolveGovernedReleases({
+        projectId,
+        requiredDefinitionTypes,
+        requiredAt: GOVERNANCE_TEST_TIMESTAMP,
+        asOfRecordedAt: GOVERNANCE_TEST_TIMESTAMP,
+        authorization,
+      });
+
+    const identification = await resolveFor([
+      "process-model",
+      "risk-mechanism",
+      "retrieval-evidence-base",
+      "standard-library",
+      "case-library",
+    ]);
+    expect(identification).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+    expect(verifiedBranches).toEqual(["knowledge-modeling.identification-basis"]);
+
+    const assessment = await resolveFor(["indicator-system", "risk-matrix"]);
+    expect(assessment).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+    expect(verifiedBranches).toEqual([
+      "knowledge-modeling.identification-basis",
+      "knowledge-modeling.assessment-basis",
+    ]);
+
+    const mixed = await resolveFor(["process-model", "indicator-system"]);
+    expect(mixed).toMatchObject({ kind: "failed", error: { code: "UNSUPPORTED_CONTRACT" } });
+    expect(verifiedBranches).toEqual([
+      "knowledge-modeling.identification-basis",
+      "knowledge-modeling.assessment-basis",
+    ]);
   });
 });
 

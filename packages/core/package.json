@@ -59,6 +59,10 @@
     "./assessment-config": {
       "types": "./dist/assessment-config/index.d.ts",
       "import": "./dist/assessment-config/index.js"
+    },
+    "./identification-knowledge": {
+      "types": "./dist/identification-knowledge/index.d.ts",
+      "import": "./dist/identification-knowledge/index.js"
     }
   }
 }

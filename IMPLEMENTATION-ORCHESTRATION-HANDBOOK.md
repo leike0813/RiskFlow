@@ -6,8 +6,8 @@
 
 当前接管点：
 
-- `main` 已完成并归档 17 个路线 change：C00–C12、C13、C14、C16、C18。
-- `openspec/changes/archive/` 共 29 项 = 17 个路线 change + 12 个辅助/实现/契约演进 change（前 8 项与上表相同，另有 `implement-engineering-data-read-branches`、`evolve-assessment-preparation-entry-fields`、`implement-monitoring-series-reader`、`implement-external-risk-event-registration`）。
+- `main` 已完成并归档 18 个路线 change：C00–C12、C13、C14、C15、C16、C18。
+- `openspec/changes/archive/` 共 31 项 = 18 个路线 change + 13 个辅助/实现/契约演进 change（含 `evolve-identification-preparation-segment-set-refs`、`evolve-knowledge-definition-types`、`evolve-assessment-preparation-entry-fields`、`implement-engineering-data-read-branches`、`implement-monitoring-series-reader`、`implement-external-risk-event-registration`、`enforce-verified-actor-authority-binding` 等）。
 - C01 主 spec 位于 `openspec/specs/domain/contract-kernel/spec.md`。
 - C02 主 spec 位于 `openspec/specs/domain/module-interfaces-events-workflows/spec.md`。
 - C03 主 spec 位于 `openspec/specs/platform/postgresql-outbox-checkpoint-foundation/spec.md`。

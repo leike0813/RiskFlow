@@ -12,7 +12,11 @@ import {
   type HttpAccessLogEntryV1,
 } from "../src/index.js";
 import { MODULE_BRANCH_CAPABILITY_V1 } from "@riskflow/contracts/ports";
-import type { EngineeringDataPortV1, ProjectionPortV1 } from "@riskflow/contracts/ports";
+import type {
+  EngineeringDataPortV1,
+  ProjectionPortV1,
+  WarningResponsePortV1,
+} from "@riskflow/contracts/ports";
 import type { LocalIdentityAccessV1 } from "@riskflow/core/access";
 
 const NOW = "2026-01-01T00:00:00.000Z";
@@ -120,6 +124,33 @@ const engineeringPort = (onApply: (command: unknown) => void): EngineeringDataPo
   },
   read: async () => {
     throw new Error("unused");
+  },
+});
+
+const warningResponsePort = (onRecord: (command: unknown) => void): WarningResponsePortV1 => ({
+  open: async () => {
+    throw new Error("unused");
+  },
+  recommend: async () => {
+    throw new Error("unused");
+  },
+  record: async (command) => {
+    onRecord(command);
+    return {
+      kind: "succeeded",
+      result: {
+        kind: "acknowledgement",
+        status: "acknowledged",
+        warningRecordRef: {
+          kind: "warning-record",
+          reference: { entityId: "warning", versionId: "1" },
+        },
+        warningResponseTaskRef: {
+          kind: "warning-response-task",
+          reference: { entityId: "task", versionId: "1" },
+        },
+      },
+    };
   },
 });
 
@@ -488,6 +519,124 @@ describe("C09 HTTP shell", () => {
     expect(response.statusCode).toBe(400);
     expect(response.json().code).toBe("CONTRACT_INVALID");
     expect(authorizeCalls).toBe(0);
+    await app.close();
+  });
+
+  it("routes warning acknowledgement through the single public port and closed catalog", async () => {
+    const authorizedBranches: string[] = [];
+    const recorded: Record<string, unknown>[] = [];
+    const app = buildApi({
+      access: accessStub((branch) => authorizedBranches.push(branch)),
+      ports: {
+        warningResponse: warningResponsePort((command) => {
+          recorded.push(command as Record<string, unknown>);
+        }),
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+    const body = {
+      schemaVersion: "1",
+      commandId: "command-ack",
+      idempotencyKey: "idempotency-ack",
+      issuedAt: NOW,
+      requestedSpatialScopeRefs: [scope],
+      requestedSourceVersionRefs: [],
+      payload: {
+        warningRecordRef: {
+          kind: "warning-record",
+          reference: { entityId: "warning", versionId: "1" },
+        },
+        warningResponseTaskRef: {
+          kind: "warning-response-task",
+          reference: { entityId: "task", versionId: "1" },
+        },
+      },
+    };
+    const url = "/api/v1/projects/project/commands/warning-response.acknowledge";
+
+    const response = await app.inject({
+      method: "POST",
+      url,
+      headers: { ...jsonHeaders, cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+      payload: body,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(authorizedBranches).toEqual(["warning-response.acknowledge"]);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({
+      kind: "acknowledge",
+      commandId: "command-ack",
+      idempotencyKey: "idempotency-ack",
+      projectId: "project",
+      actorId: "actor",
+      payload: body.payload,
+    });
+    expect(recorded[0]?.authorization).toMatchObject({
+      projectId: "project",
+      actorId: "actor",
+      grantedCapabilities: ["warning-response.record"],
+    });
+    expect(response.json()).toEqual({
+      kind: "succeeded",
+      result: {
+        kind: "acknowledgement",
+        status: "acknowledged",
+        warningRecordRef: body.payload.warningRecordRef,
+        warningResponseTaskRef: body.payload.warningResponseTaskRef,
+      },
+    });
+
+    const retried = await app.inject({
+      method: "POST",
+      url,
+      headers: { ...jsonHeaders, cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+      payload: body,
+    });
+    expect(retried.statusCode).toBe(200);
+    expect(retried.json()).toEqual(response.json());
+    expect(recorded).toHaveLength(2);
+
+    for (const invalid of [
+      { ...body, actorId: "attacker" },
+      { ...body, authorization: {} },
+      { ...body, payload: { ...body.payload, riskResolved: true } },
+      { ...body, payload: { ...body.payload, taskClosed: true } },
+      { ...body, payload: { warningRecordRef: body.payload.warningRecordRef } },
+    ]) {
+      const rejected = await app.inject({
+        method: "POST",
+        url,
+        headers: { ...jsonHeaders, cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+        payload: invalid,
+      });
+      expect(rejected.statusCode).toBe(400);
+      expect(rejected.json().code).toBe("CONTRACT_INVALID");
+    }
+    expect(authorizedBranches).toEqual([
+      "warning-response.acknowledge",
+      "warning-response.acknowledge",
+    ]);
+    expect(recorded).toHaveLength(2);
+
+    const catalogEntries = HTTP_ROUTE_CATALOG_V1.filter(
+      (entry) => entry.branch === "warning-response.acknowledge",
+    );
+    expect(catalogEntries).toHaveLength(1);
+    expect(catalogEntries[0]).toMatchObject({
+      method: "POST",
+      path: "/api/v1/projects/:projectId/commands/warning-response.acknowledge",
+      domainKind: "acknowledge",
+      portKey: "warningResponse",
+      requiredCapability: "warning-response.record",
+    });
+    const openapi = await app.inject({ method: "GET", url: "/api/v1/openapi.json" });
+    const document = openapi.json() as { paths: Record<string, unknown> };
+    expect(Object.keys(document.paths)).toContain(
+      "/api/v1/projects/{projectId}/commands/warning-response.acknowledge",
+    );
     await app.close();
   });
 });

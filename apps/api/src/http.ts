@@ -631,6 +631,7 @@ export const HTTP_ROUTE_CATALOG_V1: readonly HttpRouteEntryV1[] = Object.freeze(
     "warningResponse",
     invokeWarningRecord,
     [
+      ["warning-response.acknowledge", "acknowledge"],
       ["warning-response.adopt-recommendation", "adopt-recommendation"],
       ["warning-response.record-execution", "record-execution"],
       ["warning-response.record-feedback", "record-feedback"],

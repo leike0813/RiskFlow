@@ -586,6 +586,13 @@ describe("module interface contracts", () => {
       ],
       [
         WarningResponseRecordCommandV1Schema,
+        command("acknowledge", {
+          warningRecordRef,
+          warningResponseTaskRef,
+        }),
+      ],
+      [
+        WarningResponseRecordCommandV1Schema,
         command("adopt-recommendation", {
           responseRecommendationRef: version("response-recommendation"),
           decision: "adopted",
@@ -732,6 +739,54 @@ describe("module interface contracts", () => {
           monitoringCutoff: now,
         }),
       ).success,
+    ).toBe(false);
+
+    expect(MODULE_BRANCH_CAPABILITY_V1["warning-response.acknowledge"]).toBe(
+      "warning-response.record",
+    );
+    const acknowledgeCommand = command("acknowledge", {
+      warningRecordRef,
+      warningResponseTaskRef,
+    });
+    for (const invalidAcknowledge of [
+      command("acknowledge", { warningRecordRef }),
+      command("acknowledge", { warningResponseTaskRef }),
+      command("acknowledge", {
+        warningRecordRef: version("external-risk-event"),
+        warningResponseTaskRef,
+      }),
+      command("acknowledge", {
+        warningRecordRef,
+        warningResponseTaskRef: version("review-task"),
+      }),
+      command("acknowledge", { warningRecordRef, warningResponseTaskRef, riskResolved: true }),
+      command("acknowledge", { warningRecordRef, warningResponseTaskRef, taskClosed: true }),
+      command("acknowledge", {
+        warningRecordRef,
+        warningResponseTaskRef,
+        notificationIntentRef: version("notification-intent"),
+      }),
+      command("acknowledge", {
+        warningRecordRef,
+        warningResponseTaskRef,
+        disposalConclusion: "adopted",
+      }),
+    ]) {
+      expect(
+        WarningResponseRecordCommandV1Schema.safeParse(invalidAcknowledge).success,
+        JSON.stringify(invalidAcknowledge),
+      ).toBe(false);
+    }
+    expect(
+      WarningResponseRecordCommandV1Schema.safeParse({
+        ...acknowledgeCommand,
+        authorization: {
+          ...authorization,
+          grantedCapabilities: authorization.grantedCapabilities.filter(
+            (capability) => capability !== "warning-response.record",
+          ),
+        },
+      }).success,
     ).toBe(false);
   });
 
@@ -947,6 +1002,53 @@ describe("module interface contracts", () => {
         routeDecisionRef: version("route-decision"),
       }).success,
     ).toBe(false);
+    expect(
+      WarningResponseRecordSuccessV1Schema.safeParse({
+        kind: "acknowledgement",
+        status: "acknowledged",
+        warningRecordRef,
+        warningResponseTaskRef,
+      }).success,
+    ).toBe(true);
+    for (const invalidAcknowledgement of [
+      { kind: "acknowledgement", warningRecordRef, warningResponseTaskRef },
+      {
+        kind: "acknowledgement",
+        status: "acknowledged",
+        warningRecordRef,
+      },
+      {
+        kind: "acknowledgement",
+        status: "resolved",
+        warningRecordRef,
+        warningResponseTaskRef,
+      },
+      {
+        kind: "acknowledgement",
+        status: "acknowledged",
+        warningRecordRef,
+        warningResponseTaskRef,
+        riskResolved: true,
+      },
+      {
+        kind: "acknowledgement",
+        status: "acknowledged",
+        warningRecordRef,
+        warningResponseTaskRef,
+        taskClosed: true,
+      },
+      {
+        kind: "acknowledgement",
+        status: "acknowledged",
+        warningRecordRef: version("external-risk-event"),
+        warningResponseTaskRef,
+      },
+    ]) {
+      expect(
+        WarningResponseRecordSuccessV1Schema.safeParse(invalidAcknowledgement).success,
+        JSON.stringify(invalidAcknowledgement),
+      ).toBe(false);
+    }
 
     expect(
       IdentificationFinalizationSuccessV1Schema.safeParse({
@@ -1534,7 +1636,7 @@ describe("module interface contracts", () => {
     expect(RiskAssessmentRecordRefV1Schema.safeParse(assessmentRecordRef).success).toBe(true);
   });
 
-  it("domain events: accepts all eleven transactional events and rejects business bodies", () => {
+  it("domain events: accepts all twelve transactional events and rejects business bodies", () => {
     const identificationBasisPublishedPayload = {
       basisKind: "identification-basis",
       publishedReleases: [
@@ -1563,6 +1665,12 @@ describe("module interface contracts", () => {
         "retrieval-evidence-base-release",
         "retrieval-evidence-base",
       ),
+    };
+
+    const acknowledgedEvent = {
+      eventType: "warning.warning-acknowledged.v1",
+      aggregateRef: warningResponseTaskRef,
+      payload: { warningRecordRef, warningResponseTaskRef },
     };
 
     const events = [
@@ -1628,6 +1736,7 @@ describe("module interface contracts", () => {
           forecast: { kind: "unavailable", reasonCode: "not-created" },
         },
       },
+      acknowledgedEvent,
       {
         eventType: "warning.calibration-suggestion-created.v1",
         payload: {
@@ -1703,6 +1812,33 @@ describe("module interface contracts", () => {
         extra: "reject",
       }).success,
     ).toBe(false);
+    for (const invalidAcknowledgedEvent of [
+      {
+        ...acknowledgedEvent,
+        payload: {
+          ...acknowledgedEvent.payload,
+          notificationIntentRefs: [version("notification-intent")],
+        },
+      },
+      {
+        ...acknowledgedEvent,
+        payload: { ...acknowledgedEvent.payload, status: "acknowledged" },
+      },
+      {
+        ...acknowledgedEvent,
+        payload: { ...acknowledgedEvent.payload, warningBody: { riskEvent: "正文" } },
+      },
+      {
+        ...acknowledgedEvent,
+        aggregateRef: version("warning-response-task", "other-task"),
+      },
+      { ...acknowledgedEvent, aggregateRef: version("warning-record") },
+    ]) {
+      expect(
+        DomainEventV1Schema.safeParse({ ...eventMetadata, ...invalidAcknowledgedEvent }).success,
+        JSON.stringify(invalidAcknowledgedEvent),
+      ).toBe(false);
+    }
 
     const monitoringSnapshotChanges = [
       {

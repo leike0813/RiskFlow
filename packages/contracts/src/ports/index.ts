@@ -511,6 +511,7 @@ export const MODULE_BRANCH_CAPABILITY_V1 = {
   "warning-response.open": "warning-response.record",
   "warning-response.create-candidate": "warning-response.recommend",
   "warning-response.validate-and-record": "warning-response.recommend",
+  "warning-response.acknowledge": "warning-response.record",
   "warning-response.adopt-recommendation": "warning-response.record",
   "warning-response.record-execution": "warning-response.record",
   "warning-response.record-feedback": "warning-response.record",
@@ -1520,6 +1521,14 @@ const ActionSourceV1Schema = z.discriminatedUnion("kind", [
 
 export const WarningResponseRecordCommandV1Schema = z.discriminatedUnion("kind", [
   commandSchema(
+    "acknowledge",
+    z.strictObject({
+      warningRecordRef: WarningRecordRefV1Schema,
+      warningResponseTaskRef: WarningResponseTaskRefV1Schema,
+    }),
+    branchCapability("warning-response.acknowledge"),
+  ),
+  commandSchema(
     "adopt-recommendation",
     z.strictObject({
       responseRecommendationRef: ResponseRecommendationRefV1Schema,
@@ -2192,6 +2201,12 @@ export const RecommendationSuccessV1Schema = z.discriminatedUnion("kind", [
 export type RecommendationSuccessV1 = z.infer<typeof RecommendationSuccessV1Schema>;
 
 export const WarningResponseRecordSuccessV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("acknowledgement"),
+    status: z.literal("acknowledged"),
+    warningRecordRef: WarningRecordRefV1Schema,
+    warningResponseTaskRef: WarningResponseTaskRefV1Schema,
+  }),
   z.strictObject({
     kind: z.literal("adoption"),
     routeDecisionRef: RouteDecisionRefV1Schema,

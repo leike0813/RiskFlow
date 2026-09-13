@@ -1360,59 +1360,72 @@ describe("content-addressed artifact store", () => {
 
   it("keeps recovery authorization and findings on one database snapshot", async () => {
     const snapshotProjectId = "project-recovery-snapshot";
-    const snapshotAuthorization = authorization("actor-artifacts", {
-      project: snapshotProjectId,
-      scopes: [scope("all")],
-      grants: [grant("all")],
+    // 独立工件根：该用例的孤儿扫描只应看到本用例创建的对象，
+    // 不再受本文件中其它用例遗留的未登记对象年龄影响。
+    const snapshotRoot = await mkdtemp(join(tmpdir(), "riskflow-c04-artifacts-snapshot-"));
+    const snapshotStore = await createContentAddressedArtifactStore({
+      ...fixture.postgres.app,
+      rootDirectory: snapshotRoot,
+      policy: artifactPolicy(),
     });
-    await fixture.store.put(
-      putCommand("recovery-snapshot-source", { authorization: snapshotAuthorization }),
-      textChunks("snapshot source"),
-    );
-    const hash = await fixture.maintenance.createHashManifest({
-      schemaVersion: "1",
-      commandId: "hash-recovery-snapshot-command",
-      idempotencyKey: "hash-recovery-snapshot-idem",
-      projectId: snapshotProjectId,
-      actorId: "actor-artifacts",
-      authorization: snapshotAuthorization,
-      requiredCapability: "engineering-data.freeze",
-      manifestId: "hash-recovery-snapshot-manifest",
-      backupBatchRef: { entityId: "backup-recovery-snapshot", versionId: "v1" },
-      databaseSnapshotRef: { entityId: "database-recovery-snapshot", versionId: "v1" },
-      fileSnapshotRef: { entityId: "files-recovery-snapshot", versionId: "v1" },
-      purposeCode: "artifact-hash-manifest",
-      generatedAt: ARTIFACT_TEST_TIMESTAMP,
-      policyRef,
-    });
-    const handle = fixture.maintenance.reconcile({
-      schemaVersion: "1",
-      runId: "recovery-snapshot",
-      projectId: snapshotProjectId,
-      mode: "recovery",
-      authorization: snapshotAuthorization,
-      requiredCapability: "engineering-data.freeze",
-      policyRef,
-      hashManifestRef: hash.artifactRef,
-      databaseSnapshotRef: { entityId: "database-recovery-snapshot", versionId: "v1" },
-      fileSnapshotRef: { entityId: "files-recovery-snapshot", versionId: "v1" },
-    });
-    const findings = handle.findings[Symbol.asyncIterator]();
-    expect((await findings.next()).done).toBe(false);
-    const privateAuthorization = authorization("actor-private", {
-      project: snapshotProjectId,
-      scopes: [scope("private")],
-      grants: [grant("private")],
-    });
-    await fixture.store.put(
-      putCommand("recovery-concurrent-private", { authorization: privateAuthorization }),
-      textChunks("concurrent private content"),
-    );
-    for (;;) {
-      const finding = await findings.next();
-      if (finding.done) break;
+    try {
+      const snapshotAuthorization = authorization("actor-artifacts", {
+        project: snapshotProjectId,
+        scopes: [scope("all")],
+        grants: [grant("all")],
+      });
+      await snapshotStore.put(
+        putCommand("recovery-snapshot-source", { authorization: snapshotAuthorization }),
+        textChunks("snapshot source"),
+      );
+      const hash = await snapshotStore.maintenance.createHashManifest({
+        schemaVersion: "1",
+        commandId: "hash-recovery-snapshot-command",
+        idempotencyKey: "hash-recovery-snapshot-idem",
+        projectId: snapshotProjectId,
+        actorId: "actor-artifacts",
+        authorization: snapshotAuthorization,
+        requiredCapability: "engineering-data.freeze",
+        manifestId: "hash-recovery-snapshot-manifest",
+        backupBatchRef: { entityId: "backup-recovery-snapshot", versionId: "v1" },
+        databaseSnapshotRef: { entityId: "database-recovery-snapshot", versionId: "v1" },
+        fileSnapshotRef: { entityId: "files-recovery-snapshot", versionId: "v1" },
+        purposeCode: "artifact-hash-manifest",
+        generatedAt: ARTIFACT_TEST_TIMESTAMP,
+        policyRef,
+      });
+      const handle = snapshotStore.maintenance.reconcile({
+        schemaVersion: "1",
+        runId: "recovery-snapshot",
+        projectId: snapshotProjectId,
+        mode: "recovery",
+        authorization: snapshotAuthorization,
+        requiredCapability: "engineering-data.freeze",
+        policyRef,
+        hashManifestRef: hash.artifactRef,
+        databaseSnapshotRef: { entityId: "database-recovery-snapshot", versionId: "v1" },
+        fileSnapshotRef: { entityId: "files-recovery-snapshot", versionId: "v1" },
+      });
+      const findings = handle.findings[Symbol.asyncIterator]();
+      expect((await findings.next()).done).toBe(false);
+      const privateAuthorization = authorization("actor-private", {
+        project: snapshotProjectId,
+        scopes: [scope("private")],
+        grants: [grant("private")],
+      });
+      await snapshotStore.put(
+        putCommand("recovery-concurrent-private", { authorization: privateAuthorization }),
+        textChunks("concurrent private content"),
+      );
+      for (;;) {
+        const finding = await findings.next();
+        if (finding.done) break;
+      }
+      await expect(handle.summary).resolves.toMatchObject({ passed: true });
+    } finally {
+      await snapshotStore.close();
+      await rm(snapshotRoot, { recursive: true, force: true });
     }
-    await expect(handle.summary).resolves.toMatchObject({ passed: true });
   });
 
   it("reconcile blocks missing content and reports stale staging", async () => {

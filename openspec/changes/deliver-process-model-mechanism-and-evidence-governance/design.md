@@ -1,8 +1,8 @@
 ## Context
 
-动机见 [proposal.md](./proposal.md#why)，行为边界见 [spec.md](./specs/identification/process-model-mechanism-and-evidence-governance/spec.md)。当前代码已具备 C04 `ArtifactStoreV1`、C07 `ReviewAuditPortV1`、C08 `AgentTaskDefinitionV1`/`AgentRuntimeRunner` 和 C16 `PostgresKnowledgeGovernanceAdapter`；C16 把候选正文视为不透明工件，尚无 C17 内容校验与绑定，`resolveGovernedReleases()` 又把授权分支固定为 `knowledge-modeling.assessment-basis`。API 已有 generic knowledge/agent 路由，不需要新增 HTTP 路径，当前也没有需要接入的 Web 页面。
+动机见 [proposal.md](./proposal.md#why)，行为边界见 [spec.md](./specs/identification/process-model-mechanism-and-evidence-governance/spec.md)。当前实现检查点已包含 C17 Schema、校验、PostgreSQL façade、C08 Worker 包装和 C16 识别发布接缝；但测试 fixture 仍绕过 C15 正式读取，发布绑定仍晚于 C16 事务，Worker 也只有 runtime 导出而没有生产组合根。API 已有 generic knowledge/agent 路由，不需要新增 HTTP 路径，当前也没有需要接入的 Web 页面。
 
-基线为 `1e51bec508ddad8e2ccdd5af9a9d17b593458af9`。C15 的规划检查点 `ba13a0d6f19609fcb4c6f0f40fc4dd035516effc` 尚未实现；它只作为精确识别准备和已收口清洗结果的接口输入。协调裁决固定了三项前置：`KnowledgeDefinitionTypeV1` 由独立契约演进加入 `standard-library`、`case-library`；`implement-engineering-data-read-branches` 实现 C02 已冻结的 `source-segments`、`evidence-access`；C17 可最小修正 C16 解析能力分支。迁移号段为 `000020`～`000023`，本设计只需要 `000020`。
+初始规划基线为 `1e51bec508ddad8e2ccdd5af9a9d17b593458af9`，本次规划修补核对的实现检查点为 `ef617859100c96e2ec3b808e90e0f107a6dde4a7`。实现暴露了三处规划缺口：C15 没有供 C17 使用的正式窄读且准备快照把覆盖/排除内容工件引用保存为公共契约要求的 `route-decision` 字段；C17 发布事件成员在 C16 发布后才登记；生产组合根及其 C06 授权来源未闭合。已归档 `evolve-identification-basis-published-event` D-04 已固定发布事务接缝，本设计按其收口。迁移号段仍为 `000020`～`000023`，只使用 `000020`。
 
 ## Goals / Non-Goals
 
@@ -25,10 +25,10 @@
 实施首项按集成后代码而非 change 名称检查：
 
 1. `KnowledgeDefinitionTypeV1Schema` 能 strict parse `standard-library`、`case-library`，既有类型保持不变；
-2. C15 的正式 `readBoundResult` 能按精确 `IdentificationPreparationSnapshotRefV1` 读取已收口结果，且 `implement-engineering-data-read-branches` 已使 C02 `source-segments`、`evidence-access` 返回可经 C04 复读的 `queryResultRef` 并执行当前授权检查；
+2. 独立 C15 drift change 已归档：公开 `PostgresDataCleaningStore.readBoundResult({ projectId, preparationSnapshotRef, actorId, requestedAt, authorization })` 按精确 `IdentificationPreparationSnapshotRefV1` 返回 strict 准备快照、正式清洗结果工件和决定引用，且快照中的 `coverageDecisionRef`、`excludedSegmentDecisionRefs[]` 均是 `route-decision`；`implement-engineering-data-read-branches` 已使 C02 `source-segments`、`evidence-access` 返回可经 C04 复读的 `queryResultRef` 并执行当前授权检查；
 3. C08、C16 归档能力及复数 `includedSourceSegmentSetRefs` 已集成。
 
-任一门不满足即停止实现并升级；C17 不在本 change 补 contracts 或读取上游表。采用可执行语义门，是因为两个上游修正由调度端另行命名，绑定未确定 change 名会让施工图脆弱。
+任一门不满足即停止实现并升级；C17 不在本 change 修复 C15、补 contracts 或读取上游表。C15 drift 的最小范围只有正式精确窄读、`route-decision` 写入/复读契约及对应行为测试；不改变清洗算法、任务、迁移或公共 C02 字段。
 
 ### D-02：一个严格判别联合是识别知识正文的唯一事实模型
 
@@ -64,17 +64,19 @@ C17 adapter 以本地结构接口 `IdentificationPreparationKnowledgeReaderV1` �
 
 三方法均要求 `engineering-data.read`、精确工程/空间/来源范围及 C06 当前决定；不存在和未授权对 C17 呈现同形失败。C17 只持有注入的 C15 正式 reader、`EngineeringDataPortV1` 和 `ArtifactStoreV1`，不知道其表或 adapter 私有方法。
 
-### D-05：C17 façade 在 C16 前后设置内容门，不复制生命周期
+### D-05：C17 façade 设置内容门，发布绑定与事件由 C16 同一事务提交
 
 新增 `PostgresIdentificationKnowledgeAdapter` 作为生产注入的 `KnowledgeModelingPortV1` façade，并持有 C16 adapter：
 
 - `submit-revision` 若是五类 C17 定义，先从 C04 读取候选包、执行 D-03 校验并耐久保存校验收据，再调用 C16 `govern()`，最后绑定返回的 revision；其它定义原样委派 C16；
 - `request-review` 对 C17 revision 只允许存在绑定；合格绑定走 C16，失败绑定只允许 D-08 的失败复核路径；未知绑定作为非 C17 定义原样委派；
-- `publish-approved-release` 对 C17 revision 要求合格绑定，并在调用 C16 前重验组合成员和当前授权；成功后记录 release 绑定。失败修订永不通过此门；
-- `deactivate-release`、`rollback-by-new-release` 对已绑定 C17 release 委派 C16，回滚成功的新 release 绑定到历史 revision；其它发布原样委派；
+- `publish-approved-release` 对 C17 revision 要求合格绑定；失败修订永不通过此门。随后只调用已注入 C17 governance policy 的 C16，不在 façade 返回后另开 binding 事务；
+- `deactivate-release` 对已绑定 C17 release 委派 C16；`rollback-by-new-release` 同样只调用已注入 policy 的 C16，使新 release 在 C16 回滚事务内绑定到历史 revision；其它发布原样委派；
 - `resolve()` 仅对 `identification-basis` 执行 D-09，评估分支原样委派已有解析组合；`retrieve()` 原样委派后续注入的检索实现或返回 C02 既有 `UNSUPPORTED_CONTRACT`，不在 C17生成结果。
 
-生产组合只暴露 façade，不暴露裸 C16 adapter。跨 C03/C16 调用不能成为一个数据库事务，因此采用“先建门、后委派、最后暴露绑定”的可恢复顺序；没有 C17 binding 的 revision/release 不会被 C17 解析或发布。所有阶段使用派生且稳定的 command/idempotency key，重试先读取阶段收据再继续。
+发布和回滚严格遵循已归档 `evolve-identification-basis-published-event` D-04。C16 在自己的 `TransactionUnitV1` 回调内先写 C16 release，再调用 `IdentificationKnowledgeGovernancePolicyV1.appendRelease(context, input)`；policy 对所有五类 C17 发布读取并复验 validated revision binding/package，在同一 `TransactionContextV1` 写 C17 release binding。四类成员发布返回空事件；`retrieval-evidence-base` 继续解析三个组合成员及机理包固定的工序模型，复验五项同工程、类型、版本和双时间有效后，以 `DomainEventV1Schema.parse` 构造唯一事件。C16 随后把同一 `AtomicCommitV1` 的事实审计、命令回执和 Outbox 与 release/binding 一起提交。任一步失败整体回滚；policy 缺失对 C17 发布关闭失败。发布身份稳定派生，重放返回原 release/binding/event，不重复事实。
+
+生产组合只暴露 façade，不暴露裸 C16 adapter，也不保留内存 recorder 或发布后 `#bindRelease` 补写路径。修订导入仍因 C04 工件与 C16 修订跨阶段而使用稳定收据恢复；发布路径则是单个数据库事务。
 
 备选是修改 C16 解释 C17 正文或另建 C17 生命周期；二者都破坏 C16 的不透明内容边界。给 C16 增加通用插件注册表也只有一个消费者，暂不引入。
 
@@ -99,9 +101,9 @@ C17 adapter 以本地结构接口 `IdentificationPreparationKnowledgeReaderV1` �
 
 ### D-08：复用 C08 定义和 runner，模块只提供编制适配
 
-`createKnowledgeAuthoringTaskDefinition()` 注册现有 `knowledge-authoring` 类型，结果族只允许 `knowledge-revision`。`KnowledgeAuthoringManifestV1` 固定 D-04 读取的准备/清洗引用、目标定义类型、可选精确基线 release/artifact、验证策略、父运行、授权和全部 C08 版本引用；`prepareOrReplayAuthoringTask()` 先写 manifest 工件，再以其引用启动或重放 C08 任务并记录 attempt。
+`createKnowledgeAuthoringTaskDefinition()` 注册现有 `knowledge-authoring` 类型，结果族只允许 `knowledge-revision`。`KnowledgeAuthoringManifestV1` 固定 D-04 读取的 strict 准备快照、正式清洗结果工件、同序来源版本/保留资料段集合、排除决定、目标定义类型、可选精确基线 release/artifact、验证策略、父运行、授权和全部 C08 版本引用；`prepareOrReplayAuthoringTask()` 先写 manifest 工件，再以其引用启动或重放 C08 任务并记录 attempt。
 
-动作/增量是按目标类型判别的封闭操作：声明/退役工序节点与关系、声明/退役机理、引用/退役规范条款、引用/退役案例、选择三个组合成员。每项都带目标 ID、预期基线、证据和简短业务理由；禁止路径补丁、整对象替换和发布动作。两个只读工具分别调用 D-04 的 segment slice 和 D-05 的精确基线/release reader，工具观察仍由 C08 写 C04。
+动作/增量是按目标类型判别的封闭操作：声明/退役工序节点与关系、声明/退役机理、引用/退役规范条款、引用/退役案例、选择三个组合成员。每项都带目标 ID、预期基线、证据和简短业务理由；禁止路径补丁、整对象替换和发布动作。C08 先校验请求 tool ref 属于任务定义白名单；C17 再在读取前校验资料段集合属于 manifest 的保留成员、资料段属于该集合、limit 不超过冻结策略，或基线 release/type 精确等于 manifest 固定成员。工具已注册不扩大对象范围。两个工具分别使用组合根经 C06 为 exact branch 签发的 `engineering-data.read` 或 `knowledge-modeling.read` 上下文调用 D-04/`readExact`，观察仍由 C08 写 C04。
 
 Worker 新增 `withKnowledgeAuthoringModelStep()`/`interpretKnowledgeAuthoringModelStep()`，只在 `taskType === "knowledge-authoring"` 时构造有界结构化消息和解析 `tool-request | candidate`，其它任务委派既有 callbacks。模块级 `KnowledgeAuthoringRunner.runOnce()` 先调用同一个 `AgentRuntimeRunner.runOnce()`，再调用 D-09 失败收口；不复制 claim、租约、预算、模型循环或恢复。
 
@@ -109,13 +111,13 @@ Worker 新增 `withKnowledgeAuthoringModelStep()`/`interpretKnowledgeAuthoringMo
 
 ### D-09：终态失败生成不可发布修订并幂等请求复核
 
-`settleAuthoringFailures()` 只扫描 C17 `authoring_attempts` 中未收口的精确 task refs，再通过 C08 store 读取这些任务，不做全库 Agent 投影。对 `terminal-failure | cancelled` 且无合格 result 的任务，按以下顺序执行：
+`settleAuthoringFailures()` 只扫描 C17 `authoring_attempts` 中未收口的精确 task refs，再通过 C08 store 读取这些任务，不做全库 Agent 投影。对 `terminal-failure | cancelled` 且无合格 result 的任务，每个阶段先由组合根取得 C06 为目标工程、actor、调用身份和 exact branch 签发的独立上下文，再按以下顺序执行：
 
 1. 以 C08 error、动作、候选、validation 和 usage 引用构造 `KnowledgeAuthoringFailureV1`，写 C04 diagnostic artifact；
-2. 用稳定派生键直接调用 C16 提交一个目标定义类型的 failure revision，并写 `failure-review-only` binding；该正文是失败诊断，不伪装为有效知识包；
-3. 调用 C16 `request-review` 创建 C07 `knowledge-revision` 任务，并把 review ref 绑定回 attempt。
+2. 用 `knowledge-modeling.submit-revision` 上下文和稳定派生键直接调用 C16 提交一个目标定义类型的 failure revision，并写 `failure-review-only` binding；该正文是失败诊断，不伪装为有效知识包；
+3. 用独立 `knowledge-modeling.request-review` 上下文调用 C16；C16 再用组合根提供的 `review-audit.request-review` 上下文创建 C07 `knowledge-revision` 任务，并把 review ref 绑定回 attempt。
 
-D-05 发布门永久拒绝 `failure-review-only`。复核只用于人决定补资料、重启新 task 或结束处理，不能批准失败正文。`retryable-failure` 留给 C08 在原任务和累计预算内恢复，不提前创建复核；一旦预算或重试耗尽转终态再收口。每一步持久化稳定收据，重启不会重复 revision/review。
+D-05 发布门永久拒绝 `failure-review-only`。复核只用于人决定补资料、重启新 task 或结束处理，不能批准失败正文。`retryable-failure` 留给 C08 在原任务和累计预算内恢复，不提前创建复核；一旦预算或重试耗尽转终态再收口。授权解析或 C07/C16 调用失败时停在最后已成立阶段并保存原因，重放只补下一阶段。不得回退到任务信封授权、调用方 capability 或默认 review policy。
 
 备选是直接用 diagnostic artifact 作为 C07 target，但公共复核目标不接受该类型；创建真实且不可发布的失败 revision 可复用现有 `knowledge-revision` 审核链并保持语义明确。
 
@@ -134,8 +136,9 @@ provider 不返回精确引用、准备不可读、任一发布/绑定/成员无
 ### D-11：授权、事务、错误和审计沿既有端口收口
 
 - C17 public govern/resolve 在读取目标存在性前验证命令工程/actor 与 authorization 一致，并使用 C02 声明的 knowledge branch；资料读取另由 D-04 使用 engineering-data branch 复验当前来源范围。
-- Agent 工具只持有读能力；finalizer/失败收口是领域模块动作，可使用冻结且收窄的 submit/review 能力；C16 的 human invocation 检查继续独占 publish/deactivate/rollback。
-- C04 工件先耐久，随后每个 C17 阶段通过 `TransactionUnitV1` 原子写业务事实、命令回执和一条事实审计；没有 C02 声明的识别知识事件时提交零 Outbox 事件，不伪造事件。
+- `apps/worker/src/identification-knowledge/composition.ts` 是唯一生产组合根。它必须注入同一 `db`/`TransactionUnitV1`、C04 store/guard、C06 access、C07 review port、C08 adapter/store/registry、C15 正式 reader、C02 engineering-data port、完整 validation policy、C21/C24 policy provider 接缝、shared runner/model callbacks 和受信授权来源解析器；工厂先以这些共享依赖构造 `PostgresIdentificationKnowledgeReleasePolicy` 并注入 C16，再把同一个 C16 adapter 注入 C17 façade。除尚未上线的 C21/C24 provider 缺失时只阻断 `identification-basis` 外，其它必需项不得 optional；缺失时工厂拒绝构造。
+- 受信来源只允许请求作用域 `human-session`，或携带 C06 已签发父上下文和同一 causal run 的 `system` 调用。组合根按操作分别请求 `agent-task.start-task`、`engineering-data.source-segments`/`engineering-data.evidence-access`、`knowledge-modeling.identification-basis`、`knowledge-modeling.submit-revision`、`knowledge-modeling.request-review` 和 `review-audit.request-review`，并复验返回上下文的 actor/project、exact capability、空间/来源范围和调用身份。Agent 工具只持有读能力；finalizer/失败收口只取得对应 submit/review 能力；C16 的 human invocation 检查继续独占 publish/deactivate/rollback。
+- C04 工件先耐久，随后每个非发布 C17 阶段通过 `TransactionUnitV1` 原子写业务事实、命令回执和一条事实审计；普通修订和四类成员发布提交零识别基础事件。D-05 的组合发布/回滚在 C16 同一事务提交 release、binding、审计、回执和唯一 Outbox 事件。
 - 内部错误映射到 C02 既有 `AUTHORIZATION_DENIED`、`ENTITY_NOT_FOUND`、`STALE_VERSION`、`BUSINESS_BLOCKED`、`IDEMPOTENCY_CONFLICT`、`UNSUPPORTED_CONTRACT`、`TRANSIENT_FAILURE`、`TERMINAL_FAILURE`。日志和错误只带原因码与引用，不带正文、凭据、模型响应或数据库错误。
 
 ### D-12：显式窄读接口是 C20/C24 的唯一消费面
@@ -146,18 +149,20 @@ core 导出 `IdentificationKnowledgeReleaseReaderV1.readExact({ projectId, relea
 
 ## Risks / Trade-offs
 
-- [C15/C11 窄读接口或两个定义类型尚未集成] → D-01 作为首个硬门，未满足即停止，不在 C17 临时补契约或跨表读取。
-- [C16 调用与 C17 binding 不是单事务] → D-05 以稳定阶段键和不可见未绑定状态恢复；resolver/publish 只接受完成绑定。
+- [C15 正式窄读/route-decision drift 或两个定义类型尚未集成] → D-01 作为首个硬门，未满足即停止，不在 C17 临时补契约、容忍视图或跨表读取。
+- [C16 识别 policy 未注入或仍在发布后绑定] → D-05 对 C17 发布关闭失败；只有 release、binding、审计、回执和事件同事务成立才返回成功。
 - [失败 revision 的正文不是合法知识包] → 独立 `failure-review-only` binding 永久阻断发布，复核界面显示诊断类型；不允许它进入内容解析。
 - [一个 `knowledge-authoring` task 可能接近对象预算] → 工具分片、候选对象上限和墙钟由注入策略固定；耗尽后走 D-09，不隐式拆任务或扩容。
 - [关系校验在大包上成本上升] → 使用 O(V+E) 拓扑遍历和策略对象上限；只有基准证明不足时再优化。
-- [策略 provider 在 C21/C24 上线前无实现] → 组合根必须显式注入；缺失即 `BUSINESS_BLOCKED`，C17 无默认策略，知识治理其它命令仍可独立使用。
+- [策略 provider 在 C21/C24 上线前无实现] → 组合根可以明确标记该能力未就绪，但 `identification-basis` 必须 `BUSINESS_BLOCKED`；C17 无默认策略，知识治理其它命令仍可独立使用。
+- [工具白名单存在但成员范围未校验] → D-08 以 manifest 精确成员做第二层确定性校验；越界在目标读取前失败。
+- [终态失败没有独立 submit/review/C07 授权] → D-09/D-11 停在最后成立阶段并可幂等恢复，不借用任务信封能力。
 - [内容工件成功、后续事务失败产生孤儿] → 内容寻址写入可安全重放，只有 C17 binding 才可消费，孤儿交给 C04 既有保留/清理策略。
 
 ## Migration Plan
 
-1. 确认 D-01 三项前置和基线 drift；运行 contracts、C15/C11、C08、C16 定向回归。
+1. 先由独立 C15 drift change 交付正式精确窄读和 `route-decision` 契约修正并归档；确认 D-01 其余前置和基线 drift，运行 contracts、C15/C11、C08、C16 定向回归。
 2. 运行 provider 自动发现的 `000020_identification_knowledge_governance`，验证 app/worker/checkpointer 权限和 down/up；不占用 `000021`～`000023`。
-3. 部署 core Schema/校验、adapter façade 和 C16 branch 修正；生产 API 组合只注入 façade，先以审核夹具导入五类 draft/revision，不自动发布。
-4. 部署 Worker 编制组合和失败收口，再由人工完成送审/发布；最后验证双时间解析、历史重放和 C20 窄读夹具。
+3. 部署 core Schema/校验、C17 release policy、adapter façade 和 C16 branch/事务接缝；生产组合只暴露 façade。先以审核夹具导入五类 draft/revision，再验证四类成员发布零事件、组合发布/回滚的 release-binding-event 原子性及失败回滚。
+4. 部署 Worker 生产组合、工具成员校验和失败收口；逐项验证 C06 exact branch、授权缺失关闭失败，再由人工完成送审/发布。最后验证双时间解析、历史重放和 C20 窄读夹具。
 5. 应用回滚时先停止 C17 新写入并回退 façade/Worker；C16 revision/release 和 C04 工件保留。仅在确认四张 C17 表为空时执行 migration `down`，已有业务事实不得物理删除。

@@ -12,6 +12,7 @@ import {
   ACCESS_POLICY_REF_V1,
   AccessServiceError,
   AccessCommandResultV1Schema,
+  type AuthorizationDecisionV1,
   type LocalIdentityAccessV1,
 } from "@riskflow/core/access";
 import {
@@ -870,16 +871,17 @@ export class PostgresEngineeringContextSourceRegistry
       ) {
         return resultFailure(moduleError("AUTHORIZATION_DENIED", valid.commandId));
       }
-      await this.#verify(
+      const decision = await this.#verify(
         valid,
         valid.kind === "project" ? [] : valid.authorization.spatialScopeRefs,
         [],
       );
-      const atomic = atomicCommand(valid, "engineering-data.context-revision.v1", valid);
+      const verified = { ...valid, actorId: decision.context.actorId };
+      const atomic = atomicCommand(verified, "engineering-data.context-revision.v1", verified);
       const receipt = await this.#transactionUnit.execute(atomic, async (context) =>
-        valid.kind === "project"
-          ? this.#reviseProjectInTransaction(context, valid)
-          : this.#reviseSpatialInTransaction(context, valid),
+        verified.kind === "project"
+          ? this.#reviseProjectInTransaction(context, verified)
+          : this.#reviseSpatialInTransaction(context, verified),
       );
       const target = receipt.resultRef;
       const revision =
@@ -916,14 +918,17 @@ export class PostgresEngineeringContextSourceRegistry
       return resultFailure(moduleError("UNSUPPORTED_CONTRACT", "source-segments"));
     const valid = parsed.data;
     try {
-      await this.#verify(valid, valid.authorization.spatialScopeRefs, [valid.sourceVersionRef]);
+      const decision = await this.#verify(valid, valid.authorization.spatialScopeRefs, [
+        valid.sourceVersionRef,
+      ]);
+      const verified = { ...valid, actorId: decision.context.actorId };
       const sourceVersion = await this.#readSourceVersion(valid.projectId, valid.sourceVersionRef);
       if (sourceVersion === undefined) {
         return resultFailure(moduleError("AUTHORIZATION_DENIED", valid.commandId));
       }
-      const atomic = atomicCommand(valid, "engineering-data.source-segments.v1", valid);
+      const atomic = atomicCommand(verified, "engineering-data.source-segments.v1", verified);
       const receipt = await this.#transactionUnit.execute(atomic, async (context) =>
-        this.#registerSegmentsInTransaction(context, valid, sourceVersion),
+        this.#registerSegmentsInTransaction(context, verified, sourceVersion),
       );
       const set = await this.#readSegmentSet(valid.projectId, receipt.resultRef);
       return set === undefined
@@ -1034,10 +1039,15 @@ export class PostgresEngineeringContextSourceRegistry
       ) {
         return resultFailure(moduleError("AUTHORIZATION_DENIED", valid.commandId));
       }
-      await this.#verify(valid, valid.authorization.spatialScopeRefs, []);
-      const atomic = atomicCommand(valid, "engineering-data.applicability-snapshot.v1", valid);
+      const decision = await this.#verify(valid, valid.authorization.spatialScopeRefs, []);
+      const verified = { ...valid, actorId: decision.context.actorId };
+      const atomic = atomicCommand(
+        verified,
+        "engineering-data.applicability-snapshot.v1",
+        verified,
+      );
       const receipt = await this.#transactionUnit.execute(atomic, async (context) =>
-        this.#createSnapshotInTransaction(context, valid),
+        this.#createSnapshotInTransaction(context, verified),
       );
       const snapshot = await this.#readSnapshot(valid.projectId, receipt.resultRef);
       return snapshot === undefined
@@ -1119,7 +1129,8 @@ export class PostgresEngineeringContextSourceRegistry
     const branchQuery = { kind: query.kind, ...query.payload };
     const queryResultRef = readQueryResultRef("source-segments", query.queryId);
     try {
-      await this.#verifyRead(query, READ_BRANCH["source-segments"], [], []);
+      const decision = await this.#verifyRead(query, READ_BRANCH["source-segments"], [], []);
+      const verified = { ...query, actorId: decision.context.actorId };
       const target = await this.#resolveSourceSegmentTarget(
         query.projectId,
         branchQuery.sourceSegmentSetRef,
@@ -1127,10 +1138,10 @@ export class PostgresEngineeringContextSourceRegistry
       if (target === undefined) {
         return { kind: "failed", error: readAuthorizationDenied(query.queryId) };
       }
-      await this.#verifyRead(query, READ_BRANCH["source-segments"], target.spatialScopeRefs, [
+      await this.#verifyRead(verified, READ_BRANCH["source-segments"], target.spatialScopeRefs, [
         target.sourceVersion.sourceVersionRef,
       ]);
-      await this.#registerReadQuery(query, {
+      await this.#registerReadQuery(verified, {
         branch: "source-segments",
         branchQuery,
         queryResultRef,
@@ -1163,7 +1174,13 @@ export class PostgresEngineeringContextSourceRegistry
           }),
         ),
       );
-      await this.#verifyRead(query, READ_BRANCH["evidence-access"], [], declaredSourceVersionRefs);
+      const decision = await this.#verifyRead(
+        query,
+        READ_BRANCH["evidence-access"],
+        [],
+        declaredSourceVersionRefs,
+      );
+      const verified = { ...query, actorId: decision.context.actorId };
       const target = await this.#resolveEvidenceAccessTargets(
         query.projectId,
         branchQuery.evidenceReferences,
@@ -1172,12 +1189,12 @@ export class PostgresEngineeringContextSourceRegistry
         return { kind: "failed", error: readAuthorizationDenied(query.queryId) };
       }
       await this.#verifyRead(
-        query,
+        verified,
         READ_BRANCH["evidence-access"],
         target.spatialScopeRefs,
         declaredSourceVersionRefs,
       );
-      await this.#registerReadQuery(query, {
+      await this.#registerReadQuery(verified, {
         branch: "evidence-access",
         branchQuery,
         queryResultRef,
@@ -1490,7 +1507,7 @@ export class PostgresEngineeringContextSourceRegistry
   ): Promise<EngineeringDataApplyResultV1> {
     try {
       const evidence = normalizeEvidenceReferences(command.payload.evidenceReferences);
-      await this.#verify(
+      const decision = await this.#verify(
         command,
         command.authorization.spatialScopeRefs,
         normalizeVersionedRefs(
@@ -1500,13 +1517,14 @@ export class PostgresEngineeringContextSourceRegistry
         ),
         "engineering-data.register-external-risk-event",
       );
+      const verified = { ...command, actorId: decision.context.actorId };
       const atomic = atomicCommand(
-        command,
+        verified,
         "engineering-data.register-external-risk-event.v1",
-        command,
+        verified,
       );
       const receipt = await this.#transactionUnit.execute(atomic, async (context) =>
-        this.#registerExternalRiskEventInTransaction(context, command, evidence),
+        this.#registerExternalRiskEventInTransaction(context, verified, evidence),
       );
       return {
         kind: "succeeded",
@@ -1688,10 +1706,11 @@ export class PostgresEngineeringContextSourceRegistry
     command: Extract<EngineeringDataCommandV1, { kind: "register-source-delivery" }>,
   ): Promise<EngineeringDataApplyResultV1> {
     try {
-      await this.#verify(command, command.authorization.spatialScopeRefs, []);
-      const metadataRead = await this.#readDeliveryMetadata(command);
+      const decision = await this.#verify(command, command.authorization.spatialScopeRefs, []);
+      const verified = { ...command, actorId: decision.context.actorId };
+      const metadataRead = await this.#readDeliveryMetadata(verified);
       const envelope = metadataRead.envelope;
-      if (envelope.registeredByAccountId !== command.actorId) {
+      if (envelope.registeredByAccountId !== verified.actorId) {
         return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", command.commandId) };
       }
       if (
@@ -1722,25 +1741,25 @@ export class PostgresEngineeringContextSourceRegistry
           }),
         };
       }
-      const atomic = atomicCommand(command, "engineering-data.register-source-delivery.v1", {
-        command,
+      const atomic = atomicCommand(verified, "engineering-data.register-source-delivery.v1", {
+        command: verified,
         metadata: envelope,
       });
       const receipt = await this.#transactionUnit.execute(atomic, async (context) =>
-        this.#registerSourceDeliveryInTransaction(context, command, envelope, metadataRead),
+        this.#registerSourceDeliveryInTransaction(context, verified, envelope, metadataRead),
       );
       const sourceVersionRef = SourceVersionV1Schema.shape.sourceVersionRef.parse(
         receipt.resultRef,
       );
-      await this.#verify(command, command.authorization.spatialScopeRefs, []);
-      const sourceVersion = await this.#readSourceVersion(command.projectId, sourceVersionRef);
+      await this.#verify(verified, verified.authorization.spatialScopeRefs, []);
+      const sourceVersion = await this.#readSourceVersion(verified.projectId, sourceVersionRef);
       if (sourceVersion === undefined) {
         return { kind: "failed", error: moduleError("TERMINAL_FAILURE", command.commandId) };
       }
       await this.#ensureSourceAccess(
-        command,
+        verified,
         sourceVersion,
-        command.authorization.spatialScopeRefs,
+        verified.authorization.spatialScopeRefs,
       );
       return {
         kind: "succeeded",
@@ -1902,7 +1921,7 @@ export class PostgresEngineeringContextSourceRegistry
     requestedSpatialScopeRefs: readonly SpatialScopeRefV1[],
     requestedSourceVersionRefs: readonly SourceVersionRefV1[],
     branch: ModuleBranchV1 = "engineering-data.register-source-delivery",
-  ): Promise<void> {
+  ): Promise<AuthorizationDecisionV1> {
     if (
       command.projectId !== command.authorization.projectId ||
       command.actorId !== command.authorization.actorId ||
@@ -1910,7 +1929,7 @@ export class PostgresEngineeringContextSourceRegistry
     ) {
       throw preserveDomainError(moduleError("AUTHORIZATION_DENIED", command.commandId));
     }
-    await this.#access.verify({
+    const decision = await this.#access.verify({
       authorizationContextRef: command.authorization.authorizationContextRef,
       invocationId: command.commandId,
       projectId: command.projectId,
@@ -1919,6 +1938,11 @@ export class PostgresEngineeringContextSourceRegistry
       requestedSourceVersionRefs: [...requestedSourceVersionRefs],
       requestedAt: command.authorization.decidedAt,
     });
+    // 操作者身份只取自 C06 当前验证结果；命令声明主体必须与之一致。
+    if (decision.context.actorId !== command.actorId) {
+      throw preserveDomainError(moduleError("AUTHORIZATION_DENIED", command.commandId));
+    }
+    return decision;
   }
 
   /**
@@ -1938,7 +1962,7 @@ export class PostgresEngineeringContextSourceRegistry
     branch: ModuleBranchV1,
     resolvedSpatialScopeRefs: readonly SpatialScopeRefV1[],
     requestedSourceVersionRefs: readonly SourceVersionRefV1[],
-  ): Promise<void> {
+  ): Promise<AuthorizationDecisionV1> {
     if (
       query.projectId !== query.authorization.projectId ||
       query.actorId !== query.authorization.actorId ||
@@ -1965,7 +1989,7 @@ export class PostgresEngineeringContextSourceRegistry
       }
       requestedSpatialScopeRefs.set(refKey(authorized), authorized);
     }
-    await this.#access.verify({
+    const decision = await this.#access.verify({
       authorizationContextRef: query.authorization.authorizationContextRef,
       invocationId: query.queryId,
       projectId: query.projectId,
@@ -1974,6 +1998,15 @@ export class PostgresEngineeringContextSourceRegistry
       requestedSourceVersionRefs: [...requestedSourceVersionRefs],
       requestedAt: query.authorization.decidedAt,
     });
+    // 操作者身份只取自 C06 当前验证结果；查询声明主体必须与之一致。
+    if (decision.context.actorId !== query.actorId) {
+      throw preserveDomainError(
+        moduleError("AUTHORIZATION_DENIED", query.queryId, {
+          requiredCapability: MODULE_BRANCH_CAPABILITY_V1[branch],
+        }),
+      );
+    }
+    return decision;
   }
 
   async #reviseProjectInTransaction(

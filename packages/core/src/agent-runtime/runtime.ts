@@ -15,6 +15,7 @@ import {
   type AgentTaskRefV1,
   type AgentTaskResultRefV1,
   type AgentTaskTypeV1,
+  type AuthorizationContextV1,
   type CancelAgentTaskCommandV1,
   type ConfirmAgentCommandV1,
   type ModuleErrorV1,
@@ -33,6 +34,7 @@ import {
   type StructuredCompletionRequestV1,
   type StructuredCompletionResultV1,
 } from "../model/index.js";
+import type { ArtifactRefV1 } from "../artifacts/schema.js";
 import {
   AgentTaskBudgetPolicyV1Schema,
   AgentBudgetLedgerV1Schema,
@@ -367,6 +369,42 @@ export interface AgentTaskSnapshotV1 {
   readonly state: AgentTaskStateV1;
   readonly budgetPolicy: AgentTaskBudgetPolicyV1;
   readonly budgetLedger: AgentBudgetLedgerV1;
+}
+
+/**
+ * C08 属主模块的公共失败证据窄读：只按精确 AgentTaskRef 返回终态失败证据，
+ * 不暴露任务信封、冻结授权、模型响应或工件正文。
+ */
+export interface AgentTaskFailureEvidenceReaderV1 {
+  readTerminalFailure(
+    input: AgentTaskFailureEvidenceReadRequestV1,
+  ): Promise<AgentTaskFailureEvidenceReadResultV1>;
+}
+
+export interface AgentTaskFailureEvidenceReadRequestV1 {
+  readonly projectId: string;
+  readonly actorId: string;
+  readonly requestId: string;
+  readonly requestedAt: string;
+  readonly taskRef: AgentTaskRefV1;
+  readonly expectedTaskType: AgentTaskTypeV1;
+  readonly authorization: AuthorizationContextV1;
+}
+
+export type AgentTaskFailureEvidenceReadResultV1 =
+  | { readonly kind: "succeeded"; readonly evidence: AgentTaskFailureEvidenceV1 }
+  | { readonly kind: "failed"; readonly error: ModuleErrorV1 };
+
+export interface AgentTaskFailureEvidenceV1 {
+  readonly taskRef: AgentTaskRefV1;
+  readonly taskType: AgentTaskTypeV1;
+  readonly terminalStatus: "terminal-failure" | "cancelled";
+  readonly error?: AgentStructuredErrorV1;
+  readonly cancelReasonCode?: string;
+  readonly usage: AgentBudgetUsageV1;
+  readonly actionRefs: readonly VersionReference[];
+  readonly candidateArtifactRefs: readonly ArtifactRefV1[];
+  readonly validationArtifactRefs: readonly ArtifactRefV1[];
 }
 
 export interface AgentTaskStoreV1 {

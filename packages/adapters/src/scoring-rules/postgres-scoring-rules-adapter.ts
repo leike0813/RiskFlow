@@ -2009,10 +2009,20 @@ export class PostgresScoringRulesAdapter
     created: { readonly reviewTaskRef: ReviewTaskRefV1; readonly reviewAttemptId: string },
   ): Promise<void> {
     const recordedAt = this.#now().toISOString();
-    const atomic = atomicCommandFor(request, "knowledge.link-rule-conflict-review.v1", {
-      relationId: relation.relationId,
-      reviewAttemptId: created.reviewAttemptId,
-    });
+    const auditEntryId = `${request.requestId}:link:${relation.relationId}`;
+    // 补链是关系事实之后的独立原子命令；C03 回执按 command_id 唯一，不能复用组装请求身份。
+    const atomic = atomicCommandFor(
+      {
+        ...request,
+        requestId: `${request.requestId}:link:${relation.relationId}`,
+        idempotencyKey: `${request.idempotencyKey}:link:${relation.relationId}`,
+      },
+      "knowledge.link-rule-conflict-review.v1",
+      {
+        relationId: relation.relationId,
+        reviewAttemptId: created.reviewAttemptId,
+      },
+    );
     await this.#transactionUnit.execute(atomic, async (context): Promise<AtomicCommitV1> => {
       const transaction = asTransaction(context);
       await transaction
@@ -2027,8 +2037,8 @@ export class PostgresScoringRulesAdapter
           review_task_ref: jsonbValue(created.reviewTaskRef),
           decision_ref: null,
           status: "pending",
-          command_id: request.requestId,
-          audit_entry_id: `${request.requestId}:link:${relation.relationId}`,
+          command_id: atomic.commandId,
+          audit_entry_id: auditEntryId,
           occurred_at: request.requestedAt,
           recorded_at: recordedAt,
           persisted_at: recordedAt,
@@ -2038,7 +2048,7 @@ export class PostgresScoringRulesAdapter
       return {
         resultRef: created.reviewTaskRef,
         audit: {
-          auditEntryId: `${request.requestId}:link:${relation.relationId}`,
+          auditEntryId,
           projectId: request.projectId,
           action: "knowledge.link-rule-conflict-review",
           targetRef: created.reviewTaskRef,
@@ -2047,7 +2057,7 @@ export class PostgresScoringRulesAdapter
           occurredAt: request.requestedAt,
           recordedAt,
           version: created.reviewTaskRef.reference,
-          commandId: request.requestId,
+          commandId: atomic.commandId,
           idempotencyKey: atomic.idempotencyKey,
         },
         events: [],

@@ -1,6 +1,7 @@
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { RuleConflictRefV1Schema, ReviewTaskRefV1Schema } from "@riskflow/contracts/ports";
 import {
   completeCleaningTask,
   makeAssessmentConfigurationFixtureSet,
@@ -540,19 +541,75 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
     if (assembled.error.code !== "BUSINESS_BLOCKED") return;
     expect(assembled.error.blockerKind).toBe("scoring-rule-relation-unresolved");
 
-    const relations = await cleaning.postgres.adminPool.query<{ relation_kind: string }>(
-      "SELECT relation_kind FROM business.rule_relations WHERE project_id = $1",
-      [world.projectId],
-    );
+    const relations = await cleaning.postgres.adminPool.query<{
+      relation_id: string;
+      relation_kind: string;
+    }>("SELECT relation_id, relation_kind FROM business.rule_relations WHERE project_id = $1", [
+      world.projectId,
+    ]);
     expect(relations.rows.map((row) => row.relation_kind)).toEqual(["conflict"]);
-    // 冲突审阅链接目前无法在 C07 侧落库：C02 `ContractReferenceV1` 没有 `rule-conflict`
-    // 变体，C07 的审计提交无法记录该目标（最小复现见本轮报告）。门禁本身不依赖链接存在：
-    // 未决冲突照旧阻断组装，且不产生任何适用规则集修订。
-    const links = await cleaning.postgres.adminPool.query<{ count: string }>(
-      "SELECT count(*)::text AS count FROM business.rule_conflict_review_links WHERE project_id = $1",
+    const relation = relations.rows[0]!;
+
+    // 未决冲突已由 C07 精确受理：链接恰好一条，仍为 pending，且只保存规则冲突引用。
+    const conflictCommandId = `c19-conflict-assembly-${world.projectId}:conflict:${relation.relation_id}`;
+    const links = await cleaning.postgres.adminPool.query<{
+      relation_id: string;
+      attempt: number;
+      review_attempt_id: string;
+      decision_ref: unknown;
+      status: string;
+      review_task_ref: unknown;
+    }>(
+      `SELECT relation_id, attempt, review_attempt_id, decision_ref, status, review_task_ref
+         FROM business.rule_conflict_review_links
+        WHERE project_id = $1 ORDER BY link_id`,
       [world.projectId],
     );
-    expect(links.rows[0]?.count).toBe("0");
+    expect(links.rows.map((row) => row.status)).toEqual(["pending"]);
+    const link = links.rows[0]!;
+    expect(link.relation_id).toBe(relation.relation_id);
+    expect(link.attempt).toBe(1);
+    expect(link.review_attempt_id).toBe(conflictCommandId);
+    expect(link.decision_ref).toBeNull();
+    const reviewTaskRef = ReviewTaskRefV1Schema.parse(link.review_task_ref);
+    expect(reviewTaskRef.reviewType).toBe("rule-conflict");
+    expect(RuleConflictRefV1Schema.parse(reviewTaskRef.targetRef)).toEqual({
+      kind: "rule-conflict",
+      reference: { entityId: `rule-relation:${relation.relation_id}`, versionId: "1" },
+    });
+    expect(reviewTaskRef.waitingRunRef.reference).toEqual({
+      entityId: `${conflictCommandId}:run`,
+      versionId: "1",
+    });
+    expect(Object.keys(reviewTaskRef).sort()).toEqual([
+      "kind",
+      "reference",
+      "reviewType",
+      "targetRef",
+      "waitingRunRef",
+    ]);
+
+    const reviewTasks = await cleaning.postgres.adminPool.query<{
+      target_kind: string;
+      target_entity_id: string;
+      target_version_id: string;
+      target_ref: unknown;
+      status: string;
+    }>(
+      `SELECT target_kind, target_entity_id, target_version_id, target_ref, status
+         FROM business.review_tasks
+        WHERE project_id = $1 AND review_type = 'rule-conflict' ORDER BY review_task_id`,
+      [world.projectId],
+    );
+    expect(reviewTasks.rows.map((row) => row.status)).toEqual(["pending"]);
+    expect(reviewTasks.rows[0]?.target_kind).toBe("rule-conflict");
+    expect(reviewTasks.rows[0]?.target_entity_id).toBe(`rule-relation:${relation.relation_id}`);
+    expect(reviewTasks.rows[0]?.target_version_id).toBe("1");
+    expect(RuleConflictRefV1Schema.parse(reviewTasks.rows[0]?.target_ref)).toEqual({
+      kind: "rule-conflict",
+      reference: { entityId: `rule-relation:${relation.relation_id}`, versionId: "1" },
+    });
+
     const sets = await cleaning.postgres.adminPool.query<{ count: string }>(
       "SELECT count(*)::text AS count FROM business.applicable_rule_set_revision_metadata WHERE project_id = $1",
       [world.projectId],

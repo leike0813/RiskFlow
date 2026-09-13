@@ -23,4 +23,4 @@
 
 ## 5. C17 恢复实现前验收出口
 
-- [ ] 5.1 [IP-01、IP-02、IP-03、IP-04] 只有在以下证据同时成立后才宣布解锁 C17：新写 `snapshot_payload` 由 `IdentificationPreparationSnapshotV1Schema` strict parse；coverage/exclusion refs 全为可追溯到原决定内容与清洗结果来源的 `route-decision`；`readExactPreparation` 按精确 preparation ref 返回 strict 准备与绑定结果且授权/不可枚举/幂等/审计测试通过；C19 `readBoundResult` 合并后仍是唯一 task-ref reader且共用私有绑定实现；真实 PostgreSQL 测试无 skip；4.2～4.4 全部通过。随后 C17 才可删除 `preparationPayloadView` 与私表读取，改为注入 `Pick<PostgresDataCleaningStore, "readExactPreparation">`；本 change 不修改 C17、C24，不提交、不归档。
+- [x] 5.1 [IP-01、IP-02、IP-03、IP-04] 只有在以下证据同时成立后才宣布解锁 C17：新写 `snapshot_payload` 由 `IdentificationPreparationSnapshotV1Schema` strict parse；coverage/exclusion refs 全为可追溯到原决定内容与清洗结果来源的 `route-decision`；`readExactPreparation` 按精确 preparation ref 返回 strict 准备与绑定结果且授权/不可枚举/幂等/审计测试通过；C19 `readBoundResult` 合并后仍是唯一 task-ref reader且共用私有绑定实现；真实 PostgreSQL 测试无 skip；4.2～4.4 全部通过。随后 C17 才可删除 `preparationPayloadView` 与私表读取，改为注入 `Pick<PostgresDataCleaningStore, "readExactPreparation">`；本 change 不修改 C17、C24，不提交、不归档。

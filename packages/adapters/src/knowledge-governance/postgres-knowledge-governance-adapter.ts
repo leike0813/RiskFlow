@@ -32,6 +32,16 @@ import {
   type KnowledgeRevisionV1,
 } from "@riskflow/core/knowledge-governance";
 import {
+  isScoringRulesDefinitionTypeV1,
+  ScoringRuleError,
+  type PreparedScoringRuleV1,
+  type ScoringRuleReleaseAppendV1,
+  type ScoringRuleRevisionAppendV1,
+  type ScoringRulesDefinitionTypeV1,
+  type ScoringRulesGovernancePolicyV1,
+  type SubmitScoringRuleRevisionV1,
+} from "@riskflow/core/scoring-rules";
+import {
   AssessmentConfigurationError,
   assessmentConfigurationFailureFrom,
   isAssessmentConfigurationDefinitionTypeV1,
@@ -549,6 +559,8 @@ export interface PostgresKnowledgeGovernanceAdapterOptionsV1 {
   readonly now?: () => Date;
   /** Optional C18 content policy; C18 definition types are blocked without it. */
   readonly assessmentConfigurationPolicy?: AssessmentConfigurationGovernancePolicyV1;
+  /** Optional C19 content policy; C19 definition types are blocked without it. */
+  readonly scoringRulesPolicy?: ScoringRulesGovernancePolicyV1;
   readonly reviewAuthorization?: (
     command: KnowledgeGovernanceCommandV1,
     link: ReturnType<typeof reviewLinkFromRow>,
@@ -565,6 +577,7 @@ export class PostgresKnowledgeGovernanceAdapter {
   readonly #reviewAudit: ReviewAuditPortV1;
   readonly #now: () => Date;
   readonly #assessmentConfigurationPolicy: AssessmentConfigurationGovernancePolicyV1 | undefined;
+  readonly #scoringRulesPolicy: ScoringRulesGovernancePolicyV1 | undefined;
   readonly #reviewAuthorization:
     PostgresKnowledgeGovernanceAdapterOptionsV1["reviewAuthorization"] | undefined;
   readonly #approvalAuthorization:
@@ -577,6 +590,7 @@ export class PostgresKnowledgeGovernanceAdapter {
     this.#reviewAudit = options.reviewAudit;
     this.#now = options.now ?? (() => new Date());
     this.#assessmentConfigurationPolicy = options.assessmentConfigurationPolicy;
+    this.#scoringRulesPolicy = options.scoringRulesPolicy;
     this.#reviewAuthorization = options.reviewAuthorization;
     this.#approvalAuthorization = options.approvalAuthorization;
   }
@@ -743,6 +757,10 @@ export class PostgresKnowledgeGovernanceAdapter {
         knowledgeBranch(command.kind),
       );
       const prepared = await this.#prepareAssessmentConfiguration(command, verifiedAuthorization);
+      const preparedScoring = await this.#prepareScoringRuleRevision(
+        command,
+        verifiedAuthorization,
+      );
       const receipt = await this.#runTransaction(command, async (tx, atomic, context) => {
         const identityKey = `${command.projectId}:${command.payload.definitionType}`;
         const artifactKey = `${command.projectId}:${refKey(command.payload.candidateArtifactRef)}`;
@@ -905,6 +923,18 @@ export class PostgresKnowledgeGovernanceAdapter {
             persistedAt: recordedAt,
           });
         }
+        if (preparedScoring !== undefined) {
+          await this.#appendScoringRuleRevision(context, {
+            revisionRef: parsedRevision.revisionRef,
+            commandId: parsedRevision.commandId,
+            projectId: parsedRevision.projectId,
+            definitionType: parsedRevision.definitionType as ScoringRulesDefinitionTypeV1,
+            candidateArtifactRef: parsedRevision.candidateArtifactRef,
+            prepared: preparedScoring,
+            auditEntryId: audit.auditEntryId,
+            persistedAt: recordedAt,
+          });
+        }
         return {
           resultRef: targetForRevision(parsedRevision.revisionRef),
           audit,
@@ -949,6 +979,7 @@ export class PostgresKnowledgeGovernanceAdapter {
           checkedRevision,
           verifiedAuthorization,
         );
+        await this.#assertScoringRuleMetadata(command, checkedRevision, verifiedAuthorization);
       }
       const reviewAttemptId = `knowledge-review-attempt-${sha256CanonicalJson({
         projectId: command.projectId,
@@ -1418,7 +1449,19 @@ export class PostgresKnowledgeGovernanceAdapter {
           audit,
           recordedAt,
         });
-        return { resultRef: targetForRelease(releaseRef), audit, events };
+        const scoringEvents = await this.#appendScoringRuleRelease(context, {
+          command,
+          atomic,
+          revision,
+          releaseRef,
+          audit,
+          recordedAt,
+        });
+        return {
+          resultRef: targetForRelease(releaseRef),
+          audit,
+          events: [...events, ...scoringEvents],
+        };
       });
       const knowledgeReleaseRef = KnowledgeReleaseRefV1Schema.parse(receipt.resultRef);
       return KnowledgeGovernanceResultV1Schema.parse({
@@ -1759,7 +1802,19 @@ export class PostgresKnowledgeGovernanceAdapter {
           audit,
           recordedAt,
         });
-        return { resultRef: targetForRelease(releaseRef), audit, events };
+        const scoringEvents = await this.#appendScoringRuleRelease(context, {
+          command,
+          atomic,
+          revision,
+          releaseRef,
+          audit,
+          recordedAt,
+        });
+        return {
+          resultRef: targetForRelease(releaseRef),
+          audit,
+          events: [...events, ...scoringEvents],
+        };
       });
       const knowledgeReleaseRef = KnowledgeReleaseRefV1Schema.parse(receipt.resultRef);
       return KnowledgeGovernanceResultV1Schema.parse({
@@ -1930,6 +1985,107 @@ export class PostgresKnowledgeGovernanceAdapter {
       revision: input.revision,
       releaseRef: input.releaseRef,
       audit: input.audit,
+      recordedAt: input.recordedAt,
+    };
+    return policy.appendRelease(context, release);
+  }
+
+  async #prepareScoringRuleRevision(
+    command: Extract<KnowledgeGovernanceCommandV1, { kind: "submit-revision" }>,
+    authorization: AuthorizationContextV1,
+  ): Promise<PreparedScoringRuleV1 | undefined> {
+    if (!isScoringRulesDefinitionTypeV1(command.payload.definitionType)) return undefined;
+    const policy = this.#scoringRulesPolicy;
+    if (policy === undefined) {
+      throw new ScoringRuleError({
+        code: "BUSINESS_BLOCKED",
+        reasonCode: "scoring-rule-policy-required",
+        targetRef: asContractReference(command.payload.candidateArtifactRef),
+      });
+    }
+    const submission: SubmitScoringRuleRevisionV1 = {
+      projectId: command.projectId,
+      definitionType: command.payload.definitionType,
+      candidateArtifactRef: command.payload.candidateArtifactRef,
+      authorization,
+    };
+    return policy.prepareRevision(submission);
+  }
+
+  async #appendScoringRuleRevision(
+    context: TransactionContextV1,
+    input: ScoringRuleRevisionAppendV1,
+  ): Promise<void> {
+    const policy = this.#scoringRulesPolicy;
+    if (policy === undefined) {
+      throw new ScoringRuleError({
+        code: "BUSINESS_BLOCKED",
+        reasonCode: "scoring-rule-policy-required",
+        targetRef: asContractReference(input.revisionRef),
+      });
+    }
+    await policy.appendPreparedRevision(context, input);
+  }
+
+  async #assertScoringRuleMetadata(
+    command: KnowledgeGovernanceCommandV1,
+    revision: KnowledgeRevisionV1,
+    authorization: AuthorizationContextV1,
+  ): Promise<void> {
+    if (!isScoringRulesDefinitionTypeV1(revision.definitionType)) return;
+    const policy = this.#scoringRulesPolicy;
+    if (policy === undefined) {
+      throw new ScoringRuleError({
+        code: "BUSINESS_BLOCKED",
+        reasonCode: "scoring-rule-policy-required",
+        targetRef: asContractReference(revision.revisionRef),
+      });
+    }
+    await policy.assertRevisionMetadata({
+      projectId: command.projectId,
+      revisionRef: revision.revisionRef,
+      authorization,
+    });
+  }
+
+  async #appendScoringRuleRelease(
+    context: TransactionContextV1,
+    input: {
+      readonly command: Extract<
+        KnowledgeGovernanceCommandV1,
+        { kind: "publish-approved-release" | "rollback-by-new-release" }
+      >;
+      readonly atomic: AtomicCommandV1;
+      readonly revision: KnowledgeRevisionV1;
+      readonly releaseRef: KnowledgeReleaseRefV1;
+      readonly audit: AtomicCommitV1["audit"];
+      readonly recordedAt: string;
+    },
+  ): Promise<DomainEventV1[]> {
+    if (!isScoringRulesDefinitionTypeV1(input.revision.definitionType)) return [];
+    const policy = this.#scoringRulesPolicy;
+    if (policy === undefined) {
+      throw new ScoringRuleError({
+        code: "BUSINESS_BLOCKED",
+        reasonCode: "scoring-rule-policy-required",
+        targetRef: asContractReference(input.releaseRef),
+      });
+    }
+    const release: ScoringRuleReleaseAppendV1 = {
+      command: {
+        kind: input.command.kind,
+        commandId: input.command.commandId,
+        idempotencyKey: input.command.idempotencyKey,
+        projectId: input.command.projectId,
+        actorId: input.command.actorId,
+        issuedAt: input.command.issuedAt,
+        authorizationContextRef: input.atomic.authorizationContextRef,
+      },
+      revisionRef: input.revision.revisionRef,
+      definitionType: input.revision.definitionType as ScoringRulesDefinitionTypeV1,
+      candidateArtifactRef: input.revision.candidateArtifactRef,
+      releaseRef: input.releaseRef,
+      audit: { auditEntryId: input.audit.auditEntryId, version: input.audit.version },
       recordedAt: input.recordedAt,
     };
     return policy.appendRelease(context, release);

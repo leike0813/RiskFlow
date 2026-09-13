@@ -157,7 +157,20 @@ export const DomainEventV1Schema = z.discriminatedUnion("eventType", [
   eventSchema(
     "knowledge.identification-basis-published.v1",
     IdentificationBasisPublishedPayloadV1Schema,
-  ),
+  ).superRefine((event, context) => {
+    const compositeReleaseRef = event.payload.publishedReleases[4].releaseRef;
+    if (
+      event.aggregateRef.kind !== "knowledge-release" ||
+      event.aggregateRef.reference.entityId !== compositeReleaseRef.reference.entityId ||
+      event.aggregateRef.reference.versionId !== compositeReleaseRef.reference.versionId
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["aggregateRef"],
+        message: "aggregateRef must match the published retrieval evidence base release",
+      });
+    }
+  }),
   eventSchema(
     "assessment.recorded.v1",
     z.strictObject({

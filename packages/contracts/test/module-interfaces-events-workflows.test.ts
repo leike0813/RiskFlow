@@ -1581,6 +1581,7 @@ describe("module interface contracts", () => {
       },
       {
         eventType: "knowledge.identification-basis-published.v1",
+        aggregateRef: version("knowledge-release", "retrieval-evidence-base"),
         payload: identificationBasisPublishedPayload,
       },
     ];
@@ -1692,6 +1693,7 @@ describe("module interface contracts", () => {
 
     const identificationBasisEvent = (payload: object) => ({
       ...eventMetadata,
+      aggregateRef: version("knowledge-release", "retrieval-evidence-base"),
       eventType: "knowledge.identification-basis-published.v1",
       payload,
     });
@@ -1798,6 +1800,12 @@ describe("module interface contracts", () => {
         invalid.name,
       ).toBe(false);
     }
+    expect(
+      DomainEventV1Schema.safeParse({
+        ...identificationBasisEvent(identificationBasisPublishedPayload),
+        aggregateRef: version("knowledge-release", "other-retrieval-evidence-base"),
+      }).success,
+    ).toBe(false);
   });
 
   it("workflow stages, graph state and lifecycle: covers I0-I9 and A0-A9", () => {

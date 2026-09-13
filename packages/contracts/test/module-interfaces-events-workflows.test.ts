@@ -1461,7 +1461,37 @@ describe("module interface contracts", () => {
     expect(RiskAssessmentRecordRefV1Schema.safeParse(assessmentRecordRef).success).toBe(true);
   });
 
-  it("domain events: accepts all ten transactional events and rejects business bodies", () => {
+  it("domain events: accepts all eleven transactional events and rejects business bodies", () => {
+    const identificationBasisPublishedPayload = {
+      basisKind: "identification-basis",
+      publishedReleases: [
+        {
+          definitionType: "process-model",
+          releaseRef: version("knowledge-release", "process-model"),
+        },
+        {
+          definitionType: "risk-mechanism",
+          releaseRef: version("knowledge-release", "risk-mechanism"),
+        },
+        {
+          definitionType: "standard-library",
+          releaseRef: version("knowledge-release", "standard-library"),
+        },
+        {
+          definitionType: "case-library",
+          releaseRef: version("knowledge-release", "case-library"),
+        },
+        {
+          definitionType: "retrieval-evidence-base",
+          releaseRef: version("knowledge-release", "retrieval-evidence-base"),
+        },
+      ],
+      retrievalEvidenceBaseReleaseRef: version(
+        "retrieval-evidence-base-release",
+        "retrieval-evidence-base",
+      ),
+    };
+
     const events = [
       {
         eventType: "engineering.inputs-ready.v1",
@@ -1548,6 +1578,11 @@ describe("module interface contracts", () => {
           reviewDecisionRef: version("review-decision"),
           resumeRunRef: workflowRunRef,
         },
+      },
+      {
+        eventType: "knowledge.identification-basis-published.v1",
+        aggregateRef: version("knowledge-release", "retrieval-evidence-base"),
+        payload: identificationBasisPublishedPayload,
       },
     ];
     expect(DomainEventMetadataV1Schema.safeParse(eventMetadata).success).toBe(true);
@@ -1653,6 +1688,122 @@ describe("module interface contracts", () => {
           },
           reasonCode: "new-monitoring-data",
         },
+      }).success,
+    ).toBe(false);
+
+    const identificationBasisEvent = (payload: object) => ({
+      ...eventMetadata,
+      aggregateRef: version("knowledge-release", "retrieval-evidence-base"),
+      eventType: "knowledge.identification-basis-published.v1",
+      payload,
+    });
+    const identificationBasisReleases = identificationBasisPublishedPayload.publishedReleases;
+    const invalidIdentificationBasisPayloads = [
+      {
+        name: "missing published release",
+        payload: {
+          ...identificationBasisPublishedPayload,
+          publishedReleases: identificationBasisReleases.slice(0, 4),
+        },
+      },
+      {
+        name: "duplicated definition type",
+        payload: {
+          ...identificationBasisPublishedPayload,
+          publishedReleases: [
+            identificationBasisReleases[0],
+            identificationBasisReleases[0],
+            identificationBasisReleases[2],
+            identificationBasisReleases[3],
+            identificationBasisReleases[4],
+          ],
+        },
+      },
+      {
+        name: "misplaced definition type",
+        payload: {
+          ...identificationBasisPublishedPayload,
+          publishedReleases: [
+            identificationBasisReleases[1],
+            identificationBasisReleases[0],
+            identificationBasisReleases[2],
+            identificationBasisReleases[3],
+            identificationBasisReleases[4],
+          ],
+        },
+      },
+      {
+        name: "composite slot carrying another definition type",
+        payload: {
+          ...identificationBasisPublishedPayload,
+          publishedReleases: [
+            ...identificationBasisReleases.slice(0, 4),
+            identificationBasisReleases[2],
+          ],
+        },
+      },
+      {
+        name: "generic slot carrying typed composite release ref",
+        payload: {
+          ...identificationBasisPublishedPayload,
+          publishedReleases: [
+            ...identificationBasisReleases.slice(0, 4),
+            {
+              definitionType: "retrieval-evidence-base",
+              releaseRef: version("retrieval-evidence-base-release", "retrieval-evidence-base"),
+            },
+          ],
+        },
+      },
+      {
+        name: "retrieval evidence base release entity mismatch",
+        payload: {
+          ...identificationBasisPublishedPayload,
+          retrievalEvidenceBaseReleaseRef: version(
+            "retrieval-evidence-base-release",
+            "other-retrieval-evidence-base",
+          ),
+        },
+      },
+      {
+        name: "retrieval evidence base release version mismatch",
+        payload: {
+          ...identificationBasisPublishedPayload,
+          retrievalEvidenceBaseReleaseRef: {
+            ...identificationBasisPublishedPayload.retrievalEvidenceBaseReleaseRef,
+            reference: { entityId: "retrieval-evidence-base", versionId: "v2" },
+          },
+        },
+      },
+      {
+        name: "release carrying knowledge body",
+        payload: {
+          ...identificationBasisPublishedPayload,
+          publishedReleases: [
+            ...identificationBasisReleases.slice(0, 4),
+            {
+              definitionType: "retrieval-evidence-base",
+              releaseRef: version("knowledge-release", "retrieval-evidence-base"),
+              releaseBody: { riskEvent: "正文" },
+            },
+          ],
+        },
+      },
+      {
+        name: "unknown payload field",
+        payload: { ...identificationBasisPublishedPayload, notes: "自由字段" },
+      },
+    ];
+    for (const invalid of invalidIdentificationBasisPayloads) {
+      expect(
+        DomainEventV1Schema.safeParse(identificationBasisEvent(invalid.payload)).success,
+        invalid.name,
+      ).toBe(false);
+    }
+    expect(
+      DomainEventV1Schema.safeParse({
+        ...identificationBasisEvent(identificationBasisPublishedPayload),
+        aggregateRef: version("knowledge-release", "other-retrieval-evidence-base"),
       }).success,
     ).toBe(false);
   });

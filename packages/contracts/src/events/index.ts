@@ -190,6 +190,26 @@ export const DomainEventV1Schema = z.discriminatedUnion("eventType", [
     }),
   ),
   eventSchema(
+    "warning.warning-acknowledged.v1",
+    z.strictObject({
+      warningRecordRef: WarningRecordRefV1Schema,
+      warningResponseTaskRef: WarningResponseTaskRefV1Schema,
+    }),
+  ).superRefine((event, context) => {
+    const taskRef = event.payload.warningResponseTaskRef;
+    if (
+      event.aggregateRef.kind !== "warning-response-task" ||
+      event.aggregateRef.reference.entityId !== taskRef.reference.entityId ||
+      event.aggregateRef.reference.versionId !== taskRef.reference.versionId
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["aggregateRef"],
+        message: "aggregateRef must match the acknowledged warning response task",
+      });
+    }
+  }),
+  eventSchema(
     "warning.feedback-recorded.v1",
     z.strictObject({
       executionRecordRef: ExecutionRecordRefV1Schema,

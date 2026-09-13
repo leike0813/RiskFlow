@@ -67,18 +67,22 @@
 - **THEN** 系统返回结构化失败且不按相邻区间、数组顺序或默认等级补值
 
 ### Requirement: 冲突与重叠确定性检测
-系统 MUST 在同一工程、兼容集合、指标和相交三维适用域内比较候选规则与可适用的既有规则。相同取值域产生不同评分或等级、例外关系互相矛盾时 MUST 标记为冲突；取值域相交但结论一致时 MUST 标记为重叠并保留双方证据与覆盖关系。每个冲突/重叠事实 MUST 固定参与规则版本、交叠域、检测策略版本、证据和状态；任何未决冲突 MUST 阻止相关规则及规则集发布，系统不得按顺序、置信度或“最新版本”静默选边。
+系统 MUST 在结构化规则修订进入 C16 发布前，按“规则编制与确定性内容校验 → 冲突/重叠检测 → 关系事实耐久化 → C07 冲突复核决定 → C16 知识修订审核与发布门禁 → 发布”的顺序，在同一工程、兼容集合、指标和相交三维适用域内比较候选规则与可适用的既有已发布规则。相同取值域产生不同评分或等级、例外关系互相矛盾时 MUST 标记为冲突；取值域相交但结论一致时 MUST 标记为重叠并保留双方证据与覆盖关系。每个冲突/重叠事实 MUST 绑定候选 C16 修订、精确参与规则版本、比较基线发布、交叠域、检测策略版本、证据和状态；任何关系事实缺失、未决冲突、错目标/过期/非批准决定或比较基线漂移 MUST 阻止该结构化规则修订进入 C16 人工审核或发布。系统不得等规则发布后才补做检测，也不得按顺序、置信度或“最新版本”静默选边。
 
 #### Scenario: 冲突规则全部被拦截
 - **WHEN** 两条适用域相交的规则对同一指标取值给出不同评分或等级
-- **THEN** 系统产生一个精确 `rule-conflict` 目标并阻止双方进入可发布规则集
+- **THEN** 系统在候选规则发布前产生绑定该 C16 修订的精确 `rule-conflict` 事实与复核目标，并阻止该修订进入 C16 审核或发布
 
 #### Scenario: 等价重叠被完整记录
 - **WHEN** 两条规则的适用域和取值域相交且结论一致
 - **THEN** 系统记录重叠范围和双方证据，并按已批准的重叠处理决定确定保留成员而不丢失追溯链
 
+#### Scenario: 关系检测或补链失败保持未发布
+- **WHEN** 关系事实写入、C07 冲突任务创建或任务链接追加在任一步失败
+- **THEN** 系统不得创建结构化规则发布；已耐久候选修订继续被门禁，使用原幂等身份重试只补齐缺失事实或链接且不重复检测结论、审阅任务或审计
+
 ### Requirement: 规则冲突人工审阅
-每个待处置冲突 MUST 通过 C07 `rule-conflict` 审阅任务交由有权限的人处理，并绑定精确冲突版本、验证快照、证据快照、等待运行、审阅策略，以及闭合优先级策略产生的拟保留/拟筛除规则版本。只有与目标、工程、版本和审阅类型一致的人工决定可用于后续修订或放行；`approve-publication` 只批准该精确拟议处置，不得使冲突双方同时进入适用规则集。`reject`、`return-for-revision`、错目标决定、Agent 输出或调用方自造状态均不得视为冲突已解决。冲突审阅决定 MUST NOT 改写已提交或已发布规则，只能使新候选修订继续治理。
+每个待处置冲突 MUST 在结构化规则进入 C16 `knowledge-revision` 审核前，通过 C07 `rule-conflict` 审阅任务交由有权限的人处理，并绑定候选 C16 修订、精确冲突版本、验证快照、证据快照、等待运行、审阅策略，以及闭合优先级策略产生的拟保留/拟筛除规则版本。只有从 C07 决定事实读取、与目标、工程、版本和审阅类型一致的人工 `approve-publication` 可用于后续审核或放行；该决定只批准精确拟议处置，不得使冲突双方同时进入适用规则集。`reject`、`return-for-revision`、错目标决定、Agent 输出、缓存 link 状态或调用方自造状态均不得视为冲突已解决。冲突审阅决定 MUST NOT 改写已提交或已发布规则；拒绝或退回后必须形成新候选修订并重新检测。
 
 #### Scenario: 人工决定解除精确冲突门禁
 - **WHEN** 授权审阅者对当前精确冲突提交相符的 `approve-publication` 决定且后续候选仍通过全部校验
@@ -89,7 +93,7 @@
 - **THEN** 系统拒绝放行并继续保持新冲突版本为未决状态
 
 ### Requirement: 结构化规则复用统一定义生命周期
-规则集合 MUST 作为 C16 `structured-scoring-rule` 稳定定义的不可变修订和发布治理。提交修订前 MUST 完成来源、内容、冲突和兼容性校验；发布、停用和 `rollback-by-new-release` MUST 继续要求 C16 的精确人工决定、有效时刻和并发约束。Agent 可提交候选修订但不得成为审核者或发布者；已发布规则不得原地更新、删除或被未审核默认规则替代。
+规则集合 MUST 作为 C16 `structured-scoring-rule` 稳定定义的不可变修订和发布治理。提交候选修订时 MUST 将来源、内容、兼容性校验以及基于精确比较基线得到的冲突/重叠事实与该 C16 修订原子绑定；其后必须补齐全部 C07 冲突任务链接并取得精确批准，C16 才可接受 `knowledge-revision` 审核请求。发布事务提交前 MUST 再次校验关系事实完备、比较基线未漂移、全部冲突决定仍精确有效以及 C16 自身的知识修订批准、有效时刻和并发约束；任一失败必须回滚本次发布而保留不可变候选、关系和人工决定事实。Agent 可提交候选修订但不得成为审核者或发布者；已发布规则不得原地更新、删除或被未审核默认规则替代。
 
 #### Scenario: 人工批准后形成不可变规则发布
 - **WHEN** 无未决冲突的规则修订获得相符的 `knowledge-revision` 人工批准并由授权用户发布
@@ -98,6 +102,10 @@
 #### Scenario: Agent 或未审核修订不能发布
 - **WHEN** 发布命令由 Agent 身份发起或目标修订尚无有效人工批准
 - **THEN** 系统拒绝发布且不改变当前有效规则版本
+
+#### Scenario: C16 发布前重复校验冲突决定
+- **WHEN** 已获知识修订批准的候选在发布时缺少关系事实、仍有未决冲突、冲突决定不再精确匹配或比较基线已经变化
+- **THEN** C19 门禁使 C16 发布事务整体失败，当前有效规则版本、审计、回执和 outbox 均不产生部分新事实
 
 ### Requirement: 三维适用性筛选与完整原因
 系统 MUST 将精确 C01 `ApplicabilityMetadataSnapshotV1` 与已发布规则的 `constructionMethod`、`stratumCondition`、`engineeringStage` 三个条件逐维匹配。仅当三维均匹配且例外条款不排除当前上下文时规则才可纳入；任一维不匹配、例外命中、来源/版本失效、兼容集合不一致或冲突未决时 MUST 筛除。对候选全集中的每条规则，结果 MUST 恰好记录一次纳入或筛除决定、稳定原因码、适用性快照引用、规则发布/版本与检测证据，不得返回无理由的部分集合。
@@ -133,7 +141,9 @@
 - **THEN** 系统返回结构化等待或失败且不使用默认规则、缓存候选或旧版本冒充正式依据
 
 ### Requirement: 评估依据发布集合成员的有界读取
-系统 MUST 由 C19 提供一个只接受精确 `AssessmentBasisReleaseSetRefV1`、C06 授权上下文和标准请求幂等身份的狭窄读取入口。入口 MUST 在查询集合前按当前事实复验授权上下文及 `knowledge-modeling.read` 能力，只允许读取同一工程中已经物化的不可变评估依据发布集合。成功结果 MUST 是 strict 且无自由字段的成员清单，只包含集合引用与 schema 版本、`memberDigest`、`applicableRuleSetMember`、`scoringRuleMembers` 和 `configurationMembers`。`applicableRuleSetMember` MUST 包含精确 `releaseRef`、`revisionRef`、C04 `artifactRef` 与 `contentDigest`；`scoringRuleMembers` 的每项 MUST 包含同样四个字段，按发布引用规范排序，并与适用规则集正文中全部 `included refs` 所引用的规则发布成员去重后的规范投影完全一致，不得缺失、重复或额外加入成员；`configurationMembers` MUST 按定义类型规范排序且恰好覆盖 C18 的 11 类，每项包含 `definitionType`、精确 `releaseRef`、`revisionRef`、C04 `artifactRef` 与 `contentDigest`。每个 `contentDigest` MUST 等于对应 strict 正文的规范 JSON SHA-256 摘要，使 C25 在经 C04 当前授权读取正文后可以复算并核对；`memberDigest` MUST 覆盖上述三个成员集合的完整规范投影。入口 MUST NOT 返回适用规则集、评分规则或配置正文、显示名称、任意元数据或未发布成员，消费方读取正文时 MUST 另行通过 C04 当前授权与留痕。集合或必需成员缺失、规则成员与 `included refs` 不一致、摘要不一致、授权已撤、跨工程、引用不存在或调用方不可见时 MUST 整体返回同一种不可重试类型化拒绝，外部结果不得泄露目标是否存在或返回部分成员。读取及拒绝 MUST 使用只追加审计；仍具当前授权的相同幂等身份与规范载荷重放 MUST 返回原结果且不重复追加领域审计，同键异载荷 MUST 冲突，授权复验不得被历史成功回执绕过。
+系统 MUST 由 C19 提供一个只接受精确 `AssessmentBasisReleaseSetRefV1`、C06 授权上下文和标准请求幂等身份的狭窄读取入口；请求不得另带调用方可伪造的 `projectId`、`actorId`、名称、列表或 latest 选择器，工程与 actor 只能来自当前 C06 验证结果。入口 MUST 在查询集合或历史回执前按当前事实复验授权上下文及 `knowledge-modeling.read` 能力，只允许读取同一工程中已经物化的不可变评估依据发布集合。成功结果 MUST 是顶层 strict 判别联合，精确为 `{kind: "succeeded", schemaVersion: "1", assessmentBasisReleaseSetRef, memberDigest, applicableRuleSetMember, scoringRuleMembers, configurationMembers}`，不得包装或返回内部 `releaseSet`。`applicableRuleSetMember` MUST 包含精确 `releaseRef`、`revisionRef`、C04 `artifactRef` 与 `contentDigest`；`scoringRuleMembers` 的每项 MUST 包含同样四个字段，按发布引用规范排序，并与适用规则集正文中全部 `included refs` 逐项投影完全一致，输入或快照中的重复、缺失或额外成员均整体失败，不得静默去重；`configurationMembers` MUST 按定义类型规范排序且恰好覆盖 C18 的 11 类，每项包含 `definitionType`、精确 `releaseRef`、`revisionRef`、C04 `artifactRef` 与 `contentDigest`。每个 `contentDigest` MUST 等于对应 strict 正文的规范 JSON SHA-256 摘要，使 C25 在经 C04 当前授权读取正文后可以复算并核对；`memberDigest` MUST 覆盖上述三个成员集合的完整规范投影。入口 MUST NOT 返回内部集合记录中的工程、准备/适用性快照、配置集合、业务/记录时刻，亦不得返回适用规则集、评分规则或配置正文、显示名称、任意元数据或未发布成员；消费方读取正文时 MUST 另行通过 C04 当前授权与留痕。
+
+当前授权通过后，集合/成员缺失、规则成员与 `included refs` 不一致、摘要不一致、跨工程、引用不存在或调用方不可见 MUST 返回同一个 strict `{kind: "unavailable", error}`，其中 `error.code` 固定为不可重试 `AUTHORIZATION_DENIED`，且不含成员、存在性或差异化原因；该结果 MUST 与成功结果一样写入一条 C19 只追加领域审计和 C03 完成回执。授权已撤或授权上下文无效也返回同一公开 unavailable 形状，但只由 C06 记录安全拒绝，不写基于未验证身份的 C19 领域审计或回执。授权复验 MUST 先于历史回执；验证通过后，相同幂等身份与规范载荷重放 MUST 根据既有回执/audit action 返回原成功或 unavailable 结果且不重复查询正文、不重复审计，同键异载荷 MUST 返回 `IDEMPOTENCY_CONFLICT`。数据库、C03 或审计瞬时失败 MUST 返回独立 `{kind: "failed", error: {code: "TRANSIENT_FAILURE", ...}}`，且不得完成回执或伪装为 unavailable。
 
 #### Scenario: 当前授权读取精确集合
 - **WHEN** 调用方提交当前仍有效且具备读取能力的 C06 授权上下文和同工程精确评估依据发布集合引用
@@ -159,8 +169,16 @@
 - **WHEN** 当前授权仍有效的调用方以相同幂等身份和规范载荷重放读取
 - **THEN** 系统返回原成员清单且不重复追加领域审计；若授权已经撤销，则先返回统一拒绝而不重放历史成功结果
 
+#### Scenario: 不可用结果也可幂等重放
+- **WHEN** 当前授权有效但精确集合缺失或成员快照不可用，且调用方以相同幂等身份和规范载荷重复读取
+- **THEN** 系统两次均返回同一 strict unavailable 结果，只存在一条 `.unavailable` 领域审计和一个完成回执；同键改传其它集合引用时返回幂等冲突
+
+#### Scenario: 瞬时失败不伪装成不可用
+- **WHEN** 数据库、审计或 C03 回执提交发生瞬时失败
+- **THEN** 系统返回 strict failed 技术结果且不完成读取回执，后续可使用原幂等身份重试
+
 ### Requirement: 授权、事务、幂等与可重放审计
-每个 C19 写命令 MUST 在读取目标存在性或产生副作用前校验精确工程和对应 C06 能力；读取和解析 MUST 先限定工程、精确引用、定义类型与时间边界。规则校验事实、冲突/筛选决定、C16 修订或发布事实、C03 命令回执、审计及适用的既有领域事件 MUST 在同一事务原子成立。相同幂等身份与规范载荷 MUST 返回原结果，同键不同载荷 MUST 返回不可重试冲突；并发组装/发布必须由预期版本和数据库约束收口。审计链 MUST 能从适用规则集反向重建 C18 配置、三维快照、每条规则、规范资料段、Agent 候选、逐项校验、冲突/人工决定和发布者，但不得保存或展示模型思维链、正文、凭据或内部数据库错误。
+每个 C19 写命令 MUST 在读取目标存在性或产生副作用前校验精确工程和对应 C06 能力；读取和解析 MUST 先限定工程、精确引用、定义类型与时间边界。结构化规则提交时，C16 修订、C19 metadata、完整冲突/重叠事实、C03 命令回执和审计 MUST 在一个事务原子成立；发布时，C19 最终门禁、C16 release、回执、审计和适用 outbox MUST 在一个事务原子成立。C07 task/decision 属于独立事务边界，MUST 采用已耐久发布门禁与稳定幂等身份补偿，任何中断不得产生规则发布。适用规则集 revision/metadata、release/audit/receipt/outbox 以及 basis set/audit/receipt 分别按其命令原子提交。相同幂等身份与规范载荷 MUST 返回原结果，同键不同载荷 MUST 返回不可重试冲突；并发组装/发布必须由预期版本和数据库约束收口。审计链 MUST 能从适用规则集反向重建 C18 配置、三维快照、每条规则、规范资料段、Agent 候选、逐项校验、冲突/人工决定和发布者，但不得保存或展示模型思维链、正文、凭据或内部数据库错误。
 
 #### Scenario: 重放返回同一结果
 - **WHEN** 调用方以相同幂等身份和规范载荷重试规则修订、冲突处置或规则集组装命令

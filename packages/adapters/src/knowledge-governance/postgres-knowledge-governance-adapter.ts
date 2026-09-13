@@ -41,7 +41,10 @@ import {
   type PreparedAssessmentConfigurationV1,
   type SubmitAssessmentConfigurationRevisionV1,
 } from "@riskflow/core/assessment-config";
-import { isIdentificationKnowledgeDefinitionTypeV1 } from "@riskflow/core/identification-knowledge";
+import {
+  isIdentificationKnowledgeDefinitionTypeV1,
+  type IdentificationKnowledgeReleasePolicyV1,
+} from "@riskflow/core/identification-knowledge";
 import {
   ContractReferenceV1Schema,
   KnowledgeDefinitionTypeV1Schema,
@@ -550,6 +553,8 @@ export interface PostgresKnowledgeGovernanceAdapterOptionsV1 {
   readonly now?: () => Date;
   /** Optional C18 content policy; C18 definition types are blocked without it. */
   readonly assessmentConfigurationPolicy?: AssessmentConfigurationGovernancePolicyV1;
+  /** C17 识别知识发布事件接缝：与 C18 的策略同构，在发布事务内产出领域事件。 */
+  readonly identificationKnowledgeReleasePolicy?: IdentificationKnowledgeReleasePolicyV1;
   readonly reviewAuthorization?: (
     command: KnowledgeGovernanceCommandV1,
     link: ReturnType<typeof reviewLinkFromRow>,
@@ -566,6 +571,8 @@ export class PostgresKnowledgeGovernanceAdapter {
   readonly #reviewAudit: ReviewAuditPortV1;
   readonly #now: () => Date;
   readonly #assessmentConfigurationPolicy: AssessmentConfigurationGovernancePolicyV1 | undefined;
+  readonly #identificationKnowledgeReleasePolicy:
+    IdentificationKnowledgeReleasePolicyV1 | undefined;
   readonly #reviewAuthorization:
     PostgresKnowledgeGovernanceAdapterOptionsV1["reviewAuthorization"] | undefined;
   readonly #approvalAuthorization:
@@ -578,6 +585,7 @@ export class PostgresKnowledgeGovernanceAdapter {
     this.#reviewAudit = options.reviewAudit;
     this.#now = options.now ?? (() => new Date());
     this.#assessmentConfigurationPolicy = options.assessmentConfigurationPolicy;
+    this.#identificationKnowledgeReleasePolicy = options.identificationKnowledgeReleasePolicy;
     this.#reviewAuthorization = options.reviewAuthorization;
     this.#approvalAuthorization = options.approvalAuthorization;
   }
@@ -1435,7 +1443,7 @@ export class PostgresKnowledgeGovernanceAdapter {
             .where("project_id", "=", command.projectId)
             .execute();
         }
-        const events = await this.#appendAssessmentConfigurationRelease(context, {
+        const assessmentEvents = await this.#appendAssessmentConfigurationRelease(context, {
           command,
           atomic,
           revision,
@@ -1443,7 +1451,19 @@ export class PostgresKnowledgeGovernanceAdapter {
           audit,
           recordedAt,
         });
-        return { resultRef: targetForRelease(releaseRef), audit, events };
+        const identificationEvents = await this.#appendIdentificationKnowledgeRelease(context, {
+          command,
+          atomic,
+          revision,
+          releaseRef,
+          audit,
+          recordedAt,
+        });
+        return {
+          resultRef: targetForRelease(releaseRef),
+          audit,
+          events: [...assessmentEvents, ...identificationEvents],
+        };
       });
       const knowledgeReleaseRef = KnowledgeReleaseRefV1Schema.parse(receipt.resultRef);
       return KnowledgeGovernanceResultV1Schema.parse({
@@ -1776,7 +1796,7 @@ export class PostgresKnowledgeGovernanceAdapter {
             .where("project_id", "=", command.projectId)
             .execute();
         }
-        const events = await this.#appendAssessmentConfigurationRelease(context, {
+        const assessmentEvents = await this.#appendAssessmentConfigurationRelease(context, {
           command,
           atomic,
           revision,
@@ -1784,7 +1804,19 @@ export class PostgresKnowledgeGovernanceAdapter {
           audit,
           recordedAt,
         });
-        return { resultRef: targetForRelease(releaseRef), audit, events };
+        const identificationEvents = await this.#appendIdentificationKnowledgeRelease(context, {
+          command,
+          atomic,
+          revision,
+          releaseRef,
+          audit,
+          recordedAt,
+        });
+        return {
+          resultRef: targetForRelease(releaseRef),
+          audit,
+          events: [...assessmentEvents, ...identificationEvents],
+        };
       });
       const knowledgeReleaseRef = KnowledgeReleaseRefV1Schema.parse(receipt.resultRef);
       return KnowledgeGovernanceResultV1Schema.parse({
@@ -1917,6 +1949,44 @@ export class PostgresKnowledgeGovernanceAdapter {
       revisionRef: revision.revisionRef,
       authorization,
     });
+  }
+
+  async #appendIdentificationKnowledgeRelease(
+    context: TransactionContextV1,
+    input: {
+      readonly command: Extract<
+        KnowledgeGovernanceCommandV1,
+        { kind: "publish-approved-release" | "rollback-by-new-release" }
+      >;
+      readonly atomic: AtomicCommandV1;
+      readonly revision: KnowledgeRevisionV1;
+      readonly releaseRef: KnowledgeReleaseRefV1;
+      readonly audit: AtomicCommitV1["audit"];
+      readonly recordedAt: string;
+    },
+  ): Promise<DomainEventV1[]> {
+    if (!isIdentificationKnowledgeDefinitionTypeV1(input.revision.definitionType)) return [];
+    const policy = this.#identificationKnowledgeReleasePolicy;
+    if (policy === undefined) return [];
+    return [
+      ...(await policy.appendRelease({
+        projectId: input.command.projectId,
+        definitionType: input.revision.definitionType,
+        releaseRef: input.releaseRef,
+        revisionRef: input.revision.revisionRef,
+        candidateArtifactRef: input.revision.candidateArtifactRef,
+        command: {
+          projectId: input.command.projectId,
+          commandId: input.command.commandId,
+          idempotencyKey: input.command.idempotencyKey,
+          actorId: input.command.actorId,
+          issuedAt: input.command.issuedAt,
+          authorizationContextRef: input.atomic.authorizationContextRef,
+        },
+        recordedAt: input.recordedAt,
+        auditEntryId: input.audit.auditEntryId,
+      })),
+    ];
   }
 
   async #appendAssessmentConfigurationRelease(

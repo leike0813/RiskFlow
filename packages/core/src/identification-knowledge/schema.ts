@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import type { DomainEventV1 } from "@riskflow/contracts/events";
+
 import {
   EvidenceReferenceSchema,
   IdentifierSchema,
@@ -21,6 +23,7 @@ import {
   type AuthorizationContextV1,
   type IdentificationPreparationSnapshotRefV1,
   type IdentificationPolicySetRefV1,
+  type KnowledgeRevisionRefV1,
   type KnowledgeReleaseRefV1,
   type ModuleErrorV1,
 } from "@riskflow/contracts/ports";
@@ -547,6 +550,36 @@ export const KnowledgeAuthoringActionV1Schema = z.discriminatedUnion("kind", [
   KnowledgeAuthoringCandidateSubmissionV1Schema,
 ]);
 export type KnowledgeAuthoringActionV1 = z.infer<typeof KnowledgeAuthoringActionV1Schema>;
+
+/** C16 发布事务内由 C17 提供的识别知识发布事件接缝（与 C18 appendRelease 对称）。 */
+export interface IdentificationKnowledgeReleasePolicyV1 {
+  appendRelease(
+    input: IdentificationKnowledgeReleaseEventInputV1,
+  ): Promise<readonly DomainEventV1[]>;
+}
+
+export interface IdentificationKnowledgeReleaseEventInputV1 {
+  readonly projectId: string;
+  readonly definitionType: IdentificationKnowledgeDefinitionTypeV1;
+  readonly releaseRef: KnowledgeReleaseRefV1;
+  readonly revisionRef: KnowledgeRevisionRefV1;
+  readonly candidateArtifactRef: ContentArtifactRefV1;
+  /** 由 C17 策略在事件构造时补齐（组合发布的四个成员发布）。 */
+  readonly compositeMemberReleaseRefs?: readonly KnowledgeReleaseRefV1[];
+  readonly command: {
+    readonly projectId: string;
+    readonly commandId: string;
+    readonly idempotencyKey: string;
+    readonly actorId: string;
+    readonly issuedAt: string;
+    readonly authorizationContextRef: {
+      readonly kind: "authorization-context";
+      readonly reference: { readonly entityId: string; readonly versionId: string };
+    };
+  };
+  readonly recordedAt: string;
+  readonly auditEntryId: string;
+}
 
 // ------------------------------------------------------- injected policy inputs
 export const IdentificationKnowledgeCoverageRuleV1Schema = z.strictObject({

@@ -355,6 +355,14 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       missingCommandId,
       "knowledge-modeling.publish-approved-release",
     );
+    const publishedEventsBefore = await fixture.cleaning.postgres.adminPool.query<{
+      count: string;
+    }>(
+      `SELECT count(*)::text AS count FROM outbox.events
+        WHERE project_id = $1 AND event_type = 'knowledge.identification-basis-published.v1'`,
+      [fixture.world.projectId],
+    );
+    const publishedEventsCount = publishedEventsBefore.rows[0]?.count;
     const missing = await adapter.govern(
       KnowledgeGovernanceCommandV1Schema.parse({
         kind: "publish-approved-release",
@@ -380,6 +388,26 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
     expect(missing).toMatchObject({
       kind: "failed",
       error: { code: "BUSINESS_BLOCKED", blockerKind: "identification-knowledge-binding-required" },
+    });
+    // 发布失败：事实、绑定与 Outbox 均不落地。
+    const failedState = await fixture.cleaning.postgres.adminPool.query<{
+      releases: string;
+      bindings: string;
+      events: string;
+    }>(
+      `SELECT
+         (SELECT count(*)::text FROM business.knowledge_releases
+           WHERE project_id = $1 AND revision_id = 'unknown-revision') AS releases,
+         (SELECT count(*)::text FROM business.identification_knowledge_release_bindings
+           WHERE project_id = $1 AND revision_id = 'unknown-revision') AS bindings,
+         (SELECT count(*)::text FROM outbox.events
+           WHERE project_id = $1 AND event_type = 'knowledge.identification-basis-published.v1') AS events`,
+      [fixture.world.projectId],
+    );
+    expect(failedState.rows[0]).toEqual({
+      releases: "0",
+      bindings: "0",
+      events: String(publishedEventsCount ?? 0),
     });
   }, 240_000);
 
@@ -473,6 +501,48 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
     ) {
       return;
     }
+
+    // 组合发布必须与 C16 发布事务同事务发出识别基础发布事件，且载荷只含精确引用。
+    const publishedEvents = await fixture.cleaning.postgres.adminPool.query<{
+      event_type: string;
+      aggregate_ref: unknown;
+      payload: {
+        basisKind: string;
+        publishedReleases: readonly { definitionType: string; releaseRef: unknown }[];
+        retrievalEvidenceBaseReleaseRef: { reference: { entityId: string; versionId: string } };
+      };
+    }>(
+      `SELECT event_type, aggregate_ref, payload FROM outbox.events
+        WHERE project_id = $1 AND event_type = 'knowledge.identification-basis-published.v1'
+        ORDER BY created_at`,
+      [fixture.world.projectId],
+    );
+    expect(publishedEvents.rows).toHaveLength(1);
+    expect(publishedEvents.rows[0]?.aggregate_ref).toEqual(
+      publishedComposite.result.knowledgeReleaseRef,
+    );
+    expect(publishedEvents.rows[0]?.payload.basisKind).toBe("identification-basis");
+    expect(
+      publishedEvents.rows[0]?.payload.publishedReleases.map((entry) => entry.definitionType),
+    ).toEqual([
+      "process-model",
+      "risk-mechanism",
+      "standard-library",
+      "case-library",
+      "retrieval-evidence-base",
+    ]);
+    expect(publishedEvents.rows[0]?.payload.publishedReleases[0]?.releaseRef).toEqual(
+      processModelReleaseRef,
+    );
+    expect(publishedEvents.rows[0]?.payload.publishedReleases[1]?.releaseRef).toEqual(
+      publishedMechanism.result.knowledgeReleaseRef,
+    );
+    expect(publishedEvents.rows[0]?.payload.publishedReleases[3]?.releaseRef).toEqual(
+      publishedCase.result.knowledgeReleaseRef,
+    );
+    expect(publishedEvents.rows[0]?.payload.retrievalEvidenceBaseReleaseRef.reference).toEqual(
+      publishedComposite.result.knowledgeReleaseRef.reference,
+    );
 
     const resolveCommand = async (commandId: string) => {
       const authorization = await fixture.authorizationFor(
@@ -789,8 +859,20 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       stage: "review-linked",
     });
     expect(rows.rows[0]?.review_task_ref).not.toBeNull();
-    const replay = await adapter.settleAuthoringFailures();
-    expect(replay).toBe(0);
+    await adapter.settleAuthoringFailures();
+    // D-09 幂等：重放不创建第二个失败修订，也不重复挂复核任务。
+    const replayRows = await fixture.cleaning.postgres.adminPool.query<{
+      bindings: string;
+      reviews: string;
+    }>(
+      `SELECT
+         (SELECT count(*)::text FROM business.identification_knowledge_revision_bindings
+           WHERE project_id = $1 AND binding_kind = 'failure-review-only') AS bindings,
+         (SELECT count(*)::text FROM business.identification_knowledge_authoring_attempts
+           WHERE project_id = $1 AND stage = 'review-linked' AND review_task_ref IS NOT NULL) AS reviews`,
+      [isolated.projectId],
+    );
+    expect(replayRows.rows[0]).toEqual({ bindings: "1", reviews: "1" });
   }, 300_000);
 
   it("keeps non C17 governance definitions on the delegated C16 path", async () => {

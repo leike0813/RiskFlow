@@ -34,7 +34,7 @@ const grantApp = async (db: Kysely<unknown>): Promise<void> => {
   await sql`GRANT SELECT, INSERT ON TABLE ${sql.raw(tables.join(", "))} TO riskflow_app`.execute(
     db,
   );
-  await sql`GRANT UPDATE (stage, result_revision_ref, failure_artifact_ref, review_task_ref)
+  await sql`GRANT UPDATE (stage, result_revision_ref, failure_artifact_ref, review_task_ref, persisted_at)
     ON TABLE business.identification_knowledge_authoring_attempts TO riskflow_app`.execute(db);
 };
 

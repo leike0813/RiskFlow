@@ -43,6 +43,7 @@ import {
   KnowledgeAuthoringSegmentSliceRequestV1Schema,
   applyKnowledgeAuthoringIncrement,
   createKnowledgeAuthoringTaskDefinition,
+  identificationBasisPublishedEvent,
   identificationKnowledgePackageDigest,
   isIdentificationKnowledgeDefinitionTypeV1,
   validateIdentificationKnowledgePackage,
@@ -51,10 +52,13 @@ import {
   type IdentificationKnowledgeValidationPolicyV1,
   type IdentificationKnowledgeValidationReceiptV1,
   type IdentificationPolicySetProviderV1,
+  type IdentificationKnowledgeReleaseEventInputV1,
+  type IdentificationKnowledgeReleasePolicyV1,
   type IdentificationPreparationKnowledgeReaderV1,
   type KnowledgeAuthoringManifestV1,
   type KnowledgeAuthoringTaskPortV1,
 } from "@riskflow/core/identification-knowledge";
+import type { DomainEventV1 } from "@riskflow/contracts/events";
 import {
   ContentArtifactRefV1Schema as ContractCandidateArtifactRefV1Schema,
   ContentArtifactRefV1Schema,
@@ -215,6 +219,8 @@ export interface PostgresIdentificationKnowledgeAdapterOptionsV1 {
   readonly preparationReader: IdentificationPreparationKnowledgeReaderV1;
   readonly policy: IdentificationKnowledgeValidationPolicyV1;
   readonly policySetProvider?: IdentificationPolicySetProviderV1;
+  /** 组合发布的成员登记与事件接缝；由组合根注入并同时交给 C16。 */
+  readonly releaseEventRecorder?: IdentificationKnowledgeReleaseEventRecorder;
   /** C08 启动接缝：只有编制入口需要。 */
   readonly agentTaskPort?: AgentTaskPortV1;
   /** C08 执行存储：失败收口按精确任务引用读取状态。 */
@@ -417,6 +423,46 @@ const validationReceiptFromRow = (
 };
 
 /**
+ * 识别知识发布事件记录器：组合发布前登记四个成员精确引用，C16 发布事务内据此发出
+ * `knowledge.identification-basis-published.v1`；成员未知时保持 fail-closed 不发事件。
+ */
+export class IdentificationKnowledgeReleaseEventRecorder implements IdentificationKnowledgeReleasePolicyV1 {
+  readonly #members = new Map<string, readonly unknown[]>();
+
+  record(input: {
+    readonly projectId: string;
+    readonly revisionRef: {
+      readonly reference: { readonly entityId: string; readonly versionId: string };
+    };
+    readonly compositeMemberReleaseRefs: readonly unknown[];
+  }): void {
+    this.#members.set(
+      `${input.projectId}:${input.revisionRef.reference.entityId}:${input.revisionRef.reference.versionId}`,
+      input.compositeMemberReleaseRefs,
+    );
+  }
+
+  async appendRelease(
+    input: IdentificationKnowledgeReleaseEventInputV1,
+  ): Promise<readonly DomainEventV1[]> {
+    if (input.definitionType !== "retrieval-evidence-base") return [];
+    const key = `${input.projectId}:${input.revisionRef.reference.entityId}:${input.revisionRef.reference.versionId}`;
+    const members = this.#members.get(key);
+    this.#members.delete(key);
+    if (members === undefined) return [];
+    return [
+      identificationBasisPublishedEvent({
+        releaseRef: input.releaseRef,
+        compositeMemberReleaseRefs: members as never,
+        command: input.command,
+        recordedAt: input.recordedAt,
+        auditEntryId: input.auditEntryId,
+      }),
+    ];
+  }
+}
+
+/**
  * C17 façade：在 C16 生命周期之前设置内容门，在之后追加 C17 绑定；正文始终保存在 C04，
  * 数据库只保存受约束的索引事实（D-05、D-07、D-10、D-12）。
  */
@@ -430,6 +476,7 @@ export class PostgresIdentificationKnowledgeAdapter {
   readonly #preparationReader: IdentificationPreparationKnowledgeReaderV1;
   readonly #policy: IdentificationKnowledgeValidationPolicyV1;
   readonly #policySetProvider: IdentificationPolicySetProviderV1 | undefined;
+  readonly #releaseEventRecorder: IdentificationKnowledgeReleaseEventRecorder;
   readonly #agentTaskPort: AgentTaskPortV1 | undefined;
   readonly #agentTaskStore: AgentTaskStoreV1 | undefined;
   readonly #authoringAuthorization:
@@ -446,6 +493,8 @@ export class PostgresIdentificationKnowledgeAdapter {
     this.#preparationReader = options.preparationReader;
     this.#policy = options.policy;
     this.#policySetProvider = options.policySetProvider;
+    this.#releaseEventRecorder =
+      options.releaseEventRecorder ?? new IdentificationKnowledgeReleaseEventRecorder();
     this.#agentTaskPort = options.agentTaskPort;
     this.#agentTaskStore = options.agentTaskStore;
     this.#authoringAuthorization = options.authoringAuthorization;
@@ -945,13 +994,43 @@ export class PostgresIdentificationKnowledgeAdapter {
         if (compositeMembers !== undefined) {
           const resolved = await this.#governance.resolveGovernedReleases({
             projectId: command.projectId,
-            requiredDefinitionTypes: ["risk-mechanism", "standard-library", "case-library"],
+            requiredDefinitionTypes: [
+              "process-model",
+              "risk-mechanism",
+              "standard-library",
+              "case-library",
+            ],
             requiredAt: command.payload.effectiveFrom,
             asOfRecordedAt: command.issuedAt,
             authorization: command.authorization,
           });
           if (resolved.kind !== "succeeded") return published;
           const selected = resolved.result.releaseRefs;
+          const processModelResolution = await this.#governance.resolveGovernedReleases({
+            projectId: command.projectId,
+            requiredDefinitionTypes: ["process-model"],
+            requiredAt: command.payload.effectiveFrom,
+            asOfRecordedAt: command.issuedAt,
+            authorization: command.authorization,
+          });
+          const processModelReleaseRef =
+            processModelResolution.kind === "succeeded"
+              ? processModelResolution.result.releaseRefs[0]
+              : undefined;
+          // 事件载荷顺序固定为 process-model → risk-mechanism → standard-library → case-library，
+          // 最后一项由 C16 发布事务补上组合发布本身。
+          if (
+            processModelReleaseRef !== undefined &&
+            compositeMembers.every((member) =>
+              selected.some((candidate) => versionedReferenceEquals(candidate, member as never)),
+            )
+          ) {
+            this.#releaseEventRecorder.record({
+              projectId: command.projectId,
+              revisionRef: command.payload.revisionRef,
+              compositeMemberReleaseRefs: [processModelReleaseRef, ...compositeMembers],
+            });
+          }
           if (
             !compositeMembers.every((member) =>
               selected.some((candidate) => versionedReferenceEquals(candidate, member as never)),
@@ -1869,11 +1948,13 @@ export class PostgresIdentificationKnowledgeAdapter {
       .where("stage", "in", ["prepared", "task-started"])
       .execute();
     let settled = 0;
+    console.error("C17_SETTLE_SCAN", rows.length, store === undefined ? "no-store" : "store");
     for (const row of rows) {
       const taskRef = row.agent_task_ref as unknown as AgentTaskRefV1;
       const task = await store.getTask(taskRef);
       if (task === undefined) continue;
       const status = task.state.status;
+      console.error("C17_SETTLE_STATUS", status);
       if (status !== "terminal-failure" && status !== "cancelled") continue;
       try {
         await this.#settleOneFailure(row, task, taskRef);
@@ -2015,7 +2096,8 @@ export class PostgresIdentificationKnowledgeAdapter {
         taskRef,
         projectId: row.project_id,
         invocationId: reviewCommandId,
-        branch: "review-audit.request-review",
+        // C16 复核分支（C07 的评审请求由 C16 内部按其自身接缝签发）。
+        branch: "knowledge-modeling.request-review",
       })) ?? authorization;
     const review = await this.#requestFailureReview(
       row,
@@ -2059,7 +2141,9 @@ export class PostgresIdentificationKnowledgeAdapter {
       },
     }) as Extract<KnowledgeGovernanceCommandV1, { kind: "request-review" }>;
     const requested = await this.#governance.govern(reviewCommand);
-    if (requested.kind !== "succeeded" || requested.result.kind !== "review-task") return undefined;
+    if (requested.kind !== "succeeded" || requested.result.kind !== "review-task") {
+      return undefined;
+    }
     return requested.result.reviewTaskRef;
   }
 

@@ -8,6 +8,7 @@ import {
   KnowledgeAuthoringIncrementV1Schema,
   applyKnowledgeAuthoringIncrement,
   createKnowledgeAuthoringTaskDefinition,
+  identificationBasisPublishedEvent,
   identificationKnowledgePackageDigest,
   validateIdentificationKnowledgePackage,
   type IdentificationEvidenceDecisionV1,
@@ -601,6 +602,82 @@ describe("C17 identification knowledge package validation", () => {
                 : compositePackage();
       expect(Reflect.get(value as object, "definitionType")).toBe(definitionType);
     }
+  });
+});
+
+describe("C17 identification basis publication event", () => {
+  const releaseRef = (entityId: string) => ({
+    kind: "knowledge-release" as const,
+    reference: { entityId, versionId: "1" },
+  });
+
+  it("builds the exact published-releases payload and pins the composite aggregate", () => {
+    const composite = releaseRef("retrieval-evidence-base");
+    const event = identificationBasisPublishedEvent({
+      releaseRef: composite,
+      compositeMemberReleaseRefs: [
+        releaseRef("process-model"),
+        releaseRef("risk-mechanism"),
+        releaseRef("standard-library"),
+        releaseRef("case-library"),
+      ],
+      command: {
+        projectId: PROJECT_ID,
+        commandId: "c17-publish-1",
+        idempotencyKey: "c17-publish-key-1",
+        actorId: "manager-1",
+        issuedAt: "2030-01-01T00:02:00.000Z",
+        authorizationContextRef: {
+          kind: "authorization-context",
+          reference: { entityId: "authorization-1", versionId: "1" },
+        },
+      },
+      recordedAt: "2030-01-01T00:02:01.000Z",
+      auditEntryId: "audit-1",
+    });
+    expect(event.eventType).toBe("knowledge.identification-basis-published.v1");
+    expect(event.aggregateRef).toEqual(composite);
+    expect(event.producerCommandId).toBe("c17-publish-1");
+    expect(event.auditTrailRef).toEqual({
+      kind: "audit-trail",
+      reference: { entityId: "audit-1", versionId: "1" },
+    });
+    expect(event.payload).toMatchObject({
+      basisKind: "identification-basis",
+      retrievalEvidenceBaseReleaseRef: {
+        kind: "retrieval-evidence-base-release",
+        reference: composite.reference,
+      },
+    });
+    expect(event.payload.publishedReleases.map((entry) => entry.definitionType)).toEqual([
+      "process-model",
+      "risk-mechanism",
+      "standard-library",
+      "case-library",
+      "retrieval-evidence-base",
+    ]);
+  });
+
+  it("rejects member sets that are not exactly the four definition identities", () => {
+    expect(() =>
+      identificationBasisPublishedEvent({
+        releaseRef: releaseRef("retrieval-evidence-base"),
+        compositeMemberReleaseRefs: [releaseRef("process-model")],
+        command: {
+          projectId: PROJECT_ID,
+          commandId: "c17-publish-2",
+          idempotencyKey: "c17-publish-key-2",
+          actorId: "manager-1",
+          issuedAt: "2030-01-01T00:02:00.000Z",
+          authorizationContextRef: {
+            kind: "authorization-context",
+            reference: { entityId: "authorization-1", versionId: "1" },
+          },
+        },
+        recordedAt: "2030-01-01T00:02:01.000Z",
+        auditEntryId: "audit-2",
+      }),
+    ).toThrow();
   });
 });
 

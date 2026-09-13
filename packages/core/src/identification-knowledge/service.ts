@@ -7,9 +7,11 @@ import {
   type AgentValidationResultV1,
 } from "../agent-runtime/index.js";
 import { sha256CanonicalJson } from "../persistence/canonical-json.js";
+import { DomainEventV1Schema, type DomainEventV1 } from "@riskflow/contracts/events";
 import type {
   AgentTaskResultRefV1,
   IdentificationPreparationSnapshotRefV1,
+  KnowledgeReleaseRefV1,
 } from "@riskflow/contracts/ports";
 import type { EvidenceReference } from "@riskflow/contracts/common";
 import {
@@ -29,6 +31,7 @@ import {
   type IdentificationKnowledgePackageV1,
   type IdentificationKnowledgeValidationItemV1,
   type IdentificationKnowledgeValidationPolicyV1,
+  type IdentificationKnowledgeReleaseEventInputV1,
   type KnowledgeAuthoringIncrementV1,
   type ProcessModelPackageV1,
   type RiskMechanismPackageV1,
@@ -1150,4 +1153,61 @@ export const createKnowledgeAuthoringTaskDefinition = (
     finalizeCandidate: async (candidate, context) =>
       port.finalizeAuthoringCandidate({ task: context, candidate }),
   };
+};
+
+/**
+ * 识别基础发布事件：只在检索证据库组合发布时发出，载荷仅含精确引用，聚合引用必须是
+ * 组合发布本身（与 `knowledge.identification-basis-published.v1` 契约一致）。
+ */
+export const identificationBasisPublishedEvent = (input: {
+  readonly releaseRef: KnowledgeReleaseRefV1;
+  readonly compositeMemberReleaseRefs: readonly KnowledgeReleaseRefV1[];
+  readonly command: IdentificationKnowledgeReleaseEventInputV1["command"];
+  readonly recordedAt: string;
+  readonly auditEntryId: string;
+}): DomainEventV1 => {
+  const [processModel, riskMechanism, standardLibrary, caseLibrary] =
+    input.compositeMemberReleaseRefs;
+  if (
+    processModel === undefined ||
+    riskMechanism === undefined ||
+    standardLibrary === undefined ||
+    caseLibrary === undefined ||
+    input.compositeMemberReleaseRefs.length !== 4
+  ) {
+    throw new TypeError("identification basis publication requires four member releases");
+  }
+  return DomainEventV1Schema.parse({
+    schemaVersion: "1",
+    eventId: `identification-basis-published-${input.releaseRef.reference.entityId}`,
+    eventVersion: 1,
+    eventType: "knowledge.identification-basis-published.v1",
+    projectId: input.command.projectId,
+    aggregateRef: input.releaseRef,
+    occurredAt: input.command.issuedAt,
+    recordedAt: input.recordedAt,
+    causationId: input.command.commandId,
+    correlationId: input.command.idempotencyKey,
+    producerCommandId: input.command.commandId,
+    idempotencyKey: input.command.idempotencyKey,
+    authorizationContextRef: input.command.authorizationContextRef,
+    auditTrailRef: {
+      kind: "audit-trail",
+      reference: { entityId: input.auditEntryId, versionId: "1" },
+    },
+    payload: {
+      basisKind: "identification-basis",
+      publishedReleases: [
+        { definitionType: "process-model", releaseRef: processModel },
+        { definitionType: "risk-mechanism", releaseRef: riskMechanism },
+        { definitionType: "standard-library", releaseRef: standardLibrary },
+        { definitionType: "case-library", releaseRef: caseLibrary },
+        { definitionType: "retrieval-evidence-base", releaseRef: input.releaseRef },
+      ],
+      retrievalEvidenceBaseReleaseRef: {
+        kind: "retrieval-evidence-base-release",
+        reference: input.releaseRef.reference,
+      },
+    },
+  });
 };

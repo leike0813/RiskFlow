@@ -29,6 +29,7 @@ import type { AgentTaskPortV1, AgentTaskRefV1 } from "@riskflow/contracts/ports"
 
 import { PostgresAgentTaskAdapter } from "../../src/agent-runtime/index.js";
 import {
+  IdentificationKnowledgeReleaseEventRecorder,
   PostgresIdentificationKnowledgeAdapter,
   type PostgresIdentificationKnowledgeAdapterOptionsV1,
 } from "../../src/identification-knowledge/index.js";
@@ -520,11 +521,13 @@ export const startIdentificationKnowledgeFixture =
       access: cleaning.access,
       now: () => new Date(IDENTIFICATION_KNOWLEDGE_TEST_TIMESTAMP),
     });
+    const governanceRecorder = new IdentificationKnowledgeReleaseEventRecorder();
     const governance = new PostgresKnowledgeGovernanceAdapter({
       db: cleaning.runtime.db,
       transactionUnit: cleaning.transactionUnit,
       access: cleaning.access,
       reviewAudit,
+      identificationKnowledgeReleasePolicy: governanceRecorder,
       now: () => new Date(IDENTIFICATION_KNOWLEDGE_TEST_TIMESTAMP),
       // C16/C07 的 verify 绑定在各自调用身份上：评审请求用评审尝试 id，批准证明用命令派生 queryId。
       reviewAuthorization: (command, link) =>
@@ -776,6 +779,7 @@ export const startIdentificationKnowledgeFixture =
       preparationReader,
       reviewAudit,
       createIdentificationKnowledgeAdapter: (options) => {
+        const releaseEventRecorder = governanceRecorder;
         const holder: {
           port?: AgentTaskPortV1;
           store?: {
@@ -792,6 +796,7 @@ export const startIdentificationKnowledgeFixture =
           governance,
           preparationReader,
           policy,
+          releaseEventRecorder,
           ...(options?.withPolicySet === false
             ? {}
             : {

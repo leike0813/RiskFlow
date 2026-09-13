@@ -11,11 +11,18 @@
 
 ## 3. PostgreSQL Adapter 与正式事务链
 
-- [ ] 3.1 [IP-06] 新增唯一 `000032_deterministic_risk_assessment` 迁移，落实五张只追加表、XOR/FK/check/unique/index、审计/回执关系及 `riskflow_app` SELECT/INSERT 权限；执行 `pnpm exec vitest run packages/adapters/test/postgres/postgres-foundation.test.ts` 验证递归发现、up/down 与权限。
+- [x] 3.1 [IP-06] 新增唯一 `000032_deterministic_risk_assessment` 迁移，落实五张只追加表、XOR/FK/check/unique/index、审计/回执关系及 `riskflow_app` SELECT/INSERT 权限；执行 `pnpm exec vitest run packages/adapters/test/postgres/postgres-foundation.test.ts` 验证递归发现、up/down 与权限。
+  - 证据：000032 已由主调度登记进中央清单（`postgres-foundation.test.ts`、`auth/fixture.ts`）；`pnpm exec vitest run packages/adapters/test/postgres/postgres-foundation.test.ts` 17/17 通过（含递归发现、up/down 与 `riskflow_app` 权限），`packages/adapters/test/auth/local-identity-project-authorization.test.ts` 12/12 通过。
+  - 证据：000032 已由主调度登记进中央清单（`postgres-foundation.test.ts`、`auth/fixture.ts`）；`pnpm exec vitest run packages/adapters/test/postgres/postgres-foundation.test.ts` 17/17 通过（含递归发现、up/down 与 `riskflow_app` 权限），`packages/adapters/test/auth/local-identity-project-authorization.test.ts` 12/12 通过。
 - [ ] 3.2 [IP-04] 在 C11 PostgreSQL adapter 中完成 `freeze(assessment-preparation)`、`engineering.inputs-ready.v1` 原子提交和 C25/C19 受权窄 reader；消费前置 change 已集成的外部事件登记/读取，不实现或改写该分支；验证入口/复数 refs 原样冻结、optional 正确省略、每个 snapshot 的 C14 series 身份/工程/空间/版本均受权复验，空/重复/越权/series 不一致及缺 required 字段闭合拒绝，且不改变其它分支；执行 `pnpm exec vitest run packages/adapters/test/engineering-data/context-source/postgres-engineering-context-source-registry.test.ts` 验证。
+  - 偏差：C19 侧 `readAssessmentPreparationSnapshot` 投影片段未接线——C19 的 `AssessmentPreparationProjectionV1Schema` 额外要求 `cleaningResultArtifactRef`/`dataCleaningTaskRef`/`configurationSetRef`/`compatibilityRef`，C25 准备快照无法提供（裁定：只实现 C25 自有 `AssessmentPreparationContextReaderV1`），否则会伪造 C19 事实。
+  - 已实现：C25 窄 reader 读出准备快照后按快照自身空间与证据资料版本复验 C06 授权；来源未登记或授权未声明即关闭失败，真实登记来源下的读取成功路径由 C25 适配器套件覆盖。
 - [x] 3.3 [IP-05] 实现 `PostgresRiskAssessmentEngine.prepare/evaluate`，按 D-10 顺序完成 C19 descriptors、C04 正文、runtime policies、C14 snapshot、纯计算、C04 decision artifact 和单事务正式事实；执行 `pnpm exec vitest run packages/adapters/test/risk-assessment/postgres-risk-assessment-engine.test.ts` 验证。
 - [x] 3.4 [IP-07] 在 core/adapters package manifests 增加且只增加 `./risk-assessment/engine` export，不改依赖与锁文件；执行 `pnpm exec tsc -b packages/core/tsconfig.json packages/adapters/tsconfig.json --pretty false && git diff --check` 验证。
-- [x] 3.5 [IP-09] 完成 PostgreSQL 集成与 G2.5 fixture 测试，覆盖标准化记录与正式登记外部事件两类 XOR、外部未登记/reader 不可用/越权失败、监测所需序列零/一/多快照、完整/缺失 policy、初评/重评/补算、缺值/单位、原子回滚、幂等/并发、audit/outbox 及标准化风险记录纵向链；执行 `pnpm exec vitest run packages/adapters/test/risk-assessment/postgres-risk-assessment-engine.test.ts packages/adapters/test/engineering-data/context-source/postgres-engineering-context-source-registry.test.ts` 验证。
+- [ ] 3.5 [IP-09] 完成 PostgreSQL 集成与 G2.5 fixture 测试，覆盖标准化记录与正式登记外部事件两类 XOR、外部未登记/reader 不可用/越权失败、监测所需序列零/一/多快照、完整/缺失 policy、初评/重评/补算、缺值/单位、原子回滚、幂等/并发、audit/outbox 及标准化风险记录纵向链；执行 `pnpm exec vitest run packages/adapters/test/risk-assessment/postgres-risk-assessment-engine.test.ts packages/adapters/test/engineering-data/context-source/postgres-engineering-context-source-registry.test.ts` 验证。
+  - 待补：外部风险事件分支、缺失运行时策略、adapter 级单位/缺值三类用例尚未单独建立（规则层已由 core 表驱动用例与 `BASIS_READ`/事实失败路径覆盖）。
+  - 契约冲突：`design.md` 要求变更事件空侧省略，而公共 `DomainEventV1Schema`（`packages/contracts/src/events/index.ts`）监测分支强制两侧数组存在；当前按契约以空数组表达一侧为空，空侧省略语义待契约演进 change 落地后切换，相关用例不得标记为已达成 design 语义。
+  - 已覆盖：成功链含审计与命令回执直查断言、并发同幂等身份两者观察同一逻辑结果、回滚零新增回执/审计、提交前后复验（授权/策略/basis 漂移）、监测集合增删替换与空集合。
 
 ## 4. API 与 Worker 接入确认
 
@@ -33,5 +40,5 @@
 
 ## 7. OpenSpec Verify
 
-- [x] 7.1 [IP-12] 执行 `openspec validate deliver-deterministic-risk-assessment --strict && openspec status --change deliver-deterministic-risk-assessment --json`，确认 schemaName 仍为 `riskflow-delivery`、五工件完整、所有实施 task 已有行为与证据后再勾选。
+- [ ] 7.1 [IP-12] 执行 `openspec validate deliver-deterministic-risk-assessment --strict && openspec status --change deliver-deterministic-risk-assessment --json`，确认 schemaName 仍为 `riskflow-delivery`、五工件完整、所有实施 task 已有行为与证据后再勾选。
 - [ ] 7.2 [IP-12] 调用项目 `openspec-verify-change` Skill 独立核对 delta spec、D-ID、IP-ID、实现、数据库和 §6 证据；以再次执行 `openspec validate deliver-deterministic-risk-assessment --strict` 通过且 verify 报告无未解决 finding 为完成标准，不归档、不提交。

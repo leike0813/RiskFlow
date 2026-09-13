@@ -14,6 +14,23 @@ const countRows = async (
   return Number(result.rows[0]?.count ?? "0");
 };
 
+// 读取链路会为派生命令写自己的回执与审计，因此这里按命令 id 精确计数。
+const countReceipts = async (fixture: RiskAssessmentEngineFixtureV1, commandId: string) => {
+  const result = await fixture.postgres.postgres.adminPool.query<{ total: string }>(
+    "SELECT count(*)::text AS total FROM business.command_receipts WHERE command_id = $1",
+    [commandId],
+  );
+  return Number(result.rows[0]!.total);
+};
+
+const countAuditEntries = async (fixture: RiskAssessmentEngineFixtureV1, auditEntryId: string) => {
+  const result = await fixture.postgres.postgres.adminPool.query<{ total: string }>(
+    "SELECT count(*)::text AS total FROM audit.entries WHERE audit_entry_id = $1",
+    [auditEntryId],
+  );
+  return Number(result.rows[0]!.total);
+};
+
 const countEvents = async (
   fixture: RiskAssessmentEngineFixtureV1,
   eventType: string,
@@ -157,6 +174,11 @@ describe("C25 PostgreSQL risk assessment engine", () => {
       ),
       records: await countRows(fixture, "business.risk_assessment_records", fixture.projectId),
       events: await countEvents(fixture, "assessment.recorded.v1"),
+      receipts: await countReceipts(fixture, "c25-evaluate-success"),
+      auditEntries: await countAuditEntries(
+        fixture,
+        "audit-c25-evaluate-success:assessment-record",
+      ),
     };
 
     const evaluated = await fixture.engine.evaluate(
@@ -180,6 +202,40 @@ describe("C25 PostgreSQL risk assessment engine", () => {
       before.records + 1,
     );
     expect(await countEvents(fixture, "assessment.recorded.v1")).toBe(before.events + 1);
+    // 命令回执与审计是正式事实的一部分：直接查回执与审计行并断言其内容。
+    expect(await countReceipts(fixture, "c25-evaluate-success")).toBe(before.receipts + 1);
+    expect(await countAuditEntries(fixture, "audit-c25-evaluate-success:assessment-record")).toBe(
+      before.auditEntries + 1,
+    );
+    const receipt = await fixture.postgres.postgres.adminPool.query<{
+      command_kind: string;
+      result_ref: { reference: { entityId: string; versionId: string } };
+      completed_at: Date | null;
+      event_ids: string[];
+    }>(
+      "SELECT command_kind, result_ref, completed_at, event_ids FROM business.command_receipts WHERE command_id = $1",
+      ["c25-evaluate-success"],
+    );
+    expect(receipt.rows).toHaveLength(1);
+    expect(receipt.rows[0]!.completed_at).not.toBeNull();
+    expect(receipt.rows[0]!.command_kind).toBe("risk-assessment.record.v1");
+    expect(receipt.rows[0]!.event_ids).toHaveLength(1);
+    expect(receipt.rows[0]!.result_ref.reference).toEqual(assessmentRecordRef.reference);
+    const auditEntry = await fixture.postgres.postgres.adminPool.query<{
+      action: string;
+      actor_ref: string;
+      command_id: string;
+      target_ref: { reference: { entityId: string } };
+    }>(
+      "SELECT action, actor_ref, command_id, target_ref FROM audit.entries WHERE audit_entry_id = $1",
+      ["audit-c25-evaluate-success:assessment-record"],
+    );
+    expect(auditEntry.rows).toHaveLength(1);
+    expect(auditEntry.rows[0]!.actor_ref).toBe(fixture.managerId);
+    expect(auditEntry.rows[0]!.command_id).toBe("c25-evaluate-success");
+    expect(auditEntry.rows[0]!.target_ref.reference.entityId).toBe(
+      assessmentRecordRef.reference.entityId,
+    );
 
     const record = await fixture.postgres.postgres.adminPool.query<{
       record_payload: {
@@ -242,7 +298,7 @@ describe("C25 PostgreSQL risk assessment engine", () => {
     );
   }, 180_000);
 
-  it("并发评估同一输入快照只产生一份记录与一条事件", async () => {
+  it("并发评估同一输入快照观察到同一逻辑结果且只产生一份记录与一条事件", async () => {
     const prepared = await fixture.engine.prepare(
       (await fixture.prepareCommand({
         commandId: "c25-prepare-concurrency",
@@ -259,10 +315,12 @@ describe("C25 PostgreSQL risk assessment engine", () => {
     );
     const eventsBefore = await countEvents(fixture, "assessment.recorded.v1");
 
+    // 规格场景是同一幂等身份的并发重复：两次调用共享一个幂等键。
     const commands = await Promise.all(
       ["a", "b"].map(async (suffix) =>
         fixture.evaluateCommand({
           commandId: `c25-evaluate-concurrent-${suffix}`,
+          idempotencyKey: "c25-evaluate-concurrent",
           inputSnapshotRef,
         }),
       ),
@@ -270,13 +328,17 @@ describe("C25 PostgreSQL risk assessment engine", () => {
     const results = await Promise.all(
       commands.map(async (command) => fixture.engine.evaluate(command as never)),
     );
-    const succeeded = results.filter((result) => result.kind === "succeeded");
-    expect(succeeded.length).toBeGreaterThanOrEqual(1);
+    // 规格要求并发评估观察到同一逻辑结果：两次调用都必须成功且结果引用完全一致。
+    for (const result of results) {
+      expect(result.kind).toBe("succeeded");
+    }
+    const payloads = results.map((result) => (result as { result: unknown }).result);
+    expect(payloads[0]).toEqual(payloads[1]);
     const recordIds = new Set(
-      succeeded.map(
-        (result) =>
-          (result as { result: { assessmentRecordRef: { reference: { entityId: string } } } })
-            .result.assessmentRecordRef.reference.entityId,
+      payloads.map(
+        (payload) =>
+          (payload as { assessmentRecordRef: { reference: { entityId: string } } })
+            .assessmentRecordRef.reference.entityId,
       ),
     );
     expect(recordIds.size).toBe(1);
@@ -309,9 +371,12 @@ describe("C25 PostgreSQL risk assessment engine", () => {
       ),
       records: await countRows(fixture, "business.risk_assessment_records", fixture.projectId),
       events: await countEvents(fixture, "assessment.recorded.v1"),
+      receipts: await countReceipts(fixture, commandId),
     };
     // 预置审计主键冲突：C03 在该事务内写审计时失败，整体回滚。
     await fixture.preinsertAuditConflict(commandId);
+    // 基线取在注入之后：注入行本身不属于本次命令的新增事实。
+    const auditBefore = await countAuditEntries(fixture, `audit-${commandId}:assessment-record`);
     const result = await fixture.engine.evaluate(
       (await fixture.evaluateCommand({
         commandId,
@@ -329,6 +394,11 @@ describe("C25 PostgreSQL risk assessment engine", () => {
       before.records,
     );
     expect(await countEvents(fixture, "assessment.recorded.v1")).toBe(before.events);
+    // 回执与审计同属事务成员：失败时不得留下任何新增行。
+    expect(await countReceipts(fixture, commandId)).toBe(before.receipts);
+    expect(await countAuditEntries(fixture, `audit-${commandId}:assessment-record`)).toBe(
+      auditBefore,
+    );
   }, 180_000);
 
   it("提交前 basis 摘要漂移时关闭失败且零正式事实", async () => {
@@ -449,20 +519,96 @@ describe("C25 PostgreSQL risk assessment engine", () => {
       "business.risk_assessment_records",
       fixture.projectId,
     );
-    // 命令在撤权前签发；撤权后 C06 复验必须失败闭合。
+    // 失效注入点在读取之后、提交之前：风险事实读取返回时吊销会话。
     const command = await fixture.evaluateCommand({
       commandId: "c25-evaluate-revoked",
       inputSnapshotRef: prepared.result.assessmentInputSnapshotRef,
     });
-    await fixture.revokeAfterFirstRead();
+    const receiptsBefore = await countReceipts(fixture, "c25-evaluate-revoked");
+    const auditBefore = await countAuditEntries(
+      fixture,
+      "audit-c25-evaluate-revoked:assessment-record",
+    );
+    await fixture.revokeOnFactsRead();
     try {
       const result = await fixture.engine.evaluate(command as never);
+      expect(result).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+      expect(await countRows(fixture, "business.risk_assessment_records", fixture.projectId)).toBe(
+        recordsBefore,
+      );
+      expect(await countReceipts(fixture, "c25-evaluate-revoked")).toBe(receiptsBefore);
+      expect(await countAuditEntries(fixture, "audit-c25-evaluate-revoked:assessment-record")).toBe(
+        auditBefore,
+      );
+    } finally {
+      await fixture.restoreSession();
+    }
+  }, 180_000);
+
+  it("提交前运行时策略版本漂移时关闭失败且零正式事实", async () => {
+    const prepared = await fixture.engine.prepare(
+      (await fixture.prepareCommand({
+        commandId: "c25-prepare-policy-drift",
+        preparation: await freshPreparation("policy-drift"),
+      })) as never,
+    );
+    expect(prepared).toMatchObject({ kind: "succeeded" });
+    if (prepared.kind !== "succeeded") return;
+    const commandId = "c25-evaluate-policy-drift";
+    const recordsBefore = await countRows(
+      fixture,
+      "business.risk_assessment_records",
+      fixture.projectId,
+    );
+    const receiptsBefore = await countReceipts(fixture, commandId);
+    // 读取阶段拿到第一套策略，提交前复验必须发现版本已漂移。
+    fixture.mutatePoliciesAfterFirstRead();
+    try {
+      const result = await fixture.engine.evaluate(
+        (await fixture.evaluateCommand({
+          commandId,
+          inputSnapshotRef: prepared.result.assessmentInputSnapshotRef,
+        })) as never,
+      );
+      expect(result).toMatchObject({ kind: "failed", error: { code: "STALE_VERSION" } });
+      expect(await countRows(fixture, "business.risk_assessment_records", fixture.projectId)).toBe(
+        recordsBefore,
+      );
+      expect(await countReceipts(fixture, commandId)).toBe(receiptsBefore);
+    } finally {
+      fixture.restorePolicies();
+    }
+  }, 180_000);
+
+  it("下游授权未声明准备快照来源时读取关闭失败且零正式事实", async () => {
+    const prepared = await fixture.engine.prepare(
+      (await fixture.prepareCommand({
+        commandId: "c25-prepare-source-denied",
+        preparation: await freshPreparation("source-denied"),
+      })) as never,
+    );
+    expect(prepared).toMatchObject({ kind: "succeeded" });
+    if (prepared.kind !== "succeeded") return;
+    const recordsBefore = await countRows(
+      fixture,
+      "business.risk_assessment_records",
+      fixture.projectId,
+    );
+    // 签发接缝不再转交声明的来源：C11 读取必须因来源不可读而关闭失败。
+    fixture.denyDeclaredSources();
+    try {
+      const result = await fixture.engine.evaluate(
+        (await fixture.evaluateCommand({
+          commandId: "c25-evaluate-source-denied",
+          inputSnapshotRef: prepared.result.assessmentInputSnapshotRef,
+        })) as never,
+      );
       expect(result.kind).toBe("failed");
       expect(await countRows(fixture, "business.risk_assessment_records", fixture.projectId)).toBe(
         recordsBefore,
       );
     } finally {
-      await fixture.restoreSession();
+      fixture.restoreDeclaredSources();
     }
   }, 180_000);
 
@@ -514,6 +660,29 @@ describe("C25 PostgreSQL risk assessment engine", () => {
     // 基准记录：完整 3 快照集合。
     const baseRecord = await evaluatePreparation("base");
 
+    // 纯删除：新集合清空，事件新侧是真正的空集合。
+    const cleared = await fixture.engine.prepare(
+      (await fixture.prepareCommand({
+        commandId: "c25-change-clear",
+        kind: "reassessment",
+        reason: "monitoring-snapshot",
+        preparation: await fixture.freezePreparation({
+          suffix: "clear",
+          entryMode: "reassess",
+          triggerReasonCode: "monitoring-cleared",
+          previousAssessmentRecordRef: baseRecord,
+        }),
+        previousAssessmentRecordRef: baseRecord,
+      })) as never,
+    );
+    expect(cleared).toMatchObject({ kind: "succeeded" });
+    const clearedEvent = await changeEventOf("c25-change-clear");
+    expect(clearedEvent?.change).toMatchObject({
+      kind: "monitoring-snapshot",
+      previousMonitoringSnapshotRefs: sorted(fullSet),
+      newMonitoringSnapshotRefs: [],
+    });
+
     // 纯删除：新集合是基准集合的真子集。
     const deleted = await fixture.engine.prepare(
       (await fixture.prepareCommand({
@@ -530,8 +699,6 @@ describe("C25 PostgreSQL risk assessment engine", () => {
         previousAssessmentRecordRef: baseRecord,
       })) as never,
     );
-    if (deleted.kind !== "succeeded")
-      console.error("C25-DELETE-FAIL", JSON.stringify(deleted).slice(0, 700));
     expect(deleted).toMatchObject({ kind: "succeeded" });
     const deletion = await changeEventOf("c25-change-delete");
     expect(deletion?.change).toMatchObject({

@@ -14,9 +14,46 @@ const tables = [
   "business.risk_assessment_records",
 ] as const;
 
+// 迁移必须可重复执行：DO 块内不能使用绑定参数，故全部按字面量内联。
+const guardAuditForeignKey = async (db: Kysely<unknown>, table: string): Promise<void> => {
+  const constraint = `${table.split(".")[1]}_audit_fk`;
+  await sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = '${sql.raw(constraint)}'
+          AND conrelid = '${sql.raw(table)}'::regclass
+      ) THEN
+        ALTER TABLE ${sql.raw(table)}
+          ADD CONSTRAINT ${sql.raw(constraint)}
+          FOREIGN KEY (audit_entry_id)
+          REFERENCES audit.entries(audit_entry_id)
+          DEFERRABLE INITIALLY DEFERRED;
+      END IF;
+    END
+    $$;
+  `.execute(db);
+};
+
 const grantApp = async (db: Kysely<unknown>): Promise<void> => {
-  await sql`REVOKE ALL PRIVILEGES ON TABLE ${sql.raw(tables.join(", "))}
-    FROM PUBLIC, riskflow_app, riskflow_outbox_worker, riskflow_checkpointer`.execute(db);
+  // 先判存在再 REVOKE：表已被删除时 down 仍可重复执行。
+  await sql`
+    DO $$
+    DECLARE target text;
+    BEGIN
+      FOREACH target IN ARRAY ${sql.raw(`ARRAY['${tables.join("','")}']`)} LOOP
+        IF to_regclass(target) IS NOT NULL THEN
+          EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON TABLE %s FROM PUBLIC, riskflow_app, riskflow_outbox_worker, riskflow_checkpointer',
+            target
+          );
+        END IF;
+      END LOOP;
+    END
+    $$;
+  `.execute(db);
   await sql`GRANT SELECT, INSERT ON TABLE ${sql.raw(tables.join(", "))} TO riskflow_app`.execute(
     db,
   );
@@ -357,27 +394,9 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     )
     .execute();
 
-  await sql`
-    ALTER TABLE business.assessment_preparation_snapshots
-      ADD CONSTRAINT assessment_preparation_snapshots_audit_fk
-      FOREIGN KEY (audit_entry_id)
-      REFERENCES audit.entries(audit_entry_id)
-      DEFERRABLE INITIALLY DEFERRED
-  `.execute(db);
-  await sql`
-    ALTER TABLE business.assessment_input_snapshots
-      ADD CONSTRAINT assessment_input_snapshots_audit_fk
-      FOREIGN KEY (audit_entry_id)
-      REFERENCES audit.entries(audit_entry_id)
-      DEFERRABLE INITIALLY DEFERRED
-  `.execute(db);
-  await sql`
-    ALTER TABLE business.risk_assessment_records
-      ADD CONSTRAINT risk_assessment_records_audit_fk
-      FOREIGN KEY (audit_entry_id)
-      REFERENCES audit.entries(audit_entry_id)
-      DEFERRABLE INITIALLY DEFERRED
-  `.execute(db);
+  await guardAuditForeignKey(db, "business.assessment_preparation_snapshots");
+  await guardAuditForeignKey(db, "business.assessment_input_snapshots");
+  await guardAuditForeignKey(db, "business.risk_assessment_records");
 
   await db.schema
     .createIndex("assessment_preparation_snapshots_project_idx")
@@ -420,8 +439,22 @@ export async function up(db: Kysely<unknown>): Promise<void> {
 }
 
 export async function down(db: Kysely<unknown>): Promise<void> {
-  await sql`REVOKE ALL PRIVILEGES ON TABLE ${sql.raw(tables.join(", "))}
-    FROM PUBLIC, riskflow_app, riskflow_outbox_worker, riskflow_checkpointer`.execute(db);
+  // 先判存在再 REVOKE：表已被删除时 down 仍可重复执行。
+  await sql`
+    DO $$
+    DECLARE target text;
+    BEGIN
+      FOREACH target IN ARRAY ${sql.raw(`ARRAY['${tables.join("','")}']`)} LOOP
+        IF to_regclass(target) IS NOT NULL THEN
+          EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON TABLE %s FROM PUBLIC, riskflow_app, riskflow_outbox_worker, riskflow_checkpointer',
+            target
+          );
+        END IF;
+      END LOOP;
+    END
+    $$;
+  `.execute(db);
   await db.schema.dropIndex("risk_assessment_records_risk_input_idx").ifExists().execute();
   await db.schema.dropIndex("risk_assessment_records_project_idx").ifExists().execute();
   await db.schema.dropIndex("assessment_decision_artifacts_input_idx").ifExists().execute();

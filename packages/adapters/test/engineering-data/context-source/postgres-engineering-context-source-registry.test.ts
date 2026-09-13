@@ -3474,6 +3474,7 @@ describe("C11 PostgreSQL context/source registry", () => {
         | "engineering-data.register-source-delivery"
         | "engineering-data.evidence-access"
         | "engineering-data.assessment-preparation",
+      sourceVersionRefs: readonly SourceVersionRefV1[] = [],
     ) => {
       const state = requireWorld();
       return (
@@ -3483,7 +3484,7 @@ describe("C11 PostgreSQL context/source registry", () => {
           projectId: project,
           branch,
           requestedSpatialScopeRefs: [state.accessRootScopeRef],
-          requestedSourceVersionRefs: [],
+          requestedSourceVersionRefs: [...sourceVersionRefs],
         })
       ).context;
     };
@@ -3673,6 +3674,7 @@ describe("C11 PostgreSQL context/source registry", () => {
       readonly projectId: string;
       readonly requestedAt: string;
       readonly requestedSpatialScopeRefs?: readonly SpatialScopeRefV1[];
+      readonly requestedSourceVersionRefs?: readonly SourceVersionRefV1[];
     }) => {
       const state = requireWorld();
       return (
@@ -3682,7 +3684,7 @@ describe("C11 PostgreSQL context/source registry", () => {
           projectId: request.projectId,
           branch: request.branch as "engineering-data.evidence-access",
           requestedSpatialScopeRefs: [...(request.requestedSpatialScopeRefs ?? [])],
-          requestedSourceVersionRefs: [],
+          requestedSourceVersionRefs: [...(request.requestedSourceVersionRefs ?? [])],
         })
       ).context;
     };
@@ -3756,7 +3758,7 @@ describe("C11 PostgreSQL context/source registry", () => {
     });
 
     it("注入接缝后原样冻结入口语义并发布 engineering.inputs-ready.v1", async () => {
-      const state = requireWorld();
+      requireWorld();
       const registry = openRegistry();
       const command = await freezeCommand("open", false);
       const frozen = await registry.freeze(command);
@@ -3777,6 +3779,8 @@ describe("C11 PostgreSQL context/source registry", () => {
         },
       });
 
+      // 本桩的风险事实引用的是未登记来源资料，读取必须因来源不可验而关闭失败；
+      // 真实登记来源下的读取成功路径由 C25 适配器套件覆盖。
       const readAuthorization = await authorizeBranch(
         "c25-freeze-read",
         "engineering-data.evidence-access",
@@ -3788,20 +3792,21 @@ describe("C11 PostgreSQL context/source registry", () => {
         authorization: readAuthorization,
         preparationSnapshotRef,
       });
-      expect(read.kind).toBe("succeeded");
-      if (read.kind !== "succeeded") return;
-      expect(read.preparation).toMatchObject({
-        entryMode: "assess",
-        triggerReasonCode: "manual-assessment",
-        createdBy: state.managerId,
-        projectRevisionRef: state.projectRevisionRef,
-        applicabilityMetadataSnapshotRef: state.applicabilitySnapshotRef,
+      expect(read).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+
+      // 未声明来源的授权同样不能读出含来源证据的准备快照。
+      const undeclaredAuthorization = await authorizeBranch(
+        "c25-freeze-read-undeclared",
+        "engineering-data.evidence-access",
+      );
+      const undeclared = await registry.readAssessmentPreparationContext({
+        requestId: "c25-freeze-read-undeclared",
+        idempotencyKey: "c25-freeze-read-undeclared",
+        requestedAt: now,
+        authorization: undeclaredAuthorization,
+        preparationSnapshotRef,
       });
-      expect(read.preparation.monitoringSnapshotRefs).toBeUndefined();
-      expect(read.preparation.previousAssessmentRecordRef).toBeUndefined();
-      expect(read.preparation.causalRunRef).toBeUndefined();
-      expect(read.applicability.applicabilityMetadata.engineeringStage).toBe("shield-expansion");
-      expect(read.preparation.sourceEvidenceReferences.length).toBeGreaterThan(0);
+      expect(undeclared).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
 
       const missing = await registry.readAssessmentPreparationContext({
         requestId: "c25-freeze-read-missing",

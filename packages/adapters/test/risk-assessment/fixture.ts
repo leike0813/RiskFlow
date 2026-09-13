@@ -110,7 +110,16 @@ export interface RiskAssessmentEngineFixtureV1 {
   preparationRef(kind: "a" | "b"): AssessmentPreparationSnapshotRefV1;
   /** 首次验证后吊销管理器会话，用于提交前授权失效用例；`restoreSession` 复原。 */
   revokeAfterFirstRead(): Promise<void>;
+  /** 在风险事实读取返回后吊销管理器会话：读取已完成、提交尚未开始。 */
+  revokeOnFactsRead(): Promise<void>;
   restoreSession(): Promise<void>;
+  /** 第二次及之后的策略读取返回另一套策略版本，用于提交前策略漂移用例。 */
+  mutatePoliciesAfterFirstRead(): void;
+  /** 签发接缝不再转交调用方声明的来源版本：来源复验必须因此关闭失败。 */
+  denyDeclaredSources(): void;
+  restoreDeclaredSources(): void;
+  /** 复原运行时策略提供者（策略漂移用例之后）。 */
+  restorePolicies(): void;
   /** 追加一份准备快照变体（入口模式/监测引用/前次记录由调用方给定）。 */
   freezePreparation(input: {
     readonly suffix: string;
@@ -142,6 +151,7 @@ export interface RiskAssessmentEngineFixtureV1 {
   }): Promise<Record<string, unknown>>;
   evaluateCommand(input: {
     readonly commandId: string;
+    readonly idempotencyKey?: string;
     readonly inputSnapshotRef: unknown;
   }): Promise<Record<string, unknown>>;
   /** 不存在的工程身份，用于越权用例。 */
@@ -254,7 +264,7 @@ export const startRiskAssessmentEngineFixture =
         ...(request.requestedSpatialScopeRefs === undefined
           ? {}
           : { spatialScopeRefs: request.requestedSpatialScopeRefs }),
-        ...(request.requestedSourceVersionRefs === undefined
+        ...(denySources || request.requestedSourceVersionRefs === undefined
           ? {}
           : { sourceVersionRefs: request.requestedSourceVersionRefs }),
       });
@@ -896,20 +906,45 @@ export const startRiskAssessmentEngineFixture =
     let policySet: unknown | undefined = c25RuntimePolicySet({ projectId: PROJECT_ID });
     let driftAfterFirstBasisRead = false;
     let basisReadCount = 0;
+    let revokeOnFacts = false;
+    let mutatePoliciesAfterRead = false;
+    let policyReadCount = 0;
+    let denySources = false;
     let lastBasisRequestedAt: string | undefined;
     let lastPolicyRequiredAt: string | undefined;
+    // 与首读不同的策略版本：用于提交前策略漂移用例。
+    const variantPolicySet = c25RuntimePolicySet({
+      projectId: PROJECT_ID,
+      notificationPolicyRef: c25Version("notification-policy", "2"),
+    });
     const riskInputFacts: RiskInputFactsReaderV1 = {
-      readRiskInputFacts: async () =>
-        facts === undefined
-          ? { kind: "failed", error: precondition("c25-fixture-facts") }
-          : { kind: "succeeded", facts: facts as never },
+      readRiskInputFacts: async () => {
+        const result =
+          facts === undefined
+            ? { kind: "failed" as const, error: precondition("c25-fixture-facts") }
+            : { kind: "succeeded" as const, facts: facts as never };
+        if (revokeOnFacts) {
+          // 读取已返回、提交尚未开始：此刻失效必须在提交前复验被拒绝。
+          revokeOnFacts = false;
+          managerPassword = "c25-engine-manager-password-midflight";
+          await access.changePassword({
+            kind: "change-password",
+            sessionToken,
+            newPassword: managerPassword,
+          });
+        }
+        return result;
+      },
     };
     const runtimePolicies: AssessmentRuntimePolicySetProviderV1 = {
       readRuntimePolicySet: async (input) => {
         lastPolicyRequiredAt = input.requiredAt;
-        return policySet === undefined
+        policyReadCount += 1;
+        const current =
+          mutatePoliciesAfterRead && policyReadCount > 1 ? variantPolicySet : policySet;
+        return current === undefined
           ? { kind: "failed", error: precondition("c25-fixture-policies") }
-          : { kind: "succeeded", policySet: policySet as never };
+          : { kind: "succeeded", policySet: current as never };
       },
     };
 
@@ -1052,6 +1087,23 @@ export const startRiskAssessmentEngineFixture =
         driftAfterFirstBasisRead = true;
         basisReadCount = 0;
       },
+      async revokeOnFactsRead() {
+        revokeOnFacts = true;
+      },
+      mutatePoliciesAfterFirstRead() {
+        mutatePoliciesAfterRead = true;
+        policyReadCount = 0;
+      },
+      denyDeclaredSources() {
+        denySources = true;
+      },
+      restoreDeclaredSources() {
+        denySources = false;
+      },
+      restorePolicies() {
+        mutatePoliciesAfterRead = false;
+        policyReadCount = 0;
+      },
       async revokeAfterFirstRead() {
         managerPassword = "c25-engine-manager-password-revoked";
         await access.changePassword({
@@ -1060,18 +1112,18 @@ export const startRiskAssessmentEngineFixture =
           newPassword: managerPassword,
         });
       },
+      // 以当前口令重新登录并换回固定口令，随后所有读取都使用新会话。
       async restoreSession() {
+        const relogin = await access.login({
+          kind: "login",
+          loginAttemptId: `c25-engine-manager-restore-${Date.now()}`,
+          loginName: "c25-engine-manager",
+          password: managerPassword,
+        });
         managerPassword = "c25-engine-manager-password-restored";
         const changed = await access.changePassword({
           kind: "change-password",
-          sessionToken: (
-            await access.login({
-              kind: "login",
-              loginAttemptId: `c25-engine-manager-restore-${Date.now()}`,
-              loginName: "c25-engine-manager",
-              password: managerPassword.replace("restored", "revoked"),
-            })
-          ).sessionToken,
+          sessionToken: relogin.sessionToken,
           newPassword: managerPassword,
         });
         sessionToken = changed.sessionToken;
@@ -1114,7 +1166,7 @@ export const startRiskAssessmentEngineFixture =
         });
         return {
           commandId: input.commandId,
-          idempotencyKey: input.commandId,
+          idempotencyKey: input.idempotencyKey ?? input.commandId,
           projectId: PROJECT_ID,
           actorId: managerId,
           issuedAt: T0,
@@ -1139,7 +1191,7 @@ export const startRiskAssessmentEngineFixture =
         });
         return {
           commandId: input.commandId,
-          idempotencyKey: input.commandId,
+          idempotencyKey: input.idempotencyKey ?? input.commandId,
           projectId: PROJECT_ID,
           actorId: managerId,
           issuedAt: T0,

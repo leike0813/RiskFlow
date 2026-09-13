@@ -8,9 +8,14 @@ import {
   type TransactionContextV1,
   type TransactionUnitV1,
 } from "@riskflow/core/persistence";
-import { ACCESS_POLICY_REF_V1, type LocalIdentityAccessV1 } from "@riskflow/core/access";
+import {
+  ACCESS_POLICY_REF_V1,
+  AccessServiceError,
+  type LocalIdentityAccessV1,
+} from "@riskflow/core/access";
 import {
   ArtifactPutCommandV1Schema,
+  ArtifactReadRequestV1Schema,
   type ArtifactReadHandleV1,
   type ArtifactStoreV1,
 } from "@riskflow/core/artifacts";
@@ -192,7 +197,15 @@ interface RiskAssessmentRecordRow {
   persisted_at: TimestampColumn;
 }
 
+interface AssessmentPreparationSnapshotRow {
+  project_id: string;
+  snapshot_id: string;
+  version_id: string;
+  snapshot_payload: JsonColumn;
+}
+
 interface RiskAssessmentDatabase extends PostgresDatabase {
+  "business.assessment_preparation_snapshots": AssessmentPreparationSnapshotRow;
   "business.assessment_input_snapshots": AssessmentInputSnapshotRow;
   "business.indicator_actual_value_sets": IndicatorActualValueSetRow;
   "business.assessment_decision_artifacts": AssessmentDecisionArtifactRow;
@@ -209,6 +222,10 @@ const jsonValue = (value: unknown): unknown => JSON.stringify(value) as unknown;
 async function* one(bytes: Uint8Array): AsyncIterable<Uint8Array> {
   yield bytes;
 }
+
+// 并发重复等待窗：另一事务登记同一内容寻址工件的有限等待与轮询间隔。
+const CONCURRENT_ARTIFACT_WAIT_MS_V1 = 15_000;
+const CONCURRENT_ARTIFACT_POLL_MS_V1 = 250;
 
 const asIso = (value: Date | string): string =>
   value instanceof Date ? value.toISOString() : new Date(value).toISOString();
@@ -305,6 +322,10 @@ const moduleError = (
 const failureToModuleError = (error: unknown, causalRunId: string): ModuleErrorV1 => {
   const failure = riskAssessmentFailureFrom(error);
   if (failure !== undefined) return toModuleError(failure, causalRunId);
+  // C06 在撤权/会话失效时抛 AccessServiceError：按闭合授权错误表达，不折叠成终止失败。
+  if (error instanceof AccessServiceError) {
+    return moduleError("AUTHORIZATION_DENIED", causalRunId);
+  }
   // 已类型化的模块错误（授权/陈旧/业务阻断）原样保留，不被折叠成终止失败。
   const typed = ModuleErrorV1Schema.safeParse(
     typeof error === "object" && error !== null && "code" in error && "category" in error
@@ -585,6 +606,13 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
     },
     preparationSnapshotRef: AssessmentInputSnapshotV1["preparationSnapshotRef"],
   ): Promise<PreparationContextV1> {
+    // 先按 C25 自有表读出准备快照的空间与来源清单，据此签发带来源的下游授权；
+    // 快照本身仍只以 C11 窄读（在授权内按空间与来源双重复验）返回的事实为准。
+    const declared = await this.#declaredPreparation(
+      input.projectId,
+      input.commandId,
+      preparationSnapshotRef,
+    );
     const authorization = await this.#authorizeFor(
       {
         branch: RISK_ASSESSMENT_DOWNSTREAM_BRANCH_V1.preparationContext,
@@ -592,6 +620,8 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
         projectId: input.projectId,
         actorId: input.actorId,
         requestedAt: input.issuedAt,
+        requestedSpatialScopeRefs: [declared.spatialScopeRef],
+        requestedSourceVersionRefs: declared.sourceVersionRefs,
       },
       "risk-assessment.read",
     );
@@ -609,10 +639,72 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
         blockerRef: preparationSnapshotRef,
       });
     }
+    const preparation = AssessmentPreparationSnapshotV1Schema.parse(read.preparation);
+    // 授权按声明清单签发，事实必须与之逐项一致，否则关闭失败。
+    const verifiedSourceRefs = [
+      ...new Map(
+        preparation.sourceEvidenceReferences.map((evidence) => [
+          versionKey(evidence.sourceVersion),
+          evidence.sourceVersion,
+        ]),
+      ).values(),
+    ];
+    if (
+      preparation.spatialScopeRef.reference.entityId !==
+        declared.spatialScopeRef.reference.entityId ||
+      verifiedSourceRefs.length !== declared.sourceVersionRefs.length ||
+      verifiedSourceRefs.some(
+        (reference) =>
+          !declared.sourceVersionRefs.some(
+            (item) => versionKey(item.reference) === versionKey(reference),
+          ),
+      )
+    ) {
+      throw moduleError("AUTHORIZATION_DENIED", input.commandId);
+    }
     return {
       kind: "succeeded",
-      preparation: AssessmentPreparationSnapshotV1Schema.parse(read.preparation),
+      preparation,
       applicability: read.applicability,
+    };
+  }
+
+  /**
+   * 准备快照的授权清单：空间引用与证据资料版本取自 C25 自有只追加表，
+   * 用于向下游接缝声明将要读取的范围；缺失即视为准备快照不可用。
+   */
+  async #declaredPreparation(
+    projectId: string,
+    causalRunId: string,
+    preparationSnapshotRef: AssessmentInputSnapshotV1["preparationSnapshotRef"],
+  ): Promise<{
+    readonly spatialScopeRef: SpatialScopeRefV1;
+    readonly sourceVersionRefs: readonly SourceVersionRefV1[];
+  }> {
+    const row = await this.#db
+      .selectFrom("business.assessment_preparation_snapshots")
+      .select(["snapshot_payload"])
+      .where("project_id", "=", projectId)
+      .where("snapshot_id", "=", preparationSnapshotRef.reference.entityId)
+      .where("version_id", "=", preparationSnapshotRef.reference.versionId)
+      .executeTakeFirst();
+    if (row === undefined) {
+      throw moduleError("BUSINESS_BLOCKED", causalRunId, {
+        blockerKind: "assessment-preparation-unavailable",
+        blockerRef: preparationSnapshotRef,
+      });
+    }
+    const preparation = AssessmentPreparationSnapshotV1Schema.parse(row.snapshot_payload);
+    return {
+      spatialScopeRef: preparation.spatialScopeRef,
+      sourceVersionRefs: [
+        ...new Map(
+          preparation.sourceEvidenceReferences.map((evidence) => [
+            versionKey(evidence.sourceVersion),
+            { kind: "source-version" as const, reference: evidence.sourceVersion },
+          ]),
+        ).values(),
+      ].sort((left, right) => (versionKey(left.reference) < versionKey(right.reference) ? -1 : 1)),
     };
   }
 
@@ -1243,6 +1335,12 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
         reference: { entityId: `assessment-input-${referenceDigest}`, versionId: "1" },
       };
 
+      // 重评变更判定需要读取前次记录与其准备快照；提交前复验必须紧邻持久化放在其后。
+      const changeEvent =
+        valid.kind === "reassessment"
+          ? await this.#reassessmentChangeEvent(valid, preparation, inputSnapshot, inputSnapshotRef)
+          : undefined;
+
       // 提交前复验：授权、C19 basis 成员与 C04 正文摘要、运行时策略版本仍等价。
       await this.#assertCommitPreconditions({
         command: valid,
@@ -1256,10 +1354,6 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
         policySet,
       });
 
-      const changeEvent =
-        valid.kind === "reassessment"
-          ? await this.#reassessmentChangeEvent(valid, preparation, inputSnapshot, inputSnapshotRef)
-          : undefined;
       await this.#transactionUnit.execute(
         this.#atomicCommand(valid, "risk-assessment.prepare-input-snapshot.v1", {
           inputSnapshotRef,
@@ -1617,7 +1711,6 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
           result: this.#resultRefsFromRow(existing),
         });
       }
-      const decisionArtifact = await this.#putDecisionArtifact(valid, verified, basis, assessment);
       // 提交前复验：授权、C19 basis/C04 摘要与策略版本仍等价。
       await this.#assertCommitPreconditions({
         command: valid,
@@ -1630,18 +1723,25 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
         basis,
         policySet,
       });
-      const result = await this.#commitEvaluation({
-        command: valid,
-        verified,
-        inputSnapshot,
-        inputSnapshotRef,
-        preparation,
-        basis,
-        assessment,
-        decisionArtifact,
-        runRef,
-        recordedAt,
-      });
+      let result: EvaluationResultRefsV1;
+      try {
+        result = await this.#commitEvaluation({
+          command: valid,
+          verified,
+          inputSnapshot,
+          inputSnapshotRef,
+          preparation,
+          basis,
+          assessment,
+          runRef,
+          recordedAt,
+        });
+      } catch (error) {
+        // 并发重复：另一事务已写入同一内容寻址记录，两者必须观察同一逻辑结果。
+        const concurrent = await this.#readRecordRow(valid.projectId, assessment.recordRef);
+        if (concurrent === undefined) throw error;
+        result = this.#resultRefsFromRow(concurrent);
+      }
       return AssessmentEvaluationResultV1Schema.parse({ kind: "succeeded", result });
     } catch (error) {
       return AssessmentEvaluationResultV1Schema.parse({
@@ -1748,36 +1848,86 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
       basis.applicableRuleSetMember.artifactRef,
       ...basis.scoringRuleMembers.map((member) => member.artifactRef),
     ].sort((left, right) => (refKey(left) < refKey(right) ? -1 : 1));
-    const put = await this.#artifactStore.put(
-      ArtifactPutCommandV1Schema.parse({
-        schemaVersion: RISK_ASSESSMENT_ENGINE_SCHEMA_VERSION_V1,
-        commandId: `${command.commandId}:decision`,
-        idempotencyKey: `${command.commandId}:decision`,
-        projectId: command.projectId,
-        actorId: command.actorId,
-        issuedAt: command.issuedAt,
-        authorization: verified,
-        requiredCapability: "risk-assessment.evaluate",
-        artifactId: `assessment-decision-${assessment.decisionDigest}`,
-        artifactKind: "content",
-        purposeCode: RISK_ASSESSMENT_DECISION_ARTIFACT_PURPOSE_CODE_V1,
-        mediaType: RISK_ASSESSMENT_DECISION_MEDIA_TYPE_V1,
-        parentArtifactRefs,
-        evidenceReferences: [],
-        additionalSpatialScopeRefs: [],
-        additionalSourceAccessGrantRefs: [],
-      }),
-      one(new TextEncoder().encode(canonicalJson(assessment.decision))),
-    );
+    const artifactRef: ContentArtifactRefV1 = {
+      kind: "content-artifact",
+      reference: {
+        entityId: `assessment-decision-${assessment.decisionDigest}`,
+        versionId: `sha256:${assessment.decisionDigest}`,
+      },
+    };
+    let putRef: ContentArtifactRefV1;
+    try {
+      const put = await this.#artifactStore.put(
+        ArtifactPutCommandV1Schema.parse({
+          schemaVersion: RISK_ASSESSMENT_ENGINE_SCHEMA_VERSION_V1,
+          commandId: `${command.commandId}:decision`,
+          idempotencyKey: `${command.commandId}:decision`,
+          projectId: command.projectId,
+          actorId: command.actorId,
+          issuedAt: command.issuedAt,
+          authorization: verified,
+          requiredCapability: "risk-assessment.evaluate",
+          artifactId: artifactRef.reference.entityId,
+          artifactKind: "content",
+          purposeCode: RISK_ASSESSMENT_DECISION_ARTIFACT_PURPOSE_CODE_V1,
+          mediaType: RISK_ASSESSMENT_DECISION_MEDIA_TYPE_V1,
+          parentArtifactRefs,
+          evidenceReferences: [],
+          additionalSpatialScopeRefs: [],
+          additionalSourceAccessGrantRefs: [],
+        }),
+        one(new TextEncoder().encode(canonicalJson(assessment.decision))),
+      );
+      putRef = put.artifactRef as ContentArtifactRefV1;
+    } catch (error) {
+      // 并发重复：同一内容寻址工件已由另一事务登记；能按同一引用读出且摘要一致即为同一逻辑结果。
+      const handle = await this.#openDecisionArtifact(command, verified, artifactRef);
+      if (handle === undefined) throw error;
+      await handle.verified;
+      putRef = { kind: "content-artifact", reference: handle.manifest.artifactRef.reference };
+    }
     if (
-      put.artifactRef.kind !== "content-artifact" ||
-      put.artifactRef.reference.versionId !== `sha256:${assessment.decisionDigest}`
+      putRef.kind !== "content-artifact" ||
+      putRef.reference.versionId !== artifactRef.reference.versionId
     ) {
       throw moduleError("STALE_VERSION", command.commandId, {
-        targetRef: { kind: "content-artifact", reference: put.artifactRef.reference },
+        targetRef: { kind: "content-artifact", reference: putRef.reference },
       });
     }
-    return { ref: put.artifactRef, digest: assessment.decisionDigest };
+    return { ref: putRef, digest: assessment.decisionDigest };
+  }
+
+  /**
+   * 并发重复时按同一内容寻址引用回读已登记工件：另一事务可能仍在提交，
+   * 因此在有限窗口内轮询，超窗仍未可见即视为真实失败。
+   */
+  async #openDecisionArtifact(
+    command: Extract<AssessmentEvaluationCommandV1, { kind: "evaluate" }>,
+    verified: AuthorizationContextV1,
+    artifactRef: ContentArtifactRefV1,
+  ): Promise<ArtifactReadHandleV1 | undefined> {
+    const deadline = Date.now() + CONCURRENT_ARTIFACT_WAIT_MS_V1;
+    for (;;) {
+      const handle = await this.#artifactStore
+        .open(
+          ArtifactReadRequestV1Schema.parse({
+            schemaVersion: RISK_ASSESSMENT_ENGINE_SCHEMA_VERSION_V1,
+            requestId: `${command.commandId}:decision-read-${Date.now()}`,
+            idempotencyKey: `${command.commandId}:decision-read`,
+            artifactRef,
+            projectId: command.projectId,
+            actorId: command.actorId,
+            requestedAt: command.issuedAt,
+            purposeCode: RISK_ASSESSMENT_DECISION_ARTIFACT_PURPOSE_CODE_V1,
+            requiredCapability: "risk-assessment.evaluate",
+            authorization: verified,
+          }),
+        )
+        .catch(() => undefined);
+      if (handle !== undefined) return handle;
+      if (Date.now() >= deadline) return undefined;
+      await new Promise((resolve) => setTimeout(resolve, CONCURRENT_ARTIFACT_POLL_MS_V1));
+    }
   }
 
   async #commitEvaluation(input: {
@@ -1789,7 +1939,6 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
     readonly preparation: AssessmentPreparationSnapshotV1;
     readonly basis: LoadedBasisV1;
     readonly assessment: DeterministicAssessmentV1;
-    readonly decisionArtifact: { readonly ref: ContentArtifactRefV1; readonly digest: string };
     readonly runRef: { readonly kind: "workflow-run"; readonly reference: VersionReference };
   }): Promise<EvaluationResultRefsV1> {
     const command = input.command;
@@ -1827,6 +1976,13 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
       ),
       async (context): Promise<AtomicCommitV1> => {
         const transaction = asRiskAssessmentTransaction(context);
+        // 工件登记在回执取得之后：同一幂等身份的并发调用被回执主键串行，避免并发重复登记。
+        const decisionArtifact = await this.#putDecisionArtifact(
+          command,
+          input.verified,
+          input.basis,
+          assessment,
+        );
         await transaction
           .insertInto("business.indicator_actual_value_sets")
           .values({
@@ -1858,10 +2014,10 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
             value_set_version_id:
               assessment.valueSet.indicatorActualValueSetRef.reference.versionId,
             value_set_ref: jsonValue(assessment.valueSet.indicatorActualValueSetRef),
-            content_artifact_ref: jsonValue(input.decisionArtifact.ref),
-            content_artifact_id: input.decisionArtifact.ref.reference.entityId,
-            content_artifact_version_id: input.decisionArtifact.ref.reference.versionId,
-            content_digest: input.decisionArtifact.digest,
+            content_artifact_ref: jsonValue(decisionArtifact.ref),
+            content_artifact_id: decisionArtifact.ref.reference.entityId,
+            content_artifact_version_id: decisionArtifact.ref.reference.versionId,
+            content_digest: decisionArtifact.digest,
             recorded_at: recordedAt,
           } as never)
           .onConflict((conflict) => conflict.columns(["decision_id", "version_id"]).doNothing())

@@ -3383,6 +3383,20 @@ export class PostgresEngineeringContextSourceRegistry
           }),
         };
       }
+      // 空间与来源都必须落到已验证上下文内：来源取准备快照自身的证据资料版本。
+      const sourceVersionRefs = [
+        ...new Map(
+          preparation.sourceEvidenceReferences.map((evidence) => [
+            `${evidence.sourceVersion.entityId}@${evidence.sourceVersion.versionId}`,
+            { kind: "source-version" as const, reference: evidence.sourceVersion },
+          ]),
+        ).values(),
+      ].sort((left, right) =>
+        `${left.reference.entityId}@${left.reference.versionId}` <
+        `${right.reference.entityId}@${right.reference.versionId}`
+          ? -1
+          : 1,
+      );
       // C06 verify 把上下文与签发时的 invocationId 绑定：复验必须沿用同一调用身份。
       await this.#verifyRead(
         {
@@ -3393,7 +3407,7 @@ export class PostgresEngineeringContextSourceRegistry
         },
         "engineering-data.evidence-access",
         accessScopes,
-        [],
+        sourceVersionRefs,
       );
       return { kind: "succeeded", preparation, applicability };
     } catch (error) {

@@ -65,21 +65,35 @@ const InputsReadyPayloadV1Schema = z.strictObject({
   ]),
 });
 
-const AssessmentInputChangedPayloadV1Schema = z.strictObject({
-  change: z.discriminatedUnion("kind", [
-    z.strictObject({
-      kind: z.literal("monitoring-snapshot"),
-      previousMonitoringSnapshotRefs: z.array(MonitoringSnapshotRefV1Schema),
-      newMonitoringSnapshotRefs: z.array(MonitoringSnapshotRefV1Schema),
-    }),
-    z.strictObject({
-      kind: z.literal("applicability-metadata"),
-      previousApplicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
-      newApplicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
-    }),
-  ]),
-  reasonCode: IdentifierSchema,
-});
+const AssessmentInputChangedPayloadV1Schema = z
+  .strictObject({
+    change: z.discriminatedUnion("kind", [
+      z.strictObject({
+        kind: z.literal("monitoring-snapshot"),
+        previousMonitoringSnapshotRefs: z.array(MonitoringSnapshotRefV1Schema).min(1).optional(),
+        newMonitoringSnapshotRefs: z.array(MonitoringSnapshotRefV1Schema).min(1).optional(),
+      }),
+      z.strictObject({
+        kind: z.literal("applicability-metadata"),
+        previousApplicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
+        newApplicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
+      }),
+    ]),
+    reasonCode: IdentifierSchema,
+  })
+  .superRefine((payload, context) => {
+    if (
+      payload.change.kind === "monitoring-snapshot" &&
+      payload.change.previousMonitoringSnapshotRefs === undefined &&
+      payload.change.newMonitoringSnapshotRefs === undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["change"],
+        message: "monitoring snapshot change requires previous or new references",
+      });
+    }
+  });
 
 const ForecastAvailabilityV1Schema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("available"), effectForecastRef: EffectForecastRefV1Schema }),

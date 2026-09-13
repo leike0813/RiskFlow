@@ -16,8 +16,10 @@ import {
 } from "../../src/auth/index.js";
 import { PostgresKnowledgeGovernanceAdapter } from "../../src/knowledge-governance/index.js";
 import { createPostgresRuntime } from "../../src/postgres/pool.js";
+import { getPostgresTransaction } from "../../src/postgres/transaction-unit.js";
 import * as governanceMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-governed-definition-lifecycle/000007_governed_definition_lifecycle.js";
 import * as assessmentConfigurationMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-assessment-configuration-and-measure-governance/000012_assessment_configuration.js";
+import * as structuredScoringRulesMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-structured-scoring-rules-and-applicable-rule-sets/000028_structured_scoring_rules.js";
 import { DomainEventV1Schema, type DomainEventV1 } from "@riskflow/contracts/events";
 import type { TransactionContextV1 } from "@riskflow/core/persistence";
 import {
@@ -27,6 +29,12 @@ import {
   type AssessmentConfigurationSetResultV1,
   type PreparedAssessmentConfigurationV1,
 } from "@riskflow/core/assessment-config";
+import {
+  ScoringRuleError,
+  type PreparedScoringRuleV1,
+  type ScoringRulesGovernancePolicyV1,
+  type SubmitScoringRuleRevisionV1,
+} from "@riskflow/core/scoring-rules";
 import { vi } from "vitest";
 import {
   GOVERNANCE_TEST_TIMESTAMP,
@@ -181,10 +189,13 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
   it("supports migration down and up in reverse dependency order", async () => {
     const migrator = createPostgresRuntime(fixture!.postgres.migrator, "riskflow_migrator");
     try {
+      // 逆依赖顺序：C19 关系事实外键绑定 C16 revision，必须先于 C16 迁移回退。
+      await structuredScoringRulesMigration.down(migrator.db);
       await assessmentConfigurationMigration.down(migrator.db);
       await governanceMigration.down(migrator.db);
       await governanceMigration.up(migrator.db);
       await assessmentConfigurationMigration.up(migrator.db);
+      await structuredScoringRulesMigration.up(migrator.db);
       const restored = await fixture!.postgres.adminPool.query<{ name: string | null }>(
         "SELECT to_regclass('business.assessment_config_revision_metadata') AS name",
       );
@@ -713,6 +724,36 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
       result: { releaseRefs: [restored.result.knowledgeReleaseRef] },
     });
   });
+
+  it("blocks C19 scoring-rule submissions while the scoring-rule policy is missing", async () => {
+    const projectId = "governance-c19-policy-missing";
+    const authorization = governanceAuthorizationFor(projectId);
+    const submitted = await fixture!.adapter.govern(
+      KnowledgeGovernanceCommandV1Schema.parse({
+        kind: "submit-revision",
+        commandId: nextId("c19-submit-missing-policy"),
+        idempotencyKey: nextId("c19-submit-missing-policy-key"),
+        projectId,
+        actorId: authorization.actorId,
+        issuedAt: GOVERNANCE_TEST_TIMESTAMP,
+        authorization,
+        payload: {
+          definitionType: "structured-scoring-rule",
+          candidateArtifactRef: artifactFor("c19-missing-policy"),
+          evidenceReferences: [
+            {
+              locator: { sourceSegmentId: "segment-c19-missing-policy" },
+              sourceVersion: { entityId: "source-c19-missing-policy", versionId: "1" },
+            },
+          ],
+        },
+      }),
+    );
+    expect(submitted).toMatchObject({
+      kind: "failed",
+      error: { code: "BUSINESS_BLOCKED", blockerKind: "scoring-rule-policy-required" },
+    });
+  });
 });
 
 describe.sequential("PostgreSQL knowledge-governance adapter with a C18 content policy", () => {
@@ -904,3 +945,252 @@ describe.sequential("PostgreSQL knowledge-governance adapter with a C18 content 
     ]);
   });
 });
+
+describe.sequential(
+  "PostgreSQL knowledge-governance adapter with a C19 scoring-rules policy",
+  () => {
+    const staleVersionProjectId = "governance-c19-seam-stale-version";
+
+    const preparedFor = (
+      definitionType: SubmitScoringRuleRevisionV1["definitionType"],
+    ): PreparedScoringRuleV1 =>
+      ({
+        definitionType,
+        projectRevisionRef: {
+          kind: "project-revision",
+          reference: { entityId: "project-revision-stub", versionId: "1" },
+        },
+        compatibilityRef: { entityId: "compatibility-stub", versionId: "1" },
+        contentDigest: "b".repeat(64),
+        itemCount: 3,
+      }) satisfies PreparedScoringRuleV1;
+
+    const policyStub = () => {
+      const prepareRevision = vi.fn(
+        async (command: SubmitScoringRuleRevisionV1): Promise<PreparedScoringRuleV1> => {
+          if (command.projectId === staleVersionProjectId) {
+            throw new ScoringRuleError({
+              code: "STALE_VERSION",
+              reasonCode: "scoring-rule-base-version-conflict",
+              targetRef: {
+                kind: "knowledge-revision",
+                reference: { entityId: "c19-seam-stale-version", versionId: "1" },
+              },
+            });
+          }
+          return preparedFor(command.definitionType);
+        },
+      );
+      const appendPreparedRevision = vi.fn(async (): Promise<void> => undefined);
+      const assertRevisionMetadata = vi.fn(async (): Promise<void> => undefined);
+      const appendRelease = vi.fn(async () => [] as DomainEventV1[]);
+      const policy: ScoringRulesGovernancePolicyV1 = {
+        prepareRevision,
+        appendPreparedRevision,
+        assertRevisionMetadata,
+        appendRelease,
+      };
+      return {
+        policy,
+        prepareRevision,
+        appendPreparedRevision,
+        assertRevisionMetadata,
+        appendRelease,
+      };
+    };
+
+    const stub = policyStub();
+    let fixture: KnowledgeGovernancePostgresFixture | undefined;
+
+    beforeAll(async () => {
+      fixture = await startKnowledgeGovernanceFixture({ scoringRulesPolicy: stub.policy });
+    }, 180_000);
+
+    afterAll(async () => {
+      await fixture?.close().catch(() => undefined);
+    });
+
+    it("keeps non C19 governance behavior unchanged and never calls the policy", async () => {
+      const projectId = "governance-c19-seam-non-c19";
+      const authorization = governanceAuthorizationFor(projectId);
+      const submitted = await fixture!.adapter.govern(
+        submitFor(projectId, authorization, "seam-non-c19"),
+      );
+      expect(submitted).toMatchObject({ kind: "succeeded", result: { kind: "revision" } });
+      expect(stub!.prepareRevision).not.toHaveBeenCalled();
+      expect(stub!.appendPreparedRevision).not.toHaveBeenCalled();
+      expect(stub!.appendRelease).not.toHaveBeenCalled();
+    });
+
+    it("C19 发布门禁先于 release insert：发布真实顺序跨 submit、review、publish 接缝", async () => {
+      const projectId = "governance-c19-seam-submit";
+      const authorization = governanceAuthorizationFor(projectId);
+      const reviewAuthorization = reviewAuthorizationFor(projectId);
+      const definitionType = "structured-scoring-rule";
+      const artifactRef = artifactFor("c19-seam");
+      const submitted = await fixture!.adapter.govern(
+        KnowledgeGovernanceCommandV1Schema.parse({
+          kind: "submit-revision",
+          commandId: nextId("c19-submit"),
+          idempotencyKey: nextId("c19-submit-key"),
+          projectId,
+          actorId: authorization.actorId,
+          issuedAt: GOVERNANCE_TEST_TIMESTAMP,
+          authorization,
+          payload: {
+            definitionType,
+            candidateArtifactRef: artifactRef,
+            evidenceReferences: [
+              {
+                locator: { sourceSegmentId: "segment-c19-seam" },
+                sourceVersion: { entityId: "source-c19-seam", versionId: "1" },
+              },
+            ],
+          },
+        }),
+      );
+      expect(submitted).toMatchObject({ kind: "succeeded", result: { kind: "revision" } });
+      if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") return;
+      expect(stub!.prepareRevision).toHaveBeenCalledTimes(1);
+      expect(stub!.prepareRevision.mock.calls[0]![0]).toMatchObject({
+        projectId,
+        definitionType,
+        candidateArtifactRef: artifactRef,
+      });
+      expect(stub!.appendPreparedRevision).toHaveBeenCalledTimes(1);
+      const appendInput = stub!.appendPreparedRevision.mock.calls[0]![1];
+      expect(appendInput.revisionRef).toMatchObject(submitted.result.knowledgeRevisionRef);
+      expect(appendInput.definitionType).toBe(definitionType);
+      expect(appendInput.prepared.contentDigest).toBe("b".repeat(64));
+
+      const revisionRow = await fixture!.postgres.adminPool.query<{ definition_type: string }>(
+        `SELECT definition_type FROM business.knowledge_revisions WHERE revision_id = $1`,
+        [submitted.result.knowledgeRevisionRef.reference.entityId],
+      );
+      expect(revisionRow.rows[0]?.definition_type).toBe(definitionType);
+
+      const requested = await fixture!.adapter.govern(
+        requestReviewFor(projectId, authorization, submitted.result.knowledgeRevisionRef),
+      );
+      expect(requested).toMatchObject({ kind: "succeeded", result: { kind: "review-task" } });
+      expect(stub!.assertRevisionMetadata).toHaveBeenCalledTimes(1);
+      expect(stub!.assertRevisionMetadata.mock.calls[0]![0]).toMatchObject({
+        projectId,
+        revisionRef: submitted.result.knowledgeRevisionRef,
+      });
+      if (requested.kind !== "succeeded" || requested.result.kind !== "review-task") return;
+
+      const decision = await fixture!.reviewAudit.decideReview(
+        decideApproval(projectId, reviewAuthorization, requested.result.reviewTaskRef),
+      );
+      expect(decision.kind).toBe("succeeded");
+      if (decision.kind !== "succeeded") return;
+      stub!.appendRelease.mockImplementationOnce(async (context, input) => {
+        const releaseInTransaction = await getPostgresTransaction(context)
+          .selectFrom("business.knowledge_releases")
+          .select(({ fn }) => fn.countAll<string>().as("count"))
+          .where("project_id", "=", projectId)
+          .where("revision_id", "=", submitted.result.knowledgeRevisionRef.reference.entityId)
+          .executeTakeFirstOrThrow();
+        expect(releaseInTransaction.count).toBe("0");
+        const [audit, receipt, outbox] = await Promise.all([
+          fixture!.postgres.adminPool.query<{ count: string }>(
+            `SELECT count(*)::text AS count FROM audit.entries
+              WHERE project_id = $1 AND action = 'knowledge.publish-approved-release'`,
+            [projectId],
+          ),
+          fixture!.postgres.adminPool.query<{ count: string }>(
+            `SELECT count(*)::text AS count FROM business.command_receipts WHERE command_id = $1`,
+            [input.command.commandId],
+          ),
+          fixture!.postgres.adminPool.query<{ count: string }>(
+            `SELECT count(*)::text AS count FROM outbox.events WHERE producer_command_id = $1`,
+            [input.command.commandId],
+          ),
+        ]);
+        expect([audit, receipt, outbox].map((result) => result.rows[0]?.count)).toEqual([
+          "0",
+          "0",
+          "0",
+        ]);
+        return [];
+      });
+      const published = await fixture!.adapter.govern(
+        publishFor(
+          projectId,
+          authorization,
+          submitted.result.knowledgeRevisionRef,
+          decision.result.reviewDecisionRef,
+        ),
+      );
+      expect(published).toMatchObject({ kind: "succeeded", result: { kind: "release" } });
+      expect(stub!.appendRelease).toHaveBeenCalledTimes(1);
+      expect(stub!.appendRelease.mock.calls[0]![1]).toMatchObject({
+        definitionType,
+        revisionRef: submitted.result.knowledgeRevisionRef,
+      });
+      const committed = await Promise.all([
+        fixture!.postgres.adminPool.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM business.knowledge_releases
+            WHERE project_id = $1 AND revision_id = $2`,
+          [projectId, submitted.result.knowledgeRevisionRef.reference.entityId],
+        ),
+        fixture!.postgres.adminPool.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM audit.entries
+            WHERE project_id = $1 AND action = 'knowledge.publish-approved-release'`,
+          [projectId],
+        ),
+        fixture!.postgres.adminPool.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM business.command_receipts WHERE command_id = $1`,
+          [stub!.appendRelease.mock.calls[0]![1].command.commandId],
+        ),
+        fixture!.postgres.adminPool.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM outbox.events WHERE producer_command_id = $1`,
+          [stub!.appendRelease.mock.calls[0]![1].command.commandId],
+        ),
+      ]);
+      expect(committed.map((result) => result.rows[0]?.count)).toEqual(["1", "1", "1", "0"]);
+    });
+
+    it("maps a non BUSINESS_BLOCKED scoring-rule failure instead of degrading it", async () => {
+      const projectId = staleVersionProjectId;
+      const authorization = governanceAuthorizationFor(projectId);
+      const submitted = await fixture!.adapter.govern(
+        KnowledgeGovernanceCommandV1Schema.parse({
+          kind: "submit-revision",
+          commandId: nextId("c19-stale-version"),
+          idempotencyKey: nextId("c19-stale-version-key"),
+          projectId,
+          actorId: authorization.actorId,
+          issuedAt: GOVERNANCE_TEST_TIMESTAMP,
+          authorization,
+          payload: {
+            definitionType: "structured-scoring-rule",
+            candidateArtifactRef: artifactFor("c19-stale-version"),
+            evidenceReferences: [
+              {
+                locator: { sourceSegmentId: "segment-c19-stale-version" },
+                sourceVersion: { entityId: "source-c19-stale-version", versionId: "1" },
+              },
+            ],
+          },
+        }),
+      );
+      expect(submitted).toMatchObject({
+        kind: "failed",
+        error: {
+          code: "STALE_VERSION",
+          targetRef: {
+            kind: "knowledge-revision",
+            reference: { entityId: "c19-seam-stale-version", versionId: "1" },
+          },
+        },
+      });
+      const revisions = await fixture!.postgres.adminPool.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM business.knowledge_revisions WHERE project_id = $1`,
+        [projectId],
+      );
+      expect(revisions.rows[0]?.count).toBe("0");
+    });
+  },
+);

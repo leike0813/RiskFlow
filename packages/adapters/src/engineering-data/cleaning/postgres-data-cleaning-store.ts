@@ -95,6 +95,7 @@ import type { PostgresMonitoringStoreV1 } from "../monitoring/postgres-monitorin
 
 const SCHEMA_VERSION = "1" as const;
 const RESULT_COMMAND_KIND = "engineering-data.data-cleaning-result.v1";
+const BOUND_RESULT_READ_COMMAND_KIND = "engineering-data.read-data-cleaning-result.v1";
 const PREPARATION_COMMAND_KIND = "engineering-data.identification-preparation.v1";
 const PREPARATION_READ_COMMAND_KIND = "engineering-data.read-identification-preparation.v1";
 const MANIFEST_PURPOSE = "engineering-data.data-cleaning-preparation-manifest";
@@ -279,6 +280,31 @@ export type IdentificationPreparationReadResultV1 =
     }
   | { readonly kind: "error"; readonly error: Record<string, unknown> };
 
+/**
+ * 只读接缝输入：调用方提交自身命令身份与授权上下文，C15 按当前事实复验后再读取绑定结果。
+ * 无 project/name/“最新”参数，不能枚举目标。
+ */
+export interface DataCleaningBoundResultReadRequestV1 {
+  readonly projectId: string;
+  readonly actorId: string;
+  readonly requestId: string;
+  readonly requestedAt: string;
+  readonly authorization: EngineeringFreezeCommandV1["authorization"];
+  readonly taskRef: AgentTaskRefV1;
+}
+
+/**
+ * 只读接缝结果：成功只含绑定结果与精确工件引用；失败是统一的不可枚举类型化拒绝
+ * （缺失/跨工程/撤权/未授权同一形状），瞬时故障保持可重试语义。
+ */
+export type DataCleaningBoundResultReadResultV1 =
+  | {
+      readonly kind: "ok";
+      readonly result: DataCleaningResultV1;
+      readonly resultArtifactRef: ContentArtifactRefV1;
+    }
+  | { readonly kind: "error"; readonly error: Record<string, unknown> };
+
 const asTransaction = (context: TransactionContextV1): CleaningTransaction =>
   getPostgresTransaction(context) as unknown as CleaningTransaction;
 
@@ -413,7 +439,7 @@ const resolveAccessFailure = (error: unknown): AccessServiceError | undefined =>
 const failed = (error: Record<string, unknown>): EngineeringFreezeResultV1 =>
   EngineeringFreezeResultV1Schema.parse({ kind: "failed", error });
 
-/** 缺失、跨工程、撤权与未授权共用的不可枚举拒绝（精确读取接缝共用）。 */
+/** 缺失、跨工程、撤权与未授权共用的不可枚举拒绝（D-02 与 C19 读取接缝共用）。 */
 function boundResultDenied(causalRunId: string): never {
   throw Object.assign(new Error("data cleaning bound result is unavailable"), {
     dataCleaningError: moduleError("AUTHORIZATION_DENIED", causalRunId),
@@ -923,6 +949,78 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
   }
 
   // ----------------------------------------------------------- preparation tail
+
+  // ------------------------------------------------------ bound result read
+
+  /**
+   * 公共只读接缝（IP-11）：固定按 `engineering-data.evidence-access` 复验 C06 后复用私有
+   * `#readBoundResult` 的单点查询、strict parse、受权工件读取与任务—结果绑定，再以
+   * requestId/规范载荷写既有 C03 只追加读取回执/审计。缺失、跨工程、撤权、未授权与绑定
+   * 失配统一为同一个不可枚举拒绝；瞬时技术失败保持可重试语义。
+   */
+  async readBoundResult(
+    input: DataCleaningBoundResultReadRequestV1,
+  ): Promise<DataCleaningBoundResultReadResultV1> {
+    const context: CleaningCommandContext = {
+      commandId: input.requestId,
+      idempotencyKey: `${input.requestId}:read-bound-result`,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      issuedAt: input.requestedAt,
+      authorization: input.authorization,
+    };
+    try {
+      if (
+        input.projectId !== input.authorization.projectId ||
+        input.actorId !== input.authorization.actorId
+      ) {
+        boundResultDenied(input.requestId);
+      }
+      const decision = await this.#access.verify({
+        authorizationContextRef: input.authorization.authorizationContextRef,
+        invocationId: input.requestId,
+        projectId: input.projectId,
+        branch: EVIDENCE_ACCESS_BRANCH,
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+        requestedAt: input.requestedAt,
+      });
+      const bound = await this.#readBoundResult(
+        { ...context, authorization: decision.context },
+        input.taskRef,
+      );
+      if (bound.kind === "error") boundResultDenied(input.requestId);
+      const recordedAt = this.#now().toISOString();
+      await this.#transactionUnit.execute(
+        atomicCommandFor(context, BOUND_RESULT_READ_COMMAND_KIND, {
+          taskRef: input.taskRef,
+          resultArtifactRef: bound.resultArtifactRef,
+          requestedAt: input.requestedAt,
+        }),
+        async (): Promise<AtomicCommitV1> => ({
+          resultRef: bound.resultArtifactRef,
+          audit: {
+            auditEntryId: `${input.requestId}:read-bound-result`,
+            projectId: input.projectId,
+            action: "engineering-data.read-data-cleaning-result",
+            targetRef: bound.resultArtifactRef,
+            actorRef: input.actorId,
+            authorizationContextRef: input.authorization.authorizationContextRef,
+            occurredAt: input.requestedAt,
+            recordedAt,
+            version: bound.resultArtifactRef.reference,
+            commandId: input.requestId,
+            idempotencyKey: context.idempotencyKey,
+          },
+          events: [],
+        }),
+        { isolationLevel: "repeatable read" },
+      );
+      return { kind: "ok", result: bound.result, resultArtifactRef: bound.resultArtifactRef };
+    } catch (error) {
+      return { kind: "error", error: this.#mapError(error, input.requestId) };
+    }
+  }
 
   async #finalizePreparation(
     context: CleaningCommandContext,
@@ -1838,15 +1936,20 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
         causalRunId,
       );
     }
-    if (
-      error instanceof Error &&
-      (error as Error & { persistenceError?: { retryable?: boolean } }).persistenceError !==
-        undefined
-    ) {
-      const retryable = (error as Error & { persistenceError: { retryable?: boolean } })
-        .persistenceError.retryable;
+    const persistence = (
+      error as Error & { persistenceError?: { retryable?: boolean; code?: string } }
+    ).persistenceError;
+    const ownCode = (error as Error & { code?: unknown }).code;
+    const persistenceCode =
+      persistence?.code ?? (typeof ownCode === "string" ? ownCode : undefined);
+    const persistenceRetryable =
+      persistence?.retryable ?? (error as Error & { retryable?: unknown }).retryable;
+    if (persistenceCode === "IDEMPOTENCY_CONFLICT") {
+      return moduleError("IDEMPOTENCY_CONFLICT", causalRunId);
+    }
+    if (persistence !== undefined || typeof ownCode === "string") {
       return moduleError(
-        retryable === true ? "TRANSIENT_FAILURE" : "TERMINAL_FAILURE",
+        persistenceRetryable === true ? "TRANSIENT_FAILURE" : "TERMINAL_FAILURE",
         causalRunId,
       );
     }

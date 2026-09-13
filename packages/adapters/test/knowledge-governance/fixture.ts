@@ -18,6 +18,7 @@ import {
 } from "@riskflow/contracts/ports";
 import type { LocalIdentityAccessV1 } from "@riskflow/core/access";
 import type { AssessmentConfigurationGovernancePolicyV1 } from "@riskflow/core/assessment-config";
+import type { ScoringRulesGovernancePolicyV1 } from "@riskflow/core/scoring-rules";
 
 export const GOVERNANCE_TEST_TIMESTAMP = "2030-01-01T00:00:00.000Z";
 
@@ -65,6 +66,7 @@ export interface KnowledgeGovernancePostgresFixture {
 
 export const startKnowledgeGovernanceFixture = async (options?: {
   readonly assessmentConfigurationPolicy?: AssessmentConfigurationGovernancePolicyV1;
+  readonly scoringRulesPolicy?: ScoringRulesGovernancePolicyV1;
 }): Promise<KnowledgeGovernancePostgresFixture> => {
   const base = await startReviewAuditFixture();
   const verifiedContexts = new Map<string, AuthorizationContextV1>();
@@ -106,6 +108,9 @@ export const startKnowledgeGovernanceFixture = async (options?: {
     ...(options?.assessmentConfigurationPolicy === undefined
       ? {}
       : { assessmentConfigurationPolicy: options.assessmentConfigurationPolicy }),
+    ...(options?.scoringRulesPolicy === undefined
+      ? {}
+      : { scoringRulesPolicy: options.scoringRulesPolicy }),
   };
   const adapter = new PostgresKnowledgeGovernanceAdapter(adapterOptions);
   return {

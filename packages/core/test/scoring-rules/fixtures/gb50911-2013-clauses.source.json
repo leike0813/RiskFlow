@@ -1,0 +1,37 @@
+{
+  "metadataId": "gb50911-2013-source-provenance",
+  "reviewNotice": "真实公开来源（非甲方审核资料）；甲方正式输入到位后需复核",
+  "repositoryArtifact": "references/client-inputs/c19-specs/gb50911-2013_城市轨道交通工程监测技术规范.pdf",
+  "artifactBytes": 10052478,
+  "sha256": "1328780ab4d16871187a791262b6e6e31777bfb1cc34a22d3972c228449e4795",
+  "sha1": "488e23d812a2007f9b368e4856c7c2fbe4d0c477",
+  "sha1CrossCheck": "与 Wikimedia Commons 公共域副本 SHA-1 一致；见 references/client-inputs/c19-specs/MANIFEST.md §7",
+  "publicUrls": [
+    "https://www.cnass.cn/upload/gjgfenhui/file/20230116/1673863668856901.pdf",
+    "https://upload.wikimedia.org/wikipedia/commons/1/16/GB_50911-2013_%E5%9F%8E%E5%B8%82%E8%BD%A8%E9%81%93%E4%BA%A4%E9%80%9A%E5%B7%A5%E7%A8%8B%E7%9B%91%E6%B5%8B%E6%8A%80%E6%9C%AF%E8%A7%84%E8%8C%83.pdf"
+  ],
+  "license": "强制性国家标准：依据《强制性国家标准管理办法》第 51 条与原《国家版权局权司〔1999〕50 号》，不适用著作权法保护；Wikimedia Commons 标注 PD-PRC-GB。本夹具只摘录条文号、表号与限值，不整段再分发正文。",
+  "extraction": {
+    "method": "PDF 为扫描件但含 Adobe Paper Capture 文本层；用 PyMuPDF (fitz) 读取文本层后按原文摘录，未改写数值；表格符号与数值另经页面渲染人工/视觉复核",
+    "tooling": ["PyMuPDF text layer", "200 dpi page render cross-check"],
+    "verifiedOn": "2026-09-13"
+  },
+  "clausePageMap": {
+    "3.1.1": 16,
+    "3.2.4": 19,
+    "3.2.5": 19,
+    "3.3.5": 21,
+    "4.2.2": 23,
+    "4.2.2(续表)": 24,
+    "9.1.1": 61,
+    "9.1.2": 61,
+    "9.1.3": 61,
+    "9.1.5": 62,
+    "9.2.2": 62,
+    "表9.2.2-2": 65
+  },
+  "knownGaps": [
+    "表 9.2.2-2 的「地表隆起」行在原文岩土类型列为空，夹具按原样只登记累计值 10mm 与变化速率 3mm/d",
+    "GB 50652-2011 等直接相关的风险等级标准未公开获取，甲方输入到位后应补齐"
+  ]
+}

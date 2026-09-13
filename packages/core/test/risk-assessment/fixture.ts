@@ -62,6 +62,12 @@ import { makeAssessmentConfigurationFixtureSet } from "../assessment-config/fixt
 export const C25_FIXTURE_PROJECT_ID = "risk-assessment-project";
 export const C25_FIXTURE_AT = "2026-09-13T00:00:00.000Z";
 export const C25_FIXTURE_CUTOFF = "2026-09-13T01:00:00.000Z";
+/** 评估调用的审计主体与记录时间（与准备阶段主体刻意不同，用于双主体/双时间用例）。 */
+export const C25_FIXTURE_RECORD_AUDIT = {
+  actorId: "actor-c25-evaluate",
+  recordedAt: "2026-09-13T02:00:00.000Z",
+} as const;
+
 export const C25_FIXTURE_PROJECT_REVISION: ProjectRevisionRefV1 = {
   kind: "project-revision",
   reference: { entityId: "project-revision-c25", versionId: "1" },

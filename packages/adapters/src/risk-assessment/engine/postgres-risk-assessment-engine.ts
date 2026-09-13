@@ -1,4 +1,4 @@
-import type { ColumnType, Kysely, Transaction } from "kysely";
+import type { ColumnType, Kysely, Selectable, Transaction } from "kysely";
 
 import {
   canonicalJson,
@@ -35,6 +35,7 @@ import type {
   RiskInputFactsReaderV1,
 } from "@riskflow/core/risk-assessment/engine";
 import {
+  ASSESSMENT_RUNTIME_POLICY_SET_V1_FIELDS,
   RISK_ASSESSMENT_DECISION_ARTIFACT_PURPOSE_CODE_V1,
   RISK_ASSESSMENT_DECISION_MEDIA_TYPE_V1,
   RISK_ASSESSMENT_DOWNSTREAM_BRANCH_V1,
@@ -85,6 +86,8 @@ import {
   type ModuleCapabilityV1,
   type ModuleErrorV1,
   type RiskAssessmentPortV1,
+  type SpatialScopeRefV1,
+  type SourceVersionRefV1,
 } from "@riskflow/contracts/ports";
 import type { VersionReference } from "@riskflow/contracts/common";
 import { DomainEventV1Schema, type DomainEventV1 } from "@riskflow/contracts/events";
@@ -206,6 +209,9 @@ const jsonValue = (value: unknown): unknown => JSON.stringify(value) as unknown;
 async function* one(bytes: Uint8Array): AsyncIterable<Uint8Array> {
   yield bytes;
 }
+
+const asIso = (value: Date | string): string =>
+  value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 
 const refKey = (value: { readonly kind: string; readonly reference: VersionReference }): string =>
   `${value.kind}\u0000${value.reference.entityId}\u0000${value.reference.versionId}`;
@@ -393,6 +399,8 @@ interface EvaluationResultRefsV1 {
 }
 
 interface LoadedBasisV1 {
+  /** C19 集合成员摘要：提交前复验用它证明读取到提交之间成员未变。 */
+  readonly memberDigest: string;
   readonly applicableRuleSetMember: AssessmentBasisReleaseSetMemberV1;
   readonly scoringRuleMembers: readonly AssessmentBasisReleaseSetMemberV1[];
   readonly configurationMembers: readonly AssessmentBasisConfigurationMemberV1[];
@@ -465,6 +473,10 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
       readonly authorization: AuthorizationContextV1;
     },
     branch: ModuleBranchV1,
+    requested?: {
+      readonly spatialScopeRefs?: readonly SpatialScopeRefV1[];
+      readonly sourceVersionRefs?: readonly SourceVersionRefV1[];
+    },
   ): Promise<AuthorizationContextV1> {
     const capability = MODULE_BRANCH_CAPABILITY_V1[branch];
     if (
@@ -479,14 +491,44 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
       invocationId: command.commandId,
       projectId: command.projectId,
       branch,
-      requestedSpatialScopeRefs: [],
-      requestedSourceVersionRefs: [],
+      requestedSpatialScopeRefs: [...(requested?.spatialScopeRefs ?? [])],
+      requestedSourceVersionRefs: [...(requested?.sourceVersionRefs ?? [])],
       requestedAt: command.authorization.decidedAt,
     });
     if (decision.context.actorId !== command.actorId) {
       throw moduleError("AUTHORIZATION_DENIED", command.commandId, {}, capability);
     }
     return decision.context;
+  }
+
+  /**
+   * 准备快照的空间身份必须落在当前授权上下文内：C06 只认访问空间修订，
+   * 因此按 scope 身份把准备快照映射到已验证上下文自己的空间引用与来源版本上复验。
+   */
+  #preparationBinding(
+    causalRunId: string,
+    verified: AuthorizationContextV1,
+    preparation: AssessmentPreparationSnapshotV1,
+  ): {
+    readonly spatialScopeRefs: SpatialScopeRefV1[];
+    readonly sourceVersionRefs: SourceVersionRefV1[];
+  } {
+    const preparationScopeId = preparation.spatialScopeRef.reference.entityId;
+    const spatialScopeRefs = verified.spatialScopeRefs.filter(
+      (scope) => scope.reference.entityId === preparationScopeId,
+    );
+    if (spatialScopeRefs.length === 0) {
+      throw moduleError("AUTHORIZATION_DENIED", causalRunId);
+    }
+    const sourceVersionRefs = [
+      ...new Map(
+        preparation.sourceEvidenceReferences.map((evidence) => [
+          versionKey(evidence.sourceVersion),
+          { kind: "source-version" as const, reference: evidence.sourceVersion },
+        ]),
+      ).values(),
+    ].sort((left, right) => (versionKey(left.reference) < versionKey(right.reference) ? -1 : 1));
+    return { spatialScopeRefs, sourceVersionRefs };
   }
 
   async #authorizeFor(
@@ -620,7 +662,8 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
     readonly idempotencyKey: string;
     readonly projectId: string;
     readonly actorId: string;
-    readonly issuedAt: string;
+    /** 业务有效时点：历史回填用 effectiveAt，其余用命令 issuedAt。 */
+    readonly businessAt: string;
     readonly requiredCapability: ModuleCapabilityV1;
     readonly basisRef: BasisRefV1;
   }): Promise<LoadedBasisV1> {
@@ -630,7 +673,7 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
         invocationId: `${input.commandId}:basis`,
         projectId: input.projectId,
         actorId: input.actorId,
-        requestedAt: input.issuedAt,
+        requestedAt: input.businessAt,
       },
       input.requiredCapability,
     );
@@ -638,7 +681,7 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
       await this.#basisReader.readAssessmentBasisReleaseSet({
         requestId: `${input.commandId}:basis`,
         idempotencyKey: `${input.idempotencyKey}:basis`,
-        requestedAt: input.issuedAt,
+        requestedAt: input.businessAt,
         authorization,
         assessmentBasisReleaseSetRef: input.basisRef,
       }),
@@ -660,7 +703,7 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
         commandId: input.commandId,
         projectId: input.projectId,
         actorId: input.actorId,
-        issuedAt: input.issuedAt,
+        businessAt: input.businessAt,
         authorization,
       },
       read.applicableRuleSetMember,
@@ -682,7 +725,7 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
         actorId: input.actorId,
         requestId: `${input.commandId}:rule:${member.releaseRef.reference.entityId}`,
         idempotencyKey: `${input.commandId}:rule:${member.releaseRef.reference.entityId}`,
-        requestedAt: input.issuedAt,
+        requestedAt: input.businessAt,
         requiredCapability: BASIS_READ_CAPABILITY,
         authorization,
       });
@@ -727,6 +770,7 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
     };
 
     return {
+      memberDigest: read.memberDigest,
       applicableRuleSetMember: read.applicableRuleSetMember,
       scoringRuleMembers: read.scoringRuleMembers,
       configurationMembers: read.configurationMembers,
@@ -741,7 +785,7 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
       readonly commandId: string;
       readonly projectId: string;
       readonly actorId: string;
-      readonly issuedAt: string;
+      readonly businessAt: string;
     },
     authorization: AuthorizationContextV1,
     member: AssessmentBasisConfigurationMemberV1,
@@ -756,7 +800,7 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
         artifactRef: member.artifactRef,
         projectId: input.projectId,
         actorId: input.actorId,
-        requestedAt: input.issuedAt,
+        requestedAt: input.businessAt,
         purposeCode: ASSESSMENT_CONFIGURATION_ARTIFACT_PURPOSE_CODE_V1,
         requiredCapability: BASIS_READ_CAPABILITY,
         authorization,
@@ -797,7 +841,7 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
       readonly commandId: string;
       readonly projectId: string;
       readonly actorId: string;
-      readonly issuedAt: string;
+      readonly businessAt: string;
       readonly authorization: AuthorizationContextV1;
     },
     member: AssessmentBasisReleaseSetMemberV1,
@@ -809,7 +853,7 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
       actorId: input.actorId,
       requestId: `${input.commandId}:applicable-rule-set`,
       idempotencyKey: `${input.commandId}:applicable-rule-set`,
-      requestedAt: input.issuedAt,
+      requestedAt: input.businessAt,
       requiredCapability: BASIS_READ_CAPABILITY,
       authorization: input.authorization,
     });
@@ -823,7 +867,8 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
     readonly commandId: string;
     readonly projectId: string;
     readonly actorId: string;
-    readonly issuedAt: string;
+    /** 业务有效时点：历史回填用 effectiveAt，其余用命令 issuedAt。 */
+    readonly businessAt: string;
     readonly preparationSnapshotRef: AssessmentInputSnapshotV1["preparationSnapshotRef"];
     readonly basisRef: BasisRefV1;
   }): Promise<AssessmentRuntimePolicySetV1> {
@@ -833,15 +878,15 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
         invocationId: `${input.commandId}:runtime-policies`,
         projectId: input.projectId,
         actorId: input.actorId,
-        requestedAt: input.issuedAt,
+        requestedAt: input.businessAt,
       },
       "risk-assessment.read",
     );
     const read = await this.#runtimePolicies.readRuntimePolicySet({
       requestId: `${input.commandId}:runtime-policies`,
       idempotencyKey: `${input.commandId}:runtime-policies`,
-      requestedAt: input.issuedAt,
-      requiredAt: input.issuedAt,
+      requestedAt: input.businessAt,
+      requiredAt: input.businessAt,
       authorization,
       preparationSnapshotRef: input.preparationSnapshotRef,
       assessmentBasisReleaseSetRef: input.basisRef,
@@ -865,10 +910,16 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
     readonly actorId: string;
     readonly issuedAt: string;
     readonly preparation: AssessmentPreparationSnapshotV1;
+    /** 复验后的授权空间与来源引用：C06 只认访问空间修订。 */
+    readonly binding: {
+      readonly spatialScopeRefs: readonly SpatialScopeRefV1[];
+      readonly sourceVersionRefs: readonly SourceVersionRefV1[];
+    };
   }): Promise<readonly AssessmentMonitoringInputV1[]> {
     const inputs: AssessmentMonitoringInputV1[] = [];
     for (const monitoringRef of input.preparation.monitoringSnapshotRefs ?? []) {
-      const invocationId = `${input.commandId}:monitoring:${monitoringRef.reference.entityId}@${monitoringRef.reference.versionId}`;
+      // C06 verify 与本次调用 invocationId 绑定：快照查询与序列读取各签发一次。
+      const invocationId = `${input.commandId}:monitoring-snapshot:${monitoringRef.reference.entityId}@${monitoringRef.reference.versionId}`;
       const authorization = await this.#authorizeFor(
         {
           branch: RISK_ASSESSMENT_DOWNSTREAM_BRANCH_V1.monitoringReads,
@@ -876,6 +927,8 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
           projectId: input.projectId,
           actorId: input.actorId,
           requestedAt: input.issuedAt,
+          requestedSpatialScopeRefs: input.binding.spatialScopeRefs,
+          requestedSourceVersionRefs: input.binding.sourceVersionRefs,
         },
         "risk-assessment.read",
       );
@@ -912,12 +965,25 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
       if (snapshot.projectId !== input.projectId) {
         throw moduleError("AUTHORIZATION_DENIED", input.commandId);
       }
+      const seriesQueryId = `${input.commandId}:monitoring-series:${snapshot.monitoringSeriesRef.reference.entityId}@${snapshot.monitoringSeriesRef.reference.versionId}`;
+      const seriesAuthorization = await this.#authorizeFor(
+        {
+          branch: RISK_ASSESSMENT_DOWNSTREAM_BRANCH_V1.monitoringReads,
+          invocationId: seriesQueryId,
+          projectId: input.projectId,
+          actorId: input.actorId,
+          requestedAt: input.issuedAt,
+          requestedSpatialScopeRefs: input.binding.spatialScopeRefs,
+          requestedSourceVersionRefs: input.binding.sourceVersionRefs,
+        },
+        "risk-assessment.read",
+      );
       const seriesRead = await this.#monitoring.readSeriesRevision({
-        queryId: invocationId,
+        queryId: seriesQueryId,
         projectId: input.projectId,
         actorId: input.actorId,
         requestedAt: input.issuedAt,
-        authorization,
+        authorization: seriesAuthorization,
         monitoringSeriesRef: snapshot.monitoringSeriesRef,
       });
       if (seriesRead.kind !== "succeeded") {
@@ -935,6 +1001,94 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
       inputs.push({ snapshot, seriesRevision: seriesRead.result });
     }
     return inputs;
+  }
+
+  // ------------------------------------------------------- commit preconditions
+
+  #basisFingerprint(basis: LoadedBasisV1): string {
+    return sha256CanonicalJson({
+      memberDigest: basis.memberDigest,
+      applicable: {
+        releaseRef: basis.applicableRuleSetMember.releaseRef,
+        revisionRef: basis.applicableRuleSetMember.revisionRef,
+        artifactRef: basis.applicableRuleSetMember.artifactRef,
+        contentDigest: basis.applicableRuleSetMember.contentDigest,
+        document: sha256CanonicalJson(basis.applicableRuleSet),
+      },
+      rules: basis.rules
+        .map((entry) => ({
+          releaseRef: entry.member.releaseRef,
+          revisionRef: entry.member.revisionRef,
+          artifactRef: entry.member.artifactRef,
+          contentDigest: entry.member.contentDigest,
+          document: sha256CanonicalJson(entry.document),
+        }))
+        .sort((left, right) =>
+          versionKey(left.releaseRef.reference) < versionKey(right.releaseRef.reference) ? -1 : 1,
+        ),
+      configuration: basis.configurationMembers.map((member) => ({
+        definitionType: member.definitionType,
+        releaseRef: member.releaseRef,
+        revisionRef: member.revisionRef,
+        artifactRef: member.artifactRef,
+        contentDigest: member.contentDigest,
+      })),
+    });
+  }
+
+  /**
+   * 提交前复验（D-10）：C06 主体仍有效、C19 basis 成员与 C04 正文摘要未漂移、
+   * 运行时策略版本仍等价；任一变化都关闭失败，不落库部分结果。
+   */
+  async #assertCommitPreconditions(input: {
+    readonly command: {
+      readonly commandId: string;
+      readonly projectId: string;
+      readonly actorId: string;
+      readonly authorization: AuthorizationContextV1;
+    };
+    readonly branch: ModuleBranchV1;
+    readonly binding: {
+      readonly spatialScopeRefs: SpatialScopeRefV1[];
+      readonly sourceVersionRefs: SourceVersionRefV1[];
+    };
+    readonly businessAt: string;
+    readonly requiredCapability: ModuleCapabilityV1;
+    readonly basisRef: BasisRefV1;
+    readonly preparationSnapshotRef: AssessmentInputSnapshotV1["preparationSnapshotRef"];
+    readonly basis: LoadedBasisV1;
+    readonly policySet: AssessmentRuntimePolicySetV1;
+  }): Promise<void> {
+    await this.#verifyCommand(input.command, input.branch, input.binding);
+    const basisAgain = await this.#loadBasis({
+      commandId: input.command.commandId,
+      idempotencyKey: `${input.command.commandId}:recheck`,
+      projectId: input.command.projectId,
+      actorId: input.command.actorId,
+      businessAt: input.businessAt,
+      requiredCapability: input.requiredCapability,
+      basisRef: input.basisRef,
+    });
+    if (this.#basisFingerprint(basisAgain) !== this.#basisFingerprint(input.basis)) {
+      throw moduleError("STALE_VERSION", input.command.commandId, {
+        targetRef: input.basis.applicableRuleSetMember.releaseRef,
+      });
+    }
+    const policySetAgain = await this.#loadRuntimePolicies({
+      commandId: input.command.commandId,
+      projectId: input.command.projectId,
+      actorId: input.command.actorId,
+      businessAt: input.businessAt,
+      preparationSnapshotRef: input.preparationSnapshotRef,
+      basisRef: input.basisRef,
+    });
+    for (const field of ASSESSMENT_RUNTIME_POLICY_SET_V1_FIELDS) {
+      if (versionKey(policySetAgain[field]) !== versionKey(input.policySet[field])) {
+        throw moduleError("STALE_VERSION", input.command.commandId, {
+          targetRef: { kind: "project-revision", reference: input.policySet[field] },
+        });
+      }
+    }
   }
 
   // ------------------------------------------------------------------ context
@@ -1027,7 +1181,8 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
     }
     const valid = parsed.data;
     try {
-      await this.#verifyCommand(valid, branchForCommandKind(valid.kind));
+      const branch = branchForCommandKind(valid.kind);
+      await this.#verifyCommand(valid, branch);
       const preparationRead = await this.#loadPreparationContext(
         {
           commandId: valid.commandId,
@@ -1038,15 +1193,20 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
         valid.payload.preparationSnapshotRef,
       );
       const preparation = preparationRead.preparation;
+      // 准备快照的空间与来源身份必须由当前授权复验后才继续（只使用验证后的上下文）。
+      const binding = this.#preparationBinding(valid.commandId, valid.authorization, preparation);
+      const verified = await this.#verifyCommand(valid, branch, binding);
       const basisRef = valid.payload.assessmentBasisReleaseSetRef;
       this.#assertEntryBranch(valid, preparation, valid.commandId);
+      const businessAt =
+        valid.kind === "historical-backfill" ? valid.payload.effectiveAt : valid.issuedAt;
 
       const basis = await this.#loadBasis({
         commandId: valid.commandId,
         idempotencyKey: valid.idempotencyKey,
         projectId: valid.projectId,
-        actorId: valid.actorId,
-        issuedAt: valid.issuedAt,
+        actorId: verified.actorId,
+        businessAt,
         requiredCapability: "risk-assessment.prepare",
         basisRef,
       });
@@ -1054,8 +1214,8 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
       const policySet = await this.#loadRuntimePolicies({
         commandId: valid.commandId,
         projectId: valid.projectId,
-        actorId: valid.actorId,
-        issuedAt: valid.issuedAt,
+        actorId: verified.actorId,
+        businessAt,
         preparationSnapshotRef: valid.payload.preparationSnapshotRef,
         basisRef,
       });
@@ -1071,7 +1231,7 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
           kind: "audit-trail",
           reference: { entityId: auditEntryId, versionId: "1" },
         },
-        createdBy: valid.actorId,
+        createdBy: verified.actorId,
         createdAt: recordedAt,
       });
       const referenceDigest = sha256CanonicalJson({
@@ -1082,6 +1242,19 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
         kind: "assessment-input-snapshot",
         reference: { entityId: `assessment-input-${referenceDigest}`, versionId: "1" },
       };
+
+      // 提交前复验：授权、C19 basis 成员与 C04 正文摘要、运行时策略版本仍等价。
+      await this.#assertCommitPreconditions({
+        command: valid,
+        branch,
+        binding,
+        businessAt,
+        requiredCapability: "risk-assessment.prepare",
+        basisRef,
+        preparationSnapshotRef: valid.payload.preparationSnapshotRef,
+        basis,
+        policySet,
+      });
 
       const changeEvent =
         valid.kind === "reassessment"
@@ -1316,13 +1489,17 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
         newApplicabilityMetadataSnapshotRef: currentRef,
       });
     }
-    const field =
+    // 规则集与矩阵是单一引用；weight-or-strategy 必须同时比较权重与评分策略版本。
+    const fields =
       command.payload.reason === "applicable-rule-set"
-        ? "applicableRuleSetRef"
+        ? (["applicableRuleSetRef"] as const)
         : command.payload.reason === "risk-matrix"
-          ? "riskMatrixRef"
-          : "weightSetRef";
-    if (versionKey(previousInput[field]) === versionKey(next[field])) throw notObserved();
+          ? (["riskMatrixRef"] as const)
+          : (["weightSetRef", "scoringStrategyRef"] as const);
+    const changed = fields.some(
+      (field) => versionKey(previousInput[field]) !== versionKey(next[field]),
+    );
+    if (!changed) throw notObserved();
     return undefined;
   }
 
@@ -1338,7 +1515,7 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
     }
     const valid = parsed.data;
     try {
-      const verified = await this.#verifyCommand(valid, "risk-assessment.evaluate");
+      await this.#verifyCommand(valid, "risk-assessment.evaluate");
       const inputSnapshotRef = valid.payload.assessmentInputSnapshotRef;
       const inputRow = await this.#db
         .selectFrom("business.assessment_input_snapshots")
@@ -1370,11 +1547,18 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
         inputSnapshot.preparationSnapshotRef,
       );
       const preparation = preparationRead.preparation;
+      // 准备快照的空间与来源身份由当前授权复验后才继续；之后只用验证后的上下文。
+      const binding = this.#preparationBinding(valid.commandId, valid.authorization, preparation);
+      const verified = await this.#verifyCommand(valid, "risk-assessment.evaluate", binding);
       const runRef = this.#assessmentRunRef(verified, preparation, valid.commandId);
+      const businessAt =
+        inputRow.entry_kind === "historical-backfill" && inputRow.effective_at !== null
+          ? asIso(inputRow.effective_at)
+          : valid.issuedAt;
       const facts = await this.#loadRiskFacts({
         commandId: valid.commandId,
         projectId: valid.projectId,
-        actorId: valid.actorId,
+        actorId: verified.actorId,
         issuedAt: valid.issuedAt,
         riskInput: preparation.riskInput,
       });
@@ -1382,16 +1566,16 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
         commandId: valid.commandId,
         idempotencyKey: valid.idempotencyKey,
         projectId: valid.projectId,
-        actorId: valid.actorId,
-        issuedAt: valid.issuedAt,
+        actorId: verified.actorId,
+        businessAt,
         requiredCapability: "risk-assessment.evaluate",
         basisRef,
       });
       const policySet = await this.#loadRuntimePolicies({
         commandId: valid.commandId,
         projectId: valid.projectId,
-        actorId: valid.actorId,
-        issuedAt: valid.issuedAt,
+        actorId: verified.actorId,
+        businessAt,
         preparationSnapshotRef: inputSnapshot.preparationSnapshotRef,
         basisRef,
       });
@@ -1403,11 +1587,13 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
       const monitoring = await this.#loadMonitoring({
         commandId: valid.commandId,
         projectId: valid.projectId,
-        actorId: valid.actorId,
+        actorId: verified.actorId,
         issuedAt: valid.issuedAt,
         preparation,
+        binding,
       });
 
+      const recordedAt = this.#now().toISOString();
       const assessment = evaluateDeterministicAssessment(
         this.#engineContext({
           projectId: valid.projectId,
@@ -1421,10 +1607,32 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
           facts,
           monitoring,
         }),
+        { actorId: verified.actorId, recordedAt },
       );
-      const decisionArtifact = await this.#putDecisionArtifact(valid, basis, assessment);
+      // 同一冻结输入只对应一份正式事实：已存在则直接返回原引用，不重复提交事件与审计。
+      const existing = await this.#readRecordRow(valid.projectId, assessment.recordRef);
+      if (existing !== undefined) {
+        return AssessmentEvaluationResultV1Schema.parse({
+          kind: "succeeded",
+          result: this.#resultRefsFromRow(existing),
+        });
+      }
+      const decisionArtifact = await this.#putDecisionArtifact(valid, verified, basis, assessment);
+      // 提交前复验：授权、C19 basis/C04 摘要与策略版本仍等价。
+      await this.#assertCommitPreconditions({
+        command: valid,
+        branch: "risk-assessment.evaluate",
+        binding,
+        businessAt,
+        requiredCapability: "risk-assessment.evaluate",
+        basisRef,
+        preparationSnapshotRef: inputSnapshot.preparationSnapshotRef,
+        basis,
+        policySet,
+      });
       const result = await this.#commitEvaluation({
         command: valid,
+        verified,
         inputSnapshot,
         inputSnapshotRef,
         preparation,
@@ -1432,6 +1640,7 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
         assessment,
         decisionArtifact,
         runRef,
+        recordedAt,
       });
       return AssessmentEvaluationResultV1Schema.parse({ kind: "succeeded", result });
     } catch (error) {
@@ -1440,6 +1649,43 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
         error: failureToModuleError(error, valid.commandId),
       });
     }
+  }
+
+  async #readRecordRow(
+    projectId: string,
+    ref: { readonly reference: { readonly entityId: string; readonly versionId: string } },
+  ): Promise<Selectable<RiskAssessmentRecordRow> | undefined> {
+    return this.#db
+      .selectFrom("business.risk_assessment_records")
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where("record_id", "=", ref.reference.entityId)
+      .where("version_id", "=", ref.reference.versionId)
+      .executeTakeFirst();
+  }
+
+  #resultRefsFromRow(row: {
+    readonly value_set_id: string;
+    readonly value_set_version_id: string;
+    readonly decision_id: string;
+    readonly decision_version_id: string;
+    readonly record_id: string;
+    readonly version_id: string;
+  }): EvaluationResultRefsV1 {
+    return {
+      indicatorActualValueSetRef: {
+        kind: "indicator-actual-value-set",
+        reference: { entityId: row.value_set_id, versionId: row.value_set_version_id },
+      },
+      assessmentDecisionArtifactRef: {
+        kind: "assessment-decision-artifact",
+        reference: { entityId: row.decision_id, versionId: row.decision_version_id },
+      },
+      assessmentRecordRef: {
+        kind: "risk-assessment-record",
+        reference: { entityId: row.record_id, versionId: row.version_id },
+      },
+    };
   }
 
   #parseBasisRef(value: unknown, causalRunId: string): BasisRefV1 {
@@ -1458,7 +1704,7 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
     authorization: AuthorizationContextV1,
     preparation: AssessmentPreparationSnapshotV1,
     causalRunId: string,
-  ): { readonly reference: VersionReference } {
+  ): { readonly kind: "workflow-run"; readonly reference: VersionReference } {
     const authorizationRun = authorization.causalRunRef;
     const preparationRun = preparation.causalRunRef;
     if (authorizationRun === undefined && preparationRun === undefined) {
@@ -1474,7 +1720,8 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
     ) {
       throw moduleError("STALE_VERSION", causalRunId, { targetRef: preparationRun });
     }
-    return { reference: (authorizationRun ?? preparationRun)!.reference };
+    const resolved = (authorizationRun ?? preparationRun)!;
+    return { kind: "workflow-run" as const, reference: resolved.reference };
   }
 
   #assertInputSnapshotReferences(
@@ -1493,6 +1740,7 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
 
   async #putDecisionArtifact(
     command: Extract<AssessmentEvaluationCommandV1, { kind: "evaluate" }>,
+    verified: AuthorizationContextV1,
     basis: LoadedBasisV1,
     assessment: DeterministicAssessmentV1,
   ): Promise<{ readonly ref: ContentArtifactRefV1; readonly digest: string }> {
@@ -1508,7 +1756,7 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
         projectId: command.projectId,
         actorId: command.actorId,
         issuedAt: command.issuedAt,
-        authorization: command.authorization,
+        authorization: verified,
         requiredCapability: "risk-assessment.evaluate",
         artifactId: `assessment-decision-${assessment.decisionDigest}`,
         artifactKind: "content",
@@ -1534,17 +1782,19 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
 
   async #commitEvaluation(input: {
     readonly command: Extract<AssessmentEvaluationCommandV1, { kind: "evaluate" }>;
+    readonly verified: AuthorizationContextV1;
+    readonly recordedAt: string;
     readonly inputSnapshot: AssessmentInputSnapshotV1;
     readonly inputSnapshotRef: InputSnapshotRefV1;
     readonly preparation: AssessmentPreparationSnapshotV1;
     readonly basis: LoadedBasisV1;
     readonly assessment: DeterministicAssessmentV1;
     readonly decisionArtifact: { readonly ref: ContentArtifactRefV1; readonly digest: string };
-    readonly runRef: { readonly reference: VersionReference };
+    readonly runRef: { readonly kind: "workflow-run"; readonly reference: VersionReference };
   }): Promise<EvaluationResultRefsV1> {
     const command = input.command;
     const assessment = input.assessment;
-    const recordedAt = this.#now().toISOString();
+    const recordedAt = input.recordedAt;
     const auditEntryId = `audit-${command.commandId}:assessment-record`;
     const evidenceDigest = sha256CanonicalJson(
       assessment.valueSet.values.map((value) => value.evidenceReferences),
@@ -1644,7 +1894,7 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
             configuration_digest: configurationDigest,
             content_digest: sha256CanonicalJson(assessment.record),
             identity_digest: assessment.recordDigest,
-            actor_ref: command.actorId,
+            actor_ref: input.verified.actorId,
             authorization_context_ref: jsonValue(command.authorization.authorizationContextRef),
             audit_entry_id: auditEntryId,
             occurred_at: command.issuedAt,
@@ -1659,7 +1909,7 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
             projectId: command.projectId,
             action: "risk-assessment.record",
             targetRef: assessment.recordRef,
-            actorRef: command.actorId,
+            actorRef: input.verified.actorId,
             authorizationContextRef: command.authorization.authorizationContextRef,
             occurredAt: command.issuedAt,
             recordedAt,
@@ -1714,20 +1964,7 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
     if (row === undefined) {
       throw moduleError("TERMINAL_FAILURE", command.commandId);
     }
-    return {
-      indicatorActualValueSetRef: {
-        kind: "indicator-actual-value-set",
-        reference: { entityId: row.value_set_id, versionId: row.value_set_version_id },
-      },
-      assessmentDecisionArtifactRef: {
-        kind: "assessment-decision-artifact",
-        reference: { entityId: row.decision_id, versionId: row.decision_version_id },
-      },
-      assessmentRecordRef: {
-        kind: "risk-assessment-record",
-        reference: { entityId: row.record_id, versionId: row.version_id },
-      },
-    };
+    return this.#resultRefsFromRow(row);
   }
 }
 

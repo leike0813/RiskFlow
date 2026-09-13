@@ -13,6 +13,7 @@ import {
 } from "../../src/risk-assessment/engine/index.js";
 import {
   C25_FIXTURE_APPLICABILITY,
+  C25_FIXTURE_RECORD_AUDIT,
   c25Configuration,
   c25ConfigurationContent,
   c25Facts,
@@ -164,6 +165,10 @@ const configurationWith = (
 const contextWith = (overrides: RiskAssessmentFixtureOverridesV1 = {}): AssessmentEngineContextV1 =>
   makeRiskAssessmentEngineContext(overrides);
 
+/** 评估调用审计：核心测试固定使用夹具主体与记录时间。 */
+const evaluateWithFixtureAudit = (context: AssessmentEngineContextV1) =>
+  evaluateDeterministicAssessment(context, C25_FIXTURE_RECORD_AUDIT);
+
 const expectFailure = (run: () => unknown, reasonCode: RiskAssessmentReasonCodeV1): void => {
   let failure: ReturnType<typeof riskAssessmentFailureFrom> = undefined;
   try {
@@ -195,7 +200,7 @@ const triggersFor = (
         }
       : candidate,
   );
-  return evaluateDeterministicAssessment(
+  return evaluateWithFixtureAudit(
     contextWith({
       configuration: configurationWith({ thresholds }),
       monitoring,
@@ -207,7 +212,7 @@ const triggersFor = (
 
 describe("C25 指标取值、评分与触发总链", () => {
   it("完整评估：全量取值、P/C、矩阵与四类触发同时命中", () => {
-    const result = evaluateDeterministicAssessment(
+    const result = evaluateWithFixtureAudit(
       contextWith({ configuration: configurationWith({ maximumAcceptedLevelId: "level-1" }) }),
     );
 
@@ -260,7 +265,7 @@ describe("C25 指标取值、评分与触发总链", () => {
   });
 
   it("不满足触发时保留完整评估且触发集合为空", () => {
-    const result = evaluateDeterministicAssessment(
+    const result = evaluateWithFixtureAudit(
       contextWith({
         configuration: configurationWith({ maximumAcceptedLevelId: "level-4" }),
         monitoring: c25Monitoring({
@@ -277,7 +282,7 @@ describe("C25 指标取值、评分与触发总链", () => {
   });
 
   it("XOR：外部风险事件分支只写 externalRiskEventId", () => {
-    const result = evaluateDeterministicAssessment(
+    const result = evaluateWithFixtureAudit(
       contextWith({
         facts: c25Facts({
           riskInput: {
@@ -384,7 +389,7 @@ describe("C25 指标取值、评分与触发总链", () => {
     const settlement = monitoring[0]!;
     expectFailure(
       () =>
-        evaluateDeterministicAssessment(
+        evaluateWithFixtureAudit(
           contextWith({
             monitoring: [
               { ...settlement, snapshot: { ...settlement.snapshot, alignedPoints: [] } },
@@ -467,7 +472,7 @@ describe("C25 规则边界与 P/C", () => {
   it("规则区间外与规则覆盖不完整都不产生 P/C", () => {
     expectFailure(
       () =>
-        evaluateDeterministicAssessment(
+        evaluateWithFixtureAudit(
           contextWith({
             rules: [
               p1Rule(2),
@@ -497,7 +502,7 @@ describe("C25 规则边界与 P/C", () => {
     );
 
     expectFailure(
-      () => evaluateDeterministicAssessment(contextWith({ rules: [p1Rule(2)] })),
+      () => evaluateWithFixtureAudit(contextWith({ rules: [p1Rule(2)] })),
       "risk-assessment-rule-coverage",
     );
   });
@@ -533,7 +538,7 @@ describe("C25 规则边界与 P/C", () => {
       });
       return { ...base, riskMatrix: matrix };
     };
-    const positive = evaluateDeterministicAssessment(
+    const positive = evaluateWithFixtureAudit(
       contextWith({
         rules: [
           p1Rule(2),
@@ -545,7 +550,7 @@ describe("C25 规则边界与 P/C", () => {
     );
     expect(positive.decision.axisScores.possibility.score).toBe("2");
 
-    const negative = evaluateDeterministicAssessment(
+    const negative = evaluateWithFixtureAudit(
       contextWith({
         rules: [
           p1Rule(-2),
@@ -566,8 +571,8 @@ describe("C25 规则边界与 P/C", () => {
       c1Rule(3),
     ];
     const context = contextWith({ rules });
-    const first = evaluateDeterministicAssessment(context);
-    const reordered = evaluateDeterministicAssessment({
+    const first = evaluateWithFixtureAudit(context);
+    const reordered = evaluateWithFixtureAudit({
       ...context,
       rules: [...context.rules].reverse(),
       monitoring: [...context.monitoring].reverse(),
@@ -584,7 +589,7 @@ describe("C25 规则边界与 P/C", () => {
   });
 
   it("maximum 超过六位小数的分值仍按同一规范尺度映射矩阵", () => {
-    const result = evaluateDeterministicAssessment(
+    const result = evaluateWithFixtureAudit(
       contextWith({
         rules: [
           p1Rule(2),
@@ -658,7 +663,7 @@ describe("C25 矩阵边界", () => {
 
   it("越界 P/C 使整次评估失败且不保存等级", () => {
     expectFailure(
-      () => evaluateDeterministicAssessment(scaledContext(6, 3)),
+      () => evaluateWithFixtureAudit(scaledContext(6, 3)),
       "risk-assessment-matrix-out-of-range",
     );
   });
@@ -699,14 +704,11 @@ describe("C25 触发运算符与适用性", () => {
       },
     });
     expect(materializeIndicatorActualValues(context).values).toHaveLength(3);
-    expectFailure(
-      () => evaluateDeterministicAssessment(context),
-      "risk-assessment-threshold-ambiguous",
-    );
+    expectFailure(() => evaluateWithFixtureAudit(context), "risk-assessment-threshold-ambiguous");
   });
 
   it("适用性不匹配的联合规则不参与判定", () => {
-    const result = evaluateDeterministicAssessment(
+    const result = evaluateWithFixtureAudit(
       contextWith({
         configuration: configurationWith({
           jointRules: [
@@ -735,8 +737,8 @@ describe("C25 触发运算符与适用性", () => {
 
 describe("C25 重放与无 Agent 计算链", () => {
   it("同一冻结输入重复评估得到同一引用与内容摘要", () => {
-    const first = evaluateDeterministicAssessment(contextWith());
-    const second = evaluateDeterministicAssessment(contextWith());
+    const first = evaluateWithFixtureAudit(contextWith());
+    const second = evaluateWithFixtureAudit(contextWith());
     expect(second.decisionDigest).toBe(first.decisionDigest);
     expect(second.recordDigest).toBe(first.recordDigest);
     expect(second.valueSet.contentDigest).toBe(first.valueSet.contentDigest);
@@ -744,11 +746,37 @@ describe("C25 重放与无 Agent 计算链", () => {
     expect(second.decisionRef.reference.entityId).toBe(first.decisionRef.reference.entityId);
   });
 
+  it("记录审计主体与时间取自本次评估调用，且不参与业务身份", () => {
+    const context = contextWith();
+    const first = evaluateDeterministicAssessment(context, {
+      actorId: "actor-evaluate-a",
+      recordedAt: "2030-05-01T00:00:00.000Z",
+    });
+    const second = evaluateDeterministicAssessment(context, {
+      actorId: "actor-evaluate-b",
+      recordedAt: "2030-06-01T00:00:00.000Z",
+    });
+    expect(first.record.audit).toEqual({
+      actorId: "actor-evaluate-a",
+      action: "risk-assessment.record",
+      recordedAt: "2030-05-01T00:00:00.000Z",
+    });
+    expect(second.record.audit).toEqual({
+      actorId: "actor-evaluate-b",
+      action: "risk-assessment.record",
+      recordedAt: "2030-06-01T00:00:00.000Z",
+    });
+    // 准备阶段主体与调用阶段主体不同：记录只带调用主体。
+    expect(context.preparation.createdBy).not.toBe("actor-evaluate-a");
+    expect(first.recordDigest).toBe(second.recordDigest);
+    expect(second.recordRef.reference.entityId).toBe(first.recordRef.reference.entityId);
+  });
+
   it("缺少推理运行时也能得到相同结果：输入只有普通领域对象", () => {
     const context = contextWith();
     expect(Object.keys(context)).not.toContain("agent");
     expect(Object.keys(context)).not.toContain("runtime");
-    const result = evaluateDeterministicAssessment(context);
+    const result = evaluateWithFixtureAudit(context);
     expect(result.record.indicatorResults).toHaveLength(3);
     expect(result.valueSet.projectId).toBe("risk-assessment-project");
     expect(result.record.applicableRuleSetVersion.entityId).toBe("release-set-applicable-rule-set");

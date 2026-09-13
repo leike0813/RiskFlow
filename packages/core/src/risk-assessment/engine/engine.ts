@@ -122,6 +122,12 @@ export interface AssessmentEngineContextV1 {
   readonly monitoring: readonly AssessmentMonitoringInputV1[];
 }
 
+/** 正式记录的审计元数据：主体与记录时间来自本次评估调用，而非准备阶段。 */
+export interface RiskAssessmentAuditV1 {
+  readonly actorId: string;
+  readonly recordedAt: string;
+}
+
 export interface ScoredIndicatorV1 {
   readonly indicatorId: string;
   readonly indicatorType: "发生可能性评估指标" | "后果严重性评估指标";
@@ -948,6 +954,7 @@ export const buildRiskAssessmentRecord = (
     readonly matrix: MatrixMappingV1;
     readonly triggers: readonly AssessmentTriggerFactV1[];
     readonly recordId: string;
+    readonly audit: RiskAssessmentAuditV1;
   },
 ): RiskAssessmentRecord => {
   const evidence = new Map<string, EvidenceReference>();
@@ -1001,9 +1008,9 @@ export const buildRiskAssessmentRecord = (
     weightVersion: context.inputSnapshot.weightSetRef,
     riskMatrixVersion: context.inputSnapshot.riskMatrixRef,
     audit: {
-      actorId: context.preparation.createdBy,
+      actorId: input.audit.actorId,
       action: "risk-assessment.record",
-      recordedAt: context.preparation.createdAt,
+      recordedAt: input.audit.recordedAt,
     },
   };
   return RiskAssessmentRecordSchema.parse(
@@ -1029,6 +1036,7 @@ const configurationRef = (
 
 export const evaluateDeterministicAssessment = (
   context: AssessmentEngineContextV1,
+  audit: RiskAssessmentAuditV1,
 ): DeterministicAssessmentV1 => {
   const valueSet = materializeIndicatorActualValues(context);
   const score = scoreAssessmentAxes(context, valueSet);
@@ -1081,7 +1089,7 @@ export const evaluateDeterministicAssessment = (
   } satisfies Record<string, unknown>;
   const decision = AssessmentDecisionArtifactV1Schema.parse(decisionContent);
   const decisionDigest = sha256CanonicalJson(decision);
-  const record = buildRiskAssessmentRecord(context, { score, matrix, triggers, recordId });
+  const record = buildRiskAssessmentRecord(context, { score, matrix, triggers, recordId, audit });
   const recordDigest = sha256CanonicalJson(
     Object.fromEntries(Object.entries(record).filter(([key]) => key !== "audit")),
   );

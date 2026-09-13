@@ -3140,12 +3140,31 @@ export class PostgresEngineeringContextSourceRegistry
         return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", command.commandId) };
       }
 
+      // 监测读取所需的资料版本只能来自本次已读到的风险输入证据（C14 快照证据同源）。
+      const sourceVersionRefs = [
+        ...new Map(
+          facts.evidenceReferences.map((evidence) => [
+            `${evidence.sourceVersion.entityId}\u0000${evidence.sourceVersion.versionId}`,
+            { kind: "source-version" as const, reference: evidence.sourceVersion },
+          ]),
+        ).values(),
+      ].sort((left, right) =>
+        `${left.reference.entityId}\u0000${left.reference.versionId}` <
+        `${right.reference.entityId}\u0000${right.reference.versionId}`
+          ? -1
+          : 1,
+      );
       const orderedMonitoringRefs =
         monitoringRefs === undefined
           ? []
           : [...monitoringRefs].sort((left, right) => (refKey(left) < refKey(right) ? -1 : 1));
       for (const monitoringRef of orderedMonitoringRefs) {
-        await this.#verifyMonitoringRef(command, verified.actorId, monitoringRef);
+        await this.#verifyMonitoringRef(
+          command,
+          verified.actorId,
+          monitoringRef,
+          sourceVersionRefs,
+        );
       }
 
       const recordedAt = nowIso(this.#now);
@@ -3350,11 +3369,33 @@ export class PostgresEngineeringContextSourceRegistry
           }),
         };
       }
-      return {
-        kind: "succeeded",
-        preparation: AssessmentPreparationSnapshotV1Schema.parse(row.snapshot_payload),
-        applicability: ApplicabilityMetadataSnapshotV1Schema.parse(row.applicability_values),
-      };
+      const preparation = AssessmentPreparationSnapshotV1Schema.parse(row.snapshot_payload);
+      const applicability = ApplicabilityMetadataSnapshotV1Schema.parse(row.applicability_values);
+      // 取得准备快照后按它的空间与来源引用再次复验当前授权，只用验证后的上下文继续。
+      const accessScopes = input.authorization.spatialScopeRefs.filter(
+        (scope) => scope.reference.entityId === preparation.spatialScopeRef.reference.entityId,
+      );
+      if (accessScopes.length === 0) {
+        return {
+          kind: "failed",
+          error: moduleError("AUTHORIZATION_DENIED", input.requestId, {
+            requiredCapability: "engineering-data.read",
+          }),
+        };
+      }
+      // C06 verify 把上下文与签发时的 invocationId 绑定：复验必须沿用同一调用身份。
+      await this.#verifyRead(
+        {
+          queryId: input.requestId,
+          projectId: input.authorization.projectId,
+          actorId: input.authorization.actorId,
+          authorization: input.authorization,
+        },
+        "engineering-data.evidence-access",
+        accessScopes,
+        [],
+      );
+      return { kind: "succeeded", preparation, applicability };
     } catch (error) {
       return {
         kind: "failed",
@@ -3416,6 +3457,7 @@ export class PostgresEngineeringContextSourceRegistry
     command: Extract<EngineeringFreezeCommandV1, { kind: "assessment-preparation" }>,
     actorId: string,
     monitoringRef: Extract<ContractReferenceV1, { kind: "monitoring-snapshot" }>,
+    sourceVersionRefs: readonly SourceVersionRefV1[],
   ): Promise<void> {
     const monitoringStore = this.#monitoringStore;
     if (monitoringStore === undefined) {
@@ -3423,18 +3465,27 @@ export class PostgresEngineeringContextSourceRegistry
         moduleError("UNSUPPORTED_CONTRACT", command.commandId, { schemaVersion: "1" }),
       );
     }
-    const invocationId = `${command.commandId}:monitoring:${monitoringRef.reference.entityId}@${monitoringRef.reference.versionId}`;
+    // C06 只认授权上下文自己的访问空间修订；按 scope 身份把业务空间投影到访问空间。
+    const accessScopes = command.authorization.spatialScopeRefs.filter(
+      (scope) => scope.reference.entityId === command.payload.spatialScopeRef.reference.entityId,
+    );
+    if (accessScopes.length === 0) {
+      throw preserveDomainError(moduleError("AUTHORIZATION_DENIED", command.commandId));
+    }
+    // C06 每次 verify 都要求上下文与本次调用的 invocationId 绑定，因此两次读取各签发一次。
+    const snapshotInvocationId = `${command.commandId}:monitoring-snapshot:${monitoringRef.reference.entityId}@${monitoringRef.reference.versionId}`;
     const authorization = await this.#downstreamAuthorization({
       branch: RISK_ASSESSMENT_DOWNSTREAM_BRANCH_V1.monitoringReads,
-      invocationId,
+      invocationId: snapshotInvocationId,
       projectId: command.projectId,
       actorId,
       requestedAt: command.issuedAt,
-      requestedSpatialScopeRefs: [command.payload.spatialScopeRef],
+      requestedSpatialScopeRefs: accessScopes,
+      requestedSourceVersionRefs: sourceVersionRefs,
     });
     const read = await monitoringStore.readSnapshot({
       kind: "monitoring-snapshot",
-      queryId: invocationId,
+      queryId: snapshotInvocationId,
       projectId: command.projectId,
       actorId,
       requestedAt: command.issuedAt,
@@ -3454,7 +3505,7 @@ export class PostgresEngineeringContextSourceRegistry
     }
     const resolved = await monitoringStore.resolveSnapshotQuery({
       queryResultRef: read.result.queryResultRef,
-      invocationId,
+      invocationId: snapshotInvocationId,
       projectId: command.projectId,
       actorId,
       requestedAt: command.issuedAt,
@@ -3478,12 +3529,22 @@ export class PostgresEngineeringContextSourceRegistry
     ) {
       throw preserveDomainError(moduleError("AUTHORIZATION_DENIED", command.commandId));
     }
-    const seriesRead: MonitoringSeriesReadResultV1 = await monitoringStore.readSeriesRevision({
-      queryId: invocationId,
+    const seriesQueryId = `${command.commandId}:monitoring-series:${snapshot.monitoringSeriesRef.reference.entityId}@${snapshot.monitoringSeriesRef.reference.versionId}`;
+    const seriesAuthorization = await this.#downstreamAuthorization({
+      branch: RISK_ASSESSMENT_DOWNSTREAM_BRANCH_V1.monitoringReads,
+      invocationId: seriesQueryId,
       projectId: command.projectId,
       actorId,
       requestedAt: command.issuedAt,
-      authorization,
+      requestedSpatialScopeRefs: accessScopes,
+      requestedSourceVersionRefs: sourceVersionRefs,
+    });
+    const seriesRead: MonitoringSeriesReadResultV1 = await monitoringStore.readSeriesRevision({
+      queryId: seriesQueryId,
+      projectId: command.projectId,
+      actorId,
+      requestedAt: command.issuedAt,
+      authorization: seriesAuthorization,
       monitoringSeriesRef: snapshot.monitoringSeriesRef,
     });
     if (seriesRead.kind !== "succeeded") {

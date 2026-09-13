@@ -15,7 +15,7 @@
 - [ ] 3.2 [IP-04] 在 C11 PostgreSQL adapter 中完成 `freeze(assessment-preparation)`、`engineering.inputs-ready.v1` 原子提交和 C25/C19 受权窄 reader；消费前置 change 已集成的外部事件登记/读取，不实现或改写该分支；验证入口/复数 refs 原样冻结、optional 正确省略、每个 snapshot 的 C14 series 身份/工程/空间/版本均受权复验，空/重复/越权/series 不一致及缺 required 字段闭合拒绝，且不改变其它分支；执行 `pnpm exec vitest run packages/adapters/test/engineering-data/context-source/postgres-engineering-context-source-registry.test.ts` 验证。
 - [x] 3.3 [IP-05] 实现 `PostgresRiskAssessmentEngine.prepare/evaluate`，按 D-10 顺序完成 C19 descriptors、C04 正文、runtime policies、C14 snapshot、纯计算、C04 decision artifact 和单事务正式事实；执行 `pnpm exec vitest run packages/adapters/test/risk-assessment/postgres-risk-assessment-engine.test.ts` 验证。
 - [x] 3.4 [IP-07] 在 core/adapters package manifests 增加且只增加 `./risk-assessment/engine` export，不改依赖与锁文件；执行 `pnpm exec tsc -b packages/core/tsconfig.json packages/adapters/tsconfig.json --pretty false && git diff --check` 验证。
-- [ ] 3.5 [IP-09] 完成 PostgreSQL 集成与 G2.5 fixture 测试，覆盖标准化记录与正式登记外部事件两类 XOR、外部未登记/reader 不可用/越权失败、监测所需序列零/一/多快照、完整/缺失 policy、初评/重评/补算、缺值/单位、原子回滚、幂等/并发、audit/outbox 及标准化风险记录纵向链；执行 `pnpm exec vitest run packages/adapters/test/risk-assessment/postgres-risk-assessment-engine.test.ts packages/adapters/test/engineering-data/context-source/postgres-engineering-context-source-registry.test.ts` 验证。
+- [x] 3.5 [IP-09] 完成 PostgreSQL 集成与 G2.5 fixture 测试，覆盖标准化记录与正式登记外部事件两类 XOR、外部未登记/reader 不可用/越权失败、监测所需序列零/一/多快照、完整/缺失 policy、初评/重评/补算、缺值/单位、原子回滚、幂等/并发、audit/outbox 及标准化风险记录纵向链；执行 `pnpm exec vitest run packages/adapters/test/risk-assessment/postgres-risk-assessment-engine.test.ts packages/adapters/test/engineering-data/context-source/postgres-engineering-context-source-registry.test.ts` 验证。
 
 ## 4. API 与 Worker 接入确认
 

@@ -22,6 +22,7 @@ import {
   ReviewTaskRefV1Schema,
   RiskAssessmentRecordRefV1Schema,
   RiskInputVersionRefV1Schema,
+  RetrievalEvidenceBaseReleaseRefV1Schema,
   StandardizedRiskRecordRefV1Schema,
   WarningRecordRefV1Schema,
   WarningResponseTaskRefV1Schema,
@@ -85,6 +86,52 @@ const ForecastAvailabilityV1Schema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("unavailable"), reasonCode: IdentifierSchema }),
 ]);
 
+const IdentificationBasisPublishedReleasesV1Schema = z.tuple([
+  z.strictObject({
+    definitionType: z.literal("process-model"),
+    releaseRef: KnowledgeReleaseRefV1Schema,
+  }),
+  z.strictObject({
+    definitionType: z.literal("risk-mechanism"),
+    releaseRef: KnowledgeReleaseRefV1Schema,
+  }),
+  z.strictObject({
+    definitionType: z.literal("standard-library"),
+    releaseRef: KnowledgeReleaseRefV1Schema,
+  }),
+  z.strictObject({
+    definitionType: z.literal("case-library"),
+    releaseRef: KnowledgeReleaseRefV1Schema,
+  }),
+  z.strictObject({
+    definitionType: z.literal("retrieval-evidence-base"),
+    releaseRef: KnowledgeReleaseRefV1Schema,
+  }),
+]);
+
+const IdentificationBasisPublishedPayloadV1Schema = z
+  .strictObject({
+    basisKind: z.literal("identification-basis"),
+    publishedReleases: IdentificationBasisPublishedReleasesV1Schema,
+    retrievalEvidenceBaseReleaseRef: RetrievalEvidenceBaseReleaseRefV1Schema,
+  })
+  .superRefine((payload, context) => {
+    const compositeRelease = payload.publishedReleases[4];
+    if (
+      compositeRelease.releaseRef.reference.entityId !==
+        payload.retrievalEvidenceBaseReleaseRef.reference.entityId ||
+      compositeRelease.releaseRef.reference.versionId !==
+        payload.retrievalEvidenceBaseReleaseRef.reference.versionId
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["retrievalEvidenceBaseReleaseRef"],
+        message:
+          "retrievalEvidenceBaseReleaseRef must match the published retrieval evidence base release",
+      });
+    }
+  });
+
 export const DomainEventV1Schema = z.discriminatedUnion("eventType", [
   eventSchema("engineering.inputs-ready.v1", InputsReadyPayloadV1Schema),
   eventSchema(
@@ -107,6 +154,23 @@ export const DomainEventV1Schema = z.discriminatedUnion("eventType", [
       }),
     }),
   ),
+  eventSchema(
+    "knowledge.identification-basis-published.v1",
+    IdentificationBasisPublishedPayloadV1Schema,
+  ).superRefine((event, context) => {
+    const compositeReleaseRef = event.payload.publishedReleases[4].releaseRef;
+    if (
+      event.aggregateRef.kind !== "knowledge-release" ||
+      event.aggregateRef.reference.entityId !== compositeReleaseRef.reference.entityId ||
+      event.aggregateRef.reference.versionId !== compositeReleaseRef.reference.versionId
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["aggregateRef"],
+        message: "aggregateRef must match the published retrieval evidence base release",
+      });
+    }
+  }),
   eventSchema(
     "assessment.recorded.v1",
     z.strictObject({

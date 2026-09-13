@@ -632,10 +632,16 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
       return { kind: "failed", error: moduleError("UNSUPPORTED_CONTRACT", "monitoring.series") };
     const valid = parsed.data;
     try {
-      await this.#verify(valid, "engineering-data.write", [valid.spatialScopeRef], []);
-      const atomic = atomicCommand(valid, "engineering-data.monitoring-series.v1", valid);
+      const decision = await this.#verify(
+        valid,
+        "engineering-data.write",
+        [valid.spatialScopeRef],
+        [],
+      );
+      const verified = { ...valid, actorId: decision.context.actorId };
+      const atomic = atomicCommand(verified, "engineering-data.monitoring-series.v1", verified);
       const receipt = await this.#transactionUnit.execute(atomic, async (context) =>
-        this.#reviseSeriesInTransaction(context, valid),
+        this.#reviseSeriesInTransaction(context, verified),
       );
       const revision = await this.#readSeriesRevision(valid.projectId, receipt.resultRef);
       return revision === undefined
@@ -669,10 +675,16 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
       if (series === undefined) {
         return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", valid.commandId) };
       }
-      await this.#verify(valid, "engineering-data.write", [series.spatialScopeRef], []);
-      const atomic = atomicCommand(valid, "engineering-data.monitoring-policy.v1", valid);
+      const decision = await this.#verify(
+        valid,
+        "engineering-data.write",
+        [series.spatialScopeRef],
+        [],
+      );
+      const verified = { ...valid, actorId: decision.context.actorId };
+      const atomic = atomicCommand(verified, "engineering-data.monitoring-policy.v1", verified);
       await this.#transactionUnit.execute(atomic, async (context) =>
-        this.#registerPolicyInTransaction(context, valid),
+        this.#registerPolicyInTransaction(context, verified),
       );
       const policy = await this.#readPolicy(valid.projectId, valid.policy.availabilityPolicyRef);
       return policy === undefined
@@ -713,21 +725,27 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
       ) {
         return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", valid.commandId) };
       }
-      await this.#verify(valid, "engineering-data.write", [revision.spatialScopeRef], []);
-      const artifact = await this.#readSampleArtifact(valid, revision);
-      await this.#verify(
+      const decision = await this.#verify(
         valid,
+        "engineering-data.write",
+        [revision.spatialScopeRef],
+        [],
+      );
+      const verified = { ...valid, actorId: decision.context.actorId };
+      const artifact = await this.#readSampleArtifact(verified, revision);
+      await this.#verify(
+        verified,
         "engineering-data.write",
         [revision.spatialScopeRef],
         [artifact.envelope.sourceVersionRef],
       );
-      const atomic = atomicCommand(valid, "engineering-data.register-monitoring-batch.v1", {
-        command: valid,
+      const atomic = atomicCommand(verified, "engineering-data.register-monitoring-batch.v1", {
+        command: verified,
         envelope: artifact.envelope,
         fingerprint: artifact.fingerprint,
       });
       const receipt = await this.#transactionUnit.execute(atomic, async (context) =>
-        this.#registerBatchInTransaction(context, valid, revision, artifact),
+        this.#registerBatchInTransaction(context, verified, revision, artifact),
       );
       const batch = await this.#readBatch(valid.projectId, receipt.resultRef);
       return batch === undefined
@@ -756,7 +774,10 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
     }
     const valid = parsed.data;
     try {
-      const atomic = atomicCommand(valid, "engineering-data.monitoring-snapshot.v1", valid);
+      // 冻结的精确范围只能在事务内解析，先以同一分支完成主体绑定再进入 C03 幂等。
+      const decision = await this.#verify(valid, "engineering-data.freeze", [], []);
+      const verified = { ...valid, actorId: decision.context.actorId };
+      const atomic = atomicCommand(verified, "engineering-data.monitoring-snapshot.v1", verified);
       const receipt = await this.#transactionUnit.execute(
         atomic,
         async (context) => {
@@ -764,15 +785,15 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
           const freezeRecordedAt = await databaseClock(db);
           const revision = await this.#readSeriesRevisionFromDb(
             db,
-            valid.projectId,
-            valid.payload.monitoringSeriesRef,
+            verified.projectId,
+            verified.payload.monitoringSeriesRef,
           );
           if (revision === undefined)
-            throw domainFailure(moduleError("AUTHORIZATION_DENIED", valid.commandId));
+            throw domainFailure(moduleError("AUTHORIZATION_DENIED", verified.commandId));
           const policy = await this.#readPolicyFromDb(
             db,
-            valid.projectId,
-            valid.payload.availabilityPolicyRef,
+            verified.projectId,
+            verified.payload.availabilityPolicyRef,
           );
           if (
             policy === undefined ||
@@ -781,14 +802,14 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
               revision.monitoringSeriesRef.reference,
             )
           ) {
-            throw domainFailure(moduleError("AUTHORIZATION_DENIED", valid.commandId));
+            throw domainFailure(moduleError("AUTHORIZATION_DENIED", verified.commandId));
           }
           const sourceRows = await this.#selectSnapshotSourceRows(
             db,
-            valid.projectId,
+            verified.projectId,
             revision,
             policy,
-            valid.payload.cutoff,
+            verified.payload.cutoff,
             freezeRecordedAt,
           );
           const sourceRowsByTime = new Map<number, MonitoringSampleVersionRow[]>();
@@ -800,7 +821,7 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
           }
           try {
             await this.#verify(
-              valid,
+              verified,
               "engineering-data.freeze",
               [revision.spatialScopeRef],
               sourceVersionRefsFromJson(
@@ -815,7 +836,7 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
               throw domainFailure(
                 this.#mapError(
                   error,
-                  valid.commandId,
+                  verified.commandId,
                   "monitoring.freeze",
                   "engineering-data.freeze",
                 ),
@@ -825,7 +846,7 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
           }
           return this.#freezeInTransaction(
             context,
-            valid,
+            verified,
             revision,
             policy,
             freezeRecordedAt,
@@ -878,26 +899,27 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
           reference: evidence.sourceVersion,
         })),
       );
-      await this.#verify(
+      const decision = await this.#verify(
         { ...valid, commandId: valid.queryId },
         "engineering-data.read",
         snapshot.authorizationSnapshot.spatialScopeRefs,
         sourceVersionRefs,
       );
+      const verified = { ...valid, actorId: decision.context.actorId };
       const atomic = atomicCommand(
         {
-          commandId: valid.queryId,
-          idempotencyKey: valid.queryId,
-          projectId: valid.projectId,
-          actorId: valid.actorId,
-          issuedAt: valid.requestedAt,
-          authorization: valid.authorization,
+          commandId: verified.queryId,
+          idempotencyKey: verified.queryId,
+          projectId: verified.projectId,
+          actorId: verified.actorId,
+          issuedAt: verified.requestedAt,
+          authorization: verified.authorization,
         },
         "engineering-data.monitoring-snapshot-query.v1",
-        valid,
+        verified,
       );
       await this.#transactionUnit.execute(atomic, async (context) =>
-        this.#registerQueryInTransaction(context, valid, snapshot),
+        this.#registerQueryInTransaction(context, verified, snapshot),
       );
       return {
         kind: "succeeded",
@@ -1006,37 +1028,34 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
       }
       // 固定顺序：先按本次调用方授权上下文完成 C06 verify（授权与不可枚举拒绝优先），
       // 通过后才进入 C03 幂等；同键异载荷在授权通过后返回既有 IDEMPOTENCY_CONFLICT。
-      const verified = await this.#verify(
+      const decision = await this.#verify(
         { ...valid, commandId: valid.queryId },
         "engineering-data.read",
         [revision.spatialScopeRef],
         [],
       );
       // 操作者身份只能取自 C06 已验证的授权上下文，载荷 actor 仅是一致性声明。
-      if (verified.context.actorId !== valid.actorId) {
-        return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", valid.queryId) };
-      }
-      const actorId = verified.context.actorId;
+      const verified = { ...valid, actorId: decision.context.actorId };
       const status = await this.#readSeriesRevisionStatus(
-        valid.projectId,
-        valid.monitoringSeriesRef,
+        verified.projectId,
+        verified.monitoringSeriesRef,
       );
       if (status === undefined)
-        return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", valid.queryId) };
+        return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", verified.queryId) };
       const atomic = atomicCommand(
         {
-          commandId: valid.queryId,
-          idempotencyKey: valid.queryId,
-          projectId: valid.projectId,
-          actorId,
-          issuedAt: valid.requestedAt,
-          authorization: valid.authorization,
+          commandId: verified.queryId,
+          idempotencyKey: verified.queryId,
+          projectId: verified.projectId,
+          actorId: verified.actorId,
+          issuedAt: verified.requestedAt,
+          authorization: verified.authorization,
         },
         "engineering-data.monitoring-series-read.v1",
-        valid,
+        verified,
       );
       await this.#transactionUnit.execute(atomic, async () =>
-        this.#registerSeriesReadInTransaction(valid, actorId),
+        this.#registerSeriesReadInTransaction(verified, verified.actorId),
       );
       return {
         kind: "succeeded",
@@ -1090,7 +1109,7 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
     ) {
       throw domainFailure(moduleError("AUTHORIZATION_DENIED", command.commandId));
     }
-    return this.#access.verify({
+    const decision = await this.#access.verify({
       authorizationContextRef: command.authorization.authorizationContextRef,
       invocationId: command.commandId,
       projectId: command.projectId,
@@ -1104,6 +1123,11 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
       requestedSourceVersionRefs: [...requestedSourceVersionRefs],
       requestedAt: command.authorization.decidedAt,
     });
+    // 操作者身份只取自 C06 当前验证结果；命令声明主体必须与之一致。
+    if (decision.context.actorId !== command.actorId) {
+      throw domainFailure(moduleError("AUTHORIZATION_DENIED", command.commandId));
+    }
+    return decision;
   }
 
   async #reviseSeriesInTransaction(

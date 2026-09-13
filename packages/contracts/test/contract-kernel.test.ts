@@ -470,7 +470,26 @@ describe("评估记录", () => {
     } as const;
     // @ts-expect-error 同时携带两个标识的对象不得赋给共享风险输入引用
     const rejectedRiskInput: RiskInputReference = ambiguousRiskInput;
-    expect(RiskInputReferenceSchema.safeParse(rejectedRiskInput).success).toBe(false);
+    expect(RiskInputReferenceSchema.safeParse(rejectedRiskInput)).toEqual({
+      success: false,
+      error: expect.objectContaining({
+        issues: [expect.objectContaining({ code: "custom", path: ["externalRiskEventId"] })],
+      }),
+    });
+    expect(
+      RiskAssessmentRecordSchema.safeParse({ ...assessmentBase, ...ambiguousRiskInput }),
+    ).toEqual({
+      success: false,
+      error: expect.objectContaining({
+        issues: [expect.objectContaining({ code: "custom", path: ["externalRiskEventId"] })],
+      }),
+    });
+    expect(RiskInputReferenceSchema.safeParse({ kind: "standardized-risk-record" })).toEqual({
+      success: false,
+      error: expect.objectContaining({
+        issues: [expect.objectContaining({ code: "invalid_type", path: ["riskRecordId"] })],
+      }),
+    });
 
     expect(IndicatorResultSchema.safeParse(indicatorResult).success).toBe(true);
     expect(

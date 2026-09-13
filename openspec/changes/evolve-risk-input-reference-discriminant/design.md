@@ -45,7 +45,7 @@ type RiskInputReference =
 ```ts
 const rejectPresentOppositeRiskInputField = (
   input: { kind: "standardized-risk-record" | "external-risk-event" },
-  context: RefinementCtx,
+  context: z.core.$RefinementCtx,
 ) => {
   const oppositeField =
     input.kind === "standardized-risk-record" ? "externalRiskEventId" : "riskRecordId";
@@ -54,21 +54,23 @@ const rejectPresentOppositeRiskInputField = (
   }
 };
 
+// 对侧标识运行时可放行（冲突统一由精炼报稳定错误），类型层仍收紧为 never。
+const AbsentRiskInputFieldSchema = z.custom<never>(() => true);
+
 const RiskRecordInputSchema = z.strictObject({
   kind: z.literal("standardized-risk-record"),
   riskRecordId: IdentifierSchema,
-  externalRiskEventId: z.never().optional(),
+  externalRiskEventId: AbsentRiskInputFieldSchema.optional(),
 });
 const ExternalRiskEventInputSchema = z.strictObject({
   kind: z.literal("external-risk-event"),
   externalRiskEventId: IdentifierSchema,
-  riskRecordId: z.never().optional(),
+  riskRecordId: AbsentRiskInputFieldSchema.optional(),
 });
 
-export const RiskInputReferenceSchema = z.discriminatedUnion("kind", [
-  RiskRecordInputSchema,
-  ExternalRiskEventInputSchema,
-]).superRefine(rejectPresentOppositeRiskInputField);
+export const RiskInputReferenceSchema = z
+  .discriminatedUnion("kind", [RiskRecordInputSchema, ExternalRiskEventInputSchema])
+  .superRefine(rejectPresentOppositeRiskInputField);
 export type RiskInputReference = z.infer<typeof RiskInputReferenceSchema>;
 ```
 
@@ -88,9 +90,9 @@ type RiskInputReference =
     };
 ```
 
-仅增加 `kind` 的普通可辨识联合仍可能让预先赋值的对象以额外属性形式携带另一标识；两个 `z.never().optional()` 使携带另一有效标识的结构性赋值失败。内部 `rejectPresentOppositeRiskInputField` 精炼按 `kind` 检查另一字段是否为自有属性，使显式 `undefined` 也保持原 strict union 的运行时拒绝行为；同一精炼复用于共享引用与评估记录。类型仍只从 Schema 推导，不新增手写公共别名。
+仅增加 `kind` 的普通可辨识联合仍可能让预先赋值的对象以额外属性形式携带另一标识；对侧字段以 `z.custom<never>(() => true).optional()` 参与解析，使携带另一有效标识的结构性赋值失败。运行时与类型层在这里有意不对称：对侧字段若用 `z.never()` 收紧，双标识输入会在精炼运行前以 `invalid_type`、`expected: "never"` 失败，公开错误会泄露内部 Schema 手段，且 `rejectPresentOppositeRiskInputField` 对双标识不可达；因此对侧字段必须运行时可放行，双标识与显式 `undefined` 只由精炼按自有属性报稳定的 `custom` 冲突错误。缺少标识由分支必需字段的 `invalid_type` 拒绝，缺少或未知 `kind` 由判别器错误拒绝，均不泄露内部手段。类型仍只从 Schema 推导（`z.infer`），不新增手写公共别名。
 
-备选一是只把 `z.union` 改为 `z.discriminatedUnion`；因不能完整关闭已确认的结构性赋值缺口而否决。备选二是以 optional 字段加 `refine`；其推导类型仍宽松而否决。备选三是手写 XOR utility/type；会建立第二事实源而否决。
+备选一是只把 `z.union` 改为 `z.discriminatedUnion`；因不能完整关闭已确认的结构性赋值缺口而否决。备选二是以 optional 字段加 `refine`；其推导类型仍宽松而否决。备选三是手写 XOR utility/type；会建立第二事实源而否决。备选四是对侧字段用 `z.never()` 快速失败；因泄露内部 Schema 表示并让稳定冲突错误不可达而否决。
 
 ### D-02：判别字段和值复用同域版本化引用
 
@@ -107,7 +109,7 @@ type RiskInputReference =
 只修改 `packages/contracts/test/contract-kernel.test.ts`：
 
 - 两个合法 `RiskInputReferenceSchema` 对象及两个合法 `RiskAssessmentRecordSchema` 对象补充对应 `kind`；
-- 表格化覆盖缺少/未知 `kind`、判别与标识不匹配、双标识、无标识和额外字段的拒绝；
+- 表格化覆盖缺少/未知 `kind`、判别与标识不匹配、双标识、无标识和额外字段的拒绝；双标识与缺少标识另按 `code` 与 `path` 断言稳定结构化错误，不断言完整文案，也不允许出现内部 Schema 表示；
 - 导入 `RiskInputReference` 类型，以预先赋值的双标识对象配合 `@ts-expect-error`，确保结构性赋值不能通过；同时保留两个合法分支的静态赋值；
 - 以现有 Vitest 命令验证运行时，以直接对该测试文件执行 TypeScript `--noEmit` 验证 `@ts-expect-error`，不新增测试文件或配置。
 
@@ -120,7 +122,7 @@ type RiskInputReference =
 ## Risks / Trade-offs
 
 - [公共对象新增必填 `kind`，尚未合入本基线的下游分支可能需要适配] → 主调度在合并本 change 后重放下游分支；适配仅把现有来源映射为两个固定 literal，不提供兼容入口。
-- [`z.never().optional()` 的静态表示允许“属性存在且值为 `undefined`”] → 共享精炼在运行时拒绝该自有属性；TypeScript 无法仅由 Zod optional 输出区分“缺失”与“显式 undefined”，但两个有效标识均为非空字符串，已确认的双标识结构性赋值缺口被关闭，不另建手写公共类型事实源。
+- [对侧字段运行时放行、类型层收紧，两侧有意不对称] → 精炼是对侧标识的唯一运行时闸门；契约测试对共享引用与评估记录分别断言双标识只返回稳定的 `custom` 冲突问题，任何放行回归都会失败。TypeScript 无法区分“属性缺失”与“显式 `undefined`”，但两者都携带对侧自有属性并被同一精炼拒绝，两个有效标识均为非空字符串，结构性赋值缺口保持关闭，不另建手写公共类型事实源。
 - [新增 discriminator 改变已序列化对象形状] → 当前基线无目标类型持久化或 JSON-LD 消费；不做空迁移。未来生产记录从创建时写入 `kind`。
 
 ## Migration Plan

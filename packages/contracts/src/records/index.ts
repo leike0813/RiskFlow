@@ -164,15 +164,19 @@ const rejectPresentOppositeRiskInputField = (
   }
 };
 
+// 对侧标识在解析时宽松通过，冲突统一由 rejectPresentOppositeRiskInputField 报稳定错误，
+// 避免公开错误泄露内部 Schema 手段（如 expected never）；类型层仍收紧为 never。
+const AbsentRiskInputFieldSchema = z.custom<never>(() => true);
+
 const RiskRecordInputSchema = z.strictObject({
   kind: z.literal("standardized-risk-record"),
   riskRecordId: IdentifierSchema,
-  externalRiskEventId: z.never().optional(),
+  externalRiskEventId: AbsentRiskInputFieldSchema.optional(),
 });
 const ExternalRiskEventInputSchema = z.strictObject({
   kind: z.literal("external-risk-event"),
   externalRiskEventId: IdentifierSchema,
-  riskRecordId: z.never().optional(),
+  riskRecordId: AbsentRiskInputFieldSchema.optional(),
 });
 
 export const RiskInputReferenceSchema = z

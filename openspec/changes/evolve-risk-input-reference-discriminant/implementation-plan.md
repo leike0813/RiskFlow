@@ -20,16 +20,16 @@
 
 | IP-ID | Task | Requirement/Scenario | 文件与符号 | 精确变化 | 不得改变 |
 | --- | --- | --- | --- | --- | --- |
-| IP-01 | 收紧共享风险输入及评估记录 | `风险评估记录只引用一个风险事件来源`；“接受识别结果作为评估输入”“接受外部风险事件作为评估输入”“拒绝含糊的风险输入”“类型层拒绝同时携带两个标识”“历史评估保持可重放” | **修改** `packages/contracts/src/records/index.ts`：Zod import、`RiskRecordInputSchema`、`ExternalRiskEventInputSchema`、新增内部 `rejectPresentOppositeRiskInputField`、`RiskInputReferenceSchema`、`RiskAssessmentRecordSchema` | 按 D-01/D-02 增加 `kind` 与对侧 `z.never().optional()`，两个顶层 Schema 改为 `z.discriminatedUnion("kind", ...)` 并复用 own-property 精炼；`RiskInputReference`/`RiskAssessmentRecord` 继续由 `z.infer` 产生 | 其它 records Schema、字段、导出名与路径；ports/workflows/events；版本、证据、审计；依赖 |
+| IP-01 | 收紧共享风险输入及评估记录 | `风险评估记录只引用一个风险事件来源`；“接受识别结果作为评估输入”“接受外部风险事件作为评估输入”“拒绝含糊的风险输入”“类型层拒绝同时携带两个标识”“历史评估保持可重放” | **修改** `packages/contracts/src/records/index.ts`：Zod import、`RiskRecordInputSchema`、`ExternalRiskEventInputSchema`、新增内部 `rejectPresentOppositeRiskInputField` 与 `AbsentRiskInputFieldSchema`、`RiskInputReferenceSchema`、`RiskAssessmentRecordSchema` | 按 D-01/D-02/D-03 增加 `kind`，对侧标识以 `z.custom<never>(() => true).optional()` 运行时可放行、类型层收紧，两个顶层 Schema 改为 `z.discriminatedUnion("kind", ...)` 并复用 own-property 精炼；双标识只返回稳定的 `custom` 冲突问题，不含 `expected: "never"` 等内部表示；`RiskInputReference`/`RiskAssessmentRecord` 继续由 `z.infer` 产生 | 其它 records Schema、字段、导出名与路径；ports/workflows/events；版本、证据、审计；依赖 |
 | IP-02 | 机械适配夹具并建立回归证据 | 同 Requirement 的全部五个 Scenario | **修改** `packages/contracts/test/contract-kernel.test.ts`：imports、风险输入 XOR test、四个合法输入对象及负例 | 按 D-04 为合法引用/记录补固定 `kind`；用表格覆盖缺失/未知/错配/双重/空/额外字段；增加合法类型收窄与预先赋值双标识对象的 `@ts-expect-error` | 其它测试区块、完整错误文案断言、C25/JSON-LD 夹具 |
 | IP-03 | 最小验证与范围门 | 全部 Requirement/Scenario；D-01～D-05 | 不新增代码文件；验证 IP-01/IP-02 与本 change 工件 | 依次运行 §6 命令，确认声明、运行时、格式、lint、OpenSpec 与文件范围 | 不执行全量服务、依赖安装、提交或归档 |
 
 ## 4. 调用与副作用顺序
 
 1. `RiskInputReferenceSchema` 或 `RiskAssessmentRecordSchema` 读取 `kind` 并只选择对应分支。
-2. 分支校验要求本分支标识为非空 `IdentifierSchema`，对侧标识不得携带值，strict object 拒绝其它字段。
-3. `rejectPresentOppositeRiskInputField` 再以 `Object.hasOwn` 拒绝显式携带但值为 `undefined` 的对侧字段，保持原 strict 解析边界。
-4. 成功时返回带同一 `kind` 的推导类型；失败时只返回既有 Zod 失败，不引入领域错误、重试或回退。
+2. 分支校验要求本分支标识为非空 `IdentifierSchema`，对侧标识运行时可放行（类型层为 `never`），strict object 拒绝其它未声明字段。
+3. `rejectPresentOppositeRiskInputField` 以 `Object.hasOwn` 拒绝任何显式携带的对侧字段（含值为 `undefined`），使双标识与显式 `undefined` 都返回同一稳定的 `custom` 冲突问题，公开错误不出现 `expected: "never"` 等内部表示。
+4. 成功时返回带同一 `kind` 的推导类型；失败时只返回既有 Zod 失败（冲突为 `custom`，缺标识为分支 `invalid_type`，缺/未知 `kind` 为判别器错误），不引入领域错误、重试或回退。
 
 该路径无权限检查、状态转换、I/O、事务、持久化、事件、审计写入、幂等或重试副作用。`RiskAssessmentRecordSchema` 的版本、证据与审计字段仍由原 shape 原样校验。
 
@@ -47,8 +47,8 @@
 | --- | --- | --- | --- | --- | --- |
 | 接受识别结果作为评估输入 | IP-01、IP-02 | `packages/contracts/test/contract-kernel.test.ts` | `kind: "standardized-risk-record"` + 仅 `riskRecordId`；同 kind 的完整 `assessmentBase` | 引用与记录均解析成功；TypeScript 可按 `kind` 读取 `riskRecordId` | `pnpm exec vitest run packages/contracts/test/contract-kernel.test.ts`；类型命令见下 |
 | 接受外部风险事件作为评估输入 | IP-01、IP-02 | 同上 | `kind: "external-risk-event"` + 仅 `externalRiskEventId`；同 kind 的完整 `assessmentBase` | 引用与记录均解析成功；TypeScript 可按 `kind` 读取 `externalRiskEventId` | 同上 |
-| 拒绝含糊的风险输入 | IP-01、IP-02 | 同上 | 缺失/未知 kind、kind 与标识错配、双标识、无标识、显式 undefined 对侧字段、额外字段 | 两个 Schema 对各代表性边界 `safeParse(...).success === false` | `pnpm exec vitest run packages/contracts/test/contract-kernel.test.ts` |
-| 类型层拒绝同时携带两个标识 | IP-01、IP-02 | 同上 | 先保存带 literal kind 和两个有效标识的变量，再赋给 `RiskInputReference` | `@ts-expect-error` 被消费；若类型再次放宽，TypeScript 以 unused directive 失败 | `pnpm exec tsc --noEmit --strict --skipLibCheck --target ES2023 --module NodeNext --moduleResolution NodeNext --verbatimModuleSyntax --noUncheckedIndexedAccess --exactOptionalPropertyTypes packages/contracts/test/contract-kernel.test.ts` |
+| 拒绝含糊的风险输入 | IP-01、IP-02 | 同上 | 缺失/未知 kind、kind 与标识错配、双标识、无标识、显式 undefined 对侧字段、额外字段 | 两个 Schema 对各代表性边界 `safeParse(...).success === false`；双标识与缺标识另按 `code` 与 `path` 断言稳定结构化错误，不出现内部 Schema 表示 | `pnpm exec vitest run packages/contracts/test/contract-kernel.test.ts` |
+| 类型层拒绝同时携带两个标识 | IP-01、IP-02 | 同上，另加临时编译探针 | 先保存带 literal kind 和两个有效标识的变量，再赋给 `RiskInputReference`；探针文件对 `RiskInputReference` 与评估记录分支做同形负向赋值 | `@ts-expect-error` 被消费；若类型再次放宽，TypeScript 以 unused directive 失败；探针确认 TS2322（对侧字段为 `undefined`）后删除 | `pnpm exec tsc --noEmit --strict --skipLibCheck --target ES2023 --module NodeNext --moduleResolution NodeNext --verbatimModuleSyntax --noUncheckedIndexedAccess --exactOptionalPropertyTypes packages/contracts/test/contract-kernel.test.ts` |
 | 历史评估保持可重放 | IP-01、IP-02 | 同上 | 原 `assessmentBase` 的精确规则/权重/矩阵版本及两种 kind | 添加 kind 后既有版本、快照、证据与审计仍原样解析 | `pnpm exec vitest run packages/contracts/test/contract-kernel.test.ts` |
 | Schema/声明与包边界 | IP-01、IP-03 | 生产源码 | contracts project references | 声明构建成功且无反向依赖 | `pnpm exec tsc -b packages/contracts/tsconfig.json --pretty false`；`pnpm deps:check` |
 | 风格与工件有效性 | IP-01～IP-03 | 两个代码文件与本 change 五工件 | 规划、实现完成 | ESLint、Prettier、OpenSpec strict、空白与范围检查通过 | `pnpm exec eslint packages/contracts/src/records/index.ts packages/contracts/test/contract-kernel.test.ts`；`pnpm exec prettier --check packages/contracts/src/records/index.ts packages/contracts/test/contract-kernel.test.ts openspec/changes/evolve-risk-input-reference-discriminant`；`openspec validate evolve-risk-input-reference-discriminant --strict --no-interactive`；`git diff --check` |

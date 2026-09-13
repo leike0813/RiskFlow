@@ -108,7 +108,7 @@ export const validateRevisionBase = (input: {
   readonly baseReleaseRef?: KnowledgeReleaseRefV1 | undefined;
   readonly baseRevisionRef?: KnowledgeRevisionRefV1 | undefined;
   readonly baseRelease?: KnowledgeReleaseV1 | undefined;
-  readonly currentRelease?: KnowledgeReleaseV1 | undefined;
+  readonly latestRelease?: KnowledgeReleaseV1 | undefined;
 }): void => {
   const missingTarget = KnowledgeRevisionRefV1Schema.parse({
     kind: "knowledge-revision",
@@ -146,17 +146,16 @@ export const validateRevisionBase = (input: {
   ) {
     fail("STALE_VERSION", "base-release-mismatch", releaseTarget(requiredBaseReleaseRef));
   }
+  const latestRelease = input.latestRelease;
   if (
-    input.currentRelease === undefined ||
-    !versionedReferenceEquals(input.currentRelease.releaseRef, requiredBaseReleaseRef)
+    latestRelease === undefined ||
+    !versionedReferenceEquals(latestRelease.releaseRef, requiredBaseReleaseRef)
   ) {
     fail(
       "STALE_VERSION",
       "base-release-not-current",
       releaseTarget(requiredBaseReleaseRef),
-      input.currentRelease === undefined
-        ? undefined
-        : releaseTarget(input.currentRelease.releaseRef),
+      latestRelease === undefined ? undefined : releaseTarget(latestRelease.releaseRef),
     );
   }
 };

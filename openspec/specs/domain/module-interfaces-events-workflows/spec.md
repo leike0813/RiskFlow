@@ -261,7 +261,7 @@ A0～A9 MUST 完整追踪 RA-S1～RA-S7。A3～A6 不创建必经 Agent 任务�
 
 系统 MUST 让 `assessment-preparation` 命令显式携带 `entryMode` 与 `triggerReasonCode`，并可携带 `previousAssessmentRecordRef` 与 `causalRunRef`；调用方不得从风险输入种类或其它上下文推导入口模式和触发原因，也不得依靠默认值补全。命令和 A0 `AssessmentPreparationSnapshotV1` MUST 使用同名、同形状的可选 `monitoringSnapshotRefs`：未提供表示本次评估不使用监测输入，提供时必须是至少含一个 `MonitoringSnapshotRefV1` 的集合，并引用调用方预先按监测序列冻结且当前授权允许使用的精确快照。每个 C14 监测快照仍只属于一个监测序列，评估准备只聚合引用，不复制监测正文或改变 C14/C18 事实。
 
-`engineering.assessment-input-changed.v1` 的 monitoring-snapshot 变化 MUST 通过 `previousMonitoringSnapshotRefs` 与 `newMonitoringSnapshotRefs` 两个精确引用数组表达；任一侧可以为空，以表达监测序列新增或删除，两侧也可同时包含多个引用以表达多序列变化。事件 MUST 只携带前后监测快照引用和既有原因码，不得包含监测正文，也不得成为平行于 C14 监测快照的第二套变更事实。（RA-S1、RA-S5～RA-S7）
+`engineering.assessment-input-changed.v1` 的 monitoring-snapshot 变化 MUST 通过可选的 `previousMonitoringSnapshotRefs` 与 `newMonitoringSnapshotRefs` 精确引用数组表达；字段存在时 MUST 至少包含一个引用，且两字段 MUST 至少存在一个。只提供新数组表示纯新增，只提供前数组表示纯删除，同时提供两个非空数组表示替换或多序列变化；两侧均缺或任一显式空数组 MUST 被拒绝。事件 MUST 只携带前后监测快照引用和既有原因码，不得包含监测正文，也不得成为平行于 C14 监测快照的第二套变更事实。（RA-S1、RA-S5～RA-S7）
 
 #### Scenario: 调用方显式提交评估入口语义
 
@@ -295,9 +295,21 @@ A0～A9 MUST 完整追踪 RA-S1～RA-S7。A3～A6 不创建必经 Agent 任务�
 
 #### Scenario: 事件表达监测序列新增和删除
 
-- **WHEN** 一次评估输入变化只新增监测序列、只删除监测序列，或同时新增和删除多个序列
-- **THEN** monitoring-snapshot 事件分支分别允许前数组为空、后数组为空，或两个数组均包含多个精确监测快照引用
-- **AND** 消费方从前后引用集合判断变化，不读取监测正文或第二套变更事实
+- **WHEN** 一次评估输入变化只新增或只删除一个或多个监测快照引用
+- **THEN** 纯新增只提供非空 `newMonitoringSnapshotRefs`，纯删除只提供非空 `previousMonitoringSnapshotRefs`，并分别省略空侧字段
+- **AND** 消费方把缺失侧解释为空集合
+
+#### Scenario: 事件表达替换
+
+- **WHEN** 一次评估输入变化同时具有前后监测快照引用
+- **THEN** monitoring-snapshot 分支同时提供两个非空精确引用数组
+- **AND** 消费方从两侧引用判断替换或多序列变化，不读取监测正文或第二套变更事实
+
+#### Scenario: 事件拒绝无变化载荷
+
+- **WHEN** monitoring-snapshot 分支同时缺少前后引用数组，或显式提供任一空数组
+- **THEN** strict 事件契约拒绝该载荷
+- **AND** 系统不发布或消费无法表达实际新增、删除或替换的事件
 
 #### Scenario: 事件拒绝旧单数载荷和监测正文
 

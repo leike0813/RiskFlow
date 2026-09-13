@@ -14,6 +14,7 @@ import {
   assertSpatialScopeTree,
   allSpatialScopesCovered,
   branchCapability,
+  capabilitiesForBranches,
   evaluateSourceAccess,
   isAuthorizationSubset,
   isBranchAllowed,
@@ -41,6 +42,16 @@ describe("access domain", () => {
     expect(isBranchAllowed(["business-viewer"], "projection.export")).toBe(true);
     expect(isBranchAllowed(["business-viewer"], "projection.query")).toBe(true);
     expect(branchCapability("projection.query")).toBe("projection.query");
+    expect(branchCapability("agent-task.read-failure-evidence")).toBe("agent-task.read");
+    expect(capabilitiesForBranches(["agent-task.read-failure-evidence"])).toEqual([
+      "agent-task.read",
+    ]);
+    expect(PRESET_ROLE_BRANCHES_V1["project-risk-manager"]).toContain(
+      "agent-task.read-failure-evidence",
+    );
+    for (const role of ["reviewer", "field-responder", "business-viewer"] as const) {
+      expect(isBranchAllowed([role], "agent-task.read-failure-evidence")).toBe(false);
+    }
   });
 
   it("authorization scope closure", () => {

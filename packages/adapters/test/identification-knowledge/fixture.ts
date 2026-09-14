@@ -1,5 +1,6 @@
 import {
   ContentArtifactRefV1Schema,
+  MODULE_BRANCH_CAPABILITY_V1,
   type ModuleBranchV1,
   ProcessModelReleaseRefV1Schema,
   RiskMechanismReleaseRefV1Schema,
@@ -18,7 +19,12 @@ import {
   type IdentificationKnowledgeValidationPolicyV1,
   type IdentificationPreparationKnowledgeReaderV1,
 } from "@riskflow/core/identification-knowledge";
-import type { LocalIdentityAccessV1 } from "@riskflow/core/access";
+import {
+  ACCESS_POLICY_REF_V1,
+  AccessErrorV1Schema,
+  AccessServiceError,
+  type LocalIdentityAccessV1,
+} from "@riskflow/core/access";
 import { ArtifactPutCommandV1Schema } from "@riskflow/core/artifacts";
 import type { TransactionUnitV1 } from "@riskflow/core/persistence";
 
@@ -617,7 +623,25 @@ export const startIdentificationKnowledgeFixture =
           },
           authorize: async (input) => {
             if (options?.authorizeDenial?.(input) === true) {
-              throw new Error(`C06 denied the ${input.branch} invocation`);
+              // 与生产组合根一致：C06 拒绝以 AccessServiceError 呈现。
+              throw new AccessServiceError(
+                AccessErrorV1Schema.parse({
+                  code: "AUTHORIZATION_DENIED",
+                  retryable: false,
+                  stage: `identification-knowledge.authorization.${input.branch}`,
+                  occurredAt: IDENTIFICATION_KNOWLEDGE_TEST_TIMESTAMP,
+                  diagnosticRef: {
+                    kind: "diagnostic-artifact",
+                    reference: {
+                      entityId: "identification-knowledge-authorization",
+                      versionId: "v1",
+                    },
+                  },
+                  contextRefs: [],
+                  requiredCapability: MODULE_BRANCH_CAPABILITY_V1[input.branch],
+                  authorizationPolicyRef: ACCESS_POLICY_REF_V1,
+                }),
+              );
             }
             return await authorize(input);
           },

@@ -507,6 +507,18 @@ class IdentificationKnowledgeFailureEvidenceError extends Error {
   }
 }
 
+/**
+ * D-09 失败收口结果：逐 attempt 隔离处理。`settled` 为本次真正收口的尝试数，
+ * `failures` 为单个 attempt 的授权/调用失败及其可验原因（其它工程继续处理，不被阻断）。
+ */
+export interface IdentificationKnowledgeFailureSettlementV1 {
+  readonly settled: number;
+  readonly failures: readonly {
+    readonly taskRef: AgentTaskRefV1;
+    readonly error: ModuleErrorV1;
+  }[];
+}
+
 const excludedSegmentsFor = (result: DataCleaningResultV1): ReadonlySet<string> =>
   new Set(result.inputs.flatMap((input) => input.excludedSegmentIds));
 
@@ -2608,19 +2620,44 @@ export class PostgresIdentificationKnowledgeAdapter {
     );
   }
 
-  /** D-09 失败收口：只扫描 C17 未收口的编制尝试，再经 C08 公共窄读取精确任务的终态失败证据。 */
-  async settleAuthoringFailures(): Promise<number> {
+  /**
+   * D-09 失败收口：只扫描 C17 未收口的编制尝试，再经 C08 公共窄读取精确任务的终态失败证据。
+   * 逐 attempt 隔离：单个 attempt 的授权或调用失败被记录为可验错误并继续处理其余工程，
+   * 该 attempt 保留最后已成立阶段（不回滚其它工程的稳定事实），不得静默吞掉。
+   */
+  async settleAuthoringFailures(): Promise<IdentificationKnowledgeFailureSettlementV1> {
     const rows = await this.#db
       .selectFrom("business.identification_knowledge_authoring_attempts")
       .selectAll()
       // 停在 `failure-revision-bound` 的尝试只补未完成阶段；已成立的事实不会重复创建。
       .where("stage", "in", ["prepared", "task-started", "failure-revision-bound"])
+      // 显式顺序：同一批失败不会持续把后面的工程排在异常工程之后。
+      .orderBy("project_id", "asc")
+      .orderBy("attempt_id", "asc")
       .execute();
+    const failures: {
+      readonly taskRef: AgentTaskRefV1;
+      readonly error: ModuleErrorV1;
+    }[] = [];
     let settled = 0;
     for (const row of rows) {
-      if (await this.#settleOneFailure(row)) settled += 1;
+      const parsedTaskRef = AgentTaskRefV1Schema.safeParse(row.agent_task_ref);
+      try {
+        if (await this.#settleOneFailure(row)) settled += 1;
+      } catch (error) {
+        failures.push({
+          // 行由本模块 strict 写入；损坏行的原因仍以原始引用呈现，不伪造 task ref。
+          taskRef: parsedTaskRef.success
+            ? parsedTaskRef.data
+            : (row.agent_task_ref as unknown as AgentTaskRefV1),
+          error: await this.#mapError(
+            error,
+            parsedTaskRef.success ? parsedTaskRef.data.reference.entityId : row.attempt_id,
+          ),
+        });
+      }
     }
-    return settled;
+    return { settled, failures };
   }
 
   async #settleOneFailure(row: AuthoringAttemptRow): Promise<boolean> {
@@ -3097,6 +3134,8 @@ export class PostgresIdentificationKnowledgeAdapter {
   }
 
   async #mapError(error: unknown, causalRunId: string): Promise<ModuleErrorV1> {
+    // 失败收口按 attempt 隔离时必须保留 C08 窄读给出的原始原因码，不降级为通用终止失败。
+    if (error instanceof IdentificationKnowledgeFailureEvidenceError) return error.error;
     if (error instanceof AccessServiceError) {
       return moduleError({
         code:

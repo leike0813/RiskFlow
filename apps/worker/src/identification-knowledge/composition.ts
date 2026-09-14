@@ -21,6 +21,7 @@ import {
   type LocalIdentityAccessV1,
 } from "@riskflow/core/access";
 import { AgentTaskDefinitionRegistry } from "@riskflow/core/agent-runtime";
+import type { AgentTaskFailureEvidenceReaderV1 } from "@riskflow/core/agent-runtime";
 import {
   ArtifactPutCommandV1Schema,
   type ArtifactReferenceGuardV1,
@@ -97,6 +98,11 @@ export interface PostgresIdentificationKnowledgeCompositionOptionsV1 {
   /** C21/C24 拥有的精确识别策略提供者；缺失只阻断 identification-basis。 */
   readonly policySetProvider?: IdentificationPolicySetProviderV1;
   /**
+   * D-09 失败证据窄读：失败收口只按 C17 attempt 的精确任务引用经该公共接缝取证。
+   * 必须注入，缺失即拒绝构造；组合根不得用调用期转发或 C08 执行存储替代。
+   */
+  readonly agentTaskFailureEvidenceReader: AgentTaskFailureEvidenceReaderV1;
+  /**
    * 服务端受信调用来源解析器。它只能返回 C06 已支持的调用来源，不得直接返回授权上下文，
    * 也不得复制调用方命令的能力。
    */
@@ -164,6 +170,7 @@ export const createPostgresIdentificationKnowledgeComposition = (
     options.engineeringData === undefined ||
     options.reviewAudit === undefined ||
     options.validationPolicy === undefined ||
+    options.agentTaskFailureEvidenceReader === undefined ||
     options.resolveAuthorizationSource === undefined
   ) {
     throw new TypeError("identification knowledge composition requires every C03–C17 dependency");
@@ -296,14 +303,7 @@ export const createPostgresIdentificationKnowledgeComposition = (
       ? {}
       : { policySetProvider: options.policySetProvider }),
     agentTaskPort,
-    agentTaskFailureEvidenceReader: {
-      readTerminalFailure: async (request) => {
-        if (holders.taskAdapter === undefined) {
-          throw new TypeError("the C08 task adapter is not constructed yet");
-        }
-        return await holders.taskAdapter.readTerminalFailure(request);
-      },
-    },
+    agentTaskFailureEvidenceReader: options.agentTaskFailureEvidenceReader,
     authorize,
     ...(options.now === undefined ? {} : { now: options.now }),
   });

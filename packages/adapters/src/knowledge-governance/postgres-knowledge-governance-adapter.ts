@@ -606,6 +606,17 @@ export interface KnowledgeGovernanceReviewAuthorizationProviderV1 {
   ): Promise<AuthorizationContextV1>;
 }
 
+/** D-11：复核上下文必须绑定请求的工程、actor 且只携带该分支的唯一能力。 */
+const reviewContextMatches = (
+  context: AuthorizationContextV1,
+  request: KnowledgeGovernanceReviewAuthorizationRequestV1,
+  requiredCapability: "review-audit.request" | "review-audit.read",
+): boolean =>
+  context.projectId === request.projectId &&
+  context.actorId === request.actorId &&
+  context.grantedCapabilities.length === 1 &&
+  context.grantedCapabilities[0] === requiredCapability;
+
 export interface PostgresKnowledgeGovernanceAdapterOptionsV1 {
   readonly db: Kysely<PostgresDatabase>;
   readonly transactionUnit: TransactionUnitV1;
@@ -2041,7 +2052,11 @@ export class PostgresKnowledgeGovernanceAdapter {
     return decision.context;
   }
 
-  /** provider 缺失、未返回上下文或绑定不符都关闭失败，不使用命令 authorization 回退。 */
+  /**
+   * D-11：provider 缺失即关闭失败；provider 返回的上下文必须绑定请求的工程/actor 与该分支的
+   * 唯一能力，C16 再用精确 `invocationId`、`branch`、工程与空 scope 向 C06 亲自复验，
+   * 两步都通过才交给 C07，不允许用 C07 兜底或回退命令 authorization。
+   */
   async #reviewAuthorization(
     request: KnowledgeGovernanceReviewAuthorizationRequestV1,
     requiredCapability: "review-audit.request" | "review-audit.read",
@@ -2049,15 +2064,19 @@ export class PostgresKnowledgeGovernanceAdapter {
     const provider = this.#reviewAuthorizationProvider;
     if (provider === undefined) return undefined;
     const context = await provider.authorize(request);
-    if (
-      context.projectId !== request.projectId ||
-      context.actorId !== request.actorId ||
-      context.grantedCapabilities.length !== 1 ||
-      context.grantedCapabilities[0] !== requiredCapability
-    ) {
-      return undefined;
-    }
-    return context;
+    if (!reviewContextMatches(context, request, requiredCapability)) return undefined;
+    const decision = await this.#access.verify({
+      authorizationContextRef: context.authorizationContextRef,
+      invocationId: request.invocationId,
+      projectId: request.projectId,
+      branch: request.branch,
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [],
+      requestedAt: request.requestedAt,
+    });
+    const verified = decision.context;
+    if (!reviewContextMatches(verified, request, requiredCapability)) return undefined;
+    return verified;
   }
 
   async #prepareAssessmentConfiguration(

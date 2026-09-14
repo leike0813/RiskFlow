@@ -301,6 +301,12 @@ const startHarness = (behavior: {
       trace: unusedEntryPoint,
     },
     validationPolicy: policy,
+    // D-09 公共失败证据窄读：组合根只接受注入的 reader，不再用调用期转发。
+    agentTaskFailureEvidenceReader: {
+      async readTerminalFailure() {
+        throw new Error("the composition test never settles an authoring failure");
+      },
+    },
     resolveAuthorizationSource: behavior.resolve,
     now: () => new Date(NOW),
   });
@@ -443,6 +449,9 @@ describe("C17 worker identification knowledge composition root", () => {
         trace: unusedEntryPoint,
       },
       validationPolicy: policy,
+      agentTaskFailureEvidenceReader: {
+        readTerminalFailure: unusedEntryPoint,
+      },
       resolveAuthorizationSource: humanSource,
       ...overrides,
     }) as unknown as PostgresIdentificationKnowledgeCompositionOptionsV1;
@@ -458,6 +467,7 @@ describe("C17 worker identification knowledge composition root", () => {
       "engineeringData",
       "reviewAudit",
       "validationPolicy",
+      "agentTaskFailureEvidenceReader",
       "resolveAuthorizationSource",
     ] as const;
     for (const dependency of dependencies) {
@@ -469,6 +479,15 @@ describe("C17 worker identification knowledge composition root", () => {
       ).toThrowError(TypeError);
     }
     expect(() => createPostgresIdentificationKnowledgeComposition(requiredOptions())).not.toThrow();
+  });
+
+  it("refuses to construct when the C08 failure evidence reader is not injected", () => {
+    const options = requiredOptions();
+    Reflect.deleteProperty(options as Record<string, unknown>, "agentTaskFailureEvidenceReader");
+    // 缺失依赖必须在构造期关闭失败，不得留到调用期才抛 TypeError。
+    expect(() => createPostgresIdentificationKnowledgeComposition(options)).toThrowError(
+      "identification knowledge composition requires every C03–C17 dependency",
+    );
   });
 
   it("signs the exact engineering-data branch for the preparation narrow read", async () => {

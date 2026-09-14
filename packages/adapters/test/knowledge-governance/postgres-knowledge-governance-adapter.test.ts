@@ -51,7 +51,6 @@ import {
   GOVERNANCE_TEST_TIMESTAMP,
   governanceAuthorizationFor,
   reviewAuthorizationFor,
-  reviewAuthorizationProviderFor,
   startKnowledgeGovernanceFixture,
   type KnowledgeGovernancePostgresFixture,
 } from "./fixture.js";
@@ -556,7 +555,20 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
         transactionUnit: fixture!.transactionUnit,
         access: actualAccess,
         reviewAudit: fixture!.reviewAudit,
-        reviewAuthorizationProvider: reviewAuthorizationProviderFor(),
+        // 真实 C06：provider 按 C16 派生的 invocationId/branch 现场签发复核上下文。
+        reviewAuthorizationProvider: {
+          authorize: async (input) => {
+            const decision = await actualAccess.authorize({
+              invocation: { kind: "human-session", sessionToken: session.sessionToken },
+              invocationId: input.invocationId,
+              projectId: input.projectId,
+              branch: input.branch,
+              requestedSpatialScopeRefs: [],
+              requestedSourceVersionRefs: [],
+            });
+            return decision.context;
+          },
+        },
         now: () => new Date("2030-01-01T00:00:01.000Z"),
       });
       const agentTaskRefFor = (suffix: string) => ({
@@ -838,7 +850,7 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
       access: fixture!.access,
       reviewAudit: fixture!.reviewAudit,
       now: () => new Date(GOVERNANCE_TEST_TIMESTAMP),
-      reviewAuthorizationProvider: reviewAuthorizationProviderFor(),
+      reviewAuthorizationProvider: fixture!.reviewAuthorizationProvider(),
       identificationKnowledgePolicy,
     });
     const submitted = await adapter.govern(
@@ -922,7 +934,7 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
       access: fixture!.access,
       reviewAudit: fixture!.reviewAudit,
       now: () => new Date(GOVERNANCE_TEST_TIMESTAMP),
-      reviewAuthorizationProvider: reviewAuthorizationProviderFor(),
+      reviewAuthorizationProvider: fixture!.reviewAuthorizationProvider(),
     });
     const submitted = await withoutPolicy.govern(
       submitFor(projectId, authorization, "missing-policy", undefined, "process-model"),
@@ -985,7 +997,7 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
       access: fixture!.access,
       reviewAudit: fixture!.reviewAudit,
       now: () => new Date(GOVERNANCE_TEST_TIMESTAMP),
-      reviewAuthorizationProvider: reviewAuthorizationProviderFor(),
+      reviewAuthorizationProvider: fixture!.reviewAuthorizationProvider(),
       identificationKnowledgePolicy: {
         appendRelease: async () => {
           throw new KnowledgeLifecycleError({
@@ -1064,7 +1076,7 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
       access,
       reviewAudit: fixture!.reviewAudit,
       now: () => new Date(GOVERNANCE_TEST_TIMESTAMP),
-      reviewAuthorizationProvider: reviewAuthorizationProviderFor(),
+      reviewAuthorizationProvider: fixture!.reviewAuthorizationProvider(),
     });
 
     const resolveFor = (requiredDefinitionTypes: readonly string[]) =>
@@ -1106,7 +1118,7 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
     const authorization = governanceAuthorizationFor(projectId);
     const reviewAuthorization = reviewAuthorizationFor(projectId);
     const requests: KnowledgeGovernanceReviewAuthorizationRequestV1[] = [];
-    const baseProvider = reviewAuthorizationProviderFor();
+    const baseProvider = fixture!.reviewAuthorizationProvider();
     const adapter = new PostgresKnowledgeGovernanceAdapter({
       db: fixture!.runtime.db,
       transactionUnit: fixture!.transactionUnit,
@@ -1169,7 +1181,7 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
   }, 240_000);
 
   it("closes the failure before C07 when the structured authorization binding differs", async () => {
-    const baseProvider = reviewAuthorizationProviderFor();
+    const baseProvider = fixture!.reviewAuthorizationProvider();
     const mutatedProvider = (
       change: (context: AuthorizationContextV1) => AuthorizationContextV1,
     ): KnowledgeGovernanceReviewAuthorizationProviderV1 => ({
@@ -1240,6 +1252,11 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
         grantedCapabilities: [...context.grantedCapabilities, "review-audit.decide"],
       })),
     );
+    // C16 亲自复验 invocation：provider 返回绑定到另一调用身份的上下文必须关闭失败。
+    await runDenied("wrong-invocation", {
+      authorize: async (input) =>
+        await baseProvider.authorize({ ...input, invocationId: `${input.invocationId}:other` }),
+    });
   }, 240_000);
 
   it("blocks C19 scoring-rule submissions while the scoring-rule policy is missing", async () => {

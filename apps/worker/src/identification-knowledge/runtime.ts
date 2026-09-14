@@ -13,6 +13,7 @@ import {
   type IdentificationKnowledgeValidationPolicyV1,
 } from "@riskflow/core/identification-knowledge";
 import type { StructuredCompletionResultV1 } from "@riskflow/core/model";
+import type { IdentificationKnowledgeFailureSettlementV1 } from "@riskflow/adapters/identification-knowledge";
 import type {
   AgentModelStepContextV1,
   AgentModelStepRequestV1,
@@ -206,12 +207,16 @@ export const withKnowledgeAuthoringModelStep = (
 /** 由组合根注入的编制运行依赖：共享 runner 与 C17 终态失败收口回调。 */
 export interface KnowledgeAuthoringRunnerOptionsV1 {
   readonly runner: AgentRuntimeRunner;
-  readonly settleAuthoringFailures: (signal?: AbortSignal) => Promise<number>;
+  readonly settleAuthoringFailures: (
+    signal?: AbortSignal,
+  ) => Promise<IdentificationKnowledgeFailureSettlementV1>;
 }
 
 export interface KnowledgeAuthoringRunSummaryV1 {
   readonly processedTasks: number;
   readonly settledFailures: number;
+  /** 逐 attempt 隔离后的未收口原因；非空表示本轮存在可查的授权/调用失败。 */
+  readonly unsettledFailures: IdentificationKnowledgeFailureSettlementV1["failures"];
 }
 
 /**
@@ -227,7 +232,11 @@ export class KnowledgeAuthoringRunner {
 
   async runOnce(signal?: AbortSignal): Promise<KnowledgeAuthoringRunSummaryV1> {
     const processedTasks = await this.#options.runner.runOnce(signal);
-    const settledFailures = await this.#options.settleAuthoringFailures(signal);
-    return { processedTasks, settledFailures };
+    const settlement = await this.#options.settleAuthoringFailures(signal);
+    return {
+      processedTasks,
+      settledFailures: settlement.settled,
+      unsettledFailures: settlement.failures,
+    };
   }
 }

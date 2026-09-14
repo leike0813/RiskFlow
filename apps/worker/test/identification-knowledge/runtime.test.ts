@@ -16,6 +16,7 @@ import {
   type AgentTaskSnapshotV1,
 } from "@riskflow/core/agent-runtime";
 import type { AgentTaskRefV1 } from "@riskflow/contracts/ports";
+import { ModuleErrorV1Schema } from "@riskflow/contracts/ports";
 import {
   KNOWLEDGE_AUTHORING_TASK_TYPE,
   createKnowledgeAuthoringTaskDefinition,
@@ -458,7 +459,7 @@ const setup = (options: {
     persistArtifact,
     now: () => NOW,
   });
-  const settleAuthoringFailures = vi.fn(async () => 1);
+  const settleAuthoringFailures = vi.fn(async () => ({ settled: 1, failures: [] }));
   const authoringRunner = new KnowledgeAuthoringRunner({ runner, settleAuthoringFailures });
   return {
     store,
@@ -477,7 +478,11 @@ describe("knowledge authoring model step", () => {
       setup({ script: [segmentSliceRequest, candidateSubmission] });
 
     // `KnowledgeAuthoringRunner` 先跑 shared runner，再对 C17 attempt 收口一次。
-    expect(await authoringRunner.runOnce()).toEqual({ processedTasks: 1, settledFailures: 1 });
+    expect(await authoringRunner.runOnce()).toEqual({
+      processedTasks: 1,
+      settledFailures: 1,
+      unsettledFailures: [],
+    });
     expect(settleAuthoringFailures).toHaveBeenCalledTimes(1);
 
     // 有界切片读取按冻结工具引用路由，观察工件在下一轮渲染中回填。
@@ -531,6 +536,7 @@ describe("knowledge authoring model step", () => {
     expect(await modelFailure.authoringRunner.runOnce()).toEqual({
       processedTasks: 1,
       settledFailures: 1,
+      unsettledFailures: [],
     });
     expect(modelFailure.gateway.completeStructured).toHaveBeenCalledTimes(1);
     expect(modelFailure.store.actionFailures).toEqual([{ code: "AGENT_MODEL_FAILURE" }]);
@@ -545,6 +551,7 @@ describe("knowledge authoring model step", () => {
     expect(await toolFailure.authoringRunner.runOnce()).toEqual({
       processedTasks: 1,
       settledFailures: 1,
+      unsettledFailures: [],
     });
     expect(toolFailure.store.actionFailures).toEqual([{ code: "AGENT_TOOL_FAILURE" }]);
     expect(toolFailure.store.calls).not.toContain("complete-task");
@@ -570,6 +577,7 @@ describe("knowledge authoring model step", () => {
     expect(await budgetFailure.authoringRunner.runOnce()).toEqual({
       processedTasks: 1,
       settledFailures: 1,
+      unsettledFailures: [],
     });
     expect(budgetFailure.store.taskFailures).toEqual([{ code: "AGENT_BUDGET_EXHAUSTED" }]);
     expect(budgetFailure.store.calls).not.toContain("complete-task");
@@ -583,6 +591,7 @@ describe("knowledge authoring model step", () => {
     expect(await cancelled.authoringRunner.runOnce(controller.signal)).toEqual({
       processedTasks: 0,
       settledFailures: 1,
+      unsettledFailures: [],
     });
     expect(cancelled.store.calls).toEqual([]);
     expect(cancelled.settleAuthoringFailures).toHaveBeenCalledTimes(1);
@@ -747,7 +756,7 @@ describe("knowledge authoring runner", () => {
   it("runs the shared runner first and settles C17 failures exactly once per pass", async () => {
     const signal = new AbortController().signal;
     const runOnce = vi.fn(async () => 2);
-    const settleAuthoringFailures = vi.fn(async () => 3);
+    const settleAuthoringFailures = vi.fn(async () => ({ settled: 3, failures: [] }));
     const runner = new KnowledgeAuthoringRunner({
       runner: { runOnce } as unknown as AgentRuntimeRunner,
       settleAuthoringFailures,
@@ -756,6 +765,7 @@ describe("knowledge authoring runner", () => {
     await expect(runner.runOnce(signal)).resolves.toEqual({
       processedTasks: 2,
       settledFailures: 3,
+      unsettledFailures: [],
     });
     expect(runOnce).toHaveBeenCalledTimes(1);
     expect(runOnce).toHaveBeenCalledWith(signal);
@@ -766,8 +776,38 @@ describe("knowledge authoring runner", () => {
     );
 
     // 无 signal 的调用沿用 shared runner 的默认信号；模块不自行创建租约或并发。
-    await expect(runner.runOnce()).resolves.toEqual({ processedTasks: 2, settledFailures: 3 });
+    await expect(runner.runOnce()).resolves.toEqual({
+      processedTasks: 2,
+      settledFailures: 3,
+      unsettledFailures: [],
+    });
     expect(runOnce).toHaveBeenLastCalledWith(undefined);
     expect(settleAuthoringFailures).toHaveBeenCalledTimes(2);
+  });
+
+  it("carries the per-attempt settlement failure reason instead of dropping it", async () => {
+    const denial = ModuleErrorV1Schema.parse({
+      stageCode: "identification-knowledge.settle",
+      occurredAt: NOW,
+      causalRunId: taskRef.reference.entityId,
+      code: "AUTHORIZATION_DENIED",
+      category: "authorization",
+      retryable: false,
+      requiredCapability: "knowledge-modeling.govern",
+      authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+    });
+    const runner = new KnowledgeAuthoringRunner({
+      runner: { runOnce: async () => 1 } as unknown as AgentRuntimeRunner,
+      settleAuthoringFailures: async () => ({
+        settled: 0,
+        failures: [{ taskRef, error: denial }],
+      }),
+    });
+
+    await expect(runner.runOnce()).resolves.toEqual({
+      processedTasks: 1,
+      settledFailures: 0,
+      unsettledFailures: [{ taskRef, error: denial }],
+    });
   });
 });

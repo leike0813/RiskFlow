@@ -4,6 +4,8 @@
 
 本手册只规定大型 OpenSpec 路线的稳定编排策略，不记录某次会话的进度、旧 HEAD、Run、Task 或“下一步必须执行”的历史命令。
 
+具体的 Orca/OMP/Codex 启动、工作区信任、等待、故障恢复、同步和回收步骤见 `IMPLEMENTATION-ORCHESTRATION-RUNBOOK.md`。凡是创建或接管 worktree、启动 Agent、处理工具故障或同步活动分支，必须先读该 Runbook；其中的操作经验不能写回本手册，也不能取代实时状态。
+
 事实源按用途分开：
 
 - 领域与交付契约：`AGENTS.md`、已归档 `openspec/specs/` 和当前 change。
@@ -204,6 +206,6 @@ pnpm orchestration:coordinator
 
 ## 10. Task 提示词最小契约
 
-所有 Task 至少写明：工作项与 change、固定输入 HEAD、完整 worktree ID、角色责任、允许和禁止的语义范围、必读 `contextFiles`、验证命令、升级条件、最终证据格式。
+所有 Task 至少写明：工作项与 change、固定输入 HEAD、完整 worktree ID、角色责任、允许和禁止的语义范围、必读 `contextFiles`、验证命令、升级条件、最终证据格式。Task 还必须要求执行 Agent 先读 `IMPLEMENTATION-ORCHESTRATION-RUNBOOK.md` 中与其启动方式和工具链有关的章节。
 
 Implementation 提示词必须明确“普通测试失败在当前任务内自修”。Finalizer 提示词必须明确“核验—修复—回归—最终报告，普通缺陷不回派 Implementation”。一句“实现/验证 Cxx”不构成可派发任务。

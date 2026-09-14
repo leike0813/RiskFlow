@@ -15,7 +15,7 @@
 | IP-03 | `collectFacts`、`deriveSnapshot`、`renderHuman` | 继续从 Git/OpenSpec/Orca 重建，增加辅助项和 resumeQueue | 不提交 current-state 快照 |
 | IP-04 | `collectStatus`、`defaultExec`、Orca JSON CLI | 控制器直接复用状态与统一命令执行 | 不实现第二套状态采集器或自由 shell 接口 |
 | IP-05 | OMP `registerTool`、`tool_call`、`context`、`session_stop` | 薄适配控制器并注入短状态 | 不把扩展当作 OS 权限边界 |
-| IP-06 | 现有 handbook、`AGENTS.md`、OpenSpec workflow | 删除动态沉积，保留指针和完成标准 | 不在多份文档重复机器策略 |
+| IP-06 | 现有 handbook、`AGENTS.md`、OpenSpec workflow | 稳定策略留在 handbook；可复用操作经验迁入 Runbook | 不在文档保存动态状态或重复机器策略 |
 | IP-07 | Orca worktree/task result 与 Git merge | 以 main 检查点同步和回填 | 不复制未提交文件、不继承旧 PASS |
 
 ## 3. 代码变更映射
@@ -27,7 +27,7 @@
 | IP-03 | 接管队列 | Manifest 外 change、frontier/resumeQueue、重启接管 | `status.mjs::collectWorktree/deriveSnapshot/renderHuman`、测试 | 发现所有未归档 change；生成 AUX adopt 项；确定性排序并输出 revision | 静态 frontier 的既有含义 |
 | IP-04 | 受控状态转换 | 前置校验、并发、幂等、目标完成 | 新增 `control.mjs`、`control.test.mjs` | 实现 status/dispatch/wait/settle/integrate/doctor；common-dir 锁与回执；稳定拒绝码 | 不接受调用者提供角色、模型、任意命令 |
 | IP-05 | OMP 入口 | finalizing 派发拒绝、goal 完成、session stop | 新增 `omp-extension.mjs`、修改 `package.json` | 注册五工具；短 context；拦截 goal complete 和明显直接绕过；显式扩展启动与 doctor | 不隐藏这是软守卫，不修改 OMP 安装 |
-| IP-06 | 规则收口 | Finalizer、重规划、会话移交、高风险 audit | handbook、`AGENTS.md`、`openspec/config.yaml`、workflow implementation-plan 模板 | 验证改为 Finalizer；实现普通失败自修；历史状态改为状态命令指针；模板要求收尾范围与 auditPolicy | 领域、RI/RA 与业务运行契约 |
+| IP-06 | 规则收口 | Finalizer、重规划、会话移交、高风险 audit | handbook、Runbook、`AGENTS.md`、`openspec/config.yaml`、workflow implementation-plan 模板 | 验证改为 Finalizer；实现普通失败自修；历史状态改为状态命令指针；保留当前有效的工作区信任和故障恢复经验 | 领域、RI/RA 与业务运行契约 |
 | IP-07 | 当前状态迁移 | 重启接管、旧 PASS、工作树回收 | 四个活动工作树、Orca v2 task result、三个旧工作树 | merge main；按新 HEAD 回填 C17/C20/C26/AUX-C11；核验后 Orca 回收旧树 | 未提交用户改动、活动 writer、分支历史 |
 
 ## 4. 调用与副作用顺序
@@ -57,7 +57,7 @@
 | finalizing 不回派、replan、audit、完成门 | IP-04 | `control.test.mjs` | 合成 snapshot | 非法操作稳定拒绝；合法转换唯一 | `pnpm exec vitest run scripts/orchestration/control.test.mjs` |
 | revision、幂等、锁、三次无进展 | IP-04 | `control.test.mjs` | 临时 Git common dir | 并发至多一次；重放同结果；阈值 paused | 同上 |
 | OMP 注册与显式加载 | IP-05 | doctor + OMP print smoke | OMP 18.1.18 | 五工具注册、扩展路径存在、版本满足 | `pnpm orchestration:doctor` |
-| OpenSpec 和 Agent 文档一致 | IP-06 | OpenSpec/格式校验 | 全部工件与主规格 | 严格校验通过，无失效下一 session 指令 | `openspec validate strengthen-orchestration-finalization-and-guards --strict --no-interactive` |
+| OpenSpec 和 Agent 文档一致 | IP-06 | OpenSpec/格式校验、task prompt 测试 | 全部工件与主规格 | 严格校验通过；Runbook 被派发引用；无动态 frontier 或失效下一 session 指令 | `openspec validate strengthen-orchestration-finalization-and-guards --strict --no-interactive` |
 | 当前 frontier 接管与同步 | IP-07 | 实际 Git/Orca 状态 | 四个活动树已 merge main 并回填 | resumeQueue 为 C17、C26、AUX-C11；C20 阻塞 C17；无 mismatch | `pnpm orchestration:status --json && pnpm orchestration:check` |
 | 全库回归 | IP-01～IP-06 | 既有套件 | 实现完成 | 构建、类型、lint、格式、测试、依赖和 specs 全绿 | `pnpm verify` |
 
@@ -68,6 +68,7 @@
 - `scripts/orchestration/control.mjs`
 - `scripts/orchestration/omp-extension.mjs`
 - `scripts/orchestration/control.test.mjs`
+- `IMPLEMENTATION-ORCHESTRATION-RUNBOOK.md`
 - 本 change 的 proposal、两份 delta spec、design、implementation-plan、tasks；归档后新增 controlled-actions 主规格。
 
 修改：

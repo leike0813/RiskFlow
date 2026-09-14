@@ -11,7 +11,7 @@
 
 ## 3. 稳定规则
 
-- [x] 3.1 [IP-06] 收口 handbook、AGENTS 和 OpenSpec workflow 的 Finalizer/实现自修/审计规则，并通过 `openspec validate strengthen-orchestration-finalization-and-guards --strict --no-interactive`
+- [x] 3.1 [IP-06] 收口 handbook、Runbook、AGENTS 和 OpenSpec workflow 的 Finalizer/实现自修/审计及操作经验，并通过 `openspec validate strengthen-orchestration-finalization-and-guards --strict --no-interactive`
 - [x] 3.2 [IP-01～IP-06] 运行 `pnpm verify` 与 `git diff --check`，修复所有范围内失败
 
 ## 4. 集成与当前状态迁移

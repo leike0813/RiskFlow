@@ -52,10 +52,15 @@ Finalizer task 的完成条件是当前产物核验、批准范围内缺陷修�
 
 本 change 验收归档后先合入 main；冻结活动 writer 后，把该 main 检查点依次 merge 到 C17、C20、C26 与 C11 辅助工作树。合并后以实际 HEAD 回填 v2：C17、C26、C11 辅助项为 finalizing-ready，C20 为 waiting_dependency(C17)。任何旧 PASS 都只保留为 evidence。三个已合并、干净且无活动 writer 的旧工作树通过 Orca 正常回收。
 
+### D-09：稳定策略与操作经验分离
+
+Handbook 只保存角色、责任、状态转换和门禁；独立 Runbook 保存当前有效的 Orca/OMP/Codex 操作步骤，包括首次 worktree 信任、精确启动、等待、故障对账、活动分支同步、共享机械接缝和回收。Runbook 不记录 frontier、HEAD、Run、Task 或历史进度，接管起点仍由实时状态生成。这样保留实践经验，同时避免旧操作实例重新获得指令效力。
+
 ## Risks / Trade-offs
 
 - [通用 shell 或宿主桥接可绕过 OMP hook] → 启动时明确软守卫边界，关键状态仍由控制器和集成前检查拒绝。
 - [现有 Orca 历史信封不完整] → v1 兼容读取；当前活动项在同步后显式回填 v2，不从标题或报告猜测。
+- [重写稳定规则时丢失有效操作经验] → 独立 Runbook 只保留现行操作与恢复步骤，Handbook 强制引用但不复制。
 - [跨工作树 merge 改变已验收产物] → 合并后旧 PASS 失效，按新的 HEAD 进入 Finalizer。
 - [全局锁降低并行吞吐] → 当前协调写操作低频，先使用单锁；只有出现可测竞争时再细分。
 - [工作树状态在 rollout 前变化] → 冻结 writer 后重新采集，任何脏改动或活动 Dispatch 都停止该目标的同步。

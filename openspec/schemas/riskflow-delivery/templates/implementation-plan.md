@@ -30,3 +30,7 @@
 ## 7. 文件清单与升级条件
 
 <!-- Added/modified/deleted/protected files and concrete ask/escalation conditions -->
+
+## 8. Finalizer 授权与限定审计
+
+<!-- Full approved implementation/test scope for finalization; protected semantic boundaries; targeted audit tags: permission, transaction, critical-state-machine, semantic-merge -->

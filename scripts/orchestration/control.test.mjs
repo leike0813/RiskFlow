@@ -244,6 +244,22 @@ describe("controlled orchestration", () => {
     ).toThrowError(ControlError);
   });
 
+  it("reconciles one checkpoint while other recovery-only violations remain", () => {
+    expect(
+      preflightAction(
+        snapshot({
+          violations: [
+            { nodeId: "C17", code: "checkpoint_mismatch" },
+            { nodeId: "C20", code: "checkpoint_mismatch" },
+            { nodeId: "AUX:old", code: "worktree_reclaim_pending" },
+          ],
+        }),
+        "reconcile",
+        { workItemId: "C17", expectedRevision: "revision-1" },
+      ).node.id,
+    ).toBe("C17");
+  });
+
   it("allows only auxiliary adoption through the recovery dispatch path", () => {
     const auxiliary = node({
       id: "AUX:fix-suite-isolation",

@@ -14,6 +14,7 @@ import {
   AgentRuntimeError,
   AgentStructuredErrorV1Schema,
   AgentCandidateVersionV1Schema,
+  AgentValidationResultV1Schema,
   agentTaskRefEquals,
   buildCompletedAgentTaskResult,
   canResumeAgentTask,
@@ -34,11 +35,16 @@ import {
   type AgentTaskActionV1,
   type AgentTaskDefinitionV1,
   type AgentTaskEnvelopeV1,
+  type AgentTaskFailureEvidenceReadRequestV1,
+  type AgentTaskFailureEvidenceReadResultV1,
+  type AgentTaskFailureEvidenceReaderV1,
+  type AgentTaskFailureEvidenceV1,
   type AgentTaskSnapshotV1,
   type AgentTaskStateV1,
   type AgentStructuredErrorV1,
 } from "@riskflow/core/agent-runtime";
 import {
+  ACCESS_POLICY_REF_V1,
   AccessServiceError,
   isAuthorizationSubset,
   type LocalIdentityAccessV1,
@@ -46,6 +52,7 @@ import {
 import {
   ArtifactRefV1Schema,
   ArtifactStoreError,
+  type ArtifactRefV1,
   type ArtifactReferenceGuardV1,
   type ArtifactStoreV1,
 } from "@riskflow/core/artifacts";
@@ -60,8 +67,11 @@ import type { ModelGatewayPortV1 } from "@riskflow/core/model";
 import {
   AgentTaskResultRefV1Schema,
   AgentTaskRefV1Schema,
+  AgentTaskTypeV1Schema,
+  AuthorizationContextV1Schema,
   CancelAgentTaskCommandV1Schema,
   ConfirmAgentCommandV1Schema,
+  ModuleErrorV1Schema,
   ResumeAgentTaskCommandV1Schema,
   ContractReferenceV1Schema,
   StartAgentTaskCommandV1Schema,
@@ -69,10 +79,13 @@ import {
   type AgentTaskPortV1,
   type AgentTaskResultRefV1,
   type AgentTaskRefV1,
+  type AgentTaskTypeV1,
+  type AuthorizationContextV1,
   type CancelAgentTaskCommandV1,
   type ConfirmAgentCommandV1,
   type ContractReferenceV1,
   type ModuleBranchV1,
+  type ModuleErrorV1,
   type ResumeAgentTaskCommandV1,
   type StartAgentTaskCommandV1,
 } from "@riskflow/contracts/ports";
@@ -82,7 +95,7 @@ import {
   type VersionReference,
 } from "@riskflow/contracts/common";
 
-import { PostgresPersistenceError } from "../postgres/pool.js";
+import { PostgresPersistenceError, mapPostgresError } from "../postgres/pool.js";
 import { getPostgresTransaction, PostgresTransactionUnit } from "../postgres/transaction-unit.js";
 import type { PostgresDatabase } from "../postgres/types.js";
 
@@ -194,6 +207,9 @@ const refEqual = (left: VersionReference, right: VersionReference): boolean =>
   left.entityId === right.entityId && left.versionId === right.versionId;
 const taskId = (ref: AgentTaskRefV1): string => ref.reference.entityId;
 const activeStatuses = ["pending", "running", "retryable-failure"] as const;
+const READ_FAILURE_EVIDENCE_BRANCH = "agent-task.read-failure-evidence";
+const READ_FAILURE_EVIDENCE_CAPABILITY = "agent-task.read";
+const READ_FAILURE_EVIDENCE_COMMAND_KIND = "agent-task.read-failure-evidence";
 
 const authorizationWithinFrozenBoundary = (
   frozen: AgentTaskEnvelopeV1["frozenAuthorization"],
@@ -460,7 +476,9 @@ export interface PostgresAgentTaskAdapterOptions {
   readonly now?: () => string;
 }
 
-export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecutionStoreV1 {
+export class PostgresAgentTaskAdapter
+  implements AgentTaskPortV1, AgentTaskExecutionStoreV1, AgentTaskFailureEvidenceReaderV1
+{
   readonly #db: Kysely<AgentRuntimeDatabase>;
   readonly #transactionUnit: TransactionUnitV1;
   readonly #registry: AgentTaskDefinitionRegistry;
@@ -1387,6 +1405,302 @@ export class PostgresAgentTaskAdapter implements AgentTaskPortV1, AgentTaskExecu
     } catch (error) {
       return { kind: "failed" as const, error: this.#moduleError(error, command.projectId) };
     }
+  }
+
+  /**
+   * 公共失败证据窄读：授权先行、单点任务投影、白名单字段，
+   * 拒绝与目标边界统一为不可枚举的 `AUTHORIZATION_DENIED`。
+   */
+  async readTerminalFailure(
+    request: AgentTaskFailureEvidenceReadRequestV1,
+  ): Promise<AgentTaskFailureEvidenceReadResultV1> {
+    const causalRunId =
+      typeof request?.requestId === "string" && request.requestId.length > 0
+        ? request.requestId
+        : READ_FAILURE_EVIDENCE_COMMAND_KIND;
+    try {
+      const requestId = IdentifierSchema.parse(request.requestId);
+      const projectId = IdentifierSchema.parse(request.projectId);
+      const actorId = IdentifierSchema.parse(request.actorId);
+      const requestedAt = IsoDateTimeSchema.parse(request.requestedAt);
+      const taskRef = AgentTaskRefV1Schema.parse(request.taskRef);
+      const expectedTaskType = AgentTaskTypeV1Schema.parse(request.expectedTaskType);
+      const authorization = AuthorizationContextV1Schema.parse(request.authorization);
+      if (
+        this.#authorization === undefined ||
+        authorization.projectId !== projectId ||
+        authorization.actorId !== actorId ||
+        authorization.grantedCapabilities.length !== 1 ||
+        authorization.grantedCapabilities[0] !== READ_FAILURE_EVIDENCE_CAPABILITY
+      )
+        return { kind: "failed", error: this.#readFailureDenied(causalRunId) };
+      const decision = await this.#authorization.verify({
+        authorizationContextRef: authorization.authorizationContextRef,
+        invocationId: requestId,
+        projectId,
+        branch: READ_FAILURE_EVIDENCE_BRANCH,
+        requestedSpatialScopeRefs: authorization.spatialScopeRefs,
+        requestedSourceVersionRefs: [],
+        requestedAt,
+      });
+      if (
+        decision.context.grantedCapabilities.length !== 1 ||
+        decision.context.grantedCapabilities[0] !== READ_FAILURE_EVIDENCE_CAPABILITY ||
+        !isAuthorizationSubset(authorization, decision.context)
+      )
+        return { kind: "failed", error: this.#readFailureDenied(causalRunId) };
+      const payload = jsonValue({
+        requestId,
+        projectId,
+        actorId,
+        requestedAt,
+        taskRef,
+        expectedTaskType,
+        authorizationContextRef: authorization.authorizationContextRef,
+      });
+      const conflict = await this.#withinReadFailureRead(() =>
+        this.#terminalFailureReadConflict({
+          projectId,
+          requestId,
+          payload,
+        }),
+      );
+      if (conflict !== undefined) return { kind: "failed", error: conflict };
+      const evidence = await this.#withinReadFailureRead(() =>
+        this.#projectTerminalFailure({
+          projectId,
+          taskRef,
+          expectedTaskType,
+        }),
+      );
+      if (evidence === undefined)
+        return { kind: "failed", error: this.#readFailureDenied(causalRunId) };
+      await this.#closeTerminalFailureRead({
+        projectId,
+        actorId,
+        requestId,
+        requestedAt,
+        taskRef,
+        expectedTaskType,
+        authorization,
+        payload,
+      });
+      return { kind: "succeeded", evidence };
+    } catch (error) {
+      return { kind: "failed", error: this.#readFailureError(error, causalRunId) };
+    }
+  }
+
+  /** 读取路径的数据库故障保留 C03 一致的可重试与不可恢复语义。 */
+  async #withinReadFailureRead<T>(read: () => Promise<T>): Promise<T> {
+    try {
+      return await read();
+    } catch (error) {
+      throw mapPostgresError(error, READ_FAILURE_EVIDENCE_COMMAND_KIND);
+    }
+  }
+
+  #readFailureDenied(causalRunId: string): ModuleErrorV1 {
+    return ModuleErrorV1Schema.parse({
+      stageCode: READ_FAILURE_EVIDENCE_COMMAND_KIND,
+      occurredAt: IsoDateTimeSchema.parse(this.#now()),
+      causalRunId,
+      code: "AUTHORIZATION_DENIED",
+      category: "authorization",
+      retryable: false,
+      requiredCapability: READ_FAILURE_EVIDENCE_CAPABILITY,
+      authorizationPolicyRef: ACCESS_POLICY_REF_V1,
+    });
+  }
+
+  #readFailureError(error: unknown, causalRunId: string): ModuleErrorV1 {
+    if (error instanceof AccessServiceError) {
+      const access = error.details;
+      if (access.code === "ACCESS_TRANSIENT_FAILURE" || access.code === "ACCESS_TERMINAL_FAILURE")
+        return mapAgentError(
+          new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_PERSISTENCE_FAILURE",
+              category: "persistence",
+              retryable: access.retryable,
+              stage: access.stage,
+              ...(access.diagnosticRef.kind === "diagnostic-artifact"
+                ? { diagnosticRef: access.diagnosticRef }
+                : {}),
+            }),
+          ),
+          { causalRunId },
+        );
+      return this.#readFailureDenied(causalRunId);
+    }
+    if (error instanceof PostgresPersistenceError) {
+      if (error.code === "IDEMPOTENCY_CONFLICT")
+        return mapAgentError(
+          new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_IDEMPOTENCY_CONFLICT",
+              category: "idempotency",
+              stage: error.stage,
+              idempotencyKey: causalRunId,
+              priorCommandId: causalRunId,
+              diagnosticRef: error.diagnosticRef,
+            }),
+          ),
+          { causalRunId },
+        );
+      return mapAgentError(
+        new AgentRuntimeError(
+          makeAgentError({
+            code: "AGENT_PERSISTENCE_FAILURE",
+            category: "persistence",
+            retryable: error.retryable,
+            stage: error.stage,
+            diagnosticRef: error.diagnosticRef,
+          }),
+        ),
+        { causalRunId },
+      );
+    }
+    if (error instanceof AgentRuntimeError && error.details.code === "AGENT_AUTHORIZATION_DENIED")
+      return this.#readFailureDenied(causalRunId);
+    return mapAgentError(error, { causalRunId });
+  }
+
+  /**
+   * 只读三张 C08 现有表的窄列：任务投影、动作序号、候选与校验工件引用。
+   * 任一持久化事实与请求不符时返回 `undefined`，由调用方统一收口为不可枚举拒绝。
+   */
+  async #projectTerminalFailure(input: {
+    readonly projectId: string;
+    readonly taskRef: AgentTaskRefV1;
+    readonly expectedTaskType: AgentTaskTypeV1;
+  }): Promise<AgentTaskFailureEvidenceV1 | undefined> {
+    const row = await this.#db
+      .selectFrom("business.agent_tasks")
+      .select([
+        "agent_task_ref",
+        "task_type",
+        "status",
+        "cancel_reason_code",
+        "error",
+        "budget_ledger",
+      ])
+      .where("agent_task_id", "=", input.taskRef.reference.entityId)
+      .where("project_id", "=", input.projectId)
+      .where("version_id", "=", input.taskRef.reference.versionId)
+      .executeTakeFirst();
+    if (row === undefined) return undefined;
+    const storedRef = AgentTaskRefV1Schema.parse(row.agent_task_ref);
+    if (
+      row.task_type !== input.expectedTaskType ||
+      storedRef.taskType !== input.expectedTaskType ||
+      !agentTaskRefEquals(storedRef, input.taskRef) ||
+      (row.status !== "terminal-failure" && row.status !== "cancelled")
+    )
+      return undefined;
+    const actions = await this.#db
+      .selectFrom("business.agent_task_actions")
+      .select(["action_id", "sequence"])
+      .where("agent_task_id", "=", input.taskRef.reference.entityId)
+      .orderBy("sequence", "asc")
+      .execute();
+    const candidates = await this.#db
+      .selectFrom("business.agent_task_candidates")
+      .select(["candidate_artifact_ref", "validation"])
+      .where("agent_task_id", "=", input.taskRef.reference.entityId)
+      .orderBy("candidate_version", "asc")
+      .execute();
+    const validationArtifactRefs: ArtifactRefV1[] = [];
+    const seenValidationRefs = new Set<string>();
+    for (const candidate of candidates) {
+      if (candidate.validation === null) continue;
+      const ref = AgentValidationResultV1Schema.parse(candidate.validation).validationArtifactRef;
+      const key = `${ref.kind}\u0000${ref.reference.entityId}\u0000${ref.reference.versionId}`;
+      if (seenValidationRefs.has(key)) continue;
+      seenValidationRefs.add(key);
+      validationArtifactRefs.push(ref);
+    }
+    return {
+      taskRef: input.taskRef,
+      taskType: input.expectedTaskType,
+      terminalStatus: row.status,
+      ...(row.error === null ? {} : { error: AgentStructuredErrorV1Schema.parse(row.error) }),
+      ...(row.cancel_reason_code === null ? {} : { cancelReasonCode: row.cancel_reason_code }),
+      usage: AgentBudgetLedgerV1Schema.parse(row.budget_ledger).used,
+      actionRefs: actions.map((action) => ({
+        entityId: action.action_id,
+        versionId: String(action.sequence),
+      })),
+      candidateArtifactRefs: candidates.map((candidate) =>
+        ArtifactRefV1Schema.parse(candidate.candidate_artifact_ref),
+      ),
+      validationArtifactRefs,
+    };
+  }
+
+  /**
+   * 幂等冲突先于目标投影判定：同一 requestId 的既有收据只要工程不同或载荷 digest 不同，
+   * 都算同一请求改读其它目标。C03 收据键包含工程，跨工程情形必须在这里收口。
+   */
+  async #terminalFailureReadConflict(input: {
+    readonly projectId: string;
+    readonly requestId: string;
+    readonly payload: JsonValue;
+  }): Promise<ModuleErrorV1 | undefined> {
+    const digest = sha256CanonicalJson(input.payload);
+    const receipts = await this.#db
+      .selectFrom("business.command_receipts")
+      .select(["project_id", "command_id", "payload_sha256"])
+      .where("command_kind", "=", READ_FAILURE_EVIDENCE_COMMAND_KIND)
+      .where("idempotency_key", "=", input.requestId)
+      .orderBy("project_id", "asc")
+      .limit(2)
+      .execute();
+    const conflict = receipts.find(
+      (receipt) => receipt.project_id !== input.projectId || receipt.payload_sha256 !== digest,
+    );
+    if (conflict === undefined) return undefined;
+    return ModuleErrorV1Schema.parse({
+      stageCode: READ_FAILURE_EVIDENCE_COMMAND_KIND,
+      occurredAt: IsoDateTimeSchema.parse(this.#now()),
+      causalRunId: input.requestId,
+      code: "IDEMPOTENCY_CONFLICT",
+      category: "idempotency",
+      retryable: false,
+      idempotencyKey: input.requestId,
+      priorCommandId: conflict.command_id,
+    });
+  }
+
+  async #closeTerminalFailureRead(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestId: string;
+    readonly requestedAt: string;
+    readonly taskRef: AgentTaskRefV1;
+    readonly expectedTaskType: AgentTaskTypeV1;
+    readonly authorization: AuthorizationContextV1;
+    readonly payload: JsonValue;
+  }): Promise<void> {
+    const command = commandFor({
+      kind: READ_FAILURE_EVIDENCE_COMMAND_KIND,
+      commandId: input.requestId,
+      idempotencyKey: input.requestId,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      authorization: input.authorization,
+      payload: input.payload,
+      issuedAt: input.requestedAt,
+    });
+    await this.#transactionUnit.execute(command, async () =>
+      commit({
+        command,
+        targetRef: input.taskRef,
+        version: input.taskRef.reference,
+        action: READ_FAILURE_EVIDENCE_COMMAND_KIND,
+        now: input.requestedAt,
+      }),
+    );
   }
 
   #moduleError(error: unknown, causalRunId: string) {

@@ -10,6 +10,7 @@ import {
   preflightAction,
   riskflowDispatch,
   riskflowSettle,
+  withOrcaSender,
   withRuntimeLock,
 } from "./control.mjs";
 import { formatCurrentState, shouldBlockDirectCommand } from "./omp-extension.mjs";
@@ -107,6 +108,26 @@ describe("controlled orchestration", () => {
     expect(shouldBlockDirectCommand("orca-ide orchestration dispatch --run r --task t")).toBe(true);
     expect(shouldBlockDirectCommand("git merge feature/c26")).toBe(true);
     expect(shouldBlockDirectCommand("pnpm orchestration:check")).toBe(false);
+  });
+
+  it("passes the coordinator terminal as Orca sender for mutations", () => {
+    const invocation = {
+      command: "orca",
+      prefix: [],
+      senderTerminalHandle: "term-coordinator",
+    };
+    expect(withOrcaSender(invocation, ["orchestration", "task-create", "--spec", "task"])).toEqual([
+      "orchestration",
+      "task-create",
+      "--spec",
+      "task",
+      "--from",
+      "term-coordinator",
+    ]);
+    expect(withOrcaSender(invocation, ["orchestration", "status"])).toEqual([
+      "orchestration",
+      "status",
+    ]);
   });
 
   it("formats a short resumable state view", () => {

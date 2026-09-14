@@ -371,11 +371,12 @@ function topologicalNodes(graph) {
 export function resolveOrcaInvocation(value = process.env.ORCA_CLI_COMMAND) {
   if (nonEmptyString(value)) {
     const [command, ...prefix] = value.trim().split(/\s+/u);
-    return { command, prefix };
+    return { command, prefix, senderTerminalHandle: process.env.ORCA_TERMINAL_HANDLE ?? null };
   }
   return {
     command: process.env.ORCA_TERMINAL_HANDLE ? "orca" : "orca-ide",
     prefix: [],
+    senderTerminalHandle: process.env.ORCA_TERMINAL_HANDLE ?? null,
   };
 }
 

@@ -416,8 +416,8 @@ function idFrom(value, kind) {
   return value?.id ?? value?.[kind]?.id ?? value?.result?.id ?? null;
 }
 
-async function ensureRun(exec, invocation, rootDir, node, idempotencyKey) {
-  if (node.checkpoints?.runId) return node.checkpoints.runId;
+async function ensureRun(exec, invocation, rootDir, node, idempotencyKey, reuseExisting = true) {
+  if (reuseExisting && node.checkpoints?.runId) return node.checkpoints.runId;
   const created = await orcaJson(
     exec,
     invocation,
@@ -972,7 +972,14 @@ export async function riskflowReconcile(input, options = {}) {
       throw new ControlError("invalid_input", "reconcile 只接受 planning 或 finalization");
     }
     const invocation = resolveOrcaInvocation(options.orcaCommand);
-    const runId = await ensureRun(ctx.exec, invocation, ctx.rootDir, ctx.node, ctx.idempotencyKey);
+    const runId = await ensureRun(
+      ctx.exec,
+      invocation,
+      ctx.rootDir,
+      ctx.node,
+      ctx.idempotencyKey,
+      false,
+    );
     const role = ctx.graph.policy.roles[taskKind];
     const created = await orcaJson(
       ctx.exec,

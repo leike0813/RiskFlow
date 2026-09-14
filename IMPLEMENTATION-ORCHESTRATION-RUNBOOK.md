@@ -1,0 +1,144 @@
+# RiskFlow 编排操作手册
+
+## 1. 用途
+
+本文只保存可重复使用的 Orca、OMP、Codex 操作步骤和故障恢复方法。稳定责任与状态转换以 `IMPLEMENTATION-ORCHESTRATION-HANDBOOK.md` 为准；当前工作起点以 `pnpm orchestration:status --json` 的 `revision`、`resumeQueue` 和 `violations` 为准。本文不保存当前 frontier、HEAD、Run、Task、terminal 或历史进度。
+
+工具升级后先运行以下命令；实际帮助与 doctor 结果优先于本文示例：
+
+```bash
+pnpm orchestration:doctor
+orca --version
+orca orchestration --help
+omp --version
+codex --version
+```
+
+## 2. 接管与创建 worktree
+
+新协调会话先运行：
+
+```bash
+git status --short --branch
+git log --oneline --decorate -8
+pnpm orchestration:doctor
+pnpm orchestration:status --json
+pnpm orchestration:check
+```
+
+按 `resumeQueue` 的第一项推进。状态不一致时先修复 `violations`；不要从任务标题、聊天记录、旧 Delivery 或手册文字推测当前阶段。
+
+Orca 操作始终使用完整 worktree ID。创建正式 worktree 时运行 repo setup hook；当前 hook 应完成冻结依赖安装和 OpenSpec 工具初始化，其中 OpenSpec 的工具名是 `oh-my-pi`，不是 `omp`。hook 失败时保留输出并停止派发，不在 worktree 内临时安装依赖。
+
+从普通 shell 调用 Orca 协调命令时，若返回 `no_active_sender_terminal`，应显式传入当前协调 terminal 的 `--from <terminal-handle>`。不得借此复用另一会话的 sender、Run 或 Dispatch。
+
+### 2.1 OpenSpec 命令
+
+`riskflow-delivery` 改变工件图，不改变 OpenSpec 顶层命令。大型 change 创建时显式选 schema，之后以 change 自身 `.openspec.yaml` 和 status 返回值为准：
+
+| 目的 | 命令 |
+|---|---|
+| 校验 schema | `openspec schema which riskflow-delivery`；`openspec schema validate riskflow-delivery --verbose` |
+| 创建大型 change | `openspec new change <change> --schema riskflow-delivery --json` |
+| 查看实际 schema/下一工件 | `openspec status --change <change> --json` |
+| 获取工件指令 | `openspec instructions <artifact-id> --change <change> --json` |
+| 获取实现上下文 | `openspec instructions apply --change <change> --json` |
+| 严格校验 | `openspec validate <change> --strict --no-interactive` |
+
+`openspec-apply-change`、`openspec-verify-change` 和 `openspec-archive-change` 是 Agent Skill，不是 CLI 子命令。CLI 没有 `openspec verify`。apply 返回缺少 `implementation-plan` 时，应先按 instructions 创建该工件，不能改用默认四工件流程；发现 schema 不符时停止，不用命令行 override 强行继续。
+
+## 3. Codex 首次启动与工作区信任
+
+新 worktree 首次启动 Codex 时，工作区信任确认可能先于 Agent idle 出现。典型信号是状态栏长期停在 `model: loading` / `directory: loading`，或派发返回 `agent_prompt_blocked`。
+
+处理顺序：
+
+1. 在目标 worktree 创建 Codex terminal，等待 TUI 出现，不立即派发任务。
+2. 在该 terminal 明确信任当前目录。若 Orca CLI 允许输入，可先发送选项 `1` 再发送 Enter；若 CLI 因交互保护拒绝注入，立即停止自动重试，请操作者在该精确 terminal 中确认。
+3. 确认状态栏显示实际模型、思考强度、目标目录和权限，MCP 启动完成，并进入 idle。
+4. 再把已有 Task 派给该 terminal。若先前派发已把 Task 标为 failed，通过受控恢复将同一 Task 重置为 ready 后重试；不要新建 Task、Run 或 worktree 来绕过信任提示。
+
+不得自动修改全局 Codex 信任配置，也不得把 `agent_prompt_blocked` 记为实现失败、无进展或验收失败。
+
+## 4. 精确启动 Agent
+
+角色、模型和思考强度从 Manifest 选择，不在命令行临时改路由。正常路径使用 `pnpm orchestration:coordinator` 提供的受控工具。
+
+排查启动问题时，可核对底层形态：
+
+```bash
+# Codex：先解决工作区信任，再 worker-start
+codex --model <model> -c model_reasoning_effort="<effort>" -a never -s danger-full-access
+
+# OMP：思考强度参数是 --thinking
+omp --model <model> --thinking <level> --approval-mode yolo
+```
+
+OMP 的模型和思考强度由其启动命令指定；不要把 Codex 的 `--effort` 或 `model_reasoning_effort` 传给 OMP。自建 OMP terminal 时，先等待 `tui-idle` 并核对状态栏，再用 Dispatch 注入已有 Task。
+
+若 OMP 注入后返回 `agent_prompt_stalled`，先检查是否只是输入仍待提交；只提交一次现有输入，不要再次 dispatch 同一 Task。禁止使用 `orca reset --tasks`，该命令会影响项目内全部 Run，而非当前 Task。
+
+新的独立任务使用新的 Agent session。仅当前仍活动的 Finalizer 在同一任务内修复和回归时保持连续会话；已结束、崩溃或长时间失联的 terminal 不作为后续任务上下文。
+
+## 5. 等待、提问与超时
+
+`riskflow_wait` 单次最多等待 60 秒。超时只是协调检查点：读取一次最新状态后继续等待，不创建替代 Task，不轮询 terminal 屏幕，也不把超时记为 worker 失败。
+
+收到 `question` 时，根据已批准工件和真实代码给出有界答案；答案涉及公共契约、权限、持久化、迁移、依赖或范围变化时转为 escalation。收到 `worker_done` 后先审阅 Delivery、diff、HEAD 和证据，再 settle；不要只凭退出码或报告中的 PASS 收口。
+
+命令超时与命令失败分开记录。必须执行的关键场景应保留其实际运行证据；合理的外围 skip 可以报告，但关键路径未执行不能算通过。
+
+## 6. 派发和收口故障
+
+发生 Orca/OMP/Codex 错误时先重新运行 status 并对账以下事实：
+
+- Task、Run、Dispatch 是否已经创建；
+- 是否存在活动 writer 或重复 terminal；
+- Task 信封的 input/output HEAD 是否仍匹配；
+- 幂等回执是否为 `inflight`；
+- 错误发生在副作用之前还是之后。
+
+`uncertain_prior_execution` 表示副作用可能已发生。此时不得换幂等键盲重试；先核对 Orca、Git 和 OpenSpec 的真实结果，再走受控 reconcile。已 settled 的 Task 不复用；普通测试失败由当前责任角色处理。
+
+Orca 内部 terminal 优先用 Orca CLI 定位和操作。桌面 accessibility 无法可靠识别目标 terminal 时，不使用坐标或盲按键替代精确 handle。
+
+Finalizer 有未提交修复时，主调度必须先审阅全部 dirty paths。`riskflow_settle` 的 `reviewedPaths` 必须与实时 dirty paths 完全一致；工具只暂存这些路径。不要使用 `git add -A` 把未知改动带入检查点。
+
+## 7. 活动 worktree 同步
+
+共享编排策略、Schema、公共脚本或基础契约合入 main 后，逐个同步保留的活动 worktree：
+
+1. 确认没有活动 writer，记录同步前 HEAD，并确认 clean；脏树停止同步。
+2. 将 main merge 到该 feature 分支。
+3. 无冲突时运行受影响的最小检查，并以新 HEAD 更新 v2 信封。
+4. 有冲突时保留 merge 状态，读取冲突双方的规格、提交意图和调用方；不能直接选 ours/theirs。
+5. 语义冲突解决后运行受影响检查，并触发 Targeted Auditor；旧 PASS 不适用于新产物。
+6. 重新运行 status，确认 `resumeQueue`、依赖阻塞和 HEAD 一致。
+
+Agent 之间不复制未提交文件。同步必须形成可审阅 Git 检查点后再交接。
+
+## 8. 共享机械接缝
+
+多个 change 同时触及中央注册、迁移清单、公共 fixture 或 package exports 时，业务实现者只提交其获批范围；主调度在最终集成时统一处理机械接缝。新增 PostgreSQL migration 时至少核对：
+
+- migration manifest 的序号和路径排序；
+- `packages/adapters/test/postgres/postgres-foundation.test.ts` 的发现与约束；
+- `packages/adapters/test/auth/fixture.ts` 的测试库迁移列表；
+- package exports 与实际调用方是否一致。
+
+这些调整只允许落实已批准设计。任何顺序、事务、权限或公共 Schema 的语义决定仍需升级。
+
+## 9. 回收
+
+回收前确认：change 已归档、feature commit 已进入 main、worktree clean、没有活动 writer，相关 terminal 已结束，并且状态将该项列为可回收。
+
+使用 Orca 返回的完整 worktree ID 回收，然后同时核对：
+
+```bash
+git worktree list --porcelain
+orca worktree list --repo <full-repo-id> --json
+pnpm orchestration:status --json
+pnpm orchestration:check
+```
+
+不得使用 `git clean`、手工删除目录或 display name 猜测目标。分支删除与 worktree 回收是两个决定；没有明确授权时保留分支。

@@ -84,3 +84,17 @@ change 进入 `finalizing` 后，强模型 Finalizer MUST 在已批准语义范�
 - **WHEN** Finalizer 只修复已批准范围内的普通实现缺陷
 - **THEN** 系统 MUST 接受其回归证据作为最终收尾证据
 - **AND** MUST NOT 强制启动第二次全量验收
+
+### Requirement: 可复用操作经验必须与动态状态分离
+
+项目 MUST 保存当前有效的 Orca、OMP、Codex 操作与故障恢复步骤，并由协调与执行 Agent 在相关操作前读取；这些步骤 MUST 与稳定策略分开维护，且 MUST NOT 包含当前 frontier、HEAD、Run、Task、terminal 或历史进度。当前接管起点 MUST 只由实时状态生成。
+
+#### Scenario: 新 worktree 首次启动 Codex
+- **WHEN** Codex 因当前 worktree 尚未信任而返回 `agent_prompt_blocked`
+- **THEN** 操作步骤 MUST 指引先在精确 terminal 完成信任并确认 Agent idle
+- **AND** 系统 MUST 复用原 Task 恢复派发，不得把该提示记为实现失败或创建重复 Task
+
+#### Scenario: 新会话读取操作手册
+- **WHEN** 新协调 Agent 读取操作与恢复步骤
+- **THEN** 文档 MUST 指引其从 `revision`、`resumeQueue` 和 `violations` 接管
+- **AND** 文档 MUST NOT 提供带当前指令效力的固定工作项、检查点或 Run/Task 标识

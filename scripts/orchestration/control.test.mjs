@@ -170,10 +170,14 @@ describe("controlled orchestration", () => {
         expectedRevision: "revision-1",
       }),
     ).toThrowError(expect.objectContaining({ code: "replan_approval_required" }));
+    let createdSpec;
     let writtenEnvelope;
     const exec = async (command, args) => {
       if (command === "git") return runtimeRoot;
-      if (command === "orca-ide" && args.includes("task-create")) return { id: "task-replan" };
+      if (command === "orca-ide" && args.includes("task-create")) {
+        createdSpec = args[args.indexOf("--spec") + 1];
+        return { id: "task-replan" };
+      }
       if (command === "orca-ide" && args.includes("task-update")) {
         writtenEnvelope = JSON.parse(args[args.indexOf("--result") + 1]);
         return {};
@@ -204,6 +208,8 @@ describe("controlled orchestration", () => {
         attempt: 1,
       });
       expect(writtenEnvelope.attemptGroup).toMatch(/^C17:planning:/u);
+      expect(createdSpec).toContain("IMPLEMENTATION-ORCHESTRATION-RUNBOOK.md");
+      expect(createdSpec).toContain("references/风险识别与评估规划事实源摘要.md");
     } finally {
       await rm(runtimeRoot, { recursive: true });
     }

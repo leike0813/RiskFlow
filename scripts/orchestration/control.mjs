@@ -410,7 +410,8 @@ async function ensureRun(exec, invocation, rootDir, node, idempotencyKey) {
 
 function taskSpec(node, taskKind) {
   const responsibility = {
-    planning: "创建并闭合 riskflow-delivery 规划工件，不实现代码",
+    planning:
+      "创建并闭合 riskflow-delivery 规划工件，不实现代码；研究资料只读取 references/风险识别与评估规划事实源摘要.md",
     implementation: "按已批准 IP-ID 有界实现并在当前任务内修复普通测试失败",
     finalization:
       "核验当前产物，在已批准语义内直接修复、回归并给出最终报告；普通缺陷保持当前收尾责任",
@@ -423,7 +424,7 @@ function taskSpec(node, taskKind) {
     `工作树：${node.worktree.id}`,
     `输入 HEAD：${node.worktree.head}`,
     responsibility,
-    "先读 AGENTS.md、IMPLEMENTATION-ORCHESTRATION-HANDBOOK.md 和全部 OpenSpec contextFiles。",
+    "先读 AGENTS.md、IMPLEMENTATION-ORCHESTRATION-HANDBOOK.md、IMPLEMENTATION-ORCHESTRATION-RUNBOOK.md 和全部 OpenSpec contextFiles。",
     "公共契约、权限、持久化、迁移、依赖或批准范围变化必须 escalation；禁止提交、合并、归档或扩大范围。",
     "worker_done 必须列出产物 HEAD、证据、实际命令和剩余事项。",
   ].join("\n");

@@ -29,6 +29,7 @@ import {
   KnowledgeRevisionV1Schema,
   KnowledgeReviewLinkV1Schema,
   ResolveGovernedReleasesRequestV1Schema,
+  type KnowledgeReleaseV1,
   type KnowledgeRevisionV1,
 } from "@riskflow/core/knowledge-governance";
 import {
@@ -868,7 +869,7 @@ export class PostgresKnowledgeGovernanceAdapter {
           .executeTakeFirst();
         const definition =
           definitionRow === undefined ? undefined : definitionFromRow(definitionRow);
-        const currentFacts =
+        const facts =
           definition === undefined
             ? { releases: [], decisions: [] }
             : await this.#releaseFacts(
@@ -894,11 +895,7 @@ export class PostgresKnowledgeGovernanceAdapter {
             ? {}
             : { baseRevisionRef: baseRelease?.revisionRef ?? missingBaseRevision }),
           baseRelease,
-          currentRelease: this.#currentRelease(
-            currentFacts.releases,
-            currentFacts.decisions,
-            command.issuedAt,
-          ),
+          latestRelease: this.#latestRelease(facts.releases, command.issuedAt),
         });
         const existingArtifactRow = await tx
           .selectFrom("business.knowledge_revisions")
@@ -1508,11 +1505,12 @@ export class PostgresKnowledgeGovernanceAdapter {
           facts.decisions,
           command.issuedAt,
         );
+        const latestRelease = this.#latestRelease(facts.releases, command.issuedAt);
         const baseRelease =
           revision.baseReleaseRef === undefined
             ? undefined
             : await this.#findRelease(tx, command.projectId, revision.baseReleaseRef);
-        if (currentRelease !== undefined || revision.baseReleaseRef !== undefined) {
+        if (latestRelease !== undefined || revision.baseReleaseRef !== undefined) {
           validateRevisionBase({
             projectId: command.projectId,
             definitionType: revision.definitionType,
@@ -1520,7 +1518,7 @@ export class PostgresKnowledgeGovernanceAdapter {
             baseReleaseRef: revision.baseReleaseRef,
             baseRevisionRef: revision.baseRevisionRef,
             baseRelease,
-            currentRelease,
+            latestRelease,
           });
         }
         validatePublicationTimeline({
@@ -1531,7 +1529,8 @@ export class PostgresKnowledgeGovernanceAdapter {
           now: command.issuedAt,
           existingReleases: facts.releases,
           currentRelease,
-          expectedBaseReleaseRef: revision.baseReleaseRef,
+          expectedBaseReleaseRef:
+            currentRelease === undefined ? undefined : revision.baseReleaseRef,
         });
         const recordedAt = nowIso(this.#now);
         const releaseRef = KnowledgeReleaseRefV1Schema.parse({
@@ -2427,6 +2426,14 @@ export class PostgresKnowledgeGovernanceAdapter {
     return eligible.sort(
       (left, right) => Date.parse(right.effectiveFrom) - Date.parse(left.effectiveFrom),
     )[0];
+  }
+
+  // 演进基线：不看停用决定，只取命令时刻最近一次已生效的历史发布；运行解析仍走 #currentRelease。
+  #latestRelease(releases: readonly KnowledgeReleaseV1[], requiredAt: string) {
+    const requiredTime = Date.parse(requiredAt);
+    return releases
+      .filter((release) => Date.parse(release.effectiveFrom) <= requiredTime)
+      .sort((left, right) => Date.parse(right.effectiveFrom) - Date.parse(left.effectiveFrom))[0];
   }
 
   async #findMatchingReviewLink(

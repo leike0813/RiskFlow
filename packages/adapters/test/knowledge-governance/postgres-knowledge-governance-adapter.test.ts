@@ -9,6 +9,7 @@ import {
   ReviewDecisionCommandV1Schema,
   type AuthorizationContextV1,
   type KnowledgeGovernanceCommandV1,
+  type ReviewDecisionRefV1,
   type ReviewTaskRefV1,
 } from "@riskflow/contracts/ports";
 import {
@@ -77,9 +78,7 @@ const submitFor = (
     kind: "knowledge-release";
     reference: { entityId: string; versionId: string };
   },
-  definitionType: KnowledgeGovernanceCommandV1 extends never
-    ? never
-    : string = GENERIC_DEFINITION_TYPE,
+  options: { definitionType?: string; issuedAt?: string } = {},
 ): KnowledgeGovernanceCommandV1 =>
   KnowledgeGovernanceCommandV1Schema.parse({
     kind: "submit-revision",
@@ -87,10 +86,10 @@ const submitFor = (
     idempotencyKey: nextId("submit-key"),
     projectId,
     actorId: authorization.actorId,
-    issuedAt: GOVERNANCE_TEST_TIMESTAMP,
+    issuedAt: options.issuedAt ?? GOVERNANCE_TEST_TIMESTAMP,
     authorization,
     payload: {
-      definitionType,
+      definitionType: options.definitionType ?? GENERIC_DEFINITION_TYPE,
       ...(baseReleaseRef === undefined ? {} : { baseReleaseRef }),
       candidateArtifactRef: artifactFor(suffix),
       evidenceReferences: [
@@ -109,6 +108,7 @@ const requestReviewFor = (
     KnowledgeGovernanceCommandV1,
     { kind: "request-review" }
   >["payload"]["revisionRef"],
+  issuedAt = GOVERNANCE_TEST_TIMESTAMP,
 ) =>
   KnowledgeGovernanceCommandV1Schema.parse({
     kind: "request-review",
@@ -116,7 +116,7 @@ const requestReviewFor = (
     idempotencyKey: nextId("request-review-key"),
     projectId,
     actorId: authorization.actorId,
-    issuedAt: GOVERNANCE_TEST_TIMESTAMP,
+    issuedAt,
     authorization,
     payload: {
       revisionRef,
@@ -136,6 +136,7 @@ const publishFor = (
     { kind: "publish-approved-release" }
   >["payload"]["reviewDecisionRef"],
   effectiveFrom = GOVERNANCE_TEST_TIMESTAMP,
+  issuedAt = "2030-01-01T00:00:02.000Z",
 ) =>
   KnowledgeGovernanceCommandV1Schema.parse({
     kind: "publish-approved-release",
@@ -143,7 +144,7 @@ const publishFor = (
     idempotencyKey: nextId("publish-key"),
     projectId,
     actorId: authorization.actorId,
-    issuedAt: "2030-01-01T00:00:02.000Z",
+    issuedAt,
     authorization,
     payload: { revisionRef, reviewDecisionRef, effectiveFrom },
   });
@@ -153,6 +154,7 @@ const decideApproval = (
   authorization: AuthorizationContextV1,
   taskRef: ReviewTaskRefV1,
   decisionKind: "approve-publication" | "reject" = "approve-publication",
+  issuedAt = "2030-01-01T00:00:01.000Z",
 ) =>
   ReviewDecisionCommandV1Schema.parse({
     kind: "decide-review",
@@ -160,7 +162,7 @@ const decideApproval = (
     idempotencyKey: nextId("review-decision-key"),
     projectId,
     actorId: authorization.actorId,
-    issuedAt: "2030-01-01T00:00:01.000Z",
+    issuedAt,
     authorization,
     payload: {
       reviewTaskRef: taskRef,
@@ -854,7 +856,9 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
       identificationKnowledgePolicy,
     });
     const submitted = await adapter.govern(
-      submitFor(projectId, authorization, "policy", undefined, "process-model"),
+      submitFor(projectId, authorization, "policy", undefined, {
+        definitionType: "process-model",
+      }),
     );
     if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") {
       throw new Error(`policy submit failed: ${JSON.stringify(submitted)}`);
@@ -937,7 +941,9 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
       reviewAuthorizationProvider: fixture!.reviewAuthorizationProvider(),
     });
     const submitted = await withoutPolicy.govern(
-      submitFor(projectId, authorization, "missing-policy", undefined, "process-model"),
+      submitFor(projectId, authorization, "missing-policy", undefined, {
+        definitionType: "process-model",
+      }),
     );
     if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") {
       throw new Error(`submit failed: ${JSON.stringify(submitted)}`);
@@ -1009,7 +1015,9 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
       },
     });
     const submitted = await failing.govern(
-      submitFor(projectId, authorization, "fault", undefined, "process-model"),
+      submitFor(projectId, authorization, "fault", undefined, {
+        definitionType: "process-model",
+      }),
     );
     if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") {
       throw new Error(`submit failed: ${JSON.stringify(submitted)}`);
@@ -1258,6 +1266,193 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
         await baseProvider.authorize({ ...input, invocationId: `${input.invocationId}:other` }),
     });
   }, 240_000);
+
+  it("keeps post-deactivation evolution on the latest historical release", async () => {
+    const projectId = "governance-post-deactivation";
+    const authorization = governanceAuthorizationFor(projectId);
+    const reviewAuthorization = reviewAuthorizationFor(projectId);
+    const submitted = await fixture!.adapter.govern(
+      submitFor(projectId, authorization, "post-deactivation"),
+    );
+    expect(submitted.kind).toBe("succeeded");
+    if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") return;
+    const requested = await fixture!.adapter.govern(
+      requestReviewFor(projectId, authorization, submitted.result.knowledgeRevisionRef),
+    );
+    expect(requested.kind).toBe("succeeded");
+    if (requested.kind !== "succeeded" || requested.result.kind !== "review-task") return;
+    const decision = await fixture!.reviewAudit.decideReview(
+      decideApproval(projectId, reviewAuthorization, requested.result.reviewTaskRef),
+    );
+    expect(decision.kind).toBe("succeeded");
+    if (decision.kind !== "succeeded") return;
+    const published = await fixture!.adapter.govern(
+      publishFor(
+        projectId,
+        authorization,
+        submitted.result.knowledgeRevisionRef,
+        decision.result.reviewDecisionRef,
+      ),
+    );
+    expect(published).toMatchObject({ kind: "succeeded", result: { kind: "release" } });
+    if (published.kind !== "succeeded" || published.result.kind !== "release") return;
+
+    // 唯一发布停用：active current 为空，但该发布仍是唯一历史演进基线。
+    const deactivated = await fixture!.adapter.govern(
+      KnowledgeGovernanceCommandV1Schema.parse({
+        kind: "deactivate-release",
+        commandId: nextId("post-deactivation-deactivate"),
+        idempotencyKey: nextId("post-deactivation-deactivate-key"),
+        projectId,
+        actorId: authorization.actorId,
+        issuedAt: "2030-01-01T00:00:04.000Z",
+        authorization,
+        payload: { releaseRef: published.result.knowledgeReleaseRef, reasonCode: "superseded" },
+      }),
+    );
+    expect(deactivated).toMatchObject({ kind: "succeeded" });
+    expect(
+      await fixture!.adapter.resolveGovernedReleases({
+        projectId,
+        requiredDefinitionTypes: ["process-model"],
+        requiredAt: "2030-01-01T00:00:05.000Z",
+        asOfRecordedAt: "2030-01-01T00:00:05.000Z",
+        authorization,
+      }),
+    ).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+
+    // 并发提交都引用该历史基线：每条有效命令各自创建不可变修订。
+    const concurrentSubmits = await Promise.all([
+      fixture!.adapter.govern(
+        submitFor(
+          projectId,
+          authorization,
+          "post-deactivation-a",
+          published.result.knowledgeReleaseRef,
+          { issuedAt: "2030-01-01T00:00:05.000Z" },
+        ),
+      ),
+      fixture!.adapter.govern(
+        submitFor(
+          projectId,
+          authorization,
+          "post-deactivation-b",
+          published.result.knowledgeReleaseRef,
+          { issuedAt: "2030-01-01T00:00:05.000Z" },
+        ),
+      ),
+    ]);
+    expect(concurrentSubmits.map((result) => result.kind)).toEqual(["succeeded", "succeeded"]);
+    const revisions = concurrentSubmits.flatMap((result) =>
+      result.kind === "succeeded" && result.result.kind === "revision"
+        ? [result.result.knowledgeRevisionRef]
+        : [],
+    );
+    expect(revisions).toHaveLength(2);
+
+    const reviewDecisions: ReviewDecisionRefV1[] = [];
+    for (const revisionRef of revisions) {
+      const review = await fixture!.adapter.govern(
+        requestReviewFor(projectId, authorization, revisionRef, "2030-01-01T00:00:06.000Z"),
+      );
+      expect(review).toMatchObject({ kind: "succeeded", result: { kind: "review-task" } });
+      if (review.kind !== "succeeded" || review.result.kind !== "review-task") return;
+      const approved = await fixture!.reviewAudit.decideReview(
+        decideApproval(
+          projectId,
+          reviewAuthorization,
+          review.result.reviewTaskRef,
+          "approve-publication",
+          "2030-01-01T00:00:07.000Z",
+        ),
+      );
+      expect(approved).toMatchObject({ kind: "succeeded" });
+      if (approved.kind !== "succeeded") return;
+      reviewDecisions.push(approved.result.reviewDecisionRef);
+    }
+
+    // 停用期间的并发发布：只有一条命令创建新发布，另一条按陈旧基线拒绝。
+    const publishCommands = revisions.map((revisionRef, index) =>
+      publishFor(
+        projectId,
+        authorization,
+        revisionRef,
+        reviewDecisions[index]!,
+        "2030-01-01T00:00:08.000Z",
+        "2030-01-01T00:00:08.000Z",
+      ),
+    );
+    const attempts = await Promise.all(
+      publishCommands.map(async (command, index) => ({
+        index,
+        revisionRef: revisions[index]!,
+        command,
+        result: await fixture!.adapter.govern(command),
+      })),
+    );
+    expect(attempts.map((attempt) => attempt.result.kind).sort()).toEqual(["failed", "succeeded"]);
+    const staleAttempt = attempts.find((attempt) => attempt.result.kind === "failed")!;
+    expect(staleAttempt.result).toMatchObject({
+      kind: "failed",
+      error: { code: "STALE_VERSION" },
+    });
+    const winner = attempts.find((attempt) => attempt.result.kind === "succeeded")!;
+    const winnerResult = winner.result;
+    if (winnerResult.kind !== "succeeded" || winnerResult.result.kind !== "release") return;
+
+    // 同命令幂等重放返回原发布；不同命令不得重复发布同一修订。
+    expect(await fixture!.adapter.govern(winner.command)).toEqual(winnerResult);
+    const repeatPublish = publishFor(
+      projectId,
+      authorization,
+      winner.revisionRef,
+      reviewDecisions[winner.index]!,
+      "2030-01-01T00:00:09.000Z",
+      "2030-01-01T00:00:09.000Z",
+    );
+    expect(await fixture!.adapter.govern(repeatPublish)).toMatchObject({
+      kind: "failed",
+      error: { code: "STALE_VERSION" },
+    });
+    // 已有更新发布成立后，旧历史基线不再接受新提交。
+    expect(
+      await fixture!.adapter.govern(
+        submitFor(
+          projectId,
+          authorization,
+          "post-deactivation-old-base",
+          published.result.knowledgeReleaseRef,
+          { issuedAt: "2030-01-01T00:00:09.000Z" },
+        ),
+      ),
+    ).toMatchObject({ kind: "failed", error: { code: "STALE_VERSION" } });
+
+    const counts = await Promise.all([
+      fixture!.postgres.adminPool.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM business.knowledge_releases WHERE project_id = $1`,
+        [projectId],
+      ),
+      fixture!.postgres.adminPool.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM business.command_receipts WHERE command_id = $1`,
+        [repeatPublish.commandId],
+      ),
+    ]);
+    expect(counts.map((outcome) => outcome.rows[0]?.count)).toEqual(["2", "0"]);
+
+    // 新发布接替运行解析；停用的历史发布仍不可解析。
+    expect(
+      await fixture!.adapter.resolveGovernedReleases({
+        projectId,
+        requiredDefinitionTypes: ["process-model"],
+        requiredAt: "2030-01-01T00:00:10.000Z",
+        asOfRecordedAt: "2030-01-01T00:00:10.000Z",
+        authorization,
+      }),
+    ).toMatchObject({
+      kind: "succeeded",
+      result: { releaseRefs: [winnerResult.result.knowledgeReleaseRef] },
+    });
+  });
 
   it("blocks C19 scoring-rule submissions while the scoring-rule policy is missing", async () => {
     const projectId = "governance-c19-policy-missing";

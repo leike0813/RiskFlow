@@ -78,6 +78,10 @@
     "./scoring-rules": {
       "types": "./dist/scoring-rules/index.d.ts",
       "import": "./dist/scoring-rules/index.js"
+    },
+    "./risk-assessment/engine": {
+      "types": "./dist/risk-assessment/engine/index.d.ts",
+      "import": "./dist/risk-assessment/engine/index.js"
     }
   }
 }

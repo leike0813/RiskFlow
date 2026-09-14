@@ -141,7 +141,7 @@ describe("knowledge-governance core", () => {
         baseReleaseRef: base.releaseRef,
         baseRevisionRef: base.revisionRef,
         baseRelease: base,
-        currentRelease: base,
+        latestRelease: base,
       }),
     ).not.toThrow();
     expectFailure(
@@ -153,10 +153,50 @@ describe("knowledge-governance core", () => {
           baseReleaseRef: releaseRef("other-release"),
           baseRevisionRef: base.revisionRef,
           baseRelease: base,
-          currentRelease: base,
+          latestRelease: base,
         }),
       "STALE_VERSION",
       "base-release-mismatch",
+    );
+    expectFailure(
+      () =>
+        validateRevisionBase({
+          projectId,
+          definitionType: revision.definitionType,
+          hasDefinition: true,
+          baseReleaseRef: base.releaseRef,
+          baseRevisionRef: base.revisionRef,
+          baseRelease: base,
+        }),
+      "STALE_VERSION",
+      "base-release-not-current",
+    );
+    expectFailure(
+      () =>
+        validateRevisionBase({
+          projectId,
+          definitionType: revision.definitionType,
+          hasDefinition: true,
+          baseReleaseRef: releaseRef("missing-release"),
+          baseRevisionRef: revisionRef("missing-revision"),
+        }),
+      "ENTITY_NOT_FOUND",
+      "base-release-not-found",
+    );
+    const newerRelease = releaseFor(revision, "release-2", "2030-01-02T00:00:00.000Z");
+    expectFailure(
+      () =>
+        validateRevisionBase({
+          projectId,
+          definitionType: revision.definitionType,
+          hasDefinition: true,
+          baseReleaseRef: base.releaseRef,
+          baseRevisionRef: base.revisionRef,
+          baseRelease: base,
+          latestRelease: newerRelease,
+        }),
+      "STALE_VERSION",
+      "base-release-not-current",
     );
   });
 

@@ -752,6 +752,48 @@ describe("worktree-aware state", () => {
     expect(states).toHaveLength(1);
     expect(states[0].violations.map((item) => item.code)).toContain("duplicate_active_worktree");
   });
+
+  it("uses an auxiliary v2 envelope to ignore inherited change copies", () => {
+    const auxiliary = (id, path, tasks = []) => ({
+      id,
+      path,
+      exists: true,
+      localNodeIds: [],
+      openSpecNodeIds: [],
+      openSpecNames: ["strengthen-orchestration"],
+      liveTerminalCount: 0,
+      git: { head: "feature-head", branch: id, dirty: false, dirtyPaths: [] },
+      tasks,
+    });
+    const ownerTask = task({
+      id: "task-aux-owner",
+      status: "ready",
+      envelope: v2Envelope({
+        workItemId: "AUX:strengthen-orchestration",
+        routeNodeId: null,
+        changeName: "strengthen-orchestration",
+        worktreeId: "repo-id::/tmp/owner",
+        owner: {
+          taskId: "task-aux-owner",
+          agentClass: "strong-finalizer",
+          model: "gpt-5.6-sol",
+        },
+      }),
+    });
+    const snapshot = deriveSnapshot(
+      graph(),
+      context({
+        worktrees: [
+          auxiliary("repo-id::/tmp/inherited", "/tmp/inherited"),
+          auxiliary("repo-id::/tmp/owner", "/tmp/owner", [ownerTask]),
+        ],
+        tasks: [ownerTask],
+      }),
+    );
+    const state = snapshot.nodes.find((item) => item.id === "AUX:strengthen-orchestration");
+    expect(state?.worktree?.id).toBe("repo-id::/tmp/owner");
+    expect(state?.violations.map((item) => item.code)).not.toContain("duplicate_active_worktree");
+  });
 });
 
 describe("command boundaries", () => {

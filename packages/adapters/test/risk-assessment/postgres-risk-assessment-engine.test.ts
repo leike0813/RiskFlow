@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { DomainEventV1Schema } from "@riskflow/contracts/events";
+import { RiskAssessmentRecordSchema } from "@riskflow/contracts/records";
 
 import { c25RuntimePolicySet } from "../../../core/test/risk-assessment/fixture.js";
 
@@ -243,6 +244,7 @@ describe("C25 PostgreSQL risk assessment engine", () => {
 
     const record = await fixture.postgres.postgres.adminPool.query<{
       record_payload: {
+        kind: string;
         likelihoodScore: number;
         consequenceScore: number;
         riskLevel: string;
@@ -262,6 +264,9 @@ describe("C25 PostgreSQL risk assessment engine", () => {
     expect(record.rows).toHaveLength(1);
     const payload = record.rows[0]!.record_payload;
     expect(payload.indicatorResults).toHaveLength(3);
+    // 持久化记录必须带公共契约的判别字段，并可由公共 Schema 解析。
+    expect(payload.kind).toBe("standardized-risk-record");
+    expect(RiskAssessmentRecordSchema.parse(payload).kind).toBe("standardized-risk-record");
     expect(payload.likelihoodScore).toBe(1.4);
     expect(payload.consequenceScore).toBe(3);
     expect(payload.riskLevel).toBe("level-2");
@@ -802,8 +807,12 @@ describe("C25 PostgreSQL risk assessment engine", () => {
     expect(record.rows[0]!.risk_record_id).toBeNull();
     expect(record.rows[0]!.external_risk_event_id).toBe(externalRef.reference.entityId);
     expect(record.rows[0]!.record_payload).toMatchObject({
+      kind: "external-risk-event",
       externalRiskEventId: externalRef.reference.entityId,
     });
+    expect(RiskAssessmentRecordSchema.parse(record.rows[0]!.record_payload).kind).toBe(
+      "external-risk-event",
+    );
     expect("riskRecordId" in record.rows[0]!.record_payload).toBe(false);
   }, 180_000);
 

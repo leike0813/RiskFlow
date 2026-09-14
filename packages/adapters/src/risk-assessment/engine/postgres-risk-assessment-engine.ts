@@ -1956,10 +1956,13 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
         ]),
       ),
     );
+    // 记录判别字段由公共契约决定，风险输入标识据此二选一。
     const riskRecordId =
-      "riskRecordId" in assessment.record ? assessment.record.riskRecordId : undefined;
+      assessment.record.kind === "standardized-risk-record"
+        ? assessment.record.riskRecordId
+        : undefined;
     const externalRiskEventId =
-      "externalRiskEventId" in assessment.record
+      assessment.record.kind === "external-risk-event"
         ? assessment.record.externalRiskEventId
         : undefined;
     const receipt = await this.#transactionUnit.execute(

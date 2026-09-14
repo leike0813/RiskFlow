@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { RiskAssessmentRecordSchema } from "@riskflow/contracts/records";
+
 import { evaluateScoringRule, type StructuredScoringRule } from "../../src/scoring-rules/index.js";
 import type { AssessmentConfigurationContentV1 } from "../../src/assessment-config/index.js";
 import { parseCanonicalDecimal } from "../../src/assessment-config/index.js";
@@ -14,6 +16,7 @@ import {
 import {
   C25_FIXTURE_APPLICABILITY,
   C25_FIXTURE_RECORD_AUDIT,
+  C25_FIXTURE_RISK_RECORD_REF,
   c25Configuration,
   c25ConfigurationContent,
   c25Facts,
@@ -281,7 +284,17 @@ describe("C25 指标取值、评分与触发总链", () => {
     expect(result.record.indicatorResults).toHaveLength(3);
   });
 
-  it("XOR：外部风险事件分支只写 externalRiskEventId", () => {
+  it("XOR：标准化记录分支以 kind 判别并只写 riskRecordId", () => {
+    const result = evaluateWithFixtureAudit(contextWith({}));
+    expect(result.record).toMatchObject({ kind: "standardized-risk-record" });
+    expect("riskRecordId" in result.record).toBe(true);
+    expect(result.record.kind === "standardized-risk-record" && result.record.riskRecordId).toBe(
+      C25_FIXTURE_RISK_RECORD_REF.reference.entityId,
+    );
+    expect("externalRiskEventId" in result.record).toBe(false);
+  });
+
+  it("XOR：外部风险事件分支以 kind 判别并只写 externalRiskEventId", () => {
     const result = evaluateWithFixtureAudit(
       contextWith({
         facts: c25Facts({
@@ -292,8 +305,13 @@ describe("C25 指标取值、评分与触发总链", () => {
         }),
       }),
     );
-    expect(result.record).toMatchObject({ externalRiskEventId: "event-c25" });
+    expect(result.record).toMatchObject({
+      kind: "external-risk-event",
+      externalRiskEventId: "event-c25",
+    });
     expect("riskRecordId" in result.record).toBe(false);
+    // 公共记录 Schema 必须能解析构造结果（判别字段不可缺）。
+    expect(RiskAssessmentRecordSchema.parse(result.record).kind).toBe("external-risk-event");
   });
 
   it("缺值与映射歧义不被忽略或补齐", () => {

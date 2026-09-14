@@ -1015,8 +1015,16 @@ export const buildRiskAssessmentRecord = (
   };
   return RiskAssessmentRecordSchema.parse(
     riskInput.kind === "standardized-risk-record"
-      ? { ...base, riskRecordId: riskInput.reference.entityId }
-      : { ...base, externalRiskEventId: riskInput.reference.entityId },
+      ? {
+          ...base,
+          kind: "standardized-risk-record" as const,
+          riskRecordId: riskInput.reference.entityId,
+        }
+      : {
+          ...base,
+          kind: "external-risk-event" as const,
+          externalRiskEventId: riskInput.reference.entityId,
+        },
   );
 };
 

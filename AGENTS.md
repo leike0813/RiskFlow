@@ -15,7 +15,7 @@
 
 - 项目能力、接口和模块的开发事实源是已归档 OpenSpec 主规格与当前 change；当前代码用于判断实现现状和 drift。
 - 规划 Agent 的研究资料输入只由 `IMPLEMENTATION-ORCHESTRATION-HANDBOOK.md` §8.1 的派发提示词注入；其余 Agent 不读取或转换研究资料原件。
-- 实现 Agent 完整读取 `openspec instructions apply --json` 返回的 `contextFiles`，验证 Agent 以已批准 change、代码和可运行证据验收，不重新解释研究原文。
+- 实现 Agent 完整读取 `openspec instructions apply --json` 返回的 `contextFiles`；Finalizer 以已批准 change、代码和可运行证据完成核验、范围内修复与最终收尾，不重新解释研究原文。
 
 ### 2.1 Agent-native 横切运行契约
 
@@ -45,8 +45,9 @@
 
 ### 3.1 大型实现编排
 
-- 执行 39-change 路线前必须先读根目录 `IMPLEMENTATION-ORCHESTRATION-HANDBOOK.md`，并按其中的当前角色分工、滚动依赖图、worktree/提交检查点、Orca 生命周期和完成门推进。
-- 大型实现的角色、模型与强度以 `IMPLEMENTATION-ORCHESTRATION-HANDBOOK.md` §2 为唯一事实源；OpenSpec change、implementation plan 起草、任务规划和独立验证固定由其中的规划与验证 Agent 承担。
+- 执行 39-change 路线前必须先读根目录 `IMPLEMENTATION-ORCHESTRATION-HANDBOOK.md`，运行 `pnpm orchestration:doctor` 与 `pnpm orchestration:status --json`，只按返回的 `resumeQueue` 接管当前 frontier。
+- 大型实现的阶段、角色、模型与强度以 `config/orchestration/execution-graph.json` 为唯一事实源。规划由 Planning Agent 承担；首轮实现由 Implementation Agent 承担；进入 `FINALIZING` 后由 Finalizer 对核验、已批准范围内修复、回归和最终报告负责，普通实现缺陷不得回派首轮实现角色。
+- 主调度的编排写操作必须通过 `riskflow_*` 受控工具执行，并携带当前状态 `revision` 和幂等键；历史日志、聊天记录和手册示例不得替代实时状态。
 - Agent 之间不得用未提交文件传递实现状态。每次角色交接前由主调度 Agent审阅并形成 Git 检查点；Git 权限仍以用户在当前 session 的明确授权为准。
 
 ## 4. 代码组织约束

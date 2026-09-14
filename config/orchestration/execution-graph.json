@@ -1,7 +1,48 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "routeId": "riskflow-mvp-c00-c38",
   "mainBranch": "main",
+  "policy": {
+    "roles": {
+      "planning": {
+        "agentClass": "strong-planner",
+        "model": "gpt-5.6-sol",
+        "thinking": "high"
+      },
+      "implementation": {
+        "agentClass": "bounded-implementer",
+        "model": "commandcode/deepseek/deepseek-v4.1-flash",
+        "thinking": "max"
+      },
+      "finalization": {
+        "agentClass": "strong-finalizer",
+        "model": "gpt-5.6-sol",
+        "thinking": "high"
+      },
+      "audit": {
+        "agentClass": "strong-auditor",
+        "model": "gpt-5.6-sol",
+        "thinking": "high"
+      },
+      "archive": {
+        "agentClass": "mechanical-archiver",
+        "model": "minimax-code-cn/MiniMax-M3",
+        "thinking": "high"
+      }
+    },
+    "phaseOrder": ["planning", "implementing", "finalizing", "integrating", "archiving"],
+    "resumePriority": [
+      "recovery",
+      "finalizing",
+      "integrating",
+      "implementing",
+      "planning",
+      "ready",
+      "cleanup"
+    ],
+    "targetedAudit": ["permission", "transaction", "critical-state-machine", "semantic-merge"],
+    "noProgressLimit": 3
+  },
   "nodes": [
     {
       "id": "C00",

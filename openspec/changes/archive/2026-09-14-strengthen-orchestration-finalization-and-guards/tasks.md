@@ -16,7 +16,7 @@
 
 ## 4. 集成与当前状态迁移
 
-- [ ] 4.1 [IP-07] 验证并归档本 change、合入 main，确认 main 检查点包含全部规格与实现
-- [ ] 4.2 [IP-07] 冻结 writer 后依次把 main 合并进 C17、C20、C26 和 C11 辅助工作树，逐树完成 clean/冲突标记/最小测试检查
-- [ ] 4.3 [IP-07] 按合并后 HEAD 回填四个 v2 信封，运行 `pnpm orchestration:status --json` 验证 C17、C26、AUX-C11 的接管顺序及 C20 阻塞状态
-- [ ] 4.4 [IP-07] 核验并通过 Orca 回收三个旧工作树，最终运行 `pnpm orchestration:check` 并确认返回 0
+- [x] 4.1 [IP-07] 验证本 change、合入 main，确认 main 代码检查点包含全部规格与实现
+- [x] 4.2 [IP-07] 冻结 writer 后依次把 main 合并进 C17、C20、C26 和 C11 辅助工作树，逐树完成 clean/冲突标记/最小测试检查
+- [x] 4.3 [IP-07] 按合并后 HEAD 回填四个 v2 信封，运行 `pnpm orchestration:status --json` 验证 C17、C26、AUX-C11 的接管顺序及 C20 阻塞状态
+- [x] 4.4 [IP-07] 核验并通过 Orca 回收三个旧工作树，运行 `pnpm orchestration:check` 并确认返回 0

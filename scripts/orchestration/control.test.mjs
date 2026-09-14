@@ -9,6 +9,7 @@ import {
   createV2Envelope,
   preflightAction,
   riskflowDispatch,
+  riskflowReconcile,
   riskflowSettle,
   withOrcaSender,
   withRuntimeLock,
@@ -279,6 +280,46 @@ describe("controlled orchestration", () => {
         { workItemId: "C17", expectedRevision: "revision-1" },
       ).node.id,
     ).toBe("C17");
+  });
+
+  it("creates a new coordinator run when reconciling a historical checkpoint", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-reconcile-run-"));
+    const conflicted = node({ status: "unknown" });
+    const state = snapshot({
+      nodes: [conflicted],
+      violations: [{ nodeId: "C17", code: "checkpoint_mismatch" }],
+    });
+    let taskCreateArgs;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("run-create")) return { id: "run-reconcile" };
+      if (command === "orca-ide" && args.includes("task-create")) {
+        taskCreateArgs = args;
+        return { id: "task-reconcile" };
+      }
+      if (command === "orca-ide" && args.includes("task-update")) return {};
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      const result = await riskflowReconcile(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "reconcile-new-run",
+          taskKind: "finalization",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => ({ graph, snapshot: state }),
+        },
+      );
+      expect(result.runId).toBe("run-reconcile");
+      expect(taskCreateArgs).toContain("run-reconcile");
+      expect(taskCreateArgs).not.toContain("run-finalizer");
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
   });
 
   it("allows only auxiliary adoption through the recovery dispatch path", () => {

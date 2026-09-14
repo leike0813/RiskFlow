@@ -39,6 +39,33 @@ function envelope(overrides = {}) {
   });
 }
 
+function v2Envelope(overrides = {}) {
+  return parseTaskEnvelope({
+    result: {
+      schemaVersion: 2,
+      workItemId: "C08",
+      routeNodeId: "C08",
+      changeName: "deliver-agent",
+      taskKind: "finalization",
+      phase: "finalizing",
+      runState: "queued",
+      worktreeId,
+      inputHead: "feature-head",
+      owner: {
+        taskId: "task-c08-finalization",
+        agentClass: "strong-finalizer",
+        model: "gpt-5.6-sol",
+      },
+      attemptGroup: "finalize-c08",
+      attempt: 1,
+      auditPolicy: "self",
+      issueRefs: [],
+      evidenceRefs: [],
+      ...overrides,
+    },
+  });
+}
+
 function task(overrides = {}) {
   return {
     id: "task-c08-verification",
@@ -138,10 +165,44 @@ describe("execution graph", () => {
     });
     expect(envelope()).toMatchObject({ schemaVersion: 1, evidenceRefs: [] });
     expect(envelope({ schemaVersion: "1" })).toMatchObject({ valid: true, schemaVersion: 1 });
-    expect(envelope({ schemaVersion: 2 })).toMatchObject({
-      valid: false,
-      reason: "invalid_schema_version",
+    expect(v2Envelope()).toMatchObject({
+      valid: true,
+      schemaVersion: 2,
+      workItemId: "C08",
+      head: "feature-head",
     });
+    expect(v2Envelope({ outcome: "succeeded" })).toMatchObject({
+      valid: false,
+      reason: "premature_outcome",
+    });
+    expect(v2Envelope({ outputHead: "feature-head" })).toMatchObject({
+      valid: false,
+      reason: "premature_output_head",
+    });
+    expect(v2Envelope({ phase: "implementing" })).toMatchObject({
+      valid: false,
+      reason: "phase_task_kind_mismatch",
+    });
+    expect(v2Envelope({ runState: "settled" })).toMatchObject({
+      valid: false,
+      reason: "missing_settled_outcome",
+    });
+    expect(v2Envelope({ runState: "settled", outcome: "succeeded" })).toMatchObject({
+      valid: true,
+      outcome: "succeeded",
+    });
+    expect(v2Envelope({ approvalRef: "approval://C08/2" })).toMatchObject({
+      valid: false,
+      reason: "invalid_replan_boundary",
+    });
+    expect(
+      v2Envelope({
+        taskKind: "planning",
+        phase: "planning",
+        approvalRef: "approval://C08/2",
+        supersedesAttemptGroup: "finalize-c08",
+      }),
+    ).toMatchObject({ valid: true, approvalRef: "approval://C08/2" });
     expect(envelope({ evidenceRefs: "report.md" })).toMatchObject({
       valid: false,
       reason: "invalid_evidence_refs",
@@ -318,6 +379,71 @@ describe("worktree-aware state", () => {
     expect(snapshot.violations.map((item) => item.code)).not.toContain("main_summary_conflict");
   });
 
+  it("restarts phase selection at the latest approved replan boundary", () => {
+    const node = { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] };
+    const finalization = task({
+      id: "task-c08-finalization",
+      createdAt: "2026-09-04 12:00:00",
+      envelope: v2Envelope({
+        runState: "settled",
+        outcome: "paused",
+        outputHead: "feature-head",
+      }),
+    });
+    const replan = task({
+      id: "task-c08-replan",
+      status: "ready",
+      createdAt: "2026-09-04 13:00:00",
+      envelope: v2Envelope({
+        taskKind: "planning",
+        phase: "planning",
+        owner: {
+          taskId: "task-c08-replan",
+          agentClass: "strong-planner",
+          model: "gpt-5.6-sol",
+        },
+        attemptGroup: "C08:planning:approved",
+        approvalRef: "approval://C08/2",
+        supersedesAttemptGroup: "finalize-c08",
+      }),
+    });
+    const state = deriveNodeState(node, context({ tasks: [finalization, replan] }));
+    expect(state).toMatchObject({
+      status: "running",
+      phase: "planning",
+      checkpoints: {
+        taskId: "task-c08-replan",
+        approvalRef: "approval://C08/2",
+        supersedesAttemptGroup: "finalize-c08",
+      },
+    });
+    expect(state.violations).toEqual([]);
+  });
+
+  it("fails closed when an approved replan does not supersede a finalizing attempt", () => {
+    const node = { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] };
+    const replan = task({
+      id: "task-c08-replan",
+      status: "ready",
+      createdAt: "2026-09-04 13:00:00",
+      envelope: v2Envelope({
+        taskKind: "planning",
+        phase: "planning",
+        owner: {
+          taskId: "task-c08-replan",
+          agentClass: "strong-planner",
+          model: "gpt-5.6-sol",
+        },
+        attemptGroup: "C08:planning:approved",
+        approvalRef: "approval://C08/2",
+        supersedesAttemptGroup: "missing-finalizer",
+      }),
+    });
+    const state = deriveNodeState(node, context({ tasks: [replan] }));
+    expect(state.status).toBe("unknown");
+    expect(state.violations.map((item) => item.code)).toContain("invalid_replan_boundary");
+  });
+
   it("fails closed when the current phase has no unique creation order", () => {
     const node = { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] };
     const passed = task({
@@ -388,6 +514,85 @@ describe("worktree-aware state", () => {
     expect(withoutTime(first)).toEqual(withoutTime(second));
   });
 
+  it("orders active finalization and auxiliary adoption in the resume queue", () => {
+    const c17 = {
+      id: "C17",
+      kind: "change",
+      change: "deliver-process-model",
+      dependsOn: [],
+    };
+    const c20 = {
+      id: "C20",
+      kind: "change",
+      change: "deliver-retrieval",
+      dependsOn: ["C17"],
+    };
+    const finalizerTask = task({
+      id: "task-c17-finalizer",
+      status: "ready",
+      envelope: v2Envelope({
+        workItemId: "C17",
+        routeNodeId: "C17",
+        changeName: "deliver-process-model",
+        owner: {
+          taskId: "task-c17-finalizer",
+          agentClass: "strong-finalizer",
+          model: "gpt-5.6-sol",
+        },
+      }),
+    });
+    const routeWorktree = {
+      id: worktreeId,
+      path: "/tmp/riskflow-feature",
+      exists: true,
+      localNodeIds: ["C17"],
+      openSpecNodeIds: ["C17"],
+      openSpecNames: ["deliver-process-model"],
+      liveTerminalCount: 0,
+      git: { head: "feature-head", branch: "feature", dirty: false, dirtyPaths: [] },
+      tasks: [finalizerTask],
+    };
+    const auxiliaryWorktree = {
+      ...routeWorktree,
+      id: "repo-id::/tmp/auxiliary",
+      path: "/tmp/auxiliary",
+      localNodeIds: [],
+      openSpecNodeIds: [],
+      openSpecNames: ["fix-suite-isolation"],
+      tasks: [],
+    };
+    const auxiliaryTask = task({
+      id: "task-aux-finalizer",
+      status: "ready",
+      envelope: v2Envelope({
+        workItemId: "AUX:fix-suite-isolation",
+        routeNodeId: null,
+        changeName: "fix-suite-isolation",
+        owner: {
+          taskId: "task-aux-finalizer",
+          agentClass: "strong-finalizer",
+          model: "gpt-5.6-sol",
+        },
+      }),
+    });
+    auxiliaryWorktree.tasks = [auxiliaryTask];
+    const snapshot = deriveSnapshot(
+      graph(c20, c17),
+      context({
+        worktrees: [routeWorktree, auxiliaryWorktree],
+        tasks: [finalizerTask, auxiliaryTask],
+        ancestry: { C17: false },
+      }),
+    );
+    expect(snapshot.schemaVersion).toBe(2);
+    expect(snapshot.resumeQueue.map((item) => item.workItemId)).toEqual([
+      "C17",
+      "AUX:fix-suite-isolation",
+    ]);
+    expect(snapshot.nodes.find((node) => node.id === "C20")?.status).toBe("pending");
+    expect(snapshot.revision).toMatch(/^[a-f0-9]{64}$/u);
+  });
+
   it("fails closed for duplicate, missing, and mismatched worktree facts", () => {
     const node = { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] };
     const currentTask = task();
@@ -439,6 +644,113 @@ describe("worktree-aware state", () => {
     expect(missingOpenSpec.violations.map((item) => item.code)).toContain(
       "task_missing_local_openspec",
     );
+  });
+
+  it("fails closed for duplicate writers and v2 identity mismatches", () => {
+    const routeNode = { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] };
+    const first = task({
+      id: "first",
+      status: "dispatched",
+      envelope: v2Envelope({
+        owner: { taskId: "first", agentClass: "strong-finalizer", model: "gpt-5.6-sol" },
+      }),
+    });
+    const second = task({
+      id: "second",
+      status: "ready",
+      createdAt: "2026-09-04 13:00:00",
+      envelope: v2Envelope({
+        owner: { taskId: "wrong", agentClass: "strong-finalizer", model: "gpt-5.6-sol" },
+      }),
+    });
+    const worktree = {
+      id: worktreeId,
+      path: "/tmp/riskflow-feature",
+      exists: true,
+      localNodeIds: ["C08"],
+      openSpecNodeIds: ["C08"],
+      openSpecNames: ["deliver-agent"],
+      liveTerminalCount: 0,
+      git: { head: "feature-head", branch: "feature", dirty: false, dirtyPaths: [] },
+      tasks: [first, second],
+    };
+    const state = deriveSnapshot(
+      graph(routeNode),
+      context({ worktrees: [worktree], tasks: [first, second] }),
+    ).nodes[0];
+    expect(state.status).toBe("unknown");
+    expect(state.violations.map((item) => item.code)).toEqual(
+      expect.arrayContaining(["duplicate_active_writer", "task_identity_conflict"]),
+    );
+  });
+
+  it("allows a dispatched worker to advance HEAD but binds a settled result to outputHead", () => {
+    const routeNode = { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] };
+    const dispatched = task({
+      id: "task-c08-finalization",
+      status: "dispatched",
+      envelope: v2Envelope(),
+    });
+    const worktree = {
+      id: worktreeId,
+      path: "/tmp/riskflow-feature",
+      exists: true,
+      localNodeIds: ["C08"],
+      openSpecNodeIds: ["C08"],
+      openSpecNames: ["deliver-agent"],
+      liveTerminalCount: 1,
+      git: { head: "new-head", branch: "feature", dirty: false, dirtyPaths: [] },
+      tasks: [dispatched],
+    };
+    const active = deriveSnapshot(
+      graph(routeNode),
+      context({ worktrees: [worktree], tasks: [dispatched] }),
+    ).nodes[0];
+    expect(active.violations.map((item) => item.code)).not.toContain("checkpoint_mismatch");
+
+    const settled = {
+      ...dispatched,
+      status: "completed",
+      envelope: v2Envelope({
+        runState: "settled",
+        outcome: "succeeded",
+        outputHead: "old-output",
+      }),
+    };
+    const stale = deriveSnapshot(
+      graph(routeNode),
+      context({
+        worktrees: [{ ...worktree, tasks: [settled] }],
+        tasks: [settled],
+      }),
+    ).nodes[0];
+    expect(stale.violations.map((item) => item.code)).toContain("checkpoint_mismatch");
+  });
+
+  it("groups duplicate auxiliary changes before deriving their state", () => {
+    const auxiliary = (id, path) => ({
+      id,
+      path,
+      exists: true,
+      localNodeIds: [],
+      openSpecNodeIds: [],
+      openSpecNames: ["fix-suite-isolation"],
+      liveTerminalCount: 0,
+      git: { head: "feature-head", branch: id, dirty: false, dirtyPaths: [] },
+      tasks: [],
+    });
+    const snapshot = deriveSnapshot(
+      graph(),
+      context({
+        worktrees: [
+          auxiliary("repo-id::/tmp/aux-1", "/tmp/aux-1"),
+          auxiliary("repo-id::/tmp/aux-2", "/tmp/aux-2"),
+        ],
+      }),
+    );
+    const states = snapshot.nodes.filter((item) => item.id === "AUX:fix-suite-isolation");
+    expect(states).toHaveLength(1);
+    expect(states[0].violations.map((item) => item.code)).toContain("duplicate_active_worktree");
   });
 });
 

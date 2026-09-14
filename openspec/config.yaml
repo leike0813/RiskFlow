@@ -23,6 +23,8 @@ operations:
   apply:
     guidance:
       - 仅使用已归档 change 的直接依赖，并执行最小必要验证。
+      - 实现导致的普通测试失败在当前实现任务内修复；只有公共契约、权限、事务、持久化、迁移、依赖、范围或规划漂移需要升级。
+      - 进入 Finalizing 后由 Finalizer 在已批准语义内核验、修复并回归；普通缺陷不得退回首轮实现角色。
   archive:
     guidance:
-      - 归档前必须完成 verify、同步主 specs，并确认无活动下游引用未归档契约。
+      - 归档前必须由 Finalizer 对最终 HEAD 完成 verify 与收尾，必要的限定审计通过，同步主 specs，并确认无活动下游引用未归档契约。

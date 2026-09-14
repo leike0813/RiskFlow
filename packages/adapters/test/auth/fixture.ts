@@ -20,6 +20,7 @@ import * as engineeringDataReadQueryResultsMigration from "../../src/postgres/mi
 import * as structuredScoringRulesMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-structured-scoring-rules-and-applicable-rule-sets/000028_structured_scoring_rules.js";
 import * as deterministicRiskAssessmentMigration from "../../src/postgres/migrations/risk-assessment/deliver-deterministic-risk-assessment/000032_deterministic_risk_assessment.js";
 import * as externalRiskEventRegistrationMigration from "../../src/postgres/migrations/engineering-data/implement-external-risk-event-registration/000036_external_risk_event_registration.js";
+import * as warningTasksMigration from "../../src/postgres/migrations/warning-response/deliver-warning-tasks-and-in-app-notification/000044_warning_tasks_and_in_app_notification.js";
 
 export interface AuthPostgresFixture extends PostgresTestFixture {
   runMigrations(): Promise<void>;
@@ -76,6 +77,13 @@ export const startAuthPostgresFixture = async (): Promise<AuthPostgresFixture> =
         "engineering-data/implement-external-risk-event-registration/000036_external_risk_event_registration.ts",
       ),
       externalRiskEventRegistrationMigration,
+    ],
+    [
+      resolve(
+        base.productionMigrationRoot,
+        "warning-response/deliver-warning-tasks-and-in-app-notification/000044_warning_tasks_and_in_app_notification.ts",
+      ),
+      warningTasksMigration,
     ],
     [
       resolve(

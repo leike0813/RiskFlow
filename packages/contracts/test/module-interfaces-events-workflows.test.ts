@@ -51,9 +51,11 @@ import {
   ReviewDecisionCommandV1Schema,
   ReviewDecisionV1Schema,
   ReviewRequestV1Schema,
+  ReviewTaskRefV1Schema,
   type ReviewAuditPortV1,
   RiskAssessmentRecordRefV1Schema,
   RiskInputVersionRefV1Schema,
+  RuleConflictRefV1Schema,
   RunSubscriptionRequestV1Schema,
   StartAgentTaskCommandV1Schema,
   StartWorkflowRunCommandV1Schema,
@@ -132,6 +134,7 @@ const knowledgeReviewTaskRef = {
   targetRef: version("knowledge-revision"),
   waitingRunRef: workflowRunRef,
 };
+const ruleConflictRef = version("rule-conflict", "rule-relation-1");
 
 const authorization = {
   schemaVersion: "1",
@@ -237,7 +240,13 @@ describe("module interface contracts", () => {
   it("keeps vocabulary and capabilities closed", () => {
     expect(APPLICABILITY_METADATA_DIMENSION_VALUES).toHaveLength(3);
     expect(ModuleCapabilityV1Schema.safeParse("workflow.start").success).toBe(true);
+    expect(ModuleCapabilityV1Schema.safeParse("agent-task.read").success).toBe(true);
     expect(ModuleCapabilityV1Schema.safeParse("database.query").success).toBe(false);
+    const failureEvidenceBranches = Object.entries(MODULE_BRANCH_CAPABILITY_V1)
+      .filter(([, capability]) => capability === "agent-task.read")
+      .map(([branch]) => branch);
+    expect(failureEvidenceBranches).toEqual(["agent-task.read-failure-evidence"]);
+    expect(MODULE_BRANCH_CAPABILITY_V1["agent-task.read-failure-evidence"]).toBe("agent-task.read");
     expect(AgentTaskTypeV1Schema.safeParse("retrieval-review").success).toBe(true);
     expect(AgentTaskTypeV1Schema.safeParse("free-form").success).toBe(false);
     for (const definitionType of ["standard-library", "case-library"]) {
@@ -583,6 +592,13 @@ describe("module interface contracts", () => {
       ],
       [
         WarningResponseRecordCommandV1Schema,
+        command("acknowledge", {
+          warningRecordRef,
+          warningResponseTaskRef,
+        }),
+      ],
+      [
+        WarningResponseRecordCommandV1Schema,
         command("adopt-recommendation", {
           responseRecommendationRef: version("response-recommendation"),
           decision: "adopted",
@@ -729,6 +745,54 @@ describe("module interface contracts", () => {
           monitoringCutoff: now,
         }),
       ).success,
+    ).toBe(false);
+
+    expect(MODULE_BRANCH_CAPABILITY_V1["warning-response.acknowledge"]).toBe(
+      "warning-response.record",
+    );
+    const acknowledgeCommand = command("acknowledge", {
+      warningRecordRef,
+      warningResponseTaskRef,
+    });
+    for (const invalidAcknowledge of [
+      command("acknowledge", { warningRecordRef }),
+      command("acknowledge", { warningResponseTaskRef }),
+      command("acknowledge", {
+        warningRecordRef: version("external-risk-event"),
+        warningResponseTaskRef,
+      }),
+      command("acknowledge", {
+        warningRecordRef,
+        warningResponseTaskRef: version("review-task"),
+      }),
+      command("acknowledge", { warningRecordRef, warningResponseTaskRef, riskResolved: true }),
+      command("acknowledge", { warningRecordRef, warningResponseTaskRef, taskClosed: true }),
+      command("acknowledge", {
+        warningRecordRef,
+        warningResponseTaskRef,
+        notificationIntentRef: version("notification-intent"),
+      }),
+      command("acknowledge", {
+        warningRecordRef,
+        warningResponseTaskRef,
+        disposalConclusion: "adopted",
+      }),
+    ]) {
+      expect(
+        WarningResponseRecordCommandV1Schema.safeParse(invalidAcknowledge).success,
+        JSON.stringify(invalidAcknowledge),
+      ).toBe(false);
+    }
+    expect(
+      WarningResponseRecordCommandV1Schema.safeParse({
+        ...acknowledgeCommand,
+        authorization: {
+          ...authorization,
+          grantedCapabilities: authorization.grantedCapabilities.filter(
+            (capability) => capability !== "warning-response.record",
+          ),
+        },
+      }).success,
     ).toBe(false);
   });
 
@@ -944,6 +1008,53 @@ describe("module interface contracts", () => {
         routeDecisionRef: version("route-decision"),
       }).success,
     ).toBe(false);
+    expect(
+      WarningResponseRecordSuccessV1Schema.safeParse({
+        kind: "acknowledgement",
+        status: "acknowledged",
+        warningRecordRef,
+        warningResponseTaskRef,
+      }).success,
+    ).toBe(true);
+    for (const invalidAcknowledgement of [
+      { kind: "acknowledgement", warningRecordRef, warningResponseTaskRef },
+      {
+        kind: "acknowledgement",
+        status: "acknowledged",
+        warningRecordRef,
+      },
+      {
+        kind: "acknowledgement",
+        status: "resolved",
+        warningRecordRef,
+        warningResponseTaskRef,
+      },
+      {
+        kind: "acknowledgement",
+        status: "acknowledged",
+        warningRecordRef,
+        warningResponseTaskRef,
+        riskResolved: true,
+      },
+      {
+        kind: "acknowledgement",
+        status: "acknowledged",
+        warningRecordRef,
+        warningResponseTaskRef,
+        taskClosed: true,
+      },
+      {
+        kind: "acknowledgement",
+        status: "acknowledged",
+        warningRecordRef: version("external-risk-event"),
+        warningResponseTaskRef,
+      },
+    ]) {
+      expect(
+        WarningResponseRecordSuccessV1Schema.safeParse(invalidAcknowledgement).success,
+        JSON.stringify(invalidAcknowledgement),
+      ).toBe(false);
+    }
 
     expect(
       IdentificationFinalizationSuccessV1Schema.safeParse({
@@ -1439,6 +1550,76 @@ describe("module interface contracts", () => {
     ).toBe(false);
   });
 
+  it("closes rule conflict references across review request, task and event", () => {
+    const ruleConflictReviewTaskRef = {
+      ...version("review-task", "rule-conflict-review"),
+      reviewType: "rule-conflict",
+      targetRef: ruleConflictRef,
+      waitingRunRef: workflowRunRef,
+    };
+    const ruleConflictRequest = command("request-review", {
+      reviewType: "rule-conflict",
+      targetRef: ruleConflictRef,
+      validationSnapshotRef: version("validation-snapshot"),
+      evidenceSnapshotRef: version("evidence-snapshot"),
+      waitingRunRef: workflowRunRef,
+      reviewPolicyRef: policyRef,
+    });
+
+    expect(RuleConflictRefV1Schema.safeParse(ruleConflictRef).success).toBe(true);
+    expect(ContractReferenceV1Schema.safeParse(ruleConflictRef).success).toBe(true);
+    expect(ReviewTaskRefV1Schema.safeParse(ruleConflictReviewTaskRef).success).toBe(true);
+    expect(ReviewRequestV1Schema.safeParse(ruleConflictRequest).success).toBe(true);
+    expect(
+      DomainEventV1Schema.safeParse({
+        ...eventMetadata,
+        eventType: "review.review-requested.v1",
+        payload: {
+          reviewTaskRef: ruleConflictReviewTaskRef,
+          targetRef: ruleConflictRef,
+          waitingRunRef: workflowRunRef,
+        },
+      }).success,
+    ).toBe(true);
+
+    expect(
+      RuleConflictRefV1Schema.safeParse({
+        kind: "rule-conflict",
+        reference: { entityId: "rule-relation-1" },
+      }).success,
+    ).toBe(false);
+    expect(
+      RuleConflictRefV1Schema.safeParse({
+        kind: "rule-conflict",
+        reference: { entityId: " ", versionId: "v1" },
+      }).success,
+    ).toBe(false);
+    expect(
+      ContractReferenceV1Schema.safeParse({ ...ruleConflictRef, conflictBody: "冲突正文" }).success,
+    ).toBe(false);
+    expect(
+      ContractReferenceV1Schema.safeParse({
+        ...ruleConflictRef,
+        reference: { ...ruleConflictRef.reference, currentVersion: true },
+      }).success,
+    ).toBe(false);
+    expect(
+      ContractReferenceV1Schema.safeParse({ ...ruleConflictRef, kind: "rule-conflicts" }).success,
+    ).toBe(false);
+    expect(
+      ReviewRequestV1Schema.safeParse({
+        ...ruleConflictRequest,
+        payload: { ...ruleConflictRequest.payload, targetRef: version("knowledge-revision") },
+      }).success,
+    ).toBe(false);
+    expect(
+      ReviewTaskRefV1Schema.safeParse({
+        ...ruleConflictReviewTaskRef,
+        targetRef: version("knowledge-revision"),
+      }).success,
+    ).toBe(false);
+  });
+
   it("enforces versioned risk input XOR", () => {
     expect(RiskInputVersionRefV1Schema.safeParse(riskInput).success).toBe(true);
     expect(RiskInputVersionRefV1Schema.safeParse(externalRiskInput).success).toBe(true);
@@ -1461,7 +1642,43 @@ describe("module interface contracts", () => {
     expect(RiskAssessmentRecordRefV1Schema.safeParse(assessmentRecordRef).success).toBe(true);
   });
 
-  it("domain events: accepts all ten transactional events and rejects business bodies", () => {
+  it("domain events: accepts all twelve transactional events and rejects business bodies", () => {
+    const identificationBasisPublishedPayload = {
+      basisKind: "identification-basis",
+      publishedReleases: [
+        {
+          definitionType: "process-model",
+          releaseRef: version("knowledge-release", "process-model"),
+        },
+        {
+          definitionType: "risk-mechanism",
+          releaseRef: version("knowledge-release", "risk-mechanism"),
+        },
+        {
+          definitionType: "standard-library",
+          releaseRef: version("knowledge-release", "standard-library"),
+        },
+        {
+          definitionType: "case-library",
+          releaseRef: version("knowledge-release", "case-library"),
+        },
+        {
+          definitionType: "retrieval-evidence-base",
+          releaseRef: version("knowledge-release", "retrieval-evidence-base"),
+        },
+      ],
+      retrievalEvidenceBaseReleaseRef: version(
+        "retrieval-evidence-base-release",
+        "retrieval-evidence-base",
+      ),
+    };
+
+    const acknowledgedEvent = {
+      eventType: "warning.warning-acknowledged.v1",
+      aggregateRef: warningResponseTaskRef,
+      payload: { warningRecordRef, warningResponseTaskRef },
+    };
+
     const events = [
       {
         eventType: "engineering.inputs-ready.v1",
@@ -1525,6 +1742,7 @@ describe("module interface contracts", () => {
           forecast: { kind: "unavailable", reasonCode: "not-created" },
         },
       },
+      acknowledgedEvent,
       {
         eventType: "warning.calibration-suggestion-created.v1",
         payload: {
@@ -1548,6 +1766,11 @@ describe("module interface contracts", () => {
           reviewDecisionRef: version("review-decision"),
           resumeRunRef: workflowRunRef,
         },
+      },
+      {
+        eventType: "knowledge.identification-basis-published.v1",
+        aggregateRef: version("knowledge-release", "retrieval-evidence-base"),
+        payload: identificationBasisPublishedPayload,
       },
     ];
     expect(DomainEventMetadataV1Schema.safeParse(eventMetadata).success).toBe(true);
@@ -1595,8 +1818,86 @@ describe("module interface contracts", () => {
         extra: "reject",
       }).success,
     ).toBe(false);
+    for (const invalidAcknowledgedEvent of [
+      {
+        ...acknowledgedEvent,
+        payload: {
+          ...acknowledgedEvent.payload,
+          notificationIntentRefs: [version("notification-intent")],
+        },
+      },
+      {
+        ...acknowledgedEvent,
+        payload: { ...acknowledgedEvent.payload, status: "acknowledged" },
+      },
+      {
+        ...acknowledgedEvent,
+        payload: { ...acknowledgedEvent.payload, warningBody: { riskEvent: "正文" } },
+      },
+      {
+        ...acknowledgedEvent,
+        aggregateRef: version("warning-response-task", "other-task"),
+      },
+      { ...acknowledgedEvent, aggregateRef: version("warning-record") },
+    ]) {
+      expect(
+        DomainEventV1Schema.safeParse({ ...eventMetadata, ...invalidAcknowledgedEvent }).success,
+        JSON.stringify(invalidAcknowledgedEvent),
+      ).toBe(false);
+    }
 
-    const monitoringSnapshotChanges = [
+    const monitoringSnapshotChangeEvent = (change: object) => ({
+      ...eventMetadata,
+      eventType: "engineering.assessment-input-changed.v1",
+      payload: { change, reasonCode: "new-monitoring-data" },
+    });
+    const monitoringSnapshotChanges: {
+      change: object;
+      omittedRefsField?: "previousMonitoringSnapshotRefs" | "newMonitoringSnapshotRefs";
+    }[] = [
+      {
+        change: { kind: "monitoring-snapshot", newMonitoringSnapshotRefs: [monitoringSnapshotRef] },
+        omittedRefsField: "previousMonitoringSnapshotRefs",
+      },
+      {
+        change: {
+          kind: "monitoring-snapshot",
+          previousMonitoringSnapshotRefs: [version("monitoring-snapshot", "old-1")],
+        },
+        omittedRefsField: "newMonitoringSnapshotRefs",
+      },
+      {
+        change: {
+          kind: "monitoring-snapshot",
+          previousMonitoringSnapshotRefs: [
+            version("monitoring-snapshot", "old-1"),
+            version("monitoring-snapshot", "old-2"),
+          ],
+          newMonitoringSnapshotRefs: [
+            monitoringSnapshotRef,
+            version("monitoring-snapshot", "new-2"),
+          ],
+        },
+      },
+    ];
+    for (const { change, omittedRefsField } of monitoringSnapshotChanges) {
+      const parsed = DomainEventV1Schema.safeParse(monitoringSnapshotChangeEvent(change));
+      expect(parsed.success, JSON.stringify(change)).toBe(true);
+      if (parsed.success && omittedRefsField) {
+        expect(parsed.data.payload.change, JSON.stringify(change)).not.toHaveProperty(
+          omittedRefsField,
+        );
+      }
+    }
+    for (const change of [
+      { kind: "monitoring-snapshot" },
+      { kind: "monitoring-snapshot", previousMonitoringSnapshotRefs: [] },
+      { kind: "monitoring-snapshot", newMonitoringSnapshotRefs: [] },
+      {
+        kind: "monitoring-snapshot",
+        previousMonitoringSnapshotRefs: [],
+        newMonitoringSnapshotRefs: [],
+      },
       {
         kind: "monitoring-snapshot",
         previousMonitoringSnapshotRefs: [],
@@ -1607,52 +1908,143 @@ describe("module interface contracts", () => {
         previousMonitoringSnapshotRefs: [version("monitoring-snapshot", "old-1")],
         newMonitoringSnapshotRefs: [],
       },
+    ]) {
+      expect(
+        DomainEventV1Schema.safeParse(monitoringSnapshotChangeEvent(change)).success,
+        JSON.stringify(change),
+      ).toBe(false);
+    }
+    for (const change of [
       {
         kind: "monitoring-snapshot",
-        previousMonitoringSnapshotRefs: [
-          version("monitoring-snapshot", "old-1"),
-          version("monitoring-snapshot", "old-2"),
-        ],
-        newMonitoringSnapshotRefs: [monitoringSnapshotRef, version("monitoring-snapshot", "new-2")],
+        previousMonitoringSnapshotRef: version("monitoring-snapshot", "old"),
+        newMonitoringSnapshotRef: monitoringSnapshotRef,
+      },
+      {
+        kind: "monitoring-snapshot",
+        newMonitoringSnapshotRefs: [monitoringSnapshotRef],
+        samples: [{ value: 1 }],
+      },
+    ]) {
+      expect(
+        DomainEventV1Schema.safeParse(monitoringSnapshotChangeEvent(change)).success,
+        JSON.stringify(change),
+      ).toBe(false);
+    }
+
+    const identificationBasisEvent = (payload: object) => ({
+      ...eventMetadata,
+      aggregateRef: version("knowledge-release", "retrieval-evidence-base"),
+      eventType: "knowledge.identification-basis-published.v1",
+      payload,
+    });
+    const identificationBasisReleases = identificationBasisPublishedPayload.publishedReleases;
+    const invalidIdentificationBasisPayloads = [
+      {
+        name: "missing published release",
+        payload: {
+          ...identificationBasisPublishedPayload,
+          publishedReleases: identificationBasisReleases.slice(0, 4),
+        },
+      },
+      {
+        name: "duplicated definition type",
+        payload: {
+          ...identificationBasisPublishedPayload,
+          publishedReleases: [
+            identificationBasisReleases[0],
+            identificationBasisReleases[0],
+            identificationBasisReleases[2],
+            identificationBasisReleases[3],
+            identificationBasisReleases[4],
+          ],
+        },
+      },
+      {
+        name: "misplaced definition type",
+        payload: {
+          ...identificationBasisPublishedPayload,
+          publishedReleases: [
+            identificationBasisReleases[1],
+            identificationBasisReleases[0],
+            identificationBasisReleases[2],
+            identificationBasisReleases[3],
+            identificationBasisReleases[4],
+          ],
+        },
+      },
+      {
+        name: "composite slot carrying another definition type",
+        payload: {
+          ...identificationBasisPublishedPayload,
+          publishedReleases: [
+            ...identificationBasisReleases.slice(0, 4),
+            identificationBasisReleases[2],
+          ],
+        },
+      },
+      {
+        name: "generic slot carrying typed composite release ref",
+        payload: {
+          ...identificationBasisPublishedPayload,
+          publishedReleases: [
+            ...identificationBasisReleases.slice(0, 4),
+            {
+              definitionType: "retrieval-evidence-base",
+              releaseRef: version("retrieval-evidence-base-release", "retrieval-evidence-base"),
+            },
+          ],
+        },
+      },
+      {
+        name: "retrieval evidence base release entity mismatch",
+        payload: {
+          ...identificationBasisPublishedPayload,
+          retrievalEvidenceBaseReleaseRef: version(
+            "retrieval-evidence-base-release",
+            "other-retrieval-evidence-base",
+          ),
+        },
+      },
+      {
+        name: "retrieval evidence base release version mismatch",
+        payload: {
+          ...identificationBasisPublishedPayload,
+          retrievalEvidenceBaseReleaseRef: {
+            ...identificationBasisPublishedPayload.retrievalEvidenceBaseReleaseRef,
+            reference: { entityId: "retrieval-evidence-base", versionId: "v2" },
+          },
+        },
+      },
+      {
+        name: "release carrying knowledge body",
+        payload: {
+          ...identificationBasisPublishedPayload,
+          publishedReleases: [
+            ...identificationBasisReleases.slice(0, 4),
+            {
+              definitionType: "retrieval-evidence-base",
+              releaseRef: version("knowledge-release", "retrieval-evidence-base"),
+              releaseBody: { riskEvent: "正文" },
+            },
+          ],
+        },
+      },
+      {
+        name: "unknown payload field",
+        payload: { ...identificationBasisPublishedPayload, notes: "自由字段" },
       },
     ];
-    for (const change of monitoringSnapshotChanges) {
+    for (const invalid of invalidIdentificationBasisPayloads) {
       expect(
-        DomainEventV1Schema.safeParse({
-          ...eventMetadata,
-          eventType: "engineering.assessment-input-changed.v1",
-          payload: { change, reasonCode: "new-monitoring-data" },
-        }).success,
-        JSON.stringify(change),
-      ).toBe(true);
+        DomainEventV1Schema.safeParse(identificationBasisEvent(invalid.payload)).success,
+        invalid.name,
+      ).toBe(false);
     }
     expect(
       DomainEventV1Schema.safeParse({
-        ...eventMetadata,
-        eventType: "engineering.assessment-input-changed.v1",
-        payload: {
-          change: {
-            kind: "monitoring-snapshot",
-            previousMonitoringSnapshotRef: version("monitoring-snapshot", "old"),
-            newMonitoringSnapshotRef: monitoringSnapshotRef,
-          },
-          reasonCode: "new-monitoring-data",
-        },
-      }).success,
-    ).toBe(false);
-    expect(
-      DomainEventV1Schema.safeParse({
-        ...eventMetadata,
-        eventType: "engineering.assessment-input-changed.v1",
-        payload: {
-          change: {
-            kind: "monitoring-snapshot",
-            previousMonitoringSnapshotRefs: [],
-            newMonitoringSnapshotRefs: [monitoringSnapshotRef],
-            samples: [{ value: 1 }],
-          },
-          reasonCode: "new-monitoring-data",
-        },
+        ...identificationBasisEvent(identificationBasisPublishedPayload),
+        aggregateRef: version("knowledge-release", "other-retrieval-evidence-base"),
       }).success,
     ).toBe(false);
   });

@@ -211,6 +211,9 @@ export type CalibrationSuggestionRefV1 = z.infer<typeof CalibrationSuggestionRef
 export const AssessmentRunResultRefV1Schema = versionedRef("assessment-run-result");
 export type AssessmentRunResultRefV1 = z.infer<typeof AssessmentRunResultRefV1Schema>;
 
+export const RuleConflictRefV1Schema = versionedRef("rule-conflict");
+export type RuleConflictRefV1 = z.infer<typeof RuleConflictRefV1Schema>;
+
 export const ReviewDecisionRefV1Schema = versionedRef("review-decision");
 export type ReviewDecisionRefV1 = z.infer<typeof ReviewDecisionRefV1Schema>;
 
@@ -292,7 +295,7 @@ export const ReviewTargetRefV1Schema = z.discriminatedUnion("kind", [
   IdentificationCandidateSetRefV1Schema,
   IdentificationGroupRefV1Schema,
   KnowledgeRevisionRefV1Schema,
-  z.strictObject({ kind: z.literal("rule-conflict"), reference: VersionReferenceSchema }),
+  RuleConflictRefV1Schema,
   z.strictObject({ kind: z.literal("response-candidate"), reference: VersionReferenceSchema }),
   RecommendationCandidateRefV1Schema,
   CalibrationSuggestionRefV1Schema,
@@ -304,10 +307,6 @@ const IdentificationReviewTargetRefV1Schema = z.discriminatedUnion("kind", [
   IdentificationGroupRefV1Schema,
 ]);
 const KnowledgeReviewTargetRefV1Schema = KnowledgeRevisionRefV1Schema;
-const RuleConflictReviewTargetRefV1Schema = z.strictObject({
-  kind: z.literal("rule-conflict"),
-  reference: VersionReferenceSchema,
-});
 const ResponseReviewTargetRefV1Schema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("response-candidate"), reference: VersionReferenceSchema }),
   RecommendationCandidateRefV1Schema,
@@ -348,7 +347,7 @@ export const ReviewTaskRefV1Schema = z.discriminatedUnion("reviewType", [
   z.strictObject({
     ...reviewTaskBase,
     reviewType: z.literal("rule-conflict"),
-    targetRef: RuleConflictReviewTargetRefV1Schema,
+    targetRef: RuleConflictRefV1Schema,
   }),
   z.strictObject({
     ...reviewTaskBase,
@@ -426,6 +425,7 @@ export const ContractReferenceV1Schema = z.discriminatedUnion("kind", [
   DeviationRecordRefV1Schema,
   CalibrationSuggestionRefV1Schema,
   AssessmentRunResultRefV1Schema,
+  RuleConflictRefV1Schema,
   ReviewDecisionRefV1Schema,
   AuditTrailRefV1Schema,
   ValidationSnapshotRefV1Schema,
@@ -464,6 +464,7 @@ export const ModuleCapabilityV1_VALUES = [
   "review-audit.read",
   "review-audit.request",
   "review-audit.decide",
+  "agent-task.read",
   "agent-task.start",
   "agent-task.resume",
   "agent-task.cancel",
@@ -511,6 +512,7 @@ export const MODULE_BRANCH_CAPABILITY_V1 = {
   "warning-response.open": "warning-response.record",
   "warning-response.create-candidate": "warning-response.recommend",
   "warning-response.validate-and-record": "warning-response.recommend",
+  "warning-response.acknowledge": "warning-response.record",
   "warning-response.adopt-recommendation": "warning-response.record",
   "warning-response.record-execution": "warning-response.record",
   "warning-response.record-feedback": "warning-response.record",
@@ -520,6 +522,7 @@ export const MODULE_BRANCH_CAPABILITY_V1 = {
   "review-audit.decide-review": "review-audit.decide",
   "review-audit.trace": "review-audit.read",
   "review-audit.verify-knowledge-revision-approval": "review-audit.read",
+  "agent-task.read-failure-evidence": "agent-task.read",
   "agent-task.start-task": "agent-task.start",
   "agent-task.resume-task": "agent-task.resume",
   "agent-task.cancel-task": "agent-task.cancel",
@@ -1520,6 +1523,14 @@ const ActionSourceV1Schema = z.discriminatedUnion("kind", [
 
 export const WarningResponseRecordCommandV1Schema = z.discriminatedUnion("kind", [
   commandSchema(
+    "acknowledge",
+    z.strictObject({
+      warningRecordRef: WarningRecordRefV1Schema,
+      warningResponseTaskRef: WarningResponseTaskRefV1Schema,
+    }),
+    branchCapability("warning-response.acknowledge"),
+  ),
+  commandSchema(
     "adopt-recommendation",
     z.strictObject({
       responseRecommendationRef: ResponseRecommendationRefV1Schema,
@@ -2192,6 +2203,12 @@ export const RecommendationSuccessV1Schema = z.discriminatedUnion("kind", [
 export type RecommendationSuccessV1 = z.infer<typeof RecommendationSuccessV1Schema>;
 
 export const WarningResponseRecordSuccessV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("acknowledgement"),
+    status: z.literal("acknowledged"),
+    warningRecordRef: WarningRecordRefV1Schema,
+    warningResponseTaskRef: WarningResponseTaskRefV1Schema,
+  }),
   z.strictObject({
     kind: z.literal("adoption"),
     routeDecisionRef: RouteDecisionRefV1Schema,

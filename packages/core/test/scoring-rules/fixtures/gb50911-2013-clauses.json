@@ -1,0 +1,217 @@
+{
+  "fixtureId": "gb50911-2013-monitoring-control-values",
+  "reviewNotice": "真实公开来源（非甲方审核资料）；甲方正式输入到位后需复核",
+  "standard": {
+    "code": "GB 50911-2013",
+    "title": "城市轨道交通工程监测技术规范",
+    "standardKind": "国家规范",
+    "publisher": "中华人民共和国住房和城乡建设部、中华人民共和国国家质量监督检验检疫总局联合发布；中国建筑工业出版社出版",
+    "announcement": "住房城乡建设部公告第 141 号",
+    "issuedOn": "2013-09-06",
+    "effectiveFrom": "2014-05-01",
+    "mandatoryClauses": ["3.1.1", "9.1.1", "9.1.5"]
+  },
+  "clauses": [
+    {
+      "clauseNumber": "3.1.1",
+      "pdfPage": 16,
+      "kind": "适用条件",
+      "mandatory": true,
+      "quote": "城市轨道交通地下工程应在施工阶段对支护结构、周围岩土体及周边环境进行监测。"
+    },
+    {
+      "clauseNumber": "3.2.5",
+      "pdfPage": 19,
+      "kind": "适用条件",
+      "mandatory": false,
+      "quote": "监测范围应根据基坑设计深度、隧道埋深和断面尺寸、施工工法、支护结构形式、地质条件、周边环境条件等综合确定，并应包括主要影响区和次要影响区。"
+    },
+    {
+      "clauseNumber": "3.3.5",
+      "pdfPage": 21,
+      "kind": "适用条件",
+      "mandatory": false,
+      "quote": "工程监测等级可按表 3.3.5 划分，并应根据当地经验结合地质条件复杂程度进行调整。"
+    },
+    {
+      "clauseNumber": "4.2.2",
+      "pdfPage": 23,
+      "tableNumber": "表 4.2.2",
+      "tableContinuedOnPdfPage": 24,
+      "kind": "指标项",
+      "mandatory": false,
+      "quote": "盾构法隧道管片结构和周围岩土体监测项目应根据表 4.2.2 选择。",
+      "note": "表 4.2.2 中「地表沉降」在一级、二级、三级工程监测等级下均为应测项目。"
+    },
+    {
+      "clauseNumber": "9.1.1",
+      "pdfPage": 61,
+      "kind": "预警",
+      "mandatory": true,
+      "quote": "城市轨道交通工程监测应根据工程特点、监测项目控制值、当地施工经验等制定监测预警等级和预警标准。"
+    },
+    {
+      "clauseNumber": "9.1.3",
+      "pdfPage": 61,
+      "kind": "评分阈值",
+      "mandatory": false,
+      "quote": "监测项目控制值应按监测项目的性质分为变形监测控制值和力学监测控制值。变形监测控制值应包括变形监测数据的累计变化值和变化速率值；力学监测控制值宜包括力学监测数据的最大值和最小值。"
+    },
+    {
+      "clauseNumber": "9.1.5",
+      "pdfPage": 62,
+      "kind": "预警",
+      "mandatory": true,
+      "quote": "城市轨道交通工程施工过程中，当监测数据达到预警标准时，必须进行警情报送。"
+    },
+    {
+      "clauseNumber": "9.2.2",
+      "pdfPage": 62,
+      "tableNumber": "表 9.2.2-2",
+      "tablePdfPage": 65,
+      "kind": "评分阈值",
+      "mandatory": false,
+      "quote": "盾构法隧道管片结构竖向位移、净空收敛和地表沉降控制值应根据工程地质条件、隧道设计参数、工程监测等级及当地工程经验等确定，当无地方经验时，可按表 9.2.2-1 和表 9.2.2-2 确定。"
+    }
+  ],
+  "indicatorItems": [
+    {
+      "sequence": 1,
+      "indicatorItem": "管片结构竖向位移",
+      "clauseNumber": "4.2.2",
+      "requiredByGrade": {
+        "一级": true,
+        "二级": true,
+        "三级": true
+      }
+    },
+    {
+      "sequence": 2,
+      "indicatorItem": "管片结构水平位移",
+      "clauseNumber": "4.2.2",
+      "requiredByGrade": {
+        "一级": true,
+        "二级": false,
+        "三级": false
+      }
+    },
+    {
+      "sequence": 3,
+      "indicatorItem": "管片结构净空收敛",
+      "clauseNumber": "4.2.2",
+      "requiredByGrade": {
+        "一级": true,
+        "二级": true,
+        "三级": true
+      }
+    },
+    {
+      "sequence": 6,
+      "indicatorItem": "地表沉降",
+      "clauseNumber": "4.2.2",
+      "requiredByGrade": {
+        "一级": true,
+        "二级": true,
+        "三级": true
+      }
+    }
+  ],
+  "controlValues": [
+    {
+      "clauseNumber": "9.2.2",
+      "tableNumber": "表 9.2.2-2",
+      "pdfPage": 65,
+      "monitoringItem": "地表沉降",
+      "unit": "mm",
+      "rateUnit": "mm/d",
+      "bands": [
+        {
+          "stratumCondition": "坚硬~中硬土",
+          "grade": "一级",
+          "cumulative": [10, 20],
+          "rate": 3,
+          "gradeId": "gb50911-monitoring-grade-1"
+        },
+        {
+          "stratumCondition": "坚硬~中硬土",
+          "grade": "二级",
+          "cumulative": [20, 30],
+          "rate": 4,
+          "gradeId": "gb50911-monitoring-grade-2"
+        },
+        {
+          "stratumCondition": "坚硬~中硬土",
+          "grade": "三级",
+          "cumulative": [30, 40],
+          "rate": 4,
+          "gradeId": "gb50911-monitoring-grade-3"
+        },
+        {
+          "stratumCondition": "中软~软弱土",
+          "grade": "一级",
+          "cumulative": [15, 25],
+          "rate": 3,
+          "gradeId": "gb50911-monitoring-grade-1"
+        },
+        {
+          "stratumCondition": "中软~软弱土",
+          "grade": "二级",
+          "cumulative": [25, 35],
+          "rate": 4,
+          "gradeId": "gb50911-monitoring-grade-2"
+        },
+        {
+          "stratumCondition": "中软~软弱土",
+          "grade": "三级",
+          "cumulative": [35, 45],
+          "rate": 5,
+          "gradeId": "gb50911-monitoring-grade-3"
+        }
+      ],
+      "upliftBand": {
+        "monitoringItem": "地表隆起",
+        "cumulative": 10,
+        "rate": 3,
+        "grades": ["一级", "二级", "三级"]
+      },
+      "notes": ["本表主要适用于标准断面的盾构法隧道工程。"]
+    }
+  ],
+  "exceptions": [
+    {
+      "exceptionId": "gb50911-2013-9.1.2-no-local-experience",
+      "clauseNumber": "9.2.2",
+      "pdfPage": 62,
+      "quote": "……当无地方经验时，可按表 9.2.2-1 和表 9.2.2-2 确定。",
+      "condition": "表中数值只在无地方工程经验时直接采用；存在地方经验时应按当地经验确定控制值"
+    },
+    {
+      "exceptionId": "gb50911-2013-table-9.2.2-2-standard-section",
+      "clauseNumber": "表 9.2.2-2 注",
+      "pdfPage": 65,
+      "quote": "本表主要适用于标准断面的盾构法隧道工程。",
+      "condition": "非标准断面盾构隧道不直接采用本表数值"
+    },
+    {
+      "exceptionId": "gb50911-2013-9.1.2-special-assessment",
+      "clauseNumber": "9.1.2 第 4 款",
+      "pdfPage": 61,
+      "quote": "对重要的、特殊的或风险等级较高的环境对象的监测项目控制值，应在现状调查与检测的基础上，通过分析计算或专项评估进行确定。",
+      "condition": "重要、特殊或风险等级较高的环境对象改用专项评估控制值"
+    },
+    {
+      "exceptionId": "gb50911-2013-9.1.2-condition-based",
+      "clauseNumber": "9.1.2 第 6 款",
+      "pdfPage": 61,
+      "quote": "监测等级高、工况条件复杂的工程，宜针对不同的工况条件确定监测项目控制值，按工况条件控制监测对象的状态。",
+      "condition": "监测等级高或工况复杂时按工况条件分档确定控制值"
+    },
+    {
+      "exceptionId": "gb50911-2013-3.2.4-adjust-zone",
+      "clauseNumber": "3.2.4",
+      "pdfPage": 19,
+      "quote": "工程影响分区的划分界线应根据地质条件、施工方法及措施特点，结合当地的工程经验进行调整。当遇到下列情况时，应调整工程影响分区界线：淤泥、淤泥质土或其他高压缩性土为主；断裂破碎带、岩溶、土洞等不良地质体；采用锚杆支护、注浆加固、高压旋喷等工程措施；采用施工降水措施；施工期间出现严重的涌砂、涌土或管涌以及较严重渗漏水、支护结构过大变形等异常情况。",
+      "condition": "五类情形之一出现时按实际情况调整主要影响区与次要影响区"
+    }
+  ]
+}

@@ -22,6 +22,7 @@ import {
   ReviewTaskRefV1Schema,
   RiskAssessmentRecordRefV1Schema,
   RiskInputVersionRefV1Schema,
+  RetrievalEvidenceBaseReleaseRefV1Schema,
   StandardizedRiskRecordRefV1Schema,
   WarningRecordRefV1Schema,
   WarningResponseTaskRefV1Schema,
@@ -64,26 +65,86 @@ const InputsReadyPayloadV1Schema = z.strictObject({
   ]),
 });
 
-const AssessmentInputChangedPayloadV1Schema = z.strictObject({
-  change: z.discriminatedUnion("kind", [
-    z.strictObject({
-      kind: z.literal("monitoring-snapshot"),
-      previousMonitoringSnapshotRefs: z.array(MonitoringSnapshotRefV1Schema),
-      newMonitoringSnapshotRefs: z.array(MonitoringSnapshotRefV1Schema),
-    }),
-    z.strictObject({
-      kind: z.literal("applicability-metadata"),
-      previousApplicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
-      newApplicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
-    }),
-  ]),
-  reasonCode: IdentifierSchema,
-});
+const AssessmentInputChangedPayloadV1Schema = z
+  .strictObject({
+    change: z.discriminatedUnion("kind", [
+      z.strictObject({
+        kind: z.literal("monitoring-snapshot"),
+        previousMonitoringSnapshotRefs: z.array(MonitoringSnapshotRefV1Schema).min(1).optional(),
+        newMonitoringSnapshotRefs: z.array(MonitoringSnapshotRefV1Schema).min(1).optional(),
+      }),
+      z.strictObject({
+        kind: z.literal("applicability-metadata"),
+        previousApplicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
+        newApplicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
+      }),
+    ]),
+    reasonCode: IdentifierSchema,
+  })
+  .superRefine((payload, context) => {
+    if (
+      payload.change.kind === "monitoring-snapshot" &&
+      payload.change.previousMonitoringSnapshotRefs === undefined &&
+      payload.change.newMonitoringSnapshotRefs === undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["change"],
+        message: "monitoring snapshot change requires previous or new references",
+      });
+    }
+  });
 
 const ForecastAvailabilityV1Schema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("available"), effectForecastRef: EffectForecastRefV1Schema }),
   z.strictObject({ kind: z.literal("unavailable"), reasonCode: IdentifierSchema }),
 ]);
+
+const IdentificationBasisPublishedReleasesV1Schema = z.tuple([
+  z.strictObject({
+    definitionType: z.literal("process-model"),
+    releaseRef: KnowledgeReleaseRefV1Schema,
+  }),
+  z.strictObject({
+    definitionType: z.literal("risk-mechanism"),
+    releaseRef: KnowledgeReleaseRefV1Schema,
+  }),
+  z.strictObject({
+    definitionType: z.literal("standard-library"),
+    releaseRef: KnowledgeReleaseRefV1Schema,
+  }),
+  z.strictObject({
+    definitionType: z.literal("case-library"),
+    releaseRef: KnowledgeReleaseRefV1Schema,
+  }),
+  z.strictObject({
+    definitionType: z.literal("retrieval-evidence-base"),
+    releaseRef: KnowledgeReleaseRefV1Schema,
+  }),
+]);
+
+const IdentificationBasisPublishedPayloadV1Schema = z
+  .strictObject({
+    basisKind: z.literal("identification-basis"),
+    publishedReleases: IdentificationBasisPublishedReleasesV1Schema,
+    retrievalEvidenceBaseReleaseRef: RetrievalEvidenceBaseReleaseRefV1Schema,
+  })
+  .superRefine((payload, context) => {
+    const compositeRelease = payload.publishedReleases[4];
+    if (
+      compositeRelease.releaseRef.reference.entityId !==
+        payload.retrievalEvidenceBaseReleaseRef.reference.entityId ||
+      compositeRelease.releaseRef.reference.versionId !==
+        payload.retrievalEvidenceBaseReleaseRef.reference.versionId
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["retrievalEvidenceBaseReleaseRef"],
+        message:
+          "retrievalEvidenceBaseReleaseRef must match the published retrieval evidence base release",
+      });
+    }
+  });
 
 export const DomainEventV1Schema = z.discriminatedUnion("eventType", [
   eventSchema("engineering.inputs-ready.v1", InputsReadyPayloadV1Schema),
@@ -108,6 +169,23 @@ export const DomainEventV1Schema = z.discriminatedUnion("eventType", [
     }),
   ),
   eventSchema(
+    "knowledge.identification-basis-published.v1",
+    IdentificationBasisPublishedPayloadV1Schema,
+  ).superRefine((event, context) => {
+    const compositeReleaseRef = event.payload.publishedReleases[4].releaseRef;
+    if (
+      event.aggregateRef.kind !== "knowledge-release" ||
+      event.aggregateRef.reference.entityId !== compositeReleaseRef.reference.entityId ||
+      event.aggregateRef.reference.versionId !== compositeReleaseRef.reference.versionId
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["aggregateRef"],
+        message: "aggregateRef must match the published retrieval evidence base release",
+      });
+    }
+  }),
+  eventSchema(
     "assessment.recorded.v1",
     z.strictObject({
       riskInputRef: RiskInputVersionRefV1Schema,
@@ -125,6 +203,26 @@ export const DomainEventV1Schema = z.discriminatedUnion("eventType", [
       notificationIntentRefs: z.array(NotificationIntentRefV1Schema),
     }),
   ),
+  eventSchema(
+    "warning.warning-acknowledged.v1",
+    z.strictObject({
+      warningRecordRef: WarningRecordRefV1Schema,
+      warningResponseTaskRef: WarningResponseTaskRefV1Schema,
+    }),
+  ).superRefine((event, context) => {
+    const taskRef = event.payload.warningResponseTaskRef;
+    if (
+      event.aggregateRef.kind !== "warning-response-task" ||
+      event.aggregateRef.reference.entityId !== taskRef.reference.entityId ||
+      event.aggregateRef.reference.versionId !== taskRef.reference.versionId
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["aggregateRef"],
+        message: "aggregateRef must match the acknowledged warning response task",
+      });
+    }
+  }),
   eventSchema(
     "warning.feedback-recorded.v1",
     z.strictObject({

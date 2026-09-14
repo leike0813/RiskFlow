@@ -1,0 +1,243 @@
+## Context
+
+动机见 [proposal.md](./proposal.md#why)，行为契约见 [specs/knowledge/structured-scoring-rules-and-applicable-rule-sets/spec.md](./specs/knowledge/structured-scoring-rules-and-applicable-rule-sets/spec.md)。当前基线已经具备 C04 内容寻址工件、C06 授权、C07 审阅、C08 有界 Agent 运行时、C16 定义生命周期和 C18 评估配置解析，但尚无 C19 规则正文、冲突事实、筛选决定或最终评估依据解析。
+
+C01/C02 已冻结 `StructuredScoringRuleSchema`、三维 `ApplicabilityMetadataSchema`/`ApplicabilityConditionsSchema`、`structured-scoring-rule`、`applicable-rule-set`、`rule-conflict`、`knowledge-authoring`、`KnowledgeModelingPortV1.resolve(assessment-basis)` 与 `AssessmentBasisReleaseSetRefV1`。本 change 不修改公共契约。C15 已归档实现 `DataCleaningResultV1Schema`、只追加结果索引和结果工件读取，但结果读取只存在于 `PostgresDataCleaningStore.#readBoundResult` 私有路径；类公共面和只服务 C08 任务执行的 `DataCleaningTaskPortV1` 均没有 C19 可消费的入口。
+
+代码调查确认：C08 `AgentTaskDefinitionRegistry` 在一个实例内按任务类型唯一注册，C16 PostgreSQL adapter 目前只为 C18 提供专用内容策略接缝，C18 私有 `AssessmentConfigurationReleaseSetV1` 是最终评估依据的必要成员但不是公共 `AssessmentBasisReleaseSetRefV1`。`AssessmentPreparationSnapshotV1` 包含适用性快照引用，公共知识解析命令只传准备快照引用；C19 因此使用注入式只读解析接口，不越层读取 C11/C25 私有表。
+
+## Goals / Non-Goals
+
+**Goals:**
+
+- 用一个 `knowledge/rules` 深层模块收口规范编制、规则校验、冲突检测、三维筛选、治理策略与评估依据解析，不复制 C08/C16/C18 状态机。
+- 固定 Agent 候选、内容工件、冲突、筛选、发布和最终依据之间的版本/证据链，以及授权、事务、幂等和失败语义。
+- 让一条经 C15 保留的真实规范资料段完成 RA-S3/S4 验收，并以代表性冲突和不适用规则证明门禁。
+
+**Non-Goals:**
+
+- 不实现 C15 清洗、C17 识别知识、C18 配置治理、C25 评估准备持久化或后续 P/C、矩阵、预警与 UI。
+- 不新增公开 Schema、定义类型、Agent 任务类型、审核状态、HTTP 路由、Web 页面、第三方依赖、全局任务注册表或第二套生命周期。
+- 不在 C19 保存规范正文、配置正文或模型响应副本；不允许未审核默认规则、Mock 后端、兼容旧字段或运行时名称猜测。
+- `StructuredScoringRule.reviewStatus` 不是已发布准入事实：Agent 候选始终保留 `pending`，C16 精确发布与 C07 人工决定才是唯一审核事实。
+
+## Decisions
+
+### D-01：新增单一 `scoring-rules` 领域子路径并复用既有公共契约
+
+核心模块位于 `packages/core/src/scoring-rules/`，适配器位于 `packages/adapters/src/scoring-rules/`，分别由 `@riskflow/core/scoring-rules` 和 `@riskflow/adapters/scoring-rules` 导出。模块直接复用 contracts 的规则、适用性、证据、知识/审阅/Agent 引用，以及 C18 的私有配置集合类型；不在 C19 重新声明公共 DTO 或枚举。
+
+生产入口只暴露五个窄能力：创建 C19 `knowledge-authoring` definition、作为 C16 的 C19 内容治理策略、实现 `Pick<KnowledgeModelingPortV1, "resolve">` 的 `assessment-basis` 分支、从 C19 core 子路径导出的评估依据发布集合成员 reader，以及供 C19 冲突检测与 C25 评分共用的确定性边界归一/求值函数。API 已有通用知识路由，Worker 已有通用 runner；reader 和求值函数只供受控的进程内消费方注入或导入，因此不新增 API/Web 行为。
+
+**替代方案：**扩展 `packages/contracts` 会违反 change 边界；按校验、冲突、筛选拆成多个横向 util 会增加事实源和调用顺序耦合。
+
+### D-02：两个受治理文档是正文 SSOT，Agent 只提交规则级操作
+
+`StructuredScoringRuleDocumentV1` 为 `structured-scoring-rule` 内容工件，固定 `schemaVersion: "1"`、精确工程修订、C18 配置集合/兼容身份、按 `ruleId` 排序的 `rules[]` 及每条规则对应的来源版本、C15 清洗结果工件、资料段证据和 Agent/校验引用。规则对象直接由公共 `StructuredScoringRuleSchema` 解析；来源关联只增加追溯关系，不复制条文正文。
+
+`ApplicableRuleSetDocumentV1` 为 `applicable-rule-set` 内容工件，固定工程修订、适用性元数据快照引用及三维值、结构化规则发布、C18 配置集合、兼容身份、筛选策略版本、按身份排序且绑定来源 C16 规则发布的纳入规则引用，以及候选全集中每条规则恰好一个 `included | excluded` 决定和稳定原因码。筛选决定是正文 SSOT，数据库仅保存其精确工件引用、摘要和治理关系。
+
+Agent 的 `ScoringRuleAuthoringCandidateV1` 只允许 `add-rule` 与 `replace-rule` 两种判别操作；替换必须携带被替换规则的精确 `ruleVersion`，每项携带一个完整公共规则候选和现有证据引用。没有通用 Patch、路径、删除、整文档覆盖、发布或决定字段。确定性 materializer 将已接受操作应用到精确 base release 后生成完整新文档。
+
+**替代方案：**让 Agent 返回整包会掩盖逐项接受/拒绝；把筛选决定拆成可变数据库事实会形成第二正文事实源。
+
+### D-03：`reviewStatus` 固定为候选自述，发布事实不回写正文
+
+协调裁决固定：Agent 产生的每条公共规则 `reviewStatus` 必须为 `pending`，strict 校验拒绝 `approved` 和 `rejected`。C16 提交后内容工件不可变；人工 `knowledge-revision` 决定和由此创建的精确 C16 release 是唯一审核事实。适用规则集组装只读取已发布 release 对应工件，绝不以正文 `reviewStatus` 判断是否审核，也不在发布时生成一份仅修改状态的新工件。
+
+当前仓库生产代码没有 `reviewStatus` 消费方；只有 contracts 测试构造该字段。若实现前出现把该字段作为 C25 或其它生产准入门禁的消费者，必须停止并升级为独立契约演进，不在 C19 添加兼容分支。
+
+**替代方案：**发布时改正文违反 C04/C16 不可变性；预写 `approved` 赋予 Agent 审核权；二次修订/二次审核会形成无终点循环。
+
+### D-04：C15 结果工件与 C18 指标体系共同冻结 Authoring Manifest
+
+`ScoringRuleAuthoringManifestV1` 保存到 C04，固定工程/父运行/授权、C15 `DataCleaningResultV1` 的精确结果工件、被保留的来源版本与资料段标识、受控标准来源类别、C18 配置集合和其中唯一 `indicator-system` 成员、可选 base 规则 release，以及模型/提示/工具/预算/增量/校验策略引用。适配器通过 D-15 在 C15 concrete store 上补充的公共 `readBoundResult` 读取并复验任务—结果双向绑定，只接受 `available | partial` 中未被排除的资料段；通过 C18 `resolveConfigurationSet` 固定完整配置集合，再从其指标体系工件做有界读取。
+
+验收 fixture 必须使用一条有可核验标准名称、来源版本和资料段定位的真实规范条文，经 C15 结果标记为保留；测试代码只保存获准的最小资料段/摘要和精确引用。若实施基线没有这种合格 fixture 或 C15 尚未集成，实现停在契约夹具门并升级，不以合成规则冒充出口验收。
+
+**替代方案：**直接读转换表会绕过 C15 收口；让模型自由检索规范或按名称选“最新”来源不可重放。
+
+### D-05：复用 C08 Runner，C19 definition 只允许两个有界只读工具
+
+`createScoringRuleAuthoringTaskDefinition()` 注册 `embedded | interactive` 的 `knowledge-authoring` 定义，固定策略引用并只提供：
+
+1. `read-standard-segment-slice`：按 manifest 内来源版本和资料段标识返回有界条文切片及证据引用；
+2. `read-indicator-catalog-slice`：按 manifest 内 C18 指标体系 release/artifact 和指标身份返回有界指标定义。
+
+两个工具都复验任务类型、精确工具策略、工程、资料授权、manifest 归属、目标版本和对象/字节预算，并把观察写入 C04。`finalizeCandidate` 先逐项校验和 materialize 规则文档，再通过原 C16 `govern(submit-revision)` 提交待治理修订，返回 C08 允许的 `KnowledgeRevisionRefV1`；任何冲突事实与修订元数据同事务挂接，Agent 本身不获得治理写能力。
+
+C19 只导出 definition 及 Worker 的 render/interpret 组合函数，不创建全局 Registry 或第二 Runner。C08 Registry 的 task-type 唯一约束限定单个 Worker 组合实例；C17/C19 的部署组合不在本 change 内以多路复用抽象提前解决。
+
+**替代方案：**新建模型循环会复制 C08 预算/恢复；给工具通用检索会扩大资料面；在 C19 提前实现 C17/C19 multiplex 属于跨所有权设计。
+
+### D-06：确定性规则校验先于冲突检测，失败分类闭合
+
+`packages/core/src/scoring-rules/validation.ts` 导出 `normalizeScoringThresholds()`、`normalizeGradeIntervals()` 和 `evaluateScoringRule()`，并由 `@riskflow/core/scoring-rules` 统一暴露。前两个函数接收 contracts 原数组并返回按边界规范排序的只读判别区间；`evaluateScoringRule(rule, actualValue)` 接收一个 strict `StructuredScoringRule` 与 `ScalarValue`，返回由 C19 `ScoringRuleEvaluationResultV1Schema` 定义的 strict 判别结果：成功只含 `{kind: "evaluated", thresholdId, score, grade}`，输入类型不符或落在有限外边界时只含 `{kind: "rejected", reasonCode: "scoring-value-type-mismatch" | "scoring-value-out-of-range"}`。归一表示不修改 contracts：`lt=(-∞, value)`、`lte=(-∞, value]`、数值 `eq=[value, value]`、`gte=[value, +∞)`、`gt=(value, +∞)`、`between=[value, upperValue)`；非数值 `eq` 保持同类型同值单点。等级区间固定为 `[lowerBound, upperBound)`，缺下界为 `(-∞, upperBound)`，缺上界为 `[lowerBound, +∞)`。`between` 与等级区间的共享端点只归右侧区间，其它阈值端点严格由 operator 决定；规范排序后的阈值和等级区间必须互不重叠且无内部空洞。逐规则自定义闭合性需要新增公共字段，必须另开契约演进 change，本 change 不添加该字段。
+
+`validateScoringRuleOperations()` 按输入顺序生成 C08 标准逐项决定，依次校验：操作/base 版本、公共 strict Schema、`reviewStatus === pending`、三维非空且规范排序、指标存在且属于同一 C18 兼容集合、由上述归一函数验证的阈值/区间身份唯一、连续性与数值域、例外引用存在、证据命中 manifest 保留资料段。规则版本由 accepted operation 与 base release 规范摘要确定，拒绝 Agent 自造的漂移版本。
+
+**不变量：**所有规则发布前都能由同一归一结果唯一求值；端点、无穷边界、连续性与越界失败由上述三个导出符号唯一解释。C19 的校验和关系检测不得另写边界分支，C25 不得复制 operator 或等级区间算法。
+
+字段、格式、缺失引用和候选越界归为可修复；权限、来源资格、base/配置版本不兼容归为不可修复。规则间冲突在候选 materialize 后统一检测，也属于不可修复，不进入 C08 修正循环。系统不执行字符串公式、脚本或动态函数。
+
+**替代方案：**边生成边写修订会留下半包；把阈值冲突交给 LLM 会不可重放。
+
+### D-07：冲突和重叠使用同一相交算法，结论不同才形成发布门禁
+
+`detectRuleRelations()` 仅比较同工程、同兼容集合、同指标且三维条件集合逐维有交集的规则。规则版本身份固定为 `(ruleId, ruleVersion.entityId, ruleVersion.versionId)`；候选和基线先分别校验身份唯一，再按该 tuple 规范排序双方。候选与候选形成无序组合，候选与精确基线逐项比较，基线与基线不重复比较。候选继承基线中身份与 strict 正文摘要均相同的规则时只消除该自比较；身份相同但正文摘要不同是版本身份冲突，整个检测失败。
+
+相交算法必须调用 D-06 的 `normalizeScoringThresholds()`、`normalizeGradeIntervals()` 和同源求值语义，不得重新解释 operator、端点或无穷边界。它先按精确边界把阈值对贡献规范化，再合并为“结论、关系类型和拟议处置均不变”的极大连通交叠域；非数值 `eq` 的精确标量进入 `overlapDigest`，无需增加公共字段。一个无序规则版本对在一个该交叠域上至多产生一个事实：结论不同或例外相互否定为 `conflict`，结论相同为 `overlap`。左右字段始终使用规则版本 identity 的规范顺序；阈值/等级身份与证据去重并规范排序。
+
+关系采用三级键，避免把域内矛盾或跨修订相同语义误当成同一事实：
+
+1. `relationDomainKey = sha256(policyRef, canonicalRulePair, overlapDigest)`，标识一个 pair/domain 占位；
+2. `semanticRelationKey = sha256(relationDomainKey, relationKind, retainedRuleVersionRef, excludedRuleVersionRef)`，标识闭合关系语义；
+3. 耐久 `relationId = sha256(projectId, candidateRevisionRef, semanticRelationKey)`，`versionId` 固定为 `1`，只归属该 `KnowledgeRevisionRefV1`。
+
+`prepareRevision` 在 C16 生成 revision 前只形成规范化 relation templates；`appendPreparedRevision` 收到实际 `revisionRef` 后调用单一绑定 helper 生成最终 `relationId`、按 identity 排序的关系集合及包含 owner revision 的 `relationDigest`，再与 C16 revision/metadata/audit/receipt 同事务写入。同一 semantic key 的重复贡献合并证据引用和阈值/等级身份并规范排序，只保留一个事实；同一 domain key 出现不同 relationKind 或拟议处置，或相同 `overlapDigest` 对应不同 overlap 载荷时失败关闭。数据库身份碰撞不得 `ON CONFLICT DO NOTHING`：正常幂等重放由 C03 receipt 在 handler 外返回原结果，handler 内碰撞一律回滚，防止关系被错误归入旧修订。
+
+`conflict` 和 `overlap` 都保存版本化闭合优先级策略给出的 `retainedRuleVersionRef` 与 `excludedRuleVersionRef`；优先级只按来源类别、标准业务版本和规范规则身份比较，不读取模型置信度或输入顺序。冲突提交成功后，以最终 owner-bound `relationId` 幂等创建 C07 `rule-conflict` task 并追加 link；创建失败时已提交修订仍被门禁，后续重试只补同一 task/link。C19 在 C16 `request-review` 前从 C07 决定事实核对精确 relation target，只有人工 `approve-publication` 可批准拟议处置；新修订因 `relationId` 不同，旧任务或决定天然不匹配。`reject`/`return-for-revision` 要求新规则修订并重新检测。重叠不创建 C07 任务，适用规则集组装直接消费其 retained/excluded；若关系重复、归属不符、摘要不符，或同一无序规则版本对的交叠域互相重叠且处置不一致，则整体阻断，不按 `ruleId` 重算或静默选边。
+
+**替代方案：**对所有规则 O(n²) 扫描没有必要；按指标+三维倒排候选后只比较相交集合。引入外部规则引擎也无必要且会新增依赖。
+
+### D-08：C16 增加第二个专用策略分派，不修改 C18 实现
+
+`PostgresKnowledgeGovernanceAdapterOptionsV1` 新增可选 `scoringRulesPolicy: ScoringRulesGovernancePolicyV1`。现有 `assessmentConfigurationPolicy` 和 C18 adapter 保持不变；C16 的四个既有 policy helper 按定义类型分派：C18 的 11 类走原策略，`structured-scoring-rule | applicable-rule-set` 走 C19 策略，其它类型保持原通用行为。C19 类型缺少策略时以 `BUSINESS_BLOCKED` 拒绝，避免绕过内容校验。
+
+C19 policy 复用 C18 的四阶段范式：事务前 `prepareRevision` 有界读取/校验 C04 工件；同一 C16 事务 `appendPreparedRevision` 保存元数据；request review/publish 前 `assertRevisionMetadata` 复验；发布或 rollback 时 `appendRelease` 验证工件绑定并为 `applicable-rule-set` 返回既有 `knowledge.assessment-basis-published.v1` 事件。`structured-scoring-rule` 单独发布不代表完整评估依据，因此不发该事件。
+
+**替代方案：**把两个策略抽成新的通用插件框架会扩大 C16/C18 diff；复制 C16 生命周期到 C19 会产生第二事实源。第二个窄分派是当前两类新增定义的最小改动。
+
+### D-09：适用规则集由纯函数筛选，完整候选决策随工件送审
+
+`assembleApplicableRuleSet()` 接收精确已发布规则文档、C18 配置集合、`ApplicabilityMetadataSnapshotV1` 的引用和值、工程修订、策略和授权。三维匹配是逐维精确身份相等：规则每个数组必须包含快照对应值；例外策略只接受版本化闭合原因/条件，不解释自由文本。每条候选规则恰好产生一次决定：`included`，或 `construction-method-mismatch`、`stratum-condition-mismatch`、`engineering-stage-mismatch`、`exception-applies`、`conflict-unresolved`、`compatibility-mismatch`、`superseded-overlap` 等闭合原因。
+
+只有至少一条纳入规则、候选全集决策完整、无未决冲突且 C18 集合完整相容时才生成 `ApplicableRuleSetDocumentV1`，再通过 C16 `submit-revision → request-review → publish-approved-release`。筛选本身不发布、不自动审批；每个新的适用性快照或规则/C18 版本变化产生新候选修订，不覆盖旧集合。
+
+**替代方案：**运行评分时临时筛选会让同一评估不可重放；把每个快照建成一个 C16 稳定定义不符合 C16 每工程每类型单一稳定身份。
+
+### D-10：评估准备读取采用注入式显式接口，解析只返回精确集合引用
+
+核心定义 `AssessmentPreparationSnapshotReaderV1`，输入精确 `AssessmentPreparationSnapshotRefV1`、工程和当前授权，输出公共 `AssessmentPreparationSnapshotV1`；C19 不实现 C25 存储，也不直接读其表。`PostgresScoringRulesAdapter.resolve()` 只接受公共 `assessment-basis` 命令，先由 reader 取准备快照并复验工程/授权，再以命令 `requiredAt` 和 `issuedAt` 作为业务/记录时点解析唯一 C16 `applicable-rule-set` release 与 C18 配置集合。
+
+resolver 有界读取该规则集工件，要求其适用性快照、工程修订、规则 release、C18 集合和兼容身份全部相符，然后以规范摘要生成不可变 `AssessmentBasisReleaseSetV1` 内部记录并返回公共 `AssessmentBasisReleaseSetRefV1`。该记录只含适用规则集、其全部纳入规则发布和 11 类配置的精确成员引用/内容摘要，不复制正文；规则成员直接从 strict 规则集 `included refs` 解析到 C16 revision metadata，不接受调用方另传清单。未准备完成或成员未发布可返回公共 waiting；错工程、停用、时间/版本/兼容冲突返回 failed。调用相同命令只命中同一集合引用。
+
+内部记录的后续读取由 D-14 的 C19 自有 reader 承担；公共 resolve 结果继续只返回冻结引用。
+
+**替代方案：**C19 直接查询 C11/C25 私表违反层边界；在公共命令增加快照正文违反禁止修改 contracts；仅返回即时散列而不保存集合将失去可重建依据。
+
+### D-11：一项 `000028` 迁移覆盖 C19 只追加关系事实
+
+使用预留号段首项 `packages/adapters/src/postgres/migrations/knowledge-modeling/deliver-structured-scoring-rules-and-applicable-rule-sets/000028_structured_scoring_rules.ts`，不占用 `000029–000031`。迁移新增：
+
+- `business.scoring_rule_revision_metadata`：C16 revision、项目/工程修订、规则/C18 兼容引用、artifact/manifest/task/validation 引用、摘要和三时态；
+- `business.rule_relations`：不可变 conflict/overlap ref、所属候选 C16 revision、比较基线 release、双方规则版本、拟保留/拟筛除规则版本、相交域/证据/策略摘要和创建事实；
+- `business.rule_conflict_review_links`：精确 relation、C07 task、attempt、创建审计与三时态，按 relation+attempt 幂等；不复制 decision/status，放行时从 C07 决定事实读取；
+- `business.applicable_rule_set_revision_metadata`：C16 revision、适用性快照、规则 release、C18 set、artifact、decision digest 和三时态；
+- `business.assessment_basis_release_sets`：公共 set ref、准备/适用性快照、applicable rule set release、C18 set、工程/时点、覆盖适用规则集/纳入规则发布/11 类配置的 strict 成员快照、成员/身份摘要和三时态。
+
+所有正文/逐项筛选仍在 C04；表只存引用和规范摘要。本轮不修改迁移：既有 `rule_relations` 主键 `(relation_id, version_id)` 在 D-07 将 revision 纳入 `relationId` 后成为 owner-bound 唯一键；既有 `rule_relations_identity_uidx(project_id, revision_id, left_rule_version_id, right_rule_version_id, overlap_digest)` 在两端强制规范排序后，作为同一候选 revision 的 domain collision gate，阻止不同 kind/处置写成第二行。一个 C16 revision 只绑定一份 scoring policy，完整三元规则身份、policy、overlap 载荷与 retained/excluded 继续由 strict core Schema、写入前绑定 helper和发布门禁逐项复验。`appendPreparedRevision` 对 relation insert 不使用静默 `do nothing`，任何主键或 domain collision 都回滚。其它现有主键、外键、工程/类型 check、权限和索引保持不变；无需修改 `000028`、测试迁移清单、生产 provider/runner 或历史数据。
+
+**替代方案：**四个连续迁移会增加部署/回滚面；修改 C16/C18 旧表会耦合所有权且难以独立回退。
+
+### D-12：授权、幂等、事务、审计与错误沿用 C03/C06/C07/C08/C16
+
+所有公共 govern/resolve 入口先按 `MODULE_BRANCH_CAPABILITY_V1` 校验工程、actor 和精确能力；工具动作进一步复验资料授权和冻结目标。authoring prepare、relation snapshot、conflict task/link、规则集 assembly、basis resolution 和 basis read 各自使用规范 command/input digest，`(project_id, command_kind, idempotency_key)` 同载荷重放、异载荷 `IDEMPOTENCY_CONFLICT`。并发 revision/release 继续由 C16 definition lock、expected base 与数据库约束收口。
+
+结构化规则生命周期固定为：① Agent 只编制候选，C19 确定性校验并 materialize；② C19 对候选与精确 base/current 发布生成规范 relation templates；③ C16 submit 事务先生成 revision，再由 D-07 绑定 owner identity，并原子写 revision、C19 metadata、全部关系事实、audit 和 receipt；④ 对每个 conflict 以 owner-bound relation identity 派生稳定幂等键创建 C07 task并只追加 link，失败只留下仍被门禁的候选修订，原键重试只补缺失 link；⑤ C19 在 C16 `request-review` 创建任何 knowledge review link/task/audit 前，从 C07 事实读取精确冲突决定，缺失、pending、reject、return、过期或错目标均阻断；⑥ C16 完成人工 `knowledge-revision` 审核；⑦ 发布入口先完成 C06 人工授权和 C07 knowledge-revision 批准证明；⑧ C16 publish 事务锁定 revision/definition，复验审核链接、base/current 和 timeline；⑨ 同一事务在 `business.knowledge_releases` INSERT 前调用 C19 `appendRelease` 最终门禁，重新核对每行 owner identity、relation digest、base/current 和全部 C07 冲突决定；⑩ 门禁通过后才插入 release，并与 review link、publish audit、receipt 和 outbox 原子提交。任一最终门禁或事务副作用失败均回滚本次发布，不删除已提交 revision、relation 或 C07 决定；需要改变候选或处理被拒绝/退回决定时创建新修订，不原地修补。
+
+可观测顺序以已存在事实而非日志文案证明：submit 检查点只有一个候选 revision、其 owner-bound relations 和 `knowledge.submit-revision` audit，知识审核/发布 audit 均为零；全部 conflict 的 C07 决定事实必须先于 `knowledge.request-review` 成功 audit；knowledge-revision 批准事实必须先于发布命令；最终门禁执行时同一事务内 release 行数仍为零。门禁失败后该命令对应 release、`knowledge.publish-approved-release` audit、completed receipt 和 outbox 均零新增；成功时 release、publish audit、completed receipt 各新增一次，outbox 增量严格等于该 definition policy 返回的事件数（当前 structured-scoring-rule 为零），并共享命令/审核/修订引用。测试不依赖可能相同的墙钟时间排序，而以事务检查点、引用前置关系和行计数断言顺序。
+
+适用规则集 metadata 与 revision 同事务；applicable release/metadata 校验/audit/receipt/outbox 同事务；basis set/audit/receipt 同事务。适用规则集组装只读取已发布且已通过上述门禁的规则和持久化关系事实，不调用 `detectRuleRelations`、不创建 C07 task。工件先耐久再写引用，孤儿工件不构成正式结果。
+
+错误映射限于 `AUTHORIZATION_DENIED`、`UNSUPPORTED_CONTRACT`、`BUSINESS_BLOCKED`、`STALE_VERSION`、`IDEMPOTENCY_CONFLICT`、`TRANSIENT_FAILURE`、`TERMINAL_FAILURE` 及公共 waiting；稳定 reason code 指明来源、规则、冲突、适用性、配置或准备阻断，不复制正文、凭据或数据库信息。审计保存可重建引用、逐项决定摘要、操作者、策略与三时态；模型思维链不保存。
+
+**替代方案：**C19 自建审计、队列或错误体系会重复平台事实；跨端口分布式事务不可用，耐久门禁和幂等补链比伪原子更可靠。
+
+### D-13：文件所有权和验证保持最小
+
+新增 core/adapters/worker 的 `scoring-rules` 子目录、一个迁移和三类行为测试；只修改两个 package export、C16 PostgreSQL adapter 的 C19 policy 分派、C07 concrete adapter 的精确冲突决定读取、Worker 根导出、C15 concrete store 的一个公共只读包装及其既有测试，并机械同步两处测试迁移清单。API 通用路由、Web、contracts、C07 公共端口、C15 core task port、C18、根 workspace、锁文件与生产 migration provider/runner 不改。测试以表格驱动覆盖规则校验/冲突/三维筛选，用一条 PostgreSQL 集成主链覆盖 C15→C08→C19 关系检测/C07 决定→C16 规则发布→C19→C18→public resolve，并保留 C15/C16/C18/Worker 代表性回归。
+
+**替代方案：**为每个原因码写独立测试会锁定内部结构；只保留根因、权限、事务、幂等、真实规范出口和公共解析契约的代表性边界。
+
+### D-14：C19 导出狭窄成员 reader，不扩展 C02 或 contracts
+
+`packages/core/src/scoring-rules/schema.ts` 定义 strict `ReadAssessmentBasisReleaseSetV1Schema`、`AssessmentBasisReleaseSetMembersV1Schema` 和 `AssessmentBasisReleaseSetReadResultV1Schema`。请求精确为 `{requestId, idempotencyKey, requestedAt, authorization, assessmentBasisReleaseSetRef}`；不接受 `projectId`、`actorId`、名称、列表或 latest 参数，工程与 actor 只从 C06 当前验证结果取得。成功判别值精确为 `{kind: "succeeded", schemaVersion: "1", assessmentBasisReleaseSetRef, memberDigest, applicableRuleSetMember, scoringRuleMembers, configurationMembers}`，不得返回当前内部 `AssessmentBasisReleaseSetV1` 或 `{releaseSet: ...}` 包装：
+
+- `applicableRuleSetMember` 只含精确 `releaseRef`、`revisionRef`、`artifactRef`、`contentDigest`；
+- `scoringRuleMembers[]` 每项使用同一四字段形状，按 `releaseRef.reference.entityId`、`releaseRef.reference.versionId` 的 tuple 规范排序且 release identity 唯一；它逐项等于适用规则集 strict 正文全部 `included refs` 的来源规则发布成员投影，任何一侧重复、缺失或额外成员都失败，禁止 `Map` 或其它方式静默去重；
+- `configurationMembers[]` 按 `definitionType` 规范排序并恰好覆盖 C18 11 类，每项只含 `definitionType`、`releaseRef`、`revisionRef`、`artifactRef`、`contentDigest`。
+
+字段来源固定：集合引用来自请求并与命中行主键相等；`applicableRuleSetMember` 来自该行绑定的 C16 applicable-set release 及其 revision metadata；`scoringRuleMembers` 只从该 applicable-set strict 正文的 `included refs` 逐项解析到 C16 rule release/revision metadata；`configurationMembers` 只从该行绑定且已由 C18 校验完整的配置发布集合取得；`memberDigest` 从这三个最终投影重算。reader 不接受调用方补传任何成员。
+
+`contentDigest` 使用现有 `sha256CanonicalJson` 对对应 strict parse 后的完整文档计算：适用规则集与评分规则分别由 C19 导出的 `applicableRuleSetDocumentDigest()`、`structuredScoringRuleDocumentDigest()` 复算，配置继续复用 C18 的 `assessmentConfigurationDocumentDigest()`；`memberDigest` 对不含自身的上述三个成员投影整体计算。所有对象 strict parse，不允许正文、显示名称、扩展元数据或自由字段。C25 经 C04 读取正文后调用这些拥有方导出的摘要函数核对，不复制摘要算法。
+
+`packages/core/src/scoring-rules/service.ts` 导出 `AssessmentBasisReleaseSetReaderV1`，其唯一方法 `readAssessmentBasisReleaseSet(input)` 返回三分支 strict 结果：上述 `succeeded`；`{kind: "unavailable", error}`，其 code 固定 `AUTHORIZATION_DENIED`；以及 `{kind: "failed", error}`，供瞬时/终止技术失败使用。`PostgresScoringRulesAdapter` 实现该方法，并注入 C06 `LocalIdentityAccessV1.verify`：先按 `knowledge-modeling.assessment-basis` 对授权上下文引用做当前事实复验，再以验证后的 `projectId + assessmentBasisReleaseSetRef` 单点查询 `business.assessment_basis_release_sets`，strict parse `member_snapshot` 并复验集合引用、三个成员投影、规范排序、完整 `memberDigest` 和版本。没有 list、search、按名称、按“最新”或跨工程查询；reader 不打开任何 C04 工件。成功值不投影内部记录中的 project/preparation/applicability/configuration-set/requiredAt/issuedAt/recordedAt；C25 等消费方必须拿各类 `artifactRef` 另行通过 C04 当前授权读取正文并留下 C04 访问记录。
+
+**持久化不变量：**basis resolve 创建记录时先 strict 读取适用规则集正文，从其 `included refs` 推导唯一 `scoringRuleMembers`，逐个解析精确 C16 release→revision→C04 artifact/content digest，并复用 C18 已校验的 11 成员；任一 included ref 无对应发布元数据、存在额外/重复规则成员或任一摘要不一致时整体失败，不写部分集合。由于 release、revision 和 C04 工件均不可变，reader 只需复验该原子保存的 strict 快照与 `memberDigest`，无需在读取路径打开正文。C25 随后从 C04 复算各 `contentDigest`，并再次断言适用规则集 `included refs` 的规范投影与 `scoringRuleMembers` 完全一致。
+
+运行时边界按失败发生位置闭合：
+
+1. `ReadAssessmentBasisReleaseSetV1Schema` 在入口先 strict parse；契约错误为 `failed/UNSUPPORTED_CONTRACT`，不调用 C06 或数据库。
+2. C06 当前事实明确拒绝、过期、撤权、能力或工程不符为同形 `unavailable/AUTHORIZATION_DENIED`；只保留 C06 安全审计，不查询 C19 target/receipt，不写 C19 audit/receipt。C06 自身连接、超时等可重试故障为 `failed/TRANSIENT_FAILURE`，副作用同样为零。
+3. 当前授权通过后，首次读取的零行、跨工程、strict member snapshot 失败、成员缺失/重复/额外或摘要不符统一为不可枚举 `unavailable/AUTHORIZATION_DENIED`。success 与该 unavailable 都在一个 C03 事务中各写一条固定 action 的 C19 audit 和完成 receipt；同键同载荷由 receipt 重放，同键异载荷为 `failed/IDEMPOTENCY_CONFLICT`。
+4. 历史 success receipt 重放时，reader 先复验 C06，再按 receipt 的 `auditEntryId` 核对 `.succeeded` action，最后单点读取同一 immutable snapshot。查询发生可重试故障为 `failed/TRANSIENT_FAILURE`；audit action 缺失/未知，或 success receipt 对应集合行/strict snapshot/digest 已缺失或损坏，说明不可变事实被破坏，返回 `failed/TERMINAL_FAILURE`，不得改写成 unavailable、追加第二 audit 或完成第二 receipt。历史 `.unavailable` action 直接重建原 unavailable，不重查目标。
+5. C03/audit/receipt 事务的连接、超时、死锁/序列化等可重试故障为 `failed/TRANSIENT_FAILURE`，整体回滚且原键可重试；其它不可重试技术完整性故障为 `failed/TERMINAL_FAILURE`。二者都不伪装成 unavailable。
+
+reader 的运行时责任止于冻结成员投影：它不打开 C04 正文、不重新解析 C16 “当前发布”，也不因集合形成后的成员停用或新发布而改写历史集合。新评估必须重新走 `resolve(assessment-basis)`；历史重放仍返回原精确成员。消费方使用成员 `artifactRef` 时另行接受 C04 当前授权和留痕，失败不得回退成员。首次 authorized unavailable 已形成完成 receipt 后，即使目标随后出现，同一幂等身份仍重放原 unavailable，调用方只能以新请求身份重试；撤权发生在任何历史 receipt 之前，恢复授权后才可按原 receipt 语义继续。
+
+该入口不放入 C02 `KnowledgeModelingPortV1`：C02 的 `resolve(assessment-basis)` 是跨层冻结入口，只承诺返回公共集合引用；成员投影由 C19 私有物化结构拥有，只供确定性评估组合时注入。扩展 C02 会迫使无此存储的公共端口实现成员读取并暴露 C19 内部集合布局。也不修改 `packages/contracts`：输入、成员和错误的叶子类型全部复用既有公共引用与 `AuthorizationContextV1`/`ModuleErrorV1`，聚合 Schema 留在 `@riskflow/core/scoring-rules` 即可满足 C19→C25 的显式模块接口。
+
+**替代方案：**C25 直读 C19 表违反模块所有权；把成员塞进公共 resolve 响应会改变 C02 wire contract；新增通用 repository 或 HTTP query 会扩大权限面。一个 C19 自有、精确引用驱动的 reader 是最小边界。
+
+### D-15：C19 在 C15 concrete store 上补一个薄的清洗结果 reader
+
+`PostgresDataCleaningStore` 新增公共只读方法：
+
+```ts
+readBoundResult(input: {
+  projectId: string;
+  actorId: string;
+  requestId: string;
+  requestedAt: string;
+  authorization: EngineeringFreezeCommandV1["authorization"];
+  taskRef: AgentTaskRefV1;
+}): Promise<
+  | { kind: "ok"; result: DataCleaningResultV1; resultArtifactRef: ContentArtifactRefV1 }
+  | { kind: "error"; error: Record<string, unknown> }
+>;
+```
+
+该方法是对既有 `#readBoundResult` 的公共薄包装，不另写查询、结果解析或任务—结果绑定逻辑。包装先校验 `projectId`/`actorId` 与授权上下文一致，并固定通过 C06 `engineering-data.evidence-access`/`engineering-data.read` 当前事实复验；不得枚举 capability 对应的多个 branch 或尝试到某个分支成功为止。随后才调用私有实现，以 `projectId + taskRef` 单点读取索引，并继续经 C04 `open` 读取 `engineering-data.data-cleaning-result` 工件。公共返回只含 strict `DataCleaningResultV1` 与 `resultArtifactRef`，不暴露 `#readJson`/`#readBytes`、C04 handle、原始资料正文、列表、搜索或按名称/最新值读取。
+
+`requestId` 同时作为 C03 command/idempotency identity，`requestedAt` 是业务发生时刻；规范载荷只含工程、actor、授权上下文引用和 task ref。授权复验必须先于历史回执重放。私有读取成功后，公共包装通过既有 `TransactionUnitV1` 原子提交一条 `engineering-data.read-data-cleaning-result` 领域读取审计和命令回执，不新增表、迁移或事件；C04 `open` 仍按自身稳定读键保留工件访问审计。相同请求身份与规范载荷重放返回同一 result/artifact ref，C03 领域审计和 C04 访问审计都不重复；同一请求身份改传其它 task ref 返回 `IDEMPOTENCY_CONFLICT`，撤权后返回统一拒绝而不重放旧成功。领域审计提交失败时公共读取不返回成功，瞬时故障保持 `TRANSIENT_FAILURE`。
+
+授权撤销、actor/工程不符、跨工程、零行、工件不可见和任务—结果绑定失配在公共包装统一映射为同一个不可重试 `AUTHORIZATION_DENIED` 公开形状；内部 `#finalizePreparation` 继续直接调用私有方法并保留原 `BUSINESS_BLOCKED` 诊断，因此 C15 既有冻结行为、表、迁移、结果 Schema、审计和错误语义不变。瞬时 C04/数据库错误仍保持可重试技术失败，不伪装成目标不可用。
+
+C19 的 `PostgresScoringRulesAdapterOptionsV1` 只注入 `Pick<PostgresDataCleaningStore, "readBoundResult">`，authoring prepare 必须经该方法取得结果和工件引用，不得读取 `business.data_cleaning_results`、调用 C15 私有 helper 或另开 C04 结果工件。`DataCleaningTaskPortV1` 只拥有 C08 task load/persist/tool 生命周期，加入跨任务消费读取会混淆端口职责；`packages/contracts` 是跨层 wire contract，而该 reader 是 adapters 内 C15→C19 的进程内接缝，所以两者都不改。
+
+**不变量：**授权复验先于目标查询和回执重放；固定 read branch，不枚举授权分支；工程与 taskRef 同时限界；结果 strict parse 且 taskRef 双向绑定；成功只返回结果与工件引用；不可用目标不可枚举；C03/C04 读取审计只追加且重放不重复；同键异载荷冲突；C19 不取得原始资料正文旁路；C15 内部冻结路径行为不变。
+
+**替代方案：**把方法加入 `DataCleaningTaskPortV1` 会把下游消费耦合进 C08 执行端口；扩展 contracts 会增加无 wire 消费方的公共契约；C19 直读 C15 表会复制权限、解析和绑定规则。复用既有私有实现的 concrete-store 包装是最小修补。
+
+## Risks / Trade-offs
+
+- [C15 已归档但读取符号为私有] → 由 D-15 只增加公共薄包装并锁定测试；若必须改变 C15 Schema、表、迁移、私有冻结行为或 core task port，立即升级。
+- [公共 `reviewStatus` 容易被误读] → 候选固定 `pending`，发布消费只认 C16 release+C07 decision，并以仓库级搜索门检查新增生产消费者。
+- [C08 Registry 按 task type 唯一] → C19 只提供 definition 和组合函数，不创建全局 registry；跨 C17 的部署组合由拥有 composition 的后续 change 决定。
+- [阈值公共类型使用 JavaScript number 且没有逐规则闭合字段] → C19 只在公共类型允许范围内按 D-06 的固定闭合语义比较并拒绝非有限值，不宣称高于契约的十进制精度；若业务要求精确十进制或自定义闭合性，另开公共契约 change。
+- [冲突对数量随规则增长] → 先按指标与三维交集缩小候选，并为对应列建索引；只有基准证明不足时再引入更复杂索引。
+- [C07 跨端口调用不能与 C19 事务合并] → pending relation 永远阻断发布，任务创建与 link 使用幂等补偿；不会因中断误放行。
+- [真实规范验收资料受授权/版权约束] → 只使用 C15 已保留且获准的最小资料段/摘要，正文留在 C04；无合格输入时明确阻断，不以研究原件或合成数据替代出口。
+
+## Migration Plan
+
+1. 在实现基线确认 C08/C15/C16/C18 已归档集成、C15 `DataCleaningResultV1Schema` 与私有 `#readBoundResult` 未漂移、contracts 未漂移、生产代码无 `reviewStatus` 门禁，并准备一条获准真实规范 fixture；先按 D-15 增加并验证公共薄包装，再实现 C19 消费，任一超出 D-15 的变化立即升级。
+2. 部署 `000028_structured_scoring_rules` 的新表、约束、索引和最小角色权限；无回填、无旧表修改。
+3. 发布 core/adapters/worker 代码并先导入一份候选规则文档；先在 C16 候选修订上完成关系事实和 C07 冲突决定，再进入 C16 知识修订审核与发布，随后只消费已闭合规则组装并人工发布适用规则集。
+4. 以真实规范、冲突规则和三维不适用规则运行 RA-S3/S4 验收，确认 basis resolve 返回精确集合引用后才允许后续 C25 消费。
+5. 应用回滚时先停止新 C19 写入并回退应用；已发布 release、审阅、审计和 C19 关系事实保留。仅在确认无应用引用后执行迁移 `down`，不改写 C16/C18 历史。
+
+## Open Questions
+
+无。`reviewStatus`、C15 结果读取接缝、reader 成员投影和评分边界语义已由协调者裁决；真实规范 fixture 是实现前可判定的硬门，不是可延后设计决定。

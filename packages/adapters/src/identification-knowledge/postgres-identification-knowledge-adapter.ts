@@ -494,15 +494,15 @@ const preparationReadError = (causalRunId: string, error: unknown): ModuleErrorV
 };
 
 /**
- * C08 失败证据窄读的非同形失败（瞬时持久化、幂等冲突等）：必须可验上抛，
- * 不得被收口循环吞掉后把任务当成已收口。
+ * 失败收口的结构化失败（C08 窄读拒绝、C16 提交/复核失败）：携带原 `ModuleErrorV1` 上抛到
+ * 逐 attempt 隔离层，由 `settleAuthoringFailures()` 写入 `failures[]`，不得静默丢弃。
  */
-class IdentificationKnowledgeFailureEvidenceError extends Error {
+class IdentificationKnowledgeSettlementError extends Error {
   readonly error: ModuleErrorV1;
 
   constructor(error: ModuleErrorV1) {
-    super(`identification-knowledge failure evidence read failed: ${error.code}`);
-    this.name = "IdentificationKnowledgeFailureEvidenceError";
+    super(`identification-knowledge failure settlement failed: ${error.code}`);
+    this.name = "IdentificationKnowledgeSettlementError";
     this.error = error;
   }
 }
@@ -2643,7 +2643,8 @@ export class PostgresIdentificationKnowledgeAdapter {
     for (const row of rows) {
       const parsedTaskRef = AgentTaskRefV1Schema.safeParse(row.agent_task_ref);
       try {
-        if (await this.#settleOneFailure(row)) settled += 1;
+        await this.#settleOneFailure(row);
+        settled += 1;
       } catch (error) {
         failures.push({
           // 行由本模块 strict 写入；损坏行的原因仍以原始引用呈现，不伪造 task ref。
@@ -2660,15 +2661,18 @@ export class PostgresIdentificationKnowledgeAdapter {
     return { settled, failures };
   }
 
-  async #settleOneFailure(row: AuthoringAttemptRow): Promise<boolean> {
+  /**
+   * 收口单个 attempt：任何结构化失败（C08 窄读拒绝、C16 提交/复核失败、授权拒绝、CAS 冲突）
+   * 都以携带原 `ModuleErrorV1` 的错误上抛，由逐 attempt 隔离层写入 `failures[]`。
+   * 只有真正收口完成的 attempt 才返回，不回 `false`/`undefined` 掩盖原因。
+   */
+  async #settleOneFailure(row: AuthoringAttemptRow): Promise<void> {
     const taskRef = AgentTaskRefV1Schema.parse(row.agent_task_ref);
     // 失败修订绑定是上一步的稳定事实：已有绑定时只补未完成的复核阶段，不重复读取或创建。
     let bound = await this.#findFailureBinding(row.project_id, taskRef);
     if (bound === undefined) {
       const evidence = await this.#readTerminalFailureEvidence(row, taskRef);
-      if (evidence === undefined) return false;
       bound = await this.#bindFailureRevision(row, taskRef, evidence);
-      if (bound === undefined) return false;
     }
     const reviewCommandId = `${taskRef.reference.entityId}:failure-review`;
     const reviewAuthorization = await this.#authorize({
@@ -2685,7 +2689,6 @@ export class PostgresIdentificationKnowledgeAdapter {
       reviewCommandId,
       reviewAuthorization,
     );
-    if (review === undefined) return false;
     // 逐阶段 CAS：授权或复核失败保留上一阶段事实，重放只向前补未完成阶段。
     await this.#advanceAuthoringAttempt({
       projectId: row.project_id,
@@ -2703,7 +2706,6 @@ export class PostgresIdentificationKnowledgeAdapter {
         review_task_ref: jsonbValue(review),
       },
     });
-    return true;
   }
 
   /**
@@ -2714,7 +2716,7 @@ export class PostgresIdentificationKnowledgeAdapter {
   async #readTerminalFailureEvidence(
     row: AuthoringAttemptRow,
     taskRef: AgentTaskRefV1,
-  ): Promise<AgentTaskFailureEvidenceV1 | undefined> {
+  ): Promise<AgentTaskFailureEvidenceV1> {
     const requestId = `${taskRef.reference.entityId}:failure-evidence`;
     const requestedAt = nowIso(this.#now);
     const authorization = await this.#authorize({
@@ -2734,8 +2736,9 @@ export class PostgresIdentificationKnowledgeAdapter {
       authorization,
     });
     if (read.kind === "succeeded") return read.evidence;
-    if (read.error.code === "AUTHORIZATION_DENIED") return undefined;
-    throw new IdentificationKnowledgeFailureEvidenceError(read.error);
+    // C08 对不存在、跨工程、错类型、未终态和未授权返回同形拒绝：原因必须可查，
+    // 不得在这里转成 undefined 被静默丢弃。
+    throw new IdentificationKnowledgeSettlementError(read.error);
   }
 
   /** D-09 第 1、2 步：写不可发布的失败诊断工件，经 C16 提交失败修订并写 failure-review-only 绑定。 */
@@ -2743,13 +2746,10 @@ export class PostgresIdentificationKnowledgeAdapter {
     row: AuthoringAttemptRow,
     taskRef: AgentTaskRefV1,
     evidence: AgentTaskFailureEvidenceV1,
-  ): Promise<
-    | {
-        readonly revisionRef: KnowledgeRevisionRefV1;
-        readonly failureArtifactRef: ContentArtifactRefV1;
-      }
-    | undefined
-  > {
+  ): Promise<{
+    readonly revisionRef: KnowledgeRevisionRefV1;
+    readonly failureArtifactRef: ContentArtifactRefV1;
+  }> {
     const failureCommandId = `${taskRef.reference.entityId}:failure-revision`;
     const authorization = await this.#authorize({
       projectId: row.project_id,
@@ -2816,7 +2816,14 @@ export class PostgresIdentificationKnowledgeAdapter {
       },
     });
     const submitted = await this.#governance.govern(failureCommand);
-    if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") return undefined;
+    if (submitted.kind !== "succeeded") {
+      throw new IdentificationKnowledgeSettlementError(submitted.error);
+    }
+    if (submitted.result.kind !== "revision") {
+      throw new IdentificationKnowledgeSettlementError(
+        moduleError({ code: "TERMINAL_FAILURE", causalRunId: failureCommandId }),
+      );
+    }
     const revisionRef = submitted.result.knowledgeRevisionRef;
     const bindingAuditId = randomId("audit");
     const bindingAtomic = atomicCommand({
@@ -2949,7 +2956,7 @@ export class PostgresIdentificationKnowledgeAdapter {
     revisionRef: { readonly reference: { readonly entityId: string; readonly versionId: string } },
     commandId: string,
     authorization: AuthorizationContextV1,
-  ): Promise<ReviewTaskRefV1 | undefined> {
+  ): Promise<ReviewTaskRefV1> {
     const reviewCommand = KnowledgeGovernanceCommandV1Schema.parse({
       kind: "request-review",
       commandId,
@@ -2964,8 +2971,13 @@ export class PostgresIdentificationKnowledgeAdapter {
       },
     }) as Extract<KnowledgeGovernanceCommandV1, { kind: "request-review" }>;
     const requested = await this.#governance.govern(reviewCommand);
-    if (requested.kind !== "succeeded" || requested.result.kind !== "review-task") {
-      return undefined;
+    if (requested.kind !== "succeeded") {
+      throw new IdentificationKnowledgeSettlementError(requested.error);
+    }
+    if (requested.result.kind !== "review-task") {
+      throw new IdentificationKnowledgeSettlementError(
+        moduleError({ code: "TERMINAL_FAILURE", causalRunId: commandId }),
+      );
     }
     return requested.result.reviewTaskRef;
   }
@@ -3134,8 +3146,8 @@ export class PostgresIdentificationKnowledgeAdapter {
   }
 
   async #mapError(error: unknown, causalRunId: string): Promise<ModuleErrorV1> {
-    // 失败收口按 attempt 隔离时必须保留 C08 窄读给出的原始原因码，不降级为通用终止失败。
-    if (error instanceof IdentificationKnowledgeFailureEvidenceError) return error.error;
+    // 收口按 attempt 隔离时必须保留结构化失败的原始原因码，不降级为通用终止失败。
+    if (error instanceof IdentificationKnowledgeSettlementError) return error.error;
     if (error instanceof AccessServiceError) {
       return moduleError({
         code:

@@ -50,7 +50,7 @@ Finalizer task 的完成条件是当前产物核验、批准范围内缺陷修�
 
 ### D-08：rollout 以 main 检查点为同步源
 
-本 change 验收归档后先合入 main；冻结活动 writer 后，把该 main 检查点依次 merge 到 C17、C20、C26 与 C11 辅助工作树。合并后以实际 HEAD 回填 v2：C17、C26、C11 辅助项为 finalizing-ready，C20 为 waiting_dependency(C17)。任何旧 PASS 都只保留为 evidence。三个已合并、干净且无活动 writer 的旧工作树通过 Orca 正常回收。
+本 change 验收后先形成 main 代码检查点；冻结活动 writer 后，把该检查点依次 merge 到 C17、C20、C26 与 C11 辅助工作树。合并后以实际 HEAD 回填 v2：C17、C26、C11 辅助项为 finalizing-ready，C20 为 waiting_dependency(C17)。任何旧 PASS 都只保留为 evidence。三个已合并、干净且无活动 writer 的旧工作树通过 Orca 正常回收。rollout 对账通过后归档本 change，再把归档检查点同步到四个保留工作树并回收本 change 的专用工作树。
 
 ### D-09：稳定策略与操作经验分离
 
@@ -67,10 +67,11 @@ Handbook 只保存角色、责任、状态转换和门禁；独立 Runbook 保�
 
 ## Migration Plan
 
-1. 在独立工作树完成、验证并归档本 change，形成 main 同步检查点。
+1. 在独立工作树完成并验证本 change，形成 main 代码同步检查点。
 2. 运行 doctor 和 v1/v2 状态测试，再在 main 启用显式 OMP 扩展入口。
 3. 冻结并复核四个活动工作树，逐个 merge main；冲突按文件所有权解决并运行最小验证。
 4. 使用控制器回填四个 v2 信封，验证 `resumeQueue` 为 C17、C26、C11 辅助项，C20 明确阻塞于 C17。
-5. 核验并回收三个旧工作树；最终 `orchestration:check` 必须返回 0。
+5. 核验并回收三个旧工作树；`orchestration:check` 返回 0 后归档本 change。
+6. 把归档检查点同步到四个保留工作树，回收本 change 的专用工作树并再次运行 `orchestration:check`。
 
 回滚时禁用新的 coordinator 启动命令即可恢复只读状态入口；已写 v2 信封仍可被状态脚本读取，不回写 v1，也不回滚已同步的业务分支。

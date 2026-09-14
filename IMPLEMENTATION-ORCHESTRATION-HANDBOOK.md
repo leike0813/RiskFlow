@@ -25,6 +25,15 @@
 - **【2026-09-14 恢复编排后的进展】** main 已归档新增 4 个 change：C08 失败证据公共窄读前置（`implement-agent-task-failure-evidence-reader`，`d9f3722`）、C16 停用后修订演进修复（`evolve-knowledge-definition-post-disable-revision`，`27d158f`）、重评估事件单侧引用契约演进（`evolve-re-evaluation-event-refs` + 无 flake 稳定化 `fix-artifact-store-recovery-flake`，`bd4889b`）。每次合并后主线 `pnpm verify` 通过（最新 574 passed / 2 skipped、22 OpenSpec items）。
 - **并行编排经验（本轮）**：Sol 额度恢复后同时开 3–4 个 lane（实现 deepseek + 验证 Sol + 规划 Sol）最有效；verification 会话产出的门禁清单可直接作为下一轮实现任务书；contracts 工件冲突（事件 Schema 强制两侧存在 vs C25 设计空侧省略）必须由独立契约演进 change 先落地，禁止在下游 change 内越界改 contracts。
 - **C17 关键教训**：`git merge main` 到 feature 分支时若用 `tail` 只看末尾输出会漏掉多文件冲突；必须读全量冲突文件后逐个人工解析并 `git grep "<<<<<<<"` 复核，且禁止 `--ours/--theirs` 整文件取舍。
+- **【2026-09-14 第二轮暂停点】** 按用户指令「不再派发新任务，待当前派发任务结束后停下并记录状态」暂停。**全部在飞任务已结束**，无未完成的后台 Agent。
+- **main 已归档（本暂停点）**：`40adf7c`（风险输入可辨识联合契约）、`e0ee0d2`（**C25 确定性风险评估引擎**，主线 verify 619 passed / 2 skipped，之后归档）。此前同批归档：C08 失败证据窄读 `d9f3722`、C16 停用后修订演进 `27d158f`、重评估事件契约 + flake 修复 `bd4889b`。主线最后一次 `pnpm verify` 全绿（含 C25：47 files passed、619 tests passed、21 OpenSpec items passed）。
+- **已通过独立验证但尚未合并归档**：
+  - **C17** `deliver-process-model-mechanism-and-evidence-governance`：第五轮复验结论「**可合并归档**」，检查点 worktree `c17-process-model` 分支 `leike0813/c17-process-model` HEAD `83e5a13`（含合并冲突解决、7.1 的 C08 窄读注入、C16 invocation 复验、组合根必需依赖、失败收口结构化原因保留）。**恢复第一个动作**：合并 main → 主线 `pnpm verify` → `openspec archive deliver-process-model-mechanism-and-evidence-governance --yes` → 提交 → 回收 worktree。归档后解锁 C20/C21+。
+- **已实现、待独立验证（未合并）**：
+  - **C26** `deliver-warning-tasks-and-in-app-notification`：worktree `c26-warning-tasks` 分支 `leike0813/c26-warning-tasks` HEAD `a4705ba`（19 文件 +4708 行：core `warning/schema.ts|service.ts`、adapters `warning/postgres-warning-lifecycle-adapter.ts`（1325 行）、迁移 `warning-response/.../000044_warning_tasks_and_in_app_notification.ts`、worker runtime、三套测试；**000044 已由主调度登记进两处中央清单并扩展 `migrationManifestPathPattern`（新增 `warning-response` 域），foundation+auth 30 项通过**）。
+  - **C11 测试隔离 drift** `fix-c11-context-source-suite-isolation`：worktree `fix-c11-suite-isolation` HEAD `a6f275e`（单跑 3 passed、完整文件 28 passed、相邻组合 5 passed、静态检查 0）。
+  - **C16/XOR/事件引用/flake 四个 change 已归档**，其 worktree 已回收。
+- **未开始的后续**：C20（依赖门 IP-00 需主调度先在 C20 分支完成 Qdrant 镜像固定、`testcontainers@12.1.0` 直接依赖、依赖政策、`./retrieval` exports 与 contracts/C17 接缝，再派实现）、C21–C24、C27–C38；C26 验证、C11 隔离验证、C17 合并归档为恢复后的第一梯队。
 - 状态观察器以当前 `main` 提交中的 OpenSpec archive 作为持久完成事实；Orca 仅提供现存 feature worktree、worker 与 Dispatch 均非终态或关联 live terminal 的实时状态。已脱离实时对象的旧 Task 只进入 `diagnostics`，不得阻断 frontier 或 `orchestration:check`。
 - 运行注意：Orca `reset --tasks` 会清空该项目全部 Run 的 Task（不是仅当前绑定 Run），禁止使用；dispatch 到新 OMP 终端前先向该终端发送一次回车，否则注入会滞留为待提交输入并触发 `agent_prompt_stalled`；新增迁移必须在 `packages/adapters/test/postgres/postgres-foundation.test.ts` 与 `packages/adapters/test/auth/fixture.ts` 两处中央清单追加登记（主调度所有权，注意 manifest 必须按 sequence 升序），否则相关 PostgreSQL 测试会以 `MIGRATION_INVALID` 失败并 skip；机械归档若 M3 会话混乱，可由主调度直接执行 `openspec archive <change> --yes` 后审阅 spec diff。
 - 不推送远端；远端操作必须由用户另行授权。

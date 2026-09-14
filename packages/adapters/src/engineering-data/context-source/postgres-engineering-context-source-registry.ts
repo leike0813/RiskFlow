@@ -89,9 +89,11 @@ import {
   type EngineeringContextSourceRegistryV1,
 } from "@riskflow/core/engineering-data/context-source";
 import {
+  AuthorizationContextV1Schema,
   EngineeringDataCommandV1Schema,
   EngineeringDataQueryV1Schema,
   EngineeringFreezeCommandV1Schema,
+  EngineeringFreezeResultV1Schema,
   ExternalRiskEventRefV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
   type AuthorizationContextV1,
@@ -112,8 +114,27 @@ import {
   type SourceSegmentSetRefV1,
   type SourceVersionRefV1,
   type SpatialScopeRefV1,
+  type WaitingRefV1,
 } from "@riskflow/contracts/ports";
 import type { EvidenceReference, VersionReference } from "@riskflow/contracts/common";
+import { DomainEventV1Schema } from "@riskflow/contracts/events";
+import {
+  RISK_ASSESSMENT_DOWNSTREAM_BRANCH_V1,
+  RiskInputFactsV1Schema,
+  type AssessmentDownstreamAuthorizerV1,
+  type AssessmentPreparationContextReaderV1,
+  type RiskInputFactsReaderV1,
+} from "@riskflow/core/risk-assessment/engine";
+import { AssessmentPreparationSnapshotV1Schema } from "@riskflow/contracts/workflows";
+import type { AssessmentPreparationSnapshotV1 } from "@riskflow/contracts/workflows";
+import {
+  MonitoringSeriesRevisionReadV1Schema,
+  MonitoringSnapshotV1Schema,
+} from "@riskflow/core/engineering-data/monitoring";
+import type {
+  MonitoringSeriesReadResultV1,
+  MonitoringSnapshotV1,
+} from "@riskflow/core/engineering-data/monitoring";
 
 import { getPostgresTransaction } from "../../postgres/transaction-unit.js";
 import {
@@ -309,6 +330,36 @@ interface ExternalRiskEventRow {
   audit_entry_id: string;
 }
 
+interface AssessmentPreparationRow {
+  snapshot_id: string;
+  version_id: string;
+  schema_version: string;
+  project_id: string;
+  command_id: string;
+  idempotency_key: string;
+  payload_hash: string;
+  risk_input_ref: JsonColumn;
+  risk_input_kind: string;
+  risk_input_entity_id: string;
+  risk_input_version_id: string;
+  project_revision_ref: JsonColumn;
+  spatial_scope_ref: JsonColumn;
+  applicability_snapshot_ref: JsonColumn;
+  monitoring_snapshot_refs: JsonColumn | null;
+  entry_mode: string;
+  trigger_reason_code: string;
+  previous_assessment_record_ref: JsonColumn | null;
+  causal_run_ref: JsonColumn | null;
+  snapshot_payload: JsonColumn;
+  applicability_values: JsonColumn;
+  actor_ref: string;
+  authorization_context_ref: JsonColumn;
+  audit_entry_id: string;
+  occurred_at: TimestampColumn;
+  recorded_at: TimestampColumn;
+  persisted_at: TimestampColumn;
+}
+
 interface ReadQueryResultRow {
   query_result_id: string;
   version_id: string;
@@ -336,6 +387,7 @@ type ContextSourceDatabase = PostgresDatabase & {
   "business.applicability_metadata_snapshots": ApplicabilitySnapshotRow;
   "business.external_risk_events": ExternalRiskEventRow;
   "business.engineering_data_read_query_results": ReadQueryResultRow;
+  "business.assessment_preparation_snapshots": AssessmentPreparationRow;
 };
 
 type ContextTransaction = Transaction<ContextSourceDatabase>;
@@ -824,11 +876,24 @@ export interface PostgresEngineeringContextSourceRegistryOptions {
   };
   readonly monitoringStore?: PostgresMonitoringStoreV1;
   readonly dataCleaningStore?: PostgresDataCleaningStore;
+  /**
+   * C25 风险输入事实接缝（C24/C11 实现）。评估准备冻结必须经它复验精确 XOR 输入；
+   * 未注入时 `assessment-preparation` 分支关闭失败，不产生部分快照。
+   */
+  readonly riskInputFacts?: RiskInputFactsReaderV1;
+  /**
+   * 下游读取授权签发接缝：调用方命令只有自己那一个 capability，C14/C19 读取需要各自
+   * 精确 branch 的 C06 上下文。组合根按 branch 签发，绑定不符时适配器关闭失败。
+   */
+  readonly authorizeDownstream?: AssessmentDownstreamAuthorizerV1;
   readonly now?: () => Date;
 }
 
 export class PostgresEngineeringContextSourceRegistry
-  implements EngineeringDataPortV1, EngineeringContextSourceRegistryV1
+  implements
+    EngineeringDataPortV1,
+    EngineeringContextSourceRegistryV1,
+    AssessmentPreparationContextReaderV1
 {
   readonly #db: Kysely<ContextSourceDatabase>;
   readonly #transactionUnit: TransactionUnitV1;
@@ -837,6 +902,8 @@ export class PostgresEngineeringContextSourceRegistry
   readonly #artifactGuard: ArtifactReferenceGuardV1;
   readonly #monitoringStore: PostgresMonitoringStoreV1 | undefined;
   readonly #dataCleaningStore: PostgresDataCleaningStore | undefined;
+  readonly #riskInputFacts: RiskInputFactsReaderV1 | undefined;
+  readonly #authorizeDownstream: AssessmentDownstreamAuthorizerV1 | undefined;
   readonly #now: () => Date;
 
   constructor(options: PostgresEngineeringContextSourceRegistryOptions) {
@@ -852,6 +919,8 @@ export class PostgresEngineeringContextSourceRegistry
     this.#artifactGuard = guard;
     this.#monitoringStore = options.monitoringStore;
     this.#dataCleaningStore = options.dataCleaningStore;
+    this.#riskInputFacts = options.riskInputFacts;
+    this.#authorizeDownstream = options.authorizeDownstream;
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -1098,6 +1167,9 @@ export class PostgresEngineeringContextSourceRegistry
       this.#dataCleaningStore !== undefined
     ) {
       return this.#dataCleaningStore.freezeIdentificationPreparation(parsed.data);
+    }
+    if (parsed.data.kind === "assessment-preparation") {
+      return this.#freezeAssessmentPreparation(parsed.data);
     }
     return { kind: "failed", error: moduleError("UNSUPPORTED_CONTRACT", parsed.data.commandId) };
   }
@@ -1925,7 +1997,7 @@ export class PostgresEngineeringContextSourceRegistry
     if (
       command.projectId !== command.authorization.projectId ||
       command.actorId !== command.authorization.actorId ||
-      !command.authorization.grantedCapabilities.includes("engineering-data.write")
+      !command.authorization.grantedCapabilities.includes(MODULE_BRANCH_CAPABILITY_V1[branch])
     ) {
       throw preserveDomainError(moduleError("AUTHORIZATION_DENIED", command.commandId));
     }
@@ -2923,6 +2995,583 @@ export class PostgresEngineeringContextSourceRegistry
         recordedAt: asIso(row.recorded_at),
       },
     });
+  }
+
+  // ------------------------------------------------- assessment preparation (C25)
+
+  /**
+   * C25 评估准备冻结（D-02）：命令字段原样冻结，风险输入、适用性与每个监测快照/序列都在
+   * 这里用 C06 当前事实复验；C25 不创建监测快照、不选择序列或截止点、不推导入口语义。
+   */
+  async #freezeAssessmentPreparation(
+    command: Extract<EngineeringFreezeCommandV1, { kind: "assessment-preparation" }>,
+  ): Promise<EngineeringFreezeResultV1> {
+    try {
+      const factsReader = this.#riskInputFacts;
+      const monitoringStore = this.#monitoringStore;
+      if (factsReader === undefined || monitoringStore === undefined) {
+        return {
+          kind: "failed",
+          error: moduleError("UNSUPPORTED_CONTRACT", command.commandId, { schemaVersion: "1" }),
+        };
+      }
+      // C06 只认授权上下文自己的访问空间；载荷的业务空间引用必须落在同一空间身份内。
+      if (
+        !command.authorization.spatialScopeRefs.some((scope) =>
+          sameEntity(scope, command.payload.spatialScopeRef),
+        )
+      ) {
+        return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", command.commandId) };
+      }
+      const decision = await this.#verify(
+        command,
+        command.authorization.spatialScopeRefs,
+        [],
+        "engineering-data.assessment-preparation",
+      );
+      const verified = { ...command, actorId: decision.context.actorId };
+      const payloadRun = command.payload.causalRunRef;
+      const authorizationRun = decision.context.causalRunRef;
+      if (
+        payloadRun !== undefined &&
+        authorizationRun !== undefined &&
+        !sameVersion(payloadRun.reference, authorizationRun.reference)
+      ) {
+        return {
+          kind: "failed",
+          error: moduleError("AUTHORIZATION_DENIED", command.commandId, {
+            requiredCapability:
+              MODULE_BRANCH_CAPABILITY_V1["engineering-data.assessment-preparation"],
+          }),
+        };
+      }
+
+      const projectRevision = await this.#readProjectRevision(
+        command.projectId,
+        versionIdFromReference(command.payload.projectRevisionRef),
+      );
+      const project = await this.#db
+        .selectFrom("business.engineering_projects")
+        .select(["current_revision_id"])
+        .where("project_id", "=", command.projectId)
+        .executeTakeFirst();
+      if (projectRevision === undefined || project === undefined) {
+        return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", command.commandId) };
+      }
+      if (
+        project.current_revision_id !==
+        projectRevisionStorageId(
+          command.projectId,
+          versionIdFromReference(command.payload.projectRevisionRef),
+        )
+      ) {
+        return {
+          kind: "failed",
+          error: moduleError("STALE_VERSION", command.commandId, {
+            targetRef: command.payload.projectRevisionRef,
+          }),
+        };
+      }
+      const applicability = await this.#readSnapshot(
+        command.projectId,
+        command.payload.applicabilityMetadataSnapshotRef,
+      );
+      if (applicability === undefined) {
+        return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", command.commandId) };
+      }
+      if (
+        !sameVersion(
+          applicability.projectRevisionRef.reference,
+          command.payload.projectRevisionRef.reference,
+        )
+      ) {
+        return {
+          kind: "failed",
+          error: moduleError("STALE_VERSION", command.commandId, {
+            targetRef: command.payload.applicabilityMetadataSnapshotRef,
+          }),
+        };
+      }
+
+      const monitoringRefs = command.payload.monitoringSnapshotRefs;
+      if (monitoringRefs !== undefined) {
+        const keys = monitoringRefs.map(refKey);
+        if (new Set(keys).size !== keys.length) {
+          return {
+            kind: "failed",
+            error: moduleError("UNSUPPORTED_CONTRACT", command.commandId, { schemaVersion: "1" }),
+          };
+        }
+      }
+
+      const factsAuthorization = await this.#downstreamAuthorization({
+        branch: RISK_ASSESSMENT_DOWNSTREAM_BRANCH_V1.riskInputFacts,
+        invocationId: `${command.commandId}:risk-input-facts`,
+        projectId: command.projectId,
+        actorId: verified.actorId,
+        requestedAt: command.issuedAt,
+        requestedSpatialScopeRefs: [command.payload.spatialScopeRef],
+      });
+      const factsResult = await factsReader.readRiskInputFacts({
+        requestId: `${command.commandId}:risk-input-facts`,
+        idempotencyKey: `${command.idempotencyKey}:risk-input-facts`,
+        requestedAt: command.issuedAt,
+        authorization: factsAuthorization,
+        riskInput: command.payload.riskInput,
+      });
+      if (factsResult.kind !== "succeeded") {
+        return {
+          kind: "failed",
+          error:
+            factsResult.kind === "failed"
+              ? factsResult.error
+              : moduleError("BUSINESS_BLOCKED", command.commandId, {
+                  blockerKind: "risk-input-facts-unavailable",
+                  blockerRef: command.payload.riskInput,
+                }),
+        };
+      }
+      const facts = RiskInputFactsV1Schema.parse(factsResult.facts);
+      if (
+        facts.projectId !== command.projectId ||
+        !sameVersion(facts.riskInput.reference, command.payload.riskInput.reference) ||
+        facts.riskInput.kind !== command.payload.riskInput.kind
+      ) {
+        return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", command.commandId) };
+      }
+
+      // 监测读取所需的资料版本只能来自本次已读到的风险输入证据（C14 快照证据同源）。
+      const sourceVersionRefs = [
+        ...new Map(
+          facts.evidenceReferences.map((evidence) => [
+            `${evidence.sourceVersion.entityId}\u0000${evidence.sourceVersion.versionId}`,
+            { kind: "source-version" as const, reference: evidence.sourceVersion },
+          ]),
+        ).values(),
+      ].sort((left, right) =>
+        `${left.reference.entityId}\u0000${left.reference.versionId}` <
+        `${right.reference.entityId}\u0000${right.reference.versionId}`
+          ? -1
+          : 1,
+      );
+      const orderedMonitoringRefs =
+        monitoringRefs === undefined
+          ? []
+          : [...monitoringRefs].sort((left, right) => (refKey(left) < refKey(right) ? -1 : 1));
+      for (const monitoringRef of orderedMonitoringRefs) {
+        await this.#verifyMonitoringRef(
+          command,
+          verified.actorId,
+          monitoringRef,
+          sourceVersionRefs,
+        );
+      }
+
+      const recordedAt = nowIso(this.#now);
+      const auditEntryId = auditEntryIdFor(command.commandId, ":assessment-preparation");
+      const snapshot = AssessmentPreparationSnapshotV1Schema.parse({
+        schemaVersion: "1",
+        projectRevisionRef: command.payload.projectRevisionRef,
+        spatialScopeRef: command.payload.spatialScopeRef,
+        riskInput: command.payload.riskInput,
+        applicabilityMetadataSnapshotRef: command.payload.applicabilityMetadataSnapshotRef,
+        ...(monitoringRefs === undefined ? {} : { monitoringSnapshotRefs: orderedMonitoringRefs }),
+        sourceEvidenceReferences: facts.evidenceReferences,
+        entryMode: command.payload.entryMode,
+        triggerReasonCode: command.payload.triggerReasonCode,
+        ...(command.payload.previousAssessmentRecordRef === undefined
+          ? {}
+          : { previousAssessmentRecordRef: command.payload.previousAssessmentRecordRef }),
+        ...(command.payload.causalRunRef === undefined
+          ? {}
+          : { causalRunRef: command.payload.causalRunRef }),
+        authorizationContextRef: decision.context.authorizationContextRef,
+        auditTrailRef: {
+          kind: "audit-trail",
+          reference: { entityId: auditEntryId, versionId: "1" },
+        },
+        createdBy: verified.actorId,
+        createdAt: recordedAt,
+      });
+      // 业务身份不含记录时钟；可选字段只在提供时进入摘要，避免 undefined 进入规范 JSON。
+      const digest = sha256CanonicalJson({
+        schemaVersion: "1",
+        projectId: command.projectId,
+        idempotencyKey: command.idempotencyKey,
+        projectRevisionRef: snapshot.projectRevisionRef,
+        spatialScopeRef: snapshot.spatialScopeRef,
+        riskInput: snapshot.riskInput,
+        applicabilityMetadataSnapshotRef: snapshot.applicabilityMetadataSnapshotRef,
+        sourceEvidenceReferences: snapshot.sourceEvidenceReferences,
+        entryMode: snapshot.entryMode,
+        triggerReasonCode: snapshot.triggerReasonCode,
+        ...(snapshot.monitoringSnapshotRefs === undefined
+          ? {}
+          : { monitoringSnapshotRefs: snapshot.monitoringSnapshotRefs }),
+        ...(snapshot.previousAssessmentRecordRef === undefined
+          ? {}
+          : { previousAssessmentRecordRef: snapshot.previousAssessmentRecordRef }),
+        ...(snapshot.causalRunRef === undefined ? {} : { causalRunRef: snapshot.causalRunRef }),
+      });
+      const snapshotRef = ref(
+        "assessment-preparation-snapshot",
+        `assessment-preparation-${digest.slice(0, 40)}`,
+        "1",
+      );
+
+      await this.#transactionUnit.execute(
+        atomicCommand(verified, "engineering-data.assessment-preparation.v1", {
+          snapshotRef,
+          entryMode: snapshot.entryMode,
+          triggerReasonCode: snapshot.triggerReasonCode,
+          riskInput: snapshot.riskInput,
+          monitoringSnapshotRefs: snapshot.monitoringSnapshotRefs,
+          identityDigest: digest,
+        }),
+        async (transactionContext): Promise<AtomicCommitV1> => {
+          const transaction = asTransaction(transactionContext);
+          await transaction
+            .insertInto("business.assessment_preparation_snapshots")
+            .values({
+              snapshot_id: snapshotRef.reference.entityId,
+              version_id: snapshotRef.reference.versionId,
+              schema_version: "1",
+              project_id: command.projectId,
+              command_id: command.commandId,
+              idempotency_key: command.idempotencyKey,
+              payload_hash: digest,
+              risk_input_ref: jsonValue(snapshot.riskInput),
+              risk_input_kind: snapshot.riskInput.kind,
+              risk_input_entity_id: snapshot.riskInput.reference.entityId,
+              risk_input_version_id: snapshot.riskInput.reference.versionId,
+              project_revision_ref: jsonValue(snapshot.projectRevisionRef),
+              spatial_scope_ref: jsonValue(snapshot.spatialScopeRef),
+              applicability_snapshot_ref: jsonValue(snapshot.applicabilityMetadataSnapshotRef),
+              monitoring_snapshot_refs:
+                snapshot.monitoringSnapshotRefs === undefined
+                  ? null
+                  : jsonValue(snapshot.monitoringSnapshotRefs),
+              entry_mode: snapshot.entryMode,
+              trigger_reason_code: snapshot.triggerReasonCode,
+              previous_assessment_record_ref:
+                snapshot.previousAssessmentRecordRef === undefined
+                  ? null
+                  : jsonValue(snapshot.previousAssessmentRecordRef),
+              causal_run_ref:
+                snapshot.causalRunRef === undefined ? null : jsonValue(snapshot.causalRunRef),
+              snapshot_payload: jsonValue(snapshot),
+              applicability_values: jsonValue(applicability),
+              actor_ref: verified.actorId,
+              authorization_context_ref: jsonValue(decision.context.authorizationContextRef),
+              audit_entry_id: auditEntryId,
+              occurred_at: command.issuedAt,
+              recorded_at: recordedAt,
+            } as never)
+            .onConflict((conflict) => conflict.columns(["snapshot_id", "version_id"]).doNothing())
+            .execute();
+          return {
+            resultRef: snapshotRef,
+            audit: auditAppend(
+              verified,
+              "engineering-data.assessment-preparation",
+              snapshotRef,
+              snapshotRef.reference,
+              recordedAt,
+              auditEntryId,
+            ),
+            events: [
+              DomainEventV1Schema.parse({
+                schemaVersion: "1",
+                eventId: `inputs-ready-${digest.slice(0, 40)}`,
+                eventVersion: 1,
+                eventType: "engineering.inputs-ready.v1",
+                projectId: command.projectId,
+                aggregateRef: snapshotRef,
+                occurredAt: command.issuedAt,
+                recordedAt,
+                causationId: command.commandId,
+                correlationId: `assessment-preparation-${digest.slice(0, 40)}`,
+                producerCommandId: command.commandId,
+                idempotencyKey: command.idempotencyKey,
+                authorizationContextRef: decision.context.authorizationContextRef,
+                auditTrailRef: snapshot.auditTrailRef,
+                payload: {
+                  preparation: {
+                    kind: "assessment",
+                    assessmentPreparationSnapshotRef: snapshotRef,
+                  },
+                },
+              }),
+            ],
+          } satisfies AtomicCommitV1;
+        },
+        { isolationLevel: "repeatable read" },
+      );
+
+      return EngineeringFreezeResultV1Schema.parse({
+        kind: "succeeded",
+        result: {
+          kind: "assessment-preparation",
+          assessmentPreparationSnapshotRef: snapshotRef,
+        },
+      });
+    } catch (error) {
+      return {
+        kind: "failed",
+        error: this.#mapError(error, command.commandId, "engineering-data.assessment-preparation"),
+      };
+    }
+  }
+
+  /** C25 有界读取：公共准备快照 + 当时冻结的完整适用性元数据快照值。 */
+  async readAssessmentPreparationContext(input: {
+    readonly requestId: string;
+    readonly idempotencyKey: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly preparationSnapshotRef: Extract<
+      ContractReferenceV1,
+      { kind: "assessment-preparation-snapshot" }
+    >;
+  }): Promise<
+    | {
+        readonly kind: "succeeded";
+        readonly preparation: AssessmentPreparationSnapshotV1;
+        readonly applicability: ApplicabilityMetadataSnapshotV1;
+      }
+    | { readonly kind: "waiting"; readonly waiting: WaitingRefV1 }
+    | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
+  > {
+    try {
+      await this.#verifyRead(
+        {
+          queryId: input.requestId,
+          projectId: input.authorization.projectId,
+          actorId: input.authorization.actorId,
+          authorization: input.authorization,
+        },
+        "engineering-data.evidence-access",
+        [],
+        [],
+      );
+      const row = await this.#db
+        .selectFrom("business.assessment_preparation_snapshots")
+        .selectAll()
+        .where("project_id", "=", input.authorization.projectId)
+        .where("snapshot_id", "=", input.preparationSnapshotRef.reference.entityId)
+        .where("version_id", "=", input.preparationSnapshotRef.reference.versionId)
+        .executeTakeFirst();
+      if (row === undefined) {
+        return {
+          kind: "failed",
+          error: moduleError("AUTHORIZATION_DENIED", input.requestId, {
+            requiredCapability: "engineering-data.read",
+          }),
+        };
+      }
+      const preparation = AssessmentPreparationSnapshotV1Schema.parse(row.snapshot_payload);
+      const applicability = ApplicabilityMetadataSnapshotV1Schema.parse(row.applicability_values);
+      // 取得准备快照后按它的空间与来源引用再次复验当前授权，只用验证后的上下文继续。
+      const accessScopes = input.authorization.spatialScopeRefs.filter(
+        (scope) => scope.reference.entityId === preparation.spatialScopeRef.reference.entityId,
+      );
+      if (accessScopes.length === 0) {
+        return {
+          kind: "failed",
+          error: moduleError("AUTHORIZATION_DENIED", input.requestId, {
+            requiredCapability: "engineering-data.read",
+          }),
+        };
+      }
+      // 空间与来源都必须落到已验证上下文内：来源取准备快照自身的证据资料版本。
+      const sourceVersionRefs = [
+        ...new Map(
+          preparation.sourceEvidenceReferences.map((evidence) => [
+            `${evidence.sourceVersion.entityId}@${evidence.sourceVersion.versionId}`,
+            { kind: "source-version" as const, reference: evidence.sourceVersion },
+          ]),
+        ).values(),
+      ].sort((left, right) =>
+        `${left.reference.entityId}@${left.reference.versionId}` <
+        `${right.reference.entityId}@${right.reference.versionId}`
+          ? -1
+          : 1,
+      );
+      // C06 verify 把上下文与签发时的 invocationId 绑定：复验必须沿用同一调用身份。
+      await this.#verifyRead(
+        {
+          queryId: input.requestId,
+          projectId: input.authorization.projectId,
+          actorId: input.authorization.actorId,
+          authorization: input.authorization,
+        },
+        "engineering-data.evidence-access",
+        accessScopes,
+        sourceVersionRefs,
+      );
+      return { kind: "succeeded", preparation, applicability };
+    } catch (error) {
+      return {
+        kind: "failed",
+        error: this.#mapError(
+          error,
+          input.requestId,
+          "engineering-data.assessment-preparation-read",
+          "engineering-data.read",
+          true,
+        ),
+      };
+    }
+  }
+
+  async #downstreamAuthorization(input: {
+    readonly branch: ModuleBranchV1;
+    readonly invocationId: string;
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly requestedSpatialScopeRefs?: readonly SpatialScopeRefV1[];
+    readonly requestedSourceVersionRefs?: readonly SourceVersionRefV1[];
+  }): Promise<AuthorizationContextV1> {
+    const authorize = this.#authorizeDownstream;
+    if (authorize === undefined) {
+      throw preserveDomainError(
+        moduleError("UNSUPPORTED_CONTRACT", input.invocationId, { schemaVersion: "1" }),
+      );
+    }
+    const context = AuthorizationContextV1Schema.parse(
+      await authorize({
+        branch: input.branch,
+        invocationId: input.invocationId,
+        projectId: input.projectId,
+        actorId: input.actorId,
+        requestedAt: input.requestedAt,
+        ...(input.requestedSpatialScopeRefs === undefined
+          ? {}
+          : { requestedSpatialScopeRefs: input.requestedSpatialScopeRefs }),
+        ...(input.requestedSourceVersionRefs === undefined
+          ? {}
+          : { requestedSourceVersionRefs: input.requestedSourceVersionRefs }),
+      }),
+    );
+    const capability = MODULE_BRANCH_CAPABILITY_V1[input.branch];
+    if (
+      context.projectId !== input.projectId ||
+      context.actorId !== input.actorId ||
+      context.grantedCapabilities.length !== 1 ||
+      !context.grantedCapabilities.includes(capability)
+    ) {
+      throw preserveDomainError(moduleError("AUTHORIZATION_DENIED", input.invocationId));
+    }
+    return context;
+  }
+
+  /** 通过 C14 公共快照查询与正式序列 reader 复验每个冻结监测引用的工程、空间与序列身份。 */
+  async #verifyMonitoringRef(
+    command: Extract<EngineeringFreezeCommandV1, { kind: "assessment-preparation" }>,
+    actorId: string,
+    monitoringRef: Extract<ContractReferenceV1, { kind: "monitoring-snapshot" }>,
+    sourceVersionRefs: readonly SourceVersionRefV1[],
+  ): Promise<void> {
+    const monitoringStore = this.#monitoringStore;
+    if (monitoringStore === undefined) {
+      throw preserveDomainError(
+        moduleError("UNSUPPORTED_CONTRACT", command.commandId, { schemaVersion: "1" }),
+      );
+    }
+    // C06 只认授权上下文自己的访问空间修订；按 scope 身份把业务空间投影到访问空间。
+    const accessScopes = command.authorization.spatialScopeRefs.filter(
+      (scope) => scope.reference.entityId === command.payload.spatialScopeRef.reference.entityId,
+    );
+    if (accessScopes.length === 0) {
+      throw preserveDomainError(moduleError("AUTHORIZATION_DENIED", command.commandId));
+    }
+    // C06 每次 verify 都要求上下文与本次调用的 invocationId 绑定，因此两次读取各签发一次。
+    const snapshotInvocationId = `${command.commandId}:monitoring-snapshot:${monitoringRef.reference.entityId}@${monitoringRef.reference.versionId}`;
+    const authorization = await this.#downstreamAuthorization({
+      branch: RISK_ASSESSMENT_DOWNSTREAM_BRANCH_V1.monitoringReads,
+      invocationId: snapshotInvocationId,
+      projectId: command.projectId,
+      actorId,
+      requestedAt: command.issuedAt,
+      requestedSpatialScopeRefs: accessScopes,
+      requestedSourceVersionRefs: sourceVersionRefs,
+    });
+    const read = await monitoringStore.readSnapshot({
+      kind: "monitoring-snapshot",
+      queryId: snapshotInvocationId,
+      projectId: command.projectId,
+      actorId,
+      requestedAt: command.issuedAt,
+      authorization,
+      payload: { monitoringSnapshotRef: monitoringRef },
+    });
+    if (read.kind === "waiting") {
+      throw preserveDomainError(
+        moduleError("BUSINESS_BLOCKED", command.commandId, {
+          blockerKind: "monitoring-snapshot-unavailable",
+          blockerRef: monitoringRef,
+        }),
+      );
+    }
+    if (read.kind !== "succeeded") {
+      throw preserveDomainError(read.error as ContextSourceError);
+    }
+    const resolved = await monitoringStore.resolveSnapshotQuery({
+      queryResultRef: read.result.queryResultRef,
+      invocationId: snapshotInvocationId,
+      projectId: command.projectId,
+      actorId,
+      requestedAt: command.issuedAt,
+      authorization,
+    });
+    if (resolved.kind !== "succeeded" || resolved.result.kind !== "snapshot-query") {
+      throw preserveDomainError(
+        moduleError("AUTHORIZATION_DENIED", command.commandId, {
+          requiredCapability: "engineering-data.read",
+        }),
+      );
+    }
+    const snapshot: MonitoringSnapshotV1 = MonitoringSnapshotV1Schema.parse(
+      resolved.result.query.snapshot,
+    );
+    if (
+      snapshot.projectId !== command.projectId ||
+      !snapshot.authorizationSnapshot.spatialScopeRefs.some((scope) =>
+        sameEntity(scope, command.payload.spatialScopeRef),
+      )
+    ) {
+      throw preserveDomainError(moduleError("AUTHORIZATION_DENIED", command.commandId));
+    }
+    const seriesQueryId = `${command.commandId}:monitoring-series:${snapshot.monitoringSeriesRef.reference.entityId}@${snapshot.monitoringSeriesRef.reference.versionId}`;
+    const seriesAuthorization = await this.#downstreamAuthorization({
+      branch: RISK_ASSESSMENT_DOWNSTREAM_BRANCH_V1.monitoringReads,
+      invocationId: seriesQueryId,
+      projectId: command.projectId,
+      actorId,
+      requestedAt: command.issuedAt,
+      requestedSpatialScopeRefs: accessScopes,
+      requestedSourceVersionRefs: sourceVersionRefs,
+    });
+    const seriesRead: MonitoringSeriesReadResultV1 = await monitoringStore.readSeriesRevision({
+      queryId: seriesQueryId,
+      projectId: command.projectId,
+      actorId,
+      requestedAt: command.issuedAt,
+      authorization: seriesAuthorization,
+      monitoringSeriesRef: snapshot.monitoringSeriesRef,
+    });
+    if (seriesRead.kind !== "succeeded") {
+      throw preserveDomainError(seriesRead.error as ContextSourceError);
+    }
+    const revision = MonitoringSeriesRevisionReadV1Schema.parse(seriesRead.result);
+    if (
+      revision.projectId !== command.projectId ||
+      !sameEntity(revision.spatialScopeRef, command.payload.spatialScopeRef) ||
+      !sameVersion(revision.monitoringSeriesRef.reference, snapshot.monitoringSeriesRef.reference)
+    ) {
+      throw preserveDomainError(moduleError("AUTHORIZATION_DENIED", command.commandId));
+    }
   }
 
   #mapError(

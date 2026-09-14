@@ -3448,4 +3448,394 @@ describe("C11 PostgreSQL context/source registry", () => {
     );
     expect(retained.rows[0]?.count).toBe("2");
   });
+
+  describe("C25 assessment-preparation freeze", () => {
+    const project = "project-c25-freeze";
+    const now = "2030-01-01T00:00:00.000Z";
+    let world:
+      | {
+          readonly managerId: string;
+          readonly sessionToken: string;
+          readonly projectRevisionRef: ProjectRevisionRefV1;
+          readonly businessSpatialScopeRef: SpatialScopeRefV1;
+          readonly accessRootScopeRef: SpatialScopeRefV1;
+          readonly applicabilitySnapshotRef: ApplicabilityMetadataSnapshotRefV1;
+        }
+      | undefined;
+
+    const requireWorld = () => {
+      if (world === undefined) throw new Error("C25 freeze world is not initialized");
+      return world;
+    };
+
+    const authorizeBranch = async (
+      invocationId: string,
+      branch:
+        | "engineering-data.register-source-delivery"
+        | "engineering-data.evidence-access"
+        | "engineering-data.assessment-preparation",
+      sourceVersionRefs: readonly SourceVersionRefV1[] = [],
+    ) => {
+      const state = requireWorld();
+      return (
+        await fixture.access.authorize({
+          invocation: { kind: "human-session", sessionToken: state.sessionToken },
+          invocationId,
+          projectId: project,
+          branch,
+          requestedSpatialScopeRefs: [state.accessRootScopeRef],
+          requestedSourceVersionRefs: [...sourceVersionRefs],
+        })
+      ).context;
+    };
+
+    beforeAll(async () => {
+      // 复用本文件早先 bootstrap 的系统管理员会话（同一数据库只允许一个初始管理员）。
+      const adminLogin = await fixture.access.login({
+        kind: "login",
+        loginAttemptId: "c25-admin-login",
+        loginName: "c11-admin",
+        password: "c11-admin-password-changed",
+      });
+      const adminChanged = {
+        systemAdministrationContextRef: adminLogin.systemAdministrationContextRef!,
+      } as const;
+      const manager = await fixture.access.administerIdentity({
+        kind: "create-account",
+        commandId: "c25-create-manager",
+        idempotencyKey: "c25-create-manager",
+        expectedVersion: "none",
+        authorizationContextRef: adminChanged.systemAdministrationContextRef!,
+        loginName: "c25-manager",
+        displayName: "C25 Manager",
+        password: "c25-manager-password",
+      });
+      const managerLogin = await fixture.access.login({
+        kind: "login",
+        loginAttemptId: "c25-manager-login",
+        loginName: "c25-manager",
+        password: "c25-manager-password",
+      });
+      const managerChanged = await fixture.access.changePassword({
+        kind: "change-password",
+        sessionToken: managerLogin.sessionToken,
+        newPassword: "c25-manager-password-changed",
+      });
+      await fixture.access.administerProject({
+        kind: "open-project",
+        projectId: project,
+        commandId: "c25-open-project",
+        idempotencyKey: "c25-open-project",
+        expectedVersion: "none",
+        authorizationContextRef: adminChanged.systemAdministrationContextRef!,
+        initialRiskManagerAccountId: manager.resultRef.entityId,
+      });
+      const root = await fixture.postgres.adminPool.query<{
+        scope_id: string;
+        revision_id: string;
+      }>(
+        "SELECT scope_id, current_revision_id AS revision_id FROM business.access_spatial_scopes WHERE project_id = $1",
+        [project],
+      );
+      const accessRootScopeRef = {
+        kind: "spatial-scope" as const,
+        reference: { entityId: root.rows[0]!.scope_id, versionId: root.rows[0]!.revision_id },
+      };
+      world = {
+        managerId: manager.resultRef.entityId,
+        sessionToken: managerChanged.sessionToken,
+        projectRevisionRef: {
+          kind: "project-revision",
+          reference: { entityId: "", versionId: "1" },
+        },
+        businessSpatialScopeRef: accessRootScopeRef,
+        accessRootScopeRef,
+        applicabilitySnapshotRef: {
+          kind: "applicability-metadata-snapshot",
+          reference: { entityId: "", versionId: "1" },
+        },
+      };
+      const projectAuthorization = await authorizeBranch(
+        "c25-project",
+        "engineering-data.register-source-delivery",
+      );
+      const projectResult = await fixture.registry.reviseContext({
+        commandId: "c25-project",
+        idempotencyKey: "c25-project",
+        projectId: project,
+        actorId: manager.resultRef.entityId,
+        issuedAt: now,
+        authorization: projectAuthorization,
+        kind: "project",
+        expectedVersion: "none",
+        name: "C25 工程",
+        lifecycle: "preparing",
+        applicabilityMetadata: {
+          constructionMethod: "variable-diameter-shield",
+          stratumCondition: "soft-soil",
+          engineeringStage: "shield-expansion",
+        },
+        effectivePeriod: { validFrom: now },
+      });
+      if (projectResult.kind !== "succeeded" || projectResult.result.kind !== "project-revision") {
+        throw new Error("C25 project revision failed");
+      }
+      const spatialAuthorization = await authorizeBranch(
+        "c25-spatial",
+        "engineering-data.register-source-delivery",
+      );
+      const spatialResult = await fixture.registry.reviseContext({
+        commandId: "c25-spatial",
+        idempotencyKey: "c25-spatial",
+        projectId: project,
+        actorId: manager.resultRef.entityId,
+        issuedAt: now,
+        authorization: spatialAuthorization,
+        kind: "spatial",
+        spatialScopeRef: accessRootScopeRef,
+        projectRevisionRef: projectResult.result.revision.projectRevisionRef,
+        expectedVersion: "none",
+        name: "C25 区间",
+        worksiteLocation: "C25 工地",
+        applicabilityOverrides: {},
+        status: "active",
+        effectivePeriod: { validFrom: now },
+      });
+      if (spatialResult.kind !== "succeeded" || spatialResult.result.kind !== "spatial-revision") {
+        throw new Error("C25 spatial revision failed");
+      }
+      const snapshotAuthorization = await authorizeBranch(
+        "c25-applicability",
+        "engineering-data.register-source-delivery",
+      );
+      const snapshot = await fixture.registry.createApplicabilitySnapshot({
+        commandId: "c25-applicability",
+        idempotencyKey: "c25-applicability",
+        projectId: project,
+        actorId: manager.resultRef.entityId,
+        issuedAt: now,
+        authorization: snapshotAuthorization,
+        projectRevisionRef: projectResult.result.revision.projectRevisionRef,
+        spatialScopeRef: spatialResult.result.revision.spatialScopeRef,
+        formedAt: now,
+      });
+      if (snapshot.kind !== "succeeded" || snapshot.result.kind !== "applicability-snapshot") {
+        throw new Error("C25 applicability snapshot failed");
+      }
+      world = {
+        managerId: manager.resultRef.entityId,
+        sessionToken: managerChanged.sessionToken,
+        projectRevisionRef: projectResult.result.revision.projectRevisionRef,
+        businessSpatialScopeRef: spatialResult.result.revision.spatialScopeRef,
+        accessRootScopeRef,
+        applicabilitySnapshotRef: snapshot.result.snapshot.snapshotRef,
+      };
+    }, 240_000);
+
+    const factsReader = {
+      readRiskInputFacts: async (input: {
+        readonly authorization: AuthorizationContextV1;
+        readonly riskInput: {
+          readonly kind: string;
+          readonly reference: { readonly entityId: string; readonly versionId: string };
+        };
+      }) => ({
+        kind: "succeeded" as const,
+        facts: {
+          schemaVersion: "1" as const,
+          projectId: input.authorization.projectId,
+          riskInput: input.riskInput,
+          fields: [
+            {
+              documentType: "standardized-risk-record",
+              fieldPath: ["riskSource"],
+              value: "盾构机正面",
+              evidenceReferences: [
+                {
+                  locator: { sourceSegmentId: "c25-segment-1" },
+                  sourceVersion: { entityId: "c25-source-version", versionId: "1" },
+                },
+              ],
+            },
+          ],
+          evidenceReferences: [
+            {
+              locator: { sourceSegmentId: "c25-segment-1" },
+              sourceVersion: { entityId: "c25-source-version", versionId: "1" },
+            },
+          ],
+        },
+      }),
+    };
+
+    const authorizeDownstream = async (request: {
+      readonly branch: string;
+      readonly invocationId: string;
+      readonly projectId: string;
+      readonly requestedAt: string;
+      readonly requestedSpatialScopeRefs?: readonly SpatialScopeRefV1[];
+      readonly requestedSourceVersionRefs?: readonly SourceVersionRefV1[];
+    }) => {
+      const state = requireWorld();
+      return (
+        await fixture.access.authorize({
+          invocation: { kind: "human-session", sessionToken: state.sessionToken },
+          invocationId: request.invocationId,
+          projectId: request.projectId,
+          branch: request.branch as "engineering-data.evidence-access",
+          requestedSpatialScopeRefs: [...(request.requestedSpatialScopeRefs ?? [])],
+          requestedSourceVersionRefs: [...(request.requestedSourceVersionRefs ?? [])],
+        })
+      ).context;
+    };
+
+    const openRegistry = () =>
+      new PostgresEngineeringContextSourceRegistry({
+        db: fixture.runtime.db,
+        transactionUnit: fixture.transactionUnit,
+        access: fixture.access,
+        artifactStore: fixture.artifactStore,
+        artifactReferenceGuard: fixture.artifactRegistry,
+        monitoringStore: fixture.monitoringStore,
+        riskInputFacts: factsReader as never,
+        authorizeDownstream: authorizeDownstream as never,
+      });
+
+    const freezeCommand = async (suffix: string, withMonitoring: boolean) => {
+      const state = requireWorld();
+      const authorization = await authorizeBranch(
+        `c25-freeze-${suffix}`,
+        "engineering-data.assessment-preparation",
+      );
+      return {
+        commandId: `c25-freeze-${suffix}`,
+        idempotencyKey: `c25-freeze-${suffix}`,
+        projectId: project,
+        actorId: state.managerId,
+        issuedAt: now,
+        authorization,
+        kind: "assessment-preparation" as const,
+        payload: {
+          riskInput: StandardizedRiskRecordRefV1Schema.parse({
+            kind: "standardized-risk-record",
+            reference: { entityId: "c25-risk-record", versionId: "1" },
+          }),
+          projectRevisionRef: state.projectRevisionRef,
+          spatialScopeRef: state.businessSpatialScopeRef,
+          applicabilityMetadataSnapshotRef: state.applicabilitySnapshotRef,
+          entryMode: "assess" as const,
+          triggerReasonCode: "manual-assessment",
+          ...(withMonitoring
+            ? {
+                monitoringSnapshotRefs: [
+                  {
+                    kind: "monitoring-snapshot" as const,
+                    reference: { entityId: "c25-missing-snapshot", versionId: "1" },
+                  },
+                ],
+              }
+            : {}),
+        },
+      } satisfies EngineeringFreezeCommandV1;
+    };
+
+    it("未注入事实 reader 与授权签发接缝时关闭失败", async () => {
+      const state = requireWorld();
+      const closed = new PostgresEngineeringContextSourceRegistry({
+        db: fixture.runtime.db,
+        transactionUnit: fixture.transactionUnit,
+        access: fixture.access,
+        artifactStore: fixture.artifactStore,
+        artifactReferenceGuard: fixture.artifactRegistry,
+        monitoringStore: fixture.monitoringStore,
+      });
+      const command = await freezeCommand("closed", false);
+      expect(await closed.freeze(command)).toMatchObject({
+        kind: "failed",
+        error: { code: "UNSUPPORTED_CONTRACT" },
+      });
+      expect(state.managerId).toBeDefined();
+    });
+
+    it("注入接缝后原样冻结入口语义并发布 engineering.inputs-ready.v1", async () => {
+      requireWorld();
+      const registry = openRegistry();
+      const command = await freezeCommand("open", false);
+      const frozen = await registry.freeze(command);
+      expect(frozen).toMatchObject({
+        kind: "succeeded",
+        result: { kind: "assessment-preparation" },
+      });
+      if (frozen.kind !== "succeeded" || frozen.result.kind !== "assessment-preparation") return;
+      const preparationSnapshotRef = frozen.result.assessmentPreparationSnapshotRef;
+      expect(preparationSnapshotRef.reference.versionId).toBe("1");
+
+      const replay = await registry.freeze(command);
+      expect(replay).toMatchObject({
+        kind: "succeeded",
+        result: {
+          kind: "assessment-preparation",
+          assessmentPreparationSnapshotRef: preparationSnapshotRef,
+        },
+      });
+
+      // 本桩的风险事实引用的是未登记来源资料，读取必须因来源不可验而关闭失败；
+      // 真实登记来源下的读取成功路径由 C25 适配器套件覆盖。
+      const readAuthorization = await authorizeBranch(
+        "c25-freeze-read",
+        "engineering-data.evidence-access",
+      );
+      const read = await registry.readAssessmentPreparationContext({
+        requestId: "c25-freeze-read",
+        idempotencyKey: "c25-freeze-read",
+        requestedAt: now,
+        authorization: readAuthorization,
+        preparationSnapshotRef,
+      });
+      expect(read).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+
+      // 未声明来源的授权同样不能读出含来源证据的准备快照。
+      const undeclaredAuthorization = await authorizeBranch(
+        "c25-freeze-read-undeclared",
+        "engineering-data.evidence-access",
+      );
+      const undeclared = await registry.readAssessmentPreparationContext({
+        requestId: "c25-freeze-read-undeclared",
+        idempotencyKey: "c25-freeze-read-undeclared",
+        requestedAt: now,
+        authorization: undeclaredAuthorization,
+        preparationSnapshotRef,
+      });
+      expect(undeclared).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+
+      const missing = await registry.readAssessmentPreparationContext({
+        requestId: "c25-freeze-read-missing",
+        idempotencyKey: "c25-freeze-read-missing",
+        requestedAt: now,
+        authorization: readAuthorization,
+        preparationSnapshotRef: {
+          kind: "assessment-preparation-snapshot",
+          reference: { entityId: "c25-missing-preparation", versionId: "1" },
+        },
+      });
+      expect(missing).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+
+      const events = await fixture.postgres.adminPool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM outbox.events WHERE event_type = 'engineering.inputs-ready.v1' AND aggregate_ref ->> 'reference' LIKE '%assessment-preparation%'",
+      );
+      expect(Number(events.rows[0]?.count ?? "0")).toBeGreaterThanOrEqual(1);
+    }, 120_000);
+
+    it("监测引用先经 C14 受权读取：不存在的快照整体失败且零准备事实", async () => {
+      const registry = openRegistry();
+      const command = await freezeCommand("monitoring", true);
+      const result = await registry.freeze(command);
+      expect(result.kind).toBe("failed");
+      const rows = await fixture.postgres.adminPool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM business.assessment_preparation_snapshots WHERE project_id = $1",
+        [project],
+      );
+      expect(Number(rows.rows[0]?.count ?? "0")).toBe(1);
+    }, 120_000);
+  });
 });

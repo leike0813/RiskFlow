@@ -53,7 +53,7 @@
 | Requirement/Scenario | IP-ID | 测试文件 | Fixture/前置条件 | 关键断言 | 可运行命令 |
 |---|---|---|---|---|---|
 | v1/v2、运行/质量分离、过期 HEAD | IP-02 | `status.test.mjs` | v1 与 v2 task fixtures | 规范化一致；非 settled 无 outcome；过期 PASS 为 violation | `pnpm exec vitest run scripts/orchestration/status.test.mjs` |
-| AUX 发现、frontier/resumeQueue、重启重建 | IP-03 | `status.test.mjs` | Manifest 外 change 与乱序节点 | AUX adopt；队列稳定；frontier 兼容 | 同上 |
+| AUX 发现、frontier/resumeQueue、重启重建 | IP-03 | `status.test.mjs` | Manifest 外 change、同步继承副本与乱序节点 | AUX adopt；v2 所有权优先；无信封重复仍拒绝；队列稳定；frontier 兼容 | 同上 |
 | finalizing 不回派、replan、audit、完成门 | IP-04 | `control.test.mjs` | 合成 snapshot | 非法操作稳定拒绝；合法转换唯一 | `pnpm exec vitest run scripts/orchestration/control.test.mjs` |
 | revision、幂等、锁、三次无进展 | IP-04 | `control.test.mjs` | 临时 Git common dir | 并发至多一次；重放同结果；阈值 paused | 同上 |
 | OMP 注册与显式加载 | IP-05 | doctor + OMP print smoke | OMP 18.1.18 | 五工具注册、扩展路径存在、版本满足 | `pnpm orchestration:doctor` |

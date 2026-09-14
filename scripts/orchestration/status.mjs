@@ -1113,14 +1113,25 @@ export function deriveSnapshot(graph, facts) {
     }
   }
   const auxiliaryNodes = [...auxiliaryWorktrees]
-    .map(([name, worktrees]) => ({
-      id: `AUX:${name}`,
-      kind: "change",
-      change: name,
-      dependsOn: [],
-      auxiliary: true,
-      worktrees,
-    }))
+    .map(([name, worktrees]) => {
+      const workItemId = `AUX:${name}`;
+      const ownedWorktrees = worktrees.filter((worktree) =>
+        worktree.tasks?.some(
+          (task) =>
+            task.envelope.valid &&
+            task.envelope.workItemId === workItemId &&
+            task.envelope.changeName === name,
+        ),
+      );
+      return {
+        id: workItemId,
+        kind: "change",
+        change: name,
+        dependsOn: [],
+        auxiliary: true,
+        worktrees: ownedWorktrees.length > 0 ? ownedWorktrees : worktrees,
+      };
+    })
     .sort((left, right) => left.id.localeCompare(right.id));
   const auxiliaryStates = auxiliaryNodes.map((node) =>
     deriveNodeState(node, {

@@ -12,8 +12,7 @@
 ## 3. PostgreSQL Adapter 与正式事务链
 
 - [x] 3.1 [IP-06] 新增唯一 `000032_deterministic_risk_assessment` 迁移，落实五张只追加表、XOR/FK/check/unique/index、审计/回执关系及 `riskflow_app` SELECT/INSERT 权限；执行 `pnpm exec vitest run packages/adapters/test/postgres/postgres-foundation.test.ts` 验证递归发现、up/down 与权限。
-  - 证据：000032 已由主调度登记进中央清单（`postgres-foundation.test.ts`、`auth/fixture.ts`）；`pnpm exec vitest run packages/adapters/test/postgres/postgres-foundation.test.ts` 17/17 通过（含递归发现、up/down 与 `riskflow_app` 权限），`packages/adapters/test/auth/local-identity-project-authorization.test.ts` 12/12 通过。
-  - 证据：000032 已由主调度登记进中央清单（`postgres-foundation.test.ts`、`auth/fixture.ts`）；`pnpm exec vitest run packages/adapters/test/postgres/postgres-foundation.test.ts` 17/17 通过（含递归发现、up/down 与 `riskflow_app` 权限），`packages/adapters/test/auth/local-identity-project-authorization.test.ts` 12/12 通过。
+  - 证据：000032 已由主调度登记进中央清单（`postgres-foundation.test.ts`、`auth/fixture.ts`）；`pnpm exec vitest run packages/adapters/test/postgres/postgres-foundation.test.ts` 17/17 通过（含递归发现、up/down 与 `riskflow_app` 权限），`packages/adapters/test/auth/local-identity-project-authorization.test.ts` 13/13 通过。
 - [ ] 3.2 [IP-04] 在 C11 PostgreSQL adapter 中完成 `freeze(assessment-preparation)`、`engineering.inputs-ready.v1` 原子提交和 C25/C19 受权窄 reader；消费前置 change 已集成的外部事件登记/读取，不实现或改写该分支；验证入口/复数 refs 原样冻结、optional 正确省略、每个 snapshot 的 C14 series 身份/工程/空间/版本均受权复验，空/重复/越权/series 不一致及缺 required 字段闭合拒绝，且不改变其它分支；执行 `pnpm exec vitest run packages/adapters/test/engineering-data/context-source/postgres-engineering-context-source-registry.test.ts` 验证。
   - 偏差：C19 侧 `readAssessmentPreparationSnapshot` 投影片段未接线——C19 的 `AssessmentPreparationProjectionV1Schema` 额外要求 `cleaningResultArtifactRef`/`dataCleaningTaskRef`/`configurationSetRef`/`compatibilityRef`，C25 准备快照无法提供（裁定：只实现 C25 自有 `AssessmentPreparationContextReaderV1`），否则会伪造 C19 事实。
   - 已实现：C25 窄 reader 读出准备快照后按快照自身空间与证据资料版本复验 C06 授权；来源未登记或授权未声明即关闭失败，真实登记来源下的读取成功路径由 C25 适配器套件覆盖。
@@ -38,4 +37,5 @@
 ## 7. OpenSpec Verify
 
 - [ ] 7.1 [IP-12] 执行 `openspec validate deliver-deterministic-risk-assessment --strict && openspec status --change deliver-deterministic-risk-assessment --json`，确认 schemaName 仍为 `riskflow-delivery`、五工件完整、所有实施 task 已有行为与证据后再勾选。
-- [ ] 7.2 [IP-12] 调用项目 `openspec-verify-change` Skill 独立核对 delta spec、D-ID、IP-ID、实现、数据库和 §6 证据；以再次执行 `openspec validate deliver-deterministic-risk-assessment --strict` 通过且 verify 报告无未解决 finding 为完成标准，不归档、不提交。
+- [x] 7.2 [IP-12] 调用项目 `openspec-verify-change` Skill 独立核对 delta spec、D-ID、IP-ID、实现、数据库和 §6 证据；以再次执行 `openspec validate deliver-deterministic-risk-assessment --strict` 通过且 verify 报告无未解决 finding 为完成标准，不归档、不提交。
+  - 第四轮独立复验证据：检查点 `102ae48` 的 6 个目标测试文件共 100/100 通过（core 21、risk-assessment adapter 20、迁移幂等 1、C11 context-source 28、PostgreSQL foundation 17、auth 13）；`tsc -b`、目标 ESLint/Prettier、`deps:check`、`deps:policy` 与 OpenSpec strict 校验均通过，无未解决 finding。

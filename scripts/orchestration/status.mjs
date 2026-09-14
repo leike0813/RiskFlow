@@ -14,22 +14,13 @@ const RUN_STATES = new Set(["queued", "running", "waiting", "settled"]);
 const TASK_STATUSES = new Set(["pending", "ready", "dispatched", "completed", "failed", "blocked"]);
 const TERMINAL_TASK_STATUSES = new Set(["completed", "failed"]);
 const ACTIVE_TASK_STATUSES = new Set(["pending", "ready", "dispatched", "blocked"]);
+const WRITER_TASK_STATUSES = new Set(["pending", "ready", "dispatched"]);
 const V1_TASK_OUTCOMES = new Set(["pending", "succeeded", "failed", "blocked"]);
 const V2_TASK_OUTCOMES = new Set(["succeeded", "failed", "blocked", "paused"]);
 const MAIN_VERIFICATIONS = new Set(["pending", "passed", "failed"]);
 const TERMINAL_WORKER_STATES = new Set(["succeeded", "failed", "stopped", "abandoned"]);
 const TERMINAL_DISPATCH_STATUSES = new Set(["completed", "failed"]);
-const PHASE_ORDER = new Map([
-  ["planning", 1],
-  ["implementing", 2],
-  ["implementation", 2],
-  ["finalizing", 3],
-  ["finalization", 3],
-  ["verification", 3],
-  ["integrating", 4],
-  ["archiving", 5],
-  ["archive", 5],
-]);
+const DEFAULT_PHASE_ORDER = ["planning", "implementing", "finalizing", "integrating", "archiving"];
 
 export class CommandFailure extends Error {
   constructor(command, args, cause) {
@@ -166,6 +157,32 @@ export function parseTaskEnvelope(task) {
   if (schemaVersion === 2 && !RUN_STATES.has(envelope.runState)) {
     return { valid: false, reason: "invalid_run_state", value: envelope.runState };
   }
+  const expectedPhase = {
+    planning: "planning",
+    implementation: "implementing",
+    finalization: "finalizing",
+    audit: "finalizing",
+    archive: "archiving",
+  }[envelope.taskKind];
+  if (schemaVersion === 2 && envelope.phase !== expectedPhase) {
+    return {
+      valid: false,
+      reason: "phase_task_kind_mismatch",
+      phase: envelope.phase,
+      taskKind: envelope.taskKind,
+    };
+  }
+  const hasReplanBoundary =
+    envelope.approvalRef !== undefined || envelope.supersedesAttemptGroup !== undefined;
+  if (
+    schemaVersion === 2 &&
+    hasReplanBoundary &&
+    (envelope.taskKind !== "planning" ||
+      !nonEmptyString(envelope.approvalRef) ||
+      !nonEmptyString(envelope.supersedesAttemptGroup))
+  ) {
+    return { valid: false, reason: "invalid_replan_boundary" };
+  }
   const outcomes = schemaVersion === 1 ? V1_TASK_OUTCOMES : V2_TASK_OUTCOMES;
   if (envelope.outcome !== undefined && !outcomes.has(envelope.outcome)) {
     return { valid: false, reason: "invalid_outcome", value: envelope.outcome };
@@ -175,6 +192,9 @@ export function parseTaskEnvelope(task) {
   }
   if (schemaVersion === 2 && envelope.runState !== "settled" && envelope.outcome !== undefined) {
     return { valid: false, reason: "premature_outcome" };
+  }
+  if (schemaVersion === 2 && envelope.runState !== "settled" && envelope.outputHead != null) {
+    return { valid: false, reason: "premature_output_head" };
   }
   if (
     schemaVersion === 2 &&
@@ -257,6 +277,7 @@ export function validateGraph(graph) {
     return ["graph.nodes must be an array"];
   }
   if (!nonEmptyString(graph.routeId)) issues.push("graph.routeId must be a non-empty string");
+  if (!nonEmptyString(graph.mainBranch)) issues.push("graph.mainBranch must be a non-empty string");
   if (![1, 2].includes(Number(graph.schemaVersion))) {
     issues.push("graph.schemaVersion must be 1 or 2");
   }
@@ -276,6 +297,9 @@ export function validateGraph(graph) {
     }
     if (!Array.isArray(graph.policy?.resumePriority)) {
       issues.push("graph.policy.resumePriority must be an array");
+    }
+    if (!Array.isArray(graph.policy?.targetedAudit)) {
+      issues.push("graph.policy.targetedAudit must be an array");
     }
     if (!Number.isInteger(graph.policy?.noProgressLimit) || graph.policy.noProgressLimit < 1) {
       issues.push("graph.policy.noProgressLimit must be a positive integer");
@@ -489,19 +513,58 @@ async function collectWorktree(exec, worktree, graph, tasks) {
   };
 }
 
-function taskSummary(tasks) {
+function phaseRank(value, phaseOrder) {
+  const canonical =
+    {
+      implementation: "implementing",
+      finalization: "finalizing",
+      verification: "finalizing",
+      archive: "archiving",
+    }[value] ?? value;
+  const index = phaseOrder.indexOf(canonical);
+  return index < 0 ? 0 : index + 1;
+}
+
+function currentTaskWindow(valid, phaseOrder) {
+  const replans = valid.filter((task) => nonEmptyString(task.envelope.approvalRef));
+  if (replans.length === 0) return { tasks: valid, replanConflict: false };
+  const approved = replans.filter(
+    (replan) =>
+      nonEmptyString(replan.createdAt) &&
+      valid.some(
+        (prior) =>
+          prior.envelope.attemptGroup === replan.envelope.supersedesAttemptGroup &&
+          phaseRank(prior.envelope.phase ?? prior.envelope.taskKind, phaseOrder) >=
+            phaseRank("finalizing", phaseOrder),
+      ),
+  );
+  if (approved.length !== replans.length) return { tasks: valid, replanConflict: true };
+  const latestCreatedAt = approved
+    .map((task) => task.createdAt)
+    .sort()
+    .at(-1);
+  const boundaries = approved.filter((task) => task.createdAt === latestCreatedAt);
+  if (boundaries.length !== 1) return { tasks: valid, replanConflict: true };
+  return {
+    tasks: valid.filter(
+      (task) => task.id === boundaries[0].id || task.createdAt >= boundaries[0].createdAt,
+    ),
+    replanConflict: false,
+  };
+}
+
+function taskSummary(tasks, phaseOrder = DEFAULT_PHASE_ORDER) {
   const valid = tasks.filter((task) => task.envelope.valid);
+  const window = currentTaskWindow(valid, phaseOrder);
+  const currentValid = window.tasks;
   const maxPhase = Math.max(
     0,
-    ...valid.map(
-      (task) =>
-        PHASE_ORDER.get(task.envelope.phase) ?? PHASE_ORDER.get(task.envelope.taskKind) ?? 0,
+    ...currentValid.map((task) =>
+      phaseRank(task.envelope.phase ?? task.envelope.taskKind, phaseOrder),
     ),
   );
-  const phaseTasks = valid.filter((task) => {
-    const order =
-      PHASE_ORDER.get(task.envelope.phase) ?? PHASE_ORDER.get(task.envelope.taskKind) ?? 0;
-    return order === maxPhase;
+  const phaseTasks = currentValid.filter((task) => {
+    return phaseRank(task.envelope.phase ?? task.envelope.taskKind, phaseOrder) === maxPhase;
   });
   const maxAttempt = Math.max(0, ...phaseTasks.map((task) => Number(task.envelope.attempt ?? 0)));
   const attemptTasks = phaseTasks.filter(
@@ -539,6 +602,7 @@ function taskSummary(tasks) {
   return {
     current,
     conflict: signatures.size > 1,
+    replanConflict: window.replanConflict,
     failed,
     blocked,
     active,
@@ -549,9 +613,10 @@ function taskSummary(tasks) {
   };
 }
 
-function mainSummary(tasks, workItemId, mainHead) {
+function mainSummary(tasks, workItemId, mainHead, phaseOrder) {
   const current = taskSummary(
     tasks.filter((task) => task.envelope.valid && task.envelope.workItemId === workItemId),
+    phaseOrder,
   );
   const summaries = current.current
     .map((task) => task.envelope.main)
@@ -620,6 +685,8 @@ function taskEvidence(task) {
     runState: task.envelope.runState ?? null,
     owner: task.envelope.owner ?? null,
     attemptGroup: task.envelope.attemptGroup ?? null,
+    approvalRef: task.envelope.approvalRef ?? null,
+    supersedesAttemptGroup: task.envelope.supersedesAttemptGroup ?? null,
     attempt: task.envelope.attempt ?? null,
     auditPolicy: task.envelope.auditPolicy ?? "self",
     issueRefs: task.envelope.issueRefs ?? [],
@@ -664,7 +731,31 @@ export function deriveNodeState(node, context) {
       worktreeIds: worktrees.map((item) => item.id),
     });
   const worktree = worktrees[0] ?? null;
-  const summary = taskSummary(tasks);
+  const summary = taskSummary(tasks, context.phaseOrder);
+  if (summary.replanConflict) violations.push({ code: "invalid_replan_boundary" });
+  const activeWriterTasks = tasks.filter((task) => WRITER_TASK_STATUSES.has(task.status));
+  if (activeWriterTasks.length > 1) {
+    violations.push({
+      code: "duplicate_active_writer",
+      taskIds: activeWriterTasks.map((task) => task.id),
+    });
+  }
+  const identityMismatches = tasks.filter(
+    (task) =>
+      task.envelope.schemaVersion === 2 &&
+      (task.envelope.owner?.taskId !== task.id ||
+        task.envelope.changeName !== node.change ||
+        task.envelope.workItemId !== node.id ||
+        (node.auxiliary
+          ? task.envelope.routeNodeId != null
+          : task.envelope.routeNodeId !== node.id)),
+  );
+  if (identityMismatches.length > 0) {
+    violations.push({
+      code: "task_identity_conflict",
+      taskIds: identityMismatches.map((task) => task.id),
+    });
+  }
   const localSpecPresent = worktrees.some(
     (item) => item.localNodeIds?.includes(node.id) || item.openSpecNames?.includes(node.change),
   );
@@ -688,7 +779,7 @@ export function deriveNodeState(node, context) {
 
   const main = context.main ?? {};
   const mainArchive = archivedName(main.archiveNames ?? [], node.change);
-  const mainState = mainSummary(tasks, node.id, main.head);
+  const mainState = mainSummary(tasks, node.id, main.head, context.phaseOrder);
   if (mainState.conflict) violations.push({ code: "main_summary_conflict" });
   const mainCheckpointMatches =
     mainState.mainHead === main.head ||
@@ -700,15 +791,22 @@ export function deriveNodeState(node, context) {
       currentHead: main.head,
     });
   }
+  const latestTask = summary.latest;
+  const expectedFeatureHead =
+    latestTask?.envelope?.runState === "settled"
+      ? latestTask.envelope.outputHead
+      : ["pending", "ready", "blocked"].includes(latestTask?.status)
+        ? latestTask.envelope.inputHead
+        : null;
   if (
     worktree?.exists &&
     worktree.git?.head &&
-    summary.latest?.envelope?.head &&
-    worktree.git.head !== summary.latest.envelope.head
+    expectedFeatureHead &&
+    worktree.git.head !== expectedFeatureHead
   ) {
     violations.push({
       code: "checkpoint_mismatch",
-      checkpointHead: summary.latest.envelope.head,
+      checkpointHead: expectedFeatureHead,
       currentHead: worktree.git.head,
     });
   }
@@ -977,6 +1075,8 @@ function snapshotRevision(snapshot) {
 }
 
 export function deriveSnapshot(graph, facts) {
+  const phaseOrder = graph.policy?.phaseOrder ?? DEFAULT_PHASE_ORDER;
+  const mainBranch = graph.mainBranch ?? "main";
   const changeIds = new Set(
     graph.nodes.filter((node) => node.kind === "change").map((node) => node.id),
   );
@@ -985,10 +1085,11 @@ export function deriveSnapshot(graph, facts) {
   for (const node of topologicalNodes(graph)) {
     const state =
       node.kind === "gate"
-        ? deriveNodeState(node, { dependencyState })
+        ? deriveNodeState(node, { dependencyState, phaseOrder })
         : deriveNodeState(node, {
             ...facts,
             dependencyState,
+            phaseOrder,
             worktrees: (facts.worktrees ?? []).filter(
               (worktree) =>
                 worktree.localNodeIds?.includes(node.id) ||
@@ -1002,31 +1103,47 @@ export function deriveSnapshot(graph, facts) {
   const routeChangeNames = new Set(
     graph.nodes.filter((node) => node.kind === "change").map((node) => node.change),
   );
-  const auxiliaryNodes = (facts.worktrees ?? [])
-    .flatMap((worktree) =>
-      (worktree.openSpecNames ?? [])
-        .filter((name) => !routeChangeNames.has(name))
-        .map((name) => ({
-          id: `AUX:${name}`,
-          kind: "change",
-          change: name,
-          dependsOn: [],
-          auxiliary: true,
-          worktree,
-        })),
-    )
+  const auxiliaryWorktrees = new Map();
+  for (const worktree of facts.worktrees ?? []) {
+    for (const name of worktree.openSpecNames ?? []) {
+      if (routeChangeNames.has(name)) continue;
+      const matches = auxiliaryWorktrees.get(name) ?? [];
+      matches.push(worktree);
+      auxiliaryWorktrees.set(name, matches);
+    }
+  }
+  const auxiliaryNodes = [...auxiliaryWorktrees]
+    .map(([name, worktrees]) => ({
+      id: `AUX:${name}`,
+      kind: "change",
+      change: name,
+      dependsOn: [],
+      auxiliary: true,
+      worktrees,
+    }))
     .sort((left, right) => left.id.localeCompare(right.id));
   const auxiliaryStates = auxiliaryNodes.map((node) =>
     deriveNodeState(node, {
       ...facts,
       dependencyState,
-      worktrees: [node.worktree],
+      phaseOrder,
+      worktrees: node.worktrees,
       tasks: (facts.tasks ?? []).filter((task) => taskMatchesNode(task, node)),
     }),
   );
   const nodes = [...graph.nodes.map((node) => stateById.get(node.id)), ...auxiliaryStates];
   const changeStates = nodes.filter((node) => node.kind === "change");
   const violations = [
+    ...(facts.main?.branch && facts.main.branch !== mainBranch
+      ? [
+          {
+            nodeId: null,
+            code: "main_branch_mismatch",
+            expectedBranch: mainBranch,
+            actualBranch: facts.main.branch,
+          },
+        ]
+      : []),
     ...nodes.flatMap((node) =>
       node.violations.map((violation) => ({ nodeId: node.id, ...violation })),
     ),

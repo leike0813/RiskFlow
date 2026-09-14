@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
+import { clearTimeout, setTimeout } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
@@ -13,6 +15,13 @@ import {
 } from "./status.mjs";
 
 const TERMINAL_OUTCOMES = new Set(["succeeded", "failed", "blocked", "paused"]);
+const CONTROLLED_TOOL_NAMES = [
+  "riskflow_status",
+  "riskflow_dispatch",
+  "riskflow_wait",
+  "riskflow_settle",
+  "riskflow_integrate",
+];
 
 export class ControlError extends Error {
   constructor(code, reason, nextActions = []) {
@@ -34,17 +43,24 @@ function requiredString(value, name) {
   return value;
 }
 
+function nonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 export function findWorkItem(snapshot, workItemId) {
   return snapshot.nodes.find((node) => node.kind === "change" && node.id === workItemId) ?? null;
 }
 
 export function canCompleteGoal(snapshot, workItemIds) {
-  const targets = workItemIds?.length
-    ? workItemIds.map((id) => findWorkItem(snapshot, id)).filter(Boolean)
-    : snapshot.nodes.filter((node) => node.kind === "change");
+  const selected = workItemIds?.length
+    ? workItemIds.map((id) => [id, findWorkItem(snapshot, id)])
+    : snapshot.nodes.filter((node) => node.kind === "change").map((node) => [node.id, node]);
+  const unknown = selected.filter(([, node]) => !node).map(([id]) => id);
+  const targets = selected.map(([, node]) => node).filter(Boolean);
   const unfinished = targets.filter((node) => !["completed", "reclaimable"].includes(node.status));
   return {
-    allowed: unfinished.length === 0 && snapshot.violations.length === 0,
+    allowed: unknown.length === 0 && unfinished.length === 0 && snapshot.violations.length === 0,
+    unknown,
     unfinished: unfinished.map((node) => node.id),
     nextActions: snapshot.resumeQueue.slice(0, 3),
   };
@@ -69,14 +85,59 @@ export function preflightAction(snapshot, action, input = {}) {
   const workItemId = requiredString(input.workItemId, "workItemId");
   const node = findWorkItem(snapshot, workItemId);
   if (!node) throw new ControlError("work_item_not_found", `未知工作项：${workItemId}`);
-  if (action !== "reconcile" && node.violations.length > 0) {
+  const queueItem = snapshot.resumeQueue.find((item) => item.workItemId === workItemId);
+  const adoptingAuxiliary = action === "dispatch" && node.auxiliary && node.status === "untracked";
+  const blockingViolations = snapshot.violations.filter(
+    (violation) =>
+      !(
+        (action === "reconcile" && violation.nodeId === workItemId) ||
+        (adoptingAuxiliary && violation.nodeId === workItemId) ||
+        (action === "integrate" &&
+          queueItem?.category === "cleanup" &&
+          violation.nodeId === workItemId &&
+          violation.code === "worktree_reclaim_pending")
+      ),
+  );
+  if (blockingViolations.length > 0) {
+    throw new ControlError("orchestration_conflict", "编排状态仍有未解决冲突", [
+      "调用 riskflow_status 并先处理 violations",
+    ]);
+  }
+  if (action !== "reconcile" && !adoptingAuxiliary && node.violations.length > 0) {
     throw new ControlError("work_item_conflict", `${workItemId} 存在状态冲突`, node.nextActions);
   }
-  const queueItem = snapshot.resumeQueue.find((item) => item.workItemId === workItemId);
   if (action === "dispatch") {
+    const replanApprovalRef =
+      input.replanApprovalRef === undefined
+        ? null
+        : requiredString(input.replanApprovalRef, "replanApprovalRef");
+    if (replanApprovalRef && !["finalizing", "paused"].includes(node.status)) {
+      throw new ControlError(
+        "replan_not_allowed",
+        `${workItemId} 只有进入 finalizing 或 paused 后才能按批准引用重新规划`,
+        node.nextActions,
+      );
+    }
+    if (replanApprovalRef && !nonEmptyString(node.checkpoints?.attemptGroup)) {
+      throw new ControlError(
+        "replan_not_allowed",
+        `${workItemId} 缺少可被取代的 attemptGroup`,
+        node.nextActions,
+      );
+    }
+    if (!replanApprovalRef && node.status === "paused") {
+      throw new ControlError(
+        "replan_approval_required",
+        `${workItemId} 重开规划需要非空 replanApprovalRef`,
+        node.nextActions,
+      );
+    }
     if (
-      !queueItem ||
-      !["planning", "implementing", "finalizing", "ready"].includes(queueItem.category)
+      !replanApprovalRef &&
+      (!queueItem ||
+        !["planning", "implementing", "finalizing", "ready", "recovery"].includes(
+          queueItem.category,
+        ))
     ) {
       throw new ControlError(
         "dispatch_not_allowed",
@@ -91,6 +152,24 @@ export function preflightAction(snapshot, action, input = {}) {
         `${workItemId} 没有可收口的当前任务`,
         node.nextActions,
       );
+    }
+    if (node.checkpoints.runState === "settled") {
+      throw new ControlError(
+        "settle_not_allowed",
+        `${workItemId} 当前任务已经收口`,
+        node.nextActions,
+      );
+    }
+    if (input.outcome === "succeeded" && node.worktree.git?.dirty) {
+      const actual = [...(node.worktree.git.dirtyPaths ?? [])].sort();
+      const reviewed = [...new Set(input.reviewedPaths ?? [])].sort();
+      if (JSON.stringify(actual) !== JSON.stringify(reviewed)) {
+        throw new ControlError(
+          "unreviewed_changes",
+          `${workItemId} 的 reviewedPaths 与实际未提交改动不一致`,
+          ["审阅 riskflow_status 返回的 dirtyPaths 后重新收口"],
+        );
+      }
     }
   } else if (action === "integrate") {
     if (!queueItem || !["integrating", "cleanup"].includes(queueItem.category)) {
@@ -141,9 +220,20 @@ function taskPhase(taskKind) {
   }[taskKind];
 }
 
-export function createV2Envelope({ node, taskId, taskKind, role, runState = "queued", outcome }) {
+export function createV2Envelope({
+  node,
+  taskId,
+  taskKind,
+  role,
+  runState = "queued",
+  outcome,
+  approvalRef,
+  supersedesAttemptGroup,
+}) {
   const checkpoint = node.checkpoints;
   const phase = taskPhase(taskKind);
+  const sameAttemptGroup = checkpoint?.taskKind === taskKind;
+  const replan = nonEmptyString(approvalRef) && nonEmptyString(supersedesAttemptGroup);
   const envelope = {
     schemaVersion: 2,
     workItemId: node.id,
@@ -154,16 +244,18 @@ export function createV2Envelope({ node, taskId, taskKind, role, runState = "que
     runState,
     worktreeId: node.worktree.id,
     inputHead: node.worktree.head,
-    ...(runState === "settled" || taskKind !== "planning"
-      ? { outputHead: node.worktree.head }
-      : {}),
+    ...(runState === "settled" ? { outputHead: node.worktree.head } : {}),
     owner: {
       taskId,
       agentClass: role.agentClass,
       model: role.model,
     },
-    attemptGroup: checkpoint?.attemptGroup ?? `${node.id}:${phase}`,
-    attempt: Number(checkpoint?.attempt ?? 0) + 1,
+    attemptGroup: replan
+      ? `${node.id}:planning:${hash(approvalRef).slice(0, 12)}`
+      : ((sameAttemptGroup ? checkpoint?.attemptGroup : null) ??
+        `${node.id}:${taskKind === "audit" ? "audit" : phase}`),
+    attempt: replan ? 1 : sameAttemptGroup ? Number(checkpoint?.attempt ?? 0) + 1 : 1,
+    ...(replan ? { approvalRef, supersedesAttemptGroup } : {}),
     auditPolicy: checkpoint?.auditPolicy ?? "self",
     issueRefs: checkpoint?.issueRefs ?? [],
     evidenceRefs: checkpoint?.evidenceRefs ?? [],
@@ -214,20 +306,21 @@ export async function withRuntimeLock(rootDir, exec, work) {
   for (let attempt = 0; attempt < 25; attempt += 1) {
     try {
       await mkdir(lockDir);
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      if (await removeStaleLock(lockDir)) continue;
+      await delay(40);
+      continue;
+    }
+    try {
       await writeFile(
         resolve(lockDir, "owner.json"),
         JSON.stringify({ pid: process.pid, createdAt: Date.now() }),
         "utf8",
       );
-      try {
-        return await work(runtimeDir);
-      } finally {
-        await rm(lockDir, { recursive: true });
-      }
-    } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-      if (await removeStaleLock(lockDir)) continue;
-      await delay(40);
+      return await work(runtimeDir);
+    } finally {
+      await rm(lockDir, { recursive: true });
     }
   }
   throw new ControlError("control_busy", "编排状态正在由另一操作更新，请稍后重试");
@@ -240,43 +333,75 @@ async function readReceipt(runtimeDir, idempotencyKey, input) {
     if (receipt.inputHash !== hash(input)) {
       throw new ControlError("idempotency_conflict", "同一幂等键已用于不同输入");
     }
-    return receipt.result;
+    if (receipt.status === "inflight") {
+      throw new ControlError(
+        "uncertain_prior_execution",
+        "同一幂等操作曾开始执行，但无法确认外部副作用是否完成；禁止自动重放",
+        ["调用 riskflow_status 重新读取实时状态", "根据实时事实对账后使用新的幂等键继续"],
+      );
+    }
+    if (receipt.status === "completed" || (receipt.status === undefined && "result" in receipt)) {
+      return receipt.result;
+    }
+    throw new ControlError("invalid_idempotency_receipt", "幂等回执状态无效");
   } catch (error) {
     if (error?.code === "ENOENT") return null;
     throw error;
   }
 }
 
-async function writeReceipt(runtimeDir, idempotencyKey, input, result) {
+async function writeReceipt(runtimeDir, idempotencyKey, input, status, result) {
   const receiptsDir = resolve(runtimeDir, "receipts");
   await mkdir(receiptsDir, { recursive: true });
+  const path = resolve(receiptsDir, `${hash(idempotencyKey)}.json`);
+  const temporaryPath = `${path}.${process.pid}.tmp`;
   await writeFile(
-    resolve(receiptsDir, `${hash(idempotencyKey)}.json`),
-    JSON.stringify({ inputHash: hash(input), result }),
+    temporaryPath,
+    JSON.stringify({
+      status,
+      inputHash: hash(input),
+      ...(status === "completed" ? { result } : {}),
+    }),
     "utf8",
+  );
+  await rename(temporaryPath, path);
+}
+
+async function orcaJson(exec, invocation, args, cwd, retryRequest) {
+  return unwrapResult(
+    await readJsonCommand(
+      exec,
+      invocation.command,
+      [
+        ...invocation.prefix,
+        ...args,
+        ...(retryRequest ? ["--retry-request", retryRequest] : []),
+        "--json",
+      ],
+      {
+        cwd,
+        timeoutMs: 120_000,
+      },
+    ),
   );
 }
 
-async function orcaJson(exec, invocation, args, cwd) {
-  return unwrapResult(
-    await readJsonCommand(exec, invocation.command, [...invocation.prefix, ...args, "--json"], {
-      cwd,
-      timeoutMs: 120_000,
-    }),
-  );
+function retryRequest(idempotencyKey, step) {
+  return hash([idempotencyKey, step]);
 }
 
 function idFrom(value, kind) {
   return value?.id ?? value?.[kind]?.id ?? value?.result?.id ?? null;
 }
 
-async function ensureRun(exec, invocation, rootDir, node) {
+async function ensureRun(exec, invocation, rootDir, node, idempotencyKey) {
   if (node.checkpoints?.runId) return node.checkpoints.runId;
   const created = await orcaJson(
     exec,
     invocation,
     ["orchestration", "run-create", "--objective", `推进 RiskFlow ${node.id}：${node.change}`],
     rootDir,
+    retryRequest(idempotencyKey, "run-create"),
   );
   const runId = idFrom(created, "run");
   if (!runId) throw new ControlError("orca_result_invalid", "Orca 未返回 run id");
@@ -340,7 +465,17 @@ async function createWorktreeForReadyNode(exec, invocation, rootDir, node) {
   };
 }
 
-async function createTask(exec, invocation, rootDir, graph, node, taskKind, runId) {
+async function createTask(
+  exec,
+  invocation,
+  rootDir,
+  graph,
+  node,
+  taskKind,
+  runId,
+  idempotencyKey,
+  envelopeOptions = {},
+) {
   const role = graph.policy.roles[taskKind];
   const created = await orcaJson(
     exec,
@@ -356,10 +491,11 @@ async function createTask(exec, invocation, rootDir, graph, node, taskKind, runI
       taskSpec(node, taskKind),
     ],
     rootDir,
+    retryRequest(idempotencyKey, "task-create"),
   );
   const taskId = idFrom(created, "task");
   if (!taskId) throw new ControlError("orca_result_invalid", "Orca 未返回 task id");
-  const envelope = createV2Envelope({ node, taskId, taskKind, role });
+  const envelope = createV2Envelope({ node, taskId, taskKind, role, ...envelopeOptions });
   await orcaJson(
     exec,
     invocation,
@@ -376,11 +512,12 @@ async function createTask(exec, invocation, rootDir, graph, node, taskKind, runI
       JSON.stringify(envelope),
     ],
     rootDir,
+    retryRequest(idempotencyKey, "task-envelope"),
   );
   return { taskId, runId, envelope, role };
 }
 
-async function startWorker(exec, invocation, rootDir, node, task) {
+async function startWorker(exec, invocation, rootDir, node, task, idempotencyKey) {
   const worktree = `id:${node.worktree.id}`;
   if (["planning", "finalization", "audit"].includes(task.envelope.taskKind)) {
     return orcaJson(
@@ -403,6 +540,7 @@ async function startWorker(exec, invocation, rootDir, node, task) {
         task.role.thinking,
       ],
       rootDir,
+      retryRequest(idempotencyKey, "worker-start"),
     );
   }
   const command = `omp --model ${task.role.model} --thinking ${task.role.thinking} --approval-mode yolo`;
@@ -457,6 +595,7 @@ async function startWorker(exec, invocation, rootDir, node, task) {
       "--inject",
     ],
     rootDir,
+    retryRequest(idempotencyKey, "dispatch"),
   );
 }
 
@@ -467,20 +606,22 @@ async function controlledMutation(action, input, options, perform) {
   const idempotencyKey = requiredString(input.idempotencyKey, "idempotencyKey");
   return withRuntimeLock(rootDir, exec, async (runtimeDir) => {
     const prior = await readReceipt(runtimeDir, idempotencyKey, { action, ...input });
-    if (prior) return prior;
+    if (prior !== null) return prior;
     const status = await (options.statusProvider ?? collectStatus)({ rootDir, exec });
     if (status.graphIssues?.length) {
       throw new ControlError("invalid_manifest", status.graphIssues.join("; "));
     }
     const checked = preflightAction(status.snapshot, action, input);
+    await writeReceipt(runtimeDir, idempotencyKey, { action, ...input }, "inflight");
     const result = await perform({
       rootDir,
       exec,
+      idempotencyKey,
       graph: status.graph,
       snapshot: status.snapshot,
       ...checked,
     });
-    await writeReceipt(runtimeDir, idempotencyKey, { action, ...input }, result);
+    await writeReceipt(runtimeDir, idempotencyKey, { action, ...input }, "completed", result);
     return result;
   });
 }
@@ -502,10 +643,11 @@ export async function riskflowDispatch(input, options = {}) {
     if (!node.worktree && node.status === "ready") {
       node = await createWorktreeForReadyNode(ctx.exec, invocation, ctx.rootDir, node);
     }
-    const taskKind = nextTaskKind(node);
-    const runId = await ensureRun(ctx.exec, invocation, ctx.rootDir, node);
+    const replanApprovalRef = input.replanApprovalRef;
+    const taskKind = replanApprovalRef ? "planning" : nextTaskKind(node);
+    const runId = await ensureRun(ctx.exec, invocation, ctx.rootDir, node, ctx.idempotencyKey);
     let task;
-    if (node.checkpoints?.runState === "queued" && node.checkpoints.taskId) {
+    if (!replanApprovalRef && node.checkpoints?.runState === "queued" && node.checkpoints.taskId) {
       task = {
         taskId: node.checkpoints.taskId,
         runId: node.checkpoints.runId ?? runId,
@@ -513,9 +655,31 @@ export async function riskflowDispatch(input, options = {}) {
         role: ctx.graph.policy.roles[taskKind],
       };
     } else {
-      task = await createTask(ctx.exec, invocation, ctx.rootDir, ctx.graph, node, taskKind, runId);
+      task = await createTask(
+        ctx.exec,
+        invocation,
+        ctx.rootDir,
+        ctx.graph,
+        node,
+        taskKind,
+        runId,
+        ctx.idempotencyKey,
+        replanApprovalRef
+          ? {
+              approvalRef: replanApprovalRef,
+              supersedesAttemptGroup: node.checkpoints?.attemptGroup,
+            }
+          : {},
+      );
     }
-    const worker = await startWorker(ctx.exec, invocation, ctx.rootDir, node, task);
+    const worker = await startWorker(
+      ctx.exec,
+      invocation,
+      ctx.rootDir,
+      node,
+      task,
+      ctx.idempotencyKey,
+    );
     return {
       ok: true,
       action: "dispatch",
@@ -565,6 +729,9 @@ export async function riskflowSettle(input, options = {}) {
   if (!TERMINAL_OUTCOMES.has(input.outcome)) {
     throw new ControlError("invalid_input", "outcome 必须为 succeeded、failed、blocked 或 paused");
   }
+  if (input.outcome === "succeeded" && !input.evidenceRefs?.length) {
+    throw new ControlError("evidence_required", "成功收口必须提供至少一项可核验证据");
+  }
   return controlledMutation("settle", input, options, async (ctx) => {
     const checkpoint = ctx.node.checkpoints;
     const attempts = ctx.node.orca.attempts ?? [];
@@ -587,6 +754,20 @@ export async function riskflowSettle(input, options = {}) {
     const auditPolicy = riskTags.some((tag) => ctx.graph.policy.targetedAudit.includes(tag))
       ? "targeted"
       : checkpoint.auditPolicy;
+    let outputHead = ctx.node.worktree.head;
+    if (outcome === "succeeded" && ctx.node.worktree.git?.dirty) {
+      await ctx.exec("git", ["add", "--", ...input.reviewedPaths], {
+        cwd: ctx.node.worktree.path,
+      });
+      await ctx.exec(
+        "git",
+        ["commit", "-m", `chore(orchestration): checkpoint ${ctx.node.change}`],
+        { cwd: ctx.node.worktree.path, timeoutMs: 120_000 },
+      );
+      outputHead = String(
+        await ctx.exec("git", ["rev-parse", "HEAD"], { cwd: ctx.node.worktree.path }),
+      ).trim();
+    }
     const envelope = {
       schemaVersion: 2,
       workItemId: ctx.node.id,
@@ -598,7 +779,7 @@ export async function riskflowSettle(input, options = {}) {
       outcome,
       worktreeId: ctx.node.worktree.id,
       inputHead: checkpoint.baseHead,
-      outputHead: ctx.node.worktree.head,
+      outputHead,
       owner: checkpoint.owner,
       attemptGroup: checkpoint.attemptGroup,
       attempt: checkpoint.attempt,
@@ -624,12 +805,13 @@ export async function riskflowSettle(input, options = {}) {
         JSON.stringify(envelope),
       ],
       ctx.rootDir,
+      retryRequest(ctx.idempotencyKey, "settle"),
     );
     return { ok: true, action: "settle", workItemId: ctx.node.id, outcome, envelope };
   });
 }
 
-async function updateMainSummary(ctx, main) {
+async function updateMainSummary(ctx, main, orcaCommand, step) {
   const checkpoint = ctx.node.checkpoints;
   const envelope = {
     schemaVersion: 2,
@@ -651,7 +833,7 @@ async function updateMainSummary(ctx, main) {
     evidenceRefs: checkpoint.evidenceRefs,
     main,
   };
-  const invocation = resolveOrcaInvocation();
+  const invocation = resolveOrcaInvocation(orcaCommand);
   await orcaJson(
     ctx.exec,
     invocation,
@@ -668,6 +850,7 @@ async function updateMainSummary(ctx, main) {
       JSON.stringify(envelope),
     ],
     ctx.rootDir,
+    retryRequest(ctx.idempotencyKey, step),
   );
   return envelope;
 }
@@ -699,12 +882,17 @@ export async function riskflowIntegrate(input, options = {}) {
       const mainHead = String(
         await ctx.exec("git", ["rev-parse", "HEAD"], { cwd: ctx.rootDir }),
       ).trim();
-      const envelope = await updateMainSummary(ctx, {
-        ...ctx.node.checkpoints.main,
-        mergeCommit: mainHead,
-        mainHead,
-        verification: "pending",
-      });
+      const envelope = await updateMainSummary(
+        ctx,
+        {
+          ...ctx.node.checkpoints.main,
+          mergeCommit: mainHead,
+          mainHead,
+          verification: "pending",
+        },
+        options.orcaCommand,
+        "main-merge-summary",
+      );
       return { ok: true, action: "merge", workItemId: ctx.node.id, mainHead, envelope };
     }
     if (ctx.node.status === "merged") {
@@ -712,11 +900,16 @@ export async function riskflowIntegrate(input, options = {}) {
       const mainHead = String(
         await ctx.exec("git", ["rev-parse", "HEAD"], { cwd: ctx.rootDir }),
       ).trim();
-      const envelope = await updateMainSummary(ctx, {
-        ...ctx.node.checkpoints.main,
-        mainHead,
-        verification: "passed",
-      });
+      const envelope = await updateMainSummary(
+        ctx,
+        {
+          ...ctx.node.checkpoints.main,
+          mainHead,
+          verification: "passed",
+        },
+        options.orcaCommand,
+        "main-verify-summary",
+      );
       return { ok: true, action: "main-verify", workItemId: ctx.node.id, mainHead, envelope };
     }
     if (ctx.node.status === "main_verified") {
@@ -732,12 +925,17 @@ export async function riskflowIntegrate(input, options = {}) {
       const archiveCommit = String(
         await ctx.exec("git", ["rev-parse", "HEAD"], { cwd: ctx.rootDir }),
       ).trim();
-      const envelope = await updateMainSummary(ctx, {
-        ...ctx.node.checkpoints.main,
-        archiveCommit,
-        mainHead: archiveCommit,
-        verification: "passed",
-      });
+      const envelope = await updateMainSummary(
+        ctx,
+        {
+          ...ctx.node.checkpoints.main,
+          archiveCommit,
+          mainHead: archiveCommit,
+          verification: "passed",
+        },
+        options.orcaCommand,
+        "archive-summary",
+      );
       return { ok: true, action: "archive", workItemId: ctx.node.id, archiveCommit, envelope };
     }
     throw new ControlError("integrate_not_allowed", `${ctx.node.id} 没有可执行的集成步骤`);
@@ -751,7 +949,7 @@ export async function riskflowReconcile(input, options = {}) {
       throw new ControlError("invalid_input", "reconcile 只接受 planning 或 finalization");
     }
     const invocation = resolveOrcaInvocation(options.orcaCommand);
-    const runId = await ensureRun(ctx.exec, invocation, ctx.rootDir, ctx.node);
+    const runId = await ensureRun(ctx.exec, invocation, ctx.rootDir, ctx.node, ctx.idempotencyKey);
     const role = ctx.graph.policy.roles[taskKind];
     const created = await orcaJson(
       ctx.exec,
@@ -767,8 +965,10 @@ export async function riskflowReconcile(input, options = {}) {
         taskSpec(ctx.node, taskKind),
       ],
       ctx.rootDir,
+      retryRequest(ctx.idempotencyKey, "reconcile-task-create"),
     );
     const taskId = idFrom(created, "task");
+    if (!taskId) throw new ControlError("orca_result_invalid", "Orca 未返回 task id");
     const runState = input.waiting ? "waiting" : "queued";
     const envelope = createV2Envelope({
       node: ctx.node,
@@ -793,8 +993,57 @@ export async function riskflowReconcile(input, options = {}) {
         JSON.stringify(envelope),
       ],
       ctx.rootDir,
+      retryRequest(ctx.idempotencyKey, "reconcile-task-envelope"),
     );
     return { ok: true, action: "reconcile", workItemId: ctx.node.id, runId, taskId, envelope };
+  });
+}
+
+export async function smokeOmpExtension(extensionPath, cwd) {
+  return new Promise((resolveSmoke, rejectSmoke) => {
+    const child = spawn(
+      "omp",
+      [
+        "--mode",
+        "rpc",
+        "--no-session",
+        "--no-extensions",
+        "--no-skills",
+        "--no-rules",
+        "--no-lsp",
+        "-e",
+        extensionPath,
+      ],
+      { cwd, stdio: ["pipe", "pipe", "pipe"] },
+    );
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => child.kill("SIGTERM"), 10_000);
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on("error", rejectSmoke);
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      const missingTools = CONTROLLED_TOOL_NAMES.filter((name) => !stdout.includes(name));
+      if (code !== 0 || /Failed to load extension/u.test(stderr) || missingTools.length > 0) {
+        rejectSmoke(
+          new ControlError(
+            "extension_load_failed",
+            stderr.trim() ||
+              (missingTools.length > 0
+                ? `OMP 未注册工具：${missingTools.join(", ")}`
+                : `OMP exit ${code}`),
+          ),
+        );
+      } else {
+        resolveSmoke({ ok: true });
+      }
+    });
+    child.stdin.end('{"id":"riskflow-doctor","type":"get_state"}\n');
   });
 }
 
@@ -824,18 +1073,15 @@ export async function doctor(options = {}) {
   }
   if (graph.graphIssues?.length)
     throw new ControlError("invalid_manifest", graph.graphIssues.join("; "));
+  const orcaReady = Boolean(unwrapResult(orcaStatus)?.runtime?.state === "ready");
+  if (!orcaReady) throw new ControlError("orca_not_ready", "Orca runtime 未就绪");
+  await smokeOmpExtension(extensionPath, sourceRoot);
   return {
     ok: true,
     ompVersion: String(ompVersion).trim(),
-    orcaReady: Boolean(unwrapResult(orcaStatus)?.runtime?.state === "ready"),
+    orcaReady,
     extensionPath,
-    tools: [
-      "riskflow_status",
-      "riskflow_dispatch",
-      "riskflow_wait",
-      "riskflow_settle",
-      "riskflow_integrate",
-    ],
+    tools: CONTROLLED_TOOL_NAMES,
   };
 }
 

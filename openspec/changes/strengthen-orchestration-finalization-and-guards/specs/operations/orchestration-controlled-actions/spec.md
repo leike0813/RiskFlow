@@ -23,6 +23,11 @@ change 进入 `finalizing` 后，强模型 Finalizer MUST 在已批准语义范�
 - **THEN** 系统 MUST 将当前检查点和证据移交给新的强模型 Finalizer
 - **AND** MUST NOT 因会话终止改变责任角色
 
+#### Scenario: 成功收口只提交已审阅改动
+- **WHEN** Finalizer 工作树存在未提交改动且主调度请求成功收口
+- **THEN** 请求的 `reviewedPaths` MUST 与实时 `dirtyPaths` 完全一致
+- **AND** 系统 MUST 只暂存这些路径；不一致时 MUST 在 Git 副作用前拒绝
+
 ### Requirement: 受控操作必须执行状态前置校验
 
 派发、结果接收、集成、归档、回收和目标完成 MUST 在执行前校验状态 revision、当前阶段、工作树身份、HEAD、唯一写者及证据；拒绝结果 MUST 返回原因和当前合法下一动作。
@@ -31,6 +36,11 @@ change 进入 `finalizing` 后，强模型 Finalizer MUST 在已批准语义范�
 - **WHEN** 工作项处于 `finalizing` 且没有新的已批准规划版本
 - **THEN** 派发操作 MUST 拒绝廉价实现角色
 - **AND** MUST 返回继续或移交 Finalizer 的下一动作
+
+#### Scenario: 获批后显式重新规划
+- **WHEN** 工作项已进入 `finalizing` 或 `paused`，且派发请求提供非空 `replanApprovalRef`
+- **THEN** 系统 MUST 创建 planning v2 信封并记录该批准引用与被取代的 `attemptGroup`
+- **AND** 没有批准引用的请求 MUST NOT 使阶段回退到 planning 或 implementing
 
 #### Scenario: 接收过期验收
 - **WHEN** PASS 对应的产物 HEAD 与当前工作树 HEAD 不同
@@ -55,6 +65,11 @@ change 进入 `finalizing` 后，强模型 Finalizer MUST 在已批准语义范�
 - **WHEN** 相同幂等键和相同输入被再次提交
 - **THEN** 系统 MUST 返回第一次提交的结果
 - **AND** MUST NOT 创建第二个 Task、Dispatch 或集成动作
+
+#### Scenario: 上次外部执行结果不确定
+- **WHEN** 相同幂等键的持久回执仍为 `inflight`
+- **THEN** 系统 MUST 以 `uncertain_prior_execution` 拒绝重放外部副作用
+- **AND** MUST 指引调用者重新读取实时状态并对账
 
 ### Requirement: 高风险最终产物必须限定独立复核
 

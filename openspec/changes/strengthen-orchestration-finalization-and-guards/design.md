@@ -24,19 +24,21 @@
 
 ### D-02：v2 信封分离身份、阶段、运行与质量
 
-v2 信封字段固定为：`schemaVersion`、`workItemId`、可选 `routeNodeId`、`changeName`、`taskKind`、`phase`、`runState`、可选 `outcome`、`worktreeId`、`inputHead`、可选 `outputHead`、`owner`、`attemptGroup`、`attempt`、`auditPolicy`、`issueRefs`、`evidenceRefs` 与现有 `main` 集成对象。`outcome` 只在 `runState=settled` 时出现。v1 只在读取时规范化，不再写入。辅助 change 使用 `AUX:<change-name>`，固定路线节点使用 C-ID。
+v2 信封字段固定为：`schemaVersion`、`workItemId`、可选 `routeNodeId`、`changeName`、`taskKind`、`phase`、`runState`、可选 `outcome`、`worktreeId`、`inputHead`、可选 `outputHead`、`owner`、`attemptGroup`、`attempt`、`auditPolicy`、`issueRefs`、`evidenceRefs` 与现有 `main` 集成对象。获批 replan 的 planning 信封另带非空 `approvalRef` 和 `supersedesAttemptGroup`。`outcome` 只在 `runState=settled` 时出现。v1 只在读取时规范化，不再写入。辅助 change 使用 `AUX:<change-name>`，固定路线节点使用 C-ID。
 
 ### D-03：当前状态由事实重建，不保存仓库快照
 
-状态命令每次读取 Git、OpenSpec、Orca 与 Manifest；`frontier` 继续表示可新启动的静态节点，`resumeQueue` 表示当前合法工作。队列先按类别排序：恢复、finalizing、integrating、implementing、planning、ready、cleanup；同类按可解锁下游数降序、Manifest 拓扑序、workItemId 排序。Manifest 外的活动 change 生成 adopt 项。替代方案是提交 `current-state.json`，因会在工作树间立即漂移而不采用。
+状态命令每次读取 Git、OpenSpec、Orca 与 Manifest；`frontier` 继续表示可新启动的静态节点，`resumeQueue` 表示当前合法工作。当前尝试通常按阶段单调前进；若存在有效的获批 replan planning 信封，则从最新边界重新计算，边界之前的旧 finalizing 不再覆盖新规划。队列先按类别排序：恢复、finalizing、integrating、implementing、planning、ready、cleanup；同类按可解锁下游数降序、Manifest 拓扑序、workItemId 排序。Manifest 外的活动 change 生成 adopt 项。替代方案是提交 `current-state.json`，因会在工作树间立即漂移而不采用。
 
 ### D-04：控制器复用状态聚合器并保持操作窄小
 
-新增 `control.mjs`，导出纯校验函数和 CLI。五个动作分别为 status、dispatch、wait、settle、integrate；调用者只能指定工作项、期望 revision、幂等键及动作必要证据，任务角色、模型、模板和下一阶段由 Manifest 与状态决定。第一版集成动作只允许返回并执行当前 `nextAction` 对应的 Orca/Git/OpenSpec 受控步骤，不接受自由 shell。拒绝返回稳定 code、reason 与 nextActions。
+新增 `control.mjs`，导出纯校验函数和 CLI。五个动作分别为 status、dispatch、wait、settle、integrate；调用者只能指定工作项、期望 revision、幂等键及动作必要证据，任务角色、模型、模板和下一阶段由 Manifest 与状态决定。仅当工作项已进入 finalizing 或 paused 时，dispatch 才接受非空 `replanApprovalRef` 并创建记录批准引用和被取代尝试组的 planning v2 信封；没有批准引用不能回退阶段。第一版集成动作只允许返回并执行当前 `nextAction` 对应的 Orca/Git/OpenSpec 受控步骤，不接受自由 shell。拒绝返回稳定 code、reason 与 nextActions。
+
+主调度审阅 Finalizer 的专用 feature worktree 后，以 settle 完成角色交接；成功且工作树有改动时，调用者必须提交与实时 dirty paths 完全一致的 reviewed paths，settle 只暂存这些路径、创建 Git 检查点并以实际 HEAD 收口。这样无需开放任意 `git commit` 绕过入口，失败结果或未审阅改动也不会误提交。
 
 ### D-05：revision、锁和幂等使用 Node 与 Git common dir
 
-revision 是规范化状态业务字段的 SHA-256 摘要，不包含 generatedAt；它用于乐观并发，不作产物完整性校验。变更操作在 `git rev-parse --git-common-dir` 下用原子目录锁串行化，并将幂等回执写入未跟踪的 orchestration runtime 目录。锁有所有者和过期时间；只清理可证明过期且进程不存在的锁。替代数据库和第三方锁库均不采用。
+revision 是规范化状态业务字段的 SHA-256 摘要，不包含 generatedAt；它用于乐观并发，不作产物完整性校验。变更操作在 `git rev-parse --git-common-dir` 下用原子目录锁串行化，并将幂等回执写入未跟踪的 orchestration runtime 目录。控制器在外部副作用前持久写入 `inflight`，成功后改为 `completed`；相同幂等键若读到 `inflight`，以 `uncertain_prior_execution` 拒绝重放并要求重新读取状态。锁有所有者和过期时间；只清理可证明过期且进程不存在的锁。替代数据库和第三方锁库均不采用。
 
 ### D-06：OMP 扩展只提供项目级软守卫
 

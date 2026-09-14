@@ -21,7 +21,7 @@ export function formatCurrentState(snapshot) {
   return [
     "[RISKFLOW ORCHESTRATION STATE]",
     `revision: ${snapshot.revision}`,
-    `frontier: ${next.length ? next.map((item) => `${item.workItemId}:${item.category}`).join(", ") : "empty"}`,
+    `resumeQueue: ${next.length ? next.map((item) => `${item.workItemId}:${item.category}`).join(", ") : "empty"}`,
     ...next.map((item) => `${item.workItemId}: ${item.nextAction}`),
     "编排写操作必须使用 riskflow_* 工具；先读取状态并携带当前 revision。",
   ].join("\n");
@@ -94,7 +94,10 @@ export default function riskflowOrchestrationExtension(pi) {
       name: "riskflow_dispatch",
       label: "RiskFlow Dispatch",
       description: "按当前阶段和固定模型策略创建或启动唯一合法的下一任务。",
-      parameters: z.object(mutation),
+      parameters: z.object({
+        ...mutation,
+        replanApprovalRef: z.string().min(1).optional(),
+      }),
       approval: "write",
     },
     riskflowDispatch,
@@ -122,9 +125,10 @@ export default function riskflowOrchestrationExtension(pi) {
       parameters: z.object({
         ...mutation,
         outcome: z.enum(["succeeded", "failed", "blocked", "paused"]),
-        evidenceRefs: z.array(z.string()).default([]),
-        issueRefs: z.array(z.string()).default([]),
-        riskTags: z.array(z.string()).default([]),
+        evidenceRefs: z.array(z.string()).optional(),
+        issueRefs: z.array(z.string()).optional(),
+        riskTags: z.array(z.string()).optional(),
+        reviewedPaths: z.array(z.string()).optional(),
       }),
       approval: "write",
     },
@@ -143,10 +147,12 @@ export default function riskflowOrchestrationExtension(pi) {
   );
 
   let cached;
+  let cachedCwd;
   let cachedAt = 0;
   const current = async (cwd) => {
-    if (!cached || Date.now() - cachedAt > 5_000) {
+    if (!cached || cachedCwd !== cwd || Date.now() - cachedAt > 5_000) {
       cached = await riskflowStatus({ rootDir: cwd });
+      cachedCwd = cwd;
       cachedAt = Date.now();
     }
     return cached;
@@ -174,7 +180,7 @@ export default function riskflowOrchestrationExtension(pi) {
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName === "goal" && event.input?.op === "complete") {
       try {
-        const completion = canCompleteGoal(await current(ctx.cwd));
+        const completion = canCompleteGoal(await riskflowStatus({ rootDir: ctx.cwd }));
         if (!completion.allowed) {
           return {
             block: true,

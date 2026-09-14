@@ -41,7 +41,7 @@
 
 ### Requirement: 状态冲突必须 fail-closed
 
-系统 MUST 对当前 Git、OpenSpec、Orca 或执行信封之间的身份、HEAD、阶段和完成条件冲突输出结构化 violation。系统 MUST 分离任务运行状态和质量结论，并根据阶段顺序、尝试组、尝试次数与任务创建顺序选取同一工作项的当前尝试；早期阶段或较早尝试不得覆盖后续成功结果。同一当前阶段无法确定唯一尝试时，系统 MUST fail-closed。v1 信封 MUST 可被规范化读取，所有新增或更新的信封 MUST 写为 v2。
+系统 MUST 对当前 Git、OpenSpec、Orca 或执行信封之间的身份、HEAD、阶段和完成条件冲突输出结构化 violation。系统 MUST 分离任务运行状态和质量结论，并根据阶段顺序、尝试组、尝试次数与任务创建顺序选取同一工作项的当前尝试；早期阶段或较早尝试不得覆盖后续成功结果。有效的获批 replan planning 信封 MUST 以非空 `approvalRef` 指向批准记录，并用 `supersedesAttemptGroup` 指向已进入 finalizing 的尝试组；状态选择 MUST 从最新有效边界重新计算。同一当前阶段无法确定唯一尝试时，系统 MUST fail-closed。v1 信封 MUST 可被规范化读取，所有新增或更新的信封 MUST 写为 v2。
 
 #### Scenario: checkpoint 与当前 HEAD 不一致
 - **WHEN** 当前结构化执行信封记录的产物 HEAD 与对应 worktree 当前 HEAD 不一致
@@ -67,6 +67,11 @@
 - **WHEN** v2 信封的运行状态为 queued、running 或 waiting
 - **THEN** 信封 MUST 不得预填 succeeded 或 passed
 - **AND** 状态视图 MUST 根据运行状态报告当前阶段
+
+#### Scenario: 获批 replan 取代旧收尾阶段
+- **WHEN** 最新有效 planning 信封记录批准引用，并指向一个已进入 finalizing 的旧尝试组
+- **THEN** 状态 MUST 从该 planning Task 的创建边界重新选择当前尝试
+- **AND** 边界之前的旧 finalizing Task MUST NOT 覆盖新规划状态
 
 ### Requirement: 状态输出必须可供协调 Agent消费
 

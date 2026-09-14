@@ -47,7 +47,7 @@ PLANNING → IMPLEMENTING → FINALIZING → INTEGRATING → ARCHIVING → COMPL
 
 1. 同一已批准版本的 change 进入 `FINALIZING` 后，普通实现缺陷不再把责任退回 Implementation。
 2. 升级改变待解决的问题，不自动改变当前收尾责任。
-3. 只有重新批准了新的规划版本，才能显式重开 `IMPLEMENTING`。
+3. 只有重新批准了新的规划版本，才能显式重开 `IMPLEMENTING`；`riskflow_dispatch` 必须携带非空 `replanApprovalRef`，由控制器创建 planning v2 边界并记录被取代的 `attemptGroup`。
 4. Finalizer 会话崩溃、预算耗尽或上下文不足时，留下结构化交接包，由新的强模型 Finalizer 接管；不得因此改派低成本实现角色。
 5. 运行状态与质量结论分离。Task 创建时只能是 `queued`、`running` 或 `waiting`，不能预填成功。
 
@@ -115,7 +115,9 @@ Finalizer 完成修复后不为形式独立性重复启动全量复验。最终�
 - `riskflow_settle`：以证据收口当前任务；
 - `riskflow_integrate`：执行允许的 merge、main 门禁、归档或回收步骤。
 
-每个写操作必须携带最新 `expectedRevision` 和唯一 `idempotencyKey`。控制器在公共 Git 目录持锁，重新采集事实后再执行；状态变化、重复 writer、过期 HEAD、证据不足或阶段不合法时，操作在执行前被拒绝，并返回合法下一步。
+每个写操作必须携带最新 `expectedRevision` 和唯一 `idempotencyKey`。控制器在公共 Git 目录持锁，重新采集事实后，在任何外部副作用前持久写入 `inflight` 回执，成功后更新为 `completed`。相同幂等键若仍为 `inflight`，必须以 `uncertain_prior_execution` fail-closed，要求重新读取状态并对账，绝不自动重做副作用。状态变化、重复 writer、过期 HEAD、证据不足或阶段不合法时，操作在执行前被拒绝，并返回合法下一步。
+
+Finalizer 报告后，主调度先审阅该专用 feature worktree 的全部改动，再调用 `riskflow_settle`。成功收口必须提供证据；若工作树有已审阅改动，调用者必须提交与实时 `dirtyPaths` 完全一致的 `reviewedPaths`，settle 只暂存这些路径并形成 Git 检查点，再把实际新 HEAD 写入 v2 信封。失败、阻塞、暂停或路径不一致时不得自动提交改动。
 
 正常编排禁止直接调用以下写操作：Orca Task/Dispatch 创建或更新、worktree 创建或删除、`git merge/commit/rebase/cherry-pick`、`openspec archive`。只有控制器故障且用户明确批准 break-glass 恢复时，才允许手工操作，并须随后运行状态对账。
 
@@ -156,6 +158,8 @@ pnpm orchestration:coordinator
 ```
 
 收口时才增加 `outputHead` 和 `outcome`。`runState` 只允许 `queued`、`running`、`waiting`、`settled`；`outcome` 只允许 `succeeded`、`failed`、`blocked`、`paused`，且只在 `settled` 出现。`main` 子对象记录 merge commit、main HEAD、主线验证和 archive commit。
+
+获批重新规划的 planning 信封额外记录 `approvalRef` 与 `supersedesAttemptGroup`。状态从最新、有效且确实指向已进入 finalizing 尝试组的 replan Task 创建边界重新计算；边界之前的旧 finalizing 不再覆盖新规划。缺少批准引用时不得回退阶段。
 
 状态观察器兼容读取旧 v1 信封，但所有新写入只使用 v2。它从实时事实生成：
 

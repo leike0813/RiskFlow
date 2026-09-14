@@ -1,24 +1,34 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const execFileAsync = promisify(execFile);
-const TASK_KINDS = new Set(["planning", "implementation", "verification", "archive"]);
+const V1_TASK_KINDS = new Set(["planning", "implementation", "verification", "archive"]);
+const V2_TASK_KINDS = new Set(["planning", "implementation", "finalization", "audit", "archive"]);
+const WORK_PHASES = new Set(["planning", "implementing", "finalizing", "integrating", "archiving"]);
+const RUN_STATES = new Set(["queued", "running", "waiting", "settled"]);
 const TASK_STATUSES = new Set(["pending", "ready", "dispatched", "completed", "failed", "blocked"]);
 const TERMINAL_TASK_STATUSES = new Set(["completed", "failed"]);
 const ACTIVE_TASK_STATUSES = new Set(["pending", "ready", "dispatched", "blocked"]);
-const TASK_OUTCOMES = new Set(["pending", "succeeded", "failed", "blocked"]);
+const V1_TASK_OUTCOMES = new Set(["pending", "succeeded", "failed", "blocked"]);
+const V2_TASK_OUTCOMES = new Set(["succeeded", "failed", "blocked", "paused"]);
 const MAIN_VERIFICATIONS = new Set(["pending", "passed", "failed"]);
 const TERMINAL_WORKER_STATES = new Set(["succeeded", "failed", "stopped", "abandoned"]);
 const TERMINAL_DISPATCH_STATUSES = new Set(["completed", "failed"]);
 const PHASE_ORDER = new Map([
   ["planning", 1],
+  ["implementing", 2],
   ["implementation", 2],
+  ["finalizing", 3],
+  ["finalization", 3],
   ["verification", 3],
-  ["archive", 4],
+  ["integrating", 4],
+  ["archiving", 5],
+  ["archive", 5],
 ]);
 
 export class CommandFailure extends Error {
@@ -54,6 +64,16 @@ export async function defaultExec(command, args, options = {}) {
   }
 }
 
+export async function resolveCoordinatorRoot(rootDir, exec = defaultExec) {
+  const common = String(
+    await exec("git", ["rev-parse", "--git-common-dir"], { cwd: rootDir }),
+  ).trim();
+  const gitDir = common.startsWith("/") ? common : resolve(rootDir, common);
+  return String(
+    await exec("git", [`--git-dir=${gitDir}`, "rev-parse", "--show-toplevel"], { cwd: rootDir }),
+  ).trim();
+}
+
 export async function readJsonCommand(exec, command, args, options = {}) {
   const output = await exec(command, args, options);
   if (typeof output === "object") return output;
@@ -64,7 +84,7 @@ export async function readJsonCommand(exec, command, args, options = {}) {
   }
 }
 
-function unwrapResult(payload) {
+export function unwrapResult(payload) {
   if (payload && payload.ok === false) {
     throw new Error(payload.error?.message ?? "Orca command returned ok=false");
   }
@@ -101,19 +121,35 @@ export function parseTaskEnvelope(task) {
     parseObject(result?.execution) ?? parseObject(result?.executionEnvelope) ?? result;
   if (!envelope) return { valid: false, reason: "missing_result_object" };
 
-  const required = ["changeId", "taskKind", "worktreeId", "baseHead", "head"];
+  const schemaMissing = envelope.schemaVersion === undefined;
+  const schemaVersion = schemaMissing ? 1 : Number(envelope.schemaVersion);
+  const required =
+    schemaVersion === 1
+      ? ["changeId", "taskKind", "worktreeId", "baseHead", "head"]
+      : [
+          "workItemId",
+          "changeName",
+          "taskKind",
+          "phase",
+          "runState",
+          "worktreeId",
+          "inputHead",
+          "attemptGroup",
+          "auditPolicy",
+        ];
   const missing = required.filter((field) => !nonEmptyString(envelope[field]));
   if (missing.length > 0) return { valid: false, reason: "missing_fields", missing };
-  if (Number(envelope.schemaVersion) !== 1) {
+  if (schemaMissing || ![1, 2].includes(schemaVersion)) {
     return { valid: false, reason: "invalid_schema_version", value: envelope.schemaVersion };
   }
-  if (!TASK_KINDS.has(envelope.taskKind)) {
+  const taskKinds = schemaVersion === 1 ? V1_TASK_KINDS : V2_TASK_KINDS;
+  if (!taskKinds.has(envelope.taskKind)) {
     return { valid: false, reason: "invalid_task_kind", value: envelope.taskKind };
   }
   if (!envelope.worktreeId.includes("::/")) {
     return { valid: false, reason: "worktree_id_not_full", value: envelope.worktreeId };
   }
-  if (envelope.phase !== undefined) {
+  if (schemaVersion === 1 && envelope.phase !== undefined) {
     if (!nonEmptyString(envelope.phase)) return { valid: false, reason: "invalid_phase" };
     if (envelope.phase !== envelope.taskKind) {
       return {
@@ -124,15 +160,53 @@ export function parseTaskEnvelope(task) {
       };
     }
   }
-  if (envelope.outcome !== undefined && !TASK_OUTCOMES.has(envelope.outcome)) {
+  if (schemaVersion === 2 && !WORK_PHASES.has(envelope.phase)) {
+    return { valid: false, reason: "invalid_phase", value: envelope.phase };
+  }
+  if (schemaVersion === 2 && !RUN_STATES.has(envelope.runState)) {
+    return { valid: false, reason: "invalid_run_state", value: envelope.runState };
+  }
+  const outcomes = schemaVersion === 1 ? V1_TASK_OUTCOMES : V2_TASK_OUTCOMES;
+  if (envelope.outcome !== undefined && !outcomes.has(envelope.outcome)) {
     return { valid: false, reason: "invalid_outcome", value: envelope.outcome };
   }
-  for (const field of ["evidenceRefs", "filesModified"]) {
+  if (schemaVersion === 2 && envelope.runState === "settled" && !envelope.outcome) {
+    return { valid: false, reason: "missing_settled_outcome" };
+  }
+  if (schemaVersion === 2 && envelope.runState !== "settled" && envelope.outcome !== undefined) {
+    return { valid: false, reason: "premature_outcome" };
+  }
+  if (
+    schemaVersion === 2 &&
+    (!Number.isInteger(envelope.attempt) || Number(envelope.attempt) < 1)
+  ) {
+    return { valid: false, reason: "invalid_attempt", value: envelope.attempt };
+  }
+  if (schemaVersion === 2 && !["self", "targeted"].includes(envelope.auditPolicy)) {
+    return { valid: false, reason: "invalid_audit_policy", value: envelope.auditPolicy };
+  }
+  if (
+    schemaVersion === 2 &&
+    (!envelope.owner ||
+      typeof envelope.owner !== "object" ||
+      !nonEmptyString(envelope.owner.taskId) ||
+      !nonEmptyString(envelope.owner.agentClass) ||
+      !nonEmptyString(envelope.owner.model))
+  ) {
+    return { valid: false, reason: "invalid_owner" };
+  }
+  for (const field of ["evidenceRefs", "issueRefs", "filesModified"]) {
     if (envelope[field] !== undefined && !Array.isArray(envelope[field])) {
       return {
         valid: false,
         reason: `invalid_${field.replace(/[A-Z]/gu, (c) => `_${c.toLowerCase()}`)}`,
       };
+    }
+  }
+  for (const field of schemaVersion === 2 ? ["routeNodeId", "outputHead"] : []) {
+    const value = envelope[field];
+    if (value !== undefined && value !== null && !nonEmptyString(value)) {
+      return { valid: false, reason: `invalid_${field}` };
     }
   }
   if (envelope.main !== undefined && (!envelope.main || typeof envelope.main !== "object")) {
@@ -157,7 +231,22 @@ export function parseTaskEnvelope(task) {
   return {
     valid: true,
     ...envelope,
-    schemaVersion: 1,
+    schemaVersion,
+    workItemId: schemaVersion === 1 ? envelope.changeId : envelope.workItemId,
+    routeNodeId: schemaVersion === 1 ? envelope.changeId : (envelope.routeNodeId ?? null),
+    changeId:
+      schemaVersion === 1 ? envelope.changeId : (envelope.routeNodeId ?? envelope.workItemId),
+    inputHead: schemaVersion === 1 ? envelope.baseHead : envelope.inputHead,
+    outputHead: schemaVersion === 1 ? envelope.head : (envelope.outputHead ?? null),
+    baseHead: schemaVersion === 1 ? envelope.baseHead : envelope.inputHead,
+    head: schemaVersion === 1 ? envelope.head : (envelope.outputHead ?? envelope.inputHead),
+    runState:
+      schemaVersion === 1
+        ? envelope.outcome === "pending"
+          ? "running"
+          : "settled"
+        : envelope.runState,
+    issueRefs: envelope.issueRefs ?? [],
     evidenceRefs: envelope.evidenceRefs ?? [],
   };
 }
@@ -168,6 +257,30 @@ export function validateGraph(graph) {
     return ["graph.nodes must be an array"];
   }
   if (!nonEmptyString(graph.routeId)) issues.push("graph.routeId must be a non-empty string");
+  if (![1, 2].includes(Number(graph.schemaVersion))) {
+    issues.push("graph.schemaVersion must be 1 or 2");
+  }
+  if (Number(graph.schemaVersion) === 2) {
+    const roles = graph.policy?.roles;
+    for (const role of V2_TASK_KINDS) {
+      if (
+        !nonEmptyString(roles?.[role]?.agentClass) ||
+        !nonEmptyString(roles?.[role]?.model) ||
+        !nonEmptyString(roles?.[role]?.thinking)
+      ) {
+        issues.push(`graph.policy.roles.${role} must define agentClass, model, and thinking`);
+      }
+    }
+    if (!Array.isArray(graph.policy?.phaseOrder)) {
+      issues.push("graph.policy.phaseOrder must be an array");
+    }
+    if (!Array.isArray(graph.policy?.resumePriority)) {
+      issues.push("graph.policy.resumePriority must be an array");
+    }
+    if (!Number.isInteger(graph.policy?.noProgressLimit) || graph.policy.noProgressLimit < 1) {
+      issues.push("graph.policy.noProgressLimit must be a positive integer");
+    }
+  }
   const nodes = new Map();
   const changes = new Set();
   for (const node of graph.nodes) {
@@ -231,7 +344,7 @@ function topologicalNodes(graph) {
   return ordered;
 }
 
-function resolveOrcaInvocation(value = process.env.ORCA_CLI_COMMAND) {
+export function resolveOrcaInvocation(value = process.env.ORCA_CLI_COMMAND) {
   if (nonEmptyString(value)) {
     const [command, ...prefix] = value.trim().split(/\s+/u);
     return { command, prefix };
@@ -344,6 +457,7 @@ async function collectWorktree(exec, worktree, graph, tasks) {
     git: null,
     openSpec: null,
     openSpecNodeIds: [],
+    openSpecNames: [],
     tasks: tasks.filter((task) => task.envelope.valid && task.envelope.worktreeId === worktree.id),
   };
   if (!base.exists) return base;
@@ -359,8 +473,9 @@ async function collectWorktree(exec, worktree, graph, tasks) {
     .map((node) => node.id);
   const localNodeIds = [...openSpecNodeIds];
   for (const task of base.tasks) {
-    if (task.envelope.valid && !localNodeIds.includes(task.envelope.changeId)) {
-      const node = graph.nodes.find((candidate) => candidate.id === task.envelope.changeId);
+    const routeNodeId = task.envelope.routeNodeId ?? task.envelope.changeId;
+    if (task.envelope.valid && routeNodeId && !localNodeIds.includes(routeNodeId)) {
+      const node = graph.nodes.find((candidate) => candidate.id === routeNodeId);
       if (node?.kind === "change") localNodeIds.push(node.id);
     }
   }
@@ -368,6 +483,7 @@ async function collectWorktree(exec, worktree, graph, tasks) {
     ...base,
     git,
     openSpec: { changes: openSpec },
+    openSpecNames: [...names].sort(),
     openSpecNodeIds: [...new Set(openSpecNodeIds)],
     localNodeIds: [...new Set(localNodeIds)],
   };
@@ -377,21 +493,30 @@ function taskSummary(tasks) {
   const valid = tasks.filter((task) => task.envelope.valid);
   const maxPhase = Math.max(
     0,
-    ...valid.map((task) => PHASE_ORDER.get(task.envelope.taskKind) ?? 0),
+    ...valid.map(
+      (task) =>
+        PHASE_ORDER.get(task.envelope.phase) ?? PHASE_ORDER.get(task.envelope.taskKind) ?? 0,
+    ),
   );
-  const phaseTasks = valid.filter(
-    (task) => (PHASE_ORDER.get(task.envelope.taskKind) ?? 0) === maxPhase,
+  const phaseTasks = valid.filter((task) => {
+    const order =
+      PHASE_ORDER.get(task.envelope.phase) ?? PHASE_ORDER.get(task.envelope.taskKind) ?? 0;
+    return order === maxPhase;
+  });
+  const maxAttempt = Math.max(0, ...phaseTasks.map((task) => Number(task.envelope.attempt ?? 0)));
+  const attemptTasks = phaseTasks.filter(
+    (task) => Number(task.envelope.attempt ?? 0) === maxAttempt,
   );
-  const comparableCreationOrder = phaseTasks.every((task) => nonEmptyString(task.createdAt));
+  const comparableCreationOrder = attemptTasks.every((task) => nonEmptyString(task.createdAt));
   const maxCreatedAt = comparableCreationOrder
-    ? phaseTasks
+    ? attemptTasks
         .map((task) => task.createdAt)
         .sort()
         .at(-1)
     : null;
   const current = maxCreatedAt
-    ? phaseTasks.filter((task) => task.createdAt === maxCreatedAt)
-    : phaseTasks;
+    ? attemptTasks.filter((task) => task.createdAt === maxCreatedAt)
+    : attemptTasks;
   const signatures = new Set(
     current.map((task) => {
       const main = task.envelope.main;
@@ -424,9 +549,9 @@ function taskSummary(tasks) {
   };
 }
 
-function mainSummary(tasks, changeId, mainHead) {
+function mainSummary(tasks, workItemId, mainHead) {
   const current = taskSummary(
-    tasks.filter((task) => task.envelope.valid && task.envelope.changeId === changeId),
+    tasks.filter((task) => task.envelope.valid && task.envelope.workItemId === workItemId),
   );
   const summaries = current.current
     .map((task) => task.envelope.main)
@@ -486,11 +611,26 @@ function taskEvidence(task) {
   if (!task?.envelope?.valid) return null;
   return {
     taskId: task.id,
+    runId: task.runId,
+    workItemId: task.envelope.workItemId,
+    changeName: task.envelope.changeName ?? null,
     taskKind: task.envelope.taskKind,
     phase: task.envelope.phase ?? task.envelope.taskKind,
     outcome: task.envelope.outcome ?? null,
-    head: task.envelope.head,
-    baseHead: task.envelope.baseHead,
+    runState: task.envelope.runState ?? null,
+    owner: task.envelope.owner ?? null,
+    attemptGroup: task.envelope.attemptGroup ?? null,
+    attempt: task.envelope.attempt ?? null,
+    auditPolicy: task.envelope.auditPolicy ?? "self",
+    issueRefs: task.envelope.issueRefs ?? [],
+    main: task.envelope.main ?? {
+      mergeCommit: null,
+      mainHead: null,
+      verification: "pending",
+      archiveCommit: null,
+    },
+    head: task.envelope.outputHead ?? task.envelope.head,
+    baseHead: task.envelope.inputHead ?? task.envelope.baseHead,
     evidenceRefs: Array.isArray(task.envelope.evidenceRefs) ? task.envelope.evidenceRefs : [],
   };
 }
@@ -525,9 +665,12 @@ export function deriveNodeState(node, context) {
     });
   const worktree = worktrees[0] ?? null;
   const summary = taskSummary(tasks);
-  const localSpecPresent = worktrees.some((item) => item.localNodeIds.includes(node.id));
-  const openSpecPresent = worktree?.openSpecNodeIds?.includes(node.id);
-  const unlinkedLocal = localSpecPresent && tasks.length === 0;
+  const localSpecPresent = worktrees.some(
+    (item) => item.localNodeIds?.includes(node.id) || item.openSpecNames?.includes(node.change),
+  );
+  const openSpecPresent =
+    worktree?.openSpecNodeIds?.includes(node.id) || worktree?.openSpecNames?.includes(node.change);
+  const unlinkedLocal = localSpecPresent && tasks.length === 0 && !node.auxiliary;
   if (unlinkedLocal) violations.push({ code: "local_change_without_linked_task" });
   if (
     tasks.length > 0 &&
@@ -590,6 +733,9 @@ export function deriveNodeState(node, context) {
   let status;
   let phase = summary.latest?.envelope?.phase ?? summary.latest?.envelope?.taskKind ?? null;
   let nextActions = [];
+  const currentEnvelope = summary.latest?.envelope ?? null;
+  const currentKind = currentEnvelope?.taskKind ?? null;
+  const currentSucceeded = currentEnvelope?.outcome === "succeeded";
   if (violations.length > 0) {
     status = "unknown";
     nextActions = ["审阅 violations，禁止自动派发或回收"];
@@ -615,12 +761,53 @@ export function deriveNodeState(node, context) {
     status = "merged";
     phase = "integration";
     nextActions = ["在 main 上完成冻结安装、pnpm verify 和主线验证"];
+  } else if (currentEnvelope?.outcome === "paused") {
+    status = "paused";
+    nextActions = ["处理结构化升级条件；批准新规划后才可重开实现"];
+  } else if (summary.failed && ["verification", "finalization"].includes(currentKind)) {
+    status = "finalizing";
+    phase = "finalizing";
+    nextActions = ["由强模型 Finalizer 继续修复与回归，或移交新的强模型 Finalizer"];
   } else if (summary.failed) {
-    status = summary.failed.envelope.taskKind === "verification" ? "verification_failed" : "failed";
-    nextActions = ["按失败证据执行当前 change 的修复或重新规划"];
+    status = "failed";
+    nextActions = ["由当前责任角色按失败证据修复；仅真实设计边界变化进入重新规划"];
   } else if (summary.blocked) {
     status = "blocked";
     nextActions = ["处理 Orca task blocker 或升级决策"];
+  } else if (currentEnvelope?.runState === "waiting" && blockers.length > 0) {
+    status = "blocked";
+    nextActions = [`等待依赖归档: ${blockers.join(", ")}`];
+  } else if (currentEnvelope?.runState === "queued" && currentEnvelope.phase === "finalizing") {
+    status = "finalizing";
+    nextActions = ["派发强模型 Finalizer 接管当前产物"];
+  } else if (currentEnvelope?.runState === "queued") {
+    status = "running";
+    nextActions = ["派发当前信封指定的受控任务"];
+  } else if (
+    currentSucceeded &&
+    currentKind === "finalization" &&
+    currentEnvelope.auditPolicy === "targeted"
+  ) {
+    status = "finalizing";
+    phase = "finalizing";
+    nextActions = ["派发不同强模型责任者执行限定范围 audit"];
+  } else if (currentSucceeded && ["verification", "finalization", "audit"].includes(currentKind)) {
+    status = "finalized";
+    phase = "finalizing";
+    nextActions = ["集成当前已验收产物"];
+  } else if (currentSucceeded && currentKind === "implementation") {
+    status = "finalizing";
+    phase = "finalizing";
+    nextActions = ["创建强模型 Finalizer 任务"];
+  } else if (currentSucceeded && currentKind === "planning") {
+    status = blockers.length > 0 ? "blocked" : "running";
+    phase = "planning";
+    nextActions =
+      blockers.length > 0 ? [`等待依赖归档: ${blockers.join(", ")}`] : ["创建有界首轮实现任务"];
+  } else if (node.auxiliary && localSpecPresent && tasks.length === 0) {
+    status = "untracked";
+    phase = "adopt";
+    nextActions = ["adopt：登记 v2 执行信封后由强模型 Finalizer 接管"];
   } else if (summary.active || localSpecPresent) {
     status = "running";
     nextActions = summary.active
@@ -647,6 +834,9 @@ export function deriveNodeState(node, context) {
 
   return {
     id: node.id,
+    workItemId: node.id,
+    routeNodeId: node.auxiliary ? null : node.id,
+    auxiliary: Boolean(node.auxiliary),
     kind: node.kind,
     change: node.change,
     phase,
@@ -672,6 +862,7 @@ export function deriveNodeState(node, context) {
       dispatchIds: nodeWorkers.map((worker) => worker.dispatchId).filter(Boolean),
       workerStates: nodeWorkers.map((worker) => worker.workerState),
       terminalHandles: nodeTerminals.map((terminal) => terminal.handle).filter(Boolean),
+      attempts: tasks.map(taskEvidence).filter(Boolean),
     },
     main: {
       head: main.head ?? null,
@@ -685,6 +876,104 @@ export function deriveNodeState(node, context) {
     nextActions,
     violations,
   };
+}
+
+function taskMatchesNode(task, node) {
+  if (!task.envelope.valid) return false;
+  return node.auxiliary
+    ? task.envelope.workItemId === node.id ||
+        (task.envelope.schemaVersion === 2 && task.envelope.changeName === node.change)
+    : (task.envelope.routeNodeId ?? task.envelope.changeId) === node.id;
+}
+
+function queueCategory(node) {
+  if (["unknown", "untracked"].includes(node.status)) return "recovery";
+  if (node.status === "finalizing") return "finalizing";
+  if (["finalized", "merged", "main_verified"].includes(node.status)) return "integrating";
+  if (node.status === "running" && node.phase === "implementing") return "implementing";
+  if (node.status === "running" && node.phase === "planning") return "planning";
+  if (node.status === "ready") return "ready";
+  if (["stale", "reclaimable"].includes(node.status)) return "cleanup";
+  return null;
+}
+
+function downstreamCounts(graph) {
+  const dependents = new Map(graph.nodes.map((node) => [node.id, []]));
+  for (const node of graph.nodes) {
+    for (const dependency of node.dependsOn ?? []) dependents.get(dependency)?.push(node.id);
+  }
+  const counts = new Map();
+  const visit = (id, seen = new Set()) => {
+    for (const dependent of dependents.get(id) ?? []) {
+      if (seen.has(dependent)) continue;
+      seen.add(dependent);
+      visit(dependent, seen);
+    }
+    return seen.size;
+  };
+  for (const id of dependents.keys()) counts.set(id, visit(id));
+  return counts;
+}
+
+function buildResumeQueue(graph, nodes) {
+  const priorities = new Map(
+    (
+      graph.policy?.resumePriority ?? [
+        "recovery",
+        "finalizing",
+        "integrating",
+        "implementing",
+        "planning",
+        "ready",
+        "cleanup",
+      ]
+    ).map((name, index) => [name, index]),
+  );
+  const topology = new Map(topologicalNodes(graph).map((node, index) => [node.id, index]));
+  const downstream = downstreamCounts(graph);
+  return nodes
+    .map((node) => ({ node, category: queueCategory(node) }))
+    .filter((entry) => entry.category)
+    .sort(
+      (left, right) =>
+        (priorities.get(left.category) ?? 99) - (priorities.get(right.category) ?? 99) ||
+        (downstream.get(right.node.routeNodeId) ?? 0) -
+          (downstream.get(left.node.routeNodeId) ?? 0) ||
+        (topology.get(left.node.routeNodeId) ?? Number.MAX_SAFE_INTEGER) -
+          (topology.get(right.node.routeNodeId) ?? Number.MAX_SAFE_INTEGER) ||
+        left.node.id.localeCompare(right.node.id),
+    )
+    .map(({ node, category }) => ({
+      workItemId: node.id,
+      routeNodeId: node.routeNodeId,
+      changeName: node.change,
+      category,
+      status: node.status,
+      phase: node.phase,
+      responsibility:
+        category === "finalizing"
+          ? "strong-finalizer"
+          : category === "implementing"
+            ? "bounded-implementer"
+            : category === "planning"
+              ? "strong-planner"
+              : "coordinator",
+      worktreeId: node.worktree?.id ?? null,
+      checkpoint: node.checkpoints?.head ?? node.worktree?.head ?? null,
+      nextAction: node.nextActions[0] ?? null,
+    }));
+}
+
+function snapshotRevision(snapshot) {
+  const businessState = {
+    routeId: snapshot.routeId,
+    main: snapshot.main,
+    frontier: snapshot.frontier,
+    resumeQueue: snapshot.resumeQueue,
+    nodes: snapshot.nodes,
+    violations: snapshot.violations,
+  };
+  return createHash("sha256").update(JSON.stringify(businessState)).digest("hex");
 }
 
 export function deriveSnapshot(graph, facts) {
@@ -703,18 +992,39 @@ export function deriveSnapshot(graph, facts) {
             worktrees: (facts.worktrees ?? []).filter(
               (worktree) =>
                 worktree.localNodeIds?.includes(node.id) ||
-                worktree.tasks?.some(
-                  (task) => task.envelope.valid && task.envelope.changeId === node.id,
-                ),
+                worktree.tasks?.some((task) => taskMatchesNode(task, node)),
             ),
-            tasks: (facts.tasks ?? []).filter(
-              (task) => task.envelope.valid && task.envelope.changeId === node.id,
-            ),
+            tasks: (facts.tasks ?? []).filter((task) => taskMatchesNode(task, node)),
           });
     stateById.set(node.id, state);
     dependencyState.set(node.id, state.status);
   }
-  const nodes = graph.nodes.map((node) => stateById.get(node.id));
+  const routeChangeNames = new Set(
+    graph.nodes.filter((node) => node.kind === "change").map((node) => node.change),
+  );
+  const auxiliaryNodes = (facts.worktrees ?? [])
+    .flatMap((worktree) =>
+      (worktree.openSpecNames ?? [])
+        .filter((name) => !routeChangeNames.has(name))
+        .map((name) => ({
+          id: `AUX:${name}`,
+          kind: "change",
+          change: name,
+          dependsOn: [],
+          auxiliary: true,
+          worktree,
+        })),
+    )
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const auxiliaryStates = auxiliaryNodes.map((node) =>
+    deriveNodeState(node, {
+      ...facts,
+      dependencyState,
+      worktrees: [node.worktree],
+      tasks: (facts.tasks ?? []).filter((task) => taskMatchesNode(task, node)),
+    }),
+  );
+  const nodes = [...graph.nodes.map((node) => stateById.get(node.id)), ...auxiliaryStates];
   const changeStates = nodes.filter((node) => node.kind === "change");
   const violations = [
     ...nodes.flatMap((node) =>
@@ -734,8 +1044,8 @@ export function deriveSnapshot(graph, facts) {
       .filter((node) => ["stale", "reclaimable"].includes(node.status))
       .map((node) => ({ nodeId: node.id, code: "worktree_reclaim_pending" })),
   ];
-  return {
-    schemaVersion: 1,
+  const snapshot = {
+    schemaVersion: 2,
     generatedAt: facts.generatedAt ?? new Date().toISOString(),
     routeId: graph.routeId,
     main: {
@@ -750,6 +1060,7 @@ export function deriveSnapshot(graph, facts) {
       terminals: facts.terminals ?? [],
     },
     frontier: changeStates.filter((node) => node.status === "ready").map((node) => node.id),
+    resumeQueue: buildResumeQueue(graph, changeStates),
     nodes,
     staleWorktrees: changeStates
       .filter((node) => ["stale", "reclaimable"].includes(node.status))
@@ -763,6 +1074,7 @@ export function deriveSnapshot(graph, facts) {
     diagnostics: facts.diagnostics ?? [],
     violations,
   };
+  return { ...snapshot, revision: snapshotRevision(snapshot) };
 }
 
 function extractWorktrees(payload) {
@@ -968,7 +1280,11 @@ async function collectFacts({ rootDir, graph, exec, orcaInvocation }) {
       ),
     ];
     let reason = null;
-    if (!changeIds.has(task.envelope.changeId)) reason = "unknown_change";
+    const routeNodeId = task.envelope.routeNodeId ?? task.envelope.changeId;
+    const declaredAuxiliary =
+      task.envelope.schemaVersion === 2 &&
+      task.envelope.workItemId === `AUX:${task.envelope.changeName}`;
+    if (!changeIds.has(routeNodeId) && !declaredAuxiliary) reason = "unknown_change";
     else if (workerWorktreeIds.some((id) => id !== task.envelope.worktreeId)) {
       reason = "worker_worktree_mismatch";
     } else if (
@@ -981,7 +1297,8 @@ async function collectFacts({ rootDir, graph, exec, orcaInvocation }) {
       ? [
           {
             taskId: task.id,
-            changeId: task.envelope.changeId,
+            changeId: routeNodeId,
+            workItemId: task.envelope.workItemId,
             worktreeId: task.envelope.worktreeId,
             ...(workerWorktreeIds.length > 0 ? { workerWorktreeIds } : {}),
             reason,
@@ -1000,7 +1317,11 @@ async function collectFacts({ rootDir, graph, exec, orcaInvocation }) {
       runId: task.runId,
       status: task.status,
       ...(task.envelope.valid
-        ? { changeId: task.envelope.changeId, worktreeId: task.envelope.worktreeId }
+        ? {
+            changeId: task.envelope.routeNodeId ?? task.envelope.changeId,
+            workItemId: task.envelope.workItemId,
+            worktreeId: task.envelope.worktreeId,
+          }
         : { reason: task.envelope.reason }),
     }));
   const mainWorktree =
@@ -1057,6 +1378,7 @@ export function renderHuman(snapshot) {
     `route: ${snapshot.routeId}`,
     `main: ${snapshot.main.branch ?? "(detached)"} ${snapshot.main.head ?? "(unknown)"}${snapshot.main.dirty ? " dirty" : " clean"}`,
     `frontier: ${snapshot.frontier.length > 0 ? snapshot.frontier.join(", ") : "(empty)"}`,
+    `resume: ${snapshot.resumeQueue.length > 0 ? snapshot.resumeQueue.map((item) => item.workItemId).join(" -> ") : "(empty)"}`,
   ];
   for (const node of snapshot.nodes.filter(
     (item) => item.kind === "change" && item.status !== "completed",
@@ -1097,20 +1419,23 @@ function parseArgs(argv) {
 
 export async function collectStatus({
   rootDir = process.cwd(),
-  graphPath = resolve(rootDir, "config/orchestration/execution-graph.json"),
+  graphPath,
   exec = defaultExec,
   orcaCommand,
 } = {}) {
-  const graph = await loadGraph(graphPath);
+  const coordinatorRoot = await resolveCoordinatorRoot(rootDir, exec);
+  const graph = await loadGraph(
+    graphPath ?? resolve(coordinatorRoot, "config/orchestration/execution-graph.json"),
+  );
   const graphIssues = validateGraph(graph);
   if (graphIssues.length > 0) return { graph, graphIssues };
   const facts = await collectFacts({
-    rootDir,
+    rootDir: coordinatorRoot,
     graph,
     exec,
     orcaInvocation: resolveOrcaInvocation(orcaCommand),
   });
-  return { graph, snapshot: deriveSnapshot(graph, facts) };
+  return { graph, rootDir: coordinatorRoot, snapshot: deriveSnapshot(graph, facts) };
 }
 
 export async function main(argv = process.argv.slice(2)) {

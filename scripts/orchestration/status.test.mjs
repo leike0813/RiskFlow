@@ -39,6 +39,33 @@ function envelope(overrides = {}) {
   });
 }
 
+function v2Envelope(overrides = {}) {
+  return parseTaskEnvelope({
+    result: {
+      schemaVersion: 2,
+      workItemId: "C08",
+      routeNodeId: "C08",
+      changeName: "deliver-agent",
+      taskKind: "finalization",
+      phase: "finalizing",
+      runState: "queued",
+      worktreeId,
+      inputHead: "feature-head",
+      owner: {
+        taskId: "task-c08-finalization",
+        agentClass: "strong-finalizer",
+        model: "gpt-5.6-sol",
+      },
+      attemptGroup: "finalize-c08",
+      attempt: 1,
+      auditPolicy: "self",
+      issueRefs: [],
+      evidenceRefs: [],
+      ...overrides,
+    },
+  });
+}
+
 function task(overrides = {}) {
   return {
     id: "task-c08-verification",
@@ -138,9 +165,23 @@ describe("execution graph", () => {
     });
     expect(envelope()).toMatchObject({ schemaVersion: 1, evidenceRefs: [] });
     expect(envelope({ schemaVersion: "1" })).toMatchObject({ valid: true, schemaVersion: 1 });
-    expect(envelope({ schemaVersion: 2 })).toMatchObject({
+    expect(v2Envelope()).toMatchObject({
+      valid: true,
+      schemaVersion: 2,
+      workItemId: "C08",
+      head: "feature-head",
+    });
+    expect(v2Envelope({ outcome: "succeeded" })).toMatchObject({
       valid: false,
-      reason: "invalid_schema_version",
+      reason: "premature_outcome",
+    });
+    expect(v2Envelope({ runState: "settled" })).toMatchObject({
+      valid: false,
+      reason: "missing_settled_outcome",
+    });
+    expect(v2Envelope({ runState: "settled", outcome: "succeeded" })).toMatchObject({
+      valid: true,
+      outcome: "succeeded",
     });
     expect(envelope({ evidenceRefs: "report.md" })).toMatchObject({
       valid: false,
@@ -386,6 +427,85 @@ describe("worktree-aware state", () => {
       return copy;
     };
     expect(withoutTime(first)).toEqual(withoutTime(second));
+  });
+
+  it("orders active finalization and auxiliary adoption in the resume queue", () => {
+    const c17 = {
+      id: "C17",
+      kind: "change",
+      change: "deliver-process-model",
+      dependsOn: [],
+    };
+    const c20 = {
+      id: "C20",
+      kind: "change",
+      change: "deliver-retrieval",
+      dependsOn: ["C17"],
+    };
+    const finalizerTask = task({
+      id: "task-c17-finalizer",
+      status: "ready",
+      envelope: v2Envelope({
+        workItemId: "C17",
+        routeNodeId: "C17",
+        changeName: "deliver-process-model",
+        owner: {
+          taskId: "task-c17-finalizer",
+          agentClass: "strong-finalizer",
+          model: "gpt-5.6-sol",
+        },
+      }),
+    });
+    const routeWorktree = {
+      id: worktreeId,
+      path: "/tmp/riskflow-feature",
+      exists: true,
+      localNodeIds: ["C17"],
+      openSpecNodeIds: ["C17"],
+      openSpecNames: ["deliver-process-model"],
+      liveTerminalCount: 0,
+      git: { head: "feature-head", branch: "feature", dirty: false, dirtyPaths: [] },
+      tasks: [finalizerTask],
+    };
+    const auxiliaryWorktree = {
+      ...routeWorktree,
+      id: "repo-id::/tmp/auxiliary",
+      path: "/tmp/auxiliary",
+      localNodeIds: [],
+      openSpecNodeIds: [],
+      openSpecNames: ["fix-suite-isolation"],
+      tasks: [],
+    };
+    const auxiliaryTask = task({
+      id: "task-aux-finalizer",
+      status: "ready",
+      envelope: v2Envelope({
+        workItemId: "AUX:fix-suite-isolation",
+        routeNodeId: null,
+        changeName: "fix-suite-isolation",
+        owner: {
+          taskId: "task-aux-finalizer",
+          agentClass: "strong-finalizer",
+          model: "gpt-5.6-sol",
+        },
+      }),
+    });
+    auxiliaryWorktree.tasks = [auxiliaryTask];
+    const snapshot = deriveSnapshot(
+      graph(c20, c17),
+      context({
+        worktrees: [routeWorktree, auxiliaryWorktree],
+        tasks: [finalizerTask, auxiliaryTask],
+        ancestry: { C17: false },
+      }),
+    );
+    expect(snapshot.schemaVersion).toBe(2);
+    expect(snapshot.resumeQueue.map((item) => item.workItemId)).toEqual([
+      "C17",
+      "AUX:fix-suite-isolation",
+    ]);
+    expect(snapshot.nodes.find((node) => node.id === "C20")?.status).toBe("pending");
+    expect(snapshot.revision).toMatch(/^[a-f0-9]{64}$/u);
   });
 
   it("fails closed for duplicate, missing, and mismatched worktree facts", () => {

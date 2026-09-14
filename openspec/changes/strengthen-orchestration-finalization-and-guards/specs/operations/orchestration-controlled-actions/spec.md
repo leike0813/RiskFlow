@@ -52,6 +52,11 @@ change 进入 `finalizing` 后，强模型 Finalizer MUST 在已批准语义范�
 - **THEN** reconcile MUST 允许按工作项逐个登记当前实际 HEAD
 - **AND** 重复 writer、身份冲突或全局违规仍 MUST 阻止该操作
 
+#### Scenario: 协调命令需要 sender 身份
+- **WHEN** 控制器从 Orca terminal 运行会改变 Run、Task 或 Dispatch 的命令
+- **THEN** 所有相关写命令 MUST 携带该协调 terminal 的精确 `--from` 身份
+- **AND** 状态读取命令 MUST NOT 伪造 sender
+
 #### Scenario: 目标尚未完成
 - **WHEN** 用户目标范围仍有未完成、阻塞、活动责任或缺失证据的工作项
 - **THEN** 目标完成操作 MUST 被拒绝

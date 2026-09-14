@@ -57,6 +57,11 @@ change 进入 `finalizing` 后，强模型 Finalizer MUST 在已批准语义范�
 - **THEN** 所有相关写命令 MUST 携带该协调 terminal 的精确 `--from` 身份
 - **AND** 状态读取命令 MUST NOT 伪造 sender
 
+#### Scenario: 对账历史任务
+- **WHEN** reconcile 为历史检查点创建新的结构化责任任务
+- **THEN** 控制器 MUST 创建由当前协调 terminal 持有的新 Run
+- **AND** MUST NOT 复用绑定到旧协调会话的 Run
+
 #### Scenario: 目标尚未完成
 - **WHEN** 用户目标范围仍有未完成、阻塞、活动责任或缺失证据的工作项
 - **THEN** 目标完成操作 MUST 被拒绝

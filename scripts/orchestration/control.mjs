@@ -369,6 +369,26 @@ async function writeReceipt(runtimeDir, idempotencyKey, input, status, result) {
   await rename(temporaryPath, path);
 }
 
+const ORCA_SENDER_COMMANDS = new Set([
+  "run-create",
+  "task-create",
+  "task-update",
+  "worker-start",
+  "dispatch",
+]);
+
+export function withOrcaSender(invocation, args) {
+  if (
+    invocation.senderTerminalHandle &&
+    args[0] === "orchestration" &&
+    ORCA_SENDER_COMMANDS.has(args[1]) &&
+    !args.includes("--from")
+  ) {
+    return [...args, "--from", invocation.senderTerminalHandle];
+  }
+  return args;
+}
+
 async function orcaJson(exec, invocation, args, cwd, retryRequest) {
   return unwrapResult(
     await readJsonCommand(
@@ -376,7 +396,7 @@ async function orcaJson(exec, invocation, args, cwd, retryRequest) {
       invocation.command,
       [
         ...invocation.prefix,
-        ...args,
+        ...withOrcaSender(invocation, args),
         ...(retryRequest ? ["--retry-request", retryRequest] : []),
         "--json",
       ],

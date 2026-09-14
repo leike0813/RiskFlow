@@ -105,7 +105,7 @@
 系统 MUST 对当前 Git、OpenSpec、Orca 或执行信封之间的身份、HEAD、阶段和完成条件冲突输出结构化 violation。系统 MUST 分离任务运行状态和质量结论，并根据阶段顺序、尝试组、尝试次数与任务创建顺序选取同一工作项的当前尝试；早期阶段或较早尝试不得覆盖后续成功结果。有效的获批 replan planning 信封 MUST 以非空 `approvalRef` 指向批准记录，并用 `supersedesAttemptGroup` 指向已进入 finalizing 的尝试组；状态选择 MUST 从最新有效边界重新计算。同一当前阶段无法确定唯一尝试时，系统 MUST fail-closed。v1 信封 MUST 可被规范化读取，所有新增或更新的信封 MUST 写为 v2。
 
 #### Scenario: checkpoint 与当前 HEAD 不一致
-- **WHEN** 当前结构化执行信封记录的 feature HEAD 与对应 worktree 当前 HEAD 不一致
+- **WHEN** 当前结构化执行信封记录的产物 HEAD 与对应 worktree 当前 HEAD 不一致
 - **THEN** 状态 MUST 报告 checkpoint mismatch
 - **AND** MUST 将该节点标记为 unknown 或 blocked，不得判定为已验证
 
@@ -115,7 +115,7 @@
 - **AND** MUST NOT 报告 main summary conflict
 
 #### Scenario: 当前尝试不唯一
-- **WHEN** 同一 worktree 的当前阶段存在多个无法按结构化创建顺序唯一选择的互相冲突任务
+- **WHEN** 同一 worktree 的当前阶段存在多个无法按结构化尝试顺序唯一选择的互相冲突任务
 - **THEN** 状态 MUST 报告结构化冲突
 - **AND** MUST NOT 猜测一个任务作为当前结果
 

@@ -15,6 +15,7 @@ import {
 } from "./status.mjs";
 
 const TERMINAL_OUTCOMES = new Set(["succeeded", "failed", "blocked", "paused"]);
+const RECONCILE_SAFE_VIOLATIONS = new Set(["checkpoint_mismatch", "worktree_reclaim_pending"]);
 const CONTROLLED_TOOL_NAMES = [
   "riskflow_status",
   "riskflow_dispatch",
@@ -90,7 +91,8 @@ export function preflightAction(snapshot, action, input = {}) {
   const blockingViolations = snapshot.violations.filter(
     (violation) =>
       !(
-        (action === "reconcile" && violation.nodeId === workItemId) ||
+        (action === "reconcile" &&
+          (violation.nodeId === workItemId || RECONCILE_SAFE_VIOLATIONS.has(violation.code))) ||
         (adoptingAuxiliary && violation.nodeId === workItemId) ||
         (action === "integrate" &&
           queueItem?.category === "cleanup" &&

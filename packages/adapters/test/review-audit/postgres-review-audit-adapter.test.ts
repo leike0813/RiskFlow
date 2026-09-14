@@ -13,6 +13,7 @@ import {
   type ReviewRequestV1,
   type ReviewTaskRefV1,
   type ReviewTargetRefV1,
+  type RuleConflictRefV1,
 } from "@riskflow/contracts/ports";
 
 import {
@@ -735,6 +736,110 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
         ),
       ).toMatchObject({ kind: "failed", error: { code: "UNSUPPORTED_CONTRACT" } });
     }
+  });
+
+  it("reads rule-conflict decisions for the C19 gate without writes or target leakage", async () => {
+    const projectId = "project-rule-conflict-read";
+    const authorization = authorizationFor(projectId);
+    const { adapter } = adapterFor(fixture!, authorization);
+    const request = requestFor({
+      suffix: "rule-conflict-read",
+      projectId,
+      reviewType: "rule-conflict",
+      targetEntityId: "rule-conflict-target",
+      authorization,
+    });
+    const relationRef = request.payload.targetRef as RuleConflictRefV1;
+    const requested = await adapter.requestReview(request);
+    expect(requested.kind).toBe("succeeded");
+    if (requested.kind !== "succeeded") return;
+    const taskRef = requested.result.reviewTaskRef;
+    const readInput = {
+      projectId,
+      relationRef,
+      reviewTaskRef: taskRef,
+      authorization,
+      invocationId: "rc-read-invocation",
+      requestedAt: REVIEW_TEST_TIMESTAMP,
+    };
+
+    expect(await adapter.readRuleConflictDecision(readInput)).toEqual({ kind: "pending" });
+
+    const decided = await adapter.decideReview(decisionFor(request, taskRef, "rule-conflict-read"));
+    expect(decided.kind).toBe("succeeded");
+    if (decided.kind !== "succeeded") return;
+    const before = await reviewAuditCounts(fixture!, projectId);
+
+    expect(await adapter.readRuleConflictDecision(readInput)).toEqual({
+      kind: "decided",
+      decision: "approve-publication",
+      reviewDecisionRef: decided.result.reviewDecisionRef,
+      decidedAt: "2030-01-01T00:00:01.000Z",
+    });
+
+    const mismatches: ReadonlyArray<typeof readInput> = [
+      {
+        ...readInput,
+        relationRef: {
+          kind: "rule-conflict",
+          reference: { entityId: "rule-conflict-other", versionId: "1" },
+        },
+      },
+      {
+        ...readInput,
+        relationRef: {
+          kind: "rule-conflict",
+          reference: { entityId: "rule-conflict-target", versionId: "2" },
+        },
+      },
+      {
+        ...readInput,
+        reviewTaskRef: {
+          ...taskRef,
+          reference: { entityId: "review-task-unknown", versionId: "1" },
+        },
+      },
+    ];
+    for (const mismatch of mismatches) {
+      const result = await adapter.readRuleConflictDecision(mismatch);
+      expect(result).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+      expect(JSON.stringify(result)).not.toContain(taskRef.reference.entityId);
+      expect(JSON.stringify(result)).not.toContain("rule-conflict-target");
+    }
+
+    const denial = new AccessServiceError({
+      code: "AUTHORIZATION_DENIED",
+      stage: "verify",
+      occurredAt: REVIEW_TEST_TIMESTAMP,
+      diagnosticRef: {
+        kind: "diagnostic-artifact",
+        reference: { entityId: "diagnostic-rule-conflict-read-denied", versionId: "1" },
+      },
+      contextRefs: [],
+      retryable: false,
+      requiredCapability: "review-audit.read",
+      authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+    });
+    const denyVerify = vi.fn(async () => {
+      throw denial;
+    });
+    const { adapter: deniedAdapter, verify: deniedVerify } = adapterFor(
+      fixture!,
+      authorization,
+      denyVerify,
+    );
+    const denied = await deniedAdapter.readRuleConflictDecision(readInput);
+    expect(denied).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    expect(deniedVerify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        branch: "review-audit.trace",
+        invocationId: readInput.invocationId,
+      }),
+    );
+    expect(JSON.stringify(denied)).not.toContain(taskRef.reference.entityId);
+    expect(JSON.stringify(denied)).not.toContain("rule-conflict-target");
+
+    expect(await reviewAuditCounts(fixture!, projectId)).toEqual(before);
   });
 
   it("concurrent decisions and independent multiple decisions with partial failure", async () => {

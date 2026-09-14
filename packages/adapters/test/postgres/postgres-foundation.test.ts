@@ -44,6 +44,8 @@ import * as monitoringBatchesMigration from "../../src/postgres/migrations/engin
 import * as assessmentConfigurationMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-assessment-configuration-and-measure-governance/000012_assessment_configuration.js";
 import * as agentCleaningPartialAvailabilityMigration from "../../src/postgres/migrations/engineering-data/deliver-agent-cleaning-and-partial-availability/000016_agent_cleaning_partial_availability.js";
 import * as engineeringDataReadQueryResultsMigration from "../../src/postgres/migrations/engineering-data/implement-engineering-data-read-branches/000024_engineering_data_read_query_results.js";
+import * as structuredScoringRulesMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-structured-scoring-rules-and-applicable-rule-sets/000028_structured_scoring_rules.js";
+import * as deterministicRiskAssessmentMigration from "../../src/postgres/migrations/risk-assessment/deliver-deterministic-risk-assessment/000032_deterministic_risk_assessment.js";
 import * as externalRiskEventRegistrationMigration from "../../src/postgres/migrations/engineering-data/implement-external-risk-event-registration/000036_external_risk_event_registration.js";
 
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
@@ -339,6 +341,24 @@ const testMigrationManifest = [
   {
     root: "production",
     relativePath:
+      "knowledge-modeling/deliver-structured-scoring-rules-and-applicable-rule-sets/000028_structured_scoring_rules.ts",
+    migrationName:
+      "000028_knowledge-modeling_deliver-structured-scoring-rules-and-applicable-rule-sets_structured_scoring_rules",
+    sequence: 28,
+    module: structuredScoringRulesMigration,
+  },
+  {
+    root: "production",
+    relativePath:
+      "risk-assessment/deliver-deterministic-risk-assessment/000032_deterministic_risk_assessment.ts",
+    migrationName:
+      "000032_risk-assessment_deliver-deterministic-risk-assessment_deterministic_risk_assessment",
+    sequence: 32,
+    module: deterministicRiskAssessmentMigration,
+  },
+  {
+    root: "production",
+    relativePath:
       "engineering-data/implement-external-risk-event-registration/000036_external_risk_event_registration.ts",
     migrationName:
       "000036_engineering-data_implement-external-risk-event-registration_external_risk_event_registration",
@@ -364,7 +384,7 @@ const testMigrationManifest = [
 ] as const satisfies readonly TestMigrationManifestEntry[];
 
 const migrationManifestPathPattern =
-  /^(platform|agent-task|knowledge-modeling|engineering-data)\/([a-z0-9]+(?:-[a-z0-9]+)*)\/([0-9]{6})_([a-z0-9]+(?:[-_][a-z0-9]+)*)\.ts$/u;
+  /^(platform|agent-task|knowledge-modeling|engineering-data|risk-assessment)\/([a-z0-9]+(?:-[a-z0-9]+)*)\/([0-9]{6})_([a-z0-9]+(?:[-_][a-z0-9]+)*)\.ts$/u;
 
 const validateTestMigrationManifest = (): void => {
   const paths = new Set<string>();

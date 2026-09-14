@@ -240,7 +240,13 @@ describe("module interface contracts", () => {
   it("keeps vocabulary and capabilities closed", () => {
     expect(APPLICABILITY_METADATA_DIMENSION_VALUES).toHaveLength(3);
     expect(ModuleCapabilityV1Schema.safeParse("workflow.start").success).toBe(true);
+    expect(ModuleCapabilityV1Schema.safeParse("agent-task.read").success).toBe(true);
     expect(ModuleCapabilityV1Schema.safeParse("database.query").success).toBe(false);
+    const failureEvidenceBranches = Object.entries(MODULE_BRANCH_CAPABILITY_V1)
+      .filter(([, capability]) => capability === "agent-task.read")
+      .map(([branch]) => branch);
+    expect(failureEvidenceBranches).toEqual(["agent-task.read-failure-evidence"]);
+    expect(MODULE_BRANCH_CAPABILITY_V1["agent-task.read-failure-evidence"]).toBe("agent-task.read");
     expect(AgentTaskTypeV1Schema.safeParse("retrieval-review").success).toBe(true);
     expect(AgentTaskTypeV1Schema.safeParse("free-form").success).toBe(false);
     for (const definitionType of ["standard-library", "case-library"]) {
@@ -1840,7 +1846,58 @@ describe("module interface contracts", () => {
       ).toBe(false);
     }
 
-    const monitoringSnapshotChanges = [
+    const monitoringSnapshotChangeEvent = (change: object) => ({
+      ...eventMetadata,
+      eventType: "engineering.assessment-input-changed.v1",
+      payload: { change, reasonCode: "new-monitoring-data" },
+    });
+    const monitoringSnapshotChanges: {
+      change: object;
+      omittedRefsField?: "previousMonitoringSnapshotRefs" | "newMonitoringSnapshotRefs";
+    }[] = [
+      {
+        change: { kind: "monitoring-snapshot", newMonitoringSnapshotRefs: [monitoringSnapshotRef] },
+        omittedRefsField: "previousMonitoringSnapshotRefs",
+      },
+      {
+        change: {
+          kind: "monitoring-snapshot",
+          previousMonitoringSnapshotRefs: [version("monitoring-snapshot", "old-1")],
+        },
+        omittedRefsField: "newMonitoringSnapshotRefs",
+      },
+      {
+        change: {
+          kind: "monitoring-snapshot",
+          previousMonitoringSnapshotRefs: [
+            version("monitoring-snapshot", "old-1"),
+            version("monitoring-snapshot", "old-2"),
+          ],
+          newMonitoringSnapshotRefs: [
+            monitoringSnapshotRef,
+            version("monitoring-snapshot", "new-2"),
+          ],
+        },
+      },
+    ];
+    for (const { change, omittedRefsField } of monitoringSnapshotChanges) {
+      const parsed = DomainEventV1Schema.safeParse(monitoringSnapshotChangeEvent(change));
+      expect(parsed.success, JSON.stringify(change)).toBe(true);
+      if (parsed.success && omittedRefsField) {
+        expect(parsed.data.payload.change, JSON.stringify(change)).not.toHaveProperty(
+          omittedRefsField,
+        );
+      }
+    }
+    for (const change of [
+      { kind: "monitoring-snapshot" },
+      { kind: "monitoring-snapshot", previousMonitoringSnapshotRefs: [] },
+      { kind: "monitoring-snapshot", newMonitoringSnapshotRefs: [] },
+      {
+        kind: "monitoring-snapshot",
+        previousMonitoringSnapshotRefs: [],
+        newMonitoringSnapshotRefs: [],
+      },
       {
         kind: "monitoring-snapshot",
         previousMonitoringSnapshotRefs: [],
@@ -1851,54 +1908,29 @@ describe("module interface contracts", () => {
         previousMonitoringSnapshotRefs: [version("monitoring-snapshot", "old-1")],
         newMonitoringSnapshotRefs: [],
       },
+    ]) {
+      expect(
+        DomainEventV1Schema.safeParse(monitoringSnapshotChangeEvent(change)).success,
+        JSON.stringify(change),
+      ).toBe(false);
+    }
+    for (const change of [
       {
         kind: "monitoring-snapshot",
-        previousMonitoringSnapshotRefs: [
-          version("monitoring-snapshot", "old-1"),
-          version("monitoring-snapshot", "old-2"),
-        ],
-        newMonitoringSnapshotRefs: [monitoringSnapshotRef, version("monitoring-snapshot", "new-2")],
+        previousMonitoringSnapshotRef: version("monitoring-snapshot", "old"),
+        newMonitoringSnapshotRef: monitoringSnapshotRef,
       },
-    ];
-    for (const change of monitoringSnapshotChanges) {
+      {
+        kind: "monitoring-snapshot",
+        newMonitoringSnapshotRefs: [monitoringSnapshotRef],
+        samples: [{ value: 1 }],
+      },
+    ]) {
       expect(
-        DomainEventV1Schema.safeParse({
-          ...eventMetadata,
-          eventType: "engineering.assessment-input-changed.v1",
-          payload: { change, reasonCode: "new-monitoring-data" },
-        }).success,
+        DomainEventV1Schema.safeParse(monitoringSnapshotChangeEvent(change)).success,
         JSON.stringify(change),
-      ).toBe(true);
+      ).toBe(false);
     }
-    expect(
-      DomainEventV1Schema.safeParse({
-        ...eventMetadata,
-        eventType: "engineering.assessment-input-changed.v1",
-        payload: {
-          change: {
-            kind: "monitoring-snapshot",
-            previousMonitoringSnapshotRef: version("monitoring-snapshot", "old"),
-            newMonitoringSnapshotRef: monitoringSnapshotRef,
-          },
-          reasonCode: "new-monitoring-data",
-        },
-      }).success,
-    ).toBe(false);
-    expect(
-      DomainEventV1Schema.safeParse({
-        ...eventMetadata,
-        eventType: "engineering.assessment-input-changed.v1",
-        payload: {
-          change: {
-            kind: "monitoring-snapshot",
-            previousMonitoringSnapshotRefs: [],
-            newMonitoringSnapshotRefs: [monitoringSnapshotRef],
-            samples: [{ value: 1 }],
-          },
-          reasonCode: "new-monitoring-data",
-        },
-      }).success,
-    ).toBe(false);
 
     const identificationBasisEvent = (payload: object) => ({
       ...eventMetadata,

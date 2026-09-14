@@ -555,6 +555,52 @@ describe.sequential("local identity and project authorization", () => {
     ).rejects.toMatchObject({ details: { code: "ACCESS_CONTRACT_INVALID" } });
   });
 
+  it("issues and verifies the exact terminal failure evidence read capability", async () => {
+    expect(managerSessionToken).toBeDefined();
+    const readBranch = "agent-task.read-failure-evidence" as const;
+    const issued = await access!.authorize({
+      invocation: { kind: "human-session", sessionToken: managerSessionToken! },
+      invocationId: "authorize-agent-task-read",
+      projectId: "project-a",
+      branch: readBranch,
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [],
+    });
+    expect(issued.context.grantedCapabilities).toEqual(["agent-task.read"]);
+    const verified = await access!.verify({
+      authorizationContextRef: issued.contextRef,
+      invocationId: "authorize-agent-task-read",
+      projectId: "project-a",
+      branch: readBranch,
+      requestedSpatialScopeRefs: issued.context.spatialScopeRefs,
+      requestedSourceVersionRefs: [],
+    });
+    expect(verified.context.grantedCapabilities).toEqual(["agent-task.read"]);
+    expect(verified.contextRef).toEqual(issued.contextRef);
+    await expect(
+      access!.verify({
+        authorizationContextRef: issued.contextRef,
+        invocationId: "authorize-agent-task-read",
+        projectId: "project-a",
+        branch: "agent-task.start-task",
+        requestedSpatialScopeRefs: issued.context.spatialScopeRefs,
+        requestedSourceVersionRefs: [],
+      }),
+    ).rejects.toMatchObject({ details: { code: "AUTHORIZATION_DENIED" } });
+    for (const role of ["reviewer", "field-responder", "business-viewer"] as const) {
+      await expect(
+        access!.authorize({
+          invocation: { kind: "human-session", sessionToken: roleSessionTokens[role]! },
+          invocationId: `authorize-agent-task-read-${role}`,
+          projectId: "project-a",
+          branch: readBranch,
+          requestedSpatialScopeRefs: [],
+          requestedSourceVersionRefs: [],
+        }),
+      ).rejects.toMatchObject({ details: { code: "AUTHORIZATION_DENIED" } });
+    }
+  });
+
   it("cross-project, invalid scope graph, and concurrent revision boundaries", async () => {
     await access!.administerProject({
       kind: "open-project",

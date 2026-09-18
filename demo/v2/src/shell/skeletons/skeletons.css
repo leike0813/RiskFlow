@@ -1,0 +1,102 @@
+/* 骨架屏样式：微光动画 + 各骨架结构块。 */
+.sk {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.sk-block {
+  background: linear-gradient(90deg, #f3f5f7 25%, #e7edf2 50%, #f3f5f7 75%);
+  background-size: 200% 100%;
+  animation: sk-loading 1.2s linear infinite;
+  border-radius: var(--radius-sm);
+}
+
+.sk-toolbar {
+  height: 40px;
+}
+
+.sk-row {
+  height: 44px;
+}
+
+.sk-heading {
+  height: 32px;
+  width: 40%;
+}
+
+.sk-field-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.sk-field {
+  height: 56px;
+}
+
+.sk-section {
+  height: 120px;
+}
+
+.sk-summary {
+  height: 56px;
+}
+
+.sk-run-header {
+  height: 64px;
+}
+
+.sk-stage-bar {
+  height: 40px;
+}
+
+.sk-message {
+  height: 48px;
+  width: 78%;
+}
+
+.sk-message--alt {
+  align-self: flex-end;
+  width: 64%;
+}
+
+.sk-split {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.sk-split-side,
+.sk-split-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.sk-composite {
+  gap: var(--space-4);
+}
+
+.sk-composite > .sk-split {
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+}
+
+@keyframes sk-loading {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (max-width: 64rem) {
+  .sk-field-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sk-split,
+  .sk-composite > .sk-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

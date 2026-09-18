@@ -1,0 +1,391 @@
+/* 运营设施域样式（P-OP-01～P-OP-05 共用）。颜色全部走 tokens.css 变量。 */
+
+.op-context {
+  margin: 0 0 var(--space-3);
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.op-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.op-card h3 {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-md);
+  line-height: var(--text-md-lh);
+}
+
+.op-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.op-card-head h3 {
+  margin: 0;
+}
+
+.op-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-4);
+  justify-content: flex-end;
+}
+
+.op-action {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+}
+
+.op-action-code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+  color: var(--text-2);
+}
+
+.op-btn {
+  border: 1px solid var(--blue);
+  border-radius: var(--radius-md);
+  background: var(--card);
+  color: var(--blue);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.op-btn-primary {
+  background: var(--blue);
+  color: var(--card);
+}
+
+.op-btn-danger {
+  border-color: var(--risk-1);
+  background: var(--risk-1);
+  color: var(--card);
+}
+
+.op-btn[disabled] {
+  border-color: var(--border);
+  background: var(--bluegray-soft);
+  color: var(--text-2);
+}
+
+.op-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+}
+
+.op-chip {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--card);
+  color: var(--text-2);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.op-chip-active {
+  border-color: var(--blue);
+  color: var(--blue);
+  background: var(--blue-soft);
+}
+
+.op-table-wrap {
+  overflow-x: auto;
+}
+
+.op-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.op-table th,
+.op-table td {
+  text-align: left;
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.op-table th {
+  color: var(--text-2);
+  font-weight: 500;
+  background: var(--bluegray-soft);
+}
+
+.op-badge {
+  display: inline-block;
+  border-radius: var(--radius-full);
+  padding: 0 var(--space-2);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+  border: 1px solid transparent;
+}
+
+.op-badge-neutral {
+  background: var(--bluegray-soft);
+  color: var(--text-2);
+  border-color: var(--border);
+}
+
+.op-badge-blue {
+  background: var(--blue-soft);
+  color: var(--blue);
+  border-color: var(--blue-soft);
+}
+
+.op-badge-success {
+  background: var(--success-soft);
+  color: var(--success);
+  border-color: var(--success-soft);
+}
+
+.op-badge-review {
+  background: var(--review-soft);
+  color: var(--review);
+  border-color: var(--review-soft);
+}
+
+.op-badge-risk-2 {
+  background: var(--risk-2-soft);
+  color: var(--risk-2);
+  border-color: var(--risk-2-soft);
+}
+
+.op-badge-risk-3 {
+  background: var(--risk-3-soft);
+  color: var(--risk-3-text);
+  border-color: var(--risk-3-soft);
+}
+
+.op-field-grid {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  gap: var(--space-3);
+}
+
+.op-field dt {
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+}
+
+.op-field dd {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.op-vref {
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+  color: var(--text-2);
+}
+
+.op-vref-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin: var(--space-1) 0;
+}
+
+.op-muted {
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.op-note {
+  margin: 0 0 var(--space-3);
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+}
+
+.op-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.op-timeline li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.op-timeline-at {
+  color: var(--text-2);
+}
+
+.op-timeline-actor {
+  color: var(--text-2);
+}
+
+/* A+B 复合骨架：左适配器列表，右连接详情 */
+.op-master-detail {
+  display: grid;
+  grid-template-columns: 20rem minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.op-object-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.op-object {
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  background: var(--card);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.op-object.is-active {
+  border-color: var(--blue);
+  box-shadow: var(--card-shadow);
+}
+
+.op-object-name {
+  font-size: var(--text-md);
+  line-height: var(--text-md-lh);
+  color: var(--text);
+}
+
+.op-object-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+  color: var(--text-2);
+}
+
+/* D 治理骨架 */
+.op-gov {
+  display: grid;
+  grid-template-columns: 17rem minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.op-gov-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.op-gov-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.op-gov-main .op-card {
+  margin-bottom: 0;
+}
+
+.op-versions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.op-version {
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-3);
+}
+
+.op-version:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.op-version p {
+  margin: var(--space-1) 0;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.op-version-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* 恢复操作确认区 */
+.op-confirm {
+  border: 1px solid var(--risk-1);
+  border-radius: var(--radius-md);
+  background: var(--risk-1-soft);
+  padding: var(--space-3);
+  margin-top: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.op-confirm p {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.op-confirm label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.op-confirm-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+@media (max-width: 64rem) {
+  .op-master-detail,
+  .op-gov {
+    grid-template-columns: 1fr;
+  }
+}

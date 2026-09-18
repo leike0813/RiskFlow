@@ -1,0 +1,395 @@
+/* 风险评估域（P-RA）页面样式。颜色 / 字号 / 间距 / 圆角全部走 tokens.css 令牌。 */
+
+.ra-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.ra-context-subtitle {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+  color: var(--text-2);
+}
+
+/* 列表页工具行：筛选栏 + 右上独立主操作区 */
+.ra-list-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.ra-filters {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.ra-filters label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+  color: var(--text-2);
+}
+
+.ra-filters select {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--card);
+  color: var(--text);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.ra-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.ra-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--blue);
+  color: var(--card);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.ra-action-secondary {
+  background: var(--card);
+  color: var(--blue);
+  border: 1px solid var(--blue);
+}
+
+.ra-action-disabled {
+  background: var(--bluegray-soft);
+  color: var(--text-2);
+  cursor: not-allowed;
+}
+
+.ra-action-reason {
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+  color: var(--text-2);
+}
+
+/* 卡片 */
+.ra-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
+  padding: var(--space-4) var(--space-5);
+}
+
+.ra-card-title {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-lg);
+  line-height: var(--text-lg-lh);
+  font-weight: 600;
+}
+
+.ra-not-found p {
+  margin: var(--space-2) 0;
+}
+
+/* 字段行（B 详情 / C 运行头部） */
+.ra-field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: var(--space-3) var(--space-5);
+  margin: 0;
+}
+
+.ra-field-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.ra-field-row dt {
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+  color: var(--text-2);
+}
+
+.ra-field-row dd {
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: var(--text-md-lh);
+}
+
+/* 表格 */
+.ra-table-wrap {
+  overflow-x: auto;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
+}
+
+.ra-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.ra-table th,
+.ra-table td {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.ra-table th {
+  color: var(--text-2);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.ra-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.ra-table .ra-cell-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* 徽章 */
+.ra-level-badge {
+  display: inline-block;
+  padding: 0 var(--space-2);
+  border: 1px solid;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+  white-space: nowrap;
+}
+
+.ra-status-badge {
+  display: inline-block;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+  white-space: nowrap;
+}
+
+.ra-status-running {
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.ra-status-done {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.ra-status-waiting {
+  background: var(--review-soft);
+  color: var(--review);
+}
+
+.ra-status-neutral {
+  background: var(--bluegray-soft);
+  color: var(--text-2);
+}
+
+.ra-status-failed {
+  background: var(--risk-1-soft);
+  color: var(--risk-1);
+}
+
+/* 版本引用 */
+.ra-version-ref {
+  display: inline-flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.ra-version-kind {
+  color: var(--text-2);
+}
+
+.ra-version-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+/* A0–A9 阶段条 */
+.ra-stage-bar {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+  gap: var(--space-2);
+}
+
+.ra-stage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--card);
+}
+
+.ra-stage-id {
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+  color: var(--text-2);
+}
+
+.ra-stage-name {
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.ra-stage-status {
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+  color: var(--text-2);
+}
+
+.ra-stage-done {
+  border-color: var(--success);
+}
+
+.ra-stage-done .ra-stage-status {
+  color: var(--success);
+}
+
+.ra-stage-active {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+}
+
+.ra-stage-active .ra-stage-status {
+  color: var(--blue);
+}
+
+.ra-stage-waiting {
+  border-color: var(--review);
+}
+
+.ra-stage-waiting .ra-stage-status {
+  color: var(--review);
+}
+
+.ra-stage-failed {
+  border-color: var(--risk-1);
+}
+
+.ra-stage-failed .ra-stage-status {
+  color: var(--risk-1);
+}
+
+/* 统计条（C 骨架结果汇总） */
+.ra-stat-row {
+  display: flex;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+}
+
+.ra-stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.ra-stat-value {
+  font-size: var(--text-xl);
+  line-height: var(--text-xl-lh);
+  font-variant-numeric: tabular-nums;
+}
+
+.ra-stat-label {
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+  color: var(--text-2);
+}
+
+/* 时间线（B 骨架底部业务事件） */
+.ra-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.ra-timeline li {
+  display: flex;
+  gap: var(--space-3);
+  align-items: baseline;
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--border);
+}
+
+.ra-timeline-at {
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+  white-space: nowrap;
+}
+
+/* 表单（B 向导） */
+.ra-form-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.ra-radio-row,
+.ra-check-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--text-md);
+  line-height: var(--text-md-lh);
+}
+
+.ra-form-note {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+  color: var(--text-2);
+}
+
+.ra-form-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
+
+/* 追溯链深链行 */
+.ra-trace-row {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  align-items: baseline;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}

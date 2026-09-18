@@ -1,0 +1,246 @@
+/* 处置域页面样式（P-RS-01～P-RS-05）。颜色、字号、间距全部走 tokens.css 变量。 */
+
+.rs-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
+  padding: var(--space-4) var(--space-5);
+  margin-bottom: var(--space-4);
+}
+
+.rs-card-title {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-lg);
+  line-height: var(--text-lg-lh);
+  font-weight: 600;
+}
+
+.rs-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: var(--space-3) var(--space-5);
+  margin: 0;
+}
+
+.rs-field dt {
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+}
+
+.rs-field dd {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-md);
+  line-height: var(--text-md-lh);
+}
+
+.rs-table-wrap {
+  overflow-x: auto;
+}
+
+.rs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.rs-table th,
+.rs-table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.rs-table thead th {
+  color: var(--text-2);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.rs-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.rs-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+  white-space: nowrap;
+}
+
+.rs-chip--status {
+  color: var(--text-2);
+  background: var(--bluegray-soft);
+}
+
+.rs-chip--pass {
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.rs-chip--fail {
+  color: var(--risk-1);
+  background: var(--risk-1-soft);
+}
+
+.rs-level-badge {
+  display: inline-block;
+  padding: 0 var(--space-2);
+  border: 1px solid;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+  white-space: nowrap;
+}
+
+.rs-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--card);
+  color: var(--text);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.rs-btn--primary {
+  border-color: var(--blue);
+  background: var(--blue);
+  color: var(--card);
+}
+
+.rs-btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.rs-version-ref {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+  color: var(--text-2);
+}
+
+.rs-version-ref .mono {
+  color: var(--text);
+}
+
+.rs-timeline {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rs-timeline-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  border-bottom: 1px dashed var(--border);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.rs-timeline-item:last-child {
+  border-bottom: none;
+}
+
+.rs-timeline-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--blue);
+  align-self: center;
+}
+
+.rs-timeline-at {
+  color: var(--text-2);
+}
+
+.rs-timeline-actor {
+  font-weight: 600;
+}
+
+.rs-trace-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.rs-evidence-list {
+  display: inline-flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.rs-muted {
+  color: var(--text-2);
+}
+
+.rs-note {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+  color: var(--text-2);
+}
+
+/* 表单（P-RS-02 执行登记） */
+.rs-form-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.rs-radio-row,
+.rs-check-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--text-md);
+  line-height: var(--text-md-lh);
+}
+
+.rs-charts-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+  gap: var(--space-4);
+}
+
+/* 偏差对照：预测值 / 实际值两栏 */
+.rs-compare {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: var(--space-4);
+}
+
+.rs-compare-box {
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  padding: var(--space-3) var(--space-4);
+}
+
+.rs-compare-title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+  color: var(--text-2);
+  font-weight: 600;
+}

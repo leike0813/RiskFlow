@@ -1,0 +1,548 @@
+{
+  "categories": {
+    "G1": "外壳契约",
+    "G2": "契约字段",
+    "G3": "未建能力",
+    "G4": "归属待定",
+    "G5": "依赖决策",
+    "G6": "规格空白"
+  },
+  "gaps": [
+    {
+      "id": "GAP-001",
+      "category": "G1",
+      "title": "C10 五类骨架缺 15 处结构 slot",
+      "basis": "apps/web/src/shared/page-shells/PageFrame.tsx:68-144（PageFrame 仅渲染标题与单一内容区）；指导性方案 §8.3（.scratch/riskflow-master-plan/prototypes/prototype-v2-guiding-plan.md:276）",
+      "preset": "v2 在 docs/DESIGN-SPEC.md §5 为 15 处 slot 逐一给出扩展结构预设：B 补右侧上下文停靠区与底部业务事件时间线；C 补运行头部（运行标识/状态/阶段/触发原因/操作者/启动时间/幂等键）、子任务表与结果汇总；A 补上下文副标题与独立主操作区；D 补审核状态筛选对象列表与修订表单；E 补批量确认摘要与历史决定。骨架屏已按扩展后结构渲染。",
+      "pending": "将来外壳契约演进 change（C32–C35 design 阶段）裁决是否回写 WebShellKindV1 / PageFrame 契约。",
+      "risk": "若契约演进不采纳扩展 slot，M4 页面布局需整体回收到五类骨架内。",
+      "pageIds": []
+    },
+    {
+      "id": "GAP-002",
+      "category": "G1",
+      "title": "复合骨架 A+C / A+B 无法由单值枚举表达",
+      "basis": "apps/web/src/app/routes.ts:32（WebShellKindV1 为单值枚举）；docs/page-manifest.json 中 P-PJ-08、P-RV-05、P-OP-02",
+      "preset": "manifest.skeleton 允许组合记法（A+C / A+B），shellKind 映射主骨架 list，loading 骨架屏按主从布局同时渲染两半。",
+      "pending": "C32 / C35 的 design 裁决 shellKind 契约是否引入组合机制。",
+      "risk": "若契约不允许组合，三页需拆为两个路由或降级为单骨架。",
+      "pageIds": ["P-PJ-08", "P-RV-05", "P-OP-02"]
+    },
+    {
+      "id": "GAP-003",
+      "category": "G1",
+      "title": "Agent 专用骨架无枚举值",
+      "basis": "apps/web/src/app/routes.ts:32；指导性方案 §8.3（.scratch/riskflow-master-plan/prototypes/prototype-v2-guiding-plan.md:274）",
+      "preset": "AG 骨架映射 shellKind=custom，停靠栏与全屏工作台共用会话式骨架结构（消息流 + 输入区 + 任务摘要）。",
+      "pending": "C35 的 design 裁决 Agent 页面的骨架契约。",
+      "risk": "Agent 两页结构需重新归类到既有骨架。",
+      "pageIds": ["P-AG-01", "P-AG-02"]
+    },
+    {
+      "id": "GAP-004",
+      "category": "G1",
+      "title": "主从复合页 / KPI 横条网格 / 图谱画布三种形态无骨架承载",
+      "basis": "指导性方案 §8.3（.scratch/riskflow-master-plan/prototypes/prototype-v2-guiding-plan.md:277）；v1 已有形态参照 demo/src/components/KpiCard.tsx 等",
+      "preset": "作为叠加在基础骨架上的页面形态（PageForm：standard / master-detail / kpi-grid / graph-canvas），在 docs/DESIGN-SPEC.md §5 固化；M4 逐页声明形态。",
+      "pending": "C32–C35 各 design 裁决形态是否进入契约。",
+      "risk": "形态约定与将来 design 冲突时相关页面需调整布局。",
+      "pageIds": ["P-OV-01", "P-PJ-08", "P-RI-07", "P-RA-06"]
+    },
+    {
+      "id": "GAP-005",
+      "category": "G4",
+      "title": "P-OV-01 风险态势总览归属 C34/C35 待定",
+      "basis": "指导性方案 §8.1（.scratch/riskflow-master-plan/prototypes/prototype-v2-guiding-plan.md:241）",
+      "preset": "页面照做，manifest.change 标注「C34/C35 待定」，M4 排期挂在两批交界处。",
+      "pending": "控制面在 C34 或 C35 立项时裁决归属。",
+      "risk": "仅影响 M4 批次排期，不影响页面设计本身。",
+      "pageIds": ["P-OV-01"]
+    },
+    {
+      "id": "GAP-006",
+      "category": "G4",
+      "title": "P-RV-01 待复核队列 / P-RV-02 复核详情归属待定",
+      "basis": "指导性方案 §8.1（.scratch/riskflow-master-plan/prototypes/prototype-v2-guiding-plan.md:249）",
+      "preset": "页面照做，manifest.change 标注「待定」。",
+      "pending": "控制面裁决归属（复核链路跨 C33/C35）。",
+      "risk": "仅影响 M4 批次排期。",
+      "pageIds": ["P-RV-01", "P-RV-02"]
+    },
+    {
+      "id": "GAP-007",
+      "category": "G4",
+      "title": "P-AU-01 报告导出归属 C34/C35 待定",
+      "basis": "指导性方案 §8.1（.scratch/riskflow-master-plan/prototypes/prototype-v2-guiding-plan.md:250）",
+      "preset": "页面照做，manifest.change 标注「C34/C35 待定」；按 Electron 约束设计为独立界面，不依赖浏览器打印对话框。",
+      "pending": "控制面在 C34 或 C35 立项时裁决归属。",
+      "risk": "仅影响 M4 批次排期。",
+      "pageIds": ["P-AU-01"]
+    },
+    {
+      "id": "GAP-008",
+      "category": "G5",
+      "title": "图表库选型属 C34 dependency checkpoint，v2 不预设库",
+      "basis": "指导性方案 §4.4（.scratch/riskflow-master-plan/prototypes/prototype-v2-guiding-plan.md:104-109）",
+      "preset": "图表收敛到 ChartSurface 抽象接缝，纯 SVG + CSS 零运行时依赖实现；donut / hbars / trend / graph / matrix 五类视觉规范先行成文（docs/DESIGN-SPEC.md §4）。",
+      "pending": "C34 的 dependency checkpoint 裁决生产图表库。",
+      "risk": "选型后需把接缝实现替换为库封装；视觉规范不受影响。"
+    },
+    {
+      "id": "GAP-009",
+      "category": "G5",
+      "title": "路由库是否需要",
+      "basis": "指导性方案 §4.2（.scratch/riskflow-master-plan/prototypes/prototype-v2-guiding-plan.md:97）；C10 已否决 react-router-dom",
+      "preset": "v2 自实现路径模板匹配（静态段优先）与 memory / hash / history 三模式历史适配，不引入路由库。",
+      "pending": "生产端页面复杂度提升后是否重新评估。",
+      "risk": "低；自实现部分约 70 行，可整体替换。"
+    },
+    {
+      "id": "GAP-010",
+      "category": "G5",
+      "title": "Electron 路由模式预设",
+      "basis": "指导性方案 §4.3 与 §6（.scratch/riskflow-master-plan/prototypes/prototype-v2-guiding-plan.md:101、:201）",
+      "preset": "默认 hash（file:// 与静态托管可用），支持 memory / history 切换；构建 base 为相对路径。",
+      "pending": "将来 Electron change 裁决壳内路由模式。",
+      "risk": "若改用 history 模式需壳工程提供 fallback 配置。"
+    },
+    {
+      "id": "GAP-011",
+      "category": "G6",
+      "title": "可访问性无规格依据，只能对齐生产 C10 实现",
+      "basis": "指导性方案 §7（.scratch/riskflow-master-plan/prototypes/prototype-v2-guiding-plan.md:224）；product-information-architecture.md:101 将可访问性列为开放项",
+      "preset": "照搬生产 C10 已实现基线：skip-link、focusMainHeading、aria-busy、aria-live、prefers-reduced-motion、64rem 断点；并扩展到 57 页（键盘可达、对话框焦点陷阱与归位、颜色不作唯一信息载体、表单标签与错误关联）。",
+      "pending": "可访问性规格补位 change。",
+      "risk": "基线被规格修订时 57 页需复查。"
+    },
+    {
+      "id": "GAP-012",
+      "category": "G2",
+      "title": "部分页面的 branch / 能力位标注为常识贴近，待逐页核对",
+      "basis": "docs/page-manifest.json（P-PJ-02、P-PJ-03、P-PJ-04、P-AG-01、P-AG-02 等）",
+      "preset": "按 53 个 branch 与 29 个能力位词汇表选语义最贴近项；P-OP 设施域页面无业务 branch，标 null。",
+      "pending": "M4 各域批次对照 packages/contracts 逐页确认标注。",
+      "risk": "仅单页标注调整，无结构影响。",
+      "pageIds": ["P-PJ-02", "P-PJ-03", "P-PJ-04", "P-AG-01", "P-AG-02"]
+    },
+    {
+      "id": "GAP-013",
+      "category": "G3",
+      "title": "三个 .read 能力位无 branch 授予通路，导航可达性与导航所需能力不一致",
+      "basis": "packages/contracts/src/ports/index.ts:482-535（MODULE_BRANCH_CAPABILITY_V1 中无任何 branch 映射到 risk-identification.read / risk-assessment.read / warning-response.read）；apps/web/src/shell/navigation.ts:34、:44、:54（三项导航的 requiredCapability 恰为这三个能力位）",
+      "preset": "v2 严格按策略镜像照实渲染：风险识别 / 风险评估 / 预警处置三项导航对全部预设角色（含 project-risk-manager）呈现 denied，对应页面默认 forbidden；审阅这些页面的设计经状态矩阵 ?state= 强制注入（强制态优先于门控）。不手写「读能力由同模块其他能力隐含」之类的修补逻辑。",
+      "pending": "控制面裁决：在 branch 映射中补授予通路（如新增只读 branch），或调整导航 / 路由所需能力位；属契约演进 change。",
+      "risk": "若裁决为补 branch 映射，v2 零改动；若裁决为调整导航所需能力，shell/navigation.ts 与 page-manifest.json 的 capability 同步更新。",
+      "pageIds": []
+    },
+    {
+      "id": "GAP-014",
+      "category": "G2",
+      "title": "资料段标识的三段式正则与「资料ID-章节ID-段ID」可读形态冲突",
+      "basis": "packages/core/src/engineering-data/context-source/schema.ts:332-336（SourceSegmentIdV1Schema 要求恰好三个 [A-Za-z0-9_] 组件以连字符连接）、:30（sourceId/chapterId/segmentId 组件同约束）、:621（组合规则）；指导性方案 §4.4 追溯链语义",
+      "preset": "v2 fixture 已全部迁移为契约合法形态（如 DOC2026001-S32-SEG007，第一波收尾统一改名）；可读章节语义由 fixture 单独字段承载。",
+      "pending": "契约演进 change 裁决：正则是放宽（允许点号/多段）以容纳可读标识，还是维持三段式、显示层格式化。",
+      "risk": "若契约放宽，fixture 标识可再次迁移；若维持，生产接入侧的段标识生成必须遵循同一规则。",
+      "pageIds": ["P-PJ-05", "P-PJ-07"]
+    },
+    {
+      "id": "GAP-015",
+      "category": "G2",
+      "title": "项目管理四动作在 29 个能力位中无专属位",
+      "basis": "demo/v2/src/app/contract-mirror.data.json（projectManagerAccessActions 与 branchCapability 无交集）；packages/core/src/access/schema.ts:164-204（四项命令定义）；packages/contracts/src/ports/index.ts:482-536（53 branch 无 access 命令通路）",
+      "preset": "P-PJ-03/04 动作级门控暂用 engineering-data.write（最接近的工程管理写能力位）；页面可见动作名严格取 PROJECT_MANAGER_ACCESS_ACTIONS 四项清单。",
+      "pending": "是否新增 access 域能力位（如 access.manage），或将四动作显式归入既有能力位并写入契约。",
+      "risk": "门控粒度偏粗：拥有 engineering-data.write 的角色即显示可点，与真实 access 策略（expectedVersion + 授权上下文）不一致。",
+      "pageIds": ["P-PJ-03", "P-PJ-04"]
+    },
+    {
+      "id": "GAP-016",
+      "category": "G3",
+      "title": "接入任务运行阶段无契约阶段词汇",
+      "basis": "packages/contracts/src/workflows/index.ts:220-246（阶段词汇仅识别 I0–I9 与评估 A0–A9）；packages/contracts/src/ports/index.ts:918-935（EngineeringDataCommandV1 为单命令，无阶段模型）",
+      "preset": "P-PJ-08 用接入流水线阶段码 ING-01～ING-05（接收交付/指纹校验/结构化转换/数据清洗与部分可用判断/段集登记入库；监测批次后两段为样本版本化/快照候选登记），命名对齐既有模块职责。",
+      "pending": "接入任务是否纳入工作流运行契约（WorkflowRun 化），或维持模块内任务并为阶段码建契约词汇。",
+      "risk": "若接入任务 WorkflowRun 化，阶段码需重新映射；P-PJ-08 与 P-RI-03/P-RA-03 的阶段条语义不同源。",
+      "pageIds": ["P-PJ-08"]
+    },
+    {
+      "id": "GAP-017",
+      "category": "G2",
+      "title": "P-PJ-03 的 branch 标注与页面语义不符",
+      "basis": "demo/v2/docs/page-manifest.json（P-PJ-03 标为 engineering-data.identification-preparation）；packages/core/src/engineering-data/context-source/schema.ts:436-463（页面语义是上下文修订命令，非识别准备冻结）；packages/contracts/src/ports/index.ts:974-991（identification-preparation 为冻结命令）",
+      "preset": "页面按语义实现修订表单与版本列表；branch 标注暂不动，与 GAP-012 合并裁决。",
+      "pending": "53 个 branch 中无「上下文修订」项：新增 branch 或归入既有 engineering-data 写通路。",
+      "risk": "仅单页标注调整；若新增 branch 需同步契约镜像校验。",
+      "pageIds": ["P-PJ-03"]
+    },
+    {
+      "id": "GAP-018",
+      "category": "G2",
+      "title": "规范标准库/案例库/措施库的 branch 是运行期检索语义而非治理读",
+      "basis": "demo/v2/docs/page-manifest.json（P-KM-03/04/08 条目）；packages/contracts/src/ports/index.ts:1337-1366（hybrid-evidence 需 inputSnapshotRef 与 workItemRef、measure-candidates 需 assessmentRecordRef 与 taskRef，均为运行期检索查询）",
+      "preset": "页面按治理读呈现（D 骨架 + 版本列表），能力位沿用 knowledge-modeling.retrieve；branch 归属待裁决（新增治理读 branch 或复用 identification-basis/assessment-basis）。",
+      "pending": "三个库的治理读走哪个 branch；GAP-012 逐页核对时合并裁决。",
+      "risk": "仅 manifest 标注调整，无结构影响。",
+      "pageIds": ["P-KM-03", "P-KM-04", "P-KM-08"]
+    },
+    {
+      "id": "GAP-019",
+      "category": "G2",
+      "title": "量化标准无 KnowledgeDefinitionType 枚举值",
+      "basis": "packages/contracts/src/ports/index.ts:1244-1264（有 indicator-system、indicator-field-mapping，无量化标准）；AGENTS.md §4.3 要求量化标准作为独立不可变版本",
+      "preset": "v2 页面以独立 versionedRef（QSTD-001 · v1.0）呈现，作为 indicator-system 定义内的关联版本引用。",
+      "pending": "量化标准是独立治理对象（新增 definition type）还是指标体系组成部分。",
+      "risk": "若独立成定义类型，P-KM-05 的对象拆分与治理粒度需调整。",
+      "pageIds": ["P-KM-05"]
+    },
+    {
+      "id": "GAP-020",
+      "category": "G6",
+      "title": "治理生命周期状态词汇无契约枚举",
+      "basis": "packages/contracts/src/ports/index.ts:1272-1312（只有治理命令 submit-revision/request-review/publish-approved-release/deactivate-release/rollback-by-new-release，无 revision/release 状态枚举与状态机）",
+      "preset": "v2 按命令序列推导五态（草稿/审核中/已发布/已停用/回滚即新版本），八页统一呈现。",
+      "pending": "是否在契约中显式定义 KnowledgeRevision / KnowledgeRelease 状态枚举与转换约束。",
+      "risk": "推导规则若与生产实现不一致，筛选计数与版本列表语义需重做。",
+      "pageIds": ["P-KM-01", "P-KM-02", "P-KM-03", "P-KM-04", "P-KM-05", "P-KM-06", "P-KM-07", "P-KM-08"]
+    },
+    {
+      "id": "GAP-021",
+      "category": "G2",
+      "title": "风险矩阵版本化定义（刻度/等级/cellLevels/acceptable）无 Schema",
+      "basis": "packages/contracts/src/ports/index.ts:1255-1258（risk-matrix 仅为 KnowledgeDefinitionType 枚举值，定义内容仅 ContentArtifactRef 引用）；矩阵定义是 P/C 映射事实源且须可重放",
+      "preset": "v2 以 fixture 承载矩阵定义并全数据驱动渲染（RiskMatrixVersionChart，组件零硬编码）；形状待契约补 RiskMatrixDefinition Schema 后对齐。",
+      "pending": "矩阵定义 Schema 的字段命名与 acceptable 掩码语义归属 C32 还是后续 change。",
+      "risk": "Schema 落地后 fixture 字段需一次性重命名，无运行时影响。",
+      "pageIds": ["P-KM-07", "P-RA-06"]
+    },
+    {
+      "id": "GAP-022",
+      "category": "G2",
+      "title": "评估记录入口类别与 contracts kind 字段语义冲突",
+      "basis": "packages/contracts/src/records/index.ts:171-225（kind 是风险输入判别字段 standardized-risk-record|external-risk-event）；packages/contracts/src/workflows/index.ts:125-142（入口模式 entryMode 只在准备快照，取值 assess/reassess/historical-backfill）",
+      "preset": "页面（P-RA-04/05/07）以产生记录的评估运行 entryMode 展示入口类别；fixture 沿用契约 kind 判别字段，不新增存储字段，entryMode 仅为投影层派生展示。",
+      "pending": "C34 是否在查询投影（projection.query）中固化 entryMode 派生字段，避免消费方各自回联运行。",
+      "risk": "投影层口径问题；消费方各自回联可能漂移。",
+      "pageIds": ["P-RA-04", "P-RA-05", "P-RA-07"]
+    },
+    {
+      "id": "GAP-023",
+      "category": "G2",
+      "title": "逐指标 P/C 归属无契约字段",
+      "basis": "packages/contracts/src/records/index.ts:187-195（IndicatorResult 无归属字段）、:207-208（likelihood/consequence 分列但无逐指标归属）",
+      "preset": "v2 以指标体系 fixture 的 side 元数据呈现归属列，页面按指标项查归属，不在评估记录重复存储。",
+      "pending": "C34 指标体系 schema 是否固化每个指标项的 P/C 归属字段（单一事实源），归属变更是否随指标体系版本演进。",
+      "risk": "低；若归属散在各规则集，同一指标可能归属不一致。",
+      "pageIds": ["P-RA-05", "P-KM-05"]
+    },
+    {
+      "id": "GAP-024",
+      "category": "G2",
+      "title": "数值得分到矩阵刻度落点的分带规则无契约载体",
+      "basis": "packages/contracts/src/records/index.ts:204-217（评估记录只存数值与等级）；demo/v2/src/charts/RiskMatrixChart.tsx:30-52（落点须为刻度取值）",
+      "preset": "v2 由评估记录 fixture 直接给出落点刻度（matrixPlot），页面不做分带计算；等级经矩阵版本 cellLevels 查表。",
+      "pending": "分带规则是否并入风险矩阵版本配置（如每轴边界数组），由确定性评分阶段执行并随记录入审计。",
+      "risk": "若生产端由展示层分带，各页面各自实现会漂移；并入矩阵版本配置可消除。",
+      "pageIds": ["P-RA-06"]
+    },
+    {
+      "id": "GAP-025",
+      "category": "G2",
+      "title": "PAGE-GUIDE §3 曾把 triggerType 写成数组语义（文档漂移，已修正）",
+      "basis": "packages/contracts/src/records/index.ts:231（WarningRecordSchema.triggerType 为单值枚举）；packages/contracts/src/vocabulary/index.ts:79-84",
+      "preset": "PAGE-GUIDE §3 已修正为「单值枚举，多类触发经 triggerIndicators 逐项表达」；fixture 按契约单值落实（WARN-2026-001 记录级为「多指标联合规则命中」，4 项指标各带自身触发类型）。",
+      "pending": "无（文档漂移已修正，契约语义不变）。",
+      "risk": "无残留；后续批次已按修正后口径执行。",
+      "pageIds": ["P-WR-02"]
+    },
+    {
+      "id": "GAP-026",
+      "category": "G2",
+      "title": "触发指标无阈值快照与越限方向字段",
+      "basis": "packages/contracts/src/records/index.ts:197-202（TriggerIndicatorSchema 仅 indicatorItem/triggerType/actualValue）；预警详情页必须呈现实际值/阈值/越限方向",
+      "preset": "fixture 在契约字段旁携带展示用阈值快照（threshold/exceedDirection/unit），并显式引用监测预警阈值版本 MWT-001 · v2026.08。",
+      "pending": "契约是否在触发指标或预警记录上固化阈值版本与快照，保证历史预警可重放解释。",
+      "risk": "阈值版本更新后，历史预警按当前阈值重算展示会与开立时口径漂移。",
+      "pageIds": ["P-WR-02"]
+    },
+    {
+      "id": "GAP-027",
+      "category": "G6",
+      "title": "预警处置任务无记录 schema 与状态机枚举",
+      "basis": "packages/contracts/src/ports/index.ts:184-185（仅 WarningResponseTaskRefV1 引用类型）；openspec/specs/domain/module-interfaces-events-workflows/spec.md:346（确认不关闭任务的约束）",
+      "preset": "fixture 自定义展示状态机 WARNING_TASK_STATUSES（待确认→已确认→建议已采纳→处置执行中→反馈已登记→已闭环），确认人来自 acknowledge 审计。",
+      "pending": "任务状态机与确认人字段入契约记录 schema，或明确由投影层派生。",
+      "risk": "各端各自派生会出现口径不一致（如把「确认」误作「闭环」）。",
+      "pageIds": ["P-WR-03", "P-WR-04"]
+    },
+    {
+      "id": "GAP-028",
+      "category": "G2",
+      "title": "通知意图（notification-intent）无渠道/接收角色/投递状态字段",
+      "basis": "packages/contracts/src/ports/index.ts:187-188（仅 NotificationIntentRefV1）；packages/contracts/src/events/index.ts warning.warning-recorded.v1 payload 仅含 notificationIntentRefs",
+      "preset": "fixture 自定义 NotificationIntentView（intentId/channel/recipientRole/status），接收角色取 contract-mirror 五角色键。",
+      "pending": "通知意图记录字段是否入契约，投递状态枚举取值。",
+      "risk": "通知状态展示无契约约束，可能与实际投递结果口径漂移。",
+      "pageIds": ["P-WR-02"]
+    },
+    {
+      "id": "GAP-029",
+      "category": "G2",
+      "title": "关系三元组字段命名：PAGE-GUIDE 与 contracts 不一致（文档漂移，已修正）",
+      "basis": "demo/v2/docs/PAGE-GUIDE.md §3；packages/contracts/src/records/index.ts:17-24（RiskElementRelationSchema 固定 sourceElement/relation/targetElement）",
+      "preset": "已修正：fixture 与页面以契约为准，PAGE-GUIDE §3 已改写为契约字段名 sourceElement/relation/targetElement（第二波收尾）。",
+      "pending": "无。",
+      "risk": "无残留；后续批次按修正后口径执行。",
+      "pageIds": ["P-RI-06"]
+    },
+    {
+      "id": "GAP-030",
+      "category": "G2",
+      "title": "标准化风险记录封套无 evidenceReferences 字段",
+      "basis": "packages/contracts/src/records/index.ts:38-59（封套仅 record.evidenceLocator 单值定位与 sourceIds）；demo/v2/src/content/identification.ts（RISK_RECORDS 的 evidenceReferences 投影）",
+      "preset": "v2 在记录视图层提供 evidenceReferences 投影（evidenceLocator 定位 + sourceIds 对应资料版本展开），页面证据卡从投影渲染；封套本身不新增字段。",
+      "pending": "封套是否固化多证据引用（I8 入库时写入验收时刻证据集快照），还是维持单值 + 投影派生。",
+      "risk": "若生产端封套扩展，投影层需一次性切换到封套字段，无运行时影响。",
+      "pageIds": ["P-RI-05", "P-RI-06"]
+    },
+    {
+      "id": "GAP-031",
+      "category": "G2",
+      "title": "RISK-2026-003/004 的机理条目归属与事件语义不匹配",
+      "basis": "demo/v2/src/content/assessment.ts（PENDING_RISKS mechanismEntryId 全为 MEC-VDS-017 过挖与地表沉降）；demo/v2/src/content/knowledge.ts（MEC-VDS-012 支护结构失效 / MEC-VDS-013 渗流突涌语义更贴近）",
+      "preset": "为保持跨域一致，fixture 沿用 MEC-VDS-017 不改，图谱页机理命中边同步。",
+      "pending": "RISK-2026-003/004 的机理归属是否修正为 MEC-VDS-012/013；若修正，assessment.ts 与 identification 域 fixture 需同步。",
+      "risk": "语义层面图谱关联偏弱（涌水涌砂挂在过挖沉降机理下），不影响链路结构。",
+      "pageIds": ["P-RI-05", "P-RI-06", "P-RI-07"]
+    },
+    {
+      "id": "GAP-032",
+      "category": "G2",
+      "title": "跨域 fixture 漂移：RISK-2026-002～004 事件文本与 DOC2026001 版本号（已收敛）",
+      "basis": "demo/v2/src/content/warning.ts 与 content/assessment.ts 事件文本不一致、WARN-2026-002 关联冲突；DOC2026001 版本在 project.ts/knowledge.ts/assessment.ts 三处不一致",
+      "preset": "已收敛（第二波收尾）：warning.ts 的 WARN-2026-002/003/004 改挂 RISK-2026-002/001/003 与对应评估记录，DOC2026001 版本统一为 project.ts 登记的 v2026.06；识别记录事实源以 assessment.ts PENDING_RISKS 为准，典范追溯链锚定 RISK-2026-001 主线。",
+      "pending": "无。",
+      "risk": "无残留。",
+      "pageIds": ["P-RI-05", "P-RI-06", "P-WR-01", "P-WR-02", "P-RA-01", "P-PJ-05", "P-PJ-07"]
+    },
+    {
+      "id": "GAP-033",
+      "category": "G6",
+      "title": "处置效果预测（effect-forecast）无记录 Schema",
+      "basis": "packages/contracts/src/ports/index.ts:196-197（仅 EffectForecastRefV1）；预测输入快照见 packages/contracts/src/workflows/index.ts:176-188",
+      "preset": "fixture 自定义 EffectForecastView（forecastId / 处置建议与采纳决定引用 / 处置前监测快照 / 冻结评估依据 / 预测策略版本 / 预测后 RiskState / 逐指标预测）。",
+      "pending": "效果预测记录是否入契约记录 Schema，还是由预测评估运行结果工件承载。",
+      "risk": "各端各自组织预测字段，P-RS-03 与后续批次展示口径可能漂移。",
+      "pageIds": ["P-RS-03"]
+    },
+    {
+      "id": "GAP-034",
+      "category": "G6",
+      "title": "执行记录与反馈记录无契约记录 Schema",
+      "basis": "packages/contracts/src/ports/index.ts:199-203（仅 ref）；命令 payload 见 packages/contracts/src/ports/index.ts:1542-1562",
+      "preset": "fixture 自定义 ExecutionRecordView（含 ActionSource 判别联合）与 FeedbackRecordView（处置后监测快照/反馈材料/实测指标），字段名对齐命令 payload。",
+      "pending": "执行记录是否固化「执行措施子集 / 未执行措施及现场核查结论」字段；两记录 Schema 是否入契约。",
+      "risk": "执行与反馈入库字段无契约约束时，重放与审计取证无法校验登记完整性。",
+      "pageIds": ["P-RS-02", "P-RS-04"]
+    },
+    {
+      "id": "GAP-035",
+      "category": "G6",
+      "title": "校准建议（calibration-suggestion）无记录 Schema",
+      "basis": "packages/contracts/src/ports/index.ts:208-209（仅 CalibrationSuggestionRefV1）；创建成功结果含复核任务引用见 :2221-2225",
+      "preset": "fixture 自定义 CalibrationSuggestionView（建议摘要 / 目标知识与调整内容 / Agent 任务来源与模型、提示模板、工具、预算策略版本 / validationResult / reviewTaskRef）。",
+      "pending": "校准建议记录 Schema 是否入契约；「复核批准仅创建知识修订草稿」的生效链路是否在记录上显式表达。",
+      "risk": "校准建议内容无契约约束，人工确认入口所依据的字段可能跨端不一致。",
+      "pageIds": ["P-RS-05"]
+    },
+    {
+      "id": "GAP-036",
+      "category": "G2",
+      "title": "处置建议 implementationOrder 无排序依据字段",
+      "basis": "packages/contracts/src/records/index.ts:252-266（ResponseRecommendationSchema.implementationOrder 仅措施顺序数组）",
+      "preset": "fixture 在契约字段旁携带展示用 orderingBasis，注明由处置生成策略对措施库候选约束组合给出。",
+      "pending": "排序依据是否随建议入库固化（保证历史建议排序可解释），还是由投影层从生成策略推导。",
+      "risk": "生成策略版本更新后，历史建议的排序理由无法从记录本身还原。",
+      "pageIds": ["P-RS-01"]
+    },
+    {
+      "id": "GAP-037",
+      "category": "G2",
+      "title": "预警域与处置域 fixture 叙事漂移：WRT-2026-001 采纳后状态（已收敛）",
+      "basis": "demo/v2/src/content/warning.ts（WRT-2026-001 曾止于 acknowledged）；demo/v2/src/content/response.ts（RESP-2026-001 已登记 RD-2026-001 并推进至执行/反馈/偏差/校准）",
+      "preset": "已收敛（第二波收尾）：warning.ts 的 WRT-2026-001 状态改为 feedback 并补登采纳后时间线（09:52 采纳 RD-2026-001 → 10:40 执行 EXE-2026-001 → 08-29 16:05 反馈 FBK-2026-001）。",
+      "pending": "无。",
+      "risk": "无残留；典范链跳转不再出现「待采纳」与「已采纳」并存。",
+      "pageIds": ["P-WR-04", "P-RS-01", "P-RS-02", "P-RS-04"]
+    },
+    {
+      "id": "GAP-038",
+      "category": "G6",
+      "title": "批量确认无契约批量决定命令",
+      "basis": "packages/contracts/src/ports/index.ts:1976-2014（ReviewDecisionCommandV1Schema 为单复核任务语义，reviewTaskRef 与 targetRef 须逐任务精确匹配）；demo/v2/src/pages/review/ReviewQueuePage.tsx（批量确认摘要条）",
+      "preset": "v2 页面将批量确认呈现为「逐项提交复核决定命令」的交互，摘要条注明逐项提交与留痕，不引入批量命令。",
+      "pending": "是否需要契约级批量决定命令（payload 为决定数组），还是明确批量仅为界面层组织方式。",
+      "risk": "若后续契约引入批量命令，批量摘要条交互语义需对齐重述；仅呈现层调整。",
+      "pageIds": ["P-RV-01"]
+    },
+    {
+      "id": "GAP-039",
+      "category": "G2",
+      "title": "业务审计条目的活动码词汇无契约枚举",
+      "basis": "packages/core/src/review-audit/schema.ts:141-150（ReviewActivityCodeV1Schema 仅 6 个 review/security 活动码）；packages/core/src/review-audit/service.ts:123-133（未知活动码回退通用文案）；AGENTS.md §4.3 要求规则冲突、筛除原因、发布/回滚写入审计日志",
+      "preset": "v2 fixture 以字符串活动码呈现业务审计条目，sourceType 取 business-audit，occurred/recorded/persisted 三时点对齐投影形状；活动码词汇待契约补枚举后对齐。",
+      "pending": "业务审计活动码枚举归属（复核审计模块自有枚举，或复用业务事件分类）。",
+      "risk": "枚举落地后活动码需一次性改名，无运行时影响。",
+      "pageIds": ["P-RV-06"]
+    },
+    {
+      "id": "GAP-040",
+      "category": "G2",
+      "title": "跨类型运行列表无投影查询载体",
+      "basis": "packages/contracts/src/ports/index.ts:1787-1814（ProjectionQueryPayloadV1 的 run-view 只支持单 workflowRunRef 查询，无按工程/类型列举运行的查询形状）",
+      "preset": "v2 页面以聚合 fixture 呈现统一台账，详情深链回归属域运行页；列表查询形状待契约补充（如 run-list queryType）。",
+      "pending": "跨类型运行列表查询是否进入 projection.query 的 queryType 枚举，及筛选维度（运行类型/状态/时间窗）。",
+      "risk": "查询形状落地前列表筛选仅为页面内过滤，语义不变。",
+      "pageIds": ["P-RV-05"]
+    },
+    {
+      "id": "GAP-041",
+      "category": "G2",
+      "title": "系统管理六动作无能力位映射，动作级门控缺身份信号",
+      "basis": "demo/v2/src/app/contract-mirror.data.json（systemAccessActions 与 branchCapability 无交集、roles[system-administrator] 为空数组）；packages/core/src/access/policy.ts:42-49（SYSTEM_ACCESS_ACTIONS_V1）",
+      "preset": "P-OP-01 动作名严格取 SYSTEM_ACCESS_ACTIONS 六项；三态判定为：capabilities 为 null 时 unknown，能力并集为空集（仅 system-administrator）时 allowed，其余角色 denied 并附原因「需系统管理员身份」。不用能力位近似（GAP-015 的项目管理四动作才用 engineering-data.write 近似）。",
+      "pending": "系统管理动作的身份信号是否由会话/角色显式传入页面（而非以空能力集代理）；是否在契约中登记系统管理面的授权通道。",
+      "risk": "以「能力并集为空」代理系统管理员身份是原型期启发式；若将来出现其他空能力角色，门控语义会漂移。",
+      "pageIds": ["P-OP-01"]
+    },
+    {
+      "id": "GAP-042",
+      "category": "G6",
+      "title": "数据源适配器与连接定义无契约记录与命令",
+      "basis": "packages/contracts/src/ports/index.ts（无 adapter/connection 管理命令，资料 descriptor 上仅引用 connectionDefinitionRef）；demo/v2/src/pages/ops/DataSourcesPage.tsx",
+      "preset": "fixture 自定义 DataSourceAdapterView（adapterId/pathway/deliveryKind/connectionDefinitionRef/status/checks/referencedBy），deliveryKind 严格取契约 SourceDeliveryKind 三值；连接运维动作按 GAP-041 的系统管理员三态门控。",
+      "pending": "连接定义与健康状态是否入契约记录；监测接入通路连接对象与资料交付通道是否分属不同 schema。",
+      "risk": "连接状态口径（已连接/连接退化/未连接）若无契约约束，与监测接入实际可用性判断可能不一致。",
+      "pageIds": ["P-OP-02"]
+    },
+    {
+      "id": "GAP-043",
+      "category": "G6",
+      "title": "模型部署与提示模板版本登记无契约 schema",
+      "basis": "packages/contracts/src/ports/index.ts:319-325（AgentTaskRefV1 仅有调用侧 modelDeploymentRef/promptTemplateRef 引用）；demo/v2/src/content/ops.ts（ModelDeploymentObject/PromptTemplateObject）",
+      "preset": "fixture 自定义 ModelDeploymentObject（baseModelRef 指向原始权重部署，weightLoading 表达微调权重与原始权重同时可加载、可回退）与 PromptTemplateObject（taskScope 限定任务范围）；治理生命周期沿用知识域 GAP-020 五态预设；治理动作按 GAP-041 门控。",
+      "pending": "模型与提示模板版本是否纳入知识治理生命周期（复用 knowledge-modeling 分支）或设施域独立登记；权重并存/回退是否需要契约级引用结构。",
+      "risk": "版本登记无契约约束时，运行记录中的 modelDeploymentRef/promptTemplateRef 无法回查版本元数据，影响重放与审计。",
+      "pageIds": ["P-OP-03"]
+    },
+    {
+      "id": "GAP-044",
+      "category": "G6",
+      "title": "备份策略、恢复点与恢复操作无契约 schema 与命令",
+      "basis": "packages/contracts/src（无 backup/restore 相关 schema 与事件）；demo/v2/src/pages/ops/BackupPage.tsx（RestoreConfirm 两步确认）",
+      "preset": "fixture 自定义备份策略（versionedRef 呈现）与恢复点（建立时间/覆盖范围/校验状态）；恢复操作先经 GAP-041 三态门控，再经页内确认交互（确认范围与后果勾选 + 确认/取消）才进入提交语义；恢复操作进入版本与操作审计（深链 P-RV-06）。",
+      "pending": "恢复点校验状态枚举、恢复命令的幂等与审计字段是否入契约；恢复确认交互是否固化为外壳级危险操作原语。",
+      "risk": "恢复操作无契约命令与幂等约束时，重复提交与审计断链风险由实现侧自行承担。",
+      "pageIds": ["P-OP-04"]
+    },
+    {
+      "id": "GAP-045",
+      "category": "G6",
+      "title": "Agent 任务的工具行动（含白名单外拦截）无记录 Schema",
+      "basis": "packages/contracts/src/ports/index.ts:316-328（AgentTaskRefV1 仅版本引用，含 toolPolicyRef）；demo/v2/src/pages/agent/AgentTaskDetailPage.tsx（工具行动卡）",
+      "preset": "fixture 自定义 ToolActionView（actionId/toolName/summary/outcome: succeeded|blocked/note），拦截项记录拦截原因。",
+      "pending": "工具行动是否作为任务运行记录的一部分入契约（保证拦截与调用可审计），还是仅由审计日志承载。",
+      "risk": "白名单拦截若只在日志中，第三方重放时无法从记录校验「未越权调用」。",
+      "pageIds": ["P-AG-03"]
+    },
+    {
+      "id": "GAP-046",
+      "category": "G6",
+      "title": "Agent 增量逐项确定性校验决定无记录 Schema",
+      "basis": "packages/contracts/src/ports/index.ts:316-328（仅 incrementSchemaRef/validationPolicyRef）、:223（ValidationSnapshotRefV1 仅引用类型）；demo/v2/src/pages/agent/AgentTaskDetailPage.tsx（增量校验卡）",
+      "preset": "fixture 自定义 AgentIncrementView（incrementItemId/operationType/summary/decision: accepted|rejected/reason），操作类型为任务类型白名单内的类型化领域操作名。",
+      "pending": "逐项校验决定是否随校验快照入库为结构化记录；拒绝原因是否枚举化（权限/来源资格/版本兼容/规则冲突/越界）。",
+      "risk": "逐项决定无契约约束时，「拒绝不得循环绕过」的审计取证缺乏可校验字段。",
+      "pageIds": ["P-AG-03"]
+    },
+    {
+      "id": "GAP-047",
+      "category": "G6",
+      "title": "Agent 任务资源消耗计数与硬预算对比无契约字段",
+      "basis": "packages/contracts/src/ports/index.ts:316-328（budgetPolicyRef 仅指向预算策略版本）；demo/v2/src/pages/agent/agent-shared.tsx（资源消耗卡）",
+      "preset": "fixture 自定义 BudgetConsumptionView（tokensUsed/Limit、toolCallsUsed/Limit、candidatesUsed/Limit、wallClockSeconds/LimitSeconds）。",
+      "pending": "资源消耗是否作为任务终态记录字段入契约（支撑「预算耗尽不得静默跳过」的核验）。",
+      "risk": "消耗口径跨端不一致时，预算超限判定无法重放。",
+      "pageIds": ["P-AG-01", "P-AG-02", "P-AG-03"]
+    },
+    {
+      "id": "GAP-048",
+      "category": "G2",
+      "title": "校准建议 Agent 任务标识跨域漂移（已收敛）",
+      "basis": "demo/v2/src/content/response.ts 曾用 AGT-CAL-2026-001；demo/v2/docs/page-manifest.json（P-AG-03 samplePath /agent/tasks/AGT-001）；demo/v2/src/content/agent.ts（AGT-001 任务类型 calibration-suggestion，产出 CAL-2026-001）",
+      "preset": "已收敛（第三波收尾）：处置域 response.ts 两处标识改为 AGT-001，与 agent 域及 manifest samplePath 统一。",
+      "pending": "无。",
+      "risk": "无残留；CAL-2026-001 跳转 Agent 任务详情不再落空。",
+      "pageIds": ["P-AG-03", "P-RS-05"]
+    },
+    {
+      "id": "GAP-049",
+      "category": "G6",
+      "title": "交互 Agent 会话消息流无契约 Schema",
+      "basis": "packages/contracts/src/ports/index.ts:229-233（仅 CommandProposalRefV1/UserConfirmationRefV1 承载待确认环节）；demo/v2/src/pages/agent/agent-shared.tsx（消息流组件）",
+      "preset": "fixture 自定义 AgentMessageView（messageId/kind: user|agent|system/at/actorLabel/text/relatedTaskId）与 PendingCommandView（proposalRef/agentTaskId/commandKindLabel/summary/targetRef/state）。",
+      "pending": "消息流是否作为会话持久化记录入契约；系统提示（任务契约固定要素、确定性收口结果）是否属于审计范围。",
+      "risk": "消息流无契约约束时，「写命令提交前必须用户确认」的会话侧证据无法重放。",
+      "pageIds": ["P-AG-01", "P-AG-02"]
+    },
+    {
+      "id": "GAP-050",
+      "category": "G6",
+      "title": "risk-overview 投影内容形状未入契约",
+      "basis": "packages/contracts/src/ports/index.ts:1787-1792（risk-overview payload 仅 projectRevisionRef + 可选 spatialScopeRef）、:2294-2297（成功结果仅 queryResultRef）；demo/v2/src/pages/overview/OverviewPage.tsx",
+      "preset": "fixture 从既有域 fixture 派生聚合（在评风险 = PENDING_RISKS 非 assessed；预警中 = WARNING_RECORDS；处置执行中 = 处置任务状态机 executing；待复核 = pendingReviewTasks），矩阵落点与等级分布按「各风险记录最新评估记录」口径（重评估覆盖首次评估，避免重复计数）。",
+      "pending": "risk-overview 投影的记录 schema 是否入契约（含 KPI 口径与「最新评估」派生规则），或明确由投影层自由定义、仅保证可重放。",
+      "risk": "各端各自实现聚合口径会出现计数不一致。",
+      "pageIds": ["P-OV-01"]
+    },
+    {
+      "id": "GAP-051",
+      "category": "G6",
+      "title": "总览趋势序列选取规则未规格化",
+      "basis": "packages/contracts/src/ports/index.ts（无总览趋势相关 schema）；demo/v2/src/content/project.ts:1006-1052（MON-001，阈值 12.0 mm · THRESH-MON-001 v2026.08）",
+      "preset": "fixture 从 MON-001 快照点派生趋势，阈值线沿用序列自带监测预警阈值版本；选取与 I 级预警触发指标一致的地表沉降序列。",
+      "pending": "总览趋势是固定若干关键指标，还是跟随当前预警触发指标动态选取。",
+      "risk": "固定序列在工程阶段切换后失去代表性；动态选取规则不入契约则各端展示不一致。",
+      "pageIds": ["P-OV-01"]
+    },
+    {
+      "id": "GAP-052",
+      "category": "G2",
+      "title": "ProjectionExportRequestV1 无报告范围字段",
+      "basis": "packages/contracts/src/ports/index.ts:1833-1843（payload 仅 sourceRef 与 exportPolicyRef）；demo/v2/src/pages/report/ReportExportPage.tsx（报告范围区）",
+      "preset": "fixture 将范围语义挂在导出策略版本 EXP-POLICY-001 · v2026.08 与查询结果引用 QR-RISK-OVERVIEW-* 上，页面选择项为展示投影。",
+      "pending": "报告范围（时间窗/章节组成/空间范围）应作为 payload 字段入契约，还是由 exportPolicyRef 指向的策略版本承载；章节组成枚举是否为合同固定章节。",
+      "risk": "范围不入契约则导出产物无法按「范围 + 版本引用」重放校验，审计链断一环。",
+      "pageIds": ["P-AU-01"]
+    },
+    {
+      "id": "GAP-053",
+      "category": "G2",
+      "title": "导出产物描述与导出历史状态机无契约 schema",
+      "basis": "packages/contracts/src/ports/index.ts:253-254（ExportArtifactRefV1 仅引用）、:2304-2307（成功结果仅 exportArtifactRef）",
+      "preset": "fixture 自定义 ExportRecordView（状态 completed/failed，失败带 errorCode 与 retryable，对齐 ModuleErrorV1 安全字段口径），产物清单按导出格式预设。",
+      "pending": "导出记录与产物描述是否入契约；失败重试是否复用 TRANSIENT_FAILURE 语义。",
+      "risk": "导出历史口径各端漂移；失败产物与空产物引用无法区分。",
+      "pageIds": ["P-AU-01"]
+    },
+    {
+      "id": "GAP-054",
+      "category": "G6",
+      "title": "报告「审计摘要」章节收录范围未规格化",
+      "basis": "demo/v2/src/content/review.ts:890-903（审计类别五类）；demo/v2/src/pages/report/ReportExportPage.tsx（章节组成）",
+      "preset": "报告审计摘要默认覆盖全部五类审计条目（人工审核/规则冲突/适用性筛除/版本发布/授权审计），版本引用清单随报告固化。",
+      "pending": "甲方对报告章节与审计收录范围的要求是否以现有四类章节为准。",
+      "risk": "交付评审时报告章节口径与甲方预期不符需返工。",
+      "pageIds": ["P-AU-01"]
+    }
+  ]
+}

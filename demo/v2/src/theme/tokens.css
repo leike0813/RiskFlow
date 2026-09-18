@@ -1,0 +1,145 @@
+/* RiskFlow v2 设计令牌（M1 冻结，冻结清单与语义约束见 docs/DESIGN-SPEC.md §1）。
+   视觉方向沿用 v1：深海军蓝框架 + 浅灰蓝底 + 白卡片；工程蓝为唯一强调色；
+   风险四级色严格限定于等级 / 越限 / 预警；1.5px 描边线性图标；禁 Emoji。 */
+:root {
+  /* 框架底色 */
+  --nav-bg: #0e2238;
+  --topbar-bg: #15324d;
+  --page-bg: #f3f6fa;
+  --card: #ffffff;
+  --border: #dce4ee;
+
+  /* 文本 */
+  --text: #172b4d;
+  --text-2: #63758a;
+
+  /* 工程蓝：当前导航、主按钮、运行中状态、主图表 */
+  --blue: #2166d1;
+  --blue-soft: #e8f0fc;
+
+  /* 风险等级色：仅用于风险等级 / 越限 / 预警 */
+  --risk-1: #d9363e;
+  --risk-2: #f97316;
+  --risk-3: #e7ac08;
+  --risk-4: #20a464;
+  --risk-1-dark: #a61e24;
+  --risk-1-soft: #fdebec;
+  --risk-2-soft: #fef1e7;
+  --risk-3-soft: #fdf6e0;
+  --risk-4-soft: #e6f5ee;
+  --risk-3-text: #8a6604;
+
+  /* 状态色 */
+  --success: #1b9a6c;
+  --success-soft: #e6f5f0;
+  --review: #7e7390;
+  --review-soft: #efecf3;
+  --bluegray: #8fa6c0;
+  --bluegray-soft: #eef2f7;
+
+  /* 字体 */
+  --font: Inter, 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+
+  /* 字号与行高配对刻度（成对使用，不得拆配） */
+  --text-xs: 12px;
+  --text-xs-lh: 18px;
+  --text-sm: 13px;
+  --text-sm-lh: 20px;
+  --text-md: 14px;
+  --text-md-lh: 22px;
+  --text-lg: 16px;
+  --text-lg-lh: 24px;
+  --text-xl: 20px;
+  --text-xl-lh: 28px;
+  --text-2xl: 24px;
+  --text-2xl-lh: 32px;
+  --text-kpi: 34px;
+  --text-kpi-lh: 40px;
+
+  /* 间距刻度 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  /* 圆角刻度 */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-full: 999px;
+
+  /* 卡片 */
+  --card-radius: var(--radius-lg);
+  --card-shadow: 0 2px 8px rgba(18, 45, 72, 0.06);
+
+  /* 动效时长与缓动 */
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 320ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0.38, 1);
+
+  /* z-index 层级 */
+  --z-nav: 30;
+  --z-topbar: 30;
+  --z-dock: 40;
+  --z-overlay: 50;
+  --z-review: 60;
+
+  /* 断点（媒体查询需写字面量；令牌供文档、脚本与叠加层对齐同一数值） */
+  --bp-compact: 48rem;
+  --bp-shell: 64rem;
+  --bp-wide: 90rem;
+
+  /* 框架尺寸 */
+  --nav-width: 16rem;
+  --nav-width-compact: 13rem;
+  --topbar-height: 68px;
+  --dock-width: 22rem;
+  --agent-dock-width: 480px;
+  --drag-region-height: 28px;
+  --window-min-width: 64rem;
+  --window-min-height: 40rem;
+
+  /* 焦点环 */
+  --focus-ring: var(--blue);
+}
+
+/* 暗色：仅提供令牌结构（双套变量），切换 UI 不在本期范围，是否落地由生产端决定。 */
+[data-theme='dark'] {
+  --nav-bg: #0a1626;
+  --topbar-bg: #0e1f33;
+  --page-bg: #101c2b;
+  --card: #16273a;
+  --border: #2a3f57;
+
+  --text: #e6edf5;
+  --text-2: #93a5b8;
+
+  --blue: #5b8fe8;
+  --blue-soft: #1d3252;
+
+  --risk-1: #e56067;
+  --risk-2: #f98d4a;
+  --risk-3: #e7ac08;
+  --risk-4: #3cb87e;
+  --risk-1-dark: #f08389;
+  --risk-1-soft: #3d1f24;
+  --risk-2-soft: #3d2a1c;
+  --risk-3-soft: #38300f;
+  --risk-4-soft: #14332a;
+  --risk-3-text: #f0cd6a;
+
+  --success: #3cb87e;
+  --success-soft: #14332a;
+  --review: #a99fbc;
+  --review-soft: #2a2733;
+  --bluegray: #7e94ac;
+  --bluegray-soft: #1f3043;
+
+  --card-shadow: 0 2px 8px rgba(0, 0, 0, 0.32);
+  --focus-ring: var(--blue);
+}

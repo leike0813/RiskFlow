@@ -1,0 +1,249 @@
+/* 审阅控制台样式（内部设施，不在截图产物中）。 */
+.rv-console {
+  max-width: 88rem;
+  margin: 0 auto;
+  padding: var(--space-5);
+}
+
+.rv-header h1 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-2xl);
+  line-height: var(--text-2xl-lh);
+}
+
+.rv-hint {
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  margin: var(--space-1) 0 var(--space-3);
+}
+
+.rv-warning {
+  padding: var(--space-2) var(--space-3);
+  background: var(--risk-3-soft);
+  border: 1px solid var(--risk-3);
+  border-radius: var(--radius-md);
+  color: var(--risk-3-text);
+  font-size: var(--text-sm);
+}
+
+.rv-section {
+  margin-top: var(--space-6);
+  padding: var(--space-5);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
+}
+
+.rv-section h2 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xl);
+  line-height: var(--text-xl-lh);
+}
+
+.rv-domain h3 {
+  margin: var(--space-4) 0 var(--space-3);
+  font-size: var(--text-lg);
+  line-height: var(--text-lg-lh);
+}
+
+.rv-domain-count {
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  font-weight: 400;
+}
+
+.rv-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: var(--space-3);
+}
+
+.rv-card {
+  display: block;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  background: var(--card);
+}
+
+.rv-card:hover {
+  border-color: var(--blue);
+}
+
+.rv-card-head {
+  display: flex;
+  justify-content: space-between;
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--text-2);
+}
+
+.rv-card-skeleton {
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bluegray-soft);
+  color: var(--text-2);
+}
+
+.rv-card-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.rv-card-meta {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-xs);
+  color: var(--text-2);
+}
+
+.rv-filter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.rv-matrix-wrap {
+  overflow-x: auto;
+}
+
+.rv-matrix {
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.rv-matrix th,
+.rv-matrix td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.rv-matrix thead th {
+  background: var(--bluegray-soft);
+}
+
+.rv-matrix tbody th {
+  text-align: left;
+  font-weight: 400;
+}
+
+.rv-role-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.rv-role {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.rv-nav-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: 0;
+  margin: var(--space-3) 0 0;
+  list-style: none;
+}
+
+.rv-nav-preview li {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+
+.rv-nav-preview li[data-state='allowed'] {
+  border-color: var(--success);
+}
+
+.rv-nav-preview li[data-state='denied'] {
+  opacity: 0.55;
+}
+
+.rv-nav-preview li[data-state='unknown'] {
+  border-style: dashed;
+}
+
+.rv-nav-state {
+  font-size: var(--text-xs);
+  color: var(--text-2);
+}
+
+.rv-viewport-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.rv-viewport-btns button {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--card);
+  color: var(--text);
+}
+
+.rv-viewport-btns button[aria-pressed='true'] {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+  color: var(--blue);
+  font-weight: 600;
+}
+
+.rv-gap-list {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.rv-gap {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.rv-gap h3 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-md);
+  line-height: var(--text-md-lh);
+}
+
+.rv-gap dl {
+  margin: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.rv-gap dl > div {
+  display: grid;
+  grid-template-columns: 4rem minmax(0, 1fr);
+  gap: var(--space-2);
+}
+
+.rv-gap dt {
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+
+.rv-gap dd {
+  margin: 0;
+  min-width: 0;
+  font-size: var(--text-sm);
+}
+
+.rv-gap dd a {
+  margin-right: var(--space-2);
+}

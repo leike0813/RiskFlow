@@ -1114,12 +1114,6 @@ export async function doctor(options = {}) {
       exec,
     }),
   ]);
-  if (!String(ompVersion).includes("18.1.18")) {
-    throw new ControlError(
-      "unsupported_omp",
-      `需要 OMP 18.1.18，实际为 ${String(ompVersion).trim()}`,
-    );
-  }
   if (graph.graphIssues?.length)
     throw new ControlError("invalid_manifest", graph.graphIssues.join("; "));
   const orcaReady = Boolean(unwrapResult(orcaStatus)?.runtime?.state === "ready");

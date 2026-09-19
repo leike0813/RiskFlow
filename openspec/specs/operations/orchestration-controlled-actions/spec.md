@@ -8,7 +8,7 @@
 
 ### Requirement: Finalizer 必须持有收尾责任
 
-change 进入 `finalizing` 后，强模型 Finalizer MUST 在已批准语义范围内完成核验、修复、回归和最终报告；普通实现缺陷 MUST 保留在当前 Finalizer 责任链中。只有已批准的新规划版本才能重开 `implementing`。
+change 进入 `finalizing` 后，强模型 Finalizer MUST 在已批准语义范围内完成核验、修复、回归，并在当前 schema 声明 verification 工件时填写最终验收结论与后续注意事项；普通实现缺陷 MUST 保留在当前 Finalizer 责任链中。只有已批准的新规划版本才能重开 `implementing`。
 
 #### Scenario: 收尾发现普通实现缺陷
 - **WHEN** Finalizer 发现实现未满足已批准行为，且修复不改变公共契约、权限、持久化语义、迁移或依赖
@@ -25,6 +25,17 @@ change 进入 `finalizing` 后，强模型 Finalizer MUST 在已批准语义范�
 - **THEN** 系统 MUST 将当前检查点和证据移交给新的强模型 Finalizer
 - **AND** MUST NOT 因会话终止改变责任角色
 
+#### Scenario: Finalizer 形成验收工件
+- **WHEN** 当前 schema 声明 verification 工件且 Finalizer 已完成最终代码修复与回归
+- **THEN** Finalizer MUST 基于实际最终 HEAD 填写 verification
+- **AND** 工件 MUST 记录验收结论、规格与命令证据、验收期修复和后续注意事项
+- **AND** 最终产物再次发生实质变化时 MUST 更新 verification 后再收口
+
+#### Scenario: 限定审计补充验收工件
+- **WHEN** Finalizer 的修改触发 Targeted Auditor
+- **THEN** verification MUST 在集成前包含限定审计的最终结论与证据
+- **AND** 待执行审计 MUST NOT 被记录为 PASS 后的非阻塞事项
+
 #### Scenario: 成功收口只提交已审阅改动
 - **WHEN** Finalizer 工作树存在未提交改动且主调度请求成功收口
 - **THEN** 请求的 `reviewedPaths` MUST 与实时 `dirtyPaths` 完全一致
@@ -32,7 +43,7 @@ change 进入 `finalizing` 后，强模型 Finalizer MUST 在已批准语义范�
 
 ### Requirement: 受控操作必须执行状态前置校验
 
-派发、结果接收、集成、归档、回收和目标完成 MUST 在执行前校验状态 revision、当前阶段、工作树身份、HEAD、唯一写者及证据；拒绝结果 MUST 返回原因和当前合法下一动作。
+派发、结果接收、集成、归档、回收和目标完成 MUST 在执行前校验状态 revision、当前阶段、工作树身份、HEAD、唯一写者、当前 schema 要求的验收工件及证据；拒绝结果 MUST 返回原因和当前合法下一动作。
 
 #### Scenario: finalizing 后请求廉价实现
 - **WHEN** 工作项处于 `finalizing` 且没有新的已批准规划版本
@@ -48,6 +59,16 @@ change 进入 `finalizing` 后，强模型 Finalizer MUST 在已批准语义范�
 - **WHEN** PASS 对应的产物 HEAD 与当前工作树 HEAD 不同
 - **THEN** 结果接收操作 MUST 拒绝该 PASS
 - **AND** 工作项 MUST 保持未验收状态
+
+#### Scenario: 缺少 schema 声明的验收工件
+- **WHEN** finalization 或 audit 请求成功收口，且当前 schema 声明的 verification 工件未完成
+- **THEN** 结果接收操作 MUST 在暂存或提交前拒绝该请求
+- **AND** 必须指引验收责任者按 schema 指令完成 verification
+
+#### Scenario: 兼容不含验收工件的旧 schema
+- **WHEN** 既有 change 的实际 schema 未声明 verification 工件
+- **THEN** 结果接收操作 MUST 继续使用既有证据门禁
+- **AND** MUST NOT 为兼容检查伪造或要求额外工件
 
 #### Scenario: 逐项修复多个过期检查点
 - **WHEN** 多个独立工作项同时只有 checkpoint mismatch 或待回收冲突

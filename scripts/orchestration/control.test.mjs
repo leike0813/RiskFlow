@@ -401,6 +401,57 @@ describe("controlled orchestration", () => {
     ).not.toThrow();
   });
 
+  it("requires only schema-declared verification artifacts before successful finalization", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-verification-"));
+    const cases = [
+      { name: "pending", artifacts: [{ id: "verification", status: "ready" }], blocked: true },
+      { name: "complete", artifacts: [{ id: "verification", status: "done" }], blocked: false },
+      { name: "legacy", artifacts: [{ id: "tasks", status: "done" }], blocked: false },
+    ];
+    try {
+      for (const testCase of cases) {
+        let writes = 0;
+        const exec = async (command, args) => {
+          if (command === "git") {
+            if (["add", "commit"].includes(args[0])) writes += 1;
+            return runtimeRoot;
+          }
+          if (command === "openspec") return { artifacts: testCase.artifacts };
+          if (command === "orca-ide" && args.includes("task-update")) {
+            writes += 1;
+            return { result: {} };
+          }
+          throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+        };
+        const settle = riskflowSettle(
+          {
+            workItemId: "C17",
+            expectedRevision: "revision-1",
+            idempotencyKey: `verification-${testCase.name}`,
+            outcome: "succeeded",
+            evidenceRefs: ["verification.md"],
+          },
+          {
+            rootDir: process.cwd(),
+            exec,
+            statusProvider: async () => ({ graph, snapshot: snapshot() }),
+          },
+        );
+        if (testCase.blocked) {
+          await expect(settle).rejects.toMatchObject({
+            code: "verification_artifact_required",
+          });
+          expect(writes).toBe(0);
+        } else {
+          await expect(settle).resolves.toMatchObject({ outcome: "succeeded" });
+          expect(writes).toBe(1);
+        }
+      }
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
   it("serializes mutations with one common-dir lock", async () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-control-"));
     const exec = async (command) => {

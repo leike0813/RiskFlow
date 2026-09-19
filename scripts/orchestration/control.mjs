@@ -433,11 +433,12 @@ async function ensureRun(exec, invocation, rootDir, node, idempotencyKey, reuseE
 function taskSpec(node, taskKind) {
   const responsibility = {
     planning:
-      "创建并闭合 riskflow-delivery 规划工件，不实现代码；研究资料只读取 references/风险识别与评估规划事实源摘要.md",
-    implementation: "按已批准 IP-ID 有界实现并在当前任务内修复普通测试失败",
+      "按 change 实际 schema 和 applyRequires 创建并闭合规划工件，不实现代码；研究资料只读取 references/风险识别与评估规划事实源摘要.md",
+    implementation:
+      "按已批准 IP-ID 有界实现并在当前任务内修复普通测试失败；不提前创建 verification",
     finalization:
-      "核验当前产物，在已批准语义内直接修复、回归并给出最终报告；普通缺陷保持当前收尾责任",
-    audit: "独立检查权限、事务、关键状态机或语义 merge 冲突的受影响范围",
+      "核验当前产物，在已批准语义内直接修复、回归，并按实际 schema 填写最终 verification；普通缺陷保持当前收尾责任",
+    audit: "独立检查权限、事务、关键状态机或语义 merge 冲突的受影响范围，并把结论补入 verification",
     archive: "仅在门禁通过后机械归档",
   }[taskKind];
   return [
@@ -773,6 +774,24 @@ export async function riskflowSettle(input, options = {}) {
       sameNoProgress + 1 >= Number(ctx.graph.policy.noProgressLimit ?? 3)
         ? "paused"
         : input.outcome;
+    if (outcome === "succeeded" && ["finalization", "audit"].includes(checkpoint.taskKind)) {
+      const status = await readJsonCommand(
+        ctx.exec,
+        "openspec",
+        ["status", "--change", ctx.node.change, "--json"],
+        { cwd: ctx.node.worktree.path },
+      );
+      const verification = status.artifacts?.find((artifact) => artifact.id === "verification");
+      if (verification && verification.status !== "done") {
+        throw new ControlError(
+          "verification_artifact_required",
+          `${ctx.node.change} 的 verification 工件尚未完成`,
+          [
+            `运行 openspec instructions verification --change ${ctx.node.change} --json 并完成该工件`,
+          ],
+        );
+      }
+    }
     const riskTags = Array.isArray(input.riskTags) ? input.riskTags : [];
     const auditPolicy = riskTags.some((tag) => ctx.graph.policy.targetedAudit.includes(tag))
       ? "targeted"

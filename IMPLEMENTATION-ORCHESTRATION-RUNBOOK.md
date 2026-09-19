@@ -34,18 +34,21 @@ Orca 操作始终使用完整 worktree ID。创建正式 worktree 时运行 repo
 
 ### 2.1 OpenSpec 命令
 
-`riskflow-delivery` 改变工件图，不改变 OpenSpec 顶层命令。大型 change 创建时显式选 schema，之后以 change 自身 `.openspec.yaml` 和 status 返回值为准：
+`orchestrated-delivery` 改变工件图，不改变 OpenSpec 顶层命令。后续大型 change 创建时显式选 schema，之后以 change 自身 `.openspec.yaml` 和 status 返回值为准；旧 change 不覆盖 schema 元数据：
 
 | 目的 | 命令 |
 |---|---|
-| 校验 schema | `openspec schema which riskflow-delivery`；`openspec schema validate riskflow-delivery --verbose` |
-| 创建大型 change | `openspec new change <change> --schema riskflow-delivery --json` |
+| 校验 schema | `openspec schema which orchestrated-delivery`；`openspec schema validate orchestrated-delivery --verbose` |
+| 创建大型 change | `openspec new change <change> --schema orchestrated-delivery --json` |
 | 查看实际 schema/下一工件 | `openspec status --change <change> --json` |
 | 获取工件指令 | `openspec instructions <artifact-id> --change <change> --json` |
 | 获取实现上下文 | `openspec instructions apply --change <change> --json` |
+| 获取最终验收指令 | `openspec instructions verification --change <change> --json` |
 | 严格校验 | `openspec validate <change> --strict --no-interactive` |
 
 `openspec-apply-change`、`openspec-verify-change` 和 `openspec-archive-change` 是 Agent Skill，不是 CLI 子命令。CLI 没有 `openspec verify`。apply 返回缺少 `implementation-plan` 时，应先按 instructions 创建该工件，不能改用默认四工件流程；发现 schema 不符时停止，不用命令行 override 强行继续。
+
+OpenSpec 1.13.1 会在五个 apply 前置工件完成后把 verification 提前显示为 `ready`，并可能把 change 显示为 all done。Planning 以 status 的 `applyRequires` 为准，不创建 verification；Implementation 完成并形成固定检查点后，Finalizer 才生成该工件。归档前必须确认 verification 为 `done` 且结论对应最终 HEAD。
 
 ## 3. Codex 首次启动与工作区信任
 
@@ -102,7 +105,7 @@ OMP 的模型和思考强度由其启动命令指定；不要把 Codex 的 `--ef
 
 Orca 内部 terminal 优先用 Orca CLI 定位和操作。桌面 accessibility 无法可靠识别目标 terminal 时，不使用坐标或盲按键替代精确 handle。
 
-Finalizer 有未提交修复时，主调度必须先审阅全部 dirty paths。`riskflow_settle` 的 `reviewedPaths` 必须与实时 dirty paths 完全一致；工具只暂存这些路径。不要使用 `git add -A` 把未知改动带入检查点。
+Finalizer 有未提交修复时，主调度必须先审阅全部 dirty paths。`riskflow_settle` 的 `reviewedPaths` 必须与实时 dirty paths 完全一致；工具只暂存这些路径。对声明 verification 的 schema，finalization/audit 成功收口前先运行 status 确认该工件为 `done`，否则 settle 会在 Git 暂存前拒绝。不要使用 `git add -A` 把未知改动带入检查点。
 
 ## 7. 活动 worktree 同步
 
@@ -130,7 +133,7 @@ Agent 之间不复制未提交文件。同步必须形成可审阅 Git 检查点
 
 ## 9. 回收
 
-回收前确认：change 已归档、feature commit 已进入 main、worktree clean、没有活动 writer，相关 terminal 已结束，并且状态将该项列为可回收。
+回收前确认：change 的 verification（若 schema 声明）已完成且随 change 归档、feature commit 已进入 main、worktree clean、没有活动 writer，相关 terminal 已结束，并且状态将该项列为可回收。
 
 使用 Orca 返回的完整 worktree ID 回收，然后同时核对：
 

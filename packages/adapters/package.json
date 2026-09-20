@@ -78,6 +78,10 @@
     "./risk-assessment/engine": {
       "types": "./dist/risk-assessment/engine/index.d.ts",
       "import": "./dist/risk-assessment/engine/index.js"
+    },
+    "./warning": {
+      "types": "./dist/warning/index.d.ts",
+      "import": "./dist/warning/index.js"
     }
   }
 }

@@ -462,6 +462,90 @@ describe("controlled orchestration", () => {
     }
   });
 
+  it("states the closing-round protocol in the dispatch briefing", async () => {
+    const dispatchSpec = async (overrides, key) => {
+      const runtimeRoot = await mkdtemp(join(tmpdir(), `riskflow-round-${key}-`));
+      const target = node(overrides);
+      const snap = snapshot({
+        nodes: [target],
+        resumeQueue: [{ workItemId: "C17", category: "finalizing", nextAction: "继续收尾" }],
+      });
+      let spec;
+      const exec = async (command, args) => {
+        if (command === "git") return runtimeRoot;
+        if (command === "orca-ide" && args.includes("task-create")) {
+          spec = args[args.indexOf("--spec") + 1];
+          return { id: `task-${key}` };
+        }
+        if (command === "orca-ide" && args.includes("task-update")) return {};
+        if (command === "orca-ide" && args.includes("worker-start")) return { state: "ready" };
+        throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+      };
+      try {
+        await riskflowDispatch(
+          { workItemId: "C17", expectedRevision: "revision-1", idempotencyKey: `dispatch-${key}` },
+          { rootDir: process.cwd(), exec, statusProvider: async () => ({ graph, snapshot: snap }) },
+        );
+        return spec;
+      } finally {
+        await rm(runtimeRoot, { recursive: true });
+      }
+    };
+    const targetedFinalization = {
+      taskKind: "finalization",
+      phase: "finalizing",
+      runState: "settled",
+      outcome: "succeeded",
+      auditPolicy: "targeted",
+    };
+    const concludedAudit = {
+      taskId: "task-audit",
+      taskKind: "audit",
+      runState: "settled",
+      outcome: "failed",
+      issueRefs: ["audit-finding-1"],
+      evidenceRefs: ["audit-evidence-1"],
+    };
+
+    // 首个收尾尝试：当前尝试还是实现（auditRequired 为假、本轮尚无审计结论）
+    const first = await dispatchSpec(
+      {
+        auditRequired: false,
+        checkpoints: {
+          ...node().checkpoints,
+          taskKind: "implementation",
+          phase: "implementing",
+          runState: "settled",
+          outcome: "succeeded",
+        },
+      },
+      "first",
+    );
+    expect(first).toContain("=== 收尾轮次协议 ===");
+    expect(first).toContain("为审计结论留出位置");
+    expect(first).not.toContain("本轮限定审计已出结论");
+
+    const repair = await dispatchSpec(
+      {
+        auditRequired: false,
+        checkpoints: { ...node().checkpoints, ...targetedFinalization },
+        orca: { attempts: [concludedAudit] },
+      },
+      "repair",
+    );
+    expect(repair).toContain("本轮限定审计已出结论（task task-audit）");
+    expect(repair).toContain("audit-finding-1");
+    expect(repair).toContain("audit-evidence-1");
+    expect(repair).toContain("逐项说明闭合情况");
+
+    const audit = await dispatchSpec(
+      { auditRequired: true, checkpoints: { ...node().checkpoints, ...targetedFinalization } },
+      "audit",
+    );
+    expect(audit).toContain("唯一的限定审计");
+    expect(audit).toContain("不改产品代码");
+  });
+
   function ledgerAttemptPath(runtimeRoot, taskId) {
     return join(runtimeRoot, "riskflow-orchestration", "attempts", `${taskId}.json`);
   }

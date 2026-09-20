@@ -482,6 +482,14 @@ async function ensureRun(exec, invocation, rootDir, node, idempotencyKey, reuseE
   return runId;
 }
 
+// 本轮已出结论的限定审计（用于把 finding 直接写进修复尝试的派发说明）。
+function concludedAudit(node) {
+  const attempts = (node.orca?.attempts ?? []).filter(
+    (attempt) => attempt.taskKind === "audit" && attempt.runState === "settled",
+  );
+  return attempts.at(-1) ?? null;
+}
+
 function taskSpec(node, taskKind, envelopeOptions = {}) {
   const responsibility = {
     planning:
@@ -505,10 +513,29 @@ function taskSpec(node, taskKind, envelopeOptions = {}) {
   ];
   if (taskKind === "finalization" || taskKind === "audit") {
     lines.push(
-      "同一收尾轮次最多一次限定审计：审计发现的普通缺陷必须在同一收尾轮次内一次修完。",
-      "禁止为同一收尾重复派发新的 Finalizer 或第二次审计；机制上无法在既定会话内完成时必须 escalation，不得自行再开一轮。",
+      "",
+      "=== 收尾轮次协议 ===",
+      "同一收尾轮次最多一次限定审计；禁止请求或期待第二次审计，也禁止期待新的 Finalizer 接管本轮。",
+      "机制上无法在本会话内完成时必须 escalation，不得自行再开一轮。",
       "审计结论与随后修复的证据必须一并写入同一 verification。",
     );
+    if (taskKind === "audit") {
+      lines.push(
+        "你是本收尾轮次唯一的限定审计：只报告 finding 与证据，不改产品代码；结论写入同一 verification，供本轮修复尝试逐项闭合。",
+      );
+    } else if (node.auditRequired === false && concludedAudit(node)) {
+      const audit = concludedAudit(node);
+      lines.push(
+        `本轮限定审计已出结论（task ${audit.taskId}）。其 finding 必须逐项闭合，不得遗漏或改为"后续注意事项"：`,
+        `- audit issueRefs：${JSON.stringify(audit.issueRefs ?? [])}`,
+        `- audit evidenceRefs：${JSON.stringify(audit.evidenceRefs ?? [])}`,
+        "先读取该审计写入的 verification 与证据，逐项修复并回归，并在 worker_done 中逐项说明闭合情况。",
+      );
+    } else {
+      lines.push(
+        "若本次修改触及 permission/transaction/critical-state-machine/semantic-merge，本轮会由协调端触发一次限定审计；你填写的 verification 必须为审计结论留出位置。",
+      );
+    }
   }
   // 重开规划必须把「为什么重开」送进规划任务：否则规划者只按通用文案补齐模板章节，
   // 不会覆盖被取代尝试升级出来的批准范围（实测发生过一次）。

@@ -1,61 +1,54 @@
-# C26 定向独立核验报告
+# C26 最终核验报告
 
 验证对象：`deliver-warning-tasks-and-in-app-notification`
 
-输入与产物 HEAD：`1201085e1b9365fcd118da62db02ae3a166e0843`。本轮仅审计权限、事务、关键状态机和语义 merge 接缝，不修改生产代码、公共契约、迁移或测试，不提交、不合并、不归档。
+实际 schema：`riskflow-delivery`
 
-## 结论
+本轮输入 HEAD：`fffa13f790c48b6054f03d00d29bc644f13880fd`（协调端已将两项限定审计发现纳入 C26 收口）；最终修复保持未提交，等待协调端审阅并形成检查点。
+
+## Summary
 
 | 维度 | 结果 |
 | --- | --- |
-| 完整性 | 17/17 tasks 已勾选；7 项 Requirement 与 22 个 Scenario 已读取并对照限定范围实现 |
-| 权限 | 1 项 CRITICAL：`open` 的空间授权过滤晚于目标读取，可泄露同工程未授权空间中的评估引用是否存在 |
-| 事务 | `open`、`acknowledge` 与异步投递分别复用 C03 原子事务/幂等消费者；回滚、重放和并发代表性测试通过 |
-| 状态机 | 当前 C26 服务不会重开已关闭任务；数据库未约束 `closed → open` 回退，记录 1 项 WARNING |
-| 合并一致性 | C26 实施后 6 次 main 合并未在受影响路径产生 combined diff；中央 `000044` 登记和 feature exports 未丢失 |
+| 完整性 | 20/20 tasks；7 项 Requirement、22 个 Scenario 均有实现或既有代表性证据 |
+| 正确性 | 两项限定审计 finding 已修复；受影响 PostgreSQL、Worker 与迁移发现回归 33/33 通过 |
+| 一致性 | D-01～D-13、IP-01～IP-12 保持；无公共契约、依赖、额外迁移号或范围变化 |
 
-当前存在 1 项未解决 CRITICAL，不应归档。两项 finding 均涉及权限或迁移/持久化边界，已通过 Orca escalation 交由协调者决定修复任务；本轮 Targeted Auditor 未越权修改实现。
+最终评估：无未解决 CRITICAL、WARNING 或 SUGGESTION；当前产物可交由协调端再次执行权限/状态机限定审计。
 
-## CRITICAL
+## Finding 处置
 
-### C26-AUD-01：`open` 可枚举同工程未授权空间中的评估引用
+### C26-AUD-01：`open` 空间授权晚于目标读取 — 已解决
 
-- 规格要求在任何目标读取前复验当前工程、空间和分支授权；无权、跨空间或不存在目标必须不可枚举。
-- `#verifyCommand` 会复验授权上下文，但 `open` 随后把命令携带的 authorization 交给 reader，先读取评估，再对返回的空间执行 `#requireAuthorizedSpatialScope`：`packages/adapters/src/warning/postgres-warning-lifecycle-adapter.ts:447`、`:448`、`:454`。
-- reader 的 SQL 只按 `project_id` 和评估精确引用过滤，没有把已复验的空间集合放入查询：`packages/adapters/src/warning/postgres-warning-lifecycle-adapter.ts:267`、`:291`、`:294`。
-- 因此同工程调用者查询未授权空间中存在的引用时得到 `AUTHORIZATION_DENIED`；查询不存在引用时，reader 在 `:295` 产生 `assessment-unavailable`，映射为 `BUSINESS_BLOCKED`。返回码差异泄露目标是否存在。
-- 现有授权测试只覆盖伪造的外工程 authorization context，没有覆盖“同工程、有效上下文、未授权空间”的存在/不存在等价拒绝：`packages/adapters/test/warning/postgres-warning-lifecycle-adapter.test.ts:376`。
-- 建议：reader 使用 `#verifyCommand` 返回的当前授权，并在同一目标 SQL 中按获准空间过滤；补一组同工程跨空间的存在/不存在测试，二者均断言不可枚举 `AUTHORIZATION_DENIED` 且零副作用。该修复落实既有批准语义，不应放宽权限或改公共 DTO。
+- `packages/adapters/src/warning/postgres-warning-lifecycle-adapter.ts:253` 的 reader 现在只接收 `#verifyCommand` 返回的当前 C06 授权；评估、输入快照与准备快照的精确联结查询同时按获准空间实体过滤。
+- 查询未命中统一返回不可枚举的 `AUTHORIZATION_DENIED`，不会再以 `AUTHORIZATION_DENIED` / `BUSINESS_BLOCKED` 区分同工程未授权空间中的引用是否存在；策略提供者也改用同一已复验上下文。
+- `packages/adapters/test/warning/postgres-warning-lifecycle-adapter.test.ts:425` 使用真实 C06 子空间授权证明：未授权目标存在与不存在均返回 `AUTHORIZATION_DENIED`，且 warning 与 command receipt 计数不变。
 
-## WARNING
+### C26-AUD-02：缺少 `closed → open` 持久化守卫 — 已解决
 
-### C26-AUD-02：任务表未在数据库层阻止 `closed → open`
+- `packages/adapters/src/postgres/migrations/warning-response/deliver-warning-tasks-and-in-app-notification/000044_warning_tasks_and_in_app_notification.ts:495` 在既有 `000044` 内增加可重复建立的单向 transition trigger；`closed → open` 以 SQLSTATE `23514` 失败，`open → closed` 及非状态列窄更新不受影响。
+- down 在删除任务表后清理 trigger function；重复 up、逆序 down 与重建仍通过。未新增迁移、依赖、中央登记或公共 Schema。
+- `packages/adapters/test/warning/postgres-warning-lifecycle-adapter.test.ts:313` 以 `riskflow_app` 连接尝试重开已关闭任务，数据库拒绝后状态仍为 `closed`，随后同归集键预警创建新任务实体。
 
-- design §5.2 将任务状态固定为 `open → closed`；delta spec 要求已关闭任务不得重新打开。
-- `000044` 只检查 `status IN ('open', 'closed')`，并向 `riskflow_app` 授予 `status` 列 UPDATE：`packages/adapters/src/postgres/migrations/warning-response/deliver-warning-tasks-and-in-app-notification/000044_warning_tasks_and_in_app_notification.ts:193`、`:197`、`:503`。
-- 当前 `open` 路径只选择未关闭任务，现有测试也证明关闭后会创建新任务实体，因此 C26 当前入口行为正确；但数据库没有 transition guard，后续任一使用应用角色的写路径都能把 closed 行改回 open，破坏持久化状态机。
-- 建议：由迁移所有者决定是否在 `000044` 增加单向 transition trigger/constraint，并补数据库角色下的 closed→open 拒绝测试。此项涉及迁移语义，不能由本轮 auditor 直接修改。
+## Requirement 与设计核对
 
-## 已通过的定向核验
-
-- `open` 使用 serializable 事务并在有限预算内重试；预警唯一键、未关闭任务部分唯一索引、任务行锁、命令收据、审计和 Outbox 在同一 C03 事务中提交。注入审计冲突的测试证明业务表、回执和事件整体回滚后可安全重试。
-- `acknowledge` 先复验当前 C06 上下文，在事务内锁定当前任务并校验 warning/task/空间/版本/关联；确认、审计、命令回执和事件原子提交。并发确认只保留首次事实，失败者按提交后事实稳定返回业务阻塞。
-- Worker 只处理 strict `warning.warning-recorded.v1`，复用 `PostgresIdempotentConsumer` 的事务与 receipt；投递失败仅回滚独立投递事务并记录 pending attempt，重试与重复事件不复制通知。
-- 迁移七表、FK/唯一索引/最小 grant、逆序 down/up 与中央 manifest 的代表性测试通过；除 C26-AUD-02 外未发现额外事务或关键状态机偏差。
-- `a4705ba..HEAD` 的受影响路径只新增了 finalizer 对 warning adapter 与对应测试的修正；逐个 merge commit 的 combined diff 在 C26 路径为空，未发现语义 merge 冲突。最终 `apps/worker/src/index.ts`、两个 package `./warning` exports、授权 fixture 和 PostgreSQL foundation manifest 均保留 C26 接缝。
+- “预警只能消费已持久化的确定性评估事实”：精确 C25 三表读取、当前授权空间过滤、冻结策略匹配与空计划路径保持成立。
+- “每个评估与触发类型形成唯一不可变预警”及“处置任务按工程风险与空间归集”：数据库唯一键、serializable 重试、未关闭任务部分唯一索引和任务版本只追加保持成立。
+- “打开预警的事实与事件必须原子且幂等”：warning/task/intent/audit/receipt/outbox 仍由一个 C03 事务提交；失败回滚与同键重放回归通过。
+- “应用内通知投递不得影响预警事实”：Worker 仍复用 `PostgresIdempotentConsumer` 的独立事务，失败与重放回归通过。
+- “确认只记录已读接管”与“预警链路可重放且最小披露”：确认不更新 warning/assessment/task/delivery；错误、事件与普通结果仍仅披露稳定引用和原因类别。
+- D-03/D-10 的权限顺序已按 finding 收紧；D-05/D-09 的 `open → closed` 状态机现由调用路径与数据库共同守卫。其余 D-ID/IP-ID 未发生语义变化。
 
 ## 实际命令与证据
 
-- `openspec status --change deliver-warning-tasks-and-in-app-notification --json`：`schemaName=riskflow-delivery`，五工件 done。
-- `openspec instructions apply --change deliver-warning-tasks-and-in-app-notification --json`：17/17 tasks complete；已完整读取返回的全部 contextFiles。
-- `codegraph explore "C26 warning permission authorization transaction state machine semantic conflicts: ..."`：CLI 报当前 worktree 无可用 `.codegraph/` index，随后按项目规则回退到 `rg`、Git 与逐文件读取，未自行建索引。
-- `git diff --name-status main...HEAD`、`git diff --name-status a4705ba..HEAD -- <C26 paths>`、逐个 `git diff-tree --cc`：确认 C26 文件范围、finalizer 修正和无 C26 combined merge diff。
+- `pnpm exec vitest run packages/adapters/test/warning/postgres-warning-lifecycle-adapter.test.ts`：1 file / 12 tests passed。
 - `pnpm exec vitest run packages/adapters/test/warning/postgres-warning-lifecycle-adapter.test.ts apps/worker/test/warning/runtime.test.ts packages/adapters/test/postgres/postgres-foundation.test.ts`：3 files / 33 tests passed。
+- `pnpm exec tsc -b packages/core/tsconfig.json packages/adapters/tsconfig.json apps/worker/tsconfig.json --pretty false`：exit 0，无诊断。
+- `pnpm exec eslint packages/adapters/src/warning packages/adapters/test/warning packages/adapters/src/postgres/migrations/warning-response/deliver-warning-tasks-and-in-app-notification/000044_warning_tasks_and_in_app_notification.ts`：exit 0。
+- `pnpm exec prettier --check openspec/changes/deliver-warning-tasks-and-in-app-notification packages/adapters/src/warning packages/adapters/test/warning packages/adapters/src/postgres/migrations/warning-response/deliver-warning-tasks-and-in-app-notification/000044_warning_tasks_and_in_app_notification.ts`：通过。
+- `pnpm run deps:check && pnpm run deps:policy && git diff --check`：269 modules / 737 dependencies 无违规，dependency policy OK，diff check 通过。
 - `openspec validate deliver-warning-tasks-and-in-app-notification --strict --no-interactive`：change valid。
-- `pnpm exec prettier --check openspec/changes/deliver-warning-tasks-and-in-app-notification/verification.md && git diff --check`：通过。
 
 ## 剩余事项
 
-1. 修复并回归 C26-AUD-01 后重新执行权限定向核验；修复前不得归档。
-2. 协调者决定 C26-AUD-02 是否在当前 change 内以数据库 transition guard 收口；若暂不修复，须显式接受持久化状态机仅由调用路径保证的风险。
-3. 修复若实质改变权限、迁移或最终产物，必须再次核验受影响范围；旧 PASS 不能覆盖新产物。
+无产品实现 finding。协调端仍需审阅六个 dirty paths、形成 Git 检查点，并按编排策略再次触发限定审计；本 worker 不提交、不合并、不归档。

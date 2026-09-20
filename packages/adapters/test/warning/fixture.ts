@@ -87,6 +87,11 @@ export interface WarningLifecyclePostgresFixtureV1 {
     readonly commandId: string;
     readonly assessmentRecordRef: RiskAssessmentRecordRefV1;
   }): OpenWarningCommandV1;
+  /** 同工程但仅获准另一空间的命令，用于验证目标存在与否均不可枚举。 */
+  spatiallyRestrictedOpenCommand(input: {
+    readonly commandId: string;
+    readonly assessmentRecordRef: RiskAssessmentRecordRefV1;
+  }): Promise<OpenWarningCommandV1>;
   /** 只按精确引用解析；`missing` 让提供者表现为未解析到策略（失败闭合用例）。 */
   setPolicyAvailability(value: "available" | "missing"): void;
   setNotificationPolicy(recipients: readonly string[]): void;
@@ -220,6 +225,31 @@ export const startWarningLifecycleFixture =
           requestedAt: C26_FIXTURE_TIME,
         })
       ).context;
+
+    const restrictedScopeRef = {
+      kind: "spatial-scope" as const,
+      reference: {
+        entityId: "scope-c26-restricted",
+        versionId: "scope-c26-restricted-r1",
+      },
+    };
+    await adminPool.query(
+      `INSERT INTO business.access_spatial_scopes (scope_id, project_id, current_revision_id)
+       VALUES ($1, $2, $3)`,
+      [restrictedScopeRef.reference.entityId, projectId, restrictedScopeRef.reference.versionId],
+    );
+    await adminPool.query(
+      `INSERT INTO business.access_spatial_scope_revisions
+         (revision_id, scope_id, project_id, revision_no, parent_scope_id, status, recorded_by)
+       VALUES ($1, $2, $3, 1, $4, 'active', $5)`,
+      [
+        restrictedScopeRef.reference.versionId,
+        restrictedScopeRef.reference.entityId,
+        projectId,
+        rootRow.rows[0]!.scope_id,
+        c25.managerId,
+      ],
+    );
 
     const aggregationPolicy: WarningAggregationPolicyV1 = {
       schemaVersion: "1",
@@ -448,6 +478,26 @@ export const startWarningLifecycleFixture =
             decidedAt: C26_FIXTURE_TIME,
             invocation: { kind: "human" },
           },
+          payload: {
+            assessmentRecordRef: input.assessmentRecordRef,
+            warningAggregationPolicyRef: aggregationPolicyRef,
+            notificationPolicyRef,
+          },
+        }) as OpenWarningCommandV1;
+      },
+      async spatiallyRestrictedOpenCommand(input) {
+        return OpenWarningCommandV1Schema.parse({
+          kind: "open",
+          commandId: input.commandId,
+          idempotencyKey: input.commandId,
+          projectId,
+          actorId: c25.managerId,
+          issuedAt: C26_FIXTURE_TIME,
+          authorization: await authorizationFor({
+            branch: "warning-response.open",
+            invocationId: input.commandId,
+            spatialScopeRefs: [restrictedScopeRef],
+          }),
           payload: {
             assessmentRecordRef: input.assessmentRecordRef,
             warningAggregationPolicyRef: aggregationPolicyRef,

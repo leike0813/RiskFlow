@@ -492,6 +492,27 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     .columns(["project_id", "warning_record_id", "warning_record_version_id"])
     .execute();
 
+  await sql`
+    CREATE OR REPLACE FUNCTION business.guard_warning_response_task_reopen()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+      IF OLD.status = 'closed' AND NEW.status = 'open' THEN
+        RAISE EXCEPTION USING
+          ERRCODE = '23514',
+          CONSTRAINT = 'warning_response_tasks_no_reopen_ck';
+      END IF;
+      RETURN NEW;
+    END;
+    $$;
+  `.execute(db);
+  await sql`DROP TRIGGER IF EXISTS warning_response_tasks_no_reopen_trg
+    ON business.warning_response_tasks`.execute(db);
+  await sql`CREATE TRIGGER warning_response_tasks_no_reopen_trg
+    BEFORE UPDATE OF status ON business.warning_response_tasks
+    FOR EACH ROW EXECUTE FUNCTION business.guard_warning_response_task_reopen()`.execute(db);
+
   await revokeAll(db);
   await sql`GRANT SELECT, INSERT ON TABLE ${sql.raw(tables.join(", "))} TO riskflow_app`.execute(
     db,
@@ -516,5 +537,6 @@ export async function down(db: Kysely<unknown>): Promise<void> {
   await db.schema.dropTable("business.warning_response_task_warnings").ifExists().execute();
   await db.schema.dropTable("business.warning_response_task_versions").ifExists().execute();
   await db.schema.dropTable("business.warning_response_tasks").ifExists().execute();
+  await sql`DROP FUNCTION IF EXISTS business.guard_warning_response_task_reopen()`.execute(db);
   await db.schema.dropTable("business.warning_records").ifExists().execute();
 }

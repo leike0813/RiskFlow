@@ -60,8 +60,11 @@
 
 ## 8. 限定审计发现的收口（授权：在 C26 内直接收口）
 
-- [ ] 8.1 [IP-01, IP-05] 修正授权顺序：空间授权检查必须发生在任何按工程读取评估依据之前，使同工程内的未授权空间目标无法通过 `AUTHORIZATION_DENIED` 与 `BUSINESS_BLOCKED` 的差异被枚举；补回归断言覆盖"未授权目标不得泄露目标状态差异"。
+- [x] 8.1 [IP-01, IP-05] 修正授权顺序：空间授权检查必须发生在任何按工程读取评估依据之前，使同工程内的未授权空间目标无法通过 `AUTHORIZATION_DENIED` 与 `BUSINESS_BLOCKED` 的差异被枚举；补回归断言覆盖"未授权目标不得泄露目标状态差异"。
   - 依据：C26 限定审计结论 `openspec/changes/deliver-warning-tasks-and-in-app-notification/verification.md`（finding `open-checks-assessment-before-spatial-authorization`）。
-- [ ] 8.2 [IP-02, IP-04] 落实 delta spec 既有要求「已关闭任务不得因后续同键预警重新打开」的守卫，使 `closed → open` 不可能发生；优先应用层的条件更新/状态检查，确需数据库约束时按 `§8 共享机械接缝` 处理并在回报中列出精确登记项。补回归断言。
+  - 证据：`PostgresWarningAssessmentContextReader.read` 使用 `#verifyCommand` 返回的当前 C06 授权，并在同一精确目标 SQL 中按获准空间过滤；同工程受限空间下存在/不存在评估引用均返回 `AUTHORIZATION_DENIED` 且无回执或预警事实。`packages/adapters/test/warning/postgres-warning-lifecycle-adapter.test.ts` 通过。
+- [x] 8.2 [IP-02, IP-04] 落实 delta spec 既有要求「已关闭任务不得因后续同键预警重新打开」的守卫，使 `closed → open` 不可能发生；优先应用层的条件更新/状态检查，确需数据库约束时按 `§8 共享机械接缝` 处理并在回报中列出精确登记项。补回归断言。
   - 依据：同一审计结论（finding `closed-to-open-transition-guard-missing`）。该要求已存在于本 change 的 delta spec，属缺陷修复而非范围扩张。
-- [ ] 8.3 [IP-12] 完成 8.1/8.2 后重跑受影响回归与 `openspec validate deliver-warning-tasks-and-in-app-notification --strict --no-interactive`，并把两项 finding 的处置结论写回 `verification.md`，供协调端再次触发限定审计。
+  - 证据：`000044` 增加 `warning_response_tasks_no_reopen_trg`，应用角色执行 `closed → open` 收到数据库拒绝且任务保持关闭；迁移重复 up、down、重建及中央 provider 测试均通过。共享机械接缝无需新增登记项，仍只登记既有 `000044`。
+- [x] 8.3 [IP-12] 完成 8.1/8.2 后重跑受影响回归与 `openspec validate deliver-warning-tasks-and-in-app-notification --strict --no-interactive`，并把两项 finding 的处置结论写回 `verification.md`，供协调端再次触发限定审计。
+  - 证据：warning adapter 单测 12/12；warning adapter + Worker + PostgreSQL foundation 33/33；core/adapters/worker TypeScript build、ESLint、Prettier、`deps:check`、`deps:policy`、`git diff --check` 与 OpenSpec strict validate 全部通过。最终结论见 `verification.md`。

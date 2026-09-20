@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { WarningRecordSchema } from "@riskflow/contracts/records";
@@ -312,6 +313,15 @@ describe("C26 预警与处置任务 PostgreSQL 链", () => {
 
     // 已关闭任务不被重新使用：同键的新预警创建新任务实体。
     await state.closeTask(taskRef.reference.entityId);
+    await expect(
+      sql`UPDATE business.warning_response_tasks
+          SET status = 'open', updated_at = NOW()
+          WHERE project_id = ${state.projectId}
+            AND task_id = ${taskRef.reference.entityId}`.execute(state.db),
+    ).rejects.toBeDefined();
+    expect(
+      (await state.taskRows()).find((task) => task.taskId === taskRef.reference.entityId)?.status,
+    ).toBe("closed");
     const third = await state.assess({ suffix: "series-3" });
     const openedThird = await state.adapter.open(
       await state.openCommand({
@@ -415,7 +425,26 @@ describe("C26 预警与处置任务 PostgreSQL 链", () => {
     );
     expect(missingAssessment.kind).toBe("failed");
     if (missingAssessment.kind === "failed") {
-      expect(missingAssessment.error.code).toBe("BUSINESS_BLOCKED");
+      expect(missingAssessment.error.code).toBe("AUTHORIZATION_DENIED");
+    }
+
+    const restrictedExisting = await state.adapter.open(
+      await state.spatiallyRestrictedOpenCommand({
+        commandId: "c26-open-restricted-existing",
+        assessmentRecordRef: assessment.assessmentRecordRef,
+      }),
+    );
+    const restrictedMissing = await state.adapter.open(
+      await state.spatiallyRestrictedOpenCommand({
+        commandId: "c26-open-restricted-missing",
+        assessmentRecordRef: await state.assessWithMissingAssessment(),
+      }),
+    );
+    for (const result of [restrictedExisting, restrictedMissing]) {
+      expect(result.kind).toBe("failed");
+      if (result.kind === "failed") {
+        expect(result.error.code).toBe("AUTHORIZATION_DENIED");
+      }
     }
 
     // 未获准工程的调用方得到不可枚举拒绝，且不泄露目标是否存在。

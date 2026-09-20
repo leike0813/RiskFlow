@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { Kysely, Transaction } from "kysely";
+import { sql, type Kysely, type Transaction } from "kysely";
 
 import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/access";
 import {
@@ -264,6 +264,15 @@ export class PostgresWarningAssessmentContextReader implements WarningAssessment
     readonly assessmentRecordRef: RiskAssessmentRecordRefV1;
   }): Promise<WarningAssessmentContextV1> {
     const targetRef = input.assessmentRecordRef;
+    const authorizedSpatialScopeIds = input.authorization.spatialScopeRefs.map(
+      (scope) => scope.reference.entityId,
+    );
+    if (authorizedSpatialScopeIds.length === 0) {
+      failWarningLifecycle("warning-lifecycle-authorization-required", {
+        kind: "authorization-context",
+        reference: { entityId: "warning-response.unauthorized", versionId: "1" },
+      });
+    }
     const row = await this.#db
       .selectFrom("business.risk_assessment_records as record")
       .innerJoin("business.assessment_input_snapshots as input", (join) =>
@@ -291,8 +300,18 @@ export class PostgresWarningAssessmentContextReader implements WarningAssessment
       .where("record.project_id", "=", input.authorization.projectId)
       .where("record.record_id", "=", targetRef.reference.entityId)
       .where("record.version_id", "=", targetRef.reference.versionId)
+      .where(
+        sql<boolean>`preparation.spatial_scope_ref -> 'reference' ->> 'entityId' IN (${sql.join(
+          authorizedSpatialScopeIds,
+        )})`,
+      )
       .executeTakeFirst();
-    if (row === undefined) failWarningLifecycle("assessment-unavailable", targetRef);
+    if (row === undefined) {
+      failWarningLifecycle("warning-lifecycle-authorization-required", {
+        kind: "authorization-context",
+        reference: { entityId: "warning-response.unauthorized", versionId: "1" },
+      });
+    }
 
     const record = RiskAssessmentRecordSchema.safeParse(row.record_payload);
     const inputSnapshot = AssessmentInputSnapshotV1Schema.safeParse(row.input_snapshot_payload);
@@ -448,7 +467,7 @@ export class PostgresWarningLifecycleAdapter
       const context = await this.#assessmentContext.read({
         requestId: valid.commandId,
         requestedAt: this.#nowIso(),
-        authorization: valid.authorization,
+        authorization: verified,
         assessmentRecordRef: valid.payload.assessmentRecordRef,
       });
       this.#requireAuthorizedSpatialScope(verified, context.spatialScopeRef);
@@ -464,7 +483,7 @@ export class PostgresWarningLifecycleAdapter
       const policies = await this.#runtimePolicies.read({
         requestId: valid.commandId,
         requestedAt: this.#nowIso(),
-        authorization: valid.authorization,
+        authorization: verified,
         warningAggregationPolicyRef: valid.payload.warningAggregationPolicyRef,
         notificationPolicyRef: valid.payload.notificationPolicyRef,
       });

@@ -53,6 +53,7 @@ import {
 import { makePersistenceError } from "../../src/postgres/pool.js";
 import { PostgresAssessmentConfigurationAdapter } from "../../src/assessment-config/index.js";
 import { PostgresKnowledgeGovernanceAdapter } from "../../src/knowledge-governance/index.js";
+import type { KnowledgeGovernanceReviewAuthorizationProviderV1 } from "../../src/knowledge-governance/index.js";
 import { PostgresReviewAuditAdapter } from "../../src/review-audit/index.js";
 import { PostgresAgentTaskAdapter } from "../../src/agent-runtime/index.js";
 import {
@@ -614,25 +615,26 @@ export const startScoringRulesFixture = async (): Promise<ScoringRulesPostgresFi
   });
   configurationRef.current = configuration;
 
-  const reviewAuthorization = (command: { projectId: string; actorId: string }) =>
-    stubContext(
-      command.projectId,
-      command.actorId,
-      ["review-audit.request-review", "review-audit.trace", "review-audit.decide-review"],
-      {
-        kind: "authorization-context",
-        reference: { entityId: `${command.projectId}:review-authorization`, versionId: "1" },
-      },
-      SCORING_RULES_TEST_ISSUED_AT,
-    );
+  const reviewAuthorizationProvider: KnowledgeGovernanceReviewAuthorizationProviderV1 = {
+    authorize: async (input) =>
+      stubContext(
+        input.projectId,
+        input.actorId,
+        input.branch,
+        {
+          kind: "authorization-context",
+          reference: { entityId: `${input.projectId}:review-authorization`, versionId: "1" },
+        },
+        SCORING_RULES_TEST_ISSUED_AT,
+      ),
+  };
   const governance = new PostgresKnowledgeGovernanceAdapter({
     db,
     transactionUnit,
     access,
     reviewAudit,
     now,
-    reviewAuthorization,
-    approvalAuthorization: reviewAuthorization,
+    reviewAuthorizationProvider,
     assessmentConfigurationPolicy:
       configuration as unknown as AssessmentConfigurationGovernancePolicyV1,
     scoringRulesPolicy: scoringRules,

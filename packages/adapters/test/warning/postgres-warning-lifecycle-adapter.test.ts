@@ -501,6 +501,26 @@ describe("C26 预警与处置任务 PostgreSQL 链", () => {
     const event = await state.lastEvent("warning.warning-acknowledged.v1");
     expect(event?.aggregateRef).toEqual(taskRef);
 
+    const unauthorizedCommand = await state.acknowledgeCommand({
+      commandId: "c26-ack-invalid-authorization",
+      warningRecordRef: warningRef,
+      warningResponseTaskRef: taskRef,
+    });
+    const unauthorized = await state.adapter.acknowledge({
+      ...unauthorizedCommand,
+      authorization: {
+        ...unauthorizedCommand.authorization,
+        authorizationContextRef: {
+          kind: "authorization-context",
+          reference: { entityId: "authorization-absent", versionId: "1" },
+        },
+      },
+    } as never);
+    expect(unauthorized.kind).toBe("failed");
+    if (unauthorized.kind === "failed") {
+      expect(unauthorized.error.code).toBe("AUTHORIZATION_DENIED");
+    }
+
     // 确认不解除风险：预警、任务、意图与投递状态全部保持原值。
     expect(
       await state.warningRows({ assessmentRecordRef: assessment.assessmentRecordRef }),
@@ -514,7 +534,7 @@ describe("C26 预警与处置任务 PostgreSQL 链", () => {
       [],
     );
 
-    // 同键重试返回首次结果且不重复事实；不同命令再次确认同一配对返回业务冲突。
+    // 同键重试返回首次结果，同键异载荷优先返回幂等冲突，不重复任何事实。
     const replay = await state.adapter.acknowledge(
       (await state.acknowledgeCommand({
         commandId: "c26-ack-1",
@@ -523,6 +543,23 @@ describe("C26 预警与处置任务 PostgreSQL 链", () => {
       })) as never,
     );
     expect(replay).toEqual(acknowledged);
+    const idempotencyConflict = await state.adapter.acknowledge(
+      (await state.acknowledgeCommand({
+        commandId: "c26-ack-conflict",
+        idempotencyKey: "c26-ack-1",
+        warningRecordRef: {
+          ...warningRef,
+          reference: { ...warningRef.reference, entityId: "warning-absent" },
+        },
+        warningResponseTaskRef: taskRef,
+      })) as never,
+    );
+    expect(idempotencyConflict.kind).toBe("failed");
+    if (idempotencyConflict.kind === "failed") {
+      expect(idempotencyConflict.error.code).toBe("IDEMPOTENCY_CONFLICT");
+    }
+
+    // 不同命令再次确认同一精确配对返回业务冲突。
     const second = await state.adapter.acknowledge(
       (await state.acknowledgeCommand({
         commandId: "c26-ack-2",

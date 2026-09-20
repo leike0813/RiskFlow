@@ -421,13 +421,18 @@ export class PostgresWarningLifecycleAdapter
     verified: AuthorizationContextV1,
     spatialScopeRef: SpatialScopeRefV1,
   ): void {
-    if (
-      !verified.spatialScopeRefs.some(
-        (scope) => scope.reference.entityId === spatialScopeRef.reference.entityId,
-      )
-    ) {
+    if (!this.#hasAuthorizedSpatialScope(verified, spatialScopeRef.reference.entityId)) {
       this.#failAuthorization();
     }
+  }
+
+  #hasAuthorizedSpatialScope(
+    verified: AuthorizationContextV1,
+    spatialScopeEntityId: string,
+  ): boolean {
+    return verified.spatialScopeRefs.some(
+      (scope) => scope.reference.entityId === spatialScopeEntityId,
+    );
   }
 
   // -------------------------------------------------------------------------- open
@@ -909,8 +914,10 @@ export class PostgresWarningLifecycleAdapter
     const valid = parsed.data;
     const warningRef = valid.payload.warningRecordRef;
     const taskRef = valid.payload.warningResponseTaskRef;
+    let verified: AuthorizationContextV1 | undefined;
     try {
-      const verified = await this.#verifyCommand(valid, "warning-response.acknowledge");
+      const currentAuthorization = await this.#verifyCommand(valid, "warning-response.acknowledge");
+      verified = currentAuthorization;
       const recordedAt = this.#nowIso();
       await this.#executeWithRetry(
         this.#atomicCommand(valid, "warning-response.acknowledge", {
@@ -926,6 +933,7 @@ export class PostgresWarningLifecycleAdapter
             warningRef,
             taskRef,
             lock: true,
+            authorization: currentAuthorization,
           });
           if (targetFailure !== undefined) {
             failWarningLifecycle(
@@ -942,7 +950,7 @@ export class PostgresWarningLifecycleAdapter
               warning_record_version_id: warningRef.reference.versionId,
               task_id: taskRef.reference.entityId,
               task_version_id: taskRef.reference.versionId,
-              acknowledged_by_actor_id: verified.actorId,
+              acknowledged_by_actor_id: currentAuthorization.actorId,
               command_id: valid.commandId,
               idempotency_key: valid.idempotencyKey,
               authorization_context_ref: jsonValue(valid.authorization.authorizationContextRef),
@@ -962,7 +970,7 @@ export class PostgresWarningLifecycleAdapter
               projectId: valid.projectId,
               action: "warning-response.acknowledge",
               targetRef: warningRef,
-              actorRef: verified.actorId,
+              actorRef: currentAuthorization.actorId,
               authorizationContextRef: valid.authorization.authorizationContextRef,
               occurredAt: valid.issuedAt,
               recordedAt,
@@ -1020,6 +1028,14 @@ export class PostgresWarningLifecycleAdapter
         },
       };
     } catch (error: unknown) {
+      const directError = this.#toModuleError(error, valid.commandId);
+      if (
+        verified === undefined ||
+        directError.code === "AUTHORIZATION_DENIED" ||
+        directError.code === "IDEMPOTENCY_CONFLICT"
+      ) {
+        return { kind: "failed", error: directError };
+      }
       // C03 事务边界只保留持久化错误码，业务拒绝按提交后可见事实重新定型。
       const classified = await this.#inspectAcknowledgementTargets({
         executor: this.#db,
@@ -1027,11 +1043,12 @@ export class PostgresWarningLifecycleAdapter
         warningRef,
         taskRef,
         lock: false,
+        authorization: verified,
       });
       if (classified !== undefined) {
         return { kind: "failed", error: toWarningModuleError(classified, valid.commandId) };
       }
-      return { kind: "failed", error: this.#toModuleError(error, valid.commandId) };
+      return { kind: "failed", error: directError };
     }
   }
 
@@ -1045,16 +1062,24 @@ export class PostgresWarningLifecycleAdapter
     readonly warningRef: WarningRecordRefV1;
     readonly taskRef: WarningResponseTaskRefV1;
     readonly lock: boolean;
+    readonly authorization: AuthorizationContextV1;
   }): Promise<WarningLifecycleFailureV1 | undefined> {
     const { executor, projectId, warningRef, taskRef } = input;
     const warningRow = await executor
       .selectFrom("business.warning_records")
-      .select(["warning_record_id"])
+      .select(["warning_record_id", "spatial_scope_entity_id"])
       .where("project_id", "=", projectId)
       .where("warning_record_id", "=", warningRef.reference.entityId)
       .where("version_id", "=", warningRef.reference.versionId)
       .executeTakeFirst();
     if (warningRow === undefined) {
+      return {
+        code: "AUTHORIZATION_DENIED",
+        reasonCode: "warning-lifecycle-authorization-required",
+        targetRef: warningRef,
+      };
+    }
+    if (!this.#hasAuthorizedSpatialScope(input.authorization, warningRow.spatial_scope_entity_id)) {
       return {
         code: "AUTHORIZATION_DENIED",
         reasonCode: "warning-lifecycle-authorization-required",
@@ -1079,11 +1104,18 @@ export class PostgresWarningLifecycleAdapter
     }
     const taskQuery = executor
       .selectFrom("business.warning_response_tasks")
-      .select(["status", "current_version_id"])
+      .select(["status", "current_version_id", "spatial_scope_entity_id"])
       .where("project_id", "=", projectId)
       .where("task_id", "=", taskRef.reference.entityId);
     const taskRow = await (input.lock ? taskQuery.forUpdate() : taskQuery).executeTakeFirst();
     if (taskRow === undefined) {
+      return {
+        code: "AUTHORIZATION_DENIED",
+        reasonCode: "warning-lifecycle-authorization-required",
+        targetRef: taskRef,
+      };
+    }
+    if (taskRow.spatial_scope_entity_id !== warningRow.spatial_scope_entity_id) {
       return {
         code: "AUTHORIZATION_DENIED",
         reasonCode: "warning-lifecycle-authorization-required",
@@ -1099,6 +1131,7 @@ export class PostgresWarningLifecycleAdapter
     const link = await executor
       .selectFrom("business.warning_response_task_warnings")
       .select(["warning_record_id"])
+      .where("project_id", "=", projectId)
       .where("task_id", "=", taskRef.reference.entityId)
       .where("warning_record_id", "=", warningRef.reference.entityId)
       .where("warning_record_version_id", "=", warningRef.reference.versionId)

@@ -617,6 +617,34 @@ function isSupersededAttempt(task, scope) {
   );
 }
 
+// 同一阶段内可以先后出现多种责任：finalization 成功且要求限定审计时，audit 会以
+// 新的尝试组（attempt 1）派发。若直接比较跨组的 attempt，新责任会被旧组的更大尝试
+// 次数永久压过，状态视图便一直停在已收口的旧尝试上。
+// 因此先在阶段内按「尝试组边界」定界（组的边界取组内最新创建时间），再在组内按尝试
+// 次数与创建顺序选取。缺少尝试组或创建时间不可比较时回退既有语义，不跨组猜测。
+function latestAttemptGroupScope(phaseTasks) {
+  const groups = new Map();
+  for (const task of phaseTasks) {
+    const group = task.envelope.attemptGroup;
+    const key = nonEmptyString(group) ? `group:${group}` : `task:${task.id}`;
+    groups.set(key, [...(groups.get(key) ?? []), task]);
+  }
+  const boundaries = [...groups.values()].map((members) => {
+    const stamps = members
+      .map((task) => task.createdAt)
+      .filter(nonEmptyString)
+      .sort();
+    return { members, boundary: stamps.at(-1) ?? null };
+  });
+  if (boundaries.some((entry) => !nonEmptyString(entry.boundary))) return phaseTasks;
+  const latestBoundary = boundaries
+    .map((entry) => entry.boundary)
+    .sort()
+    .at(-1);
+  const latestGroups = boundaries.filter((entry) => entry.boundary === latestBoundary);
+  return latestGroups.flatMap((entry) => entry.members);
+}
+
 function taskSummary(tasks, phaseOrder = DEFAULT_PHASE_ORDER) {
   const valid = tasks.filter((task) => task.envelope.valid);
   const window = currentTaskWindow(valid, phaseOrder);
@@ -630,8 +658,9 @@ function taskSummary(tasks, phaseOrder = DEFAULT_PHASE_ORDER) {
   const phaseTasks = currentValid.filter((task) => {
     return phaseRank(task.envelope.phase ?? task.envelope.taskKind, phaseOrder) === maxPhase;
   });
-  const maxAttempt = Math.max(0, ...phaseTasks.map((task) => Number(task.envelope.attempt ?? 0)));
-  const attemptTasks = phaseTasks.filter(
+  const phaseScope = latestAttemptGroupScope(phaseTasks);
+  const maxAttempt = Math.max(0, ...phaseScope.map((task) => Number(task.envelope.attempt ?? 0)));
+  const attemptTasks = phaseScope.filter(
     (task) => Number(task.envelope.attempt ?? 0) === maxAttempt,
   );
   const comparableCreationOrder = attemptTasks.every((task) => nonEmptyString(task.createdAt));
@@ -930,7 +959,12 @@ export function deriveNodeState(node, context) {
   } else if (currentEnvelope?.outcome === "paused") {
     status = "paused";
     nextActions = ["处理结构化升级条件；批准新规划后才可重开实现"];
-  } else if (summary.failed && ["verification", "finalization"].includes(currentKind)) {
+  } else if (
+    summary.failed &&
+    // audit 的失败同样落在收尾责任里：规格要求审计发现的普通缺陷由当前 Finalizer
+    // 在已批准范围内修复并重跑验证；若落入 failed 态，nextTaskKind 没有合法后续角色。
+    ["verification", "finalization", "audit"].includes(currentKind)
+  ) {
     status = "finalizing";
     phase = "finalizing";
     nextActions = ["由强模型 Finalizer 继续修复与回归，或移交新的强模型 Finalizer"];

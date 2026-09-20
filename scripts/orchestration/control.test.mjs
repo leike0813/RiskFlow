@@ -117,6 +117,16 @@ const graph = {
         model: "gpt-5.6-sol",
         thinking: "high",
       },
+      implementation: {
+        agentClass: "bounded-implementer",
+        model: "commandcode/deepseek/deepseek-v4.1-flash",
+        thinking: "max",
+      },
+      audit: {
+        agentClass: "strong-auditor",
+        model: "gpt-5.6-sol",
+        thinking: "high",
+      },
     },
     targetedAudit: ["permission", "transaction", "critical-state-machine", "semantic-merge"],
     noProgressLimit: 3,
@@ -305,6 +315,61 @@ describe("controlled orchestration", () => {
       );
       expect(createdSpec).toContain("按 change 实际 schema 和 applyRequires 创建并闭合规划工件");
       expect(createdSpec).not.toContain("本次为重开规划");
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("records a running attempt for the implementation dispatch path too", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-impl-ledger-"));
+    const planning = node({
+      status: "running",
+      phase: "planning",
+      checkpoints: {
+        ...node().checkpoints,
+        taskKind: "planning",
+        phase: "planning",
+        runState: "settled",
+        outcome: "succeeded",
+      },
+    });
+    const planningSnapshot = snapshot({
+      nodes: [planning],
+      resumeQueue: [
+        { workItemId: "C17", category: "planning", nextAction: "创建有界首轮实现任务" },
+      ],
+    });
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("task-create")) return { id: "task-impl" };
+      if (command === "orca-ide" && args.includes("task-update")) return {};
+      if (command === "orca-ide" && args.includes("terminal") && args.includes("create")) {
+        return { terminal: { handle: "term-impl" } };
+      }
+      if (command === "orca-ide" && args.includes("terminal") && args.includes("wait")) return {};
+      if (command === "orca-ide" && args.includes("--inject")) return { injected: true };
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await riskflowDispatch(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "dispatch-c17-implementation-ledger",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => ({ graph, snapshot: planningSnapshot }),
+        },
+      );
+      const record = JSON.parse(
+        await readFile(
+          join(runtimeRoot, "riskflow-orchestration", "attempts", "task-impl.json"),
+          "utf8",
+        ),
+      );
+      expect(record.envelope).toMatchObject({ taskKind: "implementation", runState: "running" });
     } finally {
       await rm(runtimeRoot, { recursive: true });
     }

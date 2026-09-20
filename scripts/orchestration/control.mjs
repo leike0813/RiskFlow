@@ -699,7 +699,7 @@ async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, id
     ],
     rootDir,
   );
-  return orcaJson(
+  const worker = await orcaJson(
     exec,
     invocation,
     [
@@ -716,6 +716,9 @@ async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, id
     rootDir,
     retryRequest(idempotencyKey, "dispatch"),
   );
+  // 实现分支同样要把台账推进到 running：否则状态视图在整段实现期间仍报告
+  // runState=queued，并给出"派发当前信封指定的受控任务"这种会导致重复派发的下一动作。
+  return { ...worker, ...(await recordRunningAttempt(runtimeDir, node, task)) };
 }
 
 // worker 已启动意味着该尝试进入运行态；登记失败不使派发失败（worker 已在跑，

@@ -562,6 +562,116 @@ describe("worktree-aware state", () => {
     );
   });
 
+  it("selects the newest attempt group as the current attempt within a phase", () => {
+    const node = { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] };
+    const finalization = task({
+      id: "task-c08-finalization",
+      status: "completed",
+      createdAt: "2026-09-04 12:00:00",
+      envelope: v2Envelope({
+        runState: "settled",
+        outcome: "succeeded",
+        outputHead: "feature-head",
+        attempt: 2,
+        attemptGroup: "finalize-c08",
+        owner: {
+          taskId: "task-c08-finalization",
+          agentClass: "strong-finalizer",
+          model: "gpt-5.6-sol",
+        },
+      }),
+    });
+    const audit = task({
+      id: "task-c08-audit",
+      status: "dispatched",
+      createdAt: "2026-09-04 13:00:00",
+      envelope: v2Envelope({
+        taskKind: "audit",
+        phase: "finalizing",
+        runState: "running",
+        attempt: 1,
+        attemptGroup: "audit-c08",
+        auditPolicy: "targeted",
+        owner: {
+          taskId: "task-c08-audit",
+          agentClass: "strong-auditor",
+          model: "gpt-5.6-sol",
+        },
+      }),
+    });
+    const state = deriveNodeState(node, context({ tasks: [finalization, audit] }));
+    expect(state.violations).toEqual([]);
+    expect(state.checkpoints.taskId).toBe("task-c08-audit");
+    expect(state.status).toBe("running");
+  });
+
+  it("keeps the finalizing responsibility when an audit fails", () => {
+    const node = { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] };
+    const audit = task({
+      id: "task-c08-audit",
+      status: "failed",
+      createdAt: "2026-09-04 13:00:00",
+      envelope: v2Envelope({
+        taskKind: "audit",
+        phase: "finalizing",
+        runState: "settled",
+        outcome: "failed",
+        outputHead: "feature-head",
+        attempt: 1,
+        attemptGroup: "audit-c08",
+        auditPolicy: "targeted",
+        owner: {
+          taskId: "task-c08-audit",
+          agentClass: "strong-auditor",
+          model: "gpt-5.6-sol",
+        },
+      }),
+    });
+    const state = deriveNodeState(node, context({ tasks: [audit] }));
+    expect(state.status).toBe("finalizing");
+    expect(state.nextActions).toEqual([
+      "由强模型 Finalizer 继续修复与回归，或移交新的强模型 Finalizer",
+    ]);
+  });
+
+  it("still orders attempts inside one attempt group", () => {
+    const node = { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] };
+    const first = task({
+      id: "task-c08-attempt-1",
+      status: "completed",
+      createdAt: "2026-09-04 12:00:00",
+      envelope: v2Envelope({
+        runState: "settled",
+        outcome: "paused",
+        outputHead: "feature-head",
+        attempt: 1,
+        attemptGroup: "finalize-c08",
+        owner: {
+          taskId: "task-c08-attempt-1",
+          agentClass: "strong-finalizer",
+          model: "gpt-5.6-sol",
+        },
+      }),
+    });
+    const second = task({
+      id: "task-c08-attempt-2",
+      status: "ready",
+      createdAt: "2026-09-04 13:00:00",
+      envelope: v2Envelope({
+        runState: "queued",
+        attempt: 2,
+        attemptGroup: "finalize-c08",
+        owner: {
+          taskId: "task-c08-attempt-2",
+          agentClass: "strong-finalizer",
+          model: "gpt-5.6-sol",
+        },
+      }),
+    });
+    const state = deriveNodeState(node, context({ tasks: [first, second] }));
+    expect(state.checkpoints.taskId).toBe("task-c08-attempt-2");
+  });
+
   it("fails closed when an approved replan does not supersede a finalizing attempt", () => {
     const node = { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] };
     const replan = task({

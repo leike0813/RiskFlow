@@ -48,6 +48,7 @@ export async function defaultExec(command, args, options = {}) {
       encoding: "utf8",
       timeout: options.timeoutMs ?? 20_000,
       maxBuffer: options.maxBuffer ?? 4 * 1024 * 1024,
+      ...(options.env ? { env: options.env } : {}),
     });
     return stdout;
   } catch (error) {

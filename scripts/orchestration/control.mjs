@@ -295,11 +295,13 @@ async function removeStaleLock(lockDir) {
   return true;
 }
 
-export async function withRuntimeLock(rootDir, exec, work) {
-  const runtimeDir = resolve(await gitCommonDir(rootDir, exec), "riskflow-orchestration");
-  const lockDir = resolve(runtimeDir, "control.lock");
-  await mkdir(runtimeDir, { recursive: true });
-  for (let attempt = 0; attempt < 25; attempt += 1) {
+// 初次获取保持 fail-fast（约 1 秒），避免调用方排在长操作后面；
+// 长外部步骤结束后重新获取使用更宽预算，因为此时工作已完成、应尽量提交。
+const LOCK_ACQUIRE_ATTEMPTS = 25;
+const LOCK_REACQUIRE_ATTEMPTS = 1_500;
+
+async function acquireRuntimeLock(lockDir, attempts = LOCK_ACQUIRE_ATTEMPTS) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       await mkdir(lockDir);
     } catch (error) {
@@ -308,18 +310,44 @@ export async function withRuntimeLock(rootDir, exec, work) {
       await delay(40);
       continue;
     }
-    try {
-      await writeFile(
-        resolve(lockDir, "owner.json"),
-        JSON.stringify({ pid: process.pid, createdAt: Date.now() }),
-        "utf8",
-      );
-      return await work(runtimeDir);
-    } finally {
+    await writeFile(
+      resolve(lockDir, "owner.json"),
+      JSON.stringify({ pid: process.pid, createdAt: Date.now() }),
+      "utf8",
+    );
+    return async () => {
       await rm(lockDir, { recursive: true });
-    }
+    };
   }
   throw new ControlError("control_busy", "编排状态正在由另一操作更新，请稍后重试");
+}
+
+export async function withRuntimeLock(rootDir, exec, work) {
+  const runtimeDir = resolve(await gitCommonDir(rootDir, exec), "riskflow-orchestration");
+  const lockDir = resolve(runtimeDir, "control.lock");
+  await mkdir(runtimeDir, { recursive: true });
+  let release = await acquireRuntimeLock(lockDir);
+  let held = true;
+  const lock = {
+    // 长外部步骤在锁外执行：它仍属于同一次幂等操作，只是不占用互斥资源。
+    // 重新取锁写在 finally 中，调用点无法忘记；事实是否变化由调用方按 revision 校验。
+    async withoutLock(step) {
+      if (!held) throw new ControlError("lock_released", "运行时锁已让出，不能重复让出");
+      await release();
+      held = false;
+      try {
+        return await step();
+      } finally {
+        release = await acquireRuntimeLock(lockDir, LOCK_REACQUIRE_ATTEMPTS);
+        held = true;
+      }
+    },
+  };
+  try {
+    return await work(runtimeDir, lock);
+  } finally {
+    if (held) await release();
+  }
 }
 
 // Orca 会在监督派发起步与 worker 报告收口时整体覆盖 `tasks.result`，而 v2 执行信封
@@ -444,7 +472,7 @@ async function ensureRun(exec, invocation, rootDir, node, idempotencyKey, reuseE
   return runId;
 }
 
-function taskSpec(node, taskKind) {
+function taskSpec(node, taskKind, envelopeOptions = {}) {
   const responsibility = {
     planning:
       "按 change 实际 schema 和 applyRequires 创建并闭合规划工件，不实现代码；研究资料只读取 references/风险识别与评估规划事实源摘要.md",
@@ -455,7 +483,7 @@ function taskSpec(node, taskKind) {
     audit: "独立检查权限、事务、关键状态机或语义 merge 冲突的受影响范围，并把结论补入 verification",
     archive: "仅在门禁通过后机械归档",
   }[taskKind];
-  return [
+  const lines = [
     `工作项：${node.id}`,
     `OpenSpec change：${node.change}`,
     `工作树：${node.worktree.id}`,
@@ -464,7 +492,24 @@ function taskSpec(node, taskKind) {
     "先读 AGENTS.md、IMPLEMENTATION-ORCHESTRATION-HANDBOOK.md、IMPLEMENTATION-ORCHESTRATION-RUNBOOK.md 和全部 OpenSpec contextFiles。",
     "公共契约、权限、持久化、迁移、依赖或批准范围变化必须 escalation；禁止提交、合并、归档或扩大范围。",
     "worker_done 必须列出产物 HEAD、证据、实际命令和剩余事项。",
-  ].join("\n");
+  ];
+  // 重开规划必须把「为什么重开」送进规划任务：否则规划者只按通用文案补齐模板章节，
+  // 不会覆盖被取代尝试升级出来的批准范围（实测发生过一次）。
+  if (nonEmptyString(envelopeOptions.approvalRef)) {
+    const checkpoint = node.checkpoints ?? {};
+    lines.push(
+      "",
+      "=== 本次为重开规划 ===",
+      `批准引用：${envelopeOptions.approvalRef}`,
+      `被取代的尝试组：${envelopeOptions.supersedesAttemptGroup ?? checkpoint.attemptGroup ?? "(未记录)"}`,
+      `重开原因（被取代尝试的 issueRefs）：${JSON.stringify(checkpoint.issueRefs ?? [])}`,
+      `被取代尝试的证据（evidenceRefs）：${JSON.stringify(checkpoint.evidenceRefs ?? [])}`,
+      "本工作项 change 目录中由 proposal 引用的批准记录是本次规划的必要输入；先读取它，再据此规划。",
+      "批准记录列出的范围必须逐项展开为 IP-ID、允许文件清单和验证命令；worker_done 必须逐项说明每一条的闭合情况，仅补齐模板章节不构成规划完成。",
+      "若认定批准范围中任一项无法在该 change 已批准语义内闭合，必须在规划工件中显式说明并 escalation。",
+    );
+  }
+  return lines.join("\n");
 }
 
 async function createWorktreeForReadyNode(exec, invocation, rootDir, node) {
@@ -526,7 +571,7 @@ async function createTask(
       "--task-title",
       `${node.id} ${taskKind}`,
       "--spec",
-      taskSpec(node, taskKind),
+      taskSpec(node, taskKind, envelopeOptions),
     ],
     rootDir,
     retryRequest(idempotencyKey, "task-create"),
@@ -693,10 +738,11 @@ async function controlledMutation(action, input, options, perform) {
   const rootDir = await resolveCoordinatorRoot(options.rootDir ?? process.cwd(), exec);
   requiredString(input.expectedRevision, "expectedRevision");
   const idempotencyKey = requiredString(input.idempotencyKey, "idempotencyKey");
-  return withRuntimeLock(rootDir, exec, async (runtimeDir) => {
+  return withRuntimeLock(rootDir, exec, async (runtimeDir, lock) => {
     const prior = await readReceipt(runtimeDir, idempotencyKey, { action, ...input });
     if (prior !== null) return prior;
-    const status = await (options.statusProvider ?? collectStatus)({ rootDir, exec });
+    const collect = options.statusProvider ?? collectStatus;
+    const status = await collect({ rootDir, exec });
     if (status.graphIssues?.length) {
       throw new ControlError("invalid_manifest", status.graphIssues.join("; "));
     }
@@ -705,8 +751,11 @@ async function controlledMutation(action, input, options, perform) {
     const result = await perform({
       rootDir,
       runtimeDir,
+      lock,
       exec,
       idempotencyKey,
+      revision: status.snapshot.revision,
+      collectStatus: () => collect({ rootDir, exec }),
       graph: status.graph,
       snapshot: status.snapshot,
       ...checked,
@@ -1007,7 +1056,14 @@ export async function riskflowIntegrate(input, options = {}) {
       return { ok: true, action: "merge", workItemId: ctx.node.id, mainHead, envelope };
     }
     if (ctx.node.status === "merged") {
-      await ctx.exec("pnpm", ["verify"], { cwd: ctx.rootDir, timeoutMs: 30 * 60_000 });
+      await ctx.lock.withoutLock(() =>
+        ctx.exec("pnpm", ["verify"], {
+          cwd: ctx.rootDir,
+          timeoutMs: 30 * 60_000,
+          env: verificationEnv(),
+        }),
+      );
+      await assertFactsUnchanged(ctx);
       const mainHead = String(
         await ctx.exec("git", ["rev-parse", "HEAD"], { cwd: ctx.rootDir }),
       ).trim();
@@ -1051,6 +1107,25 @@ export async function riskflowIntegrate(input, options = {}) {
     }
     throw new ControlError("integrate_not_allowed", `${ctx.node.id} 没有可执行的集成步骤`);
   });
+}
+
+// 外部验证命令 MUST NOT 继承协调者身份：协调终端设置 ORCA_TERMINAL_HANDLE 后，
+// resolveOrcaInvocation 会把 CLI 从 orca-ide 切换为 orca，使验证结论取决于发起终端。
+function verificationEnv() {
+  const env = { ...process.env };
+  delete env.ORCA_TERMINAL_HANDLE;
+  delete env.ORCA_CLI_COMMAND;
+  return env;
+}
+
+// 长外部步骤在锁外执行，因此必须重新确认它依据的事实集没有变化。
+async function assertFactsUnchanged(ctx) {
+  const current = await ctx.collectStatus();
+  if (current.snapshot.revision !== ctx.revision) {
+    throw new ControlError("stale_revision", "长外部步骤期间编排状态已变化，请重新读取状态", [
+      "调用 riskflow_status 获取新 revision",
+    ]);
+  }
 }
 
 export async function riskflowReconcile(input, options = {}) {

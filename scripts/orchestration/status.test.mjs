@@ -9,6 +9,7 @@ import {
   defaultExec,
   deriveNodeState,
   deriveSnapshot,
+  normalizeTask,
   parseTaskEnvelope,
   readJsonCommand,
   validateGraph,
@@ -211,6 +212,50 @@ describe("execution graph", () => {
       valid: false,
       reason: "invalid_main_verification",
     });
+  });
+});
+
+describe("attempt ledger overlay", () => {
+  it("completes the current attempt from the ledger when Orca no longer carries it", () => {
+    const ledgerEnvelope = v2Envelope({ runState: "running" });
+    const record = {
+      id: "task-c08-finalization",
+      status: "dispatched",
+      run_id: "run-c08",
+      created_by_process_incarnation: "serve-1:instance-1",
+      result: null,
+    };
+    const withoutLedger = normalizeTask(record, "repo-id");
+    expect(withoutLedger.envelope.valid).toBe(false);
+    expect(withoutLedger.repoOwned).toBe(false);
+
+    const withLedger = normalizeTask(record, "repo-id", ledgerEnvelope);
+    expect(withLedger.envelope).toMatchObject({
+      valid: true,
+      workItemId: "C08",
+      taskKind: "finalization",
+      runState: "running",
+      worktreeId,
+    });
+    expect(withLedger.repoOwned).toBe(true);
+    expect(withLedger.runId).toBe("run-c08");
+    expect(withLedger.status).toBe("dispatched");
+  });
+
+  it("prefers the Orca envelope while it is still valid", () => {
+    const orcaPayload = v2Envelope({ runState: "settled", outcome: "paused" });
+    delete orcaPayload.valid;
+    const record = {
+      id: "task-c08-finalization",
+      status: "completed",
+      result: JSON.stringify(orcaPayload),
+    };
+    const normalized = normalizeTask(
+      record,
+      "repo-id",
+      v2Envelope({ runState: "settled", outcome: "succeeded" }),
+    );
+    expect(normalized.envelope).toMatchObject({ runState: "settled", outcome: "paused" });
   });
 });
 
@@ -418,6 +463,41 @@ describe("worktree-aware state", () => {
       },
     });
     expect(state.violations).toEqual([]);
+  });
+
+  it("does not count a superseded attempt as a second active writer after an approved replan", () => {
+    const node = { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] };
+    const superseded = task({
+      id: "task-c08-finalization",
+      status: "ready",
+      createdAt: "2026-09-04 12:00:00",
+      envelope: v2Envelope({ runState: "queued", attempt: 3 }),
+    });
+    const replan = task({
+      id: "task-c08-replan",
+      status: "dispatched",
+      createdAt: "2026-09-04 13:00:00",
+      envelope: v2Envelope({
+        taskKind: "planning",
+        phase: "planning",
+        runState: "running",
+        owner: {
+          taskId: "task-c08-replan",
+          agentClass: "strong-planner",
+          model: "gpt-5.6-sol",
+        },
+        attemptGroup: "C08:planning:approved",
+        approvalRef: "approval://C08/2",
+        supersedesAttemptGroup: "finalize-c08",
+      }),
+    });
+    const state = deriveNodeState(node, context({ tasks: [superseded, replan] }));
+    expect(state.violations).toEqual([]);
+    expect(state).toMatchObject({
+      status: "running",
+      phase: "planning",
+      checkpoints: { taskId: "task-c08-replan" },
+    });
   });
 
   it("fails closed when an approved replan does not supersede a finalizing attempt", () => {

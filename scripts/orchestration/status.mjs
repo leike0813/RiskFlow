@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
@@ -55,11 +55,15 @@ export async function defaultExec(command, args, options = {}) {
   }
 }
 
-export async function resolveCoordinatorRoot(rootDir, exec = defaultExec) {
+export async function gitCommonDir(rootDir, exec = defaultExec) {
   const common = String(
     await exec("git", ["rev-parse", "--git-common-dir"], { cwd: rootDir }),
   ).trim();
-  const gitDir = common.startsWith("/") ? common : resolve(rootDir, common);
+  return common.startsWith("/") ? common : resolve(rootDir, common);
+}
+
+export async function resolveCoordinatorRoot(rootDir, exec = defaultExec) {
+  const gitDir = await gitCommonDir(rootDir, exec);
   return String(
     await exec("git", [`--git-dir=${gitDir}`, "rev-parse", "--show-toplevel"], { cwd: rootDir }),
   ).trim();
@@ -457,8 +461,36 @@ function normalizeWorktree(record, rootDir, repoId) {
   };
 }
 
-function normalizeTask(record, repoId) {
-  const envelope = parseTaskEnvelope(record);
+// Orca 会在监督派发起步（createStartingWorkerDispatch）与 worker 报告收口
+// （settleWorkerReport）时整体覆盖 tasks.result，而 v2 执行信封历史上就存放在该字段。
+// 控制器把当前尝试的正式信封另外持久化在 git common dir 的台账里；状态视图只在该 Task
+// 的 result 不再携带有效信封时用台账补齐，Orca 侧的有效信封始终优先。
+async function readAttemptLedger(runtimeDir) {
+  const entries = new Map();
+  let names;
+  try {
+    names = await readdir(resolve(runtimeDir, "attempts"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return entries;
+    throw error;
+  }
+  for (const name of names.filter((candidate) => candidate.endsWith(".json"))) {
+    try {
+      const record = JSON.parse(await readFile(resolve(runtimeDir, "attempts", name), "utf8"));
+      if (nonEmptyString(record?.taskId) && record.envelope) {
+        entries.set(record.taskId, record.envelope);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return entries;
+}
+
+export function normalizeTask(record, repoId, ledgerEnvelope = null) {
+  const parsed = parseTaskEnvelope(record);
+  const envelope =
+    parsed.valid || !ledgerEnvelope ? parsed : parseTaskEnvelope({ result: ledgerEnvelope });
   const processRef = record?.created_by_process_incarnation ?? "";
   const repoOwned =
     Boolean(repoId && processRef.startsWith(`${repoId}::`)) ||
@@ -602,6 +634,8 @@ function taskSummary(tasks, phaseOrder = DEFAULT_PHASE_ORDER) {
   const latest = current[0] ?? null;
   return {
     current,
+    // 获批 replan 边界之前的尝试已被取代，不再参与当前状态判定（含活动写者计数）。
+    scope: currentValid,
     conflict: signatures.size > 1,
     replanConflict: window.replanConflict,
     failed,
@@ -734,7 +768,7 @@ export function deriveNodeState(node, context) {
   const worktree = worktrees[0] ?? null;
   const summary = taskSummary(tasks, context.phaseOrder);
   if (summary.replanConflict) violations.push({ code: "invalid_replan_boundary" });
-  const activeWriterTasks = tasks.filter((task) => WRITER_TASK_STATUSES.has(task.status));
+  const activeWriterTasks = summary.scope.filter((task) => WRITER_TASK_STATUSES.has(task.status));
   if (activeWriterTasks.length > 1) {
     violations.push({
       code: "duplicate_active_writer",
@@ -1334,11 +1368,14 @@ async function collectFacts({ rootDir, graph, exec, orcaInvocation }) {
         ),
       ),
   );
+  const attemptLedger = await readAttemptLedger(
+    resolve(await gitCommonDir(rootDir, exec), "riskflow-orchestration"),
+  );
   const tasks = [
     ...new Map(
       taskPayloads.flatMap((payload) => extractTasks(payload)).map((record) => [record.id, record]),
     ).values(),
-  ].map((record) => normalizeTask(record, repoId));
+  ].map((record) => normalizeTask(record, repoId, attemptLedger.get(record.id)));
   const repoTasks = tasks.filter((task) => task.repoOwned);
   const repoTaskIds = new Set(repoTasks.map((task) => task.id));
   const repoRunIds = new Set(repoTasks.map((task) => task.runId).filter(Boolean));

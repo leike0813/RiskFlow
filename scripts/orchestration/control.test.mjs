@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -232,6 +232,145 @@ describe("controlled orchestration", () => {
       expect(writtenEnvelope.attemptGroup).toMatch(/^C17:planning:/u);
       expect(createdSpec).toContain("IMPLEMENTATION-ORCHESTRATION-RUNBOOK.md");
       expect(createdSpec).toContain("references/风险识别与评估规划事实源摘要.md");
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  function ledgerAttemptPath(runtimeRoot, taskId) {
+    return join(runtimeRoot, "riskflow-orchestration", "attempts", `${taskId}.json`);
+  }
+
+  async function readLedgerEnvelope(runtimeRoot, taskId) {
+    const record = JSON.parse(await readFile(ledgerAttemptPath(runtimeRoot, taskId), "utf8"));
+    return record.envelope;
+  }
+
+  it("records the running attempt envelope in the ledger after a supervised dispatch", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-attempt-ledger-"));
+    const queued = node({
+      checkpoints: {
+        ...node().checkpoints,
+        schemaVersion: 2,
+        workItemId: "C17",
+        routeNodeId: "C17",
+        changeName: "deliver-process-model",
+        worktreeId: "repo::/tmp/c17",
+        inputHead: "feature-head",
+        approvalRef: null,
+        supersedesAttemptGroup: null,
+      },
+    });
+    const queuedSnapshot = snapshot({
+      nodes: [queued],
+      resumeQueue: [
+        { workItemId: "C17", category: "finalizing", nextAction: "派发强模型 Finalizer" },
+      ],
+    });
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("worker-start")) return { state: "started" };
+      if (command === "orca-ide" && args.includes("task-update")) return {};
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      const result = await riskflowDispatch(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "dispatch-c17-attempt-ledger",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => ({ graph, snapshot: queuedSnapshot }),
+        },
+      );
+      expect(result.worker).toMatchObject({ state: "started", attemptRecorded: true });
+      expect(await readLedgerEnvelope(runtimeRoot, "task-finalizer")).toMatchObject({
+        schemaVersion: 2,
+        workItemId: "C17",
+        taskKind: "finalization",
+        phase: "finalizing",
+        runState: "running",
+        worktreeId: "repo::/tmp/c17",
+        attemptGroup: "C17:finalizing",
+        attempt: 1,
+        auditPolicy: "self",
+        owner: { taskId: "task-finalizer" },
+      });
+      const recorded = await readLedgerEnvelope(runtimeRoot, "task-finalizer");
+      expect(recorded.outcome).toBeUndefined();
+      expect(recorded.outputHead).toBeUndefined();
+      expect(recorded.approvalRef).toBeUndefined();
+      expect(recorded.supersedesAttemptGroup).toBeUndefined();
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("keeps the ledger attempt when the supervised worker never starts", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-attempt-ledger-failed-start-"));
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("task-update")) return {};
+      if (command === "orca-ide" && args.includes("worker-start")) {
+        throw new Error("consumer_fenced");
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await expect(
+        riskflowDispatch(
+          {
+            workItemId: "C17",
+            expectedRevision: "revision-1",
+            idempotencyKey: "dispatch-c17-attempt-ledger-failed-start",
+          },
+          {
+            rootDir: process.cwd(),
+            exec,
+            statusProvider: async () => ({ graph, snapshot: snapshot() }),
+          },
+        ),
+      ).rejects.toThrow("consumer_fenced");
+      expect(await readLedgerEnvelope(runtimeRoot, "task-finalizer")).toMatchObject({
+        runState: "queued",
+        attemptGroup: "C17:finalizing",
+        attempt: 1,
+      });
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("keeps a started worker dispatched when the ledger record is rejected", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-attempt-ledger-rejected-"));
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("task-update")) return {};
+      if (command === "orca-ide" && args.includes("worker-start")) {
+        await rm(join(runtimeRoot, "riskflow-orchestration", "attempts"), { recursive: true });
+        await writeFile(join(runtimeRoot, "riskflow-orchestration", "attempts"), "not a directory");
+        return { state: "started" };
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      const result = await riskflowDispatch(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "dispatch-c17-attempt-ledger-rejected",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => ({ graph, snapshot: snapshot() }),
+        },
+      );
+      expect(result.worker).toMatchObject({ state: "started", attemptRecorded: false });
+      expect(result.worker.attemptWarning).toContain("登记台账失败");
     } finally {
       await rm(runtimeRoot, { recursive: true });
     }

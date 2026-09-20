@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { resolve } from "node:path";
 import { clearTimeout, setTimeout } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
   collectStatus,
   defaultExec,
+  gitCommonDir,
   readJsonCommand,
   resolveCoordinatorRoot,
   resolveOrcaInvocation,
@@ -272,13 +273,6 @@ export function createV2Envelope({
   return envelope;
 }
 
-async function gitCommonDir(rootDir, exec) {
-  const output = String(
-    await exec("git", ["rev-parse", "--git-common-dir"], { cwd: rootDir }),
-  ).trim();
-  return isAbsolute(output) ? output : resolve(rootDir, output);
-}
-
 function processAlive(pid) {
   try {
     process.kill(pid, 0);
@@ -326,6 +320,26 @@ export async function withRuntimeLock(rootDir, exec, work) {
     }
   }
   throw new ControlError("control_busy", "编排状态正在由另一操作更新，请稍后重试");
+}
+
+// Orca 会在监督派发起步与 worker 报告收口时整体覆盖 `tasks.result`，而 v2 执行信封
+// 历史上存放在该字段。控制器把当前尝试的正式信封另外持久化在 git common dir 的台账里，
+// 状态视图只在该 Task 的 result 不再携带有效信封时用它补齐，Orca 侧的有效信封始终优先。
+async function recordAttempt(runtimeDir, envelope) {
+  const taskId = envelope.owner?.taskId;
+  if (!nonEmptyString(taskId)) {
+    throw new ControlError("invalid_input", "尝试信封缺少 owner.taskId，无法登记台账");
+  }
+  const attemptsDir = resolve(runtimeDir, "attempts");
+  await mkdir(attemptsDir, { recursive: true });
+  const path = resolve(attemptsDir, `${taskId}.json`);
+  const temporaryPath = `${path}.${process.pid}.tmp`;
+  await writeFile(
+    temporaryPath,
+    JSON.stringify({ taskId, workItemId: envelope.workItemId, envelope }),
+    "utf8",
+  );
+  await rename(temporaryPath, path);
 }
 
 async function readReceipt(runtimeDir, idempotencyKey, input) {
@@ -541,10 +555,42 @@ async function createTask(
   return { taskId, runId, envelope, role };
 }
 
-async function startWorker(exec, invocation, rootDir, node, task, idempotencyKey) {
+// 从状态视图投影或控制器自建信封归一化出一次尝试的完整 v2 信封：位置与阶段字段
+// 一律以路线节点为准，尝试身份以派发信封为准，且不携带任何质量结论。
+// 投影会把 outcome/approvalRef/supersedesAttemptGroup 补成 null，且不携带
+// schemaVersion、worktreeId、inputHead；直接使用会触发 premature_outcome、
+// invalid_replan_boundary 或 missing_fields。
+function attemptEnvelope(node, task, runState) {
+  const source = task.envelope;
+  const envelope = {
+    ...source,
+    schemaVersion: 2,
+    workItemId: node.id,
+    routeNodeId: node.routeNodeId,
+    changeName: node.change,
+    taskKind: source.taskKind,
+    phase: taskPhase(source.taskKind),
+    worktreeId: node.worktree.id,
+    inputHead: node.worktree.head,
+    runState,
+    owner: {
+      ...(source.owner ?? {}),
+      taskId: task.taskId,
+      agentClass: source.owner?.agentClass ?? task.role.agentClass,
+      model: source.owner?.model ?? task.role.model,
+    },
+  };
+  delete envelope.outcome;
+  delete envelope.outputHead;
+  if (!nonEmptyString(envelope.approvalRef)) delete envelope.approvalRef;
+  if (!nonEmptyString(envelope.supersedesAttemptGroup)) delete envelope.supersedesAttemptGroup;
+  return envelope;
+}
+
+async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, idempotencyKey) {
   const worktree = `id:${node.worktree.id}`;
   if (["planning", "finalization", "audit"].includes(task.envelope.taskKind)) {
-    return orcaJson(
+    const worker = await orcaJson(
       exec,
       invocation,
       [
@@ -566,6 +612,10 @@ async function startWorker(exec, invocation, rootDir, node, task, idempotencyKey
       rootDir,
       retryRequest(idempotencyKey, "worker-start"),
     );
+    return {
+      ...worker,
+      ...(await recordRunningAttempt(runtimeDir, node, task)),
+    };
   }
   const command = `omp --model ${task.role.model} --thinking ${task.role.thinking} --approval-mode yolo`;
   const terminalResult = await orcaJson(
@@ -623,6 +673,21 @@ async function startWorker(exec, invocation, rootDir, node, task, idempotencyKey
   );
 }
 
+// worker 已启动意味着该尝试进入运行态；登记失败不使派发失败（worker 已在跑，
+// 报告失败会诱导上层盲重试），但必须以结构化 warning 暴露，因为该尝试随后可能
+// 因 Orca 覆盖 result 而无法从状态视图解析。
+async function recordRunningAttempt(runtimeDir, node, task) {
+  try {
+    await recordAttempt(runtimeDir, attemptEnvelope(node, task, "running"));
+    return { attemptRecorded: true };
+  } catch (error) {
+    return {
+      attemptRecorded: false,
+      attemptWarning: `worker 已启动，但运行中尝试登记台账失败：${error.message}`,
+    };
+  }
+}
+
 async function controlledMutation(action, input, options, perform) {
   const exec = options.exec ?? defaultExec;
   const rootDir = await resolveCoordinatorRoot(options.rootDir ?? process.cwd(), exec);
@@ -639,6 +704,7 @@ async function controlledMutation(action, input, options, perform) {
     await writeReceipt(runtimeDir, idempotencyKey, { action, ...input }, "inflight");
     const result = await perform({
       rootDir,
+      runtimeDir,
       exec,
       idempotencyKey,
       graph: status.graph,
@@ -696,10 +762,12 @@ export async function riskflowDispatch(input, options = {}) {
           : {},
       );
     }
+    await recordAttempt(ctx.runtimeDir, attemptEnvelope(node, task, "queued"));
     const worker = await startWorker(
       ctx.exec,
       invocation,
       ctx.rootDir,
+      ctx.runtimeDir,
       node,
       task,
       ctx.idempotencyKey,
@@ -894,6 +962,7 @@ async function updateMainSummary(ctx, main, orcaCommand, step) {
     ctx.rootDir,
     retryRequest(ctx.idempotencyKey, step),
   );
+  await recordAttempt(ctx.runtimeDir, envelope);
   return envelope;
 }
 
@@ -1044,6 +1113,7 @@ export async function riskflowReconcile(input, options = {}) {
       ctx.rootDir,
       retryRequest(ctx.idempotencyKey, "reconcile-task-envelope"),
     );
+    await recordAttempt(ctx.runtimeDir, envelope);
     return { ok: true, action: "reconcile", workItemId: ctx.node.id, runId, taskId, envelope };
   });
 }

@@ -2,11 +2,12 @@
 
 ## 1. 实施基线与权威来源
 
-- 初始规划 base commit：`1e51bec508ddad8e2ccdd5af9a9d17b593458af9`；本次修补核对的实现检查点：`e3172c6ff65b8ba4a75e8f794626cc53d410d606`。继续实现前执行 `git rev-parse HEAD`，并用 `git diff --name-only e3172c6ff65b8ba4a75e8f794626cc53d410d606 -- <本计划允许文件>` 复读修补范围。计划依据是本 change 工件、已归档主 specs、C08/C16/C17 当前代码、已归档 `evolve-identification-basis-published-event` D-04、独立 C15 drift change 和待归档的 C08 失败证据窄读前置 change；技术事实只使用 `references/风险识别与评估规划事实源摘要.md`。
+- 本次重开规划 base commit：`645a9352c1b1ef731556dea22196a95b2c14fc85`。批准凭据为 `approval://riskflow/C17/replan-2026-09-20`，取代 `C17:finalizing` 尝试组中 `assessment-basis-resolver-drift`、`requires-c19-delegate-dependency`、`caller-context-contract` 三项未闭合结论。继续实现前执行 `git rev-parse HEAD` 并要求与该 base 相等；若不相等，先用 `git diff --name-only 645a9352c1b1ef731556dea22196a95b2c14fc85 -- <本计划允许文件>` 复读 drift。计划依据是本 change 工件与批准记录、已归档主 specs、C08/C16/C17/C19 当前代码及既有前置 change；技术事实只使用 `references/风险识别与评估规划事实源摘要.md`。
 - schemaName 已由 `openspec status --change deliver-process-model-mechanism-and-evidence-governance --json` 确认为 `riskflow-delivery`。
 - D-01 硬门：集成后 contracts 能解析 `standard-library`/`case-library`；独立 C15 drift change 已归档，`PostgresDataCleaningStore.readExactPreparation(input: IdentificationPreparationReadRequestV1): Promise<IdentificationPreparationReadResultV1>` 能按精确准备引用返回 strict `snapshot/agentTaskRef/result/resultArtifactRef`，且 `coverageDecisionRef`、`excludedSegmentDecisionRefs[]` 均 strict parse 为 `route-decision`；`implement-engineering-data-read-branches` 已实现 D-04 的 C02 资料段/证据公共读取；独立 C08 change 已提供 `AgentTaskFailureEvidenceReaderV1.readTerminalFailure()`；C16 与复数 `includedSourceSegmentSetRefs` 均已归档集成。实施 Agent 只验证和消费，不修改 C08/C15/contracts；任一门失败立即升级。
 - 协调裁决：C17 迁移号段 `000020`～`000023`，实际仅使用 `000020`；`identificationPolicySetRef` 归 C21/C24，C17 通过注入 provider 精确读取并在缺失时 fail-closed；C16 获准修改 resolver 分支及已归档事件 D-04 指定的发布/回滚 transaction policy 接缝，其它生命周期语义不变。
 - 当前已核实命令工具：Node `24.12.0`、pnpm `11.10.0`、OpenSpec `1.13.0`、Vitest `4.1.11`、TypeScript `5.9.3`、ESLint `10.9.1`、Prettier `3.9.6`、dependency-cruiser `17.1.0`。不安装或升级依赖。
+- 重开范围只新增 D-13/IP-11：C17 façade 接受组合根注入的 C19 `PostgresScoringRulesAdapter.resolve()` 窄 delegate，原样转发 `assessment-basis` 命令与结果。无需修改 specs、公共 contracts、C19、迁移、包导出、依赖或锁文件。
 
 ## 2. 复用与接缝
 
@@ -19,6 +20,7 @@
 | IP-04～IP-07 | C03 `TransactionUnitV1`、命令收据/审计；C04 `ArtifactStoreV1`/`ArtifactReferenceGuardV1`；C07 `ReviewAuditPortV1` | 工件先耐久，C17 索引/收据事务提交，审核经 C16→C07 | 不建平行工件仓库、审计表或 review 状态 |
 | IP-07、IP-08 | C15 `createPostgresDataCleaningComposition()` 的 C06 受信来源模式；`AgentRuntimeRunner` callback 接缝；前置 C08 `AgentTaskFailureEvidenceReaderV1.readTerminalFailure()` | C17 组合根按 exact branch 签发工具/start/submit/review 授权；失败收口只按 C17 attempt 的 task ref 调 C08 reader；模块 runner 包装一次 shared `runOnce()` | 不注入 `AgentTaskStoreV1`，不调用 `PostgresAgentTaskAdapter.getTask()`，不复制 C08 查询、claim、租约、预算、模型循环、重试和恢复 |
 | IP-06 | C02 `KnowledgeResolutionCommandV1Schema`/`KnowledgeResolutionSuccessV1Schema`；注入的 `IdentificationPolicySetProviderV1` | 按 public 四字段返回识别基础，策略引用由 C21/C24 provider 提供 | 不定义识别策略内容、默认引用或治理类型 |
+| IP-11 | C19 `PostgresScoringRulesAdapter.resolve()`；C17 `PostgresIdentificationKnowledgeAdapter.resolve()`；Worker `createPostgresIdentificationKnowledgeComposition()` | 组合根把既有 C19 adapter 窄化为 `Pick<PostgresScoringRulesAdapter, "resolve">` 并作为必需 delegate 注入；C17 对 `assessment-basis` 原样转发同一命令与结果 | 不复制 C19 授权、准备、C16/C18 解析、双时间、幂等、审计、持久化或错误映射，不在 C17 新建第二个 C19 adapter |
 | IP-05、IP-09 | `apps/api/src/http.ts` 的 generic knowledge/agent 路由 | 生产组合注入 C17 façade；只跑现有路由回归 | 不新增 C17 URL、请求 Schema 或 Web 页面 |
 
 ## 3. 代码变更映射
@@ -34,7 +36,8 @@
 | IP-07 | C08 编制准备、工具成员校验、finalizer 与失败复核状态收口 | 有界任务、工具成员、逐项增量、合格修订、预算/模型/工具/恢复/取消失败复核、失败收口只读取精确任务证据及幂等场景 | **修改** C17 adapter/test：`prepareOrReplayAuthoringTask()`、`#readSegmentSliceTool()`、`#readExactKnowledgeTool()`、`#finalizeAuthoringCandidate()`、`settleAuthoringFailures()`/`#settleOneFailure()`；options 以 `agentTaskFailureEvidenceReader: AgentTaskFailureEvidenceReaderV1` 替换 `agentTaskStore?: AgentTaskStoreV1` | manifest 冻结正式准备成员；失败收口以新鲜 C08 read 授权调用 `readTerminalFailure()`，把返回的 error/cancel/usage/action/candidate/validation 引用写入诊断；窄读或授权失败返回可验错误，不 catch 静默跳过。submit/review 各用 exact branch，重放只 CAS 到 `completed | review-linked` | 不调用 C08 `getTask()`、不使用 optional 授权回调或 task-envelope fallback、不吞异常计为 settled、不在 retryable 状态提前复核 |
 | IP-08 | Worker 生产组合与 shared runner | 生产组合依赖/授权关闭失败、有界任务/增量/失败复核和 C16→C07 精确授权场景 | **修改** `apps/worker/src/identification-knowledge/composition.ts`：`createPostgresIdentificationKnowledgeComposition()`、`PostgresIdentificationKnowledgeCompositionOptionsV1`、受信 human/system 来源、exact branch C06 authorize、C07/C08/C15/C16/C17 组装；**修改** composition test | options 必须注入前置 C08 `agentTaskFailureEvidenceReader`；以对象实现 `KnowledgeGovernanceReviewAuthorizationProviderV1` 并注入 C16，删除 `reviewAuthorization/approvalAuthorization` 两个内联闭包；缺失依赖拒绝构造，授权拒绝零 C08/C07 读取 | 不修改 generic runner、不创建 provider registry/单例、不接受预制 AuthorizationContext、不用 `agentTaskAdapter.getTask()` 代替 reader |
 | IP-09 | API/Worker/Web 与依赖回归 | 所有 public/跨模块边界 | **不修改** `apps/api/src/http.ts`、`apps/api/test/http-shell.test.ts`、`apps/worker/src/agent-runtime/runner.ts`、`apps/worker/test/agent-runtime/runner.test.ts`、`apps/web/**`、contracts/C15/C11 文件 | 运行现有 generic route、runner、contracts、C11/C15、C16 回归；确认无新增 URL/Web、无依赖和跨表读取 | 不通过改测试、snapshot 或文案掩盖漂移 |
-| IP-10 | 最小全量验证与 OpenSpec 完成门 | 每个 Requirement/Scenario、每个计划文件和验证义务 | **不新增生产文件**；只更新 `tasks.md` 勾选证据 | 执行 V-01～V-10；检查文件 allowlist、IP 反向映射、apply `contextFiles` 全读和 strict validate | 不提交、不归档、不启动开发服务器 |
+| IP-10 | 最小全量验证与 OpenSpec 完成门 | 每个 Requirement/Scenario、每个计划文件和验证义务 | **不新增生产文件**；只更新 `tasks.md` 勾选证据 | 执行 V-01～V-11；检查文件 allowlist、IP 反向映射、apply `contextFiles` 全读和 strict validate | 不提交、不归档、不启动开发服务器 |
+| IP-11 | C19 assessment-basis delegate 与调用方契约 | `识别基础按准备快照和双时间精确解析 / 评估解析行为保持不变`；C19 主规格 `公共评估依据解析 / 精确依据可供后续评估冻结、未准备完成时不返回默认依据` | **修改** `packages/adapters/src/identification-knowledge/postgres-identification-knowledge-adapter.ts` 的 options/私有字段/constructor/`resolve()`；**修改** `packages/adapters/test/identification-knowledge/fixture.ts` 与 adapter test；**修改** `apps/worker/src/identification-knowledge/composition.ts` 的 options/构造门/adapter wiring；**修改** composition test | 按 D-13 把 C19 resolver 设为必需依赖；adapter 对 assessment 命令只调用一次 delegate 并逐字段透传 success/failure，identification 分支不调用；组合根缺失依赖在构造期失败并把同一对象传入 adapter | 不修改 C19 生产/测试、C02 contracts、C16/C18、数据库、迁移、包导出或依赖；不在 C17 包装/翻译 C19 结果 |
 
 ## 4. 调用与副作用顺序
 
@@ -68,6 +71,13 @@
 3. 组合根为 `:failure-review` 签发 `knowledge-modeling.request-review`；C16 用 `KnowledgeGovernanceReviewAuthorizationProviderV1.authorize()` 的 `request-review` DTO 取得 `review-audit.request-review` 上下文。成功后事务绑定 review ref 并 CAS 到 `review-linked`。任一授权/调用失败保留前一步稳定事实和原因；下一次只补未完成阶段，未创建 review 不计 settled。
 4. Façade publish 永久拒绝 failure binding。人工只能依据 review 决定补资料、启动新幂等 task 或结束；旧 task、预算、诊断和 review 均保留。
 
+### 4.5 assessment-basis 委派（IP-11）
+
+1. `PostgresIdentificationKnowledgeAdapter.resolve()` 继续先以公共 Schema strict parse；解析失败仍返回现有 `UNSUPPORTED_CONTRACT`，不调用任何 delegate。
+2. `identification-basis` 继续进入 4.2；`assessment-basis` 把同一 strict command 交给构造时注入的 C19 `resolve()`，只调用一次并原样返回结果。
+3. C19 独立完成授权、准备快照、适用规则集与 C18 配置解析、双时间、集合持久化、审计、回执和错误映射；C17 不增加前后副作用、fallback、catch 翻译或重试。
+4. Worker 组合根只接收调用方已经组装的 resolver；缺失在构造期失败，不创建 C19，不暴露裸 C16，也不改变其它 C17/C08 组合顺序。
+
 ## 5. Schema、状态与持久化落实
 
 - **Schema SSOT（IP-02）**：五类 package、policy、manifest、increment、validation/binding/failure 全部在 core C17 子模块；公共 refs/枚举只 import contracts。`KnowledgeAuthoringIncrementV1` 按 `definitionType`+`operation` 双层判别，退役必须指向 baseline 条目并带原因/证据。
@@ -77,6 +87,7 @@
 - **权限（IP-03、IP-05～IP-08）**：组合根只接受 C06 支持的 human-session 或同 causal run system parent 来源，并为每个稳定 invocation 单独 authorize。govern/resolver 使用准确 knowledge branch；D-04 使用 exact engineering read；baseline reader 使用 identification-basis；C08 启动使用 `agent-task.start-task`，失败证据读取使用前置 change 的 `agent-task.read-failure-evidence`；C16 通过 `KnowledgeGovernanceReviewAuthorizationProviderV1` 请求 C07 request/approval-proof。复验 actor/project/invocation/唯一 capability/空间/来源，不接受预制上下文或 task-envelope fallback；发布/停用/回滚仍由 C16 验证 human invocation。
 - **幂等/事务（IP-04、IP-05、IP-07）**：外层 key 加稳定阶段后缀；同 key 不同规范摘要冲突。非发布阶段各用一个 C03 事务，跨 C16/C07 使用阶段 latch 恢复；artifact 成功但事务失败只留不可消费孤儿。发布/回滚由 C16 单个事务原子提交 release、C17 binding、审计、回执和事件。
 - **审计/可观测（IP-04～IP-08）**：记录 package/manifest/validation/task/revision/release/review refs、每项原因、策略/模型/提示/工具/预算 refs 和 usage；四类成员发布零识别基础事件，组合发布/回滚恰有一个事件。测试不得用 `return` 早退掩盖失败分支，必须断言最终 binding/state/audit/receipt/outbox 计数。日志不写正文、模型响应、凭据或内部错误。
+- **C19 delegate（IP-11）**：不新增 Schema、状态、表、权限、事务、幂等键、审计或事件；这些评估依据事实仍全部由 C19 拥有。C17 只固定必需依赖和分支路由，测试以调用次数、输入深相等和结果深相等证明无额外语义。
 
 ## 6. 验收证据矩阵
 
@@ -106,7 +117,7 @@
 | 同 Requirement / 失败不触发替代结果 | IP-07、IP-08 | worker C17 test | model/tool/recovery failure + old base/candidate | no model/budget switch；no completed/publication | V-05 |
 | 识别基础按准备快照和双时间精确解析 / 精确识别基础解析成功 | IP-03、IP-05、IP-06 | adapter C17 + C16 tests | exact prep、three main+members、policy provider | public four typed refs；project/time fixed | V-03、V-04 |
 | 同 Requirement / 缺失策略或组合不一致时封闭失败 | IP-06 | adapter C17 test | provider undefined；mechanism mismatch | typed failure；no default/partial/fallback | V-03 |
-| 同 Requirement / 评估解析行为保持不变 | IP-03 | C16 adapter test | existing assessment timeline + real C06 | branch assessment；result/error deep equal baseline fixture | V-04 |
+| 同 Requirement / 评估解析行为保持不变；C19 `公共评估依据解析` 两个 Scenario | IP-03、IP-11 | C16 adapter + C17 adapter/fixture + Worker composition + C19 adapter tests | existing assessment timeline + real C06；注入 C19 delegate success/failure；缺失 delegate | C16 branch 不变；C17 同一 command 单次委派且 result/error deep equal；identification 分支零 C19 调用；组合缺失关闭失败；C19 正式解析回归通过 | V-04、V-11 |
 | 识别知识事实支持幂等审计和有界下游读取 / 相同请求幂等重放 | IP-04、IP-05、IP-07 | adapter C17 test | replay import/start/failure/publish binding | refs equal；task/revision/review/binding/audit counts unchanged | V-03 |
 | 同 Requirement / 工件或事务失败不成立正式绑定 | IP-03、IP-04、IP-05、IP-07 | adapter C17 + C16 tests | artifact/guard/binding/event/audit/receipt/outbox latch | publish transaction 无残留 release/binding/event；retry recovers same refs/counts | V-03、V-04 |
 | 同 Requirement / 下游读取严格有界 | IP-05、IP-06 | adapter C17 test | project-1 exact ref、project-2/unknown/history probes | only bound package/validation；C06 denial; no scans | V-03 |
@@ -123,15 +134,15 @@
 - `packages/core/src/identification-knowledge/service.ts`（IP-02）
 - `packages/core/src/identification-knowledge/index.ts`（IP-02）
 - `packages/core/test/identification-knowledge.test.ts`（IP-02）
-- `packages/adapters/src/identification-knowledge/postgres-identification-knowledge-adapter.ts`（IP-05～IP-07）
+- `packages/adapters/src/identification-knowledge/postgres-identification-knowledge-adapter.ts`（IP-05～IP-07、IP-11）
 - `packages/adapters/src/identification-knowledge/index.ts`（IP-05）
 - `packages/adapters/src/postgres/migrations/knowledge-modeling/deliver-process-model-mechanism-and-evidence-governance/000020_identification_knowledge_governance.ts`（IP-04）
-- `packages/adapters/test/identification-knowledge/fixture.ts`（IP-01）
-- `packages/adapters/test/identification-knowledge/postgres-identification-knowledge-adapter.test.ts`（IP-05～IP-07）
-- `apps/worker/src/identification-knowledge/composition.ts`（IP-08，唯一生产组合根）
+- `packages/adapters/test/identification-knowledge/fixture.ts`（IP-01、IP-11）
+- `packages/adapters/test/identification-knowledge/postgres-identification-knowledge-adapter.test.ts`（IP-05～IP-07、IP-11）
+- `apps/worker/src/identification-knowledge/composition.ts`（IP-08、IP-11，唯一生产组合根）
 - `apps/worker/src/identification-knowledge/runtime.ts`（IP-08）
 - `apps/worker/src/identification-knowledge/index.ts`（IP-08，仅导出本模块组合入口）
-- `apps/worker/test/identification-knowledge/composition.test.ts`（IP-08）
+- `apps/worker/test/identification-knowledge/composition.test.ts`（IP-08、IP-11）
 - `apps/worker/test/identification-knowledge/runtime.test.ts`（IP-08）
 
 **修改：**
@@ -144,6 +155,8 @@
 - `apps/worker/src/index.ts`（IP-08，仅导出组合函数/类）
 
 **删除：**无。
+
+**本次 allowlist 扩大：**不新增文件路径；只把上述四个既有 C17 adapter/fixture/Worker 组合文件的批准修改原因扩大到 IP-11。`packages/adapters/src/scoring-rules/**` 与其测试仅作为复用事实和 V-11 回归输入，仍不允许修改。
 
 **协调端所有权机械同步：**`packages/adapters/test/postgres/postgres-foundation.test.ts` 与 `packages/adapters/test/auth/fixture.ts` 中对迁移 `000020` 的中央清单登记由主调度协调端串行完成；该精确登记不属于本 change 实现者越界，其它改动仍按本节 allowlist 和保护区判断。
 
@@ -168,20 +181,21 @@
 - **V-08 静态和格式**：`pnpm exec eslint packages/core/src/identification-knowledge packages/core/test/identification-knowledge.test.ts packages/adapters/src/identification-knowledge packages/adapters/test/identification-knowledge apps/worker/src/identification-knowledge apps/worker/test/identification-knowledge && pnpm exec prettier --check packages/core/src/identification-knowledge packages/core/test/identification-knowledge.test.ts packages/core/package.json packages/adapters/src/identification-knowledge packages/adapters/test/identification-knowledge packages/adapters/package.json packages/adapters/src/knowledge-governance/postgres-knowledge-governance-adapter.ts packages/adapters/test/knowledge-governance/postgres-knowledge-governance-adapter.test.ts packages/adapters/test/postgres/postgres-foundation.test.ts apps/worker/src/identification-knowledge apps/worker/test/identification-knowledge apps/worker/src/index.ts`
 - **V-09 依赖边界**：`pnpm deps:check && pnpm deps:policy`
 - **V-10 OpenSpec/施工图完成门**：`openspec validate deliver-process-model-mechanism-and-evidence-governance --strict --no-interactive && openspec instructions apply --change deliver-process-model-mechanism-and-evidence-governance --json`
+- **V-11 C19 delegate/调用方契约**：`pnpm exec vitest run --reporter=verbose packages/adapters/test/identification-knowledge/postgres-identification-knowledge-adapter.test.ts apps/worker/test/identification-knowledge/composition.test.ts packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts`；必须证明 C17 对 assessment success/failure 的命令与结果逐字段透传、identification 分支零 C19 调用、组合缺失 delegate 在构造期失败，并由 C19 正式测试证明精确依据成功与未准备完成失败边界不漂移。
 
 ## 8. Finalizer 授权与限定审计
 
 ### 8.1 已批准收尾范围
 
-- Finalizer 以协调端固定的 implementation checkpoint 为输入，先核对实际 HEAD、完整读取本 change 的全部 `contextFiles`，再按 IP-01～IP-10、§7.1 文件清单和 tasks 未完成项验收。为落实已批准 Requirement/Scenario，可在 §7.1 允许文件内直接修复生产代码、迁移、包导出和测试，并运行受影响回归；普通缺陷不回派 Implementation。
-- Finalizer 可更新本 change 的 `tasks.md` 完成状态与验收证据，但不得改变 proposal、spec、D-01～D-12、IP-ID、Non-Goals、文件所有权或验收语义。若实现检查点相对本施工图发生 drift，先提交符号、调用链和 diff 证据；只有不改变已批准设计的机械定位调整可在当前收尾中处理。
+- Finalizer 以协调端固定的 implementation checkpoint 为输入，先核对实际 HEAD、完整读取本 change 的全部 `contextFiles`，再按 IP-01～IP-11、§7.1 文件清单和 tasks 未完成项验收。为落实已批准 Requirement/Scenario，可在 §7.1 允许文件内直接修复生产代码、迁移、包导出和测试，并运行受影响回归；普通缺陷不回派 Implementation。
+- Finalizer 可更新本 change 的 `tasks.md` 完成状态与验收证据，但不得改变 proposal、spec、D-01～D-13、IP-ID、Non-Goals、文件所有权或验收语义。若实现检查点相对本施工图发生 drift，先提交符号、调用链和 diff 证据；只有不改变已批准设计的机械定位调整可在当前收尾中处理。
 - §7.1 保护区继续生效。任何需要新增公共字段/branch/event、改变授权或事务语义、修改 C08/C15/C11 所有权文件、增加迁移/依赖、占用计划外文件或扩大 C17 能力的修复都必须升级，不得由 Finalizer 自行补设计。
 
 ### 8.2 Finalizer 必须形成的证据
 
-- 逐项反向核对全部 Requirement/Scenario、D-01～D-12、IP-01～IP-10、允许文件和 tasks；运行 V-01～V-10，并保留实际命令、退出结果及关键场景已到达最终 binding/state/audit/receipt/Outbox 断言的证据。关键场景被跳过、条件早退或仅验证替身时不得判定通过。
+- 逐项反向核对全部 Requirement/Scenario、D-01～D-13、IP-01～IP-11、允许文件和 tasks；运行 V-01～V-11，并保留实际命令、退出结果及关键场景已到达最终 binding/state/audit/receipt/Outbox 断言的证据。关键场景被跳过、条件早退或仅验证替身时不得判定通过。
 - 审阅 implementation checkpoint 到最终 HEAD 的全部 diff，确认只落在 §7.1 允许文件或协调端明确拥有的迁移清单机械同步中；确认 `packages/contracts/**`、C08/C15/C11、API/Web、根 workspace、锁文件、主 specs 和其它 changes 未发生越界修改。
-- 最终报告必须列出最终 HEAD、实际修改文件、覆盖的 Requirement/Scenario 与 IP-ID、V-01～V-10 结果、未执行命令及原因、剩余风险和需要协调端完成的机械事项；Finalizer 不提交、合并或归档。
+- 最终报告必须列出最终 HEAD、实际修改文件、覆盖的 Requirement/Scenario 与 IP-ID、V-01～V-11 结果、未执行命令及原因、剩余风险和需要协调端完成的机械事项；Finalizer 不提交、合并或归档。
 
 ### 8.3 限定审计标签
 

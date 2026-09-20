@@ -1,8 +1,8 @@
 ## Context
 
-动机见 [proposal.md](./proposal.md#why)，行为边界见 [spec.md](./specs/identification/process-model-mechanism-and-evidence-governance/spec.md)。当前实现已包含 C17 Schema、校验、PostgreSQL façade、Worker 生产组合和 C16 识别发布事务接缝。第二轮验证确认剩余缺口是规划 API 名称漂移、C08 终态失败证据没有授权公共窄读，以及 C16→C07 仍由两个可选内联回调拼装授权。API 已有 generic knowledge/agent 路由，不需要新增 HTTP 路径，当前也没有需要接入的 Web 页面。
+动机见 [proposal.md](./proposal.md#why)，行为边界见 [spec.md](./specs/identification/process-model-mechanism-and-evidence-governance/spec.md)。当前实现已包含 C17 Schema、校验、PostgreSQL façade、Worker 生产组合、C08 失败证据公共窄读和 C16 发布/授权接缝；API 已有 generic knowledge/agent 路由，也没有需要接入的 Web 页面。核对 `645a9352c1b1ef731556dea22196a95b2c14fc85` 的真实代码后，剩余 drift 是 `PostgresIdentificationKnowledgeAdapter.resolve()` 对 `assessment-basis` 直接返回 `UNSUPPORTED_CONTRACT`，而已集成的 C19 `PostgresScoringRulesAdapter.resolve()` 已拥有正式评估依据解析。
 
-初始规划基线为 `1e51bec508ddad8e2ccdd5af9a9d17b593458af9`，本次规划修补核对的实现检查点为 `e3172c6ff65b8ba4a75e8f794626cc53d410d606`。当前 C15 公共方法实际为 `PostgresDataCleaningStore.readExactPreparation(input: IdentificationPreparationReadRequestV1): Promise<IdentificationPreparationReadResultV1>`；C08 当前只有无授权的内部执行存储 `AgentTaskStoreV1.getTask(taskRef)` / `PostgresAgentTaskAdapter.getTask(taskRef)`；C16 当前 options 是 `reviewAuthorization`、`approvalAuthorization` 两个可选回调。后两项不足以形成独立验收证据，本设计在不增加 C17 迁移或依赖的前提下补公共窄接缝。迁移号段仍为 `000020`～`000023`，只使用 `000020`。
+本次重开规划以 `approval://riskflow/C17/replan-2026-09-20` 为批准凭据，只闭合 C19 delegate 注入、C17 adapter allowlist 和对应验证。C15/C08/C11 所有权、既有 Non-Goals、公共 contracts、C19 解析规则、C17 四表迁移和 C16 生命周期语义均不变；迁移号段仍为 `000020`～`000023`，只使用 `000020`。
 
 ## Goals / Non-Goals
 
@@ -11,6 +11,7 @@
 - 让五类识别知识共用一套严格包模型、确定性校验、C04 内容事实、C16 生命周期和 C07 人工复核。
 - 让审核包导入与 C08 `knowledge-authoring` 结果落到同一修订/发布绑定，且任何失败都可审计、可幂等恢复。
 - 为 C20/C24 提供按精确引用读取和解析的窄接口，同时保持工程、资料、双时间和策略版本边界。
+- 让 C17 façade 的 `assessment-basis` 分支经组合根注入的既有 C19 resolver 原样委派，保持 C02 `KnowledgeModelingPortV1` 的两类解析能力均可用。
 
 **Non-Goals:**
 
@@ -19,6 +20,7 @@
 - 不实现第二套治理状态机、Agent 循环、审计表或工件仓库，不给 C17 增加 API 专用路由或 Web 页面。
 - 不在 C17 修复“唯一发布停用后 `currentRelease` 为空且 `validateRevisionBase` 要求 base=current，导致该定义类型可能无法再提交新修订”的 C16 生命周期语义；建议另开 C16 change，不在本 change 增加特判。
 - 不在 C17 修改 C08 私表、执行存储或 contracts；C08 失败证据公共窄读由独立前置 change 交付。
+- 不在 C17 复制、包装或改写 C19 的评估依据解析规则，不在 C17 组合根新建第二个 `PostgresScoringRulesAdapter`，也不修改 C19 生产文件或持久化。
 
 ## Decisions
 
@@ -74,7 +76,7 @@ C17 adapter 以 `IdentificationPreparationNarrowReadV1` 注入 C15 正式 `prepa
 - `request-review` 对 C17 revision 只允许存在绑定；合格绑定走 C16，失败绑定只允许 D-08 的失败复核路径；未知绑定作为非 C17 定义原样委派；
 - `publish-approved-release` 对 C17 revision 要求合格绑定；失败修订永不通过此门。随后只调用已注入 C17 governance policy 的 C16，不在 façade 返回后另开 binding 事务；
 - `deactivate-release` 对已绑定 C17 release 委派 C16；`rollback-by-new-release` 同样只调用已注入 policy 的 C16，使新 release 在 C16 回滚事务内绑定到历史 revision；其它发布原样委派；
-- `resolve()` 仅对 `identification-basis` 执行 D-09，评估分支原样委派已有解析组合；`retrieve()` 原样委派后续注入的检索实现或返回 C02 既有 `UNSUPPORTED_CONTRACT`，不在 C17生成结果。
+- `resolve()` 对 `identification-basis` 执行 D-10，对 `assessment-basis` 按 D-13 原样委派注入的 C19 resolver；`retrieve()` 原样委派后续注入的检索实现或返回 C02 既有 `UNSUPPORTED_CONTRACT`，不在 C17 生成结果。
 
 发布和回滚严格遵循已归档 `evolve-identification-basis-published-event` D-04。C16 在自己的 `TransactionUnitV1` 回调内先写 C16 release，再调用 `IdentificationKnowledgeGovernancePolicyV1.appendRelease(context, input)`；policy 对所有五类 C17 发布读取并复验 validated revision binding/package，在同一 `TransactionContextV1` 写 C17 release binding。四类成员发布返回空事件；`retrieval-evidence-base` 继续解析三个组合成员及机理包固定的工序模型，复验五项同工程、类型、版本和双时间有效后，以 `DomainEventV1Schema.parse` 构造唯一事件。C16 随后把同一 `AtomicCommitV1` 的事实审计、命令回执和 Outbox 与 release/binding 一起提交。任一步失败整体回滚；policy 缺失对 C17 发布关闭失败。发布身份稳定派生，重放返回原 release/binding/event，不重复事实。
 
@@ -178,7 +180,7 @@ provider 不返回精确引用、准备不可读、任一发布/绑定/成员无
 ### D-11：授权、事务、错误和审计沿既有端口收口
 
 - C17 public govern/resolve 在读取目标存在性前验证命令工程/actor 与 authorization 一致，并使用 C02 声明的 knowledge branch；资料读取另由 D-04 使用 engineering-data branch 复验当前来源范围。
-- `apps/worker/src/identification-knowledge/composition.ts` 是唯一生产组合根。它必须注入同一 `db`/`TransactionUnitV1`、C04 store/guard、C06 access、C07 review port、C08 adapter/store/registry、C15 正式 reader、C02 engineering-data port、完整 validation policy、C21/C24 policy provider 接缝、shared runner/model callbacks 和受信授权来源解析器；工厂先以这些共享依赖构造 `PostgresIdentificationKnowledgeReleasePolicy` 并注入 C16，再把同一个 C16 adapter 注入 C17 façade。除尚未上线的 C21/C24 provider 缺失时只阻断 `identification-basis` 外，其它必需项不得 optional；缺失时工厂拒绝构造。
+- `apps/worker/src/identification-knowledge/composition.ts` 是唯一生产组合根。它必须注入同一 `db`/`TransactionUnitV1`、C04 store/guard、C06 access、C07 review port、C08 adapter/store/registry、C15 正式 reader、C02 engineering-data port、完整 validation policy、既有 C19 assessment-basis resolver、C21/C24 policy provider 接缝、shared runner/model callbacks 和受信授权来源解析器；工厂先以这些共享依赖构造 `PostgresIdentificationKnowledgeReleasePolicy` 并注入 C16，再把同一个 C16 adapter 与 C19 resolver 注入 C17 façade。除尚未上线的 C21/C24 provider 缺失时只阻断 `identification-basis` 外，其它必需项不得 optional；缺失时工厂拒绝构造。
 - 受信来源只允许请求作用域 `human-session`，或携带 C06 已签发父上下文和同一 causal run 的 `system` 调用。组合根按操作分别请求 `agent-task.start-task`、`engineering-data.source-segments`/`engineering-data.evidence-access`、`knowledge-modeling.identification-basis`、`knowledge-modeling.submit-revision`、`knowledge-modeling.request-review` 和 `review-audit.request-review`，并复验返回上下文的 actor/project、exact capability、空间/来源范围和调用身份。Agent 工具只持有读能力；finalizer/失败收口只取得对应 submit/review 能力；C16 的 human invocation 检查继续独占 publish/deactivate/rollback。
 - C16 adapter 新增并导出以下本地公共接缝，`PostgresKnowledgeGovernanceAdapterOptionsV1` 以 `reviewAuthorizationProvider?: KnowledgeGovernanceReviewAuthorizationProviderV1` 替换 `reviewAuthorization`/`approvalAuthorization`；C17 生产组合必须注入 provider，不能使用命令 authorization fallback：
 
@@ -222,6 +224,14 @@ core 导出 `IdentificationKnowledgeReleaseReaderV1.readExact({ projectId, relea
 
 这条接口有两个明确下游且隔离存储实现，符合跨层契约边界。当前不增加列表、全文搜索、批量 projection 或“当前版本”查询。
 
+### D-13：assessment-basis 只原样委派组合根注入的 C19 resolver
+
+`PostgresIdentificationKnowledgeAdapterOptionsV1` 新增必需的 `assessmentBasisResolver: Pick<PostgresScoringRulesAdapter, "resolve">`。C17 façade strict parse `KnowledgeResolutionCommandV1` 后，`identification-basis` 继续执行 D-10；`assessment-basis` 则把同一个已解析命令对象传给 `assessmentBasisResolver.resolve()` 并原样返回其 `KnowledgeResolutionResultV1`。C17 不重复 C19 的授权、准备快照、适用规则集、C18 配置集合、双时间、幂等、审计、持久化或错误映射，也不把 C19 失败改写为 C17 错误。
+
+`PostgresIdentificationKnowledgeCompositionOptionsV1` 同样把该 resolver 设为必需项，在构造检查中缺失即失败，并只把调用方已组装的 C19 adapter 窄化后传给 C17；组合根不得自行创建第二个 C19 adapter。直接构造 C17 adapter 的测试 fixture 注入可观测 delegate，证明 success/failure 结果和命令逐字段不变；Worker 组合测试证明缺失依赖关闭失败及注入对象确实被调用。C19 自身测试继续独占解析规则的行为证据，C17 不修改其生产或测试文件。
+
+备选是在 C17 重新调用 C16/C18 拼装评估依据，或让调用方绕过 façade 分别选择 C17/C19；前者复制 C19 事实与持久化，后者破坏生产只暴露统一 knowledge façade 的组合边界，因此均不采用。
+
 ## Risks / Trade-offs
 
 - [C15 正式窄读/route-decision drift 或两个定义类型尚未集成] → D-01 作为首个硬门，未满足即停止，不在 C17 临时补契约、容忍视图或跨表读取。
@@ -235,11 +245,12 @@ core 导出 `IdentificationKnowledgeReleaseReaderV1.readExact({ projectId, relea
 - [C08 无公共失败证据读取] → 独立 C08 change 先交付 D-09 的 reader、不可枚举授权和审计；未归档时 C17 失败收口不得使用 `getTask()` 或私有 SQL。
 - [C16 唯一发布停用后无法建立新修订基线] → 建议另开 C16 change 修复 `currentRelease`/`validateRevisionBase` 生命周期语义；本 change 将其列为 Non-goal，不特判。
 - [内容工件成功、后续事务失败产生孤儿] → 内容寻址写入可安全重放，只有 C17 binding 才可消费，孤儿交给 C04 既有保留/清理策略。
+- [生产组合未注入 C19 resolver 或误建第二个 C19 adapter] → D-13 将 delegate 设为必需窄依赖并在构造期拒绝缺失；组合测试核对对象透传，文件保护区禁止修改或复制 C19 实现。
 
 ## Migration Plan
 
 1. 先由独立 C15 drift change 交付 `PostgresDataCleaningStore.readExactPreparation()` 和 `route-decision` 契约修正，并由独立 C08 change 交付 `AgentTaskFailureEvidenceReaderV1.readTerminalFailure()`；两者归档后确认 D-01 其余前置和基线 drift，运行 contracts、C15/C11、C08、C16 定向回归。
 2. 运行 provider 自动发现的 `000020_identification_knowledge_governance`，验证 app/worker/checkpointer 权限和 down/up；不占用 `000021`～`000023`。
-3. 部署 core Schema/校验、C17 release policy、adapter façade 和 C16 branch/事务接缝；生产组合只暴露 façade。先以审核夹具导入五类 draft/revision，再验证四类成员发布零事件、组合发布/回滚的 release-binding-event 原子性及失败回滚。
+3. 部署 core Schema/校验、C17 release policy、adapter façade 和 C16 branch/事务接缝；生产组合把已组装的 C19 resolver 作为必需 delegate 注入并只暴露 façade。先验证两类 resolve 分支，再以审核夹具导入五类 draft/revision，验证四类成员发布零事件、组合发布/回滚的 release-binding-event 原子性及失败回滚。
 4. 部署 Worker 生产组合、工具成员校验和失败收口；逐项验证 C06 exact branch、授权缺失关闭失败，再由人工完成送审/发布。最后验证双时间解析、历史重放和 C20 窄读夹具。
 5. 应用回滚时先停止 C17 新写入并回退 façade/Worker；C16 revision/release 和 C04 工件保留。仅在确认四张 C17 表为空时执行 migration `down`，已有业务事实不得物理删除。

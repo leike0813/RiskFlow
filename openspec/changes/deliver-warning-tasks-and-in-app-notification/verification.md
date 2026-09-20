@@ -4,17 +4,17 @@
 
 实际 schema：`riskflow-delivery`
 
-本轮输入 HEAD：`5444b14aa43054ec8ac8c4f987f36aff084f4dd3`；修复保持未提交，产物 HEAD 不变，等待协调端审阅并形成检查点。
+最终实现检查点 HEAD：`a0918fbb1d9dceb570e85d2fadefaea84a63ccad`；本轮限定审计仅更新本报告，不修改生产代码、测试、公共契约、迁移或依赖。
 
 ## Summary
 
 | 维度 | 结果 |
 | --- | --- |
 | 完整性 | 21/21 tasks；7 项 Requirement、22 个 Scenario 均有实现或代表性证据 |
-| 正确性 | C26-AUD-01/02/03 均已解决；C26 及直接契约/UI/迁移代表性回归 8 files / 80 tests 通过 |
-| 一致性 | D-01～D-13、IP-01～IP-12 保持；无公共契约、权限、持久化模型、依赖或迁移号变化 |
+| 正确性 | C26-AUD-01/02/03 均已解决；最终实现检查点的限定审计与 PostgreSQL/Worker 定向回归通过 |
+| 一致性 | D-01～D-13、IP-01～IP-12 保持；权限、事务、关键状态机与语义 merge 影响范围无新 finding |
 
-最终评估：无未解决 CRITICAL、WARNING 或 SUGGESTION；当前产物可交由协调端审阅、形成检查点并执行后续限定审计。
+最终评估：无未解决 CRITICAL、WARNING 或 SUGGESTION；最终实现检查点已通过权限、事务、关键状态机与语义 merge 冲突限定审计，可交由协调端继续集成门禁。
 
 ## Finding 处置
 
@@ -57,4 +57,23 @@
 
 ## 剩余事项
 
-无产品实现 finding。协调端仍需审阅四个 dirty paths、形成 Git 检查点，并按编排策略执行后续限定审计；本 worker 不提交、不合并、不归档。
+无产品实现 finding。协调端仍需审阅本报告更新并按编排策略继续集成门禁；本 worker 不提交、不合并、不归档。
+
+## 最终检查点限定审计
+
+审计输入为 `a0918fbb1d9dceb570e85d2fadefaea84a63ccad`，范围限定为权限、事务、关键状态机及合入主线过程中可能形成的语义冲突，不重复执行全量 change 验收。
+
+- 权限：`open` 在读取评估依据前复验当前 C06 授权，精确查询按获准空间过滤；`acknowledge` 复验分支能力后校验 warning/task 的工程、空间、当前版本和关联。公共事实源 `MODULE_BRANCH_CAPABILITY_V1` 明确把 `warning-response.open` 与 `warning-response.acknowledge` 映射到 `warning-response.record`，拒绝结果的 `requiredCapability` 与契约一致。
+- 事务：`open` 的 warning/task/version/intent/audit/receipt/outbox 仍由单个 serializable `PostgresTransactionUnit` 事务提交；`acknowledge` 的确认/audit/receipt/event 原子提交；Worker 通过 `PostgresIdempotentConsumer` 的独立事务写投递事实，失败不会回滚已提交预警。
+- 关键状态机：数据库 trigger 阻止 `closed → open`；任务历史版本、关联、通知意图、投递和确认保持只追加；关闭后旧 assessment 的新命令重放只新增成功回执与审计，不创建任务版本、意图或事件，新 assessment 才创建新任务实体。
+- 语义 merge：目标实现路径的 merge 历史无合并提交改写，相关 merge 的 `--remerge-diff` 无冲突解决差异，目标路径无冲突标记；未发现主线同步改变 C26 权限、事务或状态语义。
+
+本轮实际命令与结果：
+
+- `git rev-parse HEAD && git status --short --branch`：HEAD 与调度输入一致，审计开始时工作树干净。
+- `git log --merges --oneline -- <C26 目标路径>`、`git show --remerge-diff --stat <同步 merge>` 及冲突标记扫描：无目标路径语义冲突证据。
+- `pnpm exec vitest run packages/adapters/test/warning/postgres-warning-lifecycle-adapter.test.ts apps/worker/test/warning/runtime.test.ts`：2 files / 16 tests passed。
+- `pnpm exec tsc -b packages/core/tsconfig.json packages/adapters/tsconfig.json apps/worker/tsconfig.json --pretty false`：exit 0，无诊断。
+- `openspec validate deliver-warning-tasks-and-in-app-notification --strict --no-interactive`：change valid。
+
+限定审计结论：未发现新 finding；C26-AUD-01/02/03 的修复在最终实现检查点保持成立。

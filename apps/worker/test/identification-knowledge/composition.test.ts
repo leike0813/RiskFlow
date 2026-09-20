@@ -224,9 +224,10 @@ const startHarness = (behavior: {
       issued = context;
       return { context, contextRef: context.authorizationContextRef, redacted: false };
     },
-    async verify(request: { projectId: string }) {
+    async verify(request: Parameters<LocalIdentityAccessV1["verify"]>[0]) {
       const context = issued ?? {
-        ...issuedContext({} as AuthorizationRequestV1),
+        ...commandAuthorization(request.invocationId),
+        authorizationContextRef: request.authorizationContextRef,
         projectId: request.projectId,
       };
       return { context, contextRef: context.authorizationContextRef, redacted: false };

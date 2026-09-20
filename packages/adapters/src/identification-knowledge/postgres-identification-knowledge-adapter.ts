@@ -503,12 +503,12 @@ const preparationReadError = (causalRunId: string, error: unknown): ModuleErrorV
  * 失败收口的结构化失败（C08 窄读拒绝、C16 提交/复核失败）：携带原 `ModuleErrorV1` 上抛到
  * 逐 attempt 隔离层，由 `settleAuthoringFailures()` 写入 `failures[]`，不得静默丢弃。
  */
-class IdentificationKnowledgeSettlementError extends Error {
+class IdentificationKnowledgeModuleError extends Error {
   readonly error: ModuleErrorV1;
 
   constructor(error: ModuleErrorV1) {
-    super(`identification-knowledge failure settlement failed: ${error.code}`);
-    this.name = "IdentificationKnowledgeSettlementError";
+    super(`identification-knowledge operation failed: ${error.code}`);
+    this.name = "IdentificationKnowledgeModuleError";
     this.error = error;
   }
 }
@@ -1252,9 +1252,10 @@ export class PostgresIdentificationKnowledgeAdapter {
       };
     }
     try {
-      await this.#verifyAuthorization(
+      const verified = await this.#verifyAuthorization(
         input.authorization,
         input.projectId,
+        input.actorId,
         input.invocationId ?? `knowledge-read-${refKey(releaseRef.data)}`,
         "knowledge-modeling.identification-basis",
       );
@@ -1297,7 +1298,7 @@ export class PostgresIdentificationKnowledgeAdapter {
         };
       }
       const packageValue = (await this.#readArtifact(
-        input.authorization,
+        verified,
         ContractCandidateArtifactRefV1Schema.parse(binding.candidate_artifact_ref),
         CANDIDATE_PURPOSE,
       )) as IdentificationKnowledgePackageV1;
@@ -1349,14 +1350,16 @@ export class PostgresIdentificationKnowledgeAdapter {
       const verified = await this.#verifyAuthorization(
         command.authorization,
         command.projectId,
+        command.actorId,
         command.commandId,
         "knowledge-modeling.submit-revision",
       );
+      const verifiedCommand = { ...command, authorization: verified };
       const candidateArtifactRef = ContractCandidateArtifactRefV1Schema.parse(
         command.payload.candidateArtifactRef,
       );
       const rawCandidate = await this.#readArtifact(
-        command.authorization,
+        verified,
         candidateArtifactRef,
         CANDIDATE_PURPOSE,
       );
@@ -1394,7 +1397,7 @@ export class PostgresIdentificationKnowledgeAdapter {
       });
       const packageValue = rawCandidate as IdentificationKnowledgePackageV1;
       const packageDigest = identificationKnowledgePackageDigest(packageValue);
-      const validationArtifactRef = await this.#putArtifact(command, {
+      const validationArtifactRef = await this.#putArtifact(verifiedCommand, {
         artifactId: `c17-validation-${packageDigest.slice(0, 40)}`,
         purposeCode: VALIDATION_PURPOSE,
         value: {
@@ -1410,7 +1413,7 @@ export class PostgresIdentificationKnowledgeAdapter {
       const validationId = randomId("c17-validation");
       const validationAuditId = randomId("audit");
       const recordedAt = nowIso(this.#now);
-      const buildAtomic = atomicCommand(command);
+      const buildAtomic = atomicCommand(verifiedCommand);
       const validationAtomic = buildAtomic({
         commandKind: "knowledge.identification-knowledge.validate.v1",
         commandId: `${command.commandId}:validation`,
@@ -1426,8 +1429,8 @@ export class PostgresIdentificationKnowledgeAdapter {
             artifactRef: candidateArtifactRef,
             projectId: command.projectId,
             purposeCode: CANDIDATE_PURPOSE,
-            requiredCapability: command.authorization.grantedCapabilities[0],
-            authorization: command.authorization,
+            requiredCapability: verified.grantedCapabilities[0],
+            authorization: verified,
           }),
         );
         const tx = asKnowledgeTransaction(context);
@@ -1498,7 +1501,7 @@ export class PostgresIdentificationKnowledgeAdapter {
         });
       }
       // C16 校验绑定在命令身份上：原样委派调用方命令，C17 仅用自己的派生键记录本地阶段。
-      const submitted = await this.#governance.govern(command);
+      const submitted = await this.#governance.govern(verifiedCommand);
       if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") {
         return submitted.kind === "succeeded"
           ? KnowledgeGovernanceResultV1Schema.parse({
@@ -1658,6 +1661,17 @@ export class PostgresIdentificationKnowledgeAdapter {
     command: KnowledgeGovernanceCommandV1,
   ): Promise<ReturnType<typeof KnowledgeGovernanceResultV1Schema.parse>> {
     try {
+      const verified = await this.#verifyAuthorization(
+        command.authorization,
+        command.projectId,
+        command.actorId,
+        command.commandId,
+        `knowledge-modeling.${command.kind}` as ModuleBranchV1,
+      );
+      const verifiedCommand = {
+        ...command,
+        authorization: verified,
+      } as KnowledgeGovernanceCommandV1;
       if (command.kind === "request-review") {
         const binding = await this.#findRevisionBindingByRef(
           command.projectId,
@@ -1674,7 +1688,7 @@ export class PostgresIdentificationKnowledgeAdapter {
             }),
           });
         }
-        return await this.#governance.govern(command);
+        return await this.#governance.govern(verifiedCommand);
       }
       if (command.kind === "publish-approved-release") {
         const binding = await this.#findRevisionBindingByRef(
@@ -1693,9 +1707,9 @@ export class PostgresIdentificationKnowledgeAdapter {
           });
         }
         // 发布绑定与组合事件由注入 C16 的 release policy 在同一事务提交；façade 不补写。
-        return await this.#governance.govern(command);
+        return await this.#governance.govern(verifiedCommand);
       }
-      return await this.#governance.govern(command);
+      return await this.#governance.govern(verifiedCommand);
     } catch (error) {
       return KnowledgeGovernanceResultV1Schema.parse({
         kind: "failed",
@@ -1711,6 +1725,7 @@ export class PostgresIdentificationKnowledgeAdapter {
       await this.#verifyAuthorization(
         command.authorization,
         command.projectId,
+        command.actorId,
         command.commandId,
         "knowledge-modeling.identification-basis",
       );
@@ -1944,6 +1959,7 @@ export class PostgresIdentificationKnowledgeAdapter {
       const authorized = await this.#verifyAuthorization(
         input.authorization,
         input.projectId,
+        input.actorId,
         input.commandId,
         "knowledge-modeling.submit-revision",
       );
@@ -2026,7 +2042,7 @@ export class PostgresIdentificationKnowledgeAdapter {
           projectId: input.projectId,
           actorId: input.actorId,
           issuedAt: input.issuedAt,
-          authorization: input.authorization,
+          authorization: authorized,
         },
         {
           artifactId: manifest.manifestId,
@@ -2693,6 +2709,16 @@ export class PostgresIdentificationKnowledgeAdapter {
     if (bound === undefined) {
       const evidence = await this.#readTerminalFailureEvidence(row, taskRef);
       bound = await this.#bindFailureRevision(row, taskRef, evidence);
+    } else if (row.stage !== "failure-revision-bound") {
+      const failureCommandId = `${taskRef.reference.entityId}:failure-revision`;
+      const authorization = await this.#authorize({
+        projectId: row.project_id,
+        actorId: row.actor_ref,
+        invocationId: failureCommandId,
+        branch: "knowledge-modeling.submit-revision",
+        requestedAt: nowIso(this.#now),
+      });
+      await this.#recordFailureAttempt(row, taskRef, bound.failureArtifactRef, authorization);
     }
     const reviewCommandId = `${taskRef.reference.entityId}:failure-review`;
     const reviewAuthorization = await this.#authorize({
@@ -2758,7 +2784,7 @@ export class PostgresIdentificationKnowledgeAdapter {
     if (read.kind === "succeeded") return read.evidence;
     // C08 对不存在、跨工程、错类型、未终态和未授权返回同形拒绝：原因必须可查，
     // 不得在这里转成 undefined 被静默丢弃。
-    throw new IdentificationKnowledgeSettlementError(read.error);
+    throw new IdentificationKnowledgeModuleError(read.error);
   }
 
   /** D-09 第 1、2 步：写不可发布的失败诊断工件，经 C16 提交失败修订并写 failure-review-only 绑定。 */
@@ -2837,10 +2863,10 @@ export class PostgresIdentificationKnowledgeAdapter {
     });
     const submitted = await this.#governance.govern(failureCommand);
     if (submitted.kind !== "succeeded") {
-      throw new IdentificationKnowledgeSettlementError(submitted.error);
+      throw new IdentificationKnowledgeModuleError(submitted.error);
     }
     if (submitted.result.kind !== "revision") {
-      throw new IdentificationKnowledgeSettlementError(
+      throw new IdentificationKnowledgeModuleError(
         moduleError({ code: "TERMINAL_FAILURE", causalRunId: failureCommandId }),
       );
     }
@@ -2897,6 +2923,16 @@ export class PostgresIdentificationKnowledgeAdapter {
       } satisfies AtomicCommitV1;
     });
     // 逐阶段 CAS：失败修订绑定成立后先停到 `failure-revision-bound`，授权或复核失败不回退该事实。
+    await this.#recordFailureAttempt(row, taskRef, failureArtifactRef, authorization);
+    return { revisionRef, failureArtifactRef };
+  }
+
+  async #recordFailureAttempt(
+    row: AuthoringAttemptRow,
+    taskRef: AgentTaskRefV1,
+    failureArtifactRef: ContentArtifactRefV1,
+    authorization: AuthorizationContextV1,
+  ): Promise<void> {
     await this.#advanceAuthoringAttempt({
       projectId: row.project_id,
       actorId: authorization.actorId,
@@ -2910,7 +2946,6 @@ export class PostgresIdentificationKnowledgeAdapter {
       resultRef: asContractReference(failureArtifactRef),
       values: { failure_artifact_ref: jsonbValue(failureArtifactRef) },
     });
-    return { revisionRef, failureArtifactRef };
   }
 
   async #advanceAuthoringAttempt(input: {
@@ -2992,10 +3027,10 @@ export class PostgresIdentificationKnowledgeAdapter {
     }) as Extract<KnowledgeGovernanceCommandV1, { kind: "request-review" }>;
     const requested = await this.#governance.govern(reviewCommand);
     if (requested.kind !== "succeeded") {
-      throw new IdentificationKnowledgeSettlementError(requested.error);
+      throw new IdentificationKnowledgeModuleError(requested.error);
     }
     if (requested.result.kind !== "review-task") {
-      throw new IdentificationKnowledgeSettlementError(
+      throw new IdentificationKnowledgeModuleError(
         moduleError({ code: "TERMINAL_FAILURE", causalRunId: commandId }),
       );
     }
@@ -3007,9 +3042,21 @@ export class PostgresIdentificationKnowledgeAdapter {
   async #verifyAuthorization(
     authorization: AuthorizationContextV1,
     projectId: string,
+    actorId: string,
     invocationId: string,
     branch: ModuleBranchV1,
   ): Promise<AuthorizationContextV1> {
+    const capability = MODULE_BRANCH_CAPABILITY_V1[branch];
+    if (
+      authorization.projectId !== projectId ||
+      authorization.actorId !== actorId ||
+      authorization.grantedCapabilities.length !== 1 ||
+      authorization.grantedCapabilities[0] !== capability
+    ) {
+      throw new IdentificationKnowledgeModuleError(
+        moduleError({ code: "AUTHORIZATION_DENIED", branch, causalRunId: invocationId }),
+      );
+    }
     const decision = await this.#access.verify({
       authorizationContextRef: authorization.authorizationContextRef,
       invocationId,
@@ -3019,7 +3066,18 @@ export class PostgresIdentificationKnowledgeAdapter {
       requestedSourceVersionRefs: [],
       requestedAt: authorization.decidedAt,
     });
-    return decision.context;
+    const verified = decision.context;
+    if (
+      verified.projectId !== projectId ||
+      verified.actorId !== actorId ||
+      verified.grantedCapabilities.length !== 1 ||
+      verified.grantedCapabilities[0] !== capability
+    ) {
+      throw new IdentificationKnowledgeModuleError(
+        moduleError({ code: "AUTHORIZATION_DENIED", branch, causalRunId: invocationId }),
+      );
+    }
+    return verified;
   }
 
   async #findValidation(
@@ -3167,7 +3225,7 @@ export class PostgresIdentificationKnowledgeAdapter {
 
   async #mapError(error: unknown, causalRunId: string): Promise<ModuleErrorV1> {
     // 收口按 attempt 隔离时必须保留结构化失败的原始原因码，不降级为通用终止失败。
-    if (error instanceof IdentificationKnowledgeSettlementError) return error.error;
+    if (error instanceof IdentificationKnowledgeModuleError) return error.error;
     if (error instanceof AccessServiceError) {
       return moduleError({
         code:

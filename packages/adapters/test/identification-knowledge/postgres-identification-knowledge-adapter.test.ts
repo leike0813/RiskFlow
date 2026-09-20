@@ -426,16 +426,17 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
     expect(await identificationBasisEvents()).toHaveLength(0);
 
     const readCommandId = nextId("c17-read-exact");
+    const readAuthorization = await fixture.authorizationFor(
+      readCommandId,
+      "knowledge-modeling.identification-basis",
+    );
     const read = await adapter.readExact({
       projectId: fixture.world.projectId,
       releaseRef,
-      actorId: "c20-indexer",
+      actorId: readAuthorization.actorId,
       requestedAt: IDENTIFICATION_KNOWLEDGE_TEST_TIMESTAMP,
       invocationId: readCommandId,
-      authorization: await fixture.authorizationFor(
-        readCommandId,
-        "knowledge-modeling.identification-basis",
-      ),
+      authorization: readAuthorization,
     });
     expect(read.kind).toBe("succeeded");
     if (read.kind === "failed") throw new Error(JSON.stringify(read.error));
@@ -443,17 +444,68 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
     expect(read.read.validation.disposition).toBe("accepted");
     expect(read.read.releaseBinding.releaseRef).toEqual(releaseRef);
 
+    const actorMismatchCommandId = nextId("c17-read-actor-mismatch");
+    const actorMismatchAuthorization = await fixture.authorizationFor(
+      actorMismatchCommandId,
+      "knowledge-modeling.identification-basis",
+    );
+    const actorMismatch = await adapter.readExact({
+      projectId: fixture.world.projectId,
+      releaseRef,
+      actorId: `${actorMismatchAuthorization.actorId}-other`,
+      requestedAt: IDENTIFICATION_KNOWLEDGE_TEST_TIMESTAMP,
+      invocationId: actorMismatchCommandId,
+      authorization: actorMismatchAuthorization,
+    });
+    expect(actorMismatch).toMatchObject({
+      kind: "failed",
+      error: { code: "AUTHORIZATION_DENIED" },
+    });
+
+    const verifiedActorMismatchCommandId = nextId("c17-read-verified-actor-mismatch");
+    const verifiedActorMismatchAuthorization = await fixture.authorizationFor(
+      verifiedActorMismatchCommandId,
+      "knowledge-modeling.identification-basis",
+    );
+    const originalVerify = fixture.access.verify;
+    fixture.access.verify = async (request) => {
+      const decision = await originalVerify.call(fixture.access, request);
+      return request.invocationId === verifiedActorMismatchCommandId
+        ? {
+            ...decision,
+            context: { ...decision.context, actorId: `${decision.context.actorId}-other` },
+          }
+        : decision;
+    };
+    try {
+      const verifiedActorMismatch = await adapter.readExact({
+        projectId: fixture.world.projectId,
+        releaseRef,
+        actorId: verifiedActorMismatchAuthorization.actorId,
+        requestedAt: IDENTIFICATION_KNOWLEDGE_TEST_TIMESTAMP,
+        invocationId: verifiedActorMismatchCommandId,
+        authorization: verifiedActorMismatchAuthorization,
+      });
+      expect(verifiedActorMismatch).toMatchObject({
+        kind: "failed",
+        error: { code: "AUTHORIZATION_DENIED" },
+      });
+    } finally {
+      fixture.access.verify = originalVerify;
+    }
+
     const unknownCommandId = nextId("c17-read-unknown");
+    const unknownAuthorization = await fixture.authorizationFor(
+      unknownCommandId,
+      "knowledge-modeling.identification-basis",
+    );
     const otherProject = await adapter.readExact({
       projectId: "project-unknown",
       releaseRef,
-      actorId: "c20-indexer",
+      actorId: unknownAuthorization.actorId,
       requestedAt: IDENTIFICATION_KNOWLEDGE_TEST_TIMESTAMP,
       invocationId: unknownCommandId,
-      authorization: await fixture.authorizationFor(
-        unknownCommandId,
-        "knowledge-modeling.identification-basis",
-      ),
+      authorization: unknownAuthorization,
     });
     expect(otherProject).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
   }, 300_000);
@@ -1358,19 +1410,21 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
     );
     const failureRevision = failureBinding.rows[0];
     if (failureRevision === undefined) throw new Error("the failure binding is missing");
+    const failureReleaseCommandId = nextId("c17-publish-failure");
+    const failureReleaseAuthorization = await fixture.authorizationFor(
+      failureReleaseCommandId,
+      "knowledge-modeling.publish-approved-release",
+      isolated.projectId,
+    );
     const failureRelease = await adapter.govern(
       KnowledgeGovernanceCommandV1Schema.parse({
         kind: "publish-approved-release",
-        commandId: nextId("c17-publish-failure"),
-        idempotencyKey: nextId("c17-publish-failure"),
+        commandId: failureReleaseCommandId,
+        idempotencyKey: failureReleaseCommandId,
         projectId: isolated.projectId,
-        actorId: isolated.readAuthorization.actorId,
+        actorId: failureReleaseAuthorization.actorId,
         issuedAt: "2030-01-02T00:01:00.000Z",
-        authorization: await fixture.authorizationFor(
-          nextId("c17-publish-failure-auth"),
-          "knowledge-modeling.publish-approved-release",
-          isolated.projectId,
-        ),
+        authorization: failureReleaseAuthorization,
         payload: {
           revisionRef: {
             kind: "knowledge-revision",
@@ -1696,6 +1750,26 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       reviews: "0",
       stage: "failure-revision-bound",
     });
+    // 模拟失败绑定事务已提交、attempt CAS 尚未执行时进程退出。
+    const recordFailureCommandId = `${taskEntityId}:record-failure-attempt`;
+    await fixture.cleaning.postgres.adminPool.query(
+      `DELETE FROM business.command_receipts
+        WHERE project_id = $1
+          AND command_kind = 'knowledge.identification-knowledge.record-authoring-failure.v1'
+          AND idempotency_key = $2`,
+      [isolated.projectId, recordFailureCommandId],
+    );
+    await fixture.cleaning.postgres.adminPool.query(
+      `DELETE FROM audit.entries WHERE project_id = $1 AND command_id = $2`,
+      [isolated.projectId, recordFailureCommandId],
+    );
+    await fixture.cleaning.postgres.adminPool.query(
+      `UPDATE business.identification_knowledge_authoring_attempts
+          SET stage = 'task-started', failure_artifact_ref = NULL
+        WHERE project_id = $1
+          AND agent_task_ref->'reference'->>'entityId' = $2`,
+      [isolated.projectId, taskEntityId],
+    );
     const readsBeforeReplay = evidenceReads();
     // 下一次只补未完成阶段：不重复读取本任务的 C08 证据、不创建第二个修订或复核。
     const recovering = fixture.createIdentificationKnowledgeAdapter({

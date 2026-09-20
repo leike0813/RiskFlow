@@ -57,3 +57,11 @@
   - 证据：`Change 'deliver-warning-tasks-and-in-app-notification' is valid`；status 五工件 done、schemaName `riskflow-delivery`。
 - [x] 7.2 [IP-12] 使用项目 `openspec-verify-change` Skill 独立核对 delta spec、D-ID、IP-ID、实现、数据库和 §6 证据；再次运行 `openspec validate deliver-warning-tasks-and-in-app-notification --strict --no-interactive`，verify 无未解决 finding 才完成，不提交、不归档。
   - 证据：七条 Requirement 逐条映射到实现符号与测试（见回报）；D-01～D-13 全部落实，偏差仅 §1.1/§3.4/§4.3 注记的三处；strict validate 复跑通过；未提交、未归档。
+
+## 8. 限定审计发现的收口（授权：在 C26 内直接收口）
+
+- [ ] 8.1 [IP-01, IP-05] 修正授权顺序：空间授权检查必须发生在任何按工程读取评估依据之前，使同工程内的未授权空间目标无法通过 `AUTHORIZATION_DENIED` 与 `BUSINESS_BLOCKED` 的差异被枚举；补回归断言覆盖"未授权目标不得泄露目标状态差异"。
+  - 依据：C26 限定审计结论 `openspec/changes/deliver-warning-tasks-and-in-app-notification/verification.md`（finding `open-checks-assessment-before-spatial-authorization`）。
+- [ ] 8.2 [IP-02, IP-04] 落实 delta spec 既有要求「已关闭任务不得因后续同键预警重新打开」的守卫，使 `closed → open` 不可能发生；优先应用层的条件更新/状态检查，确需数据库约束时按 `§8 共享机械接缝` 处理并在回报中列出精确登记项。补回归断言。
+  - 依据：同一审计结论（finding `closed-to-open-transition-guard-missing`）。该要求已存在于本 change 的 delta spec，属缺陷修复而非范围扩张。
+- [ ] 8.3 [IP-12] 完成 8.1/8.2 后重跑受影响回归与 `openspec validate deliver-warning-tasks-and-in-app-notification --strict --no-interactive`，并把两项 finding 的处置结论写回 `verification.md`，供协调端再次触发限定审计。

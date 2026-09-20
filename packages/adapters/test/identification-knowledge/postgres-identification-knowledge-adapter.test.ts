@@ -4,6 +4,7 @@ import {
   CancelAgentTaskCommandV1Schema,
   KnowledgeGovernanceCommandV1Schema,
   KnowledgeResolutionCommandV1Schema,
+  KnowledgeResolutionResultV1Schema,
   ModuleErrorV1Schema,
   ReviewDecisionCommandV1Schema,
   type AuthorizationContextV1,
@@ -739,7 +740,7 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
   }, 600_000);
 
   it("resolves the exact identification basis from three main releases, composite members and policy set", async () => {
-    const adapter = adapterFor();
+    const { adapter, assessmentBasisCommands } = fixture.createIdentificationKnowledgeAdapter();
     const currentReleaseRef = async (
       definitionType: KnowledgeDefinitionTypeV1,
     ): Promise<KnowledgeReleaseRefV1> => {
@@ -797,6 +798,8 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
         retrievalEvidenceBaseReleaseRef: { reference: compositeRef.reference },
       },
     });
+    // IP-11：identification 分支绝不触达 C19 assessment-basis delegate。
+    expect(assessmentBasisCommands).toEqual([]);
 
     const withoutPolicySet = adapterFor({ withPolicySet: false });
     const noPolicyCommandId = nextId("c17-resolve-no-policy");
@@ -822,6 +825,75 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       kind: "failed",
       error: { code: "BUSINESS_BLOCKED", blockerKind: "identification-policy-set-unavailable" },
     });
+  }, 600_000);
+
+  it("delegates the assessment basis to the injected C19 resolver without translation", async () => {
+    const delegatedSuccess = KnowledgeResolutionResultV1Schema.parse({
+      kind: "succeeded",
+      result: {
+        kind: "assessment-basis",
+        assessmentBasisReleaseSetRef: {
+          kind: "assessment-basis-release-set",
+          reference: { entityId: "c19-assessment-basis", versionId: "7" },
+        },
+      },
+    });
+    const delegatedFailure = KnowledgeResolutionResultV1Schema.parse({
+      kind: "failed",
+      error: {
+        stageCode: "scoring-rules.resolve-assessment-basis",
+        occurredAt: IDENTIFICATION_KNOWLEDGE_TEST_TIMESTAMP,
+        causalRunId: "c19-assessment-basis-denied",
+        code: "AUTHORIZATION_DENIED",
+        category: "authorization",
+        retryable: false,
+        requiredCapability: "knowledge-modeling.read",
+        authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+      },
+    });
+    let delegated: typeof delegatedSuccess | typeof delegatedFailure = delegatedSuccess;
+    const { adapter, assessmentBasisCommands } = fixture.createIdentificationKnowledgeAdapter({
+      assessmentBasisResolver: { resolve: async () => delegated },
+    });
+    const assessmentCommand = async () => {
+      const commandId = nextId("c17-resolve-assessment");
+      return KnowledgeResolutionCommandV1Schema.parse({
+        kind: "assessment-basis",
+        commandId,
+        idempotencyKey: commandId,
+        projectId: fixture.world.projectId,
+        actorId: fixture.world.readAuthorization.actorId,
+        issuedAt: tick(),
+        authorization: await fixture.authorizationFor(
+          commandId,
+          "knowledge-modeling.assessment-basis",
+        ),
+        payload: {
+          preparationSnapshotRef: {
+            kind: "assessment-preparation-snapshot",
+            reference: { entityId: "c19-preparation-snapshot", versionId: "5" },
+          },
+          requiredAt: tick(),
+        },
+      });
+    };
+
+    const successCommand = await assessmentCommand();
+    expect(await adapter.resolve(successCommand)).toEqual(delegatedSuccess);
+    delegated = delegatedFailure;
+    const failureCommand = await assessmentCommand();
+    expect(await adapter.resolve(failureCommand)).toEqual(delegatedFailure);
+    // 逐字段透传：同一 strict 命令各一次原样到达 C19 delegate，无包装、无重试、无翻译。
+    expect(assessmentBasisCommands).toEqual([successCommand, failureCommand]);
+
+    // strict parse 失败仍在 C17 收口为 UNSUPPORTED_CONTRACT，且不调用 delegate。
+    const unparseable = await assessmentCommand();
+    const rejected = await adapter.resolve({
+      ...unparseable,
+      payload: { ...unparseable.payload, requiredAt: "not-a-timestamp" },
+    } as never);
+    expect(rejected).toMatchObject({ kind: "failed", error: { code: "UNSUPPORTED_CONTRACT" } });
+    expect(assessmentBasisCommands).toHaveLength(2);
   }, 600_000);
 
   it("rejects a composite release whose member is no longer effective", async () => {

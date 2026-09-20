@@ -42,6 +42,7 @@ import {
 } from "../../src/identification-knowledge/index.js";
 import { PostgresKnowledgeGovernanceAdapter } from "../../src/knowledge-governance/index.js";
 import type { KnowledgeGovernanceReviewAuthorizationProviderV1 } from "../../src/knowledge-governance/index.js";
+import type { PostgresScoringRulesAdapter } from "../../src/scoring-rules/index.js";
 import { PostgresReviewAuditAdapter } from "../../src/review-audit/index.js";
 import {
   completeCleaningTask,
@@ -277,6 +278,9 @@ export interface IdentificationPreparationWorldV1 extends IdentificationKnowledg
   readonly readAuthorization: AuthorizationContextV1;
 }
 
+/** IP-11：C17 façade 必须原样转发的 C19 `resolve()` 命令。 */
+export type AssessmentBasisResolveCommandV1 = Parameters<PostgresScoringRulesAdapter["resolve"]>[0];
+
 export interface IdentificationKnowledgeFixtureV1 {
   readonly cleaning: DataCleaningPostgresFixture;
   readonly world: IdentificationPreparationWorldV1;
@@ -295,9 +299,13 @@ export interface IdentificationKnowledgeFixtureV1 {
     readonly failureEvidenceReader?: AgentTaskFailureEvidenceReaderV1;
     /** 授权故障注入：命中请求时按 C06 语义在副作用前关闭失败。 */
     readonly authorizeDenial?: (input: IdentificationKnowledgeAuthorizationRequestV1) => boolean;
+    /** IP-11：脚本化的 C19 delegate 结果来源；每次调用都会被记录。 */
+    readonly assessmentBasisResolver?: Pick<PostgresScoringRulesAdapter, "resolve">;
   }): {
     readonly adapter: PostgresIdentificationKnowledgeAdapter;
     readonly agentTaskAdapter: PostgresAgentTaskAdapter;
+    /** IP-11：C19 delegate 收到的精确命令；identification 分支必须保持为空。 */
+    readonly assessmentBasisCommands: readonly AssessmentBasisResolveCommandV1[];
   };
   /** 把审核包正文写入 C04（甲方已审核配置包导入路径）。 */
   putArtifact(
@@ -557,6 +565,12 @@ export const startIdentificationKnowledgeFixture =
       reviewAudit,
       createIdentificationKnowledgeAdapter: (options) => {
         const fault = options?.releasePolicyFault;
+        /**
+         * IP-11：可观测 C19 delegate。每次调用都记录精确命令；未脚本化结果时直接失败，
+         * 避免 assessment 分支在无脚本测试中被静默通过。
+         */
+        const assessmentBasisCommands: AssessmentBasisResolveCommandV1[] = [];
+        const scriptedAssessmentBasis = options?.assessmentBasisResolver;
         const adapterGovernance =
           fault === undefined
             ? governance
@@ -595,6 +609,16 @@ export const startIdentificationKnowledgeFixture =
           artifactStore: cleaning.artifactStore,
           artifactReferenceGuard: cleaning.artifactRegistry,
           governance: adapterGovernance,
+          // IP-11：D-13 窄 delegate；只转发命令，不复制 C19 的授权、解析或持久化。
+          assessmentBasisResolver: {
+            resolve: async (command) => {
+              assessmentBasisCommands.push(command);
+              if (scriptedAssessmentBasis === undefined) {
+                throw new Error("the C17 fixture assessment-basis delegate is not scripted");
+              }
+              return await scriptedAssessmentBasis.resolve(command);
+            },
+          },
           narrowRead: {
             preparationRead: cleaning.store,
             engineeringData: cleaning.registry,
@@ -660,7 +684,7 @@ export const startIdentificationKnowledgeFixture =
         });
         holder.port = agentTaskAdapter as unknown as AgentTaskPortV1;
         holder.reader = agentTaskAdapter;
-        return { adapter, agentTaskAdapter };
+        return { adapter, agentTaskAdapter, assessmentBasisCommands };
       },
       putArtifact: async (value, purposeCode, projectId) => {
         artifactSequence += 1;

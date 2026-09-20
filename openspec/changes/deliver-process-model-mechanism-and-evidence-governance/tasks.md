@@ -35,5 +35,5 @@
 ## 7. OpenSpec verify
 
 - [x] 7.1 [IP-01、IP-03、IP-07、IP-08、IP-10] 协调端先归档 C08 `AgentTaskFailureEvidenceReaderV1.readTerminalFailure()` 前置 change，实施端再以该 reader 替换 C17 的 `AgentTaskStoreV1.getTask()`，并以 `KnowledgeGovernanceReviewAuthorizationProviderV1` 替换 C16 的 `reviewAuthorization/approvalAuthorization` 内联回调；随后运行 V-01、V-03～V-05 及 `openspec validate deliver-process-model-mechanism-and-evidence-governance --strict --no-interactive && openspec instructions apply --change deliver-process-model-mechanism-and-evidence-governance --json`，完整读取全部 `contextFiles`，逐项核对每个 Requirement/Scenario、允许文件和验证义务均可反向定位到 IP-01～IP-10。
-- [ ] 7.2 [IP-11] 按 D-13 为 `PostgresIdentificationKnowledgeAdapter` 和唯一 Worker 组合根注入必需的 C19 `resolve()` delegate，补齐同一 assessment command/result 的 success/failure 逐字段透传、identification 零调用和缺失依赖构造失败证据；运行 implementation-plan V-11，且不得修改 C19、contracts、迁移、依赖或保护区文件。
+- [x] 7.2 [IP-11] 按 D-13 为 `PostgresIdentificationKnowledgeAdapter` 和唯一 Worker 组合根注入必需的 C19 `resolve()` delegate，补齐同一 assessment command/result 的 success/failure 逐字段透传、identification 零调用和缺失依赖构造失败证据；运行 implementation-plan V-11，且不得修改 C19、contracts、迁移、依赖或保护区文件。
 - [ ] 7.3 [IP-10、IP-11] 在全部实现任务、V-01～V-11 命令证据和 checkbox 完成后使用项目 `openspec-verify-change` 流程独立验收；未验证通过不得归档，本任务本身不提交或归档。

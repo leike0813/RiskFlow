@@ -16,6 +16,7 @@ import {
 } from "@riskflow/core/identification-knowledge";
 import {
   MODULE_BRANCH_CAPABILITY_V1,
+  KnowledgeResolutionResultV1Schema,
   type AuthorizationContextV1,
   type EngineeringDataQueryV1,
 } from "@riskflow/contracts/ports";
@@ -203,6 +204,8 @@ const startHarness = (behavior: {
   readonly authorize: (request: AuthorizationRequestV1) => AuthorizationContextV1;
   readonly preparationReadResult?: { readonly kind: "error"; readonly error: unknown } | undefined;
   readonly manifest?: typeof manifest;
+  /** IP-11：C19 assessment-basis delegate 替身；省略时注入不会被调用的哨兵。 */
+  readonly assessmentBasisResolver?: PostgresIdentificationKnowledgeCompositionOptionsV1["assessmentBasisResolver"];
 }): CompositionHarnessV1 => {
   const authorizeRequests: AuthorizationRequestV1[] = [];
   const narrowReadCalls: string[] = [];
@@ -301,6 +304,8 @@ const startHarness = (behavior: {
       trace: unusedEntryPoint,
     },
     validationPolicy: policy,
+    // D-13 必需 C19 delegate：未脚本化时使用哨兵，任何触达都会让测试失败。
+    assessmentBasisResolver: behavior.assessmentBasisResolver ?? { resolve: unusedEntryPoint },
     // D-09 公共失败证据窄读：组合根只接受注入的 reader，不再用调用期转发。
     agentTaskFailureEvidenceReader: {
       async readTerminalFailure() {
@@ -449,6 +454,7 @@ describe("C17 worker identification knowledge composition root", () => {
         trace: unusedEntryPoint,
       },
       validationPolicy: policy,
+      assessmentBasisResolver: { resolve: unusedEntryPoint },
       agentTaskFailureEvidenceReader: {
         readTerminalFailure: unusedEntryPoint,
       },
@@ -467,6 +473,7 @@ describe("C17 worker identification knowledge composition root", () => {
       "engineeringData",
       "reviewAudit",
       "validationPolicy",
+      "assessmentBasisResolver",
       "agentTaskFailureEvidenceReader",
       "resolveAuthorizationSource",
     ] as const;
@@ -488,6 +495,60 @@ describe("C17 worker identification knowledge composition root", () => {
     expect(() => createPostgresIdentificationKnowledgeComposition(options)).toThrowError(
       "identification knowledge composition requires every C03–C17 dependency",
     );
+  });
+
+  it("refuses to construct when the C19 assessment basis resolver is not injected", () => {
+    const options = requiredOptions();
+    Reflect.deleteProperty(options as Record<string, unknown>, "assessmentBasisResolver");
+    // D-13：缺 C19 delegate 时组合根不得把 C17 façade 或其替代品留给调用期。
+    expect(() => createPostgresIdentificationKnowledgeComposition(options)).toThrowError(
+      "identification knowledge composition requires every C03–C17 dependency",
+    );
+  });
+
+  it("routes the assessment basis to the injected C19 resolver without C17-side authorization", async () => {
+    const delegated = KnowledgeResolutionResultV1Schema.parse({
+      kind: "succeeded",
+      result: {
+        kind: "assessment-basis",
+        assessmentBasisReleaseSetRef: {
+          kind: "assessment-basis-release-set",
+          reference: ref("assessment-basis:composition"),
+        },
+      },
+    });
+    const received: unknown[] = [];
+    const harness = startHarness({
+      resolve: humanSource,
+      authorize: (request) => issuedContext(request),
+      assessmentBasisResolver: {
+        resolve: async (command) => {
+          received.push(command);
+          return delegated;
+        },
+      },
+    });
+    const commandId = "c17-resolve-assessment";
+    const command = {
+      kind: "assessment-basis",
+      commandId,
+      idempotencyKey: commandId,
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      issuedAt: NOW,
+      authorization: commandAuthorization(commandId),
+      payload: {
+        preparationSnapshotRef: {
+          kind: "assessment-preparation-snapshot",
+          reference: ref("assessment-preparation-snapshot:composition"),
+        },
+        requiredAt: NOW,
+      },
+    };
+    // 组合根只透传同一命令与结果：C17 不为评估分支重复授权，也不包装 C19 结果。
+    expect(await harness.composition.adapter.resolve(command as never)).toEqual(delegated);
+    expect(received).toEqual([command]);
+    expect(harness.authorizeRequests).toEqual([]);
   });
 
   it("signs the exact engineering-data branch for the preparation narrow read", async () => {

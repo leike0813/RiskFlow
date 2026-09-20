@@ -118,6 +118,7 @@ import {
   governedReleaseResolutionInvocationId,
   type PostgresKnowledgeGovernanceAdapter,
 } from "../knowledge-governance/index.js";
+import type { PostgresScoringRulesAdapter } from "../scoring-rules/index.js";
 
 const SCHEMA_VERSION = "1";
 export const IDENTIFICATION_KNOWLEDGE_VALIDATION_PURPOSE_V1 = "identification-knowledge-validation";
@@ -269,6 +270,11 @@ export interface PostgresIdentificationKnowledgeAdapterOptionsV1 {
   readonly artifactStore: ArtifactStoreV1;
   readonly artifactReferenceGuard: ArtifactReferenceGuardV1;
   readonly governance: PostgresKnowledgeGovernanceAdapter;
+  /**
+   * D-13：组合根注入的 C19 评估依据 resolver 窄 delegate。C17 只对 `assessment-basis`
+   * 原样转发同一命令与结果，不复制 C19 的授权、准备、解析、双时间、幂等或错误映射。
+   */
+  readonly assessmentBasisResolver: Pick<PostgresScoringRulesAdapter, "resolve">;
   /** D-04：C15 公开精确窄读与 C02 公共读取端口，禁止读取上游私有表。 */
   readonly narrowRead: IdentificationPreparationNarrowReadV1;
   readonly policy: IdentificationKnowledgeValidationPolicyV1;
@@ -1125,6 +1131,7 @@ export class PostgresIdentificationKnowledgeAdapter {
   readonly #artifactStore: ArtifactStoreV1;
   readonly #artifactReferenceGuard: ArtifactReferenceGuardV1;
   readonly #governance: PostgresKnowledgeGovernanceAdapter;
+  readonly #assessmentBasisResolver: PostgresIdentificationKnowledgeAdapterOptionsV1["assessmentBasisResolver"];
   readonly #preparationReader: IdentificationPreparationKnowledgeReaderV1;
   readonly #policy: IdentificationKnowledgeValidationPolicyV1;
   readonly #policySetProvider: IdentificationPolicySetProviderV1 | undefined;
@@ -1140,6 +1147,7 @@ export class PostgresIdentificationKnowledgeAdapter {
     this.#artifactStore = options.artifactStore;
     this.#artifactReferenceGuard = options.artifactReferenceGuard;
     this.#governance = options.governance;
+    this.#assessmentBasisResolver = options.assessmentBasisResolver;
     this.#preparationReader = new PostgresIdentificationPreparationKnowledgeReader({
       narrowRead: options.narrowRead,
       authorize: options.authorize,
@@ -1186,10 +1194,9 @@ export class PostgresIdentificationKnowledgeAdapter {
     }
     const valid = parsed.data;
     if (valid.kind === "assessment-basis") {
-      return {
-        kind: "failed",
-        error: moduleError({ code: "UNSUPPORTED_CONTRACT", causalRunId: valid.commandId }),
-      };
+      // D-13：同一 strict 命令交给组合根注入的 C19 resolver，只调用一次并原样返回结果；
+      // 授权、准备快照、双时间、幂等、审计与错误映射仍全部由 C19 拥有。
+      return await this.#assessmentBasisResolver.resolve(valid);
     }
     return await this.#resolveIdentificationBasis(valid);
   }

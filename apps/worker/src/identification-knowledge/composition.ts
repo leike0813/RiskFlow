@@ -13,6 +13,7 @@ import {
   PostgresKnowledgeGovernanceAdapter,
   type PostgresKnowledgeGovernanceAdapterOptionsV1,
 } from "@riskflow/adapters/knowledge-governance";
+import type { PostgresScoringRulesAdapter } from "@riskflow/adapters/scoring-rules";
 import {
   ACCESS_POLICY_REF_V1,
   AccessErrorV1Schema,
@@ -95,6 +96,11 @@ export interface PostgresIdentificationKnowledgeCompositionOptionsV1 {
   /** C07 复核端口：C16 在其生命周期内转交人工复核。 */
   readonly reviewAudit: ReviewAuditPortV1;
   readonly validationPolicy: IdentificationKnowledgeValidationPolicyV1;
+  /**
+   * D-13：调用方已组装的 C19 评估依据 resolver。组合根只把该对象窄化后注入 C17 façade，
+   * 不创建第二个 C19 adapter，也不包装或翻译其结果。
+   */
+  readonly assessmentBasisResolver: Pick<PostgresScoringRulesAdapter, "resolve">;
   /** C21/C24 拥有的精确识别策略提供者；缺失只阻断 identification-basis。 */
   readonly policySetProvider?: IdentificationPolicySetProviderV1;
   /**
@@ -170,6 +176,7 @@ export const createPostgresIdentificationKnowledgeComposition = (
     options.engineeringData === undefined ||
     options.reviewAudit === undefined ||
     options.validationPolicy === undefined ||
+    options.assessmentBasisResolver === undefined ||
     options.agentTaskFailureEvidenceReader === undefined ||
     options.resolveAuthorizationSource === undefined
   ) {
@@ -297,6 +304,8 @@ export const createPostgresIdentificationKnowledgeComposition = (
     artifactStore: options.artifactStore,
     artifactReferenceGuard: options.artifactReferenceGuard,
     governance,
+    // D-13：调用方已组装的 C19 resolver 原样注入，组合根不新建第二个 C19 adapter。
+    assessmentBasisResolver: options.assessmentBasisResolver,
     narrowRead,
     policy,
     ...(options.policySetProvider === undefined

@@ -68,3 +68,5 @@
   - 证据：`000044` 增加 `warning_response_tasks_no_reopen_trg`，应用角色执行 `closed → open` 收到数据库拒绝且任务保持关闭；迁移重复 up、down、重建及中央 provider 测试均通过。共享机械接缝无需新增登记项，仍只登记既有 `000044`。
 - [x] 8.3 [IP-12] 完成 8.1/8.2 后重跑受影响回归与 `openspec validate deliver-warning-tasks-and-in-app-notification --strict --no-interactive`，并把两项 finding 的处置结论写回 `verification.md`，供协调端再次触发限定审计。
   - 证据：warning adapter 单测 12/12；warning adapter + Worker + PostgreSQL foundation 33/33；core/adapters/worker TypeScript build、ESLint、Prettier、`deps:check`、`deps:policy`、`git diff --check` 与 OpenSpec strict validate 全部通过。最终结论见 `verification.md`。
+- [ ] 8.4 [IP-01, IP-04, IP-05] 修复复核审计发现的 C26-AUD-03：任务关闭后，重放同一 assessment 的新命令稳定返回**不可重试**的 `TERMINAL_FAILURE`。按本 change delta spec 的既有语义修复该重放路径（关闭任务不得因同键预警重新打开，但重放本身必须得到符合既有幂等/冲突语义的结果，不得退化为不可重试的终态失败），并补回归断言。
+  - 依据：C26 复核审计结论 `openspec/changes/deliver-warning-tasks-and-in-app-notification/verification.md`（finding `C26-AUD-03`）。重跑受影响回归与 `openspec validate ... --strict --no-interactive`，并把处置结论写回 verification.md。

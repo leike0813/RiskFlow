@@ -428,13 +428,26 @@ async function collectGit(exec, cwd) {
     exec("git", ["branch", "--show-current"], { cwd }),
   ]);
   const lines = String(statusOutput).split("\n").filter(Boolean);
-  const dirtyPaths = lines.filter((line) => !line.startsWith("## "));
+  // dirtyPaths 是「实时未提交改动」的唯一事实出口：收口校验直接按字符串比较，
+  // 收口提交直接把它交给 `git add --`。因此这里必须产出路径本身，而不是
+  // porcelain 的状态行（`XY<space>PATH`）。
+  const dirtyPaths = lines.filter((line) => !line.startsWith("## ")).map(porcelainDirtyPath);
   return {
     head: String(headOutput).trim(),
     branch: String(branchOutput).trim() || null,
     dirty: dirtyPaths.length > 0,
     dirtyPaths,
   };
+}
+
+export function porcelainDirtyPath(line) {
+  const entry = line.slice(3);
+  const arrow = entry.lastIndexOf(" -> ");
+  const target = arrow === -1 ? entry : entry.slice(arrow + 4);
+  // Git 会给含特殊字符的路径加外层双引号；去掉包裹即可满足比较与 git add。
+  return target.length > 1 && target.startsWith('"') && target.endsWith('"')
+    ? target.slice(1, -1)
+    : target;
 }
 
 async function isAncestor(exec, ancestor, descendant, cwd) {

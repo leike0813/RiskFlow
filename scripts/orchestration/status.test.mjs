@@ -11,6 +11,7 @@ import {
   deriveSnapshot,
   normalizeTask,
   parseTaskEnvelope,
+  porcelainDirtyPath,
   readJsonCommand,
   validateGraph,
 } from "./status.mjs";
@@ -212,6 +213,15 @@ describe("execution graph", () => {
       valid: false,
       reason: "invalid_main_verification",
     });
+  });
+});
+
+describe("dirty path projection", () => {
+  it("exposes paths rather than porcelain status lines", () => {
+    expect(porcelainDirtyPath(" M packages/a.ts")).toBe("packages/a.ts");
+    expect(porcelainDirtyPath("?? packages/b.ts")).toBe("packages/b.ts");
+    expect(porcelainDirtyPath("R  packages/old.ts -> packages/new.ts")).toBe("packages/new.ts");
+    expect(porcelainDirtyPath(' M "packages/with space.ts"')).toBe("packages/with space.ts");
   });
 });
 

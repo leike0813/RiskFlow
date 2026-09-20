@@ -1,0 +1,331 @@
+/* 外壳样式：三列网格（16rem 导航 + 主区 + 22rem 停靠区），≤64rem 塌两列。
+   视觉沿用 v1：深海军蓝框架（--nav-bg / --topbar-bg）+ 浅灰蓝底（--page-bg）。 */
+
+.app-shell {
+  display: grid;
+  grid-template-columns: var(--nav-width) minmax(0, 1fr) minmax(0, var(--dock-width));
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+/* skip-link（对齐生产 AppShell.css） */
+.skip-link {
+  position: absolute;
+  z-index: calc(var(--z-review) + 1);
+  top: 0;
+  left: 0;
+  padding: var(--space-2) var(--space-3);
+  color: #fff;
+  background: var(--topbar-bg);
+  transform: translateY(-120%);
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+/* ---- 顶部通栏（Electron 可拖拽安全区样式钩子） ---- */
+.app-header {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  min-height: var(--topbar-height);
+  padding: var(--space-3) var(--space-5);
+  color: #fff;
+  background: var(--topbar-bg);
+  /* Electron 前瞻：自绘标题栏时本区域整体可拖拽，交互控件单独标记 no-drag。
+     浏览器环境下该属性不生效，仅作为将来壳工程对接的样式钩子。 */
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.app-header button,
+.app-header select,
+.app-header a {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.app-header-brand {
+  flex: none;
+  min-width: 12rem;
+}
+
+.app-header-title {
+  margin: 0;
+  font-size: var(--text-lg);
+  line-height: var(--text-lg-lh);
+  font-weight: 700;
+  letter-spacing: 0.4px;
+}
+
+.app-header-subtitle {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.app-header-meta {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.app-header-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px;
+  border: none;
+  border-radius: var(--radius-md);
+  color: rgba(255, 255, 255, 0.85);
+  background: none;
+}
+
+.app-header-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.app-header-agent-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.app-header-agent-btn:hover,
+.app-header-agent-btn[aria-pressed='true'] {
+  background: var(--blue);
+  border-color: var(--blue);
+}
+
+/* 工程上下文选择器（顶部通栏中段） */
+.context-bar {
+  flex: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.context-bar label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: rgba(255, 255, 255, 0.85);
+  white-space: nowrap;
+}
+
+.context-bar select {
+  max-width: 15rem;
+  padding: 4px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: var(--radius-md);
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.context-bar select:disabled {
+  opacity: 0.5;
+}
+
+.context-bar option {
+  color: var(--text);
+  background: var(--card);
+}
+
+/* ---- 左侧导航 ---- */
+.app-nav {
+  padding: var(--space-3);
+  background: var(--nav-bg);
+}
+
+.app-nav ul {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.app-nav a,
+.app-nav [role='link'] {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 42px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-md);
+  font-size: var(--text-md);
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.app-nav a:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.app-nav a[aria-current='page'],
+.app-nav a[aria-current='page']:hover {
+  color: #fff;
+  background: var(--blue);
+}
+
+.app-nav [role='link'][data-navigation-state='denied'],
+.app-nav [role='link'][data-navigation-state='unknown'] {
+  color: rgba(255, 255, 255, 0.35);
+  cursor: not-allowed;
+}
+
+/* ---- 主区 ---- */
+.app-main {
+  min-width: 0;
+  padding: var(--space-5);
+  background: var(--page-bg);
+}
+
+.app-main > h1 {
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-2xl);
+  line-height: var(--text-2xl-lh);
+  font-weight: 600;
+}
+
+/* ---- 右侧停靠区 ---- */
+.right-dock {
+  padding: var(--space-4);
+  border-left: 1px solid var(--border);
+  background: var(--card);
+}
+
+.dock-open-btn {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  background: var(--card);
+}
+
+.dock-open-btn:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+.dock-panel {
+  position: sticky;
+  top: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.dock-panel-heading {
+  margin: 0;
+  font-size: var(--text-lg);
+  line-height: var(--text-lg-lh);
+  font-weight: 600;
+}
+
+.dock-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.dock-toolbar [role='tablist'] {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.dock-toolbar [role='tab'] {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-2);
+  background: var(--card);
+}
+
+.dock-toolbar [role='tab'][aria-selected='true'] {
+  color: var(--blue);
+  border-color: var(--blue);
+  background: var(--blue-soft);
+  font-weight: 600;
+}
+
+.dock-close-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px;
+  border: none;
+  border-radius: var(--radius-md);
+  color: var(--text-2);
+  background: none;
+}
+
+.dock-close-btn:hover {
+  color: var(--text);
+  background: var(--bluegray-soft);
+}
+
+.dock-panel section {
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.dock-context-summary {
+  margin: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.dock-context-summary > div {
+  display: grid;
+  grid-template-columns: 5rem minmax(0, 1fr);
+  gap: var(--space-2);
+}
+
+.dock-context-summary dt {
+  color: var(--text-2);
+}
+
+.dock-context-summary dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.dock-agent-summary p {
+  margin: 0 0 var(--space-2);
+}
+
+/* ---- ≤64rem 塌两列（对齐生产 64rem 断点） ---- */
+@media (max-width: 64rem) {
+  .app-shell {
+    grid-template-columns: var(--nav-width-compact) minmax(0, 1fr);
+  }
+
+  .app-header {
+    flex-wrap: wrap;
+    gap: var(--space-3);
+  }
+
+  .right-dock {
+    grid-column: 1 / -1;
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+}

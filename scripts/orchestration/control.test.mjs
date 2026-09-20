@@ -1,20 +1,39 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import {
   ControlError,
   canCompleteGoal,
   createV2Envelope,
   preflightAction,
   riskflowDispatch,
+  riskflowIntegrate,
   riskflowReconcile,
   riskflowSettle,
   withOrcaSender,
   withRuntimeLock,
 } from "./control.mjs";
 import { formatCurrentState, shouldBlockDirectCommand } from "./omp-extension.mjs";
+
+// 编排测试必须与调用方环境隔离：协调终端会设置 ORCA_TERMINAL_HANDLE，使
+// resolveOrcaInvocation 返回 `orca` 而不是假 exec 期望的 `orca-ide`，令同一批
+// 用例在干净 shell 与 Orca 终端中得到不同结论。
+const ambientOrchestrationEnv = {
+  terminalHandle: process.env.ORCA_TERMINAL_HANDLE,
+  cliCommand: process.env.ORCA_CLI_COMMAND,
+};
+delete process.env.ORCA_TERMINAL_HANDLE;
+delete process.env.ORCA_CLI_COMMAND;
+afterAll(() => {
+  if (ambientOrchestrationEnv.terminalHandle !== undefined) {
+    process.env.ORCA_TERMINAL_HANDLE = ambientOrchestrationEnv.terminalHandle;
+  }
+  if (ambientOrchestrationEnv.cliCommand !== undefined) {
+    process.env.ORCA_CLI_COMMAND = ambientOrchestrationEnv.cliCommand;
+  }
+});
 
 function node(overrides = {}) {
   return {
@@ -98,6 +117,16 @@ const graph = {
         model: "gpt-5.6-sol",
         thinking: "high",
       },
+      implementation: {
+        agentClass: "bounded-implementer",
+        model: "commandcode/deepseek/deepseek-v4.1-flash",
+        thinking: "max",
+      },
+      audit: {
+        agentClass: "strong-auditor",
+        model: "gpt-5.6-sol",
+        thinking: "high",
+      },
     },
     targetedAudit: ["permission", "transaction", "critical-state-machine", "semantic-merge"],
     noProgressLimit: 3,
@@ -138,6 +167,46 @@ describe("controlled orchestration", () => {
     });
     expect(text).toContain("revision: rev-1");
     expect(text).toContain("C26: 继续 Finalizer");
+  });
+
+  it("continues the attempt number from the target attempt group history", () => {
+    const auditCheckpoint = {
+      ...node().checkpoints,
+      taskId: "task-audit",
+      taskKind: "audit",
+      phase: "finalizing",
+      runState: "settled",
+      outcome: "failed",
+      attemptGroup: "C17:audit",
+      attempt: 1,
+    };
+    const withHistory = node({
+      checkpoints: auditCheckpoint,
+      orca: {
+        attempts: [
+          { taskId: "task-1", attemptGroup: "C17:finalizing", attempt: 1 },
+          { taskId: "task-2", attemptGroup: "C17:finalizing", attempt: 2 },
+          { taskId: "task-audit", attemptGroup: "C17:audit", attempt: 1 },
+        ],
+      },
+    });
+    expect(
+      createV2Envelope({
+        node: withHistory,
+        taskId: "task-repair",
+        taskKind: "finalization",
+        role: graph.policy.roles.finalization,
+      }),
+    ).toMatchObject({ attemptGroup: "C17:finalizing", attempt: 3 });
+
+    expect(
+      createV2Envelope({
+        node: node({ checkpoints: auditCheckpoint }),
+        taskId: "task-repair-2",
+        taskKind: "finalization",
+        role: graph.policy.roles.finalization,
+      }),
+    ).toMatchObject({ attemptGroup: "C17:finalizing", attempt: 1 });
   });
 
   it("keeps finalizing dispatch bound to the strong Finalizer role", () => {
@@ -183,7 +252,13 @@ describe("controlled orchestration", () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-replan-"));
     const paused = node({
       status: "paused",
-      checkpoints: { ...node().checkpoints, runState: "settled", outcome: "paused" },
+      checkpoints: {
+        ...node().checkpoints,
+        runState: "settled",
+        outcome: "paused",
+        issueRefs: ["assessment-basis-resolver-drift", "requires-c19-delegate-dependency"],
+        evidenceRefs: ["worker-report:msg-9e588210c8cd"],
+      },
     });
     const pausedSnapshot = snapshot({ nodes: [paused], resumeQueue: [] });
     expect(() =>
@@ -232,6 +307,659 @@ describe("controlled orchestration", () => {
       expect(writtenEnvelope.attemptGroup).toMatch(/^C17:planning:/u);
       expect(createdSpec).toContain("IMPLEMENTATION-ORCHESTRATION-RUNBOOK.md");
       expect(createdSpec).toContain("references/风险识别与评估规划事实源摘要.md");
+      expect(createdSpec).toContain("本次为重开规划");
+      expect(createdSpec).toContain("approval://riskflow/C17/2");
+      expect(createdSpec).toContain("C17:finalizing");
+      expect(createdSpec).toContain("assessment-basis-resolver-drift");
+      expect(createdSpec).toContain("worker-report:msg-9e588210c8cd");
+      expect(createdSpec).toContain("先读取它，再据此规划");
+      expect(createdSpec).toContain("仅补齐模板章节不构成规划完成");
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("keeps the generic planning briefing when no replan is approved", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-planning-generic-"));
+    const ready = node({
+      status: "ready",
+      checkpoints: { ...node().checkpoints, runState: "settled", outcome: "failed" },
+    });
+    const readySnapshot = snapshot({
+      nodes: [ready],
+      resumeQueue: [{ workItemId: "C17", category: "ready", nextAction: "创建有界规划任务" }],
+    });
+    let createdSpec;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("task-create")) {
+        createdSpec = args[args.indexOf("--spec") + 1];
+        return { id: "task-planning" };
+      }
+      if (command === "orca-ide" && args.includes("task-update")) return {};
+      if (command === "orca-ide" && args.includes("worker-start")) return { id: "worker-planning" };
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await riskflowDispatch(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "dispatch-c17-planning-generic",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => ({ graph, snapshot: readySnapshot }),
+        },
+      );
+      expect(createdSpec).toContain("按 change 实际 schema 和 applyRequires 创建并闭合规划工件");
+      expect(createdSpec).not.toContain("本次为重开规划");
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("records a running attempt for the implementation dispatch path too", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-impl-ledger-"));
+    const planning = node({
+      status: "running",
+      phase: "planning",
+      checkpoints: {
+        ...node().checkpoints,
+        taskKind: "planning",
+        phase: "planning",
+        runState: "settled",
+        outcome: "succeeded",
+      },
+    });
+    const planningSnapshot = snapshot({
+      nodes: [planning],
+      resumeQueue: [
+        { workItemId: "C17", category: "planning", nextAction: "创建有界首轮实现任务" },
+      ],
+    });
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("task-create")) return { id: "task-impl" };
+      if (command === "orca-ide" && args.includes("task-update")) return {};
+      if (command === "orca-ide" && args.includes("terminal") && args.includes("create")) {
+        return { terminal: { handle: "term-impl" } };
+      }
+      if (command === "orca-ide" && args.includes("terminal") && args.includes("wait")) return {};
+      if (command === "orca-ide" && args.includes("--inject")) return { injected: true };
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await riskflowDispatch(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "dispatch-c17-implementation-ledger",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => ({ graph, snapshot: planningSnapshot }),
+        },
+      );
+      const record = JSON.parse(
+        await readFile(
+          join(runtimeRoot, "riskflow-orchestration", "attempts", "task-impl.json"),
+          "utf8",
+        ),
+      );
+      expect(record.envelope).toMatchObject({ taskKind: "implementation", runState: "running" });
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("selects the finalization role when the round no longer requires an audit", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-round-role-"));
+    const roundNode = node({
+      auditRequired: false,
+      checkpoints: {
+        ...node().checkpoints,
+        taskKind: "finalization",
+        phase: "finalizing",
+        runState: "settled",
+        outcome: "succeeded",
+        auditPolicy: "targeted",
+      },
+    });
+    const roundSnapshot = snapshot({
+      nodes: [roundNode],
+      resumeQueue: [{ workItemId: "C17", category: "finalizing", nextAction: "继续收尾" }],
+    });
+    let writtenEnvelope;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("task-create")) return { id: "task-next" };
+      if (command === "orca-ide" && args.includes("task-update")) {
+        writtenEnvelope = JSON.parse(args[args.indexOf("--result") + 1]);
+        return {};
+      }
+      if (command === "orca-ide" && args.includes("worker-start")) return { state: "ready" };
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await riskflowDispatch(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "dispatch-round-role",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => ({ graph, snapshot: roundSnapshot }),
+        },
+      );
+      expect(writtenEnvelope).toMatchObject({ taskKind: "finalization" });
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("states the closing-round protocol in the dispatch briefing", async () => {
+    const dispatchSpec = async (overrides, key) => {
+      const runtimeRoot = await mkdtemp(join(tmpdir(), `riskflow-round-${key}-`));
+      const target = node(overrides);
+      const snap = snapshot({
+        nodes: [target],
+        resumeQueue: [{ workItemId: "C17", category: "finalizing", nextAction: "继续收尾" }],
+      });
+      let spec;
+      const exec = async (command, args) => {
+        if (command === "git") return runtimeRoot;
+        if (command === "orca-ide" && args.includes("task-create")) {
+          spec = args[args.indexOf("--spec") + 1];
+          return { id: `task-${key}` };
+        }
+        if (command === "orca-ide" && args.includes("task-update")) return {};
+        if (command === "orca-ide" && args.includes("worker-start")) return { state: "ready" };
+        throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+      };
+      try {
+        await riskflowDispatch(
+          { workItemId: "C17", expectedRevision: "revision-1", idempotencyKey: `dispatch-${key}` },
+          { rootDir: process.cwd(), exec, statusProvider: async () => ({ graph, snapshot: snap }) },
+        );
+        return spec;
+      } finally {
+        await rm(runtimeRoot, { recursive: true });
+      }
+    };
+    const targetedFinalization = {
+      taskKind: "finalization",
+      phase: "finalizing",
+      runState: "settled",
+      outcome: "succeeded",
+      auditPolicy: "targeted",
+    };
+    const concludedAudit = {
+      taskId: "task-audit",
+      taskKind: "audit",
+      runState: "settled",
+      outcome: "failed",
+      issueRefs: ["audit-finding-1"],
+      evidenceRefs: ["audit-evidence-1"],
+    };
+
+    // 首个收尾尝试：当前尝试还是实现（auditRequired 为假、本轮尚无审计结论）
+    const first = await dispatchSpec(
+      {
+        auditRequired: false,
+        checkpoints: {
+          ...node().checkpoints,
+          taskKind: "implementation",
+          phase: "implementing",
+          runState: "settled",
+          outcome: "succeeded",
+        },
+      },
+      "first",
+    );
+    expect(first).toContain("=== 收尾轮次协议 ===");
+    expect(first).toContain("为审计结论留出位置");
+    expect(first).not.toContain("本轮限定审计已出结论");
+
+    const repair = await dispatchSpec(
+      {
+        auditRequired: false,
+        checkpoints: { ...node().checkpoints, ...targetedFinalization },
+        orca: { attempts: [concludedAudit] },
+      },
+      "repair",
+    );
+    expect(repair).toContain("本轮限定审计已出结论（task task-audit）");
+    expect(repair).toContain("audit-finding-1");
+    expect(repair).toContain("audit-evidence-1");
+    expect(repair).toContain("逐项说明闭合情况");
+
+    const audit = await dispatchSpec(
+      { auditRequired: true, checkpoints: { ...node().checkpoints, ...targetedFinalization } },
+      "audit",
+    );
+    expect(audit).toContain("唯一的限定审计");
+    expect(audit).toContain("不改产品代码");
+  });
+
+  function ledgerAttemptPath(runtimeRoot, taskId) {
+    return join(runtimeRoot, "riskflow-orchestration", "attempts", `${taskId}.json`);
+  }
+
+  async function readLedgerEnvelope(runtimeRoot, taskId) {
+    const record = JSON.parse(await readFile(ledgerAttemptPath(runtimeRoot, taskId), "utf8"));
+    return record.envelope;
+  }
+
+  it("records the running attempt envelope in the ledger after a supervised dispatch", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-attempt-ledger-"));
+    const queued = node({
+      checkpoints: {
+        ...node().checkpoints,
+        schemaVersion: 2,
+        workItemId: "C17",
+        routeNodeId: "C17",
+        changeName: "deliver-process-model",
+        worktreeId: "repo::/tmp/c17",
+        inputHead: "feature-head",
+        approvalRef: null,
+        supersedesAttemptGroup: null,
+      },
+    });
+    const queuedSnapshot = snapshot({
+      nodes: [queued],
+      resumeQueue: [
+        { workItemId: "C17", category: "finalizing", nextAction: "派发强模型 Finalizer" },
+      ],
+    });
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("worker-start")) return { state: "started" };
+      if (command === "orca-ide" && args.includes("task-update")) return {};
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      const result = await riskflowDispatch(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "dispatch-c17-attempt-ledger",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => ({ graph, snapshot: queuedSnapshot }),
+        },
+      );
+      expect(result.worker).toMatchObject({ state: "started", attemptRecorded: true });
+      expect(await readLedgerEnvelope(runtimeRoot, "task-finalizer")).toMatchObject({
+        schemaVersion: 2,
+        workItemId: "C17",
+        taskKind: "finalization",
+        phase: "finalizing",
+        runState: "running",
+        worktreeId: "repo::/tmp/c17",
+        attemptGroup: "C17:finalizing",
+        attempt: 1,
+        auditPolicy: "self",
+        owner: { taskId: "task-finalizer" },
+      });
+      const recorded = await readLedgerEnvelope(runtimeRoot, "task-finalizer");
+      expect(recorded.outcome).toBeUndefined();
+      expect(recorded.outputHead).toBeUndefined();
+      expect(recorded.approvalRef).toBeUndefined();
+      expect(recorded.supersedesAttemptGroup).toBeUndefined();
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("keeps the ledger attempt when the supervised worker never starts", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-attempt-ledger-failed-start-"));
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("task-update")) return {};
+      if (command === "orca-ide" && args.includes("worker-start")) {
+        throw new Error("consumer_fenced");
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await expect(
+        riskflowDispatch(
+          {
+            workItemId: "C17",
+            expectedRevision: "revision-1",
+            idempotencyKey: "dispatch-c17-attempt-ledger-failed-start",
+          },
+          {
+            rootDir: process.cwd(),
+            exec,
+            statusProvider: async () => ({ graph, snapshot: snapshot() }),
+          },
+        ),
+      ).rejects.toThrow("consumer_fenced");
+      expect(await readLedgerEnvelope(runtimeRoot, "task-finalizer")).toMatchObject({
+        runState: "queued",
+        attemptGroup: "C17:finalizing",
+        attempt: 1,
+      });
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("keeps a started worker dispatched when the ledger record is rejected", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-attempt-ledger-rejected-"));
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("task-update")) return {};
+      if (command === "orca-ide" && args.includes("worker-start")) {
+        await rm(join(runtimeRoot, "riskflow-orchestration", "attempts"), { recursive: true });
+        await writeFile(join(runtimeRoot, "riskflow-orchestration", "attempts"), "not a directory");
+        return { state: "started" };
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      const result = await riskflowDispatch(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "dispatch-c17-attempt-ledger-rejected",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => ({ graph, snapshot: snapshot() }),
+        },
+      );
+      expect(result.worker).toMatchObject({ state: "started", attemptRecorded: false });
+      expect(result.worker.attemptWarning).toContain("登记台账失败");
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  function mergedState(overrides = {}) {
+    const merged = node({
+      status: "merged",
+      phase: "integration",
+      checkpoints: {
+        ...node().checkpoints,
+        runState: "settled",
+        outcome: "succeeded",
+        main: {
+          mergeCommit: "merge-head",
+          mainHead: "merge-head",
+          verification: "pending",
+          archiveCommit: null,
+        },
+      },
+    });
+    return snapshot({
+      nodes: [merged],
+      resumeQueue: [
+        { workItemId: "C17", category: "integrating", nextAction: "在 main 上完成 pnpm verify" },
+      ],
+      ...overrides,
+    });
+  }
+
+  it("releases the runtime lock while a long external step runs", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-lock-handoff-"));
+    const exec = async (command) => {
+      if (command === "git") return runtimeRoot;
+      throw new Error(`unexpected command: ${command}`);
+    };
+    let acquiredWhileReleased = false;
+    try {
+      await withRuntimeLock(process.cwd(), exec, async (_runtimeDir, lock) => {
+        await lock.withoutLock(async () => {
+          await withRuntimeLock(process.cwd(), exec, async () => {
+            acquiredWhileReleased = true;
+          });
+        });
+      });
+      expect(acquiredWhileReleased).toBe(true);
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("runs main-line verification without inheriting the coordinator identity", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-long-step-"));
+    let verificationEnv;
+    let reads = 0;
+    const exec = async (command, args, options = {}) => {
+      if (command === "git" && args[0] === "rev-parse" && args[1] === "--git-common-dir") {
+        return runtimeRoot;
+      }
+      if (command === "git" && String(args[0] ?? "").startsWith("--git-dir=")) return runtimeRoot;
+      if (command === "git" && args[0] === "rev-parse") return "merge-head";
+      if (command === "pnpm") {
+        verificationEnv = options.env;
+        return "";
+      }
+      if (command === "orca-ide" && args.includes("task-update")) return {};
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    process.env.ORCA_TERMINAL_HANDLE = "term-test-coordinator";
+    try {
+      const result = await riskflowIntegrate(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "integrate-long-step",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          orcaCommand: "orca-ide",
+          statusProvider: async () => {
+            reads += 1;
+            return { graph, snapshot: mergedState() };
+          },
+        },
+      );
+      expect(result).toMatchObject({ action: "main-verify", mainHead: "merge-head" });
+      expect(reads).toBeGreaterThan(1);
+      expect(verificationEnv.ORCA_TERMINAL_HANDLE).toBeUndefined();
+      expect(verificationEnv.ORCA_CLI_COMMAND).toBeUndefined();
+    } finally {
+      delete process.env.ORCA_TERMINAL_HANDLE;
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("rejects a long external step whose fact base changed while unlocked", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-long-step-stale-"));
+    let reads = 0;
+    const exec = async (command, args) => {
+      if (command === "git" && args[0] === "rev-parse" && args[1] === "--git-common-dir") {
+        return runtimeRoot;
+      }
+      if (command === "git" && String(args[0] ?? "").startsWith("--git-dir=")) return runtimeRoot;
+      if (command === "pnpm") return "";
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await expect(
+        riskflowIntegrate(
+          {
+            workItemId: "C17",
+            expectedRevision: "revision-1",
+            idempotencyKey: "integrate-long-step-stale",
+          },
+          {
+            rootDir: process.cwd(),
+            exec,
+            orcaCommand: "orca-ide",
+            statusProvider: async () => {
+              reads += 1;
+              // 工作项状态在长步骤期间发生变化：必须 fail-closed
+              return {
+                graph,
+                snapshot:
+                  reads === 1
+                    ? mergedState()
+                    : mergedState({ nodes: [node({ status: "finalized" })] }),
+              };
+            },
+          },
+        ),
+      ).rejects.toMatchObject({ code: "stale_revision" });
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  function settleHarness(runtimeRoot) {
+    let written;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("task-update")) {
+        written = JSON.parse(args[args.indexOf("--result") + 1]);
+        return {};
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    return { exec, envelope: () => written };
+  }
+
+  it("preserves the approved replan boundary when a planning attempt settles", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-settle-boundary-"));
+    const planning = node({
+      checkpoints: {
+        ...node().checkpoints,
+        taskId: "task-replan",
+        taskKind: "planning",
+        phase: "planning",
+        runState: "running",
+        attemptGroup: "C17:planning:approved",
+        attempt: 1,
+        approvalRef: "approval://riskflow/C17/replan-2026-09-20",
+        supersedesAttemptGroup: "C17:finalizing",
+      },
+    });
+    const { exec, envelope } = settleHarness(runtimeRoot);
+    try {
+      await riskflowSettle(
+        {
+          workItemId: "C17",
+          outcome: "paused",
+          issueRefs: ["replan-scope-not-communicated"],
+          evidenceRefs: ["worker-report:msg-replan"],
+          expectedRevision: "revision-1",
+          idempotencyKey: "settle-replan-boundary",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => ({
+            graph,
+            snapshot: snapshot({
+              nodes: [planning],
+              resumeQueue: [
+                { workItemId: "C17", category: "planning", nextAction: "等待规划收口" },
+              ],
+            }),
+          }),
+        },
+      );
+      expect(envelope()).toMatchObject({
+        taskKind: "planning",
+        runState: "settled",
+        outcome: "paused",
+        approvalRef: "approval://riskflow/C17/replan-2026-09-20",
+        supersedesAttemptGroup: "C17:finalizing",
+      });
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("does not add a replan boundary to a regular settle", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-settle-regular-"));
+    const { exec, envelope } = settleHarness(runtimeRoot);
+    try {
+      await riskflowSettle(
+        {
+          workItemId: "C17",
+          outcome: "paused",
+          issueRefs: ["ordinary"],
+          evidenceRefs: ["ordinary-report"],
+          expectedRevision: "revision-1",
+          idempotencyKey: "settle-regular-boundary",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => ({ graph, snapshot: snapshot() }),
+        },
+      );
+      expect(envelope().approvalRef).toBeUndefined();
+      expect(envelope().supersedesAttemptGroup).toBeUndefined();
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("commits only the reviewed paths when a successful settle has dirty files", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-settle-reviewed-"));
+    const dirty = node({
+      worktree: {
+        ...node().worktree,
+        dirty: true,
+        dirtyPaths: ["packages/a.ts"],
+      },
+    });
+    const dirtySnapshot = snapshot({
+      nodes: [dirty],
+      resumeQueue: [{ workItemId: "C17", category: "finalizing", nextAction: "收口" }],
+    });
+    const calls = [];
+    let written;
+    const exec = async (command, args) => {
+      calls.push([command, ...args].join(" "));
+      if (command === "git" && args[0] === "rev-parse" && args[1] === "--git-common-dir") {
+        return runtimeRoot;
+      }
+      if (command === "git" && String(args[0] ?? "").startsWith("--git-dir=")) return runtimeRoot;
+      if (command === "git" && args[0] === "rev-parse") return "reviewed-head";
+      if (command === "git" && args[0] === "add") return "";
+      if (command === "git" && args[0] === "commit") return "";
+      if (command === "openspec") return { artifacts: [] };
+      if (command === "orca-ide" && args.includes("task-update")) {
+        written = JSON.parse(args[args.indexOf("--result") + 1]);
+        return {};
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await riskflowSettle(
+        {
+          workItemId: "C17",
+          outcome: "succeeded",
+          reviewedPaths: ["packages/a.ts"],
+          evidenceRefs: ["vitest:reviewed"],
+          expectedRevision: "revision-1",
+          idempotencyKey: "settle-reviewed-paths",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          orcaCommand: "orca-ide",
+          statusProvider: async () => ({ graph, snapshot: dirtySnapshot }),
+        },
+      );
+      expect(calls).toContain("git add -- packages/a.ts");
+      expect(calls.some((call) => call.startsWith("git commit"))).toBe(true);
+      expect(written.outputHead).toBe("reviewed-head");
     } finally {
       await rm(runtimeRoot, { recursive: true });
     }
@@ -380,7 +1108,8 @@ describe("controlled orchestration", () => {
     const dirty = node({
       worktree: {
         ...node().worktree,
-        git: { head: "feature-head", dirty: true, dirtyPaths: ["b.mjs", "a.mjs"] },
+        dirty: true,
+        dirtyPaths: ["b.mjs", "a.mjs"],
       },
     });
     expect(() =>
@@ -399,6 +1128,57 @@ describe("controlled orchestration", () => {
         reviewedPaths: ["a.mjs", "b.mjs"],
       }),
     ).not.toThrow();
+  });
+
+  it("requires only schema-declared verification artifacts before successful finalization", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-verification-"));
+    const cases = [
+      { name: "pending", artifacts: [{ id: "verification", status: "ready" }], blocked: true },
+      { name: "complete", artifacts: [{ id: "verification", status: "done" }], blocked: false },
+      { name: "legacy", artifacts: [{ id: "tasks", status: "done" }], blocked: false },
+    ];
+    try {
+      for (const testCase of cases) {
+        let writes = 0;
+        const exec = async (command, args) => {
+          if (command === "git") {
+            if (["add", "commit"].includes(args[0])) writes += 1;
+            return runtimeRoot;
+          }
+          if (command === "openspec") return { artifacts: testCase.artifacts };
+          if (command === "orca-ide" && args.includes("task-update")) {
+            writes += 1;
+            return { result: {} };
+          }
+          throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+        };
+        const settle = riskflowSettle(
+          {
+            workItemId: "C17",
+            expectedRevision: "revision-1",
+            idempotencyKey: `verification-${testCase.name}`,
+            outcome: "succeeded",
+            evidenceRefs: ["verification.md"],
+          },
+          {
+            rootDir: process.cwd(),
+            exec,
+            statusProvider: async () => ({ graph, snapshot: snapshot() }),
+          },
+        );
+        if (testCase.blocked) {
+          await expect(settle).rejects.toMatchObject({
+            code: "verification_artifact_required",
+          });
+          expect(writes).toBe(0);
+        } else {
+          await expect(settle).resolves.toMatchObject({ outcome: "succeeded" });
+          expect(writes).toBe(1);
+        }
+      }
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
   });
 
   it("serializes mutations with one common-dir lock", async () => {

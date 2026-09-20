@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
@@ -48,6 +48,7 @@ export async function defaultExec(command, args, options = {}) {
       encoding: "utf8",
       timeout: options.timeoutMs ?? 20_000,
       maxBuffer: options.maxBuffer ?? 4 * 1024 * 1024,
+      ...(options.env ? { env: options.env } : {}),
     });
     return stdout;
   } catch (error) {
@@ -55,11 +56,15 @@ export async function defaultExec(command, args, options = {}) {
   }
 }
 
-export async function resolveCoordinatorRoot(rootDir, exec = defaultExec) {
+export async function gitCommonDir(rootDir, exec = defaultExec) {
   const common = String(
     await exec("git", ["rev-parse", "--git-common-dir"], { cwd: rootDir }),
   ).trim();
-  const gitDir = common.startsWith("/") ? common : resolve(rootDir, common);
+  return common.startsWith("/") ? common : resolve(rootDir, common);
+}
+
+export async function resolveCoordinatorRoot(rootDir, exec = defaultExec) {
+  const gitDir = await gitCommonDir(rootDir, exec);
   return String(
     await exec("git", [`--git-dir=${gitDir}`, "rev-parse", "--show-toplevel"], { cwd: rootDir }),
   ).trim();
@@ -423,13 +428,26 @@ async function collectGit(exec, cwd) {
     exec("git", ["branch", "--show-current"], { cwd }),
   ]);
   const lines = String(statusOutput).split("\n").filter(Boolean);
-  const dirtyPaths = lines.filter((line) => !line.startsWith("## "));
+  // dirtyPaths 是「实时未提交改动」的唯一事实出口：收口校验直接按字符串比较，
+  // 收口提交直接把它交给 `git add --`。因此这里必须产出路径本身，而不是
+  // porcelain 的状态行（`XY<space>PATH`）。
+  const dirtyPaths = lines.filter((line) => !line.startsWith("## ")).map(porcelainDirtyPath);
   return {
     head: String(headOutput).trim(),
     branch: String(branchOutput).trim() || null,
     dirty: dirtyPaths.length > 0,
     dirtyPaths,
   };
+}
+
+export function porcelainDirtyPath(line) {
+  const entry = line.slice(3);
+  const arrow = entry.lastIndexOf(" -> ");
+  const target = arrow === -1 ? entry : entry.slice(arrow + 4);
+  // Git 会给含特殊字符的路径加外层双引号；去掉包裹即可满足比较与 git add。
+  return target.length > 1 && target.startsWith('"') && target.endsWith('"')
+    ? target.slice(1, -1)
+    : target;
 }
 
 async function isAncestor(exec, ancestor, descendant, cwd) {
@@ -457,8 +475,36 @@ function normalizeWorktree(record, rootDir, repoId) {
   };
 }
 
-function normalizeTask(record, repoId) {
-  const envelope = parseTaskEnvelope(record);
+// Orca 会在监督派发起步（createStartingWorkerDispatch）与 worker 报告收口
+// （settleWorkerReport）时整体覆盖 tasks.result，而 v2 执行信封历史上就存放在该字段。
+// 控制器把当前尝试的正式信封另外持久化在 git common dir 的台账里；状态视图只在该 Task
+// 的 result 不再携带有效信封时用台账补齐，Orca 侧的有效信封始终优先。
+async function readAttemptLedger(runtimeDir) {
+  const entries = new Map();
+  let names;
+  try {
+    names = await readdir(resolve(runtimeDir, "attempts"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return entries;
+    throw error;
+  }
+  for (const name of names.filter((candidate) => candidate.endsWith(".json"))) {
+    try {
+      const record = JSON.parse(await readFile(resolve(runtimeDir, "attempts", name), "utf8"));
+      if (nonEmptyString(record?.taskId) && record.envelope) {
+        entries.set(record.taskId, record.envelope);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return entries;
+}
+
+export function normalizeTask(record, repoId, ledgerEnvelope = null) {
+  const parsed = parseTaskEnvelope(record);
+  const envelope =
+    parsed.valid || !ledgerEnvelope ? parsed : parseTaskEnvelope({ result: ledgerEnvelope });
   const processRef = record?.created_by_process_incarnation ?? "";
   const repoOwned =
     Boolean(repoId && processRef.startsWith(`${repoId}::`)) ||
@@ -554,6 +600,63 @@ function currentTaskWindow(valid, phaseOrder) {
   };
 }
 
+// 同一尝试组内只能有一个活动写者：被更高尝试次数的尝试取代的较早尝试不可能再被
+// 派发。Orca 没有 cancelled/superseded 终态，因此只能在判定侧识别它已被取代。
+// 只有尝试次数严格更高才算取代：同次数、仅创建顺序不同属于「无法唯一确定当前尝试」，
+// 必须继续 fail-closed，不能借本规则放宽。
+function isSupersededAttempt(task, scope) {
+  const attempt = Number(task.envelope?.attempt);
+  const group = task.envelope?.attemptGroup;
+  if (!Number.isInteger(attempt) || !nonEmptyString(group)) return false;
+  return scope.some(
+    (other) =>
+      other !== task &&
+      other.envelope?.attemptGroup === group &&
+      Number.isInteger(Number(other.envelope?.attempt)) &&
+      Number(other.envelope.attempt) > attempt,
+  );
+}
+
+// 同一阶段内可以先后出现多种责任：finalization 成功且要求限定审计时，audit 会以
+// 新的尝试组（attempt 1）派发。若直接比较跨组的 attempt，新责任会被旧组的更大尝试
+// 次数永久压过，状态视图便一直停在已收口的旧尝试上。
+// 因此先在阶段内按「尝试组边界」定界（组的边界取组内最新创建时间），再在组内按尝试
+// 次数与创建顺序选取。缺少尝试组或创建时间不可比较时回退既有语义，不跨组猜测。
+function latestAttemptGroupScope(phaseTasks) {
+  const groups = new Map();
+  for (const task of phaseTasks) {
+    const group = task.envelope.attemptGroup;
+    const key = nonEmptyString(group) ? `group:${group}` : `task:${task.id}`;
+    groups.set(key, [...(groups.get(key) ?? []), task]);
+  }
+  const boundaries = [...groups.values()].map((members) => {
+    const stamps = members
+      .map((task) => task.createdAt)
+      .filter(nonEmptyString)
+      .sort();
+    return { members, boundary: stamps.at(-1) ?? null };
+  });
+  if (boundaries.some((entry) => !nonEmptyString(entry.boundary))) return phaseTasks;
+  const latestBoundary = boundaries
+    .map((entry) => entry.boundary)
+    .sort()
+    .at(-1);
+  const latestGroups = boundaries.filter((entry) => entry.boundary === latestBoundary);
+  return latestGroups.flatMap((entry) => entry.members);
+}
+
+// 同一收尾轮次最多一次限定审计：本轮范围内一旦存在已收口的 audit 尝试，
+// 后续 finalization 成功收口不得再要求第二次审计。范围取本轮的尝试集合
+// （已按最新获批 replan 边界收窄）。
+function auditConcludedInScope(scope) {
+  return scope.some(
+    (task) =>
+      task.envelope.valid &&
+      task.envelope.taskKind === "audit" &&
+      task.envelope.runState === "settled",
+  );
+}
+
 function taskSummary(tasks, phaseOrder = DEFAULT_PHASE_ORDER) {
   const valid = tasks.filter((task) => task.envelope.valid);
   const window = currentTaskWindow(valid, phaseOrder);
@@ -567,8 +670,9 @@ function taskSummary(tasks, phaseOrder = DEFAULT_PHASE_ORDER) {
   const phaseTasks = currentValid.filter((task) => {
     return phaseRank(task.envelope.phase ?? task.envelope.taskKind, phaseOrder) === maxPhase;
   });
-  const maxAttempt = Math.max(0, ...phaseTasks.map((task) => Number(task.envelope.attempt ?? 0)));
-  const attemptTasks = phaseTasks.filter(
+  const phaseScope = latestAttemptGroupScope(phaseTasks);
+  const maxAttempt = Math.max(0, ...phaseScope.map((task) => Number(task.envelope.attempt ?? 0)));
+  const attemptTasks = phaseScope.filter(
     (task) => Number(task.envelope.attempt ?? 0) === maxAttempt,
   );
   const comparableCreationOrder = attemptTasks.every((task) => nonEmptyString(task.createdAt));
@@ -602,6 +706,8 @@ function taskSummary(tasks, phaseOrder = DEFAULT_PHASE_ORDER) {
   const latest = current[0] ?? null;
   return {
     current,
+    // 获批 replan 边界之前的尝试已被取代，不再参与当前状态判定（含活动写者计数）。
+    scope: currentValid,
     conflict: signatures.size > 1,
     replanConflict: window.replanConflict,
     failed,
@@ -734,7 +840,9 @@ export function deriveNodeState(node, context) {
   const worktree = worktrees[0] ?? null;
   const summary = taskSummary(tasks, context.phaseOrder);
   if (summary.replanConflict) violations.push({ code: "invalid_replan_boundary" });
-  const activeWriterTasks = tasks.filter((task) => WRITER_TASK_STATUSES.has(task.status));
+  const activeWriterTasks = summary.scope.filter(
+    (task) => WRITER_TASK_STATUSES.has(task.status) && !isSupersededAttempt(task, summary.scope),
+  );
   if (activeWriterTasks.length > 1) {
     violations.push({
       code: "duplicate_active_writer",
@@ -835,6 +943,13 @@ export function deriveNodeState(node, context) {
   const currentEnvelope = summary.latest?.envelope ?? null;
   const currentKind = currentEnvelope?.taskKind ?? null;
   const currentSucceeded = currentEnvelope?.outcome === "succeeded";
+  // 本轮是否仍需要一次限定审计：由状态视图统一判定，角色选择只消费该字段，
+  // 避免同一条规则在控制器里出现第二份实现。
+  const auditRequired =
+    currentSucceeded &&
+    currentKind === "finalization" &&
+    currentEnvelope.auditPolicy === "targeted" &&
+    !auditConcludedInScope(summary.scope);
   if (violations.length > 0) {
     status = "unknown";
     nextActions = ["审阅 violations，禁止自动派发或回收"];
@@ -863,7 +978,12 @@ export function deriveNodeState(node, context) {
   } else if (currentEnvelope?.outcome === "paused") {
     status = "paused";
     nextActions = ["处理结构化升级条件；批准新规划后才可重开实现"];
-  } else if (summary.failed && ["verification", "finalization"].includes(currentKind)) {
+  } else if (
+    summary.failed &&
+    // audit 的失败同样落在收尾责任里：规格要求审计发现的普通缺陷由当前 Finalizer
+    // 在已批准范围内修复并重跑验证；若落入 failed 态，nextTaskKind 没有合法后续角色。
+    ["verification", "finalization", "audit"].includes(currentKind)
+  ) {
     status = "finalizing";
     phase = "finalizing";
     nextActions = ["由强模型 Finalizer 继续修复与回归，或移交新的强模型 Finalizer"];
@@ -882,11 +1002,7 @@ export function deriveNodeState(node, context) {
   } else if (currentEnvelope?.runState === "queued") {
     status = "running";
     nextActions = ["派发当前信封指定的受控任务"];
-  } else if (
-    currentSucceeded &&
-    currentKind === "finalization" &&
-    currentEnvelope.auditPolicy === "targeted"
-  ) {
+  } else if (auditRequired) {
     status = "finalizing";
     phase = "finalizing";
     nextActions = ["派发不同强模型责任者执行限定范围 audit"];
@@ -972,6 +1088,7 @@ export function deriveNodeState(node, context) {
       archiveCommit: mainState.archiveCommit,
     },
     checkpoints: taskEvidence(summary.latest),
+    auditRequired,
     nextActions,
     violations,
   };
@@ -1334,11 +1451,14 @@ async function collectFacts({ rootDir, graph, exec, orcaInvocation }) {
         ),
       ),
   );
+  const attemptLedger = await readAttemptLedger(
+    resolve(await gitCommonDir(rootDir, exec), "riskflow-orchestration"),
+  );
   const tasks = [
     ...new Map(
       taskPayloads.flatMap((payload) => extractTasks(payload)).map((record) => [record.id, record]),
     ).values(),
-  ].map((record) => normalizeTask(record, repoId));
+  ].map((record) => normalizeTask(record, repoId, attemptLedger.get(record.id)));
   const repoTasks = tasks.filter((task) => task.repoOwned);
   const repoTaskIds = new Set(repoTasks.map((task) => task.id));
   const repoRunIds = new Set(repoTasks.map((task) => task.runId).filter(Boolean));
@@ -1463,12 +1583,23 @@ async function collectFacts({ rootDir, graph, exec, orcaInvocation }) {
     nonMain.map((worktree) => collectWorktree(exec, worktree, graph, liveTasks)),
   );
   const ancestry = {};
+  const routeChangeNames = new Set(
+    graph.nodes
+      .filter((candidate) => candidate.kind === "change")
+      .map((candidate) => candidate.change),
+  );
   for (const worktree of collectedWorktrees) {
     if (!worktree.exists || !worktree.git?.head) continue;
     for (const node of graph.nodes.filter(
       (candidate) => candidate.kind === "change" && worktree.localNodeIds.includes(candidate.id),
     )) {
       ancestry[node.id] = await isAncestor(exec, worktree.git.head, main.head, rootDir);
+    }
+    // 辅助 change 不在 execution-graph.json 中，deriveSnapshot 以 `AUX:<name>` 合成其工作项；
+    // 合并证据必须与路线 change 同口径，否则辅助工作项永远进不到 merged/main_verified。
+    for (const name of worktree.openSpecNames ?? []) {
+      if (routeChangeNames.has(name)) continue;
+      ancestry[`AUX:${name}`] = await isAncestor(exec, worktree.git.head, main.head, rootDir);
     }
   }
   const mainCheckpointAncestry = {};

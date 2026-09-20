@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -15,14 +16,18 @@ import {
   bootstrapInitialSystemAdministrator,
   createPostgresLocalIdentityAccess,
 } from "../../src/auth/index.js";
-import { PostgresKnowledgeGovernanceAdapter } from "../../src/knowledge-governance/index.js";
-import { createPostgresRuntime } from "../../src/postgres/pool.js";
+import {
+  PostgresKnowledgeGovernanceAdapter,
+  type KnowledgeGovernanceReviewAuthorizationProviderV1,
+  type KnowledgeGovernanceReviewAuthorizationRequestV1,
+} from "../../src/knowledge-governance/index.js";
 import { getPostgresTransaction } from "../../src/postgres/transaction-unit.js";
+import { createPostgresRuntime } from "../../src/postgres/pool.js";
 import * as governanceMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-governed-definition-lifecycle/000007_governed_definition_lifecycle.js";
 import * as assessmentConfigurationMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-assessment-configuration-and-measure-governance/000012_assessment_configuration.js";
 import * as structuredScoringRulesMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-structured-scoring-rules-and-applicable-rule-sets/000028_structured_scoring_rules.js";
 import { DomainEventV1Schema, type DomainEventV1 } from "@riskflow/contracts/events";
-import type { TransactionContextV1 } from "@riskflow/core/persistence";
+import { sha256CanonicalJson, type TransactionContextV1 } from "@riskflow/core/persistence";
 import {
   AssessmentConfigurationDefinitionTypeV1Schema,
   type AssessmentConfigurationGovernancePolicyV1,
@@ -37,6 +42,12 @@ import {
   type SubmitScoringRuleRevisionV1,
 } from "@riskflow/core/scoring-rules";
 import { vi } from "vitest";
+import type { LocalIdentityAccessV1 } from "@riskflow/core/access";
+import { KnowledgeLifecycleError } from "@riskflow/core/knowledge-governance";
+import type {
+  IdentificationKnowledgeGovernancePolicyV1,
+  IdentificationKnowledgeReleaseAppendV1,
+} from "@riskflow/core/identification-knowledge";
 import {
   GOVERNANCE_TEST_TIMESTAMP,
   governanceAuthorizationFor,
@@ -53,6 +64,12 @@ const artifactFor = (suffix: string) => ({
   reference: { entityId: `artifact-${suffix}`, versionId: `sha256:${suffix}` },
 });
 
+/**
+ * 通用治理流程的定义类型：C17 族的提交路径不设内容门，只有发布/回滚接缝需要识别知识策略，
+ * 因此基础用例统一使用 `process-model` 并注入 C17 策略替身。
+ */
+const GENERIC_DEFINITION_TYPE = "process-model" as const;
+
 const submitFor = (
   projectId: string,
   authorization: AuthorizationContextV1,
@@ -61,7 +78,7 @@ const submitFor = (
     kind: "knowledge-release";
     reference: { entityId: string; versionId: string };
   },
-  issuedAt = GOVERNANCE_TEST_TIMESTAMP,
+  options: { definitionType?: string; issuedAt?: string } = {},
 ): KnowledgeGovernanceCommandV1 =>
   KnowledgeGovernanceCommandV1Schema.parse({
     kind: "submit-revision",
@@ -69,10 +86,10 @@ const submitFor = (
     idempotencyKey: nextId("submit-key"),
     projectId,
     actorId: authorization.actorId,
-    issuedAt,
+    issuedAt: options.issuedAt ?? GOVERNANCE_TEST_TIMESTAMP,
     authorization,
     payload: {
-      definitionType: "process-model",
+      definitionType: options.definitionType ?? GENERIC_DEFINITION_TYPE,
       ...(baseReleaseRef === undefined ? {} : { baseReleaseRef }),
       candidateArtifactRef: artifactFor(suffix),
       evidenceReferences: [
@@ -157,9 +174,37 @@ const decideApproval = (
 
 describe.sequential("PostgreSQL knowledge-governance adapter", () => {
   let fixture: KnowledgeGovernancePostgresFixture | undefined;
+  /**
+   * C16 发布/回滚接缝的 C17 策略替身：证明回调拿到的是同一发布事务上下文
+   * （事务内可见刚写入的 C16 release 行），四类成员发布返回空事件。
+   */
+  const identificationAppendCalls: {
+    readonly context: TransactionContextV1;
+    readonly input: IdentificationKnowledgeReleaseAppendV1;
+  }[] = [];
+  const identificationKnowledgePolicy: IdentificationKnowledgeGovernancePolicyV1 = {
+    appendRelease: async (context, input) => {
+      // 同一事务的观察证明：只有 C16 当前发布事务内才可见刚写入的 release 行。
+      const visible = await sql<{ release_id: string }>`
+        SELECT release_id FROM business.knowledge_releases
+         WHERE release_id = ${input.releaseRef.reference.entityId}
+           AND version_id = ${input.releaseRef.reference.versionId}
+           AND project_id = ${input.command.projectId}
+      `.execute(getPostgresTransaction(context));
+      if (visible.rows[0] === undefined) {
+        throw new KnowledgeLifecycleError({
+          code: "BUSINESS_BLOCKED",
+          reasonCode: "c16-release-not-visible-in-policy-transaction",
+          targetRef: input.releaseRef,
+        });
+      }
+      identificationAppendCalls.push({ context, input });
+      return [];
+    },
+  };
 
   beforeAll(async () => {
-    fixture = await startKnowledgeGovernanceFixture();
+    fixture = await startKnowledgeGovernanceFixture({ identificationKnowledgePolicy });
   }, 180_000);
 
   afterAll(async () => {
@@ -512,10 +557,20 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
         transactionUnit: fixture!.transactionUnit,
         access: actualAccess,
         reviewAudit: fixture!.reviewAudit,
-        reviewAuthorization: (command) =>
-          reviewAuthorizationFor(command.projectId, command.actorId),
-        approvalAuthorization: (command) =>
-          reviewAuthorizationFor(command.projectId, command.actorId),
+        // 真实 C06：provider 按 C16 派生的 invocationId/branch 现场签发复核上下文。
+        reviewAuthorizationProvider: {
+          authorize: async (input) => {
+            const decision = await actualAccess.authorize({
+              invocation: { kind: "human-session", sessionToken: session.sessionToken },
+              invocationId: input.invocationId,
+              projectId: input.projectId,
+              branch: input.branch,
+              requestedSpatialScopeRefs: [],
+              requestedSourceVersionRefs: [],
+            });
+            return decision.context;
+          },
+        },
         now: () => new Date("2030-01-01T00:00:01.000Z"),
       });
       const agentTaskRefFor = (suffix: string) => ({
@@ -638,6 +693,64 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
                 );
         expect(result).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
       }
+
+      // C06 的 verify 要求调用方按同一 invocationId 授权；resolve 使用由请求派生的稳定身份。
+      const resolveInvocationId = (
+        requiredTypes: readonly string[],
+        requiredAt: string,
+        asOfRecordedAt: string,
+      ) =>
+        `knowledge-resolve-${sha256CanonicalJson({ requiredTypes, requiredAt, asOfRecordedAt })}`;
+      const resolveWith = (requiredTypes: readonly string[], context: AuthorizationContextV1) =>
+        adapter.resolveGovernedReleases({
+          projectId,
+          requiredDefinitionTypes: requiredTypes,
+          requiredAt: GOVERNANCE_TEST_TIMESTAMP,
+          asOfRecordedAt: GOVERNANCE_TEST_TIMESTAMP,
+          authorization: context,
+        });
+
+      const identificationTypes = ["process-model"];
+      const identificationInvocationId = resolveInvocationId(
+        identificationTypes,
+        GOVERNANCE_TEST_TIMESTAMP,
+        GOVERNANCE_TEST_TIMESTAMP,
+      );
+      const identification = await actualAccess.authorize({
+        invocation: { kind: "human-session", sessionToken: session.sessionToken },
+        invocationId: identificationInvocationId,
+        projectId,
+        branch: "knowledge-modeling.identification-basis",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      });
+      expect(await resolveWith(identificationTypes, identification.context)).toMatchObject({
+        kind: "failed",
+        error: { code: "BUSINESS_BLOCKED" },
+      });
+
+      const crossTypes = ["indicator-system"];
+      const crossInvocationId = resolveInvocationId(
+        crossTypes,
+        GOVERNANCE_TEST_TIMESTAMP,
+        GOVERNANCE_TEST_TIMESTAMP,
+      );
+      const crossAuthorized = await actualAccess.authorize({
+        invocation: { kind: "human-session", sessionToken: session.sessionToken },
+        invocationId: crossInvocationId,
+        projectId,
+        branch: "knowledge-modeling.assessment-basis",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      });
+      expect(await resolveWith(crossTypes, crossAuthorized.context)).toMatchObject({
+        kind: "failed",
+        error: { code: "BUSINESS_BLOCKED" },
+      });
+      expect(await resolveWith(identificationTypes, crossAuthorized.context)).toMatchObject({
+        kind: "failed",
+        error: { code: "AUTHORIZATION_DENIED" },
+      });
     } finally {
       await actualAccess.close();
     }
@@ -672,7 +785,7 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
     if (published.kind !== "succeeded" || published.result.kind !== "release") return;
     const resolved = await fixture!.adapter.resolveGovernedReleases({
       projectId,
-      requiredDefinitionTypes: ["process-model"],
+      requiredDefinitionTypes: [GENERIC_DEFINITION_TYPE],
       requiredAt: "2030-01-01T00:00:03.000Z",
       asOfRecordedAt: "2030-01-01T00:00:03.000Z",
       authorization,
@@ -694,7 +807,7 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
     expect(await fixture!.adapter.govern(deactivated)).toMatchObject({ kind: "succeeded" });
     const unavailable = await fixture!.adapter.resolveGovernedReleases({
       projectId,
-      requiredDefinitionTypes: ["process-model"],
+      requiredDefinitionTypes: [GENERIC_DEFINITION_TYPE],
       requiredAt: "2030-01-01T00:00:05.000Z",
       asOfRecordedAt: "2030-01-01T00:00:05.000Z",
       authorization,
@@ -719,7 +832,7 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
     if (restored.kind !== "succeeded" || restored.result.kind !== "release") return;
     const restoredResolution = await fixture!.adapter.resolveGovernedReleases({
       projectId,
-      requiredDefinitionTypes: ["process-model"],
+      requiredDefinitionTypes: [GENERIC_DEFINITION_TYPE],
       requiredAt: "2030-01-01T00:00:07.000Z",
       asOfRecordedAt: "2030-01-01T00:00:07.000Z",
       authorization,
@@ -729,6 +842,430 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
       result: { releaseRefs: [restored.result.knowledgeReleaseRef] },
     });
   });
+  it("runs the C17 release policy inside the publish and rollback transactions", async () => {
+    const projectId = "governance-c17-transaction-policy";
+    const authorization = governanceAuthorizationFor(projectId);
+    const reviewAuthorization = reviewAuthorizationFor(projectId);
+    const adapter = new PostgresKnowledgeGovernanceAdapter({
+      db: fixture!.runtime.db,
+      transactionUnit: fixture!.transactionUnit,
+      access: fixture!.access,
+      reviewAudit: fixture!.reviewAudit,
+      now: () => new Date(GOVERNANCE_TEST_TIMESTAMP),
+      reviewAuthorizationProvider: fixture!.reviewAuthorizationProvider(),
+      identificationKnowledgePolicy,
+    });
+    const submitted = await adapter.govern(
+      submitFor(projectId, authorization, "policy", undefined, {
+        definitionType: "process-model",
+      }),
+    );
+    if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") {
+      throw new Error(`policy submit failed: ${JSON.stringify(submitted)}`);
+    }
+    const requested = await adapter.govern(
+      requestReviewFor(projectId, authorization, submitted.result.knowledgeRevisionRef),
+    );
+    if (requested.kind !== "succeeded" || requested.result.kind !== "review-task") {
+      throw new Error(`policy review request failed: ${JSON.stringify(requested)}`);
+    }
+    const decision = await fixture!.reviewAudit.decideReview(
+      decideApproval(projectId, reviewAuthorization, requested.result.reviewTaskRef),
+    );
+    if (decision.kind !== "succeeded") throw new Error("review decision failed");
+    const callsBefore = identificationAppendCalls.length;
+    const published = await adapter.govern(
+      publishFor(
+        projectId,
+        authorization,
+        submitted.result.knowledgeRevisionRef,
+        decision.result.reviewDecisionRef,
+      ),
+    );
+    if (published.kind !== "succeeded" || published.result.kind !== "release") {
+      throw new Error(`policy publish failed: ${JSON.stringify(published)}`);
+    }
+    // 发布路径：同一事务上下文内被调用一次，成员发布返回空事件。
+    expect(identificationAppendCalls).toHaveLength(callsBefore + 1);
+    expect(identificationAppendCalls.at(-1)?.input.command.kind).toBe("publish-approved-release");
+    expect(identificationAppendCalls.at(-1)?.input.requiredAt).toBe(GOVERNANCE_TEST_TIMESTAMP);
+    expect(identificationAppendCalls.at(-1)?.input.revision.definitionType).toBe("process-model");
+    const releaseEvents = await fixture!.postgres.adminPool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM outbox.events WHERE producer_command_id = $1`,
+      [
+        (
+          await fixture!.postgres.adminPool.query<{ command_id: string }>(
+            `SELECT command_id FROM business.knowledge_releases WHERE release_id = $1`,
+            [published.result.knowledgeReleaseRef.reference.entityId],
+          )
+        ).rows[0]?.command_id ?? "missing",
+      ],
+    );
+    expect(releaseEvents.rows[0]?.count).toBe("0");
+
+    // 回滚路径同样在同一事务上下文内调用策略。
+    const rollback = KnowledgeGovernanceCommandV1Schema.parse({
+      kind: "rollback-by-new-release",
+      commandId: nextId("rollback-policy"),
+      idempotencyKey: nextId("rollback-policy-key"),
+      projectId,
+      actorId: authorization.actorId,
+      issuedAt: "2030-01-01T00:00:06.000Z",
+      authorization,
+      payload: {
+        historicalReleaseRef: published.result.knowledgeReleaseRef,
+        reviewDecisionRef: decision.result.reviewDecisionRef,
+        reasonCode: "restore",
+      },
+    });
+    const restored = await adapter.govern(rollback);
+    if (restored.kind !== "succeeded" || restored.result.kind !== "release") {
+      throw new Error(`policy rollback failed: ${JSON.stringify(restored)}`);
+    }
+    expect(identificationAppendCalls).toHaveLength(callsBefore + 2);
+    expect(identificationAppendCalls.at(-1)?.input.command.kind).toBe("rollback-by-new-release");
+    expect(identificationAppendCalls.at(-1)?.input.requiredAt).toBe("2030-01-01T00:00:06.000Z");
+  });
+
+  it("closes a C17 publish without the identification policy and rolls it back", async () => {
+    const projectId = "governance-c17-policy-missing";
+    const authorization = governanceAuthorizationFor(projectId);
+    const reviewAuthorization = reviewAuthorizationFor(projectId);
+    // 未注入识别知识策略的 C16 实例：发布路径必须对 C17 类型关闭失败。
+    const withoutPolicy = new PostgresKnowledgeGovernanceAdapter({
+      db: fixture!.runtime.db,
+      transactionUnit: fixture!.transactionUnit,
+      access: fixture!.access,
+      reviewAudit: fixture!.reviewAudit,
+      now: () => new Date(GOVERNANCE_TEST_TIMESTAMP),
+      reviewAuthorizationProvider: fixture!.reviewAuthorizationProvider(),
+    });
+    const submitted = await withoutPolicy.govern(
+      submitFor(projectId, authorization, "missing-policy", undefined, {
+        definitionType: "process-model",
+      }),
+    );
+    if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") {
+      throw new Error(`submit failed: ${JSON.stringify(submitted)}`);
+    }
+    const requested = await withoutPolicy.govern(
+      requestReviewFor(projectId, authorization, submitted.result.knowledgeRevisionRef),
+    );
+    if (requested.kind !== "succeeded" || requested.result.kind !== "review-task") {
+      throw new Error(`review request failed: ${JSON.stringify(requested)}`);
+    }
+    const decision = await fixture!.reviewAudit.decideReview(
+      decideApproval(projectId, reviewAuthorization, requested.result.reviewTaskRef),
+    );
+    if (decision.kind !== "succeeded") throw new Error("review decision failed");
+    const published = await withoutPolicy.govern(
+      publishFor(
+        projectId,
+        authorization,
+        submitted.result.knowledgeRevisionRef,
+        decision.result.reviewDecisionRef,
+      ),
+    );
+    expect(published).toMatchObject({
+      kind: "failed",
+      error: {
+        code: "BUSINESS_BLOCKED",
+        blockerKind: "identification-knowledge-policy-required",
+      },
+    });
+    // 缺失策略时发布事务整体回滚：没有 release、没有完成回执、没有识别基础事件。
+    const state = await fixture!.postgres.adminPool.query<{
+      releases: string;
+      receipts: string;
+      events: string;
+    }>(
+      `SELECT
+         (SELECT count(*)::text FROM business.knowledge_releases
+           WHERE project_id = $1 AND revision_id = $2) AS releases,
+         (SELECT count(*)::text FROM business.command_receipts
+           WHERE project_id = $1 AND command_kind = 'knowledge.publish-approved-release.v1'
+             AND completed_at IS NOT NULL) AS receipts,
+         (SELECT count(*)::text FROM outbox.events
+           WHERE project_id = $1
+             AND event_type = 'knowledge.identification-basis-published.v1') AS events`,
+      [projectId, submitted.result.knowledgeRevisionRef.reference.entityId],
+    );
+    expect(state.rows[0]).toEqual({ releases: "0", receipts: "0", events: "0" });
+  });
+
+  it("rolls the whole publish back when the C17 policy rejects inside the transaction", async () => {
+    const projectId = "governance-c17-policy-failure";
+    const authorization = governanceAuthorizationFor(projectId);
+    const reviewAuthorization = reviewAuthorizationFor(projectId);
+    const failing = new PostgresKnowledgeGovernanceAdapter({
+      db: fixture!.runtime.db,
+      transactionUnit: fixture!.transactionUnit,
+      access: fixture!.access,
+      reviewAudit: fixture!.reviewAudit,
+      now: () => new Date(GOVERNANCE_TEST_TIMESTAMP),
+      reviewAuthorizationProvider: fixture!.reviewAuthorizationProvider(),
+      identificationKnowledgePolicy: {
+        appendRelease: async () => {
+          throw new KnowledgeLifecycleError({
+            code: "BUSINESS_BLOCKED",
+            reasonCode: "c17-policy-rejected",
+            targetRef: artifactFor("policy-fault"),
+          });
+        },
+      },
+    });
+    const submitted = await failing.govern(
+      submitFor(projectId, authorization, "fault", undefined, {
+        definitionType: "process-model",
+      }),
+    );
+    if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") {
+      throw new Error(`submit failed: ${JSON.stringify(submitted)}`);
+    }
+    const requested = await failing.govern(
+      requestReviewFor(projectId, authorization, submitted.result.knowledgeRevisionRef),
+    );
+    if (requested.kind !== "succeeded" || requested.result.kind !== "review-task") {
+      throw new Error(`review request failed: ${JSON.stringify(requested)}`);
+    }
+    const decision = await fixture!.reviewAudit.decideReview(
+      decideApproval(projectId, reviewAuthorization, requested.result.reviewTaskRef),
+    );
+    if (decision.kind !== "succeeded") throw new Error("review decision failed");
+    const published = await failing.govern(
+      publishFor(
+        projectId,
+        authorization,
+        submitted.result.knowledgeRevisionRef,
+        decision.result.reviewDecisionRef,
+      ),
+    );
+    expect(published).toMatchObject({
+      kind: "failed",
+      error: { code: "BUSINESS_BLOCKED", blockerKind: "c17-policy-rejected" },
+    });
+    // 发布事务整体回滚：没有 release、没有完成回执、没有识别基础事件。
+    const state = await fixture!.postgres.adminPool.query<{
+      releases: string;
+      receipts: string;
+      events: string;
+    }>(
+      `SELECT
+         (SELECT count(*)::text FROM business.knowledge_releases
+           WHERE project_id = $1 AND revision_id = $2) AS releases,
+         (SELECT count(*)::text FROM business.command_receipts
+           WHERE project_id = $1 AND command_kind = 'knowledge.publish-approved-release.v1'
+             AND completed_at IS NOT NULL) AS receipts,
+         (SELECT count(*)::text FROM outbox.events
+           WHERE project_id = $1
+             AND event_type = 'knowledge.identification-basis-published.v1') AS events`,
+      [projectId, submitted.result.knowledgeRevisionRef.reference.entityId],
+    );
+    expect(state.rows[0]).toEqual({ releases: "0", receipts: "0", events: "0" });
+  });
+
+  it("selects the resolver branch by knowledge family before any database access", async () => {
+    const projectId = "governance-family-branch";
+    const authorization = governanceAuthorizationFor(projectId);
+    const verifiedBranches: string[] = [];
+    const access = {
+      verify: async (request: { branch: string }) => {
+        verifiedBranches.push(request.branch);
+        return {
+          context: authorization,
+          contextRef: authorization.authorizationContextRef,
+          redacted: false,
+        };
+      },
+    } as unknown as LocalIdentityAccessV1;
+    const adapter = new PostgresKnowledgeGovernanceAdapter({
+      db: fixture!.runtime.db,
+      transactionUnit: fixture!.transactionUnit,
+      access,
+      reviewAudit: fixture!.reviewAudit,
+      now: () => new Date(GOVERNANCE_TEST_TIMESTAMP),
+      reviewAuthorizationProvider: fixture!.reviewAuthorizationProvider(),
+    });
+
+    const resolveFor = (requiredDefinitionTypes: readonly string[]) =>
+      adapter.resolveGovernedReleases({
+        projectId,
+        requiredDefinitionTypes,
+        requiredAt: GOVERNANCE_TEST_TIMESTAMP,
+        asOfRecordedAt: GOVERNANCE_TEST_TIMESTAMP,
+        authorization,
+      });
+
+    const identification = await resolveFor([
+      "process-model",
+      "risk-mechanism",
+      "retrieval-evidence-base",
+      "standard-library",
+      "case-library",
+    ]);
+    expect(identification).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+    expect(verifiedBranches).toEqual(["knowledge-modeling.identification-basis"]);
+
+    const assessment = await resolveFor(["indicator-system", "risk-matrix"]);
+    expect(assessment).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+    expect(verifiedBranches).toEqual([
+      "knowledge-modeling.identification-basis",
+      "knowledge-modeling.assessment-basis",
+    ]);
+
+    const mixed = await resolveFor(["process-model", "indicator-system"]);
+    expect(mixed).toMatchObject({ kind: "failed", error: { code: "UNSUPPORTED_CONTRACT" } });
+    expect(verifiedBranches).toEqual([
+      "knowledge-modeling.identification-basis",
+      "knowledge-modeling.assessment-basis",
+    ]);
+  });
+
+  it("derives the exact structured authorization DTOs for review requests and approval proofs", async () => {
+    const projectId = "governance-structured-authorization";
+    const authorization = governanceAuthorizationFor(projectId);
+    const reviewAuthorization = reviewAuthorizationFor(projectId);
+    const requests: KnowledgeGovernanceReviewAuthorizationRequestV1[] = [];
+    const baseProvider = fixture!.reviewAuthorizationProvider();
+    const adapter = new PostgresKnowledgeGovernanceAdapter({
+      db: fixture!.runtime.db,
+      transactionUnit: fixture!.transactionUnit,
+      access: fixture!.access,
+      reviewAudit: fixture!.reviewAudit,
+      now: () => new Date(GOVERNANCE_TEST_TIMESTAMP),
+      identificationKnowledgePolicy,
+      reviewAuthorizationProvider: {
+        authorize: async (input) => {
+          requests.push(input);
+          return await baseProvider.authorize(input);
+        },
+      },
+    });
+    const submitted = await adapter.govern(submitFor(projectId, authorization, "structured"));
+    if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") {
+      throw new Error(`submit failed: ${JSON.stringify(submitted)}`);
+    }
+    const requested = await adapter.govern(
+      requestReviewFor(projectId, authorization, submitted.result.knowledgeRevisionRef),
+    );
+    if (requested.kind !== "succeeded" || requested.result.kind !== "review-task") {
+      throw new Error(`review request failed: ${JSON.stringify(requested)}`);
+    }
+    const reviewRequest = requests[0];
+    expect(reviewRequest).toMatchObject({
+      task: "request-review",
+      projectId,
+      actorId: authorization.actorId,
+      branch: "review-audit.request-review",
+      requestedAt: GOVERNANCE_TEST_TIMESTAMP,
+      revisionRef: submitted.result.knowledgeRevisionRef,
+    });
+    // C16 派生精确调用身份：invocationId 必须与评审尝试 id 唯一对应。
+    if (reviewRequest?.task !== "request-review") throw new Error("review DTO is missing");
+    expect(reviewRequest.invocationId).toBe(`${reviewRequest.reviewAttemptId}:review`);
+    const decision = await fixture!.reviewAudit.decideReview(
+      decideApproval(projectId, reviewAuthorization, requested.result.reviewTaskRef),
+    );
+    if (decision.kind !== "succeeded") throw new Error("review decision failed");
+    const publishCommand = publishFor(
+      projectId,
+      authorization,
+      submitted.result.knowledgeRevisionRef,
+      decision.result.reviewDecisionRef,
+    );
+    expect(await adapter.govern(publishCommand)).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "release" },
+    });
+    expect(requests[1]).toMatchObject({
+      task: "verify-knowledge-revision-approval",
+      projectId,
+      actorId: authorization.actorId,
+      invocationId: `${publishCommand.commandId}:approval`,
+      branch: "review-audit.verify-knowledge-revision-approval",
+      revisionRef: submitted.result.knowledgeRevisionRef,
+      reviewDecisionRef: decision.result.reviewDecisionRef,
+    });
+  }, 240_000);
+
+  it("closes the failure before C07 when the structured authorization binding differs", async () => {
+    const baseProvider = fixture!.reviewAuthorizationProvider();
+    const mutatedProvider = (
+      change: (context: AuthorizationContextV1) => AuthorizationContextV1,
+    ): KnowledgeGovernanceReviewAuthorizationProviderV1 => ({
+      authorize: async (input) => change(await baseProvider.authorize(input)),
+    });
+    const runDenied = async (
+      name: string,
+      provider: KnowledgeGovernanceReviewAuthorizationProviderV1 | undefined,
+    ) => {
+      const projectId = `governance-structured-denied-${name}`;
+      const authorization = governanceAuthorizationFor(projectId);
+      const adapter = new PostgresKnowledgeGovernanceAdapter({
+        db: fixture!.runtime.db,
+        transactionUnit: fixture!.transactionUnit,
+        access: fixture!.access,
+        reviewAudit: fixture!.reviewAudit,
+        now: () => new Date(GOVERNANCE_TEST_TIMESTAMP),
+        ...(provider === undefined ? {} : { reviewAuthorizationProvider: provider }),
+      });
+      const submitted = await adapter.govern(submitFor(projectId, authorization, name));
+      if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") {
+        throw new Error(`${name}: submit failed: ${JSON.stringify(submitted)}`);
+      }
+      const requestReview = vi.spyOn(fixture!.reviewAudit, "requestReview");
+      const requested = await adapter.govern(
+        requestReviewFor(projectId, authorization, submitted.result.knowledgeRevisionRef),
+      );
+      expect(requested, name).toMatchObject({
+        kind: "failed",
+        error: { code: "AUTHORIZATION_DENIED" },
+      });
+      // C07 读取前关闭失败：评审端口零调用、评审绑定零行。
+      expect(requestReview, name).not.toHaveBeenCalled();
+      requestReview.mockRestore();
+      const links = await fixture!.postgres.adminPool.query<{ reviews: string }>(
+        `SELECT count(*)::text AS reviews FROM business.knowledge_review_links
+          WHERE project_id = $1 AND review_task_ref IS NOT NULL`,
+        [projectId],
+      );
+      expect(links.rows[0]?.reviews, name).toBe("0");
+    };
+    await runDenied("missing-provider", undefined);
+    await runDenied(
+      "wrong-project",
+      mutatedProvider((context) => ({
+        ...context,
+        projectId: "governance-structured-denied-elsewhere",
+      })),
+    );
+    await runDenied(
+      "wrong-actor",
+      mutatedProvider((context) => ({
+        ...context,
+        actorId: "governance-structured-denied-other-actor",
+      })),
+    );
+    await runDenied(
+      "wrong-capability",
+      mutatedProvider((context) => ({
+        ...context,
+        grantedCapabilities: ["review-audit.read"],
+      })),
+    );
+    await runDenied(
+      "extra-capability",
+      mutatedProvider((context) => ({
+        ...context,
+        grantedCapabilities: [...context.grantedCapabilities, "review-audit.decide"],
+      })),
+    );
+    // C16 亲自复验 invocation：provider 返回绑定到另一调用身份的上下文必须关闭失败。
+    await runDenied("wrong-invocation", {
+      authorize: async (input) =>
+        await baseProvider.authorize({ ...input, invocationId: `${input.invocationId}:other` }),
+    });
+  }, 240_000);
 
   it("keeps post-deactivation evolution on the latest historical release", async () => {
     const projectId = "governance-post-deactivation";
@@ -792,7 +1329,7 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
           authorization,
           "post-deactivation-a",
           published.result.knowledgeReleaseRef,
-          "2030-01-01T00:00:05.000Z",
+          { issuedAt: "2030-01-01T00:00:05.000Z" },
         ),
       ),
       fixture!.adapter.govern(
@@ -801,7 +1338,7 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
           authorization,
           "post-deactivation-b",
           published.result.knowledgeReleaseRef,
-          "2030-01-01T00:00:05.000Z",
+          { issuedAt: "2030-01-01T00:00:05.000Z" },
         ),
       ),
     ]);
@@ -885,7 +1422,7 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
           authorization,
           "post-deactivation-old-base",
           published.result.knowledgeReleaseRef,
-          "2030-01-01T00:00:09.000Z",
+          { issuedAt: "2030-01-01T00:00:09.000Z" },
         ),
       ),
     ).toMatchObject({ kind: "failed", error: { code: "STALE_VERSION" } });

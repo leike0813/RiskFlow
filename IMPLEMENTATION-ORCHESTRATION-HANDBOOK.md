@@ -29,10 +29,10 @@ pnpm orchestration:status --json
 | 角色 | 责任 | 禁止 |
 |---|---|---|
 | 主调度 | 读取状态，选择合法动作，审阅检查点，处理升级，受控集成与回收 | 自由拼接 Orca/Git 调度写命令；替代规划、实现或收尾角色写生产代码 |
-| Planning | 研究代码与规格，创建并闭合 proposal、specs、design、implementation-plan、tasks | 实现、提交、合并、归档 |
+| Planning | 研究代码与规格，创建并闭合 apply 前置的 proposal、specs、design、implementation-plan、tasks | 提前创建 verification；实现、提交、合并、归档 |
 | Implementation | 按已批准 IP-ID 实现、自检，并在当前任务内修复普通测试失败 | 自行改公共契约、权限、持久化、依赖、迁移或范围 |
-| Finalizer | 独立初审当前产物，按已批准语义修复、回归并对最终产物负责 | 借收尾改变需求或设计边界；把普通缺陷退回首轮实现角色 |
-| Targeted Auditor | 对权限、事务、关键状态机或语义 merge 冲突做限定范围独立检查 | 重做所有 change 的全量验收 |
+| Finalizer | 独立初审当前产物，按已批准语义修复、回归并填写最终 verification | 借收尾改变需求或设计边界；把普通缺陷退回首轮实现角色 |
+| Targeted Auditor | 对权限、事务、关键状态机或语义 merge 冲突做限定范围独立检查，并将结论补入 verification | 重做所有 change 的全量验收 |
 | Archiver | 在集成门禁通过后机械归档 | 处理语义冲突或补实现 |
 
 主调度保留调度与 Git 权限，不因此获得生产实现权限。Agent 之间只通过已审阅的 Git 检查点和结构化执行信封交接。
@@ -59,7 +59,9 @@ PLANNING → IMPLEMENTING → FINALIZING → INTEGRATING → ARCHIVING → COMPL
 
 ### 4.1 Planning
 
-大型 change 使用 `riskflow-delivery`，顺序为 proposal → specs → design → implementation-plan → tasks。Planning 必须读取真实代码、调用方、测试和全部相关主规格；研究资料只通过规划 Task 明确注入。
+后续大型 change 使用 `orchestrated-delivery`。Planning 只闭合 `applyRequires` 的传递闭包：proposal → specs → design → implementation-plan → tasks；verification 在实现后的最终检查点由验收 Agent 创建。既有 change 继续按自身 `.openspec.yaml` 解析 schema。Planning 必须读取真实代码、调用方、测试和全部相关主规格；研究资料只通过规划 Task 明确注入。
+
+OpenSpec 1.13.1 只表达工件依赖图，因此五个前置工件完成后可能提前把 verification 显示为 `ready`，并可能给出通用的 all-done/可归档提示。Planning 和 Implementation 不据此创建 verification 或归档；规划是否完成以 status 返回的 `applyRequires` 为准。
 
 规划完成必须满足：
 
@@ -97,7 +99,7 @@ Finalizer Task 是“验收与收尾”，`openspec-verify-change` 只是其中�
 3. 运行关键接缝场景，确认目标分支实际执行，不能把关键 skip 或早退当作通过；
 4. 在已批准语义内直接修复发现的问题；
 5. 对修复后的最终产物运行受影响回归；
-6. 报告最终 HEAD、修改、证据、命令和剩余事项。
+6. 按 `openspec instructions verification --change <name> --json` 填写 verification，记录最终 HEAD、PASS/FAIL/BLOCKED 结论、修改、证据、命令和后续注意事项。
 
 Finalizer 遇到以下问题时暂停并升级，但仍保留收尾责任：
 
@@ -105,7 +107,9 @@ Finalizer 遇到以下问题时暂停并升级，但仍保留收尾责任：
 - 需要新增依赖、迁移或超出批准范围的文件所有权；
 - 必需的机械前置操作需要主调度权限。
 
-Finalizer 完成修复后不为形式独立性重复启动全量复验。最终产物若又发生实质变化，必须核验受影响范围。以下风险默认触发 Targeted Auditor：权限、事务、关键状态机、语义 merge 冲突。
+Finalizer 完成修复后不为形式独立性重复启动全量复验。最终产物若又发生实质变化，必须核验受影响范围并更新 verification。以下风险默认触发 Targeted Auditor：权限、事务、关键状态机、语义 merge 冲突；审计结论和证据进入同一 verification，待执行审计不得作为 PASS 后的注意事项。
+
+**同一收尾轮次最多一次限定审计。** 审计发现的普通缺陷必须在同一收尾轮次内一次修完；禁止为同一收尾重复派发新的 Finalizer，也禁止派发第二次限定审计。协调端 MUST 把审计 finding 回灌到仍在活动的收尾会话（同一连续上下文）完成修复与回归；机制上无法在会话内完成时必须停下来升级给用户，MUST NOT 自行再开一轮。状态视图以 `auditRequired` 表达"本轮是否仍需要审计"，角色选择 MUST 依据该字段而不是凭"检查点是 finalization 且 auditPolicy 为 targeted"就再派一次。
 
 ## 6. 受控操作层
 
@@ -119,7 +123,7 @@ Finalizer 完成修复后不为形式独立性重复启动全量复验。最终�
 
 每个写操作必须携带最新 `expectedRevision` 和唯一 `idempotencyKey`。控制器在公共 Git 目录持锁，重新采集事实后，在任何外部副作用前持久写入 `inflight` 回执，成功后更新为 `completed`。相同幂等键若仍为 `inflight`，必须以 `uncertain_prior_execution` fail-closed，要求重新读取状态并对账，绝不自动重做副作用。状态变化、重复 writer、过期 HEAD、证据不足或阶段不合法时，操作在执行前被拒绝，并返回合法下一步。
 
-Finalizer 报告后，主调度先审阅该专用 feature worktree 的全部改动，再调用 `riskflow_settle`。成功收口必须提供证据；若工作树有已审阅改动，调用者必须提交与实时 `dirtyPaths` 完全一致的 `reviewedPaths`，settle 只暂存这些路径并形成 Git 检查点，再把实际新 HEAD 写入 v2 信封。失败、阻塞、暂停或路径不一致时不得自动提交改动。
+Finalizer 报告后，主调度先审阅该专用 feature worktree 的全部改动，再调用 `riskflow_settle`。成功收口必须提供证据；对 finalization/audit，若 change 的实际 artifact 图声明 verification，settle 会先确认该工件为 `done`，否则以 `verification_artifact_required` 在任何 Git 副作用前拒绝。不含该工件的旧 schema 沿用原门禁。若工作树有已审阅改动，调用者必须提交与实时 `dirtyPaths` 完全一致的 `reviewedPaths`，settle 只暂存这些路径并形成 Git 检查点，再把实际新 HEAD 写入 v2 信封。失败、阻塞、暂停或路径不一致时不得自动提交改动。
 
 正常编排禁止直接调用以下写操作：Orca Task/Dispatch 创建或更新、worktree 创建或删除、`git merge/commit/rebase/cherry-pick`、`openspec archive`。只有控制器故障且用户明确批准 break-glass 恢复时，才允许手工操作，并须随后运行状态对账。
 
@@ -176,7 +180,7 @@ pnpm orchestration:coordinator
 
 受控集成按固定顺序执行：
 
-1. Finalizer（及必要的 Targeted Auditor）对最终 feature HEAD 通过；
+1. Finalizer（及必要的 Targeted Auditor）对最终 feature HEAD 通过并完成当前 schema 声明的 verification；
 2. feature worktree clean，任务信封 `outputHead` 与实际 HEAD 一致；
 3. merge 到 main；
 4. 在 main 运行 `pnpm verify`；
@@ -202,10 +206,10 @@ pnpm orchestration:coordinator
 
 困难、耗时或普通测试失败不构成阻塞。预算耗尽的结果是未完成并暂停，不能放宽验收或换角色绕过。
 
-一个工作项完成必须具备：规划工件闭合、实现和收尾任务完成、最终 HEAD 与证据匹配、必要审计通过、main 门禁通过、OpenSpec 已归档、worktree 已回收或明确可回收。整个目标完成还要求用户授权范围内所有工作项满足以上条件，且 `violations` 为空。
+一个工作项完成必须具备：apply 前置规划工件闭合、实现和收尾任务完成、verification（若 schema 声明）与最终 HEAD 匹配、必要审计通过、main 门禁通过、OpenSpec 已归档、worktree 已回收或明确可回收。整个目标完成还要求用户授权范围内所有工作项满足以上条件，且 `violations` 为空。
 
 ## 10. Task 提示词最小契约
 
 所有 Task 至少写明：工作项与 change、固定输入 HEAD、完整 worktree ID、角色责任、允许和禁止的语义范围、必读 `contextFiles`、验证命令、升级条件、最终证据格式。Task 还必须要求执行 Agent 先读 `IMPLEMENTATION-ORCHESTRATION-RUNBOOK.md` 中与其启动方式和工具链有关的章节。
 
-Implementation 提示词必须明确“普通测试失败在当前任务内自修”。Finalizer 提示词必须明确“核验—修复—回归—最终报告，普通缺陷不回派 Implementation”。一句“实现/验证 Cxx”不构成可派发任务。
+Planning 提示词必须按 change 的实际 schema 和 `applyRequires` 闭合规划，不硬编码 schema 名称。Implementation 提示词必须明确“普通测试失败在当前任务内自修，且不提前创建 verification”。Finalizer 提示词必须明确“核验—修复—回归—填写最终 verification，普通缺陷不回派 Implementation”；Auditor 提示词必须要求补充同一工件。一句“实现/验证 Cxx”不构成可派发任务。

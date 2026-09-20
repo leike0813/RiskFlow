@@ -176,3 +176,149 @@
 - **WHEN** 新协调 Agent 在没有上一会话聊天记录的情况下读取状态
 - **THEN** 系统 MUST 仅凭 Git、OpenSpec、Orca 和 Manifest 重建相同的 `resumeQueue`
 - **AND** 队首 MUST 给出工作项、责任角色、检查点和合法下一动作
+
+### Requirement: 状态视图必须用自持台账补齐被覆盖的当前尝试
+
+Orca 会在监督派发起步与 worker 报告收口时整体覆盖 Task 的 `result`。当某个 Task 的 `result` 不再解析出有效 v2 信封时，状态视图 MUST 用控制器自有台账中同一 `taskId` 的信封补齐该尝试；当 `result` 仍解析出有效信封时 MUST 以它为准。
+
+#### Scenario: result 被清空后用台账补齐
+- **WHEN** 某个 Task 的 `result` 为空或不是有效 v2 信封，而台账中存在该 `taskId` 的信封
+- **THEN** 状态视图 MUST 用台账信封构造该尝试的证据
+- **AND** 该尝试 MUST 参与所属工作项的尝试选择与检查点计算
+
+#### Scenario: result 仍有效时以 Orca 为准
+- **WHEN** 某个 Task 的 `result` 仍是有效 v2 信封，且台账存在同一 `taskId` 的陈旧信封
+- **THEN** 状态视图 MUST 采用 Orca 侧信封
+- **AND** 陈旧台账 MUST NOT 覆盖它
+
+#### Scenario: 台账缺失或无效
+- **WHEN** 某个 Task 的 `result` 不是有效 v2 信封，且台账中没有该 `taskId` 或该记录不构成有效信封
+- **THEN** 该 Task MUST 照旧不被视为该工作项的当前尝试证据
+- **AND** 状态视图 MUST NOT 猜测一个尝试
+
+### Requirement: 获批重开规划边界必须界定活动写者
+
+获批的 planning 尝试在创建边界上取代旧尝试组；该边界之前的尝试已经作废，MUST NOT 继续参与当前状态判定，包括活动写者冲突检测。
+
+#### Scenario: 边界之前的尝试不构成第二个活动写者
+- **WHEN** 一个已进入 finalizing 的尝试被获批的 planning 尝试取代，且该旧尝试仍处于 `ready` 或 `dispatched`
+- **THEN** 状态 MUST NOT 因该旧尝试与边界之后的尝试并存而报告重复活动写者
+- **AND** 当前尝试 MUST 仍按边界之后的创建顺序选取
+
+#### Scenario: 没有获批重开规划时保持原判定
+- **WHEN** 工作项不存在获批的 replan 边界
+- **THEN** 活动写者冲突检测 MUST 覆盖该工作项的全部有效尝试
+
+### Requirement: 辅助 change 的合并证据必须与路线 change 同口径
+
+没有固定路线节点、以 `AUX:<change>` 合成的工作项 MUST 与路线 change 使用同一合并判据：以该工作项所属非主工作树的 HEAD 是否为 main HEAD 的祖先作为「产物已进主线」的证据。路线图之外不得成为跳过该采集的理由。
+
+#### Scenario: 辅助 change 合入 main 后进入 merged
+- **WHEN** 一个辅助 change 的非主工作树 HEAD 已成为 main HEAD 的祖先，且其信封尚未记录主线复验通过
+- **THEN** 状态 MUST 把该工作项报告为 `merged`，而不是停留在 `finalized`
+- **AND** MUST 返回「在 main 上完成冻结安装、pnpm verify 和主线验证」作为下一动作
+
+#### Scenario: 辅助 change 未合入时保持 finalized
+- **WHEN** 辅助 change 的非主工作树 HEAD 仍不是 main HEAD 的祖先
+- **THEN** 状态 MUST 保持整合前的阶段判定
+- **AND** MUST NOT 仅因信封存在合并摘要而报告 `merged`
+
+#### Scenario: 路线 change 沿用原映射
+- **WHEN** 某个活动 change 名称映射到路线图中的 change 节点
+- **THEN** 该节点的合并证据 MUST 继续按其自身工作项 id 采集
+- **AND** MUST NOT 因辅助分支的加入而改变其判定
+
+### Requirement: 同组内被取代的较早尝试不构成活动写者
+
+同一尝试组内只能有一个活动写者。被**尝试次数严格更高**的同组尝试取代的较早尝试 MUST NOT 继续计入活动写者，否则已作废的旧尝试会把整个工作项锁死。同次数、仅创建顺序不同的两个活动尝试属于「无法唯一确定当前尝试」，MUST 继续 fail-closed。该收窄 MUST NOT 影响不同尝试组之间以及多写者的既有判定。
+
+#### Scenario: 同组遗留的旧尝试不再阻塞
+- **WHEN** 同一尝试组内同时存在尝试次数较低的活动尝试与尝试次数更高的活动尝试
+- **THEN** 状态 MUST NOT 因这两者并存而报告重复活动写者
+- **AND** 当前尝试 MUST 仍按尝试次数与创建顺序选出
+
+#### Scenario: 同次数活动尝试仍然 fail-closed
+- **WHEN** 同一尝试组内两个活动尝试的尝试次数相同、仅创建顺序不同
+- **THEN** 状态 MUST 继续报告重复活动写者
+- **AND** MUST NOT 借本规则擅自选定其中一个
+
+#### Scenario: 真正的多写者仍然被拒绝
+- **WHEN** 同一工作项在不同尝试组或不同阶段各有一个活动尝试
+- **THEN** 状态 MUST 继续报告重复活动写者
+- **AND** 受控操作 MUST 继续被阻止
+
+#### Scenario: 已产生结果的较早尝试不复活
+- **WHEN** 较早尝试已经收口（`completed`/`failed`）
+- **THEN** 它 MUST 继续按既有规则排除在活动写者之外
+- **AND** MUST NOT 因本规则被重新计入
+
+### Requirement: dirtyPaths 必须表达路径而不是 status 行
+
+状态视图的 `dirtyPaths` 是「实时未提交改动」的唯一事实出口，收口校验与 `git add -- <path>` 都直接消费它。它 MUST 是可直接使用的路径集合，MUST NOT 暴露 `git status --porcelain` 的状态行。
+
+#### Scenario: 未提交改动以裸路径表达
+- **WHEN** 工作树存在修改、新增或未跟踪条目
+- **THEN** `dirtyPaths` MUST 为该条目的路径本身，不含状态码前缀
+- **AND** MUST NOT 包含 `--branch` 输出的分支行
+
+#### Scenario: 重命名与复制取目标路径
+- **WHEN** 条目为重命名或复制（`old -> new`）
+- **THEN** `dirtyPaths` MUST 表达重命名/复制后的目标路径
+
+#### Scenario: 与已审阅改动可直接比较
+- **WHEN** 调用方给出与实时改动一致的路径列表
+- **THEN** 二者 MUST 能直接按字符串比较相等
+- **AND** 该列表 MUST 可直接作为 `git add --` 的参数
+
+### Requirement: 审计未通过必须保持收尾责任
+
+限定审计未通过时，收尾责任仍留在 Finalizer 责任链中：MUST NOT 回退到实现阶段、MUST NOT 因此重新规划，也 MUST NOT 落入没有后续角色的失败态。但"保持责任"MUST NOT 被解释为可以重复派发：审计发现的普通缺陷必须在同一收尾轮次内一次修完，禁止为同一收尾重复派发新的 Finalizer 或第二次限定审计。
+
+#### Scenario: 审计发现缺陷后仍可派发修复
+- **WHEN** 当前尝试为 audit 且以失败收口
+- **THEN** 状态 MUST 报告 `finalizing`，下一动作为由强模型 Finalizer 继续修复与回归
+- **AND** 修复 MUST 优先在同一收尾轮次仍然活动的收尾会话内完成（由协调端回灌 finding）
+- **AND** 会话已结束而机制无法在会话内完成时，协调端 MUST 升级给用户，MUST NOT 自动再开一轮
+
+#### Scenario: 实现或收尾的失败语义不变
+- **WHEN** 当前尝试为 implementation 或 finalization 且以失败收口
+- **THEN** 状态 MUST 保持既有判定与下一动作
+- **AND** MUST NOT 因本规则改变其责任归属
+
+### Requirement: 当前尝试必须先按尝试组边界定界
+
+同一阶段内可以先后存在多种责任（例如 finalization 之后的 audit），它们各自属于新的尝试组。当前尝试 MUST 先在阶段内按尝试组边界定界，再在该组内按尝试次数与创建顺序选取；MUST NOT 用跨组的尝试次数比较，否则新责任会被旧组的更大尝试次数永久压过。
+
+#### Scenario: 同阶段新责任成为当前尝试
+- **WHEN** 某阶段内既有已收口的尝试组，又有边界更新（组内成员创建更晚）的新尝试组
+- **THEN** 状态 MUST 以该新组为定界范围选出当前尝试
+- **AND** `checkpoints` MUST 指向该新组中按尝试次数与创建顺序选出的尝试
+
+#### Scenario: 组边界相同不擅自选定
+- **WHEN** 同一阶段内多个尝试组的边界时间相同
+- **THEN** 状态 MUST NOT 仅凭边界相同就选定其中一个
+- **AND** MUST 继续按尝试次数、创建顺序与既有冲突判定处理
+
+#### Scenario: 缺少尝试组或创建时间时保持既有语义
+- **WHEN** 阶段内存在没有尝试组的尝试，或创建时间不可比较
+- **THEN** 状态 MUST 回退到既有选择语义
+- **AND** MUST NOT 凭不完整信息跨组猜测当前尝试
+
+### Requirement: 同一收尾轮次最多一次限定审计
+
+同一收尾轮次内限定审计最多一次，审计发现的普通缺陷 MUST 在同一收尾轮次内一次修完。状态视图 MUST 显式给出该轮次是否仍需要审计（`auditRequired`）；一旦本轮已有已收口的 audit 尝试，成功收口的 finalization MUST 直接进入已验收态，MUST NOT 再要求第二次审计。
+
+#### Scenario: 尚未审计时要求一次审计
+- **WHEN** finalization 尝试成功收口、`auditPolicy` 为 `targeted`，且本收尾轮次内没有任何已收口的 audit 尝试
+- **THEN** 状态 MUST 标记 `auditRequired` 为真并给出派发限定审计的下一动作
+- **AND** 角色选择 MUST 返回 audit
+
+#### Scenario: 本轮已审计后不再要求第二次
+- **WHEN** 本收尾轮次内已存在已收口的 audit 尝试，且其后的 finalization 尝试成功收口
+- **THEN** 状态 MUST 不再要求审计（`auditRequired` 为假）
+- **AND** 该工作项 MUST 直接进入已验收态，下一动作为集成
+
+#### Scenario: 判定范围随最新获批边界
+- **WHEN** 工作项经过一次获批重开规划进入新的收尾轮次
+- **THEN** 边界之前的已收口审计 MUST NOT 抑制新轮次的审计
+- **AND** 新轮次仍 MUST 恰好触发一次限定审计

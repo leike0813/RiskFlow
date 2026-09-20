@@ -461,6 +461,13 @@ export async function down(db: Kysely<unknown>): Promise<void> {
   await db.schema.dropIndex("indicator_actual_value_sets_input_idx").ifExists().execute();
   await db.schema.dropIndex("assessment_input_snapshots_project_idx").ifExists().execute();
   await db.schema.dropIndex("assessment_preparation_snapshots_project_idx").ifExists().execute();
+  // 后续 change 可能建了指向本表的外键（例如 C26 的
+  // warning_records_assessment_fk）。孤立回滚本迁移时必须先解除这类依赖，
+  // 否则 PostgreSQL 以 "other objects depend on it" 拒绝删表。
+  await sql`ALTER TABLE business.warning_records
+    DROP CONSTRAINT IF EXISTS warning_records_assessment_fk,
+    DROP CONSTRAINT IF EXISTS warning_records_input_snapshot_fk,
+    DROP CONSTRAINT IF EXISTS warning_records_preparation_snapshot_fk`.execute(db);
   await db.schema.dropTable("business.risk_assessment_records").ifExists().execute();
   await db.schema.dropTable("business.assessment_decision_artifacts").ifExists().execute();
   await db.schema.dropTable("business.indicator_actual_value_sets").ifExists().execute();

@@ -3452,6 +3452,8 @@ describe("C11 PostgreSQL context/source registry", () => {
   describe("C25 assessment-preparation freeze", () => {
     const project = "project-c25-freeze";
     const now = "2030-01-01T00:00:00.000Z";
+    // 子套件自带 fixture，避免依赖前序用例留下的账号、密码与授权状态。
+    let fixture: EngineeringContextSourcePostgresFixture;
     let world:
       | {
           readonly managerId: string;
@@ -3490,16 +3492,28 @@ describe("C11 PostgreSQL context/source registry", () => {
     };
 
     beforeAll(async () => {
-      // 复用本文件早先 bootstrap 的系统管理员会话（同一数据库只允许一个初始管理员）。
+      fixture = await startEngineeringContextSourceFixture({
+        now: () => new Date(now),
+      });
+      await bootstrapInitialSystemAdministrator({
+        connection: fixture.postgres.migrator,
+        loginName: "c25-admin",
+        displayName: "C25 Administrator",
+        password: "c25-admin-password",
+        accountId: "c25-admin-account",
+        now: () => new Date(now),
+      });
       const adminLogin = await fixture.access.login({
         kind: "login",
         loginAttemptId: "c25-admin-login",
-        loginName: "c11-admin",
-        password: "c11-admin-password-changed",
+        loginName: "c25-admin",
+        password: "c25-admin-password",
       });
-      const adminChanged = {
-        systemAdministrationContextRef: adminLogin.systemAdministrationContextRef!,
-      } as const;
+      const adminChanged = await fixture.access.changePassword({
+        kind: "change-password",
+        sessionToken: adminLogin.sessionToken,
+        newPassword: "c25-admin-password-changed",
+      });
       const manager = await fixture.access.administerIdentity({
         kind: "create-account",
         commandId: "c25-create-manager",
@@ -3631,6 +3645,10 @@ describe("C11 PostgreSQL context/source registry", () => {
         applicabilitySnapshotRef: snapshot.result.snapshot.snapshotRef,
       };
     }, 240_000);
+
+    afterAll(async () => {
+      await fixture?.close();
+    }, 60_000);
 
     const factsReader = {
       readRiskInputFacts: async (input: {

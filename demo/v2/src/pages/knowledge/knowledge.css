@@ -1,0 +1,399 @@
+/* 知识域 D 治理骨架样式（P-KM-01～P-KM-08 共用）。颜色全部走 tokens.css 变量。 */
+
+.km-gov {
+  display: grid;
+  grid-template-columns: 17rem minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+/* 左侧：对象列表 + 审核状态筛选 chips */
+.km-gov-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.km-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.km-filter {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--card);
+  color: var(--text-2);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.km-filter.is-active {
+  border-color: var(--blue);
+  color: var(--blue);
+  background: var(--blue-soft);
+}
+
+.km-filter-count {
+  margin-left: var(--space-1);
+}
+
+.km-objects {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.km-object {
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  background: var(--card);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.km-object.is-active {
+  border-color: var(--blue);
+  box-shadow: var(--card-shadow);
+}
+
+.km-object-name {
+  font-size: var(--text-md);
+  line-height: var(--text-md-lh);
+  color: var(--text);
+}
+
+.km-object-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+  color: var(--text-2);
+}
+
+/* 右侧：详情 + 修订表单 + 版本列表 */
+.km-gov-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.km-main-head h3 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-lg);
+  line-height: var(--text-lg-lh);
+}
+
+.km-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
+  padding: var(--space-4);
+}
+
+.km-card h3 {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-md);
+  line-height: var(--text-md-lh);
+}
+
+.km-card h4 {
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: var(--text-md-lh);
+}
+
+.km-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.km-card-head h3,
+.km-card-head h4 {
+  margin: 0;
+}
+
+.km-fields {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.km-field-row {
+  display: grid;
+  grid-template-columns: 8rem minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+.km-field-row dt {
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.km-field-row dd {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.km-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+  margin: var(--space-2) 0;
+}
+
+.km-table th,
+.km-table td {
+  text-align: left;
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.km-table th {
+  color: var(--text-2);
+  font-weight: 500;
+  background: var(--bluegray-soft);
+}
+
+.km-table tr[data-highlight] td {
+  background: var(--blue-soft);
+}
+
+.km-muted {
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.km-vref-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin: var(--space-1) 0;
+}
+
+.km-vref {
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+  color: var(--text-2);
+}
+
+.km-trace {
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+  margin: var(--space-1) 0 0;
+}
+
+.km-evidence {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.km-coverage {
+  list-style: none;
+  margin: var(--space-2) 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.km-coverage li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.km-cover-ok,
+.km-cover-miss {
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-full);
+  flex: none;
+}
+
+.km-cover-ok {
+  background: var(--success);
+}
+
+.km-cover-miss {
+  background: var(--bluegray);
+}
+
+/* 生命周期 chips（不用风险等级色） */
+.km-chip {
+  display: inline-block;
+  border-radius: var(--radius-full);
+  padding: 0 var(--space-2);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+  border: 1px solid transparent;
+}
+
+.km-chip-draft {
+  background: var(--bluegray-soft);
+  color: var(--text-2);
+  border-color: var(--border);
+}
+
+.km-chip-in-review,
+.km-chip-review {
+  background: var(--review-soft);
+  color: var(--review);
+  border-color: var(--review-soft);
+}
+
+.km-chip-published {
+  background: var(--success-soft);
+  color: var(--success);
+  border-color: var(--success-soft);
+}
+
+.km-chip-deactivated {
+  background: var(--bluegray-soft);
+  color: var(--text-2);
+  border-color: var(--border);
+  text-decoration: line-through;
+}
+
+.km-chip-rollback {
+  background: var(--blue-soft);
+  color: var(--blue);
+  border-color: var(--blue-soft);
+}
+
+/* 版本列表 */
+.km-versions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.km-version {
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-3);
+}
+
+.km-version:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.km-version p {
+  margin: var(--space-1) 0;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.km-version-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.km-version-links {
+  display: flex;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.km-link-btn {
+  border: none;
+  background: none;
+  color: var(--blue);
+  padding: 0;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+/* 修订表单与治理动作 */
+.km-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: var(--space-3) 0;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.km-field textarea {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2);
+  font: inherit;
+  resize: vertical;
+  background: var(--card);
+  color: var(--text);
+}
+
+.km-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.km-btn {
+  border: 1px solid var(--blue);
+  border-radius: var(--radius-md);
+  background: var(--blue);
+  color: var(--card);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+
+.km-btn[disabled] {
+  border-color: var(--border);
+  background: var(--bluegray-soft);
+  color: var(--text-2);
+}
+
+/* 评分规则卡 */
+.km-rule {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.km-rule:last-child {
+  margin-bottom: 0;
+}
+
+@media (max-width: 64rem) {
+  .km-gov {
+    grid-template-columns: 1fr;
+  }
+}

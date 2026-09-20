@@ -1,0 +1,88 @@
+/* 审阅覆盖层样式（仅 ?gaps=on / ?vp / ?safearea=on 时渲染）。 */
+.gaps-overlay {
+  position: fixed;
+  left: var(--space-4);
+  bottom: var(--space-4);
+  z-index: var(--z-review);
+  max-width: 24rem;
+  padding: var(--space-3) var(--space-4);
+  background: #fffbe8;
+  border: 1px dashed var(--risk-3);
+  border-radius: var(--radius-md);
+  box-shadow: var(--card-shadow);
+  font-size: var(--text-sm);
+}
+
+.gaps-overlay-title {
+  margin: 0 0 var(--space-2);
+  font-weight: 700;
+}
+
+.gaps-overlay ul {
+  margin: 0;
+  padding-left: var(--space-4);
+}
+
+.gaps-overlay li {
+  margin-bottom: var(--space-1);
+}
+
+.gaps-overlay-empty,
+.gaps-overlay-hint {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--text-xs);
+}
+
+.gaps-overlay-hint {
+  margin-top: var(--space-2);
+}
+
+.viewport-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-review);
+  pointer-events: none;
+  display: flex;
+  justify-content: center;
+}
+
+.viewport-overlay-frame {
+  position: relative;
+  height: 100%;
+  border-left: 2px dashed var(--risk-2);
+  border-right: 2px dashed var(--risk-2);
+}
+
+.viewport-overlay-label {
+  position: absolute;
+  top: calc(var(--topbar-height) + var(--space-2));
+  left: var(--space-2);
+  padding: 2px 8px;
+  background: var(--risk-2-soft);
+  border: 1px solid var(--risk-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.safearea-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--drag-region-height);
+  z-index: var(--z-review);
+  pointer-events: none;
+  background: rgba(249, 115, 22, 0.18);
+  border-bottom: 2px dashed var(--risk-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.safearea-overlay-label {
+  font-size: var(--text-xs);
+  color: var(--text);
+}

@@ -60,6 +60,10 @@
       "types": "./dist/assessment-config/index.d.ts",
       "import": "./dist/assessment-config/index.js"
     },
+    "./identification-knowledge": {
+      "types": "./dist/identification-knowledge/index.d.ts",
+      "import": "./dist/identification-knowledge/index.js"
+    },
     "./scoring-rules": {
       "types": "./dist/scoring-rules/index.d.ts",
       "import": "./dist/scoring-rules/index.js"
@@ -67,6 +71,10 @@
     "./risk-assessment/engine": {
       "types": "./dist/risk-assessment/engine/index.d.ts",
       "import": "./dist/risk-assessment/engine/index.js"
+    },
+    "./warning": {
+      "types": "./dist/warning/index.d.ts",
+      "import": "./dist/warning/index.js"
     }
   }
 }

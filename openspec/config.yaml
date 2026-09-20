@@ -1,4 +1,4 @@
-schema: riskflow-delivery
+schema: orchestrated-delivery
 
 context: |
   RiskFlow 当前以中文交付，生产栈为 Node.js 24、pnpm、TypeScript；生产 workspace 仅包含 apps/web、apps/api、apps/worker 与 packages/contracts、packages/core、packages/adapters。
@@ -18,6 +18,8 @@ rules:
     - 基于固定 base commit，将每个 Requirement/Scenario、计划文件、现有符号、实现动作与可运行验证映射到稳定 IP-ID；不存在需要实现 Agent 自行决定的公共契约、数据规则、事务语义或测试范围。
   tasks:
     - 每项引用 implementation-plan 中的 IP-ID，写明可运行验证命令；tasks 只跟踪顺序与完成状态，不复制代码施工图。
+  verification:
+    - 验收 Agent 基于最终 HEAD 记录 PASS、FAIL 或 BLOCKED 结论、Requirement/Scenario/IP-ID 证据、验收期修复、限定审计结果与后续注意事项；范围内缺陷、必需证据缺口或待执行审计不得包装成 PASS。
 
 operations:
   apply:
@@ -27,4 +29,4 @@ operations:
       - 进入 Finalizing 后由 Finalizer 在已批准语义内核验、修复并回归；普通缺陷不得退回首轮实现角色。
   archive:
     guidance:
-      - 归档前必须由 Finalizer 对最终 HEAD 完成 verify 与收尾，必要的限定审计通过，同步主 specs，并确认无活动下游引用未归档契约。
+      - 归档前必须由 Finalizer 对最终 HEAD 完成 verify 与 verification 工件，必要的限定审计通过，同步主 specs，并确认无活动下游引用未归档契约。

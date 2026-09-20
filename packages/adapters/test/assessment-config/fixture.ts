@@ -11,7 +11,12 @@ import {
   type AssessmentConfigurationDocumentV1,
 } from "@riskflow/core/assessment-config";
 import type { LocalIdentityAccessV1 } from "@riskflow/core/access";
-import type { AuthorizationContextV1, ContentArtifactRefV1 } from "@riskflow/contracts/ports";
+import {
+  MODULE_BRANCH_CAPABILITY_V1,
+  type AuthorizationContextV1,
+  type ContentArtifactRefV1,
+  type ModuleBranchV1,
+} from "@riskflow/contracts/ports";
 
 import { ArtifactMaintenance } from "../../src/artifacts/maintenance.js";
 import { createFilesystemArtifactStore } from "../../src/artifacts/filesystem-artifact-store.js";
@@ -30,7 +35,7 @@ import {
 import {
   GOVERNANCE_TEST_TIMESTAMP,
   governanceAuthorizationFor,
-  reviewAuthorizationFor,
+  reviewAuthorizationProviderFor,
 } from "../knowledge-governance/fixture.js";
 
 export const ASSESSMENT_CONFIGURATION_TEST_TIMESTAMP = GOVERNANCE_TEST_TIMESTAMP;
@@ -99,12 +104,19 @@ export const startAssessmentConfigurationFixture =
       async (request: {
         authorizationContextRef: AuthorizationContextV1["authorizationContextRef"];
         projectId: string;
+        branch?: ModuleBranchV1;
       }) => {
         const configured = verifiedContexts.get(contextKey(request.authorizationContextRef));
         const context =
           configured ??
           Object.freeze({
-            ...governanceAuthorizationFor(request.projectId),
+            ...contextFor(
+              request.projectId,
+              governanceAuthorizationFor(request.projectId).actorId,
+              request.branch === undefined
+                ? governanceAuthorizationFor(request.projectId).grantedCapabilities
+                : [MODULE_BRANCH_CAPABILITY_V1[request.branch]],
+            ),
             authorizationContextRef: request.authorizationContextRef,
           });
         return { context, contextRef: request.authorizationContextRef, redacted: false };
@@ -147,16 +159,13 @@ export const startAssessmentConfigurationFixture =
         governedReleases,
         now,
       });
-      const reviewAuthorization = (command: { projectId: string; actorId: string }) =>
-        reviewAuthorizationFor(command.projectId, command.actorId);
       const governance = new PostgresKnowledgeGovernanceAdapter({
         db: base.runtime.db,
         transactionUnit: base.transactionUnit,
         access,
         reviewAudit,
         now,
-        reviewAuthorization,
-        approvalAuthorization: reviewAuthorization,
+        reviewAuthorizationProvider: reviewAuthorizationProviderFor(),
         assessmentConfigurationPolicy: configuration,
       });
       governanceRef.current = governance;

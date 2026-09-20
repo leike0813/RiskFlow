@@ -1,0 +1,15 @@
+/* 组合视图：2–3 个页面只读并置，无重复事实。 */
+.compose-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(24rem, 1fr));
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.compose-cell {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  padding: var(--space-3);
+  background: var(--card);
+}

@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { resolve } from "node:path";
 import { clearTimeout, setTimeout } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
   collectStatus,
   defaultExec,
+  gitCommonDir,
   readJsonCommand,
   resolveCoordinatorRoot,
   resolveOrcaInvocation,
@@ -162,8 +163,8 @@ export function preflightAction(snapshot, action, input = {}) {
         node.nextActions,
       );
     }
-    if (input.outcome === "succeeded" && node.worktree.git?.dirty) {
-      const actual = [...(node.worktree.git.dirtyPaths ?? [])].sort();
+    if (input.outcome === "succeeded" && node.worktree.dirty) {
+      const actual = [...(node.worktree.dirtyPaths ?? [])].sort();
       const reviewed = [...new Set(input.reviewedPaths ?? [])].sort();
       if (JSON.stringify(actual) !== JSON.stringify(reviewed)) {
         throw new ControlError(
@@ -190,17 +191,12 @@ export function preflightAction(snapshot, action, input = {}) {
 }
 
 function nextTaskKind(node) {
-  const checkpoint = node.checkpoints;
   if (node.phase === "adopt" || node.status === "untracked") return "finalization";
   if (node.status === "ready") return "planning";
   if (node.status === "finalizing") {
-    if (
-      checkpoint?.taskKind === "finalization" &&
-      checkpoint.outcome === "succeeded" &&
-      checkpoint.auditPolicy === "targeted"
-    ) {
-      return "audit";
-    }
+    // 本轮是否仍需要审计由状态视图判定（同一收尾轮次最多一次限定审计）；
+    // 这里不再凭检查点条件一律再派，避免同一收尾被重复派发。
+    if (node.auditRequired === true) return "audit";
     return "finalization";
   }
   if (node.phase === "planning") return "implementation";
@@ -236,6 +232,24 @@ export function createV2Envelope({
   const phase = taskPhase(taskKind);
   const sameAttemptGroup = checkpoint?.taskKind === taskKind;
   const replan = nonEmptyString(approvalRef) && nonEmptyString(supersedesAttemptGroup);
+  const attemptGroup = replan
+    ? `${node.id}:planning:${hash(approvalRef).slice(0, 12)}`
+    : ((sameAttemptGroup ? checkpoint?.attemptGroup : null) ??
+      `${node.id}:${taskKind === "audit" ? "audit" : phase}`);
+  // 尝试次数是同一尝试组内的代次，选择当前尝试时按最大值取。只依据"当前检查点是否
+  // 同类"来决定是否递增，会在不同职责先后进入同一组时撞号（例如 audit 失败后的修复
+  // 回到 finalizing 组、却重新从 1 起算，状态视图于是回到已收口的旧尝试）。
+  const groupAttempts = (node.orca?.attempts ?? [])
+    .filter((attempt) => attempt.attemptGroup === attemptGroup)
+    .map((attempt) => Number(attempt.attempt))
+    .filter((value) => Number.isInteger(value));
+  const attempt = replan
+    ? 1
+    : groupAttempts.length > 0
+      ? Math.max(...groupAttempts) + 1
+      : sameAttemptGroup
+        ? Number(checkpoint?.attempt ?? 0) + 1
+        : 1;
   const envelope = {
     schemaVersion: 2,
     workItemId: node.id,
@@ -252,11 +266,8 @@ export function createV2Envelope({
       agentClass: role.agentClass,
       model: role.model,
     },
-    attemptGroup: replan
-      ? `${node.id}:planning:${hash(approvalRef).slice(0, 12)}`
-      : ((sameAttemptGroup ? checkpoint?.attemptGroup : null) ??
-        `${node.id}:${taskKind === "audit" ? "audit" : phase}`),
-    attempt: replan ? 1 : sameAttemptGroup ? Number(checkpoint?.attempt ?? 0) + 1 : 1,
+    attemptGroup,
+    attempt,
     ...(replan ? { approvalRef, supersedesAttemptGroup } : {}),
     auditPolicy: checkpoint?.auditPolicy ?? "self",
     issueRefs: checkpoint?.issueRefs ?? [],
@@ -270,13 +281,6 @@ export function createV2Envelope({
     },
   };
   return envelope;
-}
-
-async function gitCommonDir(rootDir, exec) {
-  const output = String(
-    await exec("git", ["rev-parse", "--git-common-dir"], { cwd: rootDir }),
-  ).trim();
-  return isAbsolute(output) ? output : resolve(rootDir, output);
 }
 
 function processAlive(pid) {
@@ -301,11 +305,13 @@ async function removeStaleLock(lockDir) {
   return true;
 }
 
-export async function withRuntimeLock(rootDir, exec, work) {
-  const runtimeDir = resolve(await gitCommonDir(rootDir, exec), "riskflow-orchestration");
-  const lockDir = resolve(runtimeDir, "control.lock");
-  await mkdir(runtimeDir, { recursive: true });
-  for (let attempt = 0; attempt < 25; attempt += 1) {
+// 初次获取保持 fail-fast（约 1 秒），避免调用方排在长操作后面；
+// 长外部步骤结束后重新获取使用更宽预算，因为此时工作已完成、应尽量提交。
+const LOCK_ACQUIRE_ATTEMPTS = 25;
+const LOCK_REACQUIRE_ATTEMPTS = 1_500;
+
+async function acquireRuntimeLock(lockDir, attempts = LOCK_ACQUIRE_ATTEMPTS) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       await mkdir(lockDir);
     } catch (error) {
@@ -314,18 +320,64 @@ export async function withRuntimeLock(rootDir, exec, work) {
       await delay(40);
       continue;
     }
-    try {
-      await writeFile(
-        resolve(lockDir, "owner.json"),
-        JSON.stringify({ pid: process.pid, createdAt: Date.now() }),
-        "utf8",
-      );
-      return await work(runtimeDir);
-    } finally {
+    await writeFile(
+      resolve(lockDir, "owner.json"),
+      JSON.stringify({ pid: process.pid, createdAt: Date.now() }),
+      "utf8",
+    );
+    return async () => {
       await rm(lockDir, { recursive: true });
-    }
+    };
   }
   throw new ControlError("control_busy", "编排状态正在由另一操作更新，请稍后重试");
+}
+
+export async function withRuntimeLock(rootDir, exec, work) {
+  const runtimeDir = resolve(await gitCommonDir(rootDir, exec), "riskflow-orchestration");
+  const lockDir = resolve(runtimeDir, "control.lock");
+  await mkdir(runtimeDir, { recursive: true });
+  let release = await acquireRuntimeLock(lockDir);
+  let held = true;
+  const lock = {
+    // 长外部步骤在锁外执行：它仍属于同一次幂等操作，只是不占用互斥资源。
+    // 重新取锁写在 finally 中，调用点无法忘记；事实是否变化由调用方按 revision 校验。
+    async withoutLock(step) {
+      if (!held) throw new ControlError("lock_released", "运行时锁已让出，不能重复让出");
+      await release();
+      held = false;
+      try {
+        return await step();
+      } finally {
+        release = await acquireRuntimeLock(lockDir, LOCK_REACQUIRE_ATTEMPTS);
+        held = true;
+      }
+    },
+  };
+  try {
+    return await work(runtimeDir, lock);
+  } finally {
+    if (held) await release();
+  }
+}
+
+// Orca 会在监督派发起步与 worker 报告收口时整体覆盖 `tasks.result`，而 v2 执行信封
+// 历史上存放在该字段。控制器把当前尝试的正式信封另外持久化在 git common dir 的台账里，
+// 状态视图只在该 Task 的 result 不再携带有效信封时用它补齐，Orca 侧的有效信封始终优先。
+async function recordAttempt(runtimeDir, envelope) {
+  const taskId = envelope.owner?.taskId;
+  if (!nonEmptyString(taskId)) {
+    throw new ControlError("invalid_input", "尝试信封缺少 owner.taskId，无法登记台账");
+  }
+  const attemptsDir = resolve(runtimeDir, "attempts");
+  await mkdir(attemptsDir, { recursive: true });
+  const path = resolve(attemptsDir, `${taskId}.json`);
+  const temporaryPath = `${path}.${process.pid}.tmp`;
+  await writeFile(
+    temporaryPath,
+    JSON.stringify({ taskId, workItemId: envelope.workItemId, envelope }),
+    "utf8",
+  );
+  await rename(temporaryPath, path);
 }
 
 async function readReceipt(runtimeDir, idempotencyKey, input) {
@@ -430,17 +482,26 @@ async function ensureRun(exec, invocation, rootDir, node, idempotencyKey, reuseE
   return runId;
 }
 
-function taskSpec(node, taskKind) {
+// 本轮已出结论的限定审计（用于把 finding 直接写进修复尝试的派发说明）。
+function concludedAudit(node) {
+  const attempts = (node.orca?.attempts ?? []).filter(
+    (attempt) => attempt.taskKind === "audit" && attempt.runState === "settled",
+  );
+  return attempts.at(-1) ?? null;
+}
+
+function taskSpec(node, taskKind, envelopeOptions = {}) {
   const responsibility = {
     planning:
-      "创建并闭合 riskflow-delivery 规划工件，不实现代码；研究资料只读取 references/风险识别与评估规划事实源摘要.md",
-    implementation: "按已批准 IP-ID 有界实现并在当前任务内修复普通测试失败",
+      "按 change 实际 schema 和 applyRequires 创建并闭合规划工件，不实现代码；研究资料只读取 references/风险识别与评估规划事实源摘要.md",
+    implementation:
+      "按已批准 IP-ID 有界实现并在当前任务内修复普通测试失败；不提前创建 verification",
     finalization:
-      "核验当前产物，在已批准语义内直接修复、回归并给出最终报告；普通缺陷保持当前收尾责任",
-    audit: "独立检查权限、事务、关键状态机或语义 merge 冲突的受影响范围",
+      "核验当前产物，在已批准语义内直接修复、回归，并按实际 schema 填写最终 verification；普通缺陷保持当前收尾责任",
+    audit: "独立检查权限、事务、关键状态机或语义 merge 冲突的受影响范围，并把结论补入 verification",
     archive: "仅在门禁通过后机械归档",
   }[taskKind];
-  return [
+  const lines = [
     `工作项：${node.id}`,
     `OpenSpec change：${node.change}`,
     `工作树：${node.worktree.id}`,
@@ -449,7 +510,50 @@ function taskSpec(node, taskKind) {
     "先读 AGENTS.md、IMPLEMENTATION-ORCHESTRATION-HANDBOOK.md、IMPLEMENTATION-ORCHESTRATION-RUNBOOK.md 和全部 OpenSpec contextFiles。",
     "公共契约、权限、持久化、迁移、依赖或批准范围变化必须 escalation；禁止提交、合并、归档或扩大范围。",
     "worker_done 必须列出产物 HEAD、证据、实际命令和剩余事项。",
-  ].join("\n");
+  ];
+  if (taskKind === "finalization" || taskKind === "audit") {
+    lines.push(
+      "",
+      "=== 收尾轮次协议 ===",
+      "同一收尾轮次最多一次限定审计；禁止请求或期待第二次审计，也禁止期待新的 Finalizer 接管本轮。",
+      "机制上无法在本会话内完成时必须 escalation，不得自行再开一轮。",
+      "审计结论与随后修复的证据必须一并写入同一 verification。",
+    );
+    if (taskKind === "audit") {
+      lines.push(
+        "你是本收尾轮次唯一的限定审计：只报告 finding 与证据，不改产品代码；结论写入同一 verification，供本轮修复尝试逐项闭合。",
+      );
+    } else if (node.auditRequired === false && concludedAudit(node)) {
+      const audit = concludedAudit(node);
+      lines.push(
+        `本轮限定审计已出结论（task ${audit.taskId}）。其 finding 必须逐项闭合，不得遗漏或改为"后续注意事项"：`,
+        `- audit issueRefs：${JSON.stringify(audit.issueRefs ?? [])}`,
+        `- audit evidenceRefs：${JSON.stringify(audit.evidenceRefs ?? [])}`,
+        "先读取该审计写入的 verification 与证据，逐项修复并回归，并在 worker_done 中逐项说明闭合情况。",
+      );
+    } else {
+      lines.push(
+        "若本次修改触及 permission/transaction/critical-state-machine/semantic-merge，本轮会由协调端触发一次限定审计；你填写的 verification 必须为审计结论留出位置。",
+      );
+    }
+  }
+  // 重开规划必须把「为什么重开」送进规划任务：否则规划者只按通用文案补齐模板章节，
+  // 不会覆盖被取代尝试升级出来的批准范围（实测发生过一次）。
+  if (nonEmptyString(envelopeOptions.approvalRef)) {
+    const checkpoint = node.checkpoints ?? {};
+    lines.push(
+      "",
+      "=== 本次为重开规划 ===",
+      `批准引用：${envelopeOptions.approvalRef}`,
+      `被取代的尝试组：${envelopeOptions.supersedesAttemptGroup ?? checkpoint.attemptGroup ?? "(未记录)"}`,
+      `重开原因（被取代尝试的 issueRefs）：${JSON.stringify(checkpoint.issueRefs ?? [])}`,
+      `被取代尝试的证据（evidenceRefs）：${JSON.stringify(checkpoint.evidenceRefs ?? [])}`,
+      "本工作项 change 目录中由 proposal 引用的批准记录是本次规划的必要输入；先读取它，再据此规划。",
+      "批准记录列出的范围必须逐项展开为 IP-ID、允许文件清单和验证命令；worker_done 必须逐项说明每一条的闭合情况，仅补齐模板章节不构成规划完成。",
+      "若认定批准范围中任一项无法在该 change 已批准语义内闭合，必须在规划工件中显式说明并 escalation。",
+    );
+  }
+  return lines.join("\n");
 }
 
 async function createWorktreeForReadyNode(exec, invocation, rootDir, node) {
@@ -511,7 +615,7 @@ async function createTask(
       "--task-title",
       `${node.id} ${taskKind}`,
       "--spec",
-      taskSpec(node, taskKind),
+      taskSpec(node, taskKind, envelopeOptions),
     ],
     rootDir,
     retryRequest(idempotencyKey, "task-create"),
@@ -540,10 +644,42 @@ async function createTask(
   return { taskId, runId, envelope, role };
 }
 
-async function startWorker(exec, invocation, rootDir, node, task, idempotencyKey) {
+// 从状态视图投影或控制器自建信封归一化出一次尝试的完整 v2 信封：位置与阶段字段
+// 一律以路线节点为准，尝试身份以派发信封为准，且不携带任何质量结论。
+// 投影会把 outcome/approvalRef/supersedesAttemptGroup 补成 null，且不携带
+// schemaVersion、worktreeId、inputHead；直接使用会触发 premature_outcome、
+// invalid_replan_boundary 或 missing_fields。
+function attemptEnvelope(node, task, runState) {
+  const source = task.envelope;
+  const envelope = {
+    ...source,
+    schemaVersion: 2,
+    workItemId: node.id,
+    routeNodeId: node.routeNodeId,
+    changeName: node.change,
+    taskKind: source.taskKind,
+    phase: taskPhase(source.taskKind),
+    worktreeId: node.worktree.id,
+    inputHead: node.worktree.head,
+    runState,
+    owner: {
+      ...(source.owner ?? {}),
+      taskId: task.taskId,
+      agentClass: source.owner?.agentClass ?? task.role.agentClass,
+      model: source.owner?.model ?? task.role.model,
+    },
+  };
+  delete envelope.outcome;
+  delete envelope.outputHead;
+  if (!nonEmptyString(envelope.approvalRef)) delete envelope.approvalRef;
+  if (!nonEmptyString(envelope.supersedesAttemptGroup)) delete envelope.supersedesAttemptGroup;
+  return envelope;
+}
+
+async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, idempotencyKey) {
   const worktree = `id:${node.worktree.id}`;
   if (["planning", "finalization", "audit"].includes(task.envelope.taskKind)) {
-    return orcaJson(
+    const worker = await orcaJson(
       exec,
       invocation,
       [
@@ -565,6 +701,10 @@ async function startWorker(exec, invocation, rootDir, node, task, idempotencyKey
       rootDir,
       retryRequest(idempotencyKey, "worker-start"),
     );
+    return {
+      ...worker,
+      ...(await recordRunningAttempt(runtimeDir, node, task)),
+    };
   }
   const command = `omp --model ${task.role.model} --thinking ${task.role.thinking} --approval-mode yolo`;
   const terminalResult = await orcaJson(
@@ -603,7 +743,7 @@ async function startWorker(exec, invocation, rootDir, node, task, idempotencyKey
     ],
     rootDir,
   );
-  return orcaJson(
+  const worker = await orcaJson(
     exec,
     invocation,
     [
@@ -620,6 +760,24 @@ async function startWorker(exec, invocation, rootDir, node, task, idempotencyKey
     rootDir,
     retryRequest(idempotencyKey, "dispatch"),
   );
+  // 实现分支同样要把台账推进到 running：否则状态视图在整段实现期间仍报告
+  // runState=queued，并给出"派发当前信封指定的受控任务"这种会导致重复派发的下一动作。
+  return { ...worker, ...(await recordRunningAttempt(runtimeDir, node, task)) };
+}
+
+// worker 已启动意味着该尝试进入运行态；登记失败不使派发失败（worker 已在跑，
+// 报告失败会诱导上层盲重试），但必须以结构化 warning 暴露，因为该尝试随后可能
+// 因 Orca 覆盖 result 而无法从状态视图解析。
+async function recordRunningAttempt(runtimeDir, node, task) {
+  try {
+    await recordAttempt(runtimeDir, attemptEnvelope(node, task, "running"));
+    return { attemptRecorded: true };
+  } catch (error) {
+    return {
+      attemptRecorded: false,
+      attemptWarning: `worker 已启动，但运行中尝试登记台账失败：${error.message}`,
+    };
+  }
 }
 
 async function controlledMutation(action, input, options, perform) {
@@ -627,10 +785,11 @@ async function controlledMutation(action, input, options, perform) {
   const rootDir = await resolveCoordinatorRoot(options.rootDir ?? process.cwd(), exec);
   requiredString(input.expectedRevision, "expectedRevision");
   const idempotencyKey = requiredString(input.idempotencyKey, "idempotencyKey");
-  return withRuntimeLock(rootDir, exec, async (runtimeDir) => {
+  return withRuntimeLock(rootDir, exec, async (runtimeDir, lock) => {
     const prior = await readReceipt(runtimeDir, idempotencyKey, { action, ...input });
     if (prior !== null) return prior;
-    const status = await (options.statusProvider ?? collectStatus)({ rootDir, exec });
+    const collect = options.statusProvider ?? collectStatus;
+    const status = await collect({ rootDir, exec });
     if (status.graphIssues?.length) {
       throw new ControlError("invalid_manifest", status.graphIssues.join("; "));
     }
@@ -638,8 +797,12 @@ async function controlledMutation(action, input, options, perform) {
     await writeReceipt(runtimeDir, idempotencyKey, { action, ...input }, "inflight");
     const result = await perform({
       rootDir,
+      runtimeDir,
+      lock,
       exec,
       idempotencyKey,
+      revision: status.snapshot.revision,
+      collectStatus: () => collect({ rootDir, exec }),
       graph: status.graph,
       snapshot: status.snapshot,
       ...checked,
@@ -695,10 +858,12 @@ export async function riskflowDispatch(input, options = {}) {
           : {},
       );
     }
+    await recordAttempt(ctx.runtimeDir, attemptEnvelope(node, task, "queued"));
     const worker = await startWorker(
       ctx.exec,
       invocation,
       ctx.rootDir,
+      ctx.runtimeDir,
       node,
       task,
       ctx.idempotencyKey,
@@ -773,12 +938,30 @@ export async function riskflowSettle(input, options = {}) {
       sameNoProgress + 1 >= Number(ctx.graph.policy.noProgressLimit ?? 3)
         ? "paused"
         : input.outcome;
+    if (outcome === "succeeded" && ["finalization", "audit"].includes(checkpoint.taskKind)) {
+      const status = await readJsonCommand(
+        ctx.exec,
+        "openspec",
+        ["status", "--change", ctx.node.change, "--json"],
+        { cwd: ctx.node.worktree.path },
+      );
+      const verification = status.artifacts?.find((artifact) => artifact.id === "verification");
+      if (verification && verification.status !== "done") {
+        throw new ControlError(
+          "verification_artifact_required",
+          `${ctx.node.change} 的 verification 工件尚未完成`,
+          [
+            `运行 openspec instructions verification --change ${ctx.node.change} --json 并完成该工件`,
+          ],
+        );
+      }
+    }
     const riskTags = Array.isArray(input.riskTags) ? input.riskTags : [];
     const auditPolicy = riskTags.some((tag) => ctx.graph.policy.targetedAudit.includes(tag))
       ? "targeted"
       : checkpoint.auditPolicy;
     let outputHead = ctx.node.worktree.head;
-    if (outcome === "succeeded" && ctx.node.worktree.git?.dirty) {
+    if (outcome === "succeeded" && ctx.node.worktree.dirty) {
       await ctx.exec("git", ["add", "--", ...input.reviewedPaths], {
         cwd: ctx.node.worktree.path,
       });
@@ -810,6 +993,16 @@ export async function riskflowSettle(input, options = {}) {
       issueRefs,
       evidenceRefs,
       main: checkpoint.main,
+      // 获批重开规划的边界由这对字段标记；收口若丢掉它们，边界随之消失，
+      // 被取代的旧尝试会重新参与当前尝试选择（实测导致节点回退成 unknown）。
+      // 校验把这对字段视为整体，因此只在两者都非空时才成对保留。
+      ...(nonEmptyString(checkpoint.approvalRef) &&
+      nonEmptyString(checkpoint.supersedesAttemptGroup)
+        ? {
+            approvalRef: checkpoint.approvalRef,
+            supersedesAttemptGroup: checkpoint.supersedesAttemptGroup,
+          }
+        : {}),
     };
     const invocation = resolveOrcaInvocation(options.orcaCommand);
     await orcaJson(
@@ -875,6 +1068,7 @@ async function updateMainSummary(ctx, main, orcaCommand, step) {
     ctx.rootDir,
     retryRequest(ctx.idempotencyKey, step),
   );
+  await recordAttempt(ctx.runtimeDir, envelope);
   return envelope;
 }
 
@@ -919,7 +1113,14 @@ export async function riskflowIntegrate(input, options = {}) {
       return { ok: true, action: "merge", workItemId: ctx.node.id, mainHead, envelope };
     }
     if (ctx.node.status === "merged") {
-      await ctx.exec("pnpm", ["verify"], { cwd: ctx.rootDir, timeoutMs: 30 * 60_000 });
+      await ctx.lock.withoutLock(() =>
+        ctx.exec("pnpm", ["verify"], {
+          cwd: ctx.rootDir,
+          timeoutMs: 30 * 60_000,
+          env: verificationEnv(),
+        }),
+      );
+      await assertFactsUnchanged(ctx);
       const mainHead = String(
         await ctx.exec("git", ["rev-parse", "HEAD"], { cwd: ctx.rootDir }),
       ).trim();
@@ -963,6 +1164,42 @@ export async function riskflowIntegrate(input, options = {}) {
     }
     throw new ControlError("integrate_not_allowed", `${ctx.node.id} 没有可执行的集成步骤`);
   });
+}
+
+// 外部验证命令 MUST NOT 继承协调者身份：协调终端设置 ORCA_TERMINAL_HANDLE 后，
+// resolveOrcaInvocation 会把 CLI 从 orca-ide 切换为 orca，使验证结论取决于发起终端。
+function verificationEnv() {
+  const env = { ...process.env };
+  delete env.ORCA_TERMINAL_HANDLE;
+  delete env.ORCA_CLI_COMMAND;
+  return env;
+}
+
+// 长外部步骤在锁外执行，因此必须重新确认它依据的事实没有变化。只比对这一步真正
+// 依赖的不变量（阶段、当前尝试、main HEAD、违规集合），而不是整个事实集哈希：
+// 长步骤自身的构建/测试会产生瞬时文件变化，用全量哈希会把它们误判为并发写者，
+// 从而无谓丢弃一次已经通过的复验。
+async function assertFactsUnchanged(ctx) {
+  const current = await ctx.collectStatus();
+  const node = current.snapshot.nodes.find((candidate) => candidate.id === ctx.node.id);
+  const drift = [];
+  if (node?.status !== ctx.node.status) {
+    drift.push(`工作项状态 ${ctx.node.status} → ${node?.status ?? "(缺失)"}`);
+  }
+  if (node?.checkpoints?.taskId !== ctx.node.checkpoints?.taskId) {
+    drift.push("当前尝试已变化");
+  }
+  if (current.snapshot.main.head !== ctx.snapshot.main.head) {
+    drift.push("main HEAD 已变化");
+  }
+  if (current.snapshot.violations.length > 0) {
+    drift.push("出现新的状态违规");
+  }
+  if (drift.length > 0) {
+    throw new ControlError("stale_revision", `长外部步骤期间编排状态已变化：${drift.join("；")}`, [
+      "调用 riskflow_status 获取新 revision",
+    ]);
+  }
 }
 
 export async function riskflowReconcile(input, options = {}) {
@@ -1025,6 +1262,7 @@ export async function riskflowReconcile(input, options = {}) {
       ctx.rootDir,
       retryRequest(ctx.idempotencyKey, "reconcile-task-envelope"),
     );
+    await recordAttempt(ctx.runtimeDir, envelope);
     return { ok: true, action: "reconcile", workItemId: ctx.node.id, runId, taskId, envelope };
   });
 }
@@ -1095,12 +1333,6 @@ export async function doctor(options = {}) {
       exec,
     }),
   ]);
-  if (!String(ompVersion).includes("18.1.18")) {
-    throw new ControlError(
-      "unsupported_omp",
-      `需要 OMP 18.1.18，实际为 ${String(ompVersion).trim()}`,
-    );
-  }
   if (graph.graphIssues?.length)
     throw new ControlError("invalid_manifest", graph.graphIssues.join("; "));
   const orcaReady = Boolean(unwrapResult(orcaStatus)?.runtime?.state === "ready");

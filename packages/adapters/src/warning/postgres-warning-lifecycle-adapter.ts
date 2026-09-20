@@ -529,7 +529,11 @@ export class PostgresWarningLifecycleAdapter
             auditEntryId,
             recordedAt,
           );
-          const { taskRef, newWarnings } = await this.#appendTaskVersion(
+          const createdWarnings = canonicalWarnings.filter((warning) => warning.created);
+          if (createdWarnings.length === 0) {
+            return { resultRef: valid.payload.assessmentRecordRef, audit, events: [] };
+          }
+          const { taskRef } = await this.#appendTaskVersion(
             transaction,
             valid,
             context,
@@ -539,13 +543,9 @@ export class PostgresWarningLifecycleAdapter
             auditEntryId,
             recordedAt,
           );
-          const newWarningKeys = new Set(
-            newWarnings.map((warning) => warningRefPairKey(warning.warningRef)),
-          );
           const intentRefsByWarning = new Map<string, NotificationIntentRefV1[]>();
-          for (const canonical of canonicalWarnings) {
+          for (const canonical of createdWarnings) {
             const key = warningRefPairKey(canonical.warningRef);
-            if (!newWarningKeys.has(key)) continue;
             const planned = plan.notificationIntents.filter(
               (intent) => warningRefPairKey(intent.warningRef) === key,
             );
@@ -564,7 +564,7 @@ export class PostgresWarningLifecycleAdapter
               planned.map((intent) => intent.notificationIntentRef),
             );
           }
-          const events = newWarnings.map((warning) =>
+          const events = createdWarnings.map((warning) =>
             DomainEventV1Schema.parse({
               schemaVersion: "1",
               eventId: `warning-recorded-${warning.warningRef.reference.entityId}-${warning.warningRef.reference.versionId}`,
@@ -691,7 +691,6 @@ export class PostgresWarningLifecycleAdapter
     recordedAt: string,
   ): Promise<{
     readonly taskRef: WarningResponseTaskRefV1;
-    readonly newWarnings: readonly CanonicalWarningV1[];
   }> {
     const aggregationKey = plan.aggregationKey;
     const insertedTask = await transaction
@@ -752,7 +751,6 @@ export class PostgresWarningLifecycleAdapter
           kind: "warning-response-task",
           reference: { entityId: taskRow.task_id, versionId },
         },
-        newWarnings: [],
       };
     }
     const versionId = createdTask ? "1" : String(Number(taskRow.current_version_id) + 1);
@@ -798,7 +796,6 @@ export class PostgresWarningLifecycleAdapter
         kind: "warning-response-task",
         reference: { entityId: taskRow.task_id, versionId },
       },
-      newWarnings,
     };
   }
 

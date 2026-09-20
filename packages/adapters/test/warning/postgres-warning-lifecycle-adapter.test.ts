@@ -260,7 +260,7 @@ describe("C26 预警与处置任务 PostgreSQL 链", () => {
     }
   }, 240_000);
 
-  it("持续越限归集到同一任务的新版本，关闭后产生新任务实体", async () => {
+  it("持续越限归集到同一任务，关闭后重放旧评估且新评估产生新任务", async () => {
     const state = fixture!;
     const first = await state.assess({ suffix: "series-1" });
     const openedFirst = await state.adapter.open(
@@ -322,6 +322,29 @@ describe("C26 预警与处置任务 PostgreSQL 链", () => {
     expect(
       (await state.taskRows()).find((task) => task.taskId === taskRef.reference.entityId)?.status,
     ).toBe("closed");
+    const countsAfterClose = {
+      tasks: await state.countRows("business.warning_response_tasks"),
+      versions: await state.countRows("business.warning_response_task_versions"),
+      intents: await state.countRows("business.notification_intents"),
+      events: await state.countEvents("warning.warning-recorded.v1"),
+    };
+    const replayAfterClose = await state.adapter.open(
+      await state.openCommand({
+        commandId: "c26-open-series-1-after-close",
+        assessmentRecordRef: first.assessmentRecordRef,
+      }),
+    );
+    expect(replayAfterClose.kind).toBe("succeeded");
+    if (replayAfterClose.kind === "succeeded") {
+      expect(replayAfterClose.result).toEqual(openedFirst.result);
+    }
+    expect(await state.countRows("business.warning_response_tasks")).toBe(countsAfterClose.tasks);
+    expect(await state.countRows("business.warning_response_task_versions")).toBe(
+      countsAfterClose.versions,
+    );
+    expect(await state.countRows("business.notification_intents")).toBe(countsAfterClose.intents);
+    expect(await state.countEvents("warning.warning-recorded.v1")).toBe(countsAfterClose.events);
+
     const third = await state.assess({ suffix: "series-3" });
     const openedThird = await state.adapter.open(
       await state.openCommand({

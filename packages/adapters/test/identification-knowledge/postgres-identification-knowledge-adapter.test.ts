@@ -221,7 +221,11 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       | "case-library"
       | "retrieval-evidence-base",
     value: unknown,
-    options?: { readonly evidence?: readonly unknown[]; readonly projectId?: string },
+    options?: {
+      readonly evidence?: readonly unknown[];
+      readonly projectId?: string;
+      readonly replay?: boolean;
+    },
   ): Promise<KnowledgeGovernanceResultV1> => {
     const projectId = options?.projectId ?? fixture.world.projectId;
     const commandId = nextId(`c17-submit-${definitionType}`);
@@ -245,23 +249,25 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       IDENTIFICATION_KNOWLEDGE_CANDIDATE_PURPOSE_V1,
       projectId,
     );
-    return (await adapter.govern(
-      KnowledgeGovernanceCommandV1Schema.parse({
-        kind: "submit-revision",
-        commandId,
-        idempotencyKey: commandId,
-        projectId,
-        actorId: authorization.actorId,
-        issuedAt: tick(),
-        authorization,
-        payload: {
-          definitionType,
-          ...(baseReleaseRef === undefined ? {} : { baseReleaseRef }),
-          candidateArtifactRef,
-          evidenceReferences: [...(options?.evidence ?? fixture.world.evidence.slice(0, 1))],
-        },
-      }),
-    )) as KnowledgeGovernanceResultV1;
+    const command = KnowledgeGovernanceCommandV1Schema.parse({
+      kind: "submit-revision",
+      commandId,
+      idempotencyKey: commandId,
+      projectId,
+      actorId: authorization.actorId,
+      issuedAt: tick(),
+      authorization,
+      payload: {
+        definitionType,
+        ...(baseReleaseRef === undefined ? {} : { baseReleaseRef }),
+        candidateArtifactRef,
+        evidenceReferences: [...(options?.evidence ?? fixture.world.evidence.slice(0, 1))],
+      },
+    });
+    const submitted = (await adapter.govern(command)) as KnowledgeGovernanceResultV1;
+    return options?.replay
+      ? ((await adapter.govern(command)) as KnowledgeGovernanceResultV1)
+      : submitted;
   };
 
   const decideReview = async (
@@ -450,6 +456,40 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       ),
     });
     expect(otherProject).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+  }, 300_000);
+
+  it("resumes a submit after validation succeeded but C16 failed", async () => {
+    const governance = fixture.governance;
+    const originalGovern = governance.govern;
+    const isolated = await fixture.createPreparationWorld("submit-resume");
+    let failOnce = true;
+    governance.govern = (async (...args: Parameters<typeof originalGovern>) => {
+      if (failOnce) {
+        failOnce = false;
+        throw new Error("injected C16 submit failure");
+      }
+      return await originalGovern.apply(governance, args);
+    }) as typeof originalGovern;
+    try {
+      const submitted = await submitPackage(
+        adapterFor(),
+        "process-model",
+        processModelPackage({
+          ...fixture.builderInput(),
+          projectId: isolated.projectId,
+          preparationSnapshotRef: isolated.snapshotRef,
+          evidence: isolated.evidence,
+        }),
+        {
+          projectId: isolated.projectId,
+          evidence: isolated.evidence.slice(0, 1),
+          replay: true,
+        },
+      );
+      revisionOf(submitted, "resumed process-model submit");
+    } finally {
+      governance.govern = originalGovern;
+    }
   }, 300_000);
 
   it("rejects unknown fields, wrong project and unreachable evidence before any revision", async () => {

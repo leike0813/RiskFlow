@@ -1473,6 +1473,19 @@ export class PostgresIdentificationKnowledgeAdapter {
           events: [],
         } satisfies AtomicCommitV1;
       });
+      const persistedValidation = await this.#db
+        .selectFrom("business.identification_knowledge_validations")
+        .select(["validation_id", "version_id"])
+        .where("project_id", "=", command.projectId)
+        .where("idempotency_key", "=", validationAtomic.idempotencyKey)
+        .executeTakeFirst();
+      if (persistedValidation === undefined) {
+        throw new KnowledgeLifecycleError({
+          code: "ENTITY_NOT_FOUND",
+          reasonCode: "identification-knowledge-validation-not-found",
+          targetRef: asContractReference(validationArtifactRef),
+        });
+      }
       if (outcome.disposition === "rejected") {
         return KnowledgeGovernanceResultV1Schema.parse({
           kind: "failed",
@@ -1513,8 +1526,8 @@ export class PostgresIdentificationKnowledgeAdapter {
             project_id: command.projectId,
             definition_type: definitionType,
             binding_kind: "validated",
-            validation_id: validationId,
-            validation_version_id: "1",
+            validation_id: persistedValidation.validation_id,
+            validation_version_id: persistedValidation.version_id,
             package_digest: packageDigest,
             agent_task_ref: null,
             failure_artifact_ref: null,

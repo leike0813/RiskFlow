@@ -807,6 +807,62 @@ describe("worktree-aware state", () => {
     expect(stale.violations.map((item) => item.code)).toContain("checkpoint_mismatch");
   });
 
+  it("treats a merged auxiliary worktree head as merge evidence", () => {
+    const auxiliaryWorktree = {
+      id: "repo-id::/tmp/auxiliary",
+      path: "/tmp/auxiliary",
+      exists: true,
+      isMain: false,
+      git: { head: "aux-head", branch: "feature/aux", dirty: false, dirtyPaths: [] },
+      openSpec: [{ name: "fix-suite-isolation", status: "complete" }],
+      openSpecNames: ["fix-suite-isolation"],
+      openSpecNodeIds: [],
+      localNodeIds: [],
+      liveTerminalCount: 0,
+      terminals: [],
+      tasks: [],
+    };
+    const auxiliaryTask = task({
+      id: "task-aux-finalization",
+      status: "completed",
+      createdAt: "2026-09-04 14:00:00",
+      envelope: v2Envelope({
+        workItemId: "AUX:fix-suite-isolation",
+        changeName: "fix-suite-isolation",
+        routeNodeId: null,
+        runState: "settled",
+        outcome: "succeeded",
+        outputHead: "aux-head",
+        owner: {
+          taskId: "task-aux-finalization",
+          agentClass: "strong-finalizer",
+          model: "gpt-5.6-sol",
+        },
+      }),
+    });
+    auxiliaryWorktree.tasks = [auxiliaryTask];
+    const facts = context({
+      worktrees: [auxiliaryWorktree],
+      tasks: [auxiliaryTask],
+      ancestry: { "AUX:fix-suite-isolation": true },
+    });
+
+    const merged = deriveSnapshot(graph(), facts).nodes.find(
+      (candidate) => candidate.id === "AUX:fix-suite-isolation",
+    );
+    expect(merged).toMatchObject({ status: "merged", phase: "integration" });
+    expect(merged.nextActions).toEqual(["在 main 上完成冻结安装、pnpm verify 和主线验证"]);
+
+    const unmerged = deriveSnapshot(
+      graph(),
+      context({
+        worktrees: [auxiliaryWorktree],
+        tasks: [auxiliaryTask],
+      }),
+    ).nodes.find((candidate) => candidate.id === "AUX:fix-suite-isolation");
+    expect(unmerged.status).toBe("finalized");
+  });
+
   it("groups duplicate auxiliary changes before deriving their state", () => {
     const auxiliary = (id, path) => ({
       id,

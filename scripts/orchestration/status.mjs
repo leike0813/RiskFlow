@@ -1500,12 +1500,23 @@ async function collectFacts({ rootDir, graph, exec, orcaInvocation }) {
     nonMain.map((worktree) => collectWorktree(exec, worktree, graph, liveTasks)),
   );
   const ancestry = {};
+  const routeChangeNames = new Set(
+    graph.nodes
+      .filter((candidate) => candidate.kind === "change")
+      .map((candidate) => candidate.change),
+  );
   for (const worktree of collectedWorktrees) {
     if (!worktree.exists || !worktree.git?.head) continue;
     for (const node of graph.nodes.filter(
       (candidate) => candidate.kind === "change" && worktree.localNodeIds.includes(candidate.id),
     )) {
       ancestry[node.id] = await isAncestor(exec, worktree.git.head, main.head, rootDir);
+    }
+    // 辅助 change 不在 execution-graph.json 中，deriveSnapshot 以 `AUX:<name>` 合成其工作项；
+    // 合并证据必须与路线 change 同口径，否则辅助工作项永远进不到 merged/main_verified。
+    for (const name of worktree.openSpecNames ?? []) {
+      if (routeChangeNames.has(name)) continue;
+      ancestry[`AUX:${name}`] = await isAncestor(exec, worktree.git.head, main.head, rootDir);
     }
   }
   const mainCheckpointAncestry = {};

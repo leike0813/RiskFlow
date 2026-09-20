@@ -1175,11 +1175,28 @@ function verificationEnv() {
   return env;
 }
 
-// 长外部步骤在锁外执行，因此必须重新确认它依据的事实集没有变化。
+// 长外部步骤在锁外执行，因此必须重新确认它依据的事实没有变化。只比对这一步真正
+// 依赖的不变量（阶段、当前尝试、main HEAD、违规集合），而不是整个事实集哈希：
+// 长步骤自身的构建/测试会产生瞬时文件变化，用全量哈希会把它们误判为并发写者，
+// 从而无谓丢弃一次已经通过的复验。
 async function assertFactsUnchanged(ctx) {
   const current = await ctx.collectStatus();
-  if (current.snapshot.revision !== ctx.revision) {
-    throw new ControlError("stale_revision", "长外部步骤期间编排状态已变化，请重新读取状态", [
+  const node = current.snapshot.nodes.find((candidate) => candidate.id === ctx.node.id);
+  const drift = [];
+  if (node?.status !== ctx.node.status) {
+    drift.push(`工作项状态 ${ctx.node.status} → ${node?.status ?? "(缺失)"}`);
+  }
+  if (node?.checkpoints?.taskId !== ctx.node.checkpoints?.taskId) {
+    drift.push("当前尝试已变化");
+  }
+  if (current.snapshot.main.head !== ctx.snapshot.main.head) {
+    drift.push("main HEAD 已变化");
+  }
+  if (current.snapshot.violations.length > 0) {
+    drift.push("出现新的状态违规");
+  }
+  if (drift.length > 0) {
+    throw new ControlError("stale_revision", `长外部步骤期间编排状态已变化：${drift.join("；")}`, [
       "调用 riskflow_status 获取新 revision",
     ]);
   }

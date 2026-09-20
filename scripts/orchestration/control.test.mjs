@@ -801,9 +801,13 @@ describe("controlled orchestration", () => {
             orcaCommand: "orca-ide",
             statusProvider: async () => {
               reads += 1;
+              // 工作项状态在长步骤期间发生变化：必须 fail-closed
               return {
                 graph,
-                snapshot: reads === 1 ? mergedState() : mergedState({ revision: "revision-2" }),
+                snapshot:
+                  reads === 1
+                    ? mergedState()
+                    : mergedState({ nodes: [node({ status: "finalized" })] }),
               };
             },
           },

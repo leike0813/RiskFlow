@@ -578,6 +578,97 @@ describe("controlled orchestration", () => {
     }
   });
 
+  function settleHarness(runtimeRoot) {
+    let written;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("task-update")) {
+        written = JSON.parse(args[args.indexOf("--result") + 1]);
+        return {};
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    return { exec, envelope: () => written };
+  }
+
+  it("preserves the approved replan boundary when a planning attempt settles", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-settle-boundary-"));
+    const planning = node({
+      checkpoints: {
+        ...node().checkpoints,
+        taskId: "task-replan",
+        taskKind: "planning",
+        phase: "planning",
+        runState: "running",
+        attemptGroup: "C17:planning:approved",
+        attempt: 1,
+        approvalRef: "approval://riskflow/C17/replan-2026-09-20",
+        supersedesAttemptGroup: "C17:finalizing",
+      },
+    });
+    const { exec, envelope } = settleHarness(runtimeRoot);
+    try {
+      await riskflowSettle(
+        {
+          workItemId: "C17",
+          outcome: "paused",
+          issueRefs: ["replan-scope-not-communicated"],
+          evidenceRefs: ["worker-report:msg-replan"],
+          expectedRevision: "revision-1",
+          idempotencyKey: "settle-replan-boundary",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => ({
+            graph,
+            snapshot: snapshot({
+              nodes: [planning],
+              resumeQueue: [
+                { workItemId: "C17", category: "planning", nextAction: "等待规划收口" },
+              ],
+            }),
+          }),
+        },
+      );
+      expect(envelope()).toMatchObject({
+        taskKind: "planning",
+        runState: "settled",
+        outcome: "paused",
+        approvalRef: "approval://riskflow/C17/replan-2026-09-20",
+        supersedesAttemptGroup: "C17:finalizing",
+      });
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("does not add a replan boundary to a regular settle", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-settle-regular-"));
+    const { exec, envelope } = settleHarness(runtimeRoot);
+    try {
+      await riskflowSettle(
+        {
+          workItemId: "C17",
+          outcome: "paused",
+          issueRefs: ["ordinary"],
+          evidenceRefs: ["ordinary-report"],
+          expectedRevision: "revision-1",
+          idempotencyKey: "settle-regular-boundary",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => ({ graph, snapshot: snapshot() }),
+        },
+      );
+      expect(envelope().approvalRef).toBeUndefined();
+      expect(envelope().supersedesAttemptGroup).toBeUndefined();
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
   it("rejects stale revisions and incomplete goals", () => {
     expect(() =>
       preflightAction(snapshot(), "dispatch", {

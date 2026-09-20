@@ -946,6 +946,16 @@ export async function riskflowSettle(input, options = {}) {
       issueRefs,
       evidenceRefs,
       main: checkpoint.main,
+      // 获批重开规划的边界由这对字段标记；收口若丢掉它们，边界随之消失，
+      // 被取代的旧尝试会重新参与当前尝试选择（实测导致节点回退成 unknown）。
+      // 校验把这对字段视为整体，因此只在两者都非空时才成对保留。
+      ...(nonEmptyString(checkpoint.approvalRef) &&
+      nonEmptyString(checkpoint.supersedesAttemptGroup)
+        ? {
+            approvalRef: checkpoint.approvalRef,
+            supersedesAttemptGroup: checkpoint.supersedesAttemptGroup,
+          }
+        : {}),
     };
     const invocation = resolveOrcaInvocation(options.orcaCommand);
     await orcaJson(

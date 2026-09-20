@@ -587,6 +587,23 @@ function currentTaskWindow(valid, phaseOrder) {
   };
 }
 
+// 同一尝试组内只能有一个活动写者：被更高尝试次数的尝试取代的较早尝试不可能再被
+// 派发。Orca 没有 cancelled/superseded 终态，因此只能在判定侧识别它已被取代。
+// 只有尝试次数严格更高才算取代：同次数、仅创建顺序不同属于「无法唯一确定当前尝试」，
+// 必须继续 fail-closed，不能借本规则放宽。
+function isSupersededAttempt(task, scope) {
+  const attempt = Number(task.envelope?.attempt);
+  const group = task.envelope?.attemptGroup;
+  if (!Number.isInteger(attempt) || !nonEmptyString(group)) return false;
+  return scope.some(
+    (other) =>
+      other !== task &&
+      other.envelope?.attemptGroup === group &&
+      Number.isInteger(Number(other.envelope?.attempt)) &&
+      Number(other.envelope.attempt) > attempt,
+  );
+}
+
 function taskSummary(tasks, phaseOrder = DEFAULT_PHASE_ORDER) {
   const valid = tasks.filter((task) => task.envelope.valid);
   const window = currentTaskWindow(valid, phaseOrder);
@@ -769,7 +786,9 @@ export function deriveNodeState(node, context) {
   const worktree = worktrees[0] ?? null;
   const summary = taskSummary(tasks, context.phaseOrder);
   if (summary.replanConflict) violations.push({ code: "invalid_replan_boundary" });
-  const activeWriterTasks = summary.scope.filter((task) => WRITER_TASK_STATUSES.has(task.status));
+  const activeWriterTasks = summary.scope.filter(
+    (task) => WRITER_TASK_STATUSES.has(task.status) && !isSupersededAttempt(task, summary.scope),
+  );
   if (activeWriterTasks.length > 1) {
     violations.push({
       code: "duplicate_active_writer",

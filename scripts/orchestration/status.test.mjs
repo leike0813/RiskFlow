@@ -500,6 +500,58 @@ describe("worktree-aware state", () => {
     });
   });
 
+  it("does not treat a superseded attempt in the same group as a second active writer", () => {
+    const node = { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] };
+    const older = task({
+      id: "task-c08-older",
+      status: "ready",
+      createdAt: "2026-09-04 12:00:00",
+      envelope: v2Envelope({
+        attempt: 3,
+        attemptGroup: "finalize-c08",
+        owner: { taskId: "task-c08-older", agentClass: "strong-finalizer", model: "gpt-5.6-sol" },
+      }),
+    });
+    const newer = task({
+      id: "task-c08-newer",
+      status: "ready",
+      createdAt: "2026-09-04 13:00:00",
+      envelope: v2Envelope({
+        attempt: 4,
+        attemptGroup: "finalize-c08",
+        owner: { taskId: "task-c08-newer", agentClass: "strong-finalizer", model: "gpt-5.6-sol" },
+      }),
+    });
+    const state = deriveNodeState(node, context({ tasks: [older, newer] }));
+    expect(state.violations).toEqual([]);
+    expect(state.checkpoints.taskId).toBe("task-c08-newer");
+  });
+
+  it("still reports duplicate writers across attempt groups", () => {
+    const node = { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] };
+    const implementation = task({
+      id: "task-c08-implementation",
+      status: "dispatched",
+      createdAt: "2026-09-04 12:00:00",
+      envelope: v2Envelope({
+        taskKind: "implementation",
+        phase: "implementing",
+        attempt: 1,
+        attemptGroup: "implement-c08",
+      }),
+    });
+    const finalization = task({
+      id: "task-c08-finalization",
+      status: "ready",
+      createdAt: "2026-09-04 13:00:00",
+      envelope: v2Envelope({ attempt: 1, attemptGroup: "finalize-c08" }),
+    });
+    const state = deriveNodeState(node, context({ tasks: [implementation, finalization] }));
+    expect(state.violations).toContainEqual(
+      expect.objectContaining({ code: "duplicate_active_writer" }),
+    );
+  });
+
   it("fails closed when an approved replan does not supersede a finalizing attempt", () => {
     const node = { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] };
     const replan = task({

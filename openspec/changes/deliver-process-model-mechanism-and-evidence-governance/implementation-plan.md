@@ -168,3 +168,25 @@
 - **V-08 静态和格式**：`pnpm exec eslint packages/core/src/identification-knowledge packages/core/test/identification-knowledge.test.ts packages/adapters/src/identification-knowledge packages/adapters/test/identification-knowledge apps/worker/src/identification-knowledge apps/worker/test/identification-knowledge && pnpm exec prettier --check packages/core/src/identification-knowledge packages/core/test/identification-knowledge.test.ts packages/core/package.json packages/adapters/src/identification-knowledge packages/adapters/test/identification-knowledge packages/adapters/package.json packages/adapters/src/knowledge-governance/postgres-knowledge-governance-adapter.ts packages/adapters/test/knowledge-governance/postgres-knowledge-governance-adapter.test.ts packages/adapters/test/postgres/postgres-foundation.test.ts apps/worker/src/identification-knowledge apps/worker/test/identification-knowledge apps/worker/src/index.ts`
 - **V-09 依赖边界**：`pnpm deps:check && pnpm deps:policy`
 - **V-10 OpenSpec/施工图完成门**：`openspec validate deliver-process-model-mechanism-and-evidence-governance --strict --no-interactive && openspec instructions apply --change deliver-process-model-mechanism-and-evidence-governance --json`
+
+## 8. Finalizer 授权与限定审计
+
+### 8.1 已批准收尾范围
+
+- Finalizer 以协调端固定的 implementation checkpoint 为输入，先核对实际 HEAD、完整读取本 change 的全部 `contextFiles`，再按 IP-01～IP-10、§7.1 文件清单和 tasks 未完成项验收。为落实已批准 Requirement/Scenario，可在 §7.1 允许文件内直接修复生产代码、迁移、包导出和测试，并运行受影响回归；普通缺陷不回派 Implementation。
+- Finalizer 可更新本 change 的 `tasks.md` 完成状态与验收证据，但不得改变 proposal、spec、D-01～D-12、IP-ID、Non-Goals、文件所有权或验收语义。若实现检查点相对本施工图发生 drift，先提交符号、调用链和 diff 证据；只有不改变已批准设计的机械定位调整可在当前收尾中处理。
+- §7.1 保护区继续生效。任何需要新增公共字段/branch/event、改变授权或事务语义、修改 C08/C15/C11 所有权文件、增加迁移/依赖、占用计划外文件或扩大 C17 能力的修复都必须升级，不得由 Finalizer 自行补设计。
+
+### 8.2 Finalizer 必须形成的证据
+
+- 逐项反向核对全部 Requirement/Scenario、D-01～D-12、IP-01～IP-10、允许文件和 tasks；运行 V-01～V-10，并保留实际命令、退出结果及关键场景已到达最终 binding/state/audit/receipt/Outbox 断言的证据。关键场景被跳过、条件早退或仅验证替身时不得判定通过。
+- 审阅 implementation checkpoint 到最终 HEAD 的全部 diff，确认只落在 §7.1 允许文件或协调端明确拥有的迁移清单机械同步中；确认 `packages/contracts/**`、C08/C15/C11、API/Web、根 workspace、锁文件、主 specs 和其它 changes 未发生越界修改。
+- 最终报告必须列出最终 HEAD、实际修改文件、覆盖的 Requirement/Scenario 与 IP-ID、V-01～V-10 结果、未执行命令及原因、剩余风险和需要协调端完成的机械事项；Finalizer 不提交、合并或归档。
+
+### 8.3 限定审计标签
+
+- **permission（必需）**：限定检查 D-04、D-09、D-11 的 exact branch、actor/project/invocation、唯一 capability、空间/资料范围、human/system 来源和目标读取前拒绝；重点证据为 V-01、V-03～V-05，禁止扩大为全库权限重审。
+- **transaction（必需）**：限定检查 D-05、D-07、D-11 的 C16 publish/rollback 同事务 release-binding-audit-receipt-Outbox 原子性、故障回滚和幂等重放；重点证据为 V-03、V-04。
+- **critical-state-machine（必需）**：限定检查 D-08、D-09 的 C08 runner 复用、attempt 单向 CAS、终态失败窄读、`failure-review-only → review-linked` 恢复及无 fallback；重点证据为 V-01、V-03、V-05。
+- **semantic-merge（条件触发）**：仅当 implementation checkpoint 之后发生语义 merge 冲突或冲突解决时触发，范围限于受影响 IP-ID、调用链和回归；旧检查点证据不得覆盖冲突解决后的产物。
+- 限定审计发现的普通实现缺陷由当前 Finalizer 在已批准范围内修复并重跑受影响验证；发现需要改变公共契约、权限、事务、持久化、迁移、依赖或 Non-Goals 时暂停并升级。

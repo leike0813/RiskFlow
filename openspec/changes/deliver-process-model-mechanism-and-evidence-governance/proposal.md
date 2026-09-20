@@ -32,3 +32,7 @@ RiskFlow 尚无可运行的识别知识事实源：工序、风险机理、规�
 - **契约与所有权**：C17 拥有 `identification-knowledge`；继续复用 C02 的 `KnowledgeModelingPortV1`、`AgentTaskPortV1` 和识别输入引用。`packages/contracts`、主 specs、中央注册文件及 C15/C11 私有存储不在本 change 修改范围。
 - **依赖**：实现依赖 C08、C16、C15、`implement-engineering-data-read-branches`、`evolve-identification-basis-published-event` 和知识定义类型契约演进均已归档并集成；继续实现前还要求独立 C15 drift change 与 C08 失败证据窄读 change 归档。生产组合根必须显式注入 C03/C04/C06/C07/C08/C15/C16 接缝、审核策略和 C21/C24 精确策略提供者；任何必需项或受信授权来源缺失均关闭失败。不新增第三方依赖，不修改根 workspace 或锁文件。
 - **追踪**：覆盖 RI-S2（工序模型）、RI-S3（风险机理和证据关系）、RI-S4（非结构化知识编制）；为 C20 的混合检索与 C21 的识别准备提供精确发布输入，不在本 change 实现索引检索、候选识别或风险评估。
+
+## 重开规划输入（2026-09-20）
+
+本次批准的重开规划范围见本目录 `replan-2026-09-20-approval.md`（批准引用 `approval://riskflow/C17/replan-2026-09-20`）。该记录列出触发事实、必须闭合的三项变更与处置要求，是本次规划的必要输入。

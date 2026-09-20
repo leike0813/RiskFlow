@@ -669,6 +669,62 @@ describe("controlled orchestration", () => {
     }
   });
 
+  it("commits only the reviewed paths when a successful settle has dirty files", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-settle-reviewed-"));
+    const dirty = node({
+      worktree: {
+        ...node().worktree,
+        dirty: true,
+        dirtyPaths: ["packages/a.ts"],
+      },
+    });
+    const dirtySnapshot = snapshot({
+      nodes: [dirty],
+      resumeQueue: [{ workItemId: "C17", category: "finalizing", nextAction: "收口" }],
+    });
+    const calls = [];
+    let written;
+    const exec = async (command, args) => {
+      calls.push([command, ...args].join(" "));
+      if (command === "git" && args[0] === "rev-parse" && args[1] === "--git-common-dir") {
+        return runtimeRoot;
+      }
+      if (command === "git" && String(args[0] ?? "").startsWith("--git-dir=")) return runtimeRoot;
+      if (command === "git" && args[0] === "rev-parse") return "reviewed-head";
+      if (command === "git" && args[0] === "add") return "";
+      if (command === "git" && args[0] === "commit") return "";
+      if (command === "openspec") return { artifacts: [] };
+      if (command === "orca-ide" && args.includes("task-update")) {
+        written = JSON.parse(args[args.indexOf("--result") + 1]);
+        return {};
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await riskflowSettle(
+        {
+          workItemId: "C17",
+          outcome: "succeeded",
+          reviewedPaths: ["packages/a.ts"],
+          evidenceRefs: ["vitest:reviewed"],
+          expectedRevision: "revision-1",
+          idempotencyKey: "settle-reviewed-paths",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          orcaCommand: "orca-ide",
+          statusProvider: async () => ({ graph, snapshot: dirtySnapshot }),
+        },
+      );
+      expect(calls).toContain("git add -- packages/a.ts");
+      expect(calls.some((call) => call.startsWith("git commit"))).toBe(true);
+      expect(written.outputHead).toBe("reviewed-head");
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
   it("rejects stale revisions and incomplete goals", () => {
     expect(() =>
       preflightAction(snapshot(), "dispatch", {
@@ -812,7 +868,8 @@ describe("controlled orchestration", () => {
     const dirty = node({
       worktree: {
         ...node().worktree,
-        git: { head: "feature-head", dirty: true, dirtyPaths: ["b.mjs", "a.mjs"] },
+        dirty: true,
+        dirtyPaths: ["b.mjs", "a.mjs"],
       },
     });
     expect(() =>

@@ -163,8 +163,8 @@ export function preflightAction(snapshot, action, input = {}) {
         node.nextActions,
       );
     }
-    if (input.outcome === "succeeded" && node.worktree.git?.dirty) {
-      const actual = [...(node.worktree.git.dirtyPaths ?? [])].sort();
+    if (input.outcome === "succeeded" && node.worktree.dirty) {
+      const actual = [...(node.worktree.dirtyPaths ?? [])].sort();
       const reviewed = [...new Set(input.reviewedPaths ?? [])].sort();
       if (JSON.stringify(actual) !== JSON.stringify(reviewed)) {
         throw new ControlError(
@@ -914,7 +914,7 @@ export async function riskflowSettle(input, options = {}) {
       ? "targeted"
       : checkpoint.auditPolicy;
     let outputHead = ctx.node.worktree.head;
-    if (outcome === "succeeded" && ctx.node.worktree.git?.dirty) {
+    if (outcome === "succeeded" && ctx.node.worktree.dirty) {
       await ctx.exec("git", ["add", "--", ...input.reviewedPaths], {
         cwd: ctx.node.worktree.path,
       });

@@ -237,6 +237,24 @@ export function createV2Envelope({
   const phase = taskPhase(taskKind);
   const sameAttemptGroup = checkpoint?.taskKind === taskKind;
   const replan = nonEmptyString(approvalRef) && nonEmptyString(supersedesAttemptGroup);
+  const attemptGroup = replan
+    ? `${node.id}:planning:${hash(approvalRef).slice(0, 12)}`
+    : ((sameAttemptGroup ? checkpoint?.attemptGroup : null) ??
+      `${node.id}:${taskKind === "audit" ? "audit" : phase}`);
+  // 尝试次数是同一尝试组内的代次，选择当前尝试时按最大值取。只依据"当前检查点是否
+  // 同类"来决定是否递增，会在不同职责先后进入同一组时撞号（例如 audit 失败后的修复
+  // 回到 finalizing 组、却重新从 1 起算，状态视图于是回到已收口的旧尝试）。
+  const groupAttempts = (node.orca?.attempts ?? [])
+    .filter((attempt) => attempt.attemptGroup === attemptGroup)
+    .map((attempt) => Number(attempt.attempt))
+    .filter((value) => Number.isInteger(value));
+  const attempt = replan
+    ? 1
+    : groupAttempts.length > 0
+      ? Math.max(...groupAttempts) + 1
+      : sameAttemptGroup
+        ? Number(checkpoint?.attempt ?? 0) + 1
+        : 1;
   const envelope = {
     schemaVersion: 2,
     workItemId: node.id,
@@ -253,11 +271,8 @@ export function createV2Envelope({
       agentClass: role.agentClass,
       model: role.model,
     },
-    attemptGroup: replan
-      ? `${node.id}:planning:${hash(approvalRef).slice(0, 12)}`
-      : ((sameAttemptGroup ? checkpoint?.attemptGroup : null) ??
-        `${node.id}:${taskKind === "audit" ? "audit" : phase}`),
-    attempt: replan ? 1 : sameAttemptGroup ? Number(checkpoint?.attempt ?? 0) + 1 : 1,
+    attemptGroup,
+    attempt,
     ...(replan ? { approvalRef, supersedesAttemptGroup } : {}),
     auditPolicy: checkpoint?.auditPolicy ?? "self",
     issueRefs: checkpoint?.issueRefs ?? [],

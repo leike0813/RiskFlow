@@ -169,6 +169,46 @@ describe("controlled orchestration", () => {
     expect(text).toContain("C26: 继续 Finalizer");
   });
 
+  it("continues the attempt number from the target attempt group history", () => {
+    const auditCheckpoint = {
+      ...node().checkpoints,
+      taskId: "task-audit",
+      taskKind: "audit",
+      phase: "finalizing",
+      runState: "settled",
+      outcome: "failed",
+      attemptGroup: "C17:audit",
+      attempt: 1,
+    };
+    const withHistory = node({
+      checkpoints: auditCheckpoint,
+      orca: {
+        attempts: [
+          { taskId: "task-1", attemptGroup: "C17:finalizing", attempt: 1 },
+          { taskId: "task-2", attemptGroup: "C17:finalizing", attempt: 2 },
+          { taskId: "task-audit", attemptGroup: "C17:audit", attempt: 1 },
+        ],
+      },
+    });
+    expect(
+      createV2Envelope({
+        node: withHistory,
+        taskId: "task-repair",
+        taskKind: "finalization",
+        role: graph.policy.roles.finalization,
+      }),
+    ).toMatchObject({ attemptGroup: "C17:finalizing", attempt: 3 });
+
+    expect(
+      createV2Envelope({
+        node: node({ checkpoints: auditCheckpoint }),
+        taskId: "task-repair-2",
+        taskKind: "finalization",
+        role: graph.policy.roles.finalization,
+      }),
+    ).toMatchObject({ attemptGroup: "C17:finalizing", attempt: 1 });
+  });
+
   it("keeps finalizing dispatch bound to the strong Finalizer role", () => {
     const current = node();
     const checked = preflightAction(snapshot(), "dispatch", {

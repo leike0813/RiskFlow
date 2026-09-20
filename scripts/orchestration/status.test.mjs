@@ -605,6 +605,71 @@ describe("worktree-aware state", () => {
     expect(state.status).toBe("running");
   });
 
+  it("requires exactly one limited audit per finalizing round", () => {
+    const node = { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] };
+    const finalization = task({
+      id: "task-c08-finalization",
+      status: "completed",
+      createdAt: "2026-09-04 12:00:00",
+      envelope: v2Envelope({
+        runState: "settled",
+        outcome: "succeeded",
+        outputHead: "feature-head",
+        attempt: 1,
+        attemptGroup: "finalize-c08",
+        auditPolicy: "targeted",
+        owner: {
+          taskId: "task-c08-finalization",
+          agentClass: "strong-finalizer",
+          model: "gpt-5.6-sol",
+        },
+      }),
+    });
+
+    const beforeAudit = deriveNodeState(node, context({ tasks: [finalization] }));
+    expect(beforeAudit.auditRequired).toBe(true);
+    expect(beforeAudit.nextActions).toEqual(["派发不同强模型责任者执行限定范围 audit"]);
+
+    const concludedAudit = task({
+      id: "task-c08-audit",
+      status: "completed",
+      createdAt: "2026-09-04 13:00:00",
+      envelope: v2Envelope({
+        taskKind: "audit",
+        phase: "finalizing",
+        runState: "settled",
+        outcome: "failed",
+        outputHead: "feature-head",
+        attempt: 1,
+        attemptGroup: "audit-c08",
+        auditPolicy: "targeted",
+        owner: { taskId: "task-c08-audit", agentClass: "strong-auditor", model: "gpt-5.6-sol" },
+      }),
+    });
+    const repaired = task({
+      id: "task-c08-repair",
+      status: "completed",
+      createdAt: "2026-09-04 14:00:00",
+      envelope: v2Envelope({
+        runState: "settled",
+        outcome: "succeeded",
+        outputHead: "feature-head",
+        attempt: 2,
+        attemptGroup: "finalize-c08",
+        auditPolicy: "targeted",
+        owner: { taskId: "task-c08-repair", agentClass: "strong-finalizer", model: "gpt-5.6-sol" },
+      }),
+    });
+
+    const afterAudit = deriveNodeState(
+      node,
+      context({ tasks: [finalization, concludedAudit, repaired] }),
+    );
+    expect(afterAudit.auditRequired).toBe(false);
+    expect(afterAudit.status).toBe("finalized");
+    expect(afterAudit.nextActions).toEqual(["集成当前已验收产物"]);
+  });
+
   it("keeps the finalizing responsibility when an audit fails", () => {
     const node = { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] };
     const audit = task({

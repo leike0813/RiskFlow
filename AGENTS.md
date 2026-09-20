@@ -46,7 +46,7 @@
 ### 3.1 大型实现编排
 
 - 执行 39-change 路线前必须先读根目录 `IMPLEMENTATION-ORCHESTRATION-HANDBOOK.md` 和 `IMPLEMENTATION-ORCHESTRATION-RUNBOOK.md`；前者规定稳定责任与状态转换，后者规定 worktree 信任、Agent 启动、等待、同步、故障恢复和回收操作。当前起点只读取 `pnpm orchestration:status --json` 的 `resumeQueue`。
-- 大型实现的阶段、角色、模型与强度以 `config/orchestration/execution-graph.json` 为唯一事实源。规划由 Planning Agent 承担；首轮实现由 Implementation Agent 承担；进入 `FINALIZING` 后由 Finalizer 对核验、已批准范围内修复、回归和 verification 负责，普通实现缺陷不得回派首轮实现角色；触发限定审计时，由 Targeted Auditor 将最终结论补入同一工件。
+- 大型实现的阶段、角色、模型与强度以 `config/orchestration/execution-graph.json` 为唯一事实源。规划由 Planning Agent 承担；首轮实现由 Implementation Agent 承担；进入 `FINALIZING` 后由 Finalizer 对核验、已批准范围内修复、回归和 verification 负责，普通实现缺陷不得回派首轮实现角色；触发限定审计时，由 Targeted Auditor 将最终结论补入同一工件。**同一收尾轮次最多一次限定审计**：审计发现的普通缺陷必须在同一收尾轮次内一次修完，禁止为同一收尾重复派发新的 Finalizer 或第二次审计；协调端应把 finding 回灌仍在活动的收尾会话，机制上无法在会话内完成时必须升级给用户。
 - 主调度的编排写操作必须通过 `riskflow_*` 受控工具执行，并携带当前状态 `revision` 和幂等键；历史日志、聊天记录和手册示例不得替代实时状态。
 - Agent 之间不得用未提交文件传递实现状态。每次角色交接前由主调度 Agent审阅并形成 Git 检查点；Git 权限仍以用户在当前 session 的明确授权为准。
 

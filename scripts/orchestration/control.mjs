@@ -191,17 +191,12 @@ export function preflightAction(snapshot, action, input = {}) {
 }
 
 function nextTaskKind(node) {
-  const checkpoint = node.checkpoints;
   if (node.phase === "adopt" || node.status === "untracked") return "finalization";
   if (node.status === "ready") return "planning";
   if (node.status === "finalizing") {
-    if (
-      checkpoint?.taskKind === "finalization" &&
-      checkpoint.outcome === "succeeded" &&
-      checkpoint.auditPolicy === "targeted"
-    ) {
-      return "audit";
-    }
+    // 本轮是否仍需要审计由状态视图判定（同一收尾轮次最多一次限定审计）；
+    // 这里不再凭检查点条件一律再派，避免同一收尾被重复派发。
+    if (node.auditRequired === true) return "audit";
     return "finalization";
   }
   if (node.phase === "planning") return "implementation";
@@ -508,6 +503,13 @@ function taskSpec(node, taskKind, envelopeOptions = {}) {
     "公共契约、权限、持久化、迁移、依赖或批准范围变化必须 escalation；禁止提交、合并、归档或扩大范围。",
     "worker_done 必须列出产物 HEAD、证据、实际命令和剩余事项。",
   ];
+  if (taskKind === "finalization" || taskKind === "audit") {
+    lines.push(
+      "同一收尾轮次最多一次限定审计：审计发现的普通缺陷必须在同一收尾轮次内一次修完。",
+      "禁止为同一收尾重复派发新的 Finalizer 或第二次审计；机制上无法在既定会话内完成时必须 escalation，不得自行再开一轮。",
+      "审计结论与随后修复的证据必须一并写入同一 verification。",
+    );
+  }
   // 重开规划必须把「为什么重开」送进规划任务：否则规划者只按通用文案补齐模板章节，
   // 不会覆盖被取代尝试升级出来的批准范围（实测发生过一次）。
   if (nonEmptyString(envelopeOptions.approvalRef)) {

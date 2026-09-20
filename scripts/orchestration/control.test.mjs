@@ -415,6 +415,53 @@ describe("controlled orchestration", () => {
     }
   });
 
+  it("selects the finalization role when the round no longer requires an audit", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-round-role-"));
+    const roundNode = node({
+      auditRequired: false,
+      checkpoints: {
+        ...node().checkpoints,
+        taskKind: "finalization",
+        phase: "finalizing",
+        runState: "settled",
+        outcome: "succeeded",
+        auditPolicy: "targeted",
+      },
+    });
+    const roundSnapshot = snapshot({
+      nodes: [roundNode],
+      resumeQueue: [{ workItemId: "C17", category: "finalizing", nextAction: "继续收尾" }],
+    });
+    let writtenEnvelope;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("task-create")) return { id: "task-next" };
+      if (command === "orca-ide" && args.includes("task-update")) {
+        writtenEnvelope = JSON.parse(args[args.indexOf("--result") + 1]);
+        return {};
+      }
+      if (command === "orca-ide" && args.includes("worker-start")) return { state: "ready" };
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await riskflowDispatch(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "dispatch-round-role",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => ({ graph, snapshot: roundSnapshot }),
+        },
+      );
+      expect(writtenEnvelope).toMatchObject({ taskKind: "finalization" });
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
   function ledgerAttemptPath(runtimeRoot, taskId) {
     return join(runtimeRoot, "riskflow-orchestration", "attempts", `${taskId}.json`);
   }

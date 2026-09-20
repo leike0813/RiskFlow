@@ -645,6 +645,18 @@ function latestAttemptGroupScope(phaseTasks) {
   return latestGroups.flatMap((entry) => entry.members);
 }
 
+// 同一收尾轮次最多一次限定审计：本轮范围内一旦存在已收口的 audit 尝试，
+// 后续 finalization 成功收口不得再要求第二次审计。范围取本轮的尝试集合
+// （已按最新获批 replan 边界收窄）。
+function auditConcludedInScope(scope) {
+  return scope.some(
+    (task) =>
+      task.envelope.valid &&
+      task.envelope.taskKind === "audit" &&
+      task.envelope.runState === "settled",
+  );
+}
+
 function taskSummary(tasks, phaseOrder = DEFAULT_PHASE_ORDER) {
   const valid = tasks.filter((task) => task.envelope.valid);
   const window = currentTaskWindow(valid, phaseOrder);
@@ -931,6 +943,13 @@ export function deriveNodeState(node, context) {
   const currentEnvelope = summary.latest?.envelope ?? null;
   const currentKind = currentEnvelope?.taskKind ?? null;
   const currentSucceeded = currentEnvelope?.outcome === "succeeded";
+  // 本轮是否仍需要一次限定审计：由状态视图统一判定，角色选择只消费该字段，
+  // 避免同一条规则在控制器里出现第二份实现。
+  const auditRequired =
+    currentSucceeded &&
+    currentKind === "finalization" &&
+    currentEnvelope.auditPolicy === "targeted" &&
+    !auditConcludedInScope(summary.scope);
   if (violations.length > 0) {
     status = "unknown";
     nextActions = ["审阅 violations，禁止自动派发或回收"];
@@ -983,11 +1002,7 @@ export function deriveNodeState(node, context) {
   } else if (currentEnvelope?.runState === "queued") {
     status = "running";
     nextActions = ["派发当前信封指定的受控任务"];
-  } else if (
-    currentSucceeded &&
-    currentKind === "finalization" &&
-    currentEnvelope.auditPolicy === "targeted"
-  ) {
+  } else if (auditRequired) {
     status = "finalizing";
     phase = "finalizing";
     nextActions = ["派发不同强模型责任者执行限定范围 audit"];
@@ -1073,6 +1088,7 @@ export function deriveNodeState(node, context) {
       archiveCommit: mainState.archiveCommit,
     },
     checkpoints: taskEvidence(summary.latest),
+    auditRequired,
     nextActions,
     violations,
   };

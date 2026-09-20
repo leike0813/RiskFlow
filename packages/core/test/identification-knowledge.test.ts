@@ -283,6 +283,23 @@ const rejectedReasonCodes = (
     .map((item) => item.reasonCode.split(":")[0]);
 
 describe("C17 identification knowledge package validation", () => {
+  it.each([
+    {
+      name: "missing critical rule",
+      policy: { ...POLICY, coverage: [POLICY.coverage[0]] },
+    },
+    {
+      name: "duplicate critical kind",
+      policy: { ...POLICY, criticalProcessKinds: ["扩径准备", "扩径准备"] },
+    },
+    {
+      name: "duplicate coverage rule",
+      policy: { ...POLICY, coverage: [...POLICY.coverage, POLICY.coverage[0]] },
+    },
+  ])("rejects an inconsistent validation policy: $name", ({ policy }) => {
+    expect(IdentificationKnowledgeValidationPolicyV1Schema.safeParse(policy).success).toBe(false);
+  });
+
   it("accepts complete process, mechanism, standard and case packages with reachable evidence", async () => {
     const processOutcome = await validateIdentificationKnowledgePackage({
       value: processModelPackage(),

@@ -624,29 +624,45 @@ export type IdentificationKnowledgeCoverageRuleV1 = z.infer<
  * 版本化知识校验策略：关键工序覆盖门槛、允许层级/方法、条目上限和 C08 编制
  * 引用均由组合根以完整对象注入，禁止在业务逻辑中硬编码。
  */
-export const IdentificationKnowledgeValidationPolicyV1Schema = z.strictObject({
-  schemaVersion: z.literal(IDENTIFICATION_KNOWLEDGE_SCHEMA_VERSION_V1),
-  policyRef: VersionReferenceSchema,
-  criticalProcessKinds: z.array(ProcessNodeSchema).min(1),
-  coverage: z.array(IdentificationKnowledgeCoverageRuleV1Schema).min(1),
-  allowedStandardLevels: z.array(StandardLibraryLevelV1Schema).min(1),
-  allowedCaseConstructionMethods: z.array(IdentifierSchema).min(1),
-  maxEntriesPerPackage: z.number().int().positive().max(IDENTIFICATION_KNOWLEDGE_MAX_ENTRIES_V1),
-  tools: z.strictObject({
-    segmentSliceToolRef: VersionReferenceSchema,
-    baselineKnowledgeToolRef: VersionReferenceSchema,
-  }),
-  agent: z.strictObject({
-    definitionRef: VersionReferenceSchema,
-    modelDeploymentRef: VersionReferenceSchema,
-    promptTemplateRef: VersionReferenceSchema,
-    toolPolicyRef: VersionReferenceSchema,
-    budgetPolicyRef: VersionReferenceSchema,
-    incrementSchemaRef: VersionReferenceSchema,
-    validationPolicyRef: VersionReferenceSchema,
-    budgetPolicy: AgentTaskBudgetPolicyV1Schema,
-  }),
-});
+export const IdentificationKnowledgeValidationPolicyV1Schema = z
+  .strictObject({
+    schemaVersion: z.literal(IDENTIFICATION_KNOWLEDGE_SCHEMA_VERSION_V1),
+    policyRef: VersionReferenceSchema,
+    criticalProcessKinds: z.array(ProcessNodeSchema).min(1),
+    coverage: z.array(IdentificationKnowledgeCoverageRuleV1Schema).min(1),
+    allowedStandardLevels: z.array(StandardLibraryLevelV1Schema).min(1),
+    allowedCaseConstructionMethods: z.array(IdentifierSchema).min(1),
+    maxEntriesPerPackage: z.number().int().positive().max(IDENTIFICATION_KNOWLEDGE_MAX_ENTRIES_V1),
+    tools: z.strictObject({
+      segmentSliceToolRef: VersionReferenceSchema,
+      baselineKnowledgeToolRef: VersionReferenceSchema,
+    }),
+    agent: z.strictObject({
+      definitionRef: VersionReferenceSchema,
+      modelDeploymentRef: VersionReferenceSchema,
+      promptTemplateRef: VersionReferenceSchema,
+      toolPolicyRef: VersionReferenceSchema,
+      budgetPolicyRef: VersionReferenceSchema,
+      incrementSchemaRef: VersionReferenceSchema,
+      validationPolicyRef: VersionReferenceSchema,
+      budgetPolicy: AgentTaskBudgetPolicyV1Schema,
+    }),
+  })
+  .superRefine((policy, context) => {
+    const criticalKinds = new Set(policy.criticalProcessKinds);
+    const coverageKinds = new Set(policy.coverage.map((rule) => rule.processKind));
+    if (
+      criticalKinds.size !== policy.criticalProcessKinds.length ||
+      coverageKinds.size !== policy.coverage.length ||
+      policy.criticalProcessKinds.some((kind) => !coverageKinds.has(kind))
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["coverage"],
+        message: "coverage must define one rule for every unique critical process kind",
+      });
+    }
+  });
 export type IdentificationKnowledgeValidationPolicyV1 = z.infer<
   typeof IdentificationKnowledgeValidationPolicyV1Schema
 >;

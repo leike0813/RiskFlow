@@ -37,6 +37,8 @@ pnpm orchestration:status --json
 
 主调度保留调度与 Git 权限，不因此获得生产实现权限。Agent 之间只通过已审阅的 Git 检查点和结构化执行信封交接。
 
+只有执行图中需要独立语义责任的 Planning、Implementation、Finalizer 和 Targeted Auditor 才派发 Agent。状态读取、队列选择、问题回复、diff 审阅、受控 settle、集成、归档和回收由主调度直接完成，不为这些协调动作另建 Task 或 Agent。
+
 ## 3. 状态机与责任移交
 
 主流程固定为：
@@ -52,6 +54,9 @@ PLANNING → IMPLEMENTING → FINALIZING → INTEGRATING → ARCHIVING → COMPL
 3. 只有重新批准了新的规划版本，才能显式重开 `IMPLEMENTING`；`riskflow_dispatch` 必须携带非空 `replanApprovalRef`，由控制器创建 planning v2 边界并记录被取代的 `attemptGroup`。
 4. Finalizer 会话崩溃、预算耗尽或上下文不足时，留下结构化交接包，由新的强模型 Finalizer 接管；不得因此改派低成本实现角色。
 5. 运行状态与质量结论分离。Task 创建时只能是 `queued`、`running` 或 `waiting`，不能预填成功。
+6. 每个独立 Task 使用新的 Agent session。已结束、失败、暂停、释放或长时间闲置的 terminal、Run、Dispatch 和上下文不得用于后续 Task；只有同一仍活动 Task 内的修复与回归属于连续执行。首次信任确认发生在 worker 启动前，复用 queued Task 的预热 terminal 不属于跨 Task 复用。
+7. 活动 Agent 除明确的 `question`、`escalation`、进程或连接故障、用户指令外，不发送额外终端输入，不停止或释放 Dispatch；正常推进只消费事件。
+8. 只物化 `resumeQueue` 中授权范围内的队首工作及当前阶段所需对象，不预建未来 worktree、Task、Run 或 Agent session；同一 worktree 同一时刻只有一个 writer。
 
 `FINALIZING` 中的修改范围按语义判断：为落实已批准行为而联动修改 service、adapter 和测试，仍可属于收尾；改变公共事件、权限、事务、持久化或业务含义，即使只改一行，也必须升级。
 
@@ -70,6 +75,8 @@ OpenSpec 1.13.1 只表达工件依赖图，因此五个前置工件完成后可�
 - 公共接口、Schema、状态、权限、事务、审计、依赖和迁移决定位于 design；
 - 关键接缝场景被前移：发布生命周期、reader 对实际 payload 的解析、失败路径可达、幂等重试、事务回滚和权限拒绝；
 - 没有需要 Implementation 自行决定的公共语义。
+
+新增依赖还必须在 design 中写明精确版本、用途、许可证、官方来源、离线方式和退出条件。依赖清单与锁文件只由主调度按已批准设计串行处理，执行 Agent 不运行会改锁文件的安装命令。
 
 ### 4.2 Implementation
 
@@ -109,7 +116,7 @@ Finalizer 遇到以下问题时暂停并升级，但仍保留收尾责任：
 
 Finalizer 完成修复后不为形式独立性重复启动全量复验。最终产物若又发生实质变化，必须核验受影响范围并更新 verification。以下风险默认触发 Targeted Auditor：权限、事务、关键状态机、语义 merge 冲突；审计结论和证据进入同一 verification，待执行审计不得作为 PASS 后的注意事项。
 
-**同一收尾轮次最多一次限定审计。** 审计发现的普通缺陷必须在同一收尾轮次内一次修完；禁止为同一收尾重复派发新的 Finalizer，也禁止派发第二次限定审计。协调端 MUST 把审计 finding 回灌到仍在活动的收尾会话（同一连续上下文）完成修复与回归；机制上无法在会话内完成时必须停下来升级给用户，MUST NOT 自行再开一轮。状态视图以 `auditRequired` 表达"本轮是否仍需要审计"，角色选择 MUST 依据该字段而不是凭"检查点是 finalization 且 auditPolicy 为 targeted"就再派一次。
+**同一收尾轮次最多一次限定审计。** Targeted Auditor 是新的独立 Task 和 session；它发现已批准范围内的普通缺陷时，必须在自己的活动 Task 内直接修复、回归并更新同一 verification。禁止把 finding 回灌已结束或并行保留的 Finalizer 会话，也禁止再派新的 Finalizer 或第二次审计。Auditor 无法在当前 Task 内闭合时必须停下来升级给用户。状态视图以 `auditRequired` 表达本轮是否仍需要审计；已结束但未闭合的 audit 进入 `paused`，不得生成自动派发动作。
 
 ## 6. 受控操作层
 
@@ -117,11 +124,15 @@ Finalizer 完成修复后不为形式独立性重复启动全量复验。最终�
 
 - `riskflow_status`：读取实时状态、`revision` 和 `resumeQueue`；
 - `riskflow_dispatch`：按阶段和 Manifest 角色派发；
-- `riskflow_wait`：等待当前 worker 事件，单次不超过 60 秒；
+- `riskflow_wait`：确认已处理的上一批 Delivery 后等待当前 worker 事件，单次不超过 60 秒；
+- `riskflow_reply`：按精确消息 ID 回复当前未收口 Run 的 question 或 escalation；
 - `riskflow_settle`：以证据收口当前任务；
-- `riskflow_integrate`：执行允许的 merge、main 门禁、归档或回收步骤。
+- `riskflow_integrate`：执行允许的 merge、main 门禁、归档或回收步骤；
+- `riskflow_reconcile`：仅对 checkpoint 或 worktree 回收漂移创建受控恢复尝试。
 
 每个写操作必须携带最新 `expectedRevision` 和唯一 `idempotencyKey`。控制器在公共 Git 目录持锁，重新采集事实后，在任何外部副作用前持久写入 `inflight` 回执，成功后更新为 `completed`。相同幂等键若仍为 `inflight`，必须以 `uncertain_prior_execution` fail-closed，要求重新读取状态并对账，绝不自动重做副作用。状态变化、重复 writer、过期 HEAD、证据不足或阶段不合法时，操作在执行前被拒绝，并返回合法下一步。
+
+Planning、Finalizer 与 Targeted Auditor 的首次 Codex 派发由 `riskflow_dispatch` 先创建 terminal 并等待 `tui-idle`，再以精确 terminal 绑定 worker。工作区信任提示发生在 worker-start 之前；控制器返回精确 handle，操作者确认后以新幂等键和该 handle 继续当前 queued Task，不生成 failed attempt。
 
 Finalizer 报告后，主调度先审阅该专用 feature worktree 的全部改动，再调用 `riskflow_settle`。成功收口必须提供证据；对 finalization/audit，若 change 的实际 artifact 图声明 verification，settle 会先确认该工件为 `done`，否则以 `verification_artifact_required` 在任何 Git 副作用前拒绝。不含该工件的旧 schema 沿用原门禁。若工作树有已审阅改动，调用者必须提交与实时 `dirtyPaths` 完全一致的 `reviewedPaths`，settle 只暂存这些路径并形成 Git 检查点，再把实际新 HEAD 写入 v2 信封。失败、阻塞、暂停或路径不一致时不得自动提交改动。
 
@@ -198,7 +209,7 @@ pnpm orchestration:coordinator
 5. 有冲突则停止该树，记录 `blocked` 与冲突文件，不强行解决；
 6. 以同步后 HEAD 更新 v2 信封，再重新计算状态。
 
-过期 worktree 只能通过 Orca 的完整 worktree ID 回收。禁止 `git clean`、手工删目录或按 display name 猜测目标。已有未提交改动、活动 terminal 或未归档产物时不得回收。
+过期 worktree 只能通过 `riskflow_integrate` 按 Orca 的完整 worktree ID 回收。若已归档节点仅残留终态 terminal，控制器必须先验证 main 已通过、worktree clean、checkpoint 成功收口且无违规，再关闭状态中记录的精确 terminal handle；重新采集后只有同一节点变为 `reclaimable` 且 worktree ID 未变，才可回收。禁止 force、`git clean`、手工删目录或按 display name 猜测目标。已有未提交改动、活动 writer 或未归档产物时不得回收。
 
 ## 9. 无进展与完成判定
 

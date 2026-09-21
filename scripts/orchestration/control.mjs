@@ -16,6 +16,7 @@ import {
 } from "./status.mjs";
 
 const TERMINAL_OUTCOMES = new Set(["succeeded", "failed", "blocked", "paused"]);
+const TERMINAL_TASK_STATUSES = new Set(["completed", "failed", "blocked"]);
 const RECONCILE_SAFE_VIOLATIONS = new Set(["checkpoint_mismatch", "worktree_reclaim_pending"]);
 // Orca 的 `worktree create` 可能在外部副作用已经发生之后才以运行时故障结束（实测 30 秒
 // 后 `runtime_unavailable`）。只有这类"运行时不可用/响应丢失"错误才允许自持建立并取回
@@ -29,12 +30,14 @@ const WORKTREE_IDENTITY_NEXT_ACTIONS = [
 ];
 const GIT_WORKTREE_TIMEOUT_MS = 120_000;
 const SETUP_COMMAND_TIMEOUT_MS = 600_000;
-const CONTROLLED_TOOL_NAMES = [
+export const CONTROLLED_TOOL_NAMES = [
   "riskflow_status",
   "riskflow_dispatch",
   "riskflow_wait",
+  "riskflow_reply",
   "riskflow_settle",
   "riskflow_integrate",
+  "riskflow_reconcile",
 ];
 
 export class ControlError extends Error {
@@ -104,8 +107,7 @@ export function preflightAction(snapshot, action, input = {}) {
   const blockingViolations = snapshot.violations.filter(
     (violation) =>
       !(
-        (action === "reconcile" &&
-          (violation.nodeId === workItemId || RECONCILE_SAFE_VIOLATIONS.has(violation.code))) ||
+        (action === "reconcile" && RECONCILE_SAFE_VIOLATIONS.has(violation.code)) ||
         (adoptingAuxiliary && violation.nodeId === workItemId) ||
         (action === "integrate" &&
           queueItem?.category === "cleanup" &&
@@ -193,6 +195,12 @@ export function preflightAction(snapshot, action, input = {}) {
         `${workItemId} 当前不可集成`,
         node.nextActions,
       );
+    }
+  } else if (action === "reply") {
+    if (!node.checkpoints?.runId || node.checkpoints.runState === "settled") {
+      throw new ControlError("reply_not_allowed", `${workItemId} 没有可回复的当前 Run`, [
+        "调用 riskflow_status 获取最新 revision 和当前工作项",
+      ]);
     }
   } else if (action === "reconcile") {
     if (!node.worktree?.id || !node.worktree?.head) {
@@ -439,6 +447,7 @@ const ORCA_SENDER_COMMANDS = new Set([
   "task-update",
   "worker-start",
   "dispatch",
+  "reply",
 ]);
 
 export function withOrcaSender(invocation, args) {
@@ -494,14 +503,6 @@ async function ensureRun(exec, invocation, rootDir, node, idempotencyKey, reuseE
   return runId;
 }
 
-// 本轮已出结论的限定审计（用于把 finding 直接写进修复尝试的派发说明）。
-function concludedAudit(node) {
-  const attempts = (node.orca?.attempts ?? []).filter(
-    (attempt) => attempt.taskKind === "audit" && attempt.runState === "settled",
-  );
-  return attempts.at(-1) ?? null;
-}
-
 function taskSpec(node, taskKind, envelopeOptions = {}) {
   const responsibility = {
     planning:
@@ -510,7 +511,8 @@ function taskSpec(node, taskKind, envelopeOptions = {}) {
       "按已批准 IP-ID 有界实现并在当前任务内修复普通测试失败；不提前创建 verification",
     finalization:
       "核验当前产物，在已批准语义内直接修复、回归，并按实际 schema 填写最终 verification；普通缺陷保持当前收尾责任",
-    audit: "独立检查权限、事务、关键状态机或语义 merge 冲突的受影响范围，并把结论补入 verification",
+    audit:
+      "独立检查权限、事务、关键状态机或语义 merge 冲突的受影响范围；在当前任务内修复已批准范围的普通缺陷、回归并把最终结论补入 verification",
     archive: "仅在门禁通过后机械归档",
   }[taskKind];
   const lines = [
@@ -527,21 +529,14 @@ function taskSpec(node, taskKind, envelopeOptions = {}) {
     lines.push(
       "",
       "=== 收尾轮次协议 ===",
+      "每个独立 Task 使用新的 Agent session；只在当前仍活动的 Task 内连续修复，不复用已结束、失败、暂停或闲置的会话。",
       "同一收尾轮次最多一次限定审计；禁止请求或期待第二次审计，也禁止期待新的 Finalizer 接管本轮。",
-      "机制上无法在本会话内完成时必须 escalation，不得自行再开一轮。",
-      "审计结论与随后修复的证据必须一并写入同一 verification。",
+      "机制上无法在当前任务内完成时必须 escalation，不得自行再开一轮。",
+      "审计结论与任务内修复、回归证据必须一并写入同一 verification。",
     );
     if (taskKind === "audit") {
       lines.push(
-        "你是本收尾轮次唯一的限定审计：只报告 finding 与证据，不改产品代码；结论写入同一 verification，供本轮修复尝试逐项闭合。",
-      );
-    } else if (node.auditRequired === false && concludedAudit(node)) {
-      const audit = concludedAudit(node);
-      lines.push(
-        `本轮限定审计已出结论（task ${audit.taskId}）。其 finding 必须逐项闭合，不得遗漏或改为"后续注意事项"：`,
-        `- audit issueRefs：${JSON.stringify(audit.issueRefs ?? [])}`,
-        `- audit evidenceRefs：${JSON.stringify(audit.evidenceRefs ?? [])}`,
-        "先读取该审计写入的 verification 与证据，逐项修复并回归，并在 worker_done 中逐项说明闭合情况。",
+        "你是本收尾轮次唯一的限定审计：发现已批准范围内的普通缺陷时，必须在当前任务内直接修复并回归；超出边界则 escalation。",
       );
     } else {
       lines.push(
@@ -896,6 +891,59 @@ function attemptEnvelope(node, task, runState) {
 async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, idempotencyKey) {
   const worktree = `id:${node.worktree.id}`;
   if (["planning", "finalization", "audit"].includes(task.envelope.taskKind)) {
+    let terminalHandle = task.terminalHandle;
+    if (!terminalHandle) {
+      const terminal = await orcaJson(
+        exec,
+        invocation,
+        [
+          "terminal",
+          "create",
+          "--worktree",
+          worktree,
+          "--title",
+          `${node.id}-${task.envelope.taskKind}`,
+          "--command",
+          `codex --model ${task.role.model} -c model_reasoning_effort="${task.role.thinking}" -a never -s danger-full-access`,
+        ],
+        rootDir,
+      );
+      terminalHandle =
+        terminal?.agentTerminalHandle ??
+        terminal?.startupTerminal?.handle ??
+        terminal?.terminal?.handle ??
+        terminal?.handle;
+      if (!terminalHandle)
+        throw new ControlError("orca_result_invalid", "Orca 未返回 Codex terminal handle");
+    }
+    try {
+      await orcaJson(
+        exec,
+        invocation,
+        [
+          "terminal",
+          "wait",
+          "--terminal",
+          terminalHandle,
+          "--for",
+          "tui-idle",
+          "--timeout-ms",
+          "60000",
+        ],
+        rootDir,
+      );
+    } catch (error) {
+      if (!/agent_prompt_blocked|workspace trust/iu.test(error?.message ?? String(error)))
+        throw error;
+      throw new ControlError(
+        "workspace_trust_required",
+        `${terminalHandle} 正在等待 Codex 工作区信任确认`,
+        [
+          `在 ${terminalHandle} 中确认当前工作区信任并等待 tui-idle`,
+          `重新读取 riskflow_status，并以新幂等键调用 riskflow_dispatch，传入 terminalHandle=${terminalHandle}`,
+        ],
+      );
+    }
     const worker = await orcaJson(
       exec,
       invocation,
@@ -908,12 +956,8 @@ async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, id
         task.taskId,
         "--worktree",
         worktree,
-        "--agent",
-        "codex",
-        "--model",
-        task.role.model,
-        "--effort",
-        task.role.thinking,
+        "--terminal",
+        terminalHandle,
       ],
       rootDir,
       retryRequest(idempotencyKey, "worker-start"),
@@ -1063,6 +1107,10 @@ export async function riskflowDispatch(input, options = {}) {
         node.nextActions,
       );
     }
+    const terminalHandle =
+      input.terminalHandle === undefined
+        ? null
+        : requiredString(input.terminalHandle, "terminalHandle");
     const runId = await ensureRun(ctx.exec, invocation, ctx.rootDir, node, ctx.idempotencyKey);
     let task;
     if (pendingAttempt) {
@@ -1071,6 +1119,7 @@ export async function riskflowDispatch(input, options = {}) {
         runId: node.checkpoints.runId ?? runId,
         envelope: { ...node.checkpoints, taskKind },
         role: ctx.graph.policy.roles[taskKind],
+        terminalHandle,
       };
     } else {
       task = await createTask(
@@ -1089,6 +1138,7 @@ export async function riskflowDispatch(input, options = {}) {
             }
           : {},
       );
+      task.terminalHandle = terminalHandle;
     }
     await recordAttempt(ctx.runtimeDir, attemptEnvelope(node, task, "queued"));
     const worker = await startWorker(
@@ -1120,6 +1170,8 @@ export async function riskflowWait(input, options = {}) {
   const node = findWorkItem(snapshot, requiredString(input.workItemId, "workItemId"));
   if (!node?.checkpoints?.runId) throw new ControlError("wait_not_allowed", "当前工作项没有 Run");
   const timeoutMs = Math.min(60_000, Math.max(1_000, Number(input.timeoutMs ?? 60_000)));
+  const ackDeliveryId =
+    input.ackDeliveryId === undefined ? null : requiredString(input.ackDeliveryId, "ackDeliveryId");
   const invocation = resolveOrcaInvocation(options.orcaCommand);
   return orcaJson(
     options.exec ?? defaultExec,
@@ -1129,6 +1181,7 @@ export async function riskflowWait(input, options = {}) {
       "check",
       "--run",
       node.checkpoints.runId,
+      ...(ackDeliveryId ? ["--ack", ackDeliveryId] : []),
       "--wait",
       "--types",
       "worker_done,escalation,question",
@@ -1137,6 +1190,31 @@ export async function riskflowWait(input, options = {}) {
     ],
     rootDir,
   );
+}
+
+export async function riskflowReply(input, options = {}) {
+  requiredString(input.messageId, "messageId");
+  requiredString(input.body, "body");
+  return controlledMutation("reply", input, options, async (ctx) => {
+    const invocation = resolveOrcaInvocation(options.orcaCommand);
+    const result = await orcaJson(
+      ctx.exec,
+      invocation,
+      [
+        "orchestration",
+        "reply",
+        "--id",
+        input.messageId,
+        "--body",
+        input.body,
+        "--run",
+        ctx.node.checkpoints.runId,
+      ],
+      ctx.rootDir,
+      retryRequest(ctx.idempotencyKey, "reply"),
+    );
+    return { ok: true, action: "reply", workItemId: ctx.node.id, result };
+  });
 }
 
 function settledStatus(outcome) {
@@ -1237,24 +1315,27 @@ export async function riskflowSettle(input, options = {}) {
         : {}),
     };
     const invocation = resolveOrcaInvocation(options.orcaCommand);
-    await orcaJson(
-      ctx.exec,
-      invocation,
-      [
-        "orchestration",
-        "task-update",
-        "--run",
-        checkpoint.runId,
-        "--id",
-        checkpoint.taskId,
-        "--status",
-        settledStatus(outcome),
-        "--result",
-        JSON.stringify(envelope),
-      ],
-      ctx.rootDir,
-      retryRequest(ctx.idempotencyKey, "settle"),
-    );
+    if (!TERMINAL_TASK_STATUSES.has(checkpoint.taskStatus)) {
+      await orcaJson(
+        ctx.exec,
+        invocation,
+        [
+          "orchestration",
+          "task-update",
+          "--run",
+          checkpoint.runId,
+          "--id",
+          checkpoint.taskId,
+          "--status",
+          settledStatus(outcome),
+          "--result",
+          JSON.stringify(envelope),
+        ],
+        ctx.rootDir,
+        retryRequest(ctx.idempotencyKey, "settle"),
+      );
+    }
+    await recordAttempt(ctx.runtimeDir, envelope);
     return { ok: true, action: "settle", workItemId: ctx.node.id, outcome, envelope };
   });
 }
@@ -1311,6 +1392,53 @@ export async function riskflowIntegrate(input, options = {}) {
     }
     if (ctx.queueItem.category === "cleanup") {
       const invocation = resolveOrcaInvocation(options.orcaCommand);
+      if (ctx.node.status === "stale") {
+        const handles = ctx.node.orca?.terminalHandles ?? [];
+        const safelySettled =
+          ctx.node.main?.archive === true &&
+          ctx.node.main?.verification === "passed" &&
+          ctx.node.worktree?.exists === true &&
+          ctx.node.worktree.dirty === false &&
+          ctx.node.checkpoints?.runState === "settled" &&
+          ctx.node.checkpoints?.outcome === "succeeded" &&
+          ctx.node.violations.length === 0 &&
+          ctx.snapshot.violations.length === 0 &&
+          handles.length > 0;
+        if (!safelySettled) {
+          throw new ControlError(
+            "cleanup_not_safe",
+            `${ctx.node.id} 不满足终态 terminal 自动清理前提`,
+            ctx.node.nextActions,
+          );
+        }
+        for (const handle of handles) {
+          await orcaJson(
+            ctx.exec,
+            invocation,
+            ["terminal", "close", "--terminal", handle],
+            ctx.rootDir,
+            retryRequest(ctx.idempotencyKey, `terminal-close:${handle}`),
+          );
+        }
+        const current = await ctx.collectStatus();
+        const refreshed = findWorkItem(current.snapshot, ctx.node.id);
+        if (
+          refreshed?.status !== "reclaimable" ||
+          refreshed.worktree?.id !== ctx.node.worktree.id
+        ) {
+          throw new ControlError(
+            "cleanup_not_reclaimable",
+            `${ctx.node.id} 关闭终态 terminal 后仍不可回收`,
+            refreshed?.nextActions ?? ["调用 riskflow_status 重新对账"],
+          );
+        }
+      } else if (ctx.node.status !== "reclaimable") {
+        throw new ControlError(
+          "cleanup_not_safe",
+          `${ctx.node.id} 当前不可回收`,
+          ctx.node.nextActions,
+        );
+      }
       const result = await orcaJson(
         ctx.exec,
         invocation,
@@ -1597,6 +1725,7 @@ export async function main(argv = process.argv.slice(2)) {
       doctor: () => doctor({ rootDir }),
       dispatch: () => riskflowDispatch(input, { rootDir }),
       wait: () => riskflowWait(input, { rootDir }),
+      reply: () => riskflowReply(input, { rootDir }),
       settle: () => riskflowSettle(input, { rootDir }),
       integrate: () => riskflowIntegrate(input, { rootDir }),
       reconcile: () => riskflowReconcile(input, { rootDir }),

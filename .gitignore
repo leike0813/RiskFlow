@@ -103,7 +103,11 @@ Desktop.ini
 
 # ---- 本仓库局部:Agent 运行时 / 临时目录 ----------------------------------
 # 这些目录是 agent harness 的本地工作区,只对当前用户有意义,不入库
-.agents/
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/riskflow-orchestration/
+!.agents/skills/riskflow-orchestration/**
 .claude/
 .kilocode/
 .kimi-code/

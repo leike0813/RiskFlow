@@ -167,6 +167,8 @@ reviewedPaths?
 不要用 `git add -A`。
 普通测试失败由当前责任角色修复，不把 Finalizer 缺陷回派给 Implementation。
 
+若 Git 检查点已形成，但 Orca Task 已终态而 v2 信封仍为 running，先重读状态，再以新 revision 和幂等键调用 `riskflow_settle` 补齐尝试台账。不要新建 Agent Task，也不要直接编辑 runtime 文件。
+
 ### `riskflow_integrate`
 
 用途：执行当前状态允许的 merge、main 验证、OpenSpec archive 或 worktree 回收。

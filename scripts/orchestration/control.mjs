@@ -16,6 +16,7 @@ import {
 } from "./status.mjs";
 
 const TERMINAL_OUTCOMES = new Set(["succeeded", "failed", "blocked", "paused"]);
+const TERMINAL_TASK_STATUSES = new Set(["completed", "failed", "blocked"]);
 const RECONCILE_SAFE_VIOLATIONS = new Set(["checkpoint_mismatch", "worktree_reclaim_pending"]);
 // Orca 的 `worktree create` 可能在外部副作用已经发生之后才以运行时故障结束（实测 30 秒
 // 后 `runtime_unavailable`）。只有这类"运行时不可用/响应丢失"错误才允许自持建立并取回
@@ -1314,24 +1315,27 @@ export async function riskflowSettle(input, options = {}) {
         : {}),
     };
     const invocation = resolveOrcaInvocation(options.orcaCommand);
-    await orcaJson(
-      ctx.exec,
-      invocation,
-      [
-        "orchestration",
-        "task-update",
-        "--run",
-        checkpoint.runId,
-        "--id",
-        checkpoint.taskId,
-        "--status",
-        settledStatus(outcome),
-        "--result",
-        JSON.stringify(envelope),
-      ],
-      ctx.rootDir,
-      retryRequest(ctx.idempotencyKey, "settle"),
-    );
+    if (!TERMINAL_TASK_STATUSES.has(checkpoint.taskStatus)) {
+      await orcaJson(
+        ctx.exec,
+        invocation,
+        [
+          "orchestration",
+          "task-update",
+          "--run",
+          checkpoint.runId,
+          "--id",
+          checkpoint.taskId,
+          "--status",
+          settledStatus(outcome),
+          "--result",
+          JSON.stringify(envelope),
+        ],
+        ctx.rootDir,
+        retryRequest(ctx.idempotencyKey, "settle"),
+      );
+    }
+    await recordAttempt(ctx.runtimeDir, envelope);
     return { ok: true, action: "settle", workItemId: ctx.node.id, outcome, envelope };
   });
 }

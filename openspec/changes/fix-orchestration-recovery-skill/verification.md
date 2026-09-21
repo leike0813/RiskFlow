@@ -11,7 +11,7 @@
 | 维度 | 结果 |
 | --- | --- |
 | Completeness | PASS：tasks 全部完成；delta requirements、scenarios、项目 Skill、Handbook 与 Runbook 已同步 |
-| Correctness | PASS：86 项调度回归、OpenSpec strict、格式、lint、doctor、Skill 校验和 diff 检查通过 |
+| Correctness | PASS：88 项调度回归、OpenSpec strict、格式、lint、doctor、Skill 校验和 diff 检查通过 |
 | Coherence | PASS：未引入依赖、执行图路由、业务模块或新状态存储；恢复的 session 纪律与受控工具边界一致 |
 
 ## 实现与验证证据
@@ -23,6 +23,7 @@
 | Codex 工作区信任 | Planning、Finalizer、Auditor 先创建 terminal、等待 idle，再 `worker-start --terminal`；信任阻塞保留 queued Task | 信任提示时 worker-start 为 0；确认后复用当前 queued Task 和精确 terminal |
 | reconcile 与 stale cleanup | reconcile 只放行两类安全漂移；cleanup 严格校验后关闭精确 terminal、重读并要求同一 worktree reclaimable | duplicate writer 不可绕过；脏树、漂移和关闭失败均 fail-closed |
 | 状态投影 | dirty auxiliary 不误判 merged；只有同 Task 没有 live Dispatch 时，历史 failed Dispatch 才触发恢复 | 新回归覆盖旧 failed Dispatch 与当前 live Dispatch 并存，状态保持 running |
+| 终态 Task 补账 | settle 遇到 Orca Task 已终态时不重复 task-update，直接写入现有尝试台账；状态只在终态与 running 信封矛盾时优先 settled 台账 | 回归验证不调用 Orca 写操作即可收口，并由 settled 台账恢复状态 |
 | session 隔离与限定审计 | 每个独立 Task 新 session；Auditor 在自身活动 Task 内闭合普通 finding；失败 audit 转 paused 并升级 | 状态与任务说明回归验证不会复用旧 Finalizer 或自动派第二轮 |
 | 项目级 Skill | 单文件 Skill 包含冷启动、状态分流、七工具、事件循环、session 边界、stale 回收 | quick validation 通过；`.gitignore` 只豁免目标 Skill |
 
@@ -52,11 +53,15 @@ Git 历史确认这次异常来自规则重构回归，不是操作员记忆偏�
 
 历史复核后认定为规则回归并修复。控制器任务说明、状态投影、AGENTS、Handbook、Runbook、Skill 和 OpenSpec 统一为：Auditor 在自己的活动 Task 内闭环范围内普通 finding；结束仍未闭合时 paused 并升级用户，不自动派新 Finalizer 或第二次审计。
 
+### Orca Task 已终态但 v2 信封仍运行中
+
+在本轮受控 settle 中实际复现：Git 检查点已形成，Orca Task 已 completed，但其 v2 信封仍为 running，重复 task-update 被 Orca 拒绝。现已让 settle 对已对账的终态 Task 直接写 settled 尝试台账，并让状态仅在该矛盾条件下优先台账；不再需要新建 Task、复用 Agent 或直接修改 runtime 文件。
+
 ## 实际命令与结果
 
 | 命令 | 结果 |
 | --- | --- |
-| `pnpm exec vitest run scripts/orchestration/` | PASS：2 files / 86 tests |
+| `pnpm exec vitest run scripts/orchestration/` | PASS：2 files / 88 tests |
 | `pnpm exec prettier --check scripts/orchestration/ AGENTS.md IMPLEMENTATION-ORCHESTRATION-HANDBOOK.md IMPLEMENTATION-ORCHESTRATION-RUNBOOK.md .agents/skills/riskflow-orchestration/SKILL.md openspec/changes/fix-orchestration-recovery-skill` | PASS |
 | `pnpm exec eslint scripts/orchestration/` | PASS |
 | `git diff --check` | PASS |

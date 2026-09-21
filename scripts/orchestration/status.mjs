@@ -503,8 +503,11 @@ async function readAttemptLedger(runtimeDir) {
 
 export function normalizeTask(record, repoId, ledgerEnvelope = null) {
   const parsed = parseTaskEnvelope(record);
-  const envelope =
-    parsed.valid || !ledgerEnvelope ? parsed : parseTaskEnvelope({ result: ledgerEnvelope });
+  const ledger = ledgerEnvelope ? parseTaskEnvelope({ result: ledgerEnvelope }) : null;
+  const terminalTask = ["completed", "failed", "blocked"].includes(record?.status);
+  const staleOrcaEnvelope =
+    terminalTask && parsed.valid && parsed.runState !== "settled" && ledger?.runState === "settled";
+  const envelope = parsed.valid && !staleOrcaEnvelope ? parsed : ledger?.valid ? ledger : parsed;
   const processRef = record?.created_by_process_incarnation ?? "";
   const repoOwned =
     Boolean(repoId && processRef.startsWith(`${repoId}::`)) ||
@@ -784,6 +787,7 @@ function taskEvidence(task) {
   return {
     taskId: task.id,
     runId: task.runId,
+    taskStatus: task.status,
     workItemId: task.envelope.workItemId,
     changeName: task.envelope.changeName ?? null,
     taskKind: task.envelope.taskKind,

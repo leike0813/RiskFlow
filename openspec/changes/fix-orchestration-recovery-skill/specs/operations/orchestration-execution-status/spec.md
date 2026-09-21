@@ -17,6 +17,14 @@
 - **WHEN** 辅助 change 的 worktree HEAD 仍等于 main，但已有未提交实现且没有关联任务
 - **THEN** 状态将其列为待 adopt 的 recovery，而不是误判为已经 merged
 
+### Requirement: 终态 Task 的 settled 台账覆盖陈旧运行信封
+状态归一化 MUST 默认优先 Orca 的有效信封。仅当 Orca Task 已为 completed、failed 或 blocked，Orca 有效信封仍非 settled，且同 Task 的尝试台账包含有效 settled 信封时，状态 MUST 使用该 settled 台账，避免终态 Task 永久显示运行中。
+
+#### Scenario: completed Task 仍携带 running 信封
+- **WHEN** Orca Task 已 completed、其 result 仍为有效 running 信封，且本地台账已有同 Task 的 settled 信封
+- **THEN** 状态使用 settled 台账投影当前检查点
+- **AND** 其他非矛盾状态仍优先 Orca 有效信封
+
 ### Requirement: 阻塞状态返回可执行下一动作
 状态视图 MUST 为常见阻塞状态返回与当前事实对应的具体下一动作：需要回答消息时指向受控回复，需要重建尝试时指向 reconcile，需要关闭终态残留时指向 cleanup；无法由受控工具安全处理时 MUST 明确升级，而不是只给出“处理 blocker”一类循环提示。
 

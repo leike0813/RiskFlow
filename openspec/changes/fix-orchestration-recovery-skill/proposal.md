@@ -10,6 +10,7 @@
 - 让 wait 显式确认已处理的 Delivery，并让 Codex 角色在 worker-start 前经受控 terminal 完成首次工作区信任。
 - 恢复历史中被重构弱化的 session 隔离与活动 Agent 非干扰规则：每个独立 Task 使用新 session，限定审计在自己的活动 Task 内闭合普通 finding。
 - 收紧 reconcile 的违规豁免，只允许修复明确的 checkpoint/worktree 回收漂移。
+- 允许受控 settle 通过现有尝试台账补齐“Orca Task 已终态、v2 信封仍运行中”的半完成状态，不创建替代 Agent。
 - 让 cleanup 在严格前提下关闭精确终态 terminal，重读状态并仅回收已变为 reclaimable 的工作树。
 - 改善冷启动上下文与阻塞下一动作，使新会话能直接区分可执行队列、违规、stale 残留和历史诊断。
 - 增加项目级 `riskflow-orchestration` Skill，并在 `.gitignore` 中仅豁免该 Skill。

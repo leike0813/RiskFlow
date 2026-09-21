@@ -267,6 +267,21 @@ describe("attempt ledger overlay", () => {
     );
     expect(normalized.envelope).toMatchObject({ runState: "settled", outcome: "paused" });
   });
+
+  it("prefers a settled ledger over a stale running envelope on a terminal task", () => {
+    const orcaPayload = v2Envelope({ runState: "running" });
+    delete orcaPayload.valid;
+    const normalized = normalizeTask(
+      {
+        id: "task-c08-finalization",
+        status: "completed",
+        result: JSON.stringify(orcaPayload),
+      },
+      "repo-id",
+      v2Envelope({ runState: "settled", outcome: "succeeded", outputHead: "feature-head" }),
+    );
+    expect(normalized.envelope).toMatchObject({ runState: "settled", outcome: "succeeded" });
+  });
 });
 
 describe("worktree-aware state", () => {

@@ -9,12 +9,14 @@
 - [x] 1.5 按 D7 为 `riskflow_wait` 增加上一批 Delivery 的显式 ack，并以重放回归验证下一次 wait 返回后续消息
 - [x] 1.6 按 D8 在 Codex worker-start 前完成受控 terminal 预热，信任提示时保留 queued Task，并以同 terminal 恢复回归验证
 - [x] 1.7 将含可选 Delivery ack 的 `riskflow_wait` 整体登记为 write approval，避免持久状态写入落入 read tier
+- [x] 1.8 按 D11 让已终态 Task 的 settle 通过尝试台账补齐信封，不重复更新 Orca 终态或创建新 Agent Task
 
 ## 2. 状态与冷启动
 
 - [x] 2.1 按 D5 改善失败 worker、待回复和终态 terminal 残留的 nextActions，并以状态测试验证具体受控动作
 - [x] 2.2 按 D5 扩充 OMP 冷启动摘要，区分 resumeQueue、violations、stale worktree 与 diagnostics，并以扩展测试验证 diagnostics 不阻断队列
 - [x] 2.3 按 D9/D10 恢复独立 Task 的 session 隔离，令 Auditor 在自身任务内闭环普通 finding，并防止旧 failed Dispatch 覆盖同 Task 的 live Dispatch
+- [x] 2.4 仅在 Orca 终态与 running 信封矛盾时优先同 Task 的 settled 台账，并增加归一化回归
 
 ## 3. 项目级 Skill 与文档
 

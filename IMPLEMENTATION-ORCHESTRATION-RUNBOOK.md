@@ -108,6 +108,8 @@ Agent 活动期间，除回复明确的 `question` / `escalation`、处理进程
 
 `uncertain_prior_execution` 表示副作用可能已发生。此时不得换幂等键盲重试；先核对 Orca、Git 和 OpenSpec 的真实结果，再走受控 reconcile。已 settled 的 Task 不复用；普通测试失败由当前责任角色处理。
 
+若 Git 检查点已经形成，而 Orca Task 已是 completed/failed/blocked、v2 信封仍显示 running，重新读取状态后用新幂等键调用 `riskflow_settle`。控制器不会重复改写终态 Task，而会把 settled 信封写入现有尝试台账；不得为补账新建 Agent Task 或直接修改 runtime 文件。
+
 `riskflow_reconcile` 只允许处理 `checkpoint_mismatch` 与 `worktree_reclaim_pending`。失败 worker 仍绑定未 settled checkpoint 时，先读取最新状态和 revision，再创建替代尝试。重复 writer、任务身份冲突、未知 worktree 或全局违规必须人工查明根因，不能把目标节点 ID 当作绕过违规的许可。
 
 Orca 内部 terminal 优先用 Orca CLI 定位和操作。桌面 accessibility 无法可靠识别目标 terminal 时，不使用坐标或盲按键替代精确 handle。

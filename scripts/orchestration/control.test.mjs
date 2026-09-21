@@ -1058,6 +1058,54 @@ describe("controlled orchestration", () => {
     return { exec, envelope: () => written };
   }
 
+  it("settles an already-terminal Task through the attempt ledger", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-settle-terminal-task-"));
+    const terminalTask = node({
+      checkpoints: {
+        ...node().checkpoints,
+        taskKind: "planning",
+        phase: "planning",
+        taskStatus: "completed",
+        runState: "running",
+      },
+    });
+    const exec = async (command) => {
+      if (command === "git") return runtimeRoot;
+      throw new Error(`unexpected command: ${command}`);
+    };
+    try {
+      await riskflowSettle(
+        {
+          workItemId: "C17",
+          outcome: "succeeded",
+          evidenceRefs: ["terminal-task-evidence"],
+          expectedRevision: "revision-1",
+          idempotencyKey: "settle-terminal-task",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => ({
+            graph,
+            snapshot: snapshot({
+              nodes: [terminalTask],
+              resumeQueue: [{ workItemId: "C17", category: "planning", nextAction: "收口" }],
+            }),
+          }),
+        },
+      );
+      const record = JSON.parse(
+        await readFile(
+          join(runtimeRoot, "riskflow-orchestration", "attempts", "task-finalizer.json"),
+          "utf8",
+        ),
+      );
+      expect(record.envelope).toMatchObject({ runState: "settled", outcome: "succeeded" });
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
   it("preserves the approved replan boundary when a planning attempt settles", async () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-settle-boundary-"));
     const planning = node({

@@ -145,6 +145,30 @@ describe("C27 处置建议 PostgreSQL 链", () => {
     if (replay.kind !== "succeeded") return;
     expect(replay.result.knowledgeQueryResultRef).toEqual(queryResultRef);
     expect(await state.countCommandRows("measure_candidate_queries", "c27-multi-query")).toBe(1);
+
+    const changedInput = await state.measureCandidates({
+      queryId: "c27-multi-query",
+      warningResponseTaskRef: opened.taskRef,
+      assessmentRecordRef: opened.assessmentRecordRefs[1]!,
+      measureLibraryReleaseRef: state.measureLibraryReleaseRef,
+    });
+    expect(changedInput.kind === "failed" && changedInput.error.code).toBe("IDEMPOTENCY_CONFLICT");
+    expect(await state.countReceiptsForCommand("c27-multi-query")).toBe(1);
+
+    const anotherCommand = await state.measureCandidates({
+      queryId: "c27-multi-query-2",
+      warningResponseTaskRef: opened.taskRef,
+      assessmentRecordRef: opened.assessmentRecordRefs[0]!,
+      measureLibraryReleaseRef: state.measureLibraryReleaseRef,
+    });
+    expect(anotherCommand.kind).toBe("succeeded");
+    expect(await state.countReceiptsForCommand("c27-multi-query-2")).toBe(1);
+    expect(
+      await state.countAuditForCommand(
+        "knowledge-modeling.measure-candidates",
+        "c27-multi-query-2",
+      ),
+    ).toBe(1);
   });
 
   pgIt("不合格来源不能进入候选，无合格措施时结构化阻塞", async () => {

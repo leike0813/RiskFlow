@@ -673,12 +673,14 @@ export class PostgresRecommendationContextReader implements RecommendationContex
       .where("warning.project_id", "=", authorization.projectId)
       .where("warning.warning_record_id", "=", link.warning_record_id)
       .where("warning.version_id", "=", link.warning_record_version_id)
+      .where("warning.spatial_scope_entity_id", "in", authorizedScopeIds)
       .executeTakeFirst();
     if (row === undefined) {
-      failRecommendation("recommendation-warning-mismatch", taskTarget);
-    }
-    if (!authorizedScopeIds.includes(row.spatial_scope_entity_id)) {
-      failRecommendation("recommendation-authorization-required", taskTarget);
+      failRecommendation(
+        "recommendation-authorization-required",
+        taskTarget,
+        "AUTHORIZATION_DENIED",
+      );
     }
     const warningRecord = WarningRecordSchema.safeParse(row.warning_payload);
     const inputSnapshot = AssessmentInputSnapshotV1Schema.safeParse(row.input_snapshot_payload);
@@ -984,10 +986,43 @@ export class PostgresRecommendationAdapter
         measureLibraryReleaseRef: context.measureLibraryReleaseRef.reference,
         inputDigest,
       });
+      const atomicCommand = this.#atomicCommand(
+        {
+          commandId: valid.queryId,
+          idempotencyKey: valid.queryId,
+          projectId: context.projectId,
+          actorId: verified.actorId,
+          issuedAt: valid.requestedAt,
+          authorization: valid.authorization,
+        },
+        "knowledge-modeling.measure-candidates",
+        { query: valid.payload, riskEventCategory: binding.riskEventCategory, inputDigest },
+      );
       if (existing !== undefined) {
+        const resultRef = refOfQueryRow(existing);
+        await this.#executeWithRetry(atomicCommand, async (): Promise<AtomicCommitV1> => {
+          const auditEntryId = `audit-${valid.queryId}:measure-candidates`;
+          return {
+            resultRef,
+            audit: {
+              auditEntryId,
+              projectId: context.projectId,
+              action: "knowledge-modeling.measure-candidates",
+              targetRef: context.warningResponseTaskRef,
+              actorRef: verified.actorId,
+              authorizationContextRef: valid.authorization.authorizationContextRef,
+              occurredAt: valid.requestedAt,
+              recordedAt: this.#nowIso(),
+              version: { entityId: auditEntryId, versionId: "1" },
+              commandId: valid.queryId,
+              idempotencyKey: valid.queryId,
+            },
+            events: [],
+          };
+        });
         return {
           kind: "succeeded",
-          result: { knowledgeQueryResultRef: refOfQueryRow(existing) },
+          result: { knowledgeQueryResultRef: resultRef },
         };
       }
       const recordedAt = this.#nowIso();
@@ -1028,23 +1063,7 @@ export class PostgresRecommendationAdapter
         value: candidateSet,
       });
       await this.#executeWithRetry(
-        this.#atomicCommand(
-          {
-            commandId: valid.queryId,
-            idempotencyKey: valid.queryId,
-            projectId: context.projectId,
-            actorId: verified.actorId,
-            issuedAt: valid.requestedAt,
-            authorization: valid.authorization,
-          },
-          "knowledge-modeling.measure-candidates",
-          {
-            warningResponseTaskRef: context.warningResponseTaskRef,
-            measureLibraryReleaseRef: context.measureLibraryReleaseRef,
-            riskEventCategory: binding.riskEventCategory,
-            inputDigest,
-          },
-        ),
+        atomicCommand,
         async (transactionContext): Promise<AtomicCommitV1> => {
           const transaction = asTransaction(transactionContext);
           const auditEntryId = `audit-${valid.queryId}:measure-candidates`;

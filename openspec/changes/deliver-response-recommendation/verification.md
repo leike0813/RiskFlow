@@ -4,12 +4,13 @@
 
 - Change：`deliver-response-recommendation`（实际 schema：`orchestrated-delivery`）
 - 输入实现 HEAD：`45e19ce937fc8eed38e0877d40677d50f97f9c58`
-- 当前产物 HEAD：`45e19ce937fc8eed38e0877d40677d50f97f9c58`；本轮范围内修复仍在未提交工作树，主调度形成检查点后须更新此值。
+- 当前产物 HEAD：`4fa08e1186a441a6f22a5a3d1f25f202c208ae7d`；限定审计修复仍在未提交工作树，主调度形成检查点后须更新此值。
 - 验收 Agent：C27 Finalizer，任务 `task_d5df0e2ccef8`，派发 `ctx_e3e4ac832422`
+- 限定审计 Agent：任务 `task_79276f4809d0`，派发 `ctx_a301d83f4bf7`
 
 ## 结论
 
-**BLOCKED**：功能、回归和静态检查已通过，尚待本轮唯一一次限定审计核对授权不可枚举及事务/并发边界，并将结论和证据写入下节。在限定审计完成前不得改为 PASS 或归档。
+**PASS**：本轮唯一一次限定审计完成。候选查询幂等绕过和关联预警读取前的空间过滤已在 C27 范围内修复；最终回归、类型、格式及 OpenSpec 严格校验通过。
 
 ## 核验与修复证据
 
@@ -52,8 +53,11 @@
 ## 限定审计
 
 - 触发范围：本轮修改了候选/查询的当前空间授权过滤及正式建议触发校验；按收尾协议仅安排一次限定审计，重点核对来源不可枚举、事务/并发唯一性、Agent 越界和失败候选无法强制放行。
-- 当前结论：**待协调端限定审计填写**。上述 26 项 C27 测试含空间拒绝、审计回滚和并发唯一的初步证据；它们不能替代独立审计结论。
-- 审计证据与范围内修复回归：**待该次审计在本节补齐**。
+- 结论：**PASS**。已独立审阅 `PostgresRecommendationContextReader.readFrozenContext/#loadWarning`、`measureCandidates`、`createCandidate/#bindAgentResult`、`validateAndRecord/#validateAndRecordCommit/#requestReview`、C08 增量收口、`000045` 的唯一约束和只追加权限，以及既有 PostgreSQL 行为测试。
+- 发现并修复：`measureCandidates` 命中已有冻结集时曾直接返回，跳过 C03 回执与审计，同一 `queryId` 改用另一条关联评估还可能成功。现共用包含原始查询载荷的原子命令；复用时也生成回执与审计，同键异载荷被 C03 拒绝。多预警 PostgreSQL 用例新增同键改载荷及另一命令复用的回归断言。
+- 发现并修复：关联预警原先在读取正文后才检查空间。现将获准空间加入读取 SQL；不存在或越界的关联预警统一返回 `AUTHORIZATION_DENIED`，不会读取越界正文。未更改 C06 权限策略或上游事实。
+- 事务与状态边界：C27 四表仅授予应用角色 `SELECT, INSERT`，候选、校验及正式记录有精确外键/唯一约束；C03 回执、业务事实、C07 审计在同一事务中提交，审计约束失败回滚测试及并发唯一测试通过。C08 增量只接受冻结措施身份和顺序；三项校验失败仅请求 C07 复核，不生成正式建议或采纳事实。
+- 限定审计实际命令：`pnpm exec vitest run packages/adapters/test/recommendation/postgres-recommendation-adapter.test.ts`（13 项通过）；最终改动后 `pnpm exec vitest run packages/core/test/recommendation/recommendation.test.ts packages/adapters/test/recommendation/postgres-recommendation-adapter.test.ts`（26 项通过）；`pnpm exec tsc -b packages/core/tsconfig.json packages/adapters/tsconfig.json --pretty false`、`pnpm exec eslint packages/adapters/src/recommendation/postgres-recommendation-adapter.ts packages/adapters/test/recommendation/postgres-recommendation-adapter.test.ts`、`pnpm exec prettier --check packages/adapters/src/recommendation/postgres-recommendation-adapter.ts packages/adapters/test/recommendation/postgres-recommendation-adapter.test.ts`、`openspec validate deliver-response-recommendation --strict --no-interactive`、`git diff --check` 均通过。
 
 ## 后续注意事项
 

@@ -501,7 +501,7 @@ export const candidateSetValue = (overrides: Record<string, unknown> = {}) => ({
   candidateVersion: 1,
   resupplements: [],
   members: [candidateMember()],
-  frozenAuthorizationScopeDigest: "0".repeat(64),
+  frozenAuthorizationScopeDigest: authorizationScopeDigest(authorization()),
   frozenAuthorizationContextRef: authorizationContextRef,
   frozenAt: TIMESTAMP,
   ...overrides,

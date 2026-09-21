@@ -1059,6 +1059,32 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
         }),
       );
     }
+    const workItem = exact.read.workItem;
+    if (workItem.spatialScopeRefs.length === 0 || workItem.sourceVersionRefs.length === 0) {
+      throw new IdentificationContextError(
+        authorizationDenied({
+          causalRunId: input.taskRef.reference.entityId,
+          occurredAt: this.#now().toISOString(),
+          policyRef: this.#policy.policyRef,
+        }),
+      );
+    }
+    const current = await options.authorization.verifyCurrent({
+      authorization: input.authorization,
+      invocationId: input.taskRef.reference.entityId,
+      branch: "knowledge-modeling.relationship-context",
+      requestedSpatialScopeRefs: [...workItem.spatialScopeRefs],
+      requestedSourceVersionRefs: [...workItem.sourceVersionRefs],
+    });
+    if (current === undefined) {
+      throw new IdentificationContextError(
+        authorizationDenied({
+          causalRunId: input.taskRef.reference.entityId,
+          occurredAt: this.#now().toISOString(),
+          policyRef: this.#policy.policyRef,
+        }),
+      );
+    }
     const nodeId = exact.read.workItem.nodeId;
     const relationship = await this.retrieve({
       queryId: relationshipQueryIdFor(nodeId),
@@ -1220,6 +1246,10 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
     if (
       payload.projectId !== input.projectId ||
       payload.queryId !== input.queryId ||
+      !sameRef(
+        payload.knowledgeQueryResultRef.reference,
+        official.result.knowledgeQueryResultRef.reference,
+      ) ||
       payload.authorizationScopeDigest !== authorizationScopeDigest(input.authorization)
     ) {
       throw new IdentificationContextError(
@@ -1262,6 +1292,35 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
     readonly existing?: readonly RetrievalReviewCandidateV1[];
   }): Promise<readonly RetrievalReviewCandidateV1[]> {
     const options = this.#options;
+    const exact = await options.inputReader.readExact({
+      projectId: input.projectId,
+      actorId: input.actorId,
+      queryId: input.payload.queryId,
+      inputSnapshotRef: input.payload.refs.inputSnapshotRef,
+      workItemRef: input.payload.refs.workItemRef,
+      authorization: input.authorization,
+    });
+    if (
+      exact.kind === "failed" ||
+      exact.read.workItem.spatialScopeRefs.length === 0 ||
+      exact.read.workItem.sourceVersionRefs.length === 0
+    ) {
+      throw new IdentificationContextError(
+        authorizationDenied({
+          causalRunId: input.payload.queryId,
+          occurredAt: this.#now().toISOString(),
+          policyRef: this.#policy.policyRef,
+        }),
+      );
+    }
+    const readContext = await options.authorization.issueReadContext({
+      projectId: input.projectId,
+      actorId: input.actorId,
+      invocationId: `c21-fact-read:${input.originQueryResultRef.reference.entityId}`,
+      requestedAt: input.requestedAt,
+      requestedSpatialScopeRefs: [...exact.read.workItem.spatialScopeRefs],
+      requestedSourceVersionRefs: [...exact.read.workItem.sourceVersionRefs],
+    });
     const cache = new Map<string, IdentificationKnowledgeExactReadV1>();
     const members: RetrievalReviewCandidateV1[] = [...(input.existing ?? [])];
     const known = new Set(members.map((member) => member.memberRef.reference.entityId));
@@ -1271,14 +1330,6 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
       const releaseKey = `${hit.sourceReleaseRef.reference.entityId}:${hit.sourceReleaseRef.reference.versionId}`;
       let read = cache.get(releaseKey);
       if (read === undefined) {
-        const readContext = await options.authorization.issueReadContext({
-          projectId: input.projectId,
-          actorId: input.actorId,
-          invocationId: `c21-fact-read:${input.originQueryResultRef.reference.entityId}`,
-          requestedAt: input.requestedAt,
-          requestedSpatialScopeRefs: [],
-          requestedSourceVersionRefs: [],
-        });
         const result = await options.knowledgeReader.readExact({
           projectId: input.projectId,
           releaseRef: hit.sourceReleaseRef,
@@ -1292,12 +1343,18 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
         });
         if (result.kind === "failed") {
           throw new IdentificationContextError(
-            blocked({
-              causalRunId: input.originQueryResultRef.reference.entityId,
-              occurredAt: this.#now().toISOString(),
-              blockerKind: "candidate-release-missing",
-              blockerRef: hit.sourceReleaseRef,
-            }),
+            result.error.code === "AUTHORIZATION_DENIED"
+              ? authorizationDenied({
+                  causalRunId: input.originQueryResultRef.reference.entityId,
+                  occurredAt: this.#now().toISOString(),
+                  policyRef: this.#policy.policyRef,
+                })
+              : blocked({
+                  causalRunId: input.originQueryResultRef.reference.entityId,
+                  occurredAt: this.#now().toISOString(),
+                  blockerKind: "candidate-release-missing",
+                  blockerRef: hit.sourceReleaseRef,
+                }),
           );
         }
         read = result.read;
@@ -1670,6 +1727,17 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
     let candidateSet: RetrievalReviewCandidateSetV1 | undefined;
     try {
       candidateSet = await this.#readCandidateSet(task, increment.candidateSetRef);
+      if (
+        candidateSet.candidateVersion !== increment.candidateVersion ||
+        candidateSet.frozenAuthorizationScopeDigest !==
+          authorizationScopeDigest(task.envelope.authorization) ||
+        !sameRef(
+          candidateSet.frozenAuthorizationContextRef.reference,
+          task.envelope.authorization.authorizationContextRef.reference,
+        )
+      ) {
+        throw new Error("candidate version mismatch");
+      }
       items.push({
         checkId: IDENTIFICATION_CONTEXT_CHECK_IDS_V1.candidateSetBinding,
         disposition: "accepted",
@@ -1726,13 +1794,24 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
           evidenceReferences: [...outside],
         });
       }
-      const current = await this.#options.authorization.verifyCurrent({
+      const exact = await this.#options.inputReader.readExact({
+        projectId: task.envelope.projectId,
+        actorId: task.envelope.actorId,
+        queryId: task.envelope.agentTaskRef.reference.entityId,
+        inputSnapshotRef: candidateSet.inputSnapshotRef,
+        workItemRef: candidateSet.workItemRef,
         authorization: task.envelope.authorization,
-        invocationId: `${task.envelope.agentTaskRef.reference.entityId}:validate`,
-        branch: "knowledge-modeling.relationship-context",
-        requestedSpatialScopeRefs: [],
-        requestedSourceVersionRefs: [],
       });
+      const current =
+        exact.kind === "succeeded"
+          ? await this.#options.authorization.verifyCurrent({
+              authorization: task.envelope.authorization,
+              invocationId: `${task.envelope.agentTaskRef.reference.entityId}:validate`,
+              branch: "knowledge-modeling.relationship-context",
+              requestedSpatialScopeRefs: [...exact.read.workItem.spatialScopeRefs],
+              requestedSourceVersionRefs: [...exact.read.workItem.sourceVersionRefs],
+            })
+          : undefined;
       items.push({
         checkId: IDENTIFICATION_CONTEXT_CHECK_IDS_V1.currentAuthorization,
         disposition: current === undefined ? "rejected" : "accepted",
@@ -2035,6 +2114,30 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
         }),
       );
     }
+    const scopeDigest = authorizationScopeDigest(current);
+    if (
+      task.envelope.projectId !== input.projectId ||
+      task.envelope.actorId !== input.actorId ||
+      !sameRef(task.envelope.agentTaskRef.reference, input.reviewTaskRef.reference) ||
+      !sameRef(relationshipRow.inputSnapshotRef.reference, input.inputSnapshotRef.reference) ||
+      !sameRef(relationshipRow.workItemRef.reference, input.workItemRef.reference) ||
+      !sameRef(reviewedRow.inputSnapshotRef.reference, input.inputSnapshotRef.reference) ||
+      !sameRef(reviewedRow.workItemRef.reference, input.workItemRef.reference) ||
+      !sameRef(reviewedRow.agentTaskRef.reference, input.reviewTaskRef.reference) ||
+      relationshipRow.actorRef !== input.actorId ||
+      reviewedRow.actorRef !== input.actorId ||
+      relationshipRow.authorizationScopeDigest !== scopeDigest ||
+      reviewedRow.authorizationScopeDigest !== scopeDigest
+    ) {
+      throw new IdentificationContextError(
+        blocked({
+          causalRunId: input.reviewTaskRef.reference.entityId,
+          occurredAt: this.#now().toISOString(),
+          blockerKind: "context-source-mismatch",
+          blockerRef: input.workItemRef,
+        }),
+      );
+    }
     const requestedAt = this.#now().toISOString();
     const relationshipPayload = RelationshipContextPayloadV1Schema.parse(
       await this.#readArtifactJson({
@@ -2056,6 +2159,88 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
         authorization: current,
       }),
     );
+    if (
+      !sameRef(relationshipPayload.inputSnapshotRef.reference, input.inputSnapshotRef.reference) ||
+      !sameRef(relationshipPayload.workItemRef.reference, input.workItemRef.reference) ||
+      relationshipPayload.nodeId !== nodeId ||
+      !sameRef(
+        relationshipPayload.knowledgeQueryResultRef.reference,
+        relationshipRow.knowledgeQueryResultRef.reference,
+      ) ||
+      !sameRef(
+        relationshipPayload.releaseBinding.processModelReleaseRef.reference,
+        snapshot.processModelReleaseRef.reference,
+      ) ||
+      !sameRef(
+        relationshipPayload.releaseBinding.riskMechanismReleaseRef.reference,
+        snapshot.riskMechanismReleaseRef.reference,
+      ) ||
+      !sameRef(
+        relationshipPayload.releaseBinding.retrievalEvidenceBaseReleaseRef.reference,
+        snapshot.retrievalEvidenceBaseReleaseRef.reference,
+      ) ||
+      !sameRef(reviewedSet.inputSnapshotRef.reference, input.inputSnapshotRef.reference) ||
+      !sameRef(reviewedSet.workItemRef.reference, input.workItemRef.reference) ||
+      !sameRef(reviewedSet.taskRef.reference, input.reviewTaskRef.reference) ||
+      reviewedSet.nodeId !== nodeId ||
+      !sameRef(
+        reviewedSet.relationshipQueryResultRef.reference,
+        relationshipRow.knowledgeQueryResultRef.reference,
+      ) ||
+      !sameRef(
+        reviewedSet.baselineQueryResultRef.reference,
+        reviewedRow.baselineQueryResultRef.reference,
+      ) ||
+      relationshipPayload.authorizationScopeDigest !== scopeDigest ||
+      reviewedSet.authorizationScopeDigest !== scopeDigest
+    ) {
+      throw new IdentificationContextError(
+        blocked({
+          causalRunId: input.reviewTaskRef.reference.entityId,
+          occurredAt: this.#now().toISOString(),
+          blockerKind: "context-source-mismatch",
+          blockerRef: input.workItemRef,
+        }),
+      );
+    }
+    const baseline = await this.readOfficialHybrid({
+      projectId: input.projectId,
+      actorId: input.actorId,
+      requestedAt,
+      queryId: baselineQueryIdFor(nodeId),
+      expectedQueryResultRef: reviewedSet.baselineQueryResultRef,
+      authorization: current,
+    });
+    if (
+      !sameRef(
+        baseline.payload.refs.inputSnapshotRef.reference,
+        input.inputSnapshotRef.reference,
+      ) ||
+      !sameRef(baseline.payload.refs.workItemRef.reference, input.workItemRef.reference) ||
+      !sameRef(baseline.payload.refs.retrievalPolicyRef, snapshot.retrievalPolicyRef) ||
+      !sameRef(
+        baseline.payload.evidenceBaseReleaseRef.reference,
+        snapshot.retrievalEvidenceBaseReleaseRef.reference,
+      ) ||
+      ![
+        baseline.payload.memberReleaseRefs.riskMechanismRef,
+        baseline.payload.memberReleaseRefs.standardLibraryRef,
+        baseline.payload.memberReleaseRefs.caseLibraryRef,
+      ].every((member) =>
+        relationshipPayload.releaseBinding.compositeMemberReleaseRefs.some((release) =>
+          sameRef(release.reference, member.reference),
+        ),
+      )
+    ) {
+      throw new IdentificationContextError(
+        blocked({
+          causalRunId: input.reviewTaskRef.reference.entityId,
+          occurredAt: this.#now().toISOString(),
+          blockerKind: "context-source-mismatch",
+          blockerRef: input.workItemRef,
+        }),
+      );
+    }
     const timeNeighbors = relationshipPayload.neighborNodes
       .filter((neighbor) => neighbor.relationType === "时间先后关系")
       .map((neighbor) => ({
@@ -2080,6 +2265,9 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
     if (forceDependencies.length === 0) {
       throw incomplete("force-dependency-missing", relationshipRow.knowledgeQueryResultRef);
     }
+    if (relationshipPayload.currentNode.stateParameters.length === 0) {
+      throw incomplete("state-parameters-missing", relationshipRow.knowledgeQueryResultRef);
+    }
     if (relationshipPayload.mechanisms.length === 0) {
       throw incomplete("mechanism-missing", relationshipRow.knowledgeQueryResultRef);
     }
@@ -2095,8 +2283,39 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
     const modelContextArtifactSetRef = modelContextArtifactSetRefFor({
       projectId: input.projectId,
       workItemEntityId: input.workItemRef.reference.entityId,
+      taskEntityId: input.reviewTaskRef.reference.entityId,
       requestDigest,
     });
+    const existing = await options.resultStore.readResult({
+      projectId: input.projectId,
+      resultKind: "model-context",
+      resultId: modelContextArtifactSetRef.reference.entityId,
+    });
+    if (existing !== undefined) {
+      if (
+        existing.resultKind !== "model-context" ||
+        existing.requestDigest !== requestDigest ||
+        !sameRef(
+          existing.modelContextArtifactSetRef.reference,
+          modelContextArtifactSetRef.reference,
+        )
+      ) {
+        throw incomplete("model-context-identity-conflict", modelContextArtifactSetRef);
+      }
+      return {
+        modelContextArtifactSetRef,
+        payload: ModelContextPayloadV1Schema.parse(
+          await this.#readArtifactJson({
+            artifactRef: existing.artifactRef,
+            projectId: input.projectId,
+            actorId: input.actorId,
+            requestedAt,
+            purposeCode: MODEL_CONTEXT_PURPOSE_CODE_V1,
+            authorization: current,
+          }),
+        ),
+      };
+    }
     const payload: ModelContextPayloadV1 = ModelContextPayloadV1Schema.parse({
       schemaVersion: IDENTIFICATION_CONTEXT_SCHEMA_VERSION_V1,
       projectId: input.projectId,
@@ -2164,7 +2383,7 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
       },
       occurredAt: requestedAt,
       authorization: current,
-      artifactId: `identification-model-context-${input.workItemRef.reference.entityId}`,
+      artifactId: `identification-model-context-${input.workItemRef.reference.entityId}-${input.reviewTaskRef.reference.entityId}`,
       purposeCode: MODEL_CONTEXT_PURPOSE_CODE_V1,
       value: payload,
       resultRef: modelContextArtifactSetRef,

@@ -90,7 +90,7 @@ export const RelationshipContextNodeV1Schema = z.strictObject({
   processKind: ProcessNodeSchema,
   inputs: z.array(IdentifierSchema).min(1),
   outputs: z.array(IdentifierSchema).min(1),
-  stateParameters: z.array(StateParameterDescriptionSchema).min(1),
+  stateParameters: z.array(StateParameterDescriptionSchema),
   monitoringIndicators: z.array(MonitoringIndicatorSchema),
   applicability: ApplicabilityConditionsSchema,
   evidence: evidenceListSchema,
@@ -568,11 +568,12 @@ export const retrievalArtifactSetRefFor = (input: {
 export const modelContextArtifactSetRefFor = (input: {
   readonly projectId: string;
   readonly workItemEntityId: string;
+  readonly taskEntityId: string;
   readonly requestDigest: string;
 }): z.infer<typeof ModelContextArtifactSetRefV1Schema> => ({
   kind: "model-context-artifact-set",
   reference: {
-    entityId: `identification-model-context:${input.projectId}:${input.workItemEntityId}`,
+    entityId: `identification-model-context:${input.projectId}:${input.workItemEntityId}:${input.taskEntityId}`,
     versionId: input.requestDigest,
   },
 });

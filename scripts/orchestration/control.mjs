@@ -17,6 +17,18 @@ import {
 
 const TERMINAL_OUTCOMES = new Set(["succeeded", "failed", "blocked", "paused"]);
 const RECONCILE_SAFE_VIOLATIONS = new Set(["checkpoint_mismatch", "worktree_reclaim_pending"]);
+// Orca 的 `worktree create` 可能在外部副作用已经发生之后才以运行时故障结束（实测 30 秒
+// 后 `runtime_unavailable`）。只有这类"运行时不可用/响应丢失"错误才允许自持建立并取回
+// 身份；参数、命名、权限等业务错误原样冒泡，否则会用一个自建工作树掩盖真实原因。
+const ORCA_RUNTIME_FAILURE_PATTERN =
+  /runtime_unavailable|closed the connection before responding|Timed out waiting for the Orca runtime to respond|Could not connect to the running Orca app/u;
+const WORKTREE_IDENTITY_NEXT_ACTIONS = [
+  '运行 `orca repo list --json` 确认该仓库的 externalWorktreeVisibility 为 "show"，并核对 worktreeBasePath 与 worktreeBaseRef',
+  "运行 `orca worktree list --json` 与 `git worktree list --porcelain` 对账期望路径上的工作树",
+  "对账实时事实后使用新的幂等键重试派发",
+];
+const GIT_WORKTREE_TIMEOUT_MS = 120_000;
+const SETUP_COMMAND_TIMEOUT_MS = 600_000;
 const CONTROLLED_TOOL_NAMES = [
   "riskflow_status",
   "riskflow_dispatch",
@@ -556,7 +568,21 @@ function taskSpec(node, taskKind, envelopeOptions = {}) {
   return lines.join("\n");
 }
 
-async function createWorktreeForReadyNode(exec, invocation, rootDir, node) {
+async function createWorktreeForReadyNode(ctx, invocation, node) {
+  try {
+    return await createWorktreeViaOrca(ctx.exec, invocation, ctx.rootDir, node);
+  } catch (error) {
+    if (error instanceof ControlError) throw error;
+    if (!ORCA_RUNTIME_FAILURE_PATTERN.test(String(error?.message ?? ""))) throw error;
+    const recovered = await ctx.lock.withoutLock(() =>
+      provisionWorktreeWithoutOrca(ctx.exec, invocation, ctx.rootDir, node, error),
+    );
+    await assertFactsUnchanged(ctx);
+    return recovered;
+  }
+}
+
+async function createWorktreeViaOrca(exec, invocation, rootDir, node) {
   const created = await orcaJson(
     exec,
     invocation,
@@ -589,6 +615,197 @@ async function createWorktreeForReadyNode(exec, invocation, rootDir, node) {
       branch: worktree.branch,
       head: worktree.head,
     },
+  };
+}
+
+function sameDirectory(left, right) {
+  return nonEmptyString(left) && nonEmptyString(right) && resolve(left) === resolve(right);
+}
+
+// 回退的所有失败都保留原始 Orca 错误文本：真正的原因通常在那里，而不在症状里。
+function worktreeIdentityError(detail, cause) {
+  return new ControlError(
+    "worktree_identity_unresolved",
+    `Orca 工作树创建失败（${cause.message}），控制器回退也未能确认工作树身份：${detail}`,
+    WORKTREE_IDENTITY_NEXT_ACTIONS,
+  );
+}
+
+async function orcaRepoForRoot(exec, invocation, rootDir, cause) {
+  let listed;
+  try {
+    listed = await orcaJson(exec, invocation, ["repo", "list"], rootDir);
+  } catch (error) {
+    throw worktreeIdentityError(`读取 orca repo list 失败：${error.message}`, cause);
+  }
+  const repo = (listed?.repos ?? []).find((candidate) => sameDirectory(candidate?.path, rootDir));
+  if (
+    !nonEmptyString(repo?.id) ||
+    !nonEmptyString(repo?.displayName) ||
+    !nonEmptyString(repo?.worktreeBasePath)
+  ) {
+    throw worktreeIdentityError(`orca repo list 未给出 ${rootDir} 的完整仓库元数据`, cause);
+  }
+  return repo;
+}
+
+async function resolveWorktreeBaseRef(exec, rootDir, ref, cause) {
+  try {
+    const head = String(await exec("git", ["rev-parse", ref], { cwd: rootDir })).trim();
+    if (!head) throw new Error("空输出");
+    return head;
+  } catch (error) {
+    throw worktreeIdentityError(`无法解析基线 ${ref}：${error.message}`, cause);
+  }
+}
+
+// 期望路径上的 HEAD 无法解析时返回 null，表示该路径还不是可用的工作树。
+async function pathHead(exec, worktreePath) {
+  try {
+    return String(
+      await exec("git", ["-C", worktreePath, "rev-parse", "HEAD"], { cwd: worktreePath }),
+    ).trim();
+  } catch {
+    return null;
+  }
+}
+
+async function addGitWorktree(exec, rootDir, worktreePath, name, baseRef, cause) {
+  const attempts = [
+    ["worktree", "add", worktreePath, "-b", name, baseRef],
+    ["worktree", "add", worktreePath, name],
+  ];
+  const failures = [];
+  for (const args of attempts) {
+    try {
+      await exec("git", args, { cwd: rootDir, timeoutMs: GIT_WORKTREE_TIMEOUT_MS });
+      return;
+    } catch (error) {
+      failures.push(error.message);
+    }
+  }
+  throw worktreeIdentityError(`git worktree add 失败：${failures.join("；")}`, cause);
+}
+
+async function runRepoSetupScripts(exec, repo, worktreePath) {
+  const script = repo.hookSettings?.scripts?.setup;
+  if (!nonEmptyString(script)) return [];
+  const warnings = [];
+  for (const line of script.split("\n")) {
+    const command = line.trim();
+    if (!command) continue;
+    try {
+      await exec("sh", ["-c", command], { cwd: worktreePath, timeoutMs: SETUP_COMMAND_TIMEOUT_MS });
+    } catch (error) {
+      warnings.push({ command, message: error.message });
+    }
+  }
+  return warnings;
+}
+
+function worktreeSetupError(worktreePath, warnings, cause) {
+  const summary = warnings.map(({ command, message }) => `${command}: ${message}`).join("；");
+  return new ControlError(
+    "worktree_setup_failed",
+    `Orca 工作树创建失败（${cause.message}），回退已建立 ${worktreePath}，但仓库 setup 失败：${summary}`,
+    [
+      `修复并在 ${worktreePath} 重新执行失败的 setup 命令`,
+      "核对依赖与 OpenSpec 工具已就绪后，重新读取 riskflow_status 并使用新幂等键重试",
+    ],
+  );
+}
+
+// 身份只能来自实时事实：orca worktree list 中 repoId 相同、非主工作树、路径归一化后
+// 等于期望路径的记录必须恰有一条。取不到唯一身份就 fail-closed，绝不返回一个"可能对"
+// 的工作树。
+async function takeBackWorktreeIdentity(
+  exec,
+  invocation,
+  rootDir,
+  repo,
+  expectedPath,
+  expectedHead,
+  cause,
+) {
+  let listed;
+  try {
+    listed = await orcaJson(exec, invocation, ["worktree", "list"], rootDir);
+  } catch (error) {
+    throw worktreeIdentityError(`读取 orca worktree list 失败：${error.message}`, cause);
+  }
+  const matches = (listed?.worktrees ?? []).filter(
+    (candidate) =>
+      candidate?.repoId === repo.id &&
+      candidate?.isMainWorktree !== true &&
+      sameDirectory(candidate?.path, expectedPath),
+  );
+  if (matches.length !== 1) {
+    throw worktreeIdentityError(
+      `orca worktree list 在 ${expectedPath} 匹配到 ${matches.length} 条记录`,
+      cause,
+    );
+  }
+  const record = matches[0];
+  if (!nonEmptyString(record.id) || !nonEmptyString(record.path) || !nonEmptyString(record.head)) {
+    throw worktreeIdentityError(
+      `orca worktree list 在 ${expectedPath} 的记录缺少 id/path/head`,
+      cause,
+    );
+  }
+  if (String(record.head).trim() !== expectedHead) {
+    throw worktreeIdentityError(
+      `取回的工作树 HEAD ${record.head} 与请求基线 ${expectedHead} 不一致`,
+      cause,
+    );
+  }
+  const info = await stat(record.path).catch(() => null);
+  if (!info?.isDirectory()) {
+    throw worktreeIdentityError(`取回的工作树路径 ${record.path} 不存在`, cause);
+  }
+  return {
+    id: record.id,
+    path: record.path,
+    branch: nonEmptyString(record.branch)
+      ? record.branch.replace(/^refs\/heads\//u, "")
+      : record.branch,
+    head: record.head,
+  };
+}
+
+async function provisionWorktreeWithoutOrca(exec, invocation, rootDir, node, cause) {
+  const name = node.id.toLowerCase();
+  const repo = await orcaRepoForRoot(exec, invocation, rootDir, cause);
+  const expectedPath = resolve(repo.path, repo.worktreeBasePath, repo.displayName, name);
+  const baseRef = nonEmptyString(repo.worktreeBaseRef) ? repo.worktreeBaseRef : "main";
+  const expectedHead = await resolveWorktreeBaseRef(exec, rootDir, baseRef, cause);
+  // 副作用已经发生是这次故障最主要的形态：先确认再建立，绝不重复建立。
+  if ((await pathHead(exec, expectedPath)) !== expectedHead) {
+    let added = false;
+    try {
+      await addGitWorktree(exec, rootDir, expectedPath, name, baseRef, cause);
+      added = true;
+    } catch (error) {
+      // Orca 的延迟副作用可能正好在首次确认后落地，令 git add 因路径/分支
+      // 已存在而失败。只有实时 HEAD 已等于基线时才继续，其余错误仍原样冒泡。
+      if ((await pathHead(exec, expectedPath)) !== expectedHead) throw error;
+    }
+    if (added) {
+      const setupWarnings = await runRepoSetupScripts(exec, repo, expectedPath);
+      if (setupWarnings.length > 0) throw worktreeSetupError(expectedPath, setupWarnings, cause);
+    }
+  }
+  const worktree = await takeBackWorktreeIdentity(
+    exec,
+    invocation,
+    rootDir,
+    repo,
+    expectedPath,
+    expectedHead,
+    cause,
+  );
+  return {
+    ...node,
+    worktree,
   };
 }
 
@@ -827,13 +1044,28 @@ export async function riskflowDispatch(input, options = {}) {
     const invocation = resolveOrcaInvocation(options.orcaCommand);
     let node = ctx.node;
     if (!node.worktree && node.status === "ready") {
-      node = await createWorktreeForReadyNode(ctx.exec, invocation, ctx.rootDir, node);
+      node = await createWorktreeForReadyNode(ctx, invocation, node);
     }
     const replanApprovalRef = input.replanApprovalRef;
-    const taskKind = replanApprovalRef ? "planning" : nextTaskKind(node);
+    // 复用的排队尝试必须按它自己的角色启动：它的任务说明本来就属于那个角色，
+    // 用节点当前阶段重新推导会把规划尝试交给实现模型并记成实现尝试。
+    const pendingAttempt =
+      !replanApprovalRef && node.checkpoints?.runState === "queued" && node.checkpoints.taskId;
+    const taskKind = replanApprovalRef
+      ? "planning"
+      : pendingAttempt
+        ? node.checkpoints.taskKind
+        : nextTaskKind(node);
+    if (pendingAttempt && !ctx.graph.policy.roles[taskKind]) {
+      throw new ControlError(
+        "unknown_task_kind",
+        `${node.id} 的排队尝试角色 ${taskKind} 不在 Manifest 角色表中`,
+        node.nextActions,
+      );
+    }
     const runId = await ensureRun(ctx.exec, invocation, ctx.rootDir, node, ctx.idempotencyKey);
     let task;
-    if (!replanApprovalRef && node.checkpoints?.runState === "queued" && node.checkpoints.taskId) {
+    if (pendingAttempt) {
       task = {
         taskId: node.checkpoints.taskId,
         runId: node.checkpoints.runId ?? runId,

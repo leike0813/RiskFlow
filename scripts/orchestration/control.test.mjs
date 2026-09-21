@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -1304,6 +1304,471 @@ describe("controlled orchestration", () => {
         nextActions: expect.arrayContaining([expect.stringContaining("riskflow_status")]),
       });
       expect(updates).toBe(1);
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+});
+
+// Orca 的 `worktree create` 会在外部副作用可能已经发生之后才以运行时故障结束（实测
+// `runtime_unavailable: ... closed the connection before responding`）。这一组用例覆盖
+// 控制器的回退：确认已有工作树、必要时自持建立、从实时列表取回唯一身份、以及复用排队
+// 尝试时按尝试自身角色启动。
+describe("worktree provisioning recovery", () => {
+  const REPO_ID = "d4349f30-1c7e-4777-b16d-f259481b0121";
+  const BASE_HEAD = "4e9f2b1c8d7a6053e4f1b2c3d4e5f60718293a4b";
+  const RUNTIME_FAILURE =
+    "runtime_unavailable: The Orca runtime closed the connection before responding";
+  const SETUP_LINES = ["pnpm install --frozen-lockfile", "openspec init --tools codex,oh-my-pi"];
+
+  function expectedPath(runtimeRoot) {
+    return join(runtimeRoot, ".orca", "RiskFlow", "c17");
+  }
+
+  function identityRecord(runtimeRoot, overrides = {}) {
+    return {
+      id: `${REPO_ID}::${expectedPath(runtimeRoot)}`,
+      path: expectedPath(runtimeRoot),
+      repoId: REPO_ID,
+      isMainWorktree: false,
+      head: BASE_HEAD,
+      branch: "refs/heads/c17",
+      ...overrides,
+    };
+  }
+
+  function fakeExec(runtimeRoot, options = {}) {
+    const calls = [];
+    const state = {
+      worktrees: options.worktrees ?? [],
+      createError: options.createError === undefined ? RUNTIME_FAILURE : options.createError,
+      existingHead: options.existingHead ?? null,
+      setupFailure: options.setupFailure ?? null,
+      delayedSideEffectOnAdd: options.delayedSideEffectOnAdd ?? false,
+      setups: [],
+    };
+    const exec = async (command, args = [], execOptions = {}) => {
+      calls.push({ command, args, cwd: execOptions.cwd });
+      if (command === "git") {
+        if (args.includes("--git-common-dir") || args[0]?.startsWith("--git-dir=")) {
+          return runtimeRoot;
+        }
+        if (args[0] === "rev-parse") return BASE_HEAD;
+        if (args[0] === "-C") {
+          if (state.existingHead) return state.existingHead;
+          throw new Error(`fatal: not a git repository: ${args[1]}`);
+        }
+        if (args[0] === "worktree" && args[1] === "add") {
+          // 真实 `git worktree add` 会自己建立目录；这里同样让目录出现，
+          // 以便覆盖取回身份后的存在性校验。
+          await mkdir(expectedPath(runtimeRoot), { recursive: true });
+          state.worktrees = [identityRecord(runtimeRoot)];
+          if (state.delayedSideEffectOnAdd) {
+            state.existingHead = BASE_HEAD;
+            throw new Error("fatal: worktree path already exists");
+          }
+          return "";
+        }
+      }
+      if (command === "sh") {
+        state.setups.push(args[1]);
+        await options.onSetup?.(args[1], state);
+        if (state.setupFailure && args[1] === state.setupFailure) {
+          throw new Error("command failed: openspec init --tools codex,oh-my-pi: exit 1");
+        }
+        return "";
+      }
+      if (command === "orca-ide") {
+        if (args[0] === "repo" && args[1] === "list") {
+          return {
+            repos: [
+              {
+                id: REPO_ID,
+                path: runtimeRoot,
+                displayName: "RiskFlow",
+                worktreeBasePath: ".orca",
+                worktreeBaseRef: "main",
+                hookSettings: { scripts: { setup: SETUP_LINES.join("\n") } },
+              },
+            ],
+          };
+        }
+        if (args[0] === "worktree" && args[1] === "create") {
+          if (state.createError) throw new Error(state.createError);
+          return { worktree: identityRecord(runtimeRoot) };
+        }
+        if (args[0] === "worktree" && args[1] === "list") return { worktrees: state.worktrees };
+        if (args.includes("task-create")) return { id: "task-provisioned" };
+        if (args.includes("task-update")) {
+          state.envelope = JSON.parse(args[args.indexOf("--result") + 1]);
+          return {};
+        }
+        if (args.includes("worker-start")) {
+          state.workerStart = args;
+          return { state: "started" };
+        }
+        if (args.includes("terminal")) return { terminal: { handle: "term-provisioned" } };
+        if (args.includes("--inject")) return { injected: true };
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    return { exec, calls, state };
+  }
+
+  function readySnapshot() {
+    const ready = node({
+      status: "ready",
+      phase: "planning",
+      worktree: undefined,
+      checkpoints: {
+        ...node().checkpoints,
+        taskKind: "planning",
+        phase: "planning",
+        runState: "settled",
+        outcome: "failed",
+      },
+    });
+    return snapshot({
+      nodes: [ready],
+      resumeQueue: [
+        {
+          workItemId: "C17",
+          category: "ready",
+          nextAction: "创建当前 change 的 feature worktree 和结构化 task",
+        },
+      ],
+    });
+  }
+
+  function dispatchReady(
+    exec,
+    key,
+    statusProvider = async () => ({ graph, snapshot: readySnapshot() }),
+  ) {
+    return riskflowDispatch(
+      { workItemId: "C17", expectedRevision: "revision-1", idempotencyKey: `dispatch-${key}` },
+      {
+        rootDir: process.cwd(),
+        exec,
+        statusProvider,
+      },
+    );
+  }
+
+  async function readLedgerEnvelope(runtimeRoot, taskId) {
+    const record = JSON.parse(
+      await readFile(
+        join(runtimeRoot, "riskflow-orchestration", "attempts", `${taskId}.json`),
+        "utf8",
+      ),
+    );
+    return record.envelope;
+  }
+
+  it("keeps the Orca-first path untouched when the create call succeeds", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-provision-orca-"));
+    const { exec, calls, state } = fakeExec(runtimeRoot, { createError: null });
+    const record = identityRecord(runtimeRoot);
+    try {
+      const result = await dispatchReady(exec, "provision-orca");
+      expect(state.envelope).toMatchObject({ taskKind: "planning", worktreeId: record.id });
+      expect(state.workerStart).toContain(`id:${record.id}`);
+      expect(result.worktreeSetupWarnings).toBeUndefined();
+      expect(calls.some(({ command }) => command === "sh")).toBe(false);
+      expect(calls.some(({ command, args }) => command === "git" && args[0] === "worktree")).toBe(
+        false,
+      );
+      expect(calls.some(({ args }) => args[0] === "repo")).toBe(false);
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("takes back the managed identity when the worktree already exists at the expected path", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-provision-existing-"));
+    const record = identityRecord(runtimeRoot);
+    // 副作用已经发生：期望路径上确实存在该工作树的目录。
+    await mkdir(expectedPath(runtimeRoot), { recursive: true });
+    const { exec, calls, state } = fakeExec(runtimeRoot, {
+      worktrees: [record],
+      existingHead: BASE_HEAD,
+    });
+    try {
+      const result = await dispatchReady(exec, "provision-existing");
+      expect(result.worker).toMatchObject({ state: "started", attemptRecorded: true });
+      expect(state.envelope).toMatchObject({
+        taskKind: "planning",
+        worktreeId: record.id,
+        inputHead: BASE_HEAD,
+      });
+      expect(state.workerStart).toContain(`id:${record.id}`);
+      expect(calls.some(({ command, args }) => command === "git" && args[1] === "add")).toBe(false);
+      expect(calls.some(({ command }) => command === "sh")).toBe(false);
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("builds the worktree and runs the repo setup script when no side effect happened", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-provision-add-"));
+    const { exec, calls, state } = fakeExec(runtimeRoot);
+    try {
+      const result = await dispatchReady(exec, "provision-add");
+      const add = calls.find(
+        ({ command, args }) => command === "git" && args[0] === "worktree" && args[1] === "add",
+      );
+      expect(add.args).toEqual(["worktree", "add", expectedPath(runtimeRoot), "-b", "c17", "main"]);
+      expect(add.cwd).toBe(runtimeRoot);
+      expect(state.setups).toEqual(SETUP_LINES);
+      expect(result.worktreeSetupWarnings).toBeUndefined();
+      expect(result.worker).toMatchObject({ state: "started" });
+      expect(state.envelope).toMatchObject({
+        taskKind: "planning",
+        worktreeId: identityRecord(runtimeRoot).id,
+      });
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("takes back a delayed Orca side effect that lands while git worktree add is running", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-provision-delayed-"));
+    const { exec, state } = fakeExec(runtimeRoot, { delayedSideEffectOnAdd: true });
+    try {
+      const result = await dispatchReady(exec, "provision-delayed");
+      expect(result.worker).toMatchObject({ state: "started" });
+      expect(state.envelope).toMatchObject({ worktreeId: identityRecord(runtimeRoot).id });
+      expect(state.setups).toEqual([]);
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("releases the runtime lock during fallback and rejects concurrent fact drift", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-provision-unlocked-"));
+    const setupStarted = Promise.withResolvers();
+    const continueSetup = Promise.withResolvers();
+    const { exec, calls } = fakeExec(runtimeRoot, {
+      onSetup: async (command) => {
+        if (command !== SETUP_LINES[0]) return;
+        setupStarted.resolve();
+        await continueSetup.promise;
+      },
+    });
+    let reads = 0;
+    const dispatch = dispatchReady(exec, "provision-unlocked", async () => {
+      reads += 1;
+      return {
+        graph,
+        snapshot:
+          reads === 1
+            ? readySnapshot()
+            : snapshot({ nodes: [node({ status: "running", phase: "planning" })] }),
+      };
+    }).then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+    try {
+      await setupStarted.promise;
+      const concurrent = withRuntimeLock(process.cwd(), exec, async () => undefined);
+      const acquiredWhileSetupWaited = await Promise.race([
+        concurrent.then(() => true),
+        delay(100).then(() => false),
+      ]);
+      continueSetup.resolve();
+      const [outcome] = await Promise.all([dispatch, concurrent]);
+      expect(acquiredWhileSetupWaited).toBe(true);
+      expect(outcome.error).toMatchObject({ code: "stale_revision" });
+      expect(calls.some(({ args }) => args.includes("task-create"))).toBe(false);
+      expect(calls.some(({ args }) => args.includes("worker-start"))).toBe(false);
+    } finally {
+      continueSetup.resolve();
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("fails closed when a repo setup command fails", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-provision-setup-"));
+    const { exec, calls, state } = fakeExec(runtimeRoot, { setupFailure: SETUP_LINES[1] });
+    try {
+      const error = await dispatchReady(exec, "provision-setup").catch((thrown) => thrown);
+      expect(error).toMatchObject({
+        code: "worktree_setup_failed",
+        message: expect.stringContaining(SETUP_LINES[1]),
+      });
+      expect(error.message).toContain("closed the connection before responding");
+      expect(state.setups).toEqual(SETUP_LINES);
+      expect(calls.some(({ args }) => args.includes("task-create"))).toBe(false);
+      expect(calls.some(({ args }) => args.includes("worker-start"))).toBe(false);
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("fails closed when the managed identity cannot be confirmed", async () => {
+    const cases = [
+      { key: "missing", worktrees: [] },
+      {
+        key: "ambiguous",
+        worktrees: [
+          identityRecord("/tmp/unused"),
+          identityRecord("/tmp/unused", { id: `${REPO_ID}::duplicate` }),
+        ],
+      },
+      { key: "incomplete", worktrees: [identityRecord("/tmp/unused", { head: null })] },
+      { key: "stale-head", worktrees: [identityRecord("/tmp/unused", { head: "deadbeef" })] },
+      {
+        key: "main-worktree",
+        worktrees: [identityRecord("/tmp/unused", { isMainWorktree: true })],
+      },
+    ];
+    for (const testCase of cases) {
+      const runtimeRoot = await mkdtemp(join(tmpdir(), `riskflow-provision-${testCase.key}-`));
+      const records = testCase.worktrees.map((record) => ({
+        ...record,
+        id: record.id.replace("/tmp/unused", expectedPath(runtimeRoot)),
+        path: expectedPath(runtimeRoot),
+      }));
+      const { exec, calls } = fakeExec(runtimeRoot, {
+        worktrees: records,
+        existingHead: BASE_HEAD,
+      });
+      try {
+        await expect(dispatchReady(exec, `provision-${testCase.key}`)).rejects.toMatchObject({
+          code: "worktree_identity_unresolved",
+          nextActions: expect.arrayContaining([
+            expect.stringContaining("externalWorktreeVisibility"),
+          ]),
+        });
+        const error = await dispatchReady(exec, `provision-${testCase.key}-again`).catch(
+          (thrown) => thrown,
+        );
+        expect(error.message).toContain("closed the connection before responding");
+        expect(calls.some(({ args }) => args.includes("task-create"))).toBe(false);
+      } finally {
+        await rm(runtimeRoot, { recursive: true });
+      }
+    }
+  });
+
+  it("bubbles business failures from Orca instead of provisioning behind them", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-provision-business-"));
+    const { exec, calls } = fakeExec(runtimeRoot, {
+      createError: "invalid_argument: worktree name already exists",
+    });
+    try {
+      await expect(dispatchReady(exec, "provision-business")).rejects.toThrow(
+        "invalid_argument: worktree name already exists",
+      );
+      expect(calls.some(({ command, args }) => command === "git" && args[0] === "worktree")).toBe(
+        false,
+      );
+      expect(calls.some(({ args }) => args.includes("task-create"))).toBe(false);
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("starts a queued planning attempt in its own role", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-queued-planning-"));
+    const queued = node({
+      status: "running",
+      phase: "planning",
+      checkpoints: {
+        ...node().checkpoints,
+        taskKind: "planning",
+        phase: "planning",
+        runState: "queued",
+        attemptGroup: "C17:planning",
+        owner: { taskId: "task-finalizer", agentClass: "strong-planner", model: "gpt-5.6-sol" },
+      },
+    });
+    const queuedSnapshot = snapshot({
+      nodes: [queued],
+      resumeQueue: [
+        { workItemId: "C17", category: "planning", nextAction: "启动排队中的规划尝试" },
+      ],
+    });
+    let workerStart;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("worker-start")) {
+        workerStart = args;
+        return { state: "started" };
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      const result = await riskflowDispatch(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "dispatch-queued-planning",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => ({ graph, snapshot: queuedSnapshot }),
+        },
+      );
+      expect(result.taskId).toBe("task-finalizer");
+      expect(workerStart).toContain("task-finalizer");
+      expect(await readLedgerEnvelope(runtimeRoot, "task-finalizer")).toMatchObject({
+        taskKind: "planning",
+        phase: "planning",
+        runState: "running",
+        attemptGroup: "C17:planning",
+        owner: { agentClass: "strong-planner" },
+      });
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("rejects a queued attempt whose role is unknown", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-queued-unknown-"));
+    const queued = node({
+      status: "running",
+      phase: "planning",
+      checkpoints: {
+        ...node().checkpoints,
+        taskKind: "verification",
+        phase: "planning",
+        runState: "queued",
+      },
+    });
+    const queuedSnapshot = snapshot({
+      nodes: [queued],
+      resumeQueue: [
+        { workItemId: "C17", category: "planning", nextAction: "启动排队中的规划尝试" },
+      ],
+    });
+    let workerStarted = false;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("worker-start")) {
+        workerStarted = true;
+        return { state: "started" };
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await expect(
+        riskflowDispatch(
+          {
+            workItemId: "C17",
+            expectedRevision: "revision-1",
+            idempotencyKey: "dispatch-queued-unknown",
+          },
+          {
+            rootDir: process.cwd(),
+            exec,
+            statusProvider: async () => ({ graph, snapshot: queuedSnapshot }),
+          },
+        ),
+      ).rejects.toMatchObject({ code: "unknown_task_kind" });
+      expect(workerStarted).toBe(false);
     } finally {
       await rm(runtimeRoot, { recursive: true });
     }

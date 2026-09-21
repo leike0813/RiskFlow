@@ -107,6 +107,39 @@ Orca 内部 terminal 优先用 Orca CLI 定位和操作。桌面 accessibility �
 
 Finalizer 有未提交修复时，主调度必须先审阅全部 dirty paths。`riskflow_settle` 的 `reviewedPaths` 必须与实时 dirty paths 完全一致；工具只暂存这些路径。对声明 verification 的 schema，finalization/audit 成功收口前先运行 status 确认该工件为 `done`，否则 settle 会在 Git 暂存前拒绝。不要使用 `git add -A` 把未知改动带入检查点。
 
+### 6.1 Orca 工作树供给故障恢复
+
+症状：`ready` 节点的派发没有进入 `createTask`，幂等回执停在 `inflight`，而 Orca 创建调用约 30 秒后以
+`runtime_unavailable: The Orca runtime closed the connection before responding` 结束。调用失败不代表副作用没发生：
+worktree、分支、文件与 setup 结果可能已经建立，也可能完全没发生，而且**延迟**——判失败之后仍可能再建立工作树。
+
+先判定实时事实，再决定动作：
+
+```bash
+orca repo list --json        # 该仓库的 worktreeBasePath / worktreeBaseRef / hookSettings.scripts.setup / externalWorktreeVisibility
+orca worktree list --json    # 期望路径上是否已出现受管记录（id 形如 <repoId>::<path>）
+git worktree list --porcelain
+pnpm orchestration:status --json
+```
+
+期望路径由 Orca 布局决定：`<repo.path>/<worktreeBasePath>/<displayName>/<工作项 id 小写>`。不要从分支名或 display name 反推身份。
+
+控制器已实现的行为（不必人工重放）：Orca 的 `worktree create` 仍是首选路径，成功时语义不变；只有运行时不可用/响应丢失类错误才进入回退，
+参数、命名、权限类业务错误直接冒泡。回退顺序是「先确认、后建立、再取回」——期望路径已是该仓库的 git 工作树且 HEAD 等于 `worktreeBaseRef` 对应基线时
+直接取回身份，不重复建立；否则用 `git worktree add <path> -b <name> <baseRef>`（分支已存在时复用该分支）建立，再逐行执行仓库 setup 脚本。
+随后从 `orca worktree list --json` 取回 `repoId` 相同、非主工作树、路径唯一的记录，并校验 `id`/`path`/`head` 与请求基线一致。
+任一步不成立都 fail-closed：错误保留原始 Orca 文本并提示 `externalWorktreeVisibility`。此时先对账实时事实，不要换幂等键盲重试。
+回退的 git 建立、setup 与身份取回在 `lock.withoutLock` 中执行；复锁后立即重验工作项状态、当前尝试、main HEAD 和违规集，有任一漂移就在创建 Task 或启动 worker 前拒绝。
+
+前提：回退依赖仓库设置 `externalWorktreeVisibility: "show"`（`orca repo list --json` 可见）。关闭时 `git worktree add` 建立的工作树不会进入 Orca 列表，
+身份必然取不回，控制器按 fail-closed 处理；不要绕过它自行登记 Orca 私有元数据。
+
+延迟副作用：判失败后先用 `orca worktree list --json` 看期望路径是否已经出现。控制器确认身份后不再等待 Orca，之后到达的副作用只会多出带 `-2` 一类后缀的工作树与分支；
+这些多出来的工作树在回收阶段按**完整 worktree ID** 处理（§9），不用 display name 猜测。
+
+setup 失败：回退执行仓库 setup 脚本时，任一行非零退出或超时都以 `worktree_setup_failed` 终止该次派发，不创建 Task、不启动 worker，也不返回成功供给。
+保留失败命令、原始错误和已建立的工作树供对账；按 §2 修复并重新执行 setup，确认依赖与 OpenSpec 工具就绪后，再重新读取状态并使用新幂等键派发。
+
 ## 7. 活动 worktree 同步
 
 共享编排策略、Schema、公共脚本或基础契约合入 main 后，逐个同步保留的活动 worktree：

@@ -12,12 +12,12 @@
 - **AND** MUST 返回继续或移交 Finalizer 的下一动作
 
 #### Scenario: 获批后显式重新规划
-- **WHEN** 工作项已进入 `finalizing` 或 `paused`，且派发请求提供非空 `replanApprovalRef`
+- **WHEN** 工作项处于 `finalizing`、`finalized` 或 `paused`，且派发请求提供非空 `replanApprovalRef`
 - **THEN** 系统 MUST 创建 planning v2 信封并记录该批准引用与被取代的 `attemptGroup`
 - **AND** 没有批准引用的请求 MUST NOT 使阶段回退到 planning 或 implementing
 
-#### Scenario: 重开规划要求当前尝试可被取代
-- **WHEN** 派发请求携带非空 `replanApprovalRef`，但当前尝试仍在活动（`queued`/`running`/`waiting`）或其结局为 `succeeded`
+#### Scenario: 重开规划要求较早阶段当前尝试可被取代
+- **WHEN** 派发请求携带非空 `replanApprovalRef`，但当前 planning/implementing 尝试仍在活动（`queued`/`running`/`waiting`）或其结局为 `succeeded`
 - **THEN** 派发操作 MUST 拒绝该请求，且 MUST NOT 创建 planning v2 边界
 - **AND** MUST 返回与状态视图一致的下一动作（等待收口、集成或按批准另开一轮）
 

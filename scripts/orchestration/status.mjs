@@ -575,9 +575,8 @@ function phaseRank(value, phaseOrder) {
   return index < 0 ? 0 : index + 1;
 }
 
-// 获批重开规划可取代的尝试：要么已进入 finalizing 及之后阶段，要么已收口且结局非成功。
-// 仍在活动（queued/running/waiting）的尝试是重复写者，结局为 succeeded 的尝试代表已批准
-// 版本，两者都不可被「重开规划」取代。状态视图与派发前置校验共用本谓词，避免两处判定漂移。
+// 已进入 finalizing 的尝试可在获批后重开规划；较早阶段只允许取代已收口且非成功的尝试。
+// 状态视图与派发前置校验共用本谓词，避免两处判定漂移。
 const SUPERSEDABLE_OUTCOMES = new Set(["paused", "failed", "blocked"]);
 export function supersedableAttempt(checkpoint, phaseOrder = DEFAULT_PHASE_ORDER) {
   if (checkpoint === null || checkpoint === undefined) return false;
@@ -593,15 +592,22 @@ export function supersedableAttempt(checkpoint, phaseOrder = DEFAULT_PHASE_ORDER
 function currentTaskWindow(valid, phaseOrder) {
   const replans = valid.filter((task) => nonEmptyString(task.envelope.approvalRef));
   if (replans.length === 0) return { tasks: valid, replanConflict: false };
-  const approved = replans.filter(
-    (replan) =>
-      nonEmptyString(replan.createdAt) &&
-      valid.some(
-        (prior) =>
-          prior.envelope.attemptGroup === replan.envelope.supersedesAttemptGroup &&
-          supersedableAttempt(prior.envelope, phaseOrder),
-      ),
-  );
+  const approved = replans.filter((replan) => {
+    if (!nonEmptyString(replan.createdAt)) return false;
+    const prior = valid.filter(
+      (task) =>
+        task.envelope.attemptGroup === replan.envelope.supersedesAttemptGroup &&
+        nonEmptyString(task.createdAt) &&
+        task.createdAt < replan.createdAt,
+    );
+    const latestAttempt = Math.max(...prior.map((task) => Number(task.envelope.attempt ?? 0)));
+    return (
+      prior.length > 0 &&
+      prior
+        .filter((task) => Number(task.envelope.attempt ?? 0) === latestAttempt)
+        .every((task) => supersedableAttempt(task.envelope, phaseOrder))
+    );
+  });
   if (approved.length !== replans.length) return { tasks: valid, replanConflict: true };
   const latestCreatedAt = approved
     .map((task) => task.createdAt)

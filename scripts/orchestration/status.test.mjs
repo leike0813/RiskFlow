@@ -598,6 +598,29 @@ describe("worktree-aware state", () => {
         expect.objectContaining({ code: "invalid_replan_boundary" }),
       );
     }
+
+    const earlierPaused = task({
+      id: "task-c08-planning-paused",
+      status: "failed",
+      createdAt: "2026-09-04 11:00:00",
+      envelope: v2Envelope({
+        taskKind: "planning",
+        phase: "planning",
+        runState: "settled",
+        outcome: "paused",
+        attemptGroup: "C08:planning",
+        attempt: 1,
+        owner: {
+          taskId: "task-c08-planning-paused",
+          agentClass: "strong-planner",
+          model: "gpt-5.6-sol",
+        },
+      }),
+    });
+    const state = deriveNodeState(node, context({ tasks: [earlierPaused, succeeded, replan] }));
+    expect(state.violations).toContainEqual(
+      expect.objectContaining({ code: "invalid_replan_boundary" }),
+    );
   });
 
   it("does not count a superseded attempt as a second active writer after an approved replan", () => {

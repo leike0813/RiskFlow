@@ -129,10 +129,10 @@ export function preflightAction(snapshot, action, input = {}) {
       input.replanApprovalRef === undefined
         ? null
         : requiredString(input.replanApprovalRef, "replanApprovalRef");
-    if (replanApprovalRef && !["finalizing", "paused"].includes(node.status)) {
+    if (replanApprovalRef && !["finalizing", "finalized", "paused"].includes(node.status)) {
       throw new ControlError(
         "replan_not_allowed",
-        `${workItemId} 只有进入 finalizing 或 paused 后才能按批准引用重新规划`,
+        `${workItemId} 只有进入 finalizing、finalized 或 paused 后才能按批准引用重新规划`,
         node.nextActions,
       );
     }
@@ -146,7 +146,7 @@ export function preflightAction(snapshot, action, input = {}) {
     if (replanApprovalRef && !supersedableAttempt(node.checkpoints)) {
       throw new ControlError(
         "replan_not_allowed",
-        `${workItemId} 当前尝试仍在活动或已成功收口，不可被重开规划取代`,
+        `${workItemId} 当前 planning/implementing 尝试仍在活动或已成功收口，不可被重开规划取代`,
         node.nextActions,
       );
     }

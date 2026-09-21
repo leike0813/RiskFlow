@@ -1174,6 +1174,17 @@ describe("controlled orchestration", () => {
       }),
     ).not.toThrow();
 
+    const finalized = node({
+      status: "finalized",
+      checkpoints: { ...node().checkpoints, runState: "settled", outcome: "succeeded" },
+    });
+    expect(() =>
+      preflightAction(snapshot({ nodes: [finalized] }), "dispatch", {
+        workItemId: "C17",
+        replanApprovalRef: "approval://riskflow/C17/scope",
+      }),
+    ).not.toThrow();
+
     const running = node({
       status: "paused",
       checkpoints: { ...planningCheckpoint, runState: "running" },

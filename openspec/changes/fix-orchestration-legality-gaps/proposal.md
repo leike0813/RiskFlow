@@ -9,11 +9,11 @@ C20 收口时暴露了两个控制器合法性判定缺口，两者都是**规�
 
 ## What Changes
 
-- **回收合法性按该工作项自身判定**：cleanup 的阻断违规集合 MUST 排除**该工作项自己的** `worktree_reclaim_pending`；其余全部前提（已归档、主线验证通过、工作树 clean、当前尝试成功收口、关闭 terminal 后重读仍为 `reclaimable`、完整 worktree ID 未变）保持 fail-closed。
-- **重开规划边界与被取代尝试的语义对齐**：被取代的尝试 MUST 满足「已进入 finalizing」或「已收口且结局非成功（`paused`/`failed`/`blocked`）」之一；仍在活动或已成功收口的尝试 MUST NOT 被取代。
+- **回收合法性按该工作项自身判定**：`worktree_reclaim_pending` 是各工作项的待回收就绪标记，不阻断受控动作；其余全部前提（已归档、主线验证通过、工作树 clean、当前尝试成功收口、关闭 terminal 后重读仍为 `reclaimable`、完整 worktree ID 未变）保持 fail-closed。
+- **重开规划边界与被取代尝试的语义对齐**：被取代尝试组的当前尝试 MUST 满足「已进入 finalizing」或「较早阶段已收口且结局非成功（`paused`/`failed`/`blocked`）」之一；较早阶段仍在活动或已成功收口的尝试 MUST NOT 被取代。
 - **单一事实源**：该谓词由状态视图导出，派发前置校验复用同一定义，避免 preflight 与 status 各自演化出互相矛盾的规则。
-- **回归**：两个测试文件补代表性用例（自身回收标记不阻断 cleanup、paused planning 边界的接受与运行中尝试的拒绝）。
-- **文档**：`IMPLEMENTATION-ORCHESTRATION-RUNBOOK.md` §9 与 `IMPLEMENTATION-ORCHESTRATION-HANDBOOK.md` §7 写明上述判定，避免操作者再按旧措辞触发 break-glass。
+- **回归**：两个测试文件补代表性用例（多个回收标记不阻断 cleanup、paused planning 边界的接受与较早阶段运行中尝试的拒绝）。
+- **文档**：`IMPLEMENTATION-ORCHESTRATION-RUNBOOK.md` §9 与 `IMPLEMENTATION-ORCHESTRATION-HANDBOOK.md` §3 写明上述判定，避免操作者再按旧措辞触发 break-glass。
 
 ## Capabilities
 
@@ -21,8 +21,8 @@ C20 收口时暴露了两个控制器合法性判定缺口，两者都是**规�
 <!-- 无新增能力。 -->
 
 ### Modified Capabilities
-- `operations/orchestration-controlled-actions`：回收前提显式排除该工作项自身的回收就绪标记；派发前置校验的重开规划条件改为复用状态视图的边界谓词。
-- `operations/orchestration-execution-status`：获批重开规划边界可取代「已收口且非成功」的尝试，并明确仍在活动或已成功的尝试不可被取代。
+- `operations/orchestration-controlled-actions`：回收前提排除待回收就绪标记；派发前置校验的重开规划条件复用状态视图的边界谓词。
+- `operations/orchestration-execution-status`：获批重开规划边界可取代「已收口且非成功」的较早阶段尝试；finalizing 尝试保留原有例外。
 
 ## Impact
 

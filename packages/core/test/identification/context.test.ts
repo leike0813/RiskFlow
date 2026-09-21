@@ -1173,6 +1173,61 @@ describe("C21 relationship-context and retrieval review", () => {
     expect(outOfScope.auditRows).toHaveLength(0);
   });
 
+  it("rechecks current authorization after validation before tool reads and formal finalization", async () => {
+    let revoked = false;
+    const harness = makeHarness({
+      verifyCurrent: async () => (revoked ? undefined : authorization()),
+    });
+    const candidateSet = RetrievalReviewCandidateSetV1Schema.parse(candidateSetValue());
+    const candidateSetRef = await harness.putValue("candidate-set-revocation-race", candidateSet);
+    const task = taskSnapshot(candidateSetRef);
+    const candidate = {
+      schemaVersion: "1",
+      candidateVersion: 1,
+      candidateSetRef,
+      operations: [
+        {
+          operation: "select",
+          memberRef: candidateSet.members[0]!.memberRef,
+          evidence: [segmentEvidence("segment-standard")],
+          rationaleCode: "supporting-standard",
+        },
+      ],
+    };
+    expect((await harness.service.validateReviewIncrement({ task, candidate })).disposition).toBe(
+      "accepted",
+    );
+    revoked = true;
+    await expect(
+      harness.service.readFrozenResult(
+        {
+          kind: "read-frozen-result",
+          candidateSetRef,
+          queryResultRef: candidateSet.baselineQueryResultRef,
+          maxMembers: 1,
+        },
+        { task, taskRef: task.envelope.agentTaskRef, actionId: "revoked-read" },
+      ),
+    ).rejects.toMatchObject({ details: { code: "AGENT_AUTHORIZATION_DENIED" } });
+    await expect(
+      harness.service.boundedHybridResupplement(
+        {
+          kind: "bounded-hybrid-resupplement",
+          candidateSetRef,
+          supplementIntentCode: "settlement",
+          anchorEntryIds: ["entry-standard"],
+        },
+        { task, taskRef: task.envelope.agentTaskRef, actionId: "revoked-supplement" },
+      ),
+    ).rejects.toMatchObject({ details: { code: "AGENT_AUTHORIZATION_DENIED" } });
+    await expect(
+      harness.service.finalizeRetrievalReview({ task, candidate }),
+    ).rejects.toMatchObject({ details: { code: "AGENT_AUTHORIZATION_DENIED" } });
+    expect(harness.retrievalCalls).toHaveLength(0);
+    expect(harness.rows.size).toBe(0);
+    expect(harness.auditRows).toHaveLength(0);
+  });
+
   it("assembles the five-item context only when every group is present", async () => {
     const taskRefValue = taskRef();
     const completed: { current?: AgentTaskSnapshotV1 } = {};
@@ -1496,6 +1551,19 @@ describe("C21 relationship-context and retrieval review", () => {
     expect([...harness.rows.values()].some((row) => row["resultKind"] === "relationship")).toBe(
       true,
     );
+  });
+
+  it("rejects an official hybrid result owned by another actor", async () => {
+    const harness = makeHarness({ payload: hybridPayload({ actorId: "other-actor" }) });
+    await expect(
+      harness.service.readOfficialHybrid({
+        projectId: PROJECT,
+        actorId: ACTOR,
+        requestedAt: TIMESTAMP,
+        queryId: baselineQueryIdFor(NODE_ID),
+        authorization: authorization(),
+      }),
+    ).rejects.toMatchObject({ details: { code: "BUSINESS_BLOCKED" } });
   });
 
   it("rejects review preparation outside the exact work item source scope before side effects", async () => {

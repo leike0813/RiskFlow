@@ -1246,6 +1246,7 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
     if (
       payload.projectId !== input.projectId ||
       payload.queryId !== input.queryId ||
+      payload.actorId !== input.actorId ||
       !sameRef(
         payload.knowledgeQueryResultRef.reference,
         official.result.knowledgeQueryResultRef.reference,
@@ -1457,6 +1458,7 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
     const action = ReadFrozenResultActionV1Schema.parse(input);
     const task = context.task;
     const candidateSet = await this.#readCandidateSet(task, action.candidateSetRef);
+    await this.#assertCurrentCandidateAuthorization(task, candidateSet);
     const knownQueries = [
       candidateSet.baselineQueryResultRef,
       ...candidateSet.resupplements.map((item) => item.queryResultRef),
@@ -1524,6 +1526,7 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
       );
     }
     const candidateSet = await this.#readCandidateSet(task, action.candidateSetRef);
+    await this.#assertCurrentCandidateAuthorization(task, candidateSet);
     if (candidateSet.resupplements.length >= this.#policy.maxResupplements) {
       throw new AgentRuntimeError(
         makeAgentError({
@@ -1678,7 +1681,13 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
       !parsed.success ||
       parsed.data.projectId !== task.envelope.projectId ||
       parsed.data.taskRef.reference.entityId !== task.envelope.agentTaskRef.reference.entityId ||
-      parsed.data.taskRef.reference.versionId !== task.envelope.agentTaskRef.reference.versionId
+      parsed.data.taskRef.reference.versionId !== task.envelope.agentTaskRef.reference.versionId ||
+      parsed.data.frozenAuthorizationScopeDigest !==
+        authorizationScopeDigest(task.envelope.authorization) ||
+      !sameRef(
+        parsed.data.frozenAuthorizationContextRef.reference,
+        task.envelope.authorization.authorizationContextRef.reference,
+      )
     ) {
       throw new AgentRuntimeError(
         makeAgentError({
@@ -1691,6 +1700,46 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
       );
     }
     return parsed.data;
+  }
+
+  async #currentCandidateAuthorization(
+    task: AgentTaskSnapshotV1,
+    candidateSet: RetrievalReviewCandidateSetV1,
+  ): Promise<boolean> {
+    const exact = await this.#options.inputReader.readExact({
+      projectId: task.envelope.projectId,
+      actorId: task.envelope.actorId,
+      queryId: task.envelope.agentTaskRef.reference.entityId,
+      inputSnapshotRef: candidateSet.inputSnapshotRef,
+      workItemRef: candidateSet.workItemRef,
+      authorization: task.envelope.authorization,
+    });
+    if (exact.kind !== "succeeded") return false;
+    return (
+      (await this.#options.authorization.verifyCurrent({
+        authorization: task.envelope.authorization,
+        invocationId: `${task.envelope.agentTaskRef.reference.entityId}:validate`,
+        branch: "knowledge-modeling.relationship-context",
+        requestedSpatialScopeRefs: [...exact.read.workItem.spatialScopeRefs],
+        requestedSourceVersionRefs: [...exact.read.workItem.sourceVersionRefs],
+      })) !== undefined
+    );
+  }
+
+  async #assertCurrentCandidateAuthorization(
+    task: AgentTaskSnapshotV1,
+    candidateSet: RetrievalReviewCandidateSetV1,
+  ): Promise<void> {
+    if (await this.#currentCandidateAuthorization(task, candidateSet)) return;
+    throw new AgentRuntimeError(
+      makeAgentError({
+        code: "AGENT_AUTHORIZATION_DENIED",
+        category: "authorization",
+        retryable: false,
+        stage: "worker.retrieval-review.authorization",
+        taskRef: task.envelope.agentTaskRef,
+      }),
+    );
   }
 
   /** 逐项校验：候选成员、证据、版本与当前授权；可修正项与原任务预算内重试一致。 */
@@ -1794,32 +1843,14 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
           evidenceReferences: [...outside],
         });
       }
-      const exact = await this.#options.inputReader.readExact({
-        projectId: task.envelope.projectId,
-        actorId: task.envelope.actorId,
-        queryId: task.envelope.agentTaskRef.reference.entityId,
-        inputSnapshotRef: candidateSet.inputSnapshotRef,
-        workItemRef: candidateSet.workItemRef,
-        authorization: task.envelope.authorization,
-      });
-      const current =
-        exact.kind === "succeeded"
-          ? await this.#options.authorization.verifyCurrent({
-              authorization: task.envelope.authorization,
-              invocationId: `${task.envelope.agentTaskRef.reference.entityId}:validate`,
-              branch: "knowledge-modeling.relationship-context",
-              requestedSpatialScopeRefs: [...exact.read.workItem.spatialScopeRefs],
-              requestedSourceVersionRefs: [...exact.read.workItem.sourceVersionRefs],
-            })
-          : undefined;
+      const current = await this.#currentCandidateAuthorization(task, candidateSet);
       items.push({
         checkId: IDENTIFICATION_CONTEXT_CHECK_IDS_V1.currentAuthorization,
-        disposition: current === undefined ? "rejected" : "accepted",
-        ...(current === undefined ? { rejectionClass: "terminal" as const } : {}),
-        reasonCode:
-          current === undefined
-            ? IDENTIFICATION_CONTEXT_REASON_CODES_V1.authorizationRevoked
-            : IDENTIFICATION_CONTEXT_REASON_CODES_V1.accepted,
+        disposition: current ? "accepted" : "rejected",
+        ...(!current ? { rejectionClass: "terminal" as const } : {}),
+        reasonCode: !current
+          ? IDENTIFICATION_CONTEXT_REASON_CODES_V1.authorizationRevoked
+          : IDENTIFICATION_CONTEXT_REASON_CODES_V1.accepted,
         evidenceReferences: [],
       });
     }
@@ -1896,6 +1927,7 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
     const task = input.task;
     const increment = RetrievalReviewIncrementV1Schema.parse(input.candidate);
     const candidateSet = await this.#readCandidateSet(task, increment.candidateSetRef);
+    await this.#assertCurrentCandidateAuthorization(task, candidateSet);
     const byEntity = new Map(
       candidateSet.members.map((member) => [member.memberRef.reference.entityId, member]),
     );

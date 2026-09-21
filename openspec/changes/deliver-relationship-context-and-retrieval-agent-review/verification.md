@@ -4,12 +4,12 @@
 
 - Change：`deliver-relationship-context-and-retrieval-agent-review`（`orchestrated-delivery`）
 - 输入实现 HEAD：`e3fe616a05f16b3e75f342a75ed22ff749c1c1bd`
-- 当前验收代码基础 HEAD：`e3fe616a05f16b3e75f342a75ed22ff749c1c1bd`，叠加本任务未提交修复；正式输出 HEAD 待协调端形成 Git 检查点后填入。
-- 验收 Agent：C21 Finalizer，`task_20116417c841`
+- 当前验收代码基础 HEAD：`083623e802cc481b14fc643769a7f8fdbc89fd46`，叠加本次限定审计未提交修复；正式输出 HEAD 待协调端形成 Git 检查点后填入。
+- 验收 Agent：C21 Finalizer `task_20116417c841`；限定审计 Agent `task_d24cb6989f7c`
 
 ## 结论
 
-**BLOCKED（限定审计待完成）。** 当前已批准的 C21 实现与本轮修复通过下列行为、真实 PostgreSQL 和静态验证；权限范围、来源绑定与上下文结果身份的限定审计尚未完成，因此不能给出最终 PASS。C24 的生产冻结输入和识别图接线、C22 的风险候选生成属于后续 change，不计入本次结论。
+**PASS（当前工作树代码）。** 已批准的 C21 实现、Finalizer 修复和本轮唯一限定审计均通过行为、真实 PostgreSQL 和静态验证；本次审计修复尚待协调端形成 Git 检查点并将正式输出 HEAD 写回本工件。C24 的生产冻结输入和识别图接线、C22 的风险候选生成属于后续 change，不计入本次结论。
 
 ## 核验与修复证据
 
@@ -30,6 +30,7 @@
 3. `schema.ts` 与 `service.ts`：上下文结果实体身份包含工程、工作项和审阅任务；同工作项不同审阅任务互不覆盖。
 4. C21 核心及 Worker 现有测试：补冻结版本、越界范围、撤权重放、跨工作项引用、发布不符、五项缺失、双任务身份与零副作用回归；修正夹具授权摘要。
 5. `design.md`、`implementation-plan.md`：迁移路径措辞与 provider 的唯一迁移域 `risk-identification` 对齐；未移动迁移文件或修改 `000041`。
+6. 限定审计在 `service.ts` 统一复验冻结候选集与任务的授权摘要/上下文引用，并在冻结结果工具、补搜工具和正式收口前复验工作项当前空间与资料权限；C20 正式结果回读同时核对 actor。`context.test.ts` 覆盖“校验通过后撤权”的时序及跨 actor 正式结果拒绝。
 
 实际验证命令：
 
@@ -41,12 +42,14 @@ openspec validate deliver-relationship-context-and-retrieval-agent-review --type
 git diff --check
 ```
 
-结果：8 个测试文件、79 项测试全部通过（含真实 PostgreSQL 容器）；TypeScript 构建与全仓类型检查、依赖边界、定向 ESLint、Prettier、严格 OpenSpec 校验及 diff 空白检查均通过。
+结果：限定审计后 8 个测试文件、81 项测试全部通过（含真实 PostgreSQL 容器）；TypeScript 构建与全仓类型检查、依赖边界、定向 ESLint、Prettier、严格 OpenSpec 校验及 diff 空白检查均通过。
 
 ## 限定审计
 
-- 范围：C06 空间/资料授权签发与撤权重放、C21 来源及 C20 基线引用绑定、C03 审计事务回滚、同工作项双任务结果身份和稳定补搜恢复。
-- 结论与证据：**待协调端派发本轮唯一一次 Targeted Auditor 后补入**；审计必须针对最终检查点 HEAD，发现的批准范围内缺陷由审计任务内修复并回归。
+- 范围：C06 空间/资料授权与撤权时序、C21 来源及 C20 基线引用绑定、C03 审计事务回滚、同工作项双任务结果身份和稳定补搜恢复。
+- 结论：**PASS**。审计发现 C08 候选校验与 C21 工具读取/正式登记之间缺少当前授权复验，且 C20 正式结果未核对 actor；已在本任务内修复，并保持 C06/C08/C20 公共契约、迁移和事务语义不变。
+- 权限与来源证据：`context.test.ts` 新增校验后撤权用例，确认冻结读取、补搜和正式收口均拒绝，零 C20 调用、零正式登记与审计；跨 actor 的 C20 正式结果拒绝。原有测试覆盖错工程、越界资料、撤权重放、发布/来源引用不符及五项上下文身份。
+- 事务与恢复证据：真实 PostgreSQL 适配器测试覆盖追加表角色权限、同键重放、异载荷冲突、审计 FK 与回滚；C21/C08/C20 Worker 测试覆盖稳定补搜 queryId、候选版本、失败零正式结果及共享 runner。审计后运行上述 8 文件命令，81/81 通过；另运行 `pnpm exec tsc -b packages/core packages/adapters`、`pnpm typecheck`、`pnpm deps:check`、定向 ESLint/Prettier、严格 OpenSpec 校验及 `git diff --check`，均通过。
 
 ## 后续注意事项
 

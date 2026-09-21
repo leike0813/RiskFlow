@@ -103,6 +103,11 @@
 - **WHEN** 请求者拥有目标工程和全部目标资料的当前读取权限，输入引用、策略和活动代际均精确匹配
 - **THEN** 系统只将通过 PostgreSQL/C17 回查的命中写入受保护结果，并通过现有公共端口返回 `knowledgeQueryResultRef`
 
+#### Scenario: 既有知识端口透传已注入的混合检索
+
+- **WHEN** C17 知识门面注入 C20 检索实现并收到 `hybrid-evidence` 查询
+- **THEN** 门面把同一查询交给检索实现并原样返回其成功或失败结果；未注入时保留既有 `UNSUPPORTED_CONTRACT` 结果
+
 #### Scenario: 无权限候选不会泄露
 
 - **WHEN** Qdrant 候选的权限摘要与当前授权范围不一致，或事实回查拒绝访问

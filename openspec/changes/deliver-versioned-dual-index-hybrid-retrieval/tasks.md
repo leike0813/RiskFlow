@@ -1,6 +1,6 @@
 ## 1. 契约、依赖门与夹具
 
-- [ ] 1.1 [IP-00] 等待并核验主调度提供的公共发布事件、C17 同事务 Outbox 发件、C17 `readExact`、Qdrant OCI、`testcontainers@12.1.0` 及 package exports 检查点；运行 `pnpm exec vitest run packages/contracts/test/module-interfaces-events-workflows.test.ts packages/adapters/test/identification-knowledge/postgres-identification-knowledge-adapter.test.ts`，确认前置测试通过后再开始 C20。
+- [ ] 1.1 [IP-00] 核验已归档公共发布事件、C17 同事务 Outbox 发件及 `readExact` 检查点，并等待主调度提供 Qdrant OCI、`testcontainers@12.1.0` 及 package exports 机械前置；运行 `pnpm exec vitest run packages/contracts/test/module-interfaces-events-workflows.test.ts packages/adapters/test/identification-knowledge/postgres-identification-knowledge-adapter.test.ts`，确认前置测试通过后开始 C20；C17 检索委派由 4.3 完成。
 - [ ] 1.2 [IP-01] 新增 retrieval strict Schema、三个必要端口、子路径导出和核心表驱动契约测试，运行 `pnpm exec vitest run packages/core/test/retrieval/retrieval.test.ts` 验证策略、代际、结果、错误及非法边界。
 - [ ] 1.3 [IP-07] 新增固定中文合成数据集、版本化验收策略、夹具契约测试和共享真实容器 fixture，运行 `pnpm exec vitest run packages/adapters/test/retrieval/fixture-contract.test.ts` 确认 JSON 经 IP-01 Schema 解析且合成/测量边界标记完整。
 
@@ -20,17 +20,17 @@
 
 - [ ] 4.1 [IP-05] 新增版本化 Outbox projection handler，运行 `pnpm exec vitest run apps/worker/test/retrieval/projection-handler.test.ts` 验证合法/重复/坏事件、三类同代际、外部失败、部分 Qdrant 副作用重启续作及 ready 后原子切换。
 - [ ] 4.2 [IP-05] 新增 Worker composition、retrieval 导出并只修改 Worker 根导出，运行 `pnpm exec vitest run apps/worker/test/retrieval/composition.test.ts` 验证生产依赖均显式注入、非目标事件 ignored、无私表扫描/第二队列且资源预算传递完整。
-- [ ] 4.3 [IP-06] 通过既有 `KnowledgeModelingPortV1.retrieve(hybrid-evidence)` 和 C17 批准注入点完成调用方回归，不新增 API 路由；运行 `pnpm exec vitest run packages/contracts/test/module-interfaces-events-workflows.test.ts packages/adapters/test/identification-knowledge/postgres-identification-knowledge-adapter.test.ts packages/adapters/test/retrieval/hybrid-retrieval-service.test.ts`。
+- [ ] 4.3 [IP-06] 按 D13 在 C17 adapter 与 Worker 组合根新增可选 `retrievalDelegate`，注入 C20 检索服务；现有 C17 adapter 测试覆盖未注入 `UNSUPPORTED_CONTRACT`、已注入同一查询一次转发及成功/失败结果原样返回，C20 组合测试覆盖注入链；运行 `pnpm exec vitest run packages/contracts/test/module-interfaces-events-workflows.test.ts packages/adapters/test/identification-knowledge/postgres-identification-knowledge-adapter.test.ts packages/adapters/test/retrieval/hybrid-retrieval-service.test.ts apps/worker/test/retrieval/composition.test.ts`。
 
 ## 5. Web 与所有权边界
 
-- [ ] 5.1 [IP-08] 确认本 change 无 Web/UI 文件且未触碰 contracts、C17/C18/C19、主 specs、迁移 provider、中央测试清单或依赖文件；运行 `git diff --name-only 8fe4c1f07dd469ed15b7b6da6c4c98292dd476f5 -- apps/web packages/contracts openspec/specs packages/adapters/src/postgres/migrations/provider.ts`，除主调度前置检查点中的已授权 contracts 变更外应无 C20 修改。
+- [ ] 5.1 [IP-08] 确认本 change 无 Web/UI 文件；C17 仅 D13 三个获批文件变化，未触碰 contracts、C18/C19、主 specs、迁移 provider、中央测试清单或依赖文件；运行 `git diff --name-only cafdecfb78d1ebebf4fccd4260422f6cb4eb7556`，逐项对照 IP-ID allowlist 与主调度独立机械前置检查点，超出两者的路径停止并升级。
 
 ## 6. 最小验证
 
 - [ ] 6.1 [IP-08] 运行 C20 最小测试集：`pnpm exec vitest run packages/core/test/retrieval packages/adapters/test/retrieval apps/worker/test/retrieval --testTimeout=180000`，确认全部行为证据通过且没有 skipped Qdrant adapter/验收用例。
-- [ ] 6.2 [IP-08] 运行直接依赖回归：`pnpm exec vitest run packages/contracts/test/module-interfaces-events-workflows.test.ts packages/core/test/model.test.ts packages/adapters/test/model/llamacpp-model-gateway.test.ts packages/adapters/test/postgres/postgres-foundation.test.ts packages/adapters/test/artifacts/content-addressed-artifact-store.test.ts packages/adapters/test/identification-knowledge/postgres-identification-knowledge-adapter.test.ts`。
-- [ ] 6.3 [IP-08] 运行类型、静态、格式和依赖边界：`pnpm typecheck && pnpm exec eslint packages/core/src/retrieval packages/core/test/retrieval packages/adapters/src/retrieval packages/adapters/test/retrieval apps/worker/src/retrieval apps/worker/test/retrieval apps/worker/src/index.ts && pnpm exec prettier --check packages/core/src/retrieval packages/core/test/retrieval packages/adapters/src/retrieval packages/adapters/test/retrieval apps/worker/src/retrieval apps/worker/test/retrieval apps/worker/src/index.ts openspec/changes/deliver-versioned-dual-index-hybrid-retrieval && pnpm deps:check && pnpm deps:policy`。
+- [ ] 6.2 [IP-08] 运行直接依赖与 D13 接缝回归：`pnpm exec vitest run packages/contracts/test/module-interfaces-events-workflows.test.ts packages/core/test/model.test.ts packages/adapters/test/model/llamacpp-model-gateway.test.ts packages/adapters/test/postgres/postgres-foundation.test.ts packages/adapters/test/artifacts/content-addressed-artifact-store.test.ts packages/adapters/test/identification-knowledge/postgres-identification-knowledge-adapter.test.ts apps/worker/test/retrieval/composition.test.ts`。
+- [ ] 6.3 [IP-08] 运行类型、静态、格式和依赖边界：`pnpm typecheck && pnpm exec eslint packages/core/src/retrieval packages/core/test/retrieval packages/adapters/src/retrieval packages/adapters/test/retrieval packages/adapters/src/identification-knowledge/postgres-identification-knowledge-adapter.ts packages/adapters/test/identification-knowledge/postgres-identification-knowledge-adapter.test.ts apps/worker/src/retrieval apps/worker/test/retrieval apps/worker/src/identification-knowledge/composition.ts apps/worker/src/index.ts && pnpm exec prettier --check packages/core/src/retrieval packages/core/test/retrieval packages/adapters/src/retrieval packages/adapters/test/retrieval packages/adapters/src/identification-knowledge/postgres-identification-knowledge-adapter.ts packages/adapters/test/identification-knowledge/postgres-identification-knowledge-adapter.test.ts apps/worker/src/retrieval apps/worker/test/retrieval apps/worker/src/identification-knowledge/composition.ts apps/worker/src/index.ts openspec/changes/deliver-versioned-dual-index-hybrid-retrieval && pnpm deps:check && pnpm deps:policy`。
 
 ## 7. OpenSpec Verify
 

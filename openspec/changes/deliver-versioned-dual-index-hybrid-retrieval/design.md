@@ -1,8 +1,8 @@
 ## Context
 
-动机见 [proposal.md](./proposal.md#why)，行为边界见 [versioned-dual-index-hybrid-retrieval spec](./specs/identification/versioned-dual-index-hybrid-retrieval/spec.md)。当前基线 `8fe4c1f07dd469ed15b7b6da6c4c98292dd476f5` 已归档 C03 的 PostgreSQL 事务、Outbox、幂等消费者和迁移发现机制，以及 C05 的 `ModelGatewayPortV1.embed` 与内容寻址工件；C17 的已批准五工件固定了 `IdentificationKnowledgeReleaseReaderV1.readExact` 和检索证据库发布包，但 C17 尚在实现中。
+动机见 [proposal.md](./proposal.md#why)，行为边界见 [versioned-dual-index-hybrid-retrieval spec](./specs/identification/versioned-dual-index-hybrid-retrieval/spec.md)。本次重开规划的代码基线为 `cafdecfb78d1ebebf4fccd4260422f6cb4eb7556`；C03 已提供 PostgreSQL 事务、Outbox、幂等消费者和迁移发现，C05 已提供 `ModelGatewayPortV1.embed` 与内容寻址工件。已归档 C17 提供 `IdentificationKnowledgeReleaseReaderV1.readExact`、检索证据库发布包及获批的 `retrieve()` 可选委派语义，但当前实现尚缺委派选项与组合注入。
 
-C02 现有 `DomainEventV1` 尚无识别知识发布事件，C17 当前批准设计也未发 Outbox 事件。这与 C20 的唯一 Outbox 投影入口冲突。主调度已选择先归档 `evolve-identification-basis-published-event`，再受限修订 C17，使发布事务写入 `knowledge.identification-basis-published.v1`；二者是 C20 实现前置，C20 只消费最终公共事件，不复制临时形状。
+公共事件 `knowledge.identification-basis-published.v1` 已归档，C17 已在发布事务中写入对应 Outbox 事件。C20 只消费该公共事件，不复制临时形状；IP-00 在实施时核验当前检查点和回归证据。
 
 生产运行时是 Node.js 24。仓库已有原生 `fetch`、Zod 边界校验和 `@testcontainers/postgresql@12.1.0` 真实容器范式；锁文件中已有传递依赖 `testcontainers@12.1.0`，但未声明直接依赖，也没有 Qdrant 客户端。C20 的迁移号段为 `000040`～`000043`，当前方案只需 `000040`。
 
@@ -17,7 +17,7 @@ C02 现有 `DomainEventV1` 尚无识别知识发布事件，C17 当前批准设�
 **Non-Goals:**
 
 - 不设计 C21 的关系上下文、Agent 审阅/补搜、C22 风险候选或任何 P/C、矩阵、阈值逻辑。
-- 不新增 HTTP/Web 接口，不修改 C02/C17/C18/C19 生产文件；公共事件演进与 C17 发件由前置 change 完成。
+- 不新增 HTTP/Web 接口；公共事件演进与 C17 发件由前置 change 完成。C17 仅允许增加已批准的可选检索委派接缝，不改其余知识治理、授权或发布逻辑，也不修改 C02/C18/C19 生产文件。
 - 不实现通用搜索框架、第二套任务队列、自动垃圾回收器、Qdrant 内唯一正文存储或单路回退。
 
 ## Decisions
@@ -26,7 +26,7 @@ C02 现有 `DomainEventV1` 尚无识别知识发布事件，C17 当前批准设�
 
 C20 Worker 只接受前置 change 归档后的 `knowledge.identification-basis-published.v1`，并直接用 contracts 导出的严格 Schema 解析，不在 C20 定义兼容 DTO。事件只携带精确项目、识别知识发布组合、审计和因果引用；正文与成员集合由 `IdentificationKnowledgeReleaseReaderV1.readExact({ projectId, releaseRef, actorId, requestedAt, authorization })` 读取。事件引用、C17 `releaseBinding` 与严格 `RetrievalEvidenceBasePackageV1` 的风险机理库、标准库、案例库引用必须相等。
 
-实现前置按顺序为：归档公共事件 change → C17 发布事务通过 C03 Outbox 发件并有验收证据 → C20 合并/变基到两者检查点。任一前置未满足即停止实施。选择该路径是为了维持“发布事务与事件同提交”和单一事实源；放弃 C20 轮询 C17 私表、私有事件或全库扫描，因为这些方案会制造丢事件窗口和第二契约。
+实施时核验已归档公共事件和 C17 同事务 Outbox 发件的当前代码与验收证据；缺失即停止。选择该路径是为了维持“发布事务与事件同提交”和单一事实源；C20 不轮询 C17 私表、生成私有事件或全库扫描。
 
 ### D2. `packages/core/src/retrieval` 是 C20 唯一领域模块
 
@@ -36,7 +36,7 @@ C20 Worker 只接受前置 change 归档后的 `knowledge.identification-basis-p
 2. `service.ts`：纯确定性函数，负责生成稳定代际/成员身份、校验策略与代际状态、核对双索引清单、验证发布/权限摘要、计算验收门禁和装配结果；不访问网络或数据库。
 3. `ports.ts`：仅保留跨层必需端口——`RetrievalGenerationStoreV1`（PostgreSQL 状态与结果事实）、`RetrievalProjectionPortV1`（Qdrant create/upsert/query/inspect/delete）和 `HybridRetrievalInputReaderV1`（按现有查询三引用解析冻结输入）。C17 reader、C05 `ModelGatewayPortV1`、C04 `ArtifactStoreV1`、C03 `TransactionUnitV1`/`IdempotentConsumerV1` 直接复用，不再包一层。
 
-`HybridRetrievalService` 实现现有 `KnowledgeModelingPortV1.retrieve` 的 `hybrid-evidence` 分支；C17 façade 按其已批准注入点组合该服务，C20 不修改 façade。端口存在是四层边界和真实 adapter 测试替换点所需，不建立 factory、repository 基类或通用搜索抽象。
+`HybridRetrievalService` 实现现有 `KnowledgeModelingPortV1.retrieve` 的 `hybrid-evidence` 分支；C17 façade 经 D13 的可选接缝组合该服务。端口存在是四层边界和真实 adapter 测试替换点所需，不建立 factory、repository 基类或通用搜索抽象。
 
 ### D3. 策略和身份全部版本化且可重算
 
@@ -136,13 +136,19 @@ C20 新增并拥有：
 - `packages/adapters/src/retrieval/{qdrant-rest-client,postgres-retrieval-adapter,index}.ts`、`packages/adapters/test/retrieval/**` 和迁移 `000040`；
 - `apps/worker/src/retrieval/{projection-handler,composition,index}.ts` 与 `apps/worker/test/retrieval/**`。
 
-只对 `apps/worker/src/index.ts` 添加 C20 根导出；core/adapters 从各自新增的 `retrieval/index.ts` 提供子路径导出。由主调度按依赖门修改根 `package.json`、`pnpm-lock.yaml`、依赖政策，以及 `packages/core/package.json`、`packages/adapters/package.json` 的 `./retrieval` export，并提供检查点；C20 实现者不改任何 manifest/锁文件/依赖政策，不改 `packages/contracts/**`、C17/C18/C19 文件、根 workspace、`openspec/config.yaml`、主 specs、中央测试清单或迁移 provider。没有 API/Web 文件，因为现有公共端口已经覆盖查询入口。
+只对 `apps/worker/src/index.ts` 添加 C20 根导出；core/adapters 从各自新增的 `retrieval/index.ts` 提供子路径导出。C20 还拥有 D13 限定的三个 C17 接缝文件。由主调度按依赖门修改根 `package.json`、`pnpm-lock.yaml`、依赖政策，以及 `packages/core/package.json`、`packages/adapters/package.json` 的 `./retrieval` export，并提供检查点；C20 实现者不改任何 manifest/锁文件/依赖政策，不改 `packages/contracts/**`、三个获批文件以外的 C17 文件、C18/C19 文件、根 workspace、`openspec/config.yaml`、主 specs、中央测试清单或迁移 provider。没有 API/Web 文件，因为现有公共端口已经覆盖查询入口。
+
+### D13. C17 门面可选委派 C20 检索
+
+`PostgresIdentificationKnowledgeAdapterOptionsV1` 新增 `retrievalDelegate?: Pick<KnowledgeModelingPortV1, "retrieve">`，从 C02 公共端口类型引用，不新建查询或结果 DTO。门面在 `retrieve(query)` 内，未注入时保持当前 `UNSUPPORTED_CONTRACT`（`causalRunId: query.queryId`）行为；已注入时把原查询对象直接传给 `retrievalDelegate.retrieve(query)`，原样返回成功或失败结果，不在 C17 增加解析、授权、重试、错误映射或查询结果持久化。
+
+`PostgresIdentificationKnowledgeCompositionOptionsV1` 也声明同名可选项；`createPostgresIdentificationKnowledgeComposition` 只把该对象传给 C17 adapter，不把它加入必需依赖检查。C20 的 `createHybridRetrievalProjectionComposition` 组装 `HybridRetrievalService`，在其返回值中以 `retrievalDelegate: Pick<KnowledgeModelingPortV1, "retrieve">` 提供给调用方，由调用方传入 C17 composition 的同名选项；C17 组合根不创建第二个检索服务。既有 `assessmentBasisResolver` 仍是必需项。只允许修改 `packages/adapters/src/identification-knowledge/postgres-identification-knowledge-adapter.ts`、`apps/worker/src/identification-knowledge/composition.ts`、`packages/adapters/test/identification-knowledge/postgres-identification-knowledge-adapter.test.ts` 中与此委派直接相关的代码；C20 自有测试验证组合注入。
 
 RI 追踪：D1/D4/D5 覆盖 RI-S53 双索引发布投影；D6/D7 覆盖 RI-S54～RI-S55 的查询、双路召回与融合接缝；C20 只向 RI-S56 提供候选与可解释排序，Agent 审阅由 C21 实现。RA-S1～RA-S7、P/C 和矩阵不在本模块。
 
 ## Risks / Trade-offs
 
-- **[前置公共事件和 C17 发件尚未落地]** → 把两者设为实施硬门；合并检查点后先跑 contracts/C17 出站验收，再开始 C20。
+- **[公共事件或 C17 发件在实施检查点发生漂移]** → IP-00 先运行 contracts/C17 出站验收；不再满足同事务发件时停止。
 - **[Qdrant 1.19.0 server-side BM25 对中文工程词汇的质量不足]** → 双路指标独立硬门，策略冻结 tokenizer 参数；未达标即停止，不由 dense 总分掩盖，后续重新选型需新 change。
 - **[Outbox 消费事务包含有界外部构建，可能形成长事务]** → 策略限制成员、批次和墙钟，Qdrant 操作幂等且无业务锁；若实测超限，另开规格把步骤拆为既有 Outbox 驱动阶段。
 - **[一代一 collection 增加 collection 数与磁盘占用]** → 只保留活动、受引用和审计保留期内代际；由显式精确删除路径处理，不在 C20 加自动 GC。
@@ -152,7 +158,7 @@ RI 追踪：D1/D4/D5 覆盖 RI-S53 双索引发布投影；D6/D7 覆盖 RI-S54�
 
 ## Migration Plan
 
-1. 归档并集成 `evolve-identification-basis-published-event`，完成 C17 发布事务发件修订；保存 contracts、C17 Outbox 和 C17 reader 验收证据。
+1. 核验已归档 `evolve-identification-basis-published-event` 和 C17 发布事务发件、reader 的当前代码与验收证据；按 D13 在 C20 内补齐 C17 可选检索委派。
 2. 主调度按 §5.2 固定 Qdrant OCI 制品，声明 `testcontainers@12.1.0`，更新锁文件与依赖政策后形成 Git 检查点。
 3. 应用 `000040` migration；该步骤只创建空表/约束/授权，不触发历史全库扫描，也不改变现有活动服务。
 4. 部署 Qdrant 1.19.0 与 C20 adapter/Worker，运行真实容器/endpoint 契约、迁移、权限、质量和 p95 验收。
@@ -163,4 +169,4 @@ RI 追踪：D1/D4/D5 覆盖 RI-S53 双索引发布投影；D6/D7 覆盖 RI-S54�
 
 ## Open Questions
 
-无。原公共事件缺口已由主调度选择前置 contract evolution + C17 Outbox 发件方案闭合；真实甲方验收样例何时到位只影响数据集版本，不改变本设计或任务拆分。
+无。真实甲方验收样例何时到位只影响数据集版本，不改变本设计或任务拆分。

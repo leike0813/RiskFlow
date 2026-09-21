@@ -1372,6 +1372,7 @@ describe("worktree provisioning recovery", () => {
       }
       if (command === "sh") {
         state.setups.push(args[1]);
+        await options.onSetup?.(args[1], state);
         if (state.setupFailure && args[1] === state.setupFailure) {
           throw new Error("command failed: openspec init --tools codex,oh-my-pi: exit 1");
         }
@@ -1439,13 +1440,17 @@ describe("worktree provisioning recovery", () => {
     });
   }
 
-  function dispatchReady(exec, key) {
+  function dispatchReady(
+    exec,
+    key,
+    statusProvider = async () => ({ graph, snapshot: readySnapshot() }),
+  ) {
     return riskflowDispatch(
       { workItemId: "C17", expectedRevision: "revision-1", idempotencyKey: `dispatch-${key}` },
       {
         rootDir: process.cwd(),
         exec,
-        statusProvider: async () => ({ graph, snapshot: readySnapshot() }),
+        statusProvider,
       },
     );
   }
@@ -1539,16 +1544,63 @@ describe("worktree provisioning recovery", () => {
     }
   });
 
-  it("reports setup script failures as warnings without discarding the confirmed worktree", async () => {
-    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-provision-setup-"));
-    const { exec, state } = fakeExec(runtimeRoot, { setupFailure: SETUP_LINES[1] });
+  it("releases the runtime lock during fallback and rejects concurrent fact drift", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-provision-unlocked-"));
+    const setupStarted = Promise.withResolvers();
+    const continueSetup = Promise.withResolvers();
+    const { exec, calls } = fakeExec(runtimeRoot, {
+      onSetup: async (command) => {
+        if (command !== SETUP_LINES[0]) return;
+        setupStarted.resolve();
+        await continueSetup.promise;
+      },
+    });
+    let reads = 0;
+    const dispatch = dispatchReady(exec, "provision-unlocked", async () => {
+      reads += 1;
+      return {
+        graph,
+        snapshot:
+          reads === 1
+            ? readySnapshot()
+            : snapshot({ nodes: [node({ status: "running", phase: "planning" })] }),
+      };
+    }).then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
     try {
-      const result = await dispatchReady(exec, "provision-setup");
-      expect(result.worktreeSetupWarnings).toEqual([
-        { command: SETUP_LINES[1], message: expect.stringContaining("exit 1") },
+      await setupStarted.promise;
+      const concurrent = withRuntimeLock(process.cwd(), exec, async () => undefined);
+      const acquiredWhileSetupWaited = await Promise.race([
+        concurrent.then(() => true),
+        delay(100).then(() => false),
       ]);
-      expect(result.worker).toMatchObject({ state: "started" });
-      expect(state.envelope).toMatchObject({ worktreeId: identityRecord(runtimeRoot).id });
+      continueSetup.resolve();
+      const [outcome] = await Promise.all([dispatch, concurrent]);
+      expect(acquiredWhileSetupWaited).toBe(true);
+      expect(outcome.error).toMatchObject({ code: "stale_revision" });
+      expect(calls.some(({ args }) => args.includes("task-create"))).toBe(false);
+      expect(calls.some(({ args }) => args.includes("worker-start"))).toBe(false);
+    } finally {
+      continueSetup.resolve();
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("fails closed when a repo setup command fails", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-provision-setup-"));
+    const { exec, calls, state } = fakeExec(runtimeRoot, { setupFailure: SETUP_LINES[1] });
+    try {
+      const error = await dispatchReady(exec, "provision-setup").catch((thrown) => thrown);
+      expect(error).toMatchObject({
+        code: "worktree_setup_failed",
+        message: expect.stringContaining(SETUP_LINES[1]),
+      });
+      expect(error.message).toContain("closed the connection before responding");
+      expect(state.setups).toEqual(SETUP_LINES);
+      expect(calls.some(({ args }) => args.includes("task-create"))).toBe(false);
+      expect(calls.some(({ args }) => args.includes("worker-start"))).toBe(false);
     } finally {
       await rm(runtimeRoot, { recursive: true });
     }

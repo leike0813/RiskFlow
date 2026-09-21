@@ -568,13 +568,17 @@ function taskSpec(node, taskKind, envelopeOptions = {}) {
   return lines.join("\n");
 }
 
-async function createWorktreeForReadyNode(exec, invocation, rootDir, node) {
+async function createWorktreeForReadyNode(ctx, invocation, node) {
   try {
-    return await createWorktreeViaOrca(exec, invocation, rootDir, node);
+    return await createWorktreeViaOrca(ctx.exec, invocation, ctx.rootDir, node);
   } catch (error) {
     if (error instanceof ControlError) throw error;
     if (!ORCA_RUNTIME_FAILURE_PATTERN.test(String(error?.message ?? ""))) throw error;
-    return provisionWorktreeWithoutOrca(exec, invocation, rootDir, node, error);
+    const recovered = await ctx.lock.withoutLock(() =>
+      provisionWorktreeWithoutOrca(ctx.exec, invocation, ctx.rootDir, node, error),
+    );
+    await assertFactsUnchanged(ctx);
+    return recovered;
   }
 }
 
@@ -699,6 +703,18 @@ async function runRepoSetupScripts(exec, repo, worktreePath) {
   return warnings;
 }
 
+function worktreeSetupError(worktreePath, warnings, cause) {
+  const summary = warnings.map(({ command, message }) => `${command}: ${message}`).join("；");
+  return new ControlError(
+    "worktree_setup_failed",
+    `Orca 工作树创建失败（${cause.message}），回退已建立 ${worktreePath}，但仓库 setup 失败：${summary}`,
+    [
+      `修复并在 ${worktreePath} 重新执行失败的 setup 命令`,
+      "核对依赖与 OpenSpec 工具已就绪后，重新读取 riskflow_status 并使用新幂等键重试",
+    ],
+  );
+}
+
 // 身份只能来自实时事实：orca worktree list 中 repoId 相同、非主工作树、路径归一化后
 // 等于期望路径的记录必须恰有一条。取不到唯一身份就 fail-closed，绝不返回一个"可能对"
 // 的工作树。
@@ -762,16 +778,20 @@ async function provisionWorktreeWithoutOrca(exec, invocation, rootDir, node, cau
   const expectedPath = resolve(repo.path, repo.worktreeBasePath, repo.displayName, name);
   const baseRef = nonEmptyString(repo.worktreeBaseRef) ? repo.worktreeBaseRef : "main";
   const expectedHead = await resolveWorktreeBaseRef(exec, rootDir, baseRef, cause);
-  let setupWarnings = [];
   // 副作用已经发生是这次故障最主要的形态：先确认再建立，绝不重复建立。
   if ((await pathHead(exec, expectedPath)) !== expectedHead) {
+    let added = false;
     try {
       await addGitWorktree(exec, rootDir, expectedPath, name, baseRef, cause);
-      setupWarnings = await runRepoSetupScripts(exec, repo, expectedPath);
+      added = true;
     } catch (error) {
       // Orca 的延迟副作用可能正好在首次确认后落地，令 git add 因路径/分支
       // 已存在而失败。只有实时 HEAD 已等于基线时才继续，其余错误仍原样冒泡。
       if ((await pathHead(exec, expectedPath)) !== expectedHead) throw error;
+    }
+    if (added) {
+      const setupWarnings = await runRepoSetupScripts(exec, repo, expectedPath);
+      if (setupWarnings.length > 0) throw worktreeSetupError(expectedPath, setupWarnings, cause);
     }
   }
   const worktree = await takeBackWorktreeIdentity(
@@ -786,7 +806,6 @@ async function provisionWorktreeWithoutOrca(exec, invocation, rootDir, node, cau
   return {
     ...node,
     worktree,
-    ...(setupWarnings.length > 0 ? { worktreeSetupWarnings: setupWarnings } : {}),
   };
 }
 
@@ -1024,10 +1043,8 @@ export async function riskflowDispatch(input, options = {}) {
   return controlledMutation("dispatch", input, options, async (ctx) => {
     const invocation = resolveOrcaInvocation(options.orcaCommand);
     let node = ctx.node;
-    let worktreeSetupWarnings;
     if (!node.worktree && node.status === "ready") {
-      node = await createWorktreeForReadyNode(ctx.exec, invocation, ctx.rootDir, node);
-      worktreeSetupWarnings = node.worktreeSetupWarnings;
+      node = await createWorktreeForReadyNode(ctx, invocation, node);
     }
     const replanApprovalRef = input.replanApprovalRef;
     // 复用的排队尝试必须按它自己的角色启动：它的任务说明本来就属于那个角色，
@@ -1090,7 +1107,6 @@ export async function riskflowDispatch(input, options = {}) {
       taskId: task.taskId,
       runId,
       worker,
-      ...(worktreeSetupWarnings?.length ? { worktreeSetupWarnings } : {}),
     };
   });
 }

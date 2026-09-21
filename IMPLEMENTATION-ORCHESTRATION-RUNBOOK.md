@@ -129,6 +129,7 @@ pnpm orchestration:status --json
 直接取回身份，不重复建立；否则用 `git worktree add <path> -b <name> <baseRef>`（分支已存在时复用该分支）建立，再逐行执行仓库 setup 脚本。
 随后从 `orca worktree list --json` 取回 `repoId` 相同、非主工作树、路径唯一的记录，并校验 `id`/`path`/`head` 与请求基线一致。
 任一步不成立都 fail-closed：错误保留原始 Orca 文本并提示 `externalWorktreeVisibility`。此时先对账实时事实，不要换幂等键盲重试。
+回退的 git 建立、setup 与身份取回在 `lock.withoutLock` 中执行；复锁后立即重验工作项状态、当前尝试、main HEAD 和违规集，有任一漂移就在创建 Task 或启动 worker 前拒绝。
 
 前提：回退依赖仓库设置 `externalWorktreeVisibility: "show"`（`orca repo list --json` 可见）。关闭时 `git worktree add` 建立的工作树不会进入 Orca 列表，
 身份必然取不回，控制器按 fail-closed 处理；不要绕过它自行登记 Orca 私有元数据。
@@ -136,8 +137,8 @@ pnpm orchestration:status --json
 延迟副作用：判失败后先用 `orca worktree list --json` 看期望路径是否已经出现。控制器确认身份后不再等待 Orca，之后到达的副作用只会多出带 `-2` 一类后缀的工作树与分支；
 这些多出来的工作树在回收阶段按**完整 worktree ID** 处理（§9），不用 display name 猜测。
 
-setup 失败：回退执行仓库 setup 脚本时，任一行非零退出或超时只写入派发结果的结构化 `worktreeSetupWarnings`，已确认的工作树身份不作废。
-警告出现时按 §2 处理：保留输出，先核对工作树依赖与 OpenSpec 工具是否真的就绪，再继续派发。
+setup 失败：回退执行仓库 setup 脚本时，任一行非零退出或超时都以 `worktree_setup_failed` 终止该次派发，不创建 Task、不启动 worker，也不返回成功供给。
+保留失败命令、原始错误和已建立的工作树供对账；按 §2 修复并重新执行 setup，确认依赖与 OpenSpec 工具就绪后，再重新读取状态并使用新幂等键派发。
 
 ## 7. 活动 worktree 同步
 

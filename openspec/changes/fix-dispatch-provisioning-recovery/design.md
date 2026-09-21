@@ -36,8 +36,8 @@
 **D4：角色身份取自尝试本身。**
 复用分支的 `taskKind` 改为 `checkpoints.taskKind`，并以 `graph.policy.roles` 中存在对应角色为前置；不存在则 `ControlError`。`replanApprovalRef` 路径仍强制 `planning`；无排队尝试时仍用 `nextTaskKind`。
 
-**D5：setup 脚本失败不伪装成成功。**
-逐行执行并设置超时；任一行非零退出或超时都写入结构化 `setupWarnings` 返回体，与 Orca 的 `hookWarning` 语义一致。工作树身份本身不因脚本失败而作废（脚本内容属于仓库配置，不是供给契约），但调用方与运行手册都能看到。
+**D5：setup 脚本失败阻止派发。**
+逐行执行并设置超时；任一行非零退出或超时都以 `worktree_setup_failed` 暴露失败命令和原始错误，并在创建 Task 或启动 worker 前终止该次派发。已建立的工作树保留供对账和修复，但不得作为成功供给继续使用。
 
 **D6：回退只对运行时/传输失败触发。**
 回退的触发条件是 Orca 调用抛出**运行时不可用或响应丢失**类错误（`runtime_unavailable`、`closed the connection before responding`、`Timed out waiting for the Orca runtime to respond`、`Could not connect to the running Orca app`）。参数错误、命名冲突等业务错误仍然直接冒泡：这类错误下自行建立工作树会掩盖真实原因，而 Orca 的运行时故障不会。
@@ -45,7 +45,7 @@
 ## Risks / Trade-offs
 
 - **布局耦合**：期望路径依赖 `worktreeBasePath`/`displayName`。若 Orca 改布局，取回会失败并 fail-closed，错误信息指向这两个字段，不会被静默带错目录。
-- **非幂等 setup**：仅在 Orca CLI 失败后执行一次；仓库当前 setup 行（`pnpm install --frozen-lockfile`、`openspec init`、`mattpack init`、`codegraph init -i`）在已初始化的工作树上重复执行是安全的，且失败以 warning 暴露。
+- **非幂等 setup**：仅在控制器自建工作树后执行一次；仓库当前 setup 行（`pnpm install --frozen-lockfile`、`openspec init`、`mattpack init`、`codegraph init -i`）在已初始化的工作树上重复执行是安全的。失败时保留工作树供人工修复，当次派发 fail-closed。
 - **可见性设置**：回退依赖 `externalWorktreeVisibility: "show"`。关闭该设置时回退无法取回身份并 fail-closed；这是有意的，因为替代方案（自行登记 Orca 元数据）会写入 Orca 私有状态。
 - **延迟的异步副作用**：Orca 的创建可能在被判失败之后才落地（实测：`--setup skip` 的第二次同名调用在 30 秒超时后仍建立了带 `-2` 后缀的工作树与分支）。回退在期望路径确认身份后不再等待 Orca，因此延迟到达的副作用只会多出一个后缀工作树，不会改变已确认的身份；协调者在回收阶段按完整 worktree ID 处理这些多余项。
-- **回退期间的锁占用**：`worktree create` 的 30 秒等待与工作树建立都在运行时锁内，最坏情况会让并发的受控操作等待。当前规模（单 frontend 串行派发）可接受；若将来并行度提高，应把工作树供给移出锁外（与 `fix-long-step-revalidation-scope` 的锁让出模式一致）。
+- **回退期间的并发漂移**：Orca 首选路径保持原有锁语义；回退中的 `git worktree add` 和 setup 通过 `lock.withoutLock` 执行。复锁后按工作项状态、当前尝试、main HEAD 和违规集重验；任一依赖事实漂移都在 Task/worker 副作用前 fail-closed。

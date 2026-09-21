@@ -6,7 +6,7 @@
 - [x] 1.2 新增期望路径推导：`resolve(repo.path, repo.worktreeBasePath, repo.displayName, name)`，与 Orca 现有布局（`.orca/<displayName>/<name>`）一致
 - [x] 1.3 `createWorktreeForReadyNode` 改为 Orca 优先：调用成功保持原行为；调用失败时进入回退
 - [x] 1.4 回退第一步：期望路径已是本仓库 git 工作树且 HEAD 等于基线时直接取回身份，不重复建立
-- [x] 1.5 回退第二步：`git worktree add <path> -b <name> <baseRef>`（分支已存在时复用该分支），随后逐行执行仓库 setup 脚本并记录结构化 `setupWarnings`
+- [x] 1.5 回退第二步：在运行时锁外执行 `git worktree add <path> -b <name> <baseRef>`（分支已存在时复用该分支）与逐行 setup，复锁后重验依赖事实；setup 任一行失败都以结构化错误阻止 Task/worker 启动
 - [x] 1.6 回退第三步：从 `orca worktree list --json` 取回身份，匹配条件为 `repoId` 相同、非主工作树、路径归一化相等；命中必须唯一且含 `id`/`path`/`head`
 - [x] 1.7 取回后校验目录存在与 HEAD 等于请求基线；任一步不成立即抛 `ControlError`，保留原始 Orca 错误并提示 `externalWorktreeVisibility`
 

@@ -51,9 +51,14 @@ change 进入 `finalizing` 后，强模型 Finalizer MUST 在已批准语义范�
 - **AND** MUST 返回继续或移交 Finalizer 的下一动作
 
 #### Scenario: 获批后显式重新规划
-- **WHEN** 工作项已进入 `finalizing` 或 `paused`，且派发请求提供非空 `replanApprovalRef`
+- **WHEN** 工作项处于 `finalizing`、`finalized` 或 `paused`，且派发请求提供非空 `replanApprovalRef`
 - **THEN** 系统 MUST 创建 planning v2 信封并记录该批准引用与被取代的 `attemptGroup`
 - **AND** 没有批准引用的请求 MUST NOT 使阶段回退到 planning 或 implementing
+
+#### Scenario: 重开规划要求较早阶段当前尝试可被取代
+- **WHEN** 派发请求携带非空 `replanApprovalRef`，但当前 planning/implementing 尝试仍在活动（`queued`/`running`/`waiting`）或其结局为 `succeeded`
+- **THEN** 派发操作 MUST 拒绝该请求，且 MUST NOT 创建 planning v2 边界
+- **AND** MUST 返回与状态视图一致的下一动作（等待收口、集成或按批准另开一轮）
 
 #### Scenario: 接收过期验收
 - **WHEN** PASS 对应的产物 HEAD 与当前工作树 HEAD 不同
@@ -452,15 +457,21 @@ Planning、Finalizer 与 Targeted Auditor 的受控派发 MUST 先在目标 work
 - **THEN** 控制器拒绝 reconcile，且不创建 Run 或 Task
 
 ### Requirement: stale 终态残留只能经重验后回收
-cleanup 遇到已归档、主线验证通过、工作树干净、当前尝试成功收口且无状态违规的 stale 工作项时，MUST 只关闭状态投影列出的精确 terminal handles；随后 MUST 重读状态，并仅在同一工作项变为 `reclaimable` 时按完整 worktree ID 回收。任一前提不满足、关闭失败、事实漂移或重读后仍非 reclaimable 时 MUST fail-closed，MUST NOT force 删除。
+
+cleanup 遇到已归档、主线验证通过、工作树干净、当前尝试成功收口且无**其他**阻断违规的 stale 工作项时，MUST 只关闭状态投影列出的精确 terminal handles；随后 MUST 重读状态，并仅在同一工作项变为 `reclaimable` 时按完整 worktree ID 回收。回收就绪标记（`worktree_reclaim_pending`）MUST NOT 被当作阻断违规：它是状态视图对 stale/reclaimable 派生出的「待回收」就绪标记，不是冲突。任一其他前提不满足、关闭失败、事实漂移或重读后仍非 reclaimable 时 MUST fail-closed，MUST NOT force 删除。
 
 #### Scenario: 清理精确终态 terminal 后回收
-- **WHEN** 已归档成功工作项仅因若干终态 terminal 残留而为 stale
+- **WHEN** 已归档成功工作项仅因若干终态 terminal 残留而为 stale，且全局唯一的违规是该工作项的回收就绪标记
 - **THEN** 控制器关闭这些精确 handles、重读状态、确认 reclaimable 后按完整 ID 回收工作树
 
 #### Scenario: 活动或脏工作树拒绝自动清理
-- **WHEN** 工作树有未提交改动、主线未验证、尝试未成功收口、存在违规或关闭后仍非 reclaimable
+- **WHEN** 工作树有未提交改动、主线未验证、尝试未成功收口、存在回收就绪标记以外的违规，或关闭后仍非 reclaimable
 - **THEN** 控制器停止清理并保留工作树，不使用 force 或路径删除
+
+#### Scenario: 回收就绪标记不阻断任何受控动作
+- **WHEN** 全局违规中只含若干工作项的 `worktree_reclaim_pending`
+- **THEN** 派发、收口、集成与回收 MUST 按目标工作项自身的合规事实判定，MUST NOT 因这些标记被拒绝
+- **AND** 判定 MUST 仍按目标工作项自身是否转为 `reclaimable` 决定是否回收其工作树
 
 ### Requirement: 独立 Task 隔离 Agent session
 每个独立 Task MUST 使用新的 Agent session。已结束、失败、暂停、释放或长时间闲置的 terminal、Run、Dispatch 和上下文 MUST NOT 用于后续 Task；只有同一仍活动 Task 内的修复与回归可以连续执行。工作区信任恢复发生在 worker-start 前，MAY 复用当前 queued Task 的预热 terminal。活动 Agent 除 question、escalation、连接或进程故障及用户指令外 MUST NOT 接收额外终端输入、被停止或被释放。

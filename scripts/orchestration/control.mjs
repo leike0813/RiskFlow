@@ -765,8 +765,14 @@ async function provisionWorktreeWithoutOrca(exec, invocation, rootDir, node, cau
   let setupWarnings = [];
   // 副作用已经发生是这次故障最主要的形态：先确认再建立，绝不重复建立。
   if ((await pathHead(exec, expectedPath)) !== expectedHead) {
-    await addGitWorktree(exec, rootDir, expectedPath, name, baseRef, cause);
-    setupWarnings = await runRepoSetupScripts(exec, repo, expectedPath);
+    try {
+      await addGitWorktree(exec, rootDir, expectedPath, name, baseRef, cause);
+      setupWarnings = await runRepoSetupScripts(exec, repo, expectedPath);
+    } catch (error) {
+      // Orca 的延迟副作用可能正好在首次确认后落地，令 git add 因路径/分支
+      // 已存在而失败。只有实时 HEAD 已等于基线时才继续，其余错误仍原样冒泡。
+      if ((await pathHead(exec, expectedPath)) !== expectedHead) throw error;
+    }
   }
   const worktree = await takeBackWorktreeIdentity(
     exec,

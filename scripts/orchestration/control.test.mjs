@@ -1344,6 +1344,7 @@ describe("worktree provisioning recovery", () => {
       createError: options.createError === undefined ? RUNTIME_FAILURE : options.createError,
       existingHead: options.existingHead ?? null,
       setupFailure: options.setupFailure ?? null,
+      delayedSideEffectOnAdd: options.delayedSideEffectOnAdd ?? false,
       setups: [],
     };
     const exec = async (command, args = [], execOptions = {}) => {
@@ -1362,6 +1363,10 @@ describe("worktree provisioning recovery", () => {
           // 以便覆盖取回身份后的存在性校验。
           await mkdir(expectedPath(runtimeRoot), { recursive: true });
           state.worktrees = [identityRecord(runtimeRoot)];
+          if (state.delayedSideEffectOnAdd) {
+            state.existingHead = BASE_HEAD;
+            throw new Error("fatal: worktree path already exists");
+          }
           return "";
         }
       }
@@ -1516,6 +1521,19 @@ describe("worktree provisioning recovery", () => {
         taskKind: "planning",
         worktreeId: identityRecord(runtimeRoot).id,
       });
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("takes back a delayed Orca side effect that lands while git worktree add is running", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-provision-delayed-"));
+    const { exec, state } = fakeExec(runtimeRoot, { delayedSideEffectOnAdd: true });
+    try {
+      const result = await dispatchReady(exec, "provision-delayed");
+      expect(result.worker).toMatchObject({ state: "started" });
+      expect(state.envelope).toMatchObject({ worktreeId: identityRecord(runtimeRoot).id });
+      expect(state.setups).toEqual([]);
     } finally {
       await rm(runtimeRoot, { recursive: true });
     }

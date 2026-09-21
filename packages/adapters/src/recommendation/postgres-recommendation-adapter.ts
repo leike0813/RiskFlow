@@ -20,8 +20,10 @@ import {
 import {
   ApplicabilityConditionV1Schema,
   ASSESSMENT_CONFIGURATION_ARTIFACT_PURPOSE_CODE_V1,
+  IndicatorFieldMappingDocumentV1Schema,
+  JointTriggerPolicyDocumentV1Schema,
   MeasureLibraryDocumentV1Schema,
-  type MeasureLibraryContentV1,
+  MonitoringWarningThresholdDocumentV1Schema,
 } from "@riskflow/core/assessment-config";
 import { ApplicabilityMetadataSnapshotV1Schema } from "@riskflow/core/engineering-data/context-source";
 import {
@@ -73,6 +75,7 @@ import {
   primaryWarningRecordRef,
   recommendationFailureFrom,
   recommendationValidationPassed,
+  resolveTriggerIndicators,
   selectFrozenMeasures,
   toRecommendationModuleError,
   validateRecommendationCandidate,
@@ -536,15 +539,72 @@ export class PostgresRecommendationContextReader implements RecommendationContex
       kind: "content-artifact" as const,
       reference: measureMember.artifactRef.reference,
     };
-    const library = await this.#readMeasureLibrary(
-      input.requestId,
-      input.requestedAt,
-      authorization,
-      measureArtifactRef,
+    const configurationMembers = basisResult.data.configurationMembers;
+    const readMember = async (definitionType: string): Promise<unknown> => {
+      const member = configurationMembers.find((entry) => entry.definitionType === definitionType);
+      if (member === undefined)
+        failRecommendation("measure-candidates-unavailable", first.basisRef);
+      const artifactRef = {
+        kind: "content-artifact" as const,
+        reference: member.artifactRef.reference,
+      };
+      const document = await this.#readConfigurationDocument(
+        input.requestId,
+        input.requestedAt,
+        authorization,
+        artifactRef,
+        definitionType,
+      );
+      if (sha256CanonicalJson(document) !== member.contentDigest) {
+        failRecommendation("measure-candidates-unavailable", artifactRef);
+      }
+      return document;
+    };
+    const library = MeasureLibraryDocumentV1Schema.safeParse(await readMember("measure-library"));
+    const fieldMapping = IndicatorFieldMappingDocumentV1Schema.safeParse(
+      await readMember("indicator-field-mapping"),
     );
-    if (sha256CanonicalJson(library.document) !== measureMember.contentDigest) {
+    const monitoringThresholds = MonitoringWarningThresholdDocumentV1Schema.safeParse(
+      await readMember("monitoring-warning-threshold"),
+    );
+    const jointTriggerPolicy = JointTriggerPolicyDocumentV1Schema.safeParse(
+      await readMember("joint-trigger-policy"),
+    );
+    if (
+      !library.success ||
+      !fieldMapping.success ||
+      !monitoringThresholds.success ||
+      !jointTriggerPolicy.success
+    ) {
       failRecommendation("measure-candidates-unavailable", measureArtifactRef);
     }
+    const configurationSetRef = library.data.configurationSetRef;
+    const projectRevisionRef = library.data.projectRevisionRef.reference;
+    if (
+      [fieldMapping.data, monitoringThresholds.data, jointTriggerPolicy.data].some(
+        (document) =>
+          !sameRef(document.configurationSetRef, configurationSetRef) ||
+          !sameRef(document.projectRevisionRef.reference, projectRevisionRef),
+      )
+    ) {
+      failRecommendation("measure-candidates-unavailable", first.basisRef);
+    }
+    const triggerConfiguration = {
+      fieldMapping: fieldMapping.data.content,
+      monitoringThresholds: monitoringThresholds.data.content,
+      jointTriggerPolicy: jointTriggerPolicy.data.content,
+    };
+    const warnings = loaded.map((entry) => {
+      const resolution = resolveTriggerIndicators(
+        entry.warningRef.triggerIndicators.map((trigger) => trigger.indicatorItem),
+        triggerConfiguration,
+      );
+      return {
+        ...entry.warningRef,
+        resolvedTargetIndicatorIds: [...resolution.indicatorIds],
+        unresolvedTriggerItems: [...resolution.unresolvedItems],
+      };
+    });
 
     return {
       projectId: authorization.projectId,
@@ -556,9 +616,9 @@ export class PostgresRecommendationContextReader implements RecommendationContex
       measureLibraryReleaseRef,
       measureArtifactRef,
       measureContentDigest: measureMember.contentDigest,
-      measureLibrary: library.content,
+      measureLibrary: library.data.content,
       applicability: applicabilityConditionsOf(first.applicability),
-      warnings: loaded.map((entry) => entry.warningRef),
+      warnings,
       generationPolicyRef: first.inputSnapshot.responseGenerationPolicyRef,
       validationPolicyRef: first.inputSnapshot.responseValidationPolicyRef,
       agentPolicyRef: first.inputSnapshot.responseAgentPolicyRef,
@@ -640,6 +700,8 @@ export class PostgresRecommendationContextReader implements RecommendationContex
         },
         triggerType: warningRecord.data.triggerType,
         triggerIndicators: warningRecord.data.triggerIndicators,
+        resolvedTargetIndicatorIds: [],
+        unresolvedTriggerItems: [],
         evidenceReferences: warningRecord.data.evidenceReferences,
         assessmentRecordRef: {
           kind: "risk-assessment-record",
@@ -676,7 +738,7 @@ export class PostgresRecommendationContextReader implements RecommendationContex
     };
   }
 
-  async #readMeasureLibrary(
+  async #readConfigurationDocument(
     requestId: string,
     requestedAt: string,
     authorization: AuthorizationContextV1,
@@ -684,8 +746,9 @@ export class PostgresRecommendationContextReader implements RecommendationContex
       readonly kind: "content-artifact";
       readonly reference: { readonly entityId: string; readonly versionId: string };
     },
-  ): Promise<{ readonly document: unknown; readonly content: MeasureLibraryContentV1 }> {
-    const readId = `${requestId}:measure-library`;
+    definitionType: string,
+  ): Promise<unknown> {
+    const readId = `${requestId}:${definitionType}`;
     const handle = await this.#artifactStore.open(
       ArtifactReadRequestV1Schema.parse({
         schemaVersion: "1",
@@ -722,11 +785,7 @@ export class PostgresRecommendationContextReader implements RecommendationContex
     } catch {
       failRecommendation("measure-candidates-unavailable", artifactRef);
     }
-    const document = MeasureLibraryDocumentV1Schema.safeParse(parsed);
-    if (!document.success) {
-      failRecommendation("measure-candidates-unavailable", artifactRef);
-    }
-    return { document: parsed, content: document.data.content };
+    return parsed;
   }
 }
 
@@ -1075,6 +1134,7 @@ export class PostgresRecommendationAdapter
       const agentResult = valid.payload.agentTaskResultRef;
       const candidateRef = await this.#bindAgentResult({
         projectId: valid.projectId,
+        spatialScopeIds: verified.spatialScopeRefs.map((scope) => scope.reference.entityId),
         warningResponseTaskRef: valid.payload.warningResponseTaskRef,
         measureCandidateQueryResultRef: valid.payload.measureCandidateQueryResultRef,
         responseGenerationPolicyRef: valid.payload.responseGenerationPolicyRef,
@@ -1134,6 +1194,7 @@ export class PostgresRecommendationAdapter
    */
   async #bindAgentResult(input: {
     readonly projectId: string;
+    readonly spatialScopeIds: readonly string[];
     readonly warningResponseTaskRef: {
       readonly reference: { readonly entityId: string; readonly versionId: string };
     };
@@ -1155,6 +1216,30 @@ export class PostgresRecommendationAdapter
       });
     }
     const candidateRef = agentResult.candidateRef;
+    const candidateRow = await this.#readCandidateRow(
+      input.projectId,
+      candidateRef,
+      input.spatialScopeIds,
+    );
+    if (candidateRow === undefined) {
+      failRecommendation(
+        "recommendation-authorization-required",
+        candidateRef,
+        "AUTHORIZATION_DENIED",
+      );
+    }
+    const queryRow = await this.#readQueryById(
+      input.projectId,
+      { entityId: candidateRow.query_result_id, versionId: candidateRow.query_result_version_id },
+      input.spatialScopeIds,
+    );
+    if (queryRow === undefined) {
+      failRecommendation(
+        "recommendation-authorization-required",
+        candidateRef,
+        "AUTHORIZATION_DENIED",
+      );
+    }
     const task = await this.#agentTasks.getTask(agentResult.agentTaskRef);
     if (
       task === undefined ||
@@ -1174,18 +1259,6 @@ export class PostgresRecommendationAdapter
         reference: agentResult.agentTaskRef.reference,
       });
     }
-    const candidateRow = await this.#readCandidateRow(input.projectId, candidateRef);
-    if (candidateRow === undefined) {
-      failRecommendation(
-        "recommendation-authorization-required",
-        candidateRef,
-        "AUTHORIZATION_DENIED",
-      );
-    }
-    const queryRow = await this.#readQueryById(input.projectId, {
-      entityId: candidateRow.query_result_id,
-      versionId: candidateRow.query_result_version_id,
-    });
     const consistent =
       candidateRow.warning_response_task_id === input.warningResponseTaskRef.reference.entityId &&
       candidateRow.warning_response_task_version_id ===
@@ -1199,7 +1272,6 @@ export class PostgresRecommendationAdapter
       candidateRow.agent_task_type === RECOMMENDATION_TASK_TYPE_V1 &&
       candidateRow.agent_result_id === agentResult.reference.entityId &&
       candidateRow.agent_result_version_id === agentResult.reference.versionId &&
-      queryRow !== undefined &&
       queryRow.project_id === input.projectId &&
       queryRow.warning_response_task_id === candidateRow.warning_response_task_id &&
       queryRow.warning_response_task_version_id === candidateRow.warning_response_task_version_id;
@@ -1229,7 +1301,12 @@ export class PostgresRecommendationAdapter
     try {
       const verified = await this.#verify(valid, "warning-response.validate-and-record");
       const candidateRef = valid.payload.recommendationCandidateRef;
-      const candidateRow = await this.#readCandidateRow(valid.projectId, candidateRef);
+      const spatialScopeIds = verified.spatialScopeRefs.map((scope) => scope.reference.entityId);
+      const candidateRow = await this.#readCandidateRow(
+        valid.projectId,
+        candidateRef,
+        spatialScopeIds,
+      );
       if (candidateRow === undefined) {
         failRecommendation(
           "recommendation-authorization-required",
@@ -1237,12 +1314,17 @@ export class PostgresRecommendationAdapter
           "AUTHORIZATION_DENIED",
         );
       }
-      const queryRow = await this.#readQueryById(valid.projectId, {
-        entityId: candidateRow.query_result_id,
-        versionId: candidateRow.query_result_version_id,
-      });
+      const queryRow = await this.#readQueryById(
+        valid.projectId,
+        { entityId: candidateRow.query_result_id, versionId: candidateRow.query_result_version_id },
+        spatialScopeIds,
+      );
       if (queryRow === undefined) {
-        failRecommendation("recommendation-candidate-mismatch", candidateRef);
+        failRecommendation(
+          "recommendation-authorization-required",
+          candidateRef,
+          "AUTHORIZATION_DENIED",
+        );
       }
       const candidateSet = MeasureCandidateSetV1Schema.parse(queryRow.candidate_set_payload);
       const candidate = this.#readCandidatePayload(candidateRow);
@@ -1932,13 +2014,16 @@ export class PostgresRecommendationAdapter
   async #readCandidateRow(
     projectId: string,
     candidateRef: RecommendationCandidateRefV1,
+    spatialScopeIds: readonly string[],
   ): Promise<RecommendationCandidateRow | undefined> {
+    if (spatialScopeIds.length === 0) return undefined;
     return this.#db
       .selectFrom("business.recommendation_candidates")
       .selectAll()
       .where("project_id", "=", projectId)
       .where("candidate_id", "=", candidateRef.reference.entityId)
       .where("version_id", "=", candidateRef.reference.versionId)
+      .where("spatial_scope_entity_id", "in", spatialScopeIds)
       .executeTakeFirst();
   }
 
@@ -1964,14 +2049,19 @@ export class PostgresRecommendationAdapter
   async #readQueryById(
     projectId: string,
     ref: { readonly entityId: string; readonly versionId: string },
+    spatialScopeIds?: readonly string[],
   ): Promise<MeasureCandidateQueryRow | undefined> {
-    return this.#db
+    if (spatialScopeIds?.length === 0) return undefined;
+    let query = this.#db
       .selectFrom("business.measure_candidate_queries")
       .selectAll()
       .where("project_id", "=", projectId)
       .where("query_result_id", "=", ref.entityId)
-      .where("version_id", "=", ref.versionId)
-      .executeTakeFirst();
+      .where("version_id", "=", ref.versionId);
+    if (spatialScopeIds !== undefined) {
+      query = query.where("spatial_scope_entity_id", "in", spatialScopeIds);
+    }
+    return query.executeTakeFirst();
   }
 
   async #readQueryByInput(input: {

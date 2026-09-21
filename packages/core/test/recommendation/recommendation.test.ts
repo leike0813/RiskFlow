@@ -25,11 +25,13 @@ import {
   primaryWarningRecordRef,
   recommendationFailureFrom,
   recommendationValidationPassedAll,
+  resolveTriggerIndicators,
   selectFrozenMeasures,
   validateRecommendationCandidate,
   type MeasureCandidateSetV1,
   type RecommendationValidationOutcomeV1,
 } from "../../src/recommendation/index.js";
+import { c25ConfigurationDocuments } from "../risk-assessment/fixture.js";
 
 const digest = (seed: string): string => seed.repeat(64).slice(0, 64);
 const warningRef = (id: string): WarningRecordRefV1 => ({
@@ -99,12 +101,16 @@ const warning = (input: {
   readonly id: string;
   readonly triggerType: string;
   readonly indicatorItem: string;
+  readonly resolvedTargetIndicatorIds?: readonly string[];
+  readonly unresolvedTriggerItems?: readonly string[];
 }) => ({
   warningRecordRef: warningRef(input.id),
   triggerType: input.triggerType,
   triggerIndicators: [
     { indicatorItem: input.indicatorItem, triggerType: input.triggerType, actualValue: 1 },
   ],
+  resolvedTargetIndicatorIds: [...(input.resolvedTargetIndicatorIds ?? [input.indicatorItem])],
+  unresolvedTriggerItems: [...(input.unresolvedTriggerItems ?? [])],
   evidenceReferences: [
     {
       locator: { sourceSegmentId: `segment-${input.id}` },
@@ -126,8 +132,8 @@ const warning = (input: {
 });
 
 const WARNINGS = [
-  warning({ id: "warning-1", triggerType: "监测指标越限", indicatorItem: "threshold-1" }),
-  warning({ id: "warning-2", triggerType: "多指标联合规则命中", indicatorItem: "joint-1" }),
+  warning({ id: "warning-1", triggerType: "监测指标越限", indicatorItem: "indicator-1" }),
+  warning({ id: "warning-2", triggerType: "多指标联合规则命中", indicatorItem: "indicator-2" }),
   warning({ id: "warning-3", triggerType: "趋势/加速度/异常评分越限", indicatorItem: "trend-1" }),
 ];
 
@@ -166,7 +172,7 @@ const candidateSetOf = (input: {
     agentPolicyRef: { entityId: "agent-policy", versionId: "1" },
     reviewPolicyRef: { entityId: "review-policy", versionId: "1" },
     riskEventCategory: "突涌",
-    warnings: [...(input.warnings ?? WARNINGS)],
+    warnings: [...(input.warnings ?? WARNINGS.slice(0, 2))],
     candidates: input.candidates,
     inputDigest: digest("c"),
     frozenAt: "2033-04-05T06:07:08.000Z",
@@ -245,6 +251,24 @@ const selectFrozenMeasuresAll = (): ReturnType<typeof selectFrozenMeasures> =>
   });
 
 describe("C27 措施候选与三项确定性校验", () => {
+  it("冻结阈值和联合规则只经同版字段映射解析", () => {
+    const documents = c25ConfigurationDocuments();
+    const configuration = {
+      fieldMapping: documents["indicator-field-mapping"].content,
+      monitoringThresholds: documents["monitoring-warning-threshold"].content,
+      jointTriggerPolicy: documents["joint-trigger-policy"].content,
+    };
+    expect(resolveTriggerIndicators(["threshold-settlement-slope"], configuration)).toEqual({
+      indicatorIds: ["indicator-consequence-1"],
+      unresolvedItems: [],
+    });
+    expect(
+      resolveTriggerIndicators(["threshold-settlement-value", "joint-trend"], configuration),
+    ).toEqual({
+      indicatorIds: ["indicator-consequence-1"],
+      unresolvedItems: ["joint-trend", "threshold-settlement-value"],
+    });
+  });
   it("按预警逐项筛选并按措施身份合并触发关系", () => {
     const candidates = selectFrozenMeasuresAll();
     expect(candidates.map((entry) => entry.measure.measureId)).toEqual(["measure-a", "measure-b"]);
@@ -338,7 +362,7 @@ describe("C27 措施候选与三项确定性校验", () => {
       "target-indicator-unavailable: measure-a/indicator-2",
     );
     expect(outcome.results.triggerConsistency.issues).toContain(
-      "trigger-indicator-uncovered: measure-a/warning-1/threshold-1",
+      "trigger-indicator-uncovered: warning-2/indicator-2",
     );
     expect(outcome.results.standardsCompliance.passed).toBe(true);
     expect(outcome.results.siteFeasibility.passed).toBe(true);
@@ -347,9 +371,24 @@ describe("C27 措施候选与三项确定性校验", () => {
     ).toEqual([
       "trigger-consistency:target-indicator-unavailable",
       "trigger-consistency:trigger-indicator-uncovered",
-      "trigger-consistency:trigger-indicator-uncovered",
     ]);
-    expect(outcome.diagnostics[1]?.references).toEqual([warningRef("warning-1")]);
+    expect(outcome.diagnostics[1]?.references).toEqual([warningRef("warning-2")]);
+  });
+
+  it("策略有目标值但措施未覆盖预警触发指标时拒绝", () => {
+    const outcome = runValidation({
+      selections: [{ measureId: "measure-b", order: 1 }],
+      candidates: selectFrozenMeasuresAll().filter(
+        (entry) => entry.measure.measureId === "measure-b",
+      ),
+      warnings: [
+        warning({ id: "warning-1", triggerType: "监测指标越限", indicatorItem: "indicator-2" }),
+      ],
+    });
+    expect(outcome.results.triggerConsistency.passed).toBe(false);
+    expect(
+      outcome.diagnostics.some((entry) => entry.reasonCode === "trigger-indicator-uncovered"),
+    ).toBe(true);
   });
 
   it("规范证据缺失或禁忌命中时规范合规性失败", () => {

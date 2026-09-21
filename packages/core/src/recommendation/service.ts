@@ -31,7 +31,10 @@ import {
   MeasureLibraryContentV1Schema,
   selectMeasureCandidates,
   type ApplicabilityConditionV1,
+  type IndicatorFieldMappingContentV1,
+  type JointTriggerPolicyContentV1,
   type MeasureLibraryContentV1,
+  type MonitoringWarningThresholdContentV1,
 } from "../assessment-config/index.js";
 import { sha256CanonicalJson } from "../persistence/index.js";
 import {
@@ -56,6 +59,45 @@ import {
 /* -------------------------------------------------------------------------- */
 /* 冻结候选：按预警逐项求交并合并（D-03）                                       */
 /* -------------------------------------------------------------------------- */
+
+/** 只按冻结 C18 配置将阈值或联合规则展开为措施库使用的评估指标身份。 */
+export const resolveTriggerIndicators = (
+  triggerItems: readonly string[],
+  configuration: {
+    readonly fieldMapping: IndicatorFieldMappingContentV1;
+    readonly monitoringThresholds: MonitoringWarningThresholdContentV1;
+    readonly jointTriggerPolicy: JointTriggerPolicyContentV1;
+  },
+): { readonly indicatorIds: readonly string[]; readonly unresolvedItems: readonly string[] } => {
+  const indicators = new Set<string>();
+  const unresolved = new Set<string>();
+  for (const item of triggerItems) {
+    const rule = configuration.jointTriggerPolicy.rules.find((entry) => entry.ruleId === item);
+    const thresholdIds = rule?.monitoringThresholdIds ?? [item];
+    for (const thresholdId of thresholdIds) {
+      const threshold = configuration.monitoringThresholds.thresholds.find(
+        (entry) => entry.thresholdId === thresholdId,
+      );
+      if (threshold === undefined) {
+        unresolved.add(item);
+        continue;
+      }
+      const matches = configuration.fieldMapping.mappings.filter(
+        (mapping) =>
+          mapping.origin.kind !== "source-field" &&
+          mapping.origin.monitoringIndicator === threshold.monitoringIndicator &&
+          mapping.origin.parameterCode === threshold.parameterCode &&
+          mapping.origin.metric === threshold.metric,
+      );
+      if (matches.length !== 1) {
+        unresolved.add(item);
+        continue;
+      }
+      indicators.add(matches[0]!.targetIndicatorId);
+    }
+  }
+  return { indicatorIds: [...indicators].sort(), unresolvedItems: [...unresolved].sort() };
+};
 
 export interface SelectFrozenMeasuresInputV1 {
   readonly library: MeasureLibraryContentV1;
@@ -273,27 +315,42 @@ export const validateRecommendationCandidate = (
         });
       }
     }
-    for (const warning of candidateSet.warnings) {
-      const matched = selection.measure.warningRecordRefs.some((ref) =>
-        sameWarning(ref, warning.warningRecordRef),
+  }
+  for (const warning of candidateSet.warnings) {
+    const matchingSelections = selections.filter((selection) =>
+      selection.measure.warningRecordRefs.some((ref) => sameWarning(ref, warning.warningRecordRef)),
+    );
+    const covered = new Set(
+      matchingSelections.flatMap((selection) => selection.measure.measure.targetIndicatorIds),
+    );
+    for (const item of warning.unresolvedTriggerItems) {
+      triggerIssues.push(
+        issue(
+          "trigger-mapping-unavailable",
+          `${warning.warningRecordRef.reference.entityId}/${item}`,
+        ),
       );
-      if (!matched) continue;
-      for (const trigger of warning.triggerIndicators) {
-        if (!targetValues.has(trigger.indicatorItem)) {
-          triggerIssues.push(
-            issue(
-              "trigger-indicator-uncovered",
-              `${selection.measureId}/${warning.warningRecordRef.reference.entityId}/${trigger.indicatorItem}`,
-            ),
-          );
-          diagnostics.push({
-            checkId: "trigger-consistency",
-            reasonCode: "trigger-indicator-uncovered",
-            passed: false,
-            references: [warning.warningRecordRef],
-          });
-        }
-      }
+      diagnostics.push({
+        checkId: "trigger-consistency",
+        reasonCode: "trigger-mapping-unavailable",
+        passed: false,
+        references: [warning.warningRecordRef],
+      });
+    }
+    for (const indicatorId of warning.resolvedTargetIndicatorIds) {
+      if (covered.has(indicatorId) && targetValues.has(indicatorId)) continue;
+      triggerIssues.push(
+        issue(
+          "trigger-indicator-uncovered",
+          `${warning.warningRecordRef.reference.entityId}/${indicatorId}`,
+        ),
+      );
+      diagnostics.push({
+        checkId: "trigger-consistency",
+        reasonCode: "trigger-indicator-uncovered",
+        passed: false,
+        references: [warning.warningRecordRef],
+      });
     }
   }
 

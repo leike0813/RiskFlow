@@ -76,7 +76,13 @@ import {
   c25RevisionRef,
   c25Version,
 } from "../../../core/test/risk-assessment/fixture.js";
-import { ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1 } from "@riskflow/core/assessment-config";
+import {
+  ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1,
+  IndicatorFieldMappingDocumentV1Schema,
+  MeasureLibraryDocumentV1Schema,
+  MonitoringWarningThresholdDocumentV1Schema,
+  RiskAcceptanceThresholdDocumentV1Schema,
+} from "@riskflow/core/assessment-config";
 import {
   startWarningLifecycleFixture,
   type WarningLifecyclePostgresFixtureV1,
@@ -192,6 +198,7 @@ export interface RecommendationPostgresFixtureV1 {
   }): Promise<AgentTaskRefV1>;
   createCandidate(input: {
     readonly commandId: string;
+    readonly spatialScope?: "root" | "restricted";
     readonly warningResponseTaskRef: WarningResponseTaskRefV1;
     readonly measureCandidateQueryResultRef: KnowledgeQueryResultRefV1;
     readonly agentTaskResultRef: AgentTaskResultRefV1;
@@ -199,6 +206,7 @@ export interface RecommendationPostgresFixtureV1 {
   }): Promise<RecommendationResultV1>;
   validateAndRecord(input: {
     readonly commandId: string;
+    readonly spatialScope?: "root" | "restricted";
     readonly recommendationCandidateRef: RecommendationCandidateRefV1;
     readonly responseValidationPolicyRef: { readonly entityId: string; readonly versionId: string };
     readonly siteContextRef: { readonly entityId: string; readonly versionId: string };
@@ -232,8 +240,73 @@ export interface RecommendationPostgresFixtureV1 {
   close(): Promise<void>;
 }
 
-export const startRecommendationFixture = async (): Promise<RecommendationPostgresFixtureV1> => {
-  const c26 = await startWarningLifecycleFixture();
+export const startRecommendationFixture = async (
+  variant: "covered" | "missing-mapping" | "uncovered-target" = "covered",
+): Promise<RecommendationPostgresFixtureV1> => {
+  // 合成样本、待甲方复核：只让 value 阈值命中，并以同版唯一字段映射指向措施目标指标。
+  const baseDocuments = c25ConfigurationDocuments();
+  const configurationDocuments = {
+    ...baseDocuments,
+    "indicator-field-mapping": IndicatorFieldMappingDocumentV1Schema.parse({
+      ...baseDocuments["indicator-field-mapping"],
+      content: {
+        mappings: baseDocuments["indicator-field-mapping"].content.mappings.map((mapping) =>
+          variant !== "missing-mapping" && mapping.mappingId === "mapping-consequence-slope"
+            ? {
+                ...mapping,
+                mappingId: "mapping-consequence-value",
+                origin: {
+                  kind: "monitoring-value",
+                  monitoringIndicator: "地表沉降",
+                  parameterCode: "ground-settlement",
+                  metric: "value",
+                },
+                sourceUnit: "mm",
+                conversion: { kind: "identity" },
+              }
+            : mapping,
+        ),
+      },
+    }),
+    "monitoring-warning-threshold": MonitoringWarningThresholdDocumentV1Schema.parse({
+      ...baseDocuments["monitoring-warning-threshold"],
+      content: {
+        ...baseDocuments["monitoring-warning-threshold"].content,
+        thresholds: baseDocuments["monitoring-warning-threshold"].content.thresholds.map(
+          (threshold) =>
+            threshold.thresholdId === "threshold-settlement-value"
+              ? threshold
+              : {
+                  ...threshold,
+                  comparison:
+                    threshold.thresholdId === "threshold-frequency"
+                      ? { operator: "outside", lower: "0", upper: "1000" }
+                      : { operator: "gte", boundary: "999" },
+                },
+        ),
+      },
+    }),
+    "risk-acceptance-threshold": RiskAcceptanceThresholdDocumentV1Schema.parse({
+      ...baseDocuments["risk-acceptance-threshold"],
+      content: {
+        ...baseDocuments["risk-acceptance-threshold"].content,
+        thresholds: baseDocuments["risk-acceptance-threshold"].content.thresholds.map(
+          (threshold) => ({ ...threshold, maximumAcceptedLevelId: "level-4" }),
+        ),
+      },
+    }),
+    "measure-library": MeasureLibraryDocumentV1Schema.parse({
+      ...baseDocuments["measure-library"],
+      content: {
+        measures: baseDocuments["measure-library"].content.measures.map((measure) =>
+          variant === "uncovered-target" && measure.measureId === "measure-grouting"
+            ? { ...measure, targetIndicatorIds: ["indicator-possibility-2"] }
+            : measure,
+        ),
+      },
+    }),
+  };
+  const c26 = await startWarningLifecycleFixture({ configurationDocuments });
   const postgres = c26.c25.postgres;
   const db = postgres.runtime.db as unknown as Kysely<PostgresDatabase>;
   const access: LocalIdentityAccessV1 = postgres.access;
@@ -350,7 +423,6 @@ export const startRecommendationFixture = async (): Promise<RecommendationPostgr
   };
 
   // C18 措施库正文：夹具按 C18 公共文档形态发布，C27 adapter 经 C04 授权读取并 strict 解析。
-  const configurationDocuments = c25ConfigurationDocuments();
   const configurationMembers: {
     definitionType: string;
     releaseRef: unknown;
@@ -392,7 +464,9 @@ export const startRecommendationFixture = async (): Promise<RecommendationPostgr
   }[] = [];
   const basisReader: AssessmentBasisReleaseSetReaderV1 = {
     readAssessmentBasisReleaseSet: async (input) =>
-      measureAvailability === "missing"
+      measureAvailability === "missing" ||
+      input.assessmentBasisReleaseSetRef.reference.entityId !== "assessment-basis-c25" ||
+      input.assessmentBasisReleaseSetRef.reference.versionId !== "1"
         ? AssessmentBasisReleaseSetReadResultV1Schema.parse({
             kind: "unavailable",
             error: ModuleErrorV1Schema.parse({
@@ -438,6 +512,7 @@ export const startRecommendationFixture = async (): Promise<RecommendationPostgr
   const defaultValidation: Required<RecommendationValidationOverridesV1> = {
     targetIndicators: [
       { indicatorItem: "indicator-consequence-1", targetValue: 5 },
+      { indicatorItem: "indicator-possibility-2", targetValue: 5 },
       { indicatorItem: "threshold-settlement-value", targetValue: 7 },
       { indicatorItem: "threshold-frequency", targetValue: 0.2 },
       { indicatorItem: "threshold-settlement-slope", targetValue: 0.5 },
@@ -986,6 +1061,7 @@ export const startRecommendationFixture = async (): Promise<RecommendationPostgr
           branch: "warning-response.create-candidate",
           invocationId: input.commandId,
           requestedAt: C27_FIXTURE_TIME,
+          spatialScope: input.spatialScope,
         }),
         payload: {
           warningResponseTaskRef: input.warningResponseTaskRef,
@@ -1008,6 +1084,7 @@ export const startRecommendationFixture = async (): Promise<RecommendationPostgr
           branch: "warning-response.validate-and-record",
           invocationId: input.commandId,
           requestedAt: C27_FIXTURE_TIME,
+          spatialScope: input.spatialScope,
         }),
         payload: {
           recommendationCandidateRef: input.recommendationCandidateRef,

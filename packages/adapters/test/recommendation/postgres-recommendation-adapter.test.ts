@@ -45,8 +45,9 @@ describe("C27 处置建议 PostgreSQL 链", () => {
     readonly prefix: string;
     readonly assessments: number;
     readonly selections?: readonly { readonly measureId: string; readonly order: number }[];
+    readonly state?: RecommendationPostgresFixtureV1;
   }) => {
-    const state = fixture!;
+    const state = input.state ?? fixture!;
     const opened = await state.openWarnings({
       commandPrefix: `${input.prefix}-open`,
       assessments: input.assessments,
@@ -97,12 +98,23 @@ describe("C27 处置建议 PostgreSQL 链", () => {
         triggerTypes: string[];
         warningRecordRefs: { reference: { entityId: string } }[];
       }[];
-      warnings: { warningRecordRef: { reference: { entityId: string } } }[];
+      warnings: {
+        warningRecordRef: { reference: { entityId: string } };
+        resolvedTargetIndicatorIds: string[];
+        unresolvedTriggerItems: string[];
+      }[];
     };
     expect(candidateSet.candidates.map((entry) => entry.measure.measureId)).toEqual([MEASURE_GR]);
     const merged = candidateSet.candidates[0]!;
-    expect(merged.triggerTypes).toEqual(["多指标联合规则命中", "监测指标越限"]);
+    expect(merged.triggerTypes).toEqual(["监测指标越限"]);
     expect(candidateSet.warnings.length).toBeGreaterThanOrEqual(2);
+    expect(
+      candidateSet.warnings.every(
+        (warning) =>
+          warning.resolvedTargetIndicatorIds.includes("indicator-consequence-1") &&
+          warning.unresolvedTriggerItems.length === 0,
+      ),
+    ).toBe(true);
     const frozenWarningIds = candidateSet.warnings
       .map((entry) => entry.warningRecordRef.reference.entityId)
       .sort();
@@ -399,11 +411,55 @@ describe("C27 处置建议 PostgreSQL 链", () => {
     ).toBe(1);
   });
 
+  pgIt("冻结映射缺失或措施未覆盖已解析指标时待复核且无正式建议", async () => {
+    for (const variant of ["missing-mapping", "uncovered-target"] as const) {
+      const state = await startRecommendationFixture(variant);
+      try {
+        const { agent } = await freezeAndBind({
+          prefix: `c27-trigger-${variant}`,
+          assessments: 1,
+          state,
+        });
+        const result = await state.validateAndRecord({
+          commandId: `c27-trigger-${variant}-validate`,
+          recommendationCandidateRef: agent.candidateRef!,
+          responseValidationPolicyRef: state.validationPolicyRef,
+          siteContextRef: state.siteContextRef,
+        });
+        expect(result.kind === "succeeded" && result.result.kind).toBe("waiting-review");
+        const row = await state.db
+          .selectFrom("business.recommendation_validations")
+          .selectAll()
+          .where("candidate_id", "=", agent.candidateRef!.reference.entityId)
+          .executeTakeFirst();
+        expect(row?.trigger_consistency_passed).toBe(false);
+        expect(row?.standards_compliance_passed).toBe(true);
+        expect(row?.site_feasibility_passed).toBe(true);
+        expect(row?.review_task_id).toBeTruthy();
+        const evidence = row?.validation_payload as {
+          diagnostics: { reasonCode: string }[];
+        };
+        expect(
+          evidence.diagnostics.some(
+            (entry) =>
+              entry.reasonCode ===
+              (variant === "missing-mapping"
+                ? "trigger-mapping-unavailable"
+                : "trigger-indicator-uncovered"),
+          ),
+        ).toBe(true);
+        expect(await state.countRows("response_recommendations")).toBe(0);
+      } finally {
+        await state.close();
+      }
+    }
+  });
+
   pgIt("任一项失败或依据缺失时保留失败快照并进入复核", async () => {
     const state = fixture!;
     const missingTarget = await freezeAndBind({ prefix: "c27-fail-trigger", assessments: 1 });
     state.setValidationOverrides({
-      targetIndicators: [{ indicatorItem: "indicator-consequence-1", targetValue: 5 }],
+      targetIndicators: [{ indicatorItem: "indicator-possibility-2", targetValue: 5 }],
     });
     const triggerRejected = await state.validateAndRecord({
       commandId: "c27-fail-trigger-command",
@@ -581,6 +637,41 @@ describe("C27 处置建议 PostgreSQL 链", () => {
       stageCode: "warning-response.recommendation",
     });
     expect(await state.countRows("measure_candidate_queries")).toBe(baseline);
+
+    const {
+      opened: boundTask,
+      queryResultRef,
+      agent,
+    } = await freezeAndBind({
+      prefix: "c27-auth-bound",
+      assessments: 1,
+    });
+    const restrictedCreate = await state.createCandidate({
+      commandId: "c27-auth-restricted-create",
+      spatialScope: "restricted",
+      warningResponseTaskRef: boundTask.taskRef,
+      measureCandidateQueryResultRef: queryResultRef,
+      agentTaskResultRef: agent.agentResultRef!,
+      responseGenerationPolicyRef: state.generationPolicyRef,
+    });
+    const restrictedValidate = await state.validateAndRecord({
+      commandId: "c27-auth-restricted-validate",
+      spatialScope: "restricted",
+      recommendationCandidateRef: agent.candidateRef!,
+      responseValidationPolicyRef: state.validationPolicyRef,
+      siteContextRef: state.siteContextRef,
+    });
+    for (const result of [restrictedCreate, restrictedValidate]) {
+      expect(result.kind === "failed" && result.error.code).toBe("AUTHORIZATION_DENIED");
+    }
+    expect(await state.countReceiptsForCommand("c27-auth-restricted-create")).toBe(0);
+    expect(await state.countReceiptsForCommand("c27-auth-restricted-validate")).toBe(0);
+    expect(
+      await state.countCommandRows("recommendation_validations", "c27-auth-restricted-validate"),
+    ).toBe(0);
+    expect(
+      await state.countCommandRows("response_recommendations", "c27-auth-restricted-validate"),
+    ).toBe(0);
   });
 
   pgIt("审计写入失败时同事务回滚并按原幂等身份重试", async () => {

@@ -85,6 +85,8 @@ export const RecommendationFrozenWarningV1Schema = z.strictObject({
   warningRecordRef: WarningRecordRefV1Schema,
   triggerType: WarningTriggerTypeSchema,
   triggerIndicators: z.array(TriggerIndicatorSchema).min(1),
+  resolvedTargetIndicatorIds: uniqueByKey(IdentifierSchema, (value) => value, 0, 256),
+  unresolvedTriggerItems: uniqueByKey(IdentifierSchema, (value) => value, 0, 256),
   evidenceReferences: z.array(EvidenceReferenceSchema).min(1),
   assessmentRecordRef: RiskAssessmentRecordRefV1Schema,
   assessmentInputSnapshotRef: AssessmentInputSnapshotRefV1Schema,

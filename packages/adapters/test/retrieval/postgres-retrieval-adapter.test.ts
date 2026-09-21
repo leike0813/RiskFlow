@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { sql, type Kysely } from "kysely";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { DomainEventV1Schema } from "@riskflow/contracts/events";
 
 import {
   RetrievalActivationV1Schema,
@@ -15,6 +16,8 @@ import type { AtomicCommandV1, AtomicCommitV1 } from "@riskflow/core/persistence
 import type { AuthorizationContextRefV1 } from "@riskflow/contracts/ports";
 
 import { makePersistenceError } from "../../src/postgres/pool.js";
+import { createPostgresRuntime } from "../../src/postgres/pool.js";
+import { PostgresIdempotentConsumer } from "../../src/postgres/idempotent-consumer.js";
 import {
   down as retrievalDown,
   up as retrievalUp,
@@ -379,6 +382,107 @@ describe("PostgreSQL versioned hybrid retrieval facts", () => {
     expect(audits.rows[0]?.count).toBe("0");
   }, 60_000);
 
+  it("commits a permanent failure transition, audit and consumer receipt together", async () => {
+    const generation = makeGeneration("atomic-failure");
+    const worker = createPostgresRuntime(fixture!.postgres.worker);
+    const consumer = new PostgresIdempotentConsumer(worker.db);
+    const event = DomainEventV1Schema.parse({
+      schemaVersion: "1",
+      eventId: "retrieval-atomic-failure-event",
+      eventVersion: 1,
+      eventType: "engineering.inputs-ready.v1",
+      projectId: PROJECT_ID,
+      aggregateRef: {
+        kind: "project-revision",
+        reference: { entityId: PROJECT_ID, versionId: "v1" },
+      },
+      occurredAt: TIMESTAMP,
+      recordedAt: TIMESTAMP,
+      causationId: "retrieval-atomic-failure-command",
+      correlationId: "retrieval-atomic-failure-correlation",
+      producerCommandId: "retrieval-atomic-failure-command",
+      idempotencyKey: "retrieval-atomic-failure-key",
+      authorizationContextRef: generation.authorizationContextRef,
+      auditTrailRef: {
+        kind: "audit-trail",
+        reference: { entityId: "retrieval-atomic-failure-audit", versionId: "v1" },
+      },
+      payload: {
+        preparation: {
+          kind: "identification",
+          identificationPreparationSnapshotRef: {
+            kind: "identification-preparation-snapshot",
+            reference: { entityId: "retrieval-atomic-failure-preparation", versionId: "v1" },
+          },
+        },
+      },
+    });
+    const failedTransition = RetrievalGenerationTransitionV1Schema.parse({
+      schemaVersion: "1",
+      transitionRef: {
+        kind: "retrieval-generation-transition",
+        reference: { entityId: "generation-atomic-failure:9000", versionId: "quality-gate-failed" },
+      },
+      generationRef: generation.generationRef,
+      ordinal: 9_000,
+      status: "failed",
+      occurredAt: TIMESTAMP,
+      failureCode: "QUALITY_GATE_FAILED",
+      noteCode: "quality-gate-failed",
+    });
+    const consume = (abort: boolean) =>
+      consumer.consume("retrieval-atomic-failure", event, async (context) => {
+        await fixture!.adapter.ensureBuildingGeneration({
+          generation,
+          transitionRef: buildingTransition(generation).transitionRef,
+          actorRef: ACTOR_REF,
+          authorizationContextRef: generation.authorizationContextRef,
+          occurredAt: TIMESTAMP,
+          context,
+        });
+        await fixture!.adapter.appendTransition({
+          transition: failedTransition,
+          actorRef: ACTOR_REF,
+          authorizationContextRef: generation.authorizationContextRef,
+          contextRefs: [generation.identity.evidenceBaseReleaseRef],
+          context,
+        });
+        if (abort) throw makePersistenceError("TRANSACTION_FAILED", "retrieval.atomic-failure");
+        return { resultRef: generation.identity.evidenceBaseReleaseRef };
+      });
+    try {
+      await expect(consume(true)).rejects.toMatchObject({ code: "TRANSACTION_FAILED" });
+      expect(await countRows(fixture!, "retrieval_generations", "atomic-failure")).toBe(0);
+      expect(await countRows(fixture!, "retrieval_generation_transitions", "atomic-failure")).toBe(
+        0,
+      );
+      const pending = await sql<{ status: string }>`
+        SELECT status FROM outbox.consumer_receipts
+        WHERE consumer_name = 'retrieval-atomic-failure' AND event_id = ${event.eventId}
+      `.execute(worker.db);
+      expect(pending.rows[0]?.status).toBe("pending");
+      const beforeAudit = await sql<{ count: string }>`
+        SELECT count(*)::text AS count FROM audit.entries
+        WHERE audit_entry_id LIKE '%generation-atomic-failure%'
+      `.execute(worker.db);
+      expect(beforeAudit.rows[0]?.count).toBe("0");
+
+      expect((await consume(false)).replayed).toBe(false);
+      expect((await consume(false)).replayed).toBe(true);
+      expect(await fixture!.adapter.readGenerationStatus(generation.generationRef)).toBe("failed");
+      expect(await countRows(fixture!, "retrieval_generation_transitions", "atomic-failure")).toBe(
+        2,
+      );
+      const completed = await sql<{ status: string }>`
+        SELECT status FROM outbox.consumer_receipts
+        WHERE consumer_name = 'retrieval-atomic-failure' AND event_id = ${event.eventId}
+      `.execute(worker.db);
+      expect(completed.rows[0]?.status).toBe("completed");
+    } finally {
+      await worker.close();
+    }
+  }, 60_000);
+
   it("keeps one generation per identity input set", async () => {
     const generation = makeGeneration("identity");
     const first = await fixture!.adapter.ensureBuildingGeneration({
@@ -552,6 +656,18 @@ describe("PostgreSQL versioned hybrid retrieval facts", () => {
         contextRefs: [],
       }),
     ).toEqual({ kind: "activated" });
+    expect(
+      await fixture!.adapter.readCurrentActivation({
+        projectId: PROJECT_ID,
+        evidenceBaseReleaseRef: second.identity.evidenceBaseReleaseRef,
+      }),
+    ).toMatchObject({ generationRef: first.generationRef, activationOrdinal: 1 });
+    expect(
+      await fixture!.adapter.activateGeneration({
+        activation: makeActivation(second, 3, first),
+        contextRefs: [],
+      }),
+    ).toEqual({ kind: "activation-conflict" });
 
     const outcomes = await Promise.all([
       fixture!.adapter.activateGeneration({

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { z } from "zod";
 
 import {
   AuthorizationContextV1Schema,
@@ -731,6 +732,10 @@ type HybridQuery = Extract<KnowledgeRetrievalQueryV1, { kind: "hybrid-evidence" 
  * 混合检索查询服务（design D6）：当前授权 → 精确代际 → 双路检索 → 事实回查 → 受保护结果。
  * 任一步失败都不返回结果引用，也不降级到单路或旧代际。
  */
+const HybridQueryEnvelopeV1Schema = z.strictObject(
+  KnowledgeRetrievalQueryV1Schema.options[0].shape,
+);
+
 export class HybridRetrievalService {
   readonly #options: HybridRetrievalServiceOptionsV1;
   readonly #now: () => Date;
@@ -741,9 +746,9 @@ export class HybridRetrievalService {
   }
 
   async retrieve(query: KnowledgeRetrievalQueryV1): Promise<KnowledgeRetrievalResultV1> {
-    const parsed = KnowledgeRetrievalQueryV1Schema.safeParse(query);
-    if (parsed.success && parsed.data.kind === "hybrid-evidence") {
-      const hybridQuery = parsed.data;
+    const envelope = HybridQueryEnvelopeV1Schema.safeParse(query);
+    if (envelope.success) {
+      const hybridQuery = envelope.data;
       const authorization = hybridQuery.authorization;
       if (
         authorization.projectId !== hybridQuery.projectId ||
@@ -759,7 +764,10 @@ export class HybridRetrievalService {
           occurredAt: this.#now().toISOString(),
         });
       }
-      return this.#retrieveHybridEvidence(hybridQuery);
+      const parsed = KnowledgeRetrievalQueryV1Schema.safeParse(hybridQuery);
+      if (parsed.success && parsed.data.kind === "hybrid-evidence") {
+        return this.#retrieveHybridEvidence(parsed.data);
+      }
     }
     // 其他分支由后续 change（C21 等）实现；C20 保持既有公共契约的 UNSUPPORTED_CONTRACT，
     // 并且不把契约不匹配记入检索失败观测（那不是一次检索尝试）。

@@ -35,6 +35,7 @@ import {
   retrievalGenerationRefFor,
   type HybridRetrievalPolicyV1,
   type RetrievalActivationV1,
+  type RetrievalEvidenceBaseReleaseRefV1,
   type RetrievalGenerationRefV1,
   type RetrievalGenerationStoreV1,
   type RetrievalGenerationTransitionV1,
@@ -395,6 +396,7 @@ class GenerationStoreDouble implements RetrievalGenerationStoreV1 {
   readonly generations = new Map<string, RetrievalGenerationV1>();
   readonly transitions: RetrievalGenerationTransitionV1[] = [];
   readonly activations: RetrievalActivationV1[] = [];
+  readonly failureAudits: string[] = [];
   readonly queryResults = new Map<
     string,
     {
@@ -465,6 +467,10 @@ class GenerationStoreDouble implements RetrievalGenerationStoreV1 {
     this.transitions.push(input.transition);
   }
 
+  async recordProjectionFailure(input: { readonly eventId: string }): Promise<void> {
+    this.failureAudits.push(input.eventId);
+  }
+
   async readActiveGeneration(input: {
     readonly projectId: string;
     readonly policyRef: { entityId: string; versionId: string };
@@ -492,6 +498,22 @@ class GenerationStoreDouble implements RetrievalGenerationStoreV1 {
       (activation) =>
         activation.generationRef.reference.versionId === generationRef.reference.versionId,
     );
+  }
+
+  async readCurrentActivation(input: {
+    readonly projectId: string;
+    readonly evidenceBaseReleaseRef: RetrievalEvidenceBaseReleaseRefV1;
+  }): Promise<RetrievalActivationV1 | undefined> {
+    return [...this.activations]
+      .reverse()
+      .find(
+        (activation) =>
+          activation.projectId === input.projectId &&
+          activation.evidenceBaseReleaseRef.reference.entityId ===
+            input.evidenceBaseReleaseRef.reference.entityId &&
+          activation.evidenceBaseReleaseRef.reference.versionId ===
+            input.evidenceBaseReleaseRef.reference.versionId,
+      );
   }
 
   async activateGeneration(input: {
@@ -810,6 +832,47 @@ describe("versioned hybrid retrieval projection handler", () => {
     expect(projection.collections.get(expectedCollectionName)?.size).toBe(3);
   });
 
+  it("activates the next generation in a series after the policy changes", async () => {
+    const first = buildHandler({});
+    expect((await first.handler.handle(eventFor({}))).kind).toBe("projected");
+    const next = buildHandler({
+      consumer: first.consumer,
+      store: first.store,
+      projection: first.projection,
+      policy: { policyRef: { entityId: "retrieval-policy", versionId: "v2" } },
+    });
+
+    expect((await next.handler.handle(eventFor({ eventId: "event-c20-2" }))).kind).toBe(
+      "projected",
+    );
+    expect(first.store.activations).toHaveLength(2);
+    expect(first.store.activations[1]).toMatchObject({
+      activationOrdinal: 2,
+      previousGenerationRef: first.store.activations[0]?.generationRef,
+    });
+  });
+
+  it("rejects a build when the series activation changes before the final lock", async () => {
+    const { handler, store } = buildHandler({});
+    await handler.handle(eventFor({}));
+    const readCurrent = store.readCurrentActivation.bind(store);
+    let reads = 0;
+    store.readCurrentActivation = async (input) => {
+      const current = await readCurrent(input);
+      reads += 1;
+      return reads === 2 && current !== undefined
+        ? { ...current, activationOrdinal: current.activationOrdinal + 1 }
+        : current;
+    };
+
+    const outcome = await handler.handle(eventFor({ eventId: "event-c20-concurrent" }));
+    expect(outcome.kind).toBe("rejected");
+    if (outcome.kind !== "rejected") throw new Error("unreachable");
+    expect(outcome.failure.code).toBe("ACTIVATION_CONFLICT");
+    expect(outcome.failure.retryable).toBe(true);
+    expect(store.activations).toHaveLength(1);
+  });
+
   it("ignores non-target events without writing any C20 state", async () => {
     const { handler, consumer, store, projection } = buildHandler({});
     const otherEvent = DomainEventV1Schema.parse({
@@ -884,6 +947,38 @@ describe("versioned hybrid retrieval projection handler", () => {
     expect(store.activations).toHaveLength(0);
   });
 
+  it("does not complete the consumer receipt when the failed transition cannot be written", async () => {
+    const { handler, consumer, store, projection } = buildHandler({});
+    const inspect = projection.inspectGeneration.bind(projection);
+    projection.inspectGeneration = async (input) => {
+      const observation = await inspect(input);
+      return {
+        ...observation,
+        points: observation.points.map((point) => ({ ...point, hasSparseVector: false })),
+      };
+    };
+    const append = store.appendTransition.bind(store);
+    let fail = true;
+    store.appendTransition = async (input) => {
+      if (input.transition.status === "failed" && fail) throw new Error("failed-transition-write");
+      return append(input);
+    };
+
+    await expect(handler.handle(eventFor({}))).rejects.toThrow("failed-transition-write");
+    expect(consumer.receipts.get(`${HYBRID_RETRIEVAL_CONSUMER_NAME_V1}/event-c20-1`)?.status).toBe(
+      "pending",
+    );
+    fail = false;
+    expect((await handler.handle(eventFor({}))).kind).toBe("rejected");
+    expect(consumer.receipts.get(`${HYBRID_RETRIEVAL_CONSUMER_NAME_V1}/event-c20-1`)?.status).toBe(
+      "completed",
+    );
+    await handler.handle(eventFor({}));
+    expect(store.transitions.filter((transition) => transition.status === "failed")).toHaveLength(
+      1,
+    );
+  });
+
   it("reports an activation conflict as a retryable rejection without touching history", async () => {
     const { handler, store } = buildHandler({});
     store.simulateActivationConflict = true;
@@ -928,6 +1023,7 @@ describe("versioned hybrid retrieval projection handler", () => {
     if (outcome.kind !== "rejected") throw new Error("unreachable");
     expect(outcome.failure.code).toBe("SOURCE_FACT_DRIFT");
     expect(store.activations).toHaveLength(0);
+    expect(store.failureAudits).toEqual(["event-c20-1"]);
   });
 
   it("passes the versioned resource budget into the member embedding batches", async () => {

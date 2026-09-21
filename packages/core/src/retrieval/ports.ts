@@ -10,6 +10,7 @@ import type { TransactionContextV1 } from "../persistence/index.js";
 
 import type {
   HybridRetrievalInputRefsV1,
+  HybridRetrievalFailureV1,
   HybridRetrievalPolicyV1,
   HybridRetrievalQueryInputV1,
   RetrievalActivationV1,
@@ -60,6 +61,16 @@ export interface RetrievalGenerationStoreV1 {
     readonly contextRefs: readonly ContractReferenceV1[];
     readonly context?: TransactionContextV1;
   }): Promise<void>;
+  /** 尚未创建代际时，把永久失败审计与消费者回执写在同一事务。 */
+  recordProjectionFailure(input: {
+    readonly projectId: string;
+    readonly eventId: string;
+    readonly targetRef: RetrievalEvidenceBaseReleaseRefV1;
+    readonly failure: HybridRetrievalFailureV1;
+    readonly actorRef: string;
+    readonly authorizationContextRef: AuthorizationContextRefV1;
+    readonly context: TransactionContextV1;
+  }): Promise<void>;
   /** 精确读取与发布、策略和授权摘要匹配的 active + ready 代际；无匹配返回 undefined。 */
   readActiveGeneration(input: {
     readonly projectId: string;
@@ -72,6 +83,13 @@ export interface RetrievalGenerationStoreV1 {
     generationRef: RetrievalGenerationRefV1,
     context?: TransactionContextV1,
   ): Promise<RetrievalActivationV1 | undefined>;
+  /** 读取系列最近激活；最终读取在同一事务内加系列锁，构建前快照不加锁。 */
+  readCurrentActivation(input: {
+    readonly projectId: string;
+    readonly evidenceBaseReleaseRef: RetrievalEvidenceBaseReleaseRefV1;
+    readonly lock?: boolean;
+    readonly context?: TransactionContextV1;
+  }): Promise<RetrievalActivationV1 | undefined>;
   /** compare-and-swap 激活：基于当前活动版本追加 activation，失配返回冲突且不改写历史。 */
   activateGeneration(input: {
     readonly activation: RetrievalActivationV1;

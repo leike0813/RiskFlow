@@ -2,17 +2,17 @@
 
 验证对象：`deliver-versioned-dual-index-hybrid-retrieval`；实际 schema：`riskflow-delivery`。该 schema 仅定义 proposal、specs、design、implementation-plan、tasks 五个规划工件，故本报告作为 change 目录内的验收记录，不修改 schema。
 
-输入及当前工作树 HEAD：`1c757649d3975cf9e57835bc6c56b79f92694dca`。以下修复和本报告尚未提交；最终实现检查点须由协调端审阅后形成。
+初次核验输入 HEAD：`1c757649d3975cf9e57835bc6c56b79f92694dca`；本次限定审计输入与产物 HEAD：`1c22ddba84fa19fb840e89c1d696f3a8e5b9904f`。本次修复和报告尚未提交；检查点须由协调端审阅后形成。
 
 ## Summary
 
 | 维度 | 结果 |
 | --- | --- |
-| 完整性 | 10 项 Requirement、30 个 Scenario 均对应实现与可运行证据；独立核验完成，实施任务 18/18 已勾选；限定审计为后续独立门禁 |
-| 正确性 | C20-FIN-01～05 在批准范围内修复；C20 检索套件 8 files / 184 tests、直接依赖 7 files / 104 tests 通过；真实 Qdrant 七项硬门通过 |
+| 完整性 | 10 项 Requirement、30 个 Scenario 均对应实现与可运行证据；独立核验和唯一限定审计完成，实施任务 18/18 已勾选 |
+| 正确性 | C20-FIN-01～05 与 C20-AUD-01～03 在批准范围内修复；最终 C20 检索套件 8 files / 188 tests、初次直接依赖 7 files / 104 tests 通过；真实 Qdrant 七项硬门通过 |
 | 一致性 | D1～D13、IP-00～IP-08 的事实入口、模块边界、代际/权限/结果收口保持；本轮未修改公共 contracts、迁移、依赖或 C17 接缝 |
 
-当前评估：产品回归通过；本轮修改涉及权限，最终结论待同一收尾轮次的一次限定审计填入下节。审计完成前状态为 **BLOCKED（待限定审计）**。
+当前评估：产品回归与唯一限定审计均通过；最终结论和本次运行证据见末节。
 
 ## Finding 与修复
 
@@ -71,6 +71,28 @@ D1～D13 对应的发布事实入口、C20 领域单一模块、版本化身份/
 
 ## 限定审计与剩余事项
 
-本轮修复涉及权限过滤，按 implementation-plan §8 须在同一收尾轮次审计权限、事务、代际关键状态机和语义 merge。重点核对授权顺序与 scope 摘要过滤、跨工程/跨空间召回隔离、point ID 唯一性，以及本轮修复与既有代际状态和主线合入语义的关系。结论由协调端派发的唯一一次限定审计追加至本节；完成前不判定 PASS。
+本轮修复涉及权限过滤，按 implementation-plan §8 对授权顺序与 scope 摘要过滤、跨工程/跨空间召回隔离、point ID 唯一性、事务和代际关键状态机做了唯一一次限定审计，结论见下节。
 
-当前无已知产品实现 finding。协调端尚需组织唯一一次限定审计并形成 Git 检查点；本 worker 不提交、不合并、不归档。
+上述为初次核验结论；唯一一次限定审计的实时结论见下节。协调端尚需审阅检查点；本 worker 不提交、不合并、不归档。
+
+## 唯一一次限定审计（输入 HEAD `1c22ddba84fa19fb840e89c1d696f3a8e5b9904f`）
+
+审计范围：权限、事务、代际关键状态机及语义合并。对照 D5/D6、实施计划 4.1/4.2、生产调用链和现有测试发现以下三项实现偏差；协调端明确批准在本任务内修复，当前结论见本节末尾。
+
+1. **C20-AUD-01，第二代激活无法完成——已修复。** Worker 原先固定 `activationOrdinal: 1`，且按新策略和授权摘要过滤旧代际。现在构建前记录系列当前激活快照；最后在同一消费事务取得系列级 advisory lock，复读当前激活，检查快照未变，再以当前最大序号加一提交 CAS。PostgreSQL adapter 同时拒绝跳号和失配；成功后追加新代际 active、旧代际 superseded。测试覆盖同系列第二代序号 2、策略变更、并发一个胜者、过期快照冲突和不覆盖旧事实。
+2. **C20-AUD-02，权限拒绝回归失败——已修复。** 公共查询 Schema 自身会因 capability、project、actor 不匹配而 `safeParse` 失败，旧服务因此错误返回 `UNSUPPORTED_CONTRACT`。现在服务复用公共分支的字段 Schema 先确认结构，再在目标读取前拒绝上述权限不匹配，最后运行完整公共 Schema；三例均返回同形 `AUTHORIZATION_DENIED`，无 input reader、代际、Qdrant 或事实读取。真正的契约漂移仍走 `UNSUPPORTED_CONTRACT`。
+3. **C20-AUD-03，永久投影失败的回执与状态不原子——已修复。** 永久失败在 C03 消费回调内追加 `failed` transition 及审计；尚未创建代际的失败直接在同一事务追加结构化失败审计。仅当这些写入成功后才提交 completed 回执；写入异常上抛并回滚，重投复用同一事件身份。真实 PostgreSQL/C03 测试注入事务失败，确认代际、transition、审计均回滚且回执保持 pending；成功重投一次，随后同事件只重放回执，不再写第二份失败事实。
+
+首次定向复现命令：`pnpm exec vitest run packages/adapters/test/retrieval/postgres-retrieval-adapter.test.ts apps/worker/test/retrieval/projection-handler.test.ts packages/adapters/test/retrieval/hybrid-retrieval-service.test.ts --testTimeout=180000`，结果 **2 files passed、1 file failed；38 passed、3 failed**，失败均为权限预检期望 `AUTHORIZATION_DENIED`、实际 `UNSUPPORTED_CONTRACT`。修复后同一命令为 **3 files / 44 tests passed**；后续新增过期快照用例单独运行 Worker 文件 **13 tests passed**。
+
+**事务机制差异：** D5 原文写 serializable；实际 C03 `PostgresIdempotentConsumer.consume` 环境事务为 PostgreSQL READ COMMITTED，且在调用 C20 前已读取回执，无法在 C20 内提升隔离级别。协调端明确接受同一环境事务中的系列级 `pg_advisory_xact_lock` 加锁后复读及 CAS 作为等价机制。锁随提交/回滚释放；后续处理者取锁后读取已提交的胜者，失配返回可重试 `ACTIVATION_CONFLICT`。本轮未改 C03、公共 contracts、`000040` 迁移、依赖或 C17 接缝，亦未发现语义 merge 冲突。
+
+### 最终回归与收口
+
+- `pnpm exec vitest run packages/core/test/retrieval packages/adapters/test/retrieval apps/worker/test/retrieval --testTimeout=180000`：**8 files / 188 tests passed**，包含真实 Qdrant adapter 与验收测试，无 skipped 用例。
+- `pnpm exec vitest run apps/worker/test/retrieval/projection-handler.test.ts --testTimeout=180000`：新增过期快照用例后 **13 tests passed**；PostgreSQL/C03 失败回滚、并发 CAS 与权限定向测试也包含在上述全套回归中。
+- `pnpm exec tsc -b --pretty false`：exit 0。
+- `pnpm exec eslint packages/core/src/retrieval/service.ts packages/core/src/retrieval/ports.ts packages/adapters/src/retrieval/postgres-retrieval-adapter.ts apps/worker/src/retrieval/projection-handler.ts apps/worker/test/retrieval/projection-handler.test.ts packages/adapters/test/retrieval/postgres-retrieval-adapter.test.ts`：exit 0；同一文件清单的 `pnpm exec prettier --check`：通过；`pnpm exec prettier --check openspec/changes/deliver-versioned-dual-index-hybrid-retrieval/verification.md`：通过。
+- `openspec validate deliver-versioned-dual-index-hybrid-retrieval --type change --strict --no-interactive`：valid；`openspec status --change deliver-versioned-dual-index-hybrid-retrieval --json`：`riskflow-delivery` 五个规划工件 done、任务 18/18；`git diff --check`：通过。
+
+**最终结论：PASS。** C20-AUD-01～03 已在当前唯一限定审计任务内修复并回归，无未解决产品 finding。产物 Git HEAD 仍为输入 `1c22ddba84fa19fb840e89c1d696f3a8e5b9904f`；本任务修改的七个文件尚未提交，需协调端审阅并形成检查点。本 worker 不提交、不合并、不归档。

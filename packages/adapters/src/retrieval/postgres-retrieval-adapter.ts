@@ -6,6 +6,7 @@ import {
   RetrievalGenerationTransitionV1Schema,
   RetrievalGenerationV1Schema,
   assertGenerationTransition,
+  type HybridRetrievalFailureV1,
   type RetrievalActivationV1,
   type RetrievalEvidenceBaseReleaseRefV1,
   type RetrievalGenerationRefV1,
@@ -504,6 +505,30 @@ export class PostgresRetrievalAdapter implements RetrievalGenerationStoreV1 {
     );
   }
 
+  async recordProjectionFailure(input: {
+    readonly projectId: string;
+    readonly eventId: string;
+    readonly targetRef: RetrievalEvidenceBaseReleaseRefV1;
+    readonly failure: HybridRetrievalFailureV1;
+    readonly actorRef: string;
+    readonly authorizationContextRef: AuthorizationContextRefV1;
+    readonly context: TransactionContextV1;
+  }): Promise<void> {
+    await this.#appendAuditRow(
+      asRetrievalTransaction(input.context),
+      auditFor({
+        auditEntryId: auditEntryIdFor("projection-failure", input.eventId),
+        projectId: input.projectId,
+        action: `retrieval-projection.reject.${input.failure.code}`,
+        targetRef: input.targetRef,
+        actorRef: input.actorRef,
+        authorizationContextRef: input.authorizationContextRef,
+        occurredAt: input.failure.occurredAt,
+        recordedAt: nowIso(this.#now),
+      }),
+    );
+  }
+
   async activateGeneration(input: {
     readonly activation: RetrievalActivationV1;
     readonly contextRefs: readonly ContractReferenceV1[];
@@ -758,6 +783,27 @@ export class PostgresRetrievalAdapter implements RetrievalGenerationStoreV1 {
     }
   }
 
+  async readCurrentActivation(input: {
+    readonly projectId: string;
+    readonly evidenceBaseReleaseRef: RetrievalEvidenceBaseReleaseRefV1;
+    readonly lock?: boolean;
+    readonly context?: TransactionContextV1;
+  }): Promise<RetrievalActivationV1 | undefined> {
+    try {
+      if (input.context !== undefined && input.lock !== false) {
+        await this.#lockActivationSeries(
+          asRetrievalTransaction(input.context),
+          input.projectId,
+          input.evidenceBaseReleaseRef,
+        );
+      }
+      const row = await this.#selectLatestActivationRow(this.#executor(input.context), input);
+      return row === undefined ? undefined : activationFromRow(row);
+    } catch (error) {
+      throw mapPostgresError(error, "retrieval.current-activation-read");
+    }
+  }
+
   async readQueryResult(
     input: { readonly projectId: string; readonly queryId: string },
     context?: TransactionContextV1,
@@ -951,9 +997,7 @@ export class PostgresRetrievalAdapter implements RetrievalGenerationStoreV1 {
     const evidenceBaseReleaseRef = activation.evidenceBaseReleaseRef;
     const ref = activation.generationRef;
     const previous = activation.previousGenerationRef;
-    await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`riskflow.c20.retrieval-activation.${projectId}.${evidenceBaseReleaseRef.reference.entityId}`}, 0))`.execute(
-      scope.transaction,
-    );
+    await this.#lockActivationSeries(scope.transaction, projectId, evidenceBaseReleaseRef);
     const decide = (kind: "activated" | "activation-conflict"): AuditAppendV1 =>
       auditFor({
         auditEntryId,
@@ -983,7 +1027,10 @@ export class PostgresRetrievalAdapter implements RetrievalGenerationStoreV1 {
         ? previous === undefined
         : previous !== undefined &&
           sameRef(generationRowRef(current).reference, previous.reference);
-    if (!currentMatches) {
+    if (
+      !currentMatches ||
+      activation.activationOrdinal !== (current?.activation_ordinal ?? 0) + 1
+    ) {
       return { value: { kind: "activation-conflict" }, audit: decide("activation-conflict") };
     }
     const generation = await this.#selectGenerationRow(scope.transaction, ref);
@@ -1091,6 +1138,16 @@ export class PostgresRetrievalAdapter implements RetrievalGenerationStoreV1 {
     const audit = decide("activated");
     if (scope.appendAuditRow) await this.#appendAuditRow(scope.transaction, audit);
     return { value: { kind: "activated" }, audit };
+  }
+
+  async #lockActivationSeries(
+    transaction: RetrievalTransactionV1,
+    projectId: string,
+    evidenceBaseReleaseRef: RetrievalEvidenceBaseReleaseRefV1,
+  ): Promise<void> {
+    await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`riskflow.c20.retrieval-activation.${projectId}.${evidenceBaseReleaseRef.reference.entityId}`}, 0))`.execute(
+      transaction,
+    );
   }
 
   async #registerQueryResultInScope(

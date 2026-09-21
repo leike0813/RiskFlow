@@ -220,12 +220,15 @@ export class VersionedHybridRetrievalProjectionHandler {
             // 可重试失败必须在消费事务内抛出：C03 保持 pending 回执并安排至少一次重投。
             throw new ProjectionRetryError(result.failure.code, result.failure.detailCode);
           }
+          if (result.kind === "rejected") {
+            await this.#recordPermanentFailure(target, result.failure, context);
+          }
           return { resultRef: target.payload.retrievalEvidenceBaseReleaseRef };
         },
       );
     } catch (error) {
-      // 消费基础设施失败（回执冲突、连接失败）没有 outcome，必须向上暴露而不是伪装成拒绝。
-      if (outcome === undefined) throw error;
+      // 永久失败的 transition/回执若未提交，不能伪装成已记录的拒绝。
+      if (outcome?.kind !== "rejected" || !outcome.failure.retryable) throw error;
     }
     const settled = outcome;
     if (settled === undefined) {
@@ -235,10 +238,6 @@ export class VersionedHybridRetrievalProjectionHandler {
     }
     if (settled.kind === "rejected") {
       await this.#options.failureSink?.record(settled.failure);
-      if (!settled.failure.retryable) {
-        // 永久失败：回执已记入 consumed，必须落 failed transition 才能形成闭环审计。
-        await this.#appendFailedTransition(settled.failure);
-      }
       return settled;
     }
     if (consumer === undefined)
@@ -268,10 +267,28 @@ export class VersionedHybridRetrievalProjectionHandler {
     });
   }
 
-  /** 永久失败闭环：在自己的事务里追加 failed transition，不进入重试。 */
-  async #appendFailedTransition(failure: HybridRetrievalFailureV1): Promise<void> {
+  /** 永久失败与消费者回执在同一事务内收口。 */
+  async #recordPermanentFailure(
+    event: ProjectionEvent,
+    failure: HybridRetrievalFailureV1,
+    context: TransactionContextV1,
+  ): Promise<void> {
     const generationRef = failure.generationRef;
-    if (generationRef === undefined) return;
+    if (
+      generationRef === undefined ||
+      (await this.#options.generationStore.readGeneration(generationRef, context)) === undefined
+    ) {
+      await this.#options.generationStore.recordProjectionFailure({
+        projectId: event.projectId,
+        eventId: event.eventId,
+        targetRef: event.payload.retrievalEvidenceBaseReleaseRef,
+        failure,
+        actorRef: "hybrid-retrieval-projection",
+        authorizationContextRef: event.authorizationContextRef,
+        context,
+      });
+      return;
+    }
     await this.#options.generationStore.appendTransition({
       transition: {
         schemaVersion: "1",
@@ -295,6 +312,7 @@ export class VersionedHybridRetrievalProjectionHandler {
         reference: { entityId: "hybrid-retrieval-projection", versionId: failure.detailCode },
       },
       contextRefs: [],
+      context,
     });
   }
 
@@ -387,6 +405,12 @@ export class VersionedHybridRetrievalProjectionHandler {
       projectionCompatibilityRef: compatibilityRef,
     });
     const collectionName = retrievalCollectionNameFor(generationRef);
+    const baselineActivation = await generationStore.readCurrentActivation({
+      projectId,
+      evidenceBaseReleaseRef: event.payload.retrievalEvidenceBaseReleaseRef,
+      lock: false,
+      context,
+    });
 
     const reads: {
       sourceKind: RetrievalSourceKindV1;
@@ -678,13 +702,24 @@ export class VersionedHybridRetrievalProjectionHandler {
       context,
     });
 
-    const currentActivation = await generationStore.readActiveGeneration({
+    const currentActivation = await generationStore.readCurrentActivation({
       projectId,
       evidenceBaseReleaseRef: event.payload.retrievalEvidenceBaseReleaseRef,
-      policyRef: policy.policyRef,
-      authorizationScopeDigest: scopeDigest,
       context,
     });
+    if (
+      currentActivation?.activationOrdinal !== baselineActivation?.activationOrdinal ||
+      currentActivation?.generationRef.reference.versionId !==
+        baselineActivation?.generationRef.reference.versionId
+    ) {
+      return reject({
+        stage: "activation",
+        code: "ACTIVATION_CONFLICT",
+        detailCode: "concurrent-activation",
+        retryable: true,
+        generationRef,
+      });
+    }
     const activation = await generationStore.activateGeneration({
       activation: {
         schemaVersion: "1",
@@ -693,7 +728,7 @@ export class VersionedHybridRetrievalProjectionHandler {
         evidenceBaseReleaseRef: event.payload.retrievalEvidenceBaseReleaseRef,
         policyRef: policy.policyRef,
         authorizationScopeDigest: scopeDigest,
-        activationOrdinal: 1,
+        activationOrdinal: (currentActivation?.activationOrdinal ?? 0) + 1,
         ...(currentActivation === undefined
           ? {}
           : { previousGenerationRef: currentActivation.generationRef }),

@@ -499,6 +499,130 @@ describe("worktree-aware state", () => {
     expect(state.violations).toEqual([]);
   });
 
+  it("accepts a replan boundary that supersedes a settled non-succeeded attempt", () => {
+    const node = { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] };
+    const pausedPlanning = task({
+      id: "task-c08-planning-paused",
+      status: "failed",
+      createdAt: "2026-09-04 12:00:00",
+      envelope: v2Envelope({
+        taskKind: "planning",
+        phase: "planning",
+        runState: "settled",
+        outcome: "paused",
+        attemptGroup: "C08:planning",
+        attempt: 1,
+        owner: {
+          taskId: "task-c08-planning-paused",
+          agentClass: "strong-planner",
+          model: "gpt-5.6-sol",
+        },
+      }),
+    });
+    const replan = task({
+      id: "task-c08-replan",
+      status: "ready",
+      createdAt: "2026-09-04 13:00:00",
+      envelope: v2Envelope({
+        taskKind: "planning",
+        phase: "planning",
+        attemptGroup: "C08:planning:approved",
+        approvalRef: "approval://C08/scope",
+        supersedesAttemptGroup: "C08:planning",
+        owner: { taskId: "task-c08-replan", agentClass: "strong-planner", model: "gpt-5.6-sol" },
+      }),
+    });
+    const state = deriveNodeState(node, context({ tasks: [pausedPlanning, replan] }));
+    expect(state.violations).toEqual([]);
+    expect(state.checkpoints).toMatchObject({
+      taskId: "task-c08-replan",
+      approvalRef: "approval://C08/scope",
+      supersedesAttemptGroup: "C08:planning",
+    });
+  });
+
+  it("rejects a replan boundary over an active or succeeded attempt", () => {
+    const node = { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] };
+    const active = task({
+      id: "task-c08-planning-active",
+      status: "dispatched",
+      createdAt: "2026-09-04 12:00:00",
+      envelope: v2Envelope({
+        taskKind: "planning",
+        phase: "planning",
+        runState: "running",
+        attemptGroup: "C08:planning",
+        attempt: 1,
+        owner: {
+          taskId: "task-c08-planning-active",
+          agentClass: "strong-planner",
+          model: "gpt-5.6-sol",
+        },
+      }),
+    });
+    const succeeded = task({
+      id: "task-c08-planning-succeeded",
+      status: "completed",
+      createdAt: "2026-09-04 12:30:00",
+      envelope: v2Envelope({
+        taskKind: "planning",
+        phase: "planning",
+        runState: "settled",
+        outcome: "succeeded",
+        outputHead: "feature-head",
+        attemptGroup: "C08:planning",
+        attempt: 2,
+        owner: {
+          taskId: "task-c08-planning-succeeded",
+          agentClass: "strong-planner",
+          model: "gpt-5.6-sol",
+        },
+      }),
+    });
+    const replan = task({
+      id: "task-c08-replan",
+      status: "ready",
+      createdAt: "2026-09-04 13:00:00",
+      envelope: v2Envelope({
+        taskKind: "planning",
+        phase: "planning",
+        attemptGroup: "C08:planning:approved",
+        approvalRef: "approval://C08/unapproved",
+        supersedesAttemptGroup: "C08:planning",
+        owner: { taskId: "task-c08-replan", agentClass: "strong-planner", model: "gpt-5.6-sol" },
+      }),
+    });
+    for (const superseded of [active, succeeded]) {
+      const state = deriveNodeState(node, context({ tasks: [superseded, replan] }));
+      expect(state.violations).toContainEqual(
+        expect.objectContaining({ code: "invalid_replan_boundary" }),
+      );
+    }
+
+    const earlierPaused = task({
+      id: "task-c08-planning-paused",
+      status: "failed",
+      createdAt: "2026-09-04 11:00:00",
+      envelope: v2Envelope({
+        taskKind: "planning",
+        phase: "planning",
+        runState: "settled",
+        outcome: "paused",
+        attemptGroup: "C08:planning",
+        attempt: 1,
+        owner: {
+          taskId: "task-c08-planning-paused",
+          agentClass: "strong-planner",
+          model: "gpt-5.6-sol",
+        },
+      }),
+    });
+    const state = deriveNodeState(node, context({ tasks: [earlierPaused, succeeded, replan] }));
+    expect(state.violations).toContainEqual(
+      expect.objectContaining({ code: "invalid_replan_boundary" }),
+    );
+  });
+
   it("does not count a superseded attempt as a second active writer after an approved replan", () => {
     const node = { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] };
     const superseded = task({

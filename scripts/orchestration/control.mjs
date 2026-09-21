@@ -12,6 +12,7 @@ import {
   readJsonCommand,
   resolveCoordinatorRoot,
   resolveOrcaInvocation,
+  supersedableAttempt,
   unwrapResult,
 } from "./status.mjs";
 
@@ -104,15 +105,15 @@ export function preflightAction(snapshot, action, input = {}) {
   if (!node) throw new ControlError("work_item_not_found", `未知工作项：${workItemId}`);
   const queueItem = snapshot.resumeQueue.find((item) => item.workItemId === workItemId);
   const adoptingAuxiliary = action === "dispatch" && node.auxiliary && node.status === "untracked";
+  // `worktree_reclaim_pending` 由状态视图对每个 stale/reclaimable 节点派生，语义是「该工作项
+  // 还有终态工作树待回收」的就绪标记，不是冲突。把它当阻断违规会让受控回收自身不可达，
+  // 也会让一个已完成工作项的残留回收阻断其他工作项的派发，因此它 MUST NOT 阻断受控动作。
   const blockingViolations = snapshot.violations.filter(
     (violation) =>
+      violation.code !== "worktree_reclaim_pending" &&
       !(
         (action === "reconcile" && RECONCILE_SAFE_VIOLATIONS.has(violation.code)) ||
-        (adoptingAuxiliary && violation.nodeId === workItemId) ||
-        (action === "integrate" &&
-          queueItem?.category === "cleanup" &&
-          violation.nodeId === workItemId &&
-          violation.code === "worktree_reclaim_pending")
+        (adoptingAuxiliary && violation.nodeId === workItemId)
       ),
   );
   if (blockingViolations.length > 0) {
@@ -128,10 +129,10 @@ export function preflightAction(snapshot, action, input = {}) {
       input.replanApprovalRef === undefined
         ? null
         : requiredString(input.replanApprovalRef, "replanApprovalRef");
-    if (replanApprovalRef && !["finalizing", "paused"].includes(node.status)) {
+    if (replanApprovalRef && !["finalizing", "finalized", "paused"].includes(node.status)) {
       throw new ControlError(
         "replan_not_allowed",
-        `${workItemId} 只有进入 finalizing 或 paused 后才能按批准引用重新规划`,
+        `${workItemId} 只有进入 finalizing、finalized 或 paused 后才能按批准引用重新规划`,
         node.nextActions,
       );
     }
@@ -139,6 +140,13 @@ export function preflightAction(snapshot, action, input = {}) {
       throw new ControlError(
         "replan_not_allowed",
         `${workItemId} 缺少可被取代的 attemptGroup`,
+        node.nextActions,
+      );
+    }
+    if (replanApprovalRef && !supersedableAttempt(node.checkpoints)) {
+      throw new ControlError(
+        "replan_not_allowed",
+        `${workItemId} 当前 planning/implementing 尝试仍在活动或已成功收口，不可被重开规划取代`,
         node.nextActions,
       );
     }
@@ -1396,6 +1404,11 @@ export async function riskflowIntegrate(input, options = {}) {
       const invocation = resolveOrcaInvocation(options.orcaCommand);
       if (ctx.node.status === "stale") {
         const handles = ctx.node.orca?.terminalHandles ?? [];
+        // 回收就绪标记由状态视图对 stale/reclaimable 派生，是回收触发条件本身；
+        // 把它当作阻断违规会让受控回收永远不可达。其他违规仍然 fail-closed。
+        const blockingViolations = ctx.snapshot.violations.filter(
+          (violation) => violation.code !== "worktree_reclaim_pending",
+        );
         const safelySettled =
           ctx.node.main?.archive === true &&
           ctx.node.main?.verification === "passed" &&
@@ -1404,7 +1417,7 @@ export async function riskflowIntegrate(input, options = {}) {
           ctx.node.checkpoints?.runState === "settled" &&
           ctx.node.checkpoints?.outcome === "succeeded" &&
           ctx.node.violations.length === 0 &&
-          ctx.snapshot.violations.length === 0 &&
+          blockingViolations.length === 0 &&
           handles.length > 0;
         if (!safelySettled) {
           throw new ControlError(

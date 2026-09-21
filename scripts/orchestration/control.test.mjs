@@ -1022,6 +1022,12 @@ describe("controlled orchestration", () => {
                 resumeQueue: [
                   { workItemId: "C17", category: "cleanup", nextAction: "受控 cleanup" },
                 ],
+                // 回收就绪标记是回收触发条件本身，不得阻断本次回收；其他工作项的同一标记
+                // 也不得阻断本工作项。
+                violations: [
+                  { nodeId: "C17", code: "worktree_reclaim_pending" },
+                  { nodeId: "C19", code: "worktree_reclaim_pending" },
+                ],
               }),
             };
           },
@@ -1086,6 +1092,128 @@ describe("controlled orchestration", () => {
     } finally {
       await rm(runtimeRoot, { recursive: true });
     }
+  });
+
+  it("still refuses cleanup and dispatch for violations other than the reclaim readiness marker", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-cleanup-foreign-violation-"));
+    const stale = node({
+      status: "stale",
+      phase: "cleanup",
+      main: { archive: true, verification: "passed" },
+      worktree: { ...node().worktree, exists: true, dirty: false },
+      checkpoints: { ...node().checkpoints, runState: "settled", outcome: "succeeded" },
+      orca: { attempts: [], terminalHandles: ["term-old"] },
+      nextActions: ["审阅违规"],
+    });
+    let terminalCalls = 0;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args[0] === "terminal") terminalCalls += 1;
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await expect(
+        riskflowIntegrate(
+          {
+            workItemId: "C17",
+            expectedRevision: "revision-1",
+            idempotencyKey: "cleanup-foreign-violation",
+          },
+          {
+            rootDir: process.cwd(),
+            exec,
+            statusProvider: async () => ({
+              graph,
+              snapshot: snapshot({
+                nodes: [stale],
+                resumeQueue: [{ workItemId: "C17", category: "cleanup", nextAction: "审阅违规" }],
+                violations: [{ nodeId: "C19", code: "checkpoint_mismatch" }],
+              }),
+            }),
+          },
+        ),
+      ).rejects.toMatchObject({ code: "orchestration_conflict" });
+      expect(terminalCalls).toBe(0);
+
+      expect(() =>
+        preflightAction(
+          snapshot({
+            nodes: [stale],
+            resumeQueue: [{ workItemId: "C17", category: "cleanup", nextAction: "审阅违规" }],
+            violations: [{ nodeId: "C19", code: "checkpoint_mismatch" }],
+          }),
+          "integrate",
+          { workItemId: "C17", expectedRevision: "revision-1" },
+        ),
+      ).toThrowError(ControlError);
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("allows a replan only when the current attempt can be superseded", () => {
+    const planningCheckpoint = {
+      ...node().checkpoints,
+      taskKind: "planning",
+      phase: "planning",
+      attemptGroup: "C17:planning",
+      attempt: 1,
+    };
+    const supersedable = node({
+      status: "paused",
+      checkpoints: { ...planningCheckpoint, runState: "settled", outcome: "paused" },
+    });
+    const supersedableSnapshot = snapshot({
+      nodes: [supersedable],
+      resumeQueue: [{ workItemId: "C17", category: "planning", nextAction: "按批准重开规划" }],
+    });
+    expect(() =>
+      preflightAction(supersedableSnapshot, "dispatch", {
+        workItemId: "C17",
+        replanApprovalRef: "approval://riskflow/C17/scope",
+      }),
+    ).not.toThrow();
+
+    const finalized = node({
+      status: "finalized",
+      checkpoints: { ...node().checkpoints, runState: "settled", outcome: "succeeded" },
+    });
+    expect(() =>
+      preflightAction(snapshot({ nodes: [finalized] }), "dispatch", {
+        workItemId: "C17",
+        replanApprovalRef: "approval://riskflow/C17/scope",
+      }),
+    ).not.toThrow();
+
+    const running = node({
+      status: "paused",
+      checkpoints: { ...planningCheckpoint, runState: "running" },
+    });
+    const runningSnapshot = snapshot({
+      nodes: [running],
+      resumeQueue: [{ workItemId: "C17", category: "planning", nextAction: "等待收口" }],
+    });
+    expect(() =>
+      preflightAction(runningSnapshot, "dispatch", {
+        workItemId: "C17",
+        replanApprovalRef: "approval://riskflow/C17/scope",
+      }),
+    ).toThrowError(/不可被重开规划取代/);
+
+    const succeeded = node({
+      status: "paused",
+      checkpoints: { ...planningCheckpoint, runState: "settled", outcome: "succeeded" },
+    });
+    const succeededSnapshot = snapshot({
+      nodes: [succeeded],
+      resumeQueue: [{ workItemId: "C17", category: "planning", nextAction: "集成" }],
+    });
+    expect(() =>
+      preflightAction(succeededSnapshot, "dispatch", {
+        workItemId: "C17",
+        replanApprovalRef: "approval://riskflow/C17/scope",
+      }),
+    ).toThrowError(/不可被重开规划取代/);
   });
 
   function settleHarness(runtimeRoot) {

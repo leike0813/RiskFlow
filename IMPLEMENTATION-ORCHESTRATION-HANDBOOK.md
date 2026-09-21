@@ -51,7 +51,7 @@ PLANNING → IMPLEMENTING → FINALIZING → INTEGRATING → ARCHIVING → COMPL
 
 1. 同一已批准版本的 change 进入 `FINALIZING` 后，普通实现缺陷不再把责任退回 Implementation。
 2. 升级改变待解决的问题，不自动改变当前收尾责任。
-3. 只有重新批准了新的规划版本，才能显式重开 `IMPLEMENTING`；`riskflow_dispatch` 必须携带非空 `replanApprovalRef`，由控制器创建 planning v2 边界并记录被取代的 `attemptGroup`。
+3. 只有重新批准了新的规划版本，才能显式重开 `IMPLEMENTING`；`riskflow_dispatch` 必须携带非空 `replanApprovalRef`，由控制器创建 planning v2 边界并记录被取代的 `attemptGroup`。可被取代尝试组的当前尝试必须已进入 `finalizing`，或在较早阶段已收口且结局非成功（`paused`/`failed`/`blocked`）；较早阶段仍在活动或已成功收口的尝试不可被取代，由派发前置校验与状态视图用同一谓词拒绝。
 4. Finalizer 会话崩溃、预算耗尽或上下文不足时，留下结构化交接包，由新的强模型 Finalizer 接管；不得因此改派低成本实现角色。
 5. 运行状态与质量结论分离。Task 创建时只能是 `queued`、`running` 或 `waiting`，不能预填成功。
 6. 每个独立 Task 使用新的 Agent session。已结束、失败、暂停、释放或长时间闲置的 terminal、Run、Dispatch 和上下文不得用于后续 Task；只有同一仍活动 Task 内的修复与回归属于连续执行。首次信任确认发生在 worker 启动前，复用 queued Task 的预热 terminal 不属于跨 Task 复用。

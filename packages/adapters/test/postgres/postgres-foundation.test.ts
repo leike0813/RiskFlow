@@ -27,7 +27,10 @@ import {
   type PostgresCheckpointer,
 } from "../../src/postgres/index.js";
 import { getPostgresTransaction } from "../../src/postgres/transaction-unit.js";
-import { PostgresMigrationProvider } from "../../src/postgres/migrations/provider.js";
+import {
+  POSTGRES_MIGRATION_DOMAINS,
+  PostgresMigrationProvider,
+} from "../../src/postgres/migrations/provider.js";
 import { runPostgresMigrations } from "../../src/postgres/migrations/run.js";
 import { mapPostgresError, type PostgresConnectionConfig } from "../../src/postgres/pool.js";
 import { startPostgresFixture, type PostgresTestFixture } from "./fixture.js";
@@ -49,6 +52,7 @@ import * as structuredScoringRulesMigration from "../../src/postgres/migrations/
 import * as deterministicRiskAssessmentMigration from "../../src/postgres/migrations/risk-assessment/deliver-deterministic-risk-assessment/000032_deterministic_risk_assessment.js";
 import * as externalRiskEventRegistrationMigration from "../../src/postgres/migrations/engineering-data/implement-external-risk-event-registration/000036_external_risk_event_registration.js";
 import * as versionedHybridRetrievalMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-versioned-dual-index-hybrid-retrieval/000040_versioned_hybrid_retrieval.js";
+import * as identificationContextResultsMigration from "../../src/postgres/migrations/risk-identification/deliver-relationship-context-and-retrieval-agent-review/000041_identification_context_results.js";
 import * as warningTasksMigration from "../../src/postgres/migrations/warning-response/deliver-warning-tasks-and-in-app-notification/000044_warning_tasks_and_in_app_notification.js";
 import * as responseRecommendationMigration from "../../src/postgres/migrations/warning-response/deliver-response-recommendation/000045_response_recommendation.js";
 
@@ -390,6 +394,15 @@ const testMigrationManifest = [
   {
     root: "production",
     relativePath:
+      "risk-identification/deliver-relationship-context-and-retrieval-agent-review/000041_identification_context_results.ts",
+    migrationName:
+      "000041_risk-identification_deliver-relationship-context-and-retrieval-agent-review_identification_context_results",
+    sequence: 41,
+    module: identificationContextResultsMigration,
+  },
+  {
+    root: "production",
+    relativePath:
       "warning-response/deliver-warning-tasks-and-in-app-notification/000044_warning_tasks_and_in_app_notification.ts",
     migrationName:
       "000044_warning-response_deliver-warning-tasks-and-in-app-notification_warning_tasks_and_in_app_notification",
@@ -423,8 +436,10 @@ const testMigrationManifest = [
   },
 ] as const satisfies readonly TestMigrationManifestEntry[];
 
-const migrationManifestPathPattern =
-  /^(platform|agent-task|knowledge-modeling|engineering-data|risk-assessment|warning-response)\/([a-z0-9]+(?:-[a-z0-9]+)*)\/([0-9]{6})_([a-z0-9]+(?:[-_][a-z0-9]+)*)\.ts$/u;
+const migrationManifestPathPattern = new RegExp(
+  `^(${POSTGRES_MIGRATION_DOMAINS.join("|")})/([a-z0-9]+(?:-[a-z0-9]+)*)/([0-9]{6})_([a-z0-9]+(?:[-_][a-z0-9]+)*)\\.ts$`,
+  "u",
+);
 
 const validateTestMigrationManifest = (): void => {
   const paths = new Set<string>();

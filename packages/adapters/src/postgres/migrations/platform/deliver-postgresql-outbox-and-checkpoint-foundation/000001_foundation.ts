@@ -173,9 +173,10 @@ export async function up(db: Kysely<unknown>): Promise<void> {
 }
 
 export async function down(db: Kysely<unknown>): Promise<void> {
-  // 后续 change（C27）建了指向 business.command_receipts 与 audit.entries 的外键；
-  // 孤立回滚本迁移 MUST 先解除这类依赖，否则 PostgreSQL 以 "other objects depend on it"
-  // 拒绝删表。依赖表可能尚未建立，因此按表存在性守卫。
+  // 后续 change 建了指向 present 表的外键：C27 的四张表指向 business.command_receipts 与
+  // audit.entries，C21 的 identification_context_results 指向 audit.entries。孤立回滚本迁移
+  // MUST 先解除这类依赖，否则 PostgreSQL 以 "other objects depend on it" 拒绝删表。
+  // 依赖表可能尚未建立，因此按表存在性守卫。
   await sql`
     DO $$
     BEGIN
@@ -202,6 +203,11 @@ export async function down(db: Kysely<unknown>): Promise<void> {
         ALTER TABLE business.response_recommendations
           DROP CONSTRAINT IF EXISTS response_recommendations_command_fk,
           DROP CONSTRAINT IF EXISTS response_recommendations_audit_fk;
+      END IF;
+      IF EXISTS (SELECT 1 FROM information_schema.tables
+                 WHERE table_schema = 'business' AND table_name = 'identification_context_results') THEN
+        ALTER TABLE business.identification_context_results
+          DROP CONSTRAINT IF EXISTS identification_context_results_audit_fk;
       END IF;
     END
     $$;

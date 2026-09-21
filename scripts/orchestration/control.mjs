@@ -477,8 +477,8 @@ export function withOrcaSender(invocation, args) {
 // `--retry-request` 只在 orchestration 写命令上实现（与 sender 身份同一族）；terminal/worktree
 // 命令会以 invalid_argument 拒绝它，附加即让调用必定失败（实测 terminal close）。
 function withRetryRequest(args, retryRequest) {
-  if (!retryRequest || args[0] !== "orchestration") return args;
-  return [...args, "--retry-request", retryRequest];
+  if (!retryRequest || args[0] !== "orchestration") return [];
+  return ["--retry-request", retryRequest];
 }
 
 async function orcaJson(exec, invocation, args, cwd, retryRequest) {

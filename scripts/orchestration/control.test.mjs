@@ -1140,11 +1140,10 @@ describe("controlled orchestration", () => {
         },
       );
       expect(result).toMatchObject({ action: "reclaim" });
-      expect(closes.map((args) => args[args.indexOf("--terminal") + 1])).toEqual([
-        "term-gone",
-        "term-live",
+      expect(closes).toEqual([
+        ["terminal", "close", "--terminal", "term-gone", "--json"],
+        ["terminal", "close", "--terminal", "term-live", "--json"],
       ]);
-      expect(closes.every((args) => !args.includes("--retry-request"))).toBe(true);
     } finally {
       await rm(runtimeRoot, { recursive: true });
     }

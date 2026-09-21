@@ -575,6 +575,21 @@ function phaseRank(value, phaseOrder) {
   return index < 0 ? 0 : index + 1;
 }
 
+// 获批重开规划可取代的尝试：要么已进入 finalizing 及之后阶段，要么已收口且结局非成功。
+// 仍在活动（queued/running/waiting）的尝试是重复写者，结局为 succeeded 的尝试代表已批准
+// 版本，两者都不可被「重开规划」取代。状态视图与派发前置校验共用本谓词，避免两处判定漂移。
+const SUPERSEDABLE_OUTCOMES = new Set(["paused", "failed", "blocked"]);
+export function supersedableAttempt(checkpoint, phaseOrder = DEFAULT_PHASE_ORDER) {
+  if (checkpoint === null || checkpoint === undefined) return false;
+  if (
+    phaseRank(checkpoint.phase ?? checkpoint.taskKind, phaseOrder) >=
+    phaseRank("finalizing", phaseOrder)
+  ) {
+    return true;
+  }
+  return checkpoint.runState === "settled" && SUPERSEDABLE_OUTCOMES.has(checkpoint.outcome);
+}
+
 function currentTaskWindow(valid, phaseOrder) {
   const replans = valid.filter((task) => nonEmptyString(task.envelope.approvalRef));
   if (replans.length === 0) return { tasks: valid, replanConflict: false };
@@ -584,8 +599,7 @@ function currentTaskWindow(valid, phaseOrder) {
       valid.some(
         (prior) =>
           prior.envelope.attemptGroup === replan.envelope.supersedesAttemptGroup &&
-          phaseRank(prior.envelope.phase ?? prior.envelope.taskKind, phaseOrder) >=
-            phaseRank("finalizing", phaseOrder),
+          supersedableAttempt(prior.envelope, phaseOrder),
       ),
   );
   if (approved.length !== replans.length) return { tasks: valid, replanConflict: true };

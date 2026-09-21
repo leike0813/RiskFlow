@@ -1,0 +1,125 @@
+{
+  "schemaVersion": "1",
+  "syntheticSample": true,
+  "sampleNotice": "合成样本、待甲方复核",
+  "datasetRef": { "entityId": "synthetic-hybrid-retrieval", "versionId": "1" },
+  "projectId": "project-c20-a",
+  "members": [
+    {
+      "memberId": "member-1",
+      "sourceKind": "risk-mechanism",
+      "semanticGroup": "seepage-piping",
+      "text": "mechanism-seepage-piping\n渗透变形\nnode-foundation-seepage\nnode-piping-outlet\n坝基为第四系砂砾石覆盖层\n上游水位长期高于设计蓄水位\n持续高水位运行\n下游排水棱体局部淤堵\n坝基砂层缺少反滤保护\n渗流坡降增大\n砂砾石细颗粒流失\n下游坝脚翻砂鼓水\n形成集中渗漏通道\n坝基管涌\n坝体渗透破坏\n溃坝风险上升",
+      "evidenceSourceVersionRef": { "entityId": "source-version-seepage-piping", "versionId": "1" }
+    },
+    {
+      "memberId": "member-2",
+      "sourceKind": "risk-mechanism",
+      "semanticGroup": "slope-instability",
+      "text": "mechanism-slope-instability\n边坡失稳\nnode-downstream-slope\n坝坡填筑压实度不足\n库水位骤降工况\n库水位快速消落\n持续降雨入渗\n坡脚排水不畅\n孔隙水压力滞后消散\n坡体渗透力增大\n坡脚出现纵向裂缝\n下游坝坡滑塌\n坝顶高程降低",
+      "evidenceSourceVersionRef": {
+        "entityId": "source-version-slope-instability",
+        "versionId": "1"
+      }
+    },
+    {
+      "memberId": "member-3",
+      "sourceKind": "standard-library",
+      "semanticGroup": "standard-seepage-control",
+      "text": "std-sl795-2016-seepage\n行业标准\nSL 795-2016\n2016\n5.2.3\n5.3.1",
+      "evidenceSourceVersionRef": { "entityId": "source-version-sl795-2016", "versionId": "1" }
+    },
+    {
+      "memberId": "member-4",
+      "sourceKind": "standard-library",
+      "semanticGroup": "standard-seepage-control",
+      "text": "std-gb50287-2016-seepage-stability\n国家标准\nGB 50287-2016\n2016\n8.4.2",
+      "evidenceSourceVersionRef": { "entityId": "source-version-gb50287-2016", "versionId": "1" }
+    },
+    {
+      "memberId": "member-5",
+      "sourceKind": "case-library",
+      "semanticGroup": "seepage-piping",
+      "text": "case-reservoir-x-2013-piping\n均质土坝\n最大坝高 32 米\n坝基砂砾石层厚 8 米\n2013 年汛前蓄水位抬升至 78.5 米\n下游坝脚出现翻砂鼓水\n2013-06-18 巡查发现集中渗漏\n2013-06-20 启动反滤压重\n渗流量下降约七成\n未发生溃坝\n下游坡脚反滤压重\n坝基增设混凝土防渗墙",
+      "evidenceSourceVersionRef": {
+        "entityId": "source-version-case-reservoir-x",
+        "versionId": "1"
+      }
+    },
+    {
+      "memberId": "member-6",
+      "sourceKind": "case-library",
+      "semanticGroup": "slope-instability",
+      "text": "case-dam-y-2018-slope\n斜墙土石坝\n库水位骤降工况\n下游坝坡坡比 1:2.5\n2018 年汛后库水位快速消落\n下游坝坡中上部出现裂缝\n2018-09-05 巡查发现纵向裂缝\n2018-09-08 坡面出现局部滑塌\n削坡减载后边坡恢复稳定\n坝坡恢复至设计坡比\n削坡减载\n坡脚压重与排水褥垫",
+      "evidenceSourceVersionRef": { "entityId": "source-version-case-dam-y", "versionId": "1" }
+    }
+  ],
+  "queries": [
+    {
+      "queryId": "query-1",
+      "routeKind": "lexical",
+      "projectId": "project-c20-a",
+      "semanticGroup": "standard-seepage-control",
+      "text": "SL 795-2016 5.2.3 渗流控制与反滤层设计要求",
+      "expectedRelevantMemberIds": ["member-3"]
+    },
+    {
+      "queryId": "query-2",
+      "routeKind": "lexical",
+      "projectId": "project-c20-a",
+      "semanticGroup": "standard-seepage-control",
+      "text": "GB 50287-2016 8.4.2 渗透稳定评价要求",
+      "expectedRelevantMemberIds": ["member-4"]
+    },
+    {
+      "queryId": "query-3",
+      "routeKind": "semantic-paraphrase",
+      "projectId": "project-c20-a",
+      "semanticGroup": "seepage-piping",
+      "text": "砂砾石坝基细颗粒被渗流逐渐带走最终形成集中漏水通道的事故机理",
+      "expectedRelevantMemberIds": ["member-1", "member-5"]
+    },
+    {
+      "queryId": "query-4",
+      "routeKind": "semantic-paraphrase",
+      "projectId": "project-c20-a",
+      "semanticGroup": "slope-instability",
+      "text": "土石坝下游坝坡在水位快速下降之后发生滑动的成因是什么",
+      "expectedRelevantMemberIds": ["member-2", "member-6"]
+    },
+    {
+      "queryId": "query-5",
+      "routeKind": "dual-route",
+      "projectId": "project-c20-a",
+      "semanticGroup": "seepage-piping",
+      "text": "SL 795-2016 要求的渗流控制措施在某水库坝基管涌险情中如何落实",
+      "expectedRelevantMemberIds": ["member-3", "member-5", "member-1"]
+    },
+    {
+      "queryId": "query-6",
+      "routeKind": "dual-route",
+      "projectId": "project-c20-a",
+      "semanticGroup": "slope-instability",
+      "text": "GB 50287-2016 的渗透稳定评价条款与坝坡骤降滑塌实例的对照",
+      "expectedRelevantMemberIds": ["member-4", "member-6", "member-2"]
+    }
+  ],
+  "interference": [
+    {
+      "queryId": "query-leak-1",
+      "interferenceKind": "cross-project",
+      "projectId": "project-c20-b",
+      "text": "另一工程项目的坝基渗流变形与管涌机理",
+      "interferenceMemberIds": ["member-1", "member-5"],
+      "note": "跨工程干扰：候选成员属于本数据集工程，查询属于另一工程，正式结果必须整次拒绝且不泄露成员存在性"
+    },
+    {
+      "queryId": "query-leak-2",
+      "interferenceKind": "no-permission",
+      "projectId": "project-c20-a",
+      "text": "未授权资料范围内的坝坡滑塌处置案例",
+      "interferenceMemberIds": ["member-6"],
+      "note": "无当前资料权限干扰：工程相同但请求者不在成员资料授权范围内，正式结果必须拒绝而不是返回该成员"
+    }
+  ]
+}

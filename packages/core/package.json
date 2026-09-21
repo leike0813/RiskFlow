@@ -28,6 +28,10 @@
       "types": "./dist/model/index.d.ts",
       "import": "./dist/model/index.js"
     },
+    "./retrieval": {
+      "types": "./dist/retrieval/index.d.ts",
+      "import": "./dist/retrieval/index.js"
+    },
     "./review-audit": {
       "types": "./dist/review-audit/index.d.ts",
       "import": "./dist/review-audit/index.js"

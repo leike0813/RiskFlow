@@ -5,12 +5,17 @@ import {
   KnowledgeGovernanceCommandV1Schema,
   KnowledgeResolutionCommandV1Schema,
   KnowledgeResolutionResultV1Schema,
+  KnowledgeRetrievalQueryV1Schema,
+  KnowledgeRetrievalResultV1Schema,
   ModuleErrorV1Schema,
   ReviewDecisionCommandV1Schema,
   type AuthorizationContextV1,
   type KnowledgeDefinitionTypeV1,
   type KnowledgeGovernanceResultV1,
+  type KnowledgeModelingPortV1,
   type KnowledgeReleaseRefV1,
+  type KnowledgeRetrievalQueryV1,
+  type KnowledgeRetrievalResultV1,
   type KnowledgeRevisionRefV1,
   type ModuleErrorV1,
   type ReviewDecisionRefV1,
@@ -986,6 +991,123 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
     } as never);
     expect(rejected).toMatchObject({ kind: "failed", error: { code: "UNSUPPORTED_CONTRACT" } });
     expect(assessmentBasisCommands).toHaveLength(2);
+  }, 600_000);
+
+  const hybridEvidenceQuery = async (): Promise<KnowledgeRetrievalQueryV1> => {
+    const queryId = nextId("c17-retrieve");
+    return KnowledgeRetrievalQueryV1Schema.parse({
+      kind: "hybrid-evidence",
+      queryId,
+      projectId: fixture.world.projectId,
+      actorId: fixture.world.readAuthorization.actorId,
+      requestedAt: tick(),
+      authorization: await fixture.authorizationFor(queryId, "knowledge-modeling.hybrid-evidence"),
+      payload: {
+        inputSnapshotRef: {
+          kind: "identification-input-snapshot",
+          reference: { entityId: "c20-input-snapshot", versionId: "4" },
+        },
+        workItemRef: {
+          kind: "identification-work-item",
+          reference: { entityId: "c20-work-item", versionId: "2" },
+        },
+        retrievalPolicyRef: { entityId: "c20-hybrid-retrieval-policy", versionId: "1" },
+      },
+    });
+  };
+
+  /**
+   * C20 D13 的最小组合：本用例只走 `retrieve()`，其余分支不可达，故必需依赖一律显式失败，
+   * 不伪造成功；检索结果只来自注入的 delegate。
+   */
+  const adapterWithRetrievalDelegate = (
+    retrievalDelegate: Pick<KnowledgeModelingPortV1, "retrieve">,
+  ): PostgresIdentificationKnowledgeAdapter =>
+    new PostgresIdentificationKnowledgeAdapter({
+      db: fixture.cleaning.runtime.db,
+      transactionUnit: fixture.cleaning.transactionUnit,
+      access: fixture.cleaning.access,
+      artifactStore: fixture.cleaning.artifactStore,
+      artifactReferenceGuard: fixture.cleaning.artifactRegistry,
+      governance: fixture.governance,
+      assessmentBasisResolver: {
+        resolve: async () => {
+          throw new Error("the retrieval delegation case never resolves an assessment basis");
+        },
+      },
+      retrievalDelegate,
+      narrowRead: {
+        preparationRead: fixture.cleaning.store,
+        engineeringData: fixture.cleaning.registry,
+      },
+      policy: fixture.policy,
+      agentTaskFailureEvidenceReader: {
+        readTerminalFailure: async () => {
+          throw new Error("the retrieval delegation case never reads failure evidence");
+        },
+      },
+      authorize: async () => {
+        throw new Error("the retrieval delegation case never authorizes");
+      },
+    });
+
+  it("keeps the unsupported-contract close-out for hybrid-evidence without a retrieval delegate", async () => {
+    const adapter = adapterFor();
+    const query = await hybridEvidenceQuery();
+    expect(await adapter.retrieve(query)).toEqual({
+      kind: "failed",
+      error: {
+        stageCode: "identification-knowledge.unsupported_contract",
+        occurredAt: expect.any(String),
+        causalRunId: query.queryId,
+        code: "UNSUPPORTED_CONTRACT",
+        category: "technical",
+        retryable: false,
+      },
+    });
+  }, 600_000);
+
+  it("forwards one hybrid-evidence query to an injected retrieval delegate and returns its result unchanged", async () => {
+    const delegatedSuccess = KnowledgeRetrievalResultV1Schema.parse({
+      kind: "succeeded",
+      result: {
+        knowledgeQueryResultRef: {
+          kind: "knowledge-query-result",
+          reference: { entityId: "c20-hybrid-query-result", versionId: "3" },
+        },
+      },
+    });
+    const delegatedFailure = KnowledgeRetrievalResultV1Schema.parse({
+      kind: "failed",
+      error: {
+        stageCode: "retrieval.query",
+        occurredAt: IDENTIFICATION_KNOWLEDGE_TEST_TIMESTAMP,
+        causalRunId: "c20-hybrid-query-denied",
+        code: "AUTHORIZATION_DENIED",
+        category: "authorization",
+        retryable: false,
+        requiredCapability: "knowledge-modeling.read",
+        authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+      },
+    });
+    const queries: KnowledgeRetrievalQueryV1[] = [];
+    let delegated: KnowledgeRetrievalResultV1 = delegatedSuccess;
+    const adapter = adapterWithRetrievalDelegate({
+      retrieve: async (query) => {
+        queries.push(query);
+        return delegated;
+      },
+    });
+
+    const successQuery = await hybridEvidenceQuery();
+    expect(await adapter.retrieve(successQuery)).toBe(delegatedSuccess);
+    delegated = delegatedFailure;
+    const failureQuery = await hybridEvidenceQuery();
+    expect(await adapter.retrieve(failureQuery)).toBe(delegatedFailure);
+    // 同一查询对象按引用各转发一次：C17 不解析、不复制对象，也不重试或映射结果。
+    expect(queries).toHaveLength(2);
+    expect(queries[0]).toBe(successQuery);
+    expect(queries[1]).toBe(failureQuery);
   }, 600_000);
 
   it("rejects a composite release whose member is no longer effective", async () => {

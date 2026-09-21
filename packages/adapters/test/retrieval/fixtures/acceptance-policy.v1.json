@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "1",
+  "acceptancePolicyRef": {
+    "entityId": "retrieval-acceptance-policy",
+    "versionId": "c20-synthetic-v1"
+  },
+  "datasetRef": {
+    "entityId": "synthetic-hybrid-retrieval",
+    "versionId": "1"
+  },
+  "syntheticSample": true,
+  "topK": 5,
+  "denseRecallAt5Min": 0.8,
+  "bm25RecallAt5Min": 0.8,
+  "rrfRecallAt5Min": 0.9,
+  "rrfNdcgAt5Min": 0.85,
+  "reconciliationRatioMin": 1,
+  "authorizationLeakageMax": 0,
+  "qdrantQueryP95MsMax": 500,
+  "warmupRuns": 20,
+  "measuredRuns": 200
+}

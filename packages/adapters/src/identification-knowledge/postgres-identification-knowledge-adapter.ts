@@ -95,6 +95,7 @@ import {
   type KnowledgeResolutionCommandV1,
   type KnowledgeResolutionResultV1,
   type KnowledgeRevisionRefV1,
+  type KnowledgeModelingPortV1,
   type KnowledgeRetrievalQueryV1,
   type KnowledgeRetrievalResultV1,
   type AgentTaskPortV1,
@@ -275,6 +276,12 @@ export interface PostgresIdentificationKnowledgeAdapterOptionsV1 {
    * 原样转发同一命令与结果，不复制 C19 的授权、准备、解析、双时间、幂等或错误映射。
    */
   readonly assessmentBasisResolver: Pick<PostgresScoringRulesAdapter, "resolve">;
+  /**
+   * C20 D13：组合根注入的混合检索委派。C17 只把原查询对象转发一次并原样返回其结果，
+   * 不在本层增加解析、授权、重试、错误映射或查询结果持久化；未注入时保持既有
+   * `UNSUPPORTED_CONTRACT` 收口。
+   */
+  readonly retrievalDelegate?: Pick<KnowledgeModelingPortV1, "retrieve">;
   /** D-04：C15 公开精确窄读与 C02 公共读取端口，禁止读取上游私有表。 */
   readonly narrowRead: IdentificationPreparationNarrowReadV1;
   readonly policy: IdentificationKnowledgeValidationPolicyV1;
@@ -1132,6 +1139,7 @@ export class PostgresIdentificationKnowledgeAdapter {
   readonly #artifactReferenceGuard: ArtifactReferenceGuardV1;
   readonly #governance: PostgresKnowledgeGovernanceAdapter;
   readonly #assessmentBasisResolver: PostgresIdentificationKnowledgeAdapterOptionsV1["assessmentBasisResolver"];
+  readonly #retrievalDelegate: PostgresIdentificationKnowledgeAdapterOptionsV1["retrievalDelegate"];
   readonly #preparationReader: IdentificationPreparationKnowledgeReaderV1;
   readonly #policy: IdentificationKnowledgeValidationPolicyV1;
   readonly #policySetProvider: IdentificationPolicySetProviderV1 | undefined;
@@ -1148,6 +1156,7 @@ export class PostgresIdentificationKnowledgeAdapter {
     this.#artifactReferenceGuard = options.artifactReferenceGuard;
     this.#governance = options.governance;
     this.#assessmentBasisResolver = options.assessmentBasisResolver;
+    this.#retrievalDelegate = options.retrievalDelegate;
     this.#preparationReader = new PostgresIdentificationPreparationKnowledgeReader({
       narrowRead: options.narrowRead,
       authorize: options.authorize,
@@ -1202,10 +1211,15 @@ export class PostgresIdentificationKnowledgeAdapter {
   }
 
   async retrieve(query: KnowledgeRetrievalQueryV1): Promise<KnowledgeRetrievalResultV1> {
-    return {
-      kind: "failed",
-      error: moduleError({ code: "UNSUPPORTED_CONTRACT", causalRunId: query.queryId }),
-    };
+    const delegate = this.#retrievalDelegate;
+    if (delegate === undefined) {
+      return {
+        kind: "failed",
+        error: moduleError({ code: "UNSUPPORTED_CONTRACT", causalRunId: query.queryId }),
+      };
+    }
+    // C20 D13：注入时把同一查询对象原样交给 C20 混合检索服务，成功/失败结果原样返回。
+    return await delegate.retrieve(query);
   }
 
   /** D-12：C20/C24 的唯一窄读面，按精确发布引用返回不可变包与治理元数据。 */

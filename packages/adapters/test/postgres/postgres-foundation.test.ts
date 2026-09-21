@@ -48,6 +48,7 @@ import * as engineeringDataReadQueryResultsMigration from "../../src/postgres/mi
 import * as structuredScoringRulesMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-structured-scoring-rules-and-applicable-rule-sets/000028_structured_scoring_rules.js";
 import * as deterministicRiskAssessmentMigration from "../../src/postgres/migrations/risk-assessment/deliver-deterministic-risk-assessment/000032_deterministic_risk_assessment.js";
 import * as externalRiskEventRegistrationMigration from "../../src/postgres/migrations/engineering-data/implement-external-risk-event-registration/000036_external_risk_event_registration.js";
+import * as versionedHybridRetrievalMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-versioned-dual-index-hybrid-retrieval/000040_versioned_hybrid_retrieval.js";
 import * as warningTasksMigration from "../../src/postgres/migrations/warning-response/deliver-warning-tasks-and-in-app-notification/000044_warning_tasks_and_in_app_notification.js";
 
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
@@ -375,6 +376,15 @@ const testMigrationManifest = [
       "000036_engineering-data_implement-external-risk-event-registration_external_risk_event_registration",
     sequence: 36,
     module: externalRiskEventRegistrationMigration,
+  },
+  {
+    root: "production",
+    relativePath:
+      "knowledge-modeling/deliver-versioned-dual-index-hybrid-retrieval/000040_versioned_hybrid_retrieval.ts",
+    migrationName:
+      "000040_knowledge-modeling_deliver-versioned-dual-index-hybrid-retrieval_versioned_hybrid_retrieval",
+    sequence: 40,
+    module: versionedHybridRetrievalMigration,
   },
   {
     root: "production",

@@ -83,6 +83,15 @@
       "exitCondition": "容器运行时不可用且没有同等真实、可重复的隔离数据库测试设施"
     },
     {
+      "name": "testcontainers",
+      "version": "12.1.0",
+      "purpose": "以真实固定版本 Qdrant 容器执行双索引投影、混合查询与重建验收",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/testcontainers",
+      "offline": "内网 npm 镜像或 pnpm fetch store，并预拉取固定 OCI 镜像",
+      "exitCondition": "容器运行时不可用且没有同版本真实 Qdrant endpoint 可替代"
+    },
+    {
       "name": "typescript",
       "version": "5.9.3",
       "purpose": "TypeScript project references 编译",

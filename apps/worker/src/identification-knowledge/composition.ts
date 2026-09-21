@@ -46,6 +46,7 @@ import {
   type AuthorizationContextV1,
   type EngineeringDataQueryV1,
   type EngineeringDataReadResultV1,
+  type KnowledgeModelingPortV1,
   type ReviewAuditPortV1,
 } from "@riskflow/contracts/ports";
 import type { VersionReference } from "@riskflow/contracts/common";
@@ -101,6 +102,11 @@ export interface PostgresIdentificationKnowledgeCompositionOptionsV1 {
    * 不创建第二个 C19 adapter，也不包装或翻译其结果。
    */
   readonly assessmentBasisResolver: Pick<PostgresScoringRulesAdapter, "resolve">;
+  /**
+   * C20 D13：调用方已组装的 C20 混合检索服务。组合根只把该对象透传给 C17 façade，
+   * 不把它列入必需依赖检查，也不自行创建第二个检索服务；缺失时 C17 保持既有收口。
+   */
+  readonly retrievalDelegate?: Pick<KnowledgeModelingPortV1, "retrieve">;
   /** C21/C24 拥有的精确识别策略提供者；缺失只阻断 identification-basis。 */
   readonly policySetProvider?: IdentificationPolicySetProviderV1;
   /**
@@ -306,6 +312,9 @@ export const createPostgresIdentificationKnowledgeComposition = (
     governance,
     // D-13：调用方已组装的 C19 resolver 原样注入，组合根不新建第二个 C19 adapter。
     assessmentBasisResolver: options.assessmentBasisResolver,
+    ...(options.retrievalDelegate === undefined
+      ? {}
+      : { retrievalDelegate: options.retrievalDelegate }),
     narrowRead,
     policy,
     ...(options.policySetProvider === undefined

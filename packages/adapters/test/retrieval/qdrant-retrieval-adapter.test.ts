@@ -312,10 +312,10 @@ describe("QdrantRetrievalProjection", () => {
     queryDenseVector: [...DENSE_QUERY_VECTOR],
     queryText: BM25_UNIQUE_TOKEN,
     policy,
-    filter: { projectId, generationRef },
+    filter: { projectId, generationRef, authorizationScopeDigest: AUTHORIZATION_SCOPE_DIGEST },
   });
 
-  // 干扰点：用来验证 payload filter 在 Qdrant 侧真实生效（跨工程、跨代际）。
+  // 干扰点：验证 payload filter 在 Qdrant 侧隔离工程、代际和授权范围。
   const foreignPoint = (input: {
     readonly pointId: string;
     readonly projectId: string;
@@ -323,6 +323,7 @@ describe("QdrantRetrievalProjection", () => {
     readonly sourceEntryId: string;
     readonly dense: readonly number[];
     readonly bm25Text: string;
+    readonly authorizationScopeDigest?: string;
   }): Readonly<Record<string, unknown>> => ({
     id: input.pointId,
     vector: {
@@ -348,7 +349,7 @@ describe("QdrantRetrievalProjection", () => {
       sourceReleaseRef: caseLibraryReleaseRef,
       sourceEntryId: input.sourceEntryId,
       contentDigest: "1a".repeat(32),
-      authorizationScopeDigest: AUTHORIZATION_SCOPE_DIGEST,
+      authorizationScopeDigest: input.authorizationScopeDigest ?? AUTHORIZATION_SCOPE_DIGEST,
     },
   });
 
@@ -590,7 +591,7 @@ describe("QdrantRetrievalProjection", () => {
     });
     await rawUpsert(
       collectionName,
-      [0, 1, 2].map((index) =>
+      [0, 1, 2].flatMap((index) => [
         foreignPoint({
           pointId: `${String(index)}aaaaaaa-bbbb-5ccc-8ddd-eeeeeeeeeeee`,
           projectId: "project-hybrid-beta",
@@ -599,7 +600,16 @@ describe("QdrantRetrievalProjection", () => {
           dense: DENSE_QUERY_VECTOR,
           bm25Text: `${BM25_UNIQUE_TOKEN} ${BM25_UNIQUE_TOKEN} ${BM25_UNIQUE_TOKEN}`,
         }),
-      ),
+        foreignPoint({
+          pointId: `${String(index)}bbbbbbb-cccc-5ddd-8eee-ffffffffffff`,
+          projectId: PROJECT_ID,
+          generationRef,
+          sourceEntryId: `case-other-scope-${String(index)}`,
+          dense: DENSE_QUERY_VECTOR,
+          bm25Text: `${BM25_UNIQUE_TOKEN} ${BM25_UNIQUE_TOKEN} ${BM25_UNIQUE_TOKEN}`,
+          authorizationScopeDigest: "ab".repeat(32),
+        }),
+      ]),
     );
 
     const result = await adapter.queryHybrid({
@@ -608,6 +618,7 @@ describe("QdrantRetrievalProjection", () => {
     });
     expect(result.fused).toHaveLength(1);
     expect(result.fused[0]?.payload.projectId).toBe(PROJECT_ID);
+    expect(result.fused[0]?.payload.authorizationScopeDigest).toBe(AUTHORIZATION_SCOPE_DIGEST);
     expect(result.denseRoute.map((hit) => hit.pointId)).toContain(
       members.pointIdByEntryId["rm-seepage-piping"],
     );

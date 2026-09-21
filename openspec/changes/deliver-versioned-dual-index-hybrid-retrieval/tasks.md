@@ -35,4 +35,4 @@
 ## 7. OpenSpec Verify
 
 - [x] 7.1 [IP-08] 运行 `openspec validate deliver-versioned-dual-index-hybrid-retrieval --type change --strict --no-interactive`，逐项核对 implementation-plan 证据矩阵后再勾选所有实施任务。
-- [ ] 7.2 [IP-08] 由独立验证 Agent 使用 `openspec-verify-change` 对批准的 proposal/specs/design/implementation-plan/tasks、实现代码和第 6 节证据验收；验证完成前不归档、不提交，任何缺口回到对应 IP-ID 修复并重跑命令。
+- [x] 7.2 [IP-08] 由独立验证 Agent 使用 `openspec-verify-change` 对批准的 proposal/specs/design/implementation-plan/tasks、实现代码和第 6 节证据验收；验证完成前不归档、不提交，任何缺口回到对应 IP-ID 修复并重跑命令。

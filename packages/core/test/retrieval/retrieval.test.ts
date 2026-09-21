@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { AuthorizationContextV1, ContractReferenceV1 } from "@riskflow/contracts/ports";
 import { ModuleErrorV1Schema } from "@riskflow/contracts/ports";
+import { sha256CanonicalJson } from "../../src/persistence/index.js";
 
 import {
   HYBRID_RETRIEVAL_FAILURE_CODES_V1,
@@ -618,7 +619,7 @@ describe("member normalization", () => {
       const raw = source.entries.find((e) => e.entryId === member.sourceEntryId)!;
       const text = retrievalMemberText(member.sourceKind, raw.entry);
       expect(member.contentDigest, member.sourceEntryId).toBe(retrievalMemberContentDigest(text));
-      expect(member.pointId).toBe(retrievalMemberPointId(member.contentDigest));
+      expect(member.pointId).toBe(retrievalMemberPointId(sha256CanonicalJson(member.memberRef)));
       expect(member.memberRef.reference.versionId).toBe(`sha256:${member.contentDigest}`);
       expect(member.authorizationScopeDigest).toBe(SCOPE_DIGEST);
       expect(member.denseDimensions).toBe(64);
@@ -630,6 +631,24 @@ describe("member normalization", () => {
     expect(again.manifest.membersSha256).toBe(outcome.manifest.membersSha256);
     expect(again.manifest.membersSha256).toMatch(/^[0-9a-f]{64}$/u);
     expect(RetrievalIndexManifestV1Schema.safeParse(outcome.manifest).success).toBe(true);
+  });
+
+  it("keeps distinct members with identical projected text as separate points", () => {
+    const sources = memberSources().map((source) =>
+      source.sourceKind === "risk-mechanism"
+        ? { ...source, entries: [{ entryId: "same", entry: { mechanismId: "same" } }] }
+        : source.sourceKind === "standard-library"
+          ? { ...source, entries: [{ entryId: "same", entry: { entryId: "same" } }] }
+          : source,
+    );
+    const outcome = normalize({ sources });
+    expect(outcome.kind).toBe("succeeded");
+    if (outcome.kind !== "succeeded") return;
+    expect(outcome.manifest.members).toHaveLength(3);
+    expect(new Set(outcome.manifest.members.map((member) => member.pointId)).size).toBe(3);
+    expect(outcome.manifest.members[1]?.contentDigest).toBe(
+      outcome.manifest.members[2]?.contentDigest,
+    );
   });
 
   it("requires all three source kinds exactly once", () => {

@@ -429,6 +429,7 @@ export const RetrievalHybridQueryV1Schema = z.strictObject({
   filter: z.strictObject({
     projectId: IdentifierSchema,
     generationRef: RetrievalGenerationRefV1Schema,
+    authorizationScopeDigest: sha256Schema,
   }),
 });
 export type RetrievalHybridQueryV1 = z.infer<typeof RetrievalHybridQueryV1Schema>;

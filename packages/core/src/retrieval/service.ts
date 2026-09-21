@@ -185,12 +185,12 @@ export const retrievalMemberText = (
 export const retrievalMemberContentDigest = (text: string): string =>
   createHash("sha256").update(text, "utf8").digest("hex");
 
-/** 由内容摘要派生稳定 point 身份；同一成员在同一代际中永远映射到同一 point。 */
-export const retrievalMemberPointId = (contentDigest: string): string =>
-  `${contentDigest.slice(0, 8)}-${contentDigest.slice(8, 12)}-5${contentDigest.slice(13, 16)}-${(
-    (Number.parseInt(contentDigest[16] ?? "0", 16) & 0x3) |
+/** 由稳定身份摘要派生 Qdrant point 身份。 */
+export const retrievalMemberPointId = (identityDigest: string): string =>
+  `${identityDigest.slice(0, 8)}-${identityDigest.slice(8, 12)}-5${identityDigest.slice(13, 16)}-${(
+    (Number.parseInt(identityDigest[16] ?? "0", 16) & 0x3) |
     0x8
-  ).toString(16)}${contentDigest.slice(17, 20)}-${contentDigest.slice(20, 32)}`;
+  ).toString(16)}${identityDigest.slice(17, 20)}-${identityDigest.slice(20, 32)}`;
 
 export const retrievalMemberRefFor = (input: {
   readonly generationRef: RetrievalGenerationRefV1;
@@ -289,16 +289,17 @@ export const normalizeRetrievalMembers = (input: {
         };
       }
       const contentDigest = retrievalMemberContentDigest(text);
-      const pointId = retrievalMemberPointId(contentDigest);
+      const memberRef = retrievalMemberRefFor({
+        generationRef: input.generationRef,
+        sourceKind: source.sourceKind,
+        sourceReleaseRef: source.sourceReleaseRef,
+        sourceEntryId: entry.entryId,
+        contentDigest,
+      });
+      const pointId = retrievalMemberPointId(sha256CanonicalJson(memberRef));
       points.push({ pointId, text });
       members.push({
-        memberRef: retrievalMemberRefFor({
-          generationRef: input.generationRef,
-          sourceKind: source.sourceKind,
-          sourceReleaseRef: source.sourceReleaseRef,
-          sourceEntryId: entry.entryId,
-          contentDigest,
-        }),
+        memberRef,
         pointId,
         sourceKind: source.sourceKind,
         sourceReleaseRef: source.sourceReleaseRef,
@@ -742,7 +743,23 @@ export class HybridRetrievalService {
   async retrieve(query: KnowledgeRetrievalQueryV1): Promise<KnowledgeRetrievalResultV1> {
     const parsed = KnowledgeRetrievalQueryV1Schema.safeParse(query);
     if (parsed.success && parsed.data.kind === "hybrid-evidence") {
-      return this.#retrieveHybridEvidence(parsed.data);
+      const hybridQuery = parsed.data;
+      const authorization = hybridQuery.authorization;
+      if (
+        authorization.projectId !== hybridQuery.projectId ||
+        authorization.actorId !== hybridQuery.actorId ||
+        !authorization.grantedCapabilities.includes("knowledge-modeling.retrieve")
+      ) {
+        return this.#fail(hybridQuery, authorization.authorizationContextRef, {
+          stage: "authorization",
+          code: "AUTHORIZATION_DENIED",
+          detailCode: "query-authorization-mismatch",
+          projectId: hybridQuery.projectId,
+          queryId: hybridQuery.queryId,
+          occurredAt: this.#now().toISOString(),
+        });
+      }
+      return this.#retrieveHybridEvidence(hybridQuery);
     }
     // 其他分支由后续 change（C21 等）实现；C20 保持既有公共契约的 UNSUPPORTED_CONTRACT，
     // 并且不把契约不匹配记入检索失败观测（那不是一次检索尝试）。
@@ -793,6 +810,7 @@ export class HybridRetrievalService {
 
   async #retrieveHybridEvidence(query: HybridQuery): Promise<KnowledgeRetrievalResultV1> {
     const { inputReader, generationStore } = this.#options;
+    const callerScopeDigest = authorizationScopeDigest(query.authorization);
     const refs = {
       inputSnapshotRef: query.payload.inputSnapshotRef,
       workItemRef: query.payload.workItemRef,
@@ -828,7 +846,8 @@ export class HybridRetrievalService {
       frozen.actorId !== query.actorId ||
       !sameReference(frozen.refs.inputSnapshotRef.reference, refs.inputSnapshotRef.reference) ||
       !sameReference(frozen.refs.workItemRef.reference, refs.workItemRef.reference) ||
-      !sameReference(frozen.refs.retrievalPolicyRef, refs.retrievalPolicyRef);
+      !sameReference(frozen.refs.retrievalPolicyRef, refs.retrievalPolicyRef) ||
+      !sameReference(policy.policyRef, refs.retrievalPolicyRef);
     if (inputDrift) {
       return this.#fail(query, refs.inputSnapshotRef, {
         stage: "query",
@@ -843,7 +862,10 @@ export class HybridRetrievalService {
     const scopeDigest = authorizationScopeDigest(frozen.authorization);
     if (
       scopeDigest !== frozen.authorizationScopeDigest ||
-      scopeDigest !== authorizationScopeDigest(query.authorization)
+      scopeDigest !== callerScopeDigest ||
+      frozen.authorization.projectId !== query.projectId ||
+      frozen.authorization.actorId !== query.actorId ||
+      !frozen.authorization.grantedCapabilities.includes("knowledge-modeling.retrieve")
     ) {
       return this.#fail(query, refs.inputSnapshotRef, {
         stage: "authorization",
@@ -932,7 +954,7 @@ export class HybridRetrievalService {
     if (hybrid.kind === "failed") {
       return this.#fail(query, frozen.evidenceBaseReleaseRef, hybrid.failure);
     }
-    const facts = await this.#readHitFacts(query, frozen, hybrid.result);
+    const facts = await this.#readHitFacts(query, frozen, generation, hybrid.result);
     if (facts.kind === "failed") {
       return this.#fail(query, frozen.evidenceBaseReleaseRef, facts.failure);
     }
@@ -1038,7 +1060,11 @@ export class HybridRetrievalService {
           queryDenseVector: [...vector],
           queryText: frozen.queryText,
           policy,
-          filter: { projectId: query.projectId, generationRef: generation.generationRef },
+          filter: {
+            projectId: query.projectId,
+            generationRef: generation.generationRef,
+            authorizationScopeDigest: frozen.authorizationScopeDigest,
+          },
         }),
       );
     } catch {
@@ -1072,6 +1098,7 @@ export class HybridRetrievalService {
   async #readHitFacts(
     query: HybridQuery,
     frozen: HybridRetrievalQueryInputV1,
+    generation: RetrievalGenerationV1,
     hybrid: RetrievalHybridQueryResultV1,
   ): Promise<
     | { readonly kind: "succeeded"; readonly hits: readonly HybridRetrievalHitV1[] }
@@ -1098,6 +1125,14 @@ export class HybridRetrievalService {
 
     for (const [index, hit] of hybrid.fused.slice(0, policy.topK).entries()) {
       const payload = hit.payload;
+      const expectedRelease =
+        generation.identity.memberReleaseRefs[
+          payload.sourceKind === "risk-mechanism"
+            ? "riskMechanismRef"
+            : payload.sourceKind === "standard-library"
+              ? "standardLibraryRef"
+              : "caseLibraryRef"
+        ];
       if (
         payload.generationRef.reference.versionId !== hybrid.generationRef.reference.versionId ||
         payload.projectId !== query.projectId ||
@@ -1109,6 +1144,31 @@ export class HybridRetrievalService {
             "authorization",
             "AUTHORIZATION_RECONCILIATION_FAILED",
             "candidate-scope-mismatch",
+          ),
+        };
+      }
+      if (
+        payload.sourceReleaseRef.reference.entityId !== expectedRelease.reference.entityId ||
+        payload.sourceReleaseRef.reference.versionId !== expectedRelease.reference.versionId ||
+        hit.pointId !==
+          retrievalMemberPointId(
+            sha256CanonicalJson(
+              retrievalMemberRefFor({
+                generationRef: generation.generationRef,
+                sourceKind: payload.sourceKind,
+                sourceReleaseRef: payload.sourceReleaseRef,
+                sourceEntryId: payload.sourceEntryId,
+                contentDigest: payload.contentDigest,
+              }),
+            ),
+          )
+      ) {
+        return {
+          kind: "failed",
+          failure: factualFailure(
+            "reconciliation",
+            "SOURCE_FACT_DRIFT",
+            "candidate-member-mismatch",
           ),
         };
       }
@@ -1284,19 +1344,33 @@ export class HybridRetrievalService {
       });
     }
 
-    const registered = await this.#options.generationStore.registerQueryResult({
-      projectId: query.projectId,
-      queryId: query.queryId,
-      requestDigest,
-      generationRef: generation.generationRef,
-      policyRef: policy.policyRef,
-      authorizationScopeDigest: frozen.authorizationScopeDigest,
-      resultArtifactRef: artifactRef,
-      knowledgeQueryResultRef,
-      recordedAt: completedAt,
-      actorRef: query.actorId,
-      authorizationContextRef: frozen.authorizationContextRef,
-    });
+    let registered;
+    try {
+      registered = await this.#options.generationStore.registerQueryResult({
+        projectId: query.projectId,
+        queryId: query.queryId,
+        requestDigest,
+        generationRef: generation.generationRef,
+        policyRef: policy.policyRef,
+        authorizationScopeDigest: frozen.authorizationScopeDigest,
+        resultArtifactRef: artifactRef,
+        knowledgeQueryResultRef,
+        recordedAt: completedAt,
+        actorRef: query.actorId,
+        authorizationContextRef: frozen.authorizationContextRef,
+      });
+    } catch {
+      return this.#fail(query, frozen.evidenceBaseReleaseRef, {
+        stage: "result-persistence",
+        code: "RESULT_PERSISTENCE_FAILED",
+        detailCode: "result-registration-failed",
+        retryable: true,
+        projectId: query.projectId,
+        queryId: query.queryId,
+        generationRef: generation.generationRef,
+        occurredAt: this.#now().toISOString(),
+      });
+    }
     if (registered.kind === "idempotency-conflict") {
       return this.#fail(
         query,

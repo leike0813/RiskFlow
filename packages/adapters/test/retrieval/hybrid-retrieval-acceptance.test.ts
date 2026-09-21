@@ -141,7 +141,11 @@ describe("hybrid retrieval acceptance against real Qdrant 1.19.0", () => {
         queryDenseVector: [...queryVectorFor(query.semanticGroup)],
         queryText: query.text,
         policy,
-        filter: { projectId: query.projectId, generationRef: manifest.generationRef },
+        filter: {
+          projectId: query.projectId,
+          generationRef: manifest.generationRef,
+          authorizationScopeDigest: generationScopeDigest,
+        },
       });
       const rrfIds = memberIdsOf(result.fused.map((hit) => hit.pointId));
       const denseIds = memberIdsOf(result.denseRoute.map((hit) => hit.pointId));
@@ -205,7 +209,11 @@ describe("hybrid retrieval acceptance against real Qdrant 1.19.0", () => {
         queryDenseVector: [...queryVectorFor("seepage-piping")],
         queryText: interference.text,
         policy,
-        filter: { projectId: interference.projectId, generationRef: manifest.generationRef },
+        filter: {
+          projectId: interference.projectId,
+          generationRef: manifest.generationRef,
+          authorizationScopeDigest: generationScopeDigest,
+        },
       });
       quality.leakage += result.fused.length;
       quality.leakage += result.denseRoute.length + result.bm25Route.length;
@@ -220,7 +228,11 @@ describe("hybrid retrieval acceptance against real Qdrant 1.19.0", () => {
         queryDenseVector: [...queryVectorFor(probe.semanticGroup)],
         queryText: probe.text,
         policy,
-        filter: { projectId: probe.projectId, generationRef: manifest.generationRef },
+        filter: {
+          projectId: probe.projectId,
+          generationRef: manifest.generationRef,
+          authorizationScopeDigest: generationScopeDigest,
+        },
       });
       if (run >= acceptancePolicy.warmupRuns) samples.push(result.fusedQueryDurationMs);
     }
@@ -332,7 +344,11 @@ describe("hybrid retrieval acceptance against real Qdrant 1.19.0", () => {
         queryDenseVector: [...queryVectorFor(query.semanticGroup)],
         queryText: query.text,
         policy,
-        filter: { projectId: query.projectId, generationRef: manifest.generationRef },
+        filter: {
+          projectId: query.projectId,
+          generationRef: manifest.generationRef,
+          authorizationScopeDigest: generationScopeDigest,
+        },
       });
       const rebuildIds = memberIdsOf(result.fused.map((hit) => hit.pointId));
       const original = quality.rankings.find((entry) => entry.queryId === query.queryId);

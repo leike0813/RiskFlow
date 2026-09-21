@@ -37,6 +37,7 @@ import {
   type EmbeddingResultV1,
   type ModelGatewayPortV1,
 } from "@riskflow/core/model";
+import { sha256CanonicalJson } from "@riskflow/core/persistence";
 import {
   HybridRetrievalPolicyV1Schema,
   HybridRetrievalResultPayloadV1Schema,
@@ -58,6 +59,7 @@ import {
   type RetrievalGenerationRefV1,
   type RetrievalGenerationStoreV1,
   type RetrievalGenerationV1,
+  type RetrievalHybridQueryV1,
   type RetrievalHybridQueryResultV1,
   type RetrievalMemberRefV1,
   type RetrievalPointPayloadV1,
@@ -431,19 +433,20 @@ const buildMember = (
     pkg.definitionType === "risk-mechanism" ? pkg.mechanisms[0]! : pkg.entries[0]!;
   const text = retrievalMemberText(sourceKind, parsedEntry);
   const contentDigest = retrievalMemberContentDigest(text);
+  const memberRef = retrievalMemberRefFor({
+    generationRef,
+    sourceKind,
+    sourceReleaseRef,
+    sourceEntryId,
+    contentDigest,
+  });
   return {
     sourceKind,
     sourceReleaseRef,
     sourceEntryId,
     contentDigest,
-    pointId: retrievalMemberPointId(contentDigest),
-    memberRef: retrievalMemberRefFor({
-      generationRef,
-      sourceKind,
-      sourceReleaseRef,
-      sourceEntryId,
-      contentDigest,
-    }),
+    pointId: retrievalMemberPointId(sha256CanonicalJson(memberRef)),
+    memberRef,
     exactRead: exactReadFor(sourceKind, pkg, sourceReleaseRef),
   };
 };
@@ -570,6 +573,7 @@ class StubGenerationStore implements RetrievalGenerationStoreV1 {
   active: RetrievalGenerationV1 | undefined = generation;
   existing: StoredQueryResultV1 | undefined = undefined;
   registerOutcome: "registered" | "idempotency-conflict" = "registered";
+  failNextRegister = false;
   readonly readActiveInputs: ReadActiveInput[] = [];
   readonly registerInputs: RegisterInput[] = [];
 
@@ -583,6 +587,7 @@ class StubGenerationStore implements RetrievalGenerationStoreV1 {
   }
 
   async registerQueryResult(input: RegisterInput) {
+    if (this.failNextRegister) throw new Error("postgres registration unavailable");
     this.registerInputs.push(input);
     return this.registerOutcome === "registered"
       ? { kind: "registered" as const, replayed: false }
@@ -618,9 +623,11 @@ class StubGenerationStore implements RetrievalGenerationStoreV1 {
 class StubProjection implements RetrievalProjectionPortV1 {
   result: RetrievalHybridQueryResultV1 = fusionFor();
   queryCalls = 0;
+  readonly queries: RetrievalHybridQueryV1[] = [];
 
-  async queryHybrid(): Promise<RetrievalHybridQueryResultV1> {
+  async queryHybrid(query: RetrievalHybridQueryV1): Promise<RetrievalHybridQueryResultV1> {
     this.queryCalls += 1;
+    this.queries.push(query);
     return this.result;
   }
 
@@ -865,12 +872,54 @@ const capturedPayload = (harness: HarnessV1) => {
 // ------------------------------------------------------------------ 场景
 
 describe("HybridRetrievalService：查询必须精确绑定输入并在当前权限下回查事实", () => {
+  it.each([
+    ["missing capability", { grantedCapabilities: ["knowledge-modeling.read"] }],
+    ["foreign project", { projectId: "project-other" }],
+    ["foreign actor", { actorId: "actor-other" }],
+  ])("denies %s before reading the target", async (_label, override) => {
+    const harness = createHarness();
+    const query = {
+      ...makeQuery(),
+      authorization: { ...authorization, ...override },
+    } as KnowledgeRetrievalQueryV1;
+
+    expectAuthorizationDenied(await harness.service.retrieve(query));
+    expect(harness.inputReader.calls).toHaveLength(0);
+    expect(harness.store.readActiveInputs).toHaveLength(0);
+    expect(harness.projection.queryCalls).toBe(0);
+    expect(harness.facts.calls).toHaveLength(0);
+    expectNoPublishedResult(harness);
+  });
+
+  it.each([
+    ["spatial", { spatialScopeRefs: [{ kind: "source-access-grant" }] }],
+    ["source", { sourceAccessGrantRefs: [{ kind: "spatial-scope" }] }],
+  ])("rejects malformed %s scope before reading the target", async (_label, override) => {
+    const harness = createHarness();
+    const query = {
+      ...makeQuery(),
+      authorization: { ...authorization, ...override },
+    } as KnowledgeRetrievalQueryV1;
+
+    expect(errorOf(await harness.service.retrieve(query)).code).toBe("UNSUPPORTED_CONTRACT");
+    expect(harness.inputReader.calls).toHaveLength(0);
+    expect(harness.store.readActiveInputs).toHaveLength(0);
+    expect(harness.projection.queryCalls).toBe(0);
+    expect(harness.facts.calls).toHaveLength(0);
+    expectNoPublishedResult(harness);
+  });
+
   it("有权限查询返回事实回查后的结果引用并保留完整可重放解释", async () => {
     const harness = createHarness();
     const result = await harness.service.retrieve(makeQuery());
 
     expect(result.kind).toBe("succeeded");
     if (result.kind !== "succeeded") throw new Error("unreachable");
+    expect(harness.projection.queries[0]?.filter).toEqual({
+      projectId: PROJECT_ID,
+      generationRef: generation.generationRef,
+      authorizationScopeDigest: scopeDigest,
+    });
     const knowledgeQueryResultRef = result.result.knowledgeQueryResultRef;
 
     const payload = capturedPayload(harness);
@@ -993,6 +1042,19 @@ describe("HybridRetrievalService：查询必须精确绑定输入并在当前权
     expect(harness.failures[0]?.stage).toBe("authorization");
   });
 
+  it("rejects a policy body that differs from the requested policy reference", async () => {
+    const harness = createHarness();
+    harness.inputReader.input = makeFrozenInput({
+      policy: HybridRetrievalPolicyV1Schema.parse({
+        ...policy,
+        policyRef: { entityId: policy.policyRef.entityId, versionId: "other-version" },
+      }),
+    });
+    expectBlocked(await harness.service.retrieve(makeQuery()), "RETRIEVAL_INPUT_DRIFT");
+    expect(harness.store.readActiveInputs).toHaveLength(0);
+    expectNoPublishedResult(harness);
+  });
+
   it("冻结输入携带过期授权上下文时封闭失败", async () => {
     const harness = createHarness();
     harness.inputReader.input = makeFrozenInput({
@@ -1053,6 +1115,29 @@ describe("HybridRetrievalService：查询必须精确绑定输入并在当前权
               : hit,
           );
           harness.projection.result = fusionFor({ fused });
+        },
+      },
+      {
+        name: "候选来源发布不属于当前代际",
+        assertError: (result) => expectBlocked(result, "SOURCE_FACT_DRIFT"),
+        expectedDetailCode: "candidate-member-mismatch",
+        expectedStage: "reconciliation",
+        apply: (harness) => {
+          harness.projection.result = fusionFor({
+            fused: fusionFor().fused.map((hit, index) =>
+              index === 0
+                ? {
+                    ...hit,
+                    payload: payloadFor(memberOf("risk-mechanism"), {
+                      sourceReleaseRef: {
+                        kind: "knowledge-release",
+                        reference: { entityId: "unrelated-release", versionId: "1" },
+                      },
+                    }),
+                  }
+                : hit,
+            ),
+          });
         },
       },
       {
@@ -1278,6 +1363,22 @@ describe("HybridRetrievalService：双路检索不得降级或产生半正式结
     expect(harness.store.registerInputs).toHaveLength(0);
     expect(harness.failures[0]?.stage).toBe("result-persistence");
     expect(harness.failures[0]?.code).toBe("RESULT_PERSISTENCE_FAILED");
+  });
+
+  it("PostgreSQL result registration failure returns a retryable failure without a formal result", async () => {
+    const harness = createHarness();
+    harness.store.failNextRegister = true;
+
+    const result = await harness.service.retrieve(makeQuery());
+
+    expect(errorOf(result).code).toBe("TRANSIENT_FAILURE");
+    expect(harness.failures[0]).toMatchObject({
+      stage: "result-persistence",
+      code: "RESULT_PERSISTENCE_FAILED",
+      retryable: true,
+    });
+    expect(harness.artifacts.puts).toHaveLength(1);
+    expect(harness.store.registerInputs).toHaveLength(0);
   });
 
   it("结果登记冲突时不返回结果引用", async () => {

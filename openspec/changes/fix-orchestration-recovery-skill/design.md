@@ -63,9 +63,9 @@ Targeted Auditor 若发现已批准范围内的普通缺陷，在自己的活动
 
 Orca 可能保留同一 Task 的旧 failed Dispatch 与当前 live Dispatch。状态只在该 Task 不存在 live worker 时才把失败记录映射为 reconcile；否则按当前运行态继续，避免陈旧记录制造假死锁。
 
-### D11：终态 Task 的收口结果由本地尝试台账补齐
+### D11：终态 Task 的收口与集成摘要由本地尝试台账补齐
 
-worker 生命周期可能先把 Orca Task 标为 completed，而 v2 信封仍停在 running；Orca 不允许再次更新 terminal Task。`riskflow_settle` 遇到这种已对账状态时不重复调用 task-update，直接把 settled 信封原子写入现有尝试台账。状态归一化只在 Orca Task 已终态、Orca 信封仍非 settled 且台账已有 settled 信封时优先台账；其他情况继续以 Orca 有效信封为准。
+worker 生命周期可能先把 Orca Task 标为 completed，而 v2 信封仍停在 running；Orca 不允许再次更新 terminal Task。`riskflow_settle` 遇到这种已对账状态时不重复调用 task-update，直接把 settled 信封原子写入现有尝试台账；后续 merge、main 验证和归档更新同一信封时也只写尝试台账。状态归一化只在 Orca Task 已终态、Orca 信封仍非 settled 且台账已有 settled 信封时优先台账；其他情况继续以 Orca 有效信封为准。
 
 ## Risks / Trade-offs
 
@@ -76,7 +76,7 @@ worker 生命周期可能先把 Orca Task 标为 completed，而 v2 信封仍停
 - **Codex 首次信任提示被算作 worker 失败** → 在 worker-start 前创建并检查 terminal；提示未处理时保留 queued Task 和精确恢复 handle。
 - **旧 session 被当作廉价续跑路径** → 独立 Task 强制新 session；只有同一活动 Task 内允许连续修复。
 - **旧 failed Dispatch 覆盖当前 live Dispatch** → 先检查同 Task 是否仍有 live worker，再判定失败恢复。
-- **Task 已终态但信封仍 running** → settle 通过尝试台账补齐，状态仅在终态矛盾条件下优先 settled 台账。
+- **Task 已终态但仍需补齐信封或集成摘要** → settle 与 integrate 通过尝试台账补齐，状态仅在终态矛盾条件下优先 settled 台账。
 
 ## Migration Plan
 

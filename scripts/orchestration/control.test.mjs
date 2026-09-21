@@ -886,6 +886,49 @@ describe("controlled orchestration", () => {
     }
   });
 
+  it("records a main summary without rewriting an already-terminal Task", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-main-terminal-task-"));
+    const terminal = mergedState();
+    terminal.nodes[0].checkpoints.taskStatus = "completed";
+    const exec = async (command, args) => {
+      if (command === "git" && args[0] === "rev-parse" && args[1] === "--git-common-dir") {
+        return runtimeRoot;
+      }
+      if (command === "git" && String(args[0] ?? "").startsWith("--git-dir=")) {
+        return runtimeRoot;
+      }
+      if (command === "git" && args[0] === "rev-parse") return "merge-head";
+      if (command === "pnpm") return "";
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await riskflowIntegrate(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "integrate-terminal-task",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => ({ graph, snapshot: terminal }),
+        },
+      );
+      const record = JSON.parse(
+        await readFile(
+          join(runtimeRoot, "riskflow-orchestration", "attempts", "task-finalizer.json"),
+          "utf8",
+        ),
+      );
+      expect(record.envelope.main).toMatchObject({
+        mainHead: "merge-head",
+        verification: "passed",
+      });
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
   it("rejects a long external step whose fact base changed while unlocked", async () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-long-step-stale-"));
     let reads = 0;

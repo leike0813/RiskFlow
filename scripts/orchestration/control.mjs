@@ -12,12 +12,17 @@ import {
   readJsonCommand,
   resolveCoordinatorRoot,
   resolveOrcaInvocation,
+  supersedableAttempt,
   unwrapResult,
 } from "./status.mjs";
 
 const TERMINAL_OUTCOMES = new Set(["succeeded", "failed", "blocked", "paused"]);
 const TERMINAL_TASK_STATUSES = new Set(["completed", "failed", "blocked"]);
 const RECONCILE_SAFE_VIOLATIONS = new Set(["checkpoint_mismatch", "worktree_reclaim_pending"]);
+// 关闭一个已经消失的 terminal 不是失败：状态投影列出的是曾经记录的 handle，
+// 上一次尝试或其它关闭者可能已经处理过它（Orca 返回 terminal_handle_stale）。
+const TERMINAL_ALREADY_GONE_PATTERN =
+  /terminal_handle_stale|terminal not found|no such terminal|already closed/iu;
 // Orca 的 `worktree create` 可能在外部副作用已经发生之后才以运行时故障结束（实测 30 秒
 // 后 `runtime_unavailable`）。只有这类"运行时不可用/响应丢失"错误才允许自持建立并取回
 // 身份；参数、命名、权限等业务错误原样冒泡，否则会用一个自建工作树掩盖真实原因。
@@ -104,15 +109,15 @@ export function preflightAction(snapshot, action, input = {}) {
   if (!node) throw new ControlError("work_item_not_found", `未知工作项：${workItemId}`);
   const queueItem = snapshot.resumeQueue.find((item) => item.workItemId === workItemId);
   const adoptingAuxiliary = action === "dispatch" && node.auxiliary && node.status === "untracked";
+  // `worktree_reclaim_pending` 由状态视图对每个 stale/reclaimable 节点派生，语义是「该工作项
+  // 还有终态工作树待回收」的就绪标记，不是冲突。把它当阻断违规会让受控回收自身不可达，
+  // 也会让一个已完成工作项的残留回收阻断其他工作项的派发，因此它 MUST NOT 阻断受控动作。
   const blockingViolations = snapshot.violations.filter(
     (violation) =>
+      violation.code !== "worktree_reclaim_pending" &&
       !(
         (action === "reconcile" && RECONCILE_SAFE_VIOLATIONS.has(violation.code)) ||
-        (adoptingAuxiliary && violation.nodeId === workItemId) ||
-        (action === "integrate" &&
-          queueItem?.category === "cleanup" &&
-          violation.nodeId === workItemId &&
-          violation.code === "worktree_reclaim_pending")
+        (adoptingAuxiliary && violation.nodeId === workItemId)
       ),
   );
   if (blockingViolations.length > 0) {
@@ -128,10 +133,10 @@ export function preflightAction(snapshot, action, input = {}) {
       input.replanApprovalRef === undefined
         ? null
         : requiredString(input.replanApprovalRef, "replanApprovalRef");
-    if (replanApprovalRef && !["finalizing", "paused"].includes(node.status)) {
+    if (replanApprovalRef && !["finalizing", "finalized", "paused"].includes(node.status)) {
       throw new ControlError(
         "replan_not_allowed",
-        `${workItemId} 只有进入 finalizing 或 paused 后才能按批准引用重新规划`,
+        `${workItemId} 只有进入 finalizing、finalized 或 paused 后才能按批准引用重新规划`,
         node.nextActions,
       );
     }
@@ -139,6 +144,13 @@ export function preflightAction(snapshot, action, input = {}) {
       throw new ControlError(
         "replan_not_allowed",
         `${workItemId} 缺少可被取代的 attemptGroup`,
+        node.nextActions,
+      );
+    }
+    if (replanApprovalRef && !supersedableAttempt(node.checkpoints)) {
+      throw new ControlError(
+        "replan_not_allowed",
+        `${workItemId} 当前 planning/implementing 尝试仍在活动或已成功收口，不可被重开规划取代`,
         node.nextActions,
       );
     }
@@ -462,6 +474,13 @@ export function withOrcaSender(invocation, args) {
   return args;
 }
 
+// `--retry-request` 只在 orchestration 写命令上实现（与 sender 身份同一族）；terminal/worktree
+// 命令会以 invalid_argument 拒绝它，附加即让调用必定失败（实测 terminal close）。
+function withRetryRequest(args, retryRequest) {
+  if (!retryRequest || args[0] !== "orchestration") return [];
+  return ["--retry-request", retryRequest];
+}
+
 async function orcaJson(exec, invocation, args, cwd, retryRequest) {
   return unwrapResult(
     await readJsonCommand(
@@ -470,7 +489,7 @@ async function orcaJson(exec, invocation, args, cwd, retryRequest) {
       [
         ...invocation.prefix,
         ...withOrcaSender(invocation, args),
-        ...(retryRequest ? ["--retry-request", retryRequest] : []),
+        ...withRetryRequest(args, retryRequest),
         "--json",
       ],
       {
@@ -944,24 +963,42 @@ async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, id
         ],
       );
     }
-    const worker = await orcaJson(
-      exec,
-      invocation,
-      [
-        "orchestration",
-        "worker-start",
-        "--run",
-        task.runId,
-        "--task",
-        task.taskId,
-        "--worktree",
-        worktree,
-        "--terminal",
-        terminalHandle,
-      ],
-      rootDir,
-      retryRequest(idempotencyKey, "worker-start"),
-    );
+    let worker;
+    try {
+      worker = await orcaJson(
+        exec,
+        invocation,
+        [
+          "orchestration",
+          "worker-start",
+          "--run",
+          task.runId,
+          "--task",
+          task.taskId,
+          "--worktree",
+          worktree,
+          "--terminal",
+          terminalHandle,
+        ],
+        rootDir,
+        retryRequest(idempotencyKey, "worker-start"),
+      );
+    } catch (error) {
+      // 工作区信任提示会让 worker-start 以 agent_prompt_blocked 失败；它发生在
+      // worker-start 之前，不是任务失败，必须按信任恢复流程归因（spec：Codex worker
+      // 只在工作区信任完成后启动）。
+      if (!/agent_prompt_blocked|workspace trust/iu.test(error?.message ?? String(error))) {
+        throw error;
+      }
+      throw new ControlError(
+        "workspace_trust_required",
+        `${terminalHandle} 正在等待 Codex 工作区信任确认`,
+        [
+          `在 ${terminalHandle} 中确认当前工作区信任并等待 tui-idle`,
+          `重新读取 riskflow_status，并以新幂等键调用 riskflow_dispatch，传入 terminalHandle=${terminalHandle}`,
+        ],
+      );
+    }
     return {
       ...worker,
       ...(await recordRunningAttempt(runtimeDir, node, task)),
@@ -1396,6 +1433,11 @@ export async function riskflowIntegrate(input, options = {}) {
       const invocation = resolveOrcaInvocation(options.orcaCommand);
       if (ctx.node.status === "stale") {
         const handles = ctx.node.orca?.terminalHandles ?? [];
+        // 回收就绪标记由状态视图对 stale/reclaimable 派生，是回收触发条件本身；
+        // 把它当作阻断违规会让受控回收永远不可达。其他违规仍然 fail-closed。
+        const blockingViolations = ctx.snapshot.violations.filter(
+          (violation) => violation.code !== "worktree_reclaim_pending",
+        );
         const safelySettled =
           ctx.node.main?.archive === true &&
           ctx.node.main?.verification === "passed" &&
@@ -1404,7 +1446,7 @@ export async function riskflowIntegrate(input, options = {}) {
           ctx.node.checkpoints?.runState === "settled" &&
           ctx.node.checkpoints?.outcome === "succeeded" &&
           ctx.node.violations.length === 0 &&
-          ctx.snapshot.violations.length === 0 &&
+          blockingViolations.length === 0 &&
           handles.length > 0;
         if (!safelySettled) {
           throw new ControlError(
@@ -1414,13 +1456,18 @@ export async function riskflowIntegrate(input, options = {}) {
           );
         }
         for (const handle of handles) {
-          await orcaJson(
-            ctx.exec,
-            invocation,
-            ["terminal", "close", "--terminal", handle],
-            ctx.rootDir,
-            retryRequest(ctx.idempotencyKey, `terminal-close:${handle}`),
-          );
+          try {
+            await orcaJson(
+              ctx.exec,
+              invocation,
+              ["terminal", "close", "--terminal", handle],
+              ctx.rootDir,
+            );
+          } catch (error) {
+            // 状态投影列出的是曾经记录的 handle；上一次尝试或其它关闭者可能已经处理过它。
+            // 「已经不存在」不是失败，其余错误（权限、运行时不可用、参数）仍 fail-closed。
+            if (!TERMINAL_ALREADY_GONE_PATTERN.test(String(error?.message ?? error))) throw error;
+          }
         }
         const current = await ctx.collectStatus();
         const refreshed = findWorkItem(current.snapshot, ctx.node.id);

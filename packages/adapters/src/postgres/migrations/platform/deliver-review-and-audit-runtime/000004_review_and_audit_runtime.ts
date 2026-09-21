@@ -362,6 +362,20 @@ export async function down(db: Kysely<unknown>): Promise<void> {
   await sql`DROP TRIGGER IF EXISTS review_tasks_terminal_immutable
     ON business.review_tasks`.execute(db);
   await sql`DROP FUNCTION IF EXISTS business.reject_review_task_terminal_rewrite()`.execute(db);
+  // 后续 change（C27）的 recommendation_validations 指向 business.review_tasks；孤立回滚本
+  // 迁移 MUST 先解除该外键，否则 PostgreSQL 以 "other objects depend on it" 拒绝删表。
+  // 依赖表可能尚未建立，因此按表存在性守卫。
+  await sql`
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.tables
+                 WHERE table_schema = 'business' AND table_name = 'recommendation_validations') THEN
+        ALTER TABLE business.recommendation_validations
+          DROP CONSTRAINT IF EXISTS recommendation_validations_review_fk;
+      END IF;
+    END
+    $$;
+  `.execute(db);
   await db.schema.dropTable("audit.review_rejections").ifExists().execute();
   await db.schema.dropTable("business.review_decisions").ifExists().execute();
   await db.schema.dropTable("business.review_tasks").ifExists().execute();

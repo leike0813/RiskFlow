@@ -54,6 +54,7 @@ import * as externalRiskEventRegistrationMigration from "../../src/postgres/migr
 import * as versionedHybridRetrievalMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-versioned-dual-index-hybrid-retrieval/000040_versioned_hybrid_retrieval.js";
 import * as identificationContextResultsMigration from "../../src/postgres/migrations/risk-identification/deliver-relationship-context-and-retrieval-agent-review/000041_identification_context_results.js";
 import * as warningTasksMigration from "../../src/postgres/migrations/warning-response/deliver-warning-tasks-and-in-app-notification/000044_warning_tasks_and_in_app_notification.js";
+import * as responseRecommendationMigration from "../../src/postgres/migrations/warning-response/deliver-response-recommendation/000045_response_recommendation.js";
 
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
 import * as agentTaskFixtureMigration from "./fixtures/migrations/agent-task/deliver-unified-bounded-agent-runtime/900002_agent_task_fixture.js";
@@ -407,6 +408,15 @@ const testMigrationManifest = [
       "000044_warning-response_deliver-warning-tasks-and-in-app-notification_warning_tasks_and_in_app_notification",
     sequence: 44,
     module: warningTasksMigration,
+  },
+  {
+    root: "production",
+    relativePath:
+      "warning-response/deliver-response-recommendation/000045_response_recommendation.ts",
+    migrationName:
+      "000045_warning-response_deliver-response-recommendation_response_recommendation",
+    sequence: 45,
+    module: responseRecommendationMigration,
   },
   {
     root: "fixture",

@@ -335,6 +335,42 @@ describe("controlled orchestration", () => {
     }
   });
 
+  it("classifies a workspace-trust failure at worker-start as controlled trust recovery", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-worker-start-trust-"));
+    let workerStarts = 0;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      const terminal = fakeCodexTerminal(command, args);
+      if (terminal !== null) return terminal;
+      if (command === "orca-ide" && args.includes("task-create")) return { id: "task-trust" };
+      if (command === "orca-ide" && args.includes("task-update")) return {};
+      if (command === "orca-ide" && args.includes("worker-start")) {
+        workerStarts += 1;
+        throw new Error("agent_prompt_blocked");
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await expect(
+        riskflowDispatch(
+          {
+            workItemId: "C17",
+            expectedRevision: "revision-1",
+            idempotencyKey: "dispatch-worker-start-trust",
+          },
+          {
+            rootDir: process.cwd(),
+            exec,
+            statusProvider: async () => ({ graph, snapshot: snapshot() }),
+          },
+        ),
+      ).rejects.toMatchObject({ code: "workspace_trust_required" });
+      expect(workerStarts).toBe(1);
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
   it("continues the attempt number from the target attempt group history", () => {
     const auditCheckpoint = {
       ...node().checkpoints,
@@ -1022,6 +1058,12 @@ describe("controlled orchestration", () => {
                 resumeQueue: [
                   { workItemId: "C17", category: "cleanup", nextAction: "受控 cleanup" },
                 ],
+                // 回收就绪标记是回收触发条件本身，不得阻断本次回收；其他工作项的同一标记
+                // 也不得阻断本工作项。
+                violations: [
+                  { nodeId: "C17", code: "worktree_reclaim_pending" },
+                  { nodeId: "C19", code: "worktree_reclaim_pending" },
+                ],
               }),
             };
           },
@@ -1035,6 +1077,73 @@ describe("controlled orchestration", () => {
       const removal = calls.find((args) => args[0] === "worktree");
       expect(removal).toContain("id:repo::/tmp/c17");
       expect(removal).not.toContain("--force");
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("keeps closing the remaining terminals when a handle is already gone", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-cleanup-stale-handle-"));
+    const stale = node({
+      status: "stale",
+      phase: "cleanup",
+      main: { archive: true, verification: "passed" },
+      worktree: { ...node().worktree, exists: true, dirty: false },
+      checkpoints: { ...node().checkpoints, runState: "settled", outcome: "succeeded" },
+      orca: { attempts: [], terminalHandles: ["term-gone", "term-live"] },
+      nextActions: ["受控 cleanup"],
+    });
+    const reclaimable = {
+      ...stale,
+      status: "reclaimable",
+      orca: { ...stale.orca, terminalHandles: [] },
+    };
+    const closes = [];
+    let reads = 0;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide") {
+        if (args[0] === "terminal" && args[1] === "close") {
+          closes.push(args);
+          if (args[args.indexOf("--terminal") + 1] === "term-gone") {
+            throw new Error("terminal_handle_stale");
+          }
+          return { closed: true };
+        }
+        if (args[0] === "worktree" && args[1] === "rm") return { removed: true };
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      const result = await riskflowIntegrate(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "cleanup-stale-handle",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => {
+            reads += 1;
+            const current = reads === 1 ? stale : reclaimable;
+            return {
+              graph,
+              snapshot: snapshot({
+                nodes: [current],
+                resumeQueue: [
+                  { workItemId: "C17", category: "cleanup", nextAction: "受控 cleanup" },
+                ],
+              }),
+            };
+          },
+        },
+      );
+      expect(result).toMatchObject({ action: "reclaim" });
+      expect(closes).toEqual([
+        ["terminal", "close", "--terminal", "term-gone", "--json"],
+        ["terminal", "close", "--terminal", "term-live", "--json"],
+      ]);
     } finally {
       await rm(runtimeRoot, { recursive: true });
     }
@@ -1086,6 +1195,128 @@ describe("controlled orchestration", () => {
     } finally {
       await rm(runtimeRoot, { recursive: true });
     }
+  });
+
+  it("still refuses cleanup and dispatch for violations other than the reclaim readiness marker", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-cleanup-foreign-violation-"));
+    const stale = node({
+      status: "stale",
+      phase: "cleanup",
+      main: { archive: true, verification: "passed" },
+      worktree: { ...node().worktree, exists: true, dirty: false },
+      checkpoints: { ...node().checkpoints, runState: "settled", outcome: "succeeded" },
+      orca: { attempts: [], terminalHandles: ["term-old"] },
+      nextActions: ["审阅违规"],
+    });
+    let terminalCalls = 0;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args[0] === "terminal") terminalCalls += 1;
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await expect(
+        riskflowIntegrate(
+          {
+            workItemId: "C17",
+            expectedRevision: "revision-1",
+            idempotencyKey: "cleanup-foreign-violation",
+          },
+          {
+            rootDir: process.cwd(),
+            exec,
+            statusProvider: async () => ({
+              graph,
+              snapshot: snapshot({
+                nodes: [stale],
+                resumeQueue: [{ workItemId: "C17", category: "cleanup", nextAction: "审阅违规" }],
+                violations: [{ nodeId: "C19", code: "checkpoint_mismatch" }],
+              }),
+            }),
+          },
+        ),
+      ).rejects.toMatchObject({ code: "orchestration_conflict" });
+      expect(terminalCalls).toBe(0);
+
+      expect(() =>
+        preflightAction(
+          snapshot({
+            nodes: [stale],
+            resumeQueue: [{ workItemId: "C17", category: "cleanup", nextAction: "审阅违规" }],
+            violations: [{ nodeId: "C19", code: "checkpoint_mismatch" }],
+          }),
+          "integrate",
+          { workItemId: "C17", expectedRevision: "revision-1" },
+        ),
+      ).toThrowError(ControlError);
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("allows a replan only when the current attempt can be superseded", () => {
+    const planningCheckpoint = {
+      ...node().checkpoints,
+      taskKind: "planning",
+      phase: "planning",
+      attemptGroup: "C17:planning",
+      attempt: 1,
+    };
+    const supersedable = node({
+      status: "paused",
+      checkpoints: { ...planningCheckpoint, runState: "settled", outcome: "paused" },
+    });
+    const supersedableSnapshot = snapshot({
+      nodes: [supersedable],
+      resumeQueue: [{ workItemId: "C17", category: "planning", nextAction: "按批准重开规划" }],
+    });
+    expect(() =>
+      preflightAction(supersedableSnapshot, "dispatch", {
+        workItemId: "C17",
+        replanApprovalRef: "approval://riskflow/C17/scope",
+      }),
+    ).not.toThrow();
+
+    const finalized = node({
+      status: "finalized",
+      checkpoints: { ...node().checkpoints, runState: "settled", outcome: "succeeded" },
+    });
+    expect(() =>
+      preflightAction(snapshot({ nodes: [finalized] }), "dispatch", {
+        workItemId: "C17",
+        replanApprovalRef: "approval://riskflow/C17/scope",
+      }),
+    ).not.toThrow();
+
+    const running = node({
+      status: "paused",
+      checkpoints: { ...planningCheckpoint, runState: "running" },
+    });
+    const runningSnapshot = snapshot({
+      nodes: [running],
+      resumeQueue: [{ workItemId: "C17", category: "planning", nextAction: "等待收口" }],
+    });
+    expect(() =>
+      preflightAction(runningSnapshot, "dispatch", {
+        workItemId: "C17",
+        replanApprovalRef: "approval://riskflow/C17/scope",
+      }),
+    ).toThrowError(/不可被重开规划取代/);
+
+    const succeeded = node({
+      status: "paused",
+      checkpoints: { ...planningCheckpoint, runState: "settled", outcome: "succeeded" },
+    });
+    const succeededSnapshot = snapshot({
+      nodes: [succeeded],
+      resumeQueue: [{ workItemId: "C17", category: "planning", nextAction: "集成" }],
+    });
+    expect(() =>
+      preflightAction(succeededSnapshot, "dispatch", {
+        workItemId: "C17",
+        replanApprovalRef: "approval://riskflow/C17/scope",
+      }),
+    ).toThrowError(/不可被重开规划取代/);
   });
 
   function settleHarness(runtimeRoot) {

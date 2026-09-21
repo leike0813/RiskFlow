@@ -175,7 +175,7 @@ Agent 之间不复制未提交文件。同步必须形成可审阅 Git 检查点
 
 ## 9. 回收
 
-回收前确认：change 的 verification（若 schema 声明）已完成且随 change 归档、feature commit 已进入 main、main 验证通过、worktree clean、checkpoint 已成功收口、没有活动 writer 或违规，并且状态将该项列为 `reclaimable`，或仅因状态中可精确识别的终态 terminal 残留而列为 `stale`。
+回收前确认：change 的 verification（若 schema 声明）已完成且随 change 归档、feature commit 已进入 main、main 验证通过、worktree clean、checkpoint 已成功收口、没有活动 writer 或违规，并且状态将该项列为 `reclaimable`，或仅因状态中可精确识别的终态 terminal 残留而列为 `stale`。状态视图为 stale/reclaimable 工作项派发的 `worktree_reclaim_pending` 是「待回收」就绪标记而不是冲突，禁止把它当作阻断条件：判定只按目标工作项自身的合规事实，也不因其他工作项待回收而拒绝本次回收。
 
 调用 `riskflow_integrate` 回收。对上述 terminal 残留，控制器会关闭状态记录的精确 handle，重新采集状态，并仅在同一节点变为 `reclaimable` 且完整 worktree ID 未变化时执行删除。任一前提漂移都停止，不使用 force。完成后同时核对：
 

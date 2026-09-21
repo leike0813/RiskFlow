@@ -24,6 +24,7 @@ import * as externalRiskEventRegistrationMigration from "../../src/postgres/migr
 import * as versionedHybridRetrievalMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-versioned-dual-index-hybrid-retrieval/000040_versioned_hybrid_retrieval.js";
 import * as identificationContextResultsMigration from "../../src/postgres/migrations/risk-identification/deliver-relationship-context-and-retrieval-agent-review/000041_identification_context_results.js";
 import * as warningTasksMigration from "../../src/postgres/migrations/warning-response/deliver-warning-tasks-and-in-app-notification/000044_warning_tasks_and_in_app_notification.js";
+import * as responseRecommendationMigration from "../../src/postgres/migrations/warning-response/deliver-response-recommendation/000045_response_recommendation.js";
 
 export interface AuthPostgresFixture extends PostgresTestFixture {
   runMigrations(): Promise<void>;
@@ -108,6 +109,13 @@ export const startAuthPostgresFixture = async (): Promise<AuthPostgresFixture> =
         "warning-response/deliver-warning-tasks-and-in-app-notification/000044_warning_tasks_and_in_app_notification.ts",
       ),
       warningTasksMigration,
+    ],
+    [
+      resolve(
+        base.productionMigrationRoot,
+        "warning-response/deliver-response-recommendation/000045_response_recommendation.ts",
+      ),
+      responseRecommendationMigration,
     ],
     [
       resolve(

@@ -36,6 +36,9 @@ export interface AssessmentConfigurationFixtureSetV1 {
   >;
 }
 
+/** 11 类配置正文集合；注入配置正文的夹具接缝使用同一名字，避免消费方耦合到构造函数。 */
+export type AssessmentConfigurationDocumentsV1 = AssessmentConfigurationFixtureSetV1["documents"];
+
 const document = (
   definitionType: AssessmentConfigurationDefinitionTypeV1,
   content: unknown,

@@ -575,19 +575,39 @@ function phaseRank(value, phaseOrder) {
   return index < 0 ? 0 : index + 1;
 }
 
+// 已进入 finalizing 的尝试可在获批后重开规划；较早阶段只允许取代已收口且非成功的尝试。
+// 状态视图与派发前置校验共用本谓词，避免两处判定漂移。
+const SUPERSEDABLE_OUTCOMES = new Set(["paused", "failed", "blocked"]);
+export function supersedableAttempt(checkpoint, phaseOrder = DEFAULT_PHASE_ORDER) {
+  if (checkpoint === null || checkpoint === undefined) return false;
+  if (
+    phaseRank(checkpoint.phase ?? checkpoint.taskKind, phaseOrder) >=
+    phaseRank("finalizing", phaseOrder)
+  ) {
+    return true;
+  }
+  return checkpoint.runState === "settled" && SUPERSEDABLE_OUTCOMES.has(checkpoint.outcome);
+}
+
 function currentTaskWindow(valid, phaseOrder) {
   const replans = valid.filter((task) => nonEmptyString(task.envelope.approvalRef));
   if (replans.length === 0) return { tasks: valid, replanConflict: false };
-  const approved = replans.filter(
-    (replan) =>
-      nonEmptyString(replan.createdAt) &&
-      valid.some(
-        (prior) =>
-          prior.envelope.attemptGroup === replan.envelope.supersedesAttemptGroup &&
-          phaseRank(prior.envelope.phase ?? prior.envelope.taskKind, phaseOrder) >=
-            phaseRank("finalizing", phaseOrder),
-      ),
-  );
+  const approved = replans.filter((replan) => {
+    if (!nonEmptyString(replan.createdAt)) return false;
+    const prior = valid.filter(
+      (task) =>
+        task.envelope.attemptGroup === replan.envelope.supersedesAttemptGroup &&
+        nonEmptyString(task.createdAt) &&
+        task.createdAt < replan.createdAt,
+    );
+    const latestAttempt = Math.max(...prior.map((task) => Number(task.envelope.attempt ?? 0)));
+    return (
+      prior.length > 0 &&
+      prior
+        .filter((task) => Number(task.envelope.attempt ?? 0) === latestAttempt)
+        .every((task) => supersedableAttempt(task.envelope, phaseOrder))
+    );
+  });
   if (approved.length !== replans.length) return { tasks: valid, replanConflict: true };
   const latestCreatedAt = approved
     .map((task) => task.createdAt)

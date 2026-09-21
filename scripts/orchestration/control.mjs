@@ -19,6 +19,10 @@ import {
 const TERMINAL_OUTCOMES = new Set(["succeeded", "failed", "blocked", "paused"]);
 const TERMINAL_TASK_STATUSES = new Set(["completed", "failed", "blocked"]);
 const RECONCILE_SAFE_VIOLATIONS = new Set(["checkpoint_mismatch", "worktree_reclaim_pending"]);
+// 关闭一个已经消失的 terminal 不是失败：状态投影列出的是曾经记录的 handle，
+// 上一次尝试或其它关闭者可能已经处理过它（Orca 返回 terminal_handle_stale）。
+const TERMINAL_ALREADY_GONE_PATTERN =
+  /terminal_handle_stale|terminal not found|no such terminal|already closed/iu;
 // Orca 的 `worktree create` 可能在外部副作用已经发生之后才以运行时故障结束（实测 30 秒
 // 后 `runtime_unavailable`）。只有这类"运行时不可用/响应丢失"错误才允许自持建立并取回
 // 身份；参数、命名、权限等业务错误原样冒泡，否则会用一个自建工作树掩盖真实原因。
@@ -470,6 +474,13 @@ export function withOrcaSender(invocation, args) {
   return args;
 }
 
+// `--retry-request` 只在 orchestration 写命令上实现（与 sender 身份同一族）；terminal/worktree
+// 命令会以 invalid_argument 拒绝它，附加即让调用必定失败（实测 terminal close）。
+function withRetryRequest(args, retryRequest) {
+  if (!retryRequest || args[0] !== "orchestration") return args;
+  return [...args, "--retry-request", retryRequest];
+}
+
 async function orcaJson(exec, invocation, args, cwd, retryRequest) {
   return unwrapResult(
     await readJsonCommand(
@@ -478,7 +489,7 @@ async function orcaJson(exec, invocation, args, cwd, retryRequest) {
       [
         ...invocation.prefix,
         ...withOrcaSender(invocation, args),
-        ...(retryRequest ? ["--retry-request", retryRequest] : []),
+        ...withRetryRequest(args, retryRequest),
         "--json",
       ],
       {
@@ -952,24 +963,42 @@ async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, id
         ],
       );
     }
-    const worker = await orcaJson(
-      exec,
-      invocation,
-      [
-        "orchestration",
-        "worker-start",
-        "--run",
-        task.runId,
-        "--task",
-        task.taskId,
-        "--worktree",
-        worktree,
-        "--terminal",
-        terminalHandle,
-      ],
-      rootDir,
-      retryRequest(idempotencyKey, "worker-start"),
-    );
+    let worker;
+    try {
+      worker = await orcaJson(
+        exec,
+        invocation,
+        [
+          "orchestration",
+          "worker-start",
+          "--run",
+          task.runId,
+          "--task",
+          task.taskId,
+          "--worktree",
+          worktree,
+          "--terminal",
+          terminalHandle,
+        ],
+        rootDir,
+        retryRequest(idempotencyKey, "worker-start"),
+      );
+    } catch (error) {
+      // 工作区信任提示会让 worker-start 以 agent_prompt_blocked 失败；它发生在
+      // worker-start 之前，不是任务失败，必须按信任恢复流程归因（spec：Codex worker
+      // 只在工作区信任完成后启动）。
+      if (!/agent_prompt_blocked|workspace trust/iu.test(error?.message ?? String(error))) {
+        throw error;
+      }
+      throw new ControlError(
+        "workspace_trust_required",
+        `${terminalHandle} 正在等待 Codex 工作区信任确认`,
+        [
+          `在 ${terminalHandle} 中确认当前工作区信任并等待 tui-idle`,
+          `重新读取 riskflow_status，并以新幂等键调用 riskflow_dispatch，传入 terminalHandle=${terminalHandle}`,
+        ],
+      );
+    }
     return {
       ...worker,
       ...(await recordRunningAttempt(runtimeDir, node, task)),
@@ -1427,13 +1456,18 @@ export async function riskflowIntegrate(input, options = {}) {
           );
         }
         for (const handle of handles) {
-          await orcaJson(
-            ctx.exec,
-            invocation,
-            ["terminal", "close", "--terminal", handle],
-            ctx.rootDir,
-            retryRequest(ctx.idempotencyKey, `terminal-close:${handle}`),
-          );
+          try {
+            await orcaJson(
+              ctx.exec,
+              invocation,
+              ["terminal", "close", "--terminal", handle],
+              ctx.rootDir,
+            );
+          } catch (error) {
+            // 状态投影列出的是曾经记录的 handle；上一次尝试或其它关闭者可能已经处理过它。
+            // 「已经不存在」不是失败，其余错误（权限、运行时不可用、参数）仍 fail-closed。
+            if (!TERMINAL_ALREADY_GONE_PATTERN.test(String(error?.message ?? error))) throw error;
+          }
         }
         const current = await ctx.collectStatus();
         const refreshed = findWorkItem(current.snapshot, ctx.node.id);

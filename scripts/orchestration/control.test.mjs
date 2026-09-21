@@ -335,6 +335,42 @@ describe("controlled orchestration", () => {
     }
   });
 
+  it("classifies a workspace-trust failure at worker-start as controlled trust recovery", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-worker-start-trust-"));
+    let workerStarts = 0;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      const terminal = fakeCodexTerminal(command, args);
+      if (terminal !== null) return terminal;
+      if (command === "orca-ide" && args.includes("task-create")) return { id: "task-trust" };
+      if (command === "orca-ide" && args.includes("task-update")) return {};
+      if (command === "orca-ide" && args.includes("worker-start")) {
+        workerStarts += 1;
+        throw new Error("agent_prompt_blocked");
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await expect(
+        riskflowDispatch(
+          {
+            workItemId: "C17",
+            expectedRevision: "revision-1",
+            idempotencyKey: "dispatch-worker-start-trust",
+          },
+          {
+            rootDir: process.cwd(),
+            exec,
+            statusProvider: async () => ({ graph, snapshot: snapshot() }),
+          },
+        ),
+      ).rejects.toMatchObject({ code: "workspace_trust_required" });
+      expect(workerStarts).toBe(1);
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
   it("continues the attempt number from the target attempt group history", () => {
     const auditCheckpoint = {
       ...node().checkpoints,
@@ -1041,6 +1077,74 @@ describe("controlled orchestration", () => {
       const removal = calls.find((args) => args[0] === "worktree");
       expect(removal).toContain("id:repo::/tmp/c17");
       expect(removal).not.toContain("--force");
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("keeps closing the remaining terminals when a handle is already gone", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-cleanup-stale-handle-"));
+    const stale = node({
+      status: "stale",
+      phase: "cleanup",
+      main: { archive: true, verification: "passed" },
+      worktree: { ...node().worktree, exists: true, dirty: false },
+      checkpoints: { ...node().checkpoints, runState: "settled", outcome: "succeeded" },
+      orca: { attempts: [], terminalHandles: ["term-gone", "term-live"] },
+      nextActions: ["受控 cleanup"],
+    });
+    const reclaimable = {
+      ...stale,
+      status: "reclaimable",
+      orca: { ...stale.orca, terminalHandles: [] },
+    };
+    const closes = [];
+    let reads = 0;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide") {
+        if (args[0] === "terminal" && args[1] === "close") {
+          closes.push(args);
+          if (args[args.indexOf("--terminal") + 1] === "term-gone") {
+            throw new Error("terminal_handle_stale");
+          }
+          return { closed: true };
+        }
+        if (args[0] === "worktree" && args[1] === "rm") return { removed: true };
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      const result = await riskflowIntegrate(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "cleanup-stale-handle",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => {
+            reads += 1;
+            const current = reads === 1 ? stale : reclaimable;
+            return {
+              graph,
+              snapshot: snapshot({
+                nodes: [current],
+                resumeQueue: [
+                  { workItemId: "C17", category: "cleanup", nextAction: "受控 cleanup" },
+                ],
+              }),
+            };
+          },
+        },
+      );
+      expect(result).toMatchObject({ action: "reclaim" });
+      expect(closes.map((args) => args[args.indexOf("--terminal") + 1])).toEqual([
+        "term-gone",
+        "term-live",
+      ]);
+      expect(closes.every((args) => !args.includes("--retry-request"))).toBe(true);
     } finally {
       await rm(runtimeRoot, { recursive: true });
     }

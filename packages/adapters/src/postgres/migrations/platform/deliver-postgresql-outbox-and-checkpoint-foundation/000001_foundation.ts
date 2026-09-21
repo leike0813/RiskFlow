@@ -173,6 +173,39 @@ export async function up(db: Kysely<unknown>): Promise<void> {
 }
 
 export async function down(db: Kysely<unknown>): Promise<void> {
+  // 后续 change（C27）建了指向 business.command_receipts 与 audit.entries 的外键；
+  // 孤立回滚本迁移 MUST 先解除这类依赖，否则 PostgreSQL 以 "other objects depend on it"
+  // 拒绝删表。依赖表可能尚未建立，因此按表存在性守卫。
+  await sql`
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.tables
+                 WHERE table_schema = 'business' AND table_name = 'measure_candidate_queries') THEN
+        ALTER TABLE business.measure_candidate_queries
+          DROP CONSTRAINT IF EXISTS measure_candidate_queries_command_fk,
+          DROP CONSTRAINT IF EXISTS measure_candidate_queries_audit_fk;
+      END IF;
+      IF EXISTS (SELECT 1 FROM information_schema.tables
+                 WHERE table_schema = 'business' AND table_name = 'recommendation_candidates') THEN
+        ALTER TABLE business.recommendation_candidates
+          DROP CONSTRAINT IF EXISTS recommendation_candidates_command_fk,
+          DROP CONSTRAINT IF EXISTS recommendation_candidates_audit_fk;
+      END IF;
+      IF EXISTS (SELECT 1 FROM information_schema.tables
+                 WHERE table_schema = 'business' AND table_name = 'recommendation_validations') THEN
+        ALTER TABLE business.recommendation_validations
+          DROP CONSTRAINT IF EXISTS recommendation_validations_command_fk,
+          DROP CONSTRAINT IF EXISTS recommendation_validations_audit_fk;
+      END IF;
+      IF EXISTS (SELECT 1 FROM information_schema.tables
+                 WHERE table_schema = 'business' AND table_name = 'response_recommendations') THEN
+        ALTER TABLE business.response_recommendations
+          DROP CONSTRAINT IF EXISTS response_recommendations_command_fk,
+          DROP CONSTRAINT IF EXISTS response_recommendations_audit_fk;
+      END IF;
+    END
+    $$;
+  `.execute(db);
   await db.schema.dropTable("outbox.consumer_receipts").ifExists().execute();
   await db.schema.dropIndex("outbox_events_dispatch_idx").ifExists().execute();
   await db.schema.dropTable("outbox.events").ifExists().execute();

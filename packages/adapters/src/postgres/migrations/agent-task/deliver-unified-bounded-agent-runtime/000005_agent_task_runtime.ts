@@ -283,6 +283,25 @@ export async function down(db: Kysely<unknown>): Promise<void> {
   await db.schema.dropIndex("agent_task_actions_task_sequence_idx").ifExists().execute();
   await db.schema.dropIndex("agent_task_attempts_lease_idx").ifExists().execute();
   await db.schema.dropIndex("agent_tasks_project_status_idx").ifExists().execute();
+  // 后续 change（C27）建了指向 business.agent_tasks 的外键；孤立回滚本迁移 MUST 先解除这类
+  // 依赖，否则 PostgreSQL 以 "other objects depend on it" 拒绝删表。依赖表可能尚未建立，
+  // 因此按表存在性守卫。
+  await sql`
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.tables
+                 WHERE table_schema = 'business' AND table_name = 'recommendation_candidates') THEN
+        ALTER TABLE business.recommendation_candidates
+          DROP CONSTRAINT IF EXISTS recommendation_candidates_agent_task_fk;
+      END IF;
+      IF EXISTS (SELECT 1 FROM information_schema.tables
+                 WHERE table_schema = 'business' AND table_name = 'response_recommendations') THEN
+        ALTER TABLE business.response_recommendations
+          DROP CONSTRAINT IF EXISTS response_recommendations_agent_task_fk;
+      END IF;
+    END
+    $$;
+  `.execute(db);
   await db.schema.dropTable("business.agent_command_confirmations").ifExists().execute();
   await db.schema.dropTable("business.agent_task_candidates").ifExists().execute();
   await db.schema.dropTable("business.agent_task_actions").ifExists().execute();

@@ -75,6 +75,10 @@
     "./warning": {
       "types": "./dist/warning/index.d.ts",
       "import": "./dist/warning/index.js"
+    },
+    "./recommendation": {
+      "types": "./dist/recommendation/index.d.ts",
+      "import": "./dist/recommendation/index.js"
     }
   }
 }

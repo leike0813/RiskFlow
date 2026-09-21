@@ -79,6 +79,10 @@
       "types": "./dist/identification-knowledge/index.d.ts",
       "import": "./dist/identification-knowledge/index.js"
     },
+    "./identification/context": {
+      "types": "./dist/identification/context/index.d.ts",
+      "import": "./dist/identification/context/index.js"
+    },
     "./scoring-rules": {
       "types": "./dist/scoring-rules/index.d.ts",
       "import": "./dist/scoring-rules/index.js"

@@ -22,6 +22,7 @@ import * as structuredScoringRulesMigration from "../../src/postgres/migrations/
 import * as deterministicRiskAssessmentMigration from "../../src/postgres/migrations/risk-assessment/deliver-deterministic-risk-assessment/000032_deterministic_risk_assessment.js";
 import * as externalRiskEventRegistrationMigration from "../../src/postgres/migrations/engineering-data/implement-external-risk-event-registration/000036_external_risk_event_registration.js";
 import * as versionedHybridRetrievalMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-versioned-dual-index-hybrid-retrieval/000040_versioned_hybrid_retrieval.js";
+import * as identificationContextResultsMigration from "../../src/postgres/migrations/risk-identification/deliver-relationship-context-and-retrieval-agent-review/000041_identification_context_results.js";
 import * as warningTasksMigration from "../../src/postgres/migrations/warning-response/deliver-warning-tasks-and-in-app-notification/000044_warning_tasks_and_in_app_notification.js";
 
 export interface AuthPostgresFixture extends PostgresTestFixture {
@@ -93,6 +94,13 @@ export const startAuthPostgresFixture = async (): Promise<AuthPostgresFixture> =
         "knowledge-modeling/deliver-versioned-dual-index-hybrid-retrieval/000040_versioned_hybrid_retrieval.ts",
       ),
       versionedHybridRetrievalMigration,
+    ],
+    [
+      resolve(
+        base.productionMigrationRoot,
+        "risk-identification/deliver-relationship-context-and-retrieval-agent-review/000041_identification_context_results.ts",
+      ),
+      identificationContextResultsMigration,
     ],
     [
       resolve(

@@ -173,6 +173,20 @@ export async function up(db: Kysely<unknown>): Promise<void> {
 }
 
 export async function down(db: Kysely<unknown>): Promise<void> {
+  // 后续 change（C21）的 identification_context_results 指向 audit.entries；孤立回滚本迁移
+  // MUST 先解除该依赖，否则 PostgreSQL 以 "other objects depend on it" 拒绝删表。
+  // 依赖表可能尚未建立，因此按表存在性守卫。
+  await sql`
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.tables
+                 WHERE table_schema = 'business' AND table_name = 'identification_context_results') THEN
+        ALTER TABLE business.identification_context_results
+          DROP CONSTRAINT IF EXISTS identification_context_results_audit_fk;
+      END IF;
+    END
+    $$;
+  `.execute(db);
   await db.schema.dropTable("outbox.consumer_receipts").ifExists().execute();
   await db.schema.dropIndex("outbox_events_dispatch_idx").ifExists().execute();
   await db.schema.dropTable("outbox.events").ifExists().execute();

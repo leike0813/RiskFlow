@@ -77,13 +77,17 @@ cleanup 遇到已归档、主线验证通过、工作树干净、当前尝试成
 - **THEN** 操作者确认后复用该 queued Task 与预热 terminal
 - **AND** 该操作不创建新 Task，也不视为跨 Task session 复用
 
-### Requirement: 终态 Task 的收口信封可由尝试台账补齐
-当 Orca Task 已为 completed、failed 或 blocked，而当前 v2 信封仍非 settled 时，`riskflow_settle` MUST NOT 重复更新该终态 Task。控制器 MUST 在完成既有收口校验后，把 settled 信封写入现有尝试台账；MUST NOT 为补账创建新 Task、Run、Dispatch 或 Agent session。
+### Requirement: 终态 Task 的信封可由尝试台账补齐
+当 Orca Task 已为 completed、failed 或 blocked 时，`riskflow_settle` 与后续集成摘要 MUST NOT 重复更新该终态 Task。控制器 MUST 在完成既有校验后，把 settled 信封或更新后的 main 摘要写入现有尝试台账；MUST NOT 为补账创建新 Task、Run、Dispatch 或 Agent session。
 
 #### Scenario: Git 检查点形成后 Orca Task 已终态
 - **WHEN** settle 的 Git 副作用已经形成，Orca Task 已终态，但信封仍显示 running
 - **THEN** 下一次受控 settle 跳过 Orca task-update，并把最终 outputHead、outcome 和证据写入尝试台账
 - **AND** 状态可据此继续集成，不要求新 Agent
+
+#### Scenario: 终态 Task 继续记录主线结果
+- **WHEN** merge、main 验证或归档已完成，而关联 Orca Task 已终态
+- **THEN** 受控 integrate 跳过 Orca task-update，并把最新 main 摘要写入同一尝试台账
 
 ## MODIFIED Requirements
 

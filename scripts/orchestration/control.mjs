@@ -1363,24 +1363,26 @@ async function updateMainSummary(ctx, main, orcaCommand, step) {
     main,
   };
   const invocation = resolveOrcaInvocation(orcaCommand);
-  await orcaJson(
-    ctx.exec,
-    invocation,
-    [
-      "orchestration",
-      "task-update",
-      "--run",
-      checkpoint.runId,
-      "--id",
-      checkpoint.taskId,
-      "--status",
-      "completed",
-      "--result",
-      JSON.stringify(envelope),
-    ],
-    ctx.rootDir,
-    retryRequest(ctx.idempotencyKey, step),
-  );
+  if (!TERMINAL_TASK_STATUSES.has(checkpoint.taskStatus)) {
+    await orcaJson(
+      ctx.exec,
+      invocation,
+      [
+        "orchestration",
+        "task-update",
+        "--run",
+        checkpoint.runId,
+        "--id",
+        checkpoint.taskId,
+        "--status",
+        "completed",
+        "--result",
+        JSON.stringify(envelope),
+      ],
+      ctx.rootDir,
+      retryRequest(ctx.idempotencyKey, step),
+    );
+  }
   await recordAttempt(ctx.runtimeDir, envelope);
   return envelope;
 }

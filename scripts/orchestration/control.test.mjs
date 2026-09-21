@@ -585,55 +585,6 @@ describe("controlled orchestration", () => {
     }
   });
 
-  it("selects the finalization role when the round no longer requires an audit", async () => {
-    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-round-role-"));
-    const roundNode = node({
-      auditRequired: false,
-      checkpoints: {
-        ...node().checkpoints,
-        taskKind: "finalization",
-        phase: "finalizing",
-        runState: "settled",
-        outcome: "succeeded",
-        auditPolicy: "targeted",
-      },
-    });
-    const roundSnapshot = snapshot({
-      nodes: [roundNode],
-      resumeQueue: [{ workItemId: "C17", category: "finalizing", nextAction: "继续收尾" }],
-    });
-    let writtenEnvelope;
-    const exec = async (command, args) => {
-      if (command === "git") return runtimeRoot;
-      const terminal = fakeCodexTerminal(command, args);
-      if (terminal !== null) return terminal;
-      if (command === "orca-ide" && args.includes("task-create")) return { id: "task-next" };
-      if (command === "orca-ide" && args.includes("task-update")) {
-        writtenEnvelope = JSON.parse(args[args.indexOf("--result") + 1]);
-        return {};
-      }
-      if (command === "orca-ide" && args.includes("worker-start")) return { state: "ready" };
-      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
-    };
-    try {
-      await riskflowDispatch(
-        {
-          workItemId: "C17",
-          expectedRevision: "revision-1",
-          idempotencyKey: "dispatch-round-role",
-        },
-        {
-          rootDir: process.cwd(),
-          exec,
-          statusProvider: async () => ({ graph, snapshot: roundSnapshot }),
-        },
-      );
-      expect(writtenEnvelope).toMatchObject({ taskKind: "finalization" });
-    } finally {
-      await rm(runtimeRoot, { recursive: true });
-    }
-  });
-
   it("states the closing-round protocol in the dispatch briefing", async () => {
     const dispatchSpec = async (overrides, key) => {
       const runtimeRoot = await mkdtemp(join(tmpdir(), `riskflow-round-${key}-`));
@@ -672,15 +623,6 @@ describe("controlled orchestration", () => {
       outcome: "succeeded",
       auditPolicy: "targeted",
     };
-    const concludedAudit = {
-      taskId: "task-audit",
-      taskKind: "audit",
-      runState: "settled",
-      outcome: "failed",
-      issueRefs: ["audit-finding-1"],
-      evidenceRefs: ["audit-evidence-1"],
-    };
-
     // 首个收尾尝试：当前尝试还是实现（auditRequired 为假、本轮尚无审计结论）
     const first = await dispatchSpec(
       {
@@ -699,25 +641,13 @@ describe("controlled orchestration", () => {
     expect(first).toContain("为审计结论留出位置");
     expect(first).not.toContain("本轮限定审计已出结论");
 
-    const repair = await dispatchSpec(
-      {
-        auditRequired: false,
-        checkpoints: { ...node().checkpoints, ...targetedFinalization },
-        orca: { attempts: [concludedAudit] },
-      },
-      "repair",
-    );
-    expect(repair).toContain("本轮限定审计已出结论（task task-audit）");
-    expect(repair).toContain("audit-finding-1");
-    expect(repair).toContain("audit-evidence-1");
-    expect(repair).toContain("逐项说明闭合情况");
-
     const audit = await dispatchSpec(
       { auditRequired: true, checkpoints: { ...node().checkpoints, ...targetedFinalization } },
       "audit",
     );
     expect(audit).toContain("唯一的限定审计");
-    expect(audit).toContain("不改产品代码");
+    expect(audit).toContain("每个独立 Task 使用新的 Agent session");
+    expect(audit).toContain("当前任务内直接修复并回归");
   });
 
   function ledgerAttemptPath(runtimeRoot, taskId) {

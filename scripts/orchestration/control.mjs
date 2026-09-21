@@ -502,14 +502,6 @@ async function ensureRun(exec, invocation, rootDir, node, idempotencyKey, reuseE
   return runId;
 }
 
-// 本轮已出结论的限定审计（用于把 finding 直接写进修复尝试的派发说明）。
-function concludedAudit(node) {
-  const attempts = (node.orca?.attempts ?? []).filter(
-    (attempt) => attempt.taskKind === "audit" && attempt.runState === "settled",
-  );
-  return attempts.at(-1) ?? null;
-}
-
 function taskSpec(node, taskKind, envelopeOptions = {}) {
   const responsibility = {
     planning:
@@ -518,7 +510,8 @@ function taskSpec(node, taskKind, envelopeOptions = {}) {
       "按已批准 IP-ID 有界实现并在当前任务内修复普通测试失败；不提前创建 verification",
     finalization:
       "核验当前产物，在已批准语义内直接修复、回归，并按实际 schema 填写最终 verification；普通缺陷保持当前收尾责任",
-    audit: "独立检查权限、事务、关键状态机或语义 merge 冲突的受影响范围，并把结论补入 verification",
+    audit:
+      "独立检查权限、事务、关键状态机或语义 merge 冲突的受影响范围；在当前任务内修复已批准范围的普通缺陷、回归并把最终结论补入 verification",
     archive: "仅在门禁通过后机械归档",
   }[taskKind];
   const lines = [
@@ -535,21 +528,14 @@ function taskSpec(node, taskKind, envelopeOptions = {}) {
     lines.push(
       "",
       "=== 收尾轮次协议 ===",
+      "每个独立 Task 使用新的 Agent session；只在当前仍活动的 Task 内连续修复，不复用已结束、失败、暂停或闲置的会话。",
       "同一收尾轮次最多一次限定审计；禁止请求或期待第二次审计，也禁止期待新的 Finalizer 接管本轮。",
-      "机制上无法在本会话内完成时必须 escalation，不得自行再开一轮。",
-      "审计结论与随后修复的证据必须一并写入同一 verification。",
+      "机制上无法在当前任务内完成时必须 escalation，不得自行再开一轮。",
+      "审计结论与任务内修复、回归证据必须一并写入同一 verification。",
     );
     if (taskKind === "audit") {
       lines.push(
-        "你是本收尾轮次唯一的限定审计：只报告 finding 与证据，不改产品代码；结论写入同一 verification，供本轮修复尝试逐项闭合。",
-      );
-    } else if (node.auditRequired === false && concludedAudit(node)) {
-      const audit = concludedAudit(node);
-      lines.push(
-        `本轮限定审计已出结论（task ${audit.taskId}）。其 finding 必须逐项闭合，不得遗漏或改为"后续注意事项"：`,
-        `- audit issueRefs：${JSON.stringify(audit.issueRefs ?? [])}`,
-        `- audit evidenceRefs：${JSON.stringify(audit.evidenceRefs ?? [])}`,
-        "先读取该审计写入的 verification 与证据，逐项修复并回归，并在 worker_done 中逐项说明闭合情况。",
+        "你是本收尾轮次唯一的限定审计：发现已批准范围内的普通缺陷时，必须在当前任务内直接修复并回归；超出边界则 escalation。",
       );
     } else {
       lines.push(

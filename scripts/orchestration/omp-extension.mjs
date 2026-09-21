@@ -118,7 +118,7 @@ export default function riskflowOrchestrationExtension(pi) {
         ackDeliveryId: z.string().min(1).optional(),
         timeoutMs: z.number().int().min(1000).max(60000).optional(),
       }),
-      approval: "read",
+      approval: "write",
     },
     riskflowWait,
   );

@@ -53,6 +53,16 @@ OMP 上下文在既有 `resumeQueue` 之外增加 violations、stale 和 diagnos
 
 Planning、Finalizer 和 Targeted Auditor 不再让 `worker-start --agent codex` 隐式创建首次 terminal。控制器先以 Manifest 模型和强度创建 Codex terminal、等待 `tui-idle`，再通过 `worker-start --terminal` 绑定当前 queued Task。遇到工作区信任提示时返回精确 handle；操作者确认后以新幂等键和 `terminalHandle` 重入，控制器复用同一 Task 与 terminal。该路径不自动操作信任提示，也不增加信任状态存储。
 
+### D9：独立 Task 隔离 session，审计在自身任务内闭环
+
+每个独立 Task 创建新的 Agent session；已结束、失败、暂停、释放或闲置上下文不承接后续 Task。首次信任确认位于 worker-start 前，因此同 queued Task 复用预热 terminal 不违反该边界。活动 Agent 只通过事件循环驱动，除 question、escalation、连接/进程故障或用户指令外不追加输入、不停止或释放。
+
+Targeted Auditor 若发现已批准范围内的普通缺陷，在自己的活动 audit Task 内修复、回归并更新 verification。audit 结束仍未闭合时状态转为 `paused` 并升级用户，不再派 Finalizer 或第二次 audit。这保留“一轮一次审计”，同时不依赖不可见的旧 Finalizer 上下文。
+
+### D10：同 Task 的 live Dispatch 优先于历史失败记录
+
+Orca 可能保留同一 Task 的旧 failed Dispatch 与当前 live Dispatch。状态只在该 Task 不存在 live worker 时才把失败记录映射为 reconcile；否则按当前运行态继续，避免陈旧记录制造假死锁。
+
 ## Risks / Trade-offs
 
 - **关闭 terminal 与状态刷新之间发生并发变化** → 重新采集并要求 `reclaimable`，否则停止回收。
@@ -60,6 +70,8 @@ Planning、Finalizer 和 Targeted Auditor 不再让 `worker-start --agent codex`
 - **Skill 与代码漂移** → doctor 的工具清单测试、文档评审和 Skill 快速校验共同约束；运行事实仍以 `riskflow_status` 为准。
 - **Delivery 未确认导致同批重放** → 下一次 wait 显式携带上一批标识，先 ack 再等待。
 - **Codex 首次信任提示被算作 worker 失败** → 在 worker-start 前创建并检查 terminal；提示未处理时保留 queued Task 和精确恢复 handle。
+- **旧 session 被当作廉价续跑路径** → 独立 Task 强制新 session；只有同一活动 Task 内允许连续修复。
+- **旧 failed Dispatch 覆盖当前 live Dispatch** → 先检查同 Task 是否仍有 live worker，再判定失败恢复。
 
 ## Migration Plan
 

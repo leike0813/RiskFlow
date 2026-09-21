@@ -82,11 +82,13 @@ OMP 的模型和思考强度由其启动命令指定；不要把 Codex 的 `--ef
 
 若 OMP 注入后返回 `agent_prompt_stalled`，先检查是否只是输入仍待提交；只提交一次现有输入，不要再次 dispatch 同一 Task。禁止使用 `orca reset --tasks`，该命令会影响项目内全部 Run，而非当前 Task。
 
-新的独立任务使用新的 Agent session。仅当前仍活动的 Finalizer 在同一任务内修复和回归时保持连续会话；已结束、崩溃或长时间失联的 terminal 不作为后续任务上下文。
+每个独立 Task 使用新的 Agent session。只有同一仍活动 Task 内的修复和回归保持连续会话；已结束、失败、暂停、释放、崩溃或长时间闲置的 terminal、Run、Dispatch 和上下文一律不用于后续 Task。工作区信任发生在 worker-start 前；确认信任后复用当前 queued Task 和其预热 terminal，不构成跨 Task 复用。
 
 ## 5. 等待、提问与超时
 
 `riskflow_wait` 单次最多等待 60 秒。它返回的 Delivery 必须作为一个完整批次处理；处理完后，下一次 wait 传入该批次的 `ackDeliveryId`，控制器先 ack 再等待后续消息。不要在处理完成前 ack，也不要省略 ack 后反复读取同一批次。超时只是协调检查点：读取一次最新状态后继续等待，不创建替代 Task，不轮询 terminal 屏幕，也不把超时记为 worker 失败。
+
+Agent 活动期间，除回复明确的 `question` / `escalation`、处理进程或连接故障、执行用户指令外，不向 terminal 追加输入，不停止 Agent，不释放 Dispatch。协调者只等待事件；`worker_done` 后该 session 即结束，不再承接新 Task。
 
 收到 `question` 时，根据已批准工件和真实代码给出有界答案；答案涉及公共契约、权限、持久化、迁移、依赖或范围变化时转为 escalation。收到 `worker_done` 后先审阅 Delivery、diff、HEAD 和证据，再 settle；不要只凭退出码或报告中的 PASS 收口。
 

@@ -946,11 +946,14 @@ export function deriveNodeState(node, context) {
   const nodeWorkers = (context.workers ?? []).filter((worker) =>
     tasks.some((task) => task.id === worker.taskId),
   );
-  const currentWorkerFailed = nodeWorkers.some(
-    (worker) =>
-      worker.taskId === currentEnvelope?.owner?.taskId &&
-      (worker.workerState === "failed" || worker.dispatchStatus === "failed"),
+  const currentTaskWorkers = nodeWorkers.filter(
+    (worker) => worker.taskId === currentEnvelope?.owner?.taskId,
   );
+  const currentWorkerFailed =
+    !currentTaskWorkers.some(workerIsLive) &&
+    currentTaskWorkers.some(
+      (worker) => worker.workerState === "failed" || worker.dispatchStatus === "failed",
+    );
   // 本轮是否仍需要一次限定审计：由状态视图统一判定，角色选择只消费该字段，
   // 避免同一条规则在控制器里出现第二份实现。
   const auditRequired =
@@ -978,6 +981,13 @@ export function deriveNodeState(node, context) {
   } else if (currentWorkerFailed && currentEnvelope?.runState !== "settled") {
     status = "blocked";
     nextActions = ["调用 riskflow_status 获取最新 revision，再用 riskflow_reconcile 创建替代尝试"];
+  } else if (
+    currentKind === "audit" &&
+    ["failed", "blocked", "paused"].includes(currentEnvelope?.outcome)
+  ) {
+    status = "paused";
+    phase = "finalizing";
+    nextActions = ["限定审计未在当前任务内闭合；禁止复用会话或自动新建 Finalizer，向用户升级"];
   } else if (featureMerged && mainVerified) {
     status = "main_verified";
     phase = "integration";
@@ -989,12 +999,7 @@ export function deriveNodeState(node, context) {
   } else if (currentEnvelope?.outcome === "paused") {
     status = "paused";
     nextActions = ["处理结构化升级条件；批准新规划后才可重开实现"];
-  } else if (
-    summary.failed &&
-    // audit 的失败同样落在收尾责任里：规格要求审计发现的普通缺陷由当前 Finalizer
-    // 在已批准范围内修复并重跑验证；若落入 failed 态，nextTaskKind 没有合法后续角色。
-    ["verification", "finalization", "audit"].includes(currentKind)
-  ) {
+  } else if (summary.failed && ["verification", "finalization"].includes(currentKind)) {
     status = "finalizing";
     phase = "finalizing";
     nextActions = ["由强模型 Finalizer 继续修复与回归，或移交新的强模型 Finalizer"];

@@ -647,7 +647,7 @@ describe("worktree-aware state", () => {
         taskKind: "audit",
         phase: "finalizing",
         runState: "settled",
-        outcome: "failed",
+        outcome: "succeeded",
         outputHead: "feature-head",
         attempt: 1,
         attemptGroup: "audit-c08",
@@ -655,31 +655,13 @@ describe("worktree-aware state", () => {
         owner: { taskId: "task-c08-audit", agentClass: "strong-auditor", model: "gpt-5.6-sol" },
       }),
     });
-    const repaired = task({
-      id: "task-c08-repair",
-      status: "completed",
-      createdAt: "2026-09-04 14:00:00",
-      envelope: v2Envelope({
-        runState: "settled",
-        outcome: "succeeded",
-        outputHead: "feature-head",
-        attempt: 2,
-        attemptGroup: "finalize-c08",
-        auditPolicy: "targeted",
-        owner: { taskId: "task-c08-repair", agentClass: "strong-finalizer", model: "gpt-5.6-sol" },
-      }),
-    });
-
-    const afterAudit = deriveNodeState(
-      node,
-      context({ tasks: [finalization, concludedAudit, repaired] }),
-    );
+    const afterAudit = deriveNodeState(node, context({ tasks: [finalization, concludedAudit] }));
     expect(afterAudit.auditRequired).toBe(false);
     expect(afterAudit.status).toBe("finalized");
     expect(afterAudit.nextActions).toEqual(["集成当前已验收产物"]);
   });
 
-  it("keeps the finalizing responsibility when an audit fails", () => {
+  it("pauses instead of reusing a session or dispatching another Finalizer after audit failure", () => {
     const node = { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] };
     const audit = task({
       id: "task-c08-audit",
@@ -702,9 +684,9 @@ describe("worktree-aware state", () => {
       }),
     });
     const state = deriveNodeState(node, context({ tasks: [audit] }));
-    expect(state.status).toBe("finalizing");
+    expect(state.status).toBe("paused");
     expect(state.nextActions).toEqual([
-      "由强模型 Finalizer 继续修复与回归，或移交新的强模型 Finalizer",
+      "限定审计未在当前任务内闭合；禁止复用会话或自动新建 Finalizer，向用户升级",
     ]);
   });
 
@@ -747,6 +729,50 @@ describe("worktree-aware state", () => {
       status: "blocked",
       nextActions: [expect.stringContaining("riskflow_reconcile")],
     });
+  });
+
+  it("does not let an old failed dispatch override a live dispatch for the same task", () => {
+    const node = { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] };
+    const currentTask = task({
+      id: "task-c08-finalization",
+      status: "dispatched",
+      envelope: v2Envelope({ runState: "running" }),
+    });
+    const snapshot = deriveSnapshot(
+      graph(node),
+      context({
+        worktrees: [
+          {
+            id: worktreeId,
+            path: "/tmp/riskflow-feature",
+            exists: true,
+            localNodeIds: ["C08"],
+            openSpecNodeIds: ["C08"],
+            openSpecNames: ["deliver-agent"],
+            liveTerminalCount: 1,
+            git: { head: "feature-head", branch: "feature", dirty: false, dirtyPaths: [] },
+            tasks: [currentTask],
+          },
+        ],
+        tasks: [currentTask],
+        workers: [
+          {
+            taskId: "task-c08-finalization",
+            dispatchId: "dispatch-old",
+            workerState: "failed",
+            dispatchStatus: "failed",
+          },
+          {
+            taskId: "task-c08-finalization",
+            dispatchId: "dispatch-current",
+            workerState: "ready",
+            dispatchStatus: "dispatched",
+          },
+        ],
+        ancestry: { C08: false },
+      }),
+    );
+    expect(snapshot.nodes[0]).toMatchObject({ status: "running", violations: [] });
   });
 
   it("still orders attempts inside one attempt group", () => {

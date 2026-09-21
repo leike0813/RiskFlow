@@ -11,6 +11,8 @@ description: 接管并推进 RiskFlow 的受控 Orca/OpenSpec 多 Agent 调度�
 所有编排写操作走 `riskflow_*` 受控工具。
 保持单一 writer、可审阅 Git 检查点和可重放执行信封。
 
+只为执行图规定的独立语义任务派发 Agent。状态读取、队列选择、回复、审阅、settle、集成、归档和回收由当前协调者直接完成。
+
 ## 必读事实源
 
 首次接管先完整阅读：
@@ -33,6 +35,7 @@ description: 接管并推进 RiskFlow 的受控 Orca/OpenSpec 多 Agent 调度�
 4. 保存本次返回的 `revision`，不要复用旧 revision。
 5. 分开读取 `violations`、`resumeQueue`、stale/reclaimable 节点和 `diagnostics`。
 6. 只处理授权范围内、队列优先级最高且合法的动作。
+7. 不预建后续 worktree、Task、Run 或 Agent session。
 
 若 OMP 扩展不可用，可用只读命令检查状态：
 
@@ -49,7 +52,7 @@ pnpm orchestration:check
 
 1. `violations` 非空：先停止普通派发；只有 `checkpoint_mismatch` 或 `worktree_reclaim_pending` 才使用 `riskflow_reconcile`。
 2. `resumeQueue` 中 `recovery`：按节点事实分流。`untracked/adopt` 且无违规时使用 `riskflow_dispatch` 登记并派发 Finalizer；上述两类安全漂移才使用 `riskflow_reconcile`；其他情况升级。
-3. `finalizing`：派发或继续 Finalizer；必要时只做一次限定审计。
+3. `finalizing`：派发或继续当前 Finalizer；必要时只做一次限定审计。已结束且未闭合的 audit 必须升级，不派新的 Finalizer。
 4. `integrating`：审阅证据后调用 `riskflow_integrate`。
 5. `implementing`：派发当前 Implementation 任务。
 6. `planning`：派发 Planning，闭合实际 schema 的 apply 前置工件。
@@ -95,6 +98,8 @@ terminalHandle?     # Codex 首次信任确认后的精确 terminal
 新建 worktree 的 setup 失败时停止派发，保留事实并重新读取状态。
 Planning、Finalizer 或 Auditor 首次派发会先创建 Codex terminal 并等待 `tui-idle`。
 若返回 `workspace_trust_required`，在结果给出的精确 terminal 中由操作者确认信任；确认 idle 后重新读取状态，以新幂等键和该 `terminalHandle` 再调用 `riskflow_dispatch`。复用当前 queued Task，不新建 Task、Run 或 terminal。
+
+每个独立 Task 使用新的 Agent session。只有同一仍活动 Task 内的修复与回归可以继续使用当前上下文；worker_done、失败、暂停、释放或长时间闲置后的 terminal、Run、Dispatch 和上下文不得用于后续 Task。信任恢复复用的是尚未 worker-start 的 queued Task，不是旧任务上下文。
 
 ### `riskflow_wait`
 
@@ -228,10 +233,12 @@ waiting?
 5. `escalation`：能在已批准范围内回答则 reply；否则向用户升级。
 6. `worker_done`：审阅交付、diff、HEAD、verification 和证据。
 7. 审阅通过后 `riskflow_settle`。
-8. 若 `auditRequired` 为真，只派发一次不同强模型的 Targeted Auditor。
-9. 审计普通 finding 回灌仍活动的同一 Finalizer 会话，一次修完并回归。
-10. 不允许第二次限定审计；机制上无法回灌时升级给用户。
+8. 若 `auditRequired` 为真，以新的独立 session 只派发一次 Targeted Auditor。
+9. Auditor 在自己的活动 Task 内修复已批准范围的普通 finding、回归并更新 verification。
+10. Auditor 无法在当前 Task 内闭合时升级给用户；不复用 Finalizer 会话，不派新的 Finalizer 或第二次审计。
 11. 节点进入 integrating 后调用 `riskflow_integrate`，每步后重读状态。
+
+Agent 活动期间，除明确的 `question`、`escalation`、进程或连接故障、用户指令外，不追加终端输入，不停止 Agent，不释放 Dispatch；正常推进只使用事件等待。
 
 ## OpenSpec 边界
 

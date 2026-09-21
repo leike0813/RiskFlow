@@ -435,7 +435,8 @@ change 进入 `finalizing` 后，强模型 Finalizer MUST 在已批准语义范�
 - **THEN** OMP 仍按 write approval 审查该工具，避免同一工具因可选参数产生不一致权限
 
 ### Requirement: Codex worker 只在工作区信任完成后启动
-Planning、Finalizer 与 Targeted Auditor 的受控派发 MUST 先在目标 worktree 创建使用 Manifest 模型与强度的 Codex terminal，并在该 terminal 达到 `tui-idle` 后才调用 `worker-start --terminal`。若首次启动停在工作区信任提示，控制器 MUST 返回精确 terminal handle 和受控恢复动作，MUST NOT 自动修改全局信任配置、调用 worker-start 或把 queued Task 标为失败；确认信任后 MUST 复用同一 Task 和 terminal。
+
+Planning、Finalizer 与 Targeted Auditor 的受控派发 MUST 先在目标 worktree 创建使用 Manifest 模型与强度的 Codex terminal，并在该 terminal 达到 `tui-idle` 后才调用 `worker-start --terminal`。若首次启动停在工作区信任提示，控制器 MUST 返回精确 terminal handle 和受控恢复动作，MUST NOT 自动修改全局信任配置、调用 worker-start 或把 queued Task 标为失败；确认信任后 MUST 复用同一 Task 和 terminal。该归因 MUST 同时覆盖 `tui-idle` 等待阶段与 `worker-start` 阶段：任一阶段出现信任提示特征时，结果 MUST 以 `workspace_trust_required` 返回，并携带该 terminal 的精确 handle 与「尚未生成 failed attempt」的事实。
 
 #### Scenario: 首次 Codex 启动需要人工信任
 - **WHEN** 新 worktree 的 Codex terminal 返回 `agent_prompt_blocked`
@@ -444,6 +445,11 @@ Planning、Finalizer 与 Targeted Auditor 的受控派发 MUST 先在目标 work
 #### Scenario: 确认信任后复用当前尝试
 - **WHEN** 操作者在该 terminal 确认工作区信任并以新幂等键、同一 terminal handle 重新派发
 - **THEN** 控制器确认 terminal 已 idle，复用当前 queued Task，通过 `worker-start --terminal` 启动且不创建第二个 Task 或 terminal
+
+#### Scenario: worker-start 阶段的信任提示同样归类
+- **WHEN** `worker-start` 因 `agent_prompt_blocked` 或工作区信任提示失败
+- **THEN** 控制器 MUST 以 `workspace_trust_required` 返回该 terminal 的精确 handle 与受控恢复动作
+- **AND** MUST NOT 把它报告为通用控制失败或作为实现、验收失败计入尝试次数
 
 ### Requirement: reconcile 只豁免可恢复漂移
 `riskflow_reconcile` MUST 只在全局违规均属于 `checkpoint_mismatch` 或 `worktree_reclaim_pending` 时允许创建替代尝试。目标节点归属本身 MUST NOT 豁免重复写者、身份冲突或其他全局违规。
@@ -458,7 +464,7 @@ Planning、Finalizer 与 Targeted Auditor 的受控派发 MUST 先在目标 work
 
 ### Requirement: stale 终态残留只能经重验后回收
 
-cleanup 遇到已归档、主线验证通过、工作树干净、当前尝试成功收口且无**其他**阻断违规的 stale 工作项时，MUST 只关闭状态投影列出的精确 terminal handles；随后 MUST 重读状态，并仅在同一工作项变为 `reclaimable` 时按完整 worktree ID 回收。回收就绪标记（`worktree_reclaim_pending`）MUST NOT 被当作阻断违规：它是状态视图对 stale/reclaimable 派生出的「待回收」就绪标记，不是冲突。任一其他前提不满足、关闭失败、事实漂移或重读后仍非 reclaimable 时 MUST fail-closed，MUST NOT force 删除。
+cleanup 遇到已归档、主线验证通过、工作树干净、当前尝试成功收口且无**其他**阻断违规的 stale 工作项时，MUST 只关闭状态投影列出的精确 terminal handles；随后 MUST 重读状态，并仅在同一工作项变为 `reclaimable` 时按完整 worktree ID 回收。回收就绪标记（`worktree_reclaim_pending`）MUST NOT 被当作阻断违规：它是状态视图对 stale/reclaimable 派生出的「待回收」就绪标记，不是冲突。关闭步骤 MUST 只使用该子命令支持的参数，且 MUST 把「该 handle 已不存在」视为已关闭并继续处理其余 handle。任一其他前提不满足、关闭失败、事实漂移或重读后仍非 reclaimable 时 MUST fail-closed，MUST NOT force 删除。
 
 #### Scenario: 清理精确终态 terminal 后回收
 - **WHEN** 已归档成功工作项仅因若干终态 terminal 残留而为 stale，且全局唯一的违规是该工作项的回收就绪标记
@@ -472,6 +478,11 @@ cleanup 遇到已归档、主线验证通过、工作树干净、当前尝试成
 - **WHEN** 全局违规中只含若干工作项的 `worktree_reclaim_pending`
 - **THEN** 派发、收口、集成与回收 MUST 按目标工作项自身的合规事实判定，MUST NOT 因这些标记被拒绝
 - **AND** 判定 MUST 仍按目标工作项自身是否转为 `reclaimable` 决定是否回收其工作树
+
+#### Scenario: 已消失的 handle 不阻断其余关闭
+- **WHEN** 关闭某个 handle 时该 terminal 已不存在
+- **THEN** 控制器 MUST 继续关闭同一工作项的其余 handle，并仍按重读后的 reclaimable 事实决定是否回收
+- **AND** 权限、运行时不可用或参数错误 MUST 继续 fail-closed
 
 ### Requirement: 独立 Task 隔离 Agent session
 每个独立 Task MUST 使用新的 Agent session。已结束、失败、暂停、释放或长时间闲置的 terminal、Run、Dispatch 和上下文 MUST NOT 用于后续 Task；只有同一仍活动 Task 内的修复与回归可以连续执行。工作区信任恢复发生在 worker-start 前，MAY 复用当前 queued Task 的预热 terminal。活动 Agent 除 question、escalation、连接或进程故障及用户指令外 MUST NOT 接收额外终端输入、被停止或被释放。

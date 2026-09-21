@@ -130,10 +130,7 @@ export async function up(db: Kysely<unknown>): Promise<void> {
       column.notNull().defaultTo(sql`clock_timestamp()`),
     )
     .addColumn("audit_entry_id", "text", (column) => column.notNull())
-    .addPrimaryKeyConstraint("retrieval_generations_pk", [
-      "generation_id",
-      "generation_version_id",
-    ])
+    .addPrimaryKeyConstraint("retrieval_generations_pk", ["generation_id", "generation_version_id"])
     .addUniqueConstraint("retrieval_generations_identity_uidx", [...identityColumns])
     .addCheckConstraint(
       "retrieval_generations_identity_ck",

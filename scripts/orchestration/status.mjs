@@ -921,10 +921,10 @@ export function deriveNodeState(node, context) {
   }
   if (worktree && !worktree.exists)
     violations.push({ code: "worktree_missing", worktreeId: worktree.id });
-  const featureMerged = mainArchive || Boolean(context.ancestry?.[node.id]);
+  const unknownDirty = Boolean(worktree?.git?.dirty);
+  const featureMerged = mainArchive || (Boolean(context.ancestry?.[node.id]) && !unknownDirty);
   const mainVerified = mainArchive || mainState.verification === "passed";
   const archived = featureMerged && Boolean(mainArchive);
-  const unknownDirty = Boolean(worktree?.git?.dirty);
   const activeTerminal = Number(worktree?.liveTerminalCount ?? 0) > 0;
   const reclaimable =
     archived &&
@@ -943,6 +943,14 @@ export function deriveNodeState(node, context) {
   const currentEnvelope = summary.latest?.envelope ?? null;
   const currentKind = currentEnvelope?.taskKind ?? null;
   const currentSucceeded = currentEnvelope?.outcome === "succeeded";
+  const nodeWorkers = (context.workers ?? []).filter((worker) =>
+    tasks.some((task) => task.id === worker.taskId),
+  );
+  const currentWorkerFailed = nodeWorkers.some(
+    (worker) =>
+      worker.taskId === currentEnvelope?.owner?.taskId &&
+      (worker.workerState === "failed" || worker.dispatchStatus === "failed"),
+  );
   // 本轮是否仍需要一次限定审计：由状态视图统一判定，角色选择只消费该字段，
   // 避免同一条规则在控制器里出现第二份实现。
   const auditRequired =
@@ -962,11 +970,14 @@ export function deriveNodeState(node, context) {
   } else if (reclaimable) {
     status = "reclaimable";
     phase = "cleanup";
-    nextActions = ["使用完整 worktreeId 执行 Orca worktree rm，然后重新运行 orchestration:check"];
+    nextActions = ["调用 riskflow_integrate 按完整 worktreeId 回收，然后重新读取状态"];
   } else if (archived) {
     status = "stale";
     phase = "cleanup";
     nextActions = activeTerminal ? ["先收口残留 terminal/Dispatch"] : ["审阅脏状态后回收 worktree"];
+  } else if (currentWorkerFailed && currentEnvelope?.runState !== "settled") {
+    status = "blocked";
+    nextActions = ["调用 riskflow_status 获取最新 revision，再用 riskflow_reconcile 创建替代尝试"];
   } else if (featureMerged && mainVerified) {
     status = "main_verified";
     phase = "integration";
@@ -992,7 +1003,7 @@ export function deriveNodeState(node, context) {
     nextActions = ["由当前责任角色按失败证据修复；仅真实设计边界变化进入重新规划"];
   } else if (summary.blocked) {
     status = "blocked";
-    nextActions = ["处理 Orca task blocker 或升级决策"];
+    nextActions = ["如有 question/escalation 使用 riskflow_reply；无法安全恢复时携带实时证据升级"];
   } else if (currentEnvelope?.runState === "waiting" && blockers.length > 0) {
     status = "blocked";
     nextActions = [`等待依赖归档: ${blockers.join(", ")}`];
@@ -1038,13 +1049,12 @@ export function deriveNodeState(node, context) {
 
   if (unknownDirty && status === "stale") nextActions = ["未知未提交改动阻止强制回收，先人工审阅"];
   if (activeTerminal && status === "stale")
-    nextActions = ["任务已归档但仍有活动 terminal，先收口 terminal/Dispatch"];
+    nextActions = [
+      "调用 riskflow_integrate 执行 cleanup；控制器关闭精确终态 terminal、重验后按完整 worktreeId 回收",
+    ];
   if (main.archiveNames?.length && archivedName(main.archiveNames, node.change) && !mainVerified) {
     nextActions = ["补齐 main 主线验证结构化摘要，不能把 archive 当作 verify"];
   }
-  const nodeWorkers = (context.workers ?? []).filter((worker) =>
-    tasks.some((task) => task.id === worker.taskId),
-  );
   const nodeTerminals = worktree?.terminals ?? [];
 
   return {

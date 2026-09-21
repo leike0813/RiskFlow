@@ -347,6 +347,15 @@ describe("worktree-aware state", () => {
     });
     expect(deriveSnapshot(graph(node), facts).nodes[0].status).toBe("reclaimable");
 
+    const terminalFacts = {
+      ...facts,
+      worktrees: [{ ...facts.worktrees[0], liveTerminalCount: 1 }],
+    };
+    expect(deriveSnapshot(graph(node), terminalFacts).nodes[0]).toMatchObject({
+      status: "stale",
+      nextActions: [expect.stringContaining("riskflow_integrate")],
+    });
+
     const dirtyFacts = {
       ...facts,
       worktrees: [
@@ -697,6 +706,47 @@ describe("worktree-aware state", () => {
     expect(state.nextActions).toEqual([
       "由强模型 Finalizer 继续修复与回归，或移交新的强模型 Finalizer",
     ]);
+  });
+
+  it("routes a failed current worker through controlled reconciliation", () => {
+    const node = { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] };
+    const currentTask = task({
+      id: "task-c08-finalization",
+      status: "blocked",
+      envelope: v2Envelope({ runState: "running" }),
+    });
+    const snapshot = deriveSnapshot(
+      graph(node),
+      context({
+        worktrees: [
+          {
+            id: worktreeId,
+            path: "/tmp/riskflow-feature",
+            exists: true,
+            localNodeIds: ["C08"],
+            openSpecNodeIds: ["C08"],
+            openSpecNames: ["deliver-agent"],
+            liveTerminalCount: 1,
+            git: { head: "feature-head", branch: "feature", dirty: false, dirtyPaths: [] },
+            tasks: [currentTask],
+          },
+        ],
+        tasks: [currentTask],
+        workers: [
+          {
+            taskId: "task-c08-finalization",
+            dispatchId: "dispatch-c08",
+            workerState: "unsupervised",
+            dispatchStatus: "failed",
+          },
+        ],
+        ancestry: { C08: true },
+      }),
+    );
+    expect(snapshot.nodes[0]).toMatchObject({
+      status: "blocked",
+      nextActions: [expect.stringContaining("riskflow_reconcile")],
+    });
   });
 
   it("still orders attempts inside one attempt group", () => {
@@ -1098,6 +1148,43 @@ describe("worktree-aware state", () => {
       }),
     ).nodes.find((candidate) => candidate.id === "AUX:fix-suite-isolation");
     expect(unmerged.status).toBe("finalized");
+  });
+
+  it("adopts a dirty auxiliary worktree whose unchanged HEAD is already on main", () => {
+    const auxiliaryWorktree = {
+      id: "repo-id::/tmp/auxiliary",
+      path: "/tmp/auxiliary",
+      exists: true,
+      isMain: false,
+      git: {
+        head: "main-head",
+        branch: "feature/aux",
+        dirty: true,
+        dirtyPaths: ["scripts/orchestration/control.mjs"],
+      },
+      openSpec: [{ name: "fix-suite-isolation", status: "complete" }],
+      openSpecNames: ["fix-suite-isolation"],
+      openSpecNodeIds: [],
+      localNodeIds: [],
+      liveTerminalCount: 0,
+      terminals: [],
+      tasks: [],
+    };
+    const snapshot = deriveSnapshot(
+      graph(),
+      context({
+        worktrees: [auxiliaryWorktree],
+        ancestry: { "AUX:fix-suite-isolation": true },
+      }),
+    );
+    const auxiliary = snapshot.nodes.find(
+      (candidate) => candidate.id === "AUX:fix-suite-isolation",
+    );
+    expect(auxiliary).toMatchObject({ status: "untracked", phase: "adopt" });
+    expect(snapshot.resumeQueue[0]).toMatchObject({
+      workItemId: "AUX:fix-suite-isolation",
+      category: "recovery",
+    });
   });
 
   it("groups duplicate auxiliary changes before deriving their state", () => {

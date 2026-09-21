@@ -117,11 +117,15 @@ Finalizer 完成修复后不为形式独立性重复启动全量复验。最终�
 
 - `riskflow_status`：读取实时状态、`revision` 和 `resumeQueue`；
 - `riskflow_dispatch`：按阶段和 Manifest 角色派发；
-- `riskflow_wait`：等待当前 worker 事件，单次不超过 60 秒；
+- `riskflow_wait`：确认已处理的上一批 Delivery 后等待当前 worker 事件，单次不超过 60 秒；
+- `riskflow_reply`：按精确消息 ID 回复当前未收口 Run 的 question 或 escalation；
 - `riskflow_settle`：以证据收口当前任务；
-- `riskflow_integrate`：执行允许的 merge、main 门禁、归档或回收步骤。
+- `riskflow_integrate`：执行允许的 merge、main 门禁、归档或回收步骤；
+- `riskflow_reconcile`：仅对 checkpoint 或 worktree 回收漂移创建受控恢复尝试。
 
 每个写操作必须携带最新 `expectedRevision` 和唯一 `idempotencyKey`。控制器在公共 Git 目录持锁，重新采集事实后，在任何外部副作用前持久写入 `inflight` 回执，成功后更新为 `completed`。相同幂等键若仍为 `inflight`，必须以 `uncertain_prior_execution` fail-closed，要求重新读取状态并对账，绝不自动重做副作用。状态变化、重复 writer、过期 HEAD、证据不足或阶段不合法时，操作在执行前被拒绝，并返回合法下一步。
+
+Planning、Finalizer 与 Targeted Auditor 的首次 Codex 派发由 `riskflow_dispatch` 先创建 terminal 并等待 `tui-idle`，再以精确 terminal 绑定 worker。工作区信任提示发生在 worker-start 之前；控制器返回精确 handle，操作者确认后以新幂等键和该 handle 继续当前 queued Task，不生成 failed attempt。
 
 Finalizer 报告后，主调度先审阅该专用 feature worktree 的全部改动，再调用 `riskflow_settle`。成功收口必须提供证据；对 finalization/audit，若 change 的实际 artifact 图声明 verification，settle 会先确认该工件为 `done`，否则以 `verification_artifact_required` 在任何 Git 副作用前拒绝。不含该工件的旧 schema 沿用原门禁。若工作树有已审阅改动，调用者必须提交与实时 `dirtyPaths` 完全一致的 `reviewedPaths`，settle 只暂存这些路径并形成 Git 检查点，再把实际新 HEAD 写入 v2 信封。失败、阻塞、暂停或路径不一致时不得自动提交改动。
 
@@ -198,7 +202,7 @@ pnpm orchestration:coordinator
 5. 有冲突则停止该树，记录 `blocked` 与冲突文件，不强行解决；
 6. 以同步后 HEAD 更新 v2 信封，再重新计算状态。
 
-过期 worktree 只能通过 Orca 的完整 worktree ID 回收。禁止 `git clean`、手工删目录或按 display name 猜测目标。已有未提交改动、活动 terminal 或未归档产物时不得回收。
+过期 worktree 只能通过 `riskflow_integrate` 按 Orca 的完整 worktree ID 回收。若已归档节点仅残留终态 terminal，控制器必须先验证 main 已通过、worktree clean、checkpoint 成功收口且无违规，再关闭状态中记录的精确 terminal handle；重新采集后只有同一节点变为 `reclaimable` 且 worktree ID 未变，才可回收。禁止 force、`git clean`、手工删目录或按 display name 猜测目标。已有未提交改动、活动 writer 或未归档产物时不得回收。
 
 ## 9. 无进展与完成判定
 

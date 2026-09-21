@@ -56,10 +56,11 @@ OpenSpec 1.13.1 会在五个 apply 前置工件完成后把 verification 提前�
 
 处理顺序：
 
-1. 在目标 worktree 创建 Codex terminal，等待 TUI 出现，不立即派发任务。
-2. 在该 terminal 明确信任当前目录。若 Orca CLI 允许输入，可先发送选项 `1` 再发送 Enter；若 CLI 因交互保护拒绝注入，立即停止自动重试，请操作者在该精确 terminal 中确认。
-3. 确认状态栏显示实际模型、思考强度、目标目录和权限，MCP 启动完成，并进入 idle。
-4. 再把已有 Task 派给该 terminal。若先前派发已把 Task 标为 failed，通过受控恢复将同一 Task 重置为 ready 后重试；不要新建 Task、Run 或 worktree 来绕过信任提示。
+1. 正常调用 `riskflow_dispatch`。Planning、Finalizer 和 Targeted Auditor 路径会先按 Manifest 模型与强度创建 Codex terminal，再等待 `tui-idle`，最后才执行 worker-start。
+2. 若返回 `workspace_trust_required`，使用结果中的精确 terminal handle 定位 TUI。不要新建 Task、Run、terminal 或 worktree。
+3. 由操作者在该 terminal 明确信任当前目录；若 CLI 因交互保护拒绝输入，保持当前 queued Task，等待操作者在该精确 terminal 中确认。
+4. 确认状态栏显示实际模型、思考强度、目标目录和权限，MCP 启动完成并进入 idle。
+5. 重新读取状态，以新幂等键调用 `riskflow_dispatch` 并传入该 `terminalHandle`。控制器复用当前 queued Task，通过 `worker-start --terminal` 启动。
 
 不得自动修改全局 Codex 信任配置，也不得把 `agent_prompt_blocked` 记为实现失败、无进展或验收失败。
 
@@ -85,9 +86,11 @@ OMP 的模型和思考强度由其启动命令指定；不要把 Codex 的 `--ef
 
 ## 5. 等待、提问与超时
 
-`riskflow_wait` 单次最多等待 60 秒。超时只是协调检查点：读取一次最新状态后继续等待，不创建替代 Task，不轮询 terminal 屏幕，也不把超时记为 worker 失败。
+`riskflow_wait` 单次最多等待 60 秒。它返回的 Delivery 必须作为一个完整批次处理；处理完后，下一次 wait 传入该批次的 `ackDeliveryId`，控制器先 ack 再等待后续消息。不要在处理完成前 ack，也不要省略 ack 后反复读取同一批次。超时只是协调检查点：读取一次最新状态后继续等待，不创建替代 Task，不轮询 terminal 屏幕，也不把超时记为 worker 失败。
 
 收到 `question` 时，根据已批准工件和真实代码给出有界答案；答案涉及公共契约、权限、持久化、迁移、依赖或范围变化时转为 escalation。收到 `worker_done` 后先审阅 Delivery、diff、HEAD 和证据，再 settle；不要只凭退出码或报告中的 PASS 收口。
+
+回复 `question` 或 `escalation` 时调用 `riskflow_reply`，携带最新 `expectedRevision`、唯一幂等键、事件的精确 `messageId` 和答复正文。工具只绑定当前未 settled Run；不要直接调用 Orca reply 命令，也不要向已结束 Run 发送消息。
 
 命令超时与命令失败分开记录。必须执行的关键场景应保留其实际运行证据；合理的外围 skip 可以报告，但关键路径未执行不能算通过。
 
@@ -102,6 +105,8 @@ OMP 的模型和思考强度由其启动命令指定；不要把 Codex 的 `--ef
 - 错误发生在副作用之前还是之后。
 
 `uncertain_prior_execution` 表示副作用可能已发生。此时不得换幂等键盲重试；先核对 Orca、Git 和 OpenSpec 的真实结果，再走受控 reconcile。已 settled 的 Task 不复用；普通测试失败由当前责任角色处理。
+
+`riskflow_reconcile` 只允许处理 `checkpoint_mismatch` 与 `worktree_reclaim_pending`。失败 worker 仍绑定未 settled checkpoint 时，先读取最新状态和 revision，再创建替代尝试。重复 writer、任务身份冲突、未知 worktree 或全局违规必须人工查明根因，不能把目标节点 ID 当作绕过违规的许可。
 
 Orca 内部 terminal 优先用 Orca CLI 定位和操作。桌面 accessibility 无法可靠识别目标 terminal 时，不使用坐标或盲按键替代精确 handle。
 
@@ -166,9 +171,9 @@ Agent 之间不复制未提交文件。同步必须形成可审阅 Git 检查点
 
 ## 9. 回收
 
-回收前确认：change 的 verification（若 schema 声明）已完成且随 change 归档、feature commit 已进入 main、worktree clean、没有活动 writer，相关 terminal 已结束，并且状态将该项列为可回收。
+回收前确认：change 的 verification（若 schema 声明）已完成且随 change 归档、feature commit 已进入 main、main 验证通过、worktree clean、checkpoint 已成功收口、没有活动 writer 或违规，并且状态将该项列为 `reclaimable`，或仅因状态中可精确识别的终态 terminal 残留而列为 `stale`。
 
-使用 Orca 返回的完整 worktree ID 回收，然后同时核对：
+调用 `riskflow_integrate` 回收。对上述 terminal 残留，控制器会关闭状态记录的精确 handle，重新采集状态，并仅在同一节点变为 `reclaimable` 且完整 worktree ID 未变化时执行删除。任一前提漂移都停止，不使用 force。完成后同时核对：
 
 ```bash
 git worktree list --porcelain
@@ -177,4 +182,4 @@ pnpm orchestration:status --json
 pnpm orchestration:check
 ```
 
-不得使用 `git clean`、手工删除目录或 display name 猜测目标。分支删除与 worktree 回收是两个决定；没有明确授权时保留分支。
+不得直接运行 terminal close 或 worktree rm，不得使用 `git clean`、手工删除目录或 display name 猜测目标。分支删除与 worktree 回收是两个决定；没有明确授权时保留分支。

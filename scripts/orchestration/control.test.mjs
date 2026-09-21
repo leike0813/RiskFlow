@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterAll, describe, expect, it } from "vitest";
 import {
+  CONTROLLED_TOOL_NAMES,
   ControlError,
   canCompleteGoal,
   createV2Envelope,
@@ -11,7 +12,9 @@ import {
   riskflowDispatch,
   riskflowIntegrate,
   riskflowReconcile,
+  riskflowReply,
   riskflowSettle,
+  riskflowWait,
   withOrcaSender,
   withRuntimeLock,
 } from "./control.mjs";
@@ -133,9 +136,19 @@ const graph = {
   },
 };
 
+function fakeCodexTerminal(command, args) {
+  if (command !== "orca-ide" || args[0] !== "terminal") return null;
+  if (args[1] === "create") return { terminal: { handle: "term-codex" } };
+  if (args[1] === "wait") return {};
+  return null;
+}
+
 describe("controlled orchestration", () => {
   it("blocks direct orchestration mutations but permits read-only checks", () => {
     expect(shouldBlockDirectCommand("orca-ide orchestration dispatch --run r --task t")).toBe(true);
+    expect(shouldBlockDirectCommand("orca terminal create --worktree active --command codex")).toBe(
+      true,
+    );
     expect(shouldBlockDirectCommand("git merge feature/c26")).toBe(true);
     expect(shouldBlockDirectCommand("pnpm orchestration:check")).toBe(false);
   });
@@ -164,9 +177,162 @@ describe("controlled orchestration", () => {
     const text = formatCurrentState({
       revision: "rev-1",
       resumeQueue: [{ workItemId: "C26", category: "finalizing", nextAction: "继续 Finalizer" }],
+      nodes: [{ id: "AUX:old", status: "stale", nextActions: ["受控 cleanup"] }],
+      violations: [],
+      diagnostics: [{ code: "historical_orphan_task" }],
     });
     expect(text).toContain("revision: rev-1");
     expect(text).toContain("C26: 继续 Finalizer");
+    expect(text).toContain("AUX:old: 受控 cleanup");
+    expect(text).toContain("1 non-blocking (historical_orphan_task)");
+    expect(CONTROLLED_TOOL_NAMES).toEqual([
+      "riskflow_status",
+      "riskflow_dispatch",
+      "riskflow_wait",
+      "riskflow_reply",
+      "riskflow_settle",
+      "riskflow_integrate",
+      "riskflow_reconcile",
+    ]);
+  });
+
+  it("replies once to a message in the current run", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-reply-"));
+    const running = node({
+      checkpoints: { ...node().checkpoints, runState: "running" },
+    });
+    let calls = 0;
+    let replyArgs;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("reply")) {
+        calls += 1;
+        replyArgs = args;
+        return { message: { id: "reply-1" } };
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    const input = {
+      workItemId: "C17",
+      expectedRevision: "revision-1",
+      idempotencyKey: "reply-current-run",
+      messageId: "msg-question",
+      body: "继续按实际 schema 收尾",
+    };
+    const options = {
+      rootDir: process.cwd(),
+      exec,
+      statusProvider: async () => ({
+        graph,
+        snapshot: snapshot({ nodes: [running] }),
+      }),
+    };
+    try {
+      const first = await riskflowReply(input, options);
+      const replay = await riskflowReply(input, options);
+      expect(first).toEqual(replay);
+      expect(calls).toBe(1);
+      expect(replyArgs).toEqual(
+        expect.arrayContaining([
+          "--id",
+          "msg-question",
+          "--body",
+          "继续按实际 schema 收尾",
+          "--run",
+          "run-finalizer",
+        ]),
+      );
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("acknowledges the prior Delivery before waiting for the next worker event", async () => {
+    const calls = [];
+    const exec = async (command, args) => {
+      if (command === "git") return process.cwd();
+      if (command === "orca-ide" && args.includes("check")) {
+        calls.push(args);
+        return args.includes("--ack")
+          ? { delivery: { id: "delivery-2" }, messages: [{ id: "msg-next" }] }
+          : { delivery: { id: "delivery-1" }, messages: [{ id: "msg-same" }] };
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    const options = {
+      rootDir: process.cwd(),
+      exec,
+      statusProvider: async () => ({ graph, snapshot: snapshot() }),
+    };
+    const first = await riskflowWait({ workItemId: "C17", timeoutMs: 1000 }, options);
+    const next = await riskflowWait(
+      { workItemId: "C17", ackDeliveryId: first.delivery.id, timeoutMs: 1000 },
+      options,
+    );
+    expect(next.messages).toEqual([{ id: "msg-next" }]);
+    expect(calls[1]).toEqual(expect.arrayContaining(["--ack", "delivery-1"]));
+  });
+
+  it("stops before worker-start when a new Codex terminal still needs workspace trust", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-codex-trust-"));
+    let terminalCreates = 0;
+    let trusted = false;
+    let workerStarts = 0;
+    let workerStartArgs;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args[0] === "terminal" && args[1] === "create") {
+        terminalCreates += 1;
+        return { terminal: { handle: "term-codex-trust" } };
+      }
+      if (command === "orca-ide" && args[0] === "terminal" && args[1] === "wait") {
+        if (!trusted) throw new Error("agent_prompt_blocked: workspace trust required");
+        return {};
+      }
+      if (command === "orca-ide" && args.includes("worker-start")) {
+        workerStarts += 1;
+        workerStartArgs = args;
+        return { state: "started" };
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await expect(
+        riskflowDispatch(
+          {
+            workItemId: "C17",
+            expectedRevision: "revision-1",
+            idempotencyKey: "dispatch-codex-trust",
+          },
+          {
+            rootDir: process.cwd(),
+            exec,
+            statusProvider: async () => ({ graph, snapshot: snapshot() }),
+          },
+        ),
+      ).rejects.toMatchObject({ code: "workspace_trust_required" });
+      expect(workerStarts).toBe(0);
+      trusted = true;
+      const resumed = await riskflowDispatch(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "dispatch-codex-after-trust",
+          terminalHandle: "term-codex-trust",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => ({ graph, snapshot: snapshot() }),
+        },
+      );
+      expect(resumed.worker).toMatchObject({ state: "started" });
+      expect(terminalCreates).toBe(1);
+      expect(workerStartArgs).toEqual(expect.arrayContaining(["--terminal", "term-codex-trust"]));
+      expect(workerStartArgs).not.toContain("--agent");
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
   });
 
   it("continues the attempt number from the target attempt group history", () => {
@@ -271,6 +437,8 @@ describe("controlled orchestration", () => {
     let writtenEnvelope;
     const exec = async (command, args) => {
       if (command === "git") return runtimeRoot;
+      const terminal = fakeCodexTerminal(command, args);
+      if (terminal !== null) return terminal;
       if (command === "orca-ide" && args.includes("task-create")) {
         createdSpec = args[args.indexOf("--spec") + 1];
         return { id: "task-replan" };
@@ -332,6 +500,8 @@ describe("controlled orchestration", () => {
     let createdSpec;
     const exec = async (command, args) => {
       if (command === "git") return runtimeRoot;
+      const terminal = fakeCodexTerminal(command, args);
+      if (terminal !== null) return terminal;
       if (command === "orca-ide" && args.includes("task-create")) {
         createdSpec = args[args.indexOf("--spec") + 1];
         return { id: "task-planning" };
@@ -435,6 +605,8 @@ describe("controlled orchestration", () => {
     let writtenEnvelope;
     const exec = async (command, args) => {
       if (command === "git") return runtimeRoot;
+      const terminal = fakeCodexTerminal(command, args);
+      if (terminal !== null) return terminal;
       if (command === "orca-ide" && args.includes("task-create")) return { id: "task-next" };
       if (command === "orca-ide" && args.includes("task-update")) {
         writtenEnvelope = JSON.parse(args[args.indexOf("--result") + 1]);
@@ -473,6 +645,8 @@ describe("controlled orchestration", () => {
       let spec;
       const exec = async (command, args) => {
         if (command === "git") return runtimeRoot;
+        const terminal = fakeCodexTerminal(command, args);
+        if (terminal !== null) return terminal;
         if (command === "orca-ide" && args.includes("task-create")) {
           spec = args[args.indexOf("--spec") + 1];
           return { id: `task-${key}` };
@@ -578,6 +752,8 @@ describe("controlled orchestration", () => {
     });
     const exec = async (command, args) => {
       if (command === "git") return runtimeRoot;
+      const terminal = fakeCodexTerminal(command, args);
+      if (terminal !== null) return terminal;
       if (command === "orca-ide" && args.includes("worker-start")) return { state: "started" };
       if (command === "orca-ide" && args.includes("task-update")) return {};
       throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
@@ -622,6 +798,8 @@ describe("controlled orchestration", () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-attempt-ledger-failed-start-"));
     const exec = async (command, args) => {
       if (command === "git") return runtimeRoot;
+      const terminal = fakeCodexTerminal(command, args);
+      if (terminal !== null) return terminal;
       if (command === "orca-ide" && args.includes("task-update")) return {};
       if (command === "orca-ide" && args.includes("worker-start")) {
         throw new Error("consumer_fenced");
@@ -657,6 +835,8 @@ describe("controlled orchestration", () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-attempt-ledger-rejected-"));
     const exec = async (command, args) => {
       if (command === "git") return runtimeRoot;
+      const terminal = fakeCodexTerminal(command, args);
+      if (terminal !== null) return terminal;
       if (command === "orca-ide" && args.includes("task-update")) return {};
       if (command === "orca-ide" && args.includes("worker-start")) {
         await rm(join(runtimeRoot, "riskflow-orchestration", "attempts"), { recursive: true });
@@ -813,6 +993,123 @@ describe("controlled orchestration", () => {
           },
         ),
       ).rejects.toMatchObject({ code: "stale_revision" });
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("closes exact terminal handles and rechecks reclaimable before cleanup", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-cleanup-stale-"));
+    const stale = node({
+      status: "stale",
+      phase: "cleanup",
+      main: { archive: true, verification: "passed" },
+      worktree: { ...node().worktree, exists: true, dirty: false },
+      checkpoints: {
+        ...node().checkpoints,
+        runState: "settled",
+        outcome: "succeeded",
+      },
+      orca: { attempts: [], terminalHandles: ["term-old", "term-finalizer"] },
+      nextActions: ["受控 cleanup"],
+    });
+    const reclaimable = {
+      ...stale,
+      status: "reclaimable",
+      orca: { ...stale.orca, terminalHandles: [] },
+    };
+    const calls = [];
+    let reads = 0;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide") {
+        calls.push(args);
+        if (args[0] === "terminal" && args[1] === "close") return { closed: true };
+        if (args[0] === "worktree" && args[1] === "rm") return { removed: true };
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      const result = await riskflowIntegrate(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "cleanup-stale-terminals",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => {
+            reads += 1;
+            const current = reads === 1 ? stale : reclaimable;
+            return {
+              graph,
+              snapshot: snapshot({
+                nodes: [current],
+                resumeQueue: [
+                  { workItemId: "C17", category: "cleanup", nextAction: "受控 cleanup" },
+                ],
+              }),
+            };
+          },
+        },
+      );
+      expect(result).toMatchObject({ action: "reclaim" });
+      expect(calls.filter((args) => args[0] === "terminal").map((args) => args[3])).toEqual([
+        "term-old",
+        "term-finalizer",
+      ]);
+      const removal = calls.find((args) => args[0] === "worktree");
+      expect(removal).toContain("id:repo::/tmp/c17");
+      expect(removal).not.toContain("--force");
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("does not close terminals when stale cleanup preconditions fail", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-cleanup-unsafe-"));
+    const unsafe = node({
+      status: "stale",
+      phase: "cleanup",
+      main: { archive: true, verification: "passed" },
+      worktree: { ...node().worktree, exists: true, dirty: true },
+      checkpoints: {
+        ...node().checkpoints,
+        runState: "settled",
+        outcome: "succeeded",
+      },
+      orca: { attempts: [], terminalHandles: ["term-active"] },
+      nextActions: ["人工审阅"],
+    });
+    let terminalCalls = 0;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args[0] === "terminal") terminalCalls += 1;
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await expect(
+        riskflowIntegrate(
+          {
+            workItemId: "C17",
+            expectedRevision: "revision-1",
+            idempotencyKey: "cleanup-unsafe",
+          },
+          {
+            rootDir: process.cwd(),
+            exec,
+            statusProvider: async () => ({
+              graph,
+              snapshot: snapshot({
+                nodes: [unsafe],
+                resumeQueue: [{ workItemId: "C17", category: "cleanup", nextAction: "人工审阅" }],
+              }),
+            }),
+          },
+        ),
+      ).rejects.toMatchObject({ code: "cleanup_not_safe" });
+      expect(terminalCalls).toBe(0);
     } finally {
       await rm(runtimeRoot, { recursive: true });
     }
@@ -1008,6 +1305,28 @@ describe("controlled orchestration", () => {
         { workItemId: "C17", expectedRevision: "revision-1" },
       ).node.id,
     ).toBe("C17");
+  });
+
+  it("does not let reconcile bypass an unsafe violation on its own node", () => {
+    expect(() =>
+      preflightAction(
+        snapshot({ violations: [{ nodeId: "C17", code: "duplicate_active_writer" }] }),
+        "reconcile",
+        { workItemId: "C17", expectedRevision: "revision-1" },
+      ),
+    ).toThrowError(ControlError);
+  });
+
+  it("rejects replies after the current attempt is settled", () => {
+    const settled = node({
+      checkpoints: { ...node().checkpoints, runState: "settled", outcome: "succeeded" },
+    });
+    expect(() =>
+      preflightAction(snapshot({ nodes: [settled] }), "reply", {
+        workItemId: "C17",
+        expectedRevision: "revision-1",
+      }),
+    ).toThrowError(ControlError);
   });
 
   it("creates a new coordinator run when reconciling a historical checkpoint", async () => {
@@ -1693,6 +2012,8 @@ describe("worktree provisioning recovery", () => {
     let workerStart;
     const exec = async (command, args) => {
       if (command === "git") return runtimeRoot;
+      const terminal = fakeCodexTerminal(command, args);
+      if (terminal !== null) return terminal;
       if (command === "orca-ide" && args.includes("worker-start")) {
         workerStart = args;
         return { state: "started" };

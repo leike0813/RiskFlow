@@ -1,28 +1,32 @@
 import {
+  CONTROLLED_TOOL_NAMES,
   ControlError,
   canCompleteGoal,
   riskflowDispatch,
   riskflowIntegrate,
+  riskflowReconcile,
+  riskflowReply,
   riskflowSettle,
   riskflowStatus,
   riskflowWait,
 } from "./control.mjs";
 
-const CONTROLLED_TOOLS = new Set([
-  "riskflow_dispatch",
-  "riskflow_integrate",
-  "riskflow_settle",
-  "riskflow_status",
-  "riskflow_wait",
-]);
+const CONTROLLED_TOOLS = new Set(CONTROLLED_TOOL_NAMES);
 
 export function formatCurrentState(snapshot) {
   const next = snapshot.resumeQueue.slice(0, 5);
+  const violations = (snapshot.violations ?? []).slice(0, 5);
+  const stale = (snapshot.nodes ?? []).filter((node) => node.status === "stale").slice(0, 5);
+  const diagnostics = snapshot.diagnostics ?? [];
   return [
     "[RISKFLOW ORCHESTRATION STATE]",
     `revision: ${snapshot.revision}`,
     `resumeQueue: ${next.length ? next.map((item) => `${item.workItemId}:${item.category}`).join(", ") : "empty"}`,
     ...next.map((item) => `${item.workItemId}: ${item.nextAction}`),
+    `violations: ${violations.length ? violations.map((item) => `${item.code}@${item.nodeId ?? "global"}`).join(", ") : "none"}`,
+    `stale: ${stale.length ? stale.map((node) => `${node.id}: ${node.nextActions[0]}`).join("；") : "none"}`,
+    `diagnostics: ${diagnostics.length ? `${diagnostics.length} non-blocking (${[...new Set(diagnostics.map((item) => item.code))].join(", ")})` : "none"}`,
+    `controlledTools: ${CONTROLLED_TOOL_NAMES.join(", ")}`,
     "编排写操作必须使用 riskflow_* 工具；先读取状态并携带当前 revision。",
   ].join("\n");
 }
@@ -30,10 +34,10 @@ export function formatCurrentState(snapshot) {
 export function shouldBlockDirectCommand(command) {
   if (typeof command !== "string") return false;
   return [
-    /\borca(?:-ide)?\s+(?:orchestration\s+(?:task-create|task-update|dispatch|worker-start)|worktree\s+(?:create|rm))\b/,
+    /\borca(?:-ide)?\s+(?:orchestration\s+(?:task-create|task-update|dispatch|worker-start|reply)|worktree\s+(?:create|rm)|terminal\s+(?:create|close))\b/,
     /\bgit\s+(?:merge|commit|rebase|cherry-pick)\b/,
     /\bopenspec\s+archive\b/,
-    /\bnode\s+scripts\/orchestration\/control\.mjs\s+(?:dispatch|settle|integrate|reconcile)\b/,
+    /\bnode\s+scripts\/orchestration\/control\.mjs\s+(?:dispatch|reply|settle|integrate|reconcile)\b/,
   ].some((pattern) => pattern.test(command));
 }
 
@@ -93,10 +97,11 @@ export default function riskflowOrchestrationExtension(pi) {
     {
       name: "riskflow_dispatch",
       label: "RiskFlow Dispatch",
-      description: "按当前阶段和固定模型策略创建或启动唯一合法的下一任务。",
+      description: "按当前阶段和固定模型策略预热 terminal，并创建或启动唯一合法的下一任务。",
       parameters: z.object({
         ...mutation,
         replanApprovalRef: z.string().min(1).optional(),
+        terminalHandle: z.string().min(1).optional(),
       }),
       approval: "write",
     },
@@ -107,14 +112,30 @@ export default function riskflowOrchestrationExtension(pi) {
     {
       name: "riskflow_wait",
       label: "RiskFlow Wait",
-      description: "等待当前工作项的 worker_done、escalation 或 question，最长 60 秒。",
+      description: "确认已处理的 Delivery，并等待当前工作项的下一批 worker 事件，最长 60 秒。",
       parameters: z.object({
         workItemId: workItem,
+        ackDeliveryId: z.string().min(1).optional(),
         timeoutMs: z.number().int().min(1000).max(60000).optional(),
       }),
       approval: "read",
     },
     riskflowWait,
+  );
+  register(
+    pi,
+    {
+      name: "riskflow_reply",
+      label: "RiskFlow Reply",
+      description: "回复当前 Run 中的 question 或 escalation，并保持 revision 与幂等约束。",
+      parameters: z.object({
+        ...mutation,
+        messageId: z.string().min(1),
+        body: z.string().min(1),
+      }),
+      approval: "write",
+    },
+    riskflowReply,
   );
   register(
     pi,
@@ -144,6 +165,21 @@ export default function riskflowOrchestrationExtension(pi) {
       approval: "exec",
     },
     riskflowIntegrate,
+  );
+  register(
+    pi,
+    {
+      name: "riskflow_reconcile",
+      label: "RiskFlow Reconcile",
+      description: "仅对 checkpoint 或 worktree 回收漂移创建新的受控恢复尝试。",
+      parameters: z.object({
+        ...mutation,
+        taskKind: z.enum(["planning", "finalization"]).optional(),
+        waiting: z.boolean().optional(),
+      }),
+      approval: "write",
+    },
+    riskflowReconcile,
   );
 
   let cached;

@@ -831,6 +831,11 @@ interface HarnessOverrides {
   readonly workPlanValidatedRefs?: readonly unknown[];
   readonly validationPolicyOverrides?: Record<string, unknown>;
   readonly forcedReviewPolicyOverrides?: Record<string, unknown>;
+  readonly recordInsertOutcomes?: readonly (
+    | { readonly kind: "inserted" }
+    | { readonly kind: "replayed" }
+    | { readonly kind: "conflict"; readonly detailCode: string }
+  )[];
 }
 
 const makeHarness = (overrides: HarnessOverrides = {}) => {
@@ -1015,7 +1020,11 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
   const recordStore = {
     async insertRecords() {
       calls.recordInsertCalls += 1;
-      return { kind: "inserted" as const };
+      return (
+        overrides.recordInsertOutcomes?.[calls.recordInsertCalls - 1] ?? {
+          kind: "inserted" as const,
+        }
+      );
     },
     async readRecord() {
       return undefined;
@@ -2058,7 +2067,20 @@ describe("C22 服务接入（端口驱动）", () => {
   });
 
   it("自动路线按路线中的组与系统决定逐项匹配并原子写入记录和事件", async () => {
-    const harness = makeHarness();
+    const authorizationChecks = new Map<string, number>();
+    const harness = makeHarness({
+      verifyCurrent: async ({ invocationId }) => {
+        const count = (authorizationChecks.get(invocationId) ?? 0) + 1;
+        authorizationChecks.set(invocationId, count);
+        return invocationId === "command-accept-revoked" && count === 2
+          ? undefined
+          : governanceAuthorization();
+      },
+      recordInsertOutcomes: [
+        { kind: "inserted" },
+        { kind: "conflict", detailCode: "standardized-risk-record-payload-mismatch" },
+      ],
+    });
     const routeSet = AcceptanceRouteSetV1Schema.parse(routeSetValue());
     const route = routeSet.routes[0];
     if (route?.routeKind !== "automatic") throw new Error("automatic route fixture required");
@@ -2151,6 +2173,35 @@ describe("C22 服务接入（端口驱动）", () => {
     expect(harness.calls.recordInsertCalls).toBe(1);
     expect(harness.calls.transactionCalls).toBe(2);
     expect(harness.calls.verifyCurrentCalls).toBe(4);
+
+    const conflict = await harness.service.finalize(
+      acceptCommand({
+        commandId: "command-accept-conflict",
+        idempotencyKey: "idempotency-accept-conflict",
+        payload: {
+          acceptanceRouteSetRef: acceptanceRouteSetRefValue,
+          acceptedGroupRefs: [route.groupRef],
+          decisionRefs: [route.routeDecisionRef],
+        },
+      }),
+    );
+    expect(conflict).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+    expect(blockedKindOf(conflict)).toBe("standardized-risk-record-payload-mismatch");
+    expect(harness.calls.recordInsertCalls).toBe(2);
+
+    const revoked = await harness.service.finalize(
+      acceptCommand({
+        commandId: "command-accept-revoked",
+        idempotencyKey: "idempotency-accept-revoked",
+        payload: {
+          acceptanceRouteSetRef: acceptanceRouteSetRefValue,
+          acceptedGroupRefs: [route.groupRef],
+          decisionRefs: [route.routeDecisionRef],
+        },
+      }),
+    );
+    expect(revoked).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    expect(harness.calls.recordInsertCalls).toBe(2);
   });
 
   it("assemble-and-infer 模型失败时返回映射的技术错误且零登记", async () => {

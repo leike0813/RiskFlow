@@ -430,6 +430,9 @@ export class PostgresRiskCandidateFinalizationAdapter
           return { kind: "conflict", detailCode: "standardized-risk-record-payload-mismatch" };
         }
       }
+      if (created > 0) {
+        return { kind: "conflict", detailCode: "standardized-risk-record-partial-overlap" };
+      }
       return { kind: "replayed" };
     } catch (error) {
       throw mapPostgresError(error, "identification-candidate-finalization.record-insert");

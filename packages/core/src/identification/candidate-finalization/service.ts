@@ -3533,7 +3533,10 @@ export class RiskCandidateFinalizationService {
       authorizationContextRef: closing.authorizationContextRef,
       issuedAt: command.issuedAt,
     });
-    let aborted = false;
+    let abort:
+      | { readonly kind: "replayed" }
+      | { readonly kind: "conflict"; readonly detailCode: string }
+      | undefined;
     let eventRefs: { readonly eventId: string }[] = [];
     try {
       const receipt = await options.transactionUnit.execute(
@@ -3544,11 +3547,11 @@ export class RiskCandidateFinalizationService {
             context,
           );
           if (insertion.kind === "conflict") {
-            aborted = true;
+            abort = insertion;
             throw new FinalizationTransactionAbort();
           }
           if (insertion.kind === "replayed") {
-            aborted = true;
+            abort = insertion;
             throw new FinalizationTransactionAbort();
           }
           const recordedAt = this.#now().toISOString();
@@ -3615,7 +3618,7 @@ export class RiskCandidateFinalizationService {
       eventRefs = receipt.eventRefs.map((ref) => ({ eventId: ref.eventId }));
     } catch (error: unknown) {
       if (error instanceof FinalizationTransactionAbort) {
-        if (aborted) {
+        if (abort?.kind === "replayed") {
           return {
             kind: "accepted",
             standardizedRiskRecordRefs: records.map((record) => ({
@@ -3628,6 +3631,16 @@ export class RiskCandidateFinalizationService {
               eventVersion: 1 as const,
             })) satisfies DomainEventRefV1[],
           };
+        }
+        if (abort?.kind === "conflict") {
+          throw new RiskCandidateFinalizationError(
+            blocked({
+              causalRunId: commandId,
+              occurredAt,
+              blockerKind: abort.detailCode,
+              blockerRef: command.payload.acceptanceRouteSetRef,
+            }),
+          );
         }
       }
       throw error;

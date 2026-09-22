@@ -975,7 +975,7 @@ export class PostgresReviewAuditAdapter implements ReviewAuditPortV1 {
    * 的单点记录，供 `accept-groups` 判断人工路线是否已成立。授权分支沿用 `review-audit.trace`，
    * 只读、不写审计、不发事件、不改任务状态，也不返回自由正文。
    * 任何事实不一致都折叠为稳定 `detailCode` 的 `blocked`：目标不存在、跨工程引用与事实不符
-   * 彼此不可区分，不泄露目标存在性；任务未裁决（含 `pending` / `superseded`）返回 `pending`。
+   * 彼此不可区分，不泄露目标存在性；`pending` 返回等待，`superseded` 作为陈旧任务阻断。
    */
   async readIdentificationGroupDecision(input: {
     readonly projectId: string;
@@ -1027,6 +1027,7 @@ export class PostgresReviewAuditAdapter implements ReviewAuditPortV1 {
       ) {
         return blocked("review-task-fact-mismatch");
       }
+      if (task.status === "superseded") return blocked("review-task-stale");
       if (task.status !== "decided") return { kind: "pending" };
 
       const decisionRow = await this.#db

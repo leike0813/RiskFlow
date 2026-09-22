@@ -31,6 +31,7 @@ import {
   StandardizedRiskRecordEnvelopeSchema,
   type StandardizedRiskRecordEnvelope,
 } from "@riskflow/contracts/records";
+import { DomainEventV1Schema, type DomainEventV1 } from "@riskflow/contracts/events";
 import {
   AuthorizationContextV1Schema,
   type AuthorizationContextV1,
@@ -355,6 +356,29 @@ const recordWrite = (input: {
     occurredAt: TIMESTAMP,
   });
 
+const acceptedEvent = (write: StandardizedRiskRecordWriteV1, auditEntryId: string): DomainEventV1 =>
+  DomainEventV1Schema.parse({
+    schemaVersion: "1",
+    eventId: `identification-risk-record-accepted:${write.riskRecordId}:${write.versionId}`,
+    eventVersion: 1,
+    eventType: "identification.risk-record-accepted.v1",
+    projectId: write.projectId,
+    aggregateRef: write.riskRecordRef,
+    occurredAt: TIMESTAMP,
+    recordedAt: TIMESTAMP,
+    causationId: write.commandId,
+    correlationId: write.identificationRunRef.reference.entityId,
+    producerCommandId: write.commandId,
+    idempotencyKey: write.idempotencyKey,
+    authorizationContextRef: write.authorizationContextRef,
+    auditTrailRef: refOf("audit-trail", auditEntryId),
+    payload: {
+      standardizedRiskRecordRef: write.riskRecordRef,
+      identificationInputSnapshotRef: write.inputSnapshotRef,
+      identificationRunRef: write.identificationRunRef,
+    },
+  });
+
 /**
  * 与核心 `#persistRows` 同形的命令身份：原子命令的 `commandId` 就是行携带的命令身份，
  * 审计 id 为 `${commandId}:audit`，因此登记行的审计外键必须由行自身派生才能提交。
@@ -436,6 +460,8 @@ const insertRecordsThroughTransaction = async (
     readonly records: readonly StandardizedRiskRecordEnvelope[];
     readonly commandId: string;
     readonly auditEntryId: string;
+    readonly events?: readonly DomainEventV1[];
+    readonly abortOnNonInserted?: boolean;
   },
 ): Promise<{ readonly outcome: RecordInsertOutcome | undefined; readonly failed: boolean }> => {
   const command: AtomicCommandV1 = {
@@ -458,6 +484,9 @@ const insertRecordsThroughTransaction = async (
         { rows: input.rows, records: input.records, occurredAt: TIMESTAMP },
         context,
       );
+      if (input.abortOnNonInserted === true && outcome.kind !== "inserted") {
+        throw new Error("record insertion did not create the complete batch");
+      }
       return {
         resultRef: input.rows[0]?.riskRecordRef ?? refOf("standardized-risk-record", "none"),
         audit: {
@@ -476,7 +505,7 @@ const insertRecordsThroughTransaction = async (
           commandId: command.commandId,
           idempotencyKey: command.idempotencyKey,
         },
-        events: [],
+        events: input.events ?? [],
       } satisfies AtomicCommitV1;
     });
     return { outcome, failed: false };
@@ -844,6 +873,53 @@ describe("PostgreSQL risk candidate finalization persistence", () => {
     });
   }, 90_000);
 
+  it("rejects and rolls back a record batch that only partially overlaps existing identities", async () => {
+    const existing = recordWrite({
+      riskRecordId: "risk-record-partial-existing",
+      versionId: sha("risk-record-version-partial-existing"),
+      requestDigest: sha("risk-record-request-partial-existing"),
+      decisionSource: "route-decision",
+    });
+    const pending = recordWrite({
+      riskRecordId: "risk-record-partial-pending",
+      versionId: sha("risk-record-version-partial-pending"),
+      requestDigest: sha("risk-record-request-partial-pending"),
+      decisionSource: "route-decision",
+    });
+    const first = await insertRecordsThroughTransaction(fixture!, {
+      rows: [existing],
+      records: [recordEnvelope(existing.riskRecordId, existing.versionId)],
+      commandId: existing.commandId,
+      auditEntryId: `${existing.commandId}:audit`,
+    });
+    expect(first.outcome).toEqual({ kind: "inserted" });
+
+    const partial = await insertRecordsThroughTransaction(fixture!, {
+      rows: [existing, pending],
+      records: [
+        recordEnvelope(existing.riskRecordId, existing.versionId),
+        recordEnvelope(pending.riskRecordId, pending.versionId),
+      ],
+      commandId: `${pending.commandId}:batch`,
+      auditEntryId: `${pending.commandId}:batch:audit`,
+      abortOnNonInserted: true,
+    });
+
+    expect(partial.failed).toBe(true);
+    expect(partial.outcome).toEqual({
+      kind: "conflict",
+      detailCode: "standardized-risk-record-partial-overlap",
+    });
+    expect(
+      await countRows(fixture!, {
+        table: "business.standardized_risk_records",
+        projectId: PROJECT_ID,
+        idColumn: "risk_record_id",
+        id: pending.riskRecordId,
+      }),
+    ).toBe(0);
+  }, 90_000);
+
   it("serializes concurrent inserts of one risk record into a single row", async () => {
     const write = recordWrite({
       riskRecordId: "risk-record-concurrent",
@@ -892,6 +968,43 @@ describe("PostgreSQL risk candidate finalization persistence", () => {
       auditEntryId: "audit-unmatched-orphan",
     });
     expect(result.failed).toBe(true);
+    expect(
+      await countRows(fixture!, {
+        table: "business.standardized_risk_records",
+        projectId: PROJECT_ID,
+        idColumn: "risk_record_id",
+        id: write.riskRecordId,
+      }),
+    ).toBe(0);
+  }, 90_000);
+
+  it("rolls back the risk record when the accepted event cannot enter the Outbox", async () => {
+    const write = recordWrite({
+      riskRecordId: "risk-record-outbox-rollback",
+      versionId: sha("risk-record-version-outbox-rollback"),
+      requestDigest: sha("risk-record-request-outbox-rollback"),
+      decisionSource: "route-decision",
+    });
+    const auditEntryId = `${write.commandId}:audit`;
+
+    await fixture!.postgres.adminPool.query(
+      "REVOKE INSERT ON TABLE outbox.events FROM riskflow_app",
+    );
+    try {
+      const result = await insertRecordsThroughTransaction(fixture!, {
+        rows: [write],
+        records: [recordEnvelope(write.riskRecordId, write.versionId)],
+        commandId: write.commandId,
+        auditEntryId,
+        events: [acceptedEvent(write, auditEntryId)],
+      });
+      expect(result.failed).toBe(true);
+    } finally {
+      await fixture!.postgres.adminPool.query(
+        "GRANT INSERT ON TABLE outbox.events TO riskflow_app",
+      );
+    }
+
     expect(
       await countRows(fixture!, {
         table: "business.standardized_risk_records",

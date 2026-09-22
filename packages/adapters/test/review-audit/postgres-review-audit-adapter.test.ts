@@ -865,11 +865,13 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
     // 未裁决不给出决定。
     expect(await adapter.readIdentificationGroupDecision(readInput)).toEqual({ kind: "pending" });
 
-    // 同目标重新发起使旧任务 superseded；未裁决任务无论 pending 还是 superseded 都只返回 pending。
+    // 同目标重新发起使旧任务 superseded；陈旧任务必须稳定阻断，不得伪装成可继续等待的 pending。
     const supersedingRequest = requestFor({
       suffix: "group-decision",
       projectId,
       authorization,
+      targetEntityId: groupRef.reference.entityId,
+      targetVersionId: "2",
       commandId: nextId("request-group-decision-superseding"),
       idempotencyKey: nextId("idempotency-group-decision-superseding"),
     });
@@ -877,8 +879,15 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
     expect(superseding.kind).toBe("succeeded");
     if (superseding.kind !== "succeeded") return;
     const supersedingTaskRef = superseding.result.reviewTaskRef;
-    const supersedingRead = { ...readInput, reviewTaskRef: supersedingTaskRef };
-    expect(await adapter.readIdentificationGroupDecision(readInput)).toEqual({ kind: "pending" });
+    const supersedingRead = {
+      ...readInput,
+      groupRef: supersedingRequest.payload.targetRef as IdentificationGroupRefV1,
+      reviewTaskRef: supersedingTaskRef,
+    };
+    expect(await adapter.readIdentificationGroupDecision(readInput)).toEqual({
+      kind: "blocked",
+      detailCode: "review-task-stale",
+    });
     expect(await adapter.readIdentificationGroupDecision(supersedingRead)).toEqual({
       kind: "pending",
     });
@@ -951,7 +960,7 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
       },
       {
         ...supersedingRead,
-        groupRef: { ...groupRef, reference: { ...groupRef.reference, versionId: "2" } },
+        groupRef: { ...groupRef, reference: { ...groupRef.reference, versionId: "3" } },
       },
     ] as ReadonlyArray<typeof supersedingRead>) {
       const rejected = await adapter.readIdentificationGroupDecision(mismatch);

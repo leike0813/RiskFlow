@@ -604,6 +604,8 @@ export const WaitingRefV1Schema = z.discriminatedUnion("kind", [
     kind: z.literal("user-confirmation"),
     userConfirmationRef: UserConfirmationRefV1Schema,
   }),
+  // 与 `ResumeCauseV1` 的 `agent-task-completed` 成对：同一任务引用即可复原该等待。
+  z.strictObject({ kind: z.literal("agent-task"), agentTaskRef: AgentTaskRefV1Schema }),
 ]);
 export type WaitingRefV1 = z.infer<typeof WaitingRefV1Schema>;
 

@@ -17,7 +17,7 @@ C15 已把清洗后的工程输入冻结为 `IdentificationPreparationSnapshotV1
 
 **Non-Goals:**
 
-- 不修改 `packages/contracts` 的 DTO、事件、端口、错误码或权限枚举。
+- 不修改 `packages/contracts` 的 DTO、事件、端口、错误码或权限枚举。**例外（协调者已批准，仅加法）**：`WaitingRefV1Schema` 增加 `agent-task` 变体（见 D-05 的等待映射），既有三个变体不得改动；该新增使 `packages/contracts` 成为本 change 的允许文件。
 - 不实现 C30 顶层 `riskFlowGraph`，不让 C24 独自把 `engineering.inputs-ready.v1` 推断成父运行。
 - 不改写 C17/C21/C22/C23 已有知识、检索、候选、合并、置信度、复核或验收入库逻辑。
 - 不实现评估图、API、Web、查询投影、策略发布后台或检查点清理策略。
@@ -66,7 +66,7 @@ C24 adapter 实现 C21 `IdentificationContextInputReaderV1` 与 C22 `Identificat
 
 ### D-05：暂停与恢复只沿原线程、任务和业务幂等身份
 
-Agent 等待由 C08 精确任务引用表示；人工等待由 C23 精确 `ReviewTaskRefV1` 和 `WaitingRefV1` 表示。图在外部效果未知、任务未终结或人工决定未成立时登记等待业务事实，并通过 LangGraph interrupt 暂停。恢复消费者必须先以事件 ID 和 producer 幂等身份去重，再校验项目、子运行、线程、任务/组版本、当前状态版本与当前授权，最后用原 thread ID 恢复。
+Agent 等待由 C08 精确任务引用表示；人工等待由 C23 精确 `ReviewTaskRefV1` 和 `WaitingRefV1` 表示。图在外部效果未知、任务未终结或人工决定未成立时登记等待业务事实，并通过 LangGraph interrupt 暂停。**等待映射（协调者已批准，仅加法）**：`WaitingRefV1` 增加 `agent-task` 变体（引用 `AgentTaskRefV1`），与既有 `ResumeCauseV1.agent-task-completed` 成对——同一任务引用即可复原该等待；C24 自有的三种等待（知识/策略未就绪、C08 Agent 任务未终结、人工决定未成立）到 `WaitingRefV1` 的投影只由 `packages/core/src/identification/graph/service.ts` 的单一 `toWaitingRef` 承担，`human-review` 用既有 `review` 变体，`knowledge-preparation` 用既有同名变体。恢复消费者必须先以事件 ID 和 producer 幂等身份去重，再校验项目、子运行、线程、任务/组版本、当前状态版本与当前授权，最后用原 thread ID 恢复。
 
 Agent 完成恢复仍读取原 C08 任务事实和预算；`review.review-resolved.v1` 只恢复 payload 中 `resumeRunRef` 指向的等待组。重复或迟到信号返回原回执，不重复恢复、审计或副作用。无法确认外部效果时保持等待，不新建替代任务。
 
@@ -134,6 +134,23 @@ C24 内部错误联合至少区分：`INPUT_NOT_READY`、`POLICY_NOT_READY`、`W
 - `apps/worker/package.json`、`pnpm-lock.yaml`、`config/dependency-policy.json`：D-11 精确依赖治理。
 
 最小验证包括：核心快照/计划/汇总与错误路由；真实 PostgreSQL 下登记幂等、追加权限、reader 授权与 digest 对账、业务提交后 checkpoint 失败恢复；真实 LangGraph I0～I9 的成功、部分失败、Agent/人工等待恢复、迟到重复信号、协作取消和 checkpoint 不一致；现有 C21/C22/C23 回归；类型检查、格式、依赖治理和 OpenSpec 严格验证。测试断言稳定引用、终态、错误码和事务结果，不锁定节点内部调用顺序或完整文案。
+
+### D-13：C22 整集验收的处置语义修正（drift，协调者已批准）
+
+已归档 C22 的 `RiskCandidateFinalizationService.#acceptGroups` 原本把 `decisionDispositionFor(...) === "blocked"`（`reject` / `return-upstream`）的组处理为整条命令抛错，且任一被跳过组存在时整集返回 `skipped` 而**丢弃全部合格组的入库**。这与本 change 已批准的 I6～I8 规格（「一个等待、拒绝或失败组不得阻止其它已合格组入库」）和 D-08（「拒绝或退回只封闭当前组」）冲突，故按「代码为事实源、drift 用 change 修正」在本 change 内最小修正：
+
+- 整集提交集校验**保持不变**：`acceptedGroupRefs` 必须恰等于该验收路线集的全部 routes，且每条决定必须重复检查、不得跨集引用；缺项只在「review 型且本轮无决定」这一种情形下按待定跳过，其余缺项仍失败闭合。
+- 处置语义修正：`blocked`（`reject` / `return-upstream`）与既有 `reroute` 同形——只把该组记入 `skippedGroupRefs` 并继续处理其余组，被封闭组不产生任何标准化风险记录、审计或事件。
+- 决定集校验收窄（仅此一处放宽）：提交集仍必须恰等于该验收路线集的全部 routes，每条决定不得重复；唯一允许的缺项是「review 型且 C07 窄读尚无决定」的 route——它按本轮待定跳过。未知/多余键与其它缺项仍在遍历 route 集后逐键失败闭合。授权依据是 spec「一个等待组不得阻止其它已合格组入库」与「自动组和人工组并存」，原实现会整条命令抛错导致无一入库。
+- 收口语义修正：仅当**全部**组都被封闭或待定时返回 `skipped` 幂等空结果；只要存在合格组，就必须在同一 C03 事务单元内提交它们的记录、审计与 `identification.risk-record-accepted.v1`，不得因同集内有被封闭组或待定组而丢弃。
+- 混合情形下 `skipped` 不再回传被封闭组引用，由 C24 依验收路线集与自身提交的决定推导并登记；公共成功联合的字段与既有校验未放宽。
+- `packages/core/src/identification/candidate-finalization/service.ts` 及其测试因此纳入本 change 允许清单；C22 全量回归为必跑证据。
+
+### D-14：C03 checkpointer 控制通道豁免（drift，协调者已批准）
+
+已归档 C03 的 `PostgresCheckpointer` 校验层只把 `__error__`/`__scheduled__`/`__interrupt__`/`__resume__`/`__pregel_tasks` 视为协议通道，其余键必须命中 `IdentificationGraphStateV1Schema.shape`。真实 `@langchain/langgraph` 的行为使这一假设不成立：首个输入检查点把整份输入先写入 `__start__` 通道，条件边与屏障聚合会派生 `branch:to:<node>` / `join:<a>+<b>:<node>` 控制通道，因此任何真实 `StateGraph` 的每一次 `put`/`putWrites` 都会被拒绝（`CHECKPOINT_INCONSISTENT`）。C03 自身测试手写 `channel_values = { ...graphState, __pregel_tasks: [] }`，从未覆盖真实控制通道。
+
+本 change 的最小修正（只在校验层）：把 `__start__` 并入协议通道白名单，并按 `branch:` / `join:` 前缀豁免动态控制通道；`withoutProtocolChannels` 与 `validateGraphStateWrites` 共用同一判定。输入检查点在状态物化前剔除控制通道后为空对象，此时 `parseGraphState` 改为把 `channel_values.__start__` 的值交给同一批 GraphState Schema 严格解析——真实 LangGraph 把调用方输入先写入 START 通道，C24 的 `invoke(state)` 下该值即完整状态，因此这只是增加一个取值位置，**不放宽任何校验**：两处解析都失败仍以 `checkpointer.graph-state` 拒绝。表结构、SQL、迁移、权限、角色与 schema 语义不变；剔除控制通道后 `channel_values` 仍必须严格解析为 `IdentificationGraphStateV1`，非控制通道的未知键、非法写入类型与越权写入仍以既有 `CHECKPOINT_INCONSISTENT` 失败闭合。`packages/adapters/src/postgres/checkpointer.ts` 及其测试因此纳入本 change 允许清单。
 
 ## Risks / Trade-offs
 

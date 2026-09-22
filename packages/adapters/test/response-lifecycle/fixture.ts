@@ -1054,29 +1054,33 @@ export const startResponseLifecycleFixture =
 
       async feedbackCommand(input) {
         const spatialScopeRef = await this.spatialScopeFor(input.spatialScope ?? "root");
+        const command = WarningResponseRecordCommandV1Schema.parse({
+          kind: "record-feedback",
+          commandId: input.commandId,
+          idempotencyKey: input.commandId,
+          projectId,
+          actorId: managerId,
+          issuedAt: C28_FIXTURE_TIME,
+          authorization: await authorizeFor({
+            branch: "warning-response.record-feedback",
+            invocationId: input.commandId,
+            spatialScopeRefs: [spatialScopeRef],
+          }),
+          payload: {
+            executionRecordRef: input.executionRecordRef,
+            postActionMonitoringSnapshotRef: input.postActionMonitoringSnapshotRef,
+            feedbackArtifactRef: input.feedbackArtifactRef,
+            occurredAt: input.occurredAt ?? C28_FEEDBACK_TIME,
+          },
+        }) as Extract<WarningResponseRecordCommandV1, { kind: "record-feedback" }>;
         return {
           schemaVersion: "1",
-          command: WarningResponseRecordCommandV1Schema.parse({
-            kind: "record-feedback",
-            commandId: input.commandId,
-            idempotencyKey: input.commandId,
-            projectId,
-            actorId: managerId,
-            issuedAt: C28_FIXTURE_TIME,
-            authorization: await authorizeFor({
-              branch: "warning-response.record-feedback",
-              invocationId: input.commandId,
-              spatialScopeRefs: [spatialScopeRef],
-            }),
-            payload: {
-              executionRecordRef: input.executionRecordRef,
-              postActionMonitoringSnapshotRef: input.postActionMonitoringSnapshotRef,
-              feedbackArtifactRef: input.feedbackArtifactRef,
-              occurredAt: input.occurredAt ?? C28_FEEDBACK_TIME,
-            },
-          }) as Extract<WarningResponseRecordCommandV1, { kind: "record-feedback" }>,
+          command,
           feedbackInputSnapshotRef: input.snapshotRef,
-          feedbackInputSnapshot: input.snapshot,
+          feedbackInputSnapshot: {
+            ...input.snapshot,
+            authorizationContextRef: command.authorization.authorizationContextRef,
+          },
           actualAssessmentRecordRef: input.actualAssessmentRecordRef,
         };
       },

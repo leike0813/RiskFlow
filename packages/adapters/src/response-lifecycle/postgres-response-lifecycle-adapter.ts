@@ -194,6 +194,7 @@ interface AdoptionDecisionRow {
   recommendation_version_id: string;
   decision: string;
   spatial_scope_entity_id: string;
+  spatial_scope_version_id: string;
   decision_payload: JsonColumn;
   content_digest: string;
 }
@@ -391,6 +392,77 @@ const parseForecastOutcome = (
     });
   }
   return parsed.data;
+};
+
+const parseAdoptionDecision = (
+  row: AdoptionDecisionRow,
+  projectId: string,
+  recommendationRef: VersionReference,
+): void => {
+  const parsed = ResponseAdoptionDecisionV1Schema.safeParse(row.decision_payload);
+  if (
+    !parsed.success ||
+    sha256CanonicalJson(parsed.data) !== row.content_digest ||
+    parsed.data.projectId !== projectId ||
+    parsed.data.decision !== row.decision ||
+    !sameRef(parsed.data.responseRecommendationRef.reference, recommendationRef) ||
+    !sameRef(parsed.data.routeDecisionRef.reference, {
+      entityId: row.decision_id,
+      versionId: row.version_id,
+    }) ||
+    !sameRef(parsed.data.spatialScopeRef.reference, {
+      entityId: row.spatial_scope_entity_id,
+      versionId: row.spatial_scope_version_id,
+    })
+  ) {
+    failResponseLifecycle("response-lifecycle-contract-drift", {
+      kind: "response-recommendation",
+      reference: recommendationRef,
+    });
+  }
+};
+
+const parseExecutionRecord = (row: ExecutionRow, executionRef: VersionReference): void => {
+  const parsed = ResponseExecutionRecordV1Schema.safeParse(row.execution_payload);
+  if (
+    !parsed.success ||
+    sha256CanonicalJson(parsed.data) !== row.content_digest ||
+    parsed.data.projectId !== row.project_id ||
+    parsed.data.source.kind !== row.source_kind ||
+    !sameRef(parsed.data.executionRecordRef.reference, executionRef) ||
+    !sameRef(parsed.data.spatialScopeRef.reference, {
+      entityId: row.spatial_scope_entity_id,
+      versionId: row.spatial_scope_version_id,
+    })
+  ) {
+    failResponseLifecycle("response-lifecycle-contract-drift", {
+      kind: "execution-record",
+      reference: executionRef,
+    });
+  }
+};
+
+const parseFeedbackRecord = (row: FeedbackRow, feedbackRef: VersionReference): void => {
+  const parsed = ResponseFeedbackRecordV1Schema.safeParse(row.feedback_payload);
+  if (
+    !parsed.success ||
+    sha256CanonicalJson(parsed.data) !== row.content_digest ||
+    parsed.data.projectId !== row.project_id ||
+    !sameRef(parsed.data.feedbackRef.reference, feedbackRef) ||
+    !sameRef(parsed.data.executionRecordRef.reference, {
+      entityId: row.execution_id,
+      versionId: row.execution_version_id,
+    }) ||
+    !sameRef(parsed.data.spatialScopeRef.reference, {
+      entityId: row.spatial_scope_entity_id,
+      versionId: row.spatial_scope_version_id,
+    })
+  ) {
+    failResponseLifecycle("response-lifecycle-contract-drift", {
+      kind: "feedback",
+      reference: feedbackRef,
+    });
+  }
 };
 
 /* -------------------------------------------------------------------------- */
@@ -1297,6 +1369,9 @@ export class PostgresResponseLifecycleAdapter
         ForecastPolicyDocumentV1Schema,
         targetRef,
       );
+      if (!sameRef(snapshot.forecastPolicyRef, policyMember.releaseRef)) {
+        failResponseLifecycle("response-forecast-policy-mismatch", targetRef);
+      }
       const matrixMember = memberDocument(
         members,
         "risk-matrix",
@@ -1826,6 +1901,18 @@ export class PostgresResponseLifecycleAdapter
     try {
       const verified = await this.#verify(publicCommand, FEEDBACK_BRANCH_V1);
       const authorizedScopeIds = verified.spatialScopeRefs.map((scope) => scope.reference.entityId);
+      if (
+        !sameRef(
+          valid.feedbackInputSnapshot.authorizationContextRef.reference,
+          publicCommand.authorization.authorizationContextRef.reference,
+        )
+      ) {
+        failResponseLifecycle(
+          "response-lifecycle-authorization-required",
+          payload.executionRecordRef,
+          "AUTHORIZATION_DENIED",
+        );
+      }
       if (
         !sameRef(
           payload.executionRecordRef.reference,
@@ -2459,7 +2546,7 @@ export class PostgresResponseLifecycleAdapter
     recommendationRef: { readonly reference: VersionReference },
     authorizedScopeIds: readonly string[],
   ): Promise<AdoptionDecisionRow | undefined> {
-    return this.#db
+    const row = await this.#db
       .selectFrom("business.response_adoption_decisions")
       .selectAll()
       .where("project_id", "=", projectId)
@@ -2467,6 +2554,8 @@ export class PostgresResponseLifecycleAdapter
       .where("recommendation_version_id", "=", recommendationRef.reference.versionId)
       .where("spatial_scope_entity_id", "in", authorizedScopeIds)
       .executeTakeFirst();
+    if (row !== undefined) parseAdoptionDecision(row, projectId, recommendationRef.reference);
+    return row;
   }
 
   async #loadForecastOutcome(
@@ -2492,7 +2581,7 @@ export class PostgresResponseLifecycleAdapter
     executionRef: VersionReference,
     authorizedScopeIds: readonly string[],
   ): Promise<ExecutionRow | undefined> {
-    return this.#db
+    const row = await this.#db
       .selectFrom("business.response_execution_records")
       .selectAll()
       .where("project_id", "=", projectId)
@@ -2500,6 +2589,8 @@ export class PostgresResponseLifecycleAdapter
       .where("version_id", "=", executionRef.versionId)
       .where("spatial_scope_entity_id", "in", authorizedScopeIds)
       .executeTakeFirst();
+    if (row !== undefined) parseExecutionRecord(row, executionRef);
+    return row;
   }
 
   async #loadFeedback(
@@ -2507,7 +2598,7 @@ export class PostgresResponseLifecycleAdapter
     feedbackRef: VersionReference,
     authorizedScopeIds: readonly string[],
   ): Promise<FeedbackRow | undefined> {
-    return this.#db
+    const row = await this.#db
       .selectFrom("business.response_feedback_records")
       .selectAll()
       .where("project_id", "=", projectId)
@@ -2515,6 +2606,8 @@ export class PostgresResponseLifecycleAdapter
       .where("version_id", "=", feedbackRef.versionId)
       .where("spatial_scope_entity_id", "in", authorizedScopeIds)
       .executeTakeFirst();
+    if (row !== undefined) parseFeedbackRecord(row, feedbackRef);
+    return row;
   }
 
   // ------------------------------------------------------------------------- 事务

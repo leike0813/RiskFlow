@@ -466,6 +466,20 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
       },
     });
     expect(forged.kind).toBe("failed");
+    const wrongPolicy = await forecastWith({
+      commandId: "c28-forecast-wrong-policy",
+      command: {
+        ...chain.forecastCommand,
+        payload: {
+          ...chain.forecastCommand.payload,
+          forecastInputSnapshot: {
+            ...chain.forecastCommand.payload.forecastInputSnapshot,
+            forecastPolicyRef: { entityId: "release-forecast-policy-other", versionId: "1" },
+          },
+        },
+      },
+    });
+    expect(wrongPolicy.kind).toBe("failed");
     expect(await state.countRows("response_forecast_outcomes")).toBe(rowsAfterFirst);
   });
 
@@ -925,8 +939,73 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
       }),
     );
     expect(missingArtifact.kind).toBe("failed");
+    const forgedAuthorization = await state.recordFeedback({
+      ...(await state.feedbackCommand({
+        commandId: "c28-feedback-forged-authorization",
+        executionRecordRef: execution,
+        postActionMonitoringSnapshotRef: post.monitoringSnapshotRef,
+        feedbackArtifactRef: artifact,
+        actualAssessmentRecordRef: post.assessmentRecordRef,
+        snapshotRef: snapshot.ref,
+        snapshot: snapshot.body,
+      })),
+      feedbackInputSnapshot: {
+        ...snapshot.body,
+        authorizationContextRef: {
+          kind: "authorization-context",
+          reference: { entityId: "authorization-c28-forged", versionId: "1" },
+        },
+      },
+    });
+    expect(forgedAuthorization.kind).toBe("failed");
     expect(await state.countRows("response_feedback_records")).toBe(before);
     expect(await state.countEvents("warning.feedback-recorded.v1", "c28-feedback-early")).toBe(0);
+  });
+
+  pgIt("反馈正文摘要漂移时失败闭合", async () => {
+    const state = fixture!;
+    state.setExecutors([executor({ predictedValue: "12" })]);
+    const chain = await adoptedChain("c28-payload-digest");
+    const execution = executionRef(chain.execution).result.executionRecordRef;
+    const post = await state.postActionAssessment({
+      suffix: "c28-payload-digest",
+      riskInputKey: chain.prepared.riskInputKey,
+    });
+    const artifact = await state.publishFeedbackArtifact({ suffix: "c28-payload-digest" });
+    const snapshot = state.feedbackSnapshot({
+      suffix: "c28-payload-digest",
+      executionRecordRef: execution,
+      forecastRef: chain.forecast.result.outcome.effectForecastRef,
+    });
+    const feedbackCommand = await state.feedbackCommand({
+      commandId: "c28-payload-digest-feedback",
+      executionRecordRef: execution,
+      postActionMonitoringSnapshotRef: post.monitoringSnapshotRef,
+      feedbackArtifactRef: artifact,
+      actualAssessmentRecordRef: post.assessmentRecordRef,
+      snapshotRef: snapshot.ref,
+      snapshot: snapshot.body,
+    });
+    const feedback = succeeded(await state.recordFeedback(feedbackCommand));
+    if (feedback.result.kind !== "feedback") throw new Error("expected feedback result");
+    await state.recommendation.c26.c25.postgres.postgres.adminPool.query(
+      `UPDATE business.response_feedback_records SET content_digest = $1
+         WHERE feedback_id = $2 AND version_id = $3`,
+      [
+        "0".repeat(64),
+        feedback.result.feedbackRef.reference.entityId,
+        feedback.result.feedbackRef.reference.versionId,
+      ],
+    );
+    const deviation = await state.calculateDeviation(
+      await state.deviationCommand({
+        commandId: "c28-payload-digest-deviation",
+        effectForecastRef: chain.forecast.result.outcome.effectForecastRef,
+        feedbackRef: feedback.result.feedbackRef,
+        frozenAssessmentBasisRef: chain.prepared.baselineAssessmentInputSnapshotRef,
+      }),
+    );
+    expect(deviation.kind).toBe("failed");
   });
 
   pgIt("独立行动反馈以稳定不可用原因发布既有事件", async () => {

@@ -30,6 +30,7 @@ import {
   CANDIDATE_REPAIRABLE_REASON_CODES_V1,
   CANDIDATE_VALIDATION_CHECK_IDS_V1,
   CANDIDATE_VALIDATION_REASON_CODES_V1,
+  CandidateValidationSetV1Schema,
   CONFIDENCE_BASIS_SOURCES_V1,
   CompositeConfidencePolicyV1Schema,
   FORCED_REVIEW_REASON_CODES_V1,
@@ -718,6 +719,38 @@ const mergePlanValue = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+const validationSetValue = () => {
+  const candidateRefs = [
+    contentRef("candidate-artifact-candidate-001"),
+    contentRef("candidate-artifact-candidate-002"),
+  ];
+  return CandidateValidationSetV1Schema.parse({
+    schemaVersion: "1",
+    projectId: PROJECT,
+    inputSnapshotRef,
+    workItemRef,
+    nodeId: NODE_ID,
+    candidateSetRef: contentRef("candidate-set-artifact"),
+    candidateSetVersion: 1,
+    policySetRef,
+    validationPolicyRef: versionRef("validation-policy"),
+    ruleValidationPolicyRef: versionRef("rule-validation-policy"),
+    simulationConstraintPolicyRef: versionRef("simulation-policy"),
+    entries: candidateRefs.map((candidateRef, index) => ({
+      candidateId: `candidate-${String(index + 1).padStart(3, "0")}`,
+      candidateVersion: 1,
+      candidateRef,
+      disposition: "accepted",
+      checks: [checkValue(`candidate-check-${index + 1}`, true)],
+    })),
+    acceptedCandidateRefs: candidateRefs,
+    usage: candidateSetValue().usage,
+    authorizationScopeDigest: DIGEST_A,
+    authorizationContextRef,
+    completedAt: TIMESTAMP,
+  });
+};
+
 const routeSetValue = (overrides: Record<string, unknown> = {}) => ({
   schemaVersion: "1",
   projectId: PROJECT,
@@ -796,11 +829,25 @@ interface HarnessOverrides {
   readonly missingConfidencePolicy?: boolean;
   readonly modelOutcome?: unknown;
   readonly workPlanValidatedRefs?: readonly unknown[];
+  readonly validationPolicyOverrides?: Record<string, unknown>;
+  readonly forcedReviewPolicyOverrides?: Record<string, unknown>;
 }
 
 const makeHarness = (overrides: HarnessOverrides = {}) => {
   const artifacts = new Map<string, Uint8Array>();
   const rows = new Map<string, unknown>();
+  const receipts = new Map<
+    string,
+    {
+      readonly resultRef: unknown;
+      readonly auditEntryId: string;
+      readonly eventRefs: readonly {
+        readonly kind: "domain-event";
+        readonly eventId: string;
+        readonly eventVersion: number;
+      }[];
+    }
+  >();
   const calls = {
     modelContextReads: 0,
     workPlanReads: 0,
@@ -813,6 +860,7 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
     generateCalls: 0,
     embedCalls: 0,
     issueBranchCalls: 0,
+    verifyCurrentCalls: 0,
   };
 
   const bytesOf = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
@@ -939,7 +987,7 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
       return generationPolicy();
     },
     async resolveValidation() {
-      return validationPolicy();
+      return validationPolicy(overrides.validationPolicyOverrides);
     },
     async resolveMerge() {
       return mergePolicy();
@@ -948,7 +996,7 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
       return overrides.missingConfidencePolicy === true ? undefined : confidencePolicy();
     },
     async resolveForcedReview() {
-      return forcedReviewPolicy();
+      return forcedReviewPolicy(overrides.forcedReviewPolicyOverrides);
     },
   };
 
@@ -958,6 +1006,7 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
       return governanceAuthorization();
     },
     async verifyCurrent(input: { readonly invocationId: string; readonly branch: string }) {
+      calls.verifyCurrentCalls += 1;
       if (overrides.verifyCurrent !== undefined) return await overrides.verifyCurrent(input);
       return governanceAuthorization();
     },
@@ -975,20 +1024,28 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
 
   const transactionUnit = {
     async execute(
-      _command: unknown,
+      command: { readonly commandId: string },
       handler: (context: unknown) => Promise<{
         readonly resultRef: unknown;
         readonly audit: { readonly auditEntryId: string };
+        readonly events?: readonly { readonly eventId: string; readonly eventVersion: number }[];
       }>,
     ) {
       calls.transactionCalls += 1;
+      const prior = receipts.get(command.commandId);
+      if (prior !== undefined) return { ...prior, replayed: true };
       const commit = await handler({ transaction: "in-memory" });
-      return {
+      const receipt = {
         resultRef: commit.resultRef,
         auditEntryId: commit.audit.auditEntryId,
-        eventRefs: [],
-        replayed: false,
+        eventRefs: (commit.events ?? []).map((event) => ({
+          kind: "domain-event" as const,
+          eventId: event.eventId,
+          eventVersion: event.eventVersion,
+        })),
       };
+      receipts.set(command.commandId, receipt);
+      return { ...receipt, replayed: false };
     },
   };
 
@@ -2000,6 +2057,102 @@ describe("C22 服务接入（端口驱动）", () => {
     expect(harness.calls.registerCalls).toBe(0);
   });
 
+  it("自动路线按路线中的组与系统决定逐项匹配并原子写入记录和事件", async () => {
+    const harness = makeHarness();
+    const routeSet = AcceptanceRouteSetV1Schema.parse(routeSetValue());
+    const route = routeSet.routes[0];
+    if (route?.routeKind !== "automatic") throw new Error("automatic route fixture required");
+    const candidateArtifactRef = harness.putValue(
+      "candidate-artifact-candidate-001",
+      RiskCandidateV1Schema.parse(candidateValue()),
+    );
+    const group = IdentificationGroupV1Schema.parse(
+      groupValue({
+        disposition: "no-duplicate",
+        skipReasonCode: MERGE_SKIP_REASON_CODE_V1,
+        members: [
+          {
+            ...groupMemberValue("candidate-001", 1),
+            candidateRef: candidateArtifactRef,
+          },
+        ],
+      }),
+    );
+    harness.seedRow(acceptanceRouteSetRow(), routeSet);
+    harness.seedRow(
+      {
+        ...resultRowBase(
+          "route-decision",
+          route.routeDecisionRef.reference.entityId,
+          route.routeDecisionRef.reference.versionId,
+        ),
+        workPlanRef,
+        groupRef: route.groupRef,
+        routeDecisionRef: route.routeDecisionRef,
+      },
+      {
+        schemaVersion: "1",
+        projectId: PROJECT,
+        workPlanRef,
+        inputSnapshotRef,
+        mergePlanRef: mergePlanRefValue,
+        groupId: route.groupId,
+        groupVersionId: route.groupVersionId,
+        groupRef: route.groupRef,
+        routeDecisionRef: route.routeDecisionRef,
+        decision: "accept-unchanged",
+        compositeConfidence: route.compositeConfidence,
+        confidencePolicyRef: versionRef("confidence-policy"),
+        forcedReviewPolicyRef: versionRef("forced-review-policy"),
+        decidedAt: TIMESTAMP,
+      },
+    );
+    harness.seedRow(
+      {
+        ...resultRowBase(
+          "identification-group",
+          route.groupRef.reference.entityId,
+          route.groupRef.reference.versionId,
+        ),
+        workPlanRef,
+        groupRef: route.groupRef,
+      },
+      group,
+    );
+
+    const result = await harness.service.finalize(
+      acceptCommand({
+        payload: {
+          acceptanceRouteSetRef: acceptanceRouteSetRefValue,
+          acceptedGroupRefs: [route.groupRef],
+          decisionRefs: [route.routeDecisionRef],
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("succeeded");
+    expect(result.kind === "succeeded" ? result.result.kind : undefined).toBe("accepted");
+    expect(harness.calls.recordInsertCalls).toBe(1);
+    expect(harness.calls.transactionCalls).toBe(1);
+    expect(harness.calls.issueBranchCalls).toBe(0);
+    expect(harness.calls.verifyCurrentCalls).toBe(2);
+
+    const replay = await harness.service.finalize(
+      acceptCommand({
+        payload: {
+          acceptanceRouteSetRef: acceptanceRouteSetRefValue,
+          acceptedGroupRefs: [route.groupRef],
+          decisionRefs: [route.routeDecisionRef],
+        },
+      }),
+    );
+    expect(replay.kind).toBe("succeeded");
+    expect(replay.kind === "succeeded" ? replay.result.kind : undefined).toBe("accepted");
+    expect(harness.calls.recordInsertCalls).toBe(1);
+    expect(harness.calls.transactionCalls).toBe(2);
+    expect(harness.calls.verifyCurrentCalls).toBe(4);
+  });
+
   it("assemble-and-infer 模型失败时返回映射的技术错误且零登记", async () => {
     const harness = makeHarness({
       modelOutcome: {
@@ -2022,6 +2175,85 @@ describe("C22 服务接入（端口驱动）", () => {
     expect(harness.calls.generateCalls).toBe(1);
     expect(harness.calls.registerCalls).toBe(0);
     expect(harness.artifacts.size).toBe(0);
+  });
+
+  it("assemble-and-infer 正常生成并登记不可变候选集", async () => {
+    const harness = makeHarness();
+
+    const result = await harness.service.analyze(assembleCommand());
+
+    expect(result.kind).toBe("succeeded");
+    expect(result.kind === "succeeded" ? result.result.kind : undefined).toBe("assemble-and-infer");
+    expect(harness.calls.generateCalls).toBe(1);
+    expect(harness.calls.registerCalls).toBe(1);
+    expect(harness.calls.transactionCalls).toBe(1);
+  });
+
+  it("assemble-and-infer 超过冻结候选数量预算时失败关闭且零正式候选", async () => {
+    const harness = makeHarness({
+      modelOutcome: {
+        kind: "succeeded",
+        outputs: Array.from({ length: 9 }, (_, index) =>
+          candidateOutput({ riskEvent: `掌子面失稳涌水-${index}` }),
+        ),
+        invocationId: "invocation-over-budget",
+        rawResponseRef: diagnosisRef("raw-response-over-budget"),
+        usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30, outputBytes: 100 },
+        elapsedMs: 5,
+      },
+    });
+
+    const result = await harness.service.analyze(assembleCommand());
+
+    expect(result).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+    expect(blockedKindOf(result)).toBe(CANDIDATE_VALIDATION_REASON_CODES_V1.budgetExhausted);
+    expect(harness.calls.registerCalls).toBe(0);
+    expect(harness.artifacts.size).toBe(0);
+  });
+
+  it("repair-and-validate 遇到 terminal 候选时不修正或丢弃该候选", async () => {
+    const harness = makeHarness({
+      validationPolicyOverrides: { requiredRelationTypes: ["作用关系"] },
+    });
+    const candidateSetRef = {
+      kind: "identification-candidate-set" as const,
+      reference: versionRef("candidate-set-c22"),
+    };
+    const candidateSet = RiskCandidateSetV1Schema.parse(
+      candidateSetValue({
+        candidates: [
+          candidateValue({
+            candidateId: "candidate-terminal",
+            output: candidateOutput({
+              riskElementRelations: [
+                { sourceElement: "扩挖机构", relation: "诱发", targetElement: "掌子面" },
+              ],
+            }),
+          }),
+          candidateValue({ candidateId: "candidate-repairable", nodeId: RELATED_NODE_ID }),
+        ],
+      }),
+    );
+    harness.seedRow(
+      {
+        ...resultRowBase(
+          "candidate-set",
+          candidateSetRef.reference.entityId,
+          candidateSetRef.reference.versionId,
+        ),
+        workItemRef,
+        modelContextArtifactSetRef,
+        candidateSetRef,
+      },
+      candidateSet,
+    );
+
+    const result = await harness.service.analyze(repairCommand());
+
+    expect(result).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+    expect(blockedKindOf(result)).toBe(CANDIDATE_VALIDATION_REASON_CODES_V1.ruleConflict);
+    expect(harness.calls.generateCalls).toBe(0);
+    expect(harness.calls.registerCalls).toBe(0);
   });
 
   it("合并输入与冻结工作计划的已校验集合不一致时整体拒绝", async () => {
@@ -2057,7 +2289,71 @@ describe("C22 服务接入（端口驱动）", () => {
     expect(harness.calls.registerCalls).toBe(0);
   });
 
-  it("提交组缺少验收决定时阻断且不写记录与事件", async () => {
+  it("高置信组生成唯一自动验收路线且不创建人工复核任务", async () => {
+    const harness = makeHarness({
+      forcedReviewPolicyOverrides: { autoAcceptanceThreshold: 0.1 },
+    });
+    const validatedRef = validatedSetRef("validated-set-a");
+    const groupRef = groupRefValue("group-1");
+    harness.seedRow(
+      mergePlanRow(),
+      MergePlanV1Schema.parse(
+        mergePlanValue({
+          groups: [
+            {
+              groupId: "group-1",
+              groupVersionId: DIGEST_C,
+              groupRef,
+              disposition: "merged",
+              memberCount: 2,
+            },
+          ],
+          evaluatedCandidateRefs: [
+            contentRef("candidate-artifact-candidate-001"),
+            contentRef("candidate-artifact-candidate-002"),
+          ],
+        }),
+      ),
+    );
+    harness.seedRow(
+      {
+        ...resultRowBase(
+          "identification-group",
+          groupRef.reference.entityId,
+          groupRef.reference.versionId,
+        ),
+        workPlanRef,
+        groupRef,
+      },
+      IdentificationGroupV1Schema.parse(groupValue()),
+    );
+    harness.seedRow(
+      {
+        ...resultRowBase(
+          "validated-candidate-set",
+          validatedRef.reference.entityId,
+          validatedRef.reference.versionId,
+        ),
+        workItemRef,
+        candidateSetRef: {
+          kind: "identification-candidate-set",
+          reference: versionRef("candidate-set-c22"),
+        },
+        validatedCandidateSetRef: validatedRef,
+      },
+      validationSetValue(),
+    );
+
+    const result = await harness.service.finalize(routeCommand());
+
+    expect(result.kind).toBe("succeeded");
+    expect(result.kind === "succeeded" ? result.result.kind : undefined).toBe("route");
+    expect(harness.calls.reviewRequests).toBe(0);
+    expect(harness.calls.registerCalls).toBe(1);
+    expect(harness.calls.transactionCalls).toBe(1);
+  });
+
+  it("提交组的验收决定错配时阻断且不写记录与事件", async () => {
     const harness = makeHarness();
     harness.seedRow(acceptanceRouteSetRow(), AcceptanceRouteSetV1Schema.parse(routeSetValue()));
     const result = await harness.service.finalize(
@@ -2073,7 +2369,7 @@ describe("C22 服务接入（端口驱动）", () => {
     );
     expect(result.kind).toBe("failed");
     expect(failedError(result)?.code).toBe("BUSINESS_BLOCKED");
-    expect(blockedKindOf(result)).toBe("decision-missing");
+    expect(blockedKindOf(result)).toBe("automatic-decision-mismatch");
     expect(harness.calls.recordInsertCalls).toBe(0);
     expect(harness.calls.transactionCalls).toBe(0);
     expect(harness.calls.registerCalls).toBe(0);

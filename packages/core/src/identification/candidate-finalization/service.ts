@@ -211,6 +211,16 @@ const roundTo = (value: number, decimals: number): number => {
 
 const unit = (value: number): number => Math.min(1, Math.max(0, value));
 
+const generationBudgetExceeded = (input: {
+  readonly candidateCount: number;
+  readonly usage: RiskCandidateSetV1["usage"];
+  readonly policy: RiskCandidateGenerationPolicyV1;
+}): boolean =>
+  input.candidateCount > input.policy.budget.maxCandidates ||
+  input.usage.totalTokens > input.policy.budget.maxTotalTokens ||
+  input.usage.outputBytes > input.policy.budget.maxOutputBytes ||
+  input.usage.elapsedMs > input.policy.budget.maxWallClockMs;
+
 const asContentRef = (reference: VersionReference): ContractReferenceV1 => ({
   kind: CONTENT_REF_KIND,
   reference,
@@ -1228,7 +1238,12 @@ export class RiskCandidateFinalizationService {
       resultId: input.resultId,
       resultVersionId: input.resultVersionId,
       requestDigest: input.requestDigest,
-      artifactRef: { kind: CONTENT_REF_KIND, reference: { entityId: "", versionId: "" } },
+      // `#persistRows` 在登记前以 C04 返回的内容引用覆盖此值；先保持严格 Schema 可解析，
+      // 让所有成功路径都能到达实际工件写入，而不是被空字符串占位提前截断。
+      artifactRef: {
+        kind: CONTENT_REF_KIND,
+        reference: { entityId: input.resultId, versionId: input.resultVersionId },
+      },
       inputSnapshotRef: input.inputSnapshotRef,
       authorizationScopeDigest: input.authorizationScopeDigest,
       actorRef: input.actorId,
@@ -1261,7 +1276,11 @@ export class RiskCandidateFinalizationService {
     readonly inputSnapshotRef: RiskCandidateSetV1["inputSnapshotRef"];
     readonly outputs: readonly ModelOutputResult[];
     readonly round: number;
-    readonly parentCandidateRef: VersionReference | undefined;
+    readonly parentCandidates?: readonly {
+      readonly candidateId: string;
+      readonly candidateVersion: number;
+      readonly candidateRef: VersionReference;
+    }[];
     readonly modelDeploymentRef: VersionReference;
     readonly promptTemplateRef: VersionReference;
     readonly generationPolicy: RiskCandidateGenerationPolicyV1;
@@ -1269,36 +1288,40 @@ export class RiskCandidateFinalizationService {
     readonly invocationId: string;
     readonly generatedAt: string;
   }): readonly RiskCandidateV1[] {
-    const limit = input.generationPolicy.budget.maxCandidates;
-    return input.outputs.slice(0, limit).map((output, index) => ({
-      candidateId: `${input.candidateSetEntityId}:candidate:${String(index + 1).padStart(3, "0")}`,
-      candidateVersion: input.round,
-      ...(input.parentCandidateRef === undefined
-        ? {}
-        : {
-            parentCandidateRef: {
-              kind: CONTENT_REF_KIND as "content-artifact",
-              reference: input.parentCandidateRef,
-            },
-          }),
-      projectId: input.projectId,
-      inputSnapshotRef: input.inputSnapshotRef,
-      workItemRef: input.workItemRef,
-      modelContextArtifactSetRef: {
-        kind: "model-context-artifact-set" as const,
-        reference: input.modelContextArtifactSetRef,
-      },
-      retrievalArtifactSetRef: input.retrievalArtifactSetRef,
-      nodeId: input.nodeId,
-      output,
-      modelDeploymentRef: input.modelDeploymentRef,
-      promptTemplateRef: input.promptTemplateRef,
-      outputSchemaRef: input.generationPolicy.outputSchemaRef,
-      budgetPolicyRef: input.generationPolicy.budgetPolicyRef,
-      rawResponseRef: { kind: "diagnostic-artifact" as const, reference: input.rawResponseRef },
-      invocationId: input.invocationId,
-      generatedAt: input.generatedAt,
-    }));
+    return input.outputs.map((output, index) => {
+      const parent = input.parentCandidates?.[index];
+      return {
+        candidateId:
+          parent?.candidateId ??
+          `${input.candidateSetEntityId}:candidate:${String(index + 1).padStart(3, "0")}`,
+        candidateVersion: parent === undefined ? input.round : parent.candidateVersion + 1,
+        ...(parent === undefined
+          ? {}
+          : {
+              parentCandidateRef: {
+                kind: CONTENT_REF_KIND as "content-artifact",
+                reference: parent.candidateRef,
+              },
+            }),
+        projectId: input.projectId,
+        inputSnapshotRef: input.inputSnapshotRef,
+        workItemRef: input.workItemRef,
+        modelContextArtifactSetRef: {
+          kind: "model-context-artifact-set" as const,
+          reference: input.modelContextArtifactSetRef,
+        },
+        retrievalArtifactSetRef: input.retrievalArtifactSetRef,
+        nodeId: input.nodeId,
+        output,
+        modelDeploymentRef: input.modelDeploymentRef,
+        promptTemplateRef: input.promptTemplateRef,
+        outputSchemaRef: input.generationPolicy.outputSchemaRef,
+        budgetPolicyRef: input.generationPolicy.budgetPolicyRef,
+        rawResponseRef: { kind: "diagnostic-artifact" as const, reference: input.rawResponseRef },
+        invocationId: input.invocationId,
+        generatedAt: input.generatedAt,
+      };
+    });
   }
 
   /** 每个候选单独落一份 C04 正文，使校验条目能引用候选自身的精确内容地址。 */
@@ -1487,6 +1510,31 @@ export class RiskCandidateFinalizationService {
     if (modelOutcome.kind === "failed") {
       throw new RiskCandidateFinalizationError(modelOutcome.error);
     }
+    const initialUsage: RiskCandidateSetV1["usage"] = {
+      modelInvocations: 1,
+      inputTokens: modelOutcome.usage.inputTokens,
+      outputTokens: modelOutcome.usage.outputTokens,
+      totalTokens: modelOutcome.usage.totalTokens,
+      outputBytes: modelOutcome.usage.outputBytes,
+      elapsedMs: modelOutcome.elapsedMs,
+      repairRounds: 0,
+    };
+    if (
+      generationBudgetExceeded({
+        candidateCount: modelOutcome.outputs.length,
+        usage: initialUsage,
+        policy: generationPolicy,
+      })
+    ) {
+      throw new RiskCandidateFinalizationError(
+        blocked({
+          causalRunId: command.commandId,
+          occurredAt: this.#now().toISOString(),
+          blockerKind: CANDIDATE_VALIDATION_REASON_CODES_V1.budgetExhausted,
+          blockerRef: command.payload.workItemRef,
+        }),
+      );
+    }
     const generatedAt = this.#now().toISOString();
     const candidateSetEntityId = candidateSetEntityIdFor({
       projectId: command.projectId,
@@ -1502,7 +1550,6 @@ export class RiskCandidateFinalizationService {
       inputSnapshotRef: modelContext.inputSnapshotRef,
       outputs: modelOutcome.outputs,
       round: 1,
-      parentCandidateRef: undefined,
       modelDeploymentRef: command.payload.modelDeploymentRef,
       promptTemplateRef: command.payload.promptTemplateRef,
       generationPolicy,
@@ -1529,15 +1576,7 @@ export class RiskCandidateFinalizationService {
       round: 1,
       parentCandidateSetRef: undefined,
       rawResponseRefs: [modelOutcome.rawResponseRef.reference],
-      usage: {
-        modelInvocations: 1,
-        inputTokens: modelOutcome.usage.inputTokens,
-        outputTokens: modelOutcome.usage.outputTokens,
-        totalTokens: modelOutcome.usage.totalTokens,
-        outputBytes: modelOutcome.usage.outputBytes,
-        elapsedMs: modelOutcome.elapsedMs,
-        repairRounds: 0,
-      },
+      usage: initialUsage,
       candidates,
       acceptedCandidates: [],
       candidateArtifactRefs,
@@ -1733,12 +1772,24 @@ export class RiskCandidateFinalizationService {
 
     while (evaluation.disposition !== "accepted") {
       const repairable = evaluation.entries.filter((entry) => entry.disposition === "repairable");
+      const terminal = evaluation.entries.find((entry) => entry.disposition === "terminal");
+      if (terminal !== undefined) {
+        const firstFailure = terminal.checks.find((entry) => !entry.passed);
+        throw new RiskCandidateFinalizationError(
+          blocked({
+            causalRunId: command.commandId,
+            occurredAt: this.#now().toISOString(),
+            blockerKind:
+              firstFailure?.reasonCode ?? CANDIDATE_VALIDATION_REASON_CODES_V1.schemaInvalid,
+            blockerRef: terminal.candidateRef,
+          }),
+        );
+      }
       const exhausted =
         usage.repairRounds >= generationPolicy.budget.maxRepairRounds ||
         usage.totalTokens >= generationPolicy.budget.maxTotalTokens ||
         usage.outputBytes >= generationPolicy.budget.maxOutputBytes ||
-        this.#now().getTime() - Date.parse(candidateSet.generatedAt) >=
-          generationPolicy.budget.maxWallClockMs;
+        usage.elapsedMs >= generationPolicy.budget.maxWallClockMs;
       const firstFailure = evaluation.entries
         .flatMap((entry) => entry.checks)
         .find((entry) => !entry.passed);
@@ -1780,14 +1831,34 @@ export class RiskCandidateFinalizationService {
             entry.candidateVersion === candidate.candidateVersion,
         ),
       );
+      const repairParents = repairable.map((entry) => {
+        const candidate = candidateSet.candidates.find(
+          (value) =>
+            value.candidateId === entry.candidateId &&
+            value.candidateVersion === entry.candidateVersion,
+        );
+        const candidateRef = candidateArtifactRefs.get(
+          candidateEvaluationKey(entry.candidateId, entry.candidateVersion),
+        );
+        if (candidate === undefined || candidateRef === undefined) {
+          throw new TypeError("repairable candidate and artifact reference are required");
+        }
+        return {
+          candidateId: candidate.candidateId,
+          candidateVersion: candidate.candidateVersion,
+          candidateRef,
+        };
+      });
       const round = usage.repairRounds + 1;
+      const repairRequestedAt = this.#now().toISOString();
       const modelOutcome = await options.model.generateCandidates({
         projectId: command.projectId,
         actorId: command.actorId,
         invocationId: `${command.commandId}:repair:${round}`,
-        requestedAt: this.#now().toISOString(),
+        requestedAt: repairRequestedAt,
         deadlineAt: new Date(
-          Date.parse(candidateSet.generatedAt) + generationPolicy.budget.maxWallClockMs,
+          Date.parse(repairRequestedAt) +
+            Math.max(1, generationPolicy.budget.maxWallClockMs - usage.elapsedMs),
         ).toISOString(),
         modelContext,
         modelDeploymentRef: candidateSet.modelDeploymentRef,
@@ -1795,7 +1866,7 @@ export class RiskCandidateFinalizationService {
         outputSchemaRef: candidateSet.outputSchemaRef,
         budgetPolicyRef: candidateSet.budgetPolicyRef,
         budget: generationPolicy.budget,
-        maxOutputTokens: generationPolicy.budget.maxTotalTokens,
+        maxOutputTokens: Math.max(1, generationPolicy.budget.maxTotalTokens - usage.totalTokens),
         authorization: revalidated,
         repair: {
           attempt: round,
@@ -1810,6 +1881,15 @@ export class RiskCandidateFinalizationService {
       if (modelOutcome.kind === "failed") {
         throw new RiskCandidateFinalizationError(modelOutcome.error);
       }
+      if (modelOutcome.outputs.length !== repairParents.length) {
+        throw new RiskCandidateFinalizationError(
+          terminalFailure({
+            causalRunId: command.commandId,
+            occurredAt: this.#now().toISOString(),
+            stage: "repair-output-arity",
+          }),
+        );
+      }
       usage = {
         modelInvocations: usage.modelInvocations + 1,
         inputTokens: usage.inputTokens + modelOutcome.usage.inputTokens,
@@ -1819,6 +1899,22 @@ export class RiskCandidateFinalizationService {
         elapsedMs: usage.elapsedMs + modelOutcome.elapsedMs,
         repairRounds: round,
       };
+      if (
+        generationBudgetExceeded({
+          candidateCount: accepted.length + modelOutcome.outputs.length,
+          usage,
+          policy: generationPolicy,
+        })
+      ) {
+        throw new RiskCandidateFinalizationError(
+          blocked({
+            causalRunId: command.commandId,
+            occurredAt: this.#now().toISOString(),
+            blockerKind: CANDIDATE_VALIDATION_REASON_CODES_V1.budgetExhausted,
+            blockerRef: asContentRef(candidateSetRef.reference),
+          }),
+        );
+      }
       rawResponseRefs = [...rawResponseRefs, modelOutcome.rawResponseRef.reference];
       const generatedAt = this.#now().toISOString();
       const repairedCandidates = this.#buildCandidates({
@@ -1831,7 +1927,7 @@ export class RiskCandidateFinalizationService {
         inputSnapshotRef: candidateSet.inputSnapshotRef,
         outputs: modelOutcome.outputs,
         round: round + 1,
-        parentCandidateRef: candidateSetRef.reference,
+        parentCandidates: repairParents,
         modelDeploymentRef: candidateSet.modelDeploymentRef,
         promptTemplateRef: candidateSet.promptTemplateRef,
         generationPolicy,
@@ -3124,13 +3220,10 @@ export class RiskCandidateFinalizationService {
         }),
       );
     }
-    const decisionByGroup = new Map<
-      string,
-      { readonly kind: string; readonly reference: VersionReference }
-    >();
+    const decisionKeys = new Set<string>();
     for (const decisionRef of command.payload.decisionRefs) {
-      const key = referenceKey(decisionRef.reference);
-      if ([...decisionByGroup.values()].some((value) => referenceKey(value.reference) === key)) {
+      const key = `${decisionRef.kind}\u0000${referenceKey(decisionRef.reference)}`;
+      if (decisionKeys.has(key)) {
         throw new RiskCandidateFinalizationError(
           blocked({
             causalRunId: command.commandId,
@@ -3140,40 +3233,39 @@ export class RiskCandidateFinalizationService {
           }),
         );
       }
-      decisionByGroup.set(key, { kind: decisionRef.kind, reference: decisionRef.reference });
+      decisionKeys.add(key);
     }
-    const reviewAuthorization = await options.authorization.issueBranchContext({
-      projectId: command.projectId,
-      actorId: command.actorId,
-      invocationId: `${command.commandId}:trace`,
-      requestedAt: occurredAt,
-      branch: "review-audit.trace",
-      parentAuthorization: current,
-      requestedSpatialScopeRefs: [...current.spatialScopeRefs],
-      requestedSourceVersionRefs: [],
-    });
+    if (decisionKeys.size !== routeSet.routes.length) {
+      throw new RiskCandidateFinalizationError(
+        blocked({
+          causalRunId: command.commandId,
+          occurredAt,
+          blockerKind: "acceptance-decision-set-mismatch",
+          blockerRef: command.payload.acceptanceRouteSetRef,
+        }),
+      );
+    }
+    const reviewAuthorization = routeSet.routes.some((route) => route.routeKind === "review")
+      ? await options.authorization.issueBranchContext({
+          projectId: command.projectId,
+          actorId: command.actorId,
+          invocationId: `${command.commandId}:trace`,
+          requestedAt: occurredAt,
+          branch: "review-audit.trace",
+          parentAuthorization: current,
+          requestedSpatialScopeRefs: [...current.spatialScopeRefs],
+          requestedSourceVersionRefs: [],
+        })
+      : undefined;
     const records: StandardizedRiskRecordEnvelope[] = [];
     const recordWrites: StandardizedRiskRecordWriteV1[] = [];
     const skippedGroupRefs: AcceptanceRouteSetV1["routes"][number]["groupRef"][] = [];
     for (const route of routeSet.routes) {
-      const key = referenceKey(route.groupRef.reference);
-      const decision = decisionByGroup.get(key);
-      if (decision === undefined) {
-        throw new RiskCandidateFinalizationError(
-          blocked({
-            causalRunId: command.commandId,
-            occurredAt,
-            blockerKind: "decision-missing",
-            blockerRef: route.groupRef,
-          }),
-        );
-      }
       let decisionKind: string;
       let reviewDecisionRef: VersionReference | undefined;
       if (route.routeKind === "automatic") {
         if (
-          decision.kind !== "route-decision" ||
-          !sameRef(decision.reference, route.routeDecisionRef.reference)
+          !decisionKeys.has(`route-decision\u0000${referenceKey(route.routeDecisionRef.reference)}`)
         ) {
           throw new RiskCandidateFinalizationError(
             blocked({
@@ -3224,16 +3316,7 @@ export class RiskCandidateFinalizationService {
         }
         decisionKind = automatic.decision;
       } else {
-        if (decision.kind !== "review-decision") {
-          throw new RiskCandidateFinalizationError(
-            blocked({
-              causalRunId: command.commandId,
-              occurredAt,
-              blockerKind: "review-decision-mismatch",
-              blockerRef: route.groupRef,
-            }),
-          );
-        }
+        if (reviewAuthorization === undefined) throw new TypeError("review authorization required");
         const read: IdentificationGroupDecisionReadV1 =
           await options.reviewDecisionReader.readIdentificationGroupDecision({
             projectId: command.projectId,
@@ -3263,7 +3346,11 @@ export class RiskCandidateFinalizationService {
             }),
           );
         }
-        if (!sameRef(read.reviewDecisionRef.reference, decision.reference)) {
+        if (
+          !decisionKeys.has(
+            `review-decision\u0000${referenceKey(read.reviewDecisionRef.reference)}`,
+          )
+        ) {
           throw new RiskCandidateFinalizationError(
             blocked({
               causalRunId: command.commandId,
@@ -3416,6 +3503,21 @@ export class RiskCandidateFinalizationService {
       return { kind: "skipped", skippedGroupRefs };
     }
 
+    // 正式事实写入前再次复验当前授权，避免读取决定后撤权仍沿用旧上下文提交记录与事件。
+    const closing = await this.#requireCurrent({
+      authorization: command.authorization,
+      branch: "risk-identification.accept-groups",
+      causalRunId: command.commandId,
+      policyRef: command.authorization.authorizationPolicyRef,
+      capability: "risk-identification.finalize",
+    });
+    const closingScopeDigest = authorizationScopeDigest(closing);
+    const closingRecordWrites = recordWrites.map((row) => ({
+      ...row,
+      authorizationScopeDigest: closingScopeDigest,
+      authorizationContextRef: closing.authorizationContextRef,
+    }));
+
     const commandId = command.commandId;
     const auditEntryId = `${commandId}:audit`;
     const auditVersionId = records[0]?.version.reference.versionId ?? "v1";
@@ -3428,7 +3530,7 @@ export class RiskCandidateFinalizationService {
         riskRecordRefs: records.map((record) => record.version.reference),
       },
       actorRef: command.actorId,
-      authorizationContextRef: current.authorizationContextRef,
+      authorizationContextRef: closing.authorizationContextRef,
       issuedAt: command.issuedAt,
     });
     let aborted = false;
@@ -3438,7 +3540,7 @@ export class RiskCandidateFinalizationService {
         atomicCommand,
         async (context: TransactionContextV1): Promise<AtomicCommitV1> => {
           const insertion = await options.recordStore.insertRecords(
-            { rows: recordWrites, records, occurredAt },
+            { rows: closingRecordWrites, records, occurredAt },
             context,
           );
           if (insertion.kind === "conflict") {
@@ -3467,7 +3569,7 @@ export class RiskCandidateFinalizationService {
               correlationId: routeSet.identificationRunRef.reference.entityId,
               producerCommandId: commandId,
               idempotencyKey: command.idempotencyKey,
-              authorizationContextRef: current.authorizationContextRef,
+              authorizationContextRef: closing.authorizationContextRef,
               auditTrailRef: {
                 kind: "audit-trail",
                 reference: { entityId: auditEntryId, versionId: auditVersionId },
@@ -3496,7 +3598,7 @@ export class RiskCandidateFinalizationService {
                 reference: records[0]?.version.reference ?? { entityId: "", versionId: "" },
               },
               actorRef: command.actorId,
-              authorizationContextRef: current.authorizationContextRef,
+              authorizationContextRef: closing.authorizationContextRef,
               occurredAt,
               recordedAt,
               version: {
@@ -3510,8 +3612,7 @@ export class RiskCandidateFinalizationService {
           };
         },
       );
-      if (receipt.replayed) aborted = true;
-      else eventRefs = receipt.eventRefs.map((ref) => ({ eventId: ref.eventId }));
+      eventRefs = receipt.eventRefs.map((ref) => ({ eventId: ref.eventId }));
     } catch (error: unknown) {
       if (error instanceof FinalizationTransactionAbort) {
         if (aborted) {

@@ -87,6 +87,10 @@
     "./recommendation": {
       "types": "./dist/recommendation/index.d.ts",
       "import": "./dist/recommendation/index.js"
+    },
+    "./response-lifecycle": {
+      "types": "./dist/response-lifecycle/index.d.ts",
+      "import": "./dist/response-lifecycle/index.js"
     }
   }
 }

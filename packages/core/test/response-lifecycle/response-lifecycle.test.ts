@@ -145,6 +145,17 @@ describe("C28 偏差纯计算", () => {
     expect(result).toEqual({ kind: "unavailable", reasonCode: "basis-incompatible" });
   });
 
+  it.each(["absolute", "relative"] as const)("%s 拒绝负偏差阈值", (basis) => {
+    const result = computeResponseDeviation(
+      deviationInput({
+        basis,
+        threshold: "-0.1",
+        ...(basis === "relative" ? { minimumBaseline: "0.01" } : {}),
+      }),
+    );
+    expect(result).toEqual({ kind: "unavailable", reasonCode: "basis-incompatible" });
+  });
+
   it.each([
     { actualLevel: "level-4", exceeded: true, value: "2" },
     { actualLevel: "level-3", exceeded: false, value: "1" },

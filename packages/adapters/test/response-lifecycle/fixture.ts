@@ -282,6 +282,8 @@ export interface ResponseLifecyclePostgresFixtureV1 {
   setUnmatchedForecastPolicy(): Promise<void>;
   setIndicatorUnit(value: string | null): Promise<void>;
   setExecutors(value: readonly EffectForecastExecutorV1[]): void;
+  setDownstreamScopeExpansion(value: boolean): void;
+  setNow(value: string): void;
 
   countRows(table: ResponseLifecycleTableV1): Promise<number>;
   countCommandRows(table: ResponseLifecycleTableV1, commandId: string): Promise<number>;
@@ -379,6 +381,8 @@ export const startResponseLifecycleFixture =
         }),
       ),
     ];
+    let expandDownstreamScopes = false;
+    let currentTime = C28_FIXTURE_TIME;
 
     const login = await access
       .login({
@@ -679,21 +683,21 @@ export const startResponseLifecycleFixture =
         branch: request.branch,
         invocationId: request.invocationId,
         requestedAt: request.requestedAt,
-        // 组合根代替品：下游事实（C14/C19/C04）各带自己的空间修订，按工程活动空间集合签发，
-        // 仍受 C06 成员覆盖约束；C28 读者只声明调用方已获授权空间。
-        spatialScopeRefs: [
-          ...new Map(
-            [...(request.requestedSpatialScopeRefs ?? []), ...projectScopeRefs].map((scope) => [
-              `${scope.reference.entityId}\u0000${scope.reference.versionId}`,
-              scope,
-            ]),
-          ).values(),
-        ],
+        spatialScopeRefs: expandDownstreamScopes
+          ? [
+              ...new Map(
+                [...(request.requestedSpatialScopeRefs ?? []), ...projectScopeRefs].map((scope) => [
+                  `${scope.reference.entityId}\u0000${scope.reference.versionId}`,
+                  scope,
+                ]),
+              ).values(),
+            ]
+          : (request.requestedSpatialScopeRefs ?? []),
         // C14 快照自带证据来源：只为监测读取补全工程来源授权，其它分支不扩大来源范围。
         sourceVersionRefs:
           request.branch === "engineering-data.monitoring-snapshot-query"
             ? projectSourceVersionRefs
-            : (request.requestedSourceVersionRefs ?? []),
+            : [],
       });
 
     /** C19 发布事实接缝：夹具把已发布措施成员作为精确引用事实提供。 */
@@ -727,7 +731,7 @@ export const startResponseLifecycleFixture =
       access,
       reader: contextReader,
       forecastExecutors: executors,
-      now: () => new Date(C28_FIXTURE_TIME),
+      now: () => new Date(currentTime),
     });
 
     const basisReleaseSetRef = {
@@ -1224,6 +1228,12 @@ export const startResponseLifecycleFixture =
       },
       setExecutors(value) {
         executors.splice(0, executors.length, ...value);
+      },
+      setDownstreamScopeExpansion(value) {
+        expandDownstreamScopes = value;
+      },
+      setNow(value) {
+        currentTime = value;
       },
 
       countRows,

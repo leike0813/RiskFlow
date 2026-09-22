@@ -35,6 +35,82 @@ const guardAuditForeignKey = async (db: Kysely<unknown>, table: string): Promise
   `.execute(db);
 };
 
+const foreignKeys = [
+  {
+    table: "business.response_forecast_outcomes",
+    constraint: "response_forecast_outcomes_baseline_assessment_fk",
+    columns: "baseline_assessment_record_id, baseline_assessment_record_version_id",
+    target: "business.risk_assessment_records",
+    targetColumns: "record_id, version_id",
+  },
+  {
+    table: "business.response_forecast_outcomes",
+    constraint: "response_forecast_outcomes_frozen_basis_snapshot_fk",
+    columns: "frozen_basis_snapshot_id, frozen_basis_snapshot_version_id",
+    target: "business.assessment_input_snapshots",
+    targetColumns: "input_snapshot_id, version_id",
+  },
+  {
+    table: "business.response_forecast_outcomes",
+    constraint: "response_forecast_outcomes_pre_action_snapshot_fk",
+    columns: "pre_action_snapshot_id",
+    target: "business.monitoring_snapshots",
+    targetColumns: "snapshot_id",
+  },
+  {
+    table: "business.response_execution_records",
+    constraint: "response_execution_records_decision_fk",
+    columns: "route_decision_id, route_decision_version_id",
+    target: "business.response_adoption_decisions",
+    targetColumns: "decision_id, version_id",
+  },
+  {
+    table: "business.response_feedback_records",
+    constraint: "response_feedback_records_post_action_snapshot_fk",
+    columns: "post_action_snapshot_id",
+    target: "business.monitoring_snapshots",
+    targetColumns: "snapshot_id",
+  },
+  {
+    table: "business.response_feedback_records",
+    constraint: "response_feedback_records_feedback_artifact_fk",
+    columns: "feedback_artifact_id, feedback_artifact_version_id",
+    target: "business.artifact_manifests",
+    targetColumns: "artifact_id, version_id",
+  },
+  {
+    table: "business.response_feedback_records",
+    constraint: "response_feedback_records_actual_assessment_fk",
+    columns: "actual_assessment_record_id, actual_assessment_record_version_id",
+    target: "business.risk_assessment_records",
+    targetColumns: "record_id, version_id",
+  },
+] as const;
+
+const guardForeignKey = async (
+  db: Kysely<unknown>,
+  foreignKey: (typeof foreignKeys)[number],
+): Promise<void> => {
+  await sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = '${sql.raw(foreignKey.constraint)}'
+          AND conrelid = '${sql.raw(foreignKey.table)}'::regclass
+      ) THEN
+        ALTER TABLE ${sql.raw(foreignKey.table)}
+          ADD CONSTRAINT ${sql.raw(foreignKey.constraint)}
+          FOREIGN KEY (${sql.raw(foreignKey.columns)})
+          REFERENCES ${sql.raw(foreignKey.target)} (${sql.raw(foreignKey.targetColumns)})
+          DEFERRABLE INITIALLY DEFERRED;
+      END IF;
+    END
+    $$;
+  `.execute(db);
+};
+
 const revokeAll = async (db: Kysely<unknown>): Promise<void> => {
   await sql`
     DO $$
@@ -269,7 +345,10 @@ export async function up(db: Kysely<unknown>): Promise<void> {
       column.notNull().defaultTo(sql`clock_timestamp()`),
     )
     .addPrimaryKeyConstraint("response_execution_records_pk", ["execution_id", "version_id"])
-    .addUniqueConstraint("response_execution_records_content_uidx", ["project_id", "content_digest"])
+    .addUniqueConstraint("response_execution_records_content_uidx", [
+      "project_id",
+      "content_digest",
+    ])
     .addForeignKeyConstraint(
       "response_execution_records_recommendation_fk",
       ["recommendation_id", "recommendation_version_id"],
@@ -519,6 +598,7 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     )
     .execute();
 
+  for (const foreignKey of foreignKeys) await guardForeignKey(db, foreignKey);
   for (const table of tables) await guardAuditForeignKey(db, table);
 
   await db.schema

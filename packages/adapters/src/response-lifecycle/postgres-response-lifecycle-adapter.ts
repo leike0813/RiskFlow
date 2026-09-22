@@ -73,6 +73,7 @@ import {
   toResponseLifecycleModuleError,
   verifyForecastExecutorResult,
   type EffectForecastExecutorV1,
+  type ResponseDeviationFactV1,
   type ResponseDeviationFactReadResultV1,
   type ResponseDeviationResultV1,
   type ResponseExecutionRecordV1,
@@ -205,8 +206,21 @@ interface ForecastOutcomeRow {
   project_id: string;
   recommendation_id: string;
   recommendation_version_id: string;
+  route_decision_id: string;
+  route_decision_version_id: string;
+  forecast_input_snapshot_id: string;
+  forecast_input_snapshot_version_id: string;
+  frozen_basis_snapshot_id: string;
+  frozen_basis_snapshot_version_id: string;
+  pre_action_snapshot_id: string;
+  pre_action_snapshot_version_id: string;
+  baseline_assessment_record_id: string;
+  baseline_assessment_record_version_id: string;
+  forecast_policy_entity_id: string;
+  forecast_policy_version_id: string;
   availability: string;
   spatial_scope_entity_id: string;
+  spatial_scope_version_id: string;
   forecast_payload: JsonColumn;
   content_digest: string;
 }
@@ -231,9 +245,16 @@ interface FeedbackRow {
   project_id: string;
   execution_id: string;
   execution_version_id: string;
+  post_action_snapshot_id: string;
+  post_action_snapshot_version_id: string;
+  feedback_artifact_id: string;
+  feedback_artifact_version_id: string;
+  actual_assessment_record_id: string;
+  actual_assessment_record_version_id: string;
   effect_forecast_id: string | null;
   effect_forecast_version_id: string | null;
   forecast_availability: string;
+  forecast_unavailable_reason: string | null;
   spatial_scope_entity_id: string;
   spatial_scope_version_id: string;
   feedback_payload: JsonColumn;
@@ -244,7 +265,30 @@ interface DeviationRow {
   deviation_id: string;
   version_id: string;
   project_id: string;
+  recommendation_id: string;
+  recommendation_version_id: string;
+  execution_id: string;
+  execution_version_id: string;
+  effect_forecast_id: string;
+  effect_forecast_version_id: string;
+  feedback_id: string;
+  feedback_version_id: string;
+  frozen_basis_snapshot_id: string;
+  frozen_basis_snapshot_version_id: string;
+  deviation_policy_entity_id: string;
+  deviation_policy_version_id: string;
+  basis: string;
+  risk_matrix_entity_id: string;
+  risk_matrix_version_id: string;
+  target_indicator_id: string;
+  unit: string;
+  predicted_value_canonical: string;
+  actual_value_canonical: string;
+  deviation_value_canonical: string;
+  threshold_exceeded: boolean;
+  direction: string;
   spatial_scope_entity_id: string;
+  spatial_scope_version_id: string;
   deviation_payload: JsonColumn;
   content_digest: string;
 }
@@ -377,14 +421,48 @@ const canonicalStringOfNumber = (value: number): string => {
 
 /** 持久化正文只按 strict Schema 复验；摘要不符即契约漂移。 */
 const parseForecastOutcome = (
-  row: { readonly forecast_payload: unknown; readonly content_digest: string },
+  row: ForecastOutcomeRow,
   forecastRef: VersionReference,
 ): ResponseForecastOutcomeV1 => {
   const parsed = ResponseForecastOutcomeV1Schema.safeParse(row.forecast_payload);
   if (
     !parsed.success ||
     sha256CanonicalJson(parsed.data) !== row.content_digest ||
-    !sameRef(parsed.data.effectForecastRef.reference, forecastRef)
+    parsed.data.projectId !== row.project_id ||
+    !sameRef(parsed.data.effectForecastRef.reference, forecastRef) ||
+    !sameRef(parsed.data.responseRecommendationRef.reference, {
+      entityId: row.recommendation_id,
+      versionId: row.recommendation_version_id,
+    }) ||
+    !sameRef(parsed.data.routeDecisionRef.reference, {
+      entityId: row.route_decision_id,
+      versionId: row.route_decision_version_id,
+    }) ||
+    !sameRef(parsed.data.forecastInputSnapshotRef.reference, {
+      entityId: row.forecast_input_snapshot_id,
+      versionId: row.forecast_input_snapshot_version_id,
+    }) ||
+    !sameRef(parsed.data.frozenAssessmentBasisRef.reference, {
+      entityId: row.frozen_basis_snapshot_id,
+      versionId: row.frozen_basis_snapshot_version_id,
+    }) ||
+    !sameRef(parsed.data.preActionMonitoringSnapshotRef.reference, {
+      entityId: row.pre_action_snapshot_id,
+      versionId: row.pre_action_snapshot_version_id,
+    }) ||
+    !sameRef(parsed.data.baselineAssessmentRecordRef.reference, {
+      entityId: row.baseline_assessment_record_id,
+      versionId: row.baseline_assessment_record_version_id,
+    }) ||
+    !sameRef(parsed.data.forecastPolicyRef, {
+      entityId: row.forecast_policy_entity_id,
+      versionId: row.forecast_policy_version_id,
+    }) ||
+    parsed.data.availability.kind !== row.availability ||
+    !sameRef(parsed.data.spatialScopeRef.reference, {
+      entityId: row.spatial_scope_entity_id,
+      versionId: row.spatial_scope_version_id,
+    })
   ) {
     failResponseLifecycle("response-lifecycle-contract-drift", {
       kind: "effect-forecast",
@@ -453,6 +531,26 @@ const parseFeedbackRecord = (row: FeedbackRow, feedbackRef: VersionReference): v
       entityId: row.execution_id,
       versionId: row.execution_version_id,
     }) ||
+    !sameRef(parsed.data.postActionMonitoringSnapshotRef.reference, {
+      entityId: row.post_action_snapshot_id,
+      versionId: row.post_action_snapshot_version_id,
+    }) ||
+    !sameRef(parsed.data.feedbackArtifactRef.reference, {
+      entityId: row.feedback_artifact_id,
+      versionId: row.feedback_artifact_version_id,
+    }) ||
+    !sameRef(parsed.data.actualAssessmentRecordRef.reference, {
+      entityId: row.actual_assessment_record_id,
+      versionId: row.actual_assessment_record_version_id,
+    }) ||
+    parsed.data.forecast.kind !== row.forecast_availability ||
+    (parsed.data.forecast.kind === "available" &&
+      !sameRef(parsed.data.forecast.effectForecastRef.reference, {
+        entityId: row.effect_forecast_id ?? "",
+        versionId: row.effect_forecast_version_id ?? "",
+      })) ||
+    (parsed.data.forecast.kind === "unavailable" &&
+      parsed.data.forecast.reasonCode !== row.forecast_unavailable_reason) ||
     !sameRef(parsed.data.spatialScopeRef.reference, {
       entityId: row.spatial_scope_entity_id,
       versionId: row.spatial_scope_version_id,
@@ -463,6 +561,65 @@ const parseFeedbackRecord = (row: FeedbackRow, feedbackRef: VersionReference): v
       reference: feedbackRef,
     });
   }
+};
+
+const parseDeviationFact = (
+  row: DeviationRow,
+  deviationRef: VersionReference,
+): ResponseDeviationFactV1 => {
+  const parsed = ResponseDeviationFactV1Schema.safeParse(row.deviation_payload);
+  if (
+    !parsed.success ||
+    sha256CanonicalJson(parsed.data) !== row.content_digest ||
+    parsed.data.projectId !== row.project_id ||
+    !sameRef(parsed.data.deviationFactRef.reference, deviationRef) ||
+    !sameRef(parsed.data.responseRecommendationRef.reference, {
+      entityId: row.recommendation_id,
+      versionId: row.recommendation_version_id,
+    }) ||
+    !sameRef(parsed.data.executionRecordRef.reference, {
+      entityId: row.execution_id,
+      versionId: row.execution_version_id,
+    }) ||
+    !sameRef(parsed.data.effectForecastRef.reference, {
+      entityId: row.effect_forecast_id,
+      versionId: row.effect_forecast_version_id,
+    }) ||
+    !sameRef(parsed.data.feedbackRef.reference, {
+      entityId: row.feedback_id,
+      versionId: row.feedback_version_id,
+    }) ||
+    !sameRef(parsed.data.frozenAssessmentBasisRef.reference, {
+      entityId: row.frozen_basis_snapshot_id,
+      versionId: row.frozen_basis_snapshot_version_id,
+    }) ||
+    !sameRef(parsed.data.deviationPolicyRef, {
+      entityId: row.deviation_policy_entity_id,
+      versionId: row.deviation_policy_version_id,
+    }) ||
+    parsed.data.basis !== row.basis ||
+    !sameRef(parsed.data.riskMatrixRef, {
+      entityId: row.risk_matrix_entity_id,
+      versionId: row.risk_matrix_version_id,
+    }) ||
+    parsed.data.targetIndicatorId !== row.target_indicator_id ||
+    parsed.data.unit !== row.unit ||
+    parsed.data.predictedValue !== row.predicted_value_canonical ||
+    parsed.data.actualValue !== row.actual_value_canonical ||
+    parsed.data.deviationValue !== row.deviation_value_canonical ||
+    parsed.data.thresholdExceeded !== row.threshold_exceeded ||
+    parsed.data.direction !== row.direction ||
+    !sameRef(parsed.data.spatialScopeRef.reference, {
+      entityId: row.spatial_scope_entity_id,
+      versionId: row.spatial_scope_version_id,
+    })
+  ) {
+    failResponseLifecycle("response-lifecycle-contract-drift", {
+      kind: "response-deviation-fact",
+      reference: deviationRef,
+    });
+  }
+  return parsed.data;
 };
 
 /* -------------------------------------------------------------------------- */
@@ -555,11 +712,15 @@ export class PostgresResponseLifecycleContextReader implements ResponseLifecycle
   ): Promise<AuthorizationContextV1> {
     const context = await this.#authorizeDownstream(input);
     const capability = MODULE_BRANCH_CAPABILITY_V1[input.branch];
+    const requestedScopeKeys = new Set(
+      (input.requestedSpatialScopeRefs ?? []).map((scope) => refKey(scope.reference)),
+    );
     if (
       context.projectId !== input.projectId ||
       context.actorId !== input.actorId ||
       context.grantedCapabilities.length !== 1 ||
-      !context.grantedCapabilities.includes(capability)
+      !context.grantedCapabilities.includes(capability) ||
+      context.spatialScopeRefs.some((scope) => !requestedScopeKeys.has(refKey(scope.reference)))
     ) {
       failResponseLifecycle(
         "response-lifecycle-authorization-required",
@@ -1219,7 +1380,7 @@ export class PostgresResponseLifecycleAdapter
       });
       const contentDigest = sha256CanonicalJson(decision);
       const receipt = await this.#executeWithRetry(
-        this.#atomicCommand(publicCommand, ADOPTION_COMMAND_KIND_V1, decision),
+        this.#atomicCommand(publicCommand, ADOPTION_COMMAND_KIND_V1, parsed.data),
         async (transactionContext): Promise<AtomicCommitV1> => {
           const transaction = asTransaction(transactionContext);
           const auditEntryId = `audit-${publicCommand.commandId}:response-adoption-decision`;
@@ -1596,17 +1757,9 @@ export class PostgresResponseLifecycleAdapter
       computedAt: this.#nowIso(),
     });
     const contentDigest = sha256CanonicalJson(outcome);
-    const command = {
-      commandId: valid.commandId,
-      idempotencyKey: valid.idempotencyKey,
-      projectId: valid.projectId,
-      actorId: verified.actorId,
-      issuedAt: valid.issuedAt,
-      authorization: valid.authorization,
-    };
     const recordedAt = this.#nowIso();
     await this.#executeWithRetry(
-      this.#atomicCommand(command, FORECAST_COMMAND_KIND_V1, outcome),
+      this.#atomicCommand(valid, FORECAST_COMMAND_KIND_V1, valid),
       async (transactionContext): Promise<AtomicCommitV1> => {
         const transaction = asTransaction(transactionContext);
         const auditEntryId = `audit-${valid.commandId}:response-forecast`;
@@ -1813,7 +1966,7 @@ export class PostgresResponseLifecycleAdapter
       const contentDigest = sha256CanonicalJson(record);
       const recordedAt = this.#nowIso();
       await this.#executeWithRetry(
-        this.#atomicCommand(valid, EXECUTION_COMMAND_KIND_V1, record),
+        this.#atomicCommand(valid, EXECUTION_COMMAND_KIND_V1, valid),
         async (transactionContext): Promise<AtomicCommitV1> => {
           const transaction = asTransaction(transactionContext);
           const auditEntryId = `audit-${valid.commandId}:response-execution`;
@@ -2053,7 +2206,7 @@ export class PostgresResponseLifecycleAdapter
         },
       });
       await this.#executeWithRetry(
-        this.#atomicCommand(publicCommand, FEEDBACK_COMMAND_KIND_V1, record),
+        this.#atomicCommand(publicCommand, FEEDBACK_COMMAND_KIND_V1, valid),
         async (transactionContext): Promise<AtomicCommitV1> => {
           const transaction = asTransaction(transactionContext);
           const auditEntryId = `audit-${publicCommand.commandId}:response-feedback`;
@@ -2246,11 +2399,6 @@ export class PostgresResponseLifecycleAdapter
           entityId: feedbackRow.execution_id,
           versionId: feedbackRow.execution_version_id,
         }) ||
-        (feedbackRecord.data.forecast.kind === "available" &&
-          !sameRef(
-            feedbackRecord.data.forecast.effectForecastRef.reference,
-            payload.effectForecastRef.reference,
-          )) ||
         !sameRef(
           outcome.frozenAssessmentBasisRef.reference,
           payload.frozenAssessmentBasisRef.reference,
@@ -2260,6 +2408,17 @@ export class PostgresResponseLifecycleAdapter
           "response-deviation-value-incompatible",
           payload.frozenAssessmentBasisRef,
         );
+      }
+      if (feedbackRecord.data.forecast.kind === "unavailable") {
+        return { kind: "unavailable", reasonCode: feedbackRecord.data.forecast.reasonCode };
+      }
+      if (
+        !sameRef(
+          feedbackRecord.data.forecast.effectForecastRef.reference,
+          payload.effectForecastRef.reference,
+        )
+      ) {
+        failResponseLifecycle("response-deviation-value-incompatible", payload.effectForecastRef);
       }
       const execution = await this.#loadExecution(
         valid.projectId,
@@ -2411,7 +2570,7 @@ export class PostgresResponseLifecycleAdapter
       const contentDigest = sha256CanonicalJson(fact);
       const recordedAt = this.#nowIso();
       await this.#executeWithRetry(
-        this.#atomicCommand(valid, DEVIATION_COMMAND_KIND_V1, fact),
+        this.#atomicCommand(valid, DEVIATION_COMMAND_KIND_V1, valid),
         async (transactionContext): Promise<AtomicCommitV1> => {
           const transaction = asTransaction(transactionContext);
           const auditEntryId = `audit-${valid.commandId}:response-deviation`;
@@ -2483,7 +2642,15 @@ export class PostgresResponseLifecycleAdapter
           };
         },
       );
-      return { kind: "succeeded", result: { deviationFactRef, fact } };
+      const stored = await this.#loadDeviationFact(
+        valid.projectId,
+        deviationFactRef.reference,
+        authorizedScopeIds,
+      );
+      if (stored === undefined) {
+        failResponseLifecycle("response-lifecycle-contract-drift", deviationFactRef);
+      }
+      return { kind: "succeeded", result: { deviationFactRef, fact: stored } };
     } catch (error: unknown) {
       return { kind: "failed", error: this.#toModuleError(error, valid.commandId) };
     }
@@ -2525,15 +2692,10 @@ export class PostgresResponseLifecycleAdapter
       if (row === undefined) {
         return this.#failAuthorization(DEVIATION_BRANCH_V1);
       }
-      const fact = ResponseDeviationFactV1Schema.safeParse(row.deviation_payload);
-      if (
-        !fact.success ||
-        sha256CanonicalJson(fact.data) !== row.content_digest ||
-        !sameRef(fact.data.deviationFactRef.reference, input.deviationFactRef.reference)
-      ) {
-        failResponseLifecycle("response-lifecycle-contract-drift", input.deviationFactRef);
-      }
-      return { kind: "succeeded", result: { fact: fact.data } };
+      return {
+        kind: "succeeded",
+        result: { fact: parseDeviationFact(row, input.deviationFactRef.reference) },
+      };
     } catch (error: unknown) {
       return { kind: "failed", error: this.#toModuleError(error, input.requestId) };
     }
@@ -2608,6 +2770,22 @@ export class PostgresResponseLifecycleAdapter
       .executeTakeFirst();
     if (row !== undefined) parseFeedbackRecord(row, feedbackRef);
     return row;
+  }
+
+  async #loadDeviationFact(
+    projectId: string,
+    deviationRef: VersionReference,
+    authorizedScopeIds: readonly string[],
+  ): Promise<ResponseDeviationFactV1 | undefined> {
+    const row = await this.#db
+      .selectFrom("business.response_deviation_facts")
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where("deviation_id", "=", deviationRef.entityId)
+      .where("version_id", "=", deviationRef.versionId)
+      .where("spatial_scope_entity_id", "in", authorizedScopeIds)
+      .executeTakeFirst();
+    return row === undefined ? undefined : parseDeviationFact(row, deviationRef);
   }
 
   // ------------------------------------------------------------------------- 事务

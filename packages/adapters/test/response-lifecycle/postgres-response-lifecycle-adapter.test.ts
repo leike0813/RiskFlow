@@ -197,6 +197,15 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
       "response_feedback_records",
       "response_deviation_facts",
     ];
+    const upstreamForeignKeys = [
+      "response_forecast_outcomes_baseline_assessment_fk",
+      "response_forecast_outcomes_frozen_basis_snapshot_fk",
+      "response_forecast_outcomes_pre_action_snapshot_fk",
+      "response_execution_records_decision_fk",
+      "response_feedback_records_post_action_snapshot_fk",
+      "response_feedback_records_feedback_artifact_fk",
+      "response_feedback_records_actual_assessment_fk",
+    ];
     const tableCount = async (): Promise<number> => {
       const result = await state.recommendation.c26.c25.postgres.postgres.adminPool.query<{
         count: string;
@@ -246,6 +255,14 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
       expect(grants.rows.filter((row) => row.privilege_type === "DELETE")).toHaveLength(0);
       expect(grants.rows.filter((row) => row.privilege_type === "SELECT")).toHaveLength(5);
       expect(grants.rows.filter((row) => row.privilege_type === "INSERT")).toHaveLength(5);
+      const constraints = await state.recommendation.c26.c25.postgres.postgres.adminPool.query<{
+        conname: string;
+      }>(
+        `SELECT conname FROM pg_constraint
+             WHERE conname = ANY($1::text[]) ORDER BY conname`,
+        [upstreamForeignKeys],
+      );
+      expect(constraints.rows.map((row) => row.conname)).toEqual([...upstreamForeignKeys].sort());
     } finally {
       await runtime.close();
     }
@@ -277,14 +294,17 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
     expect(await state.countRows("response_execution_records")).toBe(0);
     expect(await state.countRows("response_forecast_outcomes")).toBe(0);
     expect(await state.countRows("response_deviation_facts")).toBe(0);
-    // 幂等重放返回同一决定引用且不新增事实。
-    const replay = await state.recordDecision(
-      await state.decisionCommand({
-        commandId: "c28-adopt-decision",
-        decision: "adopted",
-        binding,
-      }),
-    );
+    // 内部记录时间变化也不得改变同一命令的幂等身份。
+    state.setNow("2030-01-01T00:00:00.000Z");
+    const replay = await state
+      .recordDecision(
+        await state.decisionCommand({
+          commandId: "c28-adopt-decision",
+          decision: "adopted",
+          binding,
+        }),
+      )
+      .finally(() => state.setNow("2029-12-31T22:00:00.000Z"));
     expect(replay.kind).toBe("succeeded");
     expect(await state.countRows("response_adoption_decisions")).toBe(1);
   });
@@ -411,6 +431,59 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
     expect(rows.rows[0]?.count).toBe("1");
   });
 
+  pgIt("下游只读授权不得扩大调用方空间集合", async () => {
+    const state = fixture!;
+    state.setExecutors([executor({ predictedValue: "12" })]);
+    const prepared = await state.prepareRecommendation({ prefix: "c28-downstream-scope" });
+    const scope = await state.recommendationScope(prepared.recommendationRef);
+    const binding = state.binding({
+      suffix: "c28-downstream-scope",
+      recommendationRef: prepared.recommendationRef,
+      spatialScopeRef: scope,
+    });
+    succeeded(
+      await state.recordDecision(
+        await state.decisionCommand({
+          commandId: "c28-downstream-scope-decision",
+          decision: "adopted",
+          binding,
+        }),
+      ),
+    );
+    const snapshot = state.forecastSnapshot({
+      recommendationRef: prepared.recommendationRef,
+      routeDecisionRef: binding.routeDecisionRef,
+      preActionMonitoringSnapshotRef: prepared.preActionMonitoringSnapshotRef,
+      basisRef: prepared.baselineAssessmentInputSnapshotRef,
+      forecastPolicyRef: state.forecastPolicyReleaseRef,
+      authorizationContextRef: {
+        kind: "authorization-context",
+        reference: { entityId: "placeholder", versionId: "1" },
+      },
+    });
+    const command = await state.forecastCommand({
+      commandId: "c28-downstream-scope-forecast",
+      binding,
+      snapshotRef: snapshot.ref,
+      snapshot: snapshot.body,
+    });
+    state.setDownstreamScopeExpansion(true);
+    const result = await state
+      .forecastResponse({
+        ...command,
+        payload: {
+          ...command.payload,
+          forecastInputSnapshot: {
+            ...command.payload.forecastInputSnapshot,
+            authorizationContextRef: command.authorization.authorizationContextRef,
+          },
+        },
+      })
+      .finally(() => state.setDownstreamScopeExpansion(false));
+    expect(result.kind).toBe("failed");
+    if (result.kind === "failed") expect(result.error.code).toBe("AUTHORIZATION_DENIED");
+  });
+
   pgIt("完整预测冻结输入并按精确版本保存，重放不新建事实", async () => {
     const state = fixture!;
     state.setExecutors([executor({ predictedValue: "12" })]);
@@ -432,16 +505,19 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
     expect(outcome.forecastPolicyRef).toEqual(state.forecastPolicyReleaseRef);
     const rowsAfterFirst = await state.countRows("response_forecast_outcomes");
     // 幂等重放：同命令返回同一预测引用且不新增事实。
-    const replay = await state.forecastResponse({
-      ...chain.forecastCommand,
-      payload: {
-        ...chain.forecastCommand.payload,
-        forecastInputSnapshot: {
-          ...chain.forecastCommand.payload.forecastInputSnapshot,
-          authorizationContextRef: chain.forecastCommand.authorization.authorizationContextRef,
+    state.setNow("2030-01-01T00:00:00.000Z");
+    const replay = await state
+      .forecastResponse({
+        ...chain.forecastCommand,
+        payload: {
+          ...chain.forecastCommand.payload,
+          forecastInputSnapshot: {
+            ...chain.forecastCommand.payload.forecastInputSnapshot,
+            authorizationContextRef: chain.forecastCommand.authorization.authorizationContextRef,
+          },
         },
-      },
-    });
+      })
+      .finally(() => state.setNow("2029-12-31T22:00:00.000Z"));
     const replayResult = succeeded(replay);
     expect(replayResult.result.outcome.effectForecastRef).toEqual(outcome.effectForecastRef);
     // 只改命令标识的同载荷重试按冻结输入收敛到同一预测事实。
@@ -1174,14 +1250,17 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
         expect(read.result.fact.evidenceReferences.length).toBeGreaterThanOrEqual(2);
       }
       // 同命令重放返回同一私有事实引用。
-      const replay = await state.calculateDeviation(
-        await state.deviationCommand({
-          commandId: `c28-deviation-${entry.basis}`,
-          effectForecastRef: forecastRef,
-          feedbackRef,
-          frozenAssessmentBasisRef: chain.prepared.baselineAssessmentInputSnapshotRef,
-        }),
-      );
+      state.setNow("2030-01-01T00:00:00.000Z");
+      const replay = await state
+        .calculateDeviation(
+          await state.deviationCommand({
+            commandId: `c28-deviation-${entry.basis}`,
+            effectForecastRef: forecastRef,
+            feedbackRef,
+            frozenAssessmentBasisRef: chain.prepared.baselineAssessmentInputSnapshotRef,
+          }),
+        )
+        .finally(() => state.setNow("2029-12-31T22:00:00.000Z"));
       expect(replay.kind).toBe("succeeded");
       if (replay.kind === "succeeded") {
         expect(replay.result.deviationFactRef).toEqual(deviation.result.deviationFactRef);
@@ -1243,6 +1322,99 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
       }),
     );
     expect(unavailable.kind).toBe("unavailable");
+    expect(await state.countRows("response_deviation_facts")).toBe(before);
+
+    // 反馈已经冻结为无预测时，后来补出的同建议预测也不能反向生成偏差。
+    const prepared = await state.prepareRecommendation({ prefix: "c28-deviation-late-forecast" });
+    const scope = await state.recommendationScope(prepared.recommendationRef);
+    const binding = state.binding({
+      suffix: "c28-deviation-late-forecast",
+      recommendationRef: prepared.recommendationRef,
+      spatialScopeRef: scope,
+    });
+    succeeded(
+      await state.recordDecision(
+        await state.decisionCommand({
+          commandId: "c28-deviation-late-forecast-decision",
+          decision: "adopted",
+          binding,
+        }),
+      ),
+    );
+    const lateExecution = executionRef(
+      await state.recordExecution(
+        await state.executionCommand({
+          commandId: "c28-deviation-late-forecast-execution",
+          actionSource: {
+            kind: "adopted-recommendation",
+            responseRecommendationRef: prepared.recommendationRef,
+          },
+        }),
+      ),
+    ).result.executionRecordRef;
+    const latePost = await state.postActionAssessment({
+      suffix: "c28-deviation-late-forecast",
+      riskInputKey: prepared.riskInputKey,
+    });
+    const lateArtifact = await state.publishFeedbackArtifact({
+      suffix: "c28-deviation-late-forecast",
+    });
+    const lateFeedbackSnapshot = state.feedbackSnapshot({
+      suffix: "c28-deviation-late-forecast",
+      executionRecordRef: lateExecution,
+    });
+    const lateFeedback = succeeded(
+      await state.recordFeedback(
+        await state.feedbackCommand({
+          commandId: "c28-deviation-late-forecast-feedback",
+          executionRecordRef: lateExecution,
+          postActionMonitoringSnapshotRef: latePost.monitoringSnapshotRef,
+          feedbackArtifactRef: lateArtifact,
+          actualAssessmentRecordRef: latePost.assessmentRecordRef,
+          snapshotRef: lateFeedbackSnapshot.ref,
+          snapshot: lateFeedbackSnapshot.body,
+        }),
+      ),
+    );
+    if (lateFeedback.result.kind !== "feedback") throw new Error("expected feedback result");
+    const lateForecastSnapshot = state.forecastSnapshot({
+      recommendationRef: prepared.recommendationRef,
+      routeDecisionRef: binding.routeDecisionRef,
+      preActionMonitoringSnapshotRef: prepared.preActionMonitoringSnapshotRef,
+      basisRef: prepared.baselineAssessmentInputSnapshotRef,
+      forecastPolicyRef: state.forecastPolicyReleaseRef,
+      authorizationContextRef: {
+        kind: "authorization-context",
+        reference: { entityId: "placeholder", versionId: "1" },
+      },
+    });
+    const lateForecastCommand = await state.forecastCommand({
+      commandId: "c28-deviation-late-forecast-forecast",
+      binding,
+      snapshotRef: lateForecastSnapshot.ref,
+      snapshot: lateForecastSnapshot.body,
+    });
+    const lateForecast = succeeded(
+      await state.forecastResponse({
+        ...lateForecastCommand,
+        payload: {
+          ...lateForecastCommand.payload,
+          forecastInputSnapshot: {
+            ...lateForecastCommand.payload.forecastInputSnapshot,
+            authorizationContextRef: lateForecastCommand.authorization.authorizationContextRef,
+          },
+        },
+      }),
+    );
+    const lateDeviation = await state.calculateDeviation(
+      await state.deviationCommand({
+        commandId: "c28-deviation-late-forecast",
+        effectForecastRef: lateForecast.result.outcome.effectForecastRef,
+        feedbackRef: lateFeedback.result.feedbackRef,
+        frozenAssessmentBasisRef: prepared.baselineAssessmentInputSnapshotRef,
+      }),
+    );
+    expect(lateDeviation).toEqual({ kind: "unavailable", reasonCode: "no-effect-forecast" });
     expect(await state.countRows("response_deviation_facts")).toBe(before);
 
     // 多策略偏差文档必须失败闭合，不猜策略。
@@ -1369,6 +1541,20 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
       expect(restricted.error.code).toBe(absent.error.code);
       expect(restricted.error.code).toBe("AUTHORIZATION_DENIED");
     }
+    await state.recommendation.c26.c25.postgres.postgres.adminPool.query(
+      `UPDATE business.response_deviation_facts SET spatial_scope_version_id = 'tampered'
+         WHERE project_id = $1 AND deviation_id = $2 AND version_id = $3`,
+      [
+        state.projectId,
+        deviation.result.deviationFactRef.reference.entityId,
+        deviation.result.deviationFactRef.reference.versionId,
+      ],
+    );
+    const drifted = await state.readDeviationFact({
+      requestId: "c28-deviation-read-drifted",
+      deviationFactRef: deviation.result.deviationFactRef,
+    });
+    expect(drifted.kind).toBe("failed");
   });
 
   pgIt("同键异载荷冲突且事务任一成员失败整体回滚", async () => {
@@ -1410,5 +1596,60 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
       })),
     });
     expect(conflicting.kind === "failed" ? "failed" : "succeeded").toBe("failed");
+  });
+
+  pgIt("反馈 Outbox 写入失败时事实、回执和审计整体回滚且可安全重试", async () => {
+    const state = fixture!;
+    state.setExecutors([executor({ predictedValue: "12" })]);
+    const chain = await adoptedChain("c28-outbox-rollback");
+    const execution = executionRef(chain.execution).result.executionRecordRef;
+    const post = await state.postActionAssessment({
+      suffix: "c28-outbox-rollback",
+      riskInputKey: chain.prepared.riskInputKey,
+    });
+    const artifact = await state.publishFeedbackArtifact({ suffix: "c28-outbox-rollback" });
+    const snapshot = state.feedbackSnapshot({
+      suffix: "c28-outbox-rollback",
+      executionRecordRef: execution,
+      forecastRef: chain.forecast.result.outcome.effectForecastRef,
+    });
+    const command = await state.feedbackCommand({
+      commandId: "c28-outbox-rollback-feedback",
+      executionRecordRef: execution,
+      postActionMonitoringSnapshotRef: post.monitoringSnapshotRef,
+      feedbackArtifactRef: artifact,
+      actualAssessmentRecordRef: post.assessmentRecordRef,
+      snapshotRef: snapshot.ref,
+      snapshot: snapshot.body,
+    });
+    const factsBefore = await state.countRows("response_feedback_records");
+    const receiptsBefore = await state.countReceipts("warning-response.record-feedback");
+    const auditsBefore = await state.countAudit("warning-response.record-feedback");
+    const admin = state.recommendation.c26.c25.postgres.postgres.adminPool;
+    await admin.query("REVOKE INSERT ON TABLE outbox.events FROM riskflow_app");
+    const failed = await state.recordFeedback(command).finally(async () => {
+      await admin.query("GRANT INSERT ON TABLE outbox.events TO riskflow_app");
+    });
+    expect(failed.kind).toBe("failed");
+    expect(await state.countRows("response_feedback_records")).toBe(factsBefore);
+    expect(await state.countReceipts("warning-response.record-feedback")).toBe(receiptsBefore);
+    expect(await state.countAudit("warning-response.record-feedback")).toBe(auditsBefore);
+    expect(
+      await state.countEvents("warning.feedback-recorded.v1", "c28-outbox-rollback-feedback"),
+    ).toBe(0);
+
+    const retried = await state.recordFeedback(command);
+    expect(retried.kind).toBe("succeeded");
+    state.setNow("2030-01-01T00:00:00.000Z");
+    const replay = await state
+      .recordFeedback(command)
+      .finally(() => state.setNow("2029-12-31T22:00:00.000Z"));
+    expect(replay.kind).toBe("succeeded");
+    expect(await state.countRows("response_feedback_records")).toBe(factsBefore + 1);
+    expect(await state.countReceipts("warning-response.record-feedback")).toBe(receiptsBefore + 1);
+    expect(await state.countAudit("warning-response.record-feedback")).toBe(auditsBefore + 1);
+    expect(
+      await state.countEvents("warning.feedback-recorded.v1", "c28-outbox-rollback-feedback"),
+    ).toBe(1);
   });
 });

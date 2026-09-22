@@ -177,7 +177,9 @@ export const computeResponseDeviation = (
   switch (input.basis) {
     case "absolute": {
       const threshold = parseCanonicalDecimalSafe(input.threshold);
-      if (threshold === undefined) return unavailable("basis-incompatible");
+      if (threshold === undefined || threshold.units < 0n) {
+        return unavailable("basis-incompatible");
+      }
       const value = canonicalAtDeviationScale(absDelta);
       if (value === undefined) return unavailable("basis-incompatible");
       return {
@@ -197,7 +199,9 @@ export const computeResponseDeviation = (
       if (threshold === undefined || minimumBaseline === undefined) {
         return unavailable("basis-incompatible");
       }
-      if (minimumBaseline.units <= 0n) return unavailable("basis-incompatible");
+      if (threshold.units < 0n || minimumBaseline.units <= 0n) {
+        return unavailable("basis-incompatible");
+      }
       const denominator =
         compareCanonicalDecimalValues(absoluteValue(predicted), minimumBaseline) >= 0
           ? absoluteValue(predicted)

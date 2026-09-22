@@ -200,6 +200,8 @@ export async function up(db: Kysely<unknown>): Promise<void> {
 }
 
 export async function down(db: Kysely<unknown>): Promise<void> {
+  await sql`ALTER TABLE IF EXISTS business.response_feedback_records
+    DROP CONSTRAINT IF EXISTS response_feedback_records_feedback_artifact_fk`.execute(db);
   await db.schema.dropIndex("artifact_maintenance_batches_project_run_idx").ifExists().execute();
   await db.schema.dropTable("business.artifact_maintenance_batches").ifExists().execute();
   await db.schema.dropIndex("artifact_access_records_request_idx").ifExists().execute();

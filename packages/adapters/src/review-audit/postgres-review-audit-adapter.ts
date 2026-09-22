@@ -25,6 +25,7 @@ import {
   reviewTaskIdentityKey,
   type ReviewTaskStateV1,
 } from "@riskflow/core/review-audit";
+import type { IdentificationGroupDecisionReadV1 } from "@riskflow/core/identification/candidate-finalization";
 import {
   AtomicCommandV1Schema,
   type AtomicCommitV1,
@@ -35,6 +36,7 @@ import {
 } from "@riskflow/core/persistence";
 import {
   MODULE_BRANCH_CAPABILITY_V1,
+  IdentificationGroupRefV1Schema,
   KnowledgeRevisionApprovalProofQueryV1Schema,
   KnowledgeRevisionApprovalProofResultV1Schema,
   ReviewDecisionCommandV1Schema,
@@ -50,6 +52,7 @@ import {
   TraceResultV1Schema,
   type AuthorizationContextV1,
   type ContractReferenceV1,
+  type IdentificationGroupRefV1,
   type KnowledgeRevisionApprovalProofQueryV1,
   type KnowledgeRevisionApprovalProofResultV1,
   type ModuleBranchV1,
@@ -964,6 +967,118 @@ export class PostgresReviewAuditAdapter implements ReviewAuditPortV1 {
           causalRunId: input.invocationId,
         }),
       };
+    }
+  }
+
+  /**
+   * C22 验收决定窄读（design D-08）：以当前事实复核 `business.review_tasks` / `business.review_decisions`
+   * 的单点记录，供 `accept-groups` 判断人工路线是否已成立。授权分支沿用 `review-audit.trace`，
+   * 只读、不写审计、不发事件、不改任务状态，也不返回自由正文。
+   * 任何事实不一致都折叠为稳定 `detailCode` 的 `blocked`：目标不存在、跨工程引用与事实不符
+   * 彼此不可区分，不泄露目标存在性；`pending` 返回等待，`superseded` 作为陈旧任务阻断。
+   */
+  async readIdentificationGroupDecision(input: {
+    readonly projectId: string;
+    readonly groupRef: IdentificationGroupRefV1;
+    readonly reviewTaskRef: ReviewTaskRefV1;
+    readonly authorization: AuthorizationContextV1;
+    readonly invocationId: string;
+    readonly requestedAt: string;
+  }): Promise<IdentificationGroupDecisionReadV1> {
+    const blocked = (detailCode: string): IdentificationGroupDecisionReadV1 => ({
+      kind: "blocked",
+      detailCode,
+    });
+    try {
+      await this.#verify(
+        input.authorization,
+        input.projectId,
+        input.invocationId,
+        "review-audit.trace",
+      );
+      const task = await this.#db
+        .selectFrom("business.review_tasks")
+        .select([
+          "review_type",
+          "target_kind",
+          "target_entity_id",
+          "target_version_id",
+          "target_ref",
+          "review_task_ref",
+          "status",
+          "decision_ref",
+        ])
+        .where("project_id", "=", input.projectId)
+        .where("review_task_id", "=", input.reviewTaskRef.reference.entityId)
+        .where("version_id", "=", input.reviewTaskRef.reference.versionId)
+        .executeTakeFirst();
+      if (task === undefined) return blocked("review-task-not-found");
+
+      const storedTaskRef = ReviewTaskRefV1Schema.parse(task.review_task_ref);
+      const storedTargetRef = IdentificationGroupRefV1Schema.parse(task.target_ref);
+      if (
+        task.review_type !== "identification-group" ||
+        task.review_type !== input.reviewTaskRef.reviewType ||
+        task.target_kind !== "identification-group" ||
+        task.target_entity_id !== input.groupRef.reference.entityId ||
+        task.target_version_id !== input.groupRef.reference.versionId ||
+        !reviewTaskRefEquals(storedTaskRef, input.reviewTaskRef) ||
+        !versionedRefEquals(storedTargetRef, input.groupRef)
+      ) {
+        return blocked("review-task-fact-mismatch");
+      }
+      if (task.status === "superseded") return blocked("review-task-stale");
+      if (task.status !== "decided") return { kind: "pending" };
+
+      const decisionRow = await this.#db
+        .selectFrom("business.review_decisions")
+        .select([
+          "review_decision_ref",
+          "review_type",
+          "review_task_ref",
+          "target_ref",
+          "decision",
+          "decided_at",
+        ])
+        .where("project_id", "=", input.projectId)
+        .where("review_task_id", "=", input.reviewTaskRef.reference.entityId)
+        .executeTakeFirst();
+      if (decisionRow === undefined || task.decision_ref === null) {
+        return blocked("review-decision-missing");
+      }
+
+      const storedDecisionRef = ReviewDecisionRefV1Schema.parse(decisionRow.review_decision_ref);
+      const storedTaskDecisionRef = ReviewDecisionRefV1Schema.parse(task.decision_ref);
+      const decisionTaskRef = ReviewTaskRefV1Schema.parse(decisionRow.review_task_ref);
+      const decisionTargetRef = IdentificationGroupRefV1Schema.parse(decisionRow.target_ref);
+      const decision = ReviewDecisionV1Schema.parse(decisionRow.decision);
+      if (
+        decisionRow.review_type !== "identification-group" ||
+        decision.reviewType !== "identification-group" ||
+        !versionedRefEquals(storedDecisionRef, storedTaskDecisionRef) ||
+        !reviewTaskRefEquals(decisionTaskRef, storedTaskRef) ||
+        !versionedRefEquals(decisionTargetRef, input.groupRef)
+      ) {
+        return blocked("review-decision-fact-mismatch");
+      }
+
+      // 决定联合由契约唯一限定；`approve-revised-candidate` 另需返回修订后的候选集引用。
+      return {
+        kind: "decided",
+        decisionKind: decision.kind,
+        reviewDecisionRef: storedDecisionRef,
+        ...(decision.kind === "approve-revised-candidate"
+          ? { revisedCandidateSetRef: decision.revisedCandidateRef }
+          : {}),
+        decidedAt: asIso(decisionRow.decided_at),
+      };
+    } catch (error) {
+      // 授权拒绝与数据库失败都折叠为稳定 `blocked`，不区分目标是否存在。
+      return blocked(
+        error instanceof AccessServiceError
+          ? "review-decision-not-authorized"
+          : "review-decision-unavailable",
+      );
     }
   }
 

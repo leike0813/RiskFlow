@@ -53,6 +53,7 @@ import * as deterministicRiskAssessmentMigration from "../../src/postgres/migrat
 import * as externalRiskEventRegistrationMigration from "../../src/postgres/migrations/engineering-data/implement-external-risk-event-registration/000036_external_risk_event_registration.js";
 import * as versionedHybridRetrievalMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-versioned-dual-index-hybrid-retrieval/000040_versioned_hybrid_retrieval.js";
 import * as identificationContextResultsMigration from "../../src/postgres/migrations/risk-identification/deliver-relationship-context-and-retrieval-agent-review/000041_identification_context_results.js";
+import * as riskCandidateFinalizationMigration from "../../src/postgres/migrations/risk-identification/deliver-risk-candidate-validation-merge-and-acceptance/000042_risk_candidate_finalization.js";
 import * as warningTasksMigration from "../../src/postgres/migrations/warning-response/deliver-warning-tasks-and-in-app-notification/000044_warning_tasks_and_in_app_notification.js";
 import * as responseRecommendationMigration from "../../src/postgres/migrations/warning-response/deliver-response-recommendation/000045_response_recommendation.js";
 
@@ -399,6 +400,15 @@ const testMigrationManifest = [
       "000041_risk-identification_deliver-relationship-context-and-retrieval-agent-review_identification_context_results",
     sequence: 41,
     module: identificationContextResultsMigration,
+  },
+  {
+    root: "production",
+    relativePath:
+      "risk-identification/deliver-risk-candidate-validation-merge-and-acceptance/000042_risk_candidate_finalization.ts",
+    migrationName:
+      "000042_risk-identification_deliver-risk-candidate-validation-merge-and-acceptance_risk_candidate_finalization",
+    sequence: 42,
+    module: riskCandidateFinalizationMigration,
   },
   {
     root: "production",

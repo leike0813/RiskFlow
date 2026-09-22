@@ -83,6 +83,10 @@
       "types": "./dist/identification/context/index.d.ts",
       "import": "./dist/identification/context/index.js"
     },
+    "./identification/candidate-finalization": {
+      "types": "./dist/identification/candidate-finalization/index.d.ts",
+      "import": "./dist/identification/candidate-finalization/index.js"
+    },
     "./scoring-rules": {
       "types": "./dist/scoring-rules/index.d.ts",
       "import": "./dist/scoring-rules/index.js"

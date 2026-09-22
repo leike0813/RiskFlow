@@ -8,6 +8,7 @@ import {
   ReviewDecisionCommandV1Schema,
   ReviewRequestV1Schema,
   type AuthorizationContextV1,
+  type IdentificationGroupRefV1,
   type KnowledgeRevisionApprovalProofQueryV1,
   type ReviewDecisionCommandV1,
   type ReviewRequestV1,
@@ -839,6 +840,191 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
     expect(JSON.stringify(denied)).not.toContain(taskRef.reference.entityId);
     expect(JSON.stringify(denied)).not.toContain("rule-conflict-target");
 
+    expect(await reviewAuditCounts(fixture!, projectId)).toEqual(before);
+  });
+
+  it("reads identification-group decisions for the C22 acceptance path without writes or target leakage", async () => {
+    const projectId = "project-group-decision-read";
+    const authorization = authorizationFor(projectId);
+    const { adapter } = adapterFor(fixture!, authorization);
+    const request = requestFor({ suffix: "group-decision", projectId, authorization });
+    const groupRef = request.payload.targetRef as IdentificationGroupRefV1;
+    const requested = await adapter.requestReview(request);
+    expect(requested.kind).toBe("succeeded");
+    if (requested.kind !== "succeeded") return;
+    const taskRef = requested.result.reviewTaskRef;
+    const readInput = {
+      projectId,
+      groupRef,
+      reviewTaskRef: taskRef,
+      authorization,
+      invocationId: "group-decision-read-invocation",
+      requestedAt: REVIEW_TEST_TIMESTAMP,
+    };
+
+    // 未裁决不给出决定。
+    expect(await adapter.readIdentificationGroupDecision(readInput)).toEqual({ kind: "pending" });
+
+    // 同目标重新发起使旧任务 superseded；陈旧任务必须稳定阻断，不得伪装成可继续等待的 pending。
+    const supersedingRequest = requestFor({
+      suffix: "group-decision",
+      projectId,
+      authorization,
+      targetEntityId: groupRef.reference.entityId,
+      targetVersionId: "2",
+      commandId: nextId("request-group-decision-superseding"),
+      idempotencyKey: nextId("idempotency-group-decision-superseding"),
+    });
+    const superseding = await adapter.requestReview(supersedingRequest);
+    expect(superseding.kind).toBe("succeeded");
+    if (superseding.kind !== "succeeded") return;
+    const supersedingTaskRef = superseding.result.reviewTaskRef;
+    const supersedingRead = {
+      ...readInput,
+      groupRef: supersedingRequest.payload.targetRef as IdentificationGroupRefV1,
+      reviewTaskRef: supersedingTaskRef,
+    };
+    expect(await adapter.readIdentificationGroupDecision(readInput)).toEqual({
+      kind: "blocked",
+      detailCode: "review-task-stale",
+    });
+    expect(await adapter.readIdentificationGroupDecision(supersedingRead)).toEqual({
+      kind: "pending",
+    });
+
+    // 裁决后按当前事实返回决定种类与决定引用。
+    const decided = await adapter.decideReview(
+      decisionFor(supersedingRequest, supersedingTaskRef, "group-decision"),
+    );
+    expect(decided.kind).toBe("succeeded");
+    if (decided.kind !== "succeeded") return;
+    expect(await adapter.readIdentificationGroupDecision(supersedingRead)).toEqual({
+      kind: "decided",
+      decisionKind: "approve-unchanged",
+      reviewDecisionRef: decided.result.reviewDecisionRef,
+      decidedAt: "2030-01-01T00:00:01.000Z",
+    });
+
+    // 修订候选决定必须带回修订后的候选集引用。
+    const revisedRequest = requestFor({
+      suffix: "group-decision-revised",
+      projectId,
+      authorization,
+    });
+    const revised = await adapter.requestReview(revisedRequest);
+    expect(revised.kind).toBe("succeeded");
+    if (revised.kind !== "succeeded") return;
+    const revisedTaskRef = revised.result.reviewTaskRef;
+    const revisedCandidateRef = {
+      kind: "identification-candidate-set" as const,
+      reference: { entityId: "candidate-set-revised", versionId: "1" },
+    };
+    const revisedCommand = decisionFor(revisedRequest, revisedTaskRef, "group-decision-revised");
+    const decidedRevised = await adapter.decideReview(
+      ReviewDecisionCommandV1Schema.parse({
+        ...revisedCommand,
+        payload: {
+          ...revisedCommand.payload,
+          decision: {
+            reviewType: "identification-group",
+            kind: "approve-revised-candidate",
+            revisedCandidateRef,
+          },
+        },
+      }),
+    );
+    expect(decidedRevised.kind).toBe("succeeded");
+    if (decidedRevised.kind !== "succeeded") return;
+    expect(
+      await adapter.readIdentificationGroupDecision({
+        ...supersedingRead,
+        groupRef: revisedRequest.payload.targetRef as IdentificationGroupRefV1,
+        reviewTaskRef: revisedTaskRef,
+      }),
+    ).toEqual({
+      kind: "decided",
+      decisionKind: "approve-revised-candidate",
+      reviewDecisionRef: decidedRevised.result.reviewDecisionRef,
+      revisedCandidateSetRef: revisedCandidateRef,
+      decidedAt: "2030-01-01T00:00:01.000Z",
+    });
+
+    // 事实不符：目标引用或任务引用对不上时封闭拒绝，且不泄漏目标与任务身份。
+    for (const mismatch of [
+      {
+        ...supersedingRead,
+        groupRef: {
+          ...groupRef,
+          reference: { ...groupRef.reference, entityId: "group-decided-other" },
+        },
+      },
+      {
+        ...supersedingRead,
+        groupRef: { ...groupRef, reference: { ...groupRef.reference, versionId: "3" } },
+      },
+    ] as ReadonlyArray<typeof supersedingRead>) {
+      const rejected = await adapter.readIdentificationGroupDecision(mismatch);
+      expect(rejected).toEqual({ kind: "blocked", detailCode: "review-task-fact-mismatch" });
+      expect(JSON.stringify(rejected)).not.toContain(taskRef.reference.entityId);
+      expect(JSON.stringify(rejected)).not.toContain(groupRef.reference.entityId);
+    }
+
+    // 任务不存在与跨工程引用必须不可区分，二者都不泄露任务是否存在。
+    const otherProjectId = "project-group-decision-other";
+    const otherAuthorization = authorizationFor(otherProjectId);
+    const absent = await adapter.readIdentificationGroupDecision({
+      ...supersedingRead,
+      reviewTaskRef: {
+        ...supersedingTaskRef,
+        reference: { entityId: "review-task-unknown", versionId: "1" },
+      },
+    });
+    const foreignProject = await adapterFor(
+      fixture!,
+      otherAuthorization,
+    ).adapter.readIdentificationGroupDecision({
+      ...supersedingRead,
+      projectId: otherProjectId,
+      authorization: otherAuthorization,
+    });
+    expect(absent).toEqual({ kind: "blocked", detailCode: "review-task-not-found" });
+    expect(foreignProject).toEqual(absent);
+
+    const denial = new AccessServiceError({
+      code: "AUTHORIZATION_DENIED",
+      stage: "verify",
+      occurredAt: REVIEW_TEST_TIMESTAMP,
+      diagnosticRef: {
+        kind: "diagnostic-artifact",
+        reference: { entityId: "diagnostic-group-decision-read-denied", versionId: "1" },
+      },
+      contextRefs: [],
+      retryable: false,
+      requiredCapability: "review-audit.read",
+      authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+    });
+    const denyVerify = vi.fn(async () => {
+      throw denial;
+    });
+    const denied = await adapterFor(
+      fixture!,
+      authorization,
+      denyVerify,
+    ).adapter.readIdentificationGroupDecision(supersedingRead);
+    expect(denied).toEqual({ kind: "blocked", detailCode: "review-decision-not-authorized" });
+    expect(denyVerify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        branch: "review-audit.trace",
+        invocationId: readInput.invocationId,
+      }),
+    );
+    expect(JSON.stringify(denied)).not.toContain(groupRef.reference.entityId);
+
+    // 只读路径：读取前后任务、决定、审计、回执与事件计数完全一致。
+    const before = await reviewAuditCounts(fixture!, projectId);
+    expect(await adapter.readIdentificationGroupDecision(supersedingRead)).toMatchObject({
+      kind: "decided",
+    });
     expect(await reviewAuditCounts(fixture!, projectId)).toEqual(before);
   });
 

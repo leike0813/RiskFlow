@@ -175,8 +175,9 @@ export async function up(db: Kysely<unknown>): Promise<void> {
 export async function down(db: Kysely<unknown>): Promise<void> {
   // 后续 change 建了指向 present 表的外键：C27 的四张表指向 business.command_receipts 与
   // audit.entries，C21 的 identification_context_results 指向 audit.entries，C28 的五张表
-  // （采纳决定/预测结果/执行/反馈/偏差事实）指向 audit.entries。孤立回滚本迁移
-  // MUST 先解除这类依赖，否则 PostgreSQL 以 "other objects depend on it" 拒绝删表。
+  // （采纳决定/预测结果/执行/反馈/偏差事实）指向 audit.entries，C29 的三张表
+  // （校准建议/偏差记录/治理草案）指向 audit.entries 与 business.command_receipts。
+  // 孤立回滚本迁移 MUST 先解除这类依赖，否则 PostgreSQL 以 "other objects depend on it" 拒绝删表。
   // 依赖表可能尚未建立，因此按表存在性守卫。
   await sql`
     DO $$
@@ -239,6 +240,24 @@ export async function down(db: Kysely<unknown>): Promise<void> {
         ALTER TABLE business.response_deviation_facts
           DROP CONSTRAINT IF EXISTS response_deviation_facts_audit_fk,
           DROP CONSTRAINT IF EXISTS response_deviation_facts_command_fk;
+      END IF;
+      IF EXISTS (SELECT 1 FROM information_schema.tables
+                 WHERE table_schema = 'business' AND table_name = 'calibration_suggestions') THEN
+        ALTER TABLE business.calibration_suggestions
+          DROP CONSTRAINT IF EXISTS calibration_suggestions_audit_fk,
+          DROP CONSTRAINT IF EXISTS calibration_suggestions_command_fk;
+      END IF;
+      IF EXISTS (SELECT 1 FROM information_schema.tables
+                 WHERE table_schema = 'business' AND table_name = 'calibration_deviation_records') THEN
+        ALTER TABLE business.calibration_deviation_records
+          DROP CONSTRAINT IF EXISTS calibration_deviation_records_audit_fk,
+          DROP CONSTRAINT IF EXISTS calibration_deviation_records_command_fk;
+      END IF;
+      IF EXISTS (SELECT 1 FROM information_schema.tables
+                 WHERE table_schema = 'business' AND table_name = 'calibration_governance_drafts') THEN
+        ALTER TABLE business.calibration_governance_drafts
+          DROP CONSTRAINT IF EXISTS calibration_governance_drafts_audit_fk,
+          DROP CONSTRAINT IF EXISTS calibration_governance_drafts_command_fk;
       END IF;
     END
     $$;

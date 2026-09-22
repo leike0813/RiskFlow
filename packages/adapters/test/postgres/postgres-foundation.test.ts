@@ -56,6 +56,7 @@ import * as identificationContextResultsMigration from "../../src/postgres/migra
 import * as riskCandidateFinalizationMigration from "../../src/postgres/migrations/risk-identification/deliver-risk-candidate-validation-merge-and-acceptance/000042_risk_candidate_finalization.js";
 import * as warningTasksMigration from "../../src/postgres/migrations/warning-response/deliver-warning-tasks-and-in-app-notification/000044_warning_tasks_and_in_app_notification.js";
 import * as responseRecommendationMigration from "../../src/postgres/migrations/warning-response/deliver-response-recommendation/000045_response_recommendation.js";
+import * as executionForecastFeedbackDeviationMigration from "../../src/postgres/migrations/warning-response/deliver-execution-forecast-feedback-and-deviation/000046_execution_forecast_feedback_deviation.js";
 
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
 import * as agentTaskFixtureMigration from "./fixtures/migrations/agent-task/deliver-unified-bounded-agent-runtime/900002_agent_task_fixture.js";
@@ -427,6 +428,15 @@ const testMigrationManifest = [
       "000045_warning-response_deliver-response-recommendation_response_recommendation",
     sequence: 45,
     module: responseRecommendationMigration,
+  },
+  {
+    root: "production",
+    relativePath:
+      "warning-response/deliver-execution-forecast-feedback-and-deviation/000046_execution_forecast_feedback_deviation.ts",
+    migrationName:
+      "000046_warning-response_deliver-execution-forecast-feedback-and-deviation_execution_forecast_feedback_deviation",
+    sequence: 46,
+    module: executionForecastFeedbackDeviationMigration,
   },
   {
     root: "fixture",

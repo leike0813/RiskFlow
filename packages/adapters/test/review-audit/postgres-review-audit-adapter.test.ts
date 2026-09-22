@@ -1522,4 +1522,192 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
       await access.close();
     }
   }, 240_000);
+
+  it("pending identification review narrow read returns the frozen task facts", async () => {
+    const authorization = authorizationFor("project-c23-read");
+    const { adapter, verify } = adapterFor(fixture!, authorization);
+    const request = requestFor({ suffix: "c23-pending" });
+    const created = await adapter.requestReview(request);
+    expect(created.kind).toBe("succeeded");
+    if (created.kind !== "succeeded") return;
+    const before = await reviewAuditCounts(fixture!, request.projectId);
+
+    const read = await adapter.readPendingIdentificationReview({
+      projectId: request.projectId,
+      reviewTaskRef: created.result.reviewTaskRef,
+      authorization,
+      invocationId: "c23-read-pending",
+      requestedAt: REVIEW_TEST_TIMESTAMP,
+    });
+
+    expect(verify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        branch: "review-audit.decide-review",
+        invocationId: "c23-read-pending",
+        projectId: request.projectId,
+      }),
+    );
+    expect(read).toEqual({
+      kind: "pending",
+      task: {
+        reviewTaskRef: created.result.reviewTaskRef,
+        groupRef: request.payload.targetRef,
+        validationSnapshotRef: request.payload.validationSnapshotRef,
+        evidenceSnapshotRef: request.payload.evidenceSnapshotRef,
+        reviewPolicyRef: request.payload.reviewPolicyRef,
+        waitingRunRef: request.payload.waitingRunRef,
+      },
+    });
+    // 窄读只读事实：不写审计、不发事件、不产生命令回执。
+    expect(await reviewAuditCounts(fixture!, request.projectId)).toEqual(before);
+  }, 120_000);
+
+  it("superseded identification tasks are stale and decided tasks only allow reconciliation", async () => {
+    const authorization = authorizationFor("project-c23-stale");
+    const { adapter } = adapterFor(fixture!, authorization);
+    const request = requestFor({ suffix: "c23-stale" });
+    const created = await adapter.requestReview(request);
+    expect(created.kind).toBe("succeeded");
+    if (created.kind !== "succeeded") return;
+
+    const supersedingRequest = requestFor({ suffix: "c23-stale", targetVersionId: "2" });
+    const superseding = await adapter.requestReview(supersedingRequest);
+    expect(superseding.kind).toBe("succeeded");
+    if (superseding.kind !== "succeeded") return;
+
+    expect(
+      await adapter.readPendingIdentificationReview({
+        projectId: request.projectId,
+        reviewTaskRef: created.result.reviewTaskRef,
+        authorization,
+        invocationId: "c23-read-superseded",
+        requestedAt: REVIEW_TEST_TIMESTAMP,
+      }),
+    ).toEqual({ kind: "blocked", detailCode: "review-task-stale" });
+
+    const decided = await adapter.decideReview(
+      decisionFor(supersedingRequest, superseding.result.reviewTaskRef),
+    );
+    expect(decided.kind).toBe("succeeded");
+    // 已决定任务只返回同一冻结事实，供同命令重试对账，不返回决定正文。
+    const decidedRead = await adapter.readPendingIdentificationReview({
+      projectId: request.projectId,
+      reviewTaskRef: superseding.result.reviewTaskRef,
+      authorization,
+      invocationId: "c23-read-decided",
+      requestedAt: REVIEW_TEST_TIMESTAMP,
+    });
+    expect(decidedRead).toEqual({
+      kind: "decided",
+      task: {
+        reviewTaskRef: superseding.result.reviewTaskRef,
+        groupRef: supersedingRequest.payload.targetRef,
+        validationSnapshotRef: supersedingRequest.payload.validationSnapshotRef,
+        evidenceSnapshotRef: supersedingRequest.payload.evidenceSnapshotRef,
+        reviewPolicyRef: supersedingRequest.payload.reviewPolicyRef,
+        waitingRunRef: supersedingRequest.payload.waitingRunRef,
+      },
+    });
+  }, 180_000);
+
+  it("missing, mismatched, and cross-project identification tasks fold to the same closed result", async () => {
+    const authorization = authorizationFor("project-c23-mismatch");
+    const { adapter } = adapterFor(fixture!, authorization);
+    const request = requestFor({ suffix: "c23-mismatch" });
+    const created = await adapter.requestReview(request);
+    expect(created.kind).toBe("succeeded");
+    if (created.kind !== "succeeded") return;
+    const taskRef = created.result.reviewTaskRef;
+
+    const missing = await adapter.readPendingIdentificationReview({
+      projectId: request.projectId,
+      reviewTaskRef: {
+        ...taskRef,
+        reference: { ...taskRef.reference, versionId: "unknown-version" },
+      },
+      authorization,
+      invocationId: "c23-read-missing",
+      requestedAt: REVIEW_TEST_TIMESTAMP,
+    });
+    const crossProject = await adapter.readPendingIdentificationReview({
+      projectId: "project-c23-other",
+      reviewTaskRef: taskRef,
+      authorization,
+      invocationId: "c23-read-cross-project",
+      requestedAt: REVIEW_TEST_TIMESTAMP,
+    });
+    expect(missing).toEqual({ kind: "blocked", detailCode: "review-task-not-found" });
+    expect(crossProject).toEqual(missing);
+
+    const wrongTarget = await adapter.readPendingIdentificationReview({
+      projectId: request.projectId,
+      reviewTaskRef: {
+        ...taskRef,
+        targetRef: {
+          kind: "identification-group",
+          reference: { entityId: "other-group", versionId: "1" },
+        },
+      },
+      authorization,
+      invocationId: "c23-read-wrong-target",
+      requestedAt: REVIEW_TEST_TIMESTAMP,
+    });
+    expect(wrongTarget).toEqual({ kind: "blocked", detailCode: "review-task-fact-mismatch" });
+
+    const foreignType = requestFor({ suffix: "c23-knowledge", reviewType: "knowledge-revision" });
+    const foreignTask = await adapter.requestReview(foreignType);
+    expect(foreignTask.kind).toBe("succeeded");
+    if (foreignTask.kind !== "succeeded") return;
+    const foreignRead = await adapter.readPendingIdentificationReview({
+      projectId: foreignType.projectId,
+      reviewTaskRef: foreignTask.result.reviewTaskRef,
+      authorization,
+      invocationId: "c23-read-foreign-type",
+      requestedAt: REVIEW_TEST_TIMESTAMP,
+    });
+    expect(foreignRead).toEqual({ kind: "blocked", detailCode: "review-task-fact-mismatch" });
+  }, 180_000);
+
+  it("authorization is verified before any task fact is read", async () => {
+    const authorization = authorizationFor("project-c23-denied");
+    const denial = new AccessServiceError({
+      code: "AUTHORIZATION_DENIED",
+      stage: "verify",
+      occurredAt: REVIEW_TEST_TIMESTAMP,
+      diagnosticRef: {
+        kind: "diagnostic-artifact",
+        reference: { entityId: "diagnostic-pending-review-read-denied", versionId: "1" },
+      },
+      contextRefs: [],
+      retryable: false,
+      requiredCapability: "review-audit.decide",
+      authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+    });
+    const deniedVerify = vi.fn(async () => {
+      throw denial;
+    });
+    const request = requestFor({ suffix: "c23-denied" });
+    const created = await adapterFor(fixture!, authorization).adapter.requestReview(request);
+    expect(created.kind).toBe("succeeded");
+    if (created.kind !== "succeeded") return;
+    const { adapter } = adapterFor(fixture!, authorization, deniedVerify);
+
+    const read = await adapter.readPendingIdentificationReview({
+      projectId: request.projectId,
+      reviewTaskRef: created.result.reviewTaskRef,
+      authorization,
+      invocationId: "c23-read-denied",
+      requestedAt: REVIEW_TEST_TIMESTAMP,
+    });
+
+    // 授权先行使无权调用方无法区分目标存在性、版本陈旧或属于其它工程。
+    expect(read).toEqual({ kind: "blocked", detailCode: "review-task-not-authorized" });
+    expect(deniedVerify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        branch: "review-audit.decide-review",
+        invocationId: "c23-read-denied",
+      }),
+    );
+    expect(JSON.stringify(read)).not.toContain(created.result.reviewTaskRef.reference.entityId);
+  }, 120_000);
 });

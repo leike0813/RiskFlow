@@ -43,10 +43,12 @@ describe("C22 risk candidate finalization composition", () => {
     );
   });
 
-  it("exposes only the analyze and finalize branches of the frozen service", () => {
+  it("exposes only the analyze, finalize and revision branches of the frozen service", () => {
     const composition = createRiskCandidateFinalizationComposition(requiredOptions());
     expect(typeof composition.service.analyze).toBe("function");
     expect(typeof composition.service.finalize).toBe("function");
+    // C23 人工复核通过该窄接缝登记修订候选，不接触 C22 内部存储。
+    expect(typeof composition.service.prepareReviewRevision).toBe("function");
     // C24 拥有 `plan`：C22 组合不提供该分支，也不暴露图或 API 接线。
     expect("plan" in composition.service).toBe(false);
     expect(typeof composition.adapter.registerResults).toBe("function");

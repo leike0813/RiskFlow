@@ -27,7 +27,10 @@ import type {
   ModelOutputResult,
   StandardizedRiskRecordEnvelope,
 } from "@riskflow/contracts/records";
-import { StandardizedRiskRecordEnvelopeSchema } from "@riskflow/contracts/records";
+import {
+  ModelOutputResultSchema,
+  StandardizedRiskRecordEnvelopeSchema,
+} from "@riskflow/contracts/records";
 
 import { ArtifactPutCommandV1Schema } from "../../artifacts/index.js";
 import {
@@ -49,6 +52,8 @@ import {
   RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1,
   RISK_CANDIDATE_FINALIZATION_SCHEMA_VERSION_V1,
   RiskCandidateFinalizationResultRowV1Schema,
+  RiskCandidateSetV1Schema,
+  RiskCandidateV1Schema,
   acceptanceRouteSetRefFor,
   assertCompositeConfidenceWeights,
   assertMergePolicyWeights,
@@ -74,6 +79,7 @@ import {
   type GroupMergeEvidenceV1,
   type IdentificationGroupMemberV1,
   type IdentificationGroupV1,
+  type IdentificationReviewRevisionFieldsV1,
   type IdentificationSnapshotEntryV1,
   type IdentificationSnapshotV1,
   type MergePlanV1,
@@ -87,6 +93,8 @@ import {
 } from "./schema.js";
 import type {
   IdentificationGroupDecisionReadV1,
+  IdentificationReviewRevisionOutcomeV1,
+  IdentificationReviewRevisionRequestV1,
   RiskCandidateFinalizationServiceOptionsV1,
   RiskCandidateRepairFeedbackV1,
 } from "./ports.js";
@@ -96,6 +104,53 @@ const STAGE_PREFIX = "identification-candidate-finalization";
 const CONTENT_REF_KIND = "content-artifact";
 
 const CANDIDATE_NON_BLANK_FIELDS = ["riskSource", "riskFactor", "riskEvent"] as const;
+
+/**
+ * 修订窄端口判定为“陈旧/事实错配”的稳定明细码（design D-09）：其余 `BUSINESS_BLOCKED`
+ * 一律视为业务阻断（修订未通过确定性校验或冻结范围约束），两者都不返回正文。
+ */
+const REVISION_STALE_DETAIL_CODES_V1: Record<string, true> = {
+  "identification-group-not-found": true,
+  "group-fact-mismatch": true,
+  "snapshot-not-found": true,
+  "snapshot-fact-mismatch": true,
+  "candidate-set-not-found": true,
+  "candidate-set-fact-mismatch": true,
+  "candidate-validation-set-not-found": true,
+  "candidate-validation-set-fact-mismatch": true,
+  "candidate-not-found": true,
+  "candidate-not-in-group": true,
+  "candidate-artifact-invalid": true,
+  "candidate-artifact-mismatch": true,
+  "model-context-drift": true,
+};
+
+/**
+ * 只保留显式给出的允许字段，保证摘要与工件正文都不含 `undefined`。
+ */
+const definedRevisionFields = (
+  fields: IdentificationReviewRevisionFieldsV1,
+): IdentificationReviewRevisionFieldsV1 => {
+  const defined: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined) defined[key] = value;
+  }
+  return defined as IdentificationReviewRevisionFieldsV1;
+};
+
+/**
+ * C03 幂等回执冲突（design D-08）：同一命令身份携带不同载荷时由持久化层拒绝，并以
+ * `PersistenceErrorV1` 形状表达。核心层只按稳定码与持久化错误形状判定，不回显底层驱动错误。
+ */
+const isPersistenceConflictError = (error: unknown): boolean => {
+  if (typeof error !== "object" || error === null) return false;
+  if (!("code" in error) || !("retryable" in error) || !("stage" in error)) return false;
+  return (
+    typeof error.retryable === "boolean" &&
+    typeof error.stage === "string" &&
+    error.code === "IDEMPOTENCY_CONFLICT"
+  );
+};
 
 const diagnosticRef = (stage: string) => ({
   kind: "diagnostic-artifact" as const,
@@ -3666,5 +3721,570 @@ export class RiskCandidateFinalizationService {
         eventVersion: 1,
       })),
     };
+  }
+
+  // ------------------------------------------- C23 人工修订窄端口（D-03/D-04/D-08）
+
+  /**
+   * C23 人工修订窄端口（design D-03/D-04/D-08）：以调用者提交的 `review-audit.decide-review`
+   * 上下文复验当前授权，证明目标候选同时属于任务目标组、来源候选集与来源已校验集，构造只改写
+   * 允许字段的不可变后继候选集，按来源已校验集冻结的策略重跑确定性校验，并在一个 C03 事务登记
+   * 两类既有结果与一条审计。不调用模型、不写正式记录、不发领域事件；失败以闭合结果返回。
+   */
+  async prepareReviewRevision(
+    input: IdentificationReviewRevisionRequestV1,
+  ): Promise<IdentificationReviewRevisionOutcomeV1> {
+    try {
+      return await this.#prepareReviewRevision(input);
+    } catch (error: unknown) {
+      if (!(error instanceof RiskCandidateFinalizationError)) throw error;
+      const details = error.details;
+      if (details.code === "AUTHORIZATION_DENIED") return { kind: "unauthorized" };
+      if (details.code === "BUSINESS_BLOCKED") {
+        return REVISION_STALE_DETAIL_CODES_V1[details.blockerKind] === true
+          ? { kind: "stale", detailCode: details.blockerKind }
+          : { kind: "blocked", detailCode: details.blockerKind };
+      }
+      if (details.code === "IDEMPOTENCY_CONFLICT") {
+        return { kind: "conflict", priorCommandId: `${input.commandId}:revision` };
+      }
+      return { kind: "failed", detailCode: `revision-${details.code.toLowerCase()}` };
+    }
+  }
+
+  async #prepareReviewRevision(
+    input: IdentificationReviewRevisionRequestV1,
+  ): Promise<IdentificationReviewRevisionOutcomeV1> {
+    const options = this.#options;
+    const occurredAt = input.issuedAt;
+    const current = await this.#requireCurrent({
+      authorization: input.authorization,
+      branch: "review-audit.decide-review",
+      causalRunId: input.invocationId,
+      policyRef: input.authorization.authorizationPolicyRef,
+      capability: "review-audit.decide",
+    });
+    const scopeDigest = authorizationScopeDigest(current);
+    const revisionBlocker = (detailCode: string, blockerRef: ContractReferenceV1) =>
+      new RiskCandidateFinalizationError(
+        blocked({
+          causalRunId: input.invocationId,
+          occurredAt,
+          blockerKind: detailCode,
+          blockerRef,
+        }),
+      );
+
+    const groupRow = await this.#readRow({
+      projectId: input.projectId,
+      resultKind: "identification-group",
+      resultId: input.groupRef.reference.entityId,
+      resultVersionId: input.groupRef.reference.versionId,
+    });
+    if (groupRow === undefined || groupRow.resultKind !== "identification-group") {
+      throw revisionBlocker("identification-group-not-found", input.groupRef);
+    }
+    const group = await this.#readRegistered<IdentificationGroupV1>({
+      row: groupRow,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      requestedAt: occurredAt,
+      purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.group,
+      authorization: current,
+    });
+    // 分组正文只保存 groupId/groupVersionId：以既有身份函数重算精确引用，不反解字符串。
+    const groupRef = identificationGroupRefFor({
+      projectId: input.projectId,
+      workPlanEntityId: group.workPlanRef.reference.entityId,
+      groupId: group.groupId,
+      requestDigest: group.groupVersionId,
+    });
+    if (
+      group.projectId !== input.projectId ||
+      !sameRef(groupRef.reference, input.groupRef.reference)
+    ) {
+      throw revisionBlocker("group-fact-mismatch", input.groupRef);
+    }
+
+    const readSnapshot = async (
+      resultKind: "validation-snapshot" | "evidence-snapshot",
+      ref: { readonly reference: VersionReference },
+      snapshotKind: IdentificationSnapshotV1["snapshotKind"],
+    ): Promise<IdentificationSnapshotV1> => {
+      const row = await this.#readRow({
+        projectId: input.projectId,
+        resultKind,
+        resultId: ref.reference.entityId,
+        resultVersionId: ref.reference.versionId,
+      });
+      if (row === undefined || row.resultKind !== resultKind) {
+        throw revisionBlocker("snapshot-not-found", { kind: resultKind, reference: ref.reference });
+      }
+      const snapshot = await this.#readRegistered<IdentificationSnapshotV1>({
+        row,
+        projectId: input.projectId,
+        actorId: input.actorId,
+        requestedAt: occurredAt,
+        purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.snapshot,
+        authorization: current,
+      });
+      if (
+        snapshot.snapshotKind !== snapshotKind ||
+        snapshot.projectId !== input.projectId ||
+        !sameRef(snapshot.groupRef.reference, groupRef.reference) ||
+        !sameRef(snapshot.inputSnapshotRef.reference, group.inputSnapshotRef.reference) ||
+        !sameRef(snapshot.workPlanRef.reference, group.workPlanRef.reference) ||
+        !sameRef(snapshot.policySetRef.reference, group.policySetRef.reference)
+      ) {
+        throw revisionBlocker("snapshot-fact-mismatch", {
+          kind: resultKind,
+          reference: ref.reference,
+        });
+      }
+      return snapshot;
+    };
+    const validationSnapshot = await readSnapshot(
+      "validation-snapshot",
+      input.validationSnapshotRef,
+      "validation",
+    );
+    const evidenceSnapshot = await readSnapshot(
+      "evidence-snapshot",
+      input.evidenceSnapshotRef,
+      "evidence",
+    );
+    // 两份冻结快照必须属于同一输入、同一合并计划与同一策略集，否则不是同一次复核路线。
+    if (
+      !sameRef(
+        validationSnapshot.inputSnapshotRef.reference,
+        evidenceSnapshot.inputSnapshotRef.reference,
+      ) ||
+      !sameRef(validationSnapshot.workPlanRef.reference, evidenceSnapshot.workPlanRef.reference) ||
+      !sameRef(
+        validationSnapshot.mergePlanRef.reference,
+        evidenceSnapshot.mergePlanRef.reference,
+      ) ||
+      !sameRef(validationSnapshot.policySetRef.reference, evidenceSnapshot.policySetRef.reference)
+    ) {
+      throw revisionBlocker("snapshot-fact-mismatch", input.validationSnapshotRef);
+    }
+
+    const changes = definedRevisionFields(input.changes);
+    if (Object.keys(changes).length === 0) {
+      throw revisionBlocker("revision-unchanged", input.candidateRef);
+    }
+    if (changes.evidenceLocator !== undefined) {
+      const sourceSegmentId = changes.evidenceLocator.sourceSegmentId;
+      const frozen = evidenceSnapshot.entries.some(
+        (entry) => entry.entryKind === "evidence" && entry.sourceSegmentId === sourceSegmentId,
+      );
+      if (!frozen) {
+        throw revisionBlocker(
+          CANDIDATE_VALIDATION_REASON_CODES_V1.evidenceNotFrozen,
+          input.candidateRef,
+        );
+      }
+    }
+
+    const candidateSetRow = await this.#readRow({
+      projectId: input.projectId,
+      resultKind: "candidate-set",
+      resultId: input.sourceCandidateSetRef.reference.entityId,
+      resultVersionId: input.sourceCandidateSetRef.reference.versionId,
+    });
+    if (candidateSetRow === undefined || candidateSetRow.resultKind !== "candidate-set") {
+      throw revisionBlocker("candidate-set-not-found", input.sourceCandidateSetRef);
+    }
+    const sourceSet = await this.#readRegistered<RiskCandidateSetV1>({
+      row: candidateSetRow,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      requestedAt: occurredAt,
+      purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.candidateSet,
+      authorization: current,
+    });
+    if (
+      sourceSet.projectId !== input.projectId ||
+      !sameRef(sourceSet.inputSnapshotRef.reference, group.inputSnapshotRef.reference) ||
+      !sameRef(sourceSet.policySetRef.reference, group.policySetRef.reference) ||
+      !group.nodeIds.includes(sourceSet.nodeId)
+    ) {
+      throw revisionBlocker("candidate-set-fact-mismatch", input.sourceCandidateSetRef);
+    }
+
+    const validatedRow = await this.#readRow({
+      projectId: input.projectId,
+      resultKind: "validated-candidate-set",
+      resultId: input.sourceValidatedCandidateSetRef.reference.entityId,
+      resultVersionId: input.sourceValidatedCandidateSetRef.reference.versionId,
+    });
+    if (validatedRow === undefined || validatedRow.resultKind !== "validated-candidate-set") {
+      throw revisionBlocker(
+        "candidate-validation-set-not-found",
+        input.sourceValidatedCandidateSetRef,
+      );
+    }
+    const sourceValidation = await this.#readRegistered<CandidateValidationSetV1>({
+      row: validatedRow,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      requestedAt: occurredAt,
+      purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.validationSet,
+      authorization: current,
+    });
+    if (
+      sourceValidation.projectId !== input.projectId ||
+      !sameRef(sourceValidation.candidateSetRef.reference, input.sourceCandidateSetRef.reference) ||
+      sourceValidation.candidateSetVersion !== sourceSet.candidateSetVersion ||
+      !sameRef(sourceValidation.inputSnapshotRef.reference, sourceSet.inputSnapshotRef.reference) ||
+      !sameRef(
+        sourceValidation.inputSnapshotRef.reference,
+        validationSnapshot.inputSnapshotRef.reference,
+      ) ||
+      !sameRef(sourceValidation.policySetRef.reference, sourceSet.policySetRef.reference) ||
+      !sameRef(sourceValidation.workItemRef.reference, sourceSet.workItemRef.reference) ||
+      sourceValidation.nodeId !== sourceSet.nodeId ||
+      sourceValidation.entries.length !== sourceSet.candidates.length ||
+      !sourceSet.candidates.every((candidate) =>
+        sourceValidation.entries.some(
+          (entry) =>
+            entry.candidateId === candidate.candidateId &&
+            entry.candidateVersion === candidate.candidateVersion,
+        ),
+      )
+    ) {
+      throw revisionBlocker(
+        "candidate-validation-set-fact-mismatch",
+        input.sourceValidatedCandidateSetRef,
+      );
+    }
+
+    const targetEntry = sourceValidation.entries.find((entry) =>
+      sameRef(entry.candidateRef.reference, input.candidateRef.reference),
+    );
+    if (targetEntry === undefined) throw revisionBlocker("candidate-not-found", input.candidateRef);
+    const member = group.members.find(
+      (value) =>
+        value.candidateId === targetEntry.candidateId &&
+        value.candidateVersion === targetEntry.candidateVersion &&
+        sameRef(value.candidateRef.reference, input.candidateRef.reference),
+    );
+    if (member === undefined) {
+      throw revisionBlocker("candidate-not-in-group", input.candidateRef);
+    }
+    const candidateArtifact = await this.#readArtifactJson({
+      artifactRef: input.candidateRef.reference,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      requestedAt: occurredAt,
+      purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.candidateSet,
+      authorization: current,
+    });
+    const parsedCandidate = RiskCandidateV1Schema.safeParse(candidateArtifact);
+    if (!parsedCandidate.success) {
+      throw revisionBlocker("candidate-artifact-invalid", input.candidateRef);
+    }
+    const sourceCandidate = parsedCandidate.data;
+    if (
+      sourceCandidate.candidateId !== targetEntry.candidateId ||
+      sourceCandidate.candidateVersion !== targetEntry.candidateVersion ||
+      sourceCandidate.projectId !== input.projectId ||
+      sourceCandidate.nodeId !== sourceSet.nodeId ||
+      !sameRef(sourceCandidate.workItemRef.reference, sourceSet.workItemRef.reference) ||
+      !sameRef(sourceCandidate.inputSnapshotRef.reference, sourceSet.inputSnapshotRef.reference)
+    ) {
+      throw revisionBlocker("candidate-artifact-mismatch", input.candidateRef);
+    }
+
+    const revisedOutput = ModelOutputResultSchema.parse({
+      ...sourceCandidate.output,
+      ...changes,
+    });
+    if (sha256CanonicalJson(revisedOutput) === sha256CanonicalJson(sourceCandidate.output)) {
+      throw revisionBlocker("revision-unchanged", input.candidateRef);
+    }
+
+    // 后继候选只改允许字段：模型置信度、工序绑定、冻结输入、模型/提示/输出 Schema/预算、
+    // 原始响应与模型生成时间原样保留；父引用指向被修订候选的精确内容地址。
+    const revisedCandidate = RiskCandidateV1Schema.parse({
+      ...sourceCandidate,
+      candidateVersion: sourceCandidate.candidateVersion + 1,
+      parentCandidateRef: input.candidateRef,
+      output: revisedOutput,
+    });
+    const revisionDigest = sha256CanonicalJson({
+      projectId: input.projectId,
+      groupRef: input.groupRef.reference,
+      validationSnapshotRef: input.validationSnapshotRef.reference,
+      evidenceSnapshotRef: input.evidenceSnapshotRef.reference,
+      sourceCandidateSetRef: input.sourceCandidateSetRef.reference,
+      sourceValidatedCandidateSetRef: input.sourceValidatedCandidateSetRef.reference,
+      candidateRef: input.candidateRef.reference,
+      candidateSetVersion: sourceSet.candidateSetVersion + 1,
+      changes,
+    });
+    const revisedCandidateSetRef = candidateSetRefFor({
+      projectId: input.projectId,
+      workItemEntityId: sourceSet.workItemRef.reference.entityId,
+      requestDigest: revisionDigest,
+    });
+    const revisedSet = RiskCandidateSetV1Schema.parse({
+      ...sourceSet,
+      candidateSetVersion: sourceSet.candidateSetVersion + 1,
+      parentCandidateSetRef: candidateSetRow.artifactRef,
+      candidates: sourceSet.candidates.map((candidate) =>
+        candidate.candidateId === sourceCandidate.candidateId &&
+        candidate.candidateVersion === sourceCandidate.candidateVersion
+          ? revisedCandidate
+          : candidate,
+      ),
+      generatedAt: occurredAt,
+    });
+
+    const validationPolicy = await options.policyProvider.resolveValidation({
+      projectId: input.projectId,
+      inputSnapshotRef: sourceSet.inputSnapshotRef,
+      policySetRef: sourceSet.policySetRef,
+      repairPolicyRef: sourceValidation.validationPolicyRef,
+    });
+    if (validationPolicy === undefined) {
+      throw revisionBlocker("validation-policy-missing", input.sourceValidatedCandidateSetRef);
+    }
+    assertRepairableReasonCodes(validationPolicy);
+    const declaredSimulation = sourceValidation.simulationConstraintPolicyRef;
+    const resolvedSimulation = validationPolicy.simulationConstraint?.policyRef;
+    if (
+      !sameRef(validationPolicy.policyRef, sourceValidation.validationPolicyRef) ||
+      !sameRef(validationPolicy.policySetRef.reference, sourceSet.policySetRef.reference) ||
+      !sameRef(
+        validationPolicy.ruleValidationPolicyRef,
+        sourceValidation.ruleValidationPolicyRef,
+      ) ||
+      (declaredSimulation === undefined) !== (resolvedSimulation === undefined) ||
+      (declaredSimulation !== undefined &&
+        resolvedSimulation !== undefined &&
+        !sameRef(declaredSimulation, resolvedSimulation))
+    ) {
+      throw revisionBlocker("validation-policy-drift", input.sourceValidatedCandidateSetRef);
+    }
+
+    const contextRead = await options.modelContextReader.readExact({
+      projectId: input.projectId,
+      actorId: input.actorId,
+      requestedAt: occurredAt,
+      workItemRef: sourceSet.workItemRef,
+      retrievalArtifactSetRef: { reference: sourceSet.retrievalArtifactSetRef.reference },
+      authorization: current,
+    });
+    if (contextRead.kind === "failed") {
+      if (contextRead.code === "AUTHORIZATION_DENIED") {
+        throw new RiskCandidateFinalizationError(
+          authorizationDenied({
+            causalRunId: input.invocationId,
+            occurredAt,
+            capability: "review-audit.decide",
+            policyRef: input.authorization.authorizationPolicyRef,
+          }),
+        );
+      }
+      throw revisionBlocker("model-context-drift", sourceSet.workItemRef);
+    }
+    const modelContext = contextRead.read.payload;
+    if (
+      // 与 `#assembleCandidateSet` 写入的一致：重算同一份五项上下文的规范摘要，而不是信任读取端
+      // 自报的摘要字段，从而证明后继候选集复核复用同一冻结上下文。
+      sha256CanonicalJson(modelContext) !== sourceSet.modelContextPayloadDigest ||
+      !sameRef(
+        contextRead.read.modelContextArtifactSetRef.reference,
+        sourceSet.modelContextArtifactSetRef.reference,
+      ) ||
+      !sameRef(modelContext.inputSnapshotRef.reference, sourceSet.inputSnapshotRef.reference) ||
+      !sameRef(modelContext.workItemRef.reference, sourceSet.workItemRef.reference) ||
+      !sameRef(
+        modelContext.retrievalArtifactSetRef.reference,
+        sourceSet.retrievalArtifactSetRef.reference,
+      )
+    ) {
+      throw revisionBlocker("model-context-drift", sourceSet.workItemRef);
+    }
+
+    const candidateArtifactRefs = new Map(
+      sourceValidation.entries.map((entry) => [
+        candidateEvaluationKey(entry.candidateId, entry.candidateVersion),
+        entry.candidateRef.reference,
+      ]),
+    );
+    const revisedRefs = await this.#persistCandidates({
+      candidates: [revisedCandidate],
+      projectId: input.projectId,
+      actorId: input.actorId,
+      issuedAt: occurredAt,
+      commandId: `${input.commandId}:revision`,
+      authorization: current,
+    });
+    const revisedCandidateRef = revisedRefs.get(
+      candidateEvaluationKey(revisedCandidate.candidateId, revisedCandidate.candidateVersion),
+    );
+    if (revisedCandidateRef === undefined) {
+      throw new TypeError("revised candidate artifact reference is required");
+    }
+    candidateArtifactRefs.set(
+      candidateEvaluationKey(revisedCandidate.candidateId, revisedCandidate.candidateVersion),
+      revisedCandidateRef,
+    );
+
+    const evaluation = evaluateCandidateSet({
+      candidateSet: revisedSet,
+      candidateArtifactRefs,
+      modelContext,
+      policy: validationPolicy,
+    });
+    const rejected = evaluation.entries.find((entry) => entry.disposition !== "accepted");
+    if (rejected !== undefined) {
+      const failure = rejected.checks.find((entry) => !entry.passed);
+      throw revisionBlocker(
+        failure?.reasonCode ?? CANDIDATE_VALIDATION_REASON_CODES_V1.schemaInvalid,
+        rejected.candidateRef,
+      );
+    }
+
+    const validationDigest = sha256CanonicalJson({
+      candidateSetRef: revisedCandidateSetRef.reference,
+      validationPolicyRef: validationPolicy.policyRef,
+      ruleValidationPolicyRef: validationPolicy.ruleValidationPolicyRef,
+      simulationConstraintPolicyRef: validationPolicy.simulationConstraint?.policyRef ?? null,
+      entries: evaluation.entries.map((entry) => ({
+        candidateId: entry.candidateId,
+        candidateVersion: entry.candidateVersion,
+        candidateRef: entry.candidateRef.reference,
+        checks: entry.checks.map((checkEntry) => ({
+          checkId: checkEntry.checkId,
+          passed: checkEntry.passed,
+          reasonCode: checkEntry.reasonCode,
+        })),
+      })),
+    });
+    const validatedCandidateSetRef = validatedCandidateSetRefFor({
+      projectId: input.projectId,
+      candidateSetEntityId: revisedCandidateSetRef.reference.entityId,
+      requestDigest: validationDigest,
+    });
+    const validationSet: CandidateValidationSetV1 = {
+      schemaVersion: RISK_CANDIDATE_FINALIZATION_SCHEMA_VERSION_V1,
+      projectId: input.projectId,
+      inputSnapshotRef: revisedSet.inputSnapshotRef,
+      workItemRef: sourceSet.workItemRef,
+      nodeId: revisedSet.nodeId,
+      candidateSetRef: { kind: CONTENT_REF_KIND, reference: revisedCandidateSetRef.reference },
+      candidateSetVersion: revisedSet.candidateSetVersion,
+      policySetRef: revisedSet.policySetRef,
+      validationPolicyRef: validationPolicy.policyRef,
+      ruleValidationPolicyRef: validationPolicy.ruleValidationPolicyRef,
+      ...(validationPolicy.simulationConstraint === undefined
+        ? {}
+        : { simulationConstraintPolicyRef: validationPolicy.simulationConstraint.policyRef }),
+      entries: [...evaluation.entries],
+      acceptedCandidateRefs: evaluation.entries.map((entry) => entry.candidateRef),
+      usage: sourceValidation.usage,
+      authorizationScopeDigest: scopeDigest,
+      authorizationContextRef: current.authorizationContextRef,
+      completedAt: occurredAt,
+    };
+
+    // 一个 C03 事务登记两类既有结果与一条 `identification.review-revision-validated` 审计；
+    // 内部命令身份由外层决定命令派生，因此同载荷重放复用引用，异载荷返回幂等冲突。
+    const revisionCommandId = `${input.commandId}:revision`;
+    const persisted = await this.#persistRows({
+      requests: [
+        {
+          row: RiskCandidateFinalizationResultRowV1Schema.parse({
+            ...this.#rowBase({
+              resultKind: "candidate-set",
+              commandId: revisionCommandId,
+              projectId: input.projectId,
+              resultId: revisedCandidateSetRef.reference.entityId,
+              resultVersionId: revisedCandidateSetRef.reference.versionId,
+              requestDigest: revisionDigest,
+              inputSnapshotRef: revisedSet.inputSnapshotRef,
+              authorizationScopeDigest: scopeDigest,
+              actorId: input.actorId,
+              authorizationContextRef: current.authorizationContextRef,
+            }),
+            workItemRef: sourceSet.workItemRef,
+            modelContextArtifactSetRef: revisedSet.modelContextArtifactSetRef,
+            candidateSetRef: revisedCandidateSetRef,
+          }),
+          artifactId: this.#artifactID("candidate-set", revisedCandidateSetRef.reference),
+          purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.candidateSet,
+          value: revisedSet,
+        },
+        {
+          row: RiskCandidateFinalizationResultRowV1Schema.parse({
+            ...this.#rowBase({
+              resultKind: "validated-candidate-set",
+              commandId: revisionCommandId,
+              projectId: input.projectId,
+              resultId: validatedCandidateSetRef.reference.entityId,
+              resultVersionId: validatedCandidateSetRef.reference.versionId,
+              requestDigest: validationDigest,
+              inputSnapshotRef: revisedSet.inputSnapshotRef,
+              authorizationScopeDigest: scopeDigest,
+              actorId: input.actorId,
+              authorizationContextRef: current.authorizationContextRef,
+            }),
+            workItemRef: sourceSet.workItemRef,
+            candidateSetRef: revisedCandidateSetRef,
+            validatedCandidateSetRef,
+          }),
+          artifactId: this.#artifactID(
+            "validated-candidate-set",
+            validatedCandidateSetRef.reference,
+          ),
+          purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.validationSet,
+          value: validationSet,
+        },
+      ],
+      occurredAt,
+      authorization: current,
+      actorId: input.actorId,
+      commandKind: "identification.review-revision-validated",
+      commandId: revisionCommandId,
+      idempotencyKey: `${input.idempotencyKey}:revision`,
+      resultRef: {
+        kind: "identification-candidate-set",
+        reference: revisedCandidateSetRef.reference,
+      },
+    });
+    if (persisted.kind === "idempotency-conflict") {
+      throw new RiskCandidateFinalizationError(
+        idempotencyConflict({
+          causalRunId: input.invocationId,
+          occurredAt,
+          idempotencyKey: input.idempotencyKey,
+          priorCommandId: revisionCommandId,
+        }),
+      );
+    }
+    if (persisted.kind === "failed") {
+      // 同一外层命令身份携带不同修订载荷：C03 回执按稳定码拒绝，C23 据此返回幂等冲突。
+      if (isPersistenceConflictError(persisted.error)) {
+        throw new RiskCandidateFinalizationError(
+          idempotencyConflict({
+            causalRunId: input.invocationId,
+            occurredAt,
+            idempotencyKey: input.idempotencyKey,
+            priorCommandId: revisionCommandId,
+          }),
+        );
+      }
+      throw new RiskCandidateFinalizationError(
+        terminalFailure({
+          causalRunId: input.invocationId,
+          occurredAt,
+          stage: "review-revision-register",
+        }),
+      );
+    }
+    return { kind: "revised", revisedCandidateSetRef, validatedCandidateSetRef };
   }
 }

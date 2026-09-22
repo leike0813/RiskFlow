@@ -5,14 +5,16 @@
 - Change：`deliver-identification-human-review`
 - 实际 schema：`orchestrated-delivery`
 - 输入实现 HEAD：`a038b45f67ef2bb24c6a51ae88e4e750f7cbb55c`
-- 当前工作树 HEAD：`a038b45f67ef2bb24c6a51ae88e4e750f7cbb55c`
-- 最终验收产物：上述 HEAD 加本轮未提交验收修复；生产代码与测试 diff 摘要为 `c9b8090b166ea6bde800e4342e7b717374d47cc0341a23d1ba4db08da8c34632`，受控 settle 形成的 `outputHead` 由协调端记录
+- Finalizer 检查点 / 限定审计输入 HEAD：`face42d2a96247ce89856afdfdf6fbb1aa880899`
+- 当前工作树 HEAD：`face42d2a96247ce89856afdfdf6fbb1aa880899`
+- 最终验收产物：上述 HEAD 加本轮仅对本 verification 的结论补充；生产代码与测试未修改，受控 settle 形成的 `outputHead` 由协调端记录
 - 验收 Agent：Finalizer Task `task_1f4844a18eac`，Dispatch `ctx_396b4dde891d`
+- 限定审计 Agent：Targeted Auditor Task `task_331784a67f1c`，Dispatch `ctx_fb0a401a5487`
 - 样本边界：候选、证据、策略、任务和决定测试均为“合成样本、待甲方复核”
 
 ## 结论
 
-**BLOCKED（待本收尾轮次唯一一次限定审计）。** Finalizer 已核对 10/10 tasks、7 项 Requirement、16 个 Scenario 与 IP-01～IP-07，在已批准范围内修复三项偏差，并完成 V-01～V-08。由于本 change 及本轮修复涉及授权先行读取、命令回执事务幂等和人工决定关键状态机，整体结论须由协调端派发的 Targeted Auditor 在本文件补入最终产物 HEAD、审计发现、任务内修复和回归证据后更新；审计完成前不得集成。
+**PASS。** Finalizer 已核对 10/10 tasks、7 项 Requirement、16 个 Scenario 与 IP-01～IP-07，并在已批准范围内修复三项偏差；本收尾轮次唯一一次 Targeted Auditor 又独立核对了授权先行、已决定任务对账、两阶段事务幂等、唯一恢复事件、冻结合并关系、陈旧竞态和语义 merge 影响。审计未发现剩余缺陷或范围漂移，V-01～V-08 均通过，可以进入受控集成。
 
 ## 核验与修复证据
 
@@ -48,9 +50,13 @@
 
 ## 限定审计
 
-- 状态：**待 Targeted Auditor 填写**。
-- 必审范围：C07 授权前置与目标不可枚举；已决定任务回执身份对账；C03/C07 两阶段幂等、事务失败及唯一恢复事件；C22 合并计划、候选/校验集和快照的冻结关系；并发陈旧命令不得留下可消费修订；本轮无公共契约、权限矩阵、持久化、迁移、依赖或语义 merge 漂移。
-- 审计结论、最终产物 HEAD、发现、任务内修复和实际回归命令：待本轮唯一 Targeted Auditor 补充。
+- 状态：**PASS**；审计输入 HEAD 为 `face42d2a96247ce89856afdfdf6fbb1aa880899`。
+- 授权：C07 在读取任务事实前验证 `review-audit.decide-review`；无权、错工程、错目标和错版本均闭合，不返回目标正文。已决定任务只有在 `review.decide-review.v1` 完成回执的命令 ID、幂等键和决定引用同时匹配时才开放原命令对账，其它命令在 C22 修订副作用前返回陈旧结果。
+- 事务与幂等：C22 修订登记与 C07 决定保持两个既有本地事务；同载荷重放复用原候选、校验和决定引用，同键异载荷冲突。C07 决定、回执、审计和唯一 `review.review-resolved.v1` 事件同事务成立，失败回滚且不产生可消费恢复信号。
+- 关键状态机：`pending | decided | superseded` 未扩张；冻结验证/证据快照、合并计划、来源候选集和来源已校验集关系均按精确引用收口。并发 loser 或阶段二失败留下的内容寻址工件没有 C07 决定引用，不能进入 C22 验收。
+- 语义 merge：`251af7e7c6ec55865092e6aa1ba1a4c839d8d495..face42d2a96247ce89856afdfdf6fbb1aa880899` 为线性检查点序列，没有 merge commit 或冲突解决带来的额外语义影响；未发现公共契约、权限矩阵、持久化、迁移、依赖、API/UI drift。
+- 审计发现与修复：无；本轮未修改生产代码或测试，仅补充本 verification 的最终结论。
+- 独立回归：V-01 PASS（2 files / 77 tests）；V-02 PASS（1 file / 16 tests，真实 PostgreSQL/Testcontainers，无关键 skip）；V-03 PASS（2 files / 15 tests）；V-04～V-08 PASS。实际命令与 §“实际命令”一致，由本轮 Auditor 在上述固定 HEAD 重新运行。
 
 ## 后续注意事项
 

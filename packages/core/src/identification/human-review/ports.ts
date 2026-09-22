@@ -42,6 +42,7 @@ export interface IdentificationPendingReviewReaderV1 {
     readonly projectId: string;
     readonly reviewTaskRef: ReviewTaskRefV1;
     readonly authorization: AuthorizationContextV1;
+    readonly idempotencyKey: string;
     readonly invocationId: string;
     readonly requestedAt: string;
   }): Promise<IdentificationPendingReviewReadV1>;

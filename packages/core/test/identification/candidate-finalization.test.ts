@@ -2455,7 +2455,10 @@ const reviewAuthorization = () => authorization(["review-audit.decide"]);
 
 const makeRevisionFixture = (
   harnessOverrides: HarnessOverrides = {},
-  fixtureOptions: { readonly orphanThirdCandidate?: boolean } = {},
+  fixtureOptions: {
+    readonly orphanThirdCandidate?: boolean;
+    readonly sourceValidationOutsideMergePlan?: boolean;
+  } = {},
 ) => {
   const harness = makeHarness(harnessOverrides);
   const groupRef = groupRefValue("group-1");
@@ -2554,6 +2557,32 @@ const makeRevisionFixture = (
           ...groupMemberValue(candidate.candidateId, candidate.candidateVersion),
           candidateRef: candidateRefs[index],
         })),
+      }),
+    ),
+  );
+  harness.seedRow(
+    mergePlanRow(),
+    MergePlanV1Schema.parse(
+      mergePlanValue({
+        validatedCandidateSetRefs:
+          fixtureOptions.sourceValidationOutsideMergePlan === true
+            ? [
+                {
+                  kind: "validated-candidate-set",
+                  reference: versionRef("validated-set-other"),
+                },
+              ]
+            : [validatedSetRef],
+        groups: [
+          {
+            groupId: "group-1",
+            groupVersionId,
+            groupRef,
+            disposition: "merged",
+            memberCount: 2,
+          },
+        ],
+        evaluatedCandidateRefs: candidateRefs.slice(0, 2),
       }),
     ),
   );
@@ -2843,6 +2872,16 @@ describe("C23 人工修订窄端口", () => {
     );
 
     expect(outcome).toEqual({ kind: "stale", detailCode: "candidate-set-not-found" });
+    expect(fixture.harness.calls.registerCalls).toBe(0);
+  });
+
+  it("来源已校验集不属于任务冻结合并计划时返回陈旧结果", async () => {
+    const fixture = makeRevisionFixture({}, { sourceValidationOutsideMergePlan: true });
+    const outcome = await fixture.harness.service.prepareReviewRevision(
+      fixture.revisionRequest() as never,
+    );
+
+    expect(outcome).toEqual({ kind: "stale", detailCode: "merge-plan-fact-mismatch" });
     expect(fixture.harness.calls.registerCalls).toBe(0);
   });
 

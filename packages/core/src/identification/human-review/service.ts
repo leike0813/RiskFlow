@@ -236,6 +236,7 @@ export class IdentificationHumanReviewService {
       projectId: command.projectId,
       reviewTaskRef: command.reviewTaskRef,
       authorization: command.authorization,
+      idempotencyKey: command.idempotencyKey,
       invocationId: command.commandId,
       requestedAt: command.issuedAt,
     });

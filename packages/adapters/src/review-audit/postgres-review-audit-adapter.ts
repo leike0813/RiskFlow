@@ -1098,6 +1098,7 @@ export class PostgresReviewAuditAdapter implements ReviewAuditPortV1 {
     readonly projectId: string;
     readonly reviewTaskRef: ReviewTaskRefV1;
     readonly authorization: AuthorizationContextV1;
+    readonly idempotencyKey: string;
     readonly invocationId: string;
     readonly requestedAt: string;
   }): Promise<IdentificationPendingReviewReadV1> {
@@ -1128,6 +1129,7 @@ export class PostgresReviewAuditAdapter implements ReviewAuditPortV1 {
           "waiting_run_entity_id",
           "waiting_run_version_id",
           "status",
+          "decision_ref",
         ])
         .where("project_id", "=", input.projectId)
         .where("review_task_id", "=", input.reviewTaskRef.reference.entityId)
@@ -1156,9 +1158,30 @@ export class PostgresReviewAuditAdapter implements ReviewAuditPortV1 {
       ) {
         return blocked("review-task-fact-mismatch");
       }
-      // 已替代任务不可复核也不可对账；已决定任务只返回同一冻结事实，供同命令重试对账，
-      // 新的人工决定只能由 C07 在任务仍为 pending 时成立。
+      // 已替代任务不可复核也不可对账；已决定任务只有在当前命令精确命中原 C07 完成回执时
+      // 才返回冻结事实，避免不同命令先生成修订工件、再由决定事务判陈旧。
       if (task.status === "superseded") return blocked("review-task-stale");
+      if (task.status === "decided") {
+        const storedDecisionRef = ReviewDecisionRefV1Schema.safeParse(task.decision_ref);
+        if (!storedDecisionRef.success) return blocked("review-task-fact-mismatch");
+        const receipt = await this.#db
+          .selectFrom("business.command_receipts")
+          .select(["command_id", "result_ref", "completed_at"])
+          .where("project_id", "=", input.projectId)
+          .where("command_kind", "=", "review.decide-review.v1")
+          .where("idempotency_key", "=", input.idempotencyKey)
+          .executeTakeFirst();
+        const receiptDecisionRef = ReviewDecisionRefV1Schema.safeParse(receipt?.result_ref);
+        if (
+          receipt === undefined ||
+          receipt.completed_at === null ||
+          receipt.command_id !== input.invocationId ||
+          !receiptDecisionRef.success ||
+          !versionedRefEquals(receiptDecisionRef.data, storedDecisionRef.data)
+        ) {
+          return blocked("review-task-stale");
+        }
+      }
 
       const validationSnapshotRef = ValidationSnapshotRefV1Schema.safeParse(
         task.validation_snapshot_ref,

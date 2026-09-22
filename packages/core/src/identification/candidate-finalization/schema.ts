@@ -1,14 +1,13 @@
 import { z } from "zod";
 
 import {
-  EvidenceLocatorSchema,
   EvidenceReferenceSchema,
   IdentifierSchema,
   IsoDateTimeSchema,
   VersionReferenceSchema,
   type VersionReference,
 } from "@riskflow/contracts/common";
-import { ModelOutputResultSchema, RiskElementRelationSchema } from "@riskflow/contracts/records";
+import { ModelOutputResultSchema } from "@riskflow/contracts/records";
 import {
   AcceptanceRouteSetRefV1Schema,
   AuthorizationContextRefV1Schema,
@@ -660,31 +659,6 @@ export const AcceptanceRouteSetV1Schema = z.strictObject({
   routedAt: IsoDateTimeSchema,
 });
 export type AcceptanceRouteSetV1 = z.infer<typeof AcceptanceRouteSetV1Schema>;
-
-/**
- * C23 人工修订允许改写的候选字段（design D-02）：`ModelOutputResultSchema` 的六字段中排除
- * 只读的 `modelConfidence`。该形状是“允许修正字段集合”的唯一事实源，C23 复核 Schema 直接引用，
- * 不复制字段清单；工序绑定、模型/提示/输出 Schema/预算、原始响应与来源均不在其中。
- */
-export const IdentificationReviewRevisionFieldsV1Schema = z
-  .strictObject({
-    riskSource: IdentifierSchema.optional(),
-    riskFactor: IdentifierSchema.optional(),
-    riskEvent: IdentifierSchema.optional(),
-    riskElementRelations: z.array(RiskElementRelationSchema).min(1).optional(),
-    evidenceLocator: EvidenceLocatorSchema.optional(),
-  })
-  .superRefine((fields, context) => {
-    if (Object.values(fields).every((value) => value === undefined)) {
-      context.addIssue({
-        code: "custom",
-        message: "at least one revisable candidate field is required",
-      });
-    }
-  });
-export type IdentificationReviewRevisionFieldsV1 = z.infer<
-  typeof IdentificationReviewRevisionFieldsV1Schema
->;
 
 export const IdentificationGroupDecisionKindV1Schema = z.enum([
   "approve-unchanged",

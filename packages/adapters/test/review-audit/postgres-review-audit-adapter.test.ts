@@ -1536,6 +1536,7 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
       projectId: request.projectId,
       reviewTaskRef: created.result.reviewTaskRef,
       authorization,
+      idempotencyKey: "c23-read-pending",
       invocationId: "c23-read-pending",
       requestedAt: REVIEW_TEST_TIMESTAMP,
     });
@@ -1580,21 +1581,22 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
         projectId: request.projectId,
         reviewTaskRef: created.result.reviewTaskRef,
         authorization,
+        idempotencyKey: "c23-read-superseded",
         invocationId: "c23-read-superseded",
         requestedAt: REVIEW_TEST_TIMESTAMP,
       }),
     ).toEqual({ kind: "blocked", detailCode: "review-task-stale" });
 
-    const decided = await adapter.decideReview(
-      decisionFor(supersedingRequest, superseding.result.reviewTaskRef),
-    );
+    const decision = decisionFor(supersedingRequest, superseding.result.reviewTaskRef);
+    const decided = await adapter.decideReview(decision);
     expect(decided.kind).toBe("succeeded");
     // 已决定任务只返回同一冻结事实，供同命令重试对账，不返回决定正文。
     const decidedRead = await adapter.readPendingIdentificationReview({
       projectId: request.projectId,
       reviewTaskRef: superseding.result.reviewTaskRef,
       authorization,
-      invocationId: "c23-read-decided",
+      idempotencyKey: decision.idempotencyKey,
+      invocationId: decision.commandId,
       requestedAt: REVIEW_TEST_TIMESTAMP,
     });
     expect(decidedRead).toEqual({
@@ -1608,6 +1610,16 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
         waitingRunRef: supersedingRequest.payload.waitingRunRef,
       },
     });
+    expect(
+      await adapter.readPendingIdentificationReview({
+        projectId: request.projectId,
+        reviewTaskRef: superseding.result.reviewTaskRef,
+        authorization,
+        idempotencyKey: "c23-read-decided-other",
+        invocationId: "c23-read-decided-other",
+        requestedAt: REVIEW_TEST_TIMESTAMP,
+      }),
+    ).toEqual({ kind: "blocked", detailCode: "review-task-stale" });
   }, 180_000);
 
   it("missing, mismatched, and cross-project identification tasks fold to the same closed result", async () => {
@@ -1626,6 +1638,7 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
         reference: { ...taskRef.reference, versionId: "unknown-version" },
       },
       authorization,
+      idempotencyKey: "c23-read-missing",
       invocationId: "c23-read-missing",
       requestedAt: REVIEW_TEST_TIMESTAMP,
     });
@@ -1633,6 +1646,7 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
       projectId: "project-c23-other",
       reviewTaskRef: taskRef,
       authorization,
+      idempotencyKey: "c23-read-cross-project",
       invocationId: "c23-read-cross-project",
       requestedAt: REVIEW_TEST_TIMESTAMP,
     });
@@ -1649,6 +1663,7 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
         },
       },
       authorization,
+      idempotencyKey: "c23-read-wrong-target",
       invocationId: "c23-read-wrong-target",
       requestedAt: REVIEW_TEST_TIMESTAMP,
     });
@@ -1662,6 +1677,7 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
       projectId: foreignType.projectId,
       reviewTaskRef: foreignTask.result.reviewTaskRef,
       authorization,
+      idempotencyKey: "c23-read-foreign-type",
       invocationId: "c23-read-foreign-type",
       requestedAt: REVIEW_TEST_TIMESTAMP,
     });
@@ -1696,6 +1712,7 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
       projectId: request.projectId,
       reviewTaskRef: created.result.reviewTaskRef,
       authorization,
+      idempotencyKey: "c23-read-denied",
       invocationId: "c23-read-denied",
       requestedAt: REVIEW_TEST_TIMESTAMP,
     });

@@ -79,7 +79,6 @@ import {
   type GroupMergeEvidenceV1,
   type IdentificationGroupMemberV1,
   type IdentificationGroupV1,
-  type IdentificationReviewRevisionFieldsV1,
   type IdentificationSnapshotEntryV1,
   type IdentificationSnapshotV1,
   type MergePlanV1,
@@ -93,6 +92,7 @@ import {
 } from "./schema.js";
 import type {
   IdentificationGroupDecisionReadV1,
+  IdentificationReviewRevisionFieldsV1,
   IdentificationReviewRevisionOutcomeV1,
   IdentificationReviewRevisionRequestV1,
   RiskCandidateFinalizationServiceOptionsV1,
@@ -114,6 +114,8 @@ const REVISION_STALE_DETAIL_CODES_V1: Record<string, true> = {
   "group-fact-mismatch": true,
   "snapshot-not-found": true,
   "snapshot-fact-mismatch": true,
+  "merge-plan-not-found": true,
+  "merge-plan-fact-mismatch": true,
   "candidate-set-not-found": true,
   "candidate-set-fact-mismatch": true,
   "candidate-validation-set-not-found": true,
@@ -3867,6 +3869,43 @@ export class RiskCandidateFinalizationService {
       !sameRef(validationSnapshot.policySetRef.reference, evidenceSnapshot.policySetRef.reference)
     ) {
       throw revisionBlocker("snapshot-fact-mismatch", input.validationSnapshotRef);
+    }
+
+    const mergePlanRow = await this.#readRow({
+      projectId: input.projectId,
+      resultKind: "merge-plan",
+      resultId: validationSnapshot.mergePlanRef.reference.entityId,
+      resultVersionId: validationSnapshot.mergePlanRef.reference.versionId,
+    });
+    if (mergePlanRow === undefined || mergePlanRow.resultKind !== "merge-plan") {
+      throw revisionBlocker("merge-plan-not-found", validationSnapshot.mergePlanRef);
+    }
+    const mergePlan = await this.#readRegistered<MergePlanV1>({
+      row: mergePlanRow,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      requestedAt: occurredAt,
+      purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.mergePlan,
+      authorization: current,
+    });
+    const plannedGroup = mergePlan.groups.find((entry) =>
+      sameRef(entry.groupRef.reference, groupRef.reference),
+    );
+    if (
+      mergePlan.projectId !== input.projectId ||
+      !sameRef(mergePlan.inputSnapshotRef.reference, group.inputSnapshotRef.reference) ||
+      !sameRef(mergePlan.workPlanRef.reference, group.workPlanRef.reference) ||
+      !sameRef(mergePlan.policySetRef.reference, group.policySetRef.reference) ||
+      !mergePlan.validatedCandidateSetRefs.some((ref) =>
+        sameRef(ref.reference, input.sourceValidatedCandidateSetRef.reference),
+      ) ||
+      plannedGroup === undefined ||
+      plannedGroup.groupId !== group.groupId ||
+      plannedGroup.groupVersionId !== group.groupVersionId ||
+      plannedGroup.disposition !== group.disposition ||
+      plannedGroup.memberCount !== group.members.length
+    ) {
+      throw revisionBlocker("merge-plan-fact-mismatch", validationSnapshot.mergePlanRef);
     }
 
     const changes = definedRevisionFields(input.changes);

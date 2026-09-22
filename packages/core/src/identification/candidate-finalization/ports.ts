@@ -29,7 +29,6 @@ import type {
   CompositeConfidencePolicyV1,
   ForcedReviewPolicyV1,
   IdentificationGroupDecisionKindV1,
-  IdentificationReviewRevisionFieldsV1,
   RiskCandidateFinalizationResultRowV1,
   RiskCandidateGenerationBudgetV1,
   RiskCandidateGenerationPolicyV1,
@@ -38,6 +37,13 @@ import type {
   RiskCandidateV1,
   StandardizedRiskRecordWriteV1,
 } from "./schema.js";
+
+type IdentificationReviewRevisableFieldsV1 = Omit<ModelOutputResult, "modelConfidence">;
+
+export type IdentificationReviewRevisionFieldsV1 = {
+  readonly [Field in keyof IdentificationReviewRevisableFieldsV1]?:
+    IdentificationReviewRevisableFieldsV1[Field] | undefined;
+};
 
 /** 组合根与核心服务共用的最窄工作项读取结果（与 C02 公共分支同形）。 */
 export interface IdentificationWorkPlanWorkItemV1 {

@@ -11,19 +11,30 @@ import {
   ValidatedCandidateSetRefV1Schema,
   WorkflowRunRefV1Schema,
 } from "@riskflow/contracts/ports";
+import { ModelOutputResultSchema } from "@riskflow/contracts/records";
 
-import {
-  MAX_RISK_CANDIDATES_V1,
-  IdentificationReviewRevisionFieldsV1Schema,
-} from "../candidate-finalization/schema.js";
+import { MAX_RISK_CANDIDATES_V1 } from "../candidate-finalization/schema.js";
 
 /** C23 自有诊断前缀；不进入任何公共契约。 */
 export const IDENTIFICATION_HUMAN_REVIEW_STAGE_PREFIX_V1 = "identification-human-review" as const;
 
+export const IdentificationReviewRevisionFieldsV1Schema = ModelOutputResultSchema.omit({
+  modelConfidence: true,
+})
+  .partial()
+  .superRefine((fields, context) => {
+    if (Object.values(fields).every((value) => value === undefined)) {
+      context.addIssue({
+        code: "custom",
+        message: "at least one revisable candidate field is required",
+      });
+    }
+  });
+
 /**
  * 人工修订输入（design D-02）：精确来源候选集、来源已校验集、组内候选工件与只含允许字段的
- * strict partial 修订。允许字段集合来自 C22 的 `IdentificationReviewRevisionFieldsV1Schema`，
- * 因此 `modelConfidence`、工序绑定、候选来源与模型事实在此不可能出现。
+ * strict partial 修订。允许字段集合直接裁剪 C01 `ModelOutputResultSchema`，因此
+ * `modelConfidence`、工序绑定、候选来源与模型事实在此不可能出现。
  */
 export const IdentificationReviewRevisionV1Schema = z.strictObject({
   sourceCandidateSetRef: IdentificationCandidateSetRefV1Schema,

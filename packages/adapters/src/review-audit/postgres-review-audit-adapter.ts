@@ -26,6 +26,7 @@ import {
   type ReviewTaskStateV1,
 } from "@riskflow/core/review-audit";
 import type { IdentificationGroupDecisionReadV1 } from "@riskflow/core/identification/candidate-finalization";
+import type { IdentificationPendingReviewReadV1 } from "@riskflow/core/identification/human-review";
 import {
   AtomicCommandV1Schema,
   type AtomicCommitV1,
@@ -50,6 +51,9 @@ import {
   RuleConflictRefV1Schema,
   TraceQueryV1Schema,
   TraceResultV1Schema,
+  ValidationSnapshotRefV1Schema,
+  EvidenceSnapshotRefV1Schema,
+  WorkflowRunRefV1Schema,
   type AuthorizationContextV1,
   type ContractReferenceV1,
   type IdentificationGroupRefV1,
@@ -69,7 +73,7 @@ import {
   type TraceResultV1,
   type TraceQueryV1,
 } from "@riskflow/contracts/ports";
-import { IdentifierSchema } from "@riskflow/contracts/common";
+import { IdentifierSchema, VersionReferenceSchema } from "@riskflow/contracts/common";
 import { DomainEventV1Schema, type DomainEventV1 } from "@riskflow/contracts/events";
 
 import { makePersistenceError, mapPostgresError } from "../postgres/pool.js";
@@ -1078,6 +1082,137 @@ export class PostgresReviewAuditAdapter implements ReviewAuditPortV1 {
         error instanceof AccessServiceError
           ? "review-decision-not-authorized"
           : "review-decision-unavailable",
+      );
+    }
+  }
+
+  /**
+   * C23 识别复核的待处理任务窄读（design D-03）：先按 `review-audit.decide-review` 验证当前
+   * 授权，再按工程与完整任务版本读取 C07 自有事实。只返回精确任务、目标、冻结的验证/证据/复核
+   * 策略与等待运行；不返回决定正文、证据正文或数据库行，也不改任务状态、不写审计、不发事件。
+   * 事实错配、已替代、跨工程与读取失败折叠为闭合 `blocked`：授权先行使无权调用方无法区分目标
+   * 存在性、版本陈旧或属于其它工程。已决定任务返回同一冻结事实（`decided`）仅供同命令重试对账，
+   * 新的人工决定仍只能由 C07 在任务为 `pending` 时成立。
+   */
+  async readPendingIdentificationReview(input: {
+    readonly projectId: string;
+    readonly reviewTaskRef: ReviewTaskRefV1;
+    readonly authorization: AuthorizationContextV1;
+    readonly idempotencyKey: string;
+    readonly invocationId: string;
+    readonly requestedAt: string;
+  }): Promise<IdentificationPendingReviewReadV1> {
+    const blocked = (detailCode: string): IdentificationPendingReviewReadV1 => ({
+      kind: "blocked",
+      detailCode,
+    });
+    try {
+      await this.#verify(
+        input.authorization,
+        input.projectId,
+        input.invocationId,
+        "review-audit.decide-review",
+      );
+      const task = await this.#db
+        .selectFrom("business.review_tasks")
+        .select([
+          "review_type",
+          "target_kind",
+          "target_entity_id",
+          "target_version_id",
+          "target_ref",
+          "review_task_ref",
+          "validation_snapshot_ref",
+          "evidence_snapshot_ref",
+          "review_policy_ref",
+          "waiting_run_ref",
+          "waiting_run_entity_id",
+          "waiting_run_version_id",
+          "status",
+          "decision_ref",
+        ])
+        .where("project_id", "=", input.projectId)
+        .where("review_task_id", "=", input.reviewTaskRef.reference.entityId)
+        .where("version_id", "=", input.reviewTaskRef.reference.versionId)
+        .executeTakeFirst();
+      if (task === undefined) return blocked("review-task-not-found");
+
+      const storedTaskRef = ReviewTaskRefV1Schema.parse(task.review_task_ref);
+      const storedTargetRef = IdentificationGroupRefV1Schema.safeParse(task.target_ref);
+      const storedWaitingRunRef = WorkflowRunRefV1Schema.safeParse(task.waiting_run_ref);
+      if (!storedTargetRef.success || !storedWaitingRunRef.success) {
+        return blocked("review-task-fact-mismatch");
+      }
+      if (
+        task.review_type !== "identification-group" ||
+        task.target_kind !== "identification-group" ||
+        storedTaskRef.reviewType !== "identification-group" ||
+        storedTaskRef.targetRef.kind !== "identification-group" ||
+        task.target_entity_id !== storedTargetRef.data.reference.entityId ||
+        task.target_version_id !== storedTargetRef.data.reference.versionId ||
+        !reviewTaskRefEquals(storedTaskRef, input.reviewTaskRef) ||
+        !reviewTargetEquals(storedTaskRef.targetRef, storedTargetRef.data) ||
+        task.waiting_run_entity_id !== storedWaitingRunRef.data.reference.entityId ||
+        task.waiting_run_version_id !== storedWaitingRunRef.data.reference.versionId ||
+        !versionedRefEquals(storedTaskRef.waitingRunRef, storedWaitingRunRef.data)
+      ) {
+        return blocked("review-task-fact-mismatch");
+      }
+      // 已替代任务不可复核也不可对账；已决定任务只有在当前命令精确命中原 C07 完成回执时
+      // 才返回冻结事实，避免不同命令先生成修订工件、再由决定事务判陈旧。
+      if (task.status === "superseded") return blocked("review-task-stale");
+      if (task.status === "decided") {
+        const storedDecisionRef = ReviewDecisionRefV1Schema.safeParse(task.decision_ref);
+        if (!storedDecisionRef.success) return blocked("review-task-fact-mismatch");
+        const receipt = await this.#db
+          .selectFrom("business.command_receipts")
+          .select(["command_id", "result_ref", "completed_at"])
+          .where("project_id", "=", input.projectId)
+          .where("command_kind", "=", "review.decide-review.v1")
+          .where("idempotency_key", "=", input.idempotencyKey)
+          .executeTakeFirst();
+        const receiptDecisionRef = ReviewDecisionRefV1Schema.safeParse(receipt?.result_ref);
+        if (
+          receipt === undefined ||
+          receipt.completed_at === null ||
+          receipt.command_id !== input.invocationId ||
+          !receiptDecisionRef.success ||
+          !versionedRefEquals(receiptDecisionRef.data, storedDecisionRef.data)
+        ) {
+          return blocked("review-task-stale");
+        }
+      }
+
+      const validationSnapshotRef = ValidationSnapshotRefV1Schema.safeParse(
+        task.validation_snapshot_ref,
+      );
+      const evidenceSnapshotRef = EvidenceSnapshotRefV1Schema.safeParse(task.evidence_snapshot_ref);
+      const reviewPolicyRef = VersionReferenceSchema.safeParse(task.review_policy_ref);
+      if (
+        !validationSnapshotRef.success ||
+        !evidenceSnapshotRef.success ||
+        !reviewPolicyRef.success
+      ) {
+        return blocked("review-task-fact-mismatch");
+      }
+
+      return {
+        kind: task.status === "pending" ? "pending" : "decided",
+        task: {
+          reviewTaskRef: storedTaskRef,
+          groupRef: storedTargetRef.data,
+          validationSnapshotRef: validationSnapshotRef.data,
+          evidenceSnapshotRef: evidenceSnapshotRef.data,
+          reviewPolicyRef: reviewPolicyRef.data,
+          waitingRunRef: storedWaitingRunRef.data,
+        },
+      };
+    } catch (error) {
+      // 授权拒绝与数据库失败都折叠为稳定 `blocked`，不区分目标是否存在。
+      return blocked(
+        error instanceof AccessServiceError
+          ? "review-task-not-authorized"
+          : "review-task-unavailable",
       );
     }
   }

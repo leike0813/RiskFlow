@@ -25,6 +25,7 @@ import {
   type IdentificationFinalizationResultV1,
 } from "@riskflow/contracts/ports";
 import { ModelContextPayloadV1Schema } from "../../src/identification/context/schema.js";
+import { sha256CanonicalJson } from "../../src/persistence/index.js";
 import {
   AcceptanceRouteSetV1Schema,
   CANDIDATE_REPAIRABLE_REASON_CODES_V1,
@@ -851,6 +852,7 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
         readonly eventId: string;
         readonly eventVersion: number;
       }[];
+      readonly payloadDigest: string;
     }
   >();
   const calls = {
@@ -1033,7 +1035,7 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
 
   const transactionUnit = {
     async execute(
-      command: { readonly commandId: string },
+      command: { readonly commandId: string; readonly payload?: unknown },
       handler: (context: unknown) => Promise<{
         readonly resultRef: unknown;
         readonly audit: { readonly auditEntryId: string };
@@ -1041,8 +1043,21 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
       }>,
     ) {
       calls.transactionCalls += 1;
+      const payloadDigest = digestOf(command.payload ?? null);
       const prior = receipts.get(command.commandId);
-      if (prior !== undefined) return { ...prior, replayed: true };
+      if (prior !== undefined) {
+        // 与 C03 回执一致：同一命令身份携带不同载荷时拒绝，同载荷才算重放。
+        if (prior.payloadDigest !== payloadDigest) {
+          const conflict = new Error("IDEMPOTENCY_CONFLICT");
+          Object.defineProperties(conflict, {
+            code: { value: "IDEMPOTENCY_CONFLICT" },
+            retryable: { value: false },
+            stage: { value: "transaction.idempotency" },
+          });
+          throw conflict;
+        }
+        return { ...prior, replayed: true };
+      }
       const commit = await handler({ transaction: "in-memory" });
       const receipt = {
         resultRef: commit.resultRef,
@@ -1053,7 +1068,7 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
           eventVersion: event.eventVersion,
         })),
       };
-      receipts.set(command.commandId, receipt);
+      receipts.set(command.commandId, { ...receipt, payloadDigest });
       return { ...receipt, replayed: false };
     },
   };
@@ -2424,5 +2439,460 @@ describe("C22 服务接入（端口驱动）", () => {
     expect(harness.calls.recordInsertCalls).toBe(0);
     expect(harness.calls.transactionCalls).toBe(0);
     expect(harness.calls.registerCalls).toBe(0);
+  });
+});
+
+// ============================================================ C23 人工修订窄端口
+
+/**
+ * 修订场景全部为「合成样本、待甲方复核」：分组、候选集、已校验集、验证/证据快照与候选正文都是
+ * 按 C22 既有 Schema 手工构造的一致合成事实，不对应任何真实工程资料或真实模型输出。
+ */
+const SET_DIGEST = DIGEST_B;
+const VALIDATION_DIGEST = DIGEST_C;
+
+const reviewAuthorization = () => authorization(["review-audit.decide"]);
+
+const makeRevisionFixture = (
+  harnessOverrides: HarnessOverrides = {},
+  fixtureOptions: {
+    readonly orphanThirdCandidate?: boolean;
+    readonly sourceValidationOutsideMergePlan?: boolean;
+  } = {},
+) => {
+  const harness = makeHarness(harnessOverrides);
+  const groupRef = groupRefValue("group-1");
+  const groupVersionId = DIGEST_C;
+  const candidateSetRef = {
+    kind: "identification-candidate-set" as const,
+    reference: {
+      entityId: `identification-candidate-set:${PROJECT}:${workItemRef.reference.entityId}`,
+      versionId: SET_DIGEST,
+    },
+  };
+  const validatedSetRef = {
+    kind: "validated-candidate-set" as const,
+    reference: {
+      entityId: `validated-candidate-set:${PROJECT}:${candidateSetRef.reference.entityId}`,
+      versionId: VALIDATION_DIGEST,
+    },
+  };
+  const candidates = [
+    RiskCandidateV1Schema.parse(candidateValue({ candidateId: "candidate-001" })),
+    RiskCandidateV1Schema.parse(candidateValue({ candidateId: "candidate-002" })),
+    ...(fixtureOptions.orphanThirdCandidate === true
+      ? [RiskCandidateV1Schema.parse(candidateValue({ candidateId: "candidate-003" }))]
+      : []),
+  ];
+  const candidateRefs = candidates.map((candidate) =>
+    harness.putValue(`candidate-artifact-${candidate.candidateId}`, candidate),
+  );
+  const candidateSet = RiskCandidateSetV1Schema.parse(
+    candidateSetValue({
+      candidates,
+      modelContextPayloadDigest: sha256CanonicalJson(modelContextValue()),
+      candidateSetVersion: 1,
+    }),
+  );
+  const candidateSetRow = harness.seedRow(
+    {
+      ...resultRowBase(
+        "candidate-set",
+        candidateSetRef.reference.entityId,
+        candidateSetRef.reference.versionId,
+      ),
+      workItemRef,
+      modelContextArtifactSetRef,
+      candidateSetRef,
+    },
+    candidateSet,
+  );
+  const validatedSet = CandidateValidationSetV1Schema.parse({
+    schemaVersion: "1",
+    projectId: PROJECT,
+    inputSnapshotRef,
+    workItemRef,
+    nodeId: NODE_ID,
+    candidateSetRef: { kind: "content-artifact", reference: candidateSetRef.reference },
+    candidateSetVersion: 1,
+    policySetRef,
+    validationPolicyRef: versionRef("validation-policy"),
+    ruleValidationPolicyRef: versionRef("rule-validation-policy"),
+    entries: candidates.map((candidate, index) => ({
+      candidateId: candidate.candidateId,
+      candidateVersion: candidate.candidateVersion,
+      candidateRef: candidateRefs[index],
+      disposition: "accepted",
+      checks: [checkValue(`candidate-check-${index + 1}`, true)],
+    })),
+    acceptedCandidateRefs: candidateRefs,
+    usage: candidateSetValue().usage,
+    authorizationScopeDigest: DIGEST_A,
+    authorizationContextRef,
+    completedAt: TIMESTAMP,
+  });
+  harness.seedRow(
+    {
+      ...resultRowBase(
+        "validated-candidate-set",
+        validatedSetRef.reference.entityId,
+        validatedSetRef.reference.versionId,
+      ),
+      workItemRef,
+      candidateSetRef,
+      validatedCandidateSetRef: validatedSetRef,
+    },
+    validatedSet,
+  );
+  // 合并组只包含前两个候选：第三个候选（如构造）在来源集与已校验集中但不是组成员。
+  harness.seedRow(
+    {
+      ...resultRowBase("identification-group", groupRef.reference.entityId, groupVersionId),
+      workPlanRef,
+      groupRef,
+    },
+    IdentificationGroupV1Schema.parse(
+      groupValue({
+        members: candidates.slice(0, 2).map((candidate, index) => ({
+          ...groupMemberValue(candidate.candidateId, candidate.candidateVersion),
+          candidateRef: candidateRefs[index],
+        })),
+      }),
+    ),
+  );
+  harness.seedRow(
+    mergePlanRow(),
+    MergePlanV1Schema.parse(
+      mergePlanValue({
+        validatedCandidateSetRefs:
+          fixtureOptions.sourceValidationOutsideMergePlan === true
+            ? [
+                {
+                  kind: "validated-candidate-set",
+                  reference: versionRef("validated-set-other"),
+                },
+              ]
+            : [validatedSetRef],
+        groups: [
+          {
+            groupId: "group-1",
+            groupVersionId,
+            groupRef,
+            disposition: "merged",
+            memberCount: 2,
+          },
+        ],
+        evaluatedCandidateRefs: candidateRefs.slice(0, 2),
+      }),
+    ),
+  );
+  const validationSnapshotRef = {
+    kind: "validation-snapshot" as const,
+    reference: versionRef(`validation-snapshot:${PROJECT}:group-1`, groupVersionId),
+  };
+  const evidenceSnapshotRef = {
+    kind: "evidence-snapshot" as const,
+    reference: versionRef(`evidence-snapshot:${PROJECT}:group-1`, groupVersionId),
+  };
+  const snapshotCommon = {
+    schemaVersion: "1",
+    projectId: PROJECT,
+    inputSnapshotRef,
+    workPlanRef,
+    mergePlanRef: mergePlanRefValue,
+    policySetRef,
+    groupId: "group-1",
+    groupVersionId,
+    groupRef,
+    authorizationScopeDigest: DIGEST_A,
+    authorizationContextRef,
+    createdAt: TIMESTAMP,
+  };
+  harness.seedRow(
+    {
+      ...resultRowBase(
+        "validation-snapshot",
+        validationSnapshotRef.reference.entityId,
+        validationSnapshotRef.reference.versionId,
+      ),
+      workPlanRef,
+      groupRef,
+      validationSnapshotRef,
+    },
+    {
+      ...snapshotCommon,
+      snapshotKind: "validation",
+      entries: [
+        { entryKind: "validation", checkId: "check-1", passed: true, reasonCode: REASON.accepted },
+      ],
+    },
+  );
+  harness.seedRow(
+    {
+      ...resultRowBase(
+        "evidence-snapshot",
+        evidenceSnapshotRef.reference.entityId,
+        evidenceSnapshotRef.reference.versionId,
+      ),
+      workPlanRef,
+      groupRef,
+      evidenceSnapshotRef,
+    },
+    {
+      ...snapshotCommon,
+      snapshotKind: "evidence",
+      entries: [
+        {
+          entryKind: "evidence",
+          candidateId: "candidate-001",
+          candidateVersion: 1,
+          candidateRef: candidateRefs[0],
+          sourceSegmentId: SEGMENT_MECHANISM,
+        },
+        {
+          entryKind: "evidence",
+          candidateId: "candidate-001",
+          candidateVersion: 1,
+          candidateRef: candidateRefs[0],
+          sourceSegmentId: SEGMENT_PROCESS,
+        },
+      ],
+    },
+  );
+
+  const storedBody = async <T>(
+    resultKind: "candidate-set" | "validated-candidate-set",
+    ref: { readonly reference: VersionReference },
+  ): Promise<T> => {
+    const row = await harness.options.resultStore.readResult({
+      projectId: PROJECT,
+      resultKind,
+      resultId: ref.reference.entityId,
+      resultVersionId: ref.reference.versionId,
+    });
+    if (row === undefined) throw new Error(`missing ${resultKind} row`);
+    const handle = await harness.options.artifactStore.open({
+      artifactRef: row.artifactRef,
+    } as never);
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of handle.content) chunks.push(chunk);
+    return JSON.parse(new TextDecoder().decode(chunks[0])) as T;
+  };
+
+  return {
+    harness,
+    candidates,
+    candidateRefs,
+    candidateSet,
+    candidateSetRow,
+    validatedSet,
+    storedBody,
+    revisionRequest: (overrides: Record<string, unknown> = {}) => ({
+      projectId: PROJECT,
+      actorId: ACTOR,
+      commandId: "command-review",
+      idempotencyKey: "idempotency-review",
+      issuedAt: TIMESTAMP,
+      invocationId: "command-review:revision",
+      authorization: reviewAuthorization(),
+      groupRef,
+      validationSnapshotRef,
+      evidenceSnapshotRef,
+      sourceCandidateSetRef: candidateSetRef,
+      sourceValidatedCandidateSetRef: validatedSetRef,
+      candidateRef: candidateRefs[0],
+      changes: { riskEvent: "掌子面失稳涌水（复核修正）" },
+      ...overrides,
+    }),
+  };
+};
+
+describe("C23 人工修订窄端口", () => {
+  it("只改允许字段并形成不可变后继候选集与已校验候选集", async () => {
+    const fixture = makeRevisionFixture();
+    const outcome = await fixture.harness.service.prepareReviewRevision(
+      fixture.revisionRequest() as never,
+    );
+
+    expect(outcome.kind).toBe("revised");
+    if (outcome.kind !== "revised") return;
+    expect(outcome.revisedCandidateSetRef.reference.entityId).toBe(
+      `identification-candidate-set:${PROJECT}:${workItemRef.reference.entityId}`,
+    );
+    expect(outcome.revisedCandidateSetRef.reference.versionId).not.toBe(SET_DIGEST);
+    expect(outcome.validatedCandidateSetRef.reference.entityId).toBe(
+      `validated-candidate-set:${PROJECT}:identification-candidate-set:${PROJECT}:${workItemRef.reference.entityId}`,
+    );
+
+    const revised = await fixture.storedBody<RiskCandidateSetV1>(
+      "candidate-set",
+      outcome.revisedCandidateSetRef,
+    );
+    expect(revised.candidateSetVersion).toBe(2);
+    expect(revised.parentCandidateSetRef).toEqual(fixture.candidateSetRow.artifactRef);
+    expect(revised.candidates).toHaveLength(2);
+    const revisedCandidate = revised.candidates.find(
+      (candidate) => candidate.candidateId === "candidate-001",
+    );
+    const sourceCandidate = RiskCandidateV1Schema.parse(
+      candidateValue({ candidateId: "candidate-001" }),
+    );
+    expect(revisedCandidate?.candidateVersion).toBe(2);
+    expect(revisedCandidate?.parentCandidateRef).toEqual(fixture.candidateRefs[0]);
+    expect(revisedCandidate?.output.riskEvent).toBe("掌子面失稳涌水（复核修正）");
+    // 只读事实逐项保留：模型置信度、工序绑定、模型/提示/输出 Schema/预算、原始响应与生成时间。
+    expect(revisedCandidate?.output.modelConfidence).toBe(sourceCandidate.output.modelConfidence);
+    expect(revisedCandidate?.nodeId).toBe(sourceCandidate.nodeId);
+    expect(revisedCandidate?.modelDeploymentRef).toEqual(sourceCandidate.modelDeploymentRef);
+    expect(revisedCandidate?.promptTemplateRef).toEqual(sourceCandidate.promptTemplateRef);
+    expect(revisedCandidate?.outputSchemaRef).toEqual(sourceCandidate.outputSchemaRef);
+    expect(revisedCandidate?.budgetPolicyRef).toEqual(sourceCandidate.budgetPolicyRef);
+    expect(revisedCandidate?.rawResponseRef).toEqual(sourceCandidate.rawResponseRef);
+    expect(revisedCandidate?.generatedAt).toBe(sourceCandidate.generatedAt);
+    expect(
+      revised.candidates.find((candidate) => candidate.candidateId === "candidate-002"),
+    ).toEqual(RiskCandidateV1Schema.parse(candidateValue({ candidateId: "candidate-002" })));
+
+    const validated = await fixture.storedBody<CandidateValidationSetV1>(
+      "validated-candidate-set",
+      outcome.validatedCandidateSetRef,
+    );
+    expect(validated.entries.every((entry) => entry.disposition === "accepted")).toBe(true);
+    expect(validated.acceptedCandidateRefs).toHaveLength(2);
+    // 人工修订不产生模型预算消耗，也不形成第二条模型调用链。
+    expect(validated.usage).toEqual(fixture.validatedSet.usage);
+    expect(fixture.harness.calls.generateCalls).toBe(0);
+    expect(fixture.harness.calls.embedCalls).toBe(0);
+    // 一个 C03 事务登记两类既有结果。
+    expect(fixture.harness.calls.registerCalls).toBe(1);
+    expect(fixture.harness.calls.transactionCalls).toBe(1);
+  });
+
+  it("相同命令重放返回原候选集与校验引用", async () => {
+    const fixture = makeRevisionFixture();
+    const first = await fixture.harness.service.prepareReviewRevision(
+      fixture.revisionRequest() as never,
+    );
+    const second = await fixture.harness.service.prepareReviewRevision(
+      fixture.revisionRequest() as never,
+    );
+
+    expect(second).toEqual(first);
+    expect(fixture.harness.calls.generateCalls).toBe(0);
+  });
+
+  it("相同命令身份改变修订内容时返回幂等冲突", async () => {
+    const fixture = makeRevisionFixture();
+    const first = await fixture.harness.service.prepareReviewRevision(
+      fixture.revisionRequest() as never,
+    );
+    expect(first.kind).toBe("revised");
+
+    const conflict = await fixture.harness.service.prepareReviewRevision(
+      fixture.revisionRequest({ changes: { riskEvent: "另一条修订内容" } }) as never,
+    );
+
+    expect(conflict).toEqual({
+      kind: "conflict",
+      priorCommandId: "command-review:revision",
+    });
+  });
+
+  it("调整到冻结证据快照外的定位被拒绝且不登记结果", async () => {
+    const fixture = makeRevisionFixture();
+    const outcome = await fixture.harness.service.prepareReviewRevision(
+      fixture.revisionRequest({
+        changes: { evidenceLocator: { sourceSegmentId: SEGMENT_STATE } },
+      }) as never,
+    );
+
+    expect(outcome).toEqual({ kind: "blocked", detailCode: REASON.evidenceNotFrozen });
+    expect(fixture.harness.calls.registerCalls).toBe(0);
+    expect(fixture.harness.calls.transactionCalls).toBe(0);
+  });
+
+  it("修订后未通过机理适用性校验时返回业务阻断且不登记", async () => {
+    const fixture = makeRevisionFixture();
+    const outcome = await fixture.harness.service.prepareReviewRevision(
+      fixture.revisionRequest({
+        changes: { evidenceLocator: { sourceSegmentId: SEGMENT_PROCESS } },
+      }) as never,
+    );
+
+    expect(outcome).toEqual({ kind: "blocked", detailCode: REASON.mechanismNotApplicable });
+    expect(fixture.harness.calls.registerCalls).toBe(0);
+  });
+
+  it("没有真实字段变化时拒绝修订", async () => {
+    const fixture = makeRevisionFixture();
+    const outcome = await fixture.harness.service.prepareReviewRevision(
+      fixture.revisionRequest({
+        changes: { riskEvent: candidateValue().output.riskEvent },
+      }) as never,
+    );
+
+    expect(outcome).toEqual({ kind: "blocked", detailCode: "revision-unchanged" });
+    expect(fixture.harness.calls.registerCalls).toBe(0);
+  });
+
+  it("候选工件不在来源集合时返回陈旧结果", async () => {
+    const fixture = makeRevisionFixture();
+    const outcome = await fixture.harness.service.prepareReviewRevision(
+      fixture.revisionRequest({
+        candidateRef: contentRef("candidate-artifact-unknown"),
+      }) as never,
+    );
+
+    expect(outcome).toEqual({ kind: "stale", detailCode: "candidate-not-found" });
+    expect(fixture.harness.calls.registerCalls).toBe(0);
+  });
+
+  it("候选不在任务目标组内时返回陈旧结果", async () => {
+    const fixture = makeRevisionFixture({}, { orphanThirdCandidate: true });
+    const outcome = await fixture.harness.service.prepareReviewRevision(
+      fixture.revisionRequest({ candidateRef: fixture.candidateRefs[2] }) as never,
+    );
+
+    expect(outcome).toEqual({ kind: "stale", detailCode: "candidate-not-in-group" });
+    expect(fixture.harness.calls.registerCalls).toBe(0);
+  });
+
+  it("来源候选集版本不存在时返回陈旧结果", async () => {
+    const fixture = makeRevisionFixture();
+    const outcome = await fixture.harness.service.prepareReviewRevision(
+      fixture.revisionRequest({
+        sourceCandidateSetRef: {
+          kind: "identification-candidate-set",
+          reference: {
+            entityId: `identification-candidate-set:${PROJECT}:${workItemRef.reference.entityId}`,
+            versionId: DIGEST_A,
+          },
+        },
+      }) as never,
+    );
+
+    expect(outcome).toEqual({ kind: "stale", detailCode: "candidate-set-not-found" });
+    expect(fixture.harness.calls.registerCalls).toBe(0);
+  });
+
+  it("来源已校验集不属于任务冻结合并计划时返回陈旧结果", async () => {
+    const fixture = makeRevisionFixture({}, { sourceValidationOutsideMergePlan: true });
+    const outcome = await fixture.harness.service.prepareReviewRevision(
+      fixture.revisionRequest() as never,
+    );
+
+    expect(outcome).toEqual({ kind: "stale", detailCode: "merge-plan-fact-mismatch" });
+    expect(fixture.harness.calls.registerCalls).toBe(0);
+  });
+
+  it("当前 review-audit.decide-review 授权不成立时返回未授权", async () => {
+    const fixture = makeRevisionFixture({ verifyCurrent: async () => undefined });
+    const outcome = await fixture.harness.service.prepareReviewRevision(
+      fixture.revisionRequest() as never,
+    );
+
+    expect(outcome).toEqual({ kind: "unauthorized" });
+    expect(fixture.harness.calls.resultReads).toBe(0);
+    expect(fixture.harness.calls.registerCalls).toBe(0);
   });
 });

@@ -38,6 +38,13 @@ import type {
   StandardizedRiskRecordWriteV1,
 } from "./schema.js";
 
+type IdentificationReviewRevisableFieldsV1 = Omit<ModelOutputResult, "modelConfidence">;
+
+export type IdentificationReviewRevisionFieldsV1 = {
+  readonly [Field in keyof IdentificationReviewRevisableFieldsV1]?:
+    IdentificationReviewRevisableFieldsV1[Field] | undefined;
+};
+
 /** 组合根与核心服务共用的最窄工作项读取结果（与 C02 公共分支同形）。 */
 export interface IdentificationWorkPlanWorkItemV1 {
   readonly workItemRef: IdentificationWorkItemRefV1;
@@ -319,6 +326,66 @@ export interface RiskCandidateModelPortV1 {
       }
     | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
   >;
+}
+
+// ------------------------------------------------------------ C23 人工修订窄端口
+
+/**
+ * C23 人工修订窄端口输入（design D-03/D-04/D-08）：只携带精确来源引用、允许字段修订与调用者
+ * 提交的 `review-audit.decide-review` 授权。命令身份用于派生稳定内部登记身份，不成为公共契约。
+ */
+export interface IdentificationReviewRevisionRequestV1 {
+  readonly projectId: string;
+  readonly actorId: string;
+  readonly commandId: string;
+  readonly idempotencyKey: string;
+  readonly issuedAt: string;
+  readonly invocationId: string;
+  readonly authorization: AuthorizationContextV1;
+  readonly groupRef: IdentificationGroupRefV1;
+  readonly validationSnapshotRef: { readonly kind: "validation-snapshot" } & {
+    readonly reference: VersionReference;
+  };
+  readonly evidenceSnapshotRef: { readonly kind: "evidence-snapshot" } & {
+    readonly reference: VersionReference;
+  };
+  readonly sourceCandidateSetRef: IdentificationCandidateSetRefV1;
+  readonly sourceValidatedCandidateSetRef: ValidatedCandidateSetRefV1;
+  readonly candidateRef: { readonly kind: "content-artifact" } & {
+    readonly reference: VersionReference;
+  };
+  readonly changes: IdentificationReviewRevisionFieldsV1;
+}
+
+/**
+ * 修订窄端口的闭合结果（design D-09）：调用方按 `kind` 映射公共错误，不匹配完整文案。
+ * - `revised`：后继候选集与已校验候选集已成立，可提交 `approve-revised-candidate`。
+ * - `unauthorized`：当前 `review-audit.decide-review` 授权不成立。
+ * - `stale`：来源任务/分组/候选/快照事实不是当前版本。
+ * - `blocked`：修订本身未通过确定性校验或冻结范围约束。
+ * - `conflict`：同一幂等身份已存在不同的修订载荷。
+ * - `failed`：技术失败，未产生可消费引用。
+ */
+export type IdentificationReviewRevisionOutcomeV1 =
+  | {
+      readonly kind: "revised";
+      readonly revisedCandidateSetRef: IdentificationCandidateSetRefV1;
+      readonly validatedCandidateSetRef: ValidatedCandidateSetRefV1;
+    }
+  | { readonly kind: "unauthorized" }
+  | { readonly kind: "stale"; readonly detailCode: string }
+  | { readonly kind: "blocked"; readonly detailCode: string }
+  | { readonly kind: "conflict"; readonly priorCommandId: string }
+  | { readonly kind: "failed"; readonly detailCode: string };
+
+/**
+ * C23 人工修订接缝（design D-03）：由 `RiskCandidateFinalizationService` 在同一模块内实现，
+ * 不进入公共 `RiskIdentificationPortV1`，也不让 C23 复制 C22 的工件、身份与登记规则。
+ */
+export interface IdentificationReviewRevisionPortV1 {
+  prepareReviewRevision(
+    input: IdentificationReviewRevisionRequestV1,
+  ): Promise<IdentificationReviewRevisionOutcomeV1>;
 }
 
 /** 由组合根注入的 C22 服务依赖；任一必需项缺失时构造失败，不产生部分组合。 */

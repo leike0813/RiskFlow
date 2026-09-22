@@ -439,6 +439,11 @@ export async function up(db: Kysely<unknown>): Promise<void> {
 }
 
 export async function down(db: Kysely<unknown>): Promise<void> {
+  await sql`ALTER TABLE IF EXISTS business.response_feedback_records
+    DROP CONSTRAINT IF EXISTS response_feedback_records_actual_assessment_fk`.execute(db);
+  await sql`ALTER TABLE IF EXISTS business.response_forecast_outcomes
+    DROP CONSTRAINT IF EXISTS response_forecast_outcomes_frozen_basis_snapshot_fk,
+    DROP CONSTRAINT IF EXISTS response_forecast_outcomes_baseline_assessment_fk`.execute(db);
   // 先判存在再 REVOKE：表已被删除时 down 仍可重复执行。
   await sql`
     DO $$

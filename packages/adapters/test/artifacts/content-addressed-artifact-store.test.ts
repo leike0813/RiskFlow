@@ -41,6 +41,9 @@ import { createContentAddressedArtifactStore } from "../../src/artifacts/index.j
 import type { ArtifactFailpointV1 } from "../../src/artifacts/filesystem-artifact-store.js";
 import { createFilesystemArtifactStore } from "../../src/artifacts/filesystem-artifact-store.js";
 import { ArtifactMaintenance } from "../../src/artifacts/maintenance.js";
+import { createPostgresRuntime } from "../../src/postgres/pool.js";
+import * as artifactManifestsMigration from "../../src/postgres/migrations/platform/deliver-content-addressed-artifact-store/000002_artifact_manifests.js";
+import * as responseLifecycleMigration from "../../src/postgres/migrations/warning-response/deliver-execution-forecast-feedback-and-deviation/000046_execution_forecast_feedback_deviation.js";
 import { getPostgresTransaction } from "../../src/postgres/transaction-unit.js";
 
 const encoder = new TextEncoder();
@@ -544,6 +547,22 @@ describe("content-addressed artifact store", () => {
   afterAll(async () => {
     await fixture.close();
   }, 120_000);
+
+  it("artifact migration 可在 C28 外键存在时独立 down/up", async () => {
+    const runtime = createPostgresRuntime(fixture.postgres.migrator, "riskflow_migrator");
+    try {
+      await artifactManifestsMigration.down(runtime.db);
+      await artifactManifestsMigration.up(runtime.db);
+      await responseLifecycleMigration.up(runtime.db);
+      const constraint = await fixture.postgres.adminPool.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM pg_constraint
+           WHERE conname = 'response_feedback_records_feedback_artifact_fk'`,
+      );
+      expect(constraint.rows[0]?.count).toBe("1");
+    } finally {
+      await runtime.close();
+    }
+  });
 
   it("migration permission lifecycle keeps the app manifest table append-only", async () => {
     const constraints = await fixture.postgres.adminPool.query<{

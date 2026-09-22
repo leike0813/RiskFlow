@@ -499,6 +499,36 @@ export async function up(db: Kysely<unknown>): Promise<void> {
 }
 
 export async function down(db: Kysely<unknown>): Promise<void> {
+  // 后续 change（C28）的采纳决定、预测结果、执行记录与偏差事实表建了指向本迁移
+  // business.response_recommendations 的外键；孤立回滚本迁移 MUST 先解除这些依赖，
+  // 否则 PostgreSQL 以 "other objects depend on it" 拒绝删表。依赖表可能尚未建立，
+  // 因此按表存在性守卫。
+  await sql`
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.tables
+                 WHERE table_schema = 'business' AND table_name = 'response_adoption_decisions') THEN
+        ALTER TABLE business.response_adoption_decisions
+          DROP CONSTRAINT IF EXISTS response_adoption_decisions_recommendation_fk;
+      END IF;
+      IF EXISTS (SELECT 1 FROM information_schema.tables
+                 WHERE table_schema = 'business' AND table_name = 'response_forecast_outcomes') THEN
+        ALTER TABLE business.response_forecast_outcomes
+          DROP CONSTRAINT IF EXISTS response_forecast_outcomes_recommendation_fk;
+      END IF;
+      IF EXISTS (SELECT 1 FROM information_schema.tables
+                 WHERE table_schema = 'business' AND table_name = 'response_execution_records') THEN
+        ALTER TABLE business.response_execution_records
+          DROP CONSTRAINT IF EXISTS response_execution_records_recommendation_fk;
+      END IF;
+      IF EXISTS (SELECT 1 FROM information_schema.tables
+                 WHERE table_schema = 'business' AND table_name = 'response_deviation_facts') THEN
+        ALTER TABLE business.response_deviation_facts
+          DROP CONSTRAINT IF EXISTS response_deviation_facts_recommendation_fk;
+      END IF;
+    END
+    $$;
+  `.execute(db);
   await revokeAll(db);
   await db.schema.dropIndex("response_recommendations_warning_idx").ifExists().execute();
   await db.schema.dropIndex("recommendation_validations_binding_uidx").ifExists().execute();

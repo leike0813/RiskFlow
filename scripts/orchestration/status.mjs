@@ -21,6 +21,7 @@ const MAIN_VERIFICATIONS = new Set(["pending", "passed", "failed"]);
 const TERMINAL_WORKER_STATES = new Set(["succeeded", "failed", "stopped", "abandoned"]);
 const TERMINAL_DISPATCH_STATUSES = new Set(["completed", "failed"]);
 const DEFAULT_PHASE_ORDER = ["planning", "implementing", "finalizing", "integrating", "archiving"];
+export const DISPATCH_INPUT_TRUST_ISSUE_REF = "workspace_trust_required:dispatch_input";
 
 export class CommandFailure extends Error {
   constructor(command, args, cause) {
@@ -507,7 +508,18 @@ export function normalizeTask(record, repoId, ledgerEnvelope = null) {
   const terminalTask = ["completed", "failed", "blocked"].includes(record?.status);
   const staleOrcaEnvelope =
     terminalTask && parsed.valid && parsed.runState !== "settled" && ledger?.runState === "settled";
-  const envelope = parsed.valid && !staleOrcaEnvelope ? parsed : ledger?.valid ? ledger : parsed;
+  const dispatchInputRecovery =
+    ["pending", "ready", "failed"].includes(record?.status) &&
+    ledger?.valid &&
+    ledger.runState === "queued" &&
+    ledger.issueRefs?.includes(DISPATCH_INPUT_TRUST_ISSUE_REF);
+  const envelope = dispatchInputRecovery
+    ? ledger
+    : parsed.valid && !staleOrcaEnvelope
+      ? parsed
+      : ledger?.valid
+        ? ledger
+        : parsed;
   const processRef = record?.created_by_process_incarnation ?? "";
   const repoOwned =
     Boolean(repoId && processRef.startsWith(`${repoId}::`)) ||
@@ -863,6 +875,20 @@ export function deriveNodeState(node, context) {
     });
   const worktree = worktrees[0] ?? null;
   const summary = taskSummary(tasks, context.phaseOrder);
+  const currentEnvelope = summary.latest?.envelope ?? null;
+  const nodeWorkers = (context.workers ?? []).filter((worker) =>
+    tasks.some((task) => task.id === worker.taskId),
+  );
+  const currentTaskWorkers = nodeWorkers.filter(
+    (worker) => worker.taskId === currentEnvelope?.owner?.taskId,
+  );
+  const dispatchInputTrustRecovery =
+    ["pending", "ready", "failed"].includes(summary.latest?.status) &&
+    currentEnvelope?.runState === "queued" &&
+    currentEnvelope.issueRefs?.includes(DISPATCH_INPUT_TRUST_ISSUE_REF) &&
+    !currentTaskWorkers.some(
+      (worker) => workerIsLive(worker) || ["ready", "succeeded"].includes(worker.workerState),
+    );
   if (summary.replanConflict) violations.push({ code: "invalid_replan_boundary" });
   const activeWriterTasks = summary.scope.filter(
     (task) => WRITER_TASK_STATUSES.has(task.status) && !isSupersededAttempt(task, summary.scope),
@@ -900,7 +926,8 @@ export function deriveNodeState(node, context) {
     tasks.length > 0 &&
     worktree?.exists &&
     Array.isArray(worktree.openSpecNodeIds) &&
-    !openSpecPresent
+    !openSpecPresent &&
+    !dispatchInputTrustRecovery
   ) {
     violations.push({ code: "task_missing_local_openspec" });
   }
@@ -964,16 +991,10 @@ export function deriveNodeState(node, context) {
   let status;
   let phase = summary.latest?.envelope?.phase ?? summary.latest?.envelope?.taskKind ?? null;
   let nextActions = [];
-  const currentEnvelope = summary.latest?.envelope ?? null;
   const currentKind = currentEnvelope?.taskKind ?? null;
   const currentSucceeded = currentEnvelope?.outcome === "succeeded";
-  const nodeWorkers = (context.workers ?? []).filter((worker) =>
-    tasks.some((task) => task.id === worker.taskId),
-  );
-  const currentTaskWorkers = nodeWorkers.filter(
-    (worker) => worker.taskId === currentEnvelope?.owner?.taskId,
-  );
   const currentWorkerFailed =
+    !dispatchInputTrustRecovery &&
     !currentTaskWorkers.some(workerIsLive) &&
     currentTaskWorkers.some(
       (worker) => worker.workerState === "failed" || worker.dispatchStatus === "failed",
@@ -1023,6 +1044,9 @@ export function deriveNodeState(node, context) {
   } else if (currentEnvelope?.outcome === "paused") {
     status = "paused";
     nextActions = ["处理结构化升级条件；批准新规划后才可重开实现"];
+  } else if (dispatchInputTrustRecovery) {
+    status = phase === "finalizing" ? "finalizing" : "running";
+    nextActions = ["确认工作区信任后，以新幂等键和同一 terminalHandle 重新派发当前 Task"];
   } else if (summary.failed && ["verification", "finalization"].includes(currentKind)) {
     status = "finalizing";
     phase = "finalizing";

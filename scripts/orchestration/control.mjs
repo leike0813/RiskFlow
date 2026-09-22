@@ -6,6 +6,7 @@ import { clearTimeout, setTimeout } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
+  DISPATCH_INPUT_TRUST_ISSUE_REF,
   collectStatus,
   defaultExec,
   gitCommonDir,
@@ -28,6 +29,7 @@ const TERMINAL_ALREADY_GONE_PATTERN =
 // 身份；参数、命名、权限等业务错误原样冒泡，否则会用一个自建工作树掩盖真实原因。
 const ORCA_RUNTIME_FAILURE_PATTERN =
   /runtime_unavailable|closed the connection before responding|Timed out waiting for the Orca runtime to respond|Could not connect to the running Orca app/u;
+const WORKSPACE_TRUST_PATTERN = /agent_prompt_blocked|workspace trust/iu;
 const WORKTREE_IDENTITY_NEXT_ACTIONS = [
   '运行 `orca repo list --json` 确认该仓库的 externalWorktreeVisibility 为 "show"，并核对 worktreeBasePath 与 worktreeBaseRef',
   "运行 `orca worktree list --json` 与 `git worktree list --porcelain` 对账期望路径上的工作树",
@@ -67,6 +69,50 @@ function requiredString(value, name) {
 
 function nonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function failureDetails(value) {
+  if (typeof value === "string") {
+    try {
+      return failureDetails(JSON.parse(value));
+    } catch {
+      return null;
+    }
+  }
+  if (!value || typeof value !== "object") return null;
+  if (value.stage || value.failedStage || value.lastError) return value;
+  for (const key of ["result", "error", "details", "cause"]) {
+    const nested = failureDetails(value[key]);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function commandFailureDetails(error) {
+  for (const value of [error?.cause?.stdout, error?.cause?.stderr, error?.stdout, error?.stderr]) {
+    const details = failureDetails(value);
+    if (details) return details;
+  }
+  return null;
+}
+
+function isWorkspaceTrustFailure(details, error, requireDispatchInput = false) {
+  const stage = details?.stage ?? details?.failedStage ?? null;
+  if (stage && stage !== "dispatch_input") return false;
+  if (requireDispatchInput && stage !== "dispatch_input") return false;
+  return WORKSPACE_TRUST_PATTERN.test(
+    [details?.lastError, details?.message, error?.message].filter(Boolean).join(" "),
+  );
+}
+
+async function inspectWorkerStartFailure(error, replay) {
+  const direct = commandFailureDetails(error);
+  if (direct) return direct;
+  try {
+    return failureDetails(await replay());
+  } catch (replayError) {
+    return commandFailureDetails(replayError);
+  }
 }
 
 export function findWorkItem(snapshot, workItemId) {
@@ -907,6 +953,25 @@ function attemptEnvelope(node, task, runState) {
   return envelope;
 }
 
+async function recordWorkspaceTrustRecovery(runtimeDir, node, task) {
+  const envelope = attemptEnvelope(node, task, "queued");
+  await recordAttempt(runtimeDir, {
+    ...envelope,
+    issueRefs: [...new Set([...(envelope.issueRefs ?? []), DISPATCH_INPUT_TRUST_ISSUE_REF])],
+  });
+}
+
+function workspaceTrustError(terminalHandle) {
+  return new ControlError(
+    "workspace_trust_required",
+    `${terminalHandle} 正在等待 Codex 工作区信任确认；当前 queued Task 尚未生成 failed attempt`,
+    [
+      `在 ${terminalHandle} 中确认当前工作区信任并等待 tui-idle`,
+      `重新读取 riskflow_status，并以新幂等键调用 riskflow_dispatch，传入 terminalHandle=${terminalHandle}`,
+    ],
+  );
+}
+
 async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, idempotencyKey) {
   const worktree = `id:${node.worktree.id}`;
   if (["planning", "finalization", "audit"].includes(task.envelope.taskKind)) {
@@ -952,52 +1017,33 @@ async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, id
         rootDir,
       );
     } catch (error) {
-      if (!/agent_prompt_blocked|workspace trust/iu.test(error?.message ?? String(error)))
-        throw error;
-      throw new ControlError(
-        "workspace_trust_required",
-        `${terminalHandle} 正在等待 Codex 工作区信任确认`,
-        [
-          `在 ${terminalHandle} 中确认当前工作区信任并等待 tui-idle`,
-          `重新读取 riskflow_status，并以新幂等键调用 riskflow_dispatch，传入 terminalHandle=${terminalHandle}`,
-        ],
-      );
+      if (!isWorkspaceTrustFailure(commandFailureDetails(error), error)) throw error;
+      await recordWorkspaceTrustRecovery(runtimeDir, node, task);
+      throw workspaceTrustError(terminalHandle);
     }
     let worker;
+    const workerStartArgs = [
+      "orchestration",
+      "worker-start",
+      "--run",
+      task.runId,
+      "--task",
+      task.taskId,
+      "--worktree",
+      worktree,
+      "--terminal",
+      terminalHandle,
+    ];
+    const workerStartRetry = retryRequest(idempotencyKey, "worker-start");
     try {
-      worker = await orcaJson(
-        exec,
-        invocation,
-        [
-          "orchestration",
-          "worker-start",
-          "--run",
-          task.runId,
-          "--task",
-          task.taskId,
-          "--worktree",
-          worktree,
-          "--terminal",
-          terminalHandle,
-        ],
-        rootDir,
-        retryRequest(idempotencyKey, "worker-start"),
-      );
+      worker = await orcaJson(exec, invocation, workerStartArgs, rootDir, workerStartRetry);
     } catch (error) {
-      // 工作区信任提示会让 worker-start 以 agent_prompt_blocked 失败；它发生在
-      // worker-start 之前，不是任务失败，必须按信任恢复流程归因（spec：Codex worker
-      // 只在工作区信任完成后启动）。
-      if (!/agent_prompt_blocked|workspace trust/iu.test(error?.message ?? String(error))) {
-        throw error;
-      }
-      throw new ControlError(
-        "workspace_trust_required",
-        `${terminalHandle} 正在等待 Codex 工作区信任确认`,
-        [
-          `在 ${terminalHandle} 中确认当前工作区信任并等待 tui-idle`,
-          `重新读取 riskflow_status，并以新幂等键调用 riskflow_dispatch，传入 terminalHandle=${terminalHandle}`,
-        ],
+      const details = await inspectWorkerStartFailure(error, () =>
+        orcaJson(exec, invocation, workerStartArgs, rootDir, workerStartRetry),
       );
+      if (!isWorkspaceTrustFailure(details, error, true)) throw error;
+      await recordWorkspaceTrustRecovery(runtimeDir, node, task);
+      throw workspaceTrustError(terminalHandle);
     }
     return {
       ...worker,

@@ -337,21 +337,45 @@ describe("controlled orchestration", () => {
 
   it("classifies a workspace-trust failure at worker-start as controlled trust recovery", async () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-worker-start-trust-"));
+    let terminalCreates = 0;
+    let taskCreates = 0;
     let workerStarts = 0;
+    const workerStartArgs = [];
     const exec = async (command, args) => {
       if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args[0] === "terminal" && args[1] === "create") {
+        terminalCreates += 1;
+        return { terminal: { handle: "term-codex" } };
+      }
       const terminal = fakeCodexTerminal(command, args);
       if (terminal !== null) return terminal;
-      if (command === "orca-ide" && args.includes("task-create")) return { id: "task-trust" };
+      if (command === "orca-ide" && args.includes("task-create")) {
+        taskCreates += 1;
+        return { id: "task-trust" };
+      }
       if (command === "orca-ide" && args.includes("task-update")) return {};
       if (command === "orca-ide" && args.includes("worker-start")) {
         workerStarts += 1;
-        throw new Error("agent_prompt_blocked");
+        workerStartArgs.push(args);
+        if (workerStarts === 1) throw new Error("command failed without structured details");
+        if (workerStarts === 2) {
+          const error = new Error("worker-start replay failed");
+          error.cause = {
+            stdout: JSON.stringify({
+              state: "failed",
+              stage: "dispatch_input",
+              lastError: "agent_prompt_blocked",
+              replayed: true,
+            }),
+          };
+          throw error;
+        }
+        return { state: "started" };
       }
       throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
     };
     try {
-      await expect(
+      const blocked = expect(
         riskflowDispatch(
           {
             workItemId: "C17",
@@ -364,8 +388,106 @@ describe("controlled orchestration", () => {
             statusProvider: async () => ({ graph, snapshot: snapshot() }),
           },
         ),
-      ).rejects.toMatchObject({ code: "workspace_trust_required" });
-      expect(workerStarts).toBe(1);
+      ).rejects;
+      await blocked.toMatchObject({
+        code: "workspace_trust_required",
+        message: expect.stringContaining("尚未生成 failed attempt"),
+        nextActions: expect.arrayContaining([expect.stringContaining("term-codex")]),
+      });
+      expect(workerStarts).toBe(2);
+      expect(workerStartArgs[0]).toEqual(workerStartArgs[1]);
+
+      const recoveryEnvelope = await readLedgerEnvelope(runtimeRoot, "task-finalizer");
+      expect(recoveryEnvelope).toMatchObject({
+        runState: "queued",
+        issueRefs: ["workspace_trust_required:dispatch_input"],
+      });
+      const recoveryNode = node({
+        status: "running",
+        checkpoints: recoveryEnvelope,
+        nextActions: ["复用当前 Task 与 terminal"],
+      });
+      const recoverySnapshot = snapshot({
+        nodes: [recoveryNode],
+        resumeQueue: [
+          {
+            workItemId: "C17",
+            category: "finalizing",
+            nextAction: "复用当前 Task 与 terminal",
+          },
+        ],
+      });
+      expect(
+        preflightAction(recoverySnapshot, "reconcile", {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+        }).node.id,
+      ).toBe("C17");
+
+      const resumed = await riskflowDispatch(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "dispatch-worker-start-after-trust",
+          terminalHandle: "term-codex",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => ({ graph, snapshot: recoverySnapshot }),
+        },
+      );
+      expect(resumed).toMatchObject({ taskId: "task-finalizer", worker: { state: "started" } });
+      expect(terminalCreates).toBe(1);
+      expect(taskCreates).toBe(0);
+      expect(workerStarts).toBe(3);
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("keeps trust text outside dispatch_input fail-closed", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-worker-start-non-input-"));
+    let workerStarts = 0;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      const terminal = fakeCodexTerminal(command, args);
+      if (terminal !== null) return terminal;
+      if (command === "orca-ide" && args.includes("worker-start")) {
+        workerStarts += 1;
+        if (workerStarts === 1) throw new Error("original worker-start failure");
+        const error = new Error("worker-start replay failed");
+        error.cause = {
+          stdout: JSON.stringify({
+            state: "failed",
+            stage: "agent_start",
+            lastError: "agent_prompt_blocked",
+          }),
+        };
+        throw error;
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await expect(
+        riskflowDispatch(
+          {
+            workItemId: "C17",
+            expectedRevision: "revision-1",
+            idempotencyKey: "dispatch-worker-start-non-input",
+          },
+          {
+            rootDir: process.cwd(),
+            exec,
+            statusProvider: async () => ({ graph, snapshot: snapshot() }),
+          },
+        ),
+      ).rejects.toThrow("original worker-start failure");
+      expect(workerStarts).toBe(2);
+      expect(await readLedgerEnvelope(runtimeRoot, "task-finalizer")).toMatchObject({
+        runState: "queued",
+        issueRefs: [],
+      });
     } finally {
       await rm(runtimeRoot, { recursive: true });
     }

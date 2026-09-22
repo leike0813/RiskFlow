@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   CommandFailure,
+  DISPATCH_INPUT_TRUST_ISSUE_REF,
   InvalidJsonError,
   collectStatus,
   defaultExec,
@@ -1176,6 +1177,94 @@ describe("worktree-aware state", () => {
     expect(missingOpenSpec.violations.map((item) => item.code)).toContain(
       "task_missing_local_openspec",
     );
+  });
+
+  it("keeps dispatch-input trust recovery reachable until a worker accepts input", () => {
+    const routeNode = { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] };
+    const recoveryEnvelope = v2Envelope({
+      issueRefs: [DISPATCH_INPUT_TRUST_ISSUE_REF],
+      runState: "queued",
+    });
+    const recoveringTask = task({
+      id: "task-c08-finalization",
+      status: "failed",
+      envelope: recoveryEnvelope,
+    });
+    const worktree = {
+      id: worktreeId,
+      path: "/tmp/riskflow-feature",
+      exists: true,
+      localNodeIds: ["C08"],
+      openSpecNodeIds: [],
+      openSpecNames: [],
+      liveTerminalCount: 1,
+      git: { head: "feature-head", branch: "feature", dirty: false, dirtyPaths: [] },
+      tasks: [recoveringTask],
+    };
+    const failedWorker = {
+      taskId: "task-c08-finalization",
+      dispatchId: "dispatch-trust-blocked",
+      workerState: "failed",
+      dispatchStatus: "failed",
+    };
+
+    const recovering = deriveSnapshot(
+      graph(routeNode),
+      context({ worktrees: [worktree], tasks: [recoveringTask], workers: [failedWorker] }),
+    );
+    expect(recovering.nodes[0]).toMatchObject({
+      status: "finalizing",
+      violations: [],
+      nextActions: [expect.stringContaining("同一 terminalHandle")],
+    });
+    expect(recovering.resumeQueue[0]).toMatchObject({ workItemId: "C08", category: "finalizing" });
+
+    const runningTask = task({
+      id: "task-c08-finalization",
+      status: "dispatched",
+      envelope: v2Envelope({
+        issueRefs: [DISPATCH_INPUT_TRUST_ISSUE_REF],
+        runState: "running",
+      }),
+    });
+    const accepted = deriveSnapshot(
+      graph(routeNode),
+      context({
+        worktrees: [{ ...worktree, tasks: [runningTask] }],
+        tasks: [runningTask],
+        workers: [
+          {
+            taskId: "task-c08-finalization",
+            dispatchId: "dispatch-running",
+            workerState: "ready",
+            dispatchStatus: "dispatched",
+          },
+        ],
+      }),
+    ).nodes[0];
+    expect(accepted.status).toBe("unknown");
+    expect(accepted.violations.map((item) => item.code)).toContain("task_missing_local_openspec");
+  });
+
+  it("prefers the queued dispatch-input recovery ledger over a ready Orca envelope", () => {
+    const current = v2Envelope();
+    const rawEnvelope = { ...current };
+    delete rawEnvelope.valid;
+    const normalized = normalizeTask(
+      {
+        id: "task-c08-finalization",
+        status: "ready",
+        result: rawEnvelope,
+        created_by_process_incarnation: "repo-id::/tmp/riskflow-feature::process",
+      },
+      "repo-id",
+      { ...rawEnvelope, issueRefs: [DISPATCH_INPUT_TRUST_ISSUE_REF] },
+    );
+    expect(normalized.envelope).toMatchObject({
+      valid: true,
+      runState: "queued",
+      issueRefs: [DISPATCH_INPUT_TRUST_ISSUE_REF],
+    });
   });
 
   it("fails closed for duplicate writers and v2 identity mismatches", () => {

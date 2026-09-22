@@ -9,7 +9,7 @@
 ## 2. 有界状态恢复
 
 - [x] 2.1 [D-03] 仅对 queued、带精确恢复标记且无 live/ready/succeeded worker 的当前尝试忽略 `task_missing_local_openspec`
-- [x] 2.2 [D-03] 扩展 `status.test.mjs`，验证 reconcile/重新派发可达，且 worker 接受输入后缺少本地 change 仍失败闭合
+- [x] 2.2 [D-03] 扩展状态与控制器回归，验证同一 Run/Task/terminal 的恢复派发可达、reconcile 不创建替代尝试，且 worker 接受输入后缺少本地 change 仍失败闭合
 
 ## 3. 验证
 

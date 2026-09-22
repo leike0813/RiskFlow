@@ -261,6 +261,16 @@ export function preflightAction(snapshot, action, input = {}) {
       ]);
     }
   } else if (action === "reconcile") {
+    if (
+      node.checkpoints?.runState === "queued" &&
+      node.checkpoints.issueRefs?.includes(DISPATCH_INPUT_TRUST_ISSUE_REF)
+    ) {
+      throw new ControlError(
+        "reconcile_not_allowed",
+        `${workItemId} 的工作区信任恢复必须复用当前 queued Task，不得创建替代尝试`,
+        ["确认信任后，以新幂等键和同一 terminalHandle 调用 riskflow_dispatch"],
+      );
+    }
     if (!node.worktree?.id || !node.worktree?.head) {
       throw new ControlError("reconcile_not_allowed", `${workItemId} 缺少实际工作树或 HEAD`);
     }

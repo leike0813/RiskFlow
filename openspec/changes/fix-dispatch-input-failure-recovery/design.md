@@ -9,7 +9,7 @@
 **Goals:**
 
 - 只把结构化 `dispatch_input` 信任提示视为可恢复的 queued 尝试。
-- 让同一 Task/terminal 的重新派发与 reconcile 可达，并在输入接受后恢复严格校验。
+- 让同一 Run/Task/terminal 的重新派发可达，并在输入接受后恢复严格校验。
 
 **Non-Goals:**
 
@@ -28,7 +28,7 @@
 
 ### D-03：豁免条件同时约束信封与 worker 事实
 
-状态视图要求当前信封仍为 queued、带精确恢复标记，且没有 live/ready/succeeded worker。命中时忽略本次 `task_missing_local_openspec` 并将该尝试继续投影为待派发；一旦 worker 接受输入或信封进入 running，原失败闭合规则自动恢复。
+状态视图要求当前信封仍为 queued、带精确恢复标记，且没有 live/ready/succeeded worker。命中时忽略本次 `task_missing_local_openspec` 并将该尝试继续投影为待派发；控制器只允许携带原 terminal handle 重新 dispatch，不允许 reconcile 创建替代 Run/Task。一旦 worker 接受输入或信封进入 running，原失败闭合规则自动恢复。
 
 ## Risks / Trade-offs
 

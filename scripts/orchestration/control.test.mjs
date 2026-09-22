@@ -338,6 +338,7 @@ describe("controlled orchestration", () => {
   it("classifies a workspace-trust failure at worker-start as controlled trust recovery", async () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-worker-start-trust-"));
     let terminalCreates = 0;
+    let runCreates = 0;
     let taskCreates = 0;
     let workerStarts = 0;
     const workerStartArgs = [];
@@ -349,6 +350,10 @@ describe("controlled orchestration", () => {
       }
       const terminal = fakeCodexTerminal(command, args);
       if (terminal !== null) return terminal;
+      if (command === "orca-ide" && args.includes("run-create")) {
+        runCreates += 1;
+        return { id: "run-reconcile" };
+      }
       if (command === "orca-ide" && args.includes("task-create")) {
         taskCreates += 1;
         return { id: "task-trust" };
@@ -417,12 +422,12 @@ describe("controlled orchestration", () => {
           },
         ],
       });
-      expect(
+      expect(() =>
         preflightAction(recoverySnapshot, "reconcile", {
           workItemId: "C17",
           expectedRevision: "revision-1",
-        }).node.id,
-      ).toBe("C17");
+        }),
+      ).toThrow("必须复用当前 queued Task");
 
       const resumed = await riskflowDispatch(
         {
@@ -437,8 +442,17 @@ describe("controlled orchestration", () => {
           statusProvider: async () => ({ graph, snapshot: recoverySnapshot }),
         },
       );
-      expect(resumed).toMatchObject({ taskId: "task-finalizer", worker: { state: "started" } });
+      expect(resumed).toMatchObject({
+        taskId: "task-finalizer",
+        runId: "run-finalizer",
+        worker: { state: "started" },
+      });
+      expect(await readLedgerEnvelope(runtimeRoot, "task-finalizer")).toMatchObject({
+        runState: "running",
+        owner: { taskId: "task-finalizer" },
+      });
       expect(terminalCreates).toBe(1);
+      expect(runCreates).toBe(0);
       expect(taskCreates).toBe(0);
       expect(workerStarts).toBe(3);
     } finally {

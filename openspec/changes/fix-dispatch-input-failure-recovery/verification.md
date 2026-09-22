@@ -4,10 +4,9 @@
 
 ## 产物与结论
 
-- 输入 Git HEAD：`07d1a599ae91be781c490090dad2e8a77dc2f625`。
-- 核验时工作树 HEAD：`07d1a599ae91be781c490090dad2e8a77dc2f625`；本次修改未提交，最终产物 HEAD 由主调度审阅 dirty paths 并形成检查点后填写。
-- Finalizer 结论：已批准 drift 范围内的实现、负向边界和回归均通过，无新增依赖、迁移、公共契约、权限或持久化变化。
-- 本次修改涉及编排关键状态机；整体进入集成前应由协调端按本轮协议决定并执行至多一次 Targeted Auditor。
+- Finalizer 输入 Git HEAD：`07d1a599ae91be781c490090dad2e8a77dc2f625`；Finalizer 检查点暨限定审计输入 HEAD：`6cd38717a0fe9c0b77188d1079c973ad675f0843`。
+- 限定审计后工作树 HEAD 仍为 `6cd38717a0fe9c0b77188d1079c973ad675f0843`；审计修复未提交，最终产物 HEAD 由主调度审阅 dirty paths 并形成检查点后填写。
+- 最终结论：PASS。已批准 drift 范围内的实现、负向边界和回归均通过；无新增依赖、迁移、权限、事务或持久化变化。
 
 ## 完整性、正确性与一致性
 
@@ -21,8 +20,9 @@
 
 - **信任提示归类**：`control.test.mjs` 模拟 `worker-start` 首次失败，再以完全相同的 retry-request 重放；重放仍退出失败，但 JSON 给出 `stage=dispatch_input`、`lastError=agent_prompt_blocked`。控制器返回 `workspace_trust_required`、精确 terminal handle 和“尚未生成 failed attempt”。
 - **Task 保持 queued**：同一测试读取控制器自持台账，确认 `runState=queued` 且只写入 `workspace_trust_required:dispatch_input` 恢复原因；阶段不是 `dispatch_input` 时保留原错误并失败闭合。
-- **复用同一 Task/terminal**：确认信任后的第二次派发使用 `task-finalizer` 与 `term-codex`，累计只创建一个 terminal、零个新 Task；worker-start 的第三次调用成功进入 started。
-- **`task_missing_local_openspec` 有界恢复**：`status.test.mjs` 证明 queued + 精确恢复原因 + 无 live/ready/succeeded worker 时不产生该 violation，状态进入可派发队列；`preflightAction` 同时允许 reconcile。信封进入 running 且 worker ready 后，缺少本地 change 重新产生 `task_missing_local_openspec` 并投影为 unknown。
+- **复用同一 Run/Task/terminal**：确认信任后的第二次派发继续使用 `run-finalizer`、`task-finalizer` 与 `term-codex`，累计只创建一个 terminal、零个新 Run/Task；worker-start 的第三次调用成功，台账进入 running。
+- **`task_missing_local_openspec` 有界恢复**：`status.test.mjs` 证明 queued + 精确恢复原因 + 无 live/ready/succeeded worker 时不产生该 violation，状态进入可派发队列；信封进入 running 且 worker ready 后，缺少本地 change 重新产生 `task_missing_local_openspec` 并投影为 unknown。
+- **禁止错误 reconcile**：`control.test.mjs` 真正执行恢复 dispatch 并验证同一 Run/Task/terminal；带精确信任恢复标记的 queued 尝试会拒绝 reconcile，避免一般 reconcile 语义创建替代 Run/Task。
 
 ## 实际验证命令
 
@@ -37,8 +37,9 @@
 
 ## 限定审计结论
 
-- 状态：待协调端按 `critical-state-machine` 风险标签触发本轮唯一 Targeted Auditor。
-- 审计者填写：最终检查点 HEAD、结论、发现、任务内修复与回归证据。
+- 状态：PASS，本轮唯一 Targeted Auditor 已完成。
+- 发现并修复一项范围内普通缺陷：状态视图虽已把信任阻塞投影为可恢复 queued 尝试，但 `preflightAction` 仍允许调用一般 `riskflow_reconcile`，后者会无条件创建第二个 Run/Task，违反同一尝试复用约束。修复后该精确恢复标记只允许携带原 terminal handle 重新 dispatch；其他真实失败的 reconcile 语义保持不变。
+- 审计覆盖关键状态机及语义一致性；未发现权限、事务、持久化、迁移、依赖或 merge 冲突问题。
 
 ## 剩余事项
 

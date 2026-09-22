@@ -19,7 +19,7 @@
 
 1. `worker-start`（以及 `tui-idle` 等待）失败时，控制器 MUST 通过同一 `--retry-request` 重放或解析结构化结果取回 `stage`/`lastError`；命中 `agent_prompt_blocked` 或工作区信任特征时 MUST 以 `workspace_trust_required` 返回精确 terminal handle 与「尚未生成 failed attempt」的事实，并 MUST NOT 把该 queued Task 标为失败。
 2. 恢复 MUST 复用同一 Task 与 terminal：操作者在 terminal 确认信任后，以新幂等键、同一 `terminalHandle` 重新 dispatch，控制器确认 `tui-idle` 后调用 `worker-start --terminal`，MUST NOT 创建第二个 Task 或 terminal。
-3. `task_missing_local_openspec` MUST NOT 阻断受控恢复：当同一工作项当前尝试的 worker 从未接受输入（`stage=dispatch_input`，无 live/ready/succeeded worker）时，该 violation 不得使 `reconcile` 与携带 `terminalHandle` 的重新 `dispatch` 不可达；一旦 worker 已接受输入或尝试已成功收口，缺少本地 change 仍 MUST 失败闭合。
+3. `task_missing_local_openspec` MUST NOT 阻断受控恢复：当同一工作项当前尝试的 worker 从未接受输入（`stage=dispatch_input`，无 live/ready/succeeded worker）时，该 violation 不得使携带 `terminalHandle` 的重新 `dispatch` 不可达；恢复必须复用同一 Run/Task/terminal，不得通过 `reconcile` 创建替代尝试。一旦 worker 已接受输入或尝试已成功收口，缺少本地 change 仍 MUST 失败闭合。
 4. 回归必须覆盖上述 1–3，且断言可观察行为（返回码、返回体字段、是否创建第二个 Task/terminal、是否仍失败闭合），不得只断言命令字符串。
 
 ## 禁止
@@ -32,4 +32,4 @@
 
 - `pnpm exec vitest run scripts/orchestration/control.test.mjs scripts/orchestration/status.test.mjs`
 - `pnpm orchestration:check`
-- 证据须包含：信任提示场景返回 `workspace_trust_required` 且 Task 仍为 queued；确认信任后复用同一 Task/terminal 派发成功；`task_missing_local_openspec` 不再使 `reconcile`/恢复派发不可达，而 worker 已接受输入后仍失败闭合。
+- 证据须包含：信任提示场景返回 `workspace_trust_required` 且 Task 仍为 queued；确认信任后复用同一 Run/Task/terminal 派发成功，且 `reconcile` 不创建替代尝试；`task_missing_local_openspec` 不再使恢复派发不可达，而 worker 已接受输入后仍失败闭合。

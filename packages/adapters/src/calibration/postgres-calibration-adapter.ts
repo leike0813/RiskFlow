@@ -678,10 +678,13 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
             proof.kind === "failed" ? proof.error : this.#unsupportedContract(command.commandId),
         };
       }
-      if (row.status !== "pending-review") {
+      // 可推进性只由只追加事实派生：最新公共记录版本不再是 `pending` 时，该建议版本已收口。
+      const latest = await this.#loadLatestDeviationRecord(command.projectId, row.deviation_id);
+      if (latest !== undefined && latest.review_status !== "pending") {
         failCalibration(
           "calibration-suggestion-not-advanceable",
           command.payload.calibrationSuggestionRef,
+          "BUSINESS_BLOCKED",
         );
       }
       return { kind: "verified", row, proof: proof.result };
@@ -730,19 +733,7 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
       async (context): Promise<AtomicCommitV1> => {
         const transaction = asCalibrationTransaction(context);
         if (command.payload.outcome === "reject") {
-          // 拒绝只追加被拒绝记录版本，并把建议标记为已拒绝：后续决定不得转移到同一建议版本。
-          await transaction
-            .updateTable("business.calibration_suggestions")
-            .set({
-              status: "rejected",
-              returned_decision_ref: null,
-              approved_decision_ref: null,
-            } as never)
-            .where("project_id", "=", command.projectId)
-            .where("suggestion_id", "=", row.suggestion_id)
-            .where("version_id", "=", row.version_id)
-            .where("status", "=", "pending-review")
-            .executeTakeFirstOrThrow();
+          // 拒绝只追加被拒绝记录版本：三张 C29 表只允许 INSERT/SELECT，建议事实不可原地改写。
           await this.#insertDeviationRecordVersion({
             transaction,
             command,
@@ -757,18 +748,6 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
             auditEntryId: `audit-${command.commandId}:calibration-review-outcome`,
             reviewDecisionRef: command.payload.reviewDecisionRef,
           });
-        } else {
-          await transaction
-            .updateTable("business.calibration_suggestions")
-            .set({
-              status: "returned",
-              returned_decision_ref: jsonValue(command.payload.reviewDecisionRef),
-            } as never)
-            .where("project_id", "=", command.projectId)
-            .where("suggestion_id", "=", row.suggestion_id)
-            .where("version_id", "=", row.version_id)
-            .where("status", "=", "pending-review")
-            .executeTakeFirstOrThrow();
         }
         return {
           resultRef: command.payload.calibrationSuggestionRef,
@@ -971,17 +950,6 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
             command.payload.calibrationSuggestionRef,
           );
         }
-        await transaction
-          .updateTable("business.calibration_suggestions")
-          .set({
-            status: "approved-for-draft",
-            approved_decision_ref: jsonValue(command.payload.reviewDecisionRef),
-          } as never)
-          .where("project_id", "=", command.projectId)
-          .where("suggestion_id", "=", row.suggestion_id)
-          .where("version_id", "=", row.version_id)
-          .where("status", "=", "pending-review")
-          .executeTakeFirstOrThrow();
         await this.#insertDeviationRecordVersion({
           transaction,
           command,
@@ -1606,9 +1574,10 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
     const payload = new TextEncoder().encode(JSON.stringify(input.value, null, 2));
     const result = await this.#artifactStore.put(
       ArtifactPutCommandV1Schema.parse({
+        // C03 回执的 command_id 全局唯一：工件写入必须拥有独立身份，不能复用命令 id。
         schemaVersion: "1",
-        commandId: input.commandId,
-        idempotencyKey: input.commandId,
+        commandId: `${input.commandId}:artifact-put:${input.purposeCode}`,
+        idempotencyKey: `${input.commandId}:artifact-put:${input.purposeCode}`,
         projectId: input.authorization.projectId,
         actorId: input.authorization.actorId,
         issuedAt: input.issuedAt,

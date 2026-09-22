@@ -684,7 +684,10 @@ export const startCalibrationFixture = async (): Promise<CalibrationPostgresFixt
 
     /** 已登记修订：同一命令/幂等键重放只复用原修订，不登记第二次（C16 幂等语义）。 */
     const submitRevisions: SubmitRevisionCommandV1[] = [];
-    const registeredRevisions = new Map<string, SubmitRevisionCommandV1["payload"]["definitionType"]>();
+    const registeredRevisions = new Map<
+      string,
+      SubmitRevisionCommandV1["payload"]["definitionType"]
+    >();
     let governanceFails = false;
     const governance = {
       async govern(command: SubmitRevisionCommandV1) {
@@ -732,21 +735,9 @@ export const startCalibrationFixture = async (): Promise<CalibrationPostgresFixt
     const authorizeDownstream: CalibrationDownstreamAuthorizerV1 = (request) =>
       authorizeFor(request.branch, request.invocationId, request.projectId);
 
-    const debugTransactionUnit = {
-      execute: (command: never, handler: never, options: never) =>
-        transactionUnit.execute(command, handler, options).catch((error: unknown) => {
-          // eslint-disable-next-line no-restricted-syntax
-          const { appendFileSync } = require("node:fs");
-          appendFileSync(
-            "/tmp/c29-debug.log",
-            `TX FAIL ${String((command as { commandKind?: string }).commandKind)}: ${error instanceof Error ? error.stack : String(error)}\n`,
-          );
-          throw error;
-        }),
-    };
     const calibration = createPostgresCalibrationAdapter({
       db,
-      transactionUnit: debugTransactionUnit as never,
+      transactionUnit,
       access: accessSeam,
       deviationFacts,
       basis: basisReader,
@@ -1044,13 +1035,20 @@ export const startCalibrationFixture = async (): Promise<CalibrationPostgresFixt
 
     /** C07 复核命令各自需要自己的分支能力：请求方与决定方分别现取真实 C06 授权。 */
     const reviewAuthorization = (
-      input: { readonly requestAuthorization?: AuthorizationContextV1; readonly decideAuthorization?: AuthorizationContextV1 },
+      input: {
+        readonly requestAuthorization?: AuthorizationContextV1;
+        readonly decideAuthorization?: AuthorizationContextV1;
+      },
       suffix: string,
-    ): Promise<{ readonly request: AuthorizationContextV1; readonly decide: AuthorizationContextV1 }> =>
+    ): Promise<{
+      readonly request: AuthorizationContextV1;
+      readonly decide: AuthorizationContextV1;
+    }> =>
       Promise.all([
         input.requestAuthorization ??
           authorizeFor("review-audit.request-review", `c29-review-request-${suffix}`),
-        input.decideAuthorization ?? authorizeFor("review-audit.decide-review", `c29-decide-${suffix}`),
+        input.decideAuthorization ??
+          authorizeFor("review-audit.decide-review", `c29-decide-${suffix}`),
       ]).then(([request, decide]) => ({ request, decide }));
 
     const decideReview = async (input: {

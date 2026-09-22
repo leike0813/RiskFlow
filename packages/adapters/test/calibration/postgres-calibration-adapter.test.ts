@@ -489,9 +489,7 @@ describe.sequential("PostgreSQL calibration adapter", () => {
       }),
     );
     expect(rejectedOutcome).toMatchObject({ kind: "succeeded", result: { outcome: "rejected" } });
-    const rejectedRecords = await rowsFor(
-      rejected.result.deviationRecordRef.reference.entityId,
-    );
+    const rejectedRecords = await rowsFor(rejected.result.deviationRecordRef.reference.entityId);
     expect(rejectedRecords.map((row) => [row.version_number, row.review_status])).toEqual([
       [1, "pending"],
       [2, "rejected"],
@@ -527,9 +525,9 @@ describe.sequential("PostgreSQL calibration adapter", () => {
       kind: "succeeded",
       result: { outcome: "returned", deviationRecordVersionId: "1" },
     });
-    expect(
-      await rowsFor(returned.result.deviationRecordRef.reference.entityId),
-    ).toMatchObject([{ version_number: 1, review_status: "pending" }]);
+    expect(await rowsFor(returned.result.deviationRecordRef.reference.entityId)).toMatchObject([
+      { version_number: 1, review_status: "pending" },
+    ]);
     const returnedSuggestion = (await suggestionRows()).find(
       (row) => row.suggestion_id === returned.result.calibrationSuggestionRef.reference.entityId,
     );
@@ -580,9 +578,10 @@ describe.sequential("PostgreSQL calibration adapter", () => {
       candidateArtifactId: draft.result.candidateArtifactRef.reference.entityId,
     });
     expect(
-      (
-        await rowsFor(approved.result.deviationRecordRef.reference.entityId)
-      ).map((row) => [row.version_number, row.review_status]),
+      (await rowsFor(approved.result.deviationRecordRef.reference.entityId)).map((row) => [
+        row.version_number,
+        row.review_status,
+      ]),
     ).toEqual([
       [1, "pending"],
       [2, "approved"],
@@ -727,11 +726,9 @@ describe.sequential("PostgreSQL calibration adapter", () => {
       ),
     ).toHaveLength(0);
     expect(
-      (
-        await rowsFor(
-          seeded.prepared.result.deviationRecordRef.reference.entityId,
-        )
-      ).map((row) => row.review_status),
+      (await rowsFor(seeded.prepared.result.deviationRecordRef.reference.entityId)).map(
+        (row) => row.review_status,
+      ),
     ).toEqual(["pending"]);
 
     await fixture!.clearAuditConflict(auditEntryId);
@@ -748,11 +745,9 @@ describe.sequential("PostgreSQL calibration adapter", () => {
       retried.result.knowledgeRevisionRef.reference.entityId,
     );
     expect(
-      (
-        await rowsFor(
-          seeded.prepared.result.deviationRecordRef.reference.entityId,
-        )
-      ).map((row) => row.review_status),
+      (await rowsFor(seeded.prepared.result.deviationRecordRef.reference.entityId)).map(
+        (row) => row.review_status,
+      ),
     ).toEqual(["pending", "approved"]);
   });
 

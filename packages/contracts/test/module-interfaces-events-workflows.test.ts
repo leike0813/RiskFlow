@@ -14,6 +14,9 @@ import {
   AuthorizationContextV1Schema,
   CancelAgentTaskCommandV1Schema,
   CancelWorkflowRunCommandV1Schema,
+  CalibrationSuggestionApprovalProofQueryV1Schema,
+  CalibrationSuggestionApprovalProofResultV1Schema,
+  CalibrationSuggestionApprovalProofV1Schema,
   ConfirmAgentCommandV1Schema,
   ContractReferenceV1Schema,
   DomainEventRefV1Schema,
@@ -52,6 +55,7 @@ import {
   ReviewDecisionV1Schema,
   ReviewRequestV1Schema,
   ReviewTaskRefV1Schema,
+  type CalibrationSuggestionApprovalProofPortV1,
   type ReviewAuditPortV1,
   RiskAssessmentRecordRefV1Schema,
   RiskInputVersionRefV1Schema,
@@ -132,6 +136,12 @@ const knowledgeReviewTaskRef = {
   ...version("review-task", "knowledge-review"),
   reviewType: "knowledge-revision",
   targetRef: version("knowledge-revision"),
+  waitingRunRef: workflowRunRef,
+};
+const calibrationReviewTaskRef = {
+  ...version("review-task", "calibration-review"),
+  reviewType: "calibration-suggestion",
+  targetRef: version("calibration-suggestion"),
   waitingRunRef: workflowRunRef,
 };
 const ruleConflictRef = version("rule-conflict", "rule-relation-1");
@@ -673,6 +683,13 @@ describe("module interface contracts", () => {
           reviewDecisionRef: version("review-decision"),
         }),
       ],
+      [
+        CalibrationSuggestionApprovalProofQueryV1Schema,
+        query("verify-calibration-suggestion-approval", {
+          calibrationSuggestionRef: version("calibration-suggestion"),
+          reviewDecisionRef: version("review-decision"),
+        }),
+      ],
     ] as const;
 
     for (const [schema, input] of domainCases) {
@@ -864,6 +881,95 @@ describe("module interface contracts", () => {
       port: ReviewAuditPortV1,
     ): ReviewAuditPortV1["verifyKnowledgeRevisionApproval"] => port.verifyKnowledgeRevisionApproval;
     expect(requiresApprovalProofPort).toBeTypeOf("function");
+  });
+
+  it("keeps calibration suggestion approval proof strict and additive", () => {
+    expect(MODULE_BRANCH_CAPABILITY_V1["review-audit.verify-calibration-suggestion-approval"]).toBe(
+      "review-audit.read",
+    );
+    const validQuery = query("verify-calibration-suggestion-approval", {
+      calibrationSuggestionRef: version("calibration-suggestion"),
+      reviewDecisionRef: version("review-decision"),
+    });
+    expect(CalibrationSuggestionApprovalProofQueryV1Schema.safeParse(validQuery).success).toBe(
+      true,
+    );
+    for (const invalidQuery of [
+      { ...validQuery, extra: true },
+      { ...validQuery, projectId: "project-2" },
+      { ...validQuery, actorId: "actor-2" },
+      {
+        ...validQuery,
+        authorization: { ...authorization, grantedCapabilities: ["review-audit.request"] },
+      },
+      query("verify-calibration-suggestion-approval", {
+        reviewDecisionRef: version("review-decision"),
+      }),
+      query("verify-calibration-suggestion-approval", {
+        calibrationSuggestionRef: version("calibration-suggestion"),
+      }),
+      query("verify-calibration-suggestion-approval", {
+        calibrationSuggestionRef: version("deviation-record"),
+        reviewDecisionRef: version("review-decision"),
+      }),
+      query("verify-calibration-suggestion-approval", {
+        calibrationSuggestionRef: version("calibration-suggestion"),
+        reviewDecisionRef: version("review-decision"),
+        decision: { kind: "approve-draft-creation" },
+      }),
+    ]) {
+      expect(
+        CalibrationSuggestionApprovalProofQueryV1Schema.safeParse(invalidQuery).success,
+        JSON.stringify(invalidQuery),
+      ).toBe(false);
+    }
+
+    const approved = {
+      kind: "approved" as const,
+      calibrationSuggestionRef: version("calibration-suggestion"),
+      reviewTaskRef: calibrationReviewTaskRef,
+      reviewDecisionRef: version("review-decision"),
+      decidedAt: later,
+    };
+    expect(CalibrationSuggestionApprovalProofV1Schema.safeParse(approved).success).toBe(true);
+    expect(
+      CalibrationSuggestionApprovalProofResultV1Schema.safeParse({
+        kind: "succeeded",
+        result: approved,
+      }).success,
+    ).toBe(true);
+    for (const invalidResult of [
+      { kind: "succeeded", result: { ...approved, decision: { kind: "approve-draft-creation" } } },
+      { kind: "succeeded", result: { ...approved, reason: "reason-text" } },
+      {
+        kind: "succeeded",
+        result: { kind: "not-approved", reason: "decision-not-found", extra: true },
+      },
+      { kind: "succeeded", result: { kind: "not-approved", reason: "review-completed" } },
+    ]) {
+      expect(
+        CalibrationSuggestionApprovalProofResultV1Schema.safeParse(invalidResult).success,
+        JSON.stringify(invalidResult),
+      ).toBe(false);
+    }
+    expect(
+      CalibrationSuggestionApprovalProofV1Schema.safeParse({
+        kind: "not-approved",
+        reason: "target-mismatch",
+      }).success,
+    ).toBe(true);
+    expect(
+      CalibrationSuggestionApprovalProofV1Schema.safeParse({
+        kind: "not-approved",
+        reason: "decision-not-approval",
+      }).success,
+    ).toBe(true);
+
+    const requiresCalibrationProofPort = (
+      port: CalibrationSuggestionApprovalProofPortV1,
+    ): CalibrationSuggestionApprovalProofPortV1["verifyCalibrationSuggestionApproval"] =>
+      port.verifyCalibrationSuggestionApproval;
+    expect(requiresCalibrationProofPort).toBeTypeOf("function");
   });
 
   it("keeps method success results aligned with every declared branch", () => {

@@ -37,6 +37,10 @@ import {
   type AgentTaskEnvelopeV1,
   type AgentTaskFailureEvidenceReadRequestV1,
   type AgentTaskFailureEvidenceReadResultV1,
+  type AgentTaskCompletedResultReadRequestV1,
+  type AgentTaskCompletedResultReadResultV1,
+  type AgentTaskCompletedResultReaderV1,
+  type AgentTaskCompletedResultV1,
   type AgentTaskFailureEvidenceReaderV1,
   type AgentTaskFailureEvidenceV1,
   type AgentTaskSnapshotV1,
@@ -210,6 +214,13 @@ const activeStatuses = ["pending", "running", "retryable-failure"] as const;
 const READ_FAILURE_EVIDENCE_BRANCH = "agent-task.read-failure-evidence";
 const READ_FAILURE_EVIDENCE_CAPABILITY = "agent-task.read";
 const READ_FAILURE_EVIDENCE_COMMAND_KIND = "agent-task.read-failure-evidence";
+/** 私有完成结果窄读复用同一 `agent-task.read` 分支与只读语义，只区分 causal 阶段码。 */
+const READ_COMPLETED_RESULT_COMMAND_KIND = "agent-task.read-completed-result";
+
+const resultRefEquals = (left: AgentTaskResultRefV1, right: AgentTaskResultRefV1): boolean =>
+  left.status === right.status &&
+  refEqual(left.reference, right.reference) &&
+  agentTaskRefEquals(left.agentTaskRef, right.agentTaskRef);
 
 const authorizationWithinFrozenBoundary = (
   frozen: AgentTaskEnvelopeV1["frozenAuthorization"],
@@ -477,7 +488,11 @@ export interface PostgresAgentTaskAdapterOptions {
 }
 
 export class PostgresAgentTaskAdapter
-  implements AgentTaskPortV1, AgentTaskExecutionStoreV1, AgentTaskFailureEvidenceReaderV1
+  implements
+    AgentTaskPortV1,
+    AgentTaskExecutionStoreV1,
+    AgentTaskFailureEvidenceReaderV1,
+    AgentTaskCompletedResultReaderV1
 {
   readonly #db: Kysely<AgentRuntimeDatabase>;
   readonly #transactionUnit: TransactionUnitV1;
@@ -1489,6 +1504,141 @@ export class PostgresAgentTaskAdapter
     } catch (error) {
       return { kind: "failed", error: this.#readFailureError(error, causalRunId) };
     }
+  }
+
+  /**
+   * 模块内精确结果窄读：授权先行、单点任务投影、白名单字段。
+   * 只接受 `completed` 且结果与候选精确一致的任务；缺失、错配与无权统一为不可枚举拒绝。
+   * 复用 `agent-task.read` 的既有复核审计查询分支，不新增能力值，也不写回执/审计。
+   */
+  async readCompletedResult(
+    request: AgentTaskCompletedResultReadRequestV1,
+  ): Promise<AgentTaskCompletedResultReadResultV1> {
+    const causalRunId =
+      typeof request?.requestId === "string" && request.requestId.length > 0
+        ? request.requestId
+        : READ_COMPLETED_RESULT_COMMAND_KIND;
+    try {
+      const requestId = IdentifierSchema.parse(request.requestId);
+      const projectId = IdentifierSchema.parse(request.projectId);
+      const actorId = IdentifierSchema.parse(request.actorId);
+      const requestedAt = IsoDateTimeSchema.parse(request.requestedAt);
+      const taskRef = AgentTaskRefV1Schema.parse(request.taskRef);
+      const resultRef = AgentTaskResultRefV1Schema.parse(request.resultRef);
+      const expectedTaskType = AgentTaskTypeV1Schema.parse(request.expectedTaskType);
+      const authorization = AuthorizationContextV1Schema.parse(request.authorization);
+      if (
+        this.#authorization === undefined ||
+        authorization.projectId !== projectId ||
+        authorization.actorId !== actorId ||
+        authorization.grantedCapabilities.length !== 1 ||
+        authorization.grantedCapabilities[0] !== READ_FAILURE_EVIDENCE_CAPABILITY
+      )
+        return { kind: "failed", error: this.#readFailureDenied(causalRunId) };
+      const decision = await this.#authorization.verify({
+        authorizationContextRef: authorization.authorizationContextRef,
+        invocationId: requestId,
+        projectId,
+        branch: READ_FAILURE_EVIDENCE_BRANCH,
+        requestedSpatialScopeRefs: authorization.spatialScopeRefs,
+        requestedSourceVersionRefs: [],
+        requestedAt,
+      });
+      if (
+        decision.context.grantedCapabilities.length !== 1 ||
+        decision.context.grantedCapabilities[0] !== READ_FAILURE_EVIDENCE_CAPABILITY ||
+        !isAuthorizationSubset(authorization, decision.context)
+      )
+        return { kind: "failed", error: this.#readFailureDenied(causalRunId) };
+      const result = await this.#withinReadFailureRead(() =>
+        this.#projectCompletedResult({ projectId, taskRef, resultRef, expectedTaskType }),
+      );
+      if (result === undefined)
+        return { kind: "failed", error: this.#readFailureDenied(causalRunId) };
+      return { kind: "succeeded", result };
+    } catch (error) {
+      return { kind: "failed", error: this.#readFailureError(error, causalRunId) };
+    }
+  }
+
+  /**
+   * 只读任务信封、动作序号与候选行；结果必须命中候选保存的公共结果引用。
+   * 任一持久化事实与请求不符时返回 `undefined`，由调用方统一收口为不可枚举拒绝。
+   */
+  async #projectCompletedResult(input: {
+    readonly projectId: string;
+    readonly taskRef: AgentTaskRefV1;
+    readonly resultRef: AgentTaskResultRefV1;
+    readonly expectedTaskType: AgentTaskTypeV1;
+  }): Promise<AgentTaskCompletedResultV1 | undefined> {
+    const row = await this.#db
+      .selectFrom("business.agent_tasks")
+      .select(["agent_task_ref", "task_type", "status", "result_ref", "envelope", "budget_ledger"])
+      .where("agent_task_id", "=", input.taskRef.reference.entityId)
+      .where("project_id", "=", input.projectId)
+      .where("version_id", "=", input.taskRef.reference.versionId)
+      .executeTakeFirst();
+    if (row === undefined || row.status !== "completed" || row.result_ref === null)
+      return undefined;
+    const storedTaskRef = AgentTaskRefV1Schema.parse(row.agent_task_ref);
+    if (
+      row.task_type !== input.expectedTaskType ||
+      storedTaskRef.taskType !== input.expectedTaskType ||
+      !agentTaskRefEquals(storedTaskRef, input.taskRef)
+    )
+      return undefined;
+    const envelope = AgentTaskEnvelopeV1Schema.parse(row.envelope);
+    const storedResultRef = AgentTaskResultRefV1Schema.parse(row.result_ref);
+    if (
+      storedResultRef.status !== "completed" ||
+      input.resultRef.status !== "completed" ||
+      !resultRefEquals(storedResultRef, input.resultRef) ||
+      !agentTaskRefEquals(envelope.agentTaskRef, input.taskRef) ||
+      envelope.taskType !== input.expectedTaskType
+    )
+      return undefined;
+    const candidates = await this.#db
+      .selectFrom("business.agent_task_candidates")
+      .select([
+        "candidate_version",
+        "candidate_artifact_ref",
+        "increment_artifact_ref",
+        "validation",
+        "result_ref",
+      ])
+      .where("agent_task_id", "=", input.taskRef.reference.entityId)
+      .orderBy("candidate_version", "asc")
+      .execute();
+    const candidate = candidates.find(
+      (value) =>
+        value.result_ref !== null &&
+        resultRefEquals(AgentTaskResultRefV1Schema.parse(value.result_ref), storedResultRef),
+    );
+    if (candidate === undefined) return undefined;
+    const actions = await this.#db
+      .selectFrom("business.agent_task_actions")
+      .select(["action_id", "sequence"])
+      .where("agent_task_id", "=", input.taskRef.reference.entityId)
+      .orderBy("sequence", "asc")
+      .execute();
+    return {
+      taskRef: input.taskRef,
+      taskType: input.expectedTaskType,
+      resultRef: input.resultRef,
+      frozenInputRef: envelope.frozenInputRef,
+      parentRunRef: envelope.parentRunRef,
+      candidateVersion: candidate.candidate_version,
+      candidateArtifactRef: ArtifactRefV1Schema.parse(candidate.candidate_artifact_ref),
+      incrementArtifactRef: ArtifactRefV1Schema.parse(candidate.increment_artifact_ref),
+      ...(candidate.validation === null
+        ? {}
+        : { validation: AgentValidationResultV1Schema.parse(candidate.validation) }),
+      usage: AgentBudgetLedgerV1Schema.parse(row.budget_ledger).used,
+      actionRefs: actions.map((action) => ({
+        entityId: action.action_id,
+        versionId: String(action.sequence),
+      })),
+    };
   }
 
   /** 读取路径的数据库故障保留 C03 一致的可重试与不可恢复语义。 */

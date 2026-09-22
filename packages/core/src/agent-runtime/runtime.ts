@@ -21,6 +21,7 @@ import {
   type ModuleErrorV1,
   type ResumeAgentTaskCommandV1,
   type StartAgentTaskCommandV1,
+  type WorkflowRunRefV1,
 } from "@riskflow/contracts/ports";
 import {
   IdentifierSchema,
@@ -405,6 +406,46 @@ export interface AgentTaskFailureEvidenceV1 {
   readonly actionRefs: readonly VersionReference[];
   readonly candidateArtifactRefs: readonly ArtifactRefV1[];
   readonly validationArtifactRefs: readonly ArtifactRefV1[];
+}
+
+/**
+ * C08 属主模块的私有完成结果窄读：只按工程、精确任务/结果引用和期望任务类型
+ * 返回冻结输入、真实父运行、候选与校验工件、工具行动与预算；
+ * 不进入公共 contracts、不提供列表/latest、不暴露模型响应或思维链。
+ */
+export interface AgentTaskCompletedResultReaderV1 {
+  readCompletedResult(
+    input: AgentTaskCompletedResultReadRequestV1,
+  ): Promise<AgentTaskCompletedResultReadResultV1>;
+}
+
+export interface AgentTaskCompletedResultReadRequestV1 {
+  readonly projectId: string;
+  readonly actorId: string;
+  readonly requestId: string;
+  readonly requestedAt: string;
+  readonly taskRef: AgentTaskRefV1;
+  readonly resultRef: AgentTaskResultRefV1;
+  readonly expectedTaskType: AgentTaskTypeV1;
+  readonly authorization: AuthorizationContextV1;
+}
+
+export type AgentTaskCompletedResultReadResultV1 =
+  | { readonly kind: "succeeded"; readonly result: AgentTaskCompletedResultV1 }
+  | { readonly kind: "failed"; readonly error: ModuleErrorV1 };
+
+export interface AgentTaskCompletedResultV1 {
+  readonly taskRef: AgentTaskRefV1;
+  readonly taskType: AgentTaskTypeV1;
+  readonly resultRef: AgentTaskResultRefV1;
+  readonly frozenInputRef: ContractReferenceV1;
+  readonly parentRunRef: WorkflowRunRefV1;
+  readonly candidateVersion: number;
+  readonly candidateArtifactRef: ArtifactRefV1;
+  readonly incrementArtifactRef: ArtifactRefV1;
+  readonly validation?: AgentValidationResultV1;
+  readonly usage: AgentBudgetUsageV1;
+  readonly actionRefs: readonly VersionReference[];
 }
 
 export interface AgentTaskStoreV1 {

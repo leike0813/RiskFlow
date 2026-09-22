@@ -1,16 +1,25 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { sql } from "kysely";
 
+import {
+  AccessServiceError,
+  type AuthorizationVerificationRequestV1,
+  type LocalIdentityAccessV1,
+} from "@riskflow/core/access";
 import {
   AgentCommandProposalV1Schema,
   AgentTaskDefinitionRegistry,
   buildCompletedAgentTaskResult,
+  type AgentTaskCompletedResultReadRequestV1,
+  type AgentTaskCompletedResultReadResultV1,
+  type AgentTaskDefinitionV1,
   type AgentTaskFailureEvidenceReadRequestV1,
 } from "@riskflow/core/agent-runtime";
 import { ArtifactPutCommandV1Schema } from "@riskflow/core/artifacts";
 import { z } from "@riskflow/core/model";
 import type {
   AgentTaskRefV1,
+  AgentTaskResultRefV1,
   AgentTaskTypeV1,
   AuthorizationContextV1,
   ModuleErrorV1,
@@ -73,39 +82,58 @@ const policy = {
   maxConcurrentActions: 1,
   maxWallClockMs: 60_000,
 };
-const definition = new AgentTaskDefinitionRegistry([
-  {
-    metadata: {
-      schemaVersion: "1",
-      definitionRef: ref("cleaning-definition"),
-      taskType: "data-cleaning",
-      toolPolicyRef: policy.toolPolicyRef,
-      incrementSchemaRef: ref("cleaning-increment"),
-      validationPolicyRef: ref("cleaning-validation"),
-      supportedTriggerModes: ["embedded", "interactive"],
-      allowedToolRefs: [],
-      resultFamilies: ["content-artifact"],
-    },
-    budgetPolicy: policy,
-    actionSchema: z.strictObject({ operation: z.literal("candidate") }),
-    incrementSchema: z.strictObject({ operation: z.literal("candidate") }),
-    candidateSchema: z.strictObject({ operation: z.literal("candidate") }),
-    tools: [],
-    measureCandidateUsage: () => ({ candidates: 1, objects: 1 }),
-    validateCandidate: () => ({
-      schemaVersion: "1",
-      items: [],
-      disposition: "accepted",
-      validationArtifactRef: artifact("diagnostic-artifact", "validation"),
-      validatedAt: "2030-01-01T00:00:00.000Z",
-    }),
-    finalizeCandidate: (_candidate, context) =>
-      buildCompletedAgentTaskResult(
-        context.envelope.agentTaskRef,
-        artifact("content-artifact", "cleaned-result"),
-      ),
+const cleaningDefinition: AgentTaskDefinitionV1 = {
+  metadata: {
+    schemaVersion: "1",
+    definitionRef: ref("cleaning-definition"),
+    taskType: "data-cleaning",
+    toolPolicyRef: policy.toolPolicyRef,
+    incrementSchemaRef: ref("cleaning-increment"),
+    validationPolicyRef: ref("cleaning-validation"),
+    supportedTriggerModes: ["embedded", "interactive"],
+    allowedToolRefs: [],
+    resultFamilies: ["content-artifact"],
   },
-]);
+  budgetPolicy: policy,
+  actionSchema: z.strictObject({ operation: z.literal("candidate") }),
+  incrementSchema: z.strictObject({ operation: z.literal("candidate") }),
+  candidateSchema: z.strictObject({ operation: z.literal("candidate") }),
+  tools: [],
+  measureCandidateUsage: () => ({ candidates: 1, objects: 1 }),
+  validateCandidate: () => ({
+    schemaVersion: "1",
+    items: [],
+    disposition: "accepted",
+    validationArtifactRef: artifact("diagnostic-artifact", "validation"),
+    validatedAt: "2030-01-01T00:00:00.000Z",
+  }),
+  finalizeCandidate: (_candidate, context) =>
+    buildCompletedAgentTaskResult(
+      context.envelope.agentTaskRef,
+      artifact("content-artifact", "cleaned-result"),
+    ),
+};
+
+/**
+ * C29 校准建议定义：与数据清洗定义共用同一预算、工具策略与 schema，
+ * 只替换任务类型与结果族，用于以真实 `calibration-suggestion` 任务验证完成结果窄读。
+ */
+const calibrationDefinition: AgentTaskDefinitionV1 = {
+  ...cleaningDefinition,
+  metadata: {
+    ...cleaningDefinition.metadata,
+    definitionRef: ref("calibration-definition"),
+    taskType: "calibration-suggestion",
+    resultFamilies: ["calibration-suggestion"],
+  },
+  finalizeCandidate: (_candidate, context) =>
+    buildCompletedAgentTaskResult(context.envelope.agentTaskRef, {
+      kind: "calibration-suggestion",
+      reference: ref("calibration-suggestion-1"),
+    }),
+};
+
+const definition = new AgentTaskDefinitionRegistry([cleaningDefinition, calibrationDefinition]);
 const startCommand = {
   kind: "start-task" as const,
   commandId: "command-start-1",
@@ -132,6 +160,8 @@ const executedCommands: Array<{ readonly command: unknown; readonly proposalRef:
 const READ_BRANCH = "agent-task.read-failure-evidence";
 const READ_CLOCK = "2030-01-01T00:00:00.000Z";
 const READ_REQUESTED_AT = "2030-01-01T00:50:00.000Z";
+/** 完成结果窄读复用同一 `agent-task.read` 分支；自身不得写入该阶段码的回执或审计。 */
+const COMPLETED_RESULT_KIND = "agent-task.read-completed-result";
 const HMAC_KEY = new Uint8Array(32).fill(7);
 const adminPassword = "admin-password-v1";
 const adminPasswordChanged = "admin-password-changed-v1";
@@ -147,6 +177,8 @@ describe("postgres agent runtime adapter", () => {
   let managerSessionToken: string | undefined;
   let terminalFailureTaskRef: AgentTaskRefV1 | undefined;
   let cancelledTaskRef: AgentTaskRefV1 | undefined;
+  let completedTaskRef: AgentTaskRefV1 | undefined;
+  let completedResultRef: AgentTaskResultRefV1 | undefined;
 
   beforeAll(async () => {
     fixture = await startArtifactFixture();
@@ -279,6 +311,63 @@ describe("postgres agent runtime adapter", () => {
       authorization: overrides.authorization ?? (await readAuthorizationFor(requestId, projectId)),
     };
   };
+
+  /** 完成结果窄读沿用同一 `agent-task.read` 请求构造，只多出期望任务类型与精确结果引用。 */
+  const completedReadRequestFor = (
+    requestId: string,
+    authorizationContext: AuthorizationContextV1,
+    overrides: Partial<AgentTaskCompletedResultReadRequestV1> = {},
+  ): AgentTaskCompletedResultReadRequestV1 => ({
+    projectId: "project-1",
+    actorId: managerAccountId!,
+    requestId,
+    requestedAt: READ_REQUESTED_AT,
+    taskRef: completedTaskRef!,
+    resultRef: completedResultRef!,
+    expectedTaskType: "calibration-suggestion",
+    authorization: authorizationContext,
+    ...overrides,
+  });
+
+  /**
+   * 完成结果窄读是只读路径：阶段码回执/审计行数为零，且读取前后库内回执、审计与事件总量不变。
+   */
+  const readSideEffectCounters = async () => {
+    const scalar = async (statement: string, values: readonly unknown[] = []) =>
+      (await fixture.postgres.adminPool.query<{ count: string }>(statement, [...values])).rows[0]
+        ?.count;
+    return {
+      completedResultReceipts: await scalar(
+        "SELECT count(*)::text AS count FROM business.command_receipts WHERE command_kind = $1",
+        [COMPLETED_RESULT_KIND],
+      ),
+      completedResultAudits: await scalar(
+        "SELECT count(*)::text AS count FROM audit.entries WHERE action = $1",
+        [COMPLETED_RESULT_KIND],
+      ),
+      totalReceipts: await scalar("SELECT count(*)::text AS count FROM business.command_receipts"),
+      totalAudits: await scalar("SELECT count(*)::text AS count FROM audit.entries"),
+      totalEvents: await scalar("SELECT count(*)::text AS count FROM outbox.events"),
+    };
+  };
+
+  /**
+   * 授权先于存在性：包一层 Kysely 统计读入口调用（`selectFrom`/`transaction`），
+   * 证明拒绝路径从未回到 C08 存储；写副作用另由 `readSideEffectCounters` 的总量取证。
+   */
+  const countingStorage = (calls: { count: number }) =>
+    new Proxy(fixture.runtime.db, {
+      get(target, property, receiver) {
+        const value: unknown = Reflect.get(target, property, receiver);
+        if (typeof value !== "function") return value;
+        const bound = value.bind(target);
+        if (property !== "selectFrom" && property !== "transaction") return bound;
+        return (...args: unknown[]) => {
+          calls.count += 1;
+          return bound(...args);
+        };
+      },
+    });
 
   const putArtifact = async (
     artifactId: string,
@@ -968,5 +1057,353 @@ describe("postgres agent runtime adapter", () => {
         idempotencyKey: requestId,
       },
     });
+  });
+
+  /**
+   * C29 IP-04 成功路径：真实 `calibration-suggestion` 任务完成后，精确结果窄读
+   * 只回传冻结输入、真实父运行、候选工件与已提交预算，且不写回执/审计/事件。
+   */
+  it("reads a completed calibration-suggestion result with frozen input, parent run and candidate refs", async () => {
+    const started = await adapter.startTask({
+      ...startCommand,
+      commandId: "command-read-completed",
+      idempotencyKey: "idempotency-read-completed",
+      payload: { ...startCommand.payload, taskType: "calibration-suggestion" },
+    });
+    expect(started.kind).toBe("succeeded");
+    if (started.kind !== "succeeded") return;
+    const taskRef = started.result.agentTaskRef;
+    expect(taskRef.taskType).toBe("calibration-suggestion");
+    completedTaskRef = taskRef;
+    const claim = await adapter.claim({
+      workerId: "worker-read-completed",
+      leaseDurationMs: 30_000,
+      now: "2030-01-01T01:00:00.000Z",
+    });
+    expect(claim?.task.envelope.agentTaskRef).toEqual(taskRef);
+    if (claim === undefined) return;
+    const intent = await putArtifact("completed-intent", "diagnostic", "agent-action-intent");
+    const actionResult = await putArtifact(
+      "completed-action-result",
+      "diagnostic",
+      "agent-action-result",
+    );
+    const candidateArtifact = await putArtifact(
+      "completed-candidate",
+      "content",
+      "agent-candidate",
+    );
+    const incrementArtifact = await putArtifact(
+      "completed-increment",
+      "diagnostic",
+      "agent-increment",
+    );
+    const validationArtifact = await putArtifact(
+      "completed-validation",
+      "diagnostic",
+      "agent-validation",
+    );
+    const validation = {
+      schemaVersion: "1" as const,
+      items: [],
+      disposition: "accepted" as const,
+      validationArtifactRef: validationArtifact,
+      validatedAt: "2030-01-01T01:00:02.500Z",
+    };
+    const resultRef = buildCompletedAgentTaskResult(
+      taskRef,
+      { kind: "calibration-suggestion", reference: ref("calibration-suggestion-1") },
+      { kind: "validation-snapshot", reference: ref("calibration-validation-1") },
+    );
+    completedResultRef = resultRef;
+    const reserved = await adapter.reserveAction({
+      taskRef,
+      workerId: claim.workerId,
+      leaseToken: claim.leaseToken,
+      actionId: "action-completed-1",
+      reservationId: "reservation-completed-1",
+      actionType: "model-invocation",
+      sequence: 1,
+      idempotencyKey: "action-completed-idempotency-1",
+      intentArtifactRef: intent,
+      amount: { inputTokens: 10 },
+      now: "2030-01-01T01:00:01.000Z",
+    });
+    await adapter.recordCandidate({
+      candidate: {
+        schemaVersion: "1",
+        taskRef,
+        candidateVersion: 1,
+        parentCandidateVersion: 0,
+        candidateArtifactRef: candidateArtifact,
+        incrementArtifactRef: incrementArtifact,
+        validation,
+        resultRef,
+        disposition: "accepted",
+        createdAt: "2030-01-01T01:00:02.000Z",
+      },
+      workerId: claim.workerId,
+      leaseToken: claim.leaseToken,
+    });
+    await adapter.completeAction({
+      taskRef,
+      workerId: claim.workerId,
+      leaseToken: claim.leaseToken,
+      actionId: "action-completed-1",
+      resultRef: candidateArtifact,
+      resultArtifactRef: actionResult,
+      usage: { ...reserved.reservation.amount, inputTokens: 4 },
+      activeWallClockMs: 1_000,
+      now: "2030-01-01T01:00:03.000Z",
+    });
+    await adapter.completeTask({
+      taskRef,
+      workerId: claim.workerId,
+      leaseToken: claim.leaseToken,
+      resultRef,
+      now: "2030-01-01T01:00:04.000Z",
+    });
+    const snapshot = await adapter.getTask(taskRef);
+    expect(snapshot?.state.status).toBe("completed");
+    expect(snapshot?.state.resultRef).toEqual(resultRef);
+
+    const okRequest = completedReadRequestFor(
+      "read-completed-result-ok",
+      await readAuthorizationFor("read-completed-result-ok"),
+    );
+    const wrongVersionRequest = completedReadRequestFor(
+      "read-completed-result-wrong-version",
+      await readAuthorizationFor("read-completed-result-wrong-version"),
+      { taskRef: { ...taskRef, reference: { ...taskRef.reference, versionId: "2" } } },
+    );
+    const before = await readSideEffectCounters();
+    const read = await readerAdapter.readCompletedResult(okRequest);
+    expect(read.kind).toBe("succeeded");
+    if (read.kind !== "succeeded") return;
+    expect(read.result.taskRef).toEqual(taskRef);
+    expect(read.result.taskType).toBe("calibration-suggestion");
+    expect(read.result.resultRef).toEqual(resultRef);
+    expect(read.result.frozenInputRef).toEqual(startCommand.payload.frozenInputRef);
+    expect(read.result.parentRunRef).toEqual(startCommand.payload.parentRunRef);
+    expect(read.result.candidateVersion).toBe(1);
+    expect(read.result.candidateArtifactRef).toEqual(candidateArtifact);
+    expect(read.result.incrementArtifactRef).toEqual(incrementArtifact);
+    expect(read.result.validation).toEqual(validation);
+    expect(read.result.usage).toEqual(snapshot?.budgetLedger.used);
+    expect(read.result.usage.modelInvocations).toBe(1);
+    expect(read.result.actionRefs).toEqual([{ entityId: "action-completed-1", versionId: "1" }]);
+    expect(Object.keys(read.result).sort()).toEqual([
+      "actionRefs",
+      "candidateArtifactRef",
+      "candidateVersion",
+      "frozenInputRef",
+      "incrementArtifactRef",
+      "parentRunRef",
+      "resultRef",
+      "taskRef",
+      "taskType",
+      "usage",
+      "validation",
+    ]);
+    const serialized = JSON.stringify(read.result);
+    for (const marker of [
+      "envelope",
+      "modelResponse",
+      "authorizationContextRef",
+      "intentArtifactRef",
+    ]) {
+      expect(serialized).not.toContain(marker);
+    }
+
+    const refused = await readerAdapter.readCompletedResult(wrongVersionRequest);
+    expect(refused.kind).toBe("failed");
+    const after = await readSideEffectCounters();
+    expect(after).toEqual(before);
+  });
+
+  /**
+   * C29 IP-04 失败路径：完成结果窄读的每一个边界（工程、版本、任务类型、结果引用、存在性、能力）
+   * 都折叠成同一个不可枚举 `AUTHORIZATION_DENIED`；授权先于存在性，且整条路径零写入。
+   */
+  it("folds every completed-result read boundary into one denial without writing", async () => {
+    expect(completedTaskRef).toBeDefined();
+    expect(completedResultRef).toBeDefined();
+    const taskRef = completedTaskRef!;
+    const resultRef = completedResultRef!;
+    const requestId = "read-completed-result-denied";
+    // 固定时钟让 `occurredAt` 可比较：同一 requestId 下所有拒绝必须逐字段相同。
+    const denialReader = new PostgresAgentTaskAdapter({
+      db: fixture.runtime.db,
+      registry: definition,
+      transactionUnit: fixture.transactionUnit,
+      artifactStore: fixture.store,
+      referenceGuard: fixture.registry,
+      authorization: access,
+      now: () => READ_CLOCK,
+    });
+    const authorization = await readAuthorizationFor(requestId);
+    const projectTwoAuthorization = await readAuthorizationFor(requestId, "project-2");
+    const cases: ReadonlyArray<readonly [string, AgentTaskCompletedResultReadRequestV1]> = [
+      [
+        "跨工程",
+        completedReadRequestFor(requestId, projectTwoAuthorization, { projectId: "project-2" }),
+      ],
+      [
+        "错任务版本",
+        completedReadRequestFor(requestId, authorization, {
+          taskRef: { ...taskRef, reference: { ...taskRef.reference, versionId: "2" } },
+        }),
+      ],
+      [
+        "错期望任务类型",
+        completedReadRequestFor(requestId, authorization, { expectedTaskType: "data-cleaning" }),
+      ],
+      [
+        "错结果引用",
+        completedReadRequestFor(requestId, authorization, {
+          resultRef: {
+            ...resultRef,
+            reference: { ...resultRef.reference, entityId: "agent-result:other" },
+          },
+        }),
+      ],
+      [
+        "任务不存在",
+        completedReadRequestFor(requestId, authorization, {
+          taskRef: {
+            ...taskRef,
+            reference: { entityId: "agent-task:project-1:missing", versionId: "1" },
+          },
+        }),
+      ],
+      [
+        "非完成状态",
+        completedReadRequestFor(requestId, authorization, { taskRef: terminalFailureTaskRef! }),
+      ],
+      [
+        "缺读取能力",
+        completedReadRequestFor(requestId, authorization, {
+          authorization: { ...authorization, grantedCapabilities: ["agent-task.confirm"] },
+        }),
+      ],
+    ];
+    const expectedDenial: AgentTaskCompletedResultReadResultV1 = {
+      kind: "failed",
+      error: {
+        stageCode: "agent-task.read-failure-evidence",
+        occurredAt: READ_CLOCK,
+        causalRunId: requestId,
+        code: "AUTHORIZATION_DENIED",
+        category: "authorization",
+        retryable: false,
+        requiredCapability: "agent-task.read",
+        authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+      },
+    };
+    // 非完成状态用例必须命中真实存在的行：否则拒绝可能只来自“查不到”，钉不住状态门。
+    const nonCompletedRow = await sql<{ status: string }>`
+      SELECT status FROM business.agent_tasks
+      WHERE agent_task_id = ${terminalFailureTaskRef!.reference.entityId}
+        AND project_id = 'project-1'
+        AND version_id = ${terminalFailureTaskRef!.reference.versionId}
+    `.execute(fixture.runtime.db);
+    expect(nonCompletedRow.rows).toEqual([{ status: "terminal-failure" }]);
+
+    const before = await readSideEffectCounters();
+    const denials: AgentTaskCompletedResultReadResultV1[] = [];
+    for (const [name, caseRequest] of cases) {
+      const result = await denialReader.readCompletedResult(caseRequest);
+      expect(result.kind, name).toBe("failed");
+      if (result.kind !== "failed") continue;
+      denials.push(result);
+    }
+    expect(denials).toHaveLength(cases.length);
+    for (const denial of denials) expect(denial).toEqual(expectedDenial);
+    const serialized = JSON.stringify(denials);
+    for (const marker of [
+      taskRef.reference.entityId,
+      resultRef.reference.entityId,
+      "calibration-suggestion",
+    ]) {
+      expect(serialized).not.toContain(marker);
+    }
+
+    // 结果必须命中候选保存的公共结果引用：摘掉候选结果引用后同一请求必须同样拒绝，恢复后又能读到。
+    const candidateRow = await sql<{ result_ref: unknown }>`
+      SELECT result_ref FROM business.agent_task_candidates
+      WHERE agent_task_id = ${taskRef.reference.entityId}
+    `.execute(fixture.runtime.db);
+    expect(candidateRow.rows).toHaveLength(1);
+    try {
+      await fixture.postgres.adminPool.query(
+        "UPDATE business.agent_task_candidates SET result_ref = NULL WHERE agent_task_id = $1",
+        [taskRef.reference.entityId],
+      );
+      const orphaned = await denialReader.readCompletedResult(
+        completedReadRequestFor(requestId, authorization),
+      );
+      expect(orphaned).toEqual(expectedDenial);
+    } finally {
+      await fixture.postgres.adminPool.query(
+        "UPDATE business.agent_task_candidates SET result_ref = $2::jsonb WHERE agent_task_id = $1",
+        [taskRef.reference.entityId, JSON.stringify(candidateRow.rows[0]!.result_ref)],
+      );
+    }
+    const restored = await denialReader.readCompletedResult(
+      completedReadRequestFor(requestId, authorization),
+    );
+    expect(restored).toEqual({
+      kind: "succeeded",
+      result: expect.objectContaining({ taskRef, resultRef, candidateVersion: 1 }),
+    });
+
+    // 授权先行：C06 复核直接抛拒绝时，读路径一次都不得回到 C08 存储取行。
+    const storageCalls = { count: 0 };
+    const verifyCalls: AuthorizationVerificationRequestV1[] = [];
+    const verify = vi.fn(async (request: AuthorizationVerificationRequestV1) => {
+      verifyCalls.push(request);
+      throw new AccessServiceError({
+        code: "AUTHORIZATION_DENIED",
+        stage: "verify",
+        occurredAt: READ_CLOCK,
+        diagnosticRef: {
+          kind: "diagnostic-artifact",
+          reference: ref("read-completed-access-denied"),
+        },
+        contextRefs: [],
+        retryable: false,
+        requiredCapability: "agent-task.read",
+        authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+      });
+    });
+    const spyReader = new PostgresAgentTaskAdapter({
+      db: countingStorage(storageCalls),
+      registry: definition,
+      transactionUnit: fixture.transactionUnit,
+      artifactStore: fixture.store,
+      referenceGuard: fixture.registry,
+      authorization: { verify } as unknown as LocalIdentityAccessV1,
+      now: () => READ_CLOCK,
+    });
+    const verifyDenied = await spyReader.readCompletedResult(
+      completedReadRequestFor(requestId, authorization),
+    );
+    expect(verifyDenied).toEqual(expectedDenial);
+    expect(verify).toHaveBeenCalledTimes(1);
+    expect(verifyCalls[0]).toMatchObject({
+      branch: "agent-task.read-failure-evidence",
+      invocationId: requestId,
+      projectId: "project-1",
+    });
+    expect(storageCalls.count).toBe(0);
+    // 反证计数有效：同一口径的代理上真实查询必须被计入，`toBe(0)` 才不是空断言。
+    await countingStorage(storageCalls)
+      .selectFrom("business.agent_tasks")
+      .select("agent_task_id")
+      .limit(1)
+      .execute();
+    expect(storageCalls.count).toBe(1);
+    const after = await readSideEffectCounters();
+    expect(after).toEqual(before);
   });
 });

@@ -99,6 +99,10 @@
     "./response-lifecycle": {
       "types": "./dist/response-lifecycle/index.d.ts",
       "import": "./dist/response-lifecycle/index.js"
+    },
+    "./calibration": {
+      "types": "./dist/calibration/index.d.ts",
+      "import": "./dist/calibration/index.js"
     }
   }
 }

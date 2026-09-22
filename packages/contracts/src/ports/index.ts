@@ -522,6 +522,7 @@ export const MODULE_BRANCH_CAPABILITY_V1 = {
   "review-audit.decide-review": "review-audit.decide",
   "review-audit.trace": "review-audit.read",
   "review-audit.verify-knowledge-revision-approval": "review-audit.read",
+  "review-audit.verify-calibration-suggestion-approval": "review-audit.read",
   "agent-task.read-failure-evidence": "agent-task.read",
   "agent-task.start-task": "agent-task.start",
   "agent-task.resume-task": "agent-task.resume",
@@ -2040,6 +2041,20 @@ export type KnowledgeRevisionApprovalProofQueryV1 = z.infer<
   typeof KnowledgeRevisionApprovalProofQueryV1Schema
 >;
 
+export const CalibrationSuggestionApprovalProofQueryV1Schema = z.discriminatedUnion("kind", [
+  querySchema(
+    "verify-calibration-suggestion-approval",
+    z.strictObject({
+      calibrationSuggestionRef: CalibrationSuggestionRefV1Schema,
+      reviewDecisionRef: ReviewDecisionRefV1Schema,
+    }),
+    branchCapability("review-audit.verify-calibration-suggestion-approval"),
+  ),
+]);
+export type CalibrationSuggestionApprovalProofQueryV1 = z.infer<
+  typeof CalibrationSuggestionApprovalProofQueryV1Schema
+>;
+
 export const EngineeringDataApplySuccessV1Schema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("register-source-delivery"),
@@ -2253,6 +2268,23 @@ export type KnowledgeRevisionApprovalProofV1 = z.infer<
   typeof KnowledgeRevisionApprovalProofV1Schema
 >;
 
+export const CalibrationSuggestionApprovalProofV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("approved"),
+    calibrationSuggestionRef: CalibrationSuggestionRefV1Schema,
+    reviewTaskRef: ReviewTaskRefV1Schema,
+    reviewDecisionRef: ReviewDecisionRefV1Schema,
+    decidedAt: IsoDateTimeSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("not-approved"),
+    reason: z.enum(["decision-not-found", "target-mismatch", "decision-not-approval"]),
+  }),
+]);
+export type CalibrationSuggestionApprovalProofV1 = z.infer<
+  typeof CalibrationSuggestionApprovalProofV1Schema
+>;
+
 export const TraceSuccessV1Schema = z.union([
   z.strictObject({ auditTrailRef: AuditTrailRefV1Schema }),
   z.strictObject({ queryResultRef: QueryResultRefV1Schema }),
@@ -2411,6 +2443,13 @@ export type KnowledgeRevisionApprovalProofResultV1 = z.infer<
   typeof KnowledgeRevisionApprovalProofResultV1Schema
 >;
 
+export const CalibrationSuggestionApprovalProofResultV1Schema = moduleResultSchema(
+  CalibrationSuggestionApprovalProofV1Schema,
+);
+export type CalibrationSuggestionApprovalProofResultV1 = z.infer<
+  typeof CalibrationSuggestionApprovalProofResultV1Schema
+>;
+
 export const TraceResultV1Schema = moduleResultSchema(TraceSuccessV1Schema);
 export type TraceResultV1 = z.infer<typeof TraceResultV1Schema>;
 
@@ -2490,6 +2529,16 @@ export interface ReviewAuditPortV1 {
     query: KnowledgeRevisionApprovalProofQueryV1,
   ): Promise<KnowledgeRevisionApprovalProofResultV1>;
   trace(query: TraceQueryV1): Promise<TraceResultV1>;
+}
+
+/**
+ * 校准建议批准证明的专用只读端口：与知识修订批准证明并列，合法决定集合不同，
+ * 因此不并入 `ReviewAuditPortV1`，也不迫使既有实现者增补无关方法。
+ */
+export interface CalibrationSuggestionApprovalProofPortV1 {
+  verifyCalibrationSuggestionApproval(
+    query: CalibrationSuggestionApprovalProofQueryV1,
+  ): Promise<CalibrationSuggestionApprovalProofResultV1>;
 }
 
 export interface AgentTaskPortV1 {

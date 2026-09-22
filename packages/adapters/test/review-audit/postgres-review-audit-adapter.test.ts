@@ -4,10 +4,12 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/access";
 import {
   AuthorizationContextV1Schema,
+  CalibrationSuggestionApprovalProofQueryV1Schema,
   KnowledgeRevisionApprovalProofQueryV1Schema,
   ReviewDecisionCommandV1Schema,
   ReviewRequestV1Schema,
   type AuthorizationContextV1,
+  type CalibrationSuggestionApprovalProofQueryV1,
   type IdentificationGroupRefV1,
   type KnowledgeRevisionApprovalProofQueryV1,
   type ReviewDecisionCommandV1,
@@ -116,6 +118,7 @@ const decisionFor = (
     readonly authorization?: AuthorizationContextV1;
     readonly commandId?: string;
     readonly knowledgeDecisionKind?: "approve-publication" | "reject" | "return-for-revision";
+    readonly calibrationDecisionKind?: "approve-draft-creation" | "reject" | "return-for-revision";
   } = {},
 ): ReviewDecisionCommandV1 =>
   ReviewDecisionCommandV1Schema.parse({
@@ -141,7 +144,10 @@ const decisionFor = (
               ? { reviewType: request.payload.reviewType, kind: "approve-publication" }
               : request.payload.reviewType === "response-candidate"
                 ? { reviewType: "response-candidate", kind: "return-upstream" }
-                : { reviewType: "calibration-suggestion", kind: "approve-draft-creation" },
+                : {
+                    reviewType: "calibration-suggestion",
+                    kind: options.calibrationDecisionKind ?? "approve-draft-creation",
+                  },
       reasonCode: "reviewed",
     },
   });
@@ -169,6 +175,41 @@ const approvalQueryFor = (options: {
         reference: {
           entityId: options.revisionEntityId,
           versionId: options.revisionVersionId ?? "1",
+        },
+      },
+      reviewDecisionRef: {
+        kind: "review-decision",
+        reference: {
+          entityId: options.decisionEntityId,
+          versionId: options.decisionVersionId ?? "1",
+        },
+      },
+    },
+  });
+
+const calibrationApprovalQueryFor = (options: {
+  readonly suffix: string;
+  readonly projectId: string;
+  readonly authorization: AuthorizationContextV1;
+  readonly queryId?: string;
+  readonly suggestionEntityId: string;
+  readonly suggestionVersionId?: string;
+  readonly decisionEntityId: string;
+  readonly decisionVersionId?: string;
+}): CalibrationSuggestionApprovalProofQueryV1 =>
+  CalibrationSuggestionApprovalProofQueryV1Schema.parse({
+    queryId: options.queryId ?? nextId(`calibration-approval-query-${options.suffix}`),
+    projectId: options.projectId,
+    actorId: options.authorization.actorId,
+    requestedAt: REVIEW_TEST_TIMESTAMP,
+    authorization: options.authorization,
+    kind: "verify-calibration-suggestion-approval",
+    payload: {
+      calibrationSuggestionRef: {
+        kind: "calibration-suggestion",
+        reference: {
+          entityId: options.suggestionEntityId,
+          versionId: options.suggestionVersionId ?? "1",
         },
       },
       reviewDecisionRef: {
@@ -670,6 +711,284 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
       error: { code: "TERMINAL_FAILURE" },
     });
     expect(await reviewAuditCounts(fixture!, projectId)).toEqual(before);
+  });
+
+  it("verifies calibration suggestion approval proof with closed outcomes and no writes", async () => {
+    const projectId = "project-calibration-approval-proof";
+    const authorization = authorizationFor(projectId);
+    const { adapter } = adapterFor(fixture!, authorization);
+    const cases = [
+      {
+        suffix: "approved",
+        decisionKind: "approve-draft-creation" as const,
+        expected: "approved" as const,
+      },
+      {
+        suffix: "rejected",
+        decisionKind: "reject" as const,
+        expected: "decision-not-approval" as const,
+      },
+      {
+        suffix: "returned",
+        decisionKind: "return-for-revision" as const,
+        expected: "decision-not-approval" as const,
+      },
+      {
+        suffix: "target-mismatch",
+        decisionKind: "approve-draft-creation" as const,
+        expected: "target-mismatch" as const,
+      },
+    ];
+    const decidedCases: Array<{
+      readonly suffix: string;
+      readonly expected: (typeof cases)[number]["expected"];
+      readonly taskRef: ReviewTaskRefV1;
+      readonly decisionRef: {
+        kind: "review-decision";
+        reference: { entityId: string; versionId: string };
+      };
+    }> = [];
+
+    for (const testCase of cases) {
+      const request = requestFor({
+        suffix: `calibration-${testCase.suffix}`,
+        projectId,
+        reviewType: "calibration-suggestion",
+        targetEntityId: `suggestion-${testCase.suffix}`,
+        authorization,
+      });
+      const requested = await adapter.requestReview(request);
+      expect(requested.kind).toBe("succeeded");
+      if (requested.kind !== "succeeded") return;
+      const decided = await adapter.decideReview(
+        decisionFor(request, requested.result.reviewTaskRef, `calibration-${testCase.suffix}`, {
+          calibrationDecisionKind: testCase.decisionKind,
+        }),
+      );
+      expect(decided.kind).toBe("succeeded");
+      if (decided.kind !== "succeeded") return;
+      decidedCases.push({
+        suffix: testCase.suffix,
+        expected: testCase.expected,
+        taskRef: requested.result.reviewTaskRef,
+        decisionRef: decided.result.reviewDecisionRef,
+      });
+    }
+
+    // 任务决定事实违反既有状态约束（保存的决定引用与查询决定不一致）时必须技术失败关闭。
+    const inconsistentRequest = requestFor({
+      suffix: "calibration-inconsistent",
+      projectId,
+      reviewType: "calibration-suggestion",
+      targetEntityId: "suggestion-inconsistent",
+      authorization,
+    });
+    const inconsistentTask = await adapter.requestReview(inconsistentRequest);
+    expect(inconsistentTask.kind).toBe("succeeded");
+    if (inconsistentTask.kind !== "succeeded") return;
+    const inconsistentDecisionRef = {
+      kind: "review-decision" as const,
+      reference: { entityId: "calibration-inconsistent-decision", versionId: "1" },
+    };
+    await fixture!.postgres.adminPool.query(
+      `INSERT INTO business.review_decisions
+        (review_decision_id, version_id, review_task_id, review_decision_ref, project_id,
+         review_type, review_task_ref, target_ref, decision, reason_code,
+         validation_snapshot_ref, evidence_snapshot_ref, waiting_run_ref, review_policy_ref,
+         actor_ref, authorization_context_ref, decided_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+      [
+        inconsistentDecisionRef.reference.entityId,
+        inconsistentDecisionRef.reference.versionId,
+        inconsistentTask.result.reviewTaskRef.reference.entityId,
+        inconsistentDecisionRef,
+        projectId,
+        "calibration-suggestion",
+        inconsistentTask.result.reviewTaskRef,
+        inconsistentRequest.payload.targetRef,
+        { reviewType: "calibration-suggestion", kind: "approve-draft-creation" },
+        "reviewed",
+        inconsistentRequest.payload.validationSnapshotRef,
+        inconsistentRequest.payload.evidenceSnapshotRef,
+        inconsistentRequest.payload.waitingRunRef,
+        inconsistentRequest.payload.reviewPolicyRef,
+        "inconsistent-actor",
+        authorization.authorizationContextRef,
+        REVIEW_TEST_TIMESTAMP,
+      ],
+    );
+
+    const before = await reviewAuditCounts(fixture!, projectId);
+    for (const testCase of decidedCases) {
+      const result = await adapter.verifyCalibrationSuggestionApproval(
+        calibrationApprovalQueryFor({
+          suffix: `calibration-${testCase.suffix}`,
+          projectId,
+          authorization,
+          suggestionEntityId:
+            testCase.expected === "target-mismatch"
+              ? "suggestion-other"
+              : `suggestion-${testCase.suffix}`,
+          decisionEntityId: testCase.decisionRef.reference.entityId,
+        }),
+      );
+      if (testCase.expected === "approved") {
+        expect(result).toMatchObject({
+          kind: "succeeded",
+          result: {
+            kind: "approved",
+            calibrationSuggestionRef: {
+              kind: "calibration-suggestion",
+              reference: { entityId: "suggestion-approved", versionId: "1" },
+            },
+            reviewTaskRef: testCase.taskRef,
+            reviewDecisionRef: testCase.decisionRef,
+            decidedAt: expect.any(String),
+          },
+        });
+        expect(result).not.toHaveProperty("result.decision");
+        expect(result).not.toHaveProperty("result.reasonCode");
+        expect(result).not.toHaveProperty("result.evidence");
+      } else {
+        expect(result).toMatchObject({
+          kind: "succeeded",
+          result: { kind: "not-approved", reason: testCase.expected },
+        });
+      }
+    }
+
+    const missing = await adapter.verifyCalibrationSuggestionApproval(
+      calibrationApprovalQueryFor({
+        suffix: "calibration-missing",
+        projectId,
+        authorization,
+        suggestionEntityId: "suggestion-approved",
+        decisionEntityId: "calibration-missing-decision",
+      }),
+    );
+    expect(missing).toEqual({
+      kind: "succeeded",
+      result: { kind: "not-approved", reason: "decision-not-found" },
+    });
+
+    const projectTwo = "project-calibration-approval-proof-two";
+    const projectTwoAuthorization = authorizationFor(projectTwo);
+    const projectTwoAdapter = adapterFor(fixture!, projectTwoAuthorization).adapter;
+    const projectTwoRequest = requestFor({
+      suffix: "calibration-project-two",
+      projectId: projectTwo,
+      reviewType: "calibration-suggestion",
+      targetEntityId: "suggestion-project-two",
+      authorization: projectTwoAuthorization,
+    });
+    const projectTwoTask = await projectTwoAdapter.requestReview(projectTwoRequest);
+    expect(projectTwoTask.kind).toBe("succeeded");
+    if (projectTwoTask.kind !== "succeeded") return;
+    const projectTwoDecision = await projectTwoAdapter.decideReview(
+      decisionFor(
+        projectTwoRequest,
+        projectTwoTask.result.reviewTaskRef,
+        "calibration-project-two",
+      ),
+    );
+    expect(projectTwoDecision.kind).toBe("succeeded");
+    if (projectTwoDecision.kind !== "succeeded") return;
+    const crossProject = await adapter.verifyCalibrationSuggestionApproval(
+      calibrationApprovalQueryFor({
+        suffix: "calibration-cross-project",
+        projectId,
+        authorization,
+        suggestionEntityId: "suggestion-project-two",
+        decisionEntityId: projectTwoDecision.result.reviewDecisionRef.reference.entityId,
+      }),
+    );
+    expect(crossProject).toEqual(missing);
+
+    const inconsistent = await adapter.verifyCalibrationSuggestionApproval(
+      calibrationApprovalQueryFor({
+        suffix: "calibration-inconsistent",
+        projectId,
+        authorization,
+        suggestionEntityId: "suggestion-inconsistent",
+        decisionEntityId: inconsistentDecisionRef.reference.entityId,
+      }),
+    );
+    expect(inconsistent).toMatchObject({
+      kind: "failed",
+      error: { code: "TERMINAL_FAILURE" },
+    });
+    expect(await reviewAuditCounts(fixture!, projectId)).toEqual(before);
+  });
+
+  it("rejects calibration approval proof before lookup for invalid or unauthorized queries", async () => {
+    const projectId = "project-calibration-approval-auth";
+    const authorization = authorizationFor(projectId);
+    const valid = calibrationApprovalQueryFor({
+      suffix: "auth",
+      projectId,
+      authorization,
+      suggestionEntityId: "suggestion-auth",
+      decisionEntityId: "decision-auth",
+    });
+    const denial = new AccessServiceError({
+      code: "AUTHORIZATION_DENIED",
+      stage: "verify",
+      occurredAt: REVIEW_TEST_TIMESTAMP,
+      diagnosticRef: {
+        kind: "diagnostic-artifact",
+        reference: { entityId: "diagnostic-calibration-approval-denied", versionId: "1" },
+      },
+      contextRefs: [],
+      retryable: false,
+      requiredCapability: "review-audit.read",
+      authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+    });
+    const verify = vi.fn(async () => {
+      throw denial;
+    });
+    const { adapter, verify: verifySpy } = adapterFor(fixture!, authorization, verify);
+    await fixture!.postgres.adminPool.query(
+      "REVOKE SELECT ON TABLE business.review_decisions FROM riskflow_app",
+    );
+    try {
+      expect(await adapter.verifyCalibrationSuggestionApproval(valid)).toMatchObject({
+        kind: "failed",
+        error: { code: "AUTHORIZATION_DENIED" },
+      });
+    } finally {
+      await fixture!.postgres.adminPool.query(
+        "GRANT SELECT ON TABLE business.review_decisions TO riskflow_app",
+      );
+    }
+    expect(verifySpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        branch: "review-audit.verify-calibration-suggestion-approval",
+        invocationId: valid.queryId,
+      }),
+    );
+
+    const invalidQueries = [
+      { ...valid, kind: "verify-knowledge-revision-approval" },
+      {
+        ...valid,
+        authorization: { ...valid.authorization, grantedCapabilities: ["review-audit.request"] },
+      },
+      { ...valid, projectId: "project-calibration-approval-auth-other" },
+      { ...valid, actorId: "actor-other" },
+      { ...valid, extra: true },
+      {
+        ...valid,
+        payload: { ...valid.payload, reviewDecisionRef: { entityId: "decision-auth" } },
+      },
+    ] as unknown[];
+    const schemaAdapter = adapterFor(fixture!, authorization).adapter;
+    for (const invalid of invalidQueries) {
+      expect(
+        await schemaAdapter.verifyCalibrationSuggestionApproval(
+          invalid as CalibrationSuggestionApprovalProofQueryV1,
+        ),
+      ).toMatchObject({ kind: "failed", error: { code: "UNSUPPORTED_CONTRACT" } });
+    }
   });
 
   it("rejects approval proof before lookup for invalid or unauthorized queries", async () => {

@@ -44,7 +44,8 @@ const nullableObjectColumns = kindColumns.map(nullableObjectColumn);
 /**
  * 各类登记行的完整引用形状由核心 `IdentificationGraphResultRowV1Schema` 唯一限定；
  * 这里按同一判别联合逐类生成“本类专列非空、它类专列为空”，
- * 使数据库拒绝任何核心未声明的引用组合。`waiting` 的 `stage_result_ref` 为核心允许的可选项。
+ * 使数据库拒绝任何核心未声明的引用组合。`waiting` 的 `stage_result_ref` 与
+ * `stage-result` 的 `work_plan_ref`（D-15：工作计划形成前的 I0/I1 阶段结果）为核心允许的可选项。
  */
 const kindPairing = (kind: string, required: readonly string[], optional: readonly string[] = []) =>
   sql`(result_kind = ${sql.lit(kind)} AND ${sql.join(
@@ -65,7 +66,7 @@ const kindPairings = sql`(${sql.join(
       "input_snapshot_ref",
     ]),
     kindPairing("work-plan", ["parent_run_ref", "input_snapshot_ref", "work_plan_ref"]),
-    kindPairing("stage-result", ["work_plan_ref", "stage_result_ref"]),
+    kindPairing("stage-result", ["stage_result_ref"], ["work_plan_ref"]),
     kindPairing("waiting", ["waiting_ref"], ["stage_result_ref"]),
     kindPairing("workflow-error", ["workflow_error_ref"]),
     kindPairing("run-state", []),
@@ -74,6 +75,32 @@ const kindPairings = sql`(${sql.join(
   ],
   sql` OR `,
 )})`;
+
+const kindCheckConstraint = "identification_graph_results_kind_ck";
+
+/** 判别约束正文：新建表与重入既有表必须收敛到同一允许组合（D-15）。 */
+const kindCheckDefinition = sql`result_kind IN (${sql.join(
+  resultKinds.map((kind) => sql.lit(kind)),
+  sql`, `,
+)}) AND ${kindPairings}`;
+
+/**
+ * 同名判别约束在「新建 C24 表」与「重入已有 C24 表」两条路径上收敛为同一允许组合：
+ * 单条 DO 语句先删后建，`ADD CONSTRAINT` 在同一语句内立即校验既有行，任一行越界即整体回滚，
+ * 不留无约束的已提交状态；重复执行得到相同约束。
+ */
+const convergeKindCheck = async (db: Kysely<unknown>, tableName: string): Promise<void> => {
+  await sql`
+    DO $$
+    BEGIN
+      ALTER TABLE ${sql.raw(tableName)}
+        DROP CONSTRAINT IF EXISTS ${sql.raw(kindCheckConstraint)};
+      ALTER TABLE ${sql.raw(tableName)}
+        ADD CONSTRAINT ${sql.raw(kindCheckConstraint)} CHECK (${kindCheckDefinition});
+    END
+    $$;
+  `.execute(db);
+};
 
 /**
  * 审计外键必须延迟：C03 事务单元先跑 handler 再由事务写审计行，
@@ -191,13 +218,6 @@ export async function up(db: Kysely<unknown>): Promise<void> {
         AND actor_ref <> '' AND audit_entry_id <> ''`,
     )
     .addCheckConstraint(
-      "identification_graph_results_kind_ck",
-      sql`result_kind IN (${sql.join(
-        resultKinds.map((kind) => sql.lit(kind)),
-        sql`, `,
-      )}) AND ${kindPairings}`,
-    )
-    .addCheckConstraint(
       "identification_graph_results_digest_ck",
       sql`request_digest ~ ${digestPattern} AND authorization_scope_digest ~ ${digestPattern}`,
     )
@@ -206,6 +226,9 @@ export async function up(db: Kysely<unknown>): Promise<void> {
       sql.join([...objectColumns, ...nullableObjectColumns], sql` AND `),
     )
     .execute();
+
+  // 判别约束对新建与既有 C24 表收敛到同一允许组合（D-15），重入 `up` 不改变其它约束、索引与授权。
+  await convergeKindCheck(db, table);
 
   // 回读按 `(project_id, result_kind, result_id)` 定位后再按完整版本过滤，保持读取路径独立于主键宽度。
   await db.schema

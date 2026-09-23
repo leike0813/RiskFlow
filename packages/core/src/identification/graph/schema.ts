@@ -286,6 +286,13 @@ const resultRowBase = {
 };
 
 /**
+ * D-15：I0/I1 在工作计划形成前登记阶段结果，该判别因此不要求工作计划引用；数据库对应列为可空，
+ * 回读登记行时以 SQL NULL 表达同一事实，故这里同时接受缺省与空值。只放宽 `stage-result`
+ * 判别自身的引用形状，其它判别的引用仍严格必填，正文引用与事实来源不变。
+ */
+const stageResultWorkPlanRef = IdentificationWorkPlanRefV1Schema.nullish();
+
+/**
  * 追加式业务登记行（design D-06）：只保存 C24 自有工件的精确引用与最小判别元数据，
  * 不保存文档正文、模型响应或 LangGraph state。数据库 check constraint 与每一类一一对应。
  */
@@ -307,7 +314,7 @@ export const IdentificationGraphResultRowV1Schema = z.discriminatedUnion("result
   z.strictObject({
     ...resultRowBase,
     resultKind: z.literal("stage-result"),
-    workPlanRef: IdentificationWorkPlanRefV1Schema,
+    workPlanRef: stageResultWorkPlanRef,
     stageResultRef: StageResultRefV1Schema,
   }),
   z.strictObject({

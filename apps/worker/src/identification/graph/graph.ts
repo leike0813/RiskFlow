@@ -121,6 +121,9 @@ const STAGE_SEQUENCE_V1: readonly IdentificationStageV1[] = [
 /** 等待节点名：唯一 `interrupt()` 位置，保证恢复时先回到同一阶段重放（D-07）。 */
 const WAIT_NODE_V1 = "wait" as const;
 
+/** 工作计划形成前的阶段（D-15）：其阶段结果不引用冻结工作计划，I2 起必须携带。 */
+const STAGES_BEFORE_WORK_PLAN_V1: readonly IdentificationStageV1[] = ["I0", "I1"];
+
 const NODE_FOR_STAGE_V1 = {
   I0: "I0",
   I1: "I1",
@@ -908,7 +911,8 @@ const advance = async (input: AdvanceInputV1): Promise<IdentificationGraphStateV
       const rows: IdentificationGraphResultRowV1[] = [];
       if (stageResultRef !== undefined && input.stageResultRow) {
         const workPlanRef = input.statePatch?.workPlanRef ?? state.workPlanRef;
-        if (workPlanRef === undefined) {
+        // D-15：I0/I1 的工作计划尚未形成，其阶段结果不引用计划；I2 起必须携带冻结引用。
+        if (workPlanRef === undefined && !STAGES_BEFORE_WORK_PLAN_V1.includes(input.stage)) {
           throw new TypeError("stage result registration requires the frozen work plan");
         }
         rows.push(
@@ -924,7 +928,7 @@ const advance = async (input: AdvanceInputV1): Promise<IdentificationGraphStateV
               validAt: run.validAt,
             }),
             resultKind: "stage-result",
-            workPlanRef,
+            ...(workPlanRef === undefined ? {} : { workPlanRef }),
             stageResultRef,
           }),
         );
@@ -1296,7 +1300,7 @@ const stageI0: StageHandlerV1 = async ({ ports, run, state }) => {
     nextStage: "I1",
     cursor,
     stageResult,
-    stageResultRow: false,
+    stageResultRow: true,
     commandKind: "identification-graph.i0",
   });
 };
@@ -1457,7 +1461,7 @@ const stageI1: StageHandlerV1 = async ({ ports, run, state }) => {
     nextStage: "I2",
     cursor,
     stageResult,
-    stageResultRow: false,
+    stageResultRow: true,
     commandKind: "identification-graph.i1",
     statePatch: { inputSnapshotRef },
     extraBodies: [

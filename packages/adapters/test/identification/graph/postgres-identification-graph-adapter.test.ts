@@ -50,6 +50,7 @@ import {
   type PostgresIdentificationGraphRegistrationOutcomeV1,
 } from "../../../src/identification/graph/index.js";
 import { runPostgresMigrations } from "../../../src/postgres/migrations/run.js";
+import * as identificationGraphMigration from "../../../src/postgres/migrations/risk-identification/deliver-identification-graph/000043_identification_graph.js";
 import { createPostgresRuntime, type PostgresRuntime } from "../../../src/postgres/pool.js";
 import { PostgresTransactionUnit } from "../../../src/postgres/transaction-unit.js";
 import { artifactPolicy } from "../../artifacts/fixture.js";
@@ -460,7 +461,12 @@ const startIdentificationGraphFixture = async (): Promise<IdentificationGraphTes
 const resultRowFor = (
   kind: IdentificationGraphResultKindV1,
   suffix: string,
-  input: { readonly occurredAt?: string; readonly runVersionId?: string } = {},
+  input: {
+    readonly occurredAt?: string;
+    readonly runVersionId?: string;
+    /** D-15：工作计划形成前的 I0/I1 阶段结果没有工作计划引用。 */
+    readonly withoutWorkPlan?: boolean;
+  } = {},
 ): IdentificationGraphResultRowV1 => {
   const base = {
     schemaVersion: "1" as const,
@@ -506,7 +512,9 @@ const resultRowFor = (
       return IdentificationGraphResultRowV1Schema.parse({
         ...base,
         resultKind: "stage-result",
-        workPlanRef: refOf("identification-work-plan", "identification-work-plan:batch"),
+        ...(input.withoutWorkPlan === true
+          ? {}
+          : { workPlanRef: refOf("identification-work-plan", "identification-work-plan:batch") }),
         stageResultRef: refOf("stage-result", "stage-result-batch"),
       });
     case "waiting":
@@ -806,6 +814,81 @@ const objectPathFor = (
   return join(fixture.rootDirectory, "objects", "sha256", hash.slice(0, 2), hash.slice(2, 4), hash);
 };
 
+/** 判别约束的规范定义文本：重入 `up` 后必须与首次执行完全相同（D-15）。 */
+const kindCheckDefinitionOf = async (
+  fixture: IdentificationGraphTestFixture,
+): Promise<string | undefined> => {
+  const result = await sql<{ definition: string }>`
+    SELECT pg_get_constraintdef(oid) AS definition
+    FROM pg_constraint
+    WHERE conrelid = 'business.identification_graph_results'::regclass
+      AND conname = 'identification_graph_results_kind_ck'
+  `.execute(fixture.runtime.db);
+  return result.rows[0]?.definition;
+};
+
+/** 表上的索引与最小授权集合：重入 `up` 不得增减。授权用迁移角色读取，避免成员关系过滤。 */
+const tableIndexesOf = async (
+  fixture: IdentificationGraphTestFixture,
+): Promise<readonly string[]> =>
+  (
+    await sql<{ indexname: string }>`
+      SELECT indexname FROM pg_indexes
+      WHERE schemaname = 'business' AND tablename = 'identification_graph_results'
+      ORDER BY indexname
+    `.execute(fixture.migratorRuntime.db)
+  ).rows.map((row) => row.indexname);
+
+const tableGrantsOf = async (fixture: IdentificationGraphTestFixture): Promise<readonly string[]> =>
+  (
+    await sql<{ grantee: string; privilege_type: string }>`
+      SELECT grantee, privilege_type FROM information_schema.role_table_grants
+      WHERE table_schema = 'business' AND table_name = 'identification_graph_results'
+      ORDER BY grantee, privilege_type
+    `.execute(fixture.migratorRuntime.db)
+  ).rows.map((row) => `${row.grantee}:${row.privilege_type}`);
+
+/** 越界组合直接经 SQL 写入：核心判别 Schema 拒绝的形状必须同样由数据库拒绝（23514）。 */
+const insertRawCombination = async (
+  fixture: IdentificationGraphTestFixture,
+  input: {
+    readonly suffix: string;
+    readonly resultKind: string;
+    readonly parentRunRef?: unknown;
+    readonly inputSnapshotRef?: unknown;
+    readonly workPlanRef?: unknown;
+    readonly stageResultRef?: unknown;
+    readonly waitingRef?: unknown;
+    readonly workflowErrorRef?: unknown;
+    readonly runResultRef?: unknown;
+  },
+): Promise<void> => {
+  const json = (value: unknown): string | null =>
+    value === undefined ? null : JSON.stringify(value);
+  await sql`
+    INSERT INTO business.identification_graph_results (
+      project_id, result_kind, result_id, result_version_id, run_id, run_version_id, command_id,
+      idempotency_key, request_digest, artifact_ref, authorization_scope_digest, actor_ref,
+      authorization_context_ref, parent_run_ref, input_snapshot_ref, work_plan_ref,
+      stage_result_ref, waiting_ref, workflow_error_ref, run_result_ref,
+      valid_at, recorded_at, audit_entry_id
+    ) VALUES (
+      ${PROJECT_ID}, ${input.resultKind}, ${`raw-result-${input.suffix}`},
+      ${sha(`raw-version-${input.suffix}`)}, ${RUN_ID}, ${RUN_VERSION_ID},
+      ${`raw-command-${input.suffix}`}, ${`raw-idempotency-${input.suffix}`},
+      ${sha(`raw-request-${input.suffix}`)},
+      ${json(refOf("content-artifact", `raw-artifact-${input.suffix}`))}::jsonb,
+      ${registrationScopeDigest}, ${ACTOR_ID},
+      ${json(refOf("authorization-context", "authorization-c24"))}::jsonb,
+      ${json(input.parentRunRef)}::jsonb, ${json(input.inputSnapshotRef)}::jsonb,
+      ${json(input.workPlanRef)}::jsonb, ${json(input.stageResultRef)}::jsonb,
+      ${json(input.waitingRef)}::jsonb, ${json(input.workflowErrorRef)}::jsonb,
+      ${json(input.runResultRef)}::jsonb,
+      ${TIMESTAMP}::timestamptz, ${TIMESTAMP}::timestamptz, ${`raw-command-${input.suffix}:audit`}
+    )
+  `.execute(fixture.runtime.db);
+};
+
 let fixture: IdentificationGraphTestFixture | undefined;
 
 beforeAll(async () => {
@@ -837,6 +920,149 @@ describe("PostgreSQL identification graph persistence", () => {
       ),
     ).rejects.toMatchObject({ code: "42501" });
   }, 90_000);
+
+  it("converges the kind check on an existing table and keeps indexes and grants on re-apply", async () => {
+    const converged = await kindCheckDefinitionOf(fixture!);
+    const indexes = await tableIndexesOf(fixture!);
+    const grants = await tableGrantsOf(fixture!);
+    expect(converged).toContain("stage_result_ref IS NOT NULL");
+    // 最小授权：应用与 Outbox 只得到追加权限，checkpointer 与本表无关。
+    const appendRoles = ["riskflow_app", "riskflow_outbox_worker"];
+    expect(
+      grants
+        .filter((grant) => appendRoles.some((role) => grant.startsWith(`${role}:`)))
+        .sort((left, right) => (left < right ? -1 : 1)),
+    ).toEqual([
+      "riskflow_app:INSERT",
+      "riskflow_app:SELECT",
+      "riskflow_outbox_worker:INSERT",
+      "riskflow_outbox_worker:SELECT",
+    ]);
+    expect(grants.some((grant) => grant.startsWith("riskflow_checkpointer"))).toBe(false);
+
+    // 模拟已部署的旧表：同名 check 仍是 D-15 之前的允许组合（stage-result 必须有工作计划引用）。
+    await sql`
+      ALTER TABLE business.identification_graph_results
+        DROP CONSTRAINT identification_graph_results_kind_ck
+    `.execute(fixture!.migratorRuntime.db);
+    await sql`
+      ALTER TABLE business.identification_graph_results
+        ADD CONSTRAINT identification_graph_results_kind_ck CHECK (
+          result_kind IN (
+            'input-snapshot', 'work-plan', 'stage-result', 'waiting',
+            'workflow-error', 'run-state', 'run-result', 'cancellation'
+          ) AND (result_kind <> 'stage-result' OR work_plan_ref IS NOT NULL)
+        )
+    `.execute(fixture!.migratorRuntime.db);
+    await expect(
+      insertRawCombination(fixture!, {
+        suffix: "legacy-without-plan",
+        resultKind: "stage-result",
+        stageResultRef: refOf("stage-result", "stage-result-legacy"),
+      }),
+    ).rejects.toMatchObject({ code: "23514" });
+
+    // 重入 `up` 两次：约束收敛到新允许组合，索引与最小授权不变。
+    await identificationGraphMigration.up(fixture!.migratorRuntime.db);
+    await identificationGraphMigration.up(fixture!.migratorRuntime.db);
+    expect(await kindCheckDefinitionOf(fixture!)).toBe(converged);
+    expect(await tableIndexesOf(fixture!)).toEqual(indexes);
+    expect(await tableGrantsOf(fixture!)).toEqual(grants);
+
+    // 收敛后无工作计划的 stage-result 与既有组合一并可用。
+    const planless = resultRowFor("stage-result", "converged-without-plan", {
+      withoutWorkPlan: true,
+    });
+    expect(await registerThroughTransaction(fixture!, [planless], "first")).toMatchObject({
+      outcome: { kind: "registered", replayed: false },
+    });
+  }, 120_000);
+
+  it("accepts plan-less stage results and rejects unlisted kind combinations", async () => {
+    const planless = resultRowFor("stage-result", "without-plan", { withoutWorkPlan: true });
+    const withPlan = resultRowFor("stage-result", "with-plan");
+
+    // D-15 允许组合：无工作计划引用的阶段结果可登记并按完整身份精确回读。
+    const registered = await registerThroughTransaction(fixture!, [planless], "first");
+    expect(registered.outcome).toEqual({ kind: "registered", replayed: false });
+    const read = await fixture!.adapter.registrationStore.readRow({
+      projectId: PROJECT_ID,
+      ...registrationRead(
+        fixture!,
+        "result-row",
+        `stage-result:${planless.resultId}:${planless.resultVersionId}`,
+      ),
+      resultKind: "stage-result",
+      resultId: planless.resultId,
+      resultVersionId: planless.resultVersionId,
+    });
+    expect(read).toEqual({ ...planless, workPlanRef: null, persistedAt: expect.any(String) });
+    expect(read?.resultKind === "stage-result" ? read.workPlanRef : "unexpected").toBeNull();
+
+    // 缺省的计划引用不写工作计划列：数据库列为 NULL。
+    const stored = await sql<{ work_plan_ref: unknown }>`
+      SELECT work_plan_ref FROM business.identification_graph_results
+      WHERE project_id = ${PROJECT_ID} AND result_id = ${planless.resultId}
+    `.execute(fixture!.runtime.db);
+    expect(stored.rows).toHaveLength(1);
+    expect(stored.rows[0]?.work_plan_ref).toBeNull();
+
+    // 同键同载荷重放不增行；同键异载荷保持首次事实并返回不可重试冲突。
+    expect(await registerThroughTransaction(fixture!, [planless], "second")).toMatchObject({
+      outcome: { kind: "registered", replayed: true },
+    });
+    expect(await countRows(fixture!, { projectId: PROJECT_ID, resultId: planless.resultId })).toBe(
+      1,
+    );
+    expect(
+      await registerThroughTransaction(
+        fixture!,
+        [
+          IdentificationGraphResultRowV1Schema.parse({
+            ...planless,
+            requestDigest: sha("request-stage-result-without-plan-conflict"),
+          }),
+        ],
+        "conflict",
+      ),
+    ).toMatchObject({
+      outcome: { kind: "idempotency-conflict", priorCommandId: planless.commandId },
+    });
+
+    // 携带冻结工作计划的同类登记仍照常可用。
+    expect(await registerThroughTransaction(fixture!, [withPlan], "first")).toMatchObject({
+      outcome: { kind: "registered", replayed: false },
+    });
+
+    // 越界组合：缺同类专列、携带它类专列与未声明类别都由数据库拒绝。
+    const plan = refOf("identification-work-plan", "identification-work-plan:batch");
+    const stage = refOf("stage-result", "stage-result-batch");
+    const rejected = [
+      { suffix: "stage-without-stage-ref", resultKind: "stage-result", workPlanRef: plan },
+      {
+        suffix: "stage-with-foreign-ref",
+        resultKind: "stage-result",
+        stageResultRef: stage,
+        waitingRef: WAITING_REF,
+      },
+      {
+        suffix: "work-plan-with-foreign-ref",
+        resultKind: "work-plan",
+        parentRunRef: PARENT_RUN_REF,
+        inputSnapshotRef: refOf("identification-input-snapshot", "input-snapshot-batch"),
+        workPlanRef: plan,
+        runResultRef: refOf("identification-run-result", "identification-run-result-batch"),
+      },
+      { suffix: "run-result-without-result", resultKind: "run-result", workPlanRef: plan },
+      { suffix: "waiting-without-ref", resultKind: "waiting" },
+      { suffix: "unlisted-kind", resultKind: "unlisted-kind" },
+    ];
+    for (const combination of rejected) {
+      await expect(insertRawCombination(fixture!, combination)).rejects.toMatchObject({
+        code: "23514",
+      });
+    }
+  }, 120_000);
 
   it("registers all eight result kinds with exact identity and keeps bodies out of the table", async () => {
     const kinds: readonly IdentificationGraphResultKindV1[] = [

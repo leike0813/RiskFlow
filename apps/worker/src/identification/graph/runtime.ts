@@ -36,6 +36,7 @@ import {
   IdentificationGraphRunStateV1Schema,
   classifyIdentificationGraphOutcome,
   type IdentificationGraphRunOutcomeV1,
+  type IdentificationGraphRunStateV1,
   type IdentificationGraphResumeCauseV1,
   type IdentificationGraphRuntimeV1,
 } from "@riskflow/core/identification/graph";
@@ -942,12 +943,18 @@ export const createIdentificationGraphRuntime = (
         authorization: authorized,
       });
       const artifactRef = ContentArtifactRefV1Schema.parse(put);
-      const { runVersionId: _priorVersion, lastWaitingRef: _priorWaiting, ...stateBase } = cursor;
-      const cancelledStateWithoutVersion = {
-        ...stateBase,
+      // 取消状态是新版本：沿用游标事实但换掉版本身份、清除等待投影，再按同一 Schema 严格解析。
+      const cancelledStateBase: Partial<IdentificationGraphRunStateV1> = { ...cursor };
+      delete cancelledStateBase.runVersionId;
+      delete cancelledStateBase.lastWaitingRef;
+      const cancelledStateWithoutVersion = IdentificationGraphRunStateV1Schema.omit({
+        runVersionId: true,
+        lastWaitingRef: true,
+      }).parse({
+        ...cancelledStateBase,
         status: "cancelled" as const,
         resultRef: cancellationRef,
-      };
+      });
       const cancelledState = IdentificationGraphRunStateV1Schema.parse({
         ...cancelledStateWithoutVersion,
         runVersionId: sha256CanonicalJson(cancelledStateWithoutVersion),

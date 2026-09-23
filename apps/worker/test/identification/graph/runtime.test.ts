@@ -8,11 +8,16 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { IDENTIFICATION_GRAPH_BODY_PURPOSE_CODE_V1 } from "@riskflow/adapters/identification/graph";
-import { IdentificationStageResultV1Schema } from "@riskflow/contracts/workflows";
+import {
+  IdentificationStageResultV1Schema,
+  type IdentificationStageResultV1,
+  type IdentificationStageV1,
+} from "@riskflow/contracts/workflows";
 import {
   IdentificationGraphArtifactBodyV1Schema,
   IdentificationGraphRunResultV1Schema,
   IdentificationGraphWorkPlanBodyV1Schema,
+  type IdentificationGraphResultRowV1,
 } from "@riskflow/core/identification/graph";
 
 import {
@@ -48,14 +53,17 @@ const SECOND_REVIEW_GROUP = "group-review-second";
 const workItemCurrent = workItemRefFor(WORK_PLAN_ENTITY_ID, NODE_CURRENT);
 const workItemNeighbor = workItemRefFor(WORK_PLAN_ENTITY_ID, NODE_NEIGHBOR);
 
-/** 读取某阶段的 stage-result 正文（正文只在 C04，登记行只保存引用）。 */
-const stageResultOf = async (
+/** 读取某阶段全部 stage-result 登记行与其正文（正文只在 C04，登记行只保存引用）。 */
+const stageRowsOf = async (
   harness: IdentificationGraphHarnessV1,
   run: IdentificationGraphRunScopeV1,
-  stage: "I3" | "I8",
+  stage: IdentificationStageV1,
 ) => {
-  const rows = await harness.rows(run, "stage-result");
-  for (const row of rows) {
+  const matched: {
+    readonly row: Extract<IdentificationGraphResultRowV1, { resultKind: "stage-result" }>;
+    readonly result: IdentificationStageResultV1;
+  }[] = [];
+  for (const row of await harness.rows(run, "stage-result")) {
     if (row.resultKind !== "stage-result") continue;
     const body = IdentificationGraphArtifactBodyV1Schema.parse(
       await harness.readArtifactBody(
@@ -65,9 +73,19 @@ const stageResultOf = async (
     );
     if (body.bodyKind !== "stage-result") continue;
     const result = IdentificationStageResultV1Schema.parse(body.stageResult);
-    if (result.stage === stage) return result;
+    if (result.stage === stage) matched.push({ row, result });
   }
-  throw new TypeError(`${stage} stage result row is not registered`);
+  return matched;
+};
+
+const stageResultOf = async (
+  harness: IdentificationGraphHarnessV1,
+  run: IdentificationGraphRunScopeV1,
+  stage: IdentificationStageV1,
+) => {
+  const [matched] = await stageRowsOf(harness, run, stage);
+  if (matched === undefined) throw new TypeError(`${stage} stage result row is not registered`);
+  return matched.result;
 };
 
 const runResultOf = async (
@@ -193,6 +211,46 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
     expect(runResult.failedWorkItemRefs).toEqual([]);
     expect(runResult.skippedWorkItemRefs).toEqual([]);
     expect(outcome.state.resultRef?.reference.versionId).toBe(row.resultVersionId);
+  });
+
+  it("I0～I2 工作计划形成前的阶段结果按运行与阶段回读，重放不重复登记（D-15）", async () => {
+    const { world } = harness;
+    const run = harness.scope("stage-result-before-plan");
+    world.routes = [automaticRouteFor(WORK_PLAN_ENTITY_ID, AUTO_GROUP)];
+
+    const command = harness.startCommand(run);
+    const outcome = await harness.runtime.start(command);
+    expect(outcome.state.status).toBe("completed");
+
+    // I0 与成功的 I1 各登记一条阶段结果，都不携带工作计划引用，正文分别对应各自阶段。
+    const i0 = await stageRowsOf(harness, run, "I0");
+    const i1 = await stageRowsOf(harness, run, "I1");
+    expect(i0).toHaveLength(1);
+    expect(i1).toHaveLength(1);
+    expect(i0[0]!.row.workPlanRef).toBeNull();
+    expect(i1[0]!.row.workPlanRef).toBeNull();
+    expect(i0[0]!.result).toMatchObject({ preparationSnapshotRef: PREPARATION_SNAPSHOT_REF });
+    expect(i1[0]!.result).toMatchObject({
+      resultKind: "ready",
+      inputSnapshotRef: outcome.state.inputSnapshotRef,
+    });
+
+    // I2 起沿用同一冻结工作计划引用；阶段结果缺少该引用时按封闭失败处理。
+    const frozenWorkPlanRef = outcome.state.workPlanRef;
+    expect(frozenWorkPlanRef?.reference.entityId).toBe(WORK_PLAN_ENTITY_ID);
+    for (const stage of ["I2", "I8"] as const) {
+      const rows = await stageRowsOf(harness, run, stage);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.row.workPlanRef).toEqual(frozenWorkPlanRef);
+    }
+
+    // 同键重放不重复登记：I0/I1 的阶段登记与全部阶段登记行保持逐字不变。
+    const stageRows = await harness.rows(run, "stage-result");
+    const replayed = await harness.runtime.start(command);
+    expect(replayed.disposition).toBe("existing");
+    expect(await harness.rows(run, "stage-result")).toEqual(stageRows);
+    expect(await stageRowsOf(harness, run, "I0")).toHaveLength(1);
+    expect(await stageRowsOf(harness, run, "I1")).toHaveLength(1);
   });
 
   it("I9 精确验收路线不可读时不生成完成汇总", async () => {
@@ -325,7 +383,10 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
         "identification-graph-workflow-error:I2:WORK_PLAN_INVALID",
       );
       expect(await harness.rows(run, "work-plan")).toHaveLength(0);
-      expect(await harness.rows(run, "stage-result")).toHaveLength(0);
+      // D-15：计划未形成，不得留下 I2 阶段结果；I0/I1 既有阶段事实按追加语义保持成立。
+      expect(await stageRowsOf(harness, run, "I2")).toHaveLength(0);
+      expect(await stageRowsOf(harness, run, "I0")).toHaveLength(1);
+      expect(await stageRowsOf(harness, run, "I1")).toHaveLength(1);
       // 既有准备与知识事实保留：I1 的输入快照仍然成立。
       expect(await harness.rows(run, "input-snapshot")).toHaveLength(1);
     } finally {

@@ -154,7 +154,7 @@ C24 内部错误联合至少区分：`INPUT_NOT_READY`、`POLICY_NOT_READY`、`W
 
 ### D-15：I0/I1 的阶段结果在工作计划形成前独立登记（本次重开批准）
 
-`IdentificationGraphResultRowV1Schema` 的 `stage-result` 判别固定要求 `stageResultRef`，仅将该判别的 `workPlanRef` 改为可选；`000043` 的 `identification_graph_results_kind_ck` 对应固定 `stage_result_ref IS NOT NULL`、`work_plan_ref` 可空，其它七类判别及列组合保持原样。I0 和成功的 I1 先写 C04 阶段结果正文，再与 `run-state`（I1 另含 `input-snapshot`）在同一 C03 业务事务中登记阶段结果引用、审计和稳定幂等身份；其 `workPlanRef` 缺省。I2 形成工作计划后，图的 `advance` 对 I2～I9 仍必须携带该冻结引用，缺失时封闭失败。I1 未就绪时沿既有 `waiting` / `workflow-error` 路线，不伪造工作计划或成功阶段结果。
+`IdentificationGraphResultRowV1Schema` 的 `stage-result` 判别固定要求 `stageResultRef`，仅将该判别的 `workPlanRef` 改为可缺省（数据库列可空，读回时同一事实表现为空值，两者都不写正文或伪造引用）；`000043` 的 `identification_graph_results_kind_ck` 对应固定 `stage_result_ref IS NOT NULL`、`work_plan_ref` 可空，其它七类判别及列组合保持原样。I0 和成功的 I1 先写 C04 阶段结果正文，再与 `run-state`（I1 另含 `input-snapshot`）在同一 C03 业务事务中登记阶段结果引用、审计和稳定幂等身份；其 `workPlanRef` 缺省。I2 形成工作计划后，图的 `advance` 对 I2～I9 仍必须携带该冻结引用，缺失时封闭失败。I1 未就绪时沿既有 `waiting` / `workflow-error` 路线，不伪造工作计划或成功阶段结果。
 
 只修改 C24 内部 Schema、自有 `000043` 迁移 check、图登记和对应测试；不新增列、类别、迁移文件、权限或跨 change 契约，不复制 C21/C22/C23 正文。迁移 `up` 必须在新表和已存在的 C24 表上均把同名判别约束收敛为新允许组合：若表已存在，在迁移事务内替换该 check 并立即验证，不留无约束的已提交状态；重复执行保持相同约束、索引和最小授权。不得通过 `NOT VALID`、绕过约束或放宽其它类别实现。C24 尚未集成到主线，若发现已部署且不能安全收敛的旧表或需要额外迁移，应停止并升级。
 

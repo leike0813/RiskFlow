@@ -243,6 +243,15 @@
       "source": "https://www.npmjs.com/package/csv-parse",
       "offline": "内网 npm 镜像或 pnpm fetch store",
       "exitCondition": "安全问题、Node 24 不兼容或 CSV 结构验收失败"
+    },
+    {
+      "name": "@playwright/test",
+      "version": "1.63.0",
+      "purpose": "跨页面/跨能力真实浏览器验收（C36 质量评估的可复核证据）",
+      "license": "Apache-2.0",
+      "source": "https://www.npmjs.com/package/@playwright/test",
+      "offline": "内网 npm 镜像或 pnpm fetch store，浏览器二进制按该版本单独供给",
+      "exitCondition": "安全问题、真实浏览器验收改由等价设施接管或不再由本仓库执行"
     }
   ]
 }

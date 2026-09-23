@@ -217,6 +217,8 @@ const runStateBody = (input: {
   readonly runVersionId: string;
   readonly stage: "I2" | "I5";
   readonly workItemRef: ReferenceKitV1["workItemRef"];
+  /** D-05：完成的运行状态必须携带精确 `resultRef`，供覆盖证明核对。 */
+  readonly completedWith?: ReferenceKitV1["runResultRef"];
 }) => ({
   bodyKind: "run-state" as const,
   runState: IdentificationGraphRunStateV1Schema.parse({
@@ -224,14 +226,15 @@ const runStateBody = (input: {
     runId: RUN_ID,
     runVersionId: input.runVersionId,
     stage: input.stage,
-    status: "running",
+    status: input.completedWith === undefined ? "running" : "completed",
     completedWorkItemRefs: [],
-    pendingWorkItemRefs: [input.workItemRef],
+    pendingWorkItemRefs: input.completedWith === undefined ? [input.workItemRef] : [],
     validatedCandidateSetRefs: [],
     failedWorkItemRefs: [],
     acceptedRiskRecordRefs: [],
     rejectedGroupRefs: [],
     pendingGroupRefs: [],
+    ...(input.completedWith === undefined ? {} : { resultRef: input.completedWith }),
   }),
 });
 
@@ -1602,6 +1605,120 @@ describe("PostgreSQL identification graph persistence", () => {
       detailCode: "work-plan-read-unavailable",
     });
   }, 90_000);
+
+  it("reads a completed run result by exact reference and keeps unproven evidence closed", async () => {
+    const kit = referenceKitFor("completed-run-result");
+    // 独立运行版本：`000043` 对 `run-state` 的 `(project_id, run_id, run_version_id)` 唯一索引
+    // 使同一运行版本只能有一个状态行，本用例不复用其它用例已占用的版本。
+    const completedRunVersionId = sha("run-version-completed-run-result");
+    const runStateArtifact = await putBodyAs(fixture!, {
+      artifactId: "c24-body-run-state-completed",
+      body: runStateBody({
+        runVersionId: completedRunVersionId,
+        stage: "I5",
+        workItemRef: kit.workItemRef,
+        completedWith: kit.runResultRef,
+      }),
+    });
+    const runStateStored = IdentificationGraphResultRowV1Schema.parse({
+      ...resultRowFor("run-state", "completed", {
+        occurredAt: OTHER_TIMESTAMP,
+        runVersionId: completedRunVersionId,
+      }),
+      artifactRef: runStateArtifact,
+    });
+    const runResultArtifact = await putBodyAs(fixture!, {
+      artifactId: "c24-body-run-result-completed",
+      body: runResultBody(kit),
+    });
+    const runResultStored = IdentificationGraphResultRowV1Schema.parse({
+      ...runResultRowFor(kit, runResultArtifact),
+      runVersionId: completedRunVersionId,
+    });
+    await registerThroughTransaction(fixture!, [runStateStored, runResultStored], "first");
+
+    const completedResultAuthorization = (projectId = PROJECT_ID, actorId = ACTOR_ID) =>
+      fixture!.access.issue({
+        invocationId: identificationGraphReadInvocationIdV1({
+          operation: "run-result",
+          projectId,
+          targetId: `${kit.runResultRef.reference.entityId}:${kit.runResultRef.reference.versionId}`,
+        }),
+        branch: "risk-identification.plan",
+        capability: "risk-identification.run",
+        projectId,
+        actorId,
+      }).authorization;
+
+    const read = () =>
+      fixture!.adapter.registrationStore.readCompletedRunResult({
+        projectId: PROJECT_ID,
+        actorId: ACTOR_ID,
+        runResultRef: kit.runResultRef,
+        requestedAt: OTHER_TIMESTAMP,
+        authorization: completedResultAuthorization(),
+      });
+
+    const completed = await read();
+    expect(completed.kind).toBe("read");
+    expect(completed.kind === "read" ? completed.runResult.workPlanRef : undefined).toEqual(
+      kit.workPlanRef,
+    );
+    expect(completed.kind === "read" ? completed.runResult.zeroResults : undefined).toEqual([]);
+    expect(
+      completed.kind === "read" ? completed.runResult.acceptedRiskRecordRefs : undefined,
+    ).toEqual([]);
+
+    // 未登记的引用、跨工程与撤权一律不可用，且不披露事实是否存在。
+    const absent = await fixture!.adapter.registrationStore.readCompletedRunResult({
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      runResultRef: refOf(
+        "identification-run-result",
+        `identification-run-result:${PROJECT_ID}`,
+        sha("absent-run-result-request"),
+      ),
+      requestedAt: OTHER_TIMESTAMP,
+      authorization: completedResultAuthorization(),
+    });
+    expect(absent.kind).toBe("unavailable");
+    const foreign = await fixture!.adapter.registrationStore.readCompletedRunResult({
+      projectId: OTHER_PROJECT_ID,
+      actorId: ACTOR_ID,
+      runResultRef: kit.runResultRef,
+      requestedAt: OTHER_TIMESTAMP,
+      authorization: completedResultAuthorization(OTHER_PROJECT_ID),
+    });
+    expect(foreign.kind).toBe("unavailable");
+    fixture!.access.revoke();
+    expect((await read()).kind).toBe("unavailable");
+    fixture!.access.restore();
+
+    // 最新运行状态不再是该结果的完成版本时不提供覆盖证据。
+    const supersededVersionId = sha("run-version-after-completion");
+    const runningArtifact = await putBodyAs(fixture!, {
+      artifactId: "c24-body-run-state-running-again",
+      body: runStateBody({
+        runVersionId: supersededVersionId,
+        stage: "I5",
+        workItemRef: kit.workItemRef,
+      }),
+    });
+    await registerThroughTransaction(
+      fixture!,
+      [
+        IdentificationGraphResultRowV1Schema.parse({
+          ...resultRowFor("run-state", "running-again", {
+            occurredAt: "2030-01-01T00:00:02.000Z",
+            runVersionId: supersededVersionId,
+          }),
+          artifactRef: runningArtifact,
+        }),
+      ],
+      "second",
+    );
+    expect((await read()).kind).toBe("unavailable");
+  }, 120_000);
 
   it("reconciles checkpoint references without backfilling any business fact", async () => {
     const kit = referenceKitFor("reconcile");

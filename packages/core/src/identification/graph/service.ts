@@ -26,6 +26,7 @@ import {
   type IdentificationPreparationSnapshotRefV1,
   type IdentificationWorkItemRefV1,
   type IdentificationWorkPlanRefV1,
+  type IdentificationZeroResultRefV1,
   type ReviewTaskRefV1,
   type StandardizedRiskRecordRefV1,
   type WaitingRefV1,
@@ -80,7 +81,12 @@ export interface IdentificationGraphProcessNodeFactV1 {
 export type IdentificationGraphWorkItemOutcomeV1 =
   | { readonly kind: "accepted"; readonly workItemRef: IdentificationWorkItemRefV1 }
   | { readonly kind: "skipped"; readonly workItemRef: IdentificationWorkItemRefV1 }
-  | { readonly kind: "failed"; readonly workItemRef: IdentificationWorkItemRefV1 };
+  | { readonly kind: "failed"; readonly workItemRef: IdentificationWorkItemRefV1 }
+  | {
+      readonly kind: "zero-result";
+      readonly workItemRef: IdentificationWorkItemRefV1;
+      readonly zeroResultRef: IdentificationZeroResultRefV1;
+    };
 
 export type IdentificationGraphGroupOutcomeV1 =
   | { readonly kind: "accepted"; readonly groupRef: IdentificationGroupRefV1 }
@@ -430,6 +436,16 @@ export const summarizeIdentificationRun = (input: {
     }
   }
 
+  // 零结果按计划顺序逐项配对；既不并入跳过或失败，也不产生候选、分组或记录。
+  const zeroResults = input.plannedWorkItemRefs.flatMap((workItemRef) => {
+    const outcome = outcomeByRefKey.get(
+      `${workItemRef.reference.entityId}/${workItemRef.reference.versionId}`,
+    );
+    return outcome?.kind === "zero-result"
+      ? [{ workItemRef: outcome.workItemRef, zeroResultRef: outcome.zeroResultRef }]
+      : [];
+  });
+
   const rejectedGroupRefs: IdentificationGroupRefV1[] = [];
   const pendingReviewTaskRefs: ReviewTaskRefV1[] = [];
   for (const outcome of input.groupOutcomes) {
@@ -466,6 +482,7 @@ export const summarizeIdentificationRun = (input: {
       pendingReviewTaskRefs: [],
       failedWorkItemRefs,
       skippedWorkItemRefs,
+      zeroResults,
       auditTrailRef: input.auditTrailRef,
       recordedAt: input.recordedAt,
     }),

@@ -45,6 +45,10 @@ import {
   down as riskCandidateFinalizationDown,
   up as riskCandidateFinalizationUp,
 } from "../../../src/postgres/migrations/risk-identification/deliver-risk-candidate-validation-merge-and-acceptance/000042_risk_candidate_finalization.js";
+import {
+  down as formalZeroResultDown,
+  up as formalZeroResultUp,
+} from "../../../src/postgres/migrations/risk-identification/fix-c22-formal-zero-result-terminal-fact/000049_formal_zero_result.js";
 import { runPostgresMigrations } from "../../../src/postgres/migrations/run.js";
 import { createPostgresRuntime, type PostgresRuntime } from "../../../src/postgres/pool.js";
 import { PostgresTransactionUnit } from "../../../src/postgres/transaction-unit.js";
@@ -154,7 +158,7 @@ const groupRefFor = (groupId: string, versionId: string) =>
   refOf("identification-group", `identification-group:${PROJECT_ID}:${groupId}`, versionId);
 
 /**
- * 八类登记行的最小合法夹具；完整引用形状由核心判别联合限定，这里只按类型提供必需引用，
+ * 九类登记行的最小合法夹具；完整引用形状由核心判别联合限定，这里只按类型提供必需引用，
  * 使迁移的种类 CHECK 与核心 Schema 在同一组输入上互为对照。
  */
 const resultRowFor = (
@@ -213,6 +217,22 @@ const resultRowFor = (
           "validated-candidate-set",
           `validated-candidate-set:${PROJECT_ID}:candidate-set`,
           sha("validated-request"),
+        ),
+      });
+    case "zero-result":
+      return RiskCandidateFinalizationResultRowV1Schema.parse({
+        ...base,
+        resultKind: "zero-result",
+        workItemRef: refOf("identification-work-item", "work-item"),
+        modelContextArtifactSetRef: refOf(
+          "model-context-artifact-set",
+          `identification-model-context:${PROJECT_ID}:work-item`,
+          sha("model-context-request"),
+        ),
+        zeroResultRef: refOf(
+          "identification-zero-result",
+          `identification-zero-result:${PROJECT_ID}:work-item`,
+          sha(`zero-result-request-${suffix}`),
         ),
       });
     case "identification-group":
@@ -542,6 +562,21 @@ const tableExists = async (
   return result.rows[0]?.name !== null;
 };
 
+/** `000049` 的增量列只在 C22 结果表上断言存在性，用于证明 up/down 收敛到同一列集合。 */
+const resultsColumnExists = async (
+  fixture: RiskCandidateFinalizationTestFixture,
+  column: string,
+): Promise<boolean> => {
+  const result = await sql<{ count: string }>`
+    SELECT count(*)::text AS count
+    FROM information_schema.columns
+    WHERE table_schema = 'business'
+      AND table_name = 'identification_finalization_results'
+      AND column_name = ${column}
+  `.execute(fixture.runtime.db);
+  return Number(result.rows[0]?.count ?? "0") > 0;
+};
+
 const readArtifactBody = async (
   fixture: RiskCandidateFinalizationTestFixture,
   input: { readonly entityId: string; readonly versionId: string },
@@ -581,20 +616,133 @@ describe("PostgreSQL risk candidate finalization persistence", () => {
     const migrator = fixture!.migratorRuntime.db as unknown as Kysely<unknown>;
     expect(await tableExists(fixture!, "business.identification_finalization_results")).toBe(true);
     expect(await tableExists(fixture!, "business.standardized_risk_records")).toBe(true);
+    expect(await resultsColumnExists(fixture!, "zero_result_ref")).toBe(true);
 
+    // 按迁移栈逆序退回：`000049` 只撤销自己的列、索引与类别，`000042` 再退掉两张表。
+    await formalZeroResultDown(migrator);
+    expect(await resultsColumnExists(fixture!, "zero_result_ref")).toBe(false);
     await riskCandidateFinalizationDown(migrator);
     expect(await tableExists(fixture!, "business.identification_finalization_results")).toBe(false);
     expect(await tableExists(fixture!, "business.standardized_risk_records")).toBe(false);
 
     await riskCandidateFinalizationUp(migrator);
     await riskCandidateFinalizationUp(migrator);
+    expect(await resultsColumnExists(fixture!, "zero_result_ref")).toBe(false);
+    await formalZeroResultUp(migrator);
+    await formalZeroResultUp(migrator);
     expect(await tableExists(fixture!, "business.identification_finalization_results")).toBe(true);
     expect(await tableExists(fixture!, "business.standardized_risk_records")).toBe(true);
+    expect(await resultsColumnExists(fixture!, "zero_result_ref")).toBe(true);
+  }, 90_000);
+
+  it("limits the zero-result kind to its own column shape and refuses rollback with existing facts", async () => {
+    const migrator = fixture!.migratorRuntime.db as unknown as Kysely<unknown>;
+
+    // 尚无零结果行时 down/up 可重复执行，并收敛回同一列与同一部分唯一索引。
+    await formalZeroResultDown(migrator);
+    expect(await resultsColumnExists(fixture!, "zero_result_ref")).toBe(false);
+    // 撤销零结果类别后八类判别约束仍然有效：`000042` 的允许组合不放宽、也不被整条删除。
+    await expect(
+      sql`INSERT INTO business.identification_finalization_results
+            (project_id, result_kind, result_id, result_version_id, command_id, request_digest,
+             artifact_ref, input_snapshot_ref, authorization_scope_digest, actor_ref,
+             authorization_context_ref, created_at, audit_entry_id)
+          VALUES (${PROJECT_ID}, ${"unknown-kind"}, ${"result-unknown-kind"},
+             ${sha("unknown-kind")}, ${"command-unknown-kind"}, ${sha("unknown-kind")},
+             ${sql.lit(JSON.stringify(refOf("content-artifact", "artifact-unknown-kind")))}::jsonb,
+             ${sql.lit(JSON.stringify(refOf("identification-input-snapshot", "input-snapshot-unknown")))}::jsonb,
+             ${RESULT_SCOPE_DIGEST}, ${ACTOR_ID},
+             ${sql.lit(JSON.stringify(refOf("authorization-context", "authorization-c24")))}::jsonb,
+             ${TIMESTAMP}, ${"command-unknown-kind:audit"})`.execute(fixture!.runtime.db),
+    ).rejects.toThrow(/check constraint/i);
+    await formalZeroResultUp(migrator);
+    await formalZeroResultUp(migrator);
+    expect(await resultsColumnExists(fixture!, "zero_result_ref")).toBe(true);
+
+    const zeroRow = resultRowFor("zero-result", "guarded-shape");
+    expect((await registerThroughTransaction(fixture!, zeroRow, "first")).outcome).toEqual({
+      kind: "registered",
+      replayed: false,
+    });
+    const readBack = {
+      projectId: PROJECT_ID,
+      resultKind: "zero-result" as const,
+      resultId: zeroRow.resultId,
+      resultVersionId: zeroRow.resultVersionId,
+    };
+    expect(await fixture!.adapter.readResult(readBack)).toEqual(zeroRow);
+    expect(
+      await fixture!.adapter.readZeroResult({
+        projectId: PROJECT_ID,
+        commandId: zeroRow.commandId,
+      }),
+    ).toEqual(zeroRow);
+    expect(
+      await fixture!.adapter.readZeroResult({ projectId: PROJECT_ID, commandId: "command-other" }),
+    ).toBeUndefined();
+    expect(
+      await fixture!.adapter.readZeroResult({
+        projectId: OTHER_PROJECT_ID,
+        commandId: zeroRow.commandId,
+      }),
+    ).toBeUndefined();
+
+    // 九类 CHECK：零结果行不得携带候选集引用，也不得缺少零结果引用列。
+    if (zeroRow.resultKind !== "zero-result") throw new Error("zero-result row is required");
+    for (const conflicting of [
+      {
+        candidate_set_ref: zeroRow.modelContextArtifactSetRef,
+        zero_result_ref: zeroRow.zeroResultRef,
+      },
+      { candidate_set_ref: null, zero_result_ref: null },
+    ]) {
+      await expect(
+        sql`INSERT INTO business.identification_finalization_results
+              (project_id, result_kind, result_id, result_version_id, command_id, request_digest,
+               artifact_ref, input_snapshot_ref, authorization_scope_digest, actor_ref,
+               authorization_context_ref, work_item_ref, model_context_artifact_set_ref,
+               candidate_set_ref, zero_result_ref, created_at, audit_entry_id)
+            VALUES (${PROJECT_ID}, ${"zero-result"}, ${`result-conflicting-${String(conflicting.zero_result_ref === null)}`},
+               ${sha("conflicting-zero-result")}, ${"command-conflicting-zero-result"},
+               ${sha("conflicting-zero-result")}, ${sql.lit(JSON.stringify(zeroRow.artifactRef))}::jsonb,
+               ${sql.lit(JSON.stringify(zeroRow.inputSnapshotRef))}::jsonb, ${RESULT_SCOPE_DIGEST},
+               ${ACTOR_ID}, ${sql.lit(JSON.stringify(zeroRow.authorizationContextRef))}::jsonb,
+               ${sql.lit(JSON.stringify(zeroRow.workItemRef))}::jsonb,
+               ${sql.lit(JSON.stringify(zeroRow.modelContextArtifactSetRef))}::jsonb,
+               ${conflicting.candidate_set_ref === null ? sql`NULL` : sql`${sql.lit(JSON.stringify(conflicting.candidate_set_ref))}::jsonb`},
+               ${conflicting.zero_result_ref === null ? sql`NULL` : sql`${sql.lit(JSON.stringify(conflicting.zero_result_ref))}::jsonb`},
+               ${TIMESTAMP}, ${`${"command-conflicting-zero-result"}:audit`})`.execute(
+          fixture!.runtime.db,
+        ),
+      ).rejects.toThrow(/check constraint/i);
+    }
+
+    // 同一工程与命令身份只允许一条零结果：第二个身份在同一命令下整笔失败，原事实不变。
+    const duplicate = resultRowFor("zero-result", "guarded-shape-duplicate");
+    await expect(
+      registerThroughTransaction(
+        fixture!,
+        { ...duplicate, commandId: zeroRow.commandId },
+        "duplicate",
+      ),
+    ).rejects.toThrow();
+    expect(
+      await fixture!.adapter.readZeroResult({
+        projectId: PROJECT_ID,
+        commandId: zeroRow.commandId,
+      }),
+    ).toEqual(zeroRow);
+
+    // 已成立零事实时 down 拒绝，事实保持可读。
+    await expect(formalZeroResultDown(migrator)).rejects.toThrow();
+    expect(await resultsColumnExists(fixture!, "zero_result_ref")).toBe(true);
+    expect(await fixture!.adapter.readResult(readBack)).toEqual(zeroRow);
   }, 90_000);
 
   it("registers every result kind with C04 references only, including one real artifact", async () => {
     const kinds: readonly RiskCandidateFinalizationResultRowV1["resultKind"][] = [
       "candidate-set",
+      "zero-result",
       "validated-candidate-set",
       "identification-group",
       "merge-plan",

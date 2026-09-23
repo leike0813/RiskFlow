@@ -26,6 +26,7 @@ import {
   type IdentificationGraphRegistrationStoreV1,
   type IdentificationGraphResultKindV1,
   type IdentificationGraphResultRowV1,
+  type IdentificationGraphRunResultV1,
   type IdentificationGraphRunStateV1,
   type IdentificationGraphWorkPlanBodyV1,
   type IdentificationGraphWorkPlanReadV1,
@@ -41,6 +42,7 @@ import type {
   AuthorizationContextRefV1,
   AuthorizationContextV1,
   IdentificationInputSnapshotRefV1,
+  IdentificationRunResultRefV1,
   IdentificationWorkPlanRefV1,
   ModuleBranchV1,
   ModuleCapabilityV1,
@@ -101,6 +103,7 @@ export const identificationGraphReadInvocationIdV1 = (input: {
     | "result-row"
     | "run-rows"
     | "run-state"
+    | "run-result"
     | "stage-result"
     | "reconcile"
     | "body-write";
@@ -948,6 +951,108 @@ class IdentificationGraphRegistrationStore implements IdentificationGraphRegistr
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * D-05 已完成运行汇总精确只读：C36 只能经本端口取得覆盖证明，不读 C24 私表或 C04 正文。
+   * 读取前与返回前各复验一次当前授权；登记行、C04 正文与最新 `run-state` 必须互相一致且已
+   * `completed`。缺失、撤权、跨工程、未完成或状态错配统一返回 `unavailable`（不披露存在性），
+   * 登记行与正文损坏返回 `corrupt`，绝不以空数组或旧运行冒充证据。
+   */
+  async readCompletedRunResult(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly runResultRef: IdentificationRunResultRefV1;
+    readonly authorization: AuthorizationContextV1;
+    readonly requestedAt: string;
+  }): Promise<
+    | { readonly kind: "read"; readonly runResult: IdentificationGraphRunResultV1 }
+    | { readonly kind: "unavailable" }
+    | { readonly kind: "corrupt"; readonly detailCode: string }
+  > {
+    const verify = () =>
+      this.#persistence.verifyAuthorization({
+        authorization: input.authorization,
+        projectId: input.projectId,
+        actorId: input.actorId,
+        requestedAt: input.requestedAt,
+        invocationId: identificationGraphReadInvocationIdV1({
+          operation: "run-result",
+          projectId: input.projectId,
+          targetId: `${input.runResultRef.reference.entityId}:${input.runResultRef.reference.versionId}`,
+        }),
+      });
+    const verified = await verify();
+    if (verified === undefined) return { kind: "unavailable" };
+    const row = await this.#persistence.readRow({
+      projectId: input.projectId,
+      resultKind: "run-result",
+      resultId: input.runResultRef.reference.entityId,
+      resultVersionId: input.runResultRef.reference.versionId,
+    });
+    if (row === undefined || row.resultKind !== "run-result") return { kind: "unavailable" };
+    if (row.authorizationScopeDigest !== authorizationScopeDigest(verified)) {
+      return { kind: "unavailable" };
+    }
+    const latest = await this.#persistence.readLatestRunStateRow({
+      projectId: input.projectId,
+      runId: row.runId,
+    });
+    if (
+      latest === undefined ||
+      latest.runVersionId !== row.runVersionId ||
+      latest.authorizationScopeDigest !== authorizationScopeDigest(verified)
+    ) {
+      return { kind: "unavailable" };
+    }
+    let latestBody: IdentificationGraphArtifactBodyV1;
+    try {
+      latestBody = await this.#persistence.readBody({
+        row: latest,
+        bodyKind: "run-state",
+        projectId: input.projectId,
+        actorId: input.actorId,
+        requestedAt: input.requestedAt,
+        authorization: verified,
+      });
+    } catch {
+      return { kind: "corrupt", detailCode: "run-state-body-unavailable" };
+    }
+    if (
+      latestBody.bodyKind !== "run-state" ||
+      latestBody.runState.runId !== latest.runId ||
+      latestBody.runState.runVersionId !== latest.runVersionId ||
+      latestBody.runState.status !== "completed" ||
+      latestBody.runState.resultRef === undefined ||
+      !sameJson(latestBody.runState.resultRef, input.runResultRef)
+    ) {
+      return { kind: "unavailable" };
+    }
+    let body: IdentificationGraphArtifactBodyV1;
+    try {
+      body = await this.#persistence.readBody({
+        row,
+        bodyKind: "run-result",
+        projectId: input.projectId,
+        actorId: input.actorId,
+        requestedAt: input.requestedAt,
+        authorization: verified,
+      });
+    } catch {
+      return { kind: "corrupt", detailCode: "run-result-body-unavailable" };
+    }
+    if (body.bodyKind !== "run-result") {
+      return { kind: "corrupt", detailCode: "run-result-body-kind-mismatch" };
+    }
+    const runResult = body.runResult;
+    if (
+      runResult.projectId !== input.projectId ||
+      runResult.runRef.reference.entityId !== row.runId
+    ) {
+      return { kind: "unavailable" };
+    }
+    if ((await verify()) === undefined) return { kind: "unavailable" };
+    return { kind: "read", runResult };
   }
 }
 

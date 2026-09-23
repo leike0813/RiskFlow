@@ -1873,6 +1873,56 @@ describe("controlled orchestration", () => {
     }
   });
 
+  it("reconstructs a planning attempt while planning never succeeded", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-reconcile-planning-"));
+    const unplanned = node({
+      status: "unknown",
+      phase: "finalizing",
+      checkpoints: { ...node().checkpoints, taskKind: "finalization", outcome: null },
+      orca: {
+        attempts: [
+          {
+            taskId: "task-planning-failed",
+            taskKind: "planning",
+            attemptGroup: "C17:planning",
+            attempt: 1,
+            outcome: "failed",
+            runState: "settled",
+          },
+        ],
+      },
+    });
+    const state = snapshot({
+      nodes: [unplanned],
+      violations: [{ nodeId: "C17", code: "checkpoint_mismatch" }],
+    });
+    let envelope;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("run-create")) return { id: "run-reconcile" };
+      if (command === "orca-ide" && args.includes("task-create")) return { id: "task-reconcile" };
+      if (command === "orca-ide" && args.includes("task-update")) {
+        envelope = JSON.parse(args[args.indexOf("--result") + 1]);
+        return {};
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      const result = await riskflowReconcile(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "reconcile-planning-incomplete",
+        },
+        { rootDir: process.cwd(), exec, statusProvider: async () => ({ graph, snapshot: state }) },
+      );
+      expect(result.envelope.taskKind).toBe("planning");
+      expect(envelope).toMatchObject({ taskKind: "planning", phase: "planning" });
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
   it("allows only auxiliary adoption through the recovery dispatch path", () => {
     const auxiliary = node({
       id: "AUX:fix-suite-isolation",

@@ -337,6 +337,19 @@ function taskPhase(taskKind) {
   }[taskKind];
 }
 
+// reconcile 只重建 planning 或 finalization：派发规则判成 planning 时按规划重建，
+// 其余（实现、收尾、审计）都归入收尾；调用方显式 phase="planning" 仍按规划处理。
+function deriveReconcileKind(node, phase) {
+  if (phase === "planning") return "planning";
+  let kind = null;
+  try {
+    kind = nextTaskKind(node);
+  } catch {
+    kind = null;
+  }
+  return kind === "planning" ? "planning" : "finalization";
+}
+
 export function createV2Envelope({
   node,
   taskId,
@@ -1708,7 +1721,10 @@ async function assertFactsUnchanged(ctx) {
 
 export async function riskflowReconcile(input, options = {}) {
   return controlledMutation("reconcile", input, options, async (ctx) => {
-    const taskKind = input.taskKind ?? (input.phase === "planning" ? "planning" : "finalization");
+    // 替代尝试的角色必须与派发规则一致。旧实现只在调用方显式传 phase="planning"
+    // 时才重建规划，缺省一律 finalization，会把「规划从未成功」的工作树派成收尾
+    // （其任务说明要求填写 verification），而该工作树其实还没有任何 applyRequires 工件。
+    const taskKind = input.taskKind ?? deriveReconcileKind(ctx.node, input.phase);
     if (!new Set(["planning", "finalization"]).has(taskKind)) {
       throw new ControlError("invalid_input", "reconcile 只接受 planning 或 finalization");
     }

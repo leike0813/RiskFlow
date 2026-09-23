@@ -10,7 +10,8 @@
 
 - [x] 2.1 `scripts/orchestration/status.mjs`：`task_missing_local_openspec` 触发条件排除「当前尝试为未成功的 planning」。
 - [x] 2.2 `scripts/orchestration/control.mjs`：`nextTaskKind()` 在「存在尝试但规划从未成功」时返回 `planning`；`finalization` 回退仅保留 `phase === "adopt" || status === "untracked"`；导出 `nextTaskKind` 供测试使用。
-- 验证：`status.test.mjs`「fails closed for duplicate, missing, and mismatched worktree facts」内的规划待创建分支；`control.test.mjs`「keeps planning as the next role until a planning attempt succeeds」。
+- [x] 2.3 `scripts/orchestration/control.mjs`：`riskflowReconcile` 的替代尝试角色改为复用派发规则（`deriveReconcileKind`：规划未完成 ⇒ planning，否则 finalization；显式 `phase="planning"` 仍按规划），不再缺省一律 finalization（该缺省会把未规划的工作树派成收尾/verification）。
+- 验证：`status.test.mjs`「fails closed for duplicate, missing, and mismatched worktree facts」内的规划待创建分支；`control.test.mjs`「keeps planning as the next role until a planning attempt succeeds」「reconstructs a planning attempt while planning never succeeded」。
 
 ## 3. 验证
 

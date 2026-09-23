@@ -337,12 +337,13 @@ function taskPhase(taskKind) {
   }[taskKind];
 }
 
-// reconcile 只重建 planning 或 finalization：派发规则判成 planning 时按规划重建，
-// 其余（实现、收尾、审计）都归入收尾；调用方显式 phase="planning" 仍按规划处理。
+// reconcile 只重建「下一次尝试」或收尾：派发规则判成 planning/implementation 时按该角色
+// 重建，其余（收尾、审计）归入收尾；调用方显式 phase="planning" 仍按规划处理。
 function deriveReconcileKind(node, phase) {
   if (phase === "planning") return "planning";
   try {
-    return nextTaskKind(node) === "planning" ? "planning" : "finalization";
+    const kind = nextTaskKind(node);
+    return kind === "planning" || kind === "implementation" ? kind : "finalization";
   } catch {
     return "finalization";
   }
@@ -1744,8 +1745,11 @@ export async function riskflowReconcile(input, options = {}) {
     // 时才重建规划，缺省一律 finalization，会把「规划从未成功」的工作树派成收尾
     // （其任务说明要求填写 verification），而该工作树其实还没有任何 applyRequires 工件。
     const taskKind = input.taskKind ?? deriveReconcileKind(ctx.node, input.phase);
-    if (!new Set(["planning", "finalization"]).has(taskKind)) {
-      throw new ControlError("invalid_input", "reconcile 只接受 planning 或 finalization");
+    if (!new Set(["planning", "implementation", "finalization"]).has(taskKind)) {
+      throw new ControlError(
+        "invalid_input",
+        "reconcile 只接受 planning、implementation 或 finalization",
+      );
     }
     const invocation = resolveOrcaInvocation(options.orcaCommand);
     const runId = await ensureRun(

@@ -2012,6 +2012,61 @@ describe("controlled orchestration", () => {
     }
   });
 
+  it("reconstructs the implementation attempt of an unstarted implementation task", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-reconcile-impl-"));
+    const stuck = node({
+      status: "unknown",
+      phase: "implementing",
+      checkpoints: {
+        ...node().checkpoints,
+        taskKind: "implementation",
+        runState: "queued",
+        outcome: null,
+      },
+      orca: {
+        attempts: [
+          {
+            taskId: "task-planning-ok",
+            taskKind: "planning",
+            attemptGroup: "C17:planning",
+            attempt: 1,
+            outcome: "succeeded",
+            runState: "settled",
+          },
+        ],
+      },
+    });
+    const state = snapshot({
+      nodes: [stuck],
+      violations: [{ nodeId: "C17", code: "checkpoint_mismatch" }],
+    });
+    let envelope;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("run-create")) return { id: "run-reconcile" };
+      if (command === "orca-ide" && args.includes("task-create")) return { id: "task-reconcile" };
+      if (command === "orca-ide" && args.includes("task-update")) {
+        envelope = JSON.parse(args[args.indexOf("--result") + 1]);
+        return {};
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      const result = await riskflowReconcile(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "reconcile-implementation-incomplete",
+        },
+        { rootDir: process.cwd(), exec, statusProvider: async () => ({ graph, snapshot: state }) },
+      );
+      expect(result.envelope.taskKind).toBe("implementation");
+      expect(envelope).toMatchObject({ taskKind: "implementation", phase: "implementing" });
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
   it("allows only auxiliary adoption through the recovery dispatch path", () => {
     const auxiliary = node({
       id: "AUX:fix-suite-isolation",

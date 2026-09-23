@@ -310,9 +310,13 @@ export function nextTaskKind(node) {
   // 仍走下面的 adopt 回退。
   const planningIncomplete = !node.auxiliary && !planningSucceeded && attempts.length > 0;
   if (planningIncomplete) return "planning";
+  // 一次收尾尝试失败后节点会停在 blocked，但下一职责仍是收尾（替代 Finalizer）；
+  // 只按 status === "finalizing" 判断会把它判成"没有合法角色"，替代尝试就开不出来。
+  const finalizingCheckpoint =
+    node.checkpoints?.taskKind === "finalization" || node.checkpoints?.taskKind === "audit";
   if (node.phase === "adopt" || node.status === "untracked") return "finalization";
   if (node.status === "ready") return "planning";
-  if (node.status === "finalizing") {
+  if (node.status === "finalizing" || (node.status === "blocked" && finalizingCheckpoint)) {
     // 本轮是否仍需要审计由状态视图判定（同一收尾轮次最多一次限定审计）；
     // 这里不再凭检查点条件一律再派，避免同一收尾被重复派发。
     if (node.auditRequired === true) return "audit";

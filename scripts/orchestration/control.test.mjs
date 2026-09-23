@@ -631,6 +631,23 @@ describe("controlled orchestration", () => {
         }),
       ),
     ).toBe("planning");
+    // 收尾尝试失败后节点停在 blocked：下一职责仍是收尾（替代 Finalizer），
+    // 不能判成"没有合法角色"而让替代尝试开不出来。
+    expect(
+      nextTaskKind(
+        node({
+          status: "blocked",
+          phase: "finalizing",
+          checkpoints: { ...node().checkpoints, taskKind: "finalization", runState: "running" },
+          orca: {
+            attempts: [
+              attempt({ outcome: "succeeded" }),
+              attempt({ taskKind: "finalization", outcome: "failed", runState: "settled" }),
+            ],
+          },
+        }),
+      ),
+    ).toBe("finalization");
     // 已采纳的 auxiliary 工作树没有规划尝试，仍走收尾回退。
     expect(
       nextTaskKind(

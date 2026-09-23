@@ -23,11 +23,8 @@
  *    `getPostgresTransaction` 取不到事务（`TRANSACTION_FAILED`）。因此本文件改用同一容器上的
  *    真实 C30 父图 `assess`/`record-response-feedback` 入口驱动真实评估子运行，未覆盖 R2/S1 的
  *    “多已验收风险分别评估”父图扇出。
- * 2. `forecast-response`/`record-response-feedback` 的公开载荷缺少可解析的评估准备快照
- *    （`packages/contracts/src/ports/index.ts:1697-1705` 只提供执行/反馈/预测引用，
- *    `apps/worker/src/assessment/graph.ts` 的 `resolveBasisReleaseSetRef` 需要
- *    `assessment-preparation` 入口快照或显式 `assessment-basis-release-set`），
- *    故“反馈→偏差→校准”尾链只在内部分段入口显式冻结依据时可达，公开入口以类型化原因停住。
+ * 2. 公共预测/反馈入口可显式冻结评估依据；其它必需的预测/反馈引用仍需独立核验，
+ *    本文件只把已成立的内部冻结输入链作为尾链证据，不把缺席的公共成功路径冒充通过。
  *
  * 断言只针对调用方可见契约，不断言私有实现、提示词或文案全文。
  */
@@ -1581,8 +1578,18 @@ describe("C30 全链验收（真实 PostgreSQL + 真实 C03/C04/checkpointer + �
     expect(runResult.skippedTails).toEqual([]);
   }, 300_000);
 
-  it("R3/S4 公共反馈入口缺评估准备快照：以类型化原因停住，不伪造偏差/校准链尾（规划残差）", async () => {
+  it("R1/S5 公共预测与反馈入口缺冻结依据时在父运行副作用前拒绝", async () => {
     resetWorld();
+    const recommendationRef = refOf(
+      "response-recommendation",
+      `response-recommendation:${PROJECT_ID}`,
+      digest("recommendation-public"),
+    );
+    const preActionMonitoringSnapshotRef = refOf(
+      "monitoring-snapshot",
+      `monitoring:${PROJECT_ID}`,
+      digest("monitoring-public"),
+    );
     const executionRecordRef = refOf(
       "execution-record",
       `execution-record:${PROJECT_ID}`,
@@ -1594,60 +1601,57 @@ describe("C30 全链验收（真实 PostgreSQL + 真实 C03/C04/checkpointer + �
       `effect-forecast:${PROJECT_ID}`,
       digest("effect-forecast-public"),
     );
-    const started = await harness.riskFlow.runtime.workflowPort.startRun({
-      kind: "start-run",
-      commandId: "c30-acceptance-feedback-start",
-      idempotencyKey: "c30-acceptance-feedback-start",
-      projectId: PROJECT_ID,
-      actorId: ACTOR_ID,
-      issuedAt: TIMESTAMP,
-      authorization: AUTHORIZATION,
-      payload: {
-        entryMode: "record-response-feedback",
+    for (const [entryMode, refs] of [
+      ["forecast-response", [recommendationRef, preActionMonitoringSnapshotRef]],
+      ["record-response-feedback", [executionRecordRef, feedbackRef, forecastRef]],
+    ] as const) {
+      const payload =
+        entryMode === "forecast-response"
+          ? {
+              entryMode,
+              graphVersion: RISK_FLOW_GRAPH_VERSION,
+              retryPolicyRef: RETRY_POLICY_REF,
+              adoptedRecommendationRef: recommendationRef,
+              preActionMonitoringSnapshotRef,
+            }
+          : {
+              entryMode,
+              graphVersion: RISK_FLOW_GRAPH_VERSION,
+              retryPolicyRef: RETRY_POLICY_REF,
+              executionRecordRef,
+              feedbackRef,
+              forecastRef,
+            };
+      const started = await harness.riskFlow.runtime.workflowPort.startRun({
+        kind: "start-run",
+        commandId: `c30-acceptance-${entryMode}-missing-basis`,
+        idempotencyKey: `c30-acceptance-${entryMode}-missing-basis`,
+        projectId: PROJECT_ID,
+        actorId: ACTOR_ID,
+        issuedAt: TIMESTAMP,
+        authorization: AUTHORIZATION,
+        payload,
+      });
+      expect(started.kind).toBe("failed");
+      if (started.kind !== "failed") throw new TypeError("public segmented entry must fail");
+      expect(started.error).toMatchObject({
+        code: "BUSINESS_BLOCKED",
+        blockerKind: "assessment-basis-missing",
+        stageCode: "entry-gate",
+      });
+      const entryIdentity = workflowEntryIdentityFor({
+        entryMode,
+        projectId: PROJECT_ID,
+        frozenRefs: refs,
+      });
+      const runRef = workflowRunIdentityFor({
+        projectId: PROJECT_ID,
+        entryMode,
+        entryIdentity,
         graphVersion: RISK_FLOW_GRAPH_VERSION,
-        retryPolicyRef: RETRY_POLICY_REF,
-        executionRecordRef,
-        feedbackRef,
-        forecastRef,
-      },
-    });
-    // 分段入口缺少可解析的评估准备快照：`assessment-basis` 解析在副作用前失败，父运行以类型化原因停住。
-    expect(started.kind).toBe("failed");
-    if (started.kind !== "failed") throw new TypeError("public feedback entry must fail");
-    expect(started.error.code).toBe("TERMINAL_FAILURE");
-    expect(started.error.category).toBe("technical");
-
-    const entryIdentity = workflowEntryIdentityFor({
-      entryMode: "record-response-feedback",
-      projectId: PROJECT_ID,
-      frozenRefs: [executionRecordRef, feedbackRef, forecastRef],
-    });
-    const runRef = workflowRunIdentityFor({
-      projectId: PROJECT_ID,
-      entryMode: "record-response-feedback",
-      entryIdentity,
-      graphVersion: RISK_FLOW_GRAPH_VERSION,
-    }).runRef;
-    // 父运行以类型化失败收口；子运行登记的原因码才是缺失入口引用。
-    const state = await harness.latestState(runRef);
-    expect(state?.state.status).toBe("terminal-failure");
-    expect(state?.state.assessmentRunRefs).toHaveLength(1);
-    const parentRows = await harness.rows(runRef);
-    expect(
-      parentRows
-        .filter((row) => row.resultKind === "workflow-error")
-        .map((row) => row.workflowErrorRef?.reference.entityId),
-    ).toEqual(["risk-flow-graph-workflow-error:assessment:transaction_failed"]);
-    const childRunRef = state?.state.assessmentRunRefs[0] as WorkflowRunRefV1;
-    const childErrorRows = (await harness.rows(childRunRef)).filter(
-      (row) => row.resultKind === "workflow-error",
-    );
-    expect(childErrorRows.map((row) => row.workflowErrorRef?.reference.entityId)).toEqual([
-      "assessment-graph-workflow-error:A0:assessment-basis-missing",
-    ]);
-    const childState = await harness.latestState(childRunRef);
-    expect(childState?.state.deviationRecordRefs).toEqual([]);
-    expect(childState?.state.calibrationSuggestionRefs).toEqual([]);
+      }).runRef;
+      expect(await harness.rows(runRef)).toEqual([]);
+    }
   }, 300_000);
 
   it("R6/S2 偏差不可计算：保留最后成立事实与类型化原因，不生成校准链尾", async () => {

@@ -6,7 +6,7 @@
 
 ## Goals / Non-Goals
 
-**Goals:** 完成 A0～A9 和有限 RA-S7 入口；建立真实父子运行、冻结版本、可恢复检查点、只追加运行/路由/追踪事实；让 `run-view`/`trace-chain` 有可读取的有界内容；用耐久证据和可重复命令证明 RI-S1～RI-S6、RA-S1～RA-S7 的可达链路。
+**Goals:** 完成 A0～A9 和有限 RA-S7 入口的已成立切片；建立父子运行、冻结版本、检查点、只追加运行/路由/追踪事实；让 `run-view`/`trace-chain` 有可读取的有界内容。真实 C24 多风险同容器链路和两个分段入口的成功路径按 D-10 转由后续 change 证明。
 
 **Non-Goals:** 不复制 C18/C19/C25～C29 的计算或发布规则；不建立第二套流程状态机；不改 C10/C14 或 C24～C29 的既有写语义；不做 C31 的关联图/报告、C34 的完整前端页面、C36 的监测展示；不新增角色、能力值或生产运行时依赖。
 
@@ -22,6 +22,8 @@
 | `assess` | `projectRevisionRef?: ProjectRevisionRefV1`、`monitoringSnapshotRefs?: MonitoringSnapshotRefV1[]`（非空） | 工程修订必须显式存在；单数与集合规则同上 |
 | `reassess` | `riskInput?: RiskInputVersionRefV1`、`projectRevisionRef?: ProjectRevisionRefV1`、`spatialScopeRef?: SpatialScopeRefV1`、`applicabilityMetadataSnapshotRef?: ApplicabilityMetadataSnapshotRefV1`、`monitoringSnapshotRefs?: MonitoringSnapshotRefV1[]`（非空） | 显式风险身份和上下文经 C25 `prepare` 与前次冻结输入及 `changedInputRefs` 核对；缺项拒绝 |
 | `historical-backfill` | `projectRevisionRef?: ProjectRevisionRefV1`、`spatialScopeRef?: SpatialScopeRefV1`、`applicabilityMetadataSnapshotRef?: ApplicabilityMetadataSnapshotRefV1`、`monitoringSnapshotRefs?: MonitoringSnapshotRefV1[]`（非空） | 工程修订、空间、适用性与依据必须显式提供，按 `effectiveAt` 复验；缺少时拒绝 |
+| `forecast-response` | `assessmentBasisReleaseSetRef?: AssessmentBasisReleaseSetRefV1` | 缺少精确依据集合时在父运行副作用前按入口引用不完整语义拒绝；公共结果为 `BUSINESS_BLOCKED` |
+| `record-response-feedback` | `assessmentBasisReleaseSetRef?: AssessmentBasisReleaseSetRefV1` | 缺少精确依据集合时在父运行副作用前按入口引用不完整语义拒绝；公共结果为 `BUSINESS_BLOCKED` |
 
 可选是传输解析兼容性；C30 运行时不默认缺失值。`assess` 的既有 `spatialScopeRef`/`applicabilityMetadataSnapshotRef` 原样使用。`identify-and-assess` 的配对上下文由调用方显式提供，与 C11 准备快照的空间集合逐项相等；每条风险按其精确空间取对应上下文，缺失时该风险的评估子运行阻断。既有顶层单数监测快照只在唯一空间且与该上下文同一单项时使用，否则拒绝。多监测集合规范去重并逐序列验证，不能从单数、当前流或 `changedInputRefs` 猜出遗漏序列。历史补算存在本 change 的正式入口，故同时兑现 C02 design §10 的适用性要求；字段缺失在 Schema 层仍可解析，在 C30 前置门禁安全失败。公共其它分支、结果、能力和现有签名不变。选择加法而非更名/删除旧字段，以免破坏现有传输解析。
 
@@ -58,6 +60,10 @@
 ### D-09：可重现验收与 RI/RA 证据
 
 使用“合成样本、待甲方复核”的识别/监测输入及标明版本的正式配置，在真实 PostgreSQL、C04、C03 checkpoint/Outbox 和公开端口下执行：RI-S1～RI-S6 由 C24 I0～I9 给出资料段/工序/机理/标准化记录；RA-S1～RA-S5 由 C25 冻结/评估，RA-S6 由 C26，RA-S7 由 C27/C28/C29。测试记录命令、输入/配置版本、各阶段/事件/审计 ref、`run-view`/`trace-chain` 分页结果，并从 C25 的冻结输入独立核对 P/C、矩阵与预警触发。还必须运行无预警、待复核、三项校验失败、偏差不可计算、重复事件、检查点落后/伪引用、越权、事务回滚与迁移重入路径。可重复命令在实施计划逐场景列出；证据为测试断言与持久化引用，不依赖模型输出硬期望。
+
+### D-10：本轮交付边界及后续归属
+
+按 `approval://riskflow/C30/finalization-2026-09-23-narrow-scope-and-archive`，D-02 的真实 C24 多风险父图扇出与 D-09 的真实同容器完整链路因 C24 `GraphInterrupt` 跨图检查点边界未闭合，交 C40 `fix-c24-nested-graph-interrupt-checkpoint-boundary`；不得在 C30 侧用 catch/retry 或伪检查点代替。D-01/D-04 中两个分段入口的依据缺失前置拒绝保留为 C30 已成立行为；携带完整合法引用后的预测和反馈成功路径、C28 人工决定及正式反馈命令输入交 C41 `wire-human-decision-and-feedback-commands`。C30 不修改 C24/C28 契约或写路径，也不扩大能力、权限、迁移和依赖。已成立的分段链与缺席原因可以验收，不能据此报告 R2/S1、R6/S1 或两个入口成功场景通过；`verification.md` 由收尾角色保留 BLOCKED 证据并标明 C40/C41 归属。
 
 ## Risks / Trade-offs
 

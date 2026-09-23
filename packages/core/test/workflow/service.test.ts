@@ -206,6 +206,33 @@ describe("C30 entry gate", () => {
     expect(gate.frozenRefs).toContainEqual(projectRevisionRef);
     expect(gate.frozenRefs).toContainEqual(monitoringB);
   });
+
+  it.each([
+    [
+      "forecast-response",
+      {
+        adoptedRecommendationRef: version("response-recommendation"),
+        preActionMonitoringSnapshotRef: monitoringA,
+      },
+    ],
+    [
+      "record-response-feedback",
+      { executionRecordRef: version("execution-record"), feedbackRef: version("feedback") },
+    ],
+  ] as const)("requires and freezes the explicit basis for %s", (entryMode, refs) => {
+    const payload = { graphVersion, retryPolicyRef, entryMode, ...refs } as Payload;
+    expect(evaluateWorkflowEntryGate(payload)).toMatchObject({
+      kind: "incomplete",
+      detailCode: "assessment-basis-missing",
+    });
+    const gate = evaluateWorkflowEntryGate({
+      ...payload,
+      assessmentBasisReleaseSetRef: basisReleaseSet,
+    } as Payload);
+    expect(gate.kind).toBe("ready");
+    if (gate.kind !== "ready") return;
+    expect(gate.frozenRefs).toContainEqual(basisReleaseSet);
+  });
 });
 
 describe("C30 run identity and state version", () => {

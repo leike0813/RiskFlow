@@ -1704,6 +1704,7 @@ const StartWorkflowPayloadV1Schema = z.discriminatedUnion("entryMode", [
     entryMode: z.literal("forecast-response"),
     adoptedRecommendationRef: ResponseRecommendationRefV1Schema,
     preActionMonitoringSnapshotRef: MonitoringSnapshotRefV1Schema,
+    assessmentBasisReleaseSetRef: AssessmentBasisReleaseSetRefV1Schema.optional(),
   }),
   z.strictObject({
     ...workflowStartControlShape,
@@ -1711,6 +1712,7 @@ const StartWorkflowPayloadV1Schema = z.discriminatedUnion("entryMode", [
     executionRecordRef: ExecutionRecordRefV1Schema,
     feedbackRef: FeedbackRefV1Schema,
     forecastRef: EffectForecastRefV1Schema.optional(),
+    assessmentBasisReleaseSetRef: AssessmentBasisReleaseSetRefV1Schema.optional(),
   }),
 ]);
 

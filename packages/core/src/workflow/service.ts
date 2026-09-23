@@ -539,12 +539,20 @@ export const evaluateWorkflowEntryGate = (payload: WorkflowStartPayloadV1): Work
     }
     case "forecast-response":
     case "record-response-feedback": {
+      if (payload.assessmentBasisReleaseSetRef === undefined) {
+        return { kind: "incomplete", detailCode: "assessment-basis-missing" };
+      }
       const frozenRefs: ContractReferenceV1[] =
         payload.entryMode === "forecast-response"
-          ? [payload.adoptedRecommendationRef, payload.preActionMonitoringSnapshotRef]
+          ? [
+              payload.adoptedRecommendationRef,
+              payload.preActionMonitoringSnapshotRef,
+              payload.assessmentBasisReleaseSetRef,
+            ]
           : [
               payload.executionRecordRef,
               payload.feedbackRef,
+              payload.assessmentBasisReleaseSetRef,
               ...(payload.forecastRef === undefined ? [] : [payload.forecastRef]),
             ];
       return {

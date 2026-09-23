@@ -2633,6 +2633,35 @@ describe("C30 additive workflow inputs and bounded read ports", () => {
         payload: { ...backfillStart.payload, monitoringSnapshotRefs: [], spatialScopeRef },
       }).success,
     ).toBe(false);
+
+    for (const payload of [
+      {
+        entryMode: "forecast-response",
+        graphVersion: policyRef,
+        retryPolicyRef: policyRef,
+        adoptedRecommendationRef: version("response-recommendation"),
+        preActionMonitoringSnapshotRef: monitoringSnapshotRef,
+      },
+      {
+        entryMode: "record-response-feedback",
+        graphVersion: policyRef,
+        retryPolicyRef: policyRef,
+        executionRecordRef: version("execution-record"),
+        feedbackRef: version("feedback"),
+      },
+    ]) {
+      const start = command("start-run", payload);
+      expect(StartWorkflowRunCommandV1Schema.safeParse(start).success).toBe(true);
+      expect(
+        StartWorkflowRunCommandV1Schema.safeParse({
+          ...start,
+          payload: {
+            ...payload,
+            assessmentBasisReleaseSetRef: version("assessment-basis-release-set"),
+          },
+        }).success,
+      ).toBe(true);
+    }
   });
 
   it("pairs each spatial scope with exactly one applicability snapshot when present", () => {

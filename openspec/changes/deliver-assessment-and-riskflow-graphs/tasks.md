@@ -9,8 +9,8 @@
 
 - [x] 2.1 IP-05：实现 A0～A5 的精确输入冻结、正式依据解析和 C25 调用；运行 `pnpm exec vitest run apps/worker/test/assessment/runtime.test.ts`。
 - [x] 2.2 IP-05：实现 A6～A9 的 C26/C27 预警、候选/三项校验及无预警终态；运行 `pnpm exec vitest run apps/worker/test/assessment/composition.test.ts`。
-- [x] 2.3 IP-03：建立真实父 run、C24 识别子图与按验收风险版本启动的独立评估子运行；运行 `pnpm exec vitest run apps/worker/test/risk-flow/composition.test.ts`。
-- [x] 2.4 IP-02、IP-03、IP-04：闭合重复事件、等待/恢复、检查点对账、取消和技术失败；运行 `pnpm exec vitest run apps/worker/test/risk-flow/runtime.test.ts packages/adapters/test/workflow/postgres-workflow-adapter.test.ts`。
+- [ ] 2.3 IP-03：建立真实父 run、C24 识别子图与按验收风险版本启动的独立评估子运行；运行 `pnpm exec vitest run apps/worker/test/risk-flow/composition.test.ts`。
+- [ ] 2.4 IP-02、IP-03、IP-04：闭合重复事件、等待/恢复、检查点对账、取消和技术失败；运行 `pnpm exec vitest run apps/worker/test/risk-flow/runtime.test.ts packages/adapters/test/workflow/postgres-workflow-adapter.test.ts`。
 
 ## 3. 处置后续与有界投影
 
@@ -20,5 +20,7 @@
 
 ## 4. 全链验收与工程门禁
 
-- [x] 4.1 IP-09：以真实 PostgreSQL、C04、C03 checkpoint/Outbox 和公开端口形成 RI-S1～S6、RA-S1～S7 的完整与缺席链证据；运行 `pnpm exec vitest run apps/worker/test/risk-flow/acceptance.test.ts`。
-- [x] 4.2 IP-10：记录各场景命令、冻结版本、事件/审计/工件 ref，执行 `pnpm typecheck && pnpm lint && pnpm deps:check && pnpm deps:policy && pnpm build && pnpm format:check && pnpm openspec:validate`；仅在行为与证据均完成后勾选相应 task。
+- [ ] 4.1 IP-09：以真实 PostgreSQL、C04、C03 checkpoint/Outbox 和公开端口形成 RI-S1～S6、RA-S1～S7 的完整与缺席链证据；运行 `pnpm exec vitest run apps/worker/test/risk-flow/acceptance.test.ts`。
+- [ ] 4.2 IP-10：记录各场景命令、冻结版本、事件/审计/工件 ref，执行 `pnpm typecheck && pnpm lint && pnpm deps:check && pnpm deps:policy && pnpm build && pnpm format:check && pnpm openspec:validate`；仅在行为与证据均完成后勾选相应 task。
+
+按 `approval://riskflow/C30/finalization-2026-09-23-narrow-scope-and-archive`，本清单保持 8/13。2.3 的真实 C24 多风险扇出和 4.1 的同容器全链交 C40/C41；3.1 的预测/正式反馈成功路径交 C41；2.4 和 4.2 因跨图检查点与完整证据未闭合而保持未勾选。逐项 IP-ID、允许文件和可运行证据命令见 `implementation-plan.md` §1，Finalizer 在 `verification.md` 标明 BLOCKED 与后续归属。

@@ -10,6 +10,8 @@
 - 为 `start-run` 的评估/历史补算入口补齐冻结所需的工程修订、监测集合与历史适用性精确引用；增加独立的最小只读结果接缝，保持既有分支、能力与角色语义。
 - 以可重现命令和耐久证据核验资料段至偏差/校准的链路；只编排 C18/C19/C25～C29 已有逻辑，P/C、矩阵、预警和三项处置校验仍由确定性领域模块完成。
 
+本轮按 `approval://riskflow/C30/finalization-2026-09-23-narrow-scope-and-archive` 收窄交付边界：真实 C24 同容器多风险扇出与全链验收交由 C40 `fix-c24-nested-graph-interrupt-checkpoint-boundary`；预测、反馈分段入口的成功路径及 C28 人工决定/正式反馈命令输入交由 C41 `wire-human-decision-and-feedback-commands`。C30 已成立的分段、失败与缺席链证据仍按精确场景记录；未闭合行为不作为本 change 的通过结论。
+
 ## Capabilities
 
 ### New Capabilities

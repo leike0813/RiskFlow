@@ -13,6 +13,9 @@ interface BrowserServerV1 {
   readonly reportArtifactRef: {
     readonly reference: { readonly entityId: string; readonly versionId: string };
   };
+  readonly datasetArtifactRef: {
+    readonly reference: { readonly entityId: string; readonly versionId: string };
+  };
   close(): Promise<void>;
 }
 
@@ -73,6 +76,14 @@ const expectSummary = async (page: Page): Promise<void> => {
 
 test("真实 Chromium 完成登录、导航、质量查询、刷新与工程切换", async ({ page, browser }) => {
   test.info().annotations.push({ type: "browser-version", description: browser.version() });
+  test.info().annotations.push({
+    type: "c04-report-ref",
+    description: `${server.reportArtifactRef.reference.entityId}@${server.reportArtifactRef.reference.versionId}`,
+  });
+  test.info().annotations.push({
+    type: "c04-dataset-ref",
+    description: `${server.datasetArtifactRef.reference.entityId}@${server.datasetArtifactRef.reference.versionId}`,
+  });
 
   await test.step("登录并读取当前工程的质量摘要", async () => {
     await page.goto(pathWithSelection("/assessment", server.projectId));

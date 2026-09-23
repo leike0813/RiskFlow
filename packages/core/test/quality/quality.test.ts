@@ -209,16 +209,19 @@ describe("C36 冻结质量数据集", () => {
 
 describe("C36 确定性指标与逐项诊断", () => {
   it("用冻结标签全集计算准确率、精确率与覆盖度，不丢弃失败样例", () => {
-    expect(metric("accuracy")).toMatchObject({ numerator: 3, denominator: 7, status: "computed" });
-    expect(metric("accuracy").value).toBeCloseTo(3 / 7, 12);
+    expect(metric("accuracy")).toMatchObject({ numerator: 2, denominator: 7, status: "computed" });
+    expect(metric("accuracy").value).toBeCloseTo(2 / 7, 12);
     expect(metric("precision")).toMatchObject({ numerator: 2, denominator: 2, value: 1 });
-    expect(metric("coverage")).toMatchObject({ numerator: 3, denominator: 7, status: "computed" });
+    expect(metric("coverage")).toMatchObject({ numerator: 2, denominator: 7, status: "computed" });
 
     expect(outcomeById.get("sample-alpha-1")).toMatchObject({
       classification: "true-positive",
       recordKeyMatched: true,
     });
-    expect(outcomeById.get("sample-gamma")).toMatchObject({ classification: "true-negative" });
+    expect(outcomeById.get("sample-gamma")).toMatchObject({ classification: "undetermined" });
+    expect(outcomeById.get("sample-gamma")?.reasonCodes).toContain(
+      "quality-identification-result-missing",
+    );
     expect(outcomeById.get("sample-beta")).toMatchObject({
       classification: "false-negative",
       recordIdentityVerified: false,
@@ -279,7 +282,10 @@ describe("C36 确定性指标与逐项诊断", () => {
   it("用冻结 C29 上下文重算并比对 P/C、矩阵等级与决策摘要", () => {
     expect(metric("replay-rate")).toMatchObject({ numerator: 2, denominator: 3 });
     expect(metric("grade-match")).toMatchObject({ numerator: 2, denominator: 3 });
-    expect(metric("audit-completeness")).toMatchObject({ numerator: 6, denominator: 7 });
+    expect(metric("audit-completeness")).toMatchObject({ numerator: 0, denominator: 7 });
+    expect(outcomeById.get("sample-alpha-1")?.reasonCodes).toContain(
+      "quality-evidence-artifact-unverified",
+    );
     expect(outcome.evidenceChainStatus).toBe("partial");
     expect(outcomeById.get("sample-alpha-1")?.actualRiskLevelId).toBe(
       assessment.decision.matrix.riskLevelId,

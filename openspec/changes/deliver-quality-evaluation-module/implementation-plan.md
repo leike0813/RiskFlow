@@ -29,7 +29,7 @@
 | IP-04 | 4 | C36 页面查询投影必须有界且只追加；追加与重放 | `packages/adapters/src/postgres/migrations/query-projection/deliver-quality-evaluation-module/000049_quality_evaluation_report_index.ts`；`packages/adapters/test/auth/fixture.ts`；`packages/adapters/test/postgres/postgres-foundation.test.ts`；`packages/adapters/test/quality/postgres-quality-evaluation.test.ts` | D-05 单表约束、唯一/列表索引、`riskflow_app` 仅 SELECT/INSERT、无跨 change FK；重复 up、逆序 down；同步迁移 id | 旧迁移、上游表或 UPDATE/DELETE 权限 |
 | IP-05 | 5 | C36 页面查询投影必须有界且只追加；获授权页面读取精确质量报告；工程切换或撤权；不可枚举拒绝与旧类型兼容；追加与重放 | `packages/adapters/src/quality/postgres-quality-projection.ts`；`packages/contracts/src/ports/index.ts`；`packages/contracts/test/module-interfaces-events-workflows.test.ts`；`apps/api/src/http.ts`；`apps/api/test/quality.test.ts`；`packages/adapters/test/quality/postgres-quality-evaluation.test.ts` | D-04/D-06 仅一新增 queryType、闭合 selector 和有界摘要、`qualityProjectionQuery` 窄端口、C09 既有 route、当前 C06 最小授权，列表 keyset≤50、exact 单条、统一 NOT_FOUND | 旧 queryType/结果、额外 branch/capability/角色、私表查询 |
 | IP-06 | 6 | C36 页面查询投影必须有界且只追加；获授权页面读取精确质量报告；工程切换或撤权；跨页面验收必须使用真实浏览器与正式接缝；真实浏览器完成跨页面链路 | `apps/web/src/quality/operation.ts`（C09 operation/解码）；`apps/web/src/quality/QualityPage.tsx`（C10 页面贡献）；`apps/web/src/main.tsx`（现有 App 回调/会话/工程接线）；`apps/web/test/quality.test.tsx` | D-06 无旧工程闪现，abort 旧查询，刷新重新查询，证据只显示授权摘要；UI 不写业务正文 | C10 组件/路由/焦点语义、本地业务缓存 |
-| IP-07 | 7 | 跨页面验收必须使用真实浏览器与正式接缝；真实浏览器完成跨页面链路；环境不可用或接缝拒绝；前述全部端到端场景 | `playwright.config.ts`；`apps/web/test/browser/quality.spec.ts`；`apps/web/test/browser/server.mjs`；`package.json` 的 `quality:evaluate`/`test:browser` 脚本；`pnpm-lock.yaml` 与 `package.json` 的 `@playwright/test` 登记（仅协调端）；`apps/web/test/quality.test.tsx` | D-07 生产构建+真实 Fastify/PostgreSQL/C04/C06/C36、真实登录 Cookie/Chromium；trace/版本/命令/报告 ref 证据，关键失败非零退出 | Mock 服务或浏览器、dev server、生产运行时依赖 |
+| IP-07 | 7 | 跨页面验收必须使用真实浏览器与正式接缝；真实浏览器完成跨页面链路；环境不可用或接缝拒绝；前述全部端到端场景 | `playwright.config.ts`；`vitest.config.ts`；`apps/web/test/browser/quality.spec.ts`；`apps/web/test/browser/server.mjs`；`package.json` 的 `quality:evaluate`/`test:browser` 脚本；`pnpm-lock.yaml` 与 `package.json` 的 `@playwright/test` 登记（仅协调端）；`apps/web/test/quality.test.tsx` | D-07 生产构建+真实 Fastify/PostgreSQL/C04/C06/C36、真实登录 Cookie/Chromium；Vitest 排除 Playwright 规格文件；trace/版本/命令/报告 ref 证据，关键失败非零退出 | Mock 服务或浏览器、dev server、生产运行时依赖 |
 
 ## 4. 调用与副作用顺序
 
@@ -73,10 +73,14 @@
 
 **Implementation 可新增：** `packages/core/src/quality/{schema,evaluate,service,index}.ts`、`packages/core/test/quality/fixtures/synthetic.json`、`packages/core/test/quality/quality.test.ts`、`packages/adapters/src/quality/{postgres-quality-evaluation,postgres-quality-projection,index}.ts`、`packages/adapters/src/postgres/migrations/query-projection/deliver-quality-evaluation-module/000049_quality_evaluation_report_index.ts`、`packages/adapters/test/quality/postgres-quality-evaluation.test.ts`、`apps/api/test/quality.test.ts`、`apps/web/src/quality/operation.ts`、`apps/web/src/quality/QualityPage.tsx`、`apps/web/test/quality.test.tsx`、`apps/web/test/browser/quality.spec.ts`、`apps/web/test/browser/server.mjs`、`playwright.config.ts`、`scripts/quality/evaluate.mjs`。
 
-**Implementation 可修改：** `packages/core/package.json`、`packages/adapters/package.json`、`packages/contracts/src/ports/index.ts`、`packages/contracts/test/module-interfaces-events-workflows.test.ts`、`packages/adapters/test/auth/fixture.ts`、`packages/adapters/test/postgres/postgres-foundation.test.ts`、`apps/api/src/http.ts`、`apps/web/src/main.tsx`、根 `package.json` 的本 change 质量/浏览器脚本。**仅协调端串行改：** 根 `package.json` 的 `@playwright/test` 依赖条目、`pnpm-lock.yaml`、既有依赖策略登记；不得由 Implementation 安装或改锁文件。**删除：** 无。
+**Implementation 可修改：** `packages/core/package.json`、`packages/adapters/package.json`、`packages/contracts/src/ports/index.ts`、`packages/contracts/test/module-interfaces-events-workflows.test.ts`、`packages/adapters/test/auth/fixture.ts`、`packages/adapters/test/postgres/postgres-foundation.test.ts`、`apps/api/src/http.ts`、`apps/web/src/main.tsx`、`vitest.config.ts`、根 `package.json` 的本 change 质量/浏览器脚本。**仅协调端串行改：** 根 `package.json` 的 `@playwright/test` 依赖条目、`pnpm-lock.yaml`、既有依赖策略登记；不得由 Implementation 安装或改锁文件。**删除：** 无。
 
 受保护：C10/C13/C14 已归档公共契约与代码、C22/C29 领域算法、其它 change 的 migration/私表、角色/capability 枚举、生产依赖。任何施工符号不存在、需新增上游公开读契约/生产依赖、改变事务/权限/迁移/公共 Schema 既定语义、碰撞迁移序号或扩大文件清单时暂停并升级，不自行补设计；普通测试失败在当前任务修复。
 
 ## 8. 验收 Agent 授权与限定审计
 
 Finalizer 可在第 7 节 Implementation 允许文件和已批准语义内核验、修复、回归，并创建 `verification.md`；必须核对 Q1～Q7 的实际执行、关键场景确实命中、报告 C04 引用、浏览器 trace 与最终 HEAD。权限拒绝、C03 原子事务、migration 回滚及同键幂等列为限定审计标签；审计只在触发时由单独 Task 执行并补同一 verification，不改变质量指标口径或开放新权限。
+
+## 9. 施工文件核对
+
+`vitest.config.ts` 的唯一变动是将 `apps/web/test/browser/**` 从 Vitest 发现范围排除，使 Playwright 规格只由 Q5 的真实 Chromium 命令执行；这不改变 C36 的交付范围。

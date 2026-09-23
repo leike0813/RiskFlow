@@ -265,6 +265,12 @@ describe("C36 migration 000049", () => {
       can_update: false,
       can_delete: false,
     });
+    const scopeColumn = await fixture!.postgres.adminPool.query<{ data_type: string }>(
+      `SELECT data_type FROM information_schema.columns
+       WHERE table_schema = 'business' AND table_name = 'quality_evaluation_report_index'
+         AND column_name = 'spatial_scope_refs'`,
+    );
+    expect(scopeColumn.rows[0]?.data_type).toBe("jsonb");
     for (const role of ["riskflow_outbox_worker", "riskflow_checkpointer"]) {
       const granted = await fixture!.postgres.adminPool.query<{ allowed: boolean }>(
         `SELECT has_table_privilege($1, $2, 'SELECT') AS allowed`,
@@ -357,17 +363,17 @@ describe("C36 质量评估写入路径", () => {
     );
     expect(report.evidenceChainStatus).toBe("partial");
     expect(report.metrics.find((metric) => metric.metricCode === "accuracy")).toMatchObject({
-      numerator: 3,
+      numerator: 2,
       denominator: 6,
     });
     expect(report.metrics.find((metric) => metric.metricCode === "coverage")).toMatchObject({
-      numerator: 3,
+      numerator: 2,
       denominator: 6,
     });
     expect(
       report.metrics.find((metric) => metric.metricCode === "audit-completeness"),
     ).toMatchObject({
-      numerator: 4,
+      numerator: 0,
       denominator: 6,
     });
     expect(report.metrics.find((metric) => metric.metricCode === "replay-rate")).toMatchObject({
@@ -384,14 +390,16 @@ describe("C36 质量评估写入路径", () => {
     const rows = await fixture!.postgres.adminPool.query<{
       audit_entry_id: string;
       sample_kind: string;
+      spatial_scope_refs: unknown;
       summary_payload: { metrics: readonly unknown[] };
     }>(
-      `SELECT audit_entry_id, sample_kind, summary_payload FROM ${TABLE}
+      `SELECT audit_entry_id, sample_kind, spatial_scope_refs, summary_payload FROM ${TABLE}
        WHERE project_id = $1 AND report_artifact_id = $2`,
       [authorization.projectId, result.reportArtifactRef.reference.entityId],
     );
     expect(rows.rows).toHaveLength(1);
     expect(rows.rows[0]?.sample_kind).toBe("synthetic");
+    expect(rows.rows[0]?.spatial_scope_refs).toEqual(authorization.spatialScopeRefs);
     expect(rows.rows[0]?.summary_payload.metrics).toHaveLength(7);
     const auditRows = await fixture!.postgres.adminPool.query<{ audit_entry_id: string }>(
       `SELECT audit_entry_id FROM audit.entries WHERE audit_entry_id = $1`,
@@ -457,6 +465,18 @@ describe("C36 质量评估写入路径", () => {
       ["quality-command-denied"],
     );
     expect(deniedRows.rows[0]?.total).toBe("0");
+
+    const wrongScope = await evaluate({
+      commandId: "quality-command-wrong-scope",
+      datasetRef: datasetArtifactRef!,
+      authorization: {
+        ...authorization,
+        spatialScopeRefs: [
+          { kind: "spatial-scope", reference: { entityId: "other-scope", versionId: "v1" } },
+        ],
+      },
+    });
+    expect(wrongScope).toMatchObject({ kind: "failed", failure: { code: "AUTHORIZATION_DENIED" } });
   }, 300_000);
 });
 
@@ -480,7 +500,7 @@ describe("C36 页面查询投影", () => {
     expect(summary.sampleKind).toBe("synthetic");
     expect(summary.reportArtifactRef).toEqual(reportArtifactRef);
     expect(summary.datasetArtifactRef).toEqual(datasetArtifactRef);
-    expect(summary.evidenceRefs.length).toBeGreaterThan(0);
+    expect(summary.evidenceRefs).toEqual([]);
 
     const exact = await projection.query(
       queryEnvelope(
@@ -494,7 +514,7 @@ describe("C36 页面查询投影", () => {
     expect(exact.kind === "succeeded" && exact.result.qualitySummaries).toHaveLength(1);
   }, 300_000);
 
-  it("无权、跨工程、不存在与非法游标统一同形拒绝，旧查询类型不被接管", async () => {
+  it("无权、跨空间、跨工程、不存在与非法游标统一同形拒绝，旧查询类型不被接管", async () => {
     const projection = queryProjection();
     const otherProject = "other-quality-project";
     const foreignCursor = Buffer.from(
@@ -547,6 +567,22 @@ describe("C36 页面查询投影", () => {
         grantedCapabilities: ["projection.query", "projection.export"],
       },
     });
+    const crossSpace = await projection.query({
+      ...queryEnvelope(
+        {
+          queryType: "quality-evaluation",
+          selector: { mode: "exact", reportArtifactRef },
+        },
+        "quality-query-cross-space",
+      ),
+      authorization: {
+        ...authorization,
+        grantedCapabilities: ["projection.query"],
+        spatialScopeRefs: [
+          { kind: "spatial-scope", reference: { entityId: "other-scope", versionId: "v1" } },
+        ],
+      },
+    });
     const cursor = await projection.query(
       queryEnvelope(
         {
@@ -554,6 +590,25 @@ describe("C36 页面查询投影", () => {
           selector: { ...qualityListSelector, pageSize: 10, cursor: foreignCursor },
         },
         "quality-query-cursor",
+      ),
+    );
+    const malformedCursor = Buffer.from(
+      JSON.stringify({
+        projectId: authorization.projectId,
+        projectRevisionRef: { entityId: "quality-revision", versionId: "r1" },
+        createdAt: "not-a-date",
+        reportArtifactId: "quality-report",
+        reportArtifactVersionId: "1",
+      }),
+      "utf8",
+    ).toString("base64url");
+    const malformed = await projection.query(
+      queryEnvelope(
+        {
+          queryType: "quality-evaluation",
+          selector: { ...qualityListSelector, pageSize: 10, cursor: malformedCursor },
+        },
+        "quality-query-malformed-cursor",
       ),
     );
     const legacy = await projection.query(
@@ -568,7 +623,7 @@ describe("C36 页面查询投影", () => {
         "quality-query-legacy",
       ),
     );
-    const codes = [absent, cursor, crossProject, unauthorized].map((outcome) =>
+    const codes = [absent, cursor, malformed, crossProject, crossSpace, unauthorized].map((outcome) =>
       outcome.kind === "failed" ? outcome.error.code : "succeeded",
     );
     expect(codes).toEqual([
@@ -576,10 +631,12 @@ describe("C36 页面查询投影", () => {
       "ENTITY_NOT_FOUND",
       "ENTITY_NOT_FOUND",
       "ENTITY_NOT_FOUND",
+      "ENTITY_NOT_FOUND",
+      "ENTITY_NOT_FOUND",
     ]);
     expect(legacy.kind === "failed" && legacy.error.code).toBe("UNSUPPORTED_CONTRACT");
     const rejectionShapes = new Set(
-      [absent, cursor, crossProject, unauthorized].map((outcome) =>
+      [absent, cursor, malformed, crossProject, crossSpace, unauthorized].map((outcome) =>
         outcome.kind === "failed"
           ? JSON.stringify({
               code: outcome.error.code,
@@ -634,6 +691,7 @@ describe("C36 数据集计算 CLI", () => {
       hmacKey: CLI_HMAC_KEY,
       keyVersion: "key-v1",
     });
+    let cliSpatialScopeRef = AUTHORIZATION_FIXTURE.spatialScopeRefs[0]!;
     try {
       const adminLogin = await access.login({
         kind: "login",
@@ -672,11 +730,20 @@ describe("C36 数据集计算 CLI", () => {
         loginName: CLI_OPERATOR,
         password: CLI_OPERATOR_PASSWORD,
       });
-      await access.changePassword({
+      const operatorSession = await access.changePassword({
         kind: "change-password",
         sessionToken: operatorLogin.sessionToken,
         newPassword: CLI_OPERATOR_PASSWORD_CHANGED,
       });
+      const decision = await access.authorize({
+        invocation: { kind: "human-session", sessionToken: operatorSession.sessionToken },
+        invocationId: "cli-scope-authorize",
+        projectId: CLI_PROJECT_ID,
+        branch: "projection.export",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      });
+      cliSpatialScopeRef = decision.context.spatialScopeRefs[0]!;
     } finally {
       await access.close().catch(() => undefined);
     }
@@ -874,10 +941,7 @@ describe("C36 数据集计算 CLI", () => {
       samples: [
         {
           sampleId: "cli-sample-1",
-          spatialScopeRef: {
-            kind: "spatial-scope",
-            reference: { entityId: "cli-scope", versionId: "1" },
-          },
+          spatialScopeRef: cliSpatialScopeRef,
           processNodeId: "process-node-cli",
           sourceSegmentRefs: [cliSourceSegmentRef],
           applicabilitySnapshotRef: {

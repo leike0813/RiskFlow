@@ -85,7 +85,7 @@ const evaluateSample = (
   let actualRiskLevelId: string | undefined;
 
   if (!declaredRecord) {
-    if (sample.expectedPositive) reasonCodes.push("quality-identification-result-missing");
+    reasonCodes.push("quality-identification-result-missing");
   } else if (snapshot === undefined || identity === undefined) {
     reasonCodes.push("quality-identification-result-missing");
   } else {
@@ -117,7 +117,8 @@ const evaluateSample = (
   // 审计链完整率只按样例自己声明的耐久证据判定：声明的工件必须全部通过 C04 校验，
   // 声明记录时必须核对正式身份，声明评估时必须核对精确决策与记录引用。
   const verified = new Set((evidence?.verifiedEvidenceRefs ?? []).map(refKey));
-  let evidenceVerified = true;
+  // ponytail: 资料段缺少可授权解析收据；取得公开窄读证据后再计入审计完整率。
+  let evidenceVerified = false;
   for (const artifactRef of [
     sample.standardizedRiskRecordSnapshotArtifactRef,
     sample.assessmentDecisionArtifactRef,
@@ -180,9 +181,7 @@ const evaluateSample = (
       : "false-positive"
     : sample.expectedPositive
       ? "false-negative"
-      : declaredRecord
-        ? "undetermined"
-        : "true-negative";
+      : "undetermined";
 
   return {
     outcome: {
@@ -206,7 +205,7 @@ const evaluateSample = (
         : { expectedRiskLevelId: sample.expectedRiskLevelId }),
       ...(actualRiskLevelId === undefined ? {} : { actualRiskLevelId }),
     },
-    covered: keyMatched || (!declaredRecord && !sample.expectedPositive),
+    covered: keyMatched,
     pairComparable: sample.comparisonGroupId !== undefined,
   };
 };

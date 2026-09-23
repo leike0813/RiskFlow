@@ -11,6 +11,7 @@ import {
 } from "@riskflow/contracts/ports";
 import type { JsonValue } from "@riskflow/core/persistence";
 import { sha256CanonicalJson } from "@riskflow/core/persistence";
+import { IdentifierSchema, IsoDateTimeSchema, VersionReferenceSchema } from "@riskflow/contracts/common";
 
 import type { PostgresDatabase } from "../postgres/types.js";
 
@@ -27,6 +28,7 @@ interface QualityEvaluationReportIndexRow {
   readonly project_revision_id: string;
   readonly project_revision_version_id: string;
   readonly sample_kind: string;
+  readonly spatial_scope_refs: JsonColumn;
   readonly summary_digest: string;
   readonly summary_payload: JsonColumn;
   readonly created_at: ColumnType<Date, Date | string, Date | string>;
@@ -79,19 +81,21 @@ const decodeCursor = (value: string): QualityCursorV1 | undefined => {
   if (value.length === 0 || value.length > 512 || !/^[A-Za-z0-9_-]+$/u.test(value))
     return undefined;
   try {
-    const parsed: unknown = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
-    if (typeof parsed !== "object" || parsed === null) return undefined;
-    const candidate = parsed as Partial<QualityCursorV1>;
+    const bytes = Buffer.from(value, "base64url");
+    if (bytes.toString("base64url") !== value) return undefined;
+    const parsed: unknown = JSON.parse(bytes.toString("utf8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
+    const cursor = parsed as Partial<QualityCursorV1>;
     if (
-      typeof candidate.projectId !== "string" ||
-      typeof candidate.createdAt !== "string" ||
-      typeof candidate.reportArtifactId !== "string" ||
-      typeof candidate.reportArtifactVersionId !== "string" ||
-      typeof candidate.projectRevisionRef?.entityId !== "string" ||
-      typeof candidate.projectRevisionRef?.versionId !== "string"
-    )
-      return undefined;
-    return candidate as QualityCursorV1;
+      Object.keys(cursor).sort().join(",") !==
+        "createdAt,projectId,projectRevisionRef,reportArtifactId,reportArtifactVersionId" ||
+      !IdentifierSchema.safeParse(cursor.projectId).success ||
+      !VersionReferenceSchema.safeParse(cursor.projectRevisionRef).success ||
+      !IsoDateTimeSchema.safeParse(cursor.createdAt).success ||
+      !IdentifierSchema.safeParse(cursor.reportArtifactId).success ||
+      !IdentifierSchema.safeParse(cursor.reportArtifactVersionId).success
+    ) return undefined;
+    return cursor as QualityCursorV1;
   } catch {
     return undefined;
   }
@@ -131,18 +135,21 @@ export class PostgresQualityProjectionAdapter {
       authorization.projectId !== query.projectId ||
       authorization.actorId !== query.actorId ||
       authorization.grantedCapabilities.length !== 1 ||
-      authorization.grantedCapabilities[0] !== "projection.query"
+      authorization.grantedCapabilities[0] !== "projection.query" ||
+      authorization.spatialScopeRefs.length === 0
     ) {
       return notFound(query.queryId, occurredAt);
     }
 
     const selector = query.payload.selector;
+    const allowedSpatialScopes = JSON.stringify(authorization.spatialScopeRefs);
     const rows =
       selector.mode === "exact"
         ? await this.#db
             .selectFrom(REPORT_INDEX_TABLE)
             .selectAll()
             .where("project_id", "=", query.projectId)
+            .where(sql<boolean>`spatial_scope_refs <@ ${allowedSpatialScopes}::jsonb`)
             .where("report_artifact_id", "=", selector.reportArtifactRef.reference.entityId)
             .where(
               "report_artifact_version_id",
@@ -155,6 +162,7 @@ export class PostgresQualityProjectionAdapter {
             selector.projectRevisionRef,
             selector.pageSize,
             selector.cursor,
+            allowedSpatialScopes,
           );
     // 精确查询只返一项：跨工程、撤权与不存在都收口为同形拒绝；空列表只在列表模式下成立。
     if (rows === undefined || (selector.mode === "exact" && rows.length === 0)) {
@@ -169,11 +177,8 @@ export class PostgresQualityProjectionAdapter {
       }
       summaries.push({
         ...summary.data,
-        evidenceRefs: summary.data.evidenceRefs.filter((reference) =>
-          authorization.sourceAccessGrantRefs.some(
-            (grant) => grant.reference.entityId === reference.sourceVersion.entityId,
-          ),
-        ),
+        // C06 grant 引用与资料版本引用不是同一身份；缺少授权映射时关闭定位引用。
+        evidenceRefs: [],
       });
     }
     const last = rows.at(-1);
@@ -212,12 +217,14 @@ export class PostgresQualityProjectionAdapter {
     },
     pageSize: number,
     cursor: string | undefined,
+    allowedSpatialScopes: string,
   ): Promise<readonly QualityIndexRow[] | undefined> {
     const limit = Math.min(pageSize, PAGE_SIZE_MAX_V1);
     let builder = this.#db
       .selectFrom(REPORT_INDEX_TABLE)
       .selectAll()
       .where("project_id", "=", projectId)
+      .where(sql<boolean>`spatial_scope_refs <@ ${allowedSpatialScopes}::jsonb`)
       .where("project_revision_id", "=", projectRevisionRef.reference.entityId)
       .where("project_revision_version_id", "=", projectRevisionRef.reference.versionId);
     if (cursor !== undefined) {
@@ -231,12 +238,13 @@ export class PostgresQualityProjectionAdapter {
         return undefined;
       }
       builder = builder.where(
-        sql<boolean>`(created_at, report_artifact_id) < (${decoded.createdAt}::timestamp with time zone, ${decoded.reportArtifactId})`,
+        sql<boolean>`(created_at, report_artifact_id, report_artifact_version_id) < (${decoded.createdAt}::timestamp with time zone, ${decoded.reportArtifactId}, ${decoded.reportArtifactVersionId})`,
       );
     }
     return await builder
       .orderBy("created_at", "desc")
       .orderBy("report_artifact_id", "desc")
+      .orderBy("report_artifact_version_id", "desc")
       .limit(limit)
       .execute();
   }

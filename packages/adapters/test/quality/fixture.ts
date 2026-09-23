@@ -81,7 +81,7 @@ const BLUEPRINTS: readonly SampleBlueprintV1[] = [
     recordInCatalog: false,
     snapshotArtifactExists: false,
     assessmentDeclared: false,
-    expectedClassification: "true-negative",
+    expectedClassification: "undetermined",
   },
   {
     sampleId: "q-b1",

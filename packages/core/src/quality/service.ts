@@ -3,6 +3,7 @@ import {
   type AuthorizationContextV1,
   type ContentArtifactRefV1,
   type QualityEvaluationSummaryV1,
+  type SpatialScopeRefV1,
   type WorkflowRunRefV1,
 } from "@riskflow/contracts/ports";
 import { sha256CanonicalJson } from "../persistence/canonical-json.js";
@@ -101,6 +102,7 @@ export interface QualityEvaluationWritePortV1 {
     readonly report: QualityEvaluationReportV1;
     readonly reportArtifactRef: ContentArtifactRefV1;
     readonly summary: QualityEvaluationSummaryV1;
+    readonly spatialScopeRefs: readonly SpatialScopeRefV1[];
   }): Promise<QualityIndexAppendReceiptV1>;
 }
 
@@ -238,6 +240,26 @@ export class QualityEvaluationService {
       );
     }
     const frozenDataset = dataset.data;
+    const spatialScopeRefs = [
+      ...new Map(
+        frozenDataset.samples.map((sample) => [
+          `${sample.spatialScopeRef.reference.entityId}\u0000${sample.spatialScopeRef.reference.versionId}`,
+          sample.spatialScopeRef,
+        ]),
+      ).values(),
+    ];
+    if (
+      spatialScopeRefs.some(
+        (scope) =>
+          !authorization.spatialScopeRefs.some(
+            (granted) =>
+              granted.reference.entityId === scope.reference.entityId &&
+              granted.reference.versionId === scope.reference.versionId,
+          ),
+      )
+    ) {
+      return failed("AUTHORIZATION_DENIED", "quality-dataset-invalid", command.commandId);
+    }
     await this.#read.assertDatasetVersionAvailable({
       projectId: command.projectId,
       datasetArtifactId: qualityDatasetArtifactId(frozenDataset),
@@ -317,6 +339,7 @@ export class QualityEvaluationService {
       report,
       reportArtifactRef,
       summary: boundedSummary,
+      spatialScopeRefs,
     });
     if (receipt.kind === "conflict") {
       return failed(

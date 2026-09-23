@@ -3,6 +3,7 @@
  * 真实 PostgreSQL/C04/C03/C36，不引入开发服务器、Mock 后端或 Mock 浏览器。
  */
 import { Buffer } from "node:buffer";
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createServer } from "node:net";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -12,6 +13,7 @@ import { TextEncoder } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
+import { chromium } from "@playwright/test";
 
 import { buildApi } from "../../../../apps/api/dist/index.js";
 import {
@@ -177,6 +179,9 @@ const recordWriteRow = (input, authorization, commandId) => ({
 export const startQualityBrowserServer = async () => {
   if (!existsSync(WEB_DIST)) throw new Error(`web production build is missing: ${WEB_DIST}`);
   if (!existsSync(MIGRATION_ROOT)) throw new Error(`migration root is missing: ${MIGRATION_ROOT}`);
+  if (!existsSync(chromium.executablePath())) {
+    throw new Error(`Chromium executable is missing: ${chromium.executablePath()}`);
+  }
 
   const container = await new PostgreSqlContainer(POSTGRES_IMAGE)
     .withDatabase("riskflow")
@@ -452,7 +457,7 @@ export const startQualityBrowserServer = async () => {
           samples: [
             datasetSample({
               sampleId: "browser-sample-1",
-              spatialScopeRef: { entityId: "quality-ui-scope", versionId: "1" },
+              spatialScopeRef: authorization.spatialScopeRefs[0].reference,
               processNodeId: "process-node-browser",
               sourceSegmentRef,
               riskRecordRef: {
@@ -465,7 +470,7 @@ export const startQualityBrowserServer = async () => {
             }),
             datasetSample({
               sampleId: "browser-sample-2",
-              spatialScopeRef: { entityId: "quality-ui-scope", versionId: "1" },
+              spatialScopeRef: authorization.spatialScopeRefs[0].reference,
               processNodeId: "process-node-browser",
               sourceSegmentRef: {
                 locator: { sourceSegmentId: "segment-browser-2" },
@@ -488,6 +493,9 @@ export const startQualityBrowserServer = async () => {
         now: () => new Date(NOW),
       }).serviceOptions(),
     );
+    const acceptanceBrowser = await chromium.launch();
+    const browserVersion = acceptanceBrowser.version();
+    await acceptanceBrowser.close();
     const evaluated = await evaluationService.evaluateDataset({
       projectId: PROJECT_ID,
       actorId: authorization.actorId,
@@ -501,11 +509,14 @@ export const startQualityBrowserServer = async () => {
         commands: [
           "pnpm build && pnpm exec playwright test -c playwright.config.ts --project=chromium",
         ],
-        codeHead: process.env.GITHUB_SHA ?? "browser-acceptance",
+        codeHead: execFileSync("git", ["rev-parse", "HEAD"], {
+          cwd: REPOSITORY_ROOT,
+          encoding: "utf8",
+        }).trim(),
         environment: {
           nodeVersion: process.version,
           platform: `${process.platform}/${process.arch}`,
-          browserVersion: "chromium-playwright-1.63.0",
+          browserVersion,
         },
       },
     });

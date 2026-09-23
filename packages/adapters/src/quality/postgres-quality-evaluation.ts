@@ -1,4 +1,4 @@
-import type { ColumnType, Kysely, Transaction } from "kysely";
+import { sql, type ColumnType, type Kysely, type Transaction } from "kysely";
 
 import {
   ArtifactPutCommandV1Schema,
@@ -38,6 +38,7 @@ import {
   QualityEvaluationSummaryV1Schema,
   type AuthorizationContextV1,
   type ContentArtifactRefV1,
+  type SpatialScopeRefV1,
 } from "@riskflow/contracts/ports";
 
 import { mapPostgresError } from "../postgres/pool.js";
@@ -62,6 +63,7 @@ interface QualityEvaluationReportIndexRow {
   readonly dataset_artifact_id: string;
   readonly dataset_artifact_version_id: string;
   readonly sample_kind: string;
+  readonly spatial_scope_refs: JsonColumn;
   readonly summary_digest: string;
   readonly report_artifact_ref: JsonColumn;
   readonly dataset_artifact_ref: JsonColumn;
@@ -296,9 +298,23 @@ export class PostgresQualityEvaluationAdapter
     readonly report: unknown;
     readonly reportArtifactRef: ContentArtifactRefV1;
     readonly summary: unknown;
+    readonly spatialScopeRefs: readonly SpatialScopeRefV1[];
   }): Promise<QualityIndexAppendReceiptV1> {
     const report = QualityEvaluationReportV1Schema.parse(input.report);
     const summary = QualityEvaluationSummaryV1Schema.parse(input.summary);
+    if (
+      input.spatialScopeRefs.length === 0 ||
+      input.spatialScopeRefs.some(
+        (scope) =>
+          !input.authorization.spatialScopeRefs.some(
+            (granted) =>
+              granted.reference.entityId === scope.reference.entityId &&
+              granted.reference.versionId === scope.reference.versionId,
+          ),
+      )
+    ) {
+      throw failure("AUTHORIZATION_DENIED", "quality-dataset-invalid", input.commandId);
+    }
     const summaryDigest = sha256CanonicalJson(summary);
     const auditEntryId = `audit-${input.commandId}:quality-evaluation-report-index`;
     const command = AtomicCommandV1Schema.parse({
@@ -342,6 +358,7 @@ export class PostgresQualityEvaluationAdapter
             dataset_artifact_id: report.datasetArtifactRef.reference.entityId,
             dataset_artifact_version_id: report.datasetArtifactRef.reference.versionId,
             sample_kind: report.sampleKind,
+            spatial_scope_refs: sql`${JSON.stringify(input.spatialScopeRefs)}::jsonb`,
             summary_digest: summaryDigest,
             report_artifact_ref: jsonValue(input.reportArtifactRef),
             dataset_artifact_ref: jsonValue(report.datasetArtifactRef),

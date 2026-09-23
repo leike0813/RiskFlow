@@ -20,7 +20,7 @@ import { createPostgresQualityEvaluationAdapter } from "../../packages/adapters/
 import { createPostgresRuntime } from "../../packages/adapters/dist/postgres/pool.js";
 import { PostgresTransactionUnit } from "../../packages/adapters/dist/postgres/transaction-unit.js";
 import { ArtifactPutCommandV1Schema } from "../../packages/core/dist/artifacts/index.js";
-import { createQualityEvaluationService } from "../../packages/core/dist/quality/index.js";
+import { createQualityEvaluationService, QualityDatasetV1Schema } from "../../packages/core/dist/quality/index.js";
 
 const USAGE = "usage: pnpm quality:evaluate -- --dataset <dataset.json> --output <result-ref.json>";
 
@@ -41,7 +41,7 @@ const datasetPath = argumentValue("dataset");
 const outputPath = argumentValue("output");
 if (datasetPath === undefined || outputPath === undefined) throw new Error(USAGE);
 
-const dataset = JSON.parse(readFileSync(resolve(datasetPath), "utf8"));
+const dataset = QualityDatasetV1Schema.parse(JSON.parse(readFileSync(resolve(datasetPath), "utf8")));
 const command = process.argv.join(" ");
 const datasetArtifactId = `quality-dataset-${dataset.datasetId}@${dataset.datasetVersion}`;
 const commandId = `quality-evaluation-${sha256(`${config.projectId}|${datasetArtifactId}|${config.codeHead}`)}`;
@@ -71,7 +71,14 @@ try {
     invocationId: `${commandId}:authorize`,
     projectId: config.projectId,
     branch: "projection.export",
-    requestedSpatialScopeRefs: [],
+    requestedSpatialScopeRefs: [
+      ...new Map(
+        dataset.samples.map((sample) => [
+          `${sample.spatialScopeRef.reference.entityId}\u0000${sample.spatialScopeRef.reference.versionId}`,
+          sample.spatialScopeRef,
+        ]),
+      ).values(),
+    ],
     requestedSourceVersionRefs: [],
   });
   const authorization = decision.context;

@@ -41,6 +41,7 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     .addColumn("dataset_artifact_id", "text", (column) => column.notNull())
     .addColumn("dataset_artifact_version_id", "text", (column) => column.notNull())
     .addColumn("sample_kind", "text", (column) => column.notNull())
+    .addColumn("spatial_scope_refs", jsonb, (column) => column.notNull())
     .addColumn("summary_digest", "char(64)", (column) => column.notNull())
     .addColumn("report_artifact_ref", jsonb, (column) => column.notNull())
     .addColumn("dataset_artifact_ref", jsonb, (column) => column.notNull())
@@ -68,6 +69,10 @@ export async function up(db: Kysely<unknown>): Promise<void> {
       sql`sample_kind IN ('deidentified-real', 'synthetic')`,
     )
     .addCheckConstraint(
+      "quality_evaluation_report_index_spatial_scopes_ck",
+      sql`jsonb_typeof(spatial_scope_refs) = 'array' AND jsonb_array_length(spatial_scope_refs) > 0`,
+    )
+    .addCheckConstraint(
       "quality_evaluation_report_index_summary_digest_ck",
       sql`summary_digest ~ ${digestPattern}`,
     )
@@ -81,7 +86,7 @@ export async function up(db: Kysely<unknown>): Promise<void> {
   // kysely schema builder 不支持 DESC 排序，故按原样 SQL 建索引并保持幂等。
   await sql`
     CREATE INDEX IF NOT EXISTS ${sql.raw(listIndex)}
-      ON ${sql.raw(table)} (project_id, project_revision_id, created_at DESC, report_artifact_id)
+      ON ${sql.raw(table)} (project_id, project_revision_id, created_at DESC, report_artifact_id DESC, report_artifact_version_id DESC)
   `.execute(db);
 
   await revokeAll(db);

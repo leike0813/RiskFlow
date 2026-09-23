@@ -299,6 +299,11 @@ export async function down(db: Kysely<unknown>): Promise<void> {
         ALTER TABLE business.response_recommendations
           DROP CONSTRAINT IF EXISTS response_recommendations_agent_task_fk;
       END IF;
+      IF EXISTS (SELECT 1 FROM information_schema.tables
+                 WHERE table_schema = 'business' AND table_name = 'calibration_suggestions') THEN
+        ALTER TABLE business.calibration_suggestions
+          DROP CONSTRAINT IF EXISTS calibration_suggestions_agent_task_fk;
+      END IF;
     END
     $$;
   `.execute(db);

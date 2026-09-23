@@ -57,6 +57,8 @@ import * as riskCandidateFinalizationMigration from "../../src/postgres/migratio
 import * as warningTasksMigration from "../../src/postgres/migrations/warning-response/deliver-warning-tasks-and-in-app-notification/000044_warning_tasks_and_in_app_notification.js";
 import * as responseRecommendationMigration from "../../src/postgres/migrations/warning-response/deliver-response-recommendation/000045_response_recommendation.js";
 import * as executionForecastFeedbackDeviationMigration from "../../src/postgres/migrations/warning-response/deliver-execution-forecast-feedback-and-deviation/000046_execution_forecast_feedback_deviation.js";
+import * as calibrationSuggestionGovernanceMigration from "../../src/postgres/migrations/warning-response/deliver-calibration-suggestion-and-governance-loop/000047_calibration_suggestion_governance.js";
+import * as calibrationSuggestionLineageMigration from "../../src/postgres/migrations/warning-response/deliver-calibration-suggestion-and-governance-loop/000048_calibration_suggestion_lineage.js";
 
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
 import * as agentTaskFixtureMigration from "./fixtures/migrations/agent-task/deliver-unified-bounded-agent-runtime/900002_agent_task_fixture.js";
@@ -437,6 +439,24 @@ const testMigrationManifest = [
       "000046_warning-response_deliver-execution-forecast-feedback-and-deviation_execution_forecast_feedback_deviation",
     sequence: 46,
     module: executionForecastFeedbackDeviationMigration,
+  },
+  {
+    root: "production",
+    relativePath:
+      "warning-response/deliver-calibration-suggestion-and-governance-loop/000047_calibration_suggestion_governance.ts",
+    migrationName:
+      "000047_warning-response_deliver-calibration-suggestion-and-governance-loop_calibration_suggestion_governance",
+    sequence: 47,
+    module: calibrationSuggestionGovernanceMigration,
+  },
+  {
+    root: "production",
+    relativePath:
+      "warning-response/deliver-calibration-suggestion-and-governance-loop/000048_calibration_suggestion_lineage.ts",
+    migrationName:
+      "000048_warning-response_deliver-calibration-suggestion-and-governance-loop_calibration_suggestion_lineage",
+    sequence: 48,
+    module: calibrationSuggestionLineageMigration,
   },
   {
     root: "fixture",

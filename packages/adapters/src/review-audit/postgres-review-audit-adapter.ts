@@ -37,6 +37,8 @@ import {
 } from "@riskflow/core/persistence";
 import {
   MODULE_BRANCH_CAPABILITY_V1,
+  CalibrationSuggestionApprovalProofQueryV1Schema,
+  CalibrationSuggestionApprovalProofResultV1Schema,
   IdentificationGroupRefV1Schema,
   KnowledgeRevisionApprovalProofQueryV1Schema,
   KnowledgeRevisionApprovalProofResultV1Schema,
@@ -55,6 +57,9 @@ import {
   EvidenceSnapshotRefV1Schema,
   WorkflowRunRefV1Schema,
   type AuthorizationContextV1,
+  type CalibrationSuggestionApprovalProofPortV1,
+  type CalibrationSuggestionApprovalProofQueryV1,
+  type CalibrationSuggestionApprovalProofResultV1,
   type ContractReferenceV1,
   type IdentificationGroupRefV1,
   type KnowledgeRevisionApprovalProofQueryV1,
@@ -65,6 +70,7 @@ import {
   type ReviewDecisionCommandV1,
   type ReviewDecisionRefV1,
   type ReviewDecisionResultV1,
+  type ReviewDecisionV1,
   type ReviewRequestV1,
   type ReviewRequestResultV1,
   type ReviewTaskRefV1,
@@ -523,7 +529,9 @@ export type RuleConflictDecisionReadV1 =
   | { readonly kind: "pending" }
   | { readonly kind: "failed"; readonly error: ModuleErrorV1 };
 
-export class PostgresReviewAuditAdapter implements ReviewAuditPortV1 {
+export class PostgresReviewAuditAdapter
+  implements ReviewAuditPortV1, CalibrationSuggestionApprovalProofPortV1
+{
   readonly #db: Kysely<ReviewAuditDatabase>;
   readonly #transactionUnit: TransactionUnitV1;
   readonly #access: LocalIdentityAccessV1;
@@ -656,93 +664,18 @@ export class PostgresReviewAuditAdapter implements ReviewAuditPortV1 {
         valid.queryId,
         "review-audit.verify-knowledge-revision-approval",
       );
-      const row = await this.#db
-        .selectFrom("business.review_decisions as decision")
-        .innerJoin("business.review_tasks as task", (join) =>
-          join
-            .onRef("task.review_task_id", "=", "decision.review_task_id")
-            .onRef("task.project_id", "=", "decision.project_id"),
-        )
-        .select([
-          "decision.review_decision_id as decisionId",
-          "decision.version_id as decisionVersionId",
-          "decision.project_id as decisionProjectId",
-          "decision.review_task_id as decisionTaskId",
-          "decision.review_decision_ref as decisionRef",
-          "decision.review_type as decisionType",
-          "decision.review_task_ref as decisionTaskRef",
-          "decision.target_ref as decisionTargetRef",
-          "decision.decision as decision",
-          "decision.decided_at as decisionAt",
-          "task.review_task_id as taskId",
-          "task.version_id as taskVersionId",
-          "task.project_id as taskProjectId",
-          "task.review_type as taskType",
-          "task.target_kind as taskTargetKind",
-          "task.target_entity_id as taskTargetEntityId",
-          "task.target_version_id as taskTargetVersionId",
-          "task.review_task_ref as taskRef",
-          "task.target_ref as taskTargetRef",
-          "task.status as taskStatus",
-          "task.decision_ref as taskDecisionRef",
-          "task.decided_at as taskDecidedAt",
-        ])
-        .where("decision.project_id", "=", valid.projectId)
-        .where(
-          "decision.review_decision_id",
-          "=",
-          valid.payload.reviewDecisionRef.reference.entityId,
-        )
-        .where("decision.version_id", "=", valid.payload.reviewDecisionRef.reference.versionId)
-        .executeTakeFirst();
-
-      if (row === undefined) {
+      const projection = await this.#projectDecisionWithTask({
+        projectId: valid.projectId,
+        reviewDecisionRef: valid.payload.reviewDecisionRef,
+      });
+      if (projection === undefined) {
         return KnowledgeRevisionApprovalProofResultV1Schema.parse({
           kind: "succeeded",
           result: { kind: "not-approved", reason: "decision-not-found" },
         });
       }
-
-      const decisionRef = ReviewDecisionRefV1Schema.parse(row.decisionRef);
-      const taskRef = ReviewTaskRefV1Schema.parse(row.taskRef);
-      const decisionTaskRef = ReviewTaskRefV1Schema.parse(row.decisionTaskRef);
-      const decisionTargetRef = ReviewTargetRefV1Schema.parse(row.decisionTargetRef);
-      const taskTargetRef = ReviewTargetRefV1Schema.parse(row.taskTargetRef);
-      const decision = ReviewDecisionV1Schema.parse(row.decision);
-      const taskDecisionRef =
-        row.taskDecisionRef === null
-          ? undefined
-          : ReviewDecisionRefV1Schema.parse(row.taskDecisionRef);
-      if (taskDecisionRef === undefined) {
-        throw new TypeError("decided review task lacks a decision reference");
-      }
-
-      if (
-        row.decisionId !== valid.payload.reviewDecisionRef.reference.entityId ||
-        row.decisionVersionId !== valid.payload.reviewDecisionRef.reference.versionId ||
-        row.decisionProjectId !== valid.projectId ||
-        row.taskProjectId !== valid.projectId ||
-        row.decisionTaskId !== row.taskId ||
-        row.taskId !== taskRef.reference.entityId ||
-        row.taskVersionId !== taskRef.reference.versionId ||
-        row.taskType !== taskRef.reviewType ||
-        row.taskTargetKind !== taskRef.targetRef.kind ||
-        row.taskTargetEntityId !== taskRef.targetRef.reference.entityId ||
-        row.taskTargetVersionId !== taskRef.targetRef.reference.versionId ||
-        row.decisionType !== decision.reviewType ||
-        row.taskStatus !== "decided" ||
-        row.taskDecidedAt === null ||
-        row.taskDecisionRef === null ||
-        !versionedRefEquals(decisionRef, valid.payload.reviewDecisionRef) ||
-        !versionedRefEquals(taskDecisionRef, valid.payload.reviewDecisionRef) ||
-        !reviewTaskRefEquals(decisionTaskRef, taskRef) ||
-        !reviewTargetEquals(taskTargetRef, taskRef.targetRef) ||
-        !reviewTargetEquals(decisionTargetRef, taskTargetRef) ||
-        asIso(row.taskDecidedAt) !== asIso(row.decisionAt)
-      ) {
-        throw new TypeError("review approval proof facts are inconsistent");
-      }
-      if (!reviewTargetEquals(taskTargetRef, valid.payload.revisionRef)) {
+      const { decisionRef, taskRef, decision, decidedAt } = projection;
+      if (!reviewTargetEquals(taskRef.targetRef, valid.payload.revisionRef)) {
         return KnowledgeRevisionApprovalProofResultV1Schema.parse({
           kind: "succeeded",
           result: { kind: "not-approved", reason: "target-mismatch" },
@@ -768,7 +701,7 @@ export class PostgresReviewAuditAdapter implements ReviewAuditPortV1 {
           revisionRef: valid.payload.revisionRef,
           reviewTaskRef: taskRef,
           reviewDecisionRef: decisionRef,
-          decidedAt: asIso(row.decisionAt),
+          decidedAt,
         },
       });
     } catch (error) {
@@ -780,6 +713,177 @@ export class PostgresReviewAuditAdapter implements ReviewAuditPortV1 {
         }),
       };
     }
+  }
+
+  /**
+   * C29 专用证明查询：复用知识修订证明的授权先行与按工程/决定精确投影路径，
+   * 只把合法决定收窄为 `approve-draft-creation`；不写业务审计、拒绝审计、回执或 Outbox。
+   */
+  async verifyCalibrationSuggestionApproval(
+    query: CalibrationSuggestionApprovalProofQueryV1,
+  ): Promise<CalibrationSuggestionApprovalProofResultV1> {
+    const parsed = CalibrationSuggestionApprovalProofQueryV1Schema.safeParse(query);
+    if (!parsed.success) {
+      return {
+        kind: "failed",
+        error: moduleError({
+          code: "UNSUPPORTED_CONTRACT",
+          causalRunId: "calibration-approval-proof",
+        }),
+      };
+    }
+    const valid = parsed.data;
+    try {
+      await this.#verify(
+        valid.authorization,
+        valid.projectId,
+        valid.queryId,
+        "review-audit.verify-calibration-suggestion-approval",
+      );
+      const projection = await this.#projectDecisionWithTask({
+        projectId: valid.projectId,
+        reviewDecisionRef: valid.payload.reviewDecisionRef,
+      });
+      if (projection === undefined) {
+        return CalibrationSuggestionApprovalProofResultV1Schema.parse({
+          kind: "succeeded",
+          result: { kind: "not-approved", reason: "decision-not-found" },
+        });
+      }
+      const { decisionRef, taskRef, decision, decidedAt } = projection;
+      if (!reviewTargetEquals(taskRef.targetRef, valid.payload.calibrationSuggestionRef)) {
+        return CalibrationSuggestionApprovalProofResultV1Schema.parse({
+          kind: "succeeded",
+          result: { kind: "not-approved", reason: "target-mismatch" },
+        });
+      }
+      if (
+        taskRef.reviewType !== "calibration-suggestion" ||
+        decision.reviewType !== "calibration-suggestion"
+      ) {
+        throw new TypeError("calibration approval proof type is inconsistent");
+      }
+      return CalibrationSuggestionApprovalProofResultV1Schema.parse({
+        kind: "succeeded",
+        result: {
+          kind:
+            decision.kind === "approve-draft-creation"
+              ? "approved-for-draft"
+              : decision.kind === "reject"
+                ? "rejected"
+                : "returned-for-revision",
+          calibrationSuggestionRef: valid.payload.calibrationSuggestionRef,
+          reviewTaskRef: taskRef,
+          reviewDecisionRef: decisionRef,
+          decidedAt,
+        },
+      });
+    } catch (error) {
+      return {
+        kind: "failed",
+        error: await this.#mapError(error, {
+          branch: "review-audit.verify-calibration-suggestion-approval",
+          causalRunId: valid.queryId,
+        }),
+      };
+    }
+  }
+
+  /**
+   * 两类批准证明共用的只读投影：按工程和精确决定引用读取 C07 自有事实并复验
+   * 任务/决定互相一致。不存在返回 `undefined`；不可能状态抛技术完整性失败。
+   */
+  async #projectDecisionWithTask(input: {
+    readonly projectId: string;
+    readonly reviewDecisionRef: ReviewDecisionRefV1;
+  }): Promise<
+    | {
+        readonly decisionRef: ReviewDecisionRefV1;
+        readonly taskRef: ReviewTaskRefV1;
+        readonly decision: ReviewDecisionV1;
+        readonly decidedAt: string;
+      }
+    | undefined
+  > {
+    const row = await this.#db
+      .selectFrom("business.review_decisions as decision")
+      .innerJoin("business.review_tasks as task", (join) =>
+        join
+          .onRef("task.review_task_id", "=", "decision.review_task_id")
+          .onRef("task.project_id", "=", "decision.project_id"),
+      )
+      .select([
+        "decision.review_decision_id as decisionId",
+        "decision.version_id as decisionVersionId",
+        "decision.project_id as decisionProjectId",
+        "decision.review_task_id as decisionTaskId",
+        "decision.review_decision_ref as decisionRef",
+        "decision.review_type as decisionType",
+        "decision.review_task_ref as decisionTaskRef",
+        "decision.target_ref as decisionTargetRef",
+        "decision.decision as decision",
+        "decision.decided_at as decisionAt",
+        "task.review_task_id as taskId",
+        "task.version_id as taskVersionId",
+        "task.project_id as taskProjectId",
+        "task.review_type as taskType",
+        "task.target_kind as taskTargetKind",
+        "task.target_entity_id as taskTargetEntityId",
+        "task.target_version_id as taskTargetVersionId",
+        "task.review_task_ref as taskRef",
+        "task.target_ref as taskTargetRef",
+        "task.status as taskStatus",
+        "task.decision_ref as taskDecisionRef",
+        "task.decided_at as taskDecidedAt",
+      ])
+      .where("decision.project_id", "=", input.projectId)
+      .where("decision.review_decision_id", "=", input.reviewDecisionRef.reference.entityId)
+      .where("decision.version_id", "=", input.reviewDecisionRef.reference.versionId)
+      .executeTakeFirst();
+
+    if (row === undefined) return undefined;
+
+    const decisionRef = ReviewDecisionRefV1Schema.parse(row.decisionRef);
+    const taskRef = ReviewTaskRefV1Schema.parse(row.taskRef);
+    const decisionTaskRef = ReviewTaskRefV1Schema.parse(row.decisionTaskRef);
+    const decisionTargetRef = ReviewTargetRefV1Schema.parse(row.decisionTargetRef);
+    const taskTargetRef = ReviewTargetRefV1Schema.parse(row.taskTargetRef);
+    const decision = ReviewDecisionV1Schema.parse(row.decision);
+    const taskDecisionRef =
+      row.taskDecisionRef === null
+        ? undefined
+        : ReviewDecisionRefV1Schema.parse(row.taskDecisionRef);
+    if (taskDecisionRef === undefined) {
+      throw new TypeError("decided review task lacks a decision reference");
+    }
+
+    if (
+      row.decisionId !== input.reviewDecisionRef.reference.entityId ||
+      row.decisionVersionId !== input.reviewDecisionRef.reference.versionId ||
+      row.decisionProjectId !== input.projectId ||
+      row.taskProjectId !== input.projectId ||
+      row.decisionTaskId !== row.taskId ||
+      row.taskId !== taskRef.reference.entityId ||
+      row.taskVersionId !== taskRef.reference.versionId ||
+      row.taskType !== taskRef.reviewType ||
+      row.taskTargetKind !== taskRef.targetRef.kind ||
+      row.taskTargetEntityId !== taskRef.targetRef.reference.entityId ||
+      row.taskTargetVersionId !== taskRef.targetRef.reference.versionId ||
+      row.decisionType !== decision.reviewType ||
+      row.taskStatus !== "decided" ||
+      row.taskDecidedAt === null ||
+      row.taskDecisionRef === null ||
+      !versionedRefEquals(decisionRef, input.reviewDecisionRef) ||
+      !versionedRefEquals(taskDecisionRef, input.reviewDecisionRef) ||
+      !reviewTaskRefEquals(decisionTaskRef, taskRef) ||
+      !reviewTargetEquals(taskTargetRef, taskRef.targetRef) ||
+      !reviewTargetEquals(decisionTargetRef, taskTargetRef) ||
+      asIso(row.taskDecidedAt) !== asIso(row.decisionAt)
+    ) {
+      throw new TypeError("review approval proof facts are inconsistent");
+    }
+
+    return { decisionRef, taskRef, decision, decidedAt: asIso(row.decisionAt) };
   }
 
   async trace(query: TraceQueryV1): Promise<TraceResultV1> {

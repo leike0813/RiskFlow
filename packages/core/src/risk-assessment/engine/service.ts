@@ -4,7 +4,9 @@ import {
   type AuthorizationContextV1,
   type ContentArtifactRefV1,
   type AssessmentBasisReleaseSetRefV1,
+  type AssessmentInputSnapshotRefV1,
   type AssessmentPreparationSnapshotRefV1,
+  type KnowledgeReleaseRefV1,
   type ModuleBranchV1,
   type ModuleCapabilityV1,
   type ModuleErrorV1,
@@ -84,6 +86,29 @@ export interface AssessmentPreparationContextReaderV1 {
         readonly applicability: ApplicabilityMetadataSnapshotV1;
       }
     | { readonly kind: "waiting"; readonly waiting: WaitingRefV1 }
+    | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
+  >;
+}
+
+/** C25 owns the exact frozen assessment input; C29 consumes only this projection. */
+export interface AssessmentInputSnapshotReaderV1 {
+  readInputSnapshot(input: {
+    readonly requestId: string;
+    readonly requestedAt: string;
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly inputSnapshotRef: AssessmentInputSnapshotRefV1;
+    readonly targetReleaseRef: KnowledgeReleaseRefV1;
+  }): Promise<
+    | {
+        readonly kind: "succeeded";
+        readonly projectId: string;
+        readonly spatialScopeRef: SpatialScopeRefV1;
+        readonly basisReleaseSetRef: AssessmentBasisReleaseSetRefV1;
+        readonly targetReleaseRef: KnowledgeReleaseRefV1;
+        readonly targetContentDigest: string;
+      }
     | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
   >;
 }

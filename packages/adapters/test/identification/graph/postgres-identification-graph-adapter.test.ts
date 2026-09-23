@@ -27,6 +27,7 @@ import type {
   AtomicCommitReceiptV1,
   AtomicCommitV1,
 } from "@riskflow/core/persistence";
+import { authorizationScopeDigest } from "@riskflow/core/retrieval";
 import {
   AuthorizationContextV1Schema,
   type AuthorizationContextV1,
@@ -72,6 +73,21 @@ const SOURCE_GRANTS = [
 const plainRef = (entityId: string, versionId = "v1") => ({ entityId, versionId });
 const refOf = <const T extends string>(kind: T, entityId: string, versionId = "v1") =>
   ({ kind, reference: { entityId, versionId } }) as const;
+
+const registrationScopeDigest = authorizationScopeDigest(
+  AuthorizationContextV1Schema.parse({
+    schemaVersion: "1",
+    authorizationContextRef: refOf("authorization-context", "authorization-c24"),
+    actorId: ACTOR_ID,
+    projectId: PROJECT_ID,
+    grantedCapabilities: ["risk-identification.run"],
+    spatialScopeRefs: SCOPES,
+    sourceAccessGrantRefs: SOURCE_GRANTS,
+    authorizationPolicyRef: plainRef("authorization-policy"),
+    decidedAt: TIMESTAMP,
+    invocation: { kind: "human" },
+  }),
+);
 
 const PREPARATION_SNAPSHOT_REF = refOf(
   "identification-preparation-snapshot",
@@ -275,6 +291,7 @@ interface GraphAccessControllerV1 {
   readonly port: Pick<LocalIdentityAccessV1, "verify">;
   readonly calls: readonly { readonly invocationId: string; readonly branch: ModuleBranchV1 }[];
   revoke(): void;
+  narrowScope(): void;
   restore(): void;
   issue(input: {
     readonly invocationId: string;
@@ -289,6 +306,7 @@ const createGraphAccess = (): GraphAccessControllerV1 => {
   const issued = new Map<string, IssuedGraphAccessV1>();
   const calls: { readonly invocationId: string; readonly branch: ModuleBranchV1 }[] = [];
   let revoked = false;
+  let scopeNarrowed = false;
   // 显式变量类型注解使 `denied(...)` 调用参与控制流收窄（TS 只在被调方有类型注解时认定 never 返回）。
   const denied: (stage: string, code: string) => never = (stage, code) => {
     throw new AccessServiceError({
@@ -307,8 +325,12 @@ const createGraphAccess = (): GraphAccessControllerV1 => {
     revoke: () => {
       revoked = true;
     },
+    narrowScope: () => {
+      scopeNarrowed = true;
+    },
     restore: () => {
       revoked = false;
+      scopeNarrowed = false;
     },
     issue: (input) => {
       const entityId = `authorization-c24:${input.branch}:${input.invocationId}`;
@@ -349,7 +371,7 @@ const createGraphAccess = (): GraphAccessControllerV1 => {
           context: AuthorizationContextV1Schema.parse({
             ...stored.authorization,
             grantedCapabilities: [stored.capability],
-            spatialScopeRefs: [...SCOPES],
+            spatialScopeRefs: scopeNarrowed ? [] : [...SCOPES],
             sourceAccessGrantRefs: [...SOURCE_GRANTS],
           }),
           contextRef: stored.authorization.authorizationContextRef,
@@ -455,7 +477,7 @@ const resultRowFor = (
       `artifact-${kind}-${suffix}`,
       `sha256:${sha(`artifact-body-${kind}-${suffix}`)}`,
     ),
-    authorizationScopeDigest: sha("authorization-scope"),
+    authorizationScopeDigest: registrationScopeDigest,
     actorRef: ACTOR_ID,
     authorizationContextRef: refOf("authorization-context", "authorization-c24"),
     validAt: TIMESTAMP,
@@ -735,6 +757,24 @@ const reconcileAuthorization = (
     projectId,
   }).authorization;
 
+const registrationRead = (
+  fixture: IdentificationGraphTestFixture,
+  operation: "result-row" | "run-rows" | "run-state",
+  targetId: string,
+  projectId = PROJECT_ID,
+  actorId = ACTOR_ID,
+) => ({
+  actorId,
+  requestedAt: TIMESTAMP,
+  authorization: fixture.access.issue({
+    invocationId: identificationGraphReadInvocationIdV1({ operation, projectId, targetId }),
+    branch: "risk-identification.plan",
+    capability: "risk-identification.run",
+    projectId,
+    actorId,
+  }).authorization,
+});
+
 const countRows = async (
   fixture: IdentificationGraphTestFixture,
   query: { readonly projectId: string; readonly resultId?: string },
@@ -816,6 +856,11 @@ describe("PostgreSQL identification graph persistence", () => {
       expect(
         await fixture!.adapter.registrationStore.readRow({
           projectId: PROJECT_ID,
+          ...registrationRead(
+            fixture!,
+            "result-row",
+            `${kind}:${row.resultId}:${row.resultVersionId}`,
+          ),
           resultKind: kind,
           resultId: row.resultId,
           resultVersionId: row.resultVersionId,
@@ -851,6 +896,11 @@ describe("PostgreSQL identification graph persistence", () => {
     expect(
       await fixture!.adapter.registrationStore.readRow({
         projectId: PROJECT_ID,
+        ...registrationRead(
+          fixture!,
+          "result-row",
+          `waiting:${agentTaskWaitingRow.resultId}:${agentTaskWaitingRow.resultVersionId}`,
+        ),
         resultKind: "waiting",
         resultId: agentTaskWaitingRow.resultId,
         resultVersionId: agentTaskWaitingRow.resultVersionId,
@@ -910,6 +960,11 @@ describe("PostgreSQL identification graph persistence", () => {
     expect(
       await fixture!.adapter.registrationStore.readRow({
         projectId: PROJECT_ID,
+        ...registrationRead(
+          fixture!,
+          "result-row",
+          `stage-result:${row.resultId}:${row.resultVersionId}`,
+        ),
         resultKind: "stage-result",
         resultId: row.resultId,
         resultVersionId: row.resultVersionId,
@@ -958,6 +1013,7 @@ describe("PostgreSQL identification graph persistence", () => {
     const rows = await fixture!.adapter.registrationStore.listRunRows({
       projectId: PROJECT_ID,
       runId: RUN_ID,
+      ...registrationRead(fixture!, "run-rows", RUN_ID),
     });
     expect(rows.some((row) => row.resultId === older.resultId)).toBe(true);
     expect(rows.every((row) => row.projectId === PROJECT_ID && row.runId === RUN_ID)).toBe(true);
@@ -965,21 +1021,55 @@ describe("PostgreSQL identification graph persistence", () => {
     const latest = await fixture!.adapter.registrationStore.readLatestRunState({
       projectId: PROJECT_ID,
       runId: RUN_ID,
+      ...registrationRead(fixture!, "run-state", RUN_ID),
     });
     expect(latest?.row.resultId).toBe(storedNewer.resultId);
     expect(latest?.state.runVersionId).toBe(newerVersionId);
     expect(latest?.state.stage).toBe("I5");
+
+    const otherActor = registrationRead(fixture!, "run-state", RUN_ID, PROJECT_ID, "other-actor");
+    expect(
+      await fixture!.adapter.registrationStore.readLatestRunState({
+        projectId: PROJECT_ID,
+        runId: RUN_ID,
+        ...otherActor,
+        actorId: ACTOR_ID,
+      }),
+    ).toBeUndefined();
+    fixture!.access.narrowScope();
+    expect(
+      await fixture!.adapter.registrationStore.readLatestRunState({
+        projectId: PROJECT_ID,
+        runId: RUN_ID,
+        ...registrationRead(fixture!, "run-state", RUN_ID),
+      }),
+    ).toBeUndefined();
+    expect(
+      await fixture!.adapter.registrationStore.listRunRows({
+        projectId: PROJECT_ID,
+        runId: RUN_ID,
+        ...registrationRead(fixture!, "run-rows", RUN_ID),
+      }),
+    ).toEqual([]);
+    fixture!.access.restore();
 
     // 跨工程不得命中同运行身份：既没有登记行，也不泄露对象是否存在。
     expect(
       await fixture!.adapter.registrationStore.readLatestRunState({
         projectId: OTHER_PROJECT_ID,
         runId: RUN_ID,
+        ...registrationRead(fixture!, "run-state", RUN_ID, OTHER_PROJECT_ID),
       }),
     ).toBeUndefined();
     expect(
       await fixture!.adapter.registrationStore.readRow({
         projectId: OTHER_PROJECT_ID,
+        ...registrationRead(
+          fixture!,
+          "result-row",
+          `run-state:${storedNewer.resultId}:${storedNewer.resultVersionId}`,
+          OTHER_PROJECT_ID,
+        ),
         resultKind: "run-state",
         resultId: storedNewer.resultId,
         resultVersionId: storedNewer.resultVersionId,

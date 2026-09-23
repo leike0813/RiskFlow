@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { Kysely, Transaction } from "kysely";
+import { sql, type Kysely, type Transaction } from "kysely";
 
 import type { LocalIdentityAccessV1 } from "@riskflow/core/access";
 import {
@@ -36,6 +36,7 @@ import {
   type TransactionContextV1,
   type TransactionUnitV1,
 } from "@riskflow/core/persistence";
+import { authorizationScopeDigest } from "@riskflow/core/retrieval";
 import type {
   AuthorizationContextRefV1,
   AuthorizationContextV1,
@@ -88,18 +89,19 @@ const BRANCH_BY_CAPABILITY_V1: Partial<Record<ModuleCapabilityV1, ModuleBranchV1
 };
 
 /**
- * design D-04/D-06/D-09：登记行由 `risk-identification.plan` 分支登记，其正文与状态由同一
- * 分支读写；C04 读取用的复验分支必须与登记时一致，故此处固定。
- */
-const REGISTRATION_BRANCH_V1: ModuleBranchV1 = "risk-identification.plan";
-
-/**
  * design D-09：C05 `verify` 要求复验身份与签发身份逐字相同，而 C21/C22 的 reader 端口不携带
  * 受信调用身份。C24 按精确读写目标确定性派生身份（无墙钟、无调用方正文）：同一目标的读写
  * 身份恒定，签发方必须用同一函数派生，否则复验拒绝——fail closed 且不泄露对象是否存在。
  */
 export const identificationGraphReadInvocationIdV1 = (input: {
-  readonly operation: "context-input" | "work-plan" | "run-state" | "reconcile" | "body-write";
+  readonly operation:
+    | "context-input"
+    | "work-plan"
+    | "result-row"
+    | "run-rows"
+    | "run-state"
+    | "reconcile"
+    | "body-write";
   readonly projectId: string;
   readonly targetId: string;
 }): string => `c24-${input.operation}:${input.projectId}:${input.targetId}`;
@@ -430,6 +432,7 @@ class IdentificationGraphPersistence {
     readonly projectId: string;
     readonly actorId: string;
     readonly invocationId: string;
+    readonly requestedAt?: string;
   }): Promise<AuthorizationContextV1 | undefined> {
     if (input.authorization.projectId !== input.projectId) return undefined;
     if (input.authorization.actorId !== input.actorId) return undefined;
@@ -445,7 +448,7 @@ class IdentificationGraphPersistence {
       projectId: input.projectId,
       actorId: input.actorId,
       invocationId: input.invocationId,
-      requestedAt: input.authorization.decidedAt,
+      requestedAt: input.requestedAt ?? this.#now().toISOString(),
     });
   }
 
@@ -484,25 +487,32 @@ class IdentificationGraphPersistence {
     }
   }
 
-  /**
-   * 登记端口的成员（`readRow` / `listRunRows` / `readLatestRunState`）不携带调用方授权，
-   * 因此以登记行自身的冻结上下文引用发起当前授权复验；复验失败与对象不存在同形。
-   */
-  async verifyFrozenRegistration(input: {
-    readonly authorizationContextRef: AuthorizationContextRefV1;
-    readonly projectId: string;
-    readonly actorId: string;
-    readonly invocationId: string;
-  }): Promise<AuthorizationContextV1 | undefined> {
-    return this.#verifyRef({
-      authorizationContextRef: input.authorizationContextRef,
-      capability: "risk-identification.run",
-      branch: REGISTRATION_BRANCH_V1,
-      projectId: input.projectId,
-      actorId: input.actorId,
-      invocationId: input.invocationId,
-      requestedAt: this.#now().toISOString(),
-    });
+  /** 所有运行状态追加与取消共用同一事务锁，锁后再读取最新版本。 */
+  async assertCurrentRunVersion(
+    input: {
+      readonly projectId: string;
+      readonly runId: string;
+      readonly expectedRunVersionId: string | undefined;
+    },
+    context: unknown,
+  ): Promise<void> {
+    const transaction = this.#ambientTransaction(context);
+    await sql`SELECT pg_advisory_xact_lock(hashtext(${input.projectId}), hashtext(${input.runId}))`.execute(
+      transaction,
+    );
+    const latest = await transaction
+      .selectFrom(RESULTS_TABLE)
+      .select("run_version_id")
+      .where("project_id", "=", input.projectId)
+      .where("result_kind", "=", "run-state")
+      .where("run_id", "=", input.runId)
+      .orderBy("persisted_at", "desc")
+      .orderBy("run_version_id", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    if (latest?.run_version_id !== input.expectedRunVersionId) {
+      throw makePersistenceError("IDEMPOTENCY_CONFLICT", "identification-graph.run-version");
+    }
   }
 
   /** 只写调用方 ambient 事务；同键同摘要不覆盖首次行，同键异摘要返回首次命令身份。 */
@@ -805,6 +815,17 @@ class IdentificationGraphRegistrationStore implements IdentificationGraphRegistr
     this.#persistence = persistence;
   }
 
+  async assertCurrentRunVersion(
+    input: {
+      readonly projectId: string;
+      readonly runId: string;
+      readonly expectedRunVersionId: string | undefined;
+    },
+    context: unknown,
+  ): Promise<void> {
+    await this.#persistence.assertCurrentRunVersion(input, context);
+  }
+
   async registerRow(
     input: {
       readonly row: IdentificationGraphResultRowV1;
@@ -820,47 +841,89 @@ class IdentificationGraphRegistrationStore implements IdentificationGraphRegistr
 
   async readRow(input: {
     readonly projectId: string;
+    readonly actorId: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly requestedAt: string;
     readonly resultKind: IdentificationGraphResultRowV1["resultKind"];
     readonly resultId: string;
     readonly resultVersionId: string;
   }): Promise<IdentificationGraphResultRowV1 | undefined> {
-    return this.#persistence.readRow(input);
+    const verified = await this.#persistence.verifyAuthorization({
+      authorization: input.authorization,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      requestedAt: input.requestedAt,
+      invocationId: identificationGraphReadInvocationIdV1({
+        operation: "result-row",
+        projectId: input.projectId,
+        targetId: `${input.resultKind}:${input.resultId}:${input.resultVersionId}`,
+      }),
+    });
+    if (verified === undefined) return undefined;
+    const row = await this.#persistence.readRow(input);
+    return row?.authorizationScopeDigest === authorizationScopeDigest(verified) ? row : undefined;
   }
 
   async listRunRows(input: {
     readonly projectId: string;
     readonly runId: string;
+    readonly actorId: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly requestedAt: string;
   }): Promise<readonly IdentificationGraphResultRowV1[]> {
-    return this.#persistence.listRowsOfKind(input);
+    const verified = await this.#persistence.verifyAuthorization({
+      authorization: input.authorization,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      requestedAt: input.requestedAt,
+      invocationId: identificationGraphReadInvocationIdV1({
+        operation: "run-rows",
+        projectId: input.projectId,
+        targetId: input.runId,
+      }),
+    });
+    if (verified === undefined) return [];
+    const scopeDigest = authorizationScopeDigest(verified);
+    return (await this.#persistence.listRowsOfKind(input)).filter(
+      (row) => row.authorizationScopeDigest === scopeDigest,
+    );
   }
 
-  async readLatestRunState(input: { readonly projectId: string; readonly runId: string }): Promise<
+  async readLatestRunState(input: {
+    readonly projectId: string;
+    readonly runId: string;
+    readonly actorId: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly requestedAt: string;
+  }): Promise<
     | {
         readonly row: Extract<IdentificationGraphResultRowV1, { readonly resultKind: "run-state" }>;
         readonly state: IdentificationGraphRunStateV1;
       }
     | undefined
   > {
-    const row = await this.#persistence.readLatestRunStateRow(input);
-    if (row === undefined) return undefined;
-    const verified = await this.#persistence.verifyFrozenRegistration({
-      authorizationContextRef: row.authorizationContextRef,
+    const verified = await this.#persistence.verifyAuthorization({
+      authorization: input.authorization,
       projectId: input.projectId,
-      actorId: row.actorRef,
+      actorId: input.actorId,
+      requestedAt: input.requestedAt,
       invocationId: identificationGraphReadInvocationIdV1({
         operation: "run-state",
         projectId: input.projectId,
-        targetId: row.resultVersionId,
+        targetId: input.runId,
       }),
     });
     if (verified === undefined) return undefined;
+    const row = await this.#persistence.readLatestRunStateRow(input);
+    if (row === undefined) return undefined;
+    if (row.authorizationScopeDigest !== authorizationScopeDigest(verified)) return undefined;
     try {
       const body = await this.#persistence.readBody({
         row,
         bodyKind: "run-state",
         projectId: input.projectId,
-        actorId: row.actorRef,
-        requestedAt: this.#persistence.now().toISOString(),
+        actorId: input.actorId,
+        requestedAt: input.requestedAt,
         authorization: verified,
       });
       // 正文与登记行的运行身份必须逐字一致，否则不是同一状态版本。

@@ -207,13 +207,16 @@ export const createIdentificationGraphComposition = (
       const latest = await adapter.registrationStore.readLatestRunState({
         projectId: event.projectId,
         runId: runRef.reference.entityId,
+        actorId: authorization.actorId,
+        authorization,
+        requestedAt: event.recordedAt,
       });
       if (latest === undefined) {
         throw new TypeError("identification graph recovery requires a registered run");
       }
       await runtime.resume({
         projectId: event.projectId,
-        actorId: event.producerCommandId,
+        actorId: authorization.actorId,
         commandId: `${consumerName}:${event.eventId}`,
         idempotencyKey: `${consumerName}:${event.eventId}`,
         issuedAt: event.recordedAt,

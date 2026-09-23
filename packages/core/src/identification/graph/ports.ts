@@ -29,6 +29,14 @@ export interface IdentificationGraphPolicySetProviderV1 {
  * 登记、审计与命令回执由实现在同一 C03 业务事务内提交；同键异载荷返回不可重试冲突。
  */
 export interface IdentificationGraphRegistrationStoreV1 {
+  assertCurrentRunVersion(
+    input: {
+      readonly projectId: string;
+      readonly runId: string;
+      readonly expectedRunVersionId: string | undefined;
+    },
+    context: unknown,
+  ): Promise<void>;
   registerRow(
     input: {
       readonly row: IdentificationGraphResultRowV1;
@@ -41,6 +49,9 @@ export interface IdentificationGraphRegistrationStoreV1 {
   >;
   readRow(input: {
     readonly projectId: string;
+    readonly actorId: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly requestedAt: string;
     readonly resultKind: IdentificationGraphResultRowV1["resultKind"];
     readonly resultId: string;
     readonly resultVersionId: string;
@@ -48,8 +59,17 @@ export interface IdentificationGraphRegistrationStoreV1 {
   listRunRows(input: {
     readonly projectId: string;
     readonly runId: string;
+    readonly actorId: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly requestedAt: string;
   }): Promise<readonly IdentificationGraphResultRowV1[]>;
-  readLatestRunState(input: { readonly projectId: string; readonly runId: string }): Promise<
+  readLatestRunState(input: {
+    readonly projectId: string;
+    readonly runId: string;
+    readonly actorId: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly requestedAt: string;
+  }): Promise<
     | {
         readonly row: Extract<IdentificationGraphResultRowV1, { readonly resultKind: "run-state" }>;
         readonly state: IdentificationGraphRunStateV1;

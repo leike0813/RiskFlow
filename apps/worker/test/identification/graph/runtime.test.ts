@@ -195,6 +195,19 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
     expect(outcome.state.resultRef?.reference.versionId).toBe(row.resultVersionId);
   });
 
+  it("I9 精确验收路线不可读时不生成完成汇总", async () => {
+    const { world } = harness;
+    const run = harness.scope("i9-route-read-failure");
+    world.routes = [automaticRouteFor(WORK_PLAN_ENTITY_ID, AUTO_GROUP)];
+    world.routeReadFailureAfter = 1;
+
+    const outcome = await harness.runtime.start(harness.startCommand(run));
+
+    expect(outcome.state.status).toBe("terminal-failure");
+    expect(await harness.rows(run, "run-result")).toHaveLength(0);
+    expect(await harness.rows(run, "workflow-error")).toHaveLength(1);
+  });
+
   it("I0～I2 知识或策略未就绪时类型化等待且不形成半套输入快照或工作计划", async () => {
     const { world } = harness;
     const run = harness.scope("policy-not-ready");
@@ -567,17 +580,18 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
     const waitingCursor = await harness.latestRunState(run);
 
     // 类型不匹配的恢复原因只影响匹配组之外的情形：拒绝推进且不写新事实。
-    await expect(
-      harness.runtime.resume(
-        harness.resumeCommand(run, {
-          expectedRunVersionId: waitingCursor.runVersionId,
-          resumeCause: {
-            kind: "agent-task-completed",
-            agentTaskRef: reviewTaskRefFor(workItemCurrent),
-          },
-        }),
-      ),
-    ).rejects.toMatchObject({ error: { detailCode: "waiting-reference-kind-mismatch" } });
+    const invalidResume = harness.resumeCommand(run, {
+      expectedRunVersionId: waitingCursor.runVersionId,
+      resumeCause: {
+        kind: "agent-task-completed",
+        agentTaskRef: reviewTaskRefFor(workItemCurrent),
+      },
+    });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(harness.runtime.resume(invalidResume)).rejects.toMatchObject({
+        error: { detailCode: "waiting-reference-kind-mismatch" },
+      });
+    }
 
     world.reviewDecisions.set(reviewRoute.groupRef.reference.entityId, {
       kind: "approve-unchanged",
@@ -811,7 +825,8 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
     world.routes = [automaticRouteFor(WORK_PLAN_ENTITY_ID, AUTO_GROUP)];
     world.agentTaskStatus.set(NODE_CURRENT, "running");
     try {
-      const started = await harness.runtime.start(harness.startCommand(run));
+      const startCommand = harness.startCommand(run);
+      const started = await harness.runtime.start(startCommand);
       expect(started.state.status).toBe("waiting");
       const waitingCursor = await harness.latestRunState(run);
       const rowsBeforeCancel = await harness.rows(run);
@@ -848,10 +863,65 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
       const replayed = await harness.runtime.cancel(cancelCommand);
       expect(replayed.disposition).toBe("already-cancelled");
       expect(await harness.rows(run, "cancellation")).toHaveLength(1);
+      const replayedStart = await harness.runtime.start(startCommand);
+      expect(replayedStart.state.status).toBe("cancelled");
+      expect(replayedStart.state.resultRef).toEqual(cancelled.state.resultRef);
+      expect(await harness.rows(run)).toEqual(rowsAfterCancel);
     } finally {
       world.agentTaskStatus.delete(NODE_CURRENT);
     }
   });
+
+  it("恢复与取消竞争同一运行版本时至多一个推进到终态", async () => {
+    const { world } = harness;
+    const run = harness.scope("resume-cancel-race");
+    world.routes = [automaticRouteFor(WORK_PLAN_ENTITY_ID, AUTO_GROUP)];
+    world.agentTaskStatus.set(NODE_CURRENT, "running");
+    try {
+      const started = await harness.runtime.start(harness.startCommand(run));
+      expect(started.state.status).toBe("waiting");
+      const current = await harness.latestRunState(run);
+      const taskRef = started.state.agentTaskRefs[0]!;
+      world.agentTaskStatus.set(NODE_CURRENT, "completed");
+
+      const outcomes = await Promise.allSettled([
+        harness.runtime.resume(
+          harness.resumeCommand(run, {
+            expectedRunVersionId: current.runVersionId,
+            resumeCause: { kind: "agent-task-completed", agentTaskRef: taskRef },
+          }),
+        ),
+        harness.runtime.cancel(
+          harness.cancelCommand(run, { expectedRunVersionId: current.runVersionId }),
+        ),
+      ]);
+      const advanced = outcomes.filter(
+        (outcome) =>
+          outcome.status === "fulfilled" &&
+          (outcome.value.disposition === "resumed" ||
+            outcome.value.disposition === "cancellation-recorded"),
+      );
+      expect(
+        advanced,
+        JSON.stringify(
+          outcomes.map((outcome) =>
+            outcome.status === "fulfilled"
+              ? { disposition: outcome.value.disposition, status: outcome.value.state.status }
+              : { rejected: String(outcome.reason) },
+          ),
+        ),
+      ).toHaveLength(1);
+      const latest = await harness.latestRunState(run);
+      expect(["completed", "cancelled"]).toContain(latest.state.status);
+      if (latest.state.status === "cancelled") {
+        expect(await harness.rows(run, "run-result")).toHaveLength(0);
+      } else {
+        expect(await harness.rows(run, "cancellation")).toHaveLength(0);
+      }
+    } finally {
+      world.agentTaskStatus.delete(NODE_CURRENT);
+    }
+  }, 120_000);
 
   it("检查点引用无法由业务回读证明时按 CHECKPOINT_INCONSISTENT 零补写封闭", async () => {
     const { world } = harness;

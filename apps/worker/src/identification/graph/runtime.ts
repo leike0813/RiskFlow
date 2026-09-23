@@ -32,6 +32,8 @@ import {
 
 import {
   IdentificationGraphCancellationV1Schema,
+  IdentificationGraphResultRowV1Schema,
+  IdentificationGraphRunStateV1Schema,
   classifyIdentificationGraphOutcome,
   type IdentificationGraphRunOutcomeV1,
   type IdentificationGraphResumeCauseV1,
@@ -292,6 +294,9 @@ const retryBackoffUntil = async (input: {
     const latest = await input.ports.registrationStore.readLatestRunState({
       projectId: input.run.projectId,
       runId: input.run.runRef.reference.entityId,
+      actorId: input.run.actorId,
+      authorization: input.run.authorization,
+      requestedAt: input.run.issuedAt,
     });
     if (latest === undefined) return undefined;
     return new Date(
@@ -330,6 +335,15 @@ export const createIdentificationGraphRuntime = (
         code: "CONTRACT_INVALID",
         retryable: false,
         detailCode: "run-cursor-missing",
+        occurredAt: options.now().toISOString(),
+      });
+    }
+    if (cursor.status !== input.state.status) {
+      throw runFailure({
+        stage: input.state.stage,
+        code: "STALE_VERSION",
+        retryable: false,
+        detailCode: "run-state-version-conflict",
         occurredAt: options.now().toISOString(),
       });
     }
@@ -465,6 +479,31 @@ export const createIdentificationGraphRuntime = (
             retryable: true,
             detailCode: "checkpoint-write-unconfirmed",
             occurredAt: options.now().toISOString(),
+          });
+        }
+        const cancellationRow = (
+          await ports.registrationStore.listRunRows({
+            projectId: command.projectId,
+            runId: runIdentity.runRef.reference.entityId,
+            actorId: command.actorId,
+            authorization: authorized,
+            requestedAt: command.requestedAt,
+          })
+        ).find((row) => row.resultKind === "cancellation");
+        if (cancellationRow !== undefined) {
+          return await outcomeOf({
+            run: frozenRun,
+            state: IdentificationGraphStateV1Schema.parse({
+              ...state,
+              status: "cancelled",
+              waitingRef: undefined,
+              resultRef: cancellationResultRef({
+                projectId: command.projectId,
+                runId: runIdentity.runRef.reference.entityId,
+                versionId: cancellationRow.requestDigest,
+              }),
+            }),
+            disposition: "existing",
           });
         }
         return await outcomeOf({ run: frozenRun, state, disposition: "existing" });
@@ -618,9 +657,6 @@ export const createIdentificationGraphRuntime = (
           occurredAt: options.now().toISOString(),
         });
       }
-      if (replayed) {
-        return await outcomeOf({ run: frozenRun, state: checkpointState, disposition: "resumed" });
-      }
       // checkpoint 引用对账：无法由当前授权下的业务回读证明时零补写地封闭（design D-07）。
       const reconcile = await ports.checkpoints.reconcileCheckpointReferences({
         projectId: command.projectId,
@@ -644,6 +680,9 @@ export const createIdentificationGraphRuntime = (
         await ports.registrationStore.listRunRows({
           projectId: command.projectId,
           runId: command.runRef.reference.entityId,
+          actorId: command.actorId,
+          authorization: authorized,
+          requestedAt: command.requestedAt,
         })
       ).find((row) => row.resultKind === "cancellation");
       if (cancellationRow !== undefined) {
@@ -664,9 +703,20 @@ export const createIdentificationGraphRuntime = (
       }
       if (expected.status !== "waiting" && expected.status !== "retryable-failure") {
         // 迟到信号：运行已离开该等待，返回原回执且不重复恢复。
-        return await outcomeOf({ run: frozenRun, state: checkpointState, disposition: "existing" });
+        return await outcomeOf({
+          run: frozenRun,
+          state: checkpointState,
+          disposition: replayed ? "resumed" : "existing",
+        });
       }
       if (expected.runVersionId !== command.expectedRunVersionId) {
+        if (replayed) {
+          return await outcomeOf({
+            run: frozenRun,
+            state: checkpointState,
+            disposition: "existing",
+          });
+        }
         throw runFailure({
           stage: expected.stage,
           code: "STALE_VERSION",
@@ -791,21 +841,6 @@ export const createIdentificationGraphRuntime = (
         },
         threadId: `identification-run-thread:${command.projectId}:${command.runRef.reference.versionId}`,
       };
-      const replayed = await recordCommandReceipt({
-        ports,
-        projectId: command.projectId,
-        actorId: command.actorId,
-        commandId: command.commandId,
-        idempotencyKey: command.idempotencyKey,
-        commandKind: "identification-graph.cancel",
-        issuedAt: command.issuedAt,
-        authorization: authorized,
-        payload: { runRef: command.runRef, reasonCode: command.reasonCode },
-        resultRef: command.runRef,
-        runId: command.runRef.reference.entityId,
-        threadId: undefined,
-        stage: "I0",
-      });
       const checkpointState = await readCheckpointState({
         graph: options.graph,
         run: provisionalRun,
@@ -832,11 +867,14 @@ export const createIdentificationGraphRuntime = (
           occurredAt: options.now().toISOString(),
         });
       }
-      if (replayed || cursor.status === "cancelled") {
+      if (cursor.status === "cancelled") {
         const cancellationRow = (
           await ports.registrationStore.listRunRows({
             projectId: command.projectId,
             runId: command.runRef.reference.entityId,
+            actorId: command.actorId,
+            authorization: authorized,
+            requestedAt: command.requestedAt,
           })
         ).find((row) => row.resultKind === "cancellation");
         if (cancellationRow === undefined) {
@@ -872,6 +910,15 @@ export const createIdentificationGraphRuntime = (
           occurredAt: options.now().toISOString(),
         });
       }
+      if (cursor.status === "completed" || cursor.status === "terminal-failure") {
+        throw runFailure({
+          stage: cursor.stage,
+          code: "BUSINESS_BLOCKED",
+          retryable: false,
+          detailCode: "run-already-terminal",
+          occurredAt: options.now().toISOString(),
+        });
+      }
       const cancellation = IdentificationGraphCancellationV1Schema.parse({
         schemaVersion: "1",
         runRef: command.runRef,
@@ -895,20 +942,37 @@ export const createIdentificationGraphRuntime = (
         authorization: authorized,
       });
       const artifactRef = ContentArtifactRefV1Schema.parse(put);
-      const runStateRef = {
-        entityId: `identification-graph-run-state:${command.runRef.reference.entityId}`,
-        versionId: sha256CanonicalJson({
-          cancellation: cancellationRef,
-          cursor: cursor.runVersionId,
-        }),
+      const { runVersionId: _priorVersion, lastWaitingRef: _priorWaiting, ...stateBase } = cursor;
+      const cancelledStateWithoutVersion = {
+        ...stateBase,
+        status: "cancelled" as const,
+        resultRef: cancellationRef,
       };
+      const cancelledState = IdentificationGraphRunStateV1Schema.parse({
+        ...cancelledStateWithoutVersion,
+        runVersionId: sha256CanonicalJson(cancelledStateWithoutVersion),
+      });
+      const statePut = await ports.bodies.putBody({
+        projectId: command.projectId,
+        actorId: command.actorId,
+        commandId: `${actionId}:run-state-body`,
+        issuedAt: command.issuedAt,
+        artifactId: `identification-graph-run-state:${command.runRef.reference.entityId}:cancel`,
+        body: { bodyKind: "run-state", runState: cancelledState },
+        authorization: authorized,
+      });
+      const stateArtifactRef = ContentArtifactRefV1Schema.parse(statePut);
       await ports.transactionUnit.execute(
         {
           projectId: command.projectId,
           commandKind: "identification-graph.cancel",
           commandId: actionId,
           idempotencyKey: actionId,
-          payload: { runRef: command.runRef, cancellationRef },
+          payload: {
+            runRef: command.runRef,
+            cancellationRef,
+            expectedRunVersionId: command.expectedRunVersionId,
+          },
           actorRef: command.actorId,
           authorizationContextRef: authorized.authorizationContextRef,
           issuedAt: command.issuedAt,
@@ -916,6 +980,14 @@ export const createIdentificationGraphRuntime = (
           threadId: run.threadId,
         },
         async (context) => {
+          await ports.registrationStore.assertCurrentRunVersion(
+            {
+              projectId: command.projectId,
+              runId: command.runRef.reference.entityId,
+              expectedRunVersionId: command.expectedRunVersionId,
+            },
+            context,
+          );
           const cancelled = await ports.registrationStore.registerRow(
             {
               row: {
@@ -925,7 +997,7 @@ export const createIdentificationGraphRuntime = (
                 resultId: artifactRef.reference.entityId,
                 resultVersionId: artifactRef.reference.versionId,
                 runId: command.runRef.reference.entityId,
-                runVersionId: runStateRef.versionId,
+                runVersionId: cancelledState.runVersionId,
                 commandId: actionId,
                 idempotencyKey: `identification-graph:cancellation:${command.runRef.reference.entityId}`,
                 requestDigest: sha256CanonicalJson(cancellation),
@@ -945,6 +1017,32 @@ export const createIdentificationGraphRuntime = (
           if (cancelled.kind === "idempotency-conflict") {
             throw new TypeError("identification-graph cancellation idempotency conflict");
           }
+          await ports.registrationStore.registerRow(
+            {
+              row: IdentificationGraphResultRowV1Schema.parse({
+                schemaVersion: "1",
+                projectId: command.projectId,
+                resultKind: "run-state",
+                resultId: stateArtifactRef.reference.entityId,
+                resultVersionId: stateArtifactRef.reference.versionId,
+                runId: command.runRef.reference.entityId,
+                runVersionId: cancelledState.runVersionId,
+                commandId: actionId,
+                idempotencyKey: `${actionId}:run-state`,
+                requestDigest: sha256CanonicalJson({ resultKind: "run-state", stateArtifactRef }),
+                artifactRef: stateArtifactRef,
+                authorizationScopeDigest: authorizationScopeDigest(authorized),
+                actorRef: command.actorId,
+                authorizationContextRef: authorized.authorizationContextRef,
+                validAt: command.issuedAt,
+                recordedAt: command.issuedAt,
+                persistedAt: command.issuedAt,
+                auditEntryId: `${actionId}:audit`,
+              }),
+              occurredAt: command.issuedAt,
+            },
+            context,
+          );
           return {
             resultRef: artifactRef,
             audit: {

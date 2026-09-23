@@ -425,6 +425,7 @@ export interface IdentificationGraphWorldV1 {
   >;
   /** I7/I8/I9 读取的验收路线集。 */
   routes: readonly AcceptanceRouteV1[];
+  routeReadFailureAfter?: number;
   /** `accept-groups` 侧已入库的分组（替身模拟 C22 的幂等重放，不重复产生记录）。 */
   readonly acceptedGroups: Set<string>;
   /** 每个分组本轮新入库的标准化风险记录与事件（`accept-groups` 的闭合结果）。 */
@@ -1056,6 +1057,9 @@ const createPortDoubles = (input: {
     acceptanceRoutes: {
       async readRoutes(command) {
         world.calls.readRoutes.push(command);
+        if (world.calls.readRoutes.length > (world.routeReadFailureAfter ?? Infinity)) {
+          return undefined;
+        }
         return world.routes.map((route) => AcceptanceRouteV1Schema.parse(route));
       },
     },
@@ -1450,6 +1454,9 @@ export const startIdentificationGraphHarness = async (
         const latest = await adapter.registrationStore.readLatestRunState({
           projectId: PROJECT_ID,
           runId: runScope.runRef.reference.entityId,
+          actorId: ACTOR_ID,
+          authorization: authorizationContext(),
+          requestedAt: clock.current.toISOString(),
         });
         if (latest === undefined) throw new TypeError("identification run state is not registered");
         return { row: latest.row, state: latest.state, runVersionId: latest.state.runVersionId };
@@ -1458,6 +1465,9 @@ export const startIdentificationGraphHarness = async (
         const rows = await adapter.registrationStore.listRunRows({
           projectId: PROJECT_ID,
           runId: runScope.runRef.reference.entityId,
+          actorId: ACTOR_ID,
+          authorization: authorizationContext(),
+          requestedAt: clock.current.toISOString(),
         });
         return resultKind === undefined
           ? rows

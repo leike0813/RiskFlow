@@ -228,6 +228,14 @@ export interface IdentificationGraphAcceptanceRouteReaderV1 {
 
 /** C24 登记端口（与 core 冻结接口同形，见 `@riskflow/core/identification/graph`）。 */
 export interface IdentificationGraphRegistrationStorePortV1 {
+  assertCurrentRunVersion(
+    input: {
+      readonly projectId: string;
+      readonly runId: string;
+      readonly expectedRunVersionId: string | undefined;
+    },
+    context: unknown,
+  ): Promise<void>;
   registerRow(
     input: { readonly row: IdentificationGraphResultRowV1; readonly occurredAt: string },
     context?: unknown,
@@ -237,6 +245,9 @@ export interface IdentificationGraphRegistrationStorePortV1 {
   >;
   readRow(input: {
     readonly projectId: string;
+    readonly actorId: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly requestedAt: string;
     readonly resultKind: IdentificationGraphResultRowV1["resultKind"];
     readonly resultId: string;
     readonly resultVersionId: string;
@@ -244,8 +255,17 @@ export interface IdentificationGraphRegistrationStorePortV1 {
   listRunRows(input: {
     readonly projectId: string;
     readonly runId: string;
+    readonly actorId: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly requestedAt: string;
   }): Promise<readonly IdentificationGraphResultRowV1[]>;
-  readLatestRunState(input: { readonly projectId: string; readonly runId: string }): Promise<
+  readLatestRunState(input: {
+    readonly projectId: string;
+    readonly runId: string;
+    readonly actorId: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly requestedAt: string;
+  }): Promise<
     | {
         readonly row: Extract<IdentificationGraphResultRowV1, { readonly resultKind: "run-state" }>;
         readonly state: IdentificationGraphRunStateV1;
@@ -590,6 +610,7 @@ interface StageCommitV1 {
     runVersionId: string,
   ) => readonly IdentificationGraphResultRowV1[];
   readonly runVersionId: string;
+  readonly expectedRunVersionId: string | undefined;
   readonly occurredAt: string;
 }
 
@@ -682,6 +703,14 @@ const commitStage = async (
       threadId: run.threadId,
     },
     async (context: TransactionContextV1): Promise<AtomicCommitV1> => {
+      await ports.registrationStore.assertCurrentRunVersion(
+        {
+          projectId: run.projectId,
+          runId: run.runRef.reference.entityId,
+          expectedRunVersionId: commit.expectedRunVersionId,
+        },
+        context,
+      );
       for (const row of rows) {
         const outcome = await ports.registrationStore.registerRow(
           { row, occurredAt: commit.occurredAt },
@@ -722,6 +751,9 @@ export const readCursor = async (input: {
   const latest = await input.ports.registrationStore.readLatestRunState({
     projectId: input.run.projectId,
     runId: input.run.runRef.reference.entityId,
+    actorId: input.run.actorId,
+    authorization: input.run.authorization,
+    requestedAt: input.run.issuedAt,
   });
   return latest?.state;
 };
@@ -862,6 +894,7 @@ const advance = async (input: AdvanceInputV1): Promise<IdentificationGraphStateV
     commandKind: input.commandKind,
     bodies,
     runVersionId: cursor.state.runVersionId,
+    expectedRunVersionId: input.cursor?.runVersionId,
     occurredAt,
     rows: (refs, runVersionId) => {
       const runStateRef = artifactRefFrom(refs, runStateArtifactId);
@@ -1018,6 +1051,7 @@ const waitFor = async (input: {
     commandKind: "identification-graph.wait",
     bodies,
     runVersionId: cursorState.state.runVersionId,
+    expectedRunVersionId: input.cursor?.runVersionId,
     occurredAt,
     rows: (refs, runVersionId) => {
       const waitingArtifact = artifactRefFrom(
@@ -2378,13 +2412,16 @@ const stageI9: StageHandlerV1 = async ({ ports, run, state }) => {
   const routes =
     cursor.acceptedRouteSetRef === undefined
       ? []
-      : ((await ports.acceptanceRoutes.readRoutes({
+      : await ports.acceptanceRoutes.readRoutes({
           projectId: run.projectId,
           acceptanceRouteSetRef: cursor.acceptedRouteSetRef,
           actorId: run.actorId,
           requestedAt: run.issuedAt,
           authorization: run.authorization,
-        })) ?? []);
+        });
+  if (routes === undefined) {
+    fail(contractInvalid({ stage: "I9", detailCode: "acceptance-routes-missing", occurredAt }));
+  }
   const summary = summarizeIdentificationRun({
     projectId: run.projectId,
     runRef: run.runRef,
@@ -2567,6 +2604,7 @@ const recordNodeFailure = async (input: {
     commandKind: "identification-graph.failure",
     bodies: [{ artifactId: runStateArtifactId, build: () => cursorState.body }],
     runVersionId: cursorState.state.runVersionId,
+    expectedRunVersionId: cursor?.runVersionId,
     occurredAt,
     rows: (refs, runVersionId) => {
       const runStateRef = artifactRefFrom(refs, runStateArtifactId);
@@ -2622,6 +2660,9 @@ const failureAttempts = async (
   const rows = await ports.registrationStore.listRunRows({
     projectId: run.projectId,
     runId: run.runRef.reference.entityId,
+    actorId: run.actorId,
+    authorization: run.authorization,
+    requestedAt: run.issuedAt,
   });
   const prefix = `identification-graph-workflow-error:${stage}:${detailCode}`;
   return rows.filter(
@@ -2678,6 +2719,21 @@ export const createIdentificationGraph = (options: {
         return stateAsUpdate(await handler({ ports: options.ports, run, state }));
       } catch (error: unknown) {
         if (isGraphBubbleUp(error)) throw error;
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "stage" in error &&
+          error.stage === "identification-graph.run-version"
+        ) {
+          throw new IdentificationGraphNodeFailureV1(
+            graphError({
+              code: "VERSION_CONFLICT",
+              stage,
+              detailCode: "run-state-version-conflict",
+              occurredAt: options.ports.now().toISOString(),
+            }),
+          );
+        }
         return stateAsUpdate(
           await recordNodeFailure({
             ports: options.ports,

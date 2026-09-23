@@ -341,13 +341,11 @@ function taskPhase(taskKind) {
 // 其余（实现、收尾、审计）都归入收尾；调用方显式 phase="planning" 仍按规划处理。
 function deriveReconcileKind(node, phase) {
   if (phase === "planning") return "planning";
-  let kind = null;
   try {
-    kind = nextTaskKind(node);
+    return nextTaskKind(node) === "planning" ? "planning" : "finalization";
   } catch {
-    kind = null;
+    return "finalization";
   }
-  return kind === "planning" ? "planning" : "finalization";
 }
 
 export function createV2Envelope({

@@ -2,6 +2,7 @@ import { z, type ZodType } from "zod";
 
 import {
   CommandEnvelopeSchema,
+  EvidenceLocatorSchema,
   EvidenceReferenceSchema,
   IdentifierSchema,
   IsoDateTimeSchema,
@@ -1639,6 +1640,16 @@ const workflowStartControlShape = {
   retryPolicyRef: VersionReferenceSchema,
 };
 
+/**
+ * `identify-and-assess` 的逐空间配对上下文（C30 design D-01）：每个空间恰一项适用性快照，
+ * 监测集合可选；配对完整性由 C30 前置门禁在副作用前判定，Schema 层保持可解析。
+ */
+const WorkflowAssessmentContextV1Schema = z.strictObject({
+  spatialScopeRef: SpatialScopeRefV1Schema,
+  applicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
+  monitoringSnapshotRefs: z.array(MonitoringSnapshotRefV1Schema).min(1).optional(),
+});
+
 const StartWorkflowPayloadV1Schema = z.discriminatedUnion("entryMode", [
   z.strictObject({
     ...workflowStartControlShape,
@@ -1647,6 +1658,7 @@ const StartWorkflowPayloadV1Schema = z.discriminatedUnion("entryMode", [
     spatialScopeRefs: z.array(SpatialScopeRefV1Schema).min(1),
     sourceVersionRefs: z.array(SourceVersionRefV1Schema).min(1),
     monitoringSnapshotRef: MonitoringSnapshotRefV1Schema.optional(),
+    assessmentContexts: z.array(WorkflowAssessmentContextV1Schema).min(1).optional(),
   }),
   z.strictObject({
     ...workflowStartControlShape,
@@ -1655,6 +1667,8 @@ const StartWorkflowPayloadV1Schema = z.discriminatedUnion("entryMode", [
     applicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
     monitoringSnapshotRef: MonitoringSnapshotRefV1Schema.optional(),
     spatialScopeRef: SpatialScopeRefV1Schema,
+    projectRevisionRef: ProjectRevisionRefV1Schema.optional(),
+    monitoringSnapshotRefs: z.array(MonitoringSnapshotRefV1Schema).min(1).optional(),
   }),
   z.strictObject({
     ...workflowStartControlShape,
@@ -1668,6 +1682,11 @@ const StartWorkflowPayloadV1Schema = z.discriminatedUnion("entryMode", [
       "risk-matrix",
     ]),
     changedInputRefs: z.array(ContractReferenceV1Schema).min(1),
+    riskInput: RiskInputVersionRefV1Schema.optional(),
+    projectRevisionRef: ProjectRevisionRefV1Schema.optional(),
+    spatialScopeRef: SpatialScopeRefV1Schema.optional(),
+    applicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema.optional(),
+    monitoringSnapshotRefs: z.array(MonitoringSnapshotRefV1Schema).min(1).optional(),
   }),
   z.strictObject({
     ...workflowStartControlShape,
@@ -1676,6 +1695,9 @@ const StartWorkflowPayloadV1Schema = z.discriminatedUnion("entryMode", [
     applicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
     effectiveAt: IsoDateTimeSchema,
     assessmentBasisReleaseSetRef: AssessmentBasisReleaseSetRefV1Schema,
+    projectRevisionRef: ProjectRevisionRefV1Schema.optional(),
+    spatialScopeRef: SpatialScopeRefV1Schema.optional(),
+    monitoringSnapshotRefs: z.array(MonitoringSnapshotRefV1Schema).min(1).optional(),
   }),
   z.strictObject({
     ...workflowStartControlShape,
@@ -2354,6 +2376,127 @@ export const ProjectionExportSuccessV1Schema = z.strictObject({
   exportArtifactRef: ExportArtifactRefV1Schema,
 });
 export type ProjectionExportSuccessV1 = z.infer<typeof ProjectionExportSuccessV1Schema>;
+
+/**
+ * C30 自有链边关系码（design D-05）：只登记真实成立的相邻关系，未触发的分支登记原因而不写空边。
+ * 定义在公共契约中，因为 `ProjectionResultReadPortV1` 的有界读取结果按此闭合取值披露。
+ */
+export const WORKFLOW_LINK_RELATIONS_V1 = [
+  "parent-child",
+  "run-stage",
+  "segment-process",
+  "process-mechanism",
+  "mechanism-risk",
+  "risk-assessment",
+  "assessment-warning",
+  "warning-recommendation",
+  "recommendation-forecast",
+  "forecast-execution",
+  "execution-feedback",
+  "feedback-deviation",
+  "deviation-calibration",
+] as const;
+export const WorkflowLinkRelationV1Schema = z.enum(WORKFLOW_LINK_RELATIONS_V1);
+export type WorkflowLinkRelationV1 = z.infer<typeof WorkflowLinkRelationV1Schema>;
+
+const riskRecordTraceItemV1Base = {
+  riskRecordRef: StandardizedRiskRecordRefV1Schema,
+};
+
+/**
+ * 风险记录追溯窄读请求（design D-06）：一次最多 100 条精确版本，逐项返回最小引用，
+ * 不携带风险正文。
+ */
+export const RiskRecordTraceReadRequestV1Schema = z.strictObject({
+  projectId: IdentifierSchema,
+  riskRecordRefs: z.array(StandardizedRiskRecordRefV1Schema).min(1).max(100),
+  requestedAt: IsoDateTimeSchema,
+  authorization: AuthorizationContextV1Schema,
+});
+
+export const RiskRecordTraceItemV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("found"),
+    ...riskRecordTraceItemV1Base,
+    processNodeId: IdentifierSchema,
+    sourceSegmentIds: z.array(IdentifierSchema).min(1).max(256),
+    riskMechanismEntryIds: z.array(IdentifierSchema).max(64),
+    evidenceLocator: EvidenceLocatorSchema.optional(),
+    auditTrailRef: AuditTrailRefV1Schema,
+  }),
+  z.strictObject({
+    kind: z.literal("failed"),
+    ...riskRecordTraceItemV1Base,
+    error: ModuleErrorV1Schema,
+  }),
+]);
+
+export const RiskRecordTraceReadResultV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("succeeded"), items: z.array(RiskRecordTraceItemV1Schema) }),
+  z.strictObject({ kind: z.literal("failed"), error: ModuleErrorV1Schema }),
+]);
+export type RiskRecordTraceReadResultV1 = z.infer<typeof RiskRecordTraceReadResultV1Schema>;
+
+const projectionRunSummaryItemV1Schema = z.strictObject({
+  kind: z.literal("run-summary"),
+  workflowRunRef: WorkflowRunRefV1Schema,
+  parentRunRef: WorkflowRunRefV1Schema.optional(),
+  status: WorkflowRunStatusV1Schema,
+  /** C30 派生的入口身份：与登记行的 `entryIdentity` 同形，不伪造公共引用 kinds。 */
+  entryIdentity: VersionReferenceSchema,
+  latestResultRef: ContractReferenceV1Schema.optional(),
+  auditTrailRef: AuditTrailRefV1Schema,
+});
+
+const projectionTraceLinkItemV1Schema = z.strictObject({
+  kind: z.literal("trace-link"),
+  fromRef: ContractReferenceV1Schema,
+  toRef: ContractReferenceV1Schema,
+  relation: WorkflowLinkRelationV1Schema,
+  stageResultRef: StageResultRefV1Schema.optional(),
+  auditTrailRef: AuditTrailRefV1Schema,
+  evidenceLocator: EvidenceLocatorSchema.optional(),
+});
+
+export const ProjectionResultItemV1Schema = z.discriminatedUnion("kind", [
+  projectionRunSummaryItemV1Schema,
+  projectionTraceLinkItemV1Schema,
+]);
+export type ProjectionResultItemV1 = z.infer<typeof ProjectionResultItemV1Schema>;
+
+/** 有界页面读取请求（design D-06）：游标、上限与查询引用一同绑定当前授权摘要。 */
+export const ProjectionResultReadRequestV1Schema = z.strictObject({
+  projectId: IdentifierSchema,
+  queryResultRef: QueryResultRefV1Schema,
+  requestedAt: IsoDateTimeSchema,
+  cursor: IdentifierSchema.optional(),
+  limit: z.number().int().min(1).max(100),
+  authorization: AuthorizationContextV1Schema,
+});
+export type ProjectionResultReadRequestV1 = z.infer<typeof ProjectionResultReadRequestV1Schema>;
+
+export const ProjectionResultReadResultV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("page"),
+    queryType: z.enum(["run-view", "trace-chain"]),
+    items: z.array(ProjectionResultItemV1Schema),
+    nextCursor: IdentifierSchema.optional(),
+  }),
+  z.strictObject({ kind: z.literal("failed"), error: ModuleErrorV1Schema }),
+]);
+export type ProjectionResultReadResultV1 = z.infer<typeof ProjectionResultReadResultV1Schema>;
+
+export interface RiskRecordTraceReadPortV1 {
+  readBatch(
+    request: z.infer<typeof RiskRecordTraceReadRequestV1Schema>,
+  ): Promise<RiskRecordTraceReadResultV1>;
+}
+
+export interface ProjectionResultReadPortV1 {
+  readPage(
+    request: z.infer<typeof ProjectionResultReadRequestV1Schema>,
+  ): Promise<ProjectionResultReadResultV1>;
+}
 
 export const EngineeringDataApplyResultV1Schema = moduleResultSchema(
   EngineeringDataApplySuccessV1Schema,

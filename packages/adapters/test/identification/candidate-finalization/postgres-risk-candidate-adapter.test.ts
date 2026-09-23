@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { sql, type Kysely } from "kysely";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/access";
 import {
   ArtifactPutCommandV1Schema,
   ArtifactReadRequestV1Schema,
@@ -27,6 +28,7 @@ import type {
   AtomicCommitReceiptV1,
   AtomicCommitV1,
 } from "@riskflow/core/persistence";
+import { authorizationScopeDigest } from "@riskflow/core/retrieval";
 import {
   StandardizedRiskRecordEnvelopeSchema,
   type StandardizedRiskRecordEnvelope,
@@ -35,12 +37,22 @@ import { DomainEventV1Schema, type DomainEventV1 } from "@riskflow/contracts/eve
 import {
   AuthorizationContextV1Schema,
   type AuthorizationContextV1,
+  type ModuleBranchV1,
   type ModuleCapabilityV1,
+  type RiskRecordTraceReadResultV1,
+  type SourceAccessGrantRefV1,
+  type SpatialScopeRefV1,
+  type StandardizedRiskRecordRefV1,
 } from "@riskflow/contracts/ports";
 
 import { createFilesystemArtifactStore } from "../../../src/artifacts/filesystem-artifact-store.js";
 import { PostgresArtifactRegistry } from "../../../src/artifacts/postgres-artifact-registry.js";
 import { PostgresRiskCandidateFinalizationAdapter } from "../../../src/identification/candidate-finalization/postgres-risk-candidate-adapter.js";
+import {
+  createPostgresRiskRecordTraceReader,
+  riskRecordTraceReadInvocationIdV1,
+  type PostgresRiskRecordTraceReader,
+} from "../../../src/identification/candidate-finalization/postgres-risk-record-trace-reader.js";
 import {
   down as riskCandidateFinalizationDown,
   up as riskCandidateFinalizationUp,
@@ -76,8 +88,216 @@ interface RiskCandidateFinalizationTestFixture {
   readonly transactionUnit: PostgresTransactionUnit;
   readonly adapter: PostgresRiskCandidateFinalizationAdapter;
   readonly artifactStore: ArtifactStoreV1 & { close(): Promise<void> };
+  readonly traceAccess: TraceAccessControllerV1;
+  readonly traceReader: PostgresRiskRecordTraceReader;
   close(): Promise<void>;
 }
+
+const TRACE_READ_CAPABILITY = "projection.query" as const;
+const TRACE_BODY_MARKER = "合成风险正文不得披露";
+
+interface TraceIssuedAccessV1 {
+  readonly authorization: AuthorizationContextV1;
+  readonly invocationId: string;
+  readonly branch: ModuleBranchV1;
+}
+
+/**
+ * C06 当前授权复验端口的最小测试替身：按签发身份逐字复验（同 C24 读侧夹具），撤权或身份不符
+ * 一律拒绝。`verify` 只返回签发时冻结的上下文，因此读适配器必须自己复验而不能信任冻结引用。
+ */
+interface TraceAccessControllerV1 {
+  readonly port: Pick<LocalIdentityAccessV1, "verify">;
+  readonly calls: readonly {
+    readonly invocationId: string;
+    readonly branch: ModuleBranchV1;
+    readonly projectId: string;
+  }[];
+  revoke(): void;
+  restore(): void;
+  issue(input: {
+    readonly projectId: string;
+    readonly riskRecordRefs: readonly StandardizedRiskRecordRefV1[];
+    readonly actorId?: string;
+    readonly spatialScopeRefs?: readonly SpatialScopeRefV1[];
+    readonly sourceAccessGrantRefs?: readonly SourceAccessGrantRefV1[];
+  }): TraceIssuedAccessV1;
+}
+
+const traceScope = (entityId: string, versionId: string): SpatialScopeRefV1 => ({
+  kind: "spatial-scope",
+  reference: { entityId, versionId },
+});
+
+const createTraceAccess = (): TraceAccessControllerV1 => {
+  const issued = new Map<string, TraceIssuedAccessV1>();
+  const calls: {
+    readonly invocationId: string;
+    readonly branch: ModuleBranchV1;
+    readonly projectId: string;
+  }[] = [];
+  let revoked = false;
+  const denied: (stage: string, code: string) => never = (stage, code) => {
+    throw new AccessServiceError({
+      code: code as "AUTHORIZATION_DENIED",
+      retryable: false,
+      stage,
+      occurredAt: TIMESTAMP,
+      diagnosticRef: refOf("audit-trail", `access-diagnostic:${stage}`),
+      contextRefs: [],
+      requiredCapability: TRACE_READ_CAPABILITY,
+      authorizationPolicyRef: plainRef("authorization-policy"),
+    });
+  };
+  return {
+    calls,
+    revoke: () => {
+      revoked = true;
+    },
+    restore: () => {
+      revoked = false;
+    },
+    issue: (input) => {
+      const invocationId = riskRecordTraceReadInvocationIdV1({
+        projectId: input.projectId,
+        riskRecordRefs: [...input.riskRecordRefs],
+      });
+      const entityId = `authorization-trace:${input.projectId}:${invocationId}`;
+      const access: TraceIssuedAccessV1 = {
+        invocationId,
+        branch: "projection.query",
+        authorization: AuthorizationContextV1Schema.parse({
+          schemaVersion: "1",
+          authorizationContextRef: refOf("authorization-context", entityId),
+          actorId: input.actorId ?? ACTOR_ID,
+          projectId: input.projectId,
+          grantedCapabilities: [TRACE_READ_CAPABILITY],
+          spatialScopeRefs: [...(input.spatialScopeRefs ?? [traceScope("scope-root", "1")])],
+          sourceAccessGrantRefs: [...(input.sourceAccessGrantRefs ?? [])],
+          authorizationPolicyRef: plainRef("authorization-policy"),
+          decidedAt: TIMESTAMP,
+          invocation: { kind: "human" },
+        }),
+      };
+      issued.set(entityId, access);
+      return access;
+    },
+    port: {
+      async verify(request) {
+        calls.push({
+          invocationId: request.invocationId,
+          branch: request.branch,
+          projectId: request.projectId,
+        });
+        if (revoked) denied("verify.current", "SESSION_REVOKED");
+        const stored = issued.get(request.authorizationContextRef.reference.entityId);
+        if (
+          stored === undefined ||
+          stored.invocationId !== request.invocationId ||
+          stored.branch !== request.branch ||
+          stored.authorization.projectId !== request.projectId
+        ) {
+          denied("verify.binding", "AUTHORIZATION_DENIED");
+        }
+        return {
+          context: stored.authorization,
+          contextRef: stored.authorization.authorizationContextRef,
+          redacted: false,
+        };
+      },
+    },
+  };
+};
+
+/** 追溯读夹具的记录写入：范围摘要必须与签发上下文逐字对应，来源段与机理可参数化。 */
+const traceRecordFor = (input: {
+  readonly riskRecordId: string;
+  readonly versionId: string;
+  readonly authorizationScopeDigest: string;
+  readonly projectId?: string;
+  readonly sourceSegmentIds?: readonly string[];
+  readonly mechanismEntryIds?: readonly string[];
+  readonly processNodeId?: string;
+  readonly evidenceSourceSegmentId?: string;
+}): {
+  readonly write: StandardizedRiskRecordWriteV1;
+  readonly envelope: StandardizedRiskRecordEnvelope;
+} => {
+  const projectId = input.projectId ?? PROJECT_ID;
+  const sourceSegmentIds = [...(input.sourceSegmentIds ?? ["segment-trace-1"])];
+  const mechanismEntryIds = [...(input.mechanismEntryIds ?? ["mechanism-trace-1"])];
+  const write = StandardizedRiskRecordWriteV1Schema.parse({
+    riskRecordId: input.riskRecordId,
+    versionId: input.versionId,
+    riskRecordRef: refOf("standardized-risk-record", input.riskRecordId, input.versionId),
+    rowId: `row-${input.riskRecordId}`,
+    idempotencyKey: `identification.accept-groups:${input.riskRecordId}`,
+    requestDigest: input.versionId,
+    projectId,
+    workPlanRef,
+    identificationRunRef: refOf("workflow-run", `identification-run:${projectId}:work-plan`, "v1"),
+    inputSnapshotRef: refOf("identification-input-snapshot", "input-snapshot"),
+    mergePlanRef: refOf(
+      "merge-plan",
+      `merge-plan:${projectId}:work-plan`,
+      sha("merge-plan-request"),
+    ),
+    routeDecisionRef: refOf(
+      "route-decision",
+      `route-decision:${projectId}:merge-plan:group-1`,
+      sha("route-decision-request"),
+    ),
+    groupId: "group-1",
+    groupVersionId: sha("group-request"),
+    groupRef: groupRefFor("group-1", sha("group-request")),
+    representativeCandidateRefs: [
+      refOf("content-artifact", "candidate-artifact-1", `sha256:${sha("candidate-1")}`),
+    ],
+    sourceSegmentIds,
+    mechanismEntryIds,
+    authorizationScopeDigest: input.authorizationScopeDigest,
+    authorizationContextRef: refOf("authorization-context", "authorization-c22"),
+    actorRef: ACTOR_ID,
+    commandId: `c22-accept-groups-${input.riskRecordId}`,
+    occurredAt: TIMESTAMP,
+  });
+  const envelope = StandardizedRiskRecordEnvelopeSchema.parse({
+    riskRecordId: input.riskRecordId,
+    record: {
+      processNodeId: input.processNodeId ?? "process-node-trace",
+      riskSource: TRACE_BODY_MARKER,
+      riskFactor: "risk-factor-trace",
+      riskEvent: "risk-event-trace",
+      riskElementRelations: [
+        { sourceElement: "element-a", relation: "induces", targetElement: "element-b" },
+      ],
+      evidenceLocator: {
+        sourceSegmentId: input.evidenceSourceSegmentId ?? sourceSegmentIds[0],
+      },
+      modelConfidence: 0.8,
+    },
+    riskMechanismEntryIds: mechanismEntryIds,
+    sourceIds: sourceSegmentIds,
+    compositeConfidence: { value: 0.7, basis: ["model-confidence"] },
+    version: {
+      reference: plainRef(input.riskRecordId, input.versionId),
+      effectivePeriod: { validFrom: TIMESTAMP },
+      systemTime: { recordedAt: TIMESTAMP },
+    },
+    audit: { actorId: ACTOR_ID, action: "identification.accept-groups", recordedAt: TIMESTAMP },
+  });
+  return { write, envelope };
+};
+
+/** 追溯读断言只关心失败项的类型化原因：目标引用由各项自身携带，因此按引用归一后比对。 */
+const traceErrorShapes = (
+  items: Extract<RiskRecordTraceReadResultV1, { kind: "succeeded" }>["items"],
+): readonly Record<string, unknown>[] =>
+  items.map((item) =>
+    item.kind === "failed"
+      ? Object.fromEntries(Object.entries(item.error).filter(([key]) => key !== "targetRef"))
+      : { kind: item.kind },
+  );
 
 /** 单容器夹具：完整生产迁移链 + C04 文件系统工件存储，供登记与正式记录写入共用。 */
 const startRiskCandidateFinalizationFixture =
@@ -108,6 +328,12 @@ const startRiskCandidateFinalizationFixture =
         db: runtime.db,
         transactionUnit,
       });
+      const traceAccess = createTraceAccess();
+      const traceReader = createPostgresRiskRecordTraceReader({
+        db: runtime.db,
+        authorization: traceAccess.port,
+        now: () => new Date(TIMESTAMP),
+      });
       return {
         postgres,
         runtime,
@@ -115,6 +341,8 @@ const startRiskCandidateFinalizationFixture =
         transactionUnit,
         adapter,
         artifactStore,
+        traceAccess,
+        traceReader,
         async close() {
           await artifactStore.close().catch(() => undefined);
           await runtime.close().catch(() => undefined);
@@ -1013,5 +1241,323 @@ describe("PostgreSQL risk candidate finalization persistence", () => {
         id: write.riskRecordId,
       }),
     ).toBe(0);
+  }, 90_000);
+
+  it("reads process node, source segments, mechanisms and audit ref for exact versions in input order", async () => {
+    const riskRecordId = "risk-record-trace-visible";
+    const versionId = sha("risk-record-version-trace-visible");
+    const locatorRecordId = "risk-record-trace-foreign-locator";
+    const locatorVersionId = sha("risk-record-version-trace-foreign-locator");
+    const absentRef = refOf("standardized-risk-record", "risk-record-trace-absent", sha("absent"));
+    const visibleRef = refOf("standardized-risk-record", riskRecordId, versionId);
+    const locatorRef = refOf("standardized-risk-record", locatorRecordId, locatorVersionId);
+    const access = fixture!.traceAccess.issue({
+      projectId: PROJECT_ID,
+      riskRecordRefs: [absentRef, visibleRef, locatorRef],
+    });
+    const { write, envelope } = traceRecordFor({
+      riskRecordId,
+      versionId,
+      authorizationScopeDigest: authorizationScopeDigest(access.authorization),
+      sourceSegmentIds: ["segment-trace-1", "segment-trace-2"],
+      mechanismEntryIds: ["mechanism-trace-1", "mechanism-trace-2"],
+      processNodeId: "process-node-trace-visible",
+      evidenceSourceSegmentId: "segment-trace-2",
+    });
+    const inserted = await insertRecordsThroughTransaction(fixture!, {
+      rows: [write],
+      records: [envelope],
+      commandId: write.commandId,
+      auditEntryId: `${write.commandId}:audit`,
+    });
+    expect(inserted.outcome).toEqual({ kind: "inserted" });
+
+    // 证据定位越出本记录自身来源段：该定位不披露，其余最小引用照常返回。
+    const foreignLocator = traceRecordFor({
+      riskRecordId: locatorRecordId,
+      versionId: locatorVersionId,
+      authorizationScopeDigest: authorizationScopeDigest(access.authorization),
+      sourceSegmentIds: ["segment-trace-3"],
+      mechanismEntryIds: ["mechanism-trace-3"],
+      evidenceSourceSegmentId: "segment-trace-outside",
+    });
+    const locatorInserted = await insertRecordsThroughTransaction(fixture!, {
+      rows: [foreignLocator.write],
+      records: [foreignLocator.envelope],
+      commandId: foreignLocator.write.commandId,
+      auditEntryId: `${foreignLocator.write.commandId}:audit`,
+    });
+    expect(locatorInserted.outcome).toEqual({ kind: "inserted" });
+
+    const batch = [absentRef, visibleRef, locatorRef];
+    const result = await fixture!.traceReader.readBatch({
+      projectId: PROJECT_ID,
+      riskRecordRefs: batch,
+      requestedAt: TIMESTAMP,
+      authorization: access.authorization,
+    });
+    expect(result.kind).toBe("succeeded");
+    if (result.kind !== "succeeded") return;
+    // 输入顺序保持不变：先缺席，再命中。
+    expect(result.items.map((item) => item.kind)).toEqual(["failed", "found", "found"]);
+    expect(result.items[1]).toEqual({
+      kind: "found",
+      riskRecordRef: visibleRef,
+      processNodeId: "process-node-trace-visible",
+      sourceSegmentIds: ["segment-trace-1", "segment-trace-2"],
+      riskMechanismEntryIds: ["mechanism-trace-1", "mechanism-trace-2"],
+      evidenceLocator: { sourceSegmentId: "segment-trace-2" },
+      auditTrailRef: refOf("audit-trail", `${write.commandId}:audit`, "v1"),
+    });
+    expect(result.items[2]).toEqual({
+      kind: "found",
+      riskRecordRef: locatorRef,
+      processNodeId: "process-node-trace",
+      sourceSegmentIds: ["segment-trace-3"],
+      riskMechanismEntryIds: ["mechanism-trace-3"],
+      auditTrailRef: refOf("audit-trail", `${foreignLocator.write.commandId}:audit`, "v1"),
+    });
+    expect(fixture!.traceAccess.calls.at(-1)).toEqual({
+      invocationId: access.invocationId,
+      branch: "projection.query",
+      projectId: PROJECT_ID,
+    });
+
+    // 披露项只含最小引用：不返回风险源/因子/事件/关系/置信度等正文，也不含正文标记。
+    const disclosed = result.items[1] as Record<string, unknown>;
+    expect(Object.keys(disclosed).sort()).toEqual([
+      "auditTrailRef",
+      "evidenceLocator",
+      "kind",
+      "processNodeId",
+      "riskMechanismEntryIds",
+      "riskRecordRef",
+      "sourceSegmentIds",
+    ]);
+    expect(JSON.stringify(result)).not.toContain(TRACE_BODY_MARKER);
+  }, 90_000);
+
+  it("returns one identical ENTITY_NOT_FOUND shape for absent, cross-project and scope-hidden refs", async () => {
+    const visibleId = "risk-record-trace-visible-sibling";
+    const visibleVersion = sha("risk-record-version-trace-visible-sibling");
+    const visibleRef = refOf("standardized-risk-record", visibleId, visibleVersion);
+    const access = fixture!.traceAccess.issue({
+      projectId: PROJECT_ID,
+      riskRecordRefs: [visibleRef],
+    });
+    const visible = traceRecordFor({
+      riskRecordId: visibleId,
+      versionId: visibleVersion,
+      authorizationScopeDigest: authorizationScopeDigest(access.authorization),
+    });
+    const visibleInserted = await insertRecordsThroughTransaction(fixture!, {
+      rows: [visible.write],
+      records: [visible.envelope],
+      commandId: visible.write.commandId,
+      auditEntryId: `${visible.write.commandId}:audit`,
+    });
+    expect(visibleInserted.outcome).toEqual({ kind: "inserted" });
+
+    // 跨工程记录：行本身成立，但调用工程按工程过滤后无从枚举。
+    const foreignRef = refOf(
+      "standardized-risk-record",
+      "risk-record-trace-foreign",
+      sha("foreign"),
+    );
+    const foreign = traceRecordFor({
+      riskRecordId: "risk-record-trace-foreign",
+      versionId: sha("foreign"),
+      projectId: OTHER_PROJECT_ID,
+      authorizationScopeDigest: authorizationScopeDigest(
+        fixture!.traceAccess.issue({
+          projectId: OTHER_PROJECT_ID,
+          riskRecordRefs: [foreignRef],
+        }).authorization,
+      ),
+    });
+    const foreignInserted = await insertRecordsThroughTransaction(fixture!, {
+      rows: [foreign.write],
+      records: [foreign.envelope],
+      commandId: foreign.write.commandId,
+      auditEntryId: `${foreign.write.commandId}:audit`,
+    });
+    expect(foreignInserted.outcome).toEqual({ kind: "inserted" });
+
+    // 范围隐藏记录：同工程，但冻结范围摘要与当前授权范围不符（更窄的空间范围）。
+    const hiddenRef = refOf("standardized-risk-record", "risk-record-trace-hidden", sha("hidden"));
+    const hidden = traceRecordFor({
+      riskRecordId: "risk-record-trace-hidden",
+      versionId: sha("hidden"),
+      authorizationScopeDigest: authorizationScopeDigest(
+        fixture!.traceAccess.issue({
+          projectId: PROJECT_ID,
+          riskRecordRefs: [hiddenRef],
+          spatialScopeRefs: [traceScope("scope-hidden", "1")],
+        }).authorization,
+      ),
+    });
+    const hiddenInserted = await insertRecordsThroughTransaction(fixture!, {
+      rows: [hidden.write],
+      records: [hidden.envelope],
+      commandId: hidden.write.commandId,
+      auditEntryId: `${hidden.write.commandId}:audit`,
+    });
+    expect(hiddenInserted.outcome).toEqual({ kind: "inserted" });
+
+    const absentRef = refOf("standardized-risk-record", "risk-record-trace-absent", sha("absent"));
+    const batch = [absentRef, foreignRef, hiddenRef];
+    const batchAccess = fixture!.traceAccess.issue({
+      projectId: PROJECT_ID,
+      riskRecordRefs: batch,
+    });
+    const result = await fixture!.traceReader.readBatch({
+      projectId: PROJECT_ID,
+      riskRecordRefs: batch,
+      requestedAt: TIMESTAMP,
+      authorization: batchAccess.authorization,
+    });
+    expect(result.kind).toBe("succeeded");
+    if (result.kind !== "succeeded") return;
+    expect(result.items.map((item) => item.kind)).toEqual(["failed", "failed", "failed"]);
+    // 三种情况共享逐字相同的形状：只有各自的目标引用不同，无存在性 oracle。
+    const shapes = traceErrorShapes(result.items);
+    expect(shapes[0]).toEqual(shapes[1]);
+    expect(shapes[1]).toEqual(shapes[2]);
+    expect(shapes[0]).toMatchObject({
+      code: "ENTITY_NOT_FOUND",
+      category: "not-found",
+      retryable: false,
+      stageCode: "identification-candidate-finalization.trace-read",
+    });
+    expect(
+      result.items.map((item) =>
+        item.kind === "failed" && item.error.code === "ENTITY_NOT_FOUND"
+          ? item.error.targetRef
+          : undefined,
+      ),
+    ).toEqual(batch);
+
+    // 整批撤权：不抛异常，返回 AUTHORIZATION_DENIED，且不披露任何目标。
+    fixture!.traceAccess.revoke();
+    const revoked = await fixture!.traceReader.readBatch({
+      projectId: PROJECT_ID,
+      riskRecordRefs: [visibleRef, foreignRef],
+      requestedAt: TIMESTAMP,
+      authorization: fixture!.traceAccess.issue({
+        projectId: PROJECT_ID,
+        riskRecordRefs: [visibleRef, foreignRef],
+      }).authorization,
+    });
+    expect(revoked).toMatchObject({
+      kind: "failed",
+      error: {
+        code: "AUTHORIZATION_DENIED",
+        category: "authorization",
+        retryable: false,
+        requiredCapability: "projection.query",
+      },
+    });
+    expect(JSON.stringify(revoked)).not.toContain(visibleId);
+    expect(JSON.stringify(revoked)).not.toContain(foreignRef.reference.entityId);
+    fixture!.traceAccess.restore();
+  }, 90_000);
+
+  it("blocks a batch beyond the bound and a malformed request without reaching SQL", async () => {
+    const ref = refOf("standardized-risk-record", "risk-record-trace-bound", sha("bound"));
+    const access = fixture!.traceAccess.issue({ projectId: PROJECT_ID, riskRecordRefs: [ref] });
+    const overflow = await fixture!.traceReader.readBatch({
+      projectId: PROJECT_ID,
+      riskRecordRefs: Array.from({ length: 101 }, () => ref),
+      requestedAt: TIMESTAMP,
+      authorization: access.authorization,
+    });
+    expect(overflow).toMatchObject({
+      kind: "failed",
+      error: {
+        code: "BUSINESS_BLOCKED",
+        category: "business-blocked",
+        retryable: false,
+        blockerKind: "trace-batch-overflow",
+        stageCode: "identification-candidate-finalization.trace-read",
+      },
+    });
+
+    // 形状非法的请求与空批次同样是稳定 `BUSINESS_BLOCKED`，且在任何 SQL 之前失败。
+    const untouchedDb = {
+      selectFrom: () => {
+        throw new Error("malformed request must not reach SQL");
+      },
+    };
+    const guardedReader = createPostgresRiskRecordTraceReader({
+      db: untouchedDb,
+      authorization: fixture!.traceAccess.port,
+      now: () => new Date(TIMESTAMP),
+    });
+    for (const request of [{}, { ...access.authorization, riskRecordRefs: [] }]) {
+      const malformed = await guardedReader.readBatch(request);
+      expect(malformed).toMatchObject({
+        kind: "failed",
+        error: { code: "BUSINESS_BLOCKED", blockerKind: "trace-request-invalid" },
+      });
+    }
+  }, 90_000);
+
+  it("blocks per-record overflow with a stable blockerKind instead of truncating the record", async () => {
+    const access = fixture!.traceAccess.issue({
+      projectId: PROJECT_ID,
+      riskRecordRefs: [refOf("standardized-risk-record", "overflow", sha("overflow"))],
+    });
+    const scopeDigest = authorizationScopeDigest(access.authorization);
+    const tooManySegments = traceRecordFor({
+      riskRecordId: "risk-record-trace-many-segments",
+      versionId: sha("risk-record-version-many-segments"),
+      authorizationScopeDigest: scopeDigest,
+      sourceSegmentIds: Array.from({ length: 257 }, (_value, index) => `segment-${index}`),
+    });
+    const tooManyMechanisms = traceRecordFor({
+      riskRecordId: "risk-record-trace-many-mechanisms",
+      versionId: sha("risk-record-version-many-mechanisms"),
+      authorizationScopeDigest: scopeDigest,
+      mechanismEntryIds: Array.from({ length: 65 }, (_value, index) => `mechanism-${index}`),
+    });
+    const insertedSegments = await insertRecordsThroughTransaction(fixture!, {
+      rows: [tooManySegments.write],
+      records: [tooManySegments.envelope],
+      commandId: tooManySegments.write.commandId,
+      auditEntryId: `${tooManySegments.write.commandId}:audit`,
+    });
+    expect(insertedSegments.outcome).toEqual({ kind: "inserted" });
+    const insertedMechanisms = await insertRecordsThroughTransaction(fixture!, {
+      rows: [tooManyMechanisms.write],
+      records: [tooManyMechanisms.envelope],
+      commandId: tooManyMechanisms.write.commandId,
+      auditEntryId: `${tooManyMechanisms.write.commandId}:audit`,
+    });
+    expect(insertedMechanisms.outcome).toEqual({ kind: "inserted" });
+
+    const segmentsRef = tooManySegments.write.riskRecordRef;
+    const mechanismsRef = tooManyMechanisms.write.riskRecordRef;
+    const batchAccess = fixture!.traceAccess.issue({
+      projectId: PROJECT_ID,
+      riskRecordRefs: [segmentsRef, mechanismsRef],
+    });
+    const result = await fixture!.traceReader.readBatch({
+      projectId: PROJECT_ID,
+      riskRecordRefs: [segmentsRef, mechanismsRef],
+      requestedAt: TIMESTAMP,
+      authorization: batchAccess.authorization,
+    });
+    expect(result.kind).toBe("succeeded");
+    if (result.kind !== "succeeded") return;
+    expect(
+      result.items.map((item) =>
+        item.kind === "failed"
+          ? [item.error.code, (item.error as { blockerKind?: string }).blockerKind]
+          : item.kind,
+      ),
+    ).toEqual([
+      ["BUSINESS_BLOCKED", "trace-source-overflow"],
+      ["BUSINESS_BLOCKED", "trace-mechanism-overflow"],
+    ]);
   }, 90_000);
 });

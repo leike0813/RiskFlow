@@ -30,6 +30,7 @@ import * as responseRecommendationMigration from "../../src/postgres/migrations/
 import * as executionForecastFeedbackDeviationMigration from "../../src/postgres/migrations/warning-response/deliver-execution-forecast-feedback-and-deviation/000046_execution_forecast_feedback_deviation.js";
 import * as calibrationSuggestionGovernanceMigration from "../../src/postgres/migrations/warning-response/deliver-calibration-suggestion-and-governance-loop/000047_calibration_suggestion_governance.js";
 import * as calibrationSuggestionLineageMigration from "../../src/postgres/migrations/warning-response/deliver-calibration-suggestion-and-governance-loop/000048_calibration_suggestion_lineage.js";
+import * as assessmentRiskflowGraphsMigration from "../../src/postgres/migrations/workflow/deliver-assessment-and-riskflow-graphs/000049_assessment_riskflow_graphs.js";
 
 export interface AuthPostgresFixture extends PostgresTestFixture {
   runMigrations(): Promise<void>;
@@ -156,6 +157,13 @@ export const startAuthPostgresFixture = async (): Promise<AuthPostgresFixture> =
         "warning-response/deliver-calibration-suggestion-and-governance-loop/000048_calibration_suggestion_lineage.ts",
       ),
       calibrationSuggestionLineageMigration,
+    ],
+    [
+      resolve(
+        base.productionMigrationRoot,
+        "workflow/deliver-assessment-and-riskflow-graphs/000049_assessment_riskflow_graphs.ts",
+      ),
+      assessmentRiskflowGraphsMigration,
     ],
     [
       resolve(

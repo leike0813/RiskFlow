@@ -1,0 +1,434 @@
+import { describe, expect, it } from "vitest";
+
+import type { StartWorkflowRunCommandV1 } from "@riskflow/contracts/ports";
+
+import {
+  WorkflowGraphResultRowV1Schema,
+  WorkflowGraphRunStateV1Schema,
+} from "../../src/workflow/schema.js";
+import {
+  assessmentSubRunIdentityFor,
+  classifyWorkflowGraphFailure,
+  evaluateWorkflowEntryGate,
+  initialRunVersionId,
+  nextRunVersionId,
+  normalizeMonitoringInputs,
+  reconcileCheckpointReference,
+  workflowEntryIdentityFor,
+  workflowRunIdentityFor,
+  workflowRequestDigest,
+  type WorkflowStartPayloadV1,
+} from "../../src/workflow/service.js";
+
+type Payload = WorkflowStartPayloadV1 & { readonly entryMode: string };
+
+const version = (kind: string, entityId = kind, versionId = "v1") => ({
+  kind,
+  reference: { entityId, versionId },
+});
+
+const projectRevisionRef = version("project-revision");
+const spatialA = version("spatial-scope", "space-a");
+const spatialB = version("spatial-scope", "space-b");
+const monitoringA = version("monitoring-snapshot", "monitor-a");
+const monitoringB = version("monitoring-snapshot", "monitor-b");
+const applicabilityA = version("applicability-metadata-snapshot", "applicability-a");
+const applicabilityB = version("applicability-metadata-snapshot", "applicability-b");
+const riskInput = version("risk-input-version", "risk-input");
+const basisReleaseSet = version("assessment-basis-release-set", "basis");
+const sourceVersion = version("source-version", "source");
+const graphVersion = { entityId: "graph", versionId: "v1" };
+const retryPolicyRef = { entityId: "retry", versionId: "v1" };
+
+const identifyAndAssess = (overrides: Record<string, unknown> = {}): Payload =>
+  ({
+    graphVersion,
+    retryPolicyRef,
+    entryMode: "identify-and-assess",
+    projectRevisionRef,
+    spatialScopeRefs: [spatialA],
+    sourceVersionRefs: [sourceVersion],
+    ...overrides,
+  }) as unknown as Payload;
+
+const assess = (overrides: Record<string, unknown> = {}): Payload =>
+  ({
+    graphVersion,
+    retryPolicyRef,
+    entryMode: "assess",
+    riskInput,
+    applicabilityMetadataSnapshotRef: applicabilityA,
+    spatialScopeRef: spatialA,
+    projectRevisionRef,
+    ...overrides,
+  }) as unknown as Payload;
+
+const historicalBackfill = (overrides: Record<string, unknown> = {}): Payload =>
+  ({
+    graphVersion,
+    retryPolicyRef,
+    entryMode: "historical-backfill",
+    riskInput,
+    applicabilityMetadataSnapshotRef: applicabilityA,
+    effectiveAt: "2026-08-01T00:00:00Z",
+    assessmentBasisReleaseSetRef: basisReleaseSet,
+    ...overrides,
+  }) as unknown as Payload;
+
+const reassess = (overrides: Record<string, unknown> = {}): Payload =>
+  ({
+    graphVersion,
+    retryPolicyRef,
+    entryMode: "reassess",
+    previousAssessmentRecordRef: version("risk-assessment-record", "record"),
+    reason: "monitoring-snapshot",
+    changedInputRefs: [monitoringA],
+    ...overrides,
+  }) as unknown as Payload;
+
+describe("C30 entry gate", () => {
+  it("accepts paired multi-space contexts and freezes each space exactly once", () => {
+    const gate = evaluateWorkflowEntryGate(
+      identifyAndAssess({
+        spatialScopeRefs: [spatialA, spatialB],
+        assessmentContexts: [
+          {
+            spatialScopeRef: spatialA,
+            applicabilityMetadataSnapshotRef: applicabilityA,
+            monitoringSnapshotRefs: [monitoringA],
+          },
+          { spatialScopeRef: spatialB, applicabilityMetadataSnapshotRef: applicabilityB },
+        ],
+      }),
+    );
+    expect(gate.kind).toBe("ready");
+    if (gate.kind !== "ready") return;
+    expect(gate.assessmentContexts).toHaveLength(2);
+    expect(gate.monitoringSnapshotRefs).toEqual([monitoringA]);
+    expect(gate.frozenRefs).toContainEqual(applicabilityB);
+  });
+
+  it("blocks a risk whose space has no paired context and rejects duplicate pairing", () => {
+    expect(
+      evaluateWorkflowEntryGate(
+        identifyAndAssess({
+          spatialScopeRefs: [spatialA, spatialB],
+          assessmentContexts: [
+            { spatialScopeRef: spatialA, applicabilityMetadataSnapshotRef: applicabilityA },
+          ],
+        }),
+      ),
+    ).toMatchObject({ kind: "incomplete", detailCode: "assessment-context-missing" });
+    expect(
+      evaluateWorkflowEntryGate(
+        identifyAndAssess({
+          assessmentContexts: [
+            { spatialScopeRef: spatialA, applicabilityMetadataSnapshotRef: applicabilityA },
+            { spatialScopeRef: spatialA, applicabilityMetadataSnapshotRef: applicabilityB },
+          ],
+        }),
+      ),
+    ).toMatchObject({ kind: "conflict", detailCode: "assessment-context-duplicate" });
+    expect(
+      evaluateWorkflowEntryGate(
+        identifyAndAssess({
+          spatialScopeRefs: [spatialA],
+          assessmentContexts: [
+            { spatialScopeRef: spatialA, applicabilityMetadataSnapshotRef: applicabilityA },
+            { spatialScopeRef: spatialB, applicabilityMetadataSnapshotRef: applicabilityB },
+          ],
+        }),
+      ),
+    ).toMatchObject({ kind: "conflict", detailCode: "assessment-context-unpaired" });
+  });
+
+  it("treats a legacy singular monitoring snapshot as the equivalent single-item set only", () => {
+    expect(evaluateWorkflowEntryGate(assess({ monitoringSnapshotRef: monitoringA })).kind).toBe(
+      "ready",
+    );
+    expect(evaluateWorkflowEntryGate(assess({ monitoringSnapshotRefs: [monitoringA] })).kind).toBe(
+      "ready",
+    );
+    expect(
+      evaluateWorkflowEntryGate(
+        assess({ monitoringSnapshotRef: monitoringA, monitoringSnapshotRefs: [monitoringA] }),
+      ).kind,
+    ).toBe("ready");
+    expect(
+      evaluateWorkflowEntryGate(
+        assess({ monitoringSnapshotRef: monitoringA, monitoringSnapshotRefs: [monitoringB] }),
+      ),
+    ).toMatchObject({ kind: "conflict" });
+    expect(
+      evaluateWorkflowEntryGate(assess({ monitoringSnapshotRefs: [monitoringA, monitoringA] })),
+    ).toMatchObject({ kind: "conflict" });
+  });
+
+  it("refuses entries that omit the frozen references a formal run requires", () => {
+    expect(evaluateWorkflowEntryGate(assess({ monitoringSnapshotRefs: undefined }))).toMatchObject({
+      kind: "missing",
+    });
+    expect(evaluateWorkflowEntryGate(assess({ projectRevisionRef: undefined }))).toMatchObject({
+      kind: "incomplete",
+      detailCode: "project-revision-missing",
+    });
+    expect(
+      evaluateWorkflowEntryGate(
+        historicalBackfill({ projectRevisionRef, spatialScopeRef: undefined }),
+      ),
+    ).toMatchObject({ kind: "incomplete", detailCode: "spatial-scope-missing" });
+    expect(
+      evaluateWorkflowEntryGate(
+        historicalBackfill({
+          projectRevisionRef,
+          spatialScopeRef: spatialA,
+          monitoringSnapshotRefs: [monitoringA],
+          riskInput: undefined,
+        }),
+      ),
+    ).toMatchObject({ kind: "incomplete", detailCode: "risk-input-missing" });
+    expect(
+      evaluateWorkflowEntryGate(reassess({ monitoringSnapshotRefs: [monitoringA] })),
+    ).toMatchObject({ kind: "incomplete", detailCode: "project-revision-missing" });
+  });
+
+  it("keeps a historical backfill run on its own frozen basis and effective revision", () => {
+    const gate = evaluateWorkflowEntryGate(
+      historicalBackfill({
+        spatialScopeRef: spatialA,
+        projectRevisionRef,
+        monitoringSnapshotRefs: [monitoringA, monitoringB],
+      }),
+    );
+    expect(gate.kind).toBe("ready");
+    if (gate.kind !== "ready") return;
+    expect(gate.frozenRefs).toContainEqual(basisReleaseSet);
+    expect(gate.frozenRefs).toContainEqual(projectRevisionRef);
+    expect(gate.frozenRefs).toContainEqual(monitoringB);
+  });
+});
+
+describe("C30 run identity and state version", () => {
+  it("derives one parent run and one thread per entry identity", () => {
+    const first = workflowRunIdentityFor({
+      projectId: "project-1",
+      entryMode: "identify-and-assess",
+      entryIdentity: workflowEntryIdentityFor({
+        entryMode: "identify-and-assess",
+        projectId: "project-1",
+        frozenRefs: [projectRevisionRef, spatialA],
+      }),
+      graphVersion,
+    });
+    const replay = workflowRunIdentityFor({
+      projectId: "project-1",
+      entryMode: "identify-and-assess",
+      entryIdentity: workflowEntryIdentityFor({
+        entryMode: "identify-and-assess",
+        projectId: "project-1",
+        frozenRefs: [spatialA, projectRevisionRef],
+      }),
+      graphVersion,
+    });
+    const differentInput = workflowRunIdentityFor({
+      projectId: "project-1",
+      entryMode: "identify-and-assess",
+      entryIdentity: workflowEntryIdentityFor({
+        entryMode: "identify-and-assess",
+        projectId: "project-1",
+        frozenRefs: [projectRevisionRef, spatialB],
+      }),
+      graphVersion,
+    });
+    expect(replay).toEqual(first);
+    expect(differentInput.runRef).not.toEqual(first.runRef);
+  });
+
+  it("gives each accepted risk version its own assessment sub-run identity", () => {
+    const parent = workflowRunIdentityFor({
+      projectId: "project-1",
+      entryMode: "identify-and-assess",
+      entryIdentity: workflowEntryIdentityFor({
+        entryMode: "identify-and-assess",
+        projectId: "project-1",
+        frozenRefs: [projectRevisionRef],
+      }),
+      graphVersion,
+    }).runRef;
+    const riskA = version("standardized-risk-record", "risk-a");
+    const riskB = version("standardized-risk-record", "risk-b");
+    const subA = assessmentSubRunIdentityFor({
+      projectId: "project-1",
+      parentRunRef: parent,
+      riskRecordRef: riskA,
+    });
+    const subAReplay = assessmentSubRunIdentityFor({
+      projectId: "project-1",
+      parentRunRef: parent,
+      riskRecordRef: riskA,
+    });
+    const subB = assessmentSubRunIdentityFor({
+      projectId: "project-1",
+      parentRunRef: parent,
+      riskRecordRef: riskB,
+    });
+    expect(subAReplay).toEqual(subA);
+    expect(subB.runRef).not.toEqual(subA.runRef);
+    expect(workflowRequestDigest({ a: 1 })).toBe(workflowRequestDigest({ a: 1 }));
+  });
+
+  it("advances the run state version per stage and status without reuse", () => {
+    const base = {
+      runId: "run-1",
+      entryMode: "assess" as const,
+      recordedAt: "2026-08-31T00:00:00Z",
+    };
+    const first = initialRunVersionId(base);
+    expect(first).toBe(initialRunVersionId(base));
+    const second = nextRunVersionId({
+      runId: "run-1",
+      previousRunVersionId: first,
+      stage: "A0",
+      status: "running",
+      recordedAt: "2026-08-31T00:01:00Z",
+    });
+    const third = nextRunVersionId({
+      runId: "run-1",
+      previousRunVersionId: second,
+      stage: "A5",
+      status: "running",
+      recordedAt: "2026-08-31T00:02:00Z",
+    });
+    expect(new Set([first, second, third]).size).toBe(3);
+  });
+});
+
+describe("C30 checkpoint reconciliation and failure classification", () => {
+  it("only lets business facts lead the checkpoint by one provable step", () => {
+    expect(reconcileCheckpointReference({ checkpointStage: "A4", registeredStage: "A4" })).toBe(
+      "consistent",
+    );
+    expect(reconcileCheckpointReference({ checkpointStage: "A4", registeredStage: "A5" })).toBe(
+      "business-ahead",
+    );
+    expect(reconcileCheckpointReference({ checkpointStage: "A5", registeredStage: "A4" })).toBe(
+      "checkpoint-ahead",
+    );
+    expect(reconcileCheckpointReference({ checkpointStage: "A1", registeredStage: "A6" })).toBe(
+      "inconsistent",
+    );
+    expect(
+      reconcileCheckpointReference({ checkpointStage: "assessment", registeredStage: "A6" }),
+    ).toBe("inconsistent");
+  });
+
+  it("classifies upstream failures without retrying permission or rule conflicts", () => {
+    expect(
+      classifyWorkflowGraphFailure({
+        stage: "A5",
+        upstream: { code: "AUTHORIZATION_DENIED", retryable: false },
+        detailCode: "denied",
+        occurredAt: "2026-08-31T00:00:00Z",
+      }),
+    ).toMatchObject({ code: "AUTHORIZATION_DENIED", retryable: false });
+    expect(
+      classifyWorkflowGraphFailure({
+        stage: "A5",
+        upstream: { code: "TRANSIENT_FAILURE", retryable: true },
+        detailCode: "transient",
+        occurredAt: "2026-08-31T00:00:00Z",
+      }),
+    ).toMatchObject({ code: "RETRYABLE_INFRASTRUCTURE_FAILURE", retryable: true });
+    expect(
+      classifyWorkflowGraphFailure({
+        stage: "A5",
+        upstream: { code: "BUSINESS_BLOCKED", retryable: false },
+        detailCode: "rule-conflict",
+        occurredAt: "2026-08-31T00:00:00Z",
+      }),
+    ).toMatchObject({ code: "CONTRACT_INVALID", retryable: false });
+  });
+});
+
+describe("C30 registration rows", () => {
+  it("requires the kind-specific references and pins the run-state version", () => {
+    const row = {
+      schemaVersion: "1",
+      projectId: "project-1",
+      resultId: "run-1:A0",
+      resultVersionId: "version-1",
+      runId: "run-1",
+      runVersionId: "version-1",
+      entryMode: "assess",
+      commandId: "command-1",
+      idempotencyKey: "idempotency-1",
+      requestDigest: "a".repeat(64),
+      actorRef: "actor-1",
+      authorizationContextRef: version("authorization-context"),
+      authorizationScopeDigest: "b".repeat(64),
+      validAt: "2026-08-31T00:00:00Z",
+      recordedAt: "2026-08-31T00:00:00Z",
+      persistedAt: "2026-08-31T00:00:00Z",
+      auditEntryId: "audit-1",
+      resultKind: "run-state",
+      stage: "A0",
+      frozenRefs: [],
+    };
+    expect(WorkflowGraphResultRowV1Schema.safeParse(row).success).toBe(true);
+    expect(
+      WorkflowGraphResultRowV1Schema.safeParse({ ...row, runVersionId: "other" }).success,
+    ).toBe(false);
+    expect(
+      WorkflowGraphResultRowV1Schema.safeParse({ ...row, resultKind: "entry-snapshot" }).success,
+    ).toBe(false);
+    expect(
+      WorkflowGraphResultRowV1Schema.safeParse({ ...row, resultKind: "waiting", stage: "A6" })
+        .success,
+    ).toBe(false);
+  });
+
+  it("keeps run state bodies to references and terminal facts", () => {
+    const state = {
+      schemaVersion: "1",
+      projectId: "project-1",
+      runId: "run-1",
+      runVersionId: "version-1",
+      entryMode: "assess",
+      entryIdentity: { entityId: "workflow-entry:project-1:assess", versionId: "entry-v1" },
+      stage: "A5",
+      status: "waiting",
+      assessmentRunRefs: [],
+      acceptedRiskRecordRefs: [],
+      assessmentRecordRefs: [],
+      warningRecordRefs: [],
+      responseRecommendationRefs: [],
+      deviationRecordRefs: [],
+      calibrationSuggestionRefs: [],
+      recordedAt: "2026-08-31T00:00:00Z",
+    };
+    expect(WorkflowGraphRunStateV1Schema.safeParse(state).success).toBe(true);
+    expect(WorkflowGraphRunStateV1Schema.safeParse({ ...state, status: "completed" }).success).toBe(
+      true,
+    );
+    expect(WorkflowGraphRunStateV1Schema.safeParse({ ...state, stage: "segment" }).success).toBe(
+      false,
+    );
+  });
+
+  it("keeps monitoring normalization total over singular, plural and conflicting inputs", () => {
+    expect(normalizeMonitoringInputs({})).toEqual({ kind: "missing" });
+    expect(normalizeMonitoringInputs({ monitoringSnapshotRef: monitoringA })).toEqual({
+      kind: "ok",
+      refs: [monitoringA],
+    });
+    expect(normalizeMonitoringInputs({ monitoringSnapshotRefs: [] })).toEqual({ kind: "missing" });
+    expect(
+      normalizeMonitoringInputs({
+        monitoringSnapshotRef: monitoringA,
+        monitoringSnapshotRefs: [monitoringB],
+      }),
+    ).toEqual({ kind: "conflict" });
+  });
+});
+
+export type { StartWorkflowRunCommandV1 };

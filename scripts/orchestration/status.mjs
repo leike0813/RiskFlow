@@ -25,13 +25,26 @@ export const DISPATCH_INPUT_TRUST_ISSUE_REF = "workspace_trust_required:dispatch
 
 export class CommandFailure extends Error {
   constructor(command, args, cause) {
-    super(`command failed: ${command} ${args.join(" ")}: ${cause.message}`);
+    super(`command failed: ${command} ${args.join(" ")}: ${cause.message}${failureOutput(cause)}`);
     this.name = "CommandFailure";
     this.command = command;
     this.args = args;
     this.exitCode = cause.code;
     this.cause = cause;
   }
+}
+
+// CLI 常常把结构化错误写到 stdout（stderr 为空），只报 `cause.message` 会得到一句
+// “Command failed: <同一命令行>”，调用方只能靠反复实验反推。有界透出原始输出后，
+// 失败原因（如绑定不符、参数非法）即可直接归因。
+function failureOutput(cause, limit = 1_200) {
+  const raw = [cause?.stderr, cause?.stdout]
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter(Boolean)
+    .join("\n");
+  if (!raw) return "";
+  const bounded = raw.length > limit ? `…${raw.slice(-limit)}` : raw;
+  return `\n${bounded}`;
 }
 
 export class InvalidJsonError extends Error {

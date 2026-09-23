@@ -543,6 +543,57 @@ describe("controlled orchestration", () => {
     }
   });
 
+  it("rebinds the coordinator Run before a write that targets another Run", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-run-bind-"));
+    const calls = [];
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("run-current")) {
+        calls.push("run-current");
+        return { result: { run: { id: "run-other-lane" } } };
+      }
+      if (command === "orca-ide" && args.includes("run-use")) {
+        calls.push(`run-use:${args[args.indexOf("--id") + 1]}`);
+        return { result: {} };
+      }
+      if (command === "orca-ide" && args.includes("task-create")) {
+        calls.push("task-create");
+        return { id: "task-rebind" };
+      }
+      if (command === "orca-ide" && args.includes("task-update")) return {};
+      const terminal = fakeCodexTerminal(command, args);
+      if (terminal !== null) return terminal;
+      if (command === "orca-ide" && args.includes("worker-start")) {
+        calls.push("worker-start");
+        return { state: "started" };
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    process.env.ORCA_TERMINAL_HANDLE = "term-test-coordinator";
+    try {
+      const result = await riskflowDispatch(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "dispatch-run-rebind",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          orcaCommand: "orca-ide",
+          statusProvider: async () => ({ graph, snapshot: snapshot() }),
+        },
+      );
+      expect(result.worker).toMatchObject({ state: "started" });
+      // 一个协调端 terminal 只能绑定一个 Run：写之前必须先绑到本工作项的 Run。
+      expect(calls).toContain("run-use:run-finalizer");
+      expect(calls.indexOf("run-use:run-finalizer")).toBeLessThan(calls.indexOf("worker-start"));
+    } finally {
+      delete process.env.ORCA_TERMINAL_HANDLE;
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
   it("keeps planning as the next role until a planning attempt succeeds", () => {
     const attempt = (overrides = {}) => ({
       taskId: "task-x",
@@ -1179,6 +1230,9 @@ describe("controlled orchestration", () => {
         return "";
       }
       if (command === "orca-ide" && args.includes("task-update")) return {};
+      // 写前会确认协调端 terminal 的 Run 绑定；本用例不关心绑定结果。
+      if (command === "orca-ide" && (args.includes("run-current") || args.includes("run-use")))
+        return { result: {} };
       throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
     };
     process.env.ORCA_TERMINAL_HANDLE = "term-test-coordinator";

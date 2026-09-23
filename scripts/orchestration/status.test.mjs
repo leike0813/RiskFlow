@@ -99,7 +99,7 @@ function context(overrides = {}) {
 }
 
 describe("execution graph", () => {
-  it("validates the committed C00-C38 graph", async () => {
+  it("validates the committed execution graph", async () => {
     const manifest = JSON.parse(
       await readFile(
         resolve(
@@ -109,7 +109,7 @@ describe("execution graph", () => {
         "utf8",
       ),
     );
-    expect(manifest.nodes).toHaveLength(46);
+    expect(manifest.nodes).toHaveLength(48);
     expect(validateGraph(manifest)).toEqual([]);
   });
 

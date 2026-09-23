@@ -31,6 +31,7 @@ import * as executionForecastFeedbackDeviationMigration from "../../src/postgres
 import * as calibrationSuggestionGovernanceMigration from "../../src/postgres/migrations/warning-response/deliver-calibration-suggestion-and-governance-loop/000047_calibration_suggestion_governance.js";
 import * as calibrationSuggestionLineageMigration from "../../src/postgres/migrations/warning-response/deliver-calibration-suggestion-and-governance-loop/000048_calibration_suggestion_lineage.js";
 import * as formalZeroResultMigration from "../../src/postgres/migrations/risk-identification/fix-c22-formal-zero-result-terminal-fact/000049_formal_zero_result.js";
+import * as assessmentRiskflowGraphsMigration from "../../src/postgres/migrations/workflow/deliver-assessment-and-riskflow-graphs/000050_assessment_riskflow_graphs.js";
 
 export interface AuthPostgresFixture extends PostgresTestFixture {
   runMigrations(): Promise<void>;
@@ -164,6 +165,13 @@ export const startAuthPostgresFixture = async (): Promise<AuthPostgresFixture> =
         "risk-identification/fix-c22-formal-zero-result-terminal-fact/000049_formal_zero_result.ts",
       ),
       formalZeroResultMigration,
+    ],
+    [
+      resolve(
+        base.productionMigrationRoot,
+        "workflow/deliver-assessment-and-riskflow-graphs/000050_assessment_riskflow_graphs.ts",
+      ),
+      assessmentRiskflowGraphsMigration,
     ],
     [
       resolve(

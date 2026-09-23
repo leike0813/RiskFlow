@@ -426,6 +426,14 @@
       "dependsOn": ["C28"],
       "wave": "F",
       "lane": "quality"
+    },
+    {
+      "id": "C42",
+      "kind": "change",
+      "change": "fix-orchestration-worktree-bootstrap",
+      "dependsOn": [],
+      "wave": "F",
+      "lane": "quality"
     }
   ]
 }

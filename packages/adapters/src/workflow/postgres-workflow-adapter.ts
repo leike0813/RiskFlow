@@ -1,0 +1,899 @@
+/**
+ * C30 自有运行事实的 PostgreSQL 适配器（design D-05/D-06/D-07）。
+ *
+ * 只写入/回读本 change 的三张追加表与 C04 正文，不读其它模块私表，不复制领域事实；
+ * 运行事实登记只接受调用方已持有的 ambient C03 事务（登记、审计与命令回执同事务提交），
+ * 查询登记与正文读写自行完成当前授权复验并留下审计/收据。
+ */
+import { randomUUID } from "node:crypto";
+
+import type { Kysely, Transaction } from "kysely";
+
+import type {
+  AuthorizationContextV1,
+  ContentArtifactRefV1,
+  ModuleBranchV1,
+  ModuleCapabilityV1,
+} from "@riskflow/contracts/ports";
+import { AuthorizationContextV1Schema } from "@riskflow/contracts/ports";
+import type { LocalIdentityAccessV1 } from "@riskflow/core/access";
+import {
+  ArtifactPutCommandV1Schema,
+  ArtifactReadRequestV1Schema,
+  type ArtifactStoreV1,
+} from "@riskflow/core/artifacts";
+import {
+  type JsonValue,
+  type TransactionContextV1,
+  type TransactionUnitV1,
+} from "@riskflow/core/persistence";
+import { authorizationScopeDigest } from "@riskflow/core/retrieval";
+import {
+  WorkflowGraphArtifactBodyV1Schema,
+  WorkflowGraphLinkV1Schema,
+  WorkflowGraphResultRowV1Schema,
+  WorkflowGraphRunStateV1Schema,
+  WorkflowQueryRegistrationV1Schema,
+  type WorkflowGraphArtifactBodyV1,
+  type WorkflowGraphBodyPortV1,
+  type WorkflowGraphLinkV1,
+  type WorkflowGraphRegistrationStoreV1,
+  type WorkflowGraphResultRowV1,
+  type WorkflowGraphRunStateV1,
+  type WorkflowQueryRegistrationV1,
+  type WorkflowRegisterOutcomeV1,
+} from "@riskflow/core/workflow";
+
+import { makePersistenceError, mapPostgresError } from "../postgres/pool.js";
+import { getPostgresTransaction } from "../postgres/transaction-unit.js";
+import type { PostgresDatabase } from "../postgres/types.js";
+
+const RESULTS_TABLE = "business.workflow_graph_results";
+const LINKS_TABLE = "business.workflow_graph_links";
+const QUERIES_TABLE = "business.workflow_query_results";
+const MAX_BODY_BYTES_V1 = 16 * 1024 * 1024;
+const DEFAULT_ROW_LIMIT_V1 = 500;
+
+/** 每类 C04 正文的用途码（design D-05）：写入与读取共用同一张表，旁路写入在读取时显式拒绝。 */
+export const WORKFLOW_GRAPH_BODY_PURPOSE_CODE_V1 = {
+  "run-state": "workflow-graph-run-state",
+  "run-result": "workflow-graph-run-result",
+} as const;
+export type WorkflowGraphBodyKindV1 = keyof typeof WORKFLOW_GRAPH_BODY_PURPOSE_CODE_V1;
+
+/**
+ * design D-07：C30 不新增 capability，只复用既有 `workflow.*`、`projection.query` 与领域分支。
+ * 复验分支由授权实际持有的 capability 唯一决定；未列出的 capability 一律拒绝。
+ */
+const BRANCH_BY_CAPABILITY_V1: Partial<Record<ModuleCapabilityV1, ModuleBranchV1>> = {
+  "workflow.start": "workflow.start-run",
+  "workflow.resume": "workflow.resume-run",
+  "workflow.cancel": "workflow.cancel-run",
+  "projection.query": "projection.query",
+  "risk-assessment.prepare": "risk-assessment.initial",
+  "risk-assessment.evaluate": "risk-assessment.evaluate",
+  "warning-response.record": "warning-response.open",
+  "warning-response.recommend": "warning-response.create-candidate",
+  "review-audit.request": "review-audit.request-review",
+  "agent-task.start": "agent-task.start-task",
+};
+
+/** 受保护读写的调用身份：签发方必须用同一函数派生，否则复验按拒绝收口（fail closed）。 */
+export const workflowGraphReadInvocationIdV1 = (input: {
+  readonly operation:
+    | "result-row"
+    | "run-rows"
+    | "run-state"
+    | "run-links"
+    | "query-registration"
+    | "body-write"
+    | "body-read";
+  readonly projectId: string;
+  readonly targetId: string;
+}): string => `c30-${input.operation}:${input.projectId}:${input.targetId}`;
+
+/** C30 授权拒绝：只带稳定 detailCode，不携带正文与受限目标存在性。 */
+export class WorkflowGraphDeniedErrorV1 extends Error {
+  readonly detailCode: string;
+
+  constructor(detailCode: string) {
+    super(`workflow-graph authorization denied: ${detailCode}`);
+    this.name = "WorkflowGraphDeniedErrorV1";
+    this.detailCode = detailCode;
+  }
+}
+
+/** jsonb 列以文本形式写入，避免驱动二次编码。 */
+const jsonValue = (value: unknown): JsonValue => JSON.stringify(value) as unknown as JsonValue;
+
+const nullableJson = (value: unknown): JsonValue | null =>
+  value === undefined ? null : jsonValue(value);
+
+const isoOf = (value: Date | string): string =>
+  typeof value === "string" ? new Date(value).toISOString() : value.toISOString();
+
+interface WorkflowGraphResultDbRow {
+  project_id: string;
+  result_kind: string;
+  result_id: string;
+  result_version_id: string;
+  run_id: string;
+  run_version_id: string;
+  parent_run_id: string | null;
+  thread_id: string | null;
+  entry_mode: string;
+  command_id: string;
+  idempotency_key: string;
+  request_digest: string;
+  artifact_ref: JsonValue | null;
+  authorization_scope_digest: string;
+  actor_ref: string;
+  authorization_context_ref: JsonValue;
+  frozen_refs: JsonValue;
+  stage: string | null;
+  entry_identity: JsonValue | null;
+  input_snapshot_ref: JsonValue | null;
+  stage_result_ref: JsonValue | null;
+  route_decision_ref: JsonValue | null;
+  route_kind: string | null;
+  waiting_ref: JsonValue | null;
+  workflow_error_ref: JsonValue | null;
+  run_result_ref: JsonValue | null;
+  valid_at: Date | string;
+  recorded_at: Date | string;
+  persisted_at: Date | string;
+  audit_entry_id: string;
+}
+
+interface WorkflowGraphLinkDbRow {
+  project_id: string;
+  link_id: string;
+  run_id: string;
+  from_ref: JsonValue;
+  to_ref: JsonValue;
+  relation: string;
+  source_stage: string;
+  stage_result_ref: JsonValue | null;
+  evidence_locator: JsonValue | null;
+  authorization_context_ref: JsonValue;
+  authorization_scope_digest: string;
+  actor_ref: string;
+  recorded_at: Date | string;
+  audit_entry_id: string;
+}
+
+interface WorkflowGraphQueryDbRow {
+  project_id: string;
+  query_result_id: string;
+  query_result_version_id: string;
+  query_type: string;
+  target_ref: JsonValue;
+  run_id: string | null;
+  actor_ref: string;
+  authorization_context_ref: JsonValue;
+  authorization_scope_digest: string;
+  requested_at: Date | string;
+  recorded_at: Date | string;
+  persisted_at: Date | string;
+  audit_entry_id: string;
+}
+
+interface WorkflowGraphDatabaseV1 {
+  "business.workflow_graph_results": WorkflowGraphResultDbRow;
+  "business.workflow_graph_links": WorkflowGraphLinkDbRow;
+  "business.workflow_query_results": WorkflowGraphQueryDbRow;
+}
+
+type WorkflowGraphDatabase = PostgresDatabase & WorkflowGraphDatabaseV1;
+type WorkflowGraphQueryExecutorV1 = Kysely<WorkflowGraphDatabase>;
+type WorkflowGraphTransactionV1 = Transaction<WorkflowGraphDatabase>;
+
+const insertColumnsForRow = (row: WorkflowGraphResultRowV1): Record<string, unknown> => ({
+  project_id: row.projectId,
+  result_kind: row.resultKind,
+  result_id: row.resultId,
+  result_version_id: row.resultVersionId,
+  run_id: row.runId,
+  run_version_id: row.runVersionId,
+  parent_run_id: row.parentRunId ?? null,
+  thread_id: row.threadId ?? null,
+  entry_mode: row.entryMode,
+  command_id: row.commandId,
+  idempotency_key: row.idempotencyKey,
+  request_digest: row.requestDigest,
+  artifact_ref: nullableJson(row.artifactRef),
+  authorization_scope_digest: row.authorizationScopeDigest,
+  actor_ref: row.actorRef,
+  authorization_context_ref: jsonValue(row.authorizationContextRef),
+  frozen_refs: jsonValue(row.frozenRefs),
+  stage: row.stage ?? null,
+  entry_identity: nullableJson(row.entryIdentity),
+  input_snapshot_ref: nullableJson(row.inputSnapshotRef),
+  stage_result_ref: nullableJson(row.stageResultRef),
+  route_decision_ref: nullableJson(row.routeDecisionRef),
+  route_kind: row.routeKind ?? null,
+  waiting_ref: nullableJson(row.waitingRef),
+  workflow_error_ref: nullableJson(row.workflowErrorRef),
+  run_result_ref: nullableJson(row.runResultRef),
+  valid_at: row.validAt,
+  recorded_at: row.recordedAt,
+  audit_entry_id: row.auditEntryId,
+});
+
+const rowFromDb = (row: WorkflowGraphResultDbRow): WorkflowGraphResultRowV1 =>
+  WorkflowGraphResultRowV1Schema.parse({
+    schemaVersion: "1",
+    projectId: row.project_id,
+    resultKind: row.result_kind,
+    resultId: row.result_id,
+    resultVersionId: row.result_version_id,
+    runId: row.run_id,
+    runVersionId: row.run_version_id,
+    ...(row.parent_run_id === null ? {} : { parentRunId: row.parent_run_id }),
+    ...(row.thread_id === null ? {} : { threadId: row.thread_id }),
+    entryMode: row.entry_mode,
+    commandId: row.command_id,
+    idempotencyKey: row.idempotency_key,
+    requestDigest: row.request_digest,
+    ...(row.artifact_ref === null ? {} : { artifactRef: row.artifact_ref }),
+    authorizationScopeDigest: row.authorization_scope_digest,
+    actorRef: row.actor_ref,
+    authorizationContextRef: row.authorization_context_ref,
+    frozenRefs: row.frozen_refs,
+    ...(row.stage === null ? {} : { stage: row.stage }),
+    ...(row.entry_identity === null ? {} : { entryIdentity: row.entry_identity }),
+    ...(row.input_snapshot_ref === null ? {} : { inputSnapshotRef: row.input_snapshot_ref }),
+    ...(row.stage_result_ref === null ? {} : { stageResultRef: row.stage_result_ref }),
+    ...(row.route_decision_ref === null ? {} : { routeDecisionRef: row.route_decision_ref }),
+    ...(row.route_kind === null ? {} : { routeKind: row.route_kind }),
+    ...(row.waiting_ref === null ? {} : { waitingRef: row.waiting_ref }),
+    ...(row.workflow_error_ref === null ? {} : { workflowErrorRef: row.workflow_error_ref }),
+    ...(row.run_result_ref === null ? {} : { runResultRef: row.run_result_ref }),
+    validAt: isoOf(row.valid_at),
+    recordedAt: isoOf(row.recorded_at),
+    persistedAt: isoOf(row.persisted_at),
+    auditEntryId: row.audit_entry_id,
+  });
+
+const insertColumnsForLink = (link: WorkflowGraphLinkV1): Record<string, unknown> => ({
+  project_id: link.projectId,
+  link_id: link.linkId,
+  run_id: link.runId,
+  from_ref: jsonValue(link.fromRef),
+  to_ref: jsonValue(link.toRef),
+  relation: link.relation,
+  source_stage: link.sourceStage,
+  stage_result_ref: nullableJson(link.stageResultRef),
+  evidence_locator: nullableJson(link.evidenceLocator),
+  authorization_context_ref: jsonValue(link.authorizationContextRef),
+  authorization_scope_digest: link.authorizationScopeDigest,
+  actor_ref: link.actorRef,
+  recorded_at: link.recordedAt,
+  audit_entry_id: link.auditEntryId,
+});
+
+const linkFromDb = (row: WorkflowGraphLinkDbRow): WorkflowGraphLinkV1 =>
+  WorkflowGraphLinkV1Schema.parse({
+    schemaVersion: "1",
+    projectId: row.project_id,
+    linkId: row.link_id,
+    runId: row.run_id,
+    fromRef: row.from_ref,
+    toRef: row.to_ref,
+    relation: row.relation,
+    sourceStage: row.source_stage,
+    ...(row.stage_result_ref === null ? {} : { stageResultRef: row.stage_result_ref }),
+    ...(row.evidence_locator === null ? {} : { evidenceLocator: row.evidence_locator }),
+    authorizationContextRef: row.authorization_context_ref,
+    authorizationScopeDigest: row.authorization_scope_digest,
+    actorRef: row.actor_ref,
+    recordedAt: isoOf(row.recorded_at),
+    auditEntryId: row.audit_entry_id,
+  });
+
+const insertColumnsForQuery = (query: WorkflowQueryRegistrationV1): Record<string, unknown> => ({
+  project_id: query.projectId,
+  query_result_id: query.queryResultId,
+  query_result_version_id: query.queryResultVersionId,
+  query_type: query.queryType,
+  target_ref: jsonValue(query.targetRef),
+  run_id: query.runId ?? null,
+  actor_ref: query.actorRef,
+  authorization_context_ref: jsonValue(query.authorizationContextRef),
+  authorization_scope_digest: query.authorizationScopeDigest,
+  requested_at: query.requestedAt,
+  recorded_at: query.recordedAt,
+  audit_entry_id: query.auditEntryId,
+});
+
+const queryFromDb = (row: WorkflowGraphQueryDbRow): WorkflowQueryRegistrationV1 =>
+  WorkflowQueryRegistrationV1Schema.parse({
+    schemaVersion: "1",
+    projectId: row.project_id,
+    queryResultId: row.query_result_id,
+    queryResultVersionId: row.query_result_version_id,
+    queryType: row.query_type,
+    targetRef: row.target_ref,
+    ...(row.run_id === null ? {} : { runId: row.run_id }),
+    actorRef: row.actor_ref,
+    authorizationContextRef: row.authorization_context_ref,
+    authorizationScopeDigest: row.authorization_scope_digest,
+    requestedAt: isoOf(row.requested_at),
+    recordedAt: isoOf(row.recorded_at),
+    persistedAt: isoOf(row.persisted_at),
+    auditEntryId: row.audit_entry_id,
+  });
+
+const boundedContent = async (
+  content: AsyncIterable<Uint8Array>,
+  limit: number,
+): Promise<Uint8Array> => {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of content) {
+    total += chunk.byteLength;
+    if (total > limit) throw makePersistenceError("TRANSACTION_FAILED", "workflow-graph.body-size");
+    chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+};
+
+export interface PostgresWorkflowAdapterOptionsV1 {
+  /** 传 `runtime.db` 即可；类型为 `Kysely<PostgresDatabase & WorkflowGraphDatabaseV1>`。 */
+  readonly db: unknown;
+  /** C03 事务单元：查询登记用它自行开启事务并留下收据、审计与（可选的）领域事件。 */
+  readonly transactionUnit: TransactionUnitV1;
+  /** C04 工件存储：正文只入 C04，登记行只保存精确引用。 */
+  readonly artifactStore: ArtifactStoreV1;
+  /** C05 当前授权复验端口：每次受保护读写前按当前 actor/工程/空间/资料范围复验。 */
+  readonly authorization: Pick<LocalIdentityAccessV1, "verify">;
+  readonly now?: () => Date;
+}
+
+export interface PostgresWorkflowAdapterV1 {
+  readonly registrationStore: WorkflowGraphRegistrationStoreV1;
+  readonly bodies: WorkflowGraphBodyPortV1;
+}
+
+class WorkflowGraphPersistence {
+  readonly #db: WorkflowGraphQueryExecutorV1;
+  readonly #transactionUnit: TransactionUnitV1;
+  readonly #artifactStore: ArtifactStoreV1;
+  readonly #authorization: Pick<LocalIdentityAccessV1, "verify">;
+  readonly #now: () => Date;
+
+  constructor(options: PostgresWorkflowAdapterOptionsV1) {
+    this.#db = options.db as unknown as WorkflowGraphQueryExecutorV1;
+    this.#transactionUnit = options.transactionUnit;
+    this.#artifactStore = options.artifactStore;
+    this.#authorization = options.authorization;
+    this.#now = options.now ?? (() => new Date());
+  }
+
+  /**
+   * 当前授权复验（design D-07）：`authorization` 提供复验身份，`verify` 返回当前收窄上下文；
+   * 冻结引用不能替代它。任何形状不符或异常都按拒绝收口。
+   */
+  async verifyAuthorization(input: {
+    readonly authorization: AuthorizationContextV1;
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly invocationId: string;
+    readonly requestedAt?: string;
+  }): Promise<AuthorizationContextV1 | undefined> {
+    if (input.authorization.projectId !== input.projectId) return undefined;
+    if (input.authorization.actorId !== input.actorId) return undefined;
+    if (input.authorization.grantedCapabilities.length !== 1) return undefined;
+    const capability = input.authorization.grantedCapabilities[0];
+    if (capability === undefined) return undefined;
+    const branch = BRANCH_BY_CAPABILITY_V1[capability];
+    if (branch === undefined) return undefined;
+    try {
+      const decision = await this.#authorization.verify({
+        authorizationContextRef: input.authorization.authorizationContextRef,
+        invocationId: input.invocationId,
+        projectId: input.projectId,
+        branch,
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+        requestedAt: input.requestedAt ?? this.#now().toISOString(),
+      });
+      const verified = AuthorizationContextV1Schema.safeParse(decision.context);
+      if (!verified.success) return undefined;
+      if (
+        verified.data.projectId !== input.projectId ||
+        verified.data.actorId !== input.actorId ||
+        verified.data.grantedCapabilities.length !== 1 ||
+        verified.data.grantedCapabilities[0] !== capability
+      ) {
+        return undefined;
+      }
+      return verified.data;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * 运行状态版本断言（design D-08）：同一运行的运行状态追加前取运行级事务锁，锁后读取最新版本；
+   * 与预期不符即拒绝，不猜测“最新”。
+   */
+  async assertCurrentRunVersion(
+    input: {
+      readonly projectId: string;
+      readonly runId: string;
+      readonly expectedRunVersionId: string | undefined;
+    },
+    context: unknown,
+  ): Promise<void> {
+    const transaction = this.#ambientTransaction(context);
+    const latest = await transaction
+      .selectFrom(RESULTS_TABLE)
+      .select("run_version_id")
+      .where("project_id", "=", input.projectId)
+      .where("result_kind", "=", "run-state")
+      .where("run_id", "=", input.runId)
+      .orderBy("persisted_at", "desc")
+      .orderBy("run_version_id", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    if (latest?.run_version_id !== input.expectedRunVersionId) {
+      throw makePersistenceError("IDEMPOTENCY_CONFLICT", "workflow-graph.run-version");
+    }
+  }
+
+  /** 同键同摘要不覆盖首次行；同键异摘要返回首次命令身份（不可重试冲突）。 */
+  async registerRow(
+    input: { readonly row: WorkflowGraphResultRowV1; readonly occurredAt: string },
+    context?: unknown,
+  ): Promise<WorkflowRegisterOutcomeV1> {
+    const row = WorkflowGraphResultRowV1Schema.parse(input.row);
+    try {
+      return await this.#registerRowInTransaction(row, this.#ambientTransaction(context));
+    } catch (error) {
+      throw mapPostgresError(error, "workflow-graph.result-register");
+    }
+  }
+
+  async registerLink(
+    input: { readonly link: WorkflowGraphLinkV1 },
+    context?: unknown,
+  ): Promise<WorkflowRegisterOutcomeV1> {
+    const link = WorkflowGraphLinkV1Schema.parse(input.link);
+    try {
+      const transaction = this.#ambientTransaction(context);
+      const inserted = await transaction
+        .insertInto(LINKS_TABLE)
+        .values(insertColumnsForLink(link) as never)
+        .onConflict((conflict) => conflict.doNothing())
+        .execute();
+      if (Number(inserted[0]?.numInsertedOrUpdatedRows ?? 0n) > 0) {
+        return { kind: "registered", replayed: false };
+      }
+      const stored = await transaction
+        .selectFrom(LINKS_TABLE)
+        .selectAll()
+        .where("project_id", "=", link.projectId)
+        .where("link_id", "=", link.linkId)
+        .executeTakeFirst();
+      if (stored === undefined) {
+        throw makePersistenceError("TRANSACTION_FAILED", "workflow-graph.link-register-missing");
+      }
+      return { kind: "registered", replayed: true };
+    } catch (error) {
+      throw mapPostgresError(error, "workflow-graph.link-register");
+    }
+  }
+
+  /**
+   * 查询登记（design D-06）：`ProjectionPortV1.query` 的登记是独立命令，自行开启 C03 事务，
+   * 收据、审计与登记行同事务提交；同一查询身份重复登记必须是同一载荷。
+   */
+  async registerQuery(input: {
+    readonly registration: WorkflowQueryRegistrationV1;
+  }): Promise<WorkflowRegisterOutcomeV1> {
+    const registration = WorkflowQueryRegistrationV1Schema.parse(input.registration);
+    const existing = await this.#selectQuery(registration.projectId, registration.queryResultId);
+    if (existing !== undefined) {
+      return existing.query_result_version_id === registration.queryResultVersionId
+        ? { kind: "registered", replayed: true }
+        : { kind: "idempotency-conflict", priorCommandId: existing.query_result_id };
+    }
+    const commandId = `${registration.queryResultId}:command`;
+    try {
+      const receipt = await this.#transactionUnit.execute(
+        {
+          projectId: registration.projectId,
+          commandKind: "workflow.projection-query",
+          commandId,
+          idempotencyKey: registration.queryResultId,
+          payload: {
+            queryType: registration.queryType,
+            targetRef: jsonValue(registration.targetRef),
+            authorizationScopeDigest: registration.authorizationScopeDigest,
+          },
+          actorRef: registration.actorRef,
+          authorizationContextRef: registration.authorizationContextRef,
+          issuedAt: registration.recordedAt,
+          ...(registration.runId === undefined ? {} : { runId: registration.runId }),
+        },
+        async (context) => {
+          const transaction = this.#ambientTransaction(context);
+          await transaction
+            .insertInto(QUERIES_TABLE)
+            .values(insertColumnsForQuery(registration) as never)
+            .onConflict((conflict) => conflict.doNothing())
+            .execute();
+          const reference = {
+            entityId: registration.queryResultId,
+            versionId: registration.queryResultVersionId,
+          };
+          return {
+            resultRef: { kind: "query-result" as const, reference },
+            audit: {
+              auditEntryId: registration.auditEntryId,
+              projectId: registration.projectId,
+              action: "workflow.projection-query",
+              targetRef: { kind: "query-result" as const, reference },
+              actorRef: registration.actorRef,
+              authorizationContextRef: registration.authorizationContextRef,
+              occurredAt: registration.recordedAt,
+              recordedAt: registration.recordedAt,
+              version: reference,
+              commandId,
+              idempotencyKey: registration.queryResultId,
+              ...(registration.runId === undefined ? {} : { runId: registration.runId }),
+            },
+            events: [],
+          };
+        },
+      );
+      return { kind: "registered", replayed: receipt.replayed };
+    } catch (error) {
+      throw mapPostgresError(error, "workflow-graph.query-register");
+    }
+  }
+
+  async readRow(input: {
+    readonly projectId: string;
+    readonly runId: string;
+    readonly resultKind: WorkflowGraphResultRowV1["resultKind"];
+    readonly resultId: string;
+    readonly resultVersionId: string;
+  }): Promise<WorkflowGraphResultRowV1 | undefined> {
+    const row = await this.#db
+      .selectFrom(RESULTS_TABLE)
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("run_id", "=", input.runId)
+      .where("result_kind", "=", input.resultKind)
+      .where("result_id", "=", input.resultId)
+      .where("result_version_id", "=", input.resultVersionId)
+      .executeTakeFirst();
+    return row === undefined ? undefined : rowFromDb(row);
+  }
+
+  /** 已登记事实按持久化时间与稳定键排序，分页读取不改变顺序。 */
+  async listRunRows(input: {
+    readonly projectId: string;
+    readonly runId: string;
+    readonly limit?: number;
+  }): Promise<readonly WorkflowGraphResultRowV1[]> {
+    const rows = await this.#db
+      .selectFrom(RESULTS_TABLE)
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("run_id", "=", input.runId)
+      .orderBy("persisted_at", "asc")
+      .orderBy("result_kind", "asc")
+      .orderBy("result_id", "asc")
+      .limit(input.limit ?? DEFAULT_ROW_LIMIT_V1)
+      .execute();
+    return rows.map((row) => rowFromDb(row));
+  }
+
+  /**
+   * 最新运行状态（design D-08）：先按当前授权复验再读登记行与其 C04 正文；
+   * 无权与不存在对调用方同形，正文不可读时返回 `undefined`，绝不据 checkpoint 猜测状态。
+   */
+  async readLatestRunState(input: {
+    readonly projectId: string;
+    readonly runId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+  }): Promise<
+    | {
+        readonly row: WorkflowGraphResultRowV1 & { readonly resultKind: "run-state" };
+        readonly state: WorkflowGraphRunStateV1;
+      }
+    | undefined
+  > {
+    const row = await this.#db
+      .selectFrom(RESULTS_TABLE)
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("result_kind", "=", "run-state")
+      .where("run_id", "=", input.runId)
+      .orderBy("persisted_at", "desc")
+      .orderBy("run_version_id", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    if (row === undefined || row.artifact_ref === null) return undefined;
+    const parsedRow = rowFromDb(row);
+    if (parsedRow.resultKind !== "run-state" || parsedRow.artifactRef === undefined) {
+      return undefined;
+    }
+    const verified = await this.verifyAuthorization({
+      authorization: input.authorization,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      invocationId: workflowGraphReadInvocationIdV1({
+        operation: "run-state",
+        projectId: input.projectId,
+        targetId: input.runId,
+      }),
+      requestedAt: input.requestedAt,
+    });
+    if (verified === undefined) return undefined;
+    if (parsedRow.authorizationScopeDigest !== authorizationScopeDigest(verified)) return undefined;
+    const body = await this.#openBody({
+      projectId: input.projectId,
+      artifactRef: parsedRow.artifactRef,
+      actorId: verified.actorId,
+      requestedAt: input.requestedAt,
+      authorization: verified,
+    });
+    if (body === undefined || body.bodyKind !== "run-state") return undefined;
+    const state = WorkflowGraphRunStateV1Schema.safeParse(body.runState);
+    if (!state.success) return undefined;
+    return { row: parsedRow as typeof parsedRow & { resultKind: "run-state" }, state: state.data };
+  }
+
+  async listRunLinks(input: {
+    readonly projectId: string;
+    readonly runId: string;
+    readonly limit?: number;
+  }): Promise<readonly WorkflowGraphLinkV1[]> {
+    const rows = await this.#db
+      .selectFrom(LINKS_TABLE)
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("run_id", "=", input.runId)
+      .orderBy("recorded_at", "asc")
+      .orderBy("link_id", "asc")
+      .limit(input.limit ?? DEFAULT_ROW_LIMIT_V1)
+      .execute();
+    return rows.map((row) => linkFromDb(row));
+  }
+
+  async readQuery(input: {
+    readonly projectId: string;
+    readonly queryResultId: string;
+    readonly queryResultVersionId: string;
+  }): Promise<WorkflowQueryRegistrationV1 | undefined> {
+    const row = await this.#selectQuery(input.projectId, input.queryResultId);
+    if (row === undefined || row.query_result_version_id !== input.queryResultVersionId) {
+      return undefined;
+    }
+    return queryFromDb(row);
+  }
+
+  async #selectQuery(
+    projectId: string,
+    queryResultId: string,
+  ): Promise<WorkflowGraphQueryDbRow | undefined> {
+    return await this.#db
+      .selectFrom(QUERIES_TABLE)
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where("query_result_id", "=", queryResultId)
+      .executeTakeFirst();
+  }
+
+  async #registerRowInTransaction(
+    row: WorkflowGraphResultRowV1,
+    transaction: WorkflowGraphTransactionV1,
+  ): Promise<WorkflowRegisterOutcomeV1> {
+    const inserted = await transaction
+      .insertInto(RESULTS_TABLE)
+      .values(insertColumnsForRow(row) as never)
+      .onConflict((conflict) => conflict.doNothing())
+      .execute();
+    if (Number(inserted[0]?.numInsertedOrUpdatedRows ?? 0n) > 0) {
+      return { kind: "registered", replayed: false };
+    }
+    // `doNothing` 同时覆盖主键与 `(project_id, result_kind, idempotency_key)` 唯一键，
+    // 因此逐个身份回查：主键命中是同身份重放，幂等键命中且摘要不同是异载荷登记。
+    const byIdentity = await transaction
+      .selectFrom(RESULTS_TABLE)
+      .selectAll()
+      .where("project_id", "=", row.projectId)
+      .where("result_kind", "=", row.resultKind)
+      .where("result_id", "=", row.resultId)
+      .where("result_version_id", "=", row.resultVersionId)
+      .executeTakeFirst();
+    const stored =
+      byIdentity ??
+      (await transaction
+        .selectFrom(RESULTS_TABLE)
+        .selectAll()
+        .where("project_id", "=", row.projectId)
+        .where("result_kind", "=", row.resultKind)
+        .where("idempotency_key", "=", row.idempotencyKey)
+        .executeTakeFirst());
+    if (stored === undefined) {
+      throw makePersistenceError("TRANSACTION_FAILED", "workflow-graph.result-register-missing");
+    }
+    if (stored.request_digest !== row.requestDigest) {
+      return { kind: "idempotency-conflict", priorCommandId: stored.command_id };
+    }
+    return { kind: "registered", replayed: true };
+  }
+
+  async putBody(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly commandId: string;
+    readonly issuedAt: string;
+    readonly artifactId: string;
+    readonly body: WorkflowGraphArtifactBodyV1;
+    readonly authorization: AuthorizationContextV1;
+  }): Promise<ContentArtifactRefV1> {
+    const body = WorkflowGraphArtifactBodyV1Schema.parse(input.body);
+    const verified = await this.verifyAuthorization({
+      authorization: input.authorization,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      invocationId: workflowGraphReadInvocationIdV1({
+        operation: "body-write",
+        projectId: input.projectId,
+        targetId: input.artifactId,
+      }),
+      requestedAt: input.issuedAt,
+    });
+    if (verified === undefined) throw new WorkflowGraphDeniedErrorV1("body-write-denied");
+    const requiredCapability = verified.grantedCapabilities[0];
+    if (requiredCapability === undefined) {
+      throw new WorkflowGraphDeniedErrorV1("body-write-capability-not-granted");
+    }
+    const result = await this.#artifactStore.put(
+      ArtifactPutCommandV1Schema.parse({
+        schemaVersion: "1",
+        commandId: input.commandId,
+        idempotencyKey: input.commandId,
+        projectId: input.projectId,
+        actorId: input.actorId,
+        issuedAt: input.issuedAt,
+        authorization: verified,
+        requiredCapability,
+        artifactId: input.artifactId,
+        artifactKind: "content",
+        purposeCode: WORKFLOW_GRAPH_BODY_PURPOSE_CODE_V1[body.bodyKind],
+        mediaType: "application/json",
+        parentArtifactRefs: [],
+        evidenceReferences: [],
+        additionalSpatialScopeRefs: [],
+        additionalSourceAccessGrantRefs: [],
+      }),
+      (async function* () {
+        yield new TextEncoder().encode(JSON.stringify(body));
+      })(),
+    );
+    if (result.artifactRef.kind !== "content-artifact") {
+      throw makePersistenceError("TRANSACTION_FAILED", "workflow-graph.body-kind");
+    }
+    return result.artifactRef;
+  }
+
+  /** 读 C04 正文：先按当前授权复验，再按精确 `artifactRef` 打开并核对摘要与判别种类。 */
+  async readBody(input: {
+    readonly projectId: string;
+    readonly artifactRef: ContentArtifactRefV1;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+  }): Promise<WorkflowGraphArtifactBodyV1 | undefined> {
+    const verified = await this.verifyAuthorization({
+      authorization: input.authorization,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      invocationId: workflowGraphReadInvocationIdV1({
+        operation: "body-read",
+        projectId: input.projectId,
+        targetId: input.artifactRef.reference.entityId,
+      }),
+      requestedAt: input.requestedAt,
+    });
+    if (verified === undefined) return undefined;
+    return await this.#openBody({
+      projectId: input.projectId,
+      artifactRef: input.artifactRef,
+      actorId: verified.actorId,
+      requestedAt: input.requestedAt,
+      authorization: verified,
+    });
+  }
+
+  async #openBody(input: {
+    readonly projectId: string;
+    readonly artifactRef: ContentArtifactRefV1;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+  }): Promise<WorkflowGraphArtifactBodyV1 | undefined> {
+    const requiredCapability = input.authorization.grantedCapabilities[0];
+    if (requiredCapability === undefined) return undefined;
+    for (const purposeCode of Object.values(WORKFLOW_GRAPH_BODY_PURPOSE_CODE_V1)) {
+      try {
+        const handle = await this.#artifactStore.open(
+          ArtifactReadRequestV1Schema.parse({
+            schemaVersion: "1",
+            requestId: `c30-graph-read-${randomUUID()}`,
+            idempotencyKey: `c30-graph-read-${randomUUID()}`,
+            artifactRef: input.artifactRef,
+            projectId: input.projectId,
+            actorId: input.actorId,
+            requestedAt: input.requestedAt,
+            purposeCode,
+            requiredCapability,
+            authorization: input.authorization,
+          }),
+        );
+        const bytes = await boundedContent(handle.content, MAX_BODY_BYTES_V1);
+        await handle.verified;
+        const decoded: unknown = JSON.parse(
+          new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+        );
+        const parsed = WorkflowGraphArtifactBodyV1Schema.safeParse(decoded);
+        if (
+          parsed.success &&
+          WORKFLOW_GRAPH_BODY_PURPOSE_CODE_V1[parsed.data.bodyKind] === purposeCode
+        ) {
+          return parsed.data;
+        }
+      } catch {
+        // 用途码与登记不符时换下一个候选；全部不符即视为不可读正文，不做部分接受。
+        continue;
+      }
+    }
+    return undefined;
+  }
+
+  #ambientTransaction(context: unknown): WorkflowGraphTransactionV1 {
+    if (typeof context !== "object" || context === null) {
+      throw makePersistenceError(
+        "TRANSACTION_FAILED",
+        "workflow-graph.result-register-transaction",
+      );
+    }
+    return getPostgresTransaction(
+      context as TransactionContextV1,
+    ) as unknown as WorkflowGraphTransactionV1;
+  }
+}
+
+export const createPostgresWorkflowAdapter = (
+  options: PostgresWorkflowAdapterOptionsV1,
+): PostgresWorkflowAdapterV1 => {
+  const persistence = new WorkflowGraphPersistence(options);
+  const registrationStore: WorkflowGraphRegistrationStoreV1 = {
+    assertCurrentRunVersion: (input, context) =>
+      persistence.assertCurrentRunVersion(input, context),
+    registerRow: (input, context) => persistence.registerRow(input, context),
+    readRow: (input) => persistence.readRow(input),
+    listRunRows: (input) => persistence.listRunRows(input),
+    readLatestRunState: (input) => persistence.readLatestRunState(input),
+    registerLink: (input, context) => persistence.registerLink(input, context),
+    listRunLinks: (input) => persistence.listRunLinks(input),
+    registerQuery: (input) => persistence.registerQuery(input),
+    readQuery: (input) => persistence.readQuery(input),
+  };
+  return {
+    registrationStore,
+    bodies: {
+      putBody: (input) => persistence.putBody(input),
+      readBody: (input) => persistence.readBody(input),
+    },
+  };
+};

@@ -55,6 +55,11 @@ import {
   ReviewDecisionV1Schema,
   ReviewRequestV1Schema,
   ReviewTaskRefV1Schema,
+  RiskRecordTraceReadRequestV1Schema,
+  RiskRecordTraceReadResultV1Schema,
+  ProjectionResultReadRequestV1Schema,
+  ProjectionResultReadResultV1Schema,
+  WorkflowLinkRelationV1Schema,
   type CalibrationSuggestionApprovalProofPortV1,
   type ReviewAuditPortV1,
   RiskAssessmentRecordRefV1Schema,
@@ -2577,5 +2582,350 @@ describe("module interface contracts", () => {
         createdAt: now,
       }).success,
     ).toBe(true);
+  });
+});
+
+describe("C30 additive workflow inputs and bounded read ports", () => {
+  const secondMonitoringSnapshotRef = version("monitoring-snapshot", "monitoring-2");
+  const secondSpatialScopeRef = version("spatial-scope", "space-2");
+
+  it("keeps the frozen-reference additions optional and strict on the existing branches", () => {
+    const assessStart = command("start-run", {
+      entryMode: "assess",
+      graphVersion: policyRef,
+      retryPolicyRef: policyRef,
+      riskInput: externalRiskInput,
+      applicabilityMetadataSnapshotRef,
+      spatialScopeRef,
+    });
+    expect(StartWorkflowRunCommandV1Schema.safeParse(assessStart).success).toBe(true);
+    expect(
+      StartWorkflowRunCommandV1Schema.safeParse({
+        ...assessStart,
+        payload: {
+          ...assessStart.payload,
+          projectRevisionRef,
+          monitoringSnapshotRefs: [monitoringSnapshotRef, secondMonitoringSnapshotRef],
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      StartWorkflowRunCommandV1Schema.safeParse({
+        ...assessStart,
+        payload: { ...assessStart.payload, monitoringSnapshotRefs: [] },
+      }).success,
+    ).toBe(false);
+    expect(
+      StartWorkflowRunCommandV1Schema.safeParse({
+        ...assessStart,
+        payload: { ...assessStart.payload, projectRevisionRef: { entityId: "revision" } },
+      }).success,
+    ).toBe(false);
+
+    const reassessStart = command("start-run", {
+      entryMode: "reassess",
+      graphVersion: policyRef,
+      retryPolicyRef: policyRef,
+      previousAssessmentRecordRef: version("risk-assessment-record", "record-1"),
+      reason: "monitoring-snapshot",
+      changedInputRefs: [monitoringSnapshotRef],
+    });
+    expect(StartWorkflowRunCommandV1Schema.safeParse(reassessStart).success).toBe(true);
+    expect(
+      StartWorkflowRunCommandV1Schema.safeParse({
+        ...reassessStart,
+        payload: {
+          ...reassessStart.payload,
+          riskInput,
+          projectRevisionRef,
+          spatialScopeRef,
+          applicabilityMetadataSnapshotRef,
+          monitoringSnapshotRefs: [monitoringSnapshotRef],
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      StartWorkflowRunCommandV1Schema.safeParse({
+        ...reassessStart,
+        payload: { ...reassessStart.payload, reason: "latest-version" },
+      }).success,
+    ).toBe(false);
+
+    const backfillStart = command("start-run", {
+      entryMode: "historical-backfill",
+      graphVersion: policyRef,
+      retryPolicyRef: policyRef,
+      riskInput: externalRiskInput,
+      applicabilityMetadataSnapshotRef,
+      effectiveAt: now,
+      assessmentBasisReleaseSetRef: version("assessment-basis-release-set"),
+    });
+    expect(StartWorkflowRunCommandV1Schema.safeParse(backfillStart).success).toBe(true);
+    expect(
+      StartWorkflowRunCommandV1Schema.safeParse({
+        ...backfillStart,
+        payload: {
+          ...backfillStart.payload,
+          projectRevisionRef,
+          spatialScopeRef,
+          monitoringSnapshotRefs: [monitoringSnapshotRef],
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      StartWorkflowRunCommandV1Schema.safeParse({
+        ...backfillStart,
+        payload: { ...backfillStart.payload, monitoringSnapshotRefs: [], spatialScopeRef },
+      }).success,
+    ).toBe(false);
+
+    for (const payload of [
+      {
+        entryMode: "forecast-response",
+        graphVersion: policyRef,
+        retryPolicyRef: policyRef,
+        adoptedRecommendationRef: version("response-recommendation"),
+        preActionMonitoringSnapshotRef: monitoringSnapshotRef,
+      },
+      {
+        entryMode: "record-response-feedback",
+        graphVersion: policyRef,
+        retryPolicyRef: policyRef,
+        executionRecordRef: version("execution-record"),
+        feedbackRef: version("feedback"),
+      },
+    ]) {
+      const start = command("start-run", payload);
+      expect(StartWorkflowRunCommandV1Schema.safeParse(start).success).toBe(true);
+      expect(
+        StartWorkflowRunCommandV1Schema.safeParse({
+          ...start,
+          payload: {
+            ...payload,
+            assessmentBasisReleaseSetRef: version("assessment-basis-release-set"),
+          },
+        }).success,
+      ).toBe(true);
+    }
+  });
+
+  it("pairs each spatial scope with exactly one applicability snapshot when present", () => {
+    const identifyStart = command("start-run", {
+      entryMode: "identify-and-assess",
+      graphVersion: policyRef,
+      retryPolicyRef: policyRef,
+      projectRevisionRef,
+      spatialScopeRefs: [spatialScopeRef, secondSpatialScopeRef],
+      sourceVersionRefs: [sourceVersionRef],
+      assessmentContexts: [
+        {
+          spatialScopeRef,
+          applicabilityMetadataSnapshotRef,
+          monitoringSnapshotRefs: [monitoringSnapshotRef],
+        },
+        { spatialScopeRef: secondSpatialScopeRef, applicabilityMetadataSnapshotRef },
+      ],
+    });
+    expect(StartWorkflowRunCommandV1Schema.safeParse(identifyStart).success).toBe(true);
+    expect(
+      StartWorkflowRunCommandV1Schema.safeParse({
+        ...identifyStart,
+        payload: { ...identifyStart.payload, assessmentContexts: [] },
+      }).success,
+    ).toBe(false);
+    expect(
+      StartWorkflowRunCommandV1Schema.safeParse({
+        ...identifyStart,
+        payload: {
+          ...identifyStart.payload,
+          assessmentContexts: [
+            {
+              spatialScopeRef,
+              applicabilityMetadataSnapshotRef,
+              applicabilityMetadataSnapshot: {},
+            },
+          ],
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      StartWorkflowRunCommandV1Schema.safeParse({
+        ...identifyStart,
+        payload: {
+          ...identifyStart.payload,
+          assessmentContexts: [{ spatialScopeRef }],
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("closes the risk record trace read batch to bounded, body-free references", () => {
+    const request = {
+      projectId: "project-1",
+      riskRecordRefs: [riskInput, version("standardized-risk-record", "risk-record-2")],
+      requestedAt: now,
+      authorization,
+    };
+    expect(RiskRecordTraceReadRequestV1Schema.safeParse(request).success).toBe(true);
+    expect(
+      RiskRecordTraceReadRequestV1Schema.safeParse({ ...request, riskRecordRefs: [] }).success,
+    ).toBe(false);
+    expect(
+      RiskRecordTraceReadRequestV1Schema.safeParse({
+        ...request,
+        riskRecordRefs: Array.from({ length: 101 }, (_, index) =>
+          version("standardized-risk-record", `risk-${index}`),
+        ),
+      }).success,
+    ).toBe(false);
+    expect(
+      RiskRecordTraceReadRequestV1Schema.safeParse({ ...request, requestedAt: undefined }).success,
+    ).toBe(false);
+
+    const found = {
+      kind: "found",
+      riskRecordRef: riskInput,
+      processNodeId: "process-node-1",
+      sourceSegmentIds: ["segment-1"],
+      riskMechanismEntryIds: ["mechanism-1"],
+      evidenceLocator: { sourceSegmentId: "segment-1" },
+      auditTrailRef,
+    };
+    expect(
+      RiskRecordTraceReadResultV1Schema.safeParse({
+        kind: "succeeded",
+        items: [found],
+      }).success,
+    ).toBe(true);
+    expect(
+      RiskRecordTraceReadResultV1Schema.safeParse({
+        kind: "succeeded",
+        items: [{ ...found, riskBody: { text: "正文" } }],
+      }).success,
+    ).toBe(false);
+    expect(
+      RiskRecordTraceReadResultV1Schema.safeParse({
+        kind: "succeeded",
+        items: [{ ...found, sourceSegmentIds: Array.from({ length: 257 }, () => "segment") }],
+      }).success,
+    ).toBe(false);
+    expect(
+      RiskRecordTraceReadResultV1Schema.safeParse({
+        kind: "failed",
+        error: {
+          code: "BUSINESS_BLOCKED",
+          category: "business-blocked",
+          retryable: false,
+          stageCode: "read-batch",
+          occurredAt: now,
+          causalRunId: "run-1",
+          blockerKind: "trace-source-unavailable",
+          blockerRef: riskInput,
+        },
+      }).success,
+    ).toBe(true);
+  });
+
+  it("pages run-view and trace-chain results with a closed relation set", () => {
+    const request = {
+      projectId: "project-1",
+      queryResultRef: version("query-result", "query-1"),
+      requestedAt: now,
+      limit: 100,
+      authorization,
+    };
+    expect(ProjectionResultReadRequestV1Schema.safeParse(request).success).toBe(true);
+    expect(
+      ProjectionResultReadRequestV1Schema.safeParse({
+        ...request,
+        limit: 101,
+      }).success,
+    ).toBe(false);
+    expect(ProjectionResultReadRequestV1Schema.safeParse({ ...request, limit: 0 }).success).toBe(
+      false,
+    );
+
+    const runSummary = {
+      kind: "run-summary",
+      workflowRunRef,
+      status: "completed",
+      entryIdentity: { entityId: "workflow-entry:project-1:assess", versionId: "entry-v1" },
+      auditTrailRef,
+    };
+    const traceLink = {
+      kind: "trace-link",
+      fromRef: riskInput,
+      toRef: version("risk-assessment-record", "record-1"),
+      relation: "risk-assessment",
+      stageResultRef: version("stage-result", "A5"),
+      auditTrailRef,
+    };
+    expect(
+      ProjectionResultReadResultV1Schema.safeParse({
+        kind: "page",
+        queryType: "run-view",
+        items: [runSummary],
+        nextCursor: "cursor-1",
+      }).success,
+    ).toBe(true);
+    expect(
+      ProjectionResultReadResultV1Schema.safeParse({
+        kind: "page",
+        queryType: "trace-chain",
+        items: [traceLink],
+      }).success,
+    ).toBe(true);
+    expect(
+      ProjectionResultReadResultV1Schema.safeParse({
+        kind: "page",
+        queryType: "trace-chain",
+        items: [{ ...traceLink, relation: "invented-relation" }],
+      }).success,
+    ).toBe(false);
+    expect(
+      ProjectionResultReadResultV1Schema.safeParse({
+        kind: "page",
+        queryType: "association-graph",
+        items: [],
+      }).success,
+    ).toBe(false);
+    expect(
+      ProjectionResultReadResultV1Schema.safeParse({
+        kind: "failed",
+        error: {
+          code: "STALE_VERSION",
+          category: "concurrency",
+          retryable: false,
+          stageCode: "read-page",
+          occurredAt: now,
+          causalRunId: "run-1",
+          targetRef: version("query-result", "query-1"),
+        },
+      }).success,
+    ).toBe(true);
+    expect(WorkflowLinkRelationV1Schema.safeParse("deviation-calibration").success).toBe(true);
+    expect(WorkflowLinkRelationV1Schema.safeParse("run-view").success).toBe(false);
+  });
+
+  it("keeps the read ports free of business bodies and of the existing query signature", () => {
+    expect(
+      RiskRecordTraceReadRequestV1Schema.safeParse({
+        projectId: "project-1",
+        riskRecordRefs: [riskInput],
+        requestedAt: now,
+        authorization,
+        includeBody: true,
+      }).success,
+    ).toBe(false);
+    expect(
+      ProjectionResultReadRequestV1Schema.safeParse({
+        projectId: "project-1",
+        queryResultRef: version("query-result", "query-1"),
+        requestedAt: now,
+        limit: 50,
+        authorization,
+        queryType: "run-view",
+      }).success,
+    ).toBe(false);
   });
 });

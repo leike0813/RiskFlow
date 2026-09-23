@@ -61,6 +61,7 @@ import * as executionForecastFeedbackDeviationMigration from "../../src/postgres
 import * as calibrationSuggestionGovernanceMigration from "../../src/postgres/migrations/warning-response/deliver-calibration-suggestion-and-governance-loop/000047_calibration_suggestion_governance.js";
 import * as calibrationSuggestionLineageMigration from "../../src/postgres/migrations/warning-response/deliver-calibration-suggestion-and-governance-loop/000048_calibration_suggestion_lineage.js";
 import * as formalZeroResultMigration from "../../src/postgres/migrations/risk-identification/fix-c22-formal-zero-result-terminal-fact/000049_formal_zero_result.js";
+import * as assessmentRiskflowGraphsMigration from "../../src/postgres/migrations/workflow/deliver-assessment-and-riskflow-graphs/000050_assessment_riskflow_graphs.js";
 
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
 import * as agentTaskFixtureMigration from "./fixtures/migrations/agent-task/deliver-unified-bounded-agent-runtime/900002_agent_task_fixture.js";
@@ -475,6 +476,15 @@ const testMigrationManifest = [
       "000049_risk-identification_fix-c22-formal-zero-result-terminal-fact_formal_zero_result",
     sequence: 49,
     module: formalZeroResultMigration,
+  },
+  {
+    root: "production",
+    relativePath:
+      "workflow/deliver-assessment-and-riskflow-graphs/000050_assessment_riskflow_graphs.ts",
+    migrationName:
+      "000050_workflow_deliver-assessment-and-riskflow-graphs_assessment_riskflow_graphs",
+    sequence: 50,
+    module: assessmentRiskflowGraphsMigration,
   },
   {
     root: "fixture",

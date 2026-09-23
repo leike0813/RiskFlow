@@ -3292,16 +3292,10 @@ export class RiskCandidateFinalizationService {
       }
       decisionKeys.add(key);
     }
-    if (decisionKeys.size !== routeSet.routes.length) {
-      throw new RiskCandidateFinalizationError(
-        blocked({
-          causalRunId: command.commandId,
-          occurredAt,
-          blockerKind: "acceptance-decision-set-mismatch",
-          blockerRef: command.payload.acceptanceRouteSetRef,
-        }),
-      );
-    }
+    // 决定集校验收窄（协调者已批准，仅此一处放宽）：提交集仍必须恰等于全部 routes，且每条决定
+    // 不得重复；唯一允许的缺项是「review 型且 C07 窄读尚无决定」的 route——它按本轮待定跳过。
+    // 未知/多余键与其它缺项仍失败闭合，因此实际核对在遍历 route 集之后逐键收口。
+    const expectedDecisionKeys = new Set<string>();
     const reviewAuthorization = routeSet.routes.some((route) => route.routeKind === "review")
       ? await options.authorization.issueBranchContext({
           projectId: command.projectId,
@@ -3321,9 +3315,8 @@ export class RiskCandidateFinalizationService {
       let decisionKind: string;
       let reviewDecisionRef: VersionReference | undefined;
       if (route.routeKind === "automatic") {
-        if (
-          !decisionKeys.has(`route-decision\u0000${referenceKey(route.routeDecisionRef.reference)}`)
-        ) {
+        const automaticKey = `route-decision\u0000${referenceKey(route.routeDecisionRef.reference)}`;
+        if (!decisionKeys.has(automaticKey)) {
           throw new RiskCandidateFinalizationError(
             blocked({
               causalRunId: command.commandId,
@@ -3372,6 +3365,7 @@ export class RiskCandidateFinalizationService {
           );
         }
         decisionKind = automatic.decision;
+        expectedDecisionKeys.add(automaticKey);
       } else {
         if (reviewAuthorization === undefined) throw new TypeError("review authorization required");
         const read: IdentificationGroupDecisionReadV1 =
@@ -3394,20 +3388,13 @@ export class RiskCandidateFinalizationService {
           );
         }
         if (read.kind === "pending") {
-          throw new RiskCandidateFinalizationError(
-            blocked({
-              causalRunId: command.commandId,
-              occurredAt,
-              blockerKind: "review-decision-pending",
-              blockerRef: route.groupRef,
-            }),
-          );
+          // 人工决定尚未成立：该组按本轮待定跳过，不写任何记录，也不阻断其它已合格组
+          // （协调者已批准；spec「自动组和人工组并存」与「一个等待组不得阻止其它合格组入库」）。
+          skippedGroupRefs.push(route.groupRef);
+          continue;
         }
-        if (
-          !decisionKeys.has(
-            `review-decision\u0000${referenceKey(read.reviewDecisionRef.reference)}`,
-          )
-        ) {
+        const reviewKey = `review-decision\u0000${referenceKey(read.reviewDecisionRef.reference)}`;
+        if (!decisionKeys.has(reviewKey)) {
           throw new RiskCandidateFinalizationError(
             blocked({
               causalRunId: command.commandId,
@@ -3419,19 +3406,13 @@ export class RiskCandidateFinalizationService {
         }
         decisionKind = read.decisionKind;
         reviewDecisionRef = read.reviewDecisionRef.reference;
+        expectedDecisionKeys.add(reviewKey);
       }
       const disposition = decisionDispositionFor(decisionKind);
-      if (disposition === "blocked") {
-        throw new RiskCandidateFinalizationError(
-          blocked({
-            causalRunId: command.commandId,
-            occurredAt,
-            blockerKind: `decision-${decisionKind}`,
-            blockerRef: route.groupRef,
-          }),
-        );
-      }
-      if (disposition === "reroute") {
+      // 拒绝与退回（`reject` / `return-upstream`）只封闭当前组：与 reroute 同形地记入
+      // `skippedGroupRefs` 后继续处理其余组。被封闭组不产生任何记录、审计或事件，
+      // 其它合格组仍可在同一 C03 事务单元内独立入库（C24 I8「拒绝与退回保持阻断」）。
+      if (disposition === "reroute" || disposition === "blocked") {
         skippedGroupRefs.push(route.groupRef);
         continue;
       }
@@ -3556,7 +3537,24 @@ export class RiskCandidateFinalizationService {
         occurredAt,
       });
     }
-    if (skippedGroupRefs.length > 0 || records.length === 0) {
+    // 收窄后的决定集核对：每条提交的决定都必须被 route 集真实使用过（自动 route 的决定引用、
+    // 或 review route 经 C07 窄读得到的决定引用）。未知/多余键仍失败闭合；唯一允许的缺项是
+    // 本轮待定的 review route。
+    for (const key of decisionKeys) {
+      if (!expectedDecisionKeys.has(key)) {
+        throw new RiskCandidateFinalizationError(
+          blocked({
+            causalRunId: command.commandId,
+            occurredAt,
+            blockerKind: "acceptance-decision-set-mismatch",
+            blockerRef: command.payload.acceptanceRouteSetRef,
+          }),
+        );
+      }
+    }
+    // 只有全部组都被封闭或待定时才按幂等空结果收口；存在合格组时必须继续提交它们的记录与事件，
+    // 不得因为同集内有被封闭组而丢弃全部合格组的入库。
+    if (records.length === 0) {
       return { kind: "skipped", skippedGroupRefs };
     }
 

@@ -24,6 +24,7 @@ import * as externalRiskEventRegistrationMigration from "../../src/postgres/migr
 import * as versionedHybridRetrievalMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-versioned-dual-index-hybrid-retrieval/000040_versioned_hybrid_retrieval.js";
 import * as identificationContextResultsMigration from "../../src/postgres/migrations/risk-identification/deliver-relationship-context-and-retrieval-agent-review/000041_identification_context_results.js";
 import * as riskCandidateFinalizationMigration from "../../src/postgres/migrations/risk-identification/deliver-risk-candidate-validation-merge-and-acceptance/000042_risk_candidate_finalization.js";
+import * as identificationGraphMigration from "../../src/postgres/migrations/risk-identification/deliver-identification-graph/000043_identification_graph.js";
 import * as warningTasksMigration from "../../src/postgres/migrations/warning-response/deliver-warning-tasks-and-in-app-notification/000044_warning_tasks_and_in_app_notification.js";
 import * as responseRecommendationMigration from "../../src/postgres/migrations/warning-response/deliver-response-recommendation/000045_response_recommendation.js";
 import * as executionForecastFeedbackDeviationMigration from "../../src/postgres/migrations/warning-response/deliver-execution-forecast-feedback-and-deviation/000046_execution_forecast_feedback_deviation.js";
@@ -113,6 +114,13 @@ export const startAuthPostgresFixture = async (): Promise<AuthPostgresFixture> =
         "risk-identification/deliver-risk-candidate-validation-merge-and-acceptance/000042_risk_candidate_finalization.ts",
       ),
       riskCandidateFinalizationMigration,
+    ],
+    [
+      resolve(
+        base.productionMigrationRoot,
+        "risk-identification/deliver-identification-graph/000043_identification_graph.ts",
+      ),
+      identificationGraphMigration,
     ],
     [
       resolve(

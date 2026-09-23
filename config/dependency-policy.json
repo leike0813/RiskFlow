@@ -65,6 +65,15 @@
       "exitCondition": "pg 提供等价内置类型或版本不再匹配"
     },
     {
+      "name": "@langchain/langgraph",
+      "version": "1.4.17",
+      "purpose": "识别图 I0～I9 StateGraph 编排、interrupt/恢复与检查点编译",
+      "license": "MIT",
+      "source": "https://www.npmjs.com/package/@langchain/langgraph",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "仓库现有已批准组件能提供等价 StateGraph，或检查点隔离、恢复验收失败"
+    },
+    {
       "name": "@langchain/langgraph-checkpoint-postgres",
       "version": "1.0.5",
       "purpose": "官方 LangGraph PostgreSQL PostgresSaver",

@@ -80,6 +80,10 @@
       "types": "./dist/identification/human-review/index.d.ts",
       "import": "./dist/identification/human-review/index.js"
     },
+    "./identification/graph": {
+      "types": "./dist/identification/graph/index.d.ts",
+      "import": "./dist/identification/graph/index.js"
+    },
     "./scoring-rules": {
       "types": "./dist/scoring-rules/index.d.ts",
       "import": "./dist/scoring-rules/index.js"

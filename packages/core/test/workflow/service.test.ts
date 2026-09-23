@@ -106,6 +106,22 @@ describe("C30 entry gate", () => {
     expect(gate.assessmentContexts).toHaveLength(2);
     expect(gate.monitoringSnapshotRefs).toEqual([monitoringA]);
     expect(gate.frozenRefs).toContainEqual(applicabilityB);
+    const singularGate = evaluateWorkflowEntryGate(
+      identifyAndAssess({
+        monitoringSnapshotRef: monitoringA,
+        assessmentContexts: [
+          {
+            spatialScopeRef: spatialA,
+            applicabilityMetadataSnapshotRef: applicabilityA,
+            monitoringSnapshotRefs: [monitoringA],
+          },
+        ],
+      }),
+    );
+    expect(singularGate.kind).toBe("ready");
+    if (singularGate.kind === "ready") {
+      expect(singularGate.frozenRefs).toContainEqual(monitoringA);
+    }
   });
 
   it("blocks a risk whose space has no paired context and rejects duplicate pairing", () => {
@@ -140,6 +156,29 @@ describe("C30 entry gate", () => {
         }),
       ),
     ).toMatchObject({ kind: "conflict", detailCode: "assessment-context-unpaired" });
+    expect(
+      evaluateWorkflowEntryGate(
+        identifyAndAssess({
+          assessmentContexts: [
+            {
+              spatialScopeRef: spatialA,
+              applicabilityMetadataSnapshotRef: applicabilityA,
+              monitoringSnapshotRefs: [monitoringA, monitoringA],
+            },
+          ],
+        }),
+      ),
+    ).toMatchObject({ kind: "conflict", detailCode: "monitoring-input" });
+    expect(
+      evaluateWorkflowEntryGate(
+        identifyAndAssess({
+          monitoringSnapshotRef: monitoringA,
+          assessmentContexts: [
+            { spatialScopeRef: spatialA, applicabilityMetadataSnapshotRef: applicabilityA },
+          ],
+        }),
+      ),
+    ).toMatchObject({ kind: "conflict", detailCode: "monitoring-input" });
   });
 
   it("treats a legacy singular monitoring snapshot as the equivalent single-item set only", () => {

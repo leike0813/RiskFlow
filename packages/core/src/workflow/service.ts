@@ -457,10 +457,17 @@ export const evaluateWorkflowEntryGate = (payload: WorkflowStartPayloadV1): Work
       if (paired.size !== spaces.length) {
         return { kind: "conflict", detailCode: "assessment-context-unpaired" };
       }
-      const perContext = contexts.map((context) => {
+      const perContext: {
+        readonly context: WorkflowAssessmentContextV1;
+        readonly monitoring: readonly MonitoringSnapshotRefV1[];
+      }[] = [];
+      for (const context of contexts) {
         const normalized = normalize(context.monitoringSnapshotRefs);
-        return { context, monitoring: normalized.kind === "ok" ? normalized.refs : [] };
-      });
+        if (context.monitoringSnapshotRefs !== undefined && normalized.kind !== "ok") {
+          return { kind: "conflict", detailCode: "monitoring-input" };
+        }
+        perContext.push({ context, monitoring: normalized.kind === "ok" ? normalized.refs : [] });
+      }
       const legacy = payload.monitoringSnapshotRef;
       if (legacy !== undefined) {
         if (contexts.length !== 1) {
@@ -471,13 +478,9 @@ export const evaluateWorkflowEntryGate = (payload: WorkflowStartPayloadV1): Work
           readonly monitoring: readonly MonitoringSnapshotRefV1[];
         };
         if (
-          only.monitoring.length > 1 ||
-          (only.monitoring.length === 1 &&
-            refKey(only.monitoring[0] as MonitoringSnapshotRefV1) !== refKey(legacy))
+          only.monitoring.length !== 1 ||
+          refKey(only.monitoring[0] as MonitoringSnapshotRefV1) !== refKey(legacy)
         ) {
-          return { kind: "conflict", detailCode: "monitoring-input" };
-        }
-        if (only.monitoring.length === 0 && only.context.monitoringSnapshotRefs !== undefined) {
           return { kind: "conflict", detailCode: "monitoring-input" };
         }
       }
@@ -487,7 +490,6 @@ export const evaluateWorkflowEntryGate = (payload: WorkflowStartPayloadV1): Work
         ...payload.sourceVersionRefs,
         ...contexts.map((context) => context.applicabilityMetadataSnapshotRef),
         ...perContext.flatMap((entry) => entry.monitoring),
-        ...(legacy === undefined || perContext[0]?.monitoring.length === 0 ? [] : []),
       ];
       return {
         kind: "ready",

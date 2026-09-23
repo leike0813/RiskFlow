@@ -3,13 +3,13 @@
 ## 验收对象
 
 - Change：`deliver-assessment-and-riskflow-graphs`；实际 schema：`orchestrated-delivery`
-- 输入实现 HEAD：`1ee42ebbf15968f7bb36df030937fae8afa5c7f6`
-- 当前最终产物 HEAD：`1ee42ebbf15968f7bb36df030937fae8afa5c7f6`；本次只更新验收记录，待协调端审阅并形成文档检查点
-- 验收 Agent：C30 Finalizer，`task_2d0b377d10f5`；前次验收证据见下文，当前 HEAD 已包含其产物
+- 输入实现 HEAD：`586b0964aa1e0d4959771f172650b0d76dd9dcfa`
+- 当前产物 HEAD：`586b0964aa1e0d4959771f172650b0d76dd9dcfa`；下述门禁修复、测试与本验收记录仍在工作树，待协调端审阅并形成最终检查点
+- 验收 Agent：C30 Finalizer，`task_81edd03d922b`；接手时工作树已有下述未提交门禁修复与验收记录，前次已提交验收证据包含在输入 HEAD
 
 ## 结论
 
-**BLOCKED。** 按 `approval://riskflow/C30/finalization-2026-09-23-narrow-scope-and-archive`，已成立的评估、父运行分段、持久化投影、依据缺失前置门禁和缺席链尾保留；下列场景已转由 C40/C41 承接，不能记为本次通过：
+**BLOCKED。** 按 `approval://riskflow/C30/finalization-2026-09-23-narrow-scope-and-archive`，已成立的评估、父运行分段、持久化投影、依据缺失前置门禁和缺席链尾保留；下列场景已转由 C40/C41 承接，不能记为本次通过。本轮修复了识别评估入口的监测引用门禁，涉及冻结身份，限定审计尚待协调端安排。
 
 `openspec instructions apply --json` 当前显示 13 项中 8 项完成、5 项未完成；`openspec status` 的工件 `done` 只表示文件存在，不代表实现验收通过。
 
@@ -23,9 +23,9 @@
 | Requirement / Scenario / IP-ID | 证据或命令 | 结果 |
 |---|---|---|
 | R1/S1 历史完整输入；IP-01/05 | 评估图 4 文件回归命令（下列 C）；`apps/worker/test/assessment/runtime.test.ts` | 通过，冻结历史输入；甲方输入仍为合成样本、待甲方复核 |
-| R1/S2 单/多序列；IP-01/05 | 契约/核心命令 A、评估图命令 C | 通过，单项兼容及多项逐序列冻结 |
+| R1/S2 单/多序列；IP-01/05 | 契约/核心命令 A、K，评估图命令 C | 通过，单项兼容及多项逐序列冻结；K 复核识别评估入口的旧单数配对 |
 | R1/S3 缺失/错配；IP-01/05/10 | 命令 A、C | 通过已覆盖的修订/监测错配安全拒绝 |
-| R1/S4 多空间配对；IP-01/03/05 | 命令 C 的 `risk-flow/runtime.test.ts` | 通过，逐空间配对；该切片使用可控 C24 端口 |
+| R1/S4 多空间配对；IP-01/03/05 | 命令 C、K、L | 通过，逐空间配对；K 覆盖重复监测与未配对旧单数的前置拒绝，父图切片使用可控 C24 端口 |
 | R1/S5 分段依据；IP-01/02/06 | 命令 A、B；真实 PG 测试证实缺依据时零父运行行 | **部分通过**：依据引用可解析、冻结，缺依据前置拒绝；其余必填引用可达性及全量前置门禁 BLOCKED |
 | R2/S1 多已验收风险；IP-02/03/09 | 命令 C 的受控端口切片；同容器尝试命令 F | **BLOCKED**：真实 C24 待复核中断越过父图边界，不能据替身测试声称多风险真实扇出 |
 | R2/S2 无合格风险；IP-02/03 | 命令 C 的 `risk-flow/runtime.test.ts` | 通过，不建立空评估 |
@@ -41,7 +41,16 @@
 | R5/S3 有界只读结果；IP-01/07/08/10 | 命令 A、D | 通过，分页、游标与来源上限 |
 | R6/S1 全链耐久证据；IP-03/04/05/06/07/08/09 | 命令 B、F | **BLOCKED**：B 为真实 PG 中的 C30 分段与 C22 记录，C24 用替身；F 的真实同容器路径失败，且正式 C28 反馈接线缺失 |
 | R6/S2 无触发/失败缺席链尾；IP-05/06/08/09 | 命令 B、C | 通过已覆盖的无预警、三项拒绝、偏差不可计算与 Agent 失败的类型化缺席 |
-| 工程门禁；IP-10 | 命令 E、G、H、I、J | 均通过；不抵消上述语义与证据缺口 |
+| 工程门禁；IP-10 | 命令 E、G、H、I、J、K、L、M | 已完成的命令均通过；不抵消上述语义与证据缺口 |
+
+本轮输入 HEAD `586b0964aa1e0d4959771f172650b0d76dd9dcfa` 的实跑命令：
+
+- **N（当前 Finalizer 复核）** `pnpm exec vitest run packages/core/test/workflow/service.test.ts packages/contracts/test/module-interfaces-events-workflows.test.ts apps/worker/test/risk-flow/runtime.test.ts apps/worker/test/risk-flow/acceptance.test.ts`：4 文件、51/51 通过；覆盖门禁、公共解析与父图切片，仍不代表真实 C24 同容器通过。
+- **O（当前 Finalizer 复核）** `pnpm exec vitest run apps/worker/test/assessment/runtime.test.ts apps/worker/test/assessment/composition.test.ts apps/worker/test/risk-flow/composition.test.ts`：3 文件、37/37 通过；`pnpm typecheck`、`pnpm lint`、`pnpm format:check`、`openspec validate deliver-assessment-and-riskflow-graphs --strict --no-interactive`、`pnpm openspec:validate`（33 项通过、零失败）、`git diff --check` 均退出码 0。
+- **K** `pnpm exec vitest run packages/core/test/workflow/service.test.ts packages/contracts/test/module-interfaces-events-workflows.test.ts`：2 文件、34/34 通过；补充断言后又运行 `pnpm exec vitest run packages/core/test/workflow/service.test.ts`，1 文件、15/15 通过。
+- **L** `pnpm exec vitest run apps/worker/test/risk-flow/runtime.test.ts apps/worker/test/risk-flow/acceptance.test.ts`：2 文件、17/17 通过（40.72 秒）；`acceptance.test.ts` 的识别端口仍为替身，不能作为真实 C24 同容器证据。
+- **M** `pnpm exec vitest run apps/worker/test/risk-flow/acceptance.test.ts apps/worker/test/risk-flow/runtime.test.ts apps/worker/test/assessment/runtime.test.ts`：3 文件、28/28 通过；此命令在门禁修复前实跑，作为输入 HEAD 的基线回归证据。
+- 静态与规格命令：`pnpm typecheck`、`pnpm lint`、`pnpm deps:check`（421 模块、1214 条依赖零违规）、`pnpm deps:policy`、`pnpm build`、`pnpm format:check`、`git diff --check`、`openspec validate deliver-assessment-and-riskflow-graphs --strict --no-interactive`、`pnpm openspec:validate`（33 项通过、零失败）均退出码 0。
 
 本次 Finalizer 在输入 HEAD `1ee42ebbf15968f7bb36df030937fae8afa5c7f6` 上实跑：
 
@@ -59,11 +68,11 @@
 - **F（未通过，诊断尝试）** `pnpm exec vitest run apps/worker/test/risk-flow/acceptance.test.ts -t '真实 C24 与 C30 同容器'`：在只改允许的验收测试文件后执行，同一容器真实装配时未得到两条评估子运行。诊断中 C24 `GraphInterrupt` 冒泡；C30 侧原身份重试得到 C24 `CONTRACT_INVALID:graph-state-invalid`。实验性测试与 C30 捕获代码已撤回，当前文件仍只含可通过的独立分段场景。
 - **G** `openspec instructions apply --change deliver-assessment-and-riskflow-graphs --json`、`openspec instructions verification --change deliver-assessment-and-riskflow-graphs --json`、`openspec status --change deliver-assessment-and-riskflow-graphs --json`：确认实际 schema 与工件；本次重校验后按实时状态为准。
 
-前次收尾将 `tasks.md` 的 2.3、2.4、4.1、4.2 保留为未完成，相关依据字段、门禁、测试与 change 文档均已进入当前 HEAD。本次未修改生产代码、测试、依赖、迁移、权限或 C24/C28 写路径。
+前次收尾将 `tasks.md` 的 2.3、2.4、4.1、4.2 保留为未完成，相关依据字段、门禁、测试与 change 文档均已进入输入 HEAD。本轮在 `packages/core/src/workflow/service.ts` 修复 `identify-and-assess` 对重复监测引用及未配对旧单数引用的静默丢弃，在 `packages/core/test/workflow/service.test.ts` 补充同一入口的接受与拒绝边界；未改公共契约、权限、持久化、迁移、依赖或 C24/C28 写路径。
 
 ## 限定审计
 
-本次只更新验收记录，未修改权限、事务、关键状态机或语义合并；按 `approval://riskflow/C30/finalization-2026-09-23-nested-graph-interrupt`，本轮不执行限定审计。若协调端仍触发本轮唯一限定审计，审计者须在此节补入范围、结论与实跑证据；当前无审计通过结论。
+本轮修复涉及入口监测引用冻结与运行身份，需由协调端触发本轮唯一限定审计。审计范围为 `evaluateWorkflowEntryGate` 的识别评估监测配对、冲突拒绝及其对父运行冻结身份的影响；当前尚无审计结论。审计者须在本节补入结论、任务内修复及回归证据；本记录不得作为审计通过依据。
 
 ## 后续注意事项
 

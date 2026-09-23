@@ -1,7 +1,8 @@
 # orchestration/trust-recovery Specification
 
 ## Purpose
-TBD - created by archiving change fix-orchestration-trust-recovery-state. Update Purpose after archive.
+
+规定 Orca 编排在首次派发被 Codex 工作区信任确认阻断时的状态呈现与受控恢复：把该中间态呈现为可恢复而非只能人工审阅的 `unknown`，保留「用同一 terminalHandle 重新派发」的恢复动作，并禁止在规划尝试未成功时派发实现或收尾。
 
 ## Requirements
 

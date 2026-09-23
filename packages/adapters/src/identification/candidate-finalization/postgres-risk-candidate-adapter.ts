@@ -6,6 +6,7 @@ import {
   StandardizedRiskRecordWriteV1Schema,
   type RiskCandidateFinalizationResultRowV1,
   type RiskCandidateFinalizationResultStoreV1,
+  type RiskCandidateZeroResultRowV1,
   type StandardizedRiskRecordStoreV1,
   type StandardizedRiskRecordWriteV1,
 } from "@riskflow/core/identification/candidate-finalization";
@@ -46,6 +47,7 @@ interface IdentificationFinalizationResultDbRow {
   evidence_snapshot_ref: JsonValue | null;
   route_decision_ref: JsonValue | null;
   acceptance_route_set_ref: JsonValue | null;
+  zero_result_ref: JsonValue | null;
   created_at: Date | string;
   persisted_at: Date | string;
   audit_entry_id: string;
@@ -88,6 +90,12 @@ const kindColumnsFor = (row: RiskCandidateFinalizationResultRowV1): object => {
         work_item_ref: jsonValue(row.workItemRef),
         model_context_artifact_set_ref: jsonValue(row.modelContextArtifactSetRef),
         candidate_set_ref: jsonValue(row.candidateSetRef),
+      };
+    case "zero-result":
+      return {
+        work_item_ref: jsonValue(row.workItemRef),
+        model_context_artifact_set_ref: jsonValue(row.modelContextArtifactSetRef),
+        zero_result_ref: jsonValue(row.zeroResultRef),
       };
     case "validated-candidate-set":
       return {
@@ -160,6 +168,7 @@ const resultColumnsFor = (
     evidence_snapshot_ref: null,
     route_decision_ref: null,
     acceptance_route_set_ref: null,
+    zero_result_ref: null,
     ...kindColumnsFor(row),
     created_at: occurredAt,
     audit_entry_id: auditEntryIdFor(row.commandId),
@@ -191,6 +200,14 @@ const resultRowFromDbRow = (
         workItemRef: row.work_item_ref,
         modelContextArtifactSetRef: row.model_context_artifact_set_ref,
         candidateSetRef: row.candidate_set_ref,
+      });
+    case "zero-result":
+      return RiskCandidateFinalizationResultRowV1Schema.parse({
+        ...base,
+        resultKind: "zero-result",
+        workItemRef: row.work_item_ref,
+        modelContextArtifactSetRef: row.model_context_artifact_set_ref,
+        zeroResultRef: row.zero_result_ref,
       });
     case "validated-candidate-set":
       return RiskCandidateFinalizationResultRowV1Schema.parse({
@@ -379,6 +396,32 @@ export class PostgresRiskCandidateFinalizationAdapter
       return row === undefined ? undefined : resultRowFromDbRow(row);
     } catch (error) {
       throw mapPostgresError(error, "identification-candidate-finalization.result-read");
+    }
+  }
+
+  /**
+   * D-04 零结果重放预读：只按 `(project_id, command_id)` 命中零结果类别，返回冻结请求摘要，
+   * 不做整表扫描，也绝不把非空候选集读作零结果。
+   */
+  async readZeroResult(input: {
+    readonly projectId: string;
+    readonly commandId: string;
+  }): Promise<RiskCandidateZeroResultRowV1 | undefined> {
+    try {
+      const row = await this.#db
+        .selectFrom(RESULTS_TABLE)
+        .selectAll()
+        .where("project_id", "=", input.projectId)
+        .where("result_kind", "=", "zero-result")
+        .where("command_id", "=", input.commandId)
+        .orderBy("persisted_at", "desc")
+        .limit(1)
+        .executeTakeFirst();
+      if (row === undefined) return undefined;
+      const parsed = resultRowFromDbRow(row);
+      return parsed.resultKind === "zero-result" ? parsed : undefined;
+    } catch (error) {
+      throw mapPostgresError(error, "identification-candidate-finalization.zero-result-read");
     }
   }
 

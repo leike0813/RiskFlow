@@ -19,6 +19,7 @@ import {
   IdentificationRunResultRefV1Schema,
   IdentificationWorkItemRefV1Schema,
   IdentificationWorkPlanRefV1Schema,
+  IdentificationZeroResultRefV1Schema,
   type IdentificationWorkPlanRefV1,
   ReviewTaskRefV1Schema,
   SourceSegmentSetRefV1Schema,
@@ -191,6 +192,13 @@ export const IdentificationGraphErrorV1Schema = z.strictObject({
 });
 export type IdentificationGraphErrorV1 = z.infer<typeof IdentificationGraphErrorV1Schema>;
 
+/** D-05 零结果游标项：工作项与其正式零结果引用逐项配对，不参与合并、验收与事件。 */
+export const IdentificationGraphZeroResultV1Schema = z.strictObject({
+  workItemRef: IdentificationWorkItemRefV1Schema,
+  zeroResultRef: IdentificationZeroResultRefV1Schema,
+});
+export type IdentificationGraphZeroResultV1 = z.infer<typeof IdentificationGraphZeroResultV1Schema>;
+
 /** 运行状态版本（design D-06 `run-state`）：只含引用、阶段、游标与版本，不含正文。 */
 export const IdentificationGraphRunStateV1Schema = z.strictObject({
   schemaVersion: graphSchemaVersion,
@@ -209,6 +217,8 @@ export const IdentificationGraphRunStateV1Schema = z.strictObject({
   pendingWorkItemRefs: z.array(IdentificationWorkItemRefV1Schema),
   validatedCandidateSetRefs: z.array(ValidatedCandidateSetRefV1Schema),
   failedWorkItemRefs: z.array(IdentificationWorkItemRefV1Schema),
+  /** D-05 零结果游标：与工作项逐项配对；历史正文缺省读作空数组，不重写历史。 */
+  zeroResults: z.array(IdentificationGraphZeroResultV1Schema).default([]),
   acceptedRiskRecordRefs: z.array(StandardizedRiskRecordRefV1Schema),
   rejectedGroupRefs: z.array(IdentificationGroupRefV1Schema),
   pendingGroupRefs: z.array(IdentificationGroupRefV1Schema),
@@ -235,6 +245,8 @@ export const IdentificationGraphRunResultV1Schema = z.strictObject({
   pendingReviewTaskRefs: z.array(ReviewTaskRefV1Schema),
   failedWorkItemRefs: z.array(IdentificationWorkItemRefV1Schema),
   skippedWorkItemRefs: z.array(IdentificationWorkItemRefV1Schema),
+  /** D-05 零结果逐项引用：缺省读作空数组，历史汇总正文仍可解析。 */
+  zeroResults: z.array(IdentificationGraphZeroResultV1Schema).default([]),
   cancelledReasonCode: IdentifierSchema.optional(),
   auditTrailRef: AuditTrailRefV1Schema,
   recordedAt: IsoDateTimeSchema,

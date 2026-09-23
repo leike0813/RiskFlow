@@ -60,6 +60,7 @@ import * as responseRecommendationMigration from "../../src/postgres/migrations/
 import * as executionForecastFeedbackDeviationMigration from "../../src/postgres/migrations/warning-response/deliver-execution-forecast-feedback-and-deviation/000046_execution_forecast_feedback_deviation.js";
 import * as calibrationSuggestionGovernanceMigration from "../../src/postgres/migrations/warning-response/deliver-calibration-suggestion-and-governance-loop/000047_calibration_suggestion_governance.js";
 import * as calibrationSuggestionLineageMigration from "../../src/postgres/migrations/warning-response/deliver-calibration-suggestion-and-governance-loop/000048_calibration_suggestion_lineage.js";
+import * as formalZeroResultMigration from "../../src/postgres/migrations/risk-identification/fix-c22-formal-zero-result-terminal-fact/000049_formal_zero_result.js";
 
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
 import * as agentTaskFixtureMigration from "./fixtures/migrations/agent-task/deliver-unified-bounded-agent-runtime/900002_agent_task_fixture.js";
@@ -465,6 +466,15 @@ const testMigrationManifest = [
       "000048_warning-response_deliver-calibration-suggestion-and-governance-loop_calibration_suggestion_lineage",
     sequence: 48,
     module: calibrationSuggestionLineageMigration,
+  },
+  {
+    root: "production",
+    relativePath:
+      "risk-identification/fix-c22-formal-zero-result-terminal-fact/000049_formal_zero_result.ts",
+    migrationName:
+      "000049_risk-identification_fix-c22-formal-zero-result-terminal-fact_formal_zero_result",
+    sequence: 49,
+    module: formalZeroResultMigration,
   },
   {
     root: "fixture",

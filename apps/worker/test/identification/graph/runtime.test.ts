@@ -39,6 +39,7 @@ import {
   startIdentificationGraphHarness,
   versionRef,
   workItemRefFor,
+  zeroResultRefFor,
   type IdentificationGraphHarnessV1,
   type IdentificationGraphRunScopeV1,
 } from "./fixture.js";
@@ -561,6 +562,150 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
       world.mechanismNodes = [NODE_CURRENT, NODE_NEIGHBOR];
     }
   });
+
+  it("零结果工作项在 I4 逐项收口：不进入 I5/I6 且汇总逐项列明引用", async () => {
+    const { world } = harness;
+    const run = harness.scope("zero-result-all");
+    world.zeroResultNodes.add(NODE_CURRENT);
+    world.zeroResultNodes.add(NODE_NEIGHBOR);
+    try {
+      const outcome = await harness.runtime.start(harness.startCommand(run));
+
+      expect(outcome.state.status).toBe("completed");
+      const { runResult } = await runResultOf(harness, run);
+      expect(runResult.zeroResults).toEqual([
+        { workItemRef: workItemCurrent, zeroResultRef: zeroResultRefFor(NODE_CURRENT) },
+        { workItemRef: workItemNeighbor, zeroResultRef: zeroResultRefFor(NODE_NEIGHBOR) },
+      ]);
+      // 零结果不是失败、跳过或已验收，也不产生记录、事件、候选集或验收路线。
+      expect(runResult.failedWorkItemRefs).toEqual([]);
+      expect(runResult.skippedWorkItemRefs).toEqual([]);
+      expect(runResult.acceptedRiskRecordRefs).toEqual([]);
+      expect(runResult.acceptedEventRefs).toEqual([]);
+      expect(runResult.rejectedGroupRefs).toEqual([]);
+      expect(
+        world.calls.analyze.filter((call) => call.kind === "repair-and-validate"),
+      ).toHaveLength(0);
+      expect(
+        world.calls.finalize.filter((call) => call.kind === "merge-run-candidates"),
+      ).toHaveLength(0);
+      const cursor = await harness.latestRunState(run);
+      expect(cursor.state.validatedCandidateSetRefs).toEqual([]);
+      expect(cursor.state.zeroResults).toHaveLength(2);
+      // I4 阶段事实只保存零结果精确引用，不伪造候选集引用。
+      const i4StageResults = await stageRowsOf(harness, run, "I4");
+      expect(i4StageResults).toHaveLength(2);
+      for (const { result } of i4StageResults) {
+        expect(result.stage === "I4" ? result.candidateSetRef : undefined).toBeUndefined();
+        expect(result.stage === "I4" ? result.zeroResultRef : undefined).toBeDefined();
+        expect(result.stage === "I4" ? result.workItemRef : undefined).toBeDefined();
+      }
+      expect(world.calls.readZeroResult).toHaveLength(2);
+      // 汇总逐项引用与 C22 窄读证据逐项配对（C36 覆盖证明消费的就是同一组引用）。
+      expect(
+        world.calls.readZeroResult.map((call) => ({
+          workItemEntityId: call.workItemRef.reference.entityId,
+          zeroResultEntityId: call.zeroResultRef.reference.entityId,
+        })),
+      ).toEqual([
+        {
+          workItemEntityId: workItemCurrent.reference.entityId,
+          zeroResultEntityId: zeroResultRefFor(NODE_CURRENT).reference.entityId,
+        },
+        {
+          workItemEntityId: workItemNeighbor.reference.entityId,
+          zeroResultEntityId: zeroResultRefFor(NODE_NEIGHBOR).reference.entityId,
+        },
+      ]);
+    } finally {
+      world.zeroResultNodes.clear();
+    }
+  }, 120_000);
+
+  it("零结果与候选工作项并存：只合并已校验候选集并清除上一项候选引用", async () => {
+    const { world } = harness;
+    const run = harness.scope("zero-result-mixed");
+    world.zeroResultNodes.add(NODE_NEIGHBOR);
+    world.routes = [automaticRouteFor(WORK_PLAN_ENTITY_ID, AUTO_GROUP)];
+    try {
+      const outcome = await harness.runtime.start(harness.startCommand(run));
+
+      expect(outcome.state.status).toBe("completed");
+      const { runResult } = await runResultOf(harness, run);
+      expect(runResult.zeroResults).toEqual([
+        { workItemRef: workItemNeighbor, zeroResultRef: zeroResultRefFor(NODE_NEIGHBOR) },
+      ]);
+      expect(runResult.acceptedRiskRecordRefs).toEqual([riskRecordRefFor(AUTO_GROUP)]);
+      expect(runResult.failedWorkItemRefs).toEqual([]);
+      expect(runResult.skippedWorkItemRefs).toEqual([]);
+      // I5 与 I6 只看候选工作项：零结果项不参与校验或合并。
+      expect(
+        world.calls.analyze.filter((call) => call.kind === "repair-and-validate"),
+      ).toHaveLength(1);
+      expect(
+        world.calls.finalize.filter((call) => call.kind === "merge-run-candidates"),
+      ).toHaveLength(1);
+      // 零结果工作项结束后不保留上一项的候选集引用。
+      expect(outcome.state.candidateSetRef).toBeUndefined();
+    } finally {
+      world.zeroResultNodes.clear();
+    }
+  }, 120_000);
+
+  it("零结果无法由 C22 窄读证明时终止封闭且不登记该工作项的 I4 事实", async () => {
+    const { world } = harness;
+    const run = harness.scope("zero-result-unproven");
+    world.zeroResultNodes.add(NODE_CURRENT);
+    world.zeroResultRead.set(NODE_CURRENT, "inconsistent");
+    try {
+      const outcome = await harness.runtime.start(harness.startCommand(run));
+
+      expect(outcome.state.status).toBe("terminal-failure");
+      expect(await harness.rows(run, "workflow-error")).toHaveLength(1);
+      expect(await stageRowsOf(harness, run, "I4")).toHaveLength(0);
+      expect(await harness.rows(run, "run-result")).toHaveLength(0);
+      expect(
+        world.calls.analyze.filter((call) => call.kind === "repair-and-validate"),
+      ).toHaveLength(0);
+    } finally {
+      world.zeroResultRead.delete(NODE_CURRENT);
+      world.zeroResultNodes.clear();
+    }
+  }, 120_000);
+
+  it("恢复时零结果无法再由 C22 窄读证明按 CHECKPOINT_INCONSISTENT 零补写封闭", async () => {
+    const { world } = harness;
+    const run = harness.scope("zero-result-recovery");
+    world.zeroResultNodes.add(NODE_CURRENT);
+    world.agentTaskStatus.set(NODE_NEIGHBOR, "running");
+    try {
+      const started = await harness.runtime.start(harness.startCommand(run));
+      expect(started.state.status).toBe("waiting");
+      const cursor = await harness.latestRunState(run);
+      expect(cursor.state.zeroResults).toHaveLength(1);
+      const rowsBefore = await harness.rows(run);
+      const taskRef = started.state.agentTaskRefs[0];
+      if (taskRef === undefined) throw new TypeError("waiting run must carry its agent task");
+
+      world.zeroResultRead.set(NODE_CURRENT, "unavailable");
+      await expect(
+        harness.runtime.resume(
+          harness.resumeCommand(run, {
+            expectedRunVersionId: cursor.runVersionId,
+            resumeCause: { kind: "agent-task-completed", agentTaskRef: taskRef },
+          }),
+        ),
+      ).rejects.toMatchObject({
+        error: { code: "CHECKPOINT_INCONSISTENT", retryable: false },
+      });
+      // 零补写：不从游标或检查点补写零结果事实，也不新增登记。
+      expect(await harness.rows(run)).toEqual(rowsBefore);
+    } finally {
+      world.zeroResultRead.delete(NODE_CURRENT);
+      world.zeroResultNodes.clear();
+      world.agentTaskStatus.delete(NODE_NEIGHBOR);
+    }
+  }, 120_000);
 
   it("I5 不可修正候选失败记为工作项失败且不创建人工复核路线", async () => {
     const { world } = harness;

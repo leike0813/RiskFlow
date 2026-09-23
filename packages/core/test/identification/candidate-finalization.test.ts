@@ -47,6 +47,7 @@ import {
   RiskCandidateSetV1Schema,
   RiskCandidateV1Schema,
   RiskCandidateValidationPolicyV1Schema,
+  RiskCandidateZeroResultV1Schema,
   assertCompositeConfidenceWeights,
   assertMergePolicyWeights,
   assertRepairableReasonCodes,
@@ -485,6 +486,53 @@ const candidateSetValue = (overrides: Record<string, unknown> = {}) => ({
 const CHECK = CANDIDATE_VALIDATION_CHECK_IDS_V1;
 const REASON = CANDIDATE_VALIDATION_REASON_CODES_V1;
 
+/** 正式零结果正文夹具：与 C22 登记行使用同一工程、输入、工作项、上下文与授权摘要。 */
+const zeroResultValue = (overrides: Record<string, unknown> = {}) => ({
+  schemaVersion: "1",
+  outcome: "zero-candidates",
+  candidateCount: 0,
+  projectId: PROJECT,
+  inputSnapshotRef,
+  workItemRef,
+  nodeId: NODE_ID,
+  modelContextArtifactSetRef,
+  retrievalArtifactSetRef,
+  modelContextPayloadDigest: digestOf(modelContextValue()),
+  policySetRef,
+  generationPolicyRef: versionRef("generation-policy"),
+  modelDeploymentRef: versionRef("model-deployment"),
+  promptTemplateRef: versionRef("prompt-template"),
+  outputSchemaRef: versionRef("output-schema"),
+  budgetPolicyRef: versionRef("budget-policy"),
+  rawResponseRef: diagnosisRef("raw-response-zero"),
+  invocationId: "invocation-zero",
+  usage: {
+    modelInvocations: 1,
+    inputTokens: 10,
+    outputTokens: 0,
+    totalTokens: 10,
+    outputBytes: 2,
+    elapsedMs: 5,
+    repairRounds: 0,
+  },
+  authorizationScopeDigest: DIGEST_A,
+  authorizationContextRef,
+  actorRef: ACTOR,
+  commandId: "command-assemble",
+  formedAt: TIMESTAMP,
+  ...overrides,
+});
+
+/** 零结果的分支模型结果夹具：合法、可解析、预算内的空候选数组。 */
+const zeroModelOutcome = () => ({
+  kind: "succeeded" as const,
+  outputs: [] as readonly unknown[],
+  invocationId: "invocation-zero",
+  rawResponseRef: diagnosisRef("raw-response-zero"),
+  usage: { inputTokens: 10, outputTokens: 0, totalTokens: 10, outputBytes: 2 },
+  elapsedMs: 5,
+});
+
 /** 逐项校验的失败码表：每项检查声明的失败原因码是稳定契约。 */
 const FAILURE_REASON_OF_CHECK: Readonly<Record<string, string>> = {
   [CHECK.schema]: REASON.schemaInvalid,
@@ -832,6 +880,8 @@ interface HarnessOverrides {
   readonly workPlanValidatedRefs?: readonly unknown[];
   readonly validationPolicyOverrides?: Record<string, unknown>;
   readonly forcedReviewPolicyOverrides?: Record<string, unknown>;
+  /** 故障注入：`artifact-put` 让 C04 写入失败，`transaction` 让 C03 事务失败。 */
+  readonly failureInjection?: "artifact-put" | "transaction";
   readonly recordInsertOutcomes?: readonly (
     | { readonly kind: "inserted" }
     | { readonly kind: "replayed" }
@@ -841,7 +891,7 @@ interface HarnessOverrides {
 
 const makeHarness = (overrides: HarnessOverrides = {}) => {
   const artifacts = new Map<string, Uint8Array>();
-  const rows = new Map<string, unknown>();
+  const rows = new Map<string, RiskCandidateFinalizationResultRowV1>();
   const receipts = new Map<
     string,
     {
@@ -859,6 +909,7 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
     modelContextReads: 0,
     workPlanReads: 0,
     resultReads: 0,
+    zeroResultReads: 0,
     registerCalls: 0,
     recordInsertCalls: 0,
     transactionCalls: 0,
@@ -897,6 +948,9 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
 
   const artifactStore = {
     async put(command: { readonly artifactId: string }, content: AsyncIterable<Uint8Array>) {
+      if (overrides.failureInjection === "artifact-put") {
+        throw new Error("artifact-put-failed");
+      }
       const chunks: Uint8Array[] = [];
       let size = 0;
       for await (const chunk of content) {
@@ -948,9 +1002,22 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
       }
       return { kind: "registered", replayed: false };
     },
+    async readZeroResult({ projectId, commandId }) {
+      calls.zeroResultReads += 1;
+      for (const row of rows.values()) {
+        if (
+          row.resultKind === "zero-result" &&
+          row.projectId === projectId &&
+          row.commandId === commandId
+        ) {
+          return row;
+        }
+      }
+      return undefined;
+    },
     async readResult({ resultKind, resultId, resultVersionId }) {
       calls.resultReads += 1;
-      return rows.get(rowKey(resultKind, resultId, resultVersionId)) as never;
+      return rows.get(rowKey(resultKind, resultId, resultVersionId));
     },
   };
 
@@ -1043,6 +1110,9 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
       }>,
     ) {
       calls.transactionCalls += 1;
+      if (overrides.failureInjection === "transaction") {
+        throw new Error("transaction-failed");
+      }
       const payloadDigest = digestOf(command.payload ?? null);
       const prior = receipts.get(command.commandId);
       if (prior !== undefined) {
@@ -2275,6 +2345,279 @@ describe("C22 服务接入（端口驱动）", () => {
     expect(blockedKindOf(result)).toBe(CANDIDATE_VALIDATION_REASON_CODES_V1.budgetExhausted);
     expect(harness.calls.registerCalls).toBe(0);
     expect(harness.artifacts.size).toBe(0);
+  });
+
+  it("assemble-and-infer 合法零候选形成正式零结果终态且不产生候选集与记录", async () => {
+    const harness = makeHarness({ modelOutcome: zeroModelOutcome() });
+
+    const result = await harness.service.analyze(assembleCommand());
+
+    expect(result.kind).toBe("succeeded");
+    const zeroResultRef =
+      result.kind === "succeeded" && result.result.kind === "zero-result"
+        ? result.result.zeroResultRef
+        : undefined;
+    expect(zeroResultRef?.kind).toBe("identification-zero-result");
+    expect(zeroResultRef?.reference.entityId).toBe(
+      `identification-zero-result:${PROJECT}:${workItemRef.reference.entityId}`,
+    );
+    expect(harness.calls.generateCalls).toBe(1);
+    expect(harness.calls.registerCalls).toBe(1);
+    expect(harness.calls.transactionCalls).toBe(1);
+    expect(harness.calls.recordInsertCalls).toBe(0);
+
+    const zeroRows = [...harness.rows.values()].filter((row) => row.resultKind === "zero-result");
+    expect(zeroRows).toHaveLength(1);
+    const zeroRow = zeroRows[0];
+    expect(zeroRow?.resultKind === "zero-result" ? zeroRow.workItemRef : undefined).toEqual(
+      workItemRef,
+    );
+    expect([...harness.rows.values()].some((row) => row.resultKind === "candidate-set")).toBe(
+      false,
+    );
+
+    const body = harness.artifacts.get(zeroRow?.artifactRef.reference.versionId ?? "");
+    expect(body).toBeDefined();
+    const parsedBody = RiskCandidateZeroResultV1Schema.safeParse(
+      JSON.parse(new TextDecoder().decode(body)),
+    );
+    expect(parsedBody.success).toBe(true);
+    expect(parsedBody.data?.candidateCount).toBe(0);
+    expect(parsedBody.data?.rawResponseRef.reference.entityId).toBe("raw-response-zero");
+    expect(parsedBody.data?.usage).toMatchObject({ outputTokens: 0, repairRounds: 0 });
+  });
+
+  it("零结果同载荷重放返回原引用且不重复模型调用、登记与审计", async () => {
+    const harness = makeHarness({ modelOutcome: zeroModelOutcome() });
+
+    const first = await harness.service.analyze(assembleCommand());
+    const second = await harness.service.analyze(assembleCommand());
+
+    expect(first.kind === "succeeded" ? first.result : undefined).toEqual(
+      second.kind === "succeeded" ? second.result : undefined,
+    );
+    expect(harness.calls.generateCalls).toBe(1);
+    expect(harness.calls.registerCalls).toBe(1);
+    expect(harness.calls.transactionCalls).toBe(1);
+    expect(harness.calls.zeroResultReads).toBe(2);
+  });
+
+  it("零结果同键异载荷返回幂等冲突且不覆盖既有事实", async () => {
+    const harness = makeHarness({ modelOutcome: zeroModelOutcome() });
+    await harness.service.analyze(assembleCommand());
+
+    const conflict = await harness.service.analyze(
+      assembleCommand({
+        payload: {
+          workItemRef,
+          retrievalArtifactSetRef,
+          modelDeploymentRef: versionRef("model-deployment-v2"),
+          promptTemplateRef: versionRef("prompt-template"),
+        },
+      }),
+    );
+
+    expect(failedError(conflict)?.code).toBe("IDEMPOTENCY_CONFLICT");
+    expect(harness.calls.generateCalls).toBe(1);
+    expect(harness.calls.registerCalls).toBe(1);
+    expect(
+      [...harness.rows.values()].filter((row) => row.resultKind === "zero-result"),
+    ).toHaveLength(1);
+  });
+
+  it("零结果正文或业务事务失败时不返回正式引用且不留下半份登记", async () => {
+    const putFailure = makeHarness({
+      modelOutcome: zeroModelOutcome(),
+      failureInjection: "artifact-put",
+    });
+    await expect(putFailure.service.analyze(assembleCommand())).rejects.toThrow();
+    expect(putFailure.rows.size).toBe(0);
+    expect(putFailure.calls.registerCalls).toBe(0);
+
+    const transactionFailure = makeHarness({
+      modelOutcome: zeroModelOutcome(),
+      failureInjection: "transaction",
+    });
+    const result = await transactionFailure.service.analyze(assembleCommand());
+    expect(result.kind).toBe("failed");
+    expect(failedError(result)?.code).toBe("TERMINAL_FAILURE");
+    expect(transactionFailure.rows.size).toBe(0);
+  });
+
+  it("零结果窄读只在同一工程、输入、工作项与当前授权下返回事实", async () => {
+    const harness = makeHarness({ modelOutcome: zeroModelOutcome() });
+    const analyzed = await harness.service.analyze(assembleCommand());
+    if (analyzed.kind !== "succeeded" || analyzed.result.kind !== "zero-result") {
+      throw new Error("zero result branch is required");
+    }
+    const zeroResultRef = analyzed.result.zeroResultRef;
+    const readRequest = (overrides: Record<string, unknown> = {}) => ({
+      projectId: PROJECT,
+      actorId: ACTOR,
+      invocationId: "command-assemble:read",
+      requestedAt: TIMESTAMP,
+      inputSnapshotRef,
+      workItemRef,
+      zeroResultRef,
+      authorization: governanceAuthorization(),
+      ...overrides,
+    });
+
+    const read = await harness.service.readZeroResult(readRequest());
+    expect(read.kind).toBe("read");
+    expect(read.kind === "read" ? read.zeroResult.outcome : undefined).toBe("zero-candidates");
+
+    const unknownRef = await harness.service.readZeroResult(
+      readRequest({
+        zeroResultRef: {
+          kind: "identification-zero-result",
+          reference: versionRef("identification-zero-result-unknown"),
+        },
+      }),
+    );
+    expect(unknownRef.kind).toBe("unavailable");
+
+    const crossProject = await harness.service.readZeroResult(
+      readRequest({ projectId: "project-other" }),
+    );
+    expect(crossProject.kind).toBe("unavailable");
+
+    const otherWorkItem = await harness.service.readZeroResult(
+      readRequest({
+        workItemRef: {
+          kind: "identification-work-item",
+          reference: versionRef("work-item-other"),
+        },
+      }),
+    );
+    expect(otherWorkItem.kind).toBe("inconsistent");
+
+    const revoked = makeHarness({ verifyCurrent: async () => undefined });
+    const revokedRead = await revoked.service.readZeroResult(readRequest());
+    expect(revokedRead.kind).toBe("unavailable");
+  });
+
+  it("零结果窄读在正文与登记错配时失败闭合，并在返回前复验撤权", async () => {
+    const harness = makeHarness({ modelOutcome: zeroModelOutcome() });
+    const zeroResultRef = {
+      kind: "identification-zero-result" as const,
+      reference: versionRef("identification-zero-result-seeded", DIGEST_A),
+    };
+    harness.seedRow(
+      {
+        ...resultRowBase(
+          "zero-result",
+          zeroResultRef.reference.entityId,
+          zeroResultRef.reference.versionId,
+        ),
+        workItemRef,
+        modelContextArtifactSetRef,
+        zeroResultRef,
+      },
+      zeroResultValue({
+        workItemRef: {
+          kind: "identification-work-item",
+          reference: versionRef("work-item-other"),
+        },
+      }),
+    );
+
+    const mismatched = await harness.service.readZeroResult({
+      projectId: PROJECT,
+      actorId: ACTOR,
+      invocationId: "command-read-mismatch",
+      requestedAt: TIMESTAMP,
+      inputSnapshotRef,
+      workItemRef,
+      zeroResultRef,
+      authorization: governanceAuthorization(),
+    });
+    expect(mismatched.kind).toBe("inconsistent");
+
+    const revalidated = makeHarness({ modelOutcome: zeroModelOutcome() });
+    const analyzed = await revalidated.service.analyze(assembleCommand());
+    if (analyzed.kind !== "succeeded" || analyzed.result.kind !== "zero-result") {
+      throw new Error("zero result branch is required");
+    }
+    const ref = analyzed.result.zeroResultRef;
+    const checks = new Map<string, number>();
+    const counting = makeHarness({
+      modelOutcome: zeroModelOutcome(),
+      verifyCurrent: async ({ invocationId }) => {
+        const count = (checks.get(invocationId) ?? 0) + 1;
+        checks.set(invocationId, count);
+        return invocationId === "command-read-revoked" && count === 2
+          ? undefined
+          : governanceAuthorization();
+      },
+    });
+    counting.seedRow(
+      {
+        ...resultRowBase("zero-result", ref.reference.entityId, ref.reference.versionId),
+        requestDigest: ref.reference.versionId,
+        workItemRef,
+        modelContextArtifactSetRef,
+        zeroResultRef: ref,
+      },
+      zeroResultValue(),
+    );
+    const afterRead = await counting.service.readZeroResult({
+      projectId: PROJECT,
+      actorId: ACTOR,
+      invocationId: "command-read-revoked",
+      requestedAt: TIMESTAMP,
+      inputSnapshotRef,
+      workItemRef,
+      zeroResultRef: ref,
+      authorization: governanceAuthorization(),
+    });
+    expect(afterRead.kind).toBe("unavailable");
+  });
+
+  it("repair-and-validate 修正轮次空输出仍按元数失败而不转为零结果", async () => {
+    const harness = makeHarness({
+      validationPolicyOverrides: { requiredRelationTypes: ["作用关系"] },
+      modelOutcome: {
+        kind: "succeeded",
+        outputs: [],
+        invocationId: "invocation-repair-empty",
+        rawResponseRef: diagnosisRef("raw-response-repair-empty"),
+        usage: { inputTokens: 10, outputTokens: 0, totalTokens: 10, outputBytes: 2 },
+        elapsedMs: 5,
+      },
+    });
+    const candidateSetRef = {
+      kind: "identification-candidate-set" as const,
+      reference: versionRef("candidate-set-c22"),
+    };
+    harness.seedRow(
+      {
+        ...resultRowBase(
+          "candidate-set",
+          candidateSetRef.reference.entityId,
+          candidateSetRef.reference.versionId,
+        ),
+        workItemRef,
+        modelContextArtifactSetRef,
+        candidateSetRef,
+      },
+      RiskCandidateSetV1Schema.parse(
+        candidateSetValue({
+          candidates: [
+            candidateValue({
+              candidateId: "candidate-repairable",
+              nodeId: RELATED_NODE_ID,
+            }),
+          ],
+        }),
+      ),
+    );
+
+    const result = await harness.service.analyze(repairCommand());
+
+    expect(result).toMatchObject({ kind: "failed", error: { code: "TERMINAL_FAILURE" } });
+    expect(harness.calls.registerCalls).toBe(0);
+    expect([...harness.rows.values()].some((row) => row.resultKind === "zero-result")).toBe(false);
   });
 
   it("repair-and-validate 遇到 terminal 候选时不修正或丢弃该候选", async () => {

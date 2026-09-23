@@ -315,7 +315,10 @@ export interface IdentificationGraphPortsV1 {
   readonly agentTaskReader: {
     getTask(taskRef: AgentTaskRefV1): Promise<AgentTaskSnapshotV1 | undefined>;
   };
-  readonly finalizationService: Pick<RiskCandidateFinalizationService, "analyze" | "finalize">;
+  readonly finalizationService: Pick<
+    RiskCandidateFinalizationService,
+    "analyze" | "finalize" | "readZeroResult"
+  >;
   readonly reviewDecisionReader: IdentificationReviewDecisionReaderV1;
   readonly acceptanceRoutes: IdentificationGraphAcceptanceRouteReaderV1;
   readonly now: () => Date;
@@ -785,6 +788,7 @@ const cursorBody = (input: {
     readonly completedWorkItemRefs?: IdentificationGraphRunStateV1["completedWorkItemRefs"];
     readonly pendingWorkItemRefs?: IdentificationGraphRunStateV1["pendingWorkItemRefs"];
     readonly validatedCandidateSetRefs?: IdentificationGraphRunStateV1["validatedCandidateSetRefs"];
+    readonly zeroResults?: IdentificationGraphRunStateV1["zeroResults"];
     readonly failedWorkItemRefs?: IdentificationGraphRunStateV1["failedWorkItemRefs"];
     readonly acceptedRiskRecordRefs?: IdentificationGraphRunStateV1["acceptedRiskRecordRefs"];
     readonly rejectedGroupRefs?: IdentificationGraphRunStateV1["rejectedGroupRefs"];
@@ -812,6 +816,7 @@ const cursorBody = (input: {
     pendingWorkItemRefs: patch.pendingWorkItemRefs ?? previous?.pendingWorkItemRefs ?? [],
     validatedCandidateSetRefs:
       patch.validatedCandidateSetRefs ?? previous?.validatedCandidateSetRefs ?? [],
+    zeroResults: patch.zeroResults ?? previous?.zeroResults ?? [],
     failedWorkItemRefs: patch.failedWorkItemRefs ?? previous?.failedWorkItemRefs ?? [],
     acceptedRiskRecordRefs: patch.acceptedRiskRecordRefs ?? previous?.acceptedRiskRecordRefs ?? [],
     rejectedGroupRefs: patch.rejectedGroupRefs ?? previous?.rejectedGroupRefs ?? [],
@@ -859,6 +864,8 @@ interface AdvanceInputV1 {
     readonly inputSnapshotRef?: IdentificationGraphStateV1["inputSnapshotRef"];
     readonly workPlanRef?: IdentificationGraphStateV1["workPlanRef"];
     readonly candidateSetRef?: IdentificationGraphStateV1["candidateSetRef"];
+    /** D-05：零结果工作项不留上一项的候选引用，显式清除而不改公开图字段。 */
+    readonly clearCandidateSetRef?: true;
     readonly mergePlanRef?: IdentificationGraphStateV1["mergePlanRef"];
     readonly agentTaskRefs?: IdentificationGraphStateV1["agentTaskRefs"];
     readonly reviewTaskRefs?: IdentificationGraphStateV1["reviewTaskRefs"];
@@ -1006,9 +1013,11 @@ const advance = async (input: AdvanceInputV1): Promise<IdentificationGraphStateV
     ...((patch.workPlanRef ?? state.workPlanRef) === undefined
       ? {}
       : { workPlanRef: patch.workPlanRef ?? state.workPlanRef }),
-    ...((patch.candidateSetRef ?? state.candidateSetRef) === undefined
+    ...(patch.clearCandidateSetRef === true
       ? {}
-      : { candidateSetRef: patch.candidateSetRef ?? state.candidateSetRef }),
+      : (patch.candidateSetRef ?? state.candidateSetRef) === undefined
+        ? {}
+        : { candidateSetRef: patch.candidateSetRef ?? state.candidateSetRef }),
     ...((patch.mergePlanRef ?? state.mergePlanRef) === undefined
       ? {}
       : { mergePlanRef: patch.mergePlanRef ?? state.mergePlanRef }),
@@ -1904,6 +1913,69 @@ const stageI4: StageHandlerV1 = async ({ ports, run, state }) => {
     fail(toIdentificationGraphError({ stage: "I4", error: upstream, occurredAt }));
   }
   const analyzedResult = analyzed.result;
+  if (analyzedResult.kind === "zero-result") {
+    // D-05：零结果在同工程、同输入、同工作项的精确事实下才推进；窄读失败一律失败闭合。
+    const inputSnapshotRef = state.inputSnapshotRef;
+    if (inputSnapshotRef === undefined) {
+      fail(contractInvalid({ stage: "I4", detailCode: "input-snapshot-missing", occurredAt }));
+    }
+    const zeroRead = await ports.finalizationService.readZeroResult({
+      projectId: run.projectId,
+      actorId: run.actorId,
+      invocationId: actionIdFor(run, `I4:${workItemRef.reference.entityId}`),
+      requestedAt: run.issuedAt,
+      inputSnapshotRef,
+      workItemRef,
+      zeroResultRef: analyzedResult.zeroResultRef,
+      authorization: run.authorization,
+    });
+    if (zeroRead.kind !== "read") {
+      fail(
+        zeroRead.kind === "inconsistent"
+          ? graphError({
+              code: "CONTRACT_INVALID",
+              stage: "I4",
+              detailCode: zeroRead.detailCode,
+              occurredAt,
+            })
+          : graphError({
+              code: "AUTHORIZATION_DENIED",
+              stage: "I4",
+              detailCode: "zero-result-unavailable",
+              occurredAt,
+            }),
+      );
+    }
+    const remaining = cursor.pendingWorkItemRefs.slice(1);
+    return await advance({
+      ports,
+      run,
+      state,
+      stage: "I4",
+      actionSuffix: `I4:${workItemRef.reference.entityId}`,
+      nextStage: remaining.length > 0 ? "I3" : "I6",
+      cursor,
+      stageResultRow: true,
+      commandKind: "identification-graph.i4",
+      stageResult: IdentificationStageResultV1Schema.parse({
+        schemaVersion: "1",
+        runRef: run.runRef,
+        recordedAt: occurredAt,
+        stage: "I4",
+        modelContextArtifactSetRefs: [analyzedResult.modelContextArtifactSetRef],
+        zeroResultRef: analyzedResult.zeroResultRef,
+        workItemRef,
+      }),
+      cursorPatch: {
+        pendingWorkItemRefs: remaining,
+        zeroResults: [
+          ...cursor.zeroResults,
+          { workItemRef, zeroResultRef: analyzedResult.zeroResultRef },
+        ],
+      },
+      statePatch: { clearCandidateSetRef: true },
+    });
+  }
   if (analyzedResult.kind !== "assemble-and-infer") {
     fail(contractInvalid({ stage: "I4", detailCode: "analysis-result-kind-mismatch", occurredAt }));
   }
@@ -2425,6 +2497,9 @@ const stageI9: StageHandlerV1 = async ({ ports, run, state }) => {
   }
   const completed = new Set(cursor.completedWorkItemRefs.map((ref) => ref.reference.entityId));
   const failedItems = new Set(cursor.failedWorkItemRefs.map((ref) => ref.reference.entityId));
+  const zeroResultsByEntityId = new Map(
+    cursor.zeroResults.map((entry) => [entry.workItemRef.reference.entityId, entry]),
+  );
   const rejectedGroups = new Set(cursor.rejectedGroupRefs.map((ref) => ref.reference.entityId));
   const pendingGroups = new Set(cursor.pendingGroupRefs.map((ref) => ref.reference.entityId));
   const routes =
@@ -2455,6 +2530,14 @@ const stageI9: StageHandlerV1 = async ({ ports, run, state }) => {
       }
       if (completed.has(entityId)) {
         return { kind: "accepted" as const, workItemRef: item.workItemRef };
+      }
+      const zeroResult = zeroResultsByEntityId.get(entityId);
+      if (zeroResult !== undefined) {
+        return {
+          kind: "zero-result" as const,
+          workItemRef: item.workItemRef,
+          zeroResultRef: zeroResult.zeroResultRef,
+        };
       }
       return { kind: "skipped" as const, workItemRef: item.workItemRef };
     }),

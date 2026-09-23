@@ -30,6 +30,7 @@ import {
   IdentificationRunResultRefV1Schema,
   IdentificationWorkItemRefV1Schema,
   IdentificationWorkPlanRefV1Schema,
+  IdentificationZeroResultRefV1Schema,
   IdentificationPolicySetRefV1Schema,
   IndicatorActualValueSetRefV1Schema,
   KnowledgeQueryResultRefV1Schema,
@@ -266,6 +267,32 @@ const IdentificationI1StageResultV1Schema = z.discriminatedUnion("resultKind", [
   }),
 ]);
 
+const IdentificationI4StageResultV1Schema = z
+  .strictObject({
+    ...identificationStageBase,
+    stage: z.literal("I4"),
+    modelContextArtifactSetRefs: z.array(ModelContextArtifactSetRefV1Schema),
+    candidateSetRef: IdentificationCandidateSetRefV1Schema.optional(),
+    zeroResultRef: IdentificationZeroResultRefV1Schema.optional(),
+    workItemRef: IdentificationWorkItemRefV1Schema.optional(),
+  })
+  .superRefine((stageResult, context) => {
+    const zeroResultFieldCount = [stageResult.zeroResultRef, stageResult.workItemRef].filter(
+      (value) => value !== undefined,
+    ).length;
+    const isCandidateSetShape =
+      zeroResultFieldCount === 0 && stageResult.candidateSetRef !== undefined;
+    const isZeroResultShape =
+      zeroResultFieldCount === 2 && stageResult.candidateSetRef === undefined;
+    if (!isCandidateSetShape && !isZeroResultShape) {
+      context.addIssue({
+        code: "custom",
+        path: ["stage"],
+        message: "I4 requires exactly one candidate set reference or zero result reference",
+      });
+    }
+  });
+
 export const IdentificationStageResultV1Schema = z.discriminatedUnion("stage", [
   z.strictObject({
     ...identificationStageBase,
@@ -288,12 +315,7 @@ export const IdentificationStageResultV1Schema = z.discriminatedUnion("stage", [
     agentTaskRefs: z.array(AgentTaskRefV1Schema),
     failedWorkItemRefs: z.array(IdentificationWorkItemRefV1Schema),
   }),
-  z.strictObject({
-    ...identificationStageBase,
-    stage: z.literal("I4"),
-    modelContextArtifactSetRefs: z.array(ModelContextArtifactSetRefV1Schema),
-    candidateSetRef: IdentificationCandidateSetRefV1Schema,
-  }),
+  IdentificationI4StageResultV1Schema,
   z.strictObject({
     ...identificationStageBase,
     stage: z.literal("I5"),

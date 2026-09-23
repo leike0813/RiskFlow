@@ -194,47 +194,84 @@ const recordCommandReceipt = async (input: {
   readonly resultRef: { readonly kind: "workflow-run"; readonly reference: VersionReference };
   readonly runId: string | undefined;
   readonly threadId: string | undefined;
+  readonly stage: IdentificationGraphStateV1["stage"];
 }): Promise<boolean> => {
-  const receipt = await input.ports.transactionUnit.execute(
-    {
-      projectId: input.projectId,
-      commandKind: input.commandKind,
-      commandId: input.commandId,
-      idempotencyKey: input.idempotencyKey,
-      payload: input.payload,
-      actorRef: input.actorId,
-      authorizationContextRef: input.authorization.authorizationContextRef,
-      issuedAt: input.issuedAt,
-      ...(input.runId === undefined ? {} : { runId: input.runId }),
-      ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
-    },
-    async () => ({
-      resultRef: input.resultRef,
-      audit: {
-        auditEntryId: `${input.commandId}:audit`,
+  try {
+    const receipt = await input.ports.transactionUnit.execute(
+      {
         projectId: input.projectId,
-        action: input.commandKind,
-        targetRef: input.resultRef,
-        actorRef: input.actorId,
-        authorizationContextRef: input.authorization.authorizationContextRef,
-        occurredAt: input.issuedAt,
-        recordedAt: input.issuedAt,
-        version: {
-          entityId: input.resultRef.reference.entityId,
-          versionId: input.resultRef.reference.versionId,
-        },
+        commandKind: input.commandKind,
         commandId: input.commandId,
         idempotencyKey: input.idempotencyKey,
+        payload: input.payload,
+        actorRef: input.actorId,
+        authorizationContextRef: input.authorization.authorizationContextRef,
+        issuedAt: input.issuedAt,
         ...(input.runId === undefined ? {} : { runId: input.runId }),
         ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
       },
-      events: [],
-    }),
-  );
-  return receipt.replayed;
+      async () => ({
+        resultRef: input.resultRef,
+        audit: {
+          auditEntryId: `${input.commandId}:audit`,
+          projectId: input.projectId,
+          action: input.commandKind,
+          targetRef: input.resultRef,
+          actorRef: input.actorId,
+          authorizationContextRef: input.authorization.authorizationContextRef,
+          occurredAt: input.issuedAt,
+          recordedAt: input.issuedAt,
+          version: {
+            entityId: input.resultRef.reference.entityId,
+            versionId: input.resultRef.reference.versionId,
+          },
+          commandId: input.commandId,
+          idempotencyKey: input.idempotencyKey,
+          ...(input.runId === undefined ? {} : { runId: input.runId }),
+          ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+        },
+        events: [],
+      }),
+    );
+    return receipt.replayed;
+  } catch (error: unknown) {
+    const code =
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      typeof error.code === "string"
+        ? error.code
+        : "TRANSACTION_FAILED";
+    const retryable =
+      typeof error === "object" &&
+      error !== null &&
+      "retryable" in error &&
+      typeof error.retryable === "boolean"
+        ? error.retryable
+        : false;
+    throw runFailure({
+      stage: input.stage,
+      code,
+      retryable,
+      detailCode: code.toLowerCase(),
+      occurredAt: input.issuedAt,
+    });
+  }
 };
 
 const isGraphInterruptError = (error: unknown): boolean => error instanceof GraphInterrupt;
+
+const cancellationResultRef = (input: {
+  readonly projectId: string;
+  readonly runId: string;
+  readonly versionId: string;
+}): IdentificationRunResultRefV1 => ({
+  kind: "identification-run-result",
+  reference: {
+    entityId: `identification-cancellation:${input.projectId}:${input.runId}`,
+    versionId: input.versionId,
+  },
+});
 
 /**
  * 技术重试退避：次数与退避只来自冻结 `retryPolicyRef`（design D-10）。
@@ -270,6 +307,17 @@ export const createIdentificationGraphRuntime = (
 ): IdentificationGraphRuntimeV1 => {
   const { ports } = options;
 
+  const parseGraphResult = (value: unknown): IdentificationGraphStateV1 =>
+    IdentificationGraphStateV1Schema.parse(
+      typeof value === "object" && value !== null
+        ? Object.fromEntries(
+            Object.entries(value).filter(([key]) =>
+              Object.hasOwn(IdentificationGraphStateV1Schema.shape, key),
+            ),
+          )
+        : value,
+    );
+
   const outcomeOf = async (input: {
     readonly run: IdentificationGraphRunContextV1;
     readonly state: IdentificationGraphStateV1;
@@ -296,18 +344,21 @@ export const createIdentificationGraphRuntime = (
     readonly run: IdentificationGraphRunContextV1;
     readonly graphInput:
       | { readonly kind: "start"; readonly state: IdentificationGraphStateV1 }
-      | { readonly kind: "resume"; readonly resumeValue: IdentificationGraphResumeCauseV1 };
+      | { readonly kind: "resume"; readonly resumeValue: IdentificationGraphResumeCauseV1 }
+      | { readonly kind: "retry"; readonly state: IdentificationGraphStateV1 };
     readonly stage: IdentificationGraphStateV1["stage"];
   }): Promise<IdentificationGraphStateV1> => {
     try {
       const result =
         input.graphInput.kind === "start"
           ? await options.graph.invoke({ graph: input.graphInput.state }, graphConfig(input.run))
-          : await options.graph.resume(
-              { resume: input.graphInput.resumeValue },
-              graphConfig(input.run),
-            );
-      return IdentificationGraphStateV1Schema.parse(result);
+          : input.graphInput.kind === "retry"
+            ? await options.graph.retry(input.graphInput.state, graphConfig(input.run))
+            : await options.graph.resume(
+                { resume: input.graphInput.resumeValue },
+                graphConfig(input.run),
+              );
+      return parseGraphResult(result);
     } catch (error: unknown) {
       if (error instanceof IdentificationGraphNodeFailureV1) {
         throw new IdentificationGraphRunErrorV1(error.error);
@@ -392,6 +443,7 @@ export const createIdentificationGraphRuntime = (
         resultRef: runIdentity.runRef,
         runId: runIdentity.runRef.reference.entityId,
         threadId: runIdentity.threadId,
+        stage: "I0",
       });
       const existing = await readCursor({ ports, run: frozenRun });
       if (replayed && existing !== undefined) {
@@ -403,6 +455,15 @@ export const createIdentificationGraphRuntime = (
             code: "TRANSIENT_FAILURE",
             retryable: true,
             detailCode: "transient_failure",
+            occurredAt: options.now().toISOString(),
+          });
+        }
+        if (state.status === "running" || state.status === "pending") {
+          throw runFailure({
+            stage: state.stage,
+            code: "TRANSIENT_FAILURE",
+            retryable: true,
+            detailCode: "checkpoint-write-unconfirmed",
             occurredAt: options.now().toISOString(),
           });
         }
@@ -513,6 +574,7 @@ export const createIdentificationGraphRuntime = (
         resultRef: command.runRef,
         runId: command.runRef.reference.entityId,
         threadId: undefined,
+        stage: cursorBefore.stage,
       });
       const run: IdentificationGraphRunContextV1 = {
         projectId: command.projectId,
@@ -578,6 +640,32 @@ export const createIdentificationGraphRuntime = (
         });
       }
       const expected = cursorBefore;
+      const cancellationRow = (
+        await ports.registrationStore.listRunRows({
+          projectId: command.projectId,
+          runId: command.runRef.reference.entityId,
+        })
+      ).find((row) => row.resultKind === "cancellation");
+      if (cancellationRow !== undefined) {
+        return await outcomeOf({
+          run: frozenRun,
+          state: IdentificationGraphStateV1Schema.parse({
+            ...checkpointState,
+            status: "cancelled",
+            waitingRef: undefined,
+            resultRef: cancellationResultRef({
+              projectId: command.projectId,
+              runId: command.runRef.reference.entityId,
+              versionId: cancellationRow.requestDigest,
+            }),
+          }),
+          disposition: "existing",
+        });
+      }
+      if (expected.status !== "waiting" && expected.status !== "retryable-failure") {
+        // 迟到信号：运行已离开该等待，返回原回执且不重复恢复。
+        return await outcomeOf({ run: frozenRun, state: checkpointState, disposition: "existing" });
+      }
       if (expected.runVersionId !== command.expectedRunVersionId) {
         throw runFailure({
           stage: expected.stage,
@@ -588,10 +676,6 @@ export const createIdentificationGraphRuntime = (
         });
       }
       const waiting = expected.lastWaitingRef;
-      if (expected.status !== "waiting" && expected.status !== "retryable-failure") {
-        // 迟到信号：运行已离开该等待，返回原回执且不重复恢复。
-        return await outcomeOf({ run: frozenRun, state: checkpointState, disposition: "existing" });
-      }
       if (command.resumeCause.kind === "transient-recovered") {
         if (expected.status !== "retryable-failure") {
           throw runFailure({
@@ -655,7 +739,10 @@ export const createIdentificationGraphRuntime = (
       }
       const state = await runGraph({
         run: frozenRun,
-        graphInput: { kind: "resume", resumeValue: command.resumeCause },
+        graphInput:
+          command.resumeCause.kind === "transient-recovered"
+            ? { kind: "retry", state: checkpointState }
+            : { kind: "resume", resumeValue: command.resumeCause },
         stage: expected.stage,
       });
       return await outcomeOf({ run: frozenRun, state, disposition: "resumed" });
@@ -717,6 +804,7 @@ export const createIdentificationGraphRuntime = (
         resultRef: command.runRef,
         runId: command.runRef.reference.entityId,
         threadId: undefined,
+        stage: "I0",
       });
       const checkpointState = await readCheckpointState({
         graph: options.graph,
@@ -745,11 +833,32 @@ export const createIdentificationGraphRuntime = (
         });
       }
       if (replayed || cursor.status === "cancelled") {
+        const cancellationRow = (
+          await ports.registrationStore.listRunRows({
+            projectId: command.projectId,
+            runId: command.runRef.reference.entityId,
+          })
+        ).find((row) => row.resultKind === "cancellation");
+        if (cancellationRow === undefined) {
+          throw runFailure({
+            stage: cursor.stage,
+            code: "CONTRACT_INVALID",
+            retryable: false,
+            detailCode: "cancellation-result-missing",
+            occurredAt: options.now().toISOString(),
+          });
+        }
         return await outcomeOf({
           run,
           state: IdentificationGraphStateV1Schema.parse({
             ...checkpointState,
             status: "cancelled",
+            waitingRef: undefined,
+            resultRef: cancellationResultRef({
+              projectId: command.projectId,
+              runId: command.runRef.reference.entityId,
+              versionId: cancellationRow.requestDigest,
+            }),
           }),
           disposition: "already-cancelled",
         });
@@ -769,13 +878,11 @@ export const createIdentificationGraphRuntime = (
         reasonCode: command.reasonCode,
         cancelledAt: command.issuedAt,
       });
-      const cancellationRef: IdentificationRunResultRefV1 = {
-        kind: "identification-run-result",
-        reference: {
-          entityId: `identification-cancellation:${command.projectId}:${command.runRef.reference.entityId}`,
-          versionId: sha256CanonicalJson(cancellation),
-        },
-      };
+      const cancellationRef = cancellationResultRef({
+        projectId: command.projectId,
+        runId: command.runRef.reference.entityId,
+        versionId: sha256CanonicalJson(cancellation),
+      });
       const artifactId = `identification-graph-cancellation:${command.runRef.reference.entityId}`;
       const actionId = `${command.commandId}:cancel`;
       const put = await ports.bodies.putBody({
@@ -867,6 +974,7 @@ export const createIdentificationGraphRuntime = (
         state: IdentificationGraphStateV1Schema.parse({
           ...checkpointState,
           status: "cancelled",
+          waitingRef: undefined,
           resultRef: cancellationRef,
         }),
         disposition: "cancellation-recorded",

@@ -281,8 +281,22 @@ const validateConfig = (config: SaverGetTupleArgument): void => {
   }
 };
 
+const checkpointKey = (
+  config: SaverGetTupleArgument,
+  checkpointId = config.configurable?.checkpoint_id,
+): string | undefined => {
+  const threadId = config.configurable?.thread_id;
+  const checkpointNamespace = config.configurable?.checkpoint_ns ?? "";
+  return typeof threadId === "string" &&
+    typeof checkpointNamespace === "string" &&
+    typeof checkpointId === "string"
+    ? `${threadId}\u0000${checkpointNamespace}\u0000${checkpointId}`
+    : undefined;
+};
+
 export class PostgresCheckpointer extends PostgresSaver {
   readonly #validateReference: ContractReferenceValidator;
+  readonly #pendingPuts = new Map<string, Promise<unknown>>();
 
   constructor(
     pool: ConstructorParameters<typeof PostgresSaver>[0],
@@ -314,17 +328,28 @@ export class PostgresCheckpointer extends PostgresSaver {
     ...args: SaverPutArguments
   ): Promise<Awaited<ReturnType<PostgresSaver["put"]>>> {
     const graphState = validateCheckpointWrite(args[0], args[1], args[2]);
-    await validateReferences(this.#validateReference, graphState.state, args[2]);
-    try {
+    const key = checkpointKey(args[0], args[1].id);
+    const pending = (async () => {
+      await validateReferences(this.#validateReference, graphState.state, args[2]);
       return await super.put(...args);
+    })();
+    if (key !== undefined) this.#pendingPuts.set(key, pending);
+    try {
+      return await pending;
     } catch (error) {
       throw this.#mapCheckpointerError(error, "checkpointer.put");
+    } finally {
+      if (key !== undefined && this.#pendingPuts.get(key) === pending) {
+        this.#pendingPuts.delete(key);
+      }
     }
   }
 
   override async putWrites(...args: SaverPutWritesArguments): Promise<void> {
     validateConfig(args[0]);
     try {
+      const pending = this.#pendingPuts.get(checkpointKey(args[0]) ?? "");
+      if (pending !== undefined) await pending;
       const tuple = await super.getTuple(args[0]);
       if (tuple === undefined) {
         throw makePersistenceError("CHECKPOINT_INCONSISTENT", "checkpointer.writes");

@@ -14,3 +14,7 @@ export {
 export { runPostgresMigrations } from "../../../src/postgres/migrations/run.js";
 export { createPostgresRuntime, type PostgresRuntime } from "../../../src/postgres/pool.js";
 export { PostgresTransactionUnit } from "../../../src/postgres/transaction-unit.js";
+export {
+  createPostgresIdentificationGraphAdapter,
+  type PostgresIdentificationGraphAdapterV1,
+} from "../../../src/identification/graph/index.js";

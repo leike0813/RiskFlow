@@ -188,7 +188,6 @@ const insertColumnsFor = (row: IdentificationGraphResultRowV1): Record<string, u
   run_result_ref: "runResultRef" in row ? jsonValue(row.runResultRef) : null,
   valid_at: row.validAt,
   recorded_at: row.recordedAt,
-  persisted_at: row.persistedAt,
   audit_entry_id: row.auditEntryId,
 });
 

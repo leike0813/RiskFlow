@@ -303,6 +303,8 @@ export interface IdentificationGraphRunnerV1 {
     input: { readonly resume: IdentificationGraphResumeCauseV1 },
     config: LangGraphRunnableConfig,
   ): Promise<unknown>;
+  /** 技术失败重试：从已持久化阶段显式回到同一节点，不经过等待中断通道。 */
+  retry(state: IdentificationGraphStateV1, config: LangGraphRunnableConfig): Promise<unknown>;
   getState(config: LangGraphRunnableConfig): Promise<unknown>;
 }
 
@@ -566,7 +568,7 @@ const artifactIdFor = (kind: string, runId: string, suffix: string): string =>
   `identification-graph-${kind}:${runId}:${suffix}`;
 
 const actionIdFor = (run: IdentificationGraphRunContextV1, suffix: string): string =>
-  `${run.commandId}:${suffix}`;
+  `${run.runRef.reference.versionId}:${suffix}`;
 
 const contractInvalid = (input: {
   readonly stage: IdentificationStageV1;
@@ -801,6 +803,7 @@ interface AdvanceInputV1 {
     readonly artifactRefs: ReadonlyMap<string, ContentArtifactRefV1>;
     readonly runVersionId: string;
     readonly stageResultRef: StageResultRefV1 | undefined;
+    readonly auditEntryId: string;
   }) => readonly IdentificationGraphResultRowV1[];
   /** 状态补丁：只允许公开状态 schema 允许的字段，未提供时保留原值。 */
   readonly statePatch?: {
@@ -908,7 +911,14 @@ const advance = async (input: AdvanceInputV1): Promise<IdentificationGraphStateV
           resultKind: "run-state",
         }),
       );
-      rows.push(...(input.extraRows?.({ artifactRefs: refs, runVersionId, stageResultRef }) ?? []));
+      rows.push(
+        ...(input.extraRows?.({
+          artifactRefs: refs,
+          runVersionId,
+          stageResultRef,
+          auditEntryId: `${actionId}:audit`,
+        }) ?? []),
+      );
       return rows;
     },
   });
@@ -951,7 +961,7 @@ const advance = async (input: AdvanceInputV1): Promise<IdentificationGraphStateV
     ...((patch.mergePlanRef ?? state.mergePlanRef) === undefined
       ? {}
       : { mergePlanRef: patch.mergePlanRef ?? state.mergePlanRef }),
-    ...(input.stageResult === undefined
+    ...(input.stageResult === undefined || !input.stageResultRow
       ? state.lastStageResultRef === undefined
         ? {}
         : { lastStageResultRef: state.lastStageResultRef }
@@ -1056,8 +1066,16 @@ const waitFor = async (input: {
       return rows;
     },
   });
+  const agentTaskRefs =
+    waiting.kind === "retrieval-review-agent"
+      ? state.agentTaskRefs.some((ref) =>
+          sameVersionReference(ref.reference, waiting.agentTaskRef.reference),
+        )
+        ? state.agentTaskRefs
+        : [...state.agentTaskRefs, waiting.agentTaskRef]
+      : state.agentTaskRefs;
   return parseIdentificationGraphState(
-    { ...state, stage, status: "waiting", waitingRef },
+    { ...state, stage, status: "waiting", waitingRef, agentTaskRefs },
     occurredAt,
   );
 };
@@ -1396,7 +1414,6 @@ const stageI1: StageHandlerV1 = async ({ ports, run, state }) => {
     run.runRef.reference.entityId,
     "I1",
   );
-  const actionId = actionIdFor(run, "I1:result");
   return await advance({
     ports,
     run,
@@ -1415,7 +1432,7 @@ const stageI1: StageHandlerV1 = async ({ ports, run, state }) => {
         build: () => ({ bodyKind: "input-snapshot", inputSnapshot }),
       },
     ],
-    extraRows: ({ artifactRefs }) => [
+    extraRows: ({ artifactRefs, auditEntryId }) => [
       IdentificationGraphResultRowV1Schema.parse({
         ...rowBase({
           run,
@@ -1423,10 +1440,12 @@ const stageI1: StageHandlerV1 = async ({ ports, run, state }) => {
           runVersionId: sha256CanonicalJson({ runId: run.runRef.reference.entityId, stage: "I1" }),
           resultKind: "input-snapshot",
           idempotencySuffix: "I1:input-snapshot",
-          auditEntryId: `${actionId}:audit`,
+          auditEntryId,
           recordedAt: occurredAt,
           validAt: run.validAt,
         }),
+        resultId: inputSnapshotRef.reference.entityId,
+        resultVersionId: inputSnapshotRef.reference.versionId,
         resultKind: "input-snapshot",
         parentRunRef: run.parentRiskFlowRunRef,
         preparationSnapshotRef: run.preparationSnapshotRef,
@@ -1552,7 +1571,6 @@ const stageI2: StageHandlerV1 = async ({ ports, run, state }) => {
     excludedWorkItemCount: plan.body.excludedWorkItems.length,
   });
   const workPlanArtifactId = artifactIdFor("work-plan", run.runRef.reference.entityId, "I2");
-  const actionId = actionIdFor(run, "I2:result");
   return await advance({
     ports,
     run,
@@ -1574,7 +1592,7 @@ const stageI2: StageHandlerV1 = async ({ ports, run, state }) => {
         build: () => ({ bodyKind: "work-plan", workPlan: plan.body }),
       },
     ],
-    extraRows: ({ artifactRefs, runVersionId }) => [
+    extraRows: ({ artifactRefs, runVersionId, auditEntryId }) => [
       IdentificationGraphResultRowV1Schema.parse({
         ...rowBase({
           run,
@@ -1582,10 +1600,12 @@ const stageI2: StageHandlerV1 = async ({ ports, run, state }) => {
           runVersionId,
           resultKind: "work-plan",
           idempotencySuffix: "I2:work-plan",
-          auditEntryId: `${actionId}:audit`,
+          auditEntryId,
           recordedAt: occurredAt,
           validAt: run.validAt,
         }),
+        resultId: workPlanRef.reference.entityId,
+        resultVersionId: workPlanRef.reference.versionId,
         resultKind: "work-plan",
         parentRunRef: run.parentRiskFlowRunRef,
         inputSnapshotRef,
@@ -2452,7 +2472,6 @@ const stageI9: StageHandlerV1 = async ({ ports, run, state }) => {
     runResult,
   });
   const runResultArtifactId = artifactIdFor("run-result", run.runRef.reference.entityId, "I9");
-  const actionId = actionIdFor(run, "I9:result");
   return await advance({
     ports,
     run,
@@ -2474,7 +2493,7 @@ const stageI9: StageHandlerV1 = async ({ ports, run, state }) => {
     extraBodies: [
       { artifactId: runResultArtifactId, build: () => ({ bodyKind: "run-result", runResult }) },
     ],
-    extraRows: ({ artifactRefs, runVersionId }) => [
+    extraRows: ({ artifactRefs, runVersionId, auditEntryId }) => [
       IdentificationGraphResultRowV1Schema.parse({
         ...rowBase({
           run,
@@ -2482,10 +2501,12 @@ const stageI9: StageHandlerV1 = async ({ ports, run, state }) => {
           runVersionId,
           resultKind: "run-result",
           idempotencySuffix: "I9:run-result",
-          auditEntryId: `${actionId}:audit`,
+          auditEntryId,
           recordedAt: occurredAt,
           validAt: run.validAt,
         }),
+        resultId: runResultRef.reference.entityId,
+        resultVersionId: runResultRef.reference.versionId,
         resultKind: "run-result",
         workPlanRef,
         runResultRef,
@@ -2527,10 +2548,10 @@ const recordNodeFailure = async (input: {
     kind: "workflow-error" as const,
     reference: {
       entityId: `identification-graph-workflow-error:${error.stage}:${error.detailCode}`,
-      versionId: sha256CanonicalJson(stableError),
+      versionId: sha256CanonicalJson({ error: stableError, attempt: attempts + 1 }),
     },
   };
-  const suffix = `${stage}:failure:${error.detailCode}`;
+  const suffix = `${stage}:failure:${error.detailCode}:attempt-${attempts + 1}`;
   const runStateArtifactId = artifactIdFor("run-state", run.runRef.reference.entityId, suffix);
   const cursor = await readCursor({ ports, run });
   const cursorState = cursorBody({
@@ -2617,6 +2638,16 @@ const retryBudget = async (
   state: IdentificationGraphStateV1,
 ): Promise<number> => {
   try {
+    if (state.inputSnapshotRef === undefined) {
+      const policy = await ports.policyProvider.resolveExact({
+        projectId: run.projectId,
+        preparationSnapshotRef: run.preparationSnapshotRef,
+        requiredAt: run.validAt,
+        asOfRecordedAt: run.issuedAt,
+        authorization: run.authorization,
+      });
+      return policy?.retryPolicy.maxAttempts ?? 1;
+    }
     const policy = await readFrozenPolicyForRun({ ports, run, state, stage: state.stage });
     return policy.retryPolicy.maxAttempts;
   } catch {
@@ -2695,7 +2726,10 @@ export const createIdentificationGraph = (options: {
     );
   });
   graph.addEdge(START, NODE_FOR_STAGE_V1.I0);
-  const routes: Record<string, NodeNameV1> = { [WAIT_NODE_V1]: WAIT_NODE_V1 };
+  const routes: Record<string, NodeNameV1> = {
+    [END]: END,
+    [WAIT_NODE_V1]: WAIT_NODE_V1,
+  };
   for (const stage of STAGE_SEQUENCE_V1) {
     routes[NODE_FOR_STAGE_V1[stage]] = NODE_FOR_STAGE_V1[stage];
   }
@@ -2715,12 +2749,19 @@ export const createIdentificationGraph = (options: {
   // 该选项在调用期生效：每个 superstep 末等待检查点落库后再继续。
   const compiled = graph.compile({ checkpointer: options.checkpointer });
   return {
-    invoke: (input, config) =>
-      compiled.invoke(input.graph, { ...config, durability: "sync" }),
+    invoke: (input, config) => compiled.invoke(input.graph, { ...config, durability: "sync" }),
     resume: (input, config) =>
       compiled.invoke(
         new Command<IdentificationGraphResumeCauseV1, GraphChannelsV1, NodeNameV1>({
           resume: input.resume,
+        }),
+        { ...config, durability: "sync" },
+      ),
+    retry: (state, config) =>
+      compiled.invoke(
+        new Command<IdentificationGraphResumeCauseV1, GraphChannelsV1, NodeNameV1>({
+          update: stateAsUpdate({ ...state, status: "running" }),
+          goto: NODE_FOR_STAGE_V1[state.stage],
         }),
         { ...config, durability: "sync" },
       ),

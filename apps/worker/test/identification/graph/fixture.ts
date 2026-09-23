@@ -56,6 +56,9 @@ import {
 } from "@riskflow/core/identification/candidate-finalization";
 import {
   IdentificationGraphPolicySetV1Schema,
+  identificationInputSnapshotRefFor,
+  identificationWorkItemRefFor,
+  identificationWorkPlanRefFor,
   type IdentificationGraphPolicySetV1,
   type IdentificationGraphResultRowV1,
   type IdentificationGraphRunStateV1,
@@ -69,11 +72,6 @@ import {
 } from "@riskflow/core/identification-knowledge";
 import { sha256CanonicalJson } from "@riskflow/core/persistence";
 
-import {
-  createPostgresIdentificationGraphAdapter,
-  type PostgresIdentificationGraphAdapterV1,
-} from "@riskflow/adapters/identification/graph";
-
 import { artifactPolicy } from "../../../../../packages/adapters/test/artifacts/fixture.js";
 import {
   startPostgresFixture,
@@ -82,11 +80,13 @@ import {
 import {
   PostgresTransactionUnit,
   PostgresArtifactRegistry,
+  createPostgresIdentificationGraphAdapter,
   createFilesystemArtifactStore,
   createPostgresRuntime,
   runPostgresMigrations,
   setupPostgresCheckpointer,
   type PostgresCheckpointer,
+  type PostgresIdentificationGraphAdapterV1,
   type PostgresRuntime,
 } from "../../../../../packages/adapters/test/identification/graph/wiring.js";
 
@@ -236,7 +236,7 @@ export const preparationSnapshot = (
 
 const evidenceReference = (sourceSegmentId: string) => ({
   locator: { sourceSegmentId },
-  sourceVersion: SOURCE_VERSION_REF,
+  sourceVersion: SOURCE_VERSION_REF.reference,
 });
 
 /** 工序模型发布正文：`nodeIds` 为适用节点，另加一个仅出现在工序模型里的非适用节点。 */
@@ -499,20 +499,33 @@ export const createWorld = (): IdentificationGraphWorldV1 => ({
 });
 
 /** 稳定输入快照身份与工作计划身份（与 core 纯函数同一派生规则，供用例断言）。 */
-export const INPUT_SNAPSHOT_ENTITY_ID = `identification-input-snapshot:${PROJECT_ID}:${PREPARATION_SNAPSHOT_REF.reference.entityId}`;
-export const WORK_PLAN_ENTITY_ID = `identification-work-plan:${PROJECT_ID}:${INPUT_SNAPSHOT_ENTITY_ID}`;
+const INPUT_SNAPSHOT_REF = identificationInputSnapshotRefFor({
+  projectId: PROJECT_ID,
+  preparationSnapshotRef: PREPARATION_SNAPSHOT_REF,
+  policySetRef: POLICY_SET_REF,
+  processModelReleaseRef: PROCESS_MODEL_RELEASE_REF.reference,
+  retrievalEvidenceBaseReleaseRef: EVIDENCE_BASE_RELEASE_REF.reference,
+});
+const WORK_PLAN_REF = identificationWorkPlanRefFor({
+  projectId: PROJECT_ID,
+  inputSnapshotRef: INPUT_SNAPSHOT_REF,
+});
+export const INPUT_SNAPSHOT_ENTITY_ID = INPUT_SNAPSHOT_REF.reference.entityId;
+export const WORK_PLAN_ENTITY_ID = WORK_PLAN_REF.reference.entityId;
 
 /** 稳定工作项身份（与 core 纯函数 `identificationWorkItemRefFor` 同一派生规则）。 */
 export const workItemRefFor = (
   workPlanEntityId: string,
   nodeId: string,
-): { readonly kind: "identification-work-item"; readonly reference: VersionReference } => ({
-  kind: "identification-work-item",
-  reference: {
-    entityId: `identification-work-item:${PROJECT_ID}:${workPlanEntityId}:${nodeId}`,
-    versionId: sha256CanonicalJson({ projectId: PROJECT_ID, workPlanEntityId, nodeId }),
-  },
-});
+): { readonly kind: "identification-work-item"; readonly reference: VersionReference } =>
+  identificationWorkItemRefFor({
+    projectId: PROJECT_ID,
+    workPlanRef:
+      workPlanEntityId === WORK_PLAN_ENTITY_ID
+        ? WORK_PLAN_REF
+        : refOf("identification-work-plan", workPlanEntityId),
+    nodeId,
+  });
 
 /** 稳定 Agent 任务身份：直接复用图的公开派生函数，避免夹具与实现漂移。 */
 export const reviewTaskRefFor = (workItemRef: {

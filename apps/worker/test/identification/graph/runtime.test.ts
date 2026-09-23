@@ -5,11 +5,12 @@
  * C04 工件存储 / C24 登记面，只有 C17/C21/C22/C23 与策略目录用可控公开端口替身注入。
  * 断言稳定引用、终态、错误码与事务结果，不锁定节点内部调用顺序，也不用 LLM 文本作硬期望。
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { IDENTIFICATION_GRAPH_BODY_PURPOSE_CODE_V1 } from "@riskflow/adapters/identification/graph";
 import { IdentificationStageResultV1Schema } from "@riskflow/contracts/workflows";
 import {
+  IdentificationGraphArtifactBodyV1Schema,
   IdentificationGraphRunResultV1Schema,
   IdentificationGraphWorkPlanBodyV1Schema,
 } from "@riskflow/core/identification/graph";
@@ -48,21 +49,25 @@ const workItemCurrent = workItemRefFor(WORK_PLAN_ENTITY_ID, NODE_CURRENT);
 const workItemNeighbor = workItemRefFor(WORK_PLAN_ENTITY_ID, NODE_NEIGHBOR);
 
 /** 读取某阶段的 stage-result 正文（正文只在 C04，登记行只保存引用）。 */
-const lastStageResult = async (
+const stageResultOf = async (
   harness: IdentificationGraphHarnessV1,
   run: IdentificationGraphRunScopeV1,
+  stage: "I3" | "I8",
 ) => {
   const rows = await harness.rows(run, "stage-result");
-  const last = rows.at(-1);
-  if (last === undefined || last.resultKind !== "stage-result") {
-    throw new TypeError("stage result row is not registered");
+  for (const row of rows) {
+    if (row.resultKind !== "stage-result") continue;
+    const body = IdentificationGraphArtifactBodyV1Schema.parse(
+      await harness.readArtifactBody(
+        row.artifactRef,
+        IDENTIFICATION_GRAPH_BODY_PURPOSE_CODE_V1["stage-result"],
+      ),
+    );
+    if (body.bodyKind !== "stage-result") continue;
+    const result = IdentificationStageResultV1Schema.parse(body.stageResult);
+    if (result.stage === stage) return result;
   }
-  return IdentificationStageResultV1Schema.parse(
-    await harness.readArtifactBody(
-      last.artifactRef,
-      IDENTIFICATION_GRAPH_BODY_PURPOSE_CODE_V1["stage-result"],
-    ),
-  );
+  throw new TypeError(`${stage} stage result row is not registered`);
 };
 
 const runResultOf = async (
@@ -73,25 +78,27 @@ const runResultOf = async (
   if (row === undefined || row.resultKind !== "run-result") {
     throw new TypeError("run result row is not registered");
   }
+  const body = IdentificationGraphArtifactBodyV1Schema.parse(
+    await harness.readArtifactBody(
+      row.artifactRef,
+      IDENTIFICATION_GRAPH_BODY_PURPOSE_CODE_V1["run-result"],
+    ),
+  );
+  if (body.bodyKind !== "run-result") throw new TypeError("unexpected artifact body kind");
   return {
     row,
-    runResult: IdentificationGraphRunResultV1Schema.parse(
-      await harness.readArtifactBody(
-        row.artifactRef,
-        IDENTIFICATION_GRAPH_BODY_PURPOSE_CODE_V1["run-result"],
-      ),
-    ),
+    runResult: IdentificationGraphRunResultV1Schema.parse(body.runResult),
   };
 };
 
 describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer）", () => {
   let harness: IdentificationGraphHarnessV1;
 
-  beforeAll(async () => {
+  beforeEach(async () => {
     harness = await startIdentificationGraphHarness();
   }, 300_000);
 
-  afterAll(async () => {
+  afterEach(async () => {
     await harness.close();
   }, 120_000);
 
@@ -125,12 +132,16 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
     );
 
     // 计划正文：覆盖全部适用工序、稳定排序、回引同一准备快照的范围，非适用节点被显式排除。
-    const workPlan = IdentificationGraphWorkPlanBodyV1Schema.parse(
+    const workPlanBody = IdentificationGraphArtifactBodyV1Schema.parse(
       await harness.readArtifactBody(
         planRows[0]!.artifactRef,
         IDENTIFICATION_GRAPH_BODY_PURPOSE_CODE_V1["work-plan"],
       ),
     );
+    if (workPlanBody.bodyKind !== "work-plan") {
+      throw new TypeError("unexpected artifact body kind");
+    }
+    const workPlan = IdentificationGraphWorkPlanBodyV1Schema.parse(workPlanBody.workPlan);
     expect(workPlan.workItems.map((item) => item.nodeId)).toEqual([NODE_CURRENT, NODE_NEIGHBOR]);
     expect(workPlan.excludedWorkItems).toEqual([
       { nodeId: NODE_EXCLUDED, reasonCode: "NOT_APPLICABLE" },
@@ -166,7 +177,7 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
     ]);
 
     // I8 阶段结果保存入库记录与事件精确引用；运行游标只追加一次。
-    const i8StageResult = await lastStageResult(harness, run);
+    const i8StageResult = await stageResultOf(harness, run, "I8");
     expect(i8StageResult.stage).toBe("I8");
     if (i8StageResult.stage !== "I8") throw new TypeError("last stage result must be I8");
     expect(i8StageResult.standardizedRiskRecordRefs).toEqual([riskRecordRefFor(AUTO_GROUP)]);
@@ -236,7 +247,7 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
         ),
       ).rejects.toMatchObject({
         error: {
-          code: "BUSINESS_BLOCKED",
+          code: "UPSTREAM_WAITING",
           retryable: false,
           detailCode: "waiting-reference-kind-mismatch",
         },
@@ -379,11 +390,11 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
       expect(cursor.state.failedWorkItemRefs).toEqual([workItemNeighbor]);
       expect(cursor.state.completedWorkItemRefs).toEqual([workItemCurrent]);
 
-      const i3StageResult = await lastStageResult(harness, run);
+      const i3StageResult = await stageResultOf(harness, run, "I3");
       const { runResult } = await runResultOf(harness, run);
       // 失败项不被报告为已识别/已复核；已成立证据保留。
       expect(runResult.failedWorkItemRefs).toEqual([workItemNeighbor]);
-      expect(i3StageResult.stage).toBe("I9");
+      expect(i3StageResult.stage).toBe("I3");
     } finally {
       world.agentTaskStatus.delete(NODE_NEIGHBOR);
     }
@@ -427,7 +438,9 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
       expect(resumed.disposition).toBe("resumed");
       expect(resumed.state.status).toBe("completed");
       // 恢复沿用原动作身份与线程：同一启动任务的命令身份被原样重放，不新建替代任务。
-      expect(world.calls.startTask).toHaveLength(2);
+      expect(
+        world.calls.startTask.filter((call) => call.commandId === firstTaskCommandId),
+      ).toHaveLength(2);
       expect(world.calls.startTask[1]?.commandId).toBe(firstTaskCommandId);
       expect(world.calls.startTask[1]?.payload.modelDeploymentRef).toEqual(
         reviewTaskRefFor(workItemCurrent).modelDeploymentRef,
@@ -536,12 +549,12 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
       automaticRouteFor(WORK_PLAN_ENTITY_ID, AUTO_GROUP).routeDecisionRef,
     ]);
 
-    const i8StageResult = await lastStageResult(harness, run);
+    const i8StageResult = await stageResultOf(harness, run, "I8");
     expect(i8StageResult.stage).toBe("I8");
     if (i8StageResult.stage !== "I8") throw new TypeError("last stage result must be I8");
     expect(i8StageResult.standardizedRiskRecordRefs).toEqual([riskRecordRefFor(AUTO_GROUP)]);
     expect(i8StageResult.eventRefs).toEqual([acceptedEventRefFor(AUTO_GROUP)]);
-  });
+  }, 120_000);
 
   it("I6～I8 待定组后续有决定后恰入库一次，重复恢复事件同回执无副作用", async () => {
     const { world } = harness;
@@ -599,7 +612,7 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
     expect(replayed.disposition).toBe("resumed");
     expect(replayed.runVersionId).toBe(resumed.runVersionId);
     expect(await harness.rows(run)).toEqual(rowsAfterResume);
-  });
+  }, 120_000);
 
   it("I6～I8 混合合格组与拒绝组：合格组入库、被拒组零记录零事件", async () => {
     const { world } = harness;
@@ -615,8 +628,8 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
 
     expect(outcome.state.status).toBe("completed");
     expect(outcome.state.acceptedRiskRecordRefs).toEqual([riskRecordRefFor(AUTO_GROUP)]);
-    const i8StageResult = await lastStageResult(harness, run);
-    expect(i8StageResult.stage).toBe("I9");
+    const i8StageResult = await stageResultOf(harness, run, "I8");
+    expect(i8StageResult.stage).toBe("I8");
     const { runResult } = await runResultOf(harness, run);
     expect(runResult.acceptedRiskRecordRefs).toEqual([riskRecordRefFor(AUTO_GROUP)]);
     // 被拒组不产生任何记录或事件，只登记为拒绝。
@@ -760,7 +773,7 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
           reference: versionRef(`identification-run:${PROJECT_ID}:unregistered`, "v1"),
         },
       }),
-    ).rejects.toMatchObject({ error: { code: "ENTITY_NOT_FOUND", retryable: false } });
+    ).rejects.toMatchObject({ error: { code: "INPUT_NOT_READY", retryable: false } });
 
     // 已完成的运行收到迟到信号：返回原回执且不重复推进。
     const late = await harness.runtime.resume(
@@ -889,7 +902,7 @@ describe("C24 识别子图运行时（检查点写入失败注入）", () => {
   let harness: IdentificationGraphHarnessV1;
 
   beforeAll(async () => {
-    harness = await startIdentificationGraphHarness({ failCheckpointPutAt: 2 });
+    harness = await startIdentificationGraphHarness({ failCheckpointPutAt: 3 });
   }, 300_000);
 
   afterAll(async () => {

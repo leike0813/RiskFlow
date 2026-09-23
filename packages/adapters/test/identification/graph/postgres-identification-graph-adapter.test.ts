@@ -820,7 +820,7 @@ describe("PostgreSQL identification graph persistence", () => {
           resultId: row.resultId,
           resultVersionId: row.resultVersionId,
         }),
-      ).toEqual(row);
+      ).toEqual({ ...row, persistedAt: expect.any(String) });
     }
 
     // `agent-task` 等待变体（协调者裁决新增）在登记行与 CHECK 约束上同样被接受。
@@ -855,7 +855,7 @@ describe("PostgreSQL identification graph persistence", () => {
         resultId: agentTaskWaitingRow.resultId,
         resultVersionId: agentTaskWaitingRow.resultVersionId,
       }),
-    ).toEqual(agentTaskWaitingRow);
+    ).toEqual({ ...agentTaskWaitingRow, persistedAt: expect.any(String) });
 
     // 正文只在 C04：登记表内不得出现正文内容，且未登记的引用读不到正文。
     const plan = await registerPlanFixture(fixture!, "artifact");
@@ -914,7 +914,7 @@ describe("PostgreSQL identification graph persistence", () => {
         resultId: row.resultId,
         resultVersionId: row.resultVersionId,
       }),
-    ).toEqual(row);
+    ).toEqual({ ...row, persistedAt: expect.any(String) });
   }, 90_000);
 
   it("reads run rows and the latest run state by exact project and run identity", async () => {

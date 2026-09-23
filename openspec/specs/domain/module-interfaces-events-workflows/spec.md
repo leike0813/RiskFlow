@@ -118,7 +118,7 @@
 
 系统 MUST 以 `I0`～`I9` 闭合阶段表示一次有限识别运行：I0 资料准备与输入冻结，I1 知识就绪，I2 工序工作项规划，I3 混合/关系检索与必经 Agent 审阅，I4 五项上下文组装与 RI-S57 专用 LLM 推理，I5 有界结构修复与确定性校验，I6 全运行重复检测与多来源合并，I7 综合置信度与验收路由，I8 业务入库与评估事件，I9 结果汇总。
 
-每阶段 DTO MUST 只携带精确快照、工作项、候选集、Agent 任务、合并计划、复核任务、业务结果、路由、错误或汇总引用。I0 的 `IdentificationPreparationSnapshotV1` MUST 以非空 `sourceVersionRefs` 和非空 `includedSourceSegmentSetRefs` 冻结资料输入；两个数组 MUST 等长并按相同索引一一对应，每个资料段集合引用 MUST 属于配对的精确资料版本。一次识别运行 MUST 以单个 `IdentificationInputSnapshotV1.preparationSnapshotRef` 引用该聚合准备快照，不得拆成每个资料版本一个准备快照。I0～I9 MUST 完整追踪 RI-S1～RI-S6；任一技术错误不得伪装成业务复核。（RI-S1～RI-S6）
+每阶段 DTO MUST 只携带精确快照、工作项、候选集、正式零结果、Agent 任务、合并计划、复核任务、业务结果、路由、错误或汇总引用；识别分析结果 MUST 用闭合联合区分非空候选成功与正式零结果终态。I0 的 `IdentificationPreparationSnapshotV1` MUST 以非空 `sourceVersionRefs` 和非空 `includedSourceSegmentSetRefs` 冻结资料输入；两个数组 MUST 等长并按相同索引一一对应，每个资料段集合引用 MUST 属于配对的精确资料版本。一次识别运行 MUST 以单个 `IdentificationInputSnapshotV1.preparationSnapshotRef` 引用该聚合准备快照，不得拆成每个资料版本一个准备快照。I0～I9 MUST 完整追踪 RI-S1～RI-S6；任一技术错误不得伪装成业务复核或正式零结果。（RI-S1～RI-S6）
 
 #### Scenario: 识别正常完成
 
@@ -155,6 +155,12 @@
 - **WHEN** I3 的检索审阅 Agent 预算耗尽或重试耗尽
 - **THEN** 相应工作项进入类型化失败
 - **AND** 不以基线检索冒充最终检索继续 I4
+
+#### Scenario: I4 返回正式零结果引用
+
+- **WHEN** RI-S57 专用推理返回合法零候选且 C22 已正式登记对应事实
+- **THEN** 分析端口返回独立的零结果成功分支，I4 阶段结果只保存该精确零结果引用而不伪造候选集引用
+- **AND** 工作流状态、恢复与 I9 汇总均能从该引用回到授权范围内的原始推理证据
 
 ### Requirement: 评估工作流具有 A0 至 A9 的版本化阶段契约
 

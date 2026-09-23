@@ -27,3 +27,11 @@
 ## 5. Apply 收口
 
 - [x] 5.1 按 IP-01～IP-21 核对全部 Requirement/Scenario、计划文件和证据命令；运行 `pnpm exec openspec instructions apply --change deliver-identification-graph --json` 并确认所有 `contextFiles` 已读取、实现任务全部勾选且未提前创建 verification。
+
+## 6. 批准重开范围：I0/I1 阶段登记与依赖门禁
+
+- [ ] 6.1 实施 IP-22：收敛 C24 `stage-result` Schema 与 `000043` 同名 check，覆盖新表和重复 `up`；运行 `pnpm exec vitest run packages/adapters/test/identification/graph/postgres-identification-graph-adapter.test.ts --testTimeout 30000 --maxWorkers 1`。
+- [ ] 6.2 实施 IP-23：让 I0 和成功 I1 按原事务登记阶段结果，I2 起保持冻结工作计划要求；运行 `pnpm exec vitest run apps/worker/test/identification/graph/runtime.test.ts --testTimeout 30000 --maxWorkers 1 -t 'I0～I2'`。
+- [ ] 6.3 实施 IP-24：在现有 C24 adapter/worker 测试中覆盖允许/拒绝组合、I0/I1 登记和重放，并回归当前 actor 授权与取消事务；运行 `pnpm exec vitest run packages/adapters/test/identification/graph/postgres-identification-graph-adapter.test.ts apps/worker/test/identification/graph/runtime.test.ts --testTimeout 30000 --maxWorkers 1`。
+- [ ] 6.4 核对 IP-25：确认 `pnpm-workspace.yaml` 的例外仅为已锁定的 `@langchain/langgraph@1.4.17`，不变更依赖版本；运行 `pnpm deps:policy && pnpm deps:check && pnpm licenses:check`。
+- [ ] 6.5 按 IP-22～IP-25 收口规划新增场景和批准文件；运行 `pnpm typecheck && pnpm format:check && pnpm exec openspec validate deliver-identification-graph --strict --no-interactive`，并将最终行为和证据交由新一轮 Finalizer 更新 verification。

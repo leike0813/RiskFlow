@@ -2,13 +2,14 @@
 
 ## 1. 实施基线与权威来源
 
-- 固定 base commit：`15ddd1ad40782574fb67351a68955fcc852762a8`。Implementation Agent 启动时必须先确认 `git rev-parse HEAD` 相同；若不同，先报告 drift，不得按本施工图猜测改位点。
+- 初轮施工基线：`15ddd1ad40782574fb67351a68955fcc852762a8`；本次重开规划的固定代码基线（输入 HEAD）：`f8e61573bbe87fd192fd0385f0bd55ed22e15a9b`，批准凭据为 `approval://riskflow/C24/scope-2026-09-23-i0-i1-stage-result-and-dependency-exception`。Implementation Agent 从协调端审阅后的规划检查点启动，先确认该检查点以本次输入 HEAD 为祖先，且 IP-22～IP-25 所列符号仍与本基线一致；漂移先升级，不按旧行号猜测。
 - OpenSpec 权威来源：本 change 的 `proposal.md`、`specs/identification/graph/spec.md`、`design.md`；既有主规格以 `openspec/specs/` 为准。
 - 唯一研究输入：`references/风险识别与评估规划事实源摘要.md`。Implementation/Finalizer 不重新解释研究原件。
 - 契约事实源：`packages/contracts/src/workflows/index.ts` 的 `IdentificationPreparationSnapshotV1Schema`、`IdentificationInputSnapshotV1Schema`、`IdentificationStageResultV1Schema`、`IdentificationGraphStateV1Schema`；`packages/contracts/src/ports/index.ts` 的 `RiskIdentificationPortV1`、`WorkflowPortV1` 及现有命令/引用/错误信封。
 - 上游实现事实源：C17 识别基础与策略提供者、C21 上下文服务、C22 候选收口服务、C23 人工复核组合、C03 事务单元与 PostgreSQL checkpointer、C04 ArtifactStore、C05 授权和 C06 审计/Outbox。
 - 直接依赖决定：仅 `apps/worker` 新增精确 `@langchain/langgraph@1.4.17`。实现前后分别运行 `pnpm install --lockfile-only` 所需的仓库标准安装流程、`pnpm deps:policy`、`pnpm licenses:check`、`pnpm security:check`；不得改动现有 `@langchain/core@1.2.9`、`@langchain/langgraph-checkpoint@1.1.5`、`@langchain/langgraph-checkpoint-postgres@1.0.5`。
 - Apply 前置工件完成标准是 proposal/specs/design/implementation-plan/tasks 全部 done；本 change 不在 planning 阶段创建 verification。
+- 本次重开只追加 IP-22～IP-25；初轮 IP-01～IP-21 的完成勾选保留历史记录，新增任务在实现与回归证据成立前保持未勾选。批准范围中的 actor 读取与取消事务修复已在输入 HEAD，重开只要求其回归，不再设计权限或事务变化。
 
 ## 2. 复用与接缝
 
@@ -40,6 +41,10 @@
 | IP-19 | 核心行为验证 | I0～I2、I9、错误路由；D-12 | 新增 `packages/core/test/identification/graph.test.ts` | 表格驱动覆盖快照版本组合、计划完整性/稳定 ID、全部终态、waiting 与结构化错误分类 | 不断言完整错误文案或内部调用顺序 |
 | IP-20 | PostgreSQL 与权限验证 | 业务/checkpoint 分离、幂等/权限场景；D-04/D-06/D-07 | 新增 `packages/adapters/test/identification/graph/postgres-identification-graph-adapter.test.ts`；修改 `packages/adapters/test/postgres/postgres-foundation.test.ts`、`packages/adapters/test/auth/fixture.ts` | 真实 PostgreSQL 覆盖迁移、追加权限、同键重放/冲突、reader 授权与 digest、checkpoint 缺失/伪引用 | 不用 mock DB 代替事务证据 |
 | IP-21 | 真实图运行验证 | I3～I8、启动/恢复/取消；D-02/D-05/D-08/D-12 | 新增 `apps/worker/test/identification/graph/runtime.test.ts`、`composition.test.ts`、`fixture.ts` | 使用真实 LangGraph 与 PostgreSQL checkpointer，注入可控公开端口，覆盖成功、部分失败、Agent/人工等待、重复/迟到恢复、checkpoint 写失败对账、取消 | 不锁定节点内部调用序列，不用 LLM 文本作硬期望 |
+| IP-22 | I0/I1 阶段登记形状与数据库约束 | “I0 至 I2…”/“工作计划形成前的阶段结果可精确回读”；D-06/D-15 | `packages/core/src/identification/graph/schema.ts` 的 `IdentificationGraphResultRowV1Schema`；`packages/adapters/src/postgres/migrations/risk-identification/deliver-identification-graph/000043_identification_graph.ts` 的 `kindPairing`、`kindPairings`、`up` | 仅将 `stage-result.workPlanRef` 设为可选；SQL 同类固定 `stage_result_ref` 非空且 `work_plan_ref` 可空；新建/已存在 C24 表的同名 check 收敛且 `up` 重入不改变其它约束或授权 | 不新增迁移、类别或列；其它七类组合、主键、索引、角色与权限保持原样 |
+| IP-23 | I0/I1 阶段结果登记 | 同上；D-02/D-07/D-15 | `apps/worker/src/identification/graph/graph.ts` 的 `advance`、`stageI0`、`stageI1` | I0 与成功 I1 将已有 C04 阶段正文连同 `stage-result` 行及 `run-state` 在原事务内登记；I1 同事务另登记输入快照；计划未形成时不传 `workPlanRef`，I2～I9 仍强制现有冻结引用，重放沿用稳定动作身份 | 不改 I1 waiting/失败路由，不补造工作计划或复制上游结果正文 |
+| IP-24 | 新允许组合、登记与既有审计修复回归 | 同上及“业务运行事实…”、“启动、恢复、重试与取消…”授权/取消场景；D-09/D-15 | `packages/adapters/test/identification/graph/postgres-identification-graph-adapter.test.ts` 的 `resultRowFor` 与真实 PostgreSQL fixture；`apps/worker/test/identification/graph/runtime.test.ts` 的 I0～I2、授权及取消场景 | 在允许的现有测试文件中覆盖迁移 `up` 重入、stage-result 有/无计划允许、缺 `stage_result_ref` 与其它类别越界拒绝、I0/I1 可回读和同键重放；运行 actor 授权与取消事务/竞态回归 | 不写迁移文本快照、内部调用序列或完整文案断言 |
+| IP-25 | 精确依赖安装门禁例外核对 | D-11/D-12；本次批准记录第 2 项 | `pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude`，`apps/worker/package.json` 的 `@langchain/langgraph`，`pnpm-lock.yaml` 与 `config/dependency-policy.json` | 确认已存在的例外恰为 `@langchain/langgraph@1.4.17`，与精确直接依赖/锁定版本一致，记录为本 change 文件；运行依赖策略、锁文件与许可证门禁 | 不更换版本、不新增包、不扩大例外到其它依赖 |
 
 ## 4. 调用与副作用顺序
 
@@ -53,6 +58,7 @@
 8. 所有项和组无运行中/效果未知动作时，IP-11 生成 I9 C04 工件，IP-12 登记 run-result、run-state、审计；等待、拒绝、失败和取消分别保留精确引用。
 9. `cancel` 先校验 `workflow.cancel` 与预期状态版本，再登记 cancellation/run-state；仅阻止未开始动作。已提交上游事实、正式记录、事件、审计和 checkpoint 历史不回滚。
 10. 任一业务提交后的 checkpoint 失败返回可重试技术错误；恢复用首次业务回执重建小型状态。任一 checkpoint 引用无法由当前授权下业务回读证明时封闭为 `CHECKPOINT_INCONSISTENT`，不补写事实。
+11. 本次重开按 IP-22 先收敛 C24 的判别 Schema 与同名数据库 check，再按 IP-23 让 I0/I1 成功路径登记已有阶段正文；I0/I1 的行无工作计划引用，I2 起仍携带冻结计划。事务中的阶段行、运行状态行和 I1 输入行共享原命令/审计关联，各有独立幂等键。IP-24 在真实 PostgreSQL 上验证登记与重入，IP-25 核对已在输入 HEAD 的安装门禁例外；不重复安装依赖。
 
 ## 5. Schema、状态与持久化落实
 
@@ -63,6 +69,7 @@
 - `valid_at` 来自命令业务时刻，`recorded_at` 来自请求记录时刻，`persisted_at` 由数据库 clock；重放不得用墙钟改写任何身份。
 - 权限沿用 D-09；数据库角色只给 app/outbox worker SELECT/INSERT，checkpointer 与 PUBLIC 无权。应用层先授权后查询，拒绝返回不可枚举错误。
 - 迁移序号固定 `000043`，不得占用 `000044` 或修改历史迁移。中央迁移清单与权限 fixture 只做 IP-20 的机械登记。
+- IP-22 的可选 `workPlanRef` 只属于 `stage-result` 登记判别；`stageResultRef` 仍必填。数据库在新建表和重入既有 C24 表时均以 `identification_graph_results_kind_ck` 检查同一允许集合，保留其余判别、JSON 对象校验、索引和 SELECT/INSERT 授权；若既有表或部署状态要求新增迁移文件，立即升级。
 
 ## 6. 验收证据矩阵
 
@@ -93,6 +100,10 @@
 | 接口/失败 / 可重试技术错误按冻结策略处理 | IP-11, IP-15, IP-19, IP-21 | core + worker | retryable 错误与冻结预算 | 原动作身份、预算内重试、已完成效果不重放 | `pnpm exec vitest run packages/core/test/identification/graph.test.ts apps/worker/test/identification/graph/runtime.test.ts` |
 | 接口/失败 / 终止错误封闭失败 | IP-11, IP-14, IP-19, IP-21 | core + worker | 权限/版本/契约/冲突 | 不可重试并保留诊断；无默认/人工绕过 | `pnpm exec vitest run packages/core/test/identification/graph.test.ts apps/worker/test/identification/graph/runtime.test.ts` |
 | 迁移、权限、依赖与全量回归 | IP-13, IP-17, IP-18, IP-20 | foundation/auth + 全仓 | 真实 PostgreSQL、更新锁文件 | 000043 可升降；角色最小权限；peer/lock/依赖边界成立 | `pnpm exec vitest run packages/adapters/test/postgres/postgres-foundation.test.ts packages/adapters/test/auth && pnpm build && pnpm typecheck && pnpm lint && pnpm format:check && pnpm test && pnpm deps:check && pnpm deps:policy && pnpm licenses:check && pnpm security:check && pnpm exec openspec validate deliver-identification-graph --strict --no-interactive` |
+| I0～I2 / 工作计划形成前的阶段结果可精确回读 | IP-22, IP-23, IP-24 | `apps/worker/test/identification/graph/runtime.test.ts` | 成功启动并推进 I0/I1/I2；真实 C04 + PostgreSQL | I0/I1 各一条阶段登记、均无计划引用且正文阶段正确；I2 起有同一冻结计划引用；同键重放不增行 | `pnpm exec vitest run apps/worker/test/identification/graph/runtime.test.ts --testTimeout 30000 --maxWorkers 1 -t 'I0～I2'` |
+| D-15 / 000043 重入与 stage-result 允许/拒绝组合 | IP-22, IP-24 | `packages/adapters/test/identification/graph/postgres-identification-graph-adapter.test.ts` | 真实 PostgreSQL migrator 角色，对同一 C24 表直接执行 `up` 两次；参数化插入 | 两次后同名 check/索引/最小授权相同；无计划和有计划的 stage-result 均通过；缺阶段引用、其它七类越界均被数据库拒绝 | `pnpm exec vitest run packages/adapters/test/identification/graph/postgres-identification-graph-adapter.test.ts --testTimeout 30000 --maxWorkers 1` |
+| 已批准 actor 读取与取消事务修复回归 | IP-24 | `packages/adapters/test/identification/graph/postgres-identification-graph-adapter.test.ts`、`apps/worker/test/identification/graph/runtime.test.ts` | 当前/非当前 actor、收窄空间；同版本恢复/取消竞争和重放 | 受保护读取按当前 actor 复验且拒绝与不存在同形；取消与 run-state 同事务推进、竞争至多一方成功 | `pnpm exec vitest run packages/adapters/test/identification/graph/postgres-identification-graph-adapter.test.ts apps/worker/test/identification/graph/runtime.test.ts --testTimeout 30000 --maxWorkers 1` |
+| D-11 / 精确版本安装门禁例外 | IP-25 | `pnpm-workspace.yaml`、`apps/worker/package.json`、`pnpm-lock.yaml`、`config/dependency-policy.json` | 已批准 `@langchain/langgraph@1.4.17` | 排除项仅此精确版本；依赖/锁文件/策略一致，许可证与边界门禁通过 | `pnpm deps:policy && pnpm deps:check && pnpm licenses:check` |
 
 ## 7. 文件清单与升级条件
 
@@ -116,15 +127,19 @@
 - `packages/adapters/test/auth/fixture.ts`
 - `config/dependency-policy.json`
 - `pnpm-lock.yaml`
+- 本次重开实际允许修改：`packages/core/src/identification/graph/schema.ts`、`packages/adapters/src/postgres/migrations/risk-identification/deliver-identification-graph/000043_identification_graph.ts`（仅同名 check 允许组合及重入收敛）、`apps/worker/src/identification/graph/graph.ts`、`packages/adapters/test/identification/graph/postgres-identification-graph-adapter.test.ts`、`apps/worker/test/identification/graph/runtime.test.ts`；若需联动，只可在 `apps/worker/src/identification/graph/**`、`apps/worker/test/identification/graph/**`、`packages/adapters/test/identification/graph/**` 内，并先核对 D-15 语义。
+- `pnpm-workspace.yaml`：输入 HEAD 已包含精确 `minimumReleaseAgeExclude`，本次只纳入批准文件清单并核对，不要求重复改写。
 
 **删除：** 无。
 
-**保护：** `packages/contracts/**`、`openspec/specs/**`、C03/C15/C17/C21/C22/C23 既有生产文件及历史迁移、C30 范围的顶层 riskFlowGraph、API/Web/评估模块均不得修改。
+**本次重开规划工件：** 仅 `openspec/changes/deliver-identification-graph/specs/**`、`design.md`、`implementation-plan.md`、`tasks.md`。`proposal.md` 和已有 `verification.md` 作为输入，不在 Planning 阶段改写。
 
-出现以下任一情况必须停止并 escalation：base commit 或上述复用符号漂移；需要新增/修改公共 DTO、事件、错误码、capability 或权限映射；需要变更 C03 checkpoint schema、事务边界、C04 工件契约、现有迁移或 C21/C22/C23 事实所有权；`@langchain/langgraph@1.4.17` 不能在不改现有 core/checkpoint 版本的情况下解析；需要第二张 C24 表、回填、数据删除、外部服务或新依赖；需要更改顺序执行为并发；任何 planned-file 外生产改动。仅测试导入、中央迁移登记或格式化产生的机械文件漂移可在先报告后纳入同一 change，否则不得扩大范围。
+**保护：** `packages/contracts/**`、`openspec/specs/**`、C03/C15/C17/C21/C22/C23 既有生产文件及历史迁移、C30 范围的顶层 riskFlowGraph、API/Web/评估模块均不得修改。本次重开除上述精确允许文件外，初轮清单的其它文件也不因历史列入而自动获得新修改授权。
+
+出现以下任一情况必须停止并 escalation：本次固定基线或上述复用符号漂移；需要新增/修改公共 DTO、事件、错误码、capability 或权限映射；需要变更 C03 checkpoint schema、事务边界、C04 工件契约、C24 `000043` 同名 check 之外的迁移语义或 C21/C22/C23 事实所有权；需要新增迁移、第二张 C24 表、回填、数据删除、外部服务或新依赖；需要更改顺序执行为并发；任何本次批准清单外生产改动。原初轮关于机械文件的宽泛例外不适用于本次重开。
 
 ## 8. 验收 Agent 授权与限定审计
 
-Finalizer 可在本 change 已批准文件清单内修复普通实现缺陷、补齐缺失稳定行为测试并运行全部命令；不得修改公共契约、权限、依赖版本、迁移语义、父子运行所有权或扩大到 C30。验收必须从 base commit 和本 change 工件核对每个 IP-ID，读取 `openspec instructions apply --json` 的全部 `contextFiles`，确认 task 仅在行为与证据均成立后勾选。
+Finalizer 可在本 change 已批准文件清单内修复普通实现缺陷、补齐缺失稳定行为测试并运行全部命令；本次重开仅以 §7 精确允许文件及 D-15 语义为新修改边界，`000043` 同名 check 是唯一获批的迁移调整。不得修改公共契约、权限、依赖版本、其它迁移语义、父子运行所有权或扩大到 C30。验收必须从本次固定输入 HEAD 和协调端规划检查点核对 IP-22～IP-25，并复核 IP-01～IP-21 未漂移；读取 `openspec instructions apply --json` 的全部 `contextFiles`，确认新增 task 仅在行为与证据均成立后勾选，随后以最终 HEAD 更新现有 verification。
 
 满足执行图规定的限定审计触发条件时，Auditor 只审计这些标签：`contract-boundary`、`authorization-non-enumeration`、`append-only-idempotency`、`checkpoint-reconciliation`、`agent-review-resume`、`dependency-supply-chain`。同一收尾轮次最多一次审计；Auditor 在自己的活动 Task 内修复范围内普通缺陷并回归，无法闭合则升级，不再派第二个 Finalizer/Auditor。

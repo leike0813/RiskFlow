@@ -85,7 +85,7 @@ Agent 完成恢复仍读取原 C08 任务事实和预算；`review.review-resolv
 - `run-result`
 - `cancellation`
 
-通用必填列为 `project_id`、`result_kind`、`result_id`、`result_version_id`、`run_id`、`run_version_id`、`command_id`、`idempotency_key`、`request_digest`、`artifact_ref`、`authorization_scope_digest`、`actor_ref`、`authorization_context_ref`、`valid_at`、`recorded_at`、`persisted_at`、`audit_entry_id`。判别专列为 `parent_run_ref`、`preparation_snapshot_ref`、`input_snapshot_ref`、`work_plan_ref`、`stage_result_ref`、`waiting_ref`、`workflow_error_ref`、`run_result_ref`；取消原因保存在 cancellation 工件正文并由 `artifact_ref` 精确引用。数据库 check constraint 保证每类只出现允许组合。
+通用必填列为 `project_id`、`result_kind`、`result_id`、`result_version_id`、`run_id`、`run_version_id`、`command_id`、`idempotency_key`、`request_digest`、`artifact_ref`、`authorization_scope_digest`、`actor_ref`、`authorization_context_ref`、`valid_at`、`recorded_at`、`persisted_at`、`audit_entry_id`。判别专列为 `parent_run_ref`、`preparation_snapshot_ref`、`input_snapshot_ref`、`work_plan_ref`、`stage_result_ref`、`waiting_ref`、`workflow_error_ref`、`run_result_ref`；取消原因保存在 cancellation 工件正文并由 `artifact_ref` 精确引用。数据库 check constraint 保证每类只出现允许组合；I0/I1 的 `stage-result` 例外见 D-15。
 
 主键为 `(project_id, result_kind, result_id, result_version_id)`；每个转换为其 stage-result、run-state 或其它登记派生独立稳定 `idempotency_key`，`(project_id, result_kind, idempotency_key)` 唯一并配合 `request_digest` 实现同载荷重放/异载荷冲突；`command_id` 关联同一外部命令下的多条登记。`(project_id, run_id, run_version_id)` 对 `run-state` 建条件唯一索引。表只有 `SELECT/INSERT` 权限，`riskflow_checkpointer` 无权访问；`audit_entry_id` 使用延迟外键到 C06 审计表。所有正文先写 C04，只有登记行与审计在 C03 事务单元提交后才成为正式业务事实。
 
@@ -121,7 +121,7 @@ C24 内部错误联合至少区分：`INPUT_NOT_READY`、`POLICY_NOT_READY`、`W
 
 ### D-11：依赖精确锁定并纳入现有供应链门禁
 
-只在 `apps/worker/package.json` 新增 `"@langchain/langgraph": "1.4.17"`，不改变现有 core/checkpoint 版本。同步 `pnpm-lock.yaml` 和 `config/dependency-policy.json`，记录 runtime 用途、MIT 许可证、移除条件（仓库现有已批准组件能提供等价 StateGraph）及直接依赖归属。实现阶段用仓库 pnpm 安装流程更新锁文件，并运行既有依赖策略、锁文件一致性、许可证/供应链检查；任一 peer 解析改变现有三项版本时必须停止并升级，不以 override 绕过。
+只在 `apps/worker/package.json` 新增 `"@langchain/langgraph": "1.4.17"`，不改变现有 core/checkpoint 版本。同步 `pnpm-lock.yaml` 和 `config/dependency-policy.json`，记录 runtime 用途、MIT 许可证、移除条件（仓库现有已批准组件能提供等价 StateGraph）及直接依赖归属。`pnpm-workspace.yaml` 中的 `minimumReleaseAgeExclude: ["@langchain/langgraph@1.4.17"]` 是本 change 已批准精确版本的安装门禁例外，纳入文件所有权；它只影响该版本的发布时间等待，不引入或改变依赖版本，不能扩展为通配排除。实现阶段用仓库 pnpm 安装流程更新锁文件，并运行既有依赖策略、锁文件一致性、许可证/供应链检查；任一 peer 解析改变现有三项版本时必须停止并升级，不以 override 绕过。
 
 选择正式 LangGraph 依赖而非自研状态机，是因为项目约束指定 LangGraph 为唯一编排核心，且仅 checkpoint 包不能编译 StateGraph。
 
@@ -131,7 +131,7 @@ C24 内部错误联合至少区分：`INPUT_NOT_READY`、`POLICY_NOT_READY`、`W
 - `packages/adapters/src/identification/graph/`：D-04/D-06/D-07 的 PostgreSQL 登记、精确 reader 与恢复对账；`packages/adapters/package.json` 仅增加该子路径导出。
 - `packages/adapters/src/postgres/migrations/risk-identification/deliver-identification-graph/000043_identification_graph.ts`：唯一 C24 业务迁移；中央迁移/权限测试只做机械登记。
 - `apps/worker/src/identification/graph/`：D-01/D-02/D-05/D-08 的 graph、runtime、恢复消费者和组合根；`apps/worker/src/index.ts` 导出内部组合入口。
-- `apps/worker/package.json`、`pnpm-lock.yaml`、`config/dependency-policy.json`：D-11 精确依赖治理。
+- `apps/worker/package.json`、`pnpm-lock.yaml`、`config/dependency-policy.json`、`pnpm-workspace.yaml`：D-11 精确依赖治理与单版本安装门禁例外；后者已在本次重开批准范围内。
 
 最小验证包括：核心快照/计划/汇总与错误路由；真实 PostgreSQL 下登记幂等、追加权限、reader 授权与 digest 对账、业务提交后 checkpoint 失败恢复；真实 LangGraph I0～I9 的成功、部分失败、Agent/人工等待恢复、迟到重复信号、协作取消和 checkpoint 不一致；现有 C21/C22/C23 回归；类型检查、格式、依赖治理和 OpenSpec 严格验证。测试断言稳定引用、终态、错误码和事务结果，不锁定节点内部调用顺序或完整文案。
 
@@ -151,6 +151,12 @@ C24 内部错误联合至少区分：`INPUT_NOT_READY`、`POLICY_NOT_READY`、`W
 已归档 C03 的 `PostgresCheckpointer` 校验层只把 `__error__`/`__scheduled__`/`__interrupt__`/`__resume__`/`__pregel_tasks` 视为协议通道，其余键必须命中 `IdentificationGraphStateV1Schema.shape`。真实 `@langchain/langgraph` 的行为使这一假设不成立：首个输入检查点把整份输入先写入 `__start__` 通道，条件边与屏障聚合会派生 `branch:to:<node>` / `join:<a>+<b>:<node>` 控制通道，因此任何真实 `StateGraph` 的每一次 `put`/`putWrites` 都会被拒绝（`CHECKPOINT_INCONSISTENT`）。C03 自身测试手写 `channel_values = { ...graphState, __pregel_tasks: [] }`，从未覆盖真实控制通道。
 
 本 change 的最小修正（只在校验层）：把 `__start__` 并入协议通道白名单，并按 `branch:` / `join:` 前缀豁免动态控制通道；`withoutProtocolChannels` 与 `validateGraphStateWrites` 共用同一判定。输入检查点在状态物化前剔除控制通道后为空对象，此时 `parseGraphState` 改为把 `channel_values.__start__` 的值交给同一批 GraphState Schema 严格解析——真实 LangGraph 把调用方输入先写入 START 通道，C24 的 `invoke(state)` 下该值即完整状态，因此这只是增加一个取值位置，**不放宽任何校验**：两处解析都失败仍以 `checkpointer.graph-state` 拒绝。表结构、SQL、迁移、权限、角色与 schema 语义不变；剔除控制通道后 `channel_values` 仍必须严格解析为 `IdentificationGraphStateV1`，非控制通道的未知键、非法写入类型与越权写入仍以既有 `CHECKPOINT_INCONSISTENT` 失败闭合。`packages/adapters/src/postgres/checkpointer.ts` 及其测试因此纳入本 change 允许清单。
+
+### D-15：I0/I1 的阶段结果在工作计划形成前独立登记（本次重开批准）
+
+`IdentificationGraphResultRowV1Schema` 的 `stage-result` 判别固定要求 `stageResultRef`，仅将该判别的 `workPlanRef` 改为可选；`000043` 的 `identification_graph_results_kind_ck` 对应固定 `stage_result_ref IS NOT NULL`、`work_plan_ref` 可空，其它七类判别及列组合保持原样。I0 和成功的 I1 先写 C04 阶段结果正文，再与 `run-state`（I1 另含 `input-snapshot`）在同一 C03 业务事务中登记阶段结果引用、审计和稳定幂等身份；其 `workPlanRef` 缺省。I2 形成工作计划后，图的 `advance` 对 I2～I9 仍必须携带该冻结引用，缺失时封闭失败。I1 未就绪时沿既有 `waiting` / `workflow-error` 路线，不伪造工作计划或成功阶段结果。
+
+只修改 C24 内部 Schema、自有 `000043` 迁移 check、图登记和对应测试；不新增列、类别、迁移文件、权限或跨 change 契约，不复制 C21/C22/C23 正文。迁移 `up` 必须在新表和已存在的 C24 表上均把同名判别约束收敛为新允许组合：若表已存在，在迁移事务内替换该 check 并立即验证，不留无约束的已提交状态；重复执行保持相同约束、索引和最小授权。不得通过 `NOT VALID`、绕过约束或放宽其它类别实现。C24 尚未集成到主线，若发现已部署且不能安全收敛的旧表或需要额外迁移，应停止并升级。
 
 ## Risks / Trade-offs
 

@@ -200,8 +200,18 @@ export async function up(db: Kysely<unknown>): Promise<void> {
 }
 
 export async function down(db: Kysely<unknown>): Promise<void> {
+  // 跨 change 回滚解除块：其它 change 的表以整型引用本迁移的 artifact_manifests，
+  // 独立 down 前必须先解除这些外键，否则 DROP TABLE 会因依赖失败。
   await sql`ALTER TABLE IF EXISTS business.response_feedback_records
     DROP CONSTRAINT IF EXISTS response_feedback_records_feedback_artifact_fk`.execute(db);
+  await sql`ALTER TABLE IF EXISTS business.calibration_suggestions
+    DROP CONSTRAINT IF EXISTS calibration_suggestions_frozen_input_fk`.execute(db);
+  await sql`ALTER TABLE IF EXISTS business.calibration_suggestions
+    DROP CONSTRAINT IF EXISTS calibration_suggestions_base_artifact_fk`.execute(db);
+  await sql`ALTER TABLE IF EXISTS business.calibration_governance_drafts
+    DROP CONSTRAINT IF EXISTS calibration_governance_drafts_base_artifact_fk`.execute(db);
+  await sql`ALTER TABLE IF EXISTS business.calibration_governance_drafts
+    DROP CONSTRAINT IF EXISTS calibration_governance_drafts_candidate_artifact_fk`.execute(db);
   await db.schema.dropIndex("artifact_maintenance_batches_project_run_idx").ifExists().execute();
   await db.schema.dropTable("business.artifact_maintenance_batches").ifExists().execute();
   await db.schema.dropIndex("artifact_access_records_request_idx").ifExists().execute();

@@ -990,7 +990,13 @@ class IdentificationGraphRegistrationStore implements IdentificationGraphRegistr
       resultId: input.runResultRef.reference.entityId,
       resultVersionId: input.runResultRef.reference.versionId,
     });
-    if (row === undefined || row.resultKind !== "run-result") return { kind: "unavailable" };
+    if (
+      row === undefined ||
+      row.resultKind !== "run-result" ||
+      !sameJson(row.runResultRef, input.runResultRef)
+    ) {
+      return { kind: "unavailable" };
+    }
     if (row.authorizationScopeDigest !== authorizationScopeDigest(verified)) {
       return { kind: "unavailable" };
     }
@@ -1047,7 +1053,8 @@ class IdentificationGraphRegistrationStore implements IdentificationGraphRegistr
     const runResult = body.runResult;
     if (
       runResult.projectId !== input.projectId ||
-      runResult.runRef.reference.entityId !== row.runId
+      runResult.runRef.reference.entityId !== row.runId ||
+      !sameJson(runResult.workPlanRef, row.workPlanRef)
     ) {
       return { kind: "unavailable" };
     }

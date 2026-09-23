@@ -1694,6 +1694,60 @@ describe("PostgreSQL identification graph persistence", () => {
     expect((await read()).kind).toBe("unavailable");
     fixture!.access.restore();
 
+    // 登记指向另一冻结工作计划时，不能把正文当作该运行的覆盖证据。
+    const mismatchedKit = referenceKitFor("completed-run-result-plan-mismatch");
+    const mismatchedRunVersionId = sha("run-version-completed-plan-mismatch");
+    const mismatchedStateArtifact = await putBodyAs(fixture!, {
+      artifactId: "c24-body-run-state-plan-mismatch",
+      body: runStateBody({
+        runVersionId: mismatchedRunVersionId,
+        stage: "I5",
+        workItemRef: mismatchedKit.workItemRef,
+        completedWith: mismatchedKit.runResultRef,
+      }),
+    });
+    const mismatchedResultArtifact = await putBodyAs(fixture!, {
+      artifactId: "c24-body-run-result-plan-mismatch",
+      body: runResultBody(mismatchedKit),
+    });
+    await registerThroughTransaction(
+      fixture!,
+      [
+        IdentificationGraphResultRowV1Schema.parse({
+          ...resultRowFor("run-state", "plan-mismatch", {
+            occurredAt: "2030-01-01T00:00:01.000Z",
+            runVersionId: mismatchedRunVersionId,
+          }),
+          artifactRef: mismatchedStateArtifact,
+        }),
+        IdentificationGraphResultRowV1Schema.parse({
+          ...runResultRowFor(mismatchedKit, mismatchedResultArtifact),
+          runVersionId: mismatchedRunVersionId,
+          workPlanRef: kit.workPlanRef,
+        }),
+      ],
+      "plan-mismatch",
+    );
+    expect(
+      (
+        await fixture!.adapter.registrationStore.readCompletedRunResult({
+          projectId: PROJECT_ID,
+          actorId: ACTOR_ID,
+          runResultRef: mismatchedKit.runResultRef,
+          requestedAt: OTHER_TIMESTAMP,
+          authorization: fixture!.access.issue({
+            invocationId: identificationGraphReadInvocationIdV1({
+              operation: "run-result",
+              projectId: PROJECT_ID,
+              targetId: `${mismatchedKit.runResultRef.reference.entityId}:${mismatchedKit.runResultRef.reference.versionId}`,
+            }),
+            branch: "risk-identification.plan",
+            capability: "risk-identification.run",
+          }).authorization,
+        })
+      ).kind,
+    ).toBe("unavailable");
+
     // 最新运行状态不再是该结果的完成版本时不提供覆盖证据。
     const supersededVersionId = sha("run-version-after-completion");
     const runningArtifact = await putBodyAs(fixture!, {

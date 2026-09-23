@@ -69,7 +69,7 @@ function node(overrides = {}) {
       owner: {
         taskId: "task-finalizer",
         agentClass: "strong-finalizer",
-        model: "gpt-5.6-sol",
+        model: "gpt-6-sol",
       },
       attemptGroup: "C17:finalizing",
       attempt: 1,
@@ -112,12 +112,12 @@ const graph = {
     roles: {
       planning: {
         agentClass: "strong-planner",
-        model: "gpt-5.6-sol",
+        model: "gpt-6-sol",
         thinking: "high",
       },
       finalization: {
         agentClass: "strong-finalizer",
-        model: "gpt-5.6-sol",
+        model: "gpt-6-sol",
         thinking: "high",
       },
       implementation: {
@@ -127,7 +127,7 @@ const graph = {
       },
       audit: {
         agentClass: "strong-auditor",
-        model: "gpt-5.6-sol",
+        model: "gpt-6-sol",
         thinking: "high",
       },
     },
@@ -2388,7 +2388,7 @@ describe("worktree provisioning recovery", () => {
         phase: "planning",
         runState: "queued",
         attemptGroup: "C17:planning",
-        owner: { taskId: "task-finalizer", agentClass: "strong-planner", model: "gpt-5.6-sol" },
+        owner: { taskId: "task-finalizer", agentClass: "strong-planner", model: "gpt-6-sol" },
       },
     });
     const queuedSnapshot = snapshot({

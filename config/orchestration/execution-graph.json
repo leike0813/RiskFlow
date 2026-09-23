@@ -6,7 +6,7 @@
     "roles": {
       "planning": {
         "agentClass": "strong-planner",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6-sol",
         "thinking": "high"
       },
       "implementation": {
@@ -16,12 +16,12 @@
       },
       "finalization": {
         "agentClass": "strong-finalizer",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6-sol",
         "thinking": "high"
       },
       "audit": {
         "agentClass": "strong-auditor",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6-sol",
         "thinking": "high"
       },
       "archive": {

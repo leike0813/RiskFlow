@@ -57,7 +57,7 @@ function v2Envelope(overrides = {}) {
       owner: {
         taskId: "task-c08-finalization",
         agentClass: "strong-finalizer",
-        model: "gpt-5.6-sol",
+        model: "gpt-6-sol",
       },
       attemptGroup: "finalize-c08",
       attempt: 1,
@@ -480,7 +480,7 @@ describe("worktree-aware state", () => {
         owner: {
           taskId: "task-c08-replan",
           agentClass: "strong-planner",
-          model: "gpt-5.6-sol",
+          model: "gpt-6-sol",
         },
         attemptGroup: "C08:planning:approved",
         approvalRef: "approval://C08/2",
@@ -516,7 +516,7 @@ describe("worktree-aware state", () => {
         owner: {
           taskId: "task-c08-planning-paused",
           agentClass: "strong-planner",
-          model: "gpt-5.6-sol",
+          model: "gpt-6-sol",
         },
       }),
     });
@@ -530,7 +530,7 @@ describe("worktree-aware state", () => {
         attemptGroup: "C08:planning:approved",
         approvalRef: "approval://C08/scope",
         supersedesAttemptGroup: "C08:planning",
-        owner: { taskId: "task-c08-replan", agentClass: "strong-planner", model: "gpt-5.6-sol" },
+        owner: { taskId: "task-c08-replan", agentClass: "strong-planner", model: "gpt-6-sol" },
       }),
     });
     const state = deriveNodeState(node, context({ tasks: [pausedPlanning, replan] }));
@@ -557,7 +557,7 @@ describe("worktree-aware state", () => {
         owner: {
           taskId: "task-c08-planning-active",
           agentClass: "strong-planner",
-          model: "gpt-5.6-sol",
+          model: "gpt-6-sol",
         },
       }),
     });
@@ -576,7 +576,7 @@ describe("worktree-aware state", () => {
         owner: {
           taskId: "task-c08-planning-succeeded",
           agentClass: "strong-planner",
-          model: "gpt-5.6-sol",
+          model: "gpt-6-sol",
         },
       }),
     });
@@ -590,7 +590,7 @@ describe("worktree-aware state", () => {
         attemptGroup: "C08:planning:approved",
         approvalRef: "approval://C08/unapproved",
         supersedesAttemptGroup: "C08:planning",
-        owner: { taskId: "task-c08-replan", agentClass: "strong-planner", model: "gpt-5.6-sol" },
+        owner: { taskId: "task-c08-replan", agentClass: "strong-planner", model: "gpt-6-sol" },
       }),
     });
     for (const superseded of [active, succeeded]) {
@@ -614,7 +614,7 @@ describe("worktree-aware state", () => {
         owner: {
           taskId: "task-c08-planning-paused",
           agentClass: "strong-planner",
-          model: "gpt-5.6-sol",
+          model: "gpt-6-sol",
         },
       }),
     });
@@ -643,7 +643,7 @@ describe("worktree-aware state", () => {
         owner: {
           taskId: "task-c08-replan",
           agentClass: "strong-planner",
-          model: "gpt-5.6-sol",
+          model: "gpt-6-sol",
         },
         attemptGroup: "C08:planning:approved",
         approvalRef: "approval://C08/2",
@@ -668,7 +668,7 @@ describe("worktree-aware state", () => {
       envelope: v2Envelope({
         attempt: 3,
         attemptGroup: "finalize-c08",
-        owner: { taskId: "task-c08-older", agentClass: "strong-finalizer", model: "gpt-5.6-sol" },
+        owner: { taskId: "task-c08-older", agentClass: "strong-finalizer", model: "gpt-6-sol" },
       }),
     });
     const newer = task({
@@ -678,7 +678,7 @@ describe("worktree-aware state", () => {
       envelope: v2Envelope({
         attempt: 4,
         attemptGroup: "finalize-c08",
-        owner: { taskId: "task-c08-newer", agentClass: "strong-finalizer", model: "gpt-5.6-sol" },
+        owner: { taskId: "task-c08-newer", agentClass: "strong-finalizer", model: "gpt-6-sol" },
       }),
     });
     const state = deriveNodeState(node, context({ tasks: [older, newer] }));
@@ -726,7 +726,7 @@ describe("worktree-aware state", () => {
         owner: {
           taskId: "task-c08-finalization",
           agentClass: "strong-finalizer",
-          model: "gpt-5.6-sol",
+          model: "gpt-6-sol",
         },
       }),
     });
@@ -744,7 +744,7 @@ describe("worktree-aware state", () => {
         owner: {
           taskId: "task-c08-audit",
           agentClass: "strong-auditor",
-          model: "gpt-5.6-sol",
+          model: "gpt-6-sol",
         },
       }),
     });
@@ -770,7 +770,7 @@ describe("worktree-aware state", () => {
         owner: {
           taskId: "task-c08-finalization",
           agentClass: "strong-finalizer",
-          model: "gpt-5.6-sol",
+          model: "gpt-6-sol",
         },
       }),
     });
@@ -792,7 +792,7 @@ describe("worktree-aware state", () => {
         attempt: 1,
         attemptGroup: "audit-c08",
         auditPolicy: "targeted",
-        owner: { taskId: "task-c08-audit", agentClass: "strong-auditor", model: "gpt-5.6-sol" },
+        owner: { taskId: "task-c08-audit", agentClass: "strong-auditor", model: "gpt-6-sol" },
       }),
     });
     const afterAudit = deriveNodeState(node, context({ tasks: [finalization, concludedAudit] }));
@@ -819,7 +819,7 @@ describe("worktree-aware state", () => {
         owner: {
           taskId: "task-c08-audit",
           agentClass: "strong-auditor",
-          model: "gpt-5.6-sol",
+          model: "gpt-6-sol",
         },
       }),
     });
@@ -930,7 +930,7 @@ describe("worktree-aware state", () => {
         owner: {
           taskId: "task-c08-attempt-1",
           agentClass: "strong-finalizer",
-          model: "gpt-5.6-sol",
+          model: "gpt-6-sol",
         },
       }),
     });
@@ -945,7 +945,7 @@ describe("worktree-aware state", () => {
         owner: {
           taskId: "task-c08-attempt-2",
           agentClass: "strong-finalizer",
-          model: "gpt-5.6-sol",
+          model: "gpt-6-sol",
         },
       }),
     });
@@ -965,7 +965,7 @@ describe("worktree-aware state", () => {
         owner: {
           taskId: "task-c08-replan",
           agentClass: "strong-planner",
-          model: "gpt-5.6-sol",
+          model: "gpt-6-sol",
         },
         attemptGroup: "C08:planning:approved",
         approvalRef: "approval://C08/2",
@@ -1070,7 +1070,7 @@ describe("worktree-aware state", () => {
         owner: {
           taskId: "task-c17-finalizer",
           agentClass: "strong-finalizer",
-          model: "gpt-5.6-sol",
+          model: "gpt-6-sol",
         },
       }),
     });
@@ -1104,7 +1104,7 @@ describe("worktree-aware state", () => {
         owner: {
           taskId: "task-aux-finalizer",
           agentClass: "strong-finalizer",
-          model: "gpt-5.6-sol",
+          model: "gpt-6-sol",
         },
       }),
     });
@@ -1273,7 +1273,7 @@ describe("worktree-aware state", () => {
       id: "first",
       status: "dispatched",
       envelope: v2Envelope({
-        owner: { taskId: "first", agentClass: "strong-finalizer", model: "gpt-5.6-sol" },
+        owner: { taskId: "first", agentClass: "strong-finalizer", model: "gpt-6-sol" },
       }),
     });
     const second = task({
@@ -1281,7 +1281,7 @@ describe("worktree-aware state", () => {
       status: "ready",
       createdAt: "2026-09-04 13:00:00",
       envelope: v2Envelope({
-        owner: { taskId: "wrong", agentClass: "strong-finalizer", model: "gpt-5.6-sol" },
+        owner: { taskId: "wrong", agentClass: "strong-finalizer", model: "gpt-6-sol" },
       }),
     });
     const worktree = {
@@ -1377,7 +1377,7 @@ describe("worktree-aware state", () => {
         owner: {
           taskId: "task-aux-finalization",
           agentClass: "strong-finalizer",
-          model: "gpt-5.6-sol",
+          model: "gpt-6-sol",
         },
       }),
     });
@@ -1490,7 +1490,7 @@ describe("worktree-aware state", () => {
         owner: {
           taskId: "task-aux-owner",
           agentClass: "strong-finalizer",
-          model: "gpt-5.6-sol",
+          model: "gpt-6-sol",
         },
       }),
     });

@@ -648,6 +648,23 @@ describe("controlled orchestration", () => {
         }),
       ),
     ).toBe("finalization");
+    // 已实现成功过的 change 再次规划（只做范围收窄）应收敛到收尾，而不是重复实现。
+    expect(
+      nextTaskKind(
+        node({
+          status: "running",
+          phase: "planning",
+          checkpoints: { ...node().checkpoints, taskKind: "planning", runState: "running" },
+          orca: {
+            attempts: [
+              attempt({ outcome: "succeeded" }),
+              attempt({ taskKind: "implementation", outcome: "succeeded", runState: "settled" }),
+              attempt({ outcome: "succeeded" }),
+            ],
+          },
+        }),
+      ),
+    ).toBe("finalization");
     // 已采纳的 auxiliary 工作树没有规划尝试，仍走收尾回退。
     expect(
       nextTaskKind(

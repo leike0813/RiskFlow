@@ -314,6 +314,14 @@ export function nextTaskKind(node) {
   // 只按 status === "finalizing" 判断会把它判成"没有合法角色"，替代尝试就开不出来。
   const finalizingCheckpoint =
     node.checkpoints?.taskKind === "finalization" || node.checkpoints?.taskKind === "audit";
+  // 已经实现成功过的 change 再次进入规划（典型是只做范围收窄的规划变更）应收敛到收尾，
+  // 而不是再派一轮实现：否则"改规格"会被当成"重写一遍代码"，白烧一整轮。
+  const implementationSucceeded = attempts.some(
+    (attempt) => attempt.taskKind === "implementation" && attempt.outcome === "succeeded",
+  );
+  if (implementationSucceeded && node.phase === "planning") {
+    return node.auditRequired === true ? "audit" : "finalization";
+  }
   if (node.phase === "adopt" || node.status === "untracked") return "finalization";
   if (node.status === "ready") return "planning";
   if (node.status === "finalizing" || (node.status === "blocked" && finalizingCheckpoint)) {

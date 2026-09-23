@@ -11,7 +11,12 @@
 - [x] 2.1 `scripts/orchestration/status.mjs`：`task_missing_local_openspec` 触发条件排除「当前尝试为未成功的 planning」。
 - [x] 2.2 `scripts/orchestration/control.mjs`：`nextTaskKind()` 在「存在尝试但规划从未成功」时返回 `planning`；`finalization` 回退仅保留 `phase === "adopt" || status === "untracked"`；导出 `nextTaskKind` 供测试使用。
 - [x] 2.3 `scripts/orchestration/control.mjs`：`riskflowReconcile` 的替代尝试角色改为复用派发规则（`deriveReconcileKind`：规划未完成 ⇒ planning，否则 finalization；显式 `phase="planning"` 仍按规划），不再缺省一律 finalization（该缺省会把未规划的工作树派成收尾/verification）。
-- 验证：`status.test.mjs`「fails closed for duplicate, missing, and mismatched worktree facts」内的规划待创建分支；`control.test.mjs`「keeps planning as the next role until a planning attempt succeeds」「reconstructs a planning attempt while planning never succeeded」。
+- 验证：`status.test.mjs`「fails closed for duplicate, missing, and mismatched worktree facts」内的规划待创建分支；`control.test.mjs`「keeps planning as the next role until a planning attempt succeeds」「reconstructs a planning attempt while planning never succeeded」「launches the Codex worker with the startup update check disabled」。
+
+## 2a. worker 启动副作用
+
+- [x] 2a.1 `scripts/orchestration/control.mjs`：`startWorker` 的 `terminal create --command` 增加 `-c check_for_update_on_startup=false`，禁止 worker 启动触发 Codex 自更新（版本由项目集中管理，升级横幅会被误判为 `agent_prompt_stalled`）。
+- 验证：`control.test.mjs`「launches the Codex worker with the startup update check disabled」（断言实际下发的启动命令含该覆盖）。
 
 ## 3. 验证
 

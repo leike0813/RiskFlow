@@ -508,6 +508,41 @@ describe("controlled orchestration", () => {
     }
   });
 
+  it("launches the Codex worker with the startup update check disabled", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-codex-noupdate-"));
+    let launchCommand;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args[0] === "terminal" && args[1] === "create") {
+        launchCommand = args[args.indexOf("--command") + 1];
+        return { terminal: { handle: "term-codex" } };
+      }
+      const terminal = fakeCodexTerminal(command, args);
+      if (terminal !== null) return terminal;
+      if (command === "orca-ide" && args.includes("worker-start")) return { state: "started" };
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      const result = await riskflowDispatch(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "dispatch-codex-update-check",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => ({ graph, snapshot: snapshot() }),
+        },
+      );
+      expect(result.worker).toMatchObject({ state: "started" });
+      // 启动自更新会让 worker 版本在交付中途漂移，并把升级横幅变成非预期屏幕状态。
+      expect(launchCommand).toContain("check_for_update_on_startup=false");
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
   it("keeps planning as the next role until a planning attempt succeeds", () => {
     const attempt = (overrides = {}) => ({
       taskId: "task-x",

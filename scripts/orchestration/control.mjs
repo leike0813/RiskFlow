@@ -1040,7 +1040,9 @@ async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, id
           "--title",
           `${node.id}-${task.envelope.taskKind}`,
           "--command",
-          `codex --model ${task.role.model} -c model_reasoning_effort="${task.role.thinking}" -a never -s danger-full-access`,
+          // Codex 默认在启动时检查更新：worker 的 CLI 版本会在交付中途漂移，升级横幅
+          // 也会被误判成 agent_prompt_stalled。worker 版本由项目集中管理，启动即关闭该检查。
+          `codex --model ${task.role.model} -c model_reasoning_effort="${task.role.thinking}" -c check_for_update_on_startup=false -a never -s danger-full-access`,
         ],
         rootDir,
       );

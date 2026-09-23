@@ -1,0 +1,524 @@
+{
+  "schemaVersion": "1",
+  "datasetId": "c36-synthetic-identification-assessment",
+  "datasetVersion": "2026-09-23.1",
+  "sampleKind": "synthetic",
+  "sourceQualificationRef": null,
+  "sourceQualificationMissingReasonCode": "no-deidentified-party-samples-supplied",
+  "projectId": "risk-assessment-project",
+  "projectRevisionRef": {
+    "kind": "project-revision",
+    "reference": { "entityId": "project-revision-alpha", "versionId": "r7" }
+  },
+  "labelPolicyRef": { "entityId": "quality-label-policy", "versionId": "v1" },
+  "createdAt": "2026-09-23T00:00:00.000Z",
+  "samples": [
+    {
+      "sampleId": "sample-alpha-1",
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": { "entityId": "spatial-alpha", "versionId": "v1" }
+      },
+      "processNodeId": "process-node-1",
+      "sourceSegmentRefs": [
+        {
+          "locator": { "sourceSegmentId": "segment-alpha-1" },
+          "sourceVersion": { "entityId": "source-alpha", "versionId": "v3" }
+        }
+      ],
+      "applicabilitySnapshotRef": {
+        "kind": "applicability-metadata-snapshot",
+        "reference": { "entityId": "applicability-alpha-1", "versionId": "v1" }
+      },
+      "identificationInputSnapshotRef": {
+        "kind": "identification-input-snapshot",
+        "reference": { "entityId": "identification-input-alpha-1", "versionId": "v1" }
+      },
+      "assessmentInputSnapshotRef": {
+        "kind": "assessment-input-snapshot",
+        "reference": { "entityId": "assessment-input-alpha-1", "versionId": "v1" }
+      },
+      "riskRecordRef": {
+        "kind": "standardized-risk-record",
+        "reference": {
+          "entityId": "identification-risk-record-alpha-1",
+          "versionId": "0000000000000000000000000000000000000000000000000000000000000001"
+        }
+      },
+      "standardizedRiskRecordSnapshotArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "quality-sample-snapshot-alpha-1",
+          "versionId": "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+        }
+      },
+      "assessmentRecordRef": {
+        "kind": "risk-assessment-record",
+        "reference": { "entityId": "risk-assessment-record-alpha-1", "versionId": "1" }
+      },
+      "assessmentDecisionArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "assessment-decision-alpha-1",
+          "versionId": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+        }
+      },
+      "assessmentReplayContextArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "quality-replay-context-alpha-1",
+          "versionId": "sha256:0000000000000000000000000000000000000000000000000000000000000003"
+        }
+      },
+      "expectedEventKey": "risk-event-alpha",
+      "expectedPositive": true,
+      "expectedRiskLevelId": "risk-level-medium",
+      "comparisonGroupId": "group-alpha",
+      "requiredEvidenceRefs": [
+        {
+          "locator": { "sourceSegmentId": "segment-alpha-1" },
+          "sourceVersion": { "entityId": "source-alpha", "versionId": "v3" }
+        }
+      ],
+      "versionRefs": {
+        "identificationKnowledgeReleaseRef": {
+          "entityId": "identification-knowledge",
+          "versionId": "k3"
+        },
+        "identificationPolicySetRef": {
+          "entityId": "identification-policy-set",
+          "versionId": "p2"
+        },
+        "indicatorSystemRef": { "entityId": "indicator-system", "versionId": "i4" },
+        "indicatorFieldMappingRef": { "entityId": "indicator-field-mapping", "versionId": "m2" },
+        "applicableRuleSetRef": { "entityId": "applicable-rule-set", "versionId": "r5" },
+        "weightSetRef": { "entityId": "weight-set", "versionId": "w3" },
+        "riskMatrixRef": { "entityId": "risk-matrix", "versionId": "mx2" },
+        "modelDeploymentRef": { "entityId": "model-deployment", "versionId": "md1" },
+        "promptTemplateRef": { "entityId": "prompt-template", "versionId": "pt4" },
+        "reviewPolicyRef": { "entityId": "review-policy", "versionId": "rp1" }
+      }
+    },
+    {
+      "sampleId": "sample-alpha-2",
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": { "entityId": "spatial-alpha", "versionId": "v1" }
+      },
+      "processNodeId": "process-node-1",
+      "sourceSegmentRefs": [
+        {
+          "locator": { "sourceSegmentId": "segment-alpha-2" },
+          "sourceVersion": { "entityId": "source-alpha", "versionId": "v3" }
+        }
+      ],
+      "applicabilitySnapshotRef": {
+        "kind": "applicability-metadata-snapshot",
+        "reference": { "entityId": "applicability-alpha-2", "versionId": "v1" }
+      },
+      "identificationInputSnapshotRef": {
+        "kind": "identification-input-snapshot",
+        "reference": { "entityId": "identification-input-alpha-2", "versionId": "v1" }
+      },
+      "assessmentInputSnapshotRef": {
+        "kind": "assessment-input-snapshot",
+        "reference": { "entityId": "assessment-input-alpha-2", "versionId": "v1" }
+      },
+      "riskRecordRef": {
+        "kind": "standardized-risk-record",
+        "reference": {
+          "entityId": "identification-risk-record-alpha-2",
+          "versionId": "0000000000000000000000000000000000000000000000000000000000000004"
+        }
+      },
+      "standardizedRiskRecordSnapshotArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "quality-sample-snapshot-alpha-2",
+          "versionId": "sha256:0000000000000000000000000000000000000000000000000000000000000004"
+        }
+      },
+      "assessmentRecordRef": {
+        "kind": "risk-assessment-record",
+        "reference": { "entityId": "risk-assessment-record-alpha-2", "versionId": "1" }
+      },
+      "assessmentDecisionArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "assessment-decision-alpha-2",
+          "versionId": "sha256:0000000000000000000000000000000000000000000000000000000000000005"
+        }
+      },
+      "assessmentReplayContextArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "quality-replay-context-alpha-2",
+          "versionId": "sha256:0000000000000000000000000000000000000000000000000000000000000006"
+        }
+      },
+      "expectedEventKey": "risk-event-alpha",
+      "expectedPositive": true,
+      "expectedRiskLevelId": "risk-level-medium",
+      "comparisonGroupId": "group-alpha",
+      "requiredEvidenceRefs": [
+        {
+          "locator": { "sourceSegmentId": "segment-alpha-2" },
+          "sourceVersion": { "entityId": "source-alpha", "versionId": "v3" }
+        }
+      ],
+      "versionRefs": {
+        "identificationKnowledgeReleaseRef": {
+          "entityId": "identification-knowledge",
+          "versionId": "k3"
+        },
+        "identificationPolicySetRef": {
+          "entityId": "identification-policy-set",
+          "versionId": "p2"
+        },
+        "indicatorSystemRef": { "entityId": "indicator-system", "versionId": "i4" },
+        "indicatorFieldMappingRef": { "entityId": "indicator-field-mapping", "versionId": "m2" },
+        "applicableRuleSetRef": { "entityId": "applicable-rule-set", "versionId": "r5" },
+        "weightSetRef": { "entityId": "weight-set", "versionId": "w3" },
+        "riskMatrixRef": { "entityId": "risk-matrix", "versionId": "mx2" },
+        "modelDeploymentRef": { "entityId": "model-deployment", "versionId": "md1" },
+        "promptTemplateRef": { "entityId": "prompt-template", "versionId": "pt4" },
+        "reviewPolicyRef": { "entityId": "review-policy", "versionId": "rp1" }
+      }
+    },
+    {
+      "sampleId": "sample-beta",
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": { "entityId": "spatial-beta", "versionId": "v2" }
+      },
+      "processNodeId": "process-node-2",
+      "sourceSegmentRefs": [
+        {
+          "locator": { "sourceSegmentId": "segment-beta-1" },
+          "sourceVersion": { "entityId": "source-beta", "versionId": "v1" }
+        }
+      ],
+      "applicabilitySnapshotRef": {
+        "kind": "applicability-metadata-snapshot",
+        "reference": { "entityId": "applicability-beta", "versionId": "v1" }
+      },
+      "identificationInputSnapshotRef": {
+        "kind": "identification-input-snapshot",
+        "reference": { "entityId": "identification-input-beta", "versionId": "v1" }
+      },
+      "assessmentInputSnapshotRef": {
+        "kind": "assessment-input-snapshot",
+        "reference": { "entityId": "assessment-input-beta", "versionId": "v1" }
+      },
+      "riskRecordRef": {
+        "kind": "standardized-risk-record",
+        "reference": {
+          "entityId": "identification-risk-record-beta",
+          "versionId": "0000000000000000000000000000000000000000000000000000000000000007"
+        }
+      },
+      "standardizedRiskRecordSnapshotArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "quality-sample-snapshot-beta",
+          "versionId": "sha256:0000000000000000000000000000000000000000000000000000000000000007"
+        }
+      },
+      "assessmentRecordRef": {
+        "kind": "risk-assessment-record",
+        "reference": { "entityId": "risk-assessment-record-beta", "versionId": "1" }
+      },
+      "assessmentDecisionArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "assessment-decision-beta",
+          "versionId": "sha256:0000000000000000000000000000000000000000000000000000000000000008"
+        }
+      },
+      "assessmentReplayContextArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "quality-replay-context-beta",
+          "versionId": "sha256:0000000000000000000000000000000000000000000000000000000000000009"
+        }
+      },
+      "expectedEventKey": "risk-event-beta",
+      "expectedPositive": true,
+      "expectedRiskLevelId": "risk-level-high",
+      "requiredEvidenceRefs": [
+        {
+          "locator": { "sourceSegmentId": "segment-beta-1" },
+          "sourceVersion": { "entityId": "source-beta", "versionId": "v1" }
+        }
+      ],
+      "versionRefs": {
+        "identificationKnowledgeReleaseRef": {
+          "entityId": "identification-knowledge",
+          "versionId": "k3"
+        },
+        "identificationPolicySetRef": {
+          "entityId": "identification-policy-set",
+          "versionId": "p2"
+        },
+        "indicatorSystemRef": { "entityId": "indicator-system", "versionId": "i4" },
+        "indicatorFieldMappingRef": { "entityId": "indicator-field-mapping", "versionId": "m2" },
+        "applicableRuleSetRef": { "entityId": "applicable-rule-set", "versionId": "r5" },
+        "weightSetRef": { "entityId": "weight-set", "versionId": "w3" },
+        "riskMatrixRef": { "entityId": "risk-matrix", "versionId": "mx2" },
+        "modelDeploymentRef": { "entityId": "model-deployment", "versionId": "md1" },
+        "promptTemplateRef": { "entityId": "prompt-template", "versionId": "pt4" },
+        "reviewPolicyRef": { "entityId": "review-policy", "versionId": "rp1" }
+      }
+    },
+    {
+      "sampleId": "sample-gamma",
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": { "entityId": "spatial-gamma", "versionId": "v1" }
+      },
+      "processNodeId": "process-node-1",
+      "sourceSegmentRefs": [
+        {
+          "locator": { "sourceSegmentId": "segment-gamma-1" },
+          "sourceVersion": { "entityId": "source-gamma", "versionId": "v1" }
+        }
+      ],
+      "applicabilitySnapshotRef": {
+        "kind": "applicability-metadata-snapshot",
+        "reference": { "entityId": "applicability-gamma", "versionId": "v1" }
+      },
+      "identificationInputSnapshotRef": {
+        "kind": "identification-input-snapshot",
+        "reference": { "entityId": "identification-input-gamma", "versionId": "v1" }
+      },
+      "assessmentInputSnapshotRef": {
+        "kind": "assessment-input-snapshot",
+        "reference": { "entityId": "assessment-input-gamma", "versionId": "v1" }
+      },
+      "expectedEventKey": "risk-event-gamma",
+      "expectedPositive": false,
+      "requiredEvidenceRefs": [
+        {
+          "locator": { "sourceSegmentId": "segment-gamma-1" },
+          "sourceVersion": { "entityId": "source-gamma", "versionId": "v1" }
+        }
+      ],
+      "versionRefs": {
+        "identificationKnowledgeReleaseRef": {
+          "entityId": "identification-knowledge",
+          "versionId": "k3"
+        },
+        "identificationPolicySetRef": {
+          "entityId": "identification-policy-set",
+          "versionId": "p2"
+        },
+        "indicatorSystemRef": { "entityId": "indicator-system", "versionId": "i4" },
+        "indicatorFieldMappingRef": { "entityId": "indicator-field-mapping", "versionId": "m2" },
+        "applicableRuleSetRef": { "entityId": "applicable-rule-set", "versionId": "r5" },
+        "weightSetRef": { "entityId": "weight-set", "versionId": "w3" },
+        "riskMatrixRef": { "entityId": "risk-matrix", "versionId": "mx2" },
+        "modelDeploymentRef": { "entityId": "model-deployment", "versionId": "md1" },
+        "promptTemplateRef": { "entityId": "prompt-template", "versionId": "pt4" },
+        "reviewPolicyRef": { "entityId": "review-policy", "versionId": "rp1" }
+      }
+    },
+    {
+      "sampleId": "sample-delta",
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": { "entityId": "spatial-delta", "versionId": "v1" }
+      },
+      "processNodeId": "process-node-4",
+      "sourceSegmentRefs": [
+        {
+          "locator": { "sourceSegmentId": "segment-delta-1" },
+          "sourceVersion": { "entityId": "source-delta", "versionId": "v1" }
+        }
+      ],
+      "applicabilitySnapshotRef": {
+        "kind": "applicability-metadata-snapshot",
+        "reference": { "entityId": "applicability-delta", "versionId": "v1" }
+      },
+      "identificationInputSnapshotRef": {
+        "kind": "identification-input-snapshot",
+        "reference": { "entityId": "identification-input-delta", "versionId": "v1" }
+      },
+      "assessmentInputSnapshotRef": {
+        "kind": "assessment-input-snapshot",
+        "reference": { "entityId": "assessment-input-delta", "versionId": "v1" }
+      },
+      "riskRecordRef": {
+        "kind": "standardized-risk-record",
+        "reference": {
+          "entityId": "identification-risk-record-delta",
+          "versionId": "0000000000000000000000000000000000000000000000000000000000000010"
+        }
+      },
+      "standardizedRiskRecordSnapshotArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "quality-sample-snapshot-delta",
+          "versionId": "sha256:0000000000000000000000000000000000000000000000000000000000000010"
+        }
+      },
+      "expectedEventKey": "risk-event-delta",
+      "expectedPositive": true,
+      "requiredEvidenceRefs": [
+        {
+          "locator": { "sourceSegmentId": "segment-delta-1" },
+          "sourceVersion": { "entityId": "source-delta", "versionId": "v1" }
+        }
+      ],
+      "versionRefs": {
+        "identificationKnowledgeReleaseRef": {
+          "entityId": "identification-knowledge",
+          "versionId": "k3"
+        },
+        "identificationPolicySetRef": {
+          "entityId": "identification-policy-set",
+          "versionId": "p2"
+        },
+        "indicatorSystemRef": { "entityId": "indicator-system", "versionId": "i4" },
+        "indicatorFieldMappingRef": { "entityId": "indicator-field-mapping", "versionId": "m2" },
+        "applicableRuleSetRef": { "entityId": "applicable-rule-set", "versionId": "r5" },
+        "weightSetRef": { "entityId": "weight-set", "versionId": "w3" },
+        "riskMatrixRef": { "entityId": "risk-matrix", "versionId": "mx2" },
+        "modelDeploymentRef": { "entityId": "model-deployment", "versionId": "md1" },
+        "promptTemplateRef": { "entityId": "prompt-template", "versionId": "pt4" },
+        "reviewPolicyRef": { "entityId": "review-policy", "versionId": "rp1" }
+      }
+    },
+    {
+      "sampleId": "sample-zeta-1",
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": { "entityId": "spatial-zeta", "versionId": "v1" }
+      },
+      "processNodeId": "process-node-3",
+      "sourceSegmentRefs": [
+        {
+          "locator": { "sourceSegmentId": "segment-zeta-1" },
+          "sourceVersion": { "entityId": "source-zeta", "versionId": "v1" }
+        }
+      ],
+      "applicabilitySnapshotRef": {
+        "kind": "applicability-metadata-snapshot",
+        "reference": { "entityId": "applicability-zeta-1", "versionId": "v1" }
+      },
+      "identificationInputSnapshotRef": {
+        "kind": "identification-input-snapshot",
+        "reference": { "entityId": "identification-input-zeta-1", "versionId": "v1" }
+      },
+      "assessmentInputSnapshotRef": {
+        "kind": "assessment-input-snapshot",
+        "reference": { "entityId": "assessment-input-zeta-1", "versionId": "v1" }
+      },
+      "riskRecordRef": {
+        "kind": "standardized-risk-record",
+        "reference": {
+          "entityId": "identification-risk-record-zeta-1",
+          "versionId": "0000000000000000000000000000000000000000000000000000000000000011"
+        }
+      },
+      "standardizedRiskRecordSnapshotArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "quality-sample-snapshot-zeta-1",
+          "versionId": "sha256:0000000000000000000000000000000000000000000000000000000000000011"
+        }
+      },
+      "expectedEventKey": "risk-event-zeta",
+      "expectedPositive": true,
+      "requiredEvidenceRefs": [
+        {
+          "locator": { "sourceSegmentId": "segment-zeta-1" },
+          "sourceVersion": { "entityId": "source-zeta", "versionId": "v1" }
+        }
+      ],
+      "versionRefs": {
+        "identificationKnowledgeReleaseRef": {
+          "entityId": "identification-knowledge",
+          "versionId": "k3"
+        },
+        "identificationPolicySetRef": {
+          "entityId": "identification-policy-set",
+          "versionId": "p2"
+        },
+        "indicatorSystemRef": { "entityId": "indicator-system", "versionId": "i4" },
+        "indicatorFieldMappingRef": { "entityId": "indicator-field-mapping", "versionId": "m2" },
+        "applicableRuleSetRef": { "entityId": "applicable-rule-set", "versionId": "r5" },
+        "weightSetRef": { "entityId": "weight-set", "versionId": "w3" },
+        "riskMatrixRef": { "entityId": "risk-matrix", "versionId": "mx2" },
+        "modelDeploymentRef": { "entityId": "model-deployment", "versionId": "md1" },
+        "promptTemplateRef": { "entityId": "prompt-template", "versionId": "pt4" },
+        "reviewPolicyRef": { "entityId": "review-policy", "versionId": "rp1" }
+      }
+    },
+    {
+      "sampleId": "sample-zeta-2",
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": { "entityId": "spatial-zeta", "versionId": "v1" }
+      },
+      "processNodeId": "process-node-3",
+      "sourceSegmentRefs": [
+        {
+          "locator": { "sourceSegmentId": "segment-zeta-1" },
+          "sourceVersion": { "entityId": "source-zeta", "versionId": "v1" }
+        }
+      ],
+      "applicabilitySnapshotRef": {
+        "kind": "applicability-metadata-snapshot",
+        "reference": { "entityId": "applicability-zeta-2", "versionId": "v1" }
+      },
+      "identificationInputSnapshotRef": {
+        "kind": "identification-input-snapshot",
+        "reference": { "entityId": "identification-input-zeta-2", "versionId": "v1" }
+      },
+      "assessmentInputSnapshotRef": {
+        "kind": "assessment-input-snapshot",
+        "reference": { "entityId": "assessment-input-zeta-2", "versionId": "v1" }
+      },
+      "riskRecordRef": {
+        "kind": "standardized-risk-record",
+        "reference": {
+          "entityId": "identification-risk-record-zeta-2",
+          "versionId": "0000000000000000000000000000000000000000000000000000000000000012"
+        }
+      },
+      "standardizedRiskRecordSnapshotArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "quality-sample-snapshot-zeta-2",
+          "versionId": "sha256:0000000000000000000000000000000000000000000000000000000000000012"
+        }
+      },
+      "expectedEventKey": "risk-event-zeta",
+      "expectedPositive": true,
+      "requiredEvidenceRefs": [
+        {
+          "locator": { "sourceSegmentId": "segment-zeta-1" },
+          "sourceVersion": { "entityId": "source-zeta", "versionId": "v1" }
+        }
+      ],
+      "versionRefs": {
+        "identificationKnowledgeReleaseRef": {
+          "entityId": "identification-knowledge",
+          "versionId": "k3"
+        },
+        "identificationPolicySetRef": {
+          "entityId": "identification-policy-set",
+          "versionId": "p2"
+        },
+        "indicatorSystemRef": { "entityId": "indicator-system", "versionId": "i4" },
+        "indicatorFieldMappingRef": { "entityId": "indicator-field-mapping", "versionId": "m2" },
+        "applicableRuleSetRef": { "entityId": "applicable-rule-set", "versionId": "r5" },
+        "weightSetRef": { "entityId": "weight-set", "versionId": "w3" },
+        "riskMatrixRef": { "entityId": "risk-matrix", "versionId": "mx2" },
+        "modelDeploymentRef": { "entityId": "model-deployment", "versionId": "md1" },
+        "promptTemplateRef": { "entityId": "prompt-template", "versionId": "pt4" },
+        "reviewPolicyRef": { "entityId": "review-policy", "versionId": "rp1" }
+      }
+    }
+  ]
+}

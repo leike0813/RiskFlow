@@ -13,6 +13,8 @@
     "lint": "eslint .",
     "format:check": "prettier --check .",
     "test": "vitest run",
+    "test:browser": "playwright test -c playwright.config.ts --project=chromium",
+    "quality:evaluate": "node scripts/quality/evaluate.mjs",
     "deps:check": "depcruise --config dependency-cruiser.config.cjs apps packages",
     "deps:policy": "node scripts/check-dependency-policy.mjs",
     "licenses:check": "pnpm deps:policy",

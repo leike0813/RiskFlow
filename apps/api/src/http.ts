@@ -344,6 +344,11 @@ export interface ApiPortsV1 {
   readonly agentTask?: AgentTaskPortV1;
   readonly workflow?: WorkflowPortV1;
   readonly projection?: ProjectionPortV1;
+  /**
+   * C36 窄投影 port：只在未提供完整 `projection` port 时把原 `projection.query` 路由绑定到它，
+   * 只接受 `quality-evaluation` 查询类型；SSE 与导出仍只由完整 port 激活。
+   */
+  readonly qualityProjectionQuery?: Pick<ProjectionPortV1, "query">;
 }
 
 type ApiPortKeyV1 = keyof ApiPortsV1;
@@ -357,6 +362,8 @@ export type HttpRouteEntryV1 = Readonly<{
   domainKind: string;
   requiredCapability: ModuleCapabilityV1;
   portKey: ApiPortKeyV1;
+  /** 除 `portKey` 外仍可激活该路由的窄端口；不改变同路径只注册一条 entry 的约束。 */
+  activationPortKeys: readonly ApiPortKeyV1[];
   requestSchema: ZodType;
   moduleRequestSchema: ZodType;
   resultSchema: ZodType;
@@ -370,6 +377,7 @@ type RouteDefinitionV1 = Readonly<{
   moduleRequestSchema: ZodType;
   resultSchema: ZodType;
   portKey: ApiPortKeyV1;
+  activationPortKeys: readonly ApiPortKeyV1[];
   invoke: HttpInvokerV1;
 }>;
 
@@ -379,6 +387,7 @@ const route = (definition: RouteDefinitionV1): HttpRouteEntryV1 =>
     method: "POST" as const,
     path: `/api/v1/projects/:projectId/${definition.mode === "command" ? "commands" : "queries"}/${definition.branch}`,
     requiredCapability: MODULE_BRANCH_CAPABILITY_V1[definition.branch],
+    activationPortKeys: [definition.portKey, ...definition.activationPortKeys],
     requestSchema:
       definition.mode === "command"
         ? commandTransportSchemaFor(definition.moduleRequestSchema, definition.domainKind)
@@ -391,6 +400,7 @@ const commandRoutes = (
   portKey: ApiPortKeyV1,
   invoke: HttpInvokerV1,
   branches: readonly (readonly [ModuleBranchV1, string])[],
+  activationPortKeys: readonly ApiPortKeyV1[] = [],
 ): readonly HttpRouteEntryV1[] =>
   branches.map(([branch, domainKind]) =>
     route({
@@ -400,6 +410,7 @@ const commandRoutes = (
       moduleRequestSchema,
       resultSchema,
       portKey,
+      activationPortKeys,
       invoke,
     }),
   );
@@ -410,6 +421,7 @@ const queryRoutes = (
   portKey: ApiPortKeyV1,
   invoke: HttpInvokerV1,
   branches: readonly (readonly [ModuleBranchV1, string])[],
+  activationPortKeys: readonly ApiPortKeyV1[] = [],
 ): readonly HttpRouteEntryV1[] =>
   branches.map(([branch, domainKind]) =>
     route({
@@ -419,6 +431,7 @@ const queryRoutes = (
       moduleRequestSchema,
       resultSchema,
       portKey,
+      activationPortKeys,
       invoke,
     }),
   );
@@ -488,7 +501,9 @@ const invokeWorkflowResume: HttpInvokerV1 = (ports, request) =>
 const invokeWorkflowCancel: HttpInvokerV1 = (ports, request) =>
   ports.workflow?.cancelRun(request as CancelWorkflowRunCommandV1) ?? missingPort("workflow");
 const invokeProjectionQuery: HttpInvokerV1 = (ports, request) =>
-  ports.projection?.query(request as ProjectionQueryV1) ?? missingPort("projection");
+  ports.projection?.query(request as ProjectionQueryV1) ??
+  ports.qualityProjectionQuery?.query(request as ProjectionQueryV1) ??
+  missingPort("projection");
 const invokeProjectionSubscribe: HttpInvokerV1 = (ports, request) =>
   ports.projection?.subscribe(request as RunSubscriptionRequestV1) ?? missingPort("projection");
 const invokeProjectionExport: HttpInvokerV1 = (ports, request) =>
@@ -711,6 +726,7 @@ export const HTTP_ROUTE_CATALOG_V1: readonly HttpRouteEntryV1[] = Object.freeze(
     "projection",
     invokeProjectionQuery,
     [["projection.query", "query"]],
+    ["qualityProjectionQuery"],
   ),
   ...queryRoutes(
     RunSubscriptionRequestV1Schema,
@@ -729,7 +745,9 @@ export const HTTP_ROUTE_CATALOG_V1: readonly HttpRouteEntryV1[] = Object.freeze(
 ]);
 
 export const activeHttpRouteCatalog = (ports: ApiPortsV1): readonly HttpRouteEntryV1[] =>
-  HTTP_ROUTE_CATALOG_V1.filter((entry) => ports[entry.portKey] !== undefined);
+  HTTP_ROUTE_CATALOG_V1.filter((entry) =>
+    entry.activationPortKeys.some((portKey) => ports[portKey] !== undefined),
+  );
 
 export const HTTP_BRANCHES_V1 = Object.freeze(HTTP_ROUTE_CATALOG_V1.map((entry) => entry.branch));
 

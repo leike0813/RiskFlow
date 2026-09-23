@@ -1,6 +1,7 @@
 import { sql, type Kysely } from "kysely";
 
 const table = "business.quality_evaluation_report_index" as const;
+const datasetTable = "business.quality_evaluation_dataset_freeze" as const;
 const listIndex = "quality_evaluation_report_index_list_idx" as const;
 const commandIndex = "quality_evaluation_report_index_command_uidx" as const;
 const jsonb = sql`jsonb`;
@@ -14,6 +15,10 @@ const revokeAll = async (db: Kysely<unknown>): Promise<void> => {
     BEGIN
       IF to_regclass('${sql.raw(table)}') IS NOT NULL THEN
         REVOKE ALL PRIVILEGES ON TABLE ${sql.raw(table)}
+          FROM PUBLIC, riskflow_app, riskflow_outbox_worker, riskflow_checkpointer;
+      END IF;
+      IF to_regclass('${sql.raw(datasetTable)}') IS NOT NULL THEN
+        REVOKE ALL PRIVILEGES ON TABLE ${sql.raw(datasetTable)}
           FROM PUBLIC, riskflow_app, riskflow_outbox_worker, riskflow_checkpointer;
       END IF;
     END
@@ -30,6 +35,22 @@ const revokeAll = async (db: Kysely<unknown>): Promise<void> => {
  * 仅授权风险应用 SELECT/INSERT，索引本身可由正式 C04 报告与 C03 审计重建。
  */
 export async function up(db: Kysely<unknown>): Promise<void> {
+  await db.schema
+    .createTable(datasetTable)
+    .ifNotExists()
+    .addColumn("project_id", "text", (column) => column.notNull())
+    .addColumn("dataset_id", "text", (column) => column.notNull())
+    .addColumn("dataset_version", "text", (column) => column.notNull())
+    .addColumn("content_digest", "text", (column) => column.notNull())
+    .addPrimaryKeyConstraint("quality_evaluation_dataset_freeze_pk", [
+      "project_id", "dataset_id", "dataset_version",
+    ])
+    .addCheckConstraint(
+      "quality_evaluation_dataset_freeze_identity_ck",
+      sql`project_id <> '' AND dataset_id <> '' AND dataset_version <> ''
+        AND content_digest ~ '^sha256:[0-9a-f]{64}$'`,
+    )
+    .execute();
   await db.schema
     .createTable(table)
     .ifNotExists()
@@ -91,10 +112,12 @@ export async function up(db: Kysely<unknown>): Promise<void> {
 
   await revokeAll(db);
   await sql`GRANT SELECT, INSERT ON TABLE ${sql.raw(table)} TO riskflow_app`.execute(db);
+  await sql`GRANT SELECT, INSERT ON TABLE ${sql.raw(datasetTable)} TO riskflow_app`.execute(db);
 }
 
 export async function down(db: Kysely<unknown>): Promise<void> {
   await revokeAll(db);
   await sql`DROP INDEX IF EXISTS ${sql.raw(listIndex)}`.execute(db);
   await db.schema.dropTable(table).ifExists().execute();
+  await db.schema.dropTable(datasetTable).ifExists().execute();
 }

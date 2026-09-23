@@ -15,7 +15,7 @@ import {
   bootstrapInitialSystemAdministrator,
   createPostgresLocalIdentityAccess,
 } from "../../src/auth/index.js";
-import type { AuthorizationContextV1, ContentArtifactRefV1 } from "@riskflow/contracts/ports";
+import type { AuthorizationContextV1, ContentArtifactRefV1, WorkflowRunRefV1 } from "@riskflow/contracts/ports";
 
 import { createFilesystemArtifactStore } from "../../src/artifacts/filesystem-artifact-store.js";
 import { PostgresArtifactRegistry } from "../../src/artifacts/postgres-artifact-registry.js";
@@ -38,6 +38,7 @@ import {
 } from "./fixture.js";
 
 const TABLE = "business.quality_evaluation_report_index";
+const DATASET_TABLE = "business.quality_evaluation_dataset_freeze";
 const SCRIPT_PATH = resolve(import.meta.dirname, "../../../../scripts/quality/evaluate.mjs");
 const DATASET_ARTIFACT_ID = "quality-dataset-c36-integration-dataset@2030-06-01.1";
 const DATASET_PURPOSE_CODE = "quality-evaluation.dataset";
@@ -223,6 +224,7 @@ const evaluate = (input: {
   readonly datasetRef: ContentArtifactRefV1;
   readonly authorization?: AuthorizationContextV1;
   readonly commands?: readonly string[];
+  readonly runRefs?: readonly WorkflowRunRefV1[];
 }) =>
   evaluationService().evaluateDataset({
     projectId: authorization.projectId,
@@ -231,7 +233,7 @@ const evaluate = (input: {
     idempotencyKey: input.commandId,
     requestedAt: QUALITY_FIXTURE_TIME,
     datasetArtifactRef: input.datasetRef,
-    runRefs: [],
+    runRefs: input.runRefs ?? [],
     authorization: input.authorization ?? authorization,
     runEvidence: {
       commands: input.commands ?? [
@@ -271,6 +273,19 @@ describe("C36 migration 000049", () => {
          AND column_name = 'spatial_scope_refs'`,
     );
     expect(scopeColumn.rows[0]?.data_type).toBe("jsonb");
+    const datasetPrivileges = await fixture!.postgres.adminPool.query<{
+      can_select: boolean;
+      can_insert: boolean;
+      can_update: boolean;
+      can_delete: boolean;
+    }>(
+      `SELECT has_table_privilege('riskflow_app', $1, 'SELECT') AS can_select,
+              has_table_privilege('riskflow_app', $1, 'INSERT') AS can_insert,
+              has_table_privilege('riskflow_app', $1, 'UPDATE') AS can_update,
+              has_table_privilege('riskflow_app', $1, 'DELETE') AS can_delete`,
+      [DATASET_TABLE],
+    );
+    expect(datasetPrivileges.rows[0]).toEqual(privileges.rows[0]);
     for (const role of ["riskflow_outbox_worker", "riskflow_checkpointer"]) {
       const granted = await fixture!.postgres.adminPool.query<{ allowed: boolean }>(
         `SELECT has_table_privilege($1, $2, 'SELECT') AS allowed`,
@@ -288,6 +303,11 @@ describe("C36 migration 000049", () => {
       [TABLE],
     );
     expect(dropped.rows[0]?.table_name).toBeNull();
+    const droppedDataset = await fixture!.postgres.adminPool.query<{ table_name: string | null }>(
+      `SELECT to_regclass($1) AS table_name`,
+      [DATASET_TABLE],
+    );
+    expect(droppedDataset.rows[0]?.table_name).toBeNull();
     await qualityIndexMigration.up(db);
   }, 300_000);
 });
@@ -449,6 +469,99 @@ describe("C36 质量评估写入路径", () => {
     expect(conflicting).toMatchObject({ kind: "failed", failure: { code: "STALE_VERSION" } });
   }, 300_000);
 
+  it("拒绝别名工件绕过数据集版本身份", async () => {
+    const reference = await putJson({
+      artifactId: `${DATASET_ARTIFACT_ID}:alias`,
+      purposeCode: DATASET_PURPOSE_CODE,
+      mediaType: DATASET_MEDIA_TYPE,
+      value: datasetBody("2030-06-01.1"),
+    });
+    const result = await evaluate({
+      commandId: "quality-command-alias",
+      datasetRef: { kind: "content-artifact", reference },
+    });
+    expect(result).toMatchObject({ kind: "failed", failure: { code: "STALE_VERSION" } });
+    const rows = await fixture!.postgres.adminPool.query<{ total: string }>(
+      `SELECT count(*)::text AS total FROM ${TABLE} WHERE command_id = $1`,
+      ["quality-command-alias"],
+    );
+    expect(rows.rows[0]?.total).toBe("0");
+  }, 300_000);
+
+  it("并发同摘要只冻结一次且不同运行报告可各自成立", async () => {
+    const body = { ...datasetBody("2030-06-04.1"), datasetId: "c36-concurrent-same" };
+    const reference = await putJson({
+      artifactId: `quality-dataset-${body.datasetId}@${body.datasetVersion}`,
+      purposeCode: DATASET_PURPOSE_CODE,
+      mediaType: DATASET_MEDIA_TYPE,
+      value: body,
+    });
+    const datasetRef = { kind: "content-artifact" as const, reference };
+    const inputs = [
+      { commandId: "quality-concurrent-same-a", datasetRef },
+      {
+        commandId: "quality-concurrent-same-b",
+        datasetRef,
+        runRefs: [{ kind: "workflow-run" as const, reference: { entityId: "quality-run-b", versionId: "1" } }],
+      },
+    ];
+    const results = await Promise.all(inputs.map(evaluate));
+    expect(results.map((result) => result.kind)).toEqual(["succeeded", "succeeded"]);
+    const freeze = await fixture!.postgres.adminPool.query<{ total: string }>(
+      `SELECT count(*)::text AS total FROM ${DATASET_TABLE} WHERE project_id = $1 AND dataset_id = $2`,
+      [authorization.projectId, body.datasetId],
+    );
+    expect(freeze.rows[0]?.total).toBe("1");
+    const reports = await fixture!.postgres.adminPool.query<{ total: string }>(
+      `SELECT count(*)::text AS total FROM ${TABLE} WHERE project_id = $1 AND dataset_artifact_id = $2`,
+      [authorization.projectId, datasetRef.reference.entityId],
+    );
+    expect(reports.rows[0]?.total).toBe("2");
+    const replayed = await evaluate(inputs[0]!);
+    expect(replayed.kind).toBe("succeeded");
+    const afterReplay = await fixture!.postgres.adminPool.query<{ total: string }>(
+      `SELECT count(*)::text AS total FROM ${TABLE} WHERE project_id = $1 AND dataset_artifact_id = $2`,
+      [authorization.projectId, datasetRef.reference.entityId],
+    );
+    expect(afterReplay.rows[0]?.total).toBe("2");
+  }, 300_000);
+
+  it("并发同版本不同摘要仅一条正式报告，另一条报错版", async () => {
+    const artifactId = "quality-dataset-c36-concurrent-conflict@2030-06-05.1";
+    const datasetRef = await Promise.all([
+      datasetBody("2030-06-05.1"),
+      datasetBody("2030-06-05.1", seededSamples.slice(0, 3)),
+    ].map(async (body) => ({
+      kind: "content-artifact" as const,
+      reference: await putJson({
+        artifactId,
+        purposeCode: DATASET_PURPOSE_CODE,
+        mediaType: DATASET_MEDIA_TYPE,
+        value: { ...body, datasetId: "c36-concurrent-conflict" },
+      }),
+    })));
+    expect(datasetRef[0]!.reference.versionId).not.toBe(datasetRef[1]!.reference.versionId);
+    const results = await Promise.all(datasetRef.map((ref, index) => evaluate({
+      commandId: `quality-concurrent-conflict-${index}`,
+      datasetRef: ref,
+    })));
+    expect(results.map((result) => result.kind).sort()).toEqual(["failed", "succeeded"]);
+    expect(results.find((result) => result.kind === "failed")).toMatchObject({
+      kind: "failed",
+      failure: { code: "STALE_VERSION" },
+    });
+    const freeze = await fixture!.postgres.adminPool.query<{ total: string }>(
+      `SELECT count(*)::text AS total FROM ${DATASET_TABLE} WHERE project_id = $1 AND dataset_id = $2`,
+      [authorization.projectId, "c36-concurrent-conflict"],
+    );
+    expect(freeze.rows[0]?.total).toBe("1");
+    const reports = await fixture!.postgres.adminPool.query<{ total: string }>(
+      `SELECT count(*)::text AS total FROM ${TABLE} WHERE project_id = $1 AND dataset_artifact_id = $2`,
+      [authorization.projectId, artifactId],
+    );
+    expect(reports.rows[0]?.total).toBe("1");
+  }, 300_000);
+
   it("缺少 projection.export 的授权上下文被拒绝且不写索引", async () => {
     const denied: AuthorizationContextV1 = {
       ...authorization,
@@ -493,8 +606,11 @@ describe("C36 页面查询投影", () => {
     if (listed.kind !== "succeeded") return;
     expect(listed.result.queryResultRef.kind).toBe("query-result");
     expect(listed.result.nextCursor).toBeUndefined();
-    expect(listed.result.qualitySummaries).toHaveLength(1);
-    const summary = listed.result.qualitySummaries![0]!;
+    const summary = listed.result.qualitySummaries?.find(
+      (item) => item.reportArtifactRef.reference.entityId === reportArtifactRef?.reference.entityId,
+    );
+    expect(summary).toBeDefined();
+    if (summary === undefined) return;
     expect(summary.metrics).toHaveLength(7);
     expect(summary.label).toBe("合成样本，待甲方复核");
     expect(summary.sampleKind).toBe("synthetic");
@@ -665,8 +781,8 @@ describe("C36 页面查询投影", () => {
     });
     expect(listed.kind).toBe("succeeded");
     if (listed.kind !== "succeeded") return;
-    expect(listed.result.qualitySummaries).toHaveLength(1);
-    expect(listed.result.qualitySummaries![0]!.evidenceRefs).toEqual([]);
+    expect(listed.result.qualitySummaries?.length).toBeGreaterThan(0);
+    expect(listed.result.qualitySummaries?.every((summary) => summary.evidenceRefs.length === 0)).toBe(true);
   }, 300_000);
 });
 

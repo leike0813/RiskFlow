@@ -41,13 +41,14 @@ import {
   type SpatialScopeRefV1,
 } from "@riskflow/contracts/ports";
 
-import { mapPostgresError } from "../postgres/pool.js";
+import { makePersistenceError, mapPostgresError } from "../postgres/pool.js";
 import { getPostgresTransaction } from "../postgres/transaction-unit.js";
 import type { PostgresDatabase } from "../postgres/types.js";
 
 type JsonColumn = ColumnType<JsonValue, JsonValue, JsonValue>;
 
 const REPORT_INDEX_TABLE = "business.quality_evaluation_report_index" as const;
+const DATASET_FREEZE_TABLE = "business.quality_evaluation_dataset_freeze" as const;
 const COMMAND_KIND_V1 = "quality-evaluation.record-report" as const;
 const MAX_ARTIFACT_BYTES_V1 = 8 * 1024 * 1024;
 const MAX_SERIALIZATION_ATTEMPTS_V1 = 3;
@@ -77,6 +78,12 @@ interface QualityEvaluationReportIndexRow {
 
 interface QualityEvaluationDatabase extends PostgresDatabase {
   "business.quality_evaluation_report_index": QualityEvaluationReportIndexRow;
+  "business.quality_evaluation_dataset_freeze": {
+    readonly project_id: string;
+    readonly dataset_id: string;
+    readonly dataset_version: string;
+    readonly content_digest: string;
+  };
 }
 
 type QualityEvaluationTransaction = Transaction<QualityEvaluationDatabase>;
@@ -348,6 +355,28 @@ export class PostgresQualityEvaluationAdapter
           }),
         );
         await transaction
+          .insertInto(DATASET_FREEZE_TABLE)
+          .values({
+            project_id: input.authorization.projectId,
+            dataset_id: report.datasetId,
+            dataset_version: report.datasetVersion,
+            content_digest: report.datasetArtifactRef.reference.versionId,
+          })
+          .onConflict((conflict) =>
+            conflict.columns(["project_id", "dataset_id", "dataset_version"]).doNothing(),
+          )
+          .execute();
+        const frozen = await transaction
+          .selectFrom(DATASET_FREEZE_TABLE)
+          .select("content_digest")
+          .where("project_id", "=", input.authorization.projectId)
+          .where("dataset_id", "=", report.datasetId)
+          .where("dataset_version", "=", report.datasetVersion)
+          .executeTakeFirst();
+        if (frozen?.content_digest !== report.datasetArtifactRef.reference.versionId) {
+          throw makePersistenceError("IDEMPOTENCY_CONFLICT", "quality-evaluation.dataset-freeze");
+        }
+        await transaction
           .insertInto(REPORT_INDEX_TABLE)
           .values({
             project_id: input.authorization.projectId,
@@ -409,6 +438,9 @@ export class PostgresQualityEvaluationAdapter
       };
     } catch (error: unknown) {
       const mapped = mapPostgresError(error, "quality-evaluation.report-index");
+      if (mapped.code === "IDEMPOTENCY_CONFLICT" && mapped.stage === "quality-evaluation.dataset-freeze") {
+        throw failure("STALE_VERSION", "quality-dataset-invalid", report.datasetId);
+      }
       if (
         mapped.code === "IDEMPOTENCY_CONFLICT" ||
         isArtifactCode(error, "ARTIFACT_IDEMPOTENCY_CONFLICT")

@@ -25,8 +25,8 @@
 |---|---|---|---|---|---|
 | IP-01 | 1 | 质量数据集必须冻结并标明适用边界；冻结的脱敏样例进入评估；样例不足或只有合成样本 | `packages/core/src/quality/schema.ts`（新 `QualityDatasetV1Schema`/`QualityReportV1Schema`）；`packages/core/src/quality/index.ts`；`packages/core/package.json` 的 `./quality` export；`packages/core/test/quality/fixtures/synthetic.json`；`packages/core/test/quality/quality.test.ts` | D-01 strict 数据集、显式正负全集、精确快照与版本、样例资格、C04 数据集引用；无真实样例显式标记 | 不推断标签、配置或甲方真实表现 |
 | IP-02 | 2 | 识别与评估质量指标必须由确定性证据计算；正式结果与标注对齐；缺失结果或分母为零；可重放与可审计结论必须引用耐久证据；精确版本可复核；证据或审计缺失 | `packages/core/src/quality/evaluate.ts`（新 `evaluateQualityDataset`）；`packages/core/test/quality/quality.test.ts` | D-02 七项指标、分子/分母与逐项失败；复用 C29 引擎，核对 C22 digest、C29 决策工件/记录 ref；零分母 `null`，不重跑 LLM | C22 合并、C29 P/C/矩阵算法 |
-| IP-03 | 3 | 可重放与可审计结论必须引用耐久证据；精确版本可复核；证据或审计缺失；追加与重放 | `packages/core/src/quality/service.ts`（新 `QualityEvaluationService`/窄读端口）；`packages/adapters/src/quality/postgres-quality-evaluation.ts`（新 C04/C03 组合）；`packages/adapters/src/quality/index.ts`；`packages/adapters/package.json` 的 `./quality` export；`scripts/quality/evaluate.mjs`；`packages/adapters/test/quality/postgres-quality-evaluation.test.ts` | D-03 授权→有界 C04 读/verified→计算→报告 C04 put→C03 索引/回执/审计原子提交；CLI 只输出安全报告 ref 与实际命令；同键同摘要重放/异摘要冲突、失败不显成功 | 上游私表、异步丢审计、磁盘报告代替 C04 |
-| IP-04 | 4 | C36 页面查询投影必须有界且只追加；追加与重放 | `packages/adapters/src/postgres/migrations/query-projection/deliver-quality-evaluation-module/000049_quality_evaluation_report_index.ts`；`packages/adapters/test/auth/fixture.ts`；`packages/adapters/test/postgres/postgres-foundation.test.ts`；`packages/adapters/test/quality/postgres-quality-evaluation.test.ts` | D-05 单表约束、唯一/列表索引、`riskflow_app` 仅 SELECT/INSERT、无跨 change FK；重复 up、逆序 down；同步迁移 id | 旧迁移、上游表或 UPDATE/DELETE 权限 |
+| IP-03 | 3 | 可重放与可审计结论必须引用耐久证据；精确版本可复核；证据或审计缺失；追加与重放 | `packages/core/src/quality/service.ts`（新 `QualityEvaluationService`/窄读端口）；`packages/adapters/src/quality/postgres-quality-evaluation.ts`（新 C04/C03 组合）；`packages/adapters/src/quality/index.ts`；`packages/adapters/package.json` 的 `./quality` export；`scripts/quality/evaluate.mjs`；`packages/adapters/test/quality/postgres-quality-evaluation.test.ts` | D-03 授权→有界 C04 读/verified→计算→报告 C04 put→C03 事务内核对数据集冻结摘要并追加索引/回执/审计；CLI 只输出安全报告 ref 与实际命令；同键重放、异摘要冲突及并发回归、失败不显成功 | 上游私表、异步丢审计、磁盘报告代替 C04 |
+| IP-04 | 4 | C36 页面查询投影必须有界且只追加；追加与重放 | `packages/adapters/src/postgres/migrations/query-projection/deliver-quality-evaluation-module/000049_quality_evaluation_report_index.ts`；`packages/adapters/test/auth/fixture.ts`；`packages/adapters/test/postgres/postgres-foundation.test.ts`；`packages/adapters/test/quality/postgres-quality-evaluation.test.ts` | D-05 报告索引与数据集冻结登记表，各自只追加；冻结身份唯一、报告 ref 唯一/列表索引；`riskflow_app` 两表均仅 SELECT/INSERT、无跨 change FK；重复 up、逆序 down；同步迁移 id | 旧迁移、上游表或 UPDATE/DELETE 权限 |
 | IP-05 | 5 | C36 页面查询投影必须有界且只追加；获授权页面读取精确质量报告；工程切换或撤权；不可枚举拒绝与旧类型兼容；追加与重放 | `packages/adapters/src/quality/postgres-quality-projection.ts`；`packages/contracts/src/ports/index.ts`；`packages/contracts/test/module-interfaces-events-workflows.test.ts`；`apps/api/src/http.ts`；`apps/api/test/quality.test.ts`；`packages/adapters/test/quality/postgres-quality-evaluation.test.ts` | D-04/D-06 仅一新增 queryType、闭合 selector 和有界摘要、`qualityProjectionQuery` 窄端口、C09 既有 route、当前 C06 最小授权，列表 keyset≤50、exact 单条、统一 NOT_FOUND | 旧 queryType/结果、额外 branch/capability/角色、私表查询 |
 | IP-06 | 6 | C36 页面查询投影必须有界且只追加；获授权页面读取精确质量报告；工程切换或撤权；跨页面验收必须使用真实浏览器与正式接缝；真实浏览器完成跨页面链路 | `apps/web/src/quality/operation.ts`（C09 operation/解码）；`apps/web/src/quality/QualityPage.tsx`（C10 页面贡献）；`apps/web/src/main.tsx`（现有 App 回调/会话/工程接线）；`apps/web/test/quality.test.tsx` | D-06 无旧工程闪现，abort 旧查询，刷新重新查询，证据只显示授权摘要；UI 不写业务正文 | C10 组件/路由/焦点语义、本地业务缓存 |
 | IP-07 | 7 | 跨页面验收必须使用真实浏览器与正式接缝；真实浏览器完成跨页面链路；环境不可用或接缝拒绝；前述全部端到端场景 | `playwright.config.ts`；`vitest.config.ts`；`apps/web/test/browser/quality.spec.ts`；`apps/web/test/browser/server.mjs`；`package.json` 的 `quality:evaluate`/`test:browser` 脚本；`pnpm-lock.yaml` 与 `package.json` 的 `@playwright/test` 登记（仅协调端）；`apps/web/test/quality.test.tsx` | D-07 生产构建+真实 Fastify/PostgreSQL/C04/C06/C36、真实登录 Cookie/Chromium；Vitest 排除 Playwright 规格文件；trace/版本/命令/报告 ref 证据，关键失败非零退出 | Mock 服务或浏览器、dev server、生产运行时依赖 |
@@ -36,7 +36,7 @@
 1. IP-01 先校验数据集版本、来源资格、样例/标签/版本完整性与同工程约束；C04 冻结数据集与 C22/C29 输出/引擎上下文快照。任何缺失先失败，不读取其它样例或模型补足。
 2. IP-03 由 C06 当前授权建立单一 `projection.export` capability 的 C36 质量评估调用，C04 put 也要求此 capability；按显式 refs 逐份 C04 有界读取、完整消费 `verified`；C22 `readRecord` 核对正式记录 digest，不直接读 C22/C29 表。授权/完整性/错版统一安全失败，不生成正式质量通过项。
 3. IP-02 在内存做标签比对、C29 确定性重算和证据检查；零分母产生 `not-computable`，缺正式结果保留分母与安全原因；不修改任何业务事实。
-4. IP-03 先 C04 put 报告，再在 C03 单事务追加 IP-04 索引、回执、事实审计；事务失败不暴露成功，重试复用已成立工件。相同幂等身份同摘要返回原 ref，异摘要冲突；新版本只追加。
+4. IP-03 先 C04 put 报告，再在 C03 单事务原子登记/核对 IP-04 数据集冻结摘要，并追加报告索引、回执、事实审计；事务失败不暴露成功，重试复用已成立工件。同一数据集版本异摘要报错版；相同幂等身份同摘要返回原 ref，不同运行/报告版本仍各自追加。
 5. IP-05 C09 根据原 `projection.query` 签发当前用户/工程/空间/资料最小授权，adapter 在索引读取前复验；列表使用项目修订 + keyset + 最大 50，exact 使用完整工件 ref；返回写入时已 C04 验证的安全摘要并按当前 source grant 过滤证据定位引用，页面查询不打开 C04 正文。无权/跨工程/不存在同形失败；查询不反写业务事实。C09 的其它完整 projection port 优先，C36 窄口不启动 SSE/export。
 6. IP-06 页面只用 C09 operation，工程修订变化卸载旧状态并 abort；登录由 C09 原有 Cookie 流，刷新重新读服务器，必要时重新登录。IP-07 用已成立的合成报告运行真实浏览器；失败保留 trace 且非零退出。
 
@@ -44,7 +44,7 @@
 
 - SSOT：D-01 内部数据集/报告 Schema 在 `packages/core/src/quality/schema.ts`；D-04 对外 query/摘要 Schema 只在 `packages/contracts/src/ports/index.ts`，C36 core/adapter/web 直接引用，不再定义同字段副本。旧 `ProjectionQueryV1Schema` 选项与成功基础字段维持原样。
 - 状态：数据集 `invalid|frozen`；评估 `running|failed|committed`；指标 `computed|not-computable`；页面沿 C10 既有状态。业务风险记录、预警/处置不因质量评估发生状态迁移。
-- 存储：C04 保存数据集、输出快照、逐项报告；C36 表只保存受限索引和摘要。D-05 迁移无跨 change FK，最小 GRANT、幂等 up/down 与唯一组合；`riskflow_app` 无 UPDATE/DELETE。审计/回执用 C03，C04 访问保留原访问审计。
+- 存储：C04 保存数据集、输出快照、逐项报告；C36 报告表只保存受限索引/摘要，冻结表只保存数据集身份/内容摘要。D-05 迁移无跨 change FK，两表最小 GRANT、幂等 up/down 与各自唯一组合；`riskflow_app` 无 UPDATE/DELETE。审计/回执用 C03，C04 访问保留原访问审计。
 - 错误：无权/跨工程/不存在对页面统一 NOT_FOUND；错版 STALE_VERSION；同键异载荷 IDEMPOTENCY_CONFLICT；C04 失败关闭成功路径；指标无分母给不可计算原因。应用日志只放安全代码与引用，不含正文/模型响应。
 - 依赖：根 `@playwright/test@1.63.0` 只作为 devDependency；协调端串行更新 `package.json`、`pnpm-lock.yaml` 与依赖策略。浏览器二进制固定到该包版本并在外部缓存，缺失时浏览器验收 BLOCKED/非零退出。
 
@@ -63,7 +63,7 @@
 | C36 页面查询投影必须有界且只追加 / 获授权页面读取精确质量报告 | IP-04,IP-05,IP-06 | `packages/adapters/test/quality/postgres-quality-evaluation.test.ts`; `apps/web/test/quality.test.tsx` | 已索引报告、真实 C06 工程成员 | 列表≤50、exact 唯一、C04 摘要无正文 | Q2,Q4 |
 | 同 Requirement / 工程切换或撤权 | IP-05,IP-06 | `apps/api/test/quality.test.ts`; `apps/web/test/quality.test.tsx` | 双工程、撤权会话、延迟查询 | 同形拒绝，旧内容/证据清除、abort | Q3,Q4 |
 | 同 Requirement / 不可枚举拒绝与旧类型兼容 | IP-05 | `packages/contracts/test/module-interfaces-events-workflows.test.ts`; `apps/api/test/quality.test.ts` | 无权/跨工程/不存在、旧 queryType | 三类同形 NOT_FOUND；旧类型编码/结果不变 | Q3 |
-| 同 Requirement / 追加与重放 | IP-03,IP-04,IP-05 | `packages/adapters/test/quality/postgres-quality-evaluation.test.ts`; `packages/adapters/test/postgres/postgres-foundation.test.ts` | 同键同/异摘要、两版本、迁移回滚 | 不重复/冲突/历史可读；up/up/down/up 与 GRANT | Q2,Q8 |
+| 同 Requirement / 追加与重放 | IP-03,IP-04,IP-05 | `packages/adapters/test/quality/postgres-quality-evaluation.test.ts`; `packages/adapters/test/postgres/postgres-foundation.test.ts` | 同键同/异摘要、同数据集多报告、并发双摘要、迁移回滚 | 冻结身份唯一、同摘要幂等/异摘要错版、报告只追加；up/up/down/up 与两表 GRANT | Q2,Q8 |
 | 跨页面验收必须使用真实浏览器与正式接缝 / 真实浏览器完成跨页面链路 | IP-07 | `apps/web/test/browser/quality.spec.ts` | 真实 Chromium、生产构建、Postgres/C04/C06/C36 | 登录→页面切换→质量结果→刷新/重新登录→授权摘要、焦点 | Q5 |
 | 同 Requirement / 环境不可用或接缝拒绝 | IP-07 | 同上 | 缺 Chromium/服务或撤权 | 非零退出、trace/安全错误，不跳过关键场景 | Q5 |
 

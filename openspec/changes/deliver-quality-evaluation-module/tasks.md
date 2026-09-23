@@ -5,8 +5,8 @@
 
 ## 2. 证据、索引与公共查询
 
-- [x] 2.1 实施 IP-04 的 C36 自有只追加 migration 与测试清单；运行 `pnpm exec vitest run packages/adapters/test/postgres/postgres-foundation.test.ts`，确认重复 up、逆序 down、最小 GRANT 和序号无冲突。
-- [x] 2.2 实施 IP-03 授权读、C04 报告、C03 原子审计/回执及 CLI；运行 `pnpm exec vitest run packages/adapters/test/quality/postgres-quality-evaluation.test.ts`，确认同键重放/冲突、失败不显成功、可重现命令与工件引用。
+- [x] 2.1 实施 IP-04 的 C36 自有只追加 migration 与测试清单；报告索引按报告引用唯一，冻结登记按数据集身份唯一；运行 `pnpm exec vitest run packages/adapters/test/postgres/postgres-foundation.test.ts`，确认重复 up、逆序 down、两表最小 GRANT 和序号无冲突。
+- [x] 2.2 实施 IP-03 授权读、C04 报告、C03 同事务冻结摘要核对/索引/审计/回执及 CLI；运行 `pnpm exec vitest run packages/adapters/test/quality/postgres-quality-evaluation.test.ts`，确认同键重放、并发同/异摘要、同数据集多报告、失败不显成功、可重现命令与工件引用。
 - [x] 2.3 实施 IP-05 的公共 Schema 最小加法、C36 投影、C09 窄查询接线；运行 `pnpm exec vitest run packages/contracts/test/module-interfaces-events-workflows.test.ts apps/api/test/quality.test.ts packages/adapters/test/quality/postgres-quality-evaluation.test.ts`，确认授权、不可枚举拒绝、旧类型兼容及有界分页。
 
 ## 3. 页面与真实浏览器

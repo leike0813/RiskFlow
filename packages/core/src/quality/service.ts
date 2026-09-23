@@ -240,6 +240,10 @@ export class QualityEvaluationService {
       );
     }
     const frozenDataset = dataset.data;
+    const datasetArtifactId = qualityDatasetArtifactId(frozenDataset);
+    if (command.datasetArtifactRef.reference.entityId !== datasetArtifactId) {
+      return failed("STALE_VERSION", "quality-dataset-invalid", datasetArtifactId);
+    }
     const spatialScopeRefs = [
       ...new Map(
         frozenDataset.samples.map((sample) => [
@@ -262,7 +266,7 @@ export class QualityEvaluationService {
     }
     await this.#read.assertDatasetVersionAvailable({
       projectId: command.projectId,
-      datasetArtifactId: qualityDatasetArtifactId(frozenDataset),
+      datasetArtifactId,
       datasetArtifactVersionId: command.datasetArtifactRef.reference.versionId,
     });
 

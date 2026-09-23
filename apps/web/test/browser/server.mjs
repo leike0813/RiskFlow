@@ -56,7 +56,7 @@ const OPERATOR_LOGIN = "quality-operator";
 const PROJECT_ID = "quality-ui-project";
 const FORBIDDEN_PROJECT_ID = "quality-ui-forbidden-project";
 const PROJECT_REVISION = { entityId: PROJECT_ID, versionId: "r1" };
-const DATASET_ARTIFACT_ID = "quality-dataset-c36-browser@2030-06-02.1";
+const DATASET_ARTIFACT_ID = "quality-dataset-c36-browser-dataset@2030-06-02.1";
 const NOW = "2030-06-02T00:00:00.000Z";
 
 const CONTENT_TYPES = {

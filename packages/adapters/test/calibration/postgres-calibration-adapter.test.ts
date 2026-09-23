@@ -237,6 +237,8 @@ describe.sequential("PostgreSQL calibration adapter", () => {
       expect(dropped).toHaveLength(0);
       await calibrationMigration.up(migrator.db);
       await calibrationLineageMigration.up(migrator.db);
+      await calibrationMigration.up(migrator.db);
+      await calibrationLineageMigration.up(migrator.db);
       const recreated = await fixture!.rows<{ table_name: string }>(
         `SELECT table_name FROM information_schema.tables
          WHERE table_schema = 'business' AND table_name = ANY($1::text[])

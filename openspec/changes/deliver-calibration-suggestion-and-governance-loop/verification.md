@@ -4,7 +4,7 @@
 
 - Change：`deliver-calibration-suggestion-and-governance-loop`；实际 schema：`orchestrated-delivery`
 - 输入实现 HEAD：`9a0bd43c688c99625fd44ce087ca9a17d8b55fdc`
-- 当前产物 HEAD：`9a0bd43c688c99625fd44ce087ca9a17d8b55fdc`；本轮改动保留在工作树，尚未由协调端形成 Git 检查点
+- 当前产物 HEAD：`293e5af037354f2cc948585b41d7898620600d00` 的限定审计修复已由协调端形成 Git 检查点（下一次提交即本文件所指最终产物 HEAD）；审计核验的输入 HEAD 为 `293e5af037354f2cc948585b41d7898620600d00`
 - 验收 Agent：Orca Dispatch `task_4709b482428c` / `ctx_1fffaafaa9f8`（收尾 attempt 2）
 - 核验范围：15/15 implementation tasks、11 项 Requirement、38 个 Scenario、IP-01～IP-11
 
@@ -50,8 +50,13 @@
 ## 限定审计
 
 - 必审范围：`risk-assessment.read-input-snapshot` 的 C06 权限和空间/来源约束；C25 读取与 C29 冻结事实一致性；C07 精确决定证明；退回 reservation/consumption 的并发和只追加状态；C03 事务/Outbox；`000047`/`000048` 迁移与最小授权；C16 草案幂等收敛。
-- 结论：**待本轮唯一一次 Targeted Auditor 执行并补入本节**。
-- 审计证据：待审计 Agent 填写；发现的已批准范围内普通缺陷须在其活动 Task 内修复并回归，更新本文件及最终产物 HEAD。
+- Targeted Auditor：Orca Dispatch `task_3d2cb70dbb72` / `ctx_750026821a88`；输入 HEAD `293e5af037354f2cc948585b41d7898620600d00`。
+- **结论：PASS。** 上文 Finalizer 的 BLOCKED 是待限定审计的阶段结论；本轮审计发现的唯一缺陷已在当前任务内修复，未发现待处置开放项。
+- 权限与冻结输入：分支 `risk-assessment.read-input-snapshot` 只映射既有 `risk-assessment.read`；C25 先验 C06 授权，再按工程、快照 id/version、空间/来源、依据集合、目标发布与内容摘要读取和验证。C29 只调用 C25 窄读端口，未直接读取其私表；未增加 capability、角色或权限值。
+- 决定与事务：C07 证明按精确任务、决定、建议版本绑定三种决定；缺失或错目标分别返回既有未批准原因，状态矛盾为技术失败。C29 的退回预留和消费通过唯一约束及 C03 串行化事务限为一次，公共记录只追加 pending 后继版本；拒绝只追加 rejected 版本；批准经 C16 幂等 `submit-revision` 取得未发布修订后才追加 approved 版本。C07 证明查询无业务审计、回执或 Outbox 写入。
+- 迁移：`000048` 的两项审计外键此前无条件 `ADD CONSTRAINT`，第二次 `up` 会失败。协调端 `msg_7dc2bfb832ce` 批准在现有迁移内按 `000047` 的存在性保护修复；表结构、权限、触发器语义与逆序 `down` 未改。现有 PostgreSQL 迁移测试新增连续两次 `up`，连同原有 `down → up` 和旧数据保留断言均通过；中央 auth/foundation 登记与迁移 id 一致。
+- 实际命令与结果：`pnpm exec vitest run packages/adapters/test/calibration/postgres-calibration-adapter.test.ts -t 'migration supports down and up'`：1 passed；`pnpm exec vitest run packages/adapters/test/calibration/postgres-calibration-adapter.test.ts packages/adapters/test/review-audit/postgres-review-audit-adapter.test.ts packages/adapters/test/risk-assessment/postgres-risk-assessment-engine.test.ts --maxWorkers=1`：3 files、55 tests passed。先前并行执行同三文件时 54 passed、1 项触发 5 秒超时；该用例单独复跑 1 passed，单文件校准回归 16/16 passed。`pnpm typecheck`、scoped `pnpm exec eslint`、scoped `pnpm exec prettier --check`、`pnpm deps:check && pnpm deps:policy && openspec validate deliver-calibration-suggestion-and-governance-loop --strict --no-interactive && git diff --check`：均 exit 0。
+- 剩余事项：协调端审阅本任务的三个未提交文件并形成 Git 检查点；随后按受控流程集成、归档。
 
 ## 后续注意事项
 

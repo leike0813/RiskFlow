@@ -166,10 +166,20 @@ export async function up(db: Kysely<unknown>): Promise<void> {
   for (const table of lineageTables) {
     const constraint = `${table.split(".")[1]}_audit_fk`;
     await sql`
-      ALTER TABLE ${sql.raw(table)}
-        ADD CONSTRAINT ${sql.raw(constraint)}
-        FOREIGN KEY (audit_entry_id) REFERENCES audit.entries(audit_entry_id)
-        DEFERRABLE INITIALLY DEFERRED
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = '${sql.raw(constraint)}'
+            AND conrelid = '${sql.raw(table)}'::regclass
+        ) THEN
+          ALTER TABLE ${sql.raw(table)}
+            ADD CONSTRAINT ${sql.raw(constraint)}
+            FOREIGN KEY (audit_entry_id) REFERENCES audit.entries(audit_entry_id)
+            DEFERRABLE INITIALLY DEFERRED;
+        END IF;
+      END
+      $$
     `.execute(db);
   }
 

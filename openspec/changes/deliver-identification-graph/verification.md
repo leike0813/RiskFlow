@@ -4,12 +4,13 @@
 
 - Change：`deliver-identification-graph`（`orchestrated-delivery`）
 - 输入实现 HEAD：`6b6864f4ca94edea97cb58a2697469d7b7392d6d`
-- 当前产物 HEAD：`6b6864f4ca94edea97cb58a2697469d7b7392d6d`；本文件为未提交的验收更新
+- 限定审计输入 HEAD：`690cc78e82afcf9fc5a184b9b41e090d565743f9`
+- 当前产物 HEAD：`690cc78e82afcf9fc5a184b9b41e090d565743f9`，另有本轮未提交的审计修复与记录
 - 验收 Agent：C24 Finalizer，`task_fa1fc7088149` / `ctx_903995ae5d44`
 
 ## 结论
 
-**BLOCKED：仅待本轮限定审计。** 已核对 8 项 Requirement、33 个 Scenario、IP-01～IP-25 及 20/20 已勾选任务；当前产物的范围内行为与回归检查未发现未修复缺陷。输入 HEAD 的 D-15 修改涉及 I0/I1 关键阶段推进与 `000043` 判别约束，须由协调端完成本轮唯一一次限定审计并把结论写入下节；审计完成前不得将本结论改为 PASS 或归档。
+**PASS：限定审计发现的两项 D-07 实现缺陷已在获批范围内修复并回归。** 已核对 8 项 Requirement、33 个 Scenario、IP-01～IP-25 及 20/20 已勾选任务；D-15、checkpoint 引用对账与业务提交后的 checkpoint 恢复均有真实 PostgreSQL/LangGraph 证据。当前产物仍为未提交工作树，归档与集成由协调端处理。
 
 ## Requirement / Scenario / IP-ID 核验
 
@@ -20,7 +21,7 @@
 | I4/I5：候选校验通过；可修正错误有界闭环；不可修正候选失败 | 05、11、14、19、21 | C22 公开 `analyze` 与核心错误分类；runtime 的冻结策略及终止失败测试；C22 既有回归。 | 通过 |
 | I6～I8：自动/人工并存；本轮待定；后续恰入库一次；人工恢复；修订/分立重路由；拒绝/退回；混合合格/拒绝；全部封闭空结果 | 05、06、14～16、21 | C22/C23 公开端口与 `graph.ts`；runtime 的待定、后续恢复、混合入库及空结果测试；既有 C22/C23 测试覆盖决定处置。 | 通过 |
 | I9：部分成功汇总；仍有待复核组 | 11、14、19、21 | `summarizeIdentificationRun`、`stageI9`；core 与 runtime 的计数、精确引用、等待和缺路线阻断测试。 | 通过 |
-| 业务事实/checkpoint：控制通道；初始输入状态；业务提交后 checkpoint 失败；伪业务引用；同键异载荷冲突 | 07、08、12、13、15、20、21、22、24 | C03 checkpointer、C24 追加登记与对账；adapter 的同键冲突/伪引用/真实 PostgreSQL 约束测试，runtime 的 checkpoint 写失败恢复测试。 | 通过；D-15 迁移待审计 |
+| 业务事实/checkpoint：控制通道；初始输入状态；业务提交后 checkpoint 失败；伪业务引用；同键异载荷冲突 | 07、08、12、13、15、20、21、22、24 | C03 checkpointer、C24 追加登记与对账；adapter 的同键冲突/伪引用/真实 PostgreSQL 约束测试，runtime 的 checkpoint 写失败恢复测试。 | 通过 |
 | 启动/恢复/重试/取消：启动幂等；当前撤权；协作取消；Agent 原样复原；等待引用错配 | 02、06、12、15、16、20、21、24 | `runtime.ts`、C24 登记窄读；adapter 的当前 actor/收窄空间测试，runtime 的撤权、取消竞争、重复恢复及错配拒绝测试。 | 通过 |
 | 公开接口与失败路由：上游等待；冻结策略技术重试；终止错误封闭 | 01、02、04、05、11、14～16、19、21 | 仅组合 C17/C21/C22/C23 公开端口；core 错误分类、runtime 类型化等待/重试/终止及 composition 测试。 | 通过 |
 
@@ -39,13 +40,19 @@ IP-17 的 core/adapters 子路径与 Worker 组合入口由构建、类型及依
 | `openspec status --change deliver-identification-graph --json`；`openspec instructions apply --change deliver-identification-graph --json`；`openspec instructions verification --change deliver-identification-graph --json` | 实际 schema 为 `orchestrated-delivery`；全部 contextFiles 已读取，20/20 任务完成。 |
 | `git merge-base --is-ancestor f8e61573bbe87fd192fd0385f0bd55ed22e15a9b HEAD`；`git diff --check`；`git diff --name-only --diff-filter=U` | 规划基线为祖先；无尾随空白或未解决冲突。 |
 
-初轮全仓构建、测试和 C21/C22/C23 跨模块回归见前轮 Git 中的 verification；本轮对新 HEAD 执行了上述与 IP-22～IP-25 及未漂移接缝直接相关的回归。验收阶段生产代码修复：**无**。
+初轮全仓构建、测试和 C21/C22/C23 跨模块回归见前轮 Git 中的 verification；本轮对新 HEAD 执行了上述与 IP-22～IP-25 及未漂移接缝直接相关的回归。限定审计的两项 D-07 生产代码修复及新增回归见下节；本节较早的 37/37 是审计输入 HEAD 的基线，最终修复后命令另列。
 
 ## 限定审计
 
-本轮待审计：D-15 的 I0/I1 阶段结果与 run-state 同事务登记、I2 起冻结计划约束、`000043` 同名 check 在已有表上的重入收敛及同键重放；并复核相关 `contract-boundary`、`append-only-idempotency`、`checkpoint-reconciliation`、`agent-review-resume`、`dependency-supply-chain` 边界。协调端只派发本收尾轮次的一次限定审计，Auditor 在同一工件补充结论、审计内修复与回归证据，并将最终产物 HEAD 更新为实际值。
+本轮唯一 Targeted Auditor（`task_4574a8fe8ef0` / `ctx_fdad7f783a46`）结论：
 
-**审计结论与证据：待本轮 Targeted Auditor 填写。**
+- **D-15、追加幂等与依赖门禁：通过。** `graph.ts` 的 I0 与成功 I1 阶段正文先写 C04，阶段登记与 run-state 在同一 C03 事务提交；I2 起缺冻结计划引用时封闭失败。`000043` 在新表和既有表重入时将同名判别 check 收敛到仅 `stage-result.workPlanRef` 可空；真实 PostgreSQL 测试覆盖重入两次、允许/拒绝组合、权限和同键重放。`pnpm-workspace.yaml` 的例外仅为已锁定的 `@langchain/langgraph@1.4.17`。
+- **当前 actor 复验与取消事务：通过。** 受保护读取先按当前 actor 复验；取消与 run-state 通过同一事务及预期版本锁推进。审计输入 HEAD 的真实 PostgreSQL/LangGraph 定向回归 2 files、37/37 通过。
+- **checkpoint 引用对账：已修复并通过。** 原 `reconcileCheckpointReferences` 在有效 `workPlanRef` 下提前返回，跳过 `lastStageResultRef`、`lastErrorRef`、`waitingRef`、`resultRef`。经协调端明确授权，修复为统一返回前逐项核对；在有效工作计划下对四类伪造引用分别验证 `inconsistent`，成功结果形状不变。
+- **业务提交后 checkpoint 写失败：已修复并通过。** 原启动重放遇业务游标领先 checkpoint 时只返回技术错误，恢复信号也可能返回旧状态。经协调端扩展授权，C24 runtime 按原运行登记行及精确阶段结果正文重建引用，通过当前 actor 下的逐项对账后，在原线程补 checkpoint 并继续；启动重放与恢复信号共用此路径。已完成或失败的终态只补 checkpoint，不运行后继节点；等待状态恢复原中断。I0、I5、等待、终止失败四种故障注入证明已提交行保持、阶段动作不重复、状态可恢复。C24 内部窄读和 adapter 回读不改变公共契约、run-state 持久化形状、权限、迁移或依赖。
+- **边界：** 当整个 checkpoint 线程不存在时，现有 D-07 冻结身份无法仅由公开登记事实安全重建，启动重放仍返回可重试 `checkpoint-unavailable`，恢复命令仍按既有终止错误处理；本轮修复针对业务提交后同步 checkpoint 写入失败且线程已有前一 checkpoint 的场景。不存在以猜测身份生成新业务事实的路径。
+
+本轮实际命令：`pnpm exec vitest run packages/adapters/test/identification/graph/postgres-identification-graph-adapter.test.ts apps/worker/test/identification/graph/runtime.test.ts --testTimeout 30000 --maxWorkers 1`（审计输入 HEAD，37/37 通过）；`pnpm exec vitest run apps/worker/test/identification/graph/runtime.test.ts --testTimeout 30000 --maxWorkers 1`（恢复修复中期，27/27 通过）；`pnpm exec vitest run packages/adapters/test/identification/graph/postgres-identification-graph-adapter.test.ts --testTimeout 30000 --maxWorkers 1`（最终 12/12 通过）；`pnpm exec vitest run apps/worker/test/identification/graph/runtime.test.ts --testTimeout 30000 --maxWorkers 1 -t '业务提交后检查点写入失败'`（最终 1 通过、26 跳过）；`pnpm exec vitest run apps/worker/test/identification/graph/runtime.test.ts --testTimeout 30000 --maxWorkers 1 -t '终止失败检查点写入失败'`（最终 1 通过、27 跳过）；`pnpm exec vitest run apps/worker/test/identification/graph/runtime.test.ts --testTimeout 30000 --maxWorkers 1 -t 'I5 业务提交|按已登记等待'`（最终 2 通过、26 跳过）；`pnpm typecheck`、`pnpm format:check`、`pnpm exec openspec validate deliver-identification-graph --strict --no-interactive`、`git diff --check`（均通过）。
 
 ## 后续注意事项
 

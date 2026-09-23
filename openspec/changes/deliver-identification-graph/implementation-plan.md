@@ -129,6 +129,9 @@
 - `pnpm-lock.yaml`
 - 本次重开实际允许修改：`packages/core/src/identification/graph/schema.ts`、`packages/adapters/src/postgres/migrations/risk-identification/deliver-identification-graph/000043_identification_graph.ts`（仅同名 check 允许组合及重入收敛）、`apps/worker/src/identification/graph/graph.ts`、`packages/adapters/test/identification/graph/postgres-identification-graph-adapter.test.ts`、`apps/worker/test/identification/graph/runtime.test.ts`；若需联动，只可在 `apps/worker/src/identification/graph/**`、`apps/worker/test/identification/graph/**`、`packages/adapters/test/identification/graph/**` 内，并先核对 D-15 语义。
 - `pnpm-workspace.yaml`：输入 HEAD 已包含精确 `minimumReleaseAgeExclude`，本次只纳入批准文件清单并核对，不要求重复改写。
+- 本轮限定审计授权：`packages/adapters/src/identification/graph/postgres-identification-graph-adapter.ts` 仅修复 D-07 检查点对账在有效工作计划下提前返回、跳过其它精确引用的缺陷；对应回归限定在 `packages/adapters/test/identification/graph/postgres-identification-graph-adapter.test.ts`，不改变成功路径或对外结果形状。
+- 本轮限定审计授权：`apps/worker/src/identification/graph/runtime.ts` 与 `apps/worker/test/identification/graph/runtime.test.ts` 仅用于闭合 D-07「业务提交后 checkpoint 写失败」的原幂等身份恢复路径；不能以部分阶段的特例替代完整恢复证据。
+- 本轮限定审计扩展授权：`apps/worker/src/identification/graph/graph.ts` 的 C24 内部窄端口、上述 C24 adapter 及其测试可按已登记阶段结果精确回读 C04 正文，供 runtime 从既有业务事实重建 checkpoint 引用；不得改变 run-state 持久化形状。
 
 **删除：** 无。
 
@@ -141,5 +144,9 @@
 ## 8. 验收 Agent 授权与限定审计
 
 Finalizer 可在本 change 已批准文件清单内修复普通实现缺陷、补齐缺失稳定行为测试并运行全部命令；本次重开仅以 §7 精确允许文件及 D-15 语义为新修改边界，`000043` 同名 check 是唯一获批的迁移调整。不得修改公共契约、权限、依赖版本、其它迁移语义、父子运行所有权或扩大到 C30。验收必须从本次固定输入 HEAD 和协调端规划检查点核对 IP-22～IP-25，并复核 IP-01～IP-21 未漂移；读取 `openspec instructions apply --json` 的全部 `contextFiles`，确认新增 task 仅在行为与证据均成立后勾选，随后以最终 HEAD 更新现有 verification。
+
+本轮 Targeted Auditor 获协调端明确授权，在上述 C24 adapter 文件中仅修复 D-07 已批准的逐引用 checkpoint 对账短路，并在同一 adapter 测试文件补充有效工作计划下四类伪造引用的拒绝证据；其余范围约束不变。
+协调端另批准在 C24 runtime 及其现有测试中修复同一 D-07 契约的 checkpoint 写失败恢复；该授权不放宽公共契约、Schema、迁移、权限或成功路径语义。
+为闭合全阶段恢复，协调端进一步批准 C24 内部阶段结果窄读及关联 adapter/测试联动；若既有登记事实仍不足以推导某引用，必须作为开放项阻断验收，不得扩写 run-state。
 
 满足执行图规定的限定审计触发条件时，Auditor 只审计这些标签：`contract-boundary`、`authorization-non-enumeration`、`append-only-idempotency`、`checkpoint-reconciliation`、`agent-review-resume`、`dependency-supply-chain`。同一收尾轮次最多一次审计；Auditor 在自己的活动 Task 内修复范围内普通缺陷并回归，无法闭合则升级，不再派第二个 Finalizer/Auditor。

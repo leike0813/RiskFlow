@@ -35,6 +35,7 @@ import {
   IdentificationGraphResultRowV1Schema,
   IdentificationGraphRunStateV1Schema,
   classifyIdentificationGraphOutcome,
+  toWaitingRef,
   type IdentificationGraphRunOutcomeV1,
   type IdentificationGraphRunStateV1,
   type IdentificationGraphResumeCauseV1,
@@ -164,7 +165,7 @@ const readCheckpointState = async (input: {
   readonly graph: IdentificationGraphRunnerV1;
   readonly run: IdentificationGraphRunContextV1;
 }): Promise<IdentificationGraphStateV1 | undefined> => {
-  const snapshot = await input.graph.getState(graphConfig(input.run));
+  const snapshot = await input.graph.getState({ configurable: { thread_id: input.run.threadId } });
   if (typeof snapshot !== "object" || snapshot === null || !("values" in snapshot)) {
     return undefined;
   }
@@ -324,6 +325,126 @@ export const createIdentificationGraphRuntime = (
         : value,
     );
 
+  /** 最近一次业务提交最多领先同步 checkpoint 一个节点；只从本运行已登记的引用补齐该节点增量。 */
+  const rebuildCommittedState = async (input: {
+    readonly run: IdentificationGraphRunContextV1;
+    readonly checkpointState: IdentificationGraphStateV1;
+    readonly cursor: IdentificationGraphRunStateV1;
+  }): Promise<IdentificationGraphStateV1> => {
+    const { run, checkpointState, cursor } = input;
+    const inconsistent = (): never => {
+      throw runFailure({
+        stage: cursor.stage,
+        code: "CHECKPOINT_INCONSISTENT",
+        retryable: false,
+        detailCode: "checkpoint-inconsistent",
+        occurredAt: options.now().toISOString(),
+      });
+    };
+    const rows = await ports.registrationStore.listRunRows({
+      projectId: run.projectId,
+      runId: run.runRef.reference.entityId,
+      actorId: run.actorId,
+      authorization: run.authorization,
+      requestedAt: run.issuedAt,
+    });
+    const snapshots = rows.filter((row) => row.resultKind === "input-snapshot");
+    const plans = rows.filter((row) => row.resultKind === "work-plan");
+    if (snapshots.length > 1 || plans.length > 1) inconsistent();
+    const snapshot = snapshots[0];
+    const plan = plans[0];
+    const latestStageRef = cursor.lastStageResultRef;
+    const previousStageRef = checkpointState.lastStageResultRef;
+    const stageChanged =
+      latestStageRef !== undefined &&
+      (previousStageRef?.reference.entityId !== latestStageRef.reference.entityId ||
+        previousStageRef.reference.versionId !== latestStageRef.reference.versionId);
+    const stageResult =
+      stageChanged && latestStageRef !== undefined
+        ? await ports.bodies.readStageResultBody({
+            projectId: run.projectId,
+            runId: run.runRef.reference.entityId,
+            stageResultRef: latestStageRef,
+            actorId: run.actorId,
+            requestedAt: run.issuedAt,
+            authorization: run.authorization,
+          })
+        : undefined;
+    if (
+      stageChanged &&
+      (stageResult === undefined ||
+        stageResult.stage !== checkpointState.stage ||
+        stageResult.runRef.reference.entityId !== run.runRef.reference.entityId ||
+        stageResult.runRef.reference.versionId !== run.runRef.reference.versionId)
+    )
+      inconsistent();
+    const taskRefs = [...checkpointState.agentTaskRefs];
+    if (stageResult?.stage === "I3") {
+      for (const taskRef of stageResult.agentTaskRefs) {
+        if (
+          !taskRefs.some(
+            (ref) =>
+              ref.reference.entityId === taskRef.reference.entityId &&
+              ref.reference.versionId === taskRef.reference.versionId,
+          )
+        )
+          taskRefs.push(taskRef);
+      }
+    }
+    if (cursor.lastWaitingRef?.kind === "retrieval-review-agent") {
+      const taskRef = cursor.lastWaitingRef.agentTaskRef;
+      if (
+        !taskRefs.some(
+          (ref) =>
+            ref.reference.entityId === taskRef.reference.entityId &&
+            ref.reference.versionId === taskRef.reference.versionId,
+        )
+      )
+        taskRefs.push(taskRef);
+    }
+    const waitingRef =
+      cursor.status === "waiting"
+        ? cursor.lastWaitingRef === undefined
+          ? inconsistent()
+          : toWaitingRef({ waiting: cursor.lastWaitingRef })
+        : undefined;
+    const rebuilt = IdentificationGraphStateV1Schema.parse({
+      ...checkpointState,
+      stage: cursor.stage,
+      status: cursor.status,
+      inputSnapshotRef:
+        snapshot?.resultKind === "input-snapshot"
+          ? snapshot.inputSnapshotRef
+          : checkpointState.inputSnapshotRef,
+      workPlanRef:
+        plan?.resultKind === "work-plan" ? plan.workPlanRef : checkpointState.workPlanRef,
+      candidateSetRef:
+        stageResult?.stage === "I4" ? stageResult.candidateSetRef : checkpointState.candidateSetRef,
+      mergePlanRef:
+        stageResult?.stage === "I6" ? stageResult.mergePlanRef : checkpointState.mergePlanRef,
+      agentTaskRefs: taskRefs,
+      reviewTaskRefs:
+        stageResult?.stage === "I7" ? stageResult.reviewTaskRefs : checkpointState.reviewTaskRefs,
+      acceptedRiskRecordRefs: cursor.acceptedRiskRecordRefs,
+      rejectedGroupRefs: cursor.rejectedGroupRefs,
+      failedWorkItemRefs: cursor.failedWorkItemRefs,
+      lastStageResultRef: latestStageRef,
+      waitingRef,
+      lastErrorRef: cursor.lastErrorRef,
+      resultRef: cursor.resultRef,
+    });
+    const reconciled = await ports.checkpoints.reconcileCheckpointReferences({
+      projectId: run.projectId,
+      runId: run.runRef.reference.entityId,
+      state: rebuilt,
+      actorId: run.actorId,
+      requestedAt: run.issuedAt,
+      authorization: run.authorization,
+    });
+    if (reconciled.kind === "inconsistent") inconsistent();
+    return rebuilt;
+  };
+
   const outcomeOf = async (input: {
     readonly run: IdentificationGraphRunContextV1;
     readonly state: IdentificationGraphStateV1;
@@ -360,7 +481,12 @@ export const createIdentificationGraphRuntime = (
     readonly graphInput:
       | { readonly kind: "start"; readonly state: IdentificationGraphStateV1 }
       | { readonly kind: "resume"; readonly resumeValue: IdentificationGraphResumeCauseV1 }
-      | { readonly kind: "retry"; readonly state: IdentificationGraphStateV1 };
+      | { readonly kind: "retry"; readonly state: IdentificationGraphStateV1 }
+      | {
+          readonly kind: "recover";
+          readonly state: IdentificationGraphStateV1;
+          readonly completedNode: IdentificationGraphStateV1["stage"];
+        };
     readonly stage: IdentificationGraphStateV1["stage"];
   }): Promise<IdentificationGraphStateV1> => {
     try {
@@ -369,10 +495,16 @@ export const createIdentificationGraphRuntime = (
           ? await options.graph.invoke({ graph: input.graphInput.state }, graphConfig(input.run))
           : input.graphInput.kind === "retry"
             ? await options.graph.retry(input.graphInput.state, graphConfig(input.run))
-            : await options.graph.resume(
-                { resume: input.graphInput.resumeValue },
-                graphConfig(input.run),
-              );
+            : input.graphInput.kind === "recover"
+              ? await options.graph.recover(
+                  input.graphInput.state,
+                  input.graphInput.completedNode,
+                  graphConfig(input.run),
+                )
+              : await options.graph.resume(
+                  { resume: input.graphInput.resumeValue },
+                  graphConfig(input.run),
+                );
       return parseGraphResult(result);
     } catch (error: unknown) {
       if (error instanceof IdentificationGraphNodeFailureV1) {
@@ -392,6 +524,34 @@ export const createIdentificationGraphRuntime = (
         error,
       );
     }
+  };
+
+  const businessAheadOfCheckpoint = (
+    cursor: IdentificationGraphRunStateV1,
+    state: IdentificationGraphStateV1,
+  ): boolean =>
+    cursor.stage !== state.stage ||
+    cursor.status !== state.status ||
+    cursor.lastStageResultRef?.reference.entityId !==
+      state.lastStageResultRef?.reference.entityId ||
+    cursor.lastStageResultRef?.reference.versionId !==
+      state.lastStageResultRef?.reference.versionId;
+
+  const recoverCommittedBusiness = async (input: {
+    readonly run: IdentificationGraphRunContextV1;
+    readonly cursor: IdentificationGraphRunStateV1;
+    readonly state: IdentificationGraphStateV1;
+  }): Promise<IdentificationGraphStateV1> => {
+    const rebuilt = await rebuildCommittedState({
+      run: input.run,
+      checkpointState: input.state,
+      cursor: input.cursor,
+    });
+    return await runGraph({
+      run: input.run,
+      graphInput: { kind: "recover", state: rebuilt, completedNode: input.state.stage },
+      stage: input.cursor.stage,
+    });
   };
 
   return {
@@ -469,16 +629,7 @@ export const createIdentificationGraphRuntime = (
             stage: existing.stage,
             code: "TRANSIENT_FAILURE",
             retryable: true,
-            detailCode: "transient_failure",
-            occurredAt: options.now().toISOString(),
-          });
-        }
-        if (state.status === "running" || state.status === "pending") {
-          throw runFailure({
-            stage: state.stage,
-            code: "TRANSIENT_FAILURE",
-            retryable: true,
-            detailCode: "checkpoint-write-unconfirmed",
+            detailCode: "checkpoint-unavailable",
             occurredAt: options.now().toISOString(),
           });
         }
@@ -505,6 +656,23 @@ export const createIdentificationGraphRuntime = (
               }),
             }),
             disposition: "existing",
+          });
+        }
+        if (businessAheadOfCheckpoint(existing, state)) {
+          const recovered = await recoverCommittedBusiness({
+            run: frozenRun,
+            cursor: existing,
+            state,
+          });
+          return await outcomeOf({ run: frozenRun, state: recovered, disposition: "existing" });
+        }
+        if (state.status === "running" || state.status === "pending") {
+          throw runFailure({
+            stage: state.stage,
+            code: "TRANSIENT_FAILURE",
+            retryable: true,
+            detailCode: "checkpoint-write-unconfirmed",
+            occurredAt: options.now().toISOString(),
           });
         }
         return await outcomeOf({ run: frozenRun, state, disposition: "existing" });
@@ -676,7 +844,6 @@ export const createIdentificationGraphRuntime = (
           occurredAt: options.now().toISOString(),
         });
       }
-      const expected = cursorBefore;
       const cancellationRow = (
         await ports.registrationStore.listRunRows({
           projectId: command.projectId,
@@ -702,11 +869,28 @@ export const createIdentificationGraphRuntime = (
           disposition: "existing",
         });
       }
+      const recoveredState = businessAheadOfCheckpoint(cursorBefore, checkpointState)
+        ? await recoverCommittedBusiness({
+            run: frozenRun,
+            cursor: cursorBefore,
+            state: checkpointState,
+          })
+        : checkpointState;
+      const expected = await readCursor({ ports, run: frozenRun });
+      if (expected === undefined) {
+        throw runFailure({
+          stage: cursorBefore.stage,
+          code: "CONTRACT_INVALID",
+          retryable: false,
+          detailCode: "run-cursor-missing",
+          occurredAt: options.now().toISOString(),
+        });
+      }
       if (expected.status !== "waiting" && expected.status !== "retryable-failure") {
         // 迟到信号：运行已离开该等待，返回原回执且不重复恢复。
         return await outcomeOf({
           run: frozenRun,
-          state: checkpointState,
+          state: recoveredState,
           disposition: replayed ? "resumed" : "existing",
         });
       }
@@ -714,7 +898,7 @@ export const createIdentificationGraphRuntime = (
         if (replayed) {
           return await outcomeOf({
             run: frozenRun,
-            state: checkpointState,
+            state: recoveredState,
             disposition: "existing",
           });
         }
@@ -740,7 +924,7 @@ export const createIdentificationGraphRuntime = (
         const backoffUntil = await retryBackoffUntil({
           ports,
           run: frozenRun,
-          state: checkpointState,
+          state: recoveredState,
         });
         if (backoffUntil !== undefined && options.now().getTime() < Date.parse(backoffUntil)) {
           throw runFailure({
@@ -792,7 +976,7 @@ export const createIdentificationGraphRuntime = (
         run: frozenRun,
         graphInput:
           command.resumeCause.kind === "transient-recovered"
-            ? { kind: "retry", state: checkpointState }
+            ? { kind: "retry", state: recoveredState }
             : { kind: "resume", resumeValue: command.resumeCause },
         stage: expected.stage,
       });

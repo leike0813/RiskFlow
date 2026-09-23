@@ -1060,10 +1060,111 @@ describe("C24 识别子图运行时（检查点写入失败注入）", () => {
     expect(rowsAfterFailure.length).toBeGreaterThan(0);
     expect(rowsAfterFailure.some((row) => row.resultKind === "run-state")).toBe(true);
 
-    // 恢复先按原业务幂等身份回读首次提交：不重复创建输入、计划或阶段事实。
+    // 恢复信号先对账已提交业务；迟到信号不让旧 checkpoint 掩盖实际终态。
+    const cursor = await harness.latestRunState(run);
+    const recovered = await harness.runtime.resume(
+      harness.resumeCommand(run, {
+        expectedRunVersionId: cursor.runVersionId,
+        resumeCause: { kind: "transient-recovered" },
+      }),
+    );
+    expect(recovered.state.status).toBe("completed");
+    expect(await harness.rows(run)).toEqual(expect.arrayContaining(rowsAfterFailure));
+    expect(await stageRowsOf(harness, run, "I0")).toHaveLength(1);
+    expect((await harness.runtime.start(command)).state.status).toBe("completed");
+  });
+});
+
+describe("C24 识别子图运行时（中途检查点写入失败）", () => {
+  let harness: IdentificationGraphHarnessV1;
+
+  beforeAll(async () => {
+    harness = await startIdentificationGraphHarness({ failCheckpointPutAt: 8 });
+  }, 300_000);
+
+  afterAll(async () => {
+    await harness.close();
+  }, 120_000);
+
+  it("I5 业务提交后按首次登记恢复并继续到终态", async () => {
+    const { world } = harness;
+    const run = harness.scope("checkpoint-write-failure-i5");
+    world.routes = [automaticRouteFor(WORK_PLAN_ENTITY_ID, AUTO_GROUP)];
+    const command = harness.startCommand(run);
     await expect(harness.runtime.start(command)).rejects.toMatchObject({
-      error: { retryable: true },
+      error: { code: "RETRYABLE_INFRASTRUCTURE_FAILURE", retryable: true },
     });
-    expect(await harness.rows(run)).toEqual(rowsAfterFailure);
+    const i5Before = await stageRowsOf(harness, run, "I5");
+    expect(i5Before).toHaveLength(1);
+    const committedAnalyze = world.calls.analyze
+      .filter((call) => call.kind === "repair-and-validate")
+      .at(-1);
+    expect(committedAnalyze).toBeDefined();
+    const rowsBefore = await harness.rows(run);
+
+    const recovered = await harness.runtime.start(command);
+    expect(recovered.state.status).toBe("completed");
+    expect(recovered.state.candidateSetRef).toBeDefined();
+    expect(await stageRowsOf(harness, run, "I5")).toEqual(expect.arrayContaining(i5Before));
+    expect(
+      world.calls.analyze.filter((call) => call.commandId === committedAnalyze!.commandId),
+    ).toHaveLength(1);
+    expect(await harness.rows(run)).toEqual(expect.arrayContaining(rowsBefore));
+  });
+});
+
+describe("C24 识别子图运行时（等待检查点写入失败）", () => {
+  let harness: IdentificationGraphHarnessV1;
+
+  beforeAll(async () => {
+    harness = await startIdentificationGraphHarness({ failCheckpointPutAt: 4 });
+  }, 300_000);
+
+  afterAll(async () => {
+    await harness.close();
+  }, 120_000);
+
+  it("按已登记等待引用重建原线程且不新建识别输入", async () => {
+    const run = harness.scope("checkpoint-write-failure-waiting");
+    harness.world.policyReady = false;
+    const command = harness.startCommand(run);
+    await expect(harness.runtime.start(command)).rejects.toMatchObject({
+      error: { code: "RETRYABLE_INFRASTRUCTURE_FAILURE", retryable: true },
+    });
+    const waitingBefore = await harness.rows(run, "waiting");
+    expect(waitingBefore).toHaveLength(1);
+    const recovered = await harness.runtime.start(command);
+    expect(recovered.state.status).toBe("waiting");
+    expect(recovered.state.waitingRef).toBeDefined();
+    expect(await harness.rows(run, "waiting")).toEqual(waitingBefore);
+    expect(await harness.rows(run, "input-snapshot")).toHaveLength(0);
+  });
+});
+
+describe("C24 识别子图运行时（终止失败检查点写入失败）", () => {
+  let harness: IdentificationGraphHarnessV1;
+
+  beforeAll(async () => {
+    harness = await startIdentificationGraphHarness({ failCheckpointPutAt: 4 });
+  }, 300_000);
+
+  afterAll(async () => {
+    await harness.close();
+  }, 120_000);
+
+  it("按已登记错误恢复终态且不推进后续阶段", async () => {
+    const run = harness.scope("checkpoint-write-failure-terminal");
+    harness.world.basis = "failed";
+    const command = harness.startCommand(run);
+    await expect(harness.runtime.start(command)).rejects.toMatchObject({
+      error: { code: "RETRYABLE_INFRASTRUCTURE_FAILURE", retryable: true },
+    });
+    const errorsBefore = await harness.rows(run, "workflow-error");
+    expect(errorsBefore).toHaveLength(1);
+    const recovered = await harness.runtime.start(command);
+    expect(recovered.state.status).toBe("terminal-failure");
+    expect(recovered.state.lastErrorRef).toEqual(errorsBefore[0]?.workflowErrorRef);
+    expect(await harness.rows(run, "workflow-error")).toEqual(errorsBefore);
+    expect(await stageRowsOf(harness, run, "I2")).toHaveLength(0);
   });
 });

@@ -51,6 +51,7 @@ import {
   IdentificationStageResultV1Schema,
   type IdentificationGraphStateV1,
   type IdentificationInputSnapshotV1,
+  type IdentificationStageResultV1,
   type IdentificationStageV1,
 } from "@riskflow/contracts/workflows";
 
@@ -194,6 +195,14 @@ export interface IdentificationGraphBodyPortV1 {
     readonly requestedAt: string;
     readonly authorization: AuthorizationContextV1;
   }): Promise<IdentificationInputSnapshotV1 | undefined>;
+  readStageResultBody(input: {
+    readonly projectId: string;
+    readonly runId: string;
+    readonly stageResultRef: StageResultRefV1;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+  }): Promise<IdentificationStageResultV1 | undefined>;
 }
 
 /** checkpoint 引用对账端口（design D-07）：只有当前授权下的业务回读，零补写。 */
@@ -328,6 +337,11 @@ export interface IdentificationGraphRunnerV1 {
   ): Promise<unknown>;
   /** 技术失败重试：从已持久化阶段显式回到同一节点，不经过等待中断通道。 */
   retry(state: IdentificationGraphStateV1, config: LangGraphRunnableConfig): Promise<unknown>;
+  recover(
+    state: IdentificationGraphStateV1,
+    completedNode: IdentificationStageV1,
+    config: LangGraphRunnableConfig,
+  ): Promise<unknown>;
   getState(config: LangGraphRunnableConfig): Promise<unknown>;
 }
 
@@ -2825,6 +2839,17 @@ export const createIdentificationGraph = (options: {
         }),
         { ...config, durability: "sync" },
       ),
+    recover: async (state, completedNode, config) => {
+      await compiled.updateState(config, stateAsUpdate(state), completedNode);
+      if (
+        state.status === "completed" ||
+        state.status === "cancelled" ||
+        state.status === "terminal-failure" ||
+        state.status === "retryable-failure"
+      )
+        return state;
+      return compiled.invoke(null, { ...config, durability: "sync" });
+    },
     getState: (config) => compiled.getState(config),
   };
 };

@@ -1625,6 +1625,36 @@ describe("PostgreSQL identification graph persistence", () => {
       "first",
     );
 
+    const stageAuthorization = fixture!.access.issue({
+      invocationId: identificationGraphReadInvocationIdV1({
+        operation: "stage-result",
+        projectId: PROJECT_ID,
+        targetId: `${kit.stageResultRef.reference.entityId}@${kit.stageResultRef.reference.versionId}`,
+      }),
+      branch: "risk-identification.plan",
+      capability: "risk-identification.run",
+    }).authorization;
+    expect(
+      await fixture!.adapter.readStageResultBody({
+        projectId: PROJECT_ID,
+        runId: RUN_ID,
+        stageResultRef: kit.stageResultRef,
+        actorId: ACTOR_ID,
+        requestedAt: TIMESTAMP,
+        authorization: stageAuthorization,
+      }),
+    ).toEqual(stageResultI5Body(kit).stageResult);
+    expect(
+      await fixture!.adapter.readStageResultBody({
+        projectId: PROJECT_ID,
+        runId: OTHER_RUN_ID,
+        stageResultRef: kit.stageResultRef,
+        actorId: ACTOR_ID,
+        requestedAt: TIMESTAMP,
+        authorization: stageAuthorization,
+      }),
+    ).toBeUndefined();
+
     const before = await countRows(fixture!, { projectId: PROJECT_ID });
     // 等待态：等待引用与错误引用都必须能在本次运行内证明。
     const consistent = await fixture!.adapter.reconcileCheckpointReferences({
@@ -1679,6 +1709,59 @@ describe("PostgreSQL identification graph persistence", () => {
         authorization: reconcileAuthorization(fixture!),
       }),
     ).toMatchObject({ kind: "consistent" });
+
+    // 有效工作计划不能让其它 checkpoint 引用绕过逐项对账。
+    const forgedReferences = [
+      {
+        state: graphState(kit, {
+          workPlanRef: kit.workPlanRef,
+          lastStageResultRef: refOf("stage-result", "stage-result:forged"),
+        }),
+        detailCode: "stage-result-reference-missing",
+      },
+      {
+        state: graphState(kit, {
+          workPlanRef: kit.workPlanRef,
+          lastErrorRef: refOf("workflow-error", "workflow-error:forged"),
+        }),
+        detailCode: "workflow-error-reference-missing",
+      },
+      {
+        state: graphState(kit, {
+          status: "waiting",
+          workPlanRef: kit.workPlanRef,
+          waitingRef: {
+            kind: "knowledge-preparation",
+            knowledgePreparationTaskRef: refOf(
+              "knowledge-preparation-task",
+              "knowledge-preparation-task:forged",
+            ),
+          },
+        }),
+        detailCode: "waiting-reference-missing",
+      },
+      {
+        state: graphState(kit, {
+          status: "completed",
+          stage: "I9",
+          workPlanRef: kit.workPlanRef,
+          resultRef: refOf("identification-run-result", "identification-run-result:forged"),
+        }),
+        detailCode: "run-result-reference-missing",
+      },
+    ];
+    for (const { state, detailCode } of forgedReferences) {
+      expect(
+        await fixture!.adapter.reconcileCheckpointReferences({
+          projectId: PROJECT_ID,
+          runId: RUN_ID,
+          state,
+          actorId: ACTOR_ID,
+          requestedAt: TIMESTAMP,
+          authorization: reconcileAuthorization(fixture!),
+        }),
+      ).toEqual({ kind: "inconsistent", detailCode });
+    }
 
     // 计划内工作项缺失：状态引用了不属于本工作计划的工作项。
     expect(

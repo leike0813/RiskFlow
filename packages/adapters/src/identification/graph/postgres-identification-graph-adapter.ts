@@ -44,6 +44,7 @@ import type {
   IdentificationWorkPlanRefV1,
   ModuleBranchV1,
   ModuleCapabilityV1,
+  StageResultRefV1,
   ValidatedCandidateSetRefV1,
 } from "@riskflow/contracts/ports";
 import type {
@@ -100,6 +101,7 @@ export const identificationGraphReadInvocationIdV1 = (input: {
     | "result-row"
     | "run-rows"
     | "run-state"
+    | "stage-result"
     | "reconcile"
     | "body-write";
   readonly projectId: string;
@@ -392,6 +394,14 @@ export interface PostgresIdentificationGraphAdapterV1 {
   readInputSnapshotBody(
     input: PostgresIdentificationGraphInputSnapshotBodyReadV1,
   ): Promise<IdentificationInputSnapshotV1 | undefined>;
+  readStageResultBody(input: {
+    readonly projectId: string;
+    readonly runId: string;
+    readonly stageResultRef: StageResultRefV1;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+  }): Promise<IdentificationStageResultV1 | undefined>;
   reconcileCheckpointReferences(input: PostgresIdentificationGraphReconcileInputV1): Promise<
     | {
         readonly kind: "consistent";
@@ -1303,6 +1313,58 @@ class PostgresIdentificationGraphAdapter implements PostgresIdentificationGraphA
     }
   }
 
+  /** 仅从本运行已登记的阶段引用回读 C04 正文；不存在与无权均返回同形结果。 */
+  async readStageResultBody(input: {
+    readonly projectId: string;
+    readonly runId: string;
+    readonly stageResultRef: StageResultRefV1;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+  }): Promise<IdentificationStageResultV1 | undefined> {
+    const verified = await this.#persistence.verifyAuthorization({
+      authorization: input.authorization,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      requestedAt: input.requestedAt,
+      invocationId: identificationGraphReadInvocationIdV1({
+        operation: "stage-result",
+        projectId: input.projectId,
+        targetId: referenceKey(input.stageResultRef.reference),
+      }),
+    });
+    if (verified === undefined) return undefined;
+    try {
+      const row = await this.#persistence.readRow({
+        projectId: input.projectId,
+        resultKind: "stage-result",
+        resultId: input.stageResultRef.reference.entityId,
+        resultVersionId: input.stageResultRef.reference.versionId,
+      });
+      if (
+        row === undefined ||
+        row.resultKind !== "stage-result" ||
+        row.runId !== input.runId ||
+        !sameJson(row.stageResultRef, input.stageResultRef)
+      )
+        return undefined;
+      const body = await this.#persistence.readBody({
+        row,
+        bodyKind: "stage-result",
+        projectId: input.projectId,
+        actorId: input.actorId,
+        requestedAt: input.requestedAt,
+        authorization: verified,
+      });
+      return body.bodyKind === "stage-result" &&
+        body.stageResult.runRef.reference.entityId === input.runId
+        ? body.stageResult
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   /**
    * checkpoint 引用对账（design D-07）：状态内每个 C24 引用都按当前授权做精确业务回读，
    * 任一引用缺失、跨工程或正文与登记不一致即 `inconsistent`。本方法只有 SELECT 与 C04 读取，
@@ -1360,6 +1422,7 @@ class PostgresIdentificationGraphAdapter implements PostgresIdentificationGraphA
       return owned ? row : undefined;
     };
 
+    let workPlan: IdentificationGraphWorkPlanReadV1 | undefined;
     if (state.workPlanRef !== undefined) {
       const planRow = await readRegisteredRow("work-plan", state.workPlanRef.reference);
       if (planRow === undefined || planRow.resultKind !== "work-plan") {
@@ -1429,7 +1492,7 @@ class PostgresIdentificationGraphAdapter implements PostgresIdentificationGraphA
       if (validatedCandidateSetRefs === undefined) {
         return inconsistent("stage-result-reference-mismatch");
       }
-      const workPlan: IdentificationGraphWorkPlanReadV1 = {
+      workPlan = {
         workPlanRef: state.workPlanRef,
         inputSnapshotRef: planRow.inputSnapshotRef,
         inputSnapshot: plan.inputSnapshot,
@@ -1442,10 +1505,7 @@ class PostgresIdentificationGraphAdapter implements PostgresIdentificationGraphA
         })),
         validatedCandidateSetRefs,
       };
-      return { kind: "consistent", workPlan };
-    }
-
-    if (state.inputSnapshotRef !== undefined) {
+    } else if (state.inputSnapshotRef !== undefined) {
       const row = await readRegisteredRow("input-snapshot", state.inputSnapshotRef.reference);
       if (row === undefined || row.resultKind !== "input-snapshot") {
         return inconsistent("input-snapshot-reference-missing");
@@ -1490,7 +1550,7 @@ class PostgresIdentificationGraphAdapter implements PostgresIdentificationGraphA
       }
     }
 
-    return { kind: "consistent", workPlan: undefined };
+    return { kind: "consistent", workPlan };
   }
 }
 

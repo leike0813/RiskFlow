@@ -90,8 +90,11 @@ export interface IdentificationGraphCompositionOptionsV1 {
   readonly agentTasks: Pick<AgentTaskPortV1, "startTask">;
   /** C23 任务快照窄读：只读状态与增量结果引用。 */
   readonly agentTaskReader: IdentificationGraphPortsV1["agentTaskReader"];
-  /** C22 分析/收口窄接口。 */
-  readonly finalizationService: Pick<RiskCandidateFinalizationService, "analyze" | "finalize">;
+  /** C22 分析/收口窄接口与零结果窄读。 */
+  readonly finalizationService: Pick<
+    RiskCandidateFinalizationService,
+    "analyze" | "finalize" | "readZeroResult"
+  >;
   /** C07 人工决定窄读。 */
   readonly reviewDecisionReader: IdentificationGraphReviewDecisionReaderV1;
   /** C24 自有路线集窄读（组合根用 C22 结果端口 + C04 实现，不改 C22）。 */

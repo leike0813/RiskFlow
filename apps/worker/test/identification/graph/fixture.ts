@@ -23,6 +23,7 @@ import {
   type AuthorizationContextV1,
   type DomainEventRefV1,
   type IdentificationCandidateSetRefV1,
+  type IdentificationZeroResultRefV1,
   type ReviewDecisionRefV1,
   type ReviewTaskRefV1,
   type StandardizedRiskRecordRefV1,
@@ -50,9 +51,11 @@ import {
 } from "@riskflow/core/artifacts";
 import {
   AcceptanceRouteV1Schema,
+  RiskCandidateZeroResultV1Schema,
   type AcceptanceRouteV1,
   type IdentificationGroupDecisionKindV1,
   type RiskCandidateFinalizationService,
+  type RiskCandidateZeroResultV1,
 } from "@riskflow/core/identification/candidate-finalization";
 import {
   IdentificationGraphPolicySetV1Schema,
@@ -418,6 +421,10 @@ export interface IdentificationGraphWorldV1 {
   agentTaskStatus: Map<string, AgentInternalStatusV1>;
   /** I5 每个工作项的 `repair-and-validate` 覆盖结果。 */
   validationOverride: Map<string, "failed" | "waiting">;
+  /** I4 返回正式零结果的工作项节点（缺省非空候选）。 */
+  zeroResultNodes: Set<string>;
+  /** 零结果窄读覆盖结果（nodeId → 收口）；缺省对已登记零结果返回 `read`。 */
+  zeroResultRead: Map<string, "unavailable" | "inconsistent">;
   /** 人工组决定（group entityId → 已成立决定）；缺省表示本轮待定。 */
   reviewDecisions: Map<
     string,
@@ -462,6 +469,10 @@ export interface IdentificationGraphWorldV1 {
     /** 原始命令（判别联合），用例按 `kind` 收窄后断言冻结引用与整集提交集。 */
     readonly analyze: IdentificationAnalysisCommandV1[];
     readonly finalize: IdentificationFinalizationCommandV1[];
+    readonly readZeroResult: {
+      readonly workItemRef: { readonly reference: VersionReference };
+      readonly zeroResultRef: { readonly reference: VersionReference };
+    }[];
     readonly readDecision: unknown[];
     readonly readRoutes: unknown[];
     readonly verifyCurrent: { readonly invocationId: string; readonly branch: string }[];
@@ -477,6 +488,8 @@ export const createWorld = (): IdentificationGraphWorldV1 => ({
   mechanismNodes: [NODE_CURRENT, NODE_NEIGHBOR],
   agentTaskStatus: new Map(),
   validationOverride: new Map(),
+  zeroResultNodes: new Set(),
+  zeroResultRead: new Map(),
   reviewDecisions: new Map(),
   routes: [],
   acceptedGroups: new Set(),
@@ -492,6 +505,7 @@ export const createWorld = (): IdentificationGraphWorldV1 => ({
     getTask: [],
     analyze: [],
     finalize: [],
+    readZeroResult: [],
     readDecision: [],
     readRoutes: [],
     verifyCurrent: [],
@@ -574,6 +588,58 @@ export const modelContextArtifactSetRef = (nodeId: string) =>
     `identification-model-context:${PROJECT_ID}:${nodeId}`,
     digest(`model-context:${nodeId}`),
   );
+
+/** I4 正式零结果引用与 C22 零结果正文替身：只返回闭合结果，不复制 C22 工件与登记规则。 */
+export const zeroResultRefFor = (nodeId: string): IdentificationZeroResultRefV1 =>
+  refOf(
+    "identification-zero-result",
+    `identification-zero-result:${PROJECT_ID}:${nodeId}`,
+    digest(`zero-result:${nodeId}`),
+  );
+
+const zeroResultValueFor = (nodeId: string): RiskCandidateZeroResultV1 =>
+  RiskCandidateZeroResultV1Schema.parse({
+    schemaVersion: "1",
+    outcome: "zero-candidates",
+    candidateCount: 0,
+    projectId: PROJECT_ID,
+    inputSnapshotRef: INPUT_SNAPSHOT_REF,
+    workItemRef: workItemRefFor(WORK_PLAN_ENTITY_ID, nodeId),
+    nodeId,
+    modelContextArtifactSetRef: modelContextArtifactSetRef(nodeId),
+    retrievalArtifactSetRef: refOf(
+      "retrieval-artifact-set",
+      `retrieval-review:${nodeId}`,
+      digest(`retrieval-artifact-set:${nodeId}`),
+    ),
+    modelContextPayloadDigest: digest(`model-context-payload:${nodeId}`),
+    policySetRef: POLICY_SET_REF,
+    generationPolicyRef: versionRef("generation-policy"),
+    modelDeploymentRef: versionRef("model-deployment"),
+    promptTemplateRef: versionRef("prompt-template"),
+    outputSchemaRef: versionRef("output-schema"),
+    budgetPolicyRef: versionRef("budget-policy"),
+    rawResponseRef: refOf(
+      "diagnostic-artifact",
+      `raw-response:${nodeId}`,
+      digest(`raw-response:${nodeId}`),
+    ),
+    invocationId: `${nodeId}:generate`,
+    usage: {
+      modelInvocations: 1,
+      inputTokens: 10,
+      outputTokens: 0,
+      totalTokens: 10,
+      outputBytes: 2,
+      elapsedMs: 5,
+      repairRounds: 0,
+    },
+    authorizationScopeDigest: digest(`authorization-scope:${PROJECT_ID}`),
+    authorizationContextRef: AUTHORIZATION_CONTEXT_REF,
+    actorRef: ACTOR_ID,
+    commandId: `identification-candidate-set:${nodeId}`,
+    formedAt: TIMESTAMP,
+  });
 
 /** 占位计划身份：只用于构造替身“返回”的任务引用，图从不据此比对身份。 */
 const DUMMY_WORK_PLAN_ENTITY_ID = `identification-work-plan:${PROJECT_ID}:seed`;
@@ -823,11 +889,24 @@ const createPortDoubles = (input: {
     },
   };
 
-  const finalizationService: Pick<RiskCandidateFinalizationService, "analyze" | "finalize"> = {
+  const finalizationService: Pick<
+    RiskCandidateFinalizationService,
+    "analyze" | "finalize" | "readZeroResult"
+  > = {
     async analyze(command) {
       world.calls.analyze.push(command);
       if (command.kind === "assemble-and-infer") {
         const nodeId = nodeIdOf(command.payload.workItemRef.reference.entityId);
+        if (world.zeroResultNodes.has(nodeId)) {
+          return {
+            kind: "succeeded",
+            result: {
+              kind: "zero-result",
+              modelContextArtifactSetRef: modelContextArtifactSetRef(nodeId),
+              zeroResultRef: zeroResultRefFor(nodeId),
+            },
+          };
+        }
         return {
           kind: "succeeded",
           result: {
@@ -923,6 +1002,23 @@ const createPortDoubles = (input: {
           assessmentEventRefs: events,
         },
       };
+    },
+    async readZeroResult(input) {
+      world.calls.readZeroResult.push(input);
+      const nodeId = nodeIdOf(input.workItemRef.reference.entityId);
+      const expected = zeroResultRefFor(nodeId);
+      if (
+        input.projectId !== PROJECT_ID ||
+        input.zeroResultRef.reference.entityId !== expected.reference.entityId ||
+        input.zeroResultRef.reference.versionId !== expected.reference.versionId ||
+        input.inputSnapshotRef.reference.entityId !== INPUT_SNAPSHOT_REF.reference.entityId ||
+        input.inputSnapshotRef.reference.versionId !== INPUT_SNAPSHOT_REF.reference.versionId
+      ) {
+        return { kind: "inconsistent" };
+      }
+      const override = world.zeroResultRead.get(nodeId);
+      if (override !== undefined) return { kind: override };
+      return { kind: "read", zeroResult: zeroResultValueFor(nodeId) };
     },
   };
 

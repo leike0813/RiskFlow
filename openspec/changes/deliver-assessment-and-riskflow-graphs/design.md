@@ -41,7 +41,7 @@
 
 ### D-05：C30 持久化只追加最小运行事实
 
-单个 C30 迁移 `000049_assessment_riskflow_graphs.ts` 建立三张自有表：`business.workflow_graph_results`（`entry-snapshot|stage-result|route-decision|run-state|waiting|workflow-error|run-result` 闭合 kind、工程/父子 run/thread、精确版本、输入/结果/工件 ref、命令/幂等/actor/授权摘要、业务/记录/持久化时间、审计 ref）；`business.workflow_graph_links`（同运行内 `fromRef`、`toRef`、闭合关系码、来源阶段与审计 ref 的可重建只读链边）；`business.workflow_query_results`（查询 ref、精确目标/运行、查询类型、冻结记录时间、actor/授权摘要、审计 ref）。关系码闭合为 `parent-child|run-stage|segment-process|process-mechanism|mechanism-risk|risk-assessment|assessment-warning|warning-recommendation|recommendation-forecast|forecast-execution|execution-feedback|feedback-deviation|deviation-calibration`，未发生的分支只登记阶段原因，不虚构链边。所有历史只 INSERT，新状态追加版本；唯一键覆盖工程+kind+精确结果版本、工程+run+命令/动作、链边身份和查询身份。正文只放 C04 受权工件，登记行只存引用；checkpointer 仍使用 C03 独立存储。阶段/路由/状态登记、C03 收据和 C07 审计同一个本模块事务提交，必要的领域事件遵守各自产生者事务；检查点可以滞后，但恢复必须精确对账已登记事实。查询链边为可重建投影，不是领域事实或审计替代。数据库不对其它 change 表设跨所有权外键，关联靠公开端口复验；角色仅授予最小 SELECT/INSERT，不授 UPDATE/DELETE。
+单个 C30 迁移 `000050_assessment_riskflow_graphs.ts` 建立三张自有表：`business.workflow_graph_results`（`entry-snapshot|stage-result|route-decision|run-state|waiting|workflow-error|run-result` 闭合 kind、工程/父子 run/thread、精确版本、输入/结果/工件 ref、命令/幂等/actor/授权摘要、业务/记录/持久化时间、审计 ref）；`business.workflow_graph_links`（同运行内 `fromRef`、`toRef`、闭合关系码、来源阶段与审计 ref 的可重建只读链边）；`business.workflow_query_results`（查询 ref、精确目标/运行、查询类型、冻结记录时间、actor/授权摘要、审计 ref）。关系码闭合为 `parent-child|run-stage|segment-process|process-mechanism|mechanism-risk|risk-assessment|assessment-warning|warning-recommendation|recommendation-forecast|forecast-execution|execution-feedback|feedback-deviation|deviation-calibration`，未发生的分支只登记阶段原因，不虚构链边。所有历史只 INSERT，新状态追加版本；唯一键覆盖工程+kind+精确结果版本、工程+run+命令/动作、链边身份和查询身份。正文只放 C04 受权工件，登记行只存引用；checkpointer 仍使用 C03 独立存储。阶段/路由/状态登记、C03 收据和 C07 审计同一个本模块事务提交，必要的领域事件遵守各自产生者事务；检查点可以滞后，但恢复必须精确对账已登记事实。查询链边为可重建投影，不是领域事实或审计替代。数据库不对其它 change 表设跨所有权外键，关联靠公开端口复验；角色仅授予最小 SELECT/INSERT，不授 UPDATE/DELETE。
 
 ### D-06：补两项公开只读接缝，投影按页构建
 
@@ -73,7 +73,7 @@
 
 ## Migration Plan
 
-迁移号以本固定 HEAD 的现有最大号 `000048` 后续 `000049` 为 C30 唯一新号；若并行集成占用该号，实施前升级，由主调度串行改号。`up` 在 C03 已有 schema 内以 `ifNotExists` 建表、收敛同名约束/索引与最小角色 SELECT/INSERT 授权，重复 `up` 结果相同；`down` 先撤 C30 自有查询/链边，再删运行结果，不修改上游历史表。无旧事实回填、无跨 change 外键；迁移测试侧清单只登记 `000049`。部署先迁移，再部署 C30 adapter/Worker/只读接缝；回滚先停 C30 消费与入口，再逆序执行 `down`，上游领域事实和审计不受影响。
+迁移号以本固定 HEAD 的现有最大号 `000048` 后续为 C30 唯一新号；`000049` 由并行集成中的 C39（`fix-c22-formal-zero-result-terminal-fact`）占用，故本迁移串行改号为 `000050`（本设计既定策略：并行集成占用该号时由主调度串行改号）。`up` 在 C03 已有 schema 内以 `ifNotExists` 建表、收敛同名约束/索引与最小角色 SELECT/INSERT 授权，重复 `up` 结果相同；`down` 先撤 C30 自有查询/链边，再删运行结果，不修改上游历史表。无旧事实回填、无跨 change 外键；迁移测试侧清单只登记 `000050`。部署先迁移，再部署 C30 adapter/Worker/只读接缝；回滚先停 C30 消费与入口，再逆序执行 `down`，上游领域事实和审计不受影响。
 
 ## Open Questions
 

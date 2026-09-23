@@ -21,6 +21,7 @@ import type { VersionReference } from "@riskflow/contracts/common";
 import {
   ContentArtifactRefV1Schema,
   type AuthorizationContextV1,
+  type IdentificationInputSnapshotRefV1,
   type IdentificationRunResultRefV1,
   type ModuleBranchV1,
   type WorkflowRunRefV1,
@@ -325,6 +326,46 @@ export const createIdentificationGraphRuntime = (
         : value,
     );
 
+  /**
+   * D-05：恢复路径必须经 C22 窄读重新证明每个已登记零结果。冻结输入缺失、事实不存在、撤权
+   * 或摘要/工程/工作项错配一律按 `CHECKPOINT_INCONSISTENT` 零补写封闭，不从 checkpoint 或
+   * 游标自行补写零结果正文。
+   */
+  const assertZeroResultsProven = async (input: {
+    readonly run: IdentificationGraphRunContextV1;
+    readonly cursor: IdentificationGraphRunStateV1;
+    readonly inputSnapshotRef: IdentificationInputSnapshotRefV1 | undefined;
+  }): Promise<void> => {
+    if (input.cursor.zeroResults.length === 0) return;
+    const inconsistent = (): never => {
+      throw runFailure({
+        stage: input.cursor.stage,
+        code: "TERMINAL_FAILURE",
+        retryable: false,
+        detailCode: "checkpoint-inconsistent",
+        occurredAt: options.now().toISOString(),
+      });
+    };
+    const inputSnapshotRef = input.inputSnapshotRef;
+    if (inputSnapshotRef === undefined) {
+      inconsistent();
+    } else {
+      for (const zeroResult of input.cursor.zeroResults) {
+        const read = await ports.finalizationService.readZeroResult({
+          projectId: input.run.projectId,
+          actorId: input.run.actorId,
+          invocationId: `${input.run.runRef.reference.versionId}:I4:${zeroResult.workItemRef.reference.entityId}`,
+          requestedAt: input.run.issuedAt,
+          inputSnapshotRef,
+          workItemRef: zeroResult.workItemRef,
+          zeroResultRef: zeroResult.zeroResultRef,
+          authorization: input.run.authorization,
+        });
+        if (read.kind !== "read") inconsistent();
+      }
+    }
+  };
+
   /** 最近一次业务提交最多领先同步 checkpoint 一个节点；只从本运行已登记的引用补齐该节点增量。 */
   const rebuildCommittedState = async (input: {
     readonly run: IdentificationGraphRunContextV1;
@@ -442,6 +483,7 @@ export const createIdentificationGraphRuntime = (
       authorization: run.authorization,
     });
     if (reconciled.kind === "inconsistent") inconsistent();
+    await assertZeroResultsProven({ run, cursor, inputSnapshotRef: rebuilt.inputSnapshotRef });
     return rebuilt;
   };
 
@@ -876,6 +918,12 @@ export const createIdentificationGraphRuntime = (
             state: checkpointState,
           })
         : checkpointState;
+      // D-05：恢复路径在推进前重新证明已登记零结果，缺失或错配按检查点不一致封闭。
+      await assertZeroResultsProven({
+        run: frozenRun,
+        cursor: cursorBefore,
+        inputSnapshotRef: checkpointState.inputSnapshotRef,
+      });
       const expected = await readCursor({ ports, run: frozenRun });
       if (expected === undefined) {
         throw runFailure({

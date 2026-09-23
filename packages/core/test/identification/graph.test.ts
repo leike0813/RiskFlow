@@ -18,6 +18,7 @@ import {
   type IdentificationInputSnapshotRefV1,
   type IdentificationPreparationSnapshotRefV1,
   type IdentificationWorkItemRefV1,
+  type IdentificationZeroResultRefV1,
   type ReviewTaskRefV1,
   type WorkflowRunRefV1,
 } from "@riskflow/contracts/ports";
@@ -31,6 +32,7 @@ import {
 import {
   IDENTIFICATION_GRAPH_ERROR_CODES_V1,
   IdentificationGraphPolicySetV1Schema,
+  IdentificationGraphRunResultV1Schema,
   isRetryableIdentificationGraphError,
   type IdentificationGraphPolicySetV1,
   type IdentificationGraphWaitingV1,
@@ -203,6 +205,12 @@ const workItemRefFor = (nodeId: string) =>
 
 const PLANNED_WORK_ITEM_REFS: readonly [IdentificationWorkItemRefV1, IdentificationWorkItemRefV1] =
   [workItemRefFor(NODE_APPLICABLE_A), workItemRefFor(NODE_APPLICABLE_B)];
+
+/** 零结果引用夹具：身份由工程与节点派生，摘要只区分同一工程内的不同零事实。 */
+const zeroResultRefFor = (nodeId: string): IdentificationZeroResultRefV1 => ({
+  kind: "identification-zero-result",
+  reference: versionRef(`identification-zero-result:${PROJECT}:${nodeId}`, `zero-${nodeId}`),
+});
 
 const planInput = (overrides: {
   readonly preparationSnapshot?: IdentificationPreparationSnapshotV1;
@@ -683,6 +691,71 @@ describe("IP-11 I9 汇总：工作项与分组终态", () => {
     expect(result.runResult.failedWorkItemRefs).toEqual([secondPlannedItem]);
     expect(result.runResult.rejectedGroupRefs).toEqual([]);
     expect(result.runResult.skippedWorkItemRefs).toEqual([]);
+  });
+
+  it("全部工作项为正式零结果时逐项列明引用且不产生记录与事件", () => {
+    const zeroRefA = zeroResultRefFor("node-a");
+    const zeroRefB = zeroResultRefFor("node-b");
+    const result = summarizeInput({
+      workItemOutcomes: [
+        { kind: "zero-result", workItemRef: firstPlannedItem, zeroResultRef: zeroRefA },
+        { kind: "zero-result", workItemRef: secondPlannedItem, zeroResultRef: zeroRefB },
+      ],
+      groupOutcomes: [],
+    });
+
+    expect(result.kind).toBe("ready");
+    if (result.kind !== "ready") return;
+
+    expect(result.runResult.zeroResults).toEqual([
+      { workItemRef: firstPlannedItem, zeroResultRef: zeroRefA },
+      { workItemRef: secondPlannedItem, zeroResultRef: zeroRefB },
+    ]);
+    expect(result.runResult.skippedWorkItemRefs).toEqual([]);
+    expect(result.runResult.failedWorkItemRefs).toEqual([]);
+  });
+
+  it("零结果与已验收工作项并存时只列明零结果且不改写其它终态", () => {
+    const zeroRefB = zeroResultRefFor("node-b");
+    const result = summarizeInput({
+      workItemOutcomes: [
+        { kind: "accepted", workItemRef: firstPlannedItem },
+        { kind: "zero-result", workItemRef: secondPlannedItem, zeroResultRef: zeroRefB },
+      ],
+      groupOutcomes: [{ kind: "accepted", groupRef: GROUP_REF }],
+    });
+
+    expect(result.kind).toBe("ready");
+    if (result.kind !== "ready") return;
+
+    expect(result.runResult.zeroResults).toEqual([
+      { workItemRef: secondPlannedItem, zeroResultRef: zeroRefB },
+    ]);
+    expect(result.runResult.skippedWorkItemRefs).toEqual([]);
+    expect(result.runResult.failedWorkItemRefs).toEqual([]);
+    expect(result.runResult.acceptedRiskRecordRefs).toHaveLength(1);
+  });
+
+  it("历史汇总正文缺少零结果字段时按空数组解析，不重写历史", () => {
+    const historical = IdentificationGraphRunResultV1Schema.parse({
+      schemaVersion: "1",
+      projectId: PROJECT,
+      runRef: RUN_REF,
+      parentRiskFlowRunRef: PARENT_RUN_REF,
+      preparationSnapshotRef: PREPARATION_SNAPSHOT_REF,
+      inputSnapshotRef: inputSnapshotRefFor(),
+      workPlanRef: workPlanRefFor(),
+      acceptedRiskRecordRefs: [],
+      acceptedEventRefs: [],
+      rejectedGroupRefs: [],
+      pendingReviewTaskRefs: [],
+      failedWorkItemRefs: [],
+      skippedWorkItemRefs: [],
+      auditTrailRef: AUDIT_TRAIL_REF,
+      recordedAt: TIMESTAMP,
+    });
+
+    expect(historical.zeroResults).toEqual([]);
   });
 
   it("存在待复核分组时保持 waiting 并给出精确复核任务，不生成完成结果", () => {

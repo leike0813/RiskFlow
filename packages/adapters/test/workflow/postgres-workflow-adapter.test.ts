@@ -30,7 +30,7 @@ import {
 import { createFilesystemArtifactStore } from "../../src/artifacts/filesystem-artifact-store.js";
 import { PostgresArtifactRegistry } from "../../src/artifacts/postgres-artifact-registry.js";
 import { runPostgresMigrations } from "../../src/postgres/migrations/run.js";
-import * as assessmentRiskflowGraphsMigration from "../../src/postgres/migrations/workflow/deliver-assessment-and-riskflow-graphs/000049_assessment_riskflow_graphs.js";
+import * as assessmentRiskflowGraphsMigration from "../../src/postgres/migrations/workflow/deliver-assessment-and-riskflow-graphs/000050_assessment_riskflow_graphs.js";
 import { createPostgresRuntime, type PostgresRuntime } from "../../src/postgres/pool.js";
 import { PostgresTransactionUnit } from "../../src/postgres/transaction-unit.js";
 import {

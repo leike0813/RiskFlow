@@ -29,7 +29,10 @@ const TERMINAL_ALREADY_GONE_PATTERN =
 // 身份；参数、命名、权限等业务错误原样冒泡，否则会用一个自建工作树掩盖真实原因。
 const ORCA_RUNTIME_FAILURE_PATTERN =
   /runtime_unavailable|closed the connection before responding|Timed out waiting for the Orca runtime to respond|Could not connect to the running Orca app/u;
-const WORKSPACE_TRUST_PATTERN = /agent_prompt_blocked|workspace trust/iu;
+// 信任阻断在失败文本里并不稳定（实测 worker-start 只报 agent_prompt_stalled），
+// 因此文本判定之外还会对 terminal 屏幕做一次探测，见 terminalShowsWorkspaceTrustPrompt()。
+const WORKSPACE_TRUST_PATTERN =
+  /agent_prompt_blocked|workspace trust|trust this folder|trust and continue/iu;
 const WORKTREE_IDENTITY_NEXT_ACTIONS = [
   '运行 `orca repo list --json` 确认该仓库的 externalWorktreeVisibility 为 "show"，并核对 worktreeBasePath 与 worktreeBaseRef',
   "运行 `orca worktree list --json` 与 `git worktree list --porcelain` 对账期望路径上的工作树",
@@ -112,6 +115,24 @@ async function inspectWorkerStartFailure(error, replay) {
     return failureDetails(await replay());
   } catch (replayError) {
     return commandFailureDetails(replayError);
+  }
+}
+
+// 信任提示是 TUI 上的固定形态，比失败文本更贴近事实。探测失败（terminal 已释放、
+// 无屏幕缓冲等）不改判失败分类：调用方仍按原始错误上抛。
+async function terminalShowsWorkspaceTrustPrompt(exec, invocation, rootDir, terminalHandle) {
+  if (!nonEmptyString(terminalHandle)) return false;
+  try {
+    const result = await orcaJson(
+      exec,
+      invocation,
+      ["terminal", "read", "--terminal", terminalHandle, "--screen", "--json"],
+      rootDir,
+    );
+    const screen = [result?.screen, result?.output].filter(Boolean).join("\n");
+    return WORKSPACE_TRUST_PATTERN.test(screen);
+  } catch {
+    return false;
   }
 }
 
@@ -278,10 +299,32 @@ export function preflightAction(snapshot, action, input = {}) {
   return { node, queueItem };
 }
 
-function nextTaskKind(node) {
+export function nextTaskKind(node) {
+  const attempts = node.orca?.attempts ?? [];
+  const planningSucceeded = attempts.some(
+    (attempt) => attempt.taskKind === "planning" && attempt.outcome === "succeeded",
+  );
+  // 从未成功完成规划时（首次派发被工作区信任确认阻断、或 reconcile 替一个还没规划的
+  // 工作树生成了收尾尝试），change 还没有 applyRequires 工件：必须继续派发 planning，
+  // 否则空工作树会被交给实现或收尾角色。已采纳的 auxiliary 工作树不适用该规则，
+  // 仍走下面的 adopt 回退。
+  const planningIncomplete = !node.auxiliary && !planningSucceeded && attempts.length > 0;
+  if (planningIncomplete) return "planning";
+  // 一次收尾尝试失败后节点会停在 blocked，但下一职责仍是收尾（替代 Finalizer）；
+  // 只按 status === "finalizing" 判断会把它判成"没有合法角色"，替代尝试就开不出来。
+  const finalizingCheckpoint =
+    node.checkpoints?.taskKind === "finalization" || node.checkpoints?.taskKind === "audit";
+  // 已经实现成功过的 change 再次进入规划（典型是只做范围收窄的规划变更）应收敛到收尾，
+  // 而不是再派一轮实现：否则"改规格"会被当成"重写一遍代码"，白烧一整轮。
+  const implementationSucceeded = attempts.some(
+    (attempt) => attempt.taskKind === "implementation" && attempt.outcome === "succeeded",
+  );
+  if (implementationSucceeded && node.phase === "planning") {
+    return node.auditRequired === true ? "audit" : "finalization";
+  }
   if (node.phase === "adopt" || node.status === "untracked") return "finalization";
   if (node.status === "ready") return "planning";
-  if (node.status === "finalizing") {
+  if (node.status === "finalizing" || (node.status === "blocked" && finalizingCheckpoint)) {
     // 本轮是否仍需要审计由状态视图判定（同一收尾轮次最多一次限定审计）；
     // 这里不再凭检查点条件一律再派，避免同一收尾被重复派发。
     if (node.auditRequired === true) return "audit";
@@ -304,6 +347,18 @@ function taskPhase(taskKind) {
     audit: "finalizing",
     archive: "archiving",
   }[taskKind];
+}
+
+// reconcile 只重建「下一次尝试」或收尾：派发规则判成 planning/implementation 时按该角色
+// 重建，其余（收尾、审计）归入收尾；调用方显式 phase="planning" 仍按规划处理。
+function deriveReconcileKind(node, phase) {
+  if (phase === "planning") return "planning";
+  try {
+    const kind = nextTaskKind(node);
+    return kind === "planning" || kind === "implementation" ? kind : "finalization";
+  } catch {
+    return "finalization";
+  }
 }
 
 export function createV2Envelope({
@@ -537,7 +592,26 @@ function withRetryRequest(args, retryRequest) {
   return ["--retry-request", retryRequest];
 }
 
+// 一个协调端 terminal 只能绑定一个 Run，而 orchestration 调用（含 `check --wait` 这类读取）
+// 按发送方终端的绑定校验。控制器同时服务多条 lane，因此每次带 `--run` 的调用之前都要确认
+// 绑定：否则跨 lane 的 task-create / worker-start / check --wait 会以 consumer_fenced 失败。
+// 并发写由运行时锁串行化，所以「确认绑定 → 调用」在同一段临界区内成立。
+async function bindRunForWrite(exec, invocation, rootDir, args) {
+  if (!invocation.senderTerminalHandle) return;
+  if (args[0] !== "orchestration") return;
+  if (args[1] === "run-create" || args[1] === "run-use") return;
+  const index = args.indexOf("--run");
+  const runId = index >= 0 ? args[index + 1] : null;
+  if (!nonEmptyString(runId)) return;
+  const current = await orcaJson(exec, invocation, ["orchestration", "run-current"], rootDir).catch(
+    () => null,
+  );
+  if (current?.run?.id === runId) return;
+  await orcaJson(exec, invocation, ["orchestration", "run-use", "--id", runId], rootDir);
+}
+
 async function orcaJson(exec, invocation, args, cwd, retryRequest) {
+  await bindRunForWrite(exec, invocation, cwd, args);
   return unwrapResult(
     await readJsonCommand(
       exec,
@@ -998,7 +1072,9 @@ async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, id
           "--title",
           `${node.id}-${task.envelope.taskKind}`,
           "--command",
-          `codex --model ${task.role.model} -c model_reasoning_effort="${task.role.thinking}" -a never -s danger-full-access`,
+          // Codex 默认在启动时检查更新：worker 的 CLI 版本会在交付中途漂移，升级横幅
+          // 也会被误判成 agent_prompt_stalled。worker 版本由项目集中管理，启动即关闭该检查。
+          `codex --model ${task.role.model} -c model_reasoning_effort="${task.role.thinking}" -c check_for_update_on_startup=false -a never -s danger-full-access`,
         ],
         rootDir,
       );
@@ -1027,7 +1103,11 @@ async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, id
         rootDir,
       );
     } catch (error) {
-      if (!isWorkspaceTrustFailure(commandFailureDetails(error), error)) throw error;
+      if (
+        !isWorkspaceTrustFailure(commandFailureDetails(error), error) &&
+        !(await terminalShowsWorkspaceTrustPrompt(exec, invocation, rootDir, terminalHandle))
+      )
+        throw error;
       await recordWorkspaceTrustRecovery(runtimeDir, node, task);
       throw workspaceTrustError(terminalHandle);
     }
@@ -1051,7 +1131,11 @@ async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, id
       const details = await inspectWorkerStartFailure(error, () =>
         orcaJson(exec, invocation, workerStartArgs, rootDir, workerStartRetry),
       );
-      if (!isWorkspaceTrustFailure(details, error, true)) throw error;
+      if (
+        !isWorkspaceTrustFailure(details, error, true) &&
+        !(await terminalShowsWorkspaceTrustPrompt(exec, invocation, rootDir, terminalHandle))
+      )
+        throw error;
       await recordWorkspaceTrustRecovery(runtimeDir, node, task);
       throw workspaceTrustError(terminalHandle);
     }
@@ -1060,6 +1144,13 @@ async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, id
       ...(await recordRunningAttempt(runtimeDir, node, task)),
     };
   }
+  const active = await activeDispatchOfTask(exec, invocation, rootDir, task.taskId);
+  if (active)
+    throw new ControlError(
+      "dispatch_already_running",
+      `${node.id} 的实现 worker 仍在运行（dispatch ${active.id}，terminal ${active.assigneeHandle}）`,
+      ["不要重复派发：等待该 worker 报告，或先停止该 dispatch 与其 terminal"],
+    );
   const command = `omp --model ${task.role.model} --thinking ${task.role.thinking} --approval-mode yolo`;
   const terminalResult = await orcaJson(
     exec,
@@ -1114,9 +1205,55 @@ async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, id
     rootDir,
     retryRequest(idempotencyKey, "dispatch"),
   );
+  // 注入式派发不会回写 Orca 侧 Task 的 result，而状态视图优先采用 Orca 的信封：不同步
+  // 会把仍在运行的实现尝试一直显示成 queued，并给出「再派发一次」这种会制造第二个写者的下一动作。
+  const running = attemptEnvelope(node, task, "running");
+  await orcaJson(
+    exec,
+    invocation,
+    [
+      "orchestration",
+      "task-update",
+      "--run",
+      task.runId,
+      "--id",
+      task.taskId,
+      "--status",
+      "dispatched",
+      "--result",
+      JSON.stringify(running),
+    ],
+    rootDir,
+    retryRequest(idempotencyKey, "implementation-running"),
+  );
   // 实现分支同样要把台账推进到 running：否则状态视图在整段实现期间仍报告
   // runState=queued，并给出"派发当前信封指定的受控任务"这种会导致重复派发的下一动作。
   return { ...worker, ...(await recordRunningAttempt(runtimeDir, node, task)) };
+}
+
+// 注入式派发不进入 Orca 的受监督 worker 账本，「任务已 dispatched」只能从 dispatch-show
+// 读出。不先检查就再次派发，Orca 会在最后一步以 task_not_startable 拒绝，而此前已经新建了
+// 一个终端：同一工作树出现两个写者。
+async function activeDispatchOfTask(exec, invocation, rootDir, taskId) {
+  const shown = await orcaJson(
+    exec,
+    invocation,
+    ["orchestration", "dispatch-show", "--task", taskId],
+    rootDir,
+  ).catch(() => null);
+  const dispatch = shown?.dispatch;
+  const assignee = dispatch?.assigneeHandle ?? dispatch?.assignee_handle ?? null;
+  if (!nonEmptyString(assignee)) return null;
+  if (dispatch.status && dispatch.status !== "dispatched") return null;
+  const shownTerminal = await orcaJson(
+    exec,
+    invocation,
+    ["terminal", "show", "--terminal", assignee],
+    rootDir,
+  ).catch(() => null);
+  const record = shownTerminal?.terminal;
+  if (!record || record.orphaned === true) return null;
+  return { id: dispatch.id, assigneeHandle: assignee };
 }
 
 // worker 已启动意味着该尝试进入运行态；登记失败不使派发失败（worker 已在跑，
@@ -1669,9 +1806,15 @@ async function assertFactsUnchanged(ctx) {
 
 export async function riskflowReconcile(input, options = {}) {
   return controlledMutation("reconcile", input, options, async (ctx) => {
-    const taskKind = input.taskKind ?? (input.phase === "planning" ? "planning" : "finalization");
-    if (!new Set(["planning", "finalization"]).has(taskKind)) {
-      throw new ControlError("invalid_input", "reconcile 只接受 planning 或 finalization");
+    // 替代尝试的角色必须与派发规则一致。旧实现只在调用方显式传 phase="planning"
+    // 时才重建规划，缺省一律 finalization，会把「规划从未成功」的工作树派成收尾
+    // （其任务说明要求填写 verification），而该工作树其实还没有任何 applyRequires 工件。
+    const taskKind = input.taskKind ?? deriveReconcileKind(ctx.node, input.phase);
+    if (!new Set(["planning", "implementation", "finalization"]).has(taskKind)) {
+      throw new ControlError(
+        "invalid_input",
+        "reconcile 只接受 planning、implementation 或 finalization",
+      );
     }
     const invocation = resolveOrcaInvocation(options.orcaCommand);
     const runId = await ensureRun(

@@ -359,7 +359,7 @@ const upQueries = async (db: Kysely<unknown>): Promise<void> => {
   await grantAppendOnly(db, queriesTable);
 };
 
-/** 迁移号 `000049`：C30 唯一新增迁移，只建自有表，不设跨 change 外键、不改上游历史表。 */
+/** 迁移号 `000050`：C30 唯一新增迁移，只建自有表，不设跨 change 外键、不改上游历史表。 */
 export async function up(db: Kysely<unknown>): Promise<void> {
   await upResults(db);
   await upLinks(db);

@@ -1080,6 +1080,27 @@ describe("module interface contracts", () => {
     ).toBe(true);
     expect(
       IdentificationAnalysisSuccessV1Schema.safeParse({
+        kind: "zero-result",
+        modelContextArtifactSetRef: version("model-context-artifact-set"),
+        zeroResultRef: version("identification-zero-result"),
+      }).success,
+    ).toBe(true);
+    expect(
+      IdentificationAnalysisSuccessV1Schema.safeParse({
+        kind: "zero-result",
+        modelContextArtifactSetRef: version("model-context-artifact-set"),
+      }).success,
+    ).toBe(false);
+    expect(
+      IdentificationAnalysisSuccessV1Schema.safeParse({
+        kind: "zero-result",
+        modelContextArtifactSetRef: version("model-context-artifact-set"),
+        zeroResultRef: version("identification-zero-result"),
+        candidateSetRef: version("identification-candidate-set"),
+      }).success,
+    ).toBe(false);
+    expect(
+      IdentificationAnalysisSuccessV1Schema.safeParse({
         kind: "repair-and-validate",
         validatedCandidateSetRef: version("validated-candidate-set"),
       }).success,
@@ -2232,6 +2253,30 @@ describe("module interface contracts", () => {
         stageResult("I1", { inputSnapshotRef: identificationInputRef }),
       ).success,
     ).toBe(false);
+    expect(
+      IdentificationStageResultV1Schema.safeParse(
+        stageResult("I4", {
+          modelContextArtifactSetRefs: [],
+          zeroResultRef: version("identification-zero-result"),
+          workItemRef: version("identification-work-item"),
+        }),
+      ).success,
+    ).toBe(true);
+    for (const invalidI4Output of [
+      { modelContextArtifactSetRefs: [], zeroResultRef: version("identification-zero-result") },
+      { modelContextArtifactSetRefs: [], workItemRef: version("identification-work-item") },
+      {
+        modelContextArtifactSetRefs: [],
+        candidateSetRef: version("identification-candidate-set"),
+        zeroResultRef: version("identification-zero-result"),
+        workItemRef: version("identification-work-item"),
+      },
+      { modelContextArtifactSetRefs: [] },
+    ]) {
+      expect(
+        IdentificationStageResultV1Schema.safeParse(stageResult("I4", invalidI4Output)).success,
+      ).toBe(false);
+    }
     expect(
       AssessmentStageResultV1Schema.safeParse(
         stageResult("A1", {

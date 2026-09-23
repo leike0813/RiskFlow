@@ -49,10 +49,10 @@ export interface RiskCandidateFinalizationCompositionOptionsV1 {
 export interface RiskCandidateFinalizationCompositionV1 {
   readonly adapter: PostgresRiskCandidateFinalizationAdapter;
   readonly modelRuntime: RiskCandidateModelPortV1;
-  /** C22 只暴露 analyze/finalize 与 C23 修订接缝；`plan` 属于 C24。 */
+  /** C22 只暴露 analyze/finalize、C23 修订接缝与 C24 使用的零结果窄读；`plan` 属于 C24。 */
   readonly service: Pick<
     RiskCandidateFinalizationService,
-    "analyze" | "finalize" | "prepareReviewRevision"
+    "analyze" | "finalize" | "prepareReviewRevision" | "readZeroResult"
   >;
 }
 

@@ -1,12 +1,14 @@
 import type {
   AuthorizationContextV1,
   IdentificationPreparationSnapshotRefV1,
+  IdentificationRunResultRefV1,
 } from "@riskflow/contracts/ports";
 import type { IdentificationGraphStateV1 } from "@riskflow/contracts/workflows";
 
 import type {
   IdentificationGraphPolicySetV1,
   IdentificationGraphResultRowV1,
+  IdentificationGraphRunResultV1,
   IdentificationGraphRunStateV1,
 } from "./schema.js";
 
@@ -75,6 +77,23 @@ export interface IdentificationGraphRegistrationStoreV1 {
         readonly state: IdentificationGraphRunStateV1;
       }
     | undefined
+  >;
+  /**
+   * D-05 已完成运行汇总精确只读（C36 覆盖证明的唯一入口）：先按当前授权读取 `run-result`
+   * 登记行与其 C04 正文，再核对最新 `run-state` 为 `completed` 且指向同一结果，返回前再次
+   * 复验授权。缺失、撤权、跨工程、状态或正文不一致一律返回 `unavailable`；登记/正文损坏
+   * 返回 `corrupt`，不把空数组或旧运行冒充覆盖证明。
+   */
+  readCompletedRunResult(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly runResultRef: IdentificationRunResultRefV1;
+    readonly authorization: AuthorizationContextV1;
+    readonly requestedAt: string;
+  }): Promise<
+    | { readonly kind: "read"; readonly runResult: IdentificationGraphRunResultV1 }
+    | { readonly kind: "unavailable" }
+    | { readonly kind: "corrupt"; readonly detailCode: string }
   >;
 }
 

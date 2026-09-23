@@ -128,6 +128,9 @@ export type ModelContextArtifactSetRefV1 = z.infer<typeof ModelContextArtifactSe
 export const IdentificationCandidateSetRefV1Schema = versionedRef("identification-candidate-set");
 export type IdentificationCandidateSetRefV1 = z.infer<typeof IdentificationCandidateSetRefV1Schema>;
 
+export const IdentificationZeroResultRefV1Schema = versionedRef("identification-zero-result");
+export type IdentificationZeroResultRefV1 = z.infer<typeof IdentificationZeroResultRefV1Schema>;
+
 export const IdentificationGroupRefV1Schema = versionedRef("identification-group");
 export type IdentificationGroupRefV1 = z.infer<typeof IdentificationGroupRefV1Schema>;
 
@@ -402,6 +405,7 @@ export const ContractReferenceV1Schema = z.discriminatedUnion("kind", [
   RetrievalArtifactSetRefV1Schema,
   ModelContextArtifactSetRefV1Schema,
   IdentificationCandidateSetRefV1Schema,
+  IdentificationZeroResultRefV1Schema,
   IdentificationGroupRefV1Schema,
   ValidatedCandidateSetRefV1Schema,
   MergePlanRefV1Schema,
@@ -2183,6 +2187,11 @@ export const IdentificationAnalysisSuccessV1Schema = z.discriminatedUnion("kind"
     kind: z.literal("assemble-and-infer"),
     modelContextArtifactSetRef: ModelContextArtifactSetRefV1Schema,
     candidateSetRef: IdentificationCandidateSetRefV1Schema,
+  }),
+  z.strictObject({
+    kind: z.literal("zero-result"),
+    modelContextArtifactSetRef: ModelContextArtifactSetRefV1Schema,
+    zeroResultRef: IdentificationZeroResultRefV1Schema,
   }),
   z.strictObject({
     kind: z.literal("repair-and-validate"),

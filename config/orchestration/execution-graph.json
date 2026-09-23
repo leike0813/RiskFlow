@@ -402,6 +402,38 @@
       "wave": "F",
       "lane": "acceptance"
     },
-    { "id": "G5", "kind": "gate", "dependsOn": ["C38"], "wave": "F", "lane": "gate" }
+    { "id": "G5", "kind": "gate", "dependsOn": ["C38"], "wave": "F", "lane": "gate" },
+    {
+      "id": "C39",
+      "kind": "change",
+      "change": "fix-c22-formal-zero-result-terminal-fact",
+      "dependsOn": ["C22"],
+      "wave": "F",
+      "lane": "quality"
+    },
+    {
+      "id": "C40",
+      "kind": "change",
+      "change": "fix-c24-nested-graph-interrupt-checkpoint-boundary",
+      "dependsOn": ["C24"],
+      "wave": "F",
+      "lane": "quality"
+    },
+    {
+      "id": "C41",
+      "kind": "change",
+      "change": "wire-human-decision-and-feedback-commands",
+      "dependsOn": ["C28"],
+      "wave": "F",
+      "lane": "quality"
+    },
+    {
+      "id": "C42",
+      "kind": "change",
+      "change": "fix-orchestration-worktree-bootstrap",
+      "dependsOn": [],
+      "wave": "F",
+      "lane": "quality"
+    }
   ]
 }

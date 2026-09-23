@@ -2797,6 +2797,31 @@ const retryBudget = async (
   }
 };
 
+/**
+ * LangGraph 运行配置里的检查点键（锁定 `@langchain/langgraph@1.4.17`）：父图节点内嵌套调用本图时，
+ * LangGraph 会把父图执行上下文中的检查点并入本图运行配置，使子检查点落到父任务命名空间或父图的
+ * saver 上（design D-01）。这里显式绑定本图已注入的 saver；该键只在本包装边界设置，不进入公共
+ * DTO 或上游端口。
+ */
+const GRAPH_CHECKPOINTER_CONFIG_KEY_V1 = "__pregel_checkpointer" as const;
+
+/**
+ * 本图唯一的执行/回读配置构造（design D-01）：线程仍由调用方给出，检查点命名空间固定为根命名空间，
+ * 已注入的 saver 与 `durability: "sync"` 在父节点内外保持一致，使调用与回读命中同一检查点边界。
+ */
+const executableConfig = (
+  checkpointer: BaseCheckpointSaver,
+  config: LangGraphRunnableConfig,
+): LangGraphRunnableConfig & { readonly durability: "sync" } => ({
+  ...config,
+  configurable: {
+    ...config.configurable,
+    checkpoint_ns: "",
+    [GRAPH_CHECKPOINTER_CONFIG_KEY_V1]: checkpointer,
+  },
+  durability: "sync",
+});
+
 /** 编译 I0～I9 子图；checkpointer 由组合根提供（design D-02）。 */
 export const createIdentificationGraph = (options: {
   readonly ports: IdentificationGraphPortsV1;
@@ -2905,14 +2930,16 @@ export const createIdentificationGraph = (options: {
   // 落库而被 checkpointer 判为不一致（design D-07 要求检查点写入结果确定、恢复可对账）。
   // 该选项在调用期生效：每个 superstep 末等待检查点落库后再继续。
   const compiled = graph.compile({ checkpointer: options.checkpointer });
+  const configFor = (config: LangGraphRunnableConfig) =>
+    executableConfig(options.checkpointer, config);
   return {
-    invoke: (input, config) => compiled.invoke(input.graph, { ...config, durability: "sync" }),
+    invoke: (input, config) => compiled.invoke(input.graph, configFor(config)),
     resume: (input, config) =>
       compiled.invoke(
         new Command<IdentificationGraphResumeCauseV1, GraphChannelsV1, NodeNameV1>({
           resume: input.resume,
         }),
-        { ...config, durability: "sync" },
+        configFor(config),
       ),
     retry: (state, config) =>
       compiled.invoke(
@@ -2920,10 +2947,10 @@ export const createIdentificationGraph = (options: {
           update: stateAsUpdate({ ...state, status: "running" }),
           goto: NODE_FOR_STAGE_V1[state.stage],
         }),
-        { ...config, durability: "sync" },
+        configFor(config),
       ),
     recover: async (state, completedNode, config) => {
-      await compiled.updateState(config, stateAsUpdate(state), completedNode);
+      await compiled.updateState(configFor(config), stateAsUpdate(state), completedNode);
       if (
         state.status === "completed" ||
         state.status === "cancelled" ||
@@ -2931,8 +2958,8 @@ export const createIdentificationGraph = (options: {
         state.status === "retryable-failure"
       )
         return state;
-      return compiled.invoke(null, { ...config, durability: "sync" });
+      return compiled.invoke(null, configFor(config));
     },
-    getState: (config) => compiled.getState(config),
+    getState: (config) => compiled.getState(configFor(config)),
   };
 };

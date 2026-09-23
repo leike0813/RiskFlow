@@ -552,7 +552,11 @@ export const createIdentificationGraphRuntime = (
       if (error instanceof IdentificationGraphNodeFailureV1) {
         throw new IdentificationGraphRunErrorV1(error.error);
       }
-      if (isGraphInterruptError(error)) throw error;
+      if (isGraphInterruptError(error)) {
+        // 已登记等待的子运行在 `wait` 节点中断（design D-02）：只在精确子检查点与最新业务游标
+        // 一致时按既有等待结果返回，父图据此登记自身等待；未确认或错配一律零补写封闭。
+        return await waitingStateAfterInterrupt(input.run, input.stage);
+      }
       // checkpoint 写入等运行期失败：业务事实已提交，返回可重试技术错误（design D-07）。
       throw new IdentificationGraphRunErrorV1(
         runFailure({
@@ -578,6 +582,84 @@ export const createIdentificationGraphRuntime = (
       state.lastStageResultRef?.reference.entityId ||
     cursor.lastStageResultRef?.reference.versionId !==
       state.lastStageResultRef?.reference.versionId;
+
+  /**
+   * 已确认子检查点的等待核对（design D-02/D-03）：只在精确子线程、冻结身份、等待状态与最新只追加
+   * 业务游标（阶段与等待引用）一致，且该等待在当前授权下仍可由业务回读证明时才承认该等待。
+   * 任何缺失或错配都按既有不可重试检查点不一致语义零补写封闭，绝不从业务游标、父图状态或捕获的
+   * 中断伪造一份等待或成功。
+   */
+  const reconcileWaitingCheckpoint = async (input: {
+    readonly run: IdentificationGraphRunContextV1;
+    readonly state: IdentificationGraphStateV1;
+    readonly cursor: IdentificationGraphRunStateV1;
+  }): Promise<IdentificationGraphStateV1> => {
+    const { run, state, cursor } = input;
+    const inconsistent = (): never => {
+      throw runFailure({
+        stage: cursor.stage,
+        code: "CHECKPOINT_INCONSISTENT",
+        retryable: false,
+        detailCode: "checkpoint-inconsistent",
+        occurredAt: options.now().toISOString(),
+      });
+    };
+    const waitingRef = state.status === "waiting" ? state.waitingRef : undefined;
+    const lastWaitingRef = cursor.status === "waiting" ? cursor.lastWaitingRef : undefined;
+    if (
+      state.threadId !== run.threadId ||
+      state.runRef.reference.entityId !== run.runRef.reference.entityId ||
+      state.runRef.reference.versionId !== run.runRef.reference.versionId ||
+      state.graphVersion.entityId !== run.graphVersion.entityId ||
+      state.graphVersion.versionId !== run.graphVersion.versionId ||
+      state.parentRiskFlowRunRef.reference.entityId !==
+        run.parentRiskFlowRunRef.reference.entityId ||
+      state.parentRiskFlowRunRef.reference.versionId !==
+        run.parentRiskFlowRunRef.reference.versionId ||
+      waitingRef === undefined ||
+      lastWaitingRef === undefined ||
+      cursor.stage !== state.stage ||
+      // 等待种类必须与最新业务事实一致；精确引用身份由既有 `reconcileCheckpointReferences` 的
+      // 当前授权登记行比对证明，不重复比较上游已投影的等待引用（design D-05 避免二次投影漂移）。
+      toWaitingRef({ waiting: lastWaitingRef }).kind !== waitingRef.kind
+    ) {
+      inconsistent();
+    }
+    const reconciled = await ports.checkpoints.reconcileCheckpointReferences({
+      projectId: run.projectId,
+      runId: run.runRef.reference.entityId,
+      state,
+      actorId: run.actorId,
+      requestedAt: run.issuedAt,
+      authorization: run.authorization,
+    });
+    if (reconciled.kind === "inconsistent") inconsistent();
+    return state;
+  };
+
+  /** 中断后只承认已确认的原子等待：检查点尚未确认或不可解析时按可重试技术错误停止（design D-02）。 */
+  const waitingStateAfterInterrupt = async (
+    run: IdentificationGraphRunContextV1,
+    stage: IdentificationGraphStateV1["stage"],
+  ): Promise<IdentificationGraphStateV1> => {
+    let state: IdentificationGraphStateV1 | undefined;
+    try {
+      state = await readCheckpointState({ graph: options.graph, run });
+    } catch {
+      state = undefined;
+    }
+    const cursor = state === undefined ? undefined : await readCursor({ ports, run });
+    if (state === undefined || cursor === undefined) {
+      throw runFailure({
+        stage,
+        code: "TRANSIENT_FAILURE",
+        retryable: true,
+        detailCode: "checkpoint-unavailable",
+        occurredAt: options.now().toISOString(),
+      });
+    }
+    return await reconcileWaitingCheckpoint({ run, state, cursor });
+  };
 
   const recoverCommittedBusiness = async (input: {
     readonly run: IdentificationGraphRunContextV1;
@@ -715,6 +797,14 @@ export const createIdentificationGraphRuntime = (
             retryable: true,
             detailCode: "checkpoint-write-unconfirmed",
             occurredAt: options.now().toISOString(),
+          });
+        }
+        if (state.status === "waiting") {
+          // 已登记等待的同载荷重放沿同一核对：等待引用须与最新业务游标一致，否则零补写封闭。
+          return await outcomeOf({
+            run: frozenRun,
+            state: await reconcileWaitingCheckpoint({ run: frozenRun, state, cursor: existing }),
+            disposition: "existing",
           });
         }
         return await outcomeOf({ run: frozenRun, state, disposition: "existing" });

@@ -109,7 +109,7 @@ describe("execution graph", () => {
         "utf8",
       ),
     );
-    expect(manifest.nodes).toHaveLength(48);
+    expect(manifest.nodes).toHaveLength(49);
     expect(validateGraph(manifest)).toEqual([]);
   });
 

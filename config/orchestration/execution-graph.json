@@ -402,6 +402,14 @@
       "wave": "F",
       "lane": "acceptance"
     },
-    { "id": "G5", "kind": "gate", "dependsOn": ["C38"], "wave": "F", "lane": "gate" }
+    { "id": "G5", "kind": "gate", "dependsOn": ["C38"], "wave": "F", "lane": "gate" },
+    {
+      "id": "C39",
+      "kind": "change",
+      "change": "fix-c22-formal-zero-result-terminal-fact",
+      "dependsOn": ["C22"],
+      "wave": "F",
+      "lane": "quality"
+    }
   ]
 }

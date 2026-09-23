@@ -1132,6 +1132,13 @@ async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, id
       ...(await recordRunningAttempt(runtimeDir, node, task)),
     };
   }
+  const active = await activeDispatchOfTask(exec, invocation, rootDir, task.taskId);
+  if (active)
+    throw new ControlError(
+      "dispatch_already_running",
+      `${node.id} 的实现 worker 仍在运行（dispatch ${active.id}，terminal ${active.assigneeHandle}）`,
+      ["不要重复派发：等待该 worker 报告，或先停止该 dispatch 与其 terminal"],
+    );
   const command = `omp --model ${task.role.model} --thinking ${task.role.thinking} --approval-mode yolo`;
   const terminalResult = await orcaJson(
     exec,
@@ -1186,9 +1193,55 @@ async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, id
     rootDir,
     retryRequest(idempotencyKey, "dispatch"),
   );
+  // 注入式派发不会回写 Orca 侧 Task 的 result，而状态视图优先采用 Orca 的信封：不同步
+  // 会把仍在运行的实现尝试一直显示成 queued，并给出「再派发一次」这种会制造第二个写者的下一动作。
+  const running = attemptEnvelope(node, task, "running");
+  await orcaJson(
+    exec,
+    invocation,
+    [
+      "orchestration",
+      "task-update",
+      "--run",
+      task.runId,
+      "--id",
+      task.taskId,
+      "--status",
+      "dispatched",
+      "--result",
+      JSON.stringify(running),
+    ],
+    rootDir,
+    retryRequest(idempotencyKey, "implementation-running"),
+  );
   // 实现分支同样要把台账推进到 running：否则状态视图在整段实现期间仍报告
   // runState=queued，并给出"派发当前信封指定的受控任务"这种会导致重复派发的下一动作。
   return { ...worker, ...(await recordRunningAttempt(runtimeDir, node, task)) };
+}
+
+// 注入式派发不进入 Orca 的受监督 worker 账本，「任务已 dispatched」只能从 dispatch-show
+// 读出。不先检查就再次派发，Orca 会在最后一步以 task_not_startable 拒绝，而此前已经新建了
+// 一个终端：同一工作树出现两个写者。
+async function activeDispatchOfTask(exec, invocation, rootDir, taskId) {
+  const shown = await orcaJson(
+    exec,
+    invocation,
+    ["orchestration", "dispatch-show", "--task", taskId],
+    rootDir,
+  ).catch(() => null);
+  const dispatch = shown?.dispatch;
+  const assignee = dispatch?.assigneeHandle ?? dispatch?.assignee_handle ?? null;
+  if (!nonEmptyString(assignee)) return null;
+  if (dispatch.status && dispatch.status !== "dispatched") return null;
+  const shownTerminal = await orcaJson(
+    exec,
+    invocation,
+    ["terminal", "show", "--terminal", assignee],
+    rootDir,
+  ).catch(() => null);
+  const record = shownTerminal?.terminal;
+  if (!record || record.orphaned === true) return null;
+  return { id: dispatch.id, assigneeHandle: assignee };
 }
 
 // worker 已启动意味着该尝试进入运行态；登记失败不使派发失败（worker 已在跑，

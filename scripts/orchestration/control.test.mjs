@@ -926,14 +926,19 @@ describe("controlled orchestration", () => {
     const exec = async (command, args) => {
       if (command === "git") return runtimeRoot;
       if (command === "orca-ide" && args.includes("task-create")) return { id: "task-impl" };
-      if (command === "orca-ide" && args.includes("task-update")) return {};
+      if (command === "orca-ide" && args.includes("task-update")) {
+        if (args.includes("--result")) results.push(JSON.parse(args[args.indexOf("--result") + 1]));
+        return {};
+      }
       if (command === "orca-ide" && args.includes("terminal") && args.includes("create")) {
         return { terminal: { handle: "term-impl" } };
       }
       if (command === "orca-ide" && args.includes("terminal") && args.includes("wait")) return {};
       if (command === "orca-ide" && args.includes("--inject")) return { injected: true };
+      if (command === "orca-ide" && args.includes("dispatch-show")) return { result: {} };
       throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
     };
+    const results = [];
     try {
       await riskflowDispatch(
         {
@@ -954,6 +959,68 @@ describe("controlled orchestration", () => {
         ),
       );
       expect(record.envelope).toMatchObject({ taskKind: "implementation", runState: "running" });
+      // 注入式派发不回写 Orca 一侧，控制器必须自己同步运行中的信封；否则状态视图一直
+      // 显示 queued，并给出会制造第二个写者的"再派发"动作。
+      expect(results.at(-1)).toMatchObject({ taskKind: "implementation", runState: "running" });
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("refuses to re-dispatch while an injected implementation worker is still running", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-impl-duplicate-"));
+    const planning = node({
+      status: "running",
+      phase: "planning",
+      checkpoints: {
+        ...node().checkpoints,
+        taskKind: "planning",
+        phase: "planning",
+        runState: "settled",
+        outcome: "succeeded",
+      },
+    });
+    const snap = snapshot({
+      nodes: [planning],
+      resumeQueue: [
+        { workItemId: "C17", category: "planning", nextAction: "创建有界首轮实现任务" },
+      ],
+    });
+    let terminalCreates = 0;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("task-create")) return { id: "task-impl" };
+      if (command === "orca-ide" && args.includes("task-update")) return {};
+      if (command === "orca-ide" && args.includes("dispatch-show"))
+        return {
+          result: {
+            dispatch: { id: "ctx-live", status: "dispatched", assignee_handle: "term-live" },
+          },
+        };
+      if (command === "orca-ide" && args[0] === "terminal" && args[1] === "show")
+        return { result: { terminal: { handle: "term-live", orphaned: false } } };
+      if (command === "orca-ide" && args.includes("terminal") && args.includes("create")) {
+        terminalCreates += 1;
+        return { terminal: { handle: "term-new" } };
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await expect(
+        riskflowDispatch(
+          {
+            workItemId: "C17",
+            expectedRevision: "revision-1",
+            idempotencyKey: "dispatch-impl-duplicate",
+          },
+          {
+            rootDir: process.cwd(),
+            exec,
+            statusProvider: async () => ({ graph, snapshot: snap }),
+          },
+        ),
+      ).rejects.toMatchObject({ code: "dispatch_already_running" });
+      expect(terminalCreates).toBe(0);
     } finally {
       await rm(runtimeRoot, { recursive: true });
     }

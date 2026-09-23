@@ -18,6 +18,12 @@
 - [x] 2a.1 `scripts/orchestration/control.mjs`：`startWorker` 的 `terminal create --command` 增加 `-c check_for_update_on_startup=false`，禁止 worker 启动触发 Codex 自更新（版本由项目集中管理，升级横幅会被误判为 `agent_prompt_stalled`）。
 - 验证：`control.test.mjs`「launches the Codex worker with the startup update check disabled」（断言实际下发的启动命令含该覆盖）。
 
+## 2b. 注入式派发（实现角色）
+
+- [x] 2b.1 `scripts/orchestration/control.mjs`：实现分支在 `dispatch --inject` 成功后把 `running` 信封 `task-update` 回 Orca（注入式派发不写 Orca 侧 `result`，否则状态视图一直报 `queued` 并给出会制造第二个写者的下一动作）。
+- [x] 2b.2 `scripts/orchestration/control.mjs`：实现分支派发前用 `activeDispatchOfTask()`（`dispatch-show` + `terminal show`）判定是否已有存活 dispatch，有则抛 `dispatch_already_running`，不再新建终端。
+- 验证：`control.test.mjs`「records a running attempt for the implementation dispatch path too」（断言写入 Orca 的信封为 `implementation/running`）、「refuses to re-dispatch while an injected implementation worker is still running」（断言拒绝且未创建终端）。
+
 ## 3. 验证
 
 - [x] 3.1 `scripts/orchestration/status.test.mjs`：新增「未成功 planning + 任务存在 + 无本地 change」不产生 `task_missing_local_openspec`，且状态可恢复（非 unknown）。

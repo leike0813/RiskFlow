@@ -861,6 +861,45 @@ describe("controlled orchestration", () => {
     }
   });
 
+  it("rebinds the coordinator Run before reading another Run's messages", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-run-read-bind-"));
+    const calls = [];
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("run-current")) {
+        calls.push("run-current");
+        return { result: { run: { id: "run-other-lane" } } };
+      }
+      if (command === "orca-ide" && args.includes("run-use")) {
+        calls.push(`run-use:${args[args.indexOf("--id") + 1]}`);
+        return { result: {} };
+      }
+      if (command === "orca-ide" && args.includes("check")) {
+        calls.push("check");
+        return { messages: [] };
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    process.env.ORCA_TERMINAL_HANDLE = "term-test-coordinator";
+    try {
+      await riskflowWait(
+        { workItemId: "C17", timeoutMs: 10 },
+        {
+          rootDir: process.cwd(),
+          exec,
+          orcaCommand: "orca-ide",
+          statusProvider: async () => ({ graph, snapshot: snapshot() }),
+        },
+      );
+      // check --wait 同样按绑定校验：不重绑就只会在别的 lane 上超时/失败。
+      expect(calls).toContain("run-use:run-finalizer");
+      expect(calls.indexOf("run-use:run-finalizer")).toBeLessThan(calls.indexOf("check"));
+    } finally {
+      delete process.env.ORCA_TERMINAL_HANDLE;
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
   it("keeps the generic planning briefing when no replan is approved", async () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-planning-generic-"));
     const ready = node({

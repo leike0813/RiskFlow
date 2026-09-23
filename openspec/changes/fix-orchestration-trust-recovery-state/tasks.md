@@ -24,6 +24,12 @@
 - [x] 2b.2 `scripts/orchestration/control.mjs`：实现分支派发前用 `activeDispatchOfTask()`（`dispatch-show` + `terminal show`）判定是否已有存活 dispatch，有则抛 `dispatch_already_running`，不再新建终端。
 - 验证：`control.test.mjs`「records a running attempt for the implementation dispatch path too」（断言写入 Orca 的信封为 `implementation/running`）、「refuses to re-dispatch while an injected implementation worker is still running」（断言拒绝且未创建终端）。
 
+## 2c. 协调端 Run 绑定与失败可诊断性
+
+- [x] 2c.1 `scripts/orchestration/control.mjs`：新增 `bindRunForWrite()`，在每个带 `--run` 的 orchestration 调用前核对 `run-current`，不匹配则 `run-use` 重绑（含 `task-create` / `worker-start` / `dispatch` / `check --wait`）。一个协调端 terminal 只能绑定一个 Run，控制器同时服务多条 lane，否则跨 lane 调用以 `consumer_fenced` 失败。
+- [x] 2c.2 `scripts/orchestration/status.mjs`：`CommandFailure` 消息有界（1200 字符）透出 CLI 的 stdout/stderr。CLI 常把结构化错误写在 stdout，只报 `cause.message` 会让失败退化成一句 `Command failed: <同一命令行>`。
+- 验证：`control.test.mjs`「rebinds the coordinator Run before a write that targets another Run」「rebinds the coordinator Run before reading another Run's messages」。
+
 ## 3. 验证
 
 - [x] 3.1 `scripts/orchestration/status.test.mjs`：新增「未成功 planning + 任务存在 + 无本地 change」不产生 `task_missing_local_openspec`，且状态可恢复（非 unknown）。

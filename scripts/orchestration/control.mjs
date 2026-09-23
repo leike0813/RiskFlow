@@ -580,13 +580,13 @@ function withRetryRequest(args, retryRequest) {
   return ["--retry-request", retryRequest];
 }
 
-// 一个协调端 terminal 只能绑定一个 Run，而写命令按发送方终端的绑定校验。控制器同时服务
-// 多条 lane，因此每次带 `--run` 的写之前都要确认绑定：否则跨 lane 的 task-create /
-// worker-start 会直接失败，且失败原因不体现在命令输出里。并发写由运行时锁串行化，
-// 所以「确认绑定 → 写」在同一段临界区内成立。
+// 一个协调端 terminal 只能绑定一个 Run，而 orchestration 调用（含 `check --wait` 这类读取）
+// 按发送方终端的绑定校验。控制器同时服务多条 lane，因此每次带 `--run` 的调用之前都要确认
+// 绑定：否则跨 lane 的 task-create / worker-start / check --wait 会以 consumer_fenced 失败。
+// 并发写由运行时锁串行化，所以「确认绑定 → 调用」在同一段临界区内成立。
 async function bindRunForWrite(exec, invocation, rootDir, args) {
   if (!invocation.senderTerminalHandle) return;
-  if (args[0] !== "orchestration" || !ORCA_SENDER_COMMANDS.has(args[1])) return;
+  if (args[0] !== "orchestration") return;
   if (args[1] === "run-create" || args[1] === "run-use") return;
   const index = args.indexOf("--run");
   const runId = index >= 0 ? args[index + 1] : null;

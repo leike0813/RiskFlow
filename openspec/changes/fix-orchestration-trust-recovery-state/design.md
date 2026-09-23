@@ -9,6 +9,8 @@
 5. **worker 启动不得产生未受控副作用**。Codex 默认在启动时检查更新（`check_for_update_on_startup`，默认 true）。这会让 worker 的 CLI 版本在交付中途漂移，并把升级横幅变成一次非预期屏幕状态（实测被误判为 `agent_prompt_stalled`）。worker 版本由项目集中管理，因此 `terminal create --command` 显式带 `-c check_for_update_on_startup=false`。
 6. **注入式派发要自己同步运行态，并在派发前挡住重复写者**。实现角色用 `dispatch --inject` 注入 `omp` TUI，不进入 Orca 的受监督 worker 账本，因此 Orca 侧 Task 的 `result` 不会更新；而状态视图优先采用 Orca 的信封，于是正在运行的实现尝试一直显示为 `queued`，并给出「派发当前信封指定的受控任务」的下一动作——重试就会在同一工作树产生第二个写者（实测如此）。控制器现在：① 注入成功后把 `running` 信封 `task-update` 回 Orca；② 派发前用 `dispatch-show` + `terminal show` 判断该任务是否已有存活 dispatch，有则拒绝并给出「等待报告或先停止该 dispatch 与其 terminal」。
 
+7. **每次带 `--run` 的 orchestration 调用前先确认 Run 绑定；失败必须透出 CLI 原始输出**。一个协调端 terminal 只能绑定一个 Run，而 orchestration 调用（含 `check --wait` 这类读取）按该绑定校验；控制器同时服务多条 lane，于是跨 lane 的 `task-create` / `worker-start` / `check --wait` 会以 `consumer_fenced` 收场。控制器现在每次调用前核对 `run-current`，不匹配即 `run-use` 重绑（并发写由运行时锁串行化）。同时 `CommandFailure` 有界透出 CLI 的 stdout/stderr：CLI 常把结构化错误写在 stdout，只报 `cause.message` 会让失败退化成一句 `Command failed: <同一命令行>`，调用方只能靠反复实验反推。
+
 ## 取舍
 
 - 探测屏幕比解析错误文本更贴近事实，但引入一次额外 CLI 调用：仅在失败路径上发生，且失败本身已是非正常路径，成本可接受。

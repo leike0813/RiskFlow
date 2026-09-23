@@ -922,12 +922,18 @@ export function deriveNodeState(node, context) {
     worktree?.openSpecNodeIds?.includes(node.id) || worktree?.openSpecNames?.includes(node.change);
   const unlinkedLocal = localSpecPresent && tasks.length === 0 && !node.auxiliary;
   if (unlinkedLocal) violations.push({ code: "local_change_without_linked_task" });
+  // 规划尝试尚未成功时，本地 change 正由该尝试负责创建（首次派发可能先被 Codex
+  // 工作区信任确认阻断）。此时「任务存在但本地无 change」是正常中间态，判为冲突会
+  // 让工作项落成 unknown 并拒绝任何恢复派发。
+  const localSpecPendingFromPlanning =
+    currentEnvelope?.taskKind === "planning" && currentEnvelope?.outcome !== "succeeded";
   if (
     tasks.length > 0 &&
     worktree?.exists &&
     Array.isArray(worktree.openSpecNodeIds) &&
     !openSpecPresent &&
-    !dispatchInputTrustRecovery
+    !dispatchInputTrustRecovery &&
+    !localSpecPendingFromPlanning
   ) {
     violations.push({ code: "task_missing_local_openspec" });
   }

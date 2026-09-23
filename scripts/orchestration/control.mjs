@@ -29,7 +29,10 @@ const TERMINAL_ALREADY_GONE_PATTERN =
 // 身份；参数、命名、权限等业务错误原样冒泡，否则会用一个自建工作树掩盖真实原因。
 const ORCA_RUNTIME_FAILURE_PATTERN =
   /runtime_unavailable|closed the connection before responding|Timed out waiting for the Orca runtime to respond|Could not connect to the running Orca app/u;
-const WORKSPACE_TRUST_PATTERN = /agent_prompt_blocked|workspace trust/iu;
+// 信任阻断在失败文本里并不稳定（实测 worker-start 只报 agent_prompt_stalled），
+// 因此文本判定之外还会对 terminal 屏幕做一次探测，见 terminalShowsWorkspaceTrustPrompt()。
+const WORKSPACE_TRUST_PATTERN =
+  /agent_prompt_blocked|workspace trust|trust this folder|trust and continue/iu;
 const WORKTREE_IDENTITY_NEXT_ACTIONS = [
   '运行 `orca repo list --json` 确认该仓库的 externalWorktreeVisibility 为 "show"，并核对 worktreeBasePath 与 worktreeBaseRef',
   "运行 `orca worktree list --json` 与 `git worktree list --porcelain` 对账期望路径上的工作树",
@@ -112,6 +115,24 @@ async function inspectWorkerStartFailure(error, replay) {
     return failureDetails(await replay());
   } catch (replayError) {
     return commandFailureDetails(replayError);
+  }
+}
+
+// 信任提示是 TUI 上的固定形态，比失败文本更贴近事实。探测失败（terminal 已释放、
+// 无屏幕缓冲等）不改判失败分类：调用方仍按原始错误上抛。
+async function terminalShowsWorkspaceTrustPrompt(exec, invocation, rootDir, terminalHandle) {
+  if (!nonEmptyString(terminalHandle)) return false;
+  try {
+    const result = await orcaJson(
+      exec,
+      invocation,
+      ["terminal", "read", "--terminal", terminalHandle, "--screen", "--json"],
+      rootDir,
+    );
+    const screen = [result?.screen, result?.output].filter(Boolean).join("\n");
+    return WORKSPACE_TRUST_PATTERN.test(screen);
+  } catch {
+    return false;
   }
 }
 
@@ -278,7 +299,17 @@ export function preflightAction(snapshot, action, input = {}) {
   return { node, queueItem };
 }
 
-function nextTaskKind(node) {
+export function nextTaskKind(node) {
+  const attempts = node.orca?.attempts ?? [];
+  const planningSucceeded = attempts.some(
+    (attempt) => attempt.taskKind === "planning" && attempt.outcome === "succeeded",
+  );
+  // 从未成功完成规划时（首次派发被工作区信任确认阻断、或 reconcile 替一个还没规划的
+  // 工作树生成了收尾尝试），change 还没有 applyRequires 工件：必须继续派发 planning，
+  // 否则空工作树会被交给实现或收尾角色。已采纳的 auxiliary 工作树不适用该规则，
+  // 仍走下面的 adopt 回退。
+  const planningIncomplete = !node.auxiliary && !planningSucceeded && attempts.length > 0;
+  if (planningIncomplete) return "planning";
   if (node.phase === "adopt" || node.status === "untracked") return "finalization";
   if (node.status === "ready") return "planning";
   if (node.status === "finalizing") {
@@ -1027,7 +1058,11 @@ async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, id
         rootDir,
       );
     } catch (error) {
-      if (!isWorkspaceTrustFailure(commandFailureDetails(error), error)) throw error;
+      if (
+        !isWorkspaceTrustFailure(commandFailureDetails(error), error) &&
+        !(await terminalShowsWorkspaceTrustPrompt(exec, invocation, rootDir, terminalHandle))
+      )
+        throw error;
       await recordWorkspaceTrustRecovery(runtimeDir, node, task);
       throw workspaceTrustError(terminalHandle);
     }
@@ -1051,7 +1086,11 @@ async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, id
       const details = await inspectWorkerStartFailure(error, () =>
         orcaJson(exec, invocation, workerStartArgs, rootDir, workerStartRetry),
       );
-      if (!isWorkspaceTrustFailure(details, error, true)) throw error;
+      if (
+        !isWorkspaceTrustFailure(details, error, true) &&
+        !(await terminalShowsWorkspaceTrustPrompt(exec, invocation, rootDir, terminalHandle))
+      )
+        throw error;
       await recordWorkspaceTrustRecovery(runtimeDir, node, task);
       throw workspaceTrustError(terminalHandle);
     }

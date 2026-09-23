@@ -8,6 +8,7 @@ import {
   ControlError,
   canCompleteGoal,
   createV2Envelope,
+  nextTaskKind,
   preflightAction,
   riskflowDispatch,
   riskflowIntegrate,
@@ -502,6 +503,121 @@ describe("controlled orchestration", () => {
         runState: "queued",
         issueRefs: [],
       });
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("keeps planning as the next role until a planning attempt succeeds", () => {
+    const attempt = (overrides = {}) => ({
+      taskId: "task-x",
+      taskKind: "planning",
+      attemptGroup: "C17:planning",
+      attempt: 1,
+      outcome: null,
+      runState: "running",
+      ...overrides,
+    });
+    // 首次派发被信任确认阻断：尝试存在但规划从未成功 ⇒ 继续规划。
+    expect(
+      nextTaskKind(
+        node({
+          status: "unknown",
+          phase: "planning",
+          checkpoints: { ...node().checkpoints, taskKind: "planning", outcome: null },
+          orca: { attempts: [attempt({ outcome: "failed" })] },
+        }),
+      ),
+    ).toBe("planning");
+    // reconcile 曾替一个还没规划的工作树生成收尾尝试：仍然回到规划，而不是实现或收尾。
+    expect(
+      nextTaskKind(
+        node({
+          status: "unknown",
+          phase: "finalizing",
+          checkpoints: { ...node().checkpoints, taskKind: "finalization", outcome: null },
+          orca: {
+            attempts: [
+              attempt({ outcome: "failed" }),
+              attempt({ taskKind: "finalization", outcome: null }),
+            ],
+          },
+        }),
+      ),
+    ).toBe("planning");
+    // 已采纳的 auxiliary 工作树没有规划尝试，仍走收尾回退。
+    expect(
+      nextTaskKind(
+        node({
+          status: "untracked",
+          phase: "adopt",
+          auxiliary: true,
+          checkpoints: { ...node().checkpoints, taskKind: "finalization", outcome: null },
+          orca: { attempts: [] },
+        }),
+      ),
+    ).toBe("finalization");
+    // 规划成功后的原行为不变。
+    expect(
+      nextTaskKind(
+        node({
+          status: "running",
+          phase: "planning",
+          checkpoints: { ...node().checkpoints, taskKind: "planning", outcome: "succeeded" },
+          orca: { attempts: [attempt({ outcome: "succeeded" })] },
+        }),
+      ),
+    ).toBe("implementation");
+  });
+
+  it("classifies a stalled worker-start as trust recovery when the terminal shows the prompt", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-worker-start-screen-"));
+    let workerStarts = 0;
+    let screenReads = 0;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args[0] === "terminal" && args[1] === "read") {
+        screenReads += 1;
+        return { screen: "Trust this folder?\n› 1. Trust and continue" };
+      }
+      const terminal = fakeCodexTerminal(command, args);
+      if (terminal !== null) return terminal;
+      if (command === "orca-ide" && args.includes("worker-start")) {
+        workerStarts += 1;
+        if (workerStarts === 1) throw new Error("original worker-start failure");
+        const error = new Error("worker-start replay failed");
+        error.cause = {
+          stdout: JSON.stringify({
+            state: "failed",
+            stage: "dispatch_input",
+            lastError: "agent_prompt_stalled",
+            replayed: true,
+          }),
+        };
+        throw error;
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await expect(
+        riskflowDispatch(
+          {
+            workItemId: "C17",
+            expectedRevision: "revision-1",
+            idempotencyKey: "dispatch-worker-start-screen-trust",
+          },
+          {
+            rootDir: process.cwd(),
+            exec,
+            statusProvider: async () => ({ graph, snapshot: snapshot() }),
+          },
+        ),
+      ).rejects.toMatchObject({
+        code: "workspace_trust_required",
+        nextActions: expect.arrayContaining([expect.stringContaining("term-codex")]),
+      });
+      expect(workerStarts).toBe(2);
+      expect(screenReads).toBeGreaterThan(0);
     } finally {
       await rm(runtimeRoot, { recursive: true });
     }

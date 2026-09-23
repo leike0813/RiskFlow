@@ -884,6 +884,9 @@ describe("module interface contracts", () => {
   });
 
   it("keeps calibration suggestion approval proof strict and additive", () => {
+    expect(MODULE_BRANCH_CAPABILITY_V1["risk-assessment.read-input-snapshot"]).toBe(
+      "risk-assessment.read",
+    );
     expect(MODULE_BRANCH_CAPABILITY_V1["review-audit.verify-calibration-suggestion-approval"]).toBe(
       "review-audit.read",
     );
@@ -925,7 +928,7 @@ describe("module interface contracts", () => {
     }
 
     const approved = {
-      kind: "approved" as const,
+      kind: "approved-for-draft" as const,
       calibrationSuggestionRef: version("calibration-suggestion"),
       reviewTaskRef: calibrationReviewTaskRef,
       reviewDecisionRef: version("review-decision"),
@@ -958,12 +961,11 @@ describe("module interface contracts", () => {
         reason: "target-mismatch",
       }).success,
     ).toBe(true);
-    expect(
-      CalibrationSuggestionApprovalProofV1Schema.safeParse({
-        kind: "not-approved",
-        reason: "decision-not-approval",
-      }).success,
-    ).toBe(true);
+    for (const kind of ["rejected", "returned-for-revision"] as const) {
+      expect(
+        CalibrationSuggestionApprovalProofV1Schema.safeParse({ ...approved, kind }).success,
+      ).toBe(true);
+    }
 
     const requiresCalibrationProofPort = (
       port: CalibrationSuggestionApprovalProofPortV1,

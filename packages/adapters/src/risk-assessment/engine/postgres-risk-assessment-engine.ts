@@ -33,6 +33,7 @@ import type {
   AssessmentDownstreamAuthorizationRequestV1,
   AssessmentDownstreamAuthorizerV1,
   AssessmentEngineContextV1,
+  AssessmentInputSnapshotReaderV1,
   AssessmentMonitoringInputV1,
   AssessmentMonitoringReaderV1,
   AssessmentPreparationContextReaderV1,
@@ -78,6 +79,9 @@ import {
   AssessmentEvaluationResultV1Schema,
   AssessmentPreparationCommandV1Schema,
   AssessmentPreparationResultV1Schema,
+  AssessmentInputSnapshotRefV1Schema,
+  AssessmentPreparationSnapshotRefV1Schema,
+  KnowledgeReleaseRefV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
   ModuleErrorV1Schema,
   type AssessmentEvaluationCommandV1,
@@ -457,7 +461,9 @@ export interface PostgresRiskAssessmentEngineOptionsV1 {
  * C25 正式用例 adapter：`prepare` 全量物化 22 引用输入快照，`evaluate` 只消费冻结输入，
  * 并在单事务内保存取值集、决策链接、正式记录、审计、回执与 `assessment.recorded.v1`。
  */
-export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
+export class PostgresRiskAssessmentEngine
+  implements RiskAssessmentPortV1, AssessmentInputSnapshotReaderV1
+{
   readonly #db: Kysely<RiskAssessmentDatabase>;
   readonly #transactionUnit: TransactionUnitV1;
   readonly #access: LocalIdentityAccessV1;
@@ -482,6 +488,130 @@ export class PostgresRiskAssessmentEngine implements RiskAssessmentPortV1 {
     this.#monitoring = options.monitoring;
     this.#authorizeDownstream = options.authorizeDownstream;
     this.#now = options.now ?? (() => new Date());
+  }
+
+  async readInputSnapshot(
+    input: Parameters<AssessmentInputSnapshotReaderV1["readInputSnapshot"]>[0],
+  ): ReturnType<AssessmentInputSnapshotReaderV1["readInputSnapshot"]> {
+    const snapshotRef = AssessmentInputSnapshotRefV1Schema.safeParse(input.inputSnapshotRef);
+    const targetRef = KnowledgeReleaseRefV1Schema.safeParse(input.targetReleaseRef);
+    if (!snapshotRef.success || !targetRef.success) {
+      return { kind: "failed", error: moduleError("UNSUPPORTED_CONTRACT", input.requestId) };
+    }
+    try {
+      const command = {
+        commandId: input.requestId,
+        projectId: input.projectId,
+        actorId: input.actorId,
+        authorization: input.authorization,
+      };
+      await this.#verifyCommand(command, "risk-assessment.read-input-snapshot");
+      const row = await this.#db
+        .selectFrom("business.assessment_input_snapshots")
+        .select(["preparation_snapshot_ref", "basis_release_set_ref", "snapshot_payload"])
+        .where("project_id", "=", input.projectId)
+        .where("input_snapshot_id", "=", snapshotRef.data.reference.entityId)
+        .where("version_id", "=", snapshotRef.data.reference.versionId)
+        .executeTakeFirst();
+      if (row === undefined) {
+        throw moduleError("AUTHORIZATION_DENIED", input.requestId);
+      }
+      const snapshot = AssessmentInputSnapshotV1Schema.parse(row.snapshot_payload);
+      const basisRef = this.#parseBasisRef(row.basis_release_set_ref, input.requestId);
+      if (
+        refKey(snapshot.preparationSnapshotRef) !==
+        refKey(AssessmentPreparationSnapshotRefV1Schema.parse(row.preparation_snapshot_ref))
+      ) {
+        throw moduleError("TERMINAL_FAILURE", input.requestId);
+      }
+      const declared = await this.#declaredPreparation(
+        input.projectId,
+        input.requestId,
+        snapshot.preparationSnapshotRef,
+      );
+      await this.#verifyCommand(command, "risk-assessment.read-input-snapshot", {
+        spatialScopeRefs: [declared.spatialScopeRef],
+        sourceVersionRefs: declared.sourceVersionRefs,
+      });
+      const preparation = (
+        await this.#loadPreparationContext(
+          {
+            commandId: input.requestId,
+            projectId: input.projectId,
+            actorId: input.actorId,
+            issuedAt: input.requestedAt,
+          },
+          snapshot.preparationSnapshotRef,
+        )
+      ).preparation;
+      if (refKey(preparation.spatialScopeRef) !== refKey(declared.spatialScopeRef)) {
+        throw moduleError("TERMINAL_FAILURE", input.requestId);
+      }
+      const basisAuthorization = await this.#authorizeFor(
+        {
+          branch: RISK_ASSESSMENT_DOWNSTREAM_BRANCH_V1.basisMembers,
+          invocationId: `${input.requestId}:basis`,
+          projectId: input.projectId,
+          actorId: input.actorId,
+          requestedAt: input.requestedAt,
+          requestedSpatialScopeRefs: [preparation.spatialScopeRef],
+        },
+        "risk-assessment.read",
+      );
+      const basis = AssessmentBasisReleaseSetReadResultV1Schema.parse(
+        await this.#basisReader.readAssessmentBasisReleaseSet({
+          requestId: `${input.requestId}:basis`,
+          idempotencyKey: `${input.requestId}:basis`,
+          requestedAt: input.requestedAt,
+          authorization: basisAuthorization,
+          assessmentBasisReleaseSetRef: basisRef,
+        }),
+      );
+      if (
+        basis.kind !== "succeeded" ||
+        refKey(basis.assessmentBasisReleaseSetRef) !== refKey(basisRef)
+      ) {
+        throw moduleError("AUTHORIZATION_DENIED", input.requestId);
+      }
+      const matching = [
+        ...basis.configurationMembers,
+        ...basis.scoringRuleMembers.map((member) => ({
+          ...member,
+          definitionType: "structured-scoring-rule",
+        })),
+      ].filter((member) => refKey(member.releaseRef) === refKey(targetRef.data));
+      if (matching.length !== 1) {
+        throw moduleError("STALE_VERSION", input.requestId, { targetRef: targetRef.data });
+      }
+      const member = matching[0]!;
+      const snapshotField = {
+        "weight-set": "weightSetRef",
+        "risk-matrix": "riskMatrixRef",
+        "risk-acceptance-threshold": "riskAcceptanceThresholdRef",
+        "monitoring-warning-threshold": "monitoringWarningThresholdRef",
+        "deviation-policy": "deviationPolicyRef",
+      } as const;
+      const field = snapshotField[member.definitionType as keyof typeof snapshotField];
+      if (
+        field !== undefined &&
+        versionKey(snapshot[field]) !== versionKey(targetRef.data.reference)
+      ) {
+        throw moduleError("STALE_VERSION", input.requestId, { targetRef: targetRef.data });
+      }
+      if (field === undefined && member.definitionType !== "structured-scoring-rule") {
+        throw moduleError("STALE_VERSION", input.requestId, { targetRef: targetRef.data });
+      }
+      return {
+        kind: "succeeded",
+        projectId: input.projectId,
+        spatialScopeRef: preparation.spatialScopeRef,
+        basisReleaseSetRef: basisRef,
+        targetReleaseRef: targetRef.data,
+        targetContentDigest: member.contentDigest,
+      };
+    } catch (error: unknown) {
+      return { kind: "failed", error: failureToModuleError(error, input.requestId) };
+    }
   }
 
   // ------------------------------------------------------------- authorization

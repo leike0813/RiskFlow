@@ -509,6 +509,7 @@ export const MODULE_BRANCH_CAPABILITY_V1 = {
   "risk-assessment.reassessment": "risk-assessment.prepare",
   "risk-assessment.historical-backfill": "risk-assessment.prepare",
   "risk-assessment.evaluate": "risk-assessment.evaluate",
+  "risk-assessment.read-input-snapshot": "risk-assessment.read",
   "warning-response.open": "warning-response.record",
   "warning-response.create-candidate": "warning-response.recommend",
   "warning-response.validate-and-record": "warning-response.recommend",
@@ -2270,7 +2271,21 @@ export type KnowledgeRevisionApprovalProofV1 = z.infer<
 
 export const CalibrationSuggestionApprovalProofV1Schema = z.discriminatedUnion("kind", [
   z.strictObject({
-    kind: z.literal("approved"),
+    kind: z.literal("approved-for-draft"),
+    calibrationSuggestionRef: CalibrationSuggestionRefV1Schema,
+    reviewTaskRef: ReviewTaskRefV1Schema,
+    reviewDecisionRef: ReviewDecisionRefV1Schema,
+    decidedAt: IsoDateTimeSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("rejected"),
+    calibrationSuggestionRef: CalibrationSuggestionRefV1Schema,
+    reviewTaskRef: ReviewTaskRefV1Schema,
+    reviewDecisionRef: ReviewDecisionRefV1Schema,
+    decidedAt: IsoDateTimeSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("returned-for-revision"),
     calibrationSuggestionRef: CalibrationSuggestionRefV1Schema,
     reviewTaskRef: ReviewTaskRefV1Schema,
     reviewDecisionRef: ReviewDecisionRefV1Schema,
@@ -2278,7 +2293,7 @@ export const CalibrationSuggestionApprovalProofV1Schema = z.discriminatedUnion("
   }),
   z.strictObject({
     kind: z.literal("not-approved"),
-    reason: z.enum(["decision-not-found", "target-mismatch", "decision-not-approval"]),
+    reason: z.enum(["decision-not-found", "target-mismatch"]),
   }),
 ]);
 export type CalibrationSuggestionApprovalProofV1 = z.infer<

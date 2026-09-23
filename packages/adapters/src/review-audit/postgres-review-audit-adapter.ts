@@ -763,17 +763,15 @@ export class PostgresReviewAuditAdapter
       ) {
         throw new TypeError("calibration approval proof type is inconsistent");
       }
-      if (decision.kind !== "approve-draft-creation") {
-        return CalibrationSuggestionApprovalProofResultV1Schema.parse({
-          kind: "succeeded",
-          result: { kind: "not-approved", reason: "decision-not-approval" },
-        });
-      }
-
       return CalibrationSuggestionApprovalProofResultV1Schema.parse({
         kind: "succeeded",
         result: {
-          kind: "approved",
+          kind:
+            decision.kind === "approve-draft-creation"
+              ? "approved-for-draft"
+              : decision.kind === "reject"
+                ? "rejected"
+                : "returned-for-revision",
           calibrationSuggestionRef: valid.payload.calibrationSuggestionRef,
           reviewTaskRef: taskRef,
           reviewDecisionRef: decisionRef,

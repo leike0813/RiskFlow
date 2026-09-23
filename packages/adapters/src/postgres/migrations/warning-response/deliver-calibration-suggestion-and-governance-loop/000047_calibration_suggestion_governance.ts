@@ -160,10 +160,6 @@ export async function up(db: Kysely<unknown>): Promise<void> {
       column.notNull().defaultTo(sql`clock_timestamp()`),
     )
     .addPrimaryKeyConstraint("calibration_suggestions_pk", ["suggestion_id", "version_id"])
-    .addUniqueConstraint("calibration_suggestions_candidate_uidx", [
-      "project_id",
-      "candidate_digest",
-    ])
     .addForeignKeyConstraint(
       "calibration_suggestions_agent_task_fk",
       ["agent_task_id"],

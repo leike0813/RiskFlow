@@ -721,17 +721,17 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
       {
         suffix: "approved",
         decisionKind: "approve-draft-creation" as const,
-        expected: "approved" as const,
+        expected: "approved-for-draft" as const,
       },
       {
         suffix: "rejected",
         decisionKind: "reject" as const,
-        expected: "decision-not-approval" as const,
+        expected: "rejected" as const,
       },
       {
         suffix: "returned",
         decisionKind: "return-for-revision" as const,
-        expected: "decision-not-approval" as const,
+        expected: "returned-for-revision" as const,
       },
       {
         suffix: "target-mismatch",
@@ -832,14 +832,14 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
           decisionEntityId: testCase.decisionRef.reference.entityId,
         }),
       );
-      if (testCase.expected === "approved") {
-        expect(result).toMatchObject({
+      if (testCase.expected !== "target-mismatch") {
+        expect(result, JSON.stringify(result)).toMatchObject({
           kind: "succeeded",
           result: {
-            kind: "approved",
+            kind: testCase.expected,
             calibrationSuggestionRef: {
               kind: "calibration-suggestion",
-              reference: { entityId: "suggestion-approved", versionId: "1" },
+              reference: { entityId: `suggestion-${testCase.suffix}`, versionId: "1" },
             },
             reviewTaskRef: testCase.taskRef,
             reviewDecisionRef: testCase.decisionRef,

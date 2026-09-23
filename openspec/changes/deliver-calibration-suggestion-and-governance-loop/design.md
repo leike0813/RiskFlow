@@ -41,6 +41,8 @@
 
 `prepareInput` 的调用方显式提交一个目标 `KnowledgeReleaseRefV1`，C29 只在它属于偏差事实所引用的冻结评估依据时接受。形成的 `CalibrationInputSnapshotV1` 固定 C28 偏差事实、派生公共记录引用、C25 冻结评估输入、C19 评估依据 release set、目标 release、定义类型、基准内容工件与摘要、校验策略、C08 模型/提示/工具/预算策略和 C06 授权。目标只允许 C18/C19 中可受校准影响的类型：`weight-set`、`risk-matrix`、`risk-acceptance-threshold`、`monitoring-warning-threshold`、`deviation-policy` 或 `structured-scoring-rule`。
 
+C25 通过 `AssessmentInputSnapshotReaderV1` 类加法式窄读端口按精确快照引用返回工程、空间、`basisReleaseSetRef` 及校准目标 release/digest 最小投影；C29 先核对该投影与偏差事实、命令和 C19 成员一致，再冻结输入。该读取通过新增 `risk-assessment.read-input-snapshot` 分支复用既有 `risk-assessment.read` capability，不允许 C29 直读 C25 表。
+
 一次建议只包含一个目标定义，因而批准后只调用一次 C16 `submit-revision`，避免跨多个 C16 事务制造部分草案。需要同时调整多个定义时必须形成相互独立的任务、建议和人工决定；它们不共享批准。
 
 目标和基准从冻结评估依据解析，禁止读取 latest。若业务以后要求跨定义一致性校准，应单独设计批量治理协议，不在 C29 预留通用事务抽象。
@@ -59,9 +61,9 @@ C29 导出 `createCalibrationSuggestionTaskDefinition`，其任务类型固定�
 
 ### D-06：C07 只增加校准批准证明窄读
 
-在 `packages/contracts/src/ports/index.ts` 增加 strict `CalibrationSuggestionApprovalProofQueryV1Schema`、闭合 proof/result Schema 与类型，以及只有 `verifyCalibrationSuggestionApproval` 方法的独立 `CalibrationSuggestionApprovalProofPortV1`；现有 `ReviewAuditPortV1`、方法、命令、结果和事件签名完全不变。新增查询分支 `review-audit.verify-calibration-suggestion-approval` 只映射到既有 `review-audit.read`，不增加能力值。输入固定工程、精确 `CalibrationSuggestionRefV1`、`ReviewDecisionRefV1` 和 `AuthorizationContextRefV1`；已批准结果只返回建议、任务、决定和时间，未批准原因沿用知识修订证明的稳定集合 `decision-not-found | target-mismatch | decision-not-approval`。
+在 `packages/contracts/src/ports/index.ts` 增加 strict `CalibrationSuggestionApprovalProofQueryV1Schema`、闭合 proof/result Schema 与类型，以及只有 `verifyCalibrationSuggestionApproval` 方法的独立 `CalibrationSuggestionApprovalProofPortV1`；现有 `ReviewAuditPortV1`、方法、命令、结果和事件签名完全不变。新增查询分支 `review-audit.verify-calibration-suggestion-approval` 只映射到既有 `review-audit.read`，不增加能力值。输入固定工程、精确 `CalibrationSuggestionRefV1`、`ReviewDecisionRefV1` 和 `AuthorizationContextRefV1`；匹配结果闭合区分 `approved-for-draft | rejected | returned-for-revision` 并只返回建议、任务、决定和时间，未匹配原因固定为 `decision-not-found | target-mismatch`。
 
-`PostgresReviewAuditAdapter` 复用现有知识修订证明的授权先行和按工程/决定精确查询路径，只把合法决定收窄为 `approve-draft-creation`。查询映射既有 `review-audit.read`，无权/跨工程不可枚举，不写业务审计、拒绝审计、回执或 Outbox；任务非 `decided`、保存决定引用不一致等不可能状态返回既有技术完整性错误。C29 只能调用该公共端口，禁止读取 C07 表或复制决定事实。
+`PostgresReviewAuditAdapter` 复用现有知识修订证明的授权先行和按工程/决定精确查询路径，并把三种合法决定映射为闭合证明类型。查询映射既有 `review-audit.read`，无权/跨工程不可枚举，不写业务审计、拒绝审计、回执或 Outbox；任务非 `decided`、保存决定引用不一致等不可能状态返回既有技术完整性错误。C29 只能调用该公共端口，禁止读取 C07 表或复制决定事实。
 
 采用独立单方法端口而非修改 `ReviewAuditPortV1` 或引入通用 `verifyApproval(target, decision)`，因为两类批准的合法决定和值域不同；专用端口不迫使既有调用者和 mock 增补无关方法。
 
@@ -76,10 +78,10 @@ D-04 收口后，C29 以 D-02 派生的建议精确引用和现有 `ReviewReques
 `recordReviewOutcome` 读取建议和 C07 精确决定：
 
 - `reject`：追加 `reviewStatus=rejected` 的公共偏差记录版本和审计，不创建工件或 C16 修订。
-- `return-for-revision`：保存不可变退回关联，原公开记录保持原版本；调用方只能以新的 C08 任务形成后继建议版本和新的 C07 任务。
+- `return-for-revision`：同事务追加“退回决定 + 前驱建议版本 + 预分配后继建议引用”血缘事实及下一 `pending` 公共记录版本，不插入建议占位；新的 C08 任务形成完整候选后只能消费一次该预留，并为后继建议创建新的 C07 任务。
 - `approve-draft-creation`：仅记录待创建草案的批准关联；公共偏差记录仍为 `pending`，直到 D-09 的 C16 修订和 C29 关联均成功。
 
-决定只适用于精确建议版本。后继建议、重新生成候选或目标基准变化均需要新的复核任务和决定，不转移人工批准。
+决定只适用于精确建议版本。相同退回决定在预留消费前重放不重复追加；相同后继创建命令重放复用完整建议，预留已消费后原建议不得再次退回或被另一命令重复消费。后继建议、重新生成候选或目标基准变化均需要新的复核任务和决定，不转移人工批准。
 
 ### D-09：草案创建通过证明门禁和 C16 幂等 saga 完成
 
@@ -95,7 +97,7 @@ D-04 收口后，C29 以 D-02 派生的建议精确引用和现有 `ReviewReques
 
 任务审计保留 C08 可重建输入、原始响应工件引用、工具行动、候选版本、预算与逐项校验；C29 审计保留偏差事实、基准、建议、复核证明、候选工件、C16 修订和幂等身份。只保存工件引用及必要摘要，不保存模型内部思维链。
 
-### D-11：`000047` 只追加三张 C29 事实表
+### D-11：`000047` 与 `000048` 只追加 C29 事实表
 
 新增 `packages/adapters/src/postgres/migrations/warning-response/deliver-calibration-suggestion-and-governance-loop/000047_calibration_suggestion_governance.ts`，实施前复验序号空闲：
 
@@ -103,7 +105,9 @@ D-04 收口后，C29 以 D-02 派生的建议精确引用和现有 `ReviewReques
 2. `business.calibration_deviation_records`：完整 `DeviationRecord` strict payload、状态版本、建议与决定关联、摘要和审计；实体/版本唯一，只追加。
 3. `business.calibration_governance_drafts`：建议、批准证明引用、候选工件、C16 修订、基准发布、命令幂等和审计；建议精确版本与决定组合唯一。
 
-三表以精确引用连接 C28/C08/C07/C16/C03 事实，使用 JSONB strict payload、digest、工程、命令/幂等、授权、三时态列和必要唯一/外键约束；只允许 INSERT/SELECT，提供最小 role grant 和逆序 `down`。不修改 `000046` 或更早迁移，不回填旧偏差。中央 foundation/auth fixture 如需登记，由主调度在集成检查点串行处理，Implementation 只报告精确位置。
+新增 `000048_calibration_suggestion_lineage.ts`，以只追加 reservation/consumption 两张表保存“退回决定—前驱—后继”及单次消费事实；公共偏差记录的建议引用可由已成立建议或未消费预留满足，不允许候选占位。
+
+五表以精确引用连接 C28/C08/C07/C16/C03 事实，使用 JSONB strict payload、digest、工程、命令/幂等、授权、三时态列和必要唯一/外键约束；只允许 INSERT/SELECT，提供最小 role grant 和逆序 `down`。不修改 `000046` 或更早迁移，不回填旧偏差。中央 foundation/auth fixture 如需登记，由主调度在集成检查点串行处理，Implementation 只报告精确位置。
 
 ### D-12：文件所有权和最小验证固定
 
@@ -116,11 +120,11 @@ core 表格测试覆盖入口资格、稳定派生、类型化操作、完整 C1
 - C08 尚无公共结果读取方法，因此 D-05 使用模块内私有窄读；它避免扩张公共契约，但实现必须复用 C08 自有存储与授权，不能在 C29 复制 Agent 事实。
 - C07、C16 与 C29 各自拥有事务，无法组成一个 PostgreSQL 调用栈内事务；确定性身份、幂等命令和“最后才标记 approved”使中断可收敛，不宣称分布式原子性。
 - 单建议单定义会让关联调整产生多个复核项，但显著降低部分修订和权限混合风险；真实跨定义原子需求出现前不引入批量协议。
-- `DeviationRecord.reviewStatus` 没有 returned 状态，因此退回决定保存在建议治理事实中，公开记录保持原版本；新候选形成新的 pending 版本，历史决定仍可追溯。
+- `DeviationRecord.reviewStatus` 没有 returned 状态，因此退回决定保存在血缘事实中，公开记录追加指向预留后继引用的 pending 版本；完整后继建议消费预留后成立，历史决定仍可追溯。
 
 ## Migration Plan
 
-先确认输入 HEAD、`000047` 空闲、C28 精确读取和 C08/C07/C16 接缝仍与设计一致；再追加 contracts 的加法式证明查询、C07 实现、calibration core/adapters 和 D-11 迁移。运行 strict OpenSpec/TypeScript/边界检查、相关单元与 PostgreSQL 纵向测试，并验证真实 up/down、重复 up、旧数据保留、最小授权、幂等重放、并发唯一及事务回滚。部署后不回填历史事实、不激活 C30 路由；回滚先停用尚未接线的 C29 服务，再逆序删除三张无历史回填表，既有 C07/C16/C28 事实不变。
+先确认输入 HEAD、`000047`/`000048` 空闲、C28 精确读取和 C08/C07/C16 接缝仍与设计一致；再追加 contracts 的加法式证明查询、C07 实现、calibration core/adapters 和 D-11 迁移。运行 strict OpenSpec/TypeScript/边界检查、相关单元与 PostgreSQL 纵向测试，并验证真实 up/down、重复 up、旧数据保留、最小授权、幂等重放、并发唯一及事务回滚。部署后不回填历史事实、不激活 C30 路由；回滚先停用尚未接线的 C29 服务，再逆序删除五张无历史回填表，既有 C07/C16/C28 事实不变。
 
 ## Open Questions
 

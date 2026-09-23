@@ -2,17 +2,17 @@
 
 ### Requirement: 系统必须提供校准建议草案创建批准证明只读接缝
 
-系统 MUST 由 C07 通过专用公共批准证明端口接收工程、精确 `CalibrationSuggestionRefV1`、`ReviewDecisionRefV1` 和 C06 授权上下文，并以闭合结果证明该决定是否可作为该建议创建配置草案的人工批准依据。只有同一工程中状态为 `decided` 的 `calibration-suggestion` 复核任务，其精确目标等于所查询建议、任务保存的精确决定引用匹配且决定类型为 `approve-draft-creation` 时，系统 MUST 返回已批准证明；决定不存在、目标不匹配或决定不是批准时，系统 MUST 返回对应未批准原因。证明只包含精确建议、复核任务、复核决定和决定时间，不得返回决定正文、原因正文、证据正文或数据库行；任务与决定事实违反既有状态约束时 MUST 作为技术完整性失败关闭，不得生成批准证明。（RA-S7）
+系统 MUST 由 C07 通过专用公共决定证明端口接收工程、精确 `CalibrationSuggestionRefV1`、`ReviewDecisionRefV1` 和 C06 授权上下文，并以闭合结果证明该建议的精确决定类型。只有同一工程中状态为 `decided` 的 `calibration-suggestion` 复核任务，其精确目标等于所查询建议且任务保存的精确决定引用匹配时，系统才可按决定正文返回 `approved-for-draft`、`rejected` 或 `returned-for-revision`；决定不存在或目标不匹配时返回对应未匹配原因。证明只包含决定类型、精确建议、复核任务、复核决定和决定时间，不得返回原因正文、证据正文或数据库行；任务与决定事实违反既有状态约束时 MUST 作为技术完整性失败关闭，不得生成决定证明。（RA-S7）
 
 #### Scenario: 精确校准建议获得草案创建批准证明
 - **WHEN** 获授权调用方提交同一工程中指向精确校准建议的 `approve-draft-creation` 决定引用，且关联复核任务保持有效决定状态
 - **THEN** 系统返回闭合的已批准结果及精确建议、复核任务、复核决定和决定时间
 - **AND** 调用方无需读取 C07 表、追溯投影或解析活动文案即可执行确定性草案创建校验
 
-#### Scenario: 拒绝或退回决定不能形成批准证明
+#### Scenario: 拒绝或退回决定形成精确类型证明
 - **WHEN** 所查询决定为 `reject` 或 `return-for-revision`
-- **THEN** 系统返回 `decision-not-approval` 未批准原因
-- **AND** 不把决定存在、复核已完成或人工参与等同于批准创建草案
+- **THEN** 系统分别返回 `rejected` 或 `returned-for-revision`，并绑定精确建议、任务、决定和时间
+- **AND** C29 必须以该类型核对调用方声明，不得把退回伪装成拒绝或把拒绝伪装成退回
 
 #### Scenario: 错目标决定不能形成批准证明
 - **WHEN** 决定指向另一校准建议或另一精确版本

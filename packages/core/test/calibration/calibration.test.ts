@@ -10,6 +10,7 @@ import {
   deriveCalibrationInputSnapshotRef,
   deriveCalibrationSuggestionRef,
   deriveDeviationRecordRef,
+  deriveSuccessorCalibrationSuggestionRef,
   digestDocument,
   failCalibration,
   toCalibrationModuleError,
@@ -19,7 +20,10 @@ import {
   type CalibrationTargetDocumentV1,
   type CalibrationTargetDefinitionTypeV1,
 } from "../../src/calibration/index.js";
-import { RiskMatrixDocumentV1Schema } from "../../src/assessment-config/index.js";
+import {
+  RiskMatrixDocumentV1Schema,
+  WeightSetDocumentV1Schema,
+} from "../../src/assessment-config/index.js";
 import { sha256CanonicalJson } from "../../src/persistence/index.js";
 import {
   assessmentConfigurationDocumentOf,
@@ -73,8 +77,27 @@ const candidate = (operations: readonly CalibrationOperationV1[]): CalibrationCa
 
 const configurationSet = makeAssessmentConfigurationFixtureSet();
 
+/** 自建合法权重集：每个轴必须合计 10000 基点，单条替换无法保持总量，需成对操作。 */
 const weightSetDocument = (): CalibrationTargetDocumentV1 =>
-  assessmentConfigurationDocumentOf(configurationSet, "weight-set");
+  WeightSetDocumentV1Schema.parse({
+    schemaVersion: "1",
+    definitionType: "weight-set",
+    projectRevisionRef: configurationSet.projectRevisionRef,
+    configurationSetRef: configurationSet.configurationSetRef,
+    content: {
+      weightSetId: "calibration-weight-set",
+      weightSetVersion: "1",
+      sourceRef: configurationSet.configurationSetRef,
+      possibilityWeights: [
+        { indicatorId: "possibility-indicator-1", basisPoints: 4000 },
+        { indicatorId: "possibility-indicator-2", basisPoints: 6000 },
+      ],
+      consequenceWeights: [
+        { indicatorId: "consequence-indicator-1", basisPoints: 5000 },
+        { indicatorId: "consequence-indicator-2", basisPoints: 5000 },
+      ],
+    },
+  });
 
 /** 单带矩阵：一个类型化带状替换既能改变正文，又能保持相邻边界与单元覆盖完整。 */
 const riskMatrixDocument = (upper = "1"): CalibrationTargetDocumentV1 =>
@@ -108,7 +131,7 @@ const monitoringDocument = (): CalibrationTargetDocumentV1 =>
 const deviationPolicyDocument = (): CalibrationTargetDocumentV1 =>
   assessmentConfigurationDocumentOf(configurationSet, "deviation-policy");
 
-/** 每类目标定义一个真实改变正文、且仍通过完整文档 Schema 的类型化操作。 */
+/** 每类目标定义一个真实改变正文、且仍通过完整文档 Schema 与 C18 语义的类型化操作。 */
 const validOperationFor = (
   definitionType: CalibrationTargetDefinitionTypeV1,
 ): CalibrationOperationV1 => {
@@ -116,13 +139,13 @@ const validOperationFor = (
     case "weight-set": {
       const document = weightSetDocument();
       if (document.definitionType !== "weight-set") throw new Error("unexpected definition");
-      const [first, second] = document.content.possibilityWeights;
-      if (first === undefined || second === undefined) throw new Error("fixture too small");
+      const [first] = document.content.possibilityWeights;
+      if (first === undefined) throw new Error("fixture too small");
       return CalibrationOperationV1Schema.parse({
         kind: "replace-weight-entry",
         definitionType: "weight-set",
         axis: "possibility",
-        entry: { indicatorId: first.indicatorId, basisPoints: second.basisPoints },
+        entry: { indicatorId: first.indicatorId, basisPoints: first.basisPoints - 1000 },
       });
     }
     case "risk-matrix": {
@@ -261,6 +284,32 @@ const CALIBRATION_TARGET_TYPES: readonly CalibrationTargetDefinitionTypeV1[] = [
   "structured-scoring-rule",
 ];
 
+/** 单条替换会破坏每轴 10000 基点的总量约束，因此权重集必须成对等量调整。 */
+const validOperationsFor = (
+  definitionType: CalibrationTargetDefinitionTypeV1,
+): readonly CalibrationOperationV1[] => {
+  const operation = validOperationFor(definitionType);
+  if (definitionType !== "weight-set") return [operation];
+  const document = weightSetDocument();
+  if (document.definitionType !== "weight-set") throw new Error("unexpected definition");
+  const [first, second] = document.content.possibilityWeights;
+  if (first === undefined || second === undefined) throw new Error("fixture too small");
+  return [
+    CalibrationOperationV1Schema.parse({
+      kind: "replace-weight-entry",
+      definitionType: "weight-set",
+      axis: "possibility",
+      entry: { indicatorId: first.indicatorId, basisPoints: first.basisPoints - 1000 },
+    }),
+    CalibrationOperationV1Schema.parse({
+      kind: "replace-weight-entry",
+      definitionType: "weight-set",
+      axis: "possibility",
+      entry: { indicatorId: second.indicatorId, basisPoints: second.basisPoints + 1000 },
+    }),
+  ];
+};
+
 describe("C29 校准领域规则", () => {
   it("由不可变事实与候选摘要稳定派生身份", () => {
     const deviationFactRef = {
@@ -308,6 +357,23 @@ describe("C29 校准领域规则", () => {
         candidateDigest: "a".repeat(64),
       }).reference.entityId,
     ).not.toBe(suggestion.reference.entityId);
+    const successor = deriveSuccessorCalibrationSuggestionRef({
+      predecessorSuggestionRef: suggestion.reference,
+      reviewDecisionRef: versionRef("return-decision"),
+    });
+    expect(successor.reference.versionId).toBe("2");
+    expect(
+      deriveSuccessorCalibrationSuggestionRef({
+        predecessorSuggestionRef: suggestion.reference,
+        reviewDecisionRef: versionRef("return-decision"),
+      }),
+    ).toEqual(successor);
+    expect(
+      deriveSuccessorCalibrationSuggestionRef({
+        predecessorSuggestionRef: successor.reference,
+        reviewDecisionRef: versionRef("return-decision-2"),
+      }).reference.versionId,
+    ).toBe("3");
 
     const snapshot = deriveCalibrationInputSnapshotRef({
       projectId: "project-1",
@@ -337,15 +403,19 @@ describe("C29 校准领域规则", () => {
     "%s 上的类型化操作通过完整文档 Schema 与摘要重放",
     (definitionType) => {
       const document = documentFor(definitionType);
-      const operation = validOperationFor(definitionType);
+      const operations = validOperationsFor(definitionType);
       const outcome = validateCalibrationCandidate({
         definitionType,
         document,
-        candidate: candidate([operation]),
+        candidate: candidate(operations),
       });
       expect(outcome.validation).toMatchObject({
         disposition: "accepted",
-        items: [{ operationIndex: 0, operationKind: operation.kind, disposition: "accepted" }],
+        items: operations.map((operation, index) => ({
+          operationIndex: index,
+          operationKind: operation.kind,
+          disposition: "accepted",
+        })),
       });
       expect(outcome.validation.rejectionClass).toBeUndefined();
       expect(outcome.contentDigest).toMatch(/^[0-9a-f]{64}$/u);
@@ -354,7 +424,7 @@ describe("C29 校准领域规则", () => {
       const replay = applyCalibrationOperations({
         definitionType,
         document,
-        operations: [operation],
+        operations,
       });
       expect(digestDocument(definitionType, replay.document)).toBe(outcome.contentDigest);
       expect(replay.document).toEqual(outcome.document);
@@ -385,6 +455,26 @@ describe("C29 校准领域规则", () => {
       reasonCode: "calibration-operation-selector-missing",
     });
     expect(missing.document).toBeUndefined();
+
+    const [firstWeight] = document.content.possibilityWeights;
+    if (firstWeight === undefined) throw new Error("fixture too small");
+    const brokenWeights = validateCalibrationCandidate({
+      definitionType: "weight-set",
+      document,
+      candidate: candidate([
+        CalibrationOperationV1Schema.parse({
+          kind: "replace-weight-entry",
+          definitionType: "weight-set",
+          axis: "possibility",
+          entry: { ...firstWeight, basisPoints: 1 },
+        }),
+      ]),
+    });
+    expect(brokenWeights.validation).toMatchObject({
+      disposition: "rejected",
+      rejectionClass: "repairable",
+      items: [{ reasonCode: "calibration-document-invalid" }],
+    });
 
     // 单项操作自身合法、但破坏矩阵相邻边界时，完整文档 Schema 必须拒绝该候选。
     const matrix = twoBandRiskMatrixDocument();
@@ -432,7 +522,7 @@ describe("C29 校准领域规则", () => {
       definitionType: "weight-set",
       document: documentFor("weight-set"),
       candidate: candidate([
-        validOperationFor("weight-set"),
+        ...validOperationsFor("weight-set"),
         CalibrationOperationV1Schema.parse({
           kind: "replace-monitoring-warning-threshold",
           definitionType: "monitoring-warning-threshold",
@@ -442,6 +532,7 @@ describe("C29 校准领域规则", () => {
     });
     expect(mixed.validation.disposition).toBe("rejected");
     expect(mixed.validation.items.map((item) => item.disposition)).toEqual([
+      "accepted",
       "accepted",
       "rejected",
     ]);
@@ -486,6 +577,8 @@ describe("C29 校准领域规则", () => {
         toolPolicyRef: versionRef("calibration-tools"),
         incrementSchemaRef: versionRef("calibration-increment"),
         validationPolicyRef: versionRef("calibration-validation"),
+        evidenceRequirementCount: 1,
+        maxOperations: 4,
         budgetPolicy: {
           schemaVersion: "1",
           policyRef: versionRef("calibration-budget"),
@@ -522,16 +615,22 @@ describe("C29 校准领域规则", () => {
       resultFamilies: ["calibration-suggestion"],
     });
     expect(definition.tools).toEqual([]);
-    const typed = candidate([validOperationFor("weight-set")]);
+    const typed = candidate(validOperationsFor("weight-set"));
     expect(definition.candidateSchema.parse(typed)).toEqual(typed);
+    expect(
+      definition.candidateSchema.safeParse({
+        ...typed,
+        operations: Array.from({ length: 5 }, () => validOperationFor("weight-set")),
+      }).success,
+    ).toBe(false);
     expect(definition.measureCandidateUsage(typed, {} as never)).toEqual({
       candidates: 1,
-      objects: 1,
+      objects: 2,
     });
   });
 
   it("候选摘要绑定全部操作、理由与证据", () => {
-    const base = candidate([validOperationFor("weight-set")]);
+    const base = candidate(validOperationsFor("weight-set"));
     expect(calibrationCandidateDigest(base)).toMatch(/^[0-9a-f]{64}$/u);
     expect(calibrationCandidateDigest(base)).toBe(sha256CanonicalJson(base));
     expect(calibrationCandidateDigest({ ...base, rationale: "另一条理由" })).not.toBe(

@@ -114,3 +114,16 @@ openspec validate deliver-calibration-suggestion-and-governance-loop --strict
 - Finalizer 可在上述新增/修改文件内完成契约、领域、适配器、migration、测试和 package export 的核验及已批准范围内普通修复；不得接线 apps、发布配置、改变 D-03 单目标或 D-09 proof gate。
 - 验收必须核对所有 IP-ID、31 个 Scenario 证据、RA-S7 追踪、无占位、无 C07 私表读取、无 latest、无自动发布、无新增依赖/权限，以及 `git diff --check` 和第 6 节命令。
 - 限定审计标签：`public-contract-additive`、`authorization-before-read`、`agent-bounded-increment`、`c07-proof-gate`、`c03-transaction-outbox`、`c16-draft-only`、`migration-000047`、`cross-module-idempotent-saga`。同一收尾轮次最多一次审计，发现的范围内普通缺陷由该审计任务闭合；越界项升级。
+
+## 9. 已批准的实施增量
+
+协调端裁决 `msg_3ddffe19c23e`、`msg_acd25df67de8` 与本轮派发 `msg_dc652657ee86` 增补以下映射；第 3、6、7 节保留固定 base 时的原始施工记录。现有 delta specs 共 11 项 Requirement、38 个 Scenario，新增场景按原 IP-ID 验收：
+
+| 新增 Scenario | IP-ID | 施工与验证 |
+|---|---|---|
+| 冻结评估输入与目标依据精确匹配；其它有效依据不能替代冻结依据 | IP-06、IP-11 | C25 精确快照窄读；C29 校验工程、空间、依据集合、目标版本及摘要；C25/C29 PostgreSQL 正反场景 |
+| 退回与后继创建保持幂等；无效后继消费失败关闭 | IP-08、IP-10、IP-11 | `000048` reservation/consumption 只追加事实、单次消费约束与回归 |
+| 调用方声明与真实决定类型不一致 | IP-03、IP-08、IP-11 | C07 精确决定类型证明与 C29 声明对账 |
+| 精确快照读取返回最小冻结投影；缺失、陈旧或越权快照失败关闭 | IP-06、IP-11 | `AssessmentInputSnapshotReaderV1`、`risk-assessment.read-input-snapshot` → `risk-assessment.read`，真 PostgreSQL 授权与缺失测试 |
+
+相应文件增量：`packages/core/src/risk-assessment/engine/service.ts`、`packages/adapters/src/risk-assessment/engine/postgres-risk-assessment-engine.ts`、`packages/adapters/test/risk-assessment/{fixture,postgres-risk-assessment-engine.test}.ts`、`packages/adapters/src/postgres/migrations/warning-response/deliver-calibration-suggestion-and-governance-loop/000048_calibration_suggestion_lineage.ts`、`packages/adapters/test/{auth/fixture,postgres/postgres-foundation.test}.ts`，以及上述接缝所需的 contracts/calibration 文件和测试。仅新增一条指向既有 capability 的 branch；不新增角色、能力、依赖或应用路由。中央测试登记由本轮 Finalizer 完成，生产 migration provider 沿目录扫描发现。

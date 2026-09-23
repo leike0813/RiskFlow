@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DomainEventV1Schema } from "@riskflow/contracts/events";
 import { RiskAssessmentRecordSchema } from "@riskflow/contracts/records";
 
-import { c25RuntimePolicySet } from "../../../core/test/risk-assessment/fixture.js";
+import { c25ReleaseRef, c25RuntimePolicySet } from "../../../core/test/risk-assessment/fixture.js";
 
 import { startRiskAssessmentEngineFixture, type RiskAssessmentEngineFixtureV1 } from "./fixture.js";
 
@@ -104,6 +104,51 @@ describe("C25 PostgreSQL risk assessment engine", () => {
         "entityId" in (value as object),
     );
     expect(referenceFields).toHaveLength(22);
+  }, 120_000);
+
+  it("C25 精确窄读只返回冻结空间、依据和目标摘要", async () => {
+    const prepared = await fixture.engine.prepare(
+      (await fixture.prepareCommand({ commandId: "c25-prepare-calibration-read" })) as never,
+    );
+    expect(prepared.kind).toBe("succeeded");
+    if (prepared.kind !== "succeeded") return;
+    const requestId = "c25-read-calibration-input";
+    const query = {
+      requestId,
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      projectId: fixture.projectId,
+      actorId: fixture.managerId,
+      authorization: await fixture.readAuthorization(requestId),
+      inputSnapshotRef: prepared.result.assessmentInputSnapshotRef,
+      targetReleaseRef: c25ReleaseRef("deviation-policy"),
+    };
+    const result = await fixture.engine.readInputSnapshot(query);
+    expect(result).toMatchObject({
+      kind: "succeeded",
+      projectId: fixture.projectId,
+      basisReleaseSetRef: fixture.basisRef,
+      targetReleaseRef: query.targetReleaseRef,
+      targetContentDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+    });
+    expect(result as object).not.toHaveProperty("snapshot_payload");
+    const missing = await fixture.engine.readInputSnapshot({
+      ...query,
+      inputSnapshotRef: {
+        ...query.inputSnapshotRef,
+        reference: { ...query.inputSnapshotRef.reference, versionId: "missing" },
+      },
+    });
+    expect(missing).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    const wrongTarget = await fixture.engine.readInputSnapshot({
+      ...query,
+      targetReleaseRef: c25ReleaseRef("other-definition"),
+    });
+    expect(wrongTarget).toMatchObject({ kind: "failed", error: { code: "STALE_VERSION" } });
+    const foreign = await fixture.engine.readInputSnapshot({
+      ...query,
+      projectId: fixture.foreignProjectId(),
+    });
+    expect(foreign).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
   }, 120_000);
 
   it("同键同载荷重放返回原引用，同键异载荷返回幂等冲突", async () => {

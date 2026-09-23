@@ -95,6 +95,24 @@ export const deriveCalibrationSuggestionRef = (input: {
   },
 });
 
+/** 退回决定预留后继版本；身份只由精确前驱与精确决定决定。 */
+export const deriveSuccessorCalibrationSuggestionRef = (input: {
+  readonly predecessorSuggestionRef: VersionReference;
+  readonly reviewDecisionRef: VersionReference;
+}): { readonly kind: "calibration-suggestion"; readonly reference: VersionReference } => {
+  const predecessorVersion = Number.parseInt(input.predecessorSuggestionRef.versionId, 10);
+  if (!Number.isSafeInteger(predecessorVersion) || predecessorVersion < 1) {
+    throw new TypeError("calibration suggestion version must be a positive integer");
+  }
+  return {
+    kind: "calibration-suggestion",
+    reference: {
+      entityId: `calibration-suggestion-${sha256CanonicalJson(input).slice(0, 32)}`,
+      versionId: String(predecessorVersion + 1),
+    },
+  };
+};
+
 /** 公共偏差记录身份只由工程与精确 C28 偏差事实派生；首版固定为 `1`。 */
 export const deriveDeviationRecordRef = (input: {
   readonly projectId: string;
@@ -270,15 +288,33 @@ const applyOperation = (
   }
 };
 
-const fullDocumentInvalid = (operation: CalibrationOperationV1): PreparedOperationV1 => ({
-  operation,
-  reasonCode: "calibration-document-invalid",
-  rejectionClass: "repairable",
-});
+const strictParse = (
+  definitionType: CalibrationTargetDefinitionTypeV1,
+  document: CalibrationTargetDocumentV1,
+):
+  | { readonly success: true; readonly document: CalibrationTargetDocumentV1 }
+  | { readonly success: false } => {
+  if (definitionType === "structured-scoring-rule") {
+    const parsed = StructuredScoringRuleDocumentV1Schema.safeParse(document);
+    return parsed.success
+      ? { success: true, document: parsed.data as CalibrationTargetDocumentV1 }
+      : { success: false };
+  }
+  const parsed = AssessmentConfigurationDocumentV1Schema.safeParse(document);
+  if (!parsed.success) return { success: false };
+  try {
+    // C18 语义约束（矩阵完整性、阈值覆盖、权重总量）不在 strict Schema 内。
+    validateAssessmentConfigurationDocument(parsed.data);
+    return { success: true, document: parsed.data as CalibrationTargetDocumentV1 };
+  } catch {
+    return { success: false };
+  }
+};
 
 /**
- * 按 Agent 给出的顺序应用全部操作，每步以对应 C18/C19 完整文档 Schema 复验。
- * 任一步失败即返回该项的稳定拒绝原因，不产生部分文档。
+ * 按 Agent 给出的顺序应用全部操作，只对**最终**候选文档跑一次 C18/C19 完整 Schema 与
+ * C18 语义校验。逐项处置只表达操作自身的种类与选择器合法性，因此成对等量调整
+ * （例如权重总量守恒）不会被中间态误判。
  */
 const applyOperations = (
   definitionType: CalibrationTargetDefinitionTypeV1,
@@ -302,54 +338,27 @@ const applyOperations = (
       });
       return { items };
     }
-    const candidateDocument = prepared.document!;
-    const strict = strictParse(definitionType, candidateDocument);
-    if (!strict.success) {
-      items.push({
-        operationIndex: index,
-        operationKind: parsedOperation.kind,
-        disposition: "rejected",
-        reasonCode: fullDocumentInvalid(parsedOperation).reasonCode!,
-      });
-      return { items };
-    }
     items.push({
       operationIndex: index,
       operationKind: parsedOperation.kind,
       disposition: "accepted",
     });
-    current = strict.document;
+    current = prepared.document!;
   }
-  return { items, document: current };
-};
-
-const strictParse = (
-  definitionType: CalibrationTargetDefinitionTypeV1,
-  document: CalibrationTargetDocumentV1,
-):
-  | { readonly success: true; readonly document: CalibrationTargetDocumentV1 }
-  | { readonly success: false } => {
-  const schema =
-    definitionType === "structured-scoring-rule"
-      ? StructuredScoringRuleDocumentV1Schema
-      : AssessmentConfigurationDocumentV1Schema;
-  const parsed = schema.safeParse(document);
-  if (parsed.success) {
-    return { success: true, document: parsed.data as CalibrationTargetDocumentV1 };
-  }
-  if (definitionType !== "structured-scoring-rule") {
-    // C18 语义约束（矩阵完整性、阈值覆盖、权重总量）不在 strict Schema 内，必须再跑一次。
-    const typed = AssessmentConfigurationDocumentV1Schema.safeParse(document);
-    if (typed.success) {
-      try {
-        validateAssessmentConfigurationDocument(typed.data);
-        return { success: true, document: typed.data as CalibrationTargetDocumentV1 };
-      } catch {
-        return { success: false };
-      }
+  const strict = strictParse(definitionType, current);
+  if (!strict.success) {
+    const lastAccepted = items.findLastIndex((item) => item.disposition === "accepted");
+    const target = items[lastAccepted];
+    if (target !== undefined) {
+      items[lastAccepted] = {
+        ...target,
+        disposition: "rejected",
+        reasonCode: "calibration-document-invalid",
+      };
     }
+    return { items };
   }
-  return { success: false };
+  return { items, document: strict.document };
 };
 
 /* -------------------------------------------------------------------------- */
@@ -461,43 +470,59 @@ export const createCalibrationSuggestionTaskDefinition = (options: {
     readonly incrementSchemaRef: VersionReference;
     readonly validationPolicyRef: VersionReference;
     readonly budgetPolicy: z.infer<typeof AgentTaskBudgetPolicyV1Schema>;
+    readonly evidenceRequirementCount: number;
+    readonly maxOperations: number;
   };
   readonly port: CalibrationSuggestionTaskPortV1;
-}): AgentTaskDefinitionV1<CalibrationCandidateV1, CalibrationCandidateV1> => ({
-  metadata: AgentTaskDefinitionMetadataV1Schema.parse({
-    schemaVersion: "1",
-    definitionRef: options.policy.definitionRef,
-    taskType: CALIBRATION_AGENT_TASK_TYPE_V1,
-    toolPolicyRef: options.policy.toolPolicyRef,
-    incrementSchemaRef: options.policy.incrementSchemaRef,
-    validationPolicyRef: options.policy.validationPolicyRef,
-    supportedTriggerModes: ["embedded"],
-    allowedToolRefs: [],
-    resultFamilies: ["calibration-suggestion"],
-  }),
-  budgetPolicy: AgentTaskBudgetPolicyV1Schema.parse(options.policy.budgetPolicy),
-  actionSchema: CalibrationCandidateV1Schema,
-  incrementSchema: CalibrationCandidateV1Schema,
-  candidateSchema: CalibrationCandidateV1Schema,
-  tools: [],
-  measureCandidateUsage: (candidate) => {
-    const typed = CalibrationCandidateV1Schema.parse(candidate);
-    return { candidates: 1, objects: typed.operations.length };
-  },
-  validateCandidate: async (candidate, context) =>
-    AgentValidationResultV1Schema.parse(
-      await options.port.validateIncrement({
-        task: context,
-        candidate: CalibrationCandidateV1Schema.parse(candidate),
-      }),
-    ),
-  finalizeCandidate: async (candidate, context) => {
-    const typed = CalibrationCandidateV1Schema.parse(candidate);
-    return AgentTaskResultRefV1Schema.parse(
-      await options.port.finalizeIncrement({ task: context, candidate: typed }),
-    );
-  },
-});
+}): AgentTaskDefinitionV1<CalibrationCandidateV1, CalibrationCandidateV1> => {
+  const candidateSchema = CalibrationCandidateV1Schema.superRefine((candidate, context) => {
+    if (candidate.evidenceReferences.length < options.policy.evidenceRequirementCount) {
+      context.addIssue({
+        code: "custom",
+        path: ["evidenceReferences"],
+        message: "insufficient evidence",
+      });
+    }
+    if (candidate.operations.length > options.policy.maxOperations) {
+      context.addIssue({ code: "custom", path: ["operations"], message: "too many operations" });
+    }
+  });
+  return {
+    metadata: AgentTaskDefinitionMetadataV1Schema.parse({
+      schemaVersion: "1",
+      definitionRef: options.policy.definitionRef,
+      taskType: CALIBRATION_AGENT_TASK_TYPE_V1,
+      toolPolicyRef: options.policy.toolPolicyRef,
+      incrementSchemaRef: options.policy.incrementSchemaRef,
+      validationPolicyRef: options.policy.validationPolicyRef,
+      supportedTriggerModes: ["embedded"],
+      allowedToolRefs: [],
+      resultFamilies: ["calibration-suggestion"],
+    }),
+    budgetPolicy: AgentTaskBudgetPolicyV1Schema.parse(options.policy.budgetPolicy),
+    actionSchema: candidateSchema,
+    incrementSchema: candidateSchema,
+    candidateSchema,
+    tools: [],
+    measureCandidateUsage: (candidate) => {
+      const typed = candidateSchema.parse(candidate);
+      return { candidates: 1, objects: typed.operations.length };
+    },
+    validateCandidate: async (candidate, context) =>
+      AgentValidationResultV1Schema.parse(
+        await options.port.validateIncrement({
+          task: context,
+          candidate: candidateSchema.parse(candidate),
+        }),
+      ),
+    finalizeCandidate: async (candidate, context) => {
+      const typed = candidateSchema.parse(candidate);
+      return AgentTaskResultRefV1Schema.parse(
+        await options.port.finalizeIncrement({ task: context, candidate: typed }),
+      );
+    },
+  };
+};
 
 /** 保留 C08 公共结果构造入口，供实现方在 finalize 时生成 `candidateRef`。 */
 export const calibrationCandidateResultRef = (input: {
@@ -512,18 +537,38 @@ export const calibrationCandidateResultRef = (input: {
 /* -------------------------------------------------------------------------- */
 
 /** 版本化校验策略：固定工具白名单、预算与拒绝分类，由调用方按 ref 解析后注入。 */
-export const CalibrationValidationPolicyV1Schema = z.strictObject({
-  schemaVersion: z.literal(CALIBRATION_SCHEMA_VERSION_V1),
-  policyRef: VersionReferenceSchema,
-  projectId: IdentifierSchema,
-  definitionRef: VersionReferenceSchema,
-  toolPolicyRef: VersionReferenceSchema,
-  incrementSchemaRef: VersionReferenceSchema,
-  validationPolicyRef: VersionReferenceSchema,
-  budgetPolicy: AgentTaskBudgetPolicyV1Schema,
-  evidenceRequirementCount: z.number().int().positive(),
-  maxOperations: z.number().int().positive(),
-});
+export const CalibrationValidationPolicyV1Schema = z
+  .strictObject({
+    schemaVersion: z.literal(CALIBRATION_SCHEMA_VERSION_V1),
+    policyRef: VersionReferenceSchema,
+    projectId: IdentifierSchema,
+    definitionRef: VersionReferenceSchema,
+    toolPolicyRef: VersionReferenceSchema,
+    incrementSchemaRef: VersionReferenceSchema,
+    validationPolicyRef: VersionReferenceSchema,
+    budgetPolicy: AgentTaskBudgetPolicyV1Schema,
+    evidenceRequirementCount: z.number().int().positive(),
+    maxOperations: z.number().int().positive(),
+  })
+  .superRefine((policy, context) => {
+    if (
+      policy.toolPolicyRef.entityId !== policy.budgetPolicy.toolPolicyRef.entityId ||
+      policy.toolPolicyRef.versionId !== policy.budgetPolicy.toolPolicyRef.versionId
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["toolPolicyRef"],
+        message: "tool policy mismatch",
+      });
+    }
+    if (policy.maxOperations > policy.budgetPolicy.maxObjects) {
+      context.addIssue({
+        code: "custom",
+        path: ["maxOperations"],
+        message: "operation budget exceeded",
+      });
+    }
+  });
 export type CalibrationValidationPolicyV1 = z.infer<typeof CalibrationValidationPolicyV1Schema>;
 
 export { ScoringThresholdSchema };

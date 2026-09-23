@@ -23,6 +23,7 @@ import type {
 } from "@riskflow/core/risk-assessment/engine";
 import {
   ModuleErrorV1Schema,
+  type AuthorizationContextV1,
   type ContentArtifactRefV1,
   type ModuleErrorV1,
   type SourceVersionRefV1,
@@ -71,6 +72,7 @@ const SCORING_RULE_MEDIA_TYPE = "application/vnd.riskflow.structured-scoring-rul
 export interface RiskAssessmentEngineFixtureV1 {
   readonly postgres: EngineeringContextSourcePostgresFixture;
   readonly engine: PostgresRiskAssessmentEngine;
+  readAuthorization(requestId: string): Promise<AuthorizationContextV1>;
   readonly projectId: string;
   readonly managerId: string;
   readonly projectRevisionRef: { readonly kind: "project-revision"; readonly reference: unknown };
@@ -1099,6 +1101,12 @@ export const startRiskAssessmentEngineFixture = async (
   return {
     postgres,
     engine,
+    readAuthorization: (requestId) =>
+      authorize({
+        invocationId: requestId,
+        branch: "risk-assessment.read-input-snapshot",
+        sourceVersionRefs: [sourceVersionRef],
+      }),
     projectId: PROJECT_ID,
     managerId,
     projectRevisionRef,

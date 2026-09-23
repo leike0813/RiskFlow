@@ -9,6 +9,7 @@ import { AuthorizationContextV1Schema, type ModuleErrorV1 } from "@riskflow/cont
 import { AssessmentConfigurationDocumentV1Schema } from "@riskflow/core/assessment-config";
 
 import * as calibrationMigration from "../../src/postgres/migrations/warning-response/deliver-calibration-suggestion-and-governance-loop/000047_calibration_suggestion_governance.js";
+import * as calibrationLineageMigration from "../../src/postgres/migrations/warning-response/deliver-calibration-suggestion-and-governance-loop/000048_calibration_suggestion_lineage.js";
 import { createPostgresRuntime } from "../../src/postgres/pool.js";
 import {
   C29_CANDIDATE_PURPOSE,
@@ -22,6 +23,8 @@ import {
 const CALIBRATION_TABLES = [
   "calibration_deviation_records",
   "calibration_governance_drafts",
+  "calibration_suggestion_lineage_consumptions",
+  "calibration_suggestion_lineage_reservations",
   "calibration_suggestions",
 ] as const;
 
@@ -33,8 +36,6 @@ interface SuggestionRowV1 {
   readonly command_id: string;
   readonly frozen_input_artifact_id: string;
   readonly review_task_id: string;
-  readonly returned_decision_ref: unknown;
-  readonly approved_decision_ref: unknown;
 }
 
 interface DeviationRecordRowV1 {
@@ -53,9 +54,27 @@ interface DeviationRecordRowV1 {
 interface GovernanceDraftRowV1 {
   readonly draft_id: string;
   readonly version_id: string;
+  readonly suggestion_id: string;
   readonly candidate_artifact_id: string;
   readonly candidate_digest: string;
   readonly knowledge_revision_id: string;
+}
+
+interface LineageReservationRowV1 {
+  readonly reservation_id: string;
+  readonly predecessor_suggestion_id: string;
+  readonly predecessor_suggestion_version_id: string;
+  readonly successor_suggestion_id: string;
+  readonly successor_suggestion_version_id: string;
+  readonly review_decision_id: string;
+  readonly review_decision_version_id: string;
+}
+
+interface LineageConsumptionRowV1 {
+  readonly reservation_id: string;
+  readonly successor_suggestion_id: string;
+  readonly successor_suggestion_version_id: string;
+  readonly command_id: string;
 }
 
 type SuggestionRefV1 = {
@@ -95,6 +114,18 @@ describe.sequential("PostgreSQL calibration adapter", () => {
   const draftRows = (): Promise<GovernanceDraftRowV1[]> =>
     fixture!.rows<GovernanceDraftRowV1>(
       "SELECT * FROM business.calibration_governance_drafts WHERE project_id = $1 ORDER BY draft_id",
+      [fixture!.projectId],
+    );
+  const lineageReservations = (): Promise<LineageReservationRowV1[]> =>
+    fixture!.rows<LineageReservationRowV1>(
+      `SELECT * FROM business.calibration_suggestion_lineage_reservations
+       WHERE project_id = $1 ORDER BY reservation_id`,
+      [fixture!.projectId],
+    );
+  const lineageConsumptions = (): Promise<LineageConsumptionRowV1[]> =>
+    fixture!.rows<LineageConsumptionRowV1>(
+      `SELECT * FROM business.calibration_suggestion_lineage_consumptions
+       WHERE project_id = $1 ORDER BY reservation_id`,
       [fixture!.projectId],
     );
   const artifactCount = async (): Promise<number> =>
@@ -141,7 +172,10 @@ describe.sequential("PostgreSQL calibration adapter", () => {
   const seedSuggestion = async (input: { readonly suffix: string; readonly threshold: string }) => {
     const staged = await prepareSuggestionCommand(input);
     const result = await fixture!.createSuggestion(staged.command);
-    expect(result.kind, `createSuggestion(${input.suffix})`).toBe("succeeded");
+    expect(
+      result.kind,
+      `createSuggestion(${input.suffix}): ${JSON.stringify(result).slice(0, 500)}`,
+    ).toBe("succeeded");
     if (result.kind !== "succeeded" || result.result.kind !== "calibration") {
       throw new Error(`createSuggestion did not succeed for ${input.suffix}`);
     }
@@ -193,6 +227,7 @@ describe.sequential("PostgreSQL calibration adapter", () => {
     const sentinelId = "c29-migration-sentinel";
     try {
       await fixture!.preinsertAuditConflict(sentinelId);
+      await calibrationLineageMigration.down(migrator.db);
       await calibrationMigration.down(migrator.db);
       const dropped = await fixture!.rows<{ table_name: string }>(
         `SELECT table_name FROM information_schema.tables
@@ -201,6 +236,7 @@ describe.sequential("PostgreSQL calibration adapter", () => {
       );
       expect(dropped).toHaveLength(0);
       await calibrationMigration.up(migrator.db);
+      await calibrationLineageMigration.up(migrator.db);
       const recreated = await fixture!.rows<{ table_name: string }>(
         `SELECT table_name FROM information_schema.tables
          WHERE table_schema = 'business' AND table_name = ANY($1::text[])
@@ -294,6 +330,65 @@ describe.sequential("PostgreSQL calibration adapter", () => {
     expect(receipts[0]?.count).toBe("0");
   });
 
+  it("冻结快照缺失或目标版本不匹配时不保存校准输入", async () => {
+    const fact = fixture!.deviationFacts.seed({
+      suffix: "frozen-missing",
+      thresholdExceeded: true,
+    });
+    const before = await artifactCount();
+    fixture!.inputSnapshots.remove(fact.frozenAssessmentBasisRef.reference.entityId);
+    const missing = await fixture!.prepareInput({
+      requestId: "c29-prepare-frozen-missing",
+      deviationFactRef: fact.deviationFactRef,
+    });
+    expect(missing).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    expect(await artifactCount()).toBe(before);
+    const otherBasis = fixture!.deviationFacts.seed({
+      suffix: "frozen-basis",
+      thresholdExceeded: true,
+    });
+    const basisCommand = await fixture!.prepareCommand({
+      requestId: "c29-prepare-frozen-basis",
+      deviationFactRef: otherBasis.deviationFactRef,
+    });
+    const basisMismatch = await fixture!.calibration.prepareInput({
+      ...basisCommand,
+      basisReleaseSetRef: {
+        ...basisCommand.basisReleaseSetRef,
+        reference: { ...basisCommand.basisReleaseSetRef.reference, versionId: "other-valid" },
+      },
+    });
+    expect(basisMismatch).toMatchObject({ kind: "failed", error: { code: "STALE_VERSION" } });
+    expect(await artifactCount()).toBe(before);
+    const otherScope = fixture!.deviationFacts.seed({
+      suffix: "frozen-scope",
+      thresholdExceeded: true,
+    });
+    fixture!.inputSnapshots.mismatchScope(otherScope.frozenAssessmentBasisRef.reference.entityId);
+    const scopeMismatch = await fixture!.prepareInput({
+      requestId: "c29-prepare-frozen-scope",
+      deviationFactRef: otherScope.deviationFactRef,
+    });
+    expect(scopeMismatch).toMatchObject({ kind: "failed", error: { code: "STALE_VERSION" } });
+    expect(await artifactCount()).toBe(before);
+    const other = fixture!.deviationFacts.seed({
+      suffix: "frozen-target",
+      thresholdExceeded: true,
+    });
+    const command = await fixture!.prepareCommand({
+      requestId: "c29-prepare-frozen-target",
+      deviationFactRef: other.deviationFactRef,
+      targetReleaseRef: {
+        ...fixture!.targetReleaseRef,
+        reference: { ...fixture!.targetReleaseRef.reference, versionId: "other" },
+      },
+    });
+    const mismatch = await fixture!.calibration.prepareInput(command);
+    expect(mismatch).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    expect(await artifactCount()).toBe(before);
+    expect(fixture!.access.downstreamBranches).toContain("risk-assessment.read-input-snapshot");
+  });
+
   it("无权先拒绝：缺少记录能力时在读事实之前失败关闭", async () => {
     const fact = fixture!.deviationFacts.seed({ suffix: "denied", thresholdExceeded: true });
     const command = await fixture!.prepareCommand({
@@ -326,6 +421,56 @@ describe.sequential("PostgreSQL calibration adapter", () => {
     );
     expect(narrowed.grantedCapabilities).toEqual(["warning-response.record"]);
     expect(narrowed.projectId).toBe(fixture!.projectId);
+  });
+
+  it("候选必须绑定任务冻结的输入快照", async () => {
+    const fact = fixture!.deviationFacts.seed({
+      suffix: "snapshot-mismatch",
+      thresholdExceeded: true,
+    });
+    const prepared = await fixture!.prepareInput({
+      requestId: "c29-prepare-snapshot-mismatch",
+      deviationFactRef: fact.deviationFactRef,
+    });
+    expect(prepared.kind).toBe("succeeded");
+    if (prepared.kind !== "succeeded") return;
+    const task = await fixture!.runCalibrationTask({
+      suffix: "snapshot-mismatch",
+      frozenInputRef: prepared.result.frozenInputRef,
+      inputSnapshotRef: {
+        kind: "calibration-input-snapshot",
+        reference: { entityId: "other-snapshot", versionId: "1" },
+      },
+      operations: fixture!.operations("3"),
+    });
+    const command = await fixture!.suggestionCommand({
+      commandId: "c29-suggest-snapshot-mismatch",
+      deviationRecordRef: prepared.result.deviationRecordRef,
+      agentTaskResultRef: task.resultRef,
+    });
+    expect(await fixture!.createSuggestion(command)).toMatchObject({
+      kind: "failed",
+      error: { code: "BUSINESS_BLOCKED", retryable: false },
+    });
+  });
+
+  it("冻结输入拒绝与执行策略不一致的校验策略引用", async () => {
+    const fact = fixture!.deviationFacts.seed({
+      suffix: "policy-mismatch",
+      thresholdExceeded: true,
+    });
+    const command = await fixture!.prepareCommand({
+      requestId: "c29-prepare-policy-mismatch",
+      deviationFactRef: fact.deviationFactRef,
+    });
+    const readsBefore = fixture!.deviationFacts.readCalls.length;
+    expect(
+      await fixture!.calibration.prepareInput({
+        ...command,
+        calibrationValidationPolicyRef: { entityId: "other-policy", versionId: "1" },
+      }),
+    ).toMatchObject({ kind: "failed", error: { code: "UNSUPPORTED_CONTRACT" } });
+    expect(fixture!.deviationFacts.readCalls).toHaveLength(readsBefore);
   });
 
   it("合格候选收口：建议、pending 记录、复核任务与 Outbox 事件原子成立", async () => {
@@ -429,6 +574,39 @@ describe.sequential("PostgreSQL calibration adapter", () => {
     expect(await fixture!.countEvents(C29_SUGGESTION_EVENT_TYPE)).toBe(2);
   });
 
+  it("已有 pending 建议但无退回预留时拒绝新任务消费且零写入", async () => {
+    const seeded = await seedSuggestion({ suffix: "no-reservation", threshold: "9" });
+    const task = await fixture!.runCalibrationTask({
+      suffix: "no-reservation-second",
+      frozenInputRef: seeded.prepared.result.frozenInputRef,
+      inputSnapshotRef: seeded.prepared.result.inputSnapshotRef,
+      operations: fixture!.operations("9.5"),
+    });
+    const command = await fixture!.suggestionCommand({
+      commandId: "c29-suggest-no-reservation-second",
+      deviationRecordRef: seeded.prepared.result.deviationRecordRef,
+      agentTaskResultRef: task.resultRef,
+    });
+    const before = {
+      suggestions: await suggestionRows(),
+      deviations: await deviationRows(),
+      reservations: await lineageReservations(),
+      consumptions: await lineageConsumptions(),
+      events: await fixture!.countEvents(C29_SUGGESTION_EVENT_TYPE),
+    };
+    expect(await fixture!.createSuggestion(command)).toMatchObject({
+      kind: "failed",
+      error: { code: "BUSINESS_BLOCKED", retryable: false },
+    });
+    expect({
+      suggestions: await suggestionRows(),
+      deviations: await deviationRows(),
+      reservations: await lineageReservations(),
+      consumptions: await lineageConsumptions(),
+      events: await fixture!.countEvents(C29_SUGGESTION_EVENT_TYPE),
+    }).toEqual(before);
+  });
+
   it("原子失败回滚：审计写入冲突后不留建议、记录与事件，重试成功", async () => {
     const staged = await prepareSuggestionCommand({ suffix: "rollback", threshold: "4" });
     const before = {
@@ -472,7 +650,12 @@ describe.sequential("PostgreSQL calibration adapter", () => {
     const approved = await seedSuggestion({ suffix: "approve", threshold: "7" });
     const revisionsBefore = fixture!.governance.submitRevisions.length;
 
-    /* 拒绝：追加 rejected 公共记录版本、建议标记 rejected，且不创建 C16 修订。 */
+    /* 拒绝：追加 rejected 公共记录版本、建议行不可改写，且不创建 C16 修订。 */
+    const rejectedRowBefore = JSON.stringify(
+      (await suggestionRows()).find(
+        (row) => row.suggestion_id === rejected.result.calibrationSuggestionRef.reference.entityId,
+      ),
+    );
     const rejectDecision = await fixture!.decideReview({
       suffix: "reject",
       projectId: fixture!.projectId,
@@ -489,23 +672,42 @@ describe.sequential("PostgreSQL calibration adapter", () => {
       }),
     );
     expect(rejectedOutcome).toMatchObject({ kind: "succeeded", result: { outcome: "rejected" } });
-    const rejectedRecords = await rowsFor(rejected.result.deviationRecordRef.reference.entityId);
+    const rejectedRecords = await rowsFor(
+      rejected.prepared.result.deviationRecordRef.reference.entityId,
+    );
     expect(rejectedRecords.map((row) => [row.version_number, row.review_status])).toEqual([
       [1, "pending"],
       [2, "rejected"],
     ]);
     expect(rejectedRecords[1]!.review_decision_ref).toEqual(rejectDecision);
-    const rejectedSuggestion = (await suggestionRows()).find(
-      (row) => row.suggestion_id === rejected.result.calibrationSuggestionRef.reference.entityId,
-    );
-    expect(rejectedSuggestion).toMatchObject({
-      status: "rejected",
-      returned_decision_ref: null,
-      approved_decision_ref: null,
-    });
     expect(fixture!.governance.submitRevisions.length).toBe(revisionsBefore);
+    // 三张校准表只允许 INSERT/SELECT：拒绝决定只追加记录版本，绝不改写建议行。
+    expect(
+      JSON.stringify(
+        (await suggestionRows()).find(
+          (row) =>
+            row.suggestion_id === rejected.result.calibrationSuggestionRef.reference.entityId,
+        ),
+      ),
+    ).toBe(rejectedRowBefore);
+    // 可推进性来自追加链：同一建议上的第二个决定必须被拒绝。
+    expect(
+      await fixture!.recordReviewOutcome(
+        await fixture!.reviewOutcomeCommand({
+          commandId: "c29-outcome-reject-again",
+          outcome: "reject",
+          suggestionRef: rejected.result.calibrationSuggestionRef,
+          reviewDecisionRef: rejectDecision,
+        }),
+      ),
+    ).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED", retryable: false } });
 
-    /* 退回：公共记录保持第 1 版，退回关联记在建议行上。 */
+    /* 退回：不追加记录版本，建议行保持原事实，决定经回执与审计可追溯。 */
+    const returnedRowBefore = JSON.stringify(
+      (await suggestionRows()).find(
+        (row) => row.suggestion_id === returned.result.calibrationSuggestionRef.reference.entityId,
+      ),
+    );
     const returnDecision = await fixture!.decideReview({
       suffix: "return",
       projectId: fixture!.projectId,
@@ -513,26 +715,187 @@ describe.sequential("PostgreSQL calibration adapter", () => {
       reviewTaskRef: returned.result.reviewTaskRef,
       kind: "return-for-revision",
     });
-    const returnedOutcome = await fixture!.recordReviewOutcome(
-      await fixture!.reviewOutcomeCommand({
-        commandId: "c29-outcome-return",
-        outcome: "return-for-revision",
-        suggestionRef: returned.result.calibrationSuggestionRef,
-        reviewDecisionRef: returnDecision,
-      }),
-    );
+    const beforeWrongOutcome = {
+      records: await rowsFor(returned.prepared.result.deviationRecordRef.reference.entityId),
+      reservations: await lineageReservations(),
+    };
+    expect(
+      await fixture!.recordReviewOutcome(
+        await fixture!.reviewOutcomeCommand({
+          commandId: "c29-outcome-return-as-reject",
+          outcome: "reject",
+          suggestionRef: returned.result.calibrationSuggestionRef,
+          reviewDecisionRef: returnDecision,
+        }),
+      ),
+    ).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+    expect({
+      records: await rowsFor(returned.prepared.result.deviationRecordRef.reference.entityId),
+      reservations: await lineageReservations(),
+    }).toEqual(beforeWrongOutcome);
+    const returnCommand = await fixture!.reviewOutcomeCommand({
+      commandId: "c29-outcome-return",
+      outcome: "return-for-revision",
+      suggestionRef: returned.result.calibrationSuggestionRef,
+      reviewDecisionRef: returnDecision,
+    });
+    const returnedOutcome = await fixture!.recordReviewOutcome(returnCommand);
     expect(returnedOutcome).toMatchObject({
       kind: "succeeded",
-      result: { outcome: "returned", deviationRecordVersionId: "1" },
+      result: { outcome: "returned", deviationRecordVersionId: "2" },
     });
-    expect(await rowsFor(returned.result.deviationRecordRef.reference.entityId)).toMatchObject([
+    expect(
+      await rowsFor(returned.prepared.result.deviationRecordRef.reference.entityId),
+    ).toMatchObject([
       { version_number: 1, review_status: "pending" },
+      { version_number: 2, review_status: "pending" },
     ]);
-    const returnedSuggestion = (await suggestionRows()).find(
-      (row) => row.suggestion_id === returned.result.calibrationSuggestionRef.reference.entityId,
+    const reservation = (await lineageReservations()).find(
+      (row) => row.review_decision_id === returnDecision.reference.entityId,
+    )!;
+    expect(reservation).toMatchObject({
+      predecessor_suggestion_id: returned.result.calibrationSuggestionRef.reference.entityId,
+      predecessor_suggestion_version_id:
+        returned.result.calibrationSuggestionRef.reference.versionId,
+      successor_suggestion_version_id: "2",
+      review_decision_version_id: returnDecision.reference.versionId,
+    });
+    expect(await lineageConsumptions()).not.toContainEqual(
+      expect.objectContaining({ reservation_id: reservation.reservation_id }),
     );
-    expect(returnedSuggestion).toMatchObject({ status: "returned" });
-    expect(returnedSuggestion?.returned_decision_ref).toEqual(returnDecision);
+    const reservationRowsBeforeReplay = await lineageReservations();
+    const deviationRowsBeforeReplay = await rowsFor(
+      returned.prepared.result.deviationRecordRef.reference.entityId,
+    );
+    expect(
+      await fixture!.recordReviewOutcome(
+        await fixture!.reviewOutcomeCommand({
+          commandId: "c29-outcome-return-replay",
+          outcome: "return-for-revision",
+          suggestionRef: returned.result.calibrationSuggestionRef,
+          reviewDecisionRef: returnDecision,
+        }),
+      ),
+    ).toMatchObject({ kind: "succeeded", result: { deviationRecordVersionId: "2" } });
+    expect(await lineageReservations()).toEqual(reservationRowsBeforeReplay);
+    expect(await rowsFor(returned.prepared.result.deviationRecordRef.reference.entityId)).toEqual(
+      deviationRowsBeforeReplay,
+    );
+
+    const successorTask = await fixture!.runCalibrationTask({
+      suffix: "return-v2",
+      frozenInputRef: returned.prepared.result.frozenInputRef,
+      inputSnapshotRef: returned.prepared.result.inputSnapshotRef,
+      operations: fixture!.operations("6.5"),
+    });
+    const successorCommand = await fixture!.suggestionCommand({
+      commandId: "c29-suggest-return-v2",
+      deviationRecordRef: returned.prepared.result.deviationRecordRef,
+      agentTaskResultRef: successorTask.resultRef,
+    });
+    const successor = await fixture!.createSuggestion(successorCommand);
+    expect(successor).toMatchObject({
+      kind: "succeeded",
+      result: {
+        kind: "calibration",
+        calibrationSuggestionRef: {
+          reference: {
+            entityId: reservation.successor_suggestion_id,
+            versionId: reservation.successor_suggestion_version_id,
+          },
+        },
+      },
+    });
+    expect(await lineageConsumptions()).toContainEqual(
+      expect.objectContaining({
+        reservation_id: reservation.reservation_id,
+        successor_suggestion_id: reservation.successor_suggestion_id,
+        successor_suggestion_version_id: reservation.successor_suggestion_version_id,
+        command_id: "c29-suggest-return-v2",
+      }),
+    );
+    expect(
+      await rowsFor(returned.prepared.result.deviationRecordRef.reference.entityId),
+    ).toHaveLength(2);
+    expect(await fixture!.createSuggestion(successorCommand)).toEqual(successor);
+    expect(
+      await fixture!.recordReviewOutcome(
+        await fixture!.reviewOutcomeCommand({
+          commandId: "c29-outcome-return-after-consume",
+          outcome: "return-for-revision",
+          suggestionRef: returned.result.calibrationSuggestionRef,
+          reviewDecisionRef: returnDecision,
+        }),
+      ),
+    ).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+    if (successor.kind !== "succeeded" || successor.result.kind !== "calibration") return;
+    const successorRejectDecision = await fixture!.decideReview({
+      suffix: "return-v2-reject",
+      projectId: fixture!.projectId,
+      targetRef: successor.result.calibrationSuggestionRef,
+      reviewTaskRef: successor.result.reviewTaskRef,
+      kind: "reject",
+    });
+    expect(
+      await fixture!.recordReviewOutcome(
+        await fixture!.reviewOutcomeCommand({
+          commandId: "c29-outcome-return-v2-reject",
+          outcome: "reject",
+          suggestionRef: successor.result.calibrationSuggestionRef,
+          reviewDecisionRef: successorRejectDecision,
+        }),
+      ),
+    ).toMatchObject({
+      kind: "succeeded",
+      result: { outcome: "rejected", deviationRecordVersionId: "3" },
+    });
+    expect(
+      (await rowsFor(returned.prepared.result.deviationRecordRef.reference.entityId)).map((row) => [
+        row.version_number,
+        row.review_status,
+        row.record_payload.calibrationRecommendation,
+      ]),
+    ).toEqual([
+      [1, "pending", returned.result.calibrationSuggestionRef.reference.entityId],
+      [2, "pending", reservation.successor_suggestion_id],
+      [3, "rejected", reservation.successor_suggestion_id],
+    ]);
+    expect(fixture!.governance.submitRevisions.length).toBe(revisionsBefore);
+    expect(
+      JSON.stringify(
+        (await suggestionRows()).find(
+          (row) =>
+            row.suggestion_id === returned.result.calibrationSuggestionRef.reference.entityId,
+        ),
+      ),
+    ).toBe(returnedRowBefore);
+    const returnReceipt = (
+      await fixture!.rows<{
+        completed_at: string | null;
+        audit_entry_id: string | null;
+        result_ref: unknown;
+      }>(
+        `SELECT completed_at, audit_entry_id, result_ref FROM business.command_receipts
+         WHERE project_id = $1 AND command_id = $2`,
+        [fixture!.projectId, "c29-outcome-return"],
+      )
+    )[0]!;
+    expect(returnReceipt.completed_at).not.toBeNull();
+    expect(returnReceipt.audit_entry_id).toBe(
+      "audit-c29-outcome-return:calibration-review-outcome",
+    );
+    expect(returnReceipt.result_ref).toEqual(returned.result.calibrationSuggestionRef);
+    const returnAudit = (
+      await fixture!.rows<{ action: string; target_ref: unknown; command_id: string }>(
+        `SELECT action, target_ref, command_id FROM audit.entries WHERE audit_entry_id = $1`,
+        ["audit-c29-outcome-return:calibration-review-outcome"],
+      )
+    )[0]!;
+    expect(returnAudit).toMatchObject({
+      action: "warning-response.record-calibration-review-outcome",
+      command_id: "c29-outcome-return",
+    });
+    expect(returnAudit.target_ref).toEqual(returned.result.calibrationSuggestionRef);
 
     /* 批准：approve 只经草案路径；recordReviewOutcome 必须拒绝批准。 */
     const approveDecision = await fixture!.decideReview({
@@ -554,6 +917,11 @@ describe.sequential("PostgreSQL calibration adapter", () => {
     ).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
 
     const draftsBefore = (await draftRows()).length;
+    const approvedRowBefore = JSON.stringify(
+      (await suggestionRows()).find(
+        (row) => row.suggestion_id === approved.result.calibrationSuggestionRef.reference.entityId,
+      ),
+    );
     const draft = await fixture!.createGovernanceDraft(
       await fixture!.reviewOutcomeCommand({
         commandId: "c29-draft-approve",
@@ -578,7 +946,7 @@ describe.sequential("PostgreSQL calibration adapter", () => {
       candidateArtifactId: draft.result.candidateArtifactRef.reference.entityId,
     });
     expect(
-      (await rowsFor(approved.result.deviationRecordRef.reference.entityId)).map((row) => [
+      (await rowsFor(approved.prepared.result.deviationRecordRef.reference.entityId)).map((row) => [
         row.version_number,
         row.review_status,
       ]),
@@ -586,11 +954,15 @@ describe.sequential("PostgreSQL calibration adapter", () => {
       [1, "pending"],
       [2, "approved"],
     ]);
-    const approvedSuggestion = (await suggestionRows()).find(
-      (row) => row.suggestion_id === approved.result.calibrationSuggestionRef.reference.entityId,
-    );
-    expect(approvedSuggestion).toMatchObject({ status: "approved-for-draft" });
-    expect(approvedSuggestion?.approved_decision_ref).toEqual(approveDecision);
+    // 草案成功同样只追加：建议行保持创建时事实，不被批准改写。
+    expect(
+      JSON.stringify(
+        (await suggestionRows()).find(
+          (row) =>
+            row.suggestion_id === approved.result.calibrationSuggestionRef.reference.entityId,
+        ),
+      ),
+    ).toBe(approvedRowBefore);
 
     // 候选工件是真实内容工件：用途码、正文与草案行的候选摘要一致。
     const candidateArtifacts = await fixture!.rows<{ purpose_code: string }>(
@@ -618,11 +990,15 @@ describe.sequential("PostgreSQL calibration adapter", () => {
     const submitted = fixture!.governance.submitRevisions.at(-1)!;
     expect({
       kind: submitted.kind,
+      commandId: submitted.commandId,
+      idempotencyKey: submitted.idempotencyKey,
       definitionType: submitted.payload.definitionType,
       baseReleaseRef: submitted.payload.baseReleaseRef,
       candidateArtifactRef: submitted.payload.candidateArtifactRef,
     }).toEqual({
       kind: "submit-revision",
+      commandId: "c29-draft-approve:submit-revision",
+      idempotencyKey: "c29-draft-approve:submit-revision",
       definitionType: fixture!.targetDefinitionType,
       baseReleaseRef: fixture!.targetReleaseRef,
       candidateArtifactRef: draft.result.candidateArtifactRef,
@@ -631,21 +1007,15 @@ describe.sequential("PostgreSQL calibration adapter", () => {
   });
 
   it("无批准证明拒绝创建草案且不产生任何草案写入", async () => {
-    const rejectedSuggestion = (await suggestionRows()).find((row) => row.status === "rejected")!;
-    const suggestionRef: SuggestionRefV1 = {
-      kind: "calibration-suggestion",
-      reference: {
-        entityId: rejectedSuggestion.suggestion_id,
-        versionId: rejectedSuggestion.version_id,
-      },
-    };
-    const recordedRow = (
-      await fixture!.rows<{ review_decision_ref: unknown }>(
-        `SELECT review_decision_ref FROM business.calibration_deviation_records
-         WHERE project_id = $1 AND suggestion_id = $2 AND review_status = 'rejected'`,
-        [fixture!.projectId, rejectedSuggestion.suggestion_id],
-      )
-    )[0]!;
+    // 自足前置：本用例自己产生建议与非批准决定，不依赖其它用例留下的行状态。
+    const seeded = await seedSuggestion({ suffix: "no-proof", threshold: "11" });
+    const nonApprovalDecision = await fixture!.decideReview({
+      suffix: "no-proof",
+      projectId: fixture!.projectId,
+      targetRef: seeded.result.calibrationSuggestionRef,
+      reviewTaskRef: seeded.result.reviewTaskRef,
+      kind: "return-for-revision",
+    });
     const snapshotBefore = {
       drafts: JSON.stringify(await draftRows()),
       deviations: JSON.stringify(await deviationRows()),
@@ -653,34 +1023,25 @@ describe.sequential("PostgreSQL calibration adapter", () => {
       revisions: fixture!.governance.submitRevisions.length,
     };
 
-    // 非批准决定。
+    // 非批准决定：决定真实存在且精确绑定该建议，仍然不得创建草案。
     expect(
       await fixture!.createGovernanceDraft(
         await fixture!.reviewOutcomeCommand({
-          commandId: "c29-draft-with-reject",
+          commandId: "c29-draft-with-return",
           outcome: "approve-draft-creation",
-          suggestionRef,
-          reviewDecisionRef: recordedRow.review_decision_ref as never,
+          suggestionRef: seeded.result.calibrationSuggestionRef,
+          reviewDecisionRef: nonApprovalDecision,
         }),
       ),
     ).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED", retryable: false } });
 
-    // 决定不存在：仍然待复核的建议上提交未知决定引用，证明缺失必须先于任何写入关闭。
-    const pendingSuggestion = (await suggestionRows()).find(
-      (row) => row.status === "pending-review",
-    )!;
+    // 决定不存在：证明缺失必须先于任何写入关闭。
     expect(
       await fixture!.createGovernanceDraft(
         await fixture!.reviewOutcomeCommand({
           commandId: "c29-draft-missing-decision",
           outcome: "approve-draft-creation",
-          suggestionRef: {
-            kind: "calibration-suggestion",
-            reference: {
-              entityId: pendingSuggestion.suggestion_id,
-              versionId: pendingSuggestion.version_id,
-            },
-          },
+          suggestionRef: seeded.result.calibrationSuggestionRef,
           reviewDecisionRef: {
             kind: "review-decision",
             reference: { entityId: "c29-missing-decision", versionId: "1" },
@@ -721,8 +1082,8 @@ describe.sequential("PostgreSQL calibration adapter", () => {
     expect(interrupted.kind).toBe("failed");
     expect(fixture!.governance.submitRevisions.length).toBe(revisionsBefore + 1);
     expect(
-      (await draftRows()).filter((row) =>
-        row.draft_id.includes(seeded.result.calibrationSuggestionRef.reference.entityId),
+      (await draftRows()).filter(
+        (row) => row.suggestion_id === seeded.result.calibrationSuggestionRef.reference.entityId,
       ),
     ).toHaveLength(0);
     expect(
@@ -737,8 +1098,8 @@ describe.sequential("PostgreSQL calibration adapter", () => {
     if (retried.kind !== "succeeded") return;
     // 重试复用同一 C16 命令/幂等键：只登记一次 submit-revision，草案只留一行。
     expect(fixture!.governance.submitRevisions.length).toBe(revisionsBefore + 1);
-    const finalDrafts = (await draftRows()).filter((row) =>
-      row.draft_id.includes(seeded.result.calibrationSuggestionRef.reference.entityId),
+    const finalDrafts = (await draftRows()).filter(
+      (row) => row.suggestion_id === seeded.result.calibrationSuggestionRef.reference.entityId,
     );
     expect(finalDrafts).toHaveLength(1);
     expect(finalDrafts[0]!.knowledge_revision_id).toBe(
@@ -752,7 +1113,11 @@ describe.sequential("PostgreSQL calibration adapter", () => {
   });
 
   it("跨工程决定不可枚举：与不存在决定产生同一失败形状", async () => {
-    const suggestion = (await suggestionRows()).find((row) => row.status === "pending-review")!;
+    // 自足前置：本用例自己的建议，保证追加链最新版本仍是 pending（可推进）。
+    const seeded = await seedSuggestion({ suffix: "cross-project", threshold: "10" });
+    const suggestion = (await suggestionRows()).find(
+      (row) => row.suggestion_id === seeded.result.calibrationSuggestionRef.reference.entityId,
+    )!;
     const suggestionRef: SuggestionRefV1 = {
       kind: "calibration-suggestion",
       reference: { entityId: suggestion.suggestion_id, versionId: suggestion.version_id },

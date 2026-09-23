@@ -63,6 +63,7 @@ import {
   AssessmentBasisReleaseSetReadResultV1Schema,
   type AssessmentBasisReleaseSetReaderV1,
 } from "@riskflow/core/scoring-rules";
+import type { AssessmentInputSnapshotReaderV1 } from "@riskflow/core/risk-assessment/engine";
 import {
   AuthorizationContextV1Schema,
   ContentArtifactRefV1Schema,
@@ -243,6 +244,10 @@ export interface CalibrationPostgresFixtureV1 {
   readonly reviews: PostgresReviewAuditAdapter & CalibrationSuggestionApprovalProofPortV1;
   readonly agentTasks: PostgresAgentTaskAdapter;
   readonly deviationFacts: CalibrationDeviationFactStubV1;
+  readonly inputSnapshots: {
+    remove(entityId: string): void;
+    mismatchScope(entityId: string): void;
+  };
   readonly governance: CalibrationGovernanceStubV1;
   readonly basisReleaseSetRef: {
     readonly kind: "assessment-basis-release-set";
@@ -254,6 +259,7 @@ export interface CalibrationPostgresFixtureV1 {
   readonly validationPolicy: CalibrationValidationPolicyV1;
   readonly access: {
     readonly verifyCalls: readonly AuthorizationVerificationRequestV1[];
+    readonly downstreamBranches: readonly string[];
     deny(): void;
     allow(): void;
   };
@@ -644,6 +650,42 @@ export const startCalibrationFixture = async (): Promise<CalibrationPostgresFixt
         }),
     };
 
+    const frozenSnapshots = new Map<
+      string,
+      Extract<
+        Awaited<ReturnType<AssessmentInputSnapshotReaderV1["readInputSnapshot"]>>,
+        { kind: "succeeded" }
+      >
+    >();
+    const inputSnapshots: AssessmentInputSnapshotReaderV1 = {
+      readInputSnapshot: async (input) => {
+        const frozen = frozenSnapshots.get(input.inputSnapshotRef.reference.entityId);
+        if (
+          input.authorization.projectId !== input.projectId ||
+          !input.authorization.grantedCapabilities.includes("risk-assessment.read") ||
+          frozen === undefined ||
+          frozen.targetReleaseRef.reference.entityId !==
+            input.targetReleaseRef.reference.entityId ||
+          frozen.targetReleaseRef.reference.versionId !== input.targetReleaseRef.reference.versionId
+        ) {
+          return {
+            kind: "failed",
+            error: ModuleErrorV1Schema.parse({
+              stageCode: "c25.input-snapshot",
+              occurredAt: C29_FIXTURE_TIME,
+              causalRunId: input.requestId,
+              code: "AUTHORIZATION_DENIED",
+              category: "authorization",
+              retryable: false,
+              requiredCapability: "risk-assessment.read",
+              authorizationPolicyRef: ref("access-policy"),
+            }),
+          };
+        }
+        return frozen;
+      },
+    };
+
     /* ----------------------------------------------------------- C28 偏差事实 */
 
     const facts = new Map<string, ResponseDeviationFactV1>();
@@ -732,14 +774,18 @@ export const startCalibrationFixture = async (): Promise<CalibrationPostgresFixt
 
     /* --------------------------------------------------------- C29 适配器装配 */
 
-    const authorizeDownstream: CalibrationDownstreamAuthorizerV1 = (request) =>
-      authorizeFor(request.branch, request.invocationId, request.projectId);
+    const downstreamBranches: string[] = [];
+    const authorizeDownstream: CalibrationDownstreamAuthorizerV1 = (request) => {
+      downstreamBranches.push(request.branch);
+      return authorizeFor(request.branch, request.invocationId, request.projectId);
+    };
 
     const calibration = createPostgresCalibrationAdapter({
       db,
       transactionUnit,
       access: accessSeam,
       deviationFacts,
+      inputSnapshots,
       basis: basisReader,
       artifactStore,
       agentResults: agentTasks,
@@ -819,6 +865,16 @@ export const startCalibrationFixture = async (): Promise<CalibrationPostgresFixt
         computedAt: C29_FIXTURE_TIME,
       });
       facts.set(deviationFactRef.reference.entityId, fact);
+      frozenSnapshots.set(fact.frozenAssessmentBasisRef.reference.entityId, {
+        kind: "succeeded",
+        projectId,
+        spatialScopeRef: fact.spatialScopeRef,
+        basisReleaseSetRef,
+        targetReleaseRef: c25ReleaseRef("deviation-policy"),
+        targetContentDigest: configurationMembers.find(
+          (member) => member.definitionType === "deviation-policy",
+        )!.contentDigest,
+      });
       return fact;
     };
 
@@ -1161,6 +1217,23 @@ export const startCalibrationFixture = async (): Promise<CalibrationPostgresFixt
           deviationFactsUnavailable = value;
         },
       },
+      inputSnapshots: {
+        remove: (entityId) => {
+          frozenSnapshots.delete(entityId);
+        },
+        mismatchScope: (entityId) => {
+          const frozen = frozenSnapshots.get(entityId);
+          if (frozen !== undefined) {
+            frozenSnapshots.set(entityId, {
+              ...frozen,
+              spatialScopeRef: {
+                ...frozen.spatialScopeRef,
+                reference: ref("c29-other-spatial-scope"),
+              },
+            });
+          }
+        },
+      },
       governance: {
         submitRevisions,
         setFailure: (value) => {
@@ -1177,6 +1250,7 @@ export const startCalibrationFixture = async (): Promise<CalibrationPostgresFixt
       validationPolicy,
       access: {
         verifyCalls,
+        downstreamBranches,
         deny: () => {
           denied = true;
         },

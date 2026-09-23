@@ -30,6 +30,7 @@ import type {
   ResponseDeviationFactReaderV1,
   ResponseDeviationFactV1,
 } from "@riskflow/core/response-lifecycle";
+import type { AssessmentInputSnapshotReaderV1 } from "@riskflow/core/risk-assessment/engine";
 import {
   STRUCTURED_SCORING_RULE_ARTIFACT_PURPOSE_CODE_V1,
   StructuredScoringRuleDocumentV1Schema,
@@ -38,9 +39,11 @@ import {
 import {
   CalibrationCandidateV1Schema,
   CalibrationInputSnapshotV1Schema,
+  CalibrationValidationPolicyV1Schema,
   deriveCalibrationInputSnapshotRef,
   deriveCalibrationSuggestionRef,
   deriveDeviationRecordRef,
+  deriveSuccessorCalibrationSuggestionRef,
   digestDocument,
   failCalibration,
   calibrationFailureFrom,
@@ -58,6 +61,7 @@ import {
 } from "@riskflow/core/calibration";
 import {
   MODULE_BRANCH_CAPABILITY_V1,
+  ReviewTaskRefV1Schema,
   ReviewRequestV1Schema,
   WarningResponseRecordCommandV1Schema,
   WarningResponseRecordResultV1Schema,
@@ -65,6 +69,7 @@ import {
   ContentArtifactRefV1Schema,
   type CalibrationSuggestionApprovalProofQueryV1,
   type CalibrationSuggestionApprovalProofResultV1,
+  type CalibrationSuggestionRefV1,
   type ContentArtifactRefV1,
   type DeviationRecordRefV1,
   type KnowledgeGovernanceCommandV1,
@@ -111,6 +116,7 @@ const AGENT_INCREMENT_PURPOSE_CODE_V1 = "agent-increment";
 
 const CALIBRATION_PURPOSE_BRANCHES_V1 = {
   deviationFact: DEVIATION_FACT_BRANCH_V1,
+  inputSnapshot: "risk-assessment.read-input-snapshot",
   basis: BASIS_BRANCH_V1,
   agentResult: AGENT_RESULT_BRANCH_V1,
   reviewRequest: REVIEW_REQUEST_BRANCH_V1,
@@ -137,6 +143,8 @@ interface SuggestionRow {
   agent_task_id: string;
   agent_task_version_id: string;
   agent_task_result_ref: JsonColumn;
+  validation_policy_entity_id: string;
+  validation_policy_version_id: string;
   frozen_input_artifact_id: string;
   frozen_input_artifact_version_id: string;
   target_definition_type: string;
@@ -160,8 +168,12 @@ interface DeviationRecordRow {
   deviation_record_id: string;
   version_id: string;
   version_number: number;
+  suggestion_id: string;
+  suggestion_version_id: string;
   review_status: string;
+  review_task_ref: JsonColumn;
   record_payload: JsonColumn;
+  content_digest: string;
 }
 
 interface GovernanceDraftRow {
@@ -174,10 +186,33 @@ interface GovernanceDraftRow {
   candidate_artifact_version_id: string;
 }
 
+interface SuggestionLineageReservationRow {
+  reservation_id: string;
+  project_id: string;
+  deviation_id: string;
+  predecessor_suggestion_id: string;
+  predecessor_suggestion_version_id: string;
+  successor_suggestion_id: string;
+  successor_suggestion_version_id: string;
+  review_decision_id: string;
+  review_decision_version_id: string;
+  command_id: string;
+}
+
+interface SuggestionLineageConsumptionRow {
+  reservation_id: string;
+  project_id: string;
+  successor_suggestion_id: string;
+  successor_suggestion_version_id: string;
+  command_id: string;
+}
+
 interface CalibrationDatabase extends PostgresDatabase {
   "business.calibration_suggestions": SuggestionRow;
   "business.calibration_deviation_records": DeviationRecordRow;
   "business.calibration_governance_drafts": GovernanceDraftRow;
+  "business.calibration_suggestion_lineage_reservations": SuggestionLineageReservationRow;
+  "business.calibration_suggestion_lineage_consumptions": SuggestionLineageConsumptionRow;
 }
 
 type CalibrationTransaction = Transaction<CalibrationDatabase>;
@@ -250,6 +285,7 @@ export interface PostgresCalibrationAdapterOptionsV1 {
   readonly transactionUnit: TransactionUnitV1;
   readonly access: LocalIdentityAccessV1;
   readonly deviationFacts: ResponseDeviationFactReaderV1;
+  readonly inputSnapshots: AssessmentInputSnapshotReaderV1;
   readonly basis: AssessmentBasisReleaseSetReaderV1;
   readonly artifactStore: ArtifactStoreV1;
   readonly agentResults: AgentTaskCompletedResultReaderV1;
@@ -268,6 +304,7 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
   readonly #transactionUnit: TransactionUnitV1;
   readonly #access: LocalIdentityAccessV1;
   readonly #deviationFacts: ResponseDeviationFactReaderV1;
+  readonly #inputSnapshots: AssessmentInputSnapshotReaderV1;
   readonly #basis: AssessmentBasisReleaseSetReaderV1;
   readonly #artifactStore: ArtifactStoreV1;
   readonly #agentResults: AgentTaskCompletedResultReaderV1;
@@ -281,6 +318,7 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
     this.#transactionUnit = options.transactionUnit;
     this.#access = options.access;
     this.#deviationFacts = options.deviationFacts;
+    this.#inputSnapshots = options.inputSnapshots;
     this.#basis = options.basis;
     this.#artifactStore = options.artifactStore;
     this.#agentResults = options.agentResults;
@@ -297,6 +335,14 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
   ): Promise<CalibrationPrepareInputResultV1> {
     try {
       await this.#verify(command.authorization, command.projectId, command.requestId);
+      const agentPolicy = CalibrationValidationPolicyV1Schema.safeParse(command.agentPolicy);
+      if (
+        !agentPolicy.success ||
+        agentPolicy.data.projectId !== command.projectId ||
+        !refEquals(agentPolicy.data.policyRef, command.calibrationValidationPolicyRef)
+      ) {
+        failCalibration("calibration-contract-drift", command.targetReleaseRef);
+      }
       const downstream = await this.#purposeContexts(
         {
           invocationId: command.requestId,
@@ -314,11 +360,50 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
       if (fact.evidenceReferences.length === 0) {
         failCalibration("calibration-deviation-fact-incomplete", command.deviationFactRef);
       }
+      const snapshotAuthorization = await this.#purposeContexts(
+        {
+          invocationId: command.requestId,
+          projectId: command.projectId,
+          actorId: command.actorId,
+          requestedAt: command.requestedAt,
+          spatialScopeRefs: command.authorization.spatialScopeRefs,
+        },
+        ["inputSnapshot"],
+      );
+      const frozen = await this.#inputSnapshots.readInputSnapshot({
+        requestId: command.requestId,
+        requestedAt: command.requestedAt,
+        projectId: command.projectId,
+        actorId: command.actorId,
+        authorization: snapshotAuthorization.inputSnapshot,
+        inputSnapshotRef: fact.frozenAssessmentBasisRef,
+        targetReleaseRef: command.targetReleaseRef,
+      });
+      if (frozen.kind === "failed") {
+        failCalibration(
+          frozen.error.code === "AUTHORIZATION_DENIED"
+            ? "calibration-authorization-required"
+            : "calibration-frozen-assessment-mismatch",
+          fact.frozenAssessmentBasisRef,
+          frozen.error.code === "AUTHORIZATION_DENIED" ? "AUTHORIZATION_DENIED" : "STALE_VERSION",
+        );
+      }
+      if (
+        frozen.projectId !== command.projectId ||
+        !refEquals(frozen.spatialScopeRef.reference, fact.spatialScopeRef.reference) ||
+        !refEquals(frozen.basisReleaseSetRef.reference, command.basisReleaseSetRef.reference) ||
+        !refEquals(frozen.targetReleaseRef.reference, command.targetReleaseRef.reference)
+      ) {
+        failCalibration("calibration-frozen-assessment-mismatch", fact.frozenAssessmentBasisRef);
+      }
       const deviationRecordRef = deriveDeviationRecordRef({
         projectId: command.projectId,
         deviationFactRef: fact.deviationFactRef.reference,
       });
       const target = await this.#resolveTarget(command, downstream.basis);
+      if (target.contentDigest !== frozen.targetContentDigest) {
+        failCalibration("calibration-frozen-assessment-mismatch", command.targetReleaseRef);
+      }
       const snapshotRef = deriveCalibrationInputSnapshotRef({
         projectId: command.projectId,
         deviationFactRef: fact.deviationFactRef.reference,
@@ -337,10 +422,10 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
         baseArtifactRef: target.artifactRef,
         baseContentDigest: target.contentDigest,
         calibrationValidationPolicyRef: command.calibrationValidationPolicyRef,
-        modelDeploymentRef: command.agentPolicy.budgetPolicy.modelDeploymentRef,
-        promptTemplateRef: command.agentPolicy.budgetPolicy.promptTemplateRef,
-        toolPolicyRef: command.agentPolicy.toolPolicyRef,
-        budgetPolicyRef: command.agentPolicy.budgetPolicy.policyRef,
+        modelDeploymentRef: agentPolicy.data.budgetPolicy.modelDeploymentRef,
+        promptTemplateRef: agentPolicy.data.budgetPolicy.promptTemplateRef,
+        toolPolicyRef: agentPolicy.data.toolPolicyRef,
+        budgetPolicyRef: agentPolicy.data.budgetPolicy.policyRef,
         preparedBy: command.actorId,
         preparedAt: command.requestedAt,
       });
@@ -394,11 +479,12 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
         ["agentResult", "basis", "deviationFact", "reviewRequest"],
       );
       const result = await this.#readCompletedResult(valid, downstream.agentResult);
+      const frozenInputRef = ContentArtifactRefV1Schema.parse(result.frozenInputRef);
       const snapshot = CalibrationInputSnapshotV1Schema.parse(
         await this.#readArtifact(
           valid.commandId,
           downstream.basis,
-          ContentArtifactRefV1Schema.parse(result.frozenInputRef),
+          frozenInputRef,
           CALIBRATION_INPUT_PURPOSE_CODE_V1,
         ),
       );
@@ -410,6 +496,12 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
           AGENT_INCREMENT_PURPOSE_CODE_V1,
         ),
       );
+      const inputSnapshotRef = deriveCalibrationInputSnapshotRef({
+        projectId: snapshot.projectId,
+        deviationFactRef: snapshot.deviationFactRef.reference,
+        targetReleaseRef: snapshot.targetReleaseRef.reference,
+        calibrationValidationPolicyRef: snapshot.calibrationValidationPolicyRef,
+      });
       if (
         snapshot.projectId !== valid.projectId ||
         !refEquals(
@@ -420,6 +512,7 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
           snapshot.calibrationValidationPolicyRef,
           valid.payload.calibrationValidationPolicyRef,
         ) ||
+        !refEquals(candidate.inputSnapshotRef.reference, inputSnapshotRef.reference) ||
         !refEquals(candidate.taskRef.reference, result.taskRef.reference) ||
         !refEquals(candidate.resultRef.reference, result.resultRef.reference)
       ) {
@@ -450,12 +543,20 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
         projectId: valid.projectId,
         deviationFactRef: snapshot.deviationFactRef,
       });
-      const suggestionRef = deriveCalibrationSuggestionRef({
+      const derivedSuggestionRef = deriveCalibrationSuggestionRef({
         deviationRecordRef: valid.payload.deviationRecordRef.reference,
         agentTaskResultRef: valid.payload.agentTaskResultRef.reference,
         calibrationValidationPolicyRef: valid.payload.calibrationValidationPolicyRef,
         candidateDigest,
       });
+      const creation = await this.#resolveSuggestionCreation(valid, derivedSuggestionRef, {
+        deviationFactRef: snapshot.deviationFactRef.reference,
+        frozenInputRef: frozenInputRef.reference,
+        targetReleaseRef: snapshot.targetReleaseRef.reference,
+        baseArtifactRef: snapshot.baseArtifactRef.reference,
+        baseContentDigest: snapshot.baseContentDigest,
+      });
+      const suggestionRef = creation.suggestionRef;
       const reviewTaskRef = await this.#requestReview({
         command: valid,
         verified: downstream.reviewRequest,
@@ -463,7 +564,6 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
         parentRunRef: result.parentRunRef,
       });
       const recordedAt = this.#nowIso();
-      const frozenInputRef = ContentArtifactRefV1Schema.parse(result.frozenInputRef);
       const record = this.#buildPendingDeviationRecord({
         snapshot,
         fact,
@@ -530,17 +630,42 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
           if (stored === undefined || stored.candidate_digest !== candidateDigest) {
             failCalibration("calibration-idempotency-conflict", suggestionRef);
           }
-          await this.#insertDeviationRecordVersion({
-            transaction,
-            command: valid,
-            record,
-            deviationFactRef: snapshot.deviationFactRef.reference,
-            suggestionRef: suggestionRef.reference,
-            versionNumber: 1,
-            reviewStatus: "pending",
-            auditEntryId: `audit-${valid.commandId}:calibration-suggestion`,
-            reviewDecisionRef: undefined,
-          });
+          if (creation.reservation === undefined) {
+            await this.#insertDeviationRecordVersion({
+              transaction,
+              command: valid,
+              record,
+              deviationFactRef: snapshot.deviationFactRef.reference,
+              suggestionRef: suggestionRef.reference,
+              reviewTaskRef,
+              versionNumber: 1,
+              reviewStatus: "pending",
+              auditEntryId: `audit-${valid.commandId}:calibration-suggestion`,
+              reviewDecisionRef: undefined,
+            });
+          } else {
+            await transaction
+              .insertInto("business.calibration_suggestion_lineage_consumptions")
+              .values({
+                reservation_id: creation.reservation.reservation_id,
+                project_id: valid.projectId,
+                successor_suggestion_id: suggestionRef.reference.entityId,
+                successor_suggestion_version_id: suggestionRef.reference.versionId,
+                command_id: valid.commandId,
+                idempotency_key: valid.idempotencyKey,
+                audit_entry_id: `audit-${valid.commandId}:calibration-suggestion`,
+                recorded_at: recordedAt,
+              } as never)
+              .onConflict((conflict) => conflict.doNothing())
+              .execute();
+            const consumption = await this.#loadLineageConsumption(
+              transaction,
+              creation.reservation.reservation_id,
+            );
+            if (consumption?.command_id !== valid.commandId) {
+              failCalibration("calibration-suggestion-not-advanceable", suggestionRef);
+            }
+          }
           return {
             resultRef: suggestionRef,
             audit: {
@@ -678,15 +803,6 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
             proof.kind === "failed" ? proof.error : this.#unsupportedContract(command.commandId),
         };
       }
-      // 可推进性只由只追加事实派生：最新公共记录版本不再是 `pending` 时，该建议版本已收口。
-      const latest = await this.#loadLatestDeviationRecord(command.projectId, row.deviation_id);
-      if (latest !== undefined && latest.review_status !== "pending") {
-        failCalibration(
-          "calibration-suggestion-not-advanceable",
-          command.payload.calibrationSuggestionRef,
-          "BUSINESS_BLOCKED",
-        );
-      }
       return { kind: "verified", row, proof: proof.result };
     } catch (error: unknown) {
       return { kind: "failed", error: this.#toModuleError(error, command.commandId) };
@@ -709,6 +825,54 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
         "BUSINESS_BLOCKED",
       );
     }
+    if (command.payload.outcome === "return-for-revision") {
+      const replay = await this.#loadLineageReservationByDecision(
+        this.#db,
+        command.projectId,
+        command.payload.reviewDecisionRef.reference,
+      );
+      if (replay !== undefined) {
+        if (
+          replay.predecessor_suggestion_id !== row.suggestion_id ||
+          replay.predecessor_suggestion_version_id !== row.version_id
+        ) {
+          failCalibration(
+            "calibration-review-target-mismatch",
+            command.payload.calibrationSuggestionRef,
+          );
+        }
+        if ((await this.#loadLineageConsumption(this.#db, replay.reservation_id)) !== undefined) {
+          failCalibration(
+            "calibration-suggestion-not-advanceable",
+            command.payload.calibrationSuggestionRef,
+            "BUSINESS_BLOCKED",
+          );
+        }
+        const replayRecord = await this.#loadDeviationRecordBySuggestion(
+          command.projectId,
+          replay.deviation_id,
+          {
+            entityId: replay.successor_suggestion_id,
+            versionId: replay.successor_suggestion_version_id,
+          },
+        );
+        if (replayRecord === undefined) {
+          failCalibration("calibration-contract-drift", command.payload.calibrationSuggestionRef);
+        }
+        return {
+          kind: "succeeded",
+          result: {
+            calibrationSuggestionRef: command.payload.calibrationSuggestionRef,
+            outcome: "returned",
+            deviationRecordRef: {
+              kind: "deviation-record",
+              reference: DeviationRecordSchema.parse(replayRecord.record_payload).version.reference,
+            },
+            deviationRecordVersionId: replayRecord.version_id,
+          },
+        };
+      }
+    }
     const previous = await this.#loadLatestDeviationRecord(command.projectId, row.deviation_id);
     if (previous === undefined) {
       return failCalibration(
@@ -716,13 +880,25 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
         command.payload.calibrationSuggestionRef,
       );
     }
+    this.#assertCurrentSuggestion(previous, row, command.payload.calibrationSuggestionRef);
     const recordedAt = this.#nowIso();
-    const previousRecordVersion = DeviationRecordSchema.parse(previous.record_payload).version
-      .reference;
+    const nextVersionNumber = previous.version_number + 1;
+    const successorRef =
+      command.payload.outcome === "return-for-revision"
+        ? deriveSuccessorCalibrationSuggestionRef({
+            predecessorSuggestionRef: command.payload.calibrationSuggestionRef.reference,
+            reviewDecisionRef: command.payload.reviewDecisionRef.reference,
+          })
+        : undefined;
     const record =
       command.payload.outcome === "reject"
-        ? this.#appendDeviationRecordVersion(previous, "rejected", 2, recordedAt)
-        : undefined;
+        ? this.#appendDeviationRecordVersion(previous, "rejected", nextVersionNumber, recordedAt)
+        : this.#appendPendingDeviationRecordVersion(
+            previous,
+            successorRef!.reference,
+            nextVersionNumber,
+            recordedAt,
+          );
     const verified = await this.#verify(
       command.authorization,
       command.projectId,
@@ -732,21 +908,67 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
       atomicCommand(command, REVIEW_OUTCOME_COMMAND_KIND_V1, command.payload),
       async (context): Promise<AtomicCommitV1> => {
         const transaction = asCalibrationTransaction(context);
-        if (command.payload.outcome === "reject") {
+        if (command.payload.outcome === "return-for-revision") {
+          const reservationId = `calibration-lineage-${sha256CanonicalJson({
+            projectId: command.projectId,
+            predecessorSuggestionRef: command.payload.calibrationSuggestionRef.reference,
+            reviewDecisionRef: command.payload.reviewDecisionRef.reference,
+          }).slice(0, 32)}`;
+          await transaction
+            .insertInto("business.calibration_suggestion_lineage_reservations")
+            .values({
+              reservation_id: reservationId,
+              project_id: command.projectId,
+              deviation_id: row.deviation_id,
+              predecessor_suggestion_id: row.suggestion_id,
+              predecessor_suggestion_version_id: row.version_id,
+              successor_suggestion_id: successorRef!.reference.entityId,
+              successor_suggestion_version_id: successorRef!.reference.versionId,
+              review_decision_id: command.payload.reviewDecisionRef.reference.entityId,
+              review_decision_version_id: command.payload.reviewDecisionRef.reference.versionId,
+              command_id: command.commandId,
+              idempotency_key: command.idempotencyKey,
+              audit_entry_id: `audit-${command.commandId}:calibration-review-outcome`,
+              recorded_at: recordedAt,
+            } as never)
+            .onConflict((conflict) => conflict.doNothing())
+            .execute();
+          const stored = await this.#loadLineageReservationByDecision(
+            transaction,
+            command.projectId,
+            command.payload.reviewDecisionRef.reference,
+          );
+          if (
+            stored === undefined ||
+            stored.reservation_id !== reservationId ||
+            stored.predecessor_suggestion_id !== row.suggestion_id ||
+            stored.predecessor_suggestion_version_id !== row.version_id ||
+            stored.successor_suggestion_id !== successorRef!.reference.entityId ||
+            stored.successor_suggestion_version_id !== successorRef!.reference.versionId
+          ) {
+            failCalibration("calibration-idempotency-conflict", command.payload.reviewDecisionRef);
+          }
+        }
+        {
           // 拒绝只追加被拒绝记录版本：三张 C29 表只允许 INSERT/SELECT，建议事实不可原地改写。
           await this.#insertDeviationRecordVersion({
             transaction,
             command,
-            record: record!,
+            record,
             deviationFactRef: {
               entityId: row.deviation_fact_id,
               versionId: row.deviation_fact_version_id,
             },
-            suggestionRef: { entityId: row.suggestion_id, versionId: row.version_id },
-            versionNumber: 2,
-            reviewStatus: "rejected",
+            suggestionRef: successorRef?.reference ?? {
+              entityId: row.suggestion_id,
+              versionId: row.version_id,
+            },
+            reviewTaskRef: ReviewTaskRefV1Schema.parse(row.review_task_ref),
+            versionNumber: nextVersionNumber,
+            reviewStatus: command.payload.outcome === "reject" ? "rejected" : "pending",
             auditEntryId: `audit-${command.commandId}:calibration-review-outcome`,
-            reviewDecisionRef: command.payload.reviewDecisionRef,
+            reviewDecisionRef:
+              command.payload.outcome === "reject" ? command.payload.reviewDecisionRef : undefined,
           });
         }
         return {
@@ -775,10 +997,9 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
         outcome: command.payload.outcome === "reject" ? "rejected" : "returned",
         deviationRecordRef: {
           kind: "deviation-record",
-          reference: record?.version.reference ?? previousRecordVersion,
+          reference: record.version.reference,
         },
-        deviationRecordVersionId:
-          record?.version.reference.versionId ?? previousRecordVersion.versionId,
+        deviationRecordVersionId: record.version.reference.versionId,
       },
     };
   }
@@ -858,8 +1079,8 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
     });
     const revision = await this.#governance.govern({
       kind: "submit-revision",
-      commandId: command.commandId,
-      idempotencyKey: command.idempotencyKey,
+      commandId: `${command.commandId}:submit-revision`,
+      idempotencyKey: `${command.idempotencyKey}:submit-revision`,
       projectId: command.projectId,
       actorId: command.actorId,
       issuedAt: command.issuedAt,
@@ -899,8 +1120,15 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
         command.payload.calibrationSuggestionRef,
       );
     }
+    this.#assertCurrentSuggestion(previous, row, command.payload.calibrationSuggestionRef);
     const recordedAt = this.#nowIso();
-    const record = this.#appendDeviationRecordVersion(previous, "approved", 2, recordedAt);
+    const nextVersionNumber = previous.version_number + 1;
+    const record = this.#appendDeviationRecordVersion(
+      previous,
+      "approved",
+      nextVersionNumber,
+      recordedAt,
+    );
     await this.#executeWithRetry(
       atomicCommand(command, GOVERNANCE_DRAFT_COMMAND_KIND_V1, command.payload),
       async (context): Promise<AtomicCommitV1> => {
@@ -959,7 +1187,8 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
             versionId: row.deviation_fact_version_id,
           },
           suggestionRef: { entityId: row.suggestion_id, versionId: row.version_id },
-          versionNumber: 2,
+          reviewTaskRef: ReviewTaskRefV1Schema.parse(row.review_task_ref),
+          versionNumber: nextVersionNumber,
           reviewStatus: "approved",
           auditEntryId: `audit-${command.commandId}:calibration-governance-draft`,
           reviewDecisionRef: command.payload.reviewDecisionRef,
@@ -1285,10 +1514,14 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
     };
     readonly parentRunRef: { readonly kind: string; readonly reference: VersionReference };
   }): Promise<ReviewTaskRefV1> {
+    const reviewRequestId = `calibration-review-${sha256CanonicalJson({
+      projectId: input.command.projectId,
+      suggestionRef: input.suggestionRef.reference,
+    }).slice(0, 32)}`;
     const requested = await this.#reviews.requestReview(
       ReviewRequestV1Schema.parse({
-        commandId: `${input.command.commandId}:review`,
-        idempotencyKey: `${input.command.idempotencyKey}:review`,
+        commandId: reviewRequestId,
+        idempotencyKey: reviewRequestId,
         projectId: input.command.projectId,
         actorId: input.command.actorId,
         issuedAt: input.command.issuedAt,
@@ -1376,6 +1609,27 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
     });
   }
 
+  /** 退回只预留真实后继引用；公开 pending 版本不包含候选占位内容。 */
+  #appendPendingDeviationRecordVersion(
+    previous: DeviationRecordRow,
+    successorSuggestionRef: VersionReference,
+    versionNumber: number,
+    recordedAt: string,
+  ): DeviationRecord {
+    const current = DeviationRecordSchema.parse(previous.record_payload);
+    return DeviationRecordSchema.parse({
+      ...current,
+      calibrationRecommendation: successorSuggestionRef.entityId,
+      reviewStatus: "pending",
+      version: {
+        reference: { entityId: current.deviationRecordId, versionId: String(versionNumber) },
+        effectivePeriod: { validFrom: current.version.effectivePeriod.validFrom },
+        systemTime: { recordedAt },
+      },
+      audit: { ...current.audit, recordedAt },
+    });
+  }
+
   async #insertDeviationRecordVersion(input: {
     readonly transaction: CalibrationTransaction;
     readonly command: {
@@ -1387,6 +1641,7 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
     readonly record: DeviationRecord;
     readonly deviationFactRef: VersionReference;
     readonly suggestionRef: VersionReference;
+    readonly reviewTaskRef: ReviewTaskRefV1;
     readonly versionNumber: number;
     readonly reviewStatus: "pending" | "approved" | "rejected";
     /** 同事务唯一审计条目 id：C03 每个命令只写一条，记录行必须精确引用它。 */
@@ -1407,10 +1662,7 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
         suggestion_id: input.suggestionRef.entityId,
         suggestion_version_id: input.suggestionRef.versionId,
         review_status: input.reviewStatus,
-        review_task_ref: jsonValue({
-          kind: "review-task",
-          reference: { entityId: input.suggestionRef.entityId, versionId: "1" },
-        }),
+        review_task_ref: jsonValue(input.reviewTaskRef),
         review_decision_ref:
           input.reviewDecisionRef === undefined ? null : jsonValue(input.reviewDecisionRef),
         record_payload: jsonValue(input.record),
@@ -1424,6 +1676,185 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
       } as never)
       .onConflict((conflict) => conflict.doNothing())
       .execute();
+    const stored = await input.transaction
+      .selectFrom("business.calibration_deviation_records")
+      .select(["suggestion_id", "suggestion_version_id", "review_status", "content_digest"])
+      .where("project_id", "=", input.command.projectId)
+      .where("deviation_record_id", "=", input.record.version.reference.entityId)
+      .where("version_id", "=", input.record.version.reference.versionId)
+      .executeTakeFirst();
+    if (
+      stored === undefined ||
+      stored.suggestion_id !== input.suggestionRef.entityId ||
+      stored.suggestion_version_id !== input.suggestionRef.versionId ||
+      stored.review_status !== input.reviewStatus ||
+      stored.content_digest !== sha256CanonicalJson(input.record)
+    ) {
+      failCalibration("calibration-idempotency-conflict", {
+        kind: "deviation-record",
+        reference: input.record.version.reference,
+      });
+    }
+  }
+
+  async #resolveSuggestionCreation(
+    command: CreateCalibrationSuggestionCommandV1,
+    derivedSuggestionRef: CalibrationSuggestionRefV1,
+    context: {
+      readonly deviationFactRef: VersionReference;
+      readonly frozenInputRef: VersionReference;
+      readonly targetReleaseRef: VersionReference;
+      readonly baseArtifactRef: VersionReference;
+      readonly baseContentDigest: string;
+    },
+  ): Promise<{
+    readonly suggestionRef: CalibrationSuggestionRefV1;
+    readonly reservation?: SuggestionLineageReservationRow;
+  }> {
+    const replay = await this.#db
+      .selectFrom("business.calibration_suggestions")
+      .selectAll()
+      .where("project_id", "=", command.projectId)
+      .where("command_id", "=", command.commandId)
+      .executeTakeFirst();
+    if (replay !== undefined) {
+      return {
+        suggestionRef: {
+          kind: "calibration-suggestion",
+          reference: { entityId: replay.suggestion_id, versionId: replay.version_id },
+        },
+      };
+    }
+
+    const latest = await this.#loadLatestDeviationRecord(
+      command.projectId,
+      command.payload.deviationRecordRef.reference.entityId,
+    );
+    if (latest === undefined) return { suggestionRef: derivedSuggestionRef };
+    const reservation = await this.#loadOpenLineageReservation(
+      command.projectId,
+      command.payload.deviationRecordRef.reference.entityId,
+    );
+    if (
+      reservation === undefined ||
+      latest.review_status !== "pending" ||
+      latest.suggestion_id !== reservation.successor_suggestion_id ||
+      latest.suggestion_version_id !== reservation.successor_suggestion_version_id
+    ) {
+      failCalibration("calibration-suggestion-not-advanceable", derivedSuggestionRef);
+    }
+    const predecessor = await this.#db
+      .selectFrom("business.calibration_suggestions")
+      .selectAll()
+      .where("project_id", "=", command.projectId)
+      .where("suggestion_id", "=", reservation.predecessor_suggestion_id)
+      .where("version_id", "=", reservation.predecessor_suggestion_version_id)
+      .executeTakeFirst();
+    if (
+      predecessor === undefined ||
+      predecessor.deviation_id !== command.payload.deviationRecordRef.reference.entityId ||
+      predecessor.deviation_fact_id !== context.deviationFactRef.entityId ||
+      predecessor.deviation_fact_version_id !== context.deviationFactRef.versionId ||
+      predecessor.validation_policy_entity_id !==
+        command.payload.calibrationValidationPolicyRef.entityId ||
+      predecessor.validation_policy_version_id !==
+        command.payload.calibrationValidationPolicyRef.versionId ||
+      predecessor.frozen_input_artifact_id !== context.frozenInputRef.entityId ||
+      predecessor.frozen_input_artifact_version_id !== context.frozenInputRef.versionId ||
+      predecessor.target_release_entity_id !== context.targetReleaseRef.entityId ||
+      predecessor.target_release_version_id !== context.targetReleaseRef.versionId ||
+      predecessor.base_artifact_id !== context.baseArtifactRef.entityId ||
+      predecessor.base_artifact_version_id !== context.baseArtifactRef.versionId ||
+      predecessor.base_content_digest !== context.baseContentDigest
+    ) {
+      failCalibration("calibration-agent-result-mismatch", derivedSuggestionRef);
+    }
+    return {
+      suggestionRef: {
+        kind: "calibration-suggestion",
+        reference: {
+          entityId: reservation.successor_suggestion_id,
+          versionId: reservation.successor_suggestion_version_id,
+        },
+      },
+      reservation,
+    };
+  }
+
+  async #loadOpenLineageReservation(
+    projectId: string,
+    deviationId: string,
+  ): Promise<SuggestionLineageReservationRow | undefined> {
+    const row = await this.#db
+      .selectFrom("business.calibration_suggestion_lineage_reservations as reservation")
+      .leftJoin(
+        "business.calibration_suggestion_lineage_consumptions as consumption",
+        "consumption.reservation_id",
+        "reservation.reservation_id",
+      )
+      .selectAll("reservation")
+      .where("reservation.project_id", "=", projectId)
+      .where("reservation.deviation_id", "=", deviationId)
+      .where("consumption.reservation_id", "is", null)
+      .executeTakeFirst();
+    return row as SuggestionLineageReservationRow | undefined;
+  }
+
+  async #loadLineageReservationByDecision(
+    database: Kysely<CalibrationDatabase> | CalibrationTransaction,
+    projectId: string,
+    decisionRef: VersionReference,
+  ): Promise<SuggestionLineageReservationRow | undefined> {
+    const row = await (database as Kysely<CalibrationDatabase>)
+      .selectFrom("business.calibration_suggestion_lineage_reservations")
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where("review_decision_id", "=", decisionRef.entityId)
+      .where("review_decision_version_id", "=", decisionRef.versionId)
+      .executeTakeFirst();
+    return row as SuggestionLineageReservationRow | undefined;
+  }
+
+  async #loadLineageConsumption(
+    database: Kysely<CalibrationDatabase> | CalibrationTransaction,
+    reservationId: string,
+  ): Promise<SuggestionLineageConsumptionRow | undefined> {
+    const row = await (database as Kysely<CalibrationDatabase>)
+      .selectFrom("business.calibration_suggestion_lineage_consumptions")
+      .selectAll()
+      .where("reservation_id", "=", reservationId)
+      .executeTakeFirst();
+    return row as SuggestionLineageConsumptionRow | undefined;
+  }
+
+  async #loadDeviationRecordBySuggestion(
+    projectId: string,
+    deviationId: string,
+    suggestionRef: VersionReference,
+  ): Promise<DeviationRecordRow | undefined> {
+    const row = await this.#db
+      .selectFrom("business.calibration_deviation_records")
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where("deviation_record_id", "=", deviationId)
+      .where("suggestion_id", "=", suggestionRef.entityId)
+      .where("suggestion_version_id", "=", suggestionRef.versionId)
+      .executeTakeFirst();
+    return row as DeviationRecordRow | undefined;
+  }
+
+  #assertCurrentSuggestion(
+    latest: DeviationRecordRow,
+    suggestion: SuggestionRow,
+    targetRef: CalibrationSuggestionRefV1,
+  ): void {
+    if (
+      latest.review_status !== "pending" ||
+      latest.suggestion_id !== suggestion.suggestion_id ||
+      latest.suggestion_version_id !== suggestion.version_id
+    ) {
+      failCalibration("calibration-suggestion-not-advanceable", targetRef, "BUSINESS_BLOCKED");
+    }
   }
 
   async #loadSuggestion(command: CalibrationReviewOutcomeCommandV1): Promise<SuggestionRow> {
@@ -1490,25 +1921,29 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
 
   /** 证明是唯一批准依据：非批准必须落在调用方声明的非批准决定上。 */
   #assertProofOutcome(proof: CalibrationProofV1, command: CalibrationReviewOutcomeCommandV1): void {
-    if (proof.kind === "approved") {
-      if (command.payload.outcome !== "approve-draft-creation") {
-        failCalibration(
-          "calibration-review-decision-not-approval",
-          command.payload.calibrationSuggestionRef,
-        );
+    if (proof.kind === "not-approved") {
+      if (proof.reason === "decision-not-found") {
+        failCalibration("calibration-review-decision-not-found", command.payload.reviewDecisionRef);
       }
-      return;
-    }
-    if (proof.reason === "decision-not-found") {
-      failCalibration("calibration-review-decision-not-found", command.payload.reviewDecisionRef);
-    }
-    if (proof.reason === "target-mismatch") {
       failCalibration(
         "calibration-review-target-mismatch",
         command.payload.calibrationSuggestionRef,
       );
     }
-    if (command.payload.outcome === "approve-draft-creation") {
+    const expected =
+      command.payload.outcome === "approve-draft-creation"
+        ? "approved-for-draft"
+        : command.payload.outcome === "reject"
+          ? "rejected"
+          : "returned-for-revision";
+    if (
+      proof.kind !== expected ||
+      !refEquals(
+        proof.calibrationSuggestionRef.reference,
+        command.payload.calibrationSuggestionRef.reference,
+      ) ||
+      !refEquals(proof.reviewDecisionRef.reference, command.payload.reviewDecisionRef.reference)
+    ) {
       failCalibration(
         "calibration-review-decision-not-approval",
         command.payload.calibrationSuggestionRef,
@@ -1718,7 +2153,7 @@ type FailureV1 = { readonly kind: "failed"; readonly error: ModuleErrorV1 };
 
 type CalibrationProofV1 =
   | {
-      readonly kind: "approved";
+      readonly kind: "approved-for-draft" | "rejected" | "returned-for-revision";
       readonly calibrationSuggestionRef: { readonly reference: VersionReference };
       readonly reviewTaskRef: ReviewTaskRefV1;
       readonly reviewDecisionRef: { readonly reference: VersionReference };
@@ -1726,7 +2161,7 @@ type CalibrationProofV1 =
     }
   | {
       readonly kind: "not-approved";
-      readonly reason: "decision-not-found" | "target-mismatch" | "decision-not-approval";
+      readonly reason: "decision-not-found" | "target-mismatch";
     };
 
 const isCalibrationTargetDefinitionType = (

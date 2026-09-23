@@ -12,18 +12,18 @@
 ## 3. 校准领域与候选收口
 
 - [x] 3.1 [IP-05] 新增 calibration strict 私有 Schema、稳定 deviation/suggestion 身份、任务定义、六类类型化操作及完整 C18/C19 文档重建/校验；运行 `pnpm exec vitest run packages/core/test/calibration/calibration.test.ts`。
-- [ ] 3.2 [IP-06] 实现授权先行的 C28 fact、C25/C19 basis、C04 target 精确读取、冻结输入工件和 completed C08 结果收口，闭合未越限、真实 parent run、可修复和失败边界；运行 `pnpm exec vitest run packages/core/test/calibration/calibration.test.ts packages/adapters/test/calibration/postgres-calibration-adapter.test.ts`。
+- [x] 3.2 [IP-06] 实现授权先行的 C28 fact、C25/C19 basis、C04 target 精确读取、冻结输入工件和 completed C08 结果收口，闭合未越限、真实 parent run、可修复和失败边界；运行 `pnpm exec vitest run packages/core/test/calibration/calibration.test.ts packages/adapters/test/calibration/postgres-calibration-adapter.test.ts`。
 
 ## 4. 建议、复核与治理草案
 
-- [x] 4.1 [IP-10] 新增 `000047` 三表迁移、精确外键/唯一约束/最小权限和逆序 `down`，验证真实 up/down、重复 up 和旧数据保留；运行 `pnpm exec vitest run packages/adapters/test/calibration/postgres-calibration-adapter.test.ts`。
-- [ ] 4.2 [IP-07] 实现确定性 C07 复核请求，以及建议、pending 公共偏差记录、回执、审计和既有 Outbox 的 C03 原子写入；运行 `pnpm exec vitest run packages/adapters/test/calibration/postgres-calibration-adapter.test.ts`。
-- [ ] 4.3 [IP-08] 实现 reject、return-for-revision、approve-draft-creation 三类精确决定收口和只追加状态版本；运行 `pnpm exec vitest run packages/adapters/test/calibration/postgres-calibration-adapter.test.ts`。
-- [ ] 4.4 [IP-09] 实现 C07 证明门禁、候选精确重放、C04 内容工件、C16 幂等 `submit-revision` 与成功后的 approved 记录，证明无自动发布且尾事务重试不重复修订；运行 `pnpm exec vitest run packages/adapters/test/review-audit/postgres-review-audit-adapter.test.ts packages/adapters/test/calibration/postgres-calibration-adapter.test.ts`。
+- [x] 4.1 [IP-10] 新增 `000047` 三张主事实表和 `000048` 两张退回血缘表、精确外键/唯一约束/最小权限和逆序 `down`，验证真实 up/down、重复 up 和旧数据保留；运行 `pnpm exec vitest run packages/adapters/test/calibration/postgres-calibration-adapter.test.ts`。
+- [x] 4.2 [IP-07] 实现确定性 C07 复核请求，以及建议、pending 公共偏差记录、回执、审计和既有 Outbox 的 C03 原子写入；运行 `pnpm exec vitest run packages/adapters/test/calibration/postgres-calibration-adapter.test.ts`。
+- [x] 4.3 [IP-08] 实现 reject、return-for-revision、approve-draft-creation 三类精确决定收口和只追加状态版本；运行 `pnpm exec vitest run packages/adapters/test/calibration/postgres-calibration-adapter.test.ts`。
+- [x] 4.4 [IP-09] 实现 C07 证明门禁、候选精确重放、C04 内容工件、C16 幂等 `submit-revision` 与成功后的 approved 记录，证明无自动发布且尾事务重试不重复修订；运行 `pnpm exec vitest run packages/adapters/test/review-audit/postgres-review-audit-adapter.test.ts packages/adapters/test/calibration/postgres-calibration-adapter.test.ts`。
 
 ## 5. 导出与稳定行为
 
-- [ ] 5.1 [IP-11] 增加 core/adapters `./calibration` 子路径导出，补齐 implementation-plan §6 的 31 个 Scenario 代表性证据；运行 `pnpm exec vitest run packages/contracts/test/module-interfaces-events-workflows.test.ts packages/core/test/calibration/calibration.test.ts packages/adapters/test/agent-runtime/postgres-agent-task-adapter.test.ts packages/adapters/test/review-audit/postgres-review-audit-adapter.test.ts packages/adapters/test/calibration/postgres-calibration-adapter.test.ts`。
+- [x] 5.1 [IP-11] 增加 core/adapters `./calibration` 子路径导出，补齐 implementation-plan §6 的 Scenario 代表性证据；运行 `pnpm exec vitest run packages/contracts/test/module-interfaces-events-workflows.test.ts packages/core/test/calibration/calibration.test.ts packages/adapters/test/agent-runtime/postgres-agent-task-adapter.test.ts packages/adapters/test/review-audit/postgres-review-audit-adapter.test.ts packages/adapters/test/calibration/postgres-calibration-adapter.test.ts`。
 - [x] 5.2 [IP-11] 验证 contracts/records/events/workflows 与 apps 未漂移、C29 未激活路由且草案保持未发布；运行 `git diff -- packages/contracts/src/records packages/contracts/src/events packages/contracts/src/workflows apps && pnpm deps:check`，预期前一命令无 diff。
 
 ## 6. 最小验证与交接

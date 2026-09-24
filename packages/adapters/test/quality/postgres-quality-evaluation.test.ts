@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ArtifactPutCommandV1Schema, type ArtifactStoreV1 } from "@riskflow/core/artifacts";
 import {
   createQualityEvaluationService,
+  QualityDatasetV1Schema,
   qualityDatasetArtifactId,
   type QualityEvaluationReportV1,
 } from "@riskflow/core/quality";
@@ -1650,6 +1651,134 @@ describe("C36 数据集计算 CLI", () => {
     );
     expect(cliChunks.length).toBeGreaterThan(0);
   }, 300_000);
+});
+
+describe("C36 正式零结果公开读组合", () => {
+  it("只在终态全集、精确工作项和当前授权一致时出具冻结范围证明", async () => {
+    const synthetic = QualityDatasetV1Schema.parse(
+      JSON.parse(
+        readFileSync(
+          resolve(import.meta.dirname, "../../../core/test/quality/fixtures/synthetic.json"),
+          "utf8",
+        ),
+      ),
+    );
+    const base = synthetic.samples.find((sample) => sample.sampleId === "sample-gamma")!;
+    const runRef = {
+      kind: "workflow-run" as const,
+      reference: { entityId: "run", versionId: "1" },
+    };
+    const workPlanRef = {
+      kind: "identification-work-plan" as const,
+      reference: { entityId: "plan", versionId: "1" },
+    };
+    const terminalResultRef = {
+      kind: "identification-run-result" as const,
+      reference: { entityId: "terminal", versionId: "1" },
+    };
+    const workItemRef = {
+      kind: "identification-work-item" as const,
+      reference: { entityId: "work-item", versionId: "1" },
+    };
+    const zeroResultRef = {
+      kind: "identification-zero-result" as const,
+      reference: { entityId: "zero-result", versionId: "1" },
+    };
+    const sample = { ...base, formalRunProofRefs: { runRef, workPlanRef, terminalResultRef } };
+    const sourceVersionRef = {
+      kind: "source-version" as const,
+      reference: base.sourceSegmentRefs[0]!.sourceVersion,
+    };
+    const workItem = {
+      workItemRef,
+      nodeId: base.processNodeId,
+      spatialScopeRefs: [base.spatialScopeRef],
+      sourceVersionRefs: [sourceVersionRef],
+    };
+    const result = {
+      projectId: authorization.projectId,
+      runRef,
+      workPlanRef,
+      inputSnapshotRef: base.identificationInputSnapshotRef,
+      acceptedRiskRecordRefs: [],
+      acceptedEventRefs: [],
+      failedWorkItemRefs: [],
+      skippedWorkItemRefs: [],
+      rejectedGroupRefs: [],
+      pendingReviewTaskRefs: [],
+      zeroResults: [{ workItemRef, zeroResultRef }],
+    };
+    let current = true;
+    const adapter = createPostgresQualityEvaluationAdapter({
+      db: fixture!.runtime.db,
+      transactionUnit: fixture!.transactionUnit,
+      artifactStore: fixture!.artifactStore,
+      artifactReferenceGuard: fixture!.artifactRegistry,
+      recordStore: new PostgresRiskCandidateFinalizationAdapter({
+        db: fixture!.runtime.db,
+        transactionUnit: fixture!.transactionUnit,
+      }),
+      evidenceAccess: fixture!.contextSource,
+      formalRunEvidence: {
+        registrationStore: {
+          async readCompletedRunResult() {
+            return { kind: "read", runResult: result as never };
+          },
+        },
+        workPlanReader: {
+          async readExact() {
+            return {
+              kind: "succeeded",
+              read: { inputSnapshotRef: result.inputSnapshotRef, workItems: [workItem] } as never,
+            };
+          },
+        },
+        zeroResultReader: {
+          async readZeroResult() {
+            return current
+              ? {
+                  kind: "read",
+                  zeroResult: {
+                    nodeId: workItem.nodeId,
+                    workItemRef,
+                    inputSnapshotRef: result.inputSnapshotRef,
+                  } as never,
+                }
+              : { kind: "unavailable" };
+          },
+        },
+      },
+    });
+    const request = {
+      projectId: authorization.projectId,
+      actorId: authorization.actorId,
+      requestedAt: QUALITY_FIXTURE_TIME,
+      sample,
+      spatialScopeRefs: [base.spatialScopeRef],
+      sourceVersionRefs: [sourceVersionRef],
+      issuer: {
+        async issueReadAuthorization() {
+          return { ...authorization, grantedCapabilities: ["risk-identification.run" as const] };
+        },
+      },
+    };
+    const proved = await adapter.readFormalZeroResult(request);
+    expect(proved.kind).toBe("proved");
+    expect(await adapter.readFormalZeroResult(request)).toEqual(proved);
+    expect(
+      (
+        await adapter.readFormalZeroResult({
+          ...request,
+          sample: {
+            ...sample,
+            processNodeId: "another-node",
+          },
+        })
+      ).kind,
+    ).toBe("failed");
+    current = false;
+    expect((await adapter.readFormalZeroResult(request)).kind).toBe("failed");
+  });
 });
 
 describe("C36 必审资料段证明（真实 C13/C06）", () => {

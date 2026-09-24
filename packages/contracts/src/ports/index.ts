@@ -2410,6 +2410,21 @@ export const WORKFLOW_LINK_RELATIONS_V1 = [
 export const WorkflowLinkRelationV1Schema = z.enum(WORKFLOW_LINK_RELATIONS_V1);
 export type WorkflowLinkRelationV1 = z.infer<typeof WorkflowLinkRelationV1Schema>;
 
+/**
+ * C30 缺席链尾类型（C31 design D-01）：只登记未发生分支的类型化原因，不补造链尾事实。
+ * 定义在公共契约中，因为 `ProjectionResultReadPortV1` 的报告谓词按此闭合取值披露。
+ */
+export const WORKFLOW_SKIPPED_TAIL_KINDS_V1 = [
+  "warning",
+  "recommendation",
+  "forecast",
+  "feedback",
+  "deviation",
+  "calibration",
+] as const;
+export const WorkflowSkippedTailKindV1Schema = z.enum(WORKFLOW_SKIPPED_TAIL_KINDS_V1);
+export type WorkflowSkippedTailKindV1 = z.infer<typeof WorkflowSkippedTailKindV1Schema>;
+
 const riskRecordTraceItemV1Base = {
   riskRecordRef: StandardizedRiskRecordRefV1Schema,
 };
@@ -2469,9 +2484,39 @@ const projectionTraceLinkItemV1Schema = z.strictObject({
   evidenceLocator: EvidenceLocatorSchema.optional(),
 });
 
+/** 报告可由已成立事实披露的六种版本化引用（C31 design D-01）：不含等级、P/C 或领域正文。 */
+export const ProjectionReportFactRefV1Schema = z.discriminatedUnion("kind", [
+  StandardizedRiskRecordRefV1Schema,
+  RiskAssessmentRecordRefV1Schema,
+  WarningRecordRefV1Schema,
+  ResponseRecommendationRefV1Schema,
+  DeviationRecordRefV1Schema,
+  CalibrationSuggestionRefV1Schema,
+]);
+export type ProjectionReportFactRefV1 = z.infer<typeof ProjectionReportFactRefV1Schema>;
+
+const projectionReportFactItemV1Schema = z.strictObject({
+  kind: z.literal("report-fact"),
+  workflowRunRef: WorkflowRunRefV1Schema,
+  factRef: ProjectionReportFactRefV1Schema,
+  auditTrailRef: AuditTrailRefV1Schema,
+  evidenceLocator: EvidenceLocatorSchema.optional(),
+});
+
+const projectionReportAbsenceItemV1Schema = z.strictObject({
+  kind: z.literal("report-absence"),
+  workflowRunRef: WorkflowRunRefV1Schema,
+  tailKind: WorkflowSkippedTailKindV1Schema,
+  reasonCode: IdentifierSchema,
+  lastEstablishedRef: ContractReferenceV1Schema.optional(),
+  auditTrailRef: AuditTrailRefV1Schema,
+});
+
 export const ProjectionResultItemV1Schema = z.discriminatedUnion("kind", [
   projectionRunSummaryItemV1Schema,
   projectionTraceLinkItemV1Schema,
+  projectionReportFactItemV1Schema,
+  projectionReportAbsenceItemV1Schema,
 ]);
 export type ProjectionResultItemV1 = z.infer<typeof ProjectionResultItemV1Schema>;
 
@@ -2489,7 +2534,7 @@ export type ProjectionResultReadRequestV1 = z.infer<typeof ProjectionResultReadR
 export const ProjectionResultReadResultV1Schema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("page"),
-    queryType: z.enum(["run-view", "trace-chain"]),
+    queryType: z.enum(["run-view", "trace-chain", "association-graph", "risk-overview"]),
     items: z.array(ProjectionResultItemV1Schema),
     nextCursor: IdentifierSchema.optional(),
   }),

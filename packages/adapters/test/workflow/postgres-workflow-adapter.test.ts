@@ -31,6 +31,7 @@ import { createFilesystemArtifactStore } from "../../src/artifacts/filesystem-ar
 import { PostgresArtifactRegistry } from "../../src/artifacts/postgres-artifact-registry.js";
 import { runPostgresMigrations } from "../../src/postgres/migrations/run.js";
 import * as assessmentRiskflowGraphsMigration from "../../src/postgres/migrations/workflow/deliver-assessment-and-riskflow-graphs/000050_assessment_riskflow_graphs.js";
+import * as graphTraceReportProjectionsMigration from "../../src/postgres/migrations/workflow/deliver-graph-trace-and-report-projections/000051_graph_trace_report_projections.js";
 import { createPostgresRuntime, type PostgresRuntime } from "../../src/postgres/pool.js";
 import { PostgresTransactionUnit } from "../../src/postgres/transaction-unit.js";
 import {
@@ -719,6 +720,153 @@ describe("C30 workflow registration adapter", () => {
     expect(
       await fixture.adapter.registrationStore.registerQuery({ registration: conflicting }),
     ).toMatchObject({ kind: "idempotency-conflict" });
+  });
+
+  it("freezes an optional spatial target on query registration and still reads legacy rows", async () => {
+    const scoped = {
+      schemaVersion: "1" as const,
+      projectId: PROJECT_ID,
+      queryResultId: "query-result-c31:risk-overview",
+      queryResultVersionId: sha("query-version-scoped"),
+      queryType: "risk-overview",
+      targetRef: {
+        kind: "project-revision" as const,
+        reference: { entityId: "project-revision-c31", versionId: "v1" },
+      },
+      spatialScopeRef: SPATIAL_SCOPE_REF,
+      actorRef: ACTOR_ID,
+      authorizationContextRef: AUTHORIZATION.authorizationContextRef,
+      authorizationScopeDigest: SCOPE_DIGEST,
+      requestedAt: TIMESTAMP,
+      recordedAt: TIMESTAMP,
+      persistedAt: TIMESTAMP,
+      auditEntryId: "c31-query-risk-overview:audit",
+    };
+    expect(await fixture.adapter.registrationStore.registerQuery({ registration: scoped })).toEqual(
+      {
+        kind: "registered",
+        replayed: false,
+      },
+    );
+    const storedScoped = await fixture.adapter.registrationStore.readQuery({
+      projectId: PROJECT_ID,
+      queryResultId: scoped.queryResultId,
+      queryResultVersionId: scoped.queryResultVersionId,
+    });
+    expect(storedScoped?.spatialScopeRef).toEqual(SPATIAL_SCOPE_REF);
+    expect(storedScoped?.queryType).toBe("risk-overview");
+
+    const legacy = {
+      ...scoped,
+      queryResultId: "query-result-c31:legacy",
+      queryResultVersionId: sha("query-version-legacy"),
+      queryType: "run-view",
+      targetRef: RUN_REF,
+      runId: RUN_ID,
+      auditEntryId: "c31-query-run-view-legacy:audit",
+      spatialScopeRef: undefined,
+    };
+    await fixture.adapter.registrationStore.registerQuery({ registration: legacy as never });
+    const storedLegacy = await fixture.adapter.registrationStore.readQuery({
+      projectId: PROJECT_ID,
+      queryResultId: legacy.queryResultId,
+      queryResultVersionId: legacy.queryResultVersionId,
+    });
+    expect(storedLegacy?.spatialScopeRef).toBeUndefined();
+    const legacyRow = await sql<{ spatial_scope_ref: unknown }>`
+      SELECT spatial_scope_ref FROM business.workflow_query_results
+      WHERE project_id = ${PROJECT_ID} AND query_result_id = ${legacy.queryResultId}
+    `.execute(fixture.runtime.db);
+    expect(legacyRow.rows).toEqual([{ spatial_scope_ref: null }]);
+  });
+
+  it("rejects concurrent overview registrations with one identity and different spatial targets", async () => {
+    const queryResultId = "query-result-c31:concurrent-spatial";
+    const first = {
+      schemaVersion: "1" as const,
+      projectId: PROJECT_ID,
+      queryResultId,
+      queryResultVersionId: sha("c31-concurrent-spatial-a"),
+      queryType: "risk-overview" as const,
+      targetRef: {
+        kind: "project-revision" as const,
+        reference: { entityId: "project-revision-c31", versionId: "v1" },
+      },
+      spatialScopeRef: SPATIAL_SCOPE_REF,
+      actorRef: ACTOR_ID,
+      authorizationContextRef: AUTHORIZATION.authorizationContextRef,
+      authorizationScopeDigest: SCOPE_DIGEST,
+      requestedAt: TIMESTAMP,
+      recordedAt: TIMESTAMP,
+      persistedAt: TIMESTAMP,
+      auditEntryId: `${queryResultId}:audit`,
+    };
+    const second = {
+      ...first,
+      queryResultVersionId: sha("c31-concurrent-spatial-b"),
+      spatialScopeRef: {
+        kind: "spatial-scope" as const,
+        reference: { entityId: "scope-c31-other", versionId: "v1" },
+      },
+    };
+    const outcomes = await Promise.all(
+      [first, second].map((registration) =>
+        fixture.adapter.registrationStore.registerQuery({ registration }),
+      ),
+    );
+    expect(outcomes.map((outcome) => outcome.kind).sort()).toEqual([
+      "idempotency-conflict",
+      "registered",
+    ]);
+    const rows = await sql<{ query_result_version_id: string }>`
+      SELECT query_result_version_id FROM business.workflow_query_results
+      WHERE project_id = ${PROJECT_ID} AND query_result_id = ${queryResultId}
+    `.execute(fixture.runtime.db);
+    expect(rows.rows).toHaveLength(1);
+    const winner = [first, second].find(
+      (registration) => registration.queryResultVersionId === rows.rows[0]?.query_result_version_id,
+    );
+    expect(winner).toBeDefined();
+    if (winner !== undefined) {
+      expect(
+        await fixture.adapter.registrationStore.readQuery({
+          projectId: PROJECT_ID,
+          queryResultId,
+          queryResultVersionId: winner.queryResultVersionId,
+        }),
+      ).toMatchObject({ spatialScopeRef: winner.spatialScopeRef });
+    }
+  });
+
+  it("adds and reverses the C31 spatial column and containment indexes idempotently", async () => {
+    await graphTraceReportProjectionsMigration.down(fixture.migratorRuntime.db);
+    const dropped = await sql<{ column_name: string }>`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_schema = 'business' AND table_name = 'workflow_query_results'
+        AND column_name = 'spatial_scope_ref'
+    `.execute(fixture.migratorRuntime.db);
+    expect(dropped.rows).toHaveLength(0);
+
+    await graphTraceReportProjectionsMigration.up(fixture.migratorRuntime.db);
+    await graphTraceReportProjectionsMigration.up(fixture.migratorRuntime.db);
+    const indexes = await sql<{ indexname: string }>`
+      SELECT indexname FROM pg_indexes
+      WHERE schemaname = 'business'
+        AND indexname IN (
+          'workflow_graph_results_frozen_refs_gin',
+          'workflow_graph_links_refs_gin'
+        )
+    `.execute(fixture.migratorRuntime.db);
+    expect(indexes.rows.map((row) => row.indexname).sort()).toEqual([
+      "workflow_graph_links_refs_gin",
+      "workflow_graph_results_frozen_refs_gin",
+    ]);
+    const restored = await fixture.adapter.registrationStore.readQuery({
+      projectId: PROJECT_ID,
+      queryResultId: "query-result-c31:legacy",
+      queryResultVersionId: sha("query-version-legacy"),
+    });
+    expect(restored?.spatialScopeRef).toBeUndefined();
   });
 
   it("keeps the application role append-only on every C30 table", async () => {

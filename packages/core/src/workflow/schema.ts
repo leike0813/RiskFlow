@@ -22,6 +22,7 @@ import {
   ResponseRecommendationRefV1Schema,
   RiskAssessmentRecordRefV1Schema,
   RouteDecisionRefV1Schema,
+  SpatialScopeRefV1Schema,
   StageResultRefV1Schema,
   StandardizedRiskRecordRefV1Schema,
   WaitingRefV1Schema,
@@ -31,7 +32,9 @@ import {
   WorkflowLinkRelationV1Schema,
   WorkflowRunRefV1Schema,
   WorkflowRunStatusV1Schema,
+  WorkflowSkippedTailKindV1Schema,
   WORKFLOW_LINK_RELATIONS_V1,
+  WORKFLOW_SKIPPED_TAIL_KINDS_V1,
 } from "@riskflow/contracts/ports";
 import { AssessmentStageV1Schema, RiskFlowStageV1Schema } from "@riskflow/contracts/workflows";
 
@@ -56,6 +59,10 @@ export type WorkflowGraphResultKindV1 = z.infer<typeof WorkflowGraphResultKindV1
 /** 链边闭合关系码来自公共契约（design D-05）：C30 不维护第二份取值。 */
 export { WorkflowLinkRelationV1Schema, WORKFLOW_LINK_RELATIONS_V1 };
 export type { WorkflowLinkRelationV1 } from "@riskflow/contracts/ports";
+
+/** 缺席链尾类型同样来自公共契约（C31 design D-01）：报告谓词与登记共用一个闭合取值。 */
+export { WorkflowSkippedTailKindV1Schema, WORKFLOW_SKIPPED_TAIL_KINDS_V1 };
+export type { WorkflowSkippedTailKindV1 } from "@riskflow/contracts/ports";
 
 /** 运行阶段：父运行取 `RiskFlowStageV1`，评估子运行取 `AssessmentStageV1`。 */
 export const WorkflowRunStageV1Schema = z.union([RiskFlowStageV1Schema, AssessmentStageV1Schema]);
@@ -210,14 +217,7 @@ export type WorkflowGraphRunStateV1 = z.infer<typeof WorkflowGraphRunStateV1Sche
 
 /** 缺席链尾的类型化原因（design D-05/D-09）：只登记原因码与最后成立事实引用。 */
 export const WorkflowSkippedTailV1Schema = z.strictObject({
-  tailKind: z.enum([
-    "warning",
-    "recommendation",
-    "forecast",
-    "feedback",
-    "deviation",
-    "calibration",
-  ]),
+  tailKind: WorkflowSkippedTailKindV1Schema,
   reasonCode: IdentifierSchema,
   lastEstablishedRef: ContractReferenceV1Schema.optional(),
 });
@@ -273,6 +273,8 @@ export const WorkflowQueryRegistrationV1Schema = z.strictObject({
   queryType: IdentifierSchema,
   targetRef: ContractReferenceV1Schema,
   runId: IdentifierSchema.optional(),
+  /** C31 工程总览的精确空间目标（design D-03）：随登记冻结，旧分支为空仍按原语义读取。 */
+  spatialScopeRef: SpatialScopeRefV1Schema.optional(),
   actorRef: IdentifierSchema,
   authorizationContextRef: AuthorizationContextRefV1Schema,
   authorizationScopeDigest: digestSchema,

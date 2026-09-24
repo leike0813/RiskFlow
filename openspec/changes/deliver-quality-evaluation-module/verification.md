@@ -3,10 +3,10 @@
 ## 验收对象与结论
 
 - Change：`deliver-quality-evaluation-module`（C36；实际 schema `orchestrated-delivery`）。
-- 本轮输入 HEAD：`0eda631c01a5d5d168b07cf9cfda10e593d8a499`；合并主线检查点：`a8893d7`；已核验实现 HEAD：`963a9755ec379d4919e91b18566afb1b29b6eb33`。
-- Finalizer：`task_ba559d063211` / `ctx_97fddf591af2`。样例均为合成样本，待甲方复核；没有真实工程准确率结论。
+- Finalizer 输入 HEAD：`0eda631c01a5d5d168b07cf9cfda10e593d8a499`；合并主线检查点：`a8893d7`；本轮限定审计输入与最终代码 HEAD：`7925e5bb4f745d14c75142b652e3008cfa07842f`（本次仅更新 verification）。
+- Finalizer：`task_ba559d063211` / `ctx_97fddf591af2`；限定审计：`task_a361561568b9` / `ctx_55a94f27ea3c`。样例均为合成样本，待甲方复核；没有真实工程准确率结论。
 
-**BLOCKED：等待本轮唯一一次限定审计结论。** IP-08～IP-10 的实现、回归与规格校验已完成；本轮修改了当前授权读取和投影权限边界，按收尾协议由协调端安排限定审计。审计完成后须在下节补入结论与任务内修复/回归证据，再判定 PASS 或 FAIL；不得仅凭本节预先通过。
+**PASS：C36 已批准语义及本轮唯一一次限定审计均通过。** IP-01～IP-10 的实现、关键接缝、回归与规格校验完成；结论仅适用于上述固定代码 HEAD 和合成样本验证。
 
 ## 已核验行为
 
@@ -27,13 +27,14 @@
 | Q6、Q7 类型、依赖、格式、规格 | `pnpm typecheck`、`pnpm lint`、`pnpm deps:check`（441 模块、1296 依赖）、`pnpm deps:policy`、`pnpm exec prettier --check`（本轮变更文件）、`openspec validate deliver-quality-evaluation-module --strict --no-interactive`、`git diff --cached --check` → 均退出码 0。格式修改均经内置 `apply_patch`。 |
 | OpenSpec 状态 | `openspec status --change deliver-quality-evaluation-module --json` → `schemaName=orchestrated-delivery`、`isPlanningComplete=true`、`isComplete=true`；任务 5.1 与 5.4 已按行为和证据勾选。状态只说明工件/任务齐备，不代替本页的审计结论。 |
 
-## 限定审计（协调端补入）
+## 限定审计
 
-- 输入实现 HEAD：`963a9755ec379d4919e91b18566afb1b29b6eb33`。
+- 输入与最终代码 HEAD：`7925e5bb4f745d14c75142b652e3008cfa07842f`；相对前次已核验实现 HEAD `963a9755ec379d4919e91b18566afb1b29b6eb33`，仅 verification 文档发生变化。
 - 审计范围：D-11 的当前工程/空间/资料权限与并发行重选；D-09 的 C22 读前/读后当前授权及 C39/C22 事实合取；C36 只追加迁移 51 与 C03 原子路径受合并影响的部分。
-- 审计 Agent / Task / Dispatch：待协调端填写。
-- 发现、当前审计 Task 内修复与实际回归：待审计 Agent 填写。
-- 最终结论：待审计 Agent 填写；同一收尾轮次不再派第二次审计。
+- 审计 Agent / Task / Dispatch：本任务 / `task_a361561568b9` / `ctx_55a94f27ea3c`。
+- 代码核对：C09 按精确来源版本两轮签发，末轮复验工程/空间后由 C36 重选报告引用与摘要 digest；C39 已完成终态、冻结计划与 C22 逐工作项零结果合取，C22 返回前复验当前授权；迁移 51 只给应用角色 SELECT/INSERT，C36 索引、冻结摘要、回执与审计由 C03 单事务提交。同形拒权、撤权、并发新行、同键重放、迁移逆序回滚均有实际分支断言。未发现范围内缺陷，代码修复：无。
+- 实际回归：`pnpm exec vitest run packages/core/test/identification/candidate-finalization.test.ts packages/core/test/quality/quality.test.ts packages/adapters/test/identification/graph/postgres-identification-graph-adapter.test.ts packages/adapters/test/quality/postgres-quality-evaluation.test.ts apps/api/test/quality.test.ts packages/adapters/test/postgres/postgres-foundation.test.ts` → 6 文件、124/124 通过；`pnpm exec vitest run packages/adapters/test/identification/candidate-finalization/postgres-risk-candidate-adapter.test.ts packages/contracts/test/module-interfaces-events-workflows.test.ts apps/web/test/quality.test.tsx` → 3 文件、41/41 通过；`pnpm build && pnpm exec playwright test -c playwright.config.ts --project=chromium` → 真实 Chromium 2/2 通过；`pnpm typecheck`、`pnpm deps:check`、`pnpm deps:policy`、`openspec validate deliver-quality-evaluation-module --strict --no-interactive`、`git diff --check` → 均退出码 0。
+- 最终结论：PASS；本收尾轮次的限定审计已闭合。
 
 ## 剩余边界
 

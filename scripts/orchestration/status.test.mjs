@@ -94,6 +94,7 @@ function context(overrides = {}) {
     worktrees: [],
     tasks: [],
     ancestry: {},
+    mainActiveChangeNames: [],
     ...overrides,
   };
 }
@@ -1486,6 +1487,8 @@ describe("worktree-aware state", () => {
     const snapshot = deriveSnapshot(
       graph(),
       context({
+        // 两个工作树都是「main 没有、各自本地登记」：这份同名 change 有两个真实所有者。
+        mainActiveChangeNames: [],
         worktrees: [
           auxiliary("repo-id::/tmp/aux-1", "/tmp/aux-1"),
           auxiliary("repo-id::/tmp/aux-2", "/tmp/aux-2"),
@@ -1527,6 +1530,8 @@ describe("worktree-aware state", () => {
     const snapshot = deriveSnapshot(
       graph(),
       context({
+        // 同名 change 仍挂在 main 的活动列表里，继承副本只有精确信封才能主张归属。
+        mainActiveChangeNames: ["strengthen-orchestration"],
         worktrees: [
           auxiliary("repo-id::/tmp/inherited", "/tmp/inherited"),
           auxiliary("repo-id::/tmp/owner", "/tmp/owner", [ownerTask]),
@@ -1537,6 +1542,205 @@ describe("worktree-aware state", () => {
     const state = snapshot.nodes.find((item) => item.id === "AUX:strengthen-orchestration");
     expect(state?.worktree?.id).toBe("repo-id::/tmp/owner");
     expect(state?.violations.map((item) => item.code)).not.toContain("duplicate_active_worktree");
+  });
+
+  it("adopts only the auxiliary name that is not inherited from main", () => {
+    const auxiliary = (id, path, name) => ({
+      id,
+      path,
+      exists: true,
+      localNodeIds: [],
+      openSpecNodeIds: [],
+      openSpecNames: [name],
+      liveTerminalCount: 0,
+      git: { head: "feature-head", branch: id, dirty: false, dirtyPaths: [] },
+      tasks: [],
+    });
+    const snapshot = deriveSnapshot(
+      graph(),
+      context({
+        mainActiveChangeNames: ["fix-suite-isolation"],
+        worktrees: [
+          auxiliary("repo-id::/tmp/inherited", "/tmp/inherited", "fix-suite-isolation"),
+          auxiliary("repo-id::/tmp/local", "/tmp/local", "stabilize-fixtures"),
+        ],
+      }),
+    );
+    expect(snapshot.nodes.map((item) => item.id)).toEqual(["AUX:stabilize-fixtures"]);
+    expect(snapshot.nodes[0]).toMatchObject({
+      status: "untracked",
+      phase: "adopt",
+      worktree: { id: "repo-id::/tmp/local" },
+    });
+    expect(snapshot.resumeQueue[0]).toMatchObject({
+      workItemId: "AUX:stabilize-fixtures",
+      category: "recovery",
+    });
+  });
+
+  it("does not block route dispatch when new worktrees inherit a main auxiliary change", () => {
+    const routeWorktree = (id, path, nodeId, changeName) => {
+      const planning = task({
+        id: `task-${nodeId}-planning`,
+        status: "ready",
+        createdAt: "2026-09-04 12:00:00",
+        envelope: v2Envelope({
+          workItemId: nodeId,
+          routeNodeId: nodeId,
+          changeName,
+          taskKind: "planning",
+          phase: "planning",
+          worktreeId: id,
+          inputHead: "main-head",
+          owner: {
+            taskId: `task-${nodeId}-planning`,
+            agentClass: "strong-planner",
+            model: "gpt-6-sol",
+          },
+        }),
+      });
+      return {
+        id,
+        path,
+        exists: true,
+        localNodeIds: [nodeId],
+        openSpecNodeIds: [nodeId],
+        openSpecNames: [changeName, "fix-suite-isolation"],
+        liveTerminalCount: 1,
+        git: { head: "main-head", branch: `feature/${nodeId}`, dirty: false, dirtyPaths: [] },
+        tasks: [planning],
+      };
+    };
+    const plan08 = routeWorktree("repo-id::/tmp/c08", "/tmp/c08", "C08", "deliver-agent");
+    const plan09 = routeWorktree("repo-id::/tmp/c09", "/tmp/c09", "C09", "deliver-warning");
+    const snapshot = deriveSnapshot(
+      graph(
+        { id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] },
+        { id: "C09", kind: "change", change: "deliver-warning", dependsOn: [] },
+      ),
+      context({
+        mainActiveChangeNames: ["fix-suite-isolation"],
+        worktrees: [plan08, plan09],
+        tasks: [...plan08.tasks, ...plan09.tasks],
+        ancestry: { C08: true, C09: true },
+      }),
+    );
+    expect(snapshot.nodes.map((item) => item.id)).toEqual(["C08", "C09"]);
+    expect(snapshot.violations).toEqual([]);
+    expect(snapshot.resumeQueue.map((item) => [item.workItemId, item.category])).toEqual([
+      ["C08", "planning"],
+      ["C09", "planning"],
+    ]);
+  });
+
+  it("keeps a worktree parked at the main tip out of the merged state", () => {
+    const planning = task({
+      id: "task-c08-planning",
+      status: "ready",
+      createdAt: "2026-09-04 12:00:00",
+      envelope: v2Envelope({
+        workItemId: "C08",
+        routeNodeId: "C08",
+        changeName: "deliver-agent",
+        taskKind: "planning",
+        phase: "planning",
+        inputHead: "main-head",
+        owner: {
+          taskId: "task-c08-planning",
+          agentClass: "strong-planner",
+          model: "gpt-6-sol",
+        },
+      }),
+    });
+    const route = deriveSnapshot(
+      graph({ id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] }),
+      context({
+        worktrees: [
+          {
+            id: worktreeId,
+            path: "/tmp/riskflow-feature",
+            exists: true,
+            localNodeIds: ["C08"],
+            openSpecNames: ["deliver-agent"],
+            liveTerminalCount: 1,
+            git: { head: "main-head", branch: "feature/c08", dirty: false, dirtyPaths: [] },
+            tasks: [planning],
+          },
+        ],
+        tasks: [planning],
+        ancestry: { C08: true },
+      }),
+    ).nodes[0];
+    expect(route).toMatchObject({ status: "running", phase: "planning" });
+    expect(route.main.merged).toBe(false);
+
+    const auxiliary = deriveSnapshot(
+      graph(),
+      context({
+        worktrees: [
+          {
+            id: "repo-id::/tmp/local",
+            path: "/tmp/local",
+            exists: true,
+            localNodeIds: [],
+            openSpecNames: ["stabilize-fixtures"],
+            liveTerminalCount: 0,
+            git: { head: "main-head", branch: "feature/local", dirty: false, dirtyPaths: [] },
+            tasks: [],
+          },
+        ],
+        ancestry: { "AUX:stabilize-fixtures": true },
+      }),
+    ).nodes[0];
+    expect(auxiliary).toMatchObject({
+      id: "AUX:stabilize-fixtures",
+      status: "untracked",
+      phase: "adopt",
+      main: { merged: false },
+    });
+  });
+
+  it("separates a merged feature from a feature that is still only branched off", () => {
+    const verification = task({
+      id: "task-c08-verification",
+      createdAt: "2026-09-04 12:00:00",
+      envelope: envelope({
+        main: {
+          mergeCommit: "merge-head",
+          mainHead: "main-head",
+          verification: "pending",
+          archiveCommit: null,
+        },
+      }),
+    });
+    const featureWorktree = {
+      id: worktreeId,
+      path: "/tmp/riskflow-feature",
+      exists: true,
+      localNodeIds: ["C08"],
+      openSpecNames: ["deliver-agent"],
+      liveTerminalCount: 1,
+      git: { head: "feature-head", branch: "feature/c08", dirty: false, dirtyPaths: [] },
+      tasks: [verification],
+    };
+    const facts = context({
+      worktrees: [featureWorktree],
+      tasks: [verification],
+      ancestry: { C08: true },
+    });
+    const merged = deriveSnapshot(
+      graph({ id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] }),
+      facts,
+    ).nodes[0];
+    expect(merged).toMatchObject({ status: "merged", phase: "integration" });
+    expect(merged.main).toMatchObject({ merged: true, verification: "pending" });
+    expect(merged.nextActions).toEqual(["在 main 上完成冻结安装、pnpm verify 和主线验证"]);
+
+    const unmerged = deriveSnapshot(
+      graph({ id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] }),
+      { ...facts, ancestry: { C08: false } },
+    ).nodes[0];
+    expect(unmerged).toMatchObject({ status: "finalized", main: { merged: false } });
   });
 });
 
@@ -1561,6 +1765,7 @@ describe("command boundaries", () => {
     const exec = async (command, args, options) => {
       calls.push([command, ...args]);
       if (command === "git") return defaultExec(command, args, options);
+      if (command === "openspec") return { changes: [{ name: "fix-orchestration-bootstrap" }] };
       if (command !== "orca-test") throw new Error(`unexpected command: ${command}`);
       if (args[0] === "worktree") {
         return {
@@ -1610,6 +1815,8 @@ describe("command boundaries", () => {
 
     expect(result.snapshot.orca.runs.map((run) => run.id)).toEqual(["run-1", "run-2"]);
     expect(calls.some((call) => call.includes("--cursor") && call.includes("page-2"))).toBe(true);
+    // A1：main 根目录的活动 change 名称是判断继承副本的唯一事实源，必须真正被采集。
+    expect(calls).toContainEqual(["openspec", "list", "--json"]);
     const earlyChanges = result.snapshot.nodes.filter((node) =>
       /^C(?:0[0-9]|10|11)$/u.test(node.id),
     );

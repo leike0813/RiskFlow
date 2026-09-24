@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { clearTimeout, setTimeout } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -1056,11 +1056,44 @@ function workspaceTrustError(terminalHandle) {
   );
 }
 
+// Codex 把工作区信任记在用户的 `projects.<path>.trust_level` 下。路径来自受管工作树，
+// 可能含空格或引号，因此这里叠了两层转义：先做 TOML 引号键转义，再把整个 `-c` 参数
+// 交给 shell 引用。手写拼接最容易产出一个既不是合法 TOML 也不是合法 shell 的字符串。
+function tomlQuotedKey(value) {
+  return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+}
+
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+// 只信任本次受管工作树的精确路径，且只写进这一条 Codex 启动命令：进程结束即失效，
+// 不碰用户级 config.toml、其他项目或全局权限。身份不一致时在创建 terminal 之前拒绝，
+// 绝不退化成「先信任再说」。
+function codexTrustOverride(worktree) {
+  const path = worktree?.path;
+  const worktreeId = worktree?.id;
+  if (
+    !nonEmptyString(path) ||
+    !isAbsolute(path) ||
+    !nonEmptyString(worktreeId) ||
+    !worktreeId.endsWith(`::${path}`)
+  ) {
+    throw new ControlError(
+      "worktree_identity_unresolved",
+      `无法确认受管工作树身份（id=${worktreeId || "(空)"}，path=${path || "(空)"}），拒绝在身份不明时注入 Codex 信任配置`,
+      WORKTREE_IDENTITY_NEXT_ACTIONS,
+    );
+  }
+  return shellQuote(`projects.${tomlQuotedKey(path)}.trust_level="trusted"`);
+}
+
 async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, idempotencyKey) {
   const worktree = `id:${node.worktree.id}`;
   if (["planning", "finalization", "audit"].includes(task.envelope.taskKind)) {
     let terminalHandle = task.terminalHandle;
     if (!terminalHandle) {
+      const trustOverride = codexTrustOverride(node.worktree);
       const terminal = await orcaJson(
         exec,
         invocation,
@@ -1074,7 +1107,8 @@ async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, id
           "--command",
           // Codex 默认在启动时检查更新：worker 的 CLI 版本会在交付中途漂移，升级横幅
           // 也会被误判成 agent_prompt_stalled。worker 版本由项目集中管理，启动即关闭该检查。
-          `codex --model ${task.role.model} -c model_reasoning_effort="${task.role.thinking}" -c check_for_update_on_startup=false -a never -s danger-full-access`,
+          // 首次启动还会卡在工作区信任提示，因此同一命令里按精确受管路径给一次信任覆盖。
+          `codex --model ${task.role.model} -c model_reasoning_effort="${task.role.thinking}" -c check_for_update_on_startup=false -c ${trustOverride} -a never -s danger-full-access`,
         ],
         rootDir,
       );

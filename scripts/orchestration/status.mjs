@@ -992,7 +992,15 @@ export function deriveNodeState(node, context) {
   if (worktree && !worktree.exists)
     violations.push({ code: "worktree_missing", worktreeId: worktree.id });
   const unknownDirty = Boolean(worktree?.git?.dirty);
-  const featureMerged = mainArchive || (Boolean(context.ancestry?.[node.id]) && !unknownDirty);
+  // 从 main 尖端新建的工作树 HEAD 就等于 main HEAD，祖先查询必然为真，但那只是「还没有
+  // 自己的产物」，不是「已进主线」。缺少工作树事实时（如已回收的历史节点）不改变原有
+  // checkpoint / 归档语义，只按祖先与干净条件判定。
+  const featureHead = worktree?.git?.head ?? null;
+  const featureMerged =
+    mainArchive ||
+    ((featureHead === null || featureHead !== main.head) &&
+      Boolean(context.ancestry?.[node.id]) &&
+      !unknownDirty);
   const mainVerified = mainArchive || mainState.verification === "passed";
   const archived = featureMerged && Boolean(mainArchive);
   const activeTerminal = Number(worktree?.liveTerminalCount ?? 0) > 0;
@@ -1176,6 +1184,18 @@ export function deriveNodeState(node, context) {
   };
 }
 
+// 辅助 change 的采纳必须有真实归属证据：只有精确指向该 AUX 工作项、且 changeName 一致的
+// 有效信封才算所有权。工作树 OpenSpec 列表里出现同名目录只说明它带着这份 change（新建
+// 工作树会从 main 继承未归档副本），不构成采纳意图。采集期与推导期共用本谓词，避免
+// 「谁拥有这个 AUX」在两处出现第二份判定。
+function ownsAuxiliaryChange(task, name) {
+  return (
+    task.envelope.valid &&
+    task.envelope.workItemId === `AUX:${name}` &&
+    task.envelope.changeName === name
+  );
+}
+
 function taskMatchesNode(task, node) {
   if (!task.envelope.valid) return false;
   return node.auxiliary
@@ -1304,9 +1324,14 @@ export function deriveSnapshot(graph, facts) {
     graph.nodes.filter((node) => node.kind === "change").map((node) => node.change),
   );
   const auxiliaryWorktrees = new Map();
+  const mainActiveChangeNames = new Set(facts.mainActiveChangeNames ?? []);
   for (const worktree of facts.worktrees ?? []) {
     for (const name of worktree.openSpecNames ?? []) {
       if (routeChangeNames.has(name)) continue;
+      const owned = worktree.tasks?.some((task) => ownsAuxiliaryChange(task, name));
+      // 从 main 继承的同名活动 change 不是采纳意图：新建工作树总会带着 main 的未归档目录，
+      // 把它们当候选会在每个副本上生成同一个 AUX 工作项和伪 duplicate_active_worktree。
+      if (!owned && mainActiveChangeNames.has(name)) continue;
       const matches = auxiliaryWorktrees.get(name) ?? [];
       matches.push(worktree);
       auxiliaryWorktrees.set(name, matches);
@@ -1316,12 +1341,7 @@ export function deriveSnapshot(graph, facts) {
     .map(([name, worktrees]) => {
       const workItemId = `AUX:${name}`;
       const ownedWorktrees = worktrees.filter((worktree) =>
-        worktree.tasks?.some(
-          (task) =>
-            task.envelope.valid &&
-            task.envelope.workItemId === workItemId &&
-            task.envelope.changeName === name,
-        ),
+        worktree.tasks?.some((task) => ownsAuxiliaryChange(task, name)),
       );
       return {
         id: workItemId,
@@ -1659,7 +1679,15 @@ async function collectFacts({ rootDir, graph, exec, orcaInvocation }) {
     worktreesWithTerminals.find((worktree) => worktree.isMain) ??
     normalizeWorktree({ path: rootDir, isMainWorktree: true }, rootDir, repoId);
   const main = await collectGit(exec, rootDir);
-  const mainArchives = await committedArchiveChangeNames(exec, rootDir);
+  const [mainArchives, mainChangePayload] = await Promise.all([
+    committedArchiveChangeNames(exec, rootDir),
+    readJsonCommand(exec, "openspec", ["list", "--json"], { cwd: rootDir }),
+  ]);
+  // 当前 main 的活动 change 名称是「继承副本」判据的唯一事实源：新工作树从 main 建立时
+  // 会原样带走未归档目录，只有 main 上没有的同名活动 change 才可能是本地登记。
+  const mainActiveChangeNames = extractOpenSpecChanges(mainChangePayload).map(
+    (record) => record.name,
+  );
   const nonMain = worktreesWithTerminals.filter((worktree) => !worktree.isMain);
   const collectedWorktrees = await Promise.all(
     nonMain.map((worktree) => collectWorktree(exec, worktree, graph, liveTasks)),
@@ -1679,8 +1707,12 @@ async function collectFacts({ rootDir, graph, exec, orcaInvocation }) {
     }
     // 辅助 change 不在 execution-graph.json 中，deriveSnapshot 以 `AUX:<name>` 合成其工作项；
     // 合并证据必须与路线 change 同口径，否则辅助工作项永远进不到 merged/main_verified。
+    // `ancestry` 按 change 名共享，因此这里只登记真正会被采纳的工作树：继承副本既不会生成
+    // AUX 节点，它的 HEAD 也不该覆盖有归属证据的那棵树。
     for (const name of worktree.openSpecNames ?? []) {
       if (routeChangeNames.has(name)) continue;
+      const owned = worktree.tasks?.some((task) => ownsAuxiliaryChange(task, name));
+      if (!owned && mainActiveChangeNames.includes(name)) continue;
       ancestry[`AUX:${name}`] = await isAncestor(exec, worktree.git.head, main.head, rootDir);
     }
   }
@@ -1711,6 +1743,7 @@ async function collectFacts({ rootDir, graph, exec, orcaInvocation }) {
     unlinkedTasks,
     diagnostics,
     ancestry,
+    mainActiveChangeNames,
     mainCheckpointAncestry,
   };
 }

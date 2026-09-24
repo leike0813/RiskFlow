@@ -1,0 +1,38 @@
+# Tasks
+
+## 1. 信任归因
+
+- [x] 1.1 `scripts/orchestration/control.mjs`：扩展 `WORKSPACE_TRUST_PATTERN` 覆盖 `trust this folder` / `trust and continue`；新增 `terminalShowsWorkspaceTrustPrompt()`（`terminal read --screen` + 同一正则，探测失败返回 false）。
+- [x] 1.2 `scripts/orchestration/control.mjs`：在 `startWorker` 的 `tui-idle` 等待失败与 `worker-start` 失败两条路径上，文本判定未命中时追加屏幕探测；命中则 `recordWorkspaceTrustRecovery` + 抛 `workspace_trust_required`。
+- 验证：`scripts/orchestration/control.test.mjs`「classifies a stalled worker-start as trust recovery when the terminal shows the prompt」（`lastError=agent_prompt_stalled` + 屏幕显示信任提示 ⇒ `workspace_trust_required`，且确实读取了屏幕）。
+
+## 2. 状态与角色推导
+
+- [x] 2.1 `scripts/orchestration/status.mjs`：`task_missing_local_openspec` 触发条件排除「当前尝试为未成功的 planning」。
+- [x] 2.2 `scripts/orchestration/control.mjs`：`nextTaskKind()` 在「存在尝试但规划从未成功」时返回 `planning`；`finalization` 回退仅保留 `phase === "adopt" || status === "untracked"`；导出 `nextTaskKind` 供测试使用。
+- [x] 2.3 `scripts/orchestration/control.mjs`：`riskflowReconcile` 的替代尝试角色改为复用派发规则（`deriveReconcileKind`：规划未完成 ⇒ planning，否则 finalization；显式 `phase="planning"` 仍按规划），不再缺省一律 finalization（该缺省会把未规划的工作树派成收尾/verification）。
+- 验证：`status.test.mjs`「fails closed for duplicate, missing, and mismatched worktree facts」内的规划待创建分支；`control.test.mjs`「keeps planning as the next role until a planning attempt succeeds」「reconstructs a planning attempt while planning never succeeded」「launches the Codex worker with the startup update check disabled」。
+
+## 2a. worker 启动副作用
+
+- [x] 2a.1 `scripts/orchestration/control.mjs`：`startWorker` 的 `terminal create --command` 增加 `-c check_for_update_on_startup=false`，禁止 worker 启动触发 Codex 自更新（版本由项目集中管理，升级横幅会被误判为 `agent_prompt_stalled`）。
+- 验证：`control.test.mjs`「launches the Codex worker with the startup update check disabled」（断言实际下发的启动命令含该覆盖）。
+
+## 2b. 注入式派发（实现角色）
+
+- [x] 2b.1 `scripts/orchestration/control.mjs`：实现分支在 `dispatch --inject` 成功后把 `running` 信封 `task-update` 回 Orca（注入式派发不写 Orca 侧 `result`，否则状态视图一直报 `queued` 并给出会制造第二个写者的下一动作）。
+- [x] 2b.2 `scripts/orchestration/control.mjs`：实现分支派发前用 `activeDispatchOfTask()`（`dispatch-show` + `terminal show`）判定是否已有存活 dispatch，有则抛 `dispatch_already_running`，不再新建终端。
+- 验证：`control.test.mjs`「records a running attempt for the implementation dispatch path too」（断言写入 Orca 的信封为 `implementation/running`）、「refuses to re-dispatch while an injected implementation worker is still running」（断言拒绝且未创建终端）。
+
+## 2c. 协调端 Run 绑定与失败可诊断性
+
+- [x] 2c.1 `scripts/orchestration/control.mjs`：新增 `bindRunForWrite()`，在每个带 `--run` 的 orchestration 调用前核对 `run-current`，不匹配则 `run-use` 重绑（含 `task-create` / `worker-start` / `dispatch` / `check --wait`）。一个协调端 terminal 只能绑定一个 Run，控制器同时服务多条 lane，否则跨 lane 调用以 `consumer_fenced` 失败。
+- [x] 2c.2 `scripts/orchestration/status.mjs`：`CommandFailure` 消息有界（1200 字符）透出 CLI 的 stdout/stderr。CLI 常把结构化错误写在 stdout，只报 `cause.message` 会让失败退化成一句 `Command failed: <同一命令行>`。
+- 验证：`control.test.mjs`「rebinds the coordinator Run before a write that targets another Run」「rebinds the coordinator Run before reading another Run's messages」。
+
+## 3. 验证
+
+- [x] 3.1 `scripts/orchestration/status.test.mjs`：新增「未成功 planning + 任务存在 + 无本地 change」不产生 `task_missing_local_openspec`，且状态可恢复（非 unknown）。
+- [x] 3.2 `scripts/orchestration/control.test.mjs`：新增 `nextTaskKind` 用例——未成功 planning ⇒ `planning`（失败与 reconcile 生成的收尾尝试两态）；已采纳 auxiliary ⇒ `finalization`；规划成功 ⇒ 原行为。
+- [x] 3.3 运行 `pnpm exec vitest run scripts/orchestration/status.test.mjs scripts/orchestration/control.test.mjs`：100 passed。
+- [x] 3.4 以真实状态复核：C39 不再判 `task_missing_local_openspec`；`violations: 0`；实算 `nextTaskKind(C30)=planning`、`nextTaskKind(C39)=planning`、`nextTaskKind(C36)=implementation`（C36 规划已成功）。

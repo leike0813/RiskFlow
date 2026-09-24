@@ -24,12 +24,15 @@ import * as externalRiskEventRegistrationMigration from "../../src/postgres/migr
 import * as versionedHybridRetrievalMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-versioned-dual-index-hybrid-retrieval/000040_versioned_hybrid_retrieval.js";
 import * as identificationContextResultsMigration from "../../src/postgres/migrations/risk-identification/deliver-relationship-context-and-retrieval-agent-review/000041_identification_context_results.js";
 import * as riskCandidateFinalizationMigration from "../../src/postgres/migrations/risk-identification/deliver-risk-candidate-validation-merge-and-acceptance/000042_risk_candidate_finalization.js";
+import * as identificationGraphMigration from "../../src/postgres/migrations/risk-identification/deliver-identification-graph/000043_identification_graph.js";
 import * as warningTasksMigration from "../../src/postgres/migrations/warning-response/deliver-warning-tasks-and-in-app-notification/000044_warning_tasks_and_in_app_notification.js";
 import * as responseRecommendationMigration from "../../src/postgres/migrations/warning-response/deliver-response-recommendation/000045_response_recommendation.js";
 import * as executionForecastFeedbackDeviationMigration from "../../src/postgres/migrations/warning-response/deliver-execution-forecast-feedback-and-deviation/000046_execution_forecast_feedback_deviation.js";
 import * as calibrationSuggestionGovernanceMigration from "../../src/postgres/migrations/warning-response/deliver-calibration-suggestion-and-governance-loop/000047_calibration_suggestion_governance.js";
 import * as calibrationSuggestionLineageMigration from "../../src/postgres/migrations/warning-response/deliver-calibration-suggestion-and-governance-loop/000048_calibration_suggestion_lineage.js";
-import * as qualityEvaluationReportIndexMigration from "../../src/postgres/migrations/query-projection/deliver-quality-evaluation-module/000049_quality_evaluation_report_index.js";
+import * as formalZeroResultMigration from "../../src/postgres/migrations/risk-identification/fix-c22-formal-zero-result-terminal-fact/000049_formal_zero_result.js";
+import * as assessmentRiskflowGraphsMigration from "../../src/postgres/migrations/workflow/deliver-assessment-and-riskflow-graphs/000050_assessment_riskflow_graphs.js";
+import * as qualityEvaluationReportIndexMigration from "../../src/postgres/migrations/query-projection/deliver-quality-evaluation-module/000051_quality_evaluation_report_index.js";
 
 export interface AuthPostgresFixture extends PostgresTestFixture {
   runMigrations(): Promise<void>;
@@ -118,6 +121,13 @@ export const startAuthPostgresFixture = async (): Promise<AuthPostgresFixture> =
     [
       resolve(
         base.productionMigrationRoot,
+        "risk-identification/deliver-identification-graph/000043_identification_graph.ts",
+      ),
+      identificationGraphMigration,
+    ],
+    [
+      resolve(
+        base.productionMigrationRoot,
         "warning-response/deliver-warning-tasks-and-in-app-notification/000044_warning_tasks_and_in_app_notification.ts",
       ),
       warningTasksMigration,
@@ -153,7 +163,21 @@ export const startAuthPostgresFixture = async (): Promise<AuthPostgresFixture> =
     [
       resolve(
         base.productionMigrationRoot,
-        "query-projection/deliver-quality-evaluation-module/000049_quality_evaluation_report_index.ts",
+        "risk-identification/fix-c22-formal-zero-result-terminal-fact/000049_formal_zero_result.ts",
+      ),
+      formalZeroResultMigration,
+    ],
+    [
+      resolve(
+        base.productionMigrationRoot,
+        "workflow/deliver-assessment-and-riskflow-graphs/000050_assessment_riskflow_graphs.ts",
+      ),
+      assessmentRiskflowGraphsMigration,
+    ],
+    [
+      resolve(
+        base.productionMigrationRoot,
+        "query-projection/deliver-quality-evaluation-module/000051_quality_evaluation_report_index.ts",
       ),
       qualityEvaluationReportIndexMigration,
     ],

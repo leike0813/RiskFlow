@@ -55,17 +55,42 @@ const langGraphProtocolChannels = new Set([
   "__interrupt__",
   "__resume__",
   "__pregel_tasks",
+  // 真实 StateGraph 的首个输入检查点把整份输入先写入 START 通道（LangGraph 固定
+  // `inputChannels: START`），随后才由 START 节点按 outputKeys 过滤写入状态字段。
+  "__start__",
 ]);
+
+/**
+ * LangGraph 按节点名动态派生控制通道：条件边为 `branch:to:<node>`，屏障聚合为
+ * `join:<a>+<b>:<node>`。这些通道只承载调度信息、不承载业务事实，因此与上面的固定协议通道
+ * 同等对待；它们无法被静态枚举，只能按前缀识别。
+ */
+const langGraphControlChannelPrefixes = ["branch:", "join:"] as const;
+
+const isLangGraphControlChannel = (channel: string): boolean =>
+  langGraphProtocolChannels.has(channel) ||
+  langGraphControlChannelPrefixes.some((prefix) => channel.startsWith(prefix));
 
 const withoutProtocolChannels = (value: Record<string, unknown>): Record<string, unknown> =>
   Object.fromEntries(
-    Object.entries(value).filter(([channel]) => !langGraphProtocolChannels.has(channel)),
+    Object.entries(value).filter(([channel]) => !isLangGraphControlChannel(channel)),
   );
 
 const parseGraphState = (value: unknown) => {
+  const filtered = isRecord(value) ? withoutProtocolChannels(value) : value;
   for (const schema of graphStateSchemas) {
-    const parsed = schema.safeParse(isRecord(value) ? withoutProtocolChannels(value) : value);
+    const parsed = schema.safeParse(filtered);
     if (parsed.success) return { state: parsed.data, schema };
+  }
+  // 输入检查点尚未物化状态：LangGraph 先把调用方输入写入 START 通道，此时剔除协议/控制通道后
+  // 为空对象。该情形下状态就是 START 通道的值，仍 MUST 严格解析为同一批 Schema 之一，因此这里
+  // 只增加一个取值位置，不放宽任何校验；解析失败仍按 checkpointer.graph-state 拒绝。
+  if (isRecord(value) && isRecord(filtered) && Object.keys(filtered).length === 0) {
+    const startValue = value["__start__"];
+    for (const schema of graphStateSchemas) {
+      const parsed = schema.safeParse(startValue);
+      if (parsed.success) return { state: parsed.data, schema };
+    }
   }
   throw makePersistenceError("CHECKPOINT_INCONSISTENT", "checkpointer.graph-state");
 };
@@ -80,7 +105,7 @@ const validateGraphStateWrites = (writes: unknown, schema: GraphStateSchema): vo
     if (!Array.isArray(write) || typeof write[0] !== "string") {
       throw makePersistenceError("CHECKPOINT_INCONSISTENT", "checkpointer.writes");
     }
-    if (langGraphProtocolChannels.has(write[0])) continue;
+    if (isLangGraphControlChannel(write[0])) continue;
     const shape = schema.shape as Record<
       string,
       { safeParse(value: unknown): { success: boolean } }
@@ -256,8 +281,22 @@ const validateConfig = (config: SaverGetTupleArgument): void => {
   }
 };
 
+const checkpointKey = (
+  config: SaverGetTupleArgument,
+  checkpointId = config.configurable?.checkpoint_id,
+): string | undefined => {
+  const threadId = config.configurable?.thread_id;
+  const checkpointNamespace = config.configurable?.checkpoint_ns ?? "";
+  return typeof threadId === "string" &&
+    typeof checkpointNamespace === "string" &&
+    typeof checkpointId === "string"
+    ? `${threadId}\u0000${checkpointNamespace}\u0000${checkpointId}`
+    : undefined;
+};
+
 export class PostgresCheckpointer extends PostgresSaver {
   readonly #validateReference: ContractReferenceValidator;
+  readonly #pendingPuts = new Map<string, Promise<unknown>>();
 
   constructor(
     pool: ConstructorParameters<typeof PostgresSaver>[0],
@@ -289,17 +328,28 @@ export class PostgresCheckpointer extends PostgresSaver {
     ...args: SaverPutArguments
   ): Promise<Awaited<ReturnType<PostgresSaver["put"]>>> {
     const graphState = validateCheckpointWrite(args[0], args[1], args[2]);
-    await validateReferences(this.#validateReference, graphState.state, args[2]);
-    try {
+    const key = checkpointKey(args[0], args[1].id);
+    const pending = (async () => {
+      await validateReferences(this.#validateReference, graphState.state, args[2]);
       return await super.put(...args);
+    })();
+    if (key !== undefined) this.#pendingPuts.set(key, pending);
+    try {
+      return await pending;
     } catch (error) {
       throw this.#mapCheckpointerError(error, "checkpointer.put");
+    } finally {
+      if (key !== undefined && this.#pendingPuts.get(key) === pending) {
+        this.#pendingPuts.delete(key);
+      }
     }
   }
 
   override async putWrites(...args: SaverPutWritesArguments): Promise<void> {
     validateConfig(args[0]);
     try {
+      const pending = this.#pendingPuts.get(checkpointKey(args[0]) ?? "");
+      if (pending !== undefined) await pending;
       const tuple = await super.getTuple(args[0]);
       if (tuple === undefined) {
         throw makePersistenceError("CHECKPOINT_INCONSISTENT", "checkpointer.writes");

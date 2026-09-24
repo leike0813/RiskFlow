@@ -372,6 +372,24 @@ describe("C22 RI-S57 model runtime", () => {
     expect(SYNTHETIC_SAMPLE_NOTICE).toBe("合成样本、待甲方复核");
   });
 
+  it("接受合法空候选数组并按零候选带回空输出", async () => {
+    const schemas: unknown[] = [];
+    const { runtime } = setup({
+      completeStructured: (async (request, schema: { parse: (value: unknown) => unknown }) => {
+        schemas.push(schema);
+        return structuredResult(request, schema.parse({ candidates: [] })) as never;
+      }) as ModelGatewayPortV1["completeStructured"],
+    });
+
+    const outcome = await runtime.generateCandidates(modelRequest());
+
+    expect(schemas).toHaveLength(1);
+    expect(outcome.kind).toBe("succeeded");
+    if (outcome.kind !== "succeeded") throw new Error("legal zero candidates must succeed");
+    expect(outcome.outputs).toEqual([]);
+    expect(outcome.rawResponseRef).toEqual(RAW_RESPONSE);
+  });
+
   it("carries only structured repair feedback and parent candidate identities", async () => {
     const calls: StructuredCompletionRequestV1[] = [];
     const { runtime } = setup({

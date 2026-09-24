@@ -54,12 +54,15 @@ import * as externalRiskEventRegistrationMigration from "../../src/postgres/migr
 import * as versionedHybridRetrievalMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-versioned-dual-index-hybrid-retrieval/000040_versioned_hybrid_retrieval.js";
 import * as identificationContextResultsMigration from "../../src/postgres/migrations/risk-identification/deliver-relationship-context-and-retrieval-agent-review/000041_identification_context_results.js";
 import * as riskCandidateFinalizationMigration from "../../src/postgres/migrations/risk-identification/deliver-risk-candidate-validation-merge-and-acceptance/000042_risk_candidate_finalization.js";
+import * as identificationGraphMigration from "../../src/postgres/migrations/risk-identification/deliver-identification-graph/000043_identification_graph.js";
 import * as warningTasksMigration from "../../src/postgres/migrations/warning-response/deliver-warning-tasks-and-in-app-notification/000044_warning_tasks_and_in_app_notification.js";
 import * as responseRecommendationMigration from "../../src/postgres/migrations/warning-response/deliver-response-recommendation/000045_response_recommendation.js";
 import * as executionForecastFeedbackDeviationMigration from "../../src/postgres/migrations/warning-response/deliver-execution-forecast-feedback-and-deviation/000046_execution_forecast_feedback_deviation.js";
 import * as calibrationSuggestionGovernanceMigration from "../../src/postgres/migrations/warning-response/deliver-calibration-suggestion-and-governance-loop/000047_calibration_suggestion_governance.js";
 import * as calibrationSuggestionLineageMigration from "../../src/postgres/migrations/warning-response/deliver-calibration-suggestion-and-governance-loop/000048_calibration_suggestion_lineage.js";
-import * as qualityEvaluationReportIndexMigration from "../../src/postgres/migrations/query-projection/deliver-quality-evaluation-module/000049_quality_evaluation_report_index.js";
+import * as formalZeroResultMigration from "../../src/postgres/migrations/risk-identification/fix-c22-formal-zero-result-terminal-fact/000049_formal_zero_result.js";
+import * as assessmentRiskflowGraphsMigration from "../../src/postgres/migrations/workflow/deliver-assessment-and-riskflow-graphs/000050_assessment_riskflow_graphs.js";
+import * as qualityEvaluationReportIndexMigration from "../../src/postgres/migrations/query-projection/deliver-quality-evaluation-module/000051_quality_evaluation_report_index.js";
 
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
 import * as agentTaskFixtureMigration from "./fixtures/migrations/agent-task/deliver-unified-bounded-agent-runtime/900002_agent_task_fixture.js";
@@ -416,6 +419,13 @@ const testMigrationManifest = [
   },
   {
     root: "production",
+    relativePath: "risk-identification/deliver-identification-graph/000043_identification_graph.ts",
+    migrationName: "000043_risk-identification_deliver-identification-graph_identification_graph",
+    sequence: 43,
+    module: identificationGraphMigration,
+  },
+  {
+    root: "production",
     relativePath:
       "warning-response/deliver-warning-tasks-and-in-app-notification/000044_warning_tasks_and_in_app_notification.ts",
     migrationName:
@@ -462,10 +472,28 @@ const testMigrationManifest = [
   {
     root: "production",
     relativePath:
-      "query-projection/deliver-quality-evaluation-module/000049_quality_evaluation_report_index.ts",
+      "risk-identification/fix-c22-formal-zero-result-terminal-fact/000049_formal_zero_result.ts",
     migrationName:
-      "000049_query-projection_deliver-quality-evaluation-module_quality_evaluation_report_index",
+      "000049_risk-identification_fix-c22-formal-zero-result-terminal-fact_formal_zero_result",
     sequence: 49,
+    module: formalZeroResultMigration,
+  },
+  {
+    root: "production",
+    relativePath:
+      "workflow/deliver-assessment-and-riskflow-graphs/000050_assessment_riskflow_graphs.ts",
+    migrationName:
+      "000050_workflow_deliver-assessment-and-riskflow-graphs_assessment_riskflow_graphs",
+    sequence: 50,
+    module: assessmentRiskflowGraphsMigration,
+  },
+  {
+    root: "production",
+    relativePath:
+      "query-projection/deliver-quality-evaluation-module/000051_quality_evaluation_report_index.ts",
+    migrationName:
+      "000051_query-projection_deliver-quality-evaluation-module_quality_evaluation_report_index",
+    sequence: 51,
     module: qualityEvaluationReportIndexMigration,
   },
   {

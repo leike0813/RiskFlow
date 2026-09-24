@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@langchain/langgraph": "1.4.17",
     "@riskflow/adapters": "workspace:*",
     "@riskflow/contracts": "workspace:*",
     "@riskflow/core": "workspace:*"

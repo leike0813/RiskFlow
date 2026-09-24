@@ -1,0 +1,59 @@
+# Verification
+
+## 验收对象
+
+- Change：`deliver-identification-graph`（`orchestrated-delivery`）
+- 输入实现 HEAD：`6b6864f4ca94edea97cb58a2697469d7b7392d6d`
+- 限定审计输入 HEAD：`690cc78e82afcf9fc5a184b9b41e090d565743f9`
+- 当前产物 HEAD：`690cc78e82afcf9fc5a184b9b41e090d565743f9`，另有本轮未提交的审计修复与记录
+- 验收 Agent：C24 Finalizer，`task_fa1fc7088149` / `ctx_903995ae5d44`
+
+## 结论
+
+**PASS：限定审计发现的两项 D-07 实现缺陷已在获批范围内修复并回归。** 已核对 8 项 Requirement、33 个 Scenario、IP-01～IP-25 及 20/20 已勾选任务；D-15、checkpoint 引用对账与业务提交后的 checkpoint 恢复均有真实 PostgreSQL/LangGraph 证据。当前产物仍为未提交工作树，归档与集成由协调端处理。
+
+## Requirement / Scenario / IP-ID 核验
+
+| Requirement 与全部 Scenario | IP-ID | 实现与证据 | 结果 |
+|---|---|---|---|
+| I0～I2：合格准备；计划前阶段结果回读；知识/策略未就绪；计划不完整 | 01、03、09、10、13、14、19、22～24 | `packages/core/src/identification/graph/service.ts`；`apps/worker/src/identification/graph/graph.ts`；`000043_identification_graph.ts`；core、runtime、adapter 测试。I0/I1 各有无计划引用的阶段登记，I2 起携带冻结计划，重放不增行。 | 通过 |
+| I3：全部工作项五项上下文；单项审阅终止失败；Agent 等待暂停 | 04、14～16、21 | C21 公开服务与 `graph.ts` 顺序工作项；runtime 的失败隔离、原任务与原线程恢复测试；composition 测试。 | 通过 |
+| I4/I5：候选校验通过；可修正错误有界闭环；不可修正候选失败 | 05、11、14、19、21 | C22 公开 `analyze` 与核心错误分类；runtime 的冻结策略及终止失败测试；C22 既有回归。 | 通过 |
+| I6～I8：自动/人工并存；本轮待定；后续恰入库一次；人工恢复；修订/分立重路由；拒绝/退回；混合合格/拒绝；全部封闭空结果 | 05、06、14～16、21 | C22/C23 公开端口与 `graph.ts`；runtime 的待定、后续恢复、混合入库及空结果测试；既有 C22/C23 测试覆盖决定处置。 | 通过 |
+| I9：部分成功汇总；仍有待复核组 | 11、14、19、21 | `summarizeIdentificationRun`、`stageI9`；core 与 runtime 的计数、精确引用、等待和缺路线阻断测试。 | 通过 |
+| 业务事实/checkpoint：控制通道；初始输入状态；业务提交后 checkpoint 失败；伪业务引用；同键异载荷冲突 | 07、08、12、13、15、20、21、22、24 | C03 checkpointer、C24 追加登记与对账；adapter 的同键冲突/伪引用/真实 PostgreSQL 约束测试，runtime 的 checkpoint 写失败恢复测试。 | 通过 |
+| 启动/恢复/重试/取消：启动幂等；当前撤权；协作取消；Agent 原样复原；等待引用错配 | 02、06、12、15、16、20、21、24 | `runtime.ts`、C24 登记窄读；adapter 的当前 actor/收窄空间测试，runtime 的撤权、取消竞争、重复恢复及错配拒绝测试。 | 通过 |
+| 公开接口与失败路由：上游等待；冻结策略技术重试；终止错误封闭 | 01、02、04、05、11、14～16、19、21 | 仅组合 C17/C21/C22/C23 公开端口；core 错误分类、runtime 类型化等待/重试/终止及 composition 测试。 | 通过 |
+
+IP-17 的 core/adapters 子路径与 Worker 组合入口由构建、类型及依赖边界门禁核对；IP-18、IP-25 的精确版本、锁文件、单项 `minimumReleaseAgeExclude` 与依赖策略由下列供应链命令核对。IP-01～IP-08 的复用接缝由代码审阅、类型检查、依赖边界和以上行为测试核对；未发现需要更改公共 DTO、权限值或上游事实所有权的漂移。
+
+## 实际命令与结果
+
+| 命令 | 结果 |
+|---|---|
+| `pnpm exec vitest run packages/adapters/test/identification/graph/postgres-identification-graph-adapter.test.ts apps/worker/test/identification/graph/runtime.test.ts --testTimeout 30000 --maxWorkers 1` | 2 files，37/37 通过；真实 PostgreSQL、LangGraph 与 D-15 新场景均执行。 |
+| `pnpm exec vitest run packages/adapters/test/postgres/postgres-foundation.test.ts packages/adapters/test/auth --testTimeout 30000 --maxWorkers 1` | 2 files，30/30 通过；迁移与权限夹具回归。 |
+| `pnpm exec vitest run packages/core/test/identification/graph.test.ts packages/core/test/identification/context.test.ts packages/core/test/identification/candidate-finalization.test.ts packages/core/test/identification/human-review.test.ts` | 4 files，139/139 通过。 |
+| `pnpm exec vitest run apps/worker/test/identification/graph/composition.test.ts` | 1 file，20/20 通过。 |
+| `pnpm build && pnpm lint`；`pnpm typecheck && pnpm format:check && pnpm deps:policy && pnpm deps:check && pnpm licenses:check && pnpm exec openspec validate deliver-identification-graph --strict --no-interactive` | 全部通过；依赖边界为 0 violation，OpenSpec 严格校验通过。 |
+| `pnpm security:check`；`pnpm --registry=https://registry.npmjs.org audit --prod --audit-level high` | 默认 npmmirror 无 audit endpoint；官方 registry 的 high 门槛审计通过，报告 1 项 moderate。 |
+| `openspec status --change deliver-identification-graph --json`；`openspec instructions apply --change deliver-identification-graph --json`；`openspec instructions verification --change deliver-identification-graph --json` | 实际 schema 为 `orchestrated-delivery`；全部 contextFiles 已读取，20/20 任务完成。 |
+| `git merge-base --is-ancestor f8e61573bbe87fd192fd0385f0bd55ed22e15a9b HEAD`；`git diff --check`；`git diff --name-only --diff-filter=U` | 规划基线为祖先；无尾随空白或未解决冲突。 |
+
+初轮全仓构建、测试和 C21/C22/C23 跨模块回归见前轮 Git 中的 verification；本轮对新 HEAD 执行了上述与 IP-22～IP-25 及未漂移接缝直接相关的回归。限定审计的两项 D-07 生产代码修复及新增回归见下节；本节较早的 37/37 是审计输入 HEAD 的基线，最终修复后命令另列。
+
+## 限定审计
+
+本轮唯一 Targeted Auditor（`task_4574a8fe8ef0` / `ctx_fdad7f783a46`）结论：
+
+- **D-15、追加幂等与依赖门禁：通过。** `graph.ts` 的 I0 与成功 I1 阶段正文先写 C04，阶段登记与 run-state 在同一 C03 事务提交；I2 起缺冻结计划引用时封闭失败。`000043` 在新表和既有表重入时将同名判别 check 收敛到仅 `stage-result.workPlanRef` 可空；真实 PostgreSQL 测试覆盖重入两次、允许/拒绝组合、权限和同键重放。`pnpm-workspace.yaml` 的例外仅为已锁定的 `@langchain/langgraph@1.4.17`。
+- **当前 actor 复验与取消事务：通过。** 受保护读取先按当前 actor 复验；取消与 run-state 通过同一事务及预期版本锁推进。审计输入 HEAD 的真实 PostgreSQL/LangGraph 定向回归 2 files、37/37 通过。
+- **checkpoint 引用对账：已修复并通过。** 原 `reconcileCheckpointReferences` 在有效 `workPlanRef` 下提前返回，跳过 `lastStageResultRef`、`lastErrorRef`、`waitingRef`、`resultRef`。经协调端明确授权，修复为统一返回前逐项核对；在有效工作计划下对四类伪造引用分别验证 `inconsistent`，成功结果形状不变。
+- **业务提交后 checkpoint 写失败：已修复并通过。** 原启动重放遇业务游标领先 checkpoint 时只返回技术错误，恢复信号也可能返回旧状态。经协调端扩展授权，C24 runtime 按原运行登记行及精确阶段结果正文重建引用，通过当前 actor 下的逐项对账后，在原线程补 checkpoint 并继续；启动重放与恢复信号共用此路径。已完成或失败的终态只补 checkpoint，不运行后继节点；等待状态恢复原中断。I0、I5、等待、终止失败四种故障注入证明已提交行保持、阶段动作不重复、状态可恢复。C24 内部窄读和 adapter 回读不改变公共契约、run-state 持久化形状、权限、迁移或依赖。
+- **边界：** 当整个 checkpoint 线程不存在时，现有 D-07 冻结身份无法仅由公开登记事实安全重建，启动重放仍返回可重试 `checkpoint-unavailable`，恢复命令仍按既有终止错误处理；本轮修复针对业务提交后同步 checkpoint 写入失败且线程已有前一 checkpoint 的场景。不存在以猜测身份生成新业务事实的路径。
+
+本轮实际命令：`pnpm exec vitest run packages/adapters/test/identification/graph/postgres-identification-graph-adapter.test.ts apps/worker/test/identification/graph/runtime.test.ts --testTimeout 30000 --maxWorkers 1`（审计输入 HEAD，37/37 通过）；`pnpm exec vitest run apps/worker/test/identification/graph/runtime.test.ts --testTimeout 30000 --maxWorkers 1`（恢复修复中期，27/27 通过）；`pnpm exec vitest run packages/adapters/test/identification/graph/postgres-identification-graph-adapter.test.ts --testTimeout 30000 --maxWorkers 1`（最终 12/12 通过）；`pnpm exec vitest run apps/worker/test/identification/graph/runtime.test.ts --testTimeout 30000 --maxWorkers 1 -t '业务提交后检查点写入失败'`（最终 1 通过、26 跳过）；`pnpm exec vitest run apps/worker/test/identification/graph/runtime.test.ts --testTimeout 30000 --maxWorkers 1 -t '终止失败检查点写入失败'`（最终 1 通过、27 跳过）；`pnpm exec vitest run apps/worker/test/identification/graph/runtime.test.ts --testTimeout 30000 --maxWorkers 1 -t 'I5 业务提交|按已登记等待'`（最终 2 通过、26 跳过）；`pnpm typecheck`、`pnpm format:check`、`pnpm exec openspec validate deliver-identification-graph --strict --no-interactive`、`git diff --check`（均通过）。
+
+## 后续注意事项
+
+默认 npmmirror 不提供 pnpm audit endpoint；本轮已使用官方 registry 完成相同 high 门槛的生产依赖审计。

@@ -8,6 +8,7 @@ import {
   ControlError,
   canCompleteGoal,
   createV2Envelope,
+  nextTaskKind,
   preflightAction,
   riskflowDispatch,
   riskflowIntegrate,
@@ -507,6 +508,241 @@ describe("controlled orchestration", () => {
     }
   });
 
+  it("launches the Codex worker with the startup update check disabled", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-codex-noupdate-"));
+    let launchCommand;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args[0] === "terminal" && args[1] === "create") {
+        launchCommand = args[args.indexOf("--command") + 1];
+        return { terminal: { handle: "term-codex" } };
+      }
+      const terminal = fakeCodexTerminal(command, args);
+      if (terminal !== null) return terminal;
+      if (command === "orca-ide" && args.includes("worker-start")) return { state: "started" };
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      const result = await riskflowDispatch(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "dispatch-codex-update-check",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => ({ graph, snapshot: snapshot() }),
+        },
+      );
+      expect(result.worker).toMatchObject({ state: "started" });
+      // 启动自更新会让 worker 版本在交付中途漂移，并把升级横幅变成非预期屏幕状态。
+      expect(launchCommand).toContain("check_for_update_on_startup=false");
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("rebinds the coordinator Run before a write that targets another Run", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-run-bind-"));
+    const calls = [];
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("run-current")) {
+        calls.push("run-current");
+        return { result: { run: { id: "run-other-lane" } } };
+      }
+      if (command === "orca-ide" && args.includes("run-use")) {
+        calls.push(`run-use:${args[args.indexOf("--id") + 1]}`);
+        return { result: {} };
+      }
+      if (command === "orca-ide" && args.includes("task-create")) {
+        calls.push("task-create");
+        return { id: "task-rebind" };
+      }
+      if (command === "orca-ide" && args.includes("task-update")) return {};
+      const terminal = fakeCodexTerminal(command, args);
+      if (terminal !== null) return terminal;
+      if (command === "orca-ide" && args.includes("worker-start")) {
+        calls.push("worker-start");
+        return { state: "started" };
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    process.env.ORCA_TERMINAL_HANDLE = "term-test-coordinator";
+    try {
+      const result = await riskflowDispatch(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "dispatch-run-rebind",
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          orcaCommand: "orca-ide",
+          statusProvider: async () => ({ graph, snapshot: snapshot() }),
+        },
+      );
+      expect(result.worker).toMatchObject({ state: "started" });
+      // 一个协调端 terminal 只能绑定一个 Run：写之前必须先绑到本工作项的 Run。
+      expect(calls).toContain("run-use:run-finalizer");
+      expect(calls.indexOf("run-use:run-finalizer")).toBeLessThan(calls.indexOf("worker-start"));
+    } finally {
+      delete process.env.ORCA_TERMINAL_HANDLE;
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("keeps planning as the next role until a planning attempt succeeds", () => {
+    const attempt = (overrides = {}) => ({
+      taskId: "task-x",
+      taskKind: "planning",
+      attemptGroup: "C17:planning",
+      attempt: 1,
+      outcome: null,
+      runState: "running",
+      ...overrides,
+    });
+    // 首次派发被信任确认阻断：尝试存在但规划从未成功 ⇒ 继续规划。
+    expect(
+      nextTaskKind(
+        node({
+          status: "unknown",
+          phase: "planning",
+          checkpoints: { ...node().checkpoints, taskKind: "planning", outcome: null },
+          orca: { attempts: [attempt({ outcome: "failed" })] },
+        }),
+      ),
+    ).toBe("planning");
+    // reconcile 曾替一个还没规划的工作树生成收尾尝试：仍然回到规划，而不是实现或收尾。
+    expect(
+      nextTaskKind(
+        node({
+          status: "unknown",
+          phase: "finalizing",
+          checkpoints: { ...node().checkpoints, taskKind: "finalization", outcome: null },
+          orca: {
+            attempts: [
+              attempt({ outcome: "failed" }),
+              attempt({ taskKind: "finalization", outcome: null }),
+            ],
+          },
+        }),
+      ),
+    ).toBe("planning");
+    // 收尾尝试失败后节点停在 blocked：下一职责仍是收尾（替代 Finalizer），
+    // 不能判成"没有合法角色"而让替代尝试开不出来。
+    expect(
+      nextTaskKind(
+        node({
+          status: "blocked",
+          phase: "finalizing",
+          checkpoints: { ...node().checkpoints, taskKind: "finalization", runState: "running" },
+          orca: {
+            attempts: [
+              attempt({ outcome: "succeeded" }),
+              attempt({ taskKind: "finalization", outcome: "failed", runState: "settled" }),
+            ],
+          },
+        }),
+      ),
+    ).toBe("finalization");
+    // 已实现成功过的 change 再次规划（只做范围收窄）应收敛到收尾，而不是重复实现。
+    expect(
+      nextTaskKind(
+        node({
+          status: "running",
+          phase: "planning",
+          checkpoints: { ...node().checkpoints, taskKind: "planning", runState: "running" },
+          orca: {
+            attempts: [
+              attempt({ outcome: "succeeded" }),
+              attempt({ taskKind: "implementation", outcome: "succeeded", runState: "settled" }),
+              attempt({ outcome: "succeeded" }),
+            ],
+          },
+        }),
+      ),
+    ).toBe("finalization");
+    // 已采纳的 auxiliary 工作树没有规划尝试，仍走收尾回退。
+    expect(
+      nextTaskKind(
+        node({
+          status: "untracked",
+          phase: "adopt",
+          auxiliary: true,
+          checkpoints: { ...node().checkpoints, taskKind: "finalization", outcome: null },
+          orca: { attempts: [] },
+        }),
+      ),
+    ).toBe("finalization");
+    // 规划成功后的原行为不变。
+    expect(
+      nextTaskKind(
+        node({
+          status: "running",
+          phase: "planning",
+          checkpoints: { ...node().checkpoints, taskKind: "planning", outcome: "succeeded" },
+          orca: { attempts: [attempt({ outcome: "succeeded" })] },
+        }),
+      ),
+    ).toBe("implementation");
+  });
+
+  it("classifies a stalled worker-start as trust recovery when the terminal shows the prompt", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-worker-start-screen-"));
+    let workerStarts = 0;
+    let screenReads = 0;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args[0] === "terminal" && args[1] === "read") {
+        screenReads += 1;
+        return { screen: "Trust this folder?\n› 1. Trust and continue" };
+      }
+      const terminal = fakeCodexTerminal(command, args);
+      if (terminal !== null) return terminal;
+      if (command === "orca-ide" && args.includes("worker-start")) {
+        workerStarts += 1;
+        if (workerStarts === 1) throw new Error("original worker-start failure");
+        const error = new Error("worker-start replay failed");
+        error.cause = {
+          stdout: JSON.stringify({
+            state: "failed",
+            stage: "dispatch_input",
+            lastError: "agent_prompt_stalled",
+            replayed: true,
+          }),
+        };
+        throw error;
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await expect(
+        riskflowDispatch(
+          {
+            workItemId: "C17",
+            expectedRevision: "revision-1",
+            idempotencyKey: "dispatch-worker-start-screen-trust",
+          },
+          {
+            rootDir: process.cwd(),
+            exec,
+            statusProvider: async () => ({ graph, snapshot: snapshot() }),
+          },
+        ),
+      ).rejects.toMatchObject({
+        code: "workspace_trust_required",
+        nextActions: expect.arrayContaining([expect.stringContaining("term-codex")]),
+      });
+      expect(workerStarts).toBe(2);
+      expect(screenReads).toBeGreaterThan(0);
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
   it("continues the attempt number from the target attempt group history", () => {
     const auditCheckpoint = {
       ...node().checkpoints,
@@ -659,6 +895,45 @@ describe("controlled orchestration", () => {
     }
   });
 
+  it("rebinds the coordinator Run before reading another Run's messages", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-run-read-bind-"));
+    const calls = [];
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("run-current")) {
+        calls.push("run-current");
+        return { result: { run: { id: "run-other-lane" } } };
+      }
+      if (command === "orca-ide" && args.includes("run-use")) {
+        calls.push(`run-use:${args[args.indexOf("--id") + 1]}`);
+        return { result: {} };
+      }
+      if (command === "orca-ide" && args.includes("check")) {
+        calls.push("check");
+        return { messages: [] };
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    process.env.ORCA_TERMINAL_HANDLE = "term-test-coordinator";
+    try {
+      await riskflowWait(
+        { workItemId: "C17", timeoutMs: 10 },
+        {
+          rootDir: process.cwd(),
+          exec,
+          orcaCommand: "orca-ide",
+          statusProvider: async () => ({ graph, snapshot: snapshot() }),
+        },
+      );
+      // check --wait 同样按绑定校验：不重绑就只会在别的 lane 上超时/失败。
+      expect(calls).toContain("run-use:run-finalizer");
+      expect(calls.indexOf("run-use:run-finalizer")).toBeLessThan(calls.indexOf("check"));
+    } finally {
+      delete process.env.ORCA_TERMINAL_HANDLE;
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
   it("keeps the generic planning briefing when no replan is approved", async () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-planning-generic-"));
     const ready = node({
@@ -724,14 +999,19 @@ describe("controlled orchestration", () => {
     const exec = async (command, args) => {
       if (command === "git") return runtimeRoot;
       if (command === "orca-ide" && args.includes("task-create")) return { id: "task-impl" };
-      if (command === "orca-ide" && args.includes("task-update")) return {};
+      if (command === "orca-ide" && args.includes("task-update")) {
+        if (args.includes("--result")) results.push(JSON.parse(args[args.indexOf("--result") + 1]));
+        return {};
+      }
       if (command === "orca-ide" && args.includes("terminal") && args.includes("create")) {
         return { terminal: { handle: "term-impl" } };
       }
       if (command === "orca-ide" && args.includes("terminal") && args.includes("wait")) return {};
       if (command === "orca-ide" && args.includes("--inject")) return { injected: true };
+      if (command === "orca-ide" && args.includes("dispatch-show")) return { result: {} };
       throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
     };
+    const results = [];
     try {
       await riskflowDispatch(
         {
@@ -752,6 +1032,68 @@ describe("controlled orchestration", () => {
         ),
       );
       expect(record.envelope).toMatchObject({ taskKind: "implementation", runState: "running" });
+      // 注入式派发不回写 Orca 一侧，控制器必须自己同步运行中的信封；否则状态视图一直
+      // 显示 queued，并给出会制造第二个写者的"再派发"动作。
+      expect(results.at(-1)).toMatchObject({ taskKind: "implementation", runState: "running" });
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("refuses to re-dispatch while an injected implementation worker is still running", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-impl-duplicate-"));
+    const planning = node({
+      status: "running",
+      phase: "planning",
+      checkpoints: {
+        ...node().checkpoints,
+        taskKind: "planning",
+        phase: "planning",
+        runState: "settled",
+        outcome: "succeeded",
+      },
+    });
+    const snap = snapshot({
+      nodes: [planning],
+      resumeQueue: [
+        { workItemId: "C17", category: "planning", nextAction: "创建有界首轮实现任务" },
+      ],
+    });
+    let terminalCreates = 0;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("task-create")) return { id: "task-impl" };
+      if (command === "orca-ide" && args.includes("task-update")) return {};
+      if (command === "orca-ide" && args.includes("dispatch-show"))
+        return {
+          result: {
+            dispatch: { id: "ctx-live", status: "dispatched", assignee_handle: "term-live" },
+          },
+        };
+      if (command === "orca-ide" && args[0] === "terminal" && args[1] === "show")
+        return { result: { terminal: { handle: "term-live", orphaned: false } } };
+      if (command === "orca-ide" && args.includes("terminal") && args.includes("create")) {
+        terminalCreates += 1;
+        return { terminal: { handle: "term-new" } };
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await expect(
+        riskflowDispatch(
+          {
+            workItemId: "C17",
+            expectedRevision: "revision-1",
+            idempotencyKey: "dispatch-impl-duplicate",
+          },
+          {
+            rootDir: process.cwd(),
+            exec,
+            statusProvider: async () => ({ graph, snapshot: snap }),
+          },
+        ),
+      ).rejects.toMatchObject({ code: "dispatch_already_running" });
+      expect(terminalCreates).toBe(0);
     } finally {
       await rm(runtimeRoot, { recursive: true });
     }
@@ -1028,6 +1370,9 @@ describe("controlled orchestration", () => {
         return "";
       }
       if (command === "orca-ide" && args.includes("task-update")) return {};
+      // 写前会确认协调端 terminal 的 Run 绑定；本用例不关心绑定结果。
+      if (command === "orca-ide" && (args.includes("run-current") || args.includes("run-use")))
+        return { result: {} };
       throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
     };
     process.env.ORCA_TERMINAL_HANDLE = "term-test-coordinator";
@@ -1752,6 +2097,111 @@ describe("controlled orchestration", () => {
       expect(result.runId).toBe("run-reconcile");
       expect(taskCreateArgs).toContain("run-reconcile");
       expect(taskCreateArgs).not.toContain("run-finalizer");
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("reconstructs a planning attempt while planning never succeeded", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-reconcile-planning-"));
+    const unplanned = node({
+      status: "unknown",
+      phase: "finalizing",
+      checkpoints: { ...node().checkpoints, taskKind: "finalization", outcome: null },
+      orca: {
+        attempts: [
+          {
+            taskId: "task-planning-failed",
+            taskKind: "planning",
+            attemptGroup: "C17:planning",
+            attempt: 1,
+            outcome: "failed",
+            runState: "settled",
+          },
+        ],
+      },
+    });
+    const state = snapshot({
+      nodes: [unplanned],
+      violations: [{ nodeId: "C17", code: "checkpoint_mismatch" }],
+    });
+    let envelope;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("run-create")) return { id: "run-reconcile" };
+      if (command === "orca-ide" && args.includes("task-create")) return { id: "task-reconcile" };
+      if (command === "orca-ide" && args.includes("task-update")) {
+        envelope = JSON.parse(args[args.indexOf("--result") + 1]);
+        return {};
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      const result = await riskflowReconcile(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "reconcile-planning-incomplete",
+        },
+        { rootDir: process.cwd(), exec, statusProvider: async () => ({ graph, snapshot: state }) },
+      );
+      expect(result.envelope.taskKind).toBe("planning");
+      expect(envelope).toMatchObject({ taskKind: "planning", phase: "planning" });
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  it("reconstructs the implementation attempt of an unstarted implementation task", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-reconcile-impl-"));
+    const stuck = node({
+      status: "unknown",
+      phase: "implementing",
+      checkpoints: {
+        ...node().checkpoints,
+        taskKind: "implementation",
+        runState: "queued",
+        outcome: null,
+      },
+      orca: {
+        attempts: [
+          {
+            taskId: "task-planning-ok",
+            taskKind: "planning",
+            attemptGroup: "C17:planning",
+            attempt: 1,
+            outcome: "succeeded",
+            runState: "settled",
+          },
+        ],
+      },
+    });
+    const state = snapshot({
+      nodes: [stuck],
+      violations: [{ nodeId: "C17", code: "checkpoint_mismatch" }],
+    });
+    let envelope;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args.includes("run-create")) return { id: "run-reconcile" };
+      if (command === "orca-ide" && args.includes("task-create")) return { id: "task-reconcile" };
+      if (command === "orca-ide" && args.includes("task-update")) {
+        envelope = JSON.parse(args[args.indexOf("--result") + 1]);
+        return {};
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      const result = await riskflowReconcile(
+        {
+          workItemId: "C17",
+          expectedRevision: "revision-1",
+          idempotencyKey: "reconcile-implementation-incomplete",
+        },
+        { rootDir: process.cwd(), exec, statusProvider: async () => ({ graph, snapshot: state }) },
+      );
+      expect(result.envelope.taskKind).toBe("implementation");
+      expect(envelope).toMatchObject({ taskKind: "implementation", phase: "implementing" });
     } finally {
       await rm(runtimeRoot, { recursive: true });
     }

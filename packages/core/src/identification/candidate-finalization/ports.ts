@@ -6,6 +6,7 @@ import type {
   IdentificationPolicySetRefV1,
   IdentificationWorkItemRefV1,
   IdentificationWorkPlanRefV1,
+  IdentificationZeroResultRefV1,
   ModuleBranchV1,
   ModuleErrorV1,
   ReviewAuditPortV1,
@@ -35,6 +36,7 @@ import type {
   RiskCandidateMergePolicyV1,
   RiskCandidateValidationPolicyV1,
   RiskCandidateV1,
+  RiskCandidateZeroResultV1,
   StandardizedRiskRecordWriteV1,
 } from "./schema.js";
 
@@ -191,6 +193,14 @@ export interface RiskCandidateFinalizationResultStoreV1 {
     | { readonly kind: "registered"; readonly replayed: boolean }
     | { readonly kind: "idempotency-conflict" }
   >;
+  /**
+   * D-04 零结果重放预读：按工程与命令身份精确读取既有零结果登记行，用于模型调用前的
+   * 同载荷回放判定；不扫描其它类别，也不把非空候选集读作零结果。
+   */
+  readZeroResult(input: {
+    readonly projectId: string;
+    readonly commandId: string;
+  }): Promise<RiskCandidateZeroResultRowV1 | undefined>;
   readResult(input: {
     readonly projectId: string;
     readonly resultKind: RiskCandidateFinalizationResultRowV1["resultKind"];
@@ -198,6 +208,38 @@ export interface RiskCandidateFinalizationResultStoreV1 {
     readonly resultVersionId: string;
   }): Promise<RiskCandidateFinalizationResultRowV1 | undefined>;
 }
+
+/** 零结果登记行的精确形状；重放与窄读只消费该判别。 */
+export type RiskCandidateZeroResultRowV1 = Extract<
+  RiskCandidateFinalizationResultRowV1,
+  { readonly resultKind: "zero-result" }
+>;
+
+/**
+ * D-04 C22 零结果窄读输入：只携带精确引用与当前授权，不暴露登记表或 C04 原文，
+ * 也不允许按工程批量列举零结果。
+ */
+export interface RiskCandidateZeroResultReadRequestV1 {
+  readonly projectId: string;
+  readonly actorId: string;
+  readonly invocationId: string;
+  readonly requestedAt: string;
+  readonly inputSnapshotRef: IdentificationInputSnapshotRefV1;
+  readonly workItemRef: IdentificationWorkItemRefV1;
+  readonly zeroResultRef: IdentificationZeroResultRefV1;
+  readonly authorization: AuthorizationContextV1;
+}
+
+/**
+ * D-04 零结果窄读结果（闭合联合）：
+ * - `read`：登记、C04 正文、工程、输入、工作项、摘要与引用全部一致。
+ * - `unavailable`：不存在、跨工程/输入/工作项或授权不成立；不披露事实是否存在。
+ * - `inconsistent`：登记存在但正文、引用或摘要不一致；失败闭合，不返回可消费事实。
+ */
+export type RiskCandidateZeroResultReadOutcomeV1 =
+  | { readonly kind: "read"; readonly zeroResult: RiskCandidateZeroResultV1 }
+  | { readonly kind: "unavailable" }
+  | { readonly kind: "inconsistent"; readonly detailCode: string };
 
 /** 正式标准化风险记录写入端口（design D-09/D-10）：只在调用方 ambient 事务内写入。 */
 export interface StandardizedRiskRecordStoreV1 {

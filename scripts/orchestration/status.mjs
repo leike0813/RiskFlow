@@ -25,13 +25,26 @@ export const DISPATCH_INPUT_TRUST_ISSUE_REF = "workspace_trust_required:dispatch
 
 export class CommandFailure extends Error {
   constructor(command, args, cause) {
-    super(`command failed: ${command} ${args.join(" ")}: ${cause.message}`);
+    super(`command failed: ${command} ${args.join(" ")}: ${cause.message}${failureOutput(cause)}`);
     this.name = "CommandFailure";
     this.command = command;
     this.args = args;
     this.exitCode = cause.code;
     this.cause = cause;
   }
+}
+
+// CLI 常常把结构化错误写到 stdout（stderr 为空），只报 `cause.message` 会得到一句
+// “Command failed: <同一命令行>”，调用方只能靠反复实验反推。有界透出原始输出后，
+// 失败原因（如绑定不符、参数非法）即可直接归因。
+function failureOutput(cause, limit = 1_200) {
+  const raw = [cause?.stderr, cause?.stdout]
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter(Boolean)
+    .join("\n");
+  if (!raw) return "";
+  const bounded = raw.length > limit ? `…${raw.slice(-limit)}` : raw;
+  return `\n${bounded}`;
 }
 
 export class InvalidJsonError extends Error {
@@ -922,12 +935,18 @@ export function deriveNodeState(node, context) {
     worktree?.openSpecNodeIds?.includes(node.id) || worktree?.openSpecNames?.includes(node.change);
   const unlinkedLocal = localSpecPresent && tasks.length === 0 && !node.auxiliary;
   if (unlinkedLocal) violations.push({ code: "local_change_without_linked_task" });
+  // 规划尝试尚未成功时，本地 change 正由该尝试负责创建（首次派发可能先被 Codex
+  // 工作区信任确认阻断）。此时「任务存在但本地无 change」是正常中间态，判为冲突会
+  // 让工作项落成 unknown 并拒绝任何恢复派发。
+  const localSpecPendingFromPlanning =
+    currentEnvelope?.taskKind === "planning" && currentEnvelope?.outcome !== "succeeded";
   if (
     tasks.length > 0 &&
     worktree?.exists &&
     Array.isArray(worktree.openSpecNodeIds) &&
     !openSpecPresent &&
-    !dispatchInputTrustRecovery
+    !dispatchInputTrustRecovery &&
+    !localSpecPendingFromPlanning
   ) {
     violations.push({ code: "task_missing_local_openspec" });
   }

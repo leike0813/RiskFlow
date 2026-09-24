@@ -41,7 +41,7 @@ import { PostgresRiskCandidateFinalizationAdapter } from "../../src/identificati
 import { runPostgresMigrations } from "../../src/postgres/migrations/run.js";
 import { createPostgresRuntime, type PostgresRuntime } from "../../src/postgres/pool.js";
 import { PostgresTransactionUnit } from "../../src/postgres/transaction-unit.js";
-import * as qualityIndexMigration from "../../src/postgres/migrations/query-projection/deliver-quality-evaluation-module/000049_quality_evaluation_report_index.js";
+import * as qualityIndexMigration from "../../src/postgres/migrations/query-projection/deliver-quality-evaluation-module/000051_quality_evaluation_report_index.js";
 import {
   createPostgresQualityEvaluationAdapter,
   createPostgresQualityProjectionAdapter,

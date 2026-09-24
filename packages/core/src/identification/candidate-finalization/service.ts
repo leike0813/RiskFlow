@@ -54,6 +54,7 @@ import {
   RiskCandidateFinalizationResultRowV1Schema,
   RiskCandidateSetV1Schema,
   RiskCandidateV1Schema,
+  RiskCandidateZeroResultV1Schema,
   acceptanceRouteSetRefFor,
   assertCompositeConfidenceWeights,
   assertMergePolicyWeights,
@@ -67,6 +68,9 @@ import {
   routeDecisionRefFor,
   validatedCandidateSetRefFor,
   validationSnapshotRefFor,
+  zeroResultEntityIdFor,
+  zeroResultRefFor,
+  zeroResultRequestDigestFor,
   type AcceptanceRouteSetV1,
   type AcceptanceRouteV1,
   type AutomaticAcceptanceDecisionV1,
@@ -97,6 +101,8 @@ import type {
   IdentificationReviewRevisionRequestV1,
   RiskCandidateFinalizationServiceOptionsV1,
   RiskCandidateRepairFeedbackV1,
+  RiskCandidateZeroResultReadOutcomeV1,
+  RiskCandidateZeroResultReadRequestV1,
 } from "./ports.js";
 
 const MAX_ARTIFACT_BYTES_V1 = 8 * 1024 * 1024;
@@ -1020,6 +1026,84 @@ export class RiskCandidateFinalizationService {
     }
   }
 
+  /**
+   * D-04 零结果窄读：供 C24 在同一收窄授权下确认正式零事实，不暴露登记表或 C04 原文。
+   * 读取前与返回前都复验当前 `risk-identification.assemble-and-infer` 授权；引用不存在、
+   * 跨工程/输入/工作项以及撤权一律按不可用收口，不披露事实是否存在；登记、正文与引用
+   * 不一致或工件不可读时失败闭合。
+   */
+  async readZeroResult(
+    input: RiskCandidateZeroResultReadRequestV1,
+  ): Promise<RiskCandidateZeroResultReadOutcomeV1> {
+    const verify = () =>
+      this.#options.authorization.verifyCurrent({
+        authorization: input.authorization,
+        invocationId: input.invocationId,
+        branch: "risk-identification.assemble-and-infer",
+        requestedSpatialScopeRefs: [...input.authorization.spatialScopeRefs],
+        requestedSourceVersionRefs: [],
+      });
+    const before = await verify();
+    if (
+      before === undefined ||
+      before.projectId !== input.projectId ||
+      before.actorId !== input.actorId
+    ) {
+      return { kind: "unavailable" };
+    }
+    const row = await this.#readRow({
+      projectId: input.projectId,
+      resultKind: "zero-result",
+      resultId: input.zeroResultRef.reference.entityId,
+      resultVersionId: input.zeroResultRef.reference.versionId,
+    });
+    if (row === undefined || row.resultKind !== "zero-result") return { kind: "unavailable" };
+    if (
+      !sameRef(row.zeroResultRef.reference, input.zeroResultRef.reference) ||
+      row.requestDigest !== row.resultVersionId
+    ) {
+      return { kind: "inconsistent", detailCode: "zero-result-registration-mismatch" };
+    }
+    // 工件不可读（缺失、摘要不符、越界）与正文不合 Schema 都失败闭合，不返回可消费事实。
+    const payload = await this.#readArtifactJson({
+      artifactRef: row.artifactRef.reference,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      requestedAt: input.requestedAt,
+      purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.zeroResult,
+      authorization: before,
+    }).catch(() => undefined);
+    if (payload === undefined) {
+      return { kind: "inconsistent", detailCode: "zero-result-body-unavailable" };
+    }
+    const parsed = RiskCandidateZeroResultV1Schema.safeParse(payload);
+    if (!parsed.success) {
+      return { kind: "inconsistent", detailCode: "zero-result-payload-invalid" };
+    }
+    const zeroResult = parsed.data;
+    const expectedEntityId = zeroResultEntityIdFor({
+      projectId: input.projectId,
+      workItemEntityId: input.workItemRef.reference.entityId,
+    });
+    if (
+      zeroResult.projectId !== input.projectId ||
+      zeroResult.workItemRef.reference.entityId !== input.workItemRef.reference.entityId ||
+      zeroResult.workItemRef.reference.versionId !== input.workItemRef.reference.versionId ||
+      !sameRef(zeroResult.inputSnapshotRef.reference, input.inputSnapshotRef.reference) ||
+      !sameRef(row.workItemRef.reference, input.workItemRef.reference) ||
+      !sameRef(row.inputSnapshotRef.reference, input.inputSnapshotRef.reference) ||
+      !sameRef(
+        row.modelContextArtifactSetRef.reference,
+        zeroResult.modelContextArtifactSetRef.reference,
+      ) ||
+      input.zeroResultRef.reference.entityId !== expectedEntityId
+    ) {
+      return { kind: "inconsistent", detailCode: "zero-result-fact-mismatch" };
+    }
+    if ((await verify()) === undefined) return { kind: "unavailable" };
+    return { kind: "read", zeroResult };
+  }
+
   // ------------------------------------------------------------- 授权与持久化
 
   async #requireCurrent(input: {
@@ -1482,7 +1566,12 @@ export class RiskCandidateFinalizationService {
 
   async #assembleAndInfer(
     command: Extract<IdentificationAnalysisCommandV1, { readonly kind: "assemble-and-infer" }>,
-  ): Promise<Extract<IdentificationAnalysisSuccessV1, { readonly kind: "assemble-and-infer" }>> {
+  ): Promise<
+    Extract<
+      IdentificationAnalysisSuccessV1,
+      { readonly kind: "assemble-and-infer" } | { readonly kind: "zero-result" }
+    >
+  > {
     const options = this.#options;
     const occurredAt = this.#now().toISOString();
     const current = await this.#requireCurrent({
@@ -1549,6 +1638,47 @@ export class RiskCandidateFinalizationService {
     const deadlineAt = new Date(
       Date.parse(occurredAt) + generationPolicy.budget.maxWallClockMs,
     ).toISOString();
+    // D-04：模型调用前按工程与命令身份精确预读既有零事实，同载荷回放原引用，异载荷稳定冲突。
+    const zeroResultCommandId = `${command.commandId}:candidate-set`;
+    const zeroResultDigest = zeroResultRequestDigestFor({
+      commandId: command.commandId,
+      idempotencyKey: command.idempotencyKey,
+      projectId: command.projectId,
+      workItemRef: command.payload.workItemRef,
+      inputSnapshotRef: modelContext.inputSnapshotRef,
+      retrievalArtifactSetRef: command.payload.retrievalArtifactSetRef,
+      modelContextArtifactSetRef: modelContextRead.read.modelContextArtifactSetRef,
+      modelContextPayloadDigest: modelContextRead.read.payloadDigest,
+      policySetRef: modelContext.policySetRef,
+      generationPolicyRef: generationPolicy.policyRef,
+      modelDeploymentRef: command.payload.modelDeploymentRef,
+      promptTemplateRef: command.payload.promptTemplateRef,
+      outputSchemaRef: generationPolicy.outputSchemaRef,
+      budgetPolicyRef: generationPolicy.budgetPolicyRef,
+      authorizationScopeDigest: scopeDigest,
+    });
+    const priorZeroResult = await options.resultStore.readZeroResult({
+      projectId: command.projectId,
+      commandId: zeroResultCommandId,
+    });
+    if (priorZeroResult !== undefined) {
+      if (priorZeroResult.requestDigest !== zeroResultDigest) {
+        throw new RiskCandidateFinalizationError(
+          idempotencyConflict({
+            causalRunId: command.commandId,
+            occurredAt: this.#now().toISOString(),
+            idempotencyKey: command.idempotencyKey,
+            priorCommandId: priorZeroResult.commandId,
+          }),
+        );
+      }
+      // 同载荷重放：不重复模型调用、业务登记或审计，原引用在复验后的授权下返回。
+      return {
+        kind: "zero-result",
+        modelContextArtifactSetRef: priorZeroResult.modelContextArtifactSetRef,
+        zeroResultRef: priorZeroResult.zeroResultRef,
+      };
+    }
     const modelOutcome = await options.model.generateCandidates({
       projectId: command.projectId,
       actorId: command.actorId,
@@ -1593,6 +1723,95 @@ export class RiskCandidateFinalizationService {
       );
     }
     const generatedAt = this.#now().toISOString();
+    if (modelOutcome.outputs.length === 0) {
+      const zeroResultRef = zeroResultRefFor({
+        projectId: command.projectId,
+        workItemEntityId: command.payload.workItemRef.reference.entityId,
+        requestDigest: zeroResultDigest,
+      });
+      const persistedZero = await this.#persistRows({
+        requests: [
+          {
+            row: RiskCandidateFinalizationResultRowV1Schema.parse({
+              ...this.#rowBase({
+                resultKind: "zero-result",
+                commandId: zeroResultCommandId,
+                projectId: command.projectId,
+                resultId: zeroResultRef.reference.entityId,
+                resultVersionId: zeroResultRef.reference.versionId,
+                requestDigest: zeroResultDigest,
+                inputSnapshotRef: modelContext.inputSnapshotRef,
+                authorizationScopeDigest: scopeDigest,
+                actorId: command.actorId,
+                authorizationContextRef: current.authorizationContextRef,
+              }),
+              workItemRef: command.payload.workItemRef,
+              modelContextArtifactSetRef: modelContextRead.read.modelContextArtifactSetRef,
+              zeroResultRef,
+            }),
+            artifactId: this.#artifactID("zero-result", zeroResultRef.reference),
+            purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.zeroResult,
+            value: RiskCandidateZeroResultV1Schema.parse({
+              schemaVersion: RISK_CANDIDATE_FINALIZATION_SCHEMA_VERSION_V1,
+              outcome: "zero-candidates",
+              candidateCount: 0,
+              projectId: command.projectId,
+              inputSnapshotRef: modelContext.inputSnapshotRef,
+              workItemRef: command.payload.workItemRef,
+              nodeId: modelContext.nodeId,
+              modelContextArtifactSetRef: modelContextRead.read.modelContextArtifactSetRef,
+              retrievalArtifactSetRef: command.payload.retrievalArtifactSetRef,
+              modelContextPayloadDigest: modelContextRead.read.payloadDigest,
+              policySetRef: modelContext.policySetRef,
+              generationPolicyRef: generationPolicy.policyRef,
+              modelDeploymentRef: command.payload.modelDeploymentRef,
+              promptTemplateRef: command.payload.promptTemplateRef,
+              outputSchemaRef: generationPolicy.outputSchemaRef,
+              budgetPolicyRef: generationPolicy.budgetPolicyRef,
+              rawResponseRef: modelOutcome.rawResponseRef,
+              invocationId: modelOutcome.invocationId,
+              usage: initialUsage,
+              authorizationScopeDigest: scopeDigest,
+              authorizationContextRef: current.authorizationContextRef,
+              actorRef: command.actorId,
+              commandId: command.commandId,
+              formedAt: generatedAt,
+            }),
+          },
+        ],
+        occurredAt: generatedAt,
+        authorization: current,
+        actorId: command.actorId,
+        commandKind: "identification.candidate-set.register",
+        commandId: zeroResultCommandId,
+        idempotencyKey: zeroResultCommandId,
+        resultRef: zeroResultRef,
+      });
+      if (persistedZero.kind === "idempotency-conflict") {
+        throw new RiskCandidateFinalizationError(
+          idempotencyConflict({
+            causalRunId: command.commandId,
+            occurredAt: generatedAt,
+            idempotencyKey: command.idempotencyKey,
+            priorCommandId: persistedZero.priorCommandId,
+          }),
+        );
+      }
+      if (persistedZero.kind === "failed") {
+        throw new RiskCandidateFinalizationError(
+          terminalFailure({
+            causalRunId: command.commandId,
+            occurredAt: generatedAt,
+            stage: "candidate-set-register",
+          }),
+        );
+      }
+      return {
+        kind: "zero-result",
+        modelContextArtifactSetRef: modelContextRead.read.modelContextArtifactSetRef,
+        zeroResultRef,
+      };
+    }
     const candidateSetEntityId = candidateSetEntityIdFor({
       projectId: command.projectId,
       workItemEntityId: command.payload.workItemRef.reference.entityId,
@@ -3292,16 +3511,10 @@ export class RiskCandidateFinalizationService {
       }
       decisionKeys.add(key);
     }
-    if (decisionKeys.size !== routeSet.routes.length) {
-      throw new RiskCandidateFinalizationError(
-        blocked({
-          causalRunId: command.commandId,
-          occurredAt,
-          blockerKind: "acceptance-decision-set-mismatch",
-          blockerRef: command.payload.acceptanceRouteSetRef,
-        }),
-      );
-    }
+    // 决定集校验收窄（协调者已批准，仅此一处放宽）：提交集仍必须恰等于全部 routes，且每条决定
+    // 不得重复；唯一允许的缺项是「review 型且 C07 窄读尚无决定」的 route——它按本轮待定跳过。
+    // 未知/多余键与其它缺项仍失败闭合，因此实际核对在遍历 route 集之后逐键收口。
+    const expectedDecisionKeys = new Set<string>();
     const reviewAuthorization = routeSet.routes.some((route) => route.routeKind === "review")
       ? await options.authorization.issueBranchContext({
           projectId: command.projectId,
@@ -3321,9 +3534,8 @@ export class RiskCandidateFinalizationService {
       let decisionKind: string;
       let reviewDecisionRef: VersionReference | undefined;
       if (route.routeKind === "automatic") {
-        if (
-          !decisionKeys.has(`route-decision\u0000${referenceKey(route.routeDecisionRef.reference)}`)
-        ) {
+        const automaticKey = `route-decision\u0000${referenceKey(route.routeDecisionRef.reference)}`;
+        if (!decisionKeys.has(automaticKey)) {
           throw new RiskCandidateFinalizationError(
             blocked({
               causalRunId: command.commandId,
@@ -3372,6 +3584,7 @@ export class RiskCandidateFinalizationService {
           );
         }
         decisionKind = automatic.decision;
+        expectedDecisionKeys.add(automaticKey);
       } else {
         if (reviewAuthorization === undefined) throw new TypeError("review authorization required");
         const read: IdentificationGroupDecisionReadV1 =
@@ -3394,20 +3607,13 @@ export class RiskCandidateFinalizationService {
           );
         }
         if (read.kind === "pending") {
-          throw new RiskCandidateFinalizationError(
-            blocked({
-              causalRunId: command.commandId,
-              occurredAt,
-              blockerKind: "review-decision-pending",
-              blockerRef: route.groupRef,
-            }),
-          );
+          // 人工决定尚未成立：该组按本轮待定跳过，不写任何记录，也不阻断其它已合格组
+          // （协调者已批准；spec「自动组和人工组并存」与「一个等待组不得阻止其它合格组入库」）。
+          skippedGroupRefs.push(route.groupRef);
+          continue;
         }
-        if (
-          !decisionKeys.has(
-            `review-decision\u0000${referenceKey(read.reviewDecisionRef.reference)}`,
-          )
-        ) {
+        const reviewKey = `review-decision\u0000${referenceKey(read.reviewDecisionRef.reference)}`;
+        if (!decisionKeys.has(reviewKey)) {
           throw new RiskCandidateFinalizationError(
             blocked({
               causalRunId: command.commandId,
@@ -3419,19 +3625,13 @@ export class RiskCandidateFinalizationService {
         }
         decisionKind = read.decisionKind;
         reviewDecisionRef = read.reviewDecisionRef.reference;
+        expectedDecisionKeys.add(reviewKey);
       }
       const disposition = decisionDispositionFor(decisionKind);
-      if (disposition === "blocked") {
-        throw new RiskCandidateFinalizationError(
-          blocked({
-            causalRunId: command.commandId,
-            occurredAt,
-            blockerKind: `decision-${decisionKind}`,
-            blockerRef: route.groupRef,
-          }),
-        );
-      }
-      if (disposition === "reroute") {
+      // 拒绝与退回（`reject` / `return-upstream`）只封闭当前组：与 reroute 同形地记入
+      // `skippedGroupRefs` 后继续处理其余组。被封闭组不产生任何记录、审计或事件，
+      // 其它合格组仍可在同一 C03 事务单元内独立入库（C24 I8「拒绝与退回保持阻断」）。
+      if (disposition === "reroute" || disposition === "blocked") {
         skippedGroupRefs.push(route.groupRef);
         continue;
       }
@@ -3556,7 +3756,24 @@ export class RiskCandidateFinalizationService {
         occurredAt,
       });
     }
-    if (skippedGroupRefs.length > 0 || records.length === 0) {
+    // 收窄后的决定集核对：每条提交的决定都必须被 route 集真实使用过（自动 route 的决定引用、
+    // 或 review route 经 C07 窄读得到的决定引用）。未知/多余键仍失败闭合；唯一允许的缺项是
+    // 本轮待定的 review route。
+    for (const key of decisionKeys) {
+      if (!expectedDecisionKeys.has(key)) {
+        throw new RiskCandidateFinalizationError(
+          blocked({
+            causalRunId: command.commandId,
+            occurredAt,
+            blockerKind: "acceptance-decision-set-mismatch",
+            blockerRef: command.payload.acceptanceRouteSetRef,
+          }),
+        );
+      }
+    }
+    // 只有全部组都被封闭或待定时才按幂等空结果收口；存在合格组时必须继续提交它们的记录与事件，
+    // 不得因为同集内有被封闭组而丢弃全部合格组的入库。
+    if (records.length === 0) {
       return { kind: "skipped", skippedGroupRefs };
     }
 

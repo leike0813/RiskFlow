@@ -87,6 +87,14 @@
       "types": "./dist/identification/candidate-finalization/index.d.ts",
       "import": "./dist/identification/candidate-finalization/index.js"
     },
+    "./identification/graph": {
+      "types": "./dist/identification/graph/index.d.ts",
+      "import": "./dist/identification/graph/index.js"
+    },
+    "./workflow": {
+      "types": "./dist/workflow/index.d.ts",
+      "import": "./dist/workflow/index.js"
+    },
     "./scoring-rules": {
       "types": "./dist/scoring-rules/index.d.ts",
       "import": "./dist/scoring-rules/index.js"

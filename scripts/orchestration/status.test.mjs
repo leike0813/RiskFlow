@@ -99,7 +99,7 @@ function context(overrides = {}) {
 }
 
 describe("execution graph", () => {
-  it("validates the committed C00-C38 graph", async () => {
+  it("validates the committed execution graph", async () => {
     const manifest = JSON.parse(
       await readFile(
         resolve(
@@ -109,7 +109,7 @@ describe("execution graph", () => {
         "utf8",
       ),
     );
-    expect(manifest.nodes).toHaveLength(45);
+    expect(manifest.nodes).toHaveLength(49);
     expect(validateGraph(manifest)).toEqual([]);
   });
 
@@ -1177,6 +1177,36 @@ describe("worktree-aware state", () => {
     expect(missingOpenSpec.violations.map((item) => item.code)).toContain(
       "task_missing_local_openspec",
     );
+
+    // 规划尝试尚未成功时，change 由该尝试创建（首次派发可能先被 Codex 工作区信任
+    // 确认阻断）。这属正常中间态：不得判冲突，也不得落成 unknown，否则没有可用的恢复动作。
+    const planningTask = task({
+      id: "task-c08-planning",
+      status: "failed",
+      envelope: v2Envelope({
+        taskKind: "planning",
+        phase: "planning",
+        owner: { taskId: "task-c08-planning", agentClass: "strong-planner", model: "gpt-6-sol" },
+      }),
+    });
+    const planningPending = deriveSnapshot(
+      graph(node),
+      context({
+        worktrees: [
+          {
+            ...baseWorktree,
+            git: { head: "feature-head", branch: "feature", dirty: false, dirtyPaths: [] },
+            openSpecNodeIds: [],
+            tasks: [planningTask],
+          },
+        ],
+        tasks: [planningTask],
+      }),
+    ).nodes[0];
+    expect(planningPending.violations.map((item) => item.code)).not.toContain(
+      "task_missing_local_openspec",
+    );
+    expect(planningPending.status).not.toBe("unknown");
   });
 
   it("keeps dispatch-input trust recovery reachable until a worker accepts input", () => {

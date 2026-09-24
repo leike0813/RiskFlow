@@ -10,3 +10,6 @@ allowBuilds:
   cpu-features: false
   protobufjs: false
   ssh2: false
+
+minimumReleaseAgeExclude:
+  - "@langchain/langgraph@1.4.17"

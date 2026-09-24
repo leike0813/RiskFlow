@@ -20,6 +20,7 @@ import {
   IdentificationPolicySetRefV1Schema,
   IdentificationWorkItemRefV1Schema,
   IdentificationWorkPlanRefV1Schema,
+  IdentificationZeroResultRefV1Schema,
   MergePlanRefV1Schema,
   ModelContextArtifactSetRefV1Schema,
   RetrievalArtifactSetRefV1Schema,
@@ -29,7 +30,14 @@ import {
   ValidatedCandidateSetRefV1Schema,
   ValidationSnapshotRefV1Schema,
   WorkflowRunRefV1Schema,
+  type IdentificationInputSnapshotRefV1,
+  type IdentificationPolicySetRefV1,
+  type IdentificationWorkItemRefV1,
+  type ModelContextArtifactSetRefV1,
+  type RetrievalArtifactSetRefV1,
 } from "@riskflow/contracts/ports";
+
+import { sha256CanonicalJson } from "../../persistence/index.js";
 
 export const RISK_CANDIDATE_FINALIZATION_SCHEMA_VERSION_V1 = "1" as const;
 
@@ -42,6 +50,7 @@ export const MAX_VALIDATED_CANDIDATE_SETS_V1 = 512;
 /** D-09 一张追加式登记表承载的中间结果种类。 */
 export const RISK_CANDIDATE_FINALIZATION_RESULT_KINDS_V1 = [
   "candidate-set",
+  "zero-result",
   "validated-candidate-set",
   "identification-group",
   "merge-plan",
@@ -205,9 +214,9 @@ export type RiskCandidateValidationPolicyV1 = z.infer<typeof RiskCandidateValida
 
 // ------------------------------------------------------- 候选与候选集（RI-S57～S58）
 
-/** RI-S57 结构化输出形状：非空、有上限的六字段结果集合。 */
+/** RI-S57 结构化输出形状：有上限的候选结果集合；合法零候选是正式终态，不是失败。 */
 export const RiskCandidateModelOutputV1Schema = z.strictObject({
-  candidates: z.array(ModelOutputResultSchema).min(1).max(MAX_RISK_CANDIDATES_V1),
+  candidates: z.array(ModelOutputResultSchema).max(MAX_RISK_CANDIDATES_V1),
 });
 export type RiskCandidateModelOutputV1 = z.infer<typeof RiskCandidateModelOutputV1Schema>;
 
@@ -242,6 +251,38 @@ export const CandidateBudgetUsageV1Schema = z.strictObject({
   repairRounds: nonNegativeInt,
 });
 export type CandidateBudgetUsageV1 = z.infer<typeof CandidateBudgetUsageV1Schema>;
+
+/**
+ * 正式零结果正文（design D-03）：只表示本次冻结推理未产生候选，不推断工程无风险，
+ * 不生成候选集、合并组或风险记录。身份、冻结输入、原始响应与资源证据在此固定。
+ */
+export const RiskCandidateZeroResultV1Schema = z.strictObject({
+  schemaVersion: z.literal(RISK_CANDIDATE_FINALIZATION_SCHEMA_VERSION_V1),
+  outcome: z.literal("zero-candidates"),
+  candidateCount: z.literal(0),
+  projectId: IdentifierSchema,
+  inputSnapshotRef: IdentificationInputSnapshotRefV1Schema,
+  workItemRef: IdentificationWorkItemRefV1Schema,
+  nodeId: IdentifierSchema,
+  modelContextArtifactSetRef: ModelContextArtifactSetRefV1Schema,
+  retrievalArtifactSetRef: RetrievalArtifactSetRefV1Schema,
+  modelContextPayloadDigest: digestSchema,
+  policySetRef: IdentificationPolicySetRefV1Schema,
+  generationPolicyRef: VersionReferenceSchema,
+  modelDeploymentRef: VersionReferenceSchema,
+  promptTemplateRef: VersionReferenceSchema,
+  outputSchemaRef: VersionReferenceSchema,
+  budgetPolicyRef: VersionReferenceSchema,
+  rawResponseRef: DiagnosticArtifactRefV1Schema,
+  invocationId: IdentifierSchema,
+  usage: CandidateBudgetUsageV1Schema,
+  authorizationScopeDigest: digestSchema,
+  authorizationContextRef: AuthorizationContextRefV1Schema,
+  actorRef: IdentifierSchema,
+  commandId: IdentifierSchema,
+  formedAt: IsoDateTimeSchema,
+});
+export type RiskCandidateZeroResultV1 = z.infer<typeof RiskCandidateZeroResultV1Schema>;
 
 const candidateKey = (candidate: { candidateId: string; candidateVersion: number }): string =>
   `${candidate.candidateId}\u0000${candidate.candidateVersion}`;
@@ -789,6 +830,13 @@ export const RiskCandidateFinalizationResultRowV1Schema = z.discriminatedUnion("
   }),
   z.strictObject({
     ...resultRowBase,
+    resultKind: z.literal("zero-result"),
+    workItemRef: IdentificationWorkItemRefV1Schema,
+    modelContextArtifactSetRef: ModelContextArtifactSetRefV1Schema,
+    zeroResultRef: IdentificationZeroResultRefV1Schema,
+  }),
+  z.strictObject({
+    ...resultRowBase,
     resultKind: z.literal("validated-candidate-set"),
     workItemRef: IdentificationWorkItemRefV1Schema,
     candidateSetRef: IdentificationCandidateSetRefV1Schema,
@@ -858,6 +906,7 @@ export const RISK_CANDIDATE_FINALIZATION_ARTIFACT_PREFIX_V1 =
 /** C22 中间正文的 C04 purpose code；正文只经 C04 读取。 */
 export const RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1 = Object.freeze({
   candidateSet: "risk-candidate-set",
+  zeroResult: "risk-candidate-zero-result",
   validationSet: "risk-candidate-validation-set",
   group: "identification-group",
   mergePlan: "identification-merge-plan",
@@ -913,6 +962,63 @@ export const validatedCandidateSetRefFor = (input: {
   kind: "validated-candidate-set",
   reference: {
     entityId: `validated-candidate-set:${input.projectId}:${input.candidateSetEntityId}`,
+    versionId: input.requestDigest,
+  },
+});
+
+/** 正式零结果身份：同一工程同一工作项一个身份，版本由命令身份与冻结请求摘要决定。 */
+export const zeroResultEntityIdFor = (input: {
+  readonly projectId: string;
+  readonly workItemEntityId: string;
+}): string => `identification-zero-result:${input.projectId}:${input.workItemEntityId}`;
+
+/**
+ * 零结果冻结请求摘要（design D-03）：只由命令/幂等身份、冻结输入、五项上下文、模型、提示、
+ * 输出 Schema、预算策略与授权范围组成，模型调用前即可重算；不取墙钟或模型文本作为幂等身份。
+ */
+export const zeroResultRequestDigestFor = (input: {
+  readonly commandId: string;
+  readonly idempotencyKey: string;
+  readonly projectId: string;
+  readonly workItemRef: IdentificationWorkItemRefV1;
+  readonly inputSnapshotRef: IdentificationInputSnapshotRefV1;
+  readonly retrievalArtifactSetRef: RetrievalArtifactSetRefV1;
+  readonly modelContextArtifactSetRef: ModelContextArtifactSetRefV1;
+  readonly modelContextPayloadDigest: string;
+  readonly policySetRef: IdentificationPolicySetRefV1;
+  readonly generationPolicyRef: VersionReference;
+  readonly modelDeploymentRef: VersionReference;
+  readonly promptTemplateRef: VersionReference;
+  readonly outputSchemaRef: VersionReference;
+  readonly budgetPolicyRef: VersionReference;
+  readonly authorizationScopeDigest: string;
+}): string =>
+  sha256CanonicalJson({
+    commandId: input.commandId,
+    idempotencyKey: input.idempotencyKey,
+    projectId: input.projectId,
+    workItemRef: input.workItemRef.reference,
+    inputSnapshotRef: input.inputSnapshotRef.reference,
+    retrievalArtifactSetRef: input.retrievalArtifactSetRef.reference,
+    modelContextArtifactSetRef: input.modelContextArtifactSetRef.reference,
+    modelContextPayloadDigest: input.modelContextPayloadDigest,
+    policySetRef: input.policySetRef.reference,
+    generationPolicyRef: input.generationPolicyRef,
+    modelDeploymentRef: input.modelDeploymentRef,
+    promptTemplateRef: input.promptTemplateRef,
+    outputSchemaRef: input.outputSchemaRef,
+    budgetPolicyRef: input.budgetPolicyRef,
+    authorizationScopeDigest: input.authorizationScopeDigest,
+  });
+
+export const zeroResultRefFor = (input: {
+  readonly projectId: string;
+  readonly workItemEntityId: string;
+  readonly requestDigest: string;
+}): z.infer<typeof IdentificationZeroResultRefV1Schema> => ({
+  kind: "identification-zero-result",
+  reference: {
+    entityId: zeroResultEntityIdFor(input),
     versionId: input.requestDigest,
   },
 });

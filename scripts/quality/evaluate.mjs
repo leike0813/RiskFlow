@@ -17,10 +17,12 @@ import { createPostgresLocalIdentityAccess } from "../../packages/adapters/dist/
 import { createContentAddressedArtifactStore } from "../../packages/adapters/dist/artifacts/index.js";
 import { createPostgresEngineeringContextSourceRegistry } from "../../packages/adapters/dist/engineering-data/context-source/index.js";
 import { PostgresRiskCandidateFinalizationAdapter } from "../../packages/adapters/dist/identification/candidate-finalization/index.js";
+import { createPostgresIdentificationGraphAdapter } from "../../packages/adapters/dist/identification/graph/index.js";
 import { createPostgresQualityEvaluationAdapter } from "../../packages/adapters/dist/quality/index.js";
 import { createPostgresRuntime } from "../../packages/adapters/dist/postgres/pool.js";
 import { PostgresTransactionUnit } from "../../packages/adapters/dist/postgres/transaction-unit.js";
 import { ArtifactPutCommandV1Schema } from "../../packages/core/dist/artifacts/index.js";
+import { createRiskCandidateZeroResultReader } from "../../packages/core/dist/identification/candidate-finalization/index.js";
 import {
   createQualityEvaluationService,
   QualityDatasetV1Schema,
@@ -114,15 +116,48 @@ try {
     })(),
   );
 
+  const recordStore = new PostgresRiskCandidateFinalizationAdapter({
+    db: runtime.db,
+    transactionUnit,
+  });
+  const identificationGraph = createPostgresIdentificationGraphAdapter({
+    db: runtime.db,
+    transactionUnit,
+    artifactStore,
+    authorization: access,
+  });
   const adapter = createPostgresQualityEvaluationAdapter({
     db: runtime.db,
     transactionUnit,
     artifactStore,
     artifactReferenceGuard: artifactStore.referenceGuard,
-    recordStore: new PostgresRiskCandidateFinalizationAdapter({
-      db: runtime.db,
-      transactionUnit,
-    }),
+    recordStore,
+    formalRunEvidence: {
+      registrationStore: identificationGraph.registrationStore,
+      workPlanReader: identificationGraph.workPlanReader,
+      zeroResultReader: createRiskCandidateZeroResultReader({
+        resultStore: recordStore,
+        artifactStore,
+        authorization: {
+          verifyCurrent: async (request) => {
+            try {
+              const decision = await access.verify({
+                authorizationContextRef: request.authorization.authorizationContextRef,
+                invocationId: request.invocationId,
+                projectId: request.authorization.projectId,
+                branch: request.branch,
+                requestedSpatialScopeRefs: [...request.requestedSpatialScopeRefs],
+                requestedSourceVersionRefs: [...request.requestedSourceVersionRefs],
+                requestedAt: new Date().toISOString(),
+              });
+              return decision.context;
+            } catch {
+              return undefined;
+            }
+          },
+        },
+      }),
+    },
     // D-10：必审资料段只经 C13 现有授权读解析，正文留给拥有方。
     evidenceAccess: createPostgresEngineeringContextSourceRegistry({
       db: runtime.db,
@@ -151,6 +186,19 @@ try {
             invocationId: request.queryId,
             projectId: request.projectId,
             branch: "engineering-data.evidence-access",
+            requestedSpatialScopeRefs: [...request.spatialScopeRefs],
+            requestedSourceVersionRefs: [...request.sourceVersionRefs],
+          })
+        ).context,
+    },
+    formalRunAccess: {
+      issueReadAuthorization: async (request) =>
+        (
+          await access.authorize({
+            invocation: { kind: "human-session", sessionToken: session.sessionToken },
+            invocationId: request.invocationId,
+            projectId: request.projectId,
+            branch: request.branch,
             requestedSpatialScopeRefs: [...request.spatialScopeRefs],
             requestedSourceVersionRefs: [...request.sourceVersionRefs],
           })

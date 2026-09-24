@@ -79,17 +79,24 @@ const evaluateSample = (
 ): SampleEvaluationV1 => {
   const reasonCodes: QualityReasonCodeV1[] = [];
   const declaredRecord = sample.riskRecordRef !== undefined;
+  const formalEmpty =
+    !sample.expectedPositive &&
+    !declaredRecord &&
+    sample.formalRunProofRefs !== undefined &&
+    evidence?.formalZeroResultProof !== undefined &&
+    refKey(evidence.formalZeroResultProof.terminalResultRef) ===
+      refKey(sample.formalRunProofRefs.terminalResultRef);
   const snapshot = evidence?.recordSnapshot;
   const identity = evidence?.recordIdentity;
   let identityVerified = false;
   let keyMatched = false;
   let actualRiskLevelId: string | undefined;
 
-  if (!declaredRecord) {
+  if (!declaredRecord && !formalEmpty) {
     reasonCodes.push("quality-identification-result-missing");
-  } else if (snapshot === undefined || identity === undefined) {
+  } else if (declaredRecord && (snapshot === undefined || identity === undefined)) {
     reasonCodes.push("quality-identification-result-missing");
-  } else {
+  } else if (declaredRecord && snapshot !== undefined && identity !== undefined) {
     const envelopeVersionId = snapshot.envelope.version.reference.versionId;
     const declaredVersionId = sample.riskRecordRef?.reference.versionId;
     identityVerified =
@@ -131,6 +138,7 @@ const evaluateSample = (
   if (sample.standardizedRiskRecordSnapshotArtifactRef !== undefined && !identityVerified) {
     evidenceVerified = false;
   }
+  if (sample.formalRunProofRefs !== undefined && !formalEmpty) evidenceVerified = false;
   const receiptKeys = new Set(
     (evidence?.requiredSegmentReceipts ?? []).map((receipt) =>
       qualityEvidenceReferenceKeyV1(receipt.evidenceReference),
@@ -188,13 +196,15 @@ const evaluateSample = (
     }
   }
 
-  const classification: QualitySampleClassificationV1 = keyMatched
-    ? sample.expectedPositive
-      ? "true-positive"
-      : "false-positive"
-    : sample.expectedPositive
-      ? "false-negative"
-      : "undetermined";
+  const classification: QualitySampleClassificationV1 = formalEmpty
+    ? "true-negative"
+    : keyMatched
+      ? sample.expectedPositive
+        ? "true-positive"
+        : "false-positive"
+      : sample.expectedPositive
+        ? "false-negative"
+        : "undetermined";
 
   return {
     outcome: {
@@ -211,6 +221,7 @@ const evaluateSample = (
           }),
       recordIdentityVerified: identityVerified,
       recordKeyMatched: keyMatched,
+      ...(formalEmpty ? { formalZeroResultProof: evidence!.formalZeroResultProof } : {}),
       evidenceVerified,
       replayConsistent,
       ...(sample.expectedRiskLevelId === undefined
@@ -218,7 +229,7 @@ const evaluateSample = (
         : { expectedRiskLevelId: sample.expectedRiskLevelId }),
       ...(actualRiskLevelId === undefined ? {} : { actualRiskLevelId }),
     },
-    covered: keyMatched,
+    covered: keyMatched || formalEmpty,
     pairComparable: sample.comparisonGroupId !== undefined,
   };
 };

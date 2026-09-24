@@ -427,3 +427,54 @@ describe("C36 必审资料段收据（D-10）", () => {
     expect(auditOf(drifted)).toMatchObject({ numerator: 0, denominator: 1 });
   });
 });
+
+describe("C36 正式空结果证明（D-09）", () => {
+  it("只把有精确完成运行证明的负样例计为 TN 与覆盖", () => {
+    const draft = structuredClone(synthetic) as Record<string, unknown>;
+    const gamma = (draft["samples"] as Record<string, unknown>[]).find(
+      (entry) => entry["sampleId"] === "sample-gamma",
+    )!;
+    const terminalResultRef = {
+      kind: "identification-run-result" as const,
+      reference: { entityId: "formal-run-result", versionId: "1" },
+    };
+    gamma["formalRunProofRefs"] = {
+      runRef: { kind: "workflow-run", reference: { entityId: "formal-run", versionId: "1" } },
+      workPlanRef: {
+        kind: "identification-work-plan",
+        reference: { entityId: "formal-plan", versionId: "1" },
+      },
+      terminalResultRef,
+    };
+    draft["samples"] = [gamma];
+    const frozen = QualityDatasetV1Schema.parse(draft);
+    const missing = evaluateQualityDataset({ dataset: frozen, evidence: [] });
+    expect(missing.samples[0]?.classification).toBe("undetermined");
+    expect(missing.metrics.find((item) => item.metricCode === "coverage")?.numerator).toBe(0);
+
+    const proved = evaluateQualityDataset({
+      dataset: frozen,
+      evidence: [
+        {
+          sampleId: "sample-gamma",
+          verifiedEvidenceRefs: [],
+          requiredSegmentReceipts: [],
+          formalZeroResultProof: { terminalResultRef, frozenScopeDigest: "frozen-scope-digest" },
+        },
+      ],
+    });
+    expect(proved.samples[0]).toMatchObject({
+      classification: "true-negative",
+      formalZeroResultProof: { terminalResultRef },
+    });
+    expect(proved.samples[0]?.reasonCodes).not.toContain("quality-identification-result-missing");
+    expect(proved.metrics.find((item) => item.metricCode === "accuracy")).toMatchObject({
+      numerator: 1,
+      denominator: 1,
+    });
+    expect(proved.metrics.find((item) => item.metricCode === "coverage")).toMatchObject({
+      numerator: 1,
+      denominator: 1,
+    });
+  });
+});

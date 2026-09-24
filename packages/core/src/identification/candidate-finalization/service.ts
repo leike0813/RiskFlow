@@ -100,9 +100,12 @@ import type {
   IdentificationReviewRevisionOutcomeV1,
   IdentificationReviewRevisionRequestV1,
   RiskCandidateFinalizationServiceOptionsV1,
+  RiskCandidateFinalizationAuthorizationPortV1,
+  RiskCandidateFinalizationResultStoreV1,
   RiskCandidateRepairFeedbackV1,
   RiskCandidateZeroResultReadOutcomeV1,
   RiskCandidateZeroResultReadRequestV1,
+  RiskCandidateZeroResultReaderV1,
 } from "./ports.js";
 
 const MAX_ARTIFACT_BYTES_V1 = 8 * 1024 * 1024;
@@ -941,6 +944,148 @@ interface CandidateSetBuildResultV1 {
 
 // ---------------------------------------------------------------------- 服务
 
+type CandidateArtifactReadInputV1 = {
+  readonly artifactRef: VersionReference;
+  readonly projectId: string;
+  readonly actorId: string;
+  readonly requestedAt: string;
+  readonly purposeCode: string;
+  readonly authorization: AuthorizationContextV1;
+};
+
+/** C22 写侧与独立零结果读侧共用同一有界 C04 完整性读取。 */
+const readCandidateArtifactJson = async (
+  options: Pick<RiskCandidateFinalizationServiceOptionsV1, "artifactStore" | "now">,
+  input: CandidateArtifactReadInputV1,
+): Promise<unknown> => {
+  const readId = `${STAGE_PREFIX}-read-${randomUUID()}`;
+  const requiredCapability = input.authorization.grantedCapabilities[0];
+  if (requiredCapability === undefined) {
+    throw new RiskCandidateFinalizationError(
+      authorizationDenied({
+        causalRunId: input.artifactRef.entityId,
+        occurredAt: (options.now ?? (() => new Date()))().toISOString(),
+        capability: "risk-identification.read",
+        policyRef: input.authorization.authorizationPolicyRef,
+      }),
+    );
+  }
+  const handle = await options.artifactStore.open({
+    schemaVersion: "1",
+    requestId: readId,
+    idempotencyKey: readId,
+    artifactRef: { kind: CONTENT_REF_KIND, reference: input.artifactRef },
+    projectId: input.projectId,
+    actorId: input.actorId,
+    requestedAt: input.requestedAt,
+    purposeCode: input.purposeCode,
+    requiredCapability,
+    authorization: input.authorization,
+  });
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of handle.content) {
+    size += chunk.byteLength;
+    if (size > MAX_ARTIFACT_BYTES_V1) throw new RangeError("artifact exceeds the bounded read");
+    chunks.push(chunk);
+  }
+  await handle.verified;
+  const buffer = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    buffer.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(buffer)) as unknown;
+};
+
+/** C22 独立只读组合面；与正式服务共用零结果的唯一校验实现。 */
+export const createRiskCandidateZeroResultReader = (
+  options: Pick<RiskCandidateFinalizationServiceOptionsV1, "artifactStore" | "now"> & {
+    readonly authorization: Pick<RiskCandidateFinalizationAuthorizationPortV1, "verifyCurrent">;
+    readonly resultStore: Pick<RiskCandidateFinalizationResultStoreV1, "readResult">;
+  },
+): RiskCandidateZeroResultReaderV1 => ({
+  async readZeroResult(
+    input: RiskCandidateZeroResultReadRequestV1,
+  ): Promise<RiskCandidateZeroResultReadOutcomeV1> {
+    const verify = () =>
+      options.authorization.verifyCurrent({
+        authorization: input.authorization,
+        invocationId: input.invocationId,
+        branch: "risk-identification.assemble-and-infer",
+        requestedSpatialScopeRefs: [...input.authorization.spatialScopeRefs],
+        requestedSourceVersionRefs: [],
+      });
+    const before = await verify();
+    if (
+      before === undefined ||
+      before.projectId !== input.projectId ||
+      before.actorId !== input.actorId
+    ) {
+      return { kind: "unavailable" };
+    }
+    const row = await options.resultStore.readResult({
+      projectId: input.projectId,
+      resultKind: "zero-result",
+      resultId: input.zeroResultRef.reference.entityId,
+      resultVersionId: input.zeroResultRef.reference.versionId,
+    });
+    if (row === undefined || row.resultKind !== "zero-result") return { kind: "unavailable" };
+    if (
+      !sameRef(row.zeroResultRef.reference, input.zeroResultRef.reference) ||
+      row.requestDigest !== row.resultVersionId
+    ) {
+      return { kind: "inconsistent", detailCode: "zero-result-registration-mismatch" };
+    }
+    // 工件不可读（缺失、摘要不符、越界）与正文不合 Schema 都失败闭合，不返回可消费事实。
+    const payload = await readCandidateArtifactJson(options, {
+      artifactRef: row.artifactRef.reference,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      requestedAt: input.requestedAt,
+      purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.zeroResult,
+      authorization: before,
+    }).catch(() => undefined);
+    if (payload === undefined) {
+      return { kind: "inconsistent", detailCode: "zero-result-body-unavailable" };
+    }
+    const parsed = RiskCandidateZeroResultV1Schema.safeParse(payload);
+    if (!parsed.success) {
+      return { kind: "inconsistent", detailCode: "zero-result-payload-invalid" };
+    }
+    const zeroResult = parsed.data;
+    const expectedEntityId = zeroResultEntityIdFor({
+      projectId: input.projectId,
+      workItemEntityId: input.workItemRef.reference.entityId,
+    });
+    if (
+      zeroResult.projectId !== input.projectId ||
+      zeroResult.workItemRef.reference.entityId !== input.workItemRef.reference.entityId ||
+      zeroResult.workItemRef.reference.versionId !== input.workItemRef.reference.versionId ||
+      !sameRef(zeroResult.inputSnapshotRef.reference, input.inputSnapshotRef.reference) ||
+      !sameRef(row.workItemRef.reference, input.workItemRef.reference) ||
+      !sameRef(row.inputSnapshotRef.reference, input.inputSnapshotRef.reference) ||
+      !sameRef(
+        row.modelContextArtifactSetRef.reference,
+        zeroResult.modelContextArtifactSetRef.reference,
+      ) ||
+      input.zeroResultRef.reference.entityId !== expectedEntityId
+    ) {
+      return { kind: "inconsistent", detailCode: "zero-result-fact-mismatch" };
+    }
+    const after = await verify();
+    if (
+      after === undefined ||
+      after.projectId !== input.projectId ||
+      after.actorId !== input.actorId
+    ) {
+      return { kind: "unavailable" };
+    }
+    return { kind: "read", zeroResult };
+  },
+});
+
 /**
  * C22 深模块：RI-S57～RI-S65 的候选生成、确定性校验、全运行合并、综合置信度、验收路由与
  * 标准化记录入库只经显式端口与既有公共分支完成，不建立第二套任务、记录或事件。
@@ -1035,73 +1180,7 @@ export class RiskCandidateFinalizationService {
   async readZeroResult(
     input: RiskCandidateZeroResultReadRequestV1,
   ): Promise<RiskCandidateZeroResultReadOutcomeV1> {
-    const verify = () =>
-      this.#options.authorization.verifyCurrent({
-        authorization: input.authorization,
-        invocationId: input.invocationId,
-        branch: "risk-identification.assemble-and-infer",
-        requestedSpatialScopeRefs: [...input.authorization.spatialScopeRefs],
-        requestedSourceVersionRefs: [],
-      });
-    const before = await verify();
-    if (
-      before === undefined ||
-      before.projectId !== input.projectId ||
-      before.actorId !== input.actorId
-    ) {
-      return { kind: "unavailable" };
-    }
-    const row = await this.#readRow({
-      projectId: input.projectId,
-      resultKind: "zero-result",
-      resultId: input.zeroResultRef.reference.entityId,
-      resultVersionId: input.zeroResultRef.reference.versionId,
-    });
-    if (row === undefined || row.resultKind !== "zero-result") return { kind: "unavailable" };
-    if (
-      !sameRef(row.zeroResultRef.reference, input.zeroResultRef.reference) ||
-      row.requestDigest !== row.resultVersionId
-    ) {
-      return { kind: "inconsistent", detailCode: "zero-result-registration-mismatch" };
-    }
-    // 工件不可读（缺失、摘要不符、越界）与正文不合 Schema 都失败闭合，不返回可消费事实。
-    const payload = await this.#readArtifactJson({
-      artifactRef: row.artifactRef.reference,
-      projectId: input.projectId,
-      actorId: input.actorId,
-      requestedAt: input.requestedAt,
-      purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.zeroResult,
-      authorization: before,
-    }).catch(() => undefined);
-    if (payload === undefined) {
-      return { kind: "inconsistent", detailCode: "zero-result-body-unavailable" };
-    }
-    const parsed = RiskCandidateZeroResultV1Schema.safeParse(payload);
-    if (!parsed.success) {
-      return { kind: "inconsistent", detailCode: "zero-result-payload-invalid" };
-    }
-    const zeroResult = parsed.data;
-    const expectedEntityId = zeroResultEntityIdFor({
-      projectId: input.projectId,
-      workItemEntityId: input.workItemRef.reference.entityId,
-    });
-    if (
-      zeroResult.projectId !== input.projectId ||
-      zeroResult.workItemRef.reference.entityId !== input.workItemRef.reference.entityId ||
-      zeroResult.workItemRef.reference.versionId !== input.workItemRef.reference.versionId ||
-      !sameRef(zeroResult.inputSnapshotRef.reference, input.inputSnapshotRef.reference) ||
-      !sameRef(row.workItemRef.reference, input.workItemRef.reference) ||
-      !sameRef(row.inputSnapshotRef.reference, input.inputSnapshotRef.reference) ||
-      !sameRef(
-        row.modelContextArtifactSetRef.reference,
-        zeroResult.modelContextArtifactSetRef.reference,
-      ) ||
-      input.zeroResultRef.reference.entityId !== expectedEntityId
-    ) {
-      return { kind: "inconsistent", detailCode: "zero-result-fact-mismatch" };
-    }
-    if ((await verify()) === undefined) return { kind: "unavailable" };
-    return { kind: "read", zeroResult };
+    return createRiskCandidateZeroResultReader(this.#options).readZeroResult(input);
   }
 
   // ------------------------------------------------------------- 授权与持久化
@@ -1180,53 +1259,8 @@ export class RiskCandidateFinalizationService {
     return result.artifactRef.reference;
   }
 
-  async #readArtifactJson(input: {
-    readonly artifactRef: VersionReference;
-    readonly projectId: string;
-    readonly actorId: string;
-    readonly requestedAt: string;
-    readonly purposeCode: string;
-    readonly authorization: AuthorizationContextV1;
-  }): Promise<unknown> {
-    const readId = `${STAGE_PREFIX}-read-${randomUUID()}`;
-    const requiredCapability = input.authorization.grantedCapabilities[0];
-    if (requiredCapability === undefined) {
-      throw new RiskCandidateFinalizationError(
-        authorizationDenied({
-          causalRunId: input.artifactRef.entityId,
-          occurredAt: this.#now().toISOString(),
-          capability: "risk-identification.read",
-          policyRef: input.authorization.authorizationPolicyRef,
-        }),
-      );
-    }
-    const handle = await this.#options.artifactStore.open({
-      schemaVersion: "1",
-      requestId: readId,
-      idempotencyKey: readId,
-      artifactRef: { kind: CONTENT_REF_KIND, reference: input.artifactRef },
-      projectId: input.projectId,
-      actorId: input.actorId,
-      requestedAt: input.requestedAt,
-      purposeCode: input.purposeCode,
-      requiredCapability,
-      authorization: input.authorization,
-    });
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    for await (const chunk of handle.content) {
-      size += chunk.byteLength;
-      if (size > MAX_ARTIFACT_BYTES_V1) throw new RangeError("artifact exceeds the bounded read");
-      chunks.push(chunk);
-    }
-    await handle.verified;
-    const buffer = new Uint8Array(size);
-    let offset = 0;
-    for (const chunk of chunks) {
-      buffer.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return JSON.parse(new TextDecoder().decode(buffer)) as unknown;
+  async #readArtifactJson(input: CandidateArtifactReadInputV1): Promise<unknown> {
+    return readCandidateArtifactJson(this.#options, input);
   }
 
   async #readRegistered<T>(input: {

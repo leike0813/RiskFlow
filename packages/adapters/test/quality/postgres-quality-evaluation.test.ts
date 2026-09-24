@@ -748,7 +748,7 @@ const evidenceIssuerFor = (world: RealOperatorWorldV1, projectId: string) => ({
     }),
 });
 
-describe("C36 migration 000049", () => {
+describe("C36 migration 000051", () => {
   it("重复 up 幂等，down 可逆序回滚，只授 riskflow_app SELECT/INSERT", async () => {
     const db = fixture!.migratorRuntime.db as never;
     await qualityIndexMigration.up(db);
@@ -2058,7 +2058,7 @@ describe("C36 投影 grant 与来源版本映射（真实 C06/C13）", () => {
     expect([...grants.values()].every((grantRefs) => grantRefs.length > 0)).toBe(true);
 
     // grant 身份与来源版本身份不同：披露的定位引用必须仍精确对应被签发的来源版本。
-    const disclosed = await projection.queryWithSourceGrants(request, grants);
+    const disclosed = await projection.queryWithSourceGrants(request, grants, candidates);
     expect(disclosed.kind).toBe("succeeded");
     if (disclosed.kind !== "succeeded") return;
     expect(disclosed.result.qualitySummaries?.[0]?.evidenceRefs).toEqual(segmentRefs);
@@ -2073,6 +2073,7 @@ describe("C36 投影 grant 与来源版本映射（真实 C06/C13）", () => {
     const unmapped = await projection.queryWithSourceGrants(
       request,
       new Map<string, readonly SourceAccessGrantRefV1[]>(),
+      candidates,
     );
     expect(unmapped.kind).toBe("succeeded");
     if (unmapped.kind !== "succeeded") return;
@@ -2104,6 +2105,7 @@ describe("C36 投影 grant 与来源版本映射（真实 C06/C13）", () => {
     const revoked = await projection.queryWithSourceGrants(
       request,
       new Map([[candidates.versions[0]!.versionKey, revokedContext.sourceAccessGrantRefs]]),
+      candidates,
     );
     expect(revoked.kind).toBe("succeeded");
     if (revoked.kind !== "succeeded") return;
@@ -2114,12 +2116,34 @@ describe("C36 投影 grant 与来源版本映射（真实 C06/C13）", () => {
       `SELECT count(*)::text AS total FROM ${TABLE} WHERE project_id = $1`,
       [GRANT_PROJECT_ID],
     );
-    const replayed = await projection.queryWithSourceGrants(request, grants);
+    const replayed = await projection.queryWithSourceGrants(request, grants, candidates);
     const countsAfter = await fixture!.postgres.adminPool.query<{ total: string }>(
       `SELECT count(*)::text AS total FROM ${TABLE} WHERE project_id = $1`,
       [GRANT_PROJECT_ID],
     );
     expect(replayed.kind).toBe("succeeded");
     expect(countsAfter.rows[0]?.total).toBe(counts.rows[0]?.total);
+
+    const appended = await evaluationService().evaluateDataset({
+      projectId: GRANT_PROJECT_ID,
+      actorId: world.accountId,
+      commandId: "c36-grant-evaluate-command-after-selection",
+      idempotencyKey: "c36-grant-evaluate-command-after-selection",
+      requestedAt: QUALITY_FIXTURE_TIME,
+      datasetArtifactRef,
+      runRefs: [],
+      authorization: evaluationAuthorization,
+      requiredEvidenceAccess: evidenceIssuerFor(world, GRANT_PROJECT_ID),
+      runEvidence: {
+        commands: [
+          "pnpm exec vitest run packages/adapters/test/quality/postgres-quality-evaluation.test.ts",
+        ],
+        codeHead: "c36-grant-mapping",
+        environment: { nodeVersion: process.version },
+      },
+    });
+    expect(appended.kind).toBe("succeeded");
+    const changedPage = await projection.queryWithSourceGrants(request, grants, candidates);
+    expect(changedPage.kind).toBe("failed");
   }, 600_000);
 });

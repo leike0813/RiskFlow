@@ -241,6 +241,13 @@ export type RiskCandidateZeroResultReadOutcomeV1 =
   | { readonly kind: "unavailable" }
   | { readonly kind: "inconsistent"; readonly detailCode: string };
 
+/** C22 零结果独立只读接缝；可由 C24/C36 组合，不需候选生成写侧依赖。 */
+export interface RiskCandidateZeroResultReaderV1 {
+  readZeroResult(
+    input: RiskCandidateZeroResultReadRequestV1,
+  ): Promise<RiskCandidateZeroResultReadOutcomeV1>;
+}
+
 /** 正式标准化风险记录写入端口（design D-09/D-10）：只在调用方 ambient 事务内写入。 */
 export interface StandardizedRiskRecordStoreV1 {
   insertRecords(

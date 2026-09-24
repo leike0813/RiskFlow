@@ -36,7 +36,7 @@
 
 ### D-05. C36 自有只追加索引与 migration
 
-新增 `business.quality_evaluation_report_index`：主键 `(project_id,report_artifact_id,report_artifact_version_id)`；列只含 `project_revision_id/version_id`、`dataset_artifact_id/version_id`、`sample_kind`、`spatial_scope_refs`（冻结样例涉及的精确空间引用，仅用于当前授权过滤）、`summary_digest`、`report_artifact_ref`、`dataset_artifact_ref`、`summary_payload`（D-04 摘要，不含正文/资料段文本）、`command_id`、`actor_ref`、`authorization_context_ref`、`audit_entry_id`、`created_at`。联合约束保证 ref、项目和版本非空、`sample_kind` 闭合、摘要上界、唯一命令身份；列表索引 `(project_id,project_revision_id,created_at DESC,report_artifact_id DESC,report_artifact_version_id DESC)` 供有界 keyset 分页。无其它 change 已发布表外键；C04 引用由授权 `open` 与 manifest 守卫验证，避免跨 change 回滚耦合。`000049_quality_evaluation_report_index.ts` 位于 `query-projection/deliver-quality-evaluation-module/`，`up` 可重复、只授 `riskflow_app` 对本表 `SELECT, INSERT`（无 UPDATE/DELETE），`down` 只逆序删除本 change 表/索引。测试侧迁移清单同步 `packages/adapters/test/auth/fixture.ts` 和 `packages/adapters/test/postgres/postgres-foundation.test.ts`；不改旧迁移。若集成时序号被占用，主调度需同步后升级，不由 Implementation 猜新号。
+新增 `business.quality_evaluation_report_index`：主键 `(project_id,report_artifact_id,report_artifact_version_id)`；列只含 `project_revision_id/version_id`、`dataset_artifact_id/version_id`、`sample_kind`、`spatial_scope_refs`（冻结样例涉及的精确空间引用，仅用于当前授权过滤）、`summary_digest`、`report_artifact_ref`、`dataset_artifact_ref`、`summary_payload`（D-04 摘要，不含正文/资料段文本）、`command_id`、`actor_ref`、`authorization_context_ref`、`audit_entry_id`、`created_at`。联合约束保证 ref、项目和版本非空、`sample_kind` 闭合、摘要上界、唯一命令身份；列表索引 `(project_id,project_revision_id,created_at DESC,report_artifact_id DESC,report_artifact_version_id DESC)` 供有界 keyset 分页。无其它 change 已发布表外键；C04 引用由授权 `open` 与 manifest 守卫验证，避免跨 change 回滚耦合。`000051_quality_evaluation_report_index.ts` 位于 `query-projection/deliver-quality-evaluation-module/`，`up` 可重复、只授 `riskflow_app` 对本表 `SELECT, INSERT`（无 UPDATE/DELETE），`down` 只逆序删除本 change 表/索引。测试侧迁移清单同步 `packages/adapters/test/auth/fixture.ts` 和 `packages/adapters/test/postgres/postgres-foundation.test.ts`；不改旧迁移。序号 51 已由协调端在合并 C39 的 49 和 C30 的 50 后批准。
 
 同一 C36 migration 内另建只追加 `business.quality_evaluation_dataset_freeze`，仅存 `project_id,dataset_id,dataset_version,content_digest`，前三项组成唯一主键；仅授 `riskflow_app` `SELECT, INSERT`。C03 报告索引命令在同一事务内先登记或核对此冻结身份，再追加报告索引、回执与审计；同摘要复用冻结事实，异摘要返回不可重试 `STALE_VERSION`。报告索引仍按报告 ref 独立追加，同一冻结数据集可以产生多个运行/报告版本，故不对报告索引施加数据集唯一约束；`down` 同时删除本 change 的两张表。
 
@@ -52,13 +52,11 @@
 
 本 change 仅拥有：质量 core、C36 adapter/index/migration、C36 API 接线、C36 Web 页面与入口接线、质量 fixture/测试、Playwright 配置及根脚本/锁文件登记；`packages/contracts/src/ports/index.ts` 只做 D-04 最小加法。既有 C10/C13/C14 源文件、其它 change 私表、领域算法与已有公共 queryType 不变。RI-S1～RI-S6 对应资料段、工序、机理、标准化记录及识别结果的质量链；RA-S1～RA-S7 对应适用性快照、指标/规则、P/C/矩阵、预警/处置引用的重放和审计检查。报告缺少后段正式结果时记录覆盖缺口，不制造后段业务事实。
 
-### D-09. 正式空结果证明：精确契约与当前阻塞
+### D-09. 正式空结果证明：C39 终态与 C22 零结果合取
 
-C36 拟在 `packages/core/src/quality/service.ts` 定义 `QualityFormalRunResultReaderV1.readExact`，输入严格为 `projectId`、当前 `actorId`、`identificationRunRef`、`identificationInputSnapshotRef`、`workPlanRef`、`terminalResultRef`、样例 `processNodeId`、精确 `sourceSegmentRefs`、`expectedEventKey`、`spatialScopeRef` 及当前授权；输出只能是 `{kind:'proved', terminalResultRef, frozenScopeDigest, match:'present'|'absent', matchedRecordRef?}` 或 `{kind:'failed', reasonCode}`。样例新增运行/工作计划/终态证明的可选精确引用，缺失时沿用现有 `undetermined`，不使旧数据集失效。`absent` 必须由拥有方已结束的**完整正式结果全集**按该冻结范围与匹配键计算；`terminalResultRef` 和集合摘要需可与同一运行/工作计划的正式终态、C03 审计及精确版本核对，多匹配视为冲突。单条 `readRecord` 返回 `undefined`、候选集/合并计划或质量侧自行写的空工件都不能出具证明。`evaluateQualityDataset` 仅对负样例的 `absent` 计 TN 和覆盖，`present` 仍按正式记录证据判定；缺证明、未终态、运行/输入/空间错配、全集超界、并发版本漂移均维持 `undetermined`。无权/不存在同形失败，响应不泄露其他运行的计数或正文；重放比对终态引用及集合摘要。
+C39 已归档变更提供 `readCompletedRunResult` 与 `workPlanReader.readExact`：前者只在已完成运行的终态行、C04 正文和当前授权一致时返回，后者按工作计划精确引用读取冻结工作项。C22 已归档变更为每个零候选工作项保存正式零结果，公开 `readZeroResult` 并在读取前后复验当前 `risk-identification.assemble-and-infer` 授权。C36 仅组合这三个拥有方公开读接口；C22 独立只读组合面 `createRiskCandidateZeroResultReader` 与原服务共享唯一校验实现，只注入当前授权复验、精确结果登记读和 C04 工件读，不需要模型、人工审阅或写端口。该组合面由协调端 `msg_044d87768b43` 批准。
 
-协调端 `msg_2cbcbb1814e2` 已批准在 C22 `StandardizedRiskRecordStoreV1` **加** `readFormalRunResultProof(input)`，并由 `PostgresRiskCandidateFinalizationAdapter` 实现；不改 `readRecord`/`readResult`。该方法的输入即上述 `readExact` 输入，另含 `invocationId,requestedAt` 供 C06 对原 `projection.export` 分支复验；返回 `{kind:'proved', terminalResultRef, frozenScopeDigest, match:'present'|'absent', matchedRecordRef?}` 或 `{kind:'failed',reasonCode}`，后者把无权、跨工程/空间和不存在收为同形，不输出正文/计数。C22 拥有方仅读自己的正式事实和经核验的终态，C36 adapter 仅读此公开方法；旧 C22 命令、记录和结果语义保持。
-
-**当前阻塞仍在：** C22 `readRecord` 只能按已知 ID 读取身份（`ports.ts` 的 `StandardizedRiskRecordStoreV1`、`postgres-risk-candidate-adapter.ts:442-463`）；`readResult` 只能读取已知中间结果，`MergePlanV1Schema.groups`/`AcceptanceRouteSetV1Schema.routes` 还要求非空。`business.standardized_risk_records` 只保存已接受记录（`000042_risk_candidate_finalization.ts:242-265`）；`packages/core/src/identification/candidate-finalization/service.ts:3559-3560` 在零记录/跳过时直接返回 `skipped`，故不会执行 `:3599-3605` 的 C03 事务/写入。现有公开事实没有完整运行终态/零结果标记。因此仅增加上述只读方法仍无法合法实现 `absent`，不能从 C22 私表无行推断。协调端 `msg_ca7d95d014fa` 明确不授权 C22 写路径/持久化/migration；只读方法目前无法提供正面价值，IP-08 暂不施工并保持 BLOCKED、原指标失败闭合。后续 C22 侧 drift/feature change 由协调端另行安排，本 change 不新建。
+冻结负样例可选携带运行、工作计划和终态结果精确引用。C36 对 C39 已完成终态要求零正式记录、零事件、零失败/跳过/驳回/待审/取消工作项，工作计划非空且每个工作项恰有一个 C22 零结果；逐个核对零结果的工程、输入快照与工作项引用，并将样例的工序、唯一空间和完整来源版本集合精确匹配至唯一工作项。三处事实与当前授权全部成立时，保存终态引用和冻结范围摘要，负样例才计 TN 与覆盖。无引用、无权、不存在、漂移或任一工作项未闭合时维持 `undetermined`。正样例仍按已核验正式记录判断，不由零结果路径推断；无权与不存在同形失败，不返回其他运行正文或数量。
 
 ### D-10. 必审资料段证明：复用 C13 现有授权读
 
@@ -81,6 +79,6 @@ C06 的 `sourceAccessGrantRefs` 指向 `source_access_grant_id/revision_id`，�
 
 ## Open Questions
 
-IP-08 的 C22 **只读接口加法**虽获 `msg_2cbcbb1814e2` 批准，但现有持久事实没有零结果时的正式终态行，且 `msg_ca7d95d014fa` 拒绝在 C36 内增写路径/持久化/migration；读接口无从证明完整全集。不可用 `readRecord(undefined)` 或自造 C04 工件替代。IP-08 与真实 TN/覆盖保持 BLOCKED。真实甲方样例和目标硬件证据由后续交付补充，不改变本 change 的测量契约。
+IP-08 使用已归档 C39/C22 的正式事实，C36 不增写路径或持久化。真实甲方样例和目标硬件证据由后续交付补充，不改变本 change 的测量契约。
 
 既有 `verification.md` 还列有 C04 缺失与拒权同形失败的开放项；本次批准记录只重开上述三项。IP-09 对该错误保持失败闭合，不能以缺失推断通过；若 Finalizer 需要改变 C04 不可枚举读契约或报告处置规则，应单独升级，不在本轮替其决策。

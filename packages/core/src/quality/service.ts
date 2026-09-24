@@ -34,6 +34,7 @@ import {
   type QualityFailureV1,
   type QualityReasonCodeV1,
   type QualityRecordIdentityV1,
+  type QualitySampleV1,
   type QualityRequiredSegmentReceiptV1,
   type QualitySampleEvidenceV1,
 } from "./schema.js";
@@ -104,11 +105,41 @@ export interface QualityEvidenceAccessIssuerV1 {
   }): Promise<AuthorizationContextV1>;
 }
 
+/** C39 正式终态只读使用 C06 现有识别分支的当前会话授权。 */
+export interface QualityFormalRunAccessIssuerV1 {
+  issueReadAuthorization(input: {
+    readonly invocationId: string;
+    readonly branch: "risk-identification.plan" | "risk-identification.assemble-and-infer";
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly spatialScopeRefs: readonly SpatialScopeRefV1[];
+    readonly sourceVersionRefs: readonly SourceVersionRefV1[];
+  }): Promise<AuthorizationContextV1>;
+}
+
+export type QualityFormalZeroResultOutcomeV1 =
+  | Readonly<{
+      kind: "proved";
+      terminalResultRef: NonNullable<QualitySampleV1["formalRunProofRefs"]>["terminalResultRef"];
+      frozenScopeDigest: string;
+    }>
+  | Readonly<{ kind: "failed" }>;
+
 /**
  * D-03 公开窄读端口：由 C36 adapter 实现，只按显式引用有界读取并完整消费 C04 `verified`；
  * 不查询私表，也不扩大调用方已复验的工程/空间/资料范围。
  */
 export interface QualityEvaluationReadPortV1 extends QualityRequiredSegmentProofReaderV1 {
+  readFormalZeroResult(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly sample: QualitySampleV1;
+    readonly spatialScopeRefs: readonly SpatialScopeRefV1[];
+    readonly sourceVersionRefs: readonly SourceVersionRefV1[];
+    readonly issuer: QualityFormalRunAccessIssuerV1;
+  }): Promise<QualityFormalZeroResultOutcomeV1>;
   readVerifiedJson(input: {
     readonly artifactRef: ContentArtifactRefV1;
     readonly purposeCode: string;
@@ -174,6 +205,7 @@ export interface QualityEvaluationCommandV1 {
   readonly runEvidence: QualityRunEvidenceV1;
   /** D-10：调用方按现有 `engineering-data.evidence-access` 分支签发；缺失时必审资料段失败闭合。 */
   readonly requiredEvidenceAccess?: QualityEvidenceAccessIssuerV1;
+  readonly formalRunAccess?: QualityFormalRunAccessIssuerV1;
 }
 
 export type QualityEvaluationResultV1 =
@@ -418,6 +450,19 @@ export class QualityEvaluationService {
     dataset: QualityDatasetV1,
   ): Promise<readonly QualitySampleEvidenceV1[]> {
     const evidence: QualitySampleEvidenceV1[] = [];
+    const sourceVersionRefs = [
+      ...new Map(
+        dataset.samples.flatMap((sample) =>
+          sample.sourceSegmentRefs.map(
+            (reference) =>
+              [
+                `${reference.sourceVersion.entityId}\u0000${reference.sourceVersion.versionId}`,
+                { kind: "source-version" as const, reference: reference.sourceVersion },
+              ] as const,
+          ),
+        ),
+      ).values(),
+    ];
     for (const sample of dataset.samples) {
       const verifiedEvidenceRefs: ContentArtifactRefV1[] = [];
       const readInput = {
@@ -496,11 +541,39 @@ export class QualityEvaluationService {
         }
       }
 
+      const formalZeroResult =
+        !sample.expectedPositive &&
+        sample.riskRecordRef === undefined &&
+        sample.formalRunProofRefs !== undefined &&
+        command.formalRunAccess !== undefined &&
+        command.runRefs.some(
+          (runRef) =>
+            runRef.reference.entityId === sample.formalRunProofRefs!.runRef.reference.entityId &&
+            runRef.reference.versionId === sample.formalRunProofRefs!.runRef.reference.versionId,
+        )
+          ? await this.#read.readFormalZeroResult({
+              projectId: command.projectId,
+              actorId: command.actorId,
+              requestedAt: command.requestedAt,
+              sample,
+              spatialScopeRefs: command.authorization.spatialScopeRefs,
+              sourceVersionRefs,
+              issuer: command.formalRunAccess,
+            })
+          : { kind: "failed" as const };
       evidence.push({
         sampleId: sample.sampleId,
         ...(recordSnapshot === undefined ? {} : { recordSnapshot }),
         ...(recordIdentity === undefined ? {} : { recordIdentity }),
         ...(assessment === undefined ? {} : { assessment }),
+        ...(formalZeroResult.kind === "proved"
+          ? {
+              formalZeroResultProof: {
+                terminalResultRef: formalZeroResult.terminalResultRef,
+                frozenScopeDigest: formalZeroResult.frozenScopeDigest,
+              },
+            }
+          : {}),
         verifiedEvidenceRefs,
         requiredSegmentReceipts: await this.#collectRequiredSegmentReceipts(command, sample),
       });

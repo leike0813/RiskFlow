@@ -19,7 +19,12 @@ import {
   type TransactionOptionsV1,
   type TransactionUnitV1,
 } from "@riskflow/core/persistence";
-import type { StandardizedRiskRecordStoreV1 } from "@riskflow/core/identification/candidate-finalization";
+import type {
+  IdentificationWorkPlanReaderV1,
+  RiskCandidateZeroResultReaderV1,
+  StandardizedRiskRecordStoreV1,
+} from "@riskflow/core/identification/candidate-finalization";
+import type { IdentificationGraphRegistrationStoreV1 } from "@riskflow/core/identification/graph";
 import {
   ResolveEngineeringDataReadQueryV1Schema,
   type EngineeringDataReadResolutionResultV1,
@@ -38,9 +43,12 @@ import {
   type QualityEvaluationServiceOptionsV1,
   type QualityEvaluationWritePortV1,
   type QualityFailureCodeV1,
+  type QualityFormalRunAccessIssuerV1,
+  type QualityFormalZeroResultOutcomeV1,
   type QualityIndexAppendReceiptV1,
   type QualityReasonCodeV1,
   type QualityRecordIdentityV1,
+  type QualitySampleV1,
   type QualityRequiredSegmentProofOutcomeV1,
   type QualityRequiredSegmentReceiptV1,
 } from "@riskflow/core/quality";
@@ -53,10 +61,12 @@ import {
   type EngineeringDataQueryV1,
   type EngineeringDataReadResultV1,
   type SpatialScopeRefV1,
+  type SourceVersionRefV1,
 } from "@riskflow/contracts/ports";
 import type { EvidenceReference } from "@riskflow/contracts/common";
 
 import { makePersistenceError, mapPostgresError } from "../postgres/pool.js";
+import { identificationGraphReadInvocationIdV1 } from "../identification/graph/postgres-identification-graph-adapter.js";
 import { getPostgresTransaction } from "../postgres/transaction-unit.js";
 import type { PostgresDatabase } from "../postgres/types.js";
 
@@ -112,6 +122,14 @@ export interface PostgresQualityEvaluationAdapterOptionsV1 {
   readonly recordStore: Pick<StandardizedRiskRecordStoreV1, "readRecord">;
   /** D-10：C13 现有公开读接缝（`read` + `resolveReadQuery`），不新增或改写其语义。 */
   readonly evidenceAccess: QualityC13EvidenceReadPortV1;
+  readonly formalRunEvidence?: {
+    readonly registrationStore: Pick<
+      IdentificationGraphRegistrationStoreV1,
+      "readCompletedRunResult"
+    >;
+    readonly workPlanReader: Pick<IdentificationWorkPlanReaderV1, "readExact">;
+    readonly zeroResultReader: RiskCandidateZeroResultReaderV1;
+  };
   readonly now?: () => Date;
 }
 
@@ -146,6 +164,7 @@ export class PostgresQualityEvaluationAdapter
   readonly #artifactGuard: ArtifactReferenceGuardV1;
   readonly #recordStore: Pick<StandardizedRiskRecordStoreV1, "readRecord">;
   readonly #evidenceAccess: QualityC13EvidenceReadPortV1;
+  readonly #formalRunEvidence: PostgresQualityEvaluationAdapterOptionsV1["formalRunEvidence"];
   readonly #now: () => Date;
 
   constructor(options: PostgresQualityEvaluationAdapterOptionsV1) {
@@ -155,6 +174,7 @@ export class PostgresQualityEvaluationAdapter
     this.#artifactGuard = options.artifactReferenceGuard;
     this.#recordStore = options.recordStore;
     this.#evidenceAccess = options.evidenceAccess;
+    this.#formalRunEvidence = options.formalRunEvidence;
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -260,6 +280,180 @@ export class PostgresQualityEvaluationAdapter
           };
     } catch {
       return undefined;
+    }
+  }
+
+  /** D-09：只组合 C39/C22 已公开的精确只读事实；任何缺口保持未判定。 */
+  async readFormalZeroResult(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly sample: QualitySampleV1;
+    readonly spatialScopeRefs: readonly SpatialScopeRefV1[];
+    readonly sourceVersionRefs: readonly SourceVersionRefV1[];
+    readonly issuer: QualityFormalRunAccessIssuerV1;
+  }): Promise<QualityFormalZeroResultOutcomeV1> {
+    const ports = this.#formalRunEvidence;
+    const refs = input.sample.formalRunProofRefs;
+    const failed = { kind: "failed" } as const;
+    if (
+      ports === undefined ||
+      refs === undefined ||
+      input.sample.expectedPositive ||
+      input.sample.riskRecordRef !== undefined
+    )
+      return failed;
+    const same = (
+      left: { reference: { entityId: string; versionId: string } },
+      right: { reference: { entityId: string; versionId: string } },
+    ) =>
+      left.reference.entityId === right.reference.entityId &&
+      left.reference.versionId === right.reference.versionId;
+    const issue = async (
+      branch: "risk-identification.plan" | "risk-identification.assemble-and-infer",
+      invocationId: string,
+    ) => {
+      const context = await input.issuer.issueReadAuthorization({
+        invocationId,
+        branch,
+        projectId: input.projectId,
+        actorId: input.actorId,
+        requestedAt: input.requestedAt,
+        spatialScopeRefs: input.spatialScopeRefs,
+        sourceVersionRefs: input.sourceVersionRefs,
+      });
+      return context.projectId === input.projectId &&
+        context.actorId === input.actorId &&
+        context.grantedCapabilities.length === 1 &&
+        context.grantedCapabilities[0] === "risk-identification.run"
+        ? context
+        : undefined;
+    };
+    try {
+      const runAuthorization = await issue(
+        "risk-identification.plan",
+        identificationGraphReadInvocationIdV1({
+          operation: "run-result",
+          projectId: input.projectId,
+          targetId: `${refs.terminalResultRef.reference.entityId}:${refs.terminalResultRef.reference.versionId}`,
+        }),
+      );
+      if (runAuthorization === undefined) return failed;
+      const terminal = await ports.registrationStore.readCompletedRunResult({
+        projectId: input.projectId,
+        actorId: input.actorId,
+        requestedAt: input.requestedAt,
+        runResultRef: refs.terminalResultRef,
+        authorization: runAuthorization,
+      });
+      if (terminal.kind !== "read") return failed;
+      const result = terminal.runResult;
+      if (
+        result.projectId !== input.projectId ||
+        !same(result.runRef, refs.runRef) ||
+        !same(result.workPlanRef, refs.workPlanRef) ||
+        !same(result.inputSnapshotRef, input.sample.identificationInputSnapshotRef) ||
+        result.acceptedRiskRecordRefs.length !== 0 ||
+        result.acceptedEventRefs.length !== 0 ||
+        result.failedWorkItemRefs.length !== 0 ||
+        result.skippedWorkItemRefs.length !== 0 ||
+        result.rejectedGroupRefs.length !== 0 ||
+        result.pendingReviewTaskRefs.length !== 0 ||
+        result.cancelledReasonCode !== undefined
+      )
+        return failed;
+
+      const planAuthorization = await issue(
+        "risk-identification.plan",
+        identificationGraphReadInvocationIdV1({
+          operation: "work-plan",
+          projectId: input.projectId,
+          targetId: `${refs.workPlanRef.reference.entityId}@${refs.workPlanRef.reference.versionId}`,
+        }),
+      );
+      if (planAuthorization === undefined) return failed;
+      const plan = await ports.workPlanReader.readExact({
+        projectId: input.projectId,
+        actorId: input.actorId,
+        requestedAt: input.requestedAt,
+        workPlanRef: refs.workPlanRef,
+        authorization: planAuthorization,
+      });
+      if (
+        plan.kind !== "succeeded" ||
+        !same(plan.read.inputSnapshotRef, result.inputSnapshotRef) ||
+        plan.read.workItems.length === 0 ||
+        plan.read.workItems.length !== result.zeroResults.length
+      )
+        return failed;
+      const zeroByWorkItem = new Map(
+        result.zeroResults.map(
+          (item) =>
+            [
+              `${item.workItemRef.reference.entityId}\u0000${item.workItemRef.reference.versionId}`,
+              item,
+            ] as const,
+        ),
+      );
+      if (zeroByWorkItem.size !== plan.read.workItems.length) return failed;
+      const sampleSources = new Set(
+        input.sample.sourceSegmentRefs.map(
+          (segment) => `${segment.sourceVersion.entityId}\u0000${segment.sourceVersion.versionId}`,
+        ),
+      );
+      const matchingItems = plan.read.workItems.filter(
+        (item) =>
+          item.nodeId === input.sample.processNodeId &&
+          item.spatialScopeRefs.length === 1 &&
+          same(item.spatialScopeRefs[0]!, input.sample.spatialScopeRef) &&
+          item.sourceVersionRefs.length === sampleSources.size &&
+          item.sourceVersionRefs.every((ref) =>
+            sampleSources.has(`${ref.reference.entityId}\u0000${ref.reference.versionId}`),
+          ),
+      );
+      if (matchingItems.length !== 1) return failed;
+      for (const item of plan.read.workItems) {
+        const zero = zeroByWorkItem.get(
+          `${item.workItemRef.reference.entityId}\u0000${item.workItemRef.reference.versionId}`,
+        );
+        if (zero === undefined) return failed;
+        const invocationId = `quality-zero-${sha256CanonicalJson({
+          terminalResultRef: refs.terminalResultRef,
+          workItemRef: item.workItemRef,
+        })}`;
+        const authorization = await issue("risk-identification.assemble-and-infer", invocationId);
+        if (authorization === undefined) return failed;
+        const read = await ports.zeroResultReader.readZeroResult({
+          projectId: input.projectId,
+          actorId: input.actorId,
+          invocationId,
+          requestedAt: input.requestedAt,
+          inputSnapshotRef: result.inputSnapshotRef,
+          workItemRef: item.workItemRef,
+          zeroResultRef: zero.zeroResultRef,
+          authorization,
+        });
+        if (
+          read.kind !== "read" ||
+          read.zeroResult.nodeId !== item.nodeId ||
+          !same(read.zeroResult.workItemRef, item.workItemRef) ||
+          !same(read.zeroResult.inputSnapshotRef, result.inputSnapshotRef)
+        )
+          return failed;
+      }
+      return {
+        kind: "proved",
+        terminalResultRef: refs.terminalResultRef,
+        frozenScopeDigest: sha256CanonicalJson({
+          runRef: refs.runRef,
+          inputSnapshotRef: result.inputSnapshotRef,
+          workPlanRef: refs.workPlanRef,
+          workItems: plan.read.workItems,
+          zeroResults: result.zeroResults,
+        }),
+      };
+    } catch {
+      return failed;
     }
   }
 

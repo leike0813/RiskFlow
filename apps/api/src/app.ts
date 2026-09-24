@@ -405,41 +405,69 @@ const qualityProjectionWithGrants = async (input: {
   const sessionToken = cookieToken(input.request);
   if (sessionToken === undefined || sessionToken === null) return undefined;
   const requestedSpatialScopeRefs = input.decision.context.spatialScopeRefs;
-  const grantsBySourceVersion = new Map<string, readonly SourceAccessGrantRefV1[]>();
-  for (const candidate of candidates.versions) {
-    try {
-      // 版本键含分隔符，不能直接进入持久化的 invocation 身份；摘要保持逐请求确定。
-      const versionDigest = createHash("sha256").update(candidate.versionKey).digest("hex");
-      const perVersion = await authorize({
+  const signVersions = async (phase: "initial" | "final") => {
+    const grants = new Map<string, readonly SourceAccessGrantRefV1[]>();
+    for (const candidate of candidates.versions) {
+      try {
+        // 两轮使用不同 invocation，最终轮不能命中先前的签发回执。
+        const versionDigest = createHash("sha256").update(candidate.versionKey).digest("hex");
+        const perVersion = await authorize({
+          access: input.options.access,
+          requestId: `${input.requestId}:quality-source-version:${phase}:${versionDigest}`,
+          projectId: parsed.data.projectId,
+          branch: "projection.query",
+          sessionToken,
+          requestedSpatialScopeRefs,
+          requestedSourceVersionRefs: [candidate.sourceVersionRef],
+          requestedAt: input.now.toISOString(),
+        });
+        const context = perVersion.context;
+        if (
+          context.projectId !== parsed.data.projectId ||
+          context.actorId !== input.decision.context.actorId ||
+          context.grantedCapabilities.length !== 1 ||
+          context.grantedCapabilities[0] !== "projection.query" ||
+          JSON.stringify(context.spatialScopeRefs) !== JSON.stringify(requestedSpatialScopeRefs) ||
+          context.sourceAccessGrantRefs.length === 0
+        )
+          continue;
+        grants.set(candidate.versionKey, context.sourceAccessGrantRefs);
+      } catch (error: unknown) {
+        if (accessDeniedCode(error)) continue;
+        throw error;
+      }
+    }
+    return grants;
+  };
+  await signVersions("initial");
+  // 当前工程/空间与来源版本均在返回前重新签发；旧上下文不得披露撤权后的定位。
+  let current;
+  try {
+    current = (
+      await authorize({
         access: input.options.access,
-        requestId: `${input.requestId}:quality-source-version:${versionDigest}`,
+        requestId: `${input.requestId}:quality-final-scope`,
         projectId: parsed.data.projectId,
         branch: "projection.query",
         sessionToken,
         requestedSpatialScopeRefs,
-        requestedSourceVersionRefs: [candidate.sourceVersionRef],
+        requestedSourceVersionRefs: [],
         requestedAt: input.now.toISOString(),
-      });
-      const context = perVersion.context;
-      if (
-        context.projectId !== parsed.data.projectId ||
-        context.actorId !== input.decision.context.actorId ||
-        context.grantedCapabilities.length !== 1 ||
-        context.grantedCapabilities[0] !== "projection.query" ||
-        JSON.stringify(context.spatialScopeRefs) !== JSON.stringify(requestedSpatialScopeRefs) ||
-        context.sourceAccessGrantRefs.length === 0
-      ) {
-        continue;
-      }
-      grantsBySourceVersion.set(candidate.versionKey, context.sourceAccessGrantRefs);
-    } catch (error: unknown) {
-      // 该版本没有资料策略或被撤权：只删除它的定位引用，不披露也不失败整个请求。
-      if (accessDeniedCode(error)) continue;
-      // 签发暂时性失败不能伪装成"无证据"的成功，整个请求失败。
-      throw error;
-    }
+      })
+    ).context;
+  } catch (error: unknown) {
+    if (!accessDeniedCode(error)) throw error;
+    throw new HttpTransportError(notFound(input.requestId, input.now));
   }
-  return narrow.queryWithSourceGrants(parsed.data, grantsBySourceVersion);
+  if (
+    current.projectId !== parsed.data.projectId ||
+    current.actorId !== input.decision.context.actorId ||
+    current.grantedCapabilities.length !== 1 ||
+    current.grantedCapabilities[0] !== "projection.query" ||
+    JSON.stringify(current.spatialScopeRefs) !== JSON.stringify(requestedSpatialScopeRefs)
+  )
+    throw new HttpTransportError(notFound(input.requestId, input.now));
+  return narrow.queryWithSourceGrants(parsed.data, await signVersions("final"), candidates);
 };
 
 const accessDeniedCode = (error: unknown): boolean => {

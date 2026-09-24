@@ -48,6 +48,7 @@ import {
   RiskCandidateV1Schema,
   RiskCandidateValidationPolicyV1Schema,
   RiskCandidateZeroResultV1Schema,
+  createRiskCandidateZeroResultReader,
   assertCompositeConfidenceWeights,
   assertMergePolicyWeights,
   assertRepairableReasonCodes,
@@ -2466,6 +2467,12 @@ describe("C22 服务接入（端口驱动）", () => {
     const read = await harness.service.readZeroResult(readRequest());
     expect(read.kind).toBe("read");
     expect(read.kind === "read" ? read.zeroResult.outcome : undefined).toBe("zero-candidates");
+    const independentReader = createRiskCandidateZeroResultReader({
+      authorization: { verifyCurrent: harness.options.authorization.verifyCurrent },
+      resultStore: { readResult: harness.options.resultStore.readResult },
+      artifactStore: harness.options.artifactStore,
+    });
+    expect(await independentReader.readZeroResult(readRequest())).toEqual(read);
 
     const unknownRef = await harness.service.readZeroResult(
       readRequest({

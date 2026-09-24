@@ -224,9 +224,22 @@ export class PostgresQualityProjectionAdapter {
   async queryWithSourceGrants(
     request: unknown,
     grantsBySourceVersion: QualitySourceGrantMapV1,
+    candidates: Extract<QualityProjectionCandidateSelectionV1, { kind: "candidates" }>,
   ): Promise<ProjectionQueryResultV1> {
     const selected = await this.#selectRows(request);
     if (selected.kind === "rejected") return selected.result;
+    if (
+      selected.rows.length !== candidates.rowRefs.length ||
+      selected.rows.some(
+        (row, index) =>
+          row.report_artifact_id !== candidates.rowRefs[index]?.reportArtifactId ||
+          row.report_artifact_version_id !== candidates.rowRefs[index]?.reportArtifactVersionId ||
+          row.summary_digest !== candidates.summaryDigests[index],
+      )
+    ) {
+      const query = ProjectionQueryV1Schema.parse(request);
+      return notFound(query.queryId, this.#now().toISOString());
+    }
     return this.#summarize(selected, grantsBySourceVersion);
   }
 

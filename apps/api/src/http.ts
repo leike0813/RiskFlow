@@ -380,6 +380,7 @@ export interface ApiPortsV1 {
       queryWithSourceGrants(
         request: ProjectionQueryV1,
         grantsBySourceVersion: ReadonlyMap<string, readonly SourceAccessGrantRefV1[]>,
+        candidates: Extract<QualityProjectionCandidateSelectionV1, { kind: "candidates" }>,
       ): Promise<ProjectionQueryResultV1>;
     }>;
 }

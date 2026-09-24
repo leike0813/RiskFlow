@@ -361,7 +361,10 @@ describe("C36 质量查询接线", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(authorizeCalls[0]?.sourceVersions).toEqual([]);
-    expect(authorizeCalls.slice(1).map((call) => call.sourceVersions.map((id) => id))).toEqual([
+    expect(authorizeCalls.slice(1).map((call) => call.sourceVersions)).toEqual([
+      ["source-a"],
+      ["source-b"],
+      [],
       ["source-a"],
       ["source-b"],
     ]);
@@ -421,6 +424,60 @@ describe("C36 质量查询接线", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(granted[0]?.grantKeys).toEqual(["source-a\u00001"]);
+    await app.close();
+  });
+
+  it("返回前重新签发；预选后撤权不得沿用旧 grant", async () => {
+    let sourceChecks = 0;
+    const disclosed: string[][] = [];
+    const app = buildApi({
+      access: versionedAccessStub({
+        authorize: async (request) => {
+          if (request.requestedSourceVersionRefs.length === 0) return [];
+          sourceChecks += 1;
+          return sourceChecks === 1
+            ? [{ kind: "source-access-grant", reference: { entityId: "grant-a", versionId: "1" } }]
+            : [];
+        },
+      }),
+      ports: {
+        qualityProjectionQuery: {
+          query: async () => {
+            throw new Error("unused");
+          },
+          candidateSourceVersionRefs: async () => ({
+            kind: "candidates",
+            rowRefs: [{ reportArtifactId: "quality-report", reportArtifactVersionId: "1" }],
+            summaryDigests: ["digest-1"],
+            versions: [
+              {
+                versionKey: "source-a\u00001",
+                sourceVersionRef: {
+                  kind: "source-version",
+                  reference: { entityId: "source-a", versionId: "1" },
+                },
+              },
+            ],
+          }),
+          queryWithSourceGrants: async (_request, grants) => {
+            disclosed.push([...grants.keys()]);
+            return { kind: "succeeded", result: qualitySuccess };
+          },
+        },
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/v1/projects/${PROJECT_ID}/queries/projection.query`,
+      headers,
+      payload: queryBody(qualityPayload),
+    });
+    expect(response.statusCode).toBe(200);
+    expect(sourceChecks).toBe(2);
+    expect(disclosed).toEqual([[]]);
     await app.close();
   });
 

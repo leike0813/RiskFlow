@@ -5,6 +5,8 @@ import {
   AssessmentInputSnapshotRefV1Schema,
   ContentArtifactRefV1Schema,
   IdentificationInputSnapshotRefV1Schema,
+  IdentificationRunResultRefV1Schema,
+  IdentificationWorkPlanRefV1Schema,
   ProjectRevisionRefV1Schema,
   QUALITY_EVALUATION_METRIC_CODES_V1 as QUALITY_METRIC_CODES_V1,
   QUALITY_EVALUATION_METRIC_STATUSES_V1 as QUALITY_METRIC_STATUSES_V1,
@@ -174,6 +176,14 @@ export const QualitySampleV1Schema = z
     sourceSegmentRefs: z.array(EvidenceReferenceSchema).min(1),
     applicabilitySnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
     identificationInputSnapshotRef: IdentificationInputSnapshotRefV1Schema,
+    /** D-09：只有精确完成运行及冻结工作计划可证明正式空结果。 */
+    formalRunProofRefs: z
+      .strictObject({
+        runRef: WorkflowRunRefV1Schema,
+        workPlanRef: IdentificationWorkPlanRefV1Schema,
+        terminalResultRef: IdentificationRunResultRefV1Schema,
+      })
+      .optional(),
     assessmentInputSnapshotRef: AssessmentInputSnapshotRefV1Schema,
     riskRecordRef: StandardizedRiskRecordRefV1Schema.optional(),
     standardizedRiskRecordSnapshotArtifactRef: ContentArtifactRefV1Schema.optional(),
@@ -322,6 +332,12 @@ export const QualitySampleOutcomeV1Schema = z.strictObject({
   riskRecordVersionId: IdentifierSchema.optional(),
   recordIdentityVerified: z.boolean(),
   recordKeyMatched: z.boolean(),
+  formalZeroResultProof: z
+    .strictObject({
+      terminalResultRef: IdentificationRunResultRefV1Schema,
+      frozenScopeDigest: IdentifierSchema,
+    })
+    .optional(),
   evidenceVerified: z.boolean(),
   replayConsistent: z.boolean().nullable(),
   expectedRiskLevelId: IdentifierSchema.optional(),
@@ -428,6 +444,10 @@ export interface QualitySampleEvidenceV1 {
   readonly recordSnapshot?: QualityRecordSnapshotV1;
   readonly recordIdentity?: QualityRecordIdentityV1;
   readonly assessment?: QualityAssessmentEvidenceV1;
+  readonly formalZeroResultProof?: {
+    readonly terminalResultRef: z.infer<typeof IdentificationRunResultRefV1Schema>;
+    readonly frozenScopeDigest: string;
+  };
   /** 本次读取中通过 C04 `verified` 的精确工件引用。 */
   readonly verifiedEvidenceRefs: readonly z.infer<typeof ContentArtifactRefV1Schema>[];
   /** D-10 必审资料段收据：只在 C13 现有授权读对全部明列项同形解析时出现，不含资料正文。 */

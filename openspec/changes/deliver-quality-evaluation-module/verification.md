@@ -3,10 +3,14 @@
 ## 验收对象与结论
 
 - Change：`deliver-quality-evaluation-module`（C36；实际 schema `orchestrated-delivery`）。
-- Finalizer 输入 HEAD：`0eda631c01a5d5d168b07cf9cfda10e593d8a499`；合并主线检查点：`a8893d7`；本轮限定审计输入与最终代码 HEAD：`7925e5bb4f745d14c75142b652e3008cfa07842f`（本次仅更新 verification）。
+- 本次复核输入及已核验产品 HEAD：`e43c77e689bc51ae05c177d66180aa43e5ebdc5e`；相对前次限定审计的代码 HEAD `7925e5bb4f745d14c75142b652e3008cfa07842f`，仅本 verification 文档变化。本次只更新本工件，后续检查点由协调端形成。
+- 首轮 Finalizer 输入 HEAD：`0eda631c01a5d5d168b07cf9cfda10e593d8a499`；合并主线检查点：`a8893d7`。
 - Finalizer：`task_ba559d063211` / `ctx_97fddf591af2`；限定审计：`task_a361561568b9` / `ctx_55a94f27ea3c`。样例均为合成样本，待甲方复核；没有真实工程准确率结论。
+- 本次复核：`task_a540da5debc4` / `ctx_de5b578a6f43`；范围内代码修复：无。
 
 **PASS：C36 已批准语义及本轮唯一一次限定审计均通过。** IP-01～IP-10 的实现、关键接缝、回归与规格校验完成；结论仅适用于上述固定代码 HEAD 和合成样本验证。
+
+本次在 `e43c77e689bc51ae05c177d66180aa43e5ebdc5e` 复核全部 OpenSpec 上下文、产品差异和关键调用链；产品代码未变，前次限定审计结论仍适用。下表保留前次验收证据，本次重跑结果见“当前检查点回归”。
 
 ## 已核验行为
 
@@ -35,6 +39,15 @@
 - 代码核对：C09 按精确来源版本两轮签发，末轮复验工程/空间后由 C36 重选报告引用与摘要 digest；C39 已完成终态、冻结计划与 C22 逐工作项零结果合取，C22 返回前复验当前授权；迁移 51 只给应用角色 SELECT/INSERT，C36 索引、冻结摘要、回执与审计由 C03 单事务提交。同形拒权、撤权、并发新行、同键重放、迁移逆序回滚均有实际分支断言。未发现范围内缺陷，代码修复：无。
 - 实际回归：`pnpm exec vitest run packages/core/test/identification/candidate-finalization.test.ts packages/core/test/quality/quality.test.ts packages/adapters/test/identification/graph/postgres-identification-graph-adapter.test.ts packages/adapters/test/quality/postgres-quality-evaluation.test.ts apps/api/test/quality.test.ts packages/adapters/test/postgres/postgres-foundation.test.ts` → 6 文件、124/124 通过；`pnpm exec vitest run packages/adapters/test/identification/candidate-finalization/postgres-risk-candidate-adapter.test.ts packages/contracts/test/module-interfaces-events-workflows.test.ts apps/web/test/quality.test.tsx` → 3 文件、41/41 通过；`pnpm build && pnpm exec playwright test -c playwright.config.ts --project=chromium` → 真实 Chromium 2/2 通过；`pnpm typecheck`、`pnpm deps:check`、`pnpm deps:policy`、`openspec validate deliver-quality-evaluation-module --strict --no-interactive`、`git diff --check` → 均退出码 0。
 - 最终结论：PASS；本收尾轮次的限定审计已闭合。
+
+## 当前检查点回归
+
+- `git diff 7925e5bb4f745d14c75142b652e3008cfa07842f e43c77e689bc51ae05c177d66180aa43e5ebdc5e --stat`：仅本 verification 文档变化；IP-01～IP-10 产品代码、测试和迁移与已审计版本相同。
+- `pnpm exec vitest run packages/core/test/identification/candidate-finalization.test.ts packages/core/test/quality/quality.test.ts packages/adapters/test/identification/graph/postgres-identification-graph-adapter.test.ts packages/adapters/test/quality/postgres-quality-evaluation.test.ts apps/api/test/quality.test.ts packages/adapters/test/postgres/postgres-foundation.test.ts`：6 文件、124/124 通过；覆盖正式空结果、必审资料段、来源授权、幂等事务和迁移。
+- `pnpm exec vitest run packages/adapters/test/identification/candidate-finalization/postgres-risk-candidate-adapter.test.ts packages/contracts/test/module-interfaces-events-workflows.test.ts apps/web/test/quality.test.tsx`：3 文件、41/41 通过；覆盖 C22 持久化公开读、公共查询 Schema 与页面状态。
+- `pnpm build && pnpm exec playwright test -c playwright.config.ts --project=chromium`：生产构建通过，真实 Chromium 2/2 通过；覆盖登录、导航、质量查询、刷新、工程切换、键盘与拒权。
+- `pnpm typecheck && pnpm deps:check && pnpm deps:policy && openspec validate deliver-quality-evaluation-module --strict --no-interactive`：全部退出码 0；`pnpm deps:check` 检查 441 模块、1296 依赖。
+- 本次只改文档，未触发新的限定审计；已完成的唯一一次限定审计结果见上节。
 
 ## 剩余边界
 

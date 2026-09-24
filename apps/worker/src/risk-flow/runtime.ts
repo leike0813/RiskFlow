@@ -19,6 +19,7 @@ import {
   type CancelWorkflowRunCommandV1,
   type ContractReferenceV1,
   type DiagnosticArtifactRefV1,
+  type HumanDecisionProofPortV1,
   type IdentificationPreparationSnapshotRefV1,
   type ModuleBranchV1,
   type ModuleErrorV1,
@@ -27,11 +28,14 @@ import {
   type ResumeWorkflowRunCommandV1,
   type ResumeWorkflowRunResultV1,
   type CancelWorkflowRunResultV1,
+  type ResponseRecommendationRefV1,
   type RiskAssessmentRecordRefV1,
   type RouteDecisionRefV1,
+  type SpatialScopeRefV1,
   type StandardizedRiskRecordRefV1,
   type StartWorkflowRunCommandV1,
   type StartWorkflowRunResultV1,
+  type WaitingRefV1,
   type WorkflowEntryModeV1,
   type WorkflowPortV1,
   type WorkflowRunRefV1,
@@ -56,6 +60,7 @@ import {
 
 import {
   RISK_FLOW_GRAPH_RUN_CONFIG_KEY_V1,
+  RISK_FLOW_ROUTE_KIND_HUMAN_DECISION_COMMITTED_V1,
   RISK_FLOW_ROUTE_KIND_RISK_ACCEPTED_V1,
   appendEntryFacts,
   identificationPreparationWaitingFor,
@@ -156,6 +161,10 @@ export interface RiskFlowStartCommandV1 {
   readonly previousAssessmentRecordRef?: RiskAssessmentRecordRefV1;
   readonly runRef: WorkflowRunRefV1;
   readonly threadId: string;
+  /** 人工采纳等待意图（design D2）：只由公共 `forecast-response` 载荷的可选字段给出。 */
+  readonly waitForDecision?: true;
+  /** 等待模式下的精确建议引用：等待行据它复核采纳证明，不从其它入口推断。 */
+  readonly adoptedRecommendationRef?: ResponseRecommendationRefV1;
 }
 
 /** 父运行恢复命令：只带精确运行引用、预期状态版本与恢复原因（design D-08）。 */
@@ -190,6 +199,11 @@ export interface RiskFlowGraphRuntimeOptionsV1 {
   readonly ports: RiskFlowGraphPortsV1;
   readonly graph: RiskFlowGraphRunnerV1;
   readonly authorization: RiskFlowGraphAuthorizationPortV1;
+  /**
+   * C41 人工采纳证明接缝（design D2/D3）：等待态运行只在该证明逐项核对运行、建议与空间一致后推进。
+   * 必需注入（组合根缺失即拒绝构造）：缺失时绝不据恢复原因自行推进等待态运行。
+   */
+  readonly humanDecisionProof: HumanDecisionProofPortV1;
   readonly now: () => Date;
 }
 
@@ -303,14 +317,75 @@ const outcomeOf = (input: {
   ...(input.cursor.lastErrorRef === undefined ? {} : { errorRef: input.cursor.lastErrorRef }),
 });
 
-/** 恢复前核对精确等待/运行引用：引用不符即失败，绝不按“最新”推进（design D-08）。 */
+/**
+ * 精确引用同一性：只有种类与两段引用都一致才算同一事实，不做版本回退或“最新”匹配；
+ * `domain-event` 引用没有版本引用，与版本引用永不相等。
+ */
+const sameReference = (
+  left: ContractReferenceV1,
+  right: {
+    readonly kind: string;
+    readonly reference: { readonly entityId: string; readonly versionId: string };
+  },
+): boolean =>
+  "reference" in left &&
+  left.kind === right.kind &&
+  left.reference.entityId === right.reference.entityId &&
+  left.reference.versionId === right.reference.versionId;
+
+/**
+ * 人工决定等待门（design D2）：只有 `waitForDecision` 的 `forecast-response` 运行进入等待态。
+ * 空间不猜测：只接受恰好一个已授权空间；入口模式或授权空间不支持时以类型化失败收口，
+ * 不创建运行、不产生预测，也绝不沿用其它入口的语义。
+ */
+const humanDecisionGateFor = (input: {
+  readonly command: RiskFlowStartCommandV1;
+  readonly authorized: AuthorizationContextV1;
+  readonly occurredAt: string;
+}): RiskFlowGraphRunContextV1["humanDecisionGate"] => {
+  if (input.command.waitForDecision !== true) return undefined;
+  const spatialScopeRef =
+    input.authorized.spatialScopeRefs.length === 1 ? input.authorized.spatialScopeRefs[0] : undefined;
+  const responseRecommendationRef = input.command.adoptedRecommendationRef;
+  if (
+    input.command.entryMode !== "forecast-response" ||
+    spatialScopeRef === undefined ||
+    responseRecommendationRef === undefined
+  ) {
+    throw runFailure({
+      stage: "preparing",
+      code: "ENTRY_REFERENCES_INCOMPLETE",
+      retryable: false,
+      detailCode: "wait-for-decision-unsupported",
+      occurredAt: input.occurredAt,
+    });
+  }
+  return { responseRecommendationRef, spatialScopeRef };
+};
+
+/**
+ * 等待模式的冻结输入：把唯一已授权空间并入冻结引用（`forecast-response` 公共载荷没有空间字段，
+ * 而评估子运行 A2 的绑定要求精确空间引用）。已存在同一空间引用时原样保留，绝不产生第二条。
+ */
+const frozenRefsWithSpatialScope = (input: {
+  readonly frozenRefs: readonly ContractReferenceV1[];
+  readonly spatialScopeRef: SpatialScopeRefV1;
+}): readonly ContractReferenceV1[] =>
+  input.frozenRefs.some((ref) => sameReference(ref, input.spatialScopeRef))
+    ? input.frozenRefs
+    : [...input.frozenRefs, input.spatialScopeRef];
+
+/**
+ * 恢复前核对精确等待/运行引用：引用不符即失败，绝不按“最新”推进（design D-08）。
+ * 返回人工决定等待行（仅 `human-decision-committed` 恢复原因）：它是本次推进唯一被承认的等待事实。
+ */
 const assertResumeReferences = (input: {
   readonly rows: readonly WorkflowGraphResultRowV1[];
   readonly cursor: WorkflowGraphRunStateV1;
   readonly runRef: WorkflowRunRefV1;
   readonly cause: RiskFlowResumeValueV1;
   readonly occurredAt: string;
-}): void => {
+}): Extract<WaitingRefV1, { readonly kind: "human-decision" }> | undefined => {
   const blocked = (detailCode: string): never => {
     throw runFailure({
       stage: riskFlowStageOf(input.cursor.stage, input.occurredAt),
@@ -320,6 +395,25 @@ const assertResumeReferences = (input: {
       occurredAt: input.occurredAt,
     });
   };
+  const humanDecisionWaitings = input.rows.filter(
+    (row) => row.resultKind === "waiting" && row.waitingRef?.kind === "human-decision",
+  );
+  if (input.cause.kind === "human-decision-committed") {
+    // 等待态运行只认同一次已登记的人工决定路由：必须恰好一条等待行、其决定路由引用与恢复原因一致，
+    // 且运行仍处等待态，否则保持等待（design D2）。
+    const pending = humanDecisionWaitings.length === 1 ? humanDecisionWaitings[0]?.waitingRef : undefined;
+    const matched = pending?.kind === "human-decision" ? pending : undefined;
+    const accepted =
+      matched !== undefined &&
+      sameReference(matched.routeDecisionRef, input.cause.routeDecisionRef) &&
+      input.cursor.status === "waiting";
+    if (!accepted) blocked("human-decision-reference-mismatch");
+    return matched;
+  }
+  if (humanDecisionWaitings.length > 0 && input.cursor.status === "waiting") {
+    // 人工采纳事实成立前，等待中的预测运行不接受任何其它恢复原因（design D2）。
+    blocked("human-decision-pending");
+  }
   switch (input.cause.kind) {
     case "inputs-ready": {
       const expected = identificationPreparationWaitingFor({ runRef: input.runRef });
@@ -516,6 +610,9 @@ const resumeValueOfCause = (cause: ResumeCauseV1): RiskFlowResumeValueV1 => {
         kind: "inputs-ready",
         knowledgePreparationTaskRef: cause.knowledgePreparationTaskRef,
       };
+    case "human-decision-committed":
+      // 只映射稳定决定引用：运行、建议与空间由 C41 精确采纳证明核对，父图不自行取用（design D2）。
+      return { kind: "human-decision-committed", routeDecisionRef: cause.routeDecisionRef };
     case "transient-recovered":
       return { kind: "transient-recovered" };
     default:
@@ -704,6 +801,11 @@ export const createRiskFlowGraphRuntime = (
       requestedAt: command.validAt,
       stage: "preparing",
     });
+    const humanDecisionGate = humanDecisionGateFor({
+      command,
+      authorized,
+      occurredAt: options.now().toISOString(),
+    });
     const run: RiskFlowGraphRunContextV1 = {
       projectId: command.projectId,
       actorId: command.actorId,
@@ -717,7 +819,14 @@ export const createRiskFlowGraphRuntime = (
       threadId: command.threadId,
       entryMode: command.entryMode,
       entryIdentity: command.entryIdentity,
-      frozenRefs: command.frozenRefs,
+      // 等待模式并入唯一已授权空间（A2 绑定需要精确空间）；其余入口的冻结集合一字不改。
+      frozenRefs:
+        humanDecisionGate === undefined
+          ? command.frozenRefs
+          : frozenRefsWithSpatialScope({
+              frozenRefs: command.frozenRefs,
+              spatialScopeRef: humanDecisionGate.spatialScopeRef,
+            }),
       pairing: command.pairing,
       retryPolicyRef: command.retryPolicyRef,
       subGraphVersions: ports.subGraphVersions,
@@ -725,6 +834,7 @@ export const createRiskFlowGraphRuntime = (
       ...(command.previousAssessmentRecordRef === undefined
         ? {}
         : { previousAssessmentRecordRef: command.previousAssessmentRecordRef }),
+      ...(humanDecisionGate === undefined ? {} : { humanDecisionGate }),
     };
     const existing = await readRiskFlowCursor({ ports, run });
     if (existing !== undefined) {
@@ -850,13 +960,103 @@ export const createRiskFlowGraphRuntime = (
         occurredAt: options.now().toISOString(),
       });
     }
-    assertResumeReferences({
+    const pendingHumanDecision = assertResumeReferences({
       rows,
       cursor: cursorBefore,
       runRef: command.runRef,
       cause: command.resumeCause,
       occurredAt: options.now().toISOString(),
     });
+    const pendingDecisionRef =
+      command.resumeCause.kind === "human-decision-committed"
+        ? command.resumeCause.routeDecisionRef
+        : undefined;
+    if (
+      pendingDecisionRef !== undefined &&
+      pendingHumanDecision !== undefined &&
+      !run.frozenRefs.some((ref) => sameReference(ref, pendingDecisionRef))
+    ) {
+      // 等待态运行推进前必须由 C41 精确采纳证明逐项核对运行、建议与空间（design D2/D3）：
+      // 证明缺失、失败或任一引用不符即保持等待，绝不据恢复原因自行推进或产生预测。
+      const committed = await options.humanDecisionProof.verifyHumanDecisionCommitted({
+        kind: "verify-human-decision-committed",
+        // C41 以该恢复命令自身身份签发 C30 恢复授权，证明内部按同一 `queryId` 复验。
+        queryId: command.commandId,
+        projectId: command.projectId,
+        actorId: command.actorId,
+        requestedAt: command.issuedAt,
+        authorization: authorized,
+        payload: {
+          routeDecisionRef: pendingDecisionRef,
+          workflowRunRef: command.runRef,
+          responseRecommendationRef: pendingHumanDecision.responseRecommendationRef,
+        },
+      });
+      const adopted =
+        committed.kind === "succeeded" &&
+        committed.result.kind === "adopted" &&
+        sameReference(committed.result.routeDecisionRef, pendingDecisionRef) &&
+        sameReference(committed.result.workflowRunRef, command.runRef) &&
+        sameReference(
+          committed.result.responseRecommendationRef,
+          pendingHumanDecision.responseRecommendationRef,
+        ) &&
+        authorized.spatialScopeRefs.some((scope) =>
+          sameReference(scope, committed.result.spatialScopeRef),
+        );
+      if (!adopted) {
+        throw runFailure({
+          stage: resumeStage,
+          code: "UPSTREAM_WAITING",
+          retryable: false,
+          detailCode: "human-decision-not-committed",
+          occurredAt: options.now().toISOString(),
+        });
+      }
+      // 已证实的决定引用进入本运行冻结事实：评估子运行据此取精确采纳决定引用（design D2）。
+      const runWithDecision: RiskFlowGraphRunContextV1 = {
+        ...run,
+        frozenRefs: frozenRefsFromRowsV1(rows, [pendingDecisionRef]),
+      };
+      // 决定引用本身就是本运行创建时登记的入口路由引用（等待行据它请求采纳证明），因此这里登记
+      // 一条身份独立的路由行来承载冻结事实与原因码，绝不重复登记同一路由引用（那是同一事实）。
+      const committedRouteRef: RouteDecisionRefV1 = {
+        kind: "route-decision",
+        reference: {
+          entityId: `risk-flow-human-decision:${command.runRef.reference.entityId}`,
+          versionId: sha256CanonicalJson({
+            decisionRef: pendingDecisionRef,
+            runRef: command.runRef,
+          }),
+        },
+      };
+      await appendEntryFacts({
+        ports,
+        run: runWithDecision,
+        cursor: cursorBefore,
+        stage: resumeStage,
+        actionSuffix: `human-decision-committed:${sha256CanonicalJson(pendingDecisionRef).slice(0, 32)}`,
+        commandKind: "risk-flow-graph.human-decision-committed",
+        routeDecisions: [
+          {
+            ref: committedRouteRef,
+            routeKind: RISK_FLOW_ROUTE_KIND_HUMAN_DECISION_COMMITTED_V1,
+          },
+        ],
+      });
+      const afterFacts = await readRiskFlowCursor({ ports, run: runWithDecision });
+      if (afterFacts === undefined) {
+        throw runFailure({
+          stage: resumeStage,
+          code: "RETRYABLE_INFRASTRUCTURE_FAILURE",
+          retryable: true,
+          detailCode: "run-state-unconfirmed",
+          occurredAt: options.now().toISOString(),
+        });
+      }
+      // 决定引用已登记：按既有恢复语义推进（等待节点消费该恢复原因，评估子运行只建立一次）。
+      return await resume({ ...command, expectedRunVersionId: afterFacts.runVersionId });
+    }
     const checkpointState = await readCheckpointState({ graph: options.graph, run });
     if (checkpointState === undefined) {
       throw runFailure({
@@ -1114,6 +1314,12 @@ export const createRiskFlowGraphRuntime = (
         ...(parsed.payload.entryMode === "reassess"
           ? { previousAssessmentRecordRef: parsed.payload.previousAssessmentRecordRef }
           : {}),
+        ...(parsed.payload.entryMode === "forecast-response"
+          ? {
+              adoptedRecommendationRef: parsed.payload.adoptedRecommendationRef,
+              ...(parsed.payload.waitForDecision === true ? { waitForDecision: true as const } : {}),
+            }
+          : {}),
         runRef,
         threadId,
       });
@@ -1137,7 +1343,8 @@ export const createRiskFlowGraphRuntime = (
             }),
           };
         }
-        return { kind: "waiting", waiting: outcome.lastWaitingRef };
+        // 等待结果同时给出已登记的真实运行引用：调用方据此按精确运行继续，不自行派生身份。
+        return { kind: "waiting", waiting: outcome.lastWaitingRef, workflowRunRef: outcome.runRef };
       }
       const terminalFailure = terminalFailureOf({
         outcome,
@@ -1190,7 +1397,7 @@ export const createRiskFlowGraphRuntime = (
         resumeCause: resumeValueOfCause(parsed.payload.resumeCause),
       });
       if (outcome.status === "waiting" && outcome.lastWaitingRef !== undefined) {
-        return { kind: "waiting", waiting: outcome.lastWaitingRef };
+        return { kind: "waiting", waiting: outcome.lastWaitingRef, workflowRunRef: outcome.runRef };
       }
       const terminalFailure = terminalFailureOf({
         outcome,

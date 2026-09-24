@@ -17,7 +17,10 @@ import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/a
 import type { ArtifactStorePolicyV1 } from "@riskflow/core/artifacts";
 import {
   AuthorizationContextV1Schema,
+  ModuleErrorV1Schema,
   type AuthorizationContextV1,
+  type HumanDecisionProofPortV1,
+  type HumanDecisionProofQueryV1,
   type ModuleBranchV1,
   type StartWorkflowRunCommandV1,
 } from "@riskflow/contracts/ports";
@@ -75,6 +78,14 @@ const MONITORING_REF = {
   kind: "monitoring-snapshot" as const,
   reference: { entityId: "monitoring-composition", versionId: "v1" },
 };
+const RECOMMENDATION_REF = {
+  kind: "response-recommendation" as const,
+  reference: { entityId: "recommendation-composition", versionId: "v1" },
+};
+const BASIS_RELEASE_SET_REF = {
+  kind: "assessment-basis-release-set" as const,
+  reference: { entityId: "basis-composition", versionId: "v1" },
+};
 const GRAPH_VERSION = { entityId: "risk-flow-graph", versionId: "v1" };
 const RETRY_POLICY_REF = { entityId: "retry-policy", versionId: "v1" };
 const SUB_GRAPH_VERSIONS = {
@@ -89,6 +100,7 @@ const REQUIRED_DEPENDENCIES_V1 = [
   "artifactStore",
   "authorization",
   "runtimeAuthorization",
+  "humanDecisionProof",
   "checkpointer",
   "identificationRuntime",
   "assessmentRuntime",
@@ -172,6 +184,37 @@ const createAccessStub = (authorization: AuthorizationContextV1) => {
   };
 };
 
+/** C41 人工采纳证明替身：记录每次核对请求并固定失败关闭；成功推进由 IP-2 运行时用例覆盖。 */
+interface HumanDecisionProofStubV1 {
+  readonly port: HumanDecisionProofPortV1;
+  readonly queries: HumanDecisionProofQueryV1[];
+}
+
+const createHumanDecisionProofStub = (): HumanDecisionProofStubV1 => {
+  const queries: HumanDecisionProofQueryV1[] = [];
+  const port: HumanDecisionProofPortV1 = {
+    verifyHumanDecisionCommitted: async (query) => {
+      queries.push(query);
+      return {
+        kind: "failed",
+        error: ModuleErrorV1Schema.parse({
+          code: "TERMINAL_FAILURE",
+          category: "technical",
+          retryable: false,
+          stageCode: "c30-composition-test-proof",
+          occurredAt: TIMESTAMP,
+          causalRunId: query.projectId,
+          diagnosticRef: {
+            kind: "diagnostic-artifact",
+            reference: { entityId: "human-decision-proof", versionId: "1" },
+          },
+        }),
+      };
+    },
+  };
+  return { port, queries };
+};
+
 /** C05 复验替身（运行入口）：撤销返回 `undefined`，否则回填原授权。 */
 const runtimeAuthorizationPort = {
   verifyCurrent: async (input: {
@@ -217,6 +260,7 @@ interface CompositionFixtureV1 {
   readonly artifactStore: Awaited<ReturnType<typeof createArtifactStore>>;
   readonly checkpointer: PostgresCheckpointer;
   readonly access: ReturnType<typeof createAccessStub>;
+  readonly humanDecisionProof: HumanDecisionProofStubV1;
   readonly rootDirectory: string;
   options(): RiskFlowGraphCompositionOptionsV1;
   close(): Promise<void>;
@@ -243,6 +287,7 @@ const startFixture = async (): Promise<CompositionFixtureV1> => {
       validateReference: () => true,
     });
     const access = createAccessStub(authorizationFor("workflow.start"));
+    const humanDecisionProof = createHumanDecisionProofStub();
     // 识别/评估子运行面与配对解析在构造期闭合用例中不会被调用；被调用即说明组合根接错端口。
     const unexpected = async (): Promise<never> => {
       throw new TypeError("composition test reached a port outside the exercised contract");
@@ -254,6 +299,7 @@ const startFixture = async (): Promise<CompositionFixtureV1> => {
       artifactStore,
       checkpointer,
       access,
+      humanDecisionProof,
       rootDirectory,
       options() {
         return {
@@ -262,6 +308,7 @@ const startFixture = async (): Promise<CompositionFixtureV1> => {
           artifactStore,
           authorization: access.port,
           runtimeAuthorization: runtimeAuthorizationPort,
+          humanDecisionProof: humanDecisionProof.port,
           checkpointer,
           identificationRuntime: { start: unexpected, resume: unexpected, cancel: unexpected },
           assessmentRuntime: { start: unexpected, resume: unexpected, cancel: unexpected },
@@ -439,5 +486,120 @@ describe("C30 父运行生产组合根（真实 PostgreSQL 接线）", () => {
       new Set(rows.filter((row) => row.resultKind === "run-state").map((r) => r.resultVersionId))
         .size,
     ).toBe(2);
+  }, 120_000);
+
+  it("等待模式的预测运行在人工采纳证明核对通过前保持等待，且不启动评估子运行", async () => {
+    const command = startCommandFor({
+      commandId: "c30-composition-forecast-wait",
+      payload: {
+        entryMode: "forecast-response",
+        graphVersion: GRAPH_VERSION,
+        retryPolicyRef: RETRY_POLICY_REF,
+        adoptedRecommendationRef: RECOMMENDATION_REF,
+        preActionMonitoringSnapshotRef: MONITORING_REF,
+        assessmentBasisReleaseSetRef: BASIS_RELEASE_SET_REF,
+        waitForDecision: true,
+      },
+    });
+    const started = await composition.runtime.workflowPort.startRun(command);
+    expect(started.kind).toBe("waiting");
+    if (started.kind !== "waiting") return;
+    expect(started.waiting.kind).toBe("human-decision");
+    // 等待结果自带真实运行引用：与公共身份公式逐项一致，调用方无需自行派生。
+    const entryIdentity = workflowEntryIdentityFor({
+      entryMode: "forecast-response",
+      projectId: PROJECT_ID,
+      frozenRefs: [RECOMMENDATION_REF, MONITORING_REF, BASIS_RELEASE_SET_REF],
+    });
+    const { runRef } = workflowRunIdentityFor({
+      projectId: PROJECT_ID,
+      entryMode: "forecast-response",
+      entryIdentity,
+      graphVersion: GRAPH_VERSION,
+    });
+    expect(started.workflowRunRef).toEqual(runRef);
+
+    const rows = await composition.registrationStore.listRunRows({
+      projectId: PROJECT_ID,
+      runId: runRef.reference.entityId,
+    });
+    const waitingRow = rows.find((row) => row.resultKind === "waiting");
+    expect(waitingRow?.waitingRef).toMatchObject({
+      kind: "human-decision",
+      responseRecommendationRef: RECOMMENDATION_REF,
+      spatialScopeRef: SPACE_REF,
+    });
+    if (waitingRow?.waitingRef?.kind !== "human-decision") {
+      throw new TypeError("waiting row must carry the human decision reference");
+    }
+    // 决定路由引用就是本运行登记的入口路由引用（等待行的决定身份）。
+    expect(
+      rows.some(
+        (row) =>
+          row.resultKind === "route-decision" &&
+          row.routeKind === "entry-accepted" &&
+          row.routeDecisionRef?.reference.entityId ===
+            waitingRow.waitingRef.routeDecisionRef.reference.entityId,
+      ),
+    ).toBe(true);
+    // 等待态只登记等待与入口事实：没有评估子运行路由，评估子运行面从未被调用。
+    expect(
+      rows.filter((row) => row.resultKind === "route-decision" && row.routeKind === "assessment-sub-run"),
+    ).toEqual([]);
+    const latest = await composition.registrationStore.readLatestRunState({
+      projectId: PROJECT_ID,
+      runId: runRef.reference.entityId,
+      actorId: ACTOR_ID,
+      requestedAt: TIMESTAMP,
+      authorization: authorizationFor("workflow.start"),
+    });
+    expect(latest?.state.status).toBe("waiting");
+    // 等待态游标指向下一个要执行的阶段：恢复即进入评估，不重跑准备。
+    expect(latest?.state.stage).toBe("assessment");
+
+    // 注入的人工采纳证明被真实调用：固定失败关闭，运行保持等待且零评估动作。
+    const denied = await composition.runtime.workflowPort.resumeRun({
+      kind: "resume-run",
+      commandId: "c30-composition-forecast-wait-resume",
+      idempotencyKey: "c30-composition-forecast-wait-resume",
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      issuedAt: TIMESTAMP,
+      authorization: authorizationFor("workflow.resume"),
+      payload: {
+        workflowRunRef: runRef,
+        expectedStateVersion: latest?.state.runVersionId ?? "",
+        resumeCause: {
+          kind: "human-decision-committed",
+          routeDecisionRef: waitingRow.waitingRef.routeDecisionRef,
+        },
+      },
+    });
+    expect(denied).toMatchObject({
+      kind: "failed",
+      error: { code: "BUSINESS_BLOCKED", blockerKind: "human-decision-not-committed" },
+    });
+    expect(fixture.humanDecisionProof.queries).toHaveLength(1);
+    expect(fixture.humanDecisionProof.queries[0]?.payload).toEqual({
+      routeDecisionRef: waitingRow.waitingRef.routeDecisionRef,
+      workflowRunRef: runRef,
+      responseRecommendationRef: RECOMMENDATION_REF,
+    });
+    const afterDenied = await composition.registrationStore.readLatestRunState({
+      projectId: PROJECT_ID,
+      runId: runRef.reference.entityId,
+      actorId: ACTOR_ID,
+      requestedAt: TIMESTAMP,
+      authorization: authorizationFor("workflow.resume"),
+    });
+    expect(afterDenied?.state.status).toBe("waiting");
+    expect(
+      (
+        await composition.registrationStore.listRunRows({
+          projectId: PROJECT_ID,
+          runId: runRef.reference.entityId,
+        })
+      ).filter((row) => row.resultKind === "route-decision" && row.routeKind === "human-decision-committed"),
+    ).toEqual([]);
   }, 120_000);
 });

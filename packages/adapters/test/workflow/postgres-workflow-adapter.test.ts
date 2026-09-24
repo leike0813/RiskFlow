@@ -19,7 +19,9 @@ import {
   AuthorizationContextV1Schema,
   type AuthorizationContextV1,
   type ModuleBranchV1,
+  type ResponseWorkflowBindingProofQueryV1,
 } from "@riskflow/contracts/ports";
+import { sha256CanonicalJson } from "@riskflow/core/persistence";
 import { authorizationScopeDigest } from "@riskflow/core/retrieval";
 import {
   WorkflowGraphRunStateV1Schema,
@@ -68,6 +70,38 @@ const RUN_REF = {
   reference: { entityId: RUN_ID, versionId: RUN_VERSION_ID },
 };
 
+/** C30 绑定证明夹具：真实等待运行（入口路由行 + 人工决定等待行 + 运行状态正文）。 */
+const BINDING_QUERY_ID = "c41-binding-proof-query";
+const BINDING_RUN_ID = `risk-flow-run:${PROJECT_ID}:binding`;
+const BINDING_RUN_VERSION_ID = sha("binding-run-version");
+const BINDING_RECOMMENDATION_REF = {
+  kind: "response-recommendation" as const,
+  reference: { entityId: "recommendation-binding-c30", versionId: "v1" },
+};
+const BINDING_MONITORING_REF = {
+  kind: "monitoring-snapshot" as const,
+  reference: { entityId: "monitoring-binding-c30", versionId: "v1" },
+};
+const BINDING_ENTRY_IDENTITY = {
+  entityId: `workflow-entry:${PROJECT_ID}:forecast-response`,
+  versionId: sha("binding-entry-identity"),
+};
+/** 入口路由引用按运行派生：登记行身份不含 run_id，跨运行夹具必须自行区分。 */
+const bindingEntryRouteRefFor = (runId: string) => ({
+  kind: "route-decision" as const,
+  reference: { entityId: `risk-flow-entry:${runId}`, versionId: sha(`binding-entry-route:${runId}`) },
+});
+const BINDING_ENTRY_ROUTE_REF = bindingEntryRouteRefFor(BINDING_RUN_ID);
+const BINDING_RUN_REF = {
+  kind: "workflow-run" as const,
+  reference: { entityId: BINDING_RUN_ID, versionId: sha("binding-run-identity") },
+};
+const BINDING_FROZEN_REFS = [
+  BINDING_RECOMMENDATION_REF,
+  BINDING_MONITORING_REF,
+  SPATIAL_SCOPE_REF,
+] as const;
+
 const authorizationFor = (overrides: Record<string, unknown> = {}): AuthorizationContextV1 =>
   AuthorizationContextV1Schema.parse({
     schemaVersion: "1",
@@ -93,10 +127,15 @@ const SCOPE_DIGEST = authorizationScopeDigest(AUTHORIZATION);
 const createAccess = () => {
   const calls: { readonly invocationId: string; readonly branch: ModuleBranchV1 }[] = [];
   let revoked = false;
+  /**
+   * 真实 C05 要求 `authorization_contexts.invocation_id` 与请求 id 逐项一致（一个上下文一个 id），
+   * 因此这里可绑定唯一合法 id：复验用别的 id 一律拒绝，证明类调用必须先满足该约束。
+   */
+  let boundInvocationId: string | undefined;
   const port: Pick<LocalIdentityAccessV1, "verify"> = {
     verify: async (input) => {
       calls.push({ invocationId: input.invocationId, branch: input.branch });
-      if (revoked) {
+      if (revoked || (boundInvocationId !== undefined && input.invocationId !== boundInvocationId)) {
         throw new AccessServiceError({
           code: "AUTHORIZATION_DENIED",
           retryable: false,
@@ -126,6 +165,9 @@ const createAccess = () => {
     },
     restore: () => {
       revoked = false;
+    },
+    bindInvocationId: (invocationId: string | undefined) => {
+      boundInvocationId = invocationId;
     },
   };
 };
@@ -766,5 +808,251 @@ describe("C30 workflow registration adapter", () => {
       runId: RUN_ID,
     });
     expect(restored).toHaveLength(0);
+  });
+
+  /** 等待运行夹具：入口路由行 + 人工决定等待行 + 运行状态正文（与运行图登记形状一致）。 */
+  const seedBindingRun = async (runId = BINDING_RUN_ID): Promise<void> => {
+    const runTag = sha(runId).slice(0, 12);
+    const entryRouteRef = bindingEntryRouteRefFor(runId);
+    const rowBase = (suffix: string) => ({
+      schemaVersion: "1" as const,
+      projectId: PROJECT_ID,
+      runId,
+      runVersionId: BINDING_RUN_VERSION_ID,
+      entryMode: "forecast-response" as const,
+      commandId: `c30-binding-${runTag}-${suffix}`,
+      idempotencyKey: `c30-binding-${runTag}-${suffix}`,
+      requestDigest: sha(`binding-request-${suffix}`),
+      actorRef: ACTOR_ID,
+      authorizationContextRef: AUTHORIZATION.authorizationContextRef,
+      authorizationScopeDigest: SCOPE_DIGEST,
+      validAt: TIMESTAMP,
+      recordedAt: TIMESTAMP,
+      persistedAt: TIMESTAMP,
+      auditEntryId: `c30-binding-${runTag}-${suffix}:audit`,
+      frozenRefs: [...BINDING_FROZEN_REFS],
+    });
+    const artifactRef = await fixture.adapter.bodies.putBody({
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      commandId: `${runId}:body`,
+      issuedAt: TIMESTAMP,
+      artifactId: `c30-binding-run-state:${runId}:${BINDING_RUN_VERSION_ID}`,
+      body: {
+        bodyKind: "run-state",
+        runState: WorkflowGraphRunStateV1Schema.parse({
+          schemaVersion: "1",
+          projectId: PROJECT_ID,
+          runId,
+          runVersionId: BINDING_RUN_VERSION_ID,
+          entryMode: "forecast-response",
+          entryIdentity: BINDING_ENTRY_IDENTITY,
+          stage: "assessment",
+          status: "waiting",
+          assessmentRunRefs: [],
+          acceptedRiskRecordRefs: [],
+          assessmentRecordRefs: [],
+          warningRecordRefs: [],
+          responseRecommendationRefs: [],
+          deviationRecordRefs: [],
+          calibrationSuggestionRefs: [],
+          recordedAt: TIMESTAMP,
+        }),
+      },
+      authorization: AUTHORIZATION,
+    });
+    const rows: WorkflowGraphResultRowV1[] = [
+      {
+        ...rowBase("entry-route"),
+        resultKind: "route-decision",
+        resultId: entryRouteRef.reference.entityId,
+        resultVersionId: entryRouteRef.reference.versionId,
+        routeDecisionRef: entryRouteRef,
+        routeKind: "entry-accepted",
+      },
+      {
+        ...rowBase("human-decision-waiting"),
+        resultKind: "waiting",
+        // 等待行身份按运行限定：登记行主键不含 run_id，跨运行夹具必须自行区分。
+        resultId: sha(`binding-waiting-${runTag}`),
+        resultVersionId: sha(`binding-waiting-version-${runTag}`),
+        stage: "preparing",
+        waitingRef: {
+          kind: "human-decision",
+          routeDecisionRef: entryRouteRef,
+          responseRecommendationRef: BINDING_RECOMMENDATION_REF,
+          spatialScopeRef: SPATIAL_SCOPE_REF,
+        },
+      },
+      {
+        ...rowBase("run-state"),
+        resultKind: "run-state",
+        resultId: artifactRef.reference.entityId,
+        resultVersionId: BINDING_RUN_VERSION_ID,
+        stage: "assessment",
+        artifactRef,
+      },
+    ];
+    for (const row of rows) await registerWithinTransaction({ row });
+  };
+
+  const bindingQuery = (overrides: Record<string, unknown> = {}) =>
+    ({
+      kind: "verify-response-workflow-binding",
+      queryId: BINDING_QUERY_ID,
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      requestedAt: TIMESTAMP,
+      authorization: AUTHORIZATION,
+      payload: {
+        responseRecommendationRef: BINDING_RECOMMENDATION_REF,
+        workflowRunRef: BINDING_RUN_REF,
+      },
+      ...overrides,
+    }) as ResponseWorkflowBindingProofQueryV1;
+
+  it("returns the exact binding for one already-verified authorization context", async () => {
+    await seedBindingRun();
+    const rows = await fixture.adapter.registrationStore.listRunRows({
+      projectId: PROJECT_ID,
+      runId: BINDING_RUN_ID,
+    });
+    const frozenKeys = [
+      ...new Set(
+        rows
+          .flatMap((row) => row.frozenRefs)
+          .map((ref) =>
+            "reference" in ref
+              ? `${ref.kind}/${ref.reference.entityId}/${ref.reference.versionId}`
+              : `${ref.kind}/${ref.eventId}/${ref.eventVersion}`,
+          ),
+      ),
+    ].sort();
+
+    // 真实 C05 语义：该上下文只对 `queryId` 这一个 invocation_id 有效，内部不得再派生第二个身份。
+    const callsBefore = fixture.access.calls.length;
+    fixture.access.bindInvocationId(BINDING_QUERY_ID);
+    const proof = await fixture.adapter.bindingProof.verifyResponseWorkflowBinding(bindingQuery());
+    const newCalls = fixture.access.calls.slice(callsBefore);
+    fixture.access.bindInvocationId(undefined);
+
+    expect(newCalls).toEqual([
+      { invocationId: BINDING_QUERY_ID, branch: "workflow.start-run" },
+    ]);
+    expect(proof).toMatchObject({
+      kind: "succeeded",
+      result: {
+        kind: "bound",
+        projectId: PROJECT_ID,
+        responseRecommendationRef: BINDING_RECOMMENDATION_REF,
+        spatialScopeRef: SPATIAL_SCOPE_REF,
+        routeDecisionRef: BINDING_ENTRY_ROUTE_REF,
+        workflowRunRef: BINDING_RUN_REF,
+        runStatus: "waiting",
+        auditTrailRef: {
+          kind: "audit-trail",
+          reference: {
+            entityId: `c30-binding-${sha(BINDING_RUN_ID).slice(0, 12)}-entry-route:audit`,
+            versionId: "v1",
+          },
+        },
+      },
+    });
+    expect(proof.kind === "succeeded" ? proof.result.frozenDigest : undefined).toBe(
+      sha256CanonicalJson(frozenKeys),
+    );
+  });
+
+  it("keeps missing, unauthorized and mismatched facts indistinguishable", async () => {
+    await seedBindingRun();
+    const mismatched = await fixture.adapter.bindingProof.verifyResponseWorkflowBinding(
+      bindingQuery({
+        payload: {
+          responseRecommendationRef: {
+            kind: "response-recommendation",
+            reference: { entityId: "recommendation-binding-other", versionId: "v1" },
+          },
+          workflowRunRef: BINDING_RUN_REF,
+        },
+      }),
+    );
+    const unknownRun = await fixture.adapter.bindingProof.verifyResponseWorkflowBinding(
+      bindingQuery({
+        payload: {
+          responseRecommendationRef: BINDING_RECOMMENDATION_REF,
+          workflowRunRef: {
+            kind: "workflow-run",
+            reference: { entityId: `${BINDING_RUN_ID}:absent`, versionId: sha("absent-run") },
+          },
+        },
+      }),
+    );
+    fixture.access.revoke();
+    const unauthorized = await fixture.adapter.bindingProof.verifyResponseWorkflowBinding(
+      bindingQuery(),
+    );
+    fixture.access.restore();
+
+    for (const result of [mismatched, unknownRun, unauthorized]) {
+      expect(result).toMatchObject({
+        kind: "failed",
+        error: { code: "AUTHORIZATION_DENIED", category: "authorization", retryable: false },
+      });
+    }
+    // 除调用方自己给出的运行身份外，三类失败的错误正文逐项相同（不可据此枚举目标）。
+    const normalized = [mismatched, unknownRun, unauthorized].map((result) => ({
+      ...result,
+      error: { ...(result as { error: Record<string, unknown> }).error, causalRunId: "run" },
+    }));
+    expect(normalized[0]).toEqual(normalized[1]);
+    expect(normalized[1]).toEqual(normalized[2]);
+    // 证明只读：不新增登记行，也不写成功审计。
+    const rows = await fixture.adapter.registrationStore.listRunRows({
+      projectId: PROJECT_ID,
+      runId: BINDING_RUN_ID,
+    });
+    expect(rows.filter((row) => row.resultKind === "waiting")).toHaveLength(1);
+  });
+
+  it("fails closed with a typed failure when the persisted binding contradicts itself", async () => {
+    const tamperedRunId = `risk-flow-run:${PROJECT_ID}:binding-tampered`;
+    await seedBindingRun();
+    await seedBindingRun(tamperedRunId);
+    // 把运行状态行指向另一运行的真实正文：引用可读、但正文自称的运行与登记行不符，必须稳定失败。
+    const firstRunStateRow = (
+      await fixture.adapter.registrationStore.listRunRows({
+        projectId: PROJECT_ID,
+        runId: BINDING_RUN_ID,
+      })
+    ).find((row) => row.resultKind === "run-state");
+    await fixture.postgres.adminPool.query(
+      "UPDATE business.workflow_graph_results SET artifact_ref = $1::jsonb WHERE project_id = $2 AND run_id = $3 AND result_kind = 'run-state'",
+      [JSON.stringify(firstRunStateRow?.artifactRef), PROJECT_ID, tamperedRunId],
+    );
+    const tampered = await fixture.adapter.bindingProof.verifyResponseWorkflowBinding(
+      bindingQuery({
+        payload: {
+          responseRecommendationRef: BINDING_RECOMMENDATION_REF,
+          workflowRunRef: {
+            kind: "workflow-run",
+            reference: { entityId: tamperedRunId, versionId: sha("tampered-run") },
+          },
+        },
+      }),
+    );
+    expect(tampered).toMatchObject({
+      kind: "failed",
+      error: { code: "TERMINAL_FAILURE", category: "technical", retryable: false },
+    });
+
+    // 查询本身不合法（未声明的判别值）：稳定契约失败，不做部分接受。
+    const invalid = await fixture.adapter.bindingProof.verifyResponseWorkflowBinding({
+      ...bindingQuery(),
+      kind: "verify-unknown-proof",
+    } as unknown as ResponseWorkflowBindingProofQueryV1);
+    expect(invalid).toMatchObject({
+      kind: "failed",
+      error: { code: "UNSUPPORTED_CONTRACT", category: "technical", retryable: false },
+    });
   });
 });

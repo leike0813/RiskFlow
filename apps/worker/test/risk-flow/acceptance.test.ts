@@ -45,6 +45,7 @@ import {
   AuthorizationContextV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
   ModuleErrorV1Schema,
+  type HumanDecisionProofPortV1,
   MonitoringSnapshotRefV1Schema,
   ProjectRevisionRefV1Schema,
   RiskAssessmentRecordRefV1Schema,
@@ -1037,12 +1038,36 @@ const startHarness = async (): Promise<AcceptanceHarnessV1> => {
       },
     };
 
+    /** C41 人工采纳证明：本验收文件不演练等待/恢复门，注入缺失即失败关闭（不返回成功绑定）。 */
+    const humanDecisionProofUnavailable = {
+      async verifyHumanDecisionCommitted(
+        query: Parameters<HumanDecisionProofPortV1["verifyHumanDecisionCommitted"]>[0],
+      ): Promise<Awaited<ReturnType<HumanDecisionProofPortV1["verifyHumanDecisionCommitted"]>>> {
+        return {
+          kind: "failed",
+          error: ModuleErrorV1Schema.parse({
+            code: "TERMINAL_FAILURE",
+            category: "technical",
+            retryable: false,
+            stageCode: "c30-acceptance-proof",
+            occurredAt: query.requestedAt,
+            causalRunId: query.projectId,
+            diagnosticRef: {
+              kind: "diagnostic-artifact",
+              reference: { entityId: "human-decision-proof", versionId: "1" },
+            },
+          }),
+        };
+      },
+    };
+
     const riskFlow = createRiskFlowGraphComposition({
       db: app.db,
       transactionUnit,
       artifactStore,
       authorization: access.port,
       runtimeAuthorization: access.runtimeAuthorization,
+      humanDecisionProof: humanDecisionProofUnavailable,
       checkpointer,
       identificationRuntime: identificationRuntimeUnavailable,
       assessmentRuntime: assessment.runtime,

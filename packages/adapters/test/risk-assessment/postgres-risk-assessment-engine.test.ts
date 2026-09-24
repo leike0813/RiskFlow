@@ -1,6 +1,15 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { sha256CanonicalJson } from "@riskflow/core/persistence";
 import { DomainEventV1Schema } from "@riskflow/contracts/events";
+import {
+  ActualAssessmentProofResultV1Schema,
+  type ActualAssessmentProofResultV1,
+  type AssessmentInputSnapshotRefV1,
+  type AssessmentPreparationSnapshotRefV1,
+  type AuthorizationContextV1,
+  type RiskAssessmentRecordRefV1,
+} from "@riskflow/contracts/ports";
 import { RiskAssessmentRecordSchema } from "@riskflow/contracts/records";
 
 import { c25ReleaseRef, c25RuntimePolicySet } from "../../../core/test/risk-assessment/fixture.js";
@@ -1048,5 +1057,357 @@ describe("C25 PostgreSQL risk assessment engine", () => {
     expect(row.rows[0]!.entry_kind).toBe("historical-backfill");
     expect(new Date(row.rows[0]!.effective_at).toISOString()).toBe(effectiveAt);
     expect(new Date(row.rows[0]!.occurred_at).toISOString()).toBe("2030-01-01T00:00:00.000Z");
+  }, 180_000);
+
+  // ---------------------------------------------------------- C25 精确评估只读证明
+
+  const PROOF_REQUESTED_AT = "2030-01-01T00:00:00.000Z";
+
+  /** 证明用例共用的已成立记录：惰性建立一次，后续用例只读（篡改用例自行复原）。 */
+  let establishedProof:
+    | {
+        readonly recordRef: RiskAssessmentRecordRefV1;
+        readonly inputSnapshotRef: AssessmentInputSnapshotRefV1;
+        readonly preparationRef: AssessmentPreparationSnapshotRefV1;
+      }
+    | undefined;
+
+  const establishedProofRecord = async () => {
+    if (establishedProof === undefined) {
+      const preparation = await freshPreparation("proof");
+      const prepared = await fixture.engine.prepare(
+        (await fixture.prepareCommand({
+          commandId: "c25-proof-prepare",
+          preparation,
+        })) as never,
+      );
+      if (prepared.kind !== "succeeded") throw new Error("proof prepare failed");
+      const evaluated = await fixture.engine.evaluate(
+        (await fixture.evaluateCommand({
+          commandId: "c25-proof-evaluate",
+          inputSnapshotRef: prepared.result.assessmentInputSnapshotRef,
+        })) as never,
+      );
+      if (evaluated.kind !== "succeeded") throw new Error("proof evaluate failed");
+      establishedProof = {
+        recordRef: evaluated.result.assessmentRecordRef,
+        inputSnapshotRef: prepared.result.assessmentInputSnapshotRef,
+        preparationRef: preparation,
+      };
+    }
+    return establishedProof;
+  };
+
+  const proofQuery = (
+    queryId: string,
+    authorization: AuthorizationContextV1,
+    riskAssessmentRecordRef: RiskAssessmentRecordRefV1,
+  ) => ({
+    queryId,
+    requestedAt: PROOF_REQUESTED_AT,
+    projectId: fixture.projectId,
+    actorId: fixture.managerId,
+    authorization,
+    kind: "verify-actual-assessment" as const,
+    payload: { riskAssessmentRecordRef },
+  });
+
+  const recordRowText = async (recordRef: RiskAssessmentRecordRefV1) => {
+    const result = await fixture.postgres.postgres.adminPool.query<{
+      content_digest: string;
+      record_payload_text: string;
+    }>(
+      "SELECT content_digest, record_payload::text AS record_payload_text FROM business.risk_assessment_records WHERE record_id = $1 AND version_id = $2",
+      [recordRef.reference.entityId, recordRef.reference.versionId],
+    );
+    return result.rows[0]!;
+  };
+
+  it("精确实际评估证明返回最小投影并逐项对上冻结输入", async () => {
+    const { recordRef, inputSnapshotRef, preparationRef } = await establishedProofRecord();
+    const queryId = "c25-proof-establish";
+    const result = await fixture.engine.verifyActualAssessment(
+      proofQuery(queryId, await fixture.readAuthorization(queryId), recordRef),
+    );
+    // 严格契约裁定投影形状：既不返回正文，也不多带任何字段。
+    expect(ActualAssessmentProofResultV1Schema.safeParse(result).success).toBe(true);
+    expect(result).toMatchObject({ kind: "succeeded" });
+    if (result.kind !== "succeeded") return;
+    const proof = result.result;
+    expect(Object.keys(proof).sort()).toEqual(
+      [
+        "assessmentBasisReleaseSetRef",
+        "assessmentInputSnapshotRef",
+        "assessmentRunRef",
+        "auditTrailRef",
+        "calibrationAgentPolicyRef",
+        "deviationPolicyRef",
+        "kind",
+        "monitoringSnapshotRefs",
+        "projectId",
+        "recordedAt",
+        "riskAssessmentRecordRef",
+        "riskInputRef",
+        "spatialScopeRef",
+      ].sort(),
+    );
+    expect(proof.kind).toBe("established");
+    expect(proof.projectId).toBe(fixture.projectId);
+    expect(proof.riskAssessmentRecordRef).toEqual(recordRef);
+    expect(proof.assessmentInputSnapshotRef).toEqual(inputSnapshotRef);
+    expect(proof.assessmentBasisReleaseSetRef).toEqual(fixture.basisRef);
+    expect(proof.assessmentRunRef).toEqual({
+      kind: "workflow-run",
+      reference: { entityId: "c25-engine-run", versionId: "1" },
+    });
+
+    // 逐项与 C25 持久事实对账：输入快照的策略、准备快照的空间/监测/风险输入、记录行的审计与时间。
+    const inputSnapshotRow = await fixture.postgres.postgres.adminPool.query<{
+      snapshot_payload: {
+        deviationPolicyRef: unknown;
+        calibrationAgentPolicyRef: unknown;
+      };
+    }>(
+      "SELECT snapshot_payload FROM business.assessment_input_snapshots WHERE input_snapshot_id = $1 AND version_id = $2",
+      [inputSnapshotRef.reference.entityId, inputSnapshotRef.reference.versionId],
+    );
+    expect(proof.deviationPolicyRef).toEqual(
+      inputSnapshotRow.rows[0]!.snapshot_payload.deviationPolicyRef,
+    );
+    expect(proof.calibrationAgentPolicyRef).toEqual(
+      inputSnapshotRow.rows[0]!.snapshot_payload.calibrationAgentPolicyRef,
+    );
+    const preparationRow = await fixture.postgres.postgres.adminPool.query<{
+      snapshot_payload: {
+        spatialScopeRef: unknown;
+        riskInput: unknown;
+        monitoringSnapshotRefs?: readonly unknown[];
+      };
+    }>(
+      "SELECT snapshot_payload FROM business.assessment_preparation_snapshots WHERE snapshot_id = $1 AND version_id = $2",
+      [preparationRef.reference.entityId, preparationRef.reference.versionId],
+    );
+    expect(proof.spatialScopeRef).toEqual(fixture.businessSpatialScopeRef);
+    expect(proof.spatialScopeRef).toEqual(
+      preparationRow.rows[0]!.snapshot_payload.spatialScopeRef,
+    );
+    expect(proof.riskInputRef).toEqual(preparationRow.rows[0]!.snapshot_payload.riskInput);
+    expect(proof.monitoringSnapshotRefs).toEqual(
+      preparationRow.rows[0]!.snapshot_payload.monitoringSnapshotRefs,
+    );
+    const recordRow = await fixture.postgres.postgres.adminPool.query<{
+      audit_entry_id: string;
+      recorded_at: Date;
+    }>(
+      "SELECT audit_entry_id, recorded_at FROM business.risk_assessment_records WHERE record_id = $1 AND version_id = $2",
+      [recordRef.reference.entityId, recordRef.reference.versionId],
+    );
+    expect(proof.auditTrailRef).toEqual({
+      kind: "audit-trail",
+      reference: { entityId: recordRow.rows[0]!.audit_entry_id, versionId: "1" },
+    });
+    expect(proof.recordedAt).toBe(new Date(recordRow.rows[0]!.recorded_at).toISOString());
+  }, 180_000);
+
+  it("缺失记录、错版本与失效授权以同型 AUTHORIZATION_DENIED 收口且不枚举存在性", async () => {
+    const { recordRef } = await establishedProofRecord();
+    // 目标在库中存在，但被查询的版本不存在：与完全未知目标必须不可区分。
+    const existing = await fixture.postgres.postgres.adminPool.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM business.risk_assessment_records WHERE record_id = $1",
+      [recordRef.reference.entityId],
+    );
+    expect(existing.rows[0]!.count).toBe(1);
+
+    const unknownId = "c25-proof-unknown-record";
+    const hiddenQueryId = "c25-proof-hidden-version";
+    const unknownQueryId = "c25-proof-unknown";
+    const hidden = await fixture.engine.verifyActualAssessment(
+      proofQuery(hiddenQueryId, await fixture.readAuthorization(hiddenQueryId), {
+        ...recordRef,
+        reference: { ...recordRef.reference, versionId: "999" },
+      }),
+    );
+    const unknown = await fixture.engine.verifyActualAssessment(
+      proofQuery(unknownQueryId, await fixture.readAuthorization(unknownQueryId), {
+        kind: "risk-assessment-record",
+        reference: { entityId: unknownId, versionId: "1" },
+      }),
+    );
+    const revokedQueryId = "c25-proof-revoked";
+    const revokedAuthorization = await fixture.readAuthorization(revokedQueryId);
+    let revoked: ActualAssessmentProofResultV1;
+    await fixture.revokeAfterFirstRead();
+    try {
+      revoked = await fixture.engine.verifyActualAssessment(
+        proofQuery(revokedQueryId, revokedAuthorization, recordRef),
+      );
+    } finally {
+      await fixture.restoreSession();
+    }
+
+    const shapeOf = (result: ActualAssessmentProofResultV1) => {
+      expect(result.kind).toBe("failed");
+      if (result.kind !== "failed") throw new Error("expected a closed failure");
+      expect(result.error.code).toBe("AUTHORIZATION_DENIED");
+      if (result.error.code !== "AUTHORIZATION_DENIED") {
+        throw new Error("expected an authorization denial");
+      }
+      return {
+        category: result.error.category,
+        retryable: result.error.retryable,
+        requiredCapability: result.error.requiredCapability,
+      };
+    };
+    const expected = {
+      category: "authorization",
+      retryable: false,
+      requiredCapability: "risk-assessment.read",
+    };
+    expect(shapeOf(hidden)).toEqual(expected);
+    expect(shapeOf(unknown)).toEqual(expected);
+    expect(shapeOf(revoked)).toEqual(expected);
+    // 响应不得回显被查询的引用，也不得泄露目标是否存在。
+    expect(JSON.stringify(hidden)).not.toContain(recordRef.reference.entityId);
+    expect(JSON.stringify(unknown)).not.toContain(unknownId);
+    expect(Object.keys(hidden).sort()).toEqual(Object.keys(unknown).sort());
+  }, 240_000);
+
+  it("严格查询门：无权或跨工程请求在披露前被拒且零副作用", async () => {
+    const { recordRef } = await establishedProofRecord();
+    const queryId = "c25-proof-no-capability";
+    const authorization = await fixture.readAuthorization(queryId);
+    const noCapability = await fixture.engine.verifyActualAssessment(
+      proofQuery(queryId, { ...authorization, grantedCapabilities: ["risk-assessment.evaluate"] }, recordRef),
+    );
+    expect(noCapability).toMatchObject({
+      kind: "failed",
+      error: { code: "UNSUPPORTED_CONTRACT", category: "technical", retryable: false },
+    });
+    const foreign = await fixture.engine.verifyActualAssessment({
+      ...proofQuery(queryId, authorization, recordRef),
+      projectId: fixture.foreignProjectId(),
+    });
+    expect(foreign).toMatchObject({
+      kind: "failed",
+      error: { code: "UNSUPPORTED_CONTRACT", retryable: false },
+    });
+    // 披露前拒绝：连回执与业务审计都不产生。
+    expect(await countReceipts(fixture, queryId)).toBe(0);
+    expect(await countAuditEntries(fixture, `audit-${queryId}:assessment-record`)).toBe(0);
+  }, 180_000);
+
+  it("摘要或索引身份与正文不一致时终止失败且不改写历史", async () => {
+    const { recordRef, inputSnapshotRef, preparationRef } = await establishedProofRecord();
+    const queryId = "c25-proof-inconsistent";
+    const query = proofQuery(queryId, await fixture.readAuthorization(queryId), recordRef);
+    const original = await recordRowText(recordRef);
+
+    // 摘要与正文不符。
+    await fixture.postgres.postgres.adminPool.query(
+      "UPDATE business.risk_assessment_records SET content_digest = $3 WHERE record_id = $1 AND version_id = $2",
+      [recordRef.reference.entityId, recordRef.reference.versionId, "0".repeat(64)],
+    );
+    try {
+      expect(await fixture.engine.verifyActualAssessment(query)).toMatchObject({
+        kind: "failed",
+        error: { code: "TERMINAL_FAILURE" },
+      });
+    } finally {
+      await fixture.postgres.postgres.adminPool.query(
+        "UPDATE business.risk_assessment_records SET content_digest = $3 WHERE record_id = $1 AND version_id = $2",
+        [recordRef.reference.entityId, recordRef.reference.versionId, original.content_digest],
+      );
+    }
+
+    // 摘要与正文自洽，但正文身份与行索引身份不符。
+    const tampered = {
+      ...(JSON.parse(original.record_payload_text) as Record<string, unknown>),
+      assessmentRecordId: "c25-proof-tampered-record",
+    };
+    await fixture.postgres.postgres.adminPool.query(
+      "UPDATE business.risk_assessment_records SET record_payload = $3::jsonb, content_digest = $4 WHERE record_id = $1 AND version_id = $2",
+      [
+        recordRef.reference.entityId,
+        recordRef.reference.versionId,
+        JSON.stringify(tampered),
+        sha256CanonicalJson(tampered),
+      ],
+    );
+    try {
+      expect(await fixture.engine.verifyActualAssessment(query)).toMatchObject({
+        kind: "failed",
+        error: { code: "TERMINAL_FAILURE" },
+      });
+    } finally {
+      await fixture.postgres.postgres.adminPool.query(
+        "UPDATE business.risk_assessment_records SET record_payload = $3::jsonb, content_digest = $4 WHERE record_id = $1 AND version_id = $2",
+        [
+          recordRef.reference.entityId,
+          recordRef.reference.versionId,
+          original.record_payload_text,
+          original.content_digest,
+        ],
+      );
+    }
+
+    // 输入快照行的准备快照引用与正文不符：冻结输入链不一致同样终止失败。
+    const tamperedPreparationEntityId = "c25-proof-tampered-preparation";
+    await fixture.postgres.postgres.adminPool.query(
+      "UPDATE business.assessment_input_snapshots SET preparation_snapshot_ref = jsonb_set(preparation_snapshot_ref, '{reference,entityId}', to_jsonb($3::text)) WHERE input_snapshot_id = $1 AND version_id = $2",
+      [
+        inputSnapshotRef.reference.entityId,
+        inputSnapshotRef.reference.versionId,
+        tamperedPreparationEntityId,
+      ],
+    );
+    try {
+      expect(await fixture.engine.verifyActualAssessment(query)).toMatchObject({
+        kind: "failed",
+        error: { code: "TERMINAL_FAILURE" },
+      });
+    } finally {
+      await fixture.postgres.postgres.adminPool.query(
+        "UPDATE business.assessment_input_snapshots SET preparation_snapshot_ref = jsonb_set(preparation_snapshot_ref, '{reference,entityId}', to_jsonb($3::text)) WHERE input_snapshot_id = $1 AND version_id = $2",
+        [
+          inputSnapshotRef.reference.entityId,
+          inputSnapshotRef.reference.versionId,
+          preparationRef.reference.entityId,
+        ],
+      );
+    }
+  }, 240_000);
+
+  it("证明只读：调用前后评估记录行与内容不变且不产生新事实", async () => {
+    const { recordRef } = await establishedProofRecord();
+    const rowKey = [recordRef.reference.entityId, recordRef.reference.versionId];
+    const snapshot = async () =>
+      (
+        await fixture.postgres.postgres.adminPool.query<Record<string, unknown>>(
+          "SELECT record_id, version_id, content_digest, identity_digest, record_payload, audit_entry_id, recorded_at FROM business.risk_assessment_records WHERE record_id = $1 AND version_id = $2",
+          rowKey,
+        )
+      ).rows;
+    const before = await snapshot();
+    const recordsBefore = await countRows(
+      fixture,
+      "business.risk_assessment_records",
+      fixture.projectId,
+    );
+    const eventsBefore = await countEvents(fixture, "assessment.recorded.v1");
+
+    const queryId = "c25-proof-readonly";
+    const result = await fixture.engine.verifyActualAssessment(
+      proofQuery(queryId, await fixture.readAuthorization(queryId), recordRef),
+    );
+    expect(result).toMatchObject({ kind: "succeeded" });
+
+    expect(await snapshot()).toEqual(before);
+    expect(
+      await countRows(fixture, "business.risk_assessment_records", fixture.projectId),
+    ).toBe(recordsBefore);
+    expect(await countEvents(fixture, "assessment.recorded.v1")).toBe(eventsBefore);
+    // 只读证明不登记回执、审计或新评估事实。
+    expect(await countReceipts(fixture, queryId)).toBe(0);
+    expect(await countAuditEntries(fixture, `audit-${queryId}:assessment-record`)).toBe(0);
   }, 180_000);
 });

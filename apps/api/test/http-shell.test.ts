@@ -14,8 +14,11 @@ import {
 import { MODULE_BRANCH_CAPABILITY_V1 } from "@riskflow/contracts/ports";
 import type {
   EngineeringDataPortV1,
+  HumanDecisionFeedbackCommandV1,
+  HumanDecisionFeedbackPortV1,
   ProjectionPortV1,
   WarningResponsePortV1,
+  WarningResponseRecordSuccessV1,
 } from "@riskflow/contracts/ports";
 import type { LocalIdentityAccessV1 } from "@riskflow/core/access";
 
@@ -152,6 +155,107 @@ const warningResponsePort = (onRecord: (command: unknown) => void): WarningRespo
       },
     };
   },
+});
+
+const humanDecisionFeedbackPort = (
+  onRecord: (command: HumanDecisionFeedbackCommandV1) => void,
+): HumanDecisionFeedbackPortV1 => ({
+  record: async (command) => {
+    onRecord(command);
+    return { kind: "succeeded", result: humanDecisionFeedbackResult(command) };
+  },
+});
+
+const humanDecisionFeedbackResult = (
+  command: HumanDecisionFeedbackCommandV1,
+): WarningResponseRecordSuccessV1 => {
+  switch (command.kind) {
+    case "adopt-recommendation":
+      return command.payload.decision === "declined"
+        ? { kind: "decline", routeDecisionRef }
+        : { kind: "adoption", routeDecisionRef, forecastRunRef };
+    case "record-execution":
+      return { kind: "execution", executionRecordRef };
+    case "record-feedback":
+      return { kind: "feedback", feedbackRef };
+  }
+};
+
+const recommendationRef = {
+  kind: "response-recommendation" as const,
+  reference: { entityId: "recommendation", versionId: "1" },
+};
+const routeDecisionRef = {
+  kind: "route-decision" as const,
+  reference: { entityId: "decision", versionId: "1" },
+};
+const forecastRunRef = {
+  kind: "workflow-run" as const,
+  reference: { entityId: "run", versionId: "1" },
+};
+const executionRecordRef = {
+  kind: "execution-record" as const,
+  reference: { entityId: "execution", versionId: "1" },
+};
+const feedbackRef = {
+  kind: "feedback" as const,
+  reference: { entityId: "feedback", versionId: "1" },
+};
+const monitoringSnapshotRef = {
+  kind: "monitoring-snapshot" as const,
+  reference: { entityId: "monitoring", versionId: "1" },
+};
+const contentArtifactRef = {
+  kind: "content-artifact" as const,
+  reference: { entityId: "artifact", versionId: "1" },
+};
+const assessmentRecordRef = {
+  kind: "risk-assessment-record" as const,
+  reference: { entityId: "assessment", versionId: "1" },
+};
+
+const adoptPayload = {
+  responseRecommendationRef: recommendationRef,
+  decision: "adopted" as const,
+  reasonCode: "reason-adopt",
+  preActionMonitoringSnapshotRef: monitoringSnapshotRef,
+};
+const declinePayload = {
+  responseRecommendationRef: recommendationRef,
+  decision: "declined" as const,
+  reasonCode: "reason-decline",
+};
+const executionPayload = {
+  actionSource: {
+    kind: "adopted-recommendation" as const,
+    responseRecommendationRef: recommendationRef,
+  },
+  executedByActorId: "actor",
+  recordedByActorId: "actor",
+  occurredAt: NOW,
+  evidenceReferences: [
+    {
+      locator: { sourceSegmentId: "segment" },
+      sourceVersion: { entityId: "source", versionId: "1" },
+    },
+  ],
+};
+const feedbackPayload = {
+  executionRecordRef,
+  postActionMonitoringSnapshotRef: monitoringSnapshotRef,
+  feedbackArtifactRef: contentArtifactRef,
+  occurredAt: NOW,
+  actualAssessmentRecordRef: assessmentRecordRef,
+};
+
+const humanDecisionBody = (commandId: string, payload: Record<string, unknown>) => ({
+  schemaVersion: "1",
+  commandId,
+  idempotencyKey: `idempotency-${commandId}`,
+  issuedAt: NOW,
+  requestedSpatialScopeRefs: [scope],
+  requestedSourceVersionRefs: [],
+  payload,
 });
 
 const projectionPort = (onSubscribe: (request: unknown) => void): ProjectionPortV1 => ({
@@ -637,6 +741,291 @@ describe("C09 HTTP shell", () => {
     expect(Object.keys(document.paths)).toContain(
       "/api/v1/projects/{projectId}/commands/warning-response.acknowledge",
     );
+    await app.close();
+  });
+
+  it("forwards the human decision and feedback branches to the injected C41 port", async () => {
+    const authorizedBranches: string[] = [];
+    const humanCommands: HumanDecisionFeedbackCommandV1[] = [];
+    const legacyCommands: unknown[] = [];
+    const app = buildApi({
+      access: accessStub((branch) => authorizedBranches.push(branch)),
+      ports: {
+        humanDecisionFeedback: humanDecisionFeedbackPort((command) => humanCommands.push(command)),
+        warningResponse: warningResponsePort((command) => legacyCommands.push(command)),
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+    const send = (branch: string, commandId: string, payload: Record<string, unknown>) =>
+      app.inject({
+        method: "POST",
+        url: `/api/v1/projects/project/commands/${branch}`,
+        headers: { ...jsonHeaders, cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+        payload: humanDecisionBody(commandId, payload),
+      });
+
+    const adopted = await send(
+      "warning-response.adopt-recommendation",
+      "command-adopt",
+      adoptPayload,
+    );
+    expect(adopted.statusCode).toBe(200);
+    expect(adopted.json()).toEqual({
+      kind: "succeeded",
+      result: { kind: "adoption", routeDecisionRef, forecastRunRef },
+    });
+
+    const declined = await send(
+      "warning-response.adopt-recommendation",
+      "command-decline",
+      declinePayload,
+    );
+    expect(declined.statusCode).toBe(200);
+    expect(declined.json()).toEqual({
+      kind: "succeeded",
+      result: { kind: "decline", routeDecisionRef },
+    });
+
+    const executed = await send(
+      "warning-response.record-execution",
+      "command-execution",
+      executionPayload,
+    );
+    expect(executed.statusCode).toBe(200);
+    expect(executed.json()).toEqual({
+      kind: "succeeded",
+      result: { kind: "execution", executionRecordRef },
+    });
+
+    const fedBack = await send(
+      "warning-response.record-feedback",
+      "command-feedback",
+      feedbackPayload,
+    );
+    expect(fedBack.statusCode).toBe(200);
+    expect(fedBack.json()).toEqual({
+      kind: "succeeded",
+      result: { kind: "feedback", feedbackRef },
+    });
+
+    // HTTP 层不缓存也不改写命令身份：同键同载荷重试转发完全相同的命令。
+    const retried = await send(
+      "warning-response.record-execution",
+      "command-execution",
+      executionPayload,
+    );
+    expect(retried.statusCode).toBe(200);
+    expect(retried.json()).toEqual(executed.json());
+
+    expect(humanCommands.map((command) => [command.kind, command.commandId])).toEqual([
+      ["adopt-recommendation", "command-adopt"],
+      ["adopt-recommendation", "command-decline"],
+      ["record-execution", "command-execution"],
+      ["record-feedback", "command-feedback"],
+      ["record-execution", "command-execution"],
+    ]);
+    expect(humanCommands[4]).toEqual(humanCommands[2]);
+    // 可选精确选择器原样经 strict 传输层到达 C41 端口，既未被丢弃也未被服务端补齐。
+    expect(humanCommands[0]?.payload).toEqual(adoptPayload);
+    expect(humanCommands[3]?.payload).toEqual(feedbackPayload);
+    expect(humanCommands[0]).toMatchObject({ projectId: "project", actorId: "actor" });
+    expect(humanCommands[0]?.authorization).toMatchObject({
+      grantedCapabilities: ["warning-response.record"],
+    });
+    expect(legacyCommands).toHaveLength(0);
+    expect(authorizedBranches).toEqual([
+      "warning-response.adopt-recommendation",
+      "warning-response.adopt-recommendation",
+      "warning-response.record-execution",
+      "warning-response.record-feedback",
+      "warning-response.record-execution",
+    ]);
+    await app.close();
+  });
+
+  it("keeps the other record branches on the original port and each set unavailable without its port", async () => {
+    const legacyAuthorized: string[] = [];
+    const legacyRecorded: unknown[] = [];
+    const legacyOnly = buildApi({
+      access: accessStub((branch) => legacyAuthorized.push(branch)),
+      ports: { warningResponse: warningResponsePort((command) => legacyRecorded.push(command)) },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+    const acknowledgement = await legacyOnly.inject({
+      method: "POST",
+      url: "/api/v1/projects/project/commands/warning-response.acknowledge",
+      headers: { ...jsonHeaders, cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+      payload: humanDecisionBody("command-ack", {
+        warningRecordRef: {
+          kind: "warning-record",
+          reference: { entityId: "warning", versionId: "1" },
+        },
+        warningResponseTaskRef: {
+          kind: "warning-response-task",
+          reference: { entityId: "task", versionId: "1" },
+        },
+      }),
+    });
+    expect(acknowledgement.statusCode).toBe(200);
+    expect(legacyRecorded).toHaveLength(1);
+
+    for (const [branch, commandId, payload] of [
+      ["warning-response.adopt-recommendation", "command-adopt", adoptPayload],
+      ["warning-response.record-execution", "command-execution", executionPayload],
+      ["warning-response.record-feedback", "command-feedback", feedbackPayload],
+    ] as const) {
+      const unavailable = await legacyOnly.inject({
+        method: "POST",
+        url: `/api/v1/projects/project/commands/${branch}`,
+        headers: { ...jsonHeaders, cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+        payload: humanDecisionBody(commandId, payload),
+      });
+      expect(unavailable.statusCode).toBe(404);
+      expect(unavailable.json().code).toBe("NOT_FOUND");
+    }
+    expect(legacyAuthorized).toEqual(["warning-response.acknowledge"]);
+    expect(legacyRecorded).toHaveLength(1);
+    await legacyOnly.close();
+
+    const humanAuthorized: string[] = [];
+    const humanRecorded: HumanDecisionFeedbackCommandV1[] = [];
+    const humanOnly = buildApi({
+      access: accessStub((branch) => humanAuthorized.push(branch)),
+      ports: {
+        humanDecisionFeedback: humanDecisionFeedbackPort((command) => humanRecorded.push(command)),
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+    // 未注入端口时这些路由根本未注册：请求不进入 strict 解析、也不发生授权，故载荷内容与结果无关。
+    for (const [branch, commandId, payload] of [
+      ["warning-response.acknowledge", "command-ack", { warningRecordRef: {} }],
+      ["warning-response.calculate-deviation", "command-deviation", {}],
+      ["warning-response.create-calibration-suggestion", "command-calibration", {}],
+    ] as const) {
+      const unavailable = await humanOnly.inject({
+        method: "POST",
+        url: `/api/v1/projects/project/commands/${branch}`,
+        headers: { ...jsonHeaders, cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+        payload: humanDecisionBody(commandId, payload),
+      });
+      expect(unavailable.statusCode).toBe(404);
+      expect(unavailable.json().code).toBe("NOT_FOUND");
+    }
+    expect(humanAuthorized).toEqual([]);
+    expect(humanRecorded).toHaveLength(0);
+    // 路由拆分不改变路径、分支、能力值，只改变承载端口。
+    const recordBranches = [
+      "warning-response.acknowledge",
+      "warning-response.calculate-deviation",
+      "warning-response.create-calibration-suggestion",
+      "warning-response.adopt-recommendation",
+      "warning-response.record-execution",
+      "warning-response.record-feedback",
+    ];
+    const catalog = HTTP_ROUTE_CATALOG_V1.filter((entry) => recordBranches.includes(entry.branch));
+    expect(catalog).toHaveLength(6);
+    expect(
+      catalog.map((entry) => [
+        entry.branch,
+        entry.domainKind,
+        entry.portKey,
+        entry.requiredCapability,
+      ]),
+    ).toEqual([
+      ["warning-response.acknowledge", "acknowledge", "warningResponse", "warning-response.record"],
+      [
+        "warning-response.calculate-deviation",
+        "calculate-deviation",
+        "warningResponse",
+        "warning-response.record",
+      ],
+      [
+        "warning-response.create-calibration-suggestion",
+        "create-calibration-suggestion",
+        "warningResponse",
+        "warning-response.record",
+      ],
+      [
+        "warning-response.adopt-recommendation",
+        "adopt-recommendation",
+        "humanDecisionFeedback",
+        "warning-response.record",
+      ],
+      [
+        "warning-response.record-execution",
+        "record-execution",
+        "humanDecisionFeedback",
+        "warning-response.record",
+      ],
+      [
+        "warning-response.record-feedback",
+        "record-feedback",
+        "humanDecisionFeedback",
+        "warning-response.record",
+      ],
+    ]);
+    await humanOnly.close();
+  });
+
+  it("keeps server-side capability and strict payload checks on the human decision routes", async () => {
+    const baseAccess = accessStub();
+    const restrictedAccess: LocalIdentityAccessV1 = {
+      ...baseAccess,
+      authorize: async (request) => {
+        const decision = await baseAccess.authorize(request);
+        return {
+          ...decision,
+          context: { ...decision.context, grantedCapabilities: ["projection.query"] },
+        };
+      },
+    };
+    const humanCommands: HumanDecisionFeedbackCommandV1[] = [];
+    const app = buildApi({
+      access: restrictedAccess,
+      ports: {
+        humanDecisionFeedback: humanDecisionFeedbackPort((command) => humanCommands.push(command)),
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+    const invoke = (branch: string, commandId: string, payload: Record<string, unknown>) =>
+      app.inject({
+        method: "POST",
+        url: `/api/v1/projects/project/commands/${branch}`,
+        headers: { ...jsonHeaders, cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+        payload: humanDecisionBody(commandId, payload),
+      });
+
+    const unauthorized = await invoke(
+      "warning-response.adopt-recommendation",
+      "command-adopt",
+      adoptPayload,
+    );
+    expect(unauthorized.statusCode).toBe(404);
+    expect(unauthorized.json().code).toBe("NOT_FOUND");
+
+    const binding = await invoke("warning-response.record-feedback", "command-feedback", {
+      ...feedbackPayload,
+      binding: { forecastRunRef },
+    });
+    expect(binding.statusCode).toBe(400);
+    expect(binding.json().code).toBe("CONTRACT_INVALID");
+
+    const forgedRun = await invoke("warning-response.adopt-recommendation", "command-adopt", {
+      ...adoptPayload,
+      forecastRunRef,
+    });
+    expect(forgedRun.statusCode).toBe(400);
+    expect(forgedRun.json().code).toBe("CONTRACT_INVALID");
+
+    expect(humanCommands).toHaveLength(0);
     await app.close();
   });
 });

@@ -19,10 +19,14 @@ import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/a
 import type { ArtifactStorePolicyV1 } from "@riskflow/core/artifacts";
 import {
   AuthorizationContextV1Schema,
+  ModuleErrorV1Schema,
   type AuthorizationContextV1,
   type ContractReferenceV1,
+  type HumanDecisionProofPortV1,
+  type HumanDecisionProofQueryV1,
   type ModuleBranchV1,
   type StandardizedRiskRecordRefV1,
+  type StartWorkflowRunCommandV1,
   type WaitingRefV1,
   type WorkflowEntryModeV1,
   type WorkflowRunRefV1,
@@ -41,6 +45,8 @@ import { sha256CanonicalJson } from "@riskflow/core/persistence";
 import { authorizationScopeDigest } from "@riskflow/core/retrieval";
 import {
   WorkflowGraphRunStateV1Schema,
+  workflowEntryIdentityFor,
+  workflowRunIdentityFor,
   type WorkflowGraphBodyPortV1,
   type WorkflowGraphRegistrationStoreV1,
   type WorkflowGraphResultRowV1,
@@ -475,6 +481,85 @@ const createAssessmentRuntimeStub = (deps: {
   };
 };
 
+/** C41 人工采纳证明替身（design D2/D3）：记录每次核对请求，可切换为成功采纳或各类错配/失败。 */
+type HumanDecisionProofModeV1 =
+  | "adopted"
+  | "failed"
+  | "wrong-run"
+  | "wrong-recommendation"
+  | "wrong-scope";
+
+interface HumanDecisionProofStubV1 {
+  readonly port: HumanDecisionProofPortV1;
+  readonly queries: HumanDecisionProofQueryV1[];
+  setMode(mode: HumanDecisionProofModeV1): void;
+}
+
+const createHumanDecisionProofStub = (input: {
+  readonly spatialScopeRef: typeof SPACE_A | typeof SPACE_B;
+}): HumanDecisionProofStubV1 => {
+  const queries: HumanDecisionProofQueryV1[] = [];
+  let mode: HumanDecisionProofModeV1 = "adopted";
+  const port: HumanDecisionProofPortV1 = {
+    verifyHumanDecisionCommitted: async (query) => {
+      queries.push(query);
+      if (mode === "failed") {
+        return {
+          kind: "failed",
+          error: ModuleErrorV1Schema.parse({
+            code: "TERMINAL_FAILURE",
+            category: "technical",
+            retryable: false,
+            stageCode: "c30-runtime-test-proof",
+            occurredAt: TIMESTAMP,
+            causalRunId: query.projectId,
+            diagnosticRef: {
+              kind: "diagnostic-artifact",
+              reference: { entityId: "human-decision-proof", versionId: "1" },
+            },
+          }),
+        };
+      }
+      return {
+        kind: "succeeded",
+        result: {
+          kind: "adopted",
+          projectId: query.projectId,
+          routeDecisionRef: query.payload.routeDecisionRef,
+          workflowRunRef:
+            mode === "wrong-run"
+              ? {
+                  kind: "workflow-run",
+                  reference: { entityId: "risk-flow-run:other", versionId: sha("other-run") },
+                }
+              : query.payload.workflowRunRef,
+          responseRecommendationRef:
+            mode === "wrong-recommendation"
+              ? {
+                  kind: "response-recommendation",
+                  reference: { entityId: "response-recommendation:other", versionId: "v1" },
+                }
+              : query.payload.responseRecommendationRef,
+          spatialScopeRef: mode === "wrong-scope" ? SPACE_B : input.spatialScopeRef,
+          decidedBy: ACTOR_ID,
+          decidedAt: TIMESTAMP,
+          auditTrailRef: {
+            kind: "audit-trail",
+            reference: { entityId: "human-decision-proof:audit", versionId: "v1" },
+          },
+        },
+      };
+    },
+  };
+  return {
+    port,
+    queries,
+    setMode: (nextMode) => {
+      mode = nextMode;
+    },
+  };
+};
+
 interface RiskFlowHarnessV1 {
   readonly postgres: PostgresTestFixture;
   readonly runtime: PostgresRuntime;
@@ -485,6 +570,7 @@ interface RiskFlowHarnessV1 {
   readonly runtimeAuthorization: ReturnType<typeof createRuntimeAuthorizationStub>;
   readonly identification: ReturnType<typeof createIdentificationRuntimeStub>;
   readonly assessment: ReturnType<typeof createAssessmentRuntimeStub>;
+  readonly humanDecisionProof: HumanDecisionProofStubV1;
   readonly pairingSpaces: Map<string, typeof SPACE_A | typeof SPACE_B>;
   readonly ports: RiskFlowGraphPortsV1;
   readonly graph: RiskFlowGraphRunnerV1;
@@ -495,12 +581,19 @@ interface RiskFlowHarnessV1 {
 
 const startHarness = async (
   postgres: PostgresTestFixture,
-  options: { readonly checkpointStageResultsUsable?: boolean } = {},
+  options: {
+    readonly checkpointStageResultsUsable?: boolean;
+    /** C05 复验签发身份的空间范围：必须与用例命令的授权范围一致，否则登记行摘要无法复验。 */
+    readonly authorizationScopes?: readonly (typeof SPACE_A | typeof SPACE_B)[];
+  } = {},
 ): Promise<RiskFlowHarnessV1> => {
   const runtime = createPostgresRuntime(postgres.app, "riskflow_app");
   const transactionUnit = createPostgresTransactionUnit(postgres.app);
   const rootDirectory = await mkdtemp(join(tmpdir(), "riskflow-c30-risk-flow-"));
-  const authorization = authorizationFor("workflow.start", [SPACE_A, SPACE_B]);
+  const authorization = authorizationFor(
+    "workflow.start",
+    options.authorizationScopes ?? [SPACE_A, SPACE_B],
+  );
   const access = createAccessStub(authorization);
   const runtimeAuthorization = createRuntimeAuthorizationStub();
   try {
@@ -549,10 +642,12 @@ const startHarness = async (
     });
     const wiredPorts: RiskFlowGraphPortsV1 = { ...ports, assessmentRuntime: assessment.runtime };
     const graph = createRiskFlowGraph({ ports: wiredPorts, checkpointer });
+    const humanDecisionProof = createHumanDecisionProofStub({ spatialScopeRef: SPACE_A });
     const riskFlowRuntime = createRiskFlowGraphRuntime({
       ports: wiredPorts,
       graph,
       authorization: runtimeAuthorization.port,
+      humanDecisionProof: humanDecisionProof.port,
       now: () => clock.now(),
     });
     return {
@@ -565,6 +660,7 @@ const startHarness = async (
       runtimeAuthorization,
       identification,
       assessment,
+      humanDecisionProof,
       pairingSpaces,
       ports: wiredPorts,
       graph,
@@ -662,6 +758,24 @@ const IDENTIFY_FROZEN_REFS: readonly ContractReferenceV1[] = [
   MONITORING_A,
   MONITORING_B,
 ];
+
+/** 等待模式预测入口（C41 接线）：冻结引用与等待意图只由本用例给出。 */
+const FORECAST_RECOMMENDATION_REF = {
+  kind: "response-recommendation" as const,
+  reference: { entityId: "response-recommendation-c30", versionId: "v1" },
+};
+const FORECAST_MONITORING_REF = {
+  kind: "monitoring-snapshot" as const,
+  reference: { entityId: "monitoring-forecast-c30", versionId: "v1" },
+};
+const FORECAST_BASIS_RELEASE_SET_REF = {
+  kind: "assessment-basis-release-set" as const,
+  reference: { entityId: "basis-forecast-c30", versionId: "v1" },
+};
+const FORECAST_ASSESSMENT_INPUT_REF = {
+  kind: "assessment-input-snapshot" as const,
+  reference: { entityId: "assessment-input-forecast-c30", versionId: "v1" },
+};
 
 /** 评估子运行等待引用（替身用它表示子运行停在人工确认等待）。 */
 const USER_CONFIRMATION_WAITING: WaitingRefV1 = {
@@ -1296,6 +1410,7 @@ describe("C30 父运行图运行时（真实 PostgreSQL + 真实 LangGraph + 真
     ).toEqual(rowsBefore.map((row) => `${row.resultKind}/${row.resultId}/${row.resultVersionId}`));
     expect(await auditCount()).toBe(auditBefore);
   }, 120_000);
+
 });
 
 describe("C30 父运行图运行时（检查点写入失败后恢复对账）", () => {
@@ -1403,5 +1518,413 @@ describe("C30 父运行图运行时（检查点写入失败后恢复对账）", 
     const after = await readLatestState(harness, run.runRef, "workflow.resume");
     expect(after?.runVersionId).toBe(cursor?.runVersionId);
     expect(after?.stage).toBe("identification");
+  }, 120_000);
+});
+
+/**
+ * C41 接线等待/恢复门：等待模式的预测运行只认人工采纳事实。
+ *
+ * 与上一组用例相同只能真实 PostgreSQL + 真实 LangGraph + 真实 C03/C04，唯一差别是 C05 复验身份
+ * 只授权一个空间（等待门要求唯一已授权空间，且登记行的授权范围摘要必须与复验结果逐项一致）。
+ */
+describe("C30 人工决定等待门（唯一已授权空间）", () => {
+  let postgres: PostgresTestFixture;
+  let harness: RiskFlowHarnessV1;
+
+  beforeAll(async () => {
+    postgres = await startPostgresFixture();
+    await runPostgresMigrations({
+      connection: postgres.migrator,
+      migrationRoot: postgres.productionMigrationRoot,
+      additionalMigrationRoots: [postgres.fixtureMigrationRoot],
+    });
+    harness = await startHarness(postgres, { authorizationScopes: [SPACE_A] });
+    // 评估子运行替身停在人工确认等待：父运行据此如实登记等待，不猜测结论。
+    harness.assessment.setStatus("waiting", USER_CONFIRMATION_WAITING);
+  }, 300_000);
+
+  afterAll(async () => {
+    await harness?.close().catch(() => undefined);
+    await postgres?.close().catch(() => undefined);
+  }, 120_000);
+
+  const rowsOf = (runRef: WorkflowRunRefV1): Promise<readonly WorkflowGraphResultRowV1[]> =>
+    harness.adapter.registrationStore.listRunRows({
+      projectId: PROJECT_ID,
+      runId: runRef.reference.entityId,
+    });
+
+  /** C30 业务事实的审计条目数（工件读访问审计不属于业务补写，不计入）。 */
+  const auditCount = async (): Promise<number> => {
+    const result = await postgres.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM audit.entries WHERE project_id = $1 AND action LIKE 'risk-flow-%'",
+      [PROJECT_ID],
+    );
+    return Number(result.rows[0]?.count ?? "0");
+  };
+
+  /** 每个用例一份独立冻结输入：运行身份由冻结引用派生，用例之间不得命中同一运行。 */
+  const forecastEntryFor = (variant: string, waitForDecision: boolean) => {
+    const refs = {
+      adoptedRecommendationRef: {
+        kind: "response-recommendation" as const,
+        reference: { entityId: `response-recommendation-c30-${variant}`, versionId: "v1" },
+      },
+      preActionMonitoringSnapshotRef: {
+        kind: "monitoring-snapshot" as const,
+        reference: { entityId: `monitoring-forecast-c30-${variant}`, versionId: "v1" },
+      },
+      assessmentBasisReleaseSetRef: {
+        kind: "assessment-basis-release-set" as const,
+        reference: { entityId: `basis-forecast-c30-${variant}`, versionId: "v1" },
+      },
+      frozenAssessmentBasisRef: {
+        kind: "assessment-input-snapshot" as const,
+        reference: { entityId: `assessment-input-forecast-c30-${variant}`, versionId: "v1" },
+      },
+    };
+    const { adoptedRecommendationRef, preActionMonitoringSnapshotRef } = refs;
+    return {
+      refs,
+      runRef: workflowRunIdentityFor({
+        projectId: PROJECT_ID,
+        entryMode: "forecast-response",
+        entryIdentity: workflowEntryIdentityFor({
+          entryMode: "forecast-response",
+          projectId: PROJECT_ID,
+          frozenRefs: [
+            adoptedRecommendationRef,
+            preActionMonitoringSnapshotRef,
+            refs.assessmentBasisReleaseSetRef,
+            refs.frozenAssessmentBasisRef,
+          ],
+        }),
+        graphVersion: GRAPH_VERSION,
+      }).runRef,
+      payload: {
+        entryMode: "forecast-response" as const,
+        graphVersion: GRAPH_VERSION,
+        retryPolicyRef: RETRY_POLICY_REF,
+        ...refs,
+        ...(waitForDecision ? { waitForDecision: true as const } : {}),
+      },
+    };
+  };
+
+  it("C41/S1 等待模式的预测运行只登记等待与入口事实，同键重放返回同一运行引用", async () => {
+    harness.assessment.commands.length = 0;
+    harness.humanDecisionProof.queries.length = 0;
+    const entry = forecastEntryFor("waiting-replay", true);
+    const command: StartWorkflowRunCommandV1 = {
+      kind: "start-run",
+      commandId: "c30-forecast-waiting",
+      idempotencyKey: "c30-forecast-waiting",
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      issuedAt: TIMESTAMP,
+      authorization: authorizationFor("workflow.start", [SPACE_A]),
+      payload: entry.payload,
+    };
+    const started = await harness.riskFlowRuntime.workflowPort.startRun(command);
+    expect(started.kind).toBe("waiting");
+    if (started.kind !== "waiting") return;
+    // 等待引用自带精确建议与唯一已授权空间；运行引用由公式派生并原样返回，调用方不自行派生。
+    expect(started.waiting).toMatchObject({
+      kind: "human-decision",
+      responseRecommendationRef: entry.refs.adoptedRecommendationRef,
+      spatialScopeRef: SPACE_A,
+    });
+    expect(started.workflowRunRef).toEqual(entry.runRef);
+
+    // 等待态零评估、零预测：没有评估子运行启动，也没有评估子运行路由行。
+    expect(harness.assessment.commands).toEqual([]);
+    const rows = await rowsOf(entry.runRef);
+    expect(rows.filter((row) => row.resultKind === "waiting")).toHaveLength(1);
+    expect(
+      rows.filter(
+        (row) => row.resultKind === "route-decision" && row.routeKind === "assessment-sub-run",
+      ),
+    ).toEqual([]);
+    const waitingRow = rows.find((row) => row.resultKind === "waiting");
+    if (waitingRow?.waitingRef?.kind !== "human-decision") {
+      throw new TypeError("waiting row must carry the human decision reference");
+    }
+    // 等待行的决定路由引用就是本运行登记的入口路由引用（同一身份，可据它请求采纳证明）。
+    expect(
+      rows.some(
+        (row) =>
+          row.resultKind === "route-decision" &&
+          row.routeKind === "entry-accepted" &&
+          row.routeDecisionRef?.reference.entityId ===
+            waitingRow.waitingRef.routeDecisionRef.reference.entityId &&
+          row.routeDecisionRef?.reference.versionId ===
+            waitingRow.waitingRef.routeDecisionRef.reference.versionId,
+      ),
+    ).toBe(true);
+    const state = await readLatestState(harness, entry.runRef, "workflow.start");
+    expect(state?.status).toBe("waiting");
+    expect(state?.stage).toBe("assessment");
+
+    // 同一命令身份重放：命中同一运行引用与同一登记事实，不产生第二个等待或子运行。
+    const replay = await harness.riskFlowRuntime.workflowPort.startRun(command);
+    expect(replay.kind).toBe("waiting");
+    expect(replay.kind === "waiting" ? replay.workflowRunRef : undefined).toEqual(entry.runRef);
+    expect(harness.assessment.commands).toEqual([]);
+    const rowsAfterReplay = await rowsOf(entry.runRef);
+    expect(
+      rowsAfterReplay.map((row) => `${row.resultKind}/${row.resultId}/${row.resultVersionId}`),
+    ).toEqual(rows.map((row) => `${row.resultKind}/${row.resultId}/${row.resultVersionId}`));
+  }, 120_000);
+
+  it("C41/S1 等待中的预测运行收到其它恢复原因一律失败关闭且零预测", async () => {
+    harness.assessment.commands.length = 0;
+    const entry = forecastEntryFor("other-cause", true);
+    const started = await harness.riskFlowRuntime.workflowPort.startRun({
+      kind: "start-run",
+      commandId: "c30-forecast-waiting-other-cause",
+      idempotencyKey: "c30-forecast-waiting-other-cause",
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      issuedAt: TIMESTAMP,
+      authorization: authorizationFor("workflow.start", [SPACE_A]),
+      payload: entry.payload,
+    });
+    if (started.kind !== "waiting" || started.workflowRunRef === undefined) {
+      throw new TypeError("waiting mode must return the registered run reference");
+    }
+    const runRef = started.workflowRunRef;
+    const cursor = await readLatestState(harness, runRef, "workflow.resume");
+    expect(cursor?.status).toBe("waiting");
+    const rowsBefore = await rowsOf(runRef);
+    const auditBefore = await auditCount();
+    harness.humanDecisionProof.queries.length = 0;
+
+    for (const resumeCause of [
+      {
+        kind: "user-confirmed" as const,
+        userConfirmationRef: {
+          kind: "user-confirmation" as const,
+          reference: { entityId: "user-confirmation-waiting-gate", versionId: "v1" },
+        },
+      },
+      {
+        kind: "transient-recovered" as const,
+        workflowErrorRef: {
+          kind: "workflow-error" as const,
+          reference: { entityId: "workflow-error-waiting-gate", versionId: "v1" },
+        },
+        diagnosticArtifactRef: {
+          kind: "diagnostic-artifact" as const,
+          reference: { entityId: "diagnostic-waiting-gate", versionId: "v1" },
+        },
+      },
+    ]) {
+      const denied = await harness.riskFlowRuntime.workflowPort.resumeRun({
+        kind: "resume-run",
+        commandId: `c30-resume-waiting-denied:${resumeCause.kind}`,
+        idempotencyKey: `c30-resume-waiting-denied:${resumeCause.kind}`,
+        projectId: PROJECT_ID,
+        actorId: ACTOR_ID,
+        issuedAt: TIMESTAMP,
+        authorization: authorizationFor("workflow.resume", [SPACE_A]),
+        payload: {
+          workflowRunRef: runRef,
+          expectedStateVersion: cursor?.runVersionId ?? "",
+          resumeCause,
+        },
+      });
+      expect(denied).toMatchObject({
+        kind: "failed",
+        error: { code: "BUSINESS_BLOCKED", category: "business-blocked", retryable: false },
+      });
+    }
+    // 零预测、零补写，也不向 C41 证明端口发问。
+    expect(harness.assessment.commands).toEqual([]);
+    expect(harness.humanDecisionProof.queries).toEqual([]);
+    expect(
+      (await rowsOf(runRef)).map((row) => `${row.resultKind}/${row.resultId}/${row.resultVersionId}`),
+    ).toEqual(rowsBefore.map((row) => `${row.resultKind}/${row.resultId}/${row.resultVersionId}`));
+    expect(await auditCount()).toBe(auditBefore);
+    expect((await readLatestState(harness, runRef, "workflow.resume"))?.status).toBe("waiting");
+  }, 120_000);
+
+  it("C41/S2 人工采纳证明核对通过后恢复等待运行并建立唯一评估子运行", async () => {
+    harness.assessment.commands.length = 0;
+    harness.humanDecisionProof.setMode("adopted");
+    harness.humanDecisionProof.queries.length = 0;
+    const entry = forecastEntryFor("commit", true);
+    const started = await harness.riskFlowRuntime.workflowPort.startRun({
+      kind: "start-run",
+      commandId: "c30-forecast-commit",
+      idempotencyKey: "c30-forecast-commit",
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      issuedAt: TIMESTAMP,
+      authorization: authorizationFor("workflow.start", [SPACE_A]),
+      payload: entry.payload,
+    });
+    if (started.kind !== "waiting" || started.workflowRunRef === undefined) {
+      throw new TypeError("waiting mode must return the registered run reference");
+    }
+    const runRef = started.workflowRunRef;
+    const waitingRow = (await rowsOf(runRef)).find(
+      (row) => row.resultKind === "waiting" && row.waitingRef?.kind === "human-decision",
+    );
+    if (waitingRow?.waitingRef?.kind !== "human-decision") {
+      throw new TypeError("waiting row must carry the human decision reference");
+    }
+    const decisionRef = waitingRow.waitingRef.routeDecisionRef;
+    const cursor = await readLatestState(harness, runRef, "workflow.resume");
+    expect(cursor?.status).toBe("waiting");
+
+    const resumed = await harness.riskFlowRuntime.workflowPort.resumeRun({
+      kind: "resume-run",
+      commandId: "c30-resume-human-decision-committed",
+      idempotencyKey: "c30-resume-human-decision-committed",
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      issuedAt: TIMESTAMP,
+      authorization: authorizationFor("workflow.resume", [SPACE_A]),
+      payload: {
+        workflowRunRef: runRef,
+        expectedStateVersion: cursor?.runVersionId ?? "",
+        resumeCause: { kind: "human-decision-committed", routeDecisionRef: decisionRef },
+      },
+    });
+    // 决定成立后父运行推进到评估阶段；子运行替身停在人工确认等待，因此父运行如实保持等待。
+    expect(resumed.kind).toBe("waiting");
+    expect(harness.humanDecisionProof.queries).toHaveLength(1);
+    // 证明按恢复命令自身身份复验（真实 C05 下签发 id 与复验 id 必须一致）。
+    expect(harness.humanDecisionProof.queries[0]?.queryId).toBe(
+      "c30-resume-human-decision-committed",
+    );
+    expect(harness.humanDecisionProof.queries[0]?.payload).toEqual({
+      routeDecisionRef: decisionRef,
+      workflowRunRef: runRef,
+      responseRecommendationRef: entry.refs.adoptedRecommendationRef,
+    });
+    // 恰好一个评估子运行，且它携带已证实的采纳决定引用与唯一已授权空间（A0/A2 的精确输入）。
+    expect(harness.assessment.commands).toHaveLength(1);
+    const childCommand = harness.assessment.commands[0];
+    expect(childCommand?.parentRunRef).toEqual(runRef);
+    expect(childCommand?.entryMode).toBe("forecast-response");
+    expect(childCommand?.frozenRefs).toContainEqual(decisionRef);
+    expect(childCommand?.frozenRefs).toContainEqual(SPACE_A);
+    expect(childCommand?.frozenRefs).toContainEqual(entry.refs.frozenAssessmentBasisRef);
+    expect(childCommand?.frozenRefs.filter((ref) => ref.kind === "route-decision")).toEqual([
+      decisionRef,
+    ]);
+    // 决定引用以精确路由行登记，父运行据此可追溯来源。
+    expect(
+      (await rowsOf(runRef)).filter(
+        (row) => row.resultKind === "route-decision" && row.routeKind === "human-decision-committed",
+      ),
+    ).toHaveLength(1);
+  }, 120_000);
+
+  it("C41/S2 采纳证明失败或错配（运行/建议/空间）时保持等待且零预测", async () => {
+    for (const mode of ["failed", "wrong-run", "wrong-recommendation", "wrong-scope"] as const) {
+      harness.assessment.commands.length = 0;
+      harness.humanDecisionProof.setMode("adopted");
+      const entry = forecastEntryFor(`proof-${mode}`, true);
+      const started = await harness.riskFlowRuntime.workflowPort.startRun({
+        kind: "start-run",
+        commandId: `c30-forecast-proof-${mode}`,
+        idempotencyKey: `c30-forecast-proof-${mode}`,
+        projectId: PROJECT_ID,
+        actorId: ACTOR_ID,
+        issuedAt: TIMESTAMP,
+        authorization: authorizationFor("workflow.start", [SPACE_A]),
+        payload: entry.payload,
+      });
+      if (started.kind !== "waiting" || started.workflowRunRef === undefined) {
+        throw new TypeError("waiting mode must return the registered run reference");
+      }
+      const runRef = started.workflowRunRef;
+      const waitingRow = (await rowsOf(runRef)).find(
+        (row) => row.resultKind === "waiting" && row.waitingRef?.kind === "human-decision",
+      );
+      if (waitingRow?.waitingRef?.kind !== "human-decision") {
+        throw new TypeError("waiting row must carry the human decision reference");
+      }
+      const cursor = await readLatestState(harness, runRef, "workflow.resume");
+      const rowsBefore = await rowsOf(runRef);
+      harness.humanDecisionProof.setMode(mode);
+
+      const denied = await harness.riskFlowRuntime.workflowPort.resumeRun({
+        kind: "resume-run",
+        commandId: `c30-resume-proof-denied:${mode}`,
+        idempotencyKey: `c30-resume-proof-denied:${mode}`,
+        projectId: PROJECT_ID,
+        actorId: ACTOR_ID,
+        issuedAt: TIMESTAMP,
+        authorization: authorizationFor("workflow.resume", [SPACE_A]),
+        payload: {
+          workflowRunRef: runRef,
+          expectedStateVersion: cursor?.runVersionId ?? "",
+          resumeCause: {
+            kind: "human-decision-committed",
+            routeDecisionRef: waitingRow.waitingRef.routeDecisionRef,
+          },
+        },
+      });
+      expect(denied).toMatchObject({
+        kind: "failed",
+        error: { code: "BUSINESS_BLOCKED", blockerKind: "human-decision-not-committed" },
+      });
+      // 保持等待、零预测、零补写：不追加决定路由行，也不启动评估子运行。
+      expect(harness.assessment.commands).toEqual([]);
+      const rowsAfter = await rowsOf(runRef);
+      expect(
+        rowsAfter.map((row) => `${row.resultKind}/${row.resultId}/${row.resultVersionId}`),
+      ).toEqual(rowsBefore.map((row) => `${row.resultKind}/${row.resultId}/${row.resultVersionId}`));
+      expect(rowsAfter.filter((row) => row.routeKind === "human-decision-committed")).toEqual([]);
+      expect((await readLatestState(harness, runRef, "workflow.resume"))?.status).toBe("waiting");
+    }
+    harness.humanDecisionProof.setMode("adopted");
+  }, 300_000);
+
+  it("C41/S2 等待模式之外不改变入口语义，且不猜测空间", async () => {
+    harness.assessment.commands.length = 0;
+    // 非等待调度：`forecast-response` 保持原语义（冻结集合不含空间与决定引用，直接进入评估阶段）。
+    const entry = forecastEntryFor("default-semantics", false);
+    const started = await harness.riskFlowRuntime.workflowPort.startRun({
+      kind: "start-run",
+      commandId: "c30-forecast-default-semantics",
+      idempotencyKey: "c30-forecast-default-semantics",
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      issuedAt: TIMESTAMP,
+      authorization: authorizationFor("workflow.start", [SPACE_A]),
+      payload: entry.payload,
+    });
+    expect(started.kind).not.toBe("failed");
+    expect(harness.assessment.commands).toHaveLength(1);
+    expect(harness.assessment.commands[0]?.frozenRefs).not.toContainEqual(SPACE_A);
+    expect(
+      harness.assessment.commands[0]?.frozenRefs.filter((ref) => ref.kind === "route-decision"),
+    ).toEqual([]);
+
+    // 等待模式但不支持的空间范围（多于一个已授权空间）：类型化失败收口，绝不猜测空间。
+    const ambiguous = forecastEntryFor("ambiguous-space", true);
+    const denied = await harness.riskFlowRuntime.workflowPort.startRun({
+      kind: "start-run",
+      commandId: "c30-forecast-waiting-ambiguous-space",
+      idempotencyKey: "c30-forecast-waiting-ambiguous-space",
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      issuedAt: TIMESTAMP,
+      authorization: authorizationFor("workflow.start", [SPACE_A, SPACE_B]),
+      payload: ambiguous.payload,
+    });
+    expect(denied).toMatchObject({
+      kind: "failed",
+      error: {
+        code: "BUSINESS_BLOCKED",
+        blockerKind: "wait-for-decision-unsupported",
+        stageCode: "preparing",
+      },
+    });
+    expect(harness.assessment.commands).toHaveLength(1);
   }, 120_000);
 });

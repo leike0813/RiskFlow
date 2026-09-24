@@ -26,6 +26,7 @@ import {
 import {
   createRiskFlowGraphRuntime,
   type RiskFlowGraphAuthorizationPortV1,
+  type RiskFlowGraphRuntimeOptionsV1,
   type RiskFlowGraphRuntimeV1,
 } from "./runtime.js";
 
@@ -40,6 +41,8 @@ export interface RiskFlowGraphCompositionOptionsV1 {
   readonly authorization: Pick<LocalIdentityAccessV1, "verify">;
   /** C05 授权复验接缝（start/resume/cancel 命令入口复验）。 */
   readonly runtimeAuthorization: RiskFlowGraphAuthorizationPortV1;
+  /** C41 人工采纳证明接缝（design D2/D3）：等待态运行只在该证明核对通过后推进。 */
+  readonly humanDecisionProof: RiskFlowGraphRuntimeOptionsV1["humanDecisionProof"];
   /** 真实 PostgreSQL checkpointer（`PostgresSaver`）。 */
   readonly checkpointer: BaseCheckpointSaver;
   /** C24 识别子图运行面：子运行由 C24 自己的组合根提供（design D-02）。 */
@@ -72,6 +75,7 @@ const REQUIRED_DEPENDENCIES_V1 = [
   "artifactStore",
   "authorization",
   "runtimeAuthorization",
+  "humanDecisionProof",
   "checkpointer",
   "identificationRuntime",
   "assessmentRuntime",
@@ -116,6 +120,7 @@ export const createRiskFlowGraphComposition = (
     ports,
     graph,
     authorization: options.runtimeAuthorization,
+    humanDecisionProof: options.humanDecisionProof,
     now,
   });
 

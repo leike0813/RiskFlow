@@ -272,6 +272,45 @@ describe("C30 entry gate", () => {
     if (gate.kind !== "ready") return;
     expect(gate.frozenRefs).toContainEqual(basisReleaseSet);
   });
+
+  it("freezes the explicit assessment input snapshot only when the segmented entry names it", () => {
+    const assessmentInput = version("assessment-input-snapshot", "assessment-input");
+    const segmented = [
+      [
+        "forecast-response",
+        {
+          adoptedRecommendationRef: version("response-recommendation"),
+          preActionMonitoringSnapshotRef: monitoringA,
+        },
+      ],
+      [
+        "record-response-feedback",
+        { executionRecordRef: version("execution-record"), feedbackRef: version("feedback") },
+      ],
+    ] as const;
+    for (const [entryMode, refs] of segmented) {
+      const base = {
+        graphVersion,
+        retryPolicyRef,
+        entryMode,
+        assessmentBasisReleaseSetRef: basisReleaseSet,
+        ...refs,
+      } as Payload;
+      // 缺省保持原语义：不新增任何引用。
+      const withoutExplicitBasis = evaluateWorkflowEntryGate(base);
+      expect(withoutExplicitBasis.kind).toBe("ready");
+      if (withoutExplicitBasis.kind !== "ready") continue;
+      expect(withoutExplicitBasis.frozenRefs).not.toContainEqual(assessmentInput);
+      // 显式给出时原样进入冻结输入，评估子图据此取精确评估依据。
+      const withExplicitBasis = evaluateWorkflowEntryGate({
+        ...base,
+        frozenAssessmentBasisRef: assessmentInput,
+      } as Payload);
+      expect(withExplicitBasis.kind).toBe("ready");
+      if (withExplicitBasis.kind !== "ready") continue;
+      expect(withExplicitBasis.frozenRefs).toContainEqual(assessmentInput);
+    }
+  });
 });
 
 describe("C30 run identity and state version", () => {

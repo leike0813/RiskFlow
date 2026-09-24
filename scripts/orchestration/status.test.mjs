@@ -1498,6 +1498,29 @@ describe("worktree-aware state", () => {
     const states = snapshot.nodes.filter((item) => item.id === "AUX:fix-suite-isolation");
     expect(states).toHaveLength(1);
     expect(states[0].violations.map((item) => item.code)).toContain("duplicate_active_worktree");
+
+    const ownerTask = task({
+      id: "task-aux-owner",
+      status: "ready",
+      envelope: v2Envelope({
+        workItemId: "AUX:fix-suite-isolation",
+        routeNodeId: null,
+        changeName: "fix-suite-isolation",
+        worktreeId: "repo-id::/tmp/aux-1",
+        owner: { taskId: "task-aux-owner", agentClass: "strong-finalizer", model: "gpt-6-sol" },
+      }),
+    });
+    const withOwner = deriveSnapshot(
+      graph(),
+      context({
+        worktrees: [
+          { ...auxiliary("repo-id::/tmp/aux-1", "/tmp/aux-1"), tasks: [ownerTask] },
+          auxiliary("repo-id::/tmp/aux-2", "/tmp/aux-2"),
+        ],
+        tasks: [ownerTask],
+      }),
+    ).nodes[0];
+    expect(withOwner.violations.map((item) => item.code)).toContain("duplicate_active_worktree");
   });
 
   it("uses an auxiliary v2 envelope to ignore inherited change copies", () => {
@@ -1741,6 +1764,15 @@ describe("worktree-aware state", () => {
       { ...facts, ancestry: { C08: false } },
     ).nodes[0];
     expect(unmerged).toMatchObject({ status: "finalized", main: { merged: false } });
+
+    const missingHead = deriveSnapshot(
+      graph({ id: "C08", kind: "change", change: "deliver-agent", dependsOn: [] }),
+      {
+        ...facts,
+        worktrees: [{ ...featureWorktree, git: { ...featureWorktree.git, head: null } }],
+      },
+    ).nodes[0];
+    expect(missingHead.main.merged).toBe(false);
   });
 });
 

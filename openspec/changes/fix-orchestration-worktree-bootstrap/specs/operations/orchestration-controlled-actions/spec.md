@@ -1,24 +1,22 @@
 ## ADDED Requirements
 
-### Requirement: 受控 Codex 派发必须限定当前工作树信任
+### Requirement: 受控 Codex 派发必须明确当前工作树的信任阻断
 
-Planning、Finalizer 与 Targeted Auditor 的 Codex terminal 启动命令 MUST 只针对本次受管工作树的精确路径提供信任配置，并在向 worker 提交任务前生效。该配置 MUST 可重复使用、随该 terminal 结束而撤销，MUST NOT 修改用户的其他 Codex 配置、其他路径的信任决定或 Orca 的工作树身份。若信任仍被阻断，现有 `workspace_trust_required` 屏幕探测、queued Task 和同 terminalHandle 恢复语义 MUST 保留。
+Planning、Finalizer 与 Targeted Auditor 的 Codex terminal 在 `worker-start` 前需要当前受管工作树的信任时，控制器 MUST 返回既有类型化 `workspace_trust_required` 结果，包含完整工作树路径、精确 terminalHandle 和修复指引。指引 MUST 允许协调端或人在该 Orca terminal 手动完成信任，或只为该路径设置用户级 `[projects."<path>"]` 下的 `trust_level = "trusted"`；控制器 MUST NOT 自动改写用户级配置或其他路径的信任决定。恢复 MUST 复用已归档 `orchestration/trust-recovery` 的 queued Task 与同 terminalHandle 语义。
 
-#### Scenario: 新受管工作树首次启动 Codex
-- **WHEN** 控制器为当前已核验身份的受管工作树创建 Planning、Finalizer 或 Targeted Auditor 的新 Codex terminal
-- **THEN** 启动配置 MUST 只将该工作树的精确绝对路径标记为 trusted，并在 `worker-start` 前生效
-- **AND** worker 可在该 terminal 达到 idle 后接收任务，不需要手工修改用户级配置
+#### Scenario: 当前受管工作树需要信任
+- **WHEN** 控制器在等待 Codex idle 或 `worker-start` 输入阶段识别到当前工作树的信任提示
+- **THEN** 控制器 MUST 返回含该工作树完整绝对路径、精确 terminalHandle 和上述修复指引的 `workspace_trust_required`
+- **AND** MUST 保留 queued Task，并提供同 terminalHandle 的恢复动作，不创建替代 Task
 
-#### Scenario: 重复派发或信任已存在
-- **WHEN** 同一受管工作树再次创建独立 Codex terminal，或目标路径已有信任配置
-- **THEN** 本次启动 MUST 仍只作用于目标路径，不产生重复持久配置，也不改变其他项目设置
+#### Scenario: 当前受管工作树已信任
+- **WHEN** Codex terminal 已完成当前工作树的信任并达到 idle
+- **THEN** 控制器 MUST 正常提交 worker 任务，不得报告信任阻断
+
+#### Scenario: 信任探测不可用或配置不可读
+- **WHEN** Codex 未能达到 idle，且 terminal 信任提示无法探测或配置不可读
+- **THEN** 控制器 MUST 失败闭合，不得推断为已信任或提交 worker 任务
 
 #### Scenario: 非目标工作树与非 Codex worker
-- **WHEN** 派发目标并非当前受管工作树，或本次启动的是 Implementation 的非 Codex terminal
-- **THEN** 控制器 MUST NOT 对其注入当前工作树的信任配置
-- **AND** 不得借此改动用户级配置或其他工作树的信任状态
-
-#### Scenario: 启动后仍出现信任提示
-- **WHEN** 受控 Codex terminal 在等待 idle 或 `worker-start` 输入阶段仍显示工作区信任提示
-- **THEN** 控制器 MUST 按既有屏幕探测归类为 `workspace_trust_required`，保留 queued Task 并返回同 terminalHandle 的恢复动作
-- **AND** MUST NOT 静默扩大信任范围、创建替代 Task 或把提示计为实现失败
+- **WHEN** 受管工作树身份与路径不一致，或本次启动的是 Implementation 的非 Codex terminal
+- **THEN** 控制器 MUST 在身份不一致时拒绝 Codex 启动，且 MUST NOT 为非 Codex terminal 添加信任操作

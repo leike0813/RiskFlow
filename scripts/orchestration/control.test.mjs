@@ -313,7 +313,15 @@ describe("controlled orchestration", () => {
             statusProvider: async () => ({ graph, snapshot: snapshot() }),
           },
         ),
-      ).rejects.toMatchObject({ code: "workspace_trust_required" });
+      ).rejects.toMatchObject({
+        code: "workspace_trust_required",
+        message: expect.stringContaining("/tmp/c17"),
+        nextActions: expect.arrayContaining([
+          expect.stringContaining("Orca terminal term-codex-trust"),
+          expect.stringContaining('projects."/tmp/c17"'),
+          expect.stringContaining("terminalHandle=term-codex-trust"),
+        ]),
+      });
       expect(workerStarts).toBe(0);
       trusted = true;
       const resumed = await riskflowDispatch(
@@ -333,9 +341,8 @@ describe("controlled orchestration", () => {
       expect(terminalCreates).toBe(1);
       expect(workerStartArgs).toEqual(expect.arrayContaining(["--terminal", "term-codex-trust"]));
       expect(workerStartArgs).not.toContain("--agent");
-      // 信任提示后的恢复复用同一个 queued Task 与 terminal：不再新建 terminal、不换路径、
-      // 也不把提示记成失败尝试；启动时给出的信任覆盖仍只针对当前受管工作树。
-      expect(launchCommand).toContain('-c \'projects."/tmp/c17".trust_level="trusted"\'');
+      // 信任提示后的恢复复用同一个 queued Task 与 terminal，不自动写入信任配置。
+      expect(launchCommand).not.toContain("trust_level");
       expect(await readLedgerEnvelope(runtimeRoot, "task-finalizer")).toMatchObject({
         runState: "running",
         issueRefs: [],
@@ -406,8 +413,11 @@ describe("controlled orchestration", () => {
       ).rejects;
       await blocked.toMatchObject({
         code: "workspace_trust_required",
-        message: expect.stringContaining("尚未生成 failed attempt"),
-        nextActions: expect.arrayContaining([expect.stringContaining("term-codex")]),
+        message: expect.stringContaining("/tmp/c17"),
+        nextActions: expect.arrayContaining([
+          expect.stringContaining("Orca terminal term-codex"),
+          expect.stringContaining("terminalHandle=term-codex"),
+        ]),
       });
       expect(workerStarts).toBe(2);
       expect(workerStartArgs[0]).toEqual(workerStartArgs[1]);
@@ -517,6 +527,43 @@ describe("controlled orchestration", () => {
     }
   });
 
+  it("fails closed when Codex config cannot be read and the terminal screen is unavailable", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-trust-unavailable-"));
+    let workerStarts = 0;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args[0] === "terminal" && args[1] === "wait") {
+        throw new Error("Codex config unreadable");
+      }
+      if (command === "orca-ide" && args[0] === "terminal" && args[1] === "read") {
+        throw new Error("screen unavailable");
+      }
+      const terminal = fakeCodexTerminal(command, args);
+      if (terminal !== null) return terminal;
+      if (command === "orca-ide" && args.includes("worker-start")) workerStarts += 1;
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await expect(
+        riskflowDispatch(
+          {
+            workItemId: "C17",
+            expectedRevision: "revision-1",
+            idempotencyKey: "trust-unavailable",
+          },
+          {
+            rootDir: process.cwd(),
+            exec,
+            statusProvider: async () => ({ graph, snapshot: snapshot() }),
+          },
+        ),
+      ).rejects.toThrow("Codex config unreadable");
+      expect(workerStarts).toBe(0);
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
   it("launches the Codex worker with the startup update check disabled", async () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-codex-noupdate-"));
     let launchCommand;
@@ -588,38 +635,19 @@ describe("controlled orchestration", () => {
     }
   };
 
-  it("scopes the new Codex terminal trust override to the managed worktree path", async () => {
+  it("leaves trust to the coordinator when creating a Codex terminal", async () => {
     const first = await codexLaunchCommand("scope-first");
     const second = await codexLaunchCommand("scope-second");
     expect(first).toHaveLength(1);
     for (const command of [...first, ...second]) {
-      // 整个 `-c` 参数是一个 shell 词，路径是其中的 TOML 引号键，只覆盖当前受管路径。
-      expect(command).toContain('-c \'projects."/tmp/c17".trust_level="trusted"\'');
-      expect(command.match(/trust_level/gu)).toHaveLength(1);
+      expect(command).toContain("codex --model");
+      expect(command).not.toContain("trust_level");
       expect(command).not.toContain("config.toml");
     }
-    // 重复派发只重建同一份一次性启动参数，不累积、也不落盘任何信任配置。
     expect(second).toEqual(first);
   });
 
-  it("shell-quotes the trust override for a worktree path with special characters", async () => {
-    const path = '/tmp/c17-"quoted" weight';
-    const target = node({
-      worktree: {
-        id: `repo::${path}`,
-        path,
-        branch: "feature/c17",
-        head: "feature-head",
-        dirty: false,
-      },
-    });
-    const [command] = await codexLaunchCommand("quoted-path", target);
-    expect(command).toContain(
-      String.raw`-c 'projects."/tmp/c17-\"quoted\" weight".trust_level="trusted"'`,
-    );
-  });
-
-  it("refuses to inject trust when the worktree identity does not match the managed path", async () => {
+  it("refuses Codex startup when the worktree identity does not match the managed path", async () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-codex-identity-"));
     let terminalCreates = 0;
     const target = node({

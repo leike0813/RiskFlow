@@ -994,11 +994,11 @@ export function deriveNodeState(node, context) {
   const unknownDirty = Boolean(worktree?.git?.dirty);
   // 从 main 尖端新建的工作树 HEAD 就等于 main HEAD，祖先查询必然为真，但那只是「还没有
   // 自己的产物」，不是「已进主线」。缺少工作树事实时（如已回收的历史节点）不改变原有
-  // checkpoint / 归档语义，只按祖先与干净条件判定。
+  // checkpoint / 归档语义；存在工作树但缺少 HEAD 时不能认定已合并。
   const featureHead = worktree?.git?.head ?? null;
   const featureMerged =
     mainArchive ||
-    ((featureHead === null || featureHead !== main.head) &&
+    ((!worktree || (nonEmptyString(featureHead) && featureHead !== main.head)) &&
       Boolean(context.ancestry?.[node.id]) &&
       !unknownDirty);
   const mainVerified = mainArchive || mainState.verification === "passed";
@@ -1338,20 +1338,14 @@ export function deriveSnapshot(graph, facts) {
     }
   }
   const auxiliaryNodes = [...auxiliaryWorktrees]
-    .map(([name, worktrees]) => {
-      const workItemId = `AUX:${name}`;
-      const ownedWorktrees = worktrees.filter((worktree) =>
-        worktree.tasks?.some((task) => ownsAuxiliaryChange(task, name)),
-      );
-      return {
-        id: workItemId,
-        kind: "change",
-        change: name,
-        dependsOn: [],
-        auxiliary: true,
-        worktrees: ownedWorktrees.length > 0 ? ownedWorktrees : worktrees,
-      };
-    })
+    .map(([name, worktrees]) => ({
+      id: `AUX:${name}`,
+      kind: "change",
+      change: name,
+      dependsOn: [],
+      auxiliary: true,
+      worktrees,
+    }))
     .sort((left, right) => left.id.localeCompare(right.id));
   const auxiliaryStates = auxiliaryNodes.map((node) =>
     deriveNodeState(node, {

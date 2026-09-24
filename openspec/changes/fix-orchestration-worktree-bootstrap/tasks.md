@@ -9,8 +9,8 @@
 
 ## 3. Codex 信任与恢复
 
-- [x] 3.1 按 IP-C1 在新 Codex terminal 上只覆盖当前受管路径的信任，验证重复、路径引用与 OMP 分支；运行 `pnpm exec vitest run scripts/orchestration/control.test.mjs`。
-- [x] 3.2 按 IP-C2 保持屏幕探测、queued Task 与同 handle 恢复；运行 `pnpm exec vitest run scripts/orchestration/control.test.mjs` 与 `openspec validate fix-orchestration-worktree-bootstrap --strict --no-interactive`。
+- [x] 3.1 按 IP-C1 校验受管路径身份；信任提示时返回含完整路径、terminalHandle 和人工修复指引的既有类型化结果，已信任时正常派发；运行 `pnpm exec vitest run scripts/orchestration/control.test.mjs`。
+- [x] 3.2 按 IP-C2 保持屏幕探测、queued Task 与同 handle 恢复；探测不可用或配置不可读时失败闭合；运行 `pnpm exec vitest run scripts/orchestration/control.test.mjs` 与 `openspec validate fix-orchestration-worktree-bootstrap --strict --no-interactive`。
 
 ## 4. 交付检查
 

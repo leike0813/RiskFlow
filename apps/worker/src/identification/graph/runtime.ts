@@ -619,9 +619,25 @@ export const createIdentificationGraphRuntime = (
       waitingRef === undefined ||
       lastWaitingRef === undefined ||
       cursor.stage !== state.stage ||
-      // 等待种类必须与最新业务事实一致；精确引用身份由既有 `reconcileCheckpointReferences` 的
-      // 当前授权登记行比对证明，不重复比较上游已投影的等待引用（design D-05 避免二次投影漂移）。
       toWaitingRef({ waiting: lastWaitingRef }).kind !== waitingRef.kind
+    ) {
+      inconsistent();
+    }
+    // 同一运行可有历史等待行；仅允许最新运行版本登记的精确等待引用作为重放结果。
+    const rows = await ports.registrationStore.listRunRows({
+      projectId: run.projectId,
+      runId: run.runRef.reference.entityId,
+      actorId: run.actorId,
+      authorization: run.authorization,
+      requestedAt: run.issuedAt,
+    });
+    if (
+      !rows.some(
+        (row) =>
+          row.resultKind === "waiting" &&
+          row.runVersionId === cursor.runVersionId &&
+          sha256CanonicalJson(row.waitingRef) === sha256CanonicalJson(waitingRef),
+      )
     ) {
       inconsistent();
     }
@@ -782,6 +798,9 @@ export const createIdentificationGraphRuntime = (
             disposition: "existing",
           });
         }
+        if (state.status === "waiting" && existing.status === "waiting") {
+          await reconcileWaitingCheckpoint({ run: frozenRun, state, cursor: existing });
+        }
         if (businessAheadOfCheckpoint(existing, state)) {
           const recovered = await recoverCommittedBusiness({
             run: frozenRun,
@@ -797,14 +816,6 @@ export const createIdentificationGraphRuntime = (
             retryable: true,
             detailCode: "checkpoint-write-unconfirmed",
             occurredAt: options.now().toISOString(),
-          });
-        }
-        if (state.status === "waiting") {
-          // 已登记等待的同载荷重放沿同一核对：等待引用须与最新业务游标一致，否则零补写封闭。
-          return await outcomeOf({
-            run: frozenRun,
-            state: await reconcileWaitingCheckpoint({ run: frozenRun, state, cursor: existing }),
-            disposition: "existing",
           });
         }
         return await outcomeOf({ run: frozenRun, state, disposition: "existing" });

@@ -379,6 +379,35 @@ describe(`C24 嵌套图边界（真实父/子 StateGraph + 真实 C03 PostgreSQL
     expect((await harness.latestRunState(run)).state.status).toBe("waiting");
   }, 120_000);
 
+  it("历史等待引用不能充当最新运行版本的等待", async () => {
+    const { world } = harness;
+    const run = harness.scope("nested-stale-waiting");
+    world.routes = [
+      automaticRouteFor(WORK_PLAN_ENTITY_ID, AUTO_GROUP),
+      reviewRouteFor(WORK_PLAN_ENTITY_ID, REVIEW_GROUP, run.runRef),
+    ];
+    const command = harness.startCommand(run);
+    expect(
+      (await runNestedParent({ harness, startCommand: command })).childOutcome?.state.status,
+    ).toBe("waiting");
+
+    // 模拟旧版本仍留有同一等待登记：引用存在，但不属于最新业务游标版本。
+    const changed = await harness.postgres.adminPool.query(
+      "update business.identification_graph_results set run_version_id = 'old-version' where project_id = $1 and run_id = $2 and result_kind = 'waiting' returning result_id",
+      [PROJECT_ID, run.runRef.reference.entityId],
+    );
+    expect(changed.rowCount).toBe(1);
+    const rowsAfterChange = await harness.rows(run);
+    expect(rowsAfterChange.find((row) => row.resultKind === "waiting")?.runVersionId).toBe(
+      "old-version",
+    );
+    expect((await harness.latestRunState(run)).runVersionId).not.toBe("old-version");
+    await expect(harness.runtime.start(command)).rejects.toMatchObject({
+      error: { detailCode: "checkpoint-inconsistent", retryable: false },
+    });
+    expect(await harness.rows(run)).toEqual(rowsAfterChange);
+  }, 120_000);
+
   it("权限收窄后拒绝跨图恢复，且不借错误结果枚举子图业务事实", async () => {
     const { world, access } = harness;
     const run = harness.scope("nested-authorization-revoked");

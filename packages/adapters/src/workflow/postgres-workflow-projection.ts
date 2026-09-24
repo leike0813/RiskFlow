@@ -201,7 +201,7 @@ export interface PostgresWorkflowProjectionOptionsV1 {
   readonly bodies: WorkflowGraphBodyPortV1;
   /** C05 当前授权复验端口：每次受保护读写前按当前 actor/工程/空间/资料范围复验。 */
   readonly authorization: Pick<LocalIdentityAccessV1, "verify">;
-  /** C22 公开批读（可选注入）：每页最多一批补齐来源定位，缺失时不产出该段定位。 */
+  /** C22 公开批读：旧 trace-chain 可省略；C31 风险记录图/报告缺失时显式失败。 */
   readonly riskRecordTrace?: RiskRecordTraceReadPortV1;
   readonly now?: () => Date;
 }
@@ -344,6 +344,12 @@ class WorkflowGraphProjection {
       if (visible.visibleCount === 0) {
         return { kind: "failed", error: this.#notFound("projection-query") };
       }
+      if (
+        payload.queryType === "association-graph" &&
+        (await this.#evidenceForSubject(targetRef, verified)) === "unprovable"
+      ) {
+        return { kind: "failed", error: this.#notFound("projection-query") };
+      }
       registrationRunId = visible.runId;
     }
     const queryResultId = `query-result:${parsed.data.projectId}:${parsed.data.queryId}`;
@@ -457,6 +463,7 @@ class WorkflowGraphProjection {
     readonly subjectRef: ContractReferenceV1;
     readonly scopeDigest: string;
     readonly recordedAtAtMost?: string | undefined;
+    readonly limit?: number | undefined;
   }): Promise<readonly WorkflowGraphLinkV1[]> {
     if (input.subjectRef.kind === "domain-event") return [];
     const subjectJson = JSON.stringify(input.subjectRef);
@@ -473,7 +480,7 @@ class WorkflowGraphProjection {
     const rows = await scoped
       .orderBy("recorded_at", "asc")
       .orderBy("link_id", "asc")
-      .limit(MAX_SCAN_V1)
+      .limit(input.limit ?? MAX_SCAN_V1)
       .execute();
     return rows.map((row) => workflowGraphLinkFromDb(row));
   }
@@ -712,10 +719,10 @@ class WorkflowGraphProjection {
       (entry) => input.sortKey === undefined || entry.key > input.sortKey,
     );
     const page = remaining.slice(0, input.limit);
-    const evidence = await this.#evidenceForSubject(
-      input.registration.targetRef,
-      input.authorization,
-    );
+    const evidence =
+      this.#trace === undefined
+        ? undefined
+        : await this.#evidenceForSubject(input.registration.targetRef, input.authorization);
     if (evidence === "unprovable") {
       return { kind: "failed", error: this.#blocked("read-page", "trace-chain-incomplete") };
     }
@@ -762,7 +769,8 @@ class WorkflowGraphProjection {
     readonly authorization: AuthorizationContextV1;
   }): Promise<ReadonlyMap<string, string> | "unprovable"> {
     const trace = this.#trace;
-    if (trace === undefined || input.refs.length === 0) return new Map();
+    if (input.refs.length === 0) return new Map();
+    if (trace === undefined) return "unprovable";
     if (input.refs.length > MAX_EVIDENCE_REFS_V1) return "unprovable";
     let result: RiskRecordTraceReadResultV1;
     try {
@@ -778,14 +786,20 @@ class WorkflowGraphProjection {
     if (result.kind === "failed") return "unprovable";
     const found = new Map<string, string>();
     for (const item of result.items) {
-      const segment = item.kind === "found" ? item.sourceSegmentIds[0] : undefined;
+      const segment =
+        item.kind === "found"
+          ? (item.evidenceLocator?.sourceSegmentId ?? item.sourceSegmentIds[0])
+          : undefined;
       if (item.kind !== "found" || segment === undefined) return "unprovable";
       found.set(
         `${item.riskRecordRef.reference.entityId}/${item.riskRecordRef.reference.versionId}`,
         segment,
       );
     }
-    return found.size === input.refs.length ? found : "unprovable";
+    return found.size === input.refs.length &&
+      input.refs.every((ref) => found.has(`${ref.reference.entityId}/${ref.reference.versionId}`))
+      ? found
+      : "unprovable";
   }
 
   /**
@@ -824,7 +838,11 @@ class WorkflowGraphProjection {
       subjectRef: input.registration.targetRef,
       scopeDigest: input.scopeDigest,
       recordedAtAtMost: input.registration.recordedAt,
+      limit: MAX_GRAPH_LINKS_V1 + 1,
     });
+    if (seeded.length > MAX_GRAPH_LINKS_V1) {
+      return { kind: "failed", error: this.#blocked("read-page", "association-graph-overflow") };
+    }
     if (seeded.length === 0) {
       // 主题在登记时点已无可证明的已成立边：与不存在同形，不用空图冒充结果。
       return { kind: "failed", error: this.#notFound("read-page") };
@@ -850,14 +868,16 @@ class WorkflowGraphProjection {
     const keyed = links.value
       .map((link) => ({ key: `${link.recordedAt}/${link.linkId}`, link }))
       .sort((left, right) => (left.key < right.key ? -1 : 1));
+    if (input.sortKey !== undefined && !keyed.some((entry) => entry.key === input.sortKey)) {
+      return { kind: "failed", error: this.#blocked("read-page", "cursor-invalid") };
+    }
     const remaining = keyed.filter(
       (entry) => input.sortKey === undefined || entry.key > input.sortKey,
     );
     const page = remaining.slice(0, Math.min(input.limit, MAX_GRAPH_PAGE_SIZE_V1));
-    // 只对本页缺定位的边补齐来源：一批精确 C22 窄读，任一不可证明即整页失败，不披露半页。
+    // 每页按风险记录精确引用复验来源；登记时留下的定位不替代当前来源资格。
     const needed = new Map<string, StandardizedRiskRecordRefV1>();
     for (const entry of page) {
-      if (entry.link.evidenceLocator !== undefined) continue;
       for (const ref of [entry.link.fromRef, entry.link.toRef]) {
         if (ref.kind !== "standardized-risk-record") continue;
         needed.set(`${ref.reference.entityId}/${ref.reference.versionId}`, ref);
@@ -872,12 +892,19 @@ class WorkflowGraphProjection {
     }
     const items: ProjectionResultItemV1[] = page.map((entry) => {
       const link = entry.link;
-      let locator = link.evidenceLocator;
-      for (const ref of [link.fromRef, link.toRef]) {
-        if (locator !== undefined || ref.kind !== "standardized-risk-record") continue;
-        const segment = evidence.get(`${ref.reference.entityId}/${ref.reference.versionId}`);
-        if (segment !== undefined) locator = { sourceSegmentId: segment };
-      }
+      const riskRef = [link.fromRef, link.toRef].find(
+        (ref): ref is StandardizedRiskRecordRefV1 => ref.kind === "standardized-risk-record",
+      );
+      const segment =
+        riskRef === undefined
+          ? undefined
+          : evidence.get(`${riskRef.reference.entityId}/${riskRef.reference.versionId}`);
+      const locator =
+        riskRef === undefined
+          ? link.evidenceLocator
+          : segment === undefined
+            ? undefined
+            : { sourceSegmentId: segment };
       return {
         kind: "trace-link",
         fromRef: link.fromRef,
@@ -1021,6 +1048,12 @@ class WorkflowGraphProjection {
     if (input.sortKey !== undefined && cursor === undefined) {
       return { kind: "failed", error: this.#blocked("read-page", "cursor-invalid") };
     }
+    if (
+      cursor !== undefined &&
+      (await this.#overviewRunId({ ...scope, atRunId: cursor.runId })) !== cursor.runId
+    ) {
+      return { kind: "failed", error: this.#blocked("read-page", "cursor-invalid") };
+    }
     const runId = cursor?.runId ?? (await this.#overviewRunId({ ...scope, afterRunId: "" }));
     if (runId === undefined) {
       // 登记时点下没有可读运行的已成立事实：返回真正的空页，不生成占位运行。
@@ -1033,6 +1066,13 @@ class WorkflowGraphProjection {
       authorization: input.authorization,
     });
     if (expanded.kind === "failed") return { kind: "failed", error: expanded.error };
+    if (
+      cursor !== undefined &&
+      cursor.itemKey !== "" &&
+      !expanded.entries.some((entry) => entry.key === cursor.itemKey)
+    ) {
+      return { kind: "failed", error: this.#blocked("read-page", "cursor-invalid") };
+    }
     const remaining = expanded.entries.filter(
       (entry) => entry.key > (cursor?.runId === runId ? cursor.itemKey : ""),
     );
@@ -1102,13 +1142,14 @@ class WorkflowGraphProjection {
    * 授权摘要与登记时点作数据库谓词，并要求该运行已有可读状态正文登记；不逐个 `runId` 试探或全工程扫描。
    */
   async #overviewRunId(
-    input: ProjectionReportScopeV1 & { readonly afterRunId: string },
+    input: ProjectionReportScopeV1 &
+      ({ readonly afterRunId: string } | { readonly atRunId: string }),
   ): Promise<string | undefined> {
     const frozen = JSON.stringify([
       input.revisionRef,
       ...(input.spatialScopeRef === undefined ? [] : [input.spatialScopeRef]),
     ]);
-    const rows = await this.#db
+    const base = this.#db
       .selectFrom(RESULTS_TABLE)
       .select("run_id")
       .distinct()
@@ -1116,7 +1157,6 @@ class WorkflowGraphProjection {
       .where("result_kind", "=", "entry-snapshot")
       .where("authorization_scope_digest", "=", input.scopeDigest)
       .where("recorded_at", "<=", input.recordedAtAtMost)
-      .where("run_id", ">", input.afterRunId)
       .where(sql<SqlBool>`frozen_refs @> ${frozen}::jsonb`)
       .where(
         sql<SqlBool>`EXISTS (
@@ -1127,10 +1167,12 @@ class WorkflowGraphProjection {
           AND state.artifact_ref IS NOT NULL
           AND state.recorded_at <= ${input.recordedAtAtMost}
       )`,
-      )
-      .orderBy("run_id", "asc")
-      .limit(1)
-      .execute();
+      );
+    const scoped =
+      "atRunId" in input
+        ? base.where("run_id", "=", input.atRunId)
+        : base.where("run_id", ">", input.afterRunId);
+    const rows = await scoped.orderBy("run_id", "asc").limit(1).execute();
     return rows[0]?.run_id;
   }
 
@@ -1197,6 +1239,13 @@ class WorkflowGraphProjection {
     });
     if (stateBody === undefined || stateBody.bodyKind !== "run-state") return incomplete;
     const state = stateBody.runState;
+    if (
+      state.projectId !== input.projectId ||
+      state.runId !== input.runId ||
+      state.runVersionId !== stateRow.runVersionId
+    ) {
+      return incomplete;
+    }
     let result: WorkflowGraphRunResultV1 | undefined;
     if (resultRow !== undefined) {
       if (resultRow.artifactRef === undefined) return incomplete;
@@ -1208,6 +1257,12 @@ class WorkflowGraphProjection {
       });
       if (resultBody === undefined || resultBody.bodyKind !== "run-result") return incomplete;
       result = resultBody.runResult;
+      if (
+        result.projectId !== input.projectId ||
+        result.runRef.reference.entityId !== input.runId
+      ) {
+        return incomplete;
+      }
     }
     const factSources: readonly (readonly [readonly ProjectionReportFactRefV1[], string])[] = [
       [state.acceptedRiskRecordRefs, stateRow.auditEntryId],
@@ -1261,7 +1316,7 @@ class WorkflowGraphProjection {
       ...[...facts.entries()]
         .sort(([left], [right]) => (left < right ? -1 : 1))
         .map(([, fact]) => ({
-          key: `${REPORT_FACT_RANK_V1}|${fact.factRef.reference.entityId}/${fact.factRef.reference.versionId}`,
+          key: `${REPORT_FACT_RANK_V1}|${fact.factRef.kind}/${fact.factRef.reference.entityId}/${fact.factRef.reference.versionId}`,
           item: {
             kind: "report-fact" as const,
             workflowRunRef: runRef,

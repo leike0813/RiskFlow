@@ -188,7 +188,7 @@ const startFixture = async (): Promise<ProjectionTestFixture> => {
               kind: "found" as const,
               riskRecordRef,
               processNodeId: "process-node-1",
-              sourceSegmentIds: ["segment-1"],
+              sourceSegmentIds: ["segment-other", "segment-1"],
               riskMechanismEntryIds: ["mechanism-1"],
               evidenceLocator: { sourceSegmentId: "segment-1" },
               auditTrailRef: {
@@ -311,6 +311,7 @@ const registerLink = async (input: {
   readonly toRef: ContractReferenceV1;
   readonly relation: "risk-assessment" | "run-stage" | "parent-child";
   readonly stage: "A5" | "assessment" | "preparing";
+  readonly evidenceLocator?: { readonly sourceSegmentId: string };
 }) => {
   const commandId = `c30-projection-link-${input.linkId}`;
   await fixture.transactionUnit.execute(
@@ -341,6 +342,9 @@ const registerLink = async (input: {
               kind: "stage-result",
               reference: { entityId: `${input.linkId}:stage`, versionId: "v1" },
             },
+            ...(input.evidenceLocator === undefined
+              ? {}
+              : { evidenceLocator: input.evidenceLocator }),
             authorizationContextRef: AUTHORIZATION.authorizationContextRef,
             authorizationScopeDigest: SCOPE_DIGEST,
             actorRef: ACTOR_ID,
@@ -456,6 +460,7 @@ const seedRuns = async () => {
     toRef: ASSESSMENT_RECORD_REF,
     relation: "risk-assessment",
     stage: "A5",
+    evidenceLocator: { sourceSegmentId: "stored-segment" },
   });
 };
 
@@ -490,6 +495,7 @@ interface OverviewRunSeedV1 {
   readonly recordedAt?: string;
   /** 缺省使用报告主夹具修订；越界与隔离场景可用独立修订。 */
   readonly revisionRef?: ContractReferenceV1;
+  readonly resultRunId?: string;
   readonly acceptedRiskRecordRefs: readonly StandardizedRiskRecordRefV1[];
   readonly assessmentRecordRefs: readonly RiskAssessmentRecordRefV1[];
   readonly skippedTails: readonly WorkflowSkippedTailV1[];
@@ -547,7 +553,10 @@ const seedOverviewRun = async (seed: OverviewRunSeedV1): Promise<void> => {
         projectId: PROJECT_ID,
         runRef: {
           kind: "workflow-run",
-          reference: { entityId: seed.runId, versionId: seed.runVersionId },
+          reference: {
+            entityId: seed.resultRunId ?? seed.runId,
+            versionId: sha(`${seed.runId}:run-ref`),
+          },
         },
         entryMode: "identify-and-assess",
         stage: "result-summary",
@@ -813,9 +822,21 @@ describe("C30 workflow projection adapter", () => {
     expect(page.items[0]).toMatchObject({
       kind: "trace-link",
       relation: "risk-assessment",
-      evidenceLocator: { sourceSegmentId: "segment-1" },
+      evidenceLocator: { sourceSegmentId: "stored-segment" },
     });
     expect(fixture.trace.calls - callsBefore).toBe(1);
+
+    const legacyWithoutTrace = createPostgresWorkflowProjection({
+      db: fixture.runtime.db,
+      registrationStore: fixture.workflow.registrationStore,
+      bodies: fixture.workflow.bodies,
+      authorization: fixture.access.port,
+      now: () => new Date(TIMESTAMP),
+    });
+    const legacyPage = await legacyWithoutTrace.resultRead.readPage(
+      readRequest({ queryResultRef: queried.result.queryResultRef }),
+    );
+    expect(legacyPage).toMatchObject({ kind: "page", queryType: "trace-chain" });
 
     fixture.trace.override = {
       kind: "succeeded",
@@ -967,6 +988,80 @@ describe("C30 workflow projection adapter", () => {
     expect(page).toMatchObject({ kind: "page", queryType: "risk-overview", items: [] });
   });
 
+  it("refuses a report whose result body points to another run", async () => {
+    const revisionRef: ContractReferenceV1 = {
+      kind: "project-revision",
+      reference: { entityId: "project-revision-mismatched-result", versionId: "v1" },
+    };
+    await seedOverviewRun({
+      runId: `risk-flow-run:${PROJECT_ID}:mismatched-result`,
+      runVersionId: sha("mismatched-result-run-version"),
+      resultRunId: `risk-flow-run:${PROJECT_ID}:another-run`,
+      suffix: "c31-mismatched-result",
+      revisionRef,
+      acceptedRiskRecordRefs: [RISK_RECORD_REF],
+      assessmentRecordRefs: [],
+      skippedTails: [],
+    });
+    const queried = await queryFor("query-overview-mismatched-result", {
+      queryType: "risk-overview",
+      projectRevisionRef: revisionRef,
+      spatialScopeRef: SPATIAL_SCOPE_REF,
+    });
+    expect(queried.kind).toBe("succeeded");
+    if (queried.kind !== "succeeded") return;
+    const page = await fixture.projection.resultRead.readPage(
+      readRequest({ queryResultRef: queried.result.queryResultRef }),
+    );
+    expect(page).toMatchObject({ kind: "failed" });
+    if (page.kind === "failed") {
+      expect(page.error).toMatchObject({ blockerKind: "risk-overview-incomplete" });
+    }
+  });
+
+  it("pages distinct fact kinds that share an entity and version", async () => {
+    const shared = { entityId: "shared-report-fact", versionId: "v1" };
+    const revisionRef: ContractReferenceV1 = {
+      kind: "project-revision",
+      reference: { entityId: "project-revision-shared-fact", versionId: "v1" },
+    };
+    await seedOverviewRun({
+      runId: `risk-flow-run:${PROJECT_ID}:shared-fact`,
+      runVersionId: sha("shared-fact-run-version"),
+      suffix: "c31-shared-fact",
+      revisionRef,
+      acceptedRiskRecordRefs: [{ kind: "standardized-risk-record", reference: shared }],
+      assessmentRecordRefs: [{ kind: "risk-assessment-record", reference: shared }],
+      skippedTails: [],
+    });
+    const queried = await queryFor("query-overview-shared-fact", {
+      queryType: "risk-overview",
+      projectRevisionRef: revisionRef,
+      spatialScopeRef: SPATIAL_SCOPE_REF,
+    });
+    expect(queried.kind).toBe("succeeded");
+    if (queried.kind !== "succeeded") return;
+    const first = await fixture.projection.resultRead.readPage(
+      readRequest({ queryResultRef: queried.result.queryResultRef, limit: 2 }),
+    );
+    expect(first.kind).toBe("page");
+    if (first.kind !== "page") return;
+    expect(first.nextCursor).toBeDefined();
+    const second = await fixture.projection.resultRead.readPage(
+      readRequest({
+        queryResultRef: queried.result.queryResultRef,
+        limit: 2,
+        ...(first.nextCursor === undefined ? {} : { cursor: first.nextCursor }),
+      }),
+    );
+    expect(second.kind).toBe("page");
+    if (second.kind !== "page") return;
+    const kinds = [...first.items, ...second.items].flatMap((item) =>
+      item.kind === "report-fact" ? [item.factRef.kind] : [],
+    );
+    expect(kinds.sort()).toEqual(["risk-assessment-record", "standardized-risk-record"]);
+  });
+
   it("expands a bounded association graph over proved runs with one source batch per page", async () => {
     await seedRuns();
     await registerLink({
@@ -1001,6 +1096,20 @@ describe("C30 workflow projection adapter", () => {
     expect(first.items).toHaveLength(1);
     expect(first.nextCursor).toBeDefined();
     expect(fixture.trace.calls - callsBefore).toBeLessThanOrEqual(1);
+    if (first.nextCursor !== undefined) {
+      const fields = JSON.parse(
+        Buffer.from(first.nextCursor.split(".")[0] ?? "", "base64url").toString("utf8"),
+      ) as string[];
+      fields[2] = "forged-link-position";
+      const encoded = Buffer.from(JSON.stringify(fields)).toString("base64url");
+      const forgedPosition = await fixture.projection.resultRead.readPage(
+        readRequest({ queryResultRef, cursor: `${encoded}.${sha(JSON.stringify(fields))}` }),
+      );
+      expect(forgedPosition).toMatchObject({ kind: "failed" });
+      if (forgedPosition.kind === "failed") {
+        expect(forgedPosition.error).toMatchObject({ blockerKind: "cursor-invalid" });
+      }
+    }
 
     const second = await fixture.projection.resultRead.readPage(
       readRequest({
@@ -1041,7 +1150,13 @@ describe("C30 workflow projection adapter", () => {
     const unprovable = await fixture.projection.resultRead.readPage(
       readRequest({ queryResultRef, limit: 50 }),
     );
+    const deniedQuery = await queryFor("query-graph-source-denied", {
+      queryType: "association-graph",
+      subjectRef: RISK_RECORD_REF,
+    });
     fixture.trace.override = undefined;
+    expect(deniedQuery).toMatchObject({ kind: "failed" });
+    if (deniedQuery.kind === "failed") expect(deniedQuery.error.code).toBe("ENTITY_NOT_FOUND");
     expect(unprovable).toMatchObject({ kind: "failed" });
     if (unprovable.kind === "failed") {
       expect(unprovable.error).toMatchObject({
@@ -1049,6 +1164,45 @@ describe("C30 workflow projection adapter", () => {
         blockerKind: "association-graph-incomplete",
       });
     }
+
+    // C22 回了同数量的错误引用时也不能把登记时的定位当作当前授权证据。
+    fixture.trace.override = {
+      kind: "succeeded",
+      items: [
+        {
+          kind: "found",
+          riskRecordRef: {
+            kind: "standardized-risk-record",
+            reference: { entityId: "another-risk", versionId: "v1" },
+          },
+          processNodeId: "process-node-1",
+          sourceSegmentIds: ["segment-1"],
+          riskMechanismEntryIds: ["mechanism-1"],
+          evidenceLocator: { sourceSegmentId: "segment-1" },
+          auditTrailRef: {
+            kind: "audit-trail",
+            reference: { entityId: "audit-risk-record", versionId: "1" },
+          },
+        },
+      ],
+    };
+    const wrongBatch = await fixture.projection.resultRead.readPage(
+      readRequest({ queryResultRef, limit: 50 }),
+    );
+    fixture.trace.override = undefined;
+    expect(wrongBatch).toMatchObject({ kind: "failed" });
+
+    const withoutTrace = createPostgresWorkflowProjection({
+      db: fixture.runtime.db,
+      registrationStore: fixture.workflow.registrationStore,
+      bodies: fixture.workflow.bodies,
+      authorization: fixture.access.port,
+      now: () => new Date(TIMESTAMP),
+    });
+    const missingSource = await withoutTrace.resultRead.readPage(
+      readRequest({ queryResultRef, limit: 50 }),
+    );
+    expect(missingSource).toMatchObject({ kind: "failed" });
   });
 
   it("rejects an unprovable graph subject and forged cursors on the new branches", async () => {
@@ -1097,6 +1251,23 @@ describe("C30 workflow projection adapter", () => {
     );
     expect(first.kind).toBe("page");
     if (first.kind !== "page") return;
+    if (first.nextCursor !== undefined) {
+      const fields = JSON.parse(
+        Buffer.from(first.nextCursor.split(".")[0] ?? "", "base64url").toString("utf8"),
+      ) as string[];
+      fields[2] = JSON.stringify(["risk-flow-run:missing", ""]);
+      const encoded = Buffer.from(JSON.stringify(fields)).toString("base64url");
+      const forgedPosition = await fixture.projection.resultRead.readPage(
+        readRequest({
+          queryResultRef: queried.result.queryResultRef,
+          cursor: `${encoded}.${sha(JSON.stringify(fields))}`,
+        }),
+      );
+      expect(forgedPosition).toMatchObject({ kind: "failed" });
+      if (forgedPosition.kind === "failed") {
+        expect(forgedPosition.error).toMatchObject({ blockerKind: "cursor-invalid" });
+      }
+    }
     const other = await queryFor("query-overview-cursor-other", {
       queryType: "risk-overview",
       projectRevisionRef: PROJECT_REVISION_REF,

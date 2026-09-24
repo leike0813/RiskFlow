@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { clearTimeout, setTimeout } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -1045,20 +1045,40 @@ async function recordWorkspaceTrustRecovery(runtimeDir, node, task) {
   });
 }
 
-function workspaceTrustError(terminalHandle) {
+function workspaceTrustError(terminalHandle, path) {
   return new ControlError(
     "workspace_trust_required",
-    `${terminalHandle} 正在等待 Codex 工作区信任确认；当前 queued Task 尚未生成 failed attempt`,
+    `${terminalHandle} 正在等待 ${path} 的 Codex 工作区信任确认；当前 queued Task 尚未生成 failed attempt`,
     [
-      `在 ${terminalHandle} 中确认当前工作区信任并等待 tui-idle`,
+      `由协调端通过 Orca terminal ${terminalHandle} 手动信任 ${path}；或仅为该路径在用户级 Codex 配置中添加 [projects.${JSON.stringify(path)}] 下的 trust_level = "trusted"，然后等待 tui-idle`,
       `重新读取 riskflow_status，并以新幂等键调用 riskflow_dispatch，传入 terminalHandle=${terminalHandle}`,
     ],
   );
 }
 
+// 信任提示只为身份已确认的受管工作树给出修复指引；控制器不改用户配置。
+function managedWorktreePath(worktree) {
+  const path = worktree?.path;
+  const worktreeId = worktree?.id;
+  if (
+    !nonEmptyString(path) ||
+    !isAbsolute(path) ||
+    !nonEmptyString(worktreeId) ||
+    !worktreeId.endsWith(`::${path}`)
+  ) {
+    throw new ControlError(
+      "worktree_identity_unresolved",
+      `无法确认受管工作树身份（id=${worktreeId || "(空)"}，path=${path || "(空)"}），拒绝在身份不明时启动 Codex`,
+      WORKTREE_IDENTITY_NEXT_ACTIONS,
+    );
+  }
+  return path;
+}
+
 async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, idempotencyKey) {
   const worktree = `id:${node.worktree.id}`;
   if (["planning", "finalization", "audit"].includes(task.envelope.taskKind)) {
+    const path = managedWorktreePath(node.worktree);
     let terminalHandle = task.terminalHandle;
     if (!terminalHandle) {
       const terminal = await orcaJson(
@@ -1109,7 +1129,7 @@ async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, id
       )
         throw error;
       await recordWorkspaceTrustRecovery(runtimeDir, node, task);
-      throw workspaceTrustError(terminalHandle);
+      throw workspaceTrustError(terminalHandle, path);
     }
     let worker;
     const workerStartArgs = [
@@ -1137,7 +1157,7 @@ async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, id
       )
         throw error;
       await recordWorkspaceTrustRecovery(runtimeDir, node, task);
-      throw workspaceTrustError(terminalHandle);
+      throw workspaceTrustError(terminalHandle, path);
     }
     return {
       ...worker,

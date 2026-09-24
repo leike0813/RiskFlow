@@ -280,10 +280,12 @@ describe("controlled orchestration", () => {
     let trusted = false;
     let workerStarts = 0;
     let workerStartArgs;
+    let launchCommand;
     const exec = async (command, args) => {
       if (command === "git") return runtimeRoot;
       if (command === "orca-ide" && args[0] === "terminal" && args[1] === "create") {
         terminalCreates += 1;
+        launchCommand = args[args.indexOf("--command") + 1];
         return { terminal: { handle: "term-codex-trust" } };
       }
       if (command === "orca-ide" && args[0] === "terminal" && args[1] === "wait") {
@@ -311,7 +313,15 @@ describe("controlled orchestration", () => {
             statusProvider: async () => ({ graph, snapshot: snapshot() }),
           },
         ),
-      ).rejects.toMatchObject({ code: "workspace_trust_required" });
+      ).rejects.toMatchObject({
+        code: "workspace_trust_required",
+        message: expect.stringContaining("/tmp/c17"),
+        nextActions: expect.arrayContaining([
+          expect.stringContaining("Orca terminal term-codex-trust"),
+          expect.stringContaining('projects."/tmp/c17"'),
+          expect.stringContaining("terminalHandle=term-codex-trust"),
+        ]),
+      });
       expect(workerStarts).toBe(0);
       trusted = true;
       const resumed = await riskflowDispatch(
@@ -331,6 +341,12 @@ describe("controlled orchestration", () => {
       expect(terminalCreates).toBe(1);
       expect(workerStartArgs).toEqual(expect.arrayContaining(["--terminal", "term-codex-trust"]));
       expect(workerStartArgs).not.toContain("--agent");
+      // 信任提示后的恢复复用同一个 queued Task 与 terminal，不自动写入信任配置。
+      expect(launchCommand).not.toContain("trust_level");
+      expect(await readLedgerEnvelope(runtimeRoot, "task-finalizer")).toMatchObject({
+        runState: "running",
+        issueRefs: [],
+      });
     } finally {
       await rm(runtimeRoot, { recursive: true });
     }
@@ -397,8 +413,11 @@ describe("controlled orchestration", () => {
       ).rejects;
       await blocked.toMatchObject({
         code: "workspace_trust_required",
-        message: expect.stringContaining("尚未生成 failed attempt"),
-        nextActions: expect.arrayContaining([expect.stringContaining("term-codex")]),
+        message: expect.stringContaining("/tmp/c17"),
+        nextActions: expect.arrayContaining([
+          expect.stringContaining("Orca terminal term-codex"),
+          expect.stringContaining("terminalHandle=term-codex"),
+        ]),
       });
       expect(workerStarts).toBe(2);
       expect(workerStartArgs[0]).toEqual(workerStartArgs[1]);
@@ -508,6 +527,43 @@ describe("controlled orchestration", () => {
     }
   });
 
+  it("fails closed when Codex config cannot be read and the terminal screen is unavailable", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-trust-unavailable-"));
+    let workerStarts = 0;
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args[0] === "terminal" && args[1] === "wait") {
+        throw new Error("Codex config unreadable");
+      }
+      if (command === "orca-ide" && args[0] === "terminal" && args[1] === "read") {
+        throw new Error("screen unavailable");
+      }
+      const terminal = fakeCodexTerminal(command, args);
+      if (terminal !== null) return terminal;
+      if (command === "orca-ide" && args.includes("worker-start")) workerStarts += 1;
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await expect(
+        riskflowDispatch(
+          {
+            workItemId: "C17",
+            expectedRevision: "revision-1",
+            idempotencyKey: "trust-unavailable",
+          },
+          {
+            rootDir: process.cwd(),
+            exec,
+            statusProvider: async () => ({ graph, snapshot: snapshot() }),
+          },
+        ),
+      ).rejects.toThrow("Codex config unreadable");
+      expect(workerStarts).toBe(0);
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
   it("launches the Codex worker with the startup update check disabled", async () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-codex-noupdate-"));
     let launchCommand;
@@ -538,6 +594,96 @@ describe("controlled orchestration", () => {
       expect(result.worker).toMatchObject({ state: "started" });
       // 启动自更新会让 worker 版本在交付中途漂移，并把升级横幅变成非预期屏幕状态。
       expect(launchCommand).toContain("check_for_update_on_startup=false");
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  });
+
+  // 新建 Codex terminal 的受控派发：返回该次 terminal create 的 --command。除列出的受控
+  // 命令外一律视为意外——控制器若改写磁盘或用户级 Codex 配置，这里会直接失败。
+  const codexLaunchCommand = async (key, target = node()) => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), `riskflow-codex-${key}-`));
+    const launches = [];
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args[0] === "terminal" && args[1] === "create") {
+        launches.push(args[args.indexOf("--command") + 1]);
+        return { terminal: { handle: `term-${key}` } };
+      }
+      const terminal = fakeCodexTerminal(command, args);
+      if (terminal !== null) return terminal;
+      if (command === "orca-ide" && args.includes("worker-start")) return { state: "started" };
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      const result = await riskflowDispatch(
+        {
+          workItemId: target.id,
+          expectedRevision: "revision-1",
+          idempotencyKey: `dispatch-codex-${key}`,
+        },
+        {
+          rootDir: process.cwd(),
+          exec,
+          statusProvider: async () => ({ graph, snapshot: snapshot({ nodes: [target] }) }),
+        },
+      );
+      expect(result.worker).toMatchObject({ state: "started" });
+      return launches;
+    } finally {
+      await rm(runtimeRoot, { recursive: true });
+    }
+  };
+
+  it("leaves trust to the coordinator when creating a Codex terminal", async () => {
+    const first = await codexLaunchCommand("scope-first");
+    const second = await codexLaunchCommand("scope-second");
+    expect(first).toHaveLength(1);
+    for (const command of [...first, ...second]) {
+      expect(command).toContain("codex --model");
+      expect(command).not.toContain("trust_level");
+      expect(command).not.toContain("config.toml");
+    }
+    expect(second).toEqual(first);
+  });
+
+  it("refuses Codex startup when the worktree identity does not match the managed path", async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "riskflow-codex-identity-"));
+    let terminalCreates = 0;
+    const target = node({
+      worktree: {
+        id: "repo::/tmp/other-worktree",
+        path: "/tmp/c17",
+        branch: "feature/c17",
+        head: "feature-head",
+        dirty: false,
+      },
+    });
+    const exec = async (command, args) => {
+      if (command === "git") return runtimeRoot;
+      if (command === "orca-ide" && args[0] === "terminal" && args[1] === "create") {
+        terminalCreates += 1;
+        return { terminal: { handle: "term-codex" } };
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+    try {
+      await expect(
+        riskflowDispatch(
+          {
+            workItemId: "C17",
+            expectedRevision: "revision-1",
+            idempotencyKey: "dispatch-codex-identity",
+          },
+          {
+            rootDir: process.cwd(),
+            exec,
+            statusProvider: async () => ({ graph, snapshot: snapshot({ nodes: [target] }) }),
+          },
+        ),
+      ).rejects.toMatchObject({ code: "worktree_identity_unresolved" });
+      // 身份不一致时在创建 terminal 之前就 fail-closed，不伪装成「已信任」。
+      expect(terminalCreates).toBe(0);
     } finally {
       await rm(runtimeRoot, { recursive: true });
     }
@@ -1004,6 +1150,7 @@ describe("controlled orchestration", () => {
         return {};
       }
       if (command === "orca-ide" && args.includes("terminal") && args.includes("create")) {
+        implLaunch = args[args.indexOf("--command") + 1];
         return { terminal: { handle: "term-impl" } };
       }
       if (command === "orca-ide" && args.includes("terminal") && args.includes("wait")) return {};
@@ -1012,6 +1159,7 @@ describe("controlled orchestration", () => {
       throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
     };
     const results = [];
+    let implLaunch;
     try {
       await riskflowDispatch(
         {
@@ -1035,6 +1183,10 @@ describe("controlled orchestration", () => {
       // 注入式派发不回写 Orca 一侧，控制器必须自己同步运行中的信封；否则状态视图一直
       // 显示 queued，并给出会制造第二个写者的"再派发"动作。
       expect(results.at(-1)).toMatchObject({ taskKind: "implementation", runState: "running" });
+      // Implementation 的 OMP terminal 不属于 Codex 工作区信任范围，不得注入任何信任配置。
+      expect(implLaunch).toContain("omp --model");
+      expect(implLaunch).not.toContain("trust_level");
+      expect(implLaunch).not.toContain("projects.");
     } finally {
       await rm(runtimeRoot, { recursive: true });
     }

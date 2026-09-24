@@ -47,7 +47,10 @@ import {
   ModuleErrorV1Schema,
   OpenWarningCommandV1Schema,
   ProjectionExportRequestV1Schema,
+  ProjectionQuerySuccessV1Schema,
   ProjectionQueryV1Schema,
+  QUALITY_EVALUATION_METRIC_CODES_V1,
+  QualityEvaluationSummaryV1Schema,
   RecommendationCommandV1Schema,
   ResumeAgentTaskCommandV1Schema,
   ResumeWorkflowRunCommandV1Schema,
@@ -2582,6 +2585,145 @@ describe("module interface contracts", () => {
         createdAt: now,
       }).success,
     ).toBe(true);
+  });
+});
+
+describe("C36 质量评估查询契约", () => {
+  const reportRef = {
+    kind: "content-artifact" as const,
+    reference: { entityId: "quality-report", versionId: `sha256:${"a".repeat(64)}` },
+  };
+  const projectRevisionRef = {
+    kind: "project-revision" as const,
+    reference: { entityId: "revision", versionId: "r1" },
+  };
+  const qualityQuery = (selector: unknown) =>
+    ProjectionQueryV1Schema.safeParse(
+      query("query", { queryType: "quality-evaluation", selector }),
+    );
+
+  const summaryFor = (metrics: readonly unknown[], evidenceRefs: readonly unknown[] = []) => ({
+    schemaVersion: "1",
+    projectId: "project-1",
+    reportArtifactRef: reportRef,
+    datasetArtifactRef: reportRef,
+    sampleKind: "synthetic",
+    label: "合成样本，待甲方复核",
+    metrics,
+    evidenceRefs,
+    createdAt: now,
+  });
+
+  const metricFor = (metricCode: string, overrides: Record<string, unknown> = {}) => ({
+    metricCode,
+    numerator: 1,
+    denominator: 2,
+    value: 0.5,
+    status: "computed",
+    ...overrides,
+  });
+
+  const fullMetrics = QUALITY_EVALUATION_METRIC_CODES_V1.map((metricCode) => metricFor(metricCode));
+
+  it("只接受闭合的列表选择器与精确报告引用", () => {
+    expect(qualityQuery({ mode: "list", projectRevisionRef, pageSize: 50 }).success).toBe(true);
+    expect(
+      qualityQuery({ mode: "list", projectRevisionRef, pageSize: 1, cursor: "cursor-value" })
+        .success,
+    ).toBe(true);
+    expect(qualityQuery({ mode: "exact", reportArtifactRef: reportRef }).success).toBe(true);
+    for (const selector of [
+      { mode: "list", projectRevisionRef, pageSize: 0 },
+      { mode: "list", projectRevisionRef, pageSize: 51 },
+      { mode: "list", projectRevisionRef, pageSize: 10, filter: { riskLevelId: "high" } },
+      { mode: "list", projectRevisionRef, pageSize: 10, sql: "select 1" },
+      { mode: "exact", reportArtifactRef: reportRef, path: "/etc/passwd" },
+      { mode: "exact" },
+      { mode: "unknown", projectRevisionRef },
+    ]) {
+      expect(qualityQuery(selector).success).toBe(false);
+    }
+  });
+
+  it("保留既有 queryType 的请求与结果形状不变", () => {
+    expect(
+      ProjectionQueryV1Schema.safeParse(
+        query("query", { queryType: "trace-chain", subjectRef: reportRef }),
+      ).success,
+    ).toBe(true);
+    expect(
+      ProjectionQuerySuccessV1Schema.safeParse({ queryResultRef: version("query-result") }).success,
+    ).toBe(true);
+    expect(
+      ProjectionQuerySuccessV1Schema.safeParse({
+        queryResultRef: version("query-result"),
+        nextCursor: "cursor-value",
+      }).success,
+    ).toBe(false);
+    expect(ProjectionQuerySuccessV1Schema.safeParse({}).success).toBe(false);
+  });
+
+  it("只接受七个指标、有界证据与不可计算原因码", () => {
+    expect(
+      ProjectionQuerySuccessV1Schema.safeParse({
+        queryResultRef: version("query-result"),
+        qualitySummaries: [summaryFor(fullMetrics)],
+      }).success,
+    ).toBe(true);
+    expect(
+      ProjectionQuerySuccessV1Schema.safeParse({
+        queryResultRef: version("query-result"),
+        qualitySummaries: [summaryFor(fullMetrics.slice(0, 6))],
+      }).success,
+    ).toBe(false);
+    expect(
+      ProjectionQuerySuccessV1Schema.safeParse({
+        queryResultRef: version("query-result"),
+        qualitySummaries: [
+          summaryFor([
+            metricFor("accuracy", {
+              numerator: 0,
+              value: null,
+              status: "not-computable",
+              denominator: 0,
+            }),
+            ...fullMetrics.slice(1),
+          ]),
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      ProjectionQuerySuccessV1Schema.safeParse({
+        queryResultRef: version("query-result"),
+        qualitySummaries: [
+          summaryFor([
+            metricFor("accuracy", {
+              numerator: 0,
+              value: null,
+              status: "not-computable",
+              denominator: 0,
+              reasonCode: "quality-metric-denominator-zero",
+            }),
+            ...fullMetrics.slice(1),
+          ]),
+        ],
+      }).success,
+    ).toBe(true);
+    expect(
+      QualityEvaluationSummaryV1Schema.safeParse(
+        summaryFor(
+          fullMetrics,
+          new Array(17).fill({
+            locator: { sourceSegmentId: "segment" },
+            sourceVersion: { entityId: "source", versionId: "1" },
+          }),
+        ),
+      ).success,
+    ).toBe(false);
+    expect(
+      QualityEvaluationSummaryV1Schema.safeParse({ ...summaryFor(fullMetrics), extra: true })
+        .success,
+    ).toBe(false);
   });
 });
 

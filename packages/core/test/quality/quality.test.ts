@@ -1,0 +1,480 @@
+/** 合成样本、待甲方复核：本文件所有工程、身份、摘要与工件正文均为合成夹具，不代表真实工程性能。 */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+import { describe, expect, it } from "vitest";
+
+import {
+  StandardizedRiskRecordEnvelopeSchema,
+  type StandardizedRiskRecordEnvelope,
+} from "@riskflow/contracts/records";
+import {
+  C25_FIXTURE_RECORD_AUDIT,
+  makeRiskAssessmentEngineContext,
+} from "../risk-assessment/fixture.js";
+import { evaluateDeterministicAssessment } from "../../src/risk-assessment/engine/index.js";
+import {
+  QualityDatasetV1Schema,
+  QualityRequiredSegmentReceiptV1Schema,
+  type QualityDatasetV1,
+  type QualitySampleEvidenceV1,
+} from "../../src/quality/schema.js";
+import { evaluateQualityDataset } from "../../src/quality/evaluate.js";
+
+const synthetic = JSON.parse(
+  readFileSync(fileURLToPath(new URL("./fixtures/synthetic.json", import.meta.url)), "utf8"),
+) as unknown;
+
+const recordedAt = "2026-09-23T00:00:00.000Z";
+
+const assessment = evaluateDeterministicAssessment(
+  makeRiskAssessmentEngineContext(),
+  C25_FIXTURE_RECORD_AUDIT,
+);
+
+const envelopeFor = (input: {
+  readonly riskRecordId: string;
+  readonly versionId: string;
+  readonly processNodeId: string;
+  readonly riskEvent: string;
+  readonly sourceSegmentId: string;
+}): StandardizedRiskRecordEnvelope =>
+  StandardizedRiskRecordEnvelopeSchema.parse({
+    riskRecordId: input.riskRecordId,
+    record: {
+      processNodeId: input.processNodeId,
+      riskSource: "risk-source-synthetic",
+      riskFactor: "risk-factor-synthetic",
+      riskEvent: input.riskEvent,
+      riskElementRelations: [
+        { sourceElement: "element-a", relation: "affects", targetElement: "element-b" },
+      ],
+      evidenceLocator: { sourceSegmentId: input.sourceSegmentId },
+      modelConfidence: 0.5,
+    },
+    riskMechanismEntryIds: ["mechanism-synthetic"],
+    sourceIds: ["source-synthetic"],
+    compositeConfidence: { value: 0.5, basis: ["synthetic:0.5"] },
+    version: {
+      reference: { entityId: input.riskRecordId, versionId: input.versionId },
+      effectivePeriod: { validFrom: recordedAt },
+      systemTime: { recordedAt },
+    },
+    audit: {
+      actorId: "actor-quality-fixture",
+      action: "identification.risk-record-accepted",
+      recordedAt,
+    },
+  });
+
+/**
+ * 冻结数据集：标签、匹配键、版本与资料段来自仓库内合成 fixture；
+ * 运行输出引用（正式记录、决策工件与重放上下文）由本次真实 C29 引擎输出绑定，
+ * 因为它们只有在运行结束后才成立。C25 fixture 漂移会让本测试显式失败。
+ */
+const freezeSyntheticDataset = (): QualityDatasetV1 => {
+  const draft = structuredClone(synthetic) as Record<string, unknown>;
+  const samples = draft["samples"] as Record<string, unknown>[];
+  for (const sample of samples) {
+    const sampleId = sample["sampleId"];
+    if (sampleId !== "sample-alpha-1" && sampleId !== "sample-alpha-2") continue;
+    sample["assessmentRecordRef"] = assessment.recordRef;
+    sample["expectedRiskLevelId"] = assessment.decision.matrix.riskLevelId;
+  }
+  return QualityDatasetV1Schema.parse(draft);
+};
+
+const dataset = freezeSyntheticDataset();
+const sampleById = new Map(dataset.samples.map((sample) => [sample.sampleId, sample] as const));
+
+const sample = (sampleId: string) => {
+  const value = sampleById.get(sampleId);
+  if (value === undefined) throw new Error(`unknown fixture sample ${sampleId}`);
+  return value;
+};
+
+const snapshotEvidence = (sampleId: string, riskEvent: string): QualitySampleEvidenceV1 => {
+  const declared = sample(sampleId);
+  const snapshotRef = declared.standardizedRiskRecordSnapshotArtifactRef;
+  const riskRecordRef = declared.riskRecordRef;
+  if (snapshotRef === undefined || riskRecordRef === undefined)
+    throw new Error(`fixture sample ${sampleId} does not declare a record`);
+  const envelope = envelopeFor({
+    riskRecordId: riskRecordRef.reference.entityId,
+    versionId: riskRecordRef.reference.versionId,
+    processNodeId: declared.processNodeId,
+    riskEvent,
+    sourceSegmentId: declared.sourceSegmentRefs[0]!.locator.sourceSegmentId,
+  });
+  return {
+    sampleId,
+    recordSnapshot: { artifactRef: snapshotRef, envelope },
+    recordIdentity: {
+      riskRecordId: envelope.riskRecordId,
+      versionId: riskRecordRef.reference.versionId,
+      requestDigest: riskRecordRef.reference.versionId,
+    },
+    verifiedEvidenceRefs: [snapshotRef],
+    requiredSegmentReceipts: [],
+  };
+};
+
+const assessmentEvidence = (sampleId: string): QualitySampleEvidenceV1 => {
+  const base = snapshotEvidence(sampleId, sample(sampleId).expectedEventKey);
+  const declared = sample(sampleId);
+  const decisionRef = declared.assessmentDecisionArtifactRef;
+  const replayRef = declared.assessmentReplayContextArtifactRef;
+  if (decisionRef === undefined || replayRef === undefined)
+    throw new Error(`fixture sample ${sampleId} does not declare assessment evidence`);
+  return {
+    ...base,
+    assessment: {
+      decisionArtifactRef: decisionRef,
+      decision: assessment.decision,
+      decisionDigest: assessment.decisionDigest,
+      replay: {
+        artifactRef: replayRef,
+        context: makeRiskAssessmentEngineContext(),
+        audit: C25_FIXTURE_RECORD_AUDIT,
+      },
+    },
+    verifiedEvidenceRefs: [...base.verifiedEvidenceRefs, decisionRef, replayRef],
+  };
+};
+
+const zetaEnvelopeFor = (sampleId: string): StandardizedRiskRecordEnvelope => {
+  const declared = sample(sampleId);
+  const riskRecordRef = declared.riskRecordRef!;
+  return envelopeFor({
+    riskRecordId: riskRecordRef.reference.entityId,
+    versionId: riskRecordRef.reference.versionId,
+    processNodeId: "process-node-3",
+    riskEvent: "risk-event-zeta",
+    sourceSegmentId: "segment-zeta-1",
+  });
+};
+
+const evidence: readonly QualitySampleEvidenceV1[] = [
+  assessmentEvidence("sample-alpha-1"),
+  assessmentEvidence("sample-alpha-2"),
+  // sample-beta 故意不给证据：正式结果缺失仍必须留在分母。
+  { sampleId: "sample-gamma", verifiedEvidenceRefs: [], requiredSegmentReceipts: [] },
+  snapshotEvidence("sample-delta", "risk-event-unknown"),
+  ...["sample-zeta-1", "sample-zeta-2"].map((sampleId) => {
+    const envelope = zetaEnvelopeFor(sampleId);
+    return {
+      sampleId,
+      recordSnapshot: {
+        artifactRef: sample(sampleId).standardizedRiskRecordSnapshotArtifactRef!,
+        envelope,
+      },
+      recordIdentity: {
+        riskRecordId: envelope.riskRecordId,
+        versionId: envelope.version.reference.versionId,
+        requestDigest: envelope.version.reference.versionId,
+      },
+      verifiedEvidenceRefs: [sample(sampleId).standardizedRiskRecordSnapshotArtifactRef!],
+      requiredSegmentReceipts: [],
+    };
+  }),
+];
+
+const outcome = evaluateQualityDataset({ dataset, evidence });
+const metric = (metricCode: string) =>
+  outcome.metrics.find((entry) => entry.metricCode === metricCode)!;
+const outcomeById = new Map(outcome.samples.map((entry) => [entry.sampleId, entry] as const));
+
+describe("C36 冻结质量数据集", () => {
+  it("拒绝缺少标签政策版本或资格说明的合成数据集", () => {
+    const missingPolicy = structuredClone(synthetic) as Record<string, unknown>;
+    delete missingPolicy["labelPolicyRef"];
+    expect(QualityDatasetV1Schema.safeParse(missingPolicy).success).toBe(false);
+
+    const missingReason = structuredClone(synthetic) as Record<string, unknown>;
+    delete missingReason["sourceQualificationMissingReasonCode"];
+    expect(QualityDatasetV1Schema.safeParse(missingReason).success).toBe(false);
+
+    expect(dataset.sampleKind).toBe("synthetic");
+  });
+
+  it("按冻结版本复算同一分母与标签全集", () => {
+    const again = evaluateQualityDataset({
+      dataset: freezeSyntheticDataset(),
+      evidence,
+    });
+    expect(again.metrics).toEqual(outcome.metrics);
+    expect(again.samples.map((entry) => entry.sampleId)).toEqual(
+      dataset.samples.map((entry) => entry.sampleId),
+    );
+    expect(dataset.samples).toHaveLength(7);
+  });
+});
+
+describe("C36 确定性指标与逐项诊断", () => {
+  it("用冻结标签全集计算准确率、精确率与覆盖度，不丢弃失败样例", () => {
+    expect(metric("accuracy")).toMatchObject({ numerator: 2, denominator: 7, status: "computed" });
+    expect(metric("accuracy").value).toBeCloseTo(2 / 7, 12);
+    expect(metric("precision")).toMatchObject({ numerator: 2, denominator: 2, value: 1 });
+    expect(metric("coverage")).toMatchObject({ numerator: 2, denominator: 7, status: "computed" });
+
+    expect(outcomeById.get("sample-alpha-1")).toMatchObject({
+      classification: "true-positive",
+      recordKeyMatched: true,
+    });
+    expect(outcomeById.get("sample-gamma")).toMatchObject({ classification: "undetermined" });
+    expect(outcomeById.get("sample-gamma")?.reasonCodes).toContain(
+      "quality-identification-result-missing",
+    );
+    expect(outcomeById.get("sample-beta")).toMatchObject({
+      classification: "false-negative",
+      recordIdentityVerified: false,
+    });
+    expect(outcomeById.get("sample-beta")?.reasonCodes).toContain(
+      "quality-identification-result-missing",
+    );
+  });
+
+  it("对键错配与多命中记稳定冲突原因，而不是当作命中", () => {
+    expect(outcomeById.get("sample-delta")).toMatchObject({
+      classification: "false-negative",
+      recordKeyMatched: false,
+    });
+    expect(outcomeById.get("sample-delta")?.reasonCodes).toContain(
+      "quality-identification-key-mismatch",
+    );
+    for (const sampleId of ["sample-zeta-1", "sample-zeta-2"]) {
+      expect(outcomeById.get(sampleId)).toMatchObject({
+        classification: "false-negative",
+        recordKeyMatched: false,
+      });
+      expect(outcomeById.get(sampleId)?.reasonCodes).toContain(
+        "quality-identification-key-conflict",
+      );
+    }
+  });
+
+  it("以明列可比来源对计算跨来源一致性", () => {
+    expect(metric("source-consistency")).toMatchObject({
+      numerator: 1,
+      denominator: 1,
+      value: 1,
+      status: "computed",
+    });
+  });
+
+  it("零分母指标返回不可计算原因，不记为零分或满分", () => {
+    const single = structuredClone(synthetic) as Record<string, unknown>;
+    const samples = single["samples"] as Record<string, unknown>[];
+    single["samples"] = samples.filter((entry) => entry["sampleId"] === "sample-gamma");
+    const parsed = QualityDatasetV1Schema.parse(single);
+    const only = evaluateQualityDataset({
+      dataset: parsed,
+      evidence: [
+        { sampleId: "sample-gamma", verifiedEvidenceRefs: [], requiredSegmentReceipts: [] },
+      ],
+    });
+    expect(only.metrics.find((entry) => entry.metricCode === "precision")).toMatchObject({
+      value: null,
+      status: "not-computable",
+      reasonCode: "quality-metric-denominator-zero",
+    });
+    expect(only.metrics.find((entry) => entry.metricCode === "source-consistency")).toMatchObject({
+      value: null,
+      status: "not-computable",
+    });
+  });
+
+  it("用冻结 C29 上下文重算并比对 P/C、矩阵等级与决策摘要", () => {
+    expect(metric("replay-rate")).toMatchObject({ numerator: 2, denominator: 3 });
+    expect(metric("grade-match")).toMatchObject({ numerator: 2, denominator: 3 });
+    expect(metric("audit-completeness")).toMatchObject({ numerator: 0, denominator: 7 });
+    expect(outcomeById.get("sample-alpha-1")?.reasonCodes).toContain(
+      "quality-evidence-artifact-unverified",
+    );
+    expect(outcome.evidenceChainStatus).toBe("partial");
+    expect(outcomeById.get("sample-alpha-1")?.actualRiskLevelId).toBe(
+      assessment.decision.matrix.riskLevelId,
+    );
+  });
+
+  it("重放不一致或证据缺失时记失败而不宣布通过", () => {
+    const drifted = evidence.map((entry) =>
+      entry.sampleId === "sample-alpha-2" && entry.assessment !== undefined
+        ? {
+            ...entry,
+            assessment: {
+              ...entry.assessment,
+              decisionDigest: "0".repeat(64),
+            },
+          }
+        : entry,
+    );
+    const driftedOutcome = evaluateQualityDataset({ dataset, evidence: drifted });
+    expect(
+      driftedOutcome.samples.find((entry) => entry.sampleId === "sample-alpha-2"),
+    ).toMatchObject({ replayConsistent: false, evidenceVerified: false });
+    expect(
+      driftedOutcome.metrics.find((entry) => entry.metricCode === "replay-rate"),
+    ).toMatchObject({ numerator: 1, denominator: 3 });
+
+    const artifactRefs = evidence
+      .flatMap((entry) => entry.verifiedEvidenceRefs)
+      .map((reference) => reference.reference.entityId);
+    expect(artifactRefs).toContain("quality-sample-snapshot-alpha-1");
+  });
+
+  it("评估记录缺失时等级匹配计入分母而不是被跳过", () => {
+    const withoutAssessment = evidence.map((entry) =>
+      entry.sampleId === "sample-alpha-1"
+        ? {
+            sampleId: entry.sampleId,
+            verifiedEvidenceRefs: entry.verifiedEvidenceRefs,
+            requiredSegmentReceipts: entry.requiredSegmentReceipts,
+          }
+        : entry,
+    );
+    const stripped = evaluateQualityDataset({ dataset, evidence: withoutAssessment });
+    expect(stripped.samples.find((entry) => entry.sampleId === "sample-alpha-1")).toMatchObject({
+      classification: "false-negative",
+      replayConsistent: false,
+    });
+    expect(stripped.metrics.find((entry) => entry.metricCode === "grade-match")).toMatchObject({
+      numerator: 1,
+      denominator: 3,
+    });
+  });
+});
+
+describe("C36 必审资料段收据（D-10）", () => {
+  const zetaEvidence = evidence.find((entry) => entry.sampleId === "sample-zeta-1")!;
+
+  const receiptFor = (reference: {
+    readonly locator: { readonly sourceSegmentId: string };
+    readonly sourceVersion: { readonly entityId: string; readonly versionId: string };
+  }) =>
+    QualityRequiredSegmentReceiptV1Schema.parse({
+      evidenceReference: reference,
+      sourceVersionRef: { kind: "source-version", reference: reference.sourceVersion },
+      sourceSegmentSetRef: {
+        kind: "source-segment-set",
+        reference: { entityId: "segment-set-synthetic", versionId: "1" },
+      },
+      sourceAccessGrantRef: {
+        kind: "source-access-grant",
+        reference: { entityId: "grant-synthetic", versionId: "1" },
+      },
+      queryResultRef: {
+        kind: "query-result",
+        reference: { entityId: "evidence-access-synthetic", versionId: "1" },
+      },
+    });
+
+  const singleSampleDataset = (): QualityDatasetV1 => {
+    const draft = structuredClone(synthetic) as Record<string, unknown>;
+    draft["samples"] = (draft["samples"] as Record<string, unknown>[]).filter(
+      (entry) => entry["sampleId"] === "sample-zeta-1",
+    );
+    return QualityDatasetV1Schema.parse(draft);
+  };
+
+  const auditOf = (outcomeValue: ReturnType<typeof evaluateQualityDataset>) =>
+    outcomeValue.metrics.find((entry) => entry.metricCode === "audit-completeness");
+
+  it("全部必审资料段取得同形收据时计入审计链完整率", () => {
+    const datasetValue = singleSampleDataset();
+    const required = datasetValue.samples[0]!.requiredEvidenceRefs;
+    const proved = evaluateQualityDataset({
+      dataset: datasetValue,
+      evidence: [
+        {
+          ...zetaEvidence,
+          requiredSegmentReceipts: required.map((reference) => receiptFor(reference)),
+        },
+      ],
+    });
+    expect(auditOf(proved)).toMatchObject({ numerator: 1, denominator: 1, value: 1 });
+    expect(proved.evidenceChainStatus).toBe("complete");
+    expect(proved.samples[0]?.reasonCodes.includes("quality-evidence-artifact-unverified")).toBe(
+      false,
+    );
+  });
+
+  it("缺收据或收据指向其它版本时审计链不通过", () => {
+    const datasetValue = singleSampleDataset();
+    const required = datasetValue.samples[0]!.requiredEvidenceRefs;
+    const absent = evaluateQualityDataset({
+      dataset: datasetValue,
+      evidence: [{ ...zetaEvidence, requiredSegmentReceipts: [] }],
+    });
+    expect(auditOf(absent)).toMatchObject({ numerator: 0, denominator: 1 });
+    expect(absent.evidenceChainStatus).toBe("partial");
+    expect(absent.samples[0]?.reasonCodes).toContain("quality-evidence-artifact-unverified");
+
+    const drifted = evaluateQualityDataset({
+      dataset: datasetValue,
+      evidence: [
+        {
+          ...zetaEvidence,
+          requiredSegmentReceipts: required.map((reference) =>
+            receiptFor({
+              locator: reference.locator,
+              sourceVersion: { entityId: reference.sourceVersion.entityId, versionId: "drifted" },
+            }),
+          ),
+        },
+      ],
+    });
+    expect(auditOf(drifted)).toMatchObject({ numerator: 0, denominator: 1 });
+  });
+});
+
+describe("C36 正式空结果证明（D-09）", () => {
+  it("只把有精确完成运行证明的负样例计为 TN 与覆盖", () => {
+    const draft = structuredClone(synthetic) as Record<string, unknown>;
+    const gamma = (draft["samples"] as Record<string, unknown>[]).find(
+      (entry) => entry["sampleId"] === "sample-gamma",
+    )!;
+    const terminalResultRef = {
+      kind: "identification-run-result" as const,
+      reference: { entityId: "formal-run-result", versionId: "1" },
+    };
+    gamma["formalRunProofRefs"] = {
+      runRef: { kind: "workflow-run", reference: { entityId: "formal-run", versionId: "1" } },
+      workPlanRef: {
+        kind: "identification-work-plan",
+        reference: { entityId: "formal-plan", versionId: "1" },
+      },
+      terminalResultRef,
+    };
+    draft["samples"] = [gamma];
+    const frozen = QualityDatasetV1Schema.parse(draft);
+    const missing = evaluateQualityDataset({ dataset: frozen, evidence: [] });
+    expect(missing.samples[0]?.classification).toBe("undetermined");
+    expect(missing.metrics.find((item) => item.metricCode === "coverage")?.numerator).toBe(0);
+
+    const proved = evaluateQualityDataset({
+      dataset: frozen,
+      evidence: [
+        {
+          sampleId: "sample-gamma",
+          verifiedEvidenceRefs: [],
+          requiredSegmentReceipts: [],
+          formalZeroResultProof: { terminalResultRef, frozenScopeDigest: "frozen-scope-digest" },
+        },
+      ],
+    });
+    expect(proved.samples[0]).toMatchObject({
+      classification: "true-negative",
+      formalZeroResultProof: { terminalResultRef },
+    });
+    expect(proved.samples[0]?.reasonCodes).not.toContain("quality-identification-result-missing");
+    expect(proved.metrics.find((item) => item.metricCode === "accuracy")).toMatchObject({
+      numerator: 1,
+      denominator: 1,
+    });
+    expect(proved.metrics.find((item) => item.metricCode === "coverage")).toMatchObject({
+      numerator: 1,
+      denominator: 1,
+    });
+  });
+});

@@ -1816,6 +1816,127 @@ export const ConfirmAgentCommandV1Schema = z.discriminatedUnion("kind", [
 ]);
 export type ConfirmAgentCommandV1 = z.infer<typeof ConfirmAgentCommandV1Schema>;
 
+/** C36 质量评估：页面查询只暴露有界摘要，正文仍由 C04 工件与拥有方保存。 */
+export const QUALITY_EVALUATION_SAMPLE_KINDS_V1 = ["deidentified-real", "synthetic"] as const;
+export const QualityEvaluationSampleKindV1Schema = z.enum(QUALITY_EVALUATION_SAMPLE_KINDS_V1);
+export type QualityEvaluationSampleKindV1 = z.infer<typeof QualityEvaluationSampleKindV1Schema>;
+
+/** 无甲方真实样例时的固定标记；合成结论不得据此声称真实工程性能。 */
+export const QUALITY_EVALUATION_SYNTHETIC_LABEL_V1 = "合成样本，待甲方复核" as const;
+
+export const QUALITY_EVALUATION_METRIC_CODES_V1 = [
+  "accuracy",
+  "precision",
+  "coverage",
+  "source-consistency",
+  "grade-match",
+  "replay-rate",
+  "audit-completeness",
+] as const;
+export const QualityEvaluationMetricCodeV1Schema = z.enum(QUALITY_EVALUATION_METRIC_CODES_V1);
+export type QualityEvaluationMetricCodeV1 = z.infer<typeof QualityEvaluationMetricCodeV1Schema>;
+
+export const QUALITY_EVALUATION_METRIC_STATUSES_V1 = ["computed", "not-computable"] as const;
+export const QualityEvaluationMetricStatusV1Schema = z.enum(QUALITY_EVALUATION_METRIC_STATUSES_V1);
+export type QualityEvaluationMetricStatusV1 = z.infer<typeof QualityEvaluationMetricStatusV1Schema>;
+
+/** 稳定原因码：页面只按码解释不可计算与缺口，不披露领域正文。 */
+export const QUALITY_EVALUATION_REASON_CODES_V1 = [
+  "quality-dataset-invalid",
+  "quality-identification-key-mismatch",
+  "quality-identification-key-conflict",
+  "quality-identification-evidence-unverified",
+  "quality-identification-result-missing",
+  "quality-assessment-decision-missing",
+  "quality-assessment-record-mismatch",
+  "quality-assessment-replay-context-missing",
+  "quality-assessment-replay-mismatch",
+  "quality-assessment-replay-failed",
+  "quality-evidence-artifact-unverified",
+  "quality-summary-exceeds-limit",
+  "quality-metric-denominator-zero",
+] as const;
+export const QualityEvaluationReasonCodeV1Schema = z.enum(QUALITY_EVALUATION_REASON_CODES_V1);
+export type QualityEvaluationReasonCodeV1 = z.infer<typeof QualityEvaluationReasonCodeV1Schema>;
+
+const qualityMetricBase = {
+  metricCode: QualityEvaluationMetricCodeV1Schema,
+  numerator: z.number().int().nonnegative().refine(Number.isSafeInteger),
+  denominator: z.number().int().nonnegative().refine(Number.isSafeInteger),
+  value: z.number().finite().min(0).max(1).nullable(),
+  status: QualityEvaluationMetricStatusV1Schema,
+  reasonCode: QualityEvaluationReasonCodeV1Schema.optional(),
+};
+
+export const QualityEvaluationMetricV1Schema = z
+  .strictObject(qualityMetricBase)
+  .superRefine((metric, context) => {
+    if (metric.numerator > metric.denominator) {
+      context.addIssue({
+        code: "custom",
+        path: ["numerator"],
+        message: "numerator must not exceed the denominator",
+      });
+    }
+    if (metric.status === "computed" && (metric.denominator === 0 || metric.value === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["value"],
+        message: "computed metrics require a non-zero denominator and a value",
+      });
+      return;
+    }
+    if (
+      metric.status === "not-computable" &&
+      (metric.value !== null || metric.reasonCode === undefined)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["status"],
+        message: "not-computable metrics must report a null value and a stable reason code",
+      });
+    }
+  });
+export type QualityEvaluationMetricV1 = z.infer<typeof QualityEvaluationMetricV1Schema>;
+
+/**
+ * 页面可见的 C36 摘要：只有工程、精确报告/数据集引用、样例类别、指标分子分母与值、
+ * 证据定位引用与时间；不含完整数据集、样例标签、配置正文或原始模型响应。
+ */
+export const QualityEvaluationSummaryV1Schema = z.strictObject({
+  schemaVersion: z.literal("1"),
+  projectId: IdentifierSchema,
+  reportArtifactRef: ContentArtifactRefV1Schema,
+  datasetArtifactRef: ContentArtifactRefV1Schema,
+  sampleKind: QualityEvaluationSampleKindV1Schema,
+  label: z.string(),
+  metrics: z
+    .array(QualityEvaluationMetricV1Schema)
+    .length(QUALITY_EVALUATION_METRIC_CODES_V1.length),
+  evidenceRefs: z.array(EvidenceReferenceSchema).max(16),
+  createdAt: IsoDateTimeSchema,
+});
+export type QualityEvaluationSummaryV1 = z.infer<typeof QualityEvaluationSummaryV1Schema>;
+
+const QUALITY_EVALUATION_PAGE_SIZE_MAX = 50;
+
+/** 闭合选择器：只允许按项目修订的有界列表或按精确报告引用查询，不接受任意过滤。 */
+export const QualityEvaluationQuerySelectorV1Schema = z.discriminatedUnion("mode", [
+  z.strictObject({
+    mode: z.literal("list"),
+    projectRevisionRef: ProjectRevisionRefV1Schema,
+    pageSize: z.number().int().positive().max(QUALITY_EVALUATION_PAGE_SIZE_MAX),
+    cursor: z.string().max(512).optional(),
+  }),
+  z.strictObject({
+    mode: z.literal("exact"),
+    reportArtifactRef: ContentArtifactRefV1Schema,
+  }),
+]);
+export type QualityEvaluationQuerySelectorV1 = z.infer<
+  typeof QualityEvaluationQuerySelectorV1Schema
+>;
+
 const ProjectionQueryPayloadV1Schema = z.discriminatedUnion("queryType", [
   z.strictObject({
     queryType: z.literal("risk-overview"),
@@ -1842,6 +1963,10 @@ const ProjectionQueryPayloadV1Schema = z.discriminatedUnion("queryType", [
     queryType: z.literal("review-queue"),
     projectRevisionRef: ProjectRevisionRefV1Schema,
     spatialScopeRef: SpatialScopeRefV1Schema.optional(),
+  }),
+  z.strictObject({
+    queryType: z.literal("quality-evaluation"),
+    selector: QualityEvaluationQuerySelectorV1Schema,
   }),
 ]);
 
@@ -2373,9 +2498,24 @@ export type WorkflowRunCancellationSuccessV1 = z.infer<
   typeof WorkflowRunCancellationSuccessV1Schema
 >;
 
-export const ProjectionQuerySuccessV1Schema = z.strictObject({
-  queryResultRef: QueryResultRefV1Schema,
-});
+export const ProjectionQuerySuccessV1Schema = z
+  .strictObject({
+    queryResultRef: QueryResultRefV1Schema,
+    qualitySummaries: z
+      .array(QualityEvaluationSummaryV1Schema)
+      .max(QUALITY_EVALUATION_PAGE_SIZE_MAX)
+      .optional(),
+    nextCursor: z.string().max(512).optional(),
+  })
+  .superRefine((success, context) => {
+    if (success.nextCursor !== undefined && success.qualitySummaries === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["nextCursor"],
+        message: "a cursor is only meaningful for a bounded quality summary list",
+      });
+    }
+  });
 export type ProjectionQuerySuccessV1 = z.infer<typeof ProjectionQuerySuccessV1Schema>;
 
 export const ProjectionSubscriptionSuccessV1Schema = z.strictObject({

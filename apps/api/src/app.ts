@@ -1,13 +1,15 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import { AccessCommandResultV1Schema, type LocalIdentityAccessV1 } from "@riskflow/core/access";
 import {
+  ProjectionQueryV1Schema,
   RunSubscriptionRequestV1Schema,
   WorkflowRunRefV1Schema,
   type AuthorizationContextV1,
+  type SourceAccessGrantRefV1,
 } from "@riskflow/contracts/ports";
 import { IdentifierSchema } from "@riskflow/contracts/common";
 
@@ -341,7 +343,17 @@ const runBusiness = async (input: {
       input.entry.mode === "command"
         ? assembleCommandRequest(input.entry, projectId, body, decision)
         : assembleQueryRequest(input.entry, projectId, body, decision);
-    const result = await input.entry.invoke(input.ports, domainRequest);
+    const grantedProjection = await qualityProjectionWithGrants({
+      entry: input.entry,
+      request: input.request,
+      options: input.options,
+      ports: input.ports,
+      requestId: input.requestId,
+      now: input.now,
+      decision,
+      domainRequest,
+    });
+    const result = grantedProjection ?? (await input.entry.invoke(input.ports, domainRequest));
     const mapped = mapModuleResult({
       result,
       resultSchema: input.entry.resultSchema,
@@ -359,6 +371,114 @@ const runBusiness = async (input: {
       mapHttpError({ error, requestId: input.requestId, now: input.now }),
     );
   }
+};
+
+/**
+ * D-11：C36 质量查询的请求侧两阶段签发。只有完整 `projection` port 缺席、且窄端口实现
+ * 两阶段方法时才接管；先按当前授权预选候选来源版本，再逐版本用同一会话、工程与空间向 C06
+ * 精确签发，最后按请求内映射过滤定位引用。返回 `undefined` 表示不接管该请求。
+ */
+const qualityProjectionWithGrants = async (input: {
+  readonly entry: HttpRouteEntryV1;
+  readonly request: FastifyRequest;
+  readonly options: BuildApiOptionsV1;
+  readonly ports: ApiPortsV1;
+  readonly requestId: string;
+  readonly now: Date;
+  readonly decision: { readonly context: AuthorizationContextV1 };
+  readonly domainRequest: unknown;
+}): Promise<unknown | undefined> => {
+  if (input.entry.branch !== "projection.query" || input.ports.projection !== undefined) {
+    return undefined;
+  }
+  const narrow = input.ports.qualityProjectionQuery;
+  if (
+    narrow?.candidateSourceVersionRefs === undefined ||
+    narrow.queryWithSourceGrants === undefined
+  ) {
+    return undefined;
+  }
+  const parsed = ProjectionQueryV1Schema.safeParse(input.domainRequest);
+  if (!parsed.success || parsed.data.payload.queryType !== "quality-evaluation") return undefined;
+  const candidates = await narrow.candidateSourceVersionRefs(parsed.data);
+  if (candidates.kind === "rejected") return candidates.result;
+  const sessionToken = cookieToken(input.request);
+  if (sessionToken === undefined || sessionToken === null) return undefined;
+  const requestedSpatialScopeRefs = input.decision.context.spatialScopeRefs;
+  const signVersions = async (phase: "initial" | "final") => {
+    const grants = new Map<string, readonly SourceAccessGrantRefV1[]>();
+    for (const candidate of candidates.versions) {
+      try {
+        // 两轮使用不同 invocation，最终轮不能命中先前的签发回执。
+        const versionDigest = createHash("sha256").update(candidate.versionKey).digest("hex");
+        const perVersion = await authorize({
+          access: input.options.access,
+          requestId: `${input.requestId}:quality-source-version:${phase}:${versionDigest}`,
+          projectId: parsed.data.projectId,
+          branch: "projection.query",
+          sessionToken,
+          requestedSpatialScopeRefs,
+          requestedSourceVersionRefs: [candidate.sourceVersionRef],
+          requestedAt: input.now.toISOString(),
+        });
+        const context = perVersion.context;
+        if (
+          context.projectId !== parsed.data.projectId ||
+          context.actorId !== input.decision.context.actorId ||
+          context.grantedCapabilities.length !== 1 ||
+          context.grantedCapabilities[0] !== "projection.query" ||
+          JSON.stringify(context.spatialScopeRefs) !== JSON.stringify(requestedSpatialScopeRefs) ||
+          context.sourceAccessGrantRefs.length === 0
+        )
+          continue;
+        grants.set(candidate.versionKey, context.sourceAccessGrantRefs);
+      } catch (error: unknown) {
+        if (accessDeniedCode(error)) continue;
+        throw error;
+      }
+    }
+    return grants;
+  };
+  await signVersions("initial");
+  // 当前工程/空间与来源版本均在返回前重新签发；旧上下文不得披露撤权后的定位。
+  let current;
+  try {
+    current = (
+      await authorize({
+        access: input.options.access,
+        requestId: `${input.requestId}:quality-final-scope`,
+        projectId: parsed.data.projectId,
+        branch: "projection.query",
+        sessionToken,
+        requestedSpatialScopeRefs,
+        requestedSourceVersionRefs: [],
+        requestedAt: input.now.toISOString(),
+      })
+    ).context;
+  } catch (error: unknown) {
+    if (!accessDeniedCode(error)) throw error;
+    throw new HttpTransportError(notFound(input.requestId, input.now));
+  }
+  if (
+    current.projectId !== parsed.data.projectId ||
+    current.actorId !== input.decision.context.actorId ||
+    current.grantedCapabilities.length !== 1 ||
+    current.grantedCapabilities[0] !== "projection.query" ||
+    JSON.stringify(current.spatialScopeRefs) !== JSON.stringify(requestedSpatialScopeRefs)
+  )
+    throw new HttpTransportError(notFound(input.requestId, input.now));
+  return narrow.queryWithSourceGrants(parsed.data, await signVersions("final"), candidates);
+};
+
+const accessDeniedCode = (error: unknown): boolean => {
+  if (typeof error !== "object" || error === null || !("details" in error)) return false;
+  const details = error.details;
+  return (
+    typeof details === "object" &&
+    details !== null &&
+    "code" in details &&
+    details.code === "AUTHORIZATION_DENIED"
+  );
 };
 
 export const buildApi = (options: BuildApiOptionsV1): FastifyInstance => {

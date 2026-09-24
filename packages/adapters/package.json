@@ -116,10 +116,10 @@
       "import": "./dist/response-lifecycle/index.js"
     },
     "./human-decision-feedback": {
-    "types": "./dist/human-decision-feedback/index.d.ts",
-    "import": "./dist/human-decision-feedback/index.js"
-  },
-  "./calibration": {
+      "types": "./dist/human-decision-feedback/index.d.ts",
+      "import": "./dist/human-decision-feedback/index.js"
+    },
+    "./calibration": {
       "types": "./dist/calibration/index.d.ts",
       "import": "./dist/calibration/index.js"
     }

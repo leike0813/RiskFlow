@@ -172,10 +172,7 @@ export type HumanDecisionFeedbackFailureCodeV1 = z.infer<
 >;
 
 export type HumanDecisionFeedbackFailureKindV1 =
-  | "authorization"
-  | "business-blocked"
-  | "idempotency"
-  | "terminal";
+  "authorization" | "business-blocked" | "idempotency" | "terminal";
 
 export interface HumanDecisionFeedbackFailureV1 {
   readonly code: HumanDecisionFeedbackFailureCodeV1;

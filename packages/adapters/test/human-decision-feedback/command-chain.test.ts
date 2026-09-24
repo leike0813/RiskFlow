@@ -5,7 +5,7 @@
  * C41 端到端命令链证据（IP-8）：在同一个真实边界内跑通
  * 等待运行 → 人工采纳（C28 决定 → C41 终局 → 恢复）→ 真实现场执行 → 真实 C25 实际评估 →
  * 正式反馈 → 反馈分段启动，并覆盖失败后同键重试补齐、跨空间/陈旧/冒充失败关闭与
- * 「人工决定前不执行预测」。唯一替身是 C30 **写**入口（见 `fixture.ts` 文件头「替身面」）。
+ * 「人工决定前不执行预测」。C30 写入口与完成性证明的替身边界见 `fixture.ts` 文件头。
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -100,7 +100,10 @@ describe("C41 人工决定与反馈命令链", () => {
         artifactRef: runStateRow.artifactRef,
         spatialScopeRef: scope,
       }),
-    ).toMatchObject({ bodyKind: "run-state", runState: { status: "waiting", assessmentRunRefs: [] } });
+    ).toMatchObject({
+      bodyKind: "run-state",
+      runState: { status: "waiting", assessmentRunRefs: [] },
+    });
     expect(await state.state.countRows("response_forecast_outcomes")).toBe(forecastsBefore);
 
     // 3) 现场执行：仍有效的人工采纳决定形成一项独立执行事实。
@@ -314,9 +317,9 @@ describe("C41 人工决定与反馈命令链", () => {
       preActionMonitoringSnapshotRef: prepared.preActionMonitoringSnapshotRef,
       spatialScopeRef: scope,
     });
-    expect(
-      failureOf(await state.record({ ...forged, actorId: "actor-c41-forged" })).code,
-    ).toBe("AUTHORIZATION_DENIED");
+    expect(failureOf(await state.record({ ...forged, actorId: "actor-c41-forged" })).code).toBe(
+      "AUTHORIZATION_DENIED",
+    );
 
     // 三次失败都不产生决定、运行、执行或预测事实。
     expect(await state.decisionRows()).toHaveLength(decisionsBefore);

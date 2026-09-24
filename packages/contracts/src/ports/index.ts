@@ -2161,6 +2161,36 @@ export type ResponseWorkflowBindingProofResultV1 = z.infer<
   typeof ResponseWorkflowBindingProofResultV1Schema
 >;
 
+/** C30 按精确子运行与评估记录证明实际评估已经完成。 */
+export const WorkflowRunCompletionProofQueryV1Schema = z.discriminatedUnion("kind", [
+  querySchema(
+    "verify-workflow-run-completion",
+    z.strictObject({
+      workflowRunRef: WorkflowRunRefV1Schema,
+      riskAssessmentRecordRef: RiskAssessmentRecordRefV1Schema,
+    }),
+    branchCapability("workflow.start-run"),
+  ),
+]);
+export type WorkflowRunCompletionProofQueryV1 = z.infer<
+  typeof WorkflowRunCompletionProofQueryV1Schema
+>;
+
+export const WorkflowRunCompletionProofV1Schema = z.strictObject({
+  kind: z.literal("completed"),
+  projectId: IdentifierSchema,
+  workflowRunRef: WorkflowRunRefV1Schema,
+  riskAssessmentRecordRef: RiskAssessmentRecordRefV1Schema,
+  auditTrailRef: AuditTrailRefV1Schema,
+});
+export type WorkflowRunCompletionProofV1 = z.infer<typeof WorkflowRunCompletionProofV1Schema>;
+export const WorkflowRunCompletionProofResultV1Schema = moduleResultSchema(
+  WorkflowRunCompletionProofV1Schema,
+);
+export type WorkflowRunCompletionProofResultV1 = z.infer<
+  typeof WorkflowRunCompletionProofResultV1Schema
+>;
+
 /**
  * C25 只读证明（C41 接线 D5）：只按精确评估记录引用返回最小投影，不返回正文、latest 或列表，
  * 不重算也不改写历史评估。
@@ -2191,7 +2221,9 @@ export const ActualAssessmentProofV1Schema = z.strictObject({
 });
 export type ActualAssessmentProofV1 = z.infer<typeof ActualAssessmentProofV1Schema>;
 
-export const ActualAssessmentProofResultV1Schema = moduleResultSchema(ActualAssessmentProofV1Schema);
+export const ActualAssessmentProofResultV1Schema = moduleResultSchema(
+  ActualAssessmentProofV1Schema,
+);
 export type ActualAssessmentProofResultV1 = z.infer<typeof ActualAssessmentProofResultV1Schema>;
 
 /**
@@ -2901,9 +2933,17 @@ export interface ResponseWorkflowBindingProofPortV1 {
   ): Promise<ResponseWorkflowBindingProofResultV1>;
 }
 
+export interface WorkflowRunCompletionProofPortV1 {
+  verifyWorkflowRunCompletion(
+    query: WorkflowRunCompletionProofQueryV1,
+  ): Promise<WorkflowRunCompletionProofResultV1>;
+}
+
 /** 实际评估只读证明端口：评估所有者实现，C41 组合使用；不扩张 `RiskAssessmentPortV1` 写签名。 */
 export interface ActualAssessmentProofPortV1 {
-  verifyActualAssessment(query: ActualAssessmentProofQueryV1): Promise<ActualAssessmentProofResultV1>;
+  verifyActualAssessment(
+    query: ActualAssessmentProofQueryV1,
+  ): Promise<ActualAssessmentProofResultV1>;
 }
 
 /** 人工采纳证明只读端口：C41 实现、C30 等待运行恢复消费；只返回已终局采纳的最小证明。 */

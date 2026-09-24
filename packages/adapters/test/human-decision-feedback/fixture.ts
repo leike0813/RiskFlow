@@ -14,6 +14,8 @@
  *    （等价于组合根按运行时派生 id 签发；替身不猜测 id）。
  * 3. `basis` 与 `measureReleases` 两个只读接缝以显式失败替身注入：C41 只调用
  *    `readRecommendationContext`（只读 C27/C28/C25 与 C30 表，不触达这两个接缝）。
+ * 4. C25 合成夹具使用固定 `c25-engine-run`，未登记 C30 运行；完成性证明在此以可控替身注入，
+ *    真实 C30 证明由 `postgres-workflow-adapter.test.ts` 单独验证。
  *
  * 其余全部真实：Testcontainers PostgreSQL + 完整生产迁移链（含 C41 `000051`）、真实 C03 事务/审计/回执、
  * 真实 C04 文件系统工件、真实 C28 决定/执行/反馈写入、真实 C25 评估链与精确评估证明、
@@ -539,6 +541,8 @@ export interface HumanDecisionFeedbackPostgresFixtureV1 {
   readonly workflowAdapter: PostgresWorkflowAdapterV1;
   /** C30 写入口替身（见文件头「替身面」）。 */
   readonly workflow: C30WriteStandIn;
+  /** C25 fixture 的合成运行没有 C30 状态；此处只替代完成性证明供 C41 命令测试。 */
+  setAssessmentRunCompleted(completed: boolean): void;
   readonly rootSpatialScopeRef: SpatialScopeRefV1;
   readonly rootSpatialScope: SpatialScopeRefV1;
 
@@ -583,7 +587,9 @@ export interface HumanDecisionFeedbackPostgresFixtureV1 {
   /** 公开入口（C41 三分支）与采纳证明入口的直接调用助手。 */
   record(command: HumanDecisionFeedbackCommandV1): Promise<WarningResponseRecordResultV1>;
   proofQuery(input: HumanDecisionProofRequestV1): Promise<HumanDecisionProofQueryV1>;
-  verifyHumanDecisionCommitted(input: HumanDecisionProofRequestV1): Promise<HumanDecisionProofResultV1>;
+  verifyHumanDecisionCommitted(
+    input: HumanDecisionProofRequestV1,
+  ): Promise<HumanDecisionProofResultV1>;
   /** 用真实 C30 绑定证明端口复核指定等待运行的绑定事实（与 C41 内部同一次授权身份）。 */
   verifyBindingProof(input: {
     readonly commandId: string;
@@ -770,6 +776,26 @@ export const startHumanDecisionFeedbackFixture =
       verifyAsIssued,
       authorizeFor,
     });
+    let assessmentRunCompleted = true;
+    const runCompletionProof: PostgresWorkflowAdapterV1["runCompletionProof"] = {
+      verifyWorkflowRunCompletion: async (query) =>
+        assessmentRunCompleted &&
+        query.payload.workflowRunRef.reference.entityId === "c25-engine-run"
+          ? {
+              kind: "succeeded",
+              result: {
+                kind: "completed",
+                projectId: query.projectId,
+                workflowRunRef: query.payload.workflowRunRef,
+                riskAssessmentRecordRef: query.payload.riskAssessmentRecordRef,
+                auditTrailRef: {
+                  kind: "audit-trail",
+                  reference: { entityId: "c41-fixture-assessment-run", versionId: "1" },
+                },
+              },
+            }
+          : { kind: "failed", error: unsupportedError(query.queryId) },
+    };
 
     /** C41 只调用 `readRecommendationContext`：两个未触达的只读接缝以显式失败替身注入。 */
     const unreachableSeam = (seam: string) => async (): Promise<never> => {
@@ -799,6 +825,7 @@ export const startHumanDecisionFeedbackFixture =
       workflow,
       bindingProof: workflowAdapter.bindingProof,
       assessmentProof: state.recommendation.c26.c25.engine,
+      runCompletionProof,
       responseLifecycle: state.adapter,
       responseContext,
       workflowStartControl: {
@@ -808,7 +835,9 @@ export const startHumanDecisionFeedbackFixture =
       now: () => new Date(C41_FIXTURE_TIME),
     });
 
-    const proofQuery = async (input: HumanDecisionProofRequestV1): Promise<HumanDecisionProofQueryV1> => {
+    const proofQuery = async (
+      input: HumanDecisionProofRequestV1,
+    ): Promise<HumanDecisionProofQueryV1> => {
       const queryId =
         input.queryId ?? `c41-fixture-proof:${input.routeDecisionRef.reference.entityId}`;
       return {
@@ -842,6 +871,9 @@ export const startHumanDecisionFeedbackFixture =
       adapter,
       workflowAdapter,
       workflow,
+      setAssessmentRunCompleted(completed) {
+        assessmentRunCompleted = completed;
+      },
       rootSpatialScopeRef,
       rootSpatialScope: rootSpatialScopeRef,
       authorizeFor,
@@ -869,7 +901,8 @@ export const startHumanDecisionFeedbackFixture =
             responseRecommendationRef: input.recommendationRef,
             decision: input.decision,
             reasonCode:
-              input.reasonCode ?? (input.decision === "adopted" ? "field-verified" : "not-applicable"),
+              input.reasonCode ??
+              (input.decision === "adopted" ? "field-verified" : "not-applicable"),
             ...(input.preActionMonitoringSnapshotRef === undefined
               ? {}
               : { preActionMonitoringSnapshotRef: input.preActionMonitoringSnapshotRef }),

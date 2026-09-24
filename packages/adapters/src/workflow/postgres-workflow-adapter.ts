@@ -18,6 +18,9 @@ import type {
   ResponseWorkflowBindingProofPortV1,
   ResponseWorkflowBindingProofQueryV1,
   ResponseWorkflowBindingProofResultV1,
+  WorkflowRunCompletionProofPortV1,
+  WorkflowRunCompletionProofQueryV1,
+  WorkflowRunCompletionProofResultV1,
   WaitingRefV1,
 } from "@riskflow/contracts/ports";
 import {
@@ -25,6 +28,8 @@ import {
   ModuleErrorV1Schema,
   ResponseWorkflowBindingProofQueryV1Schema,
   ResponseWorkflowBindingProofResultV1Schema,
+  WorkflowRunCompletionProofQueryV1Schema,
+  WorkflowRunCompletionProofResultV1Schema,
 } from "@riskflow/contracts/ports";
 import { ACCESS_POLICY_REF_V1, type LocalIdentityAccessV1 } from "@riskflow/core/access";
 import {
@@ -366,6 +371,7 @@ export interface PostgresWorkflowAdapterV1 {
   readonly bodies: WorkflowGraphBodyPortV1;
   /** C30 只读绑定证明（design D5）：按精确建议与运行返回已登记路由/运行/冻结事实，不写任何事实。 */
   readonly bindingProof: ResponseWorkflowBindingProofPortV1;
+  readonly runCompletionProof: WorkflowRunCompletionProofPortV1;
 }
 
 /** 入口路由原因码：与运行图登记值一致；适配器只读该值，不解释其它原因码。 */
@@ -380,9 +386,10 @@ const bindingProofError = (input: {
   readonly occurredAt: string;
   readonly requiredCapability: ModuleCapabilityV1;
   readonly detailCode: string;
+  readonly stageCode?: string;
 }): ModuleErrorV1 => {
   const common = {
-    stageCode: PROOF_STAGE_CODE_V1,
+    stageCode: input.stageCode ?? PROOF_STAGE_CODE_V1,
     occurredAt: input.occurredAt,
     causalRunId: input.causalRunId,
   };
@@ -406,7 +413,10 @@ const bindingProofError = (input: {
           kind: "diagnostic-artifact",
           reference: {
             entityId: `workflow-binding-proof:${input.detailCode}`,
-            versionId: sha256CanonicalJson({ detailCode: input.detailCode, runId: input.causalRunId }),
+            versionId: sha256CanonicalJson({
+              detailCode: input.detailCode,
+              runId: input.causalRunId,
+            }),
           },
         },
       });
@@ -818,12 +828,13 @@ class WorkflowGraphPersistence {
       const waiting =
         humanDecisionWaitings.length === 1
           ? (humanDecisionWaitings[0]?.waitingRef as
-              | Extract<WaitingRefV1, { readonly kind: "human-decision" }>
-              | undefined)
+              Extract<WaitingRefV1, { readonly kind: "human-decision" }> | undefined)
           : undefined;
       // 入口路由行取本运行持久化顺序中的第一条 `entry-accepted`：它是创建时登记的入口事实。
       const entryRoute = scoped
-        .filter((row) => row.resultKind === "route-decision" && row.routeKind === ENTRY_ROUTE_KIND_V1)
+        .filter(
+          (row) => row.resultKind === "route-decision" && row.routeKind === ENTRY_ROUTE_KIND_V1,
+        )
         .at(0);
       const recommendationMatches =
         waiting !== undefined &&
@@ -906,6 +917,121 @@ class WorkflowGraphPersistence {
           detailCode: "binding-facts-inconsistent",
         }),
       };
+    }
+  }
+
+  /** 精确子运行与评估记录必须同时出现在已完成的 C30 持久运行状态中。 */
+  async verifyWorkflowRunCompletion(
+    query: WorkflowRunCompletionProofQueryV1,
+  ): Promise<WorkflowRunCompletionProofResultV1> {
+    const occurredAt = this.#now().toISOString();
+    const parsed = WorkflowRunCompletionProofQueryV1Schema.safeParse(query);
+    const runId = parsed.success
+      ? parsed.data.payload.workflowRunRef.reference.entityId
+      : "workflow-run";
+    const failed = (
+      code: "AUTHORIZATION_DENIED" | "TERMINAL_FAILURE" | "UNSUPPORTED_CONTRACT",
+      detailCode: string,
+    ) => ({
+      kind: "failed" as const,
+      error: bindingProofError({
+        code,
+        causalRunId: runId,
+        occurredAt,
+        requiredCapability: "workflow.start",
+        detailCode,
+        stageCode: "workflow.run-completion-proof",
+      }),
+    });
+    if (!parsed.success) return failed("UNSUPPORTED_CONTRACT", "query-invalid");
+    const valid = parsed.data;
+    try {
+      const verified = await this.verifyAuthorization({
+        authorization: valid.authorization,
+        projectId: valid.projectId,
+        actorId: valid.actorId,
+        invocationId: valid.queryId,
+        requestedAt: valid.requestedAt,
+      });
+      if (verified === undefined) return failed("AUTHORIZATION_DENIED", "completion-proof-denied");
+      const latest = await this.#latestRunStateWith({
+        projectId: valid.projectId,
+        runId,
+        requestedAt: valid.requestedAt,
+        verified,
+      });
+      if (latest === undefined) return failed("AUTHORIZATION_DENIED", "completion-not-established");
+      const { row, state } = latest;
+      if (
+        state.projectId !== valid.projectId ||
+        state.runId !== runId ||
+        state.runVersionId !== row.resultVersionId
+      )
+        return failed("TERMINAL_FAILURE", "run-state-inconsistent");
+      if (
+        state.status !== "completed" ||
+        !state.assessmentRecordRefs.some(
+          (ref) =>
+            ref.reference.entityId === valid.payload.riskAssessmentRecordRef.reference.entityId &&
+            ref.reference.versionId === valid.payload.riskAssessmentRecordRef.reference.versionId,
+        )
+      )
+        return failed("AUTHORIZATION_DENIED", "completion-not-established");
+      const resultRows = await this.#db
+        .selectFrom(RESULTS_TABLE)
+        .selectAll()
+        .where("project_id", "=", valid.projectId)
+        .where("run_id", "=", runId)
+        .where("run_version_id", "=", row.runVersionId)
+        .where("result_kind", "=", "run-result")
+        .limit(2)
+        .execute();
+      if (resultRows.length !== 1) return failed("TERMINAL_FAILURE", "run-result-inconsistent");
+      const resultRow = rowFromDb(resultRows[0]!);
+      if (
+        resultRow.resultKind !== "run-result" ||
+        resultRow.artifactRef === undefined ||
+        resultRow.authorizationScopeDigest !== authorizationScopeDigest(verified)
+      )
+        return failed("TERMINAL_FAILURE", "run-result-inconsistent");
+      const resultBody = await this.#openBody({
+        projectId: valid.projectId,
+        artifactRef: resultRow.artifactRef,
+        actorId: valid.actorId,
+        requestedAt: valid.requestedAt,
+        authorization: verified,
+      });
+      if (
+        resultBody?.bodyKind !== "run-result" ||
+        resultBody.runResult.projectId !== valid.projectId ||
+        resultBody.runResult.runRef.reference.entityId !== runId ||
+        resultBody.runResult.runRef.reference.versionId !==
+          valid.payload.workflowRunRef.reference.versionId ||
+        state.resultRef?.kind !== "risk-flow-run-result" ||
+        state.resultRef.reference.versionId !==
+          resultBody.runResult.auditTrailRef.reference.versionId ||
+        !resultBody.runResult.assessmentRecordRefs.some(
+          (ref) =>
+            ref.reference.entityId === valid.payload.riskAssessmentRecordRef.reference.entityId &&
+            ref.reference.versionId === valid.payload.riskAssessmentRecordRef.reference.versionId,
+        )
+      )
+        return failed("TERMINAL_FAILURE", "run-result-inconsistent");
+      return WorkflowRunCompletionProofResultV1Schema.parse({
+        kind: "succeeded",
+        result: {
+          kind: "completed",
+          projectId: valid.projectId,
+          workflowRunRef: valid.payload.workflowRunRef,
+          riskAssessmentRecordRef: valid.payload.riskAssessmentRecordRef,
+          auditTrailRef: {
+            kind: "audit-trail",
+            reference: { entityId: row.auditEntryId, versionId: "v1" },
+          },
+        },
+      });
+    } catch {
+      return failed("TERMINAL_FAILURE", "completion-facts-inconsistent");
     }
   }
 
@@ -1139,6 +1265,9 @@ export const createPostgresWorkflowAdapter = (
     },
     bindingProof: {
       verifyResponseWorkflowBinding: (query) => persistence.verifyResponseWorkflowBinding(query),
+    },
+    runCompletionProof: {
+      verifyWorkflowRunCompletion: (query) => persistence.verifyWorkflowRunCompletion(query),
     },
   };
 };

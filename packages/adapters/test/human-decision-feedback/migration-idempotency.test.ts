@@ -42,6 +42,20 @@ describe("C41 迁移可重入", () => {
     return result.rows[0]?.total ?? 0;
   };
 
+  const crossChangeForeignKeyCount = async (): Promise<number> => {
+    const result = await sql<{ total: number }>`
+      SELECT count(*)::int AS total
+        FROM pg_constraint
+       WHERE conrelid IN (
+         'business.human_response_decisions'::regclass,
+         'business.human_feedback_input_snapshots'::regclass
+       )
+         AND contype = 'f'
+         AND confrelid <> 'audit.entries'::regclass
+    `.execute(db);
+    return result.rows[0]?.total ?? 0;
+  };
+
   beforeAll(async () => {
     fixture = await startPostgresFixture();
     await runPostgresMigrations({
@@ -60,11 +74,13 @@ describe("C41 迁移可重入", () => {
   it("up 与 down 可重复执行且保留唯一索引与终局约束", async () => {
     expect(await c41TableCount()).toBe(C41_TABLES.length);
     expect(await c41ConstraintCount()).toBe(C41_CONSTRAINTS.length);
+    expect(await crossChangeForeignKeyCount()).toBe(0);
 
     // 第二次 up：全部 DDL 与约束必须幂等。
     await humanDecisionFeedbackMigration.up(db);
     expect(await c41TableCount()).toBe(C41_TABLES.length);
     expect(await c41ConstraintCount()).toBe(C41_CONSTRAINTS.length);
+    expect(await crossChangeForeignKeyCount()).toBe(0);
 
     // 第一次 down 删表与权限，第二次 down 必须在已删表上仍然成功。
     await humanDecisionFeedbackMigration.down(db);
@@ -76,5 +92,6 @@ describe("C41 迁移可重入", () => {
     await humanDecisionFeedbackMigration.up(db);
     expect(await c41TableCount()).toBe(C41_TABLES.length);
     expect(await c41ConstraintCount()).toBe(C41_CONSTRAINTS.length);
+    expect(await crossChangeForeignKeyCount()).toBe(0);
   }, 300_000);
 });

@@ -73,8 +73,12 @@ const decisionRowOf = async (
   );
 };
 
-const snapshotRowsOf = async (idempotencyKey: string): Promise<readonly Record<string, unknown>[]> =>
-  (await fixture!.feedbackSnapshotRows()).filter((row) => row["idempotency_key"] === idempotencyKey);
+const snapshotRowsOf = async (
+  idempotencyKey: string,
+): Promise<readonly Record<string, unknown>[]> =>
+  (await fixture!.feedbackSnapshotRows()).filter(
+    (row) => row["idempotency_key"] === idempotencyKey,
+  );
 
 describe("C41 人工决定与反馈命令 PostgreSQL 链", () => {
   beforeAll(async () => {
@@ -105,7 +109,9 @@ describe("C41 人工决定与反馈命令 PostgreSQL 链", () => {
     });
     const result = settled(await state.record(command));
     if (result.result.kind !== "adoption") {
-      throw new Error(`expected adoption, received: ${JSON.stringify(result.result).slice(0, 400)}`);
+      throw new Error(
+        `expected adoption, received: ${JSON.stringify(result.result).slice(0, 400)}`,
+      );
     }
     return { prepared, scope, command, adoption: result.result };
   };
@@ -130,7 +136,9 @@ describe("C41 人工决定与反馈命令 PostgreSQL 链", () => {
       ),
     );
     if (result.result.kind !== "execution") {
-      throw new Error(`expected execution, received: ${JSON.stringify(result.result).slice(0, 400)}`);
+      throw new Error(
+        `expected execution, received: ${JSON.stringify(result.result).slice(0, 400)}`,
+      );
     }
     return result.result.executionRecordRef;
   };
@@ -182,7 +190,8 @@ describe("C41 人工决定与反馈命令 PostgreSQL 链", () => {
     if (waitingRow?.waitingRef?.kind !== "human-decision") {
       throw new Error("expected one human-decision waiting row");
     }
-    const waiting: Extract<WaitingRefV1, { readonly kind: "human-decision" }> = waitingRow.waitingRef;
+    const waiting: Extract<WaitingRefV1, { readonly kind: "human-decision" }> =
+      waitingRow.waitingRef;
     expect(waiting.responseRecommendationRef).toEqual(prepared.recommendationRef);
     expect(waiting.spatialScopeRef).toEqual(scope);
 
@@ -465,7 +474,8 @@ describe("C41 人工决定与反馈命令 PostgreSQL 链", () => {
               commandId: "c41-binding-proof-run",
               decision: "adopted",
               recommendationRef: unregisteredRun.prepared.recommendationRef,
-              preActionMonitoringSnapshotRef: unregisteredRun.prepared.preActionMonitoringSnapshotRef,
+              preActionMonitoringSnapshotRef:
+                unregisteredRun.prepared.preActionMonitoringSnapshotRef,
               spatialScopeRef: unregisteredRun.scope,
             }),
           ),
@@ -480,9 +490,9 @@ describe("C41 人工决定与反馈命令 PostgreSQL 链", () => {
 
     // 两种错配都只留下进行中占位：无终局采纳、无 C28 决定。
     expect(await state.decisionRows()).toHaveLength(decisionsBefore + 2);
-    expect(
-      (await state.decisionRows()).filter((row) => row["state"] === "adopted"),
-    ).toHaveLength(adoptedBefore);
+    expect((await state.decisionRows()).filter((row) => row["state"] === "adopted")).toHaveLength(
+      adoptedBefore,
+    );
     expect(await state.countC28Decisions()).toBe(c28DecisionsBefore);
   });
 
@@ -558,10 +568,7 @@ describe("C41 人工决定与反馈命令 PostgreSQL 链", () => {
       await adminRows(
         `SELECT execution_id FROM business.response_execution_records
            WHERE project_id = $1 AND recommendation_id = $2`,
-        [
-          state.projectId,
-          undecided.prepared.recommendationRef.reference.entityId,
-        ],
+        [state.projectId, undecided.prepared.recommendationRef.reference.entityId],
       ),
     ).toHaveLength(0);
 
@@ -651,6 +658,28 @@ describe("C41 人工决定与反馈命令 PostgreSQL 链", () => {
     });
     expect(await snapshotRowsOf("c41-feedback-missing-selector")).toHaveLength(0);
 
+    // C25 记录已成立但所属 C30 运行未完成：正式反馈与冻结输入均不得产生。
+    state.setAssessmentRunCompleted(false);
+    try {
+      expect(
+        failureOf(
+          await state.record(
+            await state.feedbackCommand({
+              commandId: "c41-feedback-run-pending",
+              executionRecordRef: executionRef,
+              postActionMonitoringSnapshotRef: post.monitoringSnapshotRef,
+              feedbackArtifactRef: artifact,
+              actualAssessmentRecordRef: post.assessmentRecordRef,
+              spatialScopeRef: scope,
+            }),
+          ),
+        ).code,
+      ).toBe("BUSINESS_BLOCKED");
+      expect(await snapshotRowsOf("c41-feedback-run-pending")).toHaveLength(0);
+    } finally {
+      state.setAssessmentRunCompleted(true);
+    }
+
     // 其它风险输入的实际评估：链不符必须失败关闭，且不落部分正式反馈。
     const foreign = await state.state.postActionAssessment({
       suffix: "c41-feedback-foreign",
@@ -729,7 +758,11 @@ describe("C41 人工决定与反馈命令 PostgreSQL 链", () => {
       await adminRows(
         `SELECT feedback_id FROM business.response_feedback_records
            WHERE project_id = $1 AND execution_id = $2 AND feedback_id = $3`,
-        [state.projectId, executionRef.reference.entityId, retried.result.feedbackRef.reference.entityId],
+        [
+          state.projectId,
+          executionRef.reference.entityId,
+          retried.result.feedbackRef.reference.entityId,
+        ],
       ),
     ).toHaveLength(1);
     expect(state.workflow.segmentStartCalls).toHaveLength(segmentStartsBefore + 1);
@@ -786,7 +819,9 @@ describe("C41 人工决定与反馈命令 PostgreSQL 链", () => {
       }),
     );
     if (wrongRun.code !== "AUTHORIZATION_DENIED") {
-      throw new Error(`运行不符证明非 AUTHORIZATION_DENIED：${JSON.stringify(wrongRun).slice(0, 400)}`);
+      throw new Error(
+        `运行不符证明非 AUTHORIZATION_DENIED：${JSON.stringify(wrongRun).slice(0, 400)}`,
+      );
     }
     const other = await prepareRecommendation("c41-proof-other");
     expect(
@@ -890,6 +925,7 @@ describe("C41 人工决定与反馈命令 PostgreSQL 链", () => {
       responseRecommendationRef: pending.prepared.recommendationRef,
       commandId: "c41-proof-pending-decision",
       idempotencyKey: "c41-proof-pending-decision",
+      decision: "adopted",
       reasonCode: "field-verified",
       preActionMonitoringSnapshotRef: pending.prepared.preActionMonitoringSnapshotRef,
     });
@@ -974,6 +1010,20 @@ describe("C41 人工决定与反馈命令 PostgreSQL 链", () => {
     ).toHaveLength(1);
 
     // 同键异载荷：不得覆盖已成立事实。
+    expect(
+      failureOf(
+        await state.record(
+          await state.adoptCommand({
+            commandId: command.commandId,
+            decision: "declined",
+            recommendationRef: prepared.recommendationRef,
+            preActionMonitoringSnapshotRef: prepared.preActionMonitoringSnapshotRef,
+            reasonCode: command.payload.reasonCode,
+            spatialScopeRef: scope,
+          }),
+        ),
+      ).code,
+    ).toBe("IDEMPOTENCY_CONFLICT");
     expect(
       failureOf(
         await state.record(

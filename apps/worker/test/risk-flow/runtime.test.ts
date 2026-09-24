@@ -483,11 +483,7 @@ const createAssessmentRuntimeStub = (deps: {
 
 /** C41 人工采纳证明替身（design D2/D3）：记录每次核对请求，可切换为成功采纳或各类错配/失败。 */
 type HumanDecisionProofModeV1 =
-  | "adopted"
-  | "failed"
-  | "wrong-run"
-  | "wrong-recommendation"
-  | "wrong-scope";
+  "adopted" | "failed" | "wrong-run" | "wrong-recommendation" | "wrong-scope";
 
 interface HumanDecisionProofStubV1 {
   readonly port: HumanDecisionProofPortV1;
@@ -758,24 +754,6 @@ const IDENTIFY_FROZEN_REFS: readonly ContractReferenceV1[] = [
   MONITORING_A,
   MONITORING_B,
 ];
-
-/** 等待模式预测入口（C41 接线）：冻结引用与等待意图只由本用例给出。 */
-const FORECAST_RECOMMENDATION_REF = {
-  kind: "response-recommendation" as const,
-  reference: { entityId: "response-recommendation-c30", versionId: "v1" },
-};
-const FORECAST_MONITORING_REF = {
-  kind: "monitoring-snapshot" as const,
-  reference: { entityId: "monitoring-forecast-c30", versionId: "v1" },
-};
-const FORECAST_BASIS_RELEASE_SET_REF = {
-  kind: "assessment-basis-release-set" as const,
-  reference: { entityId: "basis-forecast-c30", versionId: "v1" },
-};
-const FORECAST_ASSESSMENT_INPUT_REF = {
-  kind: "assessment-input-snapshot" as const,
-  reference: { entityId: "assessment-input-forecast-c30", versionId: "v1" },
-};
 
 /** 评估子运行等待引用（替身用它表示子运行停在人工确认等待）。 */
 const USER_CONFIRMATION_WAITING: WaitingRefV1 = {
@@ -1410,7 +1388,6 @@ describe("C30 父运行图运行时（真实 PostgreSQL + 真实 LangGraph + 真
     ).toEqual(rowsBefore.map((row) => `${row.resultKind}/${row.resultId}/${row.resultVersionId}`));
     expect(await auditCount()).toBe(auditBefore);
   }, 120_000);
-
 });
 
 describe("C30 父运行图运行时（检查点写入失败后恢复对账）", () => {
@@ -1742,7 +1719,9 @@ describe("C30 人工决定等待门（唯一已授权空间）", () => {
     expect(harness.assessment.commands).toEqual([]);
     expect(harness.humanDecisionProof.queries).toEqual([]);
     expect(
-      (await rowsOf(runRef)).map((row) => `${row.resultKind}/${row.resultId}/${row.resultVersionId}`),
+      (await rowsOf(runRef)).map(
+        (row) => `${row.resultKind}/${row.resultId}/${row.resultVersionId}`,
+      ),
     ).toEqual(rowsBefore.map((row) => `${row.resultKind}/${row.resultId}/${row.resultVersionId}`));
     expect(await auditCount()).toBe(auditBefore);
     expect((await readLatestState(harness, runRef, "workflow.resume"))?.status).toBe("waiting");
@@ -1817,7 +1796,8 @@ describe("C30 人工决定等待门（唯一已授权空间）", () => {
     // 决定引用以精确路由行登记，父运行据此可追溯来源。
     expect(
       (await rowsOf(runRef)).filter(
-        (row) => row.resultKind === "route-decision" && row.routeKind === "human-decision-committed",
+        (row) =>
+          row.resultKind === "route-decision" && row.routeKind === "human-decision-committed",
       ),
     ).toHaveLength(1);
   }, 120_000);
@@ -1877,7 +1857,9 @@ describe("C30 人工决定等待门（唯一已授权空间）", () => {
       const rowsAfter = await rowsOf(runRef);
       expect(
         rowsAfter.map((row) => `${row.resultKind}/${row.resultId}/${row.resultVersionId}`),
-      ).toEqual(rowsBefore.map((row) => `${row.resultKind}/${row.resultId}/${row.resultVersionId}`));
+      ).toEqual(
+        rowsBefore.map((row) => `${row.resultKind}/${row.resultId}/${row.resultVersionId}`),
+      );
       expect(rowsAfter.filter((row) => row.routeKind === "human-decision-committed")).toEqual([]);
       expect((await readLatestState(harness, runRef, "workflow.resume"))?.status).toBe("waiting");
     }

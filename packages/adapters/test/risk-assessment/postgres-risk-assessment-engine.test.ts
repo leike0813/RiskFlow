@@ -1188,9 +1188,7 @@ describe("C25 PostgreSQL risk assessment engine", () => {
       [preparationRef.reference.entityId, preparationRef.reference.versionId],
     );
     expect(proof.spatialScopeRef).toEqual(fixture.businessSpatialScopeRef);
-    expect(proof.spatialScopeRef).toEqual(
-      preparationRow.rows[0]!.snapshot_payload.spatialScopeRef,
-    );
+    expect(proof.spatialScopeRef).toEqual(preparationRow.rows[0]!.snapshot_payload.spatialScopeRef);
     expect(proof.riskInputRef).toEqual(preparationRow.rows[0]!.snapshot_payload.riskInput);
     expect(proof.monitoringSnapshotRefs).toEqual(
       preparationRow.rows[0]!.snapshot_payload.monitoringSnapshotRefs,
@@ -1277,7 +1275,11 @@ describe("C25 PostgreSQL risk assessment engine", () => {
     const queryId = "c25-proof-no-capability";
     const authorization = await fixture.readAuthorization(queryId);
     const noCapability = await fixture.engine.verifyActualAssessment(
-      proofQuery(queryId, { ...authorization, grantedCapabilities: ["risk-assessment.evaluate"] }, recordRef),
+      proofQuery(
+        queryId,
+        { ...authorization, grantedCapabilities: ["risk-assessment.evaluate"] },
+        recordRef,
+      ),
     );
     expect(noCapability).toMatchObject({
       kind: "failed",
@@ -1402,9 +1404,9 @@ describe("C25 PostgreSQL risk assessment engine", () => {
     expect(result).toMatchObject({ kind: "succeeded" });
 
     expect(await snapshot()).toEqual(before);
-    expect(
-      await countRows(fixture, "business.risk_assessment_records", fixture.projectId),
-    ).toBe(recordsBefore);
+    expect(await countRows(fixture, "business.risk_assessment_records", fixture.projectId)).toBe(
+      recordsBefore,
+    );
     expect(await countEvents(fixture, "assessment.recorded.v1")).toBe(eventsBefore);
     // 只读证明不登记回执、审计或新评估事实。
     expect(await countReceipts(fixture, queryId)).toBe(0);

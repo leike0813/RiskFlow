@@ -34,6 +34,7 @@ import {
   type WarningResponseRecordCommandV1,
   type WarningResponseRecordResultV1,
   type WorkflowPortV1,
+  type WorkflowRunCompletionProofPortV1,
   type WorkflowRunRefV1,
 } from "@riskflow/contracts/ports";
 
@@ -134,6 +135,7 @@ export interface HumanDecisionFeedbackServicePortsV1 {
   readonly bindingProof: ResponseWorkflowBindingProofPortV1;
   /** C25 只读证明：只按精确评估记录引用核对已成立实际评估。 */
   readonly assessmentProof: ActualAssessmentProofPortV1;
+  readonly runCompletionProof: WorkflowRunCompletionProofPortV1;
   /** C28 领域写入：决定、执行与反馈仍由处置模块自己的事务提交。 */
   readonly responseLifecycle: ResponseLifecycleServiceV1;
   /** C28 精确只读上下文：建议链、基线评估与冻结评估依据。 */
@@ -185,6 +187,7 @@ export const decisionRefFor = (input: {
   readonly responseRecommendationRef: ResponseRecommendationRefV1;
   readonly commandId: string;
   readonly idempotencyKey: string;
+  readonly decision: "adopted" | "declined";
   readonly reasonCode: string;
   readonly preActionMonitoringSnapshotRef?: { readonly reference: VersionReference } | undefined;
 }): RouteDecisionRefV1 => ({
@@ -196,13 +199,16 @@ export const decisionRefFor = (input: {
       responseRecommendationRef: input.responseRecommendationRef,
       commandId: input.commandId,
       idempotencyKey: input.idempotencyKey,
+      decision: input.decision,
       reasonCode: input.reasonCode,
       preActionMonitoringSnapshotRef: input.preActionMonitoringSnapshotRef?.reference ?? null,
     }),
   },
 });
 
-const auditTrailRefFor = (commandId: string): { readonly kind: "audit-trail" } & {
+const auditTrailRefFor = (
+  commandId: string,
+): { readonly kind: "audit-trail" } & {
   readonly reference: VersionReference;
 } => ({
   kind: "audit-trail",
@@ -215,11 +221,13 @@ const assertSameCommand = (
   commandId: string,
   idempotencyKey: string,
   commandDigest: string,
+  actorId: string,
 ): void => {
   if (
     decision.commandId !== commandId ||
     decision.idempotencyKey !== idempotencyKey ||
-    decision.commandDigest !== commandDigest
+    decision.commandDigest !== commandDigest ||
+    decision.decidedBy !== actorId
   ) {
     failHumanDecisionFeedback("human-decision-feedback-decision-conflict", "idempotency");
   }
@@ -260,7 +268,10 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
         (claimed.actorId !== claimed.authorization.actorId ||
           claimed.projectId !== claimed.authorization.projectId)
       ) {
-        failHumanDecisionFeedback("human-decision-feedback-authorization-required", "authorization");
+        failHumanDecisionFeedback(
+          "human-decision-feedback-authorization-required",
+          "authorization",
+        );
       }
       const parsed = WarningResponseRecordCommandV1Schema.safeParse(command);
       if (!parsed.success) {
@@ -374,6 +385,7 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
       responseRecommendationRef: recommendationRef,
       commandId: command.commandId,
       idempotencyKey: command.idempotencyKey,
+      decision: command.payload.decision,
       reasonCode: command.payload.reasonCode,
       preActionMonitoringSnapshotRef: command.payload.preActionMonitoringSnapshotRef,
     });
@@ -382,7 +394,9 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
       kind: command.kind,
       commandId: command.commandId,
       idempotencyKey: command.idempotencyKey,
+      actorId: verified.actorId,
       responseRecommendationRef: recommendationRef,
+      decision: command.payload.decision,
       reasonCode: command.payload.reasonCode,
       preActionMonitoringSnapshotRef: command.payload.preActionMonitoringSnapshotRef ?? null,
     });
@@ -391,7 +405,13 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
       responseRecommendationRef: recommendationRef,
     });
     if (existing !== undefined) {
-      assertSameCommand(existing, command.commandId, command.idempotencyKey, commandDigest);
+      assertSameCommand(
+        existing,
+        command.commandId,
+        command.idempotencyKey,
+        commandDigest,
+        verified.actorId,
+      );
       if (existing.state === "declined") {
         // 同键同载荷重放的拒绝：返回同一逻辑结果，引用与首次一致（design D1/D3）。
         return {
@@ -432,7 +452,10 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
       if (declined.kind === "conflict") {
         failHumanDecisionFeedback(declined.detailCode, "idempotency");
       }
-      return { kind: "succeeded", result: { kind: "decline", routeDecisionRef: declined.decision.decisionRef } };
+      return {
+        kind: "succeeded",
+        result: { kind: "decline", routeDecisionRef: declined.decision.decisionRef },
+      };
     }
     // 顺序固定：先证明该建议冻结评估输入中的执行前监测快照，再按原键占用 pending 决定。
     const preActionSnapshotRef = await this.#selectPreActionSnapshot({ command, context });
@@ -461,7 +484,12 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
       // 并发中另一主体已提交拒绝：互斥终局不可覆盖。
       failHumanDecisionFeedback("human-decision-feedback-decision-conflict", "business-blocked");
     }
-    return await this.#continueAdoption(command, context, reservation.decision, preActionSnapshotRef);
+    return await this.#continueAdoption(
+      command,
+      context,
+      reservation.decision,
+      preActionSnapshotRef,
+    );
   }
 
   /** 已终局或进行中：`adopted` 直接返回既有事实（恢复未完成时按原身份补齐），`declined` 互斥失败。 */
@@ -781,14 +809,14 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
     if (
       baseline.projectId !== command.projectId ||
       !sameRef(baseline.spatialScopeRef, context.spatialScopeRef) ||
-      !sameRef(
-        baseline.assessmentInputSnapshotRef,
-        context.baselineAssessmentInputSnapshotRef,
-      ) ||
+      !sameRef(baseline.assessmentInputSnapshotRef, context.baselineAssessmentInputSnapshotRef) ||
       baseline.riskInputRef.kind !== context.riskInputRef.kind ||
       baseline.riskInputRef.reference.entityId !== context.riskInputRef.reference.entityId
     ) {
-      failHumanDecisionFeedback("human-decision-feedback-frozen-input-conflict", "business-blocked");
+      failHumanDecisionFeedback(
+        "human-decision-feedback-frozen-input-conflict",
+        "business-blocked",
+      );
     }
     return { monitoringSnapshotRefs: baseline.monitoringSnapshotRefs };
   }
@@ -811,7 +839,10 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
         responseRecommendationRef: source.responseRecommendationRef,
       });
       if (decision === undefined || decision.state !== "adopted") {
-        failHumanDecisionFeedback("human-decision-feedback-decision-not-adopted", "business-blocked");
+        failHumanDecisionFeedback(
+          "human-decision-feedback-decision-not-adopted",
+          "business-blocked",
+        );
       }
       requestedSpatialScopeRefs = [decision.spatialScopeRef];
     }
@@ -920,7 +951,10 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
         actualAssessmentRecordRef: frozen.actualAssessmentRecordRef,
       });
       if (recorded.kind !== "succeeded") return recorded;
-      if (recorded.result.kind !== "feedback" || !sameRef(recorded.result.feedbackRef, feedbackRef)) {
+      if (
+        recorded.result.kind !== "feedback" ||
+        !sameRef(recorded.result.feedbackRef, feedbackRef)
+      ) {
         failHumanDecisionFeedback("human-decision-feedback-contract-drift", "terminal");
       }
       await this.#ports.feedbackSnapshots.markSnapshotCommitted({
@@ -988,6 +1022,37 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
     if (
       established.projectId !== command.projectId ||
       !sameRef(established.riskAssessmentRecordRef, selector)
+    ) {
+      failHumanDecisionFeedback(
+        "human-decision-feedback-actual-assessment-mismatch",
+        "business-blocked",
+      );
+    }
+    const runAuthorization = await this.#issueAuthorization({
+      branch: "workflow.start-run",
+      invocationId: `${command.commandId}:assessment-run`,
+      projectId: command.projectId,
+      actorId: command.actorId,
+      requestedAt: command.issuedAt,
+      requestedSpatialScopeRefs: [established.spatialScopeRef],
+    });
+    const completed = await this.#ports.runCompletionProof.verifyWorkflowRunCompletion({
+      kind: "verify-workflow-run-completion",
+      queryId: `${command.commandId}:assessment-run`,
+      projectId: command.projectId,
+      actorId: command.actorId,
+      requestedAt: command.issuedAt,
+      authorization: runAuthorization,
+      payload: {
+        workflowRunRef: established.assessmentRunRef,
+        riskAssessmentRecordRef: selector,
+      },
+    });
+    if (
+      completed.kind !== "succeeded" ||
+      completed.result.projectId !== command.projectId ||
+      !sameRef(completed.result.workflowRunRef, established.assessmentRunRef) ||
+      !sameRef(completed.result.riskAssessmentRecordRef, selector)
     ) {
       failHumanDecisionFeedback(
         "human-decision-feedback-actual-assessment-mismatch",

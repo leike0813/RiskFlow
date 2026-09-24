@@ -544,7 +544,9 @@ describe("C30 父运行生产组合根（真实 PostgreSQL 接线）", () => {
     ).toBe(true);
     // 等待态只登记等待与入口事实：没有评估子运行路由，评估子运行面从未被调用。
     expect(
-      rows.filter((row) => row.resultKind === "route-decision" && row.routeKind === "assessment-sub-run"),
+      rows.filter(
+        (row) => row.resultKind === "route-decision" && row.routeKind === "assessment-sub-run",
+      ),
     ).toEqual([]);
     const latest = await composition.registrationStore.readLatestRunState({
       projectId: PROJECT_ID,
@@ -599,7 +601,10 @@ describe("C30 父运行生产组合根（真实 PostgreSQL 接线）", () => {
           projectId: PROJECT_ID,
           runId: runRef.reference.entityId,
         })
-      ).filter((row) => row.resultKind === "route-decision" && row.routeKind === "human-decision-committed"),
+      ).filter(
+        (row) =>
+          row.resultKind === "route-decision" && row.routeKind === "human-decision-committed",
+      ),
     ).toEqual([]);
   }, 120_000);
 });

@@ -20,6 +20,7 @@ import {
   type AuthorizationContextV1,
   type ModuleBranchV1,
   type ResponseWorkflowBindingProofQueryV1,
+  type WorkflowRunCompletionProofQueryV1,
 } from "@riskflow/contracts/ports";
 import { sha256CanonicalJson } from "@riskflow/core/persistence";
 import { authorizationScopeDigest } from "@riskflow/core/retrieval";
@@ -89,7 +90,10 @@ const BINDING_ENTRY_IDENTITY = {
 /** 入口路由引用按运行派生：登记行身份不含 run_id，跨运行夹具必须自行区分。 */
 const bindingEntryRouteRefFor = (runId: string) => ({
   kind: "route-decision" as const,
-  reference: { entityId: `risk-flow-entry:${runId}`, versionId: sha(`binding-entry-route:${runId}`) },
+  reference: {
+    entityId: `risk-flow-entry:${runId}`,
+    versionId: sha(`binding-entry-route:${runId}`),
+  },
 });
 const BINDING_ENTRY_ROUTE_REF = bindingEntryRouteRefFor(BINDING_RUN_ID);
 const BINDING_RUN_REF = {
@@ -135,7 +139,10 @@ const createAccess = () => {
   const port: Pick<LocalIdentityAccessV1, "verify"> = {
     verify: async (input) => {
       calls.push({ invocationId: input.invocationId, branch: input.branch });
-      if (revoked || (boundInvocationId !== undefined && input.invocationId !== boundInvocationId)) {
+      if (
+        revoked ||
+        (boundInvocationId !== undefined && input.invocationId !== boundInvocationId)
+      ) {
         throw new AccessServiceError({
           code: "AUTHORIZATION_DENIED",
           retryable: false,
@@ -175,11 +182,14 @@ const createAccess = () => {
 const runState = (input: {
   readonly runVersionId: string;
   readonly status?: WorkflowGraphRunStateV1["status"];
+  readonly runId?: string;
+  readonly assessmentRecordRefs?: WorkflowGraphRunStateV1["assessmentRecordRefs"];
+  readonly resultRef?: WorkflowGraphRunStateV1["resultRef"];
 }): WorkflowGraphRunStateV1 =>
   WorkflowGraphRunStateV1Schema.parse({
     schemaVersion: "1",
     projectId: PROJECT_ID,
-    runId: RUN_ID,
+    runId: input.runId ?? RUN_ID,
     runVersionId: input.runVersionId,
     entryMode: "assess",
     entryIdentity: ENTRY_IDENTITY,
@@ -187,7 +197,8 @@ const runState = (input: {
     status: input.status ?? "running",
     assessmentRunRefs: [],
     acceptedRiskRecordRefs: [RISK_RECORD_REF],
-    assessmentRecordRefs: [],
+    assessmentRecordRefs: input.assessmentRecordRefs ?? [],
+    ...(input.resultRef === undefined ? {} : { resultRef: input.resultRef }),
     warningRecordRefs: [],
     responseRecommendationRefs: [],
     deviationRecordRefs: [],
@@ -649,6 +660,143 @@ describe("C30 workflow registration adapter", () => {
     expect(missing).toBeUndefined();
   });
 
+  it("proves a completed run only for its exact recorded assessment", async () => {
+    const runId = `${RUN_ID}:completion`;
+    const runVersionId = sha("completion-run-version");
+    const assessmentRef = {
+      kind: "risk-assessment-record" as const,
+      reference: { entityId: "assessment-completed-c30", versionId: "1" },
+    };
+    const workflowRunRef = {
+      kind: "workflow-run" as const,
+      reference: { entityId: runId, versionId: sha("completion-run-identity") },
+    };
+    const resultVersionId = sha("completion-result-version");
+    const resultRef = {
+      kind: "risk-flow-run-result" as const,
+      reference: { entityId: `risk-flow-run-result:${runId}`, versionId: resultVersionId },
+    };
+    const artifactRef = await fixture.adapter.bodies.putBody({
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      commandId: "c30-body-completion",
+      issuedAt: TIMESTAMP,
+      artifactId: `c30-run-state:${runId}:${runVersionId}`,
+      body: {
+        bodyKind: "run-state",
+        runState: runState({
+          runId,
+          runVersionId,
+          status: "completed",
+          assessmentRecordRefs: [assessmentRef],
+          resultRef,
+        }),
+      },
+      authorization: AUTHORIZATION,
+    });
+    await registerWithinTransaction({
+      row: {
+        ...resultRowFor("run-state", "completion"),
+        runId,
+        runVersionId,
+        resultVersionId: runVersionId,
+        resultId: artifactRef.reference.entityId,
+        artifactRef,
+      },
+    });
+    const resultArtifactRef = await fixture.adapter.bodies.putBody({
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      commandId: "c30-body-completion-result",
+      issuedAt: TIMESTAMP,
+      artifactId: `c30-run-result:${runId}:${resultVersionId}`,
+      body: {
+        bodyKind: "run-result",
+        runResult: {
+          schemaVersion: "1",
+          projectId: PROJECT_ID,
+          runRef: workflowRunRef,
+          entryMode: "assess",
+          stage: "result-summary",
+          assessmentRunRefs: [],
+          assessmentRecordRefs: [assessmentRef],
+          warningRecordRefs: [],
+          responseRecommendationRefs: [],
+          deviationRecordRefs: [],
+          calibrationSuggestionRefs: [],
+          skippedTails: [],
+          auditTrailRef: {
+            kind: "audit-trail",
+            reference: { entityId: `risk-flow-run-audit:${runId}`, versionId: resultVersionId },
+          },
+          recordedAt: TIMESTAMP,
+        },
+      },
+      authorization: AUTHORIZATION,
+    });
+    await registerWithinTransaction({
+      row: {
+        ...resultRowFor("run-result", "completion"),
+        runId,
+        runVersionId,
+        resultVersionId: resultArtifactRef.reference.versionId,
+        resultId: resultArtifactRef.reference.entityId,
+        runResultRef: resultArtifactRef,
+        artifactRef: resultArtifactRef,
+      },
+    });
+    const query = {
+      kind: "verify-workflow-run-completion",
+      queryId: "c30-run-completion-query",
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      requestedAt: TIMESTAMP,
+      authorization: AUTHORIZATION,
+      payload: {
+        workflowRunRef,
+        riskAssessmentRecordRef: assessmentRef,
+      },
+    } satisfies WorkflowRunCompletionProofQueryV1;
+    expect(
+      await fixture.adapter.runCompletionProof.verifyWorkflowRunCompletion(query),
+    ).toMatchObject({
+      kind: "succeeded",
+      result: { riskAssessmentRecordRef: assessmentRef },
+    });
+    expect(
+      await fixture.adapter.runCompletionProof.verifyWorkflowRunCompletion({
+        ...query,
+        payload: {
+          ...query.payload,
+          riskAssessmentRecordRef: {
+            ...assessmentRef,
+            reference: { entityId: "assessment-other", versionId: "1" },
+          },
+        },
+      }),
+    ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    expect(
+      await fixture.adapter.runCompletionProof.verifyWorkflowRunCompletion({
+        ...query,
+        payload: {
+          ...query.payload,
+          workflowRunRef: {
+            ...workflowRunRef,
+            reference: { ...workflowRunRef.reference, versionId: "wrong-version" },
+          },
+        },
+      }),
+    ).toMatchObject({ kind: "failed", error: { code: "TERMINAL_FAILURE" } });
+    fixture.access.revoke();
+    expect(
+      await fixture.adapter.runCompletionProof.verifyWorkflowRunCompletion(query),
+    ).toMatchObject({
+      kind: "failed",
+      error: { code: "AUTHORIZATION_DENIED" },
+    });
+    fixture.access.restore();
+  });
+
   it("registers links append-only and refuses relations outside the closed set", async () => {
     const link = {
       schemaVersion: "1" as const,
@@ -936,9 +1084,7 @@ describe("C30 workflow registration adapter", () => {
     const newCalls = fixture.access.calls.slice(callsBefore);
     fixture.access.bindInvocationId(undefined);
 
-    expect(newCalls).toEqual([
-      { invocationId: BINDING_QUERY_ID, branch: "workflow.start-run" },
-    ]);
+    expect(newCalls).toEqual([{ invocationId: BINDING_QUERY_ID, branch: "workflow.start-run" }]);
     expect(proof).toMatchObject({
       kind: "succeeded",
       result: {
@@ -988,9 +1134,8 @@ describe("C30 workflow registration adapter", () => {
       }),
     );
     fixture.access.revoke();
-    const unauthorized = await fixture.adapter.bindingProof.verifyResponseWorkflowBinding(
-      bindingQuery(),
-    );
+    const unauthorized =
+      await fixture.adapter.bindingProof.verifyResponseWorkflowBinding(bindingQuery());
     fixture.access.restore();
 
     for (const result of [mismatched, unknownRun, unauthorized]) {

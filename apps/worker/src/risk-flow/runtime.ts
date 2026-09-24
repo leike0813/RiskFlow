@@ -345,7 +345,9 @@ const humanDecisionGateFor = (input: {
 }): RiskFlowGraphRunContextV1["humanDecisionGate"] => {
   if (input.command.waitForDecision !== true) return undefined;
   const spatialScopeRef =
-    input.authorized.spatialScopeRefs.length === 1 ? input.authorized.spatialScopeRefs[0] : undefined;
+    input.authorized.spatialScopeRefs.length === 1
+      ? input.authorized.spatialScopeRefs[0]
+      : undefined;
   const responseRecommendationRef = input.command.adoptedRecommendationRef;
   if (
     input.command.entryMode !== "forecast-response" ||
@@ -401,7 +403,8 @@ const assertResumeReferences = (input: {
   if (input.cause.kind === "human-decision-committed") {
     // 等待态运行只认同一次已登记的人工决定路由：必须恰好一条等待行、其决定路由引用与恢复原因一致，
     // 且运行仍处等待态，否则保持等待（design D2）。
-    const pending = humanDecisionWaitings.length === 1 ? humanDecisionWaitings[0]?.waitingRef : undefined;
+    const pending =
+      humanDecisionWaitings.length === 1 ? humanDecisionWaitings[0]?.waitingRef : undefined;
     const matched = pending?.kind === "human-decision" ? pending : undefined;
     const accepted =
       matched !== undefined &&
@@ -1317,7 +1320,9 @@ export const createRiskFlowGraphRuntime = (
         ...(parsed.payload.entryMode === "forecast-response"
           ? {
               adoptedRecommendationRef: parsed.payload.adoptedRecommendationRef,
-              ...(parsed.payload.waitForDecision === true ? { waitForDecision: true as const } : {}),
+              ...(parsed.payload.waitForDecision === true
+                ? { waitForDecision: true as const }
+                : {}),
             }
           : {}),
         runRef,

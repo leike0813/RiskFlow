@@ -58,6 +58,7 @@ import {
   ResumeWorkflowRunCommandV1Schema,
   ResponseWorkflowBindingProofQueryV1Schema,
   ResponseWorkflowBindingProofV1Schema,
+  WorkflowRunCompletionProofQueryV1Schema,
   ReviewDecisionCommandV1Schema,
   ReviewDecisionV1Schema,
   ReviewRequestV1Schema,
@@ -2945,7 +2946,6 @@ describe("C41 additive human decision and feedback command wiring", () => {
   const recommendationRef = version("response-recommendation");
   const routeDecisionRef = version("route-decision", "route-decision-1");
   const executionRecordRef = version("execution-record");
-  const feedbackRef = version("feedback");
 
   it("keeps the adoption decision selectors optional and the decline result free of runs", () => {
     const base = {
@@ -3003,9 +3003,9 @@ describe("C41 additive human decision and feedback command wiring", () => {
       feedbackArtifactRef: version("content-artifact"),
       occurredAt: now,
     };
-    expect(WarningResponseRecordCommandV1Schema.safeParse(command("record-feedback", payload)).success).toBe(
-      true,
-    );
+    expect(
+      WarningResponseRecordCommandV1Schema.safeParse(command("record-feedback", payload)).success,
+    ).toBe(true);
     expect(
       WarningResponseRecordCommandV1Schema.safeParse(
         command("record-feedback", {
@@ -3051,7 +3051,11 @@ describe("C41 additive human decision and feedback command wiring", () => {
     ).toBe(false);
     expect(
       StartWorkflowRunCommandV1Schema.safeParse(
-        command("start-run", { ...forecast, waitForDecision: true, forecastRunRef: workflowRunRef }),
+        command("start-run", {
+          ...forecast,
+          waitForDecision: true,
+          forecastRunRef: workflowRunRef,
+        }),
       ).success,
     ).toBe(false);
 
@@ -3117,6 +3121,18 @@ describe("C41 additive human decision and feedback command wiring", () => {
         frozenDigest: "0".repeat(64),
         auditTrailRef,
         record: { body: "not-a-proof" },
+      }).success,
+    ).toBe(false);
+
+    const completionQuery = query("verify-workflow-run-completion", {
+      workflowRunRef,
+      riskAssessmentRecordRef: assessmentRecordRef,
+    });
+    expect(WorkflowRunCompletionProofQueryV1Schema.safeParse(completionQuery).success).toBe(true);
+    expect(
+      WorkflowRunCompletionProofQueryV1Schema.safeParse({
+        ...completionQuery,
+        payload: { ...completionQuery.payload, runStatus: "completed" },
       }).success,
     ).toBe(false);
 
@@ -3218,7 +3234,8 @@ describe("C41 additive human decision and feedback command wiring", () => {
     ): ActualAssessmentProofPortV1["verifyActualAssessment"] => port.verifyActualAssessment;
     const requiresDecisionProof = (
       port: HumanDecisionProofPortV1,
-    ): HumanDecisionProofPortV1["verifyHumanDecisionCommitted"] => port.verifyHumanDecisionCommitted;
+    ): HumanDecisionProofPortV1["verifyHumanDecisionCommitted"] =>
+      port.verifyHumanDecisionCommitted;
     expect(requiresBindingProof).toBeTypeOf("function");
     expect(requiresAssessmentProof).toBeTypeOf("function");
     expect(requiresDecisionProof).toBeTypeOf("function");

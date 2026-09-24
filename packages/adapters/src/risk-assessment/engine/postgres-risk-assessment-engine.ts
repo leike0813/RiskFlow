@@ -681,9 +681,7 @@ export class PostgresRiskAssessmentEngine
       }
       const payload = record.data;
       const standardized = payload.kind === "standardized-risk-record";
-      const riskInputEntityId = standardized
-        ? payload.riskRecordId
-        : payload.externalRiskEventId;
+      const riskInputEntityId = standardized ? payload.riskRecordId : payload.externalRiskEventId;
       if (
         row.record_id !== payload.assessmentRecordId ||
         row.risk_input_kind !== payload.kind ||
@@ -729,16 +727,8 @@ export class PostgresRiskAssessmentEngine
         .selectFrom("business.assessment_preparation_snapshots")
         .select(["snapshot_payload"])
         .where("project_id", "=", valid.projectId)
-        .where(
-          "snapshot_id",
-          "=",
-          inputSnapshotValue.preparationSnapshotRef.reference.entityId,
-        )
-        .where(
-          "version_id",
-          "=",
-          inputSnapshotValue.preparationSnapshotRef.reference.versionId,
-        )
+        .where("snapshot_id", "=", inputSnapshotValue.preparationSnapshotRef.reference.entityId)
+        .where("version_id", "=", inputSnapshotValue.preparationSnapshotRef.reference.versionId)
         .executeTakeFirst();
       const preparation = AssessmentPreparationSnapshotV1Schema.safeParse(
         preparationRow?.snapshot_payload,

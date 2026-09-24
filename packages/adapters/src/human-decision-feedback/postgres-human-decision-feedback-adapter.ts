@@ -16,7 +16,6 @@ import {
   type HumanDecisionProofResultV1,
   type HumanDecisionFeedbackPortV1,
   type ModuleBranchV1,
-  type RouteDecisionRefV1,
   type WarningResponseRecordResultV1,
 } from "@riskflow/contracts/ports";
 import type { LocalIdentityAccessV1 } from "@riskflow/core/access";
@@ -34,7 +33,6 @@ import {
   failHumanDecisionFeedback,
   toHumanDecisionFeedbackModuleError,
   type HumanFeedbackInputSnapshotRowV1,
-  type HumanFeedbackSnapshotReservationV1,
   type HumanResponseDecisionReservationV1,
   type HumanResponseDecisionV1,
 } from "@riskflow/core/human-decision-feedback";
@@ -47,8 +45,15 @@ import {
   type TransactionOptionsV1,
   type TransactionUnitV1,
 } from "@riskflow/core/persistence";
-import type { ResponseLifecycleContextReaderV1, ResponseLifecycleServiceV1 } from "@riskflow/core/response-lifecycle";
-import type { ActualAssessmentProofPortV1, ResponseWorkflowBindingProofPortV1, WorkflowPortV1 } from "@riskflow/contracts/ports";
+import type {
+  ResponseLifecycleContextReaderV1,
+  ResponseLifecycleServiceV1,
+} from "@riskflow/core/response-lifecycle";
+import type {
+  ActualAssessmentProofPortV1,
+  ResponseWorkflowBindingProofPortV1,
+  WorkflowPortV1,
+} from "@riskflow/contracts/ports";
 
 import { getPostgresTransaction } from "../postgres/transaction-unit.js";
 import { mapPostgresError } from "../postgres/pool.js";
@@ -126,17 +131,16 @@ interface HumanDecisionFeedbackDatabase extends PostgresDatabase {
 const DECISIONS_TABLE = "business.human_response_decisions";
 const SNAPSHOTS_TABLE = "business.human_feedback_input_snapshots";
 
-const asTransaction = (
-  context: TransactionContextV1,
-): Transaction<HumanDecisionFeedbackDatabase> =>
+const asTransaction = (context: TransactionContextV1): Transaction<HumanDecisionFeedbackDatabase> =>
   getPostgresTransaction(context) as unknown as Transaction<HumanDecisionFeedbackDatabase>;
 
 const jsonValue = (value: unknown): unknown => JSON.stringify(value) as unknown;
 const toIso = (value: TimestampColumn | null): string | undefined =>
   value === null ? undefined : (value instanceof Date ? value : new Date(value)).toISOString();
 
-const refKey = (ref: { readonly reference: { readonly entityId: string; readonly versionId: string } }): string =>
-  `${ref.reference.entityId}\u0000${ref.reference.versionId}`;
+const refKey = (ref: {
+  readonly reference: { readonly entityId: string; readonly versionId: string };
+}): string => `${ref.reference.entityId}\u0000${ref.reference.versionId}`;
 
 const sameRef = (
   left: { readonly reference: { readonly entityId: string; readonly versionId: string } },
@@ -149,7 +153,9 @@ const sameVersionRef = (
 ): boolean => left.entityId === right.entityId && left.versionId === right.versionId;
 
 /** 行 → 规范决定：索引列与正文逐项一致，任一不符即视为不可用事实。 */
-const decisionFromRow = (row: Selectable<HumanResponseDecisionDbRow>): HumanResponseDecisionV1 | undefined => {
+const decisionFromRow = (
+  row: Selectable<HumanResponseDecisionDbRow>,
+): HumanResponseDecisionV1 | undefined => {
   const parsed = HumanResponseDecisionV1Schema.safeParse(row.decision_payload);
   const state = HumanResponseDecisionStateV1Schema.safeParse(row.state);
   if (!parsed.success || !state.success || parsed.data.state !== state.data) return undefined;
@@ -289,6 +295,7 @@ export interface PostgresHumanDecisionFeedbackAdapterOptionsV1 {
   readonly workflow: WorkflowPortV1;
   readonly bindingProof: ResponseWorkflowBindingProofPortV1;
   readonly assessmentProof: ActualAssessmentProofPortV1;
+  readonly runCompletionProof: HumanDecisionFeedbackServicePortsV1["runCompletionProof"];
   readonly responseLifecycle: ResponseLifecycleServiceV1;
   readonly responseContext: ResponseLifecycleContextReaderV1;
   readonly workflowStartControl: HumanDecisionFeedbackServicePortsV1["workflowStartControl"];
@@ -318,6 +325,7 @@ export class PostgresHumanDecisionFeedbackAdapter
         workflow: options.workflow,
         bindingProof: options.bindingProof,
         assessmentProof: options.assessmentProof,
+        runCompletionProof: options.runCompletionProof,
         responseLifecycle: options.responseLifecycle,
         responseContext: options.responseContext,
         workflowStartControl: options.workflowStartControl,
@@ -359,7 +367,10 @@ export class PostgresHumanDecisionFeedbackAdapter
         valid.actorId !== valid.authorization.actorId ||
         !valid.authorization.grantedCapabilities.includes(MODULE_BRANCH_CAPABILITY_V1[branch])
       ) {
-        failHumanDecisionFeedback("human-decision-feedback-authorization-required", "authorization");
+        failHumanDecisionFeedback(
+          "human-decision-feedback-authorization-required",
+          "authorization",
+        );
       }
       const row = await this.#db
         .selectFrom(DECISIONS_TABLE)
@@ -370,7 +381,10 @@ export class PostgresHumanDecisionFeedbackAdapter
         .executeTakeFirst();
       if (row === undefined) {
         // 缺失与越权同型：调用方无法据此枚举是否存在该决定。
-        failHumanDecisionFeedback("human-decision-feedback-authorization-required", "authorization");
+        failHumanDecisionFeedback(
+          "human-decision-feedback-authorization-required",
+          "authorization",
+        );
       }
       const decision = decisionFromRow(row);
       if (decision === undefined) {
@@ -382,9 +396,15 @@ export class PostgresHumanDecisionFeedbackAdapter
         decision.forecastRunRef === undefined ||
         !sameRef(decision.responseRecommendationRef, valid.payload.responseRecommendationRef) ||
         !sameRef(decision.forecastRunRef, valid.payload.workflowRunRef) ||
-        !sameVersionRef(decision.routeDecisionRef.reference, valid.payload.routeDecisionRef.reference)
+        !sameVersionRef(
+          decision.routeDecisionRef.reference,
+          valid.payload.routeDecisionRef.reference,
+        )
       ) {
-        failHumanDecisionFeedback("human-decision-feedback-authorization-required", "authorization");
+        failHumanDecisionFeedback(
+          "human-decision-feedback-authorization-required",
+          "authorization",
+        );
       }
       const verified = await this.#access
         .verify({
@@ -404,7 +424,10 @@ export class PostgresHumanDecisionFeedbackAdapter
           ),
         );
       if (verified.context.actorId !== valid.actorId) {
-        failHumanDecisionFeedback("human-decision-feedback-authorization-required", "authorization");
+        failHumanDecisionFeedback(
+          "human-decision-feedback-authorization-required",
+          "authorization",
+        );
       }
       return {
         kind: "succeeded",
@@ -678,7 +701,11 @@ export class PostgresHumanDecisionFeedbackAdapter
             authorization: input.authorization,
           },
           "human-decision-feedback.commit-adoption",
-          { decisionRef: input.decisionRef, routeDecisionRef: input.routeDecisionRef, forecastRunRef: input.forecastRunRef },
+          {
+            decisionRef: input.decisionRef,
+            routeDecisionRef: input.routeDecisionRef,
+            forecastRunRef: input.forecastRunRef,
+          },
         ),
         async (context): Promise<AtomicCommitV1> => {
           const transaction = asTransaction(context);
@@ -793,7 +820,10 @@ export class PostgresHumanDecisionFeedbackAdapter
   async #settleReservation(
     decision: HumanResponseDecisionV1,
   ): Promise<HumanResponseDecisionReservationV1> {
-    const stored = await this.#readDecisionRow(decision.projectId, decision.responseRecommendationRef);
+    const stored = await this.#readDecisionRow(
+      decision.projectId,
+      decision.responseRecommendationRef,
+    );
     if (stored === undefined) {
       return { kind: "conflict", detailCode: "human-decision-feedback-decision-required" };
     }
@@ -810,7 +840,9 @@ export class PostgresHumanDecisionFeedbackAdapter
 
   async #readDecisionRow(
     projectId: string,
-    recommendationRef: { readonly reference: { readonly entityId: string; readonly versionId: string } },
+    recommendationRef: {
+      readonly reference: { readonly entityId: string; readonly versionId: string };
+    },
   ): Promise<HumanResponseDecisionV1 | undefined> {
     const row = await this.#db
       .selectFrom(DECISIONS_TABLE)
@@ -910,9 +942,15 @@ export class PostgresHumanDecisionFeedbackAdapter
     },
 
     markSnapshotCommitted: async (input) => {
-      const stored = await this.#readSnapshotRowByRef(input.projectId, input.feedbackInputSnapshotRef);
+      const stored = await this.#readSnapshotRowByRef(
+        input.projectId,
+        input.feedbackInputSnapshotRef,
+      );
       if (stored === undefined) {
-        failHumanDecisionFeedback("human-decision-feedback-frozen-input-unavailable", "business-blocked");
+        failHumanDecisionFeedback(
+          "human-decision-feedback-frozen-input-unavailable",
+          "business-blocked",
+        );
       }
       const committed = HumanFeedbackInputSnapshotRowV1Schema.parse({
         ...stored,
@@ -971,9 +1009,15 @@ export class PostgresHumanDecisionFeedbackAdapter
     },
 
     markSegmentStarted: async (input) => {
-      const stored = await this.#readSnapshotRowByRef(input.projectId, input.feedbackInputSnapshotRef);
+      const stored = await this.#readSnapshotRowByRef(
+        input.projectId,
+        input.feedbackInputSnapshotRef,
+      );
       if (stored === undefined || stored.state !== "committed") {
-        failHumanDecisionFeedback("human-decision-feedback-frozen-input-unavailable", "business-blocked");
+        failHumanDecisionFeedback(
+          "human-decision-feedback-frozen-input-unavailable",
+          "business-blocked",
+        );
       }
       const started = HumanFeedbackInputSnapshotRowV1Schema.parse({
         ...stored,
@@ -999,7 +1043,10 @@ export class PostgresHumanDecisionFeedbackAdapter
           const recordedAt = this.#nowIso();
           await transaction
             .updateTable(SNAPSHOTS_TABLE)
-            .set({ segment_started_at: input.startedAt, snapshot_payload: jsonValue(started) } as never)
+            .set({
+              segment_started_at: input.startedAt,
+              snapshot_payload: jsonValue(started),
+            } as never)
             .where("project_id", "=", input.projectId)
             .where("snapshot_id", "=", stored.feedbackInputSnapshotRef.reference.entityId)
             .where("version_id", "=", stored.feedbackInputSnapshotRef.reference.versionId)

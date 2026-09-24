@@ -77,12 +77,6 @@ export async function up(db: Kysely<unknown>): Promise<void> {
       "route_decision_id",
       "route_decision_version_id",
     ])
-    .addForeignKeyConstraint(
-      "human_response_decisions_recommendation_fk",
-      ["recommendation_id", "recommendation_version_id"],
-      "business.response_recommendations",
-      ["recommendation_id", "version_id"],
-    )
     .addCheckConstraint(
       "human_response_decisions_identity_ck",
       sql`decision_id <> '' AND version_id <> '' AND project_id <> ''
@@ -153,18 +147,6 @@ export async function up(db: Kysely<unknown>): Promise<void> {
       "command_kind",
       "idempotency_key",
     ])
-    .addForeignKeyConstraint(
-      "human_feedback_input_snapshots_execution_fk",
-      ["execution_id", "execution_version_id"],
-      "business.response_execution_records",
-      ["execution_id", "version_id"],
-    )
-    .addForeignKeyConstraint(
-      "human_feedback_input_snapshots_assessment_fk",
-      ["actual_assessment_record_id", "actual_assessment_record_version_id"],
-      "business.risk_assessment_records",
-      ["record_id", "version_id"],
-    )
     .addCheckConstraint(
       "human_feedback_input_snapshots_identity_ck",
       sql`snapshot_id <> '' AND version_id <> '' AND project_id <> ''

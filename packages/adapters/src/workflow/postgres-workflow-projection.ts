@@ -767,7 +767,7 @@ class WorkflowGraphProjection {
   async #evidenceBatch(input: {
     readonly refs: readonly StandardizedRiskRecordRefV1[];
     readonly authorization: AuthorizationContextV1;
-  }): Promise<ReadonlyMap<string, string> | "unprovable"> {
+  }): Promise<ReadonlyMap<string, string | undefined> | "unprovable"> {
     const trace = this.#trace;
     if (input.refs.length === 0) return new Map();
     if (trace === undefined) return "unprovable";
@@ -784,16 +784,12 @@ class WorkflowGraphProjection {
       return "unprovable";
     }
     if (result.kind === "failed") return "unprovable";
-    const found = new Map<string, string>();
+    const found = new Map<string, string | undefined>();
     for (const item of result.items) {
-      const segment =
-        item.kind === "found"
-          ? (item.evidenceLocator?.sourceSegmentId ?? item.sourceSegmentIds[0])
-          : undefined;
-      if (item.kind !== "found" || segment === undefined) return "unprovable";
+      if (item.kind !== "found") return "unprovable";
       found.set(
         `${item.riskRecordRef.reference.entityId}/${item.riskRecordRef.reference.versionId}`,
-        segment,
+        item.evidenceLocator?.sourceSegmentId,
       );
     }
     return found.size === input.refs.length &&
@@ -1310,7 +1306,7 @@ class WorkflowGraphProjection {
             versionId: state.runVersionId,
           },
           ...(state.resultRef === undefined ? {} : { latestResultRef: state.resultRef }),
-          auditTrailRef: auditTrailRefOf(entryRow.auditEntryId),
+          auditTrailRef: auditTrailRefOf(stateRow.auditEntryId),
         },
       },
       ...[...facts.entries()]

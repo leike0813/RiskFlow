@@ -898,6 +898,11 @@ describe("C30 workflow projection adapter", () => {
     expect(first.items[0]).toMatchObject({
       kind: "run-summary",
       workflowRunRef: { reference: { entityId: REPORT_RUN_ID } },
+      auditTrailRef: {
+        reference: {
+          entityId: rowBase(REPORT_RUN_ID, REPORT_RUN_VERSION_ID, "c31-report-state").auditEntryId,
+        },
+      },
     });
     const facts = first.items.filter(
       (item): item is Extract<ProjectionResultItemV1, { kind: "report-fact" }> =>
@@ -1133,6 +1138,35 @@ describe("C30 workflow projection adapter", () => {
       evidenceLocator: { sourceSegmentId: "segment-1" },
     });
     expect(riskEdge?.auditTrailRef).toBeDefined();
+
+    // C22 只确认记录来源、没有给出证据定位时，不从来源段列表猜一个定位。
+    fixture.trace.override = {
+      kind: "succeeded",
+      items: [
+        {
+          kind: "found",
+          riskRecordRef: RISK_RECORD_REF as StandardizedRiskRecordRefV1,
+          processNodeId: "process-node-1",
+          sourceSegmentIds: ["segment-1"],
+          riskMechanismEntryIds: ["mechanism-1"],
+          auditTrailRef: {
+            kind: "audit-trail",
+            reference: { entityId: "audit-risk-record", versionId: "1" },
+          },
+        },
+      ],
+    };
+    const withoutLocator = await fixture.projection.resultRead.readPage(
+      readRequest({ queryResultRef, limit: 50 }),
+    );
+    fixture.trace.override = undefined;
+    expect(withoutLocator.kind).toBe("page");
+    if (withoutLocator.kind === "page") {
+      const riskLink = withoutLocator.items.find(
+        (item) => item.kind === "trace-link" && item.relation === "risk-assessment",
+      );
+      expect(riskLink).not.toHaveProperty("evidenceLocator");
+    }
 
     // 来源资格不可证明：整页失败，不披露半份图。
     fixture.trace.override = {

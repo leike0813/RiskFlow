@@ -516,6 +516,12 @@ class WorkflowGraphPersistence {
             queryType: registration.queryType,
             targetRef: jsonValue(registration.targetRef),
             authorizationScopeDigest: registration.authorizationScopeDigest,
+            ...(registration.queryType === "risk-overview"
+              ? {
+                  queryResultVersionId: registration.queryResultVersionId,
+                  spatialScopeRef: jsonValue(registration.spatialScopeRef ?? null),
+                }
+              : {}),
           },
           actorRef: registration.actorRef,
           authorizationContextRef: registration.authorizationContextRef,
@@ -524,11 +530,22 @@ class WorkflowGraphPersistence {
         },
         async (context) => {
           const transaction = this.#ambientTransaction(context);
-          await transaction
+          const inserted = await transaction
             .insertInto(QUERIES_TABLE)
             .values(insertColumnsForQuery(registration) as never)
             .onConflict((conflict) => conflict.doNothing())
             .execute();
+          if (Number(inserted[0]?.numInsertedOrUpdatedRows ?? 0n) === 0) {
+            const stored = await transaction
+              .selectFrom(QUERIES_TABLE)
+              .select("query_result_version_id")
+              .where("project_id", "=", registration.projectId)
+              .where("query_result_id", "=", registration.queryResultId)
+              .executeTakeFirst();
+            if (stored?.query_result_version_id !== registration.queryResultVersionId) {
+              throw makePersistenceError("IDEMPOTENCY_CONFLICT", "workflow-graph.query-identity");
+            }
+          }
           const reference = {
             entityId: registration.queryResultId,
             versionId: registration.queryResultVersionId,
@@ -553,9 +570,16 @@ class WorkflowGraphPersistence {
           };
         },
       );
-      return { kind: "registered", replayed: receipt.replayed };
+      const stored = await this.#selectQuery(registration.projectId, registration.queryResultId);
+      return stored?.query_result_version_id === registration.queryResultVersionId
+        ? { kind: "registered", replayed: receipt.replayed }
+        : { kind: "idempotency-conflict", priorCommandId: registration.queryResultId };
     } catch (error) {
-      throw mapPostgresError(error, "workflow-graph.query-register");
+      const mapped = mapPostgresError(error, "workflow-graph.query-register");
+      if (mapped.code === "IDEMPOTENCY_CONFLICT") {
+        return { kind: "idempotency-conflict", priorCommandId: registration.queryResultId };
+      }
+      throw mapped;
     }
   }
 

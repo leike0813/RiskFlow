@@ -780,6 +780,64 @@ describe("C30 workflow registration adapter", () => {
     expect(legacyRow.rows).toEqual([{ spatial_scope_ref: null }]);
   });
 
+  it("rejects concurrent overview registrations with one identity and different spatial targets", async () => {
+    const queryResultId = "query-result-c31:concurrent-spatial";
+    const first = {
+      schemaVersion: "1" as const,
+      projectId: PROJECT_ID,
+      queryResultId,
+      queryResultVersionId: sha("c31-concurrent-spatial-a"),
+      queryType: "risk-overview" as const,
+      targetRef: {
+        kind: "project-revision" as const,
+        reference: { entityId: "project-revision-c31", versionId: "v1" },
+      },
+      spatialScopeRef: SPATIAL_SCOPE_REF,
+      actorRef: ACTOR_ID,
+      authorizationContextRef: AUTHORIZATION.authorizationContextRef,
+      authorizationScopeDigest: SCOPE_DIGEST,
+      requestedAt: TIMESTAMP,
+      recordedAt: TIMESTAMP,
+      persistedAt: TIMESTAMP,
+      auditEntryId: `${queryResultId}:audit`,
+    };
+    const second = {
+      ...first,
+      queryResultVersionId: sha("c31-concurrent-spatial-b"),
+      spatialScopeRef: {
+        kind: "spatial-scope" as const,
+        reference: { entityId: "scope-c31-other", versionId: "v1" },
+      },
+    };
+    const outcomes = await Promise.all(
+      [first, second].map((registration) =>
+        fixture.adapter.registrationStore.registerQuery({ registration }),
+      ),
+    );
+    expect(outcomes.map((outcome) => outcome.kind).sort()).toEqual([
+      "idempotency-conflict",
+      "registered",
+    ]);
+    const rows = await sql<{ query_result_version_id: string }>`
+      SELECT query_result_version_id FROM business.workflow_query_results
+      WHERE project_id = ${PROJECT_ID} AND query_result_id = ${queryResultId}
+    `.execute(fixture.runtime.db);
+    expect(rows.rows).toHaveLength(1);
+    const winner = [first, second].find(
+      (registration) => registration.queryResultVersionId === rows.rows[0]?.query_result_version_id,
+    );
+    expect(winner).toBeDefined();
+    if (winner !== undefined) {
+      expect(
+        await fixture.adapter.registrationStore.readQuery({
+          projectId: PROJECT_ID,
+          queryResultId,
+          queryResultVersionId: winner.queryResultVersionId,
+        }),
+      ).toMatchObject({ spatialScopeRef: winner.spatialScopeRef });
+    }
+  });
+
   it("adds and reverses the C31 spatial column and containment indexes idempotently", async () => {
     await graphTraceReportProjectionsMigration.down(fixture.migratorRuntime.db);
     const dropped = await sql<{ column_name: string }>`

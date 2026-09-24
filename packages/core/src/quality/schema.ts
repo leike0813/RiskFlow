@@ -16,7 +16,11 @@ import {
   QualityEvaluationMetricV1Schema as QualityMetricV1Schema,
   QualityEvaluationReasonCodeV1Schema as QualityReasonCodeV1Schema,
   QualityEvaluationSampleKindV1Schema as QualitySampleKindV1Schema,
+  QueryResultRefV1Schema,
   RiskAssessmentRecordRefV1Schema,
+  SourceAccessGrantRefV1Schema,
+  SourceSegmentSetRefV1Schema,
+  SourceVersionRefV1Schema,
   SpatialScopeRefV1Schema,
   StandardizedRiskRecordRefV1Schema,
   WorkflowRunRefV1Schema,
@@ -63,11 +67,17 @@ export const qualityDatasetArtifactId = (input: {
   readonly datasetVersion: string;
 }): string => `quality-dataset-${input.datasetId}@${input.datasetVersion}`;
 
-const evidenceReferenceKey = (value: {
+/**
+ * 资料段定位身份：同一资料段 ID 与精确来源版本视为同一必审引用；
+ * 收据核对与数据集必审声明共用此口径。
+ */
+export const qualityEvidenceReferenceKeyV1 = (value: {
   readonly locator: { readonly sourceSegmentId: string };
   readonly sourceVersion: { readonly entityId: string; readonly versionId: string };
 }): string =>
   `${value.locator.sourceSegmentId}\u0000${value.sourceVersion.entityId}\u0000${value.sourceVersion.versionId}`;
+
+const evidenceReferenceKey = qualityEvidenceReferenceKeyV1;
 
 export {
   QUALITY_METRIC_CODES_V1,
@@ -420,7 +430,22 @@ export interface QualitySampleEvidenceV1 {
   readonly assessment?: QualityAssessmentEvidenceV1;
   /** 本次读取中通过 C04 `verified` 的精确工件引用。 */
   readonly verifiedEvidenceRefs: readonly z.infer<typeof ContentArtifactRefV1Schema>[];
+  /** D-10 必审资料段收据：只在 C13 现有授权读对全部明列项同形解析时出现，不含资料正文。 */
+  readonly requiredSegmentReceipts: readonly QualityRequiredSegmentReceiptV1[];
 }
+
+/**
+ * D-10 必审资料段的可授权解析收据：逐项保存资料段身份、精确来源版本、集合/查询引用与
+ * grant 引用；正文仍由 C13 保存，本收据不携带 `segment` 内容。
+ */
+export const QualityRequiredSegmentReceiptV1Schema = z.strictObject({
+  evidenceReference: EvidenceReferenceSchema,
+  sourceVersionRef: SourceVersionRefV1Schema,
+  sourceSegmentSetRef: SourceSegmentSetRefV1Schema,
+  sourceAccessGrantRef: SourceAccessGrantRefV1Schema,
+  queryResultRef: QueryResultRefV1Schema,
+});
+export type QualityRequiredSegmentReceiptV1 = z.infer<typeof QualityRequiredSegmentReceiptV1Schema>;
 
 export { AssessmentDecisionArtifactV1Schema, StandardizedRiskRecordEnvelopeSchema };
 export type { AssessmentDecisionArtifactV1, AssessmentEngineContextV1 };

@@ -16,6 +16,7 @@ interface BrowserServerV1 {
   readonly datasetArtifactRef: {
     readonly reference: { readonly entityId: string; readonly versionId: string };
   };
+  revokeSourceAccess(): Promise<boolean>;
   close(): Promise<void>;
 }
 
@@ -52,7 +53,7 @@ const login = async (page: Page): Promise<void> => {
   await expect(page.locator("#main-heading")).toBeVisible();
 };
 
-const expectSummary = async (page: Page): Promise<void> => {
+const expectSummary = async (page: Page, evidenceCount = "2"): Promise<void> => {
   const summary = page.locator(
     `[data-quality-summary="${server.reportArtifactRef.reference.entityId}"]`,
   );
@@ -72,6 +73,12 @@ const expectSummary = async (page: Page): Promise<void> => {
     "data-quality-metric-value",
     /^(not-computable|(0|1)(\.\d+)?)$/,
   );
+  // D-10：真实 C13 必审资料段收据使审计链完整；D-11：只披露已签发 grant 的定位引用。
+  await expect(summary.locator('[data-quality-metric="audit-completeness"]')).toHaveAttribute(
+    "data-quality-metric-value",
+    "1",
+  );
+  await expect(summary).toHaveAttribute("data-quality-evidence-count", evidenceCount);
 };
 
 test("真实 Chromium 完成登录、导航、质量查询、刷新与工程切换", async ({ page, browser }) => {
@@ -129,6 +136,24 @@ test("真实 Chromium 完成登录、导航、质量查询、刷新与工程切�
     await expect(
       page.locator(`[data-quality-summary="${server.reportArtifactRef.reference.entityId}"]`),
     ).toHaveCount(0);
+  });
+
+  await test.step("资料撤权后工程级摘要仍可见但定位引用不再披露", async () => {
+    const selector = page.locator('div[aria-label="工程上下文"] select').first();
+    await selector.selectOption(server.projectId);
+    await expect(page.locator('[data-quality-page="1"]')).toHaveAttribute(
+      "data-page-state",
+      "ready",
+    );
+    await expectSummary(page);
+    expect(await server.revokeSourceAccess()).toBe(true);
+    await page.reload();
+    await login(page);
+    await expect(page.locator('[data-quality-page="1"]')).toHaveAttribute(
+      "data-page-state",
+      "ready",
+    );
+    await expectSummary(page, "0");
   });
 });
 

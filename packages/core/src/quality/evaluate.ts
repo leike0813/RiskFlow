@@ -1,6 +1,7 @@
 import {
   QUALITY_METRIC_CODES_V1,
   QUALITY_SYNTHETIC_SAMPLE_LABEL_V1,
+  qualityEvidenceReferenceKeyV1,
   type QualityDatasetV1,
   type QualityMetricCodeV1,
   type QualityMetricV1,
@@ -115,10 +116,10 @@ const evaluateSample = (
   }
 
   // 审计链完整率只按样例自己声明的耐久证据判定：声明的工件必须全部通过 C04 校验，
-  // 声明记录时必须核对正式身份，声明评估时必须核对精确决策与记录引用。
+  // 声明记录时必须核对正式身份，声明评估时必须核对精确决策与记录引用，且样例明列的
+  // 必审资料段必须逐项具有当前授权下的同形解析收据（D-10）；缺任一项即失败闭合。
   const verified = new Set((evidence?.verifiedEvidenceRefs ?? []).map(refKey));
-  // ponytail: 资料段缺少可授权解析收据；取得公开窄读证据后再计入审计完整率。
-  let evidenceVerified = false;
+  let evidenceVerified = true;
   for (const artifactRef of [
     sample.standardizedRiskRecordSnapshotArtifactRef,
     sample.assessmentDecisionArtifactRef,
@@ -128,6 +129,18 @@ const evaluateSample = (
     if (!verified.has(refKey(artifactRef))) evidenceVerified = false;
   }
   if (sample.standardizedRiskRecordSnapshotArtifactRef !== undefined && !identityVerified) {
+    evidenceVerified = false;
+  }
+  const receiptKeys = new Set(
+    (evidence?.requiredSegmentReceipts ?? []).map((receipt) =>
+      qualityEvidenceReferenceKeyV1(receipt.evidenceReference),
+    ),
+  );
+  if (
+    !sample.requiredEvidenceRefs.every((required) =>
+      receiptKeys.has(qualityEvidenceReferenceKeyV1(required)),
+    )
+  ) {
     evidenceVerified = false;
   }
   if (!evidenceVerified) reasonCodes.push("quality-evidence-artifact-unverified");

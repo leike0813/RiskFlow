@@ -21,10 +21,19 @@ import {
 } from "@riskflow/core/persistence";
 import type { StandardizedRiskRecordStoreV1 } from "@riskflow/core/identification/candidate-finalization";
 import {
-  QualityError,
-  QualityEvaluationReportV1Schema,
+  ResolveEngineeringDataReadQueryV1Schema,
+  type EngineeringDataReadResolutionResultV1,
+  type ResolveEngineeringDataReadQueryV1,
+} from "@riskflow/core/engineering-data/context-source";
+import {
   QUALITY_EVALUATION_REPORT_MEDIA_TYPE_V1,
   QUALITY_EVALUATION_REPORT_PURPOSE_CODE_V1,
+  QUALITY_REQUIRED_EVIDENCE_BATCH_SIZE_V1,
+  QUALITY_REQUIRED_EVIDENCE_PURPOSE_CODE_V1,
+  QualityError,
+  QualityEvaluationReportV1Schema,
+  QualityRequiredSegmentReceiptV1Schema,
+  qualityEvidenceReferenceKeyV1,
   type QualityEvaluationReadPortV1,
   type QualityEvaluationServiceOptionsV1,
   type QualityEvaluationWritePortV1,
@@ -32,14 +41,20 @@ import {
   type QualityIndexAppendReceiptV1,
   type QualityReasonCodeV1,
   type QualityRecordIdentityV1,
+  type QualityRequiredSegmentProofOutcomeV1,
+  type QualityRequiredSegmentReceiptV1,
 } from "@riskflow/core/quality";
 import {
   ContentArtifactRefV1Schema,
+  EngineeringDataQueryV1Schema,
   QualityEvaluationSummaryV1Schema,
   type AuthorizationContextV1,
   type ContentArtifactRefV1,
+  type EngineeringDataQueryV1,
+  type EngineeringDataReadResultV1,
   type SpatialScopeRefV1,
 } from "@riskflow/contracts/ports";
+import type { EvidenceReference } from "@riskflow/contracts/common";
 
 import { makePersistenceError, mapPostgresError } from "../postgres/pool.js";
 import { getPostgresTransaction } from "../postgres/transaction-unit.js";
@@ -95,7 +110,20 @@ export interface PostgresQualityEvaluationAdapterOptionsV1 {
   readonly artifactReferenceGuard: ArtifactReferenceGuardV1;
   /** C22 公开窄读：只用于核对正式记录身份，不读 C22 私表。 */
   readonly recordStore: Pick<StandardizedRiskRecordStoreV1, "readRecord">;
+  /** D-10：C13 现有公开读接缝（`read` + `resolveReadQuery`），不新增或改写其语义。 */
+  readonly evidenceAccess: QualityC13EvidenceReadPortV1;
   readonly now?: () => Date;
+}
+
+/**
+ * D-10 C13 公共读接缝：只取既有 `EngineeringDataPortV1.read` 与
+ * `PostgresEngineeringContextSourceRegistry.resolveReadQuery` 两个公开方法。
+ */
+export interface QualityC13EvidenceReadPortV1 {
+  read(query: EngineeringDataQueryV1): Promise<EngineeringDataReadResultV1>;
+  resolveReadQuery(
+    query: ResolveEngineeringDataReadQueryV1,
+  ): Promise<EngineeringDataReadResolutionResultV1>;
 }
 
 const failure = (
@@ -117,6 +145,7 @@ export class PostgresQualityEvaluationAdapter
   readonly #artifactStore: ArtifactStoreV1;
   readonly #artifactGuard: ArtifactReferenceGuardV1;
   readonly #recordStore: Pick<StandardizedRiskRecordStoreV1, "readRecord">;
+  readonly #evidenceAccess: QualityC13EvidenceReadPortV1;
   readonly #now: () => Date;
 
   constructor(options: PostgresQualityEvaluationAdapterOptionsV1) {
@@ -125,6 +154,7 @@ export class PostgresQualityEvaluationAdapter
     this.#artifactStore = options.artifactStore;
     this.#artifactGuard = options.artifactReferenceGuard;
     this.#recordStore = options.recordStore;
+    this.#evidenceAccess = options.evidenceAccess;
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -230,6 +260,107 @@ export class PostgresQualityEvaluationAdapter
           };
     } catch {
       return undefined;
+    }
+  }
+
+  /**
+   * D-10 必审资料段证明：只经 C13 现有 `read`/`resolveReadQuery` 两阶段公开读，
+   * 逐项核对资料段 ID、精确来源版本、工程/空间与集合/grant 引用，丢弃资料正文。
+   * 无权与不存在同形失败；任何失配都不产出部分收据。
+   */
+  async readExact(input: {
+    readonly queryId: string;
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly sampleId: string;
+    readonly requiredEvidenceRefs: readonly EvidenceReference[];
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+  }): Promise<QualityRequiredSegmentProofOutcomeV1> {
+    const refs = input.requiredEvidenceRefs;
+    if (refs.length === 0 || refs.length > QUALITY_REQUIRED_EVIDENCE_BATCH_SIZE_V1) {
+      return requiredSegmentFailure("UNSUPPORTED_CONTRACT");
+    }
+    if (
+      input.projectId !== input.authorization.projectId ||
+      input.actorId !== input.authorization.actorId ||
+      !input.authorization.grantedCapabilities.includes("engineering-data.read")
+    ) {
+      return requiredSegmentFailure("AUTHORIZATION_DENIED");
+    }
+    try {
+      const read = await this.#evidenceAccess.read(
+        EngineeringDataQueryV1Schema.parse({
+          queryId: input.queryId,
+          projectId: input.projectId,
+          actorId: input.actorId,
+          requestedAt: input.requestedAt,
+          authorization: input.authorization,
+          kind: "evidence-access",
+          payload: {
+            evidenceReferences: [...refs],
+            purposeCode: QUALITY_REQUIRED_EVIDENCE_PURPOSE_CODE_V1,
+          },
+        }),
+      );
+      if (read.kind !== "succeeded") {
+        return requiredSegmentFailure(read.kind === "failed" ? read.error.code : undefined);
+      }
+      const resolved = await this.#evidenceAccess.resolveReadQuery(
+        ResolveEngineeringDataReadQueryV1Schema.parse({
+          queryResultRef: read.result.queryResultRef,
+          invocationId: input.queryId,
+          projectId: input.projectId,
+          actorId: input.actorId,
+          requestedAt: input.requestedAt,
+          authorization: input.authorization,
+        }),
+      );
+      if (resolved.kind !== "succeeded" || resolved.result.kind !== "evidence-access") {
+        return requiredSegmentFailure(resolved.kind === "failed" ? resolved.error.code : undefined);
+      }
+      const result = resolved.result;
+      if (
+        result.purposeCode !== QUALITY_REQUIRED_EVIDENCE_PURPOSE_CODE_V1 ||
+        result.items.length !== refs.length
+      ) {
+        return requiredSegmentFailure("ENTITY_NOT_FOUND");
+      }
+      const itemsByKey = new Map(
+        result.items.map(
+          (item) => [qualityEvidenceReferenceKeyV1(item.evidenceReference), item] as const,
+        ),
+      );
+      const authorizedScopeIds = new Set(
+        input.authorization.spatialScopeRefs.map((scope) => scope.reference.entityId),
+      );
+      const receipts: QualityRequiredSegmentReceiptV1[] = [];
+      for (const required of refs) {
+        const item = itemsByKey.get(qualityEvidenceReferenceKeyV1(required));
+        if (
+          item === undefined ||
+          item.segment.sourceSegmentId !== required.locator.sourceSegmentId ||
+          item.sourceVersionRef.reference.entityId !== required.sourceVersion.entityId ||
+          item.sourceVersionRef.reference.versionId !== required.sourceVersion.versionId ||
+          item.segment.spatialScopeRefs.some(
+            (scope) => !authorizedScopeIds.has(scope.reference.entityId),
+          )
+        ) {
+          return requiredSegmentFailure("ENTITY_NOT_FOUND");
+        }
+        receipts.push(
+          QualityRequiredSegmentReceiptV1Schema.parse({
+            evidenceReference: required,
+            sourceVersionRef: item.sourceVersionRef,
+            sourceSegmentSetRef: item.sourceSegmentSetRef,
+            sourceAccessGrantRef: item.sourceAccessGrantRef,
+            queryResultRef: result.queryResultRef,
+          }),
+        );
+      }
+      return { kind: "proved", items: receipts };
+    } catch (error: unknown) {
+      return requiredSegmentFailure(moduleErrorCodeOf(error));
     }
   }
 
@@ -438,7 +569,10 @@ export class PostgresQualityEvaluationAdapter
       };
     } catch (error: unknown) {
       const mapped = mapPostgresError(error, "quality-evaluation.report-index");
-      if (mapped.code === "IDEMPOTENCY_CONFLICT" && mapped.stage === "quality-evaluation.dataset-freeze") {
+      if (
+        mapped.code === "IDEMPOTENCY_CONFLICT" &&
+        mapped.stage === "quality-evaluation.dataset-freeze"
+      ) {
         throw failure("STALE_VERSION", "quality-dataset-invalid", report.datasetId);
       }
       if (
@@ -476,6 +610,27 @@ const isArtifactCode = (error: unknown, code: string): boolean =>
   typeof error === "object" &&
   error !== null &&
   (error as { readonly code?: unknown }).code === code;
+
+const moduleErrorCodeOf = (error: unknown): string | undefined => {
+  if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
+  return typeof error.code === "string" ? error.code : undefined;
+};
+
+/** D-10：拒权与不存在同形收口，错版保持可辨识；任何失败都不产出部分收据。 */
+const requiredSegmentFailure = (
+  code: string | undefined,
+): QualityRequiredSegmentProofOutcomeV1 => ({
+  kind: "failed",
+  failureCode:
+    code === "AUTHORIZATION_DENIED" || code === "ENTITY_NOT_FOUND"
+      ? "AUTHORIZATION_DENIED"
+      : code === "STALE_VERSION"
+        ? "STALE_VERSION"
+        : code === "UNSUPPORTED_CONTRACT"
+          ? "UNSUPPORTED_CONTRACT"
+          : "TERMINAL_FAILURE",
+  reasonCode: "quality-evidence-artifact-unverified",
+});
 
 const artifactFailureCode = (error: unknown): QualityFailureCodeV1 => {
   if (isArtifactCode(error, "ARTIFACT_ACCESS_DENIED")) return "AUTHORIZATION_DENIED";

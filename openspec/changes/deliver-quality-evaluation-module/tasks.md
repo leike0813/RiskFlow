@@ -17,3 +17,10 @@
 ## 4. 最小回归与交接
 
 - [x] 4.1 对 IP-01～IP-07 运行 `pnpm typecheck && pnpm deps:check && pnpm deps:policy && openspec validate deliver-quality-evaluation-module --strict --no-interactive`，记录真实 HEAD、C04 报告、浏览器版本/trace 与命令；仅在行为和证据完成后勾选各实施任务，移交 Finalizer 填写 verification。
+
+## 5. 重开范围：证明与授权映射
+
+- [ ] 5.1 **IP-08 当前 BLOCKED：** `packages/core/src/identification/candidate-finalization/service.ts:3559-3560` 对零记录/跳过直接返回 `skipped`，未进入 `:3599-3605` 的 C03 事务；`000042_risk_candidate_finalization.ts:242-265` 只存已接受记录。`msg_ca7d95d014fa` 不授权本轮补写入事实，故已批准的 C22 `readFormalRunResultProof` 只读加法也暂不施工，保持 TN/覆盖失败闭合。待后续拥有方事实源成立，再运行 `pnpm exec vitest run packages/adapters/test/identification/candidate-finalization/postgres-risk-candidate-adapter.test.ts packages/core/test/quality/quality.test.ts packages/adapters/test/quality/postgres-quality-evaluation.test.ts`，以真实 PostgreSQL 证明有结果/正式零结果/无权/跨空间、并发及重放；不得提前勾选。
+- [x] 5.2 **IP-09：** 复用 C13 已公开 `evidence-access` 及当前 C06 既有读授权，对每个 `requiredEvidenceRefs` 取得同形解析收据并与 C04/审计证据合取；运行 `pnpm exec vitest run packages/core/test/quality/quality.test.ts packages/adapters/test/quality/postgres-quality-evaluation.test.ts`，核对全项通过及缺证/撤权/跨空间工程/错版/重放失败。
+- [x] 5.3 **IP-10：** 在 C36/C09 请求内先有界取候选来源版本、逐版本向 C06 精确签发，再按真实 grant 映射过滤摘要定位；运行 `pnpm exec vitest run apps/api/test/quality.test.ts packages/adapters/test/quality/postgres-quality-evaluation.test.ts` 和 `pnpm build && pnpm exec playwright test -c playwright.config.ts --project=chromium`，核对获准可见、无权隐藏、同形拒绝、并发和旧查询兼容。
+- [ ] 5.4 **IP-08～IP-10：** 三项均有真实行为及证据后运行 `pnpm typecheck && pnpm deps:check && pnpm deps:policy && openspec validate deliver-quality-evaluation-module --strict --no-interactive`；形成固定实现检查点后由 Finalizer 更新既有 `verification.md`，规划阶段不得勾选或改写旧 BLOCKED 结论。

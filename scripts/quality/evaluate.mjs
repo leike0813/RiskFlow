@@ -15,12 +15,16 @@ import { TextEncoder } from "node:util";
 // CLI 以生产形态运行：只依赖已构建的包产物，不经过源码入口。
 import { createPostgresLocalIdentityAccess } from "../../packages/adapters/dist/auth/index.js";
 import { createContentAddressedArtifactStore } from "../../packages/adapters/dist/artifacts/index.js";
+import { createPostgresEngineeringContextSourceRegistry } from "../../packages/adapters/dist/engineering-data/context-source/index.js";
 import { PostgresRiskCandidateFinalizationAdapter } from "../../packages/adapters/dist/identification/candidate-finalization/index.js";
 import { createPostgresQualityEvaluationAdapter } from "../../packages/adapters/dist/quality/index.js";
 import { createPostgresRuntime } from "../../packages/adapters/dist/postgres/pool.js";
 import { PostgresTransactionUnit } from "../../packages/adapters/dist/postgres/transaction-unit.js";
 import { ArtifactPutCommandV1Schema } from "../../packages/core/dist/artifacts/index.js";
-import { createQualityEvaluationService, QualityDatasetV1Schema } from "../../packages/core/dist/quality/index.js";
+import {
+  createQualityEvaluationService,
+  QualityDatasetV1Schema,
+} from "../../packages/core/dist/quality/index.js";
 
 const USAGE = "usage: pnpm quality:evaluate -- --dataset <dataset.json> --output <result-ref.json>";
 
@@ -41,7 +45,9 @@ const datasetPath = argumentValue("dataset");
 const outputPath = argumentValue("output");
 if (datasetPath === undefined || outputPath === undefined) throw new Error(USAGE);
 
-const dataset = QualityDatasetV1Schema.parse(JSON.parse(readFileSync(resolve(datasetPath), "utf8")));
+const dataset = QualityDatasetV1Schema.parse(
+  JSON.parse(readFileSync(resolve(datasetPath), "utf8")),
+);
 const command = process.argv.join(" ");
 const datasetArtifactId = `quality-dataset-${dataset.datasetId}@${dataset.datasetVersion}`;
 const commandId = `quality-evaluation-${sha256(`${config.projectId}|${datasetArtifactId}|${config.codeHead}`)}`;
@@ -117,6 +123,14 @@ try {
       db: runtime.db,
       transactionUnit,
     }),
+    // D-10：必审资料段只经 C13 现有授权读解析，正文留给拥有方。
+    evidenceAccess: createPostgresEngineeringContextSourceRegistry({
+      db: runtime.db,
+      transactionUnit,
+      access,
+      artifactStore,
+      artifactReferenceGuard: artifactStore.referenceGuard,
+    }),
   });
   const service = createQualityEvaluationService(adapter.serviceOptions());
   const result = await service.evaluateDataset({
@@ -128,6 +142,20 @@ try {
     datasetArtifactRef: datasetPut.artifactRef,
     runRefs: config.runRefs ?? [],
     authorization,
+    // 每批必审资料段单独按 `engineering-data.evidence-access` 分支签发；无权即该样例失败闭合。
+    requiredEvidenceAccess: {
+      issueReadAuthorization: async (request) =>
+        (
+          await access.authorize({
+            invocation: { kind: "human-session", sessionToken: session.sessionToken },
+            invocationId: request.queryId,
+            projectId: request.projectId,
+            branch: "engineering-data.evidence-access",
+            requestedSpatialScopeRefs: [...request.spatialScopeRefs],
+            requestedSourceVersionRefs: [...request.sourceVersionRefs],
+          })
+        ).context,
+    },
     runEvidence: {
       commands: [command],
       codeHead: config.codeHead,

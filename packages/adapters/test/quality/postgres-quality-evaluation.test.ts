@@ -9,16 +9,34 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { ArtifactPutCommandV1Schema, type ArtifactStoreV1 } from "@riskflow/core/artifacts";
-import { createQualityEvaluationService } from "@riskflow/core/quality";
+import {
+  createQualityEvaluationService,
+  qualityDatasetArtifactId,
+  type QualityEvaluationReportV1,
+} from "@riskflow/core/quality";
 import { AtomicCommandV1Schema, sha256CanonicalJson } from "@riskflow/core/persistence";
 import {
   bootstrapInitialSystemAdministrator,
   createPostgresLocalIdentityAccess,
+  type PostgresLocalIdentityAccess,
 } from "../../src/auth/index.js";
-import type { AuthorizationContextV1, ContentArtifactRefV1, WorkflowRunRefV1 } from "@riskflow/contracts/ports";
+import type {
+  AuthorizationContextRefV1,
+  AuthorizationContextV1,
+  ContentArtifactRefV1,
+  ProjectRevisionRefV1,
+  SourceAccessGrantRefV1,
+  SourceVersionRefV1,
+  SpatialScopeRefV1,
+  WorkflowRunRefV1,
+} from "@riskflow/contracts/ports";
 
 import { createFilesystemArtifactStore } from "../../src/artifacts/filesystem-artifact-store.js";
 import { PostgresArtifactRegistry } from "../../src/artifacts/postgres-artifact-registry.js";
+import {
+  createPostgresEngineeringContextSourceRegistry,
+  type PostgresEngineeringContextSourceRegistry,
+} from "../../src/engineering-data/context-source/index.js";
 import { PostgresRiskCandidateFinalizationAdapter } from "../../src/identification/candidate-finalization/postgres-risk-candidate-adapter.js";
 import { runPostgresMigrations } from "../../src/postgres/migrations/run.js";
 import { createPostgresRuntime, type PostgresRuntime } from "../../src/postgres/pool.js";
@@ -54,6 +72,10 @@ interface QualityFixtureV1 {
   readonly artifactRegistry: PostgresArtifactRegistry;
   readonly artifactRootDirectory: string;
   readonly appPool: Pool;
+  /** 共享的真实 C06 接入：同一测试库内所有真实签发/登录都经它完成。 */
+  readonly access: PostgresLocalIdentityAccess;
+  /** 共享的真实 C13 组合：C36 必审资料段证明与投影授权映射都只在公开接缝上验证。 */
+  readonly contextSource: PostgresEngineeringContextSourceRegistry;
   close(): Promise<void>;
 }
 
@@ -81,6 +103,18 @@ const startFixture = async (): Promise<QualityFixtureV1> => {
       registry,
       transactionUnit,
     });
+    const access = createPostgresLocalIdentityAccess({
+      ...postgres.app,
+      hmacKey: Buffer.alloc(32, 11),
+      keyVersion: "key-v1",
+    });
+    const contextSource = createPostgresEngineeringContextSourceRegistry({
+      db: runtime.db,
+      transactionUnit,
+      access,
+      artifactStore,
+      artifactReferenceGuard: registry,
+    });
     return {
       postgres,
       runtime,
@@ -90,9 +124,12 @@ const startFixture = async (): Promise<QualityFixtureV1> => {
       artifactRegistry: registry,
       artifactRootDirectory: rootDirectory,
       appPool,
+      access,
+      contextSource,
       async close() {
         await appPool.close().catch(() => undefined);
         await artifactStore.close().catch(() => undefined);
+        await access.close().catch(() => undefined);
         await runtime.close().catch(() => undefined);
         await migratorRuntime.close().catch(() => undefined);
         await rm(rootDirectory, { recursive: true, force: true }).catch(() => undefined);
@@ -168,6 +205,7 @@ const evaluationService = () => {
       db: fixture!.runtime.db,
       transactionUnit: fixture!.transactionUnit,
     }),
+    evidenceAccess: fixture!.contextSource,
     now: () => new Date(QUALITY_FIXTURE_TIME),
   });
   return createQualityEvaluationService(adapter.serviceOptions());
@@ -219,6 +257,132 @@ const datasetBody = (datasetVersion: string, samples = seededSamples) => ({
   samples: samples.map((sample) => sample.datasetSample),
 });
 
+/** 按显式工程授权写冻结数据集工件；工件身份必须与数据集版本一一对应。 */
+const putProjectArtifact = async (input: {
+  readonly authorization: AuthorizationContextV1;
+  readonly datasetId: string;
+  readonly datasetVersion: string;
+  readonly value: unknown;
+}): Promise<ContentArtifactRefV1> => {
+  const artifactId = qualityDatasetArtifactId({
+    datasetId: input.datasetId,
+    datasetVersion: input.datasetVersion,
+  });
+  const payload = new TextEncoder().encode(JSON.stringify(input.value, null, 2));
+  const result = await fixture!.artifactStore.put(
+    ArtifactPutCommandV1Schema.parse({
+      schemaVersion: "1",
+      commandId: `${artifactId}:put`,
+      idempotencyKey: `${artifactId}:put`,
+      projectId: input.authorization.projectId,
+      actorId: input.authorization.actorId,
+      issuedAt: QUALITY_FIXTURE_TIME,
+      authorization: input.authorization,
+      requiredCapability: "projection.export",
+      artifactId,
+      artifactKind: "content",
+      purposeCode: DATASET_PURPOSE_CODE,
+      mediaType: DATASET_MEDIA_TYPE,
+      parentArtifactRefs: [],
+      evidenceReferences: [],
+      additionalSpatialScopeRefs: [],
+      additionalSourceAccessGrantRefs: [],
+    }),
+    (async function* () {
+      yield payload;
+    })(),
+  );
+  return { kind: "content-artifact", reference: result.artifactRef.reference };
+};
+
+interface ProjectDatasetSampleV1 {
+  readonly sampleId: string;
+  readonly sourceSegmentRefs: readonly unknown[];
+  readonly requiredEvidenceRefs: readonly unknown[];
+}
+
+/** 独立工程用例的冻结数据集正文：工程、修订与空间范围由调用方给定。 */
+const projectDatasetBody = (input: {
+  readonly projectId: string;
+  readonly datasetId: string;
+  readonly projectRevisionRef: ProjectRevisionRefV1;
+  readonly datasetVersion: string;
+  readonly spatialScopeRef: SpatialScopeRefV1;
+  readonly samples: readonly ProjectDatasetSampleV1[];
+}) => ({
+  schemaVersion: "1",
+  datasetId: input.datasetId,
+  datasetVersion: input.datasetVersion,
+  sampleKind: "synthetic",
+  sourceQualificationRef: null,
+  sourceQualificationMissingReasonCode: "no-deidentified-party-samples-supplied",
+  projectId: input.projectId,
+  projectRevisionRef: input.projectRevisionRef,
+  labelPolicyRef: { entityId: "quality-label-policy", versionId: "v1" },
+  createdAt: QUALITY_FIXTURE_TIME,
+  samples: input.samples.map((sample) => ({
+    sampleId: sample.sampleId,
+    spatialScopeRef: input.spatialScopeRef,
+    processNodeId: "process-node-real-source",
+    sourceSegmentRefs: [...sample.sourceSegmentRefs],
+    applicabilitySnapshotRef: {
+      kind: "applicability-metadata-snapshot",
+      reference: { entityId: `quality-applicability-${sample.sampleId}`, versionId: "1" },
+    },
+    identificationInputSnapshotRef: {
+      kind: "identification-input-snapshot",
+      reference: { entityId: `quality-input-${sample.sampleId}`, versionId: "1" },
+    },
+    assessmentInputSnapshotRef: {
+      kind: "assessment-input-snapshot",
+      reference: { entityId: `quality-assessment-input-${sample.sampleId}`, versionId: "1" },
+    },
+    expectedEventKey: "risk-event-real-source",
+    expectedPositive: false,
+    requiredEvidenceRefs: [...sample.requiredEvidenceRefs],
+    versionRefs: {
+      identificationKnowledgeReleaseRef: { entityId: "identification-knowledge", versionId: "1" },
+      identificationPolicySetRef: { entityId: "identification-policy-set", versionId: "1" },
+      indicatorSystemRef: { entityId: "indicator-system", versionId: "1" },
+      indicatorFieldMappingRef: { entityId: "indicator-field-mapping", versionId: "1" },
+      applicableRuleSetRef: { entityId: "applicable-rule-set", versionId: "1" },
+      weightSetRef: { entityId: "weight-set", versionId: "1" },
+      riskMatrixRef: { entityId: "risk-matrix", versionId: "1" },
+      modelDeploymentRef: { entityId: "model-deployment", versionId: "1" },
+      promptTemplateRef: { entityId: "prompt-template", versionId: "1" },
+      reviewPolicyRef: { entityId: "review-policy", versionId: "1" },
+    },
+  })),
+});
+
+/** 既有资料策略的当前修订；没有策略时返回 `none`，更新时按 C06 期望版本语义精确提交。 */
+const currentSourceGrantVersion = async (input: {
+  readonly projectId: string;
+  readonly sourceVersionRef: SourceVersionRefV1;
+}): Promise<{ readonly entityId: string; readonly versionId: string } | "none"> => {
+  const policy = await fixture!.postgres.adminPool.query<{
+    source_access_grant_id: string;
+    current_revision_id: string;
+  }>(
+    `SELECT source_access_grant_id, current_revision_id FROM business.source_access_policies
+      WHERE project_id = $1 AND source_entity_id = $2 AND source_version_id = $3`,
+    [
+      input.projectId,
+      input.sourceVersionRef.reference.entityId,
+      input.sourceVersionRef.reference.versionId,
+    ],
+  );
+  const row = policy.rows[0];
+  if (row === undefined) return "none";
+  const revision = await fixture!.postgres.adminPool.query<{ revision_no: number }>(
+    "SELECT revision_no FROM business.source_access_policy_revisions WHERE revision_id = $1",
+    [row.current_revision_id],
+  );
+  const revisionNo = revision.rows[0]?.revision_no;
+  if (revisionNo === undefined) throw new Error("source access policy revision is missing");
+  return { entityId: row.source_access_grant_id, versionId: String(revisionNo) };
+};
+
 const evaluate = (input: {
   readonly commandId: string;
   readonly datasetRef: ContentArtifactRefV1;
@@ -243,6 +407,346 @@ const evaluate = (input: {
       environment: { nodeVersion: process.version },
     },
   });
+
+/* ------------------------------------------------------------------ 真实 C06/C13 世界 */
+
+const TEST_ADMIN_LOGIN = "c36-test-admin";
+const TEST_ADMIN_PASSWORD = "Riskflow-C36-Admin-2030!";
+const TEST_ADMIN_PASSWORD_CHANGED = "Riskflow-C36-Admin-2030-Changed!";
+
+let administrationRef: Promise<AuthorizationContextRefV1> | undefined;
+
+/** 同一测试库只能引导一次初始管理员：文件内所有真实 C06 用例共享这一份。 */
+const systemAdministrationContext = async (): Promise<AuthorizationContextRefV1> => {
+  administrationRef ??= (async () => {
+    if (
+      (await fixture!.postgres.adminPool.query("SELECT 1 FROM business.local_accounts")).rowCount
+    ) {
+      throw new Error("C36 test database already has accounts");
+    }
+    await bootstrapInitialSystemAdministrator({
+      connection: fixture!.postgres.migrator,
+      loginName: TEST_ADMIN_LOGIN,
+      displayName: "C36 测试管理员",
+      password: TEST_ADMIN_PASSWORD,
+    });
+    const login = await fixture!.access.login({
+      kind: "login",
+      loginAttemptId: "c36-admin-login",
+      loginName: TEST_ADMIN_LOGIN,
+      password: TEST_ADMIN_PASSWORD,
+    });
+    const changed = await fixture!.access.changePassword({
+      kind: "change-password",
+      sessionToken: login.sessionToken,
+      newPassword: TEST_ADMIN_PASSWORD_CHANGED,
+    });
+    return changed.systemAdministrationContextRef;
+  })();
+  return administrationRef;
+};
+
+interface RealOperatorWorldV1 {
+  readonly accountId: string;
+  readonly sessionToken: string;
+  readonly password: string;
+  readonly accessScopeRef: SpatialScopeRefV1;
+}
+
+/** 真实工程成员：建账号、开工程、改密，并按 `projection.export` 取得访问空间范围。 */
+const realOperatorWorld = async (input: {
+  readonly projectId: string;
+  readonly loginName: string;
+  readonly password: string;
+  readonly changedPassword: string;
+}): Promise<RealOperatorWorldV1> => {
+  const administratorContextRef = await systemAdministrationContext();
+  const account = await fixture!.access.administerIdentity({
+    kind: "create-account",
+    commandId: `${input.loginName}-create`,
+    idempotencyKey: `${input.loginName}-create`,
+    expectedVersion: "none",
+    authorizationContextRef: administratorContextRef,
+    loginName: input.loginName,
+    displayName: `${input.loginName} 操作员`,
+    password: input.password,
+  });
+  await fixture!.access.administerProject({
+    kind: "open-project",
+    projectId: input.projectId,
+    commandId: `${input.loginName}-open-project`,
+    idempotencyKey: `${input.loginName}-open-project`,
+    expectedVersion: "none",
+    authorizationContextRef: administratorContextRef,
+    initialRiskManagerAccountId: account.resultRef.entityId,
+    includeAdministrator: true,
+  });
+  const login = await fixture!.access.login({
+    kind: "login",
+    loginAttemptId: `${input.loginName}-login`,
+    loginName: input.loginName,
+    password: input.password,
+  });
+  const session = await fixture!.access.changePassword({
+    kind: "change-password",
+    sessionToken: login.sessionToken,
+    newPassword: input.changedPassword,
+  });
+  const decision = await fixture!.access.authorize({
+    invocation: { kind: "human-session", sessionToken: session.sessionToken },
+    invocationId: `${input.loginName}-scope`,
+    projectId: input.projectId,
+    branch: "projection.export",
+    requestedSpatialScopeRefs: [],
+    requestedSourceVersionRefs: [],
+  });
+  return {
+    accountId: account.resultRef.entityId,
+    sessionToken: session.sessionToken,
+    password: input.changedPassword,
+    accessScopeRef: decision.context.spatialScopeRefs[0]!,
+  };
+};
+
+/** 按精确分支签发当前 C06 上下文；调用点保证 invocation 与随后的读查询 id 一致。 */
+const authorizeFor = async (input: {
+  readonly world: RealOperatorWorldV1;
+  readonly projectId: string;
+  readonly branch: "engineering-data.register-source-delivery" | "engineering-data.evidence-access";
+  readonly invocationId: string;
+  readonly spatialScopeRefs?: readonly SpatialScopeRefV1[];
+  readonly sourceVersionRefs?: readonly SourceVersionRefV1[];
+}): Promise<AuthorizationContextV1> =>
+  (
+    await fixture!.access.authorize({
+      invocation: { kind: "human-session", sessionToken: input.world.sessionToken },
+      invocationId: input.invocationId,
+      projectId: input.projectId,
+      branch: input.branch,
+      requestedSpatialScopeRefs: [...(input.spatialScopeRefs ?? [input.world.accessScopeRef])],
+      requestedSourceVersionRefs: [...(input.sourceVersionRefs ?? [])],
+    })
+  ).context;
+
+interface RealSourceWorldV1 {
+  readonly projectRevisionRef: ProjectRevisionRefV1;
+  readonly businessSpatialScopeRef: SpatialScopeRefV1;
+  readonly sourceVersionRef: SourceVersionRefV1;
+  readonly segmentIds: readonly string[];
+}
+
+/** 用 C13 公开命令建真实来源事实：项目/空间修订、适用性快照、交付与两个资料段。 */
+const seedRealSource = async (input: {
+  readonly world: RealOperatorWorldV1;
+  readonly projectId: string;
+  readonly suffix: string;
+}): Promise<RealSourceWorldV1> => {
+  const writeBranch = "engineering-data.register-source-delivery" as const;
+  const project = await fixture!.contextSource.reviseContext({
+    commandId: `c36-${input.suffix}-project`,
+    idempotencyKey: `c36-${input.suffix}-project`,
+    projectId: input.projectId,
+    actorId: input.world.accountId,
+    issuedAt: QUALITY_FIXTURE_TIME,
+    authorization: await authorizeFor({
+      world: input.world,
+      projectId: input.projectId,
+      branch: writeBranch,
+      invocationId: `c36-${input.suffix}-project`,
+    }),
+    kind: "project",
+    expectedVersion: "none",
+    name: `C36 ${input.suffix} 工程`,
+    lifecycle: "active",
+    applicabilityMetadata: {
+      constructionMethod: "盾构法",
+      stratumCondition: "合成地层",
+      engineeringStage: "掘进",
+    },
+    effectivePeriod: { validFrom: QUALITY_FIXTURE_TIME },
+  });
+  if (project.kind !== "succeeded" || project.result.kind !== "project-revision") {
+    throw new Error(`C36 ${input.suffix} C13 project revision failed`);
+  }
+  const projectRevisionRef = project.result.revision.projectRevisionRef;
+  const spatial = await fixture!.contextSource.reviseContext({
+    commandId: `c36-${input.suffix}-spatial`,
+    idempotencyKey: `c36-${input.suffix}-spatial`,
+    projectId: input.projectId,
+    actorId: input.world.accountId,
+    issuedAt: QUALITY_FIXTURE_TIME,
+    authorization: await authorizeFor({
+      world: input.world,
+      projectId: input.projectId,
+      branch: writeBranch,
+      invocationId: `c36-${input.suffix}-spatial`,
+    }),
+    kind: "spatial",
+    spatialScopeRef: input.world.accessScopeRef,
+    projectRevisionRef,
+    expectedVersion: "none",
+    name: `C36 ${input.suffix} 区间`,
+    worksiteLocation: "合成工地",
+    applicabilityOverrides: {},
+    status: "active",
+    effectivePeriod: { validFrom: QUALITY_FIXTURE_TIME },
+  });
+  if (spatial.kind !== "succeeded" || spatial.result.kind !== "spatial-revision") {
+    throw new Error(`C36 ${input.suffix} C13 spatial revision failed`);
+  }
+  const businessSpatialScopeRef = spatial.result.revision.spatialScopeRef;
+  const applicability = await fixture!.contextSource.createApplicabilitySnapshot({
+    commandId: `c36-${input.suffix}-applicability`,
+    idempotencyKey: `c36-${input.suffix}-applicability`,
+    projectId: input.projectId,
+    actorId: input.world.accountId,
+    issuedAt: QUALITY_FIXTURE_TIME,
+    authorization: await authorizeFor({
+      world: input.world,
+      projectId: input.projectId,
+      branch: writeBranch,
+      invocationId: `c36-${input.suffix}-applicability`,
+    }),
+    projectRevisionRef,
+    spatialScopeRef: businessSpatialScopeRef,
+    formedAt: QUALITY_FIXTURE_TIME,
+  });
+  if (
+    applicability.kind !== "succeeded" ||
+    applicability.result.kind !== "applicability-snapshot"
+  ) {
+    throw new Error(`C36 ${input.suffix} C13 applicability snapshot failed`);
+  }
+  const writeAuthorization = await authorizeFor({
+    world: input.world,
+    projectId: input.projectId,
+    branch: writeBranch,
+    invocationId: `c36-${input.suffix}-write`,
+  });
+  const putSourceJson = async (artifactId: string, mediaType: string, value: unknown) => {
+    const payload = new TextEncoder().encode(JSON.stringify(value, null, 2));
+    const result = await fixture!.artifactStore.put(
+      ArtifactPutCommandV1Schema.parse({
+        schemaVersion: "1",
+        commandId: `${artifactId}:put`,
+        idempotencyKey: `${artifactId}:put`,
+        projectId: input.projectId,
+        actorId: input.world.accountId,
+        issuedAt: QUALITY_FIXTURE_TIME,
+        authorization: writeAuthorization,
+        requiredCapability: "engineering-data.write",
+        artifactId,
+        artifactKind: "content",
+        purposeCode: "engineering-data.register-source-delivery",
+        mediaType,
+        parentArtifactRefs: [],
+        evidenceReferences: [],
+        additionalSpatialScopeRefs: [],
+        additionalSourceAccessGrantRefs: [],
+      }),
+      (async function* () {
+        yield payload;
+      })(),
+    );
+    return result.artifactRef;
+  };
+  const bodyRef = await putSourceJson(
+    `c36-${input.suffix}-body`,
+    "text/plain",
+    `C36 ${input.suffix} 合成来源正文`,
+  );
+  const metadataRef = await putSourceJson(`c36-${input.suffix}-metadata`, "application/json", {
+    schemaVersion: "1",
+    projectRevisionRef,
+    spatialScopeRefs: [businessSpatialScopeRef],
+    registeredByAccountId: input.world.accountId,
+    sourceItemId: `c36-${input.suffix}-source-item`,
+    sourceItemName: `C36 ${input.suffix} 合成来源`,
+    sourceCategory: "engineering-document",
+    sourceMetadata: {
+      documentType: "合成来源",
+      formedAt: QUALITY_FIXTURE_TIME,
+      sourceOrganization: "合成夹具",
+    },
+    descriptor: { kind: "file-upload", contentFingerprint: `C36 ${input.suffix} 合成来源正文` },
+    applicabilityMetadataSnapshotRef: applicability.result.snapshot.snapshotRef,
+  });
+  const delivery = await fixture!.contextSource.apply({
+    commandId: `c36-${input.suffix}-delivery`,
+    idempotencyKey: `c36-${input.suffix}-delivery`,
+    projectId: input.projectId,
+    actorId: input.world.accountId,
+    issuedAt: QUALITY_FIXTURE_TIME,
+    authorization: await authorizeFor({
+      world: input.world,
+      projectId: input.projectId,
+      branch: writeBranch,
+      invocationId: `c36-${input.suffix}-delivery`,
+    }),
+    kind: "register-source-delivery",
+    payload: {
+      sourceConnectionRef: { entityId: "file-upload", versionId: "1" },
+      deliveryKey: `c36-${input.suffix}-delivery`,
+      sourceArtifactRef: bodyRef,
+      metadataArtifactRef: metadataRef,
+      occurredAt: QUALITY_FIXTURE_TIME,
+    },
+  });
+  if (delivery.kind !== "succeeded") {
+    throw new Error(`C36 ${input.suffix} C13 source delivery failed`);
+  }
+  const sourceVersionRef = delivery.result.sourceVersionRef;
+  const segmentIds = ["segment_1", "segment_2"].map(
+    (segmentId) => `${sourceVersionRef.reference.entityId}-chapter_1-${segmentId}`,
+  );
+  const segments = await fixture!.contextSource.registerSegments({
+    commandId: `c36-${input.suffix}-segments`,
+    idempotencyKey: `c36-${input.suffix}-segments`,
+    projectId: input.projectId,
+    actorId: input.world.accountId,
+    issuedAt: QUALITY_FIXTURE_TIME,
+    authorization: await authorizeFor({
+      world: input.world,
+      projectId: input.projectId,
+      branch: writeBranch,
+      invocationId: `c36-${input.suffix}-segments`,
+      sourceVersionRefs: [sourceVersionRef],
+    }),
+    sourceVersionRef,
+    sourceId: sourceVersionRef.reference.entityId,
+    segments: segmentIds.map((sourceSegmentId, index) => ({
+      sourceSegmentId: sourceSegmentId as never,
+      chapterId: "chapter_1",
+      segmentId: `segment_${index + 1}`,
+      kind: "chapter" as const,
+      spatialScopeRefs: [businessSpatialScopeRef],
+      locator: { kind: "document" as const, pageNumber: index + 1, headingPath: ["质量验收"] },
+    })),
+  });
+  if (segments.kind !== "succeeded") {
+    throw new Error(`C36 ${input.suffix} C13 source segments failed`);
+  }
+  return { projectRevisionRef, businessSpatialScopeRef, sourceVersionRef, segmentIds };
+};
+
+/** D-10 签发接缝：按现有 `engineering-data.evidence-access` 分支逐批签发。 */
+const evidenceIssuerFor = (world: RealOperatorWorldV1, projectId: string) => ({
+  issueReadAuthorization: async (request: {
+    readonly queryId: string;
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly spatialScopeRefs: readonly SpatialScopeRefV1[];
+    readonly sourceVersionRefs: readonly SourceVersionRefV1[];
+  }) =>
+    authorizeFor({
+      world,
+      projectId,
+      branch: "engineering-data.evidence-access",
+      invocationId: request.queryId,
+      spatialScopeRefs: request.spatialScopeRefs,
+      sourceVersionRefs: request.sourceVersionRefs,
+    }),
+});
 
 describe("C36 migration 000049", () => {
   it("重复 up 幂等，down 可逆序回滚，只授 riskflow_app SELECT/INSERT", async () => {
@@ -502,7 +1006,12 @@ describe("C36 质量评估写入路径", () => {
       {
         commandId: "quality-concurrent-same-b",
         datasetRef,
-        runRefs: [{ kind: "workflow-run" as const, reference: { entityId: "quality-run-b", versionId: "1" } }],
+        runRefs: [
+          {
+            kind: "workflow-run" as const,
+            reference: { entityId: "quality-run-b", versionId: "1" },
+          },
+        ],
       },
     ];
     const results = await Promise.all(inputs.map(evaluate));
@@ -528,23 +1037,28 @@ describe("C36 质量评估写入路径", () => {
 
   it("并发同版本不同摘要仅一条正式报告，另一条报错版", async () => {
     const artifactId = "quality-dataset-c36-concurrent-conflict@2030-06-05.1";
-    const datasetRef = await Promise.all([
-      datasetBody("2030-06-05.1"),
-      datasetBody("2030-06-05.1", seededSamples.slice(0, 3)),
-    ].map(async (body) => ({
-      kind: "content-artifact" as const,
-      reference: await putJson({
-        artifactId,
-        purposeCode: DATASET_PURPOSE_CODE,
-        mediaType: DATASET_MEDIA_TYPE,
-        value: { ...body, datasetId: "c36-concurrent-conflict" },
-      }),
-    })));
+    const datasetRef = await Promise.all(
+      [datasetBody("2030-06-05.1"), datasetBody("2030-06-05.1", seededSamples.slice(0, 3))].map(
+        async (body) => ({
+          kind: "content-artifact" as const,
+          reference: await putJson({
+            artifactId,
+            purposeCode: DATASET_PURPOSE_CODE,
+            mediaType: DATASET_MEDIA_TYPE,
+            value: { ...body, datasetId: "c36-concurrent-conflict" },
+          }),
+        }),
+      ),
+    );
     expect(datasetRef[0]!.reference.versionId).not.toBe(datasetRef[1]!.reference.versionId);
-    const results = await Promise.all(datasetRef.map((ref, index) => evaluate({
-      commandId: `quality-concurrent-conflict-${index}`,
-      datasetRef: ref,
-    })));
+    const results = await Promise.all(
+      datasetRef.map((ref, index) =>
+        evaluate({
+          commandId: `quality-concurrent-conflict-${index}`,
+          datasetRef: ref,
+        }),
+      ),
+    );
     expect(results.map((result) => result.kind).sort()).toEqual(["failed", "succeeded"]);
     expect(results.find((result) => result.kind === "failed")).toMatchObject({
       kind: "failed",
@@ -739,8 +1253,8 @@ describe("C36 页面查询投影", () => {
         "quality-query-legacy",
       ),
     );
-    const codes = [absent, cursor, malformed, crossProject, crossSpace, unauthorized].map((outcome) =>
-      outcome.kind === "failed" ? outcome.error.code : "succeeded",
+    const codes = [absent, cursor, malformed, crossProject, crossSpace, unauthorized].map(
+      (outcome) => (outcome.kind === "failed" ? outcome.error.code : "succeeded"),
     );
     expect(codes).toEqual([
       "ENTITY_NOT_FOUND",
@@ -782,87 +1296,27 @@ describe("C36 页面查询投影", () => {
     expect(listed.kind).toBe("succeeded");
     if (listed.kind !== "succeeded") return;
     expect(listed.result.qualitySummaries?.length).toBeGreaterThan(0);
-    expect(listed.result.qualitySummaries?.every((summary) => summary.evidenceRefs.length === 0)).toBe(true);
+    expect(
+      listed.result.qualitySummaries?.every((summary) => summary.evidenceRefs.length === 0),
+    ).toBe(true);
   }, 300_000);
 });
 
 describe("C36 数据集计算 CLI", () => {
   const CLI_PROJECT_ID = "quality-cli-project";
   const CLI_OPERATOR = "quality-cli-operator";
-  const CLI_ADMIN_PASSWORD = "Riskflow-Cli-Admin-2030!";
   const CLI_OPERATOR_PASSWORD = "Riskflow-Cli-Operator-2030!";
   const CLI_OPERATOR_PASSWORD_CHANGED = "Riskflow-Cli-Operator-2030-Changed!";
   const CLI_HMAC_KEY = Buffer.alloc(32, 11);
 
   it("冻结数据集、写 C04 报告并按实际命令输出安全引用", async () => {
-    const migrator = fixture!.postgres.migrator;
-    await bootstrapInitialSystemAdministrator({
-      connection: migrator,
-      loginName: "cli-admin",
-      displayName: "CLI administrator",
-      password: CLI_ADMIN_PASSWORD,
+    const cliWorld = await realOperatorWorld({
+      projectId: CLI_PROJECT_ID,
+      loginName: CLI_OPERATOR,
+      password: CLI_OPERATOR_PASSWORD,
+      changedPassword: CLI_OPERATOR_PASSWORD_CHANGED,
     });
-    const access = createPostgresLocalIdentityAccess({
-      ...fixture!.postgres.app,
-      hmacKey: CLI_HMAC_KEY,
-      keyVersion: "key-v1",
-    });
-    let cliSpatialScopeRef = AUTHORIZATION_FIXTURE.spatialScopeRefs[0]!;
-    try {
-      const adminLogin = await access.login({
-        kind: "login",
-        loginAttemptId: "cli-admin-login",
-        loginName: "cli-admin",
-        password: CLI_ADMIN_PASSWORD,
-      });
-      const adminSession = await access.changePassword({
-        kind: "change-password",
-        sessionToken: adminLogin.sessionToken,
-        newPassword: "Riskflow-Cli-Admin-2030-Changed!",
-      });
-      const operator = await access.administerIdentity({
-        kind: "create-account",
-        commandId: "cli-create-operator",
-        idempotencyKey: "cli-create-operator",
-        expectedVersion: "none",
-        authorizationContextRef: adminSession.systemAdministrationContextRef,
-        loginName: CLI_OPERATOR,
-        displayName: "CLI 操作员",
-        password: CLI_OPERATOR_PASSWORD,
-      });
-      await access.administerProject({
-        kind: "open-project",
-        projectId: CLI_PROJECT_ID,
-        commandId: "cli-open-project",
-        idempotencyKey: "cli-open-project",
-        expectedVersion: "none",
-        authorizationContextRef: adminSession.systemAdministrationContextRef,
-        initialRiskManagerAccountId: operator.resultRef.entityId,
-        includeAdministrator: true,
-      });
-      const operatorLogin = await access.login({
-        kind: "login",
-        loginAttemptId: "cli-operator-login",
-        loginName: CLI_OPERATOR,
-        password: CLI_OPERATOR_PASSWORD,
-      });
-      const operatorSession = await access.changePassword({
-        kind: "change-password",
-        sessionToken: operatorLogin.sessionToken,
-        newPassword: CLI_OPERATOR_PASSWORD_CHANGED,
-      });
-      const decision = await access.authorize({
-        invocation: { kind: "human-session", sessionToken: operatorSession.sessionToken },
-        invocationId: "cli-scope-authorize",
-        projectId: CLI_PROJECT_ID,
-        branch: "projection.export",
-        requestedSpatialScopeRefs: [],
-        requestedSourceVersionRefs: [],
-      });
-      cliSpatialScopeRef = decision.context.spatialScopeRefs[0]!;
-    } finally {
-      await access.close().catch(() => undefined);
-    }
+    const cliSpatialScopeRef = cliWorld.accessScopeRef;
 
     // CLI 需要一份已冻结的运行输出：正式记录身份与 C04 记录快照。
     const cliAuthorization: AuthorizationContextV1 = {
@@ -1196,4 +1650,476 @@ describe("C36 数据集计算 CLI", () => {
     );
     expect(cliChunks.length).toBeGreaterThan(0);
   }, 300_000);
+});
+
+describe("C36 必审资料段证明（真实 C13/C06）", () => {
+  const EVIDENCE_PROJECT_ID = "quality-required-evidence-project";
+  const EVIDENCE_OPERATOR = "quality-evidence-operator";
+  const EVIDENCE_PASSWORD = "Riskflow-Evidence-2030!";
+  const EVIDENCE_PASSWORD_CHANGED = "Riskflow-Evidence-2030-Changed!";
+
+  it("逐项解析必审资料段并计入审计链完整率，缺项、错版与撤权失败闭合", async () => {
+    const world = await realOperatorWorld({
+      projectId: EVIDENCE_PROJECT_ID,
+      loginName: EVIDENCE_OPERATOR,
+      password: EVIDENCE_PASSWORD,
+      changedPassword: EVIDENCE_PASSWORD_CHANGED,
+    });
+    const source = await seedRealSource({
+      world,
+      projectId: EVIDENCE_PROJECT_ID,
+      suffix: "required-evidence",
+    });
+    // 资料授权事实由 C13 写入分支的项目风险经理上下文登记，与 C06 现有命令语义一致。
+    const sourceAccessContext = await authorizeFor({
+      world,
+      projectId: EVIDENCE_PROJECT_ID,
+      branch: "engineering-data.register-source-delivery",
+      invocationId: "c36-source-access-context-required-evidence",
+    });
+    const reviseSourceAccess = async (input: {
+      readonly commandId: string;
+      readonly visibility: "project-shared" | "restricted";
+      readonly allowedAccountIds: readonly string[];
+      readonly registeredByAccountId: string;
+    }) =>
+      fixture!.access.administerProject({
+        kind: "revise-source-access",
+        projectId: EVIDENCE_PROJECT_ID,
+        commandId: input.commandId,
+        idempotencyKey: input.commandId,
+        expectedVersion: await currentSourceGrantVersion({
+          projectId: EVIDENCE_PROJECT_ID,
+          sourceVersionRef: source.sourceVersionRef,
+        }),
+        authorizationContextRef: sourceAccessContext.authorizationContextRef,
+        sourceVersionRef: source.sourceVersionRef,
+        visibility: input.visibility,
+        allowedAccountIds: [...input.allowedAccountIds],
+        spatialScopeRefs: [world.accessScopeRef],
+        registeredByAccountId: input.registeredByAccountId,
+      });
+    await reviseSourceAccess({
+      commandId: "c36-required-evidence-grant",
+      visibility: "project-shared",
+      allowedAccountIds: [],
+      registeredByAccountId: world.accountId,
+    });
+    const evaluationAuthorization = await authorizeFor({
+      world,
+      projectId: EVIDENCE_PROJECT_ID,
+      branch: "projection.export",
+      invocationId: "c36-required-evidence-evaluate",
+    });
+    const segmentRefs = [source.segmentIds[0]!, source.segmentIds[1]!].map((sourceSegmentId) => ({
+      locator: { sourceSegmentId },
+      sourceVersion: source.sourceVersionRef.reference,
+    }));
+    const evaluateWithIssuer = (commandId: string, datasetArtifactRef: ContentArtifactRefV1) =>
+      evaluationService().evaluateDataset({
+        projectId: EVIDENCE_PROJECT_ID,
+        actorId: world.accountId,
+        commandId,
+        idempotencyKey: commandId,
+        requestedAt: QUALITY_FIXTURE_TIME,
+        datasetArtifactRef,
+        runRefs: [],
+        authorization: evaluationAuthorization,
+        requiredEvidenceAccess: evidenceIssuerFor(world, EVIDENCE_PROJECT_ID),
+        runEvidence: {
+          commands: [
+            "pnpm exec vitest run packages/adapters/test/quality/postgres-quality-evaluation.test.ts",
+          ],
+          codeHead: "c36-required-evidence",
+          environment: { nodeVersion: process.version },
+        },
+      });
+    const auditOf = (report: QualityEvaluationReportV1) =>
+      report.metrics.find((metric) => metric.metricCode === "audit-completeness");
+
+    const positiveRef = await putProjectArtifact({
+      authorization: evaluationAuthorization,
+      datasetId: "c36-required-evidence-dataset",
+      datasetVersion: "2030-06-06.1",
+      value: projectDatasetBody({
+        projectId: EVIDENCE_PROJECT_ID,
+        datasetId: "c36-required-evidence-dataset",
+        projectRevisionRef: {
+          kind: "project-revision",
+          reference: { entityId: "quality-required-evidence-revision", versionId: "r1" },
+        },
+        datasetVersion: "2030-06-06.1",
+        spatialScopeRef: world.accessScopeRef,
+        samples: [
+          {
+            sampleId: "required-1",
+            sourceSegmentRefs: [segmentRefs[0]],
+            requiredEvidenceRefs: [segmentRefs[0]],
+          },
+          {
+            sampleId: "required-2",
+            sourceSegmentRefs: [segmentRefs[1]],
+            requiredEvidenceRefs: [segmentRefs[1]],
+          },
+        ],
+      }),
+    });
+    const positive = await evaluateWithIssuer("c36-required-evidence-command", positiveRef);
+    expect(positive.kind).toBe("succeeded");
+    if (positive.kind !== "succeeded") return;
+    expect(auditOf(positive.report)).toMatchObject({
+      numerator: 2,
+      denominator: 2,
+      status: "computed",
+      value: 1,
+    });
+    expect(positive.report.evidenceChainStatus).toBe("complete");
+    expect(
+      positive.report.samples.every(
+        (sample) => !sample.reasonCodes.includes("quality-evidence-artifact-unverified"),
+      ),
+    ).toBe(true);
+
+    // 同版重放：同一命令、同一冻结版本得到同一收据集合与报告引用。
+    const replayed = await evaluateWithIssuer("c36-required-evidence-command", positiveRef);
+    expect(replayed.kind).toBe("succeeded");
+    if (replayed.kind !== "succeeded") return;
+    expect(replayed.reportArtifactRef).toEqual(positive.reportArtifactRef);
+    expect(auditOf(replayed.report)).toEqual(auditOf(positive.report));
+
+    // 缺一项：拥有方无法解析的资料段使该样例审计链失败闭合，且不产出部分收据。
+    const absentRef = {
+      locator: {
+        sourceSegmentId: `${source.sourceVersionRef.reference.entityId}-chapter_1-segment_9`,
+      },
+      sourceVersion: source.sourceVersionRef.reference,
+    };
+    const missingRef = await putProjectArtifact({
+      authorization: evaluationAuthorization,
+      datasetId: "c36-required-evidence-dataset",
+      datasetVersion: "2030-06-06-missing.1",
+      value: projectDatasetBody({
+        projectId: EVIDENCE_PROJECT_ID,
+        datasetId: "c36-required-evidence-dataset",
+        projectRevisionRef: {
+          kind: "project-revision",
+          reference: { entityId: "quality-required-evidence-revision", versionId: "r1" },
+        },
+        datasetVersion: "2030-06-06-missing.1",
+        spatialScopeRef: world.accessScopeRef,
+        samples: [
+          {
+            sampleId: "required-missing",
+            sourceSegmentRefs: [segmentRefs[0], absentRef],
+            requiredEvidenceRefs: [segmentRefs[0], absentRef],
+          },
+        ],
+      }),
+    });
+    const missing = await evaluateWithIssuer("c36-required-evidence-missing", missingRef);
+    expect(missing.kind).toBe("succeeded");
+    if (missing.kind !== "succeeded") return;
+    expect(auditOf(missing.report)).toMatchObject({ numerator: 0, denominator: 1 });
+    expect(missing.report.evidenceChainStatus).toBe("partial");
+    expect(missing.report.samples[0]?.reasonCodes).toContain(
+      "quality-evidence-artifact-unverified",
+    );
+
+    // 错版：资料版本没有当前策略，签发即拒权，样例保持未判定。
+    const wrongVersionRef = {
+      locator: { sourceSegmentId: segmentRefs[0]!.locator.sourceSegmentId },
+      sourceVersion: { entityId: source.sourceVersionRef.reference.entityId, versionId: "2" },
+    };
+    const driftedRef = await putProjectArtifact({
+      authorization: evaluationAuthorization,
+      datasetId: "c36-required-evidence-dataset",
+      datasetVersion: "2030-06-06-drift.1",
+      value: projectDatasetBody({
+        projectId: EVIDENCE_PROJECT_ID,
+        datasetId: "c36-required-evidence-dataset",
+        projectRevisionRef: {
+          kind: "project-revision",
+          reference: { entityId: "quality-required-evidence-revision", versionId: "r1" },
+        },
+        datasetVersion: "2030-06-06-drift.1",
+        spatialScopeRef: world.accessScopeRef,
+        samples: [
+          {
+            sampleId: "required-drift",
+            sourceSegmentRefs: [wrongVersionRef],
+            requiredEvidenceRefs: [wrongVersionRef],
+          },
+        ],
+      }),
+    });
+    const drifted = await evaluateWithIssuer("c36-required-evidence-drift", driftedRef);
+    expect(drifted.kind).toBe("succeeded");
+    if (drifted.kind !== "succeeded") return;
+    expect(auditOf(drifted.report)).toMatchObject({ numerator: 0, denominator: 1 });
+
+    // 跨空间：签发上下文不覆盖样例空间时，C13 拒绝解析，样例失败闭合。
+    const crossSpace = await evaluationService().evaluateDataset({
+      projectId: EVIDENCE_PROJECT_ID,
+      actorId: world.accountId,
+      commandId: "c36-required-evidence-cross-space",
+      idempotencyKey: "c36-required-evidence-cross-space",
+      requestedAt: QUALITY_FIXTURE_TIME,
+      datasetArtifactRef: positiveRef,
+      runRefs: [],
+      authorization: evaluationAuthorization,
+      requiredEvidenceAccess: {
+        issueReadAuthorization: async (request) =>
+          authorizeFor({
+            world,
+            projectId: EVIDENCE_PROJECT_ID,
+            branch: "engineering-data.evidence-access",
+            invocationId: request.queryId,
+            spatialScopeRefs: [
+              {
+                kind: "spatial-scope",
+                reference: { entityId: "quality-cross-space", versionId: "v1" },
+              },
+            ],
+            sourceVersionRefs: request.sourceVersionRefs,
+          }),
+      },
+      runEvidence: {
+        commands: [
+          "pnpm exec vitest run packages/adapters/test/quality/postgres-quality-evaluation.test.ts",
+        ],
+        codeHead: "c36-required-evidence",
+        environment: { nodeVersion: process.version },
+      },
+    });
+    expect(crossSpace.kind).toBe("succeeded");
+    if (crossSpace.kind !== "succeeded") return;
+    expect(auditOf(crossSpace.report)).toMatchObject({ numerator: 0, denominator: 2 });
+    expect(crossSpace.report.evidenceChainStatus).toBe("partial");
+
+    // 撤权：资料改为仅另一成员可见后当前会话无法解析，失败关闭且不复用旧收据。
+    const administratorAccount = await fixture!.postgres.adminPool.query<{ account_id: string }>(
+      "SELECT account_id FROM business.local_accounts WHERE login_name = $1",
+      [TEST_ADMIN_LOGIN],
+    );
+    const otherAccountId = administratorAccount.rows[0]!.account_id;
+    await reviseSourceAccess({
+      commandId: "c36-required-evidence-revoke",
+      visibility: "restricted",
+      allowedAccountIds: [otherAccountId],
+      registeredByAccountId: otherAccountId,
+    });
+    const revoked = await evaluateWithIssuer("c36-required-evidence-revoked", positiveRef);
+    expect(revoked.kind).toBe("succeeded");
+    if (revoked.kind !== "succeeded") return;
+    expect(auditOf(revoked.report)).toMatchObject({ numerator: 0, denominator: 2 });
+    expect(revoked.report.evidenceChainStatus).toBe("partial");
+  }, 600_000);
+});
+
+describe("C36 投影 grant 与来源版本映射（真实 C06/C13）", () => {
+  const GRANT_PROJECT_ID = "quality-grant-mapping-project";
+  const GRANT_OPERATOR = "quality-grant-operator";
+  const GRANT_PASSWORD = "Riskflow-Grant-2030!";
+  const GRANT_PASSWORD_CHANGED = "Riskflow-Grant-2030-Changed!";
+  const GRANT_REVISION = {
+    kind: "project-revision" as const,
+    reference: { entityId: "quality-grant-revision", versionId: "r1" },
+  };
+
+  it("只披露取得当前 grant 的来源版本定位引用，撤权与无映射只删定位不删摘要", async () => {
+    const world = await realOperatorWorld({
+      projectId: GRANT_PROJECT_ID,
+      loginName: GRANT_OPERATOR,
+      password: GRANT_PASSWORD,
+      changedPassword: GRANT_PASSWORD_CHANGED,
+    });
+    const source = await seedRealSource({ world, projectId: GRANT_PROJECT_ID, suffix: "grant" });
+    // 资料授权事实由 C13 写入分支的项目风险经理上下文登记，与 C06 现有命令语义一致。
+    const sourceAccessContext = await authorizeFor({
+      world,
+      projectId: GRANT_PROJECT_ID,
+      branch: "engineering-data.register-source-delivery",
+      invocationId: "c36-source-access-context-grant",
+    });
+    const reviseSourceAccess = async (input: {
+      readonly commandId: string;
+      readonly visibility: "project-shared" | "restricted";
+      readonly allowedAccountIds: readonly string[];
+      readonly registeredByAccountId: string;
+    }) =>
+      fixture!.access.administerProject({
+        kind: "revise-source-access",
+        projectId: GRANT_PROJECT_ID,
+        commandId: input.commandId,
+        idempotencyKey: input.commandId,
+        expectedVersion: await currentSourceGrantVersion({
+          projectId: GRANT_PROJECT_ID,
+          sourceVersionRef: source.sourceVersionRef,
+        }),
+        authorizationContextRef: sourceAccessContext.authorizationContextRef,
+        sourceVersionRef: source.sourceVersionRef,
+        visibility: input.visibility,
+        allowedAccountIds: [...input.allowedAccountIds],
+        spatialScopeRefs: [world.accessScopeRef],
+        registeredByAccountId: input.registeredByAccountId,
+      });
+    await reviseSourceAccess({
+      commandId: "c36-grant-source-access",
+      visibility: "project-shared",
+      allowedAccountIds: [],
+      registeredByAccountId: world.accountId,
+    });
+    const evaluationAuthorization = await authorizeFor({
+      world,
+      projectId: GRANT_PROJECT_ID,
+      branch: "projection.export",
+      invocationId: "c36-grant-evaluate",
+    });
+    const segmentRefs = source.segmentIds.map((sourceSegmentId) => ({
+      locator: { sourceSegmentId },
+      sourceVersion: source.sourceVersionRef.reference,
+    }));
+    const datasetArtifactRef = await putProjectArtifact({
+      authorization: evaluationAuthorization,
+      datasetId: "c36-grant-dataset",
+      datasetVersion: "2030-06-07.1",
+      value: projectDatasetBody({
+        projectId: GRANT_PROJECT_ID,
+        datasetId: "c36-grant-dataset",
+        projectRevisionRef: GRANT_REVISION,
+        datasetVersion: "2030-06-07.1",
+        spatialScopeRef: world.accessScopeRef,
+        samples: segmentRefs.map((reference, index) => ({
+          sampleId: `grant-${index + 1}`,
+          sourceSegmentRefs: [reference],
+          requiredEvidenceRefs: [reference],
+        })),
+      }),
+    });
+    const evaluated = await evaluationService().evaluateDataset({
+      projectId: GRANT_PROJECT_ID,
+      actorId: world.accountId,
+      commandId: "c36-grant-evaluate-command",
+      idempotencyKey: "c36-grant-evaluate-command",
+      requestedAt: QUALITY_FIXTURE_TIME,
+      datasetArtifactRef,
+      runRefs: [],
+      authorization: evaluationAuthorization,
+      requiredEvidenceAccess: evidenceIssuerFor(world, GRANT_PROJECT_ID),
+      runEvidence: {
+        commands: [
+          "pnpm exec vitest run packages/adapters/test/quality/postgres-quality-evaluation.test.ts",
+        ],
+        codeHead: "c36-grant-mapping",
+        environment: { nodeVersion: process.version },
+      },
+    });
+    expect(evaluated.kind).toBe("succeeded");
+    if (evaluated.kind !== "succeeded") return;
+
+    const queryAuthorization = await authorizeFor({
+      world,
+      projectId: GRANT_PROJECT_ID,
+      branch: "projection.query",
+      invocationId: "c36-grant-query",
+    });
+    const projection = queryProjection();
+    const request = {
+      queryId: "c36-grant-list",
+      projectId: GRANT_PROJECT_ID,
+      actorId: world.accountId,
+      requestedAt: QUALITY_FIXTURE_TIME,
+      authorization: queryAuthorization,
+      kind: "query" as const,
+      payload: {
+        queryType: "quality-evaluation" as const,
+        selector: { mode: "list" as const, projectRevisionRef: GRANT_REVISION, pageSize: 50 },
+      },
+    };
+    const candidates = await projection.candidateSourceVersionRefs(request);
+    expect(candidates.kind).toBe("candidates");
+    if (candidates.kind !== "candidates") return;
+    expect(candidates.versions.map((version) => version.sourceVersionRef)).toEqual([
+      source.sourceVersionRef,
+    ]);
+    expect(candidates.rowRefs).toHaveLength(1);
+    const grants = new Map<string, readonly SourceAccessGrantRefV1[]>();
+    for (const [index, version] of candidates.versions.entries()) {
+      const context = await authorizeFor({
+        world,
+        projectId: GRANT_PROJECT_ID,
+        branch: "projection.query",
+        invocationId: `c36-grant-sign-${index}`,
+        sourceVersionRefs: [version.sourceVersionRef],
+      });
+      expect(context.grantedCapabilities).toEqual(["projection.query"]);
+      grants.set(version.versionKey, context.sourceAccessGrantRefs);
+    }
+    expect([...grants.values()].every((grantRefs) => grantRefs.length > 0)).toBe(true);
+
+    // grant 身份与来源版本身份不同：披露的定位引用必须仍精确对应被签发的来源版本。
+    const disclosed = await projection.queryWithSourceGrants(request, grants);
+    expect(disclosed.kind).toBe("succeeded");
+    if (disclosed.kind !== "succeeded") return;
+    expect(disclosed.result.qualitySummaries?.[0]?.evidenceRefs).toEqual(segmentRefs);
+
+    // 单阶段查询没有请求内 grant 映射，因此不披露任何定位引用。
+    const closed = await projection.query(request);
+    expect(closed.kind).toBe("succeeded");
+    if (closed.kind !== "succeeded") return;
+    expect(closed.result.qualitySummaries?.[0]?.evidenceRefs).toEqual([]);
+
+    // 无映射时只删除定位引用，工程级摘要与分页形状不变。
+    const unmapped = await projection.queryWithSourceGrants(
+      request,
+      new Map<string, readonly SourceAccessGrantRefV1[]>(),
+    );
+    expect(unmapped.kind).toBe("succeeded");
+    if (unmapped.kind !== "succeeded") return;
+    expect(
+      unmapped.result.qualitySummaries?.every((summary) => summary.evidenceRefs.length === 0),
+    ).toBe(true);
+    expect(unmapped.result.qualitySummaries?.length).toBe(closed.result.qualitySummaries?.length);
+
+    // 撤权后当前会话签不出该版本的 grant，定位引用不再披露。
+    const administratorAccount = await fixture!.postgres.adminPool.query<{ account_id: string }>(
+      "SELECT account_id FROM business.local_accounts WHERE login_name = $1",
+      [TEST_ADMIN_LOGIN],
+    );
+    const otherAccountId = administratorAccount.rows[0]!.account_id;
+    await reviseSourceAccess({
+      commandId: "c36-grant-source-access-revoked",
+      visibility: "restricted",
+      allowedAccountIds: [otherAccountId],
+      registeredByAccountId: otherAccountId,
+    });
+    const revokedContext = await authorizeFor({
+      world,
+      projectId: GRANT_PROJECT_ID,
+      branch: "projection.query",
+      invocationId: "c36-grant-sign-revoked",
+      sourceVersionRefs: [source.sourceVersionRef],
+    });
+    expect(revokedContext.sourceAccessGrantRefs).toEqual([]);
+    const revoked = await projection.queryWithSourceGrants(
+      request,
+      new Map([[candidates.versions[0]!.versionKey, revokedContext.sourceAccessGrantRefs]]),
+    );
+    expect(revoked.kind).toBe("succeeded");
+    if (revoked.kind !== "succeeded") return;
+    expect(revoked.result.qualitySummaries?.[0]?.evidenceRefs).toEqual([]);
+
+    // 同键重放不追加业务事实。
+    const counts = await fixture!.postgres.adminPool.query<{ total: string }>(
+      `SELECT count(*)::text AS total FROM ${TABLE} WHERE project_id = $1`,
+      [GRANT_PROJECT_ID],
+    );
+    const replayed = await projection.queryWithSourceGrants(request, grants);
+    const countsAfter = await fixture!.postgres.adminPool.query<{ total: string }>(
+      `SELECT count(*)::text AS total FROM ${TABLE} WHERE project_id = $1`,
+      [GRANT_PROJECT_ID],
+    );
+    expect(replayed.kind).toBe("succeeded");
+    expect(countsAfter.rows[0]?.total).toBe(counts.rows[0]?.total);
+  }, 600_000);
 });

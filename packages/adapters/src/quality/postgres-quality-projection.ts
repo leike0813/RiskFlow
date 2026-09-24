@@ -6,12 +6,21 @@ import {
   ProjectionQueryV1Schema,
   ProjectionQuerySuccessV1Schema,
   QualityEvaluationSummaryV1Schema,
+  SourceVersionRefV1Schema,
   type ProjectionQueryResultV1,
   type ProjectionQuerySuccessV1,
+  type QualityEvaluationQuerySelectorV1,
+  type QualityEvaluationSummaryV1,
+  type SourceAccessGrantRefV1,
+  type SourceVersionRefV1,
 } from "@riskflow/contracts/ports";
 import type { JsonValue } from "@riskflow/core/persistence";
 import { sha256CanonicalJson } from "@riskflow/core/persistence";
-import { IdentifierSchema, IsoDateTimeSchema, VersionReferenceSchema } from "@riskflow/contracts/common";
+import {
+  IdentifierSchema,
+  IsoDateTimeSchema,
+  VersionReferenceSchema,
+} from "@riskflow/contracts/common";
 
 import type { PostgresDatabase } from "../postgres/types.js";
 
@@ -47,6 +56,17 @@ interface QualityCursorV1 {
   readonly reportArtifactId: string;
   readonly reportArtifactVersionId: string;
 }
+
+/** 行选取结果：拒绝已按同形收口，选中行只携带写入时已核验的摘要。 */
+type QualityProjectionSelectionV1 =
+  | Readonly<{ kind: "rejected"; result: ProjectionQueryResultV1 }>
+  | Readonly<{
+      kind: "rows";
+      projectId: string;
+      selector: QualityEvaluationQuerySelectorV1;
+      rows: readonly QualityIndexRow[];
+      summaries: readonly QualityEvaluationSummaryV1[];
+    }>;
 
 const notFound = (queryId: string, occurredAt: string): ProjectionQueryResultV1 => ({
   kind: "failed",
@@ -94,7 +114,8 @@ const decodeCursor = (value: string): QualityCursorV1 | undefined => {
       !IsoDateTimeSchema.safeParse(cursor.createdAt).success ||
       !IdentifierSchema.safeParse(cursor.reportArtifactId).success ||
       !IdentifierSchema.safeParse(cursor.reportArtifactVersionId).success
-    ) return undefined;
+    )
+      return undefined;
     return cursor as QualityCursorV1;
   } catch {
     return undefined;
@@ -104,13 +125,43 @@ const decodeCursor = (value: string): QualityCursorV1 | undefined => {
 const asIso = (value: Date | string): string =>
   typeof value === "string" ? value : value.toISOString();
 
+/**
+ * D-11 请求内授权映射键：只由精确来源版本的工程内身份与版本组成，
+ * 不由 grant ID 反推；C09 与投影两侧必须用同一键。
+ */
+export const qualitySourceVersionKeyV1 = (reference: {
+  readonly entityId: string;
+  readonly versionId: string;
+}): string => `${reference.entityId}\u0000${reference.versionId}`;
+
+/** D-11 预选结果：本次请求已按当前授权选中的行、摘要 digest 与候选来源版本。 */
+export interface QualityProjectionCandidatesV1 {
+  readonly versionKey: string;
+  readonly sourceVersionRef: SourceVersionRefV1;
+}
+
+export type QualityProjectionCandidateSelectionV1 =
+  | Readonly<{
+      kind: "candidates";
+      readonly rowRefs: readonly {
+        readonly reportArtifactId: string;
+        readonly reportArtifactVersionId: string;
+      }[];
+      readonly summaryDigests: readonly string[];
+      readonly versions: readonly QualityProjectionCandidatesV1[];
+    }>
+  | Readonly<{ kind: "rejected"; result: ProjectionQueryResultV1 }>;
+
+/** 精确来源版本 → 该版本在当前请求内取得的 C06 grant 引用；无映射即不披露该版本定位。 */
+export type QualitySourceGrantMapV1 = ReadonlyMap<string, readonly SourceAccessGrantRefV1[]>;
+
 export interface PostgresQualityProjectionOptionsV1 {
   readonly db: Kysely<PostgresDatabase>;
   readonly now?: () => Date;
 }
 
 /**
- * C36 窄查询投影（D-04/D-06）：只读 `business.quality_evaluation_report_index` 中
+ * C36 窄查询投影（D-04/D-06/D-11）：只读 `business.quality_evaluation_report_index` 中
  * 写入时已由 C04 `verified` 核对的安全摘要，不打开报告正文，也不读取 C22/C29/C14 私表。
  * 无权、跨工程与不存在统一收口为同形 `ENTITY_NOT_FOUND`，查询不写任何业务事实。
  */
@@ -124,12 +175,71 @@ export class PostgresQualityProjectionAdapter {
   }
 
   async query(request: unknown): Promise<ProjectionQueryResultV1> {
+    const selected = await this.#selectRows(request);
+    if (selected.kind === "rejected") return selected.result;
+    // 单阶段查询没有任何请求内 grant 映射，因此不披露任何定位引用。
+    return this.#summarize(selected, new Map<string, readonly SourceAccessGrantRefV1[]>());
+  }
+
+  /**
+   * D-11 第一阶段（仅服务端可调用）：按当前工程/空间授权预选与 `query` 相同的行，
+   * 复验摘要 digest 后给出候选精确来源版本，供 C09 逐版本向 C06 签发。
+   */
+  async candidateSourceVersionRefs(
+    request: unknown,
+  ): Promise<QualityProjectionCandidateSelectionV1> {
+    const selected = await this.#selectRows(request);
+    if (selected.kind === "rejected") return { kind: "rejected", result: selected.result };
+    const versions = new Map<string, QualityProjectionCandidatesV1>();
+    for (const summary of selected.summaries) {
+      for (const reference of summary.evidenceRefs) {
+        const key = qualitySourceVersionKeyV1(reference.sourceVersion);
+        if (versions.has(key)) continue;
+        versions.set(key, {
+          versionKey: key,
+          sourceVersionRef: SourceVersionRefV1Schema.parse({
+            kind: "source-version",
+            reference: reference.sourceVersion,
+          }),
+        });
+      }
+    }
+    return {
+      kind: "candidates",
+      rowRefs: selected.rows.map((row) => ({
+        reportArtifactId: row.report_artifact_id,
+        reportArtifactVersionId: row.report_artifact_version_id,
+      })),
+      summaryDigests: selected.rows.map((row) => row.summary_digest),
+      versions: [...versions.values()].sort((left, right) =>
+        left.versionKey < right.versionKey ? -1 : left.versionKey > right.versionKey ? 1 : 0,
+      ),
+    };
+  }
+
+  /**
+   * D-11 第二阶段：重新选取同样的行并复验 digest，只保留当前请求内已取得 grant 的来源版本
+   * 对应的定位引用；未授权版本、签发失败与并发新增行都不披露，其它形状与 `query` 一致。
+   */
+  async queryWithSourceGrants(
+    request: unknown,
+    grantsBySourceVersion: QualitySourceGrantMapV1,
+  ): Promise<ProjectionQueryResultV1> {
+    const selected = await this.#selectRows(request);
+    if (selected.kind === "rejected") return selected.result;
+    return this.#summarize(selected, grantsBySourceVersion);
+  }
+
+  /** 授权校验、行选取与摘要复验：`query` 与两阶段接口共用同一收口。 */
+  async #selectRows(request: unknown): Promise<QualityProjectionSelectionV1> {
     const parsed = ProjectionQueryV1Schema.safeParse(request);
     if (!parsed.success) throw parsed.error;
     const query = parsed.data;
     const occurredAt = this.#now().toISOString();
-    if (query.payload.queryType !== "quality-evaluation")
-      return unsupported(query.queryId, occurredAt);
+    if (query.payload.queryType !== "quality-evaluation") {
+      return { kind: "rejected", result: unsupported(query.queryId, occurredAt) };
+    }
+    const payload = query.payload;
     const authorization = query.authorization;
     if (
       authorization.projectId !== query.projectId ||
@@ -138,10 +248,10 @@ export class PostgresQualityProjectionAdapter {
       authorization.grantedCapabilities[0] !== "projection.query" ||
       authorization.spatialScopeRefs.length === 0
     ) {
-      return notFound(query.queryId, occurredAt);
+      return { kind: "rejected", result: notFound(query.queryId, occurredAt) };
     }
 
-    const selector = query.payload.selector;
+    const selector = payload.selector;
     const allowedSpatialScopes = JSON.stringify(authorization.spatialScopeRefs);
     const rows =
       selector.mode === "exact"
@@ -166,40 +276,56 @@ export class PostgresQualityProjectionAdapter {
           );
     // 精确查询只返一项：跨工程、撤权与不存在都收口为同形拒绝；空列表只在列表模式下成立。
     if (rows === undefined || (selector.mode === "exact" && rows.length === 0)) {
-      return notFound(query.queryId, occurredAt);
+      return { kind: "rejected", result: notFound(query.queryId, occurredAt) };
     }
 
-    const summaries = [];
+    const summaries: QualityEvaluationSummaryV1[] = [];
     for (const row of rows) {
       const summary = QualityEvaluationSummaryV1Schema.safeParse(row.summary_payload);
       if (!summary.success || sha256CanonicalJson(summary.data) !== row.summary_digest) {
-        return notFound(query.queryId, occurredAt);
+        return { kind: "rejected", result: notFound(query.queryId, occurredAt) };
       }
-      summaries.push({
-        ...summary.data,
-        // C06 grant 引用与资料版本引用不是同一身份；缺少授权映射时关闭定位引用。
-        evidenceRefs: [],
-      });
+      summaries.push(summary.data);
     }
-    const last = rows.at(-1);
+    return { kind: "rows", projectId: query.projectId, selector, rows, summaries };
+  }
+
+  /** 摘要只带当前请求已取得 grant 的定位引用；其它字段与存储摘要逐字一致。 */
+  #summarize(
+    selected: Extract<QualityProjectionSelectionV1, { kind: "rows" }>,
+    grantsBySourceVersion: QualitySourceGrantMapV1,
+  ): ProjectionQueryResultV1 {
+    const summaries = selected.summaries.map((summary) => ({
+      ...summary,
+      evidenceRefs: summary.evidenceRefs.filter(
+        (reference) =>
+          (grantsBySourceVersion.get(qualitySourceVersionKeyV1(reference.sourceVersion))?.length ??
+            0) > 0,
+      ),
+    }));
+    const last = selected.rows.at(-1);
     const success: ProjectionQuerySuccessV1 = ProjectionQuerySuccessV1Schema.parse({
       queryResultRef: {
         kind: "query-result",
         reference: {
           entityId: `quality-evaluation-query-${sha256CanonicalJson({
-            projectId: query.projectId,
+            projectId: selected.projectId,
             projectRevisionRef:
-              selector.mode === "list" ? selector.projectRevisionRef : query.payload.selector,
+              selected.selector.mode === "list"
+                ? selected.selector.projectRevisionRef
+                : selected.selector,
           })}`,
           versionId: "1",
         },
       },
       qualitySummaries: summaries,
-      ...(selector.mode === "list" && rows.length === selector.pageSize && last !== undefined
+      ...(selected.selector.mode === "list" &&
+      selected.rows.length === selected.selector.pageSize &&
+      last !== undefined
         ? {
             nextCursor: encodeCursor({
-              projectId: query.projectId,
-              projectRevisionRef: selector.projectRevisionRef.reference,
+              projectId: selected.projectId,
+              projectRevisionRef: selected.selector.projectRevisionRef.reference,
               createdAt: asIso(last.created_at),
               reportArtifactId: last.report_artifact_id,
               reportArtifactVersionId: last.report_artifact_version_id,

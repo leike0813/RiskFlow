@@ -86,6 +86,7 @@ import {
   type OpenWarningCommandV1,
   type ProjectionExportRequestV1,
   type ProjectionPortV1,
+  type ProjectionQueryResultV1,
   type ProjectionQueryV1,
   type RecommendationCommandV1,
   type ResumeAgentTaskCommandV1,
@@ -97,6 +98,8 @@ import {
   type RiskIdentificationPortV1,
   type RunSubscriptionRequestV1,
   type SpatialScopeRefV1,
+  type SourceAccessGrantRefV1,
+  type SourceVersionRefV1,
   type StartAgentTaskCommandV1,
   type StartWorkflowRunCommandV1,
   type TraceQueryV1,
@@ -334,6 +337,27 @@ const queryTransportSchemaFor = (schema: ZodType, kind: string): ZodType =>
     payload: payloadSchemaFor(schema, kind),
   });
 
+/**
+ * D-11 C36 两阶段窄端口（仅服务端可调用，不进入 HTTP 契约）：先按当前授权预选候选来源版本，
+ * 再按请求内 grant 映射过滤摘要定位引用；grant 与来源版本的身份映射只存在于本次请求。
+ */
+export type QualityProjectionSourceVersionRefV1 = {
+  readonly versionKey: string;
+  readonly sourceVersionRef: SourceVersionRefV1;
+};
+
+export type QualityProjectionCandidateSelectionV1 =
+  | Readonly<{
+      kind: "candidates";
+      readonly rowRefs: readonly {
+        readonly reportArtifactId: string;
+        readonly reportArtifactVersionId: string;
+      }[];
+      readonly summaryDigests: readonly string[];
+      readonly versions: readonly QualityProjectionSourceVersionRefV1[];
+    }>
+  | Readonly<{ kind: "rejected"; result: ProjectionQueryResultV1 }>;
+
 export interface ApiPortsV1 {
   readonly engineeringData?: EngineeringDataPortV1;
   readonly knowledgeModeling?: KnowledgeModelingPortV1;
@@ -348,7 +372,16 @@ export interface ApiPortsV1 {
    * C36 窄投影 port：只在未提供完整 `projection` port 时把原 `projection.query` 路由绑定到它，
    * 只接受 `quality-evaluation` 查询类型；SSE 与导出仍只由完整 port 激活。
    */
-  readonly qualityProjectionQuery?: Pick<ProjectionPortV1, "query">;
+  readonly qualityProjectionQuery?: Pick<ProjectionPortV1, "query"> &
+    Partial<{
+      candidateSourceVersionRefs(
+        request: ProjectionQueryV1,
+      ): Promise<QualityProjectionCandidateSelectionV1>;
+      queryWithSourceGrants(
+        request: ProjectionQueryV1,
+        grantsBySourceVersion: ReadonlyMap<string, readonly SourceAccessGrantRefV1[]>,
+      ): Promise<ProjectionQueryResultV1>;
+    }>;
 }
 
 type ApiPortKeyV1 = keyof ApiPortsV1;

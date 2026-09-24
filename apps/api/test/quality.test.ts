@@ -69,6 +69,52 @@ const accessStub = (grantedCapabilities: readonly string[] = ["projection.query"
     },
   }) as unknown as LocalIdentityAccessV1;
 
+/** 可配置的两阶段签发桩：基底上下文沿用会话桩形状，只替换 `authorize` 行为。 */
+const versionedAccessStub = (input: {
+  readonly authorize: (request: {
+    readonly invocationId: string;
+    readonly requestedSourceVersionRefs: readonly {
+      readonly reference: { readonly entityId: string; readonly versionId: string };
+    }[];
+  }) => Promise<
+    | readonly {
+        readonly kind: "source-access-grant";
+        readonly reference: { readonly entityId: string; readonly versionId: string };
+      }[]
+    | undefined
+  >;
+}) =>
+  ({
+    ...(accessStub() as unknown as Record<string, unknown>),
+    authorize: async (request: {
+      readonly invocationId: string;
+      readonly requestedSourceVersionRefs: readonly {
+        readonly reference: { readonly entityId: string; readonly versionId: string };
+      }[];
+    }) => ({
+      context: {
+        schemaVersion: "1",
+        authorizationContextRef: {
+          kind: "authorization-context",
+          reference: { entityId: "context", versionId: "1" },
+        },
+        actorId: "operator",
+        projectId: PROJECT_ID,
+        grantedCapabilities: ["projection.query"],
+        spatialScopeRefs: [],
+        sourceAccessGrantRefs: [...((await input.authorize(request)) ?? [])],
+        authorizationPolicyRef: { entityId: "policy", versionId: "1" },
+        decidedAt: NOW,
+        invocation: { kind: "human" },
+      },
+      contextRef: {
+        kind: "authorization-context",
+        reference: { entityId: "context", versionId: "1" },
+      },
+      redacted: false,
+    }),
+  }) as unknown as LocalIdentityAccessV1;
+
 const qualitySuccess: ProjectionQuerySuccessV1 = {
   queryResultRef: {
     kind: "query-result",
@@ -224,6 +270,256 @@ describe("C36 质量查询接线", () => {
     expect(response.statusCode).toBe(200);
     expect(fullCalls).toHaveLength(1);
     expect(narrowCalls).toHaveLength(0);
+    await app.close();
+  });
+
+  it("按候选来源版本逐项签发，只把请求内 grant 映射交给第二段查询", async () => {
+    const authorizeCalls: {
+      readonly invocationId: string;
+      readonly sourceVersions: readonly string[];
+    }[] = [];
+    const granted: { readonly grantKeys: readonly string[] }[] = [];
+    const sourceVersions = ["source-a", "source-b"].map((entityId) => ({
+      versionKey: `${entityId}\u00001`,
+      sourceVersionRef: {
+        kind: "source-version" as const,
+        reference: { entityId, versionId: "1" },
+      },
+    }));
+    const access = {
+      ...(accessStub() as unknown as Record<string, unknown>),
+      authorize: async (request: {
+        readonly invocationId: string;
+        readonly requestedSourceVersionRefs: readonly {
+          readonly reference: { readonly entityId: string };
+        }[];
+      }) => {
+        authorizeCalls.push({
+          invocationId: request.invocationId,
+          sourceVersions: request.requestedSourceVersionRefs.map(
+            (version) => version.reference.entityId,
+          ),
+        });
+        return {
+          context: {
+            schemaVersion: "1",
+            authorizationContextRef: {
+              kind: "authorization-context",
+              reference: { entityId: "context", versionId: "1" },
+            },
+            actorId: "operator",
+            projectId: PROJECT_ID,
+            grantedCapabilities: ["projection.query"],
+            spatialScopeRefs: [],
+            sourceAccessGrantRefs:
+              request.requestedSourceVersionRefs.length === 0
+                ? []
+                : request.requestedSourceVersionRefs.map((version) => ({
+                    kind: "source-access-grant",
+                    reference: { entityId: `grant-${version.reference.entityId}`, versionId: "1" },
+                  })),
+            authorizationPolicyRef: { entityId: "policy", versionId: "1" },
+            decidedAt: NOW,
+            invocation: { kind: "human" },
+          },
+          contextRef: {
+            kind: "authorization-context",
+            reference: { entityId: "context", versionId: "1" },
+          },
+          redacted: false,
+        };
+      },
+    } as unknown as LocalIdentityAccessV1;
+    const app = buildApi({
+      access,
+      ports: {
+        qualityProjectionQuery: {
+          query: async () => {
+            throw new Error("two-phase flow must not fall back to the single-phase query");
+          },
+          candidateSourceVersionRefs: async () => ({
+            kind: "candidates",
+            rowRefs: [{ reportArtifactId: "quality-report", reportArtifactVersionId: "1" }],
+            summaryDigests: ["digest-1"],
+            versions: sourceVersions,
+          }),
+          queryWithSourceGrants: async (_request, grantsBySourceVersion) => {
+            granted.push({ grantKeys: [...grantsBySourceVersion.keys()] });
+            return { kind: "succeeded", result: qualitySuccess };
+          },
+        },
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/v1/projects/${PROJECT_ID}/queries/projection.query`,
+      headers,
+      payload: queryBody(qualityPayload),
+    });
+    expect(response.statusCode).toBe(200);
+    expect(authorizeCalls[0]?.sourceVersions).toEqual([]);
+    expect(authorizeCalls.slice(1).map((call) => call.sourceVersions.map((id) => id))).toEqual([
+      ["source-a"],
+      ["source-b"],
+    ]);
+    expect(granted).toHaveLength(1);
+    expect(granted[0]?.grantKeys).toEqual(["source-a\u00001", "source-b\u00001"]);
+    await app.close();
+  });
+
+  it("某个来源版本拒权时只删除该版本映射，其余版本照常返回", async () => {
+    const granted: { readonly grantKeys: readonly string[] }[] = [];
+    const app = buildApi({
+      access: versionedAccessStub({
+        authorize: async (request) => {
+          if (request.requestedSourceVersionRefs[0]?.reference.entityId === "source-b") {
+            throw { details: { code: "AUTHORIZATION_DENIED" } };
+          }
+          return request.requestedSourceVersionRefs.length === 0
+            ? undefined
+            : request.requestedSourceVersionRefs.map((version) => ({
+                kind: "source-access-grant" as const,
+                reference: { entityId: `grant-${version.reference.entityId}`, versionId: "1" },
+              }));
+        },
+      }),
+      ports: {
+        qualityProjectionQuery: {
+          query: async () => {
+            throw new Error("unused");
+          },
+          candidateSourceVersionRefs: async () => ({
+            kind: "candidates",
+            rowRefs: [{ reportArtifactId: "quality-report", reportArtifactVersionId: "1" }],
+            summaryDigests: ["digest-1"],
+            versions: ["source-a", "source-b"].map((entityId) => ({
+              versionKey: `${entityId}\u00001`,
+              sourceVersionRef: {
+                kind: "source-version" as const,
+                reference: { entityId, versionId: "1" },
+              },
+            })),
+          }),
+          queryWithSourceGrants: async (_request, grantsBySourceVersion) => {
+            granted.push({ grantKeys: [...grantsBySourceVersion.keys()] });
+            return { kind: "succeeded", result: qualitySuccess };
+          },
+        },
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/v1/projects/${PROJECT_ID}/queries/projection.query`,
+      headers,
+      payload: queryBody(qualityPayload),
+    });
+    expect(response.statusCode).toBe(200);
+    expect(granted[0]?.grantKeys).toEqual(["source-a\u00001"]);
+    await app.close();
+  });
+
+  it("签发暂时性失败使整个查询失败，不伪装成空证据成功", async () => {
+    const granted: unknown[] = [];
+    const app = buildApi({
+      access: versionedAccessStub({
+        authorize: async () => {
+          throw new Error("source version signing is unavailable");
+        },
+      }),
+      ports: {
+        qualityProjectionQuery: {
+          query: async () => {
+            throw new Error("unused");
+          },
+          candidateSourceVersionRefs: async () => ({
+            kind: "candidates",
+            rowRefs: [{ reportArtifactId: "quality-report", reportArtifactVersionId: "1" }],
+            summaryDigests: ["digest-1"],
+            versions: [
+              {
+                versionKey: "source-a\u00001",
+                sourceVersionRef: {
+                  kind: "source-version" as const,
+                  reference: { entityId: "source-a", versionId: "1" },
+                },
+              },
+            ],
+          }),
+          queryWithSourceGrants: async (_request, grantsBySourceVersion) => {
+            granted.push(grantsBySourceVersion);
+            return { kind: "succeeded", result: qualitySuccess };
+          },
+        },
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/v1/projects/${PROJECT_ID}/queries/projection.query`,
+      headers,
+      payload: queryBody(qualityPayload),
+    });
+    expect(response.statusCode).toBe(500);
+    expect(response.body).toContain("TERMINAL_FAILURE");
+    expect(granted).toHaveLength(0);
+    await app.close();
+  });
+
+  it("预选被同形拒绝时不进入签发阶段", async () => {
+    const authorizeCalls: unknown[] = [];
+    const rejection = {
+      kind: "failed" as const,
+      error: {
+        code: "ENTITY_NOT_FOUND" as const,
+        category: "not-found" as const,
+        retryable: false as const,
+        stageCode: "quality-evaluation.query",
+        occurredAt: NOW,
+        causalRunId: "query-1",
+        targetRef: {
+          kind: "query-result" as const,
+          reference: { entityId: "query-1", versionId: "1" },
+        },
+      },
+    };
+    const app = buildApi({
+      access: versionedAccessStub({
+        authorize: async () => {
+          authorizeCalls.push("authorize");
+          return undefined;
+        },
+      }),
+      ports: {
+        qualityProjectionQuery: {
+          query: async () => {
+            throw new Error("unused");
+          },
+          candidateSourceVersionRefs: async () => ({ kind: "rejected", result: rejection }),
+          queryWithSourceGrants: async () => {
+            throw new Error("unused");
+          },
+        },
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/v1/projects/${PROJECT_ID}/queries/projection.query`,
+      headers,
+      payload: queryBody(qualityPayload),
+    });
+    expect(response.statusCode).toBe(404);
+    expect(authorizeCalls).toEqual(["authorize"]);
     await app.close();
   });
 

@@ -2,6 +2,8 @@
 
 基线为 `572fa73f1ccd3acb543762247842c55c2accbd42`。C22 已有 `StandardizedRiskRecordStoreV1.readRecord` 与精确结果工件引用；C29 的 `evaluateDeterministicAssessment` 是可复用的确定性计算，正式记录与决策工件有精确引用；C04 提供授权、完整性校验和不可变工件；C03 提供原子回执/审计。C02 有 `projection.query` 闭合分支和 `ProjectionPortV1`，但未有质量查询类型或 C36 投影实现。C10 Web 根路由、页面壳及 C09 浏览器客户端已存在，生产 `main.tsx` 尚未注入会话与业务页面。当前仓库没有甲方真实脱敏样例，也没有浏览器测试依赖。
 
+重开规划的实际输入 HEAD 为 `ac0ab1d788199301c65dde2b522759d097b96610`，批准记录为 `approval://riskflow/C36/scope-2026-09-23-quality-evidence-and-grant-mapping`，协调端对精确只读接缝与请求侧授权加法的裁决为 `msg_fa149dc63e7f`。当前 C36 代码和 BLOCKED verification 是实施现状；下列 D-09～D-11 只规定本次新增语义，不倒改 D-01～D-08 已完成路径。
+
 批准边界以 `approval://riskflow/C36/scope-2026-09-23-quality-evaluation-and-browser-acceptance` 与协调回复 `msg_8f46a64026e9` 为准。C36 不改 C10/C13/C14 的行为和公共契约，不承担 C37/C38 硬件目标。
 
 ## Goals / Non-Goals
@@ -50,6 +52,22 @@
 
 本 change 仅拥有：质量 core、C36 adapter/index/migration、C36 API 接线、C36 Web 页面与入口接线、质量 fixture/测试、Playwright 配置及根脚本/锁文件登记；`packages/contracts/src/ports/index.ts` 只做 D-04 最小加法。既有 C10/C13/C14 源文件、其它 change 私表、领域算法与已有公共 queryType 不变。RI-S1～RI-S6 对应资料段、工序、机理、标准化记录及识别结果的质量链；RA-S1～RA-S7 对应适用性快照、指标/规则、P/C/矩阵、预警/处置引用的重放和审计检查。报告缺少后段正式结果时记录覆盖缺口，不制造后段业务事实。
 
+### D-09. 正式空结果证明：精确契约与当前阻塞
+
+C36 拟在 `packages/core/src/quality/service.ts` 定义 `QualityFormalRunResultReaderV1.readExact`，输入严格为 `projectId`、当前 `actorId`、`identificationRunRef`、`identificationInputSnapshotRef`、`workPlanRef`、`terminalResultRef`、样例 `processNodeId`、精确 `sourceSegmentRefs`、`expectedEventKey`、`spatialScopeRef` 及当前授权；输出只能是 `{kind:'proved', terminalResultRef, frozenScopeDigest, match:'present'|'absent', matchedRecordRef?}` 或 `{kind:'failed', reasonCode}`。样例新增运行/工作计划/终态证明的可选精确引用，缺失时沿用现有 `undetermined`，不使旧数据集失效。`absent` 必须由拥有方已结束的**完整正式结果全集**按该冻结范围与匹配键计算；`terminalResultRef` 和集合摘要需可与同一运行/工作计划的正式终态、C03 审计及精确版本核对，多匹配视为冲突。单条 `readRecord` 返回 `undefined`、候选集/合并计划或质量侧自行写的空工件都不能出具证明。`evaluateQualityDataset` 仅对负样例的 `absent` 计 TN 和覆盖，`present` 仍按正式记录证据判定；缺证明、未终态、运行/输入/空间错配、全集超界、并发版本漂移均维持 `undetermined`。无权/不存在同形失败，响应不泄露其他运行的计数或正文；重放比对终态引用及集合摘要。
+
+协调端 `msg_2cbcbb1814e2` 已批准在 C22 `StandardizedRiskRecordStoreV1` **加** `readFormalRunResultProof(input)`，并由 `PostgresRiskCandidateFinalizationAdapter` 实现；不改 `readRecord`/`readResult`。该方法的输入即上述 `readExact` 输入，另含 `invocationId,requestedAt` 供 C06 对原 `projection.export` 分支复验；返回 `{kind:'proved', terminalResultRef, frozenScopeDigest, match:'present'|'absent', matchedRecordRef?}` 或 `{kind:'failed',reasonCode}`，后者把无权、跨工程/空间和不存在收为同形，不输出正文/计数。C22 拥有方仅读自己的正式事实和经核验的终态，C36 adapter 仅读此公开方法；旧 C22 命令、记录和结果语义保持。
+
+**当前阻塞仍在：** C22 `readRecord` 只能按已知 ID 读取身份（`ports.ts` 的 `StandardizedRiskRecordStoreV1`、`postgres-risk-candidate-adapter.ts:442-463`）；`readResult` 只能读取已知中间结果，`MergePlanV1Schema.groups`/`AcceptanceRouteSetV1Schema.routes` 还要求非空。`business.standardized_risk_records` 只保存已接受记录（`000042_risk_candidate_finalization.ts:242-265`）；`packages/core/src/identification/candidate-finalization/service.ts:3559-3560` 在零记录/跳过时直接返回 `skipped`，故不会执行 `:3599-3605` 的 C03 事务/写入。现有公开事实没有完整运行终态/零结果标记。因此仅增加上述只读方法仍无法合法实现 `absent`，不能从 C22 私表无行推断。协调端 `msg_ca7d95d014fa` 明确不授权 C22 写路径/持久化/migration；只读方法目前无法提供正面价值，IP-08 暂不施工并保持 BLOCKED、原指标失败闭合。后续 C22 侧 drift/feature change 由协调端另行安排，本 change 不新建。
+
+### D-10. 必审资料段证明：复用 C13 现有授权读
+
+C36 `QualityRequiredSegmentProofReaderV1.readExact` 接受 `projectId,actorId,sampleId,requiredEvidenceRefs(1..16),requestedAt` 与**独立由 C06 按现有 `engineering-data.evidence-access` 分支签发**的当前授权上下文，输出 `{kind:'proved', items:[{evidenceReference,sourceVersionRef,sourceSegmentSetRef,sourceAccessGrantRef,queryResultRef}]}` 或同形安全失败。C36 service 将样例 `requiredEvidenceRefs` 最多 256 项拆成每批至多 16 项，超界失败闭合；C36 adapter 的内部 `QualityC13EvidenceReadPortV1` 只取 C13 现有 `EngineeringDataPortV1.read` 和 `PostgresEngineeringContextSourceRegistry.resolveReadQuery` 两个公开方法，不改其签名/语义。逐批核对每个返回项的资料段 ID、精确来源版本、工程/空间、grant、集合引用与 strict Schema；只在全部明列项同形且拥有方成功解析时向 core 交付收据，丢弃 `segment` 正文，不写 C36 表。C13 现有读路径负责当前授权和资料段解析；C36 同时用 C04 `verified` 核对已有内容工件，不把 C13 的成功当成 C04 工件完整性证明。`QualitySampleEvidenceV1` 增加本次请求内收据；审计链仅在全部必审资料段收据、既有 C04 工件与正式审计均成立时通过。CLI/真实测试通过原会话另签已有读分支上下文；用户没有该既有能力时该样例失败闭合，不扩角色或权限。C13 失败不区分无权与不存在，错版/撤权不复用旧收据；同一精确版本重放仍须重新解析。
+
+### D-11. 资料 grant 与来源版本映射：C09 请求侧两阶段签发
+
+C06 的 `sourceAccessGrantRefs` 指向 `source_access_grant_id/revision_id`，不能与 `EvidenceReference.sourceVersion` 直接比较。保持 C06 签发语义：C09 对 C36 `quality-evaluation` 请求先按既有工程/空间授权选中**至多 50 条**安全索引摘要，从这些摘要提取、去重至多 `50×16` 个精确 `SourceVersionRefV1`。C36 窄端口增添仅服务端可调用的 `candidateSourceVersionRefs(query)`，返回 `{rowRefs,summaryDigests,sourceVersionRefs}`，及 `queryWithSourceGrants(query,grantsBySourceVersion)`；`grantsBySourceVersion` 是请求内 `Map<精确来源版本, readonly SourceAccessGrantRefV1[]>`，不序列化到 HTTP 或 C04 报告。C09 `runBusiness` 对每个候选版本用同一会话、工程、请求 actor、空间和原 `projection.query` 分支单独向 C06 请求 `requestedSourceVersionRefs:[ref]`。每次只在 C06 返回当前单 capability 上下文、同工程/空间且携带 grant 时，建立该**唯一请求版本 → 签发 grant refs** 的请求内映射；无 grant/拒权只删除该版本的定位引用，签发暂时性失败使请求失败而不伪装为成功空证据。最终查询重新核对所选报告 ref/摘要 digest 与候选集合，发生并发改变则同形失败或重试整个请求，绝不把旧映射用于新行；返回前逐版本复验当前授权，撤权后不披露。`queryWithSourceGrants` 只据上述映射过滤摘要 `evidenceRefs`，保留原 `queryResultRef`/分页/正文边界，不能按 grant ID 猜来源版本、不能用一个版本的 grant 放行另一个版本。旧 queryType 和完整 `projection` port 优先级不变；无新增 HTTP 字段、branch、capability、角色、生产依赖或持久化。若 C09 现有签发 API 无法在同一会话完成这条内部两阶段请求，IP-10 必须 BLOCKED 并升级，不修改 C06 既有分支语义。
+
 ## Risks / Trade-offs
 
 - 当前无甲方真实脱敏样例，首轮只能验证测量方法和链路；必须保留“合成样本，待甲方复核”，不能声称真实准确率。
@@ -63,4 +81,6 @@
 
 ## Open Questions
 
-无影响实现边界的待决问题。真实甲方样例和目标硬件证据由后续交付补充，不改变本 change 的测量契约。
+IP-08 的 C22 **只读接口加法**虽获 `msg_2cbcbb1814e2` 批准，但现有持久事实没有零结果时的正式终态行，且 `msg_ca7d95d014fa` 拒绝在 C36 内增写路径/持久化/migration；读接口无从证明完整全集。不可用 `readRecord(undefined)` 或自造 C04 工件替代。IP-08 与真实 TN/覆盖保持 BLOCKED。真实甲方样例和目标硬件证据由后续交付补充，不改变本 change 的测量契约。
+
+既有 `verification.md` 还列有 C04 缺失与拒权同形失败的开放项；本次批准记录只重开上述三项。IP-09 对该错误保持失败闭合，不能以缺失推断通过；若 Finalizer 需要改变 C04 不可枚举读契约或报告处置规则，应单独升级，不在本轮替其决策。

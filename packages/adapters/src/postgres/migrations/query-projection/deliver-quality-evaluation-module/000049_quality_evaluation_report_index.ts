@@ -43,7 +43,9 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     .addColumn("dataset_version", "text", (column) => column.notNull())
     .addColumn("content_digest", "text", (column) => column.notNull())
     .addPrimaryKeyConstraint("quality_evaluation_dataset_freeze_pk", [
-      "project_id", "dataset_id", "dataset_version",
+      "project_id",
+      "dataset_id",
+      "dataset_version",
     ])
     .addCheckConstraint(
       "quality_evaluation_dataset_freeze_identity_ck",

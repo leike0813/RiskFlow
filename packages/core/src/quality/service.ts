@@ -3,9 +3,11 @@ import {
   type AuthorizationContextV1,
   type ContentArtifactRefV1,
   type QualityEvaluationSummaryV1,
+  type SourceVersionRefV1,
   type SpatialScopeRefV1,
   type WorkflowRunRefV1,
 } from "@riskflow/contracts/ports";
+import type { EvidenceReference } from "@riskflow/contracts/common";
 import { sha256CanonicalJson } from "../persistence/canonical-json.js";
 import {
   RISK_ASSESSMENT_DECISION_ARTIFACT_PURPOSE_CODE_V1,
@@ -19,6 +21,7 @@ import {
   QualityDatasetV1Schema,
   QualityEvaluationReportV1Schema,
   QualityReplayContextArtifactV1Schema,
+  QualityRequiredSegmentReceiptV1Schema,
   StandardizedRiskRecordEnvelopeSchema,
   qualityDatasetArtifactId,
   qualityFailureFrom,
@@ -29,8 +32,9 @@ import {
   type QualityEvaluationReportV1,
   type QualityFailureCodeV1,
   type QualityFailureV1,
-  type QualityRecordIdentityV1,
   type QualityReasonCodeV1,
+  type QualityRecordIdentityV1,
+  type QualityRequiredSegmentReceiptV1,
   type QualitySampleEvidenceV1,
 } from "./schema.js";
 
@@ -45,6 +49,12 @@ export const QUALITY_EVALUATION_ARTIFACT_MEDIA_TYPE_V1 = "application/json" as c
 export const QUALITY_EVALUATION_SUMMARY_MAX_BYTES_V1 = 64 * 1024;
 const QUALITY_SUMMARY_EVIDENCE_LIMIT_V1 = 16;
 
+/** D-10 必审资料段：每批至多 16 项，样例最多 256 项，超界失败闭合。 */
+export const QUALITY_REQUIRED_EVIDENCE_BATCH_SIZE_V1 = 16;
+export const QUALITY_REQUIRED_EVIDENCE_MAX_REFS_V1 = 256;
+export const QUALITY_REQUIRED_EVIDENCE_PURPOSE_CODE_V1 =
+  "quality-evaluation.required-evidence" as const;
+
 /** C04 有界读取结果：完整性/授权失败只返回安全原因码，不返回部分载荷。 */
 export type QualityArtifactReadOutcomeV1 =
   | Readonly<{ kind: "read"; value: unknown }>
@@ -55,10 +65,50 @@ export type QualityArtifactReadOutcomeV1 =
     }>;
 
 /**
+ * D-10 必审资料段证明端口：由 C36 adapter 复用 C13 现有 `engineering-data.evidence-access`
+ * 授权读实现，对一批明列引用返回同形解析收据；无权、不存在与跨空间一律同形失败。
+ */
+export type QualityRequiredSegmentProofOutcomeV1 =
+  | Readonly<{ kind: "proved"; items: readonly QualityRequiredSegmentReceiptV1[] }>
+  | Readonly<{
+      kind: "failed";
+      failureCode: QualityFailureCodeV1;
+      reasonCode: QualityReasonCodeV1;
+    }>;
+
+export interface QualityRequiredSegmentProofReaderV1 {
+  readExact(input: {
+    /** 本批查询 id；必须与 C06 签发该授权时的 invocation 一致（C13 复验绑定）。 */
+    readonly queryId: string;
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly sampleId: string;
+    readonly requiredEvidenceRefs: readonly EvidenceReference[];
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+  }): Promise<QualityRequiredSegmentProofOutcomeV1>;
+}
+
+/**
+ * D-10 请求内签发：为一次 C13 证据读批量取得当前授权上下文；返回上下文的
+ * `invocation` 必须等于 `queryId`，否则 C13 复验会拒绝。
+ */
+export interface QualityEvidenceAccessIssuerV1 {
+  issueReadAuthorization(input: {
+    readonly queryId: string;
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly spatialScopeRefs: readonly SpatialScopeRefV1[];
+    readonly sourceVersionRefs: readonly SourceVersionRefV1[];
+  }): Promise<AuthorizationContextV1>;
+}
+
+/**
  * D-03 公开窄读端口：由 C36 adapter 实现，只按显式引用有界读取并完整消费 C04 `verified`；
  * 不查询私表，也不扩大调用方已复验的工程/空间/资料范围。
  */
-export interface QualityEvaluationReadPortV1 {
+export interface QualityEvaluationReadPortV1 extends QualityRequiredSegmentProofReaderV1 {
   readVerifiedJson(input: {
     readonly artifactRef: ContentArtifactRefV1;
     readonly purposeCode: string;
@@ -122,6 +172,8 @@ export interface QualityEvaluationCommandV1 {
   readonly runRefs: readonly WorkflowRunRefV1[];
   readonly authorization: AuthorizationContextV1;
   readonly runEvidence: QualityRunEvidenceV1;
+  /** D-10：调用方按现有 `engineering-data.evidence-access` 分支签发；缺失时必审资料段失败闭合。 */
+  readonly requiredEvidenceAccess?: QualityEvidenceAccessIssuerV1;
 }
 
 export type QualityEvaluationResultV1 =
@@ -450,9 +502,83 @@ export class QualityEvaluationService {
         ...(recordIdentity === undefined ? {} : { recordIdentity }),
         ...(assessment === undefined ? {} : { assessment }),
         verifiedEvidenceRefs,
+        requiredSegmentReceipts: await this.#collectRequiredSegmentReceipts(command, sample),
       });
     }
     return evidence;
+  }
+
+  /**
+   * D-10：按样例冻结的 `requiredEvidenceRefs` 分批（每批至多 16 项）取 C13 现有授权读收据。
+   * 任何一批无权、不存在、错版、漂移或超界都返回空收据，使该样例审计链失败闭合；
+   * 交付给 core 的只有收据，资料正文留在 C13。
+   */
+  async #collectRequiredSegmentReceipts(
+    command: QualityEvaluationCommandV1,
+    sample: QualityDatasetV1["samples"][number],
+  ): Promise<readonly QualityRequiredSegmentReceiptV1[]> {
+    const required = sample.requiredEvidenceRefs;
+    const issuer = command.requiredEvidenceAccess;
+    if (issuer === undefined || required.length > QUALITY_REQUIRED_EVIDENCE_MAX_REFS_V1) {
+      return [];
+    }
+    const receipts: QualityRequiredSegmentReceiptV1[] = [];
+    const batchCount = Math.ceil(required.length / QUALITY_REQUIRED_EVIDENCE_BATCH_SIZE_V1);
+    for (let batchIndex = 0; batchIndex < batchCount; batchIndex += 1) {
+      const batch = required.slice(
+        batchIndex * QUALITY_REQUIRED_EVIDENCE_BATCH_SIZE_V1,
+        (batchIndex + 1) * QUALITY_REQUIRED_EVIDENCE_BATCH_SIZE_V1,
+      );
+      const queryId = `${command.commandId}:${sample.sampleId}:required-evidence:${batchIndex}`;
+      try {
+        const authorization = await issuer.issueReadAuthorization({
+          queryId,
+          projectId: command.projectId,
+          actorId: command.actorId,
+          requestedAt: command.requestedAt,
+          spatialScopeRefs: [sample.spatialScopeRef],
+          sourceVersionRefs: [
+            ...new Map(
+              batch.map((reference) => [
+                `${reference.sourceVersion.entityId}\u0000${reference.sourceVersion.versionId}`,
+                {
+                  kind: "source-version" as const,
+                  reference: {
+                    entityId: reference.sourceVersion.entityId,
+                    versionId: reference.sourceVersion.versionId,
+                  },
+                },
+              ]),
+            ).values(),
+          ],
+        });
+        if (
+          authorization.projectId !== command.projectId ||
+          authorization.actorId !== command.actorId
+        ) {
+          return [];
+        }
+        const outcome = await this.#read.readExact({
+          queryId,
+          projectId: command.projectId,
+          actorId: command.actorId,
+          sampleId: sample.sampleId,
+          requiredEvidenceRefs: batch,
+          requestedAt: command.requestedAt,
+          authorization,
+        });
+        if (outcome.kind !== "proved") return [];
+        // 拥有方返回项必须逐项通过 strict Schema，才允许进入本次请求内的收据集合。
+        for (const item of outcome.items) {
+          const parsed = QualityRequiredSegmentReceiptV1Schema.safeParse(item);
+          if (!parsed.success) return [];
+          receipts.push(parsed.data);
+        }
+      } catch {
+        return [];
+      }
+    }
+    return receipts;
   }
 }
 

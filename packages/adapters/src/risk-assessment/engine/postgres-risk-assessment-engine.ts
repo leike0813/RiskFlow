@@ -74,7 +74,9 @@ import type {
   AssessmentInputSnapshotV1,
   AssessmentPreparationSnapshotV1,
 } from "@riskflow/contracts/workflows";
+import { RiskAssessmentRecordSchema } from "@riskflow/contracts/records";
 import {
+  ActualAssessmentProofQueryV1Schema,
   AssessmentEvaluationCommandV1Schema,
   AssessmentEvaluationResultV1Schema,
   AssessmentPreparationCommandV1Schema,
@@ -84,6 +86,9 @@ import {
   KnowledgeReleaseRefV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
   ModuleErrorV1Schema,
+  type ActualAssessmentProofPortV1,
+  type ActualAssessmentProofQueryV1,
+  type ActualAssessmentProofResultV1,
   type AssessmentEvaluationCommandV1,
   type AssessmentEvaluationResultV1,
   type AssessmentPreparationCommandV1,
@@ -404,6 +409,27 @@ const branchForCommandKind = (kind: AssessmentPreparationCommandV1["kind"]): Mod
       ? "risk-assessment.reassessment"
       : "risk-assessment.historical-backfill";
 
+/**
+ * 准备快照声明的读取范围：空间引用与证据资料版本。
+ * 下游窄读与只读证明都用它声明将要读取的范围，再由 C06 复验是否仍在授权内。
+ */
+const declaredPreparationRefs = (
+  preparation: AssessmentPreparationSnapshotV1,
+): {
+  readonly spatialScopeRef: SpatialScopeRefV1;
+  readonly sourceVersionRefs: readonly SourceVersionRefV1[];
+} => ({
+  spatialScopeRef: preparation.spatialScopeRef,
+  sourceVersionRefs: [
+    ...new Map(
+      preparation.sourceEvidenceReferences.map((evidence) => [
+        versionKey(evidence.sourceVersion),
+        { kind: "source-version" as const, reference: evidence.sourceVersion },
+      ]),
+    ).values(),
+  ].sort((left, right) => (versionKey(left.reference) < versionKey(right.reference) ? -1 : 1)),
+});
+
 type PreparationReadV1 = Awaited<
   ReturnType<AssessmentPreparationContextReaderV1["readAssessmentPreparationContext"]>
 >;
@@ -462,7 +488,7 @@ export interface PostgresRiskAssessmentEngineOptionsV1 {
  * 并在单事务内保存取值集、决策链接、正式记录、审计、回执与 `assessment.recorded.v1`。
  */
 export class PostgresRiskAssessmentEngine
-  implements RiskAssessmentPortV1, AssessmentInputSnapshotReaderV1
+  implements RiskAssessmentPortV1, AssessmentInputSnapshotReaderV1, ActualAssessmentProofPortV1
 {
   readonly #db: Kysely<RiskAssessmentDatabase>;
   readonly #transactionUnit: TransactionUnitV1;
@@ -611,6 +637,147 @@ export class PostgresRiskAssessmentEngine
       };
     } catch (error: unknown) {
       return { kind: "failed", error: failureToModuleError(error, input.requestId) };
+    }
+  }
+
+  /**
+   * C25 加法式只读证明：只按精确评估记录引用返回最小投影，供 C41 反馈组合逐项对账。
+   * 披露前复验当前主体、工程、空间与资料范围；缺失与越权同型失败，正文或索引不一致以
+   * 终止失败闭合。不重算评估、不返回正文/列表，也不写任何事实。
+   */
+  async verifyActualAssessment(
+    query: ActualAssessmentProofQueryV1,
+  ): Promise<ActualAssessmentProofResultV1> {
+    const parsed = ActualAssessmentProofQueryV1Schema.safeParse(query);
+    if (!parsed.success) {
+      const candidate = query as { readonly queryId?: unknown } | undefined;
+      return {
+        kind: "failed",
+        error: moduleError(
+          "UNSUPPORTED_CONTRACT",
+          typeof candidate?.queryId === "string" ? candidate.queryId : "",
+        ),
+      };
+    }
+    const valid = parsed.data;
+    const queryId = valid.queryId;
+    const command = {
+      commandId: queryId,
+      projectId: valid.projectId,
+      actorId: valid.actorId,
+      authorization: valid.authorization,
+    };
+    try {
+      await this.#verifyCommand(command, "risk-assessment.read-input-snapshot");
+      const row = await this.#readRecordRow(valid.projectId, valid.payload.riskAssessmentRecordRef);
+      if (row === undefined) {
+        // 缺失与越权同型失败：不枚举目标是否存在。
+        throw moduleError("AUTHORIZATION_DENIED", queryId);
+      }
+      // 完整性核对：正文摘要、索引身份与公共记录 Schema 必须互证，任一处不符即终止失败。
+      const record = RiskAssessmentRecordSchema.safeParse(row.record_payload);
+      if (!record.success || row.content_digest !== sha256CanonicalJson(row.record_payload)) {
+        throw moduleError("TERMINAL_FAILURE", queryId);
+      }
+      const payload = record.data;
+      const standardized = payload.kind === "standardized-risk-record";
+      const riskInputEntityId = standardized ? payload.riskRecordId : payload.externalRiskEventId;
+      if (
+        row.record_id !== payload.assessmentRecordId ||
+        row.risk_input_kind !== payload.kind ||
+        (standardized ? row.risk_record_id : row.external_risk_event_id) !== riskInputEntityId ||
+        (standardized ? row.external_risk_event_id : row.risk_record_id) !== null
+      ) {
+        throw moduleError("TERMINAL_FAILURE", queryId);
+      }
+      const inputSnapshotRow = await this.#db
+        .selectFrom("business.assessment_input_snapshots")
+        .select(["preparation_snapshot_ref", "basis_release_set_ref", "snapshot_payload"])
+        .where("project_id", "=", valid.projectId)
+        .where("input_snapshot_id", "=", row.input_snapshot_id)
+        .where("version_id", "=", row.input_snapshot_version_id)
+        .executeTakeFirst();
+      const indexedSnapshotRef = AssessmentInputSnapshotRefV1Schema.safeParse(
+        row.input_snapshot_ref,
+      );
+      const inputSnapshot = AssessmentInputSnapshotV1Schema.safeParse(
+        inputSnapshotRow?.snapshot_payload,
+      );
+      if (
+        inputSnapshotRow === undefined ||
+        !indexedSnapshotRef.success ||
+        indexedSnapshotRef.data.reference.entityId !== row.input_snapshot_id ||
+        indexedSnapshotRef.data.reference.versionId !== row.input_snapshot_version_id ||
+        !inputSnapshot.success
+      ) {
+        throw moduleError("TERMINAL_FAILURE", queryId);
+      }
+      const inputSnapshotValue = inputSnapshot.data;
+      const rowPreparationRef = AssessmentPreparationSnapshotRefV1Schema.safeParse(
+        inputSnapshotRow.preparation_snapshot_ref,
+      );
+      if (
+        !rowPreparationRef.success ||
+        refKey(rowPreparationRef.data) !== refKey(inputSnapshotValue.preparationSnapshotRef)
+      ) {
+        throw moduleError("TERMINAL_FAILURE", queryId);
+      }
+      const basisRef = this.#parseBasisRef(inputSnapshotRow.basis_release_set_ref, queryId);
+      const preparationRow = await this.#db
+        .selectFrom("business.assessment_preparation_snapshots")
+        .select(["snapshot_payload"])
+        .where("project_id", "=", valid.projectId)
+        .where("snapshot_id", "=", inputSnapshotValue.preparationSnapshotRef.reference.entityId)
+        .where("version_id", "=", inputSnapshotValue.preparationSnapshotRef.reference.versionId)
+        .executeTakeFirst();
+      const preparation = AssessmentPreparationSnapshotV1Schema.safeParse(
+        preparationRow?.snapshot_payload,
+      );
+      if (preparationRow === undefined || !preparation.success) {
+        throw moduleError("TERMINAL_FAILURE", queryId);
+      }
+      const preparationValue = preparation.data;
+      if (
+        preparationValue.riskInput.kind !== payload.kind ||
+        preparationValue.riskInput.reference.entityId !== riskInputEntityId
+      ) {
+        throw moduleError("TERMINAL_FAILURE", queryId);
+      }
+      // 披露前按记录冻结的空间与来源复验：跨工程或跨空间一律拒绝。
+      const declared = declaredPreparationRefs(preparationValue);
+      const verified = await this.#verifyCommand(command, "risk-assessment.read-input-snapshot", {
+        spatialScopeRefs: [declared.spatialScopeRef],
+        sourceVersionRefs: declared.sourceVersionRefs,
+      });
+      return {
+        kind: "succeeded",
+        result: {
+          kind: "established",
+          projectId: valid.projectId,
+          riskAssessmentRecordRef: valid.payload.riskAssessmentRecordRef,
+          riskInputRef: preparationValue.riskInput,
+          spatialScopeRef: preparationValue.spatialScopeRef,
+          assessmentInputSnapshotRef: {
+            kind: "assessment-input-snapshot",
+            reference: {
+              entityId: row.input_snapshot_id,
+              versionId: row.input_snapshot_version_id,
+            },
+          },
+          assessmentBasisReleaseSetRef: basisRef,
+          monitoringSnapshotRefs: [...(preparationValue.monitoringSnapshotRefs ?? [])],
+          deviationPolicyRef: inputSnapshotValue.deviationPolicyRef,
+          calibrationAgentPolicyRef: inputSnapshotValue.calibrationAgentPolicyRef,
+          assessmentRunRef: this.#assessmentRunRef(verified, preparationValue, queryId),
+          auditTrailRef: {
+            kind: "audit-trail",
+            reference: { entityId: row.audit_entry_id, versionId: "1" },
+          },
+          recordedAt: asIso(row.recorded_at),
+        },
+      } satisfies ActualAssessmentProofResultV1;
+    } catch (error: unknown) {
+      return { kind: "failed", error: failureToModuleError(error, queryId) };
     }
   }
 
@@ -825,17 +992,7 @@ export class PostgresRiskAssessmentEngine
       });
     }
     const preparation = AssessmentPreparationSnapshotV1Schema.parse(row.snapshot_payload);
-    return {
-      spatialScopeRef: preparation.spatialScopeRef,
-      sourceVersionRefs: [
-        ...new Map(
-          preparation.sourceEvidenceReferences.map((evidence) => [
-            versionKey(evidence.sourceVersion),
-            { kind: "source-version" as const, reference: evidence.sourceVersion },
-          ]),
-        ).values(),
-      ].sort((left, right) => (versionKey(left.reference) < versionKey(right.reference) ? -1 : 1)),
-    };
+    return declaredPreparationRefs(preparation);
   }
 
   async #loadRiskFacts(input: {

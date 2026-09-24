@@ -544,18 +544,24 @@ export const evaluateWorkflowEntryGate = (payload: WorkflowStartPayloadV1): Work
       if (payload.assessmentBasisReleaseSetRef === undefined) {
         return { kind: "incomplete", detailCode: "assessment-basis-missing" };
       }
+      // 分段入口不重新准备评估：显式给出的冻结评估依据（C25 输入快照）必须原样进入子运行冻结输入，
+      // 使 A0/A2 按该精确版本取用，而不是回退到“最新”或现场重算（design D-04）。
+      const frozenAssessmentBasisRefs: readonly ContractReferenceV1[] =
+        payload.frozenAssessmentBasisRef === undefined ? [] : [payload.frozenAssessmentBasisRef];
       const frozenRefs: ContractReferenceV1[] =
         payload.entryMode === "forecast-response"
           ? [
               payload.adoptedRecommendationRef,
               payload.preActionMonitoringSnapshotRef,
               payload.assessmentBasisReleaseSetRef,
+              ...frozenAssessmentBasisRefs,
             ]
           : [
               payload.executionRecordRef,
               payload.feedbackRef,
               payload.assessmentBasisReleaseSetRef,
               ...(payload.forecastRef === undefined ? [] : [payload.forecastRef]),
+              ...frozenAssessmentBasisRefs,
             ];
       return {
         kind: "ready",

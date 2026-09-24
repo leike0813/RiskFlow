@@ -34,6 +34,7 @@ import * as formalZeroResultMigration from "../../src/postgres/migrations/risk-i
 import * as assessmentRiskflowGraphsMigration from "../../src/postgres/migrations/workflow/deliver-assessment-and-riskflow-graphs/000050_assessment_riskflow_graphs.js";
 import * as graphTraceReportProjectionsMigration from "../../src/postgres/migrations/workflow/deliver-graph-trace-and-report-projections/000051_graph_trace_report_projections.js";
 import * as qualityEvaluationReportIndexMigration from "../../src/postgres/migrations/query-projection/deliver-quality-evaluation-module/000052_quality_evaluation_report_index.js";
+import * as humanDecisionFeedbackMigration from "../../src/postgres/migrations/warning-response/wire-human-decision-and-feedback-commands/000053_human_decision_feedback.js";
 
 export interface AuthPostgresFixture extends PostgresTestFixture {
   runMigrations(): Promise<void>;
@@ -188,6 +189,13 @@ export const startAuthPostgresFixture = async (): Promise<AuthPostgresFixture> =
         "query-projection/deliver-quality-evaluation-module/000052_quality_evaluation_report_index.ts",
       ),
       qualityEvaluationReportIndexMigration,
+    ],
+    [
+      resolve(
+        base.productionMigrationRoot,
+        "warning-response/wire-human-decision-and-feedback-commands/000053_human_decision_feedback.ts",
+      ),
+      humanDecisionFeedbackMigration,
     ],
     [
       resolve(

@@ -29,6 +29,7 @@ import {
   type ContentArtifactRefV1,
   type ContractReferenceV1,
   type IdentificationPreparationSnapshotRefV1,
+  type ResponseRecommendationRefV1,
   type RiskAssessmentRecordRefV1,
   type RiskFlowRunResultRefV1,
   type RouteDecisionRefV1,
@@ -105,6 +106,9 @@ export const RISK_FLOW_ROUTE_KIND_SUB_RUN_V1 = "assessment-sub-run" as const;
 export const RISK_FLOW_ROUTE_KIND_NO_QUALIFIED_RISK_V1 = "no-qualified-risk" as const;
 export const RISK_FLOW_ROUTE_KIND_PAIRING_MISSING_V1 = "spatial-pairing-missing" as const;
 export const RISK_FLOW_ROUTE_KIND_CANCELLED_V1 = "cancelled" as const;
+// 人工采纳决定进入父运行冻结事实的路由原因码（design D2）：与 `ResumeCauseV1` 的
+// `human-decision-committed` 成对，取值必须一致，评估子图据此取精确采纳决定引用。
+export const RISK_FLOW_ROUTE_KIND_HUMAN_DECISION_COMMITTED_V1 = "human-decision-committed" as const;
 
 /** 逐空间配对上下文：与公共入口载荷同形，入口身份一致性由门禁证明（design D-01）。 */
 export type RiskFlowAssessmentPairingV1 = WorkflowAssessmentContextV1;
@@ -188,6 +192,14 @@ export interface RiskFlowGraphRunContextV1 {
   };
   /** 本次恢复带来的识别准备快照引用（`engineering.inputs-ready.v1`）。 */
   readonly identificationPreparationSnapshotRef?: IdentificationPreparationSnapshotRefV1;
+  /**
+   * 人工决定等待门（design D2）：只在以 `waitForDecision` 创建运行的**那一次**命令上出现。
+   * 恢复路径由已登记行重建运行上下文，因此不再携带该字段——等待意图只在创建时生效，恢复即继续推进。
+   */
+  readonly humanDecisionGate?: {
+    readonly responseRecommendationRef: ResponseRecommendationRefV1;
+    readonly spatialScopeRef: SpatialScopeRefV1;
+  };
 }
 
 /** 恢复值：只携带稳定引用与原因，不携带自由正文（`wait` 节点消费）。 */
@@ -209,7 +221,12 @@ export type RiskFlowResumeValueV1 =
       readonly reasonCode: string;
       readonly relatedRunRef?: WorkflowRunRefV1;
     }
-  | { readonly kind: "transient-recovered" };
+  | { readonly kind: "transient-recovered" }
+  /**
+   * 人工采纳决定已成立（design D2）：只携带精确决定路由引用；运行、建议与空间必须由 C41 的
+   * 精确采纳证明先行核对，父图不据引用自行推进等待态运行。
+   */
+  | { readonly kind: "human-decision-committed"; readonly routeDecisionRef: RouteDecisionRefV1 };
 
 /** 首次运行输入：通道正文就是完整公开状态。 */
 export interface RiskFlowGraphInputV1 {
@@ -1689,6 +1706,25 @@ type StageHandlerV1 = (input: {
   readonly state: RiskFlowGraphStateV1;
 }) => Promise<RiskFlowGraphStateV1>;
 
+/** 逐空间入口快照：每份冻结输入只含本空间的空间/适用性/监测引用（design D-01）。 */
+const entrySnapshotsFor = (
+  run: RiskFlowGraphRunContextV1,
+): readonly {
+  readonly entryIdentity: VersionReference;
+  readonly frozenRefs: readonly ContractReferenceV1[];
+}[] =>
+  run.pairing.map((pairing) => {
+    const frozenRefs = pairingFrozenRefsV1({ frozenRefs: run.frozenRefs, pairing });
+    return {
+      entryIdentity: workflowEntryIdentityFor({
+        entryMode: run.entryMode,
+        projectId: run.projectId,
+        frozenRefs,
+      }),
+      frozenRefs,
+    };
+  });
+
 /** `preparing`：登记逐空间入口快照与入口路由，再进入识别阶段（design D-01/D-05）。 */
 const stagePrepare: StageHandlerV1 = async ({ ports, run }) => {
   const cursor = await readRiskFlowCursor({ ports, run });
@@ -1709,6 +1745,33 @@ const stagePrepare: StageHandlerV1 = async ({ ports, run }) => {
     stage: "preparing",
     evidence: { entryRouteRef },
   });
+  // 人工决定等待门（design D2）：人工采纳事实成立前只登记真实父运行、入口路由、阶段结果与等待行，
+  // 不启动评估子图、不产生任何预测；等待引用自带精确建议与已授权空间，恢复时按它逐项复核。
+  if (run.humanDecisionGate !== undefined) {
+    const waiting: Extract<WaitingRefV1, { readonly kind: "human-decision" }> = {
+      kind: "human-decision",
+      routeDecisionRef: entryRouteRef,
+      responseRecommendationRef: run.humanDecisionGate.responseRecommendationRef,
+      spatialScopeRef: run.humanDecisionGate.spatialScopeRef,
+    };
+    return await advance({
+      ports,
+      run,
+      cursor,
+      stage: "preparing",
+      // 游标阶段与正常路径一致地指向“下一个要执行的阶段”：恢复后直接进入评估节点，
+      // 不重跑 `preparing`（同一运行动作身份不可携带不同载荷重复登记，design D-05/D-08）。
+      nextStage: "assessment",
+      status: "waiting",
+      actionSuffix: "prepare",
+      commandKind: "risk-flow-graph.prepare",
+      entrySnapshots: entrySnapshotsFor(run),
+      routeDecisions: [{ ref: entryRouteRef, routeKind: RISK_FLOW_ROUTE_KIND_ENTRY_ACCEPTED_V1 }],
+      stageResults: [preparingStageResult],
+      waitings: [waiting],
+      statePatch: { lastRouteDecisionRef: entryRouteRef, lastStageResultRef: preparingStageResult },
+    });
+  }
   return await advance({
     ports,
     run,
@@ -1719,17 +1782,7 @@ const stagePrepare: StageHandlerV1 = async ({ ports, run }) => {
     status: "running",
     actionSuffix: "prepare",
     commandKind: "risk-flow-graph.prepare",
-    entrySnapshots: run.pairing.map((pairing) => {
-      const frozenRefs = pairingFrozenRefsV1({ frozenRefs: run.frozenRefs, pairing });
-      return {
-        entryIdentity: workflowEntryIdentityFor({
-          entryMode: run.entryMode,
-          projectId: run.projectId,
-          frozenRefs,
-        }),
-        frozenRefs,
-      };
-    }),
+    entrySnapshots: entrySnapshotsFor(run),
     routeDecisions: [{ ref: entryRouteRef, routeKind: RISK_FLOW_ROUTE_KIND_ENTRY_ACCEPTED_V1 }],
     stageResults: [preparingStageResult],
     links: [

@@ -14,15 +14,31 @@ import type {
   ContentArtifactRefV1,
   ModuleBranchV1,
   ModuleCapabilityV1,
+  ModuleErrorV1,
+  ResponseWorkflowBindingProofPortV1,
+  ResponseWorkflowBindingProofQueryV1,
+  ResponseWorkflowBindingProofResultV1,
+  WorkflowRunCompletionProofPortV1,
+  WorkflowRunCompletionProofQueryV1,
+  WorkflowRunCompletionProofResultV1,
+  WaitingRefV1,
 } from "@riskflow/contracts/ports";
-import { AuthorizationContextV1Schema } from "@riskflow/contracts/ports";
-import type { LocalIdentityAccessV1 } from "@riskflow/core/access";
+import {
+  AuthorizationContextV1Schema,
+  ModuleErrorV1Schema,
+  ResponseWorkflowBindingProofQueryV1Schema,
+  ResponseWorkflowBindingProofResultV1Schema,
+  WorkflowRunCompletionProofQueryV1Schema,
+  WorkflowRunCompletionProofResultV1Schema,
+} from "@riskflow/contracts/ports";
+import { ACCESS_POLICY_REF_V1, type LocalIdentityAccessV1 } from "@riskflow/core/access";
 import {
   ArtifactPutCommandV1Schema,
   ArtifactReadRequestV1Schema,
   type ArtifactStoreV1,
 } from "@riskflow/core/artifacts";
 import {
+  sha256CanonicalJson,
   type JsonValue,
   type TransactionContextV1,
   type TransactionUnitV1,
@@ -358,7 +374,67 @@ export interface PostgresWorkflowAdapterOptionsV1 {
 export interface PostgresWorkflowAdapterV1 {
   readonly registrationStore: WorkflowGraphRegistrationStoreV1;
   readonly bodies: WorkflowGraphBodyPortV1;
+  /** C30 只读绑定证明（design D5）：按精确建议与运行返回已登记路由/运行/冻结事实，不写任何事实。 */
+  readonly bindingProof: ResponseWorkflowBindingProofPortV1;
+  readonly runCompletionProof: WorkflowRunCompletionProofPortV1;
 }
+
+/** 入口路由原因码：与运行图登记值一致；适配器只读该值，不解释其它原因码。 */
+const ENTRY_ROUTE_KIND_V1 = "entry-accepted" as const;
+
+const PROOF_STAGE_CODE_V1 = "workflow.binding-proof";
+
+/** 证明失败：只给稳定类型化错误，不含正文、latest 或目标存在性。 */
+const bindingProofError = (input: {
+  readonly code: "AUTHORIZATION_DENIED" | "TERMINAL_FAILURE" | "UNSUPPORTED_CONTRACT";
+  readonly causalRunId: string;
+  readonly occurredAt: string;
+  readonly requiredCapability: ModuleCapabilityV1;
+  readonly detailCode: string;
+  readonly stageCode?: string;
+}): ModuleErrorV1 => {
+  const common = {
+    stageCode: input.stageCode ?? PROOF_STAGE_CODE_V1,
+    occurredAt: input.occurredAt,
+    causalRunId: input.causalRunId,
+  };
+  switch (input.code) {
+    case "AUTHORIZATION_DENIED":
+      return ModuleErrorV1Schema.parse({
+        ...common,
+        code: input.code,
+        category: "authorization",
+        retryable: false,
+        requiredCapability: input.requiredCapability,
+        authorizationPolicyRef: ACCESS_POLICY_REF_V1,
+      });
+    case "TERMINAL_FAILURE":
+      return ModuleErrorV1Schema.parse({
+        ...common,
+        code: input.code,
+        category: "technical",
+        retryable: false,
+        diagnosticRef: {
+          kind: "diagnostic-artifact",
+          reference: {
+            entityId: `workflow-binding-proof:${input.detailCode}`,
+            versionId: sha256CanonicalJson({
+              detailCode: input.detailCode,
+              runId: input.causalRunId,
+            }),
+          },
+        },
+      });
+    default:
+      return ModuleErrorV1Schema.parse({
+        ...common,
+        code: input.code,
+        category: "technical",
+        retryable: false,
+        schemaVersion: "1",
+      });
+  }
+};
 
 class WorkflowGraphPersistence {
   readonly #db: WorkflowGraphQueryExecutorV1;
@@ -638,6 +714,42 @@ class WorkflowGraphPersistence {
       }
     | undefined
   > {
+    const verified = await this.verifyAuthorization({
+      authorization: input.authorization,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      invocationId: workflowGraphReadInvocationIdV1({
+        operation: "run-state",
+        projectId: input.projectId,
+        targetId: input.runId,
+      }),
+      requestedAt: input.requestedAt,
+    });
+    if (verified === undefined) return undefined;
+    return await this.#latestRunStateWith({
+      projectId: input.projectId,
+      runId: input.runId,
+      requestedAt: input.requestedAt,
+      verified,
+    });
+  }
+
+  /**
+   * 已复验上下文的运行状态窄读：C05 要求一个授权上下文只对应一个 `invocation_id`，因此证明类
+   * 调用方只复验一次，这里复用同一次复验结果，不再派生第二个复验身份。
+   */
+  async #latestRunStateWith(input: {
+    readonly projectId: string;
+    readonly runId: string;
+    readonly requestedAt: string;
+    readonly verified: AuthorizationContextV1;
+  }): Promise<
+    | {
+        readonly row: WorkflowGraphResultRowV1 & { readonly resultKind: "run-state" };
+        readonly state: WorkflowGraphRunStateV1;
+      }
+    | undefined
+  > {
     const row = await this.#db
       .selectFrom(RESULTS_TABLE)
       .selectAll()
@@ -653,25 +765,15 @@ class WorkflowGraphPersistence {
     if (parsedRow.resultKind !== "run-state" || parsedRow.artifactRef === undefined) {
       return undefined;
     }
-    const verified = await this.verifyAuthorization({
-      authorization: input.authorization,
-      projectId: input.projectId,
-      actorId: input.actorId,
-      invocationId: workflowGraphReadInvocationIdV1({
-        operation: "run-state",
-        projectId: input.projectId,
-        targetId: input.runId,
-      }),
-      requestedAt: input.requestedAt,
-    });
-    if (verified === undefined) return undefined;
-    if (parsedRow.authorizationScopeDigest !== authorizationScopeDigest(verified)) return undefined;
+    if (parsedRow.authorizationScopeDigest !== authorizationScopeDigest(input.verified)) {
+      return undefined;
+    }
     const body = await this.#openBody({
       projectId: input.projectId,
       artifactRef: parsedRow.artifactRef,
-      actorId: verified.actorId,
+      actorId: input.verified.actorId,
       requestedAt: input.requestedAt,
-      authorization: verified,
+      authorization: input.verified,
     });
     if (body === undefined || body.bodyKind !== "run-state") return undefined;
     const state = WorkflowGraphRunStateV1Schema.safeParse(body.runState);
@@ -694,6 +796,272 @@ class WorkflowGraphPersistence {
       .limit(input.limit ?? DEFAULT_ROW_LIMIT_V1)
       .execute();
     return rows.map((row) => workflowGraphLinkFromDb(row));
+  }
+
+  /**
+   * C30 只读绑定证明（design D5）：先按当前授权复验工程/主体/能力与登记行的授权范围摘要，
+   * 再按精确运行与建议读取本运行的人工决定等待行、入口路由行与最新运行状态，返回最小绑定事实。
+   * 缺失与越权同型失败（`AUTHORIZATION_DENIED`），登记行存在但正文/引用不一致按 `TERMINAL_FAILURE`
+   * 稳定收口；不返回正文、latest 或列表，也不写任何 C30/C28 事实。
+   */
+  async verifyResponseWorkflowBinding(
+    query: ResponseWorkflowBindingProofQueryV1,
+  ): Promise<ResponseWorkflowBindingProofResultV1> {
+    const occurredAt = this.#now().toISOString();
+    const parsed = ResponseWorkflowBindingProofQueryV1Schema.safeParse(query);
+    if (!parsed.success) {
+      return {
+        kind: "failed",
+        error: bindingProofError({
+          code: "UNSUPPORTED_CONTRACT",
+          causalRunId: "workflow-binding-proof",
+          occurredAt,
+          requiredCapability: "workflow.start",
+          detailCode: "query-invalid",
+        }),
+      };
+    }
+    const valid = parsed.data;
+    const runId = valid.payload.workflowRunRef.reference.entityId;
+    const denied = (detailCode: string, capability: ModuleCapabilityV1) => ({
+      kind: "failed" as const,
+      error: bindingProofError({
+        code: "AUTHORIZATION_DENIED",
+        causalRunId: runId,
+        occurredAt,
+        requiredCapability: capability,
+        detailCode,
+      }),
+    });
+    try {
+      // C05 要求一个授权上下文只对应一个 `invocation_id`：C41 以 `queryId` 签发该上下文，
+      // 因此整条证明只按 `queryId` 复验一次，内部窄读复用同一复验结果（不派生第二个身份）。
+      const verified = await this.verifyAuthorization({
+        authorization: valid.authorization,
+        projectId: valid.projectId,
+        actorId: valid.actorId,
+        invocationId: valid.queryId,
+        requestedAt: valid.requestedAt,
+      });
+      const requiredCapability = verified?.grantedCapabilities[0] ?? "workflow.start";
+      if (verified === undefined) return denied("binding-proof-denied", requiredCapability);
+
+      // 只承认本运行、且授权范围摘要与当前复验一致的登记行：越权与事实缺失对调用方同形。
+      const scopeDigest = authorizationScopeDigest(verified);
+      const scoped = (await this.listRunRows({ projectId: valid.projectId, runId })).filter(
+        (row) => row.authorizationScopeDigest === scopeDigest,
+      );
+      const humanDecisionWaitings = scoped.filter(
+        (row) => row.resultKind === "waiting" && row.waitingRef?.kind === "human-decision",
+      );
+      const waiting =
+        humanDecisionWaitings.length === 1
+          ? (humanDecisionWaitings[0]?.waitingRef as
+              Extract<WaitingRefV1, { readonly kind: "human-decision" }> | undefined)
+          : undefined;
+      // 入口路由行取本运行持久化顺序中的第一条 `entry-accepted`：它是创建时登记的入口事实。
+      const entryRoute = scoped
+        .filter(
+          (row) => row.resultKind === "route-decision" && row.routeKind === ENTRY_ROUTE_KIND_V1,
+        )
+        .at(0);
+      const recommendationMatches =
+        waiting !== undefined &&
+        waiting.responseRecommendationRef.reference.entityId ===
+          valid.payload.responseRecommendationRef.reference.entityId &&
+        waiting.responseRecommendationRef.reference.versionId ===
+          valid.payload.responseRecommendationRef.reference.versionId;
+      if (
+        waiting === undefined ||
+        entryRoute === undefined ||
+        scoped.every((row) => row.resultKind !== "run-state") ||
+        !recommendationMatches
+      ) {
+        return denied("binding-not-established", requiredCapability);
+      }
+
+      const latest = await this.#latestRunStateWith({
+        projectId: valid.projectId,
+        runId,
+        requestedAt: valid.requestedAt,
+        verified,
+      });
+      // 等待行与运行状态行同事务写入：运行状态行在而正文不可读，或正文自称的工程/运行/版本与
+      // 登记行不符，只能是持久事实损坏——稳定类型化失败，绝不返回部分或外来绑定。
+      if (
+        latest === undefined ||
+        latest.state.projectId !== valid.projectId ||
+        latest.state.runId !== runId ||
+        latest.state.runVersionId !== latest.row.resultVersionId
+      ) {
+        return {
+          kind: "failed",
+          error: bindingProofError({
+            code: "TERMINAL_FAILURE",
+            causalRunId: runId,
+            occurredAt,
+            requiredCapability,
+            detailCode: "run-state-unreadable",
+          }),
+        };
+      }
+      // 冻结引用并集按稳定键去重后排序取摘要（`domain-event` 引用没有 `reference`，按事件身份取值）。
+      const frozenKeys = new Set<string>();
+      for (const row of scoped) {
+        for (const ref of row.frozenRefs) {
+          frozenKeys.add(
+            "reference" in ref
+              ? `${ref.kind}/${ref.reference.entityId}/${ref.reference.versionId}`
+              : `${ref.kind}/${ref.eventId}/${ref.eventVersion}`,
+          );
+        }
+      }
+      const frozenDigest = sha256CanonicalJson([...frozenKeys].sort());
+      return ResponseWorkflowBindingProofResultV1Schema.parse({
+        kind: "succeeded",
+        result: {
+          kind: "bound",
+          projectId: valid.projectId,
+          responseRecommendationRef: waiting.responseRecommendationRef,
+          spatialScopeRef: waiting.spatialScopeRef,
+          routeDecisionRef: waiting.routeDecisionRef,
+          workflowRunRef: valid.payload.workflowRunRef,
+          runStatus: latest.state.status,
+          frozenDigest,
+          auditTrailRef: {
+            kind: "audit-trail",
+            reference: { entityId: entryRoute.auditEntryId, versionId: "v1" },
+          },
+        },
+      });
+    } catch {
+      // 登记行/正文损坏或无法按精确引用解析：稳定类型化失败，绝不返回部分绑定。
+      return {
+        kind: "failed",
+        error: bindingProofError({
+          code: "TERMINAL_FAILURE",
+          causalRunId: runId,
+          occurredAt,
+          requiredCapability: "workflow.start",
+          detailCode: "binding-facts-inconsistent",
+        }),
+      };
+    }
+  }
+
+  /** 精确子运行与评估记录必须同时出现在已完成的 C30 持久运行状态中。 */
+  async verifyWorkflowRunCompletion(
+    query: WorkflowRunCompletionProofQueryV1,
+  ): Promise<WorkflowRunCompletionProofResultV1> {
+    const occurredAt = this.#now().toISOString();
+    const parsed = WorkflowRunCompletionProofQueryV1Schema.safeParse(query);
+    const runId = parsed.success
+      ? parsed.data.payload.workflowRunRef.reference.entityId
+      : "workflow-run";
+    const failed = (
+      code: "AUTHORIZATION_DENIED" | "TERMINAL_FAILURE" | "UNSUPPORTED_CONTRACT",
+      detailCode: string,
+    ) => ({
+      kind: "failed" as const,
+      error: bindingProofError({
+        code,
+        causalRunId: runId,
+        occurredAt,
+        requiredCapability: "workflow.start",
+        detailCode,
+        stageCode: "workflow.run-completion-proof",
+      }),
+    });
+    if (!parsed.success) return failed("UNSUPPORTED_CONTRACT", "query-invalid");
+    const valid = parsed.data;
+    try {
+      const verified = await this.verifyAuthorization({
+        authorization: valid.authorization,
+        projectId: valid.projectId,
+        actorId: valid.actorId,
+        invocationId: valid.queryId,
+        requestedAt: valid.requestedAt,
+      });
+      if (verified === undefined) return failed("AUTHORIZATION_DENIED", "completion-proof-denied");
+      const latest = await this.#latestRunStateWith({
+        projectId: valid.projectId,
+        runId,
+        requestedAt: valid.requestedAt,
+        verified,
+      });
+      if (latest === undefined) return failed("AUTHORIZATION_DENIED", "completion-not-established");
+      const { row, state } = latest;
+      if (
+        state.projectId !== valid.projectId ||
+        state.runId !== runId ||
+        state.runVersionId !== row.resultVersionId
+      )
+        return failed("TERMINAL_FAILURE", "run-state-inconsistent");
+      if (
+        state.status !== "completed" ||
+        !state.assessmentRecordRefs.some(
+          (ref) =>
+            ref.reference.entityId === valid.payload.riskAssessmentRecordRef.reference.entityId &&
+            ref.reference.versionId === valid.payload.riskAssessmentRecordRef.reference.versionId,
+        )
+      )
+        return failed("AUTHORIZATION_DENIED", "completion-not-established");
+      const resultRows = await this.#db
+        .selectFrom(RESULTS_TABLE)
+        .selectAll()
+        .where("project_id", "=", valid.projectId)
+        .where("run_id", "=", runId)
+        .where("run_version_id", "=", row.runVersionId)
+        .where("result_kind", "=", "run-result")
+        .limit(2)
+        .execute();
+      if (resultRows.length !== 1) return failed("TERMINAL_FAILURE", "run-result-inconsistent");
+      const resultRow = workflowGraphResultRowFromDb(resultRows[0]!);
+      if (
+        resultRow.resultKind !== "run-result" ||
+        resultRow.artifactRef === undefined ||
+        resultRow.authorizationScopeDigest !== authorizationScopeDigest(verified)
+      )
+        return failed("TERMINAL_FAILURE", "run-result-inconsistent");
+      const resultBody = await this.#openBody({
+        projectId: valid.projectId,
+        artifactRef: resultRow.artifactRef,
+        actorId: valid.actorId,
+        requestedAt: valid.requestedAt,
+        authorization: verified,
+      });
+      if (
+        resultBody?.bodyKind !== "run-result" ||
+        resultBody.runResult.projectId !== valid.projectId ||
+        resultBody.runResult.runRef.reference.entityId !== runId ||
+        resultBody.runResult.runRef.reference.versionId !==
+          valid.payload.workflowRunRef.reference.versionId ||
+        state.resultRef?.kind !== "risk-flow-run-result" ||
+        state.resultRef.reference.versionId !==
+          resultBody.runResult.auditTrailRef.reference.versionId ||
+        !resultBody.runResult.assessmentRecordRefs.some(
+          (ref) =>
+            ref.reference.entityId === valid.payload.riskAssessmentRecordRef.reference.entityId &&
+            ref.reference.versionId === valid.payload.riskAssessmentRecordRef.reference.versionId,
+        )
+      )
+        return failed("TERMINAL_FAILURE", "run-result-inconsistent");
+      return WorkflowRunCompletionProofResultV1Schema.parse({
+        kind: "succeeded",
+        result: {
+          kind: "completed",
+          projectId: valid.projectId,
+          workflowRunRef: valid.payload.workflowRunRef,
+          riskAssessmentRecordRef: valid.payload.riskAssessmentRecordRef,
+          auditTrailRef: {
+            kind: "audit-trail",
+            reference: { entityId: row.auditEntryId, versionId: "v1" },
+          },
+        },
+      });
+    } catch {
+      return failed("TERMINAL_FAILURE", "completion-facts-inconsistent");
+    }
   }
 
   async readQuery(input: {
@@ -923,6 +1291,12 @@ export const createPostgresWorkflowAdapter = (
     bodies: {
       putBody: (input) => persistence.putBody(input),
       readBody: (input) => persistence.readBody(input),
+    },
+    bindingProof: {
+      verifyResponseWorkflowBinding: (query) => persistence.verifyResponseWorkflowBinding(query),
+    },
+    runCompletionProof: {
+      verifyWorkflowRunCompletion: (query) => persistence.verifyWorkflowRunCompletion(query),
     },
   };
 };

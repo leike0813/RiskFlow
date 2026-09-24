@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   AgentTaskResultRefV1Schema,
   AgentTaskTypeV1Schema,
+  ActualAssessmentProofQueryV1Schema,
+  ActualAssessmentProofV1Schema,
   AssessmentBasisReleaseSetRefV1Schema,
   AssessmentEvaluationCommandV1Schema,
   AssessmentEvaluationResultV1Schema,
@@ -42,6 +44,8 @@ import {
   KnowledgeResolutionCommandV1Schema,
   KnowledgeResolutionSuccessV1Schema,
   KnowledgeRetrievalQueryV1Schema,
+  HumanDecisionProofQueryV1Schema,
+  HumanDecisionProofV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
   ModuleCapabilityV1Schema,
   ModuleErrorV1Schema,
@@ -53,7 +57,11 @@ import {
   QualityEvaluationSummaryV1Schema,
   RecommendationCommandV1Schema,
   ResumeAgentTaskCommandV1Schema,
+  ResumeCauseV1Schema,
   ResumeWorkflowRunCommandV1Schema,
+  ResponseWorkflowBindingProofQueryV1Schema,
+  ResponseWorkflowBindingProofV1Schema,
+  WorkflowRunCompletionProofQueryV1Schema,
   ReviewDecisionCommandV1Schema,
   ReviewDecisionV1Schema,
   ReviewRequestV1Schema,
@@ -64,7 +72,10 @@ import {
   ProjectionResultReadResultV1Schema,
   WorkflowLinkRelationV1Schema,
   type CalibrationSuggestionApprovalProofPortV1,
+  type HumanDecisionProofPortV1,
   type ReviewAuditPortV1,
+  type ResponseWorkflowBindingProofPortV1,
+  type ActualAssessmentProofPortV1,
   RiskAssessmentRecordRefV1Schema,
   RiskInputVersionRefV1Schema,
   RuleConflictRefV1Schema,
@@ -79,6 +90,7 @@ import {
   TraceSuccessV1Schema,
   WarningResponseRecordCommandV1Schema,
   WarningResponseRecordSuccessV1Schema,
+  WaitingRefV1Schema,
   WorkflowRunStatusV1Schema,
 } from "../src/ports/index.js";
 import { APPLICABILITY_METADATA_DIMENSION_VALUES } from "../src/vocabulary/index.js";
@@ -3120,5 +3132,305 @@ describe("C30 additive workflow inputs and bounded read ports", () => {
         queryType: "run-view",
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("C41 additive human decision and feedback command wiring", () => {
+  const recommendationRef = version("response-recommendation");
+  const routeDecisionRef = version("route-decision", "route-decision-1");
+  const executionRecordRef = version("execution-record");
+
+  it("keeps the adoption decision selectors optional and the decline result free of runs", () => {
+    const base = {
+      responseRecommendationRef: recommendationRef,
+      decision: "adopted",
+      reasonCode: "risk-accepted",
+    };
+    expect(
+      WarningResponseRecordCommandV1Schema.safeParse(command("adopt-recommendation", base)).success,
+    ).toBe(true);
+    expect(
+      WarningResponseRecordCommandV1Schema.safeParse(
+        command("adopt-recommendation", {
+          ...base,
+          preActionMonitoringSnapshotRef: monitoringSnapshotRef,
+        }),
+      ).success,
+    ).toBe(true);
+    // 客户端不得提交绑定、运行身份或授权上下文以外的事实。
+    expect(
+      WarningResponseRecordCommandV1Schema.safeParse(
+        command("adopt-recommendation", {
+          ...base,
+          binding: { projectId: "project-1", routeDecisionRef },
+        }),
+      ).success,
+    ).toBe(false);
+
+    expect(
+      WarningResponseRecordSuccessV1Schema.safeParse({
+        kind: "decline",
+        routeDecisionRef,
+      }).success,
+    ).toBe(true);
+    // 拒绝是终局事实，不得携带伪造的预测运行绑定。
+    expect(
+      WarningResponseRecordSuccessV1Schema.safeParse({
+        kind: "decline",
+        routeDecisionRef,
+        forecastRunRef: workflowRunRef,
+      }).success,
+    ).toBe(false);
+    expect(
+      WarningResponseRecordSuccessV1Schema.safeParse({
+        kind: "adoption",
+        routeDecisionRef,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("requires an exact feedback assessment selector only as a reference", () => {
+    const payload = {
+      executionRecordRef,
+      postActionMonitoringSnapshotRef: monitoringSnapshotRef,
+      feedbackArtifactRef: version("content-artifact"),
+      occurredAt: now,
+    };
+    expect(
+      WarningResponseRecordCommandV1Schema.safeParse(command("record-feedback", payload)).success,
+    ).toBe(true);
+    expect(
+      WarningResponseRecordCommandV1Schema.safeParse(
+        command("record-feedback", {
+          ...payload,
+          actualAssessmentRecordRef: assessmentRecordRef,
+        }),
+      ).success,
+    ).toBe(true);
+    // 评估结果只能以精确引用表达，调用方不得提交评估值。
+    expect(
+      WarningResponseRecordCommandV1Schema.safeParse(
+        command("record-feedback", {
+          ...payload,
+          actualAssessmentRecordRef: assessmentRecordRef,
+          actualAssessment: { riskLevel: "level-1" },
+        }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("closes the waiting and resume branches of the forecast run to one cause", () => {
+    const forecast = {
+      entryMode: "forecast-response",
+      graphVersion: policyRef,
+      retryPolicyRef: policyRef,
+      adoptedRecommendationRef: recommendationRef,
+      preActionMonitoringSnapshotRef: monitoringSnapshotRef,
+      assessmentBasisReleaseSetRef: version("assessment-basis-release-set"),
+    };
+    expect(StartWorkflowRunCommandV1Schema.safeParse(command("start-run", forecast)).success).toBe(
+      true,
+    );
+    expect(
+      StartWorkflowRunCommandV1Schema.safeParse(
+        command("start-run", { ...forecast, waitForDecision: true }),
+      ).success,
+    ).toBe(true);
+    // 等待意图是闭合的可选参数，不接受“不等待”的显式反向取值或客户端运行身份。
+    expect(
+      StartWorkflowRunCommandV1Schema.safeParse(
+        command("start-run", { ...forecast, waitForDecision: false }),
+      ).success,
+    ).toBe(false);
+    expect(
+      StartWorkflowRunCommandV1Schema.safeParse(
+        command("start-run", {
+          ...forecast,
+          waitForDecision: true,
+          forecastRunRef: workflowRunRef,
+        }),
+      ).success,
+    ).toBe(false);
+
+    expect(
+      ResumeCauseV1Schema.safeParse({ kind: "human-decision-committed", routeDecisionRef }).success,
+    ).toBe(true);
+    expect(
+      ResumeCauseV1Schema.safeParse({
+        kind: "human-decision-committed",
+        routeDecisionRef,
+        decision: "declined",
+      }).success,
+    ).toBe(false);
+    expect(
+      WaitingRefV1Schema.safeParse({
+        kind: "human-decision",
+        routeDecisionRef,
+        responseRecommendationRef: recommendationRef,
+        spatialScopeRef,
+      }).success,
+    ).toBe(true);
+    expect(
+      WaitingRefV1Schema.safeParse({
+        kind: "human-decision",
+        routeDecisionRef,
+        responseRecommendationRef: recommendationRef,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("keeps the three read-only proofs exact and free of bodies or lists", () => {
+    const scope = { ...spatialScopeRef, reference: { entityId: "space-1", versionId: "v1" } };
+    expect(
+      ResponseWorkflowBindingProofQueryV1Schema.safeParse(
+        query("verify-response-workflow-binding", {
+          responseRecommendationRef: recommendationRef,
+          workflowRunRef,
+        }),
+      ).success,
+    ).toBe(true);
+    expect(
+      ResponseWorkflowBindingProofV1Schema.safeParse({
+        kind: "bound",
+        projectId: "project-1",
+        responseRecommendationRef: recommendationRef,
+        spatialScopeRef: scope,
+        routeDecisionRef,
+        workflowRunRef,
+        runStatus: "waiting",
+        frozenDigest: "0".repeat(64),
+        auditTrailRef,
+      }).success,
+    ).toBe(true);
+    expect(
+      ResponseWorkflowBindingProofV1Schema.safeParse({
+        kind: "bound",
+        projectId: "project-1",
+        responseRecommendationRef: recommendationRef,
+        spatialScopeRef: scope,
+        routeDecisionRef,
+        workflowRunRef,
+        runStatus: "waiting",
+        frozenDigest: "0".repeat(64),
+        auditTrailRef,
+        record: { body: "not-a-proof" },
+      }).success,
+    ).toBe(false);
+
+    const completionQuery = query("verify-workflow-run-completion", {
+      workflowRunRef,
+      riskAssessmentRecordRef: assessmentRecordRef,
+    });
+    expect(WorkflowRunCompletionProofQueryV1Schema.safeParse(completionQuery).success).toBe(true);
+    expect(
+      WorkflowRunCompletionProofQueryV1Schema.safeParse({
+        ...completionQuery,
+        payload: { ...completionQuery.payload, runStatus: "completed" },
+      }).success,
+    ).toBe(false);
+
+    expect(
+      ActualAssessmentProofQueryV1Schema.safeParse(
+        query("verify-actual-assessment", { riskAssessmentRecordRef: assessmentRecordRef }),
+      ).success,
+    ).toBe(true);
+    expect(
+      ActualAssessmentProofV1Schema.safeParse({
+        kind: "established",
+        projectId: "project-1",
+        riskAssessmentRecordRef: assessmentRecordRef,
+        riskInputRef: externalRiskInput,
+        spatialScopeRef: scope,
+        assessmentInputSnapshotRef: assessmentInputRef,
+        assessmentBasisReleaseSetRef: version("assessment-basis-release-set"),
+        monitoringSnapshotRefs: [monitoringSnapshotRef],
+        deviationPolicyRef: policyRef,
+        calibrationAgentPolicyRef: policyRef,
+        assessmentRunRef: workflowRunRef,
+        auditTrailRef,
+        recordedAt: now,
+      }).success,
+    ).toBe(true);
+    expect(
+      ActualAssessmentProofV1Schema.safeParse({
+        kind: "established",
+        projectId: "project-1",
+        riskAssessmentRecordRef: assessmentRecordRef,
+        riskInputRef: externalRiskInput,
+        spatialScopeRef: scope,
+        assessmentInputSnapshotRef: assessmentInputRef,
+        assessmentBasisReleaseSetRef: version("assessment-basis-release-set"),
+        monitoringSnapshotRefs: [],
+        deviationPolicyRef: policyRef,
+        calibrationAgentPolicyRef: policyRef,
+        assessmentRunRef: workflowRunRef,
+        auditTrailRef,
+        recordedAt: now,
+        riskLevel: "level-2",
+      }).success,
+    ).toBe(false);
+
+    expect(
+      HumanDecisionProofQueryV1Schema.safeParse(
+        query("verify-human-decision-committed", {
+          routeDecisionRef,
+          workflowRunRef,
+          responseRecommendationRef: recommendationRef,
+        }),
+      ).success,
+    ).toBe(true);
+    // 越权调用：缺少 `workflow.resume` 的上下文不得读取采纳证明。
+    expect(
+      HumanDecisionProofQueryV1Schema.safeParse({
+        ...query("verify-human-decision-committed", {
+          routeDecisionRef,
+          workflowRunRef,
+          responseRecommendationRef: recommendationRef,
+        }),
+        authorization: {
+          ...authorization,
+          grantedCapabilities: authorization.grantedCapabilities.filter(
+            (capability) => capability !== "workflow.resume",
+          ),
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      HumanDecisionProofV1Schema.safeParse({
+        kind: "adopted",
+        projectId: "project-1",
+        routeDecisionRef,
+        workflowRunRef,
+        responseRecommendationRef: recommendationRef,
+        spatialScopeRef: scope,
+        decidedBy: "actor-1",
+        decidedAt: now,
+        auditTrailRef,
+      }).success,
+    ).toBe(true);
+    expect(
+      HumanDecisionProofV1Schema.safeParse({
+        kind: "pending",
+        routeDecisionRef,
+        workflowRunRef,
+        responseRecommendationRef: recommendationRef,
+      }).success,
+    ).toBe(false);
+
+    // 三个只读证明与写端口并列：既有实现者无需增补方法，签名保持精确单一。
+    const requiresBindingProof = (
+      port: ResponseWorkflowBindingProofPortV1,
+    ): ResponseWorkflowBindingProofPortV1["verifyResponseWorkflowBinding"] =>
+      port.verifyResponseWorkflowBinding;
+    const requiresAssessmentProof = (
+      port: ActualAssessmentProofPortV1,
+    ): ActualAssessmentProofPortV1["verifyActualAssessment"] => port.verifyActualAssessment;
+    const requiresDecisionProof = (
+      port: HumanDecisionProofPortV1,
+    ): HumanDecisionProofPortV1["verifyHumanDecisionCommitted"] =>
+      port.verifyHumanDecisionCommitted;
+    expect(requiresBindingProof).toBeTypeOf("function");
+    expect(requiresAssessmentProof).toBeTypeOf("function");
+    expect(requiresDecisionProof).toBeTypeOf("function");
   });
 });

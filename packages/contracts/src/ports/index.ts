@@ -14,6 +14,9 @@ export type { RiskInputReference } from "../records/index.js";
 const versionedRef = <const T extends string>(kind: T) =>
   z.strictObject({ kind: z.literal(kind), reference: VersionReferenceSchema });
 
+/** 内容摘要：只用于已登记事实的最小摘要身份，不接受任意文本。 */
+const digestSchema = z.string().regex(/^[0-9a-f]{64}$/u);
+
 export const AuthorizationContextRefV1Schema = versionedRef("authorization-context");
 export type AuthorizationContextRefV1 = z.infer<typeof AuthorizationContextRefV1Schema>;
 
@@ -613,6 +616,14 @@ export const WaitingRefV1Schema = z.discriminatedUnion("kind", [
   }),
   // 与 `ResumeCauseV1` 的 `agent-task-completed` 成对：同一任务引用即可复原该等待。
   z.strictObject({ kind: z.literal("agent-task"), agentTaskRef: AgentTaskRefV1Schema }),
+  // 与 `ResumeCauseV1` 的 `human-decision-committed` 成对：等待中的预测运行只认同一次人工
+  // 采纳决定的路由引用，并据此复核建议与空间（C41 接线）。
+  z.strictObject({
+    kind: z.literal("human-decision"),
+    routeDecisionRef: RouteDecisionRefV1Schema,
+    responseRecommendationRef: ResponseRecommendationRefV1Schema,
+    spatialScopeRef: SpatialScopeRefV1Schema,
+  }),
 ]);
 export type WaitingRefV1 = z.infer<typeof WaitingRefV1Schema>;
 
@@ -877,7 +888,13 @@ const moduleResultSchema = <const T extends ZodType>(result: T, allowWaiting = f
   if (allowWaiting) {
     return z.discriminatedUnion("kind", [
       succeeded,
-      z.strictObject({ kind: z.literal("waiting"), waiting: WaitingRefV1Schema }),
+      // 等待结果同时携带已登记的真实运行引用：调用方据此按精确运行继续，不必自行派生身份；
+      // 只有会真正进入等待态的模块使用该形态（C41 接线）。
+      z.strictObject({
+        kind: z.literal("waiting"),
+        waiting: WaitingRefV1Schema,
+        workflowRunRef: WorkflowRunRefV1Schema.optional(),
+      }),
       failed,
     ]);
   }
@@ -1545,6 +1562,9 @@ export const WarningResponseRecordCommandV1Schema = z.discriminatedUnion("kind",
       responseRecommendationRef: ResponseRecommendationRefV1Schema,
       decision: z.enum(["adopted", "declined"]),
       reasonCode: IdentifierSchema,
+      // 可选精确选择器：采纳路径据此确定执行前监测快照；缺省时由服务端在唯一合格候选下选择，
+      // 候选不唯一即安全失败，绝不猜测“最新监测”（C41 接线）。
+      preActionMonitoringSnapshotRef: MonitoringSnapshotRefV1Schema.optional(),
     }),
     branchCapability("warning-response.adopt-recommendation"),
   ),
@@ -1566,6 +1586,9 @@ export const WarningResponseRecordCommandV1Schema = z.discriminatedUnion("kind",
       postActionMonitoringSnapshotRef: MonitoringSnapshotRefV1Schema,
       feedbackArtifactRef: ContentArtifactRefV1Schema,
       occurredAt: IsoDateTimeSchema,
+      // 可选精确选择器：正式提交必须提供，服务端据此核对已成立的实际评估；选择器本身不是评估结果，
+      // 调用方不得自行提交评估值（C41 接线）。
+      actualAssessmentRecordRef: RiskAssessmentRecordRefV1Schema.optional(),
     }),
     branchCapability("warning-response.record-feedback"),
   ),
@@ -1635,6 +1658,12 @@ export const ResumeCauseV1Schema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("user-confirmed"),
     userConfirmationRef: UserConfirmationRefV1Schema,
+  }),
+  // 等待中预测运行的唯一合法恢复原因：只携带已成立的人工采纳决定路由引用，
+  // 运行、建议与空间由 C41 的精确采纳证明复核（C41 接线）。
+  z.strictObject({
+    kind: z.literal("human-decision-committed"),
+    routeDecisionRef: RouteDecisionRefV1Schema,
   }),
 ]);
 export type ResumeCauseV1 = z.infer<typeof ResumeCauseV1Schema>;
@@ -1709,6 +1738,12 @@ const StartWorkflowPayloadV1Schema = z.discriminatedUnion("entryMode", [
     adoptedRecommendationRef: ResponseRecommendationRefV1Schema,
     preActionMonitoringSnapshotRef: MonitoringSnapshotRefV1Schema,
     assessmentBasisReleaseSetRef: AssessmentBasisReleaseSetRefV1Schema.optional(),
+    // 可选冻结评估依据（C25 输入快照精确引用）：分段入口不重新准备评估，A0 只按该冻结引用
+    // 构造预测/偏差输入；缺省保持原调用方语义（C41 接线）。
+    frozenAssessmentBasisRef: AssessmentInputSnapshotRefV1Schema.optional(),
+    // 可选闭合等待意图：置位时运行在人工采纳事实成立前停留在等待态、不执行预测；
+    // 缺省保持原调用方语义（C41 接线）。
+    waitForDecision: z.literal(true).optional(),
   }),
   z.strictObject({
     ...workflowStartControlShape,
@@ -1717,6 +1752,8 @@ const StartWorkflowPayloadV1Schema = z.discriminatedUnion("entryMode", [
     feedbackRef: FeedbackRefV1Schema,
     forecastRef: EffectForecastRefV1Schema.optional(),
     assessmentBasisReleaseSetRef: AssessmentBasisReleaseSetRefV1Schema.optional(),
+    // 可选冻结评估依据：与预测入口同义，偏差阶段只按该精确引用对账（C41 接线）。
+    frozenAssessmentBasisRef: AssessmentInputSnapshotRefV1Schema.optional(),
   }),
 ]);
 
@@ -2211,6 +2248,142 @@ export type CalibrationSuggestionApprovalProofQueryV1 = z.infer<
   typeof CalibrationSuggestionApprovalProofQueryV1Schema
 >;
 
+/**
+ * C30 只读证明（C41 接线 D5）：按精确建议与运行引用返回已登记的路由/运行/空间事实，
+ * 不扩张 `WorkflowPortV1` 写签名，也不写入任何 C30/C28 事实。
+ */
+export const ResponseWorkflowBindingProofQueryV1Schema = z.discriminatedUnion("kind", [
+  querySchema(
+    "verify-response-workflow-binding",
+    z.strictObject({
+      responseRecommendationRef: ResponseRecommendationRefV1Schema,
+      workflowRunRef: WorkflowRunRefV1Schema,
+    }),
+    branchCapability("workflow.start-run"),
+  ),
+]);
+export type ResponseWorkflowBindingProofQueryV1 = z.infer<
+  typeof ResponseWorkflowBindingProofQueryV1Schema
+>;
+
+export const ResponseWorkflowBindingProofV1Schema = z.strictObject({
+  kind: z.literal("bound"),
+  projectId: IdentifierSchema,
+  responseRecommendationRef: ResponseRecommendationRefV1Schema,
+  spatialScopeRef: SpatialScopeRefV1Schema,
+  routeDecisionRef: RouteDecisionRefV1Schema,
+  workflowRunRef: WorkflowRunRefV1Schema,
+  runStatus: WorkflowRunStatusV1Schema,
+  frozenDigest: digestSchema,
+  auditTrailRef: AuditTrailRefV1Schema,
+});
+export type ResponseWorkflowBindingProofV1 = z.infer<typeof ResponseWorkflowBindingProofV1Schema>;
+
+export const ResponseWorkflowBindingProofResultV1Schema = moduleResultSchema(
+  ResponseWorkflowBindingProofV1Schema,
+);
+export type ResponseWorkflowBindingProofResultV1 = z.infer<
+  typeof ResponseWorkflowBindingProofResultV1Schema
+>;
+
+/** C30 按精确子运行与评估记录证明实际评估已经完成。 */
+export const WorkflowRunCompletionProofQueryV1Schema = z.discriminatedUnion("kind", [
+  querySchema(
+    "verify-workflow-run-completion",
+    z.strictObject({
+      workflowRunRef: WorkflowRunRefV1Schema,
+      riskAssessmentRecordRef: RiskAssessmentRecordRefV1Schema,
+    }),
+    branchCapability("workflow.start-run"),
+  ),
+]);
+export type WorkflowRunCompletionProofQueryV1 = z.infer<
+  typeof WorkflowRunCompletionProofQueryV1Schema
+>;
+
+export const WorkflowRunCompletionProofV1Schema = z.strictObject({
+  kind: z.literal("completed"),
+  projectId: IdentifierSchema,
+  workflowRunRef: WorkflowRunRefV1Schema,
+  riskAssessmentRecordRef: RiskAssessmentRecordRefV1Schema,
+  auditTrailRef: AuditTrailRefV1Schema,
+});
+export type WorkflowRunCompletionProofV1 = z.infer<typeof WorkflowRunCompletionProofV1Schema>;
+export const WorkflowRunCompletionProofResultV1Schema = moduleResultSchema(
+  WorkflowRunCompletionProofV1Schema,
+);
+export type WorkflowRunCompletionProofResultV1 = z.infer<
+  typeof WorkflowRunCompletionProofResultV1Schema
+>;
+
+/**
+ * C25 只读证明（C41 接线 D5）：只按精确评估记录引用返回最小投影，不返回正文、latest 或列表，
+ * 不重算也不改写历史评估。
+ */
+export const ActualAssessmentProofQueryV1Schema = z.discriminatedUnion("kind", [
+  querySchema(
+    "verify-actual-assessment",
+    z.strictObject({ riskAssessmentRecordRef: RiskAssessmentRecordRefV1Schema }),
+    branchCapability("risk-assessment.read-input-snapshot"),
+  ),
+]);
+export type ActualAssessmentProofQueryV1 = z.infer<typeof ActualAssessmentProofQueryV1Schema>;
+
+export const ActualAssessmentProofV1Schema = z.strictObject({
+  kind: z.literal("established"),
+  projectId: IdentifierSchema,
+  riskAssessmentRecordRef: RiskAssessmentRecordRefV1Schema,
+  riskInputRef: RiskInputVersionRefV1Schema,
+  spatialScopeRef: SpatialScopeRefV1Schema,
+  assessmentInputSnapshotRef: AssessmentInputSnapshotRefV1Schema,
+  assessmentBasisReleaseSetRef: AssessmentBasisReleaseSetRefV1Schema,
+  monitoringSnapshotRefs: z.array(MonitoringSnapshotRefV1Schema),
+  deviationPolicyRef: VersionReferenceSchema,
+  calibrationAgentPolicyRef: VersionReferenceSchema,
+  assessmentRunRef: WorkflowRunRefV1Schema,
+  auditTrailRef: AuditTrailRefV1Schema,
+  recordedAt: IsoDateTimeSchema,
+});
+export type ActualAssessmentProofV1 = z.infer<typeof ActualAssessmentProofV1Schema>;
+
+export const ActualAssessmentProofResultV1Schema = moduleResultSchema(
+  ActualAssessmentProofV1Schema,
+);
+export type ActualAssessmentProofResultV1 = z.infer<typeof ActualAssessmentProofResultV1Schema>;
+
+/**
+ * C41 只读证明（C41 接线 D3）：仅供 C30 等待运行恢复使用；只返回已终局采纳与 C28 决定一致的
+ * 最小证明，pending、declined、缺失、越权一律失败，调用方无权据此读取建议正文。
+ */
+export const HumanDecisionProofQueryV1Schema = z.discriminatedUnion("kind", [
+  querySchema(
+    "verify-human-decision-committed",
+    z.strictObject({
+      routeDecisionRef: RouteDecisionRefV1Schema,
+      workflowRunRef: WorkflowRunRefV1Schema,
+      responseRecommendationRef: ResponseRecommendationRefV1Schema,
+    }),
+    branchCapability("workflow.resume-run"),
+  ),
+]);
+export type HumanDecisionProofQueryV1 = z.infer<typeof HumanDecisionProofQueryV1Schema>;
+
+export const HumanDecisionProofV1Schema = z.strictObject({
+  kind: z.literal("adopted"),
+  projectId: IdentifierSchema,
+  routeDecisionRef: RouteDecisionRefV1Schema,
+  workflowRunRef: WorkflowRunRefV1Schema,
+  responseRecommendationRef: ResponseRecommendationRefV1Schema,
+  spatialScopeRef: SpatialScopeRefV1Schema,
+  decidedBy: IdentifierSchema,
+  decidedAt: IsoDateTimeSchema,
+  auditTrailRef: AuditTrailRefV1Schema,
+});
+export type HumanDecisionProofV1 = z.infer<typeof HumanDecisionProofV1Schema>;
+
+export const HumanDecisionProofResultV1Schema = moduleResultSchema(HumanDecisionProofV1Schema);
+export type HumanDecisionProofResultV1 = z.infer<typeof HumanDecisionProofResultV1Schema>;
+
 export const EngineeringDataApplySuccessV1Schema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("register-source-delivery"),
@@ -2389,6 +2562,11 @@ export const WarningResponseRecordSuccessV1Schema = z.discriminatedUnion("kind",
     kind: z.literal("adoption"),
     routeDecisionRef: RouteDecisionRefV1Schema,
     forecastRunRef: WorkflowRunRefV1Schema,
+  }),
+  // 拒绝是终局事实但不含预测运行：只返回 C41 自有的决定路由引用，不伪造运行绑定（C41 接线）。
+  z.strictObject({
+    kind: z.literal("decline"),
+    routeDecisionRef: RouteDecisionRefV1Schema,
   }),
   z.strictObject({ kind: z.literal("execution"), executionRecordRef: ExecutionRecordRefV1Schema }),
   z.strictObject({ kind: z.literal("feedback"), feedbackRef: FeedbackRefV1Schema }),
@@ -2878,6 +3056,20 @@ export interface WarningResponsePortV1 {
   record(command: WarningResponseRecordCommandV1): Promise<WarningResponseRecordResultV1>;
 }
 
+/** C41 承载的三个人工命令分支：公开命令里其余分支仍属处置模块（C41 接线 D1）。 */
+export type HumanDecisionFeedbackCommandV1 = Extract<
+  WarningResponseRecordCommandV1,
+  { readonly kind: "adopt-recommendation" | "record-execution" | "record-feedback" }
+>;
+
+/**
+ * 人工决定与反馈命令端口：只承载上述三分支，与 `WarningResponsePortV1.record` 并列注入，
+ * 使同一路由可按分支转发而不改变原端口的其它语义（C41 接线 D1）。
+ */
+export interface HumanDecisionFeedbackPortV1 {
+  record(command: HumanDecisionFeedbackCommandV1): Promise<WarningResponseRecordResultV1>;
+}
+
 export interface ReviewAuditPortV1 {
   requestReview(request: ReviewRequestV1): Promise<ReviewRequestResultV1>;
   decideReview(command: ReviewDecisionCommandV1): Promise<ReviewDecisionResultV1>;
@@ -2914,4 +3106,34 @@ export interface ProjectionPortV1 {
   query(request: ProjectionQueryV1): Promise<ProjectionQueryResultV1>;
   subscribe(request: RunSubscriptionRequestV1): Promise<ProjectionSubscriptionResultV1>;
   export(request: ProjectionExportRequestV1): Promise<ProjectionExportResultV1>;
+}
+
+/**
+ * 工作流绑定只读证明端口：工作流所有者实现，C41 组合使用；与 `WorkflowPortV1` 写命令并列，
+ * 不迫使既有实现者增补方法，也不改变原有查询语义。
+ */
+export interface ResponseWorkflowBindingProofPortV1 {
+  verifyResponseWorkflowBinding(
+    query: ResponseWorkflowBindingProofQueryV1,
+  ): Promise<ResponseWorkflowBindingProofResultV1>;
+}
+
+export interface WorkflowRunCompletionProofPortV1 {
+  verifyWorkflowRunCompletion(
+    query: WorkflowRunCompletionProofQueryV1,
+  ): Promise<WorkflowRunCompletionProofResultV1>;
+}
+
+/** 实际评估只读证明端口：评估所有者实现，C41 组合使用；不扩张 `RiskAssessmentPortV1` 写签名。 */
+export interface ActualAssessmentProofPortV1 {
+  verifyActualAssessment(
+    query: ActualAssessmentProofQueryV1,
+  ): Promise<ActualAssessmentProofResultV1>;
+}
+
+/** 人工采纳证明只读端口：C41 实现、C30 等待运行恢复消费；只返回已终局采纳的最小证明。 */
+export interface HumanDecisionProofPortV1 {
+  verifyHumanDecisionCommitted(
+    query: HumanDecisionProofQueryV1,
+  ): Promise<HumanDecisionProofResultV1>;
 }

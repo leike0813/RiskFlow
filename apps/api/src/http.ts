@@ -74,6 +74,8 @@ import {
   type EngineeringDataPortV1,
   type EngineeringDataQueryV1,
   type EngineeringFreezeCommandV1,
+  type HumanDecisionFeedbackCommandV1,
+  type HumanDecisionFeedbackPortV1,
   type IdentificationAnalysisCommandV1,
   type IdentificationFinalizationCommandV1,
   type IdentificationPlanCommandV1,
@@ -364,6 +366,8 @@ export interface ApiPortsV1 {
   readonly riskIdentification?: RiskIdentificationPortV1;
   readonly riskAssessment?: RiskAssessmentPortV1;
   readonly warningResponse?: WarningResponsePortV1;
+  // C41 人工决定/执行/反馈三分支的独立注入位；未注入时这三个分支不可用（C41 接线 D1）。
+  readonly humanDecisionFeedback?: HumanDecisionFeedbackPortV1;
   readonly reviewAudit?: ReviewAuditPortV1;
   readonly agentTask?: AgentTaskPortV1;
   readonly workflow?: WorkflowPortV1;
@@ -514,6 +518,10 @@ const invokeWarningRecommend: HttpInvokerV1 = (ports, request) =>
 const invokeWarningRecord: HttpInvokerV1 = (ports, request) =>
   ports.warningResponse?.record(request as WarningResponseRecordCommandV1) ??
   missingPort("warningResponse");
+// 只转发 C41 三分支；类型收窄由路由表登记的分支保证（C41 接线 D1）。
+const invokeHumanDecisionFeedback: HttpInvokerV1 = (ports, request) =>
+  ports.humanDecisionFeedback?.record(request as HumanDecisionFeedbackCommandV1) ??
+  missingPort("humanDecisionFeedback");
 const invokeReviewRequest: HttpInvokerV1 = (ports, request) =>
   ports.reviewAudit?.requestReview(request as ReviewRequestV1) ?? missingPort("reviewAudit");
 const invokeReviewDecision: HttpInvokerV1 = (ports, request) =>
@@ -681,11 +689,20 @@ export const HTTP_ROUTE_CATALOG_V1: readonly HttpRouteEntryV1[] = Object.freeze(
     invokeWarningRecord,
     [
       ["warning-response.acknowledge", "acknowledge"],
+      ["warning-response.calculate-deviation", "calculate-deviation"],
+      ["warning-response.create-calibration-suggestion", "create-calibration-suggestion"],
+    ],
+  ),
+  // C41 的人工决定/执行/反馈分支转入独立注入位，路径、能力值与结果 Schema 不变。
+  ...commandRoutes(
+    WarningResponseRecordCommandV1Schema,
+    WarningResponseRecordResultV1Schema,
+    "humanDecisionFeedback",
+    invokeHumanDecisionFeedback,
+    [
       ["warning-response.adopt-recommendation", "adopt-recommendation"],
       ["warning-response.record-execution", "record-execution"],
       ["warning-response.record-feedback", "record-feedback"],
-      ["warning-response.calculate-deviation", "calculate-deviation"],
-      ["warning-response.create-calibration-suggestion", "create-calibration-suggestion"],
     ],
   ),
   ...commandRoutes(

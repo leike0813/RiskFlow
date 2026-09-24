@@ -19,11 +19,15 @@ import {
   type AuthorizationContextV1,
   type ContractReferenceV1,
   type ModuleBranchV1,
+  type ProjectionQueryResultV1,
+  type ProjectionResultItemV1,
   type ProjectionResultReadRequestV1,
+  type RiskAssessmentRecordRefV1,
   type RiskRecordTraceReadResultV1,
+  type StandardizedRiskRecordRefV1,
 } from "@riskflow/contracts/ports";
 import { authorizationScopeDigest } from "@riskflow/core/retrieval";
-import type { WorkflowGraphResultRowV1 } from "@riskflow/core/workflow";
+import type { WorkflowGraphResultRowV1, WorkflowSkippedTailV1 } from "@riskflow/core/workflow";
 
 import { createFilesystemArtifactStore } from "../../src/artifacts/filesystem-artifact-store.js";
 import { PostgresArtifactRegistry } from "../../src/artifacts/postgres-artifact-registry.js";
@@ -128,7 +132,11 @@ interface ProjectionTestFixture {
   readonly projection: PostgresWorkflowProjectionV1;
   readonly artifactStore: ArtifactStoreV1 & { close(): Promise<void> };
   readonly access: ReturnType<typeof createAccess>;
-  readonly trace: { result: RiskRecordTraceReadResultV1; calls: number };
+  readonly trace: {
+    calls: number;
+    /** 设定后覆盖逐引用合成的结果，用于不可证明与失败路径。 */
+    override: RiskRecordTraceReadResultV1 | undefined;
+  };
   readonly rootDirectory: string;
   close(): Promise<void>;
 }
@@ -163,35 +171,32 @@ const startFixture = async (): Promise<ProjectionTestFixture> => {
       authorization: access.port,
       now: () => new Date(TIMESTAMP),
     });
-    const trace = {
-      calls: 0,
-      result: {
-        kind: "succeeded",
-        items: [
-          {
-            kind: "found",
-            riskRecordRef: RISK_RECORD_REF,
-            processNodeId: "process-node-1",
-            sourceSegmentIds: ["segment-1"],
-            riskMechanismEntryIds: ["mechanism-1"],
-            evidenceLocator: { sourceSegmentId: "segment-1" },
-            auditTrailRef: {
-              kind: "audit-trail",
-              reference: { entityId: "audit-risk-record", versionId: "1" },
-            },
-          },
-        ],
-      } as RiskRecordTraceReadResultV1,
-    };
+    const trace: ProjectionTestFixture["trace"] = { calls: 0, override: undefined };
     const projection = createPostgresWorkflowProjection({
       db: runtime.db,
       registrationStore: workflow.registrationStore,
       bodies: workflow.bodies,
       authorization: access.port,
       riskRecordTrace: {
-        readBatch: async () => {
+        readBatch: async (input) => {
           trace.calls += 1;
-          return trace.result;
+          if (trace.override !== undefined) return trace.override;
+          // 默认逐引用合成：只暴露已成立的最小来源定位，不携带任何风险正文。
+          return {
+            kind: "succeeded",
+            items: input.riskRecordRefs.map((riskRecordRef) => ({
+              kind: "found" as const,
+              riskRecordRef,
+              processNodeId: "process-node-1",
+              sourceSegmentIds: ["segment-1"],
+              riskMechanismEntryIds: ["mechanism-1"],
+              evidenceLocator: { sourceSegmentId: "segment-1" },
+              auditTrailRef: {
+                kind: "audit-trail" as const,
+                reference: { entityId: "audit-risk-record", versionId: "1" },
+              },
+            })),
+          } as RiskRecordTraceReadResultV1;
         },
       },
       now: () => new Date(TIMESTAMP),
@@ -305,7 +310,7 @@ const registerLink = async (input: {
   readonly fromRef: ContractReferenceV1;
   readonly toRef: ContractReferenceV1;
   readonly relation: "risk-assessment" | "run-stage" | "parent-child";
-  readonly stage: "A5" | "assessment";
+  readonly stage: "A5" | "assessment" | "preparing";
 }) => {
   const commandId = `c30-projection-link-${input.linkId}`;
   await fixture.transactionUnit.execute(
@@ -454,6 +459,168 @@ const seedRuns = async () => {
   });
 };
 
+const PROJECT_REVISION_REF: ContractReferenceV1 = {
+  kind: "project-revision",
+  reference: { entityId: "project-revision-c31", versionId: "v1" },
+};
+const REPORT_RUN_ID = `risk-flow-run:${PROJECT_ID}:report`;
+const LATER_RUN_ID = `risk-flow-run:${PROJECT_ID}:later`;
+const CURSOR_RUN_ID = `risk-flow-run:${PROJECT_ID}:cursor`;
+const OVERFLOW_RUN_ID = `risk-flow-run:${PROJECT_ID}:overflow`;
+const REPORT_RUN_VERSION_ID = sha("c31-report-run-version");
+const LATER_RUN_VERSION_ID = sha("c31-later-run-version");
+const CURSOR_RUN_VERSION_ID = sha("c31-cursor-run-version");
+const OVERFLOW_RUN_VERSION_ID = sha("c31-overflow-run-version");
+const LATER_RECORDED_AT = "2031-01-01T00:00:00.000Z";
+const REPORT_SKIPPED_TAIL: WorkflowSkippedTailV1 = {
+  tailKind: "warning",
+  reasonCode: "warning-not-triggered",
+  lastEstablishedRef: ASSESSMENT_RECORD_REF,
+};
+const riskRecordRefs = (count: number, prefix: string): StandardizedRiskRecordRefV1[] =>
+  Array.from({ length: count }, (_unused, index) => ({
+    kind: "standardized-risk-record" as const,
+    reference: { entityId: `${prefix}-${index}`, versionId: "v1" },
+  }));
+
+interface OverviewRunSeedV1 {
+  readonly runId: string;
+  readonly runVersionId: string;
+  readonly suffix: string;
+  readonly recordedAt?: string;
+  /** 缺省使用报告主夹具修订；越界与隔离场景可用独立修订。 */
+  readonly revisionRef?: ContractReferenceV1;
+  readonly acceptedRiskRecordRefs: readonly StandardizedRiskRecordRefV1[];
+  readonly assessmentRecordRefs: readonly RiskAssessmentRecordRefV1[];
+  readonly skippedTails: readonly WorkflowSkippedTailV1[];
+}
+
+/**
+ * C31 合成报告运行：入口行 + 最新状态正文 + 结果正文，全部只登记已成立引用与缺席原因；
+ * 冻结引用固定为同一工程修订与空间目标，供报告选择谓词命中。
+ */
+const seedOverviewRun = async (seed: OverviewRunSeedV1): Promise<void> => {
+  const recordedAt = seed.recordedAt ?? TIMESTAMP;
+  const frozenRefs = [seed.revisionRef ?? PROJECT_REVISION_REF, SPATIAL_SCOPE_REF];
+  const stateArtifactRef = await fixture.workflow.bodies.putBody({
+    projectId: PROJECT_ID,
+    actorId: ACTOR_ID,
+    commandId: `c31-report-state-${seed.suffix}`,
+    issuedAt: recordedAt,
+    artifactId: `c31-run-state:${seed.runId}:${seed.runVersionId}`,
+    body: {
+      bodyKind: "run-state",
+      runState: {
+        schemaVersion: "1",
+        projectId: PROJECT_ID,
+        runId: seed.runId,
+        runVersionId: seed.runVersionId,
+        entryMode: "identify-and-assess",
+        entryIdentity: {
+          entityId: `workflow-entry:${PROJECT_ID}:identify-and-assess`,
+          versionId: "entry-v1",
+        },
+        stage: "result-summary",
+        status: "completed",
+        assessmentRunRefs: [],
+        acceptedRiskRecordRefs: [...seed.acceptedRiskRecordRefs],
+        assessmentRecordRefs: [...seed.assessmentRecordRefs],
+        warningRecordRefs: [],
+        responseRecommendationRefs: [],
+        deviationRecordRefs: [],
+        calibrationSuggestionRefs: [],
+        recordedAt,
+      },
+    },
+    authorization: AUTHORIZATION,
+  });
+  const resultArtifactRef = await fixture.workflow.bodies.putBody({
+    projectId: PROJECT_ID,
+    actorId: ACTOR_ID,
+    commandId: `c31-report-result-${seed.suffix}`,
+    issuedAt: recordedAt,
+    artifactId: `c31-run-result:${seed.runId}:${seed.runVersionId}`,
+    body: {
+      bodyKind: "run-result",
+      runResult: {
+        schemaVersion: "1",
+        projectId: PROJECT_ID,
+        runRef: {
+          kind: "workflow-run",
+          reference: { entityId: seed.runId, versionId: seed.runVersionId },
+        },
+        entryMode: "identify-and-assess",
+        stage: "result-summary",
+        assessmentRunRefs: [],
+        assessmentRecordRefs: [...seed.assessmentRecordRefs],
+        warningRecordRefs: [],
+        responseRecommendationRefs: [],
+        deviationRecordRefs: [],
+        calibrationSuggestionRefs: [],
+        skippedTails: [...seed.skippedTails],
+        auditTrailRef: {
+          kind: "audit-trail",
+          reference: { entityId: `c31-report-${seed.suffix}:audit`, versionId: "1" },
+        },
+        recordedAt,
+      },
+    },
+    authorization: AUTHORIZATION,
+  });
+  const rows: WorkflowGraphResultRowV1[] = [
+    {
+      ...rowBase(seed.runId, seed.runVersionId, `${seed.suffix}-entry`),
+      recordedAt,
+      validAt: recordedAt,
+      frozenRefs,
+      resultKind: "entry-snapshot",
+      stage: "preparing",
+      entryIdentity: {
+        entityId: `workflow-entry:${PROJECT_ID}:identify-and-assess`,
+        versionId: "entry-v1",
+      },
+    },
+    {
+      ...rowBase(seed.runId, seed.runVersionId, `${seed.suffix}-state`),
+      recordedAt,
+      validAt: recordedAt,
+      frozenRefs,
+      resultKind: "run-state",
+      resultVersionId: seed.runVersionId,
+      stage: "result-summary",
+      artifactRef: stateArtifactRef,
+    },
+    {
+      ...rowBase(seed.runId, seed.runVersionId, `${seed.suffix}-result`),
+      recordedAt,
+      validAt: recordedAt,
+      frozenRefs,
+      resultKind: "run-result",
+      stage: "result-summary",
+      runResultRef: {
+        kind: "risk-flow-run-result",
+        reference: { entityId: `${seed.runId}:result`, versionId: "v1" },
+      },
+      artifactRef: resultArtifactRef,
+    },
+  ];
+  for (const row of rows) await register(row);
+};
+
+const queryFor = async (
+  queryId: string,
+  payload: Record<string, unknown>,
+): Promise<ProjectionQueryResultV1> =>
+  await fixture.projection.queryProjection.query({
+    queryId,
+    projectId: PROJECT_ID,
+    actorId: ACTOR_ID,
+    requestedAt: TIMESTAMP,
+    authorization: AUTHORIZATION,
+    kind: "query",
+    payload,
+  } as never);
+
 const readRequest = (input: {
   readonly queryResultRef: ProjectionResultReadRequestV1["queryResultRef"];
   readonly limit?: number;
@@ -545,13 +712,19 @@ describe("C30 workflow projection adapter", () => {
     if (unknown.kind === "failed") expect(unknown.error.code).toBe("ENTITY_NOT_FOUND");
 
     const unsupported = await fixture.projection.queryProjection.query({
-      queryId: "query-graph",
+      queryId: "query-review-queue",
       projectId: PROJECT_ID,
       actorId: ACTOR_ID,
       requestedAt: TIMESTAMP,
       authorization: AUTHORIZATION,
       kind: "query",
-      payload: { queryType: "association-graph", subjectRef: RISK_RECORD_REF },
+      payload: {
+        queryType: "review-queue",
+        projectRevisionRef: {
+          kind: "project-revision",
+          reference: { entityId: "project-revision-c30", versionId: "v1" },
+        },
+      },
     } as never);
     expect(unsupported).toMatchObject({ kind: "failed" });
     if (unsupported.kind === "failed") {
@@ -644,7 +817,7 @@ describe("C30 workflow projection adapter", () => {
     });
     expect(fixture.trace.calls - callsBefore).toBe(1);
 
-    fixture.trace.result = {
+    fixture.trace.override = {
       kind: "succeeded",
       items: [
         {
@@ -665,12 +838,382 @@ describe("C30 workflow projection adapter", () => {
     const incomplete = await fixture.projection.resultRead.readPage(
       readRequest({ queryResultRef: queried.result.queryResultRef }),
     );
+    fixture.trace.override = undefined;
     expect(incomplete).toMatchObject({ kind: "failed" });
     if (incomplete.kind === "failed") {
       expect(incomplete.error).toMatchObject({
         code: "BUSINESS_BLOCKED",
         blockerKind: "trace-chain-incomplete",
       });
+    }
+  });
+
+  it("projects a frozen revision into report facts, absence and stable bounded pages", async () => {
+    await seedOverviewRun({
+      runId: REPORT_RUN_ID,
+      runVersionId: REPORT_RUN_VERSION_ID,
+      suffix: "c31-report",
+      acceptedRiskRecordRefs: riskRecordRefs(101, "report-risk"),
+      assessmentRecordRefs: [ASSESSMENT_RECORD_REF],
+      skippedTails: [REPORT_SKIPPED_TAIL],
+    });
+    const queried = await queryFor("query-overview-scoped", {
+      queryType: "risk-overview",
+      projectRevisionRef: PROJECT_REVISION_REF,
+      spatialScopeRef: SPATIAL_SCOPE_REF,
+    });
+    expect(queried.kind).toBe("succeeded");
+    if (queried.kind !== "succeeded") return;
+    const queryResultRef = queried.result.queryResultRef;
+
+    const callsBefore = fixture.trace.calls;
+    const first = await fixture.projection.resultRead.readPage(
+      readRequest({ queryResultRef, limit: 100 }),
+    );
+    expect(first.kind).toBe("page");
+    if (first.kind !== "page") return;
+    expect(first.queryType).toBe("risk-overview");
+    expect(first.items).toHaveLength(100);
+    expect(first.items[0]).toMatchObject({
+      kind: "run-summary",
+      workflowRunRef: { reference: { entityId: REPORT_RUN_ID } },
+    });
+    const facts = first.items.filter(
+      (item): item is Extract<ProjectionResultItemV1, { kind: "report-fact" }> =>
+        item.kind === "report-fact",
+    );
+    expect(facts).toHaveLength(99);
+    const riskFact = facts.find((fact) => fact.factRef.kind === "standardized-risk-record");
+    expect(riskFact).toMatchObject({
+      factRef: { reference: { entityId: "report-risk-0" } },
+      evidenceLocator: { sourceSegmentId: "segment-1" },
+    });
+    const assessmentFact = facts.find((fact) => fact.factRef.kind === "risk-assessment-record");
+    expect(assessmentFact?.factRef).toEqual(ASSESSMENT_RECORD_REF);
+    // 报告项只披露引用、审计与获准证据定位，不携带领域正文或推断等级。
+    expect(Object.keys(first.items[0] ?? {}).sort()).toEqual([
+      "auditTrailRef",
+      "entryIdentity",
+      "kind",
+      "status",
+      "workflowRunRef",
+    ]);
+    for (const fact of facts) {
+      expect(Object.keys(fact).sort()).toEqual(
+        fact.factRef.kind === "standardized-risk-record"
+          ? ["auditTrailRef", "evidenceLocator", "factRef", "kind", "workflowRunRef"]
+          : ["auditTrailRef", "factRef", "kind", "workflowRunRef"],
+      );
+    }
+    expect(first.nextCursor).toBeDefined();
+    expect(fixture.trace.calls - callsBefore).toBe(1);
+
+    const second = await fixture.projection.resultRead.readPage(
+      readRequest({
+        queryResultRef,
+        limit: 100,
+        ...(first.nextCursor === undefined ? {} : { cursor: first.nextCursor }),
+      }),
+    );
+    expect(second.kind).toBe("page");
+    if (second.kind !== "page") return;
+    expect(second.items).toHaveLength(4);
+    expect(second.nextCursor).toBeUndefined();
+    const absence = second.items.find((item) => item.kind === "report-absence");
+    expect(absence).toMatchObject({
+      tailKind: "warning",
+      reasonCode: "warning-not-triggered",
+      lastEstablishedRef: ASSESSMENT_RECORD_REF,
+    });
+    expect(Object.keys(absence ?? {}).sort()).toEqual([
+      "auditTrailRef",
+      "kind",
+      "lastEstablishedRef",
+      "reasonCode",
+      "tailKind",
+      "workflowRunRef",
+    ]);
+
+    // 后续发布不改变历史查询：同修订/空间的重复读取仍是同一页，且晚于登记时点的运行不进入结果。
+    await seedOverviewRun({
+      runId: LATER_RUN_ID,
+      runVersionId: LATER_RUN_VERSION_ID,
+      suffix: "c31-later",
+      recordedAt: LATER_RECORDED_AT,
+      acceptedRiskRecordRefs: [RISK_RECORD_REF],
+      assessmentRecordRefs: [],
+      skippedTails: [],
+    });
+    const replay = await fixture.projection.resultRead.readPage(
+      readRequest({ queryResultRef, limit: 100 }),
+    );
+    expect(replay).toEqual(first);
+  });
+
+  it("returns a real empty page when the frozen revision has no established run", async () => {
+    const queried = await queryFor("query-overview-empty", {
+      queryType: "risk-overview",
+      projectRevisionRef: {
+        kind: "project-revision",
+        reference: { entityId: "project-revision-c31", versionId: "absent" },
+      },
+      spatialScopeRef: SPATIAL_SCOPE_REF,
+    });
+    expect(queried.kind).toBe("succeeded");
+    if (queried.kind !== "succeeded") return;
+    const page = await fixture.projection.resultRead.readPage(
+      readRequest({ queryResultRef: queried.result.queryResultRef, limit: 100 }),
+    );
+    expect(page).toMatchObject({ kind: "page", queryType: "risk-overview", items: [] });
+  });
+
+  it("expands a bounded association graph over proved runs with one source batch per page", async () => {
+    await seedRuns();
+    await registerLink({
+      linkId: sha("c31-link-parent-child"),
+      runId: ROOT_RUN_ID,
+      fromRef: {
+        kind: "workflow-run",
+        reference: { entityId: ROOT_RUN_ID, versionId: ROOT_RUN_VERSION_ID },
+      },
+      toRef: {
+        kind: "workflow-run",
+        reference: { entityId: CHILD_RUN_ID, versionId: CHILD_RUN_VERSION_ID },
+      },
+      relation: "parent-child",
+      stage: "preparing",
+    });
+    const queried = await queryFor("query-association-graph", {
+      queryType: "association-graph",
+      subjectRef: RISK_RECORD_REF,
+    });
+    expect(queried.kind).toBe("succeeded");
+    if (queried.kind !== "succeeded") return;
+    const queryResultRef = queried.result.queryResultRef;
+
+    const callsBefore = fixture.trace.calls;
+    const first = await fixture.projection.resultRead.readPage(
+      readRequest({ queryResultRef, limit: 1 }),
+    );
+    expect(first.kind).toBe("page");
+    if (first.kind !== "page") return;
+    expect(first.queryType).toBe("association-graph");
+    expect(first.items).toHaveLength(1);
+    expect(first.nextCursor).toBeDefined();
+    expect(fixture.trace.calls - callsBefore).toBeLessThanOrEqual(1);
+
+    const second = await fixture.projection.resultRead.readPage(
+      readRequest({
+        queryResultRef,
+        limit: 50,
+        ...(first.nextCursor === undefined ? {} : { cursor: first.nextCursor }),
+      }),
+    );
+    expect(second.kind).toBe("page");
+    if (second.kind !== "page") return;
+    const relations = [...first.items, ...second.items].map((item) =>
+      item.kind === "trace-link" ? item.relation : item.kind,
+    );
+    expect([...relations].sort()).toEqual(["parent-child", "risk-assessment"]);
+    const riskEdge = [...first.items, ...second.items].find(
+      (item) => item.kind === "trace-link" && item.relation === "risk-assessment",
+    );
+    expect(riskEdge).toMatchObject({
+      fromRef: RISK_RECORD_REF,
+      toRef: ASSESSMENT_RECORD_REF,
+      evidenceLocator: { sourceSegmentId: "segment-1" },
+    });
+    expect(riskEdge?.auditTrailRef).toBeDefined();
+
+    // 来源资格不可证明：整页失败，不披露半份图。
+    fixture.trace.override = {
+      kind: "failed",
+      error: {
+        code: "ENTITY_NOT_FOUND",
+        category: "not-found",
+        retryable: false,
+        stageCode: "read-batch",
+        occurredAt: TIMESTAMP,
+        causalRunId: "c30-projection",
+        targetRef: RISK_RECORD_REF,
+      },
+    };
+    const unprovable = await fixture.projection.resultRead.readPage(
+      readRequest({ queryResultRef, limit: 50 }),
+    );
+    fixture.trace.override = undefined;
+    expect(unprovable).toMatchObject({ kind: "failed" });
+    if (unprovable.kind === "failed") {
+      expect(unprovable.error).toMatchObject({
+        code: "BUSINESS_BLOCKED",
+        blockerKind: "association-graph-incomplete",
+      });
+    }
+  });
+
+  it("rejects an unprovable graph subject and forged cursors on the new branches", async () => {
+    const unprovable = await queryFor("query-unprovable-graph", {
+      queryType: "association-graph",
+      subjectRef: {
+        kind: "standardized-risk-record",
+        reference: { entityId: "risk-record-absent", versionId: "v1" },
+      },
+    });
+    expect(unprovable).toMatchObject({ kind: "failed" });
+    if (unprovable.kind === "failed") expect(unprovable.error.code).toBe("ENTITY_NOT_FOUND");
+
+    const queried = await queryFor("query-overview-cursor", {
+      queryType: "risk-overview",
+      projectRevisionRef: PROJECT_REVISION_REF,
+      spatialScopeRef: SPATIAL_SCOPE_REF,
+    });
+    expect(queried.kind).toBe("succeeded");
+    if (queried.kind !== "succeeded") return;
+    const forged = await fixture.projection.resultRead.readPage(
+      readRequest({
+        queryResultRef: queried.result.queryResultRef,
+        cursor: "Zm9yZ2Vk",
+      }),
+    );
+    expect(forged).toMatchObject({ kind: "failed" });
+    if (forged.kind === "failed") {
+      expect(forged.error).toMatchObject({
+        code: "BUSINESS_BLOCKED",
+        blockerKind: "cursor-invalid",
+      });
+    }
+
+    // 只接受绑定精确查询结果与授权摘要的游标：另一查询的合法游标同样被拒绝。
+    await seedOverviewRun({
+      runId: CURSOR_RUN_ID,
+      runVersionId: CURSOR_RUN_VERSION_ID,
+      suffix: "c31-cursor",
+      acceptedRiskRecordRefs: riskRecordRefs(2, "cursor-risk"),
+      assessmentRecordRefs: [],
+      skippedTails: [],
+    });
+    const first = await fixture.projection.resultRead.readPage(
+      readRequest({ queryResultRef: queried.result.queryResultRef, limit: 1 }),
+    );
+    expect(first.kind).toBe("page");
+    if (first.kind !== "page") return;
+    const other = await queryFor("query-overview-cursor-other", {
+      queryType: "risk-overview",
+      projectRevisionRef: PROJECT_REVISION_REF,
+      spatialScopeRef: SPATIAL_SCOPE_REF,
+    });
+    expect(other.kind).toBe("succeeded");
+    if (other.kind !== "succeeded") return;
+    const crossQuery = await fixture.projection.resultRead.readPage(
+      readRequest({
+        queryResultRef: other.result.queryResultRef,
+        ...(first.nextCursor === undefined ? {} : { cursor: first.nextCursor }),
+      }),
+    );
+    expect(crossQuery).toMatchObject({ kind: "failed" });
+    if (crossQuery.kind === "failed") {
+      expect(crossQuery.error).toMatchObject({
+        code: "BUSINESS_BLOCKED",
+        blockerKind: "cursor-invalid",
+      });
+    }
+  });
+
+  it("fails explicitly when a proved graph or a single run exceeds the hard bounds", async () => {
+    // 关联运行越界：33 条已证明的 parent-child 边使关联运行超过 32 个，返回稳定越界原因而不是裁剪后的图。
+    for (let index = 0; index < 33; index += 1) {
+      await registerLink({
+        linkId: sha(`c31-link-overflow-${index}`),
+        runId: CHILD_RUN_ID,
+        fromRef: {
+          kind: "workflow-run",
+          reference: { entityId: CHILD_RUN_ID, versionId: CHILD_RUN_VERSION_ID },
+        },
+        toRef: {
+          kind: "workflow-run",
+          reference: { entityId: `risk-flow-run:${PROJECT_ID}:overflow-${index}`, versionId: "v1" },
+        },
+        relation: "parent-child",
+        stage: "preparing",
+      });
+    }
+    const graph = await queryFor("query-graph-overflow", {
+      queryType: "association-graph",
+      subjectRef: RISK_RECORD_REF,
+    });
+    expect(graph.kind).toBe("succeeded");
+    if (graph.kind !== "succeeded") return;
+    const graphPage = await fixture.projection.resultRead.readPage(
+      readRequest({ queryResultRef: graph.result.queryResultRef, limit: 50 }),
+    );
+    expect(graphPage).toMatchObject({ kind: "failed" });
+    if (graphPage.kind === "failed") {
+      expect(graphPage.error).toMatchObject({
+        code: "BUSINESS_BLOCKED",
+        blockerKind: "association-graph-overflow",
+      });
+    }
+
+    // 单运行报告展开越界：1001 个事实超过 1000 项硬上限，不返回截断后的报告。
+    const revisionRef: ContractReferenceV1 = {
+      kind: "project-revision",
+      reference: { entityId: "project-revision-c31-overflow", versionId: "v1" },
+    };
+    await seedOverviewRun({
+      runId: OVERFLOW_RUN_ID,
+      runVersionId: OVERFLOW_RUN_VERSION_ID,
+      suffix: "c31-overflow",
+      revisionRef,
+      acceptedRiskRecordRefs: riskRecordRefs(1001, "overflow-risk"),
+      assessmentRecordRefs: [],
+      skippedTails: [],
+    });
+    const report = await queryFor("query-overview-overflow", {
+      queryType: "risk-overview",
+      projectRevisionRef: revisionRef,
+      spatialScopeRef: SPATIAL_SCOPE_REF,
+    });
+    expect(report.kind).toBe("succeeded");
+    if (report.kind !== "succeeded") return;
+    const reportPage = await fixture.projection.resultRead.readPage(
+      readRequest({ queryResultRef: report.result.queryResultRef, limit: 100 }),
+    );
+    expect(reportPage).toMatchObject({ kind: "failed" });
+    if (reportPage.kind === "failed") {
+      expect(reportPage.error).toMatchObject({
+        code: "BUSINESS_BLOCKED",
+        blockerKind: "risk-overview-overflow",
+      });
+    }
+  });
+
+  it("keeps revoked report reads indistinguishable from missing targets", async () => {
+    const queried = await queryFor("query-overview-revoked", {
+      queryType: "risk-overview",
+      projectRevisionRef: PROJECT_REVISION_REF,
+      spatialScopeRef: SPATIAL_SCOPE_REF,
+    });
+    expect(queried.kind).toBe("succeeded");
+    if (queried.kind !== "succeeded") return;
+
+    fixture.access.revoke();
+    const revoked = await fixture.projection.resultRead.readPage(
+      readRequest({ queryResultRef: queried.result.queryResultRef, limit: 100 }),
+    );
+    fixture.access.restore();
+    const missing = await fixture.projection.resultRead.readPage(
+      readRequest({
+        queryResultRef: {
+          kind: "query-result",
+          reference: { entityId: "query-result:absent", versionId: "absent" },
+        },
+      }),
+    );
+    expect(revoked).toMatchObject({ kind: "failed" });
+    expect(missing).toMatchObject({ kind: "failed" });
+    if (revoked.kind === "failed" && missing.kind === "failed") {
+      expect(revoked.error.code).toBe(missing.error.code);
+      expect(revoked.error.code).toBe("ENTITY_NOT_FOUND");
     }
   });
 });

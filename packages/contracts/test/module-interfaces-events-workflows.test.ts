@@ -2826,7 +2826,7 @@ describe("C30 additive workflow inputs and bounded read ports", () => {
     ).toBe(true);
   });
 
-  it("pages run-view and trace-chain results with a closed relation set", () => {
+  it("pages the four projection branches with closed relations, report facts and absences", () => {
     const request = {
       projectId: "project-1",
       queryResultRef: version("query-result", "query-1"),
@@ -2882,10 +2882,61 @@ describe("C30 additive workflow inputs and bounded read ports", () => {
         items: [{ ...traceLink, relation: "invented-relation" }],
       }).success,
     ).toBe(false);
+    const reportFact = {
+      kind: "report-fact",
+      workflowRunRef,
+      factRef: riskInput,
+      auditTrailRef,
+      evidenceLocator: { sourceSegmentId: "segment-1" },
+    };
+    const reportAbsence = {
+      kind: "report-absence",
+      workflowRunRef,
+      tailKind: "warning",
+      reasonCode: "warning-not-triggered",
+      lastEstablishedRef: assessmentRecordRef,
+      auditTrailRef,
+    };
     expect(
       ProjectionResultReadResultV1Schema.safeParse({
         kind: "page",
         queryType: "association-graph",
+        items: [traceLink],
+      }).success,
+    ).toBe(true);
+    expect(
+      ProjectionResultReadResultV1Schema.safeParse({
+        kind: "page",
+        queryType: "risk-overview",
+        items: [runSummary, reportFact, reportAbsence],
+        nextCursor: "cursor-1",
+      }).success,
+    ).toBe(true);
+    expect(
+      ProjectionResultReadResultV1Schema.safeParse({
+        kind: "page",
+        queryType: "risk-overview",
+        items: [{ ...reportFact, factRef: version("risk-flow-run-result", "run-result-1") }],
+      }).success,
+    ).toBe(false);
+    expect(
+      ProjectionResultReadResultV1Schema.safeParse({
+        kind: "page",
+        queryType: "risk-overview",
+        items: [{ ...reportAbsence, tailKind: "invented-tail" }],
+      }).success,
+    ).toBe(false);
+    expect(
+      ProjectionResultReadResultV1Schema.safeParse({
+        kind: "page",
+        queryType: "risk-overview",
+        items: [{ ...reportAbsence, reasonCode: "" }],
+      }).success,
+    ).toBe(false);
+    expect(
+      ProjectionResultReadResultV1Schema.safeParse({
+        kind: "page",
+        queryType: "review-queue",
         items: [],
       }).success,
     ).toBe(false);

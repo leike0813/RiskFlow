@@ -112,7 +112,7 @@ const nullableJson = (value: unknown): JsonValue | null =>
 const isoOf = (value: Date | string): string =>
   typeof value === "string" ? new Date(value).toISOString() : value.toISOString();
 
-interface WorkflowGraphResultDbRow {
+export interface WorkflowGraphResultDbRow {
   project_id: string;
   result_kind: string;
   result_id: string;
@@ -145,7 +145,7 @@ interface WorkflowGraphResultDbRow {
   audit_entry_id: string;
 }
 
-interface WorkflowGraphLinkDbRow {
+export interface WorkflowGraphLinkDbRow {
   project_id: string;
   link_id: string;
   run_id: string;
@@ -169,6 +169,7 @@ interface WorkflowGraphQueryDbRow {
   query_type: string;
   target_ref: JsonValue;
   run_id: string | null;
+  spatial_scope_ref: JsonValue | null;
   actor_ref: string;
   authorization_context_ref: JsonValue;
   authorization_scope_digest: string;
@@ -220,7 +221,9 @@ const insertColumnsForRow = (row: WorkflowGraphResultRowV1): Record<string, unkn
   audit_entry_id: row.auditEntryId,
 });
 
-const rowFromDb = (row: WorkflowGraphResultDbRow): WorkflowGraphResultRowV1 =>
+export const workflowGraphResultRowFromDb = (
+  row: WorkflowGraphResultDbRow,
+): WorkflowGraphResultRowV1 =>
   WorkflowGraphResultRowV1Schema.parse({
     schemaVersion: "1",
     projectId: row.project_id,
@@ -272,7 +275,7 @@ const insertColumnsForLink = (link: WorkflowGraphLinkV1): Record<string, unknown
   audit_entry_id: link.auditEntryId,
 });
 
-const linkFromDb = (row: WorkflowGraphLinkDbRow): WorkflowGraphLinkV1 =>
+export const workflowGraphLinkFromDb = (row: WorkflowGraphLinkDbRow): WorkflowGraphLinkV1 =>
   WorkflowGraphLinkV1Schema.parse({
     schemaVersion: "1",
     projectId: row.project_id,
@@ -298,6 +301,7 @@ const insertColumnsForQuery = (query: WorkflowQueryRegistrationV1): Record<strin
   query_type: query.queryType,
   target_ref: jsonValue(query.targetRef),
   run_id: query.runId ?? null,
+  spatial_scope_ref: nullableJson(query.spatialScopeRef),
   actor_ref: query.actorRef,
   authorization_context_ref: jsonValue(query.authorizationContextRef),
   authorization_scope_digest: query.authorizationScopeDigest,
@@ -315,6 +319,7 @@ const queryFromDb = (row: WorkflowGraphQueryDbRow): WorkflowQueryRegistrationV1 
     queryType: row.query_type,
     targetRef: row.target_ref,
     ...(row.run_id === null ? {} : { runId: row.run_id }),
+    ...(row.spatial_scope_ref === null ? {} : { spatialScopeRef: row.spatial_scope_ref }),
     actorRef: row.actor_ref,
     authorizationContextRef: row.authorization_context_ref,
     authorizationScopeDigest: row.authorization_scope_digest,
@@ -570,7 +575,7 @@ class WorkflowGraphPersistence {
       .where("result_id", "=", input.resultId)
       .where("result_version_id", "=", input.resultVersionId)
       .executeTakeFirst();
-    return row === undefined ? undefined : rowFromDb(row);
+    return row === undefined ? undefined : workflowGraphResultRowFromDb(row);
   }
 
   /** 已登记事实按持久化时间与稳定键排序，分页读取不改变顺序。 */
@@ -589,7 +594,7 @@ class WorkflowGraphPersistence {
       .orderBy("result_id", "asc")
       .limit(input.limit ?? DEFAULT_ROW_LIMIT_V1)
       .execute();
-    return rows.map((row) => rowFromDb(row));
+    return rows.map((row) => workflowGraphResultRowFromDb(row));
   }
 
   /**
@@ -620,7 +625,7 @@ class WorkflowGraphPersistence {
       .limit(1)
       .executeTakeFirst();
     if (row === undefined || row.artifact_ref === null) return undefined;
-    const parsedRow = rowFromDb(row);
+    const parsedRow = workflowGraphResultRowFromDb(row);
     if (parsedRow.resultKind !== "run-state" || parsedRow.artifactRef === undefined) {
       return undefined;
     }
@@ -664,7 +669,7 @@ class WorkflowGraphPersistence {
       .orderBy("link_id", "asc")
       .limit(input.limit ?? DEFAULT_ROW_LIMIT_V1)
       .execute();
-    return rows.map((row) => linkFromDb(row));
+    return rows.map((row) => workflowGraphLinkFromDb(row));
   }
 
   async readQuery(input: {

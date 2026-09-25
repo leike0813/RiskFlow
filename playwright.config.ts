@@ -27,5 +27,13 @@ export default defineConfig({
       name: "chromium",
       use: { ...devices["Desktop Chrome"], browserName: "chromium" },
     },
+    {
+      // C32 demo 验收：服务由 demo/test/browser/server.mjs 在测试内启动（生产构建 +
+      // 真实 HTTP/授权/投影接缝），与 apps/web 的 chromium project 互不干扰。
+      name: "demo-chromium",
+      testDir: "demo/test/browser",
+      outputDir: "test-results/demo-browser",
+      use: { ...devices["Desktop Chrome"], browserName: "chromium" },
+    },
   ],
 });

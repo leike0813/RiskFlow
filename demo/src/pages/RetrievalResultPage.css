@@ -1,0 +1,29 @@
+.rr-empty {
+  padding: 24px 0;
+  color: var(--text-2);
+  font-size: 13px;
+  text-align: center;
+}
+
+.rr-note {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.rr-node {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 8px 16px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.rr-node dt {
+  color: var(--text-2);
+}
+
+.rr-node dd {
+  margin: 0;
+  color: var(--text);
+}

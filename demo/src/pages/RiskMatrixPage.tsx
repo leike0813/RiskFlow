@@ -1,82 +1,199 @@
 import AppShell from '../components/AppShell'
+import { AssociatedObjects } from '../components/AssociatedObjects'
 import { Card } from '../components/Card'
-import { RiskBadge } from '../components/RiskBadge'
+import { DataTable, type DataTableColumn } from '../components/DataTable'
+import { PageStateView } from '../components/PageStateView'
 import { SectionTabs } from '../components/SectionTabs'
-import { StatusTag } from '../components/StatusTag'
 import { VersionTag } from '../components/VersionTag'
-import { RiskMatrix5x5 } from '../charts/RiskMatrix5x5'
+import { useEngineering, usePageQuery } from '../api/context'
 import {
-  assessmentRecord,
-  assessmentVersions,
-  matrixHighlight,
-  riskMatrixGrid,
-} from '../content/assessment'
-import type { RiskLevel } from '../content/risks'
+  listKnowledgeDefinitions,
+  readKnowledgeRelease,
+  type GovernanceListItemView,
+  type GovernanceReleaseView,
+  type RiskMatrixView,
+} from '../api/operations'
+import { LifecycleTag, knowledgeTabs, lifecycleStatusOf } from './knowledgeShared'
 import './RiskMatrixPage.css'
 
-const knowledgeTabs = [
-  { to: '/knowledge/mechanisms', label: '风险机理库' },
-  { to: '/knowledge/rules', label: '评分规则' },
-  { to: '/knowledge/matrix', label: '风险矩阵' },
-  { to: '/knowledge/measures', label: '措施库' },
+interface MatrixFacts {
+  readonly definitions: GovernanceListItemView[]
+  readonly release: GovernanceReleaseView | null
+}
+
+const definitionColumns: DataTableColumn[] = [
+  {
+    key: 'definitionRef',
+    title: '矩阵定义',
+    render: (row) => (
+      <span className="mono">
+        {(row.definitionRef as { reference: { entityId: string } }).reference.entityId}
+      </span>
+    ),
+  },
+  {
+    key: 'lifecycleStatus',
+    title: '审核状态',
+    width: 100,
+    render: (row) => (
+      <LifecycleTag
+        status={
+          row.lifecycleStatus as 'draft' | 'in-review' | 'published' | 'deactivated'
+        }
+      />
+    ),
+  },
+  {
+    key: 'currentReleaseRef',
+    title: '当前发布',
+    width: 140,
+    render: (row) => {
+      const release = row.currentReleaseRef as
+        | { reference: { entityId: string; versionId: string } }
+        | undefined
+      return release === undefined ? '—' : <VersionTag>{release.reference.versionId}</VersionTag>
+    },
+  },
+  { key: 'updatedAt', title: '更新时间', width: 170 },
 ]
 
-const levels: RiskLevel[] = ['I', 'II', 'III', 'IV']
-
 export default function RiskMatrixPage() {
-  const matrix = assessmentVersions.riskMatrix
+  const { selector } = useEngineering()
+  const { state, retry } = usePageQuery<MatrixFacts>(async (projectId, signal) => {
+    const definitions = await listKnowledgeDefinitions(
+      projectId,
+      { definitionType: 'risk-matrix' },
+      signal,
+    )
+    const published = definitions.items.find((item) => item.currentReleaseRef !== undefined)
+    const release =
+      published?.currentReleaseRef === undefined
+        ? null
+        : await readKnowledgeRelease(projectId, published.currentReleaseRef, signal)
+    return { definitions: definitions.items, release }
+  }, [])
 
   return (
-    <AppShell activeNav="knowledge" agentContext={[`${matrix.name} ${matrix.version}`]}>
+    <AppShell
+      activeNav="knowledge"
+      agentContext={selector.projectId === null ? [] : [selector.projectId]}
+    >
       <div className="page">
         <header className="page-header">
           <div>
             <h1 className="page-title">风险矩阵</h1>
-            <p className="page-subtitle">查看风险矩阵版本与分级区间</p>
+            <p className="page-subtitle">风险矩阵版本与分级区间（只读）</p>
           </div>
         </header>
 
         <SectionTabs items={knowledgeTabs} />
 
-        <div className="kmx-layout">
-          <Card title={matrix.name} extra={<VersionTag>矩阵 {matrix.version}</VersionTag>}>
-            <RiskMatrix5x5 grid={riskMatrixGrid} highlight={matrixHighlight} height={520} />
-            <p className="kmx-caption">
-              高亮格为风险评估记录 {assessmentRecord.id} 的落点（P{matrixHighlight.p} / C
-              {matrixHighlight.c}）
-            </p>
-          </Card>
+        <PageStateView
+          state={state}
+          title="风险矩阵"
+          emptyMessage="当前工程尚无风险矩阵定义"
+          forbiddenHint="当前角色不具备知识库读取权限"
+          onRetry={retry}
+        >
+          {(facts) => (
+            <>
+              {facts.release === null ||
+              facts.release.body.definitionType !== 'risk-matrix' ? (
+                <Card title="风险矩阵">
+                  <div className="kmx-empty">当前工程无已发布风险矩阵（治理空态）</div>
+                </Card>
+              ) : (
+                <Card
+                  title={`${facts.release.body.matrix.matrixId}`}
+                  extra={
+                    <>
+                      <LifecycleTag status={lifecycleStatusOf(facts.release)} />
+                      <VersionTag>矩阵 {facts.release.body.matrix.matrixVersion}</VersionTag>
+                    </>
+                  }
+                >
+                  <MatrixGrid matrix={facts.release.body.matrix} />
+                </Card>
+              )}
 
-          <div className="kmx-side">
-            <Card title="版本列表">
-              <div className="kmx-version-row">
-                <div className="kmx-version-main">
-                  <span className="mono">{matrix.id}</span>
-                  <span className="kmx-version-name">{matrix.name}</span>
-                </div>
-                <div className="kmx-version-tags">
-                  <StatusTag tone="success">已发布</StatusTag>
-                  <VersionTag>{matrix.version}</VersionTag>
-                </div>
-              </div>
-              <p className="kmx-note">
-                矩阵发布后不可原地修改；回滚通过重新启用历史版本完成，历史评估记录仍引用其评估时使用的矩阵版本。
-              </p>
-            </Card>
+              <Card title="版本列表">
+                <DataTable
+                  columns={definitionColumns}
+                  rows={facts.definitions.map((item) => ({ ...item }))}
+                />
+              </Card>
 
-            <Card title="分级图例">
-              <div className="kmx-legend">
-                {levels.map((lv) => (
-                  <RiskBadge key={lv} level={lv} />
-                ))}
-              </div>
-              <p className="kmx-note">
-                I 级为最高风险等级，IV 级为最低；风险等级由发生可能性分值 P 与后果严重性分值 C 经矩阵映射确定。
-              </p>
-            </Card>
-          </div>
-        </div>
+              {facts.release !== null && (
+                <AssociatedObjects subjectRef={facts.release.releaseRef} />
+              )}
+
+              <Card title="分级图例">
+                {facts.release !== null &&
+                facts.release.body.definitionType === 'risk-matrix' ? (
+                  <div className="kmx-legend">
+                    {facts.release.body.matrix.riskLevels.map((level) => (
+                      <span key={level.levelId} className="kmx-level">
+                        {level.levelId}（序 {level.ordinal}）
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="kmx-empty">无已发布分级定义</div>
+                )}
+                <p className="kmx-note">
+                  风险等级由发生可能性分值 P 与后果严重性分值 C 经矩阵映射确定；矩阵发布后不可原地修改。
+                </p>
+              </Card>
+            </>
+          )}
+        </PageStateView>
       </div>
     </AppShell>
+  )
+}
+
+/** 通用矩阵网格：按发布版本的轴带与单元格渲染，不假定 5×5 形状。 */
+function MatrixGrid({ matrix }: { matrix: RiskMatrixView }) {
+  const cellLevel = new Map(
+    matrix.cells.map((cell) => [`${cell.possibilityBandId}|${cell.consequenceBandId}`, cell.riskLevelId]),
+  )
+  return (
+    <div className="kmx-grid-wrap">
+      <table className="kmx-grid">
+        <thead>
+          <tr>
+            <th>P \ C</th>
+            {matrix.consequenceBands.map((band) => (
+              <th key={band.bandId}>
+                {band.bandId}
+                <span className="kmx-band-range mono">
+                  [{band.lower}, {band.upper})
+                </span>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {matrix.possibilityBands.map((possibility) => (
+            <tr key={possibility.bandId}>
+              <th>
+                {possibility.bandId}
+                <span className="kmx-band-range mono">
+                  [{possibility.lower}, {possibility.upper})
+                </span>
+              </th>
+              {matrix.consequenceBands.map((consequence) => {
+                const level = cellLevel.get(`${possibility.bandId}|${consequence.bandId}`)
+                return (
+                  <td key={consequence.bandId} className="kmx-cell">
+                    {level ?? '—'}
+                  </td>
+                )
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }

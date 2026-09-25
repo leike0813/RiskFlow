@@ -17,6 +17,8 @@ import {
   ContractReferenceV1Schema,
   DomainEventRefV1Schema,
   EngineeringDataApplyResultV1Schema,
+  EngineeringDataCatalogQueryV1Schema,
+  EngineeringDataCatalogResultV1Schema,
   EngineeringDataCommandV1Schema,
   EngineeringDataQueryV1Schema,
   EngineeringDataReadResultV1Schema,
@@ -29,10 +31,14 @@ import {
   IdentificationPlanCommandV1Schema,
   IdentificationPlanResultV1Schema,
   KnowledgeGovernanceCommandV1Schema,
+  KnowledgeGovernanceReadQueryV1Schema,
+  KnowledgeGovernanceReadResultV1Schema,
   KnowledgeGovernanceResultV1Schema,
   KnowledgeResolutionCommandV1Schema,
   KnowledgeResolutionResultV1Schema,
   KnowledgeRetrievalQueryV1Schema,
+  KnowledgeRetrievalReadQueryV1Schema,
+  KnowledgeRetrievalReadResultV1Schema,
   KnowledgeRetrievalResultV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
   ModuleErrorV1Schema,
@@ -42,6 +48,8 @@ import {
   ProjectionExportResultV1Schema,
   ProjectionQueryResultV1Schema,
   ProjectionQueryV1Schema,
+  ProjectionResultReadQueryResultV1Schema,
+  ProjectionResultReadQueryV1Schema,
   ProjectionSubscriptionResultV1Schema,
   RecommendationCommandV1Schema,
   RecommendationResultV1Schema,
@@ -70,6 +78,8 @@ import {
   type CancelAgentTaskCommandV1,
   type CancelWorkflowRunCommandV1,
   type ConfirmAgentCommandV1,
+  type EngineeringDataCatalogPortV1,
+  type EngineeringDataCatalogQueryV1,
   type EngineeringDataCommandV1,
   type EngineeringDataPortV1,
   type EngineeringDataQueryV1,
@@ -80,9 +90,13 @@ import {
   type IdentificationFinalizationCommandV1,
   type IdentificationPlanCommandV1,
   type KnowledgeGovernanceCommandV1,
+  type KnowledgeGovernanceReadPortV1,
+  type KnowledgeGovernanceReadQueryV1,
   type KnowledgeModelingPortV1,
   type KnowledgeResolutionCommandV1,
   type KnowledgeRetrievalQueryV1,
+  type KnowledgeRetrievalReadPortV1,
+  type KnowledgeRetrievalReadQueryV1,
   type ModuleBranchV1,
   type ModuleCapabilityV1,
   type OpenWarningCommandV1,
@@ -90,6 +104,8 @@ import {
   type ProjectionPortV1,
   type ProjectionQueryResultV1,
   type ProjectionQueryV1,
+  type ProjectionResultReadPortV1,
+  type ProjectionResultReadQueryV1,
   type RecommendationCommandV1,
   type ResumeAgentTaskCommandV1,
   type ResumeWorkflowRunCommandV1,
@@ -311,6 +327,13 @@ type DiscriminatedUnionSchema = {
 
 const payloadSchemaFor = (schema: ZodType, kind: string): ZodType => {
   const options = (schema as unknown as DiscriminatedUnionSchema).options ?? [];
+  // 单 kind 查询契约（C32 只读面）：非判别联合，payload 字段直接挂在 strictObject 上。
+  if (options.length === 0) {
+    const direct = (schema as unknown as ObjectSchemaWithPayload).shape?.payload;
+    if (direct !== undefined && typeof direct === "object" && direct !== null) {
+      return direct as ZodType;
+    }
+  }
   const option = options.find((candidate) => {
     const discriminator = candidate.shape.kind as { readonly value?: unknown } | undefined;
     return discriminator?.value === kind;
@@ -372,6 +395,11 @@ export interface ApiPortsV1 {
   readonly agentTask?: AgentTaskPortV1;
   readonly workflow?: WorkflowPortV1;
   readonly projection?: ProjectionPortV1;
+  // C32 只读面四条独立注入位；未注入时对应七条查询分支不激活（C32 接线 D 案）。
+  readonly engineeringDataCatalog?: EngineeringDataCatalogPortV1;
+  readonly knowledgeGovernanceRead?: KnowledgeGovernanceReadPortV1;
+  readonly knowledgeRetrievalRead?: KnowledgeRetrievalReadPortV1;
+  readonly projectionResultRead?: ProjectionResultReadPortV1;
   /**
    * C36 窄投影 port：只在未提供完整 `projection` port 时把原 `projection.query` 路由绑定到它，
    * 只接受 `quality-evaluation` 查询类型；SSE 与导出仍只由完整 port 激活。
@@ -550,6 +578,32 @@ const invokeProjectionSubscribe: HttpInvokerV1 = (ports, request) =>
   ports.projection?.subscribe(request as RunSubscriptionRequestV1) ?? missingPort("projection");
 const invokeProjectionExport: HttpInvokerV1 = (ports, request) =>
   ports.projection?.export(request as ProjectionExportRequestV1) ?? missingPort("projection");
+// C32 只读面：三条新端口直接转发 `read`；projection.result-read 把既有 readPage
+// 判别结果包成传输信封的 moduleResult（succeeded/failed）。
+const invokeEngineeringDataCatalog: HttpInvokerV1 = (ports, request) =>
+  ports.engineeringDataCatalog?.read(request as EngineeringDataCatalogQueryV1) ??
+  missingPort("engineeringDataCatalog");
+const invokeKnowledgeGovernanceRead: HttpInvokerV1 = (ports, request) =>
+  ports.knowledgeGovernanceRead?.read(request as KnowledgeGovernanceReadQueryV1) ??
+  missingPort("knowledgeGovernanceRead");
+const invokeKnowledgeRetrievalRead: HttpInvokerV1 = (ports, request) =>
+  ports.knowledgeRetrievalRead?.read(request as KnowledgeRetrievalReadQueryV1) ??
+  missingPort("knowledgeRetrievalRead");
+const invokeProjectionResultRead: HttpInvokerV1 = async (ports, request) => {
+  const port = ports.projectionResultRead ?? missingPort("projectionResultRead");
+  const query = request as ProjectionResultReadQueryV1;
+  const page = await port.readPage({
+    projectId: query.projectId,
+    queryResultRef: query.payload.queryResultRef,
+    requestedAt: query.requestedAt,
+    ...(query.payload.cursor === undefined ? {} : { cursor: query.payload.cursor }),
+    limit: query.payload.limit ?? 50,
+    authorization: query.authorization,
+  });
+  return page.kind === "page"
+    ? { kind: "succeeded", result: page }
+    : { kind: "failed", error: page.error };
+};
 
 export const HTTP_ROUTE_CATALOG_V1: readonly HttpRouteEntryV1[] = Object.freeze([
   ...commandRoutes(
@@ -792,6 +846,40 @@ export const HTTP_ROUTE_CATALOG_V1: readonly HttpRouteEntryV1[] = Object.freeze(
     "projection",
     invokeProjectionExport,
     [["projection.export", "export"]],
+  ),
+  // C32 只读面七条查询分支：目录、能力映射与 OpenAPI 由同一条目派生；未注入不激活。
+  ...queryRoutes(
+    EngineeringDataCatalogQueryV1Schema,
+    EngineeringDataCatalogResultV1Schema,
+    "engineeringDataCatalog",
+    invokeEngineeringDataCatalog,
+    [
+      ["engineering-data.context-read", "context-read"],
+      ["engineering-data.source-catalog", "source-catalog"],
+      ["engineering-data.monitoring-catalog", "monitoring-catalog"],
+      ["engineering-data.read-result", "read-result"],
+    ],
+  ),
+  ...queryRoutes(
+    KnowledgeGovernanceReadQueryV1Schema,
+    KnowledgeGovernanceReadResultV1Schema,
+    "knowledgeGovernanceRead",
+    invokeKnowledgeGovernanceRead,
+    [["knowledge-modeling.governance-read", "governance-read"]],
+  ),
+  ...queryRoutes(
+    KnowledgeRetrievalReadQueryV1Schema,
+    KnowledgeRetrievalReadResultV1Schema,
+    "knowledgeRetrievalRead",
+    invokeKnowledgeRetrievalRead,
+    [["knowledge-modeling.retrieval-result", "retrieval-result"]],
+  ),
+  ...queryRoutes(
+    ProjectionResultReadQueryV1Schema,
+    ProjectionResultReadQueryResultV1Schema,
+    "projectionResultRead",
+    invokeProjectionResultRead,
+    [["projection.result-read", "result-read"]],
   ),
 ]);
 

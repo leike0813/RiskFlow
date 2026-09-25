@@ -1,0 +1,73 @@
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--page-bg);
+}
+
+.login-card {
+  width: 380px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
+  padding: 36px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.login-brand {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.login-subtitle {
+  font-size: 13px;
+  color: var(--text-2);
+  margin-top: -8px;
+}
+
+.login-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.login-field input {
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 10px;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.login-field input:focus {
+  outline: 2px solid var(--blue-soft);
+  border-color: var(--blue);
+}
+
+.login-error {
+  font-size: 13px;
+  color: var(--risk-4);
+}
+
+.login-submit {
+  height: 38px;
+  border: none;
+  border-radius: 6px;
+  background: var(--blue);
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.login-submit:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

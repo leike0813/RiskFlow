@@ -74,6 +74,7 @@ import {
   type EngineeringFreezeCommandV1,
   type EngineeringFreezeResultV1,
   type ModuleErrorV1,
+  type ModuleBranchV1,
   type MonitoringBatchRefV1,
   type MonitoringSeriesRefV1,
   type MonitoringSnapshotRefV1,
@@ -939,7 +940,10 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
     }
   }
 
-  async resolveSnapshotQuery(query: ResolveMonitoringSnapshotQueryV1): Promise<MonitoringResultV1> {
+  async resolveSnapshotQuery(
+    query: ResolveMonitoringSnapshotQueryV1,
+    options?: { readonly verifyBranch?: ModuleBranchV1 },
+  ): Promise<MonitoringResultV1> {
     const parsed = ResolveMonitoringSnapshotQueryV1Schema.safeParse(query);
     if (!parsed.success)
       return { kind: "failed", error: moduleError("UNSUPPORTED_CONTRACT", "monitoring.query") };
@@ -979,6 +983,9 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
             reference: evidence.sourceVersion,
           })),
         ),
+        // C32：目录只读面的调用方持有 `engineering-data.read-result` 精确上下文，复验必须使用
+        // 调用方真实 branch（C06 上下文按 branch+invocation 绑定）；默认保持既有语义。
+        options?.verifyBranch,
       );
       const result = MonitoringSnapshotQueryV1Schema.parse({
         queryResultRef: parsed.data.queryResultRef,
@@ -1101,6 +1108,7 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
     branch: "engineering-data.write" | "engineering-data.freeze" | "engineering-data.read",
     requestedSpatialScopeRefs: readonly SpatialScopeRefV1[],
     requestedSourceVersionRefs: readonly SourceVersionRefV1[],
+    verifyBranch?: ModuleBranchV1,
   ): Promise<AuthorizationDecisionV1> {
     if (
       command.projectId !== command.authorization.projectId ||
@@ -1114,11 +1122,12 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
       invocationId: command.commandId,
       projectId: command.projectId,
       branch:
-        branch === "engineering-data.write"
+        verifyBranch ??
+        (branch === "engineering-data.write"
           ? "engineering-data.register-monitoring-batch"
           : branch === "engineering-data.freeze"
             ? "engineering-data.monitoring-snapshot"
-            : "engineering-data.monitoring-snapshot-query",
+            : "engineering-data.monitoring-snapshot-query"),
       requestedSpatialScopeRefs: [...requestedSpatialScopeRefs],
       requestedSourceVersionRefs: [...requestedSourceVersionRefs],
       requestedAt: command.authorization.decidedAt,

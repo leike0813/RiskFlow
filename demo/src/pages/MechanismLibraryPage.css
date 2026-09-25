@@ -58,3 +58,34 @@
   align-items: flex-start;
   gap: 6px;
 }
+
+.kme-filters {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.kme-filter {
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 15px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text-2);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.kme-filter--active,
+.kme-filter--active:hover {
+  background: var(--blue);
+  border-color: var(--blue);
+  color: #fff;
+}
+
+.kme-empty {
+  padding: 16px 0;
+  color: var(--text-2);
+  font-size: 13px;
+  text-align: center;
+}

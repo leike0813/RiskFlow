@@ -2,6 +2,14 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  margin-bottom: 12px;
+}
+
+.pm-empty {
+  padding: 24px 0;
+  color: var(--text-2);
+  font-size: 13px;
+  text-align: center;
 }
 
 .pm-flow {

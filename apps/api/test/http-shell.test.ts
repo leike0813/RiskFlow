@@ -1029,3 +1029,227 @@ describe("C09 HTTP shell", () => {
     await app.close();
   });
 });
+
+describe("C32 read surface routes", () => {
+  const queryBody = (payload: Record<string, unknown>) => ({
+    schemaVersion: "1",
+    queryId: "query-1",
+    requestedAt: NOW,
+    requestedSpatialScopeRefs: [scope],
+    requestedSourceVersionRefs: [],
+    payload,
+  });
+  const postQuery = (
+    app: ReturnType<typeof buildApi>,
+    branch: string,
+    payload: Record<string, unknown>,
+  ) =>
+    app.inject({
+      method: "POST",
+      url: `/api/v1/projects/project/queries/${branch}`,
+      headers: { ...jsonHeaders, cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+      payload: queryBody(payload),
+    });
+
+  it("routes the four engineering-data catalog branches to the catalog port", async () => {
+    const seen: { kind?: string; projectId?: string; actorId?: string }[] = [];
+    const authorizedBranches: string[] = [];
+    const app = buildApi({
+      access: accessStub((branch) => authorizedBranches.push(branch)),
+      ports: {
+        engineeringDataCatalog: {
+          read: async (query) => {
+            seen.push(query);
+            return {
+              kind: "succeeded",
+              result: {
+                kind: "context-read",
+                projectId: query.projectId,
+                contextStatus: "active",
+                missingApplicabilityDimensions: [],
+                spatialScopes: [],
+              },
+            };
+          },
+        },
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+
+    const response = await postQuery(app, "engineering-data.context-read", {});
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "context-read", contextStatus: "active" },
+    });
+    expect(authorizedBranches).toEqual(["engineering-data.context-read"]);
+    expect(seen[0]).toMatchObject({
+      kind: "context-read",
+      projectId: "project",
+      actorId: "actor",
+      queryId: "query-1",
+    });
+    await app.close();
+  });
+
+  it("routes governance-read, retrieval-result and result-read to their ports", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const app = buildApi({
+      access: accessStub(),
+      ports: {
+        knowledgeGovernanceRead: {
+          read: async (query) => {
+            seen.push({ port: "governance", kind: query.kind, payload: query.payload });
+            return {
+              kind: "succeeded",
+              result: { kind: "list-definitions", items: [], totalCount: 0 },
+            };
+          },
+        },
+        knowledgeRetrievalRead: {
+          read: async (query) => {
+            seen.push({ port: "retrieval", kind: query.kind });
+            return {
+              kind: "succeeded",
+              result: {
+                kind: "hybrid-evidence",
+                knowledgeQueryResultRef: query.payload.knowledgeQueryResultRef,
+                policyRef: { entityId: "policy", versionId: "1" },
+                generationRef: {
+                  kind: "retrieval-generation",
+                  reference: { entityId: "generation", versionId: "1" },
+                },
+                topK: 4,
+                hits: [],
+              },
+            };
+          },
+        },
+        projectionResultRead: {
+          readPage: async (request) => {
+            seen.push({ port: "projection", limit: request.limit });
+            return { kind: "page", queryType: "run-view", items: [] };
+          },
+        },
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+    const knowledgeQueryResultRef = {
+      kind: "knowledge-query-result",
+      reference: {
+        entityId: "retrieval-query-result:project:q-1",
+        versionId: "a".repeat(64),
+      },
+    };
+
+    const governance = await postQuery(app, "knowledge-modeling.governance-read", {
+      operation: "list-definitions",
+      definitionType: "risk-mechanism",
+    });
+    expect(governance.statusCode).toBe(200);
+    expect(governance.json()).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "list-definitions", totalCount: 0 },
+    });
+
+    const retrieval = await postQuery(app, "knowledge-modeling.retrieval-result", {
+      knowledgeQueryResultRef,
+    });
+    expect(retrieval.statusCode).toBe(200);
+    expect(retrieval.json()).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "hybrid-evidence", topK: 4 },
+    });
+
+    const projection = await postQuery(app, "projection.result-read", {
+      queryResultRef: {
+        kind: "query-result",
+        reference: { entityId: "query-result-1", versionId: "1" },
+      },
+    });
+    expect(projection.statusCode).toBe(200);
+    expect(projection.json()).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "page", queryType: "run-view" },
+    });
+    // readPage 的 limit 缺省由传输层补齐，游标未提供时不落到端口请求。
+    expect(seen[2]).toMatchObject({ port: "projection", limit: 50 });
+    expect(seen.map((entry) => entry.port)).toEqual(["governance", "retrieval", "projection"]);
+    await app.close();
+  });
+
+  it("maps a failed projection readPage outcome to the failure envelope", async () => {
+    const app = buildApi({
+      access: accessStub(),
+      ports: {
+        projectionResultRead: {
+          readPage: async () => ({
+            kind: "failed",
+            error: {
+              code: "AUTHORIZATION_DENIED",
+              category: "authorization",
+              retryable: false,
+              requiredCapability: "projection.query",
+              authorizationPolicyRef: { entityId: "policy", versionId: "1" },
+              stageCode: "projection.result-read",
+              occurredAt: NOW,
+              causalRunId: "query-1",
+            },
+          }),
+        },
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+    const response = await postQuery(app, "projection.result-read", {
+      queryResultRef: {
+        kind: "query-result",
+        reference: { entityId: "query-result-1", versionId: "1" },
+      },
+    });
+    expect(response.statusCode).toBe(404);
+    expect(response.json().code).toBe("NOT_FOUND");
+    await app.close();
+  });
+
+  it("keeps the read-surface branches inactive and strict when the ports are absent", async () => {
+    const app = appFor();
+    for (const branch of [
+      "engineering-data.context-read",
+      "engineering-data.source-catalog",
+      "engineering-data.monitoring-catalog",
+      "engineering-data.read-result",
+      "knowledge-modeling.governance-read",
+      "knowledge-modeling.retrieval-result",
+      "projection.result-read",
+    ]) {
+      const response = await postQuery(app, branch, {});
+      expect(response.statusCode).toBe(404);
+    }
+
+    const active = buildApi({
+      access: accessStub(),
+      ports: {
+        engineeringDataCatalog: {
+          read: async () => {
+            throw new Error("should not be reached");
+          },
+        },
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+    // 契约外字段在 transport 严格信封处即被拒绝，不进入端口。
+    const invalid = await postQuery(active, "engineering-data.context-read", { leaked: true });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json().code).toBe("CONTRACT_INVALID");
+    await app.close();
+    await active.close();
+  });
+});

@@ -1349,6 +1349,7 @@ export class PostgresEngineeringContextSourceRegistry
 
   async resolveReadQuery(
     query: ResolveEngineeringDataReadQueryV1,
+    options?: { readonly verifyBranch?: ModuleBranchV1 },
   ): Promise<EngineeringDataReadResolutionResultV1> {
     const parsed = ResolveEngineeringDataReadQueryV1Schema.safeParse(query);
     if (!parsed.success) {
@@ -1367,13 +1368,11 @@ export class PostgresEngineeringContextSourceRegistry
     if (branch === undefined) {
       return { kind: "failed", error: readAuthorizationDenied(valid.invocationId) };
     }
+    // C32：目录只读面的调用方持有 `engineering-data.read-result` 精确上下文，复验必须使用
+    // 调用方真实 branch（C06 上下文按 branch+invocation 绑定）；默认保持既有调用方语义。
+    const verifyBranch = options?.verifyBranch ?? READ_BRANCH[branch];
     try {
-      await this.#verifyRead(
-        { ...valid, queryId: valid.invocationId },
-        READ_BRANCH[branch],
-        [],
-        [],
-      );
+      await this.#verifyRead({ ...valid, queryId: valid.invocationId }, verifyBranch, [], []);
       const row = await this.#db
         .selectFrom("business.engineering_data_read_query_results")
         .selectAll()
@@ -1399,7 +1398,7 @@ export class PostgresEngineeringContextSourceRegistry
       if (!record.success || record.data.query.kind !== branch) {
         return { kind: "failed", error: readAuthorizationDenied(valid.invocationId) };
       }
-      const result = await this.#projectReadQuery(valid, record.data);
+      const result = await this.#projectReadQuery(valid, record.data, verifyBranch);
       return result === undefined
         ? { kind: "failed", error: readAuthorizationDenied(valid.invocationId) }
         : { kind: "succeeded", result };
@@ -1419,6 +1418,7 @@ export class PostgresEngineeringContextSourceRegistry
   async #projectReadQuery(
     query: ResolveEngineeringDataReadQueryV1,
     record: EngineeringDataReadQueryRecordV1,
+    verifyBranch: ModuleBranchV1,
   ): Promise<SourceSegmentReadResultV1 | EvidenceAccessReadResultV1 | undefined> {
     const verify = {
       queryId: query.invocationId,
@@ -1434,7 +1434,7 @@ export class PostgresEngineeringContextSourceRegistry
       if (target === undefined || target.sourceVersion.sourceAccessGrantRef === undefined) {
         return undefined;
       }
-      await this.#verifyRead(verify, READ_BRANCH["source-segments"], target.spatialScopeRefs, [
+      await this.#verifyRead(verify, verifyBranch, target.spatialScopeRefs, [
         target.sourceVersion.sourceVersionRef,
       ]);
       return SourceSegmentReadResultV1Schema.parse({
@@ -1459,7 +1459,7 @@ export class PostgresEngineeringContextSourceRegistry
     if (target === undefined) return undefined;
     await this.#verifyRead(
       verify,
-      READ_BRANCH["evidence-access"],
+      verifyBranch,
       target.spatialScopeRefs,
       declaredSourceVersionRefs,
     );

@@ -1,0 +1,177 @@
+/**
+ * demo 最小 HTTP 客户端：按 apps/api 传输契约形状手写（demo 是独立 npm 项目，不跨包引用）。
+ * 查询一律 POST /api/v1/projects/:projectId/queries/:branch，会话经同源 cookie 由浏览器携带。
+ */
+
+export type ApiErrorCode =
+  | 'AUTHENTICATION_REQUIRED'
+  | 'CONTRACT_INVALID'
+  | 'NOT_FOUND'
+  | 'IDEMPOTENCY_CONFLICT'
+  | 'REQUEST_TOO_LARGE'
+  | 'UNSUPPORTED_MEDIA_TYPE'
+  | 'UNSUPPORTED_CONTRACT'
+  | 'TRANSIENT_FAILURE'
+  | 'TERMINAL_FAILURE'
+
+/** 脱敏错误：只保留可对用户呈现的结构化字段，不带服务端文案与堆栈。 */
+export class ApiError extends Error {
+  readonly code: ApiErrorCode
+  readonly retryable: boolean
+  readonly requestId: string | null
+
+  constructor(code: ApiErrorCode, options: { retryable?: boolean; requestId?: string | null } = {}) {
+    super(code)
+    this.name = 'ApiError'
+    this.code = code
+    this.retryable = options.retryable ?? false
+    this.requestId = options.requestId ?? null
+  }
+}
+
+const STATUS_CODE_MAP: Record<number, ApiErrorCode> = {
+  400: 'CONTRACT_INVALID',
+  401: 'AUTHENTICATION_REQUIRED',
+  403: 'NOT_FOUND',
+  404: 'NOT_FOUND',
+  409: 'IDEMPOTENCY_CONFLICT',
+  413: 'REQUEST_TOO_LARGE',
+  415: 'UNSUPPORTED_MEDIA_TYPE',
+  422: 'CONTRACT_INVALID',
+  426: 'UNSUPPORTED_CONTRACT',
+  503: 'TRANSIENT_FAILURE',
+}
+
+const KNOWN_CODES: readonly string[] = [
+  'AUTHENTICATION_REQUIRED',
+  'CONTRACT_INVALID',
+  'NOT_FOUND',
+  'IDEMPOTENCY_CONFLICT',
+  'REQUEST_TOO_LARGE',
+  'UNSUPPORTED_MEDIA_TYPE',
+  'UNSUPPORTED_CONTRACT',
+  'TRANSIENT_FAILURE',
+  'TERMINAL_FAILURE',
+  'PASSWORD_CHANGE_REQUIRED',
+  'STALE_VERSION',
+  'BUSINESS_BLOCKED',
+]
+
+const decodeErrorBody = (body: unknown): { code?: string; requestId?: string } => {
+  if (typeof body !== 'object' || body === null) return {}
+  const record = body as Record<string, unknown>
+  return {
+    code: typeof record.code === 'string' ? record.code : undefined,
+    requestId: typeof record.requestId === 'string' ? record.requestId : undefined,
+  }
+}
+
+const toApiError = (status: number, body: unknown): ApiError => {
+  const decoded = decodeErrorBody(body)
+  const code =
+    decoded.code !== undefined && KNOWN_CODES.includes(decoded.code)
+      ? (decoded.code as ApiErrorCode)
+      : (STATUS_CODE_MAP[status] ?? 'TERMINAL_FAILURE')
+  return new ApiError(code, {
+    retryable: code === 'TRANSIENT_FAILURE',
+    requestId: decoded.requestId ?? null,
+  })
+}
+
+interface RawRequest {
+  readonly path: string
+  readonly body: Record<string, unknown>
+  readonly signal?: AbortSignal
+}
+
+/** 原始 POST：返回 2xx 的 JSON body；失败统一收敛为 ApiError；网络异常归一为瞬时故障。 */
+export const postRaw = async (request: RawRequest): Promise<unknown> => {
+  let response: Response
+  try {
+    response = await fetch(request.path, {
+      method: 'POST',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      signal: request.signal ?? null,
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify(request.body),
+    })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw new ApiError('TRANSIENT_FAILURE', { retryable: true })
+  }
+  const text = await response.text()
+  let body: unknown = null
+  if (text.length > 0) {
+    try {
+      body = JSON.parse(text)
+    } catch {
+      body = null
+    }
+  }
+  if (!response.ok) throw toApiError(response.status, body)
+  return body
+}
+
+let querySequence = 0
+
+/** 查询标识只用于审计关联，不承载业务语义。 */
+export const nextQueryId = (projectId: string, branch: string): string => {
+  querySequence += 1
+  return `demo-${branch}-${projectId}-${Date.now().toString(36)}-${querySequence}`
+}
+
+export interface QueryEnvelope {
+  readonly schemaVersion: '1'
+  readonly queryId: string
+  readonly requestedAt: string
+  readonly requestedSpatialScopeRefs: readonly unknown[]
+  readonly requestedSourceVersionRefs: readonly unknown[]
+  readonly payload: Record<string, unknown>
+}
+
+/** 查询传输信封：projectId 只走路径，不进 body；触达资料正文的查询必须声明来源版本。 */
+export const postQuery = async (input: {
+  readonly projectId: string
+  readonly branch: string
+  readonly payload: Record<string, unknown>
+  readonly sourceVersionRefs?: readonly unknown[]
+  readonly signal?: AbortSignal
+}): Promise<unknown> => {
+  if (input.projectId.includes('/') || input.projectId.includes('\\')) {
+    throw new ApiError('CONTRACT_INVALID')
+  }
+  const envelope: QueryEnvelope = {
+    schemaVersion: '1',
+    queryId: nextQueryId(input.projectId, input.branch),
+    requestedAt: new Date().toISOString(),
+    requestedSpatialScopeRefs: [],
+    requestedSourceVersionRefs: [...(input.sourceVersionRefs ?? [])],
+    payload: input.payload,
+  }
+  const body = await postRaw({
+    path: `/api/v1/projects/${encodeURIComponent(input.projectId)}/queries/${input.branch}`,
+    body: envelope as unknown as Record<string, unknown>,
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+  })
+  return body
+}
+
+/** 查询成功应答：剥离 moduleResult 信封，只留 result；failed 由 HTTP 层错误表达。 */
+export const unwrapQueryResult = (body: unknown): unknown => {
+  if (typeof body !== 'object' || body === null) throw new ApiError('TERMINAL_FAILURE')
+  const record = body as Record<string, unknown>
+  if (record.kind !== 'succeeded' || !('result' in record)) {
+    throw new ApiError('TERMINAL_FAILURE')
+  }
+  return record.result
+}
+
+/** 提交只读查询并返回业务结果载荷。 */
+export const submitQuery = async (input: {
+  readonly projectId: string
+  readonly branch: string
+  readonly payload: Record<string, unknown>
+  readonly sourceVersionRefs?: readonly unknown[]
+  readonly signal?: AbortSignal
+}): Promise<unknown> => unwrapQueryResult(await postQuery(input))

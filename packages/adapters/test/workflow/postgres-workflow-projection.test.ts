@@ -16,6 +16,8 @@ import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/a
 import type { ArtifactStoreV1 } from "@riskflow/core/artifacts";
 import {
   AuthorizationContextV1Schema,
+  ProjectionResultReadPageV1Schema,
+  ProjectionResultReadQueryResultV1Schema,
   type AuthorizationContextV1,
   type ContractReferenceV1,
   type ModuleBranchV1,
@@ -695,6 +697,42 @@ describe("C30 workflow projection adapter", () => {
     if (second.kind !== "page") return;
     expect(second.items).toHaveLength(1);
     expect(second.nextCursor).toBeUndefined();
+  });
+
+  it("serves the C32 result-read transport mapping with schema-valid page and failure outcomes", async () => {
+    // 与 C32 HTTP 接线（apps/api invokeProjectionResultRead）同形：limit 缺省 50、无游标。
+    await seedRuns();
+    const queried = await queryFor("query-run-view-c32", {
+      queryType: "run-view",
+      workflowRunRef: {
+        kind: "workflow-run",
+        reference: { entityId: ROOT_RUN_ID, versionId: ROOT_RUN_VERSION_ID },
+      },
+    });
+    expect(queried.kind).toBe("succeeded");
+    if (queried.kind !== "succeeded") return;
+
+    const page = await fixture.projection.resultRead.readPage(
+      readRequest({ queryResultRef: queried.result.queryResultRef, limit: 50 }),
+    );
+    expect(ProjectionResultReadPageV1Schema.safeParse(page).success).toBe(true);
+
+    const missing = await fixture.projection.resultRead.readPage(
+      readRequest({
+        queryResultRef: {
+          kind: "query-result",
+          reference: { entityId: "query-result:c32-absent", versionId: "absent" },
+        },
+        limit: 50,
+      }),
+    );
+    expect(missing.kind).toBe("failed");
+    // 失败判别必须能包成 C32 传输信封的 moduleResult，不扩散新错误码。
+    const wrapped =
+      missing.kind === "failed"
+        ? { kind: "failed" as const, error: missing.error }
+        : { kind: "succeeded" as const, result: missing };
+    expect(ProjectionResultReadQueryResultV1Schema.safeParse(wrapped).success).toBe(true);
   });
 
   it("rejects forged cursors, unknown query references and unsupported query types", async () => {

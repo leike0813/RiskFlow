@@ -8,6 +8,22 @@ import {
   IsoDateTimeSchema,
   VersionReferenceSchema,
 } from "../common/index.js";
+import {
+  ApplicabilityConditionsSchema,
+  ApplicabilityMetadataSchema,
+  StructuredScoringRuleSchema,
+} from "../records/index.js";
+import {
+  ApplicabilityMetadataDimensionSchema,
+  EquipmentComponentSchema,
+  MonitoringIndicatorSchema,
+  ProcessDependencyRelationTypeSchema,
+  ProcessNodeSchema,
+  RiskMechanismTypeSchema,
+  StateParameterDescriptionSchema,
+  StructuralComponentSchema,
+  WarningTriggerTypeSchema,
+} from "../vocabulary/index.js";
 export { RiskInputReferenceSchema } from "../records/index.js";
 export type { RiskInputReference } from "../records/index.js";
 
@@ -543,6 +559,13 @@ export const MODULE_BRANCH_CAPABILITY_V1 = {
   "projection.query": "projection.query",
   "projection.subscribe": "projection.subscribe",
   "projection.export": "projection.export",
+  "engineering-data.context-read": "engineering-data.read",
+  "engineering-data.source-catalog": "engineering-data.read",
+  "engineering-data.monitoring-catalog": "engineering-data.read",
+  "engineering-data.read-result": "engineering-data.read",
+  "knowledge-modeling.governance-read": "knowledge-modeling.read",
+  "knowledge-modeling.retrieval-result": "knowledge-modeling.retrieve",
+  "projection.result-read": "projection.query",
 } as const;
 export type ModuleBranchV1 = keyof typeof MODULE_BRANCH_CAPABILITY_V1;
 
@@ -3136,4 +3159,769 @@ export interface HumanDecisionProofPortV1 {
   verifyHumanDecisionCommitted(
     query: HumanDecisionProofQueryV1,
   ): Promise<HumanDecisionProofResultV1>;
+}
+
+/* ===========================================================================
+ * C32 只读面（deliver-engineering-and-knowledge-ui）
+ * 读取 DTO 只镜像各 owning 模块写路径已校验的字段形状；跨字段领域不变式由
+ * 写路径强制，读取侧不重复校验。全部为只读、有界、授权复验契约。
+ * ======================================================================== */
+
+const C32_READ_PAGE_SIZE_MAX_V1 = 50;
+const c32ReadPageSize = z.number().int().min(1).max(C32_READ_PAGE_SIZE_MAX_V1);
+const c32ReadCursor = z.string().min(1).max(512);
+const c32ReadText = z.string().trim().min(1).max(500);
+const c32FiniteNumber = z.number().finite();
+const c32NonNegativeInt = z.number().int().nonnegative();
+const c32EvidenceList = z.array(EvidenceReferenceSchema).min(1).max(16);
+
+// ---- engineering-data：工程上下文读 ----
+
+export const EngineeringSpatialScopeNodeV1Schema = z.strictObject({
+  spatialScopeRef: SpatialScopeRefV1Schema,
+  parentSpatialScopeRef: SpatialScopeRefV1Schema.optional(),
+  name: c32ReadText,
+  worksiteLocation: c32ReadText.optional(),
+});
+export type EngineeringSpatialScopeNodeV1 = z.infer<typeof EngineeringSpatialScopeNodeV1Schema>;
+
+export const EngineeringContextReadSuccessV1Schema = z.strictObject({
+  kind: z.literal("context-read"),
+  projectId: IdentifierSchema,
+  contextStatus: z.enum(["preparing", "active"]),
+  currentProjectRevisionRef: ProjectRevisionRefV1Schema.optional(),
+  applicabilityMetadata: ApplicabilityMetadataSchema.optional(),
+  missingApplicabilityDimensions: z.array(ApplicabilityMetadataDimensionSchema).max(8),
+  spatialScopes: z.array(EngineeringSpatialScopeNodeV1Schema).max(256),
+});
+export type EngineeringContextReadSuccessV1 = z.infer<typeof EngineeringContextReadSuccessV1Schema>;
+
+// ---- engineering-data：资料目录 ----
+
+export const SOURCE_CATALOG_PARSE_STATUS_V1_VALUES = [
+  "registered",
+  "processing",
+  "parsed",
+  "failed",
+] as const;
+export const SourceCatalogParseStatusV1Schema = z.enum(SOURCE_CATALOG_PARSE_STATUS_V1_VALUES);
+export type SourceCatalogParseStatusV1 = z.infer<typeof SourceCatalogParseStatusV1Schema>;
+
+export const CLEANING_AVAILABILITY_V1_VALUES = ["available", "partial", "unavailable"] as const;
+export const CleaningAvailabilityV1Schema = z.enum(CLEANING_AVAILABILITY_V1_VALUES);
+export type CleaningAvailabilityV1 = z.infer<typeof CleaningAvailabilityV1Schema>;
+
+export const SourceCatalogItemV1Schema = z.strictObject({
+  sourceVersionRef: SourceVersionRefV1Schema,
+  sourceId: IdentifierSchema,
+  documentType: c32ReadText.optional(),
+  formedAt: IsoDateTimeSchema.optional(),
+  sourceOrganization: c32ReadText.optional(),
+  externalVersion: c32ReadText.optional(),
+  parseStatus: SourceCatalogParseStatusV1Schema,
+  cleaningAvailability: CleaningAvailabilityV1Schema.optional(),
+  cleaningExclusionCount: c32NonNegativeInt.optional(),
+  sourceSegmentSetRef: SourceSegmentSetRefV1Schema.optional(),
+});
+export type SourceCatalogItemV1 = z.infer<typeof SourceCatalogItemV1Schema>;
+
+export const SourceCatalogPageV1Schema = z.strictObject({
+  kind: z.literal("source-catalog"),
+  items: z.array(SourceCatalogItemV1Schema).max(C32_READ_PAGE_SIZE_MAX_V1),
+  totalCount: c32NonNegativeInt,
+  nextCursor: c32ReadCursor.optional(),
+});
+export type SourceCatalogPageV1 = z.infer<typeof SourceCatalogPageV1Schema>;
+
+// ---- engineering-data：监测目录 ----
+
+export const MonitoringSeriesCatalogItemV1Schema = z.strictObject({
+  monitoringSeriesRef: MonitoringSeriesRefV1Schema,
+  monitoringIndicator: MonitoringIndicatorSchema,
+  monitoringObject: c32ReadText,
+  canonicalUnit: z.string().trim().min(1).max(64),
+  spatialScopeRef: SpatialScopeRefV1Schema,
+  batchCount: c32NonNegativeInt,
+  latestSnapshotRef: MonitoringSnapshotRefV1Schema.optional(),
+});
+export type MonitoringSeriesCatalogItemV1 = z.infer<typeof MonitoringSeriesCatalogItemV1Schema>;
+
+export const MonitoringCatalogSeriesPageV1Schema = z.strictObject({
+  kind: z.literal("monitoring-series-list"),
+  items: z.array(MonitoringSeriesCatalogItemV1Schema).max(C32_READ_PAGE_SIZE_MAX_V1),
+  totalCount: c32NonNegativeInt,
+  nextCursor: c32ReadCursor.optional(),
+});
+export type MonitoringCatalogSeriesPageV1 = z.infer<typeof MonitoringCatalogSeriesPageV1Schema>;
+
+export const MonitoringBatchCatalogItemV1Schema = z.strictObject({
+  monitoringBatchRef: MonitoringBatchRefV1Schema,
+  relation: z.enum(["original", "correction", "supplement"]),
+  window: z.strictObject({ from: IsoDateTimeSchema, to: IsoDateTimeSchema }),
+  sampleCount: c32NonNegativeInt,
+  occurredAt: IsoDateTimeSchema,
+});
+export type MonitoringBatchCatalogItemV1 = z.infer<typeof MonitoringBatchCatalogItemV1Schema>;
+
+export const MonitoringSnapshotCatalogItemV1Schema = z.strictObject({
+  monitoringSnapshotRef: MonitoringSnapshotRefV1Schema,
+  cutoff: IsoDateTimeSchema,
+  availability: CleaningAvailabilityV1Schema,
+  coverageRatio: c32FiniteNumber,
+  /** 快照证据触达的来源版本：客户端据此在监测快照查询/再读取时声明授权来源。 */
+  evidenceSourceVersionRefs: z.array(SourceVersionRefV1Schema).max(64),
+});
+export type MonitoringSnapshotCatalogItemV1 = z.infer<typeof MonitoringSnapshotCatalogItemV1Schema>;
+
+export const MonitoringCatalogSeriesDetailV1Schema = z.strictObject({
+  kind: z.literal("monitoring-series-detail"),
+  monitoringSeriesRef: MonitoringSeriesRefV1Schema,
+  batches: z.array(MonitoringBatchCatalogItemV1Schema).max(100),
+  snapshots: z.array(MonitoringSnapshotCatalogItemV1Schema).max(100),
+  nextCursor: c32ReadCursor.optional(),
+});
+export type MonitoringCatalogSeriesDetailV1 = z.infer<typeof MonitoringCatalogSeriesDetailV1Schema>;
+
+// ---- engineering-data：查询结果再读取（read-result）----
+
+export const EngineeringReadSegmentLocatorV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("document"),
+    pageNumber: z.number().int().positive(),
+    headingPath: z.array(c32ReadText).min(1).max(64),
+  }),
+  z.strictObject({
+    kind: z.literal("table"),
+    sheet: c32ReadText,
+    table: c32ReadText,
+    rowRange: z.strictObject({ start: c32NonNegativeInt, end: c32NonNegativeInt }),
+    columnRange: z.strictObject({ start: c32NonNegativeInt, end: c32NonNegativeInt }),
+  }),
+  z.strictObject({
+    kind: z.literal("record"),
+    dataset: c32ReadText,
+    stableRecordKey: c32ReadText,
+  }),
+  z.strictObject({
+    kind: z.literal("time-window"),
+    from: IsoDateTimeSchema,
+    to: IsoDateTimeSchema,
+  }),
+]);
+export type EngineeringReadSegmentLocatorV1 = z.infer<typeof EngineeringReadSegmentLocatorV1Schema>;
+
+export const EngineeringReadSourceSegmentV1Schema = z.strictObject({
+  sourceSegmentId: z.string().regex(/^[A-Za-z0-9_]+-[A-Za-z0-9_]+-[A-Za-z0-9_]+$/u),
+  chapterId: IdentifierSchema,
+  segmentId: IdentifierSchema,
+  kind: z.enum(["chapter", "table", "monitoring-window"]),
+  locator: EngineeringReadSegmentLocatorV1Schema,
+});
+export type EngineeringReadSourceSegmentV1 = z.infer<typeof EngineeringReadSourceSegmentV1Schema>;
+
+export const EngineeringReadSegmentSetSuccessV1Schema = z.strictObject({
+  kind: z.literal("source-segments"),
+  queryResultRef: QueryResultRefV1Schema,
+  segmentSet: z.strictObject({
+    sourceSegmentSetRef: SourceSegmentSetRefV1Schema,
+    sourceVersionRef: SourceVersionRefV1Schema,
+    sourceId: IdentifierSchema,
+    segments: z.array(EngineeringReadSourceSegmentV1Schema).min(1).max(10_000),
+    recordedAt: IsoDateTimeSchema,
+  }),
+  sourceAccessGrantRef: SourceAccessGrantRefV1Schema,
+});
+export type EngineeringReadSegmentSetSuccessV1 = z.infer<
+  typeof EngineeringReadSegmentSetSuccessV1Schema
+>;
+
+export const EngineeringReadEvidenceItemV1Schema = z.strictObject({
+  evidenceReference: EvidenceReferenceSchema,
+  sourceVersionRef: SourceVersionRefV1Schema,
+  sourceSegmentSetRef: SourceSegmentSetRefV1Schema,
+  sourceAccessGrantRef: SourceAccessGrantRefV1Schema,
+  segment: EngineeringReadSourceSegmentV1Schema,
+});
+export type EngineeringReadEvidenceItemV1 = z.infer<typeof EngineeringReadEvidenceItemV1Schema>;
+
+export const EngineeringReadEvidenceSuccessV1Schema = z.strictObject({
+  kind: z.literal("evidence-access"),
+  queryResultRef: QueryResultRefV1Schema,
+  purposeCode: IdentifierSchema,
+  items: z.array(EngineeringReadEvidenceItemV1Schema).min(1).max(256),
+});
+export type EngineeringReadEvidenceSuccessV1 = z.infer<
+  typeof EngineeringReadEvidenceSuccessV1Schema
+>;
+
+export const EngineeringReadMonitoringAlignedPointV1Schema = z.strictObject({
+  sampledAt: IsoDateTimeSchema,
+  value: c32FiniteNumber.nullable(),
+  unit: z.string().trim().min(1).max(64),
+  status: z.enum(["available", "interpolated", "missing"]),
+  reasonCode: IdentifierSchema.optional(),
+});
+export type EngineeringReadMonitoringAlignedPointV1 = z.infer<
+  typeof EngineeringReadMonitoringAlignedPointV1Schema
+>;
+
+export const EngineeringReadMonitoringFeatureV1Schema = z.strictObject({
+  featureType: z.enum(["short-term-slope", "acceleration", "dominant-frequency", "anomaly-score"]),
+  value: c32FiniteNumber.optional(),
+  unit: z.string().trim().min(1).max(64).optional(),
+  status: z.enum(["available", "unavailable"]),
+  reasonCode: IdentifierSchema.optional(),
+});
+export type EngineeringReadMonitoringFeatureV1 = z.infer<
+  typeof EngineeringReadMonitoringFeatureV1Schema
+>;
+
+export const EngineeringReadMonitoringSnapshotV1Schema = z.strictObject({
+  monitoringSnapshotRef: MonitoringSnapshotRefV1Schema,
+  monitoringSeriesRef: MonitoringSeriesRefV1Schema,
+  cutoff: IsoDateTimeSchema,
+  recordedAt: IsoDateTimeSchema,
+  window: z.strictObject({ from: IsoDateTimeSchema, to: IsoDateTimeSchema }),
+  availabilityPolicyRef: VersionReferenceSchema,
+  availability: CleaningAvailabilityV1Schema,
+  coverageRatio: c32FiniteNumber,
+  availabilityReasons: z.array(IdentifierSchema).max(32),
+  alignedPoints: z.array(EngineeringReadMonitoringAlignedPointV1Schema).max(10_000),
+  features: z.strictObject({
+    shortTermSlope: EngineeringReadMonitoringFeatureV1Schema,
+    acceleration: EngineeringReadMonitoringFeatureV1Schema,
+    dominantFrequency: EngineeringReadMonitoringFeatureV1Schema,
+    anomalyScore: EngineeringReadMonitoringFeatureV1Schema,
+  }),
+  monitoringBatchRefs: z.array(MonitoringBatchRefV1Schema).max(100),
+  evidenceReferences: z.array(EvidenceReferenceSchema).max(256),
+});
+export type EngineeringReadMonitoringSnapshotV1 = z.infer<
+  typeof EngineeringReadMonitoringSnapshotV1Schema
+>;
+
+export const EngineeringReadMonitoringSnapshotSuccessV1Schema = z.strictObject({
+  kind: z.literal("monitoring-snapshot"),
+  queryResultRef: QueryResultRefV1Schema,
+  snapshot: EngineeringReadMonitoringSnapshotV1Schema,
+});
+export type EngineeringReadMonitoringSnapshotSuccessV1 = z.infer<
+  typeof EngineeringReadMonitoringSnapshotSuccessV1Schema
+>;
+
+export const EngineeringDataReadResultPayloadV1Schema = z.discriminatedUnion("kind", [
+  EngineeringReadSegmentSetSuccessV1Schema,
+  EngineeringReadEvidenceSuccessV1Schema,
+  EngineeringReadMonitoringSnapshotSuccessV1Schema,
+]);
+export type EngineeringDataReadResultPayloadV1 = z.infer<
+  typeof EngineeringDataReadResultPayloadV1Schema
+>;
+
+export const EngineeringDataReadResultSuccessV1Schema = z.strictObject({
+  kind: z.literal("read-result"),
+  result: EngineeringDataReadResultPayloadV1Schema,
+});
+export type EngineeringDataReadResultSuccessV1 = z.infer<
+  typeof EngineeringDataReadResultSuccessV1Schema
+>;
+
+// ---- engineering-data：catalog 查询与结果 ----
+
+export const EngineeringDataCatalogQueryV1Schema = z.discriminatedUnion("kind", [
+  querySchema(
+    "context-read",
+    z.strictObject({}),
+    branchCapability("engineering-data.context-read"),
+  ),
+  querySchema(
+    "source-catalog",
+    z.strictObject({
+      cursor: c32ReadCursor.optional(),
+      pageSize: c32ReadPageSize.optional(),
+      documentType: c32ReadText.optional(),
+    }),
+    branchCapability("engineering-data.source-catalog"),
+  ),
+  querySchema(
+    "monitoring-catalog",
+    z.strictObject({
+      monitoringSeriesRef: MonitoringSeriesRefV1Schema.optional(),
+      cursor: c32ReadCursor.optional(),
+      pageSize: c32ReadPageSize.optional(),
+    }),
+    branchCapability("engineering-data.monitoring-catalog"),
+  ),
+  querySchema(
+    "read-result",
+    z.strictObject({ queryResultRef: QueryResultRefV1Schema }),
+    branchCapability("engineering-data.read-result"),
+  ),
+]);
+export type EngineeringDataCatalogQueryV1 = z.infer<typeof EngineeringDataCatalogQueryV1Schema>;
+
+export const EngineeringDataCatalogSuccessV1Schema = z.discriminatedUnion("kind", [
+  EngineeringContextReadSuccessV1Schema,
+  SourceCatalogPageV1Schema,
+  MonitoringCatalogSeriesPageV1Schema,
+  MonitoringCatalogSeriesDetailV1Schema,
+  EngineeringDataReadResultSuccessV1Schema,
+]);
+export type EngineeringDataCatalogSuccessV1 = z.infer<typeof EngineeringDataCatalogSuccessV1Schema>;
+
+export const EngineeringDataCatalogResultV1Schema = moduleResultSchema(
+  EngineeringDataCatalogSuccessV1Schema,
+);
+export type EngineeringDataCatalogResultV1 = z.infer<typeof EngineeringDataCatalogResultV1Schema>;
+
+// ---- knowledge-modeling：治理只读 ----
+
+export const KnowledgeDefinitionRefV1Schema = versionedRef("knowledge-definition");
+export type KnowledgeDefinitionRefV1 = z.infer<typeof KnowledgeDefinitionRefV1Schema>;
+
+export const KNOWLEDGE_GOVERNANCE_LIFECYCLE_FILTER_V1_VALUES = [
+  "draft",
+  "in-review",
+  "published",
+  "deactivated",
+] as const;
+export const KnowledgeGovernanceLifecycleFilterV1Schema = z.enum(
+  KNOWLEDGE_GOVERNANCE_LIFECYCLE_FILTER_V1_VALUES,
+);
+export type KnowledgeGovernanceLifecycleFilterV1 = z.infer<
+  typeof KnowledgeGovernanceLifecycleFilterV1Schema
+>;
+
+export const KNOWLEDGE_REVISION_LIFECYCLE_STATUS_V1_VALUES = [
+  "draft",
+  "in-review",
+  "approved",
+  "rejected",
+  "returned",
+  "published",
+] as const;
+export const KnowledgeRevisionLifecycleStatusV1Schema = z.enum(
+  KNOWLEDGE_REVISION_LIFECYCLE_STATUS_V1_VALUES,
+);
+export type KnowledgeRevisionLifecycleStatusV1 = z.infer<
+  typeof KnowledgeRevisionLifecycleStatusV1Schema
+>;
+
+export const KnowledgeGovernanceListItemV1Schema = z.strictObject({
+  definitionRef: KnowledgeDefinitionRefV1Schema,
+  definitionType: KnowledgeDefinitionTypeV1Schema,
+  lifecycleStatus: KnowledgeGovernanceLifecycleFilterV1Schema,
+  currentRevisionRef: KnowledgeRevisionRefV1Schema.optional(),
+  currentReleaseRef: KnowledgeReleaseRefV1Schema.optional(),
+  updatedAt: IsoDateTimeSchema,
+});
+export type KnowledgeGovernanceListItemV1 = z.infer<typeof KnowledgeGovernanceListItemV1Schema>;
+
+const governanceApplicabilityConditions = z
+  .array(
+    z.strictObject({
+      dimension: ApplicabilityMetadataDimensionSchema,
+      values: z.array(IdentifierSchema).min(1).max(32),
+    }),
+  )
+  .max(32);
+
+export const GovernanceProcessModelNodeV1Schema = z.strictObject({
+  nodeId: IdentifierSchema,
+  processKind: ProcessNodeSchema,
+  inputs: z.array(IdentifierSchema).min(1),
+  outputs: z.array(IdentifierSchema).min(1),
+  equipmentRefs: z.array(EquipmentComponentSchema),
+  structuralComponentRefs: z.array(StructuralComponentSchema),
+  stateParameters: z.array(StateParameterDescriptionSchema),
+  monitoringIndicators: z.array(MonitoringIndicatorSchema),
+  applicability: ApplicabilityConditionsSchema,
+  evidence: c32EvidenceList,
+});
+export type GovernanceProcessModelNodeV1 = z.infer<typeof GovernanceProcessModelNodeV1Schema>;
+
+export const GovernanceProcessModelEdgeV1Schema = z.strictObject({
+  edgeId: IdentifierSchema,
+  fromNodeId: IdentifierSchema,
+  toNodeId: IdentifierSchema,
+  relationType: ProcessDependencyRelationTypeSchema,
+  evidence: c32EvidenceList,
+});
+export type GovernanceProcessModelEdgeV1 = z.infer<typeof GovernanceProcessModelEdgeV1Schema>;
+
+export const GovernanceRiskMechanismEntryV1Schema = z.strictObject({
+  mechanismId: IdentifierSchema,
+  mechanismType: RiskMechanismTypeSchema,
+  nodeIds: z.array(IdentifierSchema).min(1),
+  stateParameters: z.array(StateParameterDescriptionSchema),
+  monitoringIndicators: z.array(MonitoringIndicatorSchema),
+  applicability: ApplicabilityConditionsSchema,
+  preconditions: z.array(IdentifierSchema).min(1),
+  triggeringFactors: z.array(IdentifierSchema).min(1),
+  evolutionPath: z.array(IdentifierSchema).min(1),
+  consequences: z.array(IdentifierSchema).min(1),
+  evidence: c32EvidenceList,
+});
+export type GovernanceRiskMechanismEntryV1 = z.infer<typeof GovernanceRiskMechanismEntryV1Schema>;
+
+export const GovernanceScoringRuleMemberV1Schema = z.strictObject({
+  rule: StructuredScoringRuleSchema,
+  binding: z.strictObject({
+    sourceVersionRef: SourceVersionRefV1Schema,
+    evidenceReferences: z.array(EvidenceReferenceSchema).min(1).max(64),
+  }),
+});
+export type GovernanceScoringRuleMemberV1 = z.infer<typeof GovernanceScoringRuleMemberV1Schema>;
+
+export const GovernanceRuleSetIncludedMemberV1Schema = z.strictObject({
+  ruleId: IdentifierSchema,
+  ruleVersion: VersionReferenceSchema,
+  releaseRef: KnowledgeReleaseRefV1Schema,
+  revisionRef: KnowledgeRevisionRefV1Schema,
+});
+export type GovernanceRuleSetIncludedMemberV1 = z.infer<
+  typeof GovernanceRuleSetIncludedMemberV1Schema
+>;
+
+export const GovernanceRuleSetDecisionV1Schema = z.strictObject({
+  ruleId: IdentifierSchema,
+  ruleVersion: VersionReferenceSchema,
+  decision: z.enum(["included", "excluded"]),
+  reasonCode: IdentifierSchema,
+  matchedDimensions: z.array(ApplicabilityMetadataDimensionSchema).max(3),
+  ruleReleaseRef: KnowledgeReleaseRefV1Schema.optional(),
+  ruleRevisionRef: KnowledgeRevisionRefV1Schema.optional(),
+});
+export type GovernanceRuleSetDecisionV1 = z.infer<typeof GovernanceRuleSetDecisionV1Schema>;
+
+const governanceDecimal = z.string().regex(/^-?\d+(\.\d{1,6})?$/u);
+
+export const GovernanceRiskMatrixAxisV1Schema = z.strictObject({
+  bands: z
+    .array(
+      z.strictObject({
+        bandId: IdentifierSchema,
+        lower: governanceDecimal,
+        upper: governanceDecimal,
+      }),
+    )
+    .min(1)
+    .max(32),
+});
+export type GovernanceRiskMatrixAxisV1 = z.infer<typeof GovernanceRiskMatrixAxisV1Schema>;
+
+export const GovernanceMeasureEntryV1Schema = z.strictObject({
+  measureId: IdentifierSchema,
+  riskEventCategory: IdentifierSchema,
+  applicabilityConditions: governanceApplicabilityConditions,
+  triggerTypes: z.array(WarningTriggerTypeSchema).min(1),
+  steps: z
+    .array(
+      z.strictObject({
+        stepOrdinal: z.number().int().positive().max(32),
+        instruction: c32ReadText,
+      }),
+    )
+    .min(1)
+    .max(32),
+  resourceRequirements: z.array(IdentifierSchema).max(32),
+  targetIndicatorIds: z.array(IdentifierSchema).min(1).max(64),
+  evidenceRequirements: z.array(IdentifierSchema).min(1).max(32),
+  contraindications: z.array(IdentifierSchema).max(32),
+});
+export type GovernanceMeasureEntryV1 = z.infer<typeof GovernanceMeasureEntryV1Schema>;
+
+export const KnowledgeGovernanceReadBodyV1Schema = z.discriminatedUnion("definitionType", [
+  z.strictObject({
+    definitionType: z.literal("process-model"),
+    nodes: z.array(GovernanceProcessModelNodeV1Schema).min(1).max(512),
+    dependencyEdges: z.array(GovernanceProcessModelEdgeV1Schema).max(512),
+  }),
+  z.strictObject({
+    definitionType: z.literal("risk-mechanism"),
+    processModelReleaseRef: z.strictObject({
+      kind: z.literal("process-model-release"),
+      reference: VersionReferenceSchema,
+    }),
+    mechanisms: z.array(GovernanceRiskMechanismEntryV1Schema).min(1).max(512),
+  }),
+  z.strictObject({
+    definitionType: z.literal("structured-scoring-rule"),
+    members: z.array(GovernanceScoringRuleMemberV1Schema).min(1).max(512),
+  }),
+  z.strictObject({
+    definitionType: z.literal("applicable-rule-set"),
+    applicabilitySnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
+    applicability: ApplicabilityMetadataSchema,
+    requiredAt: IsoDateTimeSchema,
+    includedMembers: z.array(GovernanceRuleSetIncludedMemberV1Schema).min(1).max(512),
+    decisions: z.array(GovernanceRuleSetDecisionV1Schema).min(1).max(512),
+  }),
+  z.strictObject({
+    definitionType: z.literal("risk-matrix"),
+    matrixId: IdentifierSchema,
+    matrixVersion: IdentifierSchema,
+    possibilityAxis: GovernanceRiskMatrixAxisV1Schema,
+    consequenceAxis: GovernanceRiskMatrixAxisV1Schema,
+    riskLevels: z
+      .array(
+        z.strictObject({
+          levelId: IdentifierSchema,
+          ordinal: z.number().int().positive().max(32),
+        }),
+      )
+      .min(1)
+      .max(32),
+    cells: z
+      .array(
+        z.strictObject({
+          possibilityBandId: IdentifierSchema,
+          consequenceBandId: IdentifierSchema,
+          riskLevelId: IdentifierSchema,
+        }),
+      )
+      .min(1)
+      .max(1024),
+  }),
+  z.strictObject({
+    definitionType: z.literal("measure-library"),
+    measures: z.array(GovernanceMeasureEntryV1Schema).min(1).max(256),
+  }),
+]);
+export type KnowledgeGovernanceReadBodyV1 = z.infer<typeof KnowledgeGovernanceReadBodyV1Schema>;
+
+export const KnowledgeGovernanceReadPayloadV1Schema = z.discriminatedUnion("operation", [
+  z.strictObject({
+    operation: z.literal("list-definitions"),
+    definitionType: KnowledgeDefinitionTypeV1Schema,
+    lifecycleStatus: KnowledgeGovernanceLifecycleFilterV1Schema.optional(),
+    keyword: z.string().trim().min(1).max(100).optional(),
+    cursor: c32ReadCursor.optional(),
+    pageSize: c32ReadPageSize.optional(),
+  }),
+  z.strictObject({
+    operation: z.literal("read-definition-revision"),
+    knowledgeRevisionRef: KnowledgeRevisionRefV1Schema,
+  }),
+  z.strictObject({
+    operation: z.literal("read-definition-release"),
+    knowledgeReleaseRef: KnowledgeReleaseRefV1Schema,
+  }),
+  z.strictObject({
+    operation: z.literal("current-release-set"),
+    requiredDefinitionTypes: z.array(KnowledgeDefinitionTypeV1Schema).max(32).optional(),
+  }),
+]);
+export type KnowledgeGovernanceReadPayloadV1 = z.infer<
+  typeof KnowledgeGovernanceReadPayloadV1Schema
+>;
+
+export const KnowledgeGovernanceReadQueryV1Schema = querySchema(
+  "governance-read",
+  KnowledgeGovernanceReadPayloadV1Schema,
+  branchCapability("knowledge-modeling.governance-read"),
+);
+export type KnowledgeGovernanceReadQueryV1 = z.infer<typeof KnowledgeGovernanceReadQueryV1Schema>;
+
+export const KnowledgeGovernanceReadSuccessV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("list-definitions"),
+    items: z.array(KnowledgeGovernanceListItemV1Schema).max(C32_READ_PAGE_SIZE_MAX_V1),
+    totalCount: c32NonNegativeInt,
+    nextCursor: c32ReadCursor.optional(),
+  }),
+  z.strictObject({
+    kind: z.literal("read-definition-revision"),
+    revisionRef: KnowledgeRevisionRefV1Schema,
+    definitionRef: KnowledgeDefinitionRefV1Schema,
+    definitionType: KnowledgeDefinitionTypeV1Schema,
+    revisionStatus: KnowledgeRevisionLifecycleStatusV1Schema,
+    evidenceReferences: z.array(EvidenceReferenceSchema).min(1),
+    body: KnowledgeGovernanceReadBodyV1Schema,
+  }),
+  z.strictObject({
+    kind: z.literal("read-definition-release"),
+    releaseRef: KnowledgeReleaseRefV1Schema,
+    definitionRef: KnowledgeDefinitionRefV1Schema,
+    definitionType: KnowledgeDefinitionTypeV1Schema,
+    revisionRef: KnowledgeRevisionRefV1Schema,
+    effectiveFrom: IsoDateTimeSchema,
+    deactivatedAt: IsoDateTimeSchema.optional(),
+    evidenceReferences: z.array(EvidenceReferenceSchema).min(1),
+    body: KnowledgeGovernanceReadBodyV1Schema,
+  }),
+  z.strictObject({
+    kind: z.literal("current-release-set"),
+    releases: z
+      .array(
+        z.strictObject({
+          definitionType: KnowledgeDefinitionTypeV1Schema,
+          releaseRef: KnowledgeReleaseRefV1Schema,
+        }),
+      )
+      .max(32),
+  }),
+]);
+export type KnowledgeGovernanceReadSuccessV1 = z.infer<
+  typeof KnowledgeGovernanceReadSuccessV1Schema
+>;
+
+export const KnowledgeGovernanceReadResultV1Schema = moduleResultSchema(
+  KnowledgeGovernanceReadSuccessV1Schema,
+);
+export type KnowledgeGovernanceReadResultV1 = z.infer<typeof KnowledgeGovernanceReadResultV1Schema>;
+
+// ---- knowledge-modeling：检索结果再读取 ----
+
+export const RetrievalReadMemberRefV1Schema = z.strictObject({
+  kind: z.literal("retrieval-member"),
+  reference: VersionReferenceSchema,
+});
+export type RetrievalReadMemberRefV1 = z.infer<typeof RetrievalReadMemberRefV1Schema>;
+
+export const RetrievalReadHitV1Schema = z.strictObject({
+  rank: z.number().int().positive(),
+  memberRef: RetrievalReadMemberRefV1Schema,
+  sourceKind: z.enum(["risk-mechanism", "standard-library", "case-library"]),
+  sourceReleaseRef: KnowledgeReleaseRefV1Schema,
+  sourceEntryId: IdentifierSchema,
+  denseContribution: c32FiniteNumber.nonnegative(),
+  bm25Contribution: c32FiniteNumber.nonnegative(),
+  fusionScore: c32FiniteNumber,
+  evidenceSourceVersionRefs: z.array(VersionReferenceSchema).max(16),
+});
+export type RetrievalReadHitV1 = z.infer<typeof RetrievalReadHitV1Schema>;
+
+export const RetrievalReadHybridSuccessV1Schema = z.strictObject({
+  kind: z.literal("hybrid-evidence"),
+  knowledgeQueryResultRef: KnowledgeQueryResultRefV1Schema,
+  policyRef: VersionReferenceSchema,
+  generationRef: z.strictObject({
+    kind: z.literal("retrieval-generation"),
+    reference: VersionReferenceSchema,
+  }),
+  topK: z.number().int().positive(),
+  hits: z.array(RetrievalReadHitV1Schema).max(100),
+});
+export type RetrievalReadHybridSuccessV1 = z.infer<typeof RetrievalReadHybridSuccessV1Schema>;
+
+export const RetrievalReadContextNodeV1Schema = z.strictObject({
+  nodeId: IdentifierSchema,
+  processKind: ProcessNodeSchema,
+  inputs: z.array(IdentifierSchema).min(1),
+  outputs: z.array(IdentifierSchema).min(1),
+  stateParameters: z.array(StateParameterDescriptionSchema),
+  monitoringIndicators: z.array(MonitoringIndicatorSchema),
+  applicability: ApplicabilityConditionsSchema,
+  evidence: z.array(EvidenceReferenceSchema).min(1),
+});
+export type RetrievalReadContextNodeV1 = z.infer<typeof RetrievalReadContextNodeV1Schema>;
+
+export const RetrievalReadNeighborV1Schema = z.strictObject({
+  nodeId: IdentifierSchema,
+  processKind: ProcessNodeSchema,
+  edgeId: IdentifierSchema,
+  relationType: ProcessDependencyRelationTypeSchema,
+  upstream: z.boolean(),
+  evidence: z.array(EvidenceReferenceSchema).min(1),
+});
+export type RetrievalReadNeighborV1 = z.infer<typeof RetrievalReadNeighborV1Schema>;
+
+export const RetrievalReadEdgeV1Schema = z.strictObject({
+  edgeId: IdentifierSchema,
+  fromNodeId: IdentifierSchema,
+  toNodeId: IdentifierSchema,
+  relationType: ProcessDependencyRelationTypeSchema,
+  evidence: z.array(EvidenceReferenceSchema).min(1),
+});
+export type RetrievalReadEdgeV1 = z.infer<typeof RetrievalReadEdgeV1Schema>;
+
+export const RetrievalReadMechanismV1Schema = z.strictObject({
+  mechanismId: IdentifierSchema,
+  mechanismType: RiskMechanismTypeSchema,
+  stateParameters: z.array(StateParameterDescriptionSchema),
+  monitoringIndicators: z.array(MonitoringIndicatorSchema),
+  evidence: z.array(EvidenceReferenceSchema).min(1),
+});
+export type RetrievalReadMechanismV1 = z.infer<typeof RetrievalReadMechanismV1Schema>;
+
+export const RetrievalReadRelationshipSuccessV1Schema = z.strictObject({
+  kind: z.literal("relationship-context"),
+  knowledgeQueryResultRef: KnowledgeQueryResultRefV1Schema,
+  nodeId: IdentifierSchema,
+  currentNode: RetrievalReadContextNodeV1Schema,
+  neighborNodes: z.array(RetrievalReadNeighborV1Schema).max(64),
+  dependencyEdges: z.array(RetrievalReadEdgeV1Schema).max(128),
+  mechanisms: z.array(RetrievalReadMechanismV1Schema).max(128),
+  excludedMechanisms: z
+    .array(z.strictObject({ mechanismId: IdentifierSchema, reasonCode: IdentifierSchema }))
+    .max(128),
+  releaseBinding: z.strictObject({
+    processModelReleaseRef: KnowledgeReleaseRefV1Schema,
+    riskMechanismReleaseRef: KnowledgeReleaseRefV1Schema,
+    retrievalEvidenceBaseReleaseRef: KnowledgeReleaseRefV1Schema,
+  }),
+});
+export type RetrievalReadRelationshipSuccessV1 = z.infer<
+  typeof RetrievalReadRelationshipSuccessV1Schema
+>;
+
+export const KnowledgeRetrievalReadQueryV1Schema = querySchema(
+  "retrieval-result",
+  z.strictObject({ knowledgeQueryResultRef: KnowledgeQueryResultRefV1Schema }),
+  branchCapability("knowledge-modeling.retrieval-result"),
+);
+export type KnowledgeRetrievalReadQueryV1 = z.infer<typeof KnowledgeRetrievalReadQueryV1Schema>;
+
+export const KnowledgeRetrievalReadSuccessV1Schema = z.discriminatedUnion("kind", [
+  RetrievalReadHybridSuccessV1Schema,
+  RetrievalReadRelationshipSuccessV1Schema,
+]);
+export type KnowledgeRetrievalReadSuccessV1 = z.infer<typeof KnowledgeRetrievalReadSuccessV1Schema>;
+
+export const KnowledgeRetrievalReadResultV1Schema = moduleResultSchema(
+  KnowledgeRetrievalReadSuccessV1Schema,
+);
+export type KnowledgeRetrievalReadResultV1 = z.infer<typeof KnowledgeRetrievalReadResultV1Schema>;
+
+// ---- projection：结果读取 ----
+
+export const ProjectionResultReadPageV1Schema = z.strictObject({
+  kind: z.literal("page"),
+  queryType: z.enum(["run-view", "trace-chain", "association-graph", "risk-overview"]),
+  items: z.array(ProjectionResultItemV1Schema),
+  nextCursor: z.string().max(512).optional(),
+});
+export type ProjectionResultReadPageV1 = z.infer<typeof ProjectionResultReadPageV1Schema>;
+
+export const ProjectionResultReadQueryV1Schema = querySchema(
+  "result-read",
+  z.strictObject({
+    queryResultRef: QueryResultRefV1Schema,
+    cursor: c32ReadCursor.optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+  branchCapability("projection.result-read"),
+);
+export type ProjectionResultReadQueryV1 = z.infer<typeof ProjectionResultReadQueryV1Schema>;
+
+export const ProjectionResultReadQueryResultV1Schema = moduleResultSchema(
+  ProjectionResultReadPageV1Schema,
+);
+export type ProjectionResultReadQueryResultV1 = z.infer<
+  typeof ProjectionResultReadQueryResultV1Schema
+>;
+
+// ---- C32 只读端口 ----
+
+export interface EngineeringDataCatalogPortV1 {
+  read(query: EngineeringDataCatalogQueryV1): Promise<EngineeringDataCatalogResultV1>;
+}
+
+export interface KnowledgeGovernanceReadPortV1 {
+  read(query: KnowledgeGovernanceReadQueryV1): Promise<KnowledgeGovernanceReadResultV1>;
+}
+
+export interface KnowledgeRetrievalReadPortV1 {
+  read(query: KnowledgeRetrievalReadQueryV1): Promise<KnowledgeRetrievalReadResultV1>;
 }

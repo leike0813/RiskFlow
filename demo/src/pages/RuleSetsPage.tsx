@@ -1,133 +1,265 @@
 import AppShell from '../components/AppShell'
+import { AssociatedObjects } from '../components/AssociatedObjects'
 import { Card } from '../components/Card'
 import { DataTable, type DataTableColumn } from '../components/DataTable'
 import { EvidenceLink } from '../components/EvidenceLink'
+import { PageStateView } from '../components/PageStateView'
 import { SectionTabs } from '../components/SectionTabs'
-import { StatusTag, type StatusTone } from '../components/StatusTag'
 import { VersionTag } from '../components/VersionTag'
-import { applicableRuleSet, scoringRules, type ScoringRule } from '../content/knowledge'
+import { useEngineering, usePageQuery } from '../api/context'
+import {
+  listKnowledgeDefinitions,
+  readCurrentReleaseSet,
+  readKnowledgeRelease,
+  type GovernanceReleaseView,
+  type ScoringRuleMemberView,
+} from '../api/operations'
+import { LifecycleTag, knowledgeTabs, lifecycleStatusOf } from './knowledgeShared'
 import './RuleSetsPage.css'
 
-const knowledgeTabs = [
-  { to: '/knowledge/mechanisms', label: '风险机理库' },
-  { to: '/knowledge/rules', label: '评分规则' },
-  { to: '/knowledge/matrix', label: '风险矩阵' },
-  { to: '/knowledge/measures', label: '措施库' },
-]
+interface RuleSetFacts {
+  readonly ruleSetRelease: GovernanceReleaseView | null
+  readonly scoringRules: ScoringRuleMemberView[]
+  readonly scoringRulesRelease: GovernanceReleaseView | null
+}
 
-const statusTone = (status: string): StatusTone =>
-  status === '已发布' ? 'success' : status === '待审核' ? 'review' : 'neutral'
-
-const columns: DataTableColumn[] = [
+const ruleColumns: DataTableColumn[] = [
   {
     key: 'ruleId',
     title: '规则标识',
-    width: 160,
-    render: (row) => <span className="mono">{(row as unknown as ScoringRule).ruleId}</span>,
+    width: 180,
+    render: (row) => <span className="mono">{row.ruleId as string}</span>,
   },
-  { key: 'indicatorItem', title: '指标项', width: 150 },
+  { key: 'indicatorItem', title: '指标项', width: 160 },
   {
-    key: 'scoringThresholds',
-    title: '评分阈值',
-    render: (row) => (
-      <span className="krs-thresholds">{(row as unknown as ScoringRule).scoringThresholds}</span>
-    ),
-  },
-  { key: 'gradeIntervals', title: '分级区间', width: 130 },
-  {
-    key: 'exceptionClauses',
-    title: '例外条款摘要',
-    width: 220,
-    render: (row) => (row as unknown as ScoringRule).exceptionClauses,
+    key: 'applicability',
+    title: '适用条件',
+    render: (row) => {
+      const applicability = row.applicability as {
+        constructionMethod: string[]
+        stratumCondition: string[]
+        engineeringStage: string[]
+      }
+      return [
+        ...applicability.constructionMethod,
+        ...applicability.stratumCondition,
+        ...applicability.engineeringStage,
+      ].join('、')
+    },
   },
   {
     key: 'reviewStatus',
     title: '审核状态',
-    width: 100,
-    render: (row) => {
-      const r = row as unknown as ScoringRule
-      return <StatusTag tone={statusTone(r.reviewStatus)}>{r.reviewStatus}</StatusTag>
-    },
+    width: 110,
+    render: (row) => <span>{row.reviewStatus as string}</span>,
   },
   {
-    key: 'evidenceLocator',
-    title: '证据',
-    width: 230,
+    key: 'ruleVersion',
+    title: '规则版本',
+    width: 120,
     render: (row) => (
-      <EvidenceLink segmentId={(row as unknown as ScoringRule).evidenceLocator} />
+      <VersionTag>
+        {(row.ruleVersion as { entityId: string; versionId: string }).versionId}
+      </VersionTag>
     ),
+  },
+  {
+    key: 'evidenceReferences',
+    title: '证据',
+    width: 220,
+    render: (row) => {
+      const references = row.evidenceReferences as {
+        sourceSegmentId: string
+        sourceVersionRef: { entityId: string; versionId: string }
+      }[]
+      return (
+        <>
+          {references.slice(0, 2).map((reference) => (
+            <EvidenceLink
+              key={reference.sourceSegmentId}
+              segmentId={reference.sourceSegmentId}
+              sourceVersionRef={reference.sourceVersionRef}
+              referencedBy={row.ruleId as string}
+            />
+          ))}
+        </>
+      )
+    },
   },
 ]
 
 export default function RuleSetsPage() {
-  const members = applicableRuleSet.memberRuleIds
-    .map((id) => scoringRules.find((r) => r.ruleId === id))
-    .filter((r): r is ScoringRule => Boolean(r))
+  const { selector } = useEngineering()
+  const { state, retry } = usePageQuery<RuleSetFacts>(async (projectId, signal) => {
+    const releaseSet = await readCurrentReleaseSet(projectId, signal)
+    const ruleSetMember = releaseSet.find(
+      (member) => member.definitionType === 'applicable-rule-set',
+    )
+    const ruleSetRelease =
+      ruleSetMember === undefined
+        ? null
+        : await readKnowledgeRelease(projectId, ruleSetMember.releaseRef, signal)
+
+    const scoringDefinitions = await listKnowledgeDefinitions(
+      projectId,
+      { definitionType: 'structured-scoring-rule', lifecycleStatus: 'published' },
+      signal,
+    )
+    const scoringDefinition = scoringDefinitions.items.find(
+      (item) => item.currentReleaseRef !== undefined,
+    )
+    const scoringRulesRelease =
+      scoringDefinition?.currentReleaseRef === undefined
+        ? null
+        : await readKnowledgeRelease(projectId, scoringDefinition.currentReleaseRef, signal)
+    const scoringRules =
+      scoringRulesRelease !== null &&
+      scoringRulesRelease.body.definitionType === 'structured-scoring-rule'
+        ? scoringRulesRelease.body.members
+        : []
+    return { ruleSetRelease, scoringRules, scoringRulesRelease }
+  }, [])
 
   return (
-    <AppShell activeNav="knowledge" agentContext={[`${applicableRuleSet.id} ${applicableRuleSet.version}`]}>
+    <AppShell
+      activeNav="knowledge"
+      agentContext={selector.projectId === null ? [] : [selector.projectId]}
+    >
       <div className="page">
         <header className="page-header">
           <div>
             <h1 className="page-title">评分规则</h1>
-            <p className="page-subtitle">管理结构化评分规则与适用规则集版本</p>
+            <p className="page-subtitle">结构化评分规则与适用规则集版本（只读）</p>
           </div>
         </header>
 
         <SectionTabs items={knowledgeTabs} />
 
-        <Card
-          title={`适用规则集 ${applicableRuleSet.id} · ${applicableRuleSet.name}`}
-          extra={
-            <>
-              <StatusTag tone={statusTone(applicableRuleSet.status)}>{applicableRuleSet.status}</StatusTag>
-              <VersionTag>规则集 {applicableRuleSet.version}</VersionTag>
-            </>
-          }
-          style={{ marginBottom: 16 }}
+        <PageStateView
+          state={state}
+          title="评分规则"
+          emptyMessage="当前工程尚无已发布适用规则集"
+          forbiddenHint="当前角色不具备知识库读取权限"
+          onRetry={retry}
         >
-          <div className="krs-ruleset-grid">
-            <div className="krs-field">
-              <div className="krs-field-label">生成时间</div>
-              <div className="krs-field-value mono">{applicableRuleSet.publishedAt}</div>
-            </div>
-            <div className="krs-field">
-              <div className="krs-field-label">适用性元数据快照</div>
-              <div className="krs-tags">
-                {applicableRuleSet.metadataSnapshot.map((m) => (
-                  <span key={m} className="krs-tag">{m}</span>
-                ))}
-              </div>
-            </div>
-            <div className="krs-field">
-              <div className="krs-field-label">成员规则版本清单（发布时冻结）</div>
-              <div className="krs-member-list">
-                {members.map((r) => (
-                  <span key={r.ruleId} className="krs-member">
-                    <span className="mono">{r.ruleId}</span>
-                    <VersionTag>{r.ruleVersion}</VersionTag>
-                  </span>
-                ))}
-              </div>
-            </div>
-            <div className="krs-field">
-              <div className="krs-field-label">冲突检测结果</div>
-              <div className="krs-conflict">
-                <StatusTag tone="success">无冲突</StatusTag>
-                <span className="krs-conflict-note">
-                  一致性校验未发现成员规则之间存在冲突或覆盖重叠
-                </span>
-              </div>
-            </div>
-          </div>
-        </Card>
+          {(facts) => (
+            <>
+              {facts.ruleSetRelease === null ||
+              facts.ruleSetRelease.body.definitionType !== 'applicable-rule-set' ? (
+                <Card title="适用规则集">
+                  <div className="krs-empty">当前工程无已发布适用规则集（治理空态）</div>
+                </Card>
+              ) : (
+                <Card
+                  title={`适用规则集 ${facts.ruleSetRelease.definitionRef.reference.entityId}`}
+                  extra={
+                    <>
+                      <LifecycleTag status={lifecycleStatusOf(facts.ruleSetRelease)} />
+                      <VersionTag>
+                        {facts.ruleSetRelease.releaseRef.reference.versionId}
+                      </VersionTag>
+                    </>
+                  }
+                  style={{ marginBottom: 16 }}
+                >
+                  <div className="krs-ruleset-grid">
+                    <div className="krs-field">
+                      <div className="krs-field-label">生效时间</div>
+                      <div className="krs-field-value mono">
+                        {facts.ruleSetRelease.effectiveFrom}
+                      </div>
+                    </div>
+                    <div className="krs-field">
+                      <div className="krs-field-label">适用性元数据快照</div>
+                      <div className="krs-tags">
+                        <span className="krs-tag">
+                          工法：{facts.ruleSetRelease.body.applicability.constructionMethod}
+                        </span>
+                        <span className="krs-tag">
+                          地层：{facts.ruleSetRelease.body.applicability.stratumCondition}
+                        </span>
+                        <span className="krs-tag">
+                          阶段：{facts.ruleSetRelease.body.applicability.engineeringStage}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="krs-field">
+                      <div className="krs-field-label">成员规则版本清单（发布时冻结）</div>
+                      <div className="krs-member-list">
+                        {facts.ruleSetRelease.body.includedMembers.map((member) => (
+                          <span
+                            key={`${member.ruleId}@${member.ruleVersion}`}
+                            className="krs-member"
+                          >
+                            <span className="mono">{member.ruleId}</span>
+                            <VersionTag>{member.ruleVersion}</VersionTag>
+                          </span>
+                        ))}
+                        {facts.ruleSetRelease.body.includedMembers.length === 0 && (
+                          <span className="krs-conflict-note">无入选成员</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="krs-field">
+                      <div className="krs-field-label">适用性筛除决定</div>
+                      <div className="krs-member-list">
+                        {facts.ruleSetRelease.body.decisions
+                          .filter((decision) => decision.decision !== 'included')
+                          .map((decision) => (
+                            <span
+                              key={`${decision.ruleId}@${decision.ruleVersion}`}
+                              className="krs-member"
+                            >
+                              <span className="mono">{decision.ruleId}</span>
+                              <span className="krs-conflict-note">
+                                {decision.decision} · {decision.reasonCode}
+                              </span>
+                            </span>
+                          ))}
+                        {facts.ruleSetRelease.body.decisions.filter(
+                          (decision) => decision.decision !== 'included',
+                        ).length === 0 && (
+                          <span className="krs-conflict-note">无筛除决定</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </Card>
+              )}
 
-        <Card title="成员规则" extra={`来源：${scoringRules[0].source}`}>
-          <DataTable
-            columns={columns}
-            rows={scoringRules as unknown as Record<string, unknown>[]}
-          />
-        </Card>
+              <Card
+                title="结构化评分规则"
+                extra={
+                  facts.scoringRulesRelease !== null ? (
+                    <VersionTag>
+                      {facts.scoringRulesRelease.releaseRef.reference.versionId}
+                    </VersionTag>
+                  ) : undefined
+                }
+              >
+                {facts.scoringRules.length === 0 ? (
+                  <div className="krs-empty">当前工程无已发布结构化评分规则</div>
+                ) : (
+                  <DataTable
+                    columns={ruleColumns}
+                    rows={facts.scoringRules.map((member) => ({
+                      ruleId: member.rule.ruleId,
+                      indicatorItem: member.rule.indicatorItem,
+                      applicability: member.rule.applicability,
+                      reviewStatus: member.rule.reviewStatus,
+                      ruleVersion: member.rule.ruleVersion,
+                      evidenceReferences: member.evidenceReferences,
+                    }))}
+                  />
+                )}
+              </Card>
+
+              {facts.ruleSetRelease !== null && (
+                <AssociatedObjects subjectRef={facts.ruleSetRelease.releaseRef} />
+              )}
+            </>
+          )}
+        </PageStateView>
       </div>
     </AppShell>
   )

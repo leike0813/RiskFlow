@@ -49,9 +49,6 @@ export const navItems: NavItem[] = [
   { key: 'review', label: '复核与审计', to: '/review' },
 ]
 
-/** 顶栏通知角标数字 */
-export const notificationCount = 4
-
 /** 五个必含工序节点（识别专利 RI-S31） */
 export interface ProcessNode {
   id: string
@@ -66,15 +63,3 @@ export const processNodes: ProcessNode[] = [
   { id: 'PN-EXPAND-04', name: '盾体扩径', order: 4 },
   { id: 'PN-EXPAND-05', name: '缩径转换', order: 5 },
 ]
-
-/** 六种风险机理类型（识别专利 RI-S41） */
-export const mechanismTypes = [
-  '掌子面稳定性失效',
-  '支护结构失效',
-  '渗流突涌',
-  '过挖与地表沉降',
-  '施工装备故障',
-  '装配连接失效',
-] as const
-
-export type MechanismType = (typeof mechanismTypes)[number]

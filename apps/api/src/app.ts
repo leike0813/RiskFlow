@@ -283,7 +283,7 @@ const accessLogEntryFor = (
 
 const authorize = async (input: {
   readonly access: LocalIdentityAccessV1;
-  readonly requestId: string;
+  readonly invocationId: string;
   readonly projectId: string;
   readonly branch: HttpRouteEntryV1["branch"];
   readonly sessionToken: string;
@@ -296,7 +296,7 @@ const authorize = async (input: {
   readonly requestedAt: string;
 }) => {
   const request = buildAuthorizationRequest({
-    invocationId: input.requestId,
+    invocationId: input.invocationId,
     projectId: input.projectId,
     branch: input.branch,
     sessionToken: input.sessionToken,
@@ -325,7 +325,12 @@ const runBusiness = async (input: {
     const projectId = pathProjectId(input.request);
     const decision = await authorize({
       access: input.options.access,
-      requestId: input.requestId,
+      // C06 verify 把授权上下文与签发时的 invocationId 绑定：下游 port 以领域
+      // commandId/queryId 复验，HTTP 签发必须沿用同一调用身份。
+      invocationId:
+        input.entry.mode === "command"
+          ? (body as HttpCommandRequestV1).commandId
+          : (body as HttpQueryRequestV1).queryId,
       projectId,
       branch: input.entry.branch,
       sessionToken: token as string,
@@ -413,7 +418,7 @@ const qualityProjectionWithGrants = async (input: {
         const versionDigest = createHash("sha256").update(candidate.versionKey).digest("hex");
         const perVersion = await authorize({
           access: input.options.access,
-          requestId: `${input.requestId}:quality-source-version:${phase}:${versionDigest}`,
+          invocationId: `${input.requestId}:quality-source-version:${phase}:${versionDigest}`,
           projectId: parsed.data.projectId,
           branch: "projection.query",
           sessionToken,
@@ -446,7 +451,7 @@ const qualityProjectionWithGrants = async (input: {
     current = (
       await authorize({
         access: input.options.access,
-        requestId: `${input.requestId}:quality-final-scope`,
+        invocationId: `${input.requestId}:quality-final-scope`,
         projectId: parsed.data.projectId,
         branch: "projection.query",
         sessionToken,
@@ -649,7 +654,7 @@ export const buildApi = (options: BuildApiOptionsV1): FastifyInstance => {
                 throw new HttpTransportError(authenticationRequired(requestId, requestNow(clock)));
               const decision = await authorize({
                 access: options.access,
-                requestId,
+                invocationId: requestId,
                 projectId,
                 branch: "projection.subscribe",
                 sessionToken: currentToken,

@@ -60,3 +60,10 @@
   font-size: 13px;
   line-height: 20px;
 }
+
+.krs-empty {
+  padding: 24px 0;
+  color: var(--text-2);
+  font-size: 13px;
+  text-align: center;
+}

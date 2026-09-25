@@ -52,6 +52,40 @@ describe("access domain", () => {
     for (const role of ["reviewer", "field-responder", "business-viewer"] as const) {
       expect(isBranchAllowed([role], "agent-task.read-failure-evidence")).toBe(false);
     }
+    // C32 只读 branch 授予：reviewer 全量七条；field-responder 仅监测相关；
+    // business-viewer 不含 retrieval-result。
+    const c32Branches = [
+      "engineering-data.context-read",
+      "engineering-data.source-catalog",
+      "engineering-data.monitoring-catalog",
+      "engineering-data.read-result",
+      "knowledge-modeling.governance-read",
+      "knowledge-modeling.retrieval-result",
+      "projection.result-read",
+    ] as const;
+    for (const branch of c32Branches) {
+      expect(isBranchAllowed(["reviewer"], branch)).toBe(true);
+      expect(isBranchAllowed(["project-risk-manager"], branch)).toBe(true);
+      expect(isBranchAllowed(["system-administrator"], branch)).toBe(false);
+    }
+    for (const branch of [
+      "engineering-data.context-read",
+      "engineering-data.monitoring-catalog",
+      "engineering-data.read-result",
+    ] as const) {
+      expect(isBranchAllowed(["field-responder"], branch)).toBe(true);
+    }
+    for (const branch of [
+      "engineering-data.source-catalog",
+      "knowledge-modeling.governance-read",
+      "knowledge-modeling.retrieval-result",
+      "projection.result-read",
+    ] as const) {
+      expect(isBranchAllowed(["field-responder"], branch)).toBe(false);
+    }
+    expect(isBranchAllowed(["business-viewer"], "knowledge-modeling.governance-read")).toBe(true);
+    expect(isBranchAllowed(["business-viewer"], "knowledge-modeling.retrieval-result")).toBe(false);
+    expect(isBranchAllowed(["business-viewer"], "projection.result-read")).toBe(true);
   });
 
   it("authorization scope closure", () => {

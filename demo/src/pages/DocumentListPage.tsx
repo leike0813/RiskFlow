@@ -1,57 +1,121 @@
 import { useNavigate } from 'react-router-dom'
 import AppShell from '../components/AppShell'
 import { Card } from '../components/Card'
-import { ConfirmButton } from '../components/ConfirmButton'
 import { DataTable, type DataTableColumn } from '../components/DataTable'
 import { KpiCard } from '../components/KpiCard'
+import { PageStateView } from '../components/PageStateView'
 import { SectionTabs } from '../components/SectionTabs'
 import { StatusTag } from '../components/StatusTag'
 import { VersionTag } from '../components/VersionTag'
-import { projectContext } from '../content/context'
-import { documentCatalog } from '../content/evidence'
+import { useEngineering, usePageQuery, useProjectPath } from '../api/context'
+import {
+  listSourceCatalog,
+  type CleaningAvailability,
+  type SourceCatalogPageView,
+  type SourceParseStatus,
+} from '../api/operations'
 import './DocumentListPage.css'
 
 const sectionTabs = [
   { to: '/project', label: '工程概览' },
   { to: '/project/documents', label: '资料目录' },
-  { to: '/project/monitoring/SRC-MON-003', label: '监测数据' },
+  { to: '/project/monitoring', label: '监测数据' },
 ]
+
+const PARSE_STATUS_LABEL: Record<SourceParseStatus, string> = {
+  registered: '已登记',
+  processing: '解析中',
+  parsed: '解析通过',
+  failed: '解析失败',
+}
+
+const PARSE_STATUS_TONE: Record<SourceParseStatus, 'success' | 'running' | 'failed' | 'neutral'> =
+  {
+    registered: 'neutral',
+    processing: 'running',
+    parsed: 'success',
+    failed: 'failed',
+  }
+
+const CLEANING_LABEL: Record<CleaningAvailability, string> = {
+  available: '清洗可用',
+  partial: '部分可用',
+  unavailable: '不可用',
+}
 
 const columns: DataTableColumn[] = [
   {
-    key: 'id',
+    key: 'sourceId',
     title: '资料标识',
-    width: 140,
-    render: (row) => <span className="mono">{row.id as string}</span>,
+    width: 180,
+    render: (row) => <span className="mono">{row.sourceId as string}</span>,
   },
-  { key: 'name', title: '资料名称' },
-  { key: 'type', title: '类型', width: 120 },
-  { key: 'formedAt', title: '形成时间', width: 110 },
-  { key: 'sourceUnit', title: '来源单位', width: 140 },
   {
-    key: 'version',
+    key: 'documentType',
+    title: '类型',
+    width: 120,
+    render: (row) => (row.documentType as string | undefined) ?? '—',
+  },
+  {
+    key: 'formedAt',
+    title: '形成时间',
+    width: 150,
+    render: (row) => (row.formedAt as string | undefined) ?? '—',
+  },
+  {
+    key: 'sourceOrganization',
+    title: '来源单位',
+    width: 160,
+    render: (row) => (row.sourceOrganization as string | undefined) ?? '—',
+  },
+  {
+    key: 'externalVersion',
     title: '版本',
-    width: 130,
-    render: (row) => <VersionTag>{row.version as string}</VersionTag>,
+    width: 120,
+    render: (row) => <VersionTag>{(row.externalVersion as string | undefined) ?? '—'}</VersionTag>,
   },
   {
     key: 'parseStatus',
     title: '解析状态',
-    width: 110,
-    render: (row) => <StatusTag tone="success">{row.parseStatus as string}</StatusTag>,
+    width: 100,
+    render: (row) => {
+      const status = row.parseStatus as SourceParseStatus
+      return <StatusTag tone={PARSE_STATUS_TONE[status]}>{PARSE_STATUS_LABEL[status]}</StatusTag>
+    },
   },
-  { key: 'segmentCount', title: '资料段', width: 80, align: 'right' },
+  {
+    key: 'cleaningAvailability',
+    title: '清洗可用性',
+    width: 130,
+    render: (row) => {
+      const availability = row.cleaningAvailability as CleaningAvailability | undefined
+      if (availability === undefined) return <StatusTag tone="neutral">未清洗</StatusTag>
+      const exclusionCount = row.cleaningExclusionCount as number | undefined
+      return (
+        <StatusTag tone={availability === 'available' ? 'success' : 'review'}>
+          {CLEANING_LABEL[availability]}
+          {availability === 'partial' && exclusionCount !== undefined
+            ? `（排除 ${exclusionCount}）`
+            : ''}
+        </StatusTag>
+      )
+    },
+  },
 ]
 
 export default function DocumentListPage() {
   const navigate = useNavigate()
-  const segmentTotal = documentCatalog.reduce((sum, d) => sum + d.segmentCount, 0)
-  const parsedCount = documentCatalog.filter((d) => d.parseStatus === '解析通过').length
+  const { selector } = useEngineering()
+  const projectPath = useProjectPath()
+  const { state, retry } = usePageQuery<SourceCatalogPageView>(
+    (projectId, signal) => listSourceCatalog(projectId, {}, signal),
+    [],
+  )
 
   return (
     <AppShell
       activeNav="project"
-      agentContext={[projectContext.project, projectContext.section]}
+      agentContext={selector.projectId === null ? [] : [selector.projectId]}
     >
       <div className="page">
         <header className="page-header">
@@ -59,32 +123,55 @@ export default function DocumentListPage() {
             <h1 className="page-title">资料目录</h1>
             <p className="page-subtitle">工程资料版本清单、来源单位与解析状态</p>
           </div>
-          <ConfirmButton
-            label="登记资料"
-            summary={[
-              `工程：${projectContext.project}（${projectContext.section}）`,
-              '对象：新登记工程资料，按元数据字段（类型、形成时间、工点位置、来源单位、版本号）逐项校验',
-              '版本：登记后生成初始版本，记录操作者、时间戳与变更日志',
-              '预计结果：资料进入资料目录并启动解析，按章节与表格切分资料段后逐项合规性校验',
-            ]}
-          />
         </header>
 
         <SectionTabs items={sectionTabs} />
 
-        <div className="pjdl-kpis">
-          <KpiCard label="登记资料" value={documentCatalog.length} unit="份" />
-          <KpiCard label="解析通过" value={parsedCount} unit="份" />
-          <KpiCard label="资料段合计" value={segmentTotal} unit="段" />
-        </div>
-
-        <Card title="工程资料版本列表">
-          <DataTable
-            columns={columns}
-            rows={documentCatalog as unknown as Record<string, unknown>[]}
-            onRowClick={(row) => navigate(`/project/documents/${row.id as string}`)}
-          />
-        </Card>
+        <PageStateView
+          state={state}
+          title="工程资料版本列表"
+          emptyMessage="当前工程尚无登记资料版本"
+          onRetry={retry}
+        >
+          {(page) => (
+            <>
+              <div className="pjdl-kpis">
+                <KpiCard label="登记资料" value={page.totalCount} unit="份" />
+                <KpiCard
+                  label="解析通过"
+                  value={page.items.filter((item) => item.parseStatus === 'parsed').length}
+                  unit="份（本页）"
+                />
+                <KpiCard
+                  label="清洗可用"
+                  value={
+                    page.items.filter((item) => item.cleaningAvailability === 'available').length
+                  }
+                  unit="份（本页）"
+                />
+              </div>
+              <Card title="工程资料版本列表">
+                <DataTable
+                  columns={columns}
+                  rows={page.items.map((item) => ({ ...item }))}
+                  onRowClick={(row) =>
+                    navigate(
+                      projectPath(
+                        `/project/documents/${encodeURIComponent(
+                          (row.sourceVersionRef as { reference: { entityId: string } }).reference
+                            .entityId,
+                        )}`,
+                      ),
+                    )
+                  }
+                />
+                {page.nextCursor !== undefined && (
+                  <div className="pjdl-more">结果按游标分页，更多条目请经目录查询继续翻页</div>
+                )}
+              </Card>
+            </>
+          )}
+        </PageStateView>
       </div>
     </AppShell>
   )

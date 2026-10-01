@@ -1,0 +1,1692 @@
+/**
+ * 合成样本、待甲方复核：本文件所有工程、参与者、命令身份、摘要与工件正文均为合成夹具，
+ * 不代表生产数据，也不得作为生产回退来源。
+ */
+import { createHash } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/access";
+import {
+  ArtifactPutCommandV1Schema,
+  type ArtifactRefV1,
+  type ArtifactStoreV1,
+} from "@riskflow/core/artifacts";
+import {
+  AcceptanceRouteSetV1Schema,
+  RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1,
+  RISK_CANDIDATE_FINALIZATION_SCHEMA_VERSION_V1,
+  RiskCandidateFinalizationResultRowV1Schema,
+  StandardizedRiskRecordWriteV1Schema,
+} from "@riskflow/core/identification/candidate-finalization";
+import {
+  IdentificationGraphArtifactBodyV1Schema,
+  IdentificationGraphResultRowV1Schema,
+  IdentificationGraphRunStateV1Schema,
+  type IdentificationGraphResultRowV1,
+} from "@riskflow/core/identification/graph";
+import type { AtomicCommandV1, AtomicCommitV1 } from "@riskflow/core/persistence";
+import { authorizationScopeDigest } from "@riskflow/core/retrieval";
+import {
+  AuthorizationContextV1Schema,
+  RiskIdentificationReadQueryV1Schema,
+  type AgentTaskRefV1,
+  type AuthorizationContextV1,
+  type IdentificationGroupRefV1,
+  type ModuleBranchV1,
+  type ModuleCapabilityV1,
+  type ReviewTaskRefV1,
+  type RiskIdentificationReadQueryV1,
+  type StandardizedRiskRecordRefV1,
+  type WorkflowRunRefV1,
+} from "@riskflow/contracts/ports";
+import { StandardizedRiskRecordEnvelopeSchema } from "@riskflow/contracts/records";
+import { IdentificationInputSnapshotV1Schema } from "@riskflow/contracts/workflows";
+
+import { createFilesystemArtifactStore } from "../../src/artifacts/filesystem-artifact-store.js";
+import { PostgresArtifactRegistry } from "../../src/artifacts/postgres-artifact-registry.js";
+import { PostgresRiskCandidateFinalizationAdapter } from "../../src/identification/candidate-finalization/postgres-risk-candidate-adapter.js";
+import {
+  createPostgresIdentificationGraphAdapter,
+  identificationGraphReadInvocationIdV1,
+  type PostgresIdentificationGraphAdapterV1,
+} from "../../src/identification/graph/index.js";
+import { PostgresRiskIdentificationReadAdapter } from "../../src/identification/read/index.js";
+import { runPostgresMigrations } from "../../src/postgres/migrations/run.js";
+import { createPostgresRuntime, type PostgresRuntime } from "../../src/postgres/pool.js";
+import { PostgresTransactionUnit } from "../../src/postgres/transaction-unit.js";
+import { artifactPolicy } from "../artifacts/fixture.js";
+import { startPostgresFixture, type PostgresTestFixture } from "../postgres/fixture.js";
+
+const PROJECT_ID = "project-c33-read";
+const OTHER_PROJECT_ID = "project-c33-read-other";
+const ACTOR_ID = "actor-c33";
+const TIMESTAMP = "2030-01-01T00:00:00.000Z";
+const sha = (seed: string): string => createHash("sha256").update(seed).digest("hex");
+const SCOPES = [
+  { kind: "spatial-scope", reference: { entityId: "scope-c33", versionId: "v1" } },
+] as const;
+const SOURCE_GRANTS = [
+  {
+    kind: "source-access-grant",
+    reference: { entityId: "source-grant-c33", versionId: "v1" },
+  },
+] as const;
+
+const plainRef = (entityId: string, versionId = "v1") => ({ entityId, versionId });
+const refOf = <const T extends string>(kind: T, entityId: string, versionId = "v1") =>
+  ({ kind, reference: { entityId, versionId } }) as const;
+
+/** 登记行的范围摘要：与签发上下文的空间/资料范围逐字对应（摘要不含能力与身份）。 */
+const registrationScopeDigest = authorizationScopeDigest(
+  AuthorizationContextV1Schema.parse({
+    schemaVersion: "1",
+    authorizationContextRef: refOf("authorization-context", "authorization-c33"),
+    actorId: ACTOR_ID,
+    projectId: PROJECT_ID,
+    grantedCapabilities: ["risk-identification.run"],
+    spatialScopeRefs: [...SCOPES],
+    sourceAccessGrantRefs: [...SOURCE_GRANTS],
+    authorizationPolicyRef: plainRef("authorization-policy"),
+    decidedAt: TIMESTAMP,
+    invocation: { kind: "human" },
+  }),
+);
+
+/**
+ * C05 当前授权复验端口的受控替身（同 C24 读侧夹具）：只按签发身份放行，撤销后一律拒绝；
+ * `narrowScope` 模拟当前范围收窄，使登记范围摘要对账失败可观察。
+ */
+interface IssuedAccessV1 {
+  readonly authorization: AuthorizationContextV1;
+  readonly invocationId: string;
+  readonly branch: ModuleBranchV1;
+  readonly capability: ModuleCapabilityV1;
+}
+
+interface ReadAccessControllerV1 {
+  readonly port: Pick<LocalIdentityAccessV1, "verify">;
+  revoke(): void;
+  narrowScope(): void;
+  restore(): void;
+  issue(input: {
+    readonly invocationId: string;
+    readonly branch: ModuleBranchV1;
+    readonly capability: ModuleCapabilityV1;
+    readonly projectId?: string;
+    readonly actorId?: string;
+  }): IssuedAccessV1;
+}
+
+const createReadAccess = (): ReadAccessControllerV1 => {
+  const issued = new Map<string, IssuedAccessV1>();
+  let revoked = false;
+  let scopeNarrowed = false;
+  const denied: (stage: string) => never = (stage) => {
+    throw new AccessServiceError({
+      code: "AUTHORIZATION_DENIED",
+      retryable: false,
+      stage,
+      occurredAt: TIMESTAMP,
+      diagnosticRef: refOf("audit-trail", `access-diagnostic:${stage}`),
+      contextRefs: [],
+      requiredCapability: "risk-identification.read",
+      authorizationPolicyRef: plainRef("authorization-policy"),
+    });
+  };
+  return {
+    revoke: () => {
+      revoked = true;
+    },
+    narrowScope: () => {
+      scopeNarrowed = true;
+    },
+    restore: () => {
+      revoked = false;
+      scopeNarrowed = false;
+    },
+    issue: (input) => {
+      const projectId = input.projectId ?? PROJECT_ID;
+      const entityId = `authorization-c33:${input.branch}:${input.invocationId}`;
+      const access: IssuedAccessV1 = {
+        authorization: AuthorizationContextV1Schema.parse({
+          schemaVersion: "1",
+          authorizationContextRef: refOf("authorization-context", entityId),
+          actorId: input.actorId ?? ACTOR_ID,
+          projectId,
+          grantedCapabilities: [input.capability],
+          spatialScopeRefs: [...SCOPES],
+          sourceAccessGrantRefs: [...SOURCE_GRANTS],
+          authorizationPolicyRef: plainRef("authorization-policy"),
+          decidedAt: TIMESTAMP,
+          invocation: { kind: "human" },
+        }),
+        invocationId: input.invocationId,
+        branch: input.branch,
+        capability: input.capability,
+      };
+      issued.set(entityId, access);
+      return access;
+    },
+    port: {
+      verify: async (request) => {
+        if (revoked) denied("verify.current");
+        const stored = issued.get(request.authorizationContextRef.reference.entityId);
+        if (
+          stored === undefined ||
+          stored.invocationId !== request.invocationId ||
+          stored.branch !== request.branch ||
+          stored.authorization.projectId !== request.projectId
+        ) {
+          denied("verify.binding");
+        }
+        return {
+          context: AuthorizationContextV1Schema.parse({
+            ...stored.authorization,
+            spatialScopeRefs: scopeNarrowed ? [] : [...SCOPES],
+          }),
+          contextRef: stored.authorization.authorizationContextRef,
+          redacted: false,
+        };
+      },
+    },
+  };
+};
+
+interface ReadTestFixture {
+  readonly postgres: PostgresTestFixture;
+  readonly runtime: PostgresRuntime;
+  readonly transactionUnit: PostgresTransactionUnit;
+  readonly graphAdapter: PostgresIdentificationGraphAdapterV1;
+  readonly finalizationAdapter: PostgresRiskCandidateFinalizationAdapter;
+  readonly reader: PostgresRiskIdentificationReadAdapter;
+  readonly artifactStore: ArtifactStoreV1 & { close(): Promise<void> };
+  readonly access: ReadAccessControllerV1;
+  readonly rootDirectory: string;
+  close(): Promise<void>;
+}
+
+/** 单容器夹具：完整生产迁移链 + C04 文件系统工件存储；播种与读取共用同一 riskflow_app 连接。 */
+const startReadFixture = async (): Promise<ReadTestFixture> => {
+  const postgres = await startPostgresFixture();
+  try {
+    await runPostgresMigrations({
+      connection: postgres.migrator,
+      migrationRoot: postgres.productionMigrationRoot,
+      additionalMigrationRoots: [postgres.fixtureMigrationRoot],
+    });
+    const rootDirectory = await mkdtemp(join(tmpdir(), "riskflow-c33-read-"));
+    const runtime = createPostgresRuntime(postgres.app, "riskflow_app");
+    const transactionUnit = new PostgresTransactionUnit(runtime.db);
+    const registry = new PostgresArtifactRegistry({
+      db: runtime.db,
+      transactionUnit,
+      pool: runtime.pool,
+    });
+    const artifactStore = await createFilesystemArtifactStore({
+      rootDirectory,
+      policy: artifactPolicy(),
+      registry,
+      transactionUnit,
+    });
+    const access = createReadAccess();
+    const graphAdapter = createPostgresIdentificationGraphAdapter({
+      db: runtime.db,
+      transactionUnit,
+      artifactStore,
+      authorization: access.port,
+      now: () => new Date(TIMESTAMP),
+    });
+    const finalizationAdapter = new PostgresRiskCandidateFinalizationAdapter({
+      db: runtime.db,
+      transactionUnit,
+    });
+    const reader = new PostgresRiskIdentificationReadAdapter({
+      db: runtime.db,
+      artifactStore,
+      authorization: access.port,
+      now: () => new Date(TIMESTAMP),
+    });
+    return {
+      postgres,
+      runtime,
+      transactionUnit,
+      graphAdapter,
+      finalizationAdapter,
+      reader,
+      artifactStore,
+      access,
+      rootDirectory,
+      async close() {
+        await artifactStore.close().catch(() => undefined);
+        await runtime.close().catch(() => undefined);
+        await rm(rootDirectory, { recursive: true, force: true }).catch(() => undefined);
+        await postgres.close().catch(() => undefined);
+      },
+    };
+  } catch (error) {
+    await postgres.close().catch(() => undefined);
+    throw error;
+  }
+};
+
+const inputSnapshot = () =>
+  IdentificationInputSnapshotV1Schema.parse({
+    schemaVersion: "1",
+    preparationSnapshotRef: refOf(
+      "identification-preparation-snapshot",
+      "identification-preparation-snapshot:c33",
+    ),
+    processModelReleaseRef: refOf("process-model-release", "process-model-c33"),
+    riskMechanismReleaseRef: refOf("risk-mechanism-release", "risk-mechanism-c33"),
+    retrievalEvidenceBaseReleaseRef: refOf(
+      "retrieval-evidence-base-release",
+      "retrieval-evidence-base-c33",
+    ),
+    identificationPolicySetRef: refOf("identification-policy-set", "identification-policy-set-c33"),
+    retrievalPolicyRef: plainRef("policy-retrieval"),
+    retrievalReviewAgentPolicyRef: plainRef("policy-retrieval-review-agent"),
+    repairPolicyRef: plainRef("policy-repair"),
+    confidencePolicyRef: plainRef("policy-confidence"),
+    forcedReviewPolicyRef: plainRef("policy-forced-review"),
+    retryPolicyRef: plainRef("policy-retry"),
+    modelDeploymentRef: plainRef("model-deployment"),
+    promptTemplateRef: plainRef("prompt-template"),
+    authorizationContextRef: refOf("authorization-context", "authorization-c33"),
+    auditTrailRef: refOf("audit-trail", "audit-trail:c33"),
+    createdBy: ACTOR_ID,
+    createdAt: TIMESTAMP,
+  });
+
+const agentTaskRefFor = (suffix: string): AgentTaskRefV1 => ({
+  kind: "agent-task",
+  reference: plainRef(`agent-task:c33:${suffix}`),
+  taskType: "retrieval-review",
+  triggerMode: "embedded",
+  modelDeploymentRef: plainRef("model-deployment"),
+  promptTemplateRef: plainRef("prompt-template"),
+  toolPolicyRef: plainRef("policy-tool"),
+  budgetPolicyRef: plainRef("policy-budget"),
+  incrementSchemaRef: plainRef("schema-increment"),
+  validationPolicyRef: plainRef("policy-validation"),
+});
+
+const reviewTaskRefFor = (
+  suffix: string,
+  groupRef: IdentificationGroupRefV1,
+  runRef: WorkflowRunRefV1,
+): ReviewTaskRefV1 => ({
+  kind: "review-task",
+  reference: plainRef(`review-task:c33:${suffix}`),
+  reviewType: "identification-group",
+  targetRef: groupRef,
+  waitingRunRef: runRef,
+});
+
+const groupRefFor = (runId: string, groupId: string): IdentificationGroupRefV1 =>
+  refOf(
+    "identification-group",
+    `identification-group:${runId}:${groupId}`,
+    sha(`group-${runId}-${groupId}`),
+  );
+
+/** 经图适配器写入 C04 正文：身份与生产读侧使用同一 `body-write` 派生约定。 */
+const putGraphBody = (
+  fixture: ReadTestFixture,
+  input: { readonly artifactId: string; readonly body: unknown },
+): Promise<ArtifactRefV1> => {
+  const issued = fixture.access.issue({
+    invocationId: identificationGraphReadInvocationIdV1({
+      operation: "body-write",
+      projectId: PROJECT_ID,
+      targetId: input.artifactId,
+    }),
+    branch: "risk-identification.plan",
+    capability: "risk-identification.run",
+  });
+  return fixture.graphAdapter.putBody({
+    projectId: PROJECT_ID,
+    actorId: ACTOR_ID,
+    commandId: `c33-fixture-put-${input.artifactId}`,
+    issuedAt: TIMESTAMP,
+    artifactId: input.artifactId,
+    body: IdentificationGraphArtifactBodyV1Schema.parse(input.body),
+    authorization: issued.authorization,
+  });
+};
+
+const graphRowFor = (input: {
+  readonly kind: "work-plan" | "stage-result" | "run-state";
+  readonly suffix: string;
+  readonly runId: string;
+  readonly runVersionId: string;
+  readonly artifactRef: ArtifactRefV1;
+  readonly validAt: string;
+  readonly resultId: string;
+  readonly workPlanRef?: ReturnType<typeof refOf>;
+  readonly stageResultRef?: ReturnType<typeof refOf>;
+  readonly inputSnapshotRef?: ReturnType<typeof refOf>;
+}): IdentificationGraphResultRowV1 => {
+  const base = {
+    schemaVersion: "1" as const,
+    projectId: PROJECT_ID,
+    resultId: input.resultId,
+    resultVersionId: sha(`result-version-${input.suffix}`),
+    runId: input.runId,
+    runVersionId: input.runVersionId,
+    commandId: `c33-fixture-${input.suffix}`,
+    idempotencyKey: `idempotency-${input.suffix}`,
+    requestDigest: sha(`request-${input.suffix}`),
+    artifactRef: input.artifactRef,
+    authorizationScopeDigest: registrationScopeDigest,
+    actorRef: ACTOR_ID,
+    authorizationContextRef: refOf("authorization-context", "authorization-c33"),
+    validAt: input.validAt,
+    recordedAt: input.validAt,
+    persistedAt: input.validAt,
+    auditEntryId: `c33-fixture-${input.suffix}:audit`,
+  };
+  switch (input.kind) {
+    case "work-plan":
+      return IdentificationGraphResultRowV1Schema.parse({
+        ...base,
+        resultKind: "work-plan",
+        parentRunRef: refOf("workflow-run", `risk-flow-run:${PROJECT_ID}`, sha("parent-version")),
+        inputSnapshotRef: input.inputSnapshotRef,
+        workPlanRef: input.workPlanRef,
+      });
+    case "stage-result":
+      return IdentificationGraphResultRowV1Schema.parse({
+        ...base,
+        resultKind: "stage-result",
+        workPlanRef: input.workPlanRef,
+        stageResultRef: input.stageResultRef,
+      });
+    case "run-state":
+      return IdentificationGraphResultRowV1Schema.parse({ ...base, resultKind: "run-state" });
+  }
+};
+
+/**
+ * 登记只在调用方 ambient C03 事务内发生：这里按与生产同一顺序驱动 commit 与审计。批量登记共用
+ * 同一命令身份与同一条审计行（C03 `AtomicCommitV1` 只承载一条审计），因此批次内每行都按该命令
+ * 派生 `auditEntryId`。
+ */
+const registerGraphRows = async (
+  fixture: ReadTestFixture,
+  rows: readonly IdentificationGraphResultRowV1[],
+  commandId: string,
+): Promise<void> => {
+  const head = rows[0] as IdentificationGraphResultRowV1;
+  const normalized = rows.map((row) =>
+    IdentificationGraphResultRowV1Schema.parse({
+      ...row,
+      commandId,
+      auditEntryId: `${commandId}:audit`,
+    }),
+  );
+  const command: AtomicCommandV1 = {
+    projectId: PROJECT_ID,
+    commandKind: "identification-graph-result-register",
+    commandId,
+    idempotencyKey: commandId,
+    payload: {
+      fixture: "合成样本、待甲方复核",
+      resultKinds: normalized.map((row) => row.resultKind),
+    },
+    actorRef: ACTOR_ID,
+    authorizationContextRef: head.authorizationContextRef,
+    issuedAt: TIMESTAMP,
+  };
+  const commit: AtomicCommitV1 = {
+    resultRef: head.artifactRef,
+    audit: {
+      auditEntryId: `${commandId}:audit`,
+      projectId: PROJECT_ID,
+      action: command.commandKind,
+      targetRef: head.artifactRef,
+      actorRef: ACTOR_ID,
+      authorizationContextRef: head.authorizationContextRef,
+      occurredAt: TIMESTAMP,
+      recordedAt: TIMESTAMP,
+      version: { entityId: head.resultId, versionId: head.resultVersionId },
+      commandId,
+      idempotencyKey: commandId,
+    },
+    events: [],
+  };
+  await fixture.transactionUnit.execute(command, async (context) => {
+    const outcome = await fixture.graphAdapter.registerResults(
+      { rows: normalized, occurredAt: TIMESTAMP },
+      context,
+    );
+    if (outcome.kind !== "registered") throw new TypeError("graph row seeding failed");
+    return commit;
+  });
+};
+
+const READ_BRANCH_FOR: Record<RiskIdentificationReadQueryV1["kind"], ModuleBranchV1> = {
+  "run-list": "risk-identification.run-list",
+  "run-read": "risk-identification.run-read",
+  "record-catalog": "risk-identification.record-catalog",
+  "record-read": "risk-identification.record-read",
+};
+
+let queryCount = 0;
+const readQuery = <K extends RiskIdentificationReadQueryV1["kind"]>(
+  fixture: ReadTestFixture,
+  kind: K,
+  payload: Extract<RiskIdentificationReadQueryV1, { kind: K }>["payload"],
+  options: { readonly projectId?: string; readonly actorId?: string } = {},
+): RiskIdentificationReadQueryV1 => {
+  const queryId = `c33-query-${++queryCount}`;
+  const authorization = fixture.access.issue({
+    invocationId: queryId,
+    branch: READ_BRANCH_FOR[kind],
+    capability: "risk-identification.read",
+    projectId: options.projectId,
+    actorId: options.actorId,
+  }).authorization;
+  return RiskIdentificationReadQueryV1Schema.parse({
+    queryId,
+    projectId: options.projectId ?? PROJECT_ID,
+    actorId: authorization.actorId,
+    requestedAt: TIMESTAMP,
+    authorization,
+    kind,
+    payload,
+  }) as RiskIdentificationReadQueryV1;
+};
+
+const runStateBody = (input: {
+  readonly runId: string;
+  readonly runVersionId: string;
+  readonly stage: "I3" | "I5" | "I9";
+  readonly status: "running" | "waiting" | "retryable-failure" | "terminal-failure" | "completed";
+  readonly workItemRef: ReturnType<typeof refOf>;
+  readonly extra?: Record<string, unknown>;
+}) => ({
+  bodyKind: "run-state" as const,
+  runState: IdentificationGraphRunStateV1Schema.parse({
+    schemaVersion: "1",
+    runId: input.runId,
+    runVersionId: input.runVersionId,
+    stage: input.stage,
+    status: input.status,
+    completedWorkItemRefs: [],
+    pendingWorkItemRefs: [input.workItemRef],
+    validatedCandidateSetRefs: [],
+    failedWorkItemRefs: [],
+    acceptedRiskRecordRefs: [],
+    rejectedGroupRefs: [],
+    pendingGroupRefs: [],
+    ...input.extra,
+  }),
+});
+
+/** 只含 run-state 登记行与正文的运行：run-list 只消费这类事实。 */
+const seedBareRun = async (
+  fixture: ReadTestFixture,
+  input: {
+    readonly suffix: string;
+    readonly validAt: string;
+    readonly stage: "I3" | "I5" | "I9";
+    readonly status: "running" | "waiting" | "completed";
+    readonly extra?: Record<string, unknown>;
+  },
+): Promise<WorkflowRunRefV1> => {
+  const runId = `workflow-run:${PROJECT_ID}:${input.suffix}`;
+  const runVersionId = sha(`run-version-${input.suffix}`);
+  const artifactRef = await putGraphBody(fixture, {
+    artifactId: `c33-body-run-state-${input.suffix}`,
+    body: runStateBody({
+      runId,
+      runVersionId,
+      stage: input.stage,
+      status: input.status,
+      workItemRef: refOf("identification-work-item", `work-item:${runId}:node-1`),
+      extra: input.extra,
+    }),
+  });
+  await registerGraphRows(
+    fixture,
+    [
+      graphRowFor({
+        kind: "run-state",
+        suffix: `run-state-${input.suffix}`,
+        runId,
+        runVersionId,
+        artifactRef,
+        validAt: input.validAt,
+        resultId: `result-run-state-${input.suffix}`,
+      }),
+    ],
+    `c33-fixture-register-${input.suffix}`,
+  );
+  return refOf("workflow-run", runId, runVersionId);
+};
+
+interface SeededRunV1 {
+  readonly runRef: WorkflowRunRefV1;
+  readonly workItemRef: ReturnType<typeof refOf>;
+  readonly workPlanRef: ReturnType<typeof refOf>;
+  readonly agentTaskRef: AgentTaskRefV1;
+  readonly reviewTaskRef: ReviewTaskRefV1;
+  readonly acceptedGroupRef: IdentificationGroupRefV1;
+  readonly pendingGroupRef: IdentificationGroupRefV1;
+  readonly rejectedGroupRef: IdentificationGroupRefV1;
+  readonly recordRef: StandardizedRiskRecordRefV1;
+  readonly routeDecisionRef: ReturnType<typeof refOf>;
+  readonly reviewDecisionRef: ReturnType<typeof refOf>;
+  readonly routeSetRef: ReturnType<typeof refOf>;
+}
+
+/** 完整运行：工作计划 + I1/I3/I5/I7 阶段正文 + 验收路由集 + 一条标准化风险记录 + run-state。 */
+const seedCompletedRun = async (
+  fixture: ReadTestFixture,
+  input: { readonly suffix: string; readonly validAt: string },
+): Promise<SeededRunV1> => {
+  const { suffix } = input;
+  const runId = `workflow-run:${PROJECT_ID}:${suffix}`;
+  const runVersionId = sha(`run-version-${suffix}`);
+  const runRef = refOf("workflow-run", runId, runVersionId);
+  const workPlanRef = refOf(
+    "identification-work-plan",
+    `identification-work-plan:${runId}`,
+    sha(`work-plan-request-${suffix}`),
+  );
+  const inputSnapshotRef = refOf(
+    "identification-input-snapshot",
+    `identification-input-snapshot:${runId}`,
+    sha(`input-snapshot-request-${suffix}`),
+  );
+  const workItemRef = refOf(
+    "identification-work-item",
+    `identification-work-item:${runId}:node-1`,
+    sha(`work-item-request-${suffix}`),
+  );
+  const agentTaskRef = agentTaskRefFor(suffix);
+  const acceptedGroupRef = groupRefFor(runId, "group-accepted");
+  const pendingGroupRef = groupRefFor(runId, "group-pending");
+  const rejectedGroupRef = groupRefFor(runId, "group-rejected");
+  const reviewTaskRef = reviewTaskRefFor(suffix, pendingGroupRef, runRef);
+  const recordRef: StandardizedRiskRecordRefV1 = refOf(
+    "standardized-risk-record",
+    `risk-record:${runId}:record-1`,
+    "v1",
+  );
+  const routeDecisionRef = refOf(
+    "route-decision",
+    `route-decision:${runId}:group-accepted`,
+    sha(`route-decision-${suffix}`),
+  );
+  const reviewDecisionRef = refOf(
+    "review-decision",
+    `review-decision:${runId}:group-pending`,
+    sha(`review-decision-${suffix}`),
+  );
+  const routeSetRef = refOf(
+    "acceptance-route-set",
+    `acceptance-route-set:${runId}`,
+    sha(`route-set-${suffix}`),
+  );
+  const mergePlanRef = refOf("merge-plan", `merge-plan:${runId}`, sha(`merge-plan-${suffix}`));
+
+  const planArtifactRef = await putGraphBody(fixture, {
+    artifactId: `c33-body-plan-${suffix}`,
+    body: {
+      bodyKind: "work-plan",
+      workPlan: {
+        schemaVersion: "1",
+        projectId: PROJECT_ID,
+        workPlanRef,
+        inputSnapshotRef,
+        inputSnapshot: inputSnapshot(),
+        workItems: [
+          {
+            schemaVersion: "1",
+            workItemRef,
+            nodeId: "node-1",
+            spatialScopeRefs: [...SCOPES],
+            sourceVersionRefs: [refOf("source-version", "source-version-c33")],
+            sourceSegmentSetRefs: [refOf("source-segment-set", "source-segment-set-c33")],
+            frozenQueryText: "node-1 冻结查询依据",
+          },
+        ],
+        excludedWorkItems: [],
+      },
+    },
+  });
+
+  const stageBodies: readonly {
+    readonly stage: string;
+    readonly body: Record<string, unknown>;
+  }[] = [
+    {
+      stage: "I1",
+      body: {
+        stage: "I1",
+        resultKind: "ready",
+        inputSnapshotRef,
+      },
+    },
+    {
+      stage: "I3",
+      body: {
+        stage: "I3",
+        retrievalArtifactSetRefs: [],
+        agentTaskRefs: [agentTaskRef],
+        failedWorkItemRefs: [],
+      },
+    },
+    {
+      stage: "I5",
+      body: {
+        stage: "I5",
+        validatedCandidateSetRef: refOf(
+          "validated-candidate-set",
+          `validated-candidate-set:${runId}:node-1`,
+          sha(`validated-${suffix}`),
+        ),
+        reviewTaskRefs: [reviewTaskRef],
+      },
+    },
+    {
+      stage: "I7",
+      body: {
+        stage: "I7",
+        acceptanceRouteSetRef: routeSetRef,
+        reviewTaskRefs: [reviewTaskRef],
+      },
+    },
+  ];
+  const stageRows: IdentificationGraphResultRowV1[] = [];
+  for (const stage of stageBodies) {
+    const stageResultRef = refOf(
+      "stage-result",
+      `stage-result:${runId}:${stage.stage}`,
+      sha(`stage-result-${suffix}-${stage.stage}`),
+    );
+    const artifactRef = await putGraphBody(fixture, {
+      artifactId: `c33-body-stage-${suffix}-${stage.stage}`,
+      body: {
+        bodyKind: "stage-result",
+        stageResult: { schemaVersion: "1", runRef, recordedAt: input.validAt, ...stage.body },
+      },
+    });
+    stageRows.push(
+      graphRowFor({
+        kind: "stage-result",
+        suffix: `${suffix}-stage-${stage.stage}`,
+        runId,
+        runVersionId,
+        artifactRef,
+        validAt: input.validAt,
+        resultId: stageResultRef.reference.entityId,
+        workPlanRef,
+        stageResultRef,
+      }),
+    );
+  }
+
+  // 验收路由集正文走 C04（C22 写入语义），登记行走既有 C22 适配器。
+  const routeSet = AcceptanceRouteSetV1Schema.parse({
+    schemaVersion: RISK_CANDIDATE_FINALIZATION_SCHEMA_VERSION_V1,
+    projectId: PROJECT_ID,
+    workPlanRef,
+    identificationRunRef: runRef,
+    inputSnapshotRef,
+    policySetRef: refOf("identification-policy-set", "identification-policy-set-c33"),
+    mergePlanRef,
+    confidencePolicyRef: plainRef("policy-confidence"),
+    forcedReviewPolicyRef: plainRef("policy-forced-review"),
+    routes: [
+      {
+        routeKind: "automatic",
+        groupId: "group-accepted",
+        groupVersionId: acceptedGroupRef.reference.versionId,
+        groupRef: acceptedGroupRef,
+        compositeConfidence: {
+          value: 0.8,
+          basis: [
+            {
+              source: "model-confidence",
+              available: true,
+              value: 0.8,
+              weight: 1,
+              contribution: 0.8,
+            },
+            {
+              source: "rule-consistency",
+              available: true,
+              value: 0.8,
+              weight: 1,
+              contribution: 0.8,
+            },
+            {
+              source: "simulation-constraint",
+              available: true,
+              value: 0.8,
+              weight: 1,
+              contribution: 0.8,
+            },
+            {
+              source: "multi-source-merge",
+              available: true,
+              value: 0.8,
+              weight: 1,
+              contribution: 0.8,
+            },
+          ],
+          policyRef: plainRef("policy-confidence"),
+          missingBasisBehavior: "block",
+          roundingDecimals: 4,
+        },
+        routeDecisionRef,
+      },
+      {
+        routeKind: "review",
+        groupId: "group-pending",
+        groupVersionId: pendingGroupRef.reference.versionId,
+        groupRef: pendingGroupRef,
+        compositeConfidence: {
+          value: 0.5,
+          basis: [
+            {
+              source: "model-confidence",
+              available: true,
+              value: 0.5,
+              weight: 1,
+              contribution: 0.5,
+            },
+            {
+              source: "rule-consistency",
+              available: true,
+              value: 0.5,
+              weight: 1,
+              contribution: 0.5,
+            },
+            {
+              source: "simulation-constraint",
+              available: true,
+              value: 0.5,
+              weight: 1,
+              contribution: 0.5,
+            },
+            {
+              source: "multi-source-merge",
+              available: true,
+              value: 0.5,
+              weight: 1,
+              contribution: 0.5,
+            },
+          ],
+          policyRef: plainRef("policy-confidence"),
+          missingBasisBehavior: "block",
+          roundingDecimals: 4,
+        },
+        reviewTaskRef,
+        waitingRunRef: runRef,
+        validationSnapshotRef: refOf("validation-snapshot", `validation-snapshot:${runId}`),
+        evidenceSnapshotRef: refOf("evidence-snapshot", `evidence-snapshot:${runId}`),
+        reviewPolicyRef: plainRef("policy-review"),
+        forcedReviewReasonCode: "below-confidence-threshold",
+      },
+    ],
+    authorizationScopeDigest: registrationScopeDigest,
+    authorizationContextRef: refOf("authorization-context", "authorization-c33"),
+    routedAt: input.validAt,
+  });
+  const encoder = new TextEncoder();
+  const routeSetPut = await fixture.artifactStore.put(
+    ArtifactPutCommandV1Schema.parse({
+      schemaVersion: "1",
+      commandId: `c33-fixture-put-route-set-${suffix}`,
+      idempotencyKey: `c33-fixture-put-route-set-${suffix}`,
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      issuedAt: TIMESTAMP,
+      authorization: AuthorizationContextV1Schema.parse({
+        schemaVersion: "1",
+        authorizationContextRef: refOf("authorization-context", "authorization-c33"),
+        actorId: ACTOR_ID,
+        projectId: PROJECT_ID,
+        grantedCapabilities: ["risk-identification.finalize"],
+        spatialScopeRefs: [...SCOPES],
+        sourceAccessGrantRefs: [...SOURCE_GRANTS],
+        authorizationPolicyRef: plainRef("authorization-policy"),
+        decidedAt: TIMESTAMP,
+        invocation: { kind: "human" },
+      }),
+      requiredCapability: "risk-identification.finalize",
+      artifactId: `c33-body-route-set-${suffix}`,
+      artifactKind: "content",
+      purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.acceptanceRouteSet,
+      mediaType: "application/json",
+      parentArtifactRefs: [],
+      evidenceReferences: [],
+      additionalSpatialScopeRefs: [],
+      additionalSourceAccessGrantRefs: [],
+    }),
+    (async function* () {
+      yield encoder.encode(JSON.stringify(routeSet));
+    })(),
+  );
+  const routeSetRow = RiskCandidateFinalizationResultRowV1Schema.parse({
+    schemaVersion: RISK_CANDIDATE_FINALIZATION_SCHEMA_VERSION_V1,
+    commandId: `c33-fixture-route-set-${suffix}`,
+    projectId: PROJECT_ID,
+    resultId: routeSetRef.reference.entityId,
+    resultVersionId: routeSetRef.reference.versionId,
+    requestDigest: sha(`route-set-request-${suffix}`),
+    artifactRef: routeSetPut.artifactRef,
+    inputSnapshotRef,
+    authorizationScopeDigest: registrationScopeDigest,
+    actorRef: ACTOR_ID,
+    authorizationContextRef: refOf("authorization-context", "authorization-c33"),
+    resultKind: "acceptance-route-set",
+    workPlanRef,
+    mergePlanRef,
+    acceptanceRouteSetRef: routeSetRef,
+  });
+  {
+    const command: AtomicCommandV1 = {
+      projectId: PROJECT_ID,
+      commandKind: "identification.accept-groups",
+      commandId: `c33-fixture-route-set-${suffix}`,
+      idempotencyKey: `c33-fixture-route-set-${suffix}`,
+      payload: { fixture: "合成样本、待甲方复核" },
+      actorRef: ACTOR_ID,
+      authorizationContextRef: refOf("authorization-context", "authorization-c33"),
+      issuedAt: TIMESTAMP,
+    };
+    await fixture.transactionUnit.execute(command, async (context) => {
+      const outcome = await fixture.finalizationAdapter.registerResults(
+        { rows: [routeSetRow], occurredAt: input.validAt },
+        context,
+      );
+      if (outcome.kind !== "registered") throw new TypeError("route set seeding failed");
+      return {
+        resultRef: routeSetRef,
+        audit: {
+          auditEntryId: `c33-fixture-route-set-${suffix}:audit`,
+          projectId: PROJECT_ID,
+          action: command.commandKind,
+          targetRef: routeSetRef,
+          actorRef: ACTOR_ID,
+          authorizationContextRef: command.authorizationContextRef,
+          occurredAt: input.validAt,
+          recordedAt: input.validAt,
+          version: routeSetRef.reference,
+          commandId: command.commandId,
+          idempotencyKey: command.idempotencyKey,
+        },
+        events: [],
+      } satisfies AtomicCommitV1;
+    });
+  }
+
+  // 标准化风险记录：自动路线记录挂在已验收组上，经既有 C22 写入路径入库。
+  const recordWrite = StandardizedRiskRecordWriteV1Schema.parse({
+    riskRecordId: recordRef.reference.entityId,
+    versionId: "v1",
+    riskRecordRef: recordRef,
+    rowId: `row-${suffix}`,
+    idempotencyKey: `identification.accept-groups:${suffix}`,
+    requestDigest: sha(`record-request-${suffix}`),
+    projectId: PROJECT_ID,
+    workPlanRef,
+    identificationRunRef: runRef,
+    inputSnapshotRef,
+    mergePlanRef,
+    routeDecisionRef,
+    groupId: "group-accepted",
+    groupVersionId: acceptedGroupRef.reference.versionId,
+    groupRef: acceptedGroupRef,
+    representativeCandidateRefs: [
+      refOf(
+        "content-artifact",
+        `candidate-artifact-${suffix}`,
+        `sha256:${sha(`candidate-${suffix}`)}`,
+      ),
+    ],
+    sourceSegmentIds: [`segment-${suffix}-1`, `segment-${suffix}-2`],
+    mechanismEntryIds: [`mechanism-${suffix}-1`],
+    authorizationScopeDigest: registrationScopeDigest,
+    authorizationContextRef: refOf("authorization-context", "authorization-c33"),
+    actorRef: ACTOR_ID,
+    commandId: `c33-fixture-record-${suffix}`,
+    occurredAt: input.validAt,
+  });
+  const recordEnvelope = StandardizedRiskRecordEnvelopeSchema.parse({
+    riskRecordId: recordRef.reference.entityId,
+    record: {
+      processNodeId: "node-1",
+      riskSource: `risk-source-${suffix}`,
+      riskFactor: `risk-factor-${suffix}`,
+      riskEvent: `risk-event-${suffix}`,
+      riskElementRelations: [
+        { sourceElement: "element-a", relation: "induces", targetElement: "element-b" },
+      ],
+      evidenceLocator: { sourceSegmentId: `segment-${suffix}-1` },
+      modelConfidence: 0.8,
+    },
+    riskMechanismEntryIds: [`mechanism-${suffix}-1`],
+    sourceIds: [`segment-${suffix}-1`, `segment-${suffix}-2`],
+    compositeConfidence: { value: 0.7, basis: ["model-confidence"] },
+    version: {
+      reference: plainRef(recordRef.reference.entityId, "v1"),
+      effectivePeriod: { validFrom: input.validAt },
+      systemTime: { recordedAt: input.validAt },
+    },
+    audit: { actorId: ACTOR_ID, action: "identification.accept-groups", recordedAt: input.validAt },
+  });
+  {
+    const command: AtomicCommandV1 = {
+      projectId: PROJECT_ID,
+      commandKind: "identification.accept-groups",
+      commandId: `c33-fixture-record-${suffix}`,
+      idempotencyKey: `c33-fixture-record-${suffix}`,
+      payload: { fixture: "合成样本、待甲方复核", recordIds: [recordWrite.riskRecordId] },
+      actorRef: ACTOR_ID,
+      authorizationContextRef: refOf("authorization-context", "authorization-c33"),
+      issuedAt: TIMESTAMP,
+    };
+    await fixture.transactionUnit.execute(command, async (context) => {
+      const outcome = await fixture.finalizationAdapter.insertRecords(
+        { rows: [recordWrite], records: [recordEnvelope], occurredAt: input.validAt },
+        context,
+      );
+      if (outcome.kind !== "inserted") throw new TypeError("record seeding failed");
+      return {
+        resultRef: recordRef,
+        audit: {
+          auditEntryId: `c33-fixture-record-${suffix}:audit`,
+          projectId: PROJECT_ID,
+          action: command.commandKind,
+          targetRef: recordRef,
+          actorRef: ACTOR_ID,
+          authorizationContextRef: command.authorizationContextRef,
+          occurredAt: input.validAt,
+          recordedAt: input.validAt,
+          version: recordRef.reference,
+          commandId: command.commandId,
+          idempotencyKey: command.idempotencyKey,
+        },
+        events: [],
+      } satisfies AtomicCommitV1;
+    });
+  }
+
+  const runStateArtifactRef = await putGraphBody(fixture, {
+    artifactId: `c33-body-run-state-${suffix}`,
+    body: runStateBody({
+      runId,
+      runVersionId,
+      stage: "I9",
+      status: "completed",
+      workItemRef,
+      extra: {
+        completedWorkItemRefs: [workItemRef],
+        pendingWorkItemRefs: [],
+        acceptedRiskRecordRefs: [recordRef],
+        pendingGroupRefs: [pendingGroupRef],
+        rejectedGroupRefs: [rejectedGroupRef],
+        acceptedRouteSetRef: routeSetRef,
+        resultRef: refOf(
+          "identification-run-result",
+          `identification-run-result:${runId}`,
+          sha(`run-result-${suffix}`),
+        ),
+      },
+    }),
+  });
+  await registerGraphRows(
+    fixture,
+    [
+      graphRowFor({
+        kind: "work-plan",
+        suffix: `${suffix}-plan`,
+        runId,
+        runVersionId,
+        artifactRef: planArtifactRef,
+        validAt: input.validAt,
+        resultId: workPlanRef.reference.entityId,
+        workPlanRef,
+        inputSnapshotRef,
+      }),
+      ...stageRows,
+      graphRowFor({
+        kind: "run-state",
+        suffix: `${suffix}-run-state`,
+        runId,
+        runVersionId,
+        artifactRef: runStateArtifactRef,
+        validAt: input.validAt,
+        resultId: `result-run-state-${suffix}`,
+      }),
+    ],
+    `c33-fixture-register-${suffix}`,
+  );
+
+  return {
+    runRef,
+    workItemRef,
+    workPlanRef,
+    agentTaskRef,
+    reviewTaskRef,
+    acceptedGroupRef,
+    pendingGroupRef,
+    rejectedGroupRef,
+    recordRef,
+    routeDecisionRef,
+    reviewDecisionRef,
+    routeSetRef,
+  };
+};
+
+const DENIED_SHAPE = {
+  code: "AUTHORIZATION_DENIED",
+  category: "authorization",
+  retryable: false,
+  stageCode: "risk-identification.read",
+  requiredCapability: "risk-identification.read",
+  authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+} as const;
+
+describe.sequential("PostgreSQL risk identification read adapter (C33)", () => {
+  let fixture: ReadTestFixture | undefined;
+
+  beforeAll(async () => {
+    fixture = await startReadFixture();
+  }, 180_000);
+
+  afterAll(async () => {
+    await fixture?.close();
+  });
+
+  const requireFixture = (): ReadTestFixture => {
+    if (fixture === undefined) throw new TypeError("fixture not started");
+    return fixture;
+  };
+
+  it("run-list 返回有界分页条目，排序与游标稳定，不伪造触发原因", async () => {
+    const f = requireFixture();
+    const first = await seedBareRun(f, {
+      suffix: "list-a",
+      validAt: "2030-01-01T00:00:01.000Z",
+      stage: "I9",
+      status: "completed",
+    });
+    const second = await seedBareRun(f, {
+      suffix: "list-b",
+      validAt: "2030-01-01T00:00:02.000Z",
+      stage: "I5",
+      status: "running",
+    });
+    const third = await seedBareRun(f, {
+      suffix: "list-c",
+      validAt: "2030-01-01T00:00:03.000Z",
+      stage: "I9",
+      status: "completed",
+    });
+
+    const page1 = await f.reader.read(readQuery(f, "run-list", { pageSize: 2 }));
+    if (page1.kind !== "succeeded") throw new TypeError("run-list first page failed");
+    // 按启动时间倒序：list-c（最新）、list-b；第二页为 list-a。
+    expect(page1.result.items.map((item) => item.runRef)).toEqual([third, second]);
+    expect(page1.result.items[0]).toMatchObject({
+      stage: "I9",
+      status: "completed",
+      startedBy: ACTOR_ID,
+      startedAt: "2030-01-01T00:00:03.000Z",
+      acceptedCount: 0,
+      pendingReviewCount: 0,
+      rejectedCount: 0,
+    });
+    expect("triggerReason" in (page1.result.items[0] as object)).toBe(false);
+    expect(page1.result.nextCursor).toBe("offset-2");
+
+    const page2 = await f.reader.read(
+      readQuery(f, "run-list", { pageSize: 2, cursor: page1.result.nextCursor }),
+    );
+    if (page2.kind !== "succeeded") throw new TypeError("run-list second page failed");
+    expect(page2.result.items.map((item) => item.runRef)).toEqual([first]);
+    expect(page2.result.items[0]!.status).toBe("completed");
+    expect(page2.result.nextCursor).toBeUndefined();
+
+    // 状态筛选：分页基于过滤后序列；重复读取同一游标得到同一内容。
+    const filtered1 = await f.reader.read(
+      readQuery(f, "run-list", { pageSize: 1, status: "completed" }),
+    );
+    if (filtered1.kind !== "succeeded") throw new TypeError("run-list filtered page failed");
+    expect(filtered1.result.items.map((item) => item.runRef)).toEqual([third]);
+    expect(filtered1.result.nextCursor).toBe("offset-1");
+    const filtered2 = await f.reader.read(
+      readQuery(f, "run-list", { pageSize: 1, status: "completed", cursor: "offset-1" }),
+    );
+    if (filtered2.kind !== "succeeded") throw new TypeError("run-list filtered replay failed");
+    expect(filtered2.result.items.map((item) => item.runRef)).toEqual([first]);
+    expect(filtered2.result.nextCursor).toBeUndefined();
+  });
+
+  it("run-read 返回阶段进度、覆盖、合并组与关联引用，并支持精确版本重放", async () => {
+    const f = requireFixture();
+    const seeded = await seedCompletedRun(f, {
+      suffix: "detail",
+      validAt: "2030-01-01T00:01:00.000Z",
+    });
+
+    const result = await f.reader.read(readQuery(f, "run-read", { runRef: seeded.runRef }));
+    if (result.kind !== "succeeded") throw new TypeError("run-read failed");
+    const detail = result.result;
+    expect(detail.kind).toBe("run-read");
+    expect(detail.runRef).toEqual(seeded.runRef);
+    expect(detail.stage).toBe("I9");
+    expect(detail.status).toBe("completed");
+    expect(detail.stageEntries).toEqual([
+      { stage: "I1", status: "completed" },
+      { stage: "I3", status: "completed" },
+      { stage: "I5", status: "completed" },
+      { stage: "I7", status: "completed" },
+      { stage: "I9", status: "completed" },
+    ]);
+    expect(detail.workItemCoverage).toEqual([
+      { workItemRef: seeded.workItemRef, processNodeId: "node-1", status: "completed" },
+    ]);
+    expect(detail.mergeGroups).toEqual([
+      {
+        groupRef: seeded.acceptedGroupRef,
+        status: "accepted",
+        acceptanceKind: "automatic",
+      },
+      {
+        groupRef: seeded.pendingGroupRef,
+        status: "pending-review",
+        acceptanceKind: "review",
+      },
+      { groupRef: seeded.rejectedGroupRef, status: "rejected" },
+    ]);
+    expect(detail.agentTaskRefs).toEqual([seeded.agentTaskRef]);
+    expect(detail.reviewTaskRefs).toEqual([seeded.reviewTaskRef]);
+    expect(detail.resultCounts).toEqual({
+      plannedWorkItemCount: 1,
+      completedWorkItemCount: 1,
+      failedWorkItemCount: 0,
+      zeroResultCount: 0,
+      acceptedCount: 1,
+      pendingReviewCount: 1,
+      rejectedCount: 1,
+    });
+    expect(detail.acceptedRiskRecordRefs).toEqual([seeded.recordRef]);
+    expect(detail.pendingReviewGroupRefs).toEqual([seeded.pendingGroupRef]);
+    expect(detail.rejectedGroupRefs).toEqual([seeded.rejectedGroupRef]);
+    expect(detail.waitingRef).toBeUndefined();
+
+    // 精确版本重放：登记同一运行的更新版本后，旧版本读取仍逐字同形。
+    const replay = await f.reader.read(readQuery(f, "run-read", { runRef: seeded.runRef }));
+    expect(replay).toEqual(result);
+
+    const newerVersionId = sha("run-version-detail-next");
+    const newerArtifactRef = await putGraphBody(f, {
+      artifactId: "c33-body-run-state-detail-next",
+      body: runStateBody({
+        runId: seeded.runRef.reference.entityId,
+        runVersionId: newerVersionId,
+        stage: "I9",
+        status: "completed",
+        workItemRef: seeded.workItemRef,
+        extra: {
+          completedWorkItemRefs: [seeded.workItemRef],
+          pendingWorkItemRefs: [],
+          acceptedRiskRecordRefs: [seeded.recordRef],
+          pendingGroupRefs: [],
+          rejectedGroupRefs: [seeded.rejectedGroupRef],
+          acceptedRouteSetRef: seeded.routeSetRef,
+        },
+      }),
+    });
+    await registerGraphRows(
+      f,
+      [
+        graphRowFor({
+          kind: "run-state",
+          suffix: "detail-run-state-next",
+          runId: seeded.runRef.reference.entityId,
+          runVersionId: newerVersionId,
+          artifactRef: newerArtifactRef,
+          validAt: "2030-01-01T00:02:00.000Z",
+          resultId: "result-run-state-detail-next",
+        }),
+      ],
+      "c33-fixture-register-detail-next",
+    );
+    const afterNewer = await f.reader.read(readQuery(f, "run-read", { runRef: seeded.runRef }));
+    expect(afterNewer).toEqual(result);
+    const newer = await f.reader.read(
+      readQuery(f, "run-read", {
+        runRef: refOf("workflow-run", seeded.runRef.reference.entityId, newerVersionId),
+      }),
+    );
+    if (newer.kind !== "succeeded") throw new TypeError("newer version run-read failed");
+    expect(newer.result.pendingReviewGroupRefs).toEqual([]);
+    expect(newer.result.resultCounts.pendingReviewCount).toBe(0);
+  });
+
+  it("run-read 如实呈现等待复核与可重试失败，不把暂停或失败伪装为完成", async () => {
+    const f = requireFixture();
+    const waitingRunId = `workflow-run:${PROJECT_ID}:waiting`;
+    const waitingVersionId = sha("run-version-waiting");
+    const waitingRunRef = refOf("workflow-run", waitingRunId, waitingVersionId);
+    const pendingGroupRef = groupRefFor(waitingRunId, "group-pending");
+    const reviewTaskRef = reviewTaskRefFor("waiting", pendingGroupRef, waitingRunRef);
+    await seedBareRun(f, {
+      suffix: "waiting",
+      validAt: "2030-01-01T00:03:00.000Z",
+      stage: "I5",
+      status: "waiting",
+      extra: {
+        pendingGroupRefs: [pendingGroupRef],
+        lastWaitingRef: {
+          kind: "human-review",
+          reviewTaskRef,
+          groupRef: pendingGroupRef,
+        },
+      },
+    });
+    const waiting = await f.reader.read(readQuery(f, "run-read", { runRef: waitingRunRef }));
+    if (waiting.kind !== "succeeded") throw new TypeError("waiting run-read failed");
+    expect(waiting.result.status).toBe("waiting");
+    expect(waiting.result.stageEntries).toEqual([{ stage: "I5", status: "waiting" }]);
+    expect(waiting.result.waitingRef).toEqual({ kind: "review", reviewTaskRef });
+    expect(waiting.result.reviewTaskRefs).toEqual([reviewTaskRef]);
+    expect(waiting.result.mergeGroups).toEqual([
+      { groupRef: pendingGroupRef, status: "pending-review" },
+    ]);
+    expect(waiting.result.workItemCoverage).toEqual([]);
+
+    const failedRunRef = await seedBareRun(f, {
+      suffix: "failed",
+      validAt: "2030-01-01T00:04:00.000Z",
+      stage: "I3",
+      status: "retryable-failure",
+      extra: {
+        lastErrorRef: refOf(
+          "workflow-error",
+          "identification-graph-workflow-error:I3:RETRYABLE_INFRASTRUCTURE_FAILURE",
+          "v1",
+        ),
+      },
+    });
+    const failedRun = await f.reader.read(readQuery(f, "run-read", { runRef: failedRunRef }));
+    if (failedRun.kind !== "succeeded") throw new TypeError("failed run-read failed");
+    expect(failedRun.result.status).toBe("retryable-failure");
+    expect(failedRun.result.stageEntries).toEqual([
+      {
+        stage: "I3",
+        status: "retryable-failure",
+        failureCode: "RETRYABLE_INFRASTRUCTURE_FAILURE",
+        retryable: true,
+      },
+    ]);
+  });
+
+  it("record-catalog 返回有界分页条目并支持工序节点、验收方式与运行筛选", async () => {
+    const f = requireFixture();
+    // 三条记录：两条自动路线（node-1）、一条人工路线（node-2），created_at 依次递增。
+    const seededRecords: {
+      readonly ref: StandardizedRiskRecordRefV1;
+      readonly processNodeId: string;
+      readonly riskEvent: string;
+      readonly acceptance: "automatic" | "review";
+    }[] = [];
+    const recordAt = [
+      "2030-01-01T00:05:01.000Z",
+      "2030-01-01T00:05:02.000Z",
+      "2030-01-01T00:05:03.000Z",
+    ];
+    const specs = [
+      { suffix: "catalog-1", processNodeId: "node-1", acceptance: "automatic" as const },
+      { suffix: "catalog-2", processNodeId: "node-1", acceptance: "automatic" as const },
+      { suffix: "catalog-3", processNodeId: "node-2", acceptance: "review" as const },
+    ];
+    for (const [index, spec] of specs.entries()) {
+      const recordId = `risk-record:${PROJECT_ID}:${spec.suffix}`;
+      const runRef = refOf(
+        "workflow-run",
+        `workflow-run:${PROJECT_ID}:catalog-run`,
+        sha("catalog-run-version"),
+      );
+      const groupRef = groupRefFor(`catalog-${spec.suffix}`, "group-1");
+      const decisionRef =
+        spec.acceptance === "automatic"
+          ? { routeDecisionRef: refOf("route-decision", `route-decision:${spec.suffix}`) }
+          : { reviewDecisionRef: refOf("review-decision", `review-decision:${spec.suffix}`) };
+      const write = StandardizedRiskRecordWriteV1Schema.parse({
+        riskRecordId: recordId,
+        versionId: "v1",
+        riskRecordRef: refOf("standardized-risk-record", recordId, "v1"),
+        rowId: `row-${spec.suffix}`,
+        idempotencyKey: `identification.accept-groups:${spec.suffix}`,
+        requestDigest: sha(`record-request-${spec.suffix}`),
+        projectId: PROJECT_ID,
+        workPlanRef: refOf("identification-work-plan", `identification-work-plan:catalog`),
+        identificationRunRef: runRef,
+        inputSnapshotRef: refOf("identification-input-snapshot", "input-snapshot-catalog"),
+        mergePlanRef: refOf("merge-plan", `merge-plan:catalog`),
+        ...decisionRef,
+        groupId: "group-1",
+        groupVersionId: groupRef.reference.versionId,
+        groupRef,
+        representativeCandidateRefs: [
+          refOf(
+            "content-artifact",
+            `candidate-artifact-${spec.suffix}`,
+            `sha256:${sha(`candidate-${spec.suffix}`)}`,
+          ),
+        ],
+        sourceSegmentIds: [`segment-${spec.suffix}`],
+        mechanismEntryIds: [`mechanism-${spec.suffix}`],
+        authorizationScopeDigest: registrationScopeDigest,
+        authorizationContextRef: refOf("authorization-context", "authorization-c33"),
+        actorRef: ACTOR_ID,
+        commandId: `c33-fixture-record-${spec.suffix}`,
+        occurredAt: recordAt[index] as string,
+      });
+      const envelope = StandardizedRiskRecordEnvelopeSchema.parse({
+        riskRecordId: recordId,
+        record: {
+          processNodeId: spec.processNodeId,
+          riskSource: `risk-source-${spec.suffix}`,
+          riskFactor: `risk-factor-${spec.suffix}`,
+          riskEvent: `risk-event-${spec.suffix}`,
+          riskElementRelations: [
+            { sourceElement: "element-a", relation: "induces", targetElement: "element-b" },
+          ],
+          evidenceLocator: { sourceSegmentId: `segment-${spec.suffix}` },
+          modelConfidence: 0.6,
+        },
+        riskMechanismEntryIds: [`mechanism-${spec.suffix}`],
+        sourceIds: [`segment-${spec.suffix}`],
+        compositeConfidence: { value: 0.6, basis: ["model-confidence"] },
+        version: {
+          reference: plainRef(recordId, "v1"),
+          effectivePeriod: { validFrom: recordAt[index] as string },
+          systemTime: { recordedAt: recordAt[index] as string },
+        },
+        audit: {
+          actorId: ACTOR_ID,
+          action: "identification.accept-groups",
+          recordedAt: recordAt[index] as string,
+        },
+      });
+      const command: AtomicCommandV1 = {
+        projectId: PROJECT_ID,
+        commandKind: "identification.accept-groups",
+        commandId: `c33-fixture-record-${spec.suffix}`,
+        idempotencyKey: `c33-fixture-record-${spec.suffix}`,
+        payload: { fixture: "合成样本、待甲方复核", recordIds: [recordId] },
+        actorRef: ACTOR_ID,
+        authorizationContextRef: refOf("authorization-context", "authorization-c33"),
+        issuedAt: TIMESTAMP,
+      };
+      await f.transactionUnit.execute(command, async (context) => {
+        const outcome = await f.finalizationAdapter.insertRecords(
+          { rows: [write], records: [envelope], occurredAt: recordAt[index] as string },
+          context,
+        );
+        if (outcome.kind !== "inserted") throw new TypeError("record seeding failed");
+        return {
+          resultRef: write.riskRecordRef,
+          audit: {
+            auditEntryId: `c33-fixture-record-${spec.suffix}:audit`,
+            projectId: PROJECT_ID,
+            action: command.commandKind,
+            targetRef: write.riskRecordRef,
+            actorRef: ACTOR_ID,
+            authorizationContextRef: command.authorizationContextRef,
+            occurredAt: recordAt[index] as string,
+            recordedAt: recordAt[index] as string,
+            version: { entityId: recordId, versionId: "v1" },
+            commandId: command.commandId,
+            idempotencyKey: command.idempotencyKey,
+          },
+          events: [],
+        } satisfies AtomicCommitV1;
+      });
+      seededRecords.push({
+        ref: refOf("standardized-risk-record", recordId, "v1"),
+        processNodeId: spec.processNodeId,
+        riskEvent: `risk-event-${spec.suffix}`,
+        acceptance: spec.acceptance,
+      });
+    }
+    const [record1, record2, record3] = seededRecords as [
+      (typeof seededRecords)[number],
+      (typeof seededRecords)[number],
+      (typeof seededRecords)[number],
+    ];
+
+    const page1 = await f.reader.read(readQuery(f, "record-catalog", { pageSize: 2 }));
+    if (page1.kind !== "succeeded") throw new TypeError("record-catalog first page failed");
+    // 目录按登记时间倒序：最新记录在前；本工程此前播种的记录也按同一序排在后面页。
+    expect(page1.result.items.map((item) => item.riskRecordRef)).toEqual([
+      record3.ref,
+      record2.ref,
+    ]);
+    expect(page1.result.items[0]).toMatchObject({
+      processNodeId: "node-2",
+      riskEventSummary: "risk-event-catalog-3",
+      compositeConfidence: { value: 0.6, basis: ["model-confidence"] },
+      acceptanceKind: "review",
+    });
+    expect("supersededBy" in (page1.result.items[0] as object)).toBe(false);
+    expect(page1.result.nextCursor).toBe("offset-2");
+    const page2 = await f.reader.read(
+      readQuery(f, "record-catalog", { pageSize: 2, cursor: "offset-2" }),
+    );
+    if (page2.kind !== "succeeded") throw new TypeError("record-catalog second page failed");
+    // 第二页之后是更早登记的 detail 运行记录（`seedCompletedRun`，登记于 00:01:00）。
+    expect(page2.result.items.map((item) => item.riskRecordRef.reference.entityId)).toEqual([
+      record1.ref.reference.entityId,
+      `risk-record:workflow-run:${PROJECT_ID}:detail:record-1`,
+    ]);
+    expect(page2.result.nextCursor).toBeUndefined();
+
+    const byNode = await f.reader.read(readQuery(f, "record-catalog", { processNodeId: "node-2" }));
+    if (byNode.kind !== "succeeded") throw new TypeError("record-catalog node filter failed");
+    expect(byNode.result.items.map((item) => item.riskRecordRef)).toEqual([record3.ref]);
+
+    const byAcceptance = await f.reader.read(
+      readQuery(f, "record-catalog", { acceptanceKind: "automatic" }),
+    );
+    if (byAcceptance.kind !== "succeeded") {
+      throw new TypeError("record-catalog acceptance filter failed");
+    }
+    expect(byAcceptance.result.items.map((item) => item.riskRecordRef.reference.entityId)).toEqual([
+      record2.ref.reference.entityId,
+      record1.ref.reference.entityId,
+      `risk-record:workflow-run:${PROJECT_ID}:detail:record-1`,
+    ]);
+    expect(byAcceptance.result.items.every((item) => item.acceptanceKind === "automatic")).toBe(
+      true,
+    );
+
+    const byRun = await f.reader.read(
+      readQuery(f, "record-catalog", {
+        identificationRunRef: refOf(
+          "workflow-run",
+          `workflow-run:${PROJECT_ID}:catalog-run`,
+          sha("catalog-run-version"),
+        ),
+      }),
+    );
+    if (byRun.kind !== "succeeded") throw new TypeError("record-catalog run filter failed");
+    expect(byRun.result.items.map((item) => item.riskRecordRef.reference.entityId)).toEqual([
+      record3.ref.reference.entityId,
+      record2.ref.reference.entityId,
+      record1.ref.reference.entityId,
+    ]);
+  });
+
+  it("record-read 返回精确版本的识别侧正文与验收决定引用", async () => {
+    const f = requireFixture();
+    const recordRef = refOf(
+      "standardized-risk-record",
+      `risk-record:${PROJECT_ID}:catalog-3`,
+      "v1",
+    );
+    const result = await f.reader.read(readQuery(f, "record-read", { riskRecordRef: recordRef }));
+    if (result.kind !== "succeeded") throw new TypeError("record-read failed");
+    const detail = result.result;
+    expect(detail.kind).toBe("record-read");
+    expect(detail.riskRecordRef).toEqual(recordRef);
+    expect(detail.record).toMatchObject({
+      processNodeId: "node-2",
+      riskEvent: "risk-event-catalog-3",
+      evidenceLocator: { sourceSegmentId: "segment-catalog-3" },
+      modelConfidence: 0.6,
+    });
+    expect(detail.riskMechanismEntryIds).toEqual(["mechanism-catalog-3"]);
+    expect(detail.sourceSegmentIds).toEqual(["segment-catalog-3"]);
+    expect(detail.compositeConfidence).toEqual({ value: 0.6, basis: ["model-confidence"] });
+    expect(detail.acceptanceDecisionRef).toEqual(
+      refOf("review-decision", "review-decision:catalog-3"),
+    );
+    expect(detail.identificationRunRef).toEqual(
+      refOf("workflow-run", `workflow-run:${PROJECT_ID}:catalog-run`, sha("catalog-run-version")),
+    );
+    expect(detail.supersededBy).toBeUndefined();
+    expect(detail.auditTrailRef).toEqual({
+      kind: "audit-trail",
+      reference: { entityId: "c33-fixture-record-catalog-3:audit", versionId: "v1" },
+    });
+
+    // 重复读取同一精确版本逐字同形。
+    const replay = await f.reader.read(readQuery(f, "record-read", { riskRecordRef: recordRef }));
+    expect(replay).toEqual(result);
+  });
+
+  it("无权、跨工程、范围收窄、不存在与游标篡改同形失败且不可枚举", async () => {
+    const f = requireFixture();
+    const seeded = await seedCompletedRun(f, {
+      suffix: "guarded",
+      validAt: "2030-01-01T00:06:00.000Z",
+    });
+
+    const expectDenied = (result: Awaited<ReturnType<typeof f.reader.read>>): void => {
+      if (result.kind !== "failed") throw new TypeError("expected a failed result");
+      expect(result.error).toMatchObject(DENIED_SHAPE);
+    };
+
+    // 冻结上下文不持识别读能力：契约解析失败且呈伪造形状 → 同形授权失败。
+    expectDenied(
+      await f.reader.read({
+        queryId: "c33-query-forged-capability",
+        projectId: PROJECT_ID,
+        actorId: ACTOR_ID,
+        requestedAt: TIMESTAMP,
+        authorization: AuthorizationContextV1Schema.parse({
+          schemaVersion: "1",
+          authorizationContextRef: refOf("authorization-context", "authorization-c33-forged"),
+          actorId: ACTOR_ID,
+          projectId: PROJECT_ID,
+          grantedCapabilities: ["risk-identification.run"],
+          spatialScopeRefs: [...SCOPES],
+          sourceAccessGrantRefs: [...SOURCE_GRANTS],
+          authorizationPolicyRef: plainRef("authorization-policy"),
+          decidedAt: TIMESTAMP,
+          invocation: { kind: "human" },
+        }),
+        kind: "run-list",
+        payload: {},
+      } as RiskIdentificationReadQueryV1),
+    );
+
+    // 冻结上下文指向其它工程 → 同形授权失败。
+    expectDenied(
+      await f.reader.read({
+        queryId: "c33-query-forged-project",
+        projectId: PROJECT_ID,
+        actorId: ACTOR_ID,
+        requestedAt: TIMESTAMP,
+        authorization: f.access.issue({
+          invocationId: "c33-query-forged-project",
+          branch: "risk-identification.run-list",
+          capability: "risk-identification.read",
+          projectId: OTHER_PROJECT_ID,
+        }).authorization,
+        kind: "run-list",
+        payload: {},
+      } as RiskIdentificationReadQueryV1),
+    );
+
+    // 撤权后再次读取：列表、运行详情、记录详情同形失败。
+    f.access.revoke();
+    try {
+      expectDenied(await f.reader.read(readQuery(f, "run-list", {})));
+      expectDenied(await f.reader.read(readQuery(f, "run-read", { runRef: seeded.runRef })));
+      expectDenied(
+        await f.reader.read(readQuery(f, "record-read", { riskRecordRef: seeded.recordRef })),
+      );
+    } finally {
+      f.access.restore();
+    }
+
+    // 当前范围收窄（登记范围摘要不再对账）：列表为空页，精确读取同形失败。
+    f.access.narrowScope();
+    try {
+      const narrowedList = await f.reader.read(readQuery(f, "run-list", {}));
+      if (narrowedList.kind !== "succeeded") throw new TypeError("narrowed run-list failed");
+      expect(narrowedList.result.items).toEqual([]);
+      expectDenied(await f.reader.read(readQuery(f, "run-read", { runRef: seeded.runRef })));
+      expectDenied(
+        await f.reader.read(readQuery(f, "record-read", { riskRecordRef: seeded.recordRef })),
+      );
+    } finally {
+      f.access.restore();
+    }
+
+    // 不存在的运行、版本不符的记录与篡改游标：同形失败，不提供存在性线索。
+    expectDenied(
+      await f.reader.read(
+        readQuery(f, "run-read", {
+          runRef: refOf("workflow-run", `workflow-run:${PROJECT_ID}:absent`, "v1"),
+        }),
+      ),
+    );
+    expectDenied(
+      await f.reader.read(
+        readQuery(f, "run-read", {
+          runRef: refOf(
+            "workflow-run",
+            seeded.runRef.reference.entityId,
+            sha("run-version-guarded-absent"),
+          ),
+        }),
+      ),
+    );
+    expectDenied(
+      await f.reader.read(
+        readQuery(f, "record-read", {
+          riskRecordRef: refOf(
+            "standardized-risk-record",
+            seeded.recordRef.reference.entityId,
+            "v-absent",
+          ),
+        }),
+      ),
+    );
+    expectDenied(await f.reader.read(readQuery(f, "record-catalog", { cursor: "tampered" })));
+
+    // 合法但无可见行的工程：列表为空页而非失败。
+    const emptyList = await f.reader.read(
+      readQuery(f, "run-list", {}, { projectId: OTHER_PROJECT_ID }),
+    );
+    if (emptyList.kind !== "succeeded") throw new TypeError("other project run-list failed");
+    expect(emptyList.result.items).toEqual([]);
+  });
+});

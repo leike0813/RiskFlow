@@ -1,6 +1,7 @@
 /**
  * demo 最小 HTTP 客户端：按 apps/api 传输契约形状手写（demo 是独立 npm 项目，不跨包引用）。
- * 查询一律 POST /api/v1/projects/:projectId/queries/:branch，会话经同源 cookie 由浏览器携带。
+ * 查询一律 POST /api/v1/projects/:projectId/queries/:branch，
+ * 命令一律 POST /api/v1/projects/:projectId/commands/:branch，会话经同源 cookie 由浏览器携带。
  */
 
 export type ApiErrorCode =
@@ -175,3 +176,58 @@ export const submitQuery = async (input: {
   readonly sourceVersionRefs?: readonly unknown[]
   readonly signal?: AbortSignal
 }): Promise<unknown> => unwrapQueryResult(await postQuery(input))
+
+let commandSequence = 0
+
+/** 命令标识即幂等键：同一 commandId 重放同一命令，不重复产生业务事实。 */
+export const nextCommandId = (projectId: string, branch: string): string => {
+  commandSequence += 1
+  return `demo-${branch}-${projectId}-${Date.now().toString(36)}-${commandSequence}`
+}
+
+export interface CommandEnvelope {
+  readonly schemaVersion: '1'
+  readonly commandId: string
+  readonly idempotencyKey: string
+  readonly issuedAt: string
+  readonly requestedSpatialScopeRefs: readonly unknown[]
+  readonly requestedSourceVersionRefs: readonly unknown[]
+  readonly payload: Record<string, unknown>
+}
+
+/** 命令传输信封：与 postQuery 同一脱敏/取消语义；commandId 由调用方传入以支持重放，缺省生成。 */
+export const postCommand = async (input: {
+  readonly projectId: string
+  readonly branch: string
+  readonly payload: Record<string, unknown>
+  readonly commandId?: string
+  readonly signal?: AbortSignal
+}): Promise<unknown> => {
+  if (input.projectId.includes('/') || input.projectId.includes('\\')) {
+    throw new ApiError('CONTRACT_INVALID')
+  }
+  const commandId = input.commandId ?? nextCommandId(input.projectId, input.branch)
+  const envelope: CommandEnvelope = {
+    schemaVersion: '1',
+    commandId,
+    idempotencyKey: commandId,
+    issuedAt: new Date().toISOString(),
+    requestedSpatialScopeRefs: [],
+    requestedSourceVersionRefs: [],
+    payload: input.payload,
+  }
+  return postRaw({
+    path: `/api/v1/projects/${encodeURIComponent(input.projectId)}/commands/${input.branch}`,
+    body: envelope as unknown as Record<string, unknown>,
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+  })
+}
+
+/** 提交命令并返回业务结果载荷（与查询同一 moduleResult 剥离语义）。 */
+export const submitCommand = async (input: {
+  readonly projectId: string
+  readonly branch: string
+  readonly payload: Record<string, unknown>
+  readonly commandId?: string
+  readonly signal?: AbortSignal
+}): Promise<unknown> => unwrapQueryResult(await postCommand(input))

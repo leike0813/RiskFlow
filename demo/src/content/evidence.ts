@@ -1,5 +1,6 @@
 /**
- * 证据与资料 SSOT：资料段详情、资料目录、监测序列、证据链与审计时间线。
+ * 证据与资料 SSOT：资料段详情（C34/C35 域证据抽屉遗留路径）、监测序列（C34 域）
+ * 与审计时间线（C35 域）。资料目录与端到端证据链已由 C33 真实查询替换并移除。
  * 事实源：prototypes/screenshot-content-inventory.md §3.3 / §3.4 / §4；
  * 资料段标识格式：资料ID-章节ID-资料段ID（识别专利 RI-S13）。
  */
@@ -249,91 +250,6 @@ export const evidenceSegments: EvidenceSegment[] = [
   },
 ]
 
-/** 资料目录（P-PJ-05 数据源） */
-export interface DocumentEntry {
-  id: string
-  name: string
-  type: string
-  version: string
-  formedAt: string
-  sourceUnit: string
-  parseStatus: string
-  segmentCount: number
-}
-
-export const documentCatalog: DocumentEntry[] = [
-  {
-    id: 'SRC-GEO-001',
-    name: '工程地质勘察报告',
-    type: '地质资料',
-    version: 'V2.0',
-    formedAt: '2026-03-12',
-    sourceUnit: '勘察设计单位',
-    parseStatus: '解析通过',
-    segmentCount: 86,
-  },
-  {
-    id: 'SRC-PLAN-002',
-    name: '变径空间扩挖与支护专项施工方案',
-    type: '专项施工方案',
-    version: 'V3.1',
-    formedAt: '2026-06-02',
-    sourceUnit: '施工单位',
-    parseStatus: '解析通过',
-    segmentCount: 124,
-  },
-  {
-    id: 'SRC-MON-003',
-    name: '站隧一体化试验区段监测数据集',
-    type: '监测数据',
-    version: '2026-08-27 批次',
-    formedAt: '2026-08-27',
-    sourceUnit: '监测单位',
-    parseStatus: '解析通过',
-    segmentCount: 42,
-  },
-  {
-    id: 'SRC-EQP-004',
-    name: '变径盾构装备设计资料',
-    type: '装备设计资料',
-    version: 'V1.4',
-    formedAt: '2026-01-20',
-    sourceUnit: '装备制造单位',
-    parseStatus: '解析通过',
-    segmentCount: 63,
-  },
-  {
-    id: 'SRC-ORG-005',
-    name: '施工组织设计',
-    type: '施工资料',
-    version: 'V2.2',
-    formedAt: '2026-02-15',
-    sourceUnit: '施工单位',
-    parseStatus: '解析通过',
-    segmentCount: 97,
-  },
-  {
-    id: 'SRC-CASE-006',
-    name: '类比工程风险案例汇编',
-    type: '案例资料',
-    version: 'V1.0',
-    formedAt: '2026-05-08',
-    sourceUnit: '课题组整理',
-    parseStatus: '解析通过',
-    segmentCount: 35,
-  },
-  {
-    id: 'SRC-STD-007',
-    name: '项目风险评估量化标准',
-    type: '标准文件',
-    version: 'V1.0',
-    formedAt: '2026-07-01',
-    sourceUnit: '工程风险管理部门',
-    parseStatus: '解析通过',
-    segmentCount: 28,
-  },
-]
-
 /** 监测序列（趋势图数据源） */
 export interface MonitoringSeries {
   id: string
@@ -401,24 +317,6 @@ export const monitoringSeries: MonitoringSeries[] = [
       { date: '08-27', value: 0.18 },
     ],
   },
-]
-
-/** 端到端证据链七个节点（AGENTS.md §4.4 固定追溯链） */
-export interface EvidenceChainNode {
-  order: number
-  kind: string
-  objectId: string
-  version?: string
-}
-
-export const evidenceChain: EvidenceChainNode[] = [
-  { order: 1, kind: '资料段', objectId: 'SRC-GEO-001-CH04-SEG018' },
-  { order: 2, kind: '工序节点', objectId: 'PN-EXPAND-02' },
-  { order: 3, kind: '风险机理条目', objectId: 'RM-SETTLE-004', version: 'V1.2' },
-  { order: 4, kind: '标准化风险记录', objectId: 'RISK-2026-001' },
-  { order: 5, kind: '适用规则集', objectId: 'RULESET-EXPAND-01', version: 'V1.3' },
-  { order: 6, kind: '风险评估记录', objectId: 'ASSESS-2026-001' },
-  { order: 7, kind: '预警信息', objectId: 'WARN-2026-001' },
 ]
 
 /** 审计时间线（操作者统一为"系统"/"风险管理人员"） */

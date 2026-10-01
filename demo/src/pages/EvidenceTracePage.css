@@ -23,11 +23,26 @@
   border-radius: 8px;
   box-shadow: var(--card-shadow);
   padding: 12px 20px;
-  cursor: pointer;
 }
 
-.et-node:hover {
-  border-color: var(--blue);
+.et-node--absent {
+  background: var(--bluegray-soft);
+  box-shadow: none;
+}
+
+.et-evidence {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 12px;
+}
+
+.et-jump {
+  color: var(--blue);
+}
+
+.et-jump:hover {
+  text-decoration: underline;
 }
 
 .et-order {

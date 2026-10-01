@@ -14,7 +14,6 @@ import type {
   ContractReferenceV1,
   ModuleErrorV1,
   ModuleBranchV1,
-  ModuleCapabilityV1,
   ProjectionExportRequestV1,
   ProjectionExportResultV1,
   ProjectionPortV1,
@@ -51,6 +50,7 @@ import {
 
 import {
   workflowGraphLinkFromDb,
+  workflowGraphReadInvocationIdV1,
   workflowGraphResultRowFromDb,
   type WorkflowGraphLinkDbRow,
   type WorkflowGraphResultDbRow,
@@ -76,13 +76,6 @@ interface WorkflowGraphProjectionDatabaseV1 {
 
 type ProjectionDatabaseV1 = PostgresDatabase & WorkflowGraphProjectionDatabaseV1;
 type ProjectionQueryExecutorV1 = Kysely<ProjectionDatabaseV1>;
-
-const BRANCH_BY_CAPABILITY_V1: Partial<Record<ModuleCapabilityV1, ModuleBranchV1>> = {
-  "projection.query": "projection.query",
-  "workflow.start": "workflow.start-run",
-  "workflow.resume": "workflow.resume-run",
-  "workflow.cancel": "workflow.cancel-run",
-};
 
 const auditTrailRefOf = (auditEntryId: string) => ({
   kind: "audit-trail" as const,
@@ -199,8 +192,9 @@ export interface PostgresWorkflowProjectionOptionsV1 {
   readonly registrationStore: WorkflowGraphRegistrationStoreV1;
   /** C04 正文端口：运行汇总只读状态正文，不复制领域事实。 */
   readonly bodies: WorkflowGraphBodyPortV1;
-  /** C05 当前授权复验端口：每次受保护读写前按当前 actor/工程/空间/资料范围复验。 */
-  readonly authorization: Pick<LocalIdentityAccessV1, "verify">;
+  /** C05 当前授权复验端口：每次受保护读写前按当前 actor/工程/空间/资料范围复验；
+   *  正文读取前另以配对派生身份进程内重签发（`authorize`，见 `#readBodyAuthorized`）。 */
+  readonly authorization: Pick<LocalIdentityAccessV1, "verify" | "authorize">;
   /** C22 公开批读：旧 trace-chain 可省略；C31 风险记录图/报告缺失时显式失败。 */
   readonly riskRecordTrace?: RiskRecordTraceReadPortV1;
   readonly now?: () => Date;
@@ -215,7 +209,7 @@ class WorkflowGraphProjection {
   readonly #db: ProjectionQueryExecutorV1;
   readonly #store: WorkflowGraphRegistrationStoreV1;
   readonly #bodies: WorkflowGraphBodyPortV1;
-  readonly #authorization: Pick<LocalIdentityAccessV1, "verify">;
+  readonly #authorization: Pick<LocalIdentityAccessV1, "verify" | "authorize">;
   readonly #trace: RiskRecordTraceReadPortV1 | undefined;
   readonly #now: () => Date;
 
@@ -234,6 +228,8 @@ class WorkflowGraphProjection {
     readonly projectId: string;
     readonly actorId: string;
     readonly invocationId: string;
+    /** 当前调用入口的路由 branch：C06 verify 精确绑定 branch，不得由 capability 反推（一对多）。 */
+    readonly branch: ModuleBranchV1;
     readonly requestedAt: string;
     /** C31 工程总览的精确空间目标：随复验收窄，不凭查询引用推断空间权限（design D-04）。 */
     readonly spatialScopeRefs?: readonly SpatialScopeRefV1[] | undefined;
@@ -243,14 +239,12 @@ class WorkflowGraphProjection {
     if (input.authorization.grantedCapabilities.length !== 1) return undefined;
     const capability = input.authorization.grantedCapabilities[0];
     if (capability === undefined) return undefined;
-    const branch = BRANCH_BY_CAPABILITY_V1[capability];
-    if (branch === undefined) return undefined;
     try {
       const decision = await this.#authorization.verify({
         authorizationContextRef: input.authorization.authorizationContextRef,
         invocationId: input.invocationId,
         projectId: input.projectId,
-        branch,
+        branch: input.branch,
         requestedSpatialScopeRefs: [...(input.spatialScopeRefs ?? [])],
         requestedSourceVersionRefs: [],
         requestedAt: input.requestedAt,
@@ -317,7 +311,8 @@ class WorkflowGraphProjection {
       authorization: parsed.data.authorization,
       projectId: parsed.data.projectId,
       actorId: parsed.data.actorId,
-      invocationId: `c30-query:${parsed.data.projectId}:${parsed.data.queryId}`,
+      invocationId: parsed.data.queryId,
+      branch: "projection.query",
       requestedAt: parsed.data.requestedAt,
       spatialScopeRefs: requestedSpatialScopeRefs,
     });
@@ -346,7 +341,12 @@ class WorkflowGraphProjection {
       }
       if (
         payload.queryType === "association-graph" &&
-        (await this.#evidenceForSubject(targetRef, verified)) === "unprovable"
+        (await this.#evidenceForSubject(
+          targetRef,
+          verified,
+          parsed.data.queryId,
+          "projection.query",
+        )) === "unprovable"
       ) {
         return { kind: "failed", error: this.#notFound("projection-query") };
       }
@@ -507,7 +507,8 @@ class WorkflowGraphProjection {
       authorization: parsed.data.authorization,
       projectId: parsed.data.projectId,
       actorId: parsed.data.authorization.actorId,
-      invocationId: `c30-read-page:${parsed.data.projectId}:${registration.queryResultId}`,
+      invocationId: parsed.data.queryId,
+      branch: "projection.result-read",
       requestedAt: parsed.data.requestedAt,
       spatialScopeRefs:
         registration.spatialScopeRef === undefined ? [] : [registration.spatialScopeRef],
@@ -553,6 +554,7 @@ class WorkflowGraphProjection {
         limit,
         sortKey,
         authorization: verified,
+        invocationId: parsed.data.queryId,
       });
     }
     if (registration.queryType === "risk-overview") {
@@ -562,6 +564,7 @@ class WorkflowGraphProjection {
         limit,
         sortKey,
         authorization: verified,
+        invocationId: parsed.data.queryId,
       });
     }
     if (registration.queryType !== "trace-chain") {
@@ -573,6 +576,7 @@ class WorkflowGraphProjection {
       limit,
       sortKey,
       authorization: verified,
+      invocationId: parsed.data.queryId,
     });
   }
 
@@ -706,6 +710,7 @@ class WorkflowGraphProjection {
     readonly limit: number;
     readonly sortKey: string | undefined;
     readonly authorization: AuthorizationContextV1;
+    readonly invocationId: string;
   }): Promise<ProjectionResultReadResultV1> {
     const links = await this.#linksForSubject({
       projectId: input.registration.projectId,
@@ -722,7 +727,12 @@ class WorkflowGraphProjection {
     const evidence =
       this.#trace === undefined
         ? undefined
-        : await this.#evidenceForSubject(input.registration.targetRef, input.authorization);
+        : await this.#evidenceForSubject(
+            input.registration.targetRef,
+            input.authorization,
+            input.invocationId,
+            "projection.result-read",
+          );
     if (evidence === "unprovable") {
       return { kind: "failed", error: this.#blocked("read-page", "trace-chain-incomplete") };
     }
@@ -767,6 +777,9 @@ class WorkflowGraphProjection {
   async #evidenceBatch(input: {
     readonly refs: readonly StandardizedRiskRecordRefV1[];
     readonly authorization: AuthorizationContextV1;
+    readonly invocationId: string;
+    /** 外层调用入口的路由 branch：与签发身份对一起透传给 C22 复验。 */
+    readonly branch: ModuleBranchV1;
   }): Promise<ReadonlyMap<string, string | undefined> | "unprovable"> {
     const trace = this.#trace;
     if (input.refs.length === 0) return new Map();
@@ -778,6 +791,8 @@ class WorkflowGraphProjection {
         projectId: input.authorization.projectId,
         riskRecordRefs: [...input.refs],
         requestedAt: this.#now().toISOString(),
+        invocationId: input.invocationId,
+        branch: input.branch,
         authorization: input.authorization,
       });
     } catch {
@@ -805,9 +820,16 @@ class WorkflowGraphProjection {
   async #evidenceForSubject(
     subjectRef: ContractReferenceV1,
     authorization: AuthorizationContextV1,
+    invocationId: string,
+    branch: ModuleBranchV1,
   ): Promise<string | undefined | "unprovable"> {
     if (subjectRef.kind !== "standardized-risk-record") return undefined;
-    const evidence = await this.#evidenceBatch({ refs: [subjectRef], authorization });
+    const evidence = await this.#evidenceBatch({
+      refs: [subjectRef],
+      authorization,
+      invocationId,
+      branch,
+    });
     if (evidence === "unprovable") return "unprovable";
     return evidence.get(`${subjectRef.reference.entityId}/${subjectRef.reference.versionId}`);
   }
@@ -828,6 +850,7 @@ class WorkflowGraphProjection {
     readonly limit: number;
     readonly sortKey: string | undefined;
     readonly authorization: AuthorizationContextV1;
+    readonly invocationId: string;
   }): Promise<ProjectionResultReadResultV1> {
     const seeded = await this.#linksForSubject({
       projectId: input.registration.projectId,
@@ -882,6 +905,8 @@ class WorkflowGraphProjection {
     const evidence = await this.#evidenceBatch({
       refs: [...needed.values()],
       authorization: input.authorization,
+      invocationId: input.invocationId,
+      branch: "projection.result-read",
     });
     if (evidence === "unprovable") {
       return { kind: "failed", error: this.#blocked("read-page", "association-graph-incomplete") };
@@ -1030,6 +1055,7 @@ class WorkflowGraphProjection {
     readonly limit: number;
     readonly sortKey: string | undefined;
     readonly authorization: AuthorizationContextV1;
+    readonly invocationId: string;
   }): Promise<ProjectionResultReadResultV1> {
     const scope: ProjectionReportScopeV1 = {
       projectId: input.registration.projectId,
@@ -1106,6 +1132,8 @@ class WorkflowGraphProjection {
     const evidence = await this.#evidenceBatch({
       refs: [...needed.values()],
       authorization: input.authorization,
+      invocationId: input.invocationId,
+      branch: "projection.result-read",
     });
     if (evidence === "unprovable") {
       return { kind: "failed", error: this.#blocked("read-page", "risk-overview-incomplete") };
@@ -1232,6 +1260,7 @@ class WorkflowGraphProjection {
       artifactRef: stateRow.artifactRef,
       actorId: input.actorId,
       authorization: input.authorization,
+      runRef: { entityId: input.runId, versionId: stateRow.runVersionId },
     });
     if (stateBody === undefined || stateBody.bodyKind !== "run-state") return incomplete;
     const state = stateBody.runState;
@@ -1250,6 +1279,7 @@ class WorkflowGraphProjection {
         artifactRef: resultRow.artifactRef,
         actorId: input.actorId,
         authorization: input.authorization,
+        runRef: { entityId: input.runId, versionId: resultRow.runVersionId },
       });
       if (resultBody === undefined || resultBody.bodyKind !== "run-result") return incomplete;
       result = resultBody.runResult;
@@ -1380,24 +1410,66 @@ class WorkflowGraphProjection {
     return row === undefined ? undefined : workflowGraphResultRowFromDb(row);
   }
 
-  /** 报告正文回读（design D-03）：只按精确 `artifactRef` 读该运行的状态/结果正文，不可读即不可重建。 */
-  async #readReportBody(input: {
+  /**
+   * 正文读取的进程内重签发（D6 裁决）：HTTP 等外部入口签发的上下文不配对 `readBody` 的
+   * 派生复验身份；沿用质量评估模块 `issueReadAuthorization` 先例，以同一导出派生函数与
+   * `projection.query` 分支重新 `authorize` 签发配对上下文（系统调用、收窄自当前已复验
+   * 上下文），再以该上下文读正文。签发或读取失败一律按不可读收口，不放宽可见性判断。
+   */
+  async #readBodyAuthorized(input: {
     readonly projectId: string;
     readonly artifactRef: ContentArtifactRefV1;
     readonly actorId: string;
     readonly authorization: AuthorizationContextV1;
+    readonly runRef: { readonly entityId: string; readonly versionId: string };
   }): Promise<WorkflowGraphArtifactBodyV1 | undefined> {
+    let issued: AuthorizationContextV1;
+    try {
+      const decision = await this.#authorization.authorize({
+        invocationId: workflowGraphReadInvocationIdV1({
+          operation: "body-read",
+          projectId: input.projectId,
+          targetId: input.artifactRef.reference.entityId,
+        }),
+        projectId: input.projectId,
+        branch: "projection.query",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+        requestedAt: this.#now().toISOString(),
+        invocation: {
+          kind: "system",
+          systemActorId: input.authorization.actorId,
+          reasonCode: "projection-body-read",
+        },
+        parentContext: input.authorization,
+        causalRunRef: { kind: "workflow-run", reference: input.runRef },
+      });
+      issued = decision.context;
+    } catch {
+      return undefined;
+    }
     try {
       return await this.#bodies.readBody({
         projectId: input.projectId,
         artifactRef: input.artifactRef,
         actorId: input.actorId,
         requestedAt: this.#now().toISOString(),
-        authorization: input.authorization,
+        authorization: issued,
       });
     } catch {
       return undefined;
     }
+  }
+
+  /** 报告正文回读（design D-03）：只按精确 `artifactRef` 读该运行的状态/结果正文，不可读即不可重建。 */
+  async #readReportBody(input: {
+    readonly projectId: string;
+    readonly artifactRef: ContentArtifactRefV1;
+    readonly actorId: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly runRef: { readonly entityId: string; readonly versionId: string };
+  }): Promise<WorkflowGraphArtifactBodyV1 | undefined> {
+    return await this.#readBodyAuthorized(input);
   }
 
   /** 最新运行状态：只取已登记行与其 C04 正文；正文不可读即视为不可重建，不猜测。 */
@@ -1410,12 +1482,12 @@ class WorkflowGraphProjection {
     const states = input.rows.filter((row) => row.resultKind === "run-state");
     const latest = states[states.length - 1];
     if (latest?.artifactRef === undefined) return undefined;
-    const body = await this.#bodies.readBody({
+    const body = await this.#readBodyAuthorized({
       projectId: input.projectId,
       artifactRef: latest.artifactRef,
       actorId: input.actorId,
-      requestedAt: this.#now().toISOString(),
       authorization: input.authorization,
+      runRef: { entityId: latest.runId, versionId: latest.runVersionId },
     });
     return body !== undefined && body.bodyKind === "run-state" ? body.runState : undefined;
   }

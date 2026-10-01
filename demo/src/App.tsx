@@ -145,8 +145,9 @@ export default function App() {
             <Route path="/agent" element={<AgentWorkbenchPage />} />
 
             <Route path="/identification" element={<IdentificationRunsPage />} />
-            <Route path="/identification/runs/RUN-20260827-001" element={<IdentificationRunPage />} />
+            <Route path="/identification/runs/:runId" element={<IdentificationRunPage />} />
             <Route path="/identification/records" element={<RiskRecordListPage />} />
+            <Route path="/identification/records/:recordId" element={<RiskDetailPage />} />
             <Route path="/identification/graph" element={<AssociationGraphPage />} />
             <Route path="/identification/process-model" element={<ProcessModelPage />} />
 
@@ -163,8 +164,6 @@ export default function App() {
             <Route path="/warnings" element={<WarningCenterPage />} />
             <Route path="/warnings/WARN-2026-001" element={<WarningDetailPage />} />
             <Route path="/warnings/tasks" element={<ResponseTasksPage />} />
-
-            <Route path="/risks/RISK-2026-001" element={<RiskDetailPage />} />
 
             <Route path="/knowledge" element={<Navigate to="/knowledge/mechanisms" replace />} />
             <Route path="/knowledge/mechanisms" element={<MechanismLibraryPage />} />

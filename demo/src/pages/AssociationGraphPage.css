@@ -50,3 +50,34 @@
   margin-right: 6px;
   font-size: 11px;
 }
+
+.graph-focus-btn {
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--text-2);
+  text-align: left;
+}
+
+.graph-focus-btn:hover {
+  color: var(--blue);
+  text-decoration: underline;
+}
+
+.graph-node-links {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-top: 10px;
+}
+
+.graph-node-links li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.graph-node-kind {
+  color: var(--text-2);
+}

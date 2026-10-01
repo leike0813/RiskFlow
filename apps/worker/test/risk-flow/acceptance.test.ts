@@ -1174,6 +1174,8 @@ const startHarness = async (): Promise<AcceptanceHarnessV1> => {
             projectId: PROJECT_ID,
             riskRecordRefs: [...riskRecordRefs],
             requestedAt: clock.current.toISOString(),
+            invocationId: `trace-read:${PROJECT_ID}:acceptance`,
+            branch: "projection.query",
             authorization: TRACE_AUTHORIZATION,
           }),
         );

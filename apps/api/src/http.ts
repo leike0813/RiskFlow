@@ -59,8 +59,12 @@ import {
   ResumeWorkflowRunResultV1Schema,
   ReviewDecisionCommandV1Schema,
   ReviewDecisionResultV1Schema,
+  ReviewQueueReadQueryV1Schema,
+  ReviewQueueReadResultV1Schema,
   ReviewRequestResultV1Schema,
   ReviewRequestV1Schema,
+  RiskIdentificationReadQueryV1Schema,
+  RiskIdentificationReadResultV1Schema,
   RunSubscriptionRequestV1Schema,
   SpatialScopeRefV1Schema,
   StartAgentTaskCommandV1Schema,
@@ -111,9 +115,13 @@ import {
   type ResumeWorkflowRunCommandV1,
   type ReviewAuditPortV1,
   type ReviewDecisionCommandV1,
+  type ReviewQueueReadPortV1,
+  type ReviewQueueReadQueryV1,
   type ReviewRequestV1,
   type RiskAssessmentPortV1,
   type RiskIdentificationPortV1,
+  type RiskIdentificationReadPortV1,
+  type RiskIdentificationReadQueryV1,
   type RunSubscriptionRequestV1,
   type SpatialScopeRefV1,
   type SourceAccessGrantRefV1,
@@ -400,6 +408,9 @@ export interface ApiPortsV1 {
   readonly knowledgeGovernanceRead?: KnowledgeGovernanceReadPortV1;
   readonly knowledgeRetrievalRead?: KnowledgeRetrievalReadPortV1;
   readonly projectionResultRead?: ProjectionResultReadPortV1;
+  // C33 只读面两条独立注入位；未注入时对应五条查询分支不激活。
+  readonly riskIdentificationRead?: RiskIdentificationReadPortV1;
+  readonly reviewQueueRead?: ReviewQueueReadPortV1;
   /**
    * C36 窄投影 port：只在未提供完整 `projection` port 时把原 `projection.query` 路由绑定到它，
    * 只接受 `quality-evaluation` 查询类型；SSE 与导出仍只由完整 port 激活。
@@ -596,6 +607,9 @@ const invokeProjectionResultRead: HttpInvokerV1 = async (ports, request) => {
     projectId: query.projectId,
     queryResultRef: query.payload.queryResultRef,
     requestedAt: query.requestedAt,
+    // C06 verify 把授权上下文与签发时的 invocationId 绑定：readPage 复验必须使用这次
+    // 读取调用的领域 queryId，HTTP 签发即以此值为 invocationId（见 app.ts 注释）。
+    queryId: query.queryId,
     ...(query.payload.cursor === undefined ? {} : { cursor: query.payload.cursor }),
     limit: query.payload.limit ?? 50,
     authorization: query.authorization,
@@ -604,6 +618,12 @@ const invokeProjectionResultRead: HttpInvokerV1 = async (ports, request) => {
     ? { kind: "succeeded", result: page }
     : { kind: "failed", error: page.error };
 };
+// C33 只读面：两条新端口直接转发 `read`，与 C32 只读面同形。
+const invokeRiskIdentificationRead: HttpInvokerV1 = (ports, request) =>
+  ports.riskIdentificationRead?.read(request as RiskIdentificationReadQueryV1) ??
+  missingPort("riskIdentificationRead");
+const invokeReviewQueueRead: HttpInvokerV1 = (ports, request) =>
+  ports.reviewQueueRead?.read(request as ReviewQueueReadQueryV1) ?? missingPort("reviewQueueRead");
 
 export const HTTP_ROUTE_CATALOG_V1: readonly HttpRouteEntryV1[] = Object.freeze([
   ...commandRoutes(
@@ -880,6 +900,26 @@ export const HTTP_ROUTE_CATALOG_V1: readonly HttpRouteEntryV1[] = Object.freeze(
     "projectionResultRead",
     invokeProjectionResultRead,
     [["projection.result-read", "result-read"]],
+  ),
+  // C33 只读面五条查询分支：目录、能力映射与 OpenAPI 由同一条目派生；未注入不激活。
+  ...queryRoutes(
+    RiskIdentificationReadQueryV1Schema,
+    RiskIdentificationReadResultV1Schema,
+    "riskIdentificationRead",
+    invokeRiskIdentificationRead,
+    [
+      ["risk-identification.run-list", "run-list"],
+      ["risk-identification.run-read", "run-read"],
+      ["risk-identification.record-catalog", "record-catalog"],
+      ["risk-identification.record-read", "record-read"],
+    ],
+  ),
+  ...queryRoutes(
+    ReviewQueueReadQueryV1Schema,
+    ReviewQueueReadResultV1Schema,
+    "reviewQueueRead",
+    invokeReviewQueueRead,
+    [["review-audit.queue-read", "queue-read"]],
   ),
 ]);
 

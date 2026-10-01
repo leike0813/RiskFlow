@@ -11,6 +11,8 @@ import {
 import {
   ApplicabilityConditionsSchema,
   ApplicabilityMetadataSchema,
+  CompositeConfidenceSchema,
+  StandardizedRiskRecordSchema,
   StructuredScoringRuleSchema,
 } from "../records/index.js";
 import {
@@ -566,8 +568,20 @@ export const MODULE_BRANCH_CAPABILITY_V1 = {
   "knowledge-modeling.governance-read": "knowledge-modeling.read",
   "knowledge-modeling.retrieval-result": "knowledge-modeling.retrieve",
   "projection.result-read": "projection.query",
+  "risk-identification.run-list": "risk-identification.read",
+  "risk-identification.run-read": "risk-identification.read",
+  "risk-identification.record-catalog": "risk-identification.read",
+  "risk-identification.record-read": "risk-identification.read",
+  "review-audit.queue-read": "review-audit.read",
 } as const;
 export type ModuleBranchV1 = keyof typeof MODULE_BRANCH_CAPABILITY_V1;
+
+const moduleBranchValuesV1 = Object.keys(MODULE_BRANCH_CAPABILITY_V1) as [
+  ModuleBranchV1,
+  ...ModuleBranchV1[],
+];
+/** 模块 branch 名以本目录（C02 分支能力表）为唯一事实源。 */
+export const ModuleBranchV1Schema = z.enum(moduleBranchValuesV1);
 
 const branchCapability = <T extends ModuleBranchV1>(branch: T) =>
   MODULE_BRANCH_CAPABILITY_V1[branch];
@@ -2772,12 +2786,15 @@ const riskRecordTraceItemV1Base = {
 
 /**
  * 风险记录追溯窄读请求（design D-06）：一次最多 100 条精确版本，逐项返回最小引用，
- * 不携带风险正文。
+ * 不携带风险正文。`invocationId` 与 `branch` 是本次调用的复验身份对（外层调用入口的
+ * 领域 `queryId` 与路由 branch），复验按它与签发身份精确配对。
  */
 export const RiskRecordTraceReadRequestV1Schema = z.strictObject({
   projectId: IdentifierSchema,
   riskRecordRefs: z.array(StandardizedRiskRecordRefV1Schema).min(1).max(100),
   requestedAt: IsoDateTimeSchema,
+  invocationId: IdentifierSchema,
+  branch: ModuleBranchV1Schema,
   authorization: AuthorizationContextV1Schema,
 });
 
@@ -2861,11 +2878,13 @@ export const ProjectionResultItemV1Schema = z.discriminatedUnion("kind", [
 ]);
 export type ProjectionResultItemV1 = z.infer<typeof ProjectionResultItemV1Schema>;
 
-/** 有界页面读取请求（design D-06）：游标、上限与查询引用一同绑定当前授权摘要。 */
+/** 有界页面读取请求（design D-06）：游标、上限与查询引用一同绑定当前授权摘要；
+ * `queryId` 是这次读取调用的领域标识，复验按它与签发身份精确配对。 */
 export const ProjectionResultReadRequestV1Schema = z.strictObject({
   projectId: IdentifierSchema,
   queryResultRef: QueryResultRefV1Schema,
   requestedAt: IsoDateTimeSchema,
+  queryId: IdentifierSchema,
   cursor: IdentifierSchema.optional(),
   limit: z.number().int().min(1).max(100),
   authorization: AuthorizationContextV1Schema,
@@ -3924,4 +3943,258 @@ export interface KnowledgeGovernanceReadPortV1 {
 
 export interface KnowledgeRetrievalReadPortV1 {
   read(query: KnowledgeRetrievalReadQueryV1): Promise<KnowledgeRetrievalReadResultV1>;
+}
+
+// ---- C33：风险识别运行/记录与复核队列只读 ----
+
+/**
+ * 识别运行阶段闭合词汇（I0–I9，domain 主规格）：ports 受依赖方向约束不能反向引用
+ * workflows 的 `IdentificationStageV1Schema`，取值必须与之一致，UI 不得自造阶段词汇。
+ */
+export const IDENTIFICATION_RUN_STAGE_V1_VALUES = [
+  "I0",
+  "I1",
+  "I2",
+  "I3",
+  "I4",
+  "I5",
+  "I6",
+  "I7",
+  "I8",
+  "I9",
+] as const;
+export const IdentificationRunStageV1Schema = z.enum(IDENTIFICATION_RUN_STAGE_V1_VALUES);
+export type IdentificationRunStageV1 = z.infer<typeof IdentificationRunStageV1Schema>;
+
+/** 验收方式：与验收路由种类（自动路线 / 人工复核路线）一一对应。 */
+export const IDENTIFICATION_ACCEPTANCE_KIND_V1_VALUES = ["automatic", "review"] as const;
+export const IdentificationAcceptanceKindV1Schema = z.enum(
+  IDENTIFICATION_ACCEPTANCE_KIND_V1_VALUES,
+);
+export type IdentificationAcceptanceKindV1 = z.infer<typeof IdentificationAcceptanceKindV1Schema>;
+
+/** 合并组在运行摘要中的归集状态：验收 / 待复核 / 拒收。 */
+export const IDENTIFICATION_MERGE_GROUP_STATUS_V1_VALUES = [
+  "accepted",
+  "pending-review",
+  "rejected",
+] as const;
+export const IdentificationMergeGroupStatusV1Schema = z.enum(
+  IDENTIFICATION_MERGE_GROUP_STATUS_V1_VALUES,
+);
+export type IdentificationMergeGroupStatusV1 = z.infer<
+  typeof IdentificationMergeGroupStatusV1Schema
+>;
+
+/** 复核队列任务状态：与复核运行时任务生命周期（待决定 / 已决定 / 已取代）一致。 */
+export const REVIEW_QUEUE_TASK_STATUS_V1_VALUES = ["pending", "decided", "superseded"] as const;
+export const ReviewQueueTaskStatusV1Schema = z.enum(REVIEW_QUEUE_TASK_STATUS_V1_VALUES);
+export type ReviewQueueTaskStatusV1 = z.infer<typeof ReviewQueueTaskStatusV1Schema>;
+
+export const RiskIdentificationRunListItemV1Schema = z.strictObject({
+  runRef: WorkflowRunRefV1Schema,
+  stage: IdentificationRunStageV1Schema,
+  status: WorkflowRunStatusV1Schema,
+  /** 触发原因仅在有登记事实时输出；识别运行登记行当前不存该字段，不得伪造。 */
+  triggerReason: IdentifierSchema.optional(),
+  startedBy: IdentifierSchema,
+  startedAt: IsoDateTimeSchema,
+  acceptedCount: c32NonNegativeInt,
+  pendingReviewCount: c32NonNegativeInt,
+  rejectedCount: c32NonNegativeInt,
+});
+export type RiskIdentificationRunListItemV1 = z.infer<typeof RiskIdentificationRunListItemV1Schema>;
+
+export const RiskIdentificationRunListPageV1Schema = z.strictObject({
+  kind: z.literal("run-list"),
+  items: z.array(RiskIdentificationRunListItemV1Schema).max(C32_READ_PAGE_SIZE_MAX_V1),
+  nextCursor: c32ReadCursor.optional(),
+});
+export type RiskIdentificationRunListPageV1 = z.infer<typeof RiskIdentificationRunListPageV1Schema>;
+
+/** I0–I9 阶段进度条目：失败阶段如实携带错误码与可重试标记，不把暂停或失败伪装为完成。 */
+export const RiskIdentificationRunStageEntryV1Schema = z.strictObject({
+  stage: IdentificationRunStageV1Schema,
+  status: WorkflowRunStatusV1Schema,
+  failureCode: IdentifierSchema.optional(),
+  retryable: z.boolean().optional(),
+});
+export type RiskIdentificationRunStageEntryV1 = z.infer<
+  typeof RiskIdentificationRunStageEntryV1Schema
+>;
+
+export const RiskIdentificationWorkItemCoverageV1Schema = z.strictObject({
+  workItemRef: IdentificationWorkItemRefV1Schema,
+  processNodeId: IdentifierSchema,
+  status: WorkflowRunStatusV1Schema,
+});
+export type RiskIdentificationWorkItemCoverageV1 = z.infer<
+  typeof RiskIdentificationWorkItemCoverageV1Schema
+>;
+
+export const RiskIdentificationMergeGroupSummaryV1Schema = z.strictObject({
+  groupRef: IdentificationGroupRefV1Schema,
+  status: IdentificationMergeGroupStatusV1Schema,
+  acceptanceKind: IdentificationAcceptanceKindV1Schema.optional(),
+});
+export type RiskIdentificationMergeGroupSummaryV1 = z.infer<
+  typeof RiskIdentificationMergeGroupSummaryV1Schema
+>;
+
+/** 运行详情摘要：引用有界集合 + 结果计数，可由精确运行版本重放。 */
+export const RiskIdentificationRunReadSuccessV1Schema = z.strictObject({
+  kind: z.literal("run-read"),
+  runRef: WorkflowRunRefV1Schema,
+  stage: IdentificationRunStageV1Schema,
+  status: WorkflowRunStatusV1Schema,
+  stageEntries: z.array(RiskIdentificationRunStageEntryV1Schema).max(10),
+  workItemCoverage: z.array(RiskIdentificationWorkItemCoverageV1Schema).max(256),
+  mergeGroups: z.array(RiskIdentificationMergeGroupSummaryV1Schema).max(256),
+  agentTaskRefs: z.array(AgentTaskRefV1Schema).max(64),
+  reviewTaskRefs: z.array(ReviewTaskRefV1Schema).max(64),
+  resultCounts: z.strictObject({
+    plannedWorkItemCount: c32NonNegativeInt,
+    completedWorkItemCount: c32NonNegativeInt,
+    failedWorkItemCount: c32NonNegativeInt,
+    zeroResultCount: c32NonNegativeInt,
+    acceptedCount: c32NonNegativeInt,
+    pendingReviewCount: c32NonNegativeInt,
+    rejectedCount: c32NonNegativeInt,
+  }),
+  acceptedRiskRecordRefs: z.array(StandardizedRiskRecordRefV1Schema).max(500),
+  pendingReviewGroupRefs: z.array(IdentificationGroupRefV1Schema).max(256),
+  rejectedGroupRefs: z.array(IdentificationGroupRefV1Schema).max(256),
+  waitingRef: WaitingRefV1Schema.optional(),
+});
+export type RiskIdentificationRunReadSuccessV1 = z.infer<
+  typeof RiskIdentificationRunReadSuccessV1Schema
+>;
+
+/** 记录目录条目：只含摘要与引用，不含七字段正文。 */
+export const RiskRecordCatalogItemV1Schema = z.strictObject({
+  riskRecordRef: StandardizedRiskRecordRefV1Schema,
+  processNodeId: IdentifierSchema,
+  riskEventSummary: c32ReadText,
+  compositeConfidence: CompositeConfidenceSchema,
+  acceptanceKind: IdentificationAcceptanceKindV1Schema,
+  supersededBy: StandardizedRiskRecordRefV1Schema.optional(),
+});
+export type RiskRecordCatalogItemV1 = z.infer<typeof RiskRecordCatalogItemV1Schema>;
+
+export const RiskRecordCatalogPageV1Schema = z.strictObject({
+  kind: z.literal("record-catalog"),
+  items: z.array(RiskRecordCatalogItemV1Schema).max(C32_READ_PAGE_SIZE_MAX_V1),
+  nextCursor: c32ReadCursor.optional(),
+});
+export type RiskRecordCatalogPageV1 = z.infer<typeof RiskRecordCatalogPageV1Schema>;
+
+/** 记录详情：C01 七字段正文原样只读（含 evidenceLocator 与 modelConfidence），不改写识别事实。 */
+export const RiskRecordReadSuccessV1Schema = z.strictObject({
+  kind: z.literal("record-read"),
+  riskRecordRef: StandardizedRiskRecordRefV1Schema,
+  record: StandardizedRiskRecordSchema,
+  riskMechanismEntryIds: z.array(IdentifierSchema).min(1).max(64),
+  sourceSegmentIds: z.array(IdentifierSchema).min(1).max(256),
+  compositeConfidence: CompositeConfidenceSchema,
+  /** 验收决定引用：自动路线为系统路由决定，人工路线为已成立的复核决定。 */
+  acceptanceDecisionRef: z.discriminatedUnion("kind", [
+    RouteDecisionRefV1Schema,
+    ReviewDecisionRefV1Schema,
+  ]),
+  identificationRunRef: WorkflowRunRefV1Schema,
+  supersededBy: StandardizedRiskRecordRefV1Schema.optional(),
+  auditTrailRef: AuditTrailRefV1Schema,
+});
+export type RiskRecordReadSuccessV1 = z.infer<typeof RiskRecordReadSuccessV1Schema>;
+
+export const RiskIdentificationReadQueryV1Schema = z.discriminatedUnion("kind", [
+  querySchema(
+    "run-list",
+    z.strictObject({
+      cursor: c32ReadCursor.optional(),
+      pageSize: c32ReadPageSize.optional(),
+      status: WorkflowRunStatusV1Schema.optional(),
+    }),
+    branchCapability("risk-identification.run-list"),
+  ),
+  querySchema(
+    "run-read",
+    z.strictObject({ runRef: WorkflowRunRefV1Schema }),
+    branchCapability("risk-identification.run-read"),
+  ),
+  querySchema(
+    "record-catalog",
+    z.strictObject({
+      cursor: c32ReadCursor.optional(),
+      pageSize: c32ReadPageSize.optional(),
+      processNodeId: IdentifierSchema.optional(),
+      acceptanceKind: IdentificationAcceptanceKindV1Schema.optional(),
+      identificationRunRef: WorkflowRunRefV1Schema.optional(),
+    }),
+    branchCapability("risk-identification.record-catalog"),
+  ),
+  querySchema(
+    "record-read",
+    z.strictObject({ riskRecordRef: StandardizedRiskRecordRefV1Schema }),
+    branchCapability("risk-identification.record-read"),
+  ),
+]);
+export type RiskIdentificationReadQueryV1 = z.infer<typeof RiskIdentificationReadQueryV1Schema>;
+
+export const RiskIdentificationReadSuccessV1Schema = z.discriminatedUnion("kind", [
+  RiskIdentificationRunListPageV1Schema,
+  RiskIdentificationRunReadSuccessV1Schema,
+  RiskRecordCatalogPageV1Schema,
+  RiskRecordReadSuccessV1Schema,
+]);
+export type RiskIdentificationReadSuccessV1 = z.infer<typeof RiskIdentificationReadSuccessV1Schema>;
+
+export const RiskIdentificationReadResultV1Schema = moduleResultSchema(
+  RiskIdentificationReadSuccessV1Schema,
+);
+export type RiskIdentificationReadResultV1 = z.infer<typeof RiskIdentificationReadResultV1Schema>;
+
+export interface RiskIdentificationReadPortV1 {
+  read(query: RiskIdentificationReadQueryV1): Promise<RiskIdentificationReadResultV1>;
+}
+
+// ---- C33：复核队列只读 ----
+
+/** 队列条目携带完整 ReviewTaskRefV1，可直接作为既有 decide-review 命令的 reviewTaskRef。 */
+export const ReviewQueueItemV1Schema = z.strictObject({
+  reviewTaskRef: ReviewTaskRefV1Schema,
+  reviewType: ReviewTypeV1Schema,
+  /** 触发原因仅在有登记事实时输出；review_tasks 登记行当前不存该字段，不得伪造。 */
+  triggerReason: IdentifierSchema.optional(),
+  submittedAt: IsoDateTimeSchema,
+  status: ReviewQueueTaskStatusV1Schema,
+  /** 目标版本已被取代时由拥有方计算置真，调用方无需自行比对版本。 */
+  stale: z.boolean(),
+});
+export type ReviewQueueItemV1 = z.infer<typeof ReviewQueueItemV1Schema>;
+
+export const ReviewQueuePageV1Schema = z.strictObject({
+  kind: z.literal("queue-read"),
+  items: z.array(ReviewQueueItemV1Schema).max(C32_READ_PAGE_SIZE_MAX_V1),
+  nextCursor: c32ReadCursor.optional(),
+});
+export type ReviewQueuePageV1 = z.infer<typeof ReviewQueuePageV1Schema>;
+
+export const ReviewQueueReadQueryV1Schema = querySchema(
+  "queue-read",
+  z.strictObject({
+    reviewType: ReviewTypeV1Schema.optional(),
+    status: ReviewQueueTaskStatusV1Schema.optional(),
+    cursor: c32ReadCursor.optional(),
+    pageSize: c32ReadPageSize.optional(),
+  }),
+  branchCapability("review-audit.queue-read"),
+);
+export type ReviewQueueReadQueryV1 = z.infer<typeof ReviewQueueReadQueryV1Schema>;
+
+export const ReviewQueueReadResultV1Schema = moduleResultSchema(ReviewQueuePageV1Schema);
+export type ReviewQueueReadResultV1 = z.infer<typeof ReviewQueueReadResultV1Schema>;
+
+export interface ReviewQueueReadPortV1 {
+  read(query: ReviewQueueReadQueryV1): Promise<ReviewQueueReadResultV1>;
 }

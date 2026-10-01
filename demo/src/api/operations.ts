@@ -1,9 +1,10 @@
 /**
  * demo 只读 operation 层：七条 C32 只读 branch 与既有 source-segments / monitoring-snapshot /
- * evidence-access / projection.query 查询的请求构造与解码白名单。解码只提取契约内页面所需字段，
- * 形状漂移统一收敛为 TERMINAL_FAILURE，由浏览器验收在真实接缝上兜底。
+ * evidence-access / projection.query 查询，以及 C33 识别只读（run-list/run-read/record-catalog/
+ * record-read）、复核队列只读（queue-read）与 decide-review 命令的请求构造与解码白名单。
+ * 解码只提取契约内页面所需字段，形状漂移统一收敛为 TERMINAL_FAILURE，由浏览器验收在真实接缝上兜底。
  */
-import { ApiError, submitQuery } from './client'
+import { ApiError, submitCommand, submitQuery } from './client'
 
 // ------------------------------------------------------------------ 解码工具
 
@@ -26,6 +27,11 @@ const asString = (value: unknown): string => {
 
 const asNumber = (value: unknown): number => {
   if (typeof value !== 'number' || !Number.isFinite(value)) throw drift()
+  return value
+}
+
+const asBoolean = (value: unknown): boolean => {
+  if (typeof value !== 'boolean') throw drift()
   return value
 }
 
@@ -468,6 +474,41 @@ export const readSourceSegments = async (
     recordedAt: asString(segmentSet.recordedAt),
     sourceAccessGrantRef: asKindRef(inner.sourceAccessGrantRef),
   }
+}
+
+/**
+ * 段标识来源定位：沿资料目录与段集读取把段标识映射回来源版本；失败降级为空映射
+ * （调用方只显定位摘要，不发起替代取数）。识别详情与证据追溯页共用。
+ */
+export const locateSegmentSources = async (
+  projectId: string,
+  segmentIds: readonly string[],
+  signal?: AbortSignal,
+): Promise<ReadonlyMap<string, VersionRef>> => {
+  const found = new Map<string, VersionRef>()
+  const needed = new Set(segmentIds)
+  if (needed.size === 0) return found
+  try {
+    const catalog = await listSourceCatalog(projectId, {}, signal)
+    for (const item of catalog.items) {
+      if (item.sourceSegmentSetRef === undefined) continue
+      const segmentSet = await readSourceSegments(
+        projectId,
+        item.sourceSegmentSetRef,
+        item.sourceVersionRef,
+        signal,
+      )
+      for (const segment of segmentSet.segments) {
+        if (needed.has(segment.sourceSegmentId) && !found.has(segment.sourceSegmentId)) {
+          found.set(segment.sourceSegmentId, item.sourceVersionRef.reference)
+        }
+      }
+      if (found.size === needed.size) break
+    }
+  } catch {
+    // 目录/段集不可读时降级：段节点仅呈现定位摘要，不发起替代取数。
+  }
+  return found
 }
 
 export interface EvidenceAccessItemView {
@@ -1215,9 +1256,10 @@ export interface ProjectionPageView {
   readonly nextCursor?: string
 }
 
-/** 治理条目关联对象：登记 trace-chain 投影查询后经 result-read 分页读取。 */
-export const readTraceChain = async (
+/** 主体投影两段读：登记 projection.query 后经 projection.result-read 分页读取。 */
+const readProjectionSubjectPage = async (
   projectId: string,
+  queryType: 'trace-chain' | 'association-graph',
   subjectRef: KindRef,
   signal?: AbortSignal,
 ): Promise<ProjectionPageView> => {
@@ -1225,7 +1267,7 @@ export const readTraceChain = async (
     await submitQuery({
       projectId,
       branch: 'projection.query',
-      payload: { queryType: 'trace-chain', subjectRef },
+      payload: { queryType, subjectRef },
       ...(signal === undefined ? {} : { signal }),
     }),
   )
@@ -1245,3 +1287,628 @@ export const readTraceChain = async (
     ...(page.nextCursor === undefined ? {} : { nextCursor: asString(page.nextCursor) }),
   }
 }
+
+/** 治理条目关联对象：登记 trace-chain 投影查询后经 result-read 分页读取。 */
+export const readTraceChain = (
+  projectId: string,
+  subjectRef: KindRef,
+  signal?: AbortSignal,
+): Promise<ProjectionPageView> => readProjectionSubjectPage(projectId, 'trace-chain', subjectRef, signal)
+
+/** 关联图：登记 association-graph 投影查询后经 result-read 分页读取（只消费可证明链边）。 */
+export const readAssociationGraph = (
+  projectId: string,
+  subjectRef: KindRef,
+  signal?: AbortSignal,
+): Promise<ProjectionPageView> =>
+  readProjectionSubjectPage(projectId, 'association-graph', subjectRef, signal)
+
+// ------------------------------------------------------------------ C33 识别运行只读（run-list / run-read）
+
+export interface CompositeConfidenceView {
+  readonly value: number
+  readonly basis: string[]
+}
+
+const asCompositeConfidence = (value: unknown): CompositeConfidenceView => {
+  const record = asRecord(value)
+  return { value: asNumber(record.value), basis: asStringArray(record.basis) }
+}
+
+export interface IdentificationRunListItemView {
+  readonly runRef: KindRef
+  readonly stage: string
+  readonly status: string
+  /** 仅在服务端返回登记事实时存在；缺省页面呈现「—」。 */
+  readonly triggerReason?: string
+  readonly startedBy: string
+  readonly startedAt: string
+  readonly acceptedCount: number
+  readonly pendingReviewCount: number
+  readonly rejectedCount: number
+}
+
+export interface IdentificationRunListPageView {
+  readonly items: IdentificationRunListItemView[]
+  readonly nextCursor?: string
+}
+
+export const listIdentificationRuns = async (
+  projectId: string,
+  options: { readonly cursor?: string; readonly status?: string } = {},
+  signal?: AbortSignal,
+): Promise<IdentificationRunListPageView> => {
+  const result = asRecord(
+    await submitQuery({
+      projectId,
+      branch: 'risk-identification.run-list',
+      payload: {
+        pageSize: 50,
+        ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+        ...(options.status === undefined ? {} : { status: options.status }),
+      },
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  )
+  if (result.kind !== 'run-list') throw drift()
+  return {
+    items: asArray(result.items).map((item) => {
+      const record = asRecord(item)
+      return {
+        runRef: asKindRef(record.runRef),
+        stage: asString(record.stage),
+        status: asString(record.status),
+        ...(record.triggerReason === undefined
+          ? {}
+          : { triggerReason: asString(record.triggerReason) }),
+        startedBy: asString(record.startedBy),
+        startedAt: asString(record.startedAt),
+        acceptedCount: asNumber(record.acceptedCount),
+        pendingReviewCount: asNumber(record.pendingReviewCount),
+        rejectedCount: asNumber(record.rejectedCount),
+      }
+    }),
+    ...(result.nextCursor === undefined ? {} : { nextCursor: asString(result.nextCursor) }),
+  }
+}
+
+export interface IdentificationRunStageEntryView {
+  readonly stage: string
+  readonly status: string
+  readonly failureCode?: string
+  readonly retryable?: boolean
+}
+
+export interface IdentificationWorkItemCoverageView {
+  readonly workItemRef: KindRef
+  readonly processNodeId: string
+  readonly status: string
+}
+
+export interface IdentificationMergeGroupView {
+  readonly groupRef: KindRef
+  readonly status: string
+  readonly acceptanceKind?: string
+}
+
+/** Agent 任务引用：页面只呈现身份与任务类型；提交回写时不需要其余策略引用字段。 */
+export interface AgentTaskRefView {
+  readonly agentTaskRef: KindRef
+  readonly taskType: string
+  readonly triggerMode: string
+}
+
+/** 复核任务引用：字段与契约 ReviewTaskRefV1 一一对应，可原样回构为 decide-review 命令载荷。 */
+export interface ReviewTaskRefView {
+  readonly reviewTaskRef: KindRef
+  readonly waitingRunRef: KindRef
+  readonly reviewType: string
+  readonly targetRef: KindRef
+}
+
+const asAgentTaskRef = (value: unknown): AgentTaskRefView => {
+  const record = asRecord(value)
+  if (asString(record.kind) !== 'agent-task') throw drift()
+  return {
+    agentTaskRef: { kind: 'agent-task', reference: asVersionRef(record.reference) },
+    taskType: asString(record.taskType),
+    triggerMode: asString(record.triggerMode),
+  }
+}
+
+const asReviewTaskRef = (value: unknown): ReviewTaskRefView => {
+  const record = asRecord(value)
+  if (asString(record.kind) !== 'review-task') throw drift()
+  return {
+    reviewTaskRef: { kind: 'review-task', reference: asVersionRef(record.reference) },
+    waitingRunRef: asKindRef(record.waitingRunRef),
+    reviewType: asString(record.reviewType),
+    targetRef: asKindRef(record.targetRef),
+  }
+}
+
+export interface WaitingRefView {
+  readonly kind: string
+  readonly ref?: KindRef
+}
+
+/** 等待引用只取种类与内嵌引用的身份；未知种类不失败（只读呈现，不据此构造命令）。 */
+const asWaitingRef = (value: unknown): WaitingRefView => {
+  const record = asRecord(value)
+  const kind = asString(record.kind)
+  const inner =
+    kind === 'review'
+      ? record.reviewTaskRef
+      : kind === 'agent-task'
+        ? record.agentTaskRef
+        : kind === 'knowledge-preparation'
+          ? record.knowledgePreparationTaskRef
+          : kind === 'user-confirmation'
+            ? record.userConfirmationRef
+            : kind === 'human-decision'
+              ? record.routeDecisionRef
+              : undefined
+  return { kind, ...(inner === undefined ? {} : { ref: asKindRef(inner) }) }
+}
+
+export interface IdentificationRunResultCountsView {
+  readonly plannedWorkItemCount: number
+  readonly completedWorkItemCount: number
+  readonly failedWorkItemCount: number
+  readonly zeroResultCount: number
+  readonly acceptedCount: number
+  readonly pendingReviewCount: number
+  readonly rejectedCount: number
+}
+
+export interface IdentificationRunDetailView {
+  readonly runRef: KindRef
+  readonly stage: string
+  readonly status: string
+  readonly stageEntries: IdentificationRunStageEntryView[]
+  readonly workItemCoverage: IdentificationWorkItemCoverageView[]
+  readonly mergeGroups: IdentificationMergeGroupView[]
+  readonly agentTaskRefs: AgentTaskRefView[]
+  readonly reviewTaskRefs: ReviewTaskRefView[]
+  readonly resultCounts: IdentificationRunResultCountsView
+  readonly acceptedRiskRecordRefs: KindRef[]
+  readonly pendingReviewGroupRefs: KindRef[]
+  readonly rejectedGroupRefs: KindRef[]
+  readonly waitingRef?: WaitingRefView
+}
+
+export const readIdentificationRun = async (
+  projectId: string,
+  runRef: KindRef,
+  signal?: AbortSignal,
+): Promise<IdentificationRunDetailView> => {
+  const result = asRecord(
+    await submitQuery({
+      projectId,
+      branch: 'risk-identification.run-read',
+      payload: { runRef },
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  )
+  if (result.kind !== 'run-read') throw drift()
+  const counts = asRecord(result.resultCounts)
+  return {
+    runRef: asKindRef(result.runRef),
+    stage: asString(result.stage),
+    status: asString(result.status),
+    stageEntries: asArray(result.stageEntries).map((entry) => {
+      const record = asRecord(entry)
+      return {
+        stage: asString(record.stage),
+        status: asString(record.status),
+        ...(record.failureCode === undefined
+          ? {}
+          : { failureCode: asString(record.failureCode) }),
+        ...(record.retryable === undefined ? {} : { retryable: asBoolean(record.retryable) }),
+      }
+    }),
+    workItemCoverage: asArray(result.workItemCoverage).map((item) => {
+      const record = asRecord(item)
+      return {
+        workItemRef: asKindRef(record.workItemRef),
+        processNodeId: asString(record.processNodeId),
+        status: asString(record.status),
+      }
+    }),
+    mergeGroups: asArray(result.mergeGroups).map((group) => {
+      const record = asRecord(group)
+      return {
+        groupRef: asKindRef(record.groupRef),
+        status: asString(record.status),
+        ...(record.acceptanceKind === undefined
+          ? {}
+          : { acceptanceKind: asString(record.acceptanceKind) }),
+      }
+    }),
+    agentTaskRefs: asArray(result.agentTaskRefs).map(asAgentTaskRef),
+    reviewTaskRefs: asArray(result.reviewTaskRefs).map(asReviewTaskRef),
+    resultCounts: {
+      plannedWorkItemCount: asNumber(counts.plannedWorkItemCount),
+      completedWorkItemCount: asNumber(counts.completedWorkItemCount),
+      failedWorkItemCount: asNumber(counts.failedWorkItemCount),
+      zeroResultCount: asNumber(counts.zeroResultCount),
+      acceptedCount: asNumber(counts.acceptedCount),
+      pendingReviewCount: asNumber(counts.pendingReviewCount),
+      rejectedCount: asNumber(counts.rejectedCount),
+    },
+    acceptedRiskRecordRefs: asArray(result.acceptedRiskRecordRefs).map(asKindRef),
+    pendingReviewGroupRefs: asArray(result.pendingReviewGroupRefs).map(asKindRef),
+    rejectedGroupRefs: asArray(result.rejectedGroupRefs).map(asKindRef),
+    ...(result.waitingRef === undefined ? {} : { waitingRef: asWaitingRef(result.waitingRef) }),
+  }
+}
+
+// ------------------------------------------------------------------ C33 风险记录只读（record-catalog / record-read）
+
+export interface RiskRecordCatalogItemView {
+  readonly riskRecordRef: KindRef
+  readonly processNodeId: string
+  readonly riskEventSummary: string
+  readonly compositeConfidence: CompositeConfidenceView
+  readonly acceptanceKind: string
+  readonly supersededBy?: KindRef
+}
+
+export interface RiskRecordCatalogPageView {
+  readonly items: RiskRecordCatalogItemView[]
+  readonly nextCursor?: string
+}
+
+export const listRiskRecords = async (
+  projectId: string,
+  options: {
+    readonly cursor?: string
+    readonly processNodeId?: string
+    readonly acceptanceKind?: string
+    readonly identificationRunRef?: KindRef
+  } = {},
+  signal?: AbortSignal,
+): Promise<RiskRecordCatalogPageView> => {
+  const result = asRecord(
+    await submitQuery({
+      projectId,
+      branch: 'risk-identification.record-catalog',
+      payload: {
+        pageSize: 50,
+        ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+        ...(options.processNodeId === undefined ? {} : { processNodeId: options.processNodeId }),
+        ...(options.acceptanceKind === undefined
+          ? {}
+          : { acceptanceKind: options.acceptanceKind }),
+        ...(options.identificationRunRef === undefined
+          ? {}
+          : { identificationRunRef: options.identificationRunRef }),
+      },
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  )
+  if (result.kind !== 'record-catalog') throw drift()
+  return {
+    items: asArray(result.items).map((item) => {
+      const record = asRecord(item)
+      return {
+        riskRecordRef: asKindRef(record.riskRecordRef),
+        processNodeId: asString(record.processNodeId),
+        riskEventSummary: asString(record.riskEventSummary),
+        compositeConfidence: asCompositeConfidence(record.compositeConfidence),
+        acceptanceKind: asString(record.acceptanceKind),
+        ...(record.supersededBy === undefined
+          ? {}
+          : { supersededBy: asKindRef(record.supersededBy) }),
+      }
+    }),
+    ...(result.nextCursor === undefined ? {} : { nextCursor: asString(result.nextCursor) }),
+  }
+}
+
+export interface RiskElementRelationView {
+  readonly sourceElement: string
+  readonly relation: string
+  readonly targetElement: string
+}
+
+/** C01 七字段正文原样只读：不改写识别事实。 */
+export interface RiskRecordBodyView {
+  readonly processNodeId: string
+  readonly riskSource: string
+  readonly riskFactor: string
+  readonly riskEvent: string
+  readonly riskElementRelations: RiskElementRelationView[]
+  readonly evidenceLocator: { readonly sourceSegmentId: string }
+  readonly modelConfidence: number
+}
+
+export interface RiskRecordDetailView {
+  readonly riskRecordRef: KindRef
+  readonly record: RiskRecordBodyView
+  readonly riskMechanismEntryIds: string[]
+  readonly sourceSegmentIds: string[]
+  readonly compositeConfidence: CompositeConfidenceView
+  /** 验收决定引用：自动路线为 route-decision，人工路线为 review-decision。 */
+  readonly acceptanceDecisionRef: KindRef
+  readonly identificationRunRef: KindRef
+  readonly supersededBy?: KindRef
+  readonly auditTrailRef: KindRef
+}
+
+export const readRiskRecord = async (
+  projectId: string,
+  riskRecordRef: KindRef,
+  signal?: AbortSignal,
+): Promise<RiskRecordDetailView> => {
+  const result = asRecord(
+    await submitQuery({
+      projectId,
+      branch: 'risk-identification.record-read',
+      payload: { riskRecordRef },
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  )
+  if (result.kind !== 'record-read') throw drift()
+  const record = asRecord(result.record)
+  const locator = asRecord(record.evidenceLocator)
+  return {
+    riskRecordRef: asKindRef(result.riskRecordRef),
+    record: {
+      processNodeId: asString(record.processNodeId),
+      riskSource: asString(record.riskSource),
+      riskFactor: asString(record.riskFactor),
+      riskEvent: asString(record.riskEvent),
+      riskElementRelations: asArray(record.riskElementRelations).map((relation) => {
+        const entry = asRecord(relation)
+        return {
+          sourceElement: asString(entry.sourceElement),
+          relation: asString(entry.relation),
+          targetElement: asString(entry.targetElement),
+        }
+      }),
+      evidenceLocator: { sourceSegmentId: asString(locator.sourceSegmentId) },
+      modelConfidence: asNumber(record.modelConfidence),
+    },
+    riskMechanismEntryIds: asStringArray(result.riskMechanismEntryIds),
+    sourceSegmentIds: asStringArray(result.sourceSegmentIds),
+    compositeConfidence: asCompositeConfidence(result.compositeConfidence),
+    acceptanceDecisionRef: asKindRef(result.acceptanceDecisionRef),
+    identificationRunRef: asKindRef(result.identificationRunRef),
+    ...(result.supersededBy === undefined ? {} : { supersededBy: asKindRef(result.supersededBy) }),
+    auditTrailRef: asKindRef(result.auditTrailRef),
+  }
+}
+
+// ------------------------------------------------------------------ C33 复核队列只读（queue-read）与 decide-review 命令
+
+export interface ReviewQueueItemView {
+  readonly reviewTaskRef: ReviewTaskRefView
+  readonly reviewType: string
+  /** 仅在服务端返回登记事实时存在；缺省页面呈现「—」。 */
+  readonly triggerReason?: string
+  readonly submittedAt: string
+  readonly status: string
+  readonly stale: boolean
+}
+
+export interface ReviewQueuePageView {
+  readonly items: ReviewQueueItemView[]
+  readonly nextCursor?: string
+}
+
+export const readReviewQueue = async (
+  projectId: string,
+  options: {
+    readonly reviewType?: string
+    readonly status?: string
+    readonly cursor?: string
+  } = {},
+  signal?: AbortSignal,
+): Promise<ReviewQueuePageView> => {
+  const result = asRecord(
+    await submitQuery({
+      projectId,
+      branch: 'review-audit.queue-read',
+      payload: {
+        pageSize: 50,
+        ...(options.reviewType === undefined ? {} : { reviewType: options.reviewType }),
+        ...(options.status === undefined ? {} : { status: options.status }),
+        ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+      },
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  )
+  if (result.kind !== 'queue-read') throw drift()
+  return {
+    items: asArray(result.items).map((item) => {
+      const record = asRecord(item)
+      return {
+        reviewTaskRef: asReviewTaskRef(record.reviewTaskRef),
+        reviewType: asString(record.reviewType),
+        ...(record.triggerReason === undefined
+          ? {}
+          : { triggerReason: asString(record.triggerReason) }),
+        submittedAt: asString(record.submittedAt),
+        status: asString(record.status),
+        stale: asBoolean(record.stale),
+      }
+    }),
+    ...(result.nextCursor === undefined ? {} : { nextCursor: asString(result.nextCursor) }),
+  }
+}
+
+export interface ReviewDecisionSubmittedView {
+  readonly reviewDecisionRef: KindRef
+}
+
+/**
+ * 原样通过/拒绝：经既有 review-audit.decide-review 命令提交。decision 由调用方按复核类型
+ * 构造（契约判别联合），commandId 作幂等键可重放；陈旧版本/无权由服务端失败闭合。
+ */
+export const submitReviewDecision = async (
+  projectId: string,
+  input: {
+    readonly reviewTaskRef: ReviewTaskRefView
+    readonly decision: Record<string, unknown>
+    readonly reasonCode: string
+    readonly commandId?: string
+  },
+  signal?: AbortSignal,
+): Promise<ReviewDecisionSubmittedView> => {
+  const result = asRecord(
+    await submitCommand({
+      projectId,
+      branch: 'review-audit.decide-review',
+      payload: {
+        reviewTaskRef: {
+          kind: 'review-task',
+          reference: input.reviewTaskRef.reviewTaskRef.reference,
+          waitingRunRef: input.reviewTaskRef.waitingRunRef,
+          reviewType: input.reviewTaskRef.reviewType,
+          targetRef: input.reviewTaskRef.targetRef,
+        },
+        targetRef: input.reviewTaskRef.targetRef,
+        decision: input.decision,
+        reasonCode: input.reasonCode,
+      },
+      ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  )
+  return { reviewDecisionRef: asKindRef(result.reviewDecisionRef) }
+}
+
+// ------------------------------------------------------------------ 投影类型化读取（追溯链 / 关联图 / 运行记录页）
+
+export interface TraceLinkItemView {
+  readonly fromRef: KindRef
+  readonly toRef: KindRef
+  readonly relation: string
+  readonly evidenceLocator?: { readonly sourceSegmentId: string }
+}
+
+/** trace-link 条目白名单解码；非链边条目返回 null，形状漂移收敛为 TERMINAL_FAILURE。 */
+const asTraceLinkItem = (item: ProjectionItemView): TraceLinkItemView | null => {
+  if (item.kind !== 'trace-link') return null
+  const locator =
+    item.evidenceLocator === undefined
+      ? undefined
+      : { sourceSegmentId: asString(asRecord(item.evidenceLocator).sourceSegmentId) }
+  return {
+    fromRef: asKindRef(item.fromRef),
+    toRef: asKindRef(item.toRef),
+    relation: asString(item.relation),
+    ...(locator === undefined ? {} : { evidenceLocator: locator }),
+  }
+}
+
+/** 投影页面上限保护：越界不再续页，收敛为 TERMINAL_FAILURE 而非呈现截断结果。 */
+const PROJECTION_MAX_ITEMS = 1000
+
+/** 沿游标读尽投影条目（每页 50，服务端有界；客户端总量越界显式失败，不呈现伪完整集）。 */
+const readProjectionItems = async (
+  projectId: string,
+  queryType: 'trace-chain' | 'association-graph' | 'risk-overview',
+  firstPayload: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<ProjectionItemView[]> => {
+  const registered = asRecord(
+    await submitQuery({
+      projectId,
+      branch: 'projection.query',
+      payload: firstPayload,
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  )
+  const queryResultRef = asQueryResultRef(registered.queryResultRef)
+  const items: ProjectionItemView[] = []
+  let cursor: string | undefined
+  for (;;) {
+    const page = asRecord(
+      await submitQuery({
+        projectId,
+        branch: 'projection.result-read',
+        payload: {
+          queryResultRef,
+          limit: 50,
+          ...(cursor === undefined ? {} : { cursor }),
+        },
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    )
+    if (page.kind !== 'page' || asString(page.queryType) !== queryType) throw drift()
+    items.push(...asArray(page.items).map((item) => asRecord(item) as ProjectionItemView))
+    if (items.length > PROJECTION_MAX_ITEMS) throw drift()
+    cursor = page.nextCursor === undefined ? undefined : asString(page.nextCursor)
+    if (cursor === undefined) return items
+  }
+}
+
+/** 证据追溯链：登记 trace-chain 投影查询后读尽可证明链边（类型化解码）。 */
+export const readTraceChainLinks = async (
+  projectId: string,
+  subjectRef: KindRef,
+  signal?: AbortSignal,
+): Promise<TraceLinkItemView[]> =>
+  (await readProjectionItems(projectId, 'trace-chain', { queryType: 'trace-chain', subjectRef }, signal)).flatMap(
+    (item) => {
+      const link = asTraceLinkItem(item)
+      return link === null ? [] : [link]
+    },
+  )
+
+/** 关联图：登记 association-graph 投影查询后读尽可证明链边（类型化解码）。 */
+export const readAssociationGraphLinks = async (
+  projectId: string,
+  subjectRef: KindRef,
+  signal?: AbortSignal,
+): Promise<TraceLinkItemView[]> =>
+  (
+    await readProjectionItems(
+      projectId,
+      'association-graph',
+      { queryType: 'association-graph', subjectRef },
+      signal,
+    )
+  ).flatMap((item) => {
+    const link = asTraceLinkItem(item)
+    return link === null ? [] : [link]
+  })
+
+export interface RunSummaryItemView {
+  readonly workflowRunRef: KindRef
+  readonly parentRunRef?: KindRef
+  readonly status: string
+  readonly entryIdentity: VersionRef
+  readonly auditTrailRef: KindRef
+}
+
+const asRunSummaryItem = (item: ProjectionItemView): RunSummaryItemView | null => {
+  if (item.kind !== 'run-summary') return null
+  return {
+    workflowRunRef: asKindRef(item.workflowRunRef),
+    ...(item.parentRunRef === undefined ? {} : { parentRunRef: asKindRef(item.parentRunRef) }),
+    status: asString(item.status),
+    entryIdentity: asVersionRef(item.entryIdentity),
+    auditTrailRef: asKindRef(item.auditTrailRef),
+  }
+}
+
+/** 评估/处置链运行摘要：登记 risk-overview 投影查询后读尽 run-summary 条目。 */
+export const readRiskOverviewRuns = async (
+  projectId: string,
+  projectRevisionRef: KindRef,
+  signal?: AbortSignal,
+): Promise<RunSummaryItemView[]> =>
+  (
+    await readProjectionItems(
+      projectId,
+      'risk-overview',
+      { queryType: 'risk-overview', projectRevisionRef },
+      signal,
+    )
+  ).flatMap((item) => {
+    const summary = asRunSummaryItem(item)
+    return summary === null ? [] : [summary]
+  })

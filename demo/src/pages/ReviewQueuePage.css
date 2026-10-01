@@ -101,6 +101,19 @@
   line-height: 20px;
 }
 
+.rq-btn-disabled--row {
+  padding: 4px 12px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.rq-outcomes {
+  list-style: none;
+  font-size: 13px;
+  line-height: 22px;
+  color: var(--text-2);
+}
+
 /* 行内"拒绝"为次级操作：描边样式，不使用风险色 */
 .rq-row-actions .confirm-btn--primary + .confirm-btn--primary {
   background: var(--card);

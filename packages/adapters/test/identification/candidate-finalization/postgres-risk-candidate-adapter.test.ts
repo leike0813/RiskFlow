@@ -50,7 +50,6 @@ import { PostgresArtifactRegistry } from "../../../src/artifacts/postgres-artifa
 import { PostgresRiskCandidateFinalizationAdapter } from "../../../src/identification/candidate-finalization/postgres-risk-candidate-adapter.js";
 import {
   createPostgresRiskRecordTraceReader,
-  riskRecordTraceReadInvocationIdV1,
   type PostgresRiskRecordTraceReader,
 } from "../../../src/identification/candidate-finalization/postgres-risk-record-trace-reader.js";
 import {
@@ -122,6 +121,8 @@ interface TraceAccessControllerV1 {
   issue(input: {
     readonly projectId: string;
     readonly riskRecordRefs: readonly StandardizedRiskRecordRefV1[];
+    /** 调用方给出的复验身份：读适配器复验必须用请求中的同一身份。 */
+    readonly invocationId: string;
     readonly actorId?: string;
     readonly spatialScopeRefs?: readonly SpatialScopeRefV1[];
     readonly sourceAccessGrantRefs?: readonly SourceAccessGrantRefV1[];
@@ -162,10 +163,7 @@ const createTraceAccess = (): TraceAccessControllerV1 => {
       revoked = false;
     },
     issue: (input) => {
-      const invocationId = riskRecordTraceReadInvocationIdV1({
-        projectId: input.projectId,
-        riskRecordRefs: [...input.riskRecordRefs],
-      });
+      const invocationId = input.invocationId;
       const entityId = `authorization-trace:${input.projectId}:${invocationId}`;
       const access: TraceIssuedAccessV1 = {
         invocationId,
@@ -1402,6 +1400,7 @@ describe("PostgreSQL risk candidate finalization persistence", () => {
     const access = fixture!.traceAccess.issue({
       projectId: PROJECT_ID,
       riskRecordRefs: [absentRef, visibleRef, locatorRef],
+      invocationId: "trace-read-visible",
     });
     const { write, envelope } = traceRecordFor({
       riskRecordId,
@@ -1442,6 +1441,8 @@ describe("PostgreSQL risk candidate finalization persistence", () => {
       projectId: PROJECT_ID,
       riskRecordRefs: batch,
       requestedAt: TIMESTAMP,
+      invocationId: access.invocationId,
+      branch: "projection.query",
       authorization: access.authorization,
     });
     expect(result.kind).toBe("succeeded");
@@ -1492,6 +1493,7 @@ describe("PostgreSQL risk candidate finalization persistence", () => {
     const access = fixture!.traceAccess.issue({
       projectId: PROJECT_ID,
       riskRecordRefs: [visibleRef],
+      invocationId: "trace-read-visible-sibling",
     });
     const visible = traceRecordFor({
       riskRecordId: visibleId,
@@ -1520,6 +1522,7 @@ describe("PostgreSQL risk candidate finalization persistence", () => {
         fixture!.traceAccess.issue({
           projectId: OTHER_PROJECT_ID,
           riskRecordRefs: [foreignRef],
+          invocationId: "trace-read-foreign",
         }).authorization,
       ),
     });
@@ -1541,6 +1544,7 @@ describe("PostgreSQL risk candidate finalization persistence", () => {
           projectId: PROJECT_ID,
           riskRecordRefs: [hiddenRef],
           spatialScopeRefs: [traceScope("scope-hidden", "1")],
+          invocationId: "trace-read-hidden",
         }).authorization,
       ),
     });
@@ -1557,11 +1561,14 @@ describe("PostgreSQL risk candidate finalization persistence", () => {
     const batchAccess = fixture!.traceAccess.issue({
       projectId: PROJECT_ID,
       riskRecordRefs: batch,
+      invocationId: "trace-read-not-found-batch",
     });
     const result = await fixture!.traceReader.readBatch({
       projectId: PROJECT_ID,
       riskRecordRefs: batch,
       requestedAt: TIMESTAMP,
+      invocationId: batchAccess.invocationId,
+      branch: "projection.query",
       authorization: batchAccess.authorization,
     });
     expect(result.kind).toBe("succeeded");
@@ -1591,9 +1598,12 @@ describe("PostgreSQL risk candidate finalization persistence", () => {
       projectId: PROJECT_ID,
       riskRecordRefs: [visibleRef, foreignRef],
       requestedAt: TIMESTAMP,
+      invocationId: "trace-read-revoked",
+      branch: "projection.query",
       authorization: fixture!.traceAccess.issue({
         projectId: PROJECT_ID,
         riskRecordRefs: [visibleRef, foreignRef],
+        invocationId: "trace-read-revoked",
       }).authorization,
     });
     expect(revoked).toMatchObject({
@@ -1612,11 +1622,17 @@ describe("PostgreSQL risk candidate finalization persistence", () => {
 
   it("blocks a batch beyond the bound and a malformed request without reaching SQL", async () => {
     const ref = refOf("standardized-risk-record", "risk-record-trace-bound", sha("bound"));
-    const access = fixture!.traceAccess.issue({ projectId: PROJECT_ID, riskRecordRefs: [ref] });
+    const access = fixture!.traceAccess.issue({
+      projectId: PROJECT_ID,
+      riskRecordRefs: [ref],
+      invocationId: "trace-read-bound",
+    });
     const overflow = await fixture!.traceReader.readBatch({
       projectId: PROJECT_ID,
       riskRecordRefs: Array.from({ length: 101 }, () => ref),
       requestedAt: TIMESTAMP,
+      invocationId: access.invocationId,
+      branch: "projection.query",
       authorization: access.authorization,
     });
     expect(overflow).toMatchObject({
@@ -1654,6 +1670,7 @@ describe("PostgreSQL risk candidate finalization persistence", () => {
     const access = fixture!.traceAccess.issue({
       projectId: PROJECT_ID,
       riskRecordRefs: [refOf("standardized-risk-record", "overflow", sha("overflow"))],
+      invocationId: "trace-read-overflow-records",
     });
     const scopeDigest = authorizationScopeDigest(access.authorization);
     const tooManySegments = traceRecordFor({
@@ -1688,11 +1705,14 @@ describe("PostgreSQL risk candidate finalization persistence", () => {
     const batchAccess = fixture!.traceAccess.issue({
       projectId: PROJECT_ID,
       riskRecordRefs: [segmentsRef, mechanismsRef],
+      invocationId: "trace-read-overflow-batch",
     });
     const result = await fixture!.traceReader.readBatch({
       projectId: PROJECT_ID,
       riskRecordRefs: [segmentsRef, mechanismsRef],
       requestedAt: TIMESTAMP,
+      invocationId: batchAccess.invocationId,
+      branch: "projection.query",
       authorization: batchAccess.authorization,
     });
     expect(result.kind).toBe("succeeded");

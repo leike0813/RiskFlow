@@ -89,9 +89,26 @@ const SCOPE_DIGEST = authorizationScopeDigest(AUTHORIZATION);
 
 const createAccess = () => {
   const calls: { readonly invocationId: string; readonly branch: ModuleBranchV1 }[] = [];
+  /** 进程内重签发的签发身份对（design D6）：与 readBody 派生复验身份配对。 */
+  const issues: { readonly invocationId: string; readonly branch: ModuleBranchV1 }[] = [];
   let revoked = false;
+  const denied = () =>
+    new AccessServiceError({
+      code: "AUTHORIZATION_DENIED",
+      retryable: false,
+      stage: "c30-projection-test-verify",
+      occurredAt: TIMESTAMP,
+      diagnosticRef: {
+        kind: "diagnostic-artifact",
+        reference: { entityId: "access-diagnostic", versionId: "1" },
+      },
+      contextRefs: [],
+      requiredCapability: "projection.query",
+      authorizationPolicyRef: { entityId: "authorization-policy", versionId: "v1" },
+    });
   return {
     calls,
+    issues,
     port: {
       verify: async (input: {
         readonly authorizationContextRef: { readonly kind: "authorization-context" };
@@ -100,23 +117,25 @@ const createAccess = () => {
       }) => {
         calls.push({ invocationId: input.invocationId, branch: input.branch });
         if (revoked) {
-          throw new AccessServiceError({
-            code: "AUTHORIZATION_DENIED",
-            retryable: false,
-            stage: "c30-projection-test-verify",
-            occurredAt: TIMESTAMP,
-            diagnosticRef: {
-              kind: "diagnostic-artifact",
-              reference: { entityId: "access-diagnostic", versionId: "1" },
-            },
-            contextRefs: [],
-            requiredCapability: "projection.query",
-            authorizationPolicyRef: { entityId: "authorization-policy", versionId: "v1" },
-          });
+          throw denied();
         }
         return { context: AUTHORIZATION } as Awaited<ReturnType<LocalIdentityAccessV1["verify"]>>;
       },
-    } satisfies Pick<LocalIdentityAccessV1, "verify">,
+      authorize: async (input: {
+        readonly invocationId: string;
+        readonly branch: ModuleBranchV1;
+      }) => {
+        issues.push({ invocationId: input.invocationId, branch: input.branch });
+        if (revoked) {
+          throw denied();
+        }
+        return {
+          context: AUTHORIZATION,
+          contextRef: AUTHORIZATION.authorizationContextRef,
+          redacted: false,
+        } as Awaited<ReturnType<LocalIdentityAccessV1["authorize"]>>;
+      },
+    } satisfies Pick<LocalIdentityAccessV1, "verify" | "authorize">,
     revoke: () => {
       revoked = true;
     },
@@ -136,6 +155,8 @@ interface ProjectionTestFixture {
   readonly access: ReturnType<typeof createAccess>;
   readonly trace: {
     calls: number;
+    /** 每次 readBatch 收到的复验身份对，用于锁定"透传当前调用身份对"语义。 */
+    invocations: { readonly invocationId: string; readonly branch: string }[];
     /** 设定后覆盖逐引用合成的结果，用于不可证明与失败路径。 */
     override: RiskRecordTraceReadResultV1 | undefined;
   };
@@ -173,7 +194,11 @@ const startFixture = async (): Promise<ProjectionTestFixture> => {
       authorization: access.port,
       now: () => new Date(TIMESTAMP),
     });
-    const trace: ProjectionTestFixture["trace"] = { calls: 0, override: undefined };
+    const trace: ProjectionTestFixture["trace"] = {
+      calls: 0,
+      invocations: [],
+      override: undefined,
+    };
     const projection = createPostgresWorkflowProjection({
       db: runtime.db,
       registrationStore: workflow.registrationStore,
@@ -182,6 +207,7 @@ const startFixture = async (): Promise<ProjectionTestFixture> => {
       riskRecordTrace: {
         readBatch: async (input) => {
           trace.calls += 1;
+          trace.invocations.push({ invocationId: input.invocationId, branch: input.branch });
           if (trace.override !== undefined) return trace.override;
           // 默认逐引用合成：只暴露已成立的最小来源定位，不携带任何风险正文。
           return {
@@ -640,6 +666,8 @@ const readRequest = (input: {
 }): ProjectionResultReadRequestV1 => ({
   projectId: PROJECT_ID,
   queryResultRef: input.queryResultRef,
+  // 复验身份字段：HTTP 签发以信封 queryId 为 invocationId，本夹具用可断言的派生值。
+  queryId: `read-page:${input.queryResultRef.reference.entityId}`,
   requestedAt: TIMESTAMP,
   limit: input.limit ?? 100,
   ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
@@ -672,6 +700,30 @@ describe("C30 workflow projection adapter", () => {
     expect(firstPage.kind).toBe("page");
     if (firstPage.kind !== "page") return;
     expect(firstPage.queryType).toBe("run-view");
+    // 复验身份锁定：query 与 readPage 都以当前调用的领域 queryId 复验，且 branch 与调用入口的
+    // 路由 branch 一一对应（query → projection.query，readPage → projection.result-read）。
+    expect(
+      fixture.access.calls.some(
+        (call) => call.invocationId === "query-run-view" && call.branch === "projection.query",
+      ),
+    ).toBe(true);
+    expect(
+      fixture.access.calls.some(
+        (call) =>
+          call.invocationId === `read-page:${queryResultRef.reference.entityId}` &&
+          call.branch === "projection.result-read",
+      ),
+    ).toBe(true);
+    // 正文读取身份锁定（IP-08/D6）：run-state 正文读取前以 body-read 派生身份进程内重签发，
+    // 签发 branch 与 readBody 复验由签发能力派生的 branch 配对（projection.query）。
+    expect(
+      fixture.access.issues.some(
+        (issue) =>
+          issue.invocationId ===
+            `c30-body-read:${PROJECT_ID}:c30-run-state:${ROOT_RUN_ID}:${ROOT_RUN_VERSION_ID}` &&
+          issue.branch === "projection.query",
+      ),
+    ).toBe(true);
     const runIds = firstPage.items
       .filter((item) => item.kind === "run-summary")
       .map((item) => (item.kind === "run-summary" ? item.workflowRunRef.reference.entityId : ""));
@@ -863,6 +915,12 @@ describe("C30 workflow projection adapter", () => {
       evidenceLocator: { sourceSegmentId: "stored-segment" },
     });
     expect(fixture.trace.calls - callsBefore).toBe(1);
+    // C22 嵌套读也必须用同一次 readPage 的领域身份对复验（含 result-read 路由 branch），
+    // 不再自造 `c22-risk-record-trace:*`。
+    expect(fixture.trace.invocations).toContainEqual({
+      invocationId: `read-page:${queried.result.queryResultRef.reference.entityId}`,
+      branch: "projection.result-read",
+    });
 
     const legacyWithoutTrace = createPostgresWorkflowProjection({
       db: fixture.runtime.db,
@@ -971,6 +1029,16 @@ describe("C30 workflow projection adapter", () => {
     }
     expect(first.nextCursor).toBeDefined();
     expect(fixture.trace.calls - callsBefore).toBe(1);
+    // 正文读取身份锁定（IP-08/D6）：结果正文读取前以 body-read 派生身份进程内重签发，
+    // 签发 branch 与 readBody 复验由签发能力派生的 branch 配对（projection.query）。
+    expect(
+      fixture.access.issues.some(
+        (issue) =>
+          issue.invocationId ===
+            `c30-body-read:${PROJECT_ID}:c31-run-result:${REPORT_RUN_ID}:${REPORT_RUN_VERSION_ID}` &&
+          issue.branch === "projection.query",
+      ),
+    ).toBe(true);
 
     const second = await fixture.projection.resultRead.readPage(
       readRequest({
@@ -1128,6 +1196,11 @@ describe("C30 workflow projection adapter", () => {
     expect(queried.kind).toBe("succeeded");
     if (queried.kind !== "succeeded") return;
     const queryResultRef = queried.result.queryResultRef;
+    // query 入口的嵌套 C22 读使用 projection.query 侧身份对（与 query 复验同一入口）。
+    expect(fixture.trace.invocations).toContainEqual({
+      invocationId: "query-association-graph",
+      branch: "projection.query",
+    });
 
     const callsBefore = fixture.trace.calls;
     const first = await fixture.projection.resultRead.readPage(
@@ -1457,6 +1530,16 @@ describe("C30 workflow projection adapter", () => {
     if (revoked.kind === "failed" && missing.kind === "failed") {
       expect(revoked.error.code).toBe(missing.error.code);
       expect(revoked.error.code).toBe("ENTITY_NOT_FOUND");
+    }
+  });
+
+  it("never reverifies with a self-derived identity on the query/readPage paths", () => {
+    // 全文件回归锁：复验身份必须是调用方给出的领域标识；这里只禁绝本 change 移除的
+    // 三个自造前缀（夹具自身的 `c30-projection-*` 命令身份是合法领域 commandId，不在此列）。
+    for (const call of fixture.access.calls) {
+      expect(call.invocationId.startsWith("c30-query:")).toBe(false);
+      expect(call.invocationId.startsWith("c30-read-page:")).toBe(false);
+      expect(call.invocationId.startsWith("c22-risk-record-trace:")).toBe(false);
     }
   });
 });

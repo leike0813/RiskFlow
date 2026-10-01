@@ -3,115 +3,172 @@ import { useNavigate } from 'react-router-dom'
 import AppShell from '../components/AppShell'
 import { Card } from '../components/Card'
 import { DataTable, type DataTableColumn } from '../components/DataTable'
-import { RiskBadge } from '../components/RiskBadge'
-import { StatusTag } from '../components/StatusTag'
+import { PageStateView } from '../components/PageStateView'
 import { SectionTabs } from '../components/SectionTabs'
-import { riskRecords, mainRisk, type RiskLevel } from '../content/risks'
-import { reviewTasks } from '../content/review'
+import { StatusTag } from '../components/StatusTag'
+import { useEngineering, usePageQuery, useProjectPath } from '../api/context'
+import {
+  listRiskRecords,
+  type RiskRecordCatalogPageView,
+} from '../api/operations'
+import {
+  ACCEPTANCE_KIND_LABEL,
+  identificationTabs,
+} from './identificationShared'
 import './RiskRecordListPage.css'
 
-const tabs = [
-  { to: '/identification', label: '识别任务' },
-  { to: '/identification/records', label: '风险记录' },
-  { to: '/identification/graph', label: '关联图谱' },
-  { to: '/identification/process-model', label: '工序模型' },
+const acceptanceOptions: { value: string; label: string }[] = [
+  { value: '', label: '全部验收方式' },
+  { value: 'automatic', label: ACCEPTANCE_KIND_LABEL.automatic ?? '自动验收' },
+  { value: 'review', label: ACCEPTANCE_KIND_LABEL.review ?? '人工复核验收' },
 ]
 
-const levelOptions: { value: string; label: string }[] = [
-  { value: 'all', label: '全部等级' },
-  { value: 'I', label: 'I 级' },
-  { value: 'II', label: 'II 级' },
-  { value: 'III', label: 'III 级' },
-  { value: 'IV', label: 'IV 级' },
+const columns: DataTableColumn[] = [
+  {
+    key: 'riskRecordRef',
+    title: '记录标识',
+    width: 170,
+    render: (row) => (
+      <span className="mono">
+        {(row.riskRecordRef as { reference: { entityId: string } }).reference.entityId}
+      </span>
+    ),
+  },
+  {
+    key: 'processNodeId',
+    title: '工序节点',
+    width: 150,
+    render: (row) => <span className="mono">{row.processNodeId as string}</span>,
+  },
+  { key: 'riskEventSummary', title: '风险事件' },
+  {
+    key: 'compositeConfidence',
+    title: '综合置信度',
+    width: 110,
+    align: 'center',
+    render: (row) => (
+      <span className="mono">
+        {(row.compositeConfidence as { value: number }).value.toFixed(2)}
+      </span>
+    ),
+  },
+  {
+    key: 'acceptanceKind',
+    title: '验收方式',
+    width: 140,
+    render: (row) => {
+      const kind = row.acceptanceKind as string
+      return (
+        <StatusTag tone={kind === 'review' ? 'review' : 'success'}>
+          {ACCEPTANCE_KIND_LABEL[kind] ?? kind}
+        </StatusTag>
+      )
+    },
+  },
+  {
+    key: 'supersededBy',
+    title: '当前效力',
+    width: 110,
+    render: (row) =>
+      row.supersededBy === undefined ? (
+        <StatusTag tone="neutral">现行</StatusTag>
+      ) : (
+        <StatusTag tone="failed">已被取代</StatusTag>
+      ),
+  },
 ]
-
-/** 验收方式：复核队列中的识别候选为人工验收，其余按自动验收 */
-function acceptanceOf(riskId: string) {
-  const task = reviewTasks.find((t) => t.type === '识别候选复核' && t.targetId === riskId)
-  if (!task) return <span className="records-dim">自动验收</span>
-  return task.status === '待复核' ? (
-    <StatusTag tone="review">人工复核 · 待复核</StatusTag>
-  ) : (
-    <StatusTag tone="success">人工复核 · 已通过</StatusTag>
-  )
-}
 
 export default function RiskRecordListPage() {
   const navigate = useNavigate()
-  const [level, setLevel] = useState('all')
+  const { selector } = useEngineering()
+  const projectPath = useProjectPath()
+  const [processNodeId, setProcessNodeId] = useState('')
+  const [acceptanceKind, setAcceptanceKind] = useState('')
 
-  const records = level === 'all' ? riskRecords : riskRecords.filter((r) => r.level === level)
-
-  const columns: DataTableColumn[] = [
-    {
-      key: 'id',
-      title: '记录标识',
-      width: 150,
-      render: (row) => <span className="mono">{row.id as string}</span>,
-    },
-    { key: 'processName', title: '工序节点', width: 130 },
-    { key: 'riskEvent', title: '风险事件' },
-    { key: 'mechanismType', title: '机理类型', width: 150 },
-    {
-      key: 'level',
-      title: '等级',
-      width: 100,
-      render: (row) => <RiskBadge level={row.level as RiskLevel} />,
-    },
-    {
-      key: 'compositeConfidence',
-      title: '综合置信度',
-      width: 110,
-      align: 'center',
-      render: (row) => <span className="mono">{(row.compositeConfidence as number).toFixed(2)}</span>,
-    },
-    {
-      key: 'acceptance',
-      title: '验收方式',
-      width: 170,
-      render: (row) => acceptanceOf(row.id as string),
-    },
-  ]
+  const { state, retry } = usePageQuery<RiskRecordCatalogPageView>(
+    (projectId, signal) =>
+      listRiskRecords(
+        projectId,
+        {
+          ...(processNodeId.trim().length === 0 ? {} : { processNodeId: processNodeId.trim() }),
+          ...(acceptanceKind === '' ? {} : { acceptanceKind }),
+        },
+        signal,
+      ),
+    [processNodeId, acceptanceKind],
+  )
 
   return (
-    <AppShell activeNav="identification" agentContext={['标准化风险记录 12 项']}>
+    <AppShell
+      activeNav="identification"
+      agentContext={selector.projectId === null ? [] : [selector.projectId]}
+    >
       <div className="page">
         <header className="page-header">
           <div>
             <h1 className="page-title">标准化风险记录</h1>
-            <p className="page-subtitle">查看全部标准化风险记录及其综合置信度与验收状态</p>
+            <p className="page-subtitle">当前工程已入库的标准化风险记录</p>
           </div>
         </header>
-        <SectionTabs items={tabs} />
+        <SectionTabs items={identificationTabs} />
 
-        <Card
+        <PageStateView
+          state={state}
           title="风险记录"
-          extra={
-            <>
-              <span>共 {records.length} 项</span>
-              <select
-                className="records-filter"
-                value={level}
-                onChange={(e) => setLevel(e.target.value)}
-                aria-label="按等级筛选"
-              >
-                {levelOptions.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </>
-          }
+          emptyMessage="当前筛选下暂无标准化风险记录"
+          onRetry={retry}
         >
-          <DataTable
-            columns={columns}
-            rows={records.map((r) => ({ ...r }))}
-            onRowClick={(row) => {
-              if (row.id === mainRisk.id) navigate(`/risks/${mainRisk.id}`)
-            }}
-          />
-        </Card>
+          {(page) => (
+            <Card
+              title="风险记录"
+              extra={
+                <>
+                  <input
+                    className="records-filter"
+                    value={processNodeId}
+                    onChange={(e) => setProcessNodeId(e.target.value)}
+                    placeholder="工序节点标识"
+                    aria-label="按工序节点筛选"
+                  />
+                  <select
+                    className="records-filter"
+                    value={acceptanceKind}
+                    onChange={(e) => setAcceptanceKind(e.target.value)}
+                    aria-label="按验收方式筛选"
+                  >
+                    {acceptanceOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </>
+              }
+            >
+              {page.items.length === 0 ? (
+                <div className="records-dim">当前筛选下暂无标准化风险记录</div>
+              ) : (
+                <DataTable
+                  columns={columns}
+                  rows={page.items.map((item) => ({ ...item }))}
+                  onRowClick={(row) =>
+                    navigate(
+                      projectPath(
+                        `/identification/records/${encodeURIComponent(
+                          (row.riskRecordRef as { reference: { entityId: string } }).reference
+                            .entityId,
+                        )}`,
+                      ),
+                    )
+                  }
+                />
+              )}
+              {page.nextCursor !== undefined && (
+                <div className="records-dim">结果按游标分页，当前呈现第一页</div>
+              )}
+            </Card>
+          )}
+        </PageStateView>
       </div>
     </AppShell>
   )

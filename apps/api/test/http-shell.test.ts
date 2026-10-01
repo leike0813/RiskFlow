@@ -1129,7 +1129,7 @@ describe("C32 read surface routes", () => {
         },
         projectionResultRead: {
           readPage: async (request) => {
-            seen.push({ port: "projection", limit: request.limit });
+            seen.push({ port: "projection", limit: request.limit, queryId: request.queryId });
             return { kind: "page", queryType: "run-view", items: [] };
           },
         },
@@ -1176,8 +1176,9 @@ describe("C32 read surface routes", () => {
       kind: "succeeded",
       result: { kind: "page", queryType: "run-view" },
     });
-    // readPage 的 limit 缺省由传输层补齐，游标未提供时不落到端口请求。
-    expect(seen[2]).toMatchObject({ port: "projection", limit: 50 });
+    // readPage 的 limit 缺省由传输层补齐，游标未提供时不落到端口请求；
+    // 复验身份字段必须透传信封 queryId，端口侧复验才能与本次签发的 invocationId 配对。
+    expect(seen[2]).toMatchObject({ port: "projection", limit: 50, queryId: "query-1" });
     expect(seen.map((entry) => entry.port)).toEqual(["governance", "retrieval", "projection"]);
     await app.close();
   });
@@ -1247,6 +1248,237 @@ describe("C32 read surface routes", () => {
     });
     // 契约外字段在 transport 严格信封处即被拒绝，不进入端口。
     const invalid = await postQuery(active, "engineering-data.context-read", { leaked: true });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json().code).toBe("CONTRACT_INVALID");
+    await app.close();
+    await active.close();
+  });
+});
+
+describe("C33 read surface routes", () => {
+  const queryBody = (payload: Record<string, unknown>) => ({
+    schemaVersion: "1",
+    queryId: "query-1",
+    requestedAt: NOW,
+    requestedSpatialScopeRefs: [scope],
+    requestedSourceVersionRefs: [],
+    payload,
+  });
+  const postQuery = (
+    app: ReturnType<typeof buildApi>,
+    branch: string,
+    payload: Record<string, unknown>,
+  ) =>
+    app.inject({
+      method: "POST",
+      url: `/api/v1/projects/project/queries/${branch}`,
+      headers: { ...jsonHeaders, cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+      payload: queryBody(payload),
+    });
+
+  const runRef = {
+    kind: "workflow-run" as const,
+    reference: { entityId: "run-1", versionId: "1" },
+  };
+
+  it("routes the four risk-identification read branches to the read port", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const authorizedBranches: string[] = [];
+    const app = buildApi({
+      access: accessStub((branch) => authorizedBranches.push(branch)),
+      ports: {
+        riskIdentificationRead: {
+          read: async (query) => {
+            seen.push({
+              kind: query.kind,
+              payload: query.payload,
+              projectId: query.projectId,
+              actorId: query.actorId,
+            });
+            if (query.kind === "run-list") {
+              return { kind: "succeeded", result: { kind: "run-list", items: [] } };
+            }
+            if (query.kind === "record-catalog") {
+              return { kind: "succeeded", result: { kind: "record-catalog", items: [] } };
+            }
+            return {
+              kind: "succeeded",
+              result: {
+                kind: "run-read",
+                runRef,
+                stage: "I3",
+                status: "waiting",
+                stageEntries: [{ stage: "I0", status: "completed" }],
+                workItemCoverage: [],
+                mergeGroups: [],
+                agentTaskRefs: [],
+                reviewTaskRefs: [],
+                resultCounts: {
+                  plannedWorkItemCount: 0,
+                  completedWorkItemCount: 0,
+                  failedWorkItemCount: 0,
+                  zeroResultCount: 0,
+                  acceptedCount: 0,
+                  pendingReviewCount: 0,
+                  rejectedCount: 0,
+                },
+                acceptedRiskRecordRefs: [],
+                pendingReviewGroupRefs: [],
+                rejectedGroupRefs: [],
+              },
+            };
+          },
+        },
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+
+    const runList = await postQuery(app, "risk-identification.run-list", { status: "waiting" });
+    expect(runList.statusCode).toBe(200);
+    expect(runList.json()).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "run-list", items: [] },
+    });
+
+    const runRead = await postQuery(app, "risk-identification.run-read", { runRef });
+    expect(runRead.statusCode).toBe(200);
+    expect(runRead.json()).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "run-read", stage: "I3", status: "waiting" },
+    });
+
+    const catalog = await postQuery(app, "risk-identification.record-catalog", {
+      acceptanceKind: "review",
+    });
+    expect(catalog.statusCode).toBe(200);
+    expect(catalog.json()).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "record-catalog", items: [] },
+    });
+
+    const recordRead = await postQuery(app, "risk-identification.record-read", {
+      riskRecordRef: {
+        kind: "standardized-risk-record",
+        reference: { entityId: "record-1", versionId: "1" },
+      },
+    });
+    expect(recordRead.statusCode).toBe(200);
+
+    expect(authorizedBranches).toEqual([
+      "risk-identification.run-list",
+      "risk-identification.run-read",
+      "risk-identification.record-catalog",
+      "risk-identification.record-read",
+    ]);
+    expect(seen.map((entry) => entry.kind)).toEqual([
+      "run-list",
+      "run-read",
+      "record-catalog",
+      "record-read",
+    ]);
+    expect(seen[0]).toMatchObject({
+      projectId: "project",
+      actorId: "actor",
+      payload: { status: "waiting" },
+    });
+    expect(seen[1]).toMatchObject({ payload: { runRef } });
+    await app.close();
+  });
+
+  it("routes review-audit.queue-read to the queue read port", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const authorizedBranches: string[] = [];
+    const app = buildApi({
+      access: accessStub((branch) => authorizedBranches.push(branch)),
+      ports: {
+        reviewQueueRead: {
+          read: async (query) => {
+            seen.push({ kind: query.kind, payload: query.payload });
+            return { kind: "succeeded", result: { kind: "queue-read", items: [] } };
+          },
+        },
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+
+    const response = await postQuery(app, "review-audit.queue-read", { status: "pending" });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "queue-read", items: [] },
+    });
+    expect(authorizedBranches).toEqual(["review-audit.queue-read"]);
+    expect(seen[0]).toMatchObject({ kind: "queue-read", payload: { status: "pending" } });
+    await app.close();
+  });
+
+  it("maps a failed read outcome to the failure envelope", async () => {
+    const app = buildApi({
+      access: accessStub(),
+      ports: {
+        riskIdentificationRead: {
+          read: async () => ({
+            kind: "failed",
+            error: {
+              code: "AUTHORIZATION_DENIED",
+              category: "authorization",
+              retryable: false,
+              requiredCapability: "risk-identification.read",
+              authorizationPolicyRef: { entityId: "policy", versionId: "1" },
+              stageCode: "risk-identification.record-read",
+              occurredAt: NOW,
+              causalRunId: "query-1",
+            },
+          }),
+        },
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+    const response = await postQuery(app, "risk-identification.record-read", {
+      riskRecordRef: {
+        kind: "standardized-risk-record",
+        reference: { entityId: "record-1", versionId: "1" },
+      },
+    });
+    expect(response.statusCode).toBe(404);
+    expect(response.json().code).toBe("NOT_FOUND");
+    await app.close();
+  });
+
+  it("keeps the C33 branches inactive and strict when the ports are absent", async () => {
+    const app = appFor();
+    for (const branch of [
+      "risk-identification.run-list",
+      "risk-identification.run-read",
+      "risk-identification.record-catalog",
+      "risk-identification.record-read",
+      "review-audit.queue-read",
+    ]) {
+      const response = await postQuery(app, branch, {});
+      expect(response.statusCode).toBe(404);
+    }
+
+    const active = buildApi({
+      access: accessStub(),
+      ports: {
+        reviewQueueRead: {
+          read: async () => {
+            throw new Error("should not be reached");
+          },
+        },
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+    // 契约外字段在 transport 严格信封处即被拒绝，不进入端口。
+    const invalid = await postQuery(active, "review-audit.queue-read", { leaked: true });
     expect(invalid.statusCode).toBe(400);
     expect(invalid.json().code).toBe("CONTRACT_INVALID");
     await app.close();

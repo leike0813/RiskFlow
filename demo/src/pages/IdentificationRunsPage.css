@@ -1,8 +1,4 @@
-.runs-kpis {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
-}
+/* 识别任务列表（/identification）：run-list 驱动的有界分页列表 */
 
 .runs-dim {
   color: var(--text-2);

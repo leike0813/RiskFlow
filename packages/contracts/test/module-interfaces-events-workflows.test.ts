@@ -2918,9 +2918,20 @@ describe("C30 additive workflow inputs and bounded read ports", () => {
       projectId: "project-1",
       riskRecordRefs: [riskInput, version("standardized-risk-record", "risk-record-2")],
       requestedAt: now,
+      invocationId: "trace-query-1",
+      branch: "projection.query",
       authorization,
     };
     expect(RiskRecordTraceReadRequestV1Schema.safeParse(request).success).toBe(true);
+    expect(
+      RiskRecordTraceReadRequestV1Schema.safeParse({ ...request, invocationId: undefined }).success,
+    ).toBe(false);
+    expect(
+      RiskRecordTraceReadRequestV1Schema.safeParse({ ...request, branch: undefined }).success,
+    ).toBe(false);
+    expect(
+      RiskRecordTraceReadRequestV1Schema.safeParse({ ...request, branch: "not-a-branch" }).success,
+    ).toBe(false);
     expect(
       RiskRecordTraceReadRequestV1Schema.safeParse({ ...request, riskRecordRefs: [] }).success,
     ).toBe(false);
@@ -2985,10 +2996,14 @@ describe("C30 additive workflow inputs and bounded read ports", () => {
       projectId: "project-1",
       queryResultRef: version("query-result", "query-1"),
       requestedAt: now,
+      queryId: "read-query-1",
       limit: 100,
       authorization,
     };
     expect(ProjectionResultReadRequestV1Schema.safeParse(request).success).toBe(true);
+    expect(
+      ProjectionResultReadRequestV1Schema.safeParse({ ...request, queryId: undefined }).success,
+    ).toBe(false);
     expect(
       ProjectionResultReadRequestV1Schema.safeParse({
         ...request,
@@ -3118,6 +3133,8 @@ describe("C30 additive workflow inputs and bounded read ports", () => {
         projectId: "project-1",
         riskRecordRefs: [riskInput],
         requestedAt: now,
+        invocationId: "trace-query-1",
+        branch: "projection.query",
         authorization,
         includeBody: true,
       }).success,
@@ -3127,6 +3144,7 @@ describe("C30 additive workflow inputs and bounded read ports", () => {
         projectId: "project-1",
         queryResultRef: version("query-result", "query-1"),
         requestedAt: now,
+        queryId: "read-query-1",
         limit: 50,
         authorization,
         queryType: "run-view",

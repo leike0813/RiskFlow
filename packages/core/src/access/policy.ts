@@ -32,6 +32,11 @@ const roleBranches: Readonly<Record<PresetRoleV1, readonly ModuleBranchV1[]>> = 
     "engineering-data.read-result",
     "knowledge-modeling.governance-read",
     "knowledge-modeling.retrieval-result",
+    "risk-identification.run-list",
+    "risk-identification.run-read",
+    "risk-identification.record-catalog",
+    "risk-identification.record-read",
+    "review-audit.queue-read",
   ),
   "field-responder": branchSet(
     "warning-response.record-execution",
@@ -42,6 +47,10 @@ const roleBranches: Readonly<Record<PresetRoleV1, readonly ModuleBranchV1[]>> = 
     "engineering-data.context-read",
     "engineering-data.monitoring-catalog",
     "engineering-data.read-result",
+    "risk-identification.run-list",
+    "risk-identification.run-read",
+    "risk-identification.record-catalog",
+    "risk-identification.record-read",
   ),
   "business-viewer": branchSet(
     "projection.query",
@@ -54,6 +63,12 @@ const roleBranches: Readonly<Record<PresetRoleV1, readonly ModuleBranchV1[]>> = 
     "engineering-data.monitoring-catalog",
     "engineering-data.read-result",
     "knowledge-modeling.governance-read",
+    "risk-identification.run-list",
+    "risk-identification.run-read",
+    "risk-identification.record-catalog",
+    "risk-identification.record-read",
+    "review-audit.queue-read",
+    "knowledge-modeling.retrieval-result",
   ),
 });
 

@@ -5,13 +5,12 @@ import {
   AuthorizationContextRefV1Schema,
   AuthorizationContextV1Schema,
   ContractReferenceV1Schema,
+  ModuleBranchV1Schema,
   ModuleCapabilityV1Schema,
-  MODULE_BRANCH_CAPABILITY_V1,
   SourceAccessGrantRefV1Schema,
   SourceVersionRefV1Schema,
   SpatialScopeRefV1Schema,
   type AuthorizationContextV1,
-  type ModuleBranchV1,
   type ModuleCapabilityV1,
 } from "@riskflow/contracts/ports";
 import {
@@ -21,13 +20,8 @@ import {
   type VersionReference,
 } from "@riskflow/contracts/common";
 
-const branchValues = Object.keys(MODULE_BRANCH_CAPABILITY_V1) as [
-  ModuleBranchV1,
-  ...ModuleBranchV1[],
-];
-
 /** C02 is the only source of module branch names. */
-export const ModuleBranchV1Schema = z.enum(branchValues);
+export { ModuleBranchV1Schema };
 
 export const LocalAccountStatusV1Schema = z.enum(["active", "disabled"]);
 export type LocalAccountStatusV1 = z.infer<typeof LocalAccountStatusV1Schema>;

@@ -52,8 +52,7 @@ describe("access domain", () => {
     for (const role of ["reviewer", "field-responder", "business-viewer"] as const) {
       expect(isBranchAllowed([role], "agent-task.read-failure-evidence")).toBe(false);
     }
-    // C32 只读 branch 授予：reviewer 全量七条；field-responder 仅监测相关；
-    // business-viewer 不含 retrieval-result。
+    // C32 只读 branch 授予：reviewer 全量七条；field-responder 仅监测相关。
     const c32Branches = [
       "engineering-data.context-read",
       "engineering-data.source-catalog",
@@ -84,8 +83,39 @@ describe("access domain", () => {
       expect(isBranchAllowed(["field-responder"], branch)).toBe(false);
     }
     expect(isBranchAllowed(["business-viewer"], "knowledge-modeling.governance-read")).toBe(true);
-    expect(isBranchAllowed(["business-viewer"], "knowledge-modeling.retrieval-result")).toBe(false);
     expect(isBranchAllowed(["business-viewer"], "projection.result-read")).toBe(true);
+  });
+
+  it("C33 识别与复核队列只读 branch 授予恰为 D5 清单", () => {
+    const identificationReadBranches = [
+      "risk-identification.run-list",
+      "risk-identification.run-read",
+      "risk-identification.record-catalog",
+      "risk-identification.record-read",
+    ] as const;
+    const c33Branches = [...identificationReadBranches, "review-audit.queue-read"] as const;
+    const c33Grantable = [...c33Branches, "knowledge-modeling.retrieval-result"] as const;
+    const grantedC33 = (role: keyof typeof PRESET_ROLE_BRANCHES_V1) =>
+      PRESET_ROLE_BRANCHES_V1[role]
+        .filter((branch) => (c33Grantable as readonly string[]).includes(branch))
+        .sort();
+
+    expect(grantedC33("reviewer")).toEqual([...c33Grantable].sort());
+    expect(grantedC33("field-responder")).toEqual([...identificationReadBranches].sort());
+    expect(grantedC33("business-viewer")).toEqual(
+      [...c33Branches, "knowledge-modeling.retrieval-result"].sort(),
+    );
+    expect(grantedC33("system-administrator")).toEqual([]);
+    expect(grantedC33("project-risk-manager")).toEqual([...c33Grantable].sort());
+
+    for (const branch of c33Branches) {
+      expect(isBranchAllowed(["reviewer"], branch)).toBe(true);
+      expect(isBranchAllowed(["project-risk-manager"], branch)).toBe(true);
+      expect(isBranchAllowed(["system-administrator"], branch)).toBe(false);
+    }
+    expect(isBranchAllowed(["field-responder"], "review-audit.queue-read")).toBe(false);
+    expect(isBranchAllowed(["business-viewer"], "knowledge-modeling.retrieval-result")).toBe(true);
+    expect(isBranchAllowed(["field-responder"], "knowledge-modeling.retrieval-result")).toBe(false);
   });
 
   it("authorization scope closure", () => {

@@ -1,7 +1,7 @@
 import type { Kysely } from "kysely";
 
 import type { LocalIdentityAccessV1 } from "@riskflow/core/access";
-import { sha256CanonicalJson, type JsonValue } from "@riskflow/core/persistence";
+import type { JsonValue } from "@riskflow/core/persistence";
 import { authorizationScopeDigest } from "@riskflow/core/retrieval";
 import {
   MODULE_BRANCH_CAPABILITY_V1,
@@ -10,6 +10,7 @@ import {
   RiskRecordTraceReadResultV1Schema,
   type AuthorizationContextV1,
   type ContractReferenceV1,
+  type ModuleBranchV1,
   type ModuleErrorV1,
   type RiskRecordTraceReadPortV1,
   type RiskRecordTraceReadResultV1,
@@ -29,11 +30,12 @@ const MAX_SOURCE_SEGMENTS_V1 = 256;
 const MAX_MECHANISM_ENTRIES_V1 = 64;
 
 /**
- * design D-06：本读接缝不新增 capability，只复用调用方已持有的 `projection.query` 分支；
+ * design D-06：本读接缝不新增 capability，只复用调用方已持有的 `projection.query` 能力位；
  * 空间与资料可见性由复验上下文与记录冻结的范围摘要逐条对账（见 `#itemFor`）。
+ * 复验 branch 由请求携带（外层调用入口的路由 branch），本端口不硬编码——C06 verify 精确
+ * 绑定 branch，而 capability 与 branch 一对多，反推恒可能错配。
  */
-const TRACE_READ_BRANCH_V1 = "projection.query";
-const TRACE_READ_CAPABILITY_V1 = MODULE_BRANCH_CAPABILITY_V1[TRACE_READ_BRANCH_V1];
+const TRACE_READ_CAPABILITY_V1 = MODULE_BRANCH_CAPABILITY_V1["projection.query"];
 
 /** 稳定边界原因码（design D-06）：调用方可据此区分整批超限与单条披露超限。 */
 const TRACE_BATCH_OVERFLOW_V1 = "trace-batch-overflow";
@@ -64,19 +66,6 @@ type RiskRecordTraceItemV1 = Extract<
   RiskRecordTraceReadResultV1,
   { kind: "succeeded" }
 >["items"][number];
-
-/**
- * design D-06：C05 `verify` 要求复验身份与签发身份逐字相同，而本读端口不携带受信调用身份。
- * 与 C24 `identificationGraphReadInvocationIdV1` 同法，按精确目标确定性派生复验身份（无墙钟、
- * 无调用方正文）：签发方必须用同一函数派生，否则复验按拒绝收口（fail closed，不泄露目标存在性）。
- */
-export const riskRecordTraceReadInvocationIdV1 = (input: {
-  readonly projectId: string;
-  readonly riskRecordRefs: readonly StandardizedRiskRecordRefV1[];
-}): string =>
-  `c22-risk-record-trace:${input.projectId}:${sha256CanonicalJson(
-    input.riskRecordRefs.map((ref) => `${ref.reference.entityId}@${ref.reference.versionId}`),
-  )}`;
 
 /** 标识符列表事实：含非字符串或空串即视为不可披露来源（fail closed，不部分披露）。 */
 const identifierListV1 = (value: unknown): readonly string[] | undefined =>
@@ -139,14 +128,12 @@ export class PostgresRiskRecordTraceReader implements RiskRecordTraceReadPortV1 
       };
     }
     const valid = parsed.data;
-    const invocationId = riskRecordTraceReadInvocationIdV1({
-      projectId: valid.projectId,
-      riskRecordRefs: valid.riskRecordRefs,
-    });
+    const invocationId = valid.invocationId;
     const verified = await this.#verifyCurrentAuthorization({
       authorization: valid.authorization,
       projectId: valid.projectId,
       invocationId,
+      branch: valid.branch,
       requestedAt: valid.requestedAt,
     });
     if (verified === undefined) {
@@ -277,13 +264,15 @@ export class PostgresRiskRecordTraceReader implements RiskRecordTraceReadPortV1 
   }
 
   /**
-   * 当前授权复验（design D-07）：复验身份与签发身份必须逐字相同，复验返回的是当前收窄上下文，
-   * 冻结引用不能替代它。任何形状不符或异常都按拒绝收口，不区分"无权"与"不存在"。
+   * 当前授权复验（design D-07）：复验身份对（`invocationId` + `branch`）与签发身份必须逐字
+   * 相同，复验返回的是当前收窄上下文，冻结引用不能替代它。任何形状不符或异常都按拒绝收口，
+   * 不区分"无权"与"不存在"。
    */
   async #verifyCurrentAuthorization(input: {
     readonly authorization: AuthorizationContextV1;
     readonly projectId: string;
     readonly invocationId: string;
+    readonly branch: ModuleBranchV1;
     readonly requestedAt: string;
   }): Promise<AuthorizationContextV1 | undefined> {
     if (input.authorization.projectId !== input.projectId) return undefined;
@@ -293,7 +282,7 @@ export class PostgresRiskRecordTraceReader implements RiskRecordTraceReadPortV1 
         authorizationContextRef: input.authorization.authorizationContextRef,
         invocationId: input.invocationId,
         projectId: input.projectId,
-        branch: TRACE_READ_BRANCH_V1,
+        branch: input.branch,
         // 读不申请额外范围：复验上下文保持调用方自身成员范围，范围摘要据此与记录冻结摘要对账。
         requestedSpatialScopeRefs: [],
         requestedSourceVersionRefs: [],

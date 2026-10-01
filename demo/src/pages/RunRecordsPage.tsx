@@ -1,114 +1,219 @@
 import { Link } from 'react-router-dom'
 import AppShell from '../components/AppShell'
 import { Card } from '../components/Card'
-import { ConfirmButton } from '../components/ConfirmButton'
 import { DataTable, type DataTableColumn } from '../components/DataTable'
-import { KpiCard } from '../components/KpiCard'
+import { PageStateView } from '../components/PageStateView'
 import { SectionTabs } from '../components/SectionTabs'
 import { StatusTag } from '../components/StatusTag'
-import { VersionTag } from '../components/VersionTag'
-import { runRecords, type RunRecord } from '../content/review'
+import { useEngineering, usePageQuery, useProjectPath } from '../api/context'
+import {
+  listIdentificationRuns,
+  readRiskOverviewRuns,
+  type IdentificationRunListPageView,
+  type KindRef,
+  type RunSummaryItemView,
+} from '../api/operations'
+import { RunStatusTag, STAGE_LABEL } from './identificationShared'
 import './RunRecordsPage.css'
 
-const countByType = (type: RunRecord['type']) => runRecords.filter((r) => r.type === type).length
-
-const replaySummary = (run: RunRecord) => [
-  `对象：${run.type}运行 ${run.runId}（${run.graph} ${run.graphVersion}）`,
-  `输入快照：${run.triggerReason}（启动时间 ${run.startedAt}）`,
-  '审计重放使用冻结的输入快照与版本引用复算运行过程，不重新调用模型',
-  '重放不产生新业务事实，结果仅用于审计核对',
+const reviewTabs = [
+  { to: '/review', label: '复核队列' },
+  { to: '/review/trace', label: '证据追溯' },
+  { to: '/review/runs', label: '运行记录' },
 ]
 
-const columns: DataTableColumn[] = [
-  {
-    key: 'runId',
-    title: '运行标识',
-    width: 190,
-    render: (row) =>
-      row.runId === 'RUN-20260827-001' ? (
-        <Link to={`/identification/runs/${row.runId as string}`} className="mono">
-          {row.runId as string}
-        </Link>
-      ) : (
-        <span className="mono">{row.runId as string}</span>
-      ),
-  },
-  {
-    key: 'type',
-    title: '类型',
-    width: 90,
-    render: (row) => <StatusTag tone="neutral">{row.type as string}</StatusTag>,
-  },
-  {
-    key: 'graph',
-    title: '图',
-    width: 180,
-    render: (row) => <span className="mono">{row.graph as string}</span>,
-  },
-  {
-    key: 'graphVersion',
-    title: '图版本',
-    width: 90,
-    render: (row) => <VersionTag>{row.graphVersion as string}</VersionTag>,
-  },
-  {
-    key: 'status',
-    title: '状态',
-    width: 100,
-    render: (row) => <StatusTag tone="success">{row.status as string}</StatusTag>,
-  },
-  { key: 'triggerReason', title: '输入快照（触发原因）' },
-  {
-    key: 'startedAt',
-    title: '启动时间',
-    width: 170,
-    render: (row) => <span className="mono">{row.startedAt as string}</span>,
-  },
-  { key: 'operator', title: '操作者', width: 120 },
-  {
-    key: 'actions',
-    title: '操作',
-    width: 120,
-    render: (row) => {
-      const run = row as unknown as RunRecord
-      return (
-        <div className="rr-actions">
-          <ConfirmButton label="审计重放" summary={replaySummary(run)} />
-        </div>
-      )
+/** 识别运行表：行可跳识别运行详情；触发原因仅在服务端返回登记事实时呈现。 */
+function IdentificationRunsSection() {
+  const projectPath = useProjectPath()
+  const { state, retry } = usePageQuery<IdentificationRunListPageView>(
+    (projectId, signal) => listIdentificationRuns(projectId, {}, signal),
+    [],
+  )
+
+  const columns: DataTableColumn[] = [
+    {
+      key: 'runRef',
+      title: '运行标识',
+      width: 210,
+      render: (row) => {
+        const entityId = (row.runRef as KindRef).reference.entityId
+        return (
+          <Link to={projectPath(`/identification/runs/${encodeURIComponent(entityId)}`)} className="mono">
+            {entityId}
+          </Link>
+        )
+      },
     },
-  },
-]
+    {
+      key: 'type',
+      title: '类型',
+      width: 80,
+      render: () => <StatusTag tone="neutral">识别</StatusTag>,
+    },
+    {
+      key: 'status',
+      title: '状态',
+      width: 110,
+      render: (row) => <RunStatusTag status={row.status as string} />,
+    },
+    {
+      key: 'stage',
+      title: '阶段',
+      width: 190,
+      render: (row) => {
+        const stage = row.stage as string
+        const label = STAGE_LABEL[stage]
+        return (
+          <span>
+            <span className="mono">{stage}</span>
+            {label !== undefined && <span className="rr-dim"> · {label}</span>}
+          </span>
+        )
+      },
+    },
+    { key: 'startedBy', title: '启动者', width: 130 },
+    {
+      key: 'startedAt',
+      title: '启动时间',
+      width: 200,
+      render: (row) => <span className="mono">{row.startedAt as string}</span>,
+    },
+    {
+      key: 'triggerReason',
+      title: '触发原因',
+      render: (row) => {
+        const reason = row.triggerReason as string | undefined
+        return reason === undefined ? <span className="rr-dim">—</span> : <span>{reason}</span>
+      },
+    },
+  ]
+
+  return (
+    <PageStateView
+      state={state}
+      title="识别运行"
+      emptyMessage="当前工程暂无识别运行"
+      forbiddenHint="当前角色不具备识别运行的读取权限"
+      onRetry={retry}
+    >
+      {(page) => (
+        <Card title="识别运行" extra={<span>来源：risk-identification.run-list · 行点击进入详情</span>}>
+          {page.items.length === 0 ? (
+            <div className="rr-dim">当前工程暂无识别运行</div>
+          ) : (
+            <DataTable columns={columns} rows={page.items.map((item) => ({ ...item }))} />
+          )}
+          {page.nextCursor !== undefined && (
+            <div className="rr-dim">结果按游标分页，当前呈现第一页</div>
+          )}
+        </Card>
+      )}
+    </PageStateView>
+  )
+}
+
+type ChainRunsResult =
+  | { readonly kind: 'no-revision' }
+  | { readonly kind: 'page'; readonly items: RunSummaryItemView[] }
+
+/** 评估/处置链运行表：risk-overview 投影 run-summary 条目；条目不含启动时间/操作者，不编造。 */
+function ChainRunsSection() {
+  const { state: engineeringState } = useEngineering()
+  const revisionRef =
+    engineeringState.kind === 'ready' ? engineeringState.value.currentProjectRevisionRef : undefined
+  const { state, retry } = usePageQuery<ChainRunsResult>(
+    async (projectId, signal) => {
+      if (revisionRef === undefined) return { kind: 'no-revision' }
+      return { kind: 'page', items: await readRiskOverviewRuns(projectId, revisionRef, signal) }
+    },
+    [revisionRef?.reference.entityId, revisionRef?.reference.versionId],
+  )
+
+  const columns: DataTableColumn[] = [
+    {
+      key: 'workflowRunRef',
+      title: '运行标识',
+      width: 210,
+      render: (row) => (
+        <span className="mono">{(row.workflowRunRef as KindRef).reference.entityId}</span>
+      ),
+    },
+    {
+      key: 'type',
+      title: '类型',
+      width: 80,
+      render: () => <StatusTag tone="neutral">链运行</StatusTag>,
+    },
+    {
+      key: 'status',
+      title: '状态',
+      width: 110,
+      render: (row) => <RunStatusTag status={row.status as string} />,
+    },
+    {
+      key: 'entryIdentity',
+      title: '入口身份',
+      render: (row) => (
+        <span className="mono">
+          {(row.entryIdentity as { entityId: string; versionId: string }).entityId}
+        </span>
+      ),
+    },
+    {
+      key: 'parentRunRef',
+      title: '父运行',
+      width: 210,
+      render: (row) => {
+        const parent = row.parentRunRef as KindRef | undefined
+        return parent === undefined ? (
+          <span className="rr-dim">—</span>
+        ) : (
+          <span className="mono">{parent.reference.entityId}</span>
+        )
+      },
+    },
+  ]
+
+  return (
+    <PageStateView
+      state={state}
+      title="评估与处置链运行"
+      emptyMessage="当前工程修订暂无链运行投影"
+      forbiddenHint="暂无可证明的链运行摘要，或当前角色不具备投影读取权限"
+      onRetry={retry}
+    >
+      {(result) => (
+        <Card title="评估与处置链运行" extra={<span>来源：risk-overview 投影 · 只读</span>}>
+          {result.kind === 'no-revision' ? (
+            <div className="rr-dim">工程修订尚未就绪，链运行摘要暂不可用</div>
+          ) : result.items.length === 0 ? (
+            <div className="rr-dim">当前工程修订暂无链运行投影</div>
+          ) : (
+            <DataTable columns={columns} rows={result.items.map((item) => ({ ...item }))} />
+          )}
+        </Card>
+      )}
+    </PageStateView>
+  )
+}
 
 export default function RunRecordsPage() {
   return (
-    <AppShell activeNav="review" agentContext={['LangGraph 运行记录']}>
+    <AppShell activeNav="review" agentContext={['运行记录']}>
       <div className="page">
         <header className="page-header">
           <div>
             <h1 className="page-title">运行记录</h1>
-            <p className="page-subtitle">全部 LangGraph 运行的状态、图版本、输入快照与审计入口</p>
+            <p className="page-subtitle">识别运行与评估/处置链运行的只读聚合视图</p>
           </div>
         </header>
 
-        <SectionTabs
-          items={[
-            { to: '/review', label: '复核队列' },
-            { to: '/review/trace', label: '证据追溯' },
-            { to: '/review/runs', label: '运行记录' },
-          ]}
-        />
+        <SectionTabs items={reviewTabs} />
 
-        <div className="rr-kpis">
-          <KpiCard label="运行总数" value={runRecords.length} unit="次" />
-          <KpiCard label="识别运行" value={countByType('识别')} unit="次" tag="identificationGraph" />
-          <KpiCard label="评估运行" value={countByType('评估')} unit="次" tag="assessmentGraph" />
-          <KpiCard label="预测运行" value={countByType('预测')} unit="次" tag="assessmentGraph" />
+        <IdentificationRunsSection />
+        <div style={{ marginTop: 16 }}>
+          <ChainRunsSection />
         </div>
-
-        <Card title="运行列表" extra={<span>审计重放与重新运行为不同命令</span>}>
-          <DataTable columns={columns} rows={runRecords.map((r) => ({ ...r }))} />
-        </Card>
       </div>
     </AppShell>
   )

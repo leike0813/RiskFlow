@@ -20,6 +20,7 @@ import {
   ContractReferenceV1Schema,
   DeviationRecordRefV1Schema,
   ResponseRecommendationRefV1Schema,
+  ReviewTaskRefV1Schema,
   RiskAssessmentRecordRefV1Schema,
   RouteDecisionRefV1Schema,
   SpatialScopeRefV1Schema,
@@ -42,6 +43,10 @@ import { WorkflowReassessmentReasonV1Schema } from "@riskflow/contracts/vocabula
 import { AssessmentStageV1Schema, RiskFlowStageV1Schema } from "@riskflow/contracts/workflows";
 
 export const WORKFLOW_GRAPH_SCHEMA_VERSION_V1 = "1" as const;
+
+/** 运行投影的阶段与引用上限：与 A0～A9 阶段数和 C34 页大小同量级，避免整段历史一次读入。 */
+const ASSESSMENT_RUN_STAGES_MAX_V1 = 10;
+const ASSESSMENT_RUN_RESULTS_MAX_V1 = 50;
 
 const schemaVersion = z.literal(WORKFLOW_GRAPH_SCHEMA_VERSION_V1);
 const digestSchema = z.string().regex(/^[0-9a-f]{64}$/u);
@@ -244,6 +249,42 @@ export const AssessmentEntryMetadataV1Schema = z.strictObject({
   changedInputRefs: z.array(ContractReferenceV1Schema).max(WORKFLOW_REASSESSMENT_INPUT_MAX_V1),
 });
 export type AssessmentEntryMetadataV1 = z.infer<typeof AssessmentEntryMetadataV1Schema>;
+
+/** 阶段投影只取该运行已登记的阶段结果行，不合成未发生的阶段轨迹。 */
+export const AssessmentRunStageV1Schema = z.strictObject({
+  stageCode: WorkflowRunStageV1Schema,
+  state: IdentifierSchema,
+  stageResultRef: StageResultRefV1Schema.optional(),
+});
+export type AssessmentRunStageV1 = z.infer<typeof AssessmentRunStageV1Schema>;
+
+/**
+ * C30 运行投影（design D-04 的运行窄读）：只含该精确运行已登记的身份、阶段与结果引用。
+ * 目标为评估子运行时直接给出其 A0～A9；目标为父运行时保留父 status/stage/R 阶段并给出真实
+ * 子运行引用，只在显式选中或唯一子运行时才读子运行阶段。多个子运行尚未选中时 `stages` 为空，
+ * 不合成一条阶段轨迹。`actorId` 与 `actions` 属于 C34 读取口径，由 C25 组合时补齐。
+ */
+export const AssessmentRunProjectionV1Schema = z.strictObject({
+  runRef: WorkflowRunRefV1Schema,
+  entryMode: WorkflowEntryModeV1Schema,
+  status: WorkflowRunStatusV1Schema,
+  stage: WorkflowRunStageV1Schema,
+  graphVersion: VersionReferenceSchema,
+  /** 产出该运行的主体标识：取登记行，不从当前调用方推断。 */
+  actorRef: IdentifierSchema,
+  startedAt: IsoDateTimeSchema,
+  stateVersion: VersionReferenceSchema,
+  stages: z.array(AssessmentRunStageV1Schema).max(ASSESSMENT_RUN_STAGES_MAX_V1),
+  resultRefs: z.array(ContractReferenceV1Schema).max(ASSESSMENT_RUN_RESULTS_MAX_V1),
+  reviewTaskRefs: z.array(ReviewTaskRefV1Schema).max(ASSESSMENT_RUN_RESULTS_MAX_V1),
+  assessmentRunRefs: z.array(WorkflowRunRefV1Schema).max(ASSESSMENT_RUN_RESULTS_MAX_V1),
+  selectedAssessmentRunRef: WorkflowRunRefV1Schema.optional(),
+  error: WorkflowErrorRefV1Schema.optional(),
+  resultCursor: IdentifierSchema.optional(),
+  nextResultCursor: IdentifierSchema.optional(),
+  nextReviewTaskCursor: IdentifierSchema.optional(),
+});
+export type AssessmentRunProjectionV1 = z.infer<typeof AssessmentRunProjectionV1Schema>;
 
 /** 缺席链尾的类型化原因（design D-05/D-09）：只登记原因码与最后成立事实引用。 */
 export const WorkflowSkippedTailV1Schema = z.strictObject({

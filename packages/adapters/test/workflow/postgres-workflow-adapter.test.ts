@@ -1082,6 +1082,323 @@ describe("C30 workflow registration adapter", () => {
     });
   });
 
+  describe("D-04 运行投影窄读", () => {
+    const RUN_AUTHORIZATION = authorizationFor({ grantedCapabilities: ["projection.query"] });
+    const GRAPH_VERSION = { entityId: "risk-flow-graph", versionId: "graph-v1" };
+    const childStages = (runId: string) =>
+      ["A0", "A5", "A9"].map((stage) => ({
+        stage,
+        versionId: sha(`run-read-stage:${runId}:${stage}`),
+      }));
+
+    afterEach(() => {
+      fixture.access.setAuthorization(undefined);
+    });
+
+    /** 登记一个运行：入口行、阶段结果行、精确 run-state 工件（可选父子链边）。 */
+    const registerRun = async (input: {
+      readonly suffix: string;
+      readonly runId: string;
+      readonly stages: readonly { readonly stage: string; readonly versionId: string }[];
+      readonly assessmentRunRefs?: readonly WorkflowRunRefV1[];
+      readonly parentRunId?: string;
+      readonly omitGraphVersion?: boolean;
+    }) => {
+      const runVersionId = sha(`run-read-version:${input.suffix}`);
+      const runRef = {
+        kind: "workflow-run" as const,
+        reference: { entityId: input.runId, versionId: runVersionId },
+      };
+      const entryIdentity = {
+        entityId: `workflow-entry:${PROJECT_ID}:${input.suffix}`,
+        versionId: sha(`run-read-entry:${input.suffix}`),
+      };
+      await registerWithinTransaction({
+        row: {
+          ...resultRowFor("entry-snapshot", input.suffix),
+          runId: input.runId,
+          runVersionId,
+          resultId: `entry-snapshot:${input.runId}:1`,
+          resultVersionId: "1",
+          entryIdentity,
+        },
+      });
+      for (const stage of input.stages) {
+        await registerWithinTransaction({
+          row: {
+            ...resultRowFor("stage-result", `${input.suffix}:${stage.stage}`),
+            runId: input.runId,
+            runVersionId,
+            resultId: `stage-result:${input.runId}:${stage.stage}`,
+            resultVersionId: stage.versionId,
+            stage: stage.stage as WorkflowGraphResultRowV1["stage"],
+            stageResultRef: {
+              kind: "stage-result",
+              reference: {
+                entityId: `stage-result:${input.runId}:${stage.stage}`,
+                versionId: stage.versionId,
+              },
+            },
+          },
+        });
+      }
+      const artifactRef = await fixture.adapter.bodies.putBody({
+        projectId: PROJECT_ID,
+        actorId: ACTOR_ID,
+        commandId: `c30-body-run-read-${input.suffix}`,
+        issuedAt: TIMESTAMP,
+        artifactId: `c30-run-state:${input.runId}:${runVersionId}`,
+        authorization: RUN_AUTHORIZATION,
+        body: {
+          bodyKind: "run-state",
+          runState: WorkflowGraphRunStateV1Schema.parse({
+            schemaVersion: "1",
+            projectId: PROJECT_ID,
+            runId: input.runId,
+            runVersionId,
+            entryMode: "identify-and-assess",
+            entryIdentity,
+            stage: "assessment",
+            status: "completed",
+            ...(input.omitGraphVersion ? {} : { graphVersion: GRAPH_VERSION }),
+            assessmentRunRefs: input.assessmentRunRefs ?? [],
+            acceptedRiskRecordRefs: [RISK_RECORD_REF],
+            assessmentRecordRefs: [],
+            warningRecordRefs: [],
+            responseRecommendationRefs: [],
+            deviationRecordRefs: [],
+            calibrationSuggestionRefs: [],
+            recordedAt: TIMESTAMP,
+          }),
+        },
+      });
+      await registerWithinTransaction({
+        row: {
+          ...resultRowFor("run-state", input.suffix),
+          runId: input.runId,
+          runVersionId,
+          resultVersionId: runVersionId,
+          resultId: artifactRef.reference.entityId,
+          artifactRef,
+        },
+      });
+      if (input.parentRunId !== undefined) {
+        const linkId = sha(`run-read-link:${input.suffix}`);
+        await fixture.transactionUnit.execute(
+          {
+            projectId: PROJECT_ID,
+            commandKind: "workflow.register-link",
+            commandId: `c30-link-run-read-${input.suffix}`,
+            idempotencyKey: `c30-link-run-read-${input.suffix}`,
+            payload: { linkId },
+            actorRef: ACTOR_ID,
+            authorizationContextRef: RUN_AUTHORIZATION.authorizationContextRef,
+            issuedAt: TIMESTAMP,
+            runId: input.runId,
+          },
+          async (context) => {
+            await fixture.adapter.registrationStore.registerLink(
+              {
+                link: {
+                  schemaVersion: "1",
+                  projectId: PROJECT_ID,
+                  linkId,
+                  runId: input.runId,
+                  fromRef: {
+                    kind: "workflow-run",
+                    reference: { entityId: input.parentRunId!, versionId: "1" },
+                  },
+                  toRef: runRef,
+                  relation: "parent-child",
+                  sourceStage: "assessment" as const,
+                  authorizationContextRef: RUN_AUTHORIZATION.authorizationContextRef,
+                  authorizationScopeDigest: SCOPE_DIGEST,
+                  actorRef: ACTOR_ID,
+                  recordedAt: TIMESTAMP,
+                  auditEntryId: `c30-link-run-read-${input.suffix}:audit`,
+                },
+              },
+              context,
+            );
+            return {
+              resultRef: RUN_REF,
+              audit: {
+                auditEntryId: `c30-link-run-read-${input.suffix}:audit`,
+                projectId: PROJECT_ID,
+                action: "workflow.register-link",
+                targetRef: RUN_REF,
+                actorRef: ACTOR_ID,
+                authorizationContextRef: RUN_AUTHORIZATION.authorizationContextRef,
+                occurredAt: TIMESTAMP,
+                recordedAt: TIMESTAMP,
+                version: RUN_REF.reference,
+                commandId: `c30-link-run-read-${input.suffix}`,
+                idempotencyKey: `c30-link-run-read-${input.suffix}`,
+              },
+              events: [],
+            };
+          },
+        );
+      }
+      return runRef;
+    };
+
+    const read = (workflowRunRef: WorkflowRunRefV1, assessmentRunRef?: WorkflowRunRefV1) =>
+      fixture.adapter.runRead.readAssessmentRun({
+        projectId: PROJECT_ID,
+        actorId: ACTOR_ID,
+        requestedAt: TIMESTAMP,
+        authorization: RUN_AUTHORIZATION,
+        workflowRunRef,
+        ...(assessmentRunRef === undefined ? {} : { assessmentRunRef }),
+      });
+
+    it("评估子运行直接呈现其阶段，父运行只在唯一子运行时自动选中", async () => {
+      fixture.access.setAuthorization(RUN_AUTHORIZATION);
+      const childAId = "risk-flow-run:run-read-child-a";
+      const childBId = "risk-flow-run:run-read-child-b";
+      const parentId = "risk-flow-run:run-read-parent";
+      const childA = await registerRun({
+        suffix: "child-a",
+        runId: childAId,
+        stages: childStages(childAId),
+        parentRunId: parentId,
+      });
+      const childB = await registerRun({
+        suffix: "child-b",
+        runId: childBId,
+        stages: childStages(childBId),
+        parentRunId: parentId,
+      });
+
+      // 目标为评估子运行：直接呈现该子运行已登记的 A0/A5/A9 阶段。
+      const childView = await read(childA);
+      expect(childView).toMatchObject({ kind: "succeeded" });
+      if (childView.kind !== "succeeded") return;
+      expect(childView.projection).toMatchObject({
+        runRef: childA,
+        graphVersion: GRAPH_VERSION,
+        stage: "assessment",
+        status: "completed",
+        stages: [
+          { stageCode: "A0", state: "A0" },
+          { stageCode: "A5", state: "A5" },
+          { stageCode: "A9", state: "A9" },
+        ],
+      });
+      expect(childView.projection.stages.every((item) => item.stageResultRef !== undefined)).toBe(
+        true,
+      );
+      // 子运行没有自己的子运行：不给选择，也不合成父阶段。
+      expect(childView.projection.assessmentRunRefs).toEqual([]);
+      expect(childView.projection.selectedAssessmentRunRef).toBeUndefined();
+
+      // 父运行 + 唯一子运行：自动选中并呈现子运行阶段。
+      const singleParentId = "risk-flow-run:run-read-parent-single";
+      await registerRun({
+        suffix: "child-single",
+        runId: "risk-flow-run:run-read-child-single",
+        stages: [],
+        parentRunId: singleParentId,
+      });
+      const singleParent = await registerRun({
+        suffix: "parent-single",
+        runId: singleParentId,
+        stages: [],
+        assessmentRunRefs: [
+          {
+            kind: "workflow-run",
+            reference: { entityId: "risk-flow-run:run-read-child-single", versionId: "1" },
+          },
+        ],
+      });
+      const singleView = await read(singleParent);
+      expect(singleView).toMatchObject({ kind: "succeeded" });
+      if (singleView.kind !== "succeeded") return;
+      expect(singleView.projection.selectedAssessmentRunRef).toBeDefined();
+      expect(singleView.projection.assessmentRunRefs).toHaveLength(1);
+
+      // 父运行 + 多子运行且未选中：阶段留空交页面引导，不合成一条轨迹。
+      const parent = await registerRun({
+        suffix: "parent-multi",
+        runId: parentId,
+        stages: [],
+        assessmentRunRefs: [childA, childB],
+      });
+      const multiView = await read(parent);
+      expect(multiView).toMatchObject({ kind: "succeeded" });
+      if (multiView.kind !== "succeeded") return;
+      expect(multiView.projection.stages).toEqual([]);
+      expect(multiView.projection.selectedAssessmentRunRef).toBeUndefined();
+      expect(multiView.projection.assessmentRunRefs).toEqual([childA, childB]);
+
+      // 显式选中其中一个子运行。
+      const selected = await read(parent, childB);
+      expect(selected).toMatchObject({ kind: "succeeded" });
+      if (selected.kind !== "succeeded") return;
+      expect(selected.projection.selectedAssessmentRunRef).toEqual(childB);
+      expect(selected.projection.stages.map((item) => item.stageCode)).toEqual(["A0", "A5", "A9"]);
+    });
+
+    it("子运行归属、图版本缺失与授权撤销一律失败闭合", async () => {
+      fixture.access.setAuthorization(RUN_AUTHORIZATION);
+      const parentId = "risk-flow-run:run-read-guard-parent";
+      const foreignChildId = "risk-flow-run:run-read-guard-child";
+      const parent = await registerRun({
+        suffix: "guard-parent",
+        runId: parentId,
+        stages: [],
+        assessmentRunRefs: [
+          { kind: "workflow-run", reference: { entityId: foreignChildId, versionId: "1" } },
+        ],
+      });
+
+      // 声明了子运行但没有该父运行的 parent-child 链边：不认其自报的父字段。
+      expect(
+        await read(parent, {
+          kind: "workflow-run",
+          reference: { entityId: foreignChildId, versionId: "1" },
+        }),
+      ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+
+      // 选中不属于该运行的子运行：与不存在不可区分。
+      expect(
+        await read(parent, {
+          kind: "workflow-run",
+          reference: { entityId: "risk-flow-run:absent", versionId: "1" },
+        }),
+      ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+
+      // 目标运行未登记：同样按授权拒绝收口。
+      expect(
+        await read({
+          kind: "workflow-run",
+          reference: { entityId: "risk-flow-run:absent", versionId: "1" },
+        }),
+      ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+
+      // 历史工件缺精确图版本：失败闭合，不用入口身份反推或编造。
+      const legacyId = "risk-flow-run:run-read-legacy";
+      const legacy = await registerRun({
+        suffix: "legacy",
+        runId: legacyId,
+        stages: [],
+        omitGraphVersion: true,
+      });
+      expect(await read(legacy)).toMatchObject({
+        kind: "failed",
+        error: { code: "BUSINESS_BLOCKED" },
+      });
+
+      fixture.access.revoke();
+      expect(await read(parent)).toMatchObject({
+        kind: "failed",
+        error: { code: "AUTHORIZATION_DENIED" },
+      });
+      fixture.access.restore();
+    });
+  });
+
   it("registers links append-only and refuses relations outside the closed set", async () => {
     const link = {
       schemaVersion: "1" as const,

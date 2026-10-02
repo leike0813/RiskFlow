@@ -21,15 +21,20 @@ import type {
   ResponseWorkflowBindingProofPortV1,
   ResponseWorkflowBindingProofQueryV1,
   ResponseWorkflowBindingProofResultV1,
+  ReviewTaskRefV1,
   RiskAssessmentRecordRefV1,
   WorkflowRunCompletionProofPortV1,
   WorkflowRunCompletionProofQueryV1,
   WorkflowRunCompletionProofResultV1,
+  WorkflowRunRefV1,
   WaitingRefV1,
 } from "@riskflow/contracts/ports";
 import {
   AuthorizationContextV1Schema,
+  ContractReferenceV1Schema,
   ModuleErrorV1Schema,
+  ReviewTaskRefV1Schema,
+  StageResultRefV1Schema,
   ResponseWorkflowBindingProofQueryV1Schema,
   ResponseWorkflowBindingProofResultV1Schema,
   WorkflowRunCompletionProofQueryV1Schema,
@@ -54,8 +59,13 @@ import {
   WorkflowGraphResultRowV1Schema,
   WorkflowGraphRunStateV1Schema,
   WorkflowQueryRegistrationV1Schema,
+  WorkflowRunStageV1Schema,
+  AssessmentRunProjectionV1Schema,
   type AssessmentEntryMetadataV1,
   type AssessmentEntriesReadPortV1,
+  type AssessmentRunProjectionV1,
+  type AssessmentRunReadPortV1,
+  type AssessmentRunStageV1,
   type WorkflowGraphArtifactBodyV1,
   type WorkflowGraphBodyPortV1,
   type WorkflowGraphLinkV1,
@@ -80,6 +90,10 @@ const ASSESSMENT_ENTRIES_MAX_V1 = 50;
 const ASSESSMENT_RUN_FACTS_MAX_V1 = 16;
 /** 产出评估记录的正式链边关系；定位只用这一条，不做全表扫描。 */
 const ASSESSMENT_LINK_RELATION_V1 = "risk-assessment" as const;
+/** 父子归属只认 `parent-child` 链边，不看运行 id 前缀或父字段自证。 */
+const RUN_READ_STAGE_CODE_V1 = "workflow.assessment-run-read";
+const ASSESSMENT_RUN_STAGE_SCAN_V1 = 32;
+const ASSESSMENT_RUN_RESULT_SCAN_V1 = 50;
 
 const DEFAULT_ROW_LIMIT_V1 = 500;
 
@@ -131,7 +145,8 @@ export const workflowGraphReadInvocationIdV1 = (input: {
     | "query-registration"
     | "body-write"
     | "body-read"
-    | "assessment-entries";
+    | "assessment-entries"
+    | "run-read";
   readonly projectId: string;
   readonly targetId: string;
 }): string => `c30-${input.operation}:${input.projectId}:${input.targetId}`;
@@ -407,6 +422,8 @@ export interface PostgresWorkflowAdapterV1 {
   readonly runCompletionProof: WorkflowRunCompletionProofPortV1;
   /** C30 入口元数据窄读（design D-12）：从已登记运行工件读出显式重评入口事实。 */
   readonly entriesRead: AssessmentEntriesReadPortV1;
+  /** C30 运行投影窄读（design D-04）：按精确运行返回已登记身份、阶段与结果引用。 */
+  readonly runRead: AssessmentRunReadPortV1;
 }
 
 /** 入口路由原因码：与运行图登记值一致；适配器只读该值，不解释其它原因码。 */
@@ -1295,6 +1312,334 @@ class WorkflowGraphPersistence {
     }
   }
 
+  /**
+   * 运行投影窄读（design D-04）：先按精确运行引用读该运行已登记的精确 run-state 工件，
+   * 再按 `parent-child` 链边验证子运行确属该精确父运行，最后有界读取选中子运行的阶段行。
+   * 多个子运行且未选中时 `stages` 为空并给出选择，不合成一条阶段轨迹；读不到即失败，
+   * 不用 checkpoint 或推断补齐。
+   */
+  async readAssessmentRun(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly workflowRunRef: WorkflowRunRefV1;
+    readonly assessmentRunRef?: WorkflowRunRefV1;
+    readonly resultCursor?: string;
+    readonly reviewTaskCursor?: string;
+  }): Promise<
+    | { readonly kind: "succeeded"; readonly projection: AssessmentRunProjectionV1 }
+    | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
+  > {
+    const occurredAt = this.#now().toISOString();
+    const failed = (detailCode: string) => ({
+      kind: "failed" as const,
+      error: bindingProofError({
+        code: "BUSINESS_BLOCKED",
+        causalRunId: input.workflowRunRef.reference.entityId,
+        occurredAt,
+        requiredCapability: "projection.query",
+        detailCode,
+        stageCode: RUN_READ_STAGE_CODE_V1,
+      }),
+    });
+    const denied = () => ({
+      kind: "failed" as const,
+      error: bindingProofError({
+        code: "AUTHORIZATION_DENIED",
+        causalRunId: input.workflowRunRef.reference.entityId,
+        occurredAt,
+        requiredCapability: "projection.query",
+        detailCode: "assessment-run-denied",
+        stageCode: RUN_READ_STAGE_CODE_V1,
+      }),
+    });
+    const verified = await this.verifyAuthorization({
+      authorization: input.authorization,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      invocationId: workflowGraphReadInvocationIdV1({
+        operation: "run-read",
+        projectId: input.projectId,
+        targetId: input.workflowRunRef.reference.entityId,
+      }),
+      requestedAt: input.requestedAt,
+    });
+    if (verified === undefined) return denied();
+    const scopeDigest = authorizationScopeDigest(verified);
+    const runId = input.workflowRunRef.reference.entityId;
+    try {
+      const latest = await this.#latestRunStateWith({
+        projectId: input.projectId,
+        runId,
+        requestedAt: input.requestedAt,
+        verified,
+      });
+      if (latest === undefined) return denied();
+      const { row, state } = latest;
+      if (
+        state.projectId !== input.projectId ||
+        state.runId !== runId ||
+        state.runVersionId !== row.resultVersionId ||
+        row.authorizationScopeDigest !== scopeDigest
+      ) {
+        return denied();
+      }
+      // 图版本是已登记的启动事实：历史工件缺席时失败闭合，不用入口身份反推或编造。
+      if (state.graphVersion === undefined) return failed("assessment-run-graph-version-missing");
+      const target = await this.#selectedAssessmentRun({
+        projectId: input.projectId,
+        parentRunId: runId,
+        parentState: state,
+        requested: input.assessmentRunRef,
+        scopeDigest,
+      });
+      if (target.kind === "denied") return denied();
+      if (target.kind === "failed") return failed(target.detailCode);
+      const stages =
+        target.stages === undefined
+          ? await this.#runStages({ projectId: input.projectId, runId, scopeDigest })
+          : target.stages;
+      const references = await this.#runReferences({
+        projectId: input.projectId,
+        runId: target.runId,
+        scopeDigest,
+        resultCursor: input.resultCursor,
+        reviewTaskCursor: input.reviewTaskCursor,
+      });
+      if (references === undefined) return failed("assessment-run-references-unreadable");
+      return {
+        kind: "succeeded",
+        projection: AssessmentRunProjectionV1Schema.parse({
+          runRef: input.workflowRunRef,
+          entryMode: state.entryMode,
+          status: state.status,
+          stage: state.stage,
+          graphVersion: state.graphVersion,
+          actorRef: row.actorRef,
+          startedAt: state.recordedAt,
+          stateVersion: { entityId: runId, versionId: state.runVersionId },
+          stages,
+          resultRefs: references.resultRefs,
+          reviewTaskRefs: references.reviewTaskRefs,
+          assessmentRunRefs: state.assessmentRunRefs,
+          ...(target.selectedAssessmentRunRef === undefined
+            ? {}
+            : { selectedAssessmentRunRef: target.selectedAssessmentRunRef }),
+          ...(state.lastErrorRef === undefined ? {} : { error: state.lastErrorRef }),
+          ...(input.resultCursor === undefined ? {} : { resultCursor: input.resultCursor }),
+          ...(references.nextResultCursor === undefined
+            ? {}
+            : { nextResultCursor: references.nextResultCursor }),
+          ...(references.nextReviewTaskCursor === undefined
+            ? {}
+            : { nextReviewTaskCursor: references.nextReviewTaskCursor }),
+        }),
+      };
+    } catch {
+      return failed("assessment-run-inconsistent");
+    }
+  }
+
+  /**
+   * 子运行选择：请求的子运行先经 `parent-child` 链边验证确属该精确父运行。
+   * 未请求时只在**唯一**子运行时自动选中；多子运行不选，`stages` 留空交页面引导选择。
+   */
+  async #selectedAssessmentRun(input: {
+    readonly projectId: string;
+    readonly parentRunId: string;
+    readonly parentState: WorkflowGraphRunStateV1;
+    readonly requested: WorkflowRunRefV1 | undefined;
+    readonly scopeDigest: string;
+  }): Promise<
+    | { readonly kind: "denied" }
+    | { readonly kind: "failed"; readonly detailCode: string }
+    | {
+        readonly kind: "ok";
+        readonly runId: string;
+        readonly selectedAssessmentRunRef: WorkflowRunRefV1 | undefined;
+        readonly stages: readonly AssessmentRunStageV1[] | undefined;
+      }
+  > {
+    const declared = input.parentState.assessmentRunRefs;
+    const requested = input.requested;
+    if (requested !== undefined) {
+      if (!declared.some((ref) => sameRef(ref, requested))) return { kind: "denied" };
+      const childLink = await this.#childLinkFor({
+        projectId: input.projectId,
+        parentRunId: input.parentRunId,
+        childRunId: requested.reference.entityId,
+        scopeDigest: input.scopeDigest,
+      });
+      if (childLink !== true) return { kind: "denied" };
+      return {
+        kind: "ok",
+        runId: requested.reference.entityId,
+        selectedAssessmentRunRef: requested,
+        stages: await this.#runStages({
+          projectId: input.projectId,
+          runId: requested.reference.entityId,
+          scopeDigest: input.scopeDigest,
+        }),
+      };
+    }
+    if (declared.length !== 1) {
+      // 父运行自身即呈现目标：保留父阶段，子运行阶段留空引导选择，不合成一条轨迹。
+      return {
+        kind: "ok",
+        runId: input.parentRunId,
+        selectedAssessmentRunRef: undefined,
+        stages: undefined,
+      };
+    }
+    const only = declared[0]!;
+    const childLink = await this.#childLinkFor({
+      projectId: input.projectId,
+      parentRunId: input.parentRunId,
+      childRunId: only.reference.entityId,
+      scopeDigest: input.scopeDigest,
+    });
+    if (childLink !== true) return { kind: "denied" };
+    return {
+      kind: "ok",
+      runId: only.reference.entityId,
+      selectedAssessmentRunRef: only,
+      stages: await this.#runStages({
+        projectId: input.projectId,
+        runId: only.reference.entityId,
+        scopeDigest: input.scopeDigest,
+      }),
+    };
+  }
+
+  /** 子运行归属证明：只认该精确父运行的 `parent-child` 链边，不看运行 id 前缀或父字段。 */
+  async #childLinkFor(input: {
+    readonly projectId: string;
+    readonly parentRunId: string;
+    readonly childRunId: string;
+    readonly scopeDigest: string;
+  }): Promise<boolean> {
+    const rows = await this.#db
+      .selectFrom(LINKS_TABLE)
+      .select("link_id")
+      .where("project_id", "=", input.projectId)
+      .where("run_id", "=", input.childRunId)
+      .where("relation", "=", "parent-child")
+      .where("authorization_scope_digest", "=", input.scopeDigest)
+      .where(
+        sql<SqlBool>`from_ref = ${JSON.stringify({
+          kind: "workflow-run",
+          reference: { entityId: input.parentRunId, versionId: "1" },
+        })}::jsonb`,
+      )
+      .limit(1)
+      .execute();
+    return rows.length > 0;
+  }
+
+  /** 阶段轨迹只由已登记的阶段结果行构成；未发生的阶段不补默认值。 */
+  async #runStages(input: {
+    readonly projectId: string;
+    readonly runId: string;
+    readonly scopeDigest: string;
+  }): Promise<readonly AssessmentRunStageV1[]> {
+    const rows = await this.#db
+      .selectFrom(RESULTS_TABLE)
+      .select(["stage", "stage_result_ref"])
+      .where("project_id", "=", input.projectId)
+      .where("run_id", "=", input.runId)
+      .where("result_kind", "=", "stage-result")
+      .where("authorization_scope_digest", "=", input.scopeDigest)
+      .orderBy("recorded_at", "asc")
+      .orderBy("result_id", "asc")
+      .limit(ASSESSMENT_RUN_STAGE_SCAN_V1)
+      .execute();
+    return rows.flatMap((row) => {
+      const stageCode = WorkflowRunStageV1Schema.safeParse(row.stage);
+      // 阶段码不是已登记的闭合取值时不猜测：跳过该行，不合成阶段轨迹。
+      if (!stageCode.success) return [];
+      const stageResultRef = StageResultRefV1Schema.safeParse(row.stage_result_ref);
+      return [
+        {
+          stageCode: stageCode.data,
+          state: stageCode.data,
+          ...(stageResultRef.success ? { stageResultRef: stageResultRef.data } : {}),
+        },
+      ];
+    });
+  }
+
+  /** 结果与复核任务引用有界分页：游标是偏移游标，绑定到当前授权摘要。 */
+  async #runReferences(input: {
+    readonly projectId: string;
+    readonly runId: string;
+    readonly scopeDigest: string;
+    readonly resultCursor: string | undefined;
+    readonly reviewTaskCursor: string | undefined;
+  }): Promise<
+    | {
+        readonly resultRefs: readonly ContractReferenceV1[];
+        readonly reviewTaskRefs: readonly ReviewTaskRefV1[];
+        readonly nextResultCursor?: string | undefined;
+        readonly nextReviewTaskCursor?: string | undefined;
+      }
+    | undefined
+  > {
+    const offsetOf = (cursor: string | undefined): number => {
+      if (cursor === undefined) return 0;
+      const parsed = Number.parseInt(cursor, 10);
+      return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : Number.NaN;
+    };
+    const resultOffset = offsetOf(input.resultCursor);
+    const taskOffset = offsetOf(input.reviewTaskCursor);
+    if (Number.isNaN(resultOffset) || Number.isNaN(taskOffset)) return undefined;
+    const ordered = () =>
+      this.#db
+        .selectFrom(RESULTS_TABLE)
+        .select(["result_kind", "run_result_ref", "stage_result_ref", "waiting_ref"])
+        .where("project_id", "=", input.projectId)
+        .where("run_id", "=", input.runId)
+        .where("authorization_scope_digest", "=", input.scopeDigest)
+        .orderBy("recorded_at", "asc")
+        .orderBy("result_id", "asc");
+    const resultRows = await ordered()
+      .where("result_kind", "in", ["run-result", "stage-result", "route-decision"])
+      .limit(ASSESSMENT_RUN_RESULT_SCAN_V1 + 1)
+      .offset(resultOffset)
+      .execute();
+    const taskRows = await ordered()
+      .where("result_kind", "=", "waiting")
+      .limit(ASSESSMENT_RUN_RESULT_SCAN_V1 + 1)
+      .offset(taskOffset)
+      .execute();
+    const resultRefs: ContractReferenceV1[] = [];
+    for (const row of resultRows.slice(0, ASSESSMENT_RUN_RESULT_SCAN_V1)) {
+      const candidate =
+        row.result_kind === "run-result"
+          ? row.run_result_ref
+          : row.result_kind === "stage-result"
+            ? row.stage_result_ref
+            : undefined;
+      const parsed = ContractReferenceV1Schema.safeParse(candidate);
+      if (parsed.success) resultRefs.push(parsed.data);
+    }
+    const reviewTaskRefs: ReviewTaskRefV1[] = [];
+    for (const row of taskRows) {
+      const parsed = ReviewTaskRefV1Schema.safeParse(row.waiting_ref);
+      if (parsed.success) reviewTaskRefs.push(parsed.data);
+    }
+    return {
+      resultRefs,
+      reviewTaskRefs,
+      ...(resultRows.length > ASSESSMENT_RUN_RESULT_SCAN_V1
+        ? { nextResultCursor: String(resultOffset + ASSESSMENT_RUN_RESULT_SCAN_V1) }
+        : {}),
+      ...(taskRows.length > ASSESSMENT_RUN_RESULT_SCAN_V1
+        ? { nextReviewTaskCursor: String(taskOffset + ASSESSMENT_RUN_RESULT_SCAN_V1) }
+        : {}),
+    };
+  }
+
   async readQuery(input: {
     readonly projectId: string;
     readonly queryResultId: string;
@@ -1532,6 +1877,9 @@ export const createPostgresWorkflowAdapter = (
     entriesRead: {
       readAssessmentEntriesForRecords: (input) =>
         persistence.readAssessmentEntriesForRecords(input),
+    },
+    runRead: {
+      readAssessmentRun: (input) => persistence.readAssessmentRun(input),
     },
   };
 };

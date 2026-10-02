@@ -25,6 +25,7 @@ import type { WorkflowReassessmentReasonV1 } from "@riskflow/contracts/vocabular
 import {
   WorkflowGraphErrorV1Schema,
   type AssessmentEntryMetadataV1,
+  type AssessmentRunProjectionV1,
   type WorkflowGraphArtifactBodyV1,
   type WorkflowGraphErrorCodeV1,
   type WorkflowGraphErrorV1,
@@ -145,6 +146,28 @@ export interface AssessmentEntriesReadPortV1 {
     readonly assessmentRecordRefs: readonly RiskAssessmentRecordRefV1[];
   }): Promise<
     | { readonly kind: "succeeded"; readonly entries: readonly AssessmentEntryMetadataV1[] }
+    | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
+  >;
+}
+
+/**
+ * C30 运行投影窄读（design D-04）：按精确运行引用返回该运行已登记的身份、阶段与结果引用。
+ * 目标为评估子运行时直接呈现其 A0～A9；目标为父运行时保留父 status/stage/R 阶段与真实子运行
+ * 引用，只在显式选中或唯一子运行时才读子运行阶段。子运行引用先验证确属该精确父运行再读；
+ * 读不到或不成立一律失败，不用 checkpoint 或合成轨迹替代。
+ */
+export interface AssessmentRunReadPortV1 {
+  readAssessmentRun(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly workflowRunRef: WorkflowRunRefV1;
+    readonly assessmentRunRef?: WorkflowRunRefV1;
+    readonly resultCursor?: string;
+    readonly reviewTaskCursor?: string;
+  }): Promise<
+    | { readonly kind: "succeeded"; readonly projection: AssessmentRunProjectionV1 }
     | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
   >;
 }

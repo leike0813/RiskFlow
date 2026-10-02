@@ -974,10 +974,7 @@ export const HTTP_ROUTE_CATALOG_V1: readonly HttpRouteEntryV1[] = Object.freeze(
     invokeCalibrationGovernance,
     [
       ["warning-response.calibration-review-outcome", "record-calibration-review-outcome"],
-      [
-        "warning-response.calibration-governance-draft",
-        "create-calibration-governance-draft",
-      ],
+      ["warning-response.calibration-governance-draft", "create-calibration-governance-draft"],
     ],
   ),
 ]);

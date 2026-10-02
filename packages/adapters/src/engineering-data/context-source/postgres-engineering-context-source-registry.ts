@@ -5,6 +5,7 @@ import {
   type InsertObject,
   type Kysely,
   type Selectable,
+  type SqlBool,
   type Transaction,
 } from "kysely";
 
@@ -15,6 +16,7 @@ import {
   type AuthorizationDecisionV1,
   type LocalIdentityAccessV1,
 } from "@riskflow/core/access";
+import { authorizationScopeDigest } from "@riskflow/core/retrieval";
 import {
   ArtifactReadRequestV1Schema,
   ArtifactReferenceCheckRequestV1Schema,
@@ -95,7 +97,15 @@ import {
   EngineeringFreezeCommandV1Schema,
   EngineeringFreezeResultV1Schema,
   ExternalRiskEventRefV1Schema,
+  ApplicabilityMetadataSnapshotRefV1Schema,
+  AssessmentEntryContextReadQueryV1Schema,
+  SourceVersionRefV1Schema,
+  SpatialScopeRefV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
+  type ApplicabilityCatalogItemV1,
+  type AssessmentEntryContextOperationV1,
+  type AssessmentEntryContextReadQueryV1,
+  type AssessmentEntryContextReadResultV1,
   type AuthorizationContextV1,
   type ContractReferenceV1,
   type ContentArtifactRefV1,
@@ -106,6 +116,7 @@ import {
   type EngineeringDataQueryV1,
   type EngineeringFreezeCommandV1,
   type EngineeringFreezeResultV1,
+  type ExternalEventCatalogItemV1,
   type ModuleBranchV1,
   type ModuleErrorV1,
   type QueryResultRefV1,
@@ -116,8 +127,13 @@ import {
   type SpatialScopeRefV1,
   type WaitingRefV1,
 } from "@riskflow/contracts/ports";
-import type { EvidenceReference, VersionReference } from "@riskflow/contracts/common";
+import {
+  EvidenceReferenceSchema,
+  type EvidenceReference,
+  type VersionReference,
+} from "@riskflow/contracts/common";
 import { DomainEventV1Schema } from "@riskflow/contracts/events";
+import { ApplicabilityMetadataSchema } from "@riskflow/contracts/records";
 import {
   RISK_ASSESSMENT_DOWNSTREAM_BRANCH_V1,
   RiskInputFactsV1Schema,
@@ -694,6 +710,71 @@ const READ_BRANCH = {
   "evidence-access": "engineering-data.evidence-access",
 } as const satisfies Record<EngineeringDataReadBranch, ModuleBranchV1>;
 
+/**
+ * 评估启动候选游标（design D-04）：绑定目录类型、精确工程/空间修订与当前授权范围。
+ * 来自另一目录、另一修订或另一授权范围的游标一律判为越界，按既有安全错误失败闭合，
+ * 不静默从 0 重新开始，也不借游标差异泄露目标是否存在。
+ */
+const ENTRY_CONTEXT_READ_BRANCH = "engineering-data.context-read" as const;
+
+const ENTRY_CONTEXT_CURSOR_SEPARATOR = "::";
+
+const entryContextCursorBindingV1 = (input: {
+  readonly operation: AssessmentEntryContextOperationV1;
+  readonly projectId: string;
+  readonly projectRevisionRef: unknown;
+  readonly spatialScopeRef: unknown;
+  readonly scopeDigest: string;
+}): string =>
+  [
+    input.operation,
+    input.projectId,
+    JSON.stringify(input.projectRevisionRef),
+    JSON.stringify(input.spatialScopeRef),
+    input.scopeDigest,
+  ].join("|");
+
+const encodeEntryContextCursorV1 = (binding: string, offset: number): string =>
+  Buffer.from(`${binding}${ENTRY_CONTEXT_CURSOR_SEPARATOR}${offset}`, "utf8").toString("base64url");
+
+const decodeEntryContextCursorV1 = (
+  cursor: string | undefined,
+  binding: string,
+): number | undefined => {
+  if (cursor === undefined) return 0;
+  let decoded: string;
+  try {
+    decoded = Buffer.from(cursor, "base64url").toString("utf8");
+  } catch {
+    return undefined;
+  }
+  const separator = decoded.lastIndexOf(ENTRY_CONTEXT_CURSOR_SEPARATOR);
+  if (separator < 0) return undefined;
+  if (decoded.slice(0, separator) !== binding) return undefined;
+  const offset = Number.parseInt(decoded.slice(separator + 2), 10);
+  if (!Number.isInteger(offset) || offset < 0) return undefined;
+  return offset;
+};
+
+/**
+ * 逐项按原 Schema 校验登记列里的引用数组。适配器层没有 zod 依赖，因此只用所属 Schema 的
+ * `safeParse` 逐项判定；空数组、越界或任一项不合法都判为不可用，不做部分截断。
+ */
+const parseRegisteredRefListV1 = <T>(
+  value: unknown,
+  schema: { safeParse(input: unknown): { readonly success: boolean; readonly data?: unknown } },
+  max: number,
+): T[] | undefined => {
+  if (!Array.isArray(value) || value.length === 0 || value.length > max) return undefined;
+  const parsed: T[] = [];
+  for (const item of value) {
+    const result = schema.safeParse(item);
+    if (!result.success) return undefined;
+    parsed.push(result.data as T);
+  }
+  return parsed;
+};
+
 const READ_QUERY_COMMAND_KIND = {
   "source-segments": "engineering-data.source-segments-query.v1",
   "evidence-access": "engineering-data.evidence-access-query.v1",
@@ -1193,6 +1274,206 @@ export class PostgresEngineeringContextSourceRegistry
     return valid.kind === "source-segments"
       ? this.#readSourceSegments(valid)
       : this.#readEvidenceAccess(valid);
+  }
+
+  /**
+   * 评估启动输入候选（design D-04 与 engineering-context delta）：两个目录各自读取本模块
+   * 自有表并各自独立分页。快照按精确工程/空间修订过滤；事件按登记空间 refs 过滤，并把该事件
+   * 登记的精确来源引用交回 C06 复验。只读已登记事实：保存字段经原 Schema 校验，不扫描来源
+   * 工件库、不推导新快照，也不创建快照、事件或评估准备。空目录保持空，不从另一目录补齐。
+   */
+  async readAssessmentEntryContext(
+    query: AssessmentEntryContextReadQueryV1,
+  ): Promise<AssessmentEntryContextReadResultV1> {
+    const invocationId = readCausalRunId(query, ENTRY_CONTEXT_READ_BRANCH);
+    const parsed = AssessmentEntryContextReadQueryV1Schema.safeParse(query);
+    if (!parsed.success) {
+      return {
+        kind: "failed",
+        error: readRequestDenied(query)
+          ? readAuthorizationDenied(invocationId)
+          : moduleError("UNSUPPORTED_CONTRACT", invocationId),
+      };
+    }
+    const valid = parsed.data;
+    const payload = valid.payload;
+    const denied = (): AssessmentEntryContextReadResultV1 => ({
+      kind: "failed",
+      error: readAuthorizationDenied(valid.queryId),
+    });
+    const pageSize = payload.pageSize ?? 50;
+    let binding: string;
+    try {
+      const decision = await this.#verifyRead(
+        valid,
+        ENTRY_CONTEXT_READ_BRANCH,
+        [payload.spatialScopeRef],
+        [],
+      );
+      binding = entryContextCursorBindingV1({
+        operation: payload.operation,
+        projectId: valid.projectId,
+        projectRevisionRef: payload.projectRevisionRef,
+        spatialScopeRef: payload.spatialScopeRef,
+        scopeDigest: authorizationScopeDigest(decision.context),
+      });
+    } catch {
+      return denied();
+    }
+    const offset = decodeEntryContextCursorV1(payload.cursor, binding);
+    if (offset === undefined) return denied();
+    return payload.operation === "applicability-catalog"
+      ? this.#applicabilityCatalog(valid, binding, offset, pageSize)
+      : this.#externalEventCatalog(valid, binding, offset, pageSize);
+  }
+
+  async #applicabilityCatalog(
+    query: AssessmentEntryContextReadQueryV1,
+    binding: string,
+    offset: number,
+    pageSize: number,
+  ): Promise<AssessmentEntryContextReadResultV1> {
+    const revision = JSON.stringify(query.payload.projectRevisionRef);
+    const scope = JSON.stringify(query.payload.spatialScopeRef);
+    const rows = await (async () => {
+      try {
+        // 只按精确工程/空间修订取已登记快照，多取一行判断是否还有下一页。
+        return await this.#db
+          .selectFrom("business.applicability_metadata_snapshots")
+          .select(["snapshot_id", "version_id", "snapshot_ref", "applicability_metadata"])
+          .where("project_id", "=", query.projectId)
+          .where(sql<SqlBool>`project_revision_ref = ${revision}::jsonb`)
+          .where(sql<SqlBool>`spatial_scope_ref = ${scope}::jsonb`)
+          .orderBy("recorded_at", "desc")
+          .orderBy("snapshot_id", "asc")
+          .orderBy("version_id", "asc")
+          .limit(offset + pageSize + 1)
+          .execute();
+      } catch (error) {
+        throw mapPostgresError(error, "engineering-data.applicability-catalog");
+      }
+    })();
+    const items: ApplicabilityCatalogItemV1[] = [];
+    for (const row of rows.slice(offset, offset + pageSize)) {
+      const snapshotRef = ApplicabilityMetadataSnapshotRefV1Schema.safeParse(row.snapshot_ref);
+      const metadata = ApplicabilityMetadataSchema.safeParse(row.applicability_metadata);
+      if (!snapshotRef.success || !metadata.success) continue;
+      items.push({ snapshotRef: snapshotRef.data, metadata: metadata.data });
+    }
+    const next =
+      rows.length > offset + pageSize
+        ? encodeEntryContextCursorV1(binding, offset + pageSize)
+        : undefined;
+    return {
+      kind: "succeeded",
+      result: {
+        kind: "applicability-catalog",
+        items,
+        ...(next === undefined ? {} : { nextCursor: next }),
+      },
+    };
+  }
+
+  async #externalEventCatalog(
+    query: AssessmentEntryContextReadQueryV1,
+    binding: string,
+    offset: number,
+    pageSize: number,
+  ): Promise<AssessmentEntryContextReadResultV1> {
+    const denied = (): AssessmentEntryContextReadResultV1 => ({
+      kind: "failed",
+      error: readAuthorizationDenied(query.queryId),
+    });
+    const scope = JSON.stringify(query.payload.spatialScopeRef);
+    const rows = await (async () => {
+      try {
+        // 只按精确工程与登记空间 refs 取本模块登记的外部事件，多取一行判断是否还有下一页。
+        return await this.#db
+          .selectFrom("business.external_risk_events")
+          .select([
+            "external_risk_event_id",
+            "version_id",
+            "external_risk_event_ref",
+            "evidence_references",
+            "source_version_refs",
+            "spatial_scope_refs",
+          ])
+          .where("project_id", "=", query.projectId)
+          // jsonb 的 @> 对“数组包含对象元素”不成立（仅标量元素成立），
+          // 因此用 jsonb_build_array 包成单元素数组再做包含判断，仍可走 GIN 索引。
+          .where(sql<SqlBool>`spatial_scope_refs @> jsonb_build_array(${scope}::jsonb)`)
+          .orderBy("recorded_at", "desc")
+          .orderBy("external_risk_event_id", "asc")
+          .orderBy("version_id", "asc")
+          .limit(offset + pageSize + 1)
+          .execute();
+      } catch (error) {
+        throw mapPostgresError(error, "engineering-data.external-event-catalog");
+      }
+    })();
+
+    // 来源范围由 C06 判定：C11 只提出该事件登记的精确来源引用，请当前授权按用途复验，
+    // 不自行解释来源授权、也不扩大范围。逐项复验通过后才披露；撤权不是“该事件不存在”，
+    // 不得折算成空目录或短列表，故整次读取按既有安全错误失败闭合。
+    const items: ExternalEventCatalogItemV1[] = [];
+    for (const row of rows.slice(offset, offset + pageSize)) {
+      const riskInput = ExternalRiskEventRefV1Schema.safeParse(row.external_risk_event_ref);
+      if (!riskInput.success) continue;
+      const sourceVersionRefs = parseRegisteredRefListV1<SourceVersionRefV1>(
+        row.source_version_refs,
+        SourceVersionRefV1Schema,
+        64,
+      );
+      const evidence = parseRegisteredRefListV1<EvidenceReference>(
+        row.evidence_references,
+        EvidenceReferenceSchema,
+        256,
+      );
+      const scopes = parseRegisteredRefListV1<SpatialScopeRefV1>(
+        row.spatial_scope_refs,
+        SpatialScopeRefV1Schema,
+        256,
+      );
+      if (sourceVersionRefs === undefined || evidence === undefined || scopes === undefined)
+        continue;
+      // 身份按 entityId 判定，与 #verifyRead 的空间归一规则一致；DB 侧的 @> 包含已保证
+      // 登记集合中存在与请求语义相等的空间，不能因 jsonb 键序差异漏判为“没有”。
+      const requestedScopeEntityId = query.payload.spatialScopeRef.reference.entityId;
+      const scopeRef = scopes.find((ref) => ref.reference.entityId === requestedScopeEntityId);
+      if (scopeRef === undefined) continue;
+      try {
+        const decision = await this.#verifyRead(
+          query,
+          ENTRY_CONTEXT_READ_BRANCH,
+          [scopeRef],
+          sourceVersionRefs,
+        );
+        // 来源授权由 C06 判定：不要求正文的分支以脱敏而非拒绝表达“未授予来源访问”。
+        // C11 不得把脱敏折算成“该事件不存在”，因此整次读取按既有安全错误失败闭合。
+        if (decision.redacted) return denied();
+      } catch {
+        return denied();
+      }
+      items.push({
+        riskInput: riskInput.data,
+        spatialScopeRef: scopeRef,
+        sourceVersionRefs,
+        evidenceReferences: evidence,
+      });
+    }
+
+    const next =
+      rows.length > offset + pageSize
+        ? encodeEntryContextCursorV1(binding, offset + pageSize)
+        : undefined;
+    return {
+      kind: "succeeded",
+      result: {
+        kind: "external-event-catalog",
+        items,
+        ...(next === undefined ? {} : { nextCursor: next }),
+      },
+    };
   }
 
   async #readSourceSegments(

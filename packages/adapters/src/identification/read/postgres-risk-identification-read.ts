@@ -157,7 +157,6 @@ const asTime = (value: TimestampColumn): number => new Date(value).getTime();
 const refKey = (reference: { readonly entityId: string; readonly versionId: string }): string =>
   `${reference.entityId}@${reference.versionId}`;
 
-
 /** 标识符列表事实：含非字符串或空串即视为不可信来源（fail closed，不部分披露）。 */
 const identifierList = (value: unknown): readonly string[] | undefined =>
   Array.isArray(value) && value.every((item) => typeof item === "string" && item.length > 0)

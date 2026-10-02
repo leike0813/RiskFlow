@@ -1693,17 +1693,12 @@ describe("C34 assessment and warning-response read surface", () => {
     ).toBe(200);
     expect(
       (
-        await postCommand(
-          app,
-          "warning-response.calibration-governance-draft",
-          "command-draft",
-          {
-            schemaVersion: "1",
-            calibrationSuggestionRef: suggestionRef,
-            reviewDecisionRef: decisionRef,
-            outcome: "approve-draft-creation",
-          },
-        )
+        await postCommand(app, "warning-response.calibration-governance-draft", "command-draft", {
+          schemaVersion: "1",
+          calibrationSuggestionRef: suggestionRef,
+          reviewDecisionRef: decisionRef,
+          outcome: "approve-draft-creation",
+        })
       ).statusCode,
     ).toBe(200);
 

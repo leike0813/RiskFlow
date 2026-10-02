@@ -4281,7 +4281,8 @@ export type ApplicabilityCatalogItemV1 = z.infer<typeof ApplicabilityCatalogItem
 export const ExternalEventCatalogItemV1Schema = z.strictObject({
   riskInput: ExternalRiskEventRefV1Schema,
   spatialScopeRef: SpatialScopeRefV1Schema,
-  sourceVersionRef: SourceVersionRefV1Schema,
+  /** 登记时已获准的来源精确引用集合，原样投影，不解析为“当前资料”。 */
+  sourceVersionRefs: z.array(SourceVersionRefV1Schema).min(1).max(64),
   evidenceReferences: z.array(EvidenceReferenceSchema).min(1).max(256),
 });
 export type ExternalEventCatalogItemV1 = z.infer<typeof ExternalEventCatalogItemV1Schema>;
@@ -4379,9 +4380,7 @@ export type AssessmentEntryContextViewV1 = z.infer<typeof AssessmentEntryContext
  * 保证工作流 `reassess` 入口与 C34 只读解释不会各写一份枚举。
  */
 export const AssessmentReassessmentReasonV1Schema = WorkflowReassessmentReasonV1Schema;
-export type AssessmentReassessmentReasonV1 = z.infer<
-  typeof AssessmentReassessmentReasonV1Schema
->;
+export type AssessmentReassessmentReasonV1 = z.infer<typeof AssessmentReassessmentReasonV1Schema>;
 
 /**
  * 重评入口不可变事实（design D-12）：前驱、原因与变化引用直接保存为入口身份的一部分，
@@ -4532,9 +4531,7 @@ export const AssessmentOverviewViewV1Schema = z.strictObject({
   spatialScopeRef: SpatialScopeRefV1Schema.optional(),
   recordedAssessmentCount: c34NonNegativeInt,
   riskLevelCounts: z
-    .array(
-      z.strictObject({ riskLevel: IdentifierSchema, count: c34NonNegativeInt }),
-    )
+    .array(z.strictObject({ riskLevel: IdentifierSchema, count: c34NonNegativeInt }))
     .max(32),
   asOf: IsoDateTimeSchema,
   actions: readActionsV1,
@@ -4571,64 +4568,66 @@ export type AssessmentRunViewV1 = z.infer<typeof AssessmentRunViewV1Schema>;
 
 const riskAssessmentReadOperationPayloadV1 = z.discriminatedUnion("operation", [
   z.strictObject({
-      operation: z.literal("pending-catalog"),
-      riskInputKind: z.enum(["risk-record", "external-risk-event"]),
-      spatialScopeRef: SpatialScopeRefV1Schema.optional(),
-      pageSize: c34ReadPageSize.optional(),
-      cursor: c34ReadCursor.optional(),
-    }),
+    operation: z.literal("pending-catalog"),
+    riskInputKind: z.enum(["risk-record", "external-risk-event"]),
+    spatialScopeRef: SpatialScopeRefV1Schema.optional(),
+    pageSize: c34ReadPageSize.optional(),
+    cursor: c34ReadCursor.optional(),
+  }),
   z.strictObject({
-      operation: z.literal("entry-context"),
-      projectRevisionRef: ProjectRevisionRefV1Schema,
-      spatialScopeRef: SpatialScopeRefV1Schema,
-      riskInput: RiskInputVersionRefV1Schema.optional(),
-      pageSize: c34ReadPageSize.optional(),
-      applicabilityCursor: c34ReadCursor.optional(),
-      externalEventCursor: c34ReadCursor.optional(),
-    }),
+    operation: z.literal("entry-context"),
+    projectRevisionRef: ProjectRevisionRefV1Schema,
+    spatialScopeRef: SpatialScopeRefV1Schema,
+    riskInput: RiskInputVersionRefV1Schema.optional(),
+    pageSize: c34ReadPageSize.optional(),
+    applicabilityCursor: c34ReadCursor.optional(),
+    externalEventCursor: c34ReadCursor.optional(),
+  }),
   z.strictObject({
-      operation: z.literal("record-catalog"),
-      riskInput: RiskInputVersionRefV1Schema.optional(),
-      entryMode: WorkflowEntryModeV1Schema.optional(),
-      riskMatrixVersion: VersionReferenceSchema.optional(),
-      spatialScopeRef: SpatialScopeRefV1Schema.optional(),
-      pageSize: c34ReadPageSize.optional(),
-      cursor: c34ReadCursor.optional(),
-    }),
+    operation: z.literal("record-catalog"),
+    riskInput: RiskInputVersionRefV1Schema.optional(),
+    entryMode: WorkflowEntryModeV1Schema.optional(),
+    riskMatrixVersion: VersionReferenceSchema.optional(),
+    spatialScopeRef: SpatialScopeRefV1Schema.optional(),
+    pageSize: c34ReadPageSize.optional(),
+    cursor: c34ReadCursor.optional(),
+  }),
   z.strictObject({
-      operation: z.literal("record-read"), assessmentRecordRef: RiskAssessmentRecordRefV1Schema }),
+    operation: z.literal("record-read"),
+    assessmentRecordRef: RiskAssessmentRecordRefV1Schema,
+  }),
   z.strictObject({
-      operation: z.literal("reassessment-history"),
-      riskInput: RiskInputVersionRefV1Schema,
-      spatialScopeRef: SpatialScopeRefV1Schema.optional(),
-      pageSize: c34ReadPageSize.optional(),
-      cursor: c34ReadCursor.optional(),
-    }),
+    operation: z.literal("reassessment-history"),
+    riskInput: RiskInputVersionRefV1Schema,
+    spatialScopeRef: SpatialScopeRefV1Schema.optional(),
+    pageSize: c34ReadPageSize.optional(),
+    cursor: c34ReadCursor.optional(),
+  }),
   z.strictObject({
-      operation: z.literal("overview"),
-      projectRevisionRef: ProjectRevisionRefV1Schema,
-      spatialScopeRef: SpatialScopeRefV1Schema.optional(),
-    }),
+    operation: z.literal("overview"),
+    projectRevisionRef: ProjectRevisionRefV1Schema,
+    spatialScopeRef: SpatialScopeRefV1Schema.optional(),
+  }),
   z.strictObject({
-      operation: z.literal("resolve"),
-      entityId: IdentifierSchema,
-      targetKind: z.enum(["record", "run"]),
-      versionId: IdentifierSchema.optional(),
-    }),
+    operation: z.literal("resolve"),
+    entityId: IdentifierSchema,
+    targetKind: z.enum(["record", "run"]),
+    versionId: IdentifierSchema.optional(),
+  }),
   z.strictObject({
-      operation: z.literal("run-read"),
-      workflowRunRef: WorkflowRunRefV1Schema,
-      assessmentRunRef: WorkflowRunRefV1Schema.optional(),
-      resultCursor: c34ReadCursor.optional(),
-      reviewTaskCursor: c34ReadCursor.optional(),
-    }),
+    operation: z.literal("run-read"),
+    workflowRunRef: WorkflowRunRefV1Schema,
+    assessmentRunRef: WorkflowRunRefV1Schema.optional(),
+    resultCursor: c34ReadCursor.optional(),
+    reviewTaskCursor: c34ReadCursor.optional(),
+  }),
 ]);
 
 export const RiskAssessmentReadQueryV1Schema = querySchema(
   "read",
   riskAssessmentReadOperationPayloadV1,
   branchCapability("risk-assessment.read"),
-);;
+);
 export type RiskAssessmentReadQueryV1 = z.infer<typeof RiskAssessmentReadQueryV1Schema>;
 
 export const RiskAssessmentReadSuccessV1Schema = z.discriminatedUnion("kind", [
@@ -4691,9 +4690,7 @@ export const WARNING_RESPONSE_READ_OPERATIONS_V1 = [
   "calibration-read",
   "resolve",
 ] as const;
-export const WarningResponseReadOperationV1Schema = z.enum(
-  WARNING_RESPONSE_READ_OPERATIONS_V1,
-);
+export const WarningResponseReadOperationV1Schema = z.enum(WARNING_RESPONSE_READ_OPERATIONS_V1);
 export type WarningResponseReadOperationV1 = z.infer<typeof WarningResponseReadOperationV1Schema>;
 
 /**
@@ -4717,9 +4714,7 @@ export const WarningNotificationDisclosureV1Schema = z.strictObject({
   recordedAt: IsoDateTimeSchema,
   deliveredAt: IsoDateTimeSchema.optional(),
 });
-export type WarningNotificationDisclosureV1 = z.infer<
-  typeof WarningNotificationDisclosureV1Schema
->;
+export type WarningNotificationDisclosureV1 = z.infer<typeof WarningNotificationDisclosureV1Schema>;
 
 export const WarningAcknowledgementViewV1Schema = z.strictObject({
   actorId: IdentifierSchema,
@@ -4898,62 +4893,76 @@ export type CalibrationOperationValidationV1 = z.infer<
 
 const warningResponseReadOperationPayloadV1 = z.discriminatedUnion("operation", [
   z.strictObject({
-      operation: z.literal("warning-catalog"),
-      spatialScopeRef: SpatialScopeRefV1Schema.optional(),
-      triggerType: WarningTriggerTypeSchema.optional(),
-      pageSize: c34ReadPageSize.optional(),
-      cursor: c34ReadCursor.optional(),
-    }),
+    operation: z.literal("warning-catalog"),
+    spatialScopeRef: SpatialScopeRefV1Schema.optional(),
+    triggerType: WarningTriggerTypeSchema.optional(),
+    pageSize: c34ReadPageSize.optional(),
+    cursor: c34ReadCursor.optional(),
+  }),
   z.strictObject({
-      operation: z.literal("task-catalog"),
-      spatialScopeRef: SpatialScopeRefV1Schema.optional(),
-      status: WarningResponseTaskStatusV1Schema.optional(),
-      pageSize: c34ReadPageSize.optional(),
-      cursor: c34ReadCursor.optional(),
-    }),
+    operation: z.literal("task-catalog"),
+    spatialScopeRef: SpatialScopeRefV1Schema.optional(),
+    status: WarningResponseTaskStatusV1Schema.optional(),
+    pageSize: c34ReadPageSize.optional(),
+    cursor: c34ReadCursor.optional(),
+  }),
   z.strictObject({
-      operation: z.literal("overview"), spatialScopeRef: SpatialScopeRefV1Schema.optional() }),
+    operation: z.literal("overview"),
+    spatialScopeRef: SpatialScopeRefV1Schema.optional(),
+  }),
   z.strictObject({
-      operation: z.literal("warning-read"),
-      warningRecordRef: WarningRecordRefV1Schema,
-      notificationCursor: c34ReadCursor.optional(),
-    }),
+    operation: z.literal("warning-read"),
+    warningRecordRef: WarningRecordRefV1Schema,
+    notificationCursor: c34ReadCursor.optional(),
+  }),
   z.strictObject({
-      operation: z.literal("task-read"), warningResponseTaskRef: WarningResponseTaskRefV1Schema, relatedCursor: c34ReadCursor.optional() }),
+    operation: z.literal("task-read"),
+    warningResponseTaskRef: WarningResponseTaskRefV1Schema,
+    relatedCursor: c34ReadCursor.optional(),
+  }),
   z.strictObject({
-      operation: z.literal("recommendation-read"), responseRecommendationRef: ResponseRecommendationRefV1Schema }),
+    operation: z.literal("recommendation-read"),
+    responseRecommendationRef: ResponseRecommendationRefV1Schema,
+  }),
   z.strictObject({
-      operation: z.literal("forecast-read"), effectForecastRef: EffectForecastRefV1Schema }),
+    operation: z.literal("forecast-read"),
+    effectForecastRef: EffectForecastRefV1Schema,
+  }),
   z.strictObject({
-      operation: z.literal("execution-read"),
-      executionRecordRef: ExecutionRecordRefV1Schema,
-      feedbackCursor: c34ReadCursor.optional(),
-    }),
+    operation: z.literal("execution-read"),
+    executionRecordRef: ExecutionRecordRefV1Schema,
+    feedbackCursor: c34ReadCursor.optional(),
+  }),
   z.strictObject({
-      operation: z.literal("feedback-read"), feedbackRef: FeedbackRefV1Schema, calibrationCursor: c34ReadCursor.optional() }),
+    operation: z.literal("feedback-read"),
+    feedbackRef: FeedbackRefV1Schema,
+    calibrationCursor: c34ReadCursor.optional(),
+  }),
   z.strictObject({
-      operation: z.literal("calibration-read"), calibrationSuggestionRef: CalibrationSuggestionRefV1Schema }),
+    operation: z.literal("calibration-read"),
+    calibrationSuggestionRef: CalibrationSuggestionRefV1Schema,
+  }),
   z.strictObject({
-      operation: z.literal("resolve"),
-      entityId: IdentifierSchema,
-      targetKind: z.enum([
-        "warning",
-        "task",
-        "recommendation",
-        "forecast",
-        "execution",
-        "feedback",
-        "calibration",
-      ]),
-      versionId: IdentifierSchema.optional(),
-    }),
+    operation: z.literal("resolve"),
+    entityId: IdentifierSchema,
+    targetKind: z.enum([
+      "warning",
+      "task",
+      "recommendation",
+      "forecast",
+      "execution",
+      "feedback",
+      "calibration",
+    ]),
+    versionId: IdentifierSchema.optional(),
+  }),
 ]);
 
 export const WarningResponseReadQueryV1Schema = querySchema(
   "read",
   warningResponseReadOperationPayloadV1,
   branchCapability("warning-response.read"),
-);;
+);
 export type WarningResponseReadQueryV1 = z.infer<typeof WarningResponseReadQueryV1Schema>;
 
 export const WarningResponseReadSuccessV1Schema = z.discriminatedUnion("kind", [
@@ -5178,9 +5187,7 @@ export const CalibrationGovernanceOutcomeV1Schema = z.union([
   CalibrationReviewOutcomePayloadV1Schema,
   CalibrationGovernanceDraftPayloadV1Schema,
 ]);
-export type CalibrationGovernanceOutcomeV1 = z.infer<
-  typeof CalibrationGovernanceOutcomeV1Schema
->;
+export type CalibrationGovernanceOutcomeV1 = z.infer<typeof CalibrationGovernanceOutcomeV1Schema>;
 
 export const CalibrationReviewOutcomeCommandV1Schema = CommandEnvelopeSchema.extend({
   authorization: AuthorizationContextV1Schema,
@@ -5202,9 +5209,7 @@ export const CalibrationGovernanceCommandV1Schema = z.discriminatedUnion("kind",
     branchCapability("warning-response.calibration-governance-draft"),
   ),
 ]);
-export type CalibrationGovernanceCommandV1 = z.infer<
-  typeof CalibrationGovernanceCommandV1Schema
->;
+export type CalibrationGovernanceCommandV1 = z.infer<typeof CalibrationGovernanceCommandV1Schema>;
 
 /** `recordReviewOutcome`：只推进对应建议版本，不创建草案。 */
 export const CalibrationReviewOutcomeSuccessV1Schema = z.strictObject({

@@ -137,7 +137,12 @@ describe("access domain", () => {
     expect(grantedRead("project-risk-manager")).toEqual([...c34ReadBranches].sort());
 
     // 校准两个治理写 branch 仅经理：预设角色集合里不得出现。
-    for (const role of ["reviewer", "field-responder", "business-viewer", "system-administrator"] as const) {
+    for (const role of [
+      "reviewer",
+      "field-responder",
+      "business-viewer",
+      "system-administrator",
+    ] as const) {
       for (const branch of c34GovernanceBranches) {
         expect(isBranchAllowed([role], branch)).toBe(false);
       }
@@ -148,9 +153,7 @@ describe("access domain", () => {
 
     // field-responder 补投影结果与措施治理读取面。
     expect(isBranchAllowed(["field-responder"], "projection.result-read")).toBe(true);
-    expect(isBranchAllowed(["field-responder"], "knowledge-modeling.governance-read")).toBe(
-      true,
-    );
+    expect(isBranchAllowed(["field-responder"], "knowledge-modeling.governance-read")).toBe(true);
 
     // 不授予 field-responder 经理的启动/采纳/确认写权。
     for (const branch of [

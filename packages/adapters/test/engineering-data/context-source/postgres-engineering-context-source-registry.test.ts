@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ArtifactPutCommandV1Schema } from "@riskflow/core/artifacts";
 import type {
   ApplicabilityMetadataSnapshotRefV1,
+  AssessmentEntryContextReadQueryV1,
   AuthorizationContextRefV1,
   AuthorizationContextV1,
   ContentArtifactRefV1,
@@ -17,6 +18,7 @@ import type {
 } from "@riskflow/contracts/ports";
 import {
   RiskInputVersionRefV1Schema,
+  SpatialScopeRefV1Schema,
   StandardizedRiskRecordRefV1Schema,
   StructuredDocumentConversionCommandV1Schema,
   StructuredDocumentConversionQueryV1Schema,
@@ -82,7 +84,8 @@ describe("C11 PostgreSQL context/source registry", () => {
             | "engineering-data.register-source-delivery"
             | "engineering-data.register-external-risk-event"
             | "engineering-data.evidence-access"
-            | "engineering-data.source-segments",
+            | "engineering-data.source-segments"
+            | "engineering-data.context-read",
           requestedSpatialScopeRefs?: readonly SpatialScopeRefV1[],
         ): Promise<AuthorizationContextV1>;
       }
@@ -873,7 +876,8 @@ describe("C11 PostgreSQL context/source registry", () => {
           | "engineering-data.register-source-delivery"
           | "engineering-data.register-external-risk-event"
           | "engineering-data.evidence-access"
-          | "engineering-data.source-segments" = "engineering-data.register-source-delivery",
+          | "engineering-data.source-segments"
+          | "engineering-data.context-read" = "engineering-data.register-source-delivery",
         requestedSpatialScopeRefs: readonly SpatialScopeRefV1[] = [spatialScopeRef],
       ) =>
         (
@@ -3333,6 +3337,362 @@ describe("C11 PostgreSQL context/source registry", () => {
       );
       expect(deniedAudit.rows[0]?.count).toBe("0");
     }
+  });
+
+  describe("C34 评估启动候选窄读", () => {
+    const readDate = "2030-01-01T00:00:00.000Z";
+
+    const entryQuery = async (input: {
+      readonly operation: "applicability-catalog" | "external-event-catalog";
+      readonly suffix: string;
+      readonly projectRevisionRef?: ProjectRevisionRefV1;
+      readonly spatialScopeRef?: SpatialScopeRefV1;
+      /** 签发授权时请求的空间；与 payload 空间分开，才能构造“载荷越界但授权成立”的失败闭合。 */
+      readonly authorizationScopeRef?: SpatialScopeRefV1;
+      readonly pageSize?: number;
+      readonly cursor?: string;
+    }): Promise<AssessmentEntryContextReadQueryV1> => {
+      const state = requireE2eState();
+      return {
+        queryId: `c34-entry-${input.suffix}`,
+        projectId: state.projectId,
+        actorId: state.managerId,
+        requestedAt: readDate,
+        authorization: await state.authorize(
+          `c34-entry-${input.suffix}`,
+          [state.sourceVersionRef],
+          "engineering-data.context-read",
+          // C11 业务空间引用是 C06 入口空间的新修订：授权按入口空间签发，
+          // 读取在适配器内按 entityId 归一到当前获准空间。
+          [input.authorizationScopeRef ?? state.accessRootScopeRef],
+        ),
+        kind: "read-assessment-entry-context",
+        payload: {
+          projectRevisionRef: input.projectRevisionRef ?? state.projectRevisionRef,
+          spatialScopeRef: input.spatialScopeRef ?? state.businessSpatialScopeRef,
+          operation: input.operation,
+          ...(input.pageSize === undefined ? {} : { pageSize: input.pageSize }),
+          ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+        },
+      };
+    };
+
+    /**
+     * 外部事件的登记空间来自其证据资料段，因此按已登记事件实际使用的空间读取，
+     * 而不是猜测某个空间修订下存在候选。返回的仍是精确已登记引用。
+     */
+    const registeredEventScope = async (): Promise<SpatialScopeRefV1> => {
+      const state = requireE2eState();
+      const rows = await fixture.postgres.adminPool.query<{ scope: unknown; count: string }>(
+        `SELECT spatial_scope_refs -> 0 AS scope, count(*)::text AS count
+           FROM business.external_risk_events
+          WHERE project_id = $1 AND jsonb_array_length(spatial_scope_refs) > 0
+          GROUP BY 1 ORDER BY 2 DESC LIMIT 1`,
+        [state.projectId],
+      );
+      const row = rows.rows[0];
+      if (row === undefined) throw new Error("no registered external risk event scope");
+      // 取已登记事件最多的空间，保证目录确实存在第二页可续。
+      expect(Number(row.count)).toBeGreaterThan(1);
+      return SpatialScopeRefV1Schema.parse(row.scope);
+    };
+
+    const countCatalogRows = async () => {
+      const state = requireE2eState();
+      const rows = await fixture.postgres.adminPool.query<{
+        snapshots: string;
+        events: string;
+        read_results: string;
+        audit: string;
+        outbox: string;
+      }>(
+        `SELECT
+           (SELECT count(*)::text FROM business.applicability_metadata_snapshots WHERE project_id = $1) AS snapshots,
+           (SELECT count(*)::text FROM business.external_risk_events WHERE project_id = $1) AS events,
+           (SELECT count(*)::text FROM business.engineering_data_read_query_results WHERE project_id = $1) AS read_results,
+           (SELECT count(*)::text FROM audit.entries WHERE project_id = $1) AS audit,
+           (SELECT count(*)::text FROM outbox.events WHERE project_id = $1) AS outbox`,
+        [state.projectId],
+      );
+      return rows.rows[0];
+    };
+
+    const registeredEventRefs = async (scopeRef: SpatialScopeRefV1) => {
+      const state = requireE2eState();
+      const rows = await fixture.postgres.adminPool.query<{ external_risk_event_ref: unknown }>(
+        "SELECT external_risk_event_ref FROM business.external_risk_events WHERE project_id = $1 AND spatial_scope_refs @> jsonb_build_array($2::jsonb)",
+        [state.projectId, JSON.stringify(scopeRef)],
+      );
+      return rows.rows.map((row) => JSON.stringify(row.external_risk_event_ref)).sort();
+    };
+
+    it("按精确修订分别续页两个已登记目录，只披露获准字段且预览零写入", async () => {
+      const state = requireE2eState();
+      const eventScopeRef = await registeredEventScope();
+      const before = await countCatalogRows();
+
+      // 快照目录：只读该精确工程/空间修订下已登记的快照，逐页取尽后与登记事实一致。
+      const registeredSnapshotRefs = async () => {
+        const rows = await fixture.postgres.adminPool.query<{ snapshot_ref: unknown }>(
+          "SELECT snapshot_ref FROM business.applicability_metadata_snapshots WHERE project_id = $1 AND project_revision_ref = $2::jsonb AND spatial_scope_ref = $3::jsonb",
+          [
+            state.projectId,
+            JSON.stringify(state.projectRevisionRef),
+            JSON.stringify(state.businessSpatialScopeRef),
+          ],
+        );
+        return rows.rows.map((row) => JSON.stringify(row.snapshot_ref)).sort();
+      };
+      const expectedSnapshotRefs = await registeredSnapshotRefs();
+      expect(expectedSnapshotRefs.length).toBeGreaterThan(0);
+
+      const pagedSnapshotRefs: string[] = [];
+      let snapshotCursor: string | undefined;
+      let snapshotGuard = 0;
+      for (;;) {
+        snapshotGuard += 1;
+        expect(snapshotGuard).toBeLessThanOrEqual(expectedSnapshotRefs.length + 1);
+        const page = await fixture.registry.readAssessmentEntryContext(
+          await entryQuery({
+            operation: "applicability-catalog",
+            suffix: `snapshot-page-${snapshotGuard}`,
+            pageSize: 1,
+            ...(snapshotCursor === undefined ? {} : { cursor: snapshotCursor }),
+          }),
+        );
+        expect(page).toMatchObject({
+          kind: "succeeded",
+          result: { kind: "applicability-catalog" },
+        });
+        if (page.kind !== "succeeded") return;
+        expect(page.result.items).toHaveLength(1);
+        // 快照项直接投影已登记快照引用与三个必含适用性维度。
+        expect(page.result.items[0]?.metadata).toMatchObject({
+          constructionMethod: "variable-diameter-shield",
+          stratumCondition: "soft-soil",
+          engineeringStage: "shield-expansion",
+        });
+        pagedSnapshotRefs.push(
+          ...page.result.items.map((item) => JSON.stringify(item.snapshotRef)),
+        );
+        snapshotCursor = page.result.nextCursor;
+        if (snapshotCursor === undefined) break;
+      }
+      expect(pagedSnapshotRefs.sort()).toEqual(expectedSnapshotRefs);
+
+      // 外部事件目录：独立游标、独立页，且只给精确引用与证据，不披露事件工件正文。
+      const registeredEvents = await registeredEventRefs(eventScopeRef);
+      expect(registeredEvents.length).toBeGreaterThan(1);
+      const firstEventPage = await fixture.registry.readAssessmentEntryContext(
+        await entryQuery({
+          operation: "external-event-catalog",
+          suffix: "event-1",
+          spatialScopeRef: eventScopeRef,
+          pageSize: 1,
+        }),
+      );
+      expect(firstEventPage).toMatchObject({
+        kind: "succeeded",
+        result: { kind: "external-event-catalog" },
+      });
+      if (firstEventPage.kind !== "succeeded") return;
+      expect(firstEventPage.result.kind).toBe("external-event-catalog");
+      expect(firstEventPage.result.items).toHaveLength(1);
+      expect(firstEventPage.result.nextCursor).toBeDefined();
+      expect(firstEventPage.result.items[0]).toMatchObject({
+        spatialScopeRef: eventScopeRef,
+        sourceVersionRefs: [state.sourceVersionRef],
+        evidenceReferences: [
+          {
+            sourceVersion: {
+              entityId: state.sourceVersionRef.reference.entityId,
+              versionId: state.sourceVersionRef.reference.versionId,
+            },
+          },
+        ],
+      });
+      expect(JSON.stringify(firstEventPage.result.items)).not.toContain("pressure-alarm");
+
+      // 该空间登记了多个事件：逐页取尽后与登记事实逐项一致，不多不少。
+      const pagedEventRefs = [
+        ...firstEventPage.result.items.map((item) => JSON.stringify(item.riskInput)),
+      ];
+      let nextCursor = firstEventPage.result.nextCursor;
+      let guard = 0;
+      while (nextCursor !== undefined) {
+        guard += 1;
+        expect(guard).toBeLessThanOrEqual(registeredEvents.length + 1);
+        const page = await fixture.registry.readAssessmentEntryContext(
+          await entryQuery({
+            operation: "external-event-catalog",
+            suffix: `event-page-${guard}`,
+            spatialScopeRef: eventScopeRef,
+            pageSize: 1,
+            cursor: nextCursor,
+          }),
+        );
+        expect(page).toMatchObject({
+          kind: "succeeded",
+          result: { kind: "external-event-catalog" },
+        });
+        if (page.kind !== "succeeded") return;
+        expect(page.result.items).toHaveLength(1);
+        pagedEventRefs.push(...page.result.items.map((item) => JSON.stringify(item.riskInput)));
+        nextCursor = page.result.nextCursor;
+      }
+      expect(pagedEventRefs.sort()).toEqual(registeredEvents);
+
+      // 两个目录各自续页：外部事件目录的游标不能推进快照目录。
+      expect(
+        await fixture.registry.readAssessmentEntryContext(
+          await entryQuery({
+            operation: "applicability-catalog",
+            suffix: "cursor-swap",
+            pageSize: 1,
+            cursor: firstEventPage.result.nextCursor,
+          }),
+        ),
+      ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+      // 游标绑定精确工程修订：换一个修订后原游标即越界。
+      expect(
+        await fixture.registry.readAssessmentEntryContext(
+          await entryQuery({
+            operation: "external-event-catalog",
+            suffix: "cursor-revision",
+            spatialScopeRef: eventScopeRef,
+            projectRevisionRef: {
+              kind: "project-revision",
+              reference: { entityId: state.projectId, versionId: "revision-not-current" },
+            },
+            pageSize: 1,
+            cursor: firstEventPage.result.nextCursor,
+          }),
+        ),
+      ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+
+      // 预览不写回：快照、事件、读取结果、审计与 Outbox 计数全部不变。
+      expect(await countCatalogRows()).toEqual(before);
+    }, 120_000);
+
+    it("空目录保持空：错配修订不跨目录补齐，越界空间失败闭合", async () => {
+      const state = requireE2eState();
+
+      // 错配工程修订：精确过滤后为空，不解析 latest、也不回退到已登记修订。
+      const revisionMismatch = await fixture.registry.readAssessmentEntryContext(
+        await entryQuery({
+          operation: "applicability-catalog",
+          suffix: "revision-mismatch",
+          projectRevisionRef: {
+            kind: "project-revision",
+            reference: { entityId: "project-revision-absent", versionId: "1" },
+          },
+        }),
+      );
+      expect(revisionMismatch).toEqual({
+        kind: "succeeded",
+        result: { kind: "applicability-catalog", items: [] },
+      });
+
+      // 获准但未登记任何候选的空间：两个目录各自保持空，不用另一目录补齐。
+      expect(
+        await fixture.registry.readAssessmentEntryContext(
+          await entryQuery({
+            operation: "applicability-catalog",
+            suffix: "empty-scope-snapshot",
+            spatialScopeRef: state.accessRootScopeRef,
+          }),
+        ),
+      ).toEqual({ kind: "succeeded", result: { kind: "applicability-catalog", items: [] } });
+      expect(
+        await fixture.registry.readAssessmentEntryContext(
+          await entryQuery({
+            operation: "external-event-catalog",
+            suffix: "empty-scope-event",
+            spatialScopeRef: state.accessRootScopeRef,
+          }),
+        ),
+      ).toEqual({ kind: "succeeded", result: { kind: "external-event-catalog", items: [] } });
+
+      // 载荷空间越界：授权只覆盖入口根空间，读取在披露目标前失败闭合，
+      // 且与“该空间从未创建”返回完全相同的错误，不泄露对象存在性。
+      const outside = await fixture.registry.readAssessmentEntryContext(
+        await entryQuery({
+          operation: "applicability-catalog",
+          suffix: "scope-outside-authorization",
+          authorizationScopeRef: state.accessRootScopeRef,
+          spatialScopeRef: {
+            kind: "spatial-scope",
+            reference: { entityId: "scope-outside-authorization", versionId: "1" },
+          },
+        }),
+      );
+      const absent = await fixture.registry.readAssessmentEntryContext(
+        await entryQuery({
+          operation: "applicability-catalog",
+          suffix: "scope-absent",
+          authorizationScopeRef: state.accessRootScopeRef,
+          spatialScopeRef: {
+            kind: "spatial-scope",
+            reference: { entityId: "scope-never-created", versionId: "1" },
+          },
+        }),
+      );
+      expect(outside).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+      // 两次读取只应有调用身份差异，错误分类与目标信息完全一致。
+      expect(absent).toMatchObject({
+        kind: "failed",
+        error: {
+          code: outside.kind === "failed" ? outside.error.code : "",
+          category: outside.kind === "failed" ? outside.error.category : "",
+          stageCode: outside.kind === "failed" ? outside.error.stageCode : "",
+          requiredCapability: outside.kind === "failed" ? outside.error.requiredCapability : "",
+          retryable: false,
+        },
+      });
+    }, 120_000);
+
+    it("目录只提出事件登记的来源引用：不解析 latest、不披露正文、不扩大来源范围", async () => {
+      const state = requireE2eState();
+      const eventScopeRef = await registeredEventScope();
+      const result = await fixture.registry.readAssessmentEntryContext(
+        await entryQuery({
+          operation: "external-event-catalog",
+          suffix: "exact-sources",
+          spatialScopeRef: eventScopeRef,
+        }),
+      );
+      expect(result).toMatchObject({
+        kind: "succeeded",
+        result: { kind: "external-event-catalog" },
+      });
+      if (result.kind !== "succeeded") return;
+      expect(result.result.items.length).toBeGreaterThan(0);
+
+      const rows = await fixture.postgres.adminPool.query<{
+        external_risk_event_ref: unknown;
+        source_version_refs: unknown;
+        spatial_scope_refs: unknown;
+        evidence_references: unknown;
+        event_artifact_ref: unknown;
+      }>(
+        "SELECT external_risk_event_ref, source_version_refs, spatial_scope_refs, evidence_references, event_artifact_ref FROM business.external_risk_events WHERE project_id = $1 AND spatial_scope_refs @> jsonb_build_array($2::jsonb)",
+        [state.projectId, JSON.stringify(eventScopeRef)],
+      );
+      const byRef = new Map(
+        rows.rows.map((row) => [JSON.stringify(row.external_risk_event_ref), row] as const),
+      );
+      expect(result.result.items).toHaveLength(byRef.size);
+      for (const item of result.result.items) {
+        const row = byRef.get(JSON.stringify(item.riskInput));
+        if (row === undefined) throw new Error("the catalog returned an unregistered event");
+        // 来源引用逐项等于登记值：不合并其它来源、不解析为“当前资料”。
+        expect(item.sourceVersionRefs).toEqual(row.source_version_refs);
+        expect(item.evidenceReferences).toEqual(row.evidence_references);
+        expect(item.spatialScopeRef).toEqual(eventScopeRef);
+        // 只给引用与证据定位，不披露事件工件引用或正文。
+        expect(JSON.stringify(item)).not.toContain(JSON.stringify(row.event_artifact_ref));
+      }
+    }, 120_000);
   });
 
   it("denies historical read resolutions once current authorization is revoked", async () => {

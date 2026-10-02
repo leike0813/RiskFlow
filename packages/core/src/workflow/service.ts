@@ -653,8 +653,7 @@ export const assessmentReasonForWorkflowReassessmentV1 = (
   | "applicability-metadata"
   | "applicable-rule-set"
   | "weight-or-strategy"
-  | "risk-matrix" =>
-  reason === "weight-strategy" ? "weight-or-strategy" : reason;
+  | "risk-matrix" => (reason === "weight-strategy" ? "weight-or-strategy" : reason);
 
 /** 从公开 `reassess` 启动载荷取出不可变重评入口事实；非重评返回 undefined。 */
 export const reassessmentEntryFromStartPayloadV1 = (

@@ -854,9 +854,7 @@ const sortEntry = (entry: WorkflowReassessmentInputV1) => ({
   reason: entry.reason,
   // ContractReferenceV1 是判别联合，成员形状不同（含 domain-event 等无 reference 变体），
   // 因此按整体 canonical 形态排序，不假设每个成员都有 reference。
-  changedInputRefs: [...entry.changedInputRefs]
-    .map((ref) => JSON.stringify(ref))
-    .sort(),
+  changedInputRefs: [...entry.changedInputRefs].map((ref) => JSON.stringify(ref)).sort(),
 });
 
 const reassessmentEntryOf = (

@@ -133,12 +133,8 @@ export const CALIBRATION_SUGGESTION_STATUS_VALUES = [
   "rejected",
   "approved-for-draft",
 ] as const;
-export const CalibrationSuggestionStatusV1Schema = z.enum(
-  CALIBRATION_SUGGESTION_STATUS_VALUES,
-);
-export type CalibrationSuggestionStatusV1 = z.infer<
-  typeof CalibrationSuggestionStatusV1Schema
->;
+export const CalibrationSuggestionStatusV1Schema = z.enum(CALIBRATION_SUGGESTION_STATUS_VALUES);
+export type CalibrationSuggestionStatusV1 = z.infer<typeof CalibrationSuggestionStatusV1Schema>;
 
 /** 六个分支与目标定义类型一一对应；只暴露 kind，不上移完整配置 Schema。 */
 export const CALIBRATION_OPERATION_KIND_VALUES = [

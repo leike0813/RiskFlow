@@ -1,7 +1,6 @@
 import { z } from "zod";
 
 import {
-  CommandEnvelopeSchema,
   EvidenceReferenceSchema,
   IdentifierSchema,
   IsoDateTimeSchema,
@@ -12,8 +11,6 @@ import {
   AgentTaskResultRefV1Schema,
   AssessmentBasisReleaseSetRefV1Schema,
   AssessmentInputSnapshotRefV1Schema,
-  AuthorizationContextV1Schema,
-  CalibrationSuggestionRefV1Schema,
   CalibrationReviewOutcomeCommandV1Schema as ContractsCalibrationReviewOutcomeCommandV1Schema,
   ContentArtifactRefV1Schema,
   ContractReferenceV1Schema,
@@ -21,7 +18,6 @@ import {
   KnowledgeReleaseRefV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
   ModuleErrorV1Schema,
-  ReviewDecisionRefV1Schema,
   type CalibrationReviewOutcomeCommandV1 as ContractsCalibrationReviewOutcomeCommandV1,
   type ContractReferenceV1,
   type ModuleCapabilityV1,

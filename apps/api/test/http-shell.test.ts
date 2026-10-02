@@ -1485,3 +1485,264 @@ describe("C33 read surface routes", () => {
     await active.close();
   });
 });
+
+describe("C34 assessment and warning-response read surface", () => {
+  const c34QueryBody = (payload: Record<string, unknown>) => ({
+    schemaVersion: "1",
+    queryId: "query-c34",
+    requestedAt: NOW,
+    requestedSpatialScopeRefs: [scope],
+    requestedSourceVersionRefs: [],
+    payload,
+  });
+  const c34CommandBody = (commandId: string, payload: Record<string, unknown>) =>
+    humanDecisionBody(commandId, payload);
+
+  const postQuery = (
+    app: ReturnType<typeof buildApi>,
+    branch: string,
+    payload: Record<string, unknown>,
+  ) =>
+    app.inject({
+      method: "POST",
+      url: `/api/v1/projects/project/queries/${branch}`,
+      headers: { ...jsonHeaders, cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+      payload: c34QueryBody(payload),
+    });
+
+  const postCommand = (
+    app: ReturnType<typeof buildApi>,
+    branch: string,
+    commandId: string,
+    payload: Record<string, unknown>,
+  ) =>
+    app.inject({
+      method: "POST",
+      url: `/api/v1/projects/project/commands/${branch}`,
+      headers: { ...jsonHeaders, cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+      payload: c34CommandBody(commandId, payload),
+    });
+
+  const readBranches = ["risk-assessment.read", "warning-response.read"] as const;
+  const governanceBranches = [
+    "warning-response.calibration-review-outcome",
+    "warning-response.calibration-governance-draft",
+  ] as const;
+
+  it("keeps every C34 branch inactive when the three ports are absent", async () => {
+    const app = appFor();
+    for (const branch of readBranches) {
+      expect((await postQuery(app, branch, {})).statusCode).toBe(404);
+    }
+    for (const branch of governanceBranches) {
+      expect((await postCommand(app, branch, "command-absent", {})).statusCode).toBe(404);
+    }
+    await app.close();
+  });
+
+  it("activates the read routes and their OpenAPI entries from the same catalog", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const app = buildApi({
+      access: accessStub(),
+      ports: {
+        riskAssessmentRead: {
+          read: async (query) => {
+            seen.push({ kind: query.kind, operation: query.payload.operation });
+            return {
+              kind: "succeeded",
+              result: { kind: "resolve", actorId: "actor-1", targetKind: "record" },
+            } as never;
+          },
+        },
+        warningResponseRead: {
+          read: async (query) => {
+            seen.push({ kind: query.kind, operation: query.payload.operation });
+            return {
+              kind: "succeeded",
+              result: {
+                kind: "overview",
+                actorId: "actor-1",
+                openTaskCount: 0,
+                warningCount: 0,
+                levelCounts: [],
+                asOf: NOW,
+                actions: [],
+              },
+            } as never;
+          },
+        },
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+
+    const openapi = await app.inject({ method: "GET", url: "/api/v1/openapi.json" });
+    const spec = openapi.json() as { paths: Record<string, unknown> };
+    expect(spec.paths["/api/v1/projects/{projectId}/queries/risk-assessment.read"]).toBeDefined();
+    expect(spec.paths["/api/v1/projects/{projectId}/queries/warning-response.read"]).toBeDefined();
+    // 未注入校准治理端口时，治理路径不得出现在 OpenAPI 中。
+    expect(
+      spec.paths[
+        "/api/v1/projects/{projectId}/commands/warning-response.calibration-review-outcome"
+      ],
+    ).toBeUndefined();
+
+    // 顶层查询信封 kind 固定为 read，业务判别落在 payload.operation。
+    expect(
+      (
+        await postQuery(app, "risk-assessment.read", {
+          operation: "resolve",
+          entityId: "ASSESS-1",
+          targetKind: "record",
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(
+      (await postQuery(app, "warning-response.read", { operation: "overview" })).statusCode,
+    ).toBe(200);
+    expect(seen.map((entry) => entry.kind)).toEqual(["read", "read"]);
+    expect(seen.map((entry) => entry.operation)).toEqual(["resolve", "overview"]);
+
+    // 越界分页、未知 operation 与客户端自带主体字段在契约边界被拒绝，不进入端口。
+    const before = seen.length;
+    expect(
+      (await postQuery(app, "risk-assessment.read", { operation: "not-an-operation" })).statusCode,
+    ).toBe(400);
+    expect(
+      (await postQuery(app, "risk-assessment.read", { operation: "record-catalog", pageSize: 51 }))
+        .statusCode,
+    ).toBe(400);
+    expect(
+      (await postQuery(app, "warning-response.read", { operation: "overview", actorId: "x" }))
+        .statusCode,
+    ).toBe(400);
+    expect(seen.length).toBe(before);
+    await app.close();
+  });
+
+  it("binds the governance routes to the calibration port by each command's own branch", async () => {
+    const calls: string[] = [];
+    const authorizedBranches: string[] = [];
+    const app = buildApi({
+      access: accessStub((branch) => authorizedBranches.push(branch)),
+      ports: {
+        calibrationGovernance: {
+          recordReviewOutcome: async (command) => {
+            calls.push(command.kind);
+            return {
+              kind: "succeeded",
+              result: {
+                calibrationSuggestionRef: command.payload.calibrationSuggestionRef,
+                outcome: "rejected",
+                deviationRecordRef: {
+                  kind: "deviation-record",
+                  reference: { entityId: "d", versionId: "1" },
+                },
+                deviationRecordVersionId: "1",
+              },
+            } as never;
+          },
+          createGovernanceDraft: async () => {
+            calls.push("create-calibration-governance-draft");
+            return {
+              kind: "succeeded",
+              result: {
+                governanceDraftRef: { entityId: "g", versionId: "1" },
+                knowledgeRevisionRef: {
+                  kind: "knowledge-revision",
+                  reference: { entityId: "k", versionId: "1" },
+                },
+                candidateArtifactRef: {
+                  kind: "content-artifact",
+                  reference: { entityId: "c", versionId: "1" },
+                },
+                deviationRecordRef: {
+                  kind: "deviation-record",
+                  reference: { entityId: "d", versionId: "1" },
+                },
+                deviationRecordVersionId: "1",
+              },
+            } as never;
+          },
+        },
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+
+    const suggestionRef = {
+      kind: "calibration-suggestion" as const,
+      reference: { entityId: "sug-1", versionId: "1" },
+    };
+    const decisionRef = {
+      kind: "review-decision" as const,
+      reference: { entityId: "dec-1", versionId: "1" },
+    };
+
+    expect(
+      (
+        await postCommand(app, "warning-response.calibration-review-outcome", "command-reject", {
+          schemaVersion: "1",
+          calibrationSuggestionRef: suggestionRef,
+          reviewDecisionRef: decisionRef,
+          outcome: "reject",
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await postCommand(
+          app,
+          "warning-response.calibration-governance-draft",
+          "command-draft",
+          {
+            schemaVersion: "1",
+            calibrationSuggestionRef: suggestionRef,
+            reviewDecisionRef: decisionRef,
+            outcome: "approve-draft-creation",
+          },
+        )
+      ).statusCode,
+    ).toBe(200);
+
+    expect(calls).toEqual([
+      "record-calibration-review-outcome",
+      "create-calibration-governance-draft",
+    ]);
+    // 入口授权精确绑定本次命令与分支，不用建议创建分支代签。
+    expect(authorizedBranches).toContain("warning-response.calibration-review-outcome");
+    expect(authorizedBranches).toContain("warning-response.calibration-governance-draft");
+    expect(authorizedBranches).not.toContain("warning-response.create-calibration-suggestion");
+
+    // 错误 outcome 在契约边界被拒绝，不进入端口，也不转移决定。
+    expect(
+      (
+        await postCommand(app, "warning-response.calibration-review-outcome", "command-mismatch", {
+          schemaVersion: "1",
+          calibrationSuggestionRef: suggestionRef,
+          reviewDecisionRef: decisionRef,
+          outcome: "approve-draft-creation",
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect(
+      (
+        await postCommand(
+          app,
+          "warning-response.calibration-governance-draft",
+          "command-mismatch-2",
+          {
+            schemaVersion: "1",
+            calibrationSuggestionRef: suggestionRef,
+            reviewDecisionRef: decisionRef,
+            outcome: "reject",
+          },
+        )
+      ).statusCode,
+    ).toBe(400);
+    expect(calls).toHaveLength(2);
+    await app.close();
+  });
+});

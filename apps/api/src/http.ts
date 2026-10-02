@@ -63,8 +63,14 @@ import {
   ReviewQueueReadResultV1Schema,
   ReviewRequestResultV1Schema,
   ReviewRequestV1Schema,
+  RiskAssessmentReadQueryV1Schema,
+  RiskAssessmentReadResultV1Schema,
   RiskIdentificationReadQueryV1Schema,
   RiskIdentificationReadResultV1Schema,
+  CalibrationGovernanceCommandV1Schema,
+  CalibrationGovernanceOutcomeResultV1Schema,
+  WarningResponseReadQueryV1Schema,
+  WarningResponseReadResultV1Schema,
   RunSubscriptionRequestV1Schema,
   SpatialScopeRefV1Schema,
   StartAgentTaskCommandV1Schema,
@@ -119,9 +125,15 @@ import {
   type ReviewQueueReadQueryV1,
   type ReviewRequestV1,
   type RiskAssessmentPortV1,
+  type RiskAssessmentReadPortV1,
+  type RiskAssessmentReadQueryV1,
   type RiskIdentificationPortV1,
   type RiskIdentificationReadPortV1,
   type RiskIdentificationReadQueryV1,
+  type CalibrationGovernancePortV1,
+  type CalibrationGovernanceCommandV1,
+  type WarningResponseReadPortV1,
+  type WarningResponseReadQueryV1,
   type RunSubscriptionRequestV1,
   type SpatialScopeRefV1,
   type SourceAccessGrantRefV1,
@@ -411,6 +423,10 @@ export interface ApiPortsV1 {
   // C33 只读面两条独立注入位；未注入时对应五条查询分支不激活。
   readonly riskIdentificationRead?: RiskIdentificationReadPortV1;
   readonly reviewQueueRead?: ReviewQueueReadPortV1;
+  // C34 只读面两条与校准治理一条独立注入位；未注入时对应四条分支不激活（design D-03、IP-08）。
+  readonly riskAssessmentRead?: RiskAssessmentReadPortV1;
+  readonly warningResponseRead?: WarningResponseReadPortV1;
+  readonly calibrationGovernance?: CalibrationGovernancePortV1;
   /**
    * C36 窄投影 port：只在未提供完整 `projection` port 时把原 `projection.query` 路由绑定到它，
    * 只接受 `quality-evaluation` 查询类型；SSE 与导出仍只由完整 port 激活。
@@ -624,6 +640,21 @@ const invokeRiskIdentificationRead: HttpInvokerV1 = (ports, request) =>
   missingPort("riskIdentificationRead");
 const invokeReviewQueueRead: HttpInvokerV1 = (ports, request) =>
   ports.reviewQueueRead?.read(request as ReviewQueueReadQueryV1) ?? missingPort("reviewQueueRead");
+// C34 只读面：两条新只读端口直接转发 `read`；校准治理按本次命令的 kind 分派到对应用例。
+const invokeRiskAssessmentRead: HttpInvokerV1 = (ports, request) =>
+  ports.riskAssessmentRead?.read(request as RiskAssessmentReadQueryV1) ??
+  missingPort("riskAssessmentRead");
+const invokeWarningResponseRead: HttpInvokerV1 = (ports, request) =>
+  ports.warningResponseRead?.read(request as WarningResponseReadQueryV1) ??
+  missingPort("warningResponseRead");
+const invokeCalibrationGovernance: HttpInvokerV1 = (ports, request) => {
+  const command = request as CalibrationGovernanceCommandV1;
+  const governance = ports.calibrationGovernance;
+  if (governance === undefined) return missingPort("calibrationGovernance");
+  return command.kind === "create-calibration-governance-draft"
+    ? governance.createGovernanceDraft(command)
+    : governance.recordReviewOutcome(command);
+};
 
 export const HTTP_ROUTE_CATALOG_V1: readonly HttpRouteEntryV1[] = Object.freeze([
   ...commandRoutes(
@@ -920,6 +951,34 @@ export const HTTP_ROUTE_CATALOG_V1: readonly HttpRouteEntryV1[] = Object.freeze(
     "reviewQueueRead",
     invokeReviewQueueRead,
     [["review-audit.queue-read", "queue-read"]],
+  ),
+  // C34 只读面与校准治理四条分支：运行路由与 OpenAPI 从同一条目派生；未注入不激活。
+  ...queryRoutes(
+    RiskAssessmentReadQueryV1Schema,
+    RiskAssessmentReadResultV1Schema,
+    "riskAssessmentRead",
+    invokeRiskAssessmentRead,
+    [["risk-assessment.read", "read"]],
+  ),
+  ...queryRoutes(
+    WarningResponseReadQueryV1Schema,
+    WarningResponseReadResultV1Schema,
+    "warningResponseRead",
+    invokeWarningResponseRead,
+    [["warning-response.read", "read"]],
+  ),
+  ...commandRoutes(
+    CalibrationGovernanceCommandV1Schema,
+    CalibrationGovernanceOutcomeResultV1Schema,
+    "calibrationGovernance",
+    invokeCalibrationGovernance,
+    [
+      ["warning-response.calibration-review-outcome", "record-calibration-review-outcome"],
+      [
+        "warning-response.calibration-governance-draft",
+        "create-calibration-governance-draft",
+      ],
+    ],
   ),
 ]);
 

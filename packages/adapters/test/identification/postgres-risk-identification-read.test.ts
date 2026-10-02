@@ -955,6 +955,14 @@ const seedCompletedRun = async (
     ],
     sourceSegmentIds: [`segment-${suffix}-1`, `segment-${suffix}-2`],
     mechanismEntryIds: [`mechanism-${suffix}-1`],
+    spatialScopeRefs: [refOf("spatial-scope", `spatial-scope-${suffix}`)],
+    sourceVersionRefs: [refOf("source-version", `source-version-${suffix}`)],
+    evidenceReferences: [
+      {
+        locator: { sourceSegmentId: `segment-${suffix}-1` },
+        sourceVersion: { entityId: `source-version-${suffix}`, versionId: "v1" },
+      },
+    ],
     authorizationScopeDigest: registrationScopeDigest,
     authorizationContextRef: refOf("authorization-context", "authorization-c33"),
     actorRef: ACTOR_ID,
@@ -1390,6 +1398,14 @@ describe.sequential("PostgreSQL risk identification read adapter (C33)", () => {
         ],
         sourceSegmentIds: [`segment-${spec.suffix}`],
         mechanismEntryIds: [`mechanism-${spec.suffix}`],
+        spatialScopeRefs: [refOf("spatial-scope", `spatial-scope-${spec.suffix}`)],
+        sourceVersionRefs: [refOf("source-version", `source-version-${spec.suffix}`)],
+        evidenceReferences: [
+          {
+            locator: { sourceSegmentId: `segment-${spec.suffix}` },
+            sourceVersion: { entityId: `source-version-${spec.suffix}`, versionId: "v1" },
+          },
+        ],
         authorizationScopeDigest: registrationScopeDigest,
         authorizationContextRef: refOf("authorization-context", "authorization-c33"),
         actorRef: ACTOR_ID,

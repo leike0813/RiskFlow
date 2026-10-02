@@ -121,6 +121,14 @@ const workItemRef = {
   kind: "identification-work-item" as const,
   reference: versionRef("work-item-c22"),
 };
+const spatialScopeRef = {
+  kind: "spatial-scope" as const,
+  reference: versionRef("spatial-scope-c22"),
+};
+const sourceVersionRef = {
+  kind: "source-version" as const,
+  reference: versionRef("source-version-c22"),
+};
 const workPlanRef = {
   kind: "identification-work-plan" as const,
   reference: versionRef("work-plan-c22"),
@@ -712,9 +720,11 @@ const groupMemberValue = (candidateId: string, candidateVersion: number) => ({
   candidateId,
   candidateVersion,
   candidateRef: contentRef(`candidate-artifact-${candidateId}`),
+  workItemRef,
   nodeId: NODE_ID,
   sourceSegmentIds: [SEGMENT_MECHANISM],
   mechanismEntryIds: ["mechanism-1"],
+  evidenceReferences: [evidence(SEGMENT_MECHANISM)],
   modelConfidence: 0.8,
 });
 
@@ -1031,7 +1041,14 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
           workPlanRef,
           inputSnapshotRef,
           inputSnapshot: inputSnapshot(),
-          workItems: [],
+          workItems: [
+            {
+              workItemRef,
+              nodeId: NODE_ID,
+              spatialScopeRefs: [spatialScopeRef],
+              sourceVersionRefs: [sourceVersionRef],
+            },
+          ],
           validatedCandidateSetRefs: overrides.workPlanValidatedRefs ?? [
             validatedSetRef("validated-set-a"),
           ],

@@ -222,6 +222,18 @@ const recordWriteRow = (
   ],
   sourceSegmentIds: [blueprint.sourceSegmentId],
   mechanismEntryIds: ["quality-mechanism"],
+  spatialScopeRefs: [
+    { kind: "spatial-scope", reference: versionRef(`quality-scope-${blueprint.sampleId}`) },
+  ],
+  sourceVersionRefs: [
+    { kind: "source-version", reference: versionRef(`quality-source-${blueprint.sampleId}`) },
+  ],
+  evidenceReferences: [
+    {
+      locator: { sourceSegmentId: blueprint.sourceSegmentId },
+      sourceVersion: versionRef(`quality-source-${blueprint.sampleId}`),
+    },
+  ],
   authorizationScopeDigest: sha256CanonicalJson({
     sampleId: blueprint.sampleId,
     scope: "quality-scope",

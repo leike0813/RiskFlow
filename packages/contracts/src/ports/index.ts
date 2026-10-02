@@ -4089,6 +4089,13 @@ export const RiskRecordCatalogItemV1Schema = z.strictObject({
   compositeConfidence: CompositeConfidenceSchema,
   acceptanceKind: IdentificationAcceptanceKindV1Schema,
   supersededBy: StandardizedRiskRecordRefV1Schema.optional(),
+  /**
+   * 接受分组时按成员工作项从已登记工作计划取出的空间范围与来源版本，以及候选见到并据以
+   * 判定的证据引用，原样投影。缺这三项登记事实的记录不进入目录：下游不得以空范围作答。
+   */
+  spatialScopeRefs: z.array(SpatialScopeRefV1Schema).min(1).max(64),
+  sourceVersionRefs: z.array(SourceVersionRefV1Schema).min(1).max(64),
+  evidenceReferences: z.array(EvidenceReferenceSchema).min(1).max(256),
 });
 export type RiskRecordCatalogItemV1 = z.infer<typeof RiskRecordCatalogItemV1Schema>;
 
@@ -4351,7 +4358,11 @@ export type AssessmentStateV1 = z.infer<typeof AssessmentStateV1Schema>;
 
 export const PendingRiskItemV1Schema = z.strictObject({
   riskInput: RiskInputVersionRefV1Schema,
-  spatialScopeRef: SpatialScopeRefV1Schema,
+  /**
+   * 空间范围是集合而非单个引用：标准化风险记录可由跨工序节点的合并组成立，其范围是组内
+   * 各工作项已登记范围的并集；外部事件分支恒为单元素集合。
+   */
+  spatialScopeRefs: z.array(SpatialScopeRefV1Schema).min(1).max(64),
   assessmentState: AssessmentStateV1Schema,
   lastAssessmentRecordRef: RiskAssessmentRecordRefV1Schema.optional(),
   evidenceReferences: z.array(EvidenceReferenceSchema).min(1).max(256),

@@ -232,10 +232,25 @@ describe("C33 识别只读成功结果判别联合", () => {
           compositeConfidence,
           acceptanceKind: "automatic",
           supersededBy: versionRef("standardized-risk-record", "record-1", "v2"),
+          spatialScopeRefs: [versionRef("spatial-scope", "space-1")],
+          sourceVersionRefs: [versionRef("source-version", "source-1")],
+          evidenceReferences: [
+            {
+              locator: { sourceSegmentId: "DOC1-S1-SEG1" },
+              sourceVersion: versionRef("source-version", "source-1").reference,
+            },
+          ],
         },
       ],
     };
     expect(RiskIdentificationReadSuccessV1Schema.safeParse(catalog).success).toBe(true);
+    // 缺登记的空间范围/来源版本/证据即不是合法目录条目：下游不得以空集合冒充「无范围」。
+    expect(
+      RiskIdentificationReadSuccessV1Schema.safeParse({
+        ...catalog,
+        items: [{ ...catalog.items[0], spatialScopeRefs: undefined }],
+      }).success,
+    ).toBe(false);
 
     const detail = {
       kind: "record-read",

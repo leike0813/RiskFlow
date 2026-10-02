@@ -24,6 +24,8 @@ import {
   ReviewDecisionRefV1Schema,
   RiskIdentificationReadQueryV1Schema,
   RouteDecisionRefV1Schema,
+  SourceVersionRefV1Schema,
+  SpatialScopeRefV1Schema,
   StandardizedRiskRecordRefV1Schema,
   WorkflowRunRefV1Schema,
   type AgentTaskRefV1,
@@ -46,6 +48,7 @@ import {
   type WaitingRefV1,
   type WorkflowRunStatusV1,
 } from "@riskflow/contracts/ports";
+import { EvidenceReferenceSchema } from "@riskflow/contracts/common";
 import { StandardizedRiskRecordEnvelopeSchema } from "@riskflow/contracts/records";
 
 import { IDENTIFICATION_GRAPH_BODY_PURPOSE_CODE_V1 } from "../graph/index.js";
@@ -137,6 +140,9 @@ interface StandardizedRiskRecordDbRow {
   review_decision_ref: JsonValue | null;
   source_segment_ids: JsonValue;
   mechanism_entry_ids: JsonValue;
+  spatial_scope_refs: JsonValue | null;
+  source_version_refs: JsonValue | null;
+  evidence_references: JsonValue | null;
   authorization_scope_digest: string;
   created_at: TimestampColumn;
   audit_entry_id: string;
@@ -889,12 +895,36 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
           ? ("review" as const)
           : undefined;
     if (acceptanceKind === undefined) return undefined;
+    // 评估启动上下文依赖记录已登记的空间范围与来源版本；缺失即没有可投影的事实，按不进入
+    // 目录处理，绝不用空集合冒充「无范围」。
+    const spatialScopeRefs =
+      row.spatial_scope_refs === null
+        ? undefined
+        : SpatialScopeRefV1Schema.array().min(1).max(64).safeParse(row.spatial_scope_refs).data;
+    const sourceVersionRefs =
+      row.source_version_refs === null
+        ? undefined
+        : SourceVersionRefV1Schema.array().min(1).max(64).safeParse(row.source_version_refs).data;
+    const evidenceReferences =
+      row.evidence_references === null
+        ? undefined
+        : EvidenceReferenceSchema.array().min(1).max(256).safeParse(row.evidence_references).data;
+    if (
+      spatialScopeRefs === undefined ||
+      sourceVersionRefs === undefined ||
+      evidenceReferences === undefined
+    ) {
+      return undefined;
+    }
     return {
       riskRecordRef: riskRecordRef.data,
       processNodeId: envelope.data.record.processNodeId,
       riskEventSummary: envelope.data.record.riskEvent,
       compositeConfidence: envelope.data.compositeConfidence,
       acceptanceKind,
+      spatialScopeRefs,
+      sourceVersionRefs,
+      evidenceReferences,
     };
   }
 
@@ -920,6 +950,15 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
         .where("project_id", "=", query.projectId)
         .where("authorization_scope_digest", "=", scopeDigest)
         .where(sql<SqlBool>`jsonb_typeof(payload) = 'object'`)
+        // 只纳入带齐评估启动事实的记录：范围/来源/证据缺任一项即无法投影，不进目录。
+        .where(
+          sql<SqlBool>`spatial_scope_refs IS NOT NULL
+            AND source_version_refs IS NOT NULL
+            AND evidence_references IS NOT NULL
+            AND jsonb_array_length(spatial_scope_refs) > 0
+            AND jsonb_array_length(source_version_refs) > 0
+            AND jsonb_array_length(evidence_references) > 0`,
+        )
         .where(
           query.payload.acceptanceKind === "automatic"
             ? sql<SqlBool>`route_decision_ref IS NOT NULL`

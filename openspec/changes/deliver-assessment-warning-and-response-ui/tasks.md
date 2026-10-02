@@ -7,7 +7,7 @@
 
 - [ ] 2.9 实施 IP-05/IP-12：按 D-12 定义重评元数据和唯一原因映射、修复无监测入口门禁、将显式前驱/原因/变化集合纳入入口身份。验证：`pnpm exec vitest run packages/core/test/workflow/service.test.ts packages/contracts/test/c34-assessment-response-read.test.ts`。
 - [x] 2.10 实施 IP-05/IP-12：贯通父子启动、run-state 工件/入口登记与恢复，移除原因启发式，保证原命令重试和同键异载荷失败。验证：`pnpm exec vitest run apps/worker/test/risk-flow/runtime.test.ts apps/worker/test/assessment/runtime.test.ts apps/worker/test/risk-flow/composition.test.ts apps/worker/test/assessment/composition.test.ts`。
-- [ ] 2.11 实施 IP-05/IP-12：验证 C04 已写但入口登记失败、响应丢失和新 runtime 恢复的持久边界；历史重评缺元数据时 runtime 拒绝继续评估。验证：`pnpm exec vitest run packages/adapters/test/workflow apps/worker/test/risk-flow/composition.test.ts apps/worker/test/assessment/composition.test.ts`。
+- [x] 2.11 实施 IP-05/IP-12：验证 C04 已写但入口登记失败、响应丢失和新 runtime 恢复的持久边界；历史重评缺元数据时 runtime 拒绝继续评估。验证：`pnpm exec vitest run packages/adapters/test/workflow apps/worker/test/risk-flow/composition.test.ts apps/worker/test/assessment/composition.test.ts`。
 - [x] 2.1 实施 IP-03/IP-12：提供 C11 两类独立分页候选，修正 C33 record-catalog 的 SQL 分页并复用原公开结果；验证精确修订、作用域与空目录。验证：`pnpm exec vitest run packages/adapters/test/engineering-data/context-source packages/adapters/test/identification/postgres-risk-identification-read.test.ts`。
 - [x] 2.2 实施 IP-05/IP-12：提供 C30 运行、父子引用与 D-12 原入口工件窄读，保持登记事实、阶段及已成立结果；精确前驱/原因/变化引用不能从 frozenRefs 反推，补缺失元数据失败用例。验证：`pnpm exec vitest run packages/adapters/test/workflow`。
 - [ ] 2.3 实施 IP-04/IP-12：组合评估候选/启动上下文及精确记录、历史、矩阵落点和所属摘要；验证缺失解释失败闭合与历史版本不变。验证：`pnpm exec vitest run packages/adapters/test/risk-assessment`。

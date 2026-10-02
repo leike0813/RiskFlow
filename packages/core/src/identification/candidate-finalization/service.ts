@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { VersionReference } from "@riskflow/contracts/common";
+import type { EvidenceReference, VersionReference } from "@riskflow/contracts/common";
 import { DomainEventV1Schema, type DomainEventV1 } from "@riskflow/contracts/events";
 import {
   IdentificationAnalysisCommandV1Schema,
@@ -17,6 +17,7 @@ import {
   type IdentificationFinalizationCommandV1,
   type IdentificationFinalizationResultV1,
   type IdentificationFinalizationSuccessV1,
+  type IdentificationWorkItemRefV1,
   type DomainEventRefV1,
   type ModuleErrorV1,
   type ModuleBranchV1,
@@ -309,6 +310,40 @@ export interface VisibleEvidenceIndexV1 {
 }
 
 /**
+ * 证据引用按 `资料段 + 来源版本` 去重并确定性排序，使登记行与分组成员的证据集合在重放下
+ * 逐字节一致（排序键固定，不依赖输入顺序）。
+ */
+export const uniqueEvidenceReferences = (
+  references: readonly EvidenceReference[],
+): EvidenceReference[] =>
+  [
+    ...new Map(
+      references.map((reference) => [
+        `${reference.locator.sourceSegmentId} ${reference.sourceVersion.entityId} ${reference.sourceVersion.versionId}`,
+        reference,
+      ]),
+    ).values(),
+  ].sort(
+    (left, right) =>
+      left.locator.sourceSegmentId.localeCompare(right.locator.sourceSegmentId) ||
+      left.sourceVersion.entityId.localeCompare(right.sourceVersion.entityId) ||
+      left.sourceVersion.versionId.localeCompare(right.sourceVersion.versionId),
+  );
+
+/**
+ * 契约引用按 `entityId` 去重并按 entityId 排序，使登记行的空间范围与来源版本集合在同一组
+ * 成员的不同顺序下仍逐字节一致。
+ */
+export const uniqueRefsByEntityId = <
+  T extends { readonly reference: { readonly entityId: string } },
+>(
+  references: readonly T[],
+): T[] =>
+  [
+    ...new Map(references.map((reference) => [reference.reference.entityId, reference])).values(),
+  ].sort((left, right) => left.reference.entityId.localeCompare(right.reference.entityId));
+
+/**
  * 由五项上下文构造确定性证据索引。候选没有机理字段，因此“机理条目适用性”只能由证据定位
  * 能否追溯到上下文机理条目裁定，这正是设计 D-05 的“机理引用来自同一发布且适用于节点”。
  */
@@ -573,12 +608,15 @@ export interface MergeCandidateInputV1 {
   readonly candidateRef: VersionReference;
   readonly candidateId: string;
   readonly candidateVersion: number;
+  readonly workItemRef: IdentificationWorkItemRefV1;
   readonly nodeId: string;
   readonly riskEvent: string;
   readonly modelConfidence: number;
   readonly sourceSegmentIds: readonly string[];
   readonly mechanismEntryIds: readonly string[];
   readonly sourceVersionKeys: readonly string[];
+  /** 候选见到并据以判定的证据引用：登记时定型，供接受分组阶段原样投影为记录的证据集合。 */
+  readonly evidenceReferences: readonly EvidenceReference[];
 }
 
 export interface MergeGroupDraftV1 {
@@ -2552,6 +2590,7 @@ export class RiskCandidateFinalizationService {
           candidateRef: reference,
           candidateId: candidate.candidateId,
           candidateVersion: candidate.candidateVersion,
+          workItemRef: candidate.workItemRef,
           nodeId: candidate.nodeId,
           riskEvent: candidate.output.riskEvent,
           modelConfidence: candidate.output.modelConfidence,
@@ -2559,6 +2598,12 @@ export class RiskCandidateFinalizationService {
             ...new Set(mechanismEvidence.map((evidence) => evidence.sourceSegmentId)),
           ].sort(),
           mechanismEntryIds: [...matchedMechanismIds].sort(),
+          evidenceReferences: uniqueEvidenceReferences(
+            mechanismEvidence.map((evidence) => ({
+              locator: { sourceSegmentId: evidence.sourceSegmentId },
+              sourceVersion: evidence.sourceVersion,
+            })),
+          ),
           sourceVersionKeys: [
             ...new Set(
               mechanismEvidence.map(
@@ -2741,6 +2786,7 @@ export class RiskCandidateFinalizationService {
         candidateId: member.candidateId,
         candidateVersion: member.candidateVersion,
         candidateRef: { kind: "content-artifact", reference: member.candidateRef },
+        workItemRef: member.workItemRef,
         nodeId: member.nodeId,
         sourceSegmentIds:
           member.sourceSegmentIds.length === 0
@@ -2750,6 +2796,7 @@ export class RiskCandidateFinalizationService {
           member.mechanismEntryIds.length === 0
             ? [member.candidateId]
             : [...member.mechanismEntryIds],
+        evidenceReferences: uniqueEvidenceReferences(member.evidenceReferences),
         modelConfidence: member.modelConfidence,
       }));
       const group: IdentificationGroupV1 = {
@@ -3512,6 +3559,28 @@ export class RiskCandidateFinalizationService {
       purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.acceptanceRouteSet,
       authorization: current,
     });
+    // 记录的空间范围与来源版本只能来自组内成员工作项对应的已登记工作计划：工作项是识别域内
+    // 唯一同时带这两个事实的登记对象。工作计划整份读一次并按精确 ref 建索引，不逐组重读。
+    const workPlanRead = await options.workPlanReader.readExact({
+      projectId: command.projectId,
+      actorId: command.actorId,
+      requestedAt: occurredAt,
+      workPlanRef: routeSet.workPlanRef,
+      authorization: current,
+    });
+    if (workPlanRead.kind === "failed") {
+      throw new RiskCandidateFinalizationError(
+        blocked({
+          causalRunId: command.commandId,
+          occurredAt,
+          blockerKind: workPlanRead.detailCode,
+          blockerRef: routeSet.workPlanRef,
+        }),
+      );
+    }
+    const workItemByKey = new Map(
+      workPlanRead.read.workItems.map((item) => [referenceKey(item.workItemRef.reference), item]),
+    );
     const routeByGroup = new Map(
       routeSet.routes.map((route) => [referenceKey(route.groupRef.reference), route]),
     );
@@ -3709,6 +3778,31 @@ export class RiskCandidateFinalizationService {
           }),
         );
       }
+      // 组的空间范围与来源版本 = 成员工作项的并集。任一成员的工作项不在已登记工作计划内即
+      // 失败闭合：宁可拒绝登记，也不写入无据的范围。
+      const memberWorkItems = group.members.map((member) => {
+        const item = workItemByKey.get(referenceKey(member.workItemRef.reference));
+        if (item === undefined) {
+          throw new RiskCandidateFinalizationError(
+            blocked({
+              causalRunId: command.commandId,
+              occurredAt,
+              blockerKind: "work-item-not-in-work-plan",
+              blockerRef: member.workItemRef,
+            }),
+          );
+        }
+        return item;
+      });
+      const spatialScopeRefs = uniqueRefsByEntityId(
+        memberWorkItems.flatMap((item) => item.spatialScopeRefs),
+      );
+      const sourceVersionRefs = uniqueRefsByEntityId(
+        memberWorkItems.flatMap((item) => item.sourceVersionRefs),
+      );
+      const evidenceReferences = uniqueEvidenceReferences(
+        group.members.flatMap((member) => member.evidenceReferences),
+      );
       const candidatePayload = (await this.#readArtifactJson({
         artifactRef: representative.candidateRef.reference,
         projectId: command.projectId,
@@ -3783,6 +3877,9 @@ export class RiskCandidateFinalizationService {
         ],
         sourceSegmentIds: envelope.sourceIds,
         mechanismEntryIds: envelope.riskMechanismEntryIds,
+        spatialScopeRefs,
+        sourceVersionRefs,
+        evidenceReferences,
         authorizationScopeDigest: routeSet.authorizationScopeDigest,
         authorizationContextRef: current.authorizationContextRef,
         actorRef: command.actorId,

@@ -60,6 +60,10 @@ import {
   down as formalZeroResultDown,
   up as formalZeroResultUp,
 } from "../../../src/postgres/migrations/risk-identification/fix-c22-formal-zero-result-terminal-fact/000049_formal_zero_result.js";
+import {
+  down as riskRecordAssessmentScopeDown,
+  up as riskRecordAssessmentScopeUp,
+} from "../../../src/postgres/migrations/risk-identification/deliver-assessment-warning-and-response-ui/000054_risk_record_assessment_scope.js";
 import { runPostgresMigrations } from "../../../src/postgres/migrations/run.js";
 import { createPostgresRuntime, type PostgresRuntime } from "../../../src/postgres/pool.js";
 import { PostgresTransactionUnit } from "../../../src/postgres/transaction-unit.js";
@@ -257,6 +261,14 @@ const traceRecordFor = (input: {
     ],
     sourceSegmentIds,
     mechanismEntryIds,
+    spatialScopeRefs: [refOf("spatial-scope", "spatial-scope-trace-1")],
+    sourceVersionRefs: [refOf("source-version", "source-version-trace-1")],
+    evidenceReferences: [
+      {
+        locator: { sourceSegmentId: sourceSegmentIds[0] ?? "segment-trace-1" },
+        sourceVersion: { entityId: "source-version-trace-1", versionId: "v1" },
+      },
+    ],
     authorizationScopeDigest: input.authorizationScopeDigest,
     authorizationContextRef: refOf("authorization-context", "authorization-c22"),
     actorRef: ACTOR_ID,
@@ -595,6 +607,14 @@ const recordWrite = (input: {
     ],
     sourceSegmentIds: ["segment-1"],
     mechanismEntryIds: ["mechanism-1"],
+    spatialScopeRefs: [refOf("spatial-scope", "spatial-scope-c22")],
+    sourceVersionRefs: [refOf("source-version", "source-version-c22")],
+    evidenceReferences: [
+      {
+        locator: { sourceSegmentId: "segment-1" },
+        sourceVersion: { entityId: "source-version-c22", versionId: "v1" },
+      },
+    ],
     authorizationScopeDigest: RESULT_SCOPE_DIGEST,
     authorizationContextRef: refOf("authorization-context", "authorization-c22"),
     actorRef: ACTOR_ID,
@@ -788,6 +808,21 @@ const tableExists = async (
   return result.rows[0]?.name !== null;
 };
 
+/** `000054` 的三项评估启动事实列，与 `000049` 同理：回滚到建表迁移之下再重放时必须复原。 */
+const recordScopeColumnExists = async (
+  fixture: RiskCandidateFinalizationTestFixture,
+  column: string,
+): Promise<boolean> => {
+  const result = await sql<{ count: string }>`
+    SELECT count(*)::text AS count
+    FROM information_schema.columns
+    WHERE table_schema = 'business'
+      AND table_name = 'standardized_risk_records'
+      AND column_name = ${column}
+  `.execute(fixture.runtime.db);
+  return Number(result.rows[0]?.count ?? "0") > 0;
+};
+
 /** `000049` 的增量列只在 C22 结果表上断言存在性，用于证明 up/down 收敛到同一列集合。 */
 const resultsColumnExists = async (
   fixture: RiskCandidateFinalizationTestFixture,
@@ -843,8 +878,12 @@ describe("PostgreSQL risk candidate finalization persistence", () => {
     expect(await tableExists(fixture!, "business.identification_finalization_results")).toBe(true);
     expect(await tableExists(fixture!, "business.standardized_risk_records")).toBe(true);
     expect(await resultsColumnExists(fixture!, "zero_result_ref")).toBe(true);
+    expect(await recordScopeColumnExists(fixture!, "spatial_scope_refs")).toBe(true);
 
-    // 按迁移栈逆序退回：`000049` 只撤销自己的列、索引与类别，`000042` 再退掉两张表。
+    // 按迁移栈逆序退回：`000054` 撤销自己的三列，`000049` 只撤销自己的列、索引与类别，
+    // `000042` 再退掉两张表；重放时同序补回，后一条迁移不会自动重建前一条加的列。
+    await riskRecordAssessmentScopeDown(migrator);
+    expect(await recordScopeColumnExists(fixture!, "spatial_scope_refs")).toBe(false);
     await formalZeroResultDown(migrator);
     expect(await resultsColumnExists(fixture!, "zero_result_ref")).toBe(false);
     await riskCandidateFinalizationDown(migrator);
@@ -856,9 +895,14 @@ describe("PostgreSQL risk candidate finalization persistence", () => {
     expect(await resultsColumnExists(fixture!, "zero_result_ref")).toBe(false);
     await formalZeroResultUp(migrator);
     await formalZeroResultUp(migrator);
+    await riskRecordAssessmentScopeUp(migrator);
+    await riskRecordAssessmentScopeUp(migrator);
     expect(await tableExists(fixture!, "business.identification_finalization_results")).toBe(true);
     expect(await tableExists(fixture!, "business.standardized_risk_records")).toBe(true);
     expect(await resultsColumnExists(fixture!, "zero_result_ref")).toBe(true);
+    expect(await recordScopeColumnExists(fixture!, "spatial_scope_refs")).toBe(true);
+    expect(await recordScopeColumnExists(fixture!, "source_version_refs")).toBe(true);
+    expect(await recordScopeColumnExists(fixture!, "evidence_references")).toBe(true);
   }, 90_000);
 
   it("limits the zero-result kind to its own column shape and refuses rollback with existing facts", async () => {

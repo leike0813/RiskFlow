@@ -65,6 +65,7 @@ import * as assessmentRiskflowGraphsMigration from "../../src/postgres/migration
 import * as graphTraceReportProjectionsMigration from "../../src/postgres/migrations/workflow/deliver-graph-trace-and-report-projections/000051_graph_trace_report_projections.js";
 import * as qualityEvaluationReportIndexMigration from "../../src/postgres/migrations/query-projection/deliver-quality-evaluation-module/000052_quality_evaluation_report_index.js";
 import * as humanDecisionFeedbackMigration from "../../src/postgres/migrations/warning-response/wire-human-decision-and-feedback-commands/000053_human_decision_feedback.js";
+import * as riskRecordAssessmentScopeMigration from "../../src/postgres/migrations/risk-identification/deliver-assessment-warning-and-response-ui/000054_risk_record_assessment_scope.js";
 
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
 import * as agentTaskFixtureMigration from "./fixtures/migrations/agent-task/deliver-unified-bounded-agent-runtime/900002_agent_task_fixture.js";
@@ -515,6 +516,15 @@ const testMigrationManifest = [
       "000053_warning-response_wire-human-decision-and-feedback-commands_human_decision_feedback",
     sequence: 53,
     module: humanDecisionFeedbackMigration,
+  },
+  {
+    root: "production",
+    relativePath:
+      "risk-identification/deliver-assessment-warning-and-response-ui/000054_risk_record_assessment_scope.ts",
+    migrationName:
+      "000054_risk-identification_deliver-assessment-warning-and-response-ui_risk_record_assessment_scope",
+    sequence: 54,
+    module: riskRecordAssessmentScopeMigration,
   },
   {
     root: "fixture",

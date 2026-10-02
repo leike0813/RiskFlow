@@ -1399,6 +1399,24 @@ describe("C36 数据集计算 CLI", () => {
                 ],
                 sourceSegmentIds: [cliSourceSegmentRef.locator.sourceSegmentId],
                 mechanismEntryIds: ["cli-mechanism"],
+                spatialScopeRefs: [
+                  {
+                    kind: "spatial-scope",
+                    reference: { entityId: "cli-scope-ref", versionId: "1" },
+                  },
+                ],
+                sourceVersionRefs: [
+                  {
+                    kind: "source-version",
+                    reference: { entityId: "cli-source-ref", versionId: "1" },
+                  },
+                ],
+                evidenceReferences: [
+                  {
+                    locator: { sourceSegmentId: cliSourceSegmentRef.locator.sourceSegmentId },
+                    sourceVersion: { entityId: "cli-source-ref", versionId: "1" },
+                  },
+                ],
                 authorizationScopeDigest: sha256CanonicalJson({ scope: "cli-scope" }),
                 authorizationContextRef: cliAuthorization.authorizationContextRef,
                 actorRef: cliAuthorization.actorId,

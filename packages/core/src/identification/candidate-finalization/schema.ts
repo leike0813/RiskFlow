@@ -27,6 +27,7 @@ import {
   ReviewTaskRefV1Schema,
   RouteDecisionRefV1Schema,
   SourceVersionRefV1Schema,
+  SpatialScopeRefV1Schema,
   ValidatedCandidateSetRefV1Schema,
   ValidationSnapshotRefV1Schema,
   WorkflowRunRefV1Schema,
@@ -460,9 +461,13 @@ export const IdentificationGroupMemberV1Schema = z.strictObject({
   candidateId: IdentifierSchema,
   candidateVersion: positiveInt,
   candidateRef: ContentArtifactRefV1Schema,
+  /** 候选来自哪个已登记工作项：工作项是识别域内唯一同时带空间范围与来源版本的登记事实。 */
+  workItemRef: IdentificationWorkItemRefV1Schema,
   nodeId: IdentifierSchema,
   sourceSegmentIds: uniqueIdentifiers,
   mechanismEntryIds: uniqueIdentifiers,
+  /** 该候选实际见到并据以判定的证据引用，登记时已按 `locator+sourceVersion` 定型，不重新解析。 */
+  evidenceReferences: z.array(EvidenceReferenceSchema).min(1).max(256),
   modelConfidence: unitInterval,
 });
 export type IdentificationGroupMemberV1 = z.infer<typeof IdentificationGroupMemberV1Schema>;
@@ -793,6 +798,14 @@ export const StandardizedRiskRecordWriteV1Schema = z.strictObject({
   representativeCandidateRefs: z.array(ContentArtifactRefV1Schema).min(1),
   sourceSegmentIds: uniqueIdentifiers,
   mechanismEntryIds: uniqueIdentifiers,
+  /**
+   * 该记录的空间范围与来源版本：接受分组时按组内成员的工作项从已登记工作计划取出并去重。
+   * 二者是下游评估启动上下文与证据解析的唯一依据，必须在登记时定型，绝不按当前资料反推。
+   */
+  spatialScopeRefs: z.array(SpatialScopeRefV1Schema).min(1).max(64),
+  sourceVersionRefs: z.array(SourceVersionRefV1Schema).min(1).max(64),
+  /** 组内成员见到并据以判定的证据引用并集；为空表示该组没有任何带版本的证据登记事实。 */
+  evidenceReferences: z.array(EvidenceReferenceSchema).max(256),
   authorizationScopeDigest: digestSchema,
   authorizationContextRef: AuthorizationContextRefV1Schema,
   actorRef: IdentifierSchema,

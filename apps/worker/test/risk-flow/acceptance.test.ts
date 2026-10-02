@@ -965,6 +965,17 @@ const startHarness = async (): Promise<AcceptanceHarnessV1> => {
         ],
         sourceSegmentIds: [`segment-${recordInput.groupId}`],
         mechanismEntryIds: [`mechanism-${recordInput.groupId}`],
+        spatialScopeRefs: [refOf("spatial-scope", `spatial-scope-${recordInput.groupId}`)],
+        sourceVersionRefs: [refOf("source-version", `source-version-${recordInput.groupId}`)],
+        evidenceReferences: [
+          {
+            locator: { sourceSegmentId: `segment-${recordInput.groupId}` },
+            sourceVersion: {
+              entityId: `source-version-${recordInput.groupId}`,
+              versionId: "v1",
+            },
+          },
+        ],
         // 追溯读只按范围摘要对账：写侧与读侧使用同一工程空间/资料范围。
         authorizationScopeDigest: authorizationScopeDigest(TRACE_AUTHORIZATION),
         authorizationContextRef: TRACE_AUTHORIZATION.authorizationContextRef,

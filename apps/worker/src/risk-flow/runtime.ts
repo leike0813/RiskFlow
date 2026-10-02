@@ -44,7 +44,7 @@ import {
   RiskFlowGraphStateV1Schema,
   type RiskFlowGraphStateV1,
 } from "@riskflow/contracts/workflows";
-import { sha256CanonicalJson } from "@riskflow/core/persistence";
+import { sha256CanonicalJson, type JsonValue } from "@riskflow/core/persistence";
 import {
   WorkflowGraphErrorV1Schema,
   classifyWorkflowGraphFailure,
@@ -1271,6 +1271,76 @@ export const createRiskFlowGraphRuntime = (
     });
   };
 
+  /**
+   * 公开 start-run 的命令身份绑定（design D-08）：以现有 TransactionUnit 执行一次短事务，
+   * 只写一条 `workflow.start-run-bound` 绑定审计并返回确定性运行引用。不调用图、不登记业务
+   * 成功、不发业务事件。回执重放时先核对回执里的运行引用与本次确定性入口一致，不一致即
+   * 视为同键异载荷并失败闭合。
+   */
+  /** 解析后的公开载荷 → 规范 JsonValue：缺席的可选字段不进入命令摘要。 */
+  const jsonPayload = (payload: StartWorkflowRunCommandV1["payload"]): JsonValue =>
+    JSON.parse(JSON.stringify(payload)) as JsonValue;
+
+  const bindStartRunCommand = async (input: {
+    readonly ports: RiskFlowGraphPortsV1;
+    readonly command: StartWorkflowRunCommandV1;
+    readonly runRef: WorkflowRunRefV1;
+    readonly occurredAt: string;
+  }): Promise<WorkflowRunRefV1 | undefined> => {
+    const command = input.command;
+    const auditEntryId = sha256CanonicalJson({
+      action: "workflow.start-run-bound",
+      commandId: command.commandId,
+      projectId: command.projectId,
+    });
+    try {
+      const receipt = await input.ports.transactionUnit.execute(
+        {
+          projectId: command.projectId,
+          commandKind: "workflow.start-run",
+          commandId: command.commandId,
+          idempotencyKey: command.idempotencyKey,
+          // 授权签名不进入摘要：重试按当前授权重新复验，而不是因换了授权上下文就判异载荷。
+          // 载荷经 JSON 往返得到规范 JsonValue：缺席的可选字段不进入摘要。
+          payload: {
+            commandId: command.commandId,
+            actorId: command.actorId,
+            issuedAt: command.issuedAt,
+            payload: jsonPayload(command.payload),
+          },
+          actorRef: command.actorId,
+          authorizationContextRef: command.authorization.authorizationContextRef,
+          issuedAt: command.issuedAt,
+          runId: input.runRef.reference.entityId,
+        },
+        async () => ({
+          resultRef: input.runRef,
+          audit: {
+            auditEntryId,
+            projectId: command.projectId,
+            action: "workflow.start-run-bound",
+            targetRef: input.runRef,
+            actorRef: command.actorId,
+            authorizationContextRef: command.authorization.authorizationContextRef,
+            occurredAt: input.occurredAt,
+            recordedAt: input.occurredAt,
+            version: input.runRef.reference,
+            commandId: command.commandId,
+            idempotencyKey: command.idempotencyKey,
+          },
+          events: [],
+        }),
+      );
+      return receipt.resultRef.kind === "workflow-run" &&
+        receipt.resultRef.reference.entityId === input.runRef.reference.entityId &&
+        receipt.resultRef.reference.versionId === input.runRef.reference.versionId
+        ? input.runRef
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
   const startRunPort = async (
     command: StartWorkflowRunCommandV1,
   ): Promise<StartWorkflowRunResultV1> => {
@@ -1303,6 +1373,34 @@ export const createRiskFlowGraphRuntime = (
     });
     const primaryRiskRef = primaryRiskRefOfPayload(parsed.payload);
     try {
+      // 命令身份绑定事务（design D-08）：在 Schema/入口检查通过后、任何图调用前，用现有
+      // TransactionUnit 留下一次短的确定性绑定。授权签名刻意不进入载荷摘要，因此换主体或
+      // 换授权重试不会误判异载荷；当前授权仍由下面的 `start` 在任何图动作前重新复验。
+      // 同键异载荷在绑定阶段即失败，不会进入第二个图/评估运行。
+      const boundRunRef = await bindStartRunCommand({
+        ports,
+        command: parsed,
+        runRef,
+        occurredAt: options.now().toISOString(),
+      });
+      if (boundRunRef === undefined) {
+        return {
+          kind: "failed",
+          error: moduleErrorFor({
+            error: riskFlowGraphError({
+              code: "CONTRACT_INVALID",
+              stage: "preparing",
+              detailCode: "start-run-binding-conflict",
+              occurredAt: options.now().toISOString(),
+            }),
+            authorization: parsed.authorization,
+            runRef,
+            idempotencyKey: parsed.idempotencyKey,
+            attempt: 1,
+            retryPolicyRef: parsed.payload.retryPolicyRef,
+          }),
+        };
+      }
       const outcome = await start({
         projectId: parsed.projectId,
         actorId: parsed.actorId,

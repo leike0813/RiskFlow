@@ -1588,6 +1588,52 @@ describe("C30 人工决定等待门（唯一已授权空间）", () => {
     };
   };
 
+  it("命令身份绑定先于图调用：同键异载荷失败，重放不产生第二次绑定审计", async () => {
+    harness.assessment.commands.length = 0;
+    const entry = forecastEntryFor("binding", true);
+    const command: StartWorkflowRunCommandV1 = {
+      kind: "start-run",
+      commandId: "c30-start-run-bound",
+      idempotencyKey: "c30-start-run-bound",
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      issuedAt: TIMESTAMP,
+      authorization: authorizationFor("workflow.start", [SPACE_A]),
+      payload: entry.payload,
+    };
+    /** 命令身份绑定审计：只按命令身份查，不按运行分区（绑定早于任何图登记）。 */
+    const boundAuditRows = async () => {
+      const result = await postgres.adminPool.query<{ action: string; command_id: string }>(
+        "SELECT action, command_id FROM audit.entries WHERE project_id = $1 AND command_id = $2 AND action = 'workflow.start-run-bound'",
+        [PROJECT_ID, command.commandId],
+      );
+      return result.rows;
+    };
+    const started = await harness.riskFlowRuntime.workflowPort.startRun(command);
+    expect(started.kind).toBe("waiting");
+    if (started.kind !== "waiting") return;
+    expect(started.workflowRunRef).toEqual(entry.runRef);
+
+    // 绑定审计与运行登记审计分别描述各自事实；绑定只写一次。
+    const boundAudit = await boundAuditRows();
+    expect(boundAudit).toHaveLength(1);
+    expect(boundAudit[0]).toMatchObject({ action: "workflow.start-run-bound" });
+
+    // 同命令身份重放：不重复绑定审计，也不产生第二个运行。
+    const replay = await harness.riskFlowRuntime.workflowPort.startRun(command);
+    expect(replay.kind === "waiting" ? replay.workflowRunRef : undefined).toEqual(entry.runRef);
+    expect(await boundAuditRows()).toHaveLength(1);
+
+    // 同键异载荷：绑定阶段即失败，不进入第二个图/评估运行。
+    const conflicting = await harness.riskFlowRuntime.workflowPort.startRun({
+      ...command,
+      payload: forecastEntryFor("binding-other", true).payload,
+    });
+    expect(conflicting.kind).toBe("failed");
+    expect(harness.assessment.commands).toEqual([]);
+    expect(await boundAuditRows()).toHaveLength(1);
+  }, 120_000);
+
   it("C41/S1 等待模式的预测运行只登记等待与入口事实，同键重放返回同一运行引用", async () => {
     harness.assessment.commands.length = 0;
     harness.humanDecisionProof.queries.length = 0;

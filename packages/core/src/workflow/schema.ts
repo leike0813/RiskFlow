@@ -220,6 +220,12 @@ export const WorkflowGraphRunStateV1Schema = z.strictObject({
    * 但缺该字段的重评解释与继续评估必须失败闭合，不从 `frozenRefs` 反推。
    */
   reassessmentEntry: WorkflowReassessmentInputV1Schema.optional(),
+  /**
+   * 启动时选定的精确图版本（design D-04）：运行页面据此解释该次运行用的是哪版图。
+   * 与 `reassessmentEntry` 同为已登记的入口事实，只追加、不参与入口身份派生；
+   * 历史工件允许缺席以保持原版本可读，读端不得用 `entryIdentity` 反推或编造该版本。
+   */
+  graphVersion: VersionReferenceSchema.optional(),
   recordedAt: IsoDateTimeSchema,
 });
 export type WorkflowGraphRunStateV1 = z.infer<typeof WorkflowGraphRunStateV1Schema>;

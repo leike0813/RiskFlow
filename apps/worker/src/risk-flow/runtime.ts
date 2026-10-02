@@ -695,6 +695,9 @@ export const createRiskFlowGraphRuntime = (
     frozenRefs: [],
     pairing: [],
     retryPolicyRef: ports.retryPolicyRef,
+    // 占位上下文只用于按运行身份定位已登记事实；精确图版本由恢复路径从已登记游标取回，
+    // 这里的占位值不得被写进任何工件正文（design D-04/D-08）。
+    graphVersion: { entityId: "unregistered", versionId: "unregistered" },
     subGraphVersions: ports.subGraphVersions,
   });
 
@@ -835,6 +838,7 @@ export const createRiskFlowGraphRuntime = (
             }),
       pairing: command.pairing,
       retryPolicyRef: command.retryPolicyRef,
+      graphVersion: command.graphVersion,
       subGraphVersions: ports.subGraphVersions,
       ...(command.primaryRiskRef === undefined ? {} : { primaryRiskRef: command.primaryRiskRef }),
       ...(command.reassessmentEntry === undefined
@@ -940,6 +944,8 @@ export const createRiskFlowGraphRuntime = (
       threadId,
       entryMode: cursorBefore.entryMode,
       entryIdentity: cursorBefore.entryIdentity,
+      // 恢复不重新选定图版本：沿用该运行启动时已登记的精确版本（design D-04）。
+      graphVersion: cursorBefore.graphVersion ?? provisional.graphVersion,
       frozenRefs,
       pairing: pairingsFromRowsV1(rows),
       ...(primaryRiskRef === undefined ? {} : { primaryRiskRef }),

@@ -186,6 +186,8 @@ export interface RiskFlowGraphRunContextV1 {
   /** 重评入口不可变事实（design D-12）；非重评不携带。 */
   readonly reassessmentEntry?: WorkflowReassessmentInputV1;
   readonly retryPolicyRef: VersionReference;
+  /** 本运行选定的精确图版本（design D-04）：只写入 C30 run-state 工件供读端原样呈现。 */
+  readonly graphVersion: VersionReference;
   /** 子图冻结版本：由组合根注入的配置身份，不从调用方猜测。 */
   readonly subGraphVersions: {
     readonly identification: VersionReference;
@@ -923,6 +925,8 @@ const runStateBody = (input: {
     ...(reassessmentEntryOf(input.run, previous) === undefined
       ? {}
       : { reassessmentEntry: reassessmentEntryOf(input.run, previous) }),
+    // 精确图版本与重评入口同理：每次形成 run-state 工件都写入同一启动值（design D-04）。
+    graphVersion: input.run.graphVersion,
     ...(identificationRunRef === undefined ? {} : { identificationRunRef }),
     ...(lastStageResultRef === undefined ? {} : { lastStageResultRef }),
     ...(lastRouteDecisionRef === undefined ? {} : { lastRouteDecisionRef }),

@@ -1239,6 +1239,8 @@ const cursorBody = (input: {
     entryIdentity: input.run.entryIdentity,
     stage: input.stage,
     status: input.status,
+    // 精确图版本与重评入口同理：每次形成 run-state 工件都写入同一启动值（design D-04）。
+    graphVersion: input.run.graphVersion,
     ...(reassessmentEntry === undefined ? {} : { reassessmentEntry }),
     ...(input.run.parentRunRef === undefined ? {} : { parentRunRef: input.run.parentRunRef }),
     assessmentRunRefs: patch.assessmentRunRefs ?? previous?.assessmentRunRefs ?? [],

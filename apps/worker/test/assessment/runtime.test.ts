@@ -1265,6 +1265,10 @@ describe("C30 评估子图运行时（真实 PostgreSQL + 真实 LangGraph）", 
     });
     // 非重评运行不携带该入口字段。
     expect(firstState?.state.reassessmentEntry).toBeUndefined();
+    // 精确图版本同样作为已登记入口事实保存（design D-04），读端可原样解释该次运行用的哪版图，
+    // 不从入口身份或运行 id 反推。
+    expect(reassessState?.state.graphVersion).toEqual(GRAPH_VERSION);
+    expect(firstState?.state.graphVersion).toEqual(GRAPH_VERSION);
   });
 
   it("同一前驱但不同原因的重评不共享运行分区，原因按唯一映射送到 C25", async () => {

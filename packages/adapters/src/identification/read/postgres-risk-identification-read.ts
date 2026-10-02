@@ -1,7 +1,7 @@
 import { TextDecoder } from "node:util";
 import { randomUUID } from "node:crypto";
 
-import type { Kysely } from "kysely";
+import { sql, type Kysely, type SqlBool } from "kysely";
 
 import { ACCESS_POLICY_REF_V1, type LocalIdentityAccessV1 } from "@riskflow/core/access";
 import { ArtifactReadRequestV1Schema, type ArtifactStoreV1 } from "@riskflow/core/artifacts";
@@ -157,30 +157,6 @@ const asTime = (value: TimestampColumn): number => new Date(value).getTime();
 const refKey = (reference: { readonly entityId: string; readonly versionId: string }): string =>
   `${reference.entityId}@${reference.versionId}`;
 
-const asVersionedRef = (
-  value: unknown,
-):
-  | {
-      readonly kind: string;
-      readonly reference: { readonly entityId: string; readonly versionId: string };
-    }
-  | undefined => {
-  if (typeof value !== "object" || value === null) return undefined;
-  const candidate = value as { kind?: unknown; reference?: unknown };
-  if (typeof candidate.kind !== "string") return undefined;
-  const reference = candidate.reference as { entityId?: unknown; versionId?: unknown } | undefined;
-  if (
-    reference === undefined ||
-    typeof reference.entityId !== "string" ||
-    typeof reference.versionId !== "string"
-  ) {
-    return undefined;
-  }
-  return {
-    kind: candidate.kind,
-    reference: { entityId: reference.entityId, versionId: reference.versionId },
-  };
-};
 
 /** 标识符列表事实：含非字符串或空串即视为不可信来源（fail closed，不部分披露）。 */
 const identifierList = (value: unknown): readonly string[] | undefined =>
@@ -932,54 +908,56 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
     if (cursor === "invalid") return failed(this.#denied(query.queryId, branch));
     const pageSize = query.payload.pageSize ?? 50;
     const scopeDigest = authorizationScopeDigest(verified);
+    const runFilter = query.payload.identificationRunRef;
 
+    // 目录过滤全部下推为数据库谓词，读取行数只随当前页增长（IP-03）：作用域摘要、验收路线、
+    // 运行引用与工序节点都在 SQL 侧求值，不再「读全量可见行再在内存截断」。工序节点与
+    // 标识在登记正文的 `record` 对象内，用 jsonb 路径取值即可，无需新增列或索引。
     let rows: StandardizedRiskRecordDbRow[];
     try {
-      rows = await this.#db
+      const scoped = this.#db
         .selectFrom(RECORDS_TABLE)
         .selectAll()
         .where("project_id", "=", query.projectId)
+        .where("authorization_scope_digest", "=", scopeDigest)
+        .where(sql<SqlBool>`jsonb_typeof(payload) = 'object'`)
+        .where(
+          query.payload.acceptanceKind === "automatic"
+            ? sql<SqlBool>`route_decision_ref IS NOT NULL`
+            : query.payload.acceptanceKind === "review"
+              ? sql<SqlBool>`route_decision_ref IS NULL AND review_decision_ref IS NOT NULL`
+              : // 未指定验收路线时只纳入已成立自动或人工验收的记录，与 #catalogItem 的判定一致
+                sql<SqlBool>`(route_decision_ref IS NOT NULL OR review_decision_ref IS NOT NULL)`,
+        );
+      const withProcessNode =
+        query.payload.processNodeId === undefined
+          ? scoped
+          : scoped.where(
+              sql<SqlBool>`payload -> 'record' ->> 'processNodeId' = ${query.payload.processNodeId}`,
+            );
+      const withRun =
+        runFilter === undefined
+          ? withProcessNode
+          : withProcessNode.where(sql<SqlBool>`identification_run_ref -> 'reference' ->> 'entityId' = ${runFilter.reference.entityId}
+              AND identification_run_ref -> 'reference' ->> 'versionId' = ${runFilter.reference.versionId}`);
+      // 多取一行判断是否还有下一页，游标语义与既有 offset 游标保持一致。
+      rows = await withRun
         .orderBy("created_at", "desc")
         .orderBy("risk_record_id", "asc")
+        .limit(cursor + pageSize + 1)
         .execute();
     } catch (error) {
       throw mapPostgresError(error, `${STAGE_CODE_V1}.record-catalog`);
     }
-    const runFilter = query.payload.identificationRunRef;
+
     const items = rows
-      .filter((row) => row.authorization_scope_digest === scopeDigest)
-      .map((row) => ({ row, item: this.#catalogItem(row) }))
-      .flatMap(({ row, item }) => {
-        if (item === undefined) return [];
-        if (
-          query.payload.processNodeId !== undefined &&
-          item.processNodeId !== query.payload.processNodeId
-        ) {
-          return [];
-        }
-        if (
-          query.payload.acceptanceKind !== undefined &&
-          item.acceptanceKind !== query.payload.acceptanceKind
-        ) {
-          return [];
-        }
-        if (runFilter !== undefined) {
-          const runRef = asVersionedRef(row.identification_run_ref);
-          if (
-            runRef === undefined ||
-            runRef.reference.entityId !== runFilter.reference.entityId ||
-            runRef.reference.versionId !== runFilter.reference.versionId
-          ) {
-            return [];
-          }
-        }
-        return [item];
-      });
-    const page = items.slice(cursor, cursor + pageSize);
-    const next = cursor + pageSize < items.length ? encodeCursor(cursor + pageSize) : undefined;
+      .slice(cursor, cursor + pageSize)
+      .map((row) => this.#catalogItem(row))
+      .flatMap((item) => (item === undefined ? [] : [item]));
+    const next = rows.length > cursor + pageSize ? encodeCursor(cursor + pageSize) : undefined;
     return succeeded({
       kind: "record-catalog",
-      items: page,
+      items,
       ...(next === undefined ? {} : { nextCursor: next }),
     });
   }

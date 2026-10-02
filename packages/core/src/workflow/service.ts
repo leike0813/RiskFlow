@@ -15,8 +15,10 @@ import type {
   StartWorkflowRunCommandV1,
   WorkflowEntryModeV1,
   WorkflowErrorRefV1,
+  WorkflowReassessmentInputV1,
   WorkflowRunRefV1,
 } from "@riskflow/contracts/ports";
+import type { WorkflowReassessmentReasonV1 } from "@riskflow/contracts/vocabulary";
 
 import {
   WorkflowGraphErrorV1Schema,
@@ -153,7 +155,12 @@ export interface WorkflowGraphRunCommandV1 {
   readonly applicabilityMetadataSnapshotRef?: ApplicabilityMetadataSnapshotRefV1;
   readonly monitoringSnapshotRefs?: readonly MonitoringSnapshotRefV1[];
   readonly assessmentRunRefs?: readonly WorkflowRunRefV1[];
-  readonly previousAssessmentRecordRef?: ContractReferenceV1;
+  /**
+   * 重评入口不可变事实（design D-12）：父公开 `startRunPort` 从解析后的 `reassess` 载荷原样
+   * 取出，经 `WorkflowGraphRunCommandV1` 传给子运行与 run-state 工件。原
+   * `previousAssessmentRecordRef` 接缝改从该对象取值，不保留可独立改变的第二套前驱。
+   */
+  readonly reassessmentEntry?: WorkflowReassessmentInputV1;
 }
 
 export interface WorkflowGraphRunOutcomeV1 {
@@ -378,12 +385,20 @@ const refKey = (
 export type NormalizedMonitoringInputsV1 =
   | { readonly kind: "ok"; readonly refs: readonly MonitoringSnapshotRefV1[] }
   | { readonly kind: "conflict" }
-  | { readonly kind: "missing" };
+  /**
+   * 显式空集合：调用方声明了监测输入集合却是空的，与 `absent` 区分并在入口门禁拒绝。
+   */
+  | { readonly kind: "missing" }
+  /**
+   * 字段缺席（design D-12）：单数字段与多数字段都未提供，表示本次入口不携带监测输入。
+   * 与显式空集合是两种不同事实，入口门禁按无监测输入继续，不补默认监测。
+   */
+  | { readonly kind: "absent" };
 
 const normalize = (
   refs: readonly MonitoringSnapshotRefV1[] | undefined,
 ): NormalizedMonitoringInputsV1 => {
-  if (refs === undefined) return { kind: "missing" };
+  if (refs === undefined) return { kind: "absent" };
   const seen = new Set<string>();
   for (const ref of refs) {
     const key = refKey(ref);
@@ -403,8 +418,9 @@ export const normalizeMonitoringInputs = (input: {
 }): NormalizedMonitoringInputsV1 => {
   const plural = normalize(input.monitoringSnapshotRefs);
   const singular = input.monitoringSnapshotRef;
+  // 两字段均缺席：本次入口不携带监测输入（design D-12），不补默认监测。
   if (singular === undefined) return plural;
-  if (input.monitoringSnapshotRefs === undefined) return { kind: "ok", refs: [singular] };
+  if (plural.kind === "absent") return { kind: "ok", refs: [singular] };
   if (plural.kind !== "ok") return plural;
   if (
     plural.refs.length !== 1 ||
@@ -514,19 +530,24 @@ export const evaluateWorkflowEntryGate = (payload: WorkflowStartPayloadV1): Work
         return { kind: "incomplete", detailCode: "applicability-metadata-missing" };
       }
       const monitoring = normalizeMonitoringInputs(payload);
-      if (monitoring.kind !== "ok") {
+      // design D-12：两字段均缺席表示本次入口不携带监测输入，按无监测继续；显式空集合、
+      // 两字段冲突与非法引用仍拒绝，不补默认监测。
+      const monitoringRefs = monitoring.kind === "ok" ? monitoring.refs : [];
+      if (monitoring.kind !== "ok" && monitoring.kind !== "absent") {
         return { kind: monitoring.kind, detailCode: "monitoring-input" };
       }
       const riskInput = payload.riskInput;
       if (riskInput === undefined) {
         return { kind: "incomplete", detailCode: "risk-input-missing" };
       }
+      // frozenRefs 仍是全部获准输入集合；重评的变化引用与其相交或重复不改变
+      // reassessmentEntry 的内容（design D-12）。
       const frozenRefs: ContractReferenceV1[] = [
         payload.projectRevisionRef,
         payload.spatialScopeRef,
         payload.applicabilityMetadataSnapshotRef,
         riskInput,
-        ...monitoring.refs,
+        ...monitoringRefs,
         ...(payload.entryMode === "historical-backfill"
           ? [payload.assessmentBasisReleaseSetRef]
           : []),
@@ -535,7 +556,7 @@ export const evaluateWorkflowEntryGate = (payload: WorkflowStartPayloadV1): Work
       return {
         kind: "ready",
         frozenRefs: dedupeRefs(frozenRefs),
-        monitoringSnapshotRefs: dedupeRefs(monitoring.refs),
+        monitoringSnapshotRefs: dedupeRefs(monitoringRefs),
         assessmentContexts: [],
       };
     }
@@ -585,16 +606,64 @@ const dedupeRefs = <T extends ContractReferenceV1>(refs: readonly T[]): T[] => {
   return result;
 };
 
-/** 入口身份引用：同一命令载荷只对应一个运行身份（design D-02）。 */
+/**
+ * 父子入口身份的唯一构造函数（design D-12）。
+ *
+ * 父公开 `startRunPort` 与子 runtime 的 `entryIdentityConsistent` 都调用它；非重评不携带
+ * `reassessmentEntry`，身份摘要与其原值完全一致。父入口身份摘要包含现有冻结输入与完整
+ * `reassessmentEntry`，因此不同前驱、原因或变化引用不会共享同一个运行分区。摘要沿用
+ * 现有 canonical JSON，不引入额外哈希门禁。
+ */
 export const workflowEntryIdentityFor = (input: {
   readonly entryMode: WorkflowEntryModeV1;
   readonly projectId: string;
   readonly frozenRefs: readonly ContractReferenceV1[];
+  readonly reassessmentEntry?: WorkflowReassessmentInputV1 | undefined;
 }): VersionReference => ({
   entityId: `workflow-entry:${input.projectId}:${input.entryMode}`,
   versionId: sha256CanonicalJson({
     entryMode: input.entryMode,
     projectId: input.projectId,
     frozenRefs: input.frozenRefs.map(refKey).sort(),
+    ...(input.reassessmentEntry === undefined
+      ? {}
+      : {
+          reassessmentEntry: {
+            previousAssessmentRecordRef: refKey(
+              input.reassessmentEntry.previousAssessmentRecordRef,
+            ),
+            reason: input.reassessmentEntry.reason,
+            changedInputRefs: input.reassessmentEntry.changedInputRefs.map(refKey).sort(),
+          },
+        }),
   }),
 });
+
+/**
+ * 重评原因的唯一映射（design D-12）。
+ *
+ * 工作流入口使用 `weight-strategy`，C25 侧沿其既有公开契约使用 `weight-or-strategy`；
+ * 只有这一项需要改名，其余四码原样透传。Worker A2 直接调用本函数，从按 `frozenRefs`
+ * 数量推导原因的启发式改为读取已登记的入口原因，不再猜测“最新原因”。
+ */
+export const assessmentReasonForWorkflowReassessmentV1 = (
+  reason: WorkflowReassessmentReasonV1,
+):
+  | "monitoring-snapshot"
+  | "applicability-metadata"
+  | "applicable-rule-set"
+  | "weight-or-strategy"
+  | "risk-matrix" =>
+  reason === "weight-strategy" ? "weight-or-strategy" : reason;
+
+/** 从公开 `reassess` 启动载荷取出不可变重评入口事实；非重评返回 undefined。 */
+export const reassessmentEntryFromStartPayloadV1 = (
+  payload: WorkflowStartPayloadV1,
+): WorkflowReassessmentInputV1 | undefined =>
+  payload.entryMode === "reassess"
+    ? {
+        previousAssessmentRecordRef: payload.previousAssessmentRecordRef,
+        reason: payload.reason,
+        changedInputRefs: payload.changedInputRefs,
+      }
+    : undefined;

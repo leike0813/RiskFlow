@@ -7,12 +7,14 @@ import {
   WorkflowGraphRunStateV1Schema,
 } from "../../src/workflow/schema.js";
 import {
+  assessmentReasonForWorkflowReassessmentV1,
   assessmentSubRunIdentityFor,
   classifyWorkflowGraphFailure,
   evaluateWorkflowEntryGate,
   initialRunVersionId,
   nextRunVersionId,
   normalizeMonitoringInputs,
+  reassessmentEntryFromStartPayloadV1,
   reconcileCheckpointReference,
   workflowEntryIdentityFor,
   workflowRunIdentityFor,
@@ -204,8 +206,13 @@ describe("C30 entry gate", () => {
   });
 
   it("refuses entries that omit the frozen references a formal run requires", () => {
-    expect(evaluateWorkflowEntryGate(assess({ monitoringSnapshotRefs: undefined }))).toMatchObject({
+    // 显式空集合与字段缺席是两种事实：前者拒绝，后者按无监测输入继续（design D-12）。
+    expect(evaluateWorkflowEntryGate(assess({ monitoringSnapshotRefs: [] }))).toMatchObject({
       kind: "missing",
+    });
+    expect(evaluateWorkflowEntryGate(assess({ monitoringSnapshotRefs: undefined }))).toMatchObject({
+      kind: "ready",
+      monitoringSnapshotRefs: [],
     });
     expect(evaluateWorkflowEntryGate(assess({ projectRevisionRef: undefined }))).toMatchObject({
       kind: "incomplete",
@@ -521,7 +528,8 @@ describe("C30 registration rows", () => {
   });
 
   it("keeps monitoring normalization total over singular, plural and conflicting inputs", () => {
-    expect(normalizeMonitoringInputs({})).toEqual({ kind: "missing" });
+    // design D-12：两字段缺席是 absent，显式空集合才是 missing。
+    expect(normalizeMonitoringInputs({})).toEqual({ kind: "absent" });
     expect(normalizeMonitoringInputs({ monitoringSnapshotRef: monitoringA })).toEqual({
       kind: "ok",
       refs: [monitoringA],
@@ -533,6 +541,65 @@ describe("C30 registration rows", () => {
         monitoringSnapshotRefs: [monitoringB],
       }),
     ).toEqual({ kind: "conflict" });
+  });
+
+  it("maps the workflow reassessment reason to the C25 reason exactly once", () => {
+    // 只有 weight-strategy 需要改名，其余四码原样透传（design D-12）。
+    expect(assessmentReasonForWorkflowReassessmentV1("weight-strategy")).toBe("weight-or-strategy");
+    for (const reason of [
+      "monitoring-snapshot",
+      "applicability-metadata",
+      "applicable-rule-set",
+      "risk-matrix",
+    ] as const) {
+      expect(assessmentReasonForWorkflowReassessmentV1(reason)).toBe(reason);
+    }
+  });
+
+  it("folds the explicit reassessment entry into the parent entry identity", () => {
+    const projectId = "project-c34";
+    const assessmentRecordRef = version("risk-assessment-record", "record");
+    const base = {
+      entryMode: "reassess" as const,
+      projectId,
+      frozenRefs: [projectRevisionRef, spatialA, monitoringA],
+    };
+    const entry = {
+      previousAssessmentRecordRef: assessmentRecordRef,
+      reason: "weight-strategy" as const,
+      changedInputRefs: [monitoringB],
+    };
+    const withEntry = workflowEntryIdentityFor({ ...base, reassessmentEntry: entry });
+    // 携带该字段后是新的独立分区；同一输入稳定重放同一身份。
+    expect(workflowEntryIdentityFor(base)).not.toEqual(withEntry);
+    expect(workflowEntryIdentityFor({ ...base, reassessmentEntry: entry })).toEqual(withEntry);
+
+    // 不同前驱、原因或变化引用都不得共享同一个运行分区。
+    for (const different of [
+      { ...entry, previousAssessmentRecordRef: version("risk-assessment-record", "record", "v2") },
+      { ...entry, reason: "risk-matrix" as const },
+      { ...entry, changedInputRefs: [projectRevisionRef] },
+    ]) {
+      expect(workflowEntryIdentityFor({ ...base, reassessmentEntry: different })).not.toEqual(
+        withEntry,
+      );
+    }
+
+    // 非重评入口不带该字段时身份与旧算法一致（保持原身份）。
+    const assessBase = { entryMode: "assess" as const, projectId, frozenRefs: [spatialA] };
+    expect(workflowEntryIdentityFor(assessBase)).toEqual(
+      workflowEntryIdentityFor({ ...assessBase, reassessmentEntry: undefined }),
+    );
+  });
+
+  it("extracts the reassessment entry only from a reassess start payload", () => {
+    const payload = reassess({ reason: "weight-strategy", changedInputRefs: [monitoringB] });
+    expect(reassessmentEntryFromStartPayloadV1(payload)).toEqual({
+      previousAssessmentRecordRef: version("risk-assessment-record", "record"),
+      reason: "weight-strategy",
+      changedInputRefs: [monitoringB],
+    });
+    expect(reassessmentEntryFromStartPayloadV1(assess())).toBeUndefined();
   });
 });
 

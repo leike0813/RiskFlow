@@ -1223,14 +1223,19 @@ describe("C30 评估子图运行时（真实 PostgreSQL + 真实 LangGraph）", 
     if (firstRecord === undefined)
       throw new TypeError("the first run must register an assessment record");
 
-    // 重评：输入发生变化并显式携带上一评估记录。
+    // 重评：输入发生变化并显式携带完整重评入口事实（design D-12：前驱、原因与变化引用
+    // 作为不可变入口事实传入，不从冻结引用集合反推）。
     const reassess = entryInputsFor("r3s3-reassess", { monitoringCount: 2 });
     const reassessOutcome = await startSegmented(reassess, "reassess", {
-      previousAssessmentRecordRef: firstRecord,
+      reassessmentEntry: {
+        previousAssessmentRecordRef: firstRecord,
+        reason: "monitoring-snapshot",
+        changedInputRefs: [reassess.monitoringSnapshotRefs[1]],
+      },
     });
     expect(reassessOutcome.status).toBe("completed");
 
-    // C25 `reassessment`：上一记录与改变原因只来自冻结输入。
+    // C25 `reassessment`：上一记录与改变原因只来自已登记的入口事实。
     const prepareCommands = harness.world.calls.prepare;
     expect(prepareCommands.map((command) => command.kind)).toEqual([
       "historical-backfill",
@@ -1241,6 +1246,7 @@ describe("C30 评估子图运行时（真实 PostgreSQL + 真实 LangGraph）", 
       throw new TypeError("the reassess entry must prepare a reassessment");
     }
     expect(reassessCommand.payload.previousAssessmentRecordRef).toEqual(firstRecord);
+    expect(reassessCommand.payload.reason).toBe("monitoring-snapshot");
 
     // 新记录与旧记录不同，且旧运行的登记行、链边与运行状态逐项未变（只追加）。
     const reassessState = await harness.latestState(reassessOutcome.runRef);

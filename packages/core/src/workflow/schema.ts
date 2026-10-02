@@ -35,6 +35,7 @@ import {
   WorkflowSkippedTailKindV1Schema,
   WORKFLOW_LINK_RELATIONS_V1,
   WORKFLOW_SKIPPED_TAIL_KINDS_V1,
+  WorkflowReassessmentInputV1Schema,
 } from "@riskflow/contracts/ports";
 import { AssessmentStageV1Schema, RiskFlowStageV1Schema } from "@riskflow/contracts/workflows";
 
@@ -211,6 +212,12 @@ export const WorkflowGraphRunStateV1Schema = z.strictObject({
   lastWaitingRef: WaitingRefV1Schema.optional(),
   lastErrorRef: WorkflowErrorRefV1Schema.optional(),
   resultRef: ContractReferenceV1Schema.optional(),
+  /**
+   * 重评入口不可变事实（design D-12）：直接引用 D-03 的 `WorkflowReassessmentInputV1Schema`。
+   * 这是已登记的入口事实而非新的图状态；历史工件允许缺席以保持原版本可读，
+   * 但缺该字段的重评解释与继续评估必须失败闭合，不从 `frozenRefs` 反推。
+   */
+  reassessmentEntry: WorkflowReassessmentInputV1Schema.optional(),
   recordedAt: IsoDateTimeSchema,
 });
 export type WorkflowGraphRunStateV1 = z.infer<typeof WorkflowGraphRunStateV1Schema>;

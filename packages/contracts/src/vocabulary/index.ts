@@ -169,3 +169,21 @@ export const CalibrationGovernanceDraftOutcomeV1Schema = z.literal(
 export type CalibrationGovernanceDraftOutcomeV1 = z.infer<
   typeof CalibrationGovernanceDraftOutcomeV1Schema
 >;
+
+/**
+ * 重评原因唯一常量（design D-03、D-12）。
+ *
+ * 它同时是工作流 `reassess` 入口的原因 Schema 与 C34 只读解释的原因 Schema，
+ * 不再在 ports 或 core 分别内联枚举。C25 侧的重评原因码沿其既有公开契约
+ * （`weight-or-strategy`），由 core 的 `assessmentReasonForWorkflowReassessmentV1`
+ * 单向映射连接，不在此处混合两套取值。
+ */
+export const WORKFLOW_REASSESSMENT_REASONS_V1 = [
+  "monitoring-snapshot",
+  "applicability-metadata",
+  "applicable-rule-set",
+  "weight-strategy",
+  "risk-matrix",
+] as const;
+export const WorkflowReassessmentReasonV1Schema = z.enum(WORKFLOW_REASSESSMENT_REASONS_V1);
+export type WorkflowReassessmentReasonV1 = z.infer<typeof WorkflowReassessmentReasonV1Schema>;

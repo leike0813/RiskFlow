@@ -29,7 +29,6 @@ import {
   type ResumeWorkflowRunResultV1,
   type CancelWorkflowRunResultV1,
   type ResponseRecommendationRefV1,
-  type RiskAssessmentRecordRefV1,
   type RouteDecisionRefV1,
   type SpatialScopeRefV1,
   type StandardizedRiskRecordRefV1,
@@ -38,6 +37,7 @@ import {
   type WaitingRefV1,
   type WorkflowEntryModeV1,
   type WorkflowPortV1,
+  type WorkflowReassessmentInputV1,
   type WorkflowRunRefV1,
 } from "@riskflow/contracts/ports";
 import {
@@ -49,7 +49,9 @@ import {
   WorkflowGraphErrorV1Schema,
   classifyWorkflowGraphFailure,
   evaluateWorkflowEntryGate,
+  reassessmentEntryFromStartPayloadV1,
   reconcileCheckpointReference,
+  workflowEntryIdentityFor,
   workflowRunIdentityFor,
   type WorkflowGraphErrorCodeV1,
   type WorkflowGraphErrorV1,
@@ -158,7 +160,8 @@ export interface RiskFlowStartCommandV1 {
   readonly frozenRefs: readonly ContractReferenceV1[];
   readonly pairing: readonly RiskFlowAssessmentPairingV1[];
   readonly primaryRiskRef?: ContractReferenceV1;
-  readonly previousAssessmentRecordRef?: RiskAssessmentRecordRefV1;
+  /** 重评入口不可变事实（design D-12）；非重评不携带。 */
+  readonly reassessmentEntry?: WorkflowReassessmentInputV1;
   readonly runRef: WorkflowRunRefV1;
   readonly threadId: string;
   /** 人工采纳等待意图（design D2）：只由公共 `forecast-response` 载荷的可选字段给出。 */
@@ -834,9 +837,9 @@ export const createRiskFlowGraphRuntime = (
       retryPolicyRef: command.retryPolicyRef,
       subGraphVersions: ports.subGraphVersions,
       ...(command.primaryRiskRef === undefined ? {} : { primaryRiskRef: command.primaryRiskRef }),
-      ...(command.previousAssessmentRecordRef === undefined
+      ...(command.reassessmentEntry === undefined
         ? {}
-        : { previousAssessmentRecordRef: command.previousAssessmentRecordRef }),
+        : { reassessmentEntry: command.reassessmentEntry }),
       ...(humanDecisionGate === undefined ? {} : { humanDecisionGate }),
     };
     const existing = await readRiskFlowCursor({ ports, run });
@@ -1277,20 +1280,15 @@ export const createRiskFlowGraphRuntime = (
       };
     }
     const entryMode = parsed.payload.entryMode;
-    const entryIdentity = {
-      entityId: `workflow-entry:${parsed.projectId}:${entryMode}`,
-      versionId: sha256CanonicalJson({
-        entryMode,
-        projectId: parsed.projectId,
-        frozenRefs: gate.frozenRefs
-          .map((ref) =>
-            ref.kind === "domain-event"
-              ? `${ref.kind}/${ref.eventId}`
-              : `${ref.kind}/${ref.reference.entityId}/${ref.reference.versionId}`,
-          )
-          .sort(),
-      }),
-    };
+    // 入口身份由 core 唯一构造函数给出（design D-12）：此处不再复制一份摘要算法，
+    // 也不把前驱伪装成变化引用加入 frozenRefs；不同前驱、原因或变化引用不共享运行分区。
+    const reassessmentEntry = reassessmentEntryFromStartPayloadV1(parsed.payload);
+    const entryIdentity = workflowEntryIdentityFor({
+      entryMode,
+      projectId: parsed.projectId,
+      frozenRefs: gate.frozenRefs,
+      reassessmentEntry,
+    });
     const { runRef, threadId } = workflowRunIdentityFor({
       projectId: parsed.projectId,
       entryMode,
@@ -1314,9 +1312,7 @@ export const createRiskFlowGraphRuntime = (
         frozenRefs: gate.frozenRefs,
         pairing: pairingsOfPayload({ payload: parsed.payload, gate }),
         ...(primaryRiskRef === undefined ? {} : { primaryRiskRef }),
-        ...(parsed.payload.entryMode === "reassess"
-          ? { previousAssessmentRecordRef: parsed.payload.previousAssessmentRecordRef }
-          : {}),
+        ...(reassessmentEntry === undefined ? {} : { reassessmentEntry }),
         ...(parsed.payload.entryMode === "forecast-response"
           ? {
               adoptedRecommendationRef: parsed.payload.adoptedRecommendationRef,

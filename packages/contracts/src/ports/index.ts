@@ -12,6 +12,7 @@ import {
   ApplicabilityConditionsSchema,
   ApplicabilityMetadataSchema,
   CompositeConfidenceSchema,
+  DeviationRecordSchema,
   GradeIntervalSchema,
   ResponseRecommendationSchema,
   RiskAssessmentRecordSchema,
@@ -35,6 +36,8 @@ import {
   StructuralComponentSchema,
   WarningResponseTaskStatusV1Schema,
   WarningTriggerTypeSchema,
+  WorkflowReassessmentReasonV1Schema,
+  COMPARISON_OPERATOR_VALUES,
 } from "../vocabulary/index.js";
 export { RiskInputReferenceSchema } from "../records/index.js";
 export type { RiskInputReference } from "../records/index.js";
@@ -1758,14 +1761,8 @@ const StartWorkflowPayloadV1Schema = z.discriminatedUnion("entryMode", [
     ...workflowStartControlShape,
     entryMode: z.literal("reassess"),
     previousAssessmentRecordRef: RiskAssessmentRecordRefV1Schema,
-    reason: z.enum([
-      "monitoring-snapshot",
-      "applicability-metadata",
-      "applicable-rule-set",
-      "weight-strategy",
-      "risk-matrix",
-    ]),
-    changedInputRefs: z.array(ContractReferenceV1Schema).min(1),
+    reason: WorkflowReassessmentReasonV1Schema,
+    changedInputRefs: z.array(ContractReferenceV1Schema).min(1).max(64),
     riskInput: RiskInputVersionRefV1Schema.optional(),
     projectRevisionRef: ProjectRevisionRefV1Schema.optional(),
     spatialScopeRef: SpatialScopeRefV1Schema.optional(),
@@ -4377,21 +4374,31 @@ export const AssessmentEntryContextViewV1Schema = z.strictObject({
 export type AssessmentEntryContextViewV1 = z.infer<typeof AssessmentEntryContextViewV1Schema>;
 
 /**
- * 重评原因（design D-03/D-07）：唯一事实源取既有 workflow 枚举取值，公共只读解释复用同一枚举。
+ * 重评原因（design D-03、D-12）：唯一事实源在 vocabulary 的
+ * `WorkflowReassessmentReasonV1Schema`，此处只作同一 Schema 的导出别名，
+ * 保证工作流 `reassess` 入口与 C34 只读解释不会各写一份枚举。
  */
-export const ASSESSMENT_REASSESSMENT_REASONS_V1 = [
-  "monitoring-snapshot",
-  "applicability-metadata",
-  "applicable-rule-set",
-  "weight-strategy",
-  "risk-matrix",
-] as const;
-export const AssessmentReassessmentReasonV1Schema = z.enum(
-  ASSESSMENT_REASSESSMENT_REASONS_V1,
-);
+export const AssessmentReassessmentReasonV1Schema = WorkflowReassessmentReasonV1Schema;
 export type AssessmentReassessmentReasonV1 = z.infer<
   typeof AssessmentReassessmentReasonV1Schema
 >;
+
+/**
+ * 重评入口不可变事实（design D-12）：前驱、原因与变化引用直接保存为入口身份的一部分，
+ * 不得从 `frozenRefs` 反推。`StartWorkflowPayloadV1Schema` 的 `reassess` 变体与
+ * C30 内部运行元数据（`run-state` 工件的 `reassessmentEntry`）直接复用此 shape。
+ * 1..64 项边界在启动前校验，越界拒绝而不截断。
+ */
+export const WORKFLOW_REASSESSMENT_INPUT_MAX_V1 = 64;
+export const WorkflowReassessmentInputV1Schema = z.strictObject({
+  previousAssessmentRecordRef: RiskAssessmentRecordRefV1Schema,
+  reason: WorkflowReassessmentReasonV1Schema,
+  changedInputRefs: z
+    .array(ContractReferenceV1Schema)
+    .min(1)
+    .max(WORKFLOW_REASSESSMENT_INPUT_MAX_V1),
+});
+export type WorkflowReassessmentInputV1 = z.infer<typeof WorkflowReassessmentInputV1Schema>;
 
 /** 矩阵落点只取保存的决策工件；页面不重算分带、不用当前矩阵解释历史。 */
 export const AssessmentMatrixPlotV1Schema = z.strictObject({
@@ -4771,7 +4778,11 @@ export type RecommendationValidationResultV1 = z.infer<
   typeof RecommendationValidationResultV1Schema
 >;
 
-/** 偏差视图只投影已登记列；冻结阈值正文由页面按 deviationPolicyRef 独立读取。 */
+/**
+ * 偏差只读解释（design D-03、D-05）：C28 私有计算偏差按其原 Schema 解析后映射为此 DTO。
+ * 私有计算视图不冒充公共偏差记录，也不把字段写回公共正文；两者只通过精确偏差引用关联。
+ * 冻结阈值正文由页面按 `deviationPolicyRef` 独立读取，不在此处补齐。
+ */
 export const DeviationViewV1Schema = z.strictObject({
   deviationPolicyRef: ContractReferenceV1Schema,
   basis: IdentifierSchema,
@@ -4795,9 +4806,23 @@ export type DeviationViewV1 = z.infer<typeof DeviationViewV1Schema>;
  * replacement 直接复用既有 ScoringThresholdSchema / GradeIntervalSchema。
  * 候选工件精确引用提供完整重建入口，摘要不能作为写命令 payload。
  */
+/**
+ * 比较形状（design D-03）：单边分支取自 vocabulary 比较算子的闭合集减去 `outside`，
+ * `outside` 自带 lower/upper，绝不混入单边 boundary 变体。
+ */
+const singleSidedComparisonOperatorV1 = COMPARISON_OPERATOR_VALUES.filter(
+  (operator) => operator !== "outside",
+);
 const calibrationComparisonV1 = z.discriminatedUnion("operator", [
-  z.strictObject({ operator: z.enum(["gt", "gte", "lt", "lte"]), boundary: c34ReadText }),
-  z.strictObject({ operator: z.literal("outside"), lower: c34ReadText, upper: c34ReadText }),
+  z.strictObject({
+    operator: z.enum(singleSidedComparisonOperatorV1),
+    boundary: c34ReadText,
+  }),
+  z.strictObject({
+    operator: z.literal("outside"),
+    lower: c34ReadText,
+    upper: c34ReadText,
+  }),
 ]);
 
 export const CalibrationChangeSummaryV1Schema = z.discriminatedUnion("kind", [
@@ -5056,8 +5081,10 @@ export const WarningResponseReadSuccessV1Schema = z.discriminatedUnion("kind", [
     actualAssessmentRecordRef: RiskAssessmentRecordRefV1Schema,
     occurredAt: IsoDateTimeSchema,
     forecastAvailability: forecastAvailabilityV1,
+    /** 公共偏差记录正文与私有计算偏差解释只在真实成立时提供。 */
+    deviationRecord: DeviationRecordSchema.optional(),
     deviation: DeviationViewV1Schema.optional(),
-    deviationRecordRef: ContractReferenceV1Schema.optional(),
+    deviationRecordRef: DeviationRecordRefV1Schema.optional(),
     calibrationRefs: z.array(CalibrationSuggestionRefV1Schema).max(50),
     nextCursor: c34ReadCursor.optional(),
     actions: readActionsV1,

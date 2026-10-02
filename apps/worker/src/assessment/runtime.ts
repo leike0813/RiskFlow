@@ -172,7 +172,7 @@ const runContextOf = (input: {
   applicabilityMetadataSnapshotRef: input.command.applicabilityMetadataSnapshotRef,
   monitoringSnapshotRefs: input.command.monitoringSnapshotRefs ?? [],
   assessmentRunRefs: input.command.assessmentRunRefs ?? [],
-  previousAssessmentRecordRef: input.command.previousAssessmentRecordRef,
+  reassessmentEntry: input.command.reassessmentEntry,
   graphVersion: input.command.graphVersion,
   threadId: input.command.threadId,
 });

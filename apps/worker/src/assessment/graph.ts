@@ -72,9 +72,11 @@ import {
   type SpatialScopeRefV1,
   type StageResultRefV1,
   type WarningResponseTaskRefV1,
+  type WorkflowReassessmentInputV1,
   type WorkflowEntryModeV1,
   type WorkflowRunRefV1,
 } from "@riskflow/contracts/ports";
+import type { WorkflowReassessmentReasonV1 } from "@riskflow/contracts/vocabulary";
 import {
   AssessmentGraphStateV1Schema,
   AssessmentStageResultV1Schema,
@@ -110,6 +112,7 @@ import {
   classifyWorkflowGraphFailure,
   initialRunVersionId,
   nextRunVersionId,
+  assessmentReasonForWorkflowReassessmentV1,
   normalizeMonitoringInputs,
   workflowEntryIdentityFor,
   type WorkflowGraphArtifactBodyV1,
@@ -207,7 +210,11 @@ export interface AssessmentGraphRunContextV1 {
   readonly applicabilityMetadataSnapshotRef: ContractReferenceV1 | undefined;
   readonly monitoringSnapshotRefs: readonly MonitoringSnapshotRefV1[];
   readonly assessmentRunRefs: readonly WorkflowRunRefV1[];
-  readonly previousAssessmentRecordRef: ContractReferenceV1 | undefined;
+  /**
+   * 重评入口不可变事实（design D-12）：非重评为 undefined。前驱与原因从该对象取值，
+   * 不保留可独立改变的第二套前驱，也不再按 frozenRefs 数量推导原因。
+   */
+  readonly reassessmentEntry: WorkflowReassessmentInputV1 | undefined;
   readonly graphVersion: VersionReference;
   readonly threadId: string;
 }
@@ -1767,34 +1774,6 @@ const measureLibraryReleaseRefOf = (input: {
   return { kind: "measure-library-release", reference: member.releaseRef.reference };
 };
 
-/**
- * 回归性重评原因：C25 `reassessment` 只接受闭合原因码，这里只按冻结引用里可证明的变化类别
- * 取值，取不到可证明类别时按适用性元数据的显式变化收口（不猜“最新原因”）。
- */
-const reassessmentReasonV1 = (input: {
-  readonly run: AssessmentGraphRunContextV1;
-}):
-  | "monitoring-snapshot"
-  | "applicability-metadata"
-  | "applicable-rule-set"
-  | "weight-or-strategy"
-  | "risk-matrix" => {
-  const kinds = input.run.frozenRefs.map((ref) => ref.kind);
-  const applicability = kinds.filter((kind) => kind === "applicability-metadata-snapshot").length;
-  const basis = kinds.filter((kind) => kind === "assessment-basis-release-set").length;
-  const releases = kinds.filter(
-    (kind) => kind === "knowledge-release" || kind === "knowledge-revision",
-  ).length;
-  const monitoring = kinds.filter(
-    (kind) => kind === "monitoring-snapshot" || kind === "monitoring-series",
-  ).length;
-  if (applicability > 1) return "applicability-metadata";
-  if (releases > 0) return "applicable-rule-set";
-  if (basis > 1) return "weight-or-strategy";
-  if (monitoring > 1) return "monitoring-snapshot";
-  return "applicability-metadata";
-};
-
 /** 入口冻结（design D-03/D-04）：每个入口用自己的冻结事实，不复制识别正文。 */
 export interface AssessmentEntryResolutionV1 {
   readonly entrySnapshotRef: AssessmentGraphStateV1["entrySnapshotRef"];
@@ -1954,18 +1933,14 @@ export const resolveAssessmentEntry = async (input: {
     }
     default: {
       const refs = entryRefsOf({ run, stage: "A0", occurredAt });
+      // A0 的前驱同样取自已登记的重评入口事实（design D-12），不从冻结引用集合反查。
       const previousAssessmentRecordRef =
-        optionalFrozenRef({
-          run,
-          kind: "risk-assessment-record",
-          schema: RiskAssessmentRecordRefV1Schema,
-          stage: "A0",
-          detailCode: "previous-assessment-record-invalid",
-          occurredAt,
-        }) ??
-        (run.previousAssessmentRecordRef === undefined
+        run.reassessmentEntry === undefined
           ? undefined
-          : parseWith(RiskAssessmentRecordRefV1Schema, run.previousAssessmentRecordRef));
+          : parseWith(
+              RiskAssessmentRecordRefV1Schema,
+              run.reassessmentEntry.previousAssessmentRecordRef,
+            );
       const frozen = await ports.engineeringData.freeze({
         commandId: actionIdFor(run, "A0"),
         idempotencyKey: actionIdFor(run, "A0"),
@@ -2422,25 +2397,24 @@ const stageA2: StageHandlerV1 = async ({ ports, run, state }) => {
     occurredAt,
   });
   const preparationSnapshotRef = entrySnapshotRef.assessmentPreparationSnapshotRef;
+  // 重评前驱与原因来自已登记的不可变入口事实（design D-12）：不再从 frozenRefs 数量或
+  // 适用性引用反推原因，也不保留可独立改变的第二套前驱。历史工件缺该入口字段时失败闭合。
+  const reassessmentEntry = run.reassessmentEntry;
+  // 已登记入口元数据若存在却解析不出前驱，同样失败闭合，不以 frozenRefs 反推补齐。
   const previousAssessmentRecordRef =
-    optionalFrozenRef({
-      run,
-      kind: "risk-assessment-record",
-      schema: RiskAssessmentRecordRefV1Schema,
-      stage: "A2",
-      detailCode: "previous-assessment-record-invalid",
-      occurredAt,
-    }) ??
-    (run.previousAssessmentRecordRef === undefined
+    reassessmentEntry === undefined
       ? undefined
-      : parseWith(RiskAssessmentRecordRefV1Schema, run.previousAssessmentRecordRef));
+      : parseWith(RiskAssessmentRecordRefV1Schema, reassessmentEntry.previousAssessmentRecordRef);
   const prepared = await ports.riskAssessment.prepare(
     run.entryMode === "reassess"
       ? previousAssessmentRecordRef === undefined
         ? fail(
             entryIncomplete({
               stage: "A2",
-              detailCode: "previous-assessment-record-missing",
+              detailCode:
+                reassessmentEntry === undefined
+                  ? "previous-assessment-record-missing"
+                  : "previous-assessment-record-invalid",
               occurredAt,
             }),
           )
@@ -2456,7 +2430,9 @@ const stageA2: StageHandlerV1 = async ({ ports, run, state }) => {
               preparationSnapshotRef,
               assessmentBasisReleaseSetRef: basisReleaseSetRef,
               previousAssessmentRecordRef,
-              reason: reassessmentReasonV1({ run }),
+              reason: assessmentReasonForWorkflowReassessmentV1(
+                (reassessmentEntry as { readonly reason: WorkflowReassessmentReasonV1 }).reason,
+              ),
             },
           }
       : run.entryMode === "historical-backfill"

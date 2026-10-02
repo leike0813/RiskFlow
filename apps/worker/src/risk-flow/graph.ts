@@ -30,7 +30,6 @@ import {
   type ContractReferenceV1,
   type IdentificationPreparationSnapshotRefV1,
   type ResponseRecommendationRefV1,
-  type RiskAssessmentRecordRefV1,
   type RiskFlowRunResultRefV1,
   type RouteDecisionRefV1,
   type SpatialScopeRefV1,
@@ -39,6 +38,7 @@ import {
   type WaitingRefV1,
   type WorkflowEntryModeV1,
   type WorkflowErrorRefV1,
+  type WorkflowReassessmentInputV1,
   type WorkflowRunRefV1,
   type WorkflowRunStatusV1,
 } from "@riskflow/contracts/ports";
@@ -183,7 +183,8 @@ export interface RiskFlowGraphRunContextV1 {
   readonly pairing: readonly RiskFlowAssessmentPairingV1[];
   /** 非识别入口的冻结风险输入（`assess`/`reassess`/`historical-backfill`/…）。 */
   readonly primaryRiskRef?: ContractReferenceV1;
-  readonly previousAssessmentRecordRef?: RiskAssessmentRecordRefV1;
+  /** 重评入口不可变事实（design D-12）；非重评不携带。 */
+  readonly reassessmentEntry?: WorkflowReassessmentInputV1;
   readonly retryPolicyRef: VersionReference;
   /** 子图冻结版本：由组合根注入的配置身份，不从调用方猜测。 */
   readonly subGraphVersions: {
@@ -772,9 +773,9 @@ export const assessmentStartCommandFor = (input: {
     ...(input.pairing.monitoringSnapshotRefs === undefined
       ? {}
       : { monitoringSnapshotRefs: input.pairing.monitoringSnapshotRefs }),
-    ...(input.run.previousAssessmentRecordRef === undefined
+    ...(input.run.reassessmentEntry === undefined
       ? {}
-      : { previousAssessmentRecordRef: input.run.previousAssessmentRecordRef }),
+      : { reassessmentEntry: input.run.reassessmentEntry }),
   };
 };
 
@@ -821,9 +822,9 @@ export const segmentedAssessmentStartCommandFor = (input: {
             ? {}
             : { monitoringSnapshotRefs: pairing.monitoringSnapshotRefs }),
         }),
-    ...(input.run.previousAssessmentRecordRef === undefined
+    ...(input.run.reassessmentEntry === undefined
       ? {}
-      : { previousAssessmentRecordRef: input.run.previousAssessmentRecordRef }),
+      : { reassessmentEntry: input.run.reassessmentEntry }),
   };
 };
 

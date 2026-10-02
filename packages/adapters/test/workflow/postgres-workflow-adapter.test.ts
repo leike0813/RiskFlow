@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { sql } from "kysely";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/access";
 import type { ArtifactStoreV1 } from "@riskflow/core/artifacts";
@@ -132,6 +132,8 @@ const SCOPE_DIGEST = authorizationScopeDigest(AUTHORIZATION);
 const createAccess = () => {
   const calls: { readonly invocationId: string; readonly branch: ModuleBranchV1 }[] = [];
   let revoked = false;
+  /** 不同窄读按各自用途分支签发；替身按当前绑定的上下文原样回放。 */
+  let contextOverride: AuthorizationContextV1 | undefined;
   /**
    * 真实 C05 要求 `authorization_contexts.invocation_id` 与请求 id 逐项一致（一个上下文一个 id），
    * 因此这里可绑定唯一合法 id：复验用别的 id 一律拒绝，证明类调用必须先满足该约束。
@@ -158,7 +160,7 @@ const createAccess = () => {
           authorizationPolicyRef: { entityId: "authorization-policy", versionId: "v1" },
         });
       }
-      const result = AuthorizationContextV1Schema.safeParse(AUTHORIZATION);
+      const result = AuthorizationContextV1Schema.safeParse(contextOverride ?? AUTHORIZATION);
       if (!result.success) throw new TypeError("invalid test authorization");
       return {
         context: { ...result.data, authorizationContextRef: input.authorizationContextRef },
@@ -176,6 +178,9 @@ const createAccess = () => {
     },
     bindInvocationId: (invocationId: string | undefined) => {
       boundInvocationId = invocationId;
+    },
+    setAuthorization: (value: AuthorizationContextV1 | undefined) => {
+      contextOverride = value;
     },
   };
 };
@@ -796,6 +801,285 @@ describe("C30 workflow registration adapter", () => {
       error: { code: "AUTHORIZATION_DENIED" },
     });
     fixture.access.restore();
+  });
+
+  describe("D-12 入口元数据窄读", () => {
+    const ENTRIES_AUTHORIZATION = authorizationFor({ grantedCapabilities: ["projection.query"] });
+    const currentRecord = {
+      kind: "risk-assessment-record" as const,
+      reference: { entityId: "assessment-entries-current", versionId: "1" },
+    };
+    const previousRecord = {
+      kind: "risk-assessment-record" as const,
+      reference: { entityId: "assessment-entries-previous", versionId: "1" },
+    };
+    const readInput = (assessmentRecordRefs = [currentRecord]) => ({
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      requestedAt: TIMESTAMP,
+      authorization: ENTRIES_AUTHORIZATION,
+      assessmentRecordRefs,
+    });
+
+    /** 登记一个评估子运行：入口行 + 精确 run-state 工件 + 产出该记录的正式链边。 */
+    const registerAssessmentRun = async (input: {
+      readonly suffix: string;
+      readonly runId: string;
+      readonly recordRef: {
+        readonly kind: "risk-assessment-record";
+        readonly reference: { readonly entityId: string; readonly versionId: string };
+      };
+      readonly entryMode: "assess" | "reassess";
+      readonly reassessmentEntry?: {
+        readonly previousAssessmentRecordRef: typeof previousRecord;
+        readonly reason: "monitoring-snapshot" | "applicability-metadata";
+        readonly changedInputRefs: readonly (typeof previousRecord)[];
+      };
+    }) => {
+      const runVersionId = sha(`entries-run-version:${input.suffix}`);
+      const entryIdentity = {
+        entityId: `workflow-entry:${PROJECT_ID}:${input.suffix}`,
+        versionId: sha(`entries-entry:${input.suffix}`),
+      };
+      await registerWithinTransaction({
+        row: {
+          ...resultRowFor("entry-snapshot", input.suffix),
+          runId: input.runId,
+          runVersionId,
+          resultId: `entry-snapshot:${input.runId}:1`,
+          resultVersionId: "1",
+          entryIdentity,
+          entryMode: input.entryMode,
+        },
+      });
+      const artifactRef = await fixture.adapter.bodies.putBody({
+        projectId: PROJECT_ID,
+        actorId: ACTOR_ID,
+        commandId: `c30-body-entries-${input.suffix}`,
+        issuedAt: TIMESTAMP,
+        artifactId: `c30-run-state:${input.runId}:${runVersionId}`,
+        authorization: ENTRIES_AUTHORIZATION,
+        body: {
+          bodyKind: "run-state",
+          runState: WorkflowGraphRunStateV1Schema.parse({
+            schemaVersion: "1",
+            projectId: PROJECT_ID,
+            runId: input.runId,
+            runVersionId,
+            entryMode: input.entryMode,
+            entryIdentity,
+            stage: "A5",
+            status: "completed",
+            assessmentRunRefs: [],
+            acceptedRiskRecordRefs: [RISK_RECORD_REF],
+            assessmentRecordRefs: [input.recordRef],
+            warningRecordRefs: [],
+            responseRecommendationRefs: [],
+            deviationRecordRefs: [],
+            calibrationSuggestionRefs: [],
+            ...(input.reassessmentEntry === undefined
+              ? {}
+              : { reassessmentEntry: input.reassessmentEntry }),
+            recordedAt: TIMESTAMP,
+          }),
+        },
+      });
+      await registerWithinTransaction({
+        row: {
+          ...resultRowFor("run-state", input.suffix),
+          runId: input.runId,
+          runVersionId,
+          resultVersionId: runVersionId,
+          resultId: artifactRef.reference.entityId,
+          artifactRef,
+        },
+      });
+      const linkId = sha(`entries-link:${input.suffix}`);
+      await fixture.transactionUnit.execute(
+        {
+          projectId: PROJECT_ID,
+          commandKind: "workflow.register-link",
+          commandId: `c30-link-entries-${input.suffix}`,
+          idempotencyKey: `c30-link-entries-${input.suffix}`,
+          payload: { linkId },
+          actorRef: ACTOR_ID,
+          authorizationContextRef: ENTRIES_AUTHORIZATION.authorizationContextRef,
+          issuedAt: TIMESTAMP,
+          runId: input.runId,
+        },
+        async (context) => {
+          await fixture.adapter.registrationStore.registerLink(
+            {
+              link: {
+                schemaVersion: "1",
+                projectId: PROJECT_ID,
+                linkId,
+                runId: input.runId,
+                fromRef: RISK_RECORD_REF,
+                toRef: input.recordRef,
+                relation: "risk-assessment",
+                sourceStage: "A5",
+                stageResultRef: STAGE_RESULT_REF,
+                authorizationContextRef: ENTRIES_AUTHORIZATION.authorizationContextRef,
+                authorizationScopeDigest: SCOPE_DIGEST,
+                actorRef: ACTOR_ID,
+                recordedAt: TIMESTAMP,
+                auditEntryId: `c30-link-entries-${input.suffix}:audit`,
+              },
+            },
+            context,
+          );
+          return {
+            resultRef: RUN_REF,
+            audit: {
+              auditEntryId: `c30-link-entries-${input.suffix}:audit`,
+              projectId: PROJECT_ID,
+              action: "workflow.register-link",
+              targetRef: RUN_REF,
+              actorRef: ACTOR_ID,
+              authorizationContextRef: ENTRIES_AUTHORIZATION.authorizationContextRef,
+              occurredAt: TIMESTAMP,
+              recordedAt: TIMESTAMP,
+              version: RUN_REF.reference,
+              commandId: `c30-link-entries-${input.suffix}`,
+              idempotencyKey: `c30-link-entries-${input.suffix}`,
+            },
+            events: [],
+          };
+        },
+      );
+    };
+
+    // 替身按绑定上下文回放；本组结束必须复原，否则后续用例会拿到错分支上下文。
+    afterEach(() => {
+      fixture.access.setAuthorization(undefined);
+    });
+
+    it("重评运行按已登记入口事实返回原因与变化集合，非重评运行返回空变化集合", async () => {
+      fixture.access.setAuthorization(ENTRIES_AUTHORIZATION);
+      await registerAssessmentRun({
+        suffix: "reassess",
+        runId: "risk-flow-run:entries-reassess",
+        recordRef: currentRecord,
+        entryMode: "reassess",
+        reassessmentEntry: {
+          previousAssessmentRecordRef: previousRecord,
+          reason: "monitoring-snapshot",
+          changedInputRefs: [previousRecord],
+        },
+      });
+      const assessRecord = {
+        kind: "risk-assessment-record" as const,
+        reference: { entityId: "assessment-entries-assess", versionId: "1" },
+      };
+      await registerAssessmentRun({
+        suffix: "assess",
+        runId: "risk-flow-run:entries-assess",
+        recordRef: assessRecord,
+        entryMode: "assess",
+      });
+
+      const result = await fixture.adapter.entriesRead.readAssessmentEntriesForRecords(
+        readInput([currentRecord, assessRecord]),
+      );
+      expect(result).toMatchObject({ kind: "succeeded" });
+      if (result.kind !== "succeeded") return;
+      expect(result.entries).toEqual([
+        {
+          assessmentRecordRef: currentRecord,
+          runRef: {
+            kind: "workflow-run",
+            reference: {
+              entityId: "risk-flow-run:entries-reassess",
+              versionId: sha("entries-run-version:reassess"),
+            },
+          },
+          entryMode: "reassess",
+          previousAssessmentRecordRef: previousRecord,
+          reason: "monitoring-snapshot",
+          changedInputRefs: [previousRecord],
+        },
+        {
+          assessmentRecordRef: assessRecord,
+          runRef: {
+            kind: "workflow-run",
+            reference: {
+              entityId: "risk-flow-run:entries-assess",
+              versionId: sha("entries-run-version:assess"),
+            },
+          },
+          entryMode: "assess",
+          changedInputRefs: [],
+        },
+      ]);
+    });
+
+    it("重评元数据缺失、目标无链边、授权撤销与空输入一律失败闭合", async () => {
+      fixture.access.setAuthorization(ENTRIES_AUTHORIZATION);
+      // 入口事实缺席：历史工件可读，但不得据此编造原因。
+      await registerAssessmentRun({
+        suffix: "reassess-missing",
+        runId: "risk-flow-run:entries-reassess-missing",
+        recordRef: {
+          kind: "risk-assessment-record",
+          reference: { entityId: "assessment-entries-missing", versionId: "1" },
+        },
+        entryMode: "reassess",
+      });
+      expect(
+        await fixture.adapter.entriesRead.readAssessmentEntriesForRecords(
+          readInput([
+            {
+              kind: "risk-assessment-record",
+              reference: { entityId: "assessment-entries-missing", versionId: "1" },
+            },
+          ]),
+        ),
+      ).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+
+      // 目标不在本工程获准链边内：与不存在不可区分。
+      expect(
+        await fixture.adapter.entriesRead.readAssessmentEntriesForRecords(
+          readInput([
+            {
+              kind: "risk-assessment-record",
+              reference: { entityId: "assessment-entries-unlinked", versionId: "1" },
+            },
+          ]),
+        ),
+      ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+
+      expect(
+        await fixture.adapter.entriesRead.readAssessmentEntriesForRecords(readInput([])),
+      ).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+
+      await registerAssessmentRun({
+        suffix: "reassess-ok",
+        runId: "risk-flow-run:entries-reassess-ok",
+        recordRef: {
+          kind: "risk-assessment-record",
+          reference: { entityId: "assessment-entries-ok", versionId: "1" },
+        },
+        entryMode: "reassess",
+        reassessmentEntry: {
+          previousAssessmentRecordRef: previousRecord,
+          reason: "applicability-metadata",
+          changedInputRefs: [previousRecord],
+        },
+      });
+      const okRef = {
+        kind: "risk-assessment-record" as const,
+        reference: { entityId: "assessment-entries-ok", versionId: "1" },
+      };
+      fixture.access.revoke();
+      expect(
+        await fixture.adapter.entriesRead.readAssessmentEntriesForRecords(readInput([okRef])),
+      ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+      fixture.access.restore();
+      expect(
+        await fixture.adapter.entriesRead.readAssessmentEntriesForRecords(readInput([okRef])),
+      ).toMatchObject({ kind: "succeeded" });
+    });
   });
 
   it("registers links append-only and refuses relations outside the closed set", async () => {

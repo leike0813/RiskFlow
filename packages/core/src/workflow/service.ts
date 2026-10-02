@@ -9,7 +9,9 @@ import type {
   AuthorizationContextV1,
   ContentArtifactRefV1,
   ContractReferenceV1,
+  ModuleErrorV1,
   MonitoringSnapshotRefV1,
+  RiskAssessmentRecordRefV1,
   SpatialScopeRefV1,
   StageResultRefV1,
   StartWorkflowRunCommandV1,
@@ -22,6 +24,7 @@ import type { WorkflowReassessmentReasonV1 } from "@riskflow/contracts/vocabular
 
 import {
   WorkflowGraphErrorV1Schema,
+  type AssessmentEntryMetadataV1,
   type WorkflowGraphArtifactBodyV1,
   type WorkflowGraphErrorCodeV1,
   type WorkflowGraphErrorV1,
@@ -126,6 +129,24 @@ export interface WorkflowGraphBodyPortV1 {
     readonly requestedAt: string;
     readonly authorization: AuthorizationContextV1;
   }): Promise<WorkflowGraphArtifactBodyV1 | undefined>;
+}
+
+/**
+ * C30 入口元数据窄读（design D-12）：输入当前获准的评估记录引用，逐项返回已登记的精确运行身份
+ * 与重评入口事实。实现只沿自己的正式结果登记/链边定位入口行与精确 run-state 工件；重评元数据
+ * 缺失、错配或不可读时整体失败闭合，不得用 `frozenRefs`、`triggerReasonCode` 或启发式补齐。
+ */
+export interface AssessmentEntriesReadPortV1 {
+  readAssessmentEntriesForRecords(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly assessmentRecordRefs: readonly RiskAssessmentRecordRefV1[];
+  }): Promise<
+    | { readonly kind: "succeeded"; readonly entries: readonly AssessmentEntryMetadataV1[] }
+    | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
+  >;
 }
 
 /**

@@ -36,7 +36,9 @@ import {
   WORKFLOW_LINK_RELATIONS_V1,
   WORKFLOW_SKIPPED_TAIL_KINDS_V1,
   WorkflowReassessmentInputV1Schema,
+  WORKFLOW_REASSESSMENT_INPUT_MAX_V1,
 } from "@riskflow/contracts/ports";
+import { WorkflowReassessmentReasonV1Schema } from "@riskflow/contracts/vocabulary";
 import { AssessmentStageV1Schema, RiskFlowStageV1Schema } from "@riskflow/contracts/workflows";
 
 export const WORKFLOW_GRAPH_SCHEMA_VERSION_V1 = "1" as const;
@@ -221,6 +223,21 @@ export const WorkflowGraphRunStateV1Schema = z.strictObject({
   recordedAt: IsoDateTimeSchema,
 });
 export type WorkflowGraphRunStateV1 = z.infer<typeof WorkflowGraphRunStateV1Schema>;
+
+/**
+ * 逐评估记录的入口元数据（design D-12）：只含已登记的精确运行身份与重评入口事实，
+ * 不复制任何领域正文。`reason` 与 `changedInputRefs` 直接取 D-12 保存的原入口事实；
+ * 非重评运行的 `changedInputRefs` 为空，且不填 `reason`。
+ */
+export const AssessmentEntryMetadataV1Schema = z.strictObject({
+  assessmentRecordRef: RiskAssessmentRecordRefV1Schema,
+  runRef: WorkflowRunRefV1Schema,
+  entryMode: WorkflowEntryModeV1Schema,
+  previousAssessmentRecordRef: RiskAssessmentRecordRefV1Schema.optional(),
+  reason: WorkflowReassessmentReasonV1Schema.optional(),
+  changedInputRefs: z.array(ContractReferenceV1Schema).max(WORKFLOW_REASSESSMENT_INPUT_MAX_V1),
+});
+export type AssessmentEntryMetadataV1 = z.infer<typeof AssessmentEntryMetadataV1Schema>;
 
 /** 缺席链尾的类型化原因（design D-05/D-09）：只登记原因码与最后成立事实引用。 */
 export const WorkflowSkippedTailV1Schema = z.strictObject({

@@ -7,17 +7,21 @@
  */
 import { randomUUID } from "node:crypto";
 
-import type { Kysely, Transaction } from "kysely";
+import type { Kysely, Transaction, SqlBool } from "kysely";
+import { sql } from "kysely";
 
+import type { VersionReference } from "@riskflow/contracts/common";
 import type {
   AuthorizationContextV1,
   ContentArtifactRefV1,
+  ContractReferenceV1,
   ModuleBranchV1,
   ModuleCapabilityV1,
   ModuleErrorV1,
   ResponseWorkflowBindingProofPortV1,
   ResponseWorkflowBindingProofQueryV1,
   ResponseWorkflowBindingProofResultV1,
+  RiskAssessmentRecordRefV1,
   WorkflowRunCompletionProofPortV1,
   WorkflowRunCompletionProofQueryV1,
   WorkflowRunCompletionProofResultV1,
@@ -50,6 +54,8 @@ import {
   WorkflowGraphResultRowV1Schema,
   WorkflowGraphRunStateV1Schema,
   WorkflowQueryRegistrationV1Schema,
+  type AssessmentEntryMetadataV1,
+  type AssessmentEntriesReadPortV1,
   type WorkflowGraphArtifactBodyV1,
   type WorkflowGraphBodyPortV1,
   type WorkflowGraphLinkV1,
@@ -68,7 +74,28 @@ const RESULTS_TABLE = "business.workflow_graph_results";
 const LINKS_TABLE = "business.workflow_graph_links";
 const QUERIES_TABLE = "business.workflow_query_results";
 const MAX_BODY_BYTES_V1 = 16 * 1024 * 1024;
+/** 入口元数据窄读的单批上限：与 C34 目录页大小同量级，避免把整段历史一次读入内存。 */
+const ASSESSMENT_ENTRIES_MAX_V1 = 50;
+/** 每个运行在一次批量定位中最多取回的入口/状态登记行数。 */
+const ASSESSMENT_RUN_FACTS_MAX_V1 = 16;
+/** 产出评估记录的正式链边关系；定位只用这一条，不做全表扫描。 */
+const ASSESSMENT_LINK_RELATION_V1 = "risk-assessment" as const;
+
 const DEFAULT_ROW_LIMIT_V1 = 500;
+
+const sameVersion = (left: VersionReference, right: VersionReference): boolean =>
+  left.entityId === right.entityId && left.versionId === right.versionId;
+
+/** 跨 kind 的精确引用比较：只对带 `reference` 的版本化引用判等，其余按 kind+事件身份。 */
+const sameRef = (left: ContractReferenceV1, right: ContractReferenceV1): boolean => {
+  if (left.kind !== right.kind) return false;
+  if (left.kind === "domain-event" && right.kind === "domain-event") {
+    return left.eventId === right.eventId && left.eventVersion === right.eventVersion;
+  }
+  return (
+    "reference" in left && "reference" in right && sameVersion(left.reference, right.reference)
+  );
+};
 
 /** 每类 C04 正文的用途码（design D-05）：写入与读取共用同一张表，旁路写入在读取时显式拒绝。 */
 export const WORKFLOW_GRAPH_BODY_PURPOSE_CODE_V1 = {
@@ -103,7 +130,8 @@ export const workflowGraphReadInvocationIdV1 = (input: {
     | "run-links"
     | "query-registration"
     | "body-write"
-    | "body-read";
+    | "body-read"
+    | "assessment-entries";
   readonly projectId: string;
   readonly targetId: string;
 }): string => `c30-${input.operation}:${input.projectId}:${input.targetId}`;
@@ -377,6 +405,8 @@ export interface PostgresWorkflowAdapterV1 {
   /** C30 只读绑定证明（design D5）：按精确建议与运行返回已登记路由/运行/冻结事实，不写任何事实。 */
   readonly bindingProof: ResponseWorkflowBindingProofPortV1;
   readonly runCompletionProof: WorkflowRunCompletionProofPortV1;
+  /** C30 入口元数据窄读（design D-12）：从已登记运行工件读出显式重评入口事实。 */
+  readonly entriesRead: AssessmentEntriesReadPortV1;
 }
 
 /** 入口路由原因码：与运行图登记值一致；适配器只读该值，不解释其它原因码。 */
@@ -386,7 +416,8 @@ const PROOF_STAGE_CODE_V1 = "workflow.binding-proof";
 
 /** 证明失败：只给稳定类型化错误，不含正文、latest 或目标存在性。 */
 const bindingProofError = (input: {
-  readonly code: "AUTHORIZATION_DENIED" | "TERMINAL_FAILURE" | "UNSUPPORTED_CONTRACT";
+  readonly code:
+    "AUTHORIZATION_DENIED" | "TERMINAL_FAILURE" | "UNSUPPORTED_CONTRACT" | "BUSINESS_BLOCKED";
   readonly causalRunId: string;
   readonly occurredAt: string;
   readonly requiredCapability: ModuleCapabilityV1;
@@ -399,6 +430,19 @@ const bindingProofError = (input: {
     causalRunId: input.causalRunId,
   };
   switch (input.code) {
+    case "BUSINESS_BLOCKED":
+      return ModuleErrorV1Schema.parse({
+        ...common,
+        code: input.code,
+        category: "business-blocked",
+        retryable: false,
+        blockerKind: "workflow-entry-fact",
+        blockerRef: {
+          kind: "workflow-run",
+          // 只带稳定内部 detailCode，便于定位失败分支；不携带正文与目标存在性。
+          reference: { entityId: `${input.causalRunId}:${input.detailCode}`, versionId: "1" },
+        },
+      });
     case "AUTHORIZATION_DENIED":
       return ModuleErrorV1Schema.parse({
         ...common,
@@ -1064,6 +1108,193 @@ class WorkflowGraphPersistence {
     }
   }
 
+  /**
+   * 入口元数据窄读（design D-12）：先沿 `risk-assessment` 链边批量定位产出该评估记录的精确运行，
+   * 再沿该运行的正式 `entry-snapshot` 登记行与精确 `run-state` 工件复验工程、运行、入口与前驱关联。
+   * 重评运行缺 `reassessmentEntry`、入口身份与登记行不符、或前驱指向自身时整体失败闭合；
+   * 不从 `frozenRefs`、`triggerReasonCode` 或阶段事实反推原因与变化集合。
+   */
+  async readAssessmentEntriesForRecords(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly assessmentRecordRefs: readonly RiskAssessmentRecordRefV1[];
+  }): Promise<
+    | { readonly kind: "succeeded"; readonly entries: readonly AssessmentEntryMetadataV1[] }
+    | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
+  > {
+    const occurredAt = this.#now().toISOString();
+    const failed = (detailCode: string) => ({
+      kind: "failed" as const,
+      error: bindingProofError({
+        code: "BUSINESS_BLOCKED",
+        causalRunId: "c30-assessment-entries",
+        occurredAt,
+        requiredCapability: "projection.query",
+        detailCode,
+        stageCode: "workflow.assessment-entries-read",
+      }),
+    });
+    const denied = () => ({
+      kind: "failed" as const,
+      error: bindingProofError({
+        code: "AUTHORIZATION_DENIED",
+        causalRunId: "c30-assessment-entries",
+        occurredAt,
+        requiredCapability: "projection.query",
+        detailCode: "assessment-entries-denied",
+        stageCode: "workflow.assessment-entries-read",
+      }),
+    });
+    if (input.assessmentRecordRefs.length === 0) return failed("assessment-records-empty");
+    if (input.assessmentRecordRefs.length > ASSESSMENT_ENTRIES_MAX_V1) {
+      return failed("assessment-records-over-limit");
+    }
+    const verified = await this.verifyAuthorization({
+      authorization: input.authorization,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      invocationId: workflowGraphReadInvocationIdV1({
+        operation: "assessment-entries",
+        projectId: input.projectId,
+        targetId: input.assessmentRecordRefs[0]!.reference.entityId,
+      }),
+      requestedAt: input.requestedAt,
+    });
+    if (verified === undefined) return denied();
+    const scopeDigest = authorizationScopeDigest(verified);
+    try {
+      // 一次批量定位：按 `risk-assessment` 链边把每条评估记录映射到唯一产出运行。
+      const toRef = (ref: RiskAssessmentRecordRefV1) => sql`${JSON.stringify(ref)}::jsonb`;
+      const linkRows = await this.#db
+        .selectFrom(LINKS_TABLE)
+        .select(["run_id", "to_ref"])
+        .distinct()
+        .where("project_id", "=", input.projectId)
+        .where("relation", "=", ASSESSMENT_LINK_RELATION_V1)
+        .where("authorization_scope_digest", "=", scopeDigest)
+        .where(sql<SqlBool>`to_ref IN (${sql.join(input.assessmentRecordRefs.map(toRef))})`)
+        .orderBy("run_id", "asc")
+        .limit(ASSESSMENT_ENTRIES_MAX_V1 * 2)
+        .execute();
+      const runByRecord = new Map<string, string>();
+      for (const row of linkRows) {
+        const key = JSON.stringify(row.to_ref);
+        if (runByRecord.has(key)) continue;
+        runByRecord.set(key, row.run_id);
+      }
+      const runIds = [...new Set(linkRows.map((row) => row.run_id))].sort();
+      if (runIds.length === 0) return denied();
+      // 入口登记行与最新状态行一并批量取回；每运行最多一条入口行与最新一条状态行。
+      const rows = await this.#db
+        .selectFrom(RESULTS_TABLE)
+        .selectAll()
+        .where("project_id", "=", input.projectId)
+        .where("authorization_scope_digest", "=", scopeDigest)
+        .where("run_id", "in", runIds)
+        .where("result_kind", "in", ["run-state", "entry-snapshot"])
+        .orderBy("run_id", "asc")
+        .orderBy("recorded_at", "asc")
+        .orderBy("run_version_id", "asc")
+        .limit(runIds.length * ASSESSMENT_RUN_FACTS_MAX_V1)
+        .execute();
+      const latestStateByRun = new Map<string, WorkflowGraphResultRowV1>();
+      const entryRowByRun = new Map<string, WorkflowGraphResultRowV1>();
+      for (const row of rows) {
+        const parsed = workflowGraphResultRowFromDb(row);
+        if (parsed.resultKind === "entry-snapshot") {
+          if (entryRowByRun.has(parsed.runId)) continue;
+          entryRowByRun.set(parsed.runId, parsed);
+          continue;
+        }
+        latestStateByRun.set(parsed.runId, parsed);
+      }
+      const entries: AssessmentEntryMetadataV1[] = [];
+      // 有界工件读：每个运行至多读一次精确 run-state 工件。
+      for (const assessmentRecordRef of input.assessmentRecordRefs) {
+        const runId = runByRecord.get(JSON.stringify(assessmentRecordRef));
+        if (runId === undefined) return denied();
+        const stateRow = latestStateByRun.get(runId);
+        const entryRow = entryRowByRun.get(runId);
+        if (
+          stateRow === undefined ||
+          stateRow.resultKind !== "run-state" ||
+          stateRow.artifactRef === undefined ||
+          entryRow === undefined ||
+          entryRow.resultKind !== "entry-snapshot" ||
+          entryRow.entryIdentity === undefined
+        ) {
+          return failed("assessment-entry-not-established");
+        }
+        const body = await this.#openBody({
+          projectId: input.projectId,
+          artifactRef: stateRow.artifactRef,
+          actorId: input.actorId,
+          requestedAt: input.requestedAt,
+          authorization: verified,
+        });
+        if (body?.bodyKind !== "run-state") return failed("assessment-run-state-unreadable");
+        const state = body.runState;
+        if (state.projectId !== input.projectId || state.runId !== runId) {
+          return failed("assessment-run-state-foreign");
+        }
+        if (state.runVersionId !== stateRow.resultVersionId) {
+          return failed("assessment-run-state-version-mismatch");
+        }
+        if (state.entryMode !== entryRow.entryMode) {
+          return failed("assessment-entry-mode-mismatch");
+        }
+        if (!sameVersion(state.entryIdentity, entryRow.entryIdentity)) {
+          return failed("assessment-entry-identity-mismatch");
+        }
+        if (!state.assessmentRecordRefs.some((ref) => sameRef(ref, assessmentRecordRef))) {
+          return failed("assessment-record-not-in-run");
+        }
+        if (state.entryMode !== "reassess") {
+          // 非重评运行没有入口变化事实；带该字段说明登记与正文错配，同样失败闭合。
+          if (state.reassessmentEntry !== undefined) {
+            return failed("assessment-entry-inconsistent");
+          }
+          entries.push({
+            assessmentRecordRef,
+            runRef: {
+              kind: "workflow-run",
+              reference: { entityId: runId, versionId: state.runVersionId },
+            },
+            entryMode: state.entryMode,
+            changedInputRefs: [],
+          });
+          continue;
+        }
+        const entry = state.reassessmentEntry;
+        if (entry === undefined) return failed("reassessment-entry-missing");
+        if (
+          sameRef(entry.previousAssessmentRecordRef, assessmentRecordRef) ||
+          !entry.changedInputRefs.some((changed) =>
+            sameRef(changed, entry.previousAssessmentRecordRef),
+          )
+        ) {
+          return failed("reassessment-predecessor-inconsistent");
+        }
+        entries.push({
+          assessmentRecordRef,
+          runRef: {
+            kind: "workflow-run",
+            reference: { entityId: runId, versionId: state.runVersionId },
+          },
+          entryMode: state.entryMode,
+          previousAssessmentRecordRef: entry.previousAssessmentRecordRef,
+          reason: entry.reason,
+          changedInputRefs: entry.changedInputRefs,
+        });
+      }
+      return { kind: "succeeded", entries };
+    } catch {
+      return failed("assessment-entries-inconsistent");
+    }
+  }
+
   async readQuery(input: {
     readonly projectId: string;
     readonly queryResultId: string;
@@ -1297,6 +1528,10 @@ export const createPostgresWorkflowAdapter = (
     },
     runCompletionProof: {
       verifyWorkflowRunCompletion: (query) => persistence.verifyWorkflowRunCompletion(query),
+    },
+    entriesRead: {
+      readAssessmentEntriesForRecords: (input) =>
+        persistence.readAssessmentEntriesForRecords(input),
     },
   };
 };

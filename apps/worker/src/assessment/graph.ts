@@ -1228,6 +1228,9 @@ const cursorBody = (input: {
   const lastWaitingRef = patch.lastWaitingRef ?? previous?.lastWaitingRef;
   const lastErrorRef = patch.lastErrorRef ?? previous?.lastErrorRef;
   const resultRef = patch.resultRef ?? previous?.resultRef;
+  // 子图每次形成 run-state 工件都保留同一重评入口事实（design D-12）：优先本轮上下文，
+  // 否则沿用前一版本已登记值。缺该字段的历史重评不补猜，由读端与继续评估失败闭合。
+  const reassessmentEntry = input.run.reassessmentEntry ?? previous?.reassessmentEntry;
   const withoutVersion: Omit<WorkflowGraphRunStateV1, "runVersionId"> = {
     schemaVersion: "1",
     projectId: input.run.projectId,
@@ -1236,6 +1239,7 @@ const cursorBody = (input: {
     entryIdentity: input.run.entryIdentity,
     stage: input.stage,
     status: input.status,
+    ...(reassessmentEntry === undefined ? {} : { reassessmentEntry }),
     ...(input.run.parentRunRef === undefined ? {} : { parentRunRef: input.run.parentRunRef }),
     assessmentRunRefs: patch.assessmentRunRefs ?? previous?.assessmentRunRefs ?? [],
     acceptedRiskRecordRefs: patch.acceptedRiskRecordRefs ?? previous?.acceptedRiskRecordRefs ?? [],

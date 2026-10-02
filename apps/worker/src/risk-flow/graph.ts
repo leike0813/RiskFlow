@@ -833,6 +833,37 @@ export const segmentedSubRunRouteIdFor = (runId: string): string =>
   `risk-flow-segmented-sub-run:${runId}`;
 
 /** 运行状态正文：版本只摘要内容本身、时间只取本运行首次记录时间，同一事实永远同一版本。 */
+/**
+ * 已登记的重评入口事实（design D-12）：优先使用本轮运行上下文传入的入口事实；本轮未携带
+ * 时沿用前一版本已登记的值，保证同一运行的每次 run-state 工件保留同一入口事实。两者都在
+ * 且不相等说明同一运行被塞入两份不同入口事实，交由调用方以入口身份核对后失败闭合，不静默
+ * 取其一。
+ */
+const reassessmentEntryConflict = (
+  run: RiskFlowGraphRunContextV1,
+  previous: WorkflowGraphRunStateV1 | undefined,
+): boolean => {
+  const registered = previous?.reassessmentEntry;
+  const incoming = run.reassessmentEntry;
+  if (registered === undefined || incoming === undefined) return false;
+  return JSON.stringify(sortEntry(registered)) !== JSON.stringify(sortEntry(incoming));
+};
+
+const sortEntry = (entry: WorkflowReassessmentInputV1) => ({
+  previousAssessmentRecordRef: entry.previousAssessmentRecordRef,
+  reason: entry.reason,
+  // ContractReferenceV1 是判别联合，成员形状不同（含 domain-event 等无 reference 变体），
+  // 因此按整体 canonical 形态排序，不假设每个成员都有 reference。
+  changedInputRefs: [...entry.changedInputRefs]
+    .map((ref) => JSON.stringify(ref))
+    .sort(),
+});
+
+const reassessmentEntryOf = (
+  run: RiskFlowGraphRunContextV1,
+  previous: WorkflowGraphRunStateV1 | undefined,
+): WorkflowReassessmentInputV1 | undefined => run.reassessmentEntry ?? previous?.reassessmentEntry;
+
 const runStateBody = (input: {
   readonly run: RiskFlowGraphRunContextV1;
   readonly previous: WorkflowGraphRunStateV1 | undefined;
@@ -889,6 +920,11 @@ const runStateBody = (input: {
     calibrationSuggestionRefs:
       patch.calibrationSuggestionRefs ?? previous?.calibrationSuggestionRefs ?? [],
     recordedAt: input.run.entryRecordedAt,
+    // 重评入口事实在每次形成 run-state 工件时保持不变（design D-12）：先取已登记值，
+    // 传入值缺失时沿用它，传入值与已登记值不同时按本轮入口为准。非重评不携带该字段。
+    ...(reassessmentEntryOf(input.run, previous) === undefined
+      ? {}
+      : { reassessmentEntry: reassessmentEntryOf(input.run, previous) }),
     ...(identificationRunRef === undefined ? {} : { identificationRunRef }),
     ...(lastStageResultRef === undefined ? {} : { lastStageResultRef }),
     ...(lastRouteDecisionRef === undefined ? {} : { lastRouteDecisionRef }),
@@ -976,6 +1012,10 @@ const advance = async (input: AdvanceInputV1): Promise<RiskFlowGraphStateV1> => 
   const occurredAt = ports.now().toISOString();
   const suffix = input.actionSuffix;
   const runId = run.runRef.reference.entityId;
+  // 同一运行被塞入两份不相等的重评入口事实时失败闭合，不静默取其一（design D-12）。
+  if (reassessmentEntryConflict(run, input.cursor)) {
+    throw new Error("reassessment entry conflicts with the registered run state");
+  }
   const runResultArtifactId = `risk-flow-graph-run-result:${runId}:${suffix}`;
   const waitings = dedupeWaitings(input.waitings ?? []);
   const actionId = `${runId}:${suffix}`;

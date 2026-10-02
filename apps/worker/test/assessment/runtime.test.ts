@@ -1255,6 +1255,59 @@ describe("C30 评估子图运行时（真实 PostgreSQL + 真实 LangGraph）", 
     expect(await harness.rows(firstOutcome.runRef)).toEqual(firstRows);
     expect(await harness.links(firstOutcome.runRef)).toEqual(firstLinks);
     expect(await harness.latestState(firstOutcome.runRef)).toEqual(firstState);
+
+    // 重评入口事实被真实保存进 run-state 工件，可从登记事实直接读回（design D-12），
+    // 不再需要从冻结引用集合反推前驱或原因。
+    expect(reassessState?.state.reassessmentEntry).toEqual({
+      previousAssessmentRecordRef: firstRecord,
+      reason: "monitoring-snapshot",
+      changedInputRefs: [reassess.monitoringSnapshotRefs[1]],
+    });
+    // 非重评运行不携带该入口字段。
+    expect(firstState?.state.reassessmentEntry).toBeUndefined();
+  });
+
+  it("同一前驱但不同原因的重评不共享运行分区，原因按唯一映射送到 C25", async () => {
+    resetWorld();
+    const first = entryInputsFor("partition-first", { basisVersionId: "basis-1" });
+    const firstOutcome = await startSegmented(first, "historical-backfill");
+    const firstRecord = (await harness.latestState(firstOutcome.runRef))?.state
+      .assessmentRecordRefs[0];
+    if (firstRecord === undefined) {
+      throw new TypeError("the first run must register an assessment record");
+    }
+
+    const runRefsFor = async (
+      reason: "monitoring-snapshot" | "risk-matrix" | "weight-strategy",
+    ) => {
+      const inputs = entryInputsFor(`partition-${reason}`, { monitoringCount: 2 });
+      const outcome = await startSegmented(inputs, "reassess", {
+        reassessmentEntry: {
+          previousAssessmentRecordRef: firstRecord,
+          reason,
+          changedInputRefs: [inputs.monitoringSnapshotRefs[1]],
+        },
+      });
+      expect(outcome.status).toBe("completed");
+      return outcome.runRef;
+    };
+
+    const monitoringRun = await runRefsFor("monitoring-snapshot");
+    const matrixRun = await runRefsFor("risk-matrix");
+    const strategyRun = await runRefsFor("weight-strategy");
+    // 前驱相同但原因不同：三个独立运行分区。
+    const runIds = [monitoringRun, matrixRun, strategyRun].map(
+      (runRef) => runRef.reference.entityId,
+    );
+    expect(new Set(runIds).size).toBe(3);
+
+    // 只有 weight-strategy 需要改名，其余两码原样透传（design D-12 唯一映射）。
+    const reasons = harness.world.calls.prepare
+      .filter((command) => command.kind === "reassessment")
+      .map((command) => (command.kind === "reassessment" ? command.payload.reason : undefined));
+    expect(new Set(reasons)).toEqual(
+      new Set(["monitoring-snapshot", "risk-matrix", "weight-or-strategy"]),
+    );
   });
 
   it("已知缺口边界：冻结依据引用与解析都不可得时稳定失败且不产生阶段成功事实", async () => {

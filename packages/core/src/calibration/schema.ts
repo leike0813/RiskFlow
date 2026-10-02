@@ -14,6 +14,7 @@ import {
   AssessmentInputSnapshotRefV1Schema,
   AuthorizationContextV1Schema,
   CalibrationSuggestionRefV1Schema,
+  CalibrationReviewOutcomeCommandV1Schema as ContractsCalibrationReviewOutcomeCommandV1Schema,
   ContentArtifactRefV1Schema,
   ContractReferenceV1Schema,
   DeviationRecordRefV1Schema,
@@ -21,6 +22,7 @@ import {
   MODULE_BRANCH_CAPABILITY_V1,
   ModuleErrorV1Schema,
   ReviewDecisionRefV1Schema,
+  type CalibrationReviewOutcomeCommandV1 as ContractsCalibrationReviewOutcomeCommandV1,
   type ContractReferenceV1,
   type ModuleCapabilityV1,
   type ModuleErrorV1,
@@ -214,35 +216,17 @@ export type CalibrationCandidateV1 = z.infer<typeof CalibrationCandidateV1Schema
 /* 私有用例命令                                                                 */
 /* -------------------------------------------------------------------------- */
 
-/** 后两个用例的命令信封：只补精确建议/决定与调用方声明的决定类型。 */
-export const CalibrationReviewOutcomeCommandV1Schema = CommandEnvelopeSchema.extend({
-  authorization: AuthorizationContextV1Schema,
-  payload: z.strictObject({
-    schemaVersion: z.literal(CALIBRATION_SCHEMA_VERSION_V1),
-    calibrationSuggestionRef: CalibrationSuggestionRefV1Schema,
-    reviewDecisionRef: ReviewDecisionRefV1Schema,
-    outcome: z.enum(["reject", "return-for-revision", "approve-draft-creation"]),
-  }),
-}).superRefine((command, context) => {
-  if (command.projectId !== command.authorization.projectId) {
-    context.addIssue({ code: "custom", path: ["projectId"], message: "project mismatch" });
-  }
-  if (command.actorId !== command.authorization.actorId) {
-    context.addIssue({ code: "custom", path: ["actorId"], message: "actor mismatch" });
-  }
-  const requiredCapability =
-    MODULE_BRANCH_CAPABILITY_V1["warning-response.create-calibration-suggestion"];
-  if (!command.authorization.grantedCapabilities.includes(requiredCapability)) {
-    context.addIssue({
-      code: "custom",
-      path: ["authorization", "grantedCapabilities"],
-      message: "required capability is not granted",
-    });
-  }
-});
-export type CalibrationReviewOutcomeCommandV1 = z.infer<
-  typeof CalibrationReviewOutcomeCommandV1Schema
->;
+/**
+ * 后两个用例的命令信封：只补精确建议/决定与调用方声明的决定类型。
+ *
+ * 载荷与内部信封由 contracts 定义一次（design D-03），core 直接复用；公共治理入口按自身
+ * branch 复验单能力授权（design D-08），因此此处不再断言调用方同时持有多个 capability。
+ */
+export const CalibrationReviewOutcomeCommandV1Schema =
+  ContractsCalibrationReviewOutcomeCommandV1Schema;
+export type CalibrationReviewOutcomeCommandV1 = ContractsCalibrationReviewOutcomeCommandV1;
+export { CalibrationGovernanceOutcomeV1Schema } from "@riskflow/contracts/ports";
+export type { CalibrationGovernanceOutcomeV1 } from "@riskflow/contracts/ports";
 
 export const CALIBRATION_SUGGESTION_OUTCOMES_V1 = [
   "pending-review",
@@ -250,8 +234,11 @@ export const CALIBRATION_SUGGESTION_OUTCOMES_V1 = [
   "rejected",
   "approved-for-draft",
 ] as const;
-export const CalibrationSuggestionStatusV1Schema = z.enum(CALIBRATION_SUGGESTION_OUTCOMES_V1);
-export type CalibrationSuggestionStatusV1 = z.infer<typeof CalibrationSuggestionStatusV1Schema>;
+export { CalibrationSuggestionStatusV1Schema } from "@riskflow/contracts/vocabulary";
+export type { CalibrationSuggestionStatusV1 } from "@riskflow/contracts/vocabulary";
+export type CalibrationSuggestionStatus = z.infer<
+  typeof import("@riskflow/contracts/vocabulary").CalibrationSuggestionStatusV1Schema
+>;
 
 /* -------------------------------------------------------------------------- */
 /* 稳定失败事实源                                                              */

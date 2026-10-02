@@ -115,3 +115,57 @@ export type QuantitativeIndicatorGroup = z.infer<typeof QuantitativeIndicatorGro
 
 export const WarningTriggerTypeSchema = z.enum(WARNING_TRIGGER_TYPE_VALUES);
 export type WarningTriggerType = z.infer<typeof WarningTriggerTypeSchema>;
+
+/* -------------------------------------------------------------------------- */
+/* C34 处置域枚举（design D-03）                                               */
+/*                                                                            */
+/* 只读界面暴露的任务状态、校准状态、类型化操作 kind 及其校验枚举在此定义一次； */
+/* core 消费并 re-export，同一领域枚举不得在 core 与 contracts 重复定义。       */
+/* -------------------------------------------------------------------------- */
+
+export const WARNING_RESPONSE_TASK_STATUS_VALUES = ["open", "closed"] as const;
+export const WarningResponseTaskStatusV1Schema = z.enum(WARNING_RESPONSE_TASK_STATUS_VALUES);
+export type WarningResponseTaskStatusV1 = z.infer<typeof WarningResponseTaskStatusV1Schema>;
+
+export const CALIBRATION_SUGGESTION_STATUS_VALUES = [
+  "pending-review",
+  "returned",
+  "rejected",
+  "approved-for-draft",
+] as const;
+export const CalibrationSuggestionStatusV1Schema = z.enum(
+  CALIBRATION_SUGGESTION_STATUS_VALUES,
+);
+export type CalibrationSuggestionStatusV1 = z.infer<
+  typeof CalibrationSuggestionStatusV1Schema
+>;
+
+/** 六个分支与目标定义类型一一对应；只暴露 kind，不上移完整配置 Schema。 */
+export const CALIBRATION_OPERATION_KIND_VALUES = [
+  "replace-weight-entry",
+  "replace-risk-matrix-band",
+  "replace-risk-acceptance-threshold",
+  "replace-monitoring-warning-threshold",
+  "replace-deviation-policy",
+  "replace-scoring-rule-interval",
+] as const;
+export const CalibrationOperationKindV1Schema = z.enum(CALIBRATION_OPERATION_KIND_VALUES);
+export type CalibrationOperationKindV1 = z.infer<typeof CalibrationOperationKindV1Schema>;
+
+/** 已存比较形状：单边 gt/gte/lt/lte 携带 boundary，outside 携带 lower/upper；无新比较逻辑。 */
+export const COMPARISON_OPERATOR_VALUES = ["gt", "gte", "lt", "lte", "outside"] as const;
+export const ComparisonOperatorV1Schema = z.enum(COMPARISON_OPERATOR_VALUES);
+export type ComparisonOperatorV1 = z.infer<typeof ComparisonOperatorV1Schema>;
+
+/** 校准公开治理入口的闭合决定取值（design D-03/D-08）。 */
+export const CALIBRATION_REVIEW_OUTCOMES_V1 = ["reject", "return-for-revision"] as const;
+export const CalibrationReviewOutcomeV1Schema = z.enum(CALIBRATION_REVIEW_OUTCOMES_V1);
+export type CalibrationReviewOutcomeV1 = z.infer<typeof CalibrationReviewOutcomeV1Schema>;
+
+export const CALIBRATION_GOVERNANCE_DRAFT_OUTCOME_V1 = "approve-draft-creation" as const;
+export const CalibrationGovernanceDraftOutcomeV1Schema = z.literal(
+  CALIBRATION_GOVERNANCE_DRAFT_OUTCOME_V1,
+);
+export type CalibrationGovernanceDraftOutcomeV1 = z.infer<
+  typeof CalibrationGovernanceDraftOutcomeV1Schema
+>;

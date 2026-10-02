@@ -37,12 +37,18 @@ const roleBranches: Readonly<Record<PresetRoleV1, readonly ModuleBranchV1[]>> = 
     "risk-identification.record-catalog",
     "risk-identification.record-read",
     "review-audit.queue-read",
+    "risk-assessment.read",
+    "warning-response.read",
   ),
   "field-responder": branchSet(
     "warning-response.record-execution",
     "warning-response.record-feedback",
     "projection.query",
     "projection.subscribe",
+    // C34：补齐已公开矩阵/措施与投影的读取面，使处置角色能读风险解释与终局结果；
+    // 不授予经理的启动/采纳/确认/校准治理写权（design D-06）。
+    "projection.result-read",
+    "knowledge-modeling.governance-read",
     "engineering-data.evidence-access",
     "engineering-data.context-read",
     "engineering-data.monitoring-catalog",
@@ -51,6 +57,8 @@ const roleBranches: Readonly<Record<PresetRoleV1, readonly ModuleBranchV1[]>> = 
     "risk-identification.run-read",
     "risk-identification.record-catalog",
     "risk-identification.record-read",
+    "risk-assessment.read",
+    "warning-response.read",
   ),
   "business-viewer": branchSet(
     "projection.query",
@@ -69,6 +77,8 @@ const roleBranches: Readonly<Record<PresetRoleV1, readonly ModuleBranchV1[]>> = 
     "risk-identification.record-read",
     "review-audit.queue-read",
     "knowledge-modeling.retrieval-result",
+    "risk-assessment.read",
+    "warning-response.read",
   ),
 });
 

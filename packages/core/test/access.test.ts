@@ -74,11 +74,11 @@ describe("access domain", () => {
     ] as const) {
       expect(isBranchAllowed(["field-responder"], branch)).toBe(true);
     }
+    // C34 起 field-responder 另获 `projection.result-read` 与
+    // `knowledge-modeling.governance-read`（design D-06），此处只断言仍未授予的分支。
     for (const branch of [
       "engineering-data.source-catalog",
-      "knowledge-modeling.governance-read",
       "knowledge-modeling.retrieval-result",
-      "projection.result-read",
     ] as const) {
       expect(isBranchAllowed(["field-responder"], branch)).toBe(false);
     }
@@ -116,6 +116,51 @@ describe("access domain", () => {
     expect(isBranchAllowed(["field-responder"], "review-audit.queue-read")).toBe(false);
     expect(isBranchAllowed(["business-viewer"], "knowledge-modeling.retrieval-result")).toBe(true);
     expect(isBranchAllowed(["field-responder"], "knowledge-modeling.retrieval-result")).toBe(false);
+  });
+
+  it("C34 评估与处置只读 branch 及校准治理写权按 D6 固定角色授予", () => {
+    const c34ReadBranches = ["risk-assessment.read", "warning-response.read"] as const;
+    const c34GovernanceBranches = [
+      "warning-response.calibration-review-outcome",
+      "warning-response.calibration-governance-draft",
+    ] as const;
+    const grantedRead = (role: keyof typeof PRESET_ROLE_BRANCHES_V1) =>
+      PRESET_ROLE_BRANCHES_V1[role]
+        .filter((branch) => (c34ReadBranches as readonly string[]).includes(branch))
+        .sort();
+
+    // 两个新 read branch 授予 reviewer、field-responder、business-viewer。
+    for (const role of ["reviewer", "field-responder", "business-viewer"] as const) {
+      expect(grantedRead(role)).toEqual([...c34ReadBranches].sort());
+    }
+    expect(grantedRead("system-administrator")).toEqual([]);
+    expect(grantedRead("project-risk-manager")).toEqual([...c34ReadBranches].sort());
+
+    // 校准两个治理写 branch 仅经理：预设角色集合里不得出现。
+    for (const role of ["reviewer", "field-responder", "business-viewer", "system-administrator"] as const) {
+      for (const branch of c34GovernanceBranches) {
+        expect(isBranchAllowed([role], branch)).toBe(false);
+      }
+    }
+    for (const branch of c34GovernanceBranches) {
+      expect(isBranchAllowed(["project-risk-manager"], branch)).toBe(true);
+    }
+
+    // field-responder 补投影结果与措施治理读取面。
+    expect(isBranchAllowed(["field-responder"], "projection.result-read")).toBe(true);
+    expect(isBranchAllowed(["field-responder"], "knowledge-modeling.governance-read")).toBe(
+      true,
+    );
+
+    // 不授予 field-responder 经理的启动/采纳/确认写权。
+    for (const branch of [
+      "risk-assessment.initial",
+      "risk-assessment.reassessment",
+      "warning-response.acknowledge",
+      "warning-response.adopt-recommendation",
+    ] as const) {
+      expect(isBranchAllowed(["field-responder"], branch)).toBe(false);
+    }
   });
 
   it("authorization scope closure", () => {

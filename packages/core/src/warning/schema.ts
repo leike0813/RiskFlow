@@ -24,9 +24,14 @@ import {
 } from "@riskflow/contracts/ports";
 import {
   WARNING_TRIGGER_TYPE_VALUES,
+  WarningResponseTaskStatusV1Schema,
   WarningTriggerTypeSchema,
+  type WarningResponseTaskStatusV1,
   type WarningTriggerType,
 } from "@riskflow/contracts/vocabulary";
+
+export { WarningResponseTaskStatusV1Schema } from "@riskflow/contracts/vocabulary";
+export type { WarningResponseTaskStatusV1 } from "@riskflow/contracts/vocabulary";
 
 /**
  * C26 自有 schema：只描述预警处置任务的持久化与派生事实，
@@ -40,12 +45,6 @@ export const WARNING_MAX_EVIDENCE_REFERENCES_V1 = 1024;
 export const WARNING_MAX_RECIPIENTS_V1 = 256;
 export const WARNING_TASK_OPEN_STATUS_V1 = "open" as const;
 export const WARNING_TASK_CLOSED_STATUS_V1 = "closed" as const;
-
-export const WarningResponseTaskStatusV1Schema = z.enum([
-  WARNING_TASK_OPEN_STATUS_V1,
-  WARNING_TASK_CLOSED_STATUS_V1,
-]);
-export type WarningResponseTaskStatusV1 = z.infer<typeof WarningResponseTaskStatusV1Schema>;
 
 export const WARNING_RISK_INPUT_KIND_V1 = [
   "standardized-risk-record",

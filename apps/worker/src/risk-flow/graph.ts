@@ -859,10 +859,28 @@ const sortEntry = (entry: WorkflowReassessmentInputV1) => ({
   changedInputRefs: [...entry.changedInputRefs].map((ref) => JSON.stringify(ref)).sort(),
 });
 
+/**
+ * 重评入口事实（design D-12）：优先本轮上下文，否则沿用前一版本已登记值。
+ * `reassess` 运行两处都拿不到显式入口事实时失败闭合——历史工件可读，但不得据此补猜
+ * 前驱、原因或变化引用，也不得让重评在没有原入口事实的情况下继续推进。
+ */
 const reassessmentEntryOf = (
   run: RiskFlowGraphRunContextV1,
   previous: WorkflowGraphRunStateV1 | undefined,
-): WorkflowReassessmentInputV1 | undefined => run.reassessmentEntry ?? previous?.reassessmentEntry;
+  occurredAt: string,
+): WorkflowReassessmentInputV1 | undefined => {
+  const entry = run.reassessmentEntry ?? previous?.reassessmentEntry;
+  if (entry === undefined && run.entryMode === "reassess") {
+    throw new RiskFlowGraphNodeFailureV1(
+      contractInvalid({
+        stage: "preparing",
+        detailCode: "reassessment-entry-fact-missing",
+        occurredAt,
+      }),
+    );
+  }
+  return entry;
+};
 
 const runStateBody = (input: {
   readonly run: RiskFlowGraphRunContextV1;
@@ -922,9 +940,9 @@ const runStateBody = (input: {
     recordedAt: input.run.entryRecordedAt,
     // 重评入口事实在每次形成 run-state 工件时保持不变（design D-12）：先取已登记值，
     // 传入值缺失时沿用它，传入值与已登记值不同时按本轮入口为准。非重评不携带该字段。
-    ...(reassessmentEntryOf(input.run, previous) === undefined
+    ...(reassessmentEntryOf(input.run, previous, input.run.entryRecordedAt) === undefined
       ? {}
-      : { reassessmentEntry: reassessmentEntryOf(input.run, previous) }),
+      : { reassessmentEntry: reassessmentEntryOf(input.run, previous, input.run.entryRecordedAt) }),
     // 精确图版本与重评入口同理：每次形成 run-state 工件都写入同一启动值（design D-04）。
     graphVersion: input.run.graphVersion,
     ...(identificationRunRef === undefined ? {} : { identificationRunRef }),

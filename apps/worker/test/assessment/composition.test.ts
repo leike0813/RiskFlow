@@ -707,4 +707,31 @@ describe("C30 评估子图组合根（真实 PostgreSQL 接线）", () => {
     expect(outcome.resultRef).toBeDefined();
     expect(outcome.resultRef).toEqual(latestState?.resultRef);
   });
+
+  it("历史重评缺入口元数据：拒绝继续评估且运行分区零登记", async () => {
+    // `reassess` 运行在运行上下文与已登记运行状态里都拿不到 D-12 入口事实时（历史工件允许
+    // 缺席以保持可读），runtime 必须拒绝继续评估，且绝不从前驱字段或冻结引用反推原因。
+    // 失败发生在首版运行状态成形之前，因此没有可登记的终态事实：拒绝即零登记。
+    const scope = scopeOf({ seed: "composition-reassess-missing-entry", entryMode: "reassess" });
+    const rejected = await composition.runtime
+      .start({ ...startCommandOf(scope), entryMode: "reassess" })
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+    if (!(rejected instanceof AssessmentGraphRunErrorV1)) {
+      throw new TypeError("expected the reassess run without entry facts to be rejected");
+    }
+    expect({
+      code: rejected.code,
+      detailCode: rejected.detailCode,
+      retryable: rejected.retryable,
+    }).toEqual({
+      code: "CONTRACT_INVALID",
+      detailCode: "reassessment-entry-fact-missing",
+      retryable: false,
+    });
+    expect(await rowsOf(scope)).toEqual([]);
+    expect(await linksOf(scope)).toEqual([]);
+  });
 });

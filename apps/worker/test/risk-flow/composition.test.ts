@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/access";
 import type { ArtifactStorePolicyV1 } from "@riskflow/core/artifacts";
+import type { TransactionUnitV1 } from "@riskflow/core/persistence";
 import {
   AuthorizationContextV1Schema,
   ModuleErrorV1Schema,
@@ -24,7 +25,11 @@ import {
   type ModuleBranchV1,
   type StartWorkflowRunCommandV1,
 } from "@riskflow/contracts/ports";
-import { workflowEntryIdentityFor, workflowRunIdentityFor } from "@riskflow/core/workflow";
+import {
+  evaluateWorkflowEntryGate,
+  workflowEntryIdentityFor,
+  workflowRunIdentityFor,
+} from "@riskflow/core/workflow";
 
 import { createArtifactStore } from "@riskflow/adapters/artifacts";
 import {
@@ -237,21 +242,39 @@ const startCommandFor = (input: {
   payload: input.payload,
 });
 
-const readyPayload = (): StartWorkflowRunCommandV1["payload"] => ({
-  entryMode: "identify-and-assess",
-  graphVersion: GRAPH_VERSION,
-  retryPolicyRef: RETRY_POLICY_REF,
-  projectRevisionRef: PROJECT_REVISION_REF,
-  spatialScopeRefs: [SPACE_REF],
-  sourceVersionRefs: [SOURCE_VERSION_REF],
-  assessmentContexts: [
-    {
-      spatialScopeRef: SPACE_REF,
-      applicabilityMetadataSnapshotRef: APPLICABILITY_REF,
-      monitoringSnapshotRefs: [MONITORING_REF],
-    },
-  ],
-});
+/**
+ * 合格入口载荷。给出 `suffix` 时按该后缀派生一组独立冻结引用，因此每个用例天然落在
+ * 不同的运行分区，不会因为共享同一确定性运行身份而互相干扰；不给出时沿用模块级共享夹具。
+ */
+const readyPayload = (suffix?: string): StartWorkflowRunCommandV1["payload"] => {
+  const scoped = <T extends { readonly reference: { readonly entityId: string } }>(base: T): T =>
+    suffix === undefined
+      ? base
+      : {
+          ...base,
+          reference: { ...base.reference, entityId: `${base.reference.entityId}-${suffix}` },
+        };
+  const projectRevisionRef = scoped(PROJECT_REVISION_REF);
+  const sourceVersionRef = scoped(SOURCE_VERSION_REF);
+  const spaceRef = scoped(SPACE_REF);
+  const applicabilityRef = scoped(APPLICABILITY_REF);
+  const monitoringRef = scoped(MONITORING_REF);
+  return {
+    entryMode: "identify-and-assess",
+    graphVersion: GRAPH_VERSION,
+    retryPolicyRef: RETRY_POLICY_REF,
+    projectRevisionRef,
+    spatialScopeRefs: [spaceRef],
+    sourceVersionRefs: [sourceVersionRef],
+    assessmentContexts: [
+      {
+        spatialScopeRef: spaceRef,
+        applicabilityMetadataSnapshotRef: applicabilityRef,
+        monitoringSnapshotRefs: [monitoringRef],
+      },
+    ],
+  };
+};
 
 interface CompositionFixtureV1 {
   readonly postgres: PostgresTestFixture;
@@ -354,6 +377,24 @@ describe("C30 父运行生产组合根（真实 PostgreSQL 接线）", () => {
     );
     return Number(result.rows[0]?.count ?? "0");
   };
+  /** 公开命令的确定性运行引用：断言端与生产端共用同一门禁与身份函数，不硬编码身份字符串。 */
+  const runIdOf = (command: StartWorkflowRunCommandV1): string => {
+    const gate = evaluateWorkflowEntryGate(command.payload);
+    if (gate.kind !== "ready") {
+      throw new Error(`测试载荷未通过入口门禁：${gate.detailCode}`);
+    }
+    const entryIdentity = workflowEntryIdentityFor({
+      entryMode: command.payload.entryMode,
+      projectId: command.projectId,
+      frozenRefs: gate.frozenRefs,
+    });
+    return workflowRunIdentityFor({
+      projectId: command.projectId,
+      entryMode: command.payload.entryMode,
+      entryIdentity,
+      graphVersion: command.payload.graphVersion,
+    }).runRef.reference.entityId;
+  };
   const countAudit = async (): Promise<number> => {
     const result = await fixture.postgres.adminPool.query<{ count: string }>(
       "SELECT count(*)::text AS count FROM audit.entries WHERE project_id = $1",
@@ -361,6 +402,95 @@ describe("C30 父运行生产组合根（真实 PostgreSQL 接线）", () => {
     );
     return Number(result.rows[0]?.count ?? "0");
   };
+
+  /**
+   * 一次失败的事务单元：第一次 `execute` 抛可重试的基础设施失败，之后完全委托给真实单元。
+   * 正文（C04）写入发生在登记事务之外，因此这正是“C04 已写、登记未成立、响应丢失”的边界：
+   * 没有任何一行登记被提交，图却已经推进过。
+   */
+  const failOnceTransactionUnit = (): TransactionUnitV1 & { armed: boolean } => {
+    const armed = { armed: true };
+    return {
+      get armed() {
+        return armed.armed;
+      },
+      execute: async (command, handler, options) => {
+        if (armed.armed) {
+          armed.armed = false;
+          throw new Error("injected registration outage");
+        }
+        return fixture.transactionUnit.execute(command, handler, options);
+      },
+    };
+  };
+
+  it("持久边界：入口登记提交失败后重试同一命令只补登记，不产生第二个运行", async () => {
+    const command = startCommandFor({
+      commandId: "c30-composition-bound-retry",
+      payload: readyPayload("bound-retry"),
+    });
+    const runId = runIdOf(command);
+    // 绑定事务先于图调用，但登记事务随后失败：调用方拿到失败响应，且没有任何登记行。
+    const outage = failOnceTransactionUnit();
+    const broken = createRiskFlowGraphComposition({
+      ...fixture.options(),
+      transactionUnit: outage,
+    });
+    const failed = await broken.runtime.workflowPort.startRun(command);
+    expect(failed.kind).toBe("failed");
+    expect(await broken.registrationStore.listRunRows({ projectId: PROJECT_ID, runId })).toEqual(
+      [],
+    );
+    await broken.adapter.close?.().catch?.(() => undefined);
+
+    // 依赖恢复后用原命令、原幂等键重试：继续启动同一运行，不新建运行、不重复绑定。
+    const retry = await composition.runtime.workflowPort.startRun(command);
+    expect(retry.kind).toBe("waiting");
+    expect(retry.kind === "waiting" ? retry.workflowRunRef.reference.entityId : undefined).toBe(
+      runId,
+    );
+    const restored = await composition.registrationStore.listRunRows({
+      projectId: PROJECT_ID,
+      runId,
+    });
+    expect(restored.filter((row) => row.resultKind === "entry-snapshot")).toHaveLength(1);
+    // 绑定回执按幂等键复用，不因重试追加第二次绑定审计。
+    const bindings = await fixture.postgres.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM audit.entries WHERE project_id = $1 AND command_id = $2",
+      [PROJECT_ID, command.commandId],
+    );
+    expect(Number(bindings.rows[0]?.count ?? "0")).toBe(1);
+  }, 120_000);
+
+  it("新 runtime 从同一数据库恢复既有运行，不重建也不丢已登记事实", async () => {
+    const command = startCommandFor({
+      commandId: "c30-composition-new-runtime",
+      payload: readyPayload("new-runtime"),
+    });
+    const started = await composition.runtime.workflowPort.startRun(command);
+    expect(started.kind).toBe("waiting");
+    const runId = runIdOf(command);
+    const before = await composition.registrationStore.listRunRows({
+      projectId: PROJECT_ID,
+      runId,
+    });
+    expect(before.length).toBeGreaterThan(0);
+
+    // 用同一数据库重新组合一个全新 runtime：事实从登记面读回，不依赖前一个进程。
+    const fresh = createRiskFlowGraphComposition(fixture.options());
+    const latest = await fresh.registrationStore.readLatestRunState({
+      projectId: PROJECT_ID,
+      runId,
+      actorId: ACTOR_ID,
+      requestedAt: TIMESTAMP,
+      authorization: authorizationFor("workflow.start"),
+    });
+    expect(latest?.state.status).toBe("waiting");
+    expect(latest?.state.graphVersion).toEqual(GRAPH_VERSION);
+    expect(await fresh.registrationStore.listRunRows({ projectId: PROJECT_ID, runId })).toEqual(
+      before,
+    );
+  }, 120_000);
 
   it("任一必需依赖缺失即抛 TypeError，且不产生半组合", () => {
     for (const dependency of REQUIRED_DEPENDENCIES_V1) {

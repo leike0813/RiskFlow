@@ -1915,12 +1915,14 @@ export const readRiskOverviewRunPage = async (
   const queryResultRef =
     input.queryResultRef ??
     asQueryResultRef(
-      await submitQuery({
-        projectId,
-        branch: 'projection.query',
-        payload: { queryType: 'risk-overview', projectRevisionRef },
-        ...(signal === undefined ? {} : { signal }),
-      }),
+      asRecord(
+        await submitQuery({
+          projectId,
+          branch: 'projection.query',
+          payload: { queryType: 'risk-overview', projectRevisionRef },
+          ...(signal === undefined ? {} : { signal }),
+        }),
+      ).queryResultRef,
     )
   const page = asRecord(
     await submitQuery({

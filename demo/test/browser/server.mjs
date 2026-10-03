@@ -144,6 +144,16 @@ const evidenceFor = (sourceVersionRef, sourceSegmentId) => ({
   sourceVersion: sourceVersionRef.reference,
 });
 
+/**
+ * 评估执行（写）路径的部署注入接缝在本装配中不提供。
+ *
+ * C34 只读分支不消费这些接缝；一旦误被调用立即失败，而不是返回空集合或默认策略冒充
+ * 「评估依据已就绪」——后者会把未执行伪装成已评估。
+ */
+const unwiredWritePathSeam = (label) => () => {
+  throw new Error(`评估执行路径接缝未在演示装配中注入：${label}`);
+};
+
 const agentTaskRef = {
   kind: "agent-task",
   reference: versionRef("demo-agent-task"),
@@ -1885,6 +1895,11 @@ export const startDemoBrowserServer = async () => {
         ],
         sourceSegmentIds: input.sourceSegmentIds,
         mechanismEntryIds: input.mechanismEntryIds,
+        // 空间范围、来源版本与证据并集在登记时定型（schema 要求），取值来自本条记录
+        // 自己已登记的资料事实，不按当前资料反推，也不跨记录借用。
+        spatialScopeRefs: input.spatialScopeRefs,
+        sourceVersionRefs: input.sourceVersionRefs,
+        evidenceReferences: input.evidenceReferences,
         authorizationScopeDigest: scopeDigest,
         authorizationContextRef: baseAuth.authorizationContextRef,
         actorRef: baseAuth.actorId,
@@ -1976,6 +1991,9 @@ export const startDemoBrowserServer = async () => {
       ],
       sourceSegmentIds: [sourceA.segmentIds[0]],
       mechanismEntryIds: ["MEC-VDS-017"],
+      spatialScopeRefs: [spatialScopeRef],
+      sourceVersionRefs: [sourceA.sourceVersionRef],
+      evidenceReferences: [sampleEvidence],
       modelConfidence: 0.8,
       compositeValue: 0.8,
       occurredAt: "2030-06-01T08:10:00.000Z",
@@ -1995,6 +2013,12 @@ export const startDemoBrowserServer = async () => {
       ],
       sourceSegmentIds: [sourceA.segmentIds[1], sourceB.segmentIds[0]],
       mechanismEntryIds: ["MEC-VDS-017"],
+      spatialScopeRefs: [spatialScopeRef],
+      sourceVersionRefs: [sourceA.sourceVersionRef, sourceB.sourceVersionRef],
+      evidenceReferences: [
+        evidenceFor(sourceA.sourceVersionRef, sourceA.segmentIds[1]),
+        evidenceFor(sourceB.sourceVersionRef, sourceB.segmentIds[0]),
+      ],
       modelConfidence: 0.55,
       compositeValue: 0.5,
       occurredAt: "2030-06-01T08:20:00.000Z",
@@ -2383,9 +2407,37 @@ export const startDemoBrowserServer = async () => {
       });
     });
     const publicOrigin = `http://127.0.0.1:${freePort}`;
+
+    // ---- C34 评估只读（design D-04）：C25 引擎 + 全部真实接缝 ----
+    //
+    // C34 八条只读分支只用到 recordCatalog/entryContext/entriesRead/runRead 四个接缝，
+    // 其余接缝属于评估执行（写）路径，本装配不提供，也不会为读面伪造结果。
+    const identificationRead = createPostgresRiskIdentificationReadAdapter({
+      db: appRuntime.db,
+      artifactStore,
+      authorization: access,
+    });
+    const assessmentEngine = createPostgresRiskAssessmentEngine({
+      db: appRuntime.db,
+      transactionUnit,
+      access,
+      artifactStore,
+      preparationContext: registry,
+      riskInputFacts: unwiredWritePathSeam("riskInputFacts"),
+      basisReader: unwiredWritePathSeam("basisReader"),
+      runtimePolicies: unwiredWritePathSeam("runtimePolicies"),
+      monitoring: monitoringStore,
+      authorizeDownstream,
+      entryContext: createAssessmentEntryContextReadPort(registry),
+      runRead: workflow.runRead,
+      entriesRead: workflow.entriesRead,
+      recordCatalog: identificationRead,
+    });
+
     const api = buildApi({
       access,
       ports: {
+        riskAssessmentRead: assessmentEngine,
         engineeringData: registry,
         engineeringDataCatalog: createPostgresEngineeringDataCatalogAdapter({
           db: appRuntime.db,
@@ -2419,11 +2471,7 @@ export const startDemoBrowserServer = async () => {
         }),
         projection: projection.queryProjection,
         projectionResultRead: projection.resultRead,
-        riskIdentificationRead: createPostgresRiskIdentificationReadAdapter({
-          db: appRuntime.db,
-          artifactStore,
-          authorization: access,
-        }),
+        riskIdentificationRead: identificationRead,
         reviewQueueRead: createPostgresReviewQueueReadAdapter({
           db: appRuntime.db,
           authorization: access,

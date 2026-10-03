@@ -155,10 +155,12 @@ test("viewer 无检索读取权限时呈现权限骨架", async ({ page }) => {
   await expect(page.getByText("无权访问该检索结果，或结果引用不存在")).toBeVisible();
 });
 
-test("无知识读能力角色打开机理库页呈现权限骨架", async ({ page }) => {
+test("处置角色已获知识读面、可读取机理条目", async ({ page }) => {
+  // 本 change 的 task 1.2（design D-06）给 field-responder 补齐了知识治理读取面，
+  // 使处置角色能读风险解释与终局结果；原先「处置角色无知识读能力」的预期已随该
+  // 授权变更失效。此处按现行授权断言可读，治理写权仍不在该角色上。
   await login(page, server.responderLogin, `/knowledge/mechanisms?project=${server.projectId}`);
-  await expect(page.getByText("当前角色不具备知识库读取权限")).toBeVisible();
-  await expect(page.getByText("MEC-VDS-017")).toHaveCount(0);
+  await expect(page.getByText("MEC-VDS-017").first()).toBeVisible();
 });
 
 test("viewer 可查看知识治理页但不具备追溯投影权限", async ({ page }) => {

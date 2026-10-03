@@ -52,6 +52,7 @@ import {
   createElement,
   useContext,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
@@ -126,6 +127,7 @@ export const usePageQuery = <T,>(
   const { selector } = useEngineering()
   const [state, setState] = useState<PageState<T> | { kind: 'idle' }>({ kind: 'idle' })
   const [tick, setTick] = useState(0)
+  const sequence = useRef(0)
 
   useEffect(() => {
     if (selector.projectId === null) {
@@ -134,19 +136,25 @@ export const usePageQuery = <T,>(
     }
     const projectId = selector.projectId
     const controller = new AbortController()
+    // 迟到的旧响应不得覆盖新查询：取消只能拦住未完成的请求，已 resolve 的仍会回调。
+    sequence.current += 1
+    const current = sequence.current
+    const settle = (next: PageState<T>) => {
+      if (current === sequence.current) setState(next)
+    }
     setState({ kind: 'loading' })
     query(projectId, controller.signal)
-      .then((value) => setState({ kind: 'ready', value }))
+      .then((value) => settle({ kind: 'ready', value }))
       .catch((error: unknown) => {
         if (error instanceof DOMException && error.name === 'AbortError') return
         if (
           error instanceof ApiError &&
           (error.code === 'NOT_FOUND' || error.code === 'AUTHENTICATION_REQUIRED')
         ) {
-          setState({ kind: 'forbidden' })
+          settle({ kind: 'forbidden' })
           return
         }
-        setState({
+        settle({
           kind: 'error',
           code: error instanceof ApiError ? error.code : 'TERMINAL_FAILURE',
           retryable: error instanceof ApiError ? error.retryable : false,

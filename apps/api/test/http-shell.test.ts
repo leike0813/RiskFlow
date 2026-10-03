@@ -1740,4 +1740,83 @@ describe("C34 assessment and warning-response read surface", () => {
     expect(calls).toHaveLength(2);
     await app.close();
   });
+
+  it("rejects the peer governance branch's success shape on each route", async () => {
+    // 两条治理分支的成功形状不同：任一分支返回对方的成功结果都必须被结果 Schema 拒绝，
+    // 公共包装不得为了通过而放宽内部结果。
+    const suggestionRef = {
+      kind: "calibration-suggestion" as const,
+      reference: { entityId: "sug-1", versionId: "1" },
+    };
+    const decisionRef = {
+      kind: "review-decision" as const,
+      reference: { entityId: "dec-1", versionId: "1" },
+    };
+    const draftShape = {
+      governanceDraftRef: { entityId: "g", versionId: "1" },
+      knowledgeRevisionRef: {
+        kind: "knowledge-revision" as const,
+        reference: { entityId: "k", versionId: "1" },
+      },
+      candidateArtifactRef: {
+        kind: "content-artifact" as const,
+        reference: { entityId: "c", versionId: "1" },
+      },
+      deviationRecordRef: {
+        kind: "deviation-record" as const,
+        reference: { entityId: "d", versionId: "1" },
+      },
+      deviationRecordVersionId: "1",
+    };
+    const reviewShape = {
+      calibrationSuggestionRef: suggestionRef,
+      outcome: "rejected" as const,
+      deviationRecordRef: {
+        kind: "deviation-record" as const,
+        reference: { entityId: "d", versionId: "1" },
+      },
+      deviationRecordVersionId: "1",
+    };
+    const app = buildApi({
+      access: accessStub(),
+      ports: {
+        calibrationGovernance: {
+          // 复核分支返回草案形状，草案分支返回复核形状：两条都必须失败闭合。
+          recordReviewOutcome: async () => ({ kind: "succeeded", result: draftShape }) as never,
+          createGovernanceDraft: async () => ({ kind: "succeeded", result: reviewShape }) as never,
+        },
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+
+    const reviewResponse = await postCommand(
+      app,
+      "warning-response.calibration-review-outcome",
+      "command-shape-reject",
+      {
+        schemaVersion: "1",
+        calibrationSuggestionRef: suggestionRef,
+        reviewDecisionRef: decisionRef,
+        outcome: "reject",
+      },
+    );
+    const draftResponse = await postCommand(
+      app,
+      "warning-response.calibration-governance-draft",
+      "command-shape-draft",
+      {
+        schemaVersion: "1",
+        calibrationSuggestionRef: suggestionRef,
+        reviewDecisionRef: decisionRef,
+        outcome: "approve-draft-creation",
+      },
+    );
+    expect(reviewResponse.statusCode).toBe(500);
+    expect(draftResponse.statusCode).toBe(500);
+    expect(reviewResponse.json()).toMatchObject({ code: "TERMINAL_FAILURE", retryable: false });
+    expect(draftResponse.json()).toMatchObject({ code: "TERMINAL_FAILURE", retryable: false });
+    await app.close();
+  });
 });

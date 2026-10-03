@@ -68,7 +68,8 @@ import {
   RiskIdentificationReadQueryV1Schema,
   RiskIdentificationReadResultV1Schema,
   CalibrationGovernanceCommandV1Schema,
-  CalibrationGovernanceOutcomeResultV1Schema,
+  CalibrationGovernanceDraftResultV1Schema,
+  CalibrationReviewOutcomeResultV1Schema,
   WarningResponseReadQueryV1Schema,
   WarningResponseReadResultV1Schema,
   RunSubscriptionRequestV1Schema,
@@ -496,6 +497,31 @@ const commandRoutes = (
   activationPortKeys: readonly ApiPortKeyV1[] = [],
 ): readonly HttpRouteEntryV1[] =>
   branches.map(([branch, domainKind]) =>
+    route({
+      branch,
+      domainKind,
+      mode: "command",
+      moduleRequestSchema,
+      resultSchema,
+      portKey,
+      activationPortKeys,
+      invoke,
+    }),
+  );
+
+/**
+ * 治理路由按分支各绑自己的结果 Schema（design D-08）：同一用例族的两个分支成功形状不同，
+ * 共用联合 Schema 会让任一分支接受对方的成功结果。请求信封仍取自同一份公共契约，
+ * kind 与分支不匹配时由签发能力在领域层失败闭合，不在这里复制 payload 定义。
+ */
+const commandRoutesByResult = (
+  moduleRequestSchema: ZodType,
+  portKey: ApiPortKeyV1,
+  invoke: HttpInvokerV1,
+  branches: readonly (readonly [ModuleBranchV1, string, ZodType])[],
+  activationPortKeys: readonly ApiPortKeyV1[] = [],
+): readonly HttpRouteEntryV1[] =>
+  branches.map(([branch, domainKind, resultSchema]) =>
     route({
       branch,
       domainKind,
@@ -967,14 +993,21 @@ export const HTTP_ROUTE_CATALOG_V1: readonly HttpRouteEntryV1[] = Object.freeze(
     invokeWarningResponseRead,
     [["warning-response.read", "read"]],
   ),
-  ...commandRoutes(
+  ...commandRoutesByResult(
     CalibrationGovernanceCommandV1Schema,
-    CalibrationGovernanceOutcomeResultV1Schema,
     "calibrationGovernance",
     invokeCalibrationGovernance,
     [
-      ["warning-response.calibration-review-outcome", "record-calibration-review-outcome"],
-      ["warning-response.calibration-governance-draft", "create-calibration-governance-draft"],
+      [
+        "warning-response.calibration-review-outcome",
+        "record-calibration-review-outcome",
+        CalibrationReviewOutcomeResultV1Schema,
+      ],
+      [
+        "warning-response.calibration-governance-draft",
+        "create-calibration-governance-draft",
+        CalibrationGovernanceDraftResultV1Schema,
+      ],
     ],
   ),
 ]);

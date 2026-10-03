@@ -17,7 +17,7 @@
 - [x] 2.5 实施 IP-06/IP-12：补齐 C28 预测/执行/反馈偏差与 C41 人工决定的精确读取，保持 available/unavailable 和独立事实。验证：`pnpm exec vitest run packages/adapters/test/response-lifecycle packages/adapters/test/human-decision-feedback`。
 - [x] 2.6 实施 IP-07/IP-12：提供 C29 校准只读与窄治理包装，按实际 branch 与 verified context 分用途授权；验证真实 C06/C07/C16、拒绝/退回、未发布草案与尾事务重试。验证：`pnpm exec vitest run packages/adapters/test/calibration`。
 - [x] 2.7 实施 IP-06/IP-07/IP-12：在 C26 factory 组合所属窄读和关系页，输出获准 actions 与独立摘要，避免跨域私表访问。验证：`pnpm exec vitest run packages/adapters/test/warning packages/adapters/test/calibration`、`pnpm deps:check`。
-- [ ] 2.8 实施 IP-08/IP-12：复验四个新分支和三个注入位，补两治理分支各自结果校验与按 Schema 构造的 read stub，验证 runtime/OpenAPI、未注入关闭、strict outcome 与授权安全失败。验证：`pnpm exec vitest run apps/api/test/http-shell.test.ts packages/contracts/test/c34-assessment-response-read.test.ts`。
+- [x] 2.8 实施 IP-08/IP-12：复验四个新分支和三个注入位，补两治理分支各自结果校验与按 Schema 构造的 read stub，验证 runtime/OpenAPI、未注入关闭、strict outcome 与授权安全失败。验证：`pnpm exec vitest run apps/api/test/http-shell.test.ts packages/contracts/test/c34-assessment-response-read.test.ts`。
 
 ## 3. 复用 v2 页面并接通真实操作
 

@@ -1550,7 +1550,13 @@ describe("C34 assessment and warning-response read surface", () => {
             seen.push({ kind: query.kind, operation: query.payload.operation });
             return {
               kind: "succeeded",
-              result: { kind: "resolve", actorId: "actor-1", targetKind: "record" },
+              result: {
+                kind: "resolve",
+                actorId: "actor-1",
+                targetKind: "record",
+                // 读 stub 按 Schema 构造：解析结果带获准动作，缺字段必须被结果边界拒绝。
+                actions: [],
+              },
             } as never;
           },
         },

@@ -449,6 +449,17 @@ const c26ResolveRef = (
   return { kind: ref.kind, reference: ref.reference } as ContractReferenceV1;
 };
 
+/** 每种类别只列自己的命令分支：借邻近分支代签等于给出不该有的按钮。 */
+const RESOLVE_BRANCHES_V1: Readonly<Record<string, readonly ModuleBranchV1[]>> = {
+  warning: ["warning-response.acknowledge"],
+  task: ["warning-response.acknowledge"],
+  recommendation: ["warning-response.adopt-recommendation"],
+  forecast: [],
+  execution: ["warning-response.record-feedback"],
+  feedback: [],
+  calibration: ["warning-response.calibration-review-outcome"],
+};
+
 const RESOLVE_REF_KINDS_V1 = {
   warning: "warning-record",
   task: "warning-response-task",
@@ -2720,6 +2731,8 @@ export class PostgresWarningLifecycleAdapter
         actorId: command.actorId,
         targetKind: payload.targetKind,
         refs: refs.map((ref) => c26ResolveRef(ref, payload.targetKind)),
+        // 解析结果按目标类别给出对应命令的当前授权，不借用邻近类别的分支。
+        actions: await this.#readActions(command, RESOLVE_BRANCHES_V1[payload.targetKind] ?? []),
       },
     });
   }

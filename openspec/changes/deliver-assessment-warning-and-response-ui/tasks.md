@@ -1,6 +1,6 @@
 ## 1. 公共契约与权限
 
-- [ ] 1.1 实施 IP-01/IP-12：补正基础契约并闭合两条领域读、C11 候选窄读、两条校准命令及 SSOT；补 resolve actions、预览策略同形引用、重评共用输入、窄成功结果及稳定边界用例。验证：`pnpm exec vitest run packages/contracts/test/c34-assessment-response-read.test.ts packages/contracts/test/module-interfaces-events-workflows.test.ts`、`pnpm typecheck`。
+- [x] 1.1 实施 IP-01/IP-12：补正基础契约并闭合两条领域读、C11 候选窄读、两条校准命令及 SSOT；补 resolve actions、预览策略同形引用、重评共用输入、窄成功结果及稳定边界用例。验证：`pnpm exec vitest run packages/contracts/test/c34-assessment-response-read.test.ts packages/contracts/test/module-interfaces-events-workflows.test.ts`、`pnpm typecheck`。
 - [x] 1.2 实施 IP-02/IP-12：按 D-06 授予只读角色与两个经理治理分支，验证真实单分支授权及未授予写权。验证：`pnpm exec vitest run packages/core/test/access.test.ts`。
 
 ## 2. 所属读取与公共接线

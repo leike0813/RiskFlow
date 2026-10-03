@@ -3619,6 +3619,8 @@ export class PostgresRiskAssessmentEngine
             kind: "risk-assessment-record",
             reference: { entityId: record.record_id, versionId: record.version_id },
           },
+          // 解析结果与其它读一致给出获准动作：记录可重评，运行不能借记录分支发起重评。
+          actions: await this.#readActions(command, verified, ["risk-assessment.reassessment"]),
         },
       });
     }
@@ -3643,6 +3645,7 @@ export class PostgresRiskAssessmentEngine
               versionId: run.runRef.reference.versionId,
             },
           },
+          actions: await this.#readActions(command, verified, []),
         },
       });
     }

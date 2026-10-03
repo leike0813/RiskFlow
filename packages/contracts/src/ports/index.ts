@@ -4715,6 +4715,8 @@ export const RiskAssessmentReadSuccessV1Schema = z.discriminatedUnion("kind", [
     targetKind: z.enum(["record", "run"]),
     assessmentRecordRef: RiskAssessmentRecordRefV1Schema.optional(),
     workflowRunRef: WorkflowRunRefV1Schema.optional(),
+    // 与预警处置的 resolve 同形：解析结果也给出获准动作，页面不必再猜命令。
+    actions: readActionsV1,
   }),
   z.strictObject({ kind: z.literal("run-read"), ...AssessmentRunViewV1Schema.shape }),
 ]);
@@ -5211,6 +5213,8 @@ export const WarningResponseReadSuccessV1Schema = z.discriminatedUnion("kind", [
         ]),
       )
       .max(50),
+    // 解析结果也要给出获准动作：页面据此决定按钮，不用再猜目标类别对应的命令。
+    actions: readActionsV1,
   }),
 ]);
 export type WarningResponseReadSuccessV1 = z.infer<typeof WarningResponseReadSuccessV1Schema>;

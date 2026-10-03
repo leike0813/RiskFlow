@@ -1912,3 +1912,1585 @@ export const readRiskOverviewRuns = async (
     const summary = asRunSummaryItem(item)
     return summary === null ? [] : [summary]
   })
+
+// ============================================================================
+// C34 风险评估读面（design D-04、D-05）
+//
+// 每个操作一个显式返回类型：页面拿到的是已解码事实，不是需要自己再判断形状的
+// unknown。形状漂移统一收敛为 TERMINAL_FAILURE，页面据此进入失败态，不用半个结果渲染。
+// 事实一律带精确版本，解码后不得丢弃 version。
+// ============================================================================
+
+const C34_ASSESSMENT_READ_BRANCH = 'risk-assessment.read' as const
+
+export interface ReadActionView {
+  readonly branch: string
+  readonly availability: 'allowed' | 'denied'
+}
+
+const asActions = (value: unknown): ReadActionView[] =>
+  asArray(value).map((item) => {
+    const record = asRecord(item)
+    const availability = asString(record.availability)
+    if (availability !== 'allowed' && availability !== 'denied') throw drift()
+    return { branch: asString(record.branch), availability }
+  })
+
+/** 只读游标是不透明串：页面原样回传，不解析、不改写。 */
+const asCursor = (value: unknown): { readonly nextCursor?: string } =>
+  value === undefined ? {} : { nextCursor: asString(value) }
+
+const asConfigRef = (value: unknown): VersionRef => asVersionRef(value)
+
+/** 决策工件七项原引用：页面只展示，不用当前配置替换历史引用。 */
+const CONFIGURATION_REF_KEYS_V1 = [
+  'indicatorSystemRef',
+  'indicatorFieldMappingRef',
+  'weightSetRef',
+  'scoringStrategyRef',
+  'riskAcceptanceThresholdRef',
+  'monitoringWarningThresholdRef',
+  'jointTriggerPolicyRef',
+] as const
+
+export type AssessmentConfigurationRefsView = Readonly<Record<(typeof CONFIGURATION_REF_KEYS_V1)[number], VersionRef>>
+
+const asConfigurationRefs = (value: unknown): AssessmentConfigurationRefsView => {
+  const record = asRecord(value)
+  return {
+    indicatorSystemRef: asConfigRef(record.indicatorSystemRef),
+    indicatorFieldMappingRef: asConfigRef(record.indicatorFieldMappingRef),
+    weightSetRef: asConfigRef(record.weightSetRef),
+    scoringStrategyRef: asConfigRef(record.scoringStrategyRef),
+    riskAcceptanceThresholdRef: asConfigRef(record.riskAcceptanceThresholdRef),
+    monitoringWarningThresholdRef: asConfigRef(record.monitoringWarningThresholdRef),
+    jointTriggerPolicyRef: asConfigRef(record.jointTriggerPolicyRef),
+  }
+}
+
+export interface RiskMatrixPlotView {
+  readonly riskMatrixRef: VersionRef
+  readonly possibilityBandId: string
+  readonly consequenceBandId: string
+  readonly riskLevelId: string
+  readonly riskLevelOrdinal: number
+}
+
+const asMatrixPlot = (value: unknown): RiskMatrixPlotView => {
+  const record = asRecord(value)
+  return {
+    riskMatrixRef: asConfigRef(record.riskMatrixRef),
+    possibilityBandId: asString(record.possibilityBandId),
+    consequenceBandId: asString(record.consequenceBandId),
+    riskLevelId: asString(record.riskLevelId),
+    riskLevelOrdinal: asNumber(record.riskLevelOrdinal),
+  }
+}
+
+export interface PendingRiskItemView {
+  readonly riskInput: KindRef
+  readonly spatialScopeRefs: readonly KindRef[]
+  readonly assessmentState: string
+  readonly lastAssessmentRecordRef?: KindRef
+  readonly evidenceReferences: readonly EvidenceReferenceView[]
+}
+
+const asPendingRiskItem = (value: unknown): PendingRiskItemView => {
+  const record = asRecord(value)
+  return {
+    riskInput: asKindRef(record.riskInput),
+    spatialScopeRefs: asArray(record.spatialScopeRefs).map(asKindRef),
+    assessmentState: asString(record.assessmentState),
+    ...(record.lastAssessmentRecordRef === undefined
+      ? {}
+      : { lastAssessmentRecordRef: asKindRef(record.lastAssessmentRecordRef) }),
+    evidenceReferences: asEvidenceList(record.evidenceReferences),
+  }
+}
+
+export interface AssessmentRecordCatalogItemView {
+  readonly assessmentRecordRef: KindRef
+  readonly riskInput: KindRef
+  readonly entryMode: string
+  readonly previousAssessmentRecordRef?: KindRef
+  readonly occurredAt: string
+  readonly likelihoodScore: number
+  readonly consequenceScore: number
+  readonly riskState: string
+  readonly matrixPlot: RiskMatrixPlotView
+}
+
+const asRecordCatalogItem = (value: unknown): AssessmentRecordCatalogItemView => {
+  const record = asRecord(value)
+  return {
+    assessmentRecordRef: asKindRef(record.assessmentRecordRef),
+    riskInput: asKindRef(record.riskInput),
+    entryMode: asString(record.entryMode),
+    ...(record.previousAssessmentRecordRef === undefined
+      ? {}
+      : { previousAssessmentRecordRef: asKindRef(record.previousAssessmentRecordRef) }),
+    occurredAt: asString(record.occurredAt),
+    likelihoodScore: asNumber(record.likelihoodScore),
+    consequenceScore: asNumber(record.consequenceScore),
+    riskState: asString(record.riskState),
+    matrixPlot: asMatrixPlot(record.matrixPlot),
+  }
+}
+
+export interface ReassessmentHistoryItemView extends AssessmentRecordCatalogItemView {
+  readonly reason?: string
+  readonly changedInputRefs: readonly KindRef[]
+}
+
+const asReassessmentHistoryItem = (value: unknown): ReassessmentHistoryItemView => ({
+  ...asRecordCatalogItem(value),
+  ...(asRecord(value).reason === undefined ? {} : { reason: asString(asRecord(value).reason) }),
+  changedInputRefs: asArray(asRecord(value).changedInputRefs).map(asKindRef),
+})
+
+export interface AssessmentIndicatorExplanationView {
+  readonly indicatorId: string
+  readonly actualValue: unknown
+  readonly canonicalValue: string
+  readonly canonicalUnit?: string
+  readonly sourceReferences: readonly KindRef[]
+  readonly evidenceReferences: readonly EvidenceReferenceView[]
+  readonly ruleId: string
+  readonly ruleVersion: VersionRef
+  readonly grade: string
+  readonly baseScore: string
+}
+
+const asIndicatorExplanation = (value: unknown): AssessmentIndicatorExplanationView => {
+  const record = asRecord(value)
+  return {
+    indicatorId: asString(record.indicatorId),
+    actualValue: record.actualValue,
+    canonicalValue: asString(record.canonicalValue),
+    ...(record.canonicalUnit === undefined ? {} : { canonicalUnit: asString(record.canonicalUnit) }),
+    sourceReferences: asArray(record.sourceReferences).map(asKindRef),
+    evidenceReferences: asEvidenceList(record.evidenceReferences),
+    ruleId: asString(record.ruleId),
+    ruleVersion: asConfigRef(record.ruleVersion),
+    grade: asString(record.grade),
+    baseScore: asString(record.baseScore),
+  }
+}
+
+export interface AssessmentAxisView {
+  readonly strategy: string
+  readonly score: string
+  readonly publicScore: number
+  readonly weightSetRef?: VersionRef
+  readonly contributions: readonly {
+    readonly indicatorId: string
+    readonly baseScore: string
+    readonly weightedScore: string
+    readonly basisPoints?: number
+  }[]
+}
+
+const asAxis = (value: unknown): AssessmentAxisView => {
+  const record = asRecord(value)
+  return {
+    strategy: asString(record.strategy),
+    score: asString(record.score),
+    publicScore: asNumber(record.publicScore),
+    ...(record.weightSetRef === undefined ? {} : { weightSetRef: asConfigRef(record.weightSetRef) }),
+    contributions: asArray(record.contributions).map((item) => {
+      const contribution = asRecord(item)
+      return {
+        indicatorId: asString(contribution.indicatorId),
+        baseScore: asString(contribution.baseScore),
+        weightedScore: asString(contribution.weightedScore),
+        ...(contribution.basisPoints === undefined
+          ? {}
+          : { basisPoints: asNumber(contribution.basisPoints) }),
+      }
+    }),
+  }
+}
+
+export interface AssessmentTriggerFactView {
+  readonly triggerType: string
+  readonly indicatorItem: string
+  readonly actualValue?: unknown
+  readonly thresholdId?: string
+  readonly thresholdValue?: string
+  readonly jointRuleId?: string
+  readonly evidenceReferences: readonly EvidenceReferenceView[]
+}
+
+const asTriggerFact = (value: unknown): AssessmentTriggerFactView => {
+  const record = asRecord(value)
+  return {
+    triggerType: asString(record.triggerType),
+    indicatorItem: asString(record.indicatorItem),
+    ...(record.actualValue === undefined ? {} : { actualValue: record.actualValue }),
+    ...(record.thresholdId === undefined ? {} : { thresholdId: asString(record.thresholdId) }),
+    ...(record.thresholdValue === undefined
+      ? {}
+      : { thresholdValue: asString(record.thresholdValue) }),
+    ...(record.jointRuleId === undefined ? {} : { jointRuleId: asString(record.jointRuleId) }),
+    evidenceReferences: asEvidenceList(record.evidenceReferences),
+  }
+}
+
+const submitAssessmentRead = async (
+  projectId: string,
+  payload: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<Record<string, unknown>> =>
+  asRecord(
+    await submitQuery({
+      projectId,
+      branch: C34_ASSESSMENT_READ_BRANCH,
+      payload,
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  )
+
+export interface PendingCatalogView {
+  readonly kind: 'pending-catalog'
+  readonly actorId: string
+  readonly items: readonly PendingRiskItemView[]
+  readonly nextCursor?: string
+  readonly actions: readonly ReadActionView[]
+}
+
+/** P-RA-01 待评估风险目录：按风险输入分页，游标原样续页。 */
+export const readPendingRiskCatalog = async (
+  projectId: string,
+  input: {
+    readonly riskInputKind: 'risk-record' | 'external-risk-event'
+    readonly spatialScopeRef?: KindRef
+    readonly pageSize?: number
+    readonly cursor?: string
+  },
+  signal?: AbortSignal,
+): Promise<PendingCatalogView> => {
+  const result = await submitAssessmentRead(
+    projectId,
+    {
+      operation: 'pending-catalog',
+      riskInputKind: input.riskInputKind,
+      ...(input.spatialScopeRef === undefined ? {} : { spatialScopeRef: input.spatialScopeRef }),
+      ...(input.pageSize === undefined ? {} : { pageSize: input.pageSize }),
+      ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+    },
+    signal,
+  )
+  if (result.kind !== 'pending-catalog') throw drift()
+  return {
+    kind: 'pending-catalog',
+    actorId: asString(result.actorId),
+    items: asArray(result.items).map(asPendingRiskItem),
+    ...asCursor(result.nextCursor),
+    actions: asActions(result.actions),
+  }
+}
+
+export interface EntryContextView {
+  readonly kind: 'entry-context'
+  readonly actorId: string
+  readonly projectId: string
+  readonly projectRevisionRef: KindRef
+  readonly spatialScopeRef: KindRef
+  readonly riskInput?: KindRef
+  readonly applicabilityItems: readonly unknown[]
+  readonly externalEventItems: readonly unknown[]
+  readonly applicabilityNextCursor?: string
+  readonly externalEventNextCursor?: string
+  readonly runPolicy: unknown
+  readonly actions: readonly ReadActionView[]
+}
+
+/** P-RA-02 启动入口上下文：两个独立目录各自游标，不合成一个列表。 */
+export const readAssessmentEntryContext = async (
+  projectId: string,
+  input: {
+    readonly projectRevisionRef: KindRef
+    readonly spatialScopeRef: KindRef
+    readonly riskInput?: KindRef
+    readonly pageSize?: number
+    readonly applicabilityCursor?: string
+    readonly externalEventCursor?: string
+  },
+  signal?: AbortSignal,
+): Promise<EntryContextView> => {
+  const result = await submitAssessmentRead(
+    projectId,
+    {
+      operation: 'entry-context',
+      projectRevisionRef: input.projectRevisionRef,
+      spatialScopeRef: input.spatialScopeRef,
+      ...(input.riskInput === undefined ? {} : { riskInput: input.riskInput }),
+      ...(input.pageSize === undefined ? {} : { pageSize: input.pageSize }),
+      ...(input.applicabilityCursor === undefined
+        ? {}
+        : { applicabilityCursor: input.applicabilityCursor }),
+      ...(input.externalEventCursor === undefined
+        ? {}
+        : { externalEventCursor: input.externalEventCursor }),
+    },
+    signal,
+  )
+  if (result.kind !== 'entry-context') throw drift()
+  return {
+    kind: 'entry-context',
+    actorId: asString(result.actorId),
+    projectId: asString(result.projectId),
+    projectRevisionRef: asKindRef(result.projectRevisionRef),
+    spatialScopeRef: asKindRef(result.spatialScopeRef),
+    ...(result.riskInput === undefined ? {} : { riskInput: asKindRef(result.riskInput) }),
+    applicabilityItems: asArray(result.applicabilityItems),
+    externalEventItems: asArray(result.externalEventItems),
+    ...(result.applicabilityNextCursor === undefined
+      ? {}
+      : { applicabilityNextCursor: asString(result.applicabilityNextCursor) }),
+    ...(result.externalEventNextCursor === undefined
+      ? {}
+      : { externalEventNextCursor: asString(result.externalEventNextCursor) }),
+    runPolicy: result.runPolicy,
+    actions: asActions(result.actions),
+  }
+}
+
+export interface RecordCatalogView {
+  readonly kind: 'record-catalog'
+  readonly actorId: string
+  readonly items: readonly AssessmentRecordCatalogItemView[]
+  readonly nextCursor?: string
+  readonly actions: readonly ReadActionView[]
+}
+
+/** P-RA-04 评估记录目录：条目只含摘要与冻结落点，正文由 record-read 解释。 */
+export const readAssessmentRecordCatalog = async (
+  projectId: string,
+  input: {
+    readonly riskInput?: KindRef
+    readonly entryMode?: string
+    readonly riskMatrixVersion?: VersionRef
+    readonly spatialScopeRef?: KindRef
+    readonly pageSize?: number
+    readonly cursor?: string
+  },
+  signal?: AbortSignal,
+): Promise<RecordCatalogView> => {
+  const result = await submitAssessmentRead(
+    projectId,
+    {
+      operation: 'record-catalog',
+      ...(input.riskInput === undefined ? {} : { riskInput: input.riskInput }),
+      ...(input.entryMode === undefined ? {} : { entryMode: input.entryMode }),
+      ...(input.riskMatrixVersion === undefined
+        ? {}
+        : { riskMatrixVersion: input.riskMatrixVersion }),
+      ...(input.spatialScopeRef === undefined ? {} : { spatialScopeRef: input.spatialScopeRef }),
+      ...(input.pageSize === undefined ? {} : { pageSize: input.pageSize }),
+      ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+    },
+    signal,
+  )
+  if (result.kind !== 'record-catalog') throw drift()
+  return {
+    kind: 'record-catalog',
+    actorId: asString(result.actorId),
+    items: asArray(result.items).map(asRecordCatalogItem),
+    ...asCursor(result.nextCursor),
+    actions: asActions(result.actions),
+  }
+}
+
+export interface ReassessmentHistoryView {
+  readonly kind: 'reassessment-history'
+  readonly actorId: string
+  readonly items: readonly ReassessmentHistoryItemView[]
+  readonly nextCursor?: string
+  readonly actions: readonly ReadActionView[]
+}
+
+/** P-RA-07 重评历史：原因与变化引用取登记的入口事实，页面不自己推断变化。 */
+export const readReassessmentHistory = async (
+  projectId: string,
+  input: {
+    readonly riskInput: KindRef
+    readonly spatialScopeRef?: KindRef
+    readonly pageSize?: number
+    readonly cursor?: string
+  },
+  signal?: AbortSignal,
+): Promise<ReassessmentHistoryView> => {
+  const result = await submitAssessmentRead(
+    projectId,
+    {
+      operation: 'reassessment-history',
+      riskInput: input.riskInput,
+      ...(input.spatialScopeRef === undefined ? {} : { spatialScopeRef: input.spatialScopeRef }),
+      ...(input.pageSize === undefined ? {} : { pageSize: input.pageSize }),
+      ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+    },
+    signal,
+  )
+  if (result.kind !== 'reassessment-history') throw drift()
+  return {
+    kind: 'reassessment-history',
+    actorId: asString(result.actorId),
+    items: asArray(result.items).map(asReassessmentHistoryItem),
+    ...asCursor(result.nextCursor),
+    actions: asActions(result.actions),
+  }
+}
+
+export interface AssessmentRecordView {
+  readonly kind: 'record-read'
+  readonly actorId: string
+  readonly record: unknown
+  readonly assessmentRecordRef: KindRef
+  readonly preparationSnapshotRef: KindRef
+  readonly inputSnapshotRef: KindRef
+  readonly entryMode: string
+  readonly previousAssessmentRecordRef?: KindRef
+  readonly reassessmentReason?: string
+  readonly changedInputRefs: readonly KindRef[]
+  readonly configurationRefs: AssessmentConfigurationRefsView
+  readonly indicators: readonly AssessmentIndicatorExplanationView[]
+  readonly axes: { readonly possibility: AssessmentAxisView; readonly consequence: AssessmentAxisView }
+  readonly matrixPlot: RiskMatrixPlotView
+  readonly triggerFacts: readonly AssessmentTriggerFactView[]
+  readonly evidenceReferences: readonly EvidenceReferenceView[]
+  readonly auditTrailRef: KindRef
+  readonly actions: readonly ReadActionView[]
+}
+
+/** P-RA-05 评估记录精确读：指标解释、轴贡献与落点都来自该记录保存的引用。 */
+export const readAssessmentRecord = async (
+  projectId: string,
+  assessmentRecordRef: KindRef,
+  signal?: AbortSignal,
+): Promise<AssessmentRecordView> => {
+  const result = await submitAssessmentRead(
+    projectId,
+    { operation: 'record-read', assessmentRecordRef },
+    signal,
+  )
+  if (result.kind !== 'record-read') throw drift()
+  const axes = asRecord(result.axes)
+  return {
+    kind: 'record-read',
+    actorId: asString(result.actorId),
+    record: result.record,
+    assessmentRecordRef: asKindRef(result.assessmentRecordRef),
+    preparationSnapshotRef: asKindRef(result.preparationSnapshotRef),
+    inputSnapshotRef: asKindRef(result.inputSnapshotRef),
+    entryMode: asString(result.entryMode),
+    ...(result.previousAssessmentRecordRef === undefined
+      ? {}
+      : { previousAssessmentRecordRef: asKindRef(result.previousAssessmentRecordRef) }),
+    ...(result.reassessmentReason === undefined
+      ? {}
+      : { reassessmentReason: asString(result.reassessmentReason) }),
+    changedInputRefs: asArray(result.changedInputRefs).map(asKindRef),
+    configurationRefs: asConfigurationRefs(result.configurationRefs),
+    indicators: asArray(result.indicators).map(asIndicatorExplanation),
+    axes: { possibility: asAxis(axes.possibility), consequence: asAxis(axes.consequence) },
+    matrixPlot: asMatrixPlot(result.matrixPlot),
+    triggerFacts: asArray(result.triggerFacts).map(asTriggerFact),
+    evidenceReferences: asEvidenceList(result.evidenceReferences),
+    auditTrailRef: asKindRef(result.auditTrailRef),
+    actions: asActions(result.actions),
+  }
+}
+
+export interface AssessmentOverviewView {
+  readonly kind: 'overview'
+  readonly actorId: string
+  readonly projectId: string
+  readonly spatialScopeRef?: KindRef
+  readonly recordedAssessmentCount: number
+  readonly riskLevelCounts: readonly { readonly riskLevel: string; readonly count: number }[]
+  readonly asOf: string
+  readonly actions: readonly ReadActionView[]
+}
+
+/** P-RA-01 评估摘要：只统计已入库记录版本，不声称识别风险总数。 */
+export const readAssessmentOverview = async (
+  projectId: string,
+  input: { readonly projectRevisionRef: KindRef; readonly spatialScopeRef?: KindRef },
+  signal?: AbortSignal,
+): Promise<AssessmentOverviewView> => {
+  const result = await submitAssessmentRead(
+    projectId,
+    {
+      operation: 'overview',
+      projectRevisionRef: input.projectRevisionRef,
+      ...(input.spatialScopeRef === undefined ? {} : { spatialScopeRef: input.spatialScopeRef }),
+    },
+    signal,
+  )
+  if (result.kind !== 'overview') throw drift()
+  return {
+    kind: 'overview',
+    actorId: asString(result.actorId),
+    projectId: asString(result.projectId),
+    ...(result.spatialScopeRef === undefined
+      ? {}
+      : { spatialScopeRef: asKindRef(result.spatialScopeRef) }),
+    recordedAssessmentCount: asNumber(result.recordedAssessmentCount),
+    riskLevelCounts: asArray(result.riskLevelCounts).map((item) => {
+      const count = asRecord(item)
+      return { riskLevel: asString(count.riskLevel), count: asNumber(count.count) }
+    }),
+    asOf: asString(result.asOf),
+    actions: asActions(result.actions),
+  }
+}
+
+export interface AssessmentRunView {
+  readonly kind: 'run-read'
+  readonly actorId: string
+  readonly runRef: KindRef
+  readonly entryMode: string
+  readonly status: string
+  readonly stage: string
+  readonly graphVersion: VersionRef
+  readonly actorRef: string
+  readonly startedAt: string
+  readonly stateVersion: VersionRef
+  readonly stages: readonly {
+    readonly stageCode: string
+    readonly state: string
+    readonly stageResultRef?: KindRef
+  }[]
+  readonly resultRefs: readonly KindRef[]
+  readonly reviewTaskRefs: readonly KindRef[]
+  readonly assessmentRunRefs: readonly KindRef[]
+  readonly selectedAssessmentRunRef?: KindRef
+  readonly error?: KindRef
+  readonly nextCursor?: string
+  readonly actions: readonly ReadActionView[]
+}
+
+/**
+ * P-RA-03 运行精确读：父运行可带精确 `assessmentRunRef` 选择空间子运行，
+ * 阶段按登记的 stageCode 展示，不把父图 R 阶段改称 A 阶段。
+ */
+export const readAssessmentRun = async (
+  projectId: string,
+  input: {
+    readonly workflowRunRef: KindRef
+    readonly assessmentRunRef?: KindRef
+    readonly resultCursor?: string
+    readonly reviewTaskCursor?: string
+  },
+  signal?: AbortSignal,
+): Promise<AssessmentRunView> => {
+  const result = await submitAssessmentRead(
+    projectId,
+    {
+      operation: 'run-read',
+      workflowRunRef: input.workflowRunRef,
+      ...(input.assessmentRunRef === undefined ? {} : { assessmentRunRef: input.assessmentRunRef }),
+      ...(input.resultCursor === undefined ? {} : { resultCursor: input.resultCursor }),
+      ...(input.reviewTaskCursor === undefined
+        ? {}
+        : { reviewTaskCursor: input.reviewTaskCursor }),
+    },
+    signal,
+  )
+  if (result.kind !== 'run-read') throw drift()
+  return {
+    kind: 'run-read',
+    actorId: asString(result.actorId),
+    runRef: asKindRef(result.runRef),
+    entryMode: asString(result.entryMode),
+    status: asString(result.status),
+    stage: asString(result.stage),
+    graphVersion: asConfigRef(result.graphVersion),
+    actorRef: asString(result.actorRef),
+    startedAt: asString(result.startedAt),
+    stateVersion: asConfigRef(result.stateVersion),
+    stages: asArray(result.stages).map((item) => {
+      const stage = asRecord(item)
+      return {
+        stageCode: asString(stage.stageCode),
+        state: asString(stage.state),
+        ...(stage.stageResultRef === undefined
+          ? {}
+          : { stageResultRef: asKindRef(stage.stageResultRef) }),
+      }
+    }),
+    resultRefs: asArray(result.resultRefs).map(asKindRef),
+    reviewTaskRefs: asArray(result.reviewTaskRefs).map(asKindRef),
+    assessmentRunRefs: asArray(result.assessmentRunRefs).map(asKindRef),
+    ...(result.selectedAssessmentRunRef === undefined
+      ? {}
+      : { selectedAssessmentRunRef: asKindRef(result.selectedAssessmentRunRef) }),
+    ...(result.error === undefined ? {} : { error: asKindRef(result.error) }),
+    ...asCursor(result.nextCursor),
+    actions: asActions(result.actions),
+  }
+}
+
+export interface AssessmentResolveView {
+  readonly kind: 'resolve'
+  readonly actorId: string
+  readonly targetKind: 'record' | 'run'
+  readonly assessmentRecordRef?: KindRef
+  readonly workflowRunRef?: KindRef
+  readonly actions: readonly ReadActionView[]
+}
+
+/** 只含实体 ID 的书签入口：解析出可见版本，随后由调用方替换 URL。 */
+export const readAssessmentResolve = async (
+  projectId: string,
+  input: {
+    readonly entityId: string
+    readonly targetKind: 'record' | 'run'
+    readonly versionId?: string
+  },
+  signal?: AbortSignal,
+): Promise<AssessmentResolveView> => {
+  const result = await submitAssessmentRead(
+    projectId,
+    {
+      operation: 'resolve',
+      entityId: input.entityId,
+      targetKind: input.targetKind,
+      ...(input.versionId === undefined ? {} : { versionId: input.versionId }),
+    },
+    signal,
+  )
+  if (result.kind !== 'resolve') throw drift()
+  const targetKind = asString(result.targetKind)
+  if (targetKind !== 'record' && targetKind !== 'run') throw drift()
+  return {
+    kind: 'resolve',
+    actorId: asString(result.actorId),
+    targetKind,
+    ...(result.assessmentRecordRef === undefined
+      ? {}
+      : { assessmentRecordRef: asKindRef(result.assessmentRecordRef) }),
+    ...(result.workflowRunRef === undefined
+      ? {}
+      : { workflowRunRef: asKindRef(result.workflowRunRef) }),
+    actions: asActions(result.actions),
+  }
+}
+
+// ============================================================================
+// C34 预警处置读面（design D-05）
+//
+// 七组关系各自独立分页：公共契约只有一个 relatedCursor，游标内含它属于哪一组关系。
+// 页面原样回传某一组的游标即可续该组，其余组回到首页；不解析游标内容、不合并成单一列表。
+// ============================================================================
+
+const C34_WARNING_READ_BRANCH = 'warning-response.read' as const
+
+export interface WarningCatalogItemView {
+  readonly warningRecordRef: KindRef
+  readonly assessmentRecordRef: KindRef
+  readonly taskRef: KindRef
+  readonly triggerType: string
+  readonly warningLevel: string
+  readonly occurredAt: string
+  readonly acknowledged: boolean
+}
+
+const asWarningCatalogItem = (value: unknown): WarningCatalogItemView => {
+  const record = asRecord(value)
+  return {
+    warningRecordRef: asKindRef(record.warningRecordRef),
+    assessmentRecordRef: asKindRef(record.assessmentRecordRef),
+    taskRef: asKindRef(record.taskRef),
+    triggerType: asString(record.triggerType),
+    warningLevel: asString(record.warningLevel),
+    occurredAt: asString(record.occurredAt),
+    acknowledged: asBoolean(record.acknowledged),
+  }
+}
+
+export interface WarningTaskCatalogItemView {
+  readonly taskRef: KindRef
+  readonly status: string
+  readonly riskInput: KindRef
+  readonly spatialScopeRef: KindRef
+  readonly warningCount: number
+  readonly occurredAt: string
+}
+
+const asTaskCatalogItem = (value: unknown): WarningTaskCatalogItemView => {
+  const record = asRecord(value)
+  return {
+    taskRef: asKindRef(record.taskRef),
+    status: asString(record.status),
+    riskInput: asKindRef(record.riskInput),
+    spatialScopeRef: asKindRef(record.spatialScopeRef),
+    warningCount: asNumber(record.warningCount),
+    occurredAt: asString(record.occurredAt),
+  }
+}
+
+export interface WarningCatalogView {
+  readonly kind: 'warning-catalog'
+  readonly actorId: string
+  readonly items: readonly WarningCatalogItemView[]
+  readonly nextCursor?: string
+  readonly actions: readonly ReadActionView[]
+}
+
+/** P-WR-01 预警目录：按触发类型筛选，条目带任务与评估记录精确引用。 */
+export const readWarningCatalog = async (
+  projectId: string,
+  input: {
+    readonly spatialScopeRef?: KindRef
+    readonly triggerType?: string
+    readonly pageSize?: number
+    readonly cursor?: string
+  },
+  signal?: AbortSignal,
+): Promise<WarningCatalogView> => {
+  const result = asRecord(
+    await submitQuery({
+      projectId,
+      branch: C34_WARNING_READ_BRANCH,
+      payload: {
+        operation: 'warning-catalog',
+        ...(input.spatialScopeRef === undefined ? {} : { spatialScopeRef: input.spatialScopeRef }),
+        ...(input.triggerType === undefined ? {} : { triggerType: input.triggerType }),
+        ...(input.pageSize === undefined ? {} : { pageSize: input.pageSize }),
+        ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+      },
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  )
+  if (result.kind !== 'warning-catalog') throw drift()
+  return {
+    kind: 'warning-catalog',
+    actorId: asString(result.actorId),
+    items: asArray(result.items).map(asWarningCatalogItem),
+    ...asCursor(result.nextCursor),
+    actions: asActions(result.actions),
+  }
+}
+
+export interface WarningTaskCatalogView {
+  readonly kind: 'task-catalog'
+  readonly actorId: string
+  readonly items: readonly WarningTaskCatalogItemView[]
+  readonly nextCursor?: string
+  readonly actions: readonly ReadActionView[]
+}
+
+/** P-WR-03 处置任务目录：条目只含风险输入、空间与预警计数。 */
+export const readWarningTaskCatalog = async (
+  projectId: string,
+  input: {
+    readonly spatialScopeRef?: KindRef
+    readonly status?: string
+    readonly pageSize?: number
+    readonly cursor?: string
+  },
+  signal?: AbortSignal,
+): Promise<WarningTaskCatalogView> => {
+  const result = asRecord(
+    await submitQuery({
+      projectId,
+      branch: C34_WARNING_READ_BRANCH,
+      payload: {
+        operation: 'task-catalog',
+        ...(input.spatialScopeRef === undefined ? {} : { spatialScopeRef: input.spatialScopeRef }),
+        ...(input.status === undefined ? {} : { status: input.status }),
+        ...(input.pageSize === undefined ? {} : { pageSize: input.pageSize }),
+        ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+      },
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  )
+  if (result.kind !== 'task-catalog') throw drift()
+  return {
+    kind: 'task-catalog',
+    actorId: asString(result.actorId),
+    items: asArray(result.items).map(asTaskCatalogItem),
+    ...asCursor(result.nextCursor),
+    actions: asActions(result.actions),
+  }
+}
+
+export interface WarningResponseOverviewView {
+  readonly kind: 'overview'
+  readonly actorId: string
+  readonly openTaskCount: number
+  readonly warningCount: number
+  readonly levelCounts: readonly { readonly warningLevel: string; readonly count: number }[]
+  readonly asOf: string
+  readonly actions: readonly ReadActionView[]
+}
+
+/** 概览计数注明统计口径：只统计已登记的开放任务与预警，不外推识别风险总数。 */
+export const readWarningResponseOverview = async (
+  projectId: string,
+  input: { readonly spatialScopeRef?: KindRef },
+  signal?: AbortSignal,
+): Promise<WarningResponseOverviewView> => {
+  const result = asRecord(
+    await submitQuery({
+      projectId,
+      branch: C34_WARNING_READ_BRANCH,
+      payload: {
+        operation: 'overview',
+        ...(input.spatialScopeRef === undefined ? {} : { spatialScopeRef: input.spatialScopeRef }),
+      },
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  )
+  if (result.kind !== 'overview') throw drift()
+  return {
+    kind: 'overview',
+    actorId: asString(result.actorId),
+    openTaskCount: asNumber(result.openTaskCount),
+    warningCount: asNumber(result.warningCount),
+    levelCounts: asArray(result.levelCounts).map((item) => {
+      const level = asRecord(item)
+      return { warningLevel: asString(level.warningLevel), count: asNumber(level.count) }
+    }),
+    asOf: asString(result.asOf),
+    actions: asActions(result.actions),
+  }
+}
+
+export interface WarningNotificationView {
+  readonly intentRef: KindRef
+  readonly recipientActorId: string
+  readonly channel: string
+  readonly recordedAt: string
+  readonly deliveredAt?: string
+}
+
+const asNotification = (value: unknown): WarningNotificationView => {
+  const record = asRecord(value)
+  return {
+    intentRef: asKindRef(record.intentRef),
+    recipientActorId: asString(record.recipientActorId),
+    channel: asString(record.channel),
+    recordedAt: asString(record.recordedAt),
+    ...(record.deliveredAt === undefined ? {} : { deliveredAt: asString(record.deliveredAt) }),
+  }
+}
+
+export interface WarningRecordView {
+  readonly kind: 'warning-read'
+  readonly actorId: string
+  readonly record: unknown
+  readonly warningRecordRef: KindRef
+  readonly assessmentRecordRef: KindRef
+  readonly taskRef: KindRef
+  readonly triggerFacts: readonly unknown[]
+  readonly matrixPlot: RiskMatrixPlotView
+  readonly notifications: readonly WarningNotificationView[]
+  readonly notificationsNextCursor?: string
+  readonly acknowledgement?: {
+    readonly actorId: string
+    readonly acknowledgedAt: string
+    readonly auditTrailRef: KindRef
+  }
+  readonly actions: readonly ReadActionView[]
+}
+
+/**
+ * P-WR-02 预警精确读：阈值解释取冻结的触发事实，通知披露区分意图与已登记投递。
+ * 未登记投递时不补 deliveredAt——意图不等于送达。
+ */
+export const readWarningRecord = async (
+  projectId: string,
+  warningRecordRef: KindRef,
+  input: { readonly notificationCursor?: string } = {},
+  signal?: AbortSignal,
+): Promise<WarningRecordView> => {
+  const result = asRecord(
+    await submitQuery({
+      projectId,
+      branch: C34_WARNING_READ_BRANCH,
+      payload: {
+        operation: 'warning-read',
+        warningRecordRef,
+        ...(input.notificationCursor === undefined
+          ? {}
+          : { notificationCursor: input.notificationCursor }),
+      },
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  )
+  if (result.kind !== 'warning-read') throw drift()
+  return {
+    kind: 'warning-read',
+    actorId: asString(result.actorId),
+    record: result.record,
+    warningRecordRef: asKindRef(result.warningRecordRef),
+    assessmentRecordRef: asKindRef(result.assessmentRecordRef),
+    taskRef: asKindRef(result.taskRef),
+    triggerFacts: asArray(result.triggerFacts),
+    matrixPlot: asMatrixPlot(result.matrixPlot),
+    notifications: asArray(result.notifications).map(asNotification),
+    ...(result.notificationsNextCursor === undefined
+      ? {}
+      : { notificationsNextCursor: asString(result.notificationsNextCursor) }),
+    ...(result.acknowledgement === undefined
+      ? {}
+      : {
+          acknowledgement: {
+            actorId: asString(asRecord(result.acknowledgement).actorId),
+            acknowledgedAt: asString(asRecord(result.acknowledgement).acknowledgedAt),
+            auditTrailRef: asKindRef(asRecord(result.acknowledgement).auditTrailRef),
+          },
+        }),
+    actions: asActions(result.actions),
+  }
+}
+
+export interface WarningTaskRelationsView {
+  readonly warningRefs: readonly KindRef[]
+  readonly recommendationRefs: readonly KindRef[]
+  readonly decisionRefs: readonly KindRef[]
+  readonly executionRefs: readonly KindRef[]
+  readonly forecastRefs: readonly KindRef[]
+  readonly feedbackRefs: readonly KindRef[]
+  readonly calibrationRefs: readonly KindRef[]
+  readonly warningNextCursor?: string
+  readonly recommendationNextCursor?: string
+  readonly decisionNextCursor?: string
+  readonly executionNextCursor?: string
+  readonly forecastNextCursor?: string
+  readonly feedbackNextCursor?: string
+  readonly calibrationNextCursor?: string
+}
+
+const asTaskRelations = (value: unknown): WarningTaskRelationsView => {
+  const record = asRecord(value)
+  return {
+    warningRefs: asArray(record.warningRefs).map(asKindRef),
+    recommendationRefs: asArray(record.recommendationRefs).map(asKindRef),
+    decisionRefs: asArray(record.decisionRefs).map(asKindRef),
+    executionRefs: asArray(record.executionRefs).map(asKindRef),
+    forecastRefs: asArray(record.forecastRefs).map(asKindRef),
+    feedbackRefs: asArray(record.feedbackRefs).map(asKindRef),
+    calibrationRefs: asArray(record.calibrationRefs).map(asKindRef),
+    ...(record.warningNextCursor === undefined
+      ? {}
+      : { warningNextCursor: asString(record.warningNextCursor) }),
+    ...(record.recommendationNextCursor === undefined
+      ? {}
+      : { recommendationNextCursor: asString(record.recommendationNextCursor) }),
+    ...(record.decisionNextCursor === undefined
+      ? {}
+      : { decisionNextCursor: asString(record.decisionNextCursor) }),
+    ...(record.executionNextCursor === undefined
+      ? {}
+      : { executionNextCursor: asString(record.executionNextCursor) }),
+    ...(record.forecastNextCursor === undefined
+      ? {}
+      : { forecastNextCursor: asString(record.forecastNextCursor) }),
+    ...(record.feedbackNextCursor === undefined
+      ? {}
+      : { feedbackNextCursor: asString(record.feedbackNextCursor) }),
+    ...(record.calibrationNextCursor === undefined
+      ? {}
+      : { calibrationNextCursor: asString(record.calibrationNextCursor) }),
+  }
+}
+
+export interface WarningTaskView {
+  readonly kind: 'task-read'
+  readonly actorId: string
+  readonly taskRef: KindRef
+  readonly status: string
+  readonly riskInput: KindRef
+  readonly spatialScopeRef: KindRef
+  readonly occurredAt: string
+  readonly relations: WarningTaskRelationsView
+  readonly actions: readonly ReadActionView[]
+}
+
+/** P-WR-04 任务精确读：关系集合由各所属接缝分别提供，页面按组续页。 */
+export const readWarningTask = async (
+  projectId: string,
+  warningResponseTaskRef: KindRef,
+  input: { readonly relatedCursor?: string } = {},
+  signal?: AbortSignal,
+): Promise<WarningTaskView> => {
+  const result = asRecord(
+    await submitQuery({
+      projectId,
+      branch: C34_WARNING_READ_BRANCH,
+      payload: {
+        operation: 'task-read',
+        warningResponseTaskRef,
+        ...(input.relatedCursor === undefined ? {} : { relatedCursor: input.relatedCursor }),
+      },
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  )
+  if (result.kind !== 'task-read') throw drift()
+  return {
+    kind: 'task-read',
+    actorId: asString(result.actorId),
+    taskRef: asKindRef(result.taskRef),
+    status: asString(result.status),
+    riskInput: asKindRef(result.riskInput),
+    spatialScopeRef: asKindRef(result.spatialScopeRef),
+    occurredAt: asString(result.occurredAt),
+    relations: asTaskRelations(result.relations),
+    actions: asActions(result.actions),
+  }
+}
+
+// ============================================================================
+// C34 处置精确读（design D-05）
+//
+// 预测可用性区分 available 与 unavailable：unavailable 只给原因码，页面不得补数值、
+// 不用当前阈值解释冻结偏差。执行来源与 C28 登记事实同形，两类来源不混。
+// ============================================================================
+
+export interface RiskStateView {
+  readonly likelihoodScore: number
+  readonly consequenceScore: number
+  readonly riskLevel: string
+}
+
+export interface ForecastAvailabilityView {
+  readonly kind: 'available' | 'unavailable'
+  readonly predictedValue?: unknown
+  readonly predictedRiskState?: RiskStateView
+  readonly reasonCode?: string
+}
+
+const asForecastAvailability = (value: unknown): ForecastAvailabilityView => {
+  const record = asRecord(value)
+  const kind = asString(record.kind)
+  if (kind === 'unavailable') return { kind, reasonCode: asString(record.reasonCode) }
+  if (kind !== 'available') throw drift()
+  return {
+    kind,
+    predictedValue: record.predictedValue,
+    predictedRiskState: asRiskState(record.predictedRiskState),
+  }
+}
+
+const asRiskState = (value: unknown): RiskStateView => {
+  const record = asRecord(value)
+  return {
+    likelihoodScore: asNumber(record.likelihoodScore),
+    consequenceScore: asNumber(record.consequenceScore),
+    riskLevel: asString(record.riskLevel),
+  }
+}
+
+const submitWarningRead = async (
+  projectId: string,
+  payload: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<Record<string, unknown>> =>
+  asRecord(
+    await submitQuery({
+      projectId,
+      branch: C34_WARNING_READ_BRANCH,
+      payload,
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  )
+
+export interface RecommendationView {
+  readonly kind: 'recommendation-read'
+  readonly actorId: string
+  readonly recommendation: unknown
+  readonly responseRecommendationRef: KindRef
+  readonly taskRef: KindRef
+  readonly validationResults: readonly {
+    readonly checkId: string
+    readonly pass: boolean
+    readonly evidenceReferences: readonly EvidenceReferenceView[]
+    readonly reasonCode?: string
+  }[]
+  readonly generationPolicyRef: VersionRef
+  readonly validationPolicyRef: VersionRef
+  readonly measureReleaseRefs: readonly KindRef[]
+  readonly decision?: {
+    readonly decisionRef: KindRef
+    readonly state: 'adopted' | 'declined'
+    readonly actorId: string
+    readonly decidedAt: string
+    readonly reasonCode: string
+    readonly forecastRunRef?: KindRef
+  }
+  readonly actions: readonly ReadActionView[]
+}
+
+/** P-RS-01 建议精确读：策略是裸版本引用，页面不套一个不相干的 kind 去展示。 */
+export const readResponseRecommendation = async (
+  projectId: string,
+  responseRecommendationRef: KindRef,
+  signal?: AbortSignal,
+): Promise<RecommendationView> => {
+  const result = await submitWarningRead(
+    projectId,
+    { operation: 'recommendation-read', responseRecommendationRef },
+    signal,
+  )
+  if (result.kind !== 'recommendation-read') throw drift()
+  return {
+    kind: 'recommendation-read',
+    actorId: asString(result.actorId),
+    recommendation: result.recommendation,
+    responseRecommendationRef: asKindRef(result.responseRecommendationRef),
+    taskRef: asKindRef(result.taskRef),
+    validationResults: asArray(result.validationResults).map((item) => {
+      const check = asRecord(item)
+      return {
+        checkId: asString(check.checkId),
+        pass: asBoolean(check.pass),
+        evidenceReferences: asEvidenceList(check.evidenceReferences),
+        ...(check.reasonCode === undefined ? {} : { reasonCode: asString(check.reasonCode) }),
+      }
+    }),
+    generationPolicyRef: asConfigRef(result.generationPolicyRef),
+    validationPolicyRef: asConfigRef(result.validationPolicyRef),
+    measureReleaseRefs: asArray(result.measureReleaseRefs).map(asKindRef),
+    ...(result.decision === undefined
+      ? {}
+      : {
+          decision: {
+            decisionRef: asKindRef(asRecord(result.decision).decisionRef),
+            state: asDecisionState(asRecord(result.decision).state),
+            actorId: asString(asRecord(result.decision).actorId),
+            decidedAt: asString(asRecord(result.decision).decidedAt),
+            reasonCode: asString(asRecord(result.decision).reasonCode),
+            ...(asRecord(result.decision).forecastRunRef === undefined
+              ? {}
+              : { forecastRunRef: asKindRef(asRecord(result.decision).forecastRunRef) }),
+          },
+        }),
+    actions: asActions(result.actions),
+  }
+}
+
+const asDecisionState = (value: unknown): 'adopted' | 'declined' => {
+  const state = asString(value)
+  if (state !== 'adopted' && state !== 'declined') throw drift()
+  return state
+}
+
+export interface ForecastView {
+  readonly kind: 'forecast-read'
+  readonly actorId: string
+  readonly effectForecastRef: KindRef
+  readonly recommendationRef: KindRef
+  readonly routeDecisionRef: KindRef
+  readonly runRef: KindRef
+  readonly inputSnapshotRef: KindRef
+  readonly frozenAssessmentBasisRef: KindRef
+  readonly preActionMonitoringSnapshotRef: KindRef
+  readonly baselineAssessmentRecordRef: KindRef
+  readonly forecastPolicyRef: KindRef
+  readonly method: string
+  readonly targetIndicatorId: string
+  readonly unit: string
+  readonly horizonSteps: number
+  readonly availability: ForecastAvailabilityView
+  readonly actions: readonly ReadActionView[]
+}
+
+/** P-RS-03 预测精确读：方法、步长与可用性取登记事实，页面不重算预测。 */
+export const readEffectForecast = async (
+  projectId: string,
+  effectForecastRef: KindRef,
+  signal?: AbortSignal,
+): Promise<ForecastView> => {
+  const result = await submitWarningRead(
+    projectId,
+    { operation: 'forecast-read', effectForecastRef },
+    signal,
+  )
+  if (result.kind !== 'forecast-read') throw drift()
+  return {
+    kind: 'forecast-read',
+    actorId: asString(result.actorId),
+    effectForecastRef: asKindRef(result.effectForecastRef),
+    recommendationRef: asKindRef(result.recommendationRef),
+    routeDecisionRef: asKindRef(result.routeDecisionRef),
+    runRef: asKindRef(result.runRef),
+    inputSnapshotRef: asKindRef(result.inputSnapshotRef),
+    frozenAssessmentBasisRef: asKindRef(result.frozenAssessmentBasisRef),
+    preActionMonitoringSnapshotRef: asKindRef(result.preActionMonitoringSnapshotRef),
+    baselineAssessmentRecordRef: asKindRef(result.baselineAssessmentRecordRef),
+    forecastPolicyRef: asKindRef(result.forecastPolicyRef),
+    method: asString(result.method),
+    targetIndicatorId: asString(result.targetIndicatorId),
+    unit: asString(result.unit),
+    horizonSteps: asNumber(result.horizonSteps),
+    availability: asForecastAvailability(result.availability),
+    actions: asActions(result.actions),
+  }
+}
+
+export interface ExecutionView {
+  readonly kind: 'execution-read'
+  readonly actorId: string
+  readonly executionRecordRef: KindRef
+  readonly source:
+    | {
+        readonly sourceKind: 'adopted-recommendation'
+        readonly recommendationRef: KindRef
+        readonly routeDecisionRef: KindRef
+      }
+    | {
+        readonly sourceKind: 'independent-action'
+        readonly measureReleaseRefs: readonly KindRef[]
+      }
+  readonly executedByActorId: string
+  readonly recordedByActorId: string
+  readonly occurredAt: string
+  readonly spatialScopeRef: KindRef
+  readonly evidenceReferences: readonly EvidenceReferenceView[]
+  readonly feedbackRefs: readonly KindRef[]
+  readonly nextCursor?: string
+  readonly actions: readonly ReadActionView[]
+}
+
+const asExecutionSource = (
+  value: unknown,
+): ExecutionView['source'] => {
+  const record = asRecord(value)
+  const sourceKind = asString(record.sourceKind)
+  if (sourceKind === 'independent-action') {
+    return {
+      sourceKind,
+      measureReleaseRefs: asArray(record.measureReleaseRefs).map(asKindRef),
+    }
+  }
+  if (sourceKind !== 'adopted-recommendation') throw drift()
+  return {
+    sourceKind,
+    recommendationRef: asKindRef(record.recommendationRef),
+    routeDecisionRef: asKindRef(record.routeDecisionRef),
+  }
+}
+
+/** P-RS-02 执行登记页读取：来源与 C28 登记事实同形，采纳与独立行动不混。 */
+export const readExecutionRecord = async (
+  projectId: string,
+  executionRecordRef: KindRef,
+  input: { readonly feedbackCursor?: string } = {},
+  signal?: AbortSignal,
+): Promise<ExecutionView> => {
+  const result = await submitWarningRead(
+    projectId,
+    {
+      operation: 'execution-read',
+      executionRecordRef,
+      ...(input.feedbackCursor === undefined ? {} : { feedbackCursor: input.feedbackCursor }),
+    },
+    signal,
+  )
+  if (result.kind !== 'execution-read') throw drift()
+  return {
+    kind: 'execution-read',
+    actorId: asString(result.actorId),
+    executionRecordRef: asKindRef(result.executionRecordRef),
+    source: asExecutionSource(result.source),
+    executedByActorId: asString(result.executedByActorId),
+    recordedByActorId: asString(result.recordedByActorId),
+    occurredAt: asString(result.occurredAt),
+    spatialScopeRef: asKindRef(result.spatialScopeRef),
+    evidenceReferences: asEvidenceList(result.evidenceReferences),
+    feedbackRefs: asArray(result.feedbackRefs).map(asKindRef),
+    ...asCursor(result.nextCursor),
+    actions: asActions(result.actions),
+  }
+}
+
+export interface FeedbackView {
+  readonly kind: 'feedback-read'
+  readonly actorId: string
+  readonly feedbackRef: KindRef
+  readonly executionRef: KindRef
+  readonly postActionMonitoringSnapshotRef: KindRef
+  readonly feedbackArtifactRef: KindRef
+  readonly actualAssessmentRecordRef: KindRef
+  readonly occurredAt: string
+  readonly forecastAvailability: ForecastAvailabilityView
+  readonly deviationRecord?: unknown
+  readonly deviation?: unknown
+  readonly deviationRecordRef?: KindRef
+  readonly calibrationRefs: readonly KindRef[]
+  readonly nextCursor?: string
+  readonly actions: readonly ReadActionView[]
+}
+
+/**
+ * P-RS-04 反馈精确读：公共偏差记录与私有计算偏差解释分别给出，页面不把解释冒充
+ * 公共记录；校准引用只在真实登记时出现。
+ */
+export const readFeedbackRecord = async (
+  projectId: string,
+  feedbackRef: KindRef,
+  input: { readonly calibrationCursor?: string } = {},
+  signal?: AbortSignal,
+): Promise<FeedbackView> => {
+  const result = await submitWarningRead(
+    projectId,
+    {
+      operation: 'feedback-read',
+      feedbackRef,
+      ...(input.calibrationCursor === undefined
+        ? {}
+        : { calibrationCursor: input.calibrationCursor }),
+    },
+    signal,
+  )
+  if (result.kind !== 'feedback-read') throw drift()
+  return {
+    kind: 'feedback-read',
+    actorId: asString(result.actorId),
+    feedbackRef: asKindRef(result.feedbackRef),
+    executionRef: asKindRef(result.executionRef),
+    postActionMonitoringSnapshotRef: asKindRef(result.postActionMonitoringSnapshotRef),
+    feedbackArtifactRef: asKindRef(result.feedbackArtifactRef),
+    actualAssessmentRecordRef: asKindRef(result.actualAssessmentRecordRef),
+    occurredAt: asString(result.occurredAt),
+    forecastAvailability: asForecastAvailability(result.forecastAvailability),
+    ...(result.deviationRecord === undefined ? {} : { deviationRecord: result.deviationRecord }),
+    ...(result.deviation === undefined ? {} : { deviation: result.deviation }),
+    ...(result.deviationRecordRef === undefined
+      ? {}
+      : { deviationRecordRef: asKindRef(result.deviationRecordRef) }),
+    calibrationRefs: asArray(result.calibrationRefs).map(asKindRef),
+    ...asCursor(result.nextCursor),
+    actions: asActions(result.actions),
+  }
+}
+
+export interface CalibrationView {
+  readonly kind: 'calibration-read'
+  readonly actorId: string
+  readonly calibrationSuggestionRef: KindRef
+  readonly targetKind: string
+  readonly targetReleaseRef: KindRef
+  readonly inputSnapshotRef: KindRef
+  readonly validationPolicyRef: VersionRef
+  readonly operations: readonly {
+    readonly operation: unknown
+    readonly valid: boolean
+    readonly reasonCode?: string
+  }[]
+  readonly status: string
+  readonly reviewTaskRef?: KindRef
+  readonly deviationRecordRef: KindRef
+  readonly deviationRecordVersionId: string
+  readonly reviewDecisionRef?: KindRef
+  readonly candidateArtifactRef?: KindRef
+  readonly knowledgeRevisionRef?: KindRef
+  readonly actions: readonly ReadActionView[]
+}
+
+/** P-RS-05 校准建议精确读：草案是未发布修订，页面不显示为已发布知识。 */
+export const readCalibrationSuggestion = async (
+  projectId: string,
+  calibrationSuggestionRef: KindRef,
+  signal?: AbortSignal,
+): Promise<CalibrationView> => {
+  const result = await submitWarningRead(
+    projectId,
+    { operation: 'calibration-read', calibrationSuggestionRef },
+    signal,
+  )
+  if (result.kind !== 'calibration-read') throw drift()
+  return {
+    kind: 'calibration-read',
+    actorId: asString(result.actorId),
+    calibrationSuggestionRef: asKindRef(result.calibrationSuggestionRef),
+    targetKind: asString(result.targetKind),
+    targetReleaseRef: asKindRef(result.targetReleaseRef),
+    inputSnapshotRef: asKindRef(result.inputSnapshotRef),
+    validationPolicyRef: asConfigRef(result.validationPolicyRef),
+    operations: asArray(result.operations).map((item) => {
+      const operation = asRecord(item)
+      return {
+        operation: operation.operation,
+        valid: asBoolean(operation.valid),
+        ...(operation.reasonCode === undefined
+          ? {}
+          : { reasonCode: asString(operation.reasonCode) }),
+      }
+    }),
+    status: asString(result.status),
+    ...(result.reviewTaskRef === undefined
+      ? {}
+      : { reviewTaskRef: asKindRef(result.reviewTaskRef) }),
+    deviationRecordRef: asKindRef(result.deviationRecordRef),
+    deviationRecordVersionId: asString(result.deviationRecordVersionId),
+    ...(result.reviewDecisionRef === undefined
+      ? {}
+      : { reviewDecisionRef: asKindRef(result.reviewDecisionRef) }),
+    ...(result.candidateArtifactRef === undefined
+      ? {}
+      : { candidateArtifactRef: asKindRef(result.candidateArtifactRef) }),
+    ...(result.knowledgeRevisionRef === undefined
+      ? {}
+      : { knowledgeRevisionRef: asKindRef(result.knowledgeRevisionRef) }),
+    actions: asActions(result.actions),
+  }
+}
+
+export type WarningResponseTargetKind =
+  | 'warning'
+  | 'task'
+  | 'recommendation'
+  | 'forecast'
+  | 'execution'
+  | 'feedback'
+  | 'calibration'
+
+export interface WarningResponseResolveView {
+  readonly kind: 'resolve'
+  readonly actorId: string
+  readonly targetKind: WarningResponseTargetKind
+  readonly refs: readonly KindRef[]
+  readonly actions: readonly ReadActionView[]
+}
+
+const WARNING_RESPONSE_TARGET_KINDS_V1: readonly WarningResponseTargetKind[] = [
+  'warning',
+  'task',
+  'recommendation',
+  'forecast',
+  'execution',
+  'feedback',
+  'calibration',
+]
+
+/** 只含实体 ID 的书签入口：解析出可见版本，随后由调用方替换 URL。 */
+export const readWarningResponseResolve = async (
+  projectId: string,
+  input: { readonly entityId: string; readonly targetKind: WarningResponseTargetKind; readonly versionId?: string },
+  signal?: AbortSignal,
+): Promise<WarningResponseResolveView> => {
+  const result = await submitWarningRead(
+    projectId,
+    {
+      operation: 'resolve',
+      entityId: input.entityId,
+      targetKind: input.targetKind,
+      ...(input.versionId === undefined ? {} : { versionId: input.versionId }),
+    },
+    signal,
+  )
+  if (result.kind !== 'resolve') throw drift()
+  const targetKind = asString(result.targetKind)
+  if (!WARNING_RESPONSE_TARGET_KINDS_V1.includes(targetKind as WarningResponseTargetKind)) {
+    throw drift()
+  }
+  return {
+    kind: 'resolve',
+    actorId: asString(result.actorId),
+    targetKind: targetKind as WarningResponseTargetKind,
+    refs: asArray(result.refs).map(asKindRef),
+    actions: asActions(result.actions),
+  }
+}
+
+// ============================================================================
+// C34 写入封装（design D-07、D-08）
+//
+// 冻结完整命令信封：引用带 kind 与 version，不在页面里拼 HTTP 字段。
+// commandId 由调用方给出并作幂等键，原载荷重试不改键；取消不得产生零提交。
+// ============================================================================
+
+export type CalibrationReviewOutcomeV1 = 'reject' | 'return-for-revision'
+
+export interface CalibrationReviewOutcomeSubmittedView {
+  readonly calibrationSuggestionRef: KindRef
+  readonly outcome: CalibrationReviewOutcomeV1
+  readonly deviationRecordRef: KindRef
+  readonly deviationRecordVersionId: string
+}
+
+/**
+ * P-RS-05 校准收口：拒绝与退回走各自的公共分支，错误 outcome 在契约边界被拒绝。
+ * 命令只接受精确建议与决定引用，不接受裸标识。
+ */
+export const submitCalibrationReviewOutcome = async (
+  projectId: string,
+  input: {
+    readonly commandId: string
+    readonly calibrationSuggestionRef: KindRef
+    readonly reviewDecisionRef: KindRef
+    readonly outcome: CalibrationReviewOutcomeV1
+  },
+  signal?: AbortSignal,
+): Promise<CalibrationReviewOutcomeSubmittedView> => {
+  const result = asRecord(
+    await submitCommand({
+      projectId,
+      branch: 'warning-response.calibration-review-outcome',
+      commandId: input.commandId,
+      payload: {
+        schemaVersion: '1',
+        calibrationSuggestionRef: input.calibrationSuggestionRef,
+        reviewDecisionRef: input.reviewDecisionRef,
+        outcome: input.outcome,
+      },
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  )
+  const outcome = asString(result.outcome)
+  if (outcome !== 'reject' && outcome !== 'return-for-revision') throw drift()
+  return {
+    calibrationSuggestionRef: asKindRef(result.calibrationSuggestionRef),
+    outcome,
+    deviationRecordRef: asKindRef(result.deviationRecordRef),
+    deviationRecordVersionId: asString(result.deviationRecordVersionId),
+  }
+}
+
+export interface CalibrationGovernanceDraftSubmittedView {
+  readonly governanceDraftRef: KindRef
+  readonly knowledgeRevisionRef: KindRef
+  readonly candidateArtifactRef: KindRef
+  readonly deviationRecordRef: KindRef
+  readonly deviationRecordVersionId: string
+}
+
+/**
+ * P-RS-05 校准草案：只提交未发布修订，发布由既有知识治理负责，页面不得据此显示已发布。
+ */
+export const submitCalibrationGovernanceDraft = async (
+  projectId: string,
+  input: {
+    readonly commandId: string
+    readonly calibrationSuggestionRef: KindRef
+    readonly reviewDecisionRef: KindRef
+  },
+  signal?: AbortSignal,
+): Promise<CalibrationGovernanceDraftSubmittedView> => {
+  const result = asRecord(
+    await submitCommand({
+      projectId,
+      branch: 'warning-response.calibration-governance-draft',
+      commandId: input.commandId,
+      payload: {
+        schemaVersion: '1',
+        calibrationSuggestionRef: input.calibrationSuggestionRef,
+        reviewDecisionRef: input.reviewDecisionRef,
+        outcome: 'approve-draft-creation',
+      },
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  )
+  return {
+    governanceDraftRef: asKindRef(result.governanceDraftRef),
+    knowledgeRevisionRef: asKindRef(result.knowledgeRevisionRef),
+    candidateArtifactRef: asKindRef(result.candidateArtifactRef),
+    deviationRecordRef: asKindRef(result.deviationRecordRef),
+    deviationRecordVersionId: asString(result.deviationRecordVersionId),
+  }
+}

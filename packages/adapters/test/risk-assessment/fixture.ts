@@ -24,6 +24,7 @@ import type {
 import {
   ModuleErrorV1Schema,
   type AuthorizationContextV1,
+  type ContractReferenceV1,
   type ContentArtifactRefV1,
   type ModuleErrorV1,
   type ProjectRevisionRefV1,
@@ -32,7 +33,12 @@ import {
   type SpatialScopeRefV1,
 } from "@riskflow/contracts/ports";
 import type { AssessmentPreparationSnapshotRefV1 } from "@riskflow/contracts/ports";
-import type { AssessmentEntriesReadPortV1, AssessmentRunReadPortV1 } from "@riskflow/core/workflow";
+import {
+  WorkflowGraphRunStateV1Schema,
+  workflowGraphInvocationIdV1,
+  type WorkflowGraphResultRowV1,
+} from "@riskflow/core/workflow";
+import { authorizationScopeDigest } from "@riskflow/core/retrieval";
 
 import { bootstrapInitialSystemAdministrator } from "../../src/auth/index.js";
 import {
@@ -41,12 +47,14 @@ import {
 } from "../../src/engineering-data/context-source/postgres-engineering-context-source-registry.js";
 import { createPostgresRiskAssessmentEngine } from "../../src/risk-assessment/engine/index.js";
 import type { PostgresRiskAssessmentEngine } from "../../src/risk-assessment/engine/index.js";
+import { createPostgresWorkflowAdapter } from "../../src/workflow/index.js";
 import {
   startEngineeringContextSourceFixture,
   type EngineeringContextSourcePostgresFixture,
 } from "../engineering-data/context-source/fixture.js";
 import {
   C25_FIXTURE_APPLICABILITY,
+  C25_FIXTURE_RISK_RECORD_REF,
   C25_FIXTURE_RULES,
   c25ApplicableRuleSet,
   c25ConfigurationDocuments,
@@ -150,6 +158,32 @@ export interface RiskAssessmentEngineFixtureV1 {
   };
   /** 之前冻结的准备快照引用（A 含 3 个监测快照，B 只含 1 个）。 */
   preparationRef(kind: "a" | "b"): AssessmentPreparationSnapshotRefV1;
+  /**
+   * 用真实 C30 适配器登记一个产出指定评估记录的运行（入口行 + run-state 工件 + 正式链边）。
+   * 记录解释与重评历史只解释这些已登记事实，缺失时 C25 必须失败闭合。
+   */
+  registerAssessmentRun(input: {
+    readonly suffix: string;
+    readonly runId: string;
+    readonly recordRef: {
+      readonly kind: "risk-assessment-record";
+      readonly reference: { readonly entityId: string; readonly versionId: string };
+    };
+    readonly entryMode: "assess" | "reassess";
+    readonly reassessmentEntry?: {
+      readonly previousAssessmentRecordRef: {
+        readonly kind: "risk-assessment-record";
+        readonly reference: { readonly entityId: string; readonly versionId: string };
+      };
+      readonly reason: "monitoring-snapshot" | "applicability-metadata";
+      readonly changedInputRefs: readonly ContractReferenceV1[];
+    };
+  }): Promise<{
+    readonly runRef: {
+      readonly kind: "workflow-run";
+      readonly reference: { readonly entityId: string; readonly versionId: string };
+    };
+  }>;
   /** 首次验证后吊销管理器会话，用于提交前授权失效用例；`restoreSession` 复原。 */
   revokeAfterFirstRead(): Promise<void>;
   /** 在风险事实读取返回后吊销管理器会话：读取已完成、提交尚未开始。 */
@@ -1034,19 +1068,19 @@ export const startRiskAssessmentEngineFixture = async (
   });
 
   // 组合根为 C11 冻结的监测读取接缝注入资料版本（风险输入证据同源）。
-  // 本修复只覆盖 entry-context / pending-catalog 外部事件两条候选接缝对 C11 的真实调用，
-  // 因此只注入这两条路径实际依赖的 entryContext；其余 C34 读端口保持显式未接线，
-  // 一旦被误调用立即失败，绝不用成功空结果冒充已实现读取。
+  // 记录解释与重评历史依赖 C30 已登记的运行事实（design D-12），因此这里注入真实 C30 适配器的
+  // 两个窄读端口；C33 风险记录目录仍保持显式未接线，一旦被误调用立即失败，
+  // 绝不用成功空结果冒充已实现读取。
   const unwiredReadDependency = (label: string): never => {
     throw new Error(`C25 fixture seam 之外的读依赖未接线：${label}`);
   };
-  const unusedRunRead: AssessmentRunReadPortV1 = {
-    readAssessmentRun: async () => unwiredReadDependency("runRead.readAssessmentRun"),
-  };
-  const unusedEntriesRead: AssessmentEntriesReadPortV1 = {
-    readAssessmentEntriesForRecords: async () =>
-      unwiredReadDependency("entriesRead.readAssessmentEntriesForRecords"),
-  };
+  const workflow = createPostgresWorkflowAdapter({
+    db: postgres.runtime.db,
+    transactionUnit: postgres.transactionUnit,
+    artifactStore: postgres.artifactStore,
+    authorization: access,
+    now: () => new Date(T0),
+  });
   const unusedRecordCatalog: RiskIdentificationReadPortV1 = {
     read: async () => unwiredReadDependency("recordCatalog.read"),
   };
@@ -1062,8 +1096,8 @@ export const startRiskAssessmentEngineFixture = async (
     monitoring: postgres.monitoringStore,
     authorizeDownstream,
     entryContext: createAssessmentEntryContextReadPort(registry),
-    runRead: unusedRunRead,
-    entriesRead: unusedEntriesRead,
+    runRead: workflow.runRead,
+    entriesRead: workflow.entriesRead,
     recordCatalog: unusedRecordCatalog,
     now: () => new Date(T0),
   });
@@ -1077,6 +1111,8 @@ export const startRiskAssessmentEngineFixture = async (
       readonly reference: { readonly entityId: string; readonly versionId: string };
     }[];
     readonly previousAssessmentRecordRef?: unknown;
+    /** 覆盖默认适用性快照，用于重评的「适用性元数据变化」用例。 */
+    readonly applicabilityMetadataSnapshotRef?: unknown;
     readonly effectiveAt?: string;
     readonly withCausalRun?: boolean;
     /** 风险输入覆盖：外部风险事件分支用正式登记的外部事件引用。 */
@@ -1103,7 +1139,8 @@ export const startRiskAssessmentEngineFixture = async (
         riskInput: input.riskInput ?? c25Facts().riskInput,
         projectRevisionRef,
         spatialScopeRef: businessSpatialScopeRef,
-        applicabilityMetadataSnapshotRef: applicabilitySnapshotRef,
+        applicabilityMetadataSnapshotRef:
+          input.applicabilityMetadataSnapshotRef ?? applicabilitySnapshotRef,
         entryMode: input.entryMode,
         triggerReasonCode: input.triggerReasonCode,
         ...(input.monitoringSnapshotRefs === undefined
@@ -1127,6 +1164,244 @@ export const startRiskAssessmentEngineFixture = async (
     }
     return frozen.result.assessmentPreparationSnapshotRef;
   };
+
+  // 记录解释与重评历史只能解释 C30 已登记的运行事实：这里用 C30 自身适配器登记真实入口行、
+  // 真实 run-state 工件与产出该记录的正式链边，不向 C25 塞入测试替身。
+  const entriesAuthorization = await authorize({
+    invocationId: "c25-engine-entries-registration",
+    branch: "projection.query",
+  });
+  const entriesScopeDigest = authorizationScopeDigest(entriesAuthorization);
+
+  const registerWithinTransaction = async (input: {
+    readonly row: WorkflowGraphResultRowV1;
+    readonly commandKind?: string;
+  }) => {
+    const commandKind = input.commandKind ?? "workflow.register-row";
+    await postgres.transactionUnit.execute(
+      {
+        projectId: PROJECT_ID,
+        commandKind,
+        commandId: input.row.commandId,
+        idempotencyKey: input.row.idempotencyKey,
+        payload: { resultId: input.row.resultId, kind: input.row.resultKind },
+        actorRef: input.row.actorRef,
+        authorizationContextRef: input.row.authorizationContextRef,
+        issuedAt: input.row.recordedAt,
+        runId: input.row.runId,
+      },
+      async (context) => {
+        await workflow.registrationStore.registerRow(
+          { row: input.row, occurredAt: input.row.recordedAt },
+          context,
+        );
+        return {
+          resultRef: {
+            kind: "workflow-run" as const,
+            reference: { entityId: input.row.runId, versionId: input.row.runVersionId },
+          },
+          audit: {
+            auditEntryId: input.row.auditEntryId,
+            projectId: PROJECT_ID,
+            action: commandKind,
+            targetRef: {
+              kind: "workflow-run" as const,
+              reference: { entityId: input.row.runId, versionId: input.row.runVersionId },
+            },
+            actorRef: input.row.actorRef,
+            authorizationContextRef: input.row.authorizationContextRef,
+            occurredAt: input.row.recordedAt,
+            recordedAt: input.row.recordedAt,
+            version: { entityId: input.row.runId, versionId: input.row.runVersionId },
+            commandId: input.row.commandId,
+            idempotencyKey: input.row.idempotencyKey,
+            runId: input.row.runId,
+          },
+          events: [],
+        };
+      },
+    );
+  };
+
+  /** 登记一个产出指定评估记录的真实 C30 运行（入口行 + run-state 工件 + 正式链边）。 */
+  const registerAssessmentRun = async (input: {
+    readonly suffix: string;
+    readonly runId: string;
+    readonly recordRef: {
+      readonly kind: "risk-assessment-record";
+      readonly reference: { readonly entityId: string; readonly versionId: string };
+    };
+    readonly entryMode: "assess" | "reassess";
+    readonly reassessmentEntry?: {
+      readonly previousAssessmentRecordRef: {
+        readonly kind: "risk-assessment-record";
+        readonly reference: { readonly entityId: string; readonly versionId: string };
+      };
+      readonly reason: "monitoring-snapshot" | "applicability-metadata";
+      readonly changedInputRefs: readonly ContractReferenceV1[];
+    };
+  }) => {
+    const runVersionId = c25Digest({ run: "run-version", suffix: input.suffix });
+    const entryIdentity = {
+      entityId: `workflow-entry:${PROJECT_ID}:${input.suffix}`,
+      versionId: c25Digest({ run: "entry-identity", suffix: input.suffix }),
+    };
+    const rowBase = {
+      schemaVersion: "1" as const,
+      projectId: PROJECT_ID,
+      runId: input.runId,
+      runVersionId,
+      entryMode: input.entryMode,
+      requestDigest: c25Digest({ run: "request", suffix: input.suffix }),
+      actorRef: managerId,
+      authorizationContextRef: entriesAuthorization.authorizationContextRef,
+      authorizationScopeDigest: entriesScopeDigest,
+      validAt: T0,
+      recordedAt: T0,
+      persistedAt: T0,
+      frozenRefs: [C25_FIXTURE_RISK_RECORD_REF],
+    };
+    // 每个登记行一个命令身份：C03 对同键异载荷直接判幂等冲突。
+    const rowIdentity = (resultKind: string) => ({
+      commandId: `c25-engine-entries-${input.suffix}:${resultKind}`,
+      idempotencyKey: `c25-engine-entries-${input.suffix}:${resultKind}`,
+      auditEntryId: `c25-engine-entries-${input.suffix}:${resultKind}:audit`,
+    });
+    await registerWithinTransaction({
+      row: {
+        ...rowBase,
+        ...rowIdentity("entry-snapshot"),
+        resultKind: "entry-snapshot",
+        resultId: `entry-snapshot:${input.runId}:1`,
+        resultVersionId: "1",
+        stage: "preparing",
+        entryIdentity,
+      },
+    });
+    const artifactId = `c25-run-state:${input.runId}:${runVersionId}`;
+    const artifactRef = await workflow.bodies.putBody({
+      projectId: PROJECT_ID,
+      actorId: managerId,
+      commandId: `c25-engine-entries-body-${input.suffix}`,
+      issuedAt: T0,
+      artifactId,
+      // C30 按 C06 要求用签发身份复验：写入必须用同一派生身份换取授权。
+      authorization: await authorize({
+        invocationId: workflowGraphInvocationIdV1({
+          operation: "body-write",
+          projectId: PROJECT_ID,
+          targetId: artifactId,
+        }),
+        branch: "projection.query",
+      }),
+      body: {
+        bodyKind: "run-state",
+        runState: WorkflowGraphRunStateV1Schema.parse({
+          schemaVersion: "1",
+          projectId: PROJECT_ID,
+          runId: input.runId,
+          runVersionId,
+          entryMode: input.entryMode,
+          entryIdentity,
+          stage: "A5",
+          status: "completed",
+          assessmentRunRefs: [],
+          acceptedRiskRecordRefs: [C25_FIXTURE_RISK_RECORD_REF],
+          assessmentRecordRefs: [input.recordRef],
+          warningRecordRefs: [],
+          responseRecommendationRefs: [],
+          deviationRecordRefs: [],
+          calibrationSuggestionRefs: [],
+          ...(input.reassessmentEntry === undefined
+            ? {}
+            : { reassessmentEntry: input.reassessmentEntry }),
+          recordedAt: T0,
+        }),
+      },
+    });
+    await registerWithinTransaction({
+      row: {
+        ...rowBase,
+        ...rowIdentity("run-state"),
+        resultKind: "run-state",
+        resultId: artifactRef.reference.entityId,
+        resultVersionId: runVersionId,
+        stage: "A5",
+        artifactRef,
+      },
+    });
+    const linkId = c25Digest({ run: "entries-link", suffix: input.suffix });
+    await postgres.transactionUnit.execute(
+      {
+        projectId: PROJECT_ID,
+        commandKind: "workflow.register-link",
+        commandId: `c25-engine-entries-link-${input.suffix}`,
+        idempotencyKey: `c25-engine-entries-link-${input.suffix}`,
+        payload: { linkId },
+        actorRef: managerId,
+        authorizationContextRef: entriesAuthorization.authorizationContextRef,
+        issuedAt: T0,
+        runId: input.runId,
+      },
+      async (context) => {
+        await workflow.registrationStore.registerLink(
+          {
+            link: {
+              schemaVersion: "1",
+              projectId: PROJECT_ID,
+              linkId,
+              runId: input.runId,
+              fromRef: C25_FIXTURE_RISK_RECORD_REF,
+              toRef: input.recordRef,
+              relation: "risk-assessment",
+              sourceStage: "A5",
+              stageResultRef: {
+                kind: "stage-result",
+                reference: { entityId: `c25-stage-result:${input.suffix}`, versionId: "1" },
+              },
+              authorizationContextRef: entriesAuthorization.authorizationContextRef,
+              authorizationScopeDigest: entriesScopeDigest,
+              actorRef: managerId,
+              recordedAt: T0,
+              auditEntryId: `c25-engine-entries-link-${input.suffix}:audit`,
+            },
+          },
+          context,
+        );
+        return {
+          resultRef: {
+            kind: "workflow-run" as const,
+            reference: { entityId: input.runId, versionId: runVersionId },
+          },
+          audit: {
+            auditEntryId: `c25-engine-entries-link-${input.suffix}:audit`,
+            projectId: PROJECT_ID,
+            action: "workflow.register-link",
+            targetRef: {
+              kind: "workflow-run" as const,
+              reference: { entityId: input.runId, versionId: runVersionId },
+            },
+            actorRef: managerId,
+            authorizationContextRef: entriesAuthorization.authorizationContextRef,
+            occurredAt: T0,
+            recordedAt: T0,
+            version: { entityId: input.runId, versionId: runVersionId },
+            commandId: `c25-engine-entries-link-${input.suffix}`,
+            idempotencyKey: `c25-engine-entries-link-${input.suffix}`,
+            runId: input.runId,
+          },
+          events: [],
+        };
+      },
+    );
+    return {
+      runRef: {
+        kind: "workflow-run" as const,
+        reference: { entityId: input.runId, versionId: runVersionId },
+      },
+    };
+  };
+
   const preparations = {
     a: await freezePreparation({
       suffix: "a",
@@ -1238,6 +1513,7 @@ export const startRiskAssessmentEngineFixture = async (
       sessionToken = changed.sessionToken;
     },
     freezePreparation,
+    registerAssessmentRun,
     async preinsertAuditConflict(commandId) {
       await postgres.postgres.adminPool.query(
         `INSERT INTO audit.entries (audit_entry_id, project_id, action, target_ref, actor_ref, authorization_context_ref, version_ref, occurred_at, recorded_at, command_id, idempotency_key)

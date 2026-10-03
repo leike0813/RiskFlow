@@ -17,6 +17,7 @@ import {
 import { RiskAssessmentRecordSchema } from "@riskflow/contracts/records";
 
 import { c25ReleaseRef, c25RuntimePolicySet } from "../../../core/test/risk-assessment/fixture.js";
+import { C25_FIXTURE_RISK_RECORD_REF } from "../../../core/test/risk-assessment/fixture.js";
 
 import { startRiskAssessmentEngineFixture, type RiskAssessmentEngineFixtureV1 } from "./fixture.js";
 
@@ -1820,4 +1821,536 @@ describe("C25 PostgreSQL risk assessment engine", () => {
       await setAccessStatus("ready");
     }
   }, 240_000);
+
+  // ---------------------------------------------------------------- C34 记录解释、重评历史与总览
+
+  /** 跑通一次真实评估（冻结入口 → prepare → evaluate），返回评估记录的精确引用。 */
+  const evaluateThrough = async (input: {
+    readonly suffix: string;
+    /** 风险输入覆盖：历史用例用独占风险记录，使该风险输入下只有本用例的记录。 */
+    readonly riskInput?: {
+      readonly kind: "standardized-risk-record";
+      readonly reference: { readonly entityId: string; readonly versionId: string };
+    };
+    readonly reassessment?: {
+      readonly previousAssessmentRecordRef: RiskAssessmentRecordRefV1;
+      /** 重评必须观察到真实输入变化：这里按「移除部分监测快照」制造删除侧变化。 */
+      readonly monitoringSnapshotRefs: readonly {
+        readonly kind: "monitoring-snapshot";
+        readonly reference: { readonly entityId: string; readonly versionId: string };
+      }[];
+    };
+  }) => {
+    const preparation = await fixture.freezePreparation({
+      suffix: `read-${input.suffix}`,
+      entryMode: input.reassessment === undefined ? "assess" : "reassess",
+      triggerReasonCode:
+        input.reassessment === undefined ? "manual-assessment" : "monitoring-snapshot",
+      monitoringSnapshotRefs:
+        input.reassessment?.monitoringSnapshotRefs ?? fixture.monitoringSnapshotRefs,
+      ...(input.riskInput === undefined ? {} : { riskInput: input.riskInput }),
+      ...(input.reassessment === undefined
+        ? {}
+        : { previousAssessmentRecordRef: input.reassessment.previousAssessmentRecordRef }),
+    });
+    const prepared = await fixture.engine.prepare(
+      (await fixture.prepareCommand({
+        commandId: `c25-read-${input.suffix}`,
+        ...(input.reassessment === undefined
+          ? {}
+          : {
+              kind: "reassessment" as const,
+              reason: "monitoring-snapshot" as const,
+              previousAssessmentRecordRef: input.reassessment.previousAssessmentRecordRef,
+            }),
+        preparation,
+      })) as never,
+    );
+    if (prepared.kind !== "succeeded") {
+      throw new Error(`prepare failed: ${JSON.stringify(prepared).slice(0, 400)}`);
+    }
+    const evaluated = await fixture.engine.evaluate(
+      (await fixture.evaluateCommand({
+        commandId: `c25-read-${input.suffix}-evaluate`,
+        inputSnapshotRef: prepared.result.assessmentInputSnapshotRef,
+      })) as never,
+    );
+    if (evaluated.kind !== "succeeded") {
+      throw new Error(`evaluate failed: ${JSON.stringify(evaluated).slice(0, 400)}`);
+    }
+    return {
+      ...evaluated.result,
+      inputSnapshotRef: prepared.result.assessmentInputSnapshotRef,
+    };
+  };
+
+  /** 记录行自有列的 P/C 与风险等级：目录摘要必须逐项对上，不从正文重算。 */
+  const storedScores = async (recordRef: RiskAssessmentRecordRefV1) => {
+    const rows = await fixture.postgres.postgres.adminPool.query<{
+      likelihood_score_canonical: string;
+      consequence_score_canonical: string;
+      risk_level_id: string;
+    }>(
+      "SELECT likelihood_score_canonical, consequence_score_canonical, risk_level_id FROM business.risk_assessment_records WHERE project_id = $1 AND record_id = $2 AND version_id = $3",
+      [fixture.projectId, recordRef.reference.entityId, recordRef.reference.versionId],
+    );
+    expect(rows.rows).toHaveLength(1);
+    return rows.rows[0]!;
+  };
+
+  /** 读取链路的解释失败闭合必须是业务阻断，而不是半份解释或空目录。 */
+  const expectClosedBusinessBlocked = (result: RiskAssessmentReadResultV1, detailCode: string) => {
+    expect(result.kind).toBe("failed");
+    if (result.kind !== "failed") throw new Error("expected a closed read failure");
+    expect(result.error).toMatchObject({
+      code: "BUSINESS_BLOCKED",
+      category: "business-blocked",
+      retryable: false,
+      blockerRef: { reference: { entityId: expect.stringContaining(`:${detailCode}`) } },
+    });
+  };
+
+  /** 已登记评估记录的三张正式事实行整体文本，用于证明读取不改写历史版本。 */
+  const storedFactsText = async (recordRef: RiskAssessmentRecordRefV1) => {
+    const rows = await fixture.postgres.postgres.adminPool.query<{ facts: string }>(
+      `SELECT jsonb_build_object(
+                'record', to_jsonb(r.record_payload),
+                'record_digest', to_jsonb(r.identity_digest),
+                'value_set', to_jsonb(v.value_set_payload),
+                'decision_ref', to_jsonb(d.content_artifact_ref),
+                'decision_digest', to_jsonb(d.content_digest)
+              )::text AS facts
+         FROM business.risk_assessment_records r
+         JOIN business.indicator_actual_value_sets v
+           ON v.project_id = r.project_id AND v.value_set_id = r.value_set_id
+          AND v.version_id = r.value_set_version_id
+         JOIN business.assessment_decision_artifacts d
+           ON d.project_id = r.project_id AND d.decision_id = r.decision_id
+          AND d.version_id = r.decision_version_id
+        WHERE r.project_id = $1 AND r.record_id = $2 AND r.version_id = $3`,
+      [fixture.projectId, recordRef.reference.entityId, recordRef.reference.versionId],
+    );
+    expect(rows.rows).toHaveLength(1);
+    return rows.rows[0]!.facts;
+  };
+
+  it("记录目录给出摘要与冻结落点，精确记录逐项对上保存的规则、轴、触发与配置引用", async () => {
+    const assessed = await evaluateThrough({ suffix: "catalog-a" });
+    await fixture.registerAssessmentRun({
+      suffix: "catalog-a",
+      runId: "c25-read-run:assess",
+      recordRef: assessed.assessmentRecordRef,
+      entryMode: "assess",
+    });
+    const factsBefore = await storedFactsText(assessed.assessmentRecordRef);
+    const scores = await storedScores(assessed.assessmentRecordRef);
+
+    const catalog = await fixture.engine.read(
+      await entryReadQuery({
+        queryId: "c25-record-catalog",
+        payload: { operation: "record-catalog" },
+      }),
+    );
+    expect(catalog).toMatchObject({ kind: "succeeded", result: { kind: "record-catalog" } });
+    if (catalog.kind !== "succeeded" || catalog.result.kind !== "record-catalog")
+      throw new Error("expected a record-catalog page");
+    const item = catalog.result.items.find(
+      (entry) =>
+        entry.assessmentRecordRef.reference.entityId ===
+        assessed.assessmentRecordRef.reference.entityId,
+    );
+    expect(item).toBeDefined();
+    // 风险输入的精确版本只登记在准备快照上：目录条目必须原样带出，不得补空版本。
+    expect(item!.riskInput).toEqual(C25_FIXTURE_RISK_RECORD_REF);
+    expect(item!.entryMode).toBe("assess");
+    expect(item!.previousAssessmentRecordRef).toBeUndefined();
+    expect(item!.likelihoodScore).toBe(Number(scores.likelihood_score_canonical));
+    expect(item!.consequenceScore).toBe(Number(scores.consequence_score_canonical));
+    expect(item!.riskState).toBe(scores.risk_level_id);
+    // 矩阵落点来自保存的决策工件：分带、等级与序号都不在目录侧重算。
+    expect(item!.matrixPlot.riskMatrixRef.entityId).toContain("risk-matrix");
+    expect(item!.matrixPlot.riskLevelId).toBe(scores.risk_level_id);
+    expect(item!.matrixPlot.riskLevelOrdinal).toBeGreaterThan(0);
+    expect(catalog.result.actions).toContainEqual({
+      branch: "risk-assessment.reassessment",
+      availability: "allowed",
+    });
+
+    // 入口方式、空间与矩阵版本是三类独立筛选；不匹配时返回空目录而不是全量。
+    const byEntryMode = await fixture.engine.read(
+      await entryReadQuery({
+        queryId: "c25-record-catalog-reassess",
+        payload: { operation: "record-catalog", entryMode: "reassess" },
+      }),
+    );
+    expect(byEntryMode).toMatchObject({ kind: "succeeded", result: { items: [] } });
+
+    const byMatrixVersion = await fixture.engine.read(
+      await entryReadQuery({
+        queryId: "c25-record-catalog-matrix",
+        payload: {
+          operation: "record-catalog",
+          riskMatrixVersion: item!.matrixPlot.riskMatrixRef,
+        },
+      }),
+    );
+    expect(byMatrixVersion).toMatchObject({ kind: "succeeded" });
+    if (byMatrixVersion.kind !== "succeeded" || byMatrixVersion.result.kind !== "record-catalog")
+      throw new Error("expected a matrix-filtered catalog page");
+    expect(
+      byMatrixVersion.result.items.some(
+        (entry) =>
+          entry.assessmentRecordRef.reference.entityId ===
+          assessed.assessmentRecordRef.reference.entityId,
+      ),
+    ).toBe(true);
+
+    const byForeignMatrix = await fixture.engine.read(
+      await entryReadQuery({
+        queryId: "c25-record-catalog-matrix-foreign",
+        payload: {
+          operation: "record-catalog",
+          riskMatrixVersion: { entityId: "risk-matrix-not-in-use", versionId: "1" },
+        },
+      }),
+    );
+    expect(byForeignMatrix).toMatchObject({ kind: "succeeded", result: { items: [] } });
+
+    const byScope = await fixture.engine.read(
+      await entryReadQuery({
+        queryId: "c25-record-catalog-scope",
+        payload: { operation: "record-catalog", spatialScopeRef: fixture.businessSpatialScopeRef },
+      }),
+    );
+    expect(byScope).toMatchObject({ kind: "succeeded" });
+    if (byScope.kind !== "succeeded" || byScope.result.kind !== "record-catalog")
+      throw new Error("expected a scope-filtered catalog page");
+    expect(
+      byScope.result.items.some(
+        (entry) =>
+          entry.assessmentRecordRef.reference.entityId ===
+          assessed.assessmentRecordRef.reference.entityId,
+      ),
+    ).toBe(true);
+
+    // 精确记录：实际值来自保存的实际值集，规则/等级/基准分来自同记录的决策工件。
+    const recordRead = await fixture.engine.read(
+      await entryReadQuery({
+        queryId: "c25-record-read",
+        payload: {
+          operation: "record-read",
+          assessmentRecordRef: assessed.assessmentRecordRef,
+        },
+      }),
+    );
+    expect(recordRead).toMatchObject({ kind: "succeeded", result: { kind: "record-read" } });
+    if (recordRead.kind !== "succeeded" || recordRead.result.kind !== "record-read")
+      throw new Error("expected a record-read view");
+    const view = recordRead.result;
+    expect(view.actorId).toBe(fixture.managerId);
+    expect(view.assessmentRecordRef).toEqual(assessed.assessmentRecordRef);
+    expect(view.record.riskLevel).toBe(scores.risk_level_id);
+    expect(view.entryMode).toBe("assess");
+    expect(view.inputSnapshotRef.reference.entityId).toBe(
+      assessed.inputSnapshotRef.reference.entityId,
+    );
+    expect(view.matrixPlot).toEqual(item!.matrixPlot);
+    // 七项配置原引用逐项来自决策工件，客户端不推导。
+    expect(Object.keys(view.configurationRefs).sort()).toEqual([
+      "indicatorFieldMappingRef",
+      "indicatorSystemRef",
+      "jointTriggerPolicyRef",
+      "monitoringWarningThresholdRef",
+      "riskAcceptanceThresholdRef",
+      "scoringStrategyRef",
+      "weightSetRef",
+    ]);
+    expect(view.indicators.length).toBeGreaterThan(0);
+    for (const explanation of view.indicators) {
+      expect(explanation.ruleId).toMatch(/^/u);
+      expect(explanation.grade.length).toBeGreaterThan(0);
+      expect(explanation.sourceReferences.length).toBeGreaterThan(0);
+    }
+    expect(view.axes.possibility.contributions.length).toBeGreaterThan(0);
+    expect(view.axes.possibility.weightSetRef).toEqual(view.configurationRefs.weightSetRef);
+    expect(view.triggerFacts.length).toBeGreaterThan(0);
+    expect(view.auditTrailRef.reference.entityId).toBe(
+      `audit-c25-read-catalog-a-evaluate:assessment-record`,
+    );
+    expect(view.actions).toContainEqual({
+      branch: "risk-assessment.reassessment",
+      availability: "allowed",
+    });
+
+    // 读取不改写历史：记录、实际值集与决策工件三张事实行整体不变。
+    expect(await storedFactsText(assessed.assessmentRecordRef)).toBe(factsBefore);
+  }, 300_000);
+
+  it("重评历史按同一风险输入升序给出完整链条，原因与变化引用取 C30 已登记入口事实", async () => {
+    // 该风险输入只承载本用例的两条记录：历史读要求页内每条记录都有已登记的运行事实，
+    // 混入其它用例的记录会让解释按缺失登记失败闭合。
+    const historyRiskInput = {
+      kind: "standardized-risk-record" as const,
+      reference: { entityId: "risk-record-c25-history", versionId: "1" },
+    };
+    const first = await evaluateThrough({ suffix: "history-a", riskInput: historyRiskInput });
+    await fixture.registerAssessmentRun({
+      suffix: "history-a",
+      runId: "c25-read-run:history-a",
+      recordRef: first.assessmentRecordRef,
+      entryMode: "assess",
+    });
+    // 第二次评估把其中一个监测序列替换为后续修订：替换侧构成可观察的真实输入变化，
+    // 且每个序列仍恰好一个快照，指标覆盖保持完整。
+    // 修订号取本用例独占的身份：复用早前用例的修订会命中撤权前签发的授权上下文。
+    const replaced = await fixture.seriesVariant({
+      seriesId: "c25-series-settlement",
+      seriesVersion: "3",
+      canonicalUnit: "mm",
+      values: [5.5, 6, 6.5, 7, 7.5],
+    });
+    const second = await evaluateThrough({
+      suffix: "history-b",
+      riskInput: historyRiskInput,
+      reassessment: {
+        previousAssessmentRecordRef: first.assessmentRecordRef,
+        monitoringSnapshotRefs: [replaced, ...fixture.monitoringSnapshotRefs.slice(1)],
+      },
+    });
+    // 变化引用必须逐项对应真实的输入变化：新旧两个版本的快照加上前驱记录本身。
+    const changedInputRefs = [first.assessmentRecordRef, replaced];
+    await fixture.registerAssessmentRun({
+      suffix: "history-b",
+      runId: "c25-read-run:history-b",
+      recordRef: second.assessmentRecordRef,
+      entryMode: "reassess",
+      reassessmentEntry: {
+        previousAssessmentRecordRef: first.assessmentRecordRef,
+        reason: "monitoring-snapshot",
+        changedInputRefs,
+      },
+    });
+    const factsBefore = {
+      first: await storedFactsText(first.assessmentRecordRef),
+      second: await storedFactsText(second.assessmentRecordRef),
+    };
+
+    const history = await fixture.engine.read(
+      await entryReadQuery({
+        queryId: "c25-reassessment-history",
+        payload: {
+          operation: "reassessment-history",
+          riskInput: historyRiskInput,
+        },
+      }),
+    );
+    expect(history).toMatchObject({ kind: "succeeded", result: { kind: "reassessment-history" } });
+    if (history.kind !== "succeeded" || history.result.kind !== "reassessment-history")
+      throw new Error("expected a reassessment history page");
+    const chain = history.result.items.filter((entry) =>
+      [
+        first.assessmentRecordRef.reference.entityId,
+        second.assessmentRecordRef.reference.entityId,
+      ].includes(entry.assessmentRecordRef.reference.entityId),
+    );
+    expect(chain).toHaveLength(2);
+    // 时点相同的记录以记录标识定序，因此链条顺序由已登记的前驱关系证明，而不是位置。
+    const initial = chain.find(
+      (entry) =>
+        entry.assessmentRecordRef.reference.entityId ===
+        first.assessmentRecordRef.reference.entityId,
+    )!;
+    const reassessed = chain.find(
+      (entry) =>
+        entry.assessmentRecordRef.reference.entityId ===
+        second.assessmentRecordRef.reference.entityId,
+    )!;
+    expect(initial.entryMode).toBe("assess");
+    expect(initial.previousAssessmentRecordRef).toBeUndefined();
+    expect(initial.reason).toBeUndefined();
+    expect(initial.changedInputRefs).toEqual([]);
+    expect(reassessed.entryMode).toBe("reassess");
+    expect(reassessed.previousAssessmentRecordRef).toEqual(first.assessmentRecordRef);
+    expect(reassessed.reason).toBe("monitoring-snapshot");
+    expect(reassessed.changedInputRefs).toEqual(changedInputRefs);
+    // 整页按业务时点升序，页面自身不重排。
+    const occurredAt = history.result.items.map((entry) => entry.occurredAt);
+    expect(occurredAt).toEqual([...occurredAt].sort((left, right) => left.localeCompare(right)));
+
+    // 分页：首页只给一条并给出游标，游标续页给出链条后半段。
+    const firstPage = await fixture.engine.read(
+      await entryReadQuery({
+        queryId: "c25-reassessment-history-page-1",
+        payload: {
+          operation: "reassessment-history",
+          riskInput: historyRiskInput,
+          pageSize: 1,
+        },
+      }),
+    );
+    expect(firstPage).toMatchObject({ kind: "succeeded" });
+    if (firstPage.kind !== "succeeded" || firstPage.result.kind !== "reassessment-history")
+      throw new Error("expected a history first page");
+    expect(firstPage.result.items).toHaveLength(1);
+    expect(firstPage.result.nextCursor).toBeDefined();
+    const secondPage = await fixture.engine.read(
+      await entryReadQuery({
+        queryId: "c25-reassessment-history-page-2",
+        payload: {
+          operation: "reassessment-history",
+          riskInput: historyRiskInput,
+          pageSize: 1,
+          cursor: firstPage.result.nextCursor,
+        },
+      }),
+    );
+    expect(secondPage).toMatchObject({ kind: "succeeded" });
+    if (secondPage.kind !== "succeeded" || secondPage.result.kind !== "reassessment-history")
+      throw new Error("expected a history second page");
+    expect(secondPage.result.items).toHaveLength(1);
+    expect(secondPage.result.items[0]!.assessmentRecordRef).not.toEqual(
+      firstPage.result.items[0]!.assessmentRecordRef,
+    );
+    expect(
+      new Set(
+        [...firstPage.result.items, ...secondPage.result.items].map(
+          (entry) => entry.assessmentRecordRef.reference.entityId,
+        ),
+      ),
+    ).toEqual(new Set(chain.map((entry) => entry.assessmentRecordRef.reference.entityId)));
+
+    // 历史只追加：读历史不产生新记录，也不改写前侧与后侧的任何已登记事实。
+    expect(await storedFactsText(first.assessmentRecordRef)).toBe(factsBefore.first);
+    expect(await storedFactsText(second.assessmentRecordRef)).toBe(factsBefore.second);
+  }, 300_000);
+
+  it("解释缺失时记录读取失败闭合，不返回半份解释；总览按空间范围独立统计", async () => {
+    const assessed = await evaluateThrough({ suffix: "explanation" });
+    await fixture.registerAssessmentRun({
+      suffix: "explanation",
+      runId: "c25-read-run:explanation",
+      recordRef: assessed.assessmentRecordRef,
+      entryMode: "assess",
+    });
+    const valueSetRow = await fixture.postgres.postgres.adminPool.query<{
+      value_set_id: string;
+      version_id: string;
+      value_set_payload: { values: readonly unknown[] };
+    }>(
+      "SELECT value_set_id, version_id, value_set_payload FROM business.indicator_actual_value_sets WHERE project_id = $1 AND value_set_id = $2",
+      [fixture.projectId, assessed.indicatorActualValueSetRef.reference.entityId],
+    );
+    expect(valueSetRow.rows).toHaveLength(1);
+    const originalPayload = valueSetRow.rows[0]!.value_set_payload;
+    const factsBefore = await storedFactsText(assessed.assessmentRecordRef);
+
+    // 篡改保存的实际值集：少一个指标后值集仍可解析，但解释缺项，必须失败闭合。
+    const truncated = { ...originalPayload, values: originalPayload.values.slice(1) };
+    expect(truncated.values.length).toBeGreaterThan(0);
+    await fixture.postgres.postgres.adminPool.query(
+      "UPDATE business.indicator_actual_value_sets SET value_set_payload = $3::jsonb WHERE project_id = $1 AND value_set_id = $2",
+      [fixture.projectId, valueSetRow.rows[0]!.value_set_id, JSON.stringify(truncated)],
+    );
+    try {
+      expectClosedBusinessBlocked(
+        await fixture.engine.read(
+          await entryReadQuery({
+            queryId: "c25-record-read-missing-explanation",
+            payload: {
+              operation: "record-read",
+              assessmentRecordRef: assessed.assessmentRecordRef,
+            },
+          }),
+        ),
+        "indicator-actual-value-missing",
+      );
+    } finally {
+      await fixture.postgres.postgres.adminPool.query(
+        "UPDATE business.indicator_actual_value_sets SET value_set_payload = $3::jsonb WHERE project_id = $1 AND value_set_id = $2",
+        [fixture.projectId, valueSetRow.rows[0]!.value_set_id, JSON.stringify(originalPayload)],
+      );
+    }
+
+    // 精确记录不存在时同样失败闭合，且不枚举存在性。
+    expectClosedBusinessBlocked(
+      await fixture.engine.read(
+        await entryReadQuery({
+          queryId: "c25-record-read-absent",
+          payload: {
+            operation: "record-read",
+            assessmentRecordRef: {
+              kind: "risk-assessment-record",
+              reference: { entityId: "assessment-record-not-registered", versionId: "1" },
+            },
+          },
+        }),
+      ),
+      "assessment-record-not-found",
+    );
+    expect(await storedFactsText(assessed.assessmentRecordRef)).toBe(factsBefore);
+
+    // 总览只统计已入库的评估记录版本，并按请求空间范围收窄统计窗口。
+    const storedRecords = await countRows(
+      fixture,
+      "business.risk_assessment_records",
+      fixture.projectId,
+    );
+    const overview = await fixture.engine.read(
+      await entryReadQuery({
+        queryId: "c25-overview",
+        payload: { operation: "overview", projectRevisionRef: fixture.projectRevisionRef },
+      }),
+    );
+    expect(overview).toMatchObject({ kind: "succeeded", result: { kind: "overview" } });
+    if (overview.kind !== "succeeded" || overview.result.kind !== "overview")
+      throw new Error("expected an overview");
+    expect(overview.result.projectId).toBe(fixture.projectId);
+    expect(overview.result.recordedAssessmentCount).toBe(storedRecords);
+    expect(overview.result.riskLevelCounts.reduce((sum, entry) => sum + entry.count, 0)).toBe(
+      storedRecords,
+    );
+    expect(overview.result.riskLevelCounts.map((entry) => entry.riskLevel)).toEqual(
+      [...overview.result.riskLevelCounts.map((entry) => entry.riskLevel)].sort((left, right) =>
+        left.localeCompare(right),
+      ),
+    );
+    expect(overview.result.actions).toContainEqual({
+      branch: "risk-assessment.initial",
+      availability: "allowed",
+    });
+
+    const scoped = await fixture.engine.read(
+      await entryReadQuery({
+        queryId: "c25-overview-scoped",
+        payload: {
+          operation: "overview",
+          projectRevisionRef: fixture.projectRevisionRef,
+          spatialScopeRef: fixture.businessSpatialScopeRef,
+        },
+      }),
+    );
+    expect(scoped).toMatchObject({ kind: "succeeded" });
+    if (scoped.kind !== "succeeded" || scoped.result.kind !== "overview")
+      throw new Error("expected a scoped overview");
+    expect(scoped.result.spatialScopeRef).toEqual(fixture.businessSpatialScopeRef);
+    expect(scoped.result.recordedAssessmentCount).toBe(storedRecords);
+
+    const foreignScope = await fixture.engine.read(
+      await entryReadQuery({
+        queryId: "c25-overview-foreign-scope",
+        payload: {
+          operation: "overview",
+          projectRevisionRef: fixture.projectRevisionRef,
+          spatialScopeRef: {
+            kind: "spatial-scope",
+            reference: { entityId: "scope-outside-c25", versionId: "1" },
+          },
+        },
+      }),
+    );
+    expect(foreignScope).toMatchObject({
+      kind: "succeeded",
+      result: { recordedAssessmentCount: 0, riskLevelCounts: [] },
+    });
+  }, 300_000);
 });

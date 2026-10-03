@@ -133,9 +133,32 @@ export interface WorkflowGraphBodyPortV1 {
 }
 
 /**
+ * C30 端口受保护读写的调用身份（design D-05）：C06 复验要求授权的签发身份与复验身份一致，
+ * 因此调用方必须在换取下游授权前用同一函数派生身份。签发方与复验方共用这一事实源，
+ * 任何一方自行拼字符串都会让复验按拒绝收口。
+ */
+export const workflowGraphInvocationIdV1 = (input: {
+  readonly operation:
+    | "result-row"
+    | "run-rows"
+    | "run-state"
+    | "run-links"
+    | "query-registration"
+    | "body-write"
+    | "body-read"
+    | "assessment-entries"
+    | "run-read";
+  readonly projectId: string;
+  readonly targetId: string;
+}): string => `c30-${input.operation}:${input.projectId}:${input.targetId}`;
+
+/**
  * C30 入口元数据窄读（design D-12）：输入当前获准的评估记录引用，逐项返回已登记的精确运行身份
  * 与重评入口事实。实现只沿自己的正式结果登记/链边定位入口行与精确 run-state 工件；重评元数据
  * 缺失、错配或不可读时整体失败闭合，不得用 `frozenRefs`、`triggerReasonCode` 或启发式补齐。
+ *
+ * `authorization` 必须是调用方以 `workflowGraphInvocationIdV1({operation:"assessment-entries",
+ * targetId: assessmentRecordRefs[0]})` 换取的下游授权；C30 沿同一身份复验当前授权。
  */
 export interface AssessmentEntriesReadPortV1 {
   readAssessmentEntriesForRecords(input: {
@@ -155,6 +178,9 @@ export interface AssessmentEntriesReadPortV1 {
  * 目标为评估子运行时直接呈现其 A0～A9；目标为父运行时保留父 status/stage/R 阶段与真实子运行
  * 引用，只在显式选中或唯一子运行时才读子运行阶段。子运行引用先验证确属该精确父运行再读；
  * 读不到或不成立一律失败，不用 checkpoint 或合成轨迹替代。
+ *
+ * `authorization` 必须是调用方以 `workflowGraphInvocationIdV1({operation:"run-read",
+ * targetId: workflowRunRef})` 换取的下游授权。
  */
 export interface AssessmentRunReadPortV1 {
   readAssessmentRun(input: {

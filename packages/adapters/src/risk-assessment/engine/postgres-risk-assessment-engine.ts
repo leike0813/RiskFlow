@@ -138,7 +138,11 @@ import {
   type WorkflowRunRefV1,
 } from "@riskflow/contracts/ports";
 import type { RiskIdentificationReadPortV1 } from "@riskflow/contracts/ports";
-import type { AssessmentEntriesReadPortV1, AssessmentRunReadPortV1 } from "@riskflow/core/workflow";
+import {
+  workflowGraphInvocationIdV1,
+  type AssessmentEntriesReadPortV1,
+  type AssessmentRunReadPortV1,
+} from "@riskflow/core/workflow";
 import { VersionReferenceSchema, type VersionReference } from "@riskflow/contracts/common";
 import { DomainEventV1Schema, type DomainEventV1 } from "@riskflow/contracts/events";
 
@@ -2551,8 +2555,12 @@ export class PostgresRiskAssessmentEngine
     try {
       return await this.#dispatchRead(command, verified);
     } catch (error) {
-      if (error instanceof RiskAssessmentReadFailure)
+      // 公开读契约是全函数：任何已定型的模块错误都收口为失败结果，绝不把错误对象抛给调用方。
+      if (error instanceof RiskAssessmentReadFailure) {
         return this.#readFailure(command, error.error);
+      }
+      const typed = ModuleErrorV1Schema.safeParse(error);
+      if (typed.success) return this.#readFailure(command, typed.data);
       throw error;
     }
   }
@@ -3038,7 +3046,7 @@ export class PostgresRiskAssessmentEngine
     const offset = decodeC34Offset(command.payload.cursor);
     if (offset === undefined) return this.#readFailure(command, this.#readDenied(command));
     const page = await this.#recordPage(command, {
-      limit: offset + pageSize + 1,
+      pageSize,
       offset,
       ...(command.payload.riskInput === undefined ? {} : { riskInput: command.payload.riskInput }),
     });
@@ -3078,7 +3086,7 @@ export class PostgresRiskAssessmentEngine
       ) {
         continue;
       }
-      items.push(this.#catalogItemOf(row, preparation, context.decision));
+      items.push(this.#catalogItemOf(row, preparation, context.decision, command.queryId));
     }
     return RiskAssessmentReadResultV1Schema.parse({
       kind: "succeeded",
@@ -3092,11 +3100,14 @@ export class PostgresRiskAssessmentEngine
     });
   }
 
-  /** 记录行的有界分页：只按记录行自有列过滤，按 `occurred_at` 倒序。 */
+  /**
+   * 记录行的有界分页：只按记录行自有列过滤，按 `occurred_at` 排序。
+   * 多取的一行只用于判定 `hasMore`，绝不返回给调用方——否则页大小会越界一行。
+   */
   async #recordPage(
     command: RiskAssessmentReadQueryV1,
     options: {
-      readonly limit: number;
+      readonly pageSize: number;
       readonly offset: number;
       readonly riskInput?: RiskInputVersionRefV1;
       readonly ascending?: boolean;
@@ -3110,14 +3121,12 @@ export class PostgresRiskAssessmentEngine
       .selectAll()
       .where("project_id", "=", command.projectId);
     if (options.riskInput !== undefined) {
-      const kind =
-        options.riskInput.kind === "standardized-risk-record"
-          ? "risk-record"
-          : "external-risk-event";
+      // 记录行按公共 `RiskInputVersionRefV1` 的判别值登记，此处不再另造一份内部枚举。
+      const kind = options.riskInput.kind;
       query = query
         .where("risk_input_kind", "=", kind)
         .where(
-          kind === "risk-record" ? "risk_record_id" : "external_risk_event_id",
+          kind === "standardized-risk-record" ? "risk_record_id" : "external_risk_event_id",
           "=",
           options.riskInput.reference.entityId,
         );
@@ -3127,12 +3136,15 @@ export class PostgresRiskAssessmentEngine
       rows = await query
         .orderBy("occurred_at", options.ascending === true ? "asc" : "desc")
         .orderBy("record_id", "asc")
-        .limit(options.limit)
+        .limit(options.offset + options.pageSize + 1)
         .execute();
     } catch (error) {
       throw mapPostgresError(error, "risk-assessment.read.record-page");
     }
-    return { rows: rows.slice(options.offset), hasMore: rows.length > options.offset };
+    return {
+      rows: rows.slice(options.offset, options.offset + options.pageSize),
+      hasMore: rows.length > options.offset + options.pageSize,
+    };
   }
 
   #inputSnapshotKeyOf(row: {
@@ -3225,6 +3237,7 @@ export class PostgresRiskAssessmentEngine
     row: Selectable<RiskAssessmentRecordRow>,
     preparation: Selectable<AssessmentPreparationSnapshotRow>,
     decision: AssessmentDecisionArtifactV1,
+    causalRunId: string,
   ): AssessmentRecordCatalogItemV1 {
     const previous =
       preparation.previous_assessment_record_ref === null
@@ -3235,7 +3248,7 @@ export class PostgresRiskAssessmentEngine
         kind: "risk-assessment-record",
         reference: { entityId: row.record_id, versionId: row.version_id },
       },
-      riskInput: this.#riskInputOf(preparation),
+      riskInput: this.#riskInputOf(preparation, causalRunId),
       entryMode: preparation.entry_mode as WorkflowEntryModeV1,
       ...(previous === undefined ? {} : { previousAssessmentRecordRef: previous }),
       occurredAt: asIso(row.occurred_at),
@@ -3247,11 +3260,14 @@ export class PostgresRiskAssessmentEngine
   }
 
   /** 风险输入的精确版本只登记在准备快照上；记录行不带版本，绝不在此处补空版本。 */
-  #riskInputOf(preparation: Selectable<AssessmentPreparationSnapshotRow>): RiskInputVersionRefV1 {
+  #riskInputOf(
+    preparation: Selectable<AssessmentPreparationSnapshotRow>,
+    causalRunId: string,
+  ): RiskInputVersionRefV1 {
     const parsed = RiskInputVersionRefV1Schema.safeParse(preparation.risk_input_ref);
     if (!parsed.success) {
       throw new RiskAssessmentReadFailure(
-        this.#readBlocked("risk-input-reference-invalid", preparation.risk_input_kind),
+        this.#readBlocked(causalRunId, "risk-input-reference-invalid", preparation.risk_input_kind),
       );
     }
     return parsed.data;
@@ -3316,7 +3332,11 @@ export class PostgresRiskAssessmentEngine
       authorization: await this.#authorizeFor(
         {
           branch: "projection.query",
-          invocationId: `${command.queryId}:record-entries`,
+          invocationId: workflowGraphInvocationIdV1({
+            operation: "assessment-entries",
+            projectId: command.projectId,
+            targetId: ref.reference.entityId,
+          }),
           projectId: command.projectId,
           actorId: command.actorId,
           requestedAt: command.requestedAt,
@@ -3329,7 +3349,8 @@ export class PostgresRiskAssessmentEngine
     const metadata = entry.entries.find(
       (item) => versionKey(item.assessmentRecordRef.reference) === versionKey(ref.reference),
     );
-    const view: AssessmentRecordViewV1 = {
+    const view: AssessmentRecordViewV1 & { readonly kind: "record-read" } = {
+      kind: "record-read",
       actorId: command.actorId,
       record: record.data,
       assessmentRecordRef: ref,
@@ -3343,7 +3364,7 @@ export class PostgresRiskAssessmentEngine
       changedInputRefs: metadata?.changedInputRefs ?? [],
       applicability: decision.decision.applicability,
       configurationRefs: decision.decision.configurationRefs,
-      indicators: this.#indicatorExplanations(decision.decision, values),
+      indicators: this.#indicatorExplanations(decision.decision, values, command.queryId),
       axes: {
         possibility: this.#axisOf(decision.decision.axisScores.possibility),
         consequence: this.#axisOf(decision.decision.axisScores.consequence),
@@ -3373,13 +3394,14 @@ export class PostgresRiskAssessmentEngine
   #indicatorExplanations(
     decision: AssessmentDecisionArtifactV1,
     values: LoadedValueSetV1,
+    causalRunId: string,
   ): AssessmentRecordViewV1["indicators"] {
     const byId = new Map(values.values.values.map((value) => [value.indicatorId, value]));
     return decision.rules.map((rule) => {
       const value = byId.get(rule.indicatorId);
       if (value === undefined) {
         throw new RiskAssessmentReadFailure(
-          this.#readBlocked("indicator-actual-value-missing", `indicator:${rule.indicatorId}`),
+          this.#readBlocked(causalRunId, "indicator-actual-value-missing"),
         );
       }
       return {
@@ -3442,31 +3464,39 @@ export class PostgresRiskAssessmentEngine
     const offset = decodeC34Offset(command.payload.cursor);
     if (offset === undefined) return this.#readFailure(command, this.#readDenied(command));
     const page = await this.#recordPage(command, {
-      limit: offset + pageSize + 1,
+      pageSize,
       offset,
       riskInput: command.payload.riskInput,
       ascending: true,
     });
     const preparations = await this.#preparationsOf(command, page.rows);
-    const entries = await this.#entriesRead.readAssessmentEntriesForRecords({
-      projectId: command.projectId,
-      actorId: command.actorId,
-      requestedAt: command.requestedAt,
-      authorization: await this.#authorizeFor(
-        {
-          branch: "projection.query",
-          invocationId: `${command.queryId}:history-entries`,
-          projectId: command.projectId,
-          actorId: command.actorId,
-          requestedAt: command.requestedAt,
-        },
-        "projection.query",
-      ),
-      assessmentRecordRefs: page.rows.map((row) => ({
-        kind: "risk-assessment-record" as const,
-        reference: { entityId: row.record_id, versionId: row.version_id },
-      })),
-    });
+    // 空页无需入口事实：没有记录就没有可解释对象，也不必换取下游授权。
+    const entries =
+      page.rows.length === 0
+        ? ({ kind: "succeeded", entries: [] } as const)
+        : await this.#entriesRead.readAssessmentEntriesForRecords({
+            projectId: command.projectId,
+            actorId: command.actorId,
+            requestedAt: command.requestedAt,
+            authorization: await this.#authorizeFor(
+              {
+                branch: "projection.query",
+                invocationId: workflowGraphInvocationIdV1({
+                  operation: "assessment-entries",
+                  projectId: command.projectId,
+                  targetId: page.rows[0]!.record_id,
+                }),
+                projectId: command.projectId,
+                actorId: command.actorId,
+                requestedAt: command.requestedAt,
+              },
+              "projection.query",
+            ),
+            assessmentRecordRefs: page.rows.map((row) => ({
+              kind: "risk-assessment-record" as const,
+              reference: { entityId: row.record_id, versionId: row.version_id },
+            })),
+          });
     if (entries.kind !== "succeeded") throw new RiskAssessmentReadFailure(entries.error);
     const metadataByKey = new Map(
       entries.entries.map((item) => [versionKey(item.assessmentRecordRef.reference), item]),
@@ -3497,7 +3527,7 @@ export class PostgresRiskAssessmentEngine
         versionKey({ entityId: row.record_id, versionId: row.version_id }),
       );
       items.push({
-        ...this.#catalogItemOf(row, preparation, context.decision),
+        ...this.#catalogItemOf(row, preparation, context.decision, command.queryId),
         ...(metadata?.reason === undefined ? {} : { reason: metadata.reason }),
         changedInputRefs: metadata?.changedInputRefs ?? [],
       });
@@ -3524,7 +3554,7 @@ export class PostgresRiskAssessmentEngine
     command: C34ReadCommandV1<"overview">,
     verified: AuthorizationContextV1,
   ): Promise<RiskAssessmentReadResultV1> {
-    const page = await this.#recordPage(command, { limit: 5000, offset: 0 });
+    const page = await this.#recordPage(command, { pageSize: 5000, offset: 0 });
     const preparations = await this.#preparationsOf(command, page.rows);
     const counts = new Map<string, number>();
     let matched = 0;
@@ -3696,7 +3726,11 @@ export class PostgresRiskAssessmentEngine
       authorization: await this.#authorizeFor(
         {
           branch: "projection.query",
-          invocationId: `${command.queryId}:run-read`,
+          invocationId: workflowGraphInvocationIdV1({
+            operation: "run-read",
+            projectId: command.projectId,
+            targetId: workflowRunRef.reference.entityId,
+          }),
           projectId: command.projectId,
           actorId: command.actorId,
           requestedAt: command.requestedAt,
@@ -3838,12 +3872,14 @@ export class PostgresRiskAssessmentEngine
     verified: AuthorizationContextV1,
     artifactRef: ContentArtifactRefV1,
   ): Promise<unknown | undefined> {
+    // 一次查询可能读多份正文，幂等键必须逐份唯一，否则第二份会被判同键异载荷。
+    const identity = `${command.queryId}:read:${artifactRef.reference.entityId}:${artifactRef.reference.versionId}`;
     const handle = await this.#artifactStore
       .open(
         ArtifactReadRequestV1Schema.parse({
           schemaVersion: RISK_ASSESSMENT_ENGINE_SCHEMA_VERSION_V1,
-          requestId: `${command.queryId}:read-${Date.now()}`,
-          idempotencyKey: `${command.queryId}:read`,
+          requestId: identity,
+          idempotencyKey: identity,
           artifactRef,
           projectId: command.projectId,
           actorId: command.actorId,
@@ -3858,11 +3894,20 @@ export class PostgresRiskAssessmentEngine
     return readArtifactJson(handle);
   }
 
-  #readBlocked(causalRunId: string, detailCode: string, blockerRef?: string): ModuleErrorV1 {
+  /**
+   * 读面失败闭合：`blockerKind` 给出稳定的详情码，`blockerRef` 按 `<查询身份>:<详情码>`
+   * 编码同一事实，让调用方既拿到类型化错误，也能在不解析正文的前提下定位到具体读操作。
+   */
+  #readBlocked(causalRunId: string, detailCode: string, blockerEntityId?: string): ModuleErrorV1 {
     return moduleError("BUSINESS_BLOCKED", causalRunId, {
-      schemaVersion: RISK_ASSESSMENT_ENGINE_SCHEMA_VERSION_V1,
       blockerKind: detailCode,
-      ...(blockerRef === undefined ? {} : { blockerRef }),
+      blockerRef: {
+        kind: "project-revision",
+        reference: {
+          entityId: blockerEntityId ?? `${causalRunId}:${detailCode}`,
+          versionId: "1",
+        },
+      },
     });
   }
 }

@@ -61,6 +61,7 @@ import {
   WorkflowQueryRegistrationV1Schema,
   WorkflowRunStageV1Schema,
   AssessmentRunProjectionV1Schema,
+  workflowGraphInvocationIdV1,
   type AssessmentEntryMetadataV1,
   type AssessmentEntriesReadPortV1,
   type AssessmentRunProjectionV1,
@@ -136,20 +137,7 @@ const BRANCH_BY_CAPABILITY_V1: Partial<Record<ModuleCapabilityV1, ModuleBranchV1
 };
 
 /** 受保护读写的调用身份：签发方必须用同一函数派生，否则复验按拒绝收口（fail closed）。 */
-export const workflowGraphReadInvocationIdV1 = (input: {
-  readonly operation:
-    | "result-row"
-    | "run-rows"
-    | "run-state"
-    | "run-links"
-    | "query-registration"
-    | "body-write"
-    | "body-read"
-    | "assessment-entries"
-    | "run-read";
-  readonly projectId: string;
-  readonly targetId: string;
-}): string => `c30-${input.operation}:${input.projectId}:${input.targetId}`;
+export const workflowGraphReadInvocationIdV1 = workflowGraphInvocationIdV1;
 
 /** C30 授权拒绝：只带稳定 detailCode，不携带正文与受限目标存在性。 */
 export class WorkflowGraphDeniedErrorV1 extends Error {

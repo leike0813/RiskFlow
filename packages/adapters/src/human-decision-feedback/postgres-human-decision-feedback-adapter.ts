@@ -11,6 +11,7 @@ import {
   MODULE_BRANCH_CAPABILITY_V1,
   HumanDecisionProofQueryV1Schema,
   type AuthorizationContextV1,
+  type ResponseRecommendationRefV1,
   type HumanDecisionProofPortV1,
   type HumanDecisionProofQueryV1,
   type HumanDecisionProofResultV1,
@@ -18,7 +19,7 @@ import {
   type ModuleBranchV1,
   type WarningResponseRecordResultV1,
 } from "@riskflow/contracts/ports";
-import type { LocalIdentityAccessV1 } from "@riskflow/core/access";
+import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/access";
 import {
   HumanDecisionFeedbackService,
   type HumanDecisionFeedbackDownstreamAuthorizerV1,
@@ -56,6 +57,10 @@ import type {
 } from "@riskflow/contracts/ports";
 
 import { getPostgresTransaction } from "../postgres/transaction-unit.js";
+import type {
+  C26RouteDecisionResultV1,
+  WarningResponseRouteDecisionReaderV1,
+} from "../warning/postgres-warning-lifecycle-adapter.js";
 import { mapPostgresError } from "../postgres/pool.js";
 import type { PostgresDatabase } from "../postgres/types.js";
 
@@ -302,8 +307,21 @@ export interface PostgresHumanDecisionFeedbackAdapterOptionsV1 {
   readonly now?: () => Date;
 }
 
+/** C26 组合窄读时交给 C41 的全部输入：授权、调用身份与精确建议引用。 */
+export type RouteDecisionReadInputV1 = {
+  readonly projectId: string;
+  readonly actorId: string;
+  readonly requestedAt: string;
+  readonly invocationId: string;
+  readonly authorization: AuthorizationContextV1;
+  readonly routeDecisionForRecommendationRef: ResponseRecommendationRefV1;
+};
+
 export class PostgresHumanDecisionFeedbackAdapter
-  implements HumanDecisionFeedbackPortV1, HumanDecisionProofPortV1
+  implements
+    HumanDecisionFeedbackPortV1,
+    HumanDecisionProofPortV1,
+    WarningResponseRouteDecisionReaderV1
 {
   readonly #db: Kysely<HumanDecisionFeedbackDatabase>;
   readonly #transactionUnit: TransactionUnitV1;
@@ -452,6 +470,64 @@ export class PostgresHumanDecisionFeedbackAdapter
   }
 
   // ------------------------------------------------------------------------- 事务
+
+  /**
+   * C41 采纳/拒绝终局的所属窄读（design D-06）：C26 只沿公共契约取终局状态、决定人、时点、
+   * 原因与真实运行引用。授权不可判定一律按拒绝收口，缺失则是诚实的「尚无决定」。
+   */
+  async readRouteDecision(input: RouteDecisionReadInputV1): Promise<C26RouteDecisionResultV1> {
+    const branch: ModuleBranchV1 = "warning-response.read";
+    if (
+      input.projectId !== input.authorization.projectId ||
+      input.actorId !== input.authorization.actorId ||
+      !input.authorization.grantedCapabilities.includes(MODULE_BRANCH_CAPABILITY_V1[branch])
+    ) {
+      return { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } };
+    }
+    const decision = await this.#readDecisionRow(
+      input.projectId,
+      input.routeDecisionForRecommendationRef,
+    );
+    if (decision === undefined) return { kind: "absent" };
+    const verified = await this.#access
+      .verify({
+        authorizationContextRef: input.authorization.authorizationContextRef,
+        invocationId: input.invocationId,
+        projectId: input.projectId,
+        branch,
+        requestedSpatialScopeRefs: [decision.spatialScopeRef],
+        requestedSourceVersionRefs: [],
+        requestedAt: input.requestedAt,
+      })
+      .catch((error: unknown) => {
+        if (error instanceof AccessServiceError) return undefined;
+        throw error;
+      });
+    if (verified === undefined || verified.redacted) {
+      return { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } };
+    }
+    // 决定的空间范围必须落在已验证授权内，越权与不存在对调用方同形。
+    if (
+      !verified.context.spatialScopeRefs.some((scope) =>
+        sameVersionRef(scope.reference, decision.spatialScopeRef.reference),
+      )
+    ) {
+      return { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } };
+    }
+    return {
+      kind: "succeeded",
+      decision: {
+        decisionRef: decision.decisionRef,
+        state: decision.state === "adopted" ? "adopted" : "declined",
+        actorId: decision.decidedBy,
+        decidedAt: decision.decidedAt,
+        reasonCode: decision.reasonCode,
+        ...(decision.forecastRunRef === undefined
+          ? {}
+          : { forecastRunRef: decision.forecastRunRef }),
+      },
+    };
+  }
 
   #nowIso(): string {
     return this.#now().toISOString();

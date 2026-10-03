@@ -21,7 +21,7 @@ import {
   type WarningResponseRecordCommandV1,
   type WarningResponseTaskRefV1,
 } from "@riskflow/contracts/ports";
-import type { DomainEventV1 } from "@riskflow/contracts/events";
+import { DomainEventV1Schema, type DomainEventV1 } from "@riskflow/contracts/events";
 import type { VersionReference } from "@riskflow/contracts/common";
 
 import {
@@ -32,6 +32,8 @@ import {
   PostgresWarningAssessmentContextReader,
   createPostgresWarningLifecycleAdapter,
   type PostgresWarningLifecycleAdapter,
+  type WarningResponseRecommendationReaderV1,
+  type WarningResponseRouteDecisionReaderV1,
 } from "../../src/warning/index.js";
 import type { PostgresDatabase } from "../../src/postgres/types.js";
 import {
@@ -94,6 +96,34 @@ export interface WarningLifecyclePostgresFixtureV1 {
     readonly assessmentRecordRef: RiskAssessmentRecordRefV1;
   }): Promise<OpenWarningCommandV1>;
   /** 只按精确引用解析；`missing` 让提供者表现为未解析到策略（失败闭合用例）。 */
+  /** C34 读契约的授权入口：与命令同走真实 C06 签发，身份即 queryId。 */
+  readAuthorization(
+    queryId: string,
+    spatialScopeRefs?: readonly unknown[],
+  ): Promise<AuthorizationContextV1>;
+  /** 未获准空间的读授权：用于验证目标存在与否均不可枚举。 */
+  restrictedReadAuthorization(
+    queryId: string,
+    spatialScopeRefs: readonly unknown[],
+  ): Promise<AuthorizationContextV1>;
+  /** 显式未接线的所属读依赖覆盖：按用例需要注入真实 C27/C41 窄读。 */
+  withOwningReaders(readers: {
+    readonly recommendations?: WarningResponseRecommendationReaderV1;
+    readonly routeDecisions?: WarningResponseRouteDecisionReaderV1;
+  }): PostgresWarningLifecycleAdapter;
+  /** 未获准空间的精确范围引用：用于验证目标存在与否均不可枚举。 */
+  readonly restrictedScopeRef: {
+    readonly kind: "spatial-scope";
+    readonly reference: { readonly entityId: string; readonly versionId: string };
+  };
+  /** 真实触发一次幂等投递：与 Worker 同一事件、同一消费者、同一事务边界。 */
+  deliverInApp(input: {
+    /** 产生该预警事件的真实命令身份：投递按这条已登记事件触发，不手工拼造事件。 */
+    readonly producerCommandId: string;
+    readonly warningRecordRef: WarningRecordRefV1;
+    readonly warningResponseTaskRef: WarningResponseTaskRefV1;
+    readonly notificationIntentRefs: readonly NotificationIntentRefV1[];
+  }): Promise<void>;
   setPolicyAvailability(value: "available" | "missing"): void;
   setNotificationPolicy(recipients: readonly string[]): void;
   warningRows(input: { readonly assessmentRecordRef: RiskAssessmentRecordRefV1 }): Promise<
@@ -131,6 +161,7 @@ export interface WarningLifecyclePostgresFixtureV1 {
   intentRows(warningRecordId: string): Promise<
     readonly {
       readonly intentId: string;
+      readonly intentVersionId: string;
       readonly recipientActorId: string;
       readonly channel: string;
       readonly taskId: string;
@@ -306,14 +337,54 @@ export const startWarningLifecycleFixture = async (
 
   const reader = new PostgresWarningAssessmentContextReader({ db });
   const consumer = createPostgresIdempotentConsumer(c25.postgres.postgres.worker);
+  // 动作门控按用途逐次签发下游授权：与 C25 夹具同一真实 C06 签发路径。
+  const authorizeDownstream = (request: {
+    readonly branch: ModuleBranchV1;
+    readonly invocationId: string;
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly requestedSpatialScopeRefs?: readonly SpatialScopeRefV1[];
+    readonly requestedSourceVersionRefs?: readonly SourceVersionRefV1[];
+  }): Promise<AuthorizationContextV1> =>
+    authorizationFor({
+      branch: request.branch,
+      invocationId: request.invocationId,
+      spatialScopeRefs: request.requestedSpatialScopeRefs,
+    });
+  // C27 正式建议与 C41 终局决定分属两个拥有方，本夹具不跨域代写：需要这些事实的用例
+  // 由各拥有方自己的夹具覆盖，这里显式未接线，一旦被误调用立即失败。
+  const unwiredOwningReader = (label: string): never => {
+    throw new Error(`C26 fixture seam 之外的所属读依赖未接线：${label}`);
+  };
+  const unwiredRecommendations: WarningResponseRecommendationReaderV1 = {
+    readRecommendationView: () => unwiredOwningReader("recommendations.readRecommendationView"),
+  };
+  const unwiredRouteDecisions: WarningResponseRouteDecisionReaderV1 = {
+    readRouteDecision: () => unwiredOwningReader("routeDecisions.readRouteDecision"),
+  };
   const adapter = createPostgresWarningLifecycleAdapter({
     db,
     transactionUnit: c25.postgres.transactionUnit,
     access,
     assessmentContext: reader,
     runtimePolicies: policyProvider,
+    authorizeDownstream,
+    recommendations: unwiredRecommendations,
+    routeDecisions: unwiredRouteDecisions,
     now: () => new Date(C26_FIXTURE_TIME),
   });
+
+  const readRecordedEvent = async (commandId: string): Promise<DomainEventV1 | undefined> => {
+    const row = await adminPool.query<{ event_json: unknown }>(
+      `SELECT event_json FROM outbox.events
+        WHERE project_id = $1 AND producer_command_id = $2 AND event_type = 'warning.warning-recorded.v1'
+        ORDER BY persisted_at DESC, event_id DESC LIMIT 1`,
+      [projectId, commandId],
+    );
+    const parsed = DomainEventV1Schema.safeParse(row.rows[0]?.event_json);
+    return parsed.success ? parsed.data : undefined;
+  };
 
   const assess = async (input: { readonly suffix: string }): Promise<AssessmentWithTriggersV1> => {
     const preparation = await c25.freezePreparation({
@@ -435,11 +506,67 @@ export const startWarningLifecycleFixture = async (
     projectId,
     managerId: c25.managerId,
     recipients: defaultRecipients,
+    restrictedScopeRef,
     aggregationPolicyRef,
     notificationPolicyRef,
     assess,
     openCommand,
     acknowledgeCommand,
+    async deliverInApp(input) {
+      // 用开预警时真实登记的那条事件，不手工拼造事件外壳。
+      const event = await readRecordedEvent(input.producerCommandId);
+      if (event === undefined) {
+        throw new Error(
+          `C26 fixture delivery found no recorded event for ${input.producerCommandId}`,
+        );
+      }
+      const result = await consumer.consume(
+        "warning-in-app-notification",
+        event,
+        async (context, consumed) => {
+          if (consumed.eventType !== "warning.warning-recorded.v1") {
+            throw new Error("unexpected event type in the C26 delivery fixture");
+          }
+          await adapter.deliverInAppNotifications(context, {
+            projectId,
+            warningRecordRef: input.warningRecordRef,
+            warningResponseTaskRef: input.warningResponseTaskRef,
+            notificationIntentRefs: input.notificationIntentRefs,
+          });
+          return { resultRef: input.warningRecordRef };
+        },
+      );
+      if (result.kind === "failed") {
+        throw new Error(`C26 fixture delivery failed: ${JSON.stringify(result).slice(0, 300)}`);
+      }
+    },
+    readAuthorization(queryId, spatialScopeRefs) {
+      return authorizationFor({
+        branch: "warning-response.read",
+        invocationId: queryId,
+        ...(spatialScopeRefs === undefined ? {} : { spatialScopeRefs }),
+      });
+    },
+    restrictedReadAuthorization(queryId, spatialScopeRefs) {
+      return authorizationFor({
+        branch: "warning-response.read",
+        invocationId: queryId,
+        spatialScopeRefs,
+      });
+    },
+    withOwningReaders(readers) {
+      return createPostgresWarningLifecycleAdapter({
+        db,
+        transactionUnit: c25.postgres.transactionUnit,
+        access,
+        assessmentContext: reader,
+        runtimePolicies: policyProvider,
+        authorizeDownstream,
+        recommendations: readers.recommendations ?? unwiredRecommendations,
+        routeDecisions: readers.routeDecisions ?? unwiredRouteDecisions,
+        now: () => new Date(C26_FIXTURE_TIME),
+      });
+    },
     setPolicyAvailability(value) {
       policyAvailability = value;
     },
@@ -597,18 +724,20 @@ export const startWarningLifecycleFixture = async (
     async intentRows(warningRecordId) {
       const rows = await adminPool.query<{
         intent_id: string;
+        version_id: string;
         recipient_actor_id: string;
         channel: string;
         task_id: string;
         task_version_id: string;
         notification_policy_entity_id: string;
       }>(
-        `SELECT intent_id, recipient_actor_id, channel, task_id, task_version_id, notification_policy_entity_id
+        `SELECT intent_id, version_id, recipient_actor_id, channel, task_id, task_version_id, notification_policy_entity_id
          FROM business.notification_intents WHERE project_id = $1 AND warning_record_id = $2 ORDER BY recipient_actor_id`,
         [projectId, warningRecordId],
       );
       return rows.rows.map((row) => ({
         intentId: row.intent_id,
+        intentVersionId: row.version_id,
         recipientActorId: row.recipient_actor_id,
         channel: row.channel,
         taskId: row.task_id,

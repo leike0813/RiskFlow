@@ -5074,8 +5074,10 @@ export const WarningResponseReadSuccessV1Schema = z.discriminatedUnion("kind", [
     responseRecommendationRef: ResponseRecommendationRefV1Schema,
     taskRef: WarningResponseTaskRefV1Schema,
     validationResults: z.array(RecommendationValidationResultV1Schema).max(3),
-    generationPolicyRef: ContractReferenceV1Schema,
-    validationPolicyRef: ContractReferenceV1Schema,
+    // 策略对象与配置引用同形：领域里就是裸版本引用，联合里没有能诚实表达"策略"的 kind，
+    // 因此不套 ContractReferenceV1，避免用一个不相干的 kind 冒充。
+    generationPolicyRef: VersionReferenceSchema,
+    validationPolicyRef: VersionReferenceSchema,
     measureReleaseRefs: z.array(ContractReferenceV1Schema).max(50),
     decision: z
       .strictObject({

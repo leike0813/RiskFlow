@@ -11,7 +11,9 @@
 - [x] 2.1 实施 IP-03/IP-12：提供 C11 两类独立分页候选，修正 C33 record-catalog 的 SQL 分页并复用原公开结果；验证精确修订、作用域与空目录。验证：`pnpm exec vitest run packages/adapters/test/engineering-data/context-source packages/adapters/test/identification/postgres-risk-identification-read.test.ts`。
 - [x] 2.2 实施 IP-05/IP-12：提供 C30 运行、父子引用与 D-12 原入口工件窄读，保持登记事实、阶段及已成立结果；精确前驱/原因/变化引用不能从 frozenRefs 反推，补缺失元数据失败用例。验证：`pnpm exec vitest run packages/adapters/test/workflow`。
 - [x] 2.3 实施 IP-04/IP-12：组合评估候选/启动上下文及精确记录、历史、矩阵落点和所属摘要；验证缺失解释失败闭合与历史版本不变。验证：`pnpm exec vitest run packages/adapters/test/risk-assessment`。
-- [ ] 2.4 实施 IP-06/IP-12：补齐 C26 预警、任务、确认/站内通知与 C27 正式建议的所属有界读取。验证：`pnpm exec vitest run packages/adapters/test/warning packages/adapters/test/recommendation`。
+- [x] 2.4 实施 IP-06/IP-12：补齐 C26 预警、任务、确认/站内通知与 C27 正式建议的所属有界读取。验证：`pnpm exec vitest run packages/adapters/test/warning packages/adapters/test/recommendation`。
+  - 用户决定：`recommendation-read` 的 `generationPolicyRef`/`validationPolicyRef` 改为 `VersionReference`（联合里没有能诚实表达"策略"的 kind，不套 `ContractReferenceV1`）；`measureReleaseRefs` 按已登记的单条措施库发布引用投影为 1 元素数组。
+  - 本任务交付 `warning-catalog`、`task-catalog`、`overview`、`warning-read`、`recommendation-read`；`task-read` 关系页与 `resolve` 随 task 2.7 一并落地。
 - [ ] 2.5 实施 IP-06/IP-12：补齐 C28 预测/执行/反馈偏差与 C41 人工决定的精确读取，保持 available/unavailable 和独立事实。验证：`pnpm exec vitest run packages/adapters/test/response-lifecycle packages/adapters/test/human-decision-feedback`。
 - [ ] 2.6 实施 IP-07/IP-12：提供 C29 校准只读与窄治理包装，按实际 branch 与 verified context 分用途授权；验证真实 C06/C07/C16、拒绝/退回、未发布草案与尾事务重试。验证：`pnpm exec vitest run packages/adapters/test/calibration`。
 - [ ] 2.7 实施 IP-06/IP-07/IP-12：在 C26 factory 组合所属窄读和关系页，输出获准 actions 与独立摘要，避免跨域私表访问。验证：`pnpm exec vitest run packages/adapters/test/warning packages/adapters/test/calibration`、`pnpm deps:check`。

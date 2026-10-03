@@ -2,10 +2,15 @@ import { sql } from "kysely";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { WarningRecordSchema } from "@riskflow/contracts/records";
+import { WARNING_TRIGGER_TYPE_VALUES } from "@riskflow/contracts/vocabulary";
 
 import { createPostgresRuntime } from "../../src/postgres/pool.js";
 import * as warningMigration from "../../src/postgres/migrations/warning-response/deliver-warning-tasks-and-in-app-notification/000044_warning_tasks_and_in_app_notification.js";
-import { startWarningLifecycleFixture, type WarningLifecyclePostgresFixtureV1 } from "./fixture.js";
+import {
+  C26_FIXTURE_TIME,
+  startWarningLifecycleFixture,
+  type WarningLifecyclePostgresFixtureV1,
+} from "./fixture.js";
 
 const WARNING_TABLES = [
   "warning_records",
@@ -751,5 +756,461 @@ describe("C26 预警与处置任务 PostgreSQL 链", () => {
     } finally {
       await runtime.close();
     }
+  }, 240_000);
+
+  // ================================================================== C34 只读
+
+  /** 读查询的公共信封：身份即 queryId，授权由夹具按同一身份签发。 */
+  const readQuery = async (
+    state: WarningLifecyclePostgresFixtureV1,
+    input: {
+      readonly queryId: string;
+      readonly payload: Record<string, unknown>;
+      readonly restricted?: boolean;
+    },
+  ) => {
+    const spatialScopeRefs =
+      input.restricted === true ? [state.restrictedScopeRef] : [state.c25.accessRootScopeRef];
+    return {
+      kind: "read" as const,
+      queryId: input.queryId,
+      projectId: state.projectId,
+      actorId: state.managerId,
+      requestedAt: C26_FIXTURE_TIME,
+      authorization:
+        input.restricted === true
+          ? await state.restrictedReadAuthorization(input.queryId, spatialScopeRefs)
+          : await state.readAuthorization(input.queryId, spatialScopeRefs),
+      payload: input.payload,
+    };
+  };
+
+  /** 目标不存在、越权与未注入都必须收口为类型化失败，绝不抛错或返回半份结果。 */
+  const expectClosed = (result: unknown, detailCode: string) => {
+    expect(result).toMatchObject({
+      kind: "failed",
+      error: { code: "BUSINESS_BLOCKED", blockerKind: detailCode, retryable: false },
+    });
+  };
+
+  it("预警目录按空间与触发类型独立筛选，确认状态取自独立确认事实", async () => {
+    const state = fixture!;
+    const assessment = await state.assess({ suffix: "read-catalog" });
+    const opened = await state.adapter.open(
+      await state.openCommand({
+        commandId: "c26-read-catalog-open",
+        assessmentRecordRef: assessment.assessmentRecordRef,
+      }),
+    );
+    expect(opened.kind).toBe("succeeded");
+    if (opened.kind !== "succeeded") return;
+    const allRefs = opened.result.warningRecordRefs;
+    const acked = allRefs[0]!;
+    expect(
+      (
+        await state.adapter.acknowledge(
+          await state.acknowledgeCommand({
+            commandId: "c26-read-catalog-ack",
+            warningRecordRef: acked,
+            warningResponseTaskRef: opened.result.warningResponseTaskRefs[0]!,
+          }),
+        )
+      ).kind,
+    ).toBe("succeeded");
+
+    const catalog = await state.adapter.read(
+      await readQuery(state, {
+        queryId: "c26-read-catalog",
+        payload: { operation: "warning-catalog" },
+      }),
+    );
+    expect(catalog).toMatchObject({ kind: "succeeded", result: { kind: "warning-catalog" } });
+    if (catalog.kind !== "succeeded" || catalog.result.kind !== "warning-catalog") return;
+    const mine = catalog.result.items.filter(
+      (item) =>
+        item.assessmentRecordRef.reference.entityId ===
+        assessment.assessmentRecordRef.reference.entityId,
+    );
+    expect(mine).toHaveLength(allRefs.length);
+    for (const item of mine) {
+      expect(item.taskRef.reference.entityId).toBe(
+        opened.result.warningResponseTaskRefs[0]!.reference.entityId,
+      );
+      expect(item.warningLevel).toBe(assessment.riskLevel);
+      expect(item.acknowledged).toBe(
+        item.warningRecordRef.reference.entityId === acked.reference.entityId,
+      );
+      expect(assessment.triggerTypes.includes(item.triggerType)).toBe(true);
+    }
+    // 触发类型是独立筛选：命中时每条都必须是该类型，未命中的类型必须排除本评估的全部预警。
+    const hit = assessment.triggerTypes[0]!;
+    const hitCatalog = await state.adapter.read(
+      await readQuery(state, {
+        queryId: "c26-read-catalog-hit",
+        payload: { operation: "warning-catalog", triggerType: hit },
+      }),
+    );
+    expect(hitCatalog).toMatchObject({ kind: "succeeded" });
+    if (hitCatalog.kind !== "succeeded" || hitCatalog.result.kind !== "warning-catalog") return;
+    expect(hitCatalog.result.items.length).toBeGreaterThan(0);
+    expect(hitCatalog.result.items.every((item) => item.triggerType === hit)).toBe(true);
+    const other = WARNING_TRIGGER_TYPE_VALUES.find(
+      (triggerType) => !assessment.triggerTypes.includes(triggerType),
+    );
+    expect(other).toBeDefined();
+    const otherCatalog = await state.adapter.read(
+      await readQuery(state, {
+        queryId: "c26-read-catalog-other",
+        payload: { operation: "warning-catalog", triggerType: other! },
+      }),
+    );
+    expect(otherCatalog).toMatchObject({ kind: "succeeded" });
+    if (otherCatalog.kind !== "succeeded" || otherCatalog.result.kind !== "warning-catalog") return;
+    expect(
+      otherCatalog.result.items.every(
+        (item) =>
+          item.assessmentRecordRef.reference.entityId !==
+          assessment.assessmentRecordRef.reference.entityId,
+      ),
+    ).toBe(true);
+    // 动作可用性只由分支授权决定，读成功不推断写能力。
+    expect(catalog.result.actions).toContainEqual({
+      branch: "warning-response.acknowledge",
+      availability: "allowed",
+    });
+  }, 240_000);
+
+  it("任务目录给出精确风险输入版本、空间范围与去重预警数，按状态与游标推进", async () => {
+    const state = fixture!;
+    const first = await state.assess({ suffix: "read-task-a" });
+    const second = await state.assess({ suffix: "read-task-b" });
+    for (const [index, assessment] of [first, second].entries()) {
+      const opened = await state.adapter.open(
+        await state.openCommand({
+          commandId: `c26-read-task-open-${index}`,
+          assessmentRecordRef: assessment.assessmentRecordRef,
+        }),
+      );
+      expect(opened.kind).toBe("succeeded");
+    }
+    const before = await state.db
+      .selectFrom("business.warning_response_tasks")
+      .select(["task_id"])
+      .where("project_id", "=", state.projectId)
+      .where("status", "=", "open")
+      .execute();
+    const target = before.find(
+      (row) => first.assessmentRecordRef.reference.entityId !== undefined && row.task_id.length > 0,
+    )!;
+    const openCount = before.length;
+    expect(openCount).toBeGreaterThanOrEqual(1);
+
+    const all = await state.adapter.read(
+      await readQuery(state, {
+        queryId: "c26-read-task-all",
+        payload: { operation: "task-catalog" },
+      }),
+    );
+    expect(all).toMatchObject({ kind: "succeeded", result: { kind: "task-catalog" } });
+    if (all.kind !== "succeeded" || all.result.kind !== "task-catalog") return;
+    for (const item of all.result.items) {
+      expect(item.status).toBe("open");
+      // 风险输入的精确版本只登记在关联预警上，绝不用聚合键的空版本或默认版本。
+      expect(item.riskInput.reference.versionId.length).toBeGreaterThan(0);
+      expect(item.spatialScopeRef.reference.versionId.length).toBeGreaterThan(0);
+      expect(item.warningCount).toBeGreaterThanOrEqual(1);
+    }
+
+    // 分页：首页一行并给出游标，游标续页不重复、不越界。
+    const page1 = await state.adapter.read(
+      await readQuery(state, {
+        queryId: "c26-read-task-page-1",
+        payload: { operation: "task-catalog", pageSize: 1 },
+      }),
+    );
+    expect(page1).toMatchObject({ kind: "succeeded" });
+    if (page1.kind !== "succeeded" || page1.result.kind !== "task-catalog") return;
+    expect(page1.result.items).toHaveLength(1);
+    const collected = [...page1.result.items.map((item) => item.taskRef.reference.entityId)];
+    let cursor = page1.result.nextCursor;
+    while (cursor !== undefined) {
+      const next = await state.adapter.read(
+        await readQuery(state, {
+          queryId: `c26-read-task-page-${collected.length + 1}`,
+          payload: { operation: "task-catalog", pageSize: 1, cursor },
+        }),
+      );
+      expect(next).toMatchObject({ kind: "succeeded" });
+      if (next.kind !== "succeeded" || next.result.kind !== "task-catalog") return;
+      collected.push(...next.result.items.map((item) => item.taskRef.reference.entityId));
+      cursor = next.result.nextCursor;
+    }
+    expect(collected).toHaveLength(new Set(collected).size);
+    expect(new Set(collected)).toEqual(
+      new Set(all.result.items.map((item) => item.taskRef.reference.entityId)),
+    );
+    expect(target.task_id.length).toBeGreaterThan(0);
+  }, 240_000);
+
+  it("目录游标绑定查询与授权：筛选改变、授权范围改变与格式篡改一律拒绝", async () => {
+    const state = fixture!;
+    const assessment = await state.assess({ suffix: "read-cursor" });
+    await state.adapter.open(
+      await state.openCommand({
+        commandId: "c26-read-cursor-open",
+        assessmentRecordRef: assessment.assessmentRecordRef,
+      }),
+    );
+    const first = await state.adapter.read(
+      await readQuery(state, {
+        queryId: "c26-read-cursor-page-1",
+        payload: { operation: "warning-catalog", pageSize: 1 },
+      }),
+    );
+    expect(first).toMatchObject({ kind: "succeeded" });
+    if (first.kind !== "succeeded" || first.result.kind !== "warning-catalog") return;
+    if (first.result.nextCursor === undefined) return;
+    const cursor = first.result.nextCursor;
+
+    // 换筛选续页：游标不再匹配当前查询，整体拒绝而不是从头重来。
+    const changed = await state.adapter.read(
+      await readQuery(state, {
+        queryId: "c26-read-cursor-page-2-changed",
+        payload: {
+          operation: "warning-catalog",
+          pageSize: 1,
+          cursor,
+          triggerType: "监测指标越限",
+        },
+      }),
+    );
+    expect(changed).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+
+    // 换空间授权续页：作用域改变一律拒绝。
+    const rescoped = await state.adapter.read(
+      await readQuery(state, {
+        queryId: "c26-read-cursor-page-2-restricted",
+        payload: { operation: "warning-catalog", pageSize: 1, cursor },
+        restricted: true,
+      }),
+    );
+    expect(rescoped).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+
+    // 格式篡改：解码失败同样整体拒绝。
+    const tampered = await state.adapter.read(
+      await readQuery(state, {
+        queryId: "c26-read-cursor-page-2-tampered",
+        payload: { operation: "warning-catalog", pageSize: 1, cursor: "not-a-cursor" },
+      }),
+    );
+    expect(tampered).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+  }, 240_000);
+
+  it("所属摘要只聚合获准空间的开放任务与去重预警，不泄露未授权总量", async () => {
+    const state = fixture!;
+    const assessment = await state.assess({ suffix: "read-overview" });
+    const opened = await state.adapter.open(
+      await state.openCommand({
+        commandId: "c26-read-overview-open",
+        assessmentRecordRef: assessment.assessmentRecordRef,
+      }),
+    );
+    expect(opened.kind).toBe("succeeded");
+    if (opened.kind !== "succeeded") return;
+
+    const overview = await state.adapter.read(
+      await readQuery(state, { queryId: "c26-read-overview", payload: { operation: "overview" } }),
+    );
+    expect(overview).toMatchObject({ kind: "succeeded", result: { kind: "overview" } });
+    if (overview.kind !== "succeeded" || overview.result.kind !== "overview") return;
+    const openTasks = await state.db
+      .selectFrom("business.warning_response_tasks")
+      .select(["task_id"])
+      .where("project_id", "=", state.projectId)
+      .where("status", "=", "open")
+      .execute();
+    expect(overview.result.openTaskCount).toBe(openTasks.length);
+    const distinct = await state.db
+      .selectFrom("business.warning_response_task_warnings")
+      .select(["warning_record_id"])
+      .distinct()
+      .where("project_id", "=", state.projectId)
+      .execute();
+    expect(overview.result.warningCount).toBeLessThanOrEqual(distinct.length);
+    expect(
+      overview.result.levelCounts.reduce((sum, entry) => sum + entry.count, 0),
+    ).toBeLessThanOrEqual(distinct.length);
+    expect(overview.result.levelCounts.map((entry) => entry.warningLevel)).toEqual(
+      [...overview.result.levelCounts.map((entry) => entry.warningLevel)].sort((left, right) =>
+        left.localeCompare(right),
+      ),
+    );
+    expect(overview.result.asOf).toBe(C26_FIXTURE_TIME);
+  }, 240_000);
+
+  it("精确预警读给出正文、确认与通知披露，投递时刻只由已登记投递行证明", async () => {
+    const state = fixture!;
+    const assessment = await state.assess({ suffix: "read-warning" });
+    const opened = await state.adapter.open(
+      await state.openCommand({
+        commandId: "c26-read-warning-open",
+        assessmentRecordRef: assessment.assessmentRecordRef,
+      }),
+    );
+    expect(opened.kind).toBe("succeeded");
+    if (opened.kind !== "succeeded") return;
+    const target = opened.result.warningRecordRefs[0]!;
+    const taskRef = opened.result.warningResponseTaskRefs[0]!;
+
+    const pending = await state.adapter.read(
+      await readQuery(state, {
+        queryId: "c26-read-warning-pending",
+        payload: { operation: "warning-read", warningRecordRef: target },
+      }),
+    );
+    expect(pending).toMatchObject({ kind: "succeeded", result: { kind: "warning-read" } });
+    if (pending.kind !== "succeeded" || pending.result.kind !== "warning-read") return;
+    expect(pending.result.warningRecord.warningRecordId).toBe(target.reference.entityId);
+    expect(pending.result.assessmentRecordRef.reference.entityId).toBe(
+      assessment.assessmentRecordRef.reference.entityId,
+    );
+    expect(pending.result.taskRef.reference.entityId).toBe(taskRef.reference.entityId);
+    expect(pending.result.acknowledgement).toBeUndefined();
+    expect(pending.result.notifications.length).toBeGreaterThan(0);
+    // 意图自身不证明已送达：未经幂等消费者投递的意图没有 deliveredAt。
+    expect(pending.result.notifications.every((entry) => entry.deliveredAt === undefined)).toBe(
+      true,
+    );
+    expect(pending.result.notifications.every((entry) => entry.recipientActorId.length > 0)).toBe(
+      true,
+    );
+
+    const intents = await state.intentRows(target.reference.entityId);
+    await state.deliverInApp({
+      producerCommandId: "c26-read-warning-open",
+      warningRecordRef: target,
+      warningResponseTaskRef: taskRef,
+      notificationIntentRefs: intents.map((intent) => ({
+        kind: "notification-intent" as const,
+        reference: { entityId: intent.intentId, versionId: intent.intentVersionId },
+      })),
+    });
+    const delivered = await state.notificationRows(intents.map((intent) => intent.intentId));
+    expect(delivered.length).toBe(intents.length);
+    const afterDelivery = await state.adapter.read(
+      await readQuery(state, {
+        queryId: "c26-read-warning-delivered",
+        payload: { operation: "warning-read", warningRecordRef: target },
+      }),
+    );
+    expect(afterDelivery).toMatchObject({ kind: "succeeded" });
+    if (afterDelivery.kind !== "succeeded" || afterDelivery.result.kind !== "warning-read") return;
+    expect(
+      afterDelivery.result.notifications.some((entry) => entry.deliveredAt !== undefined),
+    ).toBe(true);
+
+    // 确认是独立事实：确认后目录与精确读都能看到同一条确认。
+    await state.adapter.acknowledge(
+      await state.acknowledgeCommand({
+        commandId: "c26-read-warning-ack",
+        warningRecordRef: target,
+        warningResponseTaskRef: taskRef,
+      }),
+    );
+    const acknowledged = await state.adapter.read(
+      await readQuery(state, {
+        queryId: "c26-read-warning-acked",
+        payload: { operation: "warning-read", warningRecordRef: target },
+      }),
+    );
+    expect(acknowledged).toMatchObject({ kind: "succeeded" });
+    if (acknowledged.kind !== "succeeded" || acknowledged.result.kind !== "warning-read") return;
+    expect(acknowledged.result.acknowledgement).toMatchObject({
+      actorId: state.managerId,
+      acknowledgedAt: C26_FIXTURE_TIME,
+    });
+    const catalog = await state.adapter.read(
+      await readQuery(state, {
+        queryId: "c26-read-warning-catalog",
+        payload: { operation: "warning-catalog" },
+      }),
+    );
+    expect(catalog).toMatchObject({ kind: "succeeded" });
+    if (catalog.kind !== "succeeded" || catalog.result.kind !== "warning-catalog") return;
+    expect(
+      catalog.result.items.find(
+        (item) => item.warningRecordRef.reference.entityId === target.reference.entityId,
+      )?.acknowledged,
+    ).toBe(true);
+  }, 240_000);
+
+  it("目标不存在与跨空间同形失败；未注入的所属接缝整体失败闭合", async () => {
+    const state = fixture!;
+    const assessment = await state.assess({ suffix: "read-deny" });
+    const opened = await state.adapter.open(
+      await state.openCommand({
+        commandId: "c26-read-deny-open",
+        assessmentRecordRef: assessment.assessmentRecordRef,
+      }),
+    );
+    expect(opened.kind).toBe("succeeded");
+    if (opened.kind !== "succeeded") return;
+    const target = opened.result.warningRecordRefs[0]!;
+
+    const absent = await state.adapter.read(
+      await readQuery(state, {
+        queryId: "c26-read-deny-absent",
+        payload: {
+          operation: "warning-read",
+          warningRecordRef: {
+            kind: "warning-record",
+            reference: { entityId: "warning-record-absent", versionId: "1" },
+          },
+        },
+      }),
+    );
+    const outOfScope = await state.adapter.read(
+      await readQuery(state, {
+        queryId: "c26-read-deny-out-of-scope",
+        payload: { operation: "warning-read", warningRecordRef: target },
+        restricted: true,
+      }),
+    );
+    expectClosed(absent, "warning-record-not-found");
+    expectClosed(outOfScope, "warning-record-not-found");
+
+    // 未注入的所属接缝：没有事实就说没有，而不是用空集合或空建议冒充。
+    // recommendation-read 会真的去问 C27；C27 未注入即失败，不返回空建议。
+    const unwiredRecommendation = await state.adapter.read(
+      await readQuery(state, {
+        queryId: "c26-read-deny-unwired",
+        payload: {
+          operation: "recommendation-read",
+          responseRecommendationRef: {
+            kind: "response-recommendation",
+            reference: { entityId: "response-recommendation-absent", versionId: "1" },
+          },
+        },
+      }),
+    );
+    expect(unwiredRecommendation).toMatchObject({
+      kind: "failed",
+      error: { retryable: false },
+    });
+    expectClosed(
+      await state.adapter.read(
+        await readQuery(state, {
+          queryId: "c26-read-deny-unwired-task",
+          payload: {
+            operation: "task-read",
+            warningResponseTaskRef: {
+              kind: "warning-response-task",
+              reference: { entityId: "task-absent", versionId: "1" },
+            },
+          },
+        }),
+      ),
+      "owning-read-seam-not-injected",
+    );
   }, 240_000);
 });

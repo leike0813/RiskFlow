@@ -6,4 +6,5 @@ export {
   PostgresHumanDecisionFeedbackAdapter,
   createPostgresHumanDecisionFeedbackAdapter,
   type PostgresHumanDecisionFeedbackAdapterOptionsV1,
+  type RouteDecisionReadInputV1,
 } from "./postgres-human-decision-feedback-adapter.js";

@@ -1,4 +1,4 @@
-import { sql, type Kysely, type Transaction } from "kysely";
+import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 
 import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/access";
 import {
@@ -59,7 +59,7 @@ import {
   type ReviewTaskRefV1,
   type RiskInputVersionRefV1,
 } from "@riskflow/contracts/ports";
-import { WarningRecordSchema } from "@riskflow/contracts/records";
+import { ResponseRecommendationSchema, WarningRecordSchema } from "@riskflow/contracts/records";
 import {
   AssessmentInputSnapshotV1Schema,
   type AssessmentInputSnapshotV1,
@@ -94,6 +94,12 @@ import {
   type ValidateAndRecordCommandV1,
 } from "@riskflow/core/recommendation";
 
+import { RecommendationValidationEvidenceV1Schema } from "@riskflow/core/recommendation";
+import type {
+  C26RecommendationViewResultV1,
+  RecommendationReadViewInputV1,
+  WarningResponseRecommendationReaderV1,
+} from "../warning/postgres-warning-lifecycle-adapter.js";
 import { mapPostgresError } from "../postgres/pool.js";
 import { getPostgresTransaction } from "../postgres/transaction-unit.js";
 import type { PostgresDatabase } from "../postgres/types.js";
@@ -229,6 +235,10 @@ interface RecommendationValidationRow {
   candidate_id: string;
   candidate_version_id: string;
   review_task_id: string | null;
+  trigger_consistency_passed: boolean;
+  standards_compliance_passed: boolean;
+  site_feasibility_passed: boolean;
+  validation_payload: JsonColumn;
 }
 
 interface ResponseRecommendationRow {
@@ -237,6 +247,21 @@ interface ResponseRecommendationRow {
   project_id: string;
   candidate_id: string;
   candidate_version_id: string;
+  validation_id: string;
+  validation_version_id: string;
+  warning_response_task_id: string;
+  warning_response_task_version_id: string;
+  spatial_scope_entity_id: string;
+  spatial_scope_version_id: string;
+  measure_library_release_id: string;
+  measure_library_release_version_id: string;
+  generation_policy_entity_id: string;
+  generation_policy_version_id: string;
+  validation_policy_entity_id: string;
+  validation_policy_version_id: string;
+  review_status: string;
+  record_payload: JsonColumn;
+  content_digest: string;
 }
 
 type RecommendationDatabase = PostgresDatabase & {
@@ -810,7 +835,10 @@ export interface PostgresRecommendationAdapterOptionsV1 {
 }
 
 export class PostgresRecommendationAdapter
-  implements RecommendationServiceV1, ResponseRecommendationTaskPortV1
+  implements
+    RecommendationServiceV1,
+    ResponseRecommendationTaskPortV1,
+    WarningResponseRecommendationReaderV1
 {
   readonly #db: Kysely<RecommendationDatabase>;
   readonly #transactionUnit: TransactionUnitV1;
@@ -2216,6 +2244,162 @@ export class PostgresRecommendationAdapter
       authorizationContextRef: command.authorization.authorizationContextRef,
       issuedAt: command.issuedAt,
     };
+  }
+
+  // ---------------------------------------------------------------- recommendation-read
+
+  /**
+   * C27 正式建议的所属窄读（design D-06）：C26 不访问建议私表，只沿公共契约取自己需要的形状。
+   * 正文、校验结果与政策引用全部取自已登记事实；内容摘要不符即失败闭合，不返回半份建议。
+   */
+  async readRecommendationView(
+    input: RecommendationReadViewInputV1,
+  ): Promise<C26RecommendationViewResultV1> {
+    const verified = await this.#verifyRead(input, "warning-response.read").catch(
+      (): undefined => undefined,
+    );
+    if (verified === undefined) {
+      return { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } };
+    }
+    const ref = input.responseRecommendationRef.reference;
+    let row: Selectable<ResponseRecommendationRow> | undefined;
+    let validation: Selectable<RecommendationValidationRow> | undefined;
+    try {
+      row = await this.#db
+        .selectFrom("business.response_recommendations")
+        .selectAll()
+        .where("project_id", "=", input.projectId)
+        .where("recommendation_id", "=", ref.entityId)
+        .where("version_id", "=", ref.versionId)
+        .executeTakeFirst();
+      if (row === undefined) {
+        return { kind: "failed", error: { code: "RECOMMENDATION_NOT_FOUND" } };
+      }
+      validation = await this.#db
+        .selectFrom("business.recommendation_validations")
+        .selectAll()
+        .where("project_id", "=", input.projectId)
+        .where("validation_id", "=", row.validation_id)
+        .where("version_id", "=", row.validation_version_id)
+        .executeTakeFirst();
+    } catch (error) {
+      const mapped = mapPostgresError(error, "recommendation.read");
+      return { kind: "failed", error: { code: mapped.code } };
+    }
+    // 建议的空间范围必须落在已验证授权内；越权与不存在对调用方同形。
+    if (
+      !verified.spatialScopeRefs.some(
+        (scope) => scope.reference.entityId === row.spatial_scope_entity_id,
+      )
+    ) {
+      return { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } };
+    }
+    const record = ResponseRecommendationSchema.safeParse(row.record_payload);
+    if (
+      !record.success ||
+      validation === undefined ||
+      sha256CanonicalJson(record.data) !== row.content_digest
+    ) {
+      return { kind: "failed", error: { code: "RECOMMENDATION_PAYLOAD_INVALID" } };
+    }
+    const evidence = RecommendationValidationEvidenceV1Schema.safeParse(
+      validation.validation_payload,
+    );
+    if (!evidence.success) {
+      return { kind: "failed", error: { code: "RECOMMENDATION_VALIDATION_UNREADABLE" } };
+    }
+    return {
+      kind: "succeeded",
+      view: {
+        responseRecommendationRef: {
+          kind: "response-recommendation",
+          reference: { entityId: row.recommendation_id, versionId: row.version_id },
+        },
+        recommendation: record.data,
+        taskRef: {
+          kind: "warning-response-task",
+          reference: {
+            entityId: row.warning_response_task_id,
+            versionId: row.warning_response_task_version_id,
+          },
+        },
+        validationResults: [
+          {
+            checkId: "trigger-consistency",
+            pass: validation.trigger_consistency_passed,
+            // 校验诊断登记的是领域引用，不是资料段证据引用：这里不把两种引用互相转换。
+            evidenceReferences: [],
+          },
+          {
+            checkId: "standards-compliance",
+            pass: validation.standards_compliance_passed,
+            evidenceReferences: [],
+          },
+          {
+            checkId: "site-feasibility",
+            pass: validation.site_feasibility_passed,
+            evidenceReferences: [],
+          },
+        ],
+        generationPolicyRef: {
+          entityId: row.generation_policy_entity_id,
+          versionId: row.generation_policy_version_id,
+        },
+        validationPolicyRef: {
+          entityId: row.validation_policy_entity_id,
+          versionId: row.validation_policy_version_id,
+        },
+        // 建议只登记一组措施库发布引用，逐字投影，不补全库里没有的其它发布。
+        measureReleaseRefs: [
+          {
+            kind: "measure-library-release",
+            reference: {
+              entityId: row.measure_library_release_id,
+              versionId: row.measure_library_release_version_id,
+            },
+          },
+        ],
+        spatialScopeEntityId: row.spatial_scope_entity_id,
+      },
+    };
+  }
+
+  /** 读侧复验：与命令复验同形，但用请求时点而不是签发时点，并返回 `undefined` 表示拒绝。 */
+  async #verifyRead(
+    input: {
+      readonly projectId: string;
+      readonly actorId: string;
+      readonly requestedAt: string;
+      readonly invocationId: string;
+      readonly authorization: AuthorizationContextV1;
+    },
+    branch: ModuleBranchV1,
+  ): Promise<AuthorizationContextV1 | undefined> {
+    const capability = MODULE_BRANCH_CAPABILITY_V1[branch];
+    if (
+      input.projectId !== input.authorization.projectId ||
+      input.actorId !== input.authorization.actorId ||
+      !input.authorization.grantedCapabilities.includes(capability)
+    ) {
+      return undefined;
+    }
+    const decision = await this.#access
+      .verify({
+        authorizationContextRef: input.authorization.authorizationContextRef,
+        invocationId: input.invocationId,
+        projectId: input.projectId,
+        branch,
+        requestedSpatialScopeRefs: [...input.authorization.spatialScopeRefs],
+        requestedSourceVersionRefs: [],
+        requestedAt: input.requestedAt,
+      })
+      .catch((error: unknown) => {
+        if (error instanceof AccessServiceError) return undefined;
+        throw error;
+      });
+    if (decision === undefined || decision.redacted) return undefined;
+    if (decision.context.actorId !== input.actorId) return undefined;
+    return decision.context;
   }
 
   async #executeWithRetry(

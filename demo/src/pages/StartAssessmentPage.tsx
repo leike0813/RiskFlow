@@ -8,6 +8,7 @@ import { useEngineering, usePageQuery, useProjectPath } from '../api/context'
 import {
   actionAvailability,
   readAssessmentEntryContext,
+  readAssessmentRecordCatalog,
   readEngineeringContext,
   readPendingRiskCatalog,
   submitStartAssessment,
@@ -15,6 +16,9 @@ import {
   type EntryContextView,
   type KindRef,
   type PendingCatalogView,
+  type RecordCatalogView,
+  type WorkflowReassessmentReasonV1,
+  WORKFLOW_REASSESSMENT_REASONS_V1,
 } from '../api/operations'
 import { FieldCard, FieldRow, NextPageButton, VersionRefText } from './assessmentResponseShared'
 import './assessment-response.css'
@@ -36,6 +40,10 @@ export default function StartAssessmentPage() {
   const [applicabilityCursor, setApplicabilityCursor] = useState<string | undefined>(undefined)
   const [externalEventCursor, setExternalEventCursor] = useState<string | undefined>(undefined)
   const [riskCursor, setRiskCursor] = useState<string | undefined>(undefined)
+  const [entryMode, setEntryMode] = useState<'assess' | 'reassess'>('assess')
+  const [previousRecord, setPreviousRecord] = useState<KindRef | null>(null)
+  const [reason, setReason] = useState<WorkflowReassessmentReasonV1>('monitoring-snapshot')
+  const [changedInputs, setChangedInputs] = useState('')
 
   const context = usePageQuery<EngineeringContextView>(
     (projectId, signal) => readEngineeringContext(projectId, signal),
@@ -87,10 +95,28 @@ export default function StartAssessmentPage() {
     [riskCursor],
   )
 
+  // 重评入口：前驱取自已入库评估记录的精确引用，页面不推断"上一次是哪一条"。
+  const priorRecords = usePageQuery<RecordCatalogView>(
+    (projectId, signal) => readAssessmentRecordCatalog(projectId, {}, signal),
+    [],
+  )
+
   const availability =
     entry.state.kind === 'ready' ? actionAvailability(entry.state.value.actions, 'workflow.start-run') : null
+  const changedInputRefs = changedInputs
+    .split(/[\n,]+/)
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
+    .map((entityId) => ({ kind: 'monitoring-snapshot', reference: { entityId, versionId: entityId } }))
+  const reassessComplete =
+    entryMode === 'assess' ||
+    (previousRecord !== null && changedInputRefs.length >= 1 && changedInputRefs.length <= 64)
   const missing =
-    selectedScope === null || revisionRef === null || riskInput === null || snapshot === null
+    selectedScope === null ||
+    revisionRef === null ||
+    riskInput === null ||
+    snapshot === null ||
+    !reassessComplete
   const runnable =
     availability === 'allowed' &&
     !missing &&
@@ -106,6 +132,7 @@ export default function StartAssessmentPage() {
       // 幂等键由本次选中的精确引用决定：同一选择重试复用同一键，任一引用变化即换新身份。
       commandId: [
         'demo-assess',
+        entryMode,
         projectId,
         selectedScope.reference.entityId,
         selectedScope.reference.versionId,
@@ -113,6 +140,11 @@ export default function StartAssessmentPage() {
         riskInput.reference.versionId,
         snapshot.reference.entityId,
         snapshot.reference.versionId,
+        previousRecord?.reference.entityId ?? '',
+        entryMode === 'reassess' ? reason : '',
+        ...(entryMode === 'reassess'
+          ? changedInputRefs.map((ref) => ref.reference.entityId)
+          : []),
       ].join('-'),
       graphVersion: entry.state.value.runPolicy.graphVersion,
       retryPolicyRef: entry.state.value.runPolicy.retryPolicyRef,
@@ -120,6 +152,9 @@ export default function StartAssessmentPage() {
       spatialScopeRef: selectedScope,
       projectRevisionRef: revisionRef,
       applicabilityMetadataSnapshotRef: snapshot,
+      ...(entryMode === 'reassess' && previousRecord !== null
+        ? { previousAssessmentRecordRef: previousRecord, reason, changedInputRefs }
+        : {}),
     })
     navigate(
       projectPath(
@@ -299,6 +334,85 @@ export default function StartAssessmentPage() {
               </PageStateView>
             </Card>
 
+            <Card title="入口模式" style={{ marginTop: 16 }}>
+              <div className="wc-filter" role="group" aria-label="入口模式">
+                <span className="wc-filter-label">入口</span>
+                {(
+                  [
+                    ['assess', '初评'],
+                    ['reassess', '重评'],
+                  ] as const
+                ).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`wc-chip${entryMode === value ? ' wc-chip--active' : ''}`}
+                    onClick={() => setEntryMode(value)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {entryMode === 'reassess' && (
+                <>
+                  <label className="ar-form-field">
+                    前驱评估记录
+                    <select
+                      value={previousRecord?.reference.entityId ?? ''}
+                      onChange={(event) => {
+                        const found = priorRecords.state.kind === 'ready'
+                          ? priorRecords.state.value.items.find(
+                              (item) =>
+                                item.assessmentRecordRef.reference.entityId === event.target.value,
+                            )?.assessmentRecordRef
+                          : undefined
+                        setPreviousRecord(found ?? null)
+                      }}
+                    >
+                      <option value="">请选择前驱评估记录</option>
+                    {(priorRecords.state.kind === 'ready' ? priorRecords.state.value.items : []).map(
+                      (item) => (
+                        <option
+                          key={item.assessmentRecordRef.reference.entityId}
+                          value={item.assessmentRecordRef.reference.entityId}
+                        >
+                          {item.assessmentRecordRef.reference.entityId}（{item.entryMode}）
+                        </option>
+                      ),
+                    )}
+                    </select>
+                  </label>
+                  <label className="ar-form-field">
+                    重评原因
+                    <select
+                      value={reason}
+                      onChange={(event) =>
+                        setReason(event.target.value as WorkflowReassessmentReasonV1)
+                      }
+                    >
+                      {WORKFLOW_REASSESSMENT_REASONS_V1.map((value) => (
+                        <option key={value} value={value}>
+                          {value}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="ar-form-field">
+                    变化引用（每行一个精确标识，1～64 项）
+                    <textarea
+                      rows={3}
+                      value={changedInputs}
+                      onChange={(event) => setChangedInputs(event.target.value)}
+                    />
+                  </label>
+                  <p className="ar-note">
+                    前驱、原因与变化集合都是重评入口身份的一部分：同一组合重复提交复用同一运行，
+                    任一项变化即换新身份。页面不替你推断"改了什么"。
+                  </p>
+                </>
+              )}
+            </Card>
+
             <Card title="提交" style={{ marginTop: 16 }}>
               {availability !== null && availability !== 'allowed' && (
                 <p className="ar-note">当前不可启动运行（{availability}）。</p>
@@ -308,7 +422,9 @@ export default function StartAssessmentPage() {
                 availability={availability === 'allowed' && runnable ? 'allowed' : 'business-unavailable'}
                 unavailableReason={
                   missing
-                    ? '缺少工程修订、空间范围、风险输入或适用性快照'
+                    ? entryMode === 'reassess'
+                      ? '缺少工程修订、空间范围、风险输入、适用性快照、前驱记录或 1～64 项变化引用'
+                      : '缺少工程修订、空间范围、风险输入或适用性快照'
                     : entry.state.kind === 'ready' && entry.state.value.runPolicy.kind !== 'available'
                       ? '部署未注入合格的运行策略'
                       : '当前角色无启动评估的权限'
@@ -319,7 +435,17 @@ export default function StartAssessmentPage() {
                   `空间范围：${selectedScope.reference.entityId} · ${selectedScope.reference.versionId}`,
                   `风险输入：${riskInput?.reference.entityId ?? '—'} · ${riskInput?.reference.versionId ?? '—'}`,
                   `适用性快照：${snapshot?.reference.entityId ?? '—'} · ${snapshot?.reference.versionId ?? '—'}`,
-                  '入口模式：初评（assess）',
+                  entryMode === 'reassess'
+                    ? `入口模式：重评（reassess）· 原因 ${reason}`
+                    : '入口模式：初评（assess）',
+                  ...(entryMode === 'reassess'
+                    ? [
+                        `前驱评估记录：${previousRecord?.reference.entityId ?? '—'}`,
+                        `变化引用（${changedInputRefs.length} 项）：${
+                          changedInputRefs.map((ref) => ref.reference.entityId).join('、') || '—'
+                        }`,
+                      ]
+                    : []),
                   '预计结果：登记一次有限评估运行；评估依据在运行内冻结',
                 ]}
                 onConfirm={start}

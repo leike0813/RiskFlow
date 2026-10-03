@@ -3533,6 +3533,17 @@ export const readWarningResponseResolve = async (
  */
 export type StartAssessmentEntryMode = 'assess' | 'reassess'
 
+/** 重评原因沿 vocabulary 的唯一常量，不在页面另写一份枚举。 */
+export const WORKFLOW_REASSESSMENT_REASONS_V1 = [
+  'monitoring-snapshot',
+  'applicability-metadata',
+  'applicable-rule-set',
+  'weight-strategy',
+  'risk-matrix',
+] as const
+
+export type WorkflowReassessmentReasonV1 = (typeof WORKFLOW_REASSESSMENT_REASONS_V1)[number]
+
 export interface StartAssessmentInput {
   readonly commandId: string
   readonly graphVersion: VersionRef
@@ -3543,7 +3554,7 @@ export interface StartAssessmentInput {
   readonly applicabilityMetadataSnapshotRef: KindRef
   readonly monitoringSnapshotRefs?: readonly KindRef[]
   readonly previousAssessmentRecordRef?: KindRef
-  readonly reason?: string
+  readonly reason?: WorkflowReassessmentReasonV1
   readonly changedInputRefs?: readonly KindRef[]
 }
 

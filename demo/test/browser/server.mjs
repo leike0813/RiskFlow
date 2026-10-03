@@ -54,7 +54,10 @@ import {
 import { createPostgresRuntime } from "../../../packages/adapters/dist/postgres/pool.js";
 import { PostgresRetrievalAdapter } from "../../../packages/adapters/dist/retrieval/index.js";
 import { createPostgresRiskAssessmentEngine } from "../../../packages/adapters/dist/risk-assessment/engine/index.js";
-import { createPostgresWarningLifecycleAdapter } from "../../../packages/adapters/dist/warning/index.js";
+import {
+  PostgresWarningAssessmentContextReader,
+  createPostgresWarningLifecycleAdapter,
+} from "../../../packages/adapters/dist/warning/index.js";
 import { createPostgresRecommendationAdapter } from "../../../packages/adapters/dist/recommendation/index.js";
 import { createPostgresResponseLifecycleAdapter } from "../../../packages/adapters/dist/response-lifecycle/index.js";
 import { createPostgresCalibrationAdapter } from "../../../packages/adapters/dist/calibration/index.js";
@@ -2434,10 +2437,70 @@ export const startDemoBrowserServer = async () => {
       recordCatalog: identificationRead,
     });
 
+    // ---- C34 处置只读（design D-05）：C27→C28→C29→C41→C26 的组合窄读 ----
+    //
+    // 五者的 C34 读视图只消费 db 与 C06 授权复验；策略、证明、图执行器等写路径接缝
+    // 一律显式未接线——它们属于处置写入，不在本装配的读取面内。
+    const recommendation = createPostgresRecommendationAdapter({
+      db: appRuntime.db,
+      transactionUnit,
+      access,
+      artifactStore,
+      reader: unwiredWritePathSeam("recommendationReader"),
+      policies: unwiredWritePathSeam("recommendationPolicies"),
+      agentTasks: unwiredWritePathSeam("recommendationAgentTasks"),
+    });
+    const responseLifecycle = createPostgresResponseLifecycleAdapter({
+      db: appRuntime.db,
+      transactionUnit,
+      access,
+      reader: unwiredWritePathSeam("responseLifecycleReader"),
+      forecastExecutors: [],
+    });
+    const calibration = createPostgresCalibrationAdapter({
+      db: appRuntime.db,
+      transactionUnit,
+      access,
+      deviationFacts: responseLifecycle,
+      inputSnapshots: assessmentEngine,
+      basis: unwiredWritePathSeam("calibrationBasis"),
+      artifactStore,
+      agentResults: unwiredWritePathSeam("calibrationAgentResults"),
+      reviews: unwiredWritePathSeam("calibrationReviews"),
+      governance: unwiredWritePathSeam("calibrationGovernance"),
+      authorizeDownstream,
+    });
+    const humanDecisionFeedback = createPostgresHumanDecisionFeedbackAdapter({
+      db: appRuntime.db,
+      transactionUnit,
+      access,
+      authorizeDownstream,
+      workflow: unwiredWritePathSeam("humanDecisionWorkflow"),
+      bindingProof: workflow.bindingProof,
+      assessmentProof: assessmentEngine,
+      runCompletionProof: workflow.runCompletionProof,
+      responseLifecycle,
+      responseContext: unwiredWritePathSeam("humanDecisionResponseContext"),
+      workflowStartControl: unwiredWritePathSeam("humanDecisionWorkflowStartControl"),
+    });
+    const warningLifecycle = createPostgresWarningLifecycleAdapter({
+      db: appRuntime.db,
+      transactionUnit,
+      access,
+      assessmentContext: new PostgresWarningAssessmentContextReader({ db: appRuntime.db }),
+      runtimePolicies: unwiredWritePathSeam("warningRuntimePolicies"),
+      authorizeDownstream,
+      recommendations: recommendation,
+      routeDecisions: humanDecisionFeedback,
+      lifecycle: responseLifecycle,
+      calibration,
+    });
+
     const api = buildApi({
       access,
       ports: {
         riskAssessmentRead: assessmentEngine,
+        warningResponseRead: warningLifecycle,
         engineeringData: registry,
         engineeringDataCatalog: createPostgresEngineeringDataCatalogAdapter({
           db: appRuntime.db,

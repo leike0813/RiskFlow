@@ -55,6 +55,11 @@ import { createPostgresRuntime } from "../../../packages/adapters/dist/postgres/
 import { PostgresRetrievalAdapter } from "../../../packages/adapters/dist/retrieval/index.js";
 import { createPostgresRiskAssessmentEngine } from "../../../packages/adapters/dist/risk-assessment/engine/index.js";
 import {
+  createRecommendationPolicies,
+  createRiskAssessmentRuntimePolicies,
+  createWarningRuntimePolicies,
+} from "./deploymentPolicies.mjs";
+import {
   PostgresWarningAssessmentContextReader,
   createPostgresWarningLifecycleAdapter,
 } from "../../../packages/adapters/dist/warning/index.js";
@@ -317,15 +322,17 @@ export const startDemoBrowserServer = async () => {
         loginName,
         password: ACCOUNT_PASSWORD,
       });
-      return access.changePassword({
+      const changed = await access.changePassword({
         kind: "change-password",
         sessionToken: initial.sessionToken,
         newPassword: ACCOUNT_PASSWORD_CHANGED,
       });
+      // 通知策略需要精确账户主体；登录结果携带 accountRef，改密结果只带新令牌。
+      return { ...changed, accountRef: initial.accountRef, sessionToken: changed.sessionToken };
     };
     const operatorSession = await loginAs(OPERATOR_LOGIN, "demo-browser-operator-login");
-    await loginAs(VIEWER_LOGIN, "demo-browser-viewer-login");
-    await loginAs(RESPONDER_LOGIN, "demo-browser-responder-login");
+    const viewerSession = await loginAs(VIEWER_LOGIN, "demo-browser-viewer-login");
+    const responderSession = await loginAs(RESPONDER_LOGIN, "demo-browser-responder-login");
 
     const authorize = async (sessionToken, invocationId, branch, sourceVersionRefs = []) =>
       (
@@ -2428,7 +2435,7 @@ export const startDemoBrowserServer = async () => {
       preparationContext: registry,
       riskInputFacts: unwiredWritePathSeam("riskInputFacts"),
       basisReader: unwiredWritePathSeam("basisReader"),
-      runtimePolicies: unwiredWritePathSeam("runtimePolicies"),
+      runtimePolicies: createRiskAssessmentRuntimePolicies({ projectId: PROJECT_ID }),
       monitoring: monitoringStore,
       authorizeDownstream,
       entryContext: createAssessmentEntryContextReadPort(registry),
@@ -2447,7 +2454,21 @@ export const startDemoBrowserServer = async () => {
       access,
       artifactStore,
       reader: unwiredWritePathSeam("recommendationReader"),
-      policies: unwiredWritePathSeam("recommendationPolicies"),
+      policies: createRecommendationPolicies({
+        projectId: PROJECT_ID,
+        // 生成策略按已入库的风险记录绑定风险事件分类；演示只登记自动路线那条。
+        bindings: [
+          {
+            riskInputRef: {
+              kind: "standardized-risk-record",
+              reference: { entityId: recordAutoRef.reference.entityId, versionId: "1" },
+            },
+            riskEventCategory: "地表沉降超限",
+          },
+        ],
+        targetIndicators: [{ indicatorItem: "地表沉降", targetValue: 10 }],
+        reviewedStandardEvidence: [{ measureId: "MS-001", evidenceItem: "监测日报" }],
+      }),
       agentTasks: unwiredWritePathSeam("recommendationAgentTasks"),
     });
     const responseLifecycle = createPostgresResponseLifecycleAdapter({
@@ -2488,7 +2509,21 @@ export const startDemoBrowserServer = async () => {
       transactionUnit,
       access,
       assessmentContext: new PostgresWarningAssessmentContextReader({ db: appRuntime.db }),
-      runtimePolicies: unwiredWritePathSeam("warningRuntimePolicies"),
+      runtimePolicies: createWarningRuntimePolicies({
+        projectId: PROJECT_ID,
+        // 通知接收主体取已登录账号的精确账户引用；不从用户名或文案推断主体。
+        recipientActorIds: [
+          operatorSession.accountRef.entityId,
+          responderSession.accountRef.entityId,
+          viewerSession.accountRef.entityId,
+        ],
+        responseDirectionByTriggerType: {
+          风险等级超过风险可接受阈值: "评估并制定处置方案",
+          监测指标越限: "加密监测并复核处置范围",
+          "趋势/加速度/异常评分越限": "趋势复核与现场核查",
+          多指标联合规则命中: "联合规则专项处置",
+        },
+      }),
       authorizeDownstream,
       recommendations: recommendation,
       routeDecisions: humanDecisionFeedback,

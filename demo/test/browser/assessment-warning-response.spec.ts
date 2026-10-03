@@ -91,7 +91,7 @@ test("评估记录深链页按精确 version 打开", async ({ page }) => {
   await expectResolvedState(page);
 });
 
-test("处置域深链页在无对应登记事实时诚实失败", async ({ page }) => {
+test("处置域深链在无对应登记事实时诚实失败", async ({ page }) => {
   for (const path of [
     "/warnings/demo-missing-warning",
     "/warnings/tasks/demo-missing-task",
@@ -101,8 +101,8 @@ test("处置域深链页在无对应登记事实时诚实失败", async ({ page 
     "/response/calibrations/demo-missing-calibration",
     "/response/executions/register",
   ]) {
-    await page.goto(`${server.origin}${withProject(path)}`);
-    await page.waitForURL(`${server.origin}${withProject(path)}`);
+    // 深链的受支持进入方式是「登录后回到原目标页」：登录门禁本身是 design D-02 的一部分。
+    await login(page, server.operatorLogin, withProject(path));
     await expect(page.locator("h1.page-title"), `深链 ${path} 应渲染页面标题`).toHaveCount(1);
     await expectResolvedState(page);
   }
@@ -126,10 +126,17 @@ test("只读角色在评估与处置域看不到任何提交控件", async ({ pa
 test("工程切换后旧工程的迟到响应不得污染当前页面", async ({ page }) => {
   await login(page, server.operatorLogin, withProject("/assessment/records"));
   await expect(page.locator("h1.page-title")).toHaveText("评估记录");
-  // 切换到另一个工程标识后，页面不得残留旧工程的数据或运行标识。
-  await page.goto(`${server.origin}/assessment/records?project=demo-switched-project`);
+  await expect(page.getByText(`当前工程：${server.projectId}`)).toBeVisible();
+
+  // 通过真实工程切换控件切换到另一个工程：旧工程的迟到响应不得污染当前页面。
+  await page.getByRole("button", { name: "切换工程" }).click();
+  await page.getByLabel("工程标识").fill("demo-switched-project");
+  await page.getByRole("button", { name: "确定" }).click();
   await expect(page.getByText("当前工程：demo-switched-project")).toBeVisible();
-  await expect(page.getByText(/demo-c32-project/)).toHaveCount(0);
+
+  // 切换后页面不得再呈现旧工程的任何登记事实。
+  await expect(page.getByText(server.projectId)).toHaveCount(0);
+  await expectResolvedState(page);
 });
 
 test("矩阵页在来源不可读时呈现 unavailable 而非空图", async ({ page }) => {

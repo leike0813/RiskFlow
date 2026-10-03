@@ -32,6 +32,7 @@ import {
   PostgresWarningAssessmentContextReader,
   createPostgresWarningLifecycleAdapter,
   type PostgresWarningLifecycleAdapter,
+  type WarningResponseLifecycleReaderV1,
   type WarningResponseRecommendationReaderV1,
   type WarningResponseRouteDecisionReaderV1,
 } from "../../src/warning/index.js";
@@ -363,6 +364,11 @@ export const startWarningLifecycleFixture = async (
   const unwiredRouteDecisions: WarningResponseRouteDecisionReaderV1 = {
     readRouteDecision: () => unwiredOwningReader("routeDecisions.readRouteDecision"),
   };
+  const unwiredLifecycle: WarningResponseLifecycleReaderV1 = {
+    readForecastView: () => unwiredOwningReader("lifecycle.readForecastView"),
+    readExecutionView: () => unwiredOwningReader("lifecycle.readExecutionView"),
+    readFeedbackView: () => unwiredOwningReader("lifecycle.readFeedbackView"),
+  };
   const adapter = createPostgresWarningLifecycleAdapter({
     db,
     transactionUnit: c25.postgres.transactionUnit,
@@ -372,6 +378,7 @@ export const startWarningLifecycleFixture = async (
     authorizeDownstream,
     recommendations: unwiredRecommendations,
     routeDecisions: unwiredRouteDecisions,
+    lifecycle: unwiredLifecycle,
     now: () => new Date(C26_FIXTURE_TIME),
   });
 
@@ -564,6 +571,7 @@ export const startWarningLifecycleFixture = async (
         authorizeDownstream,
         recommendations: readers.recommendations ?? unwiredRecommendations,
         routeDecisions: readers.routeDecisions ?? unwiredRouteDecisions,
+        lifecycle: readers.lifecycle ?? unwiredLifecycle,
         now: () => new Date(C26_FIXTURE_TIME),
       });
     },

@@ -45,6 +45,16 @@ import {
   type WarningResponseRecordResultV1,
 } from "@riskflow/contracts/ports";
 import type { VersionReference } from "@riskflow/contracts/common";
+import type {
+  ContractReferenceV1,
+  DeviationViewV1,
+  ForecastAvailabilityV1,
+} from "@riskflow/contracts/ports";
+import type {
+  C28ReadResultV1,
+  LifecycleReadInputV1,
+  WarningResponseLifecycleReaderV1,
+} from "../warning/postgres-warning-lifecycle-adapter.js";
 import { DomainEventV1Schema } from "@riskflow/contracts/events";
 import {
   ResponseRecommendationSchema,
@@ -77,6 +87,7 @@ import {
   type ResponseDeviationFactReadResultV1,
   type ResponseDeviationResultV1,
   type ResponseExecutionRecordV1,
+  type ResponseFeedbackRecordV1,
   type ResponseForecastAvailabilityV1,
   type ResponseForecastExecutorRequestV1,
   type ResponseForecastOutcomeV1,
@@ -101,6 +112,9 @@ const ADOPTION_BRANCH_V1 = "warning-response.adopt-recommendation" as const;
 const EXECUTION_BRANCH_V1 = "warning-response.record-execution" as const;
 const FEEDBACK_BRANCH_V1 = "warning-response.record-feedback" as const;
 const DEVIATION_BRANCH_V1 = "warning-response.calculate-deviation" as const;
+
+/** 关系集合单页上限：与公共 C34 目录页大小一致，读侧不再多取。 */
+const C34_RELATION_PAGE_SIZE_V1 = 50;
 /** C14 窄读、C19 basis 与 C04 正文读取各用既有精确分支，不新增 capability。 */
 const MONITORING_BRANCH_V1 = "engineering-data.monitoring-snapshot-query" as const;
 const BASIS_BRANCH_V1 = "knowledge-modeling.assessment-basis" as const;
@@ -255,6 +269,7 @@ interface FeedbackRow {
   effect_forecast_version_id: string | null;
   forecast_availability: string;
   forecast_unavailable_reason: string | null;
+  recorded_at: Date;
   spatial_scope_entity_id: string;
   spatial_scope_version_id: string;
   feedback_payload: JsonColumn;
@@ -291,6 +306,7 @@ interface DeviationRow {
   spatial_scope_version_id: string;
   deviation_payload: JsonColumn;
   content_digest: string;
+  computed_at: Date;
 }
 
 type ResponseLifecycleDatabase = PostgresDatabase & {
@@ -1246,7 +1262,10 @@ export interface PostgresResponseLifecycleAdapterOptionsV1 {
 }
 
 export class PostgresResponseLifecycleAdapter
-  implements ResponseLifecycleServiceV1, ResponseDeviationFactReaderV1
+  implements
+    ResponseLifecycleServiceV1,
+    ResponseDeviationFactReaderV1,
+    WarningResponseLifecycleReaderV1
 {
   readonly #db: Kysely<ResponseLifecycleDatabase>;
   readonly #transactionUnit: TransactionUnitV1;
@@ -2702,6 +2721,309 @@ export class PostgresResponseLifecycleAdapter
   }
 
   // ------------------------------------------------------------------ loaders
+
+  // ------------------------------------------------------------------ C34 所属窄读
+
+  /**
+   * 预测/执行/反馈的所属窄读（design D-06）：C26 不访问 C28 私表。
+   * 正文一律走既有 loader + parser，缺失与越权同形失败，绝不返回半份结果。
+   */
+  async #verifyRead(
+    input: {
+      readonly projectId: string;
+      readonly actorId: string;
+      readonly requestedAt: string;
+      readonly invocationId: string;
+      readonly authorization: AuthorizationContextV1;
+    },
+    branch: ModuleBranchV1,
+  ): Promise<AuthorizationContextV1 | undefined> {
+    const capability = MODULE_BRANCH_CAPABILITY_V1[branch];
+    if (
+      input.projectId !== input.authorization.projectId ||
+      input.actorId !== input.authorization.actorId ||
+      !input.authorization.grantedCapabilities.includes(capability)
+    ) {
+      return undefined;
+    }
+    const decision = await this.#access
+      .verify({
+        authorizationContextRef: input.authorization.authorizationContextRef,
+        invocationId: input.invocationId,
+        projectId: input.projectId,
+        branch,
+        requestedSpatialScopeRefs: [...input.authorization.spatialScopeRefs],
+        requestedSourceVersionRefs: [],
+        requestedAt: input.requestedAt,
+      })
+      .catch((error: unknown) => {
+        if (error instanceof AccessServiceError) return undefined;
+        throw error;
+      });
+    if (decision === undefined || decision.redacted) return undefined;
+    if (decision.context.actorId !== input.actorId) return undefined;
+    return decision.context;
+  }
+
+  /**
+   * 公共可用性：available 时取已登记的预测投影（数值与风险状态），unavailable 时只给原因码。
+   * 登记事实与投影不同形属于完整性问题，按 drift 失败闭合，不反推数值也不降级为不可用。
+   */
+  #publicAvailabilityOf(
+    availability: ResponseForecastAvailabilityV1,
+    projected: ResponseForecastOutcomeV1["projected"],
+    forecastRef: VersionReference,
+  ): ForecastAvailabilityV1 {
+    if (availability.kind === "unavailable") {
+      return { kind: "unavailable", reasonCode: availability.reasonCode };
+    }
+    if (projected === undefined || projected.kind !== "available") {
+      failResponseLifecycle("response-lifecycle-contract-drift", {
+        kind: "effect-forecast",
+        reference: forecastRef,
+      });
+    }
+    return {
+      kind: "available",
+      predictedValue: projected.predictedValue,
+      predictedRiskState: projected.predictedRiskState,
+    };
+  }
+
+  /**
+   * 预测精确读：available 分支给数值与风险状态，unavailable 分支只给原因码；
+   * 缺失与越权同形失败，不用 C25 重算预测。
+   */
+  async readForecastView(input: LifecycleReadInputV1<"effect-forecast">): Promise<C28ReadResultV1> {
+    const verified = await this.#verifyRead(input, "warning-response.read");
+    if (verified === undefined) return { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } };
+    const row = await this.#loadForecastOutcome(
+      input.projectId,
+      input.targetRef.reference,
+      verified.spatialScopeRefs.map((scope) => scope.reference.entityId),
+    );
+    if (row === undefined) return { kind: "failed", error: { code: "EFFECT_FORECAST_NOT_FOUND" } };
+    const forecast = parseForecastOutcome(row, input.targetRef.reference);
+    return {
+      kind: "succeeded",
+      view: {
+        effectForecastRef: { kind: "effect-forecast", reference: input.targetRef.reference },
+        recommendationRef: forecast.responseRecommendationRef,
+        routeDecisionRef: forecast.routeDecisionRef,
+        runRef: forecast.forecastRunRef,
+        inputSnapshotRef: forecast.forecastInputSnapshotRef,
+        frozenAssessmentBasisRef: forecast.frozenAssessmentBasisRef,
+        preActionMonitoringSnapshotRef: forecast.preActionMonitoringSnapshotRef,
+        baselineAssessmentRecordRef: forecast.baselineAssessmentRecordRef,
+        forecastPolicyRef: {
+          kind: "knowledge-release",
+          reference: forecast.forecastPolicyRef,
+        },
+        method: forecast.method,
+        targetIndicatorId: forecast.targetIndicatorId,
+        unit: forecast.unit,
+        horizonSteps: forecast.horizonSteps,
+        availability: this.#publicAvailabilityOf(
+          forecast.availability,
+          forecast.projected,
+          input.targetRef.reference,
+        ),
+        spatialScopeEntityId: row.spatial_scope_entity_id,
+      },
+    };
+  }
+
+  /**
+   * 执行精确读：来源按登记事实原样投影，关联反馈取同执行已登记的反馈行。
+   */
+  async readExecutionView(
+    input: LifecycleReadInputV1<"execution-record">,
+  ): Promise<C28ReadResultV1> {
+    const verified = await this.#verifyRead(input, "warning-response.read");
+    if (verified === undefined) return { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } };
+    const scopeIds = verified.spatialScopeRefs.map((scope) => scope.reference.entityId);
+    const row = await this.#loadExecution(input.projectId, input.targetRef.reference, scopeIds);
+    if (row === undefined) return { kind: "failed", error: { code: "EXECUTION_RECORD_NOT_FOUND" } };
+    const record = ResponseExecutionRecordV1Schema.parse(row.execution_payload);
+    const feedbackRefs = await this.#feedbackRefsOf(
+      input.projectId,
+      input.targetRef.reference,
+      scopeIds,
+    );
+    return {
+      kind: "succeeded",
+      view: {
+        executionRecordRef: { kind: "execution-record", reference: input.targetRef.reference },
+        source:
+          record.source.kind === "adopted-recommendation"
+            ? {
+                sourceKind: "adopted-recommendation",
+                recommendationRef: record.source.responseRecommendationRef,
+                routeDecisionRef: record.source.routeDecisionRef,
+              }
+            : {
+                sourceKind: "independent-action",
+                measureReleaseRefs: record.source.measureReleaseRefs,
+              },
+        executedByActorId: record.executedByActorId,
+        recordedByActorId: record.recordedByActorId,
+        occurredAt: record.occurredAt,
+        spatialScopeRef: record.spatialScopeRef,
+        evidenceReferences: record.evidenceReferences,
+        feedbackRefs,
+        spatialScopeEntityId: row.spatial_scope_entity_id,
+      },
+    };
+  }
+
+  /**
+   * 反馈登记的预测可用性：unavailable 只给原因码；available 时数值与风险状态取自
+   * 它引用的那条预测事实的已登记投影。反馈自己的措辞不得改写预测判定，不同形即 drift。
+   */
+  async #publicAvailabilityForFeedback(
+    projectId: string,
+    feedback: FeedbackRow,
+    recorded: ResponseFeedbackRecordV1,
+    scopeIds: readonly string[],
+  ): Promise<ForecastAvailabilityV1> {
+    if (feedback.effect_forecast_id === null || feedback.effect_forecast_version_id === null) {
+      failResponseLifecycle("response-lifecycle-contract-drift", {
+        kind: "feedback",
+        reference: { entityId: feedback.feedback_id, versionId: feedback.version_id },
+      });
+    }
+    const forecastRef = {
+      entityId: feedback.effect_forecast_id,
+      versionId: feedback.effect_forecast_version_id,
+    };
+    if (recorded.forecast.kind === "unavailable") {
+      return this.#publicAvailabilityOf(recorded.forecast, undefined, forecastRef);
+    }
+    const row = await this.#loadForecastOutcome(projectId, forecastRef, scopeIds);
+    if (row === undefined) {
+      failResponseLifecycle("response-lifecycle-contract-drift", {
+        kind: "effect-forecast",
+        reference: forecastRef,
+      });
+    }
+    const forecast = parseForecastOutcome(row, forecastRef);
+    return this.#publicAvailabilityOf(forecast.availability, forecast.projected, forecastRef);
+  }
+
+  /**
+   * 反馈精确读：预测可用性按登记事实原样给出；偏差事实与公共偏差记录分属
+   * 「私有计算解释」与「C29 公共记录」，这里只投影自己拥有的那一半。
+   */
+  async readFeedbackView(input: LifecycleReadInputV1<"feedback">): Promise<C28ReadResultV1> {
+    const verified = await this.#verifyRead(input, "warning-response.read");
+    if (verified === undefined) return { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } };
+    const scopeIds = verified.spatialScopeRefs.map((scope) => scope.reference.entityId);
+    const row = await this.#loadFeedback(input.projectId, input.targetRef.reference, scopeIds);
+    if (row === undefined) return { kind: "failed", error: { code: "FEEDBACK_NOT_FOUND" } };
+    const record = ResponseFeedbackRecordV1Schema.parse(row.feedback_payload);
+    const deviation =
+      row.effect_forecast_id === null
+        ? undefined
+        : await this.#deviationViewOf(input.projectId, row, scopeIds);
+    return {
+      kind: "succeeded",
+      view: {
+        feedbackRef: { kind: "feedback", reference: input.targetRef.reference },
+        executionRef: {
+          kind: "execution-record",
+          reference: { entityId: row.execution_id, versionId: row.execution_version_id },
+        },
+        postActionMonitoringSnapshotRef: {
+          kind: "monitoring-snapshot",
+          reference: {
+            entityId: row.post_action_snapshot_id,
+            versionId: row.post_action_snapshot_version_id,
+          },
+        },
+        feedbackArtifactRef: {
+          kind: "content-artifact",
+          reference: {
+            entityId: row.feedback_artifact_id,
+            versionId: row.feedback_artifact_version_id,
+          },
+        },
+        actualAssessmentRecordRef: {
+          kind: "risk-assessment-record",
+          reference: {
+            entityId: row.actual_assessment_record_id,
+            versionId: row.actual_assessment_record_version_id,
+          },
+        },
+        occurredAt: record.occurredAt,
+        forecastAvailability: await this.#publicAvailabilityForFeedback(
+          input.projectId,
+          row,
+          record,
+          scopeIds,
+        ),
+        ...(deviation === undefined ? {} : { deviation }),
+        spatialScopeEntityId: row.spatial_scope_entity_id,
+      },
+    };
+  }
+
+  async #feedbackRefsOf(
+    projectId: string,
+    executionRef: VersionReference,
+    scopeIds: readonly string[],
+  ): Promise<ContractReferenceV1[]> {
+    const rows = await this.#db
+      .selectFrom("business.response_feedback_records")
+      .select(["feedback_id", "version_id"])
+      .where("project_id", "=", projectId)
+      .where("execution_id", "=", executionRef.entityId)
+      .where("execution_version_id", "=", executionRef.versionId)
+      .where("spatial_scope_entity_id", "in", scopeIds as string[])
+      .orderBy("recorded_at", "desc")
+      .limit(C34_RELATION_PAGE_SIZE_V1)
+      .execute();
+    return rows.map((row) => ({
+      kind: "feedback" as const,
+      reference: { entityId: row.feedback_id, versionId: row.version_id },
+    }));
+  }
+
+  /** 偏差事实只取已登记且落在获准空间的那一条；缺失就是没有，不从预测与反馈重算。 */
+  async #deviationViewOf(
+    projectId: string,
+    feedback: FeedbackRow,
+    scopeIds: readonly string[],
+  ): Promise<DeviationViewV1 | undefined> {
+    const row = await this.#db
+      .selectFrom("business.response_deviation_facts")
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where("feedback_id", "=", feedback.feedback_id)
+      .where("feedback_version_id", "=", feedback.version_id)
+      .where("spatial_scope_entity_id", "in", scopeIds as string[])
+      .orderBy("computed_at", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    if (row === undefined) return undefined;
+    const fact = parseDeviationFact(row, { entityId: row.deviation_id, versionId: row.version_id });
+    return {
+      deviationPolicyRef: fact.deviationPolicyRef,
+      basis: fact.basis,
+      targetIndicatorId: fact.targetIndicatorId,
+      unit: fact.unit,
+      // 私有事实登记的是规范十进制字符串，它本身就是合法标量：逐字投影，不另做数值转换。
+      predictedValue: fact.predictedValue,
+      actualValue: fact.actualValue,
+      deviationValue: fact.deviationValue,
+      thresholdExceeded: fact.thresholdExceeded,
+      direction: fact.direction,
+      riskMatrixRef: fact.riskMatrixRef,
+      predictedRiskState: fact.predictedRiskState,
+      actualRiskState: fact.actualRiskState,
+      evidenceReferences: fact.evidenceReferences,
+      computedAt: fact.computedAt,
+    };
+  }
 
   async #loadDecision(
     projectId: string,

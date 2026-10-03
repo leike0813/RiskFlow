@@ -16,6 +16,7 @@ import {
   GradeIntervalSchema,
   ResponseRecommendationSchema,
   RiskAssessmentRecordSchema,
+  RiskStateSchema,
   ScalarValueSchema,
   ScoringThresholdSchema,
   StandardizedRiskRecordSchema,
@@ -4748,16 +4749,17 @@ export type WarningResponseReadOperationV1 = z.infer<typeof WarningResponseReadO
 
 /**
  * 预测/偏差不可用使用 unavailable+reasonCode；只有 available 分支才允许数值或风险状态。
- * 不伪造趋势曲线，不以当前阈值补齐冻结偏差策略正文。
+ * available 的数值与风险状态取自已登记的预测投影，unavailable 不反推原因。
  */
-const forecastAvailabilityV1 = z.discriminatedUnion("kind", [
+export const forecastAvailabilityV1Schema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("available"),
     predictedValue: ScalarValueSchema,
-    predictedRiskState: IdentifierSchema,
+    predictedRiskState: RiskStateSchema,
   }),
   z.strictObject({ kind: z.literal("unavailable"), reasonCode: IdentifierSchema }),
 ]);
+export type ForecastAvailabilityV1 = z.infer<typeof forecastAvailabilityV1Schema>;
 
 /** 通知披露最小集：意图与投递分离，投递由已登记 delivered 行证明。 */
 export const WarningNotificationDisclosureV1Schema = z.strictObject({
@@ -4832,7 +4834,9 @@ export type RecommendationValidationResultV1 = z.infer<
  * 冻结阈值正文由页面按 `deviationPolicyRef` 独立读取，不在此处补齐。
  */
 export const DeviationViewV1Schema = z.strictObject({
-  deviationPolicyRef: ContractReferenceV1Schema,
+  // 与 recommendation-read 的两个政策引用同因：领域里就是裸版本引用，判别联合里没有
+  // 能诚实表达「策略」的 kind，套用不相干 kind 属于编造。
+  deviationPolicyRef: VersionReferenceSchema,
   basis: IdentifierSchema,
   targetIndicatorId: IdentifierSchema,
   unit: c34ReadText,
@@ -4842,8 +4846,10 @@ export const DeviationViewV1Schema = z.strictObject({
   thresholdExceeded: z.boolean(),
   direction: IdentifierSchema,
   riskMatrixRef: VersionReferenceSchema,
-  predictedRiskState: IdentifierSchema,
-  actualRiskState: IdentifierSchema,
+  // 私有偏差事实登记的就是结构化风险状态（可能性、后果、等级），逐字投影，
+  // 不压成等级标识符——那会丢掉解释偏差所需的两项分数。
+  predictedRiskState: RiskStateSchema,
+  actualRiskState: RiskStateSchema,
   evidenceReferences: z.array(EvidenceReferenceSchema).max(256),
   computedAt: IsoDateTimeSchema,
 });
@@ -5107,23 +5113,32 @@ export const WarningResponseReadSuccessV1Schema = z.discriminatedUnion("kind", [
     targetIndicatorId: IdentifierSchema,
     unit: c34ReadText,
     horizonSteps: c34NonNegativeInt,
-    availability: forecastAvailabilityV1,
+    availability: forecastAvailabilityV1Schema,
     actions: readActionsV1,
   }),
   z.strictObject({
     kind: z.literal("execution-read"),
     actorId: IdentifierSchema,
     executionRecordRef: ExecutionRecordRefV1Schema,
+    // 来源与 C28 登记事实同形：采纳来源按 CHECK 必无措施发布引用，独立行动必带；
+    // 反馈引用执行而非被执行引用，方向相反，不作为执行来源出现。
     source: z.discriminatedUnion("sourceKind", [
       z.strictObject({
         sourceKind: z.literal("adopted-recommendation"),
         recommendationRef: ResponseRecommendationRefV1Schema,
         routeDecisionRef: RouteDecisionRefV1Schema,
-        measureReleaseRefs: z.array(ContractReferenceV1Schema).max(50),
       }),
       z.strictObject({
-        sourceKind: z.literal("feedback-entry"),
-        feedbackRef: FeedbackRefV1Schema,
+        sourceKind: z.literal("independent-action"),
+        measureReleaseRefs: z
+          .array(
+            z.strictObject({
+              kind: z.literal("measure-library-release"),
+              reference: VersionReferenceSchema,
+            }),
+          )
+          .min(1)
+          .max(50),
       }),
     ]),
     executedByActorId: IdentifierSchema,
@@ -5144,7 +5159,7 @@ export const WarningResponseReadSuccessV1Schema = z.discriminatedUnion("kind", [
     feedbackArtifactRef: ContentArtifactRefV1Schema,
     actualAssessmentRecordRef: RiskAssessmentRecordRefV1Schema,
     occurredAt: IsoDateTimeSchema,
-    forecastAvailability: forecastAvailabilityV1,
+    forecastAvailability: forecastAvailabilityV1Schema,
     /** 公共偏差记录正文与私有计算偏差解释只在真实成立时提供。 */
     deviationRecord: DeviationRecordSchema.optional(),
     deviation: DeviationViewV1Schema.optional(),

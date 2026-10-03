@@ -2,7 +2,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import * as responseLifecycleMigration from "../../src/postgres/migrations/warning-response/deliver-execution-forecast-feedback-and-deviation/000046_execution_forecast_feedback_deviation.js";
 import { createPostgresRuntime } from "../../src/postgres/pool.js";
+import type {
+  C28ExecutionViewV1,
+  C28FeedbackViewV1,
+  C28ForecastViewV1,
+} from "../../src/warning/postgres-warning-lifecycle-adapter.js";
 import {
+  C28_FIXTURE_TIME,
   C28_FORECAST_METHOD,
   C28_FORECAST_REQUIRED_REF,
   C28_TARGET_INDICATOR,
@@ -1651,5 +1657,357 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
     expect(
       await state.countEvents("warning.feedback-recorded.v1", "c28-outbox-rollback-feedback"),
     ).toBe(1);
+  });
+
+  // ---------------------------------------------------------------- C34 所属窄读
+
+  /** 窄读用例共用的可匹配预测策略：每个用例自备策略，不依赖前一个用例留下的状态。 */
+  const useDefaultForecastPolicy = async (
+    state: ResponseLifecyclePostgresFixtureV1,
+  ): Promise<void> => {
+    state.setExecutors([executor({ predictedValue: "12", riskLevel: "level-2" })]);
+    await state.setForecastPolicies([
+      {
+        policyId: "c28-forecast-policy",
+        method: C28_FORECAST_METHOD,
+        inputIndicatorIds: ["indicator-possibility-1"],
+        targetIndicatorId: C28_TARGET_INDICATOR,
+        horizonSteps: 5,
+        unit: C28_TARGET_UNIT,
+        requiredRef: C28_FORECAST_REQUIRED_REF,
+      },
+    ]);
+  };
+
+  /** 窄读共用的完整登记链：建议 → 采纳 → 预测 → 执行 → 反馈。 */
+  const readChain = async (prefix: string) => {
+    const state = fixture!;
+    await useDefaultForecastPolicy(state);
+    const chain = await adoptedChain(prefix);
+    const outcome = chain.forecast.result.outcome;
+    const execution = executionRef(chain.execution).result.executionRecordRef;
+    const post = await state.postActionAssessment({
+      suffix: prefix,
+      riskInputKey: chain.prepared.riskInputKey,
+    });
+    const snapshot = state.feedbackSnapshot({
+      suffix: prefix,
+      executionRecordRef: execution,
+      forecastRef: outcome.effectForecastRef,
+    });
+    const feedback = succeeded(
+      await state.recordFeedback(
+        await state.feedbackCommand({
+          commandId: `${prefix}-feedback`,
+          executionRecordRef: execution,
+          postActionMonitoringSnapshotRef: post.monitoringSnapshotRef,
+          feedbackArtifactRef: await state.publishFeedbackArtifact({ suffix: prefix }),
+          actualAssessmentRecordRef: post.assessmentRecordRef,
+          snapshotRef: snapshot.ref,
+          snapshot: snapshot.body,
+        }),
+      ),
+    );
+    if (feedback.result.kind !== "feedback") {
+      throw new Error(`C28 narrow read chain failed: ${JSON.stringify(feedback).slice(0, 600)}`);
+    }
+    return {
+      prepared: chain.prepared,
+      binding: chain.binding,
+      outcome,
+      execution,
+      feedbackRef: feedback.result.feedbackRef,
+    };
+  };
+
+  /** 窄读输入一律走真实 C06 签发：只按用途换调用标识与获准空间。 */
+  const narrowReadInput = async (input: {
+    readonly invocationId: string;
+    readonly kind: "effect-forecast" | "execution-record" | "feedback";
+    readonly reference: { readonly entityId: string; readonly versionId: string };
+    readonly spatialScope?: "root" | "restricted";
+    readonly actorId?: string;
+  }) => ({
+    projectId: fixture!.projectId,
+    actorId: input.actorId ?? fixture!.managerId,
+    requestedAt: C28_FIXTURE_TIME,
+    invocationId: input.invocationId,
+    authorization: await fixture!.readAuthorization(input.invocationId, input.spatialScope),
+    targetRef: { kind: input.kind, reference: input.reference },
+  });
+
+  pgIt("预测窄读按登记事实投影全部引用与参数，重复读取不新建事实", async () => {
+    const state = fixture!;
+    const chain = await readChain("c28-narrow-forecast");
+    const reference = chain.outcome.effectForecastRef.reference;
+    const read = await state.adapter.readForecastView(
+      await narrowReadInput({
+        invocationId: "c28-narrow-forecast-1",
+        kind: "effect-forecast",
+        reference,
+      }),
+    );
+    expect(read.kind).toBe("succeeded");
+    if (read.kind !== "succeeded") return;
+    const view = read.view as C28ForecastViewV1;
+    expect(view.effectForecastRef.reference).toEqual(reference);
+    expect(view.recommendationRef.reference).toEqual(chain.prepared.recommendationRef.reference);
+    expect(view.routeDecisionRef.reference).toEqual(chain.binding.routeDecisionRef.reference);
+    expect(view.runRef).toEqual(chain.outcome.forecastRunRef);
+    expect(view.inputSnapshotRef.reference).toEqual(
+      chain.outcome.forecastInputSnapshotRef.reference,
+    );
+    expect(view.frozenAssessmentBasisRef.reference).toEqual(
+      chain.outcome.frozenAssessmentBasisRef.reference,
+    );
+    expect(view.preActionMonitoringSnapshotRef.reference).toEqual(
+      chain.outcome.preActionMonitoringSnapshotRef.reference,
+    );
+    expect(view.baselineAssessmentRecordRef.reference).toEqual(
+      chain.outcome.baselineAssessmentRecordRef.reference,
+    );
+    expect(view.forecastPolicyRef.reference).toEqual(chain.outcome.forecastPolicyRef);
+    expect(view.method).toBe(C28_FORECAST_METHOD);
+    expect(view.targetIndicatorId).toBe(C28_TARGET_INDICATOR);
+    expect(view.unit).toBe(C28_TARGET_UNIT);
+    expect(view.horizonSteps).toBe(5);
+    expect(view.availability).toEqual({
+      kind: "available",
+      predictedValue: chain.outcome.projected?.predictedValue,
+      predictedRiskState: chain.outcome.projected?.predictedRiskState,
+    });
+    const before = await state.countRows("response_forecast_outcomes");
+    const replay = await state.adapter.readForecastView(
+      await narrowReadInput({
+        invocationId: "c28-narrow-forecast-2",
+        kind: "effect-forecast",
+        reference,
+      }),
+    );
+    expect(replay.kind).toBe("succeeded");
+    if (replay.kind === "succeeded") {
+      expect(replay.view).toEqual(read.view);
+    }
+    expect(await state.countRows("response_forecast_outcomes")).toBe(before);
+  });
+
+  pgIt("预测不可用时窄读只给登记原因码，不换方法也不补数值", async () => {
+    const state = fixture!;
+    await useDefaultForecastPolicy(state);
+    state.setExecutors([]);
+    const chain = await adoptedChain("c28-narrow-forecast-unavailable");
+    const reference = chain.forecast.result.outcome.effectForecastRef.reference;
+    const read = await state.adapter.readForecastView(
+      await narrowReadInput({
+        invocationId: "c28-narrow-forecast-unavailable-1",
+        kind: "effect-forecast",
+        reference,
+      }),
+    );
+    expect(read.kind).toBe("succeeded");
+    if (read.kind !== "succeeded") return;
+    const view = read.view as C28ForecastViewV1;
+    expect(view.availability).toEqual({ kind: "unavailable", reasonCode: "executor-unavailable" });
+    expect(view.method).toBe(C28_FORECAST_METHOD);
+  });
+
+  pgIt("执行窄读按登记来源投影已成立反馈，主体不匹配失败闭合", async () => {
+    const state = fixture!;
+    const chain = await readChain("c28-narrow-execution");
+    const read = await state.adapter.readExecutionView(
+      await narrowReadInput({
+        invocationId: "c28-narrow-execution-1",
+        kind: "execution-record",
+        reference: chain.execution.reference,
+      }),
+    );
+    expect(read.kind).toBe("succeeded");
+    if (read.kind !== "succeeded") return;
+    const view = read.view as C28ExecutionViewV1;
+    expect(view.executionRecordRef.reference).toEqual(chain.execution.reference);
+    const source = view.source as {
+      readonly sourceKind: string;
+      readonly recommendationRef: { readonly reference: { entityId: string; versionId: string } };
+      readonly routeDecisionRef: { readonly reference: { entityId: string; versionId: string } };
+    };
+    expect(source.sourceKind).toBe("adopted-recommendation");
+    expect(source.recommendationRef.reference).toEqual(chain.prepared.recommendationRef.reference);
+    expect(source.routeDecisionRef.reference).toEqual(chain.binding.routeDecisionRef.reference);
+    expect(view.executedByActorId).toBe(state.managerId);
+    expect(view.recordedByActorId).toBe(state.managerId);
+    expect(view.evidenceReferences).toEqual([
+      {
+        locator: { sourceSegmentId: "c28-execution-evidence" },
+        sourceVersion: { entityId: "source-version-c28", versionId: "1" },
+      },
+    ]);
+    expect(view.feedbackRefs).toEqual([
+      { kind: "feedback", reference: chain.feedbackRef.reference },
+    ]);
+    // 授权主体与签发主体必须一致：同一引用不因调用方自称而放行。
+    const foreign = await state.adapter.readExecutionView(
+      await narrowReadInput({
+        invocationId: "c28-narrow-execution-foreign",
+        kind: "execution-record",
+        reference: chain.execution.reference,
+        actorId: "c28-narrow-execution-foreign-actor",
+      }),
+    );
+    expect(foreign).toEqual({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+  });
+
+  pgIt("独立行动执行的窄读只给登记的措施发布引用，不伪造建议来源", async () => {
+    const state = fixture!;
+    const result = executionRef(
+      await state.recordExecution(
+        await state.executionCommand({
+          commandId: "c28-narrow-independent-execution",
+          actionSource: {
+            kind: "independent-action",
+            measureReleaseRefs: [MEASURE_RELEASE_REF],
+          },
+        }),
+      ),
+    );
+    succeeded(result);
+    const read = await state.adapter.readExecutionView(
+      await narrowReadInput({
+        invocationId: "c28-narrow-independent-execution-1",
+        kind: "execution-record",
+        reference: result.result.executionRecordRef.reference,
+      }),
+    );
+    expect(read.kind).toBe("succeeded");
+    if (read.kind !== "succeeded") return;
+    const view = read.view as C28ExecutionViewV1;
+    expect(view.source).toEqual({
+      sourceKind: "independent-action",
+      measureReleaseRefs: [MEASURE_RELEASE_REF],
+    });
+    // 关联反馈按该执行已登记的反馈行给出，不额外补查，也不清空既有关系。
+    const reference = result.result.executionRecordRef.reference;
+    const registered = await state.recommendation.c26.c25.postgres.postgres.adminPool.query<{
+      feedback_id: string;
+      version_id: string;
+    }>(
+      `SELECT feedback_id, version_id FROM business.response_feedback_records
+         WHERE project_id = $1 AND execution_id = $2 AND execution_version_id = $3
+         ORDER BY recorded_at DESC LIMIT 50`,
+      [state.projectId, reference.entityId, reference.versionId],
+    );
+    expect(view.feedbackRefs).toEqual(
+      registered.rows.map((row) => ({
+        kind: "feedback",
+        reference: { entityId: row.feedback_id, versionId: row.version_id },
+      })),
+    );
+  });
+
+  pgIt("反馈窄读投影登记的预测可用性与私有偏差解释，不越界给 C29 公共记录", async () => {
+    const state = fixture!;
+    await state.setDeviationPolicies([
+      {
+        policyId: "c28-narrow-deviation-absolute",
+        basis: "absolute",
+        threshold: "2",
+        evidenceRequirements: ["monitoring-record"],
+      },
+    ]);
+    const chain = await readChain("c28-narrow-feedback");
+    const deviation = succeeded(
+      await state.calculateDeviation(
+        await state.deviationCommand({
+          commandId: "c28-narrow-feedback-deviation",
+          effectForecastRef: chain.outcome.effectForecastRef,
+          feedbackRef: chain.feedbackRef,
+          frozenAssessmentBasisRef: chain.prepared.baselineAssessmentInputSnapshotRef,
+        }),
+      ),
+    );
+    const read = await state.adapter.readFeedbackView(
+      await narrowReadInput({
+        invocationId: "c28-narrow-feedback-1",
+        kind: "feedback",
+        reference: chain.feedbackRef.reference,
+      }),
+    );
+    expect(read.kind).toBe("succeeded");
+    if (read.kind !== "succeeded") return;
+    const view = read.view as C28FeedbackViewV1;
+    expect(view.feedbackRef.reference).toEqual(chain.feedbackRef.reference);
+    expect(view.executionRef.reference).toEqual(chain.execution.reference);
+    expect(view.forecastAvailability).toEqual({
+      kind: "available",
+      predictedValue: chain.outcome.projected?.predictedValue,
+      predictedRiskState: chain.outcome.projected?.predictedRiskState,
+    });
+    const fact = deviation.result.fact;
+    const projected = view.deviation as Record<string, unknown>;
+    expect(projected).toMatchObject({
+      basis: fact.basis,
+      targetIndicatorId: fact.targetIndicatorId,
+      unit: fact.unit,
+      predictedValue: fact.predictedValue,
+      actualValue: fact.actualValue,
+      deviationValue: fact.deviationValue,
+      thresholdExceeded: fact.thresholdExceeded,
+      direction: fact.direction,
+      computedAt: fact.computedAt,
+    });
+    expect(projected["deviationPolicyRef"]).toEqual(fact.deviationPolicyRef);
+    expect(projected["predictedRiskState"]).toEqual(fact.predictedRiskState);
+    expect(projected["actualRiskState"]).toEqual(fact.actualRiskState);
+    // 公共偏差记录归 C29 所有：C28 窄读不出现该引用。
+    expect(Object.keys(view)).not.toContain("deviationRecordRef");
+  });
+
+  pgIt("三类窄读的目标缺失与空间不符同形失败，不返回半份结果", async () => {
+    const state = fixture!;
+    const chain = await readChain("c28-narrow-missing");
+    const absent = { entityId: "c28-narrow-absent", versionId: "1" };
+    const cases = [
+      {
+        kind: "effect-forecast" as const,
+        present: chain.outcome.effectForecastRef.reference,
+        code: "EFFECT_FORECAST_NOT_FOUND",
+      },
+      {
+        kind: "execution-record" as const,
+        present: chain.execution.reference,
+        code: "EXECUTION_RECORD_NOT_FOUND",
+      },
+      {
+        kind: "feedback" as const,
+        present: chain.feedbackRef.reference,
+        code: "FEEDBACK_NOT_FOUND",
+      },
+    ];
+    const readOne = async (input: {
+      readonly kind: (typeof cases)[number]["kind"];
+      readonly invocationId: string;
+      readonly reference: { readonly entityId: string; readonly versionId: string };
+      readonly spatialScope?: "root" | "restricted";
+    }) => {
+      const inputBody = await narrowReadInput(input);
+      if (input.kind === "effect-forecast") return state.adapter.readForecastView(inputBody);
+      if (input.kind === "execution-record") return state.adapter.readExecutionView(inputBody);
+      return state.adapter.readFeedbackView(inputBody);
+    };
+    for (const entry of cases) {
+      const missing = await readOne({
+        kind: entry.kind,
+        invocationId: `c28-narrow-missing-absent-${entry.kind}`,
+        reference: absent,
+      });
+      // 越权空间与不存在目标返回同一失败码：调用方无法据此区分两种情况。
+      const outOfScope = await readOne({
+        kind: entry.kind,
+        invocationId: `c28-narrow-missing-scope-${entry.kind}`,
+        reference: entry.present,
+        spatialScope: "restricted",
+      });
+      expect(missing).toEqual({ kind: "failed", error: { code: entry.code } });
+      expect(outOfScope).toEqual({ kind: "failed", error: { code: entry.code } });
+    }
   });
 });

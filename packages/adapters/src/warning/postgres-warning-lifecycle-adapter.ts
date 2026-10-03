@@ -39,6 +39,7 @@ import {
   RiskInputVersionRefV1Schema,
   SpatialScopeRefV1Schema,
   WARNING_RESPONSE_READ_OPERATIONS_V1,
+  forecastAvailabilityV1Schema,
   WarningResponseReadQueryV1Schema,
   WarningResponseReadResultV1Schema,
   WarningResponseRecordCommandV1Schema,
@@ -623,6 +624,70 @@ export type RecommendationReadViewInputV1 = {
   readonly responseRecommendationRef: ResponseRecommendationRefV1;
 };
 
+/** C28 预测/执行/反馈的所属窄读：一个拥有方一个接缝，读失败整体收口。 */
+export interface WarningResponseLifecycleReaderV1 {
+  readForecastView(input: LifecycleReadInputV1<"effect-forecast">): Promise<C28ReadResultV1>;
+  readExecutionView(input: LifecycleReadInputV1<"execution-record">): Promise<C28ReadResultV1>;
+  readFeedbackView(input: LifecycleReadInputV1<"feedback">): Promise<C28ReadResultV1>;
+}
+
+/** 组合根交给 C28 的全部输入：授权、调用身份与精确对象引用。 */
+export type LifecycleReadInputV1<K extends "effect-forecast" | "execution-record" | "feedback"> = {
+  readonly projectId: string;
+  readonly actorId: string;
+  readonly requestedAt: string;
+  readonly invocationId: string;
+  readonly authorization: AuthorizationContextV1;
+  readonly targetRef: { readonly kind: K; readonly reference: VersionReference };
+};
+
+export type C28ForecastViewV1 = {
+  readonly effectForecastRef: ContractReferenceV1;
+  readonly recommendationRef: ContractReferenceV1;
+  readonly routeDecisionRef: ContractReferenceV1;
+  readonly runRef: WorkflowRunRefV1;
+  readonly inputSnapshotRef: ContractReferenceV1;
+  readonly frozenAssessmentBasisRef: ContractReferenceV1;
+  readonly preActionMonitoringSnapshotRef: ContractReferenceV1;
+  readonly baselineAssessmentRecordRef: ContractReferenceV1;
+  readonly forecastPolicyRef: ContractReferenceV1;
+  readonly method: string;
+  readonly targetIndicatorId: string;
+  readonly unit: string;
+  readonly horizonSteps: number;
+  readonly availability: unknown;
+  readonly spatialScopeEntityId: string;
+};
+
+export type C28ExecutionViewV1 = {
+  readonly executionRecordRef: ContractReferenceV1;
+  readonly source: unknown;
+  readonly executedByActorId: string;
+  readonly recordedByActorId: string;
+  readonly occurredAt: string;
+  readonly spatialScopeRef: SpatialScopeRefV1;
+  readonly evidenceReferences: readonly unknown[];
+  readonly feedbackRefs: readonly ContractReferenceV1[];
+  readonly spatialScopeEntityId: string;
+};
+
+export type C28FeedbackViewV1 = {
+  readonly feedbackRef: ContractReferenceV1;
+  readonly executionRef: ContractReferenceV1;
+  readonly postActionMonitoringSnapshotRef: ContractReferenceV1;
+  readonly feedbackArtifactRef: ContractReferenceV1;
+  readonly actualAssessmentRecordRef: ContractReferenceV1;
+  readonly occurredAt: string;
+  readonly forecastAvailability: unknown;
+  readonly deviation: unknown;
+  readonly deviationRecordRef?: ContractReferenceV1;
+  readonly spatialScopeEntityId: string;
+};
+
+export type C28ReadResultV1 =
+  | { readonly kind: "succeeded"; readonly view: unknown }
+  | { readonly kind: "failed"; readonly error: { readonly code: string } };
+
 /** C41 采纳/拒绝终局的所属窄读：未注入即整体失败闭合，不用空决定冒充尚未决定。 */
 export interface WarningResponseRouteDecisionReaderV1 {
   readRouteDecision(input: {
@@ -649,6 +714,8 @@ export interface PostgresWarningLifecycleAdapterOptionsV1 {
   readonly recommendations: WarningResponseRecommendationReaderV1;
   /** C41 采纳/拒绝终局的所属窄读。 */
   readonly routeDecisions: WarningResponseRouteDecisionReaderV1;
+  /** C28 预测/执行/反馈的所属窄读。 */
+  readonly lifecycle: WarningResponseLifecycleReaderV1;
   readonly now?: () => Date;
 }
 
@@ -668,6 +735,7 @@ export class PostgresWarningLifecycleAdapter
   readonly #authorizeDownstream: AssessmentDownstreamAuthorizerV1;
   readonly #recommendations: WarningResponseRecommendationReaderV1;
   readonly #routeDecisions: WarningResponseRouteDecisionReaderV1;
+  readonly #lifecycle: WarningResponseLifecycleReaderV1;
   readonly #now: () => Date;
 
   constructor(options: PostgresWarningLifecycleAdapterOptionsV1) {
@@ -679,6 +747,7 @@ export class PostgresWarningLifecycleAdapter
     this.#authorizeDownstream = options.authorizeDownstream;
     this.#recommendations = options.recommendations;
     this.#routeDecisions = options.routeDecisions;
+    this.#lifecycle = options.lifecycle;
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -1711,6 +1780,10 @@ export class PostgresWarningLifecycleAdapter
         return this.#readWarning(c26ReadCommand<"warning-read">(command), verified);
       case "recommendation-read":
         return this.#readRecommendation(c26ReadCommand<"recommendation-read">(command), verified);
+      case "forecast-read":
+        return this.#readForecast(c26ReadCommand<"forecast-read">(command), verified);
+      case "execution-read":
+        return this.#readExecution(c26ReadCommand<"execution-read">(command), verified);
       default:
         // 其余操作的所属接缝由各自拥有方提供，尚未注入时整体失败闭合，绝不用空集合冒充没有。
         throw new WarningResponseReadFailure(
@@ -2120,6 +2193,113 @@ export class PostgresWarningLifecycleAdapter
         measureReleaseRefs: [...view.view.measureReleaseRefs],
         ...(decision.kind === "succeeded" ? { decision: decision.decision } : {}),
         actions: await this.#readActions(command, ["warning-response.adopt-recommendation"]),
+      },
+    });
+  }
+
+  /**
+   * `forecast-read`（design D-05、D-06）：预测正文、方法、步长与可用性全部取自 C28 自有事实。
+   * unavailable 分支不给数值，也不由 C26 反推原因。
+   */
+  async #readForecast(
+    command: C26ReadCommandV1<"forecast-read">,
+    verified: AuthorizationContextV1,
+  ): Promise<WarningResponseReadResultV1> {
+    const scopeIds = this.#readableScopeIds(command, verified);
+    const view = await this.#lifecycle.readForecastView({
+      projectId: command.projectId,
+      actorId: command.actorId,
+      requestedAt: command.requestedAt,
+      invocationId: `${command.queryId}:forecast`,
+      authorization: await this.#authorizeForComposition(command, `${command.queryId}:forecast`),
+      targetRef: {
+        kind: "effect-forecast",
+        reference: command.payload.effectForecastRef.reference,
+      },
+    });
+    if (view.kind === "failed") {
+      throw new WarningResponseReadFailure(
+        view.error.code === "AUTHORIZATION_DENIED"
+          ? this.#readDenied(command)
+          : this.#readBlocked(command, `forecast-read-${view.error.code}`),
+      );
+    }
+    const exact = view.view as C28ForecastViewV1;
+    if (!scopeIds.includes(exact.spatialScopeEntityId)) {
+      throw new WarningResponseReadFailure(this.#readBlocked(command, "effect-forecast-not-found"));
+    }
+    const availability = forecastAvailabilityV1Schema.parse(exact.availability);
+    return WarningResponseReadResultV1Schema.parse({
+      kind: "succeeded",
+      result: {
+        kind: "forecast-read",
+        actorId: command.actorId,
+        effectForecastRef: exact.effectForecastRef,
+        recommendationRef: exact.recommendationRef,
+        routeDecisionRef: exact.routeDecisionRef,
+        runRef: exact.runRef,
+        inputSnapshotRef: exact.inputSnapshotRef,
+        frozenAssessmentBasisRef: exact.frozenAssessmentBasisRef,
+        preActionMonitoringSnapshotRef: exact.preActionMonitoringSnapshotRef,
+        baselineAssessmentRecordRef: exact.baselineAssessmentRecordRef,
+        forecastPolicyRef: exact.forecastPolicyRef,
+        method: exact.method,
+        targetIndicatorId: exact.targetIndicatorId,
+        unit: exact.unit,
+        horizonSteps: exact.horizonSteps,
+        availability,
+        actions: await this.#readActions(command, ["warning-response.record-execution"]),
+      },
+    });
+  }
+
+  /**
+   * `execution-read`（design D-05、D-06）：执行来源、证据与已成立反馈取自 C28 自有事实。
+   * 关联反馈按 C28 已登记的反馈行给出，不逐项跨域补查。
+   */
+  async #readExecution(
+    command: C26ReadCommandV1<"execution-read">,
+    verified: AuthorizationContextV1,
+  ): Promise<WarningResponseReadResultV1> {
+    const scopeIds = this.#readableScopeIds(command, verified);
+    const view = await this.#lifecycle.readExecutionView({
+      projectId: command.projectId,
+      actorId: command.actorId,
+      requestedAt: command.requestedAt,
+      invocationId: `${command.queryId}:execution`,
+      authorization: await this.#authorizeForComposition(command, `${command.queryId}:execution`),
+      targetRef: {
+        kind: "execution-record",
+        reference: command.payload.executionRecordRef.reference,
+      },
+    });
+    if (view.kind === "failed") {
+      throw new WarningResponseReadFailure(
+        view.error.code === "AUTHORIZATION_DENIED"
+          ? this.#readDenied(command)
+          : this.#readBlocked(command, `execution-read-${view.error.code}`),
+      );
+    }
+    const exact = view.view as C28ExecutionViewV1;
+    if (!scopeIds.includes(exact.spatialScopeEntityId)) {
+      throw new WarningResponseReadFailure(
+        this.#readBlocked(command, "execution-record-not-found"),
+      );
+    }
+    return WarningResponseReadResultV1Schema.parse({
+      kind: "succeeded",
+      result: {
+        kind: "execution-read",
+        actorId: command.actorId,
+        executionRecordRef: exact.executionRecordRef,
+        source: exact.source,
+        executedByActorId: exact.executedByActorId,
+        recordedByActorId: exact.recordedByActorId,
+        occurredAt: exact.occurredAt,
+        spatialScopeRef: exact.spatialScopeRef,
+        evidenceReferences: exact.evidenceReferences,
+        feedbackRefs: exact.feedbackRefs,
+        actions: await this.#readActions(command, ["warning-response.record-feedback"]),
       },
     });
   }

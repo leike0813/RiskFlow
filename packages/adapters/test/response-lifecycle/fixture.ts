@@ -252,6 +252,11 @@ export interface ResponseLifecyclePostgresFixtureV1 {
   recordExecution(command: WarningResponseRecordCommandV1): Promise<WarningResponseRecordResultV1>;
   recordFeedback(command: unknown): Promise<WarningResponseRecordResultV1>;
   calculateDeviation(command: WarningResponseRecordCommandV1): Promise<ResponseDeviationResultV1>;
+  /** C34 读契约的授权入口：与命令同走真实 C06 签发，身份即调用 id。 */
+  readAuthorization(
+    invocationId: string,
+    spatialScope?: "root" | "restricted",
+  ): Promise<AuthorizationContextV1>;
   readDeviationFact(input: {
     readonly requestId: string;
     readonly deviationFactRef: {
@@ -1125,6 +1130,15 @@ export const startResponseLifecycleFixture =
       },
       async calculateDeviation(command) {
         return ResponseDeviationResultV1Schema.parse(await adapter.calculateDeviation(command));
+      },
+      async readAuthorization(invocationId, spatialScope) {
+        const scopeRefs =
+          spatialScope === "restricted" ? [restrictedSpatialScopeRef] : [rootSpatialScopeRef];
+        return authorizeFor({
+          branch: "warning-response.read",
+          invocationId,
+          spatialScopeRefs: scopeRefs,
+        });
       },
       async readDeviationFact(input) {
         return adapter.readDeviationFact({

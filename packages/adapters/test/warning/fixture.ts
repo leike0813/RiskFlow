@@ -360,19 +360,37 @@ export const startWarningLifecycleFixture = async (
   const unwiredOwningReader = (label: string): never => {
     throw new Error(`C26 fixture seam 之外的所属读依赖未接线：${label}`);
   };
+  /** 未接线的有界关系页按接缝契约返回失败结果：消费方据此收口成稳定失败码。 */
+  const unwiredRelationPage = (label: string) => {
+    void label;
+    return { kind: "failed", error: { code: "OWNING_READ_SEAM_NOT_INJECTED" } } as const;
+  };
   const unwiredRecommendations: WarningResponseRecommendationReaderV1 = {
     readRecommendationView: () => unwiredOwningReader("recommendations.readRecommendationView"),
+    readRecommendationRefsForTask: () => unwiredRelationPage("readRecommendationRefsForTask"),
   };
   const unwiredRouteDecisions: WarningResponseRouteDecisionReaderV1 = {
     readRouteDecision: () => unwiredOwningReader("routeDecisions.readRouteDecision"),
   };
   const unwiredCalibration: WarningResponseCalibrationReaderV1 = {
     readCalibrationView: () => unwiredOwningReader("calibration.readCalibrationView"),
+    readCalibrationRefsForDeviationFacts: () =>
+      unwiredRelationPage("readCalibrationRefsForDeviationFacts"),
   };
   const unwiredLifecycle: WarningResponseLifecycleReaderV1 = {
     readForecastView: () => unwiredOwningReader("lifecycle.readForecastView"),
     readExecutionView: () => unwiredOwningReader("lifecycle.readExecutionView"),
     readFeedbackView: () => unwiredOwningReader("lifecycle.readFeedbackView"),
+    readDecisionRefsForRecommendations: () =>
+      unwiredRelationPage("readDecisionRefsForRecommendations"),
+    readForecastRefsForRecommendations: () =>
+      unwiredRelationPage("readForecastRefsForRecommendations"),
+    readExecutionRefsForRecommendations: () =>
+      unwiredRelationPage("readExecutionRefsForRecommendations"),
+    readFeedbackRefsForRecommendations: () =>
+      unwiredRelationPage("readFeedbackRefsForRecommendations"),
+    readDeviationFactRefsForRecommendations: () =>
+      unwiredRelationPage("readDeviationFactRefsForRecommendations"),
   };
   const adapter = createPostgresWarningLifecycleAdapter({
     db,

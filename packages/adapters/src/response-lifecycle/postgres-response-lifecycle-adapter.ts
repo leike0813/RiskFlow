@@ -1,4 +1,4 @@
-import type { Kysely, Transaction } from "kysely";
+import { sql, type Kysely, type Transaction } from "kysely";
 
 import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/access";
 import { ArtifactReadRequestV1Schema, type ArtifactStoreV1 } from "@riskflow/core/artifacts";
@@ -52,6 +52,9 @@ import type {
 } from "@riskflow/contracts/ports";
 import type {
   C28ReadResultV1,
+  RelationAnchorV1,
+  RelationPageInputV1,
+  RelationPageResultV1,
   LifecycleReadInputV1,
   WarningResponseLifecycleReaderV1,
 } from "../warning/postgres-warning-lifecycle-adapter.js";
@@ -535,6 +538,64 @@ const parseExecutionRecord = (row: ExecutionRow, executionRef: VersionReference)
     });
   }
 };
+
+type SqlFragment = ReturnType<typeof sql>;
+
+/** 关系页查询行：标识、版本与登记时点，登记时点只用于构造续页位置。 */
+interface C28RelationRowV1 {
+  readonly entity_id: string;
+  readonly version_id: string;
+  readonly recorded_at: Date | string;
+}
+
+/** 关系页返回的引用 kind：只允许公共引用联合里真实存在的这些。 */
+type RelationPageRefKindV1 =
+  | "route-decision"
+  | "effect-forecast"
+  | "execution-record"
+  | "feedback"
+  | "response-deviation-fact"
+  | "calibration-suggestion"
+  | "response-recommendation";
+
+/** 锚点集合为空：这类关系尚不存在，返回空页而不是跨域反查。 */
+const emptyRelationPage = (kind: string): RelationPageResultV1 => ({
+  kind: "succeeded",
+  refs: [],
+  hasMore: false,
+  lastRef: undefined,
+  lastRecordedAt: undefined,
+});
+
+/** 锚点谓词按 OR 组合：多个建议共享一类关系查询，单次 SQL 内完成。 */
+const joinAnchorSql = (
+  anchors: readonly RelationAnchorV1[],
+  predicate: (anchor: RelationAnchorV1) => SqlFragment,
+): SqlFragment =>
+  anchors.reduce<SqlFragment | undefined>(
+    (acc, anchor) => (acc === undefined ? predicate(anchor) : sql`${acc} OR ${predicate(anchor)}`),
+    undefined,
+  ) ?? sql`FALSE`;
+
+/**
+ * keyset 续页位置：登记时点倒序、标识升序。
+ * `after` 只携带上一页末行的身份与登记时点，不携带权限材料——每次读取都重新复验当前授权。
+ */
+const relationAfterSql = (
+  after:
+    | { readonly recordedAt: string; readonly entityId: string; readonly versionId: string }
+    | undefined,
+  timeColumn: SqlFragment,
+  idColumn: SqlFragment,
+): SqlFragment =>
+  after === undefined
+    ? sql``
+    : sql`AND (
+           ${timeColumn} < ${after.recordedAt}
+           OR (${timeColumn} = ${after.recordedAt} AND ${idColumn} > ${after.entityId})
+           OR (${timeColumn} = ${after.recordedAt} AND ${idColumn} = ${after.entityId}
+               AND ${sql.ref("version_id")} > ${after.versionId})
+         )`;
 
 const parseFeedbackRecord = (row: FeedbackRow, feedbackRef: VersionReference): void => {
   const parsed = ResponseFeedbackRecordV1Schema.safeParse(row.feedback_payload);
@@ -3022,6 +3083,199 @@ export class PostgresResponseLifecycleAdapter
       actualRiskState: fact.actualRiskState,
       evidenceReferences: fact.evidenceReferences,
       computedAt: fact.computedAt,
+    };
+  }
+
+  /* ---------------------------------------------------------- C34 关系页窄读 */
+
+  /**
+   * 建议下的五类关系引用（design D-05、D-10）：每条都是一条有界 keyset 查询，
+   * 先落工程、空间与锚点筛选再 `LIMIT pageSize+1`；锚点集合为空表示该建议尚无此类
+   * 关系，返回空页而不是跨域反查或编造占位引用。
+   */
+  async readDecisionRefsForRecommendations(
+    input: RelationPageInputV1,
+  ): Promise<RelationPageResultV1> {
+    const scopeIds = await this.#relationScopeIds(input);
+    if (typeof scopeIds === "string") return { kind: "failed", error: { code: scopeIds } };
+    if (scopeIds === undefined) return emptyRelationPage("route-decision");
+    return this.#relationPage(
+      "route-decision",
+      input,
+      scopeIds,
+      sql`
+      SELECT d.decision_id AS entity_id, d.version_id, d.recorded_at
+        FROM business.response_adoption_decisions d
+       WHERE d.project_id = ${input.projectId}
+         AND d.spatial_scope_entity_id = ANY(${scopeIds})
+         AND (${joinAnchorSql(
+           input.anchorRefs,
+           (anchor) => sql`d.recommendation_id = ${anchor.reference.entityId}
+                 AND d.recommendation_version_id = ${anchor.reference.versionId}`,
+         )})
+         ${relationAfterSql(input.after, sql`d.recorded_at`, sql`d.decision_id`)}
+       ORDER BY d.recorded_at DESC, d.decision_id ASC, d.version_id ASC
+       LIMIT ${input.pageSize + 1}
+    `,
+    );
+  }
+
+  async readForecastRefsForRecommendations(
+    input: RelationPageInputV1,
+  ): Promise<RelationPageResultV1> {
+    const scopeIds = await this.#relationScopeIds(input);
+    if (typeof scopeIds === "string") return { kind: "failed", error: { code: scopeIds } };
+    if (scopeIds === undefined) return emptyRelationPage("effect-forecast");
+    return this.#relationPage(
+      "effect-forecast",
+      input,
+      scopeIds,
+      sql`
+      SELECT f.forecast_id AS entity_id, f.version_id, f.recorded_at
+        FROM business.response_forecast_outcomes f
+       WHERE f.project_id = ${input.projectId}
+         AND f.spatial_scope_entity_id = ANY(${scopeIds})
+         AND (${joinAnchorSql(
+           input.anchorRefs,
+           (anchor) => sql`f.recommendation_id = ${anchor.reference.entityId}
+                 AND f.recommendation_version_id = ${anchor.reference.versionId}`,
+         )})
+         ${relationAfterSql(input.after, sql`f.recorded_at`, sql`f.forecast_id`)}
+       ORDER BY f.recorded_at DESC, f.forecast_id ASC, f.version_id ASC
+       LIMIT ${input.pageSize + 1}
+    `,
+    );
+  }
+
+  async readExecutionRefsForRecommendations(
+    input: RelationPageInputV1,
+  ): Promise<RelationPageResultV1> {
+    const scopeIds = await this.#relationScopeIds(input);
+    if (typeof scopeIds === "string") return { kind: "failed", error: { code: scopeIds } };
+    if (scopeIds === undefined) return emptyRelationPage("execution-record");
+    return this.#relationPage(
+      "execution-record",
+      input,
+      scopeIds,
+      sql`
+      SELECT x.execution_id AS entity_id, x.version_id, x.recorded_at
+        FROM business.response_execution_records x
+       WHERE x.project_id = ${input.projectId}
+         AND x.spatial_scope_entity_id = ANY(${scopeIds})
+         AND (${joinAnchorSql(
+           input.anchorRefs,
+           (anchor) => sql`x.recommendation_id = ${anchor.reference.entityId}
+                 AND x.recommendation_version_id = ${anchor.reference.versionId}`,
+         )})
+         ${relationAfterSql(input.after, sql`x.recorded_at`, sql`x.execution_id`)}
+       ORDER BY x.recorded_at DESC, x.execution_id ASC, x.version_id ASC
+       LIMIT ${input.pageSize + 1}
+    `,
+    );
+  }
+
+  /**
+   * 反馈按执行登记：经 C28 自有执行表回到建议，不在 C28 内跨域猜建议归属，
+   * 独立行动的反馈没有建议，因此不会出现在任何建议的关系页里。
+   */
+  async readFeedbackRefsForRecommendations(
+    input: RelationPageInputV1,
+  ): Promise<RelationPageResultV1> {
+    const scopeIds = await this.#relationScopeIds(input);
+    if (typeof scopeIds === "string") return { kind: "failed", error: { code: scopeIds } };
+    if (scopeIds === undefined) return emptyRelationPage("feedback");
+    return this.#relationPage(
+      "feedback",
+      input,
+      scopeIds,
+      sql`
+      SELECT b.feedback_id AS entity_id, b.version_id, b.recorded_at
+        FROM business.response_feedback_records b
+        JOIN business.response_execution_records x
+          ON x.project_id = b.project_id
+         AND x.execution_id = b.execution_id
+         AND x.execution_version_id = b.execution_version_id
+       WHERE b.project_id = ${input.projectId}
+         AND b.spatial_scope_entity_id = ANY(${scopeIds})
+         AND (${joinAnchorSql(
+           input.anchorRefs,
+           (anchor) => sql`x.recommendation_id = ${anchor.reference.entityId}
+                 AND x.recommendation_version_id = ${anchor.reference.versionId}`,
+         )})
+         ${relationAfterSql(input.after, sql`b.recorded_at`, sql`b.feedback_id`)}
+       ORDER BY b.recorded_at DESC, b.feedback_id ASC, b.version_id ASC
+       LIMIT ${input.pageSize + 1}
+    `,
+    );
+  }
+
+  /** 私有偏差事实按建议登记：公共读只拿它的精确引用去问 C29 校准建议。 */
+  async readDeviationFactRefsForRecommendations(
+    input: RelationPageInputV1,
+  ): Promise<RelationPageResultV1> {
+    const scopeIds = await this.#relationScopeIds(input);
+    if (typeof scopeIds === "string") return { kind: "failed", error: { code: scopeIds } };
+    if (scopeIds === undefined) {
+      return emptyRelationPage("response-deviation-fact");
+    }
+    return this.#relationPage(
+      "response-deviation-fact",
+      input,
+      scopeIds,
+      sql`
+      SELECT v.deviation_id AS entity_id, v.version_id, v.computed_at
+        FROM business.response_deviation_facts v
+       WHERE v.project_id = ${input.projectId}
+         AND v.spatial_scope_entity_id = ANY(${scopeIds})
+         AND (${joinAnchorSql(
+           input.anchorRefs,
+           (anchor) => sql`v.recommendation_id = ${anchor.reference.entityId}
+                 AND v.recommendation_version_id = ${anchor.reference.versionId}`,
+         )})
+         ${relationAfterSql(input.after, sql`v.computed_at`, sql`v.deviation_id`)}
+       ORDER BY v.computed_at DESC, v.deviation_id ASC, v.version_id ASC
+       LIMIT ${input.pageSize + 1}
+    `,
+    );
+  }
+
+  /** 关系页授权：与精确读同一分支与同一复验；未授权不读任何行。 */
+  async #relationScopeIds(
+    input: RelationPageInputV1,
+  ): Promise<string[] | "AUTHORIZATION_DENIED" | undefined> {
+    const verified = await this.#verifyRead(input, "warning-response.read");
+    if (verified === undefined) return "AUTHORIZATION_DENIED";
+    if (input.anchorRefs.length === 0) return undefined;
+    return verified.spatialScopeRefs.map((scope) => scope.reference.entityId);
+  }
+
+  /** 统一收口：`pageSize+1` 判 hasMore，末行位置供公共游标续页。 */
+  async #relationPage(
+    kind: string,
+    input: RelationPageInputV1,
+    scopeIds: string[],
+    query: SqlFragment,
+  ): Promise<RelationPageResultV1> {
+    const rows = (await query.execute(this.#db)).rows as readonly C28RelationRowV1[];
+    const page = rows.slice(0, input.pageSize);
+    const last = page.at(-1);
+    return {
+      kind: "succeeded",
+      hasMore: rows.length > input.pageSize,
+      lastRef:
+        last === undefined
+          ? undefined
+          : { kind, reference: { entityId: last.entity_id, versionId: last.version_id } },
+      lastRecordedAt:
+        last === undefined
+          ? undefined
+          : last.recorded_at instanceof Date
+            ? last.recorded_at.toISOString()
+            : last.recorded_at,
+      refs: page.map((row) => ({
+        kind,
+        reference: { entityId: row.entity_id, versionId: row.version_id },
+      })),
     };
   }
 

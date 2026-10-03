@@ -1197,15 +1197,34 @@ describe("C26 预警与处置任务 PostgreSQL 链", () => {
       kind: "failed",
       error: { retryable: false },
     });
+    // 目标不存在与跨空间同形：任务自身事实先收口，不因为某组关系未接线就泄露存在性。
+    const absentTask = await state.adapter.read(
+      await readQuery(state, {
+        queryId: "c26-read-deny-unwired-task",
+        payload: {
+          operation: "task-read",
+          warningResponseTaskRef: {
+            kind: "warning-response-task",
+            reference: { entityId: "task-absent", versionId: "1" },
+          },
+        },
+      }),
+    );
+    expectClosed(absentTask, "warning-response-task-not-found");
+    // 目标存在但所属接缝未注入：整体失败闭合，不用空关系冒充「还没有」。
+    const existingTask = (await state.taskRows())[0]!;
     expectClosed(
       await state.adapter.read(
         await readQuery(state, {
-          queryId: "c26-read-deny-unwired-task",
+          queryId: "c26-read-deny-unwired-task-existing",
           payload: {
             operation: "task-read",
             warningResponseTaskRef: {
               kind: "warning-response-task",
-              reference: { entityId: "task-absent", versionId: "1" },
+              reference: {
+                entityId: existingTask.taskId,
+                versionId: existingTask.currentVersionId,
+              },
             },
           },
         }),

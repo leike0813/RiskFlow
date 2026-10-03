@@ -1,4 +1,4 @@
-import type { ColumnType, Kysely, Transaction } from "kysely";
+import { sql, type ColumnType, type Kysely, type Transaction } from "kysely";
 
 import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/access";
 import {
@@ -97,6 +97,9 @@ import { DomainEventV1Schema } from "@riskflow/contracts/events";
 
 import type {
   C29CalibrationViewResultV1,
+  RelationAnchorV1,
+  RelationPageInputV1,
+  RelationPageResultV1,
   WarningResponseCalibrationReaderV1,
 } from "../warning/postgres-warning-lifecycle-adapter.js";
 import { mapPostgresError } from "../postgres/pool.js";
@@ -104,6 +107,7 @@ import { getPostgresTransaction } from "../postgres/transaction-unit.js";
 import type { PostgresDatabase } from "../postgres/types.js";
 
 type JsonColumn = ColumnType<JsonValue, JsonValue, JsonValue>;
+type SqlFragment = ReturnType<typeof sql>;
 
 /**
  * C29 命令分支：与公共 `create-calibration-suggestion` 同属 `warning-response.record` 能力，
@@ -2292,7 +2296,10 @@ export class PostgresCalibrationAdapter
    * 不把 C06 的原始错误抛给只读组合方。
    */
   async #verifyRead(
-    input: CalibrationReadViewInputV1,
+    input: Pick<
+      CalibrationReadViewInputV1,
+      "projectId" | "actorId" | "requestedAt" | "invocationId" | "authorization"
+    >,
   ): Promise<AuthorizationContextV1 | undefined> {
     const capability = MODULE_BRANCH_CAPABILITY_V1[CALIBRATION_READ_BRANCH_V1];
     if (
@@ -2319,6 +2326,62 @@ export class PostgresCalibrationAdapter
     if (decision === undefined || decision.redacted) return undefined;
     if (decision.context.actorId !== input.actorId) return undefined;
     return decision.context;
+  }
+
+  /**
+   * 私有偏差事实下的校准建议引用（design D-05、D-10）：按登记时点倒序、标识升序走 keyset。
+   * 一个偏差事实可能对应一条建议与其后继建议，这里如实给出全部已登记引用。
+   */
+  async readCalibrationRefsForDeviationFacts(
+    input: RelationPageInputV1,
+  ): Promise<RelationPageResultV1> {
+    const verified = await this.#verifyRead(input);
+    if (verified === undefined) return { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } };
+    if (input.anchorRefs.length === 0) {
+      return {
+        kind: "succeeded",
+        refs: [],
+        hasMore: false,
+        lastRef: undefined,
+        lastRecordedAt: undefined,
+      };
+    }
+    const scopeIds = verified.spatialScopeRefs.map((scope) => scope.reference.entityId);
+    if (scopeIds.length === 0) {
+      return { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } };
+    }
+    const rows = await sql<{ entity_id: string; version_id: string; recorded_at: Date }>`
+      SELECT c.suggestion_id AS entity_id, c.version_id, c.recorded_at
+        FROM business.calibration_suggestions c
+       WHERE c.project_id = ${input.projectId}
+         AND c.spatial_scope_entity_id = ANY(${scopeIds})
+         AND (${joinRelationAnchorSql(
+           input.anchorRefs,
+           (anchor) => sql`c.deviation_fact_id = ${anchor.reference.entityId}
+                 AND c.deviation_fact_version_id = ${anchor.reference.versionId}`,
+         )})
+         ${relationAfterSql(input.after, sql`c.recorded_at`, sql`c.suggestion_id`)}
+       ORDER BY c.recorded_at DESC, c.suggestion_id ASC, c.version_id ASC
+       LIMIT ${input.pageSize + 1}
+    `.execute(this.#db);
+    const page = rows.rows.slice(0, input.pageSize);
+    const last = page.at(-1);
+    return {
+      kind: "succeeded",
+      hasMore: rows.rows.length > input.pageSize,
+      lastRef:
+        last === undefined
+          ? undefined
+          : {
+              kind: "calibration-suggestion",
+              reference: { entityId: last.entity_id, versionId: last.version_id },
+            },
+      lastRecordedAt: last?.recorded_at.toISOString(),
+      refs: page.map((row) => ({
+        kind: "calibration-suggestion",
+        reference: { entityId: row.entity_id, versionId: row.version_id },
+      })),
+    };
   }
 
   /**
@@ -2361,6 +2424,33 @@ export class PostgresCalibrationAdapter
     return row as GovernanceDraftRow | undefined;
   }
 }
+
+/** 锚点谓词按 OR 组合：多个偏差事实共享一次查询。 */
+const joinRelationAnchorSql = (
+  anchors: readonly RelationAnchorV1[],
+  predicate: (anchor: RelationAnchorV1) => SqlFragment,
+): SqlFragment =>
+  anchors.reduce<SqlFragment | undefined>(
+    (acc, anchor) => (acc === undefined ? predicate(anchor) : sql`${acc} OR ${predicate(anchor)}`),
+    undefined,
+  ) ?? sql`FALSE`;
+
+/** keyset 续页位置：登记时点倒序、标识升序；`after` 不携带权限材料。 */
+const relationAfterSql = (
+  after:
+    | { readonly recordedAt: string; readonly entityId: string; readonly versionId: string }
+    | undefined,
+  timeColumn: SqlFragment,
+  idColumn: SqlFragment,
+): SqlFragment =>
+  after === undefined
+    ? sql``
+    : sql`AND (
+           ${timeColumn} < ${after.recordedAt}
+           OR (${timeColumn} = ${after.recordedAt} AND ${idColumn} > ${after.entityId})
+           OR (${timeColumn} = ${after.recordedAt} AND ${idColumn} = ${after.entityId}
+               AND c.version_id > ${after.versionId})
+         )`;
 
 /**
  * 公共状态：偏差记录版本上的复核状态是唯一登记处，按建议状态词汇投影。

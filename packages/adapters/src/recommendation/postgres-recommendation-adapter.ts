@@ -95,9 +95,12 @@ import {
 } from "@riskflow/core/recommendation";
 
 import { RecommendationValidationEvidenceV1Schema } from "@riskflow/core/recommendation";
+import type { WarningResponseTaskRefV1 } from "@riskflow/contracts/ports";
 import type {
   C26RecommendationViewResultV1,
   RecommendationReadViewInputV1,
+  RelationPageInputV1,
+  RelationPageResultV1,
   WarningResponseRecommendationReaderV1,
 } from "../warning/postgres-warning-lifecycle-adapter.js";
 import { mapPostgresError } from "../postgres/pool.js";
@@ -2365,6 +2368,69 @@ export class PostgresRecommendationAdapter
   }
 
   /** 读侧复验：与命令复验同形，但用请求时点而不是签发时点，并返回 `undefined` 表示拒绝。 */
+  /**
+   * 任务下的正式建议引用（design D-05、D-10）：按登记时点倒序、标识升序走 keyset，
+   * 先落工程、空间与任务筛选再 `LIMIT pageSize+1`。
+   * C26 不访问本表，也不为「还没有建议」编造占位引用。
+   */
+  async readRecommendationRefsForTask(
+    input: Omit<RelationPageInputV1, "anchorRefs"> & {
+      readonly warningResponseTaskRef: WarningResponseTaskRefV1;
+    },
+  ): Promise<RelationPageResultV1> {
+    const verified = await this.#verifyRead(input, "warning-response.read").catch(
+      (): undefined => undefined,
+    );
+    if (verified === undefined) return { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } };
+    const scopeIds = verified.spatialScopeRefs.map((scope) => scope.reference.entityId);
+    if (scopeIds.length === 0) {
+      return { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } };
+    }
+    const task = input.warningResponseTaskRef.reference;
+    const rows = await sql<{
+      entity_id: string;
+      version_id: string;
+      recorded_at: Date;
+    }>`
+      SELECT r.recommendation_id AS entity_id, r.version_id, r.recorded_at
+        FROM business.response_recommendations r
+       WHERE r.project_id = ${input.projectId}
+         AND r.spatial_scope_entity_id = ANY(${scopeIds})
+         AND r.warning_response_task_id = ${task.entityId}
+         AND r.warning_response_task_version_id = ${task.versionId}
+         ${
+           input.after === undefined
+             ? sql``
+             : sql`AND (
+                    r.recorded_at < ${input.after.recordedAt}
+                 OR (r.recorded_at = ${input.after.recordedAt} AND r.recommendation_id > ${input.after.entityId})
+                 OR (r.recorded_at = ${input.after.recordedAt} AND r.recommendation_id = ${input.after.entityId}
+                     AND r.version_id > ${input.after.versionId})
+               )`
+         }
+       ORDER BY r.recorded_at DESC, r.recommendation_id ASC, r.version_id ASC
+       LIMIT ${input.pageSize + 1}
+    `.execute(this.#db);
+    const page = rows.rows.slice(0, input.pageSize);
+    const last = page.at(-1);
+    return {
+      kind: "succeeded",
+      hasMore: rows.rows.length > input.pageSize,
+      lastRef:
+        last === undefined
+          ? undefined
+          : {
+              kind: "response-recommendation",
+              reference: { entityId: last.entity_id, versionId: last.version_id },
+            },
+      lastRecordedAt: last?.recorded_at.toISOString(),
+      refs: page.map((row) => ({
+        kind: "response-recommendation",
+        reference: { entityId: row.entity_id, versionId: row.version_id },
+      })),
+    };
+  }
+
   async #verifyRead(
     input: {
       readonly projectId: string;

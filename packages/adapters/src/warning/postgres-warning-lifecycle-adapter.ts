@@ -42,6 +42,13 @@ import {
   forecastAvailabilityV1Schema,
   WarningResponseReadQueryV1Schema,
   WarningResponseReadResultV1Schema,
+  WarningRecordRefV1Schema,
+  ResponseRecommendationRefV1Schema,
+  RouteDecisionRefV1Schema,
+  ExecutionRecordRefV1Schema,
+  EffectForecastRefV1Schema,
+  FeedbackRefV1Schema,
+  CalibrationSuggestionRefV1Schema,
   WarningResponseRecordCommandV1Schema,
   type AuthorizationContextV1,
   type CalibrationSuggestionRefV1,
@@ -320,6 +327,139 @@ const c26ReadCommand = <O extends WarningResponseReadOperationV1>(
 ): C26ReadCommandV1<O> => command as C26ReadCommandV1<O>;
 
 /** 只有带空间范围筛选的操作才接受请求范围；精确对象读按已验证范围判定归属。 */
+/* ------------------------------------------------ C34 关系页（task-read）分派与游标 */
+
+const C26_RELATION_PAGE_SIZE_V1 = 50;
+
+/** 七组关系各自独立分页；游标必须声明它属于哪一组。 */
+type C26RelationKindV1 =
+  | "warning"
+  | "recommendation"
+  | "decision"
+  | "forecast"
+  | "execution"
+  | "feedback"
+  | "calibration"
+  /** 私有偏差事实只用于向 C29 换建议引用，不出现在公共关系里。 */
+  | "deviation";
+
+type C26RelationPageV1 = {
+  readonly refs: readonly RelationPageRefV1[];
+  readonly hasMore: boolean;
+  readonly lastRef: RelationPageRefV1 | undefined;
+  readonly lastRecordedAt: string | undefined;
+};
+
+type C26RelationRowV1 = {
+  readonly entity_id: string;
+  readonly version_id: string;
+  readonly recorded_at: Date;
+};
+
+type C26RelationAnchorV1 = {
+  readonly projectId: string;
+  readonly taskRef: VersionReference;
+  readonly scopeDigest: string;
+};
+
+type C26RelationCursorV1 = C26RelationAnchorV1 & {
+  readonly schemaVersion: "1";
+  readonly relation: C26RelationKindV1;
+  readonly after: {
+    readonly recordedAt: string;
+    readonly entityId: string;
+    readonly versionId: string;
+  };
+};
+
+const C26_RELATION_CURSOR_KEYS_V1 = [
+  "schemaVersion",
+  "projectId",
+  "taskRef",
+  "scopeDigest",
+  "relation",
+  "after",
+] as const;
+
+const C26_RELATION_KINDS_V1: readonly C26RelationKindV1[] = [
+  "warning",
+  "recommendation",
+  "decision",
+  "forecast",
+  "execution",
+  "feedback",
+  "calibration",
+  "deviation",
+];
+
+const c26RelationAnchor = (
+  command: WarningResponseReadQueryV1,
+  verified: AuthorizationContextV1,
+  taskRef: VersionReference,
+): C26RelationAnchorV1 => ({
+  projectId: command.projectId,
+  taskRef,
+  // 授权摘要只取空间身份：关系游标因此绑定作用域，却绝不携带权限材料。
+  scopeDigest: sha256CanonicalJson(
+    verified.spatialScopeRefs.map(
+      (scope) => `${scope.reference.entityId}/${scope.reference.versionId}`,
+    ),
+  ),
+});
+
+const decodeC26RelationCursor = (
+  cursor: string | undefined,
+  anchor: C26RelationAnchorV1,
+): C26RelationCursorV1 | undefined | null => {
+  if (cursor === undefined) return undefined;
+  const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as unknown;
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const keys = Object.keys(parsed);
+  if (
+    keys.length !== C26_RELATION_CURSOR_KEYS_V1.length ||
+    !C26_RELATION_CURSOR_KEYS_V1.every((key) => keys.includes(key))
+  ) {
+    return null;
+  }
+  const candidate = parsed as C26RelationCursorV1;
+  if (candidate.schemaVersion !== "1") return null;
+  if (candidate.projectId !== anchor.projectId || candidate.scopeDigest !== anchor.scopeDigest) {
+    return null;
+  }
+  if (!sameVersionReference(candidate.taskRef, anchor.taskRef)) return null;
+  if (C26_RELATION_KINDS_V1.includes(candidate.relation) === false) return null;
+  return candidate;
+};
+
+const encodeC26RelationCursor = (cursor: C26RelationCursorV1): string =>
+  Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+
+/** 公共结果按关系组给出各自的续页游标；没有下一页就不给该游标。 */
+const c26RelationCursorField = (
+  anchor: C26RelationAnchorV1,
+  relation: C26RelationKindV1,
+  page: C26RelationPageV1,
+): Record<string, string> => {
+  void anchor;
+  if (page.hasMore === false || page.lastRef === undefined || page.lastRecordedAt === undefined) {
+    return {};
+  }
+  return {
+    [`${relation}NextCursor`]: encodeC26RelationCursor({
+      schemaVersion: "1",
+      projectId: anchor.projectId,
+      taskRef: anchor.taskRef,
+      scopeDigest: anchor.scopeDigest,
+      relation,
+      after: {
+        recordedAt: page.lastRecordedAt,
+        entityId: page.lastRef.reference.entityId,
+        versionId: page.lastRef.reference.versionId,
+      },
+    }),
+  };
+};
+
 const c26RequestedScopeRef = (
   payload: WarningResponseReadQueryV1["payload"],
 ): SpatialScopeRefV1 | undefined =>
@@ -613,6 +753,12 @@ export interface WarningResponseRecommendationReaderV1 {
   readRecommendationView(
     input: RecommendationReadViewInputV1,
   ): Promise<C26RecommendationViewResultV1>;
+  /** 任务下的正式建议引用：关系页只取引用，不取正文。 */
+  readRecommendationRefsForTask(
+    input: Omit<RelationPageInputV1, "anchorRefs"> & {
+      readonly warningResponseTaskRef: WarningResponseTaskRefV1;
+    },
+  ): Promise<RelationPageResultV1>;
 }
 
 /** C26 组合窄读时交给所属方的全部输入：授权、调用身份与精确对象引用。 */
@@ -630,6 +776,14 @@ export interface WarningResponseLifecycleReaderV1 {
   readForecastView(input: LifecycleReadInputV1<"effect-forecast">): Promise<C28ReadResultV1>;
   readExecutionView(input: LifecycleReadInputV1<"execution-record">): Promise<C28ReadResultV1>;
   readFeedbackView(input: LifecycleReadInputV1<"feedback">): Promise<C28ReadResultV1>;
+  /** 建议下的五类关系引用：关系页只取引用，不取正文。 */
+  readDecisionRefsForRecommendations(input: RelationPageInputV1): Promise<RelationPageResultV1>;
+  readForecastRefsForRecommendations(input: RelationPageInputV1): Promise<RelationPageResultV1>;
+  readExecutionRefsForRecommendations(input: RelationPageInputV1): Promise<RelationPageResultV1>;
+  readFeedbackRefsForRecommendations(input: RelationPageInputV1): Promise<RelationPageResultV1>;
+  readDeviationFactRefsForRecommendations(
+    input: RelationPageInputV1,
+  ): Promise<RelationPageResultV1>;
 }
 
 /** C29 组合 `calibration-read` 时从 C29 取得的精确事实；草案未登记时不给草案引用。 */
@@ -654,6 +808,46 @@ export type C29CalibrationViewResultV1 =
   | { readonly kind: "succeeded"; readonly view: C29CalibrationViewV1 }
   | { readonly kind: "failed"; readonly error: { readonly code: string } };
 
+/**
+ * 关系页有界输入（design D-05、D-10）：所属方只按精确锚点集合与 keyset 位置取一页，
+ * 不知道自己被谁组合，也不决定公共游标形状。
+ */
+export type RelationPageInputV1 = {
+  readonly projectId: string;
+  readonly actorId: string;
+  readonly requestedAt: string;
+  readonly invocationId: string;
+  readonly authorization: AuthorizationContextV1;
+  readonly anchorRefs: readonly RelationAnchorV1[];
+  /** keyset 续页位置：登记时点倒序、标识升序；缺省表示首页。 */
+  readonly after?: {
+    readonly recordedAt: string;
+    readonly entityId: string;
+    readonly versionId: string;
+  };
+  readonly pageSize: number;
+};
+
+/**
+ * 关系页引用：只带 kind 与精确版本。公共引用联合的成员形状并不统一
+ * （事件引用用 eventId），关系页不复用它，公共投影时再按各自 Schema 解析。
+ */
+export type RelationPageRefV1 = { readonly kind: string; readonly reference: VersionReference };
+
+/** 关系锚点：只要求调用方给出精确版本身份，kind 由所属方自己判定。 */
+export type RelationAnchorV1 = { readonly reference: VersionReference };
+
+export type RelationPageResultV1 =
+  | {
+      readonly kind: "succeeded";
+      readonly refs: readonly RelationPageRefV1[];
+      readonly hasMore: boolean;
+      /** 末页定位：下一页请求据此构造 keyset 位置。 */
+      readonly lastRef: RelationPageRefV1 | undefined;
+      readonly lastRecordedAt: string | undefined;
+    }
+  | { readonly kind: "failed"; readonly error: { readonly code: string } };
+
 /** C29 校准建议的所属窄读：一个拥有方一个接缝，读失败整体收口。 */
 export interface WarningResponseCalibrationReaderV1 {
   readCalibrationView(input: {
@@ -664,6 +858,8 @@ export interface WarningResponseCalibrationReaderV1 {
     readonly authorization: AuthorizationContextV1;
     readonly calibrationSuggestionRef: CalibrationSuggestionRefV1;
   }): Promise<C29CalibrationViewResultV1>;
+  /** 私有偏差事实下的校准建议引用：关系页只取引用，不取正文。 */
+  readCalibrationRefsForDeviationFacts(input: RelationPageInputV1): Promise<RelationPageResultV1>;
 }
 
 /** 组合根交给 C28 的全部输入：授权、调用身份与精确对象引用。 */
@@ -1815,6 +2011,8 @@ export class PostgresWarningLifecycleAdapter
         return this.#readTaskCatalog(c26ReadCommand<"task-catalog">(command), verified);
       case "overview":
         return this.#readOverview(c26ReadCommand<"overview">(command), verified);
+      case "task-read":
+        return this.#readTask(c26ReadCommand<"task-read">(command), verified);
       case "warning-read":
         return this.#readWarning(c26ReadCommand<"warning-read">(command), verified);
       case "recommendation-read":
@@ -2114,6 +2312,282 @@ export class PostgresWarningLifecycleAdapter
    * `warning-read`（design D-05）：预警正文、确认与通知披露全部取自有登记事实。
    * 触发阈值解释不在这里——页面独立调 C25 精确记录读，C26 不跨域反查。
    */
+  /**
+   * `task-read`（design D-05、D-10）：任务自身事实与预警关系取自 C26 自有表，
+   * 建议、决定、预测、执行、反馈与校准六类关系分别经所属接缝取一页。
+   *
+   * 七组关系各自独立分页：公共契约只有一个 `relatedCursor`，游标内含它属于哪一组关系，
+   * 因此一次请求只续其中一组，其余六组回到首页。任何一组读失败即整体失败闭合，
+   * 不用「其余组为空」冒充完整关系。
+   */
+  async #readTask(
+    command: C26ReadCommandV1<"task-read">,
+    verified: AuthorizationContextV1,
+  ): Promise<WarningResponseReadResultV1> {
+    const scopeIds = this.#readableScopeIds(command, verified);
+    const taskRef = command.payload.warningResponseTaskRef.reference;
+    const task = await this.#loadTaskExact(command, scopeIds, taskRef);
+    if (task === undefined) {
+      throw new WarningResponseReadFailure(
+        this.#readBlocked(command, "warning-response-task-not-found"),
+      );
+    }
+    const anchor = c26RelationAnchor(command, verified, taskRef);
+    const resume = decodeC26RelationCursor(command.payload.relatedCursor, anchor);
+    if (resume === null) throw new WarningResponseReadFailure(this.#readDenied(command));
+    const page = async (relation: C26RelationKindV1) => ({
+      projectId: command.projectId,
+      actorId: command.actorId,
+      requestedAt: command.requestedAt,
+      invocationId: `${command.queryId}:${relation}`,
+      authorization: await this.#authorizeForComposition(command, `${command.queryId}:${relation}`),
+      ...(resume !== undefined && resume.relation === relation ? { after: resume.after } : {}),
+      pageSize: C26_RELATION_PAGE_SIZE_V1,
+    });
+    const warnings = await this.#taskWarningRefs(command, taskRef, resume);
+    const recommendations = await this.#relation(
+      command,
+      "recommendation",
+      await this.#recommendations.readRecommendationRefsForTask({
+        ...(await page("recommendation")),
+        warningResponseTaskRef: command.payload.warningResponseTaskRef,
+      }),
+    );
+    const anchors = recommendations.refs;
+    const [decisions, forecasts, executions, feedbacks, deviationFacts] = await Promise.all([
+      this.#relation(
+        command,
+        "decision",
+        await this.#lifecycle.readDecisionRefsForRecommendations({
+          ...(await page("decision")),
+          anchorRefs: anchors,
+        }),
+      ),
+      this.#relation(
+        command,
+        "forecast",
+        await this.#lifecycle.readForecastRefsForRecommendations({
+          ...(await page("forecast")),
+          anchorRefs: anchors,
+        }),
+      ),
+      this.#relation(
+        command,
+        "execution",
+        await this.#lifecycle.readExecutionRefsForRecommendations({
+          ...(await page("execution")),
+          anchorRefs: anchors,
+        }),
+      ),
+      this.#relation(
+        command,
+        "feedback",
+        await this.#lifecycle.readFeedbackRefsForRecommendations({
+          ...(await page("feedback")),
+          anchorRefs: anchors,
+        }),
+      ),
+      this.#relation(
+        command,
+        "deviation",
+        await this.#lifecycle.readDeviationFactRefsForRecommendations({
+          ...(await page("deviation")),
+          anchorRefs: anchors,
+        }),
+      ),
+    ]);
+    const calibrations = await this.#relation(
+      command,
+      "calibration",
+      await this.#calibration.readCalibrationRefsForDeviationFacts({
+        ...(await page("calibration")),
+        anchorRefs: deviationFacts.refs,
+      }),
+    );
+    return WarningResponseReadResultV1Schema.parse({
+      kind: "succeeded",
+      result: {
+        kind: "task-read",
+        actorId: command.actorId,
+        taskRef: command.payload.warningResponseTaskRef,
+        status: task.status,
+        riskInput: task.riskInput,
+        spatialScopeRef: task.spatialScopeRef,
+        occurredAt: task.occurred_at,
+        relations: {
+          warningRefs: warnings.refs.map((ref) =>
+            WarningRecordRefV1Schema.parse({
+              kind: "warning-record",
+              reference: ref.reference,
+            }),
+          ),
+          recommendationRefs: recommendations.refs.map((ref) =>
+            ResponseRecommendationRefV1Schema.parse({
+              kind: "response-recommendation",
+              reference: ref.reference,
+            }),
+          ),
+          decisionRefs: decisions.refs.map((ref) =>
+            RouteDecisionRefV1Schema.parse({ kind: "route-decision", reference: ref.reference }),
+          ),
+          executionRefs: executions.refs.map((ref) =>
+            ExecutionRecordRefV1Schema.parse({
+              kind: "execution-record",
+              reference: ref.reference,
+            }),
+          ),
+          forecastRefs: forecasts.refs.map((ref) =>
+            EffectForecastRefV1Schema.parse({ kind: "effect-forecast", reference: ref.reference }),
+          ),
+          feedbackRefs: feedbacks.refs.map((ref) =>
+            FeedbackRefV1Schema.parse({ kind: "feedback", reference: ref.reference }),
+          ),
+          calibrationRefs: calibrations.refs.map((ref) =>
+            CalibrationSuggestionRefV1Schema.parse({
+              kind: "calibration-suggestion",
+              reference: ref.reference,
+            }),
+          ),
+          ...c26RelationCursorField(anchor, "warning", warnings),
+          ...c26RelationCursorField(anchor, "recommendation", recommendations),
+          ...c26RelationCursorField(anchor, "decision", decisions),
+          ...c26RelationCursorField(anchor, "execution", executions),
+          ...c26RelationCursorField(anchor, "forecast", forecasts),
+          ...c26RelationCursorField(anchor, "feedback", feedbacks),
+          ...c26RelationCursorField(anchor, "calibration", calibrations),
+        },
+        actions: await this.#readActions(command, ["warning-response.acknowledge"]),
+      },
+    });
+  }
+
+  /** 任务精确读：只认登记的当前版本，历史版本不与当前状态混用。 */
+  async #loadTaskExact(
+    command: WarningResponseReadQueryV1,
+    scopeIds: readonly string[],
+    taskRef: VersionReference,
+  ): Promise<
+    | {
+        readonly status: "open" | "closed";
+        readonly riskInput: RiskInputVersionRefV1;
+        readonly spatialScopeRef: SpatialScopeRefV1;
+        readonly occurred_at: string;
+      }
+    | undefined
+  > {
+    let rows: readonly C26TaskCatalogRow[];
+    try {
+      rows = (
+        await sql<C26TaskCatalogRow>`
+        SELECT t.task_id,
+               t.current_version_id,
+               t.status,
+               v.spatial_scope_ref,
+               v.occurred_at
+          FROM business.warning_response_tasks t
+          JOIN business.warning_response_task_versions v
+            ON v.project_id = t.project_id AND v.task_id = t.task_id AND v.version_id = t.current_version_id
+         WHERE t.project_id = ${command.projectId}
+           AND t.spatial_scope_entity_id = ANY(${scopeIds})
+           AND t.task_id = ${taskRef.entityId}
+         LIMIT 1
+      `.execute(this.#db)
+      ).rows;
+    } catch (error) {
+      throw mapPostgresError(error, "warning-response.read.task-read");
+    }
+    const row = rows[0];
+    if (row === undefined || row.current_version_id !== taskRef.versionId) return undefined;
+    const exact = (await this.#taskDetailOf(command, [row])).get(row.task_id);
+    if (exact === undefined) {
+      throw new WarningResponseReadFailure(
+        this.#readBlocked(command, "task-current-version-unreadable"),
+      );
+    }
+    return {
+      status: row.status,
+      riskInput: exact.riskInput,
+      spatialScopeRef: exact.spatialScopeRef,
+      occurred_at: row.occurred_at.toISOString(),
+    };
+  }
+
+  /** 任务下的预警引用：来自 C26 自有关系表，按登记时点倒序、标识升序。 */
+  async #taskWarningRefs(
+    command: WarningResponseReadQueryV1,
+    taskRef: VersionReference,
+    resume: C26RelationCursorV1 | undefined,
+  ): Promise<C26RelationPageV1> {
+    const after = resume !== undefined && resume.relation === "warning" ? resume.after : undefined;
+    let rows: readonly C26RelationRowV1[];
+    try {
+      rows = (
+        await sql<C26RelationRowV1>`
+        SELECT w.warning_record_id AS entity_id,
+               w.warning_record_version_id AS version_id,
+               w.recorded_at
+          FROM business.warning_response_task_warnings w
+         WHERE w.project_id = ${command.projectId}
+           AND w.task_id = ${taskRef.entityId}
+           ${
+             after === undefined
+               ? sql``
+               : sql`AND (
+                      w.recorded_at < ${after.recordedAt}
+                   OR (w.recorded_at = ${after.recordedAt} AND w.warning_record_id > ${after.entityId})
+                   OR (w.recorded_at = ${after.recordedAt} AND w.warning_record_id = ${after.entityId}
+                       AND w.warning_record_version_id > ${after.versionId})
+                 )`
+           }
+         ORDER BY w.recorded_at DESC, w.warning_record_id ASC, w.warning_record_version_id ASC
+         LIMIT ${C26_RELATION_PAGE_SIZE_V1 + 1}
+      `.execute(this.#db)
+      ).rows;
+    } catch (error) {
+      throw mapPostgresError(error, "warning-response.read.task-warnings");
+    }
+    const page = rows.slice(0, C26_RELATION_PAGE_SIZE_V1);
+    const last = page.at(-1);
+    return {
+      hasMore: rows.length > C26_RELATION_PAGE_SIZE_V1,
+      lastRef:
+        last === undefined
+          ? undefined
+          : {
+              kind: "warning-record",
+              reference: { entityId: last.entity_id, versionId: last.version_id },
+            },
+      lastRecordedAt: last?.recorded_at.toISOString(),
+      refs: page.map((row) => ({
+        kind: "warning-record",
+        reference: { entityId: row.entity_id, versionId: row.version_id },
+      })),
+    };
+  }
+
+  /** 关系页失败即整体失败：所属接缝读不到就不返回半份关系。 */
+  async #relation(
+    command: WarningResponseReadQueryV1,
+    relation: C26RelationKindV1,
+    page: RelationPageResultV1,
+  ): Promise<C26RelationPageV1> {
+    if (page.kind === "failed") {
+      throw new WarningResponseReadFailure(
+        page.error.code === "AUTHORIZATION_DENIED"
+          ? this.#readDenied(command)
+          : page.error.code === "OWNING_READ_SEAM_NOT_INJECTED"
+            ? this.#readBlocked(command, "owning-read-seam-not-injected")
+            : this.#readBlocked(command, `task-relation-${relation}-${page.error.code}`),
+      );
+    }
+    return {
+      refs: page.refs,
+      hasMore: page.hasMore,
+      lastRef: page.lastRef,
+      lastRecordedAt: page.lastRecordedAt,
+    };
+  }
+
   async #readWarning(
     command: C26ReadCommandV1<"warning-read">,
     verified: AuthorizationContextV1,

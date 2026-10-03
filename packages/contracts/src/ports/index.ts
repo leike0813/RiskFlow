@@ -5175,7 +5175,7 @@ export const WarningResponseReadSuccessV1Schema = z.discriminatedUnion("kind", [
     targetKind: IdentifierSchema,
     targetReleaseRef: ContractReferenceV1Schema,
     inputSnapshotRef: ContractReferenceV1Schema,
-    validationPolicyRef: ContractReferenceV1Schema,
+    validationPolicyRef: VersionReferenceSchema,
     operations: z.array(CalibrationOperationValidationV1Schema).max(64),
     status: CalibrationSuggestionStatusV1Schema,
     reviewTaskRef: ReviewTaskRefV1Schema.optional(),

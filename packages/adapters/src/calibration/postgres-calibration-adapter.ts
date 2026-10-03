@@ -38,6 +38,7 @@ import {
 } from "@riskflow/core/scoring-rules";
 import {
   CalibrationCandidateV1Schema,
+  CalibrationCandidateValidationV1Schema,
   CalibrationInputSnapshotV1Schema,
   CalibrationValidationPolicyV1Schema,
   deriveCalibrationInputSnapshotRef,
@@ -49,11 +50,14 @@ import {
   calibrationFailureFrom,
   toCalibrationModuleError,
   validateCalibrationCandidate,
+  type CalibrationCandidateV1,
+  type CalibrationCandidateValidationV1,
   type CalibrationGovernanceDraftResultV1,
   type CalibrationPrepareInputCommandV1,
   type CalibrationPrepareInputResultV1,
   type CalibrationReviewOutcomeCommandV1,
   type CalibrationReviewOutcomeResultV1,
+  type CalibrationOperationV1,
   type CalibrationServiceV1,
   type CalibrationTargetDefinitionTypeV1,
   type CalibrationTargetDocumentV1,
@@ -69,6 +73,9 @@ import {
   ContentArtifactRefV1Schema,
   type CalibrationSuggestionApprovalProofQueryV1,
   type CalibrationSuggestionApprovalProofResultV1,
+  ReviewDecisionRefV1Schema,
+  type CalibrationChangeSummaryV1,
+  type CalibrationOperationValidationV1,
   type CalibrationSuggestionRefV1,
   type ContentArtifactRefV1,
   type DeviationRecordRefV1,
@@ -85,8 +92,13 @@ import {
 } from "@riskflow/contracts/ports";
 import type { VersionReference } from "@riskflow/contracts/common";
 import { DeviationRecordSchema, type DeviationRecord } from "@riskflow/contracts/records";
+import type { CalibrationSuggestionStatusV1 } from "@riskflow/contracts/vocabulary";
 import { DomainEventV1Schema } from "@riskflow/contracts/events";
 
+import type {
+  C29CalibrationViewResultV1,
+  WarningResponseCalibrationReaderV1,
+} from "../warning/postgres-warning-lifecycle-adapter.js";
 import { mapPostgresError } from "../postgres/pool.js";
 import { getPostgresTransaction } from "../postgres/transaction-unit.js";
 import type { PostgresDatabase } from "../postgres/types.js";
@@ -98,6 +110,8 @@ type JsonColumn = ColumnType<JsonValue, JsonValue, JsonValue>;
  * 不新增 capability 或角色枚举。
  */
 const CALIBRATION_BRANCH_V1 = "warning-response.create-calibration-suggestion" as const;
+/** 只读沿 C26 同一读分支复验：校准正文、状态与草案都按已登记行投影。 */
+const CALIBRATION_READ_BRANCH_V1 = "warning-response.read" as const;
 const GOVERNANCE_BRANCH_V1 = "knowledge-modeling.submit-revision" as const;
 const CALIBRATION_COMMAND_KIND_V1 = "warning-response.create-calibration-suggestion";
 const REVIEW_OUTCOME_COMMAND_KIND_V1 = "warning-response.record-calibration-review-outcome";
@@ -159,7 +173,10 @@ interface SuggestionRow {
   review_task_id: string;
   review_task_version_id: string;
   review_task_ref: JsonColumn;
+  spatial_scope_entity_id: string;
+  spatial_scope_version_id: string;
   status: string;
+  recorded_at: Date;
   command_id: string;
 }
 
@@ -172,18 +189,25 @@ interface DeviationRecordRow {
   suggestion_version_id: string;
   review_status: string;
   review_task_ref: JsonColumn;
+  review_decision_ref: JsonColumn | null;
   record_payload: JsonColumn;
   content_digest: string;
+  recorded_at: Date;
 }
 
 interface GovernanceDraftRow {
   project_id: string;
   draft_id: string;
   version_id: string;
+  suggestion_id: string;
+  suggestion_version_id: string;
+  review_decision_id: string;
+  review_decision_version_id: string;
   knowledge_revision_id: string;
   knowledge_revision_version_id: string;
   candidate_artifact_id: string;
   candidate_artifact_version_id: string;
+  recorded_at: Date;
 }
 
 interface SuggestionLineageReservationRow {
@@ -276,6 +300,16 @@ export interface CalibrationDownstreamAuthorizationRequestV1 {
   readonly requestedSpatialScopeRefs: readonly SpatialScopeRefV1[];
 }
 
+/** C26 组合 `calibration-read` 时交给 C29 的全部输入：授权、调用身份与精确建议引用。 */
+export type CalibrationReadViewInputV1 = {
+  readonly projectId: string;
+  readonly actorId: string;
+  readonly requestedAt: string;
+  readonly invocationId: string;
+  readonly authorization: AuthorizationContextV1;
+  readonly calibrationSuggestionRef: CalibrationSuggestionRefV1;
+};
+
 export type CalibrationDownstreamAuthorizerV1 = (
   request: CalibrationDownstreamAuthorizationRequestV1,
 ) => Promise<AuthorizationContextV1>;
@@ -299,7 +333,9 @@ export interface PostgresCalibrationAdapterOptionsV1 {
  * C29 四用例实现：授权先行，只按精确引用读取 C28/C25/C19/C04/C08/C07 公开或窄化接缝，
  * 先请求 C07 复核再以 C03 事务原子写入建议、公共偏差记录、回执、审计与既有 Outbox 事件。
  */
-export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
+export class PostgresCalibrationAdapter
+  implements CalibrationServiceV1, WarningResponseCalibrationReaderV1
+{
   readonly #db: Kysely<CalibrationDatabase>;
   readonly #transactionUnit: TransactionUnitV1;
   readonly #access: LocalIdentityAccessV1;
@@ -2147,7 +2183,294 @@ export class PostgresCalibrationAdapter implements CalibrationServiceV1 {
       MODULE_BRANCH_CAPABILITY_V1[CALIBRATION_BRANCH_V1],
     );
   }
+
+  /* --------------------------------------------------------------- C34 校准窄读 */
+
+  /**
+   * 校准建议精确读（design D-06）：C26 不访问 C29 私表。
+   * 候选、逐项校验、偏差记录与草案都取自已登记行；缺失与越权同形失败，
+   * 未登记草案时不给草案引用，不把「尚未批准」投影成已批准。
+   */
+  async readCalibrationView(
+    input: CalibrationReadViewInputV1,
+  ): Promise<C29CalibrationViewResultV1> {
+    const verified = await this.#verifyRead(input);
+    if (verified === undefined) return { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } };
+    const suggestionRef = input.calibrationSuggestionRef.reference;
+    const row = await this.#db
+      .selectFrom("business.calibration_suggestions")
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("suggestion_id", "=", suggestionRef.entityId)
+      .where("version_id", "=", suggestionRef.versionId)
+      .where(
+        "spatial_scope_entity_id",
+        "in",
+        verified.spatialScopeRefs.map((scope) => scope.reference.entityId) as string[],
+      )
+      .executeTakeFirst();
+    if (row === undefined) {
+      return { kind: "failed", error: { code: "CALIBRATION_SUGGESTION_NOT_FOUND" } };
+    }
+    const suggestion = row as SuggestionRow;
+    const candidate = CalibrationCandidateV1Schema.parse(suggestion.candidate_payload);
+    const validation = CalibrationCandidateValidationV1Schema.parse(suggestion.validation_payload);
+    const record = await this.#loadCurrentDeviationRecord(
+      input.projectId,
+      suggestion.deviation_id,
+      suggestionRef,
+    );
+    if (record === undefined) {
+      return { kind: "failed", error: { code: "CALIBRATION_DEVIATION_RECORD_NOT_FOUND" } };
+    }
+    // 复核状态与决定只在偏差记录版本上追加登记：按当前版本给出，不回读建议行的初始状态。
+    const decisionRef =
+      record.review_decision_ref === null
+        ? undefined
+        : ReviewDecisionRefV1Schema.parse(record.review_decision_ref);
+    const draft =
+      decisionRef === undefined
+        ? undefined
+        : await this.#loadDraftByDecision(input.projectId, suggestionRef, decisionRef.reference);
+    return {
+      kind: "succeeded",
+      view: {
+        calibrationSuggestionRef: input.calibrationSuggestionRef,
+        targetKind: suggestion.target_definition_type,
+        targetReleaseRef: {
+          kind: "knowledge-release",
+          reference: {
+            entityId: suggestion.target_release_entity_id,
+            versionId: suggestion.target_release_version_id,
+          },
+        },
+        inputSnapshotRef: ContentArtifactRefV1Schema.parse({
+          kind: "content-artifact",
+          reference: {
+            entityId: suggestion.frozen_input_artifact_id,
+            versionId: suggestion.frozen_input_artifact_version_id,
+          },
+        }),
+        validationPolicyRef: {
+          entityId: suggestion.validation_policy_entity_id,
+          versionId: suggestion.validation_policy_version_id,
+        },
+        operations: operationValidationsOf(candidate, validation),
+        status: suggestionStatusOf(record.review_status),
+        reviewTaskRef: ReviewTaskRefV1Schema.parse(suggestion.review_task_ref),
+        deviationRecordRef: {
+          kind: "deviation-record",
+          reference: DeviationRecordSchema.parse(record.record_payload).version.reference,
+        },
+        deviationRecordVersionId: record.version_id,
+        ...(decisionRef === undefined ? {} : { reviewDecisionRef: decisionRef }),
+        ...(draft === undefined
+          ? {}
+          : {
+              candidateArtifactRef: {
+                kind: "content-artifact",
+                reference: {
+                  entityId: draft.candidate_artifact_id,
+                  versionId: draft.candidate_artifact_version_id,
+                },
+              },
+              knowledgeRevisionRef: {
+                kind: "knowledge-revision",
+                reference: {
+                  entityId: draft.knowledge_revision_id,
+                  versionId: draft.knowledge_revision_version_id,
+                },
+              },
+            }),
+        spatialScopeEntityId: suggestion.spatial_scope_entity_id,
+      },
+    };
+  }
+
+  /**
+   * 读分支复验：授权主体、工程与单能力必须与签发一致，失败只回落为未授权，
+   * 不把 C06 的原始错误抛给只读组合方。
+   */
+  async #verifyRead(
+    input: CalibrationReadViewInputV1,
+  ): Promise<AuthorizationContextV1 | undefined> {
+    const capability = MODULE_BRANCH_CAPABILITY_V1[CALIBRATION_READ_BRANCH_V1];
+    if (
+      input.authorization.projectId !== input.projectId ||
+      input.authorization.actorId !== input.actorId ||
+      !input.authorization.grantedCapabilities.includes(capability)
+    ) {
+      return undefined;
+    }
+    const decision = await this.#access
+      .verify({
+        authorizationContextRef: input.authorization.authorizationContextRef,
+        invocationId: input.invocationId,
+        projectId: input.projectId,
+        branch: CALIBRATION_READ_BRANCH_V1,
+        requestedSpatialScopeRefs: [...input.authorization.spatialScopeRefs],
+        requestedSourceVersionRefs: [],
+        requestedAt: input.requestedAt,
+      })
+      .catch((error: unknown) => {
+        if (error instanceof AccessServiceError) return undefined;
+        throw error;
+      });
+    if (decision === undefined || decision.redacted) return undefined;
+    if (decision.context.actorId !== input.actorId) return undefined;
+    return decision.context;
+  }
+
+  /**
+   * 该建议当前生效的偏差记录版本：复核只追加版本，取版本号最大的一条，
+   * 不用任意一条同建议记录冒充当前状态。
+   */
+  async #loadCurrentDeviationRecord(
+    projectId: string,
+    deviationId: string,
+    suggestionRef: VersionReference,
+  ): Promise<DeviationRecordRow | undefined> {
+    const row = await this.#db
+      .selectFrom("business.calibration_deviation_records")
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where("deviation_record_id", "=", deviationId)
+      .where("suggestion_id", "=", suggestionRef.entityId)
+      .where("suggestion_version_id", "=", suggestionRef.versionId)
+      .orderBy("version_number", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    return row as DeviationRecordRow | undefined;
+  }
+
+  /** 草案按建议与批准决定精确取：同一决定只登记一项未发布草案。 */
+  async #loadDraftByDecision(
+    projectId: string,
+    suggestionRef: VersionReference,
+    decisionRef: VersionReference,
+  ): Promise<GovernanceDraftRow | undefined> {
+    const row = await this.#db
+      .selectFrom("business.calibration_governance_drafts")
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where("suggestion_id", "=", suggestionRef.entityId)
+      .where("suggestion_version_id", "=", suggestionRef.versionId)
+      .where("review_decision_id", "=", decisionRef.entityId)
+      .where("review_decision_version_id", "=", decisionRef.versionId)
+      .executeTakeFirst();
+    return row as GovernanceDraftRow | undefined;
+  }
 }
+
+/**
+ * 公共状态：偏差记录版本上的复核状态是唯一登记处，按建议状态词汇投影。
+ * 退回不在本建议上登记决定，而是产生后继建议，因此本建议仍为待复核。
+ */
+const suggestionStatusOf = (reviewStatus: string): CalibrationSuggestionStatusV1 => {
+  switch (reviewStatus) {
+    case "rejected":
+      return "rejected";
+    case "approved":
+      return "approved-for-draft";
+    default:
+      return "pending-review";
+  }
+};
+
+/**
+ * 逐项校验：按候选操作的登记顺序与已登记校验项配对，序号、操作类型与判定必须一致。
+ * 缺少配对项说明登记不完整，按 drift 失败闭合，不默认全部通过。
+ */
+const operationValidationsOf = (
+  candidate: CalibrationCandidateV1,
+  validation: CalibrationCandidateValidationV1,
+): CalibrationOperationValidationV1[] =>
+  candidate.operations.map((operation, index) => {
+    const item = validation.items.find((entry) => entry.operationIndex === index);
+    if (item === undefined || item.operationKind !== operation.kind) {
+      failCalibration("calibration-contract-drift", {
+        kind: "calibration-suggestion",
+        reference: candidate.inputSnapshotRef.reference,
+      });
+    }
+    return {
+      operation: changeSummaryOf(operation),
+      valid: item.disposition === "accepted",
+      ...(item.reasonCode === undefined ? {} : { reasonCode: item.reasonCode }),
+    };
+  });
+
+/**
+ * 领域操作 → 公共变更摘要：只投影识别该次变更所需的字段。
+ * 适用性条件等完整正文仍以已登记候选为准，摘要不替代候选。
+ */
+const changeSummaryOf = (operation: CalibrationOperationV1): CalibrationChangeSummaryV1 => {
+  switch (operation.kind) {
+    case "replace-weight-entry":
+      return {
+        kind: operation.kind,
+        axis: operation.axis,
+        indicatorId: operation.entry.indicatorId,
+        basisPoints: operation.entry.basisPoints,
+      };
+    case "replace-risk-matrix-band":
+      return {
+        kind: operation.kind,
+        axis: operation.axis,
+        bandId: operation.band.bandId,
+        lower: operation.band.lower,
+        upper: operation.band.upper,
+      };
+    case "replace-risk-acceptance-threshold":
+      return {
+        kind: operation.kind,
+        thresholdId: operation.threshold.thresholdId,
+        maximumAcceptedLevelId: operation.threshold.maximumAcceptedLevelId,
+      };
+    case "replace-monitoring-warning-threshold":
+      return {
+        kind: operation.kind,
+        thresholdId: operation.threshold.thresholdId,
+        monitoringIndicator: operation.threshold.monitoringIndicator,
+        parameterCode: operation.threshold.parameterCode,
+        metric: operation.threshold.metric,
+        unit: operation.threshold.unit,
+        comparison: operation.threshold.comparison,
+        warningLevelId: operation.threshold.warningLevelId,
+      };
+    case "replace-deviation-policy":
+      // 摘要的 basis 词汇按变更语义命名：阈值、最小基线、等级步长。
+      return operation.policy.basis === "absolute"
+        ? {
+            kind: operation.kind,
+            basis: "threshold",
+            policyId: operation.policy.policyId,
+            threshold: operation.policy.threshold,
+          }
+        : operation.policy.basis === "relative"
+          ? {
+              kind: operation.kind,
+              basis: "minimum-baseline",
+              policyId: operation.policy.policyId,
+              threshold: operation.policy.threshold,
+              minimumBaseline: operation.policy.minimumBaseline,
+            }
+          : {
+              kind: operation.kind,
+              basis: "level-step",
+              policyId: operation.policy.policyId,
+              // 公共摘要的数值字段是规范十进制字符串：整数步长逐字投影，不做浮点往返。
+              levelStep: String(operation.policy.levelStep),
+              riskMatrixRef: operation.policy.riskMatrixRef,
+            };
+    case "replace-scoring-rule-interval":
+      return {
+        kind: operation.kind,
+        ruleId: operation.ruleId,
+        replacement: operation.replacement,
+      };
+  }
+};
 
 type FailureV1 = { readonly kind: "failed"; readonly error: ModuleErrorV1 };
 

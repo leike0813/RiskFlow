@@ -32,6 +32,7 @@ import {
   PostgresWarningAssessmentContextReader,
   createPostgresWarningLifecycleAdapter,
   type PostgresWarningLifecycleAdapter,
+  type WarningResponseCalibrationReaderV1,
   type WarningResponseLifecycleReaderV1,
   type WarningResponseRecommendationReaderV1,
   type WarningResponseRouteDecisionReaderV1,
@@ -111,6 +112,7 @@ export interface WarningLifecyclePostgresFixtureV1 {
   withOwningReaders(readers: {
     readonly recommendations?: WarningResponseRecommendationReaderV1;
     readonly routeDecisions?: WarningResponseRouteDecisionReaderV1;
+    readonly calibration?: WarningResponseCalibrationReaderV1;
   }): PostgresWarningLifecycleAdapter;
   /** 未获准空间的精确范围引用：用于验证目标存在与否均不可枚举。 */
   readonly restrictedScopeRef: {
@@ -364,6 +366,9 @@ export const startWarningLifecycleFixture = async (
   const unwiredRouteDecisions: WarningResponseRouteDecisionReaderV1 = {
     readRouteDecision: () => unwiredOwningReader("routeDecisions.readRouteDecision"),
   };
+  const unwiredCalibration: WarningResponseCalibrationReaderV1 = {
+    readCalibrationView: () => unwiredOwningReader("calibration.readCalibrationView"),
+  };
   const unwiredLifecycle: WarningResponseLifecycleReaderV1 = {
     readForecastView: () => unwiredOwningReader("lifecycle.readForecastView"),
     readExecutionView: () => unwiredOwningReader("lifecycle.readExecutionView"),
@@ -379,6 +384,7 @@ export const startWarningLifecycleFixture = async (
     recommendations: unwiredRecommendations,
     routeDecisions: unwiredRouteDecisions,
     lifecycle: unwiredLifecycle,
+    calibration: unwiredCalibration,
     now: () => new Date(C26_FIXTURE_TIME),
   });
 
@@ -572,6 +578,7 @@ export const startWarningLifecycleFixture = async (
         recommendations: readers.recommendations ?? unwiredRecommendations,
         routeDecisions: readers.routeDecisions ?? unwiredRouteDecisions,
         lifecycle: readers.lifecycle ?? unwiredLifecycle,
+        calibration: readers.calibration ?? unwiredCalibration,
         now: () => new Date(C26_FIXTURE_TIME),
       });
     },

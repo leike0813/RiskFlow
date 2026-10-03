@@ -1166,4 +1166,194 @@ describe.sequential("PostgreSQL calibration adapter", () => {
     expect(after).toEqual(suggestion);
     expect(C29_FIXTURE_TIME).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
   });
+  // ---------------------------------------------------------------- C34 校准窄读
+
+  /** 基准偏差策略的登记标识：摘要里的 policyId 必须来自已登记基准，不是测试自造。 */
+  const baseDeviationPolicyId = (): string =>
+    (
+      fixture!.baseDocument.content as {
+        readonly policies: readonly { readonly policyId: string }[];
+      }
+    ).policies[0]!.policyId;
+
+  /** 窄读输入一律走真实 C06 读分支签发：空间范围按该建议登记的偏差事实空间给出。 */
+  const calibrationRead = async (input: {
+    readonly invocationId: string;
+    readonly suggestionRef: SuggestionRefV1;
+    readonly scopeRef: {
+      readonly kind: "spatial-scope";
+      readonly reference: { readonly entityId: string; readonly versionId: string };
+    };
+    readonly actorId?: string;
+  }) =>
+    fixture!.calibration.readCalibrationView({
+      projectId: fixture!.projectId,
+      actorId: input.actorId ?? fixture!.managerId,
+      requestedAt: C29_FIXTURE_TIME,
+      invocationId: input.invocationId,
+      authorization: await fixture!.readAuthorization({
+        invocationId: input.invocationId,
+        spatialScopeRefs: [input.scopeRef],
+      }),
+      calibrationSuggestionRef: input.suggestionRef,
+    });
+
+  it("校准窄读按登记行投影目标、逐项校验与偏差记录版本，重复读取不新建事实", async () => {
+    const seeded = await seedSuggestion({ suffix: "narrow-pending", threshold: "3" });
+    const suggestionRef = seeded.result.calibrationSuggestionRef;
+    const scopeRef = fixture!.rootScopeRef;
+    const read = await calibrationRead({
+      invocationId: "c29-narrow-pending-1",
+      suggestionRef,
+      scopeRef,
+    });
+    expect(read.kind).toBe("succeeded");
+    if (read.kind !== "succeeded") return;
+    const view = read.view;
+    expect(view.calibrationSuggestionRef).toEqual(suggestionRef);
+    expect(view.targetKind).toBe(fixture!.targetDefinitionType);
+    expect(view.targetReleaseRef.reference).toEqual(fixture!.targetReleaseRef.reference);
+    expect(view.inputSnapshotRef.reference).toEqual(
+      seeded.prepared.result.frozenInputRef.reference,
+    );
+    expect(view.validationPolicyRef).toEqual(fixture!.validationPolicy.policyRef);
+    // 待复核建议的当前记录版本是第 1 版：公共状态由记录版本投影，不回读建议行初始值。
+    expect(view.status).toBe("pending-review");
+    // 逐项校验来自已登记候选与校验项：阈值操作按变更摘要给出，判定逐项一致。
+    expect(view.operations).toEqual([
+      {
+        operation: {
+          kind: "replace-deviation-policy",
+          basis: "threshold",
+          policyId: baseDeviationPolicyId(),
+          threshold: "3",
+        },
+        valid: true,
+      },
+    ]);
+    expect(view.reviewTaskRef).toEqual(seeded.result.reviewTaskRef);
+    expect(view.deviationRecordRef.reference).toEqual(
+      seeded.prepared.result.deviationRecordRef.reference,
+    );
+    expect(view.deviationRecordVersionId).toBe(
+      (await rowsFor(seeded.prepared.result.deviationRecordRef.reference.entityId))[0]!.version_id,
+    );
+    // 未批准时不给决定与草案引用。
+    expect(Object.keys(view)).not.toContain("reviewDecisionRef");
+    expect(Object.keys(view)).not.toContain("candidateArtifactRef");
+    expect(Object.keys(view)).not.toContain("knowledgeRevisionRef");
+
+    const suggestionsBefore = (await suggestionRows()).length;
+    const replay = await calibrationRead({
+      invocationId: "c29-narrow-pending-2",
+      suggestionRef,
+      scopeRef,
+    });
+    expect(replay.kind).toBe("succeeded");
+    if (replay.kind === "succeeded") expect(replay.view).toEqual(view);
+    expect((await suggestionRows()).length).toBe(suggestionsBefore);
+  });
+
+  it("批准并创建草案后窄读给出决定与草案引用，草案仍是未发布修订", async () => {
+    const seeded = await seedSuggestion({ suffix: "narrow-draft", threshold: "4" });
+    const suggestionRef = seeded.result.calibrationSuggestionRef;
+    const scopeRef = fixture!.rootScopeRef;
+    const decision = await fixture!.decideReview({
+      suffix: "narrow-draft",
+      projectId: fixture!.projectId,
+      targetRef: suggestionRef,
+      reviewTaskRef: seeded.result.reviewTaskRef,
+      kind: "approve-draft-creation",
+    });
+    const outcome = await fixture!.createGovernanceDraft(
+      await fixture!.reviewOutcomeCommand({
+        commandId: "c29-narrow-draft",
+        outcome: "approve-draft-creation",
+        suggestionRef,
+        reviewDecisionRef: decision,
+      }),
+    );
+    expect(outcome.kind).toBe("succeeded");
+    if (outcome.kind !== "succeeded") return;
+
+    const read = await calibrationRead({
+      invocationId: "c29-narrow-draft-1",
+      suggestionRef,
+      scopeRef,
+    });
+    expect(read.kind).toBe("succeeded");
+    if (read.kind !== "succeeded") return;
+    expect(read.view.reviewDecisionRef).toEqual(decision);
+    expect(read.view.candidateArtifactRef).toEqual(outcome.result.candidateArtifactRef);
+    expect(read.view.knowledgeRevisionRef).toEqual(outcome.result.knowledgeRevisionRef);
+    // 草案只是未发布修订：公共读不给发布状态，也不给替代建议的新状态。
+    expect(read.view.status).toBe("approved-for-draft");
+  });
+
+  it("拒绝决定记在偏差记录版本上，窄读按该版本的决定投影", async () => {
+    const seeded = await seedSuggestion({ suffix: "narrow-reject", threshold: "5" });
+    const suggestionRef = seeded.result.calibrationSuggestionRef;
+    const decision = await fixture!.decideReview({
+      suffix: "narrow-reject",
+      projectId: fixture!.projectId,
+      targetRef: suggestionRef,
+      reviewTaskRef: seeded.result.reviewTaskRef,
+      kind: "reject",
+    });
+    await fixture!.recordReviewOutcome(
+      await fixture!.reviewOutcomeCommand({
+        commandId: "c29-narrow-reject",
+        outcome: "reject",
+        suggestionRef,
+        reviewDecisionRef: decision,
+      }),
+    );
+    const read = await calibrationRead({
+      invocationId: "c29-narrow-reject-1",
+      suggestionRef,
+      scopeRef: fixture!.rootScopeRef,
+    });
+    expect(read.kind).toBe("succeeded");
+    if (read.kind !== "succeeded") return;
+    expect(read.view.reviewDecisionRef).toEqual(decision);
+    // 拒绝只追加记录版本：当前状态由该版本给出。
+    expect(read.view.status).toBe("rejected");
+    // 拒绝不创建草案。
+    expect(Object.keys(read.view)).not.toContain("candidateArtifactRef");
+  });
+
+  it("校准窄读的目标缺失、版本错配与主体错配都失败闭合", async () => {
+    const seeded = await seedSuggestion({ suffix: "narrow-denied", threshold: "6" });
+    const suggestionRef = seeded.result.calibrationSuggestionRef;
+    const missing: SuggestionRefV1 = {
+      kind: "calibration-suggestion",
+      reference: { entityId: "c29-unknown-suggestion", versionId: "1" },
+    };
+    const absent = await calibrationRead({
+      invocationId: "c29-narrow-denied-absent",
+      suggestionRef: missing,
+      scopeRef: fixture!.rootScopeRef,
+    });
+    // 目标存在但版本不是登记版本：与根本不存在返回同一形状，调用方无法据此枚举。
+    const wrongVersion = await calibrationRead({
+      invocationId: "c29-narrow-denied-version",
+      suggestionRef: {
+        kind: "calibration-suggestion",
+        reference: {
+          entityId: suggestionRef.reference.entityId,
+          versionId: "c29-unknown-suggestion-version",
+        },
+      },
+      scopeRef: fixture!.rootScopeRef,
+    });
+    expect(absent).toEqual({ kind: "failed", error: { code: "CALIBRATION_SUGGESTION_NOT_FOUND" } });
+    expect(wrongVersion).toEqual(absent);
+    const foreign = await calibrationRead({
+      invocationId: "c29-narrow-denied-actor",
+      suggestionRef,
+      scopeRef: fixture!.rootScopeRef,
+      actorId: "c29-narrow-denied-actor",
+    });
+    expect(foreign).toEqual({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+  });
 });

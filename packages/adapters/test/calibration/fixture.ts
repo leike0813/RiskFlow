@@ -67,6 +67,7 @@ import type { AssessmentInputSnapshotReaderV1 } from "@riskflow/core/risk-assess
 import {
   AuthorizationContextV1Schema,
   ContentArtifactRefV1Schema,
+  SpatialScopeRefV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
   ModuleErrorV1Schema,
   ReviewDecisionCommandV1Schema,
@@ -81,6 +82,7 @@ import {
   type ModuleCapabilityV1,
   type ReviewDecisionRefV1,
   type ReviewTaskRefV1,
+  type SpatialScopeRefV1,
   type VersionReference,
   type WarningResponseRecordResultV1,
 } from "@riskflow/contracts/ports";
@@ -240,6 +242,7 @@ export interface CalibrationPostgresFixtureV1 {
   readonly artifactStore: ArtifactStoreV1;
   readonly projectId: string;
   readonly managerId: string;
+  readonly rootScopeRef: SpatialScopeRefV1;
   readonly calibration: PostgresCalibrationAdapter;
   readonly reviews: PostgresReviewAuditAdapter & CalibrationSuggestionApprovalProofPortV1;
   readonly agentTasks: PostgresAgentTaskAdapter;
@@ -268,6 +271,11 @@ export interface CalibrationPostgresFixtureV1 {
   inputAuthorization(commandId: string): Promise<AuthorizationContextV1>;
   /** 按精确分支与调用标识现取真实 C06 上下文：用于核对单能力收窄结果。 */
   authorizationFor(branch: string, invocationId: string): Promise<AuthorizationContextV1>;
+  /** C34 窄读授权：真实 C06 读分支上下文，空间范围按用例显式给出。 */
+  readAuthorization(input: {
+    readonly invocationId: string;
+    readonly spatialScopeRefs: readonly SpatialScopeRefV1[];
+  }): Promise<AuthorizationContextV1>;
   /** 目标定义上的闭合类型化操作：只改偏差阈值，其余字段取自冻结基准。 */
   operations(threshold: string): readonly CalibrationOperationV1[];
   prepareCommand(input: {
@@ -442,6 +450,32 @@ export const startCalibrationFixture = async (): Promise<CalibrationPostgresFixt
       newPassword: MANAGER_PASSWORD_CHANGED,
     });
     const sessionToken = preparedManager.sessionToken;
+
+    /**
+     * 工程登记的根空间：校准事实与 C34 窄读都用它，使读授权可由真实 C06 覆盖。
+     * 偏差事实的空间必须落在已登记空间图内，否则任何读授权都不成立。
+     */
+    const rootScopeRef: SpatialScopeRefV1 = await (async () => {
+      const identities = await db
+        .selectFrom("business.access_spatial_scopes")
+        .select(["scope_id", "current_revision_id"])
+        .where("project_id", "=", projectId)
+        .execute();
+      for (const identity of identities) {
+        const revision = await db
+          .selectFrom("business.access_spatial_scope_revisions")
+          .select(["revision_id", "parent_scope_id", "status"])
+          .where("revision_id", "=", identity.current_revision_id)
+          .executeTakeFirst();
+        if (revision?.parent_scope_id === null && revision.status === "active") {
+          return SpatialScopeRefV1Schema.parse({
+            kind: "spatial-scope",
+            reference: { entityId: identity.scope_id, versionId: revision.revision_id },
+          });
+        }
+      }
+      throw new Error("c29 fixture: 工程未登记可用根空间");
+    })();
 
     /** 真实 C06 授权按用途与精确 invocationId 现取；同一 invocationId 只签发一次。 */
     const authorizations = new Map<string, Promise<AuthorizationContextV1>>();
@@ -858,10 +892,7 @@ export const startCalibrationFixture = async (): Promise<CalibrationPostgresFixt
         actualRiskState: { likelihoodScore: 3, consequenceScore: 4, riskLevel: "high" },
         evidenceReferences: evidence,
         summary: `c29-deviation-${input.suffix}`,
-        spatialScopeRef: {
-          kind: "spatial-scope",
-          reference: ref(`c29-spatial-scope-${input.suffix}`),
-        },
+        spatialScopeRef: rootScopeRef,
         computedAt: C29_FIXTURE_TIME,
       });
       facts.set(deviationFactRef.reference.entityId, fact);
@@ -1207,6 +1238,7 @@ export const startCalibrationFixture = async (): Promise<CalibrationPostgresFixt
       artifactStore,
       projectId,
       managerId,
+      rootScopeRef,
       calibration,
       reviews: reviews as PostgresReviewAuditAdapter & CalibrationSuggestionApprovalProofPortV1,
       agentTasks,
@@ -1260,6 +1292,17 @@ export const startCalibrationFixture = async (): Promise<CalibrationPostgresFixt
       },
       inputAuthorization,
       authorizationFor: (branch, invocationId) => authorizeFor(branch, invocationId),
+      readAuthorization: (input) =>
+        access
+          .authorize({
+            invocation: { kind: "human-session", sessionToken },
+            invocationId: input.invocationId,
+            projectId,
+            branch: "warning-response.read" as never,
+            requestedSpatialScopeRefs: [...input.spatialScopeRefs],
+            requestedSourceVersionRefs: [],
+          })
+          .then((decision) => AuthorizationContextV1Schema.parse(decision.context)),
       operations,
       prepareCommand,
       prepareInput,

@@ -44,6 +44,7 @@ import {
   WarningResponseReadResultV1Schema,
   WarningResponseRecordCommandV1Schema,
   type AuthorizationContextV1,
+  type CalibrationSuggestionRefV1,
   type ContractReferenceV1,
   type ModuleBranchV1,
   type ModuleErrorV1,
@@ -631,6 +632,40 @@ export interface WarningResponseLifecycleReaderV1 {
   readFeedbackView(input: LifecycleReadInputV1<"feedback">): Promise<C28ReadResultV1>;
 }
 
+/** C29 组合 `calibration-read` 时从 C29 取得的精确事实；草案未登记时不给草案引用。 */
+export type C29CalibrationViewV1 = {
+  readonly calibrationSuggestionRef: CalibrationSuggestionRefV1;
+  readonly targetKind: string;
+  readonly targetReleaseRef: ContractReferenceV1;
+  readonly inputSnapshotRef: ContractReferenceV1;
+  readonly validationPolicyRef: VersionReference;
+  readonly operations: readonly unknown[];
+  readonly status: string;
+  readonly reviewTaskRef: unknown;
+  readonly deviationRecordRef: ContractReferenceV1;
+  readonly deviationRecordVersionId: string;
+  readonly reviewDecisionRef?: ContractReferenceV1;
+  readonly candidateArtifactRef?: ContractReferenceV1;
+  readonly knowledgeRevisionRef?: ContractReferenceV1;
+  readonly spatialScopeEntityId: string;
+};
+
+export type C29CalibrationViewResultV1 =
+  | { readonly kind: "succeeded"; readonly view: C29CalibrationViewV1 }
+  | { readonly kind: "failed"; readonly error: { readonly code: string } };
+
+/** C29 校准建议的所属窄读：一个拥有方一个接缝，读失败整体收口。 */
+export interface WarningResponseCalibrationReaderV1 {
+  readCalibrationView(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly invocationId: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly calibrationSuggestionRef: CalibrationSuggestionRefV1;
+  }): Promise<C29CalibrationViewResultV1>;
+}
+
 /** 组合根交给 C28 的全部输入：授权、调用身份与精确对象引用。 */
 export type LifecycleReadInputV1<K extends "effect-forecast" | "execution-record" | "feedback"> = {
   readonly projectId: string;
@@ -716,6 +751,8 @@ export interface PostgresWarningLifecycleAdapterOptionsV1 {
   readonly routeDecisions: WarningResponseRouteDecisionReaderV1;
   /** C28 预测/执行/反馈的所属窄读。 */
   readonly lifecycle: WarningResponseLifecycleReaderV1;
+  /** C29 校准建议的所属窄读。 */
+  readonly calibration: WarningResponseCalibrationReaderV1;
   readonly now?: () => Date;
 }
 
@@ -736,6 +773,7 @@ export class PostgresWarningLifecycleAdapter
   readonly #recommendations: WarningResponseRecommendationReaderV1;
   readonly #routeDecisions: WarningResponseRouteDecisionReaderV1;
   readonly #lifecycle: WarningResponseLifecycleReaderV1;
+  readonly #calibration: WarningResponseCalibrationReaderV1;
   readonly #now: () => Date;
 
   constructor(options: PostgresWarningLifecycleAdapterOptionsV1) {
@@ -748,6 +786,7 @@ export class PostgresWarningLifecycleAdapter
     this.#recommendations = options.recommendations;
     this.#routeDecisions = options.routeDecisions;
     this.#lifecycle = options.lifecycle;
+    this.#calibration = options.calibration;
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -1784,6 +1823,8 @@ export class PostgresWarningLifecycleAdapter
         return this.#readForecast(c26ReadCommand<"forecast-read">(command), verified);
       case "execution-read":
         return this.#readExecution(c26ReadCommand<"execution-read">(command), verified);
+      case "calibration-read":
+        return this.#readCalibration(c26ReadCommand<"calibration-read">(command), verified);
       default:
         // 其余操作的所属接缝由各自拥有方提供，尚未注入时整体失败闭合，绝不用空集合冒充没有。
         throw new WarningResponseReadFailure(
@@ -2300,6 +2341,68 @@ export class PostgresWarningLifecycleAdapter
         evidenceReferences: exact.evidenceReferences,
         feedbackRefs: exact.feedbackRefs,
         actions: await this.#readActions(command, ["warning-response.record-feedback"]),
+      },
+    });
+  }
+
+  /**
+   * `calibration-read`（design D-05、D-06）：目标定义、逐项校验、偏差记录版本与草案
+   * 全部取自 C29 自有事实。公共偏差记录不属于本读，未登记草案时不给草案引用。
+   */
+  async #readCalibration(
+    command: C26ReadCommandV1<"calibration-read">,
+    verified: AuthorizationContextV1,
+  ): Promise<WarningResponseReadResultV1> {
+    const scopeIds = this.#readableScopeIds(command, verified);
+    const view = await this.#calibration.readCalibrationView({
+      projectId: command.projectId,
+      actorId: command.actorId,
+      requestedAt: command.requestedAt,
+      invocationId: `${command.queryId}:calibration`,
+      authorization: await this.#authorizeForComposition(command, `${command.queryId}:calibration`),
+      calibrationSuggestionRef: command.payload.calibrationSuggestionRef,
+    });
+    if (view.kind === "failed") {
+      throw new WarningResponseReadFailure(
+        view.error.code === "AUTHORIZATION_DENIED"
+          ? this.#readDenied(command)
+          : this.#readBlocked(command, `calibration-read-${view.error.code}`),
+      );
+    }
+    const exact = view.view;
+    if (!scopeIds.includes(exact.spatialScopeEntityId)) {
+      throw new WarningResponseReadFailure(
+        this.#readBlocked(command, "calibration-suggestion-not-found"),
+      );
+    }
+    return WarningResponseReadResultV1Schema.parse({
+      kind: "succeeded",
+      result: {
+        kind: "calibration-read",
+        actorId: command.actorId,
+        calibrationSuggestionRef: exact.calibrationSuggestionRef,
+        targetKind: exact.targetKind,
+        targetReleaseRef: exact.targetReleaseRef,
+        inputSnapshotRef: exact.inputSnapshotRef,
+        validationPolicyRef: exact.validationPolicyRef,
+        operations: exact.operations,
+        status: exact.status,
+        reviewTaskRef: exact.reviewTaskRef,
+        deviationRecordRef: exact.deviationRecordRef,
+        deviationRecordVersionId: exact.deviationRecordVersionId,
+        ...(exact.reviewDecisionRef === undefined
+          ? {}
+          : { reviewDecisionRef: exact.reviewDecisionRef }),
+        ...(exact.candidateArtifactRef === undefined
+          ? {}
+          : { candidateArtifactRef: exact.candidateArtifactRef }),
+        ...(exact.knowledgeRevisionRef === undefined
+          ? {}
+          : { knowledgeRevisionRef: exact.knowledgeRevisionRef }),
+        actions: await this.#readActions(command, [
+          "warning-response.calibration-review-outcome",
+          "warning-response.calibration-governance-draft",
+        ]),
       },
     });
   }

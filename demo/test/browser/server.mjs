@@ -26,7 +26,10 @@ import {
 } from "../../../packages/adapters/dist/auth/index.js";
 import { createContentAddressedArtifactStore } from "../../../packages/adapters/dist/artifacts/index.js";
 import { createPostgresEngineeringDataCatalogAdapter } from "../../../packages/adapters/dist/engineering-data/catalog/index.js";
-import { createPostgresEngineeringContextSourceRegistry } from "../../../packages/adapters/dist/engineering-data/context-source/index.js";
+import {
+  createAssessmentEntryContextReadPort,
+  createPostgresEngineeringContextSourceRegistry,
+} from "../../../packages/adapters/dist/engineering-data/context-source/index.js";
 import { createPostgresMonitoringStore } from "../../../packages/adapters/dist/engineering-data/monitoring/index.js";
 import {
   createPostgresRiskCandidateFinalizationAdapter,
@@ -50,6 +53,12 @@ import {
 } from "../../../packages/adapters/dist/postgres/index.js";
 import { createPostgresRuntime } from "../../../packages/adapters/dist/postgres/pool.js";
 import { PostgresRetrievalAdapter } from "../../../packages/adapters/dist/retrieval/index.js";
+import { createPostgresRiskAssessmentEngine } from "../../../packages/adapters/dist/risk-assessment/engine/index.js";
+import { createPostgresWarningLifecycleAdapter } from "../../../packages/adapters/dist/warning/index.js";
+import { createPostgresRecommendationAdapter } from "../../../packages/adapters/dist/recommendation/index.js";
+import { createPostgresResponseLifecycleAdapter } from "../../../packages/adapters/dist/response-lifecycle/index.js";
+import { createPostgresCalibrationAdapter } from "../../../packages/adapters/dist/calibration/index.js";
+import { createPostgresHumanDecisionFeedbackAdapter } from "../../../packages/adapters/dist/human-decision-feedback/index.js";
 import {
   createPostgresReviewAuditAdapter,
   createPostgresReviewQueueReadAdapter,
@@ -391,6 +400,25 @@ export const startDemoBrowserServer = async () => {
     const projectRevisionRef = projectRevision.result.revision.projectRevisionRef;
     const baseAuth = await operatorAuth("demo-browser-base", "engineering-data.context-read");
     const spatialScopeRef = baseAuth.spatialScopeRefs[0];
+
+    /**
+     * C25/C26/C29 共用的真实 C06 下游签发接缝（design D-06）。
+     *
+     * 按调用方请求的精确 branch 逐次签发，不合并能力也不裁剪：请求什么 branch 就签什么，
+     * 绑定不符时 C06 自己关闭失败。空间范围必须显式给出——human-session 路径不回填父
+     * 上下文范围，漏传会让下游上下文范围为空而不是全工程。
+     */
+    const authorizeDownstream = async (request) =>
+      (
+        await access.authorize({
+          invocation: { kind: "human-session", sessionToken: operatorSession.sessionToken },
+          invocationId: request.invocationId,
+          projectId: request.projectId,
+          branch: request.branch,
+          requestedSpatialScopeRefs: [...(request.requestedSpatialScopeRefs ?? [spatialScopeRef])],
+          requestedSourceVersionRefs: [...(request.requestedSourceVersionRefs ?? [])],
+        })
+      ).context;
     await access.administerProject({
       kind: "revise-membership",
       projectId: PROJECT_ID,
@@ -2415,6 +2443,7 @@ export const startDemoBrowserServer = async () => {
     const indexHtml = resolve(DEMO_DIST, "index.html");
     const spaPaths = [
       "/",
+      "/overview",
       "/login",
       "/project",
       "/project/documents",
@@ -2424,7 +2453,10 @@ export const startDemoBrowserServer = async () => {
       "/identification/graph",
       "/identification/process-model",
       "/assessment",
+      "/assessment/start",
       "/assessment/records",
+      "/assessment/matrix",
+      "/assessment/reassessments",
       "/warnings",
       "/warnings/tasks",
       "/knowledge",
@@ -2441,7 +2473,14 @@ export const startDemoBrowserServer = async () => {
     for (const spaPath of spaPaths) {
       api.get(spaPath, async (_request, reply) => sendFile(reply, indexHtml, 200));
     }
-    for (const prefix of ["/project", "/identification", "/assessment", "/warnings", "/risks"]) {
+    for (const prefix of [
+      "/project",
+      "/identification",
+      "/assessment",
+      "/warnings",
+      "/response",
+      "/risks",
+    ]) {
       api.get(`${prefix}/*`, async (_request, reply) => sendFile(reply, indexHtml, 200));
     }
     api.get("/assets/*", async (request, reply) => {

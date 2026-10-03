@@ -25,11 +25,21 @@ const DocumentListPage = lazy(() => import('./pages/DocumentListPage'))
 const DocumentDetailPage = lazy(() => import('./pages/DocumentDetailPage'))
 const MonitoringDetailPage = lazy(() => import('./pages/MonitoringDetailPage'))
 const PendingAssessmentPage = lazy(() => import('./pages/PendingAssessmentPage'))
+const StartAssessmentPage = lazy(() => import('./pages/StartAssessmentPage'))
+const AssessmentRunPage = lazy(() => import('./pages/AssessmentRunPage'))
 const AssessmentRecordsPage = lazy(() => import('./pages/AssessmentRecordsPage'))
 const AssessmentRecordPage = lazy(() => import('./pages/AssessmentRecordPage'))
+const AssessmentMatrixPage = lazy(() => import('./pages/AssessmentMatrixPage'))
+const ReassessmentsPage = lazy(() => import('./pages/ReassessmentsPage'))
 const WarningCenterPage = lazy(() => import('./pages/WarningCenterPage'))
 const WarningDetailPage = lazy(() => import('./pages/WarningDetailPage'))
 const ResponseTasksPage = lazy(() => import('./pages/ResponseTasksPage'))
+const WarningTaskPage = lazy(() => import('./pages/WarningTaskPage'))
+const RecommendationDetailPage = lazy(() => import('./pages/RecommendationDetailPage'))
+const ExecutionRegisterPage = lazy(() => import('./pages/ExecutionRegisterPage'))
+const PredictionDetailPage = lazy(() => import('./pages/PredictionDetailPage'))
+const FeedbackDetailPage = lazy(() => import('./pages/FeedbackDetailPage'))
+const CalibrationDetailPage = lazy(() => import('./pages/CalibrationDetailPage'))
 const RiskDetailPage = lazy(() => import('./pages/RiskDetailPage'))
 const MechanismLibraryPage = lazy(() => import('./pages/MechanismLibraryPage'))
 const RuleSetsPage = lazy(() => import('./pages/RuleSetsPage'))
@@ -142,6 +152,7 @@ export default function App() {
             }
           >
             <Route path="/" element={<RiskOverviewPage />} />
+            <Route path="/overview" element={<RiskOverviewPage />} />
             <Route path="/agent" element={<AgentWorkbenchPage />} />
 
             <Route path="/identification" element={<IdentificationRunsPage />} />
@@ -158,12 +169,27 @@ export default function App() {
             <Route path="/project/monitoring/:seriesId" element={<MonitoringDetailPage />} />
 
             <Route path="/assessment" element={<PendingAssessmentPage />} />
+            <Route path="/assessment/start" element={<StartAssessmentPage />} />
+            <Route path="/assessment/runs/:runId" element={<AssessmentRunPage />} />
             <Route path="/assessment/records" element={<AssessmentRecordsPage />} />
-            <Route path="/assessment/records/ASSESS-2026-001" element={<AssessmentRecordPage />} />
+            <Route path="/assessment/records/:recordId" element={<AssessmentRecordPage />} />
+            <Route path="/assessment/matrix" element={<AssessmentMatrixPage />} />
+            <Route path="/assessment/reassessments" element={<ReassessmentsPage />} />
 
+            {/* 静态 tasks 路由必须先于 :warningId，否则 /warnings/tasks 会被当作预警标识。 */}
             <Route path="/warnings" element={<WarningCenterPage />} />
-            <Route path="/warnings/WARN-2026-001" element={<WarningDetailPage />} />
             <Route path="/warnings/tasks" element={<ResponseTasksPage />} />
+            <Route path="/warnings/tasks/:taskId" element={<WarningTaskPage />} />
+            <Route path="/warnings/:warningId" element={<WarningDetailPage />} />
+
+            <Route
+              path="/response/recommendations/:recommendationId"
+              element={<RecommendationDetailPage />}
+            />
+            <Route path="/response/executions/register" element={<ExecutionRegisterPage />} />
+            <Route path="/response/predictions/:predictionId" element={<PredictionDetailPage />} />
+            <Route path="/response/feedback/:feedbackId" element={<FeedbackDetailPage />} />
+            <Route path="/response/calibrations/:suggestionId" element={<CalibrationDetailPage />} />
 
             <Route path="/knowledge" element={<Navigate to="/knowledge/mechanisms" replace />} />
             <Route path="/knowledge/mechanisms" element={<MechanismLibraryPage />} />

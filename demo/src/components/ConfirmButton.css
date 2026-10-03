@@ -35,6 +35,19 @@
   background: var(--bluegray-soft);
 }
 
+.confirm-btn[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.confirm-btn-reason {
+  display: block;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-2);
+  margin-top: 2px;
+}
+
 .confirm-overlay {
   position: fixed;
   inset: 0;

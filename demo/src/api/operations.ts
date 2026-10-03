@@ -1895,23 +1895,65 @@ const asRunSummaryItem = (item: ProjectionItemView): RunSummaryItemView | null =
   }
 }
 
-/** 评估/处置链运行摘要：登记 risk-overview 投影查询后读尽 run-summary 条目。 */
+export interface RiskOverviewRunPageView {
+  readonly items: readonly RunSummaryItemView[]
+  readonly queryResultRef: QueryResultRefView
+  readonly nextCursor?: string
+}
+
+/**
+ * P-OV-01 原 C31 投影的单页读取：登记 risk-overview 投影查询后按 `limit` 取一页，
+ * 原样保留 queryResultRef 与 nextCursor。页面按页推进，不读尽投影也不在页面上重新聚合。
+ */
+export const readRiskOverviewRunPage = async (
+  projectId: string,
+  projectRevisionRef: KindRef,
+  input: { readonly queryResultRef?: QueryResultRefView; readonly cursor?: string; readonly limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<RiskOverviewRunPageView> => {
+  // 续页复用原 queryResultRef：重新登记会得到另一个查询身份，等于丢掉原投影口径。
+  const queryResultRef =
+    input.queryResultRef ??
+    asQueryResultRef(
+      await submitQuery({
+        projectId,
+        branch: 'projection.query',
+        payload: { queryType: 'risk-overview', projectRevisionRef },
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    )
+  const page = asRecord(
+    await submitQuery({
+      projectId,
+      branch: 'projection.result-read',
+      payload: {
+        queryResultRef,
+        limit: input.limit ?? 50,
+        ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+      },
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  )
+  if (page.kind !== 'page') throw drift()
+  return {
+    items: asArray(page.items)
+      .map((item) => asRunSummaryItem(asRecord(item) as ProjectionItemView))
+      .filter((item): item is RunSummaryItemView => item !== null),
+    queryResultRef,
+    ...(page.nextCursor === undefined ? {} : { nextCursor: asString(page.nextCursor) }),
+  }
+}
+
+/**
+ * 链运行摘要（run-records 页沿用）：等价于取第一页。调用方若要按页推进请用
+ * `readRiskOverviewRunPage`，本页只呈现第一页并显式说明分页口径。
+ */
 export const readRiskOverviewRuns = async (
   projectId: string,
   projectRevisionRef: KindRef,
   signal?: AbortSignal,
 ): Promise<RunSummaryItemView[]> =>
-  (
-    await readProjectionItems(
-      projectId,
-      'risk-overview',
-      { queryType: 'risk-overview', projectRevisionRef },
-      signal,
-    )
-  ).flatMap((item) => {
-    const summary = asRunSummaryItem(item)
-    return summary === null ? [] : [summary]
-  })
+  [...(await readRiskOverviewRunPage(projectId, projectRevisionRef, {}, signal)).items]
 
 // ============================================================================
 // C34 风险评估读面（design D-04、D-05）
@@ -1923,18 +1965,44 @@ export const readRiskOverviewRuns = async (
 
 const C34_ASSESSMENT_READ_BRANCH = 'risk-assessment.read' as const
 
+/** 动作可用性四态：`hidden` 不渲染，`denied` 置灰，`business-unavailable` 呈现原因。 */
+export type ReadActionAvailability =
+  | 'allowed'
+  | 'denied'
+  | 'business-unavailable'
+  | 'hidden'
+
+const READ_ACTION_AVAILABILITIES: readonly ReadActionAvailability[] = [
+  'allowed',
+  'denied',
+  'business-unavailable',
+  'hidden',
+]
+
 export interface ReadActionView {
   readonly branch: string
-  readonly availability: 'allowed' | 'denied'
+  readonly availability: ReadActionAvailability
+  readonly reasonCode?: string
 }
 
 const asActions = (value: unknown): ReadActionView[] =>
   asArray(value).map((item) => {
     const record = asRecord(item)
     const availability = asString(record.availability)
-    if (availability !== 'allowed' && availability !== 'denied') throw drift()
-    return { branch: asString(record.branch), availability }
+    if (!READ_ACTION_AVAILABILITIES.includes(availability as ReadActionAvailability)) throw drift()
+    return {
+      branch: asString(record.branch),
+      availability: availability as ReadActionAvailability,
+      ...(record.reasonCode === undefined ? {} : { reasonCode: asString(record.reasonCode) }),
+    }
   })
+
+/** 写动作门控：`allowed` 才可渲染为可提交控件，其余给出原因而不渲染为可用按钮。 */
+export const actionAvailability = (
+  actions: readonly ReadActionView[],
+  branch: string,
+): ReadActionAvailability | null =>
+  actions.find((action) => action.branch === branch)?.availability ?? null
 
 /** 只读游标是不透明串：页面原样回传，不解析、不改写。 */
 const asCursor = (value: unknown): { readonly nextCursor?: string } =>
@@ -2190,6 +2258,60 @@ export const readPendingRiskCatalog = async (
   }
 }
 
+export interface ApplicabilityCatalogItemView {
+  readonly snapshotRef: KindRef
+  readonly metadata: ApplicabilityMetadataView
+}
+
+const asApplicabilityCatalogItem = (value: unknown): ApplicabilityCatalogItemView => {
+  const record = asRecord(value)
+  return {
+    snapshotRef: asKindRef(record.snapshotRef),
+    metadata: asApplicabilityMetadata(record.metadata),
+  }
+}
+
+export interface ExternalEventCatalogItemView {
+  readonly riskInput: KindRef
+  readonly spatialScopeRef: KindRef
+  readonly sourceVersionRefs: readonly KindRef[]
+  readonly evidenceReferences: readonly EvidenceReferenceView[]
+}
+
+const asExternalEventCatalogItem = (value: unknown): ExternalEventCatalogItemView => {
+  const record = asRecord(value)
+  return {
+    riskInput: asKindRef(record.riskInput),
+    spatialScopeRef: asKindRef(record.spatialScopeRef),
+    sourceVersionRefs: asArray(record.sourceVersionRefs).map(asKindRef),
+    evidenceReferences: asEvidenceList(record.evidenceReferences),
+  }
+}
+
+/**
+ * 部署注入的运行策略：不存在合格配置时为 unavailable，页面不得替用户补默认引用，
+ * 也不得在没有精确版本的情况下启动。
+ */
+export type EntryRunPolicyView =
+  | {
+      readonly kind: 'available'
+      readonly graphVersion: VersionRef
+      readonly retryPolicyRef: VersionRef
+    }
+  | { readonly kind: 'unavailable'; readonly reasonCode: string }
+
+const asRunPolicy = (value: unknown): EntryRunPolicyView => {
+  const record = asRecord(value)
+  const kind = asString(record.kind)
+  if (kind === 'unavailable') return { kind, reasonCode: asString(record.reasonCode) }
+  if (kind !== 'available') throw drift()
+  return {
+    kind,
+    graphVersion: asConfigRef(record.graphVersion),
+    retryPolicyRef: asConfigRef(record.retryPolicyRef),
+  }
+}
+
 export interface EntryContextView {
   readonly kind: 'entry-context'
   readonly actorId: string
@@ -2197,11 +2319,11 @@ export interface EntryContextView {
   readonly projectRevisionRef: KindRef
   readonly spatialScopeRef: KindRef
   readonly riskInput?: KindRef
-  readonly applicabilityItems: readonly unknown[]
-  readonly externalEventItems: readonly unknown[]
+  readonly applicabilityItems: readonly ApplicabilityCatalogItemView[]
+  readonly externalEventItems: readonly ExternalEventCatalogItemView[]
   readonly applicabilityNextCursor?: string
   readonly externalEventNextCursor?: string
-  readonly runPolicy: unknown
+  readonly runPolicy: EntryRunPolicyView
   readonly actions: readonly ReadActionView[]
 }
 
@@ -2243,15 +2365,15 @@ export const readAssessmentEntryContext = async (
     projectRevisionRef: asKindRef(result.projectRevisionRef),
     spatialScopeRef: asKindRef(result.spatialScopeRef),
     ...(result.riskInput === undefined ? {} : { riskInput: asKindRef(result.riskInput) }),
-    applicabilityItems: asArray(result.applicabilityItems),
-    externalEventItems: asArray(result.externalEventItems),
+    applicabilityItems: asArray(result.applicabilityItems).map(asApplicabilityCatalogItem),
+    externalEventItems: asArray(result.externalEventItems).map(asExternalEventCatalogItem),
     ...(result.applicabilityNextCursor === undefined
       ? {}
       : { applicabilityNextCursor: asString(result.applicabilityNextCursor) }),
     ...(result.externalEventNextCursor === undefined
       ? {}
       : { externalEventNextCursor: asString(result.externalEventNextCursor) }),
-    runPolicy: result.runPolicy,
+    runPolicy: asRunPolicy(result.runPolicy),
     actions: asActions(result.actions),
   }
 }
@@ -3404,6 +3526,223 @@ export const readWarningResponseResolve = async (
 // 冻结完整命令信封：引用带 kind 与 version，不在页面里拼 HTTP 字段。
 // commandId 由调用方给出并作幂等键，原载荷重试不改键；取消不得产生零提交。
 // ============================================================================
+
+/**
+ * 初评/重评统一走 `workflow.start-run`：两种入口同一分支、同一控制字段，
+ * 重评额外要求前驱、原因与变化集合，页面不得自行推断变化。
+ */
+export type StartAssessmentEntryMode = 'assess' | 'reassess'
+
+export interface StartAssessmentInput {
+  readonly commandId: string
+  readonly graphVersion: VersionRef
+  readonly retryPolicyRef: VersionRef
+  readonly riskInput: KindRef
+  readonly spatialScopeRef: KindRef
+  readonly projectRevisionRef?: KindRef
+  readonly applicabilityMetadataSnapshotRef: KindRef
+  readonly monitoringSnapshotRefs?: readonly KindRef[]
+  readonly previousAssessmentRecordRef?: KindRef
+  readonly reason?: string
+  readonly changedInputRefs?: readonly KindRef[]
+}
+
+/** P-RA-02 启动初评或重评；返回登记的运行引用，页面据此跳运行深链。 */
+export const submitStartAssessment = async (
+  projectId: string,
+  input: StartAssessmentInput,
+  signal?: AbortSignal,
+): Promise<{ readonly workflowRunRef: KindRef; readonly entryMode: string }> => {
+  const reassess = input.previousAssessmentRecordRef !== undefined
+  if (reassess && (input.reason === undefined || (input.changedInputRefs?.length ?? 0) === 0)) {
+    throw new ApiError('CONTRACT_INVALID')
+  }
+  const result = asRecord(
+    await submitCommand({
+      projectId,
+      branch: 'workflow.start-run',
+      commandId: input.commandId,
+      payload: reassess
+        ? {
+            graphVersion: input.graphVersion,
+            retryPolicyRef: input.retryPolicyRef,
+            entryMode: 'reassess',
+            previousAssessmentRecordRef: input.previousAssessmentRecordRef,
+            reason: input.reason,
+            changedInputRefs: [...(input.changedInputRefs ?? [])],
+            riskInput: input.riskInput,
+            spatialScopeRef: input.spatialScopeRef,
+            ...(input.projectRevisionRef === undefined
+              ? {}
+              : { projectRevisionRef: input.projectRevisionRef }),
+            applicabilityMetadataSnapshotRef: input.applicabilityMetadataSnapshotRef,
+            ...(input.monitoringSnapshotRefs === undefined
+              ? {}
+              : { monitoringSnapshotRefs: [...input.monitoringSnapshotRefs] }),
+          }
+        : {
+            graphVersion: input.graphVersion,
+            retryPolicyRef: input.retryPolicyRef,
+            entryMode: 'assess',
+            riskInput: input.riskInput,
+            spatialScopeRef: input.spatialScopeRef,
+            ...(input.projectRevisionRef === undefined
+              ? {}
+              : { projectRevisionRef: input.projectRevisionRef }),
+            applicabilityMetadataSnapshotRef: input.applicabilityMetadataSnapshotRef,
+            ...(input.monitoringSnapshotRefs === undefined
+              ? {}
+              : { monitoringSnapshotRefs: [...input.monitoringSnapshotRefs] }),
+          },
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  )
+  return {
+    workflowRunRef: asKindRef(result.workflowRunRef),
+    entryMode: asString(result.entryMode),
+  }
+}
+
+/** P-WR-02 预警确认：只形成确认事实，不关闭任务。 */
+export const submitWarningAcknowledgement = async (
+  projectId: string,
+  input: {
+    readonly commandId: string
+    readonly warningRecordRef: KindRef
+    readonly warningResponseTaskRef: KindRef
+  },
+  signal?: AbortSignal,
+): Promise<{ readonly warningRecordRef: KindRef }> => {
+  const result = asRecord(
+    await submitCommand({
+      projectId,
+      branch: 'warning-response.acknowledge',
+      commandId: input.commandId,
+      payload: {
+        warningRecordRef: input.warningRecordRef,
+        warningResponseTaskRef: input.warningResponseTaskRef,
+      },
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  )
+  return { warningRecordRef: asKindRef(result.warningRecordRef) }
+}
+
+/**
+ * P-RS-01 采纳或拒绝正式建议：拒绝不启动预测。采纳必须带执行前监测快照的精确选择器，
+ * 页面不提交“最新监测”。
+ */
+export const submitRecommendationDecision = async (
+  projectId: string,
+  input: {
+    readonly commandId: string
+    readonly responseRecommendationRef: KindRef
+    readonly decision: 'adopted' | 'declined'
+    readonly reasonCode: string
+    readonly preActionMonitoringSnapshotRef?: KindRef
+  },
+  signal?: AbortSignal,
+): Promise<{ readonly routeDecisionRef: KindRef; readonly decision: string }> => {
+  if (input.decision === 'adopted' && input.preActionMonitoringSnapshotRef === undefined) {
+    throw new ApiError('CONTRACT_INVALID')
+  }
+  const result = asRecord(
+    await submitCommand({
+      projectId,
+      branch: 'warning-response.adopt-recommendation',
+      commandId: input.commandId,
+      payload: {
+        responseRecommendationRef: input.responseRecommendationRef,
+        decision: input.decision,
+        reasonCode: input.reasonCode,
+        ...(input.preActionMonitoringSnapshotRef === undefined
+          ? {}
+          : { preActionMonitoringSnapshotRef: input.preActionMonitoringSnapshotRef }),
+      },
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  )
+  return {
+    routeDecisionRef: asKindRef(result.routeDecisionRef),
+    decision: asString(result.decision),
+  }
+}
+
+/** 证据引用按公共 Schema 组装：`{locator, sourceVersion}`，页面传入已登记的精确来源段与来源版本。 */
+export interface EvidenceReferenceInput {
+  readonly locator: { readonly sourceSegmentId: string }
+  readonly sourceVersion: VersionRef
+}
+
+/**
+ * P-RS-02 执行登记：两类来源都登记人工事实，采纳路径的建议不会被当作执行记录重复登记。
+ * 执行身份取当前 verified actor，不提供自由编辑。
+ */
+export const submitExecutionRecord = async (
+  projectId: string,
+  input: {
+    readonly commandId: string
+    readonly actionSource:
+      | {
+          readonly kind: 'adopted-recommendation'
+          readonly responseRecommendationRef: KindRef
+        }
+      | { readonly kind: 'independent-action'; readonly measureReleaseRefs: readonly KindRef[] }
+    readonly executedByActorId: string
+    readonly occurredAt: string
+    readonly evidenceReferences: readonly EvidenceReferenceInput[]
+  },
+  signal?: AbortSignal,
+): Promise<{ readonly executionRecordRef: KindRef }> => {
+  if (input.evidenceReferences.length === 0) throw new ApiError('CONTRACT_INVALID')
+  const result = asRecord(
+    await submitCommand({
+      projectId,
+      branch: 'warning-response.record-execution',
+      commandId: input.commandId,
+      payload: {
+        actionSource: input.actionSource,
+        executedByActorId: input.executedByActorId,
+        recordedByActorId: input.executedByActorId,
+        occurredAt: input.occurredAt,
+        evidenceReferences: input.evidenceReferences,
+      },
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  )
+  return { executionRecordRef: asKindRef(result.executionRecordRef) }
+}
+
+/** P-RS-02 反馈登记：提交实际评估的精确选择器，页面不提交 P/C 数值。 */
+export const submitResponseFeedback = async (
+  projectId: string,
+  input: {
+    readonly commandId: string
+    readonly executionRecordRef: KindRef
+    readonly postActionMonitoringSnapshotRef: KindRef
+    readonly feedbackArtifactRef: KindRef
+    readonly occurredAt: string
+    readonly actualAssessmentRecordRef: KindRef
+  },
+  signal?: AbortSignal,
+): Promise<{ readonly feedbackRef: KindRef }> => {
+  const result = asRecord(
+    await submitCommand({
+      projectId,
+      branch: 'warning-response.record-feedback',
+      commandId: input.commandId,
+      payload: {
+        executionRecordRef: input.executionRecordRef,
+        postActionMonitoringSnapshotRef: input.postActionMonitoringSnapshotRef,
+        feedbackArtifactRef: input.feedbackArtifactRef,
+        occurredAt: input.occurredAt,
+        actualAssessmentRecordRef: input.actualAssessmentRecordRef,
+      },
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  )
+  return { feedbackRef: asKindRef(result.feedbackRef) }
+}
 
 export type CalibrationReviewOutcomeV1 = 'reject' | 'return-for-revision'
 

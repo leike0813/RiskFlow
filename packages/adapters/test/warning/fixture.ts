@@ -368,6 +368,7 @@ export const startWarningLifecycleFixture = async (
   const unwiredRecommendations: WarningResponseRecommendationReaderV1 = {
     readRecommendationView: () => unwiredOwningReader("recommendations.readRecommendationView"),
     readRecommendationRefsForTask: () => unwiredRelationPage("readRecommendationRefsForTask"),
+    resolveRecommendationRefs: () => unwiredRelationPage("resolveRecommendationRefs"),
   };
   const unwiredRouteDecisions: WarningResponseRouteDecisionReaderV1 = {
     readRouteDecision: () => unwiredOwningReader("routeDecisions.readRouteDecision"),
@@ -376,6 +377,7 @@ export const startWarningLifecycleFixture = async (
     readCalibrationView: () => unwiredOwningReader("calibration.readCalibrationView"),
     readCalibrationRefsForDeviationFacts: () =>
       unwiredRelationPage("readCalibrationRefsForDeviationFacts"),
+    resolveCalibrationRefs: () => unwiredRelationPage("resolveCalibrationRefs"),
   };
   const unwiredLifecycle: WarningResponseLifecycleReaderV1 = {
     readForecastView: () => unwiredOwningReader("lifecycle.readForecastView"),
@@ -391,6 +393,7 @@ export const startWarningLifecycleFixture = async (
       unwiredRelationPage("readFeedbackRefsForRecommendations"),
     readDeviationFactRefsForRecommendations: () =>
       unwiredRelationPage("readDeviationFactRefsForRecommendations"),
+    resolveLifecycleRefs: () => unwiredRelationPage("resolveLifecycleRefs"),
   };
   const adapter = createPostgresWarningLifecycleAdapter({
     db,

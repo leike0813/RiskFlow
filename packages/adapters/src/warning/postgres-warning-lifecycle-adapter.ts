@@ -330,6 +330,8 @@ const c26ReadCommand = <O extends WarningResponseReadOperationV1>(
 /* ------------------------------------------------ C34 关系页（task-read）分派与游标 */
 
 const C26_RELATION_PAGE_SIZE_V1 = 50;
+/** 解析结果有界：实体标识的登记版本数由公共上限约束。 */
+const C26_RESOLVE_MAX_REFS_V1 = 50;
 
 /** 七组关系各自独立分页；游标必须声明它属于哪一组。 */
 type C26RelationKindV1 =
@@ -433,6 +435,29 @@ const decodeC26RelationCursor = (
 
 const encodeC26RelationCursor = (cursor: C26RelationCursorV1): string =>
   Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+
+/** 解析结果按调用方声明的类别投影成公共引用；不跨类别混入。 */
+const c26ResolveRef = (
+  ref: { readonly kind: string; readonly reference: VersionReference },
+  targetKind:
+    "warning" | "task" | "recommendation" | "forecast" | "execution" | "feedback" | "calibration",
+): ContractReferenceV1 => {
+  const expected = RESOLVE_REF_KINDS_V1[targetKind];
+  if (ref.kind !== expected) {
+    throw new TypeError(`resolve kind mismatch: ${ref.kind} is not ${expected}`);
+  }
+  return { kind: ref.kind, reference: ref.reference } as ContractReferenceV1;
+};
+
+const RESOLVE_REF_KINDS_V1 = {
+  warning: "warning-record",
+  task: "warning-response-task",
+  recommendation: "response-recommendation",
+  forecast: "effect-forecast",
+  execution: "execution-record",
+  feedback: "feedback",
+  calibration: "calibration-suggestion",
+} as const;
 
 /** 公共结果按关系组给出各自的续页游标；没有下一页就不给该游标。 */
 const c26RelationCursorField = (
@@ -759,6 +784,8 @@ export interface WarningResponseRecommendationReaderV1 {
       readonly warningResponseTaskRef: WarningResponseTaskRefV1;
     },
   ): Promise<RelationPageResultV1>;
+  /** 把实体标识解析为精确建议引用；不属于本模块时返回空集合。 */
+  resolveRecommendationRefs(input: ResolveRefsInputV1): Promise<ResolveRefsResultV1>;
 }
 
 /** C26 组合窄读时交给所属方的全部输入：授权、调用身份与精确对象引用。 */
@@ -784,6 +811,8 @@ export interface WarningResponseLifecycleReaderV1 {
   readDeviationFactRefsForRecommendations(
     input: RelationPageInputV1,
   ): Promise<RelationPageResultV1>;
+  /** 把实体标识解析为精确预测、执行与反馈引用；不属于本模块时返回空集合。 */
+  resolveLifecycleRefs(input: ResolveRefsInputV1): Promise<ResolveRefsResultV1>;
 }
 
 /** C29 组合 `calibration-read` 时从 C29 取得的精确事实；草案未登记时不给草案引用。 */
@@ -832,6 +861,24 @@ export type RelationPageInputV1 = {
  * 关系页引用：只带 kind 与精确版本。公共引用联合的成员形状并不统一
  * （事件引用用 eventId），关系页不复用它，公共投影时再按各自 Schema 解析。
  */
+/**
+ * `resolve` 的所属方输入（design D-05）：调用方只给实体标识与可选版本，
+ * 拥有方按自己的表判定它是不是自己登记的精确引用。
+ */
+export type ResolveRefsInputV1 = {
+  readonly projectId: string;
+  readonly actorId: string;
+  readonly requestedAt: string;
+  readonly invocationId: string;
+  readonly authorization: AuthorizationContextV1;
+  readonly entityId: string;
+  readonly versionId: string | undefined;
+};
+
+export type ResolveRefsResultV1 =
+  | { readonly kind: "succeeded"; readonly refs: readonly RelationPageRefV1[] }
+  | { readonly kind: "failed"; readonly error: { readonly code: string } };
+
 export type RelationPageRefV1 = { readonly kind: string; readonly reference: VersionReference };
 
 /** 关系锚点：只要求调用方给出精确版本身份，kind 由所属方自己判定。 */
@@ -860,6 +907,8 @@ export interface WarningResponseCalibrationReaderV1 {
   }): Promise<C29CalibrationViewResultV1>;
   /** 私有偏差事实下的校准建议引用：关系页只取引用，不取正文。 */
   readCalibrationRefsForDeviationFacts(input: RelationPageInputV1): Promise<RelationPageResultV1>;
+  /** 把实体标识解析为精确校准建议引用；不属于本模块时返回空集合。 */
+  resolveCalibrationRefs(input: ResolveRefsInputV1): Promise<ResolveRefsResultV1>;
 }
 
 /** 组合根交给 C28 的全部输入：授权、调用身份与精确对象引用。 */
@@ -2013,6 +2062,8 @@ export class PostgresWarningLifecycleAdapter
         return this.#readOverview(c26ReadCommand<"overview">(command), verified);
       case "task-read":
         return this.#readTask(c26ReadCommand<"task-read">(command), verified);
+      case "resolve":
+        return this.#readResolve(c26ReadCommand<"resolve">(command), verified);
       case "warning-read":
         return this.#readWarning(c26ReadCommand<"warning-read">(command), verified);
       case "recommendation-read":
@@ -2586,6 +2637,106 @@ export class PostgresWarningLifecycleAdapter
       lastRef: page.lastRef,
       lastRecordedAt: page.lastRecordedAt,
     };
+  }
+
+  /**
+   * `resolve`（design D-05）：把页面上的实体标识解析为精确引用与版本。
+   * 预警与任务取自 C26 自有表，建议、预测、执行、反馈与校准分别经所属接缝解析；
+   * 只返回调用方声明的那一类，别的事件域一律不混入。
+   */
+  async #readResolve(
+    command: C26ReadCommandV1<"resolve">,
+    verified: AuthorizationContextV1,
+  ): Promise<WarningResponseReadResultV1> {
+    const scopeIds = this.#readableScopeIds(command, verified);
+    const payload = command.payload;
+    const resolveInput = async (invocation: string) => ({
+      projectId: command.projectId,
+      actorId: command.actorId,
+      requestedAt: command.requestedAt,
+      invocationId: `${command.queryId}:${invocation}`,
+      authorization: await this.#authorizeForComposition(
+        command,
+        `${command.queryId}:${invocation}`,
+      ),
+      entityId: payload.entityId,
+      versionId: payload.versionId,
+    });
+    const own = async (): Promise<readonly RelationPageRefV1[]> => {
+      if (payload.targetKind === "warning") {
+        const rows = await sql<{ entity_id: string; version_id: string }>`
+          SELECT w.warning_record_id AS entity_id, w.version_id
+            FROM business.warning_records w
+           WHERE w.project_id = ${command.projectId}
+             AND w.spatial_scope_entity_id = ANY(${scopeIds})
+             AND w.warning_record_id = ${payload.entityId}
+             ${payload.versionId === undefined ? sql`` : sql`AND w.version_id = ${payload.versionId}`}
+           ORDER BY w.version_id ASC
+           LIMIT ${C26_RESOLVE_MAX_REFS_V1}
+        `.execute(this.#db);
+        return rows.rows.map((row) => ({
+          kind: "warning-record",
+          reference: { entityId: row.entity_id, versionId: row.version_id },
+        }));
+      }
+      const rows = await sql<{ entity_id: string; version_id: string }>`
+        SELECT t.task_id AS entity_id, t.current_version_id AS version_id
+          FROM business.warning_response_tasks t
+         WHERE t.project_id = ${command.projectId}
+           AND t.spatial_scope_entity_id = ANY(${scopeIds})
+           AND t.task_id = ${payload.entityId}
+           ${payload.versionId === undefined ? sql`` : sql`AND t.current_version_id = ${payload.versionId}`}
+         ORDER BY t.task_id ASC
+         LIMIT ${C26_RESOLVE_MAX_REFS_V1}
+      `.execute(this.#db);
+      return rows.rows.map((row) => ({
+        kind: "warning-response-task",
+        reference: { entityId: row.entity_id, versionId: row.version_id },
+      }));
+    };
+    const refs =
+      payload.targetKind === "warning" || payload.targetKind === "task"
+        ? await own()
+        : payload.targetKind === "recommendation"
+          ? await this.#requireResolved(
+              command,
+              await this.#recommendations.resolveRecommendationRefs(
+                await resolveInput("recommendation"),
+              ),
+            )
+          : payload.targetKind === "calibration"
+            ? await this.#requireResolved(
+                command,
+                await this.#calibration.resolveCalibrationRefs(await resolveInput("calibration")),
+              )
+            : await this.#requireResolved(
+                command,
+                await this.#lifecycle.resolveLifecycleRefs(await resolveInput("lifecycle")),
+              );
+    return WarningResponseReadResultV1Schema.parse({
+      kind: "succeeded",
+      result: {
+        kind: "resolve",
+        actorId: command.actorId,
+        targetKind: payload.targetKind,
+        refs: refs.map((ref) => c26ResolveRef(ref, payload.targetKind)),
+      },
+    });
+  }
+
+  /** 任一所属方解析失败即整体失败：不返回部分解析结果。 */
+  async #requireResolved(
+    command: WarningResponseReadQueryV1,
+    result: ResolveRefsResultV1,
+  ): Promise<readonly RelationPageRefV1[]> {
+    if (result.kind === "failed") {
+      throw new WarningResponseReadFailure(
+        result.error.code === "AUTHORIZATION_DENIED"
+          ? this.#readDenied(command)
+          : this.#readBlocked(command, `resolve-${result.error.code}`),
+      );
+    }
+    return result.refs;
   }
 
   async #readWarning(

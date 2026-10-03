@@ -55,6 +55,8 @@ import type {
   RelationAnchorV1,
   RelationPageInputV1,
   RelationPageResultV1,
+  ResolveRefsInputV1,
+  ResolveRefsResultV1,
   LifecycleReadInputV1,
   WarningResponseLifecycleReaderV1,
 } from "../warning/postgres-warning-lifecycle-adapter.js";
@@ -541,6 +543,9 @@ const parseExecutionRecord = (row: ExecutionRow, executionRef: VersionReference)
 
 type SqlFragment = ReturnType<typeof sql>;
 
+/** 解析结果有界：实体标识在三类关系里的登记版本数由公共上限约束。 */
+const C28_RESOLVE_MAX_REFS_V1 = 50;
+
 /** 关系页查询行：标识、版本与登记时点，登记时点只用于构造续页位置。 */
 interface C28RelationRowV1 {
   readonly entity_id: string;
@@ -548,18 +553,11 @@ interface C28RelationRowV1 {
   readonly recorded_at: Date | string;
 }
 
-/** 关系页返回的引用 kind：只允许公共引用联合里真实存在的这些。 */
-type RelationPageRefKindV1 =
-  | "route-decision"
-  | "effect-forecast"
-  | "execution-record"
-  | "feedback"
-  | "response-deviation-fact"
-  | "calibration-suggestion"
-  | "response-recommendation";
-
-/** 锚点集合为空：这类关系尚不存在，返回空页而不是跨域反查。 */
-const emptyRelationPage = (kind: string): RelationPageResultV1 => ({
+/**
+ * 锚点集合为空：这类关系尚不存在，返回空页而不是跨域反查。
+ * 空页不携带 kind——没有任何已登记引用时，kind 没有事实来源。
+ */
+const emptyRelationPage = (): RelationPageResultV1 => ({
   kind: "succeeded",
   refs: [],
   hasMore: false,
@@ -3098,7 +3096,7 @@ export class PostgresResponseLifecycleAdapter
   ): Promise<RelationPageResultV1> {
     const scopeIds = await this.#relationScopeIds(input);
     if (typeof scopeIds === "string") return { kind: "failed", error: { code: scopeIds } };
-    if (scopeIds === undefined) return emptyRelationPage("route-decision");
+    if (scopeIds === undefined) return emptyRelationPage();
     return this.#relationPage(
       "route-decision",
       input,
@@ -3125,7 +3123,7 @@ export class PostgresResponseLifecycleAdapter
   ): Promise<RelationPageResultV1> {
     const scopeIds = await this.#relationScopeIds(input);
     if (typeof scopeIds === "string") return { kind: "failed", error: { code: scopeIds } };
-    if (scopeIds === undefined) return emptyRelationPage("effect-forecast");
+    if (scopeIds === undefined) return emptyRelationPage();
     return this.#relationPage(
       "effect-forecast",
       input,
@@ -3152,7 +3150,7 @@ export class PostgresResponseLifecycleAdapter
   ): Promise<RelationPageResultV1> {
     const scopeIds = await this.#relationScopeIds(input);
     if (typeof scopeIds === "string") return { kind: "failed", error: { code: scopeIds } };
-    if (scopeIds === undefined) return emptyRelationPage("execution-record");
+    if (scopeIds === undefined) return emptyRelationPage();
     return this.#relationPage(
       "execution-record",
       input,
@@ -3183,7 +3181,7 @@ export class PostgresResponseLifecycleAdapter
   ): Promise<RelationPageResultV1> {
     const scopeIds = await this.#relationScopeIds(input);
     if (typeof scopeIds === "string") return { kind: "failed", error: { code: scopeIds } };
-    if (scopeIds === undefined) return emptyRelationPage("feedback");
+    if (scopeIds === undefined) return emptyRelationPage();
     return this.#relationPage(
       "feedback",
       input,
@@ -3216,7 +3214,7 @@ export class PostgresResponseLifecycleAdapter
     const scopeIds = await this.#relationScopeIds(input);
     if (typeof scopeIds === "string") return { kind: "failed", error: { code: scopeIds } };
     if (scopeIds === undefined) {
-      return emptyRelationPage("response-deviation-fact");
+      return emptyRelationPage();
     }
     return this.#relationPage(
       "response-deviation-fact",
@@ -3237,6 +3235,51 @@ export class PostgresResponseLifecycleAdapter
        LIMIT ${input.pageSize + 1}
     `,
     );
+  }
+
+  /**
+   * 实体标识解析：只认本模块登记的预测、执行与反馈。
+   * 同一标识落在多个类别时如实给出全部类别，不替调用方猜它属于哪一类。
+   */
+  async resolveLifecycleRefs(input: ResolveRefsInputV1): Promise<ResolveRefsResultV1> {
+    const verified = await this.#verifyRead(input, "warning-response.read");
+    if (verified === undefined) return { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } };
+    const scopeIds = verified.spatialScopeRefs.map((scope) => scope.reference.entityId);
+    if (scopeIds.length === 0) {
+      return { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } };
+    }
+    const versionFilter = input.versionId;
+    const rows = await sql<{ kind: string; version_id: string }>`
+      SELECT 'effect-forecast' AS kind, f.version_id
+        FROM business.response_forecast_outcomes f
+       WHERE f.project_id = ${input.projectId}
+         AND f.spatial_scope_entity_id = ANY(${scopeIds})
+         AND f.forecast_id = ${input.entityId}
+         ${versionFilter === undefined ? sql`` : sql`AND f.version_id = ${versionFilter}`}
+       UNION ALL
+      SELECT 'execution-record' AS kind, x.version_id
+        FROM business.response_execution_records x
+       WHERE x.project_id = ${input.projectId}
+         AND x.spatial_scope_entity_id = ANY(${scopeIds})
+         AND x.execution_id = ${input.entityId}
+         ${versionFilter === undefined ? sql`` : sql`AND x.version_id = ${versionFilter}`}
+       UNION ALL
+      SELECT 'feedback' AS kind, b.version_id
+        FROM business.response_feedback_records b
+       WHERE b.project_id = ${input.projectId}
+         AND b.spatial_scope_entity_id = ANY(${scopeIds})
+         AND b.feedback_id = ${input.entityId}
+         ${versionFilter === undefined ? sql`` : sql`AND b.version_id = ${versionFilter}`}
+       ORDER BY 1 ASC, 2 ASC
+       LIMIT ${C28_RESOLVE_MAX_REFS_V1}
+    `.execute(this.#db);
+    return {
+      kind: "succeeded",
+      refs: rows.rows.map((row) => ({
+        kind: row.kind,
+        reference: { entityId: input.entityId, versionId: row.version_id },
+      })),
+    };
   }
 
   /** 关系页授权：与精确读同一分支与同一复验；未授权不读任何行。 */

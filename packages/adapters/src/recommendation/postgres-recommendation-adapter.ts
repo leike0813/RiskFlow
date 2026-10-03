@@ -96,11 +96,16 @@ import {
 
 import { RecommendationValidationEvidenceV1Schema } from "@riskflow/core/recommendation";
 import type { WarningResponseTaskRefV1 } from "@riskflow/contracts/ports";
+
+/** 解析结果有界：实体标识的登记版本数由公共上限约束。 */
+const C26_RESOLVE_MAX_REFS_V1 = 50;
 import type {
   C26RecommendationViewResultV1,
   RecommendationReadViewInputV1,
   RelationPageInputV1,
   RelationPageResultV1,
+  ResolveRefsInputV1,
+  ResolveRefsResultV1,
   WarningResponseRecommendationReaderV1,
 } from "../warning/postgres-warning-lifecycle-adapter.js";
 import { mapPostgresError } from "../postgres/pool.js";
@@ -2427,6 +2432,35 @@ export class PostgresRecommendationAdapter
       refs: page.map((row) => ({
         kind: "response-recommendation",
         reference: { entityId: row.entity_id, versionId: row.version_id },
+      })),
+    };
+  }
+
+  /** 实体标识解析：只认本模块登记的建议，版本缺省时给出该实体的全部登记版本。 */
+  async resolveRecommendationRefs(input: ResolveRefsInputV1): Promise<ResolveRefsResultV1> {
+    const verified = await this.#verifyRead(input, "warning-response.read").catch(
+      (): undefined => undefined,
+    );
+    if (verified === undefined) return { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } };
+    const scopeIds = verified.spatialScopeRefs.map((scope) => scope.reference.entityId);
+    if (scopeIds.length === 0) {
+      return { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } };
+    }
+    const rows = await sql<{ version_id: string }>`
+      SELECT r.version_id
+        FROM business.response_recommendations r
+       WHERE r.project_id = ${input.projectId}
+         AND r.spatial_scope_entity_id = ANY(${scopeIds})
+         AND r.recommendation_id = ${input.entityId}
+         ${input.versionId === undefined ? sql`` : sql`AND r.version_id = ${input.versionId}`}
+       ORDER BY r.version_id ASC
+       LIMIT ${C26_RESOLVE_MAX_REFS_V1}
+    `.execute(this.#db);
+    return {
+      kind: "succeeded",
+      refs: rows.rows.map((row) => ({
+        kind: "response-recommendation",
+        reference: { entityId: input.entityId, versionId: row.version_id },
       })),
     };
   }

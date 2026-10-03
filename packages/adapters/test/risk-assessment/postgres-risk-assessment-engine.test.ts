@@ -8,7 +8,11 @@ import {
   type AssessmentInputSnapshotRefV1,
   type AssessmentPreparationSnapshotRefV1,
   type AuthorizationContextV1,
+  type RiskAssessmentReadQueryV1,
+  type RiskAssessmentReadResultV1,
   type RiskAssessmentRecordRefV1,
+  type SpatialScopeRefV1,
+  type SourceVersionRefV1,
 } from "@riskflow/contracts/ports";
 import { RiskAssessmentRecordSchema } from "@riskflow/contracts/records";
 
@@ -1412,4 +1416,408 @@ describe("C25 PostgreSQL risk assessment engine", () => {
     expect(await countReceipts(fixture, queryId)).toBe(0);
     expect(await countAuditEntries(fixture, `audit-${queryId}:assessment-record`)).toBe(0);
   }, 180_000);
+
+  // ---------------------------------------------------------------- C34 入口候选真实接缝
+
+  const ENTRY_READ_AT = "2030-01-01T00:00:00.000Z";
+
+  /**
+   * 真实 C06→C11→C25 入口候选查询：`risk-assessment.read` 授权显式携带当前已验证空间与来源范围，
+   * 与 C11 目录要求一致；不额外放宽调用方范围，也不在此处伪造来源授权。
+   */
+  const entryReadQuery = async (input: {
+    readonly queryId: string;
+    readonly payload: RiskAssessmentReadQueryV1["payload"];
+    readonly spatialScopeRefs?: readonly SpatialScopeRefV1[];
+    readonly sourceVersionRefs?: readonly SourceVersionRefV1[];
+  }): Promise<RiskAssessmentReadQueryV1> => ({
+    queryId: input.queryId,
+    projectId: fixture.projectId,
+    actorId: fixture.managerId,
+    requestedAt: ENTRY_READ_AT,
+    authorization: await fixture.entryReadAuthorization(input.queryId, {
+      spatialScopeRefs: input.spatialScopeRefs ?? [fixture.accessRootScopeRef],
+      sourceVersionRefs: input.sourceVersionRefs ?? [fixture.sourceVersionRef],
+    }),
+    kind: "read",
+    payload: input.payload,
+  });
+
+  const expectClosedAuthorizationDenied = (result: RiskAssessmentReadResultV1) => {
+    expect(result.kind).toBe("failed");
+    if (result.kind !== "failed") throw new Error("expected a closed read failure");
+    expect(result.error).toMatchObject({
+      code: "AUTHORIZATION_DENIED",
+      category: "authorization",
+      retryable: false,
+    });
+  };
+
+  /** 目录预览只读断言：业务目录、查询结果、业务审计与 Outbox 均不得新增。 */
+  const catalogWriteCounts = async () => {
+    const result = await fixture.postgres.postgres.adminPool.query<{
+      snapshots: string;
+      events: string;
+      read_results: string;
+      audit: string;
+      outbox: string;
+    }>(
+      `SELECT
+         (SELECT count(*)::text FROM business.applicability_metadata_snapshots WHERE project_id = $1) AS snapshots,
+         (SELECT count(*)::text FROM business.external_risk_events WHERE project_id = $1) AS events,
+         (SELECT count(*)::text FROM business.engineering_data_read_query_results WHERE project_id = $1) AS read_results,
+         (SELECT count(*)::text FROM audit.entries WHERE project_id = $1) AS audit,
+         (SELECT count(*)::text FROM outbox.events WHERE project_id = $1) AS outbox`,
+      [fixture.projectId],
+    );
+    return result.rows[0]!;
+  };
+
+  it("entry-context 组合两类已登记目录：独立游标、按身份归一 C06 空间且预览零业务写入", async () => {
+    await fixture.registerExternalRiskEvent("entry-catalog-a");
+    await fixture.registerExternalRiskEvent("entry-catalog-b");
+    await fixture.registerApplicabilitySnapshot("entry-catalog-2");
+
+    // 入口候选 seam 只按 scope 身份（entityId）把业务空间引用归一到当前已验证的授权空间，
+    // 不透传授权范围之外的空间，也不自行解析任何空间事实。
+    expect(fixture.businessSpatialScopeRef.reference.entityId).toBe(
+      fixture.accessRootScopeRef.reference.entityId,
+    );
+
+    const before = await catalogWriteCounts();
+
+    const firstPage = await fixture.engine.read(
+      await entryReadQuery({
+        queryId: "c25-entry-context-1",
+        payload: {
+          operation: "entry-context",
+          projectRevisionRef: fixture.projectRevisionRef,
+          spatialScopeRef: fixture.businessSpatialScopeRef,
+          pageSize: 1,
+        },
+      }),
+    );
+    expect(firstPage).toMatchObject({ kind: "succeeded", result: { kind: "entry-context" } });
+    if (firstPage.kind !== "succeeded" || firstPage.result.kind !== "entry-context") return;
+    expect(firstPage.result.actorId).toBe(fixture.managerId);
+    expect(firstPage.result.projectId).toBe(fixture.projectId);
+    expect(firstPage.result.projectRevisionRef).toEqual(fixture.projectRevisionRef);
+    expect(firstPage.result.spatialScopeRef).toEqual(fixture.businessSpatialScopeRef);
+    expect(firstPage.result.applicabilityItems).toHaveLength(1);
+    expect(firstPage.result.externalEventItems).toHaveLength(1);
+    expect(firstPage.result.applicabilityNextCursor).toBeDefined();
+    expect(firstPage.result.externalEventNextCursor).toBeDefined();
+    // 运行策略未注入：只给 unavailable，不伪造可用部署配置。
+    expect(firstPage.result.runPolicy).toMatchObject({ kind: "unavailable" });
+    const firstApplicabilityRef = JSON.stringify(
+      firstPage.result.applicabilityItems[0]!.snapshotRef,
+    );
+    const firstExternalRef = JSON.stringify(firstPage.result.externalEventItems[0]!.riskInput);
+
+    // 外部事件游标只推进外部事件目录；未传适用性游标时适用性目录保持首页。
+    const externalSecond = await fixture.engine.read(
+      await entryReadQuery({
+        queryId: "c25-entry-context-external-2",
+        payload: {
+          operation: "entry-context",
+          projectRevisionRef: fixture.projectRevisionRef,
+          spatialScopeRef: fixture.businessSpatialScopeRef,
+          pageSize: 1,
+          externalEventCursor: firstPage.result.externalEventNextCursor,
+        },
+      }),
+    );
+    expect(externalSecond).toMatchObject({ kind: "succeeded" });
+    if (externalSecond.kind !== "succeeded" || externalSecond.result.kind !== "entry-context")
+      throw new Error("expected an entry-context external continuation");
+    expect(externalSecond.result.externalEventItems).toHaveLength(1);
+    expect(JSON.stringify(externalSecond.result.externalEventItems[0]!.riskInput)).not.toBe(
+      firstExternalRef,
+    );
+    expect(JSON.stringify(externalSecond.result.applicabilityItems[0]!.snapshotRef)).toBe(
+      firstApplicabilityRef,
+    );
+
+    // 适用性游标只推进适用性目录；未传外部事件游标时外部事件目录保持首页。
+    const applicabilitySecond = await fixture.engine.read(
+      await entryReadQuery({
+        queryId: "c25-entry-context-applicability-2",
+        payload: {
+          operation: "entry-context",
+          projectRevisionRef: fixture.projectRevisionRef,
+          spatialScopeRef: fixture.businessSpatialScopeRef,
+          pageSize: 1,
+          applicabilityCursor: firstPage.result.applicabilityNextCursor,
+        },
+      }),
+    );
+    expect(applicabilitySecond).toMatchObject({ kind: "succeeded" });
+    if (
+      applicabilitySecond.kind !== "succeeded" ||
+      applicabilitySecond.result.kind !== "entry-context"
+    )
+      throw new Error("expected an entry-context applicability continuation");
+    expect(applicabilitySecond.result.applicabilityItems).toHaveLength(1);
+    expect(JSON.stringify(applicabilitySecond.result.applicabilityItems[0]!.snapshotRef)).not.toBe(
+      firstApplicabilityRef,
+    );
+    expect(JSON.stringify(applicabilitySecond.result.externalEventItems[0]!.riskInput)).toBe(
+      firstExternalRef,
+    );
+
+    // 预览只读：契约目录、读取结果、业务审计与 Outbox 全部不增加。
+    expect(await catalogWriteCounts()).toEqual(before);
+  }, 240_000);
+
+  it("pending-catalog 外部事件分支只提交空间即可读取，携带工程修订被严格拒绝", async () => {
+    const registered = [
+      await fixture.registerExternalRiskEvent("pending-external-a"),
+      await fixture.registerExternalRiskEvent("pending-external-b"),
+    ];
+    const result = await fixture.engine.read(
+      await entryReadQuery({
+        queryId: "c25-pending-external",
+        payload: {
+          operation: "pending-catalog",
+          riskInputKind: "external-risk-event",
+          spatialScopeRef: fixture.businessSpatialScopeRef,
+        },
+      }),
+    );
+    expect(result).toMatchObject({ kind: "succeeded", result: { kind: "pending-catalog" } });
+    if (result.kind !== "succeeded" || result.result.kind !== "pending-catalog") return;
+    const byId = new Map(
+      result.result.items.map((item) => [item.riskInput.reference.entityId, item] as const),
+    );
+    for (const event of registered) {
+      const item = byId.get(event.reference.entityId);
+      expect(item).toBeDefined();
+      expect(item!.assessmentState).toBe("unassessed");
+      expect(item!.spatialScopeRefs).toEqual([fixture.businessSpatialScopeRef]);
+    }
+
+    // 严格输入：外部事件分支禁止工程修订字段，越界载荷在披露前被拒。
+    const forged = await fixture.engine.read({
+      ...(await entryReadQuery({
+        queryId: "c25-pending-external-forged",
+        payload: {
+          operation: "pending-catalog",
+          riskInputKind: "external-risk-event",
+          spatialScopeRef: fixture.businessSpatialScopeRef,
+        },
+      })),
+      payload: {
+        operation: "pending-catalog",
+        riskInputKind: "external-risk-event",
+        spatialScopeRef: fixture.businessSpatialScopeRef,
+        projectRevisionRef: fixture.projectRevisionRef,
+      },
+    } as never);
+    expect(forged).toMatchObject({
+      kind: "failed",
+      error: { code: "UNSUPPORTED_CONTRACT", category: "technical" },
+    });
+  }, 240_000);
+
+  it("入口候选读：错空间、撤权与越界游标返回同型 AUTHORIZATION_DENIED 且零写入", async () => {
+    const before = await catalogWriteCounts();
+
+    // 载荷空间不在当前已验证空间身份内：披露前拒绝。
+    const wrongScope = await fixture.engine.read(
+      await entryReadQuery({
+        queryId: "c25-entry-wrong-scope",
+        payload: {
+          operation: "entry-context",
+          projectRevisionRef: fixture.projectRevisionRef,
+          spatialScopeRef: {
+            kind: "spatial-scope",
+            reference: { entityId: "scope-outside-c25", versionId: "1" },
+          },
+        },
+      }),
+    );
+    expectClosedAuthorizationDenied(wrongScope);
+
+    // 当前授权已撤销：读契约复验失败闭合，不当作空目录。
+    const revokedQuery = await entryReadQuery({
+      queryId: "c25-entry-revoked",
+      payload: {
+        operation: "entry-context",
+        projectRevisionRef: fixture.projectRevisionRef,
+        spatialScopeRef: fixture.businessSpatialScopeRef,
+      },
+    });
+    await fixture.revokeAfterFirstRead();
+    let revoked: RiskAssessmentReadResultV1 | undefined;
+    try {
+      revoked = await fixture.engine.read(revokedQuery);
+    } finally {
+      await fixture.restoreSession();
+    }
+    if (revoked === undefined) throw new Error("revoked entry read did not return");
+    expectClosedAuthorizationDenied(revoked);
+
+    // 越界游标：把外部事件目录游标用于适用性目录，C11 绑定不符后闭合拒绝。
+    const externalPage = await fixture.engine.read(
+      await entryReadQuery({
+        queryId: "c25-entry-cursor-source",
+        payload: {
+          operation: "pending-catalog",
+          riskInputKind: "external-risk-event",
+          spatialScopeRef: fixture.businessSpatialScopeRef,
+          pageSize: 1,
+        },
+      }),
+    );
+    expect(externalPage).toMatchObject({ kind: "succeeded" });
+    if (externalPage.kind !== "succeeded" || externalPage.result.kind !== "pending-catalog") return;
+    expect(externalPage.result.nextCursor).toBeDefined();
+    const crossCursor = await fixture.engine.read(
+      await entryReadQuery({
+        queryId: "c25-entry-cross-cursor",
+        payload: {
+          operation: "entry-context",
+          projectRevisionRef: fixture.projectRevisionRef,
+          spatialScopeRef: fixture.businessSpatialScopeRef,
+          pageSize: 1,
+          applicabilityCursor: externalPage.result.nextCursor,
+        },
+      }),
+    );
+    expectClosedAuthorizationDenied(crossCursor);
+
+    // 当前授权未携带任何来源授权：C11 只提供空来源集合，存在外部事件时仍安全失败而非空目录。
+    const missingSource = await fixture.engine.read(
+      await entryReadQuery({
+        queryId: "c25-entry-missing-source",
+        sourceVersionRefs: [],
+        payload: {
+          operation: "entry-context",
+          projectRevisionRef: fixture.projectRevisionRef,
+          spatialScopeRef: fixture.businessSpatialScopeRef,
+        },
+      }),
+    );
+    expectClosedAuthorizationDenied(missingSource);
+
+    // 失败的候选读同样零业务写入。
+    expect(await catalogWriteCounts()).toEqual(before);
+  }, 240_000);
+
+  /** 复用 C25 原读取身份直接调用 C11 来源定位端口。 */
+  const locatorQuery = (input: {
+    readonly queryId: string;
+    readonly authorization: AuthorizationContextV1;
+  }) => ({
+    queryId: input.queryId,
+    projectId: fixture.projectId,
+    actorId: fixture.managerId,
+    requestedAt: ENTRY_READ_AT,
+    authorization: input.authorization,
+    kind: "read-assessment-entry-source-versions" as const,
+    payload: { spatialScopeRef: fixture.businessSpatialScopeRef },
+  });
+
+  it("入口来源定位：无来源授权返回空范围、登记错配或缺失安全失败", async () => {
+    // 无来源授权：C11 只按当前已验证 grant 定位，范围为空而非失败；
+    // 但外部事件逐来源复验仍必须闭合拒绝，不能折算成空目录。
+    await fixture.registerExternalRiskEvent("locator-empty-external");
+    const noGrantQueryId = "c25-locator-empty";
+    const emptyLocated = await fixture.postgres.registry.readAuthorizedSourceVersions(
+      locatorQuery({
+        queryId: noGrantQueryId,
+        authorization: await fixture.entryReadAuthorization(noGrantQueryId, {
+          spatialScopeRefs: [fixture.accessRootScopeRef],
+          sourceVersionRefs: [],
+        }),
+      }),
+    );
+    expect(emptyLocated).toEqual({ kind: "succeeded", result: { sourceVersionRefs: [] } });
+    const noGrantExternal = await fixture.engine.read(
+      await entryReadQuery({
+        queryId: "c25-locator-empty-read",
+        sourceVersionRefs: [],
+        payload: {
+          operation: "pending-catalog",
+          riskInputKind: "external-risk-event",
+          spatialScopeRef: fixture.businessSpatialScopeRef,
+        },
+      }),
+    );
+    expectClosedAuthorizationDenied(noGrantExternal);
+
+    // 临时篡改 C11 自有 source_versions 登记，验证定位按错配/缺失安全失败并在 finally 复原。
+    const row = (
+      await fixture.postgres.postgres.adminPool.query<{
+        source_version_id: string;
+        version_id: string;
+        source_version_ref: { reference: { versionId: string } };
+      }>(
+        "SELECT source_version_id, version_id, source_version_ref FROM business.source_versions WHERE project_id = $1 AND access_status = 'ready' ORDER BY source_version_id LIMIT 1",
+        [fixture.projectId],
+      )
+    ).rows[0]!;
+    const setSourceVersion = (versionId: string) =>
+      fixture.postgres.postgres.adminPool.query(
+        "UPDATE business.source_versions SET source_version_ref = jsonb_set(source_version_ref, '{reference,versionId}', to_jsonb($3::text)) WHERE source_version_id = $1 AND version_id = $2",
+        [row.source_version_id, row.version_id, versionId],
+      );
+    // 000008 的 access_status/source_access_grant_ref 触发器只允许 pending-access→ready，
+    // 因此临时停用该触发器把来源置回非就绪态，读取后必须复原。
+    const setAccessStatus = async (status: "pending-access" | "ready") => {
+      await fixture.postgres.postgres.adminPool.query(
+        "ALTER TABLE business.source_versions DISABLE TRIGGER source_versions_access_transition",
+      );
+      try {
+        await fixture.postgres.postgres.adminPool.query(
+          "UPDATE business.source_versions SET access_status = $3 WHERE source_version_id = $1 AND version_id = $2",
+          [row.source_version_id, row.version_id, status],
+        );
+      } finally {
+        await fixture.postgres.postgres.adminPool.query(
+          "ALTER TABLE business.source_versions ENABLE TRIGGER source_versions_access_transition",
+        );
+      }
+    };
+    const grantedQueryId = "c25-locator-corrupt";
+    const grantedAuthorization = await fixture.entryReadAuthorization(grantedQueryId, {
+      spatialScopeRefs: [fixture.accessRootScopeRef],
+      sourceVersionRefs: [fixture.sourceVersionRef],
+    });
+
+    await setSourceVersion("c25-corrupt-source-version");
+    try {
+      expect(
+        await fixture.postgres.registry.readAuthorizedSourceVersions(
+          locatorQuery({ queryId: grantedQueryId, authorization: grantedAuthorization }),
+        ),
+      ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+      expectClosedAuthorizationDenied(
+        await fixture.engine.read(
+          await entryReadQuery({
+            queryId: "c25-locator-corrupt-read",
+            payload: {
+              operation: "entry-context",
+              projectRevisionRef: fixture.projectRevisionRef,
+              spatialScopeRef: fixture.businessSpatialScopeRef,
+            },
+          }),
+        ),
+      );
+    } finally {
+      await setSourceVersion(row.source_version_ref.reference.versionId);
+    }
+
+    // 登记缺失：来源非就绪时定位按 0 行 ≠ 已授权项数安全失败，不把它折算成空范围。
+    await setAccessStatus("pending-access");
+    try {
+      expect(
+        await fixture.postgres.registry.readAuthorizedSourceVersions(
+          locatorQuery({ queryId: grantedQueryId, authorization: grantedAuthorization }),
+        ),
+      ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    } finally {
+      await setAccessStatus("ready");
+    }
+  }, 240_000);
 });

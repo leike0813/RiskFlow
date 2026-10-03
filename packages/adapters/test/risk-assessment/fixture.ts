@@ -26,12 +26,19 @@ import {
   type AuthorizationContextV1,
   type ContentArtifactRefV1,
   type ModuleErrorV1,
+  type ProjectRevisionRefV1,
+  type RiskIdentificationReadPortV1,
   type SourceVersionRefV1,
+  type SpatialScopeRefV1,
 } from "@riskflow/contracts/ports";
 import type { AssessmentPreparationSnapshotRefV1 } from "@riskflow/contracts/ports";
+import type { AssessmentEntriesReadPortV1, AssessmentRunReadPortV1 } from "@riskflow/core/workflow";
 
 import { bootstrapInitialSystemAdministrator } from "../../src/auth/index.js";
-import { PostgresEngineeringContextSourceRegistry } from "../../src/engineering-data/context-source/postgres-engineering-context-source-registry.js";
+import {
+  createAssessmentEntryContextReadPort,
+  PostgresEngineeringContextSourceRegistry,
+} from "../../src/engineering-data/context-source/postgres-engineering-context-source-registry.js";
 import { createPostgresRiskAssessmentEngine } from "../../src/risk-assessment/engine/index.js";
 import type { PostgresRiskAssessmentEngine } from "../../src/risk-assessment/engine/index.js";
 import {
@@ -73,10 +80,22 @@ export interface RiskAssessmentEngineFixtureV1 {
   readonly postgres: EngineeringContextSourcePostgresFixture;
   readonly engine: PostgresRiskAssessmentEngine;
   readAuthorization(requestId: string): Promise<AuthorizationContextV1>;
+  /** C34 风险评估只读分支授权：`risk-assessment.read` 与入口候选 seam 用例使用。 */
+  entryReadAuthorization(
+    requestId: string,
+    options?: {
+      readonly spatialScopeRefs?: readonly SpatialScopeRefV1[];
+      readonly sourceVersionRefs?: readonly SourceVersionRefV1[];
+    },
+  ): Promise<AuthorizationContextV1>;
   readonly projectId: string;
   readonly managerId: string;
-  readonly projectRevisionRef: { readonly kind: "project-revision"; readonly reference: unknown };
-  readonly businessSpatialScopeRef: unknown;
+  readonly projectRevisionRef: ProjectRevisionRefV1;
+  /** C06 授权侧入口空间引用：候选读取按 entityId 匹配此当前授权范围。 */
+  readonly accessRootScopeRef: SpatialScopeRefV1;
+  /** 已登记来源精确引用：入口候选读的当前已验证来源范围。 */
+  readonly sourceVersionRef: SourceVersionRefV1;
+  readonly businessSpatialScopeRef: SpatialScopeRefV1;
   readonly preparationSnapshotRef: AssessmentPreparationSnapshotRefV1;
   readonly monitoringSnapshotRefs: readonly {
     readonly kind: "monitoring-snapshot";
@@ -97,6 +116,11 @@ export interface RiskAssessmentEngineFixtureV1 {
   /** 正式登记外部风险事件（C11 外部分支），返回可用于风险输入的精确引用。 */
   registerExternalRiskEvent(suffix: string): Promise<{
     readonly kind: "external-risk-event";
+    readonly reference: { readonly entityId: string; readonly versionId: string };
+  }>;
+  /** 追加一份适用性快照（同一工程修订/业务空间、不同命令），用于入口目录分页。 */
+  registerApplicabilitySnapshot(suffix: string): Promise<{
+    readonly kind: "applicability-metadata-snapshot";
     readonly reference: { readonly entityId: string; readonly versionId: string };
   }>;
   /** 同一监测序列的后续修订：单位或样本数不同的快照，用于单位/缺值用例。 */
@@ -1010,6 +1034,22 @@ export const startRiskAssessmentEngineFixture = async (
   });
 
   // 组合根为 C11 冻结的监测读取接缝注入资料版本（风险输入证据同源）。
+  // 本修复只覆盖 entry-context / pending-catalog 外部事件两条候选接缝对 C11 的真实调用，
+  // 因此只注入这两条路径实际依赖的 entryContext；其余 C34 读端口保持显式未接线，
+  // 一旦被误调用立即失败，绝不用成功空结果冒充已实现读取。
+  const unwiredReadDependency = (label: string): never => {
+    throw new Error(`C25 fixture seam 之外的读依赖未接线：${label}`);
+  };
+  const unusedRunRead: AssessmentRunReadPortV1 = {
+    readAssessmentRun: async () => unwiredReadDependency("runRead.readAssessmentRun"),
+  };
+  const unusedEntriesRead: AssessmentEntriesReadPortV1 = {
+    readAssessmentEntriesForRecords: async () =>
+      unwiredReadDependency("entriesRead.readAssessmentEntriesForRecords"),
+  };
+  const unusedRecordCatalog: RiskIdentificationReadPortV1 = {
+    read: async () => unwiredReadDependency("recordCatalog.read"),
+  };
   const engine = createPostgresRiskAssessmentEngine({
     db: postgres.runtime.db,
     transactionUnit: postgres.transactionUnit,
@@ -1021,6 +1061,10 @@ export const startRiskAssessmentEngineFixture = async (
     runtimePolicies,
     monitoring: postgres.monitoringStore,
     authorizeDownstream,
+    entryContext: createAssessmentEntryContextReadPort(registry),
+    runRead: unusedRunRead,
+    entriesRead: unusedEntriesRead,
+    recordCatalog: unusedRecordCatalog,
     now: () => new Date(T0),
   });
 
@@ -1107,9 +1151,18 @@ export const startRiskAssessmentEngineFixture = async (
         branch: "risk-assessment.read-input-snapshot",
         sourceVersionRefs: [sourceVersionRef],
       }),
+    entryReadAuthorization: (requestId, options) =>
+      authorize({
+        invocationId: requestId,
+        branch: "risk-assessment.read",
+        spatialScopeRefs: options?.spatialScopeRefs ?? [accessRootScopeRef],
+        sourceVersionRefs: options?.sourceVersionRefs ?? [],
+      }),
     projectId: PROJECT_ID,
     managerId,
     projectRevisionRef,
+    accessRootScopeRef,
+    sourceVersionRef,
     businessSpatialScopeRef,
     preparationSnapshotRef: preparations.a,
     monitoringSnapshotRefs,
@@ -1235,6 +1288,28 @@ export const startRiskAssessmentEngineFixture = async (
       const ref = external.result.externalRiskEventRef;
       registeredExternalRiskEvents.add(`${ref.reference.entityId}@${ref.reference.versionId}`);
       return ref;
+    },
+    async registerApplicabilitySnapshot(suffix) {
+      const result = await postgres.registry.createApplicabilitySnapshot({
+        commandId: `c25-applicability-${suffix}`,
+        idempotencyKey: `c25-applicability-${suffix}`,
+        projectId: PROJECT_ID,
+        actorId: managerId,
+        issuedAt: T0,
+        authorization: await authorize({
+          invocationId: `c25-applicability-${suffix}`,
+          branch: "engineering-data.register-source-delivery",
+        }),
+        projectRevisionRef,
+        spatialScopeRef: businessSpatialScopeRef,
+        formedAt: T0,
+      });
+      if (result.kind !== "succeeded" || result.result.kind !== "applicability-snapshot") {
+        throw new Error(
+          `C25 applicability snapshot failed: ${JSON.stringify(result).slice(0, 400)}`,
+        );
+      }
+      return result.result.snapshot.snapshotRef;
     },
     async seriesVariant(input) {
       const definition = monitoringSeriesDefinitions.find(

@@ -1,4 +1,5 @@
 export {
+  createAssessmentEntryContextReadPort,
   createPostgresEngineeringContextSourceRegistry,
   PostgresEngineeringContextSourceRegistry,
 } from "./postgres-engineering-context-source-registry.js";

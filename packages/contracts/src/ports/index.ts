@@ -4296,13 +4296,21 @@ export type ExternalEventCatalogItemV1 = z.infer<typeof ExternalEventCatalogItem
 
 export const AssessmentEntryContextReadQueryV1Schema = querySchema(
   "read-assessment-entry-context",
-  z.strictObject({
-    projectRevisionRef: ProjectRevisionRefV1Schema,
-    spatialScopeRef: SpatialScopeRefV1Schema,
-    operation: AssessmentEntryContextOperationV1Schema,
-    pageSize: c34ReadPageSize.optional(),
-    cursor: c34ReadCursor.optional(),
-  }),
+  z.discriminatedUnion("operation", [
+    z.strictObject({
+      operation: z.literal("applicability-catalog"),
+      projectRevisionRef: ProjectRevisionRefV1Schema,
+      spatialScopeRef: SpatialScopeRefV1Schema,
+      pageSize: c34ReadPageSize.optional(),
+      cursor: c34ReadCursor.optional(),
+    }),
+    z.strictObject({
+      operation: z.literal("external-event-catalog"),
+      spatialScopeRef: SpatialScopeRefV1Schema,
+      pageSize: c34ReadPageSize.optional(),
+      cursor: c34ReadCursor.optional(),
+    }),
+  ]),
   branchCapability("engineering-data.context-read"),
 );
 export type AssessmentEntryContextReadQueryV1 = z.infer<
@@ -4332,8 +4340,33 @@ export type AssessmentEntryContextReadResultV1 = z.infer<
   typeof AssessmentEntryContextReadResultV1Schema
 >;
 
+/** C11 仅定位 C25 当前已验证授权包含的来源，不发现或授予新资料范围。 */
+export const ASSESSMENT_ENTRY_SOURCE_VERSION_MAX_V1 = 256;
+
+export const AssessmentEntrySourceVersionsReadQueryV1Schema = querySchema(
+  "read-assessment-entry-source-versions",
+  z.strictObject({ spatialScopeRef: SpatialScopeRefV1Schema }),
+  branchCapability("risk-assessment.read"),
+);
+export type AssessmentEntrySourceVersionsReadQueryV1 = z.infer<
+  typeof AssessmentEntrySourceVersionsReadQueryV1Schema
+>;
+export const AssessmentEntrySourceVersionsReadResultV1Schema = moduleResultSchema(
+  z.strictObject({
+    sourceVersionRefs: z
+      .array(SourceVersionRefV1Schema)
+      .max(ASSESSMENT_ENTRY_SOURCE_VERSION_MAX_V1),
+  }),
+);
+export type AssessmentEntrySourceVersionsReadResultV1 = z.infer<
+  typeof AssessmentEntrySourceVersionsReadResultV1Schema
+>;
+
 export interface AssessmentEntryContextReadPortV1 {
   read(query: AssessmentEntryContextReadQueryV1): Promise<AssessmentEntryContextReadResultV1>;
+  readAuthorizedSourceVersions(
+    query: AssessmentEntrySourceVersionsReadQueryV1,
+  ): Promise<AssessmentEntrySourceVersionsReadResultV1>;
 }
 
 // ---- C25：风险评估只读（design D-04） ----
@@ -4578,13 +4611,22 @@ export const AssessmentRunViewV1Schema = z.strictObject({
 export type AssessmentRunViewV1 = z.infer<typeof AssessmentRunViewV1Schema>;
 
 const riskAssessmentReadOperationPayloadV1 = z.discriminatedUnion("operation", [
-  z.strictObject({
-    operation: z.literal("pending-catalog"),
-    riskInputKind: z.enum(["risk-record", "external-risk-event"]),
-    spatialScopeRef: SpatialScopeRefV1Schema.optional(),
-    pageSize: c34ReadPageSize.optional(),
-    cursor: c34ReadCursor.optional(),
-  }),
+  z.discriminatedUnion("riskInputKind", [
+    z.strictObject({
+      operation: z.literal("pending-catalog"),
+      riskInputKind: z.literal("risk-record"),
+      spatialScopeRef: SpatialScopeRefV1Schema.optional(),
+      pageSize: c34ReadPageSize.optional(),
+      cursor: c34ReadCursor.optional(),
+    }),
+    z.strictObject({
+      operation: z.literal("pending-catalog"),
+      riskInputKind: z.literal("external-risk-event"),
+      spatialScopeRef: SpatialScopeRefV1Schema,
+      pageSize: c34ReadPageSize.optional(),
+      cursor: c34ReadCursor.optional(),
+    }),
+  ]),
   z.strictObject({
     operation: z.literal("entry-context"),
     projectRevisionRef: ProjectRevisionRefV1Schema,

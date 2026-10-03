@@ -32,7 +32,11 @@ import {
   PostgresMigrationProvider,
 } from "../../src/postgres/migrations/provider.js";
 import { runPostgresMigrations } from "../../src/postgres/migrations/run.js";
-import { mapPostgresError, type PostgresConnectionConfig } from "../../src/postgres/pool.js";
+import {
+  createPostgresRuntime,
+  mapPostgresError,
+  type PostgresConnectionConfig,
+} from "../../src/postgres/pool.js";
 import { startPostgresFixture, type PostgresTestFixture } from "./fixture.js";
 import * as artifactManifestsMigration from "../../src/postgres/migrations/platform/deliver-content-addressed-artifact-store/000002_artifact_manifests.js";
 import * as foundationMigration from "../../src/postgres/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/000001_foundation.js";
@@ -66,6 +70,7 @@ import * as graphTraceReportProjectionsMigration from "../../src/postgres/migrat
 import * as qualityEvaluationReportIndexMigration from "../../src/postgres/migrations/query-projection/deliver-quality-evaluation-module/000052_quality_evaluation_report_index.js";
 import * as humanDecisionFeedbackMigration from "../../src/postgres/migrations/warning-response/wire-human-decision-and-feedback-commands/000053_human_decision_feedback.js";
 import * as riskRecordAssessmentScopeMigration from "../../src/postgres/migrations/risk-identification/deliver-assessment-warning-and-response-ui/000054_risk_record_assessment_scope.js";
+import * as assessmentEntryCatalogCursorKeysMigration from "../../src/postgres/migrations/engineering-data/fix-assessment-entry-read-seam/000055_assessment_entry_catalog_cursor_keys.js";
 
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
 import * as agentTaskFixtureMigration from "./fixtures/migrations/agent-task/deliver-unified-bounded-agent-runtime/900002_agent_task_fixture.js";
@@ -525,6 +530,15 @@ const testMigrationManifest = [
       "000054_risk-identification_deliver-assessment-warning-and-response-ui_risk_record_assessment_scope",
     sequence: 54,
     module: riskRecordAssessmentScopeMigration,
+  },
+  {
+    root: "production",
+    relativePath:
+      "engineering-data/fix-assessment-entry-read-seam/000055_assessment_entry_catalog_cursor_keys.ts",
+    migrationName:
+      "000055_engineering-data_fix-assessment-entry-read-seam_assessment_entry_catalog_cursor_keys",
+    sequence: 55,
+    module: assessmentEntryCatalogCursorKeysMigration,
   },
   {
     root: "fixture",
@@ -1586,6 +1600,203 @@ describe("PostgreSQL foundation", () => {
     );
     expect(businessRows.rows[0]?.count).toBeGreaterThan(0);
   });
+
+  it("adds durable catalog cursor keys with backfill, fresh defaults, uniqueness and stable grants", async () => {
+    expect(fixture).toBeDefined();
+    const catalogTables = [
+      {
+        table: "business.applicability_metadata_snapshots",
+        idColumn: "snapshot_id",
+        index: "applicability_metadata_snapshots_catalog_cursor_uidx",
+        historicalId: "snapshot-catalog-55",
+      },
+      {
+        table: "business.external_risk_events",
+        idColumn: "external_risk_event_id",
+        index: "external_risk_events_catalog_cursor_uidx",
+        historicalId: "event-catalog-55",
+      },
+    ] as const;
+    const projectId = "project-catalog-55";
+    const revisionId = "revision-catalog-55";
+    const auditEntryId = "audit-catalog-55";
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const migratorRuntime = createPostgresRuntime(fixture!.migrator, "riskflow_migrator");
+    const relacl = async (table: string) =>
+      (
+        await fixture!.adminPool.query<{ relacl: string | null }>(
+          "SELECT relacl::text AS relacl FROM pg_class WHERE oid = $1::regclass",
+          [table],
+        )
+      ).rows[0]?.relacl ?? null;
+    const cursorKeys = async (): Promise<readonly string[]> => {
+      const keys: string[] = [];
+      for (const { table, idColumn } of catalogTables) {
+        const rows = await fixture!.adminPool.query<{ catalog_cursor_key: string }>(
+          "SELECT catalog_cursor_key FROM " + table + " WHERE project_id = $1 ORDER BY " + idColumn,
+          [projectId],
+        );
+        keys.push(...rows.rows.map((row) => row.catalog_cursor_key));
+      }
+      return keys;
+    };
+    const grantsBefore = await Promise.all(catalogTables.map(({ table }) => relacl(table)));
+    try {
+      // 退回定位列，重建「只有历史登记行、尚无定位键」的旧库状态。
+      await assessmentEntryCatalogCursorKeysMigration.down(migratorRuntime.db as never);
+      const seeded = await fixture!.adminPool.connect();
+      try {
+        await seeded.query("BEGIN");
+        await seeded.query(
+          "INSERT INTO audit.entries (audit_entry_id, project_id, action, target_ref, actor_ref, authorization_context_ref, version_ref, occurred_at, recorded_at, command_id, idempotency_key) VALUES ($1, $2, 'catalog-cursor-55', '{}'::jsonb, 'actor-55', '{}'::jsonb, '{}'::jsonb, $3, $3, 'command-catalog-55', 'idempotency-catalog-55')",
+          [auditEntryId, projectId, timestamp],
+        );
+        await seeded.query(
+          "INSERT INTO business.engineering_projects (project_id, current_revision_id) VALUES ($1, $2)",
+          [projectId, revisionId],
+        );
+        await seeded.query(
+          "INSERT INTO business.engineering_project_revisions (revision_id, project_id, revision_no, project_revision_ref, name, lifecycle, applicability_metadata, effective_period, system_time, actor_id, authorization_context_ref, audit_entry_id, occurred_at) VALUES ($1, $2, 1, '{}'::jsonb, 'catalog-55', 'active', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, 'actor-55', '{}'::jsonb, $3, $4)",
+          [revisionId, projectId, auditEntryId, timestamp],
+        );
+        await seeded.query(
+          "INSERT INTO business.applicability_metadata_snapshots (snapshot_id, version_id, project_id, snapshot_ref, applicability_metadata, provenance, project_revision_ref, spatial_scope_ref, formed_at, actor_id, authorization_context_ref, audit_entry_id) VALUES ($1, 'v1', $2, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, $3, 'actor-55', '{}'::jsonb, $4)",
+          ["snapshot-catalog-55", projectId, timestamp, auditEntryId],
+        );
+        await seeded.query(
+          "INSERT INTO business.external_risk_events (external_risk_event_id, version_id, project_id, external_risk_event_ref, external_source_entity_id, external_source_version_id, external_source_ref, external_event_key, event_artifact_ref, evidence_references, source_version_refs, spatial_scope_refs, occurred_at, recorded_at, actor_id, authorization_context_ref, audit_entry_id) VALUES ($1, 'v1', $2, '{}'::jsonb, 'source-entity-55', 'source-version-55', '{}'::jsonb, 'event-key-55', '{}'::jsonb, '[{}]'::jsonb, '[{}]'::jsonb, '[{}]'::jsonb, $3, $3, 'actor-55', '{}'::jsonb, $4)",
+          ["event-catalog-55", projectId, timestamp, auditEntryId],
+        );
+        await seeded.query("COMMIT");
+      } catch (error) {
+        await seeded.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        seeded.release();
+      }
+
+      // 重放迁移并幂等重复一次：加列回填历史行，唯一索引与默认值成立。
+      await assessmentEntryCatalogCursorKeysMigration.up(migratorRuntime.db as never);
+      await assessmentEntryCatalogCursorKeysMigration.up(migratorRuntime.db as never);
+      const backfilled = await cursorKeys();
+      expect(backfilled).toHaveLength(2);
+      expect(backfilled.every((key) => uuidPattern.test(key))).toBe(true);
+      expect(new Set(backfilled).size).toBe(2);
+
+      for (const { table, idColumn, index, historicalId } of catalogTables) {
+        const column = await fixture!.adminPool.query<{
+          data_type: string;
+          is_nullable: string;
+          column_default: string | null;
+        }>(
+          "SELECT data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema = 'business' AND table_name = $1 AND column_name = 'catalog_cursor_key'",
+          [table.replace("business.", "")],
+        );
+        expect(column.rows[0]).toMatchObject({ data_type: "uuid", is_nullable: "NO" });
+        expect(column.rows[0]?.column_default).toContain("gen_random_uuid()");
+        const indexed = await fixture!.adminPool.query<{ indexdef: string }>(
+          "SELECT indexdef FROM pg_indexes WHERE schemaname = 'business' AND indexname = $1",
+          [index],
+        );
+        expect(indexed.rows[0]?.indexdef).toMatch(/^CREATE UNIQUE INDEX/u);
+        const historicalKey = (
+          await fixture!.adminPool.query<{ catalog_cursor_key: string }>(
+            "SELECT catalog_cursor_key FROM " + table + " WHERE " + idColumn + " = $1",
+            [historicalId],
+          )
+        ).rows[0]?.catalog_cursor_key;
+        expect(historicalKey).toMatch(uuidPattern);
+      }
+
+      // 新行不提供定位列：数据库默认值为每行生成彼此独立的新键。
+      await fixture!.adminPool.query(
+        "INSERT INTO business.applicability_metadata_snapshots (snapshot_id, version_id, project_id, snapshot_ref, applicability_metadata, provenance, project_revision_ref, spatial_scope_ref, formed_at, actor_id, authorization_context_ref, audit_entry_id) VALUES ($1, 'v1', $2, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, $3, 'actor-55', '{}'::jsonb, $4)",
+        ["snapshot-catalog-new-55", projectId, timestamp, auditEntryId],
+      );
+      await fixture!.adminPool.query(
+        "INSERT INTO business.external_risk_events (external_risk_event_id, version_id, project_id, external_risk_event_ref, external_source_entity_id, external_source_version_id, external_source_ref, external_event_key, event_artifact_ref, evidence_references, source_version_refs, spatial_scope_refs, occurred_at, recorded_at, actor_id, authorization_context_ref, audit_entry_id) VALUES ($1, 'v1', $2, '{}'::jsonb, 'source-entity-new-55', 'source-version-new-55', '{}'::jsonb, 'event-key-new-55', '{}'::jsonb, '[{}]'::jsonb, '[{}]'::jsonb, '[{}]'::jsonb, $3, $3, 'actor-55', '{}'::jsonb, $4)",
+        ["event-catalog-new-55", projectId, timestamp, auditEntryId],
+      );
+      const refreshed = await cursorKeys();
+      expect(refreshed).toHaveLength(4);
+      expect(refreshed.every((key) => uuidPattern.test(key))).toBe(true);
+      expect(new Set(refreshed).size).toBe(4);
+
+      const historicalEventKey = (
+        await fixture!.adminPool.query<{ catalog_cursor_key: string }>(
+          "SELECT catalog_cursor_key FROM business.external_risk_events WHERE external_risk_event_id = 'event-catalog-55'",
+        )
+      ).rows[0]?.catalog_cursor_key;
+      await expect(
+        fixture!.adminPool.query(
+          "UPDATE business.external_risk_events SET catalog_cursor_key = $1 WHERE external_risk_event_id = 'event-catalog-new-55'",
+          [historicalEventKey],
+        ),
+      ).rejects.toMatchObject({ code: "23505" });
+
+      const grantsAfter = await Promise.all(catalogTables.map(({ table }) => relacl(table)));
+      expect(grantsAfter).toEqual(grantsBefore);
+      for (const { table } of catalogTables) {
+        const privileges = await fixture!.adminPool.query<{
+          app_select: boolean;
+          app_insert: boolean;
+          app_update: boolean;
+          app_delete: boolean;
+          worker_select: boolean;
+          checkpointer_select: boolean;
+        }>(
+          "SELECT has_table_privilege('riskflow_app', $1, 'SELECT') AS app_select, has_table_privilege('riskflow_app', $1, 'INSERT') AS app_insert, has_table_privilege('riskflow_app', $1, 'UPDATE') AS app_update, has_table_privilege('riskflow_app', $1, 'DELETE') AS app_delete, has_table_privilege('riskflow_outbox_worker', $1, 'SELECT') AS worker_select, has_table_privilege('riskflow_checkpointer', $1, 'SELECT') AS checkpointer_select",
+          [table],
+        );
+        expect(privileges.rows[0]).toEqual({
+          app_select: true,
+          app_insert: true,
+          app_update: false,
+          app_delete: false,
+          worker_select: false,
+          checkpointer_select: false,
+        });
+        const publicAcl = await fixture!.adminPool.query<{ public_acl: string }>(
+          "SELECT count(*)::text AS public_acl FROM pg_class c, aclexplode(c.relacl) acl WHERE c.oid = $1::regclass AND acl.grantee = 0",
+          [table],
+        );
+        expect(publicAcl.rows[0]?.public_acl).toBe("0");
+      }
+    } finally {
+      await assessmentEntryCatalogCursorKeysMigration
+        .up(migratorRuntime.db as never)
+        .catch(() => undefined);
+      const cleanup = await fixture!.adminPool.connect().catch(() => undefined);
+      if (cleanup !== undefined) {
+        try {
+          await cleanup.query("BEGIN");
+          await cleanup.query("DELETE FROM business.external_risk_events WHERE project_id = $1", [
+            projectId,
+          ]);
+          await cleanup.query(
+            "DELETE FROM business.applicability_metadata_snapshots WHERE project_id = $1",
+            [projectId],
+          );
+          await cleanup.query(
+            "DELETE FROM business.engineering_project_revisions WHERE project_id = $1",
+            [projectId],
+          );
+          await cleanup.query("DELETE FROM business.engineering_projects WHERE project_id = $1", [
+            projectId,
+          ]);
+          await cleanup.query("DELETE FROM audit.entries WHERE audit_entry_id = $1", [
+            auditEntryId,
+          ]);
+          await cleanup.query("COMMIT");
+        } catch {
+          await cleanup.query("ROLLBACK").catch(() => undefined);
+        } finally {
+          cleanup.release();
+        }
+      }
+      await migratorRuntime.close();
+    }
+  }, 120_000);
 });
 
 const commitEventWithId = (event: DomainEventV1, eventId: string): DomainEventV1 => ({

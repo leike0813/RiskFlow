@@ -2,6 +2,7 @@ import { TextDecoder } from "node:util";
 import {
   sql,
   type ColumnType,
+  type Generated,
   type InsertObject,
   type Kysely,
   type Selectable,
@@ -99,13 +100,19 @@ import {
   ExternalRiskEventRefV1Schema,
   ApplicabilityMetadataSnapshotRefV1Schema,
   AssessmentEntryContextReadQueryV1Schema,
+  AssessmentEntrySourceVersionsReadQueryV1Schema,
+  ASSESSMENT_ENTRY_SOURCE_VERSION_MAX_V1,
+  SourceAccessGrantRefV1Schema,
   SourceVersionRefV1Schema,
   SpatialScopeRefV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
   type ApplicabilityCatalogItemV1,
   type AssessmentEntryContextOperationV1,
   type AssessmentEntryContextReadQueryV1,
+  type AssessmentEntryContextReadPortV1,
   type AssessmentEntryContextReadResultV1,
+  type AssessmentEntrySourceVersionsReadQueryV1,
+  type AssessmentEntrySourceVersionsReadResultV1,
   type AuthorizationContextV1,
   type ContractReferenceV1,
   type ContentArtifactRefV1,
@@ -307,6 +314,7 @@ interface SegmentRow {
 }
 
 interface ApplicabilitySnapshotRow {
+  catalog_cursor_key: Generated<string>;
   snapshot_id: string;
   version_id: string;
   project_id: string;
@@ -326,6 +334,7 @@ interface ApplicabilitySnapshotRow {
 }
 
 interface ExternalRiskEventRow {
+  catalog_cursor_key: Generated<string>;
   external_risk_event_id: string;
   version_id: string;
   project_id: string;
@@ -717,44 +726,57 @@ const READ_BRANCH = {
  */
 const ENTRY_CONTEXT_READ_BRANCH = "engineering-data.context-read" as const;
 
-const ENTRY_CONTEXT_CURSOR_SEPARATOR = "::";
-
 const entryContextCursorBindingV1 = (input: {
   readonly operation: AssessmentEntryContextOperationV1;
   readonly projectId: string;
-  readonly projectRevisionRef: unknown;
+  readonly projectRevisionRef?: unknown;
   readonly spatialScopeRef: unknown;
   readonly scopeDigest: string;
-}): string =>
-  [
-    input.operation,
-    input.projectId,
-    JSON.stringify(input.projectRevisionRef),
-    JSON.stringify(input.spatialScopeRef),
-    input.scopeDigest,
-  ].join("|");
+}): string => sha256CanonicalJson(input);
 
-const encodeEntryContextCursorV1 = (binding: string, offset: number): string =>
-  Buffer.from(`${binding}${ENTRY_CONTEXT_CURSOR_SEPARATOR}${offset}`, "utf8").toString("base64url");
+const encodeEntryContextCursorV1 = (binding: string, anchor: string): string =>
+  Buffer.from(JSON.stringify({ v: 1, b: binding, anchor }), "utf8").toString("base64url");
 
 const decodeEntryContextCursorV1 = (
   cursor: string | undefined,
   binding: string,
-): number | undefined => {
-  if (cursor === undefined) return 0;
-  let decoded: string;
+): string | null | undefined => {
+  if (cursor === undefined) return null;
   try {
-    decoded = Buffer.from(cursor, "base64url").toString("utf8");
+    if (!/^[A-Za-z0-9_-]+$/.test(cursor)) return undefined;
+    const bytes = Buffer.from(cursor, "base64url");
+    if (bytes.toString("base64url") !== cursor) return undefined;
+    const value: unknown = JSON.parse(bytes.toString("utf8"));
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+    const decoded = value as { v?: unknown; b?: unknown; anchor?: unknown };
+    if (
+      Object.keys(decoded).length !== 3 ||
+      decoded.v !== 1 ||
+      decoded.b !== binding ||
+      typeof decoded.anchor !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(decoded.anchor)
+    )
+      return undefined;
+    return decoded.anchor;
   } catch {
     return undefined;
   }
-  const separator = decoded.lastIndexOf(ENTRY_CONTEXT_CURSOR_SEPARATOR);
-  if (separator < 0) return undefined;
-  if (decoded.slice(0, separator) !== binding) return undefined;
-  const offset = Number.parseInt(decoded.slice(separator + 2), 10);
-  if (!Number.isInteger(offset) || offset < 0) return undefined;
-  return offset;
 };
+
+interface EntryContextAnchorV1 {
+  recorded_at_text: string;
+  entity_id: string;
+  version_id: string;
+}
+
+const entryContextAfterAnchorV1 = (
+  anchor: EntryContextAnchorV1,
+  idColumn: "snapshot_id" | "external_risk_event_id",
+) => sql<SqlBool>`(
+  recorded_at < ${anchor.recorded_at_text}::timestamptz
+  OR (recorded_at = ${anchor.recorded_at_text}::timestamptz AND
+      (${sql.ref(idColumn)}, version_id) > (${anchor.entity_id}, ${anchor.version_id}))
+)`;
 
 /**
  * 逐项按原 Schema 校验登记列里的引用数组。适配器层没有 zod 依赖，因此只用所属 Schema 的
@@ -1282,6 +1304,94 @@ export class PostgresEngineeringContextSourceRegistry
    * 登记的精确来源引用交回 C06 复验。只读已登记事实：保存字段经原 Schema 校验，不扫描来源
    * 工件库、不推导新快照，也不创建快照、事件或评估准备。空目录保持空，不从另一目录补齐。
    */
+  async readAuthorizedSourceVersions(
+    query: AssessmentEntrySourceVersionsReadQueryV1,
+  ): Promise<AssessmentEntrySourceVersionsReadResultV1> {
+    const denied = (): AssessmentEntrySourceVersionsReadResultV1 => ({
+      kind: "failed",
+      error: moduleError("AUTHORIZATION_DENIED", query.queryId, {
+        requiredCapability: "risk-assessment.read",
+      }),
+    });
+    const parsed = AssessmentEntrySourceVersionsReadQueryV1Schema.safeParse(query);
+    if (!parsed.success) return denied();
+    const valid = parsed.data;
+    const scope = valid.authorization.spatialScopeRefs.find(
+      (ref) => ref.reference.entityId === valid.payload.spatialScopeRef.reference.entityId,
+    );
+    if (scope === undefined) return denied();
+    try {
+      // 重用 C25 原读取身份复验资源范围，来源版本仅由 C11 登记事实定位。
+      const decision = await this.#access.verify({
+        authorizationContextRef: valid.authorization.authorizationContextRef,
+        invocationId: valid.queryId,
+        projectId: valid.projectId,
+        branch: "risk-assessment.read",
+        requestedSpatialScopeRefs: [scope],
+        requestedSourceVersionRefs: [],
+        requestedAt: valid.requestedAt,
+      });
+      if (
+        decision.redacted ||
+        decision.context.actorId !== valid.actorId ||
+        decision.context.projectId !== valid.projectId
+      )
+        return denied();
+      const grants = decision.context.sourceAccessGrantRefs;
+      if (grants.length > ASSESSMENT_ENTRY_SOURCE_VERSION_MAX_V1) return denied();
+      if (grants.length === 0) return { kind: "succeeded", result: { sourceVersionRefs: [] } };
+      const grantIds = new Set(grants.map((ref) => ref.reference.entityId));
+      if (grantIds.size !== grants.length) return denied();
+      const rows = await this.#db
+        .selectFrom("business.source_versions")
+        .select([
+          "source_version_id",
+          "version_id",
+          "source_version_ref",
+          "source_access_grant_ref",
+        ])
+        .where("project_id", "=", valid.projectId)
+        .where("access_status", "=", "ready")
+        // C11 保存创建时授权修订；稳定 grant identity 仍指向同一精确来源版本。
+        .where(
+          sql<SqlBool>`source_access_grant_ref -> 'reference' ->> 'entityId' IN (${sql.join([...grantIds])})`,
+        )
+        .limit(grants.length + 1)
+        .execute();
+      if (rows.length !== grants.length) return denied();
+      const sourceVersionRefs: SourceVersionRefV1[] = [];
+      const seenGrants = new Set<string>();
+      for (const row of rows) {
+        const source = SourceVersionRefV1Schema.safeParse(row.source_version_ref);
+        const grant = SourceAccessGrantRefV1Schema.safeParse(row.source_access_grant_ref);
+        if (
+          !source.success ||
+          !grant.success ||
+          source.data.reference.entityId !== row.source_version_id ||
+          source.data.reference.versionId !== row.version_id ||
+          !grantIds.has(grant.data.reference.entityId) ||
+          seenGrants.has(grant.data.reference.entityId)
+        )
+          return denied();
+        seenGrants.add(grant.data.reference.entityId);
+        sourceVersionRefs.push(source.data);
+      }
+      sourceVersionRefs.sort((left, right) => refKey(left).localeCompare(refKey(right)));
+      return { kind: "succeeded", result: { sourceVersionRefs } };
+    } catch (error) {
+      if (error instanceof AccessServiceError) return denied();
+      return {
+        kind: "failed",
+        error: this.#mapError(
+          error,
+          valid.queryId,
+          "engineering-data.entry-source-versions",
+          "engineering-data.read",
+        ),
+      };
+    }
+  }
+
   async readAssessmentEntryContext(
     query: AssessmentEntryContextReadQueryV1,
   ): Promise<AssessmentEntryContextReadResultV1> {
@@ -1310,59 +1420,85 @@ export class PostgresEngineeringContextSourceRegistry
         [payload.spatialScopeRef],
         [],
       );
+      if (decision.redacted) return denied();
       binding = entryContextCursorBindingV1({
         operation: payload.operation,
         projectId: valid.projectId,
-        projectRevisionRef: payload.projectRevisionRef,
+        ...(payload.operation === "applicability-catalog"
+          ? { projectRevisionRef: payload.projectRevisionRef }
+          : {}),
         spatialScopeRef: payload.spatialScopeRef,
         scopeDigest: authorizationScopeDigest(decision.context),
       });
     } catch {
       return denied();
     }
-    const offset = decodeEntryContextCursorV1(payload.cursor, binding);
-    if (offset === undefined) return denied();
-    return payload.operation === "applicability-catalog"
-      ? this.#applicabilityCatalog(valid, binding, offset, pageSize)
-      : this.#externalEventCatalog(valid, binding, offset, pageSize);
+    const anchor = decodeEntryContextCursorV1(payload.cursor, binding);
+    if (anchor === undefined) return denied();
+    try {
+      return payload.operation === "applicability-catalog"
+        ? await this.#applicabilityCatalog(valid, binding, anchor, pageSize)
+        : await this.#externalEventCatalog(valid, binding, anchor, pageSize);
+    } catch (error) {
+      return {
+        kind: "failed",
+        error: this.#mapError(
+          error,
+          valid.queryId,
+          "engineering-data.context-read",
+          "engineering-data.read",
+        ),
+      };
+    }
   }
 
   async #applicabilityCatalog(
     query: AssessmentEntryContextReadQueryV1,
     binding: string,
-    offset: number,
+    cursorKey: string | null,
     pageSize: number,
   ): Promise<AssessmentEntryContextReadResultV1> {
+    if (query.payload.operation !== "applicability-catalog")
+      return { kind: "failed", error: readAuthorizationDenied(query.queryId) };
     const revision = JSON.stringify(query.payload.projectRevisionRef);
     const scope = JSON.stringify(query.payload.spatialScopeRef);
-    const rows = await (async () => {
-      try {
-        // 只按精确工程/空间修订取已登记快照，多取一行判断是否还有下一页。
-        return await this.#db
-          .selectFrom("business.applicability_metadata_snapshots")
-          .select(["snapshot_id", "version_id", "snapshot_ref", "applicability_metadata"])
-          .where("project_id", "=", query.projectId)
-          .where(sql<SqlBool>`project_revision_ref = ${revision}::jsonb`)
-          .where(sql<SqlBool>`spatial_scope_ref = ${scope}::jsonb`)
-          .orderBy("recorded_at", "desc")
-          .orderBy("snapshot_id", "asc")
-          .orderBy("version_id", "asc")
-          .limit(offset + pageSize + 1)
-          .execute();
-      } catch (error) {
-        throw mapPostgresError(error, "engineering-data.applicability-catalog");
-      }
-    })();
+    let page = this.#db
+      .selectFrom("business.applicability_metadata_snapshots")
+      .where("project_id", "=", query.projectId)
+      .where(sql<SqlBool>`project_revision_ref = ${revision}::jsonb`)
+      .where(sql<SqlBool>`spatial_scope_ref = ${scope}::jsonb`);
+    if (cursorKey !== null) {
+      const anchor = await page
+        .select([
+          sql<string>`recorded_at::text`.as("recorded_at_text"),
+          "snapshot_id as entity_id",
+          "version_id",
+        ])
+        .where("catalog_cursor_key", "=", cursorKey)
+        .limit(1)
+        .executeTakeFirst();
+      if (anchor === undefined)
+        return { kind: "failed", error: readAuthorizationDenied(query.queryId) };
+      page = page.where(entryContextAfterAnchorV1(anchor, "snapshot_id"));
+    }
+    const rows = await page
+      .select(["catalog_cursor_key", "snapshot_ref", "applicability_metadata"])
+      .orderBy("recorded_at", "desc")
+      .orderBy("snapshot_id", "asc")
+      .orderBy("version_id", "asc")
+      .limit(pageSize + 1)
+      .execute();
     const items: ApplicabilityCatalogItemV1[] = [];
-    for (const row of rows.slice(offset, offset + pageSize)) {
+    for (const row of rows.slice(0, pageSize)) {
       const snapshotRef = ApplicabilityMetadataSnapshotRefV1Schema.safeParse(row.snapshot_ref);
       const metadata = ApplicabilityMetadataSchema.safeParse(row.applicability_metadata);
-      if (!snapshotRef.success || !metadata.success) continue;
+      if (!snapshotRef.success || !metadata.success)
+        return { kind: "failed", error: moduleError("TERMINAL_FAILURE", query.queryId) };
       items.push({ snapshotRef: snapshotRef.data, metadata: metadata.data });
     }
     const next =
-      rows.length > offset + pageSize
-        ? encodeEntryContextCursorV1(binding, offset + pageSize)
+      rows.length > pageSize
+        ? encodeEntryContextCursorV1(binding, rows[pageSize - 1]!.catalog_cursor_key)
         : undefined;
     return {
       kind: "succeeded",
@@ -1377,7 +1513,7 @@ export class PostgresEngineeringContextSourceRegistry
   async #externalEventCatalog(
     query: AssessmentEntryContextReadQueryV1,
     binding: string,
-    offset: number,
+    cursorKey: string | null,
     pageSize: number,
   ): Promise<AssessmentEntryContextReadResultV1> {
     const denied = (): AssessmentEntryContextReadResultV1 => ({
@@ -1385,40 +1521,47 @@ export class PostgresEngineeringContextSourceRegistry
       error: readAuthorizationDenied(query.queryId),
     });
     const scope = JSON.stringify(query.payload.spatialScopeRef);
-    const rows = await (async () => {
-      try {
-        // 只按精确工程与登记空间 refs 取本模块登记的外部事件，多取一行判断是否还有下一页。
-        return await this.#db
-          .selectFrom("business.external_risk_events")
-          .select([
-            "external_risk_event_id",
-            "version_id",
-            "external_risk_event_ref",
-            "evidence_references",
-            "source_version_refs",
-            "spatial_scope_refs",
-          ])
-          .where("project_id", "=", query.projectId)
-          // jsonb 的 @> 对“数组包含对象元素”不成立（仅标量元素成立），
-          // 因此用 jsonb_build_array 包成单元素数组再做包含判断，仍可走 GIN 索引。
-          .where(sql<SqlBool>`spatial_scope_refs @> jsonb_build_array(${scope}::jsonb)`)
-          .orderBy("recorded_at", "desc")
-          .orderBy("external_risk_event_id", "asc")
-          .orderBy("version_id", "asc")
-          .limit(offset + pageSize + 1)
-          .execute();
-      } catch (error) {
-        throw mapPostgresError(error, "engineering-data.external-event-catalog");
-      }
-    })();
+    let page = this.#db
+      .selectFrom("business.external_risk_events")
+      .where("project_id", "=", query.projectId)
+      .where(sql<SqlBool>`spatial_scope_refs @> jsonb_build_array(${scope}::jsonb)`);
+    if (cursorKey !== null) {
+      const anchor = await page
+        .select([
+          sql<string>`recorded_at::text`.as("recorded_at_text"),
+          "external_risk_event_id as entity_id",
+          "version_id",
+        ])
+        .where("catalog_cursor_key", "=", cursorKey)
+        .limit(1)
+        .executeTakeFirst();
+      if (anchor === undefined) return denied();
+      page = page.where(entryContextAfterAnchorV1(anchor, "external_risk_event_id"));
+    }
+    const rows = await page
+      .select([
+        "catalog_cursor_key",
+        "external_risk_event_id",
+        "version_id",
+        "external_risk_event_ref",
+        "evidence_references",
+        "source_version_refs",
+        "spatial_scope_refs",
+      ])
+      .orderBy("recorded_at", "desc")
+      .orderBy("external_risk_event_id", "asc")
+      .orderBy("version_id", "asc")
+      .limit(pageSize + 1)
+      .execute();
 
     // 来源范围由 C06 判定：C11 只提出该事件登记的精确来源引用，请当前授权按用途复验，
     // 不自行解释来源授权、也不扩大范围。逐项复验通过后才披露；撤权不是“该事件不存在”，
     // 不得折算成空目录或短列表，故整次读取按既有安全错误失败闭合。
     const items: ExternalEventCatalogItemV1[] = [];
-    for (const row of rows.slice(offset, offset + pageSize)) {
+    for (const row of rows.slice(0, pageSize)) {
       const riskInput = ExternalRiskEventRefV1Schema.safeParse(row.external_risk_event_ref);
-      if (!riskInput.success) continue;
+      if (!riskInput.success)
+        return { kind: "failed", error: moduleError("TERMINAL_FAILURE", query.queryId) };
       const sourceVersionRefs = parseRegisteredRefListV1<SourceVersionRefV1>(
         row.source_version_refs,
         SourceVersionRefV1Schema,
@@ -1435,12 +1578,17 @@ export class PostgresEngineeringContextSourceRegistry
         256,
       );
       if (sourceVersionRefs === undefined || evidence === undefined || scopes === undefined)
-        continue;
+        return { kind: "failed", error: moduleError("TERMINAL_FAILURE", query.queryId) };
       // 身份按 entityId 判定，与 #verifyRead 的空间归一规则一致；DB 侧的 @> 包含已保证
       // 登记集合中存在与请求语义相等的空间，不能因 jsonb 键序差异漏判为“没有”。
       const requestedScopeEntityId = query.payload.spatialScopeRef.reference.entityId;
-      const scopeRef = scopes.find((ref) => ref.reference.entityId === requestedScopeEntityId);
-      if (scopeRef === undefined) continue;
+      const scopeRef = scopes.find(
+        (ref) =>
+          ref.reference.entityId === requestedScopeEntityId &&
+          ref.reference.versionId === query.payload.spatialScopeRef.reference.versionId,
+      );
+      if (scopeRef === undefined)
+        return { kind: "failed", error: moduleError("TERMINAL_FAILURE", query.queryId) };
       try {
         const decision = await this.#verifyRead(
           query,
@@ -1463,8 +1611,8 @@ export class PostgresEngineeringContextSourceRegistry
     }
 
     const next =
-      rows.length > offset + pageSize
-        ? encodeEntryContextCursorV1(binding, offset + pageSize)
+      rows.length > pageSize
+        ? encodeEntryContextCursorV1(binding, rows[pageSize - 1]!.catalog_cursor_key)
         : undefined;
     return {
       kind: "succeeded",
@@ -3922,5 +4070,12 @@ export const createPostgresEngineeringContextSourceRegistry = (
   options: PostgresEngineeringContextSourceRegistryOptions,
 ): PostgresEngineeringContextSourceRegistry =>
   new PostgresEngineeringContextSourceRegistry(options);
+
+export const createAssessmentEntryContextReadPort = (
+  registry: PostgresEngineeringContextSourceRegistry,
+): AssessmentEntryContextReadPortV1 => ({
+  read: (query) => registry.readAssessmentEntryContext(query),
+  readAuthorizedSourceVersions: (query) => registry.readAuthorizedSourceVersions(query),
+});
 
 export type { ContextSourceDatabase };

@@ -1,9 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { Kysely, PostgresDialect } from "kysely";
 
 import { ArtifactPutCommandV1Schema } from "@riskflow/core/artifacts";
 import type {
   ApplicabilityMetadataSnapshotRefV1,
   AssessmentEntryContextReadQueryV1,
+  AssessmentEntryContextReadResultV1,
   AuthorizationContextRefV1,
   AuthorizationContextV1,
   ContentArtifactRefV1,
@@ -26,10 +28,12 @@ import {
 import { bootstrapInitialSystemAdministrator } from "../../../src/auth/index.js";
 import { PostgresEngineeringContextSourceRegistry } from "../../../src/engineering-data/context-source/postgres-engineering-context-source-registry.js";
 import { StructuredDocumentConversionAdapter } from "../../../src/engineering-data/document-conversion/structured-document-converter.js";
-import { createPostgresRuntime } from "../../../src/postgres/pool.js";
+import { createPostgresPool, createPostgresRuntime } from "../../../src/postgres/pool.js";
+import type { PostgresDatabase } from "../../../src/postgres/types.js";
 import * as contextSourceMigration from "../../../src/postgres/migrations/engineering-data/deliver-engineering-context-and-source-registry/000008_engineering_context_source_registry.js";
 import * as externalRiskEventRegistrationMigration from "../../../src/postgres/migrations/engineering-data/implement-external-risk-event-registration/000036_external_risk_event_registration.js";
 import * as readQueryResultsMigration from "../../../src/postgres/migrations/engineering-data/implement-engineering-data-read-branches/000024_engineering_data_read_query_results.js";
+import * as assessmentEntryCatalogCursorKeysMigration from "../../../src/postgres/migrations/engineering-data/fix-assessment-entry-read-seam/000055_assessment_entry_catalog_cursor_keys.js";
 import {
   startEngineeringContextSourceFixture,
   type EngineeringContextSourcePostgresFixture,
@@ -325,7 +329,8 @@ describe("C11 PostgreSQL context/source registry", () => {
     expect(privilegeResult.rows[0]).toEqual({ app: true, worker: false, checkpointer: false });
     const migratorRuntime = createPostgresRuntime(fixture.postgres.migrator, "riskflow_migrator");
     try {
-      // 000036 holds a foreign key onto business.engineering_projects, so it rolls back first.
+      // 000055 只增列/索引，000036 持有 000008 工程表外键，回退按依赖反向执行。
+      await assessmentEntryCatalogCursorKeysMigration.down(migratorRuntime.db);
       await externalRiskEventRegistrationMigration.down(migratorRuntime.db);
       await contextSourceMigration.down(migratorRuntime.db);
       const dropped = await fixture.postgres.adminPool.query<{ count: string }>(
@@ -334,6 +339,7 @@ describe("C11 PostgreSQL context/source registry", () => {
       expect(dropped.rows[0]?.count).toBe("0");
       await contextSourceMigration.up(migratorRuntime.db);
       await externalRiskEventRegistrationMigration.up(migratorRuntime.db);
+      await assessmentEntryCatalogCursorKeysMigration.up(migratorRuntime.db);
     } finally {
       await migratorRuntime.close();
     }
@@ -344,6 +350,7 @@ describe("C11 PostgreSQL context/source registry", () => {
       "actor_id",
       "audit_entry_id",
       "authorization_context_ref",
+      "catalog_cursor_key",
       "event_artifact_ref",
       "evidence_references",
       "external_event_key",
@@ -409,12 +416,14 @@ describe("C11 PostgreSQL context/source registry", () => {
     await expectSchema();
     const migratorRuntime = createPostgresRuntime(fixture.postgres.migrator, "riskflow_migrator");
     try {
+      await assessmentEntryCatalogCursorKeysMigration.down(migratorRuntime.db);
       await externalRiskEventRegistrationMigration.down(migratorRuntime.db);
       const dropped = await fixture.postgres.adminPool.query<{ count: string }>(
         "SELECT count(*)::text AS count FROM information_schema.tables WHERE table_schema = 'business' AND table_name = 'external_risk_events'",
       );
       expect(dropped.rows[0]?.count).toBe("0");
       await externalRiskEventRegistrationMigration.up(migratorRuntime.db);
+      await assessmentEntryCatalogCursorKeysMigration.up(migratorRuntime.db);
     } finally {
       await migratorRuntime.close();
     }
@@ -3349,10 +3358,29 @@ describe("C11 PostgreSQL context/source registry", () => {
       readonly spatialScopeRef?: SpatialScopeRefV1;
       /** 签发授权时请求的空间；与 payload 空间分开，才能构造“载荷越界但授权成立”的失败闭合。 */
       readonly authorizationScopeRef?: SpatialScopeRefV1;
+      /** 需要构造授权摘要差异（同一 payload 空间、不同获准集合）时使用。 */
+      readonly authorizationScopeRefs?: readonly SpatialScopeRefV1[];
       readonly pageSize?: number;
       readonly cursor?: string;
     }): Promise<AssessmentEntryContextReadQueryV1> => {
       const state = requireE2eState();
+      const spatialScopeRef = input.spatialScopeRef ?? state.businessSpatialScopeRef;
+      // 操作判别 strict 载荷：只有适用性目录携带精确工程修订，外部事件目录只用空间。
+      const payload =
+        input.operation === "applicability-catalog"
+          ? {
+              operation: "applicability-catalog" as const,
+              projectRevisionRef: input.projectRevisionRef ?? state.projectRevisionRef,
+              spatialScopeRef,
+              ...(input.pageSize === undefined ? {} : { pageSize: input.pageSize }),
+              ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+            }
+          : {
+              operation: "external-event-catalog" as const,
+              spatialScopeRef,
+              ...(input.pageSize === undefined ? {} : { pageSize: input.pageSize }),
+              ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+            };
       return {
         queryId: `c34-entry-${input.suffix}`,
         projectId: state.projectId,
@@ -3364,16 +3392,10 @@ describe("C11 PostgreSQL context/source registry", () => {
           "engineering-data.context-read",
           // C11 业务空间引用是 C06 入口空间的新修订：授权按入口空间签发，
           // 读取在适配器内按 entityId 归一到当前获准空间。
-          [input.authorizationScopeRef ?? state.accessRootScopeRef],
+          input.authorizationScopeRefs ?? [input.authorizationScopeRef ?? state.accessRootScopeRef],
         ),
         kind: "read-assessment-entry-context",
-        payload: {
-          projectRevisionRef: input.projectRevisionRef ?? state.projectRevisionRef,
-          spatialScopeRef: input.spatialScopeRef ?? state.businessSpatialScopeRef,
-          operation: input.operation,
-          ...(input.pageSize === undefined ? {} : { pageSize: input.pageSize }),
-          ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
-        },
+        payload,
       };
     };
 
@@ -3553,22 +3575,8 @@ describe("C11 PostgreSQL context/source registry", () => {
           }),
         ),
       ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
-      // 游标绑定精确工程修订：换一个修订后原游标即越界。
-      expect(
-        await fixture.registry.readAssessmentEntryContext(
-          await entryQuery({
-            operation: "external-event-catalog",
-            suffix: "cursor-revision",
-            spatialScopeRef: eventScopeRef,
-            projectRevisionRef: {
-              kind: "project-revision",
-              reference: { entityId: state.projectId, versionId: "revision-not-current" },
-            },
-            pageSize: 1,
-            cursor: firstEventPage.result.nextCursor,
-          }),
-        ),
-      ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+      // 适用性游标与精确工程修订的绑定越界（外部事件目录不登记该字段）由下方
+      // “C34 目录分页有界、定位稳定与失败闭合”套件用真实适用性游标验证，此处不重复。
 
       // 预览不写回：快照、事件、读取结果、审计与 Outbox 计数全部不变。
       expect(await countCatalogRows()).toEqual(before);
@@ -3693,6 +3701,600 @@ describe("C11 PostgreSQL context/source registry", () => {
         expect(JSON.stringify(item)).not.toContain(JSON.stringify(row.event_artifact_ref));
       }
     }, 120_000);
+
+    describe("C34 目录分页有界、定位稳定与失败闭合", () => {
+      // 本套件用真实 C06 授权与真实 C11 登记命令构造“合法合成登记事实”，待甲方复核；
+      // 目录读取本身不 mock，全部经 PostgreSQL 适配器执行。
+      type CatalogScope = {
+        readonly access: SpatialScopeRefV1;
+        readonly business: SpatialScopeRefV1;
+      };
+      let childScope: CatalogScope;
+      // 前置用例已推进工程修订指针，登记写入必须落在数据库当前修订上。
+      let catalogRevision: ProjectRevisionRefV1;
+
+      const currentProjectRevisionRef = async (): Promise<ProjectRevisionRefV1> => {
+        const state = requireE2eState();
+        const rows = await fixture.postgres.adminPool.query<{
+          project_revision_ref: ProjectRevisionRefV1;
+        }>(
+          `SELECT r.project_revision_ref
+             FROM business.engineering_projects p
+             JOIN business.engineering_project_revisions r
+               ON r.project_id = p.project_id AND r.revision_id = p.current_revision_id
+            WHERE p.project_id = $1`,
+          [state.projectId],
+        );
+        return rows.rows[0]!.project_revision_ref;
+      };
+
+      const seedSnapshot = async (commandId: string, scope: CatalogScope) => {
+        const state = requireE2eState();
+        const authorization = await state.authorize(
+          commandId,
+          [],
+          "engineering-data.register-source-delivery",
+          [scope.access],
+        );
+        const result = await fixture.registry.createApplicabilitySnapshot({
+          commandId,
+          idempotencyKey: commandId,
+          projectId: state.projectId,
+          actorId: state.managerId,
+          issuedAt: "2030-01-01T00:00:00.000Z",
+          authorization,
+          projectRevisionRef: catalogRevision,
+          spatialScopeRef: scope.business,
+          formedAt: "2030-01-01T00:00:00.000Z",
+        });
+        if (result.kind !== "succeeded" || result.result.kind !== "applicability-snapshot")
+          throw new Error(`C34 seed ${commandId} failed`);
+        return result.result.snapshot.snapshotRef;
+      };
+
+      const createChildScope = async (scopeId: string): Promise<CatalogScope> => {
+        const state = requireE2eState();
+        await fixture.access.administerProject({
+          kind: "create-spatial-scope",
+          projectId: state.projectId,
+          commandId: `${scopeId}-scope`,
+          idempotencyKey: `${scopeId}-scope`,
+          expectedVersion: "none",
+          authorizationContextRef: (await state.authorize(`${scopeId}-scope-actor`))
+            .authorizationContextRef,
+          scopeId,
+          parentScopeRef: state.accessRootScopeRef,
+        });
+        const revision = await fixture.postgres.adminPool.query<{ revision_id: string }>(
+          "SELECT current_revision_id AS revision_id FROM business.access_spatial_scopes WHERE project_id = $1 AND scope_id = $2",
+          [state.projectId, scopeId],
+        );
+        const access: SpatialScopeRefV1 = {
+          kind: "spatial-scope",
+          reference: { entityId: scopeId, versionId: revision.rows[0]!.revision_id },
+        };
+        const business: SpatialScopeRefV1 = {
+          kind: "spatial-scope",
+          reference: { entityId: scopeId, versionId: "1" },
+        };
+        const revised = await fixture.registry.reviseContext({
+          commandId: `${scopeId}-context`,
+          idempotencyKey: `${scopeId}-context`,
+          projectId: state.projectId,
+          actorId: state.managerId,
+          issuedAt: "2030-01-01T00:00:00.000Z",
+          authorization: await state.authorize(
+            `${scopeId}-context`,
+            [],
+            "engineering-data.register-source-delivery",
+            [access],
+          ),
+          kind: "spatial",
+          spatialScopeRef: business,
+          projectRevisionRef: catalogRevision,
+          expectedVersion: "none",
+          name: "C34 分页验收区段",
+          worksiteLocation: "合成区段",
+          applicabilityOverrides: { engineeringStage: "shield-expansion" },
+          status: "active",
+          effectivePeriod: { validFrom: "2030-01-01T00:00:00.000Z" },
+        });
+        if (revised.kind !== "succeeded" || revised.result.kind !== "spatial-revision")
+          throw new Error(`C34 child scope ${scopeId} revision failed`);
+        return { access, business };
+      };
+
+      const readApplicability = async (input: {
+        readonly suffix: string;
+        readonly scope?: CatalogScope;
+        readonly pageSize?: number;
+        readonly cursor?: string;
+        readonly projectRevisionRef?: ProjectRevisionRefV1;
+        readonly authorizationScopeRefs?: readonly SpatialScopeRefV1[];
+      }) => {
+        const target = input.scope ?? childScope;
+        return fixture.registry.readAssessmentEntryContext(
+          await entryQuery({
+            operation: "applicability-catalog",
+            suffix: input.suffix,
+            spatialScopeRef: target.business,
+            authorizationScopeRefs: input.authorizationScopeRefs ?? [target.access],
+            projectRevisionRef: input.projectRevisionRef ?? catalogRevision,
+            ...(input.pageSize === undefined ? {} : { pageSize: input.pageSize }),
+            ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+          }),
+        );
+      };
+
+      /** 正向目录读取必须先显式断言成功再收窄，避免实现失败被静默 return 掩盖成假绿。 */
+      const expectApplicabilityCatalog = (
+        result: AssessmentEntryContextReadResultV1,
+        context: string,
+      ) => {
+        expect(result, context).toMatchObject({
+          kind: "succeeded",
+          result: { kind: "applicability-catalog" },
+        });
+        if (result.kind !== "succeeded" || result.result.kind !== "applicability-catalog")
+          throw new Error(`${context}: 适用性目录读取未成功`);
+        return result.result;
+      };
+
+      const mutateCursor = (
+        cursor: string,
+        mutate: (value: { anchor?: unknown; b?: unknown }) => void,
+      ): string => {
+        const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as {
+          anchor?: unknown;
+          b?: unknown;
+        };
+        mutate(value);
+        return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+      };
+
+      beforeAll(async () => {
+        catalogRevision = await currentProjectRevisionRef();
+        childScope = await createChildScope("c34-paging-scope");
+        // 51 条同一 issuedAt 的登记：钉住“页大小 50 + 一条哨兵”边界与同时间 tie-break。
+        for (let index = 0; index < 51; index += 1) {
+          await seedSnapshot(`c34-paging-${String(index).padStart(2, "0")}`, childScope);
+        }
+      }, 240_000);
+
+      it("页大小上界 50：51 条登记稳定续页，单页读取有界且预览零写入", async () => {
+        const state = requireE2eState();
+        const before = await countCatalogRows();
+
+        // 首页取满 50 条并保留续页游标；第二页取尽最后 1 条且无续页。
+        const first = await readApplicability({ suffix: "bound-first" });
+        expect(first).toMatchObject({
+          kind: "succeeded",
+          result: { kind: "applicability-catalog" },
+        });
+        if (first.kind !== "succeeded" || first.result.kind !== "applicability-catalog") return;
+        expect(first.result.items).toHaveLength(50);
+        const sentinel = first.result.nextCursor;
+        expect(sentinel).toBeDefined();
+        if (sentinel === undefined) return;
+        const second = await readApplicability({ suffix: "bound-second", cursor: sentinel });
+        expect(second).toMatchObject({
+          kind: "succeeded",
+          result: { kind: "applicability-catalog" },
+        });
+        if (second.kind !== "succeeded" || second.result.kind !== "applicability-catalog") return;
+        expect(second.result.items).toHaveLength(1);
+        expect(second.result.nextCursor).toBeUndefined();
+
+        // 两页并集恰好等于该精确修订/空间下的全部登记事实：不重复、不遗漏。
+        const registered = await fixture.postgres.adminPool.query<{ snapshot_ref: unknown }>(
+          "SELECT snapshot_ref FROM business.applicability_metadata_snapshots WHERE project_id = $1 AND project_revision_ref = $2::jsonb AND spatial_scope_ref = $3::jsonb",
+          [state.projectId, JSON.stringify(catalogRevision), JSON.stringify(childScope.business)],
+        );
+        const paged = [...first.result.items, ...second.result.items].map((item) =>
+          JSON.stringify(item.snapshotRef),
+        );
+        expect(paged.sort()).toEqual(
+          registered.rows.map((row) => JSON.stringify(row.snapshot_ref)).sort(),
+        );
+
+        // 采集真实执行的 SQL 边界：首页 1 次事实查询，续页多 1 次唯一锚点查询，LIMIT 恒为 pageSize+1。
+        const pool = createPostgresPool(fixture.postgres.app, "riskflow_app");
+        const captured: { sql: string; parameters: readonly unknown[] }[] = [];
+        const loggingDb = new Kysely<PostgresDatabase>({
+          dialect: new PostgresDialect({ pool }),
+          log: (event) => {
+            if (event.level === "query")
+              captured.push({ sql: event.query.sql, parameters: event.query.parameters });
+          },
+        });
+        const loggingRegistry = new PostgresEngineeringContextSourceRegistry({
+          db: loggingDb,
+          transactionUnit: fixture.transactionUnit,
+          access: fixture.access,
+          artifactStore: fixture.artifactStore,
+          artifactReferenceGuard: fixture.artifactRegistry,
+          monitoringStore: fixture.monitoringStore,
+        });
+        const limits = (table: string) =>
+          captured
+            .filter((query) => query.sql.includes(table))
+            .flatMap((query) => {
+              const match = /limit \$(\d+)/iu.exec(query.sql);
+              return match === null ? [] : [Number(query.parameters[Number(match[1]) - 1])];
+            });
+        try {
+          captured.length = 0;
+          const loggedFirst = await loggingRegistry.readAssessmentEntryContext(
+            await entryQuery({
+              operation: "applicability-catalog",
+              suffix: "bound-log-first",
+              projectRevisionRef: catalogRevision,
+              spatialScopeRef: childScope.business,
+              authorizationScopeRefs: [childScope.access],
+            }),
+          );
+          expect(loggedFirst).toMatchObject({ kind: "succeeded" });
+          expect(limits("applicability_metadata_snapshots")).toEqual([51]);
+          if (
+            loggedFirst.kind !== "succeeded" ||
+            loggedFirst.result.kind !== "applicability-catalog" ||
+            loggedFirst.result.nextCursor === undefined
+          )
+            throw new Error("bounded first page must return an applicability cursor");
+          captured.length = 0;
+          const loggedSecond = await loggingRegistry.readAssessmentEntryContext(
+            await entryQuery({
+              operation: "applicability-catalog",
+              suffix: "bound-log-second",
+              projectRevisionRef: catalogRevision,
+              spatialScopeRef: childScope.business,
+              authorizationScopeRefs: [childScope.access],
+              cursor: loggedFirst.result.nextCursor,
+            }),
+          );
+          expect(loggedSecond).toMatchObject({ kind: "succeeded" });
+          // 唯一锚点查询 LIMIT 1 + 事实查询 LIMIT pageSize+1；无累计 offset，页数不放大读取量。
+          expect(
+            limits("applicability_metadata_snapshots").sort((left, right) => left - right),
+          ).toEqual([1, 51]);
+        } finally {
+          await loggingDb.destroy();
+        }
+
+        // 预览不产生业务写入：登记事实、读取结果、审计与 Outbox 计数全部不变。
+        expect(await countCatalogRows()).toEqual(before);
+      }, 120_000);
+
+      it("登记时间含微秒：等时锚点稳定推进，插入更靠前条目不重复已消费项", async () => {
+        const setRecordedAt = async (ref: ApplicabilityMetadataSnapshotRefV1, value: string) => {
+          await fixture.postgres.adminPool.query(
+            "UPDATE business.applicability_metadata_snapshots SET recorded_at = $3::timestamptz WHERE snapshot_id = $1 AND version_id = $2",
+            [ref.reference.entityId, ref.reference.versionId, value],
+          );
+        };
+        // 整数微秒（PostgreSQL 只保留 6 位小数，超过会被四舍五入成同值 tie）。
+        const old4 = await seedSnapshot("c34-micro-4", childScope);
+        const middle5 = await seedSnapshot("c34-micro-5", childScope);
+        const anchor6 = await seedSnapshot("c34-micro-6", childScope);
+        await setRecordedAt(old4, "2030-01-02T00:00:00.000004Z");
+        await setRecordedAt(middle5, "2030-01-02T00:00:00.000005Z");
+        await setRecordedAt(anchor6, "2030-01-02T00:00:00.000006Z");
+
+        const firstPage = expectApplicabilityCatalog(
+          await readApplicability({ suffix: "micro-first", pageSize: 1 }),
+          "micro-first",
+        );
+        expect(firstPage.items[0]?.snapshotRef).toEqual(anchor6);
+        const cursor = firstPage.nextCursor;
+        expect(cursor).toBeDefined();
+        if (cursor === undefined) throw new Error("micro-first: 缺少续页游标");
+
+        // 翻页期间插入一条排序在已消费锚点之前（…007）：keyset 必须跳过它且不重复已消费项。
+        const newer7 = await seedSnapshot("c34-micro-7", childScope);
+        await setRecordedAt(newer7, "2030-01-02T00:00:00.000007Z");
+
+        const secondPage = expectApplicabilityCatalog(
+          await readApplicability({ suffix: "micro-second", pageSize: 1, cursor }),
+          "micro-second",
+        );
+        // 微秒精度参与排序：…005 排在 …004 之前，已消费的 …006 不重复。
+        expect(secondPage.items[0]?.snapshotRef).toEqual(middle5);
+        const next = secondPage.nextCursor;
+        expect(next).toBeDefined();
+        if (next === undefined) throw new Error("micro-second: 缺少续页游标");
+        const thirdPage = expectApplicabilityCatalog(
+          await readApplicability({ suffix: "micro-third", pageSize: 1, cursor: next }),
+          "micro-third",
+        );
+        expect(thirdPage.items[0]?.snapshotRef).toEqual(old4);
+        // 排序在锚点之前的 …007 不被回头取回，也不把已消费的 …006 带回。
+        expect(thirdPage.items[0]?.snapshotRef).not.toEqual(newer7);
+        expect(thirdPage.items[0]?.snapshotRef).not.toEqual(anchor6);
+      }, 120_000);
+
+      it("长工程修订/空间/实体标识：游标仍满足 512 上限并跨新运行时恢复", async () => {
+        const longScope = await createChildScope(`c34-long-scope-${"s".repeat(700)}`);
+        const longRevision: ProjectRevisionRefV1 = {
+          kind: "project-revision",
+          reference: { entityId: `revision-${"r".repeat(600)}`, versionId: "1" },
+        };
+        const longSuffix = "e".repeat(600);
+        const longFirst = await seedSnapshot(`c34-long-${longSuffix}-1`, longScope);
+        const longSecond = await seedSnapshot(`c34-long-${longSuffix}-2`, longScope);
+        // 合成登记事实：改成超长精确修订引用，验证游标不嵌入领域标识、仍受 512 约束。
+        await fixture.postgres.adminPool.query(
+          "UPDATE business.applicability_metadata_snapshots SET project_revision_ref = $3::jsonb WHERE snapshot_id IN ($1, $2)",
+          [
+            longFirst.reference.entityId,
+            longSecond.reference.entityId,
+            JSON.stringify(longRevision),
+          ],
+        );
+
+        const firstPage = expectApplicabilityCatalog(
+          await readApplicability({
+            suffix: "long-first",
+            scope: longScope,
+            pageSize: 1,
+            projectRevisionRef: longRevision,
+          }),
+          "long-first",
+        );
+        expect(firstPage.items).toHaveLength(1);
+        const cursor = firstPage.nextCursor;
+        expect(cursor).toBeDefined();
+        if (cursor === undefined) throw new Error("long-first: 缺少续页游标");
+        expect(cursor.length).toBeLessThanOrEqual(512);
+
+        // 新运行时（独立连接池 + 新 registry 实例）用同一数据库的续页游标恢复。
+        const freshRuntime = createPostgresRuntime(fixture.postgres.app, "riskflow_app");
+        try {
+          const freshRegistry = new PostgresEngineeringContextSourceRegistry({
+            db: freshRuntime.db,
+            transactionUnit: fixture.transactionUnit,
+            access: fixture.access,
+            artifactStore: fixture.artifactStore,
+            artifactReferenceGuard: fixture.artifactRegistry,
+            monitoringStore: fixture.monitoringStore,
+          });
+          const resumed = expectApplicabilityCatalog(
+            await freshRegistry.readAssessmentEntryContext(
+              await entryQuery({
+                operation: "applicability-catalog",
+                suffix: "long-second",
+                spatialScopeRef: longScope.business,
+                authorizationScopeRefs: [longScope.access],
+                projectRevisionRef: longRevision,
+                pageSize: 1,
+                cursor,
+              }),
+            ),
+            "long-second",
+          );
+          expect(resumed.items).toHaveLength(1);
+          expect(resumed.nextCursor).toBeUndefined();
+        } finally {
+          await freshRuntime.close();
+        }
+      }, 240_000);
+
+      it("错目录/空间/修订/授权摘要/伪锚点一律同形拒绝", async () => {
+        const state = requireE2eState();
+        const denied = { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } } as const;
+        const base = expectApplicabilityCatalog(
+          await readApplicability({ suffix: "guard-base", pageSize: 1 }),
+          "guard-base",
+        );
+        const cursor = base.nextCursor;
+        expect(cursor).toBeDefined();
+        if (cursor === undefined) throw new Error("guard-base: 缺少续页游标");
+
+        // 同一适用性游标在多种错配下都必须同形拒绝且不披露目标存在性；以表驱动逐项覆盖。
+        const applicabilityQuery = (
+          suffix: string,
+          overrides: {
+            readonly spatialScopeRef?: SpatialScopeRefV1;
+            readonly authorizationScopeRefs?: readonly SpatialScopeRefV1[];
+            readonly projectRevisionRef?: ProjectRevisionRefV1;
+            readonly cursor?: string;
+          },
+        ) =>
+          entryQuery({
+            operation: "applicability-catalog",
+            suffix,
+            spatialScopeRef: overrides.spatialScopeRef ?? childScope.business,
+            authorizationScopeRefs: overrides.authorizationScopeRefs ?? [childScope.access],
+            ...(overrides.projectRevisionRef === undefined
+              ? {}
+              : { projectRevisionRef: overrides.projectRevisionRef }),
+            pageSize: 1,
+            cursor: overrides.cursor ?? cursor,
+          });
+        const deniedQueries: readonly {
+          readonly name: string;
+          readonly build: (suffix: string) => Promise<AssessmentEntryContextReadQueryV1>;
+        }[] = [
+          {
+            name: "错目录",
+            build: (suffix) =>
+              entryQuery({
+                operation: "external-event-catalog",
+                suffix,
+                spatialScopeRef: childScope.business,
+                authorizationScopeRefs: [childScope.access],
+                pageSize: 1,
+                cursor,
+              }),
+          },
+          {
+            name: "错空间修订",
+            build: (suffix) => applicabilityQuery(suffix, { spatialScopeRef: childScope.access }),
+          },
+          {
+            name: "错工程修订",
+            build: (suffix) =>
+              applicabilityQuery(suffix, {
+                projectRevisionRef: {
+                  kind: "project-revision",
+                  reference: { entityId: state.projectId, versionId: "revision-not-current" },
+                },
+              }),
+          },
+          {
+            name: "伪 UUID 锚点",
+            build: (suffix) =>
+              applicabilityQuery(suffix, {
+                cursor: mutateCursor(cursor, (value) => {
+                  value.anchor = "00000000-0000-4000-8000-000000000000";
+                }),
+              }),
+          },
+          {
+            name: "非法锚点",
+            build: (suffix) =>
+              applicabilityQuery(suffix, {
+                cursor: mutateCursor(cursor, (value) => {
+                  value.anchor = "not-a-uuid";
+                }),
+              }),
+          },
+          {
+            name: "伪造绑定摘要",
+            build: (suffix) =>
+              applicabilityQuery(suffix, {
+                cursor: mutateCursor(cursor, (value) => {
+                  value.b = "0".repeat(64);
+                }),
+              }),
+          },
+          {
+            name: "损坏游标",
+            build: (suffix) => applicabilityQuery(suffix, { cursor: "!!!not-a-cursor!!!" }),
+          },
+        ];
+        for (const [index, testCase] of deniedQueries.entries()) {
+          const result = await fixture.registry.readAssessmentEntryContext(
+            await testCase.build(`guard-${index}`),
+          );
+          expect(result, testCase.name).toMatchObject(denied);
+        }
+
+        // 错授权摘要：payload 空间与操作不变，但该空间的当前获准修订已推进，重验出的摘要与旧游标不符。
+        const accessRevision = await fixture.postgres.adminPool.query<{ revision_no: number }>(
+          `SELECT r.revision_no
+             FROM business.access_spatial_scopes s
+             JOIN business.access_spatial_scope_revisions r ON r.revision_id = s.current_revision_id
+            WHERE s.project_id = $1 AND s.scope_id = $2`,
+          [state.projectId, childScope.access.reference.entityId],
+        );
+        await fixture.access.administerProject({
+          kind: "revise-spatial-scope",
+          projectId: state.projectId,
+          commandId: "c34-guard-revise-access",
+          idempotencyKey: "c34-guard-revise-access",
+          expectedVersion: {
+            entityId: childScope.access.reference.entityId,
+            versionId: String(accessRevision.rows[0]!.revision_no),
+          },
+          authorizationContextRef: (await state.authorize("c34-guard-revise-access-actor"))
+            .authorizationContextRef,
+          scopeId: childScope.access.reference.entityId,
+          status: "active",
+          parentScopeRef: state.accessRootScopeRef,
+        });
+        const advanced = await fixture.postgres.adminPool.query<{ revision_id: string }>(
+          "SELECT current_revision_id AS revision_id FROM business.access_spatial_scopes WHERE project_id = $1 AND scope_id = $2",
+          [state.projectId, childScope.access.reference.entityId],
+        );
+        const advancedAccess: SpatialScopeRefV1 = {
+          kind: "spatial-scope",
+          reference: {
+            entityId: childScope.access.reference.entityId,
+            versionId: advanced.rows[0]!.revision_id,
+          },
+        };
+        expect(
+          await fixture.registry.readAssessmentEntryContext(
+            await applicabilityQuery("guard-cross-digest", {
+              authorizationScopeRefs: [advancedAccess],
+            }),
+          ),
+        ).toMatchObject(denied);
+        // 该空间授权修订已推进：后续用例改用新获准引用。
+        childScope = { access: advancedAccess, business: childScope.business };
+      }, 120_000);
+
+      it("页内已登记事实损坏时类型化技术失败，不退化为空页", async () => {
+        const state = requireE2eState();
+        const target = await fixture.postgres.adminPool.query<{
+          catalog_cursor_key: string;
+          applicability_metadata: unknown;
+        }>(
+          `SELECT catalog_cursor_key, applicability_metadata
+             FROM business.applicability_metadata_snapshots
+            WHERE project_id = $1 AND project_revision_ref = $2::jsonb AND spatial_scope_ref = $3::jsonb
+            ORDER BY recorded_at DESC, snapshot_id ASC, version_id ASC
+            LIMIT 1`,
+          [state.projectId, JSON.stringify(catalogRevision), JSON.stringify(childScope.business)],
+        );
+        const row = target.rows[0];
+        if (row === undefined) throw new Error("no applicability row to corrupt");
+        try {
+          await fixture.postgres.adminPool.query(
+            `UPDATE business.applicability_metadata_snapshots SET applicability_metadata = '{"broken":true}'::jsonb WHERE catalog_cursor_key = $1`,
+            [row.catalog_cursor_key],
+          );
+          expect(
+            await readApplicability({ suffix: "corrupt-applicability", pageSize: 1 }),
+          ).toMatchObject({
+            kind: "failed",
+            error: { code: "TERMINAL_FAILURE", category: "technical", retryable: false },
+          });
+        } finally {
+          await fixture.postgres.adminPool.query(
+            `UPDATE business.applicability_metadata_snapshots SET applicability_metadata = $2::jsonb WHERE catalog_cursor_key = $1`,
+            [row.catalog_cursor_key, JSON.stringify(row.applicability_metadata)],
+          );
+        }
+
+        // 外部事件目录同形：登记引用不可解析即技术失败，不退化为“该事件不存在”。
+        const eventScopeRef = await registeredEventScope();
+        const eventRow = await fixture.postgres.adminPool.query<{
+          catalog_cursor_key: string;
+          external_risk_event_ref: unknown;
+        }>(
+          `SELECT catalog_cursor_key, external_risk_event_ref
+             FROM business.external_risk_events
+            WHERE project_id = $1 AND spatial_scope_refs @> jsonb_build_array($2::jsonb)
+            ORDER BY recorded_at DESC, external_risk_event_id ASC, version_id ASC
+            LIMIT 1`,
+          [state.projectId, JSON.stringify(eventScopeRef)],
+        );
+        const eventTarget = eventRow.rows[0];
+        if (eventTarget === undefined) throw new Error("no external event row to corrupt");
+        try {
+          await fixture.postgres.adminPool.query(
+            `UPDATE business.external_risk_events SET external_risk_event_ref = '{"kind":"corrupt"}'::jsonb WHERE catalog_cursor_key = $1`,
+            [eventTarget.catalog_cursor_key],
+          );
+          expect(
+            await fixture.registry.readAssessmentEntryContext(
+              await entryQuery({
+                operation: "external-event-catalog",
+                suffix: "corrupt-external",
+                spatialScopeRef: eventScopeRef,
+                pageSize: 1,
+              }),
+            ),
+          ).toMatchObject({ kind: "failed", error: { code: "TERMINAL_FAILURE" } });
+        } finally {
+          await fixture.postgres.adminPool.query(
+            `UPDATE business.external_risk_events SET external_risk_event_ref = $2::jsonb WHERE catalog_cursor_key = $1`,
+            [eventTarget.catalog_cursor_key, JSON.stringify(eventTarget.external_risk_event_ref)],
+          );
+        }
+      }, 120_000);
+    });
   });
 
   it("denies historical read resolutions once current authorization is revoked", async () => {

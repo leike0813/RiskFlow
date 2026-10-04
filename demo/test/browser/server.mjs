@@ -2770,14 +2770,16 @@ export const startDemoBrowserServer = async () => {
       subGraphVersions: DEMO_RISK_FLOW_CONFIG.subGraphVersions,
       retryPolicyRef: DEMO_RISK_FLOW_CONFIG.retryPolicyRef,
     });
-    // 两组合根构建成功即证明依赖齐备；父图的 workflow 写入口保持未接线。
-    void riskFlowComposition;
+    // 两组合根构建成功即证明依赖齐备。`workflow` 写入口接父图运行时：`assess` 入口由父图
+    // 直接路由到评估子运行面，不经过识别子运行面，因此不需要 C24 的识别组合根。
+    // 识别子运行面仍保持抛错标记——真被路由到就立即失败，而不是跑出无法追溯的父运行状态。
 
     const api = buildApi({
       access,
       ports: {
         riskAssessmentRead: assessmentEngine,
         warningResponseRead: warningLifecycle,
+        workflow: riskFlowComposition.runtime.workflowPort,
         engineeringData: registry,
         engineeringDataCatalog: createPostgresEngineeringDataCatalogAdapter({
           db: appRuntime.db,
@@ -2932,6 +2934,18 @@ export const startDemoBrowserServer = async () => {
       },
       /** 撤权接缝：真实 C06 成员状态改写，供浏览器观察授权撤销后的失败闭合。 */
       setViewerMembershipStatus,
+      /**
+       * 启动真实 `assess` 评估运行所需的冻结输入：全部是本装配登记的真实事实，
+       * 不是为通过场景而拼的假引用。空间范围与适用性快照同源，评估子运行面据此推进。
+       */
+      assessStartInput: {
+        graphVersion: DEMO_RISK_FLOW_CONFIG.subGraphVersions.assessment,
+        retryPolicyRef: DEMO_RISK_FLOW_CONFIG.retryPolicyRef,
+        riskInput: { kind: "standardized-risk-record", reference: recordAutoRef.reference },
+        spatialScopeRef,
+        projectRevisionRef: { kind: "project-revision", reference: projectRevisionRef.reference },
+        applicabilityMetadataSnapshotRef: applicabilitySnapshotRef,
+      },
       /**
        * C31 risk-overview 的两个已登记运行：同父、不同入口身份，用于验收「按页追溯」——
        * 下一页必须是真实的下一个运行，且与首页共用同一个 `queryResultRef`。

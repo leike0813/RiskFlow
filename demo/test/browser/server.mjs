@@ -45,7 +45,12 @@ import {
   identificationGraphReadInvocationIdV1,
 } from "../../../packages/adapters/dist/identification/graph/index.js";
 import { createPostgresRiskIdentificationReadAdapter } from "../../../packages/adapters/dist/identification/read/index.js";
-import { createPostgresKnowledgeGovernanceReadAdapter } from "../../../packages/adapters/dist/knowledge-governance/index.js";
+import {
+  PostgresKnowledgeGovernanceAdapter,
+  createPostgresKnowledgeGovernanceReadAdapter,
+} from "../../../packages/adapters/dist/knowledge-governance/index.js";
+import { createPostgresAssessmentConfigurationAdapter } from "../../../packages/adapters/dist/assessment-config/index.js";
+import { createPostgresScoringRulesAdapter } from "../../../packages/adapters/dist/scoring-rules/index.js";
 import {
   bootstrapPostgresFoundation,
   createPostgresTransactionUnit,
@@ -68,7 +73,10 @@ import {
   PostgresWarningAssessmentContextReader,
   createPostgresWarningLifecycleAdapter,
 } from "../../../packages/adapters/dist/warning/index.js";
-import { createPostgresRecommendationAdapter } from "../../../packages/adapters/dist/recommendation/index.js";
+import {
+  PostgresRecommendationContextReader,
+  createPostgresRecommendationAdapter,
+} from "../../../packages/adapters/dist/recommendation/index.js";
 import {
   createEffectForecastModelReaderV1,
   createPostgresResponseLifecycleAdapter,
@@ -172,6 +180,25 @@ const evidenceFor = (sourceVersionRef, sourceSegmentId) => ({
 const unwiredWritePathSeam = (label) => () => {
   throw new Error(`评估执行路径接缝未在演示装配中注入：${label}`);
 };
+
+/**
+ * 未启用的版本化配置接缝：返回抛错的 Proxy，任何属性读取都立即失败。
+ *
+ * 与「返回 undefined / 空对象」的区别是——空配置会让下游安静地按「没有策略」运行，
+ * 把未编制成功伪装成已配置。这里宁可炸也不静默降级。
+ */
+const unwiredConfigSeam = (label) =>
+  new Proxy(
+    {},
+    {
+      get(_target, property) {
+        throw new Error(`版本化配置接缝未在演示装配中登记：${label}.${String(property)}`);
+      },
+      has() {
+        throw new Error(`版本化配置接缝未在演示装配中登记：${label}`);
+      },
+    },
+  );
 
 const agentTaskRef = {
   kind: "agent-task",
@@ -2477,6 +2504,42 @@ export const startDemoBrowserServer = async () => {
     });
     const publicOrigin = `http://127.0.0.1:${freePort}`;
 
+    // ---- C16 → C18 → C19 正式依据链（design D-11）----
+    //
+    // C16 拥有发布/修订/工件引用；C18 与 C19 都经它的 governedReleases 解析精确引用，
+    // 各自只持有自己的配置集合与依据投影。C19 的 `resolve` 按冻结的评估准备快照物化
+    // `assessment-basis-release-set`，本装配把它作为 C25 的依据读取端口与图组合根的
+    // basisResolver。规则「编制」路径（清洗、任务、Agent、提交修订）不在本装配内，
+    // 一旦误调用即失败，而不是返回未编制成功的空依据。
+    const knowledgeGovernance = new PostgresKnowledgeGovernanceAdapter({
+      db: appRuntime.db,
+      transactionUnit,
+      access,
+      reviewAudit,
+    });
+    const assessmentConfiguration = createPostgresAssessmentConfigurationAdapter({
+      db: appRuntime.db,
+      transactionUnit,
+      artifactStore,
+      governedReleases: knowledgeGovernance,
+    });
+    const scoringRules = createPostgresScoringRulesAdapter({
+      db: appRuntime.db,
+      transactionUnit,
+      artifactStore,
+      artifactReferenceGuard: artifactStore.referenceGuard,
+      access,
+      taskStore: unwiredWritePathSeam("scoringRulesTaskStore"),
+      dataCleaning: unwiredWritePathSeam("scoringRulesDataCleaning"),
+      configuration: assessmentConfiguration,
+      governedReleases: knowledgeGovernance,
+      // 准备快照投影由所属的 C11 提供，不注入假投影。
+      preparationSnapshot: registry,
+      submitRevision: unwiredWritePathSeam("scoringRulesSubmitRevision"),
+      startAgentTask: unwiredWritePathSeam("scoringRulesStartAgentTask"),
+      policy: unwiredConfigSeam("scoringRulesPolicy"),
+    });
+
     // ---- C34 评估只读（design D-04）：C25 引擎 + 全部真实接缝 ----
     //
     // C34 八条只读分支只用到 recordCatalog/entryContext/entriesRead/runRead 四个接缝，
@@ -2494,7 +2557,7 @@ export const startDemoBrowserServer = async () => {
       artifactStore,
       preparationContext: registry,
       riskInputFacts,
-      basisReader: unwiredWritePathSeam("basisReader"),
+      basisReader: scoringRules,
       runtimePolicies: createRiskAssessmentRuntimePolicies({ projectId: PROJECT_ID }),
       monitoring: monitoringStore,
       authorizeDownstream,
@@ -2513,7 +2576,11 @@ export const startDemoBrowserServer = async () => {
       transactionUnit,
       access,
       artifactStore,
-      reader: unwiredWritePathSeam("recommendationReader"),
+      reader: new PostgresRecommendationContextReader({
+        db: appRuntime.db,
+        artifactStore,
+        basis: scoringRules,
+      }),
       policies: createRecommendationPolicies({
         projectId: PROJECT_ID,
         // 生成策略按已入库的风险记录绑定风险事件分类；演示只登记自动路线那条。
@@ -2555,7 +2622,7 @@ export const startDemoBrowserServer = async () => {
       access,
       deviationFacts: responseLifecycle,
       inputSnapshots: assessmentEngine,
-      basis: unwiredWritePathSeam("calibrationBasis"),
+      basis: scoringRules,
       artifactStore,
       agentResults: unwiredWritePathSeam("calibrationAgentResults"),
       reviews: unwiredWritePathSeam("calibrationReviews"),

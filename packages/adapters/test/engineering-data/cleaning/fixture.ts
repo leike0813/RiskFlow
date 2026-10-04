@@ -1337,9 +1337,18 @@ export interface CleaningTaskCompletionV1 {
  * every artifact purpose the C08 port asserts (agent-action-intent, agent-candidate,
  * agent-increment, agent-validation, agent-action-result) is exercised.
  */
+/**
+ * 驱动任务到完成所需的最小服务面。只暴露工件写入与「静默其它活动任务」，于是同一数据库里
+ * 可以用注入的 C15/C08 管线驱动任务，而不必传入整套清洗夹具。
+ */
+export interface CleaningTaskDrivingServicesV1 {
+  readonly artifactStore: ArtifactStoreV1;
+  readonly quiesceOtherActiveTasks: (projectId: string) => Promise<void>;
+}
+
 export const completeCleaningTask = async (
   pipeline: CleaningPipelineV1,
-  fixture: DataCleaningPostgresFixture,
+  services: CleaningTaskDrivingServicesV1,
   options: {
     readonly workerId: string;
     readonly projectId: string;
@@ -1358,7 +1367,7 @@ export const completeCleaningTask = async (
   },
 ): Promise<CleaningTaskCompletionV1> => {
   const adapter = pipeline.agentTaskAdapter;
-  await fixture.quiesceOtherActiveTasks(options.projectId);
+  await services.quiesceOtherActiveTasks(options.projectId);
   const claimAt = options.claimAt ?? at(60);
   const claimTime = Date.parse(claimAt);
   const step = (seconds: number): string => new Date(claimTime + seconds * 1_000).toISOString();
@@ -1377,7 +1386,7 @@ export const completeCleaningTask = async (
     purposeCode: string,
     artifactKind: "content" | "diagnostic",
   ) =>
-    fixture.artifactStore.put(
+    services.artifactStore.put(
       ArtifactPutCommandV1Schema.parse({
         schemaVersion: "1",
         commandId: `${artifactId}:put`,

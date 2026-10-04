@@ -19,6 +19,11 @@ import {
 } from "@riskflow/core/access";
 import { authorizationScopeDigest } from "@riskflow/core/retrieval";
 import {
+  AssessmentPreparationProjectionV1Schema,
+  AssessmentPreparationSnapshotReadRequestSchema,
+  type AssessmentPreparationProjectionV1,
+} from "@riskflow/core/scoring-rules";
+import {
   ArtifactReadRequestV1Schema,
   ArtifactReferenceCheckRequestV1Schema,
   ArtifactStoreError,
@@ -125,6 +130,7 @@ import {
   type EngineeringFreezeResultV1,
   type ExternalEventCatalogItemV1,
   type ModuleBranchV1,
+  type ModuleCapabilityV1,
   type ModuleErrorV1,
   type QueryResultRefV1,
   type SourceAccessGrantRefV1,
@@ -1299,6 +1305,54 @@ export class PostgresEngineeringContextSourceRegistry
   }
 
   /**
+   * 授权修订引用与资料版本引用是两个不同契约，不能直接混用或强转。这里只按 C11 自有登记事实
+   * 做有界一对一映射：按当前工程、ready 状态与稳定 grant identity 定位精确来源版本，沿用既有
+   * 上限、至多「授权数量加一」的查询边界、一对一及 Schema/行身份校验，返回原精确 refs。
+   * 不选择最新版本、不读 C06 私表；空授权得到空集合，缺失、歧义或越界映射返回 `undefined`，
+   * 由调用方按不可枚举的授权失败收口。入口目录与准备冻结共用这一个实现。
+   */
+  async #resolveAuthorizedSourceVersions(input: {
+    readonly projectId: string;
+    readonly grantRefs: readonly SourceAccessGrantRefV1[];
+  }): Promise<SourceVersionRefV1[] | undefined> {
+    if (input.grantRefs.length > ASSESSMENT_ENTRY_SOURCE_VERSION_MAX_V1) return undefined;
+    if (input.grantRefs.length === 0) return [];
+    const grantIds = new Set(input.grantRefs.map((ref) => ref.reference.entityId));
+    if (grantIds.size !== input.grantRefs.length) return undefined;
+    const rows = await this.#db
+      .selectFrom("business.source_versions")
+      .select(["source_version_id", "version_id", "source_version_ref", "source_access_grant_ref"])
+      .where("project_id", "=", input.projectId)
+      .where("access_status", "=", "ready")
+      // C11 保存创建时授权修订；稳定 grant identity 仍指向同一精确来源版本。
+      .where(
+        sql<SqlBool>`source_access_grant_ref -> 'reference' ->> 'entityId' IN (${sql.join([...grantIds])})`,
+      )
+      .limit(input.grantRefs.length + 1)
+      .execute();
+    if (rows.length !== input.grantRefs.length) return undefined;
+    const sourceVersionRefs: SourceVersionRefV1[] = [];
+    const seenGrants = new Set<string>();
+    for (const row of rows) {
+      const source = SourceVersionRefV1Schema.safeParse(row.source_version_ref);
+      const grant = SourceAccessGrantRefV1Schema.safeParse(row.source_access_grant_ref);
+      if (
+        !source.success ||
+        !grant.success ||
+        source.data.reference.entityId !== row.source_version_id ||
+        source.data.reference.versionId !== row.version_id ||
+        !grantIds.has(grant.data.reference.entityId) ||
+        seenGrants.has(grant.data.reference.entityId)
+      )
+        return undefined;
+      seenGrants.add(grant.data.reference.entityId);
+      sourceVersionRefs.push(source.data);
+    }
+    sourceVersionRefs.sort((left, right) => refKey(left).localeCompare(refKey(right)));
+    return sourceVersionRefs;
+  }
+
+  /**
    * 评估启动输入候选（design D-04 与 engineering-context delta）：两个目录各自读取本模块
    * 自有表并各自独立分页。快照按精确工程/空间修订过滤；事件按登记空间 refs 过滤，并把该事件
    * 登记的精确来源引用交回 C06 复验。只读已登记事实：保存字段经原 Schema 校验，不扫描来源
@@ -1337,46 +1391,11 @@ export class PostgresEngineeringContextSourceRegistry
         decision.context.projectId !== valid.projectId
       )
         return denied();
-      const grants = decision.context.sourceAccessGrantRefs;
-      if (grants.length > ASSESSMENT_ENTRY_SOURCE_VERSION_MAX_V1) return denied();
-      if (grants.length === 0) return { kind: "succeeded", result: { sourceVersionRefs: [] } };
-      const grantIds = new Set(grants.map((ref) => ref.reference.entityId));
-      if (grantIds.size !== grants.length) return denied();
-      const rows = await this.#db
-        .selectFrom("business.source_versions")
-        .select([
-          "source_version_id",
-          "version_id",
-          "source_version_ref",
-          "source_access_grant_ref",
-        ])
-        .where("project_id", "=", valid.projectId)
-        .where("access_status", "=", "ready")
-        // C11 保存创建时授权修订；稳定 grant identity 仍指向同一精确来源版本。
-        .where(
-          sql<SqlBool>`source_access_grant_ref -> 'reference' ->> 'entityId' IN (${sql.join([...grantIds])})`,
-        )
-        .limit(grants.length + 1)
-        .execute();
-      if (rows.length !== grants.length) return denied();
-      const sourceVersionRefs: SourceVersionRefV1[] = [];
-      const seenGrants = new Set<string>();
-      for (const row of rows) {
-        const source = SourceVersionRefV1Schema.safeParse(row.source_version_ref);
-        const grant = SourceAccessGrantRefV1Schema.safeParse(row.source_access_grant_ref);
-        if (
-          !source.success ||
-          !grant.success ||
-          source.data.reference.entityId !== row.source_version_id ||
-          source.data.reference.versionId !== row.version_id ||
-          !grantIds.has(grant.data.reference.entityId) ||
-          seenGrants.has(grant.data.reference.entityId)
-        )
-          return denied();
-        seenGrants.add(grant.data.reference.entityId);
-        sourceVersionRefs.push(source.data);
-      }
-      sourceVersionRefs.sort((left, right) => refKey(left).localeCompare(refKey(right)));
+      const sourceVersionRefs = await this.#resolveAuthorizedSourceVersions({
+        projectId: valid.projectId,
+        grantRefs: decision.context.sourceAccessGrantRefs,
+      });
+      if (sourceVersionRefs === undefined) return denied();
       return { kind: "succeeded", result: { sourceVersionRefs } };
     } catch (error) {
       if (error instanceof AccessServiceError) return denied();
@@ -3533,6 +3552,16 @@ export class PostgresEngineeringContextSourceRegistry
         }
       }
 
+      // 事实读取授权必须与本次入口已复验的当前来源范围同源：按授权修订有界解析出精确资料版本，
+      // 解析不成立（缺失、歧义、越界）时在暴露任何目标前关闭失败。
+      const authorizedSourceVersionRefs = await this.#resolveAuthorizedSourceVersions({
+        projectId: command.projectId,
+        grantRefs: decision.context.sourceAccessGrantRefs,
+      });
+      if (authorizedSourceVersionRefs === undefined) {
+        return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", command.commandId) };
+      }
+
       const factsAuthorization = await this.#downstreamAuthorization({
         branch: RISK_ASSESSMENT_DOWNSTREAM_BRANCH_V1.riskInputFacts,
         invocationId: `${command.commandId}:risk-input-facts`,
@@ -3540,7 +3569,28 @@ export class PostgresEngineeringContextSourceRegistry
         actorId: verified.actorId,
         requestedAt: command.issuedAt,
         requestedSpatialScopeRefs: [command.payload.spatialScopeRef],
+        requestedSourceVersionRefs: authorizedSourceVersionRefs,
       });
+      // 下游签发接缝不得扩大本次已获准的来源或空间：任何额外来源或空间都按授权失败收口。
+      const entryGrantIds = new Set(
+        decision.context.sourceAccessGrantRefs.map((ref) => ref.reference.entityId),
+      );
+      const entryScopeIds = new Set(
+        decision.context.spatialScopeRefs.map((ref) => ref.reference.entityId),
+      );
+      if (
+        factsAuthorization.projectId !== command.projectId ||
+        factsAuthorization.actorId !== verified.actorId ||
+        factsAuthorization.spatialScopeRefs.length === 0 ||
+        factsAuthorization.spatialScopeRefs.some(
+          (ref) => !entryScopeIds.has(ref.reference.entityId),
+        ) ||
+        factsAuthorization.sourceAccessGrantRefs.some(
+          (ref) => !entryGrantIds.has(ref.reference.entityId),
+        )
+      ) {
+        return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", command.commandId) };
+      }
       const factsResult = await factsReader.readRiskInputFacts({
         requestId: `${command.commandId}:risk-input-facts`,
         idempotencyKey: `${command.idempotencyKey}:risk-input-facts`,
@@ -3752,6 +3802,98 @@ export class PostgresEngineeringContextSourceRegistry
     }
   }
 
+  /**
+   * 两个公开入口共用的自有行读取、解析与保存范围两阶段复验。分支由各入口固定：
+   * C25 准备上下文沿 `engineering-data.evidence-access`，C19 准备投影沿
+   * `knowledge-modeling.assessment-basis`。精确行查找只用于取得待复验的空间与来源，
+   * 复验通过后才暴露任何准备事实。
+   */
+  async #readAssessmentPreparationForBranch(input: {
+    readonly requestId: string;
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly preparationSnapshotRef: Extract<
+      ContractReferenceV1,
+      { kind: "assessment-preparation-snapshot" }
+    >;
+    readonly branch: ModuleBranchV1;
+  }): Promise<
+    | {
+        readonly kind: "succeeded";
+        readonly preparation: AssessmentPreparationSnapshotV1;
+        readonly applicability: ApplicabilityMetadataSnapshotV1;
+      }
+    | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
+  > {
+    const denied = (): { readonly kind: "failed"; readonly error: ModuleErrorV1 } => ({
+      kind: "failed",
+      error: moduleError("AUTHORIZATION_DENIED", input.requestId, {
+        requiredCapability: MODULE_BRANCH_CAPABILITY_V1[input.branch],
+      }),
+    });
+    const current = async (
+      spatialScopeRefs: readonly SpatialScopeRefV1[],
+      sourceVersionRefs: readonly SourceVersionRefV1[],
+    ) => {
+      if (
+        input.projectId !== input.authorization.projectId ||
+        input.actorId !== input.authorization.actorId ||
+        !input.authorization.grantedCapabilities.includes(MODULE_BRANCH_CAPABILITY_V1[input.branch])
+      ) {
+        throw preserveDomainError(moduleError("AUTHORIZATION_DENIED", input.requestId));
+      }
+      const decision = await this.#access.verify({
+        authorizationContextRef: input.authorization.authorizationContextRef,
+        invocationId: input.requestId,
+        projectId: input.projectId,
+        branch: input.branch,
+        requestedSpatialScopeRefs: [...spatialScopeRefs],
+        requestedSourceVersionRefs: [...sourceVersionRefs],
+        requestedAt: input.requestedAt,
+      });
+      // 操作者身份只取自 C06 当前验证结果；调用方声明的 actor 必须与之一致。
+      if (decision.context.actorId !== input.actorId) {
+        throw preserveDomainError(moduleError("AUTHORIZATION_DENIED", input.requestId));
+      }
+      return decision;
+    };
+    await current([], []);
+    const row = await this.#db
+      .selectFrom("business.assessment_preparation_snapshots")
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("snapshot_id", "=", input.preparationSnapshotRef.reference.entityId)
+      .where("version_id", "=", input.preparationSnapshotRef.reference.versionId)
+      .executeTakeFirst();
+    if (row === undefined) return denied();
+    const preparation = AssessmentPreparationSnapshotV1Schema.parse(row.snapshot_payload);
+    const applicability = ApplicabilityMetadataSnapshotV1Schema.parse(row.applicability_values);
+    // 取得准备快照后按它保存的空间与来源引用再次复验当前授权，只用验证后的上下文继续。
+    const accessScopes = input.authorization.spatialScopeRefs.filter(
+      (scope) => scope.reference.entityId === preparation.spatialScopeRef.reference.entityId,
+    );
+    if (accessScopes.length === 0) return denied();
+    // 来源取准备快照自身的证据资料版本；不按“最新来源”替换。
+    const sourceVersionRefs = [
+      ...new Map(
+        preparation.sourceEvidenceReferences.map((evidence) => [
+          `${evidence.sourceVersion.entityId}@${evidence.sourceVersion.versionId}`,
+          { kind: "source-version" as const, reference: evidence.sourceVersion },
+        ]),
+      ).values(),
+    ].sort((left, right) =>
+      `${left.reference.entityId}@${left.reference.versionId}` <
+      `${right.reference.entityId}@${right.reference.versionId}`
+        ? -1
+        : 1,
+    );
+    // C06 verify 把上下文与签发时的 invocationId 绑定：复验必须沿用同一调用身份。
+    await current(accessScopes, sourceVersionRefs);
+    return { kind: "succeeded", preparation, applicability };
+  }
+
   /** C25 有界读取：公共准备快照 + 当时冻结的完整适用性元数据快照值。 */
   async readAssessmentPreparationContext(input: {
     readonly requestId: string;
@@ -3772,73 +3914,21 @@ export class PostgresEngineeringContextSourceRegistry
     | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
   > {
     try {
-      await this.#verifyRead(
-        {
-          queryId: input.requestId,
-          projectId: input.authorization.projectId,
-          actorId: input.authorization.actorId,
-          authorization: input.authorization,
-        },
-        "engineering-data.evidence-access",
-        [],
-        [],
-      );
-      const row = await this.#db
-        .selectFrom("business.assessment_preparation_snapshots")
-        .selectAll()
-        .where("project_id", "=", input.authorization.projectId)
-        .where("snapshot_id", "=", input.preparationSnapshotRef.reference.entityId)
-        .where("version_id", "=", input.preparationSnapshotRef.reference.versionId)
-        .executeTakeFirst();
-      if (row === undefined) {
-        return {
-          kind: "failed",
-          error: moduleError("AUTHORIZATION_DENIED", input.requestId, {
-            requiredCapability: "engineering-data.read",
-          }),
-        };
-      }
-      const preparation = AssessmentPreparationSnapshotV1Schema.parse(row.snapshot_payload);
-      const applicability = ApplicabilityMetadataSnapshotV1Schema.parse(row.applicability_values);
-      // 取得准备快照后按它的空间与来源引用再次复验当前授权，只用验证后的上下文继续。
-      const accessScopes = input.authorization.spatialScopeRefs.filter(
-        (scope) => scope.reference.entityId === preparation.spatialScopeRef.reference.entityId,
-      );
-      if (accessScopes.length === 0) {
-        return {
-          kind: "failed",
-          error: moduleError("AUTHORIZATION_DENIED", input.requestId, {
-            requiredCapability: "engineering-data.read",
-          }),
-        };
-      }
-      // 空间与来源都必须落到已验证上下文内：来源取准备快照自身的证据资料版本。
-      const sourceVersionRefs = [
-        ...new Map(
-          preparation.sourceEvidenceReferences.map((evidence) => [
-            `${evidence.sourceVersion.entityId}@${evidence.sourceVersion.versionId}`,
-            { kind: "source-version" as const, reference: evidence.sourceVersion },
-          ]),
-        ).values(),
-      ].sort((left, right) =>
-        `${left.reference.entityId}@${left.reference.versionId}` <
-        `${right.reference.entityId}@${right.reference.versionId}`
-          ? -1
-          : 1,
-      );
-      // C06 verify 把上下文与签发时的 invocationId 绑定：复验必须沿用同一调用身份。
-      await this.#verifyRead(
-        {
-          queryId: input.requestId,
-          projectId: input.authorization.projectId,
-          actorId: input.authorization.actorId,
-          authorization: input.authorization,
-        },
-        "engineering-data.evidence-access",
-        accessScopes,
-        sourceVersionRefs,
-      );
-      return { kind: "succeeded", preparation, applicability };
+      const read = await this.#readAssessmentPreparationForBranch({
+        requestId: input.requestId,
+        projectId: input.authorization.projectId,
+        actorId: input.authorization.actorId,
+        requestedAt: input.requestedAt,
+        authorization: input.authorization,
+        preparationSnapshotRef: input.preparationSnapshotRef,
+        branch: "engineering-data.evidence-access",
+      });
+      if (read.kind === "failed") return read;
+      return {
+        kind: "succeeded",
+        preparation: read.preparation,
+        applicability: read.applicability,
+      };
     } catch (error) {
       return {
         kind: "failed",
@@ -3847,6 +3937,98 @@ export class PostgresEngineeringContextSourceRegistry
           input.requestId,
           "engineering-data.assessment-preparation-read",
           "engineering-data.read",
+          true,
+        ),
+      };
+    }
+  }
+
+  /**
+   * C19 评估依据的生产准备投影读取（IP-04 / C19 delta spec）。只接受原 C19
+   * `knowledge-modeling.assessment-basis` 调用身份，不签发额外分支、不扩大授权。
+   * 投影只含准备身份、工程修订与适用性；清洗任务与结果工件是规则编制的来源，不在此处。
+   */
+  async readAssessmentPreparationSnapshot(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestId: string;
+    readonly idempotencyKey: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly preparationSnapshotRef: {
+      readonly kind: string;
+      readonly reference: { readonly entityId: string; readonly versionId: string };
+    };
+  }): Promise<
+    | { readonly kind: "succeeded"; readonly projection: AssessmentPreparationProjectionV1 }
+    | { readonly kind: "waiting"; readonly waiting: WaitingRefV1 }
+    | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
+  > {
+    const strict = AssessmentPreparationSnapshotReadRequestSchema.safeParse(input);
+    if (
+      !strict.success ||
+      strict.data.preparationSnapshotRef.kind !== "assessment-preparation-snapshot"
+    ) {
+      return {
+        kind: "failed",
+        error: moduleError("UNSUPPORTED_CONTRACT", input.requestId, { schemaVersion: "1" }),
+      };
+    }
+    try {
+      const read = await this.#readAssessmentPreparationForBranch({
+        requestId: input.requestId,
+        projectId: input.projectId,
+        actorId: input.actorId,
+        requestedAt: input.requestedAt,
+        authorization: input.authorization,
+        preparationSnapshotRef: {
+          kind: "assessment-preparation-snapshot",
+          reference: input.preparationSnapshotRef.reference,
+        },
+        branch: "knowledge-modeling.assessment-basis",
+      });
+      if (read.kind === "failed") return read;
+      // 准备、适用性与工程修订必须互相绑定后才形成投影。
+      if (
+        read.preparation.projectRevisionRef.reference.versionId === "" ||
+        !sameVersion(
+          read.preparation.applicabilityMetadataSnapshotRef.reference,
+          read.applicability.snapshotRef.reference,
+        )
+      ) {
+        return {
+          kind: "failed",
+          error: moduleError("AUTHORIZATION_DENIED", input.requestId, {
+            requiredCapability: MODULE_BRANCH_CAPABILITY_V1["knowledge-modeling.assessment-basis"],
+          }),
+        };
+      }
+      return {
+        kind: "succeeded",
+        projection: AssessmentPreparationProjectionV1Schema.parse({
+          schemaVersion: "1",
+          preparationSnapshotRef: {
+            kind: "assessment-preparation-snapshot",
+            reference: input.preparationSnapshotRef.reference,
+          },
+          projectId: input.projectId,
+          projectRevisionRef: read.preparation.projectRevisionRef,
+          applicabilitySnapshotRef: read.preparation.applicabilityMetadataSnapshotRef,
+          applicability: {
+            constructionMethod: read.applicability.applicabilityMetadata.constructionMethod,
+            stratumCondition: read.applicability.applicabilityMetadata.stratumCondition,
+            engineeringStage: read.applicability.applicabilityMetadata.engineeringStage,
+          },
+        }),
+      };
+    } catch (error) {
+      return {
+        kind: "failed",
+        error: this.#mapError(
+          error,
+          input.requestId,
+          "knowledge.assessment-preparation-projection",
+          MODULE_BRANCH_CAPABILITY_V1["knowledge-modeling.assessment-basis"],
           true,
         ),
       };
@@ -4007,8 +4189,7 @@ export class PostgresEngineeringContextSourceRegistry
     error: unknown,
     causalRunId: string,
     stage: string,
-    requiredCapability:
-      "engineering-data.read" | "engineering-data.write" = "engineering-data.write",
+    requiredCapability: ModuleCapabilityV1 = "engineering-data.write",
     concealAuthorizationTarget = false,
   ): ModuleErrorV1 {
     const contextError =

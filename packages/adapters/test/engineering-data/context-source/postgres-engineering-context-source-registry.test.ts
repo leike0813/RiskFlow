@@ -4806,6 +4806,74 @@ describe("C11 PostgreSQL context/source registry", () => {
       expect(Number(events.rows[0]?.count ?? "0")).toBeGreaterThanOrEqual(1);
     }, 120_000);
 
+    it("下游签发接缝返回额外来源或空间时拒绝冻结且零准备事实", async () => {
+      const state = requireWorld();
+      const snapshotsBefore = await fixture.postgres.adminPool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM business.assessment_preparation_snapshots WHERE project_id = $1",
+        [project],
+      );
+      const eventsBefore = await fixture.postgres.adminPool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM outbox.events WHERE event_type = 'engineering.inputs-ready.v1'",
+      );
+      for (const widen of [
+        { extraSource: true, extraSpace: false },
+        { extraSource: false, extraSpace: true },
+      ]) {
+        const widening = new PostgresEngineeringContextSourceRegistry({
+          db: fixture.runtime.db,
+          transactionUnit: fixture.transactionUnit,
+          access: fixture.access,
+          artifactStore: fixture.artifactStore,
+          artifactReferenceGuard: fixture.artifactRegistry,
+          monitoringStore: fixture.monitoringStore,
+          riskInputFacts: factsReader as never,
+          authorizeDownstream: (async (request: {
+            readonly branch: string;
+            readonly invocationId: string;
+          }) => ({
+            ...(await authorizeDownstream(request)),
+            ...(widen.extraSource
+              ? {
+                  sourceAccessGrantRefs: [
+                    {
+                      kind: "source-access-grant" as const,
+                      reference: { entityId: "grant-not-granted", versionId: "1" },
+                    },
+                  ],
+                }
+              : {}),
+            ...(widen.extraSpace
+              ? {
+                  spatialScopeRefs: [
+                    state.accessRootScopeRef,
+                    {
+                      kind: "spatial-scope" as const,
+                      reference: { entityId: "scope-not-granted", versionId: "1" },
+                    },
+                  ],
+                }
+              : {}),
+          })) as never,
+        });
+        const result = await widening.freeze(
+          await freezeCommand(`widen-${widen.extraSource}-${widen.extraSpace}`, false),
+        );
+        expect(result, JSON.stringify(widen)).toMatchObject({
+          kind: "failed",
+          error: { code: "AUTHORIZATION_DENIED" },
+        });
+      }
+      const snapshotsAfter = await fixture.postgres.adminPool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM business.assessment_preparation_snapshots WHERE project_id = $1",
+        [project],
+      );
+      const eventsAfter = await fixture.postgres.adminPool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM outbox.events WHERE event_type = 'engineering.inputs-ready.v1'",
+      );
+      expect(Number(snapshotsAfter.rows[0]?.count)).toBe(Number(snapshotsBefore.rows[0]?.count));
+      expect(Number(eventsAfter.rows[0]?.count)).toBe(Number(eventsBefore.rows[0]?.count));
+    }, 120_000);
+
     it("监测引用先经 C14 受权读取：不存在的快照整体失败且零准备事实", async () => {
       const registry = openRegistry();
       const command = await freezeCommand("monitoring", true);

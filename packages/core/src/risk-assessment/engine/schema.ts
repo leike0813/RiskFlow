@@ -11,11 +11,15 @@ import {
   AssessmentInputSnapshotRefV1Schema,
   AssessmentPreparationSnapshotRefV1Schema,
   AssessmentBasisReleaseSetRefV1Schema,
+  AuthorizationContextV1Schema,
   ContentArtifactRefV1Schema,
   IndicatorActualValueSetRefV1Schema,
   KnowledgeReleaseRefV1Schema,
   KnowledgeRevisionRefV1Schema,
   ModuleErrorV1Schema,
+  RISK_INPUT_FACT_MAX_FIELDS_V1,
+  RiskInputFactFieldPathSegmentV1Schema,
+  RiskInputFactFieldV1Schema,
   RiskInputVersionRefV1Schema,
   type ModuleErrorV1,
   type ContractReferenceV1,
@@ -37,7 +41,8 @@ export const RISK_ASSESSMENT_DECISION_MEDIA_TYPE_V1 =
 export const RISK_ASSESSMENT_DECISION_ARTIFACT_PURPOSE_CODE_V1 =
   "risk-assessment.decision" as const;
 export const RISK_ASSESSMENT_MAX_ARTIFACT_BYTES_V1 = 1024 * 1024;
-export const RISK_ASSESSMENT_MAX_FACT_FIELDS_V1 = 1024;
+/** 字段上限与契约层同源，避免 C11/C25 与所属 reader 出现两套预算。 */
+export const RISK_ASSESSMENT_MAX_FACT_FIELDS_V1 = RISK_INPUT_FACT_MAX_FIELDS_V1;
 export const RISK_ASSESSMENT_MAX_INDICATOR_VALUES_V1 = 512;
 export const RISK_ASSESSMENT_MAX_TRIGGERS_V1 = 1024;
 export const RISK_ASSESSMENT_INPUT_SNAPSHOT_REFERENCE_COUNT_V1 = 22;
@@ -228,15 +233,23 @@ export const toModuleError = (
 /* 风险输入事实（D-01 接缝 1）                                                 */
 /* -------------------------------------------------------------------------- */
 
-const factFieldPathSegment = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/u);
+const factFieldPathSegment = RiskInputFactFieldPathSegmentV1Schema;
 
-export const RiskInputFactFieldV1Schema = z.strictObject({
-  documentType: IdentifierSchema,
-  fieldPath: z.array(factFieldPathSegment).min(1).max(16),
-  value: ScalarValueSchema,
-  evidenceReferences: z.array(EvidenceReferenceSchema).min(1).max(32),
+export { RiskInputFactFieldV1Schema };
+export type { RiskInputFactFieldV1 } from "@riskflow/contracts/ports";
+
+/**
+ * 读取请求是接缝契约的一部分：身份、时间、授权与精确 XOR 风险输入由 C06 签发的
+ * 调用方给出，所属 reader 不得从自由字符串推断工程或改换调用身份。
+ */
+export const RiskInputFactsReadRequestV1Schema = z.strictObject({
+  requestId: IdentifierSchema,
+  idempotencyKey: IdentifierSchema,
+  requestedAt: IsoDateTimeSchema,
+  authorization: AuthorizationContextV1Schema,
+  riskInput: RiskInputVersionRefV1Schema,
 });
-export type RiskInputFactFieldV1 = z.infer<typeof RiskInputFactFieldV1Schema>;
+export type RiskInputFactsReadRequestV1 = z.infer<typeof RiskInputFactsReadRequestV1Schema>;
 
 export const RiskInputFactsV1Schema = z.strictObject({
   schemaVersion: z.literal(RISK_ASSESSMENT_ENGINE_SCHEMA_VERSION_V1),

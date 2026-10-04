@@ -1449,7 +1449,6 @@ export class PostgresScoringRulesAdapter
         requestedAt: request.requestedAt,
         authorization,
         preparationSnapshotRef: request.preparationSnapshotRef,
-        requiredAt: request.requiredAt,
       });
       if (snapshot.kind === "waiting") {
         return AssembleApplicableRuleSetResultV1Schema.parse({
@@ -1464,9 +1463,14 @@ export class PostgresScoringRulesAdapter
         });
       }
       const projection = AssessmentPreparationProjectionV1Schema.parse(snapshot.projection);
+      // 准备身份与适用性只以 C11 生产投影为准；配置集合与兼容身份由 C18 解析和 C19
+      // 版本化策略核验，不由准备投影担保。
       if (
         projection.projectId !== request.projectId ||
-        !sameVersion(projection.configurationSetRef, request.configurationSetRef) ||
+        !sameVersion(
+          projection.preparationSnapshotRef.reference,
+          request.preparationSnapshotRef.reference,
+        ) ||
         !sameVersion(
           projection.applicabilitySnapshotRef.reference,
           request.applicabilitySnapshotRef.reference,
@@ -1687,7 +1691,6 @@ export class PostgresScoringRulesAdapter
         requestedAt: command.issuedAt,
         authorization,
         preparationSnapshotRef: command.payload.preparationSnapshotRef,
-        requiredAt: command.payload.requiredAt,
       });
       if (snapshot.kind !== "succeeded") {
         return KnowledgeResolutionResultV1Schema.parse({
@@ -1746,13 +1749,22 @@ export class PostgresScoringRulesAdapter
       if (applicableRuleSetDocumentDigest(document) !== metadata.contentDigest) {
         return this.#resolutionDenied(command, "scoring-rule-artifact-mismatch");
       }
+      // 准备绑定只认生产投影：准备引用、工程修订与适用性引用必须逐项一致。
+      // 配置集合与兼容身份改由 C18 真实发布解析和 C19 版本化策略核验。
       if (
+        projection.projectId !== command.projectId ||
+        !sameVersion(
+          projection.preparationSnapshotRef.reference,
+          command.payload.preparationSnapshotRef.reference,
+        ) ||
+        !sameVersion(
+          document.projectRevisionRef.reference,
+          projection.projectRevisionRef.reference,
+        ) ||
         !sameVersion(
           document.applicabilitySnapshotRef.reference,
           projection.applicabilitySnapshotRef.reference,
-        ) ||
-        !sameVersion(document.configurationSetRef, projection.configurationSetRef) ||
-        !sameVersion(document.compatibilityRef, projection.compatibilityRef)
+        )
       ) {
         return this.#resolutionDenied(command, "scoring-rule-applicability-mismatch");
       }
@@ -1771,6 +1783,20 @@ export class PostgresScoringRulesAdapter
           kind: "failed",
           error: configurationSet.error,
         });
+      }
+      // 真实发布配置集合必须与已发布规则集正文的工程、工程修订和集合引用一致。
+      if (
+        configurationSet.configurationSet.projectId !== command.projectId ||
+        !sameVersion(
+          configurationSet.configurationSet.projectRevisionRef.reference,
+          projection.projectRevisionRef.reference,
+        ) ||
+        !sameVersion(
+          configurationSet.configurationSet.configurationSetRef,
+          document.configurationSetRef,
+        )
+      ) {
+        return this.#resolutionDenied(command, "scoring-rule-applicability-mismatch");
       }
       const applicableRuleSetMember: AssessmentBasisReleaseSetMemberV1 = {
         releaseRef: release.releaseRef,

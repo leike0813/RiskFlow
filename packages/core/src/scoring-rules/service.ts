@@ -1,9 +1,14 @@
 import { z } from "zod";
 
 import type { DomainEventV1 } from "@riskflow/contracts/events";
-import { IdentifierSchema, VersionReferenceSchema } from "@riskflow/contracts/common";
+import {
+  IsoDateTimeSchema,
+  IdentifierSchema,
+  VersionReferenceSchema,
+} from "@riskflow/contracts/common";
 import type { VersionReference } from "@riskflow/contracts/common";
 import {
+  AuthorizationContextV1Schema,
   type AgentTaskResultRefV1,
   type AuthorizationContextRefV1,
   type AuthorizationContextV1,
@@ -257,8 +262,12 @@ export const createScoringRuleAuthoringTaskDefinition = (
 /* -------------------------------------------------------------------------- */
 
 /**
- * C25 拥有的评估准备快照在 C19 侧的严格投影：只含装配与冻结所需的精确字段。
- * 该投影由注入的 `AssessmentPreparationSnapshotReaderV1` 提供，C19 不实现其存储。
+ * 评估准备快照的严格投影，存储所有者是 C11（C11 通过生产
+ * `AssessmentPreparationSnapshotReaderV1` 提供，C19 不实现其存储）。
+ *
+ * 投影只保留装配与冻结真正需要的身份与适用性：清洗任务与结果工件是**规则编制**的来源，
+ * 由编制 manifest 精确绑定，不属于每份评估准备的必填输入；配置集合、兼容身份与业务
+ * 有效／记录时刻由 C19/C18 的发布解析承担，同样不进入准备投影。
  */
 export const AssessmentPreparationProjectionV1Schema = z.strictObject({
   schemaVersion: z.literal("1"),
@@ -280,29 +289,29 @@ export const AssessmentPreparationProjectionV1Schema = z.strictObject({
     stratumCondition: IdentifierSchema,
     engineeringStage: IdentifierSchema,
   }),
-  cleaningResultArtifactRef: z.strictObject({
-    kind: z.literal("content-artifact"),
-    reference: VersionReferenceSchema,
-  }),
-  dataCleaningTaskRef: z.strictObject({
-    kind: z.literal("agent-task"),
-    reference: VersionReferenceSchema,
-    taskType: z.literal("data-cleaning"),
-    triggerMode: z.enum(["embedded", "interactive"]),
-    modelDeploymentRef: VersionReferenceSchema,
-    promptTemplateRef: VersionReferenceSchema,
-    toolPolicyRef: VersionReferenceSchema,
-    budgetPolicyRef: VersionReferenceSchema,
-    incrementSchemaRef: VersionReferenceSchema,
-    validationPolicyRef: VersionReferenceSchema,
-  }),
-  configurationSetRef: VersionReferenceSchema,
-  compatibilityRef: VersionReferenceSchema,
-  requiredAt: IdentifierSchema,
-  asOfRecordedAt: IdentifierSchema,
 });
 export type AssessmentPreparationProjectionV1 = z.infer<
   typeof AssessmentPreparationProjectionV1Schema
+>;
+
+/**
+ * 评估准备投影读取的 strict 请求契约。请求只带调用身份与精确准备引用：
+ * 不含 `requiredAt`、不含调用方自选分支——分支与调用身份由所属 reader 固定。
+ */
+export const AssessmentPreparationSnapshotReadRequestSchema = z.strictObject({
+  projectId: IdentifierSchema,
+  actorId: IdentifierSchema,
+  requestId: IdentifierSchema,
+  idempotencyKey: IdentifierSchema,
+  requestedAt: IsoDateTimeSchema,
+  authorization: AuthorizationContextV1Schema,
+  preparationSnapshotRef: z.strictObject({
+    kind: IdentifierSchema,
+    reference: VersionReferenceSchema,
+  }),
+});
+export type AssessmentPreparationSnapshotReadRequestV1 = z.infer<
+  typeof AssessmentPreparationSnapshotReadRequestSchema
 >;
 
 export interface AssessmentPreparationSnapshotReaderV1 {
@@ -317,7 +326,6 @@ export interface AssessmentPreparationSnapshotReaderV1 {
       readonly kind: string;
       readonly reference: { readonly entityId: string; readonly versionId: string };
     };
-    readonly requiredAt: string;
   }): Promise<
     | { readonly kind: "succeeded"; readonly projection: AssessmentPreparationProjectionV1 }
     | { readonly kind: "waiting"; readonly waiting: WaitingRefV1 }

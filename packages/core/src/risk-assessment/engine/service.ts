@@ -13,7 +13,6 @@ import {
   type EngineeringDataQueryV1,
   type EngineeringDataReadResultV1,
   type RiskAssessmentPortV1,
-  type RiskInputVersionRefV1,
   type SpatialScopeRefV1,
   type SourceVersionRefV1,
   type WaitingRefV1,
@@ -49,6 +48,7 @@ import {
   failRiskAssessment,
   riskAssessmentFailureFrom,
   type AssessmentRuntimePolicySetV1,
+  type RiskInputFactsReadRequestV1,
   type RiskInputFactsV1,
 } from "./schema.js";
 
@@ -59,13 +59,9 @@ import {
  */
 
 export interface RiskInputFactsReaderV1 {
-  readRiskInputFacts(input: {
-    readonly requestId: string;
-    readonly idempotencyKey: string;
-    readonly requestedAt: string;
-    readonly authorization: AuthorizationContextV1;
-    readonly riskInput: RiskInputVersionRefV1;
-  }): Promise<
+  readRiskInputFacts(
+    input: RiskInputFactsReadRequestV1,
+  ): Promise<
     | { readonly kind: "succeeded"; readonly facts: RiskInputFactsV1 }
     | { readonly kind: "waiting"; readonly waiting: WaitingRefV1 }
     | { readonly kind: "failed"; readonly error: ModuleErrorV1 }

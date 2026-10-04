@@ -8,6 +8,7 @@ import {
   EngineeringDataReadResolutionResultV1Schema,
   EvidenceAccessItemV1Schema,
   EvidenceAccessReadResultV1Schema,
+  ExternalRiskEventFactsArtifactV1Schema,
   ResolveEngineeringDataReadQueryV1Schema,
   ResolveSourceProcessingInputQueryV1Schema,
   ResolveSourceVersionForReadQueryV1Schema,
@@ -578,6 +579,66 @@ describe("engineering data read query schemas", () => {
         kind: "succeeded",
         result: { kind: "source-segments", segmentSet },
       }).success,
+    ).toBe(false);
+  });
+});
+
+describe("外部风险事件结构化风险事实工件", () => {
+  const field = {
+    documentType: "external-risk-event",
+    fieldPath: ["geology", "overburdenThickness"],
+    value: 12.5,
+    evidenceReferences: [
+      {
+        locator: { sourceSegmentId: "segment-1" },
+        sourceVersion: { entityId: "source-1", versionId: "1" },
+      },
+    ],
+  };
+  const artifact = {
+    schemaVersion: "1" as const,
+    projectId: "project-1",
+    externalSourceRef: { entityId: "external-source", versionId: "1" },
+    externalEventKey: "event-1",
+    fields: [field],
+  };
+
+  it("接受逐字段声明身份、路径、标量与证据的正文", () => {
+    expect(ExternalRiskEventFactsArtifactV1Schema.safeParse(artifact).success).toBe(true);
+  });
+
+  it("拒绝重复字段身份", () => {
+    expect(
+      ExternalRiskEventFactsArtifactV1Schema.safeParse({ ...artifact, fields: [field, field] })
+        .success,
+    ).toBe(false);
+  });
+
+  it("拒绝非标量值、空字段集合与契约外字段", () => {
+    expect(
+      ExternalRiskEventFactsArtifactV1Schema.safeParse({
+        ...artifact,
+        fields: [{ ...field, value: { magnitude: 1 } }],
+      }).success,
+    ).toBe(false);
+    expect(
+      ExternalRiskEventFactsArtifactV1Schema.safeParse({ ...artifact, fields: [] }).success,
+    ).toBe(false);
+    expect(
+      ExternalRiskEventFactsArtifactV1Schema.safeParse({ ...artifact, unit: "m" }).success,
+    ).toBe(false);
+  });
+
+  it("拒绝缺少精确来源版本或事件键的正文", () => {
+    expect(
+      ExternalRiskEventFactsArtifactV1Schema.safeParse({
+        ...artifact,
+        externalSourceRef: undefined,
+      }).success,
+    ).toBe(false);
+    expect(
+      ExternalRiskEventFactsArtifactV1Schema.safeParse({ ...artifact, externalEventKey: "" })
+        .success,
     ).toBe(false);
   });
 });

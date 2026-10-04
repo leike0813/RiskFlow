@@ -14,7 +14,11 @@ import {
   AssessmentConfigurationDocumentV1Schema,
   type AssessmentConfigurationDocumentV1,
 } from "@riskflow/core/assessment-config";
-import { canonicalJson, sha256CanonicalJson } from "@riskflow/core/persistence";
+import {
+  canonicalJson,
+  sha256CanonicalJson,
+  type AtomicCommitV1,
+} from "@riskflow/core/persistence";
 import type {
   AssessmentDownstreamAuthorizationRequestV1,
   AssessmentDownstreamAuthorizerV1,
@@ -39,8 +43,11 @@ import {
   type WorkflowGraphResultRowV1,
 } from "@riskflow/core/workflow";
 import { authorizationScopeDigest } from "@riskflow/core/retrieval";
+import { type StandardizedRiskRecordWriteV1 } from "@riskflow/core/identification/candidate-finalization";
+import type { CompositeConfidence, StandardizedRiskRecord } from "@riskflow/contracts/records";
 
 import { bootstrapInitialSystemAdministrator } from "../../src/auth/index.js";
+import { createPostgresRiskCandidateFinalizationAdapter } from "../../src/identification/candidate-finalization/index.js";
 import {
   createAssessmentEntryContextReadPort,
   PostgresEngineeringContextSourceRegistry,
@@ -126,6 +133,47 @@ export interface RiskAssessmentEngineFixtureV1 {
     readonly kind: "external-risk-event";
     readonly reference: { readonly entityId: string; readonly versionId: string };
   }>;
+  /**
+   * 以指定正文正式登记外部风险事件（C11 外部分支）。IP-04 用它同时覆盖「结构化正文可评估」
+   * 与「登记成功不等于可评估」两种稳定行为，正文形状完全由调用方给出。
+   */
+  registerExternalRiskEventWithBody(input: {
+    readonly suffix: string;
+    readonly body: unknown;
+    readonly evidenceSegmentIds?: readonly string[];
+  }): Promise<{
+    readonly kind: "external-risk-event";
+    readonly reference: { readonly entityId: string; readonly versionId: string };
+  }>;
+  /**
+   * 用真实 C22 适配器在 C03 事务单元内登记一个已验收的标准化风险记录，返回可用于风险输入的
+   * 精确引用。IP-04 用它证明识别登记是接缝的另一端真实写入，而不是手工造行。
+   */
+  registerAcceptedStandardizedRiskRecord(input: {
+    readonly suffix: string;
+    readonly record?: StandardizedRiskRecord;
+    readonly compositeConfidence?: CompositeConfidence;
+  }): Promise<{
+    readonly kind: "standardized-risk-record";
+    readonly reference: { readonly entityId: string; readonly versionId: string };
+  }>;
+  /**
+   * 签发 `engineering-data.evidence-access` 分支的当前授权上下文，供两个 owning reader 的
+   * C06 两阶段复验使用；scope/source 由调用方按待复验目标给出。
+   */
+  authorizeEvidenceAccess(
+    requestId: string,
+    options?: {
+      readonly spatialScopeRefs?: readonly SpatialScopeRefV1[];
+      readonly sourceVersionRefs?: readonly SourceVersionRefV1[];
+    },
+  ): Promise<AuthorizationContextV1>;
+  /**
+   * 把 C11 与 C25 共同消费的事实接缝整体切换为给定 reader。IP-04 起生产接缝用例用真实
+   * owning reader 组合；故障 stub 仍可通过 `restoreStubFactsReader` 复原。
+   */
+  useFactsReader(reader: RiskInputFactsReaderV1): void;
+  restoreStubFactsReader(): void;
   /** 追加一份适用性快照（同一工程修订/业务空间、不同命令），用于入口目录分页。 */
   registerApplicabilitySnapshot(suffix: string): Promise<{
     readonly kind: "applicability-metadata-snapshot";
@@ -207,6 +255,8 @@ export interface RiskAssessmentEngineFixtureV1 {
     }[];
     readonly previousAssessmentRecordRef?: unknown;
     readonly effectiveAt?: string;
+    /** 缺省使用既有合成风险输入；IP-04 用已登记的真实记录引用冻结正式准备。 */
+    readonly riskInput?: unknown;
   }): Promise<AssessmentPreparationSnapshotRefV1>;
   prepareCommand(input: {
     readonly commandId: string;
@@ -919,6 +969,55 @@ export const startRiskAssessmentEngineFixture = async (
     await registerMonitoringSeries(monitoringSeriesDefinitions[2]!),
   ];
 
+  const registerExternalRiskEventWithBody = async (input: {
+    readonly suffix: string;
+    readonly body: unknown;
+    readonly evidenceSegmentIds?: readonly string[];
+  }): Promise<{
+    readonly kind: "external-risk-event";
+    readonly reference: { readonly entityId: string; readonly versionId: string };
+  }> => {
+    const segmentIds = input.evidenceSegmentIds ?? [sourceSegmentId];
+    const eventEvidence = segmentIds.map((segment) => ({
+      locator: { sourceSegmentId: segment },
+      sourceVersion: sourceVersionRef.reference,
+    }));
+    const eventArtifactRef = await putRaw({
+      artifactId: `external-event-${input.suffix}`,
+      purposeCode: "engineering-data.register-external-risk-event",
+      mediaType: "application/json",
+      body: JSON.stringify(input.body),
+      sourceVersionRefs: [sourceVersionRef],
+      evidenceReferences: eventEvidence,
+    });
+    const external = await postgres.registry.apply({
+      commandId: `c25-external-${input.suffix}`,
+      idempotencyKey: `c25-external-${input.suffix}`,
+      projectId: PROJECT_ID,
+      actorId: managerId,
+      issuedAt: T0,
+      authorization: await authorize({
+        invocationId: `c25-external-${input.suffix}`,
+        branch: "engineering-data.register-external-risk-event",
+        sourceVersionRefs: [sourceVersionRef],
+      }),
+      kind: "register-external-risk-event",
+      payload: {
+        externalSourceRef: { entityId: "external-risk-platform", versionId: "1" },
+        externalEventKey: `external-event-${input.suffix}`,
+        eventArtifactRef,
+        evidenceReferences: eventEvidence,
+        occurredAt: T0,
+      },
+    } as never);
+    if (external.kind !== "succeeded") {
+      throw new Error(`C25 external event failed: ${JSON.stringify(external).slice(0, 400)}`);
+    }
+    const ref = external.result.externalRiskEventRef;
+    registeredExternalRiskEvents.add(`${ref.reference.entityId}@${ref.reference.versionId}`);
+    return ref;
+  };
+
   const factsFor = (riskInput?: unknown) => {
     const base = c25Facts({
       projectId: PROJECT_ID,
@@ -1014,7 +1113,7 @@ export const startRiskAssessmentEngineFixture = async (
     projectId: PROJECT_ID,
     notificationPolicyRef: c25Version("notification-policy", "2"),
   });
-  const riskInputFacts: RiskInputFactsReaderV1 = {
+  const stubRiskInputFacts: RiskInputFactsReaderV1 = {
     readRiskInputFacts: async (input) => {
       // 外部风险事件必须已正式登记，否则事实读取不可用（与 C24 窄读同语义）。
       const riskInput = (input as { readonly riskInput?: Record<string, unknown> }).riskInput;
@@ -1042,6 +1141,12 @@ export const startRiskAssessmentEngineFixture = async (
       }
       return result;
     },
+  };
+  // 故障 stub 与正式 owning reader 走同一个接缝：IP-04 起生产用例可整体替换为真实 reader，
+  // C11 与 C25 两端始终消费同一组合，两 owning factories 都不依赖对方实例。
+  let activeFactsReader: RiskInputFactsReaderV1 = stubRiskInputFacts;
+  const riskInputFacts: RiskInputFactsReaderV1 = {
+    readRiskInputFacts: (input) => activeFactsReader.readRiskInputFacts(input),
   };
   const runtimePolicies: AssessmentRuntimePolicySetProviderV1 = {
     readRuntimePolicySet: async (input) => {
@@ -1526,44 +1631,181 @@ export const startRiskAssessmentEngineFixture = async (
       return preparations[kind];
     },
     async registerExternalRiskEvent(suffix) {
-      const eventArtifactRef = await putRaw({
-        artifactId: `external-event-${suffix}`,
-        purposeCode: "engineering-data.register-external-risk-event",
-        mediaType: "application/json",
-        body: JSON.stringify({ eventType: "external-risk-event", suffix }),
-        sourceVersionRefs: [sourceVersionRef],
-        evidenceReferences: [
-          { locator: { sourceSegmentId }, sourceVersion: sourceVersionRef.reference },
-        ],
+      return registerExternalRiskEventWithBody({
+        suffix,
+        body: { eventType: "external-risk-event", suffix },
       });
-      const external = await postgres.registry.apply({
-        commandId: `c25-external-${suffix}`,
-        idempotencyKey: `c25-external-${suffix}`,
+    },
+    async registerExternalRiskEventWithBody(input) {
+      return registerExternalRiskEventWithBody(input);
+    },
+    async registerAcceptedStandardizedRiskRecord(input) {
+      const riskRecordId = `c25-record-${input.suffix}`;
+      const riskRecordRef = {
+        kind: "standardized-risk-record" as const,
+        reference: { entityId: riskRecordId, versionId: "1" },
+      };
+      const record: StandardizedRiskRecord = input.record ?? {
+        processNodeId: "c25-process-node",
+        riskSource: "c25-risk-source",
+        riskFactor: "c25-risk-factor",
+        riskEvent: "c25-risk-event",
+        riskElementRelations: [
+          { sourceElement: "c25-element", relation: "affects", targetElement: "c25-worksite" },
+        ],
+        evidenceLocator: { sourceSegmentId },
+        modelConfidence: 0.82,
+      };
+      const compositeConfidence: CompositeConfidence = input.compositeConfidence ?? {
+        value: 0.78,
+        basis: ["c25-confidence-basis"],
+      };
+      const recordEvidence = [
+        { locator: { sourceSegmentId }, sourceVersion: sourceVersionRef.reference },
+      ];
+      const commandId = `c25-accept-${input.suffix}`;
+      const row: StandardizedRiskRecordWriteV1 = {
+        riskRecordId,
+        versionId: "1",
+        riskRecordRef,
+        rowId: `c25-accept-row-${input.suffix}`,
+        idempotencyKey: commandId,
+        requestDigest: c25Digest(record),
         projectId: PROJECT_ID,
-        actorId: managerId,
-        issuedAt: T0,
-        authorization: await authorize({
-          invocationId: `c25-external-${suffix}`,
-          branch: "engineering-data.register-external-risk-event",
+        workPlanRef: {
+          kind: "identification-work-plan",
+          reference: { entityId: `c25-work-plan-${input.suffix}`, versionId: "1" },
+        },
+        identificationRunRef: {
+          kind: "workflow-run",
+          reference: { entityId: `c25-identification-run-${input.suffix}`, versionId: "1" },
+        },
+        inputSnapshotRef: {
+          kind: "identification-input-snapshot",
+          reference: { entityId: `c25-identification-snapshot-${input.suffix}`, versionId: "1" },
+        },
+        mergePlanRef: {
+          kind: "merge-plan",
+          reference: { entityId: `c25-merge-plan-${input.suffix}`, versionId: "1" },
+        },
+        reviewDecisionRef: {
+          kind: "review-decision",
+          reference: { entityId: `c25-review-decision-${input.suffix}`, versionId: "1" },
+        },
+        groupId: `c25-group-${input.suffix}`,
+        groupVersionId: "1",
+        groupRef: {
+          kind: "identification-group",
+          reference: { entityId: `c25-group-${input.suffix}`, versionId: "1" },
+        },
+        representativeCandidateRefs: [
+          {
+            kind: "content-artifact",
+            reference: {
+              entityId: `c25-candidate-${input.suffix}`,
+              versionId: "1",
+            },
+          },
+        ],
+        sourceSegmentIds: [sourceSegmentId],
+        mechanismEntryIds: [`c25-mechanism-${input.suffix}`],
+        spatialScopeRefs: [businessSpatialScopeRef],
+        sourceVersionRefs: [sourceVersionRef],
+        evidenceReferences: recordEvidence,
+        authorizationScopeDigest: c25Digest({
+          spatialScopeRefs: [businessSpatialScopeRef],
           sourceVersionRefs: [sourceVersionRef],
         }),
-        kind: "register-external-risk-event",
-        payload: {
-          externalSourceRef: { entityId: "external-risk-platform", versionId: "1" },
-          externalEventKey: `external-event-${suffix}`,
-          eventArtifactRef,
-          evidenceReferences: [
-            { locator: { sourceSegmentId }, sourceVersion: sourceVersionRef.reference },
-          ],
-          occurredAt: T0,
+        authorizationContextRef: {
+          kind: "authorization-context",
+          reference: { entityId: `c25-accept-auth-${input.suffix}`, versionId: "1" },
         },
-      } as never);
-      if (external.kind !== "succeeded") {
-        throw new Error(`C25 external event failed: ${JSON.stringify(external).slice(0, 400)}`);
-      }
-      const ref = external.result.externalRiskEventRef;
-      registeredExternalRiskEvents.add(`${ref.reference.entityId}@${ref.reference.versionId}`);
-      return ref;
+        actorRef: managerId,
+        commandId,
+        occurredAt: T0,
+      };
+      const finalization = createPostgresRiskCandidateFinalizationAdapter({
+        db: postgres.runtime.db,
+        transactionUnit: postgres.transactionUnit,
+        now: () => new Date(T0),
+      });
+      await postgres.transactionUnit.execute(
+        {
+          projectId: PROJECT_ID,
+          commandKind: "identification.accept-groups",
+          commandId,
+          idempotencyKey: commandId,
+          payload: { fixture: "合成样本、待甲方复核", recordIds: [riskRecordId] },
+          actorRef: managerId,
+          authorizationContextRef: row.authorizationContextRef,
+          issuedAt: T0,
+        },
+        async (context) => {
+          const outcome = await finalization.insertRecords(
+            {
+              rows: [row],
+              records: [
+                {
+                  riskRecordId,
+                  record,
+                  riskMechanismEntryIds: row.mechanismEntryIds,
+                  sourceIds: [sourceVersionRef.reference.entityId],
+                  compositeConfidence,
+                  version: {
+                    reference: { entityId: riskRecordId, versionId: "1" },
+                    effectivePeriod: { validFrom: T0 },
+                    systemTime: { recordedAt: T0 },
+                  },
+                  audit: {
+                    actorId: managerId,
+                    action: "identification.accept-groups",
+                    recordedAt: T0,
+                  },
+                },
+              ],
+              occurredAt: T0,
+            },
+            context,
+          );
+          if (outcome.kind !== "inserted" && outcome.kind !== "replayed") {
+            throw new Error(`C25 accepted record insert failed: ${outcome.detailCode}`);
+          }
+          return {
+            resultRef: riskRecordRef,
+            audit: {
+              auditEntryId: `${commandId}:audit`,
+              projectId: PROJECT_ID,
+              action: "identification.accept-groups",
+              targetRef: riskRecordRef,
+              actorRef: managerId,
+              authorizationContextRef: row.authorizationContextRef,
+              occurredAt: T0,
+              recordedAt: T0,
+              version: { entityId: riskRecordId, versionId: "1" },
+              commandId,
+              idempotencyKey: commandId,
+            },
+            events: [],
+          } satisfies AtomicCommitV1;
+        },
+      );
+      return riskRecordRef;
+    },
+    async authorizeEvidenceAccess(requestId, options) {
+      return authorize({
+        invocationId: requestId,
+        branch: "engineering-data.evidence-access",
+        ...(options?.spatialScopeRefs === undefined
+          ? {}
+          : { spatialScopeRefs: options.spatialScopeRefs }),
+        sourceVersionRefs: options?.sourceVersionRefs ?? [sourceVersionRef],
+      });
+    },
+    useFactsReader(reader) {
+      activeFactsReader = reader;
+    },
+    restoreStubFactsReader() {
+      activeFactsReader = stubRiskInputFacts;
     },
     async registerApplicabilitySnapshot(suffix) {
       const result = await postgres.registry.createApplicabilitySnapshot({

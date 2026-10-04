@@ -657,6 +657,8 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
       kind: "assessment-preparation-snapshot" as const,
       reference: { entityId: `preparation-${world.projectId}`, versionId: "1" },
     };
+    // 准备投影只含准备身份、工程修订与适用性（IP-04 / C19 delta spec）：清洗任务与结果工件
+    // 属于规则编制来源，配置集合与兼容身份由 C18 解析和 C19 版本化策略核验。
     requireFixture().setPreparationProjection({
       schemaVersion: "1",
       preparationSnapshotRef,
@@ -664,12 +666,6 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
       projectRevisionRef: world.projectRevisionRef,
       applicabilitySnapshotRef: world.applicabilitySnapshotRef,
       applicability: { ...CHAIN_APPLICABILITY },
-      cleaningResultArtifactRef: handoff.cleaningResultArtifactRef,
-      dataCleaningTaskRef: project.taskRef,
-      configurationSetRef: project.configurationSetRef,
-      compatibilityRef: requireFixture().policy.compatibilityRef,
-      requiredAt: RULE_AUTHORING_AT,
-      asOfRecordedAt: RULE_AUTHORING_AT,
     });
 
     const assemblyRequest = {

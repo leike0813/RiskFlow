@@ -7,7 +7,7 @@ import {
   IsoDateTimeSchema,
   VersionReferenceSchema,
 } from "@riskflow/contracts/common";
-import { ApplicabilityMetadataSchema } from "@riskflow/contracts/records";
+import { ApplicabilityMetadataSchema, ScalarValueSchema } from "@riskflow/contracts/records";
 import {
   ApplicabilityMetadataSnapshotRefV1Schema,
   AuthorizationContextV1Schema,
@@ -34,6 +34,48 @@ export const CONTEXT_SOURCE_SCHEMA_VERSION_V1 = "1" as const;
 export const CONTEXT_SOURCE_MAX_SPATIAL_SCOPES = 128;
 export const CONTEXT_SOURCE_MAX_SEGMENTS = 10_000;
 export const CONTEXT_SOURCE_MAX_SEGMENT_BATCH = 500;
+export const CONTEXT_SOURCE_MAX_EXTERNAL_RISK_EVENT_FIELDS = 1024;
+
+/* -------------------------------------------------------------------------- */
+/* 外部风险事件结构化工件（IP-03）                                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 可进入评估的外部风险事件正文契约。只有满足该契约的已登记工件才构成结构化风险事实；
+ * 其它任意已登记正文仍是合法登记物，但在风险事实读取时按契约失败闭合。
+ */
+export const ExternalRiskEventFactsArtifactV1Schema = z.strictObject({
+  schemaVersion: z.literal(CONTEXT_SOURCE_SCHEMA_VERSION_V1),
+  projectId: IdentifierSchema,
+  externalSourceRef: z.strictObject({
+    entityId: IdentifierSchema,
+    versionId: IdentifierSchema,
+  }),
+  externalEventKey: IdentifierSchema,
+  fields: z
+    .array(
+      z.strictObject({
+        documentType: IdentifierSchema,
+        fieldPath: z
+          .array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/u))
+          .min(1)
+          .max(16),
+        value: ScalarValueSchema,
+        evidenceReferences: z.array(EvidenceReferenceSchema).min(1).max(32),
+      }),
+    )
+    .min(1)
+    .max(CONTEXT_SOURCE_MAX_EXTERNAL_RISK_EVENT_FIELDS)
+    .superRefine((fields, context) => {
+      const keys = fields.map((field) => `${field.documentType}/${field.fieldPath.join("/")}`);
+      if (new Set(keys).size !== keys.length) {
+        context.addIssue({ code: "custom", message: "event fact fields must be unique" });
+      }
+    }),
+});
+export type ExternalRiskEventFactsArtifactV1 = z.infer<
+  typeof ExternalRiskEventFactsArtifactV1Schema
+>;
 
 export const ProjectBusinessLifecycleV1Schema = z.enum([
   "preparing",

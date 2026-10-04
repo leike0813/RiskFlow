@@ -77,6 +77,7 @@ import {
   type ResponseWorkflowBindingProofPortV1,
   type ActualAssessmentProofPortV1,
   RiskAssessmentRecordRefV1Schema,
+  RiskInputFactFieldV1Schema,
   RiskInputVersionRefV1Schema,
   RuleConflictRefV1Schema,
   RunSubscriptionRequestV1Schema,
@@ -1789,6 +1790,39 @@ describe("module interface contracts", () => {
     expect(ExternalRiskEventRefV1Schema.safeParse(externalRiskInput).success).toBe(true);
     expect(ContractReferenceV1Schema.safeParse(riskInput).success).toBe(true);
     expect(RiskAssessmentRecordRefV1Schema.safeParse(assessmentRecordRef).success).toBe(true);
+  });
+
+  it("shares one risk input fact field shape across both owners", () => {
+    const field = {
+      documentType: "standardized-risk-record",
+      fieldPath: ["record", "modelConfidence"],
+      value: 0.82,
+      evidenceReferences: [
+        {
+          locator: { sourceSegmentId: "segment-1" },
+          sourceVersion: { entityId: "source-1", versionId: "v1" },
+        },
+      ],
+    };
+    expect(RiskInputFactFieldV1Schema.safeParse(field).success).toBe(true);
+    expect(
+      RiskInputFactFieldV1Schema.safeParse({ ...field, value: { magnitude: 1 } }).success,
+    ).toBe(false);
+    expect(RiskInputFactFieldV1Schema.safeParse({ ...field, fieldPath: [] }).success).toBe(false);
+    expect(
+      RiskInputFactFieldV1Schema.safeParse({ ...field, fieldPath: ["record", "bad segment"] })
+        .success,
+    ).toBe(false);
+    expect(RiskInputFactFieldV1Schema.safeParse({ ...field, evidenceReferences: [] }).success).toBe(
+      false,
+    );
+    expect(
+      RiskInputFactFieldV1Schema.safeParse({
+        ...field,
+        evidenceReferences: Array.from({ length: 33 }, () => field.evidenceReferences[0]),
+      }).success,
+    ).toBe(false);
+    expect(RiskInputFactFieldV1Schema.safeParse({ ...field, unit: "kPa" }).success).toBe(false);
   });
 
   it("domain events: accepts all twelve transactional events and rejects business bodies", () => {

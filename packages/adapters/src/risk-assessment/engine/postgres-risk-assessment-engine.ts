@@ -1122,6 +1122,14 @@ export class PostgresRiskAssessmentEngine
     readonly actorId: string;
     readonly issuedAt: string;
     readonly riskInput: AssessmentPreparationSnapshotV1["riskInput"];
+    /**
+     * 已由 `#verifyCommand` 复验的准备绑定：事实读取授权只能按这里的精确空间与来源范围签发，
+     * 既不从自由请求、风险标识或最新资料推断，也不扩大调用方已获准范围。
+     */
+    readonly binding: {
+      readonly spatialScopeRefs: readonly SpatialScopeRefV1[];
+      readonly sourceVersionRefs: readonly SourceVersionRefV1[];
+    };
   }): Promise<RiskInputFactsV1> {
     const authorization = await this.#authorizeFor(
       {
@@ -1130,9 +1138,26 @@ export class PostgresRiskAssessmentEngine
         projectId: input.projectId,
         actorId: input.actorId,
         requestedAt: input.issuedAt,
+        requestedSpatialScopeRefs: input.binding.spatialScopeRefs,
+        requestedSourceVersionRefs: input.binding.sourceVersionRefs,
       },
       "risk-assessment.read",
     );
+    // 下游签发接缝不得返回超出已复验绑定的空间；绑定带来源时也不得返回无来源授权，
+    // 否则风险事实读取会在收窄阶段被拒，这里提前按授权失败收口。
+    const bindingScopeIds = new Set(
+      input.binding.spatialScopeRefs.map((scope) => scope.reference.entityId),
+    );
+    if (
+      authorization.spatialScopeRefs.length === 0 ||
+      authorization.spatialScopeRefs.some(
+        (scope) => !bindingScopeIds.has(scope.reference.entityId),
+      ) ||
+      (input.binding.sourceVersionRefs.length > 0 &&
+        authorization.sourceAccessGrantRefs.length === 0)
+    ) {
+      throw moduleError("AUTHORIZATION_DENIED", input.commandId);
+    }
     const read = await this.#riskInputFacts.readRiskInputFacts({
       requestId: `${input.commandId}:risk-input-facts`,
       idempotencyKey: `${input.commandId}:risk-input-facts`,
@@ -2063,6 +2088,7 @@ export class PostgresRiskAssessmentEngine
         actorId: verified.actorId,
         issuedAt: valid.issuedAt,
         riskInput: preparation.riskInput,
+        binding,
       });
       const basis = await this.#loadBasis({
         commandId: valid.commandId,

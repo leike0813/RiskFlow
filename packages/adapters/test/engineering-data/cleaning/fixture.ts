@@ -442,6 +442,81 @@ export interface CleaningWorldV1 {
   ): Promise<Extract<EngineeringFreezeCommandV1, { kind: "identification-preparation" }>>;
 }
 
+/**
+ * 清洗管线依赖的既有服务：调用方把自己的 runtime、C06、C03、C04 与会话来源显式注入，
+ * 于是同一数据库里可以再装配一条真实 C15/C08 链路，而不必另起容器或另建系统管理员。
+ */
+export interface CleaningPipelineServicesV1 {
+  readonly db: unknown;
+  readonly transactionUnit: TransactionUnitV1;
+  readonly access: LocalIdentityAccessV1;
+  readonly artifactStore: ArtifactStoreV1;
+  readonly artifactReferenceGuard: ArtifactReferenceGuardV1;
+  readonly monitoringStore: PostgresMonitoringStoreV1;
+  /** 启动接缝的受信调用来源：按启动命令 actor 取该成员的 C06 会话。 */
+  readonly sessionTokenFor: (accountId: string) => string | undefined;
+  readonly onStartTask?: (request: DataCleaningAgentTaskStartRequestV1) => void;
+}
+
+/**
+ * 用既有服务装配一条真实 C15/C08 管线。与本文件自己的 `createPipeline` 走同一条启动路径：
+ * 服务端受信来源经 C06 的 `agent-task.start-task` exact branch 签发独立上下文，再由同一个
+ * C08 adapter 执行，不扩写冻结命令的 capability。
+ */
+export const createCleaningPipelineFor = (
+  services: CleaningPipelineServicesV1,
+  options: {
+    readonly policy: DataCleaningPolicyV1;
+    readonly now?: () => Date;
+  },
+): CleaningPipelineV1 => {
+  const now = options.now ?? (() => new Date(CLEANING_TEST_TIMESTAMP));
+  const holder: { adapter?: PostgresAgentTaskAdapter } = {};
+  const store = createPostgresDataCleaningStore({
+    db: services.db as never,
+    transactionUnit: services.transactionUnit,
+    access: services.access,
+    artifactStore: services.artifactStore,
+    artifactReferenceGuard: services.artifactReferenceGuard,
+    monitoringStore: services.monitoringStore,
+    startAgentTask: async (request) => {
+      services.onStartTask?.(request);
+      const sessionToken = services.sessionTokenFor(request.command.actorId);
+      if (sessionToken === undefined) {
+        throw new Error("the C15 pipeline has no C06 session for the start actor");
+      }
+      const decision = await services.access.authorize({
+        invocation: { kind: "human-session", sessionToken },
+        invocationId: request.command.commandId,
+        projectId: request.command.projectId,
+        branch: "agent-task.start-task",
+        requestedSpatialScopeRefs: [...request.requestedSpatialScopeRefs],
+        requestedSourceVersionRefs: [...request.requestedSourceVersionRefs],
+        requestedAt: request.command.issuedAt,
+      });
+      return holder.adapter!.startTask(
+        StartAgentTaskCommandV1Schema.parse({
+          ...request.command,
+          authorization: decision.context,
+        }),
+      );
+    },
+    policy: options.policy,
+    now: () => now(),
+  });
+  holder.adapter = new PostgresAgentTaskAdapter({
+    db: services.db as never,
+    registry: new AgentTaskDefinitionRegistry([store.createTaskDefinition()]),
+    transactionUnit: services.transactionUnit,
+    referenceGuard: services.artifactReferenceGuard,
+    artifactStore: services.artifactStore,
+    // C08 必须用同一个 C06 verifier 在创建和执行时复验授权，否则冻结上下文无从校验。
+    authorization: services.access,
+    now: () => now().toISOString(),
+  });
+  return { policy: options.policy, store, agentTaskAdapter: holder.adapter };
+};
+
 export interface DataCleaningPostgresFixture {
   readonly postgres: EngineeringContextSourcePostgresFixture["postgres"];
   readonly rootDirectory: string;
@@ -551,71 +626,28 @@ export const startDataCleaningFixture = async (
     [uploader, freezer].find((member) => member.accountId === accountId)?.sessionToken;
 
   const recordedStartCommands: DataCleaningAgentTaskStartRequestV1[] = [];
-  const createAgentTaskAdapter = (values: {
-    readonly store: PostgresDataCleaningStore;
-    readonly transactionUnit: TransactionUnitV1;
-  }) =>
-    new PostgresAgentTaskAdapter({
-      db: base.runtime.db,
-      registry: new AgentTaskDefinitionRegistry([values.store.createTaskDefinition()]),
-      transactionUnit: values.transactionUnit,
-      referenceGuard: base.artifactRegistry,
-      artifactStore: base.artifactStore,
-      // C08 必须用同一个 C06 verifier 在创建和执行时复验授权，否则冻结上下文无从校验。
-      authorization: base.access,
-      now: () => CLEANING_TEST_TIMESTAMP,
-    });
 
   const createPipeline = (
     pipelineOptions: {
       readonly policy?: DataCleaningPolicyV1;
       readonly transactionUnit?: TransactionUnitV1;
     } = {},
-  ): CleaningPipelineV1 => {
-    const pipelinePolicy = pipelineOptions.policy ?? policy;
-    const transactionUnit = pipelineOptions.transactionUnit ?? base.transactionUnit;
-    const holder: { adapter?: PostgresAgentTaskAdapter } = {};
-    const pipelineStore = createPostgresDataCleaningStore({
-      db: base.runtime.db,
-      transactionUnit,
-      access: base.access,
-      artifactStore: base.artifactStore,
-      artifactReferenceGuard: base.artifactRegistry,
-      monitoringStore: base.monitoringStore,
-      // 生产组合根（apps/worker/src/engineering-data/cleaning/composition.ts）按 D-13 用服务端
-      // 受信来源经 C06 的 `agent-task.start-task` exact branch 签发独立上下文；这里用同一个
-      // C06 会话授权和同一个 C08 adapter 走同一条路径，不再扩写冻结命令的 capability。
-      startAgentTask: async (request) => {
-        recordedStartCommands.push(request);
-        const sessionToken = sessionTokenFor(request.command.actorId);
-        if (sessionToken === undefined)
-          throw new Error("the C15 fixture has no C06 session for the start actor");
-        const decision = await base.access.authorize({
-          invocation: { kind: "human-session", sessionToken },
-          invocationId: request.command.commandId,
-          projectId: request.command.projectId,
-          branch: "agent-task.start-task",
-          requestedSpatialScopeRefs: [...request.requestedSpatialScopeRefs],
-          requestedSourceVersionRefs: [...request.requestedSourceVersionRefs],
-          requestedAt: request.command.issuedAt,
-        });
-        return holder.adapter!.startTask(
-          StartAgentTaskCommandV1Schema.parse({
-            ...request.command,
-            authorization: decision.context,
-          }),
-        );
+  ): CleaningPipelineV1 =>
+    createCleaningPipelineFor(
+      {
+        db: base.runtime.db,
+        transactionUnit: pipelineOptions.transactionUnit ?? base.transactionUnit,
+        access: base.access,
+        artifactStore: base.artifactStore,
+        artifactReferenceGuard: base.artifactRegistry,
+        monitoringStore: base.monitoringStore,
+        sessionTokenFor,
+        onStartTask: (request) => {
+          recordedStartCommands.push(request);
+        },
       },
-      policy: pipelinePolicy,
-      now: () => new Date(CLEANING_TEST_TIMESTAMP),
-    });
-    holder.adapter = createAgentTaskAdapter({ store: pipelineStore, transactionUnit });
-    return {
-      policy: pipelinePolicy,
-      store: pipelineStore,
-      agentTaskAdapter: holder.adapter,
-    };
-  };
+      { policy: pipelineOptions.policy ?? policy },
+    );
 
   const defaultPipeline = createPipeline();
   let artifactReadSequence = 0;

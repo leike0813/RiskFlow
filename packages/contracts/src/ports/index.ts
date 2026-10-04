@@ -407,6 +407,23 @@ export const RiskInputVersionRefV1Schema = z.discriminatedUnion("kind", [
 ]);
 export type RiskInputVersionRefV1 = z.infer<typeof RiskInputVersionRefV1Schema>;
 
+/**
+ * 风险事实字段由契约层唯一定义：标准化风险记录与外部风险事件两个所属域只投影
+ * 该形状的正式标量，消费方不得再定义第二套字段或标量类型。
+ */
+export const RISK_INPUT_FACT_MAX_FIELDS_V1 = 1024;
+export const RiskInputFactFieldPathSegmentV1Schema = z
+  .string()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/u);
+
+export const RiskInputFactFieldV1Schema = z.strictObject({
+  documentType: IdentifierSchema,
+  fieldPath: z.array(RiskInputFactFieldPathSegmentV1Schema).min(1).max(16),
+  value: ScalarValueSchema,
+  evidenceReferences: z.array(EvidenceReferenceSchema).min(1).max(32),
+});
+export type RiskInputFactFieldV1 = z.infer<typeof RiskInputFactFieldV1Schema>;
+
 export const ContractReferenceV1Schema = z.discriminatedUnion("kind", [
   AuthorizationContextRefV1Schema,
   ProjectRevisionRefV1Schema,

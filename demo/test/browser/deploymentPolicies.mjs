@@ -213,6 +213,88 @@ export const DEMO_FORECAST_POLICIES = Object.freeze([
 ]);
 
 /**
+ * C19 版本化编制策略（合成样本、待甲方复核）。
+ *
+ * 编制路径本身仍不接线；这里只登记组合根必须冻结的那份策略文档，让 C17/C19 在被
+ * 真正调用时能按精确 `policyRef` 冻结同一版本，而不是在读侧现编一份默认策略。
+ */
+const SCORING_RULES_AGENT_TOOLS = Object.freeze({
+  entityId: "demo-policy-scoring-rule-tools",
+  versionId: "1",
+});
+
+export const createScoringRulesPolicy = () =>
+  Object.freeze({
+    schemaVersion: "1",
+    policyRef: Object.freeze({ entityId: "demo-policy-scoring-rules", versionId: "1" }),
+    compatibilityRef: Object.freeze({
+      entityId: "demo-policy-scoring-rules-compatibility",
+      versionId: "1",
+    }),
+    assemblyPolicyRef: Object.freeze({
+      entityId: "demo-policy-scoring-rules-assembly",
+      versionId: "1",
+    }),
+    conflictPriorityPolicyRef: Object.freeze({
+      entityId: "demo-policy-scoring-rules-conflict-priority",
+      versionId: "1",
+    }),
+    allowedSourceStandardKinds: Object.freeze(["国家标准", "行业标准"]),
+    tools: Object.freeze({
+      standardSegmentToolRef: Object.freeze({
+        entityId: "demo-tool-standard-segment",
+        versionId: "1",
+      }),
+      indicatorCatalogToolRef: Object.freeze({
+        entityId: "demo-tool-indicator-catalog",
+        versionId: "1",
+      }),
+      maxSegmentsPerRead: 64,
+      maxIndicatorsPerRead: 128,
+    }),
+    agent: Object.freeze({
+      definitionRef: Object.freeze({
+        entityId: "demo-definition-scoring-rule",
+        versionId: "1",
+      }),
+      modelDeploymentRef: ASSESSMENT_RUNTIME_POLICY_REFS.modelDeploymentRef,
+      promptTemplateRef: ASSESSMENT_RUNTIME_POLICY_REFS.promptTemplateRef,
+      toolPolicyRef: SCORING_RULES_AGENT_TOOLS,
+      budgetPolicyRef: Object.freeze({
+        entityId: "demo-policy-scoring-rule-budget",
+        versionId: "1",
+      }),
+      incrementSchemaRef: Object.freeze({
+        entityId: "demo-schema-scoring-rule-increment",
+        versionId: "1",
+      }),
+      validationPolicyRef: ASSESSMENT_RUNTIME_POLICY_REFS.responseValidationPolicyRef,
+      budgetPolicy: Object.freeze({
+        schemaVersion: "1",
+        policyRef: Object.freeze({
+          entityId: "demo-policy-scoring-rule-budget",
+          versionId: "1",
+        }),
+        modelDeploymentRef: ASSESSMENT_RUNTIME_POLICY_REFS.modelDeploymentRef,
+        promptTemplateRef: ASSESSMENT_RUNTIME_POLICY_REFS.promptTemplateRef,
+        toolPolicyRef: SCORING_RULES_AGENT_TOOLS,
+        maxModelInvocations: 2,
+        maxToolInvocations: 4,
+        maxContextTokens: 16000,
+        maxInputBytes: 65536,
+        maxOutputBytes: 16384,
+        maxCandidates: 4,
+        maxObjects: 16,
+        maxSupplementarySearches: 1,
+        maxCorrections: 1,
+        maxTransientRetries: 1,
+        maxConcurrentActions: 1,
+        maxWallClockMs: 30000,
+      }),
+    }),
+  });
+
+/**
  * C29 校准校验策略（合成样本、待甲方复核）：固定工具白名单、预算与拒绝分类。
  * 与上面十项运行策略不是同一族（C25 的 `calibrationAgentPolicyRef` 是 Agent 策略引用，
  * 这里是被 C29 逐项核对的校验策略文档），因此单独登记，不混进运行策略集。

@@ -70,6 +70,7 @@ import {
   DEMO_RISK_FLOW_CONFIG,
   createRecommendationPolicies,
   createResponseAgentPolicy,
+  createScoringRulesPolicy,
   createRiskFlowRetryPolicyReader,
   createRiskAssessmentRuntimePolicies,
   createWarningRuntimePolicies,
@@ -2573,7 +2574,8 @@ export const startDemoBrowserServer = async () => {
       preparationSnapshot: registry,
       submitRevision: unwiredWritePathSeam("scoringRulesSubmitRevision"),
       startAgentTask: unwiredWritePathSeam("scoringRulesStartAgentTask"),
-      policy: unwiredConfigSeam("scoringRulesPolicy"),
+      // 版本化编制策略由部署冻结：组合根不在读侧现编默认策略（合成样本、待甲方复核）。
+      policy: createScoringRulesPolicy(),
     });
 
     // ---- C34 评估只读（design D-04）：C25 引擎 + 全部真实接缝 ----

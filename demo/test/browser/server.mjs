@@ -2701,9 +2701,11 @@ export const startDemoBrowserServer = async () => {
       inputSnapshots: assessmentEngine,
       basis: scoringRules,
       artifactStore,
-      agentResults: unwiredWritePathSeam("calibrationAgentResults"),
-      reviews: unwiredWritePathSeam("calibrationReviews"),
-      governance: unwiredWritePathSeam("calibrationGovernance"),
+      // C29 只消费 C07 的复核请求与校准批准证明，不声明完整复核端口；治理只消费 C16
+      // `submit-revision`，不触达发布、停用或回滚。三者都是本装配已有的真实适配器。
+      agentResults: recommendationAgentTasks,
+      reviews: reviewAudit,
+      governance: { govern: (command) => knowledgeGovernance.submitRevision(command) },
       authorizeDownstream,
     });
     const humanDecisionFeedback = createPostgresHumanDecisionFeedbackAdapter({

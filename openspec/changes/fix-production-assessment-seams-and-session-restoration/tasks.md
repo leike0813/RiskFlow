@@ -12,7 +12,7 @@
 先完成 1.4 的真实 C15/C19 依据装配及两种 XOR 集成验收，再推进 2.1 和 2.3/2.4；2.2 的纯算法可独立实现。1.4 使用合成资料经真实清洗收口、C19 编制、C16/C07 审核发布和 resolve 返回实际 basisRef；不能以 startTask 播种或直接调用 appendRelease 替代清洗／发布事实。共享 cleaning/scoring helper 修改时补其施工图 §7 指定的受影响回归。
 
 - [x] 2.1 实施 IP-05：收窄评分上下文并实现 C25 预测风险状态端口，覆盖跨评分边界、精确基线、监测身份与零实际写入；验证 `pnpm exec vitest run packages/core/test/risk-assessment/engine.test.ts packages/adapters/test/risk-assessment/postgres-risk-assessment-engine.test.ts`。
-- [ ] 2.2 实施 IP-06：模型与 outcome Schema、十进制除法和三类纯参数算法，覆盖缺槽、退化、边界及有界窗口测量；验证 `pnpm exec vitest run packages/core/test/response-lifecycle/response-lifecycle.test.ts packages/core/test/response-lifecycle/forecast.test.ts`。
+- [x] 2.2 实施 IP-06：模型与 outcome Schema、十进制除法和三类纯参数算法，覆盖缺槽、退化、边界及有界窗口测量；验证 `pnpm exec vitest run packages/core/test/response-lifecycle/response-lifecycle.test.ts packages/core/test/response-lifecycle/forecast.test.ts`。
 - [ ] 2.3 实施 IP-07：部署执行器工厂使用真实 C04 模型和 C25 投影，三类方法分别得到预测值及变化的风险状态；验证 `pnpm exec vitest run packages/adapters/test/response-lifecycle/forecast-executors.test.ts` 与 `pnpm deps:check`。
 - [ ] 2.4 收口 IP-07：C28 组装正式措施和受权身份、解包 outcome，迁移既有 executor 工厂，验证不可用、原子失败、幂等和旧模型重算；验证 `pnpm exec vitest run packages/adapters/test/response-lifecycle/postgres-response-lifecycle-adapter.test.ts packages/adapters/test/response-lifecycle/forecast-executors.test.ts` 与 `pnpm typecheck`。
 

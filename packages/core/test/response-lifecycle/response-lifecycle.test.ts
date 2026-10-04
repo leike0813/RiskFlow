@@ -3,13 +3,16 @@ import { describe, expect, it } from "vitest";
 import { AuthorizationContextV1Schema } from "@riskflow/contracts/ports";
 
 import {
+  computeEffectForecast,
   computeResponseDeviation,
+  EFFECT_FORECAST_MODEL_ALGORITHM_VERSION_V1,
   effectForecastRefOf,
   ResponseAdoptionDecisionCommandV1Schema,
   ResponseDeviationFactRefV1Schema,
   ResponseDeviationFactV1Schema,
   ResponseForecastExecutorResultV1Schema,
   ResponseForecastOutcomeV1Schema,
+  ResponseForecastProjectionV1Schema,
   verifyForecastExecutorResult,
   VerifiedResponseWorkflowBindingV1Schema,
   type ResponseDeviationInputV1,
@@ -548,5 +551,61 @@ describe("C28 私有 Schema 与稳定引用", () => {
       ResponseDeviationFactV1Schema.safeParse({ ...fact, calibrationRecommendation: "x" }).success,
     ).toBe(false);
     expect(effectForecastRefOf("c".repeat(64))).toEqual(effectForecastRefOf("c".repeat(64)));
+  });
+
+  it("参数算法输出直接进入既有预测正文契约，不另立预测值形状", () => {
+    const computed = computeEffectForecast({
+      method: "mechanism-model",
+      model: {
+        schemaVersion: "1",
+        projectId: "project-c28",
+        method: "mechanism-model",
+        algorithmVersion: EFFECT_FORECAST_MODEL_ALGORITHM_VERSION_V1,
+        inputIndicators: [{ indicatorId: "indicator-consequence-1", unit: "mm" }],
+        targetIndicatorId: "indicator-consequence-1",
+        unit: "mm",
+        stepMs: 1000,
+        maxHorizonSteps: 720,
+        calculationScale: 2,
+        measureLibraryReleaseRef: { entityId: "measure-library-1", versionId: "1" },
+        measureEffects: [{ measureId: "measure-1", offset: "0", perStep: "0" }],
+        evidenceReferences: [
+          {
+            locator: { sourceSegmentId: "segment-1" },
+            sourceVersion: { entityId: "source-version-1", versionId: "1" },
+          },
+        ],
+        sampleOrigin: "synthetic",
+        reviewStatus: "pending-client-review",
+        parameters: {
+          intercept: "0",
+          terms: [{ indicatorId: "indicator-consequence-1", power: 1, coefficient: "3" }],
+          horizonCoefficient: "0",
+          inputDomains: [
+            { indicatorId: "indicator-consequence-1", domain: { lower: "0", upper: "100" } },
+          ],
+          outputDomain: { lower: "0", upper: "100" },
+        },
+      },
+      horizonSteps: 1,
+      baselineValues: [{ indicatorId: "indicator-consequence-1", value: "3" }],
+      measures: [],
+    });
+    expect(computed).toEqual({ kind: "value", value: "9" });
+    if (computed.kind !== "value") return;
+    // 算法给出的规范十进制就是正式预测正文的形状，不需要任何中间转换层。
+    expect(
+      ResponseForecastProjectionV1Schema.safeParse({
+        predictedValue: computed.value,
+        predictedRiskState: { likelihoodScore: 2, consequenceScore: 2, riskLevel: "level-2" },
+        evidenceReferences: [
+          {
+            locator: { sourceSegmentId: "segment-1" },
+            sourceVersion: { entityId: "source-version-1", versionId: "1" },
+          },
+        ],
+        summary: "synthetic-mechanism",
+      }).success,
+    ).toBe(true);
   });
 });

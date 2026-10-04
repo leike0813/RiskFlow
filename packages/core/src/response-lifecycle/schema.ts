@@ -39,6 +39,7 @@ import {
 import {
   CanonicalDecimalV1Schema,
   ForecastMethodV1Schema,
+  compareCanonicalDecimal,
   type ForecastPolicyV1,
 } from "../assessment-config/index.js";
 import { MonitoringSnapshotV1Schema } from "../engineering-data/monitoring/index.js";
@@ -397,6 +398,228 @@ export interface EffectForecastExecutorV1 {
     request: ResponseForecastExecutorRequestV1,
   ): Promise<ResponseForecastExecutorResultV1> | ResponseForecastExecutorResultV1;
 }
+
+/* -------------------------------------------------------------------------- */
+/* D-06：参数预测模型是有界内容工件                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 参数模型是 C04 内容工件，不是 C18 配置包的一部分：模型的系数、阈值与措施效果必须能被
+ * 精确引用并按内容寻址重放，因此不允许在执行器或装配代码里硬编码，也不接受任意公式串。
+ * 本版本只支持三种声明式参数形状，`algorithmVersion` 固定以区分后续模型家族。
+ */
+export const EFFECT_FORECAST_MODEL_ALGORITHM_VERSION_V1 = "parameter-forecast-v1" as const;
+export const EFFECT_FORECAST_MODEL_PURPOSE_CODE_V1 = "response-lifecycle.forecast-model" as const;
+export const EFFECT_FORECAST_MODEL_MEDIA_TYPE_V1 = "application/json" as const;
+export const EFFECT_FORECAST_MODEL_MAX_ARTIFACT_BYTES_V1 = 1024 * 1024;
+
+const uniqueBy = <T>(schema: z.ZodType<T>, key: (value: T) => string, maximum: number) =>
+  z
+    .array(schema)
+    .max(maximum)
+    .superRefine((values, context) => {
+      const keys = values.map(key);
+      if (new Set(keys).size !== keys.length) {
+        context.addIssue({ code: "custom", message: "collection must not contain duplicates" });
+      }
+    });
+
+/** 样本来源与审核状态：合成样本只能处于待甲方复核，不得被表述为已审核。 */
+export const EFFECT_FORECAST_SAMPLE_ORIGIN_V1_VALUES = ["synthetic", "client-reviewed"] as const;
+export const EffectForecastSampleOriginV1Schema = z.enum(EFFECT_FORECAST_SAMPLE_ORIGIN_V1_VALUES);
+export const EFFECT_FORECAST_REVIEW_STATUS_V1_VALUES = [
+  "pending-client-review",
+  "reviewed",
+] as const;
+export const EffectForecastReviewStatusV1Schema = z.enum(EFFECT_FORECAST_REVIEW_STATUS_V1_VALUES);
+
+/** 模型声明的一条措施效果：按措施标识绑定到原措施库版本的正式 measureId。 */
+const EffectForecastMeasureEffectV1Schema = z.strictObject({
+  measureId: IdentifierSchema,
+  offset: CanonicalDecimalV1Schema,
+  perStep: CanonicalDecimalV1Schema,
+});
+export type EffectForecastMeasureEffectV1 = z.infer<typeof EffectForecastMeasureEffectV1Schema>;
+
+const EffectForecastInputIndicatorV1Schema = z.strictObject({
+  indicatorId: IdentifierSchema,
+  unit: unitSchema,
+});
+export type EffectForecastInputIndicatorV1 = z.infer<typeof EffectForecastInputIndicatorV1Schema>;
+
+/** 有界物理区间；下界不得大于上界，闭区间两端都是合法取值。 */
+const EffectForecastDomainV1Schema = z
+  .strictObject({ lower: CanonicalDecimalV1Schema, upper: CanonicalDecimalV1Schema })
+  .superRefine((domain, context) => {
+    if (compareCanonicalDecimal(domain.lower, domain.upper) > 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["upper"],
+        message: "domain upper bound must not be below its lower bound",
+      });
+    }
+  });
+
+const effectForecastModelBase = {
+  schemaVersion: z.literal(RESPONSE_LIFECYCLE_SCHEMA_VERSION_V1),
+  projectId: IdentifierSchema,
+  algorithmVersion: z.literal(EFFECT_FORECAST_MODEL_ALGORITHM_VERSION_V1),
+  inputIndicators: uniqueBy(
+    EffectForecastInputIndicatorV1Schema,
+    (value) => value.indicatorId,
+    32,
+  ).min(1),
+  targetIndicatorId: IdentifierSchema,
+  unit: unitSchema,
+  stepMs: positiveInteger,
+  maxHorizonSteps: positiveInteger.max(720),
+  calculationScale: positiveInteger.max(32),
+  measureLibraryReleaseRef: VersionReferenceSchema,
+  measureEffects: uniqueBy(
+    EffectForecastMeasureEffectV1Schema,
+    (value) => value.measureId,
+    128,
+  ).min(1),
+  evidenceReferences: uniqueBy(
+    EvidenceReferenceSchema,
+    (value) =>
+      `${value.sourceVersion.entityId}@${value.sourceVersion.versionId}\u0000${JSON.stringify(value.locator)}`,
+    256,
+  ).min(1),
+  sampleOrigin: EffectForecastSampleOriginV1Schema,
+  reviewStatus: EffectForecastReviewStatusV1Schema,
+} as const;
+
+/** 已训练线性回归系数：运行时只代入基线，不重新拟合。 */
+const HistoricalStatisticsParametersV1Schema = z.strictObject({
+  intercept: CanonicalDecimalV1Schema,
+  inputCoefficients: uniqueBy(
+    z.strictObject({ coefficient: CanonicalDecimalV1Schema }),
+    (value) => value.coefficient,
+    32,
+  ).min(1),
+  horizonCoefficient: CanonicalDecimalV1Schema,
+  fitSampleCount: positiveInteger.max(1_000_000).min(2),
+});
+export type HistoricalStatisticsParametersV1 = z.infer<
+  typeof HistoricalStatisticsParametersV1Schema
+>;
+
+/** 趋势窗口点数：算法只取执行前快照末尾这些对齐槽的原下标做最小二乘。 */
+const MonitoringTrendParametersV1Schema = z.strictObject({
+  windowPoints: positiveInteger.max(720).min(2),
+});
+export type MonitoringTrendParametersV1 = z.infer<typeof MonitoringTrendParametersV1Schema>;
+
+/** 有界多项式机理项：指标与次数组合唯一，禁止任意表达式。 */
+const MechanismTermV1Schema = z.strictObject({
+  indicatorId: IdentifierSchema,
+  power: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+  coefficient: CanonicalDecimalV1Schema,
+});
+export type MechanismTermV1 = z.infer<typeof MechanismTermV1Schema>;
+
+const MechanismParametersV1Schema = z.strictObject({
+  intercept: CanonicalDecimalV1Schema,
+  terms: uniqueBy(MechanismTermV1Schema, (value) => `${value.indicatorId}@${value.power}`, 128).min(
+    1,
+  ),
+  horizonCoefficient: CanonicalDecimalV1Schema,
+  inputDomains: uniqueBy(
+    z.strictObject({
+      indicatorId: IdentifierSchema,
+      domain: EffectForecastDomainV1Schema,
+    }),
+    (value) => value.indicatorId,
+    32,
+  ),
+  outputDomain: EffectForecastDomainV1Schema,
+});
+export type MechanismParametersV1 = z.infer<typeof MechanismParametersV1Schema>;
+
+const HistoricalStatisticsEffectForecastModelV1Schema = z.strictObject({
+  ...effectForecastModelBase,
+  method: z.literal("historical-statistics"),
+  parameters: HistoricalStatisticsParametersV1Schema,
+});
+const MonitoringTrendEffectForecastModelV1Schema = z.strictObject({
+  ...effectForecastModelBase,
+  method: z.literal("monitoring-trend"),
+  parameters: MonitoringTrendParametersV1Schema,
+});
+const MechanismEffectForecastModelV1Schema = z.strictObject({
+  ...effectForecastModelBase,
+  method: z.literal("mechanism-model"),
+  parameters: MechanismParametersV1Schema,
+});
+
+export const EffectForecastModelArtifactV1Schema = z
+  .discriminatedUnion("method", [
+    HistoricalStatisticsEffectForecastModelV1Schema,
+    MonitoringTrendEffectForecastModelV1Schema,
+    MechanismEffectForecastModelV1Schema,
+  ])
+  .superRefine((model, context) => {
+    // 甲方复核过的样本必须已审核；合成样本不得冒充已审核。
+    if (model.sampleOrigin === "client-reviewed" && model.reviewStatus !== "reviewed") {
+      context.addIssue({
+        code: "custom",
+        path: ["reviewStatus"],
+        message: "client-reviewed samples must carry a reviewed status",
+      });
+    }
+    if (model.reviewStatus === "reviewed" && model.sampleOrigin !== "client-reviewed") {
+      context.addIssue({
+        code: "custom",
+        path: ["sampleOrigin"],
+        message: "only client-reviewed samples may carry a reviewed status",
+      });
+    }
+    // 趋势方法只能预测目标指标自身：序列取值就是它的输入，再声明别的指标没有口径。
+    if (
+      model.method === "monitoring-trend" &&
+      (model.inputIndicators.length !== 1 ||
+        model.inputIndicators[0]!.indicatorId !== model.targetIndicatorId ||
+        model.inputIndicators[0]!.unit !== model.unit)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["inputIndicators"],
+        message: "monitoring-trend models must take the target indicator as their only input",
+      });
+    }
+    if (model.method === "historical-statistics") {
+      const declared = model.inputIndicators.map((value) => value.indicatorId);
+      if (
+        model.parameters.inputCoefficients.length !== declared.length ||
+        declared.includes(model.targetIndicatorId)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["parameters", "inputCoefficients"],
+          message:
+            "one coefficient per declared input is required and the target must not be an input",
+        });
+      }
+    }
+    if (model.method === "mechanism-model") {
+      const declared = new Set(model.inputIndicators.map((value) => value.indicatorId));
+      const dominated = model.parameters.terms.map((value) => value.indicatorId);
+      const domainBound = new Set(model.parameters.inputDomains.map((value) => value.indicatorId));
+      if (
+        dominated.some((indicatorId) => !declared.has(indicatorId)) ||
+        declared.size !== model.parameters.inputDomains.length ||
+        [...domainBound].some((indicatorId) => !declared.has(indicatorId))
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["parameters", "inputDomains"],
+          message: "mechanism terms and input domains must cover exactly the declared inputs",
+        });
+      }
+    }
+  });
+export type EffectForecastModelArtifactV1 = z.infer<typeof EffectForecastModelArtifactV1Schema>;
 
 /* -------------------------------------------------------------------------- */
 /* 闭合失败事实源                                                              */

@@ -61,6 +61,11 @@ export const decimalFromInteger = (value: number): CanonicalDecimalValueV1 => {
 
 export const decimalIsZero = (value: CanonicalDecimalValueV1): boolean => value.units === 0n;
 
+export const negateDecimals = (value: CanonicalDecimalValueV1): CanonicalDecimalValueV1 => ({
+  units: -value.units,
+  scale: value.scale,
+});
+
 export const compareDecimals = (
   left: CanonicalDecimalValueV1,
   right: CanonicalDecimalValueV1,
@@ -101,6 +106,31 @@ export const roundDecimal = (
   decimalScale: number,
 ): CanonicalDecimalValueV1 =>
   roundCanonicalDecimalValue(value, decimalScale, "half-away-from-zero");
+
+/**
+ * `left / right`，结果保留 `scale` 位小数：BigInt 对齐后精确相除，按 half-away-from-zero
+ * 就近取值。分母为零没有定义，直接失败而不是回退成零或无穷。
+ */
+export const divideDecimals = (
+  left: CanonicalDecimalValueV1,
+  right: CanonicalDecimalValueV1,
+  scale: number,
+): CanonicalDecimalValueV1 => {
+  if (right.units === 0n) throw new RangeError("division by zero");
+  if (!Number.isInteger(scale) || scale < 0 || scale > RISK_ASSESSMENT_DECIMAL_MAX_SCALE_V1) {
+    throw new RangeError("division scale is outside the supported range");
+  }
+  // left / right × 10^scale = (l.units × 10^(r.scale + scale)) / (r.units × 10^l.scale)
+  const dividend = left.units * powerOfTen(right.scale + scale);
+  const divisor = right.units * powerOfTen(left.scale);
+  const negative = dividend < 0n !== divisor < 0n;
+  const magnitudeDividend = dividend < 0n ? -dividend : dividend;
+  const magnitudeDivisor = divisor < 0n ? -divisor : divisor;
+  const quotient = magnitudeDividend / magnitudeDivisor;
+  const remainder = magnitudeDividend % magnitudeDivisor;
+  const units = remainder * 2n >= magnitudeDivisor ? quotient + 1n : quotient;
+  return { units: negative ? -units : units, scale };
+};
 
 export const decimalToString = (value: CanonicalDecimalValueV1): string =>
   canonicalDecimalToString(value);

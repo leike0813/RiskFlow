@@ -38,6 +38,15 @@ const session = (token: string) => ({
   expiresAt: NOW,
 });
 
+/** 自省只回报无 token 元数据：与登录结果共用同一组字段，只是没有凭证。 */
+const sessionMetadata = () => ({
+  sessionRef: { entityId: "session", versionId: "1" },
+  accountRef: { entityId: "account", versionId: "1" },
+  passwordChangeRequired: false,
+  restricted: false,
+  expiresAt: NOW,
+});
+
 const accessStub = (onAuthorize?: (branch: string) => void): LocalIdentityAccessV1 => ({
   administerIdentity: async () => {
     throw new Error("unused");
@@ -52,6 +61,8 @@ const accessStub = (onAuthorize?: (branch: string) => void): LocalIdentityAccess
     resultRef: { entityId: "session", versionId: "1" },
     references: [],
   }),
+  readSession: async () => sessionMetadata(),
+  readSession: async () => sessionMetadata(),
   authorize: async (request) => {
     onAuthorize?.(request.branch);
     return {

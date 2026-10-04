@@ -25,6 +25,8 @@ import {
   ProjectAccessCommandV1Schema,
   evaluateSourceAccess,
   projectionAccess,
+  ReadSessionCommandV1Schema,
+  SessionMetadataV1Schema,
   SessionResultV1Schema,
   type AccessCommandResultV1,
   type AccessErrorCodeV1,
@@ -36,6 +38,8 @@ import {
   type LoginCommandV1,
   type LogoutCommandV1,
   type ProjectAccessCommandV1,
+  type ReadSessionCommandV1,
+  type SessionMetadataV1,
   type SessionResultV1,
   type SpatialScopeNodeV1,
   type SourceAccessPolicyV1,
@@ -263,17 +267,18 @@ const randomId = (prefix: string): string => `${prefix}-${randomUUID()}`;
 const accountRevisionRef = (accountId: string, version: number): VersionReference =>
   ref(accountId, String(version));
 
-const sessionResult = (
+/**
+ * 会话元数据：会话与账号引用、到期时间、首次改密限制与受限标志的唯一投影。
+ * 自省只回报它；登录结果在它之上追加 token 与管理上下文，两处不各写一套字段计算。
+ */
+const sessionMetadata = (
   session: LocalSessionRow,
-  token: string,
   passwordChangeRequired: boolean,
   restricted: boolean,
-  systemAdministrationContextRef?: AuthorizationContextRefV1,
-): SessionResultV1 =>
-  SessionResultV1Schema.parse({
+): SessionMetadataV1 =>
+  SessionMetadataV1Schema.parse({
     sessionRef: ref(session.session_id, "1"),
     accountRef: ref(session.account_id, String(session.credential_version)),
-    sessionToken: token,
     passwordChangeRequired,
     restricted,
     expiresAt: iso(
@@ -284,6 +289,18 @@ const sessionResult = (
         ),
       ),
     ),
+  });
+
+const sessionResult = (
+  session: LocalSessionRow,
+  token: string,
+  passwordChangeRequired: boolean,
+  restricted: boolean,
+  systemAdministrationContextRef?: AuthorizationContextRefV1,
+): SessionResultV1 =>
+  SessionResultV1Schema.parse({
+    ...sessionMetadata(session, passwordChangeRequired, restricted),
+    sessionToken: token,
     ...(systemAdministrationContextRef === undefined ? {} : { systemAdministrationContextRef }),
   });
 
@@ -1973,7 +1990,7 @@ export const createPostgresLocalIdentityAccess = (
       .execute();
   };
 
-  const readSession = async (
+  const authenticateSession = async (
     database: AccessDb,
     token: string,
     stage: string,
@@ -2533,7 +2550,7 @@ export const createPostgresLocalIdentityAccess = (
     try {
       return await db.transaction().execute(async (transaction) => {
         const tx = transaction as unknown as AccessDb;
-        const authenticated = await readSession(
+        const authenticated = await authenticateSession(
           tx,
           valid.sessionToken,
           "password-change.session",
@@ -2715,6 +2732,38 @@ export const createPostgresLocalIdentityAccess = (
     }
   };
 
+  /**
+   * 会话自省：沿既有会话验证路径回报无 token 元数据。
+   *
+   * 允许受限会话通过（改密仍受业务授权限制），并按既有会话使用规则推进空闲期限——
+   * 绝不越过绝对期限。停用、撤销、密码或密钥版本不符、空闲/绝对期限到达都按会话失效类别
+   * 失败，调用方据此区分「没有有效会话」与技术故障。这里不签发任何授权上下文。
+   */
+  const readSession = async (command: ReadSessionCommandV1): Promise<SessionMetadataV1> => {
+    const parsed = ReadSessionCommandV1Schema.safeParse(command);
+    if (!parsed.success) throw makeAccessError("ACCESS_CONTRACT_INVALID", "session.command", clock);
+    const valid = parsed.data;
+    try {
+      return await db.transaction().execute(async (transaction) => {
+        const tx = transaction as unknown as AccessDb;
+        const authenticated = await authenticateSession(
+          tx,
+          valid.sessionToken,
+          "session.read",
+          true,
+        );
+        const touched = await touchSession(tx, authenticated);
+        return sessionMetadata(
+          touched.session,
+          touched.account.password_change_required,
+          touched.account.password_change_required,
+        );
+      });
+    } catch (error) {
+      throw asAccessError(error, "session.read", clock);
+    }
+  };
+
   const authorize = async (request: AuthorizationRequestV1): Promise<AuthorizationDecisionV1> => {
     const parsed = AuthorizationRequestV1Schema.safeParse(request);
     if (!parsed.success)
@@ -2729,7 +2778,7 @@ export const createPostgresLocalIdentityAccess = (
         let parent: AuthorizationContextV1 | undefined;
         let effectiveScopes = valid.requestedSpatialScopeRefs;
         if (valid.invocation.kind === "human-session") {
-          const authenticated = await readSession(
+          const authenticated = await authenticateSession(
             tx,
             valid.invocation.sessionToken,
             "authorize.session",
@@ -3027,6 +3076,7 @@ export const createPostgresLocalIdentityAccess = (
     login,
     changePassword,
     logout,
+    readSession,
     authorize,
     verify,
     close: runtime.close,

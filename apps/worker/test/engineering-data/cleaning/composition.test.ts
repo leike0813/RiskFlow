@@ -213,6 +213,7 @@ const startHarness = (behavior: {
     login: unusedEntryPoint,
     changePassword: unusedEntryPoint,
     logout: unusedEntryPoint,
+    readSession: unusedEntryPoint,
     async authorize(request) {
       authorizeRequests.push(request);
       const context = behavior.authorize(request);

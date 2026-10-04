@@ -218,10 +218,23 @@ export const LogoutCommandV1Schema = z.strictObject({
 });
 export type LogoutCommandV1 = z.infer<typeof LogoutCommandV1Schema>;
 
+/**
+ * 会话自省：只验证既有服务端会话并回报无 token 元数据。
+ *
+ * 它不签发任何授权上下文，也不返回 token；管理上下文不入 local_sessions，因此不在此投影。
+ * 字段与普通命令完全分离，使 HTTP 层可以直接 GET 且不会不小心泄露凭证。
+ */
+export const ReadSessionCommandV1Schema = z.strictObject({
+  kind: z.literal("introspect-session"),
+  sessionToken: z.string().min(1).max(512),
+});
+export type ReadSessionCommandV1 = z.infer<typeof ReadSessionCommandV1Schema>;
+
 export const SessionCommandV1Schema = z.discriminatedUnion("kind", [
   LoginCommandV1Schema,
   ChangePasswordCommandV1Schema,
   LogoutCommandV1Schema,
+  ReadSessionCommandV1Schema,
 ]);
 export type SessionCommandV1 = z.infer<typeof SessionCommandV1Schema>;
 
@@ -311,13 +324,23 @@ export const AccessCommandResultV1Schema = z.strictObject({
 });
 export type AccessCommandResultV1 = z.infer<typeof AccessCommandResultV1Schema>;
 
-export const SessionResultV1Schema = z.strictObject({
+/**
+ * 会话元数据：会话与账号引用、到期时间、首次改密限制与受限标志。
+ *
+ * 这是自省的唯一返回形状，不含 token；`SessionResultV1` 在其上扩展 token 与管理上下文，
+ * 因此登录返回的元数据与自省回报的元数据不会出现两套字段定义。
+ */
+export const SessionMetadataV1Schema = z.strictObject({
   sessionRef: AccessReferenceV1Schema,
   accountRef: AccessReferenceV1Schema,
-  sessionToken: z.string().min(1).max(512),
   passwordChangeRequired: z.boolean(),
   restricted: z.boolean(),
   expiresAt: IsoDateTimeSchema,
+});
+export type SessionMetadataV1 = z.infer<typeof SessionMetadataV1Schema>;
+
+export const SessionResultV1Schema = SessionMetadataV1Schema.extend({
+  sessionToken: z.string().min(1).max(512),
   systemAdministrationContextRef: AuthorizationContextRefV1Schema.optional(),
 });
 export type SessionResultV1 = z.infer<typeof SessionResultV1Schema>;

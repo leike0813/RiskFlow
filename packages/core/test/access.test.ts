@@ -9,7 +9,11 @@ import {
   LoginCommandV1Schema,
   PasswordV1Schema,
   PresetRoleV1Schema,
+  ReadSessionCommandV1Schema,
   RoleSetV1Schema,
+  SessionCommandV1Schema,
+  SessionMetadataV1Schema,
+  SessionResultV1Schema,
   SpatialScopeRefSetV1Schema,
   assertSpatialScopeTree,
   allSpatialScopesCovered,
@@ -365,5 +369,46 @@ describe("access domain", () => {
     ];
     expect(isAuthorizationSubset(base, child, { scopeNodes: nodes })).toBe(true);
     expect(isAuthorizationSubset(child, base, { scopeNodes: nodes })).toBe(false);
+  });
+  it("会话自省命令与无 token 元数据契约", () => {
+    const command = { kind: "introspect-session", sessionToken: "opaque-token" } as const;
+    expect(SessionCommandV1Schema.safeParse(command).success).toBe(true);
+    // 自省只接受服务端会话 token：没有口令、没有身份名称，也没有项目授权参数。
+    expect(SessionCommandV1Schema.safeParse({ ...command, loginName: "user001" }).success).toBe(
+      false,
+    );
+    expect(SessionCommandV1Schema.safeParse({ ...command, sessionToken: "" }).success).toBe(false);
+    expect(ReadSessionCommandV1Schema.safeParse(command).success).toBe(true);
+
+    const metadata = {
+      sessionRef: { entityId: "session", versionId: "1" },
+      accountRef: { entityId: "account", versionId: "1" },
+      passwordChangeRequired: true,
+      restricted: true,
+      expiresAt: "2026-01-01T00:00:00.000Z",
+    };
+    expect(SessionMetadataV1Schema.safeParse(metadata).success).toBe(true);
+    // 元数据形状里没有 token 位：任何多余字段都被 strict Schema 拒绝。
+    expect(SessionMetadataV1Schema.safeParse({ ...metadata, sessionToken: "x" }).success).toBe(
+      false,
+    );
+    // 登录结果在元数据之上追加 token 与管理上下文，两处共用同一组字段定义。
+    const login = SessionResultV1Schema.safeParse({
+      ...metadata,
+      sessionToken: "opaque-token",
+      systemAdministrationContextRef: {
+        kind: "authorization-context",
+        reference: { entityId: "context", versionId: "1" },
+      },
+    });
+    expect(login.success).toBe(true);
+    if (login.success) {
+      // 登录结果在元数据之上只多出凭证与管理上下文，字段名不另立一套。
+      expect(
+        Object.keys(login.data)
+          .filter((key) => !(key in metadata))
+          .sort(),
+      ).toEqual(["sessionToken", "systemAdministrationContextRef"]);
+    }
   });
 });

@@ -27,6 +27,15 @@ const session = (token: string) => ({
   expiresAt: NOW,
 });
 
+/** 自省只回报无 token 元数据：与登录结果共用同一组字段，只是没有凭证。 */
+const sessionMetadata = () => ({
+  sessionRef: { entityId: "session", versionId: "1" },
+  accountRef: { entityId: "account", versionId: "1" },
+  passwordChangeRequired: false,
+  restricted: false,
+  expiresAt: NOW,
+});
+
 const accessStub = (grantedCapabilities: readonly string[] = ["projection.query"]) =>
   ({
     administerIdentity: async () => {
@@ -42,6 +51,7 @@ const accessStub = (grantedCapabilities: readonly string[] = ["projection.query"
       resultRef: { entityId: "session", versionId: "1" },
       references: [],
     }),
+    readSession: async () => sessionMetadata(),
     authorize: async () => ({
       context: {
         schemaVersion: "1",

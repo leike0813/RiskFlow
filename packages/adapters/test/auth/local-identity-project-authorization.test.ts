@@ -1298,6 +1298,110 @@ describe.sequential("local identity and project authorization", () => {
     expect(p95).toBeLessThanOrEqual(100);
   }, 180_000);
 
+  it("session introspection reports token-free metadata and honours both deadlines", async () => {
+    const managerMetadata = await access!.readSession({
+      kind: "introspect-session",
+      sessionToken: managerSessionToken!,
+    });
+    // 自省只回报元数据：没有 token，也没有工程或系统管理授权上下文。
+    expect(managerMetadata).not.toHaveProperty("sessionToken");
+    expect(managerMetadata).not.toHaveProperty("systemAdministrationContextRef");
+    expect(managerMetadata.sessionRef.entityId).toBeTruthy();
+    expect(managerMetadata.accountRef.entityId).toBeTruthy();
+    expect(managerMetadata.passwordChangeRequired).toBe(false);
+    expect(managerMetadata.restricted).toBe(false);
+
+    const liveSession = async () =>
+      (
+        await fixture!.adminPool.query<{ idle_expires_at: Date; absolute_expires_at: Date }>(
+          `SELECT session.idle_expires_at, session.absolute_expires_at
+             FROM business.local_sessions session
+             JOIN business.local_accounts account ON account.account_id = session.account_id
+            WHERE account.login_name = $1 AND session.revoked_at IS NULL
+            ORDER BY session.created_at DESC LIMIT 1`,
+          ["user001"],
+        )
+      ).rows[0]!;
+    const beforeRead = await liveSession();
+    clock.advance(60 * 1000);
+    await access!.readSession({ kind: "introspect-session", sessionToken: managerSessionToken! });
+    const afterRead = await liveSession();
+    // 有效读取按既有会话使用规则推进空闲期限。
+    expect(new Date(afterRead.idle_expires_at).getTime()).toBeGreaterThan(
+      new Date(beforeRead.idle_expires_at).getTime(),
+    );
+    // 绝对期限不因反复自省而延后。
+    expect(new Date(afterRead.absolute_expires_at).getTime()).toBe(
+      new Date(beforeRead.absolute_expires_at).getTime(),
+    );
+  }, 180_000);
+
+  it("session introspection keeps restricted sessions introspectable", async () => {
+    const metadata = await access!.readSession({
+      kind: "introspect-session",
+      sessionToken: roleSessionTokens.child!,
+    });
+    // 自省不返回 token，标志来自同一账号事实。
+    expect(metadata).not.toHaveProperty("sessionToken");
+    expect(metadata).not.toHaveProperty("systemAdministrationContextRef");
+    // 同一账号重新登录后的标志与自省完全一致，两条路径不各判一套受限状态。
+    const fresh = await access!.login({
+      kind: "login",
+      loginAttemptId: "login-introspect-restricted",
+      loginName: "child001",
+      password: CHILD_PASSWORD,
+    });
+    expect(metadata.restricted).toBe(fresh.restricted);
+    expect(metadata.passwordChangeRequired).toBe(fresh.passwordChangeRequired);
+    // 受限会话下业务授权限制仍生效：自省通过不等于放行。
+    const denial = access!.authorize({
+      invocation: { kind: "human-session", sessionToken: fresh.sessionToken },
+      invocationId: "authorize-restricted-after-introspect",
+      projectId: "project-a",
+      branch: "projection.query",
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [],
+    });
+    await (fresh.restricted
+      ? expect(denial).rejects.toMatchObject({
+          details: { code: "PASSWORD_CHANGE_REQUIRED" },
+        })
+      : expect(denial).resolves.toBeDefined());
+    await access!.logout({ kind: "logout", sessionToken: fresh.sessionToken });
+  }, 180_000);
+
+  it("session introspection rejects revoked, disabled, and version-mismatched sessions", async () => {
+    await expect(
+      access!.readSession({ kind: "introspect-session", sessionToken: "not-a-session-token" }),
+    ).rejects.toMatchObject({ details: { code: "SESSION_REVOKED" } });
+    const revoked = await access!.login({
+      kind: "login",
+      loginAttemptId: "login-introspect-revoked",
+      loginName: "user001",
+      password: USER_PASSWORD_CHANGED,
+    });
+    await access!.logout({ kind: "logout", sessionToken: revoked.sessionToken });
+    await expect(
+      access!.readSession({
+        kind: "introspect-session",
+        sessionToken: revoked.sessionToken,
+      }),
+    ).rejects.toMatchObject({ details: { code: "SESSION_REVOKED" } });
+    const keyAccess = createPostgresLocalIdentityAccess({
+      ...fixture!.app,
+      hmacKey: new Uint8Array(32).fill(9),
+      keyVersion: "key-v-introspect",
+      now: clock.now,
+    });
+    await expect(
+      keyAccess.readSession({
+        kind: "introspect-session",
+        sessionToken: roleSessionTokens.reviewer!,
+      }),
+    ).rejects.toMatchObject({ details: { code: "SESSION_REVOKED" } });
+    await keyAccess.close();
+  }, 180_000);
+
   it("credential revocation, key-version invalidation, and session timeouts", async () => {
     const resetAccount = await fixture!.adminPool.query<{ security_version: number }>(
       "SELECT security_version FROM business.local_accounts WHERE account_id = $1",

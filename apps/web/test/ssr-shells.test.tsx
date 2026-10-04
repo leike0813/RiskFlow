@@ -260,3 +260,70 @@ describe("C10 Web shell SSR 结构", () => {
     expect(unscoped).not.toContain("unscoped source body");
   });
 });
+
+describe("C10 Web 会话恢复外壳", () => {
+  it("keeps the shell on the original deep link while the session is being restored", () => {
+    const checking = renderToStaticMarkup(
+      <App
+        pathname="/quality/assessment?project=project-1&revision=project-1@rev-1"
+        session={{ kind: "checking" }}
+        context={context}
+        capabilities={availableCapabilities}
+        onRetrySessionRestore={() => undefined}
+      />,
+    );
+    expect(checking).toContain('data-session-state="checking"');
+    // 恢复完成前既不跳登录页，也不发业务查询：没有导航、没有工程门禁结果。
+    expect(checking).not.toContain("data-navigation=");
+    expect(checking).not.toContain('autoComplete="username"');
+    expect(checking).not.toContain('data-page-state="');
+  });
+
+  it("offers a restore retry on restore failure instead of falling back to anonymous", () => {
+    const failed = renderToStaticMarkup(
+      <App
+        pathname="/quality/assessment?project=project-1&revision=project-1@rev-1"
+        session={{ kind: "failed", error: makeSafeHttpError({ code: "TRANSIENT_FAILURE" }) }}
+        onRetrySessionRestore={() => undefined}
+      />,
+    );
+    expect(failed).toContain('data-session-state="failed"');
+    expect(failed).toContain('data-session-retry="restore"');
+    expect(failed).not.toContain("disabled");
+    // 技术故障不得当匿名：既不给登录表单，也不给业务外壳。
+    expect(failed).not.toContain('autoComplete="username"');
+    expect(failed).not.toContain("data-navigation=");
+
+    const withoutRetry = renderToStaticMarkup(
+      <App pathname="/overview" session={{ kind: "failed", error: makeSafeHttpError({}) }} />,
+    );
+    expect(withoutRetry).toContain('data-session-state="failed"');
+    expect(withoutRetry).toContain("disabled");
+  });
+
+  it("routes a restored session that still must change password to the change password form", () => {
+    const mustChange = renderToStaticMarkup(
+      <App
+        pathname="/quality/assessment?project=project-1&revision=project-1@rev-1"
+        session={{ kind: "restricted", metadata: { ...metadata, passwordChangeRequired: true } }}
+        context={context}
+        capabilities={availableCapabilities}
+        onChangePassword={() => undefined}
+      />,
+    );
+    expect(mustChange).toContain('autoComplete="new-password"');
+    expect(mustChange).not.toContain("data-navigation=");
+    expect(mustChange).not.toContain('data-session-state="restricted"');
+
+    const restrictedOnly = renderToStaticMarkup(
+      <App
+        pathname="/overview"
+        session={{ kind: "restricted", metadata: { ...metadata, restricted: true } }}
+        context={context}
+        capabilities={availableCapabilities}
+      />,
+    );
+    expect(restrictedOnly).toContain('data-session-state="restricted"');
+    expect(restrictedOnly).not.toContain("data-navigation=");
+  });
+});

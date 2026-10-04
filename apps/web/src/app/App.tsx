@@ -31,6 +31,8 @@ export type AppPropsV1 = Readonly<{
   processNodeOptions?: AppShellPropsV1["processNodeOptions"];
   onLogin?: (input: SessionLoginInputV1) => void;
   onChangePassword?: (input: SessionChangePasswordInputV1) => void;
+  /** 恢复失败后的重试入口：重发同一条自省，不绕过既有工程门禁。 */
+  onRetrySessionRestore?: () => void;
   routeContent?: (
     resolution: Extract<WebRouteResolutionV1, { kind: "matched" }>,
     context: WebContextV1,
@@ -138,15 +140,27 @@ const sessionContent = (input: {
   session: SessionStateV1;
   onLogin?: ((value: SessionLoginInputV1) => void) | undefined;
   onChangePassword?: ((value: SessionChangePasswordInputV1) => void) | undefined;
+  onRetrySessionRestore?: (() => void) | undefined;
 }): ReactNode => {
-  if (input.session.kind === "checking") return sessionPage("正在检查会话", <p>正在检查会话</p>);
+  if (input.session.kind === "checking")
+    return sessionPage("正在检查会话", <p data-session-state="checking">正在检查会话</p>);
   if (input.session.kind === "anonymous") return <LoginPage onLogin={input.onLogin} />;
   if (input.session.kind === "restricted")
     return <RestrictedPage session={input.session} onChangePassword={input.onChangePassword} />;
   if (input.session.kind === "failed")
     return sessionPage(
       "会话不可用",
-      <p data-session-state="failed">{safeErrorFields(input.session.error)}</p>,
+      <Fragment>
+        <p data-session-state="failed">{safeErrorFields(input.session.error)}</p>
+        <button
+          type="button"
+          data-session-retry="restore"
+          onClick={input.onRetrySessionRestore}
+          disabled={input.onRetrySessionRestore === undefined}
+        >
+          重试
+        </button>
+      </Fragment>,
     );
   return null;
 };
@@ -255,6 +269,7 @@ export const App = (props: AppPropsV1 = {}): ReactNode => {
       session,
       onLogin: props.onLogin,
       onChangePassword: props.onChangePassword,
+      onRetrySessionRestore: props.onRetrySessionRestore,
     });
   return (
     <AppShell

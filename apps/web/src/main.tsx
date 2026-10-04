@@ -1,9 +1,10 @@
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 
 import type { ProjectRevisionRefV1 } from "@riskflow/contracts/ports";
 
 import {
+  C09HttpError,
   createC09Client,
   type SessionChangePasswordInputV1,
   type SessionLoginInputV1,
@@ -11,7 +12,12 @@ import {
 } from "./api/http.js";
 import { App } from "./app/App.js";
 import { createWebRouteRegistry, type WebRouteResolutionV1 } from "./app/routes.js";
-import { INITIAL_WEB_CONTEXT_V1, type SessionStateV1, type WebContextV1 } from "./app/state.js";
+import {
+  createRequestRevisionGuard,
+  INITIAL_WEB_CONTEXT_V1,
+  type SessionStateV1,
+  type WebContextV1,
+} from "./app/state.js";
 import { QUALITY_EVALUATION_QUERY_OPERATION_V1 } from "./quality/operation.js";
 import {
   createQualityAssessmentRouteContribution,
@@ -74,8 +80,27 @@ const sessionFromMetadata = (metadata: SessionMetadataViewV1): SessionStateV1 =>
     ? { kind: "restricted", metadata }
     : { kind: "authenticated", metadata };
 
+/**
+ * 启动自省只有一种收敛为匿名的情形：服务端确认没有有效会话（401）。
+ * 400/503/500、传输失败与解码失败都是技术故障，一律按可重试失败呈现，
+ * 绝不把一次故障降级成未登录。
+ */
+const sessionFromRestoreFailure = (error: unknown): SessionStateV1 =>
+  error instanceof C09HttpError && error.error.code === "AUTHENTICATION_REQUIRED"
+    ? { kind: "anonymous" }
+    : { kind: "failed", error: safeHttpErrorOf(error) };
+
+/**
+ * 认证代次直接复用既有请求 revision guard：它自带的 `requestId` 递进就是代次，
+ * `begin` 会取消上一次在途请求，`accept` 只对仍属当前代次的响应放行。
+ * 因此迟到的恢复响应不会覆盖更新的登录、改密或重试。
+ */
+const AUTH_GENERATION_REVISION = INITIAL_WEB_CONTEXT_V1.revision;
+
 const AppRoot = (): ReactNode => {
-  const [session, setSession] = useState<SessionStateV1>({ kind: "anonymous" });
+  // 入口初态是 checking：恢复完成前既不跳登录页，也不发任何业务查询。
+  const [session, setSession] = useState<SessionStateV1>({ kind: "checking" });
+  const [authGuard] = useState(createRequestRevisionGuard);
   const [selection] = useState(() => readProjectSelection(window.location.search));
   const initialProjectId = selection.projectIds[0] ?? null;
   const context = useMemo<WebContextV1>(
@@ -92,18 +117,62 @@ const AppRoot = (): ReactNode => {
       ]),
     [selection, initialProjectId],
   );
-  const onLogin = useCallback((input: SessionLoginInputV1): void => {
-    void client.login(input, new AbortController().signal).then(
-      (metadata) => setSession(sessionFromMetadata(metadata)),
-      (error: unknown) => setSession({ kind: "failed", error: safeHttpErrorOf(error) }),
+  /** 启动恢复与恢复重试共用同一条路径，重试同样推进认证代次。 */
+  const restoreSession = useCallback((): void => {
+    const token = authGuard.begin({
+      revision: AUTH_GENERATION_REVISION,
+      routeId: "session.restore",
+    });
+    setSession({ kind: "checking" });
+    void client.introspectSession(token.signal).then(
+      (metadata: SessionMetadataViewV1) => {
+        if (authGuard.accept(token)) setSession(sessionFromMetadata(metadata));
+      },
+      (error: unknown) => {
+        if (authGuard.accept(token)) setSession(sessionFromRestoreFailure(error));
+      },
     );
-  }, []);
-  const onChangePassword = useCallback((input: SessionChangePasswordInputV1): void => {
-    void client.changePassword(input, new AbortController().signal).then(
-      (metadata) => setSession(sessionFromMetadata(metadata)),
-      (error: unknown) => setSession({ kind: "failed", error: safeHttpErrorOf(error) }),
-    );
-  }, []);
+  }, [authGuard]);
+  useEffect(() => {
+    restoreSession();
+    return () => authGuard.cancel();
+  }, [authGuard, restoreSession]);
+  const onLogin = useCallback(
+    (input: SessionLoginInputV1): void => {
+      const token = authGuard.begin({
+        revision: AUTH_GENERATION_REVISION,
+        routeId: "session.login",
+      });
+      void client.login(input, token.signal).then(
+        (metadata) => {
+          if (authGuard.accept(token)) setSession(sessionFromMetadata(metadata));
+        },
+        (error: unknown) => {
+          if (authGuard.accept(token))
+            setSession({ kind: "failed", error: safeHttpErrorOf(error) });
+        },
+      );
+    },
+    [authGuard],
+  );
+  const onChangePassword = useCallback(
+    (input: SessionChangePasswordInputV1): void => {
+      const token = authGuard.begin({
+        revision: AUTH_GENERATION_REVISION,
+        routeId: "session.change-password",
+      });
+      void client.changePassword(input, token.signal).then(
+        (metadata) => {
+          if (authGuard.accept(token)) setSession(sessionFromMetadata(metadata));
+        },
+        (error: unknown) => {
+          if (authGuard.accept(token))
+            setSession({ kind: "failed", error: safeHttpErrorOf(error) });
+        },
+      );
+    },
+    [authGuard],
+  );
   /**
    * `App` 的 routeContent 是唯一能把实时 `context` 交给页面的位置：工程切换后
    * 页面收到新的 projectId（子树按 context.revision 重挂），旧查询立即取消。
@@ -129,6 +198,7 @@ const AppRoot = (): ReactNode => {
       projectOptions={selection.projectIds.map((projectId) => ({ projectId, label: projectId }))}
       onLogin={onLogin}
       onChangePassword={onChangePassword}
+      onRetrySessionRestore={restoreSession}
       routeContent={routeContent}
     />
   );

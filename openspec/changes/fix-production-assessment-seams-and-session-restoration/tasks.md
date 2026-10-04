@@ -21,7 +21,7 @@
 - [x] 3.1 实施 IP-08：C06 无 token 会话 view/readSession，受限会话、idle/absolute、停用和版本失效，补完整接口 stub；验证 `pnpm exec vitest run packages/core/test/access.test.ts packages/adapters/test/auth/local-identity-project-authorization.test.ts apps/worker/test/engineering-data/cleaning/composition.test.ts`。
 - [x] 3.2 实施 IP-09：Cookie GET 自省、系统目录/OpenAPI 和生产 Web GET 客户端，验证所有响应 no-store 及 200/400/401/503/500 分离；验证 `pnpm exec vitest run apps/api/test/http-shell.test.ts apps/web/test/api-client-openapi.test.ts`。
 - [x] 3.3 实施 IP-10：demo 启动恢复、受限改密、技术失败重试、认证代次与注销失败收口；验证 `pnpm --dir demo build`，浏览器行为证据在 4.1 完成前不得宣称该路径验收通过。
-- [ ] 3.4 实施 IP-11：apps/web 保持 checking 初态、复用 revision guard 并提供恢复失败重试；验证 `pnpm exec vitest run apps/web/test/ssr-shells.test.tsx apps/web/test/api-client-openapi.test.ts` 与 `pnpm build`，浏览器行为证据在 4.1 收口。
+- [x] 3.4 实施 IP-11：apps/web 保持 checking 初态、复用 revision guard 并提供恢复失败重试；验证 `pnpm exec vitest run apps/web/test/ssr-shells.test.tsx apps/web/test/api-client-openapi.test.ts` 与 `pnpm build`，浏览器行为证据在 4.1 收口。
 
 ## 4. 真实浏览器与收尾证据
 

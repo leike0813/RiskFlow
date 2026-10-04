@@ -421,6 +421,7 @@ export class C30WriteStandIn implements WorkflowPortV1 {
       issuedAt: input.command.issuedAt,
       artifactId: runStateArtifactId,
       body: { bodyKind: "run-state", runState },
+      invocationId: `c30-body-write:${deps.projectId}:${runStateArtifactId}`,
       authorization: await deps.authorizeFor({
         branch: "workflow.start-run",
         invocationId: `c30-body-write:${deps.projectId}:${runStateArtifactId}`,
@@ -1008,7 +1009,6 @@ export const startHumanDecisionFeedbackFixture =
           actorId: managerId,
           requestedAt: C41_FIXTURE_TIME,
           invocationId: `c30-body-read:${projectId}:${input.artifactRef.reference.entityId}`,
-          requestedAt: C41_FIXTURE_TIME,
           authorization: await authorizeFor({
             branch: "workflow.start-run",
             invocationId: `c30-body-read:${projectId}:${input.artifactRef.reference.entityId}`,

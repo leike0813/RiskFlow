@@ -1390,7 +1390,7 @@ export const startRiskAssessmentEngineFixture = async (
       commandId: `c25-engine-entries-body-${input.suffix}`,
       issuedAt: T0,
       artifactId,
-      // C30 按 C06 要求用签发身份复验：写入必须用同一派生身份换取授权。
+      // C30 按 C06 要求用签发身份复验：写入必须用同一 invocationId 换取授权。
       authorization: await authorize({
         invocationId: workflowGraphInvocationIdV1({
           operation: "body-write",
@@ -1398,6 +1398,11 @@ export const startRiskAssessmentEngineFixture = async (
           targetId: artifactId,
         }),
         branch: "projection.query",
+      }),
+      invocationId: workflowGraphInvocationIdV1({
+        operation: "body-write",
+        projectId: PROJECT_ID,
+        targetId: artifactId,
       }),
       body: {
         bodyKind: "run-state",

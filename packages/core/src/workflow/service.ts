@@ -121,6 +121,12 @@ export interface WorkflowGraphBodyPortV1 {
     readonly issuedAt: string;
     readonly artifactId: string;
     readonly body: WorkflowGraphArtifactBodyV1;
+    /**
+     * 复验身份：调用方 `authorization` 实际签发时的 `invocationId`。端口 MUST NOT 自行派生
+     * ——`c30-body-write:…` 这类字符串没有任何生产签发方，调用方只能用运行/命令的真实身份
+     * 换取上下文，派生身份会让复验必然拒结。必填，不提供可选分支（与 `readBody` 同一要求）。
+     */
+    readonly invocationId: string;
     readonly authorization: AuthorizationContextV1;
   }): Promise<ContentArtifactRefV1>;
   readBody(input: {

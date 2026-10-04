@@ -621,6 +621,7 @@ describe("C30 workflow registration adapter", () => {
       projectId: PROJECT_ID,
       actorId: ACTOR_ID,
       commandId: "c30-body-state-1",
+      invocationId: "c30-body-state-1",
       issuedAt: TIMESTAMP,
       artifactId: `c30-run-state:${RUN_ID}:${BODY_RUN_VERSION_ID}`,
       body: { bodyKind: "run-state", runState: runState({ runVersionId: BODY_RUN_VERSION_ID }) },
@@ -686,6 +687,7 @@ describe("C30 workflow registration adapter", () => {
       projectId: PROJECT_ID,
       actorId: ACTOR_ID,
       commandId: "c30-body-completion",
+      invocationId: "c30-body-completion",
       issuedAt: TIMESTAMP,
       artifactId: `c30-run-state:${runId}:${runVersionId}`,
       body: {
@@ -714,6 +716,7 @@ describe("C30 workflow registration adapter", () => {
       projectId: PROJECT_ID,
       actorId: ACTOR_ID,
       commandId: "c30-body-completion-result",
+      invocationId: "c30-body-completion-result",
       issuedAt: TIMESTAMP,
       artifactId: `c30-run-result:${runId}:${resultVersionId}`,
       body: {
@@ -856,6 +859,7 @@ describe("C30 workflow registration adapter", () => {
         projectId: PROJECT_ID,
         actorId: ACTOR_ID,
         commandId: `c30-body-entries-${input.suffix}`,
+        invocationId: `c30-body-entries-${input.suffix}`,
         issuedAt: TIMESTAMP,
         artifactId: `c30-run-state:${input.runId}:${runVersionId}`,
         authorization: ENTRIES_AUTHORIZATION,
@@ -1146,6 +1150,7 @@ describe("C30 workflow registration adapter", () => {
         projectId: PROJECT_ID,
         actorId: ACTOR_ID,
         commandId: `c30-body-run-read-${input.suffix}`,
+        invocationId: `c30-body-run-read-${input.suffix}`,
         issuedAt: TIMESTAMP,
         artifactId: `c30-run-state:${input.runId}:${runVersionId}`,
         authorization: RUN_AUTHORIZATION,
@@ -1733,6 +1738,7 @@ describe("C30 workflow registration adapter", () => {
       projectId: PROJECT_ID,
       actorId: ACTOR_ID,
       commandId: `${runId}:body`,
+      invocationId: `${runId}:body`,
       issuedAt: TIMESTAMP,
       artifactId: `c30-binding-run-state:${runId}:${BINDING_RUN_VERSION_ID}`,
       body: {

@@ -1100,6 +1100,7 @@ const commitStage = async (
       issuedAt: run.issuedAt,
       artifactId: body.artifactId,
       body: WorkflowGraphArtifactBodyV1Schema.parse(body.build(artifactRefs)),
+      invocationId: run.commandId,
       authorization: run.authorization,
     });
     artifactRefs.set(body.artifactId, ContentArtifactRefV1Schema.parse(put));

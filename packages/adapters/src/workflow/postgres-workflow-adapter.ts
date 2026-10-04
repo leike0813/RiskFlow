@@ -1699,6 +1699,7 @@ class WorkflowGraphPersistence {
     readonly issuedAt: string;
     readonly artifactId: string;
     readonly body: WorkflowGraphArtifactBodyV1;
+    readonly invocationId: string;
     readonly authorization: AuthorizationContextV1;
   }): Promise<ContentArtifactRefV1> {
     const body = WorkflowGraphArtifactBodyV1Schema.parse(input.body);
@@ -1706,11 +1707,9 @@ class WorkflowGraphPersistence {
       authorization: input.authorization,
       projectId: input.projectId,
       actorId: input.actorId,
-      invocationId: workflowGraphReadInvocationIdV1({
-        operation: "body-write",
-        projectId: input.projectId,
-        targetId: input.artifactId,
-      }),
+      // 身份由调用方给出：它必须是 `authorization` 实际签发时的 invocationId（运行/命令身份）。
+      // 端口内固定派生会让真实签发方提供的上下文永远对不上，复验必然拒结（design D1/D2）。
+      invocationId: input.invocationId,
       requestedAt: input.issuedAt,
     });
     if (verified === undefined) throw new WorkflowGraphDeniedErrorV1("body-write-denied");

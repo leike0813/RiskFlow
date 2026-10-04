@@ -385,6 +385,7 @@ const createAssessmentRuntimeStub = (deps: {
       issuedAt: command.issuedAt,
       artifactId: `assessment-run-state:${command.runRef.reference.entityId}:${runVersionId}`,
       body: { bodyKind: "run-state", runState: state },
+      invocationId: command.commandId,
       authorization: command.authorization,
     });
     const auditEntryId = `${command.commandId}:audit`;

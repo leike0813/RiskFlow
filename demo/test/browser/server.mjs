@@ -95,7 +95,6 @@ import {
 import {
   createPostgresWorkflowAdapter,
   createPostgresWorkflowProjection,
-  workflowGraphReadInvocationIdV1,
 } from "../../../packages/adapters/dist/workflow/index.js";
 import { ArtifactPutCommandV1Schema } from "../../../packages/core/dist/artifacts/index.js";
 import {
@@ -2391,21 +2390,17 @@ export const startDemoBrowserServer = async () => {
       // （总览查询不传空间范围）。多带一个空间引用会让入口行匹配不上，整页失败闭合。
       const chainFrozenRefs = [projectRevisionRef];
       const chainStateArtifactId = `c33-${suffix}-run-state:${chainRunId}:${chainRunVersionId}`;
-      // C30 正文写入与生产读侧共用同一 body-write 派生调用身份（真实授权接缝）。
-      const chainBodyAuth = await operatorAuth(
-        workflowGraphReadInvocationIdV1({
-          operation: "body-write",
-          projectId: PROJECT_ID,
-          targetId: chainStateArtifactId,
-        }),
-        "workflow.start-run",
-      );
+      // C30 正文写入沿真实授权接缝复验：身份由签发方给出，端口按同一身份复验，
+      // 不用无签发方的端口内派生身份。
+      const chainBodyInvocationId = `demo-c33-${suffix}-chain-body-write`;
+      const chainBodyAuth = await operatorAuth(chainBodyInvocationId, "workflow.start-run");
       const chainStateArtifactRef = await workflow.bodies.putBody({
         projectId: PROJECT_ID,
         actorId: chainBodyAuth.actorId,
         commandId: `demo-c33-${suffix}-body-run-state`,
         issuedAt: chainRecordedAt,
         artifactId: chainStateArtifactId,
+        invocationId: chainBodyInvocationId,
         body: WorkflowGraphArtifactBodyV1Schema.parse({
           bodyKind: "run-state",
           runState: {

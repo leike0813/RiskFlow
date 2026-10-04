@@ -455,6 +455,7 @@ const seedRuns = async () => {
       projectId: PROJECT_ID,
       actorId: ACTOR_ID,
       commandId: `c30-projection-body-${runId}`,
+      invocationId: `c30-projection-body-${runId}`,
       issuedAt: TIMESTAMP,
       artifactId: `c30-run-state:${runId}:${runVersionId}`,
       body: {
@@ -575,6 +576,7 @@ const seedOverviewRun = async (seed: OverviewRunSeedV1): Promise<void> => {
     projectId: PROJECT_ID,
     actorId: ACTOR_ID,
     commandId: `c31-report-state-${seed.suffix}`,
+    invocationId: `c31-report-state-${seed.suffix}`,
     issuedAt: recordedAt,
     artifactId: `c31-run-state:${seed.runId}:${seed.runVersionId}`,
     body: {
@@ -607,6 +609,7 @@ const seedOverviewRun = async (seed: OverviewRunSeedV1): Promise<void> => {
     projectId: PROJECT_ID,
     actorId: ACTOR_ID,
     commandId: `c31-report-result-${seed.suffix}`,
+    invocationId: `c31-report-result-${seed.suffix}`,
     issuedAt: recordedAt,
     artifactId: `c31-run-result:${seed.runId}:${seed.runVersionId}`,
     body: {

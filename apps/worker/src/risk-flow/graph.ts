@@ -1069,6 +1069,7 @@ const advance = async (input: AdvanceInputV1): Promise<RiskFlowGraphStateV1> => 
       issuedAt: run.entryRecordedAt,
       artifactId,
       body: WorkflowGraphArtifactBodyV1Schema.parse(body),
+      invocationId: run.commandId,
       authorization: run.authorization,
     });
     artifactRefs.set(artifactId, ContentArtifactRefV1Schema.parse(placed));

@@ -85,6 +85,40 @@ interface RawRequest {
   readonly signal?: AbortSignal
 }
 
+/**
+ * 原始 GET：无请求体的只读调用（当前只有会话自省）。与 POST 共用同一套失败收敛，
+ * 网络异常同样归一为瞬时故障。
+ */
+export const getRaw = async (request: {
+  readonly path: string
+  readonly signal?: AbortSignal
+}): Promise<unknown> => {
+  let response: Response
+  try {
+    response = await fetch(request.path, {
+      method: 'GET',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      signal: request.signal ?? null,
+      headers: { accept: 'application/json' },
+    })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw new ApiError('TRANSIENT_FAILURE', { retryable: true })
+  }
+  const text = await response.text()
+  let body: unknown = null
+  if (text.length > 0) {
+    try {
+      body = JSON.parse(text)
+    } catch {
+      body = null
+    }
+  }
+  if (!response.ok) throw toApiError(response.status, body)
+  return body
+}
+
 /** 原始 POST：返回 2xx 的 JSON body；失败统一收敛为 ApiError；网络异常归一为瞬时故障。 */
 export const postRaw = async (request: RawRequest): Promise<unknown> => {
   let response: Response

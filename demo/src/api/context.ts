@@ -60,14 +60,25 @@ import { ApiError } from './client'
 import type { EngineeringContextView } from './operations'
 import type { SessionMetadata } from './session'
 
+/**
+ * 会话状态机：启动期先自省，再决定进入业务页、改密还是登录。
+ *
+ * `restoring` 与 `restore-failed` 是独立状态而不是匿名：技术故障期间界面显示可重试失败，
+ * 绝不把一次读失败表述成「没有有效会话」。
+ */
 export type SessionState =
+  | { readonly kind: 'restoring' }
+  | { readonly kind: 'restore-failed' }
   | { readonly kind: 'anonymous' }
   | { readonly kind: 'authenticated'; readonly session: SessionMetadata }
 
 export interface SessionContextValue {
   readonly state: SessionState
   readonly login: (loginName: string, password: string) => Promise<void>
+  readonly changePassword: (newPassword: string) => Promise<void>
   readonly logout: () => Promise<void>
+  readonly logoutFailed: boolean
+  readonly retryRestore: () => void
 }
 
 export const SessionContext = createContext<SessionContextValue | null>(null)

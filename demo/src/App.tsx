@@ -1,5 +1,12 @@
-import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Navigate, Outlet, Route, Routes, useLocation, useSearchParams } from 'react-router-dom'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  Navigate,
+  Outlet,
+  Route,
+  Routes,
+  useLocation,
+  useSearchParams,
+} from 'react-router-dom'
 import { ApiError } from './api/client'
 import {
   EngineeringProvider,
@@ -11,7 +18,12 @@ import {
   type SessionState,
 } from './api/context'
 import { readEngineeringContext } from './api/operations'
-import { login as sessionLogin, logout as sessionLogout } from './api/session'
+import {
+  changePassword as sessionChangePassword,
+  currentSession,
+  login as sessionLogin,
+  logout as sessionLogout,
+} from './api/session'
 
 const RiskOverviewPage = lazy(() => import('./pages/RiskOverviewPage'))
 const AgentWorkbenchPage = lazy(() => import('./pages/AgentWorkbenchPage'))
@@ -51,26 +63,63 @@ const EvidenceTracePage = lazy(() => import('./pages/EvidenceTracePage'))
 const RunRecordsPage = lazy(() => import('./pages/RunRecordsPage'))
 const LoginPage = lazy(() => import('./pages/LoginPage'))
 
-/** 会话门：未认证访问业务页一律跳转登录页，登录后回到原目标页。 */
+/**
+ * 会话门：恢复完成前不跳转、不装载业务页；确认为匿名才进登录页并保留原目标；
+ * 受限会话先改密；恢复失败给出可重试入口，而不是伪装成未登录。
+ */
 function RequireSession({ children }: { children?: ReactNode }) {
-  const { state } = useSession()
+  const { state, retryRestore } = useSession()
   const location = useLocation()
-  if (state.kind !== 'authenticated') {
+  if (state.kind === 'restoring' || state.kind === 'restore-failed') {
+    return <SessionGateView failed={state.kind === 'restore-failed'} onRetry={retryRestore} />
+  }
+  if (state.kind === 'anonymous') {
     const next = `${location.pathname}${location.search}`
     return <Navigate to={`/login?next=${encodeURIComponent(next)}`} replace />
+  }
+  if (state.session.restricted) {
+    const next = `${location.pathname}${location.search}`
+    return <Navigate to={`/change-password?next=${encodeURIComponent(next)}`} replace />
   }
   return <>{children}</>
 }
 
-/** 已认证用户访问 /login 时回到原目标或首页。 */
+/** 恢复期与恢复失败：只呈现状态与重试，不显示任何业务内容。 */
+function SessionGateView(props: { failed: boolean; onRetry: () => void }) {
+  return (
+    <div className="page">
+      <h1>{props.failed ? '会话恢复失败' : '正在恢复会话'}</h1>
+      <p>{props.failed ? '无法确认当前会话状态，请重试。' : '正在确认当前会话……'}</p>
+      {props.failed ? (
+        <button type="button" className="shell-switch-btn" onClick={props.onRetry}>
+          重试
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
+/** 恢复期 /login 同样先呈现检查状态，避免闪现登录表单。已认证且不受限时回到原目标。 */
 function LoginRoute() {
-  const { state } = useSession()
+  const { state, retryRestore } = useSession()
   const [searchParams] = useSearchParams()
-  if (state.kind === 'authenticated') {
+  if (state.kind === 'restoring' || state.kind === 'restore-failed') {
+    return <SessionGateView failed={state.kind === 'restore-failed'} onRetry={retryRestore} />
+  }
+  if (state.kind === 'authenticated' && !state.session.restricted) {
     const next = searchParams.get('next')
     return <Navigate to={next !== null && next.startsWith('/') ? next : '/'} replace />
   }
   return <LoginPage />
+}
+
+/** 改密路由：只在受限会话下可达，交给同一份认证表单处理改密模式。 */
+function ChangePasswordRoute() {
+  const { state } = useSession()
+  if (state.kind !== 'authenticated' || !state.session.restricted) {
+    return <Navigate to="/" replace />
+  }
+  return <LoginPage mode="change-password" />
 }
 
 /** 工程上下文门：按 URL ?project=&revision= 选择器加载 context-read，切换即重建查询。 */
@@ -123,20 +172,67 @@ function EngineeringGate() {
 }
 
 export default function App() {
-  const [sessionState, setSessionState] = useState<SessionState>({ kind: 'anonymous' })
+  const [sessionState, setSessionState] = useState<SessionState>({ kind: 'restoring' })
+  const [logoutFailed, setLogoutFailed] = useState(false)
+  const [restoreTick, setRestoreTick] = useState(0)
+  /**
+   * 认证代次：每次登录、改密、注销或重试恢复都推进一次。
+   * 迟到的旧响应携带更小的代次，直接丢弃——它恢复的会话已被更新的操作取代。
+   */
+  const generation = useRef(0)
+
+  useEffect(() => {
+    const current = (generation.current += 1)
+    const controller = new AbortController()
+    setSessionState({ kind: 'restoring' })
+    currentSession(controller.signal)
+      .then((session) => {
+        if (current !== generation.current) return
+        setSessionState(session === null ? { kind: 'anonymous' } : { kind: 'authenticated', session })
+      })
+      .catch(() => {
+        if (current !== generation.current) return
+        setSessionState({ kind: 'restore-failed' })
+      })
+    return () => controller.abort()
+  }, [restoreTick])
+
   const sessionValue: SessionContextValue = useMemo(
     () => ({
       state: sessionState,
+      logoutFailed,
+      retryRestore: () => {
+        setLogoutFailed(false)
+        setRestoreTick((value) => value + 1)
+      },
       login: async (loginName: string, password: string) => {
+        const current = (generation.current += 1)
         const session = await sessionLogin({ loginName, password })
+        if (current !== generation.current) return
+        setLogoutFailed(false)
+        setSessionState({ kind: 'authenticated', session })
+      },
+      changePassword: async (newPassword: string) => {
+        const current = (generation.current += 1)
+        const session = await sessionChangePassword({ newPassword })
+        if (current !== generation.current) return
         setSessionState({ kind: 'authenticated', session })
       },
       logout: async () => {
-        await sessionLogout().catch(() => undefined)
+        const current = (generation.current += 1)
+        try {
+          await sessionLogout()
+        } catch {
+          // 注销失败保持原会话并允许重试：只有成功注销才进入匿名。
+          if (current === generation.current) setLogoutFailed(true)
+          return
+        }
+        if (current !== generation.current) return
+        setLogoutFailed(false)
         setSessionState({ kind: 'anonymous' })
       },
     }),
-    [sessionState],
+    [sessionState, logoutFailed],
   )
 
   return (
@@ -144,6 +240,7 @@ export default function App() {
       <Suspense fallback={<div className="page" />}>
         <Routes>
           <Route path="/login" element={<LoginRoute />} />
+          <Route path="/change-password" element={<ChangePasswordRoute />} />
           <Route
             element={
               <RequireSession>

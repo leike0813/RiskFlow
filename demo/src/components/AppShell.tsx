@@ -80,7 +80,7 @@ export default function AppShell({
   const dockOpen = useAgentDockOpen()
   const location = useLocation()
   const agentActive = dockOpen || location.pathname === '/agent'
-  const { state: sessionState, logout } = useSession()
+  const { state: sessionState, logout, logoutFailed } = useSession()
   const { selector, state: engineering } = useEngineering()
 
   return (
@@ -151,6 +151,16 @@ export default function AppShell({
                 >
                   登出
                 </button>
+                {/* 注销失败保持原会话并允许重试：只有成功注销才进入匿名。 */}
+                {logoutFailed ? (
+                  <button
+                    type="button"
+                    className="shell-switch-btn shell-switch-btn--warn"
+                    onClick={() => void logout()}
+                  >
+                    重试登出
+                  </button>
+                ) : null}
               </>
             )}
             <button

@@ -493,6 +493,15 @@ export const startDemoBrowserServer = async () => {
     const spatialScopeRef = baseAuth.spatialScopeRefs[0];
 
     /**
+     * 下游上下文默认请求的来源版本：operator 在本工程共享的资料 A。
+     *
+     * 不带来源授权签发的上下文，其 `sourceAccessGrantRefs` 为空；下游按记录真实资料版本
+     * 复验时（阶段二 `verifyScope`）解析出的来源授权不在该上下文之内，C06 会以
+     * `verify.narrowing` 拒绝它自己签发的上下文。资料 B 仅系统管理员可见，不在此列。
+     * 先声明、登记完成后填充：签发接缝必须晚于资料登记才有可请求的来源。
+     */
+    const downstreamSourceVersionRefs = [];
+    /**
      * C25/C26/C29 共用的真实 C06 下游签发接缝（design D-06）。
      *
      * 按调用方请求的精确 branch 逐次签发，不合并能力也不裁剪：请求什么 branch 就签什么，
@@ -507,7 +516,9 @@ export const startDemoBrowserServer = async () => {
           projectId: request.projectId,
           branch: request.branch,
           requestedSpatialScopeRefs: [...(request.requestedSpatialScopeRefs ?? [spatialScopeRef])],
-          requestedSourceVersionRefs: [...(request.requestedSourceVersionRefs ?? [])],
+          requestedSourceVersionRefs: [
+            ...(request.requestedSourceVersionRefs ?? downstreamSourceVersionRefs),
+          ],
         })
       ).context;
     await access.administerProject({
@@ -673,6 +684,7 @@ export const startDemoBrowserServer = async () => {
     };
     const sourceA = await registerSource("a", "C32 验收资料 A");
     const sourceB = await registerSource("b", "C32 验收资料 B（受限）");
+    downstreamSourceVersionRefs.push(sourceA.sourceVersionRef);
 
     // 资料访问授权：A 工程内共享；B 仅系统管理员可见。
     const administratorAccount = await adminRuntime.pool.query(
@@ -2727,7 +2739,10 @@ export const startDemoBrowserServer = async () => {
       checkpointer,
       engineeringData: registry,
       basis: scoringRules,
-      basisResolver: knowledgeGovernance,
+      // C19 的 `assessment-basis` 解析落在 C17/C19 适配器上（按冻结准备快照物化
+      // `assessment-basis-release-set`）；知识治理适配器只有 `resolveGovernedReleases`，
+      // 不实现该分支，传错对象会在 A1 直接抛「resolve is not a function」。
+      basisResolver: scoringRules,
       runtimePolicies: createRiskAssessmentRuntimePolicies({ projectId: PROJECT_ID }),
       riskAssessment: assessmentEngine,
       warning: warningLifecycle,

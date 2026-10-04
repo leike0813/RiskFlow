@@ -1976,18 +1976,21 @@ export const resolveAssessmentEntry = async (input: {
             );
       // 冻结是 C11 的写动作，需要 `engineering-data.freeze` 能力：按用途另签下游上下文，
       // 运行上下文本身只有 workflow 能力，直传会让 C11 命令在能力校验处关闭失败。
+      // 命令身份与 A0 阶段提交分列：`command_receipts.command_id` 全局唯一，同一身份被两个
+      // command_kind 复用会撞唯一约束。
+      const freezeActionId = actionIdFor(run, "A0:assessment-preparation");
       const freezeAuthorization = await ports.authorizeDownstream({
         branch: "engineering-data.assessment-preparation",
         // 必须与下面 freeze 命令的 commandId 逐字一致：C06 一个授权上下文只对应一个
         // invocation_id，C11 按命令身份复验。
-        invocationId: actionIdFor(run, "A0"),
+        invocationId: freezeActionId,
         projectId: run.projectId,
         actorId: run.actorId,
         requestedAt: run.issuedAt,
       });
       const frozen = await ports.engineeringData.freeze({
-        commandId: actionIdFor(run, "A0"),
-        idempotencyKey: actionIdFor(run, "A0"),
+        commandId: freezeActionId,
+        idempotencyKey: freezeActionId,
         projectId: run.projectId,
         actorId: run.actorId,
         issuedAt: run.issuedAt,

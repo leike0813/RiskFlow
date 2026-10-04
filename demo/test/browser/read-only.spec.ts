@@ -18,14 +18,26 @@ test.afterAll(async () => {
   await server?.close();
 });
 
-const login = async (page, loginName, targetPath) => {
-  await page.goto(`${server.origin}${targetPath}`);
-  await page.waitForURL(/\/login\?next=/);
-  await expect(page.getByText("RiskFlow", { exact: true }).first()).toBeVisible();
-  await page.getByLabel("登录名").fill(loginName);
-  await page.getByLabel("密码").fill(server.accountPassword);
-  await page.getByRole("button", { name: "登录", exact: true }).click();
-  await page.waitForURL(`${server.origin}${targetPath}`);
+/**
+ * 启动先自省：会话仍有效时直接落在目标页，只有 401 才出现登录表单。
+ * 同一次验收里连续打开多个深页时，后面的深链不再需要（也不应该）重复登录。
+ */
+const login = async (page, loginName, targetPath, password = server.accountPassword) => {
+  const target = `${server.origin}${targetPath}`;
+  await page.goto(target);
+  // 启动先自省：只有 401 才落到登录表单。会话仍有效时表单不会出现，等它落定即可，
+  // 同一个浏览器上下文里连续打开多个深页时不再重复登录。
+  const needsLogin = await page
+    .getByLabel("登录名")
+    .waitFor({ state: "visible", timeout: 5_000 })
+    .then(() => true, () => false);
+  if (needsLogin) {
+    await expect(page.getByText("RiskFlow", { exact: true }).first()).toBeVisible();
+    await page.getByLabel("登录名").fill(loginName);
+    await page.getByLabel("密码").fill(password);
+    await page.getByRole("button", { name: "登录", exact: true }).click();
+  }
+  await page.waitForURL(target);
 };
 
 const selectProject = async (page) => {
@@ -170,4 +182,161 @@ test("viewer 可查看知识治理页但不具备追溯投影权限", async ({ p
   await expect(
     page.getByText(/暂无关联对象|当前角色不具备追溯投影的读取权限/).first(),
   ).toBeVisible();
+});
+
+/** 一次性故障注入：只影响这一次请求，后续走真实服务端。 */
+const transientFailureBody = () =>
+  JSON.stringify({
+    schemaVersion: "1",
+    requestId: "demo-injected-transient",
+    code: "TRANSIENT_FAILURE",
+    retryable: true,
+    occurredAt: "2030-06-02T00:00:00.000Z",
+    references: [],
+  });
+
+const fulfillTransient = (route) =>
+  route.fulfill({
+    status: 503,
+    contentType: "application/json",
+    headers: { "cache-control": "no-store" },
+    body: transientFailureBody(),
+  });
+
+test("启动恢复正式会话：硬刷新保持会话且恢复前不装载业务页", async ({ page }) => {
+  const deepLink = `/project?project=${server.projectId}`;
+  await login(page, server.operatorLogin, deepLink);
+
+  await test.step("硬刷新停在恢复检查态，恢复完成前不装载业务页", async () => {
+    await page.route("**/api/v1/session", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await route.fallback();
+    });
+    await page.reload();
+    await expect(page.getByText("正在恢复会话")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "工程概览", level: 1 })).toHaveCount(0);
+    await expect(page).toHaveURL(`${server.origin}${deepLink}`);
+    await page.unroute("**/api/v1/session");
+    await expect(page.getByRole("heading", { name: "工程概览", level: 1 })).toBeVisible();
+    await expect(page.getByText("工程身份信息")).toBeVisible();
+    await expect(page.getByRole("button", { name: "登出", exact: true })).toBeVisible();
+  });
+});
+
+test("受限会话恢复后先改密，改密前无业务请求且完成后回到原深链", async ({ page }) => {
+  const deepLink = `/project?project=${server.projectId}`;
+  await page.context().clearCookies();
+  await page.goto(`${server.origin}${deepLink}`);
+  await page.waitForURL(/\/login\?next=/);
+  await page.getByLabel("登录名").fill(server.restrictedLogin);
+  await page.getByLabel("密码").fill(server.restrictedAccountPassword);
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+
+  await test.step("受限会话被送入改密页并保留回跳目标", async () => {
+    await page.waitForURL(/\/change-password\?next=/);
+    await expect(page.getByText("首次登录需要修改初始密码")).toBeVisible();
+    await expect(page.getByText("工程概览")).toHaveCount(0);
+  });
+
+  await test.step("刷新后仍在改密页，改密成功后回到原深链", async () => {
+    await page.reload();
+    await expect(page.getByText("首次登录需要修改初始密码")).toBeVisible();
+    await page.getByLabel("新密码").fill(server.restrictedPasswordChanged);
+    await page.getByRole("button", { name: "提交", exact: true }).click();
+    await page.waitForURL(`${server.origin}${deepLink}`);
+    await expect(page.getByRole("heading", { name: "工程概览", level: 1 })).toBeVisible();
+  });
+});
+
+test("恢复故障按可重试失败呈现而不是匿名，重试后恢复真实会话", async ({ page }) => {
+  const deepLink = `/project?project=${server.projectId}`;
+  await login(page, server.operatorLogin, deepLink);
+
+  let injected = 0;
+  await page.route("**/api/v1/session", async (route) => {
+    if (route.request().method() !== "GET" || injected++ > 0) {
+      await route.fallback();
+      return;
+    }
+    await fulfillTransient(route);
+  });
+  await page.reload();
+
+  await test.step("一次 503 呈现可重试恢复失败，既不是匿名也不丢原 URL", async () => {
+    await expect(page.getByText("会话恢复失败")).toBeVisible();
+    await expect(page.getByRole("button", { name: "重试", exact: true })).toBeVisible();
+    await expect(page.getByText("RiskFlow", { exact: true }).first()).toHaveCount(0);
+    await expect(page).toHaveURL(`${server.origin}${deepLink}`);
+  });
+
+  await test.step("重试走真实自省并回到工程概览", async () => {
+    await page.unroute("**/api/v1/session");
+    await page.getByRole("button", { name: "重试", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "工程概览", level: 1 })).toBeVisible();
+  });
+});
+
+test("注销失败保持现有会话并可重试，真实注销后才进入匿名", async ({ page }) => {
+  const deepLink = `/project?project=${server.projectId}`;
+  await login(page, server.operatorLogin, deepLink);
+  const accountId = await page.locator(".shell-context-item").first().textContent();
+
+  let injected = 0;
+  await page.route("**/api/v1/session/logout", async (route) => {
+    if (injected++ > 0) {
+      await route.fallback();
+      return;
+    }
+    await fulfillTransient(route);
+  });
+
+  await test.step("一次 503 保留会话并给出重试入口", async () => {
+    await page.getByRole("button", { name: "登出", exact: true }).click();
+    await expect(page.getByRole("button", { name: "重试登出", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "工程概览", level: 1 })).toBeVisible();
+    expect(await page.locator(".shell-context-item").first().textContent()).toBe(accountId);
+  });
+
+  await test.step("真实注销成功后进入匿名", async () => {
+    await page.unroute("**/api/v1/session/logout");
+    await page.getByRole("button", { name: "重试登出", exact: true }).click();
+    await page.waitForURL(/\/login\?next=/);
+    await expect(page.getByRole("heading", { name: "工程概览", level: 1 })).toHaveCount(0);
+  });
+});
+
+test("被取代的注销响应不会覆盖更新的认证代次", async ({ page }) => {
+  const deepLink = `/project?project=${server.projectId}`;
+  await login(page, server.operatorLogin, deepLink);
+
+  // 第一次注销挂起；第二次以更新代次立即失败，使「会话保留 + 重试入口」成为可见基线。
+  let releaseLate;
+  const lateGate = new Promise((resolve) => {
+    releaseLate = resolve;
+  });
+  let lateAnswered = false;
+  let calls = 0;
+  await page.route("**/api/v1/session/logout", async (route) => {
+    calls += 1;
+    if (calls === 1) {
+      await lateGate;
+      lateAnswered = true;
+      // 迟到的旧代次是一次真实注销：若被采纳，会把当前会话直接清空。
+      await route.fallback();
+      return;
+    }
+    await fulfillTransient(route);
+  });
+
+  await page.getByRole("button", { name: "登出", exact: true }).click();
+  await page.getByRole("button", { name: "登出", exact: true }).click();
+  await expect(page.getByRole("button", { name: "重试登出", exact: true })).toBeVisible();
+
+  await test.step("迟到的旧代次注销成功也不改变当前会话", async () => {
+    releaseLate();
+    await expect.poll(() => lateAnswered).toBe(true);
+    // 旧代次返回的正是「成功注销」：若被采纳，当前会话会被直接清空。
+    await expect(page.getByRole("button", { name: "重试登出", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "工程概览", level: 1 })).toBeVisible();
+  });
 });

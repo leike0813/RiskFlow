@@ -25,6 +25,6 @@
 
 ## 4. 真实浏览器与收尾证据
 
-- [ ] 4.1 实施 IP-12：两套现有 harness 仅增加真实受限账号，完成 reload、精确深链、匿名回跳、受限改密、恢复503重试、迟到认证和 demo 注销失败；先运行 `pnpm build`、`pnpm --dir demo build`，再验证 `pnpm exec playwright test -c playwright.config.ts --project=chromium apps/web/test/browser/quality.spec.ts` 与 `pnpm exec playwright test -c playwright.config.ts --project=demo-chromium demo/test/browser/read-only.spec.ts`。
-- [ ] 4.2 完成 IP-12 相关回归：按施工图 E-R/E-P/E-S/E-H 运行所属单测与 PostgreSQL 集成测试；验证 `pnpm typecheck`、`pnpm lint`、`pnpm format:check`、`pnpm deps:check`、`pnpm deps:policy` 与 `openspec validate fix-production-assessment-seams-and-session-restoration --strict --no-interactive`。记录无法执行或失败的具体证据，不 skip 关键场景。
+- [x] 4.1 实施 IP-12：两套现有 harness 仅增加真实受限账号，完成 reload、精确深链、匿名回跳、受限改密、恢复503重试、迟到认证和 demo 注销失败；先运行 `pnpm build`、`pnpm --dir demo build`，再验证 `pnpm exec playwright test -c playwright.config.ts --project=chromium apps/web/test/browser/quality.spec.ts` 与 `pnpm exec playwright test -c playwright.config.ts --project=demo-chromium demo/test/browser/read-only.spec.ts`。
+- [x] 4.2 完成 IP-12 相关回归：按施工图 E-R/E-P/E-S/E-H 运行所属单测与 PostgreSQL 集成测试；验证 `pnpm typecheck`、`pnpm lint`、`pnpm format:check`、`pnpm deps:check`、`pnpm deps:policy` 与 `openspec validate fix-production-assessment-seams-and-session-restoration --strict --no-interactive`。记录无法执行或失败的具体证据，不 skip 关键场景。
 - [ ] 4.3 完成 IP-12 验收移交：Finalizer 按最终实现检查点核对施工图 §6 每个场景、§7 文件及三项限定审计标签，修复已批准范围内缺陷并创建 verification；用 `openspec status --change fix-production-assessment-seams-and-session-restoration --json` 核对工件与任务状态。确认真实评估链和三算法证据成立、无实际事实污染，再由原 C34 change 更新依赖／基线继续 4.1d；本任务不授权 Git 提交或接管 C34 装配。

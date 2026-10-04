@@ -51,9 +51,23 @@ const ROLE_PASSWORD = "riskflow-role-password";
 const HMAC_KEY = Buffer.alloc(32, 7);
 const KEY_VERSION = "key-v1";
 const ADMIN_PASSWORD = "Riskflow-Admin-2030!";
+
+// 容器停止时 PostgreSQL 会主动断开仍打开的连接，pg 池以未监听的 'error' 事件抛出
+// 57P01；这只是 teardown 噪声，不应压垮测试 worker。非 teardown 错误照常失败。
+let tearingDown = false;
+process.on("uncaughtException", (error) => {
+  const code = /** @type {{ code?: string }} */ (error)?.code;
+  const message = error instanceof Error ? error.message : String(error);
+  if (tearingDown && (code === "57P01" || message.includes("terminating connection"))) return;
+  console.error(error);
+  process.exit(1);
+});
 const OPERATOR_PASSWORD = "Riskflow-Operator-2030!";
 const OPERATOR_PASSWORD_CHANGED = "Riskflow-Operator-2030-Changed!";
 const OPERATOR_LOGIN = "quality-operator";
+const RESTRICTED_LOGIN = "quality-restricted";
+const RESTRICTED_PASSWORD = "Riskflow-Restricted-2030!";
+const RESTRICTED_PASSWORD_CHANGED = "Riskflow-Restricted-2030-Changed!";
 const PROJECT_ID = "quality-ui-project";
 const FORBIDDEN_PROJECT_ID = "quality-ui-forbidden-project";
 const PROJECT_REVISION = { entityId: PROJECT_ID, versionId: "r1" };
@@ -166,6 +180,10 @@ const recordWriteRow = (input, authorization, commandId) => ({
   ],
   sourceSegmentIds: [input.sourceSegmentRef.locator.sourceSegmentId],
   mechanismEntryIds: ["quality-mechanism"],
+  // 记录的空间范围、来源版本与证据引用在登记时定型，绝不按当前资料反推。
+  spatialScopeRefs: [input.spatialScopeRef],
+  sourceVersionRefs: [{ kind: "source-version", reference: input.sourceSegmentRef.sourceVersion }],
+  evidenceReferences: [input.sourceSegmentRef],
   authorizationScopeDigest: sha256CanonicalJson({ scope: "quality-ui-scope" }),
   authorizationContextRef: authorization.authorizationContextRef,
   actorRef: authorization.actorId,
@@ -342,6 +360,34 @@ export const startQualityBrowserServer = async () => {
       requestedSourceVersionRefs: [],
     });
     const authorization = evaluation.context;
+
+    /**
+     * 受限会话验收账号：建立后从不在服务端改密，因此每次登录都由真实 C06 发放
+     * mustChangePassword=true 的会话。它只在浏览器里走完改密后才能进入业务。
+     */
+    const restrictedAccount = await access.administerIdentity({
+      kind: "create-account",
+      commandId: "browser-create-restricted",
+      idempotencyKey: "browser-create-restricted",
+      expectedVersion: "none",
+      authorizationContextRef: administratorContextRef,
+      loginName: RESTRICTED_LOGIN,
+      displayName: "质量验收受限操作员",
+      password: RESTRICTED_PASSWORD,
+    });
+    await access.administerProject({
+      kind: "revise-membership",
+      projectId: PROJECT_ID,
+      commandId: "browser-restricted-membership",
+      idempotencyKey: "browser-restricted-membership",
+      expectedVersion: "none",
+      authorizationContextRef: administratorContextRef,
+      membershipId: "browser-restricted-membership",
+      accountId: restrictedAccount.resultRef.entityId,
+      roles: ["business-viewer"],
+      spatialScopeRefs: [authorization.spatialScopeRefs[0]],
+      status: "active",
+    });
 
     const putJson = async (artifactId, purposeCode, mediaType, value, options = {}) => {
       const result = await artifactStore.put(
@@ -592,6 +638,7 @@ export const startQualityBrowserServer = async () => {
           processNodeId: "process-node-browser",
           riskEvent: "risk-event-browser",
           sourceSegmentRef,
+          spatialScopeRef: accessScopeRef,
         };
         const insertion = await recordStore.insertRecords(
           {
@@ -802,6 +849,10 @@ export const startQualityBrowserServer = async () => {
       projectRevisionRef: PROJECT_REVISION,
       operatorLogin: OPERATOR_LOGIN,
       operatorPassword: OPERATOR_PASSWORD_CHANGED,
+      /** 受限账号的初始密码；改密后的密码一并给出，便于重复验收。 */
+      restrictedLogin: RESTRICTED_LOGIN,
+      restrictedPassword: RESTRICTED_PASSWORD,
+      restrictedPasswordChanged: RESTRICTED_PASSWORD_CHANGED,
       reportArtifactRef: evaluated.reportArtifactRef,
       datasetArtifactRef,
       /** D-11 撤权：把资料改为仅系统管理员可见，页面必须只保留工程级摘要。 */
@@ -815,6 +866,7 @@ export const startQualityBrowserServer = async () => {
         return receipt !== undefined;
       },
       close: async () => {
+        tearingDown = true;
         for (const close of closeables.reverse()) {
           await Promise.resolve(close()).catch(() => undefined);
         }
@@ -823,6 +875,7 @@ export const startQualityBrowserServer = async () => {
       },
     };
   } catch (error) {
+    tearingDown = true;
     for (const close of closeables.reverse()) {
       await Promise.resolve(close()).catch(() => undefined);
     }

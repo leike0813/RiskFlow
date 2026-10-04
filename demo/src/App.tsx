@@ -115,9 +115,16 @@ function LoginRoute() {
 
 /** 改密路由：只在受限会话下可达，交给同一份认证表单处理改密模式。 */
 function ChangePasswordRoute() {
-  const { state } = useSession()
-  if (state.kind !== 'authenticated' || !state.session.restricted) {
-    return <Navigate to="/" replace />
+  const { state, retryRestore } = useSession()
+  const [searchParams] = useSearchParams()
+  // 刷新改密页会先进入恢复期；改密成功后受限解除。两种情况都必须回到原目标，
+  // 否则受限账号会在改密中途被甩到首页。
+  if (state.kind === 'restoring' || state.kind === 'restore-failed') {
+    return <SessionGateView failed={state.kind === 'restore-failed'} onRetry={retryRestore} />
+  }
+  if (state.kind === 'authenticated' && !state.session.restricted) {
+    const next = searchParams.get('next')
+    return <Navigate to={next !== null && next.startsWith('/') ? next : '/'} replace />
   }
   return <LoginPage mode="change-password" />
 }

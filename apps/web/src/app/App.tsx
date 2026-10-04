@@ -52,6 +52,18 @@ const initialPathname = (pathname: string | undefined): string => {
   return window.location.pathname;
 };
 
+/**
+ * 会话路由的回跳目标。只接受同源相对路径：`//host` 这类协议相对写法会跳到外站，
+ * 一律丢弃，缺省回跳交给既有路由解析。
+ */
+const nextTargetOf = (): string | null => {
+  if (typeof window === "undefined") return null;
+  const next = new URLSearchParams(window.location.search).get("next");
+  return next !== null && /^\/(?!\/)/.test(next) ? next : null;
+};
+
+const pathOfTarget = (target: string): string => target.split("?")[0] ?? target;
+
 const sessionPage = (title: string, content: ReactNode): ReactNode => (
   <div className="session-page">
     <main className="app-main" aria-labelledby="main-heading">
@@ -72,11 +84,12 @@ const LoginPage = ({
     event.preventDefault();
     if (onLogin === undefined) return;
     const data = new FormData(event.currentTarget);
-    const loginAttemptId = String(data.get("loginAttemptId") ?? "").trim();
     const loginName = String(data.get("loginName") ?? "").trim();
     const password = String(data.get("password") ?? "");
-    if (loginAttemptId === "" || loginName === "" || password === "") return;
-    onLogin({ loginAttemptId, loginName, password });
+    if (loginName === "" || password === "") return;
+    // 登录尝试标识按次生成：会话恢复后重新登录是常规路径，固定标识会让第二次登录
+    // 被服务端判定为同一笔幂等重放而直接冲突。
+    onLogin({ loginAttemptId: `web-login-${crypto.randomUUID()}`, loginName, password });
   };
   return sessionPage(
     "登录",
@@ -89,7 +102,6 @@ const LoginPage = ({
         密码
         <input name="password" type="password" autoComplete="current-password" required />
       </label>
-      <input name="loginAttemptId" type="hidden" value="web-login" readOnly />
       <button type="submit" disabled={onLogin === undefined}>
         登录
       </button>
@@ -224,14 +236,27 @@ export const App = (props: AppPropsV1 = {}): ReactNode => {
   const resolution = useMemo(() => resolveWebRoute(pathname, registry), [pathname, registry]);
   const sessionRoute =
     resolution.kind === "matched" && resolution.route.section === null ? resolution : undefined;
+  // 匿名与受限都带原深链回跳：登录或改密完成后回到进入会话门之前的那一页。
+  // 已经带着 `next` 时直接沿用，不把会话页自身再套一层。
+  const currentUrl = (): string =>
+    typeof window === "undefined"
+      ? pathname
+      : `${window.location.pathname}${window.location.search}`;
+  const returnTarget = (): string => nextTargetOf() ?? currentUrl();
   const browserTarget =
     session.kind === "anonymous"
-      ? "/login"
+      ? pathname === "/login"
+        ? undefined
+        : `/login?next=${encodeURIComponent(returnTarget())}`
       : session.kind === "restricted" && session.metadata.passwordChangeRequired
-        ? "/change-password"
-        : session.kind === "authenticated" &&
-            (resolution.kind === "redirect" || sessionRoute !== undefined)
-          ? "/overview"
+        ? pathname === "/change-password"
+          ? undefined
+          : `/change-password?next=${encodeURIComponent(returnTarget())}`
+        : session.kind === "authenticated"
+          ? (nextTargetOf() ??
+            (resolution.kind === "redirect" || sessionRoute !== undefined
+              ? "/overview"
+              : undefined))
           : undefined;
   const effectiveResolution =
     session.kind === "authenticated" &&
@@ -251,9 +276,9 @@ export const App = (props: AppPropsV1 = {}): ReactNode => {
       browserTarget === undefined
     )
       return;
-    if (pathname === browserTarget) return;
+    if (pathname === pathOfTarget(browserTarget)) return;
     window.history.replaceState({}, "", browserTarget);
-    setPathname(browserTarget);
+    setPathname(pathOfTarget(browserTarget));
   }, [browserTarget, pathname, props.pathname]);
   const navigate = (routeId: string): void => {
     const target = registry.byId(routeId);

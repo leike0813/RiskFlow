@@ -189,9 +189,13 @@ const AppRoot = (): ReactNode => {
         spatialScopeRef={current.spatialScopeRef}
       />
     ) : undefined;
+  /**
+   * 这里不再下发 pathname：`App` 自带 popstate 监听与会话跳转（匿名 → 带 `next` 的
+   * 登录页、受限 → 带 `next` 的改密页），把 pathname 钉死会让这些跳转永不生效，
+   * 原深链也就无法在登录或改密完成后被送回。
+   */
   return (
     <App
-      pathname={window.location.pathname}
       session={session}
       context={context}
       registry={registry}

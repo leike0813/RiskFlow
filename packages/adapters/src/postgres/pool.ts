@@ -102,9 +102,14 @@ export const createPostgresPool = (
   if (!config.connectionString && !config.host && !config.database) {
     throw makePersistenceError("CONNECTION_FAILED", "pool.create");
   }
-  return new pg.Pool(
+  const pool = new pg.Pool(
     sessionRole === undefined ? config : { ...config, options: `-c role=${sessionRole}` },
   );
+  // 空闲连接被服务端断开（例如容器停止、连接被回收）时 pg 会发出 'error' 事件。
+  // 没有监听器的话这会变成 uncaughtException 直接终止整个进程；池本身会在下一次
+  // 取连接时重建，因此这里只需吸收事件，让在途查询照常按既有错误映射收口。
+  pool.on("error", () => undefined);
+  return pool;
 };
 
 export const createPostgresRuntime = (

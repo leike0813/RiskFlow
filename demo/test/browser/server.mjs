@@ -111,8 +111,10 @@ const ADMIN_PASSWORD_CHANGED = "Riskflow-Admin-2030-Changed!";
 const OPERATOR_LOGIN = "demo-operator";
 const VIEWER_LOGIN = "demo-viewer";
 const RESPONDER_LOGIN = "demo-responder";
+const RESTRICTED_LOGIN = "demo-restricted";
 const ACCOUNT_PASSWORD = "Riskflow-Demo-2030!";
 const ACCOUNT_PASSWORD_CHANGED = "Riskflow-Demo-2030-Changed!";
+const RESTRICTED_PASSWORD_CHANGED = "Riskflow-Demo-Restricted-Changed!";
 const PROJECT_ID = "demo-c32-project";
 const NOW = "2030-06-02T00:00:00.000Z";
 
@@ -305,6 +307,13 @@ export const startDemoBrowserServer = async () => {
       "现场处置（验收）",
       "demo-browser-create-responder",
     );
+    // 受限会话验收账号：建立后从不在服务端改密，每次登录都由真实 C06 发放
+    // mustChangePassword=true 的会话，只能先在浏览器里走完改密。
+    const restricted = await createAccount(
+      RESTRICTED_LOGIN,
+      "首次登录改密（验收）",
+      "demo-browser-create-restricted",
+    );
     await access.administerProject({
       kind: "open-project",
       projectId: PROJECT_ID,
@@ -462,6 +471,19 @@ export const startDemoBrowserServer = async () => {
       membershipId: "demo-browser-responder-membership",
       accountId: responder.resultRef.entityId,
       roles: ["field-responder"],
+      spatialScopeRefs: [spatialScopeRef],
+      status: "active",
+    });
+    await access.administerProject({
+      kind: "revise-membership",
+      projectId: PROJECT_ID,
+      commandId: "demo-browser-restricted-membership",
+      idempotencyKey: "demo-browser-restricted-membership",
+      expectedVersion: "none",
+      authorizationContextRef: administratorContextRef,
+      membershipId: "demo-browser-restricted-membership",
+      accountId: restricted.resultRef.entityId,
+      roles: ["business-viewer"],
       spatialScopeRefs: [spatialScopeRef],
       status: "active",
     });
@@ -2591,6 +2613,7 @@ export const startDemoBrowserServer = async () => {
       "/",
       "/overview",
       "/login",
+      "/change-password",
       "/project",
       "/project/documents",
       "/project/monitoring",
@@ -2646,6 +2669,10 @@ export const startDemoBrowserServer = async () => {
       operatorLogin: OPERATOR_LOGIN,
       viewerLogin: VIEWER_LOGIN,
       responderLogin: RESPONDER_LOGIN,
+      /** 受限账号：初始密码即通用初始密码，改密后另有其密码。 */
+      restrictedLogin: RESTRICTED_LOGIN,
+      restrictedAccountPassword: ACCOUNT_PASSWORD,
+      restrictedPasswordChanged: RESTRICTED_PASSWORD_CHANGED,
       accountPassword: ACCOUNT_PASSWORD_CHANGED,
       seriesEntityId: seriesRef.reference.entityId,
       sourceAVersionEntityId: sourceA.sourceVersionRef.reference.entityId,

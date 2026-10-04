@@ -20,13 +20,25 @@ test.afterAll(async () => {
   await server?.close();
 });
 
+/**
+ * 启动先自省：会话仍有效时直接落在目标页，只有 401 才出现登录表单。
+ * 同一次验收里连续打开多个深页时，后面的深链不再需要（也不应该）重复登录。
+ */
 const login = async (page, loginName, targetPath) => {
-  await page.goto(`${server.origin}${targetPath}`);
-  await page.waitForURL(/\/login\?next=/);
-  await page.getByLabel("登录名").fill(loginName);
-  await page.getByLabel("密码").fill(server.accountPassword);
-  await page.getByRole("button", { name: "登录", exact: true }).click();
-  await page.waitForURL(`${server.origin}${targetPath}`);
+  const target = `${server.origin}${targetPath}`;
+  await page.goto(target);
+  // 启动先自省：只有 401 才落到登录表单。会话仍有效时表单不会出现，等它落定即可，
+  // 同一个浏览器上下文里连续打开多个深页时不再重复登录。
+  const needsLogin = await page
+    .getByLabel("登录名")
+    .waitFor({ state: "visible", timeout: 5_000 })
+    .then(() => true, () => false);
+  if (needsLogin) {
+    await page.getByLabel("登录名").fill(loginName);
+    await page.getByLabel("密码").fill(server.accountPassword);
+    await page.getByRole("button", { name: "登录", exact: true }).click();
+  }
+  await page.waitForURL(target);
 };
 
 const withProject = (path) => `${path}?project=${server.projectId}`;

@@ -6,6 +6,7 @@ import {
   IdentifierSchema,
   IsoDateTimeSchema,
   VersionReferenceSchema,
+  type VersionReference,
 } from "@riskflow/contracts/common";
 import {
   AssessmentInputSnapshotRefV1Schema,
@@ -358,10 +359,21 @@ export type ResponseDeviationFactV1 = z.infer<typeof ResponseDeviationFactV1Sche
 /* D-05：版本化效果预测执行器接缝                                               */
 /* -------------------------------------------------------------------------- */
 
-/** 执行器输入：冻结快照正文、单个 C18 策略、基线指标/风险状态与 C14 执行前快照。 */
+/**
+ * 执行器输入：冻结快照正文、单个 C18 策略、基线指标/风险状态与 C14 执行前快照。
+ *
+ * 下发的是受权身份与冻结范围，不是 C28 命令本身的能力：执行器据此在各自既有分支上取得
+ * 读取能力（C04 模型工件、C25 预测风险状态），因此不放大调用者范围，也不把命令上下文
+ * 当成跨模块通行证。
+ */
 export interface ResponseForecastExecutorRequestV1 {
   readonly commandId: string;
-  readonly projectId: string;
+  readonly caller: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly spatialScopeRefs: readonly z.infer<typeof SpatialScopeRefV1Schema>[];
+  };
   readonly snapshot: ResponseForecastInputSnapshotV1;
   readonly policy: ForecastPolicyV1;
   readonly baseline: {
@@ -372,20 +384,45 @@ export interface ResponseForecastExecutorRequestV1 {
     }[];
   };
   readonly monitoringSnapshot: z.infer<typeof MonitoringSnapshotV1Schema>;
+  /** 已采纳建议的正式措施集合：只带标识，效果一律来自模型工件按措施库版本绑定的声明。 */
+  readonly measures: readonly { readonly measureId: string }[];
+  /** 冻结建议所用措施库版本：模型工件的措施效果必须绑定同一版本。 */
+  readonly measureLibraryReleaseRef: VersionReference;
+  /** 建议链基线评估记录：C25 预测风险状态的重算起点。 */
+  readonly baselineAssessmentRecordRef: z.infer<typeof RiskAssessmentRecordRefV1Schema>;
 }
 
-/** 执行器输出：必须回显方法、`requiredRef`、目标指标、单位、时域与证据。 */
-export const ResponseForecastExecutorResultV1Schema = z.strictObject({
+const responseForecastExecutorEchoV1 = {
   method: ForecastMethodV1Schema,
   requiredRef: VersionReferenceSchema,
   targetIndicatorId: IdentifierSchema,
   unit: unitSchema,
   horizonSteps: positiveInteger.max(720),
-  predictedValue: CanonicalDecimalV1Schema,
-  predictedRiskState: RiskStateSchema,
-  evidenceReferences: z.array(EvidenceReferenceSchema).min(1),
   summary: IdentifierSchema,
-});
+} as const;
+
+/**
+ * 执行器输出：必须回显方法、`requiredRef`、目标指标、单位、时域与摘要。
+ *
+ * 联合而非单形状：模型工件读不到、样本不足、工具失败与预算耗尽都收敛为受控不可用，
+ * 由 C28 映射到公开原因码后原子收口。执行器不得用默认值、基线值或占位值冒充一次成功预测。
+ * 不可用分支可以不携带证据——它没有产生任何预测正文。
+ */
+export const ResponseForecastExecutorResultV1Schema = z.discriminatedUnion("availability", [
+  z.strictObject({
+    ...responseForecastExecutorEchoV1,
+    availability: z.literal("available"),
+    predictedValue: CanonicalDecimalV1Schema,
+    predictedRiskState: RiskStateSchema,
+    evidenceReferences: z.array(EvidenceReferenceSchema).min(1),
+  }),
+  z.strictObject({
+    ...responseForecastExecutorEchoV1,
+    availability: z.literal("unavailable"),
+    reasonCode: ResponseForecastUnavailableReasonV1Schema,
+    evidenceReferences: z.array(EvidenceReferenceSchema).min(1).optional(),
+  }),
+]);
 export type ResponseForecastExecutorResultV1 = z.infer<
   typeof ResponseForecastExecutorResultV1Schema
 >;

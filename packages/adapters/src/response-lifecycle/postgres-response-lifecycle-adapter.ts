@@ -1704,11 +1704,21 @@ export class PostgresResponseLifecycleAdapter
       }
       const request: ResponseForecastExecutorRequestV1 = {
         commandId: valid.commandId,
-        projectId: valid.projectId,
+        // 下发受权身份与冻结空间，不下发命令能力：执行器在既有分支上另取读取能力。
+        caller: {
+          projectId: valid.projectId,
+          actorId: verified.actorId,
+          requestedAt: valid.issuedAt,
+          spatialScopeRefs: [context.spatialScopeRef],
+        },
         snapshot,
         policy,
         baseline: context.baseline,
         monitoringSnapshot: preActionSnapshot,
+        // 正式措施按已采纳建议的 measureItems 下发，模型只能按这些 measureId 给效果。
+        measures: context.record.measureItems.map((item) => ({ measureId: item.measureId })),
+        measureLibraryReleaseRef: context.measureLibraryReleaseRef,
+        baselineAssessmentRecordRef: context.baselineAssessmentRecordRef,
       };
       const execution = verifyForecastExecutorResult({
         method: policy.method,
@@ -1726,6 +1736,25 @@ export class PostgresResponseLifecycleAdapter
         });
       }
       const outcome = execution.result;
+      // 执行器只读不写：不可用与可用都在同一事务里原子收口，不留下半条预测。
+      if (outcome.availability === "unavailable") {
+        return await this.#persistForecast({
+          valid,
+          verified,
+          binding,
+          context,
+          reasonCode: outcome.reasonCode,
+          resolution: [
+            "policy",
+            policy.method,
+            refKey(policy.requiredRef),
+            policy.targetIndicatorId,
+            policy.unit,
+            String(policy.horizonSteps),
+            outcome.reasonCode,
+          ].join(":"),
+        });
+      }
       return await this.#persistForecast({
         valid,
         verified,

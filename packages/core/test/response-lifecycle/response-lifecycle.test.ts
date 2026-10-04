@@ -230,6 +230,7 @@ describe("C28 执行器结果复验", () => {
     riskLevelIds: ["level-1", "level-2", "level-3", "level-4"],
   };
   const result = {
+    availability: "available" as const,
     method: "historical-statistics" as const,
     requiredRef: { entityId: "forecast-statistics-model", versionId: "1" },
     targetIndicatorId: "indicator-consequence-1",
@@ -251,6 +252,26 @@ describe("C28 执行器结果复验", () => {
     expect(execution.kind).toBe("executed");
   });
 
+  it("执行器交回受控不可用时复验通过，风险状态不参与校验", () => {
+    const execution = verifyForecastExecutorResult({
+      ...request,
+      result: {
+        availability: "unavailable",
+        method: "historical-statistics",
+        requiredRef: { entityId: "forecast-statistics-model", versionId: "1" },
+        targetIndicatorId: "indicator-consequence-1",
+        unit: "mm",
+        horizonSteps: 5,
+        reasonCode: "policy-unavailable",
+        summary: "synthetic-statistics",
+      },
+    });
+    expect(execution).toEqual({
+      kind: "executed",
+      result: expect.objectContaining({ availability: "unavailable" }),
+    });
+  });
+
   it.each([
     { patch: { method: "monitoring-trend" }, reasonCode: "method-mismatch" },
     { patch: { method: "unknown-method" }, reasonCode: "result-unreadable" },
@@ -266,6 +287,8 @@ describe("C28 执行器结果复验", () => {
     { patch: { horizonSteps: 4 }, reasonCode: "horizon-mismatch" },
     { patch: { predictedValue: "Infinity" }, reasonCode: "result-unreadable" },
     { patch: { predictedValue: "not-a-decimal" }, reasonCode: "result-unreadable" },
+    { patch: { availability: "unknown" }, reasonCode: "result-unreadable" },
+    { patch: { reasonCode: "unknown-reason" }, reasonCode: "result-unreadable" },
     {
       patch: {
         predictedRiskState: { likelihoodScore: 2, consequenceScore: 2, riskLevel: "level-9" },

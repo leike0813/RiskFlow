@@ -19,7 +19,6 @@ import {
 
 import {
   EffectForecastModelArtifactV1Schema,
-  type EffectForecastMeasureEffectV1,
   type EffectForecastModelArtifactV1,
 } from "./schema.js";
 
@@ -72,8 +71,11 @@ export type EffectForecastComputationV1 =
   | { readonly kind: "unavailable"; readonly reason: ForecastUnavailableReasonV1 }
   | { readonly kind: "rejected"; readonly reason: ForecastRejectedReasonV1 };
 
-/** 正式措施在模型适用条件内的一条效果；由部署从模型工件与措施库版本逐项绑定。 */
-export type ForecastMeasureV1 = EffectForecastMeasureEffectV1;
+/**
+ * 正式措施标识：只来自已采纳建议。措施效果一律从模型工件按措施库版本绑定，执行器与算法
+ * 都不接受调用方自带的效果值，也不按缺省零效果补齐。
+ */
+export type ForecastMeasureV1 = { readonly measureId: string };
 
 /** 冻结基线的实际取值：缺失就是缺失，不把布尔或非数值字符串强转成数字。 */
 export type ForecastBaselineValueV1 = {

@@ -42,6 +42,8 @@ const executor = (input: {
   readonly unit?: string;
   readonly horizonSteps?: number;
   readonly evidence?: boolean;
+  /** 置为理由码即让执行器交回受控不可用，用于验证 C28 侧的原子收口。 */
+  readonly unavailable?: string;
 }) => ({
   method: (input.method ?? C28_FORECAST_METHOD) as never,
   requiredRef: input.requiredRef ?? C28_FORECAST_REQUIRED_REF,
@@ -51,21 +53,34 @@ const executor = (input: {
       readonly unit: string;
       readonly horizonSteps: number;
     };
-  }) => ({
-    method: (input.method ?? C28_FORECAST_METHOD) as never,
-    requiredRef: input.requiredRef ?? C28_FORECAST_REQUIRED_REF,
-    targetIndicatorId: request.policy.targetIndicatorId,
-    unit: input.unit ?? request.policy.unit,
-    horizonSteps: input.horizonSteps ?? request.policy.horizonSteps,
-    predictedValue: input.predictedValue ?? "12",
-    predictedRiskState: {
-      likelihoodScore: 2,
-      consequenceScore: 2,
-      riskLevel: input.riskLevel ?? "level-2",
-    },
-    evidenceReferences: input.evidence === false ? [] : [EVIDENCE],
-    summary: "synthetic-executor",
-  }),
+  }) => {
+    const echo = {
+      method: (input.method ?? C28_FORECAST_METHOD) as never,
+      requiredRef: input.requiredRef ?? C28_FORECAST_REQUIRED_REF,
+      targetIndicatorId: request.policy.targetIndicatorId,
+      unit: input.unit ?? request.policy.unit,
+      horizonSteps: input.horizonSteps ?? request.policy.horizonSteps,
+      summary: "synthetic-executor",
+    };
+    if (input.unavailable !== undefined) {
+      return {
+        ...echo,
+        availability: "unavailable" as const,
+        reasonCode: input.unavailable as never,
+      };
+    }
+    return {
+      ...echo,
+      availability: "available" as const,
+      predictedValue: input.predictedValue ?? "12",
+      predictedRiskState: {
+        likelihoodScore: 2,
+        consequenceScore: 2,
+        riskLevel: input.riskLevel ?? "level-2",
+      },
+      evidenceReferences: input.evidence === false ? [] : [EVIDENCE],
+    };
+  },
 });
 
 describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
@@ -642,6 +657,22 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
       kind: "unavailable",
       reasonCode: "executor-unavailable",
     });
+  });
+
+  pgIt("执行器交回受控不可用时按其理由原子收口，不补默认值", async () => {
+    const state = fixture!;
+    state.setExecutors([executor({ unavailable: "input-indicator-missing" })]);
+    const chain = await adoptedChain("c28-forecast-executor-unavailable");
+    expect(chain.forecast.kind).toBe("succeeded");
+    if (chain.forecast.kind !== "succeeded") return;
+    const outcome = chain.forecast.result.outcome;
+    // 执行器给出的公开原因码原样落库：它已经完成模型与工具侧判定，C28 不再改判。
+    expect(outcome.availability).toEqual({
+      kind: "unavailable",
+      reasonCode: "input-indicator-missing",
+    });
+    expect(outcome.projected?.kind).toBe("unavailable");
+    expect(outcome.projected).not.toHaveProperty("predictedValue");
   });
 
   pgIt("三类版本化方法各自形成正式预测", async () => {

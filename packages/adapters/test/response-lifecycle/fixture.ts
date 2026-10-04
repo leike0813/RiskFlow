@@ -53,6 +53,8 @@ import {
   type ResponseForecastInputSnapshotV1,
 } from "@riskflow/contracts/workflows";
 import {
+  EFFECT_FORECAST_MODEL_MEDIA_TYPE_V1,
+  EFFECT_FORECAST_MODEL_PURPOSE_CODE_V1,
   ResponseDeviationResultV1Schema,
   ResponseForecastResultV1Schema,
   type EffectForecastExecutorV1,
@@ -61,6 +63,7 @@ import {
   type ResponseForecastResultV1,
   type VerifiedResponseWorkflowBindingV1,
 } from "@riskflow/core/response-lifecycle";
+import type { ForecastRiskStatePortV1 } from "@riskflow/core/risk-assessment/engine";
 
 import {
   createPostgresResponseLifecycleAdapter,
@@ -287,6 +290,16 @@ export interface ResponseLifecyclePostgresFixtureV1 {
   setUnmatchedForecastPolicy(): Promise<void>;
   setIndicatorUnit(value: string | null): Promise<void>;
   setExecutors(value: readonly EffectForecastExecutorV1[]): void;
+  /** 生产执行器用的同一 C06 下游授权签发：不在测试侧另造一套上下文。 */
+  authorizeDownstream: ResponseLifecycleDownstreamAuthorizerV1;
+  /** 真实 C25 评估引擎（含窄预测端口），供生产执行器投影预测风险状态。 */
+  assessment: ForecastRiskStatePortV1;
+  /** 按精确引用发布参数模型工件：正文即模型 Schema，生产读取走真实 C04。 */
+  publishForecastModel(input: {
+    readonly artifactId: string;
+    readonly model: unknown;
+  }): Promise<ContentArtifactRef>;
+  readonly measureLibraryReleaseRef: { readonly entityId: string; readonly versionId: string };
   setDownstreamScopeExpansion(value: boolean): void;
   setNow(value: string): void;
 
@@ -698,9 +711,11 @@ export const startResponseLifecycleFixture =
               ).values(),
             ]
           : (request.requestedSpatialScopeRefs ?? []),
-        // C14 快照自带证据来源：只为监测读取补全工程来源授权，其它分支不扩大来源范围。
+        // C14 快照与 C25 输入快照读取各自需要在冻结依据里复验的来源授权：只为这两条分支
+        // 补全工程来源授权，其它分支不扩大来源范围。
         sourceVersionRefs:
-          request.branch === "engineering-data.monitoring-snapshot-query"
+          request.branch === "engineering-data.monitoring-snapshot-query" ||
+          request.branch === "risk-assessment.read-input-snapshot"
             ? projectSourceVersionRefs
             : [],
       });
@@ -1243,6 +1258,18 @@ export const startResponseLifecycleFixture =
       setExecutors(value) {
         executors.splice(0, executors.length, ...value);
       },
+      authorizeDownstream,
+      assessment: recommendation.c26.c25.engine,
+      async publishForecastModel(input) {
+        return await publishArtifact({
+          commandId: `c28-model-${input.artifactId}`,
+          purposeCode: EFFECT_FORECAST_MODEL_PURPOSE_CODE_V1,
+          mediaType: EFFECT_FORECAST_MODEL_MEDIA_TYPE_V1,
+          artifactId: input.artifactId,
+          value: input.model,
+        });
+      },
+      measureLibraryReleaseRef: recommendation.measureLibraryReleaseRef.reference,
       setDownstreamScopeExpansion(value) {
         expandDownstreamScopes = value;
       },

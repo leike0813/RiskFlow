@@ -304,7 +304,10 @@ export const verifyForecastExecutorResult = (input: {
   if (result.unit !== input.unit) return invalidResult("unit-mismatch");
   if (result.horizonSteps !== input.horizonSteps) return invalidResult("horizon-mismatch");
   // 风险等级必须存在于同一冻结风险矩阵，strict Schema 不能表达该关系。
-  if (!input.riskLevelIds.includes(result.predictedRiskState.riskLevel)) {
+  if (
+    result.availability === "available" &&
+    !input.riskLevelIds.includes(result.predictedRiskState.riskLevel)
+  ) {
     return invalidResult("risk-state-invalid");
   }
   return { kind: "executed", result };

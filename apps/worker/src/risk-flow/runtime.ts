@@ -710,16 +710,27 @@ export const createRiskFlowGraphRuntime = (
     readonly branch: ModuleBranchV1;
     readonly requestedAt: string;
     readonly stage: RiskFlowGraphStateV1["stage"];
+    /**
+     * 已签发的调用身份：运行控制类复验必须用它，而不是派生身份。
+     *
+     * C06 `verify` 精确绑定签发时的 `invocationId`（C05：一个授权上下文只对应一个
+     * invocation_id）。`workflow.start-run` 的上下文由公开命令以 `commandId` 签发，父图
+     * 若用 `c30-workflow-start:*` 这类没有签发方的派生身份去复验，必然被判绑定不符。
+     * 阶段内的领域写动作仍按各自的操作身份签发，不受此项影响。
+     */
+    readonly issuedInvocationId?: string;
   }): Promise<AuthorizationContextV1> => {
     const authorized = await options.authorization.verifyCurrent({
       authorization: input.authorization,
       projectId: input.projectId,
       actorId: input.actorId,
-      invocationId: invocationIdFor({
-        operation: input.operation,
-        projectId: input.projectId,
-        targetId: input.targetId,
-      }),
+      invocationId:
+        input.issuedInvocationId ??
+        invocationIdFor({
+          operation: input.operation,
+          projectId: input.projectId,
+          targetId: input.targetId,
+        }),
       branch: input.branch,
       requestedAt: input.requestedAt,
     });
@@ -809,6 +820,7 @@ export const createRiskFlowGraphRuntime = (
       branch: "workflow.start-run",
       requestedAt: command.validAt,
       stage: "preparing",
+      issuedInvocationId: command.commandId,
     });
     const humanDecisionGate = humanDecisionGateFor({
       command,
@@ -916,6 +928,7 @@ export const createRiskFlowGraphRuntime = (
       branch: "workflow.resume-run",
       requestedAt: command.validAt,
       stage: resumeStage,
+      issuedInvocationId: command.commandId,
     });
     const rows = await readRiskFlowRows({ ports, run: provisional });
     const threadId = rows.find((row) => row.threadId !== undefined)?.threadId;
@@ -1154,6 +1167,7 @@ export const createRiskFlowGraphRuntime = (
       branch: "workflow.cancel-run",
       requestedAt: command.validAt,
       stage: cancelStage,
+      issuedInvocationId: command.commandId,
     });
     const rows = await readRiskFlowRows({ ports, run: provisional });
     const threadId = rows.find((row) => row.threadId !== undefined)?.threadId;

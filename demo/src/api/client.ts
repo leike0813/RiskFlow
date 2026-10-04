@@ -229,27 +229,99 @@ export interface CommandEnvelope {
   readonly payload: Record<string, unknown>
 }
 
+/** 稳定摘要：键按字典序排列，使对象字面量写法差异不影响同一 payload 的判定。 */
+const canonicalPayloadDigest = (payload: Record<string, unknown>): string => {
+  const normalize = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(normalize)
+    if (typeof value === 'object' && value !== null) {
+      const record = value as Record<string, unknown>
+      const sorted: Record<string, unknown> = {}
+      for (const key of Object.keys(record).sort()) sorted[key] = normalize(record[key])
+      return sorted
+    }
+    return value
+  }
+  return JSON.stringify(normalize(payload))
+}
+
+/**
+ * 冻结信封登记：同一 `commandId` 的重试逐字节复用首次冻结的请求。
+ *
+ * D-07 要求动作确认冻结整个信封（含 `issuedAt`/`commandId`/`idempotencyKey`/空间/来源），
+ * 网络异常后的重试必须原样重发。只保留 commandId 再刷新时间会被服务端按同键异载荷拒绝——
+ * 绑定摘要本来就包含 `issuedAt`，那是设计要求，不是缺陷。
+ *
+ * payload 变了就换身份：登记项摘要不匹配时废弃旧信封重新冻结，调用方同时应给出新的
+ * `commandId`（页面把目标引用的 entityId/versionId 编进了 commandId，引用变化自然换身份）。
+ */
+const frozenCommands = new Map<string, { readonly digest: string; readonly envelope: CommandEnvelope }>()
+
+/** 登记项上限：只服务同一次确认的即时重试，不承担长期重放记忆。 */
+const FROZEN_COMMAND_LIMIT_V1 = 200
+
+const freezeCommandEnvelope = (input: {
+  readonly projectId: string
+  readonly branch: string
+  readonly commandId: string
+  readonly payload: Record<string, unknown>
+  readonly spatialScopeRefs: readonly unknown[]
+  readonly sourceVersionRefs: readonly unknown[]
+}): CommandEnvelope => {
+  const key = `${input.projectId}|${input.branch}|${input.commandId}`
+  const digest = canonicalPayloadDigest({
+    payload: input.payload,
+    requestedSpatialScopeRefs: input.spatialScopeRefs,
+    requestedSourceVersionRefs: input.sourceVersionRefs,
+  })
+  const frozen = frozenCommands.get(key)
+  if (frozen !== undefined && frozen.digest === digest) return frozen.envelope
+  if (frozenCommands.size >= FROZEN_COMMAND_LIMIT_V1) {
+    const oldest = frozenCommands.keys().next()
+    if (!oldest.done) frozenCommands.delete(oldest.value)
+  }
+  const envelope: CommandEnvelope = {
+    schemaVersion: '1',
+    commandId: input.commandId,
+    idempotencyKey: input.commandId,
+    issuedAt: new Date().toISOString(),
+    requestedSpatialScopeRefs: input.spatialScopeRefs,
+    requestedSourceVersionRefs: input.sourceVersionRefs,
+    payload: input.payload,
+  }
+  frozenCommands.set(key, { digest, envelope })
+  return envelope
+}
+
+/**
+ * 丢弃某条命令的冻结信封：目标引用发生变化时，调用方重新确认并取得新身份。
+ * 陈旧版本必须刷新后再次确认，不在这里自动改引用。
+ */
+export const discardFrozenCommand = (projectId: string, branch: string, commandId: string): void => {
+  frozenCommands.delete(`${projectId}|${branch}|${commandId}`)
+}
+
 /** 命令传输信封：与 postQuery 同一脱敏/取消语义；commandId 由调用方传入以支持重放，缺省生成。 */
 export const postCommand = async (input: {
   readonly projectId: string
   readonly branch: string
   readonly payload: Record<string, unknown>
   readonly commandId?: string
+  readonly spatialScopeRefs?: readonly unknown[]
+  readonly sourceVersionRefs?: readonly unknown[]
   readonly signal?: AbortSignal
 }): Promise<unknown> => {
   if (input.projectId.includes('/') || input.projectId.includes('\\')) {
     throw new ApiError('CONTRACT_INVALID')
   }
   const commandId = input.commandId ?? nextCommandId(input.projectId, input.branch)
-  const envelope: CommandEnvelope = {
-    schemaVersion: '1',
+  const envelope = freezeCommandEnvelope({
+    projectId: input.projectId,
+    branch: input.branch,
     commandId,
-    idempotencyKey: commandId,
-    issuedAt: new Date().toISOString(),
-    requestedSpatialScopeRefs: [],
-    requestedSourceVersionRefs: [],
     payload: input.payload,
-  }
+    spatialScopeRefs: input.spatialScopeRefs ?? [],
+    sourceVersionRefs: input.sourceVersionRefs ?? [],
+  })
   return postRaw({
     path: `/api/v1/projects/${encodeURIComponent(input.projectId)}/commands/${input.branch}`,
     body: envelope as unknown as Record<string, unknown>,
@@ -263,5 +335,7 @@ export const submitCommand = async (input: {
   readonly branch: string
   readonly payload: Record<string, unknown>
   readonly commandId?: string
+  readonly spatialScopeRefs?: readonly unknown[]
+  readonly sourceVersionRefs?: readonly unknown[]
   readonly signal?: AbortSignal
 }): Promise<unknown> => unwrapQueryResult(await postCommand(input))

@@ -2703,18 +2703,27 @@ export const startDemoBrowserServer = async () => {
       artifactStore,
       authorization: access,
       runtimeAuthorization: {
-        verifyCurrent: async (input) =>
-          (
-            await access.verify({
-              authorizationContextRef: input.authorization.authorizationContextRef,
-              invocationId: input.invocationId,
-              projectId: input.projectId,
-              branch: input.branch,
-              requestedSpatialScopeRefs: [],
-              requestedSourceVersionRefs: [],
-              requestedAt: input.requestedAt,
-            })
-          ).context,
+        // 运行时端口约定：复验不通过返回 `undefined`，由运行时自己收口成
+        // `RiskFlowGraphRunErrorV1`。这里若把 C06 的 AccessServiceError 直接抛出去，
+        // 会被 requireRunError 归为 `unclassified-failure`，把「授权被拒」伪装成
+        // 「技术故障、可重试」——同一个失败两种读法，验收无从断言。
+        verifyCurrent: async (input) => {
+          try {
+            return (
+              await access.verify({
+                authorizationContextRef: input.authorization.authorizationContextRef,
+                invocationId: input.invocationId,
+                projectId: input.projectId,
+                branch: input.branch,
+                requestedSpatialScopeRefs: [],
+                requestedSourceVersionRefs: [],
+                requestedAt: input.requestedAt,
+              })
+            ).context;
+          } catch {
+            return undefined;
+          }
+        },
       },
       checkpointer,
       engineeringData: registry,
@@ -2747,18 +2756,27 @@ export const startDemoBrowserServer = async () => {
       artifactStore,
       authorization: access,
       runtimeAuthorization: {
-        verifyCurrent: async (input) =>
-          (
-            await access.verify({
-              authorizationContextRef: input.authorization.authorizationContextRef,
-              invocationId: input.invocationId,
-              projectId: input.projectId,
-              branch: input.branch,
-              requestedSpatialScopeRefs: [],
-              requestedSourceVersionRefs: [],
-              requestedAt: input.requestedAt,
-            })
-          ).context,
+        // 运行时端口约定：复验不通过返回 `undefined`，由运行时自己收口成
+        // `RiskFlowGraphRunErrorV1`。这里若把 C06 的 AccessServiceError 直接抛出去，
+        // 会被 requireRunError 归为 `unclassified-failure`，把「授权被拒」伪装成
+        // 「技术故障、可重试」——同一个失败两种读法，验收无从断言。
+        verifyCurrent: async (input) => {
+          try {
+            return (
+              await access.verify({
+                authorizationContextRef: input.authorization.authorizationContextRef,
+                invocationId: input.invocationId,
+                projectId: input.projectId,
+                branch: input.branch,
+                requestedSpatialScopeRefs: [],
+                requestedSourceVersionRefs: [],
+                requestedAt: input.requestedAt,
+              })
+            ).context;
+          } catch {
+            return undefined;
+          }
+        },
       },
       humanDecisionProof: humanDecisionFeedback,
       checkpointer,

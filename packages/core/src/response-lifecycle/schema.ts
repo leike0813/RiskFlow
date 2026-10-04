@@ -30,7 +30,7 @@ import {
   type ModuleErrorV1,
   type WarningResponseRecordCommandV1,
 } from "@riskflow/contracts/ports";
-import { RiskStateSchema } from "@riskflow/contracts/records";
+import { RiskStateSchema, type MeasureItem } from "@riskflow/contracts/records";
 import {
   ResponseForecastInputSnapshotV1Schema,
   ResponseFeedbackInputSnapshotV1Schema,
@@ -185,9 +185,16 @@ export type ResponseForecastAvailabilityV1 = z.infer<typeof ResponseForecastAvai
 export const RESPONSE_FORECAST_UNAVAILABLE_REASONS_V1 = [
   "executor-unavailable",
   "policy-unavailable",
+  "model-artifact-unavailable",
   "monitoring-snapshot-unavailable",
+  "monitoring-points-insufficient",
+  "regression-degenerate",
+  "monitoring-series-mismatch",
   "target-indicator-unsupported",
+  "risk-state-unavailable",
   "input-indicator-missing",
+  "input-indicator-unavailable",
+  "measure-parameter-unavailable",
 ] as const;
 export const ResponseForecastUnavailableReasonV1Schema = z.enum(
   RESPONSE_FORECAST_UNAVAILABLE_REASONS_V1,
@@ -368,12 +375,10 @@ export type ResponseDeviationFactV1 = z.infer<typeof ResponseDeviationFactV1Sche
  */
 export interface ResponseForecastExecutorRequestV1 {
   readonly commandId: string;
-  readonly caller: {
-    readonly projectId: string;
-    readonly actorId: string;
-    readonly requestedAt: string;
-    readonly spatialScopeRefs: readonly z.infer<typeof SpatialScopeRefV1Schema>[];
-  };
+  readonly projectId: string;
+  readonly issuedAt: string;
+  readonly idempotencyKey: string;
+  readonly authorization: z.infer<typeof AuthorizationContextV1Schema>;
   readonly snapshot: ResponseForecastInputSnapshotV1;
   readonly policy: ForecastPolicyV1;
   readonly baseline: {
@@ -381,11 +386,13 @@ export interface ResponseForecastExecutorRequestV1 {
     readonly indicatorValues: readonly {
       readonly indicatorItem: string;
       readonly value: string | number | boolean;
+      /** 冻结指标体系中的数值指标正式单位；缺失时不能作为模型的合法输入。 */
+      readonly unit?: string;
     }[];
   };
   readonly monitoringSnapshot: z.infer<typeof MonitoringSnapshotV1Schema>;
   /** 已采纳建议的正式措施集合：只带标识，效果一律来自模型工件按措施库版本绑定的声明。 */
-  readonly measures: readonly { readonly measureId: string }[];
+  readonly adoptedMeasures: readonly MeasureItem[];
   /** 冻结建议所用措施库版本：模型工件的措施效果必须绑定同一版本。 */
   readonly measureLibraryReleaseRef: VersionReference;
   /** 建议链基线评估记录：C25 预测风险状态的重算起点。 */
@@ -402,30 +409,30 @@ const responseForecastExecutorEchoV1 = {
 } as const;
 
 /**
- * 执行器输出：必须回显方法、`requiredRef`、目标指标、单位、时域与摘要。
- *
- * 联合而非单形状：模型工件读不到、样本不足、工具失败与预算耗尽都收敛为受控不可用，
- * 由 C28 映射到公开原因码后原子收口。执行器不得用默认值、基线值或占位值冒充一次成功预测。
- * 不可用分支可以不携带证据——它没有产生任何预测正文。
+ * 成功预测结果：C28 另用 EffectForecastExecutorOutcomeV1 区分可用与业务不可用。
  */
-export const ResponseForecastExecutorResultV1Schema = z.discriminatedUnion("availability", [
-  z.strictObject({
-    ...responseForecastExecutorEchoV1,
-    availability: z.literal("available"),
-    predictedValue: CanonicalDecimalV1Schema,
-    predictedRiskState: RiskStateSchema,
-    evidenceReferences: z.array(EvidenceReferenceSchema).min(1),
-  }),
-  z.strictObject({
-    ...responseForecastExecutorEchoV1,
-    availability: z.literal("unavailable"),
-    reasonCode: ResponseForecastUnavailableReasonV1Schema,
-    evidenceReferences: z.array(EvidenceReferenceSchema).min(1).optional(),
-  }),
-]);
+export const ResponseForecastExecutorResultV1Schema = z.strictObject({
+  ...responseForecastExecutorEchoV1,
+  predictedValue: CanonicalDecimalV1Schema,
+  predictedRiskState: RiskStateSchema,
+  evidenceReferences: z.array(EvidenceReferenceSchema).min(1),
+});
 export type ResponseForecastExecutorResultV1 = z.infer<
   typeof ResponseForecastExecutorResultV1Schema
 >;
+
+/** 执行结果联合：仅合法业务输入不足时返回 unavailable；错误通过失败通道传播。 */
+export const EffectForecastExecutorOutcomeV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("available"),
+    result: ResponseForecastExecutorResultV1Schema,
+  }),
+  z.strictObject({
+    kind: z.literal("unavailable"),
+    reasonCode: ResponseForecastUnavailableReasonV1Schema,
+  }),
+]);
+export type EffectForecastExecutorOutcomeV1 = z.infer<typeof EffectForecastExecutorOutcomeV1Schema>;
 
 /** 私有版本化执行接缝：由部署按 `requiredRef` 注入正式实现，测试夹具不得用于生产。 */
 export interface EffectForecastExecutorV1 {
@@ -433,7 +440,7 @@ export interface EffectForecastExecutorV1 {
   readonly requiredRef: { readonly entityId: string; readonly versionId: string };
   forecast(
     request: ResponseForecastExecutorRequestV1,
-  ): Promise<ResponseForecastExecutorResultV1> | ResponseForecastExecutorResultV1;
+  ): Promise<EffectForecastExecutorOutcomeV1> | EffectForecastExecutorOutcomeV1;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -530,11 +537,10 @@ const effectForecastModelBase = {
 /** 已训练线性回归系数：运行时只代入基线，不重新拟合。 */
 const HistoricalStatisticsParametersV1Schema = z.strictObject({
   intercept: CanonicalDecimalV1Schema,
-  inputCoefficients: uniqueBy(
-    z.strictObject({ coefficient: CanonicalDecimalV1Schema }),
-    (value) => value.coefficient,
-    32,
-  ).min(1),
+  inputCoefficients: z
+    .array(z.strictObject({ coefficient: CanonicalDecimalV1Schema }))
+    .min(1)
+    .max(32),
   horizonCoefficient: CanonicalDecimalV1Schema,
   fitSampleCount: positiveInteger.max(1_000_000).min(2),
 });
@@ -627,15 +633,11 @@ export const EffectForecastModelArtifactV1Schema = z
     }
     if (model.method === "historical-statistics") {
       const declared = model.inputIndicators.map((value) => value.indicatorId);
-      if (
-        model.parameters.inputCoefficients.length !== declared.length ||
-        declared.includes(model.targetIndicatorId)
-      ) {
+      if (model.parameters.inputCoefficients.length !== declared.length) {
         context.addIssue({
           code: "custom",
           path: ["parameters", "inputCoefficients"],
-          message:
-            "one coefficient per declared input is required and the target must not be an input",
+          message: "one coefficient per declared input is required",
         });
       }
     }

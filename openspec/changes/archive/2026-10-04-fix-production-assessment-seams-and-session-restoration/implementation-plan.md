@@ -43,7 +43,7 @@
 | IP-04 | 1.4 | 两个消费者使用同一事实提供者；两个正式输入成功场景；评估准备向风险事实读取传递当前获准来源范围，两场景；冻结来源范围贯穿正式评估读取；评估依据准备投影由所属域提供，三场景；公共评估依据解析，三场景 | core scoring-rules/service；C11 registry #freezeAssessmentPreparation/readAuthorizedSourceVersions/readAssessmentPreparationContext、新 readAssessmentPreparationSnapshot；C19 assembleApplicableRuleSetRevision/resolve；C25 #loadRiskFacts/evaluate；C11/C19/core scoring/risk-assessment tests、fixtures 与生产接缝辅助文件 | D-04 有界映射与当前资源范围；D-12 六字段生产准备投影、共用所属行读取及保存范围复验、两个 C19 消费者核对真实准备／C18 配置、同库真实清洗／编制／审核发布和两种 XOR 持久回读 | C06 子集规则与公共契约、公开 assessment snapshot 字段、C15 合格编制来源及人工发布门禁；不接 C34 两套业务组合根；原故障 stub 默认行为 |
 | IP-05 | 2.1 | 预测风险状态使用冻结评分依据进行纯计算，三场景；预测指标进入同一冻结评分依据 | core engine/service、engine.ts；PostgresRiskAssessmentEngine；既有 engine tests | D-08 窄评分类型、ForecastRiskStatePort、回读自域基线/快照/值、目标序列复验、内存覆盖后计算 | 实际写路径、正式评分公式、原 Schema |
 | IP-06 | 2.2 | 三类生产预测执行器消费精确参数模型与正式措施，三场景 | response-lifecycle/schema/index、新 forecast.ts；engine/decimal；core response tests、新 forecast.test.ts | D-05/06/07 模型 Schema/预算/来源标记、三算法、除法与参数化算法例 | C18 配置定义与公式禁止边界 |
-| IP-07 | 2.3、2.4 | 参数预测必须诚实不可用并从冻结事实重放，四场景；预测执行只消费有界正式输入及评估所有者的计算接缝，两场景 | 新 forecast-executors.ts/index；C28 adapter；existing C28 test/fixture、新 executor tests；新共享生产 fixture | D-05/08 请求带真实措施与受权身份；结果联合解包；C04模型→纯算法→C25投影→原C28事务；旧夹具统一工厂迁移 | 原公开预测、回执/审计原子性、同键判异 |
+| IP-07 | 2.3、2.4 | 参数预测必须诚实不可用并从冻结事实重放，四场景；预测执行只消费有界正式输入及评估所有者的计算接缝，两场景 | 新 forecast-executors.ts/index；C28 adapter；existing C28 test/fixture、新 executor tests；新共享生产 fixture | D-05/08 请求带真实措施与受权身份；baseline 值携带冻结数值指标正式单位，模型输入集合／单位逐项复验；结果联合解包；C04模型→纯算法→C25投影→原C28事务；旧夹具统一工厂迁移 | 原公开预测、回执/审计原子性、同键判异 |
 | IP-08 | 3.1 | 当前会话元数据由服务端验证后提供，四场景 | access schema/service；auth adapter；access/auth tests；worker cleaning composition stub | D-09 view 复用、readSession、touch、停用账号 SESSION_REVOKED；补完整接口字面量 | 其它授权错误映射、绝对期限、token |
 | IP-09 | 3.2 | HTTP 提供安全 Cookie 当前会话查询，四场景 | API http/app/http-shell tests；appsweb api/http/api-client test | D-10 introspect 路由、mapSessionView、GET客户端无 body、目录与OpenAPI一致 | Set-Cookie、Cookie安全策略、业务路由 |
 | IP-10 | 3.3 | Web 启动恢复正式会话并保护认证状态竞态，六场景 | demo api/client/session/context、App/LoginPage/AppShell | D-11 restore/受限/技术失败/重试、changePassword、认证代次、logout成功才清 | 原深链、工程门禁及现有样式 |
@@ -57,7 +57,7 @@
 3. 正式评估：C11 原入口授权复验→从当前 grant refs 通过自有登记表有界解析 source-version refs→原事实分支签发及资源子集校验→owning reader 两阶段复验→原事务冻结 preparation→C25 当前授权复验 preparation binding→以该空间／来源签发同一 reader 分支并校验资源子集→读取原 basis/monitoring→原确定性 evaluate→原 assessment/receipt/audit/outbox事务。测试两种 XOR 均须实际取得引用并持久回读。C11 共用解析来源映射，不将 source-access-grant ref 强转为 source-version ref；C25 #loadRiskFacts 所需 binding 在 evaluate 的现有 #verifyCommand 后传入。
 4. 预测：C28 现有采纳/运行绑定／授权→正式建议及冻结输入→策略和执行前监测→精确 executor→模型用途权限及工件→纯参数算法→C25 窄投影（自有精确基线及原basis）→结果复验→C28 原 #persistForecast。缺合法输入走 typed unavailable；越权、非法工件/结果直接失败；技术错误不降级。available/unavailable仍同键重放和整事务回滚。
 5. 自省：解析唯一 Cookie→C06 原事务 readSession(allowRestricted)→状态/版本/期限检查→touch idle→元数据投影→no-store HTTP。无需 command_receipts/outbox；不 mint 授权或 token。
-6. Web：checking/restoring→GET→authenticated/restricted/anonymous/failed；仅401匿名。认证每次begin代次／取消旧请求→只接收当前代次→保留原URL→正常会话才走原业务门禁。demo logout技术失败保留会话，成功清会话和上下文。
+6. Web：checking/restoring→GET→authenticated/restricted/anonymous/failed；仅401匿名。认证每次begin代次／取消旧请求→只接收当前代次→保留原URL→正常会话才走原业务门禁。demo logout技术失败保留会话，成功或401确认失效清会话和上下文；在途注销去重，表单仅在当前认证操作被接受后回跳。
 
 ## 5. Schema、状态与持久化落实
 
@@ -70,7 +70,7 @@
 - D-12 C19 assemble/resolve 必须核对 reader 返回的精确准备引用、工程／工程修订与冻结适用性；组装用真实投影值，拒绝调用方错配。分别按命令业务／记录时刻调用已有 C18 resolveConfigurationSet，核对返回的工程、工程修订和配置集合引用与组装请求／已发布规则集正文；兼容引用复用 C19 版本化策略和已发布规则修订核验。resolve 当前权限验证用 issuedAt，requiredAt 只决定业务有效性。配置解析成功可保留 C18 既有留痕，错配不得产生 C19 候选／依据成功事实。禁止从假准备投影证明配置或兼容身份。
 - D-12 cleaning/scoring fixture 可抽取接受既有数据库／服务的组合 helper；原默认测试路径保持原行为，本验收路径显式选择真实 C06/C03/C04/C07/C16/C18/C19。一个 runtime 上增加适配器不构成 C34 的第二套业务组合根，不调用会另建数据库的完整 fixture starter。样本、确定性响应与测试审核注明合成待甲方复核。
 - D-12 外部事件登记 helper 共用原工件写入／登记实现，默认正文由旧 helper 提供，结构化正文由新用例提供；专用 C22 种子优先留在 production-assessment-seams.fixture.ts，仅把必要依赖暴露于共享 fixture。没有 reader 切换用例时精简 restoreProductionFactsReader/restoreStubFactsReader，权限恢复只验证真实会话和 C06 当前事实，不靠重装 reader。
-- D-05预测请求为内部契约扩展，所有 EffectForecastExecutor 实现和夹具同步返回联合。新增原因集中于所属 Schema，公开不可用仍沿原形状。原 `responseForecastInputDigest` 已包含方法/requiredRef/时域/冻结refs，继续复用；不能额外制造摘要门禁。
+- D-05预测请求为内部契约扩展，baseline.indicatorValues.unit 由 C28 读取同次冻结 indicator-system 的 numeric canonicalUnit 后填入；非数值或缺定义不填单位。执行器求值前核对全部模型输入单位，缺失或不符直接契约失败且不保存事实。所有 EffectForecastExecutor 实现和夹具同步返回联合。新增原因集中于所属 Schema，公开不可用仍沿原形状。原 `responseForecastInputDigest` 已包含方法/requiredRef/时域/冻结refs，继续复用；不能额外制造摘要门禁。
 - D-06模型参数不放入 C18 配置包；C04登记 JSON工件及原受权读取。策略requiredRef固定工件，措施效果对每条正式 measureId 和原库版本逐项绑定。缺指标或措施参数必须类型化不可用，不填默认零值。
 - D-08只读自身 assessment_input_snapshots/risk_assessment_records/indicator value tables，公开 C19/C14/C04接缝，不跨域私表。评分context及values分别收窄为 AssessmentScoringContextV1 和 AssessmentScoringValuesV1；完整actual evaluation沿旧形态，预测仅传indicatorId/actualValue。C25预测投影不能建立实际值集合/准备/预警/收据/Outbox。
 - D-09 SessionView基座及token扩展；自省省略 systemAdministrationContextRef。已有SessionMetadata shape与cookie属性不变；仅自省停用认证归会话失效。
@@ -129,7 +129,7 @@
 | 三类生产预测执行器消费精确参数模型与正式措施 / 监测趋势消费原冻结序列 | IP-06/07 | forecast.test；executor test | 原对齐槽/缺槽/observed、720槽测量 | OLS原下标外推+措施；不采用插值/latest | E-P |
 | 三类生产预测执行器消费精确参数模型与正式措施 / 机理参数有界计算 | IP-06/07 | forecast.test；executor test | 1/2/3次terms、合法domain与措施 | 规范decimal、有限计算、越domain失败 | E-P |
 | 参数预测必须诚实不可用并从冻结事实重放 / 模型或样本不足时不可用 | IP-06/07 | executor test；C28 test | 缺模型/措施参数、缺值/不足/退化点 | 稳定reason、无值，不能回退方法 | E-P |
-| 参数预测必须诚实不可用并从冻结事实重放 / 越权或模型结果非法时失败 | IP-07 | executor test；C28 test | 撤权、错method/unit/ref、超预算/缺证据/非法result | failed，无部分事实/成功审计/收据 | E-P |
+| 参数预测必须诚实不可用并从冻结事实重放 / 越权或模型结果非法时失败 | IP-07 | executor test；C28 test | 撤权、错method/ref、目标或输入单位不符／正式输入单位缺失、超预算/缺证据/非法result | failed，无部分事实/成功审计/收据 | E-P |
 | 参数预测必须诚实不可用并从冻结事实重放 / 发布新模型后旧预测仍可复算 | IP-07 | executor test；C28 test | 旧新工件/策略，旧原冻结refs | 旧decimal逐字符一致、同riskState | E-P |
 | 参数预测必须诚实不可用并从冻结事实重放 / 正式预测保存继续原子且幂等 | IP-07 | C28 test | available/unavailable重试、并发、尾事务失败 | 同key同载荷重放、异载荷冲突、全回滚 | E-P |
 | 当前会话元数据由服务端验证后提供 / 有效会话可查询无 token 元数据 | IP-08 | access/auth tests | 真实会话/时钟 | 无token/新上下文；正确idle推进 | E-S |
@@ -177,20 +177,22 @@
 | M / IP-04 | `packages/adapters/test/scoring-rules/fixture.ts` | 必要时提取 C19/C18/C16/C07 组合和审核发布 helper，允许注入现有真实 C06；原授权 stub 不进入生产接缝验收 |
 | N / IP-04/07 | `packages/adapters/test/risk-assessment/production-assessment-basis.fixture.ts` | 如需独立辅助文件，集中同库真实 C15 收口、C19 编制及审核发布、实际 basis 解析；复用既有 helper |
 | N / IP-04/07 | `packages/adapters/test/risk-assessment/production-assessment-seams.fixture.ts` | 单库真实C06/C04/C11/C19/识别登记/C25及合成模型/措施数据 |
+| N / IP-04 | `packages/adapters/test/risk-assessment/production-assessment-basis.test.ts` | 同库真实 C15/C19/C16/C07 依据链及两种 XOR 正式评估断言 |
 | N / IP-02/03/04 | `packages/adapters/test/risk-assessment/postgres-risk-input-facts-reader.test.ts` | 两分支权限/版本/证据和冻结评估集成 |
 | M / IP-05 | `packages/core/src/risk-assessment/engine/engine.ts` | 窄评分类型与形参 |
 | M / IP-04/05 | `packages/adapters/src/risk-assessment/engine/postgres-risk-assessment-engine.ts` | IP-04 以已复验 preparation binding 签发事实读取并校验资源范围；IP-05 实现预测投影，复用owning私有读 |
 | M / IP-05 | `packages/core/test/risk-assessment/engine.test.ts` | 相同规则跨边界纯计算 |
 | M / IP-04/05 | `packages/adapters/test/risk-assessment/postgres-risk-assessment-engine.test.ts` | IP-04 事实授权范围与既有评估回归；IP-05 精确投影及零实际写入 |
 | M / IP-06 | `packages/core/src/risk-assessment/engine/decimal.ts` | 有界规范十进制除法 |
-| M / IP-06/07 | `packages/core/src/response-lifecycle/schema.ts` | 模型/结果联合Schema、内部请求措施及受权身份 |
+| M / IP-06/07 | `packages/core/src/response-lifecycle/schema.ts` | 模型/结果联合Schema、内部请求措施／受权身份及冻结输入单位 |
 | N / IP-06 | `packages/core/src/response-lifecycle/forecast.ts` | 三个纯参数算法 |
 | M / IP-06 | `packages/core/src/response-lifecycle/index.ts` | 纯算法导出 |
 | M / IP-06 | `packages/core/test/response-lifecycle/response-lifecycle.test.ts` | 原校验回归、新模型/联合 |
 | N / IP-06 | `packages/core/test/response-lifecycle/forecast.test.ts` | 算法/除法/边界与有界测量 |
-| N / IP-07 | `packages/adapters/src/response-lifecycle/forecast-executors.ts` | 部署工厂、受权工件读、C25窄调用 |
+| N / IP-07 | `packages/adapters/src/response-lifecycle/forecast-model-reader.ts` | 有界受权模型读取 helper，verified 消费与错误分类；与工厂同属 D-05～08 |
+| N / IP-07 | `packages/adapters/src/response-lifecycle/forecast-executors.ts` | 部署工厂、受权工件读、模型输入集合／单位复验、C25窄调用 |
 | M / IP-07 | `packages/adapters/src/response-lifecycle/index.ts` | 工厂与options导出 |
-| M / IP-07 | `packages/adapters/src/response-lifecycle/postgres-response-lifecycle-adapter.ts` | request补全、available/unavailable解包、原事务持久化 |
+| M / IP-07 | `packages/adapters/src/response-lifecycle/postgres-response-lifecycle-adapter.ts` | request补全及冻结指标正式单位投影、available/unavailable解包、原事务持久化 |
 | M / IP-07 | `packages/adapters/test/response-lifecycle/fixture.ts` | 支持生产executor/真实model seed所需接缝 |
 | M / IP-07 | `packages/adapters/test/response-lifecycle/postgres-response-lifecycle-adapter.test.ts` | executor工厂统一包装、不可用/原子/重放 |
 | N / IP-07 | `packages/adapters/test/response-lifecycle/forecast-executors.test.ts` | 真实C04模型+C25投影三方法集成 |
@@ -202,6 +204,7 @@
 | M / IP-08 | `apps/worker/test/engineering-data/cleaning/composition.test.ts` | 完整接口stub增加unused readSession |
 | M / IP-09 | `apps/api/src/http.ts` | introspect目录/metadata映射，result沿view复用 |
 | M / IP-09 | `apps/api/src/app.ts` | Cookie GET handler/no-store/error |
+| M / IP-08/09 | `apps/api/test/quality.test.ts` | 完整 access stub 增加无 token readSession，保留原质量行为 |
 | M / IP-09 | `apps/api/test/http-shell.test.ts` | 新路由/status/OpenAPI及accessStub完整性 |
 | M / IP-09 | `apps/web/src/api/http.ts` | introspect操作/GET方法/catalog/client |
 | M / IP-09 | `apps/web/test/api-client-openapi.test.ts` | GET运行契约 |
@@ -214,9 +217,12 @@
 | M / IP-11 | `apps/web/src/main.tsx` | checking初态/restore/guard |
 | M / IP-11 | `apps/web/src/app/App.tsx` | 恢复失败retry入口 |
 | M / IP-11 | `apps/web/test/ssr-shells.test.tsx` | checking/failed/restricted行为 |
+| M / IP-12 | `packages/adapters/src/postgres/pool.ts` | 所属连接池监听空闲连接 error，避免未处理事件终止进程；在途查询仍沿原错误映射 |
+| M / IP-10/12 | `demo/test/browser/assessment-warning-response.spec.ts` | 仅登录助手适配已有 Cookie 的启动恢复；业务断言和装配不扩展 |
+| M / IP-10/12 | `demo/test/browser/identification-review.spec.ts` | 仅登录助手适配已有 Cookie 的启动恢复；业务断言和装配不扩展 |
 | M / IP-12 | `demo/test/browser/server.mjs` | 仅会话所需真实受限账号 |
 | M / IP-12 | `demo/test/browser/read-only.spec.ts` | 真实恢复/受限/竞态/注销失败 |
-| M / IP-12 | `apps/web/test/browser/server.mjs` | 仅会话所需真实受限账号 |
+| M / IP-12 | `apps/web/test/browser/server.mjs` | 会话所需真实受限账号；风险种子写入既有空间／来源／证据字段，不扩展业务装配 |
 | M / IP-12 | `apps/web/test/browser/quality.spec.ts` | 真实恢复/受限/重试/竞态 |
 
 OpenSpec 工件：本 change 的 proposal/design/implementation-plan/tasks 与九份 delta spec（IP-01～12按§3对应）；实施仅勾选已完成 tasks，Finalizer 新建本 change `verification.md`（IP-12）。归档通过 sync/archive 工作流更新九份所属主规格，不能在 apply 内提前同步主规格。
@@ -225,7 +231,7 @@ OpenSpec 工件：本 change 的 proposal/design/implementation-plan/tasks 与�
 
 IP-04 的测试装配授权覆盖上述 C15/C19 及审核发布 helper 的最小提取和依赖注入，不授权修改这些模块的生产契约或绕过来源／人工发布门禁。改动 cleaning/scoring 共享 helper 后分别运行 `pnpm exec vitest run packages/adapters/test/engineering-data/cleaning/postgres-data-cleaning-store.test.ts` 与 `pnpm exec vitest run packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts` 的受影响回归；仅在实际修改共享 helper 时增加该回归。缺失实际清洗／审核／basis 事实时 1.4 保持未完成；测试执行数量不替代该验收边界。
 
-保护路径：C34 所有 change 工件、其余 UI页面/业务 harness装配、数据库迁移、package.json/锁文件、config/orchestration、openspec/config、研究资料及业务算法口径。core access/index、context-source/index、engine adapter index 已有 export覆盖新所属符号时不必修改；无修改仅因“导出保险”。response-lifecycle/service.ts 的 verifyForecastExecutorResult 保持原签名，不修改。
+保护路径：C34 所有 change 工件、其余 UI页面/业务 harness装配（上表明确列出的两份 demo spec 登录助手除外）、数据库迁移、package.json/锁文件、config/orchestration、openspec/config、研究资料及业务算法口径。core access/index、context-source/index、engine adapter index 已有 export覆盖新所属符号时不必修改；无修改仅因“导出保险”。response-lifecycle/service.ts 的 verifyForecastExecutorResult 保持原签名，不修改。
 
 升级条件：实现发现新公共契约/枚举/依赖/迁移、必须写实际评估或扩大授权、表外生产文件、基线缺失符号、未列EffectForecastExecutor实现、现有验证命令不可执行或 shared C34 并行写冲突，停止依赖工作并报告具体差异；当前已授权普通实现/测试缺陷在本Task内修复，不重复请求既有授权。实际范围变更先更新design与施工图。
 

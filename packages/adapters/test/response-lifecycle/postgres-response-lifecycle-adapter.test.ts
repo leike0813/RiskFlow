@@ -64,21 +64,22 @@ const executor = (input: {
     };
     if (input.unavailable !== undefined) {
       return {
-        ...echo,
-        availability: "unavailable" as const,
+        kind: "unavailable" as const,
         reasonCode: input.unavailable as never,
       };
     }
     return {
-      ...echo,
-      availability: "available" as const,
-      predictedValue: input.predictedValue ?? "12",
-      predictedRiskState: {
-        likelihoodScore: 2,
-        consequenceScore: 2,
-        riskLevel: input.riskLevel ?? "level-2",
+      kind: "available" as const,
+      result: {
+        ...echo,
+        predictedValue: input.predictedValue ?? "12",
+        predictedRiskState: {
+          likelihoodScore: 2,
+          consequenceScore: 2,
+          riskLevel: input.riskLevel ?? "level-2",
+        },
+        evidenceReferences: input.evidence === false ? [] : [EVIDENCE],
       },
-      evidenceReferences: input.evidence === false ? [] : [EVIDENCE],
     };
   },
 });

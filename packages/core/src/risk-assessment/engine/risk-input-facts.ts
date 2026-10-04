@@ -1,4 +1,5 @@
 import { ModuleErrorV1Schema, type ModuleErrorV1 } from "@riskflow/contracts/ports";
+import { IdentifierSchema, IsoDateTimeSchema } from "@riskflow/contracts/common";
 
 import { RiskInputFactsReadRequestV1Schema, type RiskInputFactsReadRequestV1 } from "./schema.js";
 import type { RiskInputFactsReaderV1 } from "./service.js";
@@ -24,15 +25,16 @@ const unsupportedContract = (input: unknown): ModuleErrorV1 => {
     readonly requestId?: unknown;
     readonly requestedAt?: unknown;
   };
+  const requestId = IdentifierSchema.safeParse(request.requestId);
+  const requestedAt = IsoDateTimeSchema.safeParse(request.requestedAt);
   return ModuleErrorV1Schema.parse({
     code: "UNSUPPORTED_CONTRACT",
     category: "technical",
     retryable: false,
     schemaVersion: "1",
     stageCode: STAGE_CODE_V1,
-    occurredAt:
-      typeof request.requestedAt === "string" ? request.requestedAt : "1970-01-01T00:00:00.000Z",
-    causalRunId: typeof request.requestId === "string" ? request.requestId : STAGE_CODE_V1,
+    occurredAt: requestedAt.success ? requestedAt.data : "1970-01-01T00:00:00.000Z",
+    causalRunId: requestId.success ? requestId.data : STAGE_CODE_V1,
   });
 };
 

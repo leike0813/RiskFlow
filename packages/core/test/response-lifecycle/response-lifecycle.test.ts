@@ -6,6 +6,7 @@ import {
   computeEffectForecast,
   computeResponseDeviation,
   EFFECT_FORECAST_MODEL_ALGORITHM_VERSION_V1,
+  EffectForecastExecutorOutcomeV1Schema,
   effectForecastRefOf,
   ResponseAdoptionDecisionCommandV1Schema,
   ResponseDeviationFactRefV1Schema,
@@ -230,7 +231,6 @@ describe("C28 执行器结果复验", () => {
     riskLevelIds: ["level-1", "level-2", "level-3", "level-4"],
   };
   const result = {
-    availability: "available" as const,
     method: "historical-statistics" as const,
     requiredRef: { entityId: "forecast-statistics-model", versionId: "1" },
     targetIndicatorId: "indicator-consequence-1",
@@ -252,24 +252,19 @@ describe("C28 执行器结果复验", () => {
     expect(execution.kind).toBe("executed");
   });
 
-  it("执行器交回受控不可用时复验通过，风险状态不参与校验", () => {
-    const execution = verifyForecastExecutorResult({
-      ...request,
-      result: {
-        availability: "unavailable",
-        method: "historical-statistics",
-        requiredRef: { entityId: "forecast-statistics-model", versionId: "1" },
-        targetIndicatorId: "indicator-consequence-1",
-        unit: "mm",
-        horizonSteps: 5,
-        reasonCode: "policy-unavailable",
-        summary: "synthetic-statistics",
-      },
-    });
-    expect(execution).toEqual({
-      kind: "executed",
-      result: expect.objectContaining({ availability: "unavailable" }),
-    });
+  it("不可用由 outcome 联合承载，结果复验只接收原成功结果", () => {
+    expect(
+      EffectForecastExecutorOutcomeV1Schema.safeParse({
+        kind: "unavailable",
+        reasonCode: "model-artifact-unavailable",
+      }).success,
+    ).toBe(true);
+    expect(
+      EffectForecastExecutorOutcomeV1Schema.safeParse({ kind: "available", result }).success,
+    ).toBe(true);
+    expect(
+      verifyForecastExecutorResult({ ...request, result: { kind: "available", result } }),
+    ).toEqual({ kind: "invalid", reasonCode: "result-unreadable" });
   });
 
   it.each([
@@ -287,7 +282,7 @@ describe("C28 执行器结果复验", () => {
     { patch: { horizonSteps: 4 }, reasonCode: "horizon-mismatch" },
     { patch: { predictedValue: "Infinity" }, reasonCode: "result-unreadable" },
     { patch: { predictedValue: "not-a-decimal" }, reasonCode: "result-unreadable" },
-    { patch: { availability: "unknown" }, reasonCode: "result-unreadable" },
+    { patch: { availability: "available" }, reasonCode: "result-unreadable" },
     { patch: { reasonCode: "unknown-reason" }, reasonCode: "result-unreadable" },
     {
       patch: {

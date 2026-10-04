@@ -21,7 +21,11 @@ import {
   type RiskInputFactsReadRequestV1,
   type RiskInputFactsReaderV1,
 } from "@riskflow/core/risk-assessment/engine";
-import { EvidenceReferenceSchema, type EvidenceReference } from "@riskflow/contracts/common";
+import {
+  EvidenceReferenceSchema,
+  IdentifierSchema,
+  type EvidenceReference,
+} from "@riskflow/contracts/common";
 import {
   ContentArtifactRefV1Schema,
   ExternalRiskEventRefV1Schema,
@@ -135,10 +139,14 @@ const failure = (
 };
 
 const evidenceKey = (reference: EvidenceReference): string =>
-  `${reference.locator.sourceSegmentId}@${reference.sourceVersion.entityId}/${reference.sourceVersion.versionId}`;
+  JSON.stringify([
+    reference.locator.sourceSegmentId,
+    reference.sourceVersion.entityId,
+    reference.sourceVersion.versionId,
+  ]);
 
 const refKey = (reference: { readonly entityId: string; readonly versionId: string }): string =>
-  `${reference.entityId}/${reference.versionId}`;
+  JSON.stringify([reference.entityId, reference.versionId]);
 
 const boundedContent = async (content: AsyncIterable<Uint8Array>): Promise<Uint8Array> => {
   const chunks: Uint8Array[] = [];
@@ -243,10 +251,12 @@ export const createPostgresExternalRiskInputFactsReader = (
   return {
     async readRiskInputFacts(input) {
       const occurredAt = now().toISOString();
-      const causalRunId =
-        typeof (input as { readonly requestId?: unknown }).requestId === "string"
-          ? (input as { readonly requestId: string }).requestId
-          : STAGE_CODE_V1;
+      const rawRequestId =
+        typeof input === "object" && input !== null
+          ? (input as { readonly requestId?: unknown }).requestId
+          : undefined;
+      const requestId = IdentifierSchema.safeParse(rawRequestId);
+      const causalRunId = requestId.success ? requestId.data : STAGE_CODE_V1;
       const parsed = RiskInputFactsReadRequestV1Schema.safeParse(input);
       if (!parsed.success || parsed.data.riskInput.kind !== "external-risk-event") {
         return { kind: "failed", error: failure("UNSUPPORTED_CONTRACT", causalRunId, occurredAt) };
@@ -311,6 +321,16 @@ export const createPostgresExternalRiskInputFactsReader = (
         evidenceReferences === undefined ||
         spatialScopeRefs === undefined ||
         sourceVersionRefs === undefined
+      ) {
+        return { kind: "failed", error: failure("AUTHORIZATION_DENIED", causalRunId, occurredAt) };
+      }
+      const registeredSourceVersions = new Set(
+        sourceVersionRefs.map((reference) => refKey(reference.reference)),
+      );
+      if (
+        evidenceReferences.some(
+          (reference) => !registeredSourceVersions.has(refKey(reference.sourceVersion)),
+        )
       ) {
         return { kind: "failed", error: failure("AUTHORIZATION_DENIED", causalRunId, occurredAt) };
       }
@@ -393,7 +413,7 @@ export const createPostgresExternalRiskInputFactsReader = (
         artifact.data.projectId !== projectId ||
         artifact.data.externalEventKey !== row.external_event_key ||
         refKey(artifact.data.externalSourceRef) !==
-          `${row.external_source_entity_id}/${row.external_source_version_id}`
+          JSON.stringify([row.external_source_entity_id, row.external_source_version_id])
       ) {
         return { kind: "failed", error: failure("UNSUPPORTED_CONTRACT", causalRunId, occurredAt) };
       }

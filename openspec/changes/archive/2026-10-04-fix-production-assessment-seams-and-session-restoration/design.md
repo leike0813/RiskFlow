@@ -44,6 +44,8 @@ C25 的 `#loadRiskFacts` 同样必须传入范围：从已由 `#verifyCommand` �
 
 `ResponseForecastExecutorRequestV1` 保留现有 snapshot/policy/baseline/monitoringSnapshot，新增 issuedAt、idempotencyKey、authorization、baselineAssessmentRecordRef、measureLibraryReleaseRef、adoptedMeasures（复用 `MeasureItemSchema[]`）。这些值只由 C28 已验证 `ResponseLifecycleFrozenContextV1` 组装，不接受自由客户端字段。正式措施只含已有 measureId/content；不虚构 measures 自有 targetIndicatorIds。C28 正式建议的 targetIndicators 和模型 target 匹配，措施效果逐条按 measureId 及精确措施库版本匹配。
 
+baseline.indicatorValues 每项包含可选 `unit:string`，仅由 C28 从同次冻结依据中的 indicator-system 数值指标定义提取 canonicalUnit；非数值或缺失定义不带单位。执行器求值前核对模型输入集合等于冻结策略输入集合，且每个输入单位精确等于该基线项的正式单位。缺少正式单位或单位不符属于契约失败，沿 response-forecast-result-invalid 收口，不转换单位、补默认单位或保存预测事实。其余基线值与 riskState 保持原样；不修改风险评估记录 Schema。
+
 执行返回 strict 联合 `EffectForecastExecutorOutcomeV1`：`{kind:"available",result:原 ResponseForecastExecutorResultV1}` 或 `{kind:"unavailable",reasonCode:受限枚举}`。内部接缝统一迁移，既有测试 executor() 工厂只包装 available；`verifyForecastExecutorResult` 继续只验证原 result。unavailable 沿原 `#persistForecast` 保存无值的不可用事实，不可称正式数值预测；available 复验失败沿 `response-forecast-result-invalid`，不保存事实。
 
 新增不可用原因固定为 model-artifact-unavailable、input-indicator-unavailable、measure-parameter-unavailable、monitoring-series-mismatch、monitoring-points-insufficient、regression-degenerate、risk-state-unavailable。非法工件身份、method/unit/版本、证据、预算或数值结果属于契约失败；撤权属于 AUTHORIZATION_DENIED；技术故障保留技术错误，不伪装业务不可用。既有 executor-unavailable 等原因保留，所有新增枚举只在所属 Schema 定义一次。
@@ -88,7 +90,7 @@ executor factory 依赖 artifactStore/access/authorizeDownstream/forecastRiskSta
 
 demo SessionState 新增 restoring、restricted、restore-failed；apps/web 复用 checking/restricted/failed，取消入口 anonymous 覆盖。启动 effect 发 GET 自省，仅 401 转 anonymous；400/503/500/网络／解析错误转可重试恢复失败。恢复期间保留原 pathname/search/hash，只显示等待；恢复正常会话后由原工程门禁签发上下文，受限会话进入改密，完成后回原深链。新增 demo changePassword，复用 LoginPage 表单及既有 CSS，正常登录仍可用。apps/web 保留现有 RestrictedPage，failed 显示恢复重试，不新增登出界面。
 
-每次 restore/login/changePassword/logout 创建认证代次并取消旧请求；只接受仍属当前代次的响应。apps/web 复用 createRequestRevisionGuard；demo 用本地 ref，禁止迟到 restore 覆盖登录、迟到登录覆盖已注销或改密。demo 只有 logout 成功才清会话；失败保持会话并显示可重试错误。两客户端 GET 用 same-origin credentials、no-store、无 body/content-type；JSON 只按正式元数据严格解码，demo 补 PASSWORD_CHANGE_REQUIRED 错误类型。
+每次 restore/login/changePassword/logout 创建认证代次并取消旧请求；只接受仍属当前代次的响应。apps/web 复用 createRequestRevisionGuard；demo 用本地 ref，禁止迟到 restore 覆盖登录、迟到登录覆盖已注销或改密。demo logout 成功或服务端返回 401 确认会话失效时清会话；技术失败保持会话并显示可重试错误。在途注销去重，旧代次表单不执行成功回跳。两客户端 GET 用 same-origin credentials、no-store、无 body/content-type；JSON 只按正式元数据严格解码，demo 补 PASSWORD_CHANGE_REQUIRED 错误类型。
 
 ### D-12 所属测试、审计与串行移交
 
@@ -113,6 +115,8 @@ C19 两个消费者均严格核对返回的准备引用、工程和工程修订�
 先以真实 C19 完成 IP-04，再推进 IP-05 的预测风险投影与 IP-07 集成，预测测试直接复用同一已发布依据和实际评估基线。IP-06 纯算法可独立实现，但不能替代这些集成证据。会话容量不足时按既有检查点和交接规则分段接续同一 change，保持已批准范围与验收要求。
 
 外部事件的原默认正文与结构化正文共用同一工件写入／事件登记路径；接缝专用种子优先置于专用组合夹具，共享 fixture 只提供所需的最小受权依赖。reader 安装与会话恢复职责明确：会话恢复复验当前权限，只有测试确实切换了 reader 时才提供 reader 恢复操作。
+
+生产预测模型 IO 集中到 response-lifecycle/forecast-model-reader.ts，工厂只调用有界读取端口；错误分类、verified 内容读取与模型 Schema 核对由该 helper 负责。真实依据断言集中到 production-assessment-basis.test.ts；API quality stub 随 readSession 接口完整适配。两份 demo 业务 spec 仅适配启动恢复后的登录助手，其余业务装配保持 C34 所有。apps/web 浏览器种子按既有正式风险记录契约写入空间、来源版本及证据。空闲 PostgreSQL 连接 error 由 createPostgresPool 监听，在途查询保留原失败映射；浏览器 harness 不注册全局 uncaughtException 吞捕。
 
 IP-04 同时覆盖入口来源缺失／不覆盖目标、来源撤权及授权器返回额外来源的拒绝，验证无新增准备或评估成功事实、业务回执和 outbox；C04/C06 必需读取与安全审计照常。任务只在对应全部行为和证据完成后勾选；reader 局部通过不等于正式评估链或该任务已完成。
 

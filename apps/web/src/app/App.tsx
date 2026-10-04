@@ -241,7 +241,7 @@ export const App = (props: AppPropsV1 = {}): ReactNode => {
   const currentUrl = (): string =>
     typeof window === "undefined"
       ? pathname
-      : `${window.location.pathname}${window.location.search}`;
+      : `${window.location.pathname}${window.location.search}${window.location.hash}`;
   const returnTarget = (): string => nextTargetOf() ?? currentUrl();
   const browserTarget =
     session.kind === "anonymous"

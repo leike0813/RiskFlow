@@ -106,6 +106,22 @@ describe("C28 参数预测模型工件契约", () => {
     }
   });
 
+  it("历史统计按输入位置保留重复系数，并允许目标指标作为显式输入", () => {
+    const model = historicalModel({
+      inputIndicators: [
+        { indicatorId: "input-a", unit: "mm" },
+        { indicatorId: "target-1", unit: "mm" },
+      ],
+      parameters: {
+        intercept: "10",
+        inputCoefficients: [{ coefficient: "2" }, { coefficient: "2" }],
+        horizonCoefficient: "0.25",
+        fitSampleCount: 240,
+      },
+    });
+    expect(EffectForecastModelArtifactV1Schema.safeParse(model).success).toBe(true);
+  });
+
   it("缺参数、错方法形状与越界预算都不构成合法模型", () => {
     const invalid: readonly unknown[] = [
       // 系数数量与声明输入不一一对应。

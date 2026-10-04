@@ -9,11 +9,12 @@ import {
   computeEffectForecast,
   EFFECT_FORECAST_MODEL_MAX_ARTIFACT_BYTES_V1,
   type EffectForecastExecutorV1,
+  type EffectForecastExecutorOutcomeV1,
   type EffectForecastModelArtifactV1,
   type ForecastAlignedPointV1,
   type ResponseForecastExecutorRequestV1,
-  type ResponseForecastExecutorResultV1,
   type ResponseForecastUnavailableReasonV1,
+  failResponseLifecycle,
 } from "@riskflow/core/response-lifecycle";
 import type {
   ForecastRiskStatePortV1,
@@ -27,11 +28,11 @@ import type { EffectForecastModelReaderV1 } from "./forecast-model-reader.js";
  *
  * 每个已发布 C18 预测策略的精确 `requiredRef` 装配唯一实现：执行器只走「读模型工件 →
  * 代入参数 → 求值 → 取 C25 预测风险状态」这条固定通路，不夹带默认参数、默认措施效果或方法
- * 回退。模型工件读不到、样本不足、工具失败与预算耗尽都收敛为受控不可用，由 C28 原子收口。
+ * 回退。模型引用缺失与合法输入不足返回受控不可用；权限、契约、预算和技术错误走失败通道。
  */
 
 export interface EffectForecastExecutorBudgetV1 {
-  /** 模型工件正文的硬上限；超出即不可用，不做截断解析。 */
+  /** 模型工件正文的硬上限；超出即失败，不做截断解析。 */
   readonly maxModelArtifactBytes: number;
 }
 
@@ -41,7 +42,7 @@ export const DEFAULT_EFFECT_FORECAST_EXECUTOR_BUDGET_V1: EffectForecastExecutorB
 
 /** 执行器只在既有精确分支上取得读取能力：模型工件走 C04 成员读取，风险状态走 C25 输入快照读取。 */
 export const EFFECT_FORECAST_AUTHORIZATION_BRANCHES_V1 = [
-  "knowledge-modeling.measure-candidates",
+  "knowledge-modeling.assessment-basis",
   "risk-assessment.read-input-snapshot",
 ] as const;
 
@@ -69,15 +70,26 @@ export interface ProductionEffectForecastExecutorsOptionsV1 {
   readonly budget?: EffectForecastExecutorBudgetV1;
 }
 
-/** 计算不可用/拒绝原因到 C28 公开原因码的唯一映射。 */
-const computationReason = (reason: string): ResponseForecastUnavailableReasonV1 =>
-  reason === "input-indicator-missing" ? "input-indicator-missing" : "policy-unavailable";
+/** 只有合法输入不足属于不可用；非法模型与计算结果必须走失败通道。 */
+const computationReason = (
+  reason:
+    "input-indicator-missing" | "monitoring-window-insufficient" | "monitoring-slope-degenerate",
+): ResponseForecastUnavailableReasonV1 => {
+  switch (reason) {
+    case "input-indicator-missing":
+      return "input-indicator-unavailable";
+    case "monitoring-window-insufficient":
+      return "monitoring-points-insufficient";
+    case "monitoring-slope-degenerate":
+      return "regression-degenerate";
+  }
+};
 
 /** C25 预测风险状态的受控不可用到公开原因码的唯一映射。 */
 const projectionReason = (reasonCode: string): ResponseForecastUnavailableReasonV1 =>
   reasonCode === "monitoring-series-mismatch"
-    ? "monitoring-snapshot-unavailable"
-    : "target-indicator-unsupported";
+    ? "monitoring-series-mismatch"
+    : "risk-state-unavailable";
 
 /**
  * 规范十进制预测值必须能被现有评分标量无损承载：C25 的预测入参是数值，转换有损时关闭失败，
@@ -121,15 +133,23 @@ const alignedPointsOf = (
   }));
 
 /**
- * 模型工件必须逐字复述策略与冻结建议的身份：方法、目标指标、单位、时域与措施库版本都要对上。
- * 措施效果因此只能来自与建议同版本的措施库，不接受模型自带的效果表。
+ * 模型工件必须匹配冻结策略与事实：方法、输入及目标指标、正式单位、时域和措施库版本。
+ * 模型效果参数仅能绑定建议所用的正式措施库版本。
  */
 const consistentWithPolicy = (
   model: EffectForecastModelArtifactV1,
   policy: ForecastPolicyV1,
   measureLibraryReleaseRef: { readonly entityId: string; readonly versionId: string },
+  baseline: ResponseForecastExecutorRequestV1["baseline"],
 ): boolean =>
   model.method === policy.method &&
+  model.inputIndicators.length === policy.inputIndicatorIds.length &&
+  model.inputIndicators.every(
+    (indicator) =>
+      policy.inputIndicatorIds.includes(indicator.indicatorId) &&
+      baseline.indicatorValues.find((entry) => entry.indicatorItem === indicator.indicatorId)
+        ?.unit === indicator.unit,
+  ) &&
   model.targetIndicatorId === policy.targetIndicatorId &&
   model.unit === policy.unit &&
   policy.horizonSteps <= model.maxHorizonSteps &&
@@ -142,11 +162,11 @@ const riskStateRequest = (
   authorization: AuthorizationContextV1,
   predictedValue: number,
 ): ForecastRiskStateRequestV1 => ({
-  requestId: `${request.commandId}:risk-state`,
-  idempotencyKey: `${request.commandId}:risk-state`,
-  requestedAt: request.caller.requestedAt,
-  projectId: request.caller.projectId,
-  actorId: request.caller.actorId,
+  requestId: `${request.commandId}:forecast-risk-state`,
+  idempotencyKey: `${request.idempotencyKey}:risk-state`,
+  requestedAt: request.issuedAt,
+  projectId: request.projectId,
+  actorId: request.authorization.actorId,
   authorization,
   baselineAssessmentRecordRef: request.baselineAssessmentRecordRef,
   frozenAssessmentBasisRef: request.snapshot.frozenAssessmentBasisRef,
@@ -165,7 +185,7 @@ const createExecutor = (
 ): EffectForecastExecutorV1 => ({
   method: policy.method,
   requiredRef: policy.requiredRef,
-  async forecast(request): Promise<ResponseForecastExecutorResultV1> {
+  async forecast(request): Promise<EffectForecastExecutorOutcomeV1> {
     const echo = {
       method: policy.method,
       requiredRef: policy.requiredRef,
@@ -175,28 +195,31 @@ const createExecutor = (
       summary: `${policy.method}-${policy.targetIndicatorId}-${policy.horizonSteps}`,
     };
     const identity = {
-      projectId: request.caller.projectId,
-      actorId: request.caller.actorId,
-      requestedAt: request.caller.requestedAt,
-      requestedSpatialScopeRefs: request.caller.spatialScopeRefs,
+      projectId: request.projectId,
+      actorId: request.authorization.actorId,
+      requestedAt: request.issuedAt,
+      requestedSpatialScopeRefs: request.authorization.spatialScopeRefs,
     };
     // 1) 读模型工件：按策略精确 requiredRef、在调用者身份下、受权且有界。
     const artifact = await models.readModelArtifact({
       invocationId: `${request.commandId}:model`,
       authorization: await authorizeDownstream({
         ...identity,
-        branch: "knowledge-modeling.measure-candidates",
+        branch: "knowledge-modeling.assessment-basis",
         invocationId: `${request.commandId}:model`,
       }),
       modelRef: policy.requiredRef,
       maxBytes: budget.maxModelArtifactBytes,
     });
     if (artifact.kind !== "succeeded") {
-      return { ...echo, availability: "unavailable", reasonCode: "policy-unavailable" };
+      return { kind: "unavailable", reasonCode: "model-artifact-unavailable" };
     }
     const model = artifact.model;
-    if (!consistentWithPolicy(model, policy, request.measureLibraryReleaseRef)) {
-      return { ...echo, availability: "unavailable", reasonCode: "policy-unavailable" };
+    if (!consistentWithPolicy(model, policy, request.measureLibraryReleaseRef, request.baseline)) {
+      failResponseLifecycle("response-forecast-result-invalid", {
+        kind: "content-artifact",
+        reference: policy.requiredRef,
+      });
     }
     const evidenceReferences = [...model.evidenceReferences];
     // 2) 代入参数求值：三种方法互不回退，缺输入与非法模型各自按受控结果收敛。
@@ -208,34 +231,34 @@ const createExecutor = (
             horizonSteps: policy.horizonSteps,
             cutoff: request.monitoringSnapshot.cutoff,
             alignedPoints: alignedPointsOf(request),
-            measures: [...request.measures],
+            measures: [...request.adoptedMeasures],
           })
         : computeEffectForecast({
             method: policy.method,
             model,
             horizonSteps: policy.horizonSteps,
             baselineValues: baselineOf(request),
-            measures: [...request.measures],
+            measures: [...request.adoptedMeasures],
           });
     if (computed.kind === "unavailable") {
       return {
-        ...echo,
-        availability: "unavailable",
+        kind: "unavailable",
         reasonCode: computationReason(computed.reason),
-        evidenceReferences,
       };
     }
     if (computed.kind === "rejected") {
-      return {
-        ...echo,
-        availability: "unavailable",
-        reasonCode: computationReason(computed.reason),
-      };
+      failResponseLifecycle("response-forecast-result-invalid", {
+        kind: "effect-forecast",
+        reference: { entityId: computed.reason, versionId: "1" },
+      });
     }
     // 3) 取 C25 预测风险状态：执行器不自行评分或映射矩阵。
     const predictedValue = asScoringScalar(computed.value);
     if (predictedValue === undefined) {
-      return { ...echo, availability: "unavailable", reasonCode: "target-indicator-unsupported" };
+      failResponseLifecycle("response-forecast-result-invalid", {
+        kind: "effect-forecast",
+        reference: { entityId: request.commandId, versionId: "1" },
+      });
     }
     const projection = await assessment.projectForecastRiskState(
       riskStateRequest(
@@ -243,28 +266,28 @@ const createExecutor = (
         await authorizeDownstream({
           ...identity,
           branch: "risk-assessment.read-input-snapshot",
-          invocationId: `${request.commandId}:risk-state`,
+          invocationId: `${request.commandId}:forecast-risk-state`,
         }),
         predictedValue,
       ),
     );
     if (projection.kind === "unavailable") {
       return {
-        ...echo,
-        availability: "unavailable",
+        kind: "unavailable",
         reasonCode: projectionReason(projection.reasonCode),
-        evidenceReferences,
       };
     }
     if (projection.kind === "failed") {
-      return { ...echo, availability: "unavailable", reasonCode: "executor-unavailable" };
+      throw projection.error;
     }
     return {
-      ...echo,
-      availability: "available",
-      predictedValue: computed.value,
-      predictedRiskState: projection.riskState,
-      evidenceReferences,
+      kind: "available",
+      result: {
+        ...echo,
+        predictedValue: computed.value,
+        predictedRiskState: projection.riskState,
+        evidenceReferences,
+      },
     };
   },
 });

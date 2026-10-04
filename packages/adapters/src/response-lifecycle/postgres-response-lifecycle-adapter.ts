@@ -36,6 +36,7 @@ import {
   SpatialScopeRefV1Schema,
   WarningResponseRecordCommandV1Schema,
   WarningResponseRecordResultV1Schema,
+  ModuleErrorV1Schema,
   type AuthorizationContextV1,
   type ModuleBranchV1,
   type ModuleCapabilityV1,
@@ -68,6 +69,7 @@ import {
 
 import {
   ForecastResponseCommandV1Schema,
+  EffectForecastExecutorOutcomeV1Schema,
   ResponseAdoptionDecisionCommandV1Schema,
   ResponseAdoptionDecisionV1Schema,
   ResponseDeviationFactV1Schema,
@@ -1704,22 +1706,55 @@ export class PostgresResponseLifecycleAdapter
       }
       const request: ResponseForecastExecutorRequestV1 = {
         commandId: valid.commandId,
-        // 下发受权身份与冻结空间，不下发命令能力：执行器在既有分支上另取读取能力。
-        caller: {
-          projectId: valid.projectId,
-          actorId: verified.actorId,
-          requestedAt: valid.issuedAt,
-          spatialScopeRefs: [context.spatialScopeRef],
-        },
+        projectId: valid.projectId,
+        issuedAt: valid.issuedAt,
+        idempotencyKey: valid.idempotencyKey,
+        authorization: verified,
         snapshot,
         policy,
-        baseline: context.baseline,
+        baseline: {
+          ...context.baseline,
+          indicatorValues: context.baseline.indicatorValues.map((entry) => {
+            const unit = indicatorUnitOf(
+              indicatorMember.document.content.indicators,
+              entry.indicatorItem,
+            );
+            return { ...entry, ...(unit === undefined ? {} : { unit }) };
+          }),
+        },
         monitoringSnapshot: preActionSnapshot,
         // 正式措施按已采纳建议的 measureItems 下发，模型只能按这些 measureId 给效果。
-        measures: context.record.measureItems.map((item) => ({ measureId: item.measureId })),
+        adoptedMeasures: context.record.measureItems,
         measureLibraryReleaseRef: context.measureLibraryReleaseRef,
         baselineAssessmentRecordRef: context.baselineAssessmentRecordRef,
       };
+      const executorOutcome = EffectForecastExecutorOutcomeV1Schema.safeParse(
+        await executor.forecast(request),
+      );
+      if (!executorOutcome.success) {
+        failResponseLifecycle("response-forecast-result-invalid", {
+          kind: "effect-forecast",
+          reference: { entityId: valid.commandId, versionId: "1" },
+        });
+      }
+      if (executorOutcome.data.kind === "unavailable") {
+        return await this.#persistForecast({
+          valid,
+          verified,
+          binding,
+          context,
+          reasonCode: executorOutcome.data.reasonCode,
+          resolution: [
+            "policy",
+            policy.method,
+            refKey(policy.requiredRef),
+            policy.targetIndicatorId,
+            policy.unit,
+            String(policy.horizonSteps),
+            executorOutcome.data.reasonCode,
+          ].join(":"),
+        });
+      }
       const execution = verifyForecastExecutorResult({
         method: policy.method,
         requiredRef: policy.requiredRef,
@@ -1727,7 +1762,7 @@ export class PostgresResponseLifecycleAdapter
         unit: policy.unit,
         horizonSteps: policy.horizonSteps,
         riskLevelIds: matrixMember.document.content.riskLevels.map((level) => level.levelId),
-        result: await executor.forecast(request),
+        result: executorOutcome.data.result,
       });
       if (execution.kind === "invalid") {
         failResponseLifecycle("response-forecast-result-invalid", {
@@ -1736,25 +1771,7 @@ export class PostgresResponseLifecycleAdapter
         });
       }
       const outcome = execution.result;
-      // 执行器只读不写：不可用与可用都在同一事务里原子收口，不留下半条预测。
-      if (outcome.availability === "unavailable") {
-        return await this.#persistForecast({
-          valid,
-          verified,
-          binding,
-          context,
-          reasonCode: outcome.reasonCode,
-          resolution: [
-            "policy",
-            policy.method,
-            refKey(policy.requiredRef),
-            policy.targetIndicatorId,
-            policy.unit,
-            String(policy.horizonSteps),
-            outcome.reasonCode,
-          ].join(":"),
-        });
-      }
+      // 执行器只读不写：只有 validated available outcome 进入 C28 原事务。
       return await this.#persistForecast({
         valid,
         verified,
@@ -1777,7 +1794,11 @@ export class PostgresResponseLifecycleAdapter
         },
       });
     } catch (error: unknown) {
-      return { kind: "failed", error: this.#toModuleError(error, valid.commandId) };
+      const moduleError = ModuleErrorV1Schema.safeParse(error);
+      return {
+        kind: "failed",
+        error: moduleError.success ? moduleError.data : this.#toModuleError(error, valid.commandId),
+      };
     }
   }
 

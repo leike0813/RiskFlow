@@ -14,7 +14,11 @@ import {
   type RiskInputFactsReadRequestV1,
   type RiskInputFactsReaderV1,
 } from "@riskflow/core/risk-assessment/engine";
-import { EvidenceReferenceSchema, type EvidenceReference } from "@riskflow/contracts/common";
+import {
+  EvidenceReferenceSchema,
+  IdentifierSchema,
+  type EvidenceReference,
+} from "@riskflow/contracts/common";
 import {
   MODULE_BRANCH_CAPABILITY_V1,
   ModuleErrorV1Schema,
@@ -109,7 +113,11 @@ const failure = (
 };
 
 const evidenceKey = (reference: EvidenceReference): string =>
-  `${reference.locator.sourceSegmentId}@${reference.sourceVersion.entityId}/${reference.sourceVersion.versionId}`;
+  JSON.stringify([
+    reference.locator.sourceSegmentId,
+    reference.sourceVersion.entityId,
+    reference.sourceVersion.versionId,
+  ]);
 
 export interface PostgresStandardizedRiskInputFactsReaderOptionsV1 {
   /** 传 `runtime.db` 即可；本 reader 只读 `business.standardized_risk_records`。 */
@@ -188,10 +196,12 @@ export const createPostgresStandardizedRiskInputFactsReader = (
   return {
     async readRiskInputFacts(input) {
       const occurredAt = now().toISOString();
-      const causalRunId =
-        typeof (input as { readonly requestId?: unknown }).requestId === "string"
-          ? (input as { readonly requestId: string }).requestId
-          : STAGE_CODE_V1;
+      const rawRequestId =
+        typeof input === "object" && input !== null
+          ? (input as { readonly requestId?: unknown }).requestId
+          : undefined;
+      const requestId = IdentifierSchema.safeParse(rawRequestId);
+      const causalRunId = requestId.success ? requestId.data : STAGE_CODE_V1;
       const parsed = RiskInputFactsReadRequestV1Schema.safeParse(input);
       if (!parsed.success) {
         return {
@@ -271,6 +281,21 @@ export const createPostgresStandardizedRiskInputFactsReader = (
         spatialScopeRefs === undefined ||
         sourceVersionRefs === undefined ||
         evidenceReferences === undefined
+      ) {
+        return { kind: "failed", error: denied(causalRunId, occurredAt) };
+      }
+      const registeredSourceVersions = new Set(
+        sourceVersionRefs.map((reference) =>
+          JSON.stringify([reference.reference.entityId, reference.reference.versionId]),
+        ),
+      );
+      if (
+        evidenceReferences.some(
+          (reference) =>
+            !registeredSourceVersions.has(
+              JSON.stringify([reference.sourceVersion.entityId, reference.sourceVersion.versionId]),
+            ),
+        )
       ) {
         return { kind: "failed", error: denied(causalRunId, occurredAt) };
       }

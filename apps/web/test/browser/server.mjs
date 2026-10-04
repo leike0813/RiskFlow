@@ -52,16 +52,6 @@ const HMAC_KEY = Buffer.alloc(32, 7);
 const KEY_VERSION = "key-v1";
 const ADMIN_PASSWORD = "Riskflow-Admin-2030!";
 
-// 容器停止时 PostgreSQL 会主动断开仍打开的连接，pg 池以未监听的 'error' 事件抛出
-// 57P01；这只是 teardown 噪声，不应压垮测试 worker。非 teardown 错误照常失败。
-let tearingDown = false;
-process.on("uncaughtException", (error) => {
-  const code = /** @type {{ code?: string }} */ (error)?.code;
-  const message = error instanceof Error ? error.message : String(error);
-  if (tearingDown && (code === "57P01" || message.includes("terminating connection"))) return;
-  console.error(error);
-  process.exit(1);
-});
 const OPERATOR_PASSWORD = "Riskflow-Operator-2030!";
 const OPERATOR_PASSWORD_CHANGED = "Riskflow-Operator-2030-Changed!";
 const OPERATOR_LOGIN = "quality-operator";
@@ -866,7 +856,6 @@ export const startQualityBrowserServer = async () => {
         return receipt !== undefined;
       },
       close: async () => {
-        tearingDown = true;
         for (const close of closeables.reverse()) {
           await Promise.resolve(close()).catch(() => undefined);
         }
@@ -875,7 +864,6 @@ export const startQualityBrowserServer = async () => {
       },
     };
   } catch (error) {
-    tearingDown = true;
     for (const close of closeables.reverse()) {
       await Promise.resolve(close()).catch(() => undefined);
     }

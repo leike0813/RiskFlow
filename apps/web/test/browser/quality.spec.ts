@@ -48,7 +48,7 @@ const selectionFor = (projectIds: readonly string[]): string =>
 const pathWithSelection = (pathname: string, projectId: string): string =>
   `${origin()}${pathname}?${selectionFor([projectId, server.forbiddenProjectId])}`;
 
-const deepLinkUrl = (): string => pathWithSelection("/assessment", server.projectId);
+const deepLinkUrl = (): string => `${pathWithSelection("/assessment", server.projectId)}#evidence`;
 
 /**
  * 启动先自省：有效会话直接进入原页，401 才落到带 `next` 的登录页。
@@ -201,7 +201,7 @@ test("启动恢复正式会话：硬刷新、精确深链、匿名回跳与恢�
     await page.goto(deepLinkUrl());
     await expect(page).toHaveURL(/\/login\?next=/);
     expect(new URL(page.url()).searchParams.get("next")).toBe(
-      new URL(deepLinkUrl()).pathname + new URL(deepLinkUrl()).search,
+      new URL(deepLinkUrl()).pathname + new URL(deepLinkUrl()).search + new URL(deepLinkUrl()).hash,
     );
     await ensureSession(page);
     await expect(page).toHaveURL(deepLinkUrl());
@@ -253,6 +253,8 @@ test("受限会话恢复后先改密，改密前无业务请求且完成后回�
 
   await test.step("受限会话进入改密页并保留回跳目标", async () => {
     await expect(page).toHaveURL(/\/change-password\?next=/);
+    await page.reload();
+    await expect(page).toHaveURL(/\/change-password\?next=/);
     await expect(page.locator('input[name="newPassword"]')).toBeVisible();
     await expect(page.locator("[data-navigation]")).toHaveCount(0);
     expect(businessPosts).toEqual([]);
@@ -265,6 +267,66 @@ test("受限会话恢复后先改密，改密前无业务请求且完成后回�
     await expect(page.locator("[data-navigation]").first()).toBeVisible();
     await expect(page.locator('input[name="newPassword"]')).toHaveCount(0);
   });
+});
+
+test("畸形的成功自省响应保持失败态，重试后读取真实会话", async ({ page }) => {
+  await page.context().clearCookies();
+  await page.goto(deepLinkUrl());
+  await ensureSession(page);
+
+  await page.route("**/api/v1/session", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: { "cache-control": "no-store" },
+      body: JSON.stringify({
+        schemaVersion: "1",
+        sessionRef: { entityId: "session", versionId: "1", unexpected: true },
+        accountRef: { entityId: "account", versionId: "1" },
+        passwordChangeRequired: false,
+        restricted: false,
+        expiresAt: "1",
+      }),
+    });
+  });
+
+  await page.reload();
+  await expect(page.locator('[data-session-state="failed"]')).toBeVisible();
+  await expect(page).toHaveURL(deepLinkUrl());
+  await page.unroute("**/api/v1/session");
+  await page.getByRole("button", { name: "重试" }).click();
+  await expect(page.locator('[data-quality-page="1"]')).toHaveAttribute("data-page-state", "ready");
+});
+
+test("自省响应包含额外 token 字段时拒绝进入已认证态", async ({ page }) => {
+  await page.context().clearCookies();
+  await page.goto(deepLinkUrl());
+  await ensureSession(page);
+  await page.route("**/api/v1/session", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: { "cache-control": "no-store" },
+      body: JSON.stringify({
+        schemaVersion: "1",
+        sessionRef: { entityId: "session-malformed", versionId: "1" },
+        accountRef: { entityId: "account-malformed", versionId: "1" },
+        passwordChangeRequired: false,
+        restricted: false,
+        expiresAt: "2030-06-02T00:00:00.000Z",
+        sessionToken: "unexpected-token",
+      }),
+    });
+  });
+
+  await page.reload();
+  await expect(page.locator('[data-session-state="failed"]')).toBeVisible();
+  await expect(page.locator('[data-session-state="authenticated"]')).toHaveCount(0);
 });
 
 test("恢复故障按可重试失败呈现而不是匿名，重试后恢复真实会话", async ({ page }) => {

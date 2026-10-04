@@ -1,50 +1,50 @@
-import { useState, type FormEvent, type ReactNode } from 'react'
-import { Link, useLocation, useSearchParams } from 'react-router-dom'
-import { navItems, type NavKey } from '../content/context'
-import { searchWithSelector, useEngineering, useSession } from '../api/context'
-import { Icon, type IconName } from './icons'
-import { EvidenceProvider } from './EvidenceDrawer'
-import { AgentDock } from '../agent/AgentDock'
-import { toggleAgentDock, useAgentDockOpen } from '../agent/agentDockStore'
-import './AppShell.css'
+import { useState, type FormEvent, type ReactNode } from "react";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
+import { navItems, type NavKey } from "../content/context";
+import { searchWithSelector, useEngineering, useSession } from "../api/context";
+import { Icon, type IconName } from "./icons";
+import { EvidenceProvider } from "./EvidenceDrawer";
+import { AgentDock } from "../agent/AgentDock";
+import { toggleAgentDock, useAgentDockOpen } from "../agent/agentDockStore";
+import "./AppShell.css";
 
 const navIcons: Record<NavKey, IconName> = {
-  overview: 'overview',
-  project: 'project',
-  identification: 'identification',
-  assessment: 'assessment',
-  warnings: 'warnings',
-  knowledge: 'knowledge',
-  review: 'review',
-}
+  overview: "overview",
+  project: "project",
+  identification: "identification",
+  assessment: "assessment",
+  warnings: "warnings",
+  knowledge: "knowledge",
+  review: "review",
+};
 
 const CONTEXT_STATUS_LABEL: Record<string, string> = {
-  preparing: '上下文准备中',
-  active: '上下文已生效',
-}
+  preparing: "上下文准备中",
+  active: "上下文已生效",
+};
 
 /** 顶栏工程切换：手输工程标识写回 URL 参数，页面停留原地按新工程重新加载。 */
 function EngineeringSwitcher() {
-  const { selector } = useEngineering()
-  const [searchParams, setSearchParams] = useSearchParams()
-  const [draft, setDraft] = useState('')
-  const [editing, setEditing] = useState(false)
+  const { selector } = useEngineering();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [draft, setDraft] = useState("");
+  const [editing, setEditing] = useState(false);
 
   const onSubmit = (event: FormEvent) => {
-    event.preventDefault()
-    const project = draft.trim()
-    if (project.length === 0) return
-    setSearchParams(searchWithSelector(`?${searchParams.toString()}`, { project }))
-    setEditing(false)
-    setDraft('')
-  }
+    event.preventDefault();
+    const project = draft.trim();
+    if (project.length === 0) return;
+    setSearchParams(searchWithSelector(`?${searchParams.toString()}`, { project }));
+    setEditing(false);
+    setDraft("");
+  };
 
   if (!editing) {
     return (
       <button type="button" className="shell-switch-btn" onClick={() => setEditing(true)}>
-        {selector.projectId === null ? '选择工程' : '切换工程'}
+        {selector.projectId === null ? "选择工程" : "切换工程"}
       </button>
-    )
+    );
   }
   return (
     <form className="shell-switch-form" onSubmit={onSubmit}>
@@ -58,7 +58,7 @@ function EngineeringSwitcher() {
         确定
       </button>
     </form>
-  )
+  );
 }
 
 /**
@@ -73,15 +73,15 @@ export default function AppShell({
   agentContext,
   children,
 }: {
-  activeNav: NavKey | null
-  agentContext?: string[]
-  children: ReactNode
+  activeNav: NavKey | null;
+  agentContext?: string[];
+  children: ReactNode;
 }) {
-  const dockOpen = useAgentDockOpen()
-  const location = useLocation()
-  const agentActive = dockOpen || location.pathname === '/agent'
-  const { state: sessionState, logout, logoutFailed } = useSession()
-  const { selector, state: engineering } = useEngineering()
+  const dockOpen = useAgentDockOpen();
+  const location = useLocation();
+  const agentActive = dockOpen || location.pathname === "/agent";
+  const { state: sessionState, logout, logoutPending, logoutFailed } = useSession();
+  const { selector, state: engineering } = useEngineering();
 
   return (
     <EvidenceProvider>
@@ -96,7 +96,7 @@ export default function AppShell({
               <Link
                 key={item.key}
                 to={{ pathname: item.to, search: location.search }}
-                className={`shell-menu-item${activeNav === item.key ? ' shell-menu-item--active' : ''}`}
+                className={`shell-menu-item${activeNav === item.key ? " shell-menu-item--active" : ""}`}
               >
                 <Icon name={navIcons[item.key]} size={18} />
                 {item.label}
@@ -112,7 +112,7 @@ export default function AppShell({
             ) : (
               <>
                 <span className="shell-context-item">当前工程：{selector.projectId}</span>
-                {engineering.kind === 'ready' && (
+                {engineering.kind === "ready" && (
                   <>
                     <span className="shell-context-item">
                       {CONTEXT_STATUS_LABEL[engineering.value.contextStatus] ??
@@ -125,13 +125,13 @@ export default function AppShell({
                     )}
                   </>
                 )}
-                {engineering.kind === 'loading' && (
+                {engineering.kind === "loading" && (
                   <span className="shell-context-item">上下文加载中…</span>
                 )}
-                {engineering.kind === 'error' && (
+                {engineering.kind === "error" && (
                   <span className="shell-context-item">工程上下文加载失败</span>
                 )}
-                {engineering.kind === 'forbidden' && (
+                {engineering.kind === "forbidden" && (
                   <span className="shell-context-item">无权访问该工程</span>
                 )}
               </>
@@ -139,7 +139,7 @@ export default function AppShell({
           </div>
           <div className="shell-actions">
             <EngineeringSwitcher />
-            {sessionState.kind === 'authenticated' && (
+            {sessionState.kind === "authenticated" && (
               <>
                 <span className="shell-context-item mono">
                   {sessionState.session.accountRef.entityId}
@@ -147,6 +147,7 @@ export default function AppShell({
                 <button
                   type="button"
                   className="shell-switch-btn"
+                  disabled={logoutPending}
                   onClick={() => void logout()}
                 >
                   登出
@@ -156,6 +157,7 @@ export default function AppShell({
                   <button
                     type="button"
                     className="shell-switch-btn shell-switch-btn--warn"
+                    disabled={logoutPending}
                     onClick={() => void logout()}
                   >
                     重试登出
@@ -165,7 +167,7 @@ export default function AppShell({
             )}
             <button
               type="button"
-              className={`shell-agent-btn${agentActive ? ' shell-agent-btn--active' : ''}`}
+              className={`shell-agent-btn${agentActive ? " shell-agent-btn--active" : ""}`}
               onClick={toggleAgentDock}
             >
               <Icon name="agent" size={16} />
@@ -179,5 +181,5 @@ export default function AppShell({
         <AgentDock context={agentContext} />
       </div>
     </EvidenceProvider>
-  )
+  );
 }

@@ -12,6 +12,8 @@ import type {
   SpatialScopeRefV1,
   StandardizedRiskRecordRefV1,
 } from "@riskflow/contracts/ports";
+import { createPostgresExternalRiskInputFactsReader } from "../../src/engineering-data/context-source/postgres-external-risk-input-facts-reader.js";
+import { createPostgresStandardizedRiskInputFactsReader } from "../../src/identification/read/postgres-standardized-risk-input-facts-reader.js";
 
 import {
   startProductionAssessmentSeamsFixture,
@@ -417,6 +419,27 @@ describe("统一风险事实生产读取接缝", () => {
     }
   }, 240_000);
 
+  it("拒绝超出登记来源范围的标准记录证据", async () => {
+    const unregisteredSourceEvidence = JSON.stringify([
+      {
+        locator: { sourceSegmentId: secondSegmentId },
+        sourceVersion: { entityId: "c25-unregistered-source", versionId: "1" },
+      },
+    ]);
+    const riskInput = await insertIncompleteRecord("evidence-source-outside-scope", {
+      evidence_references: unregisteredSourceEvidence,
+    });
+    const result = await fixture.riskInputFacts.readRiskInputFacts(
+      await readRequest({
+        requestId: "seam-evidence-source-outside-scope",
+        riskInput,
+        spatialScopeRefs: [fixture.businessSpatialScopeRef],
+        sourceVersionRefs: [fixture.sourceVersionRef],
+      }),
+    );
+    expect(result).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+  }, 180_000);
+
   it("只读投影可重复重放：事实相同且不新增记录、收据或事件", async () => {
     const read = async (requestId: string) =>
       fixture.riskInputFacts.readRiskInputFacts(
@@ -779,5 +802,82 @@ describe("组合工厂不依赖 C11 registry 实例", () => {
       kind: "failed",
       error: { code: "UNSUPPORTED_CONTRACT" },
     });
+  });
+
+  it("非法读取身份和时间在组合层及 owning readers 均返回类型化契约失败", async () => {
+    const authorization = {
+      schemaVersion: "1" as const,
+      authorizationContextRef: {
+        kind: "authorization-context" as const,
+        reference: { entityId: "auth-1", versionId: "1" },
+      },
+      actorId: "actor-1",
+      projectId: "project-1",
+      grantedCapabilities: ["engineering-data.read" as const],
+      spatialScopeRefs: [],
+      sourceAccessGrantRefs: [],
+      authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+      decidedAt: T0,
+      invocation: { kind: "human" as const },
+    };
+    const branches: RiskInputFactsReaderV1 = {
+      readRiskInputFacts: async () => {
+        throw new Error("invalid input must not be dispatched");
+      },
+    };
+    const readers = [
+      createRiskInputFactsReader({ standardizedRiskRecord: branches, externalRiskEvent: branches }),
+      createPostgresStandardizedRiskInputFactsReader({
+        db: {},
+        authorization: {
+          verify: async () => {
+            throw new Error("must not verify");
+          },
+        } as never,
+      }),
+      createPostgresExternalRiskInputFactsReader({
+        db: {},
+        authorization: {
+          verify: async () => {
+            throw new Error("must not verify");
+          },
+        } as never,
+        artifactStore: {} as never,
+      }),
+    ];
+    const invalidRequests = [
+      null,
+      undefined,
+      {
+        requestId: "",
+        idempotencyKey: "invalid-request-id",
+        requestedAt: T0,
+        authorization,
+        riskInput: {
+          kind: "standardized-risk-record",
+          reference: { entityId: "record-1", versionId: "1" },
+        },
+      },
+      {
+        requestId: "invalid-request-time",
+        idempotencyKey: "invalid-request-time",
+        requestedAt: "bad",
+        authorization,
+        riskInput: {
+          kind: "standardized-risk-record",
+          reference: { entityId: "record-1", versionId: "1" },
+        },
+      },
+    ];
+    for (const reader of readers) {
+      for (const request of invalidRequests) {
+        await expect(
+          Promise.resolve().then(() => reader.readRiskInputFacts(request as never)),
+        ).resolves.toMatchObject({
+          kind: "failed",
+          error: { code: "UNSUPPORTED_CONTRACT" },
+        });
+      }
+    }
   });
 });

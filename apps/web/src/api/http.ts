@@ -2,6 +2,7 @@ import {
   AuthorizationContextRefV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
 } from "@riskflow/contracts/ports";
+import { IsoDateTimeSchema, VersionReferenceSchema } from "@riskflow/contracts/common";
 import type {
   AuthorizationContextRefV1,
   ModuleBranchV1,
@@ -291,16 +292,30 @@ const sessionOperation = <TRequest, TResult>(input: {
   });
 
 const exactSessionReference = (value: unknown): SessionReferenceV1 => {
-  if (!isRecord(value) || Object.keys(value).length !== 2)
-    throw new Error("invalid session reference");
-  if (!isNonEmptyString(value.entityId) || !isNonEmptyString(value.versionId))
-    throw new Error("invalid session reference");
-  return Object.freeze({ entityId: value.entityId.trim(), versionId: value.versionId.trim() });
+  const parsed = VersionReferenceSchema.safeParse(value);
+  if (!parsed.success) throw new Error("invalid session reference");
+  return Object.freeze(parsed.data);
 };
 
+const SESSION_METADATA_KEYS_V1 = new Set([
+  "schemaVersion",
+  "sessionRef",
+  "accountRef",
+  "passwordChangeRequired",
+  "restricted",
+  "expiresAt",
+  "systemAdministrationContextRef",
+]);
+
 export const decodeSessionMetadata = (value: unknown): SessionMetadataViewV1 => {
-  if (!isRecord(value) || value.schemaVersion !== HTTP_SCHEMA_VERSION_V1)
+  if (
+    !isRecord(value) ||
+    Object.keys(value).some((key) => !SESSION_METADATA_KEYS_V1.has(key)) ||
+    value.schemaVersion !== HTTP_SCHEMA_VERSION_V1
+  )
     throw new Error("invalid session response");
+  const expiresAt = IsoDateTimeSchema.safeParse(value.expiresAt);
+  if (!expiresAt.success) throw new Error("invalid session expiry");
   const systemAdministrationContextRef =
     value.systemAdministrationContextRef === undefined
       ? undefined
@@ -317,11 +332,7 @@ export const decodeSessionMetadata = (value: unknown): SessionMetadataViewV1 => 
     accountRef: exactSessionReference(value.accountRef),
     passwordChangeRequired: value.passwordChangeRequired === true,
     restricted: value.restricted === true,
-    expiresAt: isDateString(value.expiresAt)
-      ? value.expiresAt
-      : (() => {
-          throw new Error("invalid session expiry");
-        })(),
+    expiresAt: expiresAt.data,
     ...(systemAdministrationContextRef === undefined ? {} : { systemAdministrationContextRef }),
   };
   if (typeof value.passwordChangeRequired !== "boolean" || typeof value.restricted !== "boolean")

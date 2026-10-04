@@ -6,6 +6,7 @@ import {
   C09HttpError,
   createC09Client,
   createCommandOperation,
+  decodeSessionMetadata,
   makeSafeHttpError,
   type C09Fetch,
 } from "../src/api/http.js";
@@ -197,6 +198,14 @@ describe("C10 C09 HTTP 与 OpenAPI 边界", () => {
 
     const anonymous = createC09Client({ fetcher: async () => new Response("", { status: 401 }) });
     await expect(anonymous.introspectSession(signal)).rejects.toBeInstanceOf(C09HttpError);
+  });
+
+  it.each([
+    ["Date.parse shorthand", { expiresAt: "1" }],
+    ["out-of-range calendar date", { expiresAt: "2030-02-30T00:00:00.000Z" }],
+    ["unexpected token field", { sessionToken: "must-not-be-accepted" }],
+  ])("rejects malformed session metadata: %s", (_case, patch) => {
+    expect(() => decodeSessionMetadata({ ...sessionMetadata, ...patch })).toThrow();
   });
 
   it("reduces malformed and public C09 errors to safe stable fields", async () => {

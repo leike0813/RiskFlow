@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { ForecastPolicyV1 } from "@riskflow/core/assessment-config";
+import { makeArtifactError, type ArtifactStoreV1 } from "@riskflow/core/artifacts";
 import { EFFECT_FORECAST_MODEL_ALGORITHM_VERSION_V1 } from "@riskflow/core/response-lifecycle";
 import {
   createEffectForecastModelReaderV1,
@@ -9,6 +10,7 @@ import {
 
 import {
   C28_FORECAST_REQUIRED_REF,
+  C28_FIXTURE_TIME,
   C28_TARGET_INDICATOR,
   C28_TARGET_UNIT,
   startResponseLifecycleFixture,
@@ -62,7 +64,11 @@ const historicalModel = (parameters: Record<string, unknown>) => ({
 });
 
 /** 走一次真实建议链到预测，命令标识可独立指定以免互相撞幂等键。 */
-const adoptedForecast = async (state: ResponseLifecyclePostgresFixtureV1, prefix: string) => {
+const adoptedForecast = async (
+  state: ResponseLifecyclePostgresFixtureV1,
+  prefix: string,
+  expectedFailure = false,
+) => {
   const prepared = await state.prepareRecommendation({ prefix });
   const scope = await state.recommendationScope(prepared.recommendationRef);
   const binding = state.binding({
@@ -103,6 +109,9 @@ const adoptedForecast = async (state: ResponseLifecyclePostgresFixtureV1, prefix
     assessments: await countAssessmentRows(state, "risk_assessment_records"),
     valueSets: await countAssessmentRows(state, "indicator_actual_value_sets"),
     warnings: await countAssessmentRows(state, "warning_records"),
+    forecasts: await state.countRows("response_forecast_outcomes"),
+    forecastReceipts: await state.countReceipts("warning-response.forecast-response"),
+    forecastAudit: await state.countAudit("warning-response.forecast-response"),
   };
   const result = await state.forecastResponse({
     ...command,
@@ -114,6 +123,21 @@ const adoptedForecast = async (state: ResponseLifecyclePostgresFixtureV1, prefix
       },
     },
   });
+  if (expectedFailure) {
+    expect(result.kind).toBe("failed");
+    if (result.kind === "failed") {
+      expect(result.error.code).toBe("TERMINAL_FAILURE");
+    }
+    expect(await state.countRows("response_forecast_outcomes")).toBe(before.forecasts);
+    expect(await state.countReceipts("warning-response.forecast-response")).toBe(
+      before.forecastReceipts,
+    );
+    expect(await state.countAudit("warning-response.forecast-response")).toBe(before.forecastAudit);
+    expect(await countAssessmentRows(state, "risk_assessment_records")).toBe(before.assessments);
+    expect(await countAssessmentRows(state, "indicator_actual_value_sets")).toBe(before.valueSets);
+    expect(await countAssessmentRows(state, "warning_records")).toBe(before.warnings);
+    return { outcome: undefined, before };
+  }
   if (result.kind !== "succeeded") {
     throw new Error(`forecast failed: ${JSON.stringify(result).slice(0, 400)}`);
   }
@@ -161,6 +185,7 @@ const forecastWithModel = async (input: {
   readonly policyId: string;
   readonly method: ForecastPolicyV1["method"];
   readonly inputIndicatorIds: readonly string[];
+  readonly expectedFailure?: boolean;
 }) => {
   const state = fixture!;
   const modelRef = await state.publishForecastModel({
@@ -178,7 +203,7 @@ const forecastWithModel = async (input: {
   };
   await state.setForecastPolicies([policy]);
   installExecutors(state, [policy]);
-  return await adoptedForecast(state, input.prefix);
+  return await adoptedForecast(state, input.prefix, input.expectedFailure);
 };
 
 const boundModel = (
@@ -216,6 +241,47 @@ describe("C28 生产预测执行器工厂", () => {
         { ...policy, inputIndicatorIds: [...policy.inputIndicatorIds].reverse() },
       ]),
     ).toThrow();
+  });
+
+  pgIt("模型缺失才不可用，权限与存储错误保持类型化失败", async () => {
+    const state = fixture!;
+    const modelRef = await state.publishForecastModel({
+      artifactId: "c28-reader-failure-model",
+      model: boundModel(state, historicalModel({})),
+    });
+    const invocationId = "c28-reader-failure";
+    const request = {
+      invocationId,
+      authorization: await state.authorizeDownstream({
+        branch: "knowledge-modeling.assessment-basis",
+        invocationId,
+        projectId: state.projectId,
+        actorId: state.managerId,
+        requestedAt: C28_FIXTURE_TIME,
+        requestedSpatialScopeRefs: [state.rootSpatialScopeRef],
+      }),
+      modelRef: modelRef.reference,
+      maxBytes: 1024,
+    };
+    for (const [artifactCode, moduleCode, retryable] of [
+      ["ARTIFACT_ACCESS_DENIED", "AUTHORIZATION_DENIED", false],
+      ["ARTIFACT_INTEGRITY_FAILURE", "TERMINAL_FAILURE", false],
+      ["ARTIFACT_IO_FAILURE", "TRANSIENT_FAILURE", true],
+      ["ARTIFACT_REFERENCE_NOT_FOUND", undefined, false],
+    ] as const) {
+      const reader = createEffectForecastModelReaderV1({
+        artifactStore: {
+          open: async () => {
+            throw makeArtifactError(artifactCode, "forecast.read", [], retryable);
+          },
+        } as ArtifactStoreV1,
+      });
+      if (moduleCode === undefined) {
+        await expect(reader.readModelArtifact(request)).resolves.toEqual({ kind: "unavailable" });
+      } else {
+        await expect(reader.readModelArtifact(request)).rejects.toMatchObject({ code: moduleCode });
+      }
+    }
   });
 
   pgIt("历史统计方法按真实模型工件预测，风险状态来自 C25 投影", async () => {
@@ -273,41 +339,41 @@ describe("C28 生产预测执行器工厂", () => {
     }
   });
 
-  pgIt("模型工件不满足 Schema 时交回受控不可用，不回退到基线值", async () => {
-    const forecast = await forecastWithModel({
+  pgIt("模型工件不满足 Schema 时失败且不写预测或实际事实", async () => {
+    await forecastWithModel({
       prefix: "c28-factory-broken",
       artifactId: "c28-forecast-broken-model",
       policyId: "c28-forecast-broken",
       method: "historical-statistics",
       inputIndicatorIds: ["indicator-possibility-1"],
       model: { method: "historical-statistics" },
+      expectedFailure: true,
     });
-    expect(forecast.outcome.availability).toEqual({
-      kind: "unavailable",
-      reasonCode: "policy-unavailable",
-    });
-    expect(forecast.outcome.projected?.kind).toBe("unavailable");
-    expect(forecast.outcome.projected).not.toHaveProperty("predictedValue");
   });
 
-  pgIt("模型措施效果绑定非正式措施库版本时不可用", async () => {
+  pgIt("模型措施库、输入指标或单位偏离正式策略时失败且不写预测或实际事实", async () => {
     const state = fixture!;
-    const forecast = await forecastWithModel({
-      prefix: "c28-factory-library",
-      artifactId: "c28-forecast-library-mismatch",
-      policyId: "c28-forecast-library",
-      method: "historical-statistics",
-      inputIndicatorIds: ["indicator-possibility-1"],
-      model: {
-        ...boundModel(state, historicalModel({})),
-        measureLibraryReleaseRef: { entityId: "other-measure-library", versionId: "9" },
-      },
-    });
-    // 措施效果不是模型自带的：与建议同一措施库版本才对得上，否则不接受。
-    expect(forecast.outcome.availability).toEqual({
-      kind: "unavailable",
-      reasonCode: "policy-unavailable",
-    });
+    for (const [suffix, overrides] of [
+      [
+        "library",
+        { measureLibraryReleaseRef: { entityId: "other-measure-library", versionId: "9" } },
+      ],
+      [
+        "input",
+        { inputIndicators: [{ indicatorId: C28_TARGET_INDICATOR, unit: C28_TARGET_UNIT }] },
+      ],
+      ["unit", { inputIndicators: [{ indicatorId: "indicator-possibility-1", unit: "m" }] }],
+    ] as const) {
+      await forecastWithModel({
+        prefix: `c28-factory-${suffix}`,
+        artifactId: `c28-forecast-${suffix}-mismatch`,
+        policyId: `c28-forecast-${suffix}`,
+        method: "historical-statistics",
+        inputIndicatorIds: ["indicator-possibility-1"],
+        model: { ...boundModel(state, historicalModel({})), ...overrides },
+        expectedFailure: true,
+      });
+    }
   });
 
   pgIt("趋势与机理方法各自走真实模型工件与真实 C25 投影", async () => {

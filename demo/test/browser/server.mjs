@@ -50,6 +50,7 @@ import {
   bootstrapPostgresFoundation,
   createPostgresTransactionUnit,
   runPostgresMigrations,
+  setupPostgresCheckpointer,
 } from "../../../packages/adapters/dist/postgres/index.js";
 import { createPostgresRuntime } from "../../../packages/adapters/dist/postgres/pool.js";
 import { PostgresRetrievalAdapter } from "../../../packages/adapters/dist/retrieval/index.js";
@@ -2194,6 +2195,17 @@ export const startDemoBrowserServer = async () => {
     );
 
     // ---- HTTP：C32 只读端口 + 既有查询端口 + demo 静态资源同源挂载 ----
+    /**
+     * 真实 PostgreSQL checkpointer（design D-11）。用独立的 checkpointer 角色连接，
+     * 与应用角色分离；契约引用校验在本装配内恒真——评估与风险流程的图状态引用都由
+     * 所属注册表在同一事务内复验，检查点层不重复做一次弱校验。
+     */
+    const checkpointer = await setupPostgresCheckpointer({
+      ...roleConfig("riskflow_checkpointer_login"),
+      validateReference: () => true,
+    });
+    closeables.push(() => checkpointer.end());
+
     const workflow = createPostgresWorkflowAdapter({
       db: appRuntime.db,
       transactionUnit,

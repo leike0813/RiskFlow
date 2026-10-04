@@ -99,6 +99,54 @@ export const createWarningRuntimePolicies = ({
  * C27 处置策略：生成策略把风险输入绑定到风险事件分类，验证策略给出目标指标值与
  * 已复核标准证据。两条引用同样只按精确版本解析。
  */
+/**
+ * C27 处置建议生成的 Agent 策略（合成样本、待甲方复核）。
+ *
+ * 工具白名单、预算与增量 Schema 都是版本化配置：Agent 只能按这里的精确引用动作，
+ * 超出预算或引用不匹配由 C08 按硬预算关闭失败，不由模型自由发挥。
+ */
+export const createResponseAgentPolicy = ({ projectId }) =>
+  Object.freeze({
+    schemaVersion: "1",
+    policyRef: ASSESSMENT_RUNTIME_POLICY_REFS.responseAgentPolicyRef,
+    projectId,
+    definitionRef: Object.freeze({
+      entityId: "demo-definition-response-recommendation",
+      versionId: "1",
+    }),
+    toolPolicyRef: Object.freeze({
+      entityId: "demo-policy-response-recommendation-tools",
+      versionId: "1",
+    }),
+    incrementSchemaRef: Object.freeze({
+      entityId: "demo-schema-response-recommendation-increment",
+      versionId: "1",
+    }),
+    validationPolicyRef: ASSESSMENT_RUNTIME_POLICY_REFS.responseValidationPolicyRef,
+    budgetPolicy: Object.freeze({
+      schemaVersion: "1",
+      policyRef: Object.freeze({ entityId: "demo-policy-response-agent-budget", versionId: "1" }),
+      modelDeploymentRef: ASSESSMENT_RUNTIME_POLICY_REFS.modelDeploymentRef,
+      promptTemplateRef: ASSESSMENT_RUNTIME_POLICY_REFS.promptTemplateRef,
+      toolPolicyRef: Object.freeze({
+        entityId: "demo-policy-response-recommendation-tools",
+        versionId: "1",
+      }),
+      maxModelInvocations: 4,
+      maxToolInvocations: 4,
+      maxContextTokens: 16384,
+      maxInputBytes: 262144,
+      maxOutputBytes: 65536,
+      maxCandidates: 8,
+      maxObjects: 64,
+      maxSupplementarySearches: 0,
+      maxCorrections: 2,
+      maxTransientRetries: 1,
+      maxConcurrentActions: 1,
+      maxWallClockMs: 600000,
+    }),
+  });
+
 export const createRecommendationPolicies = ({
   projectId,
   bindings,

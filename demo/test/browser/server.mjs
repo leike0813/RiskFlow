@@ -69,6 +69,7 @@ import {
   DEMO_FORECAST_POLICIES,
   DEMO_RISK_FLOW_CONFIG,
   createRecommendationPolicies,
+  createResponseAgentPolicy,
   createRiskFlowRetryPolicyReader,
   createRiskAssessmentRuntimePolicies,
   createWarningRuntimePolicies,
@@ -82,6 +83,9 @@ import {
   PostgresRecommendationContextReader,
   createPostgresRecommendationAdapter,
 } from "../../../packages/adapters/dist/recommendation/index.js";
+import { PostgresAgentTaskAdapter } from "../../../packages/adapters/dist/agent-runtime/index.js";
+import { AgentTaskDefinitionRegistry } from "../../../packages/core/dist/agent-runtime/runtime.js";
+import { createResponseRecommendationTaskDefinition } from "../../../packages/core/dist/recommendation/index.js";
 import {
   createEffectForecastModelReaderV1,
   createPostgresResponseLifecycleAdapter,
@@ -2599,6 +2603,29 @@ export const startDemoBrowserServer = async () => {
       recordCatalog: identificationRead,
     });
 
+    // ---- C27 处置建议：Agent 任务契约与 C08 只读接缝 ----
+    //
+    // C27 按部署登记的 Agent 策略派生 C08 任务信封，候选经确定性校验后成为正式建议。
+    // 任务定义的增量端口回指 C27 适配器自身——C27 既是任务定义的所有者，也是校验者，
+    // 因此这里用延迟绑定打破构造期循环，不预先伪造候选。
+    const responseAgentPolicy = createResponseAgentPolicy({ projectId: PROJECT_ID });
+    const recommendationAdapterRef = {};
+    const recommendationTaskDefinition = createResponseRecommendationTaskDefinition({
+      policy: responseAgentPolicy,
+      port: {
+        validateIncrement: (input) => recommendationAdapterRef.current.validateIncrement(input),
+        finalizeIncrement: (input) => recommendationAdapterRef.current.finalizeIncrement(input),
+      },
+    });
+    const recommendationAgentTasks = new PostgresAgentTaskAdapter({
+      db: appRuntime.db,
+      registry: new AgentTaskDefinitionRegistry([recommendationTaskDefinition]),
+      transactionUnit,
+      artifactStore,
+      referenceGuard: artifactStore.referenceGuard,
+      authorization: access,
+    });
+
     // ---- C34 处置只读（design D-05）：C27→C28→C29→C41→C26 的组合窄读 ----
     //
     // 五者的 C34 读视图只消费 db 与 C06 授权复验；策略、证明、图执行器等写路径接缝
@@ -2628,8 +2655,9 @@ export const startDemoBrowserServer = async () => {
         targetIndicators: [{ indicatorItem: "地表沉降", targetValue: 10 }],
         reviewedStandardEvidence: [{ measureId: "MS-001", evidenceItem: "监测日报" }],
       }),
-      agentTasks: unwiredWritePathSeam("recommendationAgentTasks"),
+      agentTasks: recommendationAgentTasks,
     });
+    recommendationAdapterRef.current = recommendation;
     /**
      * C28 生产预测执行器：按已发布 C18 策略的唯一 requiredRef 装配，
      * 模型正文只经 C04 受权读取，风险状态只经 C25 只读投影重算。

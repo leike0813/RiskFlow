@@ -157,3 +157,40 @@ test("矩阵页在来源不可读时呈现 unavailable 而非空图", async ({ p
   // 角色读不到矩阵来源时给出原因，而不是渲染一张没有数据的空矩阵冒充完整视图。
   await expect(page.getByText(/未给出已生效的风险矩阵发布|正在读取/)).toBeVisible();
 });
+
+/**
+ * 读回页面当前四态。撤权前后必须落在不同态，否则「撤权后仍然读得到」会被空态掩盖。
+ */
+const readPageStates = (page) =>
+  page.locator("[data-page-state]").evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute("data-page-state")),
+  );
+
+test("撤权后同一账号的评估与处置读取失败闭合，且不泄露既有事实", async ({ page }) => {
+  const target = withProject("/warnings");
+  await login(page, server.viewerLogin, target);
+  await expect(page.locator("h1.page-title")).toHaveText("预警中心");
+
+  // 撤权前：这个账号确实读得到该分支（无论有无数据，都不是权限态）。
+  await expectResolvedState(page);
+  const before = await readPageStates(page);
+  expect(before, "撤权前不应处于权限态").not.toContain("forbidden");
+
+  // 真实 C06 撤销同一成员：撤的是「已经能读」的授权，不是换一个从未授权的账号。
+  const withdrawnVersion = await server.setViewerMembershipStatus("removed");
+  try {
+    // 只导航一次：每次轮询都重新导航会让 SPA 永远停在渲染之前，等不到任何状态。
+    await page.goto(`${server.origin}${target}`);
+    // 撤权后必须失败闭合，而不是退回「暂无数据」冒充读到了空目录。
+    await expect(
+      page.locator('[data-page-state="forbidden"], [data-page-state="error"]').first(),
+    ).toBeVisible({ timeout: 20_000 });
+    // 撤权后不得再渲染撤权前读到的任何内容：两张数据卡都只剩权限骨架，没有列表。
+    await expect(page.locator('[data-page-state="forbidden"]')).toHaveCount(2);
+    await expect(page.locator("table.data-table")).toHaveCount(0);
+  } finally {
+    // 恢复必须走同一条真实命令：修订号由 C06 递增，这里不猜。
+    await server.setViewerMembershipStatus("active");
+    expect(withdrawnVersion).toMatch(/^\d+$/);
+  }
+});

@@ -133,6 +133,8 @@ const OPERATOR_LOGIN = "demo-operator";
 const VIEWER_LOGIN = "demo-viewer";
 const RESPONDER_LOGIN = "demo-responder";
 const RESTRICTED_LOGIN = "demo-restricted";
+/** 只读验收账号的成员标识：撤权场景按同一成员改状态，不另建账号。 */
+const VIEWER_MEMBERSHIP_ID = "demo-browser-viewer-membership";
 const ACCOUNT_PASSWORD = "Riskflow-Demo-2030!";
 const ACCOUNT_PASSWORD_CHANGED = "Riskflow-Demo-2030-Changed!";
 const RESTRICTED_PASSWORD_CHANGED = "Riskflow-Demo-Restricted-Changed!";
@@ -512,7 +514,7 @@ export const startDemoBrowserServer = async () => {
       idempotencyKey: "demo-browser-viewer-membership",
       expectedVersion: "none",
       authorizationContextRef: administratorContextRef,
-      membershipId: "demo-browser-viewer-membership",
+      membershipId: VIEWER_MEMBERSHIP_ID,
       accountId: viewer.resultRef.entityId,
       roles: ["business-viewer"],
       spatialScopeRefs: [spatialScopeRef],
@@ -2373,33 +2375,40 @@ export const startDemoBrowserServer = async () => {
     // 链运行登记行播种（fix-projection-reverification-identity-seam IP-06）：risk-overview
     // 正向读取要求同一运行既有 entry-snapshot 行（冻结引用覆盖工程修订），又有带 C04 正文的
     // run-state 行；登记时点同样必须早于页面真实请求时点。
-    const chainRunId = `risk-flow-run:${PROJECT_ID}:chain`;
-    const chainRunVersionId = sha("c33-chain-run-version");
-    const chainRunRef = kindRef("workflow-run", chainRunId, chainRunVersionId);
-    const chainEntryIdentity = {
-      entityId: `workflow-entry:${PROJECT_ID}:identify-and-assess`,
-      versionId: "entry-v1",
-    };
-    const chainFrozenRefs = [projectRevisionRef, spatialScopeRef];
-    const chainStateArtifactId = `c33-chain-run-state:${chainRunId}:${chainRunVersionId}`;
-    // C30 正文写入与生产读侧共用同一 body-write 派生调用身份（真实授权接缝）。
-    const chainBodyAuth = await operatorAuth(
-      workflowGraphReadInvocationIdV1({
-        operation: "body-write",
+    //
+    // 播种按运行逐个进行：C31 的 risk-overview 每页只展开一个运行，翻页完全由用户驱动。
+    // 只有一个运行就永远只有一页，「按页追溯」无从验收，因此这里登记两个真实运行，
+    // 让下一页游标成为真实游标而不是构造出来的假游标。
+    const seedRiskOverviewRun = async (suffix, parentRunRef) => {
+      const chainRunId = `risk-flow-run:${PROJECT_ID}:${suffix}`;
+      const chainRunVersionId = sha(`c33-${suffix}-run-version`);
+      const chainRunRef = kindRef("workflow-run", chainRunId, chainRunVersionId);
+      const chainEntryIdentity = {
+        entityId: `workflow-entry:${PROJECT_ID}:identify-and-assess`,
+        versionId: `entry-${suffix}`,
+      };
+      // 冻结引用必须与 risk-overview 登记的目标逐字一致：登记目标只有工程修订
+      // （总览查询不传空间范围）。多带一个空间引用会让入口行匹配不上，整页失败闭合。
+      const chainFrozenRefs = [projectRevisionRef];
+      const chainStateArtifactId = `c33-${suffix}-run-state:${chainRunId}:${chainRunVersionId}`;
+      // C30 正文写入与生产读侧共用同一 body-write 派生调用身份（真实授权接缝）。
+      const chainBodyAuth = await operatorAuth(
+        workflowGraphReadInvocationIdV1({
+          operation: "body-write",
+          projectId: PROJECT_ID,
+          targetId: chainStateArtifactId,
+        }),
+        "workflow.start-run",
+      );
+      const chainStateArtifactRef = await workflow.bodies.putBody({
         projectId: PROJECT_ID,
-        targetId: chainStateArtifactId,
-      }),
-      "workflow.start-run",
-    );
-    const chainStateArtifactRef = await workflow.bodies.putBody({
-      projectId: PROJECT_ID,
-      actorId: chainBodyAuth.actorId,
-      commandId: "demo-c33-chain-body-run-state",
-      issuedAt: chainRecordedAt,
-      artifactId: chainStateArtifactId,
-      body: WorkflowGraphArtifactBodyV1Schema.parse({
-        bodyKind: "run-state",
-        runState: {
+        actorId: chainBodyAuth.actorId,
+        commandId: `demo-c33-${suffix}-body-run-state`,
+        issuedAt: chainRecordedAt,
+        artifactId: chainStateArtifactId,
+        body: WorkflowGraphArtifactBodyV1Schema.parse({
+          bodyKind: "run-state",
+          runState: {
           schemaVersion: "1",
           projectId: PROJECT_ID,
           runId: chainRunId,
@@ -2408,7 +2417,7 @@ export const startDemoBrowserServer = async () => {
           entryIdentity: chainEntryIdentity,
           stage: "result-summary",
           status: "completed",
-          parentRunRef: completedRunRef,
+          parentRunRef,
           assessmentRunRefs: [],
           acceptedRiskRecordRefs: [recordAutoRef, recordReviewRef],
           assessmentRecordRefs: [assessmentRef],
@@ -2425,20 +2434,21 @@ export const startDemoBrowserServer = async () => {
       schemaVersion: "1",
       projectId: PROJECT_ID,
       resultId: `${chainRunId}:${rowSuffix}`,
-      resultVersionId: sha(`c33-chain-result-${rowSuffix}`),
+      resultVersionId: sha(`c33-${suffix}-result-${rowSuffix}`),
       runId: chainRunId,
       runVersionId: chainRunVersionId,
       entryMode: "identify-and-assess",
-      commandId: `demo-c33-chain-${rowSuffix}`,
-      idempotencyKey: `demo-c33-chain-${rowSuffix}`,
-      requestDigest: sha(`demo-c33-chain-request-${rowSuffix}`),
+      // 命令身份按运行区分：复用同一 commandId 会让第二次播种撞上第一次的幂等登记。
+      commandId: `demo-c33-${suffix}-${rowSuffix}`,
+      idempotencyKey: `demo-c33-${suffix}-${rowSuffix}`,
+      requestDigest: sha(`demo-c33-${suffix}-request-${rowSuffix}`),
       actorRef: baseAuth.actorId,
       authorizationContextRef: baseAuth.authorizationContextRef,
       authorizationScopeDigest: scopeDigest,
       validAt: chainRecordedAt,
       recordedAt: chainRecordedAt,
       persistedAt: chainRecordedAt,
-      auditEntryId: `demo-c33-chain-${rowSuffix}:audit`,
+      auditEntryId: `demo-c33-${suffix}-${rowSuffix}:audit`,
       frozenRefs: chainFrozenRefs,
     });
     const registerChainRow = async (row) => {
@@ -2498,6 +2508,12 @@ export const startDemoBrowserServer = async () => {
         artifactRef: chainStateArtifactRef,
       }),
     );
+      return chainRunRef;
+    };
+    // 两个已登记运行：父子链上的兄弟运行，父运行相同、入口身份不同。
+    const chainRunRef = await seedRiskOverviewRun("chain-a", completedRunRef);
+    const chainRunId = chainRunRef.reference.entityId;
+    const chainRunRefB = await seedRiskOverviewRun("chain-b", completedRunRef);
     const freePort = await new Promise((resolved, rejected) => {
       const probe = createServer();
       probe.once("error", rejected);
@@ -2805,6 +2821,35 @@ export const startDemoBrowserServer = async () => {
       publicOrigin,
       now: () => new Date(),
     });
+    /**
+     * 撤权接缝：用真实 C06 `revise-membership` 改写只读验收账号的成员状态。
+     *
+     * 撤权不是「换一个没有权限的账号」——那只能证明从未授权。本接缝让同一个账号先按
+     * `active` 完成一次真实读取，再把同一成员置为 `removed`，因此浏览器里观察到的
+     * 失败闭合是真实的授权撤销，而不是从未拥有的权限。恢复时把状态改回 `active`，
+     * 成员修订号由 C06 自己递增，这里不猜版本。
+     */
+    let viewerMembershipVersion = "1";
+    const setViewerMembershipStatus = async (status) => {
+      const result = await access.administerProject({
+        kind: "revise-membership",
+        projectId: PROJECT_ID,
+        commandId: `demo-browser-viewer-membership-${status}-${viewerMembershipVersion}`,
+        idempotencyKey: `demo-browser-viewer-membership-${status}-${viewerMembershipVersion}`,
+        expectedVersion: {
+          entityId: VIEWER_MEMBERSHIP_ID,
+          versionId: viewerMembershipVersion,
+        },
+        authorizationContextRef: administratorContextRef,
+        membershipId: VIEWER_MEMBERSHIP_ID,
+        accountId: viewer.resultRef.entityId,
+        roles: ["business-viewer"],
+        spatialScopeRefs: [spatialScopeRef],
+        status,
+      });
+      viewerMembershipVersion = result.resultRef.versionId;
+      return result.resultRef.versionId;
+    };
     const sendFile = async (reply, filePath, statusCode) => {
       const body = await readFile(filePath);
       return reply
@@ -2885,6 +2930,24 @@ export const startDemoBrowserServer = async () => {
         entityId: relationshipResultRef.reference.entityId,
         versionId: relationshipResultRef.reference.versionId,
       },
+      /** 撤权接缝：真实 C06 成员状态改写，供浏览器观察授权撤销后的失败闭合。 */
+      setViewerMembershipStatus,
+      /**
+       * C31 risk-overview 的两个已登记运行：同父、不同入口身份，用于验收「按页追溯」——
+       * 下一页必须是真实的下一个运行，且与首页共用同一个 `queryResultRef`。
+       */
+      overviewRuns: [
+        {
+          runId: chainRunRef.reference.entityId,
+          versionId: chainRunRef.reference.versionId,
+          entryVersionId: "entry-chain-a",
+        },
+        {
+          runId: chainRunRefB.reference.entityId,
+          versionId: chainRunRefB.reference.versionId,
+          entryVersionId: "entry-chain-b",
+        },
+      ],
       identification: {
         completedRunId,
         waitingRunId,

@@ -51,6 +51,8 @@ import {
 } from "../../../packages/adapters/dist/knowledge-governance/index.js";
 import { createPostgresAssessmentConfigurationAdapter } from "../../../packages/adapters/dist/assessment-config/index.js";
 import { createPostgresScoringRulesAdapter } from "../../../packages/adapters/dist/scoring-rules/index.js";
+import { createAssessmentGraphComposition } from "../../../apps/worker/dist/assessment/index.js";
+import { createRiskFlowGraphComposition } from "../../../apps/worker/dist/risk-flow/index.js";
 import {
   bootstrapPostgresFoundation,
   createPostgresTransactionUnit,
@@ -65,7 +67,9 @@ import { createPostgresExternalRiskInputFactsReader } from "../../../packages/ad
 import { createRiskInputFactsReader } from "../../../packages/core/dist/risk-assessment/engine/index.js";
 import {
   DEMO_FORECAST_POLICIES,
+  DEMO_RISK_FLOW_CONFIG,
   createRecommendationPolicies,
+  createRiskFlowRetryPolicyReader,
   createRiskAssessmentRuntimePolicies,
   createWarningRuntimePolicies,
 } from "./deploymentPolicies.mjs";
@@ -2668,6 +2672,90 @@ export const startDemoBrowserServer = async () => {
       lifecycle: responseLifecycle,
       calibration,
     });
+
+    /**
+     * 评估图组合根（design D-11）：真实 checkpointer + C11 准备冻结 + C19 依据 + C25 评估
+     * + C26 预警 + C27 处置 + C28 预测偏差 + C29 校准，全部指向本装配已建的所属适配器。
+     *
+     * 启动/恢复/取消三类运行控制各自按请求的精确 branch 复验当前授权；本演示装配不下发
+     * 任何领域写命令，因此 `workflow` 端口保持未接线并显式失败——组合根可以构建，
+     * 但不会在没有真实调用者的情况下凭空登记一次运行。
+     */
+    const assessmentComposition = createAssessmentGraphComposition({
+      db: appRuntime.db,
+      transactionUnit,
+      artifactStore,
+      authorization: access,
+      runtimeAuthorization: {
+        verifyCurrent: async (input) =>
+          (
+            await access.verify({
+              authorizationContextRef: input.authorization.authorizationContextRef,
+              invocationId: input.invocationId,
+              projectId: input.projectId,
+              branch: input.branch,
+              requestedSpatialScopeRefs: [],
+              requestedSourceVersionRefs: [],
+              requestedAt: input.requestedAt,
+            })
+          ).context,
+      },
+      checkpointer,
+      engineeringData: registry,
+      basis: scoringRules,
+      basisResolver: knowledgeGovernance,
+      runtimePolicies: createRiskAssessmentRuntimePolicies({ projectId: PROJECT_ID }),
+      riskAssessment: assessmentEngine,
+      warning: warningLifecycle,
+      recommendation,
+      recommendationAgent: unwiredWritePathSeam("assessmentRecommendationAgent"),
+      responseLifecycle,
+      calibration,
+      calibrationAgent: unwiredWritePathSeam("assessmentCalibrationAgent"),
+      // 分段入口的冻结策略目录由部署持有；本装配不内建默认策略，解析不到即关闭失败。
+      policies: unwiredWritePathSeam("assessmentPolicyCatalog"),
+    });
+    // 组合根构建成功即证明十八项依赖齐备；运行控制端口保持未接线。
+
+    /**
+     * 风险流程父图组合根（design D-11/D-08）：评估子运行面用上面刚建的评估组合根运行时，
+     * 人工采纳证明用真实 C41，重试预算只按冻结 `retryPolicyRef` 解析。
+     *
+     * 识别子运行面由 C24 自己的组合根提供（design D-02），本装配不代建；它以抛错标记
+     * 注入——父图一旦路由到识别子运行就立即失败，而不是拿一个不存在的子运行面跑出一段
+     * 无法追溯的父运行状态。
+     */
+    const riskFlowComposition = createRiskFlowGraphComposition({
+      db: appRuntime.db,
+      transactionUnit,
+      artifactStore,
+      authorization: access,
+      runtimeAuthorization: {
+        verifyCurrent: async (input) =>
+          (
+            await access.verify({
+              authorizationContextRef: input.authorization.authorizationContextRef,
+              invocationId: input.invocationId,
+              projectId: input.projectId,
+              branch: input.branch,
+              requestedSpatialScopeRefs: [],
+              requestedSourceVersionRefs: [],
+              requestedAt: input.requestedAt,
+            })
+          ).context,
+      },
+      humanDecisionProof: humanDecisionFeedback,
+      checkpointer,
+      identificationRuntime: unwiredWritePathSeam("riskFlowIdentificationRuntime"),
+      assessmentRuntime: assessmentComposition.runtime,
+      // 空间配对只按调用方给出的精确来源解析，本装配不猜测验收风险的空间。
+      riskSpatialPairing: { resolve: async () => undefined },
+      retryPolicy: createRiskFlowRetryPolicyReader(),
+      subGraphVersions: DEMO_RISK_FLOW_CONFIG.subGraphVersions,
+      retryPolicyRef: DEMO_RISK_FLOW_CONFIG.retryPolicyRef,
+    });
+    // 两组合根构建成功即证明依赖齐备；父图的 workflow 写入口保持未接线。
+    void riskFlowComposition;
 
     const api = buildApi({
       access,

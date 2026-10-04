@@ -164,4 +164,26 @@ export const DEMO_FORECAST_POLICIES = Object.freeze([
   }),
 ]);
 
+/**
+ * 风险流程父图的冻结配置身份（design D-08）：重试预算只从冻结引用解析，
+ * 子图版本由部署注入不从调用方猜测，验收风险的空间配对只按调用方给出的精确来源解析。
+ *
+ * 引用对不上即返回 undefined（关闭失败），不返回内建默认预算或默认配对。
+ */
+export const DEMO_RISK_FLOW_CONFIG = Object.freeze({
+  retryPolicyRef: Object.freeze({ entityId: "demo-policy-retry", versionId: "1" }),
+  subGraphVersions: Object.freeze({
+    identification: Object.freeze({ entityId: "demo-subgraph-identification", versionId: "1" }),
+    assessment: Object.freeze({ entityId: "demo-subgraph-assessment", versionId: "1" }),
+  }),
+  retryBudget: Object.freeze({ maxAttempts: 3, backoffMs: 1000 }),
+});
+
+export const createRiskFlowRetryPolicyReader = () => ({
+  read: async (input) =>
+    matchesRef(DEMO_RISK_FLOW_CONFIG.retryPolicyRef, input.retryPolicyRef)
+      ? { maxAttempts: DEMO_RISK_FLOW_CONFIG.retryBudget.maxAttempts, backoffMs: DEMO_RISK_FLOW_CONFIG.retryBudget.backoffMs }
+      : undefined,
+});
+
 export { refKey };

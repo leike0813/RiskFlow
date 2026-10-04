@@ -74,6 +74,7 @@ import {
   type WorkflowGraphRunStateV1,
   type WorkflowGraphRuntimePortV1,
   type WorkflowRunStageV1,
+  workflowGraphInvocationIdV1,
 } from "@riskflow/core/workflow";
 import { authorizationScopeDigest } from "@riskflow/core/retrieval";
 
@@ -1497,6 +1498,11 @@ const childSkippedTails = async (input: {
     artifactRef,
     actorId: input.run.actorId,
     requestedAt: input.run.issuedAt,
+    invocationId: workflowGraphInvocationIdV1({
+      operation: "body-read",
+      projectId: input.run.projectId,
+      targetId: artifactRef.reference.entityId,
+    }),
     authorization: input.run.authorization,
   });
   return body?.bodyKind === "run-result" ? body.runResult.skippedTails : [];

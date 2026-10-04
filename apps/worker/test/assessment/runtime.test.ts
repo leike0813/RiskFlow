@@ -689,6 +689,8 @@ const startHarness = async (): Promise<AssessmentGraphHarnessV1> => {
           artifactRef: row.artifactRef,
           actorId: ACTOR_ID,
           requestedAt: now().toISOString(),
+          invocationId: `c30-body-read:${PROJECT_ID}:${row.artifactRef.reference.entityId}`,
+          requestedAt: now().toISOString(),
           authorization: AUTHORIZATION,
         });
         if (body === undefined || body.bodyKind !== "run-result") {

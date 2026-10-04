@@ -1157,6 +1157,8 @@ const startHarness = async (): Promise<AcceptanceHarnessV1> => {
           artifactRef: row.artifactRef,
           actorId: ACTOR_ID,
           requestedAt: clock.current.toISOString(),
+          invocationId: `c30-body-read:${PROJECT_ID}:${row.artifactRef.reference.entityId}`,
+          requestedAt: clock.current.toISOString(),
           authorization: AUTHORIZATION,
         });
         if (body === undefined || body.bodyKind !== "run-result") {

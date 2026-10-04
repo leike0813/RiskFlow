@@ -1423,14 +1423,20 @@ class WorkflowGraphProjection {
     readonly authorization: AuthorizationContextV1;
     readonly runRef: { readonly entityId: string; readonly versionId: string };
   }): Promise<WorkflowGraphArtifactBodyV1 | undefined> {
+    // 身份纳入本次读取所依据的授权上下文：C06 对重复 `invocationId` 走重放路径并比对
+    // `parent_context_id`，而本端口每次读取的父上下文都由本次 `queryId` 复验得来、必然不同。
+    // 只按 operation+工程+工件派生会让同一工件的第二次读取与第一次争抢同一身份，
+    // 以 `IDEMPOTENCY_CONFLICT` 收口（design D1）。
+    const invocationId = workflowGraphReadInvocationIdV1({
+      operation: "body-read",
+      projectId: input.projectId,
+      targetId: input.artifactRef.reference.entityId,
+    });
+    const scopedInvocationId = `${invocationId}:${input.authorization.authorizationContextRef.reference.entityId}`;
     let issued: AuthorizationContextV1;
     try {
       const decision = await this.#authorization.authorize({
-        invocationId: workflowGraphReadInvocationIdV1({
-          operation: "body-read",
-          projectId: input.projectId,
-          targetId: input.artifactRef.reference.entityId,
-        }),
+        invocationId: scopedInvocationId,
         projectId: input.projectId,
         branch: "projection.query",
         requestedSpatialScopeRefs: [],
@@ -1454,6 +1460,7 @@ class WorkflowGraphProjection {
         artifactRef: input.artifactRef,
         actorId: input.actorId,
         requestedAt: this.#now().toISOString(),
+        invocationId: scopedInvocationId,
         authorization: issued,
       });
     } catch {

@@ -1753,17 +1753,16 @@ class WorkflowGraphPersistence {
     readonly artifactRef: ContentArtifactRefV1;
     readonly actorId: string;
     readonly requestedAt: string;
+    readonly invocationId: string;
     readonly authorization: AuthorizationContextV1;
   }): Promise<WorkflowGraphArtifactBodyV1 | undefined> {
     const verified = await this.verifyAuthorization({
       authorization: input.authorization,
       projectId: input.projectId,
       actorId: input.actorId,
-      invocationId: workflowGraphReadInvocationIdV1({
-        operation: "body-read",
-        projectId: input.projectId,
-        targetId: input.artifactRef.reference.entityId,
-      }),
+      // 身份由调用方按签发方同一导出函数给出：端口内部固定派生会让不同授权上下文
+      // 争抢同一个 `invocation_id`，同一工件的第二次读取必然冲突（design D1/D2）。
+      invocationId: input.invocationId,
       requestedAt: input.requestedAt,
     });
     if (verified === undefined) return undefined;

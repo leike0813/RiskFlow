@@ -91,7 +91,10 @@ const createAccess = () => {
   const calls: { readonly invocationId: string; readonly branch: ModuleBranchV1 }[] = [];
   /** 进程内重签发的签发身份对（design D6）：与 readBody 派生复验身份配对。 */
   const issues: { readonly invocationId: string; readonly branch: ModuleBranchV1 }[] = [];
+  /** C06 重放绑定：`invocationId` → 首次绑定它的父上下文，用于复现真实冲突语义。 */
+  const bodyReadBindings = new Map<string, string | undefined>();
   let revoked = false;
+  let rotateVerifiedContext = false;
   const denied = () =>
     new AccessServiceError({
       code: "AUTHORIZATION_DENIED",
@@ -119,16 +122,41 @@ const createAccess = () => {
         if (revoked) {
           throw denied();
         }
-        return { context: AUTHORIZATION } as Awaited<ReturnType<LocalIdentityAccessV1["verify"]>>;
+        // 默认固定返回同一上下文，保持既有断言的稳定基线；开启 rotate 后每次复验签发新的
+        // 上下文引用——与 C06 真实行为一致，也是正文读取身份必须随之变化的唯一前提。
+        if (!rotateVerifiedContext) {
+          return { context: AUTHORIZATION } as Awaited<ReturnType<LocalIdentityAccessV1["verify"]>>;
+        }
+        return {
+          context: {
+            ...AUTHORIZATION,
+            authorizationContextRef: {
+              kind: "authorization-context" as const,
+              reference: { entityId: `verified-context-${calls.length}`, versionId: "1" },
+            },
+          },
+        } as Awaited<ReturnType<LocalIdentityAccessV1["verify"]>>;
       },
       authorize: async (input: {
         readonly invocationId: string;
         readonly branch: ModuleBranchV1;
+        readonly parentContext?: {
+          readonly authorizationContextRef: { readonly entityId: string };
+        };
       }) => {
         issues.push({ invocationId: input.invocationId, branch: input.branch });
         if (revoked) {
           throw denied();
         }
+        // 按 C06 真实重放语义建模：同一 `invocationId` 必须始终对应同一父上下文，
+        // 否则 `IDEMPOTENCY_CONFLICT`。替身若无条件放行，固定派生的正文读取身份就会
+        // 掩盖「同一工件第二次起必然冲突」这一缺陷（design D1）。
+        const parentId = input.parentContext?.authorizationContextRef.entityId;
+        const bound = bodyReadBindings.get(input.invocationId);
+        if (bound !== undefined && bound !== parentId) {
+          throw denied();
+        }
+        bodyReadBindings.set(input.invocationId, parentId);
         return {
           context: AUTHORIZATION,
           contextRef: AUTHORIZATION.authorizationContextRef,
@@ -136,6 +164,13 @@ const createAccess = () => {
         } as Awaited<ReturnType<LocalIdentityAccessV1["authorize"]>>;
       },
     } satisfies Pick<LocalIdentityAccessV1, "verify" | "authorize">,
+    /** 开启后每次复验签发新的授权上下文引用；返回关闭句柄，作用域限于调用方自己。 */
+    rotateVerifiedContexts: () => {
+      rotateVerifiedContext = true;
+      return () => {
+        rotateVerifiedContext = false;
+      };
+    },
     revoke: () => {
       revoked = true;
     },
@@ -714,16 +749,20 @@ describe("C30 workflow projection adapter", () => {
           call.branch === "projection.result-read",
       ),
     ).toBe(true);
-    // 正文读取身份锁定（IP-08/D6）：run-state 正文读取前以 body-read 派生身份进程内重签发，
-    // 签发 branch 与 readBody 复验由签发能力派生的 branch 配对（projection.query）。
-    expect(
-      fixture.access.issues.some(
-        (issue) =>
-          issue.invocationId ===
-            `c30-body-read:${PROJECT_ID}:c30-run-state:${ROOT_RUN_ID}:${ROOT_RUN_VERSION_ID}` &&
-          issue.branch === "projection.query",
-      ),
-    ).toBe(true);
+    // 正文读取身份锁定（design D1）：run-state 正文读取前以 body-read 派生身份进程内重签发，
+    // 签发 branch 与 readBody 复验由签发能力派生的 branch 配对（projection.query）；身份必须
+    // 追加本次读取所依据的授权上下文，否则同一工件的第二次读取会与第一次争抢同一身份。
+    const bodyReadPrefix = `c30-body-read:${PROJECT_ID}:c30-run-state:${ROOT_RUN_ID}:${ROOT_RUN_VERSION_ID}:`;
+    const bodyReadIssues = fixture.access.issues.filter(
+      (issue) =>
+        issue.invocationId.startsWith(bodyReadPrefix) && issue.branch === "projection.query",
+    );
+    expect(bodyReadIssues.length).toBeGreaterThan(0);
+    // 每个签发身份都带一个非空父上下文后缀。同一 (工件, 父上下文) 的重复签发共用同一身份
+    // 是正确的——C06 重放路径据此返回既有上下文；本测试真正锁住的是多次读取都不失败。
+    expect(bodyReadIssues.every((issue) => issue.invocationId.length > bodyReadPrefix.length)).toBe(
+      true,
+    );
     const runIds = firstPage.items
       .filter((item) => item.kind === "run-summary")
       .map((item) => (item.kind === "run-summary" ? item.workflowRunRef.reference.entityId : ""));
@@ -749,6 +788,60 @@ describe("C30 workflow projection adapter", () => {
     if (second.kind !== "page") return;
     expect(second.items).toHaveLength(1);
     expect(second.nextCursor).toBeUndefined();
+  });
+
+  it("reads the same run body repeatedly when each read re-verifies its own context", async () => {
+    // 缺陷回归（design D1）：投影端口每次读取都以本次 `queryId` 复验出**新的**父授权上下文。
+    // 若正文读取身份只按 operation+工程+工件派生，第二次读取会与第一次争抢同一个
+    // `invocation_id`，在 C06 重放比对处抛 `IDEMPOTENCY_CONFLICT` 并以 incomplete 收口。
+    // 本用例开启替身的上下文轮转，使该冲突真实可复现；旧实现下第二次读取必然失败。
+    await seedRuns();
+    const stopRotating = fixture.access.rotateVerifiedContexts();
+    const queried = await queryFor("query-run-view-repeat", {
+      queryType: "run-view",
+      workflowRunRef: {
+        kind: "workflow-run",
+        reference: { entityId: ROOT_RUN_ID, versionId: ROOT_RUN_VERSION_ID },
+      },
+    });
+    expect(queried.kind).toBe("succeeded");
+    if (queried.kind !== "succeeded") return;
+    const queryResultRef = queried.result.queryResultRef;
+
+    const rotated = new Set<string>();
+    const collect = () => {
+      const prefix = `c30-body-read:${PROJECT_ID}:c30-run-state:${ROOT_RUN_ID}:${ROOT_RUN_VERSION_ID}:`;
+      for (const issue of fixture.access.issues) {
+        if (issue.invocationId.startsWith(`${prefix}verified-context-`)) {
+          rotated.add(issue.invocationId);
+        }
+      }
+    };
+
+    try {
+      const first = await fixture.projection.resultRead.readPage(
+        readRequest({ queryResultRef, limit: 100 }),
+      );
+      expect(first.kind).toBe("page");
+      collect();
+
+      // 同一登记结果被再次读取：每次都是独立读取，不是同一次调用的重放。
+      const second = await fixture.projection.resultRead.readPage(
+        readRequest({ queryResultRef, limit: 100 }),
+      );
+      expect(second.kind, `重复读取应成功，实际 ${JSON.stringify(second)}`).toBe("page");
+      collect();
+
+      if (first.kind !== "page" || second.kind !== "page") return;
+      expect(second.items).toEqual(first.items);
+      // 两次读取的父上下文不同，正文读取身份必须随之不同，不得共用同一个 `invocation_id`。
+      expect(
+        rotated.size,
+        `正文读取身份应随父上下文变化，实际 ${[...rotated]}`,
+      ).toBeGreaterThanOrEqual(2);
+    } finally {
+      stopRotating();
+    }
   });
 
   it("serves the C32 result-read transport mapping with schema-valid page and failure outcomes", async () => {
@@ -1029,14 +1122,15 @@ describe("C30 workflow projection adapter", () => {
     }
     expect(first.nextCursor).toBeDefined();
     expect(fixture.trace.calls - callsBefore).toBe(1);
-    // 正文读取身份锁定（IP-08/D6）：结果正文读取前以 body-read 派生身份进程内重签发，
-    // 签发 branch 与 readBody 复验由签发能力派生的 branch 配对（projection.query）。
+    // 正文读取身份锁定（design D1）：结果正文读取前以 body-read 派生身份进程内重签发，
+    // 签发 branch 与 readBody 复验由签发能力派生的 branch 配对（projection.query）；身份追加
+    // 本次读取所依据的授权上下文后缀，使不同父上下文不共用同一身份。
     expect(
       fixture.access.issues.some(
         (issue) =>
-          issue.invocationId ===
-            `c30-body-read:${PROJECT_ID}:c31-run-result:${REPORT_RUN_ID}:${REPORT_RUN_VERSION_ID}` &&
-          issue.branch === "projection.query",
+          issue.invocationId.startsWith(
+            `c30-body-read:${PROJECT_ID}:c31-run-result:${REPORT_RUN_ID}:${REPORT_RUN_VERSION_ID}:`,
+          ) && issue.branch === "projection.query",
       ),
     ).toBe(true);
 

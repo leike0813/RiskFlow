@@ -968,6 +968,7 @@ describe("C30 父运行图运行时（真实 PostgreSQL + 真实 LangGraph + 真
             artifactRef: resultRow.runResultRef,
             actorId: ACTOR_ID,
             requestedAt: TIMESTAMP,
+            invocationId: `c30-body-read:${PROJECT_ID}:${resultRow.runResultRef.reference.entityId}`,
             authorization: authorizationFor("workflow.start", [SPACE_A, SPACE_B]),
           });
     expect(runResultBody?.bodyKind).toBe("run-result");

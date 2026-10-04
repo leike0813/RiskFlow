@@ -194,3 +194,124 @@ test("撤权后同一账号的评估与处置读取失败闭合，且不泄露�
     expect(withdrawnVersion).toMatch(/^\d+$/);
   }
 });
+
+test("C31 运行摘要按页追溯：同一投影引用下由用户续页，且不整库翻页", async ({ page }) => {
+  await login(page, server.operatorLogin, withProject("/"));
+  await expect(page.locator("h1.page-title")).toHaveText("风险态势总览");
+
+  const [first, second] = server.overviewRuns;
+  // 首页只展开一个运行：另一个运行必须靠用户点「续页」才出现，页面不得自己翻到底。
+  await expect(page.getByText(first.entryVersionId)).toBeVisible();
+  await expect(page.getByText(second.entryVersionId)).toHaveCount(0);
+
+  // 只取引用本身：整张卡片还含表格，续页后表格内容本就应该变化。
+  const resultRef = page
+    .locator(".ar-note", { hasText: "投影结果引用" })
+    .locator(".ar-ref .mono");
+  const beforeRef = await resultRef.innerText();
+  expect(beforeRef).toContain(server.projectId);
+
+  // 单页有界：概览页只渲染运行摘要这一张表，不把投影一次性铺开。
+  await expect(page.getByRole("button", { name: "续页" })).toHaveCount(1);
+
+  await page.getByRole("button", { name: "续页" }).click();
+  await expect(page.getByText(second.entryVersionId)).toBeVisible();
+  await expect(page.getByText(first.entryVersionId)).toHaveCount(0);
+
+  // 翻页保留原投影引用：续页换的是游标，不是另起一个查询结果。
+  await expect(resultRef).toHaveText(beforeRef);
+  // 读完最后一个运行后不再给出续页入口，页面不会无限续页。
+  await expect(page.getByRole("button", { name: "续页" })).toHaveCount(0);
+});
+
+test("父子运行在摘要里按真实父运行引用呈现，不用同一父级冒充兄弟运行", async ({ page }) => {
+  await login(page, server.operatorLogin, withProject("/"));
+  await expect(page.locator("h1.page-title")).toHaveText("风险态势总览");
+  await expect(page.getByText(server.overviewRuns[0].entryVersionId)).toBeVisible();
+
+  // 父运行列必须落回识别阶段的真实父运行引用，而不是留空或写死文案。
+  const parentCell = page.locator("table.data-table tbody tr td:last-child").first();
+  await expect(parentCell).toHaveText(server.identification.completedRunId);
+
+  // 续到第二页后父运行不变：兄弟运行共享父级，但入口身份必须区分开。
+  await page.getByRole("button", { name: "续页" }).click();
+  await expect(page.getByText(server.overviewRuns[1].entryVersionId)).toBeVisible();
+  await expect(page.locator("table.data-table tbody tr td:last-child").first()).toHaveText(
+    server.identification.completedRunId,
+  );
+});
+
+/**
+ * 直接打真实 HTTP 读分支。走页面内 fetch 而不是 Node 侧直连：会话 Cookie 只在真实
+ * 浏览器上下文里才有，另起一个探针会退化成「用另一种方式重新登录」。
+ */
+const postResultRead = (page, envelope) =>
+  page.evaluate(async (body) => {
+    const response = await fetch(
+      `/api/v1/projects/${encodeURIComponent(body.projectId)}/queries/projection.result-read`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body.envelope),
+      },
+    );
+    return { status: response.status, body: await response.json() };
+  }, { projectId: server.projectId, envelope });
+
+test("陈旧投影引用与伪造游标失败闭合，精确引用仍可重复读取", async ({ page }) => {
+  // 抓页面自己发出的投影查询应答：查询结果引用是登记时算出来的，只能取真实那一个，
+  // 自造一个只会验证到「自造的引用读不到」，验证不到「陈旧引用不被改指」。
+  const queryBodies = [];
+  page.on("response", async (response) => {
+    if (response.url().endsWith("/queries/projection.query")) {
+      queryBodies.push(await response.json().catch(() => undefined));
+    }
+  });
+  await login(page, server.operatorLogin, withProject("/"));
+  await expect(page.locator("h1.page-title")).toHaveText("风险态势总览");
+  await expect.poll(() => queryBodies.length, { timeout: 20_000 }).toBeGreaterThan(0);
+
+  const registered = queryBodies
+    .map(
+      (body) =>
+        (body as { result?: { queryResultRef?: unknown } } | undefined)?.result?.queryResultRef,
+    )
+    .find((ref) => ref !== undefined);
+  expect(registered, "应捕获到页面登记的投影查询结果引用").toBeDefined();
+  const queryResultRef = registered as { reference: { entityId: string; versionId: string } };
+
+  const envelopeFor = (payload) => ({
+    schemaVersion: "1",
+    queryId: `demo-stale-${Math.random().toString(36).slice(2)}`,
+    requestedAt: new Date().toISOString(),
+    requestedSpatialScopeRefs: [],
+    requestedSourceVersionRefs: [],
+    payload,
+  });
+
+  // 陈旧版本：同一条结果引用换一个版本，必须读不到，而不是回退到当前版本。
+  const stale = await postResultRead(
+    page,
+    envelopeFor({
+      queryResultRef: {
+        ...queryResultRef,
+        reference: { ...queryResultRef.reference, versionId: `${queryResultRef.reference.versionId}-stale` },
+      },
+    }),
+  );
+  expect(stale.status, `陈旧版本应被拒，实际 ${JSON.stringify(stale.body)}`).toBe(404);
+
+  // 伪造游标：游标不是本服务签发的，必须整页失败，不得返回别的运行的条目。
+  const forged = await postResultRead(
+    page,
+    envelopeFor({ queryResultRef, cursor: "forged-cursor-not-issued-by-this-service" }),
+  );
+  expect(forged.status, `伪造游标应被拒，实际 ${JSON.stringify(forged.body)}`).toBeGreaterThanOrEqual(
+    400,
+  );
+
+  // 精确引用可被重复读取：第二次读取与页面自身那次逐字相同请求仍须成功（design D1 回归）。
+  const exact = await postResultRead(page, envelopeFor({ queryResultRef }));
+  expect(exact.body.kind, `精确引用应可读，实际 ${JSON.stringify(exact.body)}`).toBe("succeeded");
+  expect(JSON.stringify(exact.body)).toContain(server.overviewRuns[0].runId);
+});

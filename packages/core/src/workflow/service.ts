@@ -128,6 +128,12 @@ export interface WorkflowGraphBodyPortV1 {
     readonly artifactRef: ContentArtifactRefV1;
     readonly actorId: string;
     readonly requestedAt: string;
+    /**
+     * 调用方派生的复验身份。必填且不得由端口内部固定派生：正文读取的身份必须与本次
+     * 读取所依据的授权上下文配对，固定身份会让同一工件的第二次读取与第一次争抢同一个
+     * `invocation_id`，从而在 C06 重放比对处必然冲突（design D2）。
+     */
+    readonly invocationId: string;
     readonly authorization: AuthorizationContextV1;
   }): Promise<WorkflowGraphArtifactBodyV1 | undefined>;
 }

@@ -1007,6 +1007,8 @@ export const startHumanDecisionFeedbackFixture =
           artifactRef: input.artifactRef,
           actorId: managerId,
           requestedAt: C41_FIXTURE_TIME,
+          invocationId: `c30-body-read:${projectId}:${input.artifactRef.reference.entityId}`,
+          requestedAt: C41_FIXTURE_TIME,
           authorization: await authorizeFor({
             branch: "workflow.start-run",
             invocationId: `c30-body-read:${projectId}:${input.artifactRef.reference.entityId}`,

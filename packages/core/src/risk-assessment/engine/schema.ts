@@ -6,7 +6,11 @@ import {
   IsoDateTimeSchema,
   VersionReferenceSchema,
 } from "@riskflow/contracts/common";
-import { ApplicabilityMetadataSchema, ScalarValueSchema } from "@riskflow/contracts/records";
+import {
+  ApplicabilityMetadataSchema,
+  RiskStateSchema,
+  ScalarValueSchema,
+} from "@riskflow/contracts/records";
 import {
   AssessmentInputSnapshotRefV1Schema,
   AssessmentPreparationSnapshotRefV1Schema,
@@ -20,6 +24,7 @@ import {
   RISK_INPUT_FACT_MAX_FIELDS_V1,
   RiskInputFactFieldPathSegmentV1Schema,
   RiskInputFactFieldV1Schema,
+  RiskAssessmentRecordRefV1Schema,
   RiskInputVersionRefV1Schema,
   type ModuleErrorV1,
   type ContractReferenceV1,
@@ -490,3 +495,59 @@ export const AssessmentDecisionArtifactV1Schema = z.strictObject({
   }),
 });
 export type AssessmentDecisionArtifactV1 = z.infer<typeof AssessmentDecisionArtifactV1Schema>;
+
+/* -------------------------------------------------------------------------- */
+/* 预测风险状态投影（D-08）                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 预测风险状态只回答「按同一冻结依据重算后风险落在哪一档」。它不产生正式评估记录、
+ * 实际值集合、准备快照、预警、收据或 Outbox 事件，因此结果形状不是评估记录的子集，
+ * 而是直接给出风险状态本身。
+ */
+export const ForecastRiskStateRequestV1Schema = z.strictObject({
+  requestId: IdentifierSchema,
+  idempotencyKey: IdentifierSchema,
+  requestedAt: IsoDateTimeSchema,
+  projectId: IdentifierSchema,
+  actorId: IdentifierSchema,
+  authorization: AuthorizationContextV1Schema,
+  /** 预测所基于的正式评估记录：精确版本，不接受「最新」。 */
+  baselineAssessmentRecordRef: RiskAssessmentRecordRefV1Schema,
+  /** 冻结的评分依据：与正式评估同一 input snapshot，规则／权重／矩阵不重新解析。 */
+  frozenAssessmentBasisRef: AssessmentInputSnapshotRefV1Schema,
+  /** 执行前的精确监测快照：预测过程不得越过该快照使用更晚数据。 */
+  preActionMonitoringSnapshotRef: z.strictObject({
+    kind: z.literal("monitoring-snapshot"),
+    reference: VersionReferenceSchema,
+  }),
+  targetIndicatorId: IdentifierSchema,
+  targetUnit: IdentifierSchema,
+  predictedValue: ScalarValueSchema,
+});
+export type ForecastRiskStateRequestV1 = z.infer<typeof ForecastRiskStateRequestV1Schema>;
+
+/** 不可用是受控结论而非失败：依据或监测不满足重算前提时按原因码返回，不伪造分数。 */
+export const ForecastRiskStateUnavailableReasonCodeV1Schema = z.enum([
+  "risk-state-unavailable",
+  "monitoring-series-mismatch",
+]);
+export type ForecastRiskStateUnavailableReasonCodeV1 = z.infer<
+  typeof ForecastRiskStateUnavailableReasonCodeV1Schema
+>;
+
+export const ForecastRiskStateResultV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("succeeded"),
+    riskState: RiskStateSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("unavailable"),
+    reasonCode: ForecastRiskStateUnavailableReasonCodeV1Schema,
+  }),
+  z.strictObject({
+    kind: z.literal("failed"),
+    error: ModuleErrorV1Schema,
+  }),
+]);
+export type ForecastRiskStateResultV1 = z.infer<typeof ForecastRiskStateResultV1Schema>;

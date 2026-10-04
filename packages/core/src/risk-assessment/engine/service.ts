@@ -23,6 +23,7 @@ import {
   type ResolveMonitoringSnapshotQueryV1,
 } from "../../engineering-data/monitoring/index.js";
 import type { ApplicabilityMetadataSnapshotV1 } from "../../engineering-data/context-source/index.js";
+import type { ForecastRiskStateRequestV1, ForecastRiskStateResultV1 } from "./schema.js";
 import type { AssessmentPreparationSnapshotV1 } from "@riskflow/contracts/workflows";
 import {
   ArtifactReadRequestV1Schema,
@@ -161,6 +162,17 @@ export interface AssessmentMonitoringReaderV1 extends MonitoringSeriesReaderV1 {
 
 /** C25 用例接口：实现方是 `packages/adapters` 的 PostgreSQL engine。 */
 export type RiskAssessmentEngineV1 = RiskAssessmentPortV1;
+
+/**
+ * C25 拥有的预测风险状态投影（design D-08）。调用方是 C28：它已冻结正式建议、精确基线与
+ * 执行前监测快照，需要一个「按同一评分依据重算后风险落在哪一档」的纯计算接缝。
+ *
+ * 该端口只读：实现方不得写评估记录、实际值集合、准备快照、预警、收据或 Outbox 事件，
+ * 因此同一请求重复执行不产生任何业务写入，却必须给出完全相同的结果。
+ */
+export interface ForecastRiskStatePortV1 {
+  projectForecastRiskState(request: ForecastRiskStateRequestV1): Promise<ForecastRiskStateResultV1>;
+}
 
 /* -------------------------------------------------------------------------- */
 /* C04 受权有界读取（D-03）                                                    */

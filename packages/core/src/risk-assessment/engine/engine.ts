@@ -122,6 +122,43 @@ export interface AssessmentEngineContextV1 {
   readonly monitoring: readonly AssessmentMonitoringInputV1[];
 }
 
+/**
+ * 评分与矩阵映射的最小上下文（design D-08）。它只含「重算一轴分数与风险等级」真正需要的
+ * 事实：已发布配置、按指标索引的规则及其所属发布成员、以及用于配置溯源的依据引用。
+ *
+ * 完整实际评估上下文额外携带准备、输入快照、风险事实与监测输入；预测投影不建立实际值集合、
+ * 不冻结准备、不写预警与收据，因此不能要求那些事实，也不应被这些函数读取。
+ */
+export interface AssessmentScoringContextV1 {
+  readonly basis: {
+    readonly applicableRuleSetMember: AssessmentBasisReleaseSetMemberV1;
+    readonly configurationMembers: readonly AssessmentBasisConfigurationMemberV1[];
+  };
+  readonly configuration: AssessmentConfigurationV1;
+  readonly rules: readonly {
+    readonly member: AssessmentBasisReleaseSetMemberV1;
+    readonly document: StructuredScoringRuleDocumentV1;
+  }[];
+}
+
+/**
+ * 评分输入的实际值集合。预测场景只提供被替换的那一个指标取值，其余指标沿用同一冻结
+ * 依据中的实际值；因此形状与实际评估一致，不另立第二套取值契约。
+ */
+export type AssessmentScoringValuesV1 = IndicatorActualValueSetV1;
+
+/** 从完整实际评估上下文取出评分所需的最小上下文。 */
+export const assessmentScoringContextOf = (
+  context: AssessmentEngineContextV1,
+): AssessmentScoringContextV1 => ({
+  basis: {
+    applicableRuleSetMember: context.basis.applicableRuleSetMember,
+    configurationMembers: context.basis.configurationMembers,
+  },
+  configuration: context.configuration,
+  rules: context.rules,
+});
+
 /** 正式记录的审计元数据：主体与记录时间来自本次评估调用，而非准备阶段。 */
 export interface RiskAssessmentAuditV1 {
   readonly actorId: string;
@@ -188,13 +225,13 @@ const monitoringSeriesKey = (indicator: string, parameterCode: string) =>
 type TargetRef = ContractReferenceV1;
 
 const configurationMemberFor = (
-  context: AssessmentEngineContextV1,
+  context: AssessmentScoringContextV1,
   definitionType: string,
 ): AssessmentBasisConfigurationMemberV1 | undefined =>
   context.basis.configurationMembers.find((member) => member.definitionType === definitionType);
 
 const configurationTargetRef = (
-  context: AssessmentEngineContextV1,
+  context: AssessmentScoringContextV1,
   definitionType: string,
 ): TargetRef => {
   const member = configurationMemberFor(context, definitionType);
@@ -334,7 +371,7 @@ const cutoffPoint = (
 /* 指标取值（D-05）                                                            */
 /* -------------------------------------------------------------------------- */
 
-const indicatorDefinition = (context: AssessmentEngineContextV1, indicatorId: string) => {
+const indicatorDefinition = (context: AssessmentScoringContextV1, indicatorId: string) => {
   const indicator = context.configuration.indicatorSystem.indicators.find(
     (candidate) => candidate.indicatorId === indicatorId,
   );
@@ -377,7 +414,7 @@ const assertValueKind = (
 };
 
 const publicNumber = (
-  context: AssessmentEngineContextV1,
+  context: AssessmentScoringContextV1,
   value: CanonicalDecimalValueV1,
   definitionType: string,
 ): number => {
@@ -590,7 +627,7 @@ export const materializeIndicatorActualValues = (
 /* -------------------------------------------------------------------------- */
 
 const ruleByIndicator = (
-  context: AssessmentEngineContextV1,
+  context: AssessmentScoringContextV1,
 ): ReadonlyMap<
   string,
   { rule: StructuredScoringRule; member: AssessmentBasisReleaseSetMemberV1 }
@@ -610,9 +647,9 @@ const ruleByIndicator = (
 };
 
 const scoreAxis = (
-  context: AssessmentEngineContextV1,
+  context: AssessmentScoringContextV1,
   axis: "possibility" | "consequence",
-  values: IndicatorActualValueSetV1,
+  values: AssessmentScoringValuesV1,
 ): AxisScoreResultV1 => {
   const indicatorType = axis === "possibility" ? "发生可能性评估指标" : "后果严重性评估指标";
   const weights =
@@ -691,7 +728,8 @@ const scoreAxis = (
     axis: {
       kind: "weighted-average",
       decimalScale: strategy.rounding.decimalScale,
-      weightSetRef: context.inputSnapshot.weightSetRef,
+      // 权重集引用取自已发布的配置成员，而不是评估输入快照：预测重算不消费输入快照。
+      weightSetRef: configurationRef(context, "weight-set"),
       score: decimalToString(rounded),
       publicScore: publicNumber(context, rounded, "scoring-strategy"),
       contributions: perIndicator.map((item) => ({
@@ -706,8 +744,8 @@ const scoreAxis = (
 };
 
 export const scoreAssessmentAxes = (
-  context: AssessmentEngineContextV1,
-  values: IndicatorActualValueSetV1,
+  context: AssessmentScoringContextV1,
+  values: AssessmentScoringValuesV1,
 ): AssessmentScoreV1 => ({
   possibility: scoreAxis(context, "possibility", values),
   consequence: scoreAxis(context, "consequence", values),
@@ -735,7 +773,7 @@ const bandIndex = (
 };
 
 export const mapAssessmentRiskLevel = (
-  context: AssessmentEngineContextV1,
+  context: AssessmentScoringContextV1,
   possibility: CanonicalDecimalValueV1,
   consequence: CanonicalDecimalValueV1,
 ): MatrixMappingV1 => {
@@ -1029,7 +1067,7 @@ export const buildRiskAssessmentRecord = (
 };
 
 const configurationRef = (
-  context: AssessmentEngineContextV1,
+  context: AssessmentScoringContextV1,
   definitionType: string,
 ): VersionReference => {
   const member = configurationMemberFor(context, definitionType);

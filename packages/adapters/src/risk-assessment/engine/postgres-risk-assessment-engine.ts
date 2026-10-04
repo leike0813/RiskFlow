@@ -37,8 +37,12 @@ import {
 import type { ApplicabilityMetadataSnapshotV1 } from "@riskflow/core/engineering-data/context-source";
 import {
   AssessmentDecisionArtifactV1Schema,
+  ForecastRiskStateRequestV1Schema,
+  ForecastRiskStateResultV1Schema,
   IndicatorActualValueSetV1Schema,
   type AssessmentDecisionArtifactV1,
+  type ForecastRiskStateRequestV1,
+  type ForecastRiskStateResultV1,
   type IndicatorActualValueSetV1,
 } from "@riskflow/core/risk-assessment/engine";
 import type {
@@ -51,6 +55,7 @@ import type {
   AssessmentMonitoringReaderV1,
   AssessmentPreparationContextReaderV1,
   AssessmentRuntimePolicySetProviderV1,
+  ForecastRiskStatePortV1,
   RiskInputFactsReaderV1,
 } from "@riskflow/core/risk-assessment/engine";
 import {
@@ -63,11 +68,14 @@ import {
   AssessmentRuntimePolicySetV1Schema,
   RiskInputFactsV1Schema,
   evaluateDeterministicAssessment,
+  mapAssessmentRiskLevel,
+  scoreAssessmentAxes,
   readApplicableRuleSetDocument,
   readStructuredScoringRuleDocument,
   riskAssessmentFailureFrom,
   toModuleError,
   type AssessmentRuntimePolicySetV1,
+  type AssessmentScoringContextV1,
   type DeterministicAssessmentV1,
   type RiskInputFactsV1,
 } from "@riskflow/core/risk-assessment/engine";
@@ -599,6 +607,7 @@ export class PostgresRiskAssessmentEngine
     RiskAssessmentPortV1,
     AssessmentInputSnapshotReaderV1,
     ActualAssessmentProofPortV1,
+    ForecastRiskStatePortV1,
     RiskAssessmentReadPortV1
 {
   readonly #db: Kysely<RiskAssessmentDatabase>;
@@ -1434,7 +1443,10 @@ export class PostgresRiskAssessmentEngine
     readonly projectId: string;
     readonly actorId: string;
     readonly issuedAt: string;
-    readonly preparation: AssessmentPreparationSnapshotV1;
+    readonly monitoringSnapshotRefs: readonly {
+      readonly kind: "monitoring-snapshot";
+      readonly reference: { readonly entityId: string; readonly versionId: string };
+    }[];
     /** 复验后的授权空间与来源引用：C06 只认访问空间修订。 */
     readonly binding: {
       readonly spatialScopeRefs: readonly SpatialScopeRefV1[];
@@ -1442,90 +1454,121 @@ export class PostgresRiskAssessmentEngine
     };
   }): Promise<readonly AssessmentMonitoringInputV1[]> {
     const inputs: AssessmentMonitoringInputV1[] = [];
-    for (const monitoringRef of input.preparation.monitoringSnapshotRefs ?? []) {
-      // C06 verify 与本次调用 invocationId 绑定：快照查询与序列读取各签发一次。
-      const invocationId = `${input.commandId}:monitoring-snapshot:${monitoringRef.reference.entityId}@${monitoringRef.reference.versionId}`;
-      const authorization = await this.#authorizeFor(
-        {
-          branch: RISK_ASSESSMENT_DOWNSTREAM_BRANCH_V1.monitoringReads,
-          invocationId,
+    for (const monitoringRef of input.monitoringSnapshotRefs) {
+      inputs.push(
+        await this.#readMonitoringSnapshotRef({
+          commandId: input.commandId,
           projectId: input.projectId,
           actorId: input.actorId,
-          requestedAt: input.issuedAt,
-          requestedSpatialScopeRefs: input.binding.spatialScopeRefs,
-          requestedSourceVersionRefs: input.binding.sourceVersionRefs,
-        },
-        "risk-assessment.read",
+          issuedAt: input.issuedAt,
+          monitoringRef,
+          binding: input.binding,
+        }),
       );
-      const read = await this.#monitoring.readSnapshot({
-        kind: "monitoring-snapshot",
-        queryId: invocationId,
-        projectId: input.projectId,
-        actorId: input.actorId,
-        requestedAt: input.issuedAt,
-        authorization,
-        payload: { monitoringSnapshotRef: monitoringRef },
-      });
-      if (read.kind !== "succeeded") {
-        throw moduleError("BUSINESS_BLOCKED", input.commandId, {
-          blockerKind: "risk-assessment-monitoring-unavailable",
-          blockerRef: monitoringRef,
-        });
-      }
-      const resolved = await this.#monitoring.resolveSnapshotQuery({
-        queryResultRef: read.result.queryResultRef,
+    }
+    return inputs;
+  }
+
+  /**
+   * 精确读取一个监测快照及其序列修订（design D-08）。正式评估按准备快照登记的引用逐个读取，
+   * 预测则读取请求声明的执行前快照：两者走同一条受权接缝，不另建监测读取路径。
+   */
+  async #readMonitoringSnapshotRef(input: {
+    readonly commandId: string;
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly issuedAt: string;
+    readonly monitoringRef: {
+      readonly kind: "monitoring-snapshot";
+      readonly reference: { readonly entityId: string; readonly versionId: string };
+    };
+    readonly binding: {
+      readonly spatialScopeRefs: readonly SpatialScopeRefV1[];
+      readonly sourceVersionRefs: readonly SourceVersionRefV1[];
+    };
+  }): Promise<AssessmentMonitoringInputV1> {
+    const { monitoringRef } = input;
+    // C06 verify 与本次调用 invocationId 绑定：快照查询与序列读取各签发一次。
+    const invocationId = `${input.commandId}:monitoring-snapshot:${monitoringRef.reference.entityId}@${monitoringRef.reference.versionId}`;
+    const authorization = await this.#authorizeFor(
+      {
+        branch: RISK_ASSESSMENT_DOWNSTREAM_BRANCH_V1.monitoringReads,
         invocationId,
         projectId: input.projectId,
         actorId: input.actorId,
         requestedAt: input.issuedAt,
-        authorization,
+        requestedSpatialScopeRefs: input.binding.spatialScopeRefs,
+        requestedSourceVersionRefs: input.binding.sourceVersionRefs,
+      },
+      "risk-assessment.read",
+    );
+    const read = await this.#monitoring.readSnapshot({
+      kind: "monitoring-snapshot",
+      queryId: invocationId,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      requestedAt: input.issuedAt,
+      authorization,
+      payload: { monitoringSnapshotRef: monitoringRef },
+    });
+    if (read.kind !== "succeeded") {
+      throw moduleError("BUSINESS_BLOCKED", input.commandId, {
+        blockerKind: "risk-assessment-monitoring-unavailable",
+        blockerRef: monitoringRef,
       });
-      if (resolved.kind !== "succeeded" || resolved.result.kind !== "snapshot-query") {
-        throw moduleError("BUSINESS_BLOCKED", input.commandId, {
-          blockerKind: "risk-assessment-monitoring-unavailable",
-          blockerRef: monitoringRef,
-        });
-      }
-      const snapshot = resolved.result.query.snapshot;
-      if (snapshot.projectId !== input.projectId) {
-        throw moduleError("AUTHORIZATION_DENIED", input.commandId);
-      }
-      const seriesQueryId = `${input.commandId}:monitoring-series:${snapshot.monitoringSeriesRef.reference.entityId}@${snapshot.monitoringSeriesRef.reference.versionId}`;
-      const seriesAuthorization = await this.#authorizeFor(
-        {
-          branch: RISK_ASSESSMENT_DOWNSTREAM_BRANCH_V1.monitoringReads,
-          invocationId: seriesQueryId,
-          projectId: input.projectId,
-          actorId: input.actorId,
-          requestedAt: input.issuedAt,
-          requestedSpatialScopeRefs: input.binding.spatialScopeRefs,
-          requestedSourceVersionRefs: input.binding.sourceVersionRefs,
-        },
-        "risk-assessment.read",
-      );
-      const seriesRead = await this.#monitoring.readSeriesRevision({
-        queryId: seriesQueryId,
+    }
+    const resolved = await this.#monitoring.resolveSnapshotQuery({
+      queryResultRef: read.result.queryResultRef,
+      invocationId,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      requestedAt: input.issuedAt,
+      authorization,
+    });
+    if (resolved.kind !== "succeeded" || resolved.result.kind !== "snapshot-query") {
+      throw moduleError("BUSINESS_BLOCKED", input.commandId, {
+        blockerKind: "risk-assessment-monitoring-unavailable",
+        blockerRef: monitoringRef,
+      });
+    }
+    const snapshot = resolved.result.query.snapshot;
+    if (snapshot.projectId !== input.projectId) {
+      throw moduleError("AUTHORIZATION_DENIED", input.commandId);
+    }
+    const seriesQueryId = `${input.commandId}:monitoring-series:${snapshot.monitoringSeriesRef.reference.entityId}@${snapshot.monitoringSeriesRef.reference.versionId}`;
+    const seriesAuthorization = await this.#authorizeFor(
+      {
+        branch: RISK_ASSESSMENT_DOWNSTREAM_BRANCH_V1.monitoringReads,
+        invocationId: seriesQueryId,
         projectId: input.projectId,
         actorId: input.actorId,
         requestedAt: input.issuedAt,
-        authorization: seriesAuthorization,
-        monitoringSeriesRef: snapshot.monitoringSeriesRef,
+        requestedSpatialScopeRefs: input.binding.spatialScopeRefs,
+        requestedSourceVersionRefs: input.binding.sourceVersionRefs,
+      },
+      "risk-assessment.read",
+    );
+    const seriesRead = await this.#monitoring.readSeriesRevision({
+      queryId: seriesQueryId,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      requestedAt: input.issuedAt,
+      authorization: seriesAuthorization,
+      monitoringSeriesRef: snapshot.monitoringSeriesRef,
+    });
+    if (seriesRead.kind !== "succeeded") {
+      throw moduleError("BUSINESS_BLOCKED", input.commandId, {
+        blockerKind: "risk-assessment-series-unavailable",
+        blockerRef: snapshot.monitoringSeriesRef,
       });
-      if (seriesRead.kind !== "succeeded") {
-        throw moduleError("BUSINESS_BLOCKED", input.commandId, {
-          blockerKind: "risk-assessment-series-unavailable",
-          blockerRef: snapshot.monitoringSeriesRef,
-        });
-      }
-      if (
-        refKey(seriesRead.result.monitoringSeriesRef) !== refKey(snapshot.monitoringSeriesRef) ||
-        seriesRead.result.projectId !== input.projectId
-      ) {
-        throw moduleError("AUTHORIZATION_DENIED", input.commandId);
-      }
-      inputs.push({ snapshot, seriesRevision: seriesRead.result });
     }
-    return inputs;
+    if (
+      refKey(seriesRead.result.monitoringSeriesRef) !== refKey(snapshot.monitoringSeriesRef) ||
+      seriesRead.result.projectId !== input.projectId
+    ) {
+      throw moduleError("AUTHORIZATION_DENIED", input.commandId);
+    }
+    return { snapshot, seriesRevision: seriesRead.result };
   }
 
   // ------------------------------------------------------- commit preconditions
@@ -2117,7 +2160,7 @@ export class PostgresRiskAssessmentEngine
         projectId: valid.projectId,
         actorId: verified.actorId,
         issuedAt: valid.issuedAt,
-        preparation,
+        monitoringSnapshotRefs: preparation.monitoringSnapshotRefs ?? [],
         binding,
       });
 
@@ -2196,6 +2239,254 @@ export class PostgresRiskAssessmentEngine
       .where("record_id", "=", ref.reference.entityId)
       .where("version_id", "=", ref.reference.versionId)
       .executeTakeFirst();
+  }
+
+  /**
+   * 预测风险状态投影（design D-08）。它复用正式评估的同一评分与矩阵映射，但只读：
+   * 读取基线记录的冻结依据与已存实际值集合，把目标指标替换为预测值后重算，
+   * 随后直接返回风险状态。
+   *
+   * 这里刻意不建立实际值集合、不冻结准备、不写评估记录、预警、收据或 Outbox 事件——
+   * 预测不是一次正式评估。同一请求重复执行必须得到完全相同的结果。
+   */
+  async projectForecastRiskState(
+    request: ForecastRiskStateRequestV1,
+  ): Promise<ForecastRiskStateResultV1> {
+    const parsed = ForecastRiskStateRequestV1Schema.safeParse(request);
+    if (!parsed.success) {
+      return ForecastRiskStateResultV1Schema.parse({
+        kind: "failed",
+        error: moduleError("UNSUPPORTED_CONTRACT", "risk-assessment.forecast-risk-state"),
+      });
+    }
+    const valid = parsed.data;
+    const commandId = valid.requestId;
+    const denied = (reasonCode: "risk-state-unavailable" | "monitoring-series-mismatch") =>
+      ForecastRiskStateResultV1Schema.parse({ kind: "unavailable", reasonCode });
+    try {
+      if (valid.projectId !== valid.authorization.projectId) {
+        throw moduleError("AUTHORIZATION_DENIED", commandId);
+      }
+      // 预测读的是已冻结事实，因此按正式评估的读取分支复验当前身份。
+      await this.#verifyCommand(
+        {
+          commandId,
+          projectId: valid.projectId,
+          actorId: valid.actorId,
+          authorization: valid.authorization,
+        },
+        "risk-assessment.read-input-snapshot",
+      );
+      const record = await this.#readRecordRow(valid.projectId, {
+        reference: valid.baselineAssessmentRecordRef.reference,
+      });
+      if (record === undefined) {
+        throw moduleError("AUTHORIZATION_DENIED", commandId);
+      }
+      // 评分依据只能来自基线记录冻结的那一版；请求声明的引用必须与之相同。
+      const boundInputSnapshot = AssessmentInputSnapshotRefV1Schema.safeParse(
+        record.input_snapshot_ref,
+      );
+      if (
+        !boundInputSnapshot.success ||
+        boundInputSnapshot.data.reference.entityId !==
+          valid.frozenAssessmentBasisRef.reference.entityId ||
+        boundInputSnapshot.data.reference.versionId !==
+          valid.frozenAssessmentBasisRef.reference.versionId
+      ) {
+        return denied("risk-state-unavailable");
+      }
+      const inputRow = await this.#db
+        .selectFrom("business.assessment_input_snapshots")
+        .selectAll()
+        .where("project_id", "=", valid.projectId)
+        .where("input_snapshot_id", "=", record.input_snapshot_id)
+        .where("version_id", "=", record.input_snapshot_version_id)
+        .executeTakeFirst();
+      if (inputRow === undefined) {
+        throw moduleError("AUTHORIZATION_DENIED", commandId);
+      }
+      const basisRef = this.#parseBasisRef(inputRow.basis_release_set_ref, commandId);
+      const basis = await this.#loadBasis({
+        commandId,
+        idempotencyKey: valid.idempotencyKey,
+        projectId: valid.projectId,
+        actorId: valid.actorId,
+        businessAt: valid.requestedAt,
+        // 依据成员读取与正式评估走同一条 C19 读取接缝，因此声明同一能力面。
+        requiredCapability: "risk-assessment.evaluate",
+        basisRef,
+      });
+      const valueSet = await this.#readValueSetForForecast(valid, {
+        value_set_id: record.value_set_id,
+        value_set_version_id: record.value_set_version_id,
+      });
+      if (valueSet === undefined) {
+        throw moduleError("AUTHORIZATION_DENIED", commandId);
+      }
+      const target = valueSet.values.values.find(
+        (value) => value.indicatorId === valid.targetIndicatorId,
+      );
+      if (target === undefined) {
+        return denied("risk-state-unavailable");
+      }
+      const indicator = basis.configuration.indicatorSystem.indicators.find(
+        (candidate) => candidate.indicatorId === valid.targetIndicatorId,
+      );
+      if (indicator === undefined) {
+        return denied("risk-state-unavailable");
+      }
+      // 预测值必须落在该指标正式声明的单位与量纲上：数值指标比规范单位，序数指标没有单位。
+      // 口径不同即不可用，不在这里做任何换算或推断。
+      const indicatorUnit = indicator.valueKind === "numeric" ? indicator.canonicalUnit : undefined;
+      if (indicatorUnit === undefined || indicatorUnit !== valid.targetUnit) {
+        return denied("risk-state-unavailable");
+      }
+      // 执行前监测快照必须真的承载目标指标：按序列修订的 monitoringIndicator/parameterCode
+      // 与该指标已发布字段映射的监测来源逐字比对，不从序列标识反推语义。快照本身读不到
+      // （撤权、失效或技术故障）时按类型化失败闭合，不降级为"序列不匹配"，也不改走其它序列。
+      // 目标指标本身没有监测来源（来源字段指标）时无序列可核对，该快照只作为请求声明的冻结事实读取。
+      const preparation = await this.#readForecastPreparation(valid, inputRow);
+      if (preparation === undefined) {
+        throw moduleError("AUTHORIZATION_DENIED", commandId);
+      }
+      const binding = this.#preparationBinding(commandId, valid.authorization, preparation);
+      const verified = await this.#verifyCommand(
+        {
+          commandId,
+          projectId: valid.projectId,
+          actorId: valid.actorId,
+          authorization: valid.authorization,
+        },
+        "risk-assessment.read-input-snapshot",
+        binding,
+      );
+      const series = (
+        await this.#readMonitoringSnapshotRef({
+          commandId,
+          projectId: valid.projectId,
+          actorId: verified.actorId,
+          issuedAt: valid.requestedAt,
+          monitoringRef: valid.preActionMonitoringSnapshotRef,
+          binding,
+        })
+      ).seriesRevision;
+      const monitoredOrigins = basis.configuration.fieldMapping.mappings.filter(
+        (mapping) =>
+          mapping.targetIndicatorId === valid.targetIndicatorId &&
+          mapping.origin.kind !== "source-field",
+      );
+      const carried =
+        monitoredOrigins.length === 0 ||
+        monitoredOrigins.some(
+          (mapping) =>
+            mapping.origin.kind !== "source-field" &&
+            mapping.origin.monitoringIndicator === series.monitoringIndicator &&
+            mapping.origin.parameterCode === series.parameterCode &&
+            mapping.targetUnit === valid.targetUnit &&
+            series.canonicalUnit === valid.targetUnit,
+        );
+      if (!carried) {
+        return denied("monitoring-series-mismatch");
+      }
+      const predicted = this.#projectedValueSet(valid, valueSet);
+      // 评分只按已发布配置与规则重算：这里不构造完整实际评估上下文，预测不需要准备、
+      // 输入快照、风险事实或监测输入（design D-08）。
+      const scoring: AssessmentScoringContextV1 = {
+        basis: {
+          applicableRuleSetMember: basis.applicableRuleSetMember,
+          configurationMembers: basis.configurationMembers,
+        },
+        configuration: basis.configuration,
+        rules: basis.rules,
+      };
+      const score = scoreAssessmentAxes(scoring, predicted);
+      const mapping = mapAssessmentRiskLevel(
+        scoring,
+        score.possibility.scoreValue,
+        score.consequence.scoreValue,
+      );
+      return ForecastRiskStateResultV1Schema.parse({
+        kind: "succeeded",
+        riskState: {
+          likelihoodScore: score.possibility.axis.publicScore,
+          consequenceScore: score.consequence.axis.publicScore,
+          riskLevel: mapping.riskLevelId,
+        },
+      });
+    } catch (error) {
+      return ForecastRiskStateResultV1Schema.parse({
+        kind: "failed",
+        error: failureToModuleError(error, commandId),
+      });
+    }
+  }
+
+  /**
+   * 预测只在内存里替换一个指标取值：返回的取值集合不落库，因此不生成新引用，
+   * 也不携带内容摘要——它只是评分函数的一次入参。
+   */
+  #projectedValueSet(
+    request: ForecastRiskStateRequestV1,
+    valueSet: LoadedValueSetV1,
+  ): IndicatorActualValueSetV1 {
+    return {
+      ...valueSet.values,
+      values: valueSet.values.values.map((value) =>
+        value.indicatorId === request.targetIndicatorId
+          ? { ...value, actualValue: request.predictedValue }
+          : value,
+      ),
+    };
+  }
+
+  /**
+   * 预测沿基线输入快照登记的精确准备引用取回已保存的准备正文：执行前监测快照的读取必须
+   * 在准备快照登记的空间与来源范围内复验，预测不接受自由传入的范围。
+   */
+  async #readForecastPreparation(
+    request: ForecastRiskStateRequestV1,
+    inputRow: Pick<
+      Selectable<AssessmentInputSnapshotRow>,
+      "preparation_snapshot_id" | "preparation_snapshot_version_id"
+    >,
+  ): Promise<AssessmentPreparationSnapshotV1 | undefined> {
+    let stored: { readonly snapshot_payload: unknown } | undefined;
+    try {
+      stored = await this.#db
+        .selectFrom("business.assessment_preparation_snapshots")
+        .select(["snapshot_payload"])
+        .where("project_id", "=", request.projectId)
+        .where("snapshot_id", "=", inputRow.preparation_snapshot_id)
+        .where("version_id", "=", inputRow.preparation_snapshot_version_id)
+        .executeTakeFirst();
+    } catch (error) {
+      throw mapPostgresError(error, "risk-assessment.read.preparation-snapshot");
+    }
+    if (stored === undefined) return undefined;
+    const preparation = AssessmentPreparationSnapshotV1Schema.safeParse(stored.snapshot_payload);
+    return preparation.success ? preparation.data : undefined;
+  }
+
+  async #readValueSetForForecast(
+    request: ForecastRiskStateRequestV1,
+    row: { readonly value_set_id: string; readonly value_set_version_id: string },
+  ): Promise<LoadedValueSetV1 | undefined> {
+    let stored: { readonly value_set_payload: unknown } | undefined;
+    try {
+      stored = await this.#db
+        .selectFrom("business.indicator_actual_value_sets")
+        .select(["value_set_payload"])
+        .where("project_id", "=", request.projectId)
+        .where("value_set_id", "=", row.value_set_id)
+        .where("version_id", "=", row.value_set_version_id)
+        .executeTakeFirst();
+    } catch (error) {
+      throw mapPostgresError(error, "risk-assessment.read.value-set");
+    }
+    if (stored === undefined) return undefined;
+    const values = IndicatorActualValueSetV1Schema.safeParse(stored.value_set_payload);
+    return values.success ? { values: values.data } : undefined;
   }
 
   #resultRefsFromRow(row: {

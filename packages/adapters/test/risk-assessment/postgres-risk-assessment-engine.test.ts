@@ -2353,4 +2353,271 @@ describe("C25 PostgreSQL risk assessment engine", () => {
       result: { recordedAssessmentCount: 0, riskLevelCounts: [] },
     });
   }, 300_000);
+
+  /**
+   * 预测风险状态投影（design D-08）：按基线记录冻结的同一评分依据重算，风险状态随目标
+   * 指标预测值变化；它不是一次正式评估，因此不产生任何实际事实写入。
+   */
+  describe("预测风险状态投影", () => {
+    /** 先跑一次正式评估，拿到真实的基线记录与冻结输入快照。 */
+    const evaluatedBaseline = async (suffix: string) => {
+      const preparation = await freshPreparation(`forecast-${suffix}`);
+      const prepared = await fixture.engine.prepare(
+        (await fixture.prepareCommand({
+          commandId: `forecast-prepare-${suffix}`,
+          preparation,
+        })) as never,
+      );
+      expect(prepared.kind).toBe("succeeded");
+      if (prepared.kind !== "succeeded") throw new Error("baseline preparation failed");
+      const inputSnapshotRef = prepared.result.assessmentInputSnapshotRef;
+      const evaluated = await fixture.engine.evaluate(
+        (await fixture.evaluateCommand({
+          commandId: `forecast-eval-${suffix}`,
+          inputSnapshotRef,
+        })) as never,
+      );
+      expect(evaluated.kind).toBe("succeeded");
+      if (evaluated.kind !== "succeeded") throw new Error("baseline evaluation failed");
+      return {
+        inputSnapshotRef,
+        baselineAssessmentRecordRef: evaluated.result.assessmentRecordRef,
+      };
+    };
+
+    /** 预测请求：授权沿用正式评估的输入快照读取分支——同一身份、同一能力面。 */
+    const forecastRequest = async (input: {
+      readonly requestId: string;
+      readonly baselineAssessmentRecordRef: unknown;
+      readonly inputSnapshotRef: unknown;
+      readonly targetIndicatorId: string;
+      readonly targetUnit: string;
+      readonly predictedValue: number;
+      /** 执行前监测快照默认取夹具登记的地表沉降序列，它承载后果指标。 */
+      readonly preActionMonitoringSnapshotRef?: {
+        readonly kind: "monitoring-snapshot";
+        readonly reference: { readonly entityId: string; readonly versionId: string };
+      };
+    }) => ({
+      requestId: input.requestId,
+      idempotencyKey: input.requestId,
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      projectId: fixture.projectId,
+      actorId: fixture.managerId,
+      // C06 把上下文与签发时的调用标识绑定，因此签发与复验必须用同一个 requestId。
+      authorization: await fixture.readAuthorization(input.requestId),
+      baselineAssessmentRecordRef: input.baselineAssessmentRecordRef,
+      frozenAssessmentBasisRef: input.inputSnapshotRef,
+      preActionMonitoringSnapshotRef:
+        input.preActionMonitoringSnapshotRef ?? fixture.monitoringSnapshotRefs[0]!,
+      targetIndicatorId: input.targetIndicatorId,
+      targetUnit: input.targetUnit,
+      predictedValue: input.predictedValue,
+    });
+
+    it("目标指标预测值改变时风险状态随之变化且可精确重放", async () => {
+      const baseline = await evaluatedBaseline("baseline");
+      const countsBefore = {
+        records: await countRows(fixture, "business.risk_assessment_records", fixture.projectId),
+        valueSets: await countRows(
+          fixture,
+          "business.indicator_actual_value_sets",
+          fixture.projectId,
+        ),
+        preparations: await countRows(
+          fixture,
+          "business.assessment_preparation_snapshots",
+          fixture.projectId,
+        ),
+        warnings: await countRows(fixture, "business.warning_records", fixture.projectId),
+        events: await countEvents(fixture, "risk-assessment.*"),
+      };
+
+      // 后果指标跨评分带：<10mm 得 1 分，>=40mm 得 5 分（该指标的正式量化标准）。
+      // 后果轴按最大值取值，因此这一个指标决定整轴分数并推动矩阵换带。
+      const low = await fixture.engine.projectForecastRiskState(
+        (await forecastRequest({
+          requestId: "forecast-risk-low",
+          baselineAssessmentRecordRef: baseline.baselineAssessmentRecordRef,
+          inputSnapshotRef: baseline.inputSnapshotRef,
+          targetIndicatorId: "indicator-consequence-1",
+          targetUnit: "mm",
+          predictedValue: 5,
+        })) as never,
+      );
+      const high = await fixture.engine.projectForecastRiskState(
+        (await forecastRequest({
+          requestId: "forecast-risk-high",
+          baselineAssessmentRecordRef: baseline.baselineAssessmentRecordRef,
+          inputSnapshotRef: baseline.inputSnapshotRef,
+          targetIndicatorId: "indicator-consequence-1",
+          targetUnit: "mm",
+          predictedValue: 40,
+        })) as never,
+      );
+      expect(low.kind, JSON.stringify(low)).toBe("succeeded");
+      expect(high.kind, JSON.stringify(high)).toBe("succeeded");
+      if (low.kind !== "succeeded" || high.kind !== "succeeded") return;
+      // 可能性轴沿基线实际值不变；只有被预测的那一轴随预测值变化，说明替换只发生一次。
+      expect(high.riskState.likelihoodScore).toBe(low.riskState.likelihoodScore);
+      expect(high.riskState.consequenceScore).toBeGreaterThan(low.riskState.consequenceScore);
+      expect(high.riskState).not.toEqual(low.riskState);
+
+      // 可能性轴：来源字段指标没有监测来源，执行前快照在此只作为请求声明的冻结事实读取。
+      // 可能性按 40%/60% 加权，把高权重指标从最低档带到最高档必然改变可能性得分与风险等级。
+      const possibilityLow = await fixture.engine.projectForecastRiskState(
+        (await forecastRequest({
+          requestId: "forecast-risk-possibility-low",
+          baselineAssessmentRecordRef: baseline.baselineAssessmentRecordRef,
+          inputSnapshotRef: baseline.inputSnapshotRef,
+          targetIndicatorId: "indicator-possibility-2",
+          targetUnit: "1",
+          predictedValue: 1,
+        })) as never,
+      );
+      const possibilityHigh = await fixture.engine.projectForecastRiskState(
+        (await forecastRequest({
+          requestId: "forecast-risk-possibility-high",
+          baselineAssessmentRecordRef: baseline.baselineAssessmentRecordRef,
+          inputSnapshotRef: baseline.inputSnapshotRef,
+          targetIndicatorId: "indicator-possibility-2",
+          targetUnit: "1",
+          predictedValue: 5,
+        })) as never,
+      );
+      if (possibilityLow.kind !== "succeeded" || possibilityHigh.kind !== "succeeded") {
+        throw new Error(
+          `possibility forecast unavailable: ${JSON.stringify([possibilityLow, possibilityHigh])}`,
+        );
+      }
+      expect(possibilityHigh.riskState.likelihoodScore).toBeGreaterThan(
+        possibilityLow.riskState.likelihoodScore,
+      );
+      // 可能性轴跨带后矩阵换格：风险等级必须随之改变，而不是恒定或缺省。
+      expect(possibilityHigh.riskState.riskLevel).not.toBe(possibilityLow.riskState.riskLevel);
+
+      // 同一请求重放给出完全相同的状态：精确重放不依赖执行时刻。
+      const replay = await fixture.engine.projectForecastRiskState(
+        (await forecastRequest({
+          requestId: "forecast-risk-low",
+          baselineAssessmentRecordRef: baseline.baselineAssessmentRecordRef,
+          inputSnapshotRef: baseline.inputSnapshotRef,
+          targetIndicatorId: "indicator-consequence-1",
+          targetUnit: "mm",
+          predictedValue: 5,
+        })) as never,
+      );
+      expect(replay).toEqual(low);
+
+      // 纯计算：不新增任何实际事实，也不发布领域事件。
+      expect(await countRows(fixture, "business.risk_assessment_records", fixture.projectId)).toBe(
+        countsBefore.records,
+      );
+      expect(
+        await countRows(fixture, "business.indicator_actual_value_sets", fixture.projectId),
+      ).toBe(countsBefore.valueSets);
+      expect(
+        await countRows(fixture, "business.assessment_preparation_snapshots", fixture.projectId),
+      ).toBe(countsBefore.preparations);
+      expect(await countRows(fixture, "business.warning_records", fixture.projectId)).toBe(
+        countsBefore.warnings,
+      );
+      expect(await countEvents(fixture, "risk-assessment.*")).toBe(countsBefore.events);
+    }, 300_000);
+
+    it("冻结依据、指标、单位或监测序列不相容时按受控结果收敛且不返回分数", async () => {
+      const baseline = await evaluatedBaseline("mismatch");
+      const settlementSnapshot = fixture.monitoringSnapshotRefs[0]!;
+      const waterLevelSnapshot = fixture.monitoringSnapshotRefs[1]!;
+      const cases = [
+        {
+          label: "frozen-basis-mismatch",
+          expected: { kind: "unavailable", reasonCode: "risk-state-unavailable" },
+          inputSnapshotRef: {
+            kind: "assessment-input-snapshot" as const,
+            reference: { entityId: "forecast-absent-input", versionId: "1" },
+          },
+          targetIndicatorId: "indicator-consequence-1",
+          targetUnit: "mm",
+          predictedValue: 8,
+          preActionMonitoringSnapshotRef: settlementSnapshot,
+        },
+        {
+          label: "indicator-missing",
+          expected: { kind: "unavailable", reasonCode: "risk-state-unavailable" },
+          inputSnapshotRef: baseline.inputSnapshotRef,
+          targetIndicatorId: "indicator-not-in-basis",
+          targetUnit: "mm",
+          predictedValue: 8,
+          preActionMonitoringSnapshotRef: settlementSnapshot,
+        },
+        {
+          label: "unit-mismatch",
+          expected: { kind: "unavailable", reasonCode: "risk-state-unavailable" },
+          inputSnapshotRef: baseline.inputSnapshotRef,
+          targetIndicatorId: "indicator-consequence-1",
+          targetUnit: "m",
+          predictedValue: 8,
+          preActionMonitoringSnapshotRef: settlementSnapshot,
+        },
+        {
+          // 指标与单位都相容，但执行前快照是地下水位序列：它不承载目标指标，不做跨序列推断。
+          label: "monitoring-series-mismatch",
+          expected: { kind: "unavailable", reasonCode: "monitoring-series-mismatch" },
+          inputSnapshotRef: baseline.inputSnapshotRef,
+          targetIndicatorId: "indicator-consequence-1",
+          targetUnit: "mm",
+          predictedValue: 8,
+          preActionMonitoringSnapshotRef: waterLevelSnapshot,
+        },
+        {
+          // 请求声明的快照版本不存在：按精确引用读不到即类型化失败，不退化成"序列不匹配"，
+          // 也不沿用基线风险状态冒充预测。
+          label: "monitoring-snapshot-unreadable",
+          expected: { kind: "failed" },
+          inputSnapshotRef: baseline.inputSnapshotRef,
+          targetIndicatorId: "indicator-consequence-1",
+          targetUnit: "mm",
+          predictedValue: 8,
+          preActionMonitoringSnapshotRef: {
+            kind: "monitoring-snapshot" as const,
+            reference: { entityId: settlementSnapshot.reference.entityId, versionId: "9" },
+          },
+        },
+      ];
+      for (const current of cases) {
+        const result = await fixture.engine.projectForecastRiskState(
+          (await forecastRequest({
+            requestId: `forecast-risk-${current.label}`,
+            baselineAssessmentRecordRef: baseline.baselineAssessmentRecordRef,
+            inputSnapshotRef: current.inputSnapshotRef,
+            targetIndicatorId: current.targetIndicatorId,
+            targetUnit: current.targetUnit,
+            predictedValue: current.predictedValue,
+            preActionMonitoringSnapshotRef: current.preActionMonitoringSnapshotRef,
+          })) as never,
+        );
+        expect(result, current.label).toMatchObject(current.expected);
+        expect(result, current.label).not.toHaveProperty("riskState");
+      }
+    }, 300_000);
+
+    it("基线记录不存在或授权身份不符时关闭失败", async () => {
+      const baseline = await evaluatedBaseline("denied");
+      const absent = await fixture.engine.projectForecastRiskState(
+        (await forecastRequest({
+          requestId: "forecast-risk-absent-record",
+          baselineAssessmentRecordRef: {
+            kind: "risk-assessment-record",
+            reference: { entityId: "forecast-absent-record", versionId: "1" },
+          },
+          inputSnapshotRef: baseline.inputSnapshotRef,
+          targetIndicatorId: "indicator-consequence-1",
+          targetUnit: "mm",
+          predictedValue: 8,
+        })) as never,
+      );
+      expect(absent).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    }, 300_000);
+  });
 });

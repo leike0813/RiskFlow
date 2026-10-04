@@ -29,6 +29,7 @@ import type {
   EngineeringDataCommandV1,
   EngineeringFreezeCommandV1,
   EngineeringFreezeResultV1,
+  ModuleBranchV1,
   MonitoringBatchRefV1,
   MonitoringSeriesRefV1,
   ProjectRevisionRefV1,
@@ -54,6 +55,7 @@ import {
   StructuredDocumentConversionAdapter,
   type OcrLayoutParserV1,
 } from "../../../src/engineering-data/document-conversion/structured-document-converter.js";
+import type { PostgresEngineeringContextSourceRegistryOptions } from "../../../src/engineering-data/context-source/index.js";
 import {
   startEngineeringContextSourceFixture,
   type EngineeringContextSourcePostgresFixture,
@@ -416,13 +418,13 @@ export interface CleaningWorldV1 {
     invocationId: string,
     sourceVersionRefs?: readonly SourceVersionRefV1[],
   ): Promise<AuthorizationContextV1>;
-  /** 任意 C06 分支的真实会话授权（测试组合根用）。 */
+  /**
+   * 任意 C06 分支的真实会话授权（测试组合根用）。分支由 C02 分支表与成员角色共同裁决，
+   * 资料范围默认取本 world 登记的全部来源版本；C07/C16/C19 因此无需测试替身即可复验。
+   */
   authorizeBranch(
     invocationId: string,
-    branch:
-      | "engineering-data.evidence-access"
-      | "knowledge-modeling.assessment-basis"
-      | "knowledge-modeling.submit-revision",
+    branch: ModuleBranchV1,
     sourceVersionRefs?: readonly SourceVersionRefV1[],
   ): Promise<AuthorizationContextV1>;
   /** C15 精确准备与清洗结果读取接缝共用的 `engineering-data.evidence-access` 分支授权。 */
@@ -563,10 +565,22 @@ export interface DataCleaningPostgresFixture {
 export const startDataCleaningFixture = async (
   options: {
     readonly policy?: DataCleaningPolicyV1;
+    /**
+     * C11 registry 的额外接线。生产依据装配（IP-04 / D-12）需要同一 registry 既能做
+     * 清洗链路，也能冻结评估准备——那要求注入生产风险事实 reader 与下游授权签发接缝。
+     * 缺省不注入：C15 单模块用例的既有行为保持原样。
+     */
+    readonly registryOptions?: Partial<
+      Omit<
+        PostgresEngineeringContextSourceRegistryOptions,
+        "db" | "transactionUnit" | "access" | "artifactStore" | "artifactReferenceGuard"
+      >
+    >;
   } = {},
 ): Promise<DataCleaningPostgresFixture> => {
   const base = await startEngineeringContextSourceFixture({
     now: () => new Date(CLEANING_TEST_TIMESTAMP),
+    registryOptions: options.registryOptions,
   });
   const policy = options.policy ?? cleaningPolicy();
   const admin = await bootstrapInitialSystemAdministrator({
@@ -699,11 +713,7 @@ export const startDataCleaningFixture = async (
     const authorizeFor = async (
       credential: { readonly accountId: string; readonly sessionToken: string },
       invocationId: string,
-      branch:
-        | "engineering-data.register-source-delivery"
-        | "engineering-data.register-monitoring-batch"
-        | "engineering-data.identification-preparation"
-        | "engineering-data.evidence-access",
+      branch: ModuleBranchV1,
       spatialScopeRefs: readonly SpatialScopeRefV1[],
       sourceVersionRefs: readonly SourceVersionRefV1[],
     ) =>

@@ -4424,6 +4424,8 @@ describe("C11 PostgreSQL context/source registry", () => {
           readonly businessSpatialScopeRef: SpatialScopeRefV1;
           readonly accessRootScopeRef: SpatialScopeRefV1;
           readonly applicabilitySnapshotRef: ApplicabilityMetadataSnapshotRefV1;
+          /** C19 准备读取声明的来源范围：与准备快照内的来源证据同源。 */
+          readonly sourceVersionRef: SourceVersionRefV1;
         }
       | undefined;
 
@@ -4437,8 +4439,13 @@ describe("C11 PostgreSQL context/source registry", () => {
       branch:
         | "engineering-data.register-source-delivery"
         | "engineering-data.evidence-access"
-        | "engineering-data.assessment-preparation",
+        | "engineering-data.assessment-preparation"
+        // C19 评估依据准备读取固定使用自己的分支；C11 不枚举或复用其它分支的上下文。
+        | "knowledge-modeling.assessment-basis",
       sourceVersionRefs: readonly SourceVersionRefV1[] = [],
+      // 业务空间是准备快照自身保存的空间身份；C11 按该身份核对授权空间，
+      // 因此读取场景必须按业务空间而非根空间签发。
+      spatialScopeRef?: SpatialScopeRefV1,
     ) => {
       const state = requireWorld();
       return (
@@ -4447,7 +4454,7 @@ describe("C11 PostgreSQL context/source registry", () => {
           invocationId,
           projectId: project,
           branch,
-          requestedSpatialScopeRefs: [state.accessRootScopeRef],
+          requestedSpatialScopeRefs: [spatialScopeRef ?? state.accessRootScopeRef],
           requestedSourceVersionRefs: [...sourceVersionRefs],
         })
       ).context;
@@ -4598,6 +4605,94 @@ describe("C11 PostgreSQL context/source registry", () => {
       if (snapshot.kind !== "succeeded" || snapshot.result.kind !== "applicability-snapshot") {
         throw new Error("C25 applicability snapshot failed");
       }
+      // C19 评估依据准备读取必须声明该工程的真实来源版本：先登记一份交付，
+      // 让「授权声明的来源范围」与「准备快照内的来源证据」同源可比。
+      const sourceAuthorization = await authorizeBranch(
+        "c25-basis-source",
+        "engineering-data.register-source-delivery",
+      );
+      const sourceArtifact = await fixture.artifactStore.put(
+        {
+          schemaVersion: "1",
+          commandId: "c25-basis-source:put",
+          idempotencyKey: "c25-basis-source:put",
+          projectId: project,
+          actorId: manager.resultRef.entityId,
+          issuedAt: now,
+          authorization: sourceAuthorization,
+          requiredCapability: sourceAuthorization.grantedCapabilities[0]!,
+          artifactId: "c25-basis-source",
+          artifactKind: "content",
+          purposeCode: "engineering-data.register-source-delivery",
+          mediaType: "application/json",
+          parentArtifactRefs: [],
+          evidenceReferences: [],
+          additionalSpatialScopeRefs: [],
+          additionalSourceAccessGrantRefs: [],
+        },
+        (async function* () {
+          yield new TextEncoder().encode(JSON.stringify({ schemaVersion: "1" }));
+        })(),
+      );
+      const metadataArtifact = await fixture.artifactStore.put(
+        {
+          schemaVersion: "1",
+          commandId: "c25-basis-source-metadata:put",
+          idempotencyKey: "c25-basis-source-metadata:put",
+          projectId: project,
+          actorId: manager.resultRef.entityId,
+          issuedAt: now,
+          authorization: sourceAuthorization,
+          requiredCapability: sourceAuthorization.grantedCapabilities[0]!,
+          artifactId: "c25-basis-source-metadata",
+          artifactKind: "content",
+          purposeCode: "engineering-data.register-source-delivery",
+          mediaType: "application/json",
+          parentArtifactRefs: [],
+          evidenceReferences: [],
+          additionalSpatialScopeRefs: [],
+          additionalSourceAccessGrantRefs: [],
+        },
+        (async function* () {
+          yield new TextEncoder().encode(
+            JSON.stringify({
+              schemaVersion: "1",
+              projectRevisionRef: projectResult.result.revision.projectRevisionRef,
+              spatialScopeRefs: [spatialResult.result.revision.spatialScopeRef],
+              registeredByAccountId: manager.resultRef.entityId,
+              sourceItemId: "c25-basis-source-item",
+              sourceItemName: "C25 basis source",
+              sourceCategory: "engineering-document",
+              sourceMetadata: {
+                documentType: "c25-basis",
+                formedAt: now,
+                sourceOrganization: "owner",
+              },
+              descriptor: { kind: "file-upload", contentFingerprint: "c25-basis-source" },
+              applicabilityMetadataSnapshotRef: snapshot.result.snapshot.snapshotRef,
+            }),
+          );
+        })(),
+      );
+      const delivery = await fixture.registry.apply({
+        commandId: "c25-basis-source",
+        idempotencyKey: "c25-basis-source",
+        projectId: project,
+        actorId: manager.resultRef.entityId,
+        issuedAt: now,
+        authorization: sourceAuthorization,
+        kind: "register-source-delivery",
+        payload: {
+          sourceConnectionRef: { entityId: "c25-basis-connection", versionId: "1" },
+          deliveryKey: "c25-basis-source",
+          sourceArtifactRef: sourceArtifact.artifactRef,
+          metadataArtifactRef: metadataArtifact.artifactRef,
+          occurredAt: now,
+        },
+      } as never);
+      if (delivery.kind !== "succeeded" || delivery.result.kind !== "register-source-delivery") {
+        throw new Error(`C25 basis source delivery failed: ${JSON.stringify(delivery)}`);
+      }
       world = {
         managerId: manager.resultRef.entityId,
         sessionToken: managerChanged.sessionToken,
@@ -4605,6 +4700,7 @@ describe("C11 PostgreSQL context/source registry", () => {
         businessSpatialScopeRef: spatialResult.result.revision.spatialScopeRef,
         accessRootScopeRef,
         applicabilitySnapshotRef: snapshot.result.snapshot.snapshotRef,
+        sourceVersionRef: delivery.result.sourceVersionRef,
       };
     }, 240_000);
 
@@ -4619,33 +4715,31 @@ describe("C11 PostgreSQL context/source registry", () => {
           readonly kind: string;
           readonly reference: { readonly entityId: string; readonly versionId: string };
         };
-      }) => ({
-        kind: "succeeded" as const,
-        facts: {
-          schemaVersion: "1" as const,
-          projectId: input.authorization.projectId,
-          riskInput: input.riskInput,
-          fields: [
-            {
-              documentType: "standardized-risk-record",
-              fieldPath: ["riskSource"],
-              value: "盾构机正面",
-              evidenceReferences: [
-                {
-                  locator: { sourceSegmentId: "c25-segment-1" },
-                  sourceVersion: { entityId: "c25-source-version", versionId: "1" },
-                },
-              ],
-            },
-          ],
-          evidenceReferences: [
-            {
-              locator: { sourceSegmentId: "c25-segment-1" },
-              sourceVersion: { entityId: "c25-source-version", versionId: "1" },
-            },
-          ],
-        },
-      }),
+      }) => {
+        // 事实证据必须落在该 world 登记的真实来源版本上：准备快照会原样保存这些来源引用，
+        // 后续 C19 读取按同一引用复验。用固定假版本会让读取按越权关闭。
+        const state = requireWorld();
+        const sourceVersion = state.sourceVersionRef.reference;
+        return {
+          kind: "succeeded" as const,
+          facts: {
+            schemaVersion: "1" as const,
+            projectId: input.authorization.projectId,
+            riskInput: input.riskInput,
+            fields: [
+              {
+                documentType: "standardized-risk-record",
+                fieldPath: ["riskSource"],
+                value: "盾构机正面",
+                evidenceReferences: [
+                  { locator: { sourceSegmentId: "c25-segment-1" }, sourceVersion },
+                ],
+              },
+            ],
+            evidenceReferences: [{ locator: { sourceSegmentId: "c25-segment-1" }, sourceVersion }],
+          },
+        };
+      },
     };
 
     const authorizeDownstream = async (request: {
@@ -4681,11 +4775,18 @@ describe("C11 PostgreSQL context/source registry", () => {
         authorizeDownstream: authorizeDownstream as never,
       });
 
-    const freezeCommand = async (suffix: string, withMonitoring: boolean) => {
+    const freezeCommand = async (
+      suffix: string,
+      withMonitoring: boolean,
+      // 入口授权声明的来源范围。缺省为空：既有冻结用例不要求来源证据同源；
+      // C19 准备读取场景必须与读取授权声明同一来源，否则按越权关闭。
+      sourceVersionRefs: readonly SourceVersionRefV1[] = [],
+    ) => {
       const state = requireWorld();
       const authorization = await authorizeBranch(
         `c25-freeze-${suffix}`,
         "engineering-data.assessment-preparation",
+        sourceVersionRefs,
       );
       return {
         commandId: `c25-freeze-${suffix}`,
@@ -4885,5 +4986,138 @@ describe("C11 PostgreSQL context/source registry", () => {
       );
       expect(Number(rows.rows[0]?.count ?? "0")).toBe(1);
     }, 120_000);
+
+    /**
+     * IP-04 / C19 delta：评估依据准备投影由 C11 所属域提供。投影只含准备身份、工程修订与
+     * 冻结适用性六项——不含清洗任务、结果工件、配置集合或兼容引用，因为那些是规则编制
+     * 来源与 C18/C19 的核验对象。读取固定 `knowledge-modeling.assessment-basis` 分支，
+     * 与 C25 精确准备读取的 `engineering-data.evidence-access` 分支互不通用。
+     */
+    describe("C19 评估依据准备投影读取", () => {
+      const freezeAndRead = async (suffix: string) => {
+        const state = requireWorld();
+        const registry = openRegistry();
+        const command = await freezeCommand(`basis-${suffix}`, false, [state.sourceVersionRef]);
+        const frozen = await registry.freeze(command);
+        if (frozen.kind !== "succeeded" || frozen.result.kind !== "assessment-preparation") {
+          throw new Error(`C11 freeze failed: ${JSON.stringify(frozen)}`);
+        }
+        const authorization = await authorizeBranch(
+          `basis-${suffix}-read`,
+          "knowledge-modeling.assessment-basis",
+          // 准备快照内含来源证据：授权必须声明该工程的真实来源版本与业务空间，否则按越权关闭。
+          [state.sourceVersionRef],
+          state.businessSpatialScopeRef,
+        );
+        return {
+          state,
+          registry,
+          preparationSnapshotRef: frozen.result.assessmentPreparationSnapshotRef,
+          read: await registry.readAssessmentPreparationSnapshot({
+            projectId: project,
+            actorId: state.managerId,
+            requestId: `basis-${suffix}-read`,
+            idempotencyKey: `basis-${suffix}-read`,
+            requestedAt: now,
+            authorization,
+            preparationSnapshotRef: frozen.result.assessmentPreparationSnapshotRef,
+          }),
+        };
+      };
+
+      it("投影只含准备身份、工程修订与冻结适用性，且与冻结准备同源", async () => {
+        const { state, preparationSnapshotRef, read } = await freezeAndRead("projection");
+        expect(read.kind, JSON.stringify(read)).toBe("succeeded");
+        if (read.kind !== "succeeded") return;
+        // 六字段闭包：不得混入清洗任务、结果工件、配置集合、兼容引用或业务时刻。
+        expect(Object.keys(read.projection).sort()).toEqual([
+          "applicability",
+          "applicabilitySnapshotRef",
+          "preparationSnapshotRef",
+          "projectId",
+          "projectRevisionRef",
+          "schemaVersion",
+        ]);
+        expect(read.projection.preparationSnapshotRef).toEqual(preparationSnapshotRef);
+        expect(read.projection.projectId).toBe(project);
+        expect(read.projection.projectRevisionRef).toEqual(state.projectRevisionRef);
+        expect(read.projection.applicabilitySnapshotRef).toEqual(state.applicabilitySnapshotRef);
+      }, 120_000);
+
+      it("准备身份错配或工程不合法时关闭失败且不返回投影", async () => {
+        const state = requireWorld();
+        const registry = openRegistry();
+        const frozen = await registry.freeze(
+          await freezeCommand("basis-mismatch", false, [state.sourceVersionRef]),
+        );
+        if (frozen.kind !== "succeeded" || frozen.result.kind !== "assessment-preparation") {
+          throw new Error("C11 freeze failed");
+        }
+        const cases = [
+          {
+            label: "preparation-missing",
+            preparationSnapshotRef: {
+              kind: "assessment-preparation-snapshot" as const,
+              reference: { entityId: "c11-absent-preparation", versionId: "1" },
+            },
+          },
+          {
+            label: "preparation-wrong-version",
+            preparationSnapshotRef: {
+              ...frozen.result.assessmentPreparationSnapshotRef,
+              reference: {
+                ...frozen.result.assessmentPreparationSnapshotRef.reference,
+                versionId: "7",
+              },
+            },
+          },
+          {
+            label: "foreign-project",
+            projectId: "project-c11-foreign",
+          },
+        ];
+        for (const current of cases) {
+          const authorization = await authorizeBranch(
+            `basis-mismatch-${current.label}`,
+            "knowledge-modeling.assessment-basis",
+          );
+          const read = await registry.readAssessmentPreparationSnapshot({
+            projectId: current.projectId ?? project,
+            actorId: state.managerId,
+            requestId: `basis-mismatch-${current.label}`,
+            idempotencyKey: `basis-mismatch-${current.label}`,
+            requestedAt: now,
+            authorization,
+            preparationSnapshotRef:
+              current.preparationSnapshotRef ?? frozen.result.assessmentPreparationSnapshotRef,
+          });
+          // 缺失、错版本与跨工程收敛为同一不可枚举拒绝，且不返回任何投影字段。
+          expect(read, current.label).toMatchObject({
+            kind: "failed",
+            error: { code: "AUTHORIZATION_DENIED" },
+          });
+        }
+      }, 120_000);
+
+      it("只接受 C19 assessment-basis 调用身份：C25 evidence-access 上下文不被接受", async () => {
+        const { state, preparationSnapshotRef } = await freezeAndRead("identity");
+        // 合法准备、合法 actor，但授权上下文来自另一个分支：C11 不枚举或复用其它分支。
+        const authorization = await authorizeBranch(
+          "basis-identity-other-branch",
+          "engineering-data.evidence-access",
+        );
+        const registry = openRegistry();
+        const read = await registry.readAssessmentPreparationSnapshot({
+          projectId: project,
+          actorId: state.managerId,
+          requestId: "basis-identity-other-branch",
+          idempotencyKey: "basis-identity-other-branch",
+          requestedAt: now,
+          authorization,
+          preparationSnapshotRef,
+        });
+        expect(read).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+      }, 120_000);
+    });
   });
 });

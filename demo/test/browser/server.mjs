@@ -54,6 +54,9 @@ import {
 import { createPostgresRuntime } from "../../../packages/adapters/dist/postgres/pool.js";
 import { PostgresRetrievalAdapter } from "../../../packages/adapters/dist/retrieval/index.js";
 import { createPostgresRiskAssessmentEngine } from "../../../packages/adapters/dist/risk-assessment/engine/index.js";
+import { createPostgresStandardizedRiskInputFactsReader } from "../../../packages/adapters/dist/identification/read/index.js";
+import { createPostgresExternalRiskInputFactsReader } from "../../../packages/adapters/dist/engineering-data/context-source/index.js";
+import { createRiskInputFactsReader } from "../../../packages/core/dist/risk-assessment/engine/index.js";
 import {
   createRecommendationPolicies,
   createRiskAssessmentRuntimePolicies,
@@ -392,6 +395,21 @@ export const startDemoBrowserServer = async () => {
       artifactStore,
       artifactReferenceGuard: artifactStore.referenceGuard,
     });
+    /**
+     * 风险输入事实 XOR：标准化风险记录归识别验收域，外部风险事件归工程数据源登记域，
+     * 由 core 的组合工厂按 kind 分派。两个分支各自复验 C06 当前授权，不共用一个查询。
+     */
+    const riskInputFacts = createRiskInputFactsReader({
+      standardizedRiskRecord: createPostgresStandardizedRiskInputFactsReader({
+        db: appRuntime.db,
+        authorization: access,
+      }),
+      externalRiskEvent: createPostgresExternalRiskInputFactsReader({
+        db: appRuntime.db,
+        authorization: access,
+        artifactStore,
+      }),
+    });
     const registry = createPostgresEngineeringContextSourceRegistry({
       db: appRuntime.db,
       transactionUnit,
@@ -399,6 +417,8 @@ export const startDemoBrowserServer = async () => {
       artifactStore,
       artifactReferenceGuard: artifactStore.referenceGuard,
       monitoringStore,
+      // C25 风险输入事实接缝：评估准备冻结经它复验精确 XOR 输入（design D-01）。
+      riskInputFacts,
     });
     const writeAuth = async (invocationId, sourceVersionRefs = []) =>
       operatorAuth(invocationId, "engineering-data.register-source-delivery", sourceVersionRefs);
@@ -2449,13 +2469,14 @@ export const startDemoBrowserServer = async () => {
       artifactStore,
       authorization: access,
     });
+
     const assessmentEngine = createPostgresRiskAssessmentEngine({
       db: appRuntime.db,
       transactionUnit,
       access,
       artifactStore,
       preparationContext: registry,
-      riskInputFacts: unwiredWritePathSeam("riskInputFacts"),
+      riskInputFacts,
       basisReader: unwiredWritePathSeam("basisReader"),
       runtimePolicies: createRiskAssessmentRuntimePolicies({ projectId: PROJECT_ID }),
       monitoring: monitoringStore,

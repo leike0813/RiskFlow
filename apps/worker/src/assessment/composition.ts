@@ -69,6 +69,11 @@ export interface AssessmentGraphCompositionOptionsV1 {
   readonly calibrationAgent: AssessmentGraphPortsV1["calibrationAgent"];
   /** 分段入口的冻结策略目录：只有部署持有已冻结策略，组合根不内建默认策略。 */
   readonly policies: AssessmentGraphPortsV1["policies"];
+  /**
+   * C06 下游签发接缝：由部署按 branch 签发精确上下文（复用同一真实 C06 access）。
+   * 图的运行上下文只有 `workflow.*` 能力，C11 冻结等下游动作必须用各自 branch 的上下文。
+   */
+  readonly authorizeDownstream: AssessmentGraphPortsV1["authorizeDownstream"];
   readonly now?: () => Date;
 }
 
@@ -100,6 +105,7 @@ const REQUIRED_DEPENDENCIES_V1 = [
   "calibration",
   "calibrationAgent",
   "policies",
+  "authorizeDownstream",
 ] as const;
 
 export const createAssessmentGraphComposition = (
@@ -135,6 +141,7 @@ export const createAssessmentGraphComposition = (
     calibration: options.calibration,
     calibrationAgent: options.calibrationAgent,
     policies: options.policies,
+    authorizeDownstream: options.authorizeDownstream,
     now,
   };
 

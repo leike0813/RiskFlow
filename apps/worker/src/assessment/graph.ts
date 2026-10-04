@@ -87,6 +87,7 @@ import {
   type ResponseForecastInputSnapshotV1,
 } from "@riskflow/contracts/workflows";
 import type {
+  AssessmentDownstreamAuthorizerV1,
   AssessmentRuntimePolicySetProviderV1,
   AssessmentRuntimePolicySetV1,
 } from "@riskflow/core/risk-assessment/engine";
@@ -195,6 +196,13 @@ export interface AssessmentGraphRunContextV1 {
   readonly actorId: string;
   readonly authorization: AuthorizationContextV1;
   readonly commandId: string;
+  /**
+   * 已签发的调用身份：`authorization` 实际签发时的 `invocationId`。
+   *
+   * 子运行沿用父运行的公开命令上下文，因此它的业务 `commandId` 与该上下文的签发身份不同。
+   * 正文写入与游标读取都按本字段复验（C06 一个授权上下文只对应一个 invocation_id）。
+   */
+  readonly issuedInvocationId: string;
   readonly idempotencyKey: string;
   /** 记录时刻：登记行的 `recorded_at`。 */
   readonly issuedAt: string;
@@ -330,6 +338,12 @@ export interface AssessmentGraphPortsV1 {
   readonly calibration: Pick<CalibrationServiceV1, "prepareInput" | "createSuggestion">;
   readonly calibrationAgent: AssessmentGraphCalibrationAgentPortV1;
   readonly policies: AssessmentGraphPolicyCatalogV1;
+  /**
+   * C06 下游签发接缝：运行上下文只有 `workflow.*` 那一个 capability，C11 评估准备冻结等
+   * 下游动作需要各自精确 branch 的上下文（C06 verify 要求子上下文 capability ⊆ 父）。
+   * 按用途单独签发，不把运行上下文直接转交下游。
+   */
+  readonly authorizeDownstream: AssessmentDownstreamAuthorizerV1;
   readonly now: () => Date;
 }
 
@@ -1100,7 +1114,7 @@ const commitStage = async (
       issuedAt: run.issuedAt,
       artifactId: body.artifactId,
       body: WorkflowGraphArtifactBodyV1Schema.parse(body.build(artifactRefs)),
-      invocationId: run.commandId,
+      invocationId: run.issuedInvocationId,
       authorization: run.authorization,
     });
     artifactRefs.set(body.artifactId, ContentArtifactRefV1Schema.parse(put));
@@ -1193,6 +1207,7 @@ export const readAssessmentCursor = async (input: {
     runId: input.run.runRef.reference.entityId,
     actorId: input.run.actorId,
     requestedAt: input.run.issuedAt,
+    invocationId: input.run.issuedInvocationId,
     authorization: input.run.authorization,
   });
   return latest?.state;
@@ -1959,13 +1974,24 @@ export const resolveAssessmentEntry = async (input: {
               RiskAssessmentRecordRefV1Schema,
               run.reassessmentEntry.previousAssessmentRecordRef,
             );
+      // 冻结是 C11 的写动作，需要 `engineering-data.freeze` 能力：按用途另签下游上下文，
+      // 运行上下文本身只有 workflow 能力，直传会让 C11 命令在能力校验处关闭失败。
+      const freezeAuthorization = await ports.authorizeDownstream({
+        branch: "engineering-data.assessment-preparation",
+        // 必须与下面 freeze 命令的 commandId 逐字一致：C06 一个授权上下文只对应一个
+        // invocation_id，C11 按命令身份复验。
+        invocationId: actionIdFor(run, "A0"),
+        projectId: run.projectId,
+        actorId: run.actorId,
+        requestedAt: run.issuedAt,
+      });
       const frozen = await ports.engineeringData.freeze({
         commandId: actionIdFor(run, "A0"),
         idempotencyKey: actionIdFor(run, "A0"),
         projectId: run.projectId,
         actorId: run.actorId,
         issuedAt: run.issuedAt,
-        authorization: run.authorization,
+        authorization: freezeAuthorization,
         kind: "assessment-preparation",
         payload: {
           riskInput: refs.riskInput,

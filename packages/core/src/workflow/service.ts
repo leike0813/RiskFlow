@@ -85,6 +85,12 @@ export interface WorkflowGraphRegistrationStoreV1 {
     readonly runId: string;
     readonly actorId: string;
     readonly requestedAt: string;
+    /**
+     * 复验身份：调用方 `authorization` 实际签发时的 `invocationId`（运行/命令身份）。
+     * 端口 MUST NOT 自行派生——派生字符串没有签发方，复验必然拒结，游标会恒为空，
+     * 运行版本断言随之失效（与 `readBody`/`putBody` 同一要求）。
+     */
+    readonly invocationId: string;
     readonly authorization: AuthorizationContextV1;
   }): Promise<
     | {
@@ -219,6 +225,14 @@ export interface WorkflowGraphRunCommandV1 {
   readonly actorId: string;
   readonly authorization: AuthorizationContextV1;
   readonly commandId: string;
+  /**
+   * 已签发的调用身份：`authorization` 实际签发时的 `invocationId`。
+   *
+   * 评估子运行沿用父运行的公开命令上下文（同一个授权上下文），但它自己的业务命令身份
+   * `c30-assessment-start:*` 与该上下文的签发身份不同。C06 一个授权上下文只对应一个
+   * invocation_id，运行控制复验必须用本字段，否则必然被判绑定不符。必填，不提供可选分支。
+   */
+  readonly issuedInvocationId: string;
   readonly idempotencyKey: string;
   readonly issuedAt: string;
   readonly validAt: string;

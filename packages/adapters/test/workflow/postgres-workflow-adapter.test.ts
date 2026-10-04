@@ -642,6 +642,7 @@ describe("C30 workflow registration adapter", () => {
       runId: RUN_ID,
       actorId: ACTOR_ID,
       requestedAt: TIMESTAMP,
+      invocationId: "c30-run-state-read",
       authorization: AUTHORIZATION,
     });
     expect(latest?.state.runVersionId).toBe(BODY_RUN_VERSION_ID);
@@ -652,6 +653,7 @@ describe("C30 workflow registration adapter", () => {
       runId: RUN_ID,
       actorId: ACTOR_ID,
       requestedAt: TIMESTAMP,
+      invocationId: "c30-run-state-read",
       authorization: AUTHORIZATION,
     });
     fixture.access.restore();
@@ -662,6 +664,7 @@ describe("C30 workflow registration adapter", () => {
       runId: OTHER_RUN_ID,
       actorId: ACTOR_ID,
       requestedAt: TIMESTAMP,
+      invocationId: "c30-run-state-read",
       authorization: AUTHORIZATION,
     });
     expect(missing).toBeUndefined();

@@ -483,6 +483,7 @@ describe("C30 父运行生产组合根（真实 PostgreSQL 接线）", () => {
       runId,
       actorId: ACTOR_ID,
       requestedAt: TIMESTAMP,
+      invocationId: "risk-flow-cursor-read",
       authorization: authorizationFor("workflow.start"),
     });
     expect(latest?.state.status).toBe("waiting");
@@ -594,6 +595,7 @@ describe("C30 父运行生产组合根（真实 PostgreSQL 接线）", () => {
       runId: runRef.reference.entityId,
       actorId: ACTOR_ID,
       requestedAt: TIMESTAMP,
+      invocationId: "risk-flow-cursor-read",
       authorization: authorizationFor("workflow.start"),
     });
     expect(latest?.state.status).toBe("waiting");
@@ -683,6 +685,7 @@ describe("C30 父运行生产组合根（真实 PostgreSQL 接线）", () => {
       runId: runRef.reference.entityId,
       actorId: ACTOR_ID,
       requestedAt: TIMESTAMP,
+      invocationId: "risk-flow-cursor-read",
       authorization: authorizationFor("workflow.start"),
     });
     expect(latest?.state.status).toBe("waiting");
@@ -722,6 +725,7 @@ describe("C30 父运行生产组合根（真实 PostgreSQL 接线）", () => {
       runId: runRef.reference.entityId,
       actorId: ACTOR_ID,
       requestedAt: TIMESTAMP,
+      invocationId: "risk-flow-cursor-read",
       authorization: authorizationFor("workflow.resume"),
     });
     expect(afterDenied?.state.status).toBe("waiting");

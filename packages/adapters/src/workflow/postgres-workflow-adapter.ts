@@ -755,6 +755,7 @@ class WorkflowGraphPersistence {
     readonly runId: string;
     readonly actorId: string;
     readonly requestedAt: string;
+    readonly invocationId: string;
     readonly authorization: AuthorizationContextV1;
   }): Promise<
     | {
@@ -767,11 +768,8 @@ class WorkflowGraphPersistence {
       authorization: input.authorization,
       projectId: input.projectId,
       actorId: input.actorId,
-      invocationId: workflowGraphReadInvocationIdV1({
-        operation: "run-state",
-        projectId: input.projectId,
-        targetId: input.runId,
-      }),
+      // 身份由调用方给出（运行/命令身份），端口不派生无签发方的字符串。
+      invocationId: input.invocationId,
       requestedAt: input.requestedAt,
     });
     if (verified === undefined) return undefined;

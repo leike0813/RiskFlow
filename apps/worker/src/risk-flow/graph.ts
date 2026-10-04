@@ -559,6 +559,7 @@ export const readRiskFlowCursor = async (input: {
     runId: input.run.runRef.reference.entityId,
     actorId: input.run.actorId,
     requestedAt: input.run.issuedAt,
+    invocationId: input.run.commandId,
     authorization: input.run.authorization,
   });
   return latest?.state;
@@ -752,6 +753,8 @@ export const assessmentStartCommandFor = (input: {
     actorId: input.run.actorId,
     authorization: input.run.authorization,
     commandId,
+    // 子运行沿用父运行的公开命令上下文：签发身份是父命令身份，不是子运行自己的命令身份。
+    issuedInvocationId: input.run.commandId,
     idempotencyKey: commandId,
     issuedAt: input.run.entryRecordedAt,
     validAt: input.run.entryRecordedAt,
@@ -802,6 +805,8 @@ export const segmentedAssessmentStartCommandFor = (input: {
     actorId: input.run.actorId,
     authorization: input.run.authorization,
     commandId,
+    // 子运行沿用父运行的公开命令上下文：签发身份是父命令身份，不是子运行自己的命令身份。
+    issuedInvocationId: input.run.commandId,
     idempotencyKey: commandId,
     issuedAt: input.run.entryRecordedAt,
     validAt: input.run.entryRecordedAt,
@@ -1535,6 +1540,7 @@ const aggregateAssessmentSubRuns = async (input: {
       runId: childRunRef.reference.entityId,
       actorId: run.actorId,
       requestedAt: run.issuedAt,
+      invocationId: run.commandId,
       authorization: run.authorization,
     });
     if (latest === undefined) {

@@ -329,6 +329,19 @@ const createPortDoubles = (calls: CallLogV1): InjectedPortsV1 => ({
     resolveForecastPolicy: forbidden("forecast policy resolution"),
     resolveCalibrationPolicy: forbidden("calibration policy resolution"),
   },
+  // 下游写动作按 branch 另签上下文：复验时能力来自本上下文，不复用运行上下文。
+  authorizeDownstream: async (request) =>
+    AuthorizationContextV1Schema.parse({
+      ...AUTHORIZATION,
+      authorizationContextRef: {
+        kind: "authorization-context",
+        reference: versionRef(
+          `authorization-context:${request.branch}`,
+          digest(`downstream:${request.invocationId}`),
+        ),
+      },
+      grantedCapabilities: ["engineering-data.freeze"],
+    }),
 });
 
 const artifactPolicy = (): ArtifactStorePolicyV1 => ({
@@ -698,6 +711,7 @@ describe("C30 评估子图组合根（真实 PostgreSQL 接线）", () => {
       runId,
       actorId: ACTOR_ID,
       requestedAt: TIMESTAMP,
+      invocationId: "assessment-cursor-read",
       authorization: AUTHORIZATION,
     });
     const latestState: WorkflowGraphRunStateV1 | undefined = latest?.state;

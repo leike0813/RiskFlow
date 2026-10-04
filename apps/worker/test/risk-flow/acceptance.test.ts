@@ -302,6 +302,7 @@ interface AcceptanceWorldV1 {
     readonly prepare: AssessmentPreparationCommandV1[];
     readonly evaluate: AssessmentEvaluationCommandV1[];
     readonly warningOpen: OpenWarningCommandV1[];
+    readonly authorizeDownstream: { readonly invocationId: string; readonly branch: string }[];
   };
 }
 
@@ -319,6 +320,7 @@ const createWorld = (): AcceptanceWorldV1 => ({
     prepare: [],
     evaluate: [],
     warningOpen: [],
+    authorizeDownstream: [],
   },
 });
 
@@ -424,9 +426,19 @@ interface AssessmentPortDoublesV1 {
   readonly calibration: Pick<CalibrationServiceV1, "prepareInput" | "createSuggestion">;
   readonly calibrationAgent: AssessmentGraphCalibrationAgentPortV1;
   readonly policies: AssessmentGraphPolicyCatalogV1;
+  readonly authorizeDownstream: AssessmentGraphPortsV1["authorizeDownstream"];
 }
 
 const createPortDoubles = (world: AcceptanceWorldV1): AssessmentPortDoublesV1 => ({
+  // C11 冻结等下游动作按 branch 另签上下文；本替身只回传装配登记的授权身份，
+  // 并记录签发请求，使验收能断言「下游动作用的是另签上下文而不是运行上下文」。
+  authorizeDownstream: async (request) => {
+    world.calls.authorizeDownstream.push(request);
+    return AuthorizationContextV1Schema.parse({
+      ...AUTHORIZATION,
+      grantedCapabilities: ["engineering-data.freeze"],
+    });
+  },
   engineeringData: {
     freeze: async (command) => {
       world.calls.freeze.push(command);
@@ -1138,6 +1150,7 @@ const startHarness = async (): Promise<AcceptanceHarnessV1> => {
           runId: runRef.reference.entityId,
           actorId: ACTOR_ID,
           requestedAt: clock.current.toISOString(),
+          invocationId: "risk-flow-cursor-read",
           authorization: AUTHORIZATION,
         });
       },

@@ -691,6 +691,7 @@ const readLatestState = async (
       runId: runRef.reference.entityId,
       actorId: ACTOR_ID,
       requestedAt: TIMESTAMP,
+      invocationId: "risk-flow-cursor-read",
       authorization: authorizationFor(capability, [SPACE_A, SPACE_B]),
     })
   )?.state;

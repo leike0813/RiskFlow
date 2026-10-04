@@ -72,6 +72,7 @@ import {
   createRiskFlowRetryPolicyReader,
   createRiskAssessmentRuntimePolicies,
   createWarningRuntimePolicies,
+  createAssessmentPolicyCatalog,
 } from "./deploymentPolicies.mjs";
 import {
   PostgresWarningAssessmentContextReader,
@@ -457,6 +458,9 @@ export const startDemoBrowserServer = async () => {
       monitoringStore,
       // C25 风险输入事实接缝：评估准备冻结经它复验精确 XOR 输入（design D-01）。
       riskInputFacts,
+      // C11 冻结内部的下游读取（C25 风险输入事实、C19 依据成员）按 branch 另签精确上下文；
+      // 闭包在首次调用时才求值，避开与本块之后的 operator 会话/空间身份定义的顺序依赖。
+      authorizeDownstream: (request) => authorizeDownstream(request),
     });
     const writeAuth = async (invocationId, sourceVersionRefs = []) =>
       operatorAuth(invocationId, "engineering-data.register-source-delivery", sourceVersionRefs);
@@ -2732,8 +2736,15 @@ export const startDemoBrowserServer = async () => {
       responseLifecycle,
       calibration,
       calibrationAgent: unwiredWritePathSeam("assessmentCalibrationAgent"),
-      // 分段入口的冻结策略目录由部署持有；本装配不内建默认策略，解析不到即关闭失败。
-      policies: unwiredWritePathSeam("assessmentPolicyCatalog"),
+      // 分段入口的冻结策略目录由部署持有：预测与校准策略只按调用方给出的精确依据集合
+      // 引用解析，引用未登记即 `unavailable`，不回退到内建默认策略。
+      policies: createAssessmentPolicyCatalog({
+        projectId: PROJECT_ID,
+        basisReader: scoringRules,
+        authorizeDownstream,
+      }),
+      // 同一真实 C06 access：图按用途另签下游上下文（C11 冻结等），不复用运行上下文。
+      authorizeDownstream,
     });
     // 组合根构建成功即证明十八项依赖齐备；运行控制端口保持未接线。
 

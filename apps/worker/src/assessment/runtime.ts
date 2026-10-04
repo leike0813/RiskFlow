@@ -145,12 +145,6 @@ const graphConfig = (run: AssessmentGraphRunContextV1): LangGraphRunnableConfig 
   },
 });
 
-const invocationIdFor = (input: {
-  readonly operation: string;
-  readonly projectId: string;
-  readonly targetId: string;
-}): string => `c30-${input.operation}:${input.projectId}:${input.targetId}`;
-
 const runContextOf = (input: {
   readonly command: WorkflowGraphRunCommandV1;
   readonly authorization: AuthorizationContextV1;
@@ -159,6 +153,7 @@ const runContextOf = (input: {
   actorId: input.command.actorId,
   authorization: input.authorization,
   commandId: input.command.commandId,
+  issuedInvocationId: input.command.issuedInvocationId,
   idempotencyKey: input.command.idempotencyKey,
   issuedAt: input.command.issuedAt,
   validAt: input.command.validAt,
@@ -301,21 +296,24 @@ export const createAssessmentGraphRuntime = (
     readonly authorization: AuthorizationContextV1;
     readonly projectId: string;
     readonly actorId: string;
-    readonly operation: string;
-    readonly targetId: string;
     readonly branch: ModuleBranchV1;
     readonly requestedAt: string;
     readonly stage: AssessmentGraphStateV1["stage"];
+    /**
+     * 已签发的调用身份：运行控制类复验必须用它，不提供派生回退。
+     *
+     * C06 `verify` 精确绑定签发时的 `invocationId`（C05：一个授权上下文只对应一个
+     * invocation_id）。`workflow.start-run` / `resume-run` / `cancel-run` 的上下文由公开
+     * 命令以 `commandId` 签发，评估子运行沿用父运行上下文；任何 `c30-workflow-start:*`
+     * 派生串都没有签发方，复验必然被判绑定不符。
+     */
+    readonly issuedInvocationId: string;
   }): Promise<AuthorizationContextV1> => {
     const authorized = await options.authorization.verifyCurrent({
       authorization: input.authorization,
       projectId: input.projectId,
       actorId: input.actorId,
-      invocationId: invocationIdFor({
-        operation: input.operation,
-        projectId: input.projectId,
-        targetId: input.targetId,
-      }),
+      invocationId: input.issuedInvocationId,
       branch: input.branch,
       requestedAt: input.requestedAt,
     });
@@ -434,11 +432,10 @@ export const createAssessmentGraphRuntime = (
       authorization: command.authorization,
       projectId: command.projectId,
       actorId: command.actorId,
-      operation: "workflow-start",
-      targetId: command.commandId,
       branch: "workflow.start-run",
       requestedAt: command.validAt,
       stage: "A0",
+      issuedInvocationId: command.issuedInvocationId,
     });
     const run = runContextOf({ command, authorization: authorized });
     if (!entryIdentityConsistent(run)) {
@@ -496,11 +493,10 @@ export const createAssessmentGraphRuntime = (
       authorization: command.authorization,
       projectId: command.projectId,
       actorId: command.actorId,
-      operation: "workflow-resume",
-      targetId: command.commandId,
       branch: "workflow.resume-run",
       requestedAt: command.validAt,
       stage: cursorStage,
+      issuedInvocationId: command.issuedInvocationId,
     });
     const run = runContextOf({ command, authorization: authorized });
     if (cursorBefore.status === "cancelled") {
@@ -605,11 +601,10 @@ export const createAssessmentGraphRuntime = (
       authorization: command.authorization,
       projectId: command.projectId,
       actorId: command.actorId,
-      operation: "workflow-cancel",
-      targetId: command.commandId,
       branch: "workflow.cancel-run",
       requestedAt: command.validAt,
       stage: cursorStage,
+      issuedInvocationId: command.issuedInvocationId,
     });
     const run = runContextOf({ command, authorization: authorized });
     if (cursor.status === "cancelled") {

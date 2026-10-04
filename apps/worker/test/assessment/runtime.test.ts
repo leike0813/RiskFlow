@@ -499,6 +499,19 @@ const createPortDoubles = (world: AssessmentWorldV1): AssessmentPortDoublesV1 =>
     resolveForecastPolicy: forbidden("forecast policy resolution"),
     resolveCalibrationPolicy: forbidden("calibration policy resolution"),
   },
+  // 下游写动作按 branch 另签上下文：复验时能力来自本上下文，不复用运行上下文。
+  authorizeDownstream: async (request) =>
+    AuthorizationContextV1Schema.parse({
+      ...AUTHORIZATION,
+      authorizationContextRef: {
+        kind: "authorization-context",
+        reference: versionRef(
+          `authorization-context:${request.branch}`,
+          digest(`downstream:${request.invocationId}`),
+        ),
+      },
+      grantedCapabilities: ["engineering-data.freeze"],
+    }),
 });
 
 const artifactPolicy = (): ArtifactStorePolicyV1 => ({
@@ -673,6 +686,7 @@ const startHarness = async (): Promise<AssessmentGraphHarnessV1> => {
           runId: runRef.reference.entityId,
           actorId: ACTOR_ID,
           requestedAt: now().toISOString(),
+          invocationId: "assessment-cursor-read",
           authorization: AUTHORIZATION,
         });
       },

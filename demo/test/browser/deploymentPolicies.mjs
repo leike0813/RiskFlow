@@ -146,4 +146,22 @@ export const createRecommendationPolicies = ({
   };
 };
 
+/**
+ * C18 已发布预测策略（合成样本、待甲方复核）。
+ *
+ * 工厂按 `requiredRef` 唯一装配执行器，运行期不再选择；重复策略直接失败，
+ * 不任意挑一个。每个策略的方法、输入指标与步长都是版本化配置，不是代码默认值。
+ */
+export const DEMO_FORECAST_POLICIES = Object.freeze([
+  Object.freeze({
+    policyId: "demo-forecast-policy-settlement",
+    method: "monitoring-trend",
+    inputIndicatorIds: Object.freeze(["地表沉降"]),
+    targetIndicatorId: "地表沉降",
+    horizonSteps: 1,
+    unit: "mm",
+    requiredRef: Object.freeze({ entityId: "demo-policy-forecast", versionId: "1" }),
+  }),
+]);
+
 export { refKey };

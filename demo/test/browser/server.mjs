@@ -58,6 +58,7 @@ import { createPostgresStandardizedRiskInputFactsReader } from "../../../package
 import { createPostgresExternalRiskInputFactsReader } from "../../../packages/adapters/dist/engineering-data/context-source/index.js";
 import { createRiskInputFactsReader } from "../../../packages/core/dist/risk-assessment/engine/index.js";
 import {
+  DEMO_FORECAST_POLICIES,
   createRecommendationPolicies,
   createRiskAssessmentRuntimePolicies,
   createWarningRuntimePolicies,
@@ -67,7 +68,11 @@ import {
   createPostgresWarningLifecycleAdapter,
 } from "../../../packages/adapters/dist/warning/index.js";
 import { createPostgresRecommendationAdapter } from "../../../packages/adapters/dist/recommendation/index.js";
-import { createPostgresResponseLifecycleAdapter } from "../../../packages/adapters/dist/response-lifecycle/index.js";
+import {
+  createEffectForecastModelReaderV1,
+  createPostgresResponseLifecycleAdapter,
+  createProductionEffectForecastExecutorsV1,
+} from "../../../packages/adapters/dist/response-lifecycle/index.js";
 import { createPostgresCalibrationAdapter } from "../../../packages/adapters/dist/calibration/index.js";
 import { createPostgresHumanDecisionFeedbackAdapter } from "../../../packages/adapters/dist/human-decision-feedback/index.js";
 import {
@@ -2514,12 +2519,23 @@ export const startDemoBrowserServer = async () => {
       }),
       agentTasks: unwiredWritePathSeam("recommendationAgentTasks"),
     });
+    /**
+     * C28 生产预测执行器：按已发布 C18 策略的唯一 requiredRef 装配，
+     * 模型正文只经 C04 受权读取，风险状态只经 C25 只读投影重算。
+     * 不下发命令能力；两个读取分支在各自 branch 上以调用者身份另取读取能力。
+     */
+    const forecastExecutors = createProductionEffectForecastExecutorsV1({
+      policies: DEMO_FORECAST_POLICIES,
+      models: createEffectForecastModelReaderV1({ artifactStore }),
+      assessment: assessmentEngine,
+      authorizeDownstream,
+    });
     const responseLifecycle = createPostgresResponseLifecycleAdapter({
       db: appRuntime.db,
       transactionUnit,
       access,
       reader: unwiredWritePathSeam("responseLifecycleReader"),
-      forecastExecutors: [],
+      forecastExecutors,
     });
     const calibration = createPostgresCalibrationAdapter({
       db: appRuntime.db,

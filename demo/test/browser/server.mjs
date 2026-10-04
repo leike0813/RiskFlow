@@ -85,6 +85,7 @@ import {
 import {
   createEffectForecastModelReaderV1,
   createPostgresResponseLifecycleAdapter,
+  createPostgresResponseLifecycleContextReader,
   createProductionEffectForecastExecutorsV1,
 } from "../../../packages/adapters/dist/response-lifecycle/index.js";
 import { createPostgresCalibrationAdapter } from "../../../packages/adapters/dist/calibration/index.js";
@@ -2640,11 +2641,28 @@ export const startDemoBrowserServer = async () => {
       assessment: assessmentEngine,
       authorizeDownstream,
     });
+    // C28 精确只读上下文：建议链、基线评估与冻结评估依据都走真实接缝。措施发布事实
+    // （C19）在本装配内没有已发布措施目录，用显式失败替身而不是返回空集合——空集合会让
+    // 上层误以为「没有措施」而不是「没有接缝」。
+    const responseContext = createPostgresResponseLifecycleContextReader({
+      db: appRuntime.db,
+      artifactStore,
+      basis: scoringRules,
+      monitoring: monitoringStore,
+      measureReleases: {
+        readPublishedMeasureReleases: async () => {
+          throw new TypeError(
+            "验收装配未接入 C19 已发布措施读取接缝：不得据此断言「没有措施」",
+          );
+        },
+      },
+      authorizeDownstream,
+    });
     const responseLifecycle = createPostgresResponseLifecycleAdapter({
       db: appRuntime.db,
       transactionUnit,
       access,
-      reader: unwiredWritePathSeam("responseLifecycleReader"),
+      reader: responseContext,
       forecastExecutors,
     });
     const calibration = createPostgresCalibrationAdapter({
@@ -2665,13 +2683,23 @@ export const startDemoBrowserServer = async () => {
       transactionUnit,
       access,
       authorizeDownstream,
-      workflow: unwiredWritePathSeam("humanDecisionWorkflow"),
+      // C41 发起的是真实 C30 运行，不走测试替身。父图组合根在本适配器之后构造（它依赖本
+      // 适配器作为采纳证明），因此这里转发到运行时的实际写入口，首次调用时解析。
+      workflow: {
+        startRun: (command) => riskFlowComposition.runtime.workflowPort.startRun(command),
+        resumeRun: (command) => riskFlowComposition.runtime.workflowPort.resumeRun(command),
+        cancelRun: (command) => riskFlowComposition.runtime.workflowPort.cancelRun(command),
+      },
       bindingProof: workflow.bindingProof,
       assessmentProof: assessmentEngine,
       runCompletionProof: workflow.runCompletionProof,
       responseLifecycle,
-      responseContext: unwiredWritePathSeam("humanDecisionResponseContext"),
-      workflowStartControl: unwiredWritePathSeam("humanDecisionWorkflowStartControl"),
+      responseContext,
+      // 服务端已发布的入口控制，绝不取自客户端载荷。
+      workflowStartControl: {
+        graphVersion: DEMO_RISK_FLOW_CONFIG.subGraphVersions.assessment,
+        retryPolicyRef: DEMO_RISK_FLOW_CONFIG.retryPolicyRef,
+      },
     });
     const warningLifecycle = createPostgresWarningLifecycleAdapter({
       db: appRuntime.db,

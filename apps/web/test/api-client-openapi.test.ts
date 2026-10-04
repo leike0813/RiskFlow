@@ -169,6 +169,36 @@ describe("C10 C09 HTTP 与 OpenAPI 边界", () => {
     expect(calls).toHaveLength(beforeUnknown);
   });
 
+  it("introspects the current session over GET without a body or client-held identity", async () => {
+    const calls: Array<{ input: RequestInfo | URL; init: RequestInit | undefined }> = [];
+    const client = createC09Client({
+      fetcher: async (input, init) => {
+        calls.push({ input, init });
+        if (String(input) === "/api/v1/session")
+          return new Response(JSON.stringify(sessionMetadata), { status: 200 });
+        return new Response(JSON.stringify({}), { status: 401 });
+      },
+    });
+    const signal = new AbortController().signal;
+    const metadata = await client.introspectSession(signal);
+
+    expect(metadata).toEqual(sessionMetadata);
+    expect(calls).toHaveLength(1);
+    const call = calls[0]!;
+    expect(String(call.input)).toBe("/api/v1/session");
+    expect(call.init?.method).toBe("GET");
+    // 自省没有请求体：身份只来自同源安全 Cookie，客户端不持也不发任何会话凭证。
+    expect(call.init?.body).toBeUndefined();
+    expect(call.init?.credentials).toBe("same-origin");
+    expect(call.init?.cache).toBe("no-store");
+    const headers = new Headers(call.init?.headers);
+    expect(headers.get("authorization")).toBeNull();
+    expect(headers.get("content-type")).toBeNull();
+
+    const anonymous = createC09Client({ fetcher: async () => new Response("", { status: 401 }) });
+    await expect(anonymous.introspectSession(signal)).rejects.toBeInstanceOf(C09HttpError);
+  });
+
   it("reduces malformed and public C09 errors to safe stable fields", async () => {
     const safe = makeSafeHttpError({
       requestId: "request-1",

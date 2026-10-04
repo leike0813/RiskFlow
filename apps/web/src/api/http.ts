@@ -100,7 +100,7 @@ export type C09OperationModeV1 = "session" | "command" | "query";
 export type C09OperationV1<TRequest, TResult> = Readonly<{
   operationId: C09OperationIdV1;
   mode: C09OperationModeV1;
-  method: "POST";
+  method: "POST" | "GET";
   path: C09PathTemplateV1;
   branch: ModuleBranchV1 | null;
   requiredCapability: ModuleCapabilityV1 | null;
@@ -111,7 +111,8 @@ export type C09OperationV1<TRequest, TResult> = Readonly<{
 export type RegisteredC09OperationV1<TRequest, TResult> = C09OperationV1<TRequest, TResult>;
 type AnyC09OperationV1 = C09OperationV1<never, unknown>;
 
-export type C09SystemRouteKindV1 = "login" | "change-password" | "logout" | "openapi" | "sse";
+export type C09SystemRouteKindV1 =
+  "login" | "change-password" | "logout" | "introspect" | "openapi" | "sse";
 export type C09SystemRouteEntryV1 = Readonly<{
   method: "POST" | "GET";
   path: string;
@@ -140,6 +141,14 @@ export const C09_SYSTEM_ROUTE_CATALOG_V1: readonly C09SystemRouteEntryV1[] = Obj
     path: "/api/v1/session/logout",
     kind: "logout" as const,
     requiresSession: true,
+    mediaType: HTTP_JSON_MEDIA_TYPE_V1,
+  }),
+  // 自省是唯一的会话 GET：没有请求体，身份只来自安全 Cookie。
+  Object.freeze({
+    method: "GET" as const,
+    path: "/api/v1/session",
+    kind: "introspect" as const,
+    requiresSession: false,
     mediaType: HTTP_JSON_MEDIA_TYPE_V1,
   }),
   Object.freeze({
@@ -256,18 +265,24 @@ const safeProjectPath = (path: string, projectId: string): string => {
   return path.replace(":projectId", encodeURIComponent(projectId));
 };
 
-export type C09SystemOperationIdV1 = "session.login" | "session.change-password" | "session.logout";
+export type C09SystemOperationIdV1 =
+  "session.login" | "session.change-password" | "session.logout" | "session.introspect";
 
 const sessionOperation = <TRequest, TResult>(input: {
-  operationId: C09SystemOperationIdV1;
-  path: "/api/v1/session/login" | "/api/v1/session/change-password" | "/api/v1/session/logout";
-  encode: (request: TRequest) => unknown;
-  decode: (response: unknown) => TResult;
+  readonly operationId: C09SystemOperationIdV1;
+  readonly method: "POST" | "GET";
+  readonly path:
+    | "/api/v1/session/login"
+    | "/api/v1/session/change-password"
+    | "/api/v1/session/logout"
+    | "/api/v1/session";
+  readonly encode: (request: TRequest) => unknown;
+  readonly decode: (response: unknown) => TResult;
 }): C09OperationV1<TRequest, TResult> =>
   Object.freeze({
     operationId: input.operationId,
     mode: "session" as const,
-    method: "POST" as const,
+    method: input.method,
     path: input.path,
     branch: null,
     requiredCapability: null,
@@ -317,21 +332,32 @@ export const decodeSessionMetadata = (value: unknown): SessionMetadataViewV1 => 
 export const C09_SESSION_OPERATIONS_V1 = Object.freeze([
   sessionOperation<SessionLoginInputV1, SessionMetadataViewV1>({
     operationId: "session.login",
+    method: "POST" as const,
     path: "/api/v1/session/login",
     encode: (request) => ({ schemaVersion: HTTP_SCHEMA_VERSION_V1, ...request }),
     decode: decodeSessionMetadata,
   }),
   sessionOperation<SessionChangePasswordInputV1, SessionMetadataViewV1>({
     operationId: "session.change-password",
+    method: "POST" as const,
     path: "/api/v1/session/change-password",
     encode: (request) => ({ schemaVersion: HTTP_SCHEMA_VERSION_V1, ...request }),
     decode: decodeSessionMetadata,
   }),
   sessionOperation<Record<string, never>, undefined>({
     operationId: "session.logout",
+    method: "POST" as const,
     path: "/api/v1/session/logout",
     encode: () => ({ schemaVersion: HTTP_SCHEMA_VERSION_V1 }),
     decode: () => undefined,
+  }),
+  // 自省不编码任何请求：身份只来自同源安全 Cookie，客户端不持也不发会话身份。
+  sessionOperation<Record<string, never>, SessionMetadataViewV1>({
+    operationId: "session.introspect",
+    method: "GET" as const,
+    path: "/api/v1/session",
+    encode: () => ({}),
+    decode: decodeSessionMetadata,
   }),
 ]);
 
@@ -347,6 +373,10 @@ const C09_LOGOUT_OPERATION_V1 = C09_SESSION_OPERATIONS_V1[2] as C09OperationV1<
   Record<string, never>,
   undefined
 >;
+const C09_INTROSPECT_OPERATION_V1 = C09_SESSION_OPERATIONS_V1[3] as C09OperationV1<
+  Record<string, never>,
+  SessionMetadataViewV1
+>;
 
 const expectedProjectPath = (mode: "command" | "query", branch: ModuleBranchV1): string =>
   `/api/v1/projects/:projectId/${mode === "command" ? "commands" : "queries"}/${branch}`;
@@ -358,7 +388,7 @@ const assertOperation = (operation: AnyC09OperationV1): void => {
   if (
     !isNonEmptyString(operation.operationId) ||
     !/^[a-z0-9][a-z0-9.-]*$/.test(operation.operationId) ||
-    operation.method !== "POST" ||
+    (operation.method !== "POST" && operation.method !== "GET") ||
     typeof operation.encode !== "function" ||
     typeof operation.decode !== "function"
   )
@@ -376,6 +406,8 @@ const assertOperation = (operation: AnyC09OperationV1): void => {
   }
   if (operation.mode !== "command" && operation.mode !== "query")
     throw new Error("invalid C09 operation mode");
+  // GET 只属于会话自省；业务命令与查询仍是有请求体的 POST。
+  if (operation.method !== "POST") throw new Error("invalid C09 operation method");
   if (
     operation.branch === null ||
     !Object.hasOwn(MODULE_BRANCH_CAPABILITY_V1, operation.branch) ||
@@ -500,6 +532,8 @@ export type C09ClientV1 = Readonly<{
     signal: AbortSignal,
   ) => Promise<SessionMetadataViewV1>;
   logout: (signal: AbortSignal) => Promise<void>;
+  /** 当前会话自省：GET 无请求体，身份只来自同源安全 Cookie。 */
+  introspectSession: (signal: AbortSignal) => Promise<SessionMetadataViewV1>;
   submit: <TRequest, TResult>(
     operation: RegisteredC09OperationV1<TRequest, TResult>,
     request: TRequest,
@@ -612,6 +646,7 @@ export const createC09Client = (input?: {
   const loginOperation = C09_LOGIN_OPERATION_V1;
   const passwordOperation = C09_CHANGE_PASSWORD_OPERATION_V1;
   const logoutOperation = C09_LOGOUT_OPERATION_V1;
+  const introspectOperation = C09_INTROSPECT_OPERATION_V1;
   return Object.freeze({
     operations,
     loadOpenApi: async (signal: AbortSignal) => {
@@ -629,6 +664,7 @@ export const createC09Client = (input?: {
     logout: async (signal) => {
       await submit(logoutOperation, {}, signal);
     },
+    introspectSession: async (signal) => (await submit(introspectOperation, {}, signal)).value,
     submit,
     subscribe: (subscription: C09RunSubscriptionInputV1) => sse.subscribe(subscription),
   });

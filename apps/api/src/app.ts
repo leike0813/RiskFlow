@@ -33,12 +33,14 @@ import {
   buildLoginCommand,
   buildLogoutCommand,
   buildOpenApiDocument,
+  buildReadSessionCommand,
   httpCatalogForOpenApi,
   invalidRequest,
   isSafeHeaderValue,
   isSupportedJsonMediaType,
   mapHttpError,
   mapModuleResult,
+  mapSessionMetadata,
   mapSessionResult,
   notFound,
   requestTooLarge,
@@ -576,6 +578,28 @@ export const buildApi = (options: BuildApiOptionsV1): FastifyInstance => {
       const result = mapSessionResult(session);
       setSessionCookie(reply, session.sessionToken);
       return reply.code(200).type(HTTP_JSON_MEDIA_TYPE_V1).send(result);
+    } catch (error) {
+      return responseFailure(reply, mapHttpError({ error, requestId, now }));
+    }
+  });
+
+  /**
+   * 当前会话自省：只从安全 Cookie 取会话，返回无 token 元数据。
+   *
+   * 无请求体、不接受客户端会话身份或 Authorization header；所有响应禁止缓存，
+   * 也不返回 token 或下发新 Cookie。缺 Cookie 与失效会话都是 401 认证失败，
+   * 畸形或重复 Cookie 是 400 契约失败，暂态与终态故障保留原技术错误信封。
+   */
+  app.get("/api/v1/session", async (request, reply) => {
+    const requestId = requestIdFor(request, generateId);
+    const now = requestNow(clock);
+    reply.header("cache-control", "no-store");
+    const token = cookieToken(request);
+    const sessionError = sessionFailure(reply, token, requestId, now);
+    if (sessionError !== undefined) return sessionError;
+    try {
+      const metadata = await options.access.readSession(buildReadSessionCommand(token as string));
+      return reply.code(200).type(HTTP_JSON_MEDIA_TYPE_V1).send(mapSessionMetadata(metadata));
     } catch (error) {
       return responseFailure(reply, mapHttpError({ error, requestId, now }));
     }

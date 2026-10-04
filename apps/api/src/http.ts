@@ -154,8 +154,10 @@ import {
   ChangePasswordCommandV1Schema,
   LoginCommandV1Schema,
   LoginNameInputV1Schema,
+  ReadSessionCommandV1Schema,
   LogoutCommandV1Schema,
   PasswordV1Schema,
+  SessionMetadataV1Schema as CoreSessionMetadataV1Schema,
   SessionResultV1Schema,
   SourceVersionRefSetV1Schema,
   type AccessErrorV1,
@@ -1431,6 +1433,26 @@ export const buildLogoutCommand = (body: unknown, sessionToken: string) => {
   SessionLogoutRequestV1Schema.parse(body);
   return LogoutCommandV1Schema.parse({ kind: "logout", sessionToken });
 };
+/** 自省命令：只带 Cookie 里的会话 token，没有请求体、没有身份名称。 */
+export const buildReadSessionCommand = (sessionToken: string) =>
+  ReadSessionCommandV1Schema.parse({ kind: "introspect-session", sessionToken });
+/**
+ * 自省投影：把 C06 的会话元数据映射为 HTTP 会话 Schema。
+ *
+ * 字段与登录投影共用同一组取值；管理上下文不由会话读取派生，因此自省不会带出该字段。
+ */
+export const mapSessionMetadata = (result: unknown): SessionMetadataV1 => {
+  const parsed = CoreSessionMetadataV1Schema.parse(result);
+  return SessionMetadataV1Schema.parse({
+    schemaVersion: HTTP_SCHEMA_VERSION_V1,
+    sessionRef: parsed.sessionRef,
+    accountRef: parsed.accountRef,
+    passwordChangeRequired: parsed.passwordChangeRequired,
+    restricted: parsed.restricted,
+    expiresAt: parsed.expiresAt,
+  });
+};
+
 export const buildAuthorizationDecision = (result: unknown): AuthorizationDecisionV1 =>
   AuthorizationDecisionV1Schema.parse(result);
 
@@ -1441,7 +1463,8 @@ export const isSupportedJsonMediaType = (value: string | undefined): boolean => 
   return value.split(";", 1)[0]?.trim().toLowerCase() === HTTP_JSON_MEDIA_TYPE_V1;
 };
 
-export type HttpSessionRouteKindV1 = "login" | "change-password" | "logout" | "openapi";
+export type HttpSessionRouteKindV1 =
+  "login" | "change-password" | "logout" | "introspect" | "openapi";
 export type HttpSystemRouteEntryV1 = Readonly<{
   method: "POST" | "GET";
   path: string;
@@ -1477,6 +1500,15 @@ export const HTTP_SYSTEM_ROUTE_CATALOG_V1: readonly HttpSystemRouteEntryV1[] = O
     kind: "logout" as const,
     requestSchema: SessionLogoutRequestV1Schema,
     requiresSession: true,
+    mediaType: HTTP_JSON_MEDIA_TYPE_V1,
+  }),
+  // 自省走安全 Cookie：没有请求体、不接受客户端会话身份，缺 Cookie 时按匿名结果处理。
+  Object.freeze({
+    method: "GET" as const,
+    path: "/api/v1/session",
+    kind: "introspect" as const,
+    resultSchema: SessionMetadataV1Schema,
+    requiresSession: false,
     mediaType: HTTP_JSON_MEDIA_TYPE_V1,
   }),
   Object.freeze({
@@ -1601,8 +1633,11 @@ const operationFor = (entry: HttpRouteEntryV1 | HttpSystemRouteEntryV1): OpenApi
         : {}),
       ...errorResponses(),
     },
+    // 自省缺 Cookie 时按匿名结果返回而不是硬性拒绝，因此安全方案在这里显式声明，
+    // 而不是靠 requiresSession 顺带带出。
     ...(systemKind !== "openapi" &&
     ("mode" in entry ||
+      systemKind === "introspect" ||
       (systemKind !== undefined && "requiresSession" in entry && entry.requiresSession))
       ? { security: [{ sessionCookie: [] }] }
       : {}),

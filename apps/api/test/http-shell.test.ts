@@ -20,7 +20,9 @@ import type {
   WarningResponsePortV1,
   WarningResponseRecordSuccessV1,
 } from "@riskflow/contracts/ports";
+import { AccessErrorV1Schema, AccessServiceError } from "@riskflow/core/access";
 import type { LocalIdentityAccessV1 } from "@riskflow/core/access";
+import { HttpErrorV1Schema } from "../src/http.js";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const ORIGIN = "https://ui.example";
@@ -317,6 +319,103 @@ describe("C09 HTTP shell", () => {
     expect(cookie).toContain("SameSite=Strict");
     expect(cookie).toContain("Path=/");
     expect(cookie).not.toContain("Domain=");
+    await app.close();
+  });
+
+  it("reports the current session from the cookie without a token, request body, or set-cookie", async () => {
+    const app = appFor();
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/session",
+      headers: { origin: ORIGIN, cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).not.toContain("opaque-token");
+    expect(response.headers["set-cookie"]).toBeUndefined();
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(HttpErrorV1Schema.safeParse(JSON.parse(response.body)).success).toBe(false);
+    const metadata = JSON.parse(response.body) as Record<string, unknown>;
+    expect(metadata.sessionRef).toEqual({ entityId: "session", versionId: "1" });
+    expect(metadata.passwordChangeRequired).toBe(false);
+    expect(metadata.restricted).toBe(false);
+    await app.close();
+  });
+
+  it("separates a missing or invalid session cookie from a malformed one", async () => {
+    const app = appFor();
+    const missing = await app.inject({
+      method: "GET",
+      url: "/api/v1/session",
+      headers: jsonHeaders,
+    });
+    expect(missing.statusCode).toBe(401);
+    expect(missing.headers["cache-control"]).toBe("no-store");
+
+    // 重复 Cookie 是形状非法：400，而不是被当成某个会话。
+    const duplicated = await app.inject({
+      method: "GET",
+      url: "/api/v1/session",
+      headers: {
+        origin: ORIGIN,
+        cookie: `${HTTP_COOKIE_NAME_V1}=a; ${HTTP_COOKIE_NAME_V1}=b`,
+      },
+    });
+    expect(duplicated.statusCode).toBe(400);
+    expect(duplicated.headers["cache-control"]).toBe("no-store");
+
+    const failed = buildApi({
+      access: {
+        ...accessStub(),
+        readSession: async () => {
+          throw new AccessServiceError(
+            AccessErrorV1Schema.parse({
+              code: "SESSION_REVOKED",
+              retryable: false,
+              stage: "session.read",
+              occurredAt: NOW,
+              diagnosticRef: {
+                kind: "diagnostic-artifact",
+                reference: { entityId: "diagnostic", versionId: "1" },
+              },
+              contextRefs: [],
+            }),
+          );
+        },
+      },
+      ports: {},
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+    const revoked = await failed.inject({
+      method: "GET",
+      url: "/api/v1/session",
+      headers: { origin: ORIGIN, cookie: `${HTTP_COOKIE_NAME_V1}=stale` },
+    });
+    expect(revoked.statusCode).toBe(401);
+    await app.close();
+    await failed.close();
+  });
+
+  it("keeps introspection in the OpenAPI catalog with the cookie security scheme", async () => {
+    const app = appFor();
+    const document = (await app.inject({ method: "GET", url: "/api/v1/openapi.json" })).json() as {
+      paths: Record<string, Record<string, Record<string, unknown>>>;
+    };
+    const operation = document.paths["/api/v1/session"]?.get;
+    expect(operation).toBeDefined();
+    if (operation === undefined) {
+      await app.close();
+      return;
+    }
+    expect(operation.operationId).toBe("riskflow_introspect");
+    expect(operation.security).toEqual([{ sessionCookie: [] }]);
+    // GET 无请求体：目录里没有 requestSchema，生成的文档也不声明请求体。
+    expect(operation.requestBody).toBeUndefined();
+    const ok = operation.responses?.["200"] as
+      { content?: Record<string, { schema?: { required?: readonly string[] } }> } | undefined;
+    expect(ok?.content?.["application/json"]?.schema?.required).toContain("expiresAt");
     await app.close();
   });
 

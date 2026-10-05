@@ -3057,6 +3057,11 @@ export class PostgresRiskAssessmentEngine
         projectId: command.projectId,
         actorId: command.actorId,
         requestedAt: command.requestedAt,
+        // 目录只列记录元数据与证据定位，不读资料正文，因此不请求来源授权。
+        // 带上来源授权会让本次读取的 `authorizationScopeDigest` 多出 grant 项，
+        // 与记录按自身登记范围计算的摘要不相等，目录将对所有记录返回空。
+        // 证据正文的可读与脱敏由 C33 逐来源判定，不在这里提前收窄。
+        requestedSourceVersionRefs: [],
       },
       "risk-identification.read",
     );

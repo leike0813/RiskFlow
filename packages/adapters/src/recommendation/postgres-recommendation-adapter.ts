@@ -842,6 +842,32 @@ export interface PostgresRecommendationAdapterOptionsV1 {
   readonly now?: () => Date;
 }
 
+/**
+ * 候选集窄读的调用身份与精确对象引用。授权、调用标识与查询结果引用三者一同绑定，
+ * C27 用同一 `invocationId`、同一分支亲自向 C06 复验。
+ */
+export type MeasureCandidateSetReadInputV1 = {
+  readonly projectId: string;
+  readonly actorId: string;
+  readonly requestedAt: string;
+  readonly invocationId: string;
+  readonly authorization: AuthorizationContextV1;
+  readonly knowledgeQueryResultRef: KnowledgeQueryResultRefV1;
+};
+
+export type MeasureCandidateSetReadResultV1 =
+  | {
+      readonly kind: "succeeded";
+      readonly knowledgeQueryResultRef: KnowledgeQueryResultRefV1;
+      /** 已冻结的候选集原文：组合根据此合成 Agent 任务输入，不自行拼装候选。 */
+      readonly candidateSet: MeasureCandidateSetV1;
+      readonly candidateSetArtifactRef: {
+        readonly kind: "content-artifact";
+        readonly reference: { readonly entityId: string; readonly versionId: string };
+      };
+    }
+  | { readonly kind: "failed"; readonly error: { readonly code: string } };
+
 export class PostgresRecommendationAdapter
   implements
     RecommendationServiceV1,
@@ -2373,6 +2399,59 @@ export class PostgresRecommendationAdapter
   }
 
   /** 读侧复验：与命令复验同形，但用请求时点而不是签发时点，并返回 `undefined` 表示拒绝。 */
+  /**
+   * C27 候选组合输入的公开窄读（design D-06）：`measureCandidates` 成功时只交出查询结果
+   * 引用，处置 Agent 的有界任务必须据此取回已冻结的候选集原文来合成输入。
+   * C27 是候选集的唯一拥有方：正文只按已登记事实返回，摘要对不上、越权或未登记都失败闭合，
+   * 既不返回空集，也不为调用方代造候选。
+   */
+  async readMeasureCandidateSet(
+    input: MeasureCandidateSetReadInputV1,
+  ): Promise<MeasureCandidateSetReadResultV1> {
+    const verified = await this.#verifyRead(input, "warning-response.read").catch(
+      (): undefined => undefined,
+    );
+    if (verified === undefined) {
+      return { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } };
+    }
+    const scopeIds = verified.spatialScopeRefs.map((scope) => scope.reference.entityId);
+    let row: MeasureCandidateQueryRow | undefined;
+    try {
+      row = await this.#readQueryById(
+        input.projectId,
+        input.knowledgeQueryResultRef.reference,
+        scopeIds,
+      );
+    } catch (error) {
+      const mapped = mapPostgresError(error, "recommendation.read-measure-candidate-set");
+      return { kind: "failed", error: { code: mapped.code } };
+    }
+    if (row === undefined) {
+      return { kind: "failed", error: { code: "MEASURE_CANDIDATES_UNAVAILABLE" } };
+    }
+    const candidateSet = MeasureCandidateSetV1Schema.safeParse(row.candidate_set_payload);
+    if (
+      !candidateSet.success ||
+      sha256CanonicalJson(candidateSet.data) !== row.candidate_set_digest ||
+      candidateSet.data.projectId !== input.projectId ||
+      !scopeIds.includes(candidateSet.data.spatialScopeRef.reference.entityId)
+    ) {
+      return { kind: "failed", error: { code: "MEASURE_CANDIDATE_SET_INVALID" } };
+    }
+    return {
+      kind: "succeeded",
+      knowledgeQueryResultRef: input.knowledgeQueryResultRef,
+      candidateSet: candidateSet.data,
+      candidateSetArtifactRef: {
+        kind: "content-artifact",
+        reference: {
+          entityId: row.candidate_set_artifact_id,
+          versionId: row.candidate_set_artifact_version_id,
+        },
+      },
+    };
+  }
+
   /**
    * 任务下的正式建议引用（design D-05、D-10）：按登记时点倒序、标识升序走 keyset，
    * 先落工程、空间与任务筛选再 `LIMIT pageSize+1`。

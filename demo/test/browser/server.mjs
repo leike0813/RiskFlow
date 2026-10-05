@@ -53,6 +53,8 @@ import { createPostgresAssessmentConfigurationAdapter } from "../../../packages/
 import { createPostgresScoringRulesAdapter } from "../../../packages/adapters/dist/scoring-rules/index.js";
 import { createAssessmentGraphComposition } from "../../../apps/worker/dist/assessment/index.js";
 import { createRiskFlowGraphComposition } from "../../../apps/worker/dist/risk-flow/index.js";
+import { createPostgresDataCleaningComposition } from "../../../apps/worker/dist/engineering-data/cleaning/index.js";
+import { createStructuredDocumentConversionAdapter } from "../../../packages/adapters/dist/engineering-data/document-conversion/index.js";
 import {
   bootstrapPostgresFoundation,
   createPostgresTransactionUnit,
@@ -431,6 +433,43 @@ export const startDemoBrowserServer = async () => {
       );
       return result.artifactRef;
     };
+    /**
+     * 按原始字节放工件：结构化文档转换（C12）要读真实正文，不能拿 JSON 顶替。
+     * 与 `putJson` 共用同一套访问快照字段，只让正文与媒体类型由调用方给定。
+     */
+    const putBody = async (
+      artifactId,
+      purposeCode,
+      bytes,
+      mediaType,
+      authorization,
+      requiredCapability,
+    ) => {
+      const result = await artifactStore.put(
+        ArtifactPutCommandV1Schema.parse({
+          schemaVersion: "1",
+          commandId: `${artifactId}:put`,
+          idempotencyKey: `${artifactId}:put`,
+          projectId: PROJECT_ID,
+          actorId: authorization.actorId,
+          issuedAt: NOW,
+          authorization,
+          requiredCapability,
+          artifactId,
+          artifactKind: "content",
+          purposeCode,
+          mediaType,
+          parentArtifactRefs: [],
+          evidenceReferences: [],
+          additionalSpatialScopeRefs: [],
+          additionalSourceAccessGrantRefs: [],
+        }),
+        (async function* () {
+          yield bytes;
+        })(),
+      );
+      return result.artifactRef;
+    };
 
     // ---- 工程上下文与空间区段（C13 公开接缝） ----
     const monitoringStore = createPostgresMonitoringStore({
@@ -440,6 +479,68 @@ export const startDemoBrowserServer = async () => {
       artifactStore,
       artifactReferenceGuard: artifactStore.referenceGuard,
     });
+
+    // ---- C15 数据清洗与 C12 结构化文档转换（IP-12：C19 编制的上游来源）----
+    //
+    // C19 编制硬依赖一条已收口的 C08 清洗任务（`scoring-rule-source-unavailable`），
+    // 而清洗又硬依赖资料先经 C12 转换。两者都装配产品侧组合根：冻结、解析、任务创建、
+    // 增量校验与收口全部走生产代码，本装配只给部署策略数据与受信调用来源。
+    // 策略是部署数据而非行为，按已验证形态给定（合成样本、待甲方复核）。
+    const conversionPolicyRef = versionRef("demo-c12-conversion-policy", "1");
+    const conversionQualityPolicyRef = versionRef("demo-c12-quality-policy", "1");
+    const conversionDeploymentRef = versionRef("demo-c12-converter-deployment", "1");
+    const cleaningPolicyRef = versionRef("demo-c15-data-processing-policy", "1");
+    const cleaningBudgetPolicyRef = versionRef("demo-c15-budget-policy", "1");
+    const cleaningPolicy = {
+      schemaVersion: "1",
+      policyRef: cleaningPolicyRef,
+      // 三个允许列表必须与 C12 转换命令逐字对齐，否则清洗取不到转换记录。
+      allowedConversionPolicyRefs: [conversionPolicyRef],
+      allowedQualityPolicyRefs: [conversionQualityPolicyRef],
+      allowedConverterDeploymentRefs: [conversionDeploymentRef],
+      allowedExclusionReasonCodes: ["demo-c15-manual-exclusion"],
+      protectedSegmentKinds: [],
+      // 内置 CSV 解析器产出 table/record/cell/paragraph 段；必含种类取 table。
+      requiredSegmentKinds: ["table"],
+      protectedMonitoringSelectionReasons: ["latest-valid", "correction"],
+      minimumRetainedSegmentRatio: 0.5,
+      minimumRetainedSampleRatio: 0.5,
+      minimumDocumentCoverageRatio: 0.5,
+      tools: {
+        documentSegmentToolRef: versionRef("demo-c15-document-segment-tool", "1"),
+        monitoringSnapshotToolRef: versionRef("demo-c15-monitoring-snapshot-tool", "1"),
+        maxSegmentsPerRead: 8,
+        maxMonitoringItemsPerRead: 8,
+      },
+      agent: {
+        definitionRef: versionRef("demo-c15-cleaning-definition", "1"),
+        modelDeploymentRef: versionRef("demo-c15-cleaning-model", "1"),
+        promptTemplateRef: versionRef("demo-c15-cleaning-prompt", "1"),
+        toolPolicyRef: versionRef("demo-c15-cleaning-tools", "1"),
+        budgetPolicyRef: cleaningBudgetPolicyRef,
+        incrementSchemaRef: versionRef("demo-c15-cleaning-increment", "1"),
+        validationPolicyRef: versionRef("demo-c15-cleaning-validation", "1"),
+        budgetPolicy: {
+          schemaVersion: "1",
+          policyRef: cleaningBudgetPolicyRef,
+          modelDeploymentRef: versionRef("demo-c15-cleaning-model", "1"),
+          promptTemplateRef: versionRef("demo-c15-cleaning-prompt", "1"),
+          toolPolicyRef: versionRef("demo-c15-cleaning-tools", "1"),
+          maxModelInvocations: 4,
+          maxToolInvocations: 8,
+          maxContextTokens: 4_096,
+          maxInputBytes: 262_144,
+          maxOutputBytes: 262_144,
+          maxCandidates: 2,
+          maxObjects: 32,
+          maxSupplementarySearches: 2,
+          maxCorrections: 2,
+          maxTransientRetries: 1,
+          maxConcurrentActions: 1,
+          maxWallClockMs: 600_000,
+        },
+      },
+    };
     /**
      * 风险输入事实 XOR：标准化风险记录归识别验收域，外部风险事件归工程数据源登记域，
      * 由 core 的组合工厂按 kind 分派。两个分支各自复验 C06 当前授权，不共用一个查询。
@@ -527,6 +628,26 @@ export const startDemoBrowserServer = async () => {
           ],
         })
       ).context;
+    /**
+     * C15 组合根：清洗任务经 C06 的 `agent-task.start-task` 分支取得唯一启动上下文，
+     * 再由同一个注入 C06 verifier 的 C08 adapter 创建。这里只声明受信调用来源，
+     * 授权本身仍由 C06 按启动命令的 commandId 签发与复验。
+     */
+    const cleaning = createPostgresDataCleaningComposition({
+      store: {
+        db: appRuntime.db,
+        transactionUnit,
+        access,
+        artifactStore,
+        artifactReferenceGuard: artifactStore.referenceGuard,
+        monitoringStore,
+        policy: cleaningPolicy,
+      },
+      resolveStartAuthorizationInvocation: () => ({
+        kind: "human-session",
+        sessionToken: operatorSession.sessionToken,
+      }),
+    });
     await access.administerProject({
       kind: "revise-membership",
       projectId: PROJECT_ID,
@@ -731,6 +852,332 @@ export const startDemoBrowserServer = async () => {
       });
     await reviseSourceAccess(sourceA.sourceVersionRef, "a", "project-shared", []);
     await reviseSourceAccess(sourceB.sourceVersionRef, "b", "restricted", [administratorAccountId]);
+
+    // ---- C12 结构化文档转换 + C15 清洗冻结（IP-12：C19 编制的上游来源）----
+    //
+    // 资料 A/B 的资料段是直接登记的，不经 C12 转换。这里单独登记一份可转换资料：
+    // 正文是真实 CSV 字节，由内置 CSV 解析器产出 `table` 段（清洗策略的必含段种类），
+    // 转换记录落库后 C15 冻结才能解析资料并创建真实的 C08 清洗任务。
+    // 这样 C12/C15 链不触碰既有播种数据的资料段与证据引用（合成样本、待甲方复核）。
+    const convertibleAuth = await writeAuth("demo-browser-source-c15");
+    const convertibleBodyRef = await putBody(
+      "demo-browser-source-c15-body",
+      "engineering-data.register-source-delivery",
+      new TextEncoder().encode(
+        [
+          "指标,单位,阈值,说明",
+          "地表沉降累计值,mm,12.0,施工监测控制值",
+          "地表沉降短期斜率,mm/d,2.0,施工监测控制值",
+          "支护结构变形,mm,8.0,施工监测控制值",
+        ].join("\n"),
+      ),
+      "text/csv",
+      convertibleAuth,
+      "engineering-data.write",
+    );
+    const convertibleMetadataRef = await putJson(
+      "demo-browser-source-c15-metadata",
+      "engineering-data.register-source-delivery",
+      {
+        schemaVersion: "1",
+        projectRevisionRef,
+        spatialScopeRefs: [businessSpatialScopeRef],
+        registeredByAccountId: convertibleAuth.actorId,
+        sourceItemId: "demo-browser-source-item-c15",
+        sourceItemName: "C34 清洗来源资料（监测控制值表）",
+        sourceCategory: "engineering-document",
+        sourceMetadata: {
+          documentType: "监测控制值表",
+          formedAt: NOW,
+          sourceOrganization: "合成夹具",
+        },
+        descriptor: { kind: "file-upload", contentFingerprint: "C34 合成监测控制值表" },
+        applicabilityMetadataSnapshotRef: applicabilitySnapshotRef,
+      },
+      convertibleAuth,
+      "engineering-data.write",
+    );
+    const convertibleDelivery = await registry.apply({
+      commandId: "demo-browser-delivery-c15",
+      idempotencyKey: "demo-browser-delivery-c15",
+      projectId: PROJECT_ID,
+      actorId: convertibleAuth.actorId,
+      issuedAt: NOW,
+      authorization: await writeAuth("demo-browser-delivery-c15"),
+      kind: "register-source-delivery",
+      payload: {
+        sourceConnectionRef: versionRef("file-upload"),
+        deliveryKey: "demo-browser-delivery-c15",
+        sourceArtifactRef: convertibleBodyRef,
+        metadataArtifactRef: convertibleMetadataRef,
+        occurredAt: NOW,
+      },
+    });
+    if (convertibleDelivery.kind !== "succeeded") {
+      throw new Error(
+        `demo fixture delivery c15 failed: ${JSON.stringify(convertibleDelivery)}`,
+      );
+    }
+    const convertibleSourceVersionRef = convertibleDelivery.result.sourceVersionRef;
+    await reviseSourceAccess(convertibleSourceVersionRef, "c15", "project-shared", []);
+
+    const documentConversion = createStructuredDocumentConversionAdapter({
+      // 不传 db 时适配器只把结果留在内存，C15 解析资料时查不到转换记录。
+      db: appRuntime.db,
+      transactionUnit,
+      contextSource: registry,
+      artifactStore,
+      qualityPolicyRef: conversionQualityPolicyRef,
+      converterDeploymentRef: conversionDeploymentRef,
+      resourcePolicy: {
+        schemaVersion: "1",
+        policyRef: conversionPolicyRef,
+        maxInputBytes: 1_048_576,
+        maxZipEntries: 256,
+        maxZipUncompressedBytes: 8_388_608,
+        maxZipCompressionRatio: 64,
+        maxXmlBytes: 4_194_304,
+        maxPdfPages: 200,
+        maxPdfTextItems: 20_000,
+        maxSheets: 32,
+        maxCells: 200_000,
+        maxCsvRecords: 20_000,
+        maxCsvFields: 64,
+        maxOutputBlocks: 10_000,
+      },
+    });
+    const conversionResult = await documentConversion.convert({
+      schemaVersion: "1",
+      conversionId: "demo-c12-conversion-c15",
+      idempotencyKey: "demo-c12-conversion-c15",
+      runId: "demo-c12-run-c15",
+      threadId: "demo-c12-thread-c15",
+      issuedAt: NOW,
+      deadlineAt: "2030-06-02T01:00:00.000Z",
+      projectId: PROJECT_ID,
+      actorId: convertibleAuth.actorId,
+      // 转换命令没有独立 C06 分支：按已验证形态用资料登记分支签发，
+      // invocationId 与 conversionId 同值，空间与来源都显式给出。
+      authorization: await operatorAuth(
+        "demo-c12-conversion-c15",
+        "engineering-data.register-source-delivery",
+        [convertibleSourceVersionRef],
+      ),
+      sourceVersionRef: convertibleSourceVersionRef,
+      sourceArtifactRef: convertibleBodyRef,
+      mediaType: "text/csv",
+      input: { kind: "csv" },
+      conversionPolicyRef,
+      qualityPolicyRef: conversionQualityPolicyRef,
+      converterDeploymentRef: conversionDeploymentRef,
+    });
+    if (conversionResult.kind !== "succeeded") {
+      throw new Error(
+        `demo fixture C12 转换失败：${JSON.stringify(conversionResult.error ?? null)}`,
+      );
+    }
+
+    /**
+     * C15 真实清洗冻结：经产品侧 store 冻结识别准备，快照自带已创建的 C08 清洗任务。
+     * 清洗任务随后由确定性 worker 走完整生命周期收口——这里不代写任何清洗结果。
+     */
+    const cleaningFreeze = await cleaning.store.freezeIdentificationPreparation({
+      kind: "identification-preparation",
+      commandId: "demo-c15-identification-preparation",
+      idempotencyKey: "demo-c15-identification-preparation",
+      projectId: PROJECT_ID,
+      actorId: baseAuth.actorId,
+      issuedAt: NOW,
+      // 冻结走自己的 C06 分支（能力 `engineering-data.freeze`），不复用资料登记的写授权；
+      // invocationId 与 commandId 同值，C06/C08 才能对得上同一份复验身份。
+      authorization: await operatorAuth(
+        "demo-c15-identification-preparation",
+        "engineering-data.identification-preparation",
+        [convertibleSourceVersionRef],
+      ),
+      payload: {
+        projectRevisionRef,
+        spatialScopeRefs: [spatialScopeRef],
+        sourceVersionRefs: [convertibleSourceVersionRef],
+        dataProcessingPolicyRef: cleaningPolicy.policyRef,
+      },
+    });
+    if (cleaningFreeze.kind !== "succeeded") {
+      // 首次冻结会因清洗任务尚未收口而停在 `data-cleaning-task-incomplete`，
+      // 但 C08 任务已经按真实契约创建。驱动它走完生命周期后重放同一冻结命令即可收口，
+      // 不另起一条任务，也不手工写已完成任务。
+      if (cleaningFreeze.error?.blockerKind !== "data-cleaning-task-incomplete") {
+        throw new Error(
+          `demo fixture C15 冻结失败：${JSON.stringify(cleaningFreeze.error ?? null)}`,
+        );
+      }
+    }
+
+    /**
+     * 确定性 C08 worker：按 C08 契约走完清洗任务生命周期。
+     *
+     * `claim` 会抢任意 active 任务，因此断言抢到的正是刚创建的那条；抢错就显式失败，
+     * 不把「抢到别的任务」当成清洗已完成（design D-05 的有界 Agent 任务契约）。
+     * 候选内容按合成样本给定，清洗判定与收口全部由生产定义代码完成。
+     */
+    const cleaningAdapter = cleaning.agentTaskAdapter;
+    const claimAt = "2030-06-02T00:10:00.000Z";
+    const claimStep = (seconds) => new Date(Date.parse(claimAt) + seconds * 1000).toISOString();
+    const cleaningClaim = await cleaningAdapter.claim({
+      workerId: "demo-c15-worker",
+      leaseDurationMs: 600_000,
+      now: claimAt,
+    });
+    if (cleaningClaim === undefined) {
+      throw new Error("demo fixture C15 清洗任务无可认领的 active 任务");
+    }
+    const cleaningTaskRef = cleaningClaim.task.envelope.agentTaskRef;
+    if (!cleaningTaskRef.reference.entityId.startsWith("agent-task:")) {
+      throw new Error(`demo fixture C15 认领到非预期任务：${cleaningTaskRef.reference.entityId}`);
+    }
+    const cleaningAuthorization = cleaningClaim.task.envelope.authorization;
+    const cleaningCapability = cleaningAuthorization.grantedCapabilities[0];
+    const putCleaningArtifact = async (artifactId, purposeCode, artifactKind, value) =>
+      artifactStore.put(
+        ArtifactPutCommandV1Schema.parse({
+          schemaVersion: "1",
+          commandId: `${artifactId}:put`,
+          idempotencyKey: `${artifactId}:put`,
+          projectId: cleaningAuthorization.projectId,
+          actorId: cleaningAuthorization.actorId,
+          issuedAt: cleaningAuthorization.decidedAt,
+          authorization: cleaningAuthorization,
+          requiredCapability: cleaningCapability,
+          artifactId,
+          artifactKind,
+          purposeCode,
+          mediaType: "application/json",
+          parentArtifactRefs: [],
+          evidenceReferences: [],
+          additionalSpatialScopeRefs: [],
+          additionalSourceAccessGrantRefs: [],
+        }),
+        (async function* () {
+          yield new TextEncoder().encode(JSON.stringify(value));
+        })(),
+      );
+    const cleaningCandidate = {
+      schemaVersion: "1",
+      candidateVersion: 1,
+      observations: [],
+      exclusions: [],
+    };
+    const intentPut = await putCleaningArtifact(
+      `demo-c15-intent-${cleaningTaskRef.reference.entityId}`,
+      "agent-action-intent",
+      "diagnostic",
+      { action: "submit-cleaning-candidate" },
+    );
+    const candidatePut = await putCleaningArtifact(
+      `demo-c15-candidate-${cleaningTaskRef.reference.entityId}`,
+      "agent-candidate",
+      "content",
+      cleaningCandidate,
+    );
+    const incrementPut = await putCleaningArtifact(
+      `demo-c15-increment-${cleaningTaskRef.reference.entityId}`,
+      "agent-increment",
+      "diagnostic",
+      cleaningCandidate,
+    );
+    const actionResultPut = await putCleaningArtifact(
+      `demo-c15-action-result-${cleaningTaskRef.reference.entityId}`,
+      "agent-action-result",
+      "diagnostic",
+      { action: "submit-cleaning-candidate", outcome: "accepted" },
+    );
+    const cleaningActionId = `${cleaningTaskRef.reference.entityId}:action`;
+    const reserved = await cleaningAdapter.reserveAction({
+      taskRef: cleaningTaskRef,
+      workerId: cleaningClaim.workerId,
+      leaseToken: cleaningClaim.leaseToken,
+      actionId: cleaningActionId,
+      reservationId: `${cleaningActionId}:reservation`,
+      actionType: "model-invocation",
+      sequence: 1,
+      idempotencyKey: `${cleaningActionId}:idempotency`,
+      intentArtifactRef: intentPut.artifactRef,
+      now: claimStep(1),
+    });
+    await cleaningAdapter.completeAction({
+      taskRef: cleaningTaskRef,
+      workerId: cleaningClaim.workerId,
+      leaseToken: cleaningClaim.leaseToken,
+      actionId: cleaningActionId,
+      resultRef: candidatePut.artifactRef,
+      resultArtifactRef: actionResultPut.artifactRef,
+      usage: { ...reserved.reservation.amount, modelInvocations: 1 },
+      activeWallClockMs: 1_000,
+      now: claimStep(2),
+    });
+    const cleaningDefinition = cleaning.store.createTaskDefinition();
+    const cleaningValidation = await cleaningDefinition.validateCandidate(
+      cleaningCandidate,
+      cleaningClaim.task,
+    );
+    const cleaningResultRef = await cleaningDefinition.finalizeCandidate(
+      cleaningCandidate,
+      cleaningClaim.task,
+    );
+    await cleaningAdapter.recordCandidate({
+      candidate: {
+        schemaVersion: "1",
+        taskRef: cleaningTaskRef,
+        candidateVersion: 1,
+        parentCandidateVersion: 0,
+        candidateArtifactRef: candidatePut.artifactRef,
+        incrementArtifactRef: incrementPut.artifactRef,
+        validation: cleaningValidation,
+        resultRef: cleaningResultRef,
+        disposition: "accepted",
+        createdAt: claimStep(3),
+      },
+      workerId: cleaningClaim.workerId,
+      leaseToken: cleaningClaim.leaseToken,
+    });
+    await cleaningAdapter.completeTask({
+      taskRef: cleaningTaskRef,
+      workerId: cleaningClaim.workerId,
+      leaseToken: cleaningClaim.leaseToken,
+      resultRef: cleaningResultRef,
+      now: claimStep(4),
+    });
+    /** C19 编制要用的真实清洗任务引用：来自上面的 C08 任务，不是构造出来的。 */
+    const dataCleaningTaskRef = {
+      kind: "agent-task",
+      reference: cleaningTaskRef.reference,
+    };
+
+    // 任务收口后重放同一冻结命令：命令身份与幂等键不变，C08 不会再建第二条任务。
+    const cleaningFreezeSettled = await cleaning.store.freezeIdentificationPreparation({
+      kind: "identification-preparation",
+      commandId: "demo-c15-identification-preparation",
+      idempotencyKey: "demo-c15-identification-preparation",
+      projectId: PROJECT_ID,
+      actorId: baseAuth.actorId,
+      issuedAt: NOW,
+      authorization: await operatorAuth(
+        "demo-c15-identification-preparation",
+        "engineering-data.identification-preparation",
+        [convertibleSourceVersionRef],
+      ),
+      payload: {
+        projectRevisionRef,
+        spatialScopeRefs: [spatialScopeRef],
+        sourceVersionRefs: [convertibleSourceVersionRef],
+        dataProcessingPolicyRef: cleaningPolicy.policyRef,
+      },
+    });
+    if (cleaningFreezeSettled.kind !== "succeeded") {
+      throw new Error(
+        `demo fixture C15 冻结收口失败：${JSON.stringify(cleaningFreezeSettled.error ?? null)}`,
+      );
+    }
 
     // ---- 监测序列 + 批次 + 冻结快照（C14 公开接缝） ----
     const monitoringAuth = (invocationId, branch) =>
@@ -3057,6 +3504,11 @@ export const startDemoBrowserServer = async () => {
        * 「完整信封冻结 + 响应丢失重试」——重试必须逐字节复用首次冻结的信封。
        */
       warningDetailRef: { ...warningRef.reference },
+      /**
+       * C15 真实清洗任务引用：C19 编制（`loadAuthoringManifest` → `readBoundResult`）
+       * 唯一的上游来源。它来自上面的 C08 任务，不是构造出来的引用。
+       */
+      dataCleaningTaskRef,
       /**
        * C31 risk-overview 的两个已登记运行：同父、不同入口身份，用于验收「按页追溯」——
        * 下一页必须是真实的下一个运行，且与首页共用同一个 `queryResultRef`。

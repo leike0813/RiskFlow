@@ -2123,6 +2123,7 @@ export const startDemoBrowserServer = async () => {
       riskElementRelations: [
         { sourceElement: "刀具磨损", relation: "加剧", targetElement: "围岩扰动" },
       ],
+      // 资料 B 仅系统管理员可见，这条记录因此只对管理员可读；证据抽屉的受限脱敏态由此而来。
       sourceSegmentIds: [sourceA.segmentIds[1], sourceB.segmentIds[0]],
       mechanismEntryIds: ["MEC-VDS-017"],
       spatialScopeRefs: [spatialScopeRef],
@@ -2603,6 +2604,12 @@ export const startDemoBrowserServer = async () => {
       runRead: workflow.runRead,
       entriesRead: workflow.entriesRead,
       recordCatalog: identificationRead,
+      // 入口运行策略与 C30 图的 `workflowStartControl` 取同一组部署值：入口面声明的图版本
+      // 必须就是真会跑起来的那一版，缺省则入口如实报 `business-unavailable`。
+      entryRunPolicy: {
+        graphVersion: DEMO_RISK_FLOW_CONFIG.subGraphVersions.assessment,
+        retryPolicyRef: DEMO_RISK_FLOW_CONFIG.retryPolicyRef,
+      },
     });
 
     // ---- C27 处置建议：Agent 任务契约与 C08 只读接缝 ----
@@ -3045,6 +3052,11 @@ export const startDemoBrowserServer = async () => {
         projectRevisionRef: { kind: "project-revision", reference: projectRevisionRef.reference },
         applicabilityMetadataSnapshotRef: applicabilitySnapshotRef,
       },
+      /**
+       * 链运行登记的未确认预警：`warning-response.acknowledge` 的真实写入口，用于验收
+       * 「完整信封冻结 + 响应丢失重试」——重试必须逐字节复用首次冻结的信封。
+       */
+      warningDetailRef: { ...warningRef.reference },
       /**
        * C31 risk-overview 的两个已登记运行：同父、不同入口身份，用于验收「按页追溯」——
        * 下一页必须是真实的下一个运行，且与首页共用同一个 `queryResultRef`。

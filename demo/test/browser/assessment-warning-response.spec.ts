@@ -23,6 +23,10 @@ test.afterAll(async () => {
   await server?.close();
 });
 
+test.beforeEach(async ({ page }) => {
+  page.setDefaultTimeout(20_000);
+});
+
 /** design D-02 的 17 条路由，含根路径入口别名。 */
 const C34_ROUTES = [
   { key: "P-OV-01", path: "/", heading: "风险态势总览" },
@@ -42,8 +46,36 @@ const withProject = (path, extraParams = {}) => {
   const params = new URLSearchParams({ project: server.projectId });
   for (const [key, value] of new URLSearchParams(existing)) params.set(key, value);
   for (const [key, value] of Object.entries(extraParams)) params.set(key, value);
+  params.set("assessmentSources", JSON.stringify({ projectId: server.projectId,
+    revisionId: params.get("revision")?.split("@").at(-1) ?? null,
+    refs: server.assessmentSourceVersionRefs }));
   return `${base}?${params.toString()}`;
 };
+
+const localDateTimeNow = (page) => page.evaluate(() => {
+  const now = new Date();
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 19);
+});
+
+test("资料来源由用户声明，修改范围重新读取，切换工程清除来源", async ({ page }) => {
+  await login(page, server.operatorLogin, `/assessment/records?project=${server.projectId}`);
+  await expect(page.getByRole("button", { name: "资料来源：未选择" })).toBeVisible();
+  await page.getByRole("button", { name: "资料来源：未选择" }).click();
+  await page.getByLabel("资料来源版本").fill(JSON.stringify(server.assessmentSourceVersionRefs));
+  const request = page.waitForRequest(req => req.url().endsWith("/queries/risk-assessment.read") &&
+    req.postDataJSON().payload.operation === "record-catalog" && req.postDataJSON().requestedSourceVersionRefs.length > 0);
+  const response = page.waitForResponse(res => res.url().endsWith("/queries/risk-assessment.read") &&
+    res.request().postDataJSON().payload.operation === "record-catalog" && res.request().postDataJSON().requestedSourceVersionRefs.length > 0);
+  await page.getByRole("button", { name: "应用来源", exact: true }).click();
+  expect((await request).postDataJSON().requestedSourceVersionRefs).toEqual(
+    server.assessmentSourceVersionRefs.map(reference => ({ kind: "source-version", reference })));
+  expect((await response).status()).toBe(200);
+  await page.getByRole("button", { name: "切换工程", exact: true }).click();
+  await page.getByLabel("工程标识").fill("demo-other-project");
+  await page.getByRole("button", { name: "确定", exact: true }).click();
+  await expect(page.getByRole("button", { name: "资料来源：未选择" })).toBeVisible();
+  expect(new URL(page.url()).searchParams.has("assessmentSources")).toBe(false);
+});
 
 /**
  * 启动先自省：会话仍有效时直接落在目标页，只有 401 才出现登录表单。
@@ -158,11 +190,13 @@ test("工程切换后旧工程的迟到响应不得污染当前页面", async ({
   await expectResolvedState(page);
 });
 
-test("矩阵页在来源不可读时呈现 unavailable 而非空图", async ({ page }) => {
+test("矩阵来源请求失败时安全收口且不绘制空图", async ({ page }) => {
+  await page.route("**/queries/knowledge-modeling.governance-read", (route) => route.abort("failed"));
   await login(page, server.responderLogin, withProject("/assessment/matrix"));
   await expect(page.locator("h1.page-title")).toHaveText("P/C 风险矩阵视图");
-  // 角色读不到矩阵来源时给出原因，而不是渲染一张没有数据的空矩阵冒充完整视图。
-  await expect(page.getByText(/未给出已生效的风险矩阵发布|正在读取/)).toBeVisible();
+  await expect(page.locator('[data-page-state="error"]')).toBeVisible();
+  await expect(page.getByRole("img", { name: "P/C 风险矩阵" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "重试", exact: true })).toBeEnabled();
 });
 
 /**
@@ -172,6 +206,30 @@ const readPageStates = (page) =>
   page.locator("[data-page-state]").evaluateAll((nodes) =>
     nodes.map((node) => node.getAttribute("data-page-state")),
   );
+
+for (const failedBranch of ["risk-assessment.read", "warning-response.read", "projection.query"]) {
+  test(`态势来源 ${failedBranch} 失败时其它来源保留独立范围与时点`, async ({ page }) => {
+    await page.route(`**/queries/${failedBranch}`, async route => {
+      const operation = route.request().postDataJSON().payload.operation;
+      if (failedBranch === "projection.query" || operation === "overview") return route.abort("failed");
+      await route.continue();
+    });
+    await login(page, server.operatorLogin, withProject("/overview"));
+    await expect(page.locator('[data-page-state="error"]').first()).toBeVisible();
+    const goodLabels = failedBranch === "risk-assessment.read" ? ["开放处置任务"]
+      : failedBranch === "warning-response.read" ? ["已入库评估记录"]
+        : ["已入库评估记录", "开放处置任务"];
+    for (const label of goodLabels) await expect(page.getByText(label, { exact: true })).toBeVisible();
+    await expect(page.getByText(/asOf/).first()).toBeVisible();
+    if (failedBranch !== "projection.query") await expect(page.getByText(server.overviewRuns[0].entryVersionId)).toBeVisible();
+    await page.getByRole("button", { name: "切换工程" }).click();
+    await page.getByLabel("工程标识").fill("demo-switched-project");
+    await page.getByRole("button", { name: "确定" }).click();
+    await expect(page.getByText("当前工程：demo-switched-project")).toBeVisible();
+    await expect(page.getByText(server.overviewRuns[0].entryVersionId)).toHaveCount(0);
+    for (const label of goodLabels) await expect(page.getByText(label, { exact: true })).toHaveCount(0);
+  });
+}
 
 test("撤权后同一账号的评估与处置读取失败闭合，且不泄露既有事实", async ({ page }) => {
   const target = withProject("/warnings");
@@ -361,7 +419,7 @@ const startRealAssessmentAndReadWarnings = async (page, suffix, options = {}) =>
       issuedAt: new Date().toISOString(),
       requestedSpatialScopeRefs: [],
       requestedSourceVersionRefs: [],
-      payload: { ...server.assessStartInput, entryMode: "assess" },
+      payload: { ...server.assessStartInput, ...options.startInput, entryMode: "assess" },
     },
     "commands",
   );
@@ -478,8 +536,8 @@ test("响应丢失后重试逐字节复用首次冻结的完整信封，服务�
         headers: { ...route.request().headers(), origin: server.origin },
         data: envelope,
       });
+      firstServerResult.body = await direct.json();
       firstServerResult.status = direct.status();
-      firstServerResult.body = (await direct.text().catch(() => undefined))?.slice(0, 300);
       await route.fulfill({ status: 599, contentType: "text/plain", body: "response dropped" });
       return;
     }
@@ -503,9 +561,9 @@ test("响应丢失后重试逐字节复用首次冻结的完整信封，服务�
     .poll(() => firstServerResult.status, { timeout: 30_000 })
     .toBe(200);
   expect(
-    JSON.stringify(firstServerResult.body),
+    firstServerResult.body,
     `首次请求必须真的执行到服务端，路由日志 ${JSON.stringify(handlerLog)}`,
-  ).toContain("acknowledged");
+  ).toMatchObject({ kind: "succeeded", result: { status: "acknowledged" } });
 
   // 服务端侧证据：确认事实在应答丢失之前就已落库，重试之前就能读到。
   await expect
@@ -597,6 +655,179 @@ test("取消确认不发出任何写命令，也不留下确认事实", async ({
  * 每一步都经真实 HTTP 命令与真实领域适配器，断言只锁结构化引用、状态枚举与命令回执，
  * 不锁 UI 文案。任何一步没跑通都计为失败，不 skip、不用播种事实冒充命令执行。
  */
+test("运行结果与复核任务独立有界续页，终态保留引用", async ({ page }) => {
+  await login(page, server.operatorLogin, withProject("/warnings"));
+  const read = (payload) => postBranch(page, "risk-assessment.read", {
+    schemaVersion: "1", queryId: `run-page-${crypto.randomUUID()}`,
+    requestedAt: new Date().toISOString(), requestedSpatialScopeRefs: [],
+    requestedSourceVersionRefs: server.assessmentSourceVersionRefs.map(reference => ({ kind: "source-version", reference })),
+    payload: { operation: "run-read", workflowRunRef: server.paginatedRunRef, ...payload },
+  }, "queries");
+  const first = await read({});
+  expect(first.status, JSON.stringify(first.body)).toBe(200);
+  expect(first.body.result.resultRefs).toHaveLength(50);
+  expect(first.body.result.reviewTaskRefs).toHaveLength(50);
+  const second = await read({ resultCursor: first.body.result.nextCursor });
+  expect(second.status, JSON.stringify(second.body)).toBe(200);
+  expect(second.body.result.resultRefs).toHaveLength(5);
+  expect(second.body.result.reviewTaskRefs).toHaveLength(50);
+  const third = await read({ resultCursor: second.body.result.nextCursor });
+  expect(third.status, JSON.stringify(third.body)).toBe(200);
+  expect(third.body.result.resultRefs).toEqual([]);
+  expect(third.body.result.reviewTaskRefs).toHaveLength(5);
+  expect(third.body.result.nextCursor).toBeUndefined();
+  const foreign = await read({ workflowRunRef: server.terminalRunRef, resultCursor: first.body.result.nextCursor });
+  expect(foreign.status).toBeGreaterThanOrEqual(400);
+  expect(new Set([...first.body.result.resultRefs, ...second.body.result.resultRefs]
+    .map(ref => ref.reference.entityId)).size).toBe(55);
+  expect(new Set([...first.body.result.reviewTaskRefs, ...second.body.result.reviewTaskRefs, ...third.body.result.reviewTaskRefs]
+    .map(ref => ref.reference.entityId)).size).toBe(105);
+  await page.goto(`${server.origin}${withProject(`/assessment/runs/${server.paginatedRunRef.reference.entityId}`, {
+    version: server.paginatedRunRef.reference.versionId,
+  })}`);
+  await expect(page.getByRole("button", { name: "续页" })).toBeVisible();
+  await page.getByRole("button", { name: "续页" }).click();
+  await expect(page.locator(".ar-two-col li")).toHaveCount(55);
+  await page.getByRole("button", { name: "续页" }).click();
+  await expect(page.getByRole("button", { name: "续页" })).toHaveCount(0);
+  await expect(page.locator(".ar-two-col li")).toHaveCount(5);
+});
+
+test("慢读取保持单在途轮询，隐藏、终态和卸载停止刷新", async ({ page }) => {
+  test.setTimeout(90_000);
+  let count = 0;
+  let active = 0;
+  let maxActive = 0;
+  await page.route("**/queries/risk-assessment.read", async route => {
+    if (route.request().postDataJSON().payload.operation !== "run-read") return route.continue();
+    count += 1;
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    try {
+      const response = await route.fetch();
+      if (count === 2) await new Promise(resolve => setTimeout(resolve, 6100));
+      await route.fulfill({ response });
+    } finally { active -= 1; }
+  });
+  await login(page, server.operatorLogin, withProject(`/assessment/runs/${server.paginatedRunRef.reference.entityId}`, {
+    version: server.paginatedRunRef.reference.versionId,
+  }));
+  await expect(page.getByText("waiting", { exact: true }).first()).toBeVisible();
+  await expect.poll(() => count, { timeout: 15_000 }).toBe(2);
+  await page.waitForTimeout(6500);
+  expect(count).toBe(2);
+  expect(maxActive).toBe(1);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await page.waitForTimeout(5500);
+  expect(count).toBe(2);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect.poll(() => count, { timeout: 10_000 }).toBe(3);
+  await page.goto(`${server.origin}${withProject(`/assessment/runs/${server.terminalRunRef.reference.entityId}`, {
+    version: server.terminalRunRef.reference.versionId,
+  })}`);
+  await expect(page.getByText("terminal-failure", { exact: true }).first()).toBeVisible();
+  const terminalCount = count;
+  await page.waitForTimeout(5500);
+  expect(count).toBe(terminalCount);
+  await page.goto(`${server.origin}${withProject("/warnings")}`);
+  await page.waitForTimeout(5500);
+  expect(count).toBe(terminalCount);
+});
+
+test("独立行动使用真实已发布措施，执行与反馈不产生预测或校准", async ({ page }) => {
+  test.setTimeout(240_000);
+  await login(page, server.operatorLogin, withProject("/warnings"));
+  const real = await startRealAssessmentAndReadWarnings(page, "independent-action");
+  await page.goto(`${server.origin}${withProject("/response/executions/register", {
+    task: real.taskRef.reference.entityId, taskVersion: real.taskRef.reference.versionId,
+  })}`);
+  await page.getByLabel("执行来源").selectOption("independent-action");
+  await page.getByLabel("措施发布标识").fill(server.measureLibraryReleaseRef.entityId);
+  await page.getByLabel("措施发布版本").fill(server.measureLibraryReleaseRef.versionId);
+  await page.getByLabel("执行发生时间").fill(await localDateTimeNow(page));
+  await page.getByLabel("证据来源段标识").fill(server.sourceA.segmentIds[0]);
+  await page.getByLabel("证据来源版本标识").fill(server.sourceA.sourceVersionRef.reference.entityId);
+  await page.getByLabel("证据来源版本号").fill(server.sourceA.sourceVersionRef.reference.versionId);
+  await page.getByLabel("措施发布版本").fill("unregistered-version");
+  await page.getByRole("button", { name: "登记执行", exact: true }).click();
+  const invalidExecution = page.waitForResponse(response => response.url().endsWith("/commands/warning-response.record-execution"));
+  await page.getByRole("button", { name: "确认登记执行", exact: true }).click();
+  const invalidHttp = await invalidExecution;
+  expect(invalidHttp.status()).toBeGreaterThanOrEqual(400);
+  expect((await invalidHttp.json()).code).toBe("BUSINESS_BLOCKED");
+  expect(new URL(page.url()).searchParams.get("execution")).toBeNull();
+  await page.getByRole("dialog").getByRole("button", { name: "取消", exact: true }).click();
+  await page.getByLabel("措施发布版本").fill(server.measureLibraryReleaseRef.versionId);
+  let releaseResponse;
+  let recordSubmitted;
+  const responseGate = new Promise(resolve => { releaseResponse = resolve; });
+  const submitted = new Promise(resolve => { recordSubmitted = resolve; });
+  await page.route("**/commands/warning-response.record-execution", async route => {
+    const response = await route.fetch();
+    recordSubmitted({ response, body: await response.json() });
+    await responseGate;
+    await route.fulfill({ response });
+  });
+  await page.getByRole("button", { name: "登记执行", exact: true }).click();
+  const executionResponse = page.waitForResponse(response => response.url().endsWith("/commands/warning-response.record-execution"));
+  await page.getByRole("button", { name: "确认登记执行", exact: true }).click();
+  const { response: executionHttp, body: execution } = await submitted;
+  try {
+    expect(executionHttp.status(), JSON.stringify(execution)).toBe(200);
+    // 提交对话框锁住页面控件；用浏览器历史导航触发同一 SPA 的工程上下文变化。
+    await page.evaluate(() => {
+      const target = new URL(location.href);
+      target.searchParams.set("project", "demo-switched-project");
+      target.searchParams.delete("assessmentSources");
+      history.pushState({}, "", target);
+      dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await expect(page.getByText("当前工程：demo-switched-project")).toBeVisible();
+  } finally { releaseResponse(); }
+  await executionResponse;
+  await page.waitForTimeout(200);
+  expect(new URL(page.url()).searchParams.get("execution")).toBeNull();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  const executionRef = execution.result.executionRecordRef;
+  await page.goto(`${server.origin}${withProject("/response/executions/register", {
+    task: real.taskRef.reference.entityId, taskVersion: real.taskRef.reference.versionId,
+    execution: executionRef.reference.entityId, version: executionRef.reference.versionId,
+  })}`);
+  await expect.poll(() => new URL(page.url()).searchParams.get("version")).toBe(executionRef.reference.versionId);
+  await page.getByLabel("反馈工件标识").fill(server.feedbackArtifactRef.reference.entityId);
+  await page.getByLabel("反馈工件版本").fill(server.feedbackArtifactRef.reference.versionId);
+  await page.getByLabel("处置后监测快照标识").fill(server.settlementMonitoringSnapshotRef.reference.entityId);
+  await page.getByLabel("处置后监测快照版本").fill(server.settlementMonitoringSnapshotRef.reference.versionId);
+  await page.getByLabel("实际评估记录标识").fill(real.assessmentRecordRef.reference.entityId);
+  await page.getByLabel("实际评估记录版本").fill(real.assessmentRecordRef.reference.versionId);
+  await page.getByLabel("反馈发生时间").fill(await localDateTimeNow(page));
+  await page.getByRole("button", { name: "登记反馈", exact: true }).click();
+  const feedbackResponse = page.waitForResponse(response => response.url().endsWith("/commands/warning-response.record-feedback"));
+  await page.getByRole("button", { name: "确认登记反馈", exact: true }).click();
+  const feedbackHttp = await feedbackResponse;
+  const feedback = await feedbackHttp.json();
+  expect(feedbackHttp.status(), JSON.stringify(feedback)).toBe(200);
+  await expect(page.locator("h1.page-title")).toHaveText("处置反馈");
+  const read = await postBranch(page, "warning-response.read", {
+    schemaVersion: "1", queryId: `independent-read-${crypto.randomUUID()}`,
+    requestedAt: new Date().toISOString(), requestedSpatialScopeRefs: [],
+    requestedSourceVersionRefs: server.assessmentSourceVersionRefs.map(reference => ({ kind: "source-version", reference })),
+    payload: { operation: "feedback-read", feedbackRef: feedback.result.feedbackRef },
+  }, "queries");
+  expect(read.status, JSON.stringify(read.body)).toBe(200);
+  expect(read.body.result.executionRef).toEqual(executionRef);
+  expect(read.body.result.forecastAvailability.kind).toBe("unavailable");
+  expect(read.body.result.deviation).toBeUndefined();
+  expect(read.body.result.deviationRecord).toBeUndefined();
+  expect(read.body.result.calibrationRefs).toEqual([]);
+});
+
 test("采纳、执行与反馈成立真实事实后，偏差驱动出校准建议，批准只生成未发布草案", async ({ page }) => {
   test.setTimeout(600_000);
   await login(page, server.operatorLogin, withProject("/warnings"));
@@ -664,25 +895,17 @@ test("采纳、执行与反馈成立真实事实后，偏差驱动出校准建�
   const recommendationRef = recommendationRefs[0];
 
   // ---- 4. 人工采纳正式建议（C41：真实 routeDecisionRef + 内部起并恢复预测运行）----
-  const adopted = await postBranch(
-    page,
-    "warning-response.adopt-recommendation",
-    {
-      schemaVersion: "1",
-      commandId: `spec-cal-adopt-${recommendationRef.reference.entityId}`,
-      idempotencyKey: `spec-cal-adopt-${recommendationRef.reference.entityId}`,
-      issuedAt: new Date().toISOString(),
-      requestedSpatialScopeRefs: [],
-      requestedSourceVersionRefs: [],
-      payload: {
-        responseRecommendationRef: recommendationRef,
-        decision: "adopted",
-        reasonCode: "demo-calibration-closed-loop",
-        preActionMonitoringSnapshotRef: server.settlementMonitoringSnapshotRef,
-      },
-    },
-    "commands",
-  );
+  await page.goto(`${server.origin}${withProject(`/response/recommendations/${recommendationRef.reference.entityId}`, { version: recommendationRef.reference.versionId })}`);
+  await page.getByLabel("执行前监测快照标识").fill(server.settlementMonitoringSnapshotRef.reference.entityId);
+  await expect(page.getByRole("button", { name: "采纳建议", exact: true })).toBeDisabled();
+  await page.getByLabel("执行前监测快照版本").fill(server.settlementMonitoringSnapshotRef.reference.versionId);
+  await page.getByRole("button", { name: "采纳建议", exact: true }).click();
+  const adoptionResponse = page.waitForResponse((response) => response.url().includes("/commands/warning-response.adopt-recommendation"));
+  await page.getByRole("button", { name: "确认采纳建议", exact: true }).click();
+  const adoptionHttp = await adoptionResponse;
+  const adopted = { status: adoptionHttp.status(), body: await adoptionHttp.json() };
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByText("已采纳", { exact: true })).toBeVisible();
   expect(adopted.status, `采纳应成立，实际 ${JSON.stringify(adopted.body)}`).toBe(200);
   const adoption = adopted.body?.result;
   // 结果判别式本身就是决定事实：`adoption` 表示已采纳并已产生真实预测运行绑定，
@@ -715,68 +938,43 @@ test("采纳、执行与反馈成立真实事实后，偏差驱动出校准建�
   const effectForecastRef = forecastRefs[0];
 
   // ---- 6. 登记执行（正式建议来源 + 真实来源段证据）----
-  const executedAt = new Date().toISOString();
-  const execution = await postBranch(
-    page,
-    "warning-response.record-execution",
-    {
-      schemaVersion: "1",
-      commandId: `spec-cal-exec-${effectForecastRef.reference.entityId}`,
-      idempotencyKey: `spec-cal-exec-${effectForecastRef.reference.entityId}`,
-      issuedAt: new Date().toISOString(),
-      requestedSpatialScopeRefs: [],
-      requestedSourceVersionRefs: [],
-      payload: {
-        actionSource: {
-          kind: "adopted-recommendation",
-          responseRecommendationRef: recommendationRef,
-        },
-        // 载荷要的是账号主体标识，不是登录名：登录名会被 C28 判为执行来源无效。
-        executedByActorId: server.operatorAccountId,
-        recordedByActorId: server.operatorAccountId,
-        occurredAt: executedAt,
-        evidenceReferences: [
-          {
-            locator: {
-              sourceSegmentId: `${server.sourceAVersionEntityId}-chapter_1-segment_1`,
-            },
-            sourceVersion: { entityId: server.sourceAVersionEntityId, versionId: "1" },
-          },
-        ],
-      },
-    },
-    "commands",
-  );
-  expect(execution.status, `登记执行应成立，实际 ${JSON.stringify(execution.body)}`).toBe(200);
-  const executionRef = execution.body?.result?.executionRecordRef;
-  expect(executionRef, `登记执行必须返回真实执行记录，实际 ${JSON.stringify(execution.body)}`)
-    .toBeTruthy();
+  await page.goto(`${server.origin}${withProject('/response/executions/register', {
+    task: real.taskRef.reference.entityId, taskVersion: real.taskRef.reference.versionId,
+  })}`);
+  await page.getByLabel("建议标识", { exact: true }).fill(recommendationRef.reference.entityId);
+  await page.getByLabel("建议版本", { exact: true }).fill(recommendationRef.reference.versionId);
+  await page.getByLabel("执行发生时间").fill(await localDateTimeNow(page));
+  await page.getByLabel("证据来源段标识").fill(server.sourceA.segmentIds[0]);
+  await page.getByLabel("证据来源版本标识").fill(server.sourceA.sourceVersionRef.reference.entityId);
+  await expect(page.getByRole("button", { name: "登记执行", exact: true })).toBeDisabled();
+  await page.getByLabel("证据来源版本号").fill(server.sourceA.sourceVersionRef.reference.versionId);
+  await page.getByRole("button", { name: "登记执行", exact: true }).click();
+  const executionResponse = page.waitForResponse(response => response.url().endsWith("/commands/warning-response.record-execution"));
+  await page.getByRole("button", { name: "确认登记执行", exact: true }).click();
+  const executionHttp = await executionResponse;
+  const execution = { status: executionHttp.status(), body: await executionHttp.json() };
+  expect(execution.status, JSON.stringify(execution.body)).toBe(200);
+  const executionRef = execution.body.result.executionRecordRef;
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect.poll(() => new URL(page.url()).searchParams.get("version")).toBe(executionRef.reference.versionId);
 
-  // ---- 7. 登记正式反馈（真实反馈工件 + 实际评估记录 + 处置后监测快照）----
-  const feedback = await postBranch(
-    page,
-    "warning-response.record-feedback",
-    {
-      schemaVersion: "1",
-      commandId: `spec-cal-feedback-${executionRef.reference.entityId}`,
-      idempotencyKey: `spec-cal-feedback-${executionRef.reference.entityId}`,
-      issuedAt: new Date().toISOString(),
-      requestedSpatialScopeRefs: [],
-      requestedSourceVersionRefs: [],
-      payload: {
-        executionRecordRef: executionRef,
-        postActionMonitoringSnapshotRef: server.settlementMonitoringSnapshotRef,
-        feedbackArtifactRef: server.feedbackArtifactRef,
-        occurredAt: new Date().toISOString(),
-        actualAssessmentRecordRef: real.assessmentRecordRef,
-      },
-    },
-    "commands",
-  );
-  expect(feedback.status, `登记反馈应成立，实际 ${JSON.stringify(feedback.body)}`).toBe(200);
-  const feedbackRef = feedback.body?.result?.feedbackRef;
-  expect(feedbackRef, `登记反馈必须返回真实反馈引用，实际 ${JSON.stringify(feedback.body)}`)
-    .toBeTruthy();
+  // ---- 7. 通过页面登记正式反馈：所有输入都是真实精确引用 ----
+  await page.getByLabel("反馈工件标识").fill(server.feedbackArtifactRef.reference.entityId);
+  await page.getByLabel("反馈工件版本").fill(server.feedbackArtifactRef.reference.versionId);
+  await page.getByLabel("处置后监测快照标识").fill(server.settlementMonitoringSnapshotRef.reference.entityId);
+  await page.getByLabel("处置后监测快照版本").fill(server.settlementMonitoringSnapshotRef.reference.versionId);
+  await page.getByLabel("实际评估记录标识").fill(real.assessmentRecordRef.reference.entityId);
+  await page.getByLabel("实际评估记录版本").fill(real.assessmentRecordRef.reference.versionId);
+  await expect(page.getByRole("button", { name: "登记反馈", exact: true })).toBeDisabled();
+  await page.getByLabel("反馈发生时间").fill(await localDateTimeNow(page));
+  await page.getByRole("button", { name: "登记反馈", exact: true }).click();
+  const feedbackResponse = page.waitForResponse(response => response.url().endsWith("/commands/warning-response.record-feedback"));
+  await page.getByRole("button", { name: "确认登记反馈", exact: true }).click();
+  const feedbackHttp = await feedbackResponse;
+  const feedback = { status: feedbackHttp.status(), body: await feedbackHttp.json() };
+  expect(feedback.status, JSON.stringify(feedback.body)).toBe(200);
+  const feedbackRef = feedback.body.result.feedbackRef;
+  await expect(page.locator("h1.page-title")).toHaveText("处置反馈");
 
   // ---- 8. 反馈分段由 C41 在登记反馈的同一命令内启动 ----
   //
@@ -851,4 +1049,281 @@ test("采纳、执行与反馈成立真实事实后，偏差驱动出校准建�
     calibrationView?.knowledgeRevisionRef,
     "尚未批准草案时不得存在已发布知识修订",
   ).toBeUndefined();
+  // ---- 11. C07 真实批准后，以精确决定通过页面创建 C29/C16 未发布草案 ----
+  const queue = await postBranch(page, "review-audit.queue-read", {
+    schemaVersion: "1", queryId: `spec-cal-review-${crypto.randomUUID()}`,
+    requestedAt: new Date().toISOString(), requestedSpatialScopeRefs: [], requestedSourceVersionRefs: [],
+    payload: { reviewType: "calibration-suggestion", status: "pending", pageSize: 50 },
+  }, "queries");
+  expect(queue.status, JSON.stringify(queue.body)).toBe(200);
+  const reviewTask = queue.body.result.items.find((item) => item.reviewTaskRef.targetRef.reference.entityId === calibrationSuggestionRef.reference.entityId);
+  expect(reviewTask).toBeTruthy();
+  const decisionId = `spec-cal-approve-${crypto.randomUUID()}`;
+  const approved = await postBranch(page, "review-audit.decide-review", {
+    schemaVersion: "1", commandId: decisionId, idempotencyKey: decisionId, issuedAt: new Date().toISOString(),
+    requestedSpatialScopeRefs: [], requestedSourceVersionRefs: [],
+    payload: {
+      reviewTaskRef: reviewTask.reviewTaskRef, targetRef: reviewTask.reviewTaskRef.targetRef,
+      decision: { reviewType: "calibration-suggestion", kind: "approve-draft-creation" }, reasonCode: "calibration-verification",
+    },
+  }, "commands");
+  expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+  const reviewDecisionRef = approved.body.result.reviewDecisionRef;
+  await page.reload();
+  await page.getByLabel("复核决定标识").fill(reviewDecisionRef.reference.entityId);
+  await page.getByLabel("复核决定版本").fill(reviewDecisionRef.reference.versionId);
+  await page.getByRole("button", { name: "创建治理草案", exact: true }).click();
+  const draftResponse = page.waitForResponse((response) => response.url().includes("/commands/warning-response.calibration-governance-draft"));
+  await page.getByRole("button", { name: "确认创建治理草案", exact: true }).click();
+  const draftHttp = await draftResponse;
+  const draftBody = await draftHttp.json();
+  expect(draftHttp.status(), JSON.stringify(draftBody)).toBe(200);
+  expect(draftBody.result.knowledgeRevisionRef).toBeTruthy();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByText(draftBody.result.knowledgeRevisionRef.reference.entityId, { exact: false })).toBeVisible();
+  const reread = await postBranch(page, "warning-response.read", {
+    schemaVersion: "1", queryId: `spec-cal-draft-${crypto.randomUUID()}`, requestedAt: new Date().toISOString(),
+    requestedSpatialScopeRefs: [], requestedSourceVersionRefs: [], payload: { operation: "calibration-read", calibrationSuggestionRef },
+  }, "queries");
+  expect(reread.body.result.status).toBe("approved-for-draft");
+  expect(reread.body.result.knowledgeRevisionRef).toEqual(draftBody.result.knowledgeRevisionRef);
+});
+
+/**
+ * C34 启动向导真实 UI 验收（IP-10/IP-12）。
+ *
+ * 断言页面用完整精确引用（不伪造版本）经真实 HTTP 命令启动运行，并在真实 PostgreSQL 上
+ * 取得可读运行事实；缺输入、取消、键盘焦点、空间/工程切换清空按真实行为验收。
+ */
+
+/** 打开启动向导并填入全部精确引用（空间/适用性快照/风险输入/可选监测），返回所用真实引用。 */
+const openStartWizard = async (page, options = {}) => {
+  const monitoring = options.monitoring ?? server.assessStartInput.monitoringSnapshotRefs;
+  const scope = server.assessStartInput.spatialScopeRef;
+  const snapshot = server.assessStartInput.applicabilityMetadataSnapshotRef;
+  const riskInput = server.assessStartInput.riskInput;
+  await login(page, server.operatorLogin, withProject("/assessment/start"));
+  await expect(page.locator("h1.page-title")).toHaveText("启动评估");
+  await page.getByRole("combobox").first().selectOption(scope.reference.entityId);
+  const snapshotChip = page.getByRole("button", { name: snapshot.reference.entityId, exact: true });
+  const riskChip = page.getByRole("button", { name: riskInput.reference.entityId, exact: true });
+  await expect(snapshotChip, "适用性快照候选应来自入口上下文精确读").toBeVisible({ timeout: 20_000 });
+  await expect(riskChip, "风险输入候选应来自待评估目录精确读").toBeVisible({ timeout: 20_000 });
+  await snapshotChip.click();
+  await riskChip.click();
+  await page.getByLabel(/监测快照引用/).fill(JSON.stringify(monitoring));
+  return { scope, snapshot, riskInput, monitoring };
+};
+
+test("启动向导按精确引用门控：缺输入不提交、取消与 Escape 无副作用、键盘焦点受约束", async ({ page }) => {
+  await login(page, server.operatorLogin, withProject("/assessment/start"));
+  await expect(page.locator("h1.page-title")).toHaveText("启动评估");
+  // 未选空间前不渲染提交控件，也不伪造默认引用。
+  await expect(page.getByText("请先选择空间范围")).toBeVisible();
+  await expect(page.getByRole("button", { name: "启动评估", exact: true })).toHaveCount(0);
+
+  const commands = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/commands/")) commands.push(request.url());
+  });
+
+  const scope = server.assessStartInput.spatialScopeRef;
+  const snapshot = server.assessStartInput.applicabilityMetadataSnapshotRef;
+  const riskInput = server.assessStartInput.riskInput;
+  await page.getByRole("combobox").first().selectOption(scope.reference.entityId);
+  const trigger = page.getByRole("button", { name: "启动评估", exact: true });
+  await expect(trigger).toBeDisabled();
+  await page.getByRole("button", { name: snapshot.reference.entityId, exact: true }).click();
+  await page.getByRole("button", { name: riskInput.reference.entityId, exact: true }).click();
+  await expect(trigger).toBeEnabled();
+
+  // 缺版本的监测引用（自由标识冒充版本）不可用，不能用来提交。
+  await page.getByLabel(/监测快照引用/).fill('[{"kind":"monitoring-snapshot","reference":{"entityId":"x"}}]');
+  await expect(page.getByText(/监测引用不可用/)).toBeVisible();
+  await expect(trigger).toBeDisabled();
+
+  await page.getByLabel(/监测快照引用/).fill(JSON.stringify([server.settlementMonitoringSnapshotRef]));
+  await expect(trigger).toBeEnabled();
+
+  // 确认对话框：焦点落到取消、Escape 关闭、取消不发出任何写命令、关闭后焦点归还触发按钮。
+  await trigger.click();
+  const dialog = page.locator(".confirm-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "取消" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+
+  await trigger.click();
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "取消" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(commands, "取消不得发出任何写命令").toHaveLength(0);
+});
+
+test("启动向导空间变化清空关联选择，工程切换不残留旧工程选择", async ({ page }) => {
+  const scope = server.assessStartInput.spatialScopeRef;
+  const snapshot = server.assessStartInput.applicabilityMetadataSnapshotRef;
+  const riskInput = server.assessStartInput.riskInput;
+  await login(page, server.operatorLogin, withProject("/assessment/start"));
+  await expect(page.locator("h1.page-title")).toHaveText("启动评估");
+  await page.getByRole("combobox").first().selectOption(scope.reference.entityId);
+  await page.getByRole("button", { name: snapshot.reference.entityId, exact: true }).click();
+  await page.getByRole("button", { name: riskInput.reference.entityId, exact: true }).click();
+  await expect(page.locator(".ar-chip--active")).toHaveCount(2);
+
+  // 空间恢复为空：候选区收回，关联选择清空。
+  await page.getByRole("combobox").first().selectOption("");
+  await expect(page.getByText("请先选择空间范围")).toBeVisible();
+  await expect(page.getByRole("button", { name: "启动评估", exact: true })).toHaveCount(0);
+
+  // 重新选择同一空间：此前选中的快照/风险输入不得残留为活动选择。
+  await page.getByRole("combobox").first().selectOption(scope.reference.entityId);
+  await expect(page.getByRole("button", { name: snapshot.reference.entityId, exact: true })).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator(".ar-chip--active")).toHaveCount(0);
+
+  await page.getByRole("button", { name: snapshot.reference.entityId, exact: true }).click();
+  await page.getByRole("button", { name: riskInput.reference.entityId, exact: true }).click();
+  await page.getByLabel(/监测快照引用/).fill(JSON.stringify([server.settlementMonitoringSnapshotRef]));
+  await expect(page.locator(".ar-chip--active")).toHaveCount(2);
+
+  // 切换工程：旧工程的 scope-bound 选择必须清空，不残留到新工程。
+  await page.getByRole("button", { name: "切换工程" }).click();
+  await page.getByLabel("工程标识").fill("demo-switched-project");
+  await page.getByRole("button", { name: "确定" }).click();
+  await expect(page.getByText("当前工程：demo-switched-project")).toBeVisible();
+  await expect(page.locator(".ar-chip--active")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "启动评估", exact: true })).toHaveCount(0);
+});
+
+test("启动向导以完整精确引用提交初评，命令载荷精确且返回真实运行", async ({ page }) => {
+  test.setTimeout(240_000);
+  const refs = await openStartWizard(page);
+  const sentEnvelopes = [];
+  page.on("request", (request) => {
+    if (request.url().endsWith("/commands/workflow.start-run")) {
+      try {
+        sentEnvelopes.push(JSON.parse(request.postData() ?? "null"));
+      } catch {
+        sentEnvelopes.push(null);
+      }
+    }
+  });
+
+  await page.getByRole("button", { name: "启动评估", exact: true }).click();
+  await page.locator(".confirm-dialog").getByRole("button", { name: "确认启动评估" }).click();
+  await page.waitForURL(/assessment\/runs\/[^?]+\?.*version=/, { timeout: 60_000 });
+
+  // 命令载荷逐项精确：监测/风险输入/适用性快照/空间与工作流策略都取用户选定与已读事实，不伪造版本。
+  await expect.poll(() => sentEnvelopes.length, { timeout: 30_000 }).toBeGreaterThan(0);
+  const sent = sentEnvelopes[0];
+  expect(sent.payload.monitoringSnapshotRefs).toEqual(refs.monitoring);
+  expect(sent.payload.riskInput).toEqual(refs.riskInput);
+  expect(sent.payload.applicabilityMetadataSnapshotRef).toEqual(refs.snapshot);
+  expect(sent.payload.spatialScopeRef).toEqual(refs.scope);
+  expect(sent.payload.graphVersion).toEqual(server.assessStartInput.graphVersion);
+  expect(sent.payload.entryMode).toBe("assess");
+  expect(sent.commandId).toBeTruthy();
+  expect(sent.idempotencyKey).toBe(sent.commandId);
+
+  // 真实运行深链 + 运行页读回真实登记事实（入口模式为 assess）。
+  const runId = new URL(page.url()).pathname.split("/assessment/runs/")[1];
+  expect(runId, "真实启动必须返回运行深链").toBeTruthy();
+  await expect(page.locator("h1.page-title")).toHaveText("评估运行");
+  await expect(page.locator("dt", { hasText: "运行引用" }).locator("..")).toContainText(runId);
+  await expect(page.locator("dt", { hasText: "入口模式" }).locator("..")).toContainText("assess");
+});
+
+test("启动向导响应丢失后按原身份原载荷重试，取得同一运行", async ({ page }) => {
+  test.setTimeout(240_000);
+  await openStartWizard(page);
+  const envelopes = [];
+  let dropped = false;
+  await page.route("**/commands/workflow.start-run", async (route) => {
+    const envelope = route.request().postData() ?? "";
+    envelopes.push(envelope);
+    if (!dropped) {
+      dropped = true;
+      // 服务端已提交、响应丢失：真实打一次服务端，再让页面收到网络失败。
+      const direct = await page.request.post(route.request().url(), {
+        headers: { ...route.request().headers(), origin: server.origin },
+        data: envelope,
+      });
+      expect(direct.status()).toBe(200);
+      await route.fulfill({ status: 599, contentType: "text/plain", body: "response dropped" });
+      return;
+    }
+    await route.continue();
+  });
+
+  const dialog = page.locator(".confirm-dialog");
+  await page.getByRole("button", { name: "启动评估", exact: true }).click();
+  await dialog.getByRole("button", { name: "确认启动评估" }).click();
+  // 首次应答被掐断：对话框留在原处等重试。
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "确认启动评估" }).click();
+  await expect.poll(() => envelopes.length, { timeout: 60_000 }).toBe(2);
+  expect(envelopes[1], "重试必须逐字节复用首次冻结的完整信封").toBe(envelopes[0]);
+  await page.waitForURL(/assessment\/runs\/[^?]+\?.*version=/, { timeout: 60_000 });
+});
+
+test("启动向导以完整精确引用提交重评，返回真实重评运行", async ({ page }) => {
+  test.setTimeout(240_000);
+  // 重评需要真实前驱：先经真实 UI 初评落一条评估记录。
+  await openStartWizard(page);
+  await page.getByRole("button", { name: "启动评估", exact: true }).click();
+  await page.locator(".confirm-dialog").getByRole("button", { name: "确认启动评估" }).click();
+  await page.waitForURL(/assessment\/runs\//, { timeout: 60_000 });
+
+  await login(page, server.operatorLogin, withProject("/assessment/start"));
+  await expect(page.locator("h1.page-title")).toHaveText("启动评估");
+  const scope = server.assessStartInput.spatialScopeRef;
+  const snapshot = server.assessStartInput.applicabilityMetadataSnapshotRef;
+  const riskInput = server.assessStartInput.riskInput;
+  await page.getByRole("combobox").first().selectOption(scope.reference.entityId);
+  await page.getByRole("button", { name: snapshot.reference.entityId, exact: true }).click();
+  await page.getByRole("button", { name: riskInput.reference.entityId, exact: true }).click();
+  await page.getByRole("button", { name: "重评", exact: true }).click();
+
+  const priorSelect = page.getByLabel(/前驱评估记录/);
+  await expect
+    .poll(async () => priorSelect.locator("option").count(), { timeout: 20_000 })
+    .toBeGreaterThan(1);
+  await priorSelect.selectOption({ index: 1 });
+  await page.getByLabel(/变化引用/).fill(JSON.stringify([
+    server.settlementMonitoringSnapshotRef, server.reassessmentSettlementMonitoringSnapshotRef,
+  ]));
+  await page.getByLabel(/监测快照引用/).fill(JSON.stringify([
+    server.reassessmentSettlementMonitoringSnapshotRef, server.slurryPressureMonitoringSnapshotRef,
+  ]));
+
+  const trigger = page.getByRole("button", { name: "启动评估", exact: true });
+  await expect(trigger).toBeEnabled();
+  await trigger.click();
+  await page.locator(".confirm-dialog").getByRole("button", { name: "确认启动评估" }).click();
+  await page.waitForURL(/assessment\/runs\/[^?]+\?.*version=/, { timeout: 60_000 });
+  await expect(page.locator("h1.page-title")).toHaveText("评估运行");
+  await expect(page.locator("dt", { hasText: "入口模式" }).locator("..")).toContainText("reassess");
+});
+
+test("同一定义发布新矩阵后历史落点按两个冻结版本分组", async ({ page }) => {
+  test.setTimeout(180_000);
+  await login(page, server.operatorLogin, withProject("/warnings"));
+  const real = await startRealAssessmentAndReadWarnings(page, "historical-matrix");
+  const refs = await server.publishNextRiskMatrix();
+  await startRealAssessmentAndReadWarnings(page, "historical-matrix-new", {
+    startInput: { monitoringSnapshotRefs: [server.reassessmentSettlementMonitoringSnapshotRef, server.slurryPressureMonitoringSnapshotRef] },
+  });
+  const startedAt = Date.now();
+  await page.goto(`${server.origin}${withProject("/assessment/matrix")}`);
+  await expect(page.getByRole("img", { name: "P/C 风险矩阵" })).toHaveCount(2);
+  for (const ref of [refs.oldReleaseRef, refs.newReleaseRef]) {
+    await expect(page.getByText(`${ref.reference.entityId} · ${ref.reference.versionId}`, { exact: true }).first()).toBeVisible();
+  }
+  const ids = await page.locator("tbody tr td:first-child a").allTextContents();
+  expect(ids.join(" ")).toContain(real.assessmentRecordRef.reference.entityId);
+  expect(new Set(ids).size).toBeGreaterThanOrEqual(2);
+  console.info("C34 historical matrix page", { elapsedMs: Date.now() - startedAt,
+    groups: await page.getByRole("img", { name: "P/C 风险矩阵" }).count(),
+    domNodes: await page.locator("*").count() });
 });

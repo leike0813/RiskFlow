@@ -32,12 +32,21 @@ const ASSESSMENT_TABS = [
 export default function ReassessmentsPage() {
   const { selector } = useEngineering()
   const projectPath = useProjectPath()
-  const [riskInput, setRiskInput] = useState<KindRef | null>(null)
-  const [cursor, setCursor] = useState<string | undefined>(undefined)
+  const contextKey = JSON.stringify([selector.projectId, selector.revisionId, selector.assessmentSources])
+  const [selection, setSelection] = useState<{ key: string; reference: KindRef }>()
+  const riskInput = selection?.key === contextKey ? selection.reference : null
+  const setRiskInput = (reference: KindRef) => setSelection({ key: contextKey, reference })
+  const cursorKey = contextKey + JSON.stringify(riskInput)
+  const [pageCursor, setPageCursor] = useState<{ key: string; cursor: string | undefined }>()
+  const cursor = pageCursor?.key === cursorKey ? pageCursor.cursor : undefined
+  const setCursor = (next: string | undefined) => setPageCursor({ key: cursorKey, cursor: next })
+  const [catalogPage, setCatalogPage] = useState<{ key: string; cursor: string }>()
+  const catalogCursor = catalogPage?.key === contextKey ? catalogPage.cursor : undefined
 
   const catalog = usePageQuery<RecordCatalogView>(
-    (projectId, signal) => readAssessmentRecordCatalog(projectId, { entryMode: 'reassess' }, signal),
-    [],
+    (projectId, signal) => readAssessmentRecordCatalog(projectId,
+      { entryMode: 'reassess', ...(catalogCursor === undefined ? {} : { cursor: catalogCursor }) }, signal),
+    [catalogCursor],
   )
   const history = usePageQuery<ReassessmentHistoryView>(
     (projectId, signal) =>
@@ -91,7 +100,7 @@ export default function ReassessmentsPage() {
                     </li>
                   ))}
                 </ul>
-                <NextPageButton nextCursor={page.nextCursor} onContinue={() => setCursor(undefined)} />
+                <NextPageButton nextCursor={page.nextCursor} onContinue={(cursor) => setCatalogPage({ key: contextKey, cursor })} />
               </>
             )}
           </PageStateView>

@@ -19,7 +19,7 @@ import './assessment-response.css'
 /** 终态运行停止轮询；等待中与可重试失败保持单轮询观察，不做高频刷新。 */
 const POLL_INTERVAL_MS = 5000
 const isTerminal = (status: string): boolean =>
-  status === 'completed' || status === 'failed' || status === 'cancelled'
+  status === 'completed' || status === 'terminal-failure' || status === 'cancelled'
 
 /**
  * P-RA-03 评估运行（design D-02、D-04）。
@@ -37,6 +37,13 @@ export default function AssessmentRunPage() {
   const assessmentRun = searchParams.get('assessmentRun')
   const assessmentRunVersion = searchParams.get('assessmentRunVersion')
   const [tick, setTick] = useState(0)
+  const [visible, setVisible] = useState(() => document.visibilityState === 'visible')
+  // 续页游标绑定当前运行身份：切换父/子运行或版本即失效，不把上一集合的游标带过去。
+  // 服务端把结果引用与复核任务两个集合的游标编码进同一个不透明 nextCursor，这里原样回传。
+  const [pageCursor, setPageCursor] = useState<{ readonly key: string; readonly cursor: string }>()
+  const runKey = [selector.projectId, selector.revisionId, selector.assessmentSources,
+    runId ?? '', version ?? '', assessmentRun ?? '', assessmentRunVersion ?? ''].join('|')
+  const cursor = pageCursor !== undefined && pageCursor.key === runKey ? pageCursor.cursor : undefined
 
   const runRef: KindRef | null =
     runId === undefined
@@ -59,17 +66,25 @@ export default function AssessmentRunPage() {
                       reference: { entityId: assessmentRun, versionId: assessmentRunVersion },
                     },
                   }),
+              ...(cursor === undefined ? {} : { resultCursor: cursor }),
             },
             signal,
           ),
-    [runId, version, assessmentRun, assessmentRunVersion, tick],
+    [runId, version, assessmentRun, assessmentRunVersion, cursor, tick],
   )
 
   useEffect(() => {
-    if (run.state.kind !== 'ready' || isTerminal(run.state.value.status)) return
-    const timer = window.setInterval(() => setTick((value) => value + 1), POLL_INTERVAL_MS)
-    return () => window.clearInterval(timer)
-  }, [run.state])
+    const onChange = () => setVisible(document.visibilityState === 'visible')
+    document.addEventListener('visibilitychange', onChange)
+    return () => document.removeEventListener('visibilitychange', onChange)
+  }, [])
+
+  // 单在途轮询：本轮结果落地（run.state 变化）后才排下一次；隐藏页与终态都不排。
+  useEffect(() => {
+    if (run.state.kind !== 'ready' || isTerminal(run.state.value.status) || !visible) return
+    const timer = window.setTimeout(() => setTick((value) => value + 1), POLL_INTERVAL_MS)
+    return () => window.clearTimeout(timer)
+  }, [run.state, visible])
 
   // 首次只含实体 ID 的书签：经显式 resolve 取得可见版本后替换 URL，带 version 后不再解析。
   const resolve = usePageQuery<AssessmentResolveView>(
@@ -207,7 +222,10 @@ export default function AssessmentRunPage() {
                       ))}
                     </ul>
                   )}
-                  <NextPageButton nextCursor={value.nextCursor} onContinue={() => setTick((v) => v + 1)} />
+                  <NextPageButton
+                    nextCursor={value.nextCursor}
+                    onContinue={(next) => setPageCursor({ key: runKey, cursor: next })}
+                  />
                 </FieldCard>
 
                 <FieldCard title="人工复核任务">

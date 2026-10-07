@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import AppShell from '../components/AppShell'
 import { Card } from '../components/Card'
@@ -33,6 +33,9 @@ export default function RecommendationDetailPage() {
   const preActionSnapshot = searchParams.get('preActionSnapshot') ?? ''
   const preActionSnapshotVersion = searchParams.get('preActionSnapshotVersion') ?? ''
   const [tick, setTick] = useState(0)
+  const inputIdentity = JSON.stringify([selector.projectId, selector.revisionId, selector.assessmentSources, recommendationId, version, preActionSnapshot, preActionSnapshotVersion])
+  const command = useRef({ identity: '', id: '' })
+  if (command.current.identity !== inputIdentity) command.current = { identity: inputIdentity, id: crypto.randomUUID() }
 
   const recommendationRef: KindRef | null =
     recommendationId === undefined
@@ -80,17 +83,17 @@ export default function RecommendationDetailPage() {
     if (recommendation.state.kind !== 'ready' || selector.projectId === null) return
     const ref = recommendation.state.value.responseRecommendationRef
     await submitRecommendationDecision(selector.projectId, {
-      commandId: `demo-decide-${decision}-${ref.reference.entityId}-${ref.reference.versionId}`,
+      commandId: `demo-decide-${decision}-${command.current.id}`,
       responseRecommendationRef: ref,
       decision,
       reasonCode: decision === 'adopted' ? 'adopt-per-response-plan' : 'decline-per-response-plan',
-      ...(decision === 'adopted' && preActionSnapshot !== ''
+      ...(decision === 'adopted' && preActionSnapshot !== '' && preActionSnapshotVersion !== ''
         ? {
             preActionMonitoringSnapshotRef: {
               kind: 'monitoring-snapshot',
               reference: {
                 entityId: preActionSnapshot,
-                versionId: preActionSnapshotVersion === '' ? preActionSnapshot : preActionSnapshotVersion,
+                versionId: preActionSnapshotVersion,
               },
             },
           }
@@ -103,13 +106,13 @@ export default function RecommendationDetailPage() {
   const decideAvailability = actionAvailability(actions, 'warning-response.adopt-recommendation')
   const decided = recommendation.state.kind === 'ready' ? recommendation.state.value.decision : undefined
   const monitorSnapshotRef: KindRef | null =
-    preActionSnapshot === ''
+    preActionSnapshot === '' || preActionSnapshotVersion === ''
       ? null
       : {
           kind: 'monitoring-snapshot',
           reference: {
             entityId: preActionSnapshot,
-            versionId: preActionSnapshotVersion === '' ? preActionSnapshot : preActionSnapshotVersion,
+            versionId: preActionSnapshotVersion,
           },
         }
 
@@ -247,29 +250,40 @@ export default function RecommendationDetailPage() {
                     placeholder="采纳时必填：采纳路径据此建立真实等待运行"
                   />
                 </label>
-                <p className="ar-note">
-                  采纳必须给出执行前监测快照的精确引用；缺省时由服务端在唯一合格候选下选择，
-                  候选不唯一即安全失败。
-                </p>
+                <label className="ar-form-field">
+                  执行前监测快照版本
+                  <input
+                    type="text"
+                    value={preActionSnapshotVersion}
+                    onChange={(event) => {
+                      const next = new URLSearchParams(searchParams)
+                      if (event.target.value === '') next.delete('preActionSnapshotVersion')
+                      else next.set('preActionSnapshotVersion', event.target.value)
+                      setSearchParams(next)
+                    }}
+                  />
+                </label>
                 <div className="wd-header-actions">
                   <ConfirmButton
                     label="采纳建议"
-                    availability={decided === undefined && decideAvailability === 'allowed' ? 'allowed' : 'business-unavailable'}
+                    resetKey={inputIdentity}
+                    availability={decideAvailability === 'hidden' || decideAvailability === null ? 'hidden' : decided === undefined && decideAvailability === 'allowed' && monitorSnapshotRef !== null ? 'allowed' : 'business-unavailable'}
                     unavailableReason={
-                      decided !== undefined ? '该建议已有终局决定' : '当前角色无采纳权限'
+                      decided !== undefined ? '该建议已有终局决定' : decideAvailability !== 'allowed' ? '当前角色无采纳权限' : '请填写执行前监测快照标识和版本'
                     }
                     summary={[
                       `工程：${selector.projectId ?? '—'}`,
-                      `建议：${value.responseRecommendationRef.reference.entityId}`,
-                      `执行前监测快照：${monitorSnapshotRef?.reference.entityId ?? '未指定（由服务端在唯一合格候选下选择）'}`,
+                      `建议：${value.responseRecommendationRef.reference.entityId} · ${value.responseRecommendationRef.reference.versionId}`,
+                      `执行前监测快照：${monitorSnapshotRef?.reference.entityId ?? '—'} · ${monitorSnapshotRef?.reference.versionId ?? '—'}`,
                       '预计结果：登记人工采纳并建立真实等待运行；只有预测运行成立后才提交决定',
                     ]}
                     onConfirm={() => decide('adopted')}
                   />
                   <ConfirmButton
                     label="拒绝建议"
+                    resetKey={inputIdentity}
                     tone="danger"
-                    availability={decided === undefined && decideAvailability === 'allowed' ? 'allowed' : 'business-unavailable'}
+                    availability={decideAvailability === 'hidden' || decideAvailability === null ? 'hidden' : decided === undefined && decideAvailability === 'allowed' ? 'allowed' : 'business-unavailable'}
                     unavailableReason={decided !== undefined ? '该建议已有终局决定' : '当前角色无决定权限'}
                     summary={[
                       `工程：${selector.projectId ?? '—'}`,

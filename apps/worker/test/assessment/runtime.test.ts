@@ -546,6 +546,7 @@ interface AssessmentGraphHarnessV1 {
     readonly entryMode: WorkflowEntryModeV1;
     readonly frozenRefs: readonly ContractReferenceV1[];
     readonly riskRecordRef?: StandardizedRiskRecordRefV1;
+    readonly reassessmentEntry?: WorkflowGraphRunCommandV1["reassessmentEntry"];
   }): RunScopeV1;
   startCommand(input: {
     readonly scope: RunScopeV1;
@@ -622,6 +623,7 @@ const startHarness = async (): Promise<AssessmentGraphHarnessV1> => {
           entryMode: input.entryMode,
           projectId: PROJECT_ID,
           frozenRefs: input.frozenRefs,
+          reassessmentEntry: input.reassessmentEntry,
         });
         // 每个用例的运行自带父运行身份：父运行身份由本次运行的入口身份唯一确定，不同运行因此
         // 落在不同 `runId` 分区，登记事实互不可见。（同一父运行下的兄弟子运行共享 `runId`
@@ -918,6 +920,7 @@ const startSegmented = async (
     entryMode,
     frozenRefs: inputs.frozenRefs,
     riskRecordRef: inputs.riskInput,
+    reassessmentEntry: overrides.reassessmentEntry,
   });
   const outcome = await harness.runtime.start(
     harness.startCommand({

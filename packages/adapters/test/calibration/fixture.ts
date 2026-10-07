@@ -131,7 +131,7 @@ export const C29_SUGGESTION_EVENT_TYPE = "warning.calibration-suggestion-created
 const C29_CONFIGURATION_MEDIA_TYPE = "application/vnd.riskflow.assessment-configuration+json";
 /** C29 冻结输入工件与候选工件的用途码/媒体类型（C04 读取按用途精确匹配）。 */
 export const C29_FROZEN_INPUT_PURPOSE = "warning-response.calibration-input-snapshot";
-export const C29_CANDIDATE_PURPOSE = "knowledge-modeling.calibration-candidate";
+export const C29_CANDIDATE_PURPOSE = ASSESSMENT_CONFIGURATION_ARTIFACT_PURPOSE_CODE_V1;
 /** C08 自有的工件用途码：C29 必须按同一用途读取候选正文。 */
 const C29_AGENT_INCREMENT_PURPOSE = "agent-increment";
 const C29_AGENT_CANDIDATE_PURPOSE = "agent-candidate";
@@ -264,6 +264,7 @@ export interface CalibrationPostgresFixtureV1 {
     readonly verifyCalls: readonly AuthorizationVerificationRequestV1[];
     readonly downstreamBranches: readonly string[];
     deny(): void;
+    denyDownstream(branch: string): void;
     allow(): void;
   };
 
@@ -505,6 +506,7 @@ export const startCalibrationFixture = async (): Promise<CalibrationPostgresFixt
 
     const verifyCalls: AuthorizationVerificationRequestV1[] = [];
     let denied = false;
+    let deniedDownstreamBranch: string | undefined;
     const deniedError = (): AccessServiceError =>
       new AccessServiceError({
         code: "AUTHORIZATION_DENIED",
@@ -811,6 +813,7 @@ export const startCalibrationFixture = async (): Promise<CalibrationPostgresFixt
     const downstreamBranches: string[] = [];
     const authorizeDownstream: CalibrationDownstreamAuthorizerV1 = (request) => {
       downstreamBranches.push(request.branch);
+      if (request.branch === deniedDownstreamBranch) throw deniedError();
       return authorizeFor(request.branch, request.invocationId, request.projectId);
     };
 
@@ -1286,8 +1289,12 @@ export const startCalibrationFixture = async (): Promise<CalibrationPostgresFixt
         deny: () => {
           denied = true;
         },
+        denyDownstream: (branch) => {
+          deniedDownstreamBranch = branch;
+        },
         allow: () => {
           denied = false;
+          deniedDownstreamBranch = undefined;
         },
       },
       inputAuthorization,

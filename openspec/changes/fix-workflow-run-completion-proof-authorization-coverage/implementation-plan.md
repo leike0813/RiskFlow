@@ -12,16 +12,16 @@
 
 | IP-ID | 现有文件与符号 | 复用方式 | 禁止复制的事实 |
 | --- | --- | --- | --- |
-| IP-01 | `packages/core/src/retrieval/service.ts` 的 `authorizationScopeDigest` | 保留写入侧摘要语义，新增一处可比较的覆盖判定函数 | 不改摘要算法，不另造第二套范围规范化 |
-| IP-02 | `packages/adapters/src/workflow/postgres-workflow-adapter.ts` 的 `#latestRunStateWith` 与 `verifyWorkflowRunCompletion` | 在既有准入位置把等值改为覆盖，两处共用一个私有判定，其余核对不动 | 不把判定散落到各调用点 |
-| IP-03 | 登记行的 `frozenRefs` 与运行状态正文 | 复用已登记的范围引用作为被覆盖集合 | 不从摘要反推范围，不新增列 |
+| IP-01 | `packages/core/src/retrieval/service.ts` 的 `authorizationScopeDigest` | 保留写入摘要，删除只比较空间的重复 helper，复用 C04 既有覆盖校验 | 不改摘要算法，不另造第二套范围规范化 |
+| IP-02 | `packages/adapters/src/workflow/postgres-workflow-adapter.ts` 的 `#latestRunStateWith` 与 `verifyWorkflowRunCompletion` | 状态及结果通过 C04 公开读取校验各自 manifest 的完整授权快照，再核对正文 | 不读 C04 私表，不保留摘要等值捷径 |
+| IP-03 | 运行状态与结果工件的 C04 manifest | 复用已登记的空间、来源授权及策略引用作为被覆盖集合 | 不从摘要反推范围，不新增列 |
 
 ## 3. 代码变更映射
 
 | IP-ID | Task | Requirement/Scenario | 文件与符号 | 精确变化 | 不得改变 |
 | --- | --- | --- | --- | --- | --- |
-| IP-01 | 1.1 | 工作流生命周期…／按收窄上下文证明更宽范围启动的运行 | `packages/core/src/retrieval/service.ts` | 新增覆盖判定：空间范围与来源授权逐项集合包含，工程相同；返回可判定的稳定结论 | `authorizationScopeDigest` 算法与写入侧用途 |
-| IP-02 | 2.1 | 工作流生命周期…／按收窄上下文证明更宽范围启动的运行、范围不足时仍然拒绝 | `packages/adapters/src/workflow/postgres-workflow-adapter.ts` `#latestRunStateWith` 与 `verifyWorkflowRunCompletion` | 准入从摘要等值改为覆盖判定；被覆盖集合取该运行已登记的范围引用；`run-state` 行与 `run-result` 行共用同一私有准入，覆盖不足返回证明未成立而非事实不一致 | 状态可读性、版本一致性、`run-result` 正文对账与失败同型语义 |
+| IP-01 | 1.1 | 工作流生命周期…／按收窄上下文证明更宽范围启动的运行 | `packages/core/src/retrieval/service.ts` | 删除重复空间判定，完整覆盖校验由 C04 负责 | `authorizationScopeDigest` 算法与写入侧用途 |
+| IP-02 | 2.1 | 工作流生命周期…／按收窄上下文证明更宽范围启动的运行、范围不足时仍然拒绝 | `packages/adapters/src/workflow/postgres-workflow-adapter.ts` `#latestRunStateWith` 与 `verifyWorkflowRunCompletion` | 去除摘要等值准入，分别通过 C04 读取精确状态与结果工件；空间、来源及策略不足返回证明未成立，读取后核对正文关联 | 状态可读性、版本一致性、`run-result` 正文对账与失败同型语义 |
 | IP-03 | 3.1 | 工作流生命周期…／写入侧授权摘要仍被审计保留 | `packages/adapters/src/workflow/postgres-workflow-adapter.ts` 写入路径 | 不改写入；确认登记行仍保存摘要 | 写入侧任何字段与审计 |
 | IP-04 | 4.1 | 以按任务收窄的读取上下文确认实际评估 | `packages/core/src/human-decision-feedback/service.ts` | 不改签发范围；确认反馈段读取上下文仍按单空间收窄 | C41 授权签发语义 |
 | IP-05 | 5.1 | 范围不足时仍然拒绝、写入侧授权摘要仍被审计保留 | `packages/adapters/test/workflow`、`packages/adapters/test/human-decision-feedback` | 覆盖成功、范围不足拒绝、跨工程拒绝、摘要写入保留 | 既有断言的稳定可观察口径 |

@@ -165,6 +165,52 @@ export interface QueryEnvelope {
   readonly payload: Record<string, unknown>
 }
 
+export interface AssessmentSourceSelection {
+  readonly projectId: string
+  readonly revisionId: string | null
+  readonly refs: readonly { readonly entityId: string; readonly versionId: string }[]
+}
+
+/** 来源由用户明确声明；工程或修订不匹配时不继承旧选择。 */
+export const readAssessmentSourceSelection = (search: string): AssessmentSourceSelection | null => {
+  const params = new URLSearchParams(search)
+  const serialized = params.get('assessmentSources')
+  if (serialized === null) return null
+  try {
+    const selection = JSON.parse(serialized) as AssessmentSourceSelection
+    const revision = params.get('revision')
+    const revisionId = revision?.includes('@') ? revision.split('@')[1] : revision
+    if (
+      selection.projectId !== params.get('project') ||
+      selection.revisionId !== revisionId ||
+      !Array.isArray(selection.refs) ||
+      selection.refs.length === 0 ||
+      selection.refs.length > 256 ||
+      selection.refs.some(
+        (ref) =>
+          ref === null ||
+          typeof ref !== 'object' ||
+          typeof ref.entityId !== 'string' ||
+          ref.entityId.trim() === '' ||
+          typeof ref.versionId !== 'string' ||
+          ref.versionId.trim() === '',
+      )
+    )
+      return null
+    return selection
+  } catch {
+    return null
+  }
+}
+
+const selectedAssessmentSources = (projectId: string) => {
+  if (typeof window === 'undefined') return []
+  const selection = readAssessmentSourceSelection(window.location.search)
+  return selection?.projectId === projectId
+    ? selection.refs.map((reference) => ({ kind: 'source-version' as const, reference }))
+    : []
+}
+
 /** 查询传输信封：projectId 只走路径，不进 body；触达资料正文的查询必须声明来源版本。 */
 export const postQuery = async (input: {
   readonly projectId: string
@@ -181,7 +227,8 @@ export const postQuery = async (input: {
     queryId: nextQueryId(input.projectId, input.branch),
     requestedAt: new Date().toISOString(),
     requestedSpatialScopeRefs: [],
-    requestedSourceVersionRefs: [...(input.sourceVersionRefs ?? [])],
+    requestedSourceVersionRefs: [...(input.sourceVersionRefs ??
+      (input.branch === 'risk-assessment.read' ? selectedAssessmentSources(input.projectId) : []))],
     payload: input.payload,
   }
   const body = await postRaw({
@@ -320,7 +367,8 @@ export const postCommand = async (input: {
     commandId,
     payload: input.payload,
     spatialScopeRefs: input.spatialScopeRefs ?? [],
-    sourceVersionRefs: input.sourceVersionRefs ?? [],
+    sourceVersionRefs: input.sourceVersionRefs ??
+      (input.branch === 'workflow.start-run' ? selectedAssessmentSources(input.projectId) : []),
   })
   return postRaw({
     path: `/api/v1/projects/${encodeURIComponent(input.projectId)}/commands/${input.branch}`,

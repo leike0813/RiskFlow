@@ -49,6 +49,14 @@
 
 ## 4. 调用与副作用顺序
 
+IP-06/IP-12 补全独立措施读取：修改 `packages/adapters/src/response-lifecycle/postgres-response-lifecycle-adapter.ts` 的内部端口及转发，复用核心读取输入；`server.mjs` 以登记来源授权映射、当前 actor 和原空间/来源上限另签 C16 精确发布读取，并用 `isAuthorizationSubset` 核对后直接交 C04。IP-10 将运行页终态与 `WorkflowRunStatusV1` 的 `terminal-failure` 对齐。无新增依赖、迁移或公共 Schema。
+
+IP-05/10 的 C30 读取复用 `WaitingRefV1Schema` 解出复核引用，各阶段按最新登记去重，两组续页保留独立末尾位置；C25 运行游标复用现有筛选/授权 anchor。IP-06 的 C28 无预测反馈返回已登记不可用原因，扩展原独立反馈用例。IP-07/12 的 C29 fixture 只拒绝指定下游证明分支，复用现有草案/审核/尾事务用例验证无副作用与原身份恢复。
+
+IP-06 的 C26 `#authorizeForComposition` 和 `#readActions` 使用 C06 复验后的入口上下文及已有签发字段，显式保留空间、收窄来源为空，签后复用 `isAuthorizationSubset` 检查范围；动作独立检查所属分支能力。避免无字段时继承组合根来源；所属窄读不读取资料正文。回归现有 warning tests 与完整浏览器场景。
+
+IP-12 扩展现有 `assessment-warning-response.spec.ts`、`risk-level-response-verification.spec.ts`、`server.mjs` 与现有 C25/C28/C29/C30 测试：两种执行及完整反馈链、旧新矩阵冻结分组、运行结果/复核任务各超过 50 项的独立游标、慢读/隐藏/终态/卸载轮询、拒绝/陈旧/撤权/错误决定/尾事务与迟到写、三个态势来源独立失败、50 项可见加大量不可见行及多版本矩阵页面测量。写成功均经真实公开命令；只读历史/失败夹具沿原拥有方 Schema。根构建与 demo 构建完成后串行运行完整 `demo-chromium --retries=0`，保留失败 trace，逐条记录实际证据。
+
 1. IP-01/02 基线补正→IP-05 的 2.9/2.10/2.11→IP-03/05 的所属读取→已批准修复 fix-assessment-entry-read-seam→IP-04→IP-06/07→IP-08 补正→IP-09→IP-10/11→IP-12（所属测试随各 IP 完成，最终装配与浏览器证据在 4.1～4.3 收口）；契约与拥有方实现之前不接假 UI。IP-ID 保持稳定，候选接缝修复通过不替代原 IP-04 完整验收。
 2. 读：真实会话/路径工程签发 read 分支 → owning adapter 当前复验 → SQL 范围/limit → 本模块 Schema 解析 → 精确下游用途授权 → 所属端口读 → DTO/边界复验 → 安全 HTTP 结果。下游失败不转 absent，不从缓存或最新版本替代。
 3. UI 写：页面精确读及 actions → 用户输入/Schema 形状检查 → 冻结完整信封和确认摘要 → 确认 → C09 当前权限 → 原领域用例 → 事实/回执/审计/Outbox → 精确结果引用回读。取消/工程变化/版本变化废弃确认；响应丢失仅重放原请求。
@@ -140,6 +148,7 @@ IP-13 测试优先扩展上述现有用例，不新建测试框架或文本静�
 | IP-11 | M | `demo/src/pages/WarningCenterPage.tsx`、`demo/src/pages/WarningDetailPage.tsx`、`demo/src/pages/ResponseTasksPage.tsx` |
 | IP-11 | N | `demo/src/pages/WarningTaskPage.tsx`、`demo/src/pages/RecommendationDetailPage.tsx`、`demo/src/pages/ExecutionRegisterPage.tsx`、`demo/src/pages/PredictionDetailPage.tsx`、`demo/src/pages/FeedbackDetailPage.tsx`、`demo/src/pages/CalibrationDetailPage.tsx` |
 | IP-12 | N | `packages/contracts/test/c34-assessment-response-read.test.ts`、`demo/test/browser/assessment-warning-response.spec.ts` |
+| IP-13/IP-12 | N | `demo/test/browser/risk-level-response-verification.spec.ts`（独立等级配置的完整真实闭环） |
 | IP-05/IP-12 | M | `packages/core/test/workflow/service.test.ts`、`apps/worker/test/risk-flow/runtime.test.ts`、`apps/worker/test/risk-flow/composition.test.ts`、`apps/worker/test/assessment/runtime.test.ts`、`apps/worker/test/assessment/composition.test.ts` |
 | IP-12 | M | `packages/contracts/test/module-interfaces-events-workflows.test.ts`、`packages/adapters/test/engineering-data/context-source/fixture.ts`、`packages/adapters/test/engineering-data/context-source/postgres-engineering-context-source-registry.test.ts`、`packages/adapters/test/risk-assessment/fixture.ts`、`packages/adapters/test/risk-assessment/postgres-risk-assessment-engine.test.ts`、`packages/adapters/test/identification/postgres-risk-identification-read.test.ts`、`packages/adapters/test/workflow/postgres-workflow-adapter.test.ts`、`packages/adapters/test/warning/fixture.ts`、`packages/adapters/test/warning/postgres-warning-lifecycle-adapter.test.ts`、`packages/adapters/test/recommendation/fixture.ts`、`packages/adapters/test/recommendation/postgres-recommendation-adapter.test.ts`、`packages/adapters/test/response-lifecycle/fixture.ts`、`packages/adapters/test/response-lifecycle/postgres-response-lifecycle-adapter.test.ts`、`packages/adapters/test/human-decision-feedback/fixture.ts`、`packages/adapters/test/human-decision-feedback/postgres-human-decision-feedback-adapter.test.ts`、`packages/adapters/test/calibration/fixture.ts`、`packages/adapters/test/calibration/postgres-calibration-adapter.test.ts`、`demo/test/browser/server.mjs`、`demo/test/browser/read-only.spec.ts`、`demo/test/browser/identification-review.spec.ts` |
 | IP-12 | M | `packages/core/src/human-decision-feedback/service.ts`（4.1 真实装配暴露：C41 三处 hand-off 二次签发与 C06 同调用身份幂等冲突，改交命令自身已复验的上下文；`workflow.resume-run` 签发身份必须等于 C30 运行时实际使用的 `<commandId>:resume`；反馈分段签发身份必须等于 C30 实际调用的 `<commandId>:feedback-segment`；分段入口冻结的效果预测取自 C28 记录反馈时解析出的真实预测并随冻结行落库） |

@@ -4,7 +4,7 @@
 
 ## 1. 覆盖判定
 
-- [x] 1.1 实施 IP-01：在 `packages/core/src/retrieval/service.ts` 新增可比较的授权覆盖判定（空间范围与来源授权逐项集合包含 + 同工程），`authorizationScopeDigest` 及其写入侧用途不变。验证：`pnpm exec vitest run packages/adapters/test/workflow`、`pnpm typecheck`。
+- [x] 1.1 实施 IP-01：复用 C04 工件读取的授权覆盖判定（空间范围与来源授权逐项集合包含 + 同工程），移除 retrieval 中只比较空间的重复判定；`authorizationScopeDigest` 及其写入侧用途不变。验证：`pnpm exec vitest run packages/adapters/test/workflow`、`pnpm typecheck`。
 
 ## 2. 读取准入
 

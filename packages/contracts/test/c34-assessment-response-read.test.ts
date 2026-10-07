@@ -6,6 +6,7 @@ import {
   AssessmentEntrySourceVersionsReadQueryV1Schema,
   AssessmentEntrySourceVersionsReadResultV1Schema,
   RiskAssessmentReadQueryV1Schema,
+  RiskAssessmentReadResultV1Schema,
 } from "../src/ports/index.js";
 
 const ref = (kind: string, entityId = "entity-1") => ({
@@ -36,6 +37,36 @@ const query = (kind: string, capability: string, payload: object) => ({
 });
 
 describe("C34 评估候选输入接缝", () => {
+  it("入口运行策略保留与 start-run 同形的精确版本引用", () => {
+    const result = {
+      kind: "entry-context",
+      actorId: "actor-1",
+      projectId: "project-1",
+      projectRevisionRef,
+      spatialScopeRef,
+      applicabilityItems: [],
+      externalEventItems: [],
+      actions: [],
+      runPolicy: {
+        kind: "available",
+        graphVersion: { entityId: "assessment-graph", versionId: "v1" },
+        retryPolicyRef: { entityId: "retry-policy", versionId: "v1" },
+      },
+    };
+    expect(RiskAssessmentReadResultV1Schema.safeParse({ kind: "succeeded", result }).success).toBe(
+      true,
+    );
+    expect(
+      RiskAssessmentReadResultV1Schema.safeParse({
+        kind: "succeeded",
+        result: {
+          ...result,
+          runPolicy: { ...result.runPolicy, retryPolicyRef: ref("workflow-run") },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
   it.each([
     [{ operation: "applicability-catalog", projectRevisionRef, spatialScopeRef }, true],
     [{ operation: "applicability-catalog", spatialScopeRef }, false],

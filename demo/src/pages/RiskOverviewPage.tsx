@@ -32,8 +32,12 @@ import './assessment-response.css'
 export default function RiskOverviewPage() {
   const { selector } = useEngineering()
   const projectPath = useProjectPath()
-  const [cursor, setCursor] = useState<string | undefined>(undefined)
-  const [runQueryRef, setRunQueryRef] = useState<QueryResultRefView | undefined>(undefined)
+  // 投影查询身份与续页游标绑定当前工程修订：工程/修订一变即作废，不拿旧投影读新修订。
+  const [paged, setPaged] = useState<{
+    readonly key: string
+    readonly cursor?: string
+    readonly queryRef?: QueryResultRefView
+  }>()
 
   const context = usePageQuery<EngineeringContextView>(
     (projectId, signal) => readEngineeringContext(projectId, signal),
@@ -53,6 +57,17 @@ export default function RiskOverviewPage() {
     (projectId, signal) => readWarningResponseOverview(projectId, {}, signal),
     [],
   )
+  const revisionKey =
+    revisionRef === null
+      ? null
+      : (selector.projectId ?? '') +
+        '/' +
+        revisionRef.reference.entityId +
+        '@' +
+        revisionRef.reference.versionId
+  const bound: { readonly key: string; readonly cursor?: string; readonly queryRef?: QueryResultRefView } =
+    revisionKey !== null && paged?.key === revisionKey ? paged : { key: revisionKey ?? '' }
+
   const runs = usePageQuery<RiskOverviewRunPageView>(
     (projectId, signal) =>
       revisionRef === null
@@ -61,16 +76,17 @@ export default function RiskOverviewPage() {
             projectId,
             revisionRef,
             {
-              ...(runQueryRef === undefined ? {} : { queryResultRef: runQueryRef }),
-              ...(cursor === undefined ? {} : { cursor }),
+              ...(bound.queryRef === undefined ? {} : { queryResultRef: bound.queryRef }),
+              ...(bound.cursor === undefined ? {} : { cursor: bound.cursor }),
             },
             signal,
           ),
-    [revisionRef?.reference.entityId, revisionRef?.reference.versionId, runQueryRef, cursor],
+    [revisionRef?.reference.entityId, revisionRef?.reference.versionId, bound.queryRef, bound.cursor],
   )
 
-  if (runs.state.kind === 'ready' && runQueryRef === undefined) {
-    setRunQueryRef(runs.state.value.queryResultRef)
+  if (runs.state.kind === 'ready' && bound.queryRef === undefined) {
+    // 首页登记查询身份后固定该投影，续页与原页共用同一 queryResultRef。
+    setPaged({ key: revisionKey ?? '', cursor: bound.cursor, queryRef: runs.state.value.queryResultRef })
   }
 
   return (
@@ -217,7 +233,12 @@ export default function RiskOverviewPage() {
                     ))}
                   </tbody>
                 </table>
-                <NextPageButton nextCursor={page.nextCursor} onContinue={setCursor} />
+                <NextPageButton
+                  nextCursor={page.nextCursor}
+                  onContinue={(next) =>
+                    setPaged({ key: revisionKey ?? '', cursor: next, queryRef: bound.queryRef })
+                  }
+                />
                 <p className="ar-note">
                   投影结果引用：<VersionRefText reference={page.queryResultRef.reference} />
                 </p>

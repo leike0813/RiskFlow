@@ -2164,6 +2164,7 @@ const stageA0: StageHandlerV1 = async ({ ports, run, state }) => {
     entryMode: run.entryMode,
     projectId: run.projectId,
     frozenRefs: run.frozenRefs,
+    reassessmentEntry: run.reassessmentEntry,
   });
   if (!sameVersionReference(expectedIdentity, run.entryIdentity)) {
     fail(contractInvalid({ stage: "A0", detailCode: "entry-identity-mismatch", occurredAt }));

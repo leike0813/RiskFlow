@@ -24,6 +24,7 @@ export function ConfirmButton({
   tone = 'primary',
   availability = 'allowed',
   unavailableReason,
+  resetKey,
   onConfirm,
 }: {
   label: string
@@ -31,6 +32,8 @@ export function ConfirmButton({
   tone?: 'primary' | 'danger'
   availability?: ConfirmActionAvailability
   unavailableReason?: string
+  /** 上下文标识（如工程）：变化时关闭对话框并清除失败残留，避免旧上下文污染新上下文。 */
+  resetKey?: string
   onConfirm: () => Promise<void>
 }) {
   const [open, setOpen] = useState(false)
@@ -39,6 +42,24 @@ export function ConfirmButton({
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const dialogRef = useRef<HTMLDivElement | null>(null)
   const cancelRef = useRef<HTMLButtonElement | null>(null)
+  // 已卸载或上下文已切换时忽略迟到的写响应：迟到的 success/failure 不得关闭新上下文的对话框
+  // 或写入失败残留。
+  const aliveRef = useRef(true)
+  const attemptRef = useRef(0)
+
+  useEffect(() => {
+    aliveRef.current = true
+    return () => {
+      aliveRef.current = false
+    }
+  }, [])
+
+  useEffect(() => {
+    attemptRef.current += 1
+    setOpen(false)
+    setSubmitting(false)
+    setFailureCode(null)
+  }, [resetKey])
 
   useEffect(() => {
     if (!open) return
@@ -48,6 +69,7 @@ export function ConfirmButton({
         if (!submitting) {
           setOpen(false)
           setFailureCode(null)
+          triggerRef.current?.focus()
         }
         return
       }
@@ -81,16 +103,19 @@ export function ConfirmButton({
   }
 
   const confirm = async () => {
+    const attempt = (attemptRef.current += 1)
     setSubmitting(true)
     setFailureCode(null)
     try {
       await onConfirm()
+      if (!aliveRef.current || attempt !== attemptRef.current) return
       setOpen(false)
       triggerRef.current?.focus()
     } catch (error) {
+      if (!aliveRef.current || attempt !== attemptRef.current) return
       setFailureCode(error instanceof ApiError ? error.code : 'TERMINAL_FAILURE')
     } finally {
-      setSubmitting(false)
+      if (aliveRef.current && attempt === attemptRef.current) setSubmitting(false)
     }
   }
 

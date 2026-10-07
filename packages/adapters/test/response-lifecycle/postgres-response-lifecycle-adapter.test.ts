@@ -1170,6 +1170,26 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
     const payload = event?.["payload"] as { forecast: { kind: string; reasonCode?: string } };
     expect(payload.forecast.kind).toBe("unavailable");
     expect(payload.forecast.reasonCode).toBe("no-effect-forecast");
+    const result = succeeded(feedback);
+    if (result.result.kind !== "feedback") throw new Error("expected feedback result");
+    const invocationId = "c28-independent-feedback-read";
+    const read = await state.adapter.readFeedbackView({
+      projectId: state.projectId,
+      actorId: state.managerId,
+      requestedAt: C28_FIXTURE_TIME,
+      invocationId,
+      authorization: await state.readAuthorization(invocationId),
+      targetRef: result.result.feedbackRef,
+    });
+    expect(read.kind).toBe("succeeded");
+    if (read.kind !== "succeeded") throw new Error("expected feedback view");
+    const view = read.view as C28FeedbackViewV1;
+    expect(view.forecastAvailability).toEqual({
+      kind: "unavailable",
+      reasonCode: "no-effect-forecast",
+    });
+    expect(view.deviation).toBeUndefined();
+    expect(view.deviationFactRef).toBeUndefined();
   });
 
   pgIt("三类偏差策略按冻结阈值产生私有事实并可供 C29 精确读取", async () => {

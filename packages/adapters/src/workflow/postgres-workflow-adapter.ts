@@ -23,7 +23,6 @@ import type {
   ResponseWorkflowBindingProofResultV1,
   ReviewTaskRefV1,
   RiskAssessmentRecordRefV1,
-  SpatialScopeRefV1,
   WorkflowRunCompletionProofPortV1,
   WorkflowRunCompletionProofQueryV1,
   WorkflowRunCompletionProofResultV1,
@@ -35,6 +34,7 @@ import {
   ContractReferenceV1Schema,
   ModuleErrorV1Schema,
   ReviewTaskRefV1Schema,
+  WaitingRefV1Schema,
   StageResultRefV1Schema,
   ResponseWorkflowBindingProofQueryV1Schema,
   ResponseWorkflowBindingProofResultV1Schema,
@@ -53,7 +53,6 @@ import {
   type TransactionContextV1,
   type TransactionUnitV1,
 } from "@riskflow/core/persistence";
-import { authorizationScopeDigest, coversSpatialScopes } from "@riskflow/core/retrieval";
 import {
   WorkflowGraphArtifactBodyV1Schema,
   WorkflowGraphLinkV1Schema,
@@ -813,16 +812,7 @@ class WorkflowGraphPersistence {
     if (parsedRow.resultKind !== "run-state" || parsedRow.artifactRef === undefined) {
       return undefined;
     }
-    if (
-      !(await this.#runRowsAdmittedTo({
-        projectId: input.projectId,
-        runId: input.runId,
-        verified: input.verified,
-        rowDigest: parsedRow.authorizationScopeDigest,
-      }))
-    ) {
-      return undefined;
-    }
+    // C04 按该精确工件登记的工程、空间和来源集合复验覆盖；摘要只保留为写入审计事实。
     const body = await this.#openBody({
       projectId: input.projectId,
       artifactRef: parsedRow.artifactRef,
@@ -834,50 +824,6 @@ class WorkflowGraphPersistence {
     const state = WorkflowGraphRunStateV1Schema.safeParse(body.runState);
     if (!state.success) return undefined;
     return { row: parsedRow as typeof parsedRow & { resultKind: "run-state" }, state: state.data };
-  }
-
-  /**
-   * 单个登记行的读取准入（drift design D-01～D-04）：写入侧摘要等值即承认；不等时退到覆盖判定。
-   * 运行状态行与 `run-result` 行同属一次运行的已登记事实，用同一个判定避免两处口径分叉。
-   */
-  async #runRowsAdmittedTo(input: {
-    readonly projectId: string;
-    readonly runId: string;
-    readonly verified: AuthorizationContextV1;
-    readonly rowDigest: string;
-  }): Promise<boolean> {
-    return (
-      input.rowDigest === authorizationScopeDigest(input.verified) ||
-      (await this.#runRowsCoveredBy(input))
-    );
-  }
-
-  /**
-   * 授权覆盖判定（drift design D-01～D-04）：调用方上下文与写入上下文摘要不等时，只有「同工程
-   * 且调用方空间范围覆盖该运行已登记事实声明的空间」才承认这些行。
-   *
-   * 放宽只发生在读取准入这一个判定上：来源授权与授权策略摘要仍是写入侧审计事实，读取时不再
-   * 比对——否则任何按任务收窄签发的读取上下文都无法证明一条以更宽授权启动的运行，而这正是
-   * 人工启动 + 模块读取的正常分工。跨工程由查询本身按 `projectId` 收口，范围不足一律不覆盖。
-   *
-   * 运行声明的空间范围只从它自己已登记行的冻结引用取（drift design D-03），不从摘要反推；
-   * 没有登记任何空间的运行不走本放宽，保持原等值口径。
-   */
-  async #runRowsCoveredBy(input: {
-    readonly projectId: string;
-    readonly runId: string;
-    readonly verified: AuthorizationContextV1;
-  }): Promise<boolean> {
-    const rows = await this.listRunRows({ projectId: input.projectId, runId: input.runId });
-    const required = [
-      ...new Map(
-        rows
-          .flatMap((candidate) => candidate.frozenRefs)
-          .filter((ref): ref is SpatialScopeRefV1 => ref.kind === "spatial-scope")
-          .map((ref) => [`${ref.reference.entityId}/${ref.reference.versionId}`, ref]),
-      ).values(),
-    ];
-    return required.length > 0 && coversSpatialScopes(input.verified, required);
   }
 
   async listRunLinks(input: {
@@ -945,11 +891,21 @@ class WorkflowGraphPersistence {
       const requiredCapability = verified?.grantedCapabilities[0] ?? "workflow.start";
       if (verified === undefined) return denied("binding-proof-denied", requiredCapability);
 
-      // 只承认本运行、且授权范围摘要与当前复验一致的登记行：越权与事实缺失对调用方同形。
-      const scopeDigest = authorizationScopeDigest(verified);
-      const scoped = (await this.listRunRows({ projectId: valid.projectId, runId })).filter(
-        (row) => row.authorizationScopeDigest === scopeDigest,
-      );
+      // 先由同一 C04 窄读证明工程、空间和来源覆盖，再组合本运行登记事实。
+      const latest = await this.#latestRunStateWith({
+        projectId: valid.projectId,
+        runId,
+        requestedAt: valid.requestedAt,
+        verified,
+      });
+      if (latest === undefined) return denied("binding-not-established", requiredCapability);
+      const scoped = await this.listRunRows({
+        projectId: valid.projectId,
+        runId,
+        limit: DEFAULT_ROW_LIMIT_V1 + 1,
+      });
+      if (scoped.length > DEFAULT_ROW_LIMIT_V1)
+        return denied("binding-not-established", requiredCapability);
       const humanDecisionWaitings = scoped.filter(
         (row) => row.resultKind === "waiting" && row.waitingRef?.kind === "human-decision",
       );
@@ -979,12 +935,6 @@ class WorkflowGraphPersistence {
         return denied("binding-not-established", requiredCapability);
       }
 
-      const latest = await this.#latestRunStateWith({
-        projectId: valid.projectId,
-        runId,
-        requestedAt: valid.requestedAt,
-        verified,
-      });
       // 等待行与运行状态行同事务写入：运行状态行在而正文不可读，或正文自称的工程/运行/版本与
       // 登记行不符，只能是持久事实损坏——稳定类型化失败，绝不返回部分或外来绑定。
       if (
@@ -1121,15 +1071,6 @@ class WorkflowGraphPersistence {
       const resultRow = workflowGraphResultRowFromDb(resultRows[0]!);
       if (resultRow.resultKind !== "run-result" || resultRow.artifactRef === undefined)
         return failed("TERMINAL_FAILURE", "run-result-inconsistent");
-      if (
-        !(await this.#runRowsAdmittedTo({
-          projectId: valid.projectId,
-          runId,
-          verified,
-          rowDigest: resultRow.authorizationScopeDigest,
-        }))
-      )
-        return failed("AUTHORIZATION_DENIED", "completion-not-established");
       const resultBody = await this.#openBody({
         projectId: valid.projectId,
         artifactRef: resultRow.artifactRef,
@@ -1137,6 +1078,8 @@ class WorkflowGraphPersistence {
         requestedAt: valid.requestedAt,
         authorization: verified,
       });
+      if (resultBody === undefined)
+        return failed("AUTHORIZATION_DENIED", "completion-not-established");
       if (
         resultBody?.bodyKind !== "run-result" ||
         resultBody.runResult.projectId !== valid.projectId ||
@@ -1226,7 +1169,6 @@ class WorkflowGraphPersistence {
       requestedAt: input.requestedAt,
     });
     if (verified === undefined) return denied();
-    const scopeDigest = authorizationScopeDigest(verified);
     try {
       // 一次批量定位：按 `risk-assessment` 链边把每条评估记录映射到唯一产出运行。
       const toRef = (ref: RiskAssessmentRecordRefV1) => sql`${JSON.stringify(ref)}::jsonb`;
@@ -1236,11 +1178,11 @@ class WorkflowGraphPersistence {
         .distinct()
         .where("project_id", "=", input.projectId)
         .where("relation", "=", ASSESSMENT_LINK_RELATION_V1)
-        .where("authorization_scope_digest", "=", scopeDigest)
         .where(sql<SqlBool>`to_ref IN (${sql.join(input.assessmentRecordRefs.map(toRef))})`)
         .orderBy("run_id", "asc")
-        .limit(ASSESSMENT_ENTRIES_MAX_V1 * 2)
+        .limit(ASSESSMENT_ENTRIES_MAX_V1 * 2 + 1)
         .execute();
+      if (linkRows.length > ASSESSMENT_ENTRIES_MAX_V1 * 2) return denied();
       const runByRecord = new Map<string, string>();
       for (const row of linkRows) {
         const key = JSON.stringify(row.to_ref);
@@ -1254,14 +1196,14 @@ class WorkflowGraphPersistence {
         .selectFrom(RESULTS_TABLE)
         .selectAll()
         .where("project_id", "=", input.projectId)
-        .where("authorization_scope_digest", "=", scopeDigest)
         .where("run_id", "in", runIds)
         .where("result_kind", "in", ["run-state", "entry-snapshot"])
         .orderBy("run_id", "asc")
         .orderBy("recorded_at", "asc")
         .orderBy("run_version_id", "asc")
-        .limit(runIds.length * ASSESSMENT_RUN_FACTS_MAX_V1)
+        .limit(runIds.length * ASSESSMENT_RUN_FACTS_MAX_V1 + 1)
         .execute();
+      if (rows.length > runIds.length * ASSESSMENT_RUN_FACTS_MAX_V1) return denied();
       const latestStateByRun = new Map<string, WorkflowGraphResultRowV1>();
       const entryRowByRun = new Map<string, WorkflowGraphResultRowV1>();
       for (const row of rows) {
@@ -1283,12 +1225,9 @@ class WorkflowGraphPersistence {
         if (
           stateRow === undefined ||
           stateRow.resultKind !== "run-state" ||
-          stateRow.artifactRef === undefined ||
-          entryRow === undefined ||
-          entryRow.resultKind !== "entry-snapshot" ||
-          entryRow.entryIdentity === undefined
+          stateRow.artifactRef === undefined
         ) {
-          return failed("assessment-entry-not-established");
+          return denied();
         }
         const body = await this.#openBody({
           projectId: input.projectId,
@@ -1297,7 +1236,13 @@ class WorkflowGraphPersistence {
           requestedAt: input.requestedAt,
           authorization: verified,
         });
-        if (body?.bodyKind !== "run-state") return failed("assessment-run-state-unreadable");
+        if (body?.bodyKind !== "run-state") return denied();
+        if (
+          entryRow === undefined ||
+          entryRow.resultKind !== "entry-snapshot" ||
+          entryRow.entryIdentity === undefined
+        )
+          return failed("assessment-entry-not-established");
         const state = body.runState;
         if (state.projectId !== input.projectId || state.runId !== runId) {
           return failed("assessment-run-state-foreign");
@@ -1332,12 +1277,7 @@ class WorkflowGraphPersistence {
         }
         const entry = state.reassessmentEntry;
         if (entry === undefined) return failed("reassessment-entry-missing");
-        if (
-          sameRef(entry.previousAssessmentRecordRef, assessmentRecordRef) ||
-          !entry.changedInputRefs.some((changed) =>
-            sameRef(changed, entry.previousAssessmentRecordRef),
-          )
-        ) {
+        if (sameRef(entry.previousAssessmentRecordRef, assessmentRecordRef)) {
           return failed("reassessment-predecessor-inconsistent");
         }
         entries.push({
@@ -1412,7 +1352,6 @@ class WorkflowGraphPersistence {
       requestedAt: input.requestedAt,
     });
     if (verified === undefined) return denied();
-    const scopeDigest = authorizationScopeDigest(verified);
     const runId = input.workflowRunRef.reference.entityId;
     try {
       const latest = await this.#latestRunStateWith({
@@ -1426,8 +1365,7 @@ class WorkflowGraphPersistence {
       if (
         state.projectId !== input.projectId ||
         state.runId !== runId ||
-        state.runVersionId !== row.resultVersionId ||
-        row.authorizationScopeDigest !== scopeDigest
+        state.runVersionId !== row.resultVersionId
       ) {
         return denied();
       }
@@ -1436,20 +1374,27 @@ class WorkflowGraphPersistence {
       const target = await this.#selectedAssessmentRun({
         projectId: input.projectId,
         parentRunId: runId,
+        parentRunRef: input.workflowRunRef,
         parentState: state,
         requested: input.assessmentRunRef,
-        scopeDigest,
+        scopeDigest: row.authorizationScopeDigest,
+        verified,
+        requestedAt: input.requestedAt,
       });
       if (target.kind === "denied") return denied();
       if (target.kind === "failed") return failed(target.detailCode);
       const stages =
         target.stages === undefined
-          ? await this.#runStages({ projectId: input.projectId, runId, scopeDigest })
+          ? await this.#runStages({
+              projectId: input.projectId,
+              runId,
+              scopeDigest: target.scopeDigest,
+            })
           : target.stages;
       const references = await this.#runReferences({
         projectId: input.projectId,
         runId: target.runId,
-        scopeDigest,
+        scopeDigest: target.scopeDigest,
         resultCursor: input.resultCursor,
         reviewTaskCursor: input.reviewTaskCursor,
       });
@@ -1494,15 +1439,19 @@ class WorkflowGraphPersistence {
   async #selectedAssessmentRun(input: {
     readonly projectId: string;
     readonly parentRunId: string;
+    readonly parentRunRef: WorkflowRunRefV1;
     readonly parentState: WorkflowGraphRunStateV1;
     readonly requested: WorkflowRunRefV1 | undefined;
     readonly scopeDigest: string;
+    readonly verified: AuthorizationContextV1;
+    readonly requestedAt: string;
   }): Promise<
     | { readonly kind: "denied" }
     | { readonly kind: "failed"; readonly detailCode: string }
     | {
         readonly kind: "ok";
         readonly runId: string;
+        readonly scopeDigest: string;
         readonly selectedAssessmentRunRef: WorkflowRunRefV1 | undefined;
         readonly stages: readonly AssessmentRunStageV1[] | undefined;
       }
@@ -1515,17 +1464,27 @@ class WorkflowGraphPersistence {
         projectId: input.projectId,
         parentRunId: input.parentRunId,
         childRunId: requested.reference.entityId,
+        parentRunRef: input.parentRunRef,
+        childRunRef: requested,
         scopeDigest: input.scopeDigest,
       });
       if (childLink !== true) return { kind: "denied" };
+      const child = await this.#latestRunStateWith({
+        projectId: input.projectId,
+        runId: requested.reference.entityId,
+        verified: input.verified,
+        requestedAt: input.requestedAt,
+      });
+      if (child === undefined) return { kind: "denied" };
       return {
         kind: "ok",
         runId: requested.reference.entityId,
+        scopeDigest: child.row.authorizationScopeDigest,
         selectedAssessmentRunRef: requested,
         stages: await this.#runStages({
           projectId: input.projectId,
           runId: requested.reference.entityId,
-          scopeDigest: input.scopeDigest,
+          scopeDigest: child.row.authorizationScopeDigest,
         }),
       };
     }
@@ -1534,6 +1493,7 @@ class WorkflowGraphPersistence {
       return {
         kind: "ok",
         runId: input.parentRunId,
+        scopeDigest: input.scopeDigest,
         selectedAssessmentRunRef: undefined,
         stages: undefined,
       };
@@ -1543,17 +1503,27 @@ class WorkflowGraphPersistence {
       projectId: input.projectId,
       parentRunId: input.parentRunId,
       childRunId: only.reference.entityId,
+      parentRunRef: input.parentRunRef,
+      childRunRef: only,
       scopeDigest: input.scopeDigest,
     });
     if (childLink !== true) return { kind: "denied" };
+    const child = await this.#latestRunStateWith({
+      projectId: input.projectId,
+      runId: only.reference.entityId,
+      verified: input.verified,
+      requestedAt: input.requestedAt,
+    });
+    if (child === undefined) return { kind: "denied" };
     return {
       kind: "ok",
       runId: only.reference.entityId,
+      scopeDigest: child.row.authorizationScopeDigest,
       selectedAssessmentRunRef: only,
       stages: await this.#runStages({
         projectId: input.projectId,
         runId: only.reference.entityId,
-        scopeDigest: input.scopeDigest,
+        scopeDigest: child.row.authorizationScopeDigest,
       }),
     };
   }
@@ -1563,21 +1533,19 @@ class WorkflowGraphPersistence {
     readonly projectId: string;
     readonly parentRunId: string;
     readonly childRunId: string;
+    readonly parentRunRef: WorkflowRunRefV1;
+    readonly childRunRef: WorkflowRunRefV1;
     readonly scopeDigest: string;
   }): Promise<boolean> {
     const rows = await this.#db
       .selectFrom(LINKS_TABLE)
       .select("link_id")
       .where("project_id", "=", input.projectId)
-      .where("run_id", "=", input.childRunId)
+      .where("run_id", "in", [input.parentRunId, input.childRunId])
       .where("relation", "=", "parent-child")
       .where("authorization_scope_digest", "=", input.scopeDigest)
-      .where(
-        sql<SqlBool>`from_ref = ${JSON.stringify({
-          kind: "workflow-run",
-          reference: { entityId: input.parentRunId, versionId: "1" },
-        })}::jsonb`,
-      )
+      .where(sql<SqlBool>`from_ref = ${JSON.stringify(input.parentRunRef)}::jsonb`)
+      .where(sql<SqlBool>`to_ref = ${JSON.stringify(input.childRunRef)}::jsonb`)
       .limit(1)
       .execute();
     return rows.length > 0;
@@ -1596,7 +1564,9 @@ class WorkflowGraphPersistence {
       .where("run_id", "=", input.runId)
       .where("result_kind", "=", "stage-result")
       .where("authorization_scope_digest", "=", input.scopeDigest)
-      .orderBy("recorded_at", "asc")
+      .distinctOn("stage")
+      .orderBy("stage", "asc")
+      .orderBy("recorded_at", "desc")
       .orderBy("result_id", "asc")
       .limit(ASSESSMENT_RUN_STAGE_SCAN_V1)
       .execute();
@@ -1633,6 +1603,7 @@ class WorkflowGraphPersistence {
   > {
     const offsetOf = (cursor: string | undefined): number => {
       if (cursor === undefined) return 0;
+      if (!/^(0|[1-9][0-9]*)$/.test(cursor)) return Number.NaN;
       const parsed = Number.parseInt(cursor, 10);
       return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : Number.NaN;
     };
@@ -1670,18 +1641,31 @@ class WorkflowGraphPersistence {
       if (parsed.success) resultRefs.push(parsed.data);
     }
     const reviewTaskRefs: ReviewTaskRefV1[] = [];
-    for (const row of taskRows) {
-      const parsed = ReviewTaskRefV1Schema.safeParse(row.waiting_ref);
+    for (const row of taskRows.slice(0, ASSESSMENT_RUN_RESULT_SCAN_V1)) {
+      const waiting = WaitingRefV1Schema.safeParse(row.waiting_ref);
+      const parsed = ReviewTaskRefV1Schema.safeParse(
+        waiting.success && waiting.data.kind === "review" ? waiting.data.reviewTaskRef : undefined,
+      );
       if (parsed.success) reviewTaskRefs.push(parsed.data);
     }
     return {
       resultRefs,
       reviewTaskRefs,
-      ...(resultRows.length > ASSESSMENT_RUN_RESULT_SCAN_V1
-        ? { nextResultCursor: String(resultOffset + ASSESSMENT_RUN_RESULT_SCAN_V1) }
+      ...(resultRows.length > ASSESSMENT_RUN_RESULT_SCAN_V1 ||
+      taskRows.length > ASSESSMENT_RUN_RESULT_SCAN_V1
+        ? {
+            nextResultCursor: String(
+              resultOffset + Math.min(resultRows.length, ASSESSMENT_RUN_RESULT_SCAN_V1),
+            ),
+          }
         : {}),
-      ...(taskRows.length > ASSESSMENT_RUN_RESULT_SCAN_V1
-        ? { nextReviewTaskCursor: String(taskOffset + ASSESSMENT_RUN_RESULT_SCAN_V1) }
+      ...(resultRows.length > ASSESSMENT_RUN_RESULT_SCAN_V1 ||
+      taskRows.length > ASSESSMENT_RUN_RESULT_SCAN_V1
+        ? {
+            nextReviewTaskCursor: String(
+              taskOffset + Math.min(taskRows.length, ASSESSMENT_RUN_RESULT_SCAN_V1),
+            ),
+          }
         : {}),
     };
   }

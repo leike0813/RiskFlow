@@ -18,6 +18,7 @@ import {
 import {
   ACCESS_POLICY_REF_V1,
   AccessServiceError,
+  isAuthorizationSubset,
   type LocalIdentityAccessV1,
 } from "@riskflow/core/access";
 import {
@@ -592,7 +593,7 @@ export interface PostgresRiskAssessmentEngineOptionsV1 {
   readonly entryRunPolicy?:
     | {
         readonly graphVersion: VersionReference;
-        readonly retryPolicyRef: ContractReferenceV1;
+        readonly retryPolicyRef: VersionReference;
       }
     | undefined;
   readonly now?: () => Date;
@@ -3044,7 +3045,7 @@ export class PostgresRiskAssessmentEngine
     const scope = command.payload.spatialScopeRef;
     const candidates =
       command.payload.riskInputKind === "risk-record"
-        ? await this.#pendingRiskRecordCandidates(command, pageSize)
+        ? await this.#pendingRiskRecordCandidates(command, verified, pageSize)
         : await this.#pendingExternalEventCandidates(command, verified, pageSize);
     const states = await this.#assessmentStatesFor(command, candidates.items);
     const items: PendingRiskItemV1[] = [];
@@ -3083,6 +3084,7 @@ export class PostgresRiskAssessmentEngine
 
   async #pendingRiskRecordCandidates(
     command: C34ReadCommandV1<"pending-catalog">,
+    verified: AuthorizationContextV1,
     pageSize: number,
   ): Promise<PendingCandidatePageV1> {
     const context = await this.#authorizeFor(
@@ -3092,6 +3094,7 @@ export class PostgresRiskAssessmentEngine
         projectId: command.projectId,
         actorId: command.actorId,
         requestedAt: command.requestedAt,
+        requestedSpatialScopeRefs: verified.spatialScopeRefs,
         // 目录只列记录元数据与证据定位，不读资料正文，因此不请求来源授权。
         // 带上来源授权会让本次读取的 `authorizationScopeDigest` 多出 grant 项，
         // 与记录按自身登记范围计算的摘要不相等，目录将对所有记录返回空。
@@ -3184,7 +3187,7 @@ export class PostgresRiskAssessmentEngine
       version_id: string;
     }) => {
       const key =
-        row.risk_input_kind === "risk-record"
+        row.risk_input_kind === "standardized-risk-record"
           ? `risk-record ${row.risk_record_id ?? ""}`
           : `external-event ${row.external_risk_event_id ?? ""}`;
       if (states.has(key)) return;
@@ -3212,9 +3215,12 @@ export class PostgresRiskAssessmentEngine
             "recorded_at",
           ])
           .where("project_id", "=", command.projectId)
-          .where("risk_input_kind", "=", "risk-record")
+          .where("risk_input_kind", "=", "standardized-risk-record")
           .where("risk_record_id", "in", riskRecordIds)
+          .distinctOn("risk_record_id")
+          .orderBy("risk_record_id", "asc")
           .orderBy("recorded_at", "desc")
+          .limit(riskRecordIds.length)
           .execute();
         for (const row of rows) record(row);
       }
@@ -3232,7 +3238,10 @@ export class PostgresRiskAssessmentEngine
           .where("project_id", "=", command.projectId)
           .where("risk_input_kind", "=", "external-risk-event")
           .where("external_risk_event_id", "in", externalEventIds)
+          .distinctOn("external_risk_event_id")
+          .orderBy("external_risk_event_id", "asc")
           .orderBy("recorded_at", "desc")
+          .limit(externalEventIds.length)
           .execute();
         for (const row of rows) record(row);
       }
@@ -3400,14 +3409,16 @@ export class PostgresRiskAssessmentEngine
     verified: AuthorizationContextV1,
   ): Promise<RiskAssessmentReadResultV1> {
     const pageSize = command.payload.pageSize ?? 50;
-    const offset = decodeC34Offset(command.payload.cursor);
-    if (offset === undefined) return this.#readFailure(command, this.#readDenied(command));
+    const after = decodeC34RecordCursor(command.payload.cursor, command, verified);
+    if (after === null) return this.#readFailure(command, this.#readDenied(command));
     const page = await this.#recordPage(command, {
       pageSize,
-      offset,
+      verified,
+      after,
       ...(command.payload.riskInput === undefined ? {} : { riskInput: command.payload.riskInput }),
     });
     const preparations = await this.#preparationsOf(command, page.rows);
+    const decisions = new Map<string, LoadedDecisionV1 | undefined>();
     const items: AssessmentRecordCatalogItemV1[] = [];
     for (const row of page.rows) {
       const preparation = preparations.get(this.#inputSnapshotKeyOf(row));
@@ -3427,12 +3438,18 @@ export class PostgresRiskAssessmentEngine
       ) {
         continue;
       }
-      const context = await this.#loadDecisionContext(
-        command,
-        verified,
-        row.decision_id,
-        row.decision_version_id,
-      );
+      const decisionKey = `${row.decision_id}\u0000${row.decision_version_id}`;
+      if (!decisions.has(decisionKey))
+        decisions.set(
+          decisionKey,
+          await this.#loadDecisionContext(
+            command,
+            verified,
+            row.decision_id,
+            row.decision_version_id,
+          ),
+        );
+      const context = decisions.get(decisionKey);
       if (context === undefined) {
         throw this.#readBlocked(command.queryId, "record-decision-artifact-unreadable");
       }
@@ -3451,21 +3468,24 @@ export class PostgresRiskAssessmentEngine
         kind: "record-catalog",
         actorId: command.actorId,
         items,
-        ...(page.hasMore ? { nextCursor: encodeC34Offset(offset + pageSize) } : {}),
+        ...(page.hasMore
+          ? { nextCursor: encodeC34RecordCursor(page.rows.at(-1)!, command, verified) }
+          : {}),
         actions: await this.#readActions(command, verified, ["risk-assessment.reassessment"]),
       },
     });
   }
 
   /**
-   * 记录行的有界分页：只按记录行自有列过滤，按 `occurred_at` 排序。
+   * 记录行先按拥有方保存的空间、来源和筛选条件缩小，再按稳定排序键分页。
    * 多取的一行只用于判定 `hasMore`，绝不返回给调用方——否则页大小会越界一行。
    */
   async #recordPage(
     command: RiskAssessmentReadQueryV1,
     options: {
       readonly pageSize: number;
-      readonly offset: number;
+      readonly verified: AuthorizationContextV1;
+      readonly after: C34RecordCursorV1 | undefined;
       readonly riskInput?: RiskInputVersionRefV1;
       readonly ascending?: boolean;
     },
@@ -3473,35 +3493,109 @@ export class PostgresRiskAssessmentEngine
     readonly rows: readonly Selectable<RiskAssessmentRecordRow>[];
     readonly hasMore: boolean;
   }> {
-    let query = this.#db
-      .selectFrom("business.risk_assessment_records")
-      .selectAll()
-      .where("project_id", "=", command.projectId);
+    let query = await this.#authorizedRecordQuery(command, options.verified);
     if (options.riskInput !== undefined) {
       // 记录行按公共 `RiskInputVersionRefV1` 的判别值登记，此处不再另造一份内部枚举。
       const kind = options.riskInput.kind;
       query = query
-        .where("risk_input_kind", "=", kind)
+        .where("r.risk_input_kind", "=", kind)
         .where(
-          kind === "standardized-risk-record" ? "risk_record_id" : "external_risk_event_id",
+          kind === "standardized-risk-record" ? "r.risk_record_id" : "r.external_risk_event_id",
           "=",
           options.riskInput.reference.entityId,
-        );
+        )
+        .where("p.risk_input_version_id", "=", options.riskInput.reference.versionId);
+    }
+    if (options.after !== undefined) {
+      const after = options.after;
+      const timeOrder = options.ascending === true ? sql`>` : sql`<`;
+      query = query.where(sql<SqlBool>`(
+        r.occurred_at ${timeOrder} ${after.afterOccurredAt}
+        OR (r.occurred_at = ${after.afterOccurredAt} AND r.record_id > ${after.afterEntityId})
+        OR (r.occurred_at = ${after.afterOccurredAt} AND r.record_id = ${after.afterEntityId} AND r.version_id > ${after.afterVersionId})
+      )`);
     }
     let rows: readonly Selectable<RiskAssessmentRecordRow>[];
     try {
       rows = await query
-        .orderBy("occurred_at", options.ascending === true ? "asc" : "desc")
-        .orderBy("record_id", "asc")
-        .limit(options.offset + options.pageSize + 1)
+        .selectAll("r")
+        .orderBy("r.occurred_at", options.ascending === true ? "asc" : "desc")
+        .orderBy("r.record_id", "asc")
+        .orderBy("r.version_id", "asc")
+        .limit(options.pageSize + 1)
         .execute();
     } catch (error) {
       throw mapPostgresError(error, "risk-assessment.read.record-page");
     }
     return {
-      rows: rows.slice(options.offset, options.offset + options.pageSize),
-      hasMore: rows.length > options.offset + options.pageSize,
+      rows: rows.slice(0, options.pageSize),
+      hasMore: rows.length > options.pageSize,
     };
+  }
+
+  /** 同一授权过滤用于目录、历史和 SQL 摘要；不借 C04 私表发现来源授权。 */
+  async #authorizedRecordQuery(
+    command: RiskAssessmentReadQueryV1,
+    verified: AuthorizationContextV1,
+  ) {
+    const scopeIds = verified.spatialScopeRefs.map((ref) => ref.reference.entityId);
+    const requestedScope =
+      "spatialScopeRef" in command.payload ? command.payload.spatialScopeRef : undefined;
+    if (
+      scopeIds.length === 0 ||
+      (requestedScope !== undefined && !scopeIds.includes(requestedScope.reference.entityId))
+    ) {
+      throw new RiskAssessmentReadFailure(this.#readDenied(command));
+    }
+    const sources = await this.#entryContext.readAuthorizedSourceVersions({
+      queryId: command.queryId,
+      projectId: command.projectId,
+      actorId: command.actorId,
+      requestedAt: command.requestedAt,
+      authorization: verified,
+      kind: "read-assessment-entry-source-versions",
+      payload: { spatialScopeRef: requestedScope ?? verified.spatialScopeRefs[0]! },
+    });
+    if (sources.kind !== "succeeded")
+      throw new RiskAssessmentReadFailure(this.#readDenied(command));
+    const allowedSources = JSON.stringify(
+      sources.result.sourceVersionRefs.map((ref) => ref.reference),
+    );
+    let query = this.#db
+      .selectFrom("business.risk_assessment_records as r")
+      .innerJoin("business.assessment_input_snapshots as i", (join) =>
+        join
+          .onRef("i.project_id", "=", "r.project_id")
+          .onRef("i.input_snapshot_id", "=", "r.input_snapshot_id")
+          .onRef("i.version_id", "=", "r.input_snapshot_version_id"),
+      )
+      .innerJoin("business.assessment_preparation_snapshots as p", (join) =>
+        join
+          .onRef("p.project_id", "=", "i.project_id")
+          .onRef("p.snapshot_id", "=", "i.preparation_snapshot_id")
+          .onRef("p.version_id", "=", "i.preparation_snapshot_version_id"),
+      )
+      .where("r.project_id", "=", command.projectId)
+      .where(sql<SqlBool>`p.spatial_scope_ref -> 'reference' ->> 'entityId' = ANY(${scopeIds})`)
+      .where(sql<SqlBool>`jsonb_typeof(p.snapshot_payload -> 'sourceEvidenceReferences') = 'array'`)
+      .where(sql<SqlBool>`NOT EXISTS (
+        SELECT 1 FROM jsonb_array_elements(p.snapshot_payload -> 'sourceEvidenceReferences') evidence
+        WHERE evidence -> 'sourceVersion' IS NULL
+           OR NOT ${allowedSources}::jsonb @> jsonb_build_array(evidence -> 'sourceVersion')
+      )`);
+    if (requestedScope !== undefined)
+      query = query.where(
+        sql<SqlBool>`p.spatial_scope_ref = ${JSON.stringify(requestedScope)}::jsonb`,
+      );
+    if (command.payload.operation === "record-catalog") {
+      if (command.payload.entryMode !== undefined)
+        query = query.where("p.entry_mode", "=", command.payload.entryMode);
+      if (command.payload.riskMatrixVersion !== undefined)
+        query = query.where(
+          sql<SqlBool>`i.snapshot_payload -> 'riskMatrixRef' = ${JSON.stringify(command.payload.riskMatrixVersion)}::jsonb`,
+        );
+    }
+    return query;
   }
 
   #inputSnapshotKeyOf(row: {
@@ -3651,11 +3745,19 @@ export class PostgresRiskAssessmentEngine
     verified: AuthorizationContextV1,
   ): Promise<RiskAssessmentReadResultV1> {
     const ref = command.payload.assessmentRecordRef;
-    const row = await this.#readRecordRow(command.projectId, ref).catch((error: unknown) => {
-      throw mapPostgresError(error, "risk-assessment.read.record-read");
-    });
+    const row = await (
+      await this.#authorizedRecordQuery(command, verified)
+    )
+      .selectAll("r")
+      .where("r.record_id", "=", ref.reference.entityId)
+      .where("r.version_id", "=", ref.reference.versionId)
+      .limit(1)
+      .executeTakeFirst()
+      .catch((error: unknown) => {
+        throw mapPostgresError(error, "risk-assessment.read.record-read");
+      });
     if (row === undefined) {
-      throw this.#readBlocked(command.queryId, "assessment-record-not-found");
+      throw new RiskAssessmentReadFailure(this.#readDenied(command));
     }
     const record = RiskAssessmentRecordSchema.safeParse(row.record_payload);
     if (!record.success) {
@@ -3686,18 +3788,14 @@ export class PostgresRiskAssessmentEngine
       projectId: command.projectId,
       actorId: command.actorId,
       requestedAt: command.requestedAt,
-      authorization: await this.#authorizeFor(
-        {
-          branch: "projection.query",
-          invocationId: workflowGraphInvocationIdV1({
-            operation: "assessment-entries",
-            projectId: command.projectId,
-            targetId: ref.reference.entityId,
-          }),
+      authorization: await this.#artifactReadAuthorization(
+        command,
+        workflowGraphInvocationIdV1({
+          operation: "assessment-entries",
           projectId: command.projectId,
-          actorId: command.actorId,
-          requestedAt: command.requestedAt,
-        },
+          targetId: ref.reference.entityId,
+        }),
+        verified,
         "projection.query",
       ),
       assessmentRecordRefs: [ref],
@@ -3818,11 +3916,12 @@ export class PostgresRiskAssessmentEngine
     verified: AuthorizationContextV1,
   ): Promise<RiskAssessmentReadResultV1> {
     const pageSize = command.payload.pageSize ?? 50;
-    const offset = decodeC34Offset(command.payload.cursor);
-    if (offset === undefined) return this.#readFailure(command, this.#readDenied(command));
+    const after = decodeC34RecordCursor(command.payload.cursor, command, verified);
+    if (after === null) return this.#readFailure(command, this.#readDenied(command));
     const page = await this.#recordPage(command, {
       pageSize,
-      offset,
+      verified,
+      after,
       riskInput: command.payload.riskInput,
       ascending: true,
     });
@@ -3835,18 +3934,14 @@ export class PostgresRiskAssessmentEngine
             projectId: command.projectId,
             actorId: command.actorId,
             requestedAt: command.requestedAt,
-            authorization: await this.#authorizeFor(
-              {
-                branch: "projection.query",
-                invocationId: workflowGraphInvocationIdV1({
-                  operation: "assessment-entries",
-                  projectId: command.projectId,
-                  targetId: page.rows[0]!.record_id,
-                }),
+            authorization: await this.#artifactReadAuthorization(
+              command,
+              workflowGraphInvocationIdV1({
+                operation: "assessment-entries",
                 projectId: command.projectId,
-                actorId: command.actorId,
-                requestedAt: command.requestedAt,
-              },
+                targetId: page.rows[0]!.record_id,
+              }),
+              verified,
               "projection.query",
             ),
             assessmentRecordRefs: page.rows.map((row) => ({
@@ -3895,7 +3990,9 @@ export class PostgresRiskAssessmentEngine
         kind: "reassessment-history",
         actorId: command.actorId,
         items,
-        ...(page.hasMore ? { nextCursor: encodeC34Offset(offset + pageSize) } : {}),
+        ...(page.hasMore
+          ? { nextCursor: encodeC34RecordCursor(page.rows.at(-1)!, command, verified) }
+          : {}),
         actions: await this.#readActions(command, verified, ["risk-assessment.reassessment"]),
       },
     });
@@ -3904,32 +4001,19 @@ export class PostgresRiskAssessmentEngine
   // ---------------------------------------------------------------- 总览
 
   /**
-   * 总览只统计已入库的评估记录版本，不声称识别风险总数。空间范围经该页记录的准备快照收窄，
-   * 因此统计窗口有界：先取一页记录，再按精确输入快照取准备快照后过滤。
+   * 总览按当前授权空间与来源统计已入库的记录版本；SQL 聚合只返回等级计数。
    */
   async #readOverview(
     command: C34ReadCommandV1<"overview">,
     verified: AuthorizationContextV1,
   ): Promise<RiskAssessmentReadResultV1> {
-    const page = await this.#recordPage(command, { pageSize: 5000, offset: 0 });
-    const preparations = await this.#preparationsOf(command, page.rows);
-    const counts = new Map<string, number>();
-    let matched = 0;
-    for (const row of page.rows) {
-      const preparation = preparations.get(this.#inputSnapshotKeyOf(row));
-      if (preparation === undefined) {
-        throw this.#readBlocked(command.queryId, "assessment-preparation-snapshot-missing");
-      }
-      if (
-        command.payload.spatialScopeRef !== undefined &&
-        versionKey(asVersionRef(preparation.spatial_scope_ref)) !==
-          versionKey(command.payload.spatialScopeRef.reference)
-      ) {
-        continue;
-      }
-      matched += 1;
-      counts.set(row.risk_level_id, (counts.get(row.risk_level_id) ?? 0) + 1);
-    }
+    const query = await this.#authorizedRecordQuery(command, verified);
+    const counts = await query
+      .select("r.risk_level_id")
+      .select((eb) => eb.fn.countAll<string>().as("count"))
+      .groupBy("r.risk_level_id")
+      .orderBy("r.risk_level_id", "asc")
+      .execute();
     return RiskAssessmentReadResultV1Schema.parse({
       kind: "succeeded",
       result: {
@@ -3939,10 +4023,11 @@ export class PostgresRiskAssessmentEngine
         ...(command.payload.spatialScopeRef === undefined
           ? {}
           : { spatialScopeRef: command.payload.spatialScopeRef }),
-        recordedAssessmentCount: matched,
-        riskLevelCounts: [...counts.entries()]
-          .map(([riskLevel, count]) => ({ riskLevel, count }))
-          .sort((left, right) => left.riskLevel.localeCompare(right.riskLevel)),
+        recordedAssessmentCount: counts.reduce((total, row) => total + Number(row.count), 0),
+        riskLevelCounts: counts.map((row) => ({
+          riskLevel: row.risk_level_id,
+          count: Number(row.count),
+        })),
         asOf: this.#now().toISOString(),
         actions: await this.#readActions(command, verified, ["risk-assessment.initial"]),
       },
@@ -3956,15 +4041,26 @@ export class PostgresRiskAssessmentEngine
     command: C34ReadCommandV1<"resolve">,
     verified: AuthorizationContextV1,
   ): Promise<RiskAssessmentReadResultV1> {
-    const record =
-      command.payload.targetKind === "record"
-        ? await this.#readRecordRow(command.projectId, {
-            reference: {
-              entityId: command.payload.entityId,
-              versionId: command.payload.versionId ?? "",
-            },
-          })
-        : undefined;
+    let record: Selectable<RiskAssessmentRecordRow> | undefined;
+    if (command.payload.targetKind === "record") {
+      let query = (await this.#authorizedRecordQuery(command, verified))
+        .selectAll("r")
+        .where("r.record_id", "=", command.payload.entityId);
+      if (command.payload.versionId !== undefined)
+        query = query.where("r.version_id", "=", command.payload.versionId);
+      record = await query.orderBy("r.recorded_at", "desc").limit(1).executeTakeFirst();
+      if (
+        record === undefined ||
+        (await this.#loadDecisionContext(
+          command,
+          verified,
+          record.decision_id,
+          record.decision_version_id,
+        )) === undefined
+      ) {
+        throw new RiskAssessmentReadFailure(this.#readDenied(command));
+      }
+    }
     if (record !== undefined) {
       return RiskAssessmentReadResultV1Schema.parse({
         kind: "succeeded",
@@ -4016,6 +4112,7 @@ export class PostgresRiskAssessmentEngine
     const cursor = decodeC34RunCursor(
       command.payload.resultCursor,
       command.payload.reviewTaskCursor,
+      c34RecordCursorAnchor(command, verified),
     );
     if (cursor === undefined) return this.#readFailure(command, this.#readDenied(command));
     const projection = await this.#readRunProjection(
@@ -4038,7 +4135,11 @@ export class PostgresRiskAssessmentEngine
     const next =
       projection.nextResultCursor === undefined && projection.nextReviewTaskCursor === undefined
         ? undefined
-        : encodeC34RunCursor(projection.nextResultCursor, projection.nextReviewTaskCursor);
+        : encodeC34RunCursor(
+            projection.nextResultCursor,
+            projection.nextReviewTaskCursor,
+            c34RecordCursorAnchor(command, verified),
+          );
     return RiskAssessmentReadResultV1Schema.parse({
       kind: "succeeded",
       result: {
@@ -4083,18 +4184,14 @@ export class PostgresRiskAssessmentEngine
       projectId: command.projectId,
       actorId: command.actorId,
       requestedAt: command.requestedAt,
-      authorization: await this.#authorizeFor(
-        {
-          branch: "projection.query",
-          invocationId: workflowGraphInvocationIdV1({
-            operation: "run-read",
-            projectId: command.projectId,
-            targetId: workflowRunRef.reference.entityId,
-          }),
+      authorization: await this.#artifactReadAuthorization(
+        command,
+        workflowGraphInvocationIdV1({
+          operation: "run-read",
           projectId: command.projectId,
-          actorId: command.actorId,
-          requestedAt: command.requestedAt,
-        },
+          targetId: workflowRunRef.reference.entityId,
+        }),
+        verified,
         "projection.query",
       ),
       workflowRunRef,
@@ -4106,8 +4203,9 @@ export class PostgresRiskAssessmentEngine
         ? {}
         : { reviewTaskCursor: selection.reviewTaskCursor }),
     });
-    void verified;
-    return projection.kind === "succeeded" ? projection.projection : undefined;
+    if (projection.kind !== "succeeded")
+      throw new RiskAssessmentReadFailure(this.#readDenied(command));
+    return projection.projection;
   }
 
   // ---------------------------------------------------------------- 冻结事实读取
@@ -4252,42 +4350,57 @@ export class PostgresRiskAssessmentEngine
             authorization,
           }),
         )
-        .catch(() => undefined);
+        .catch(() => {
+          throw new RiskAssessmentReadFailure(this.#readDenied(command));
+        });
       return handle === undefined ? undefined : await readArtifactJson(handle);
     };
-    // 两份上下文都由 C06 按同一分支签发、都过 C04 的全部访问快照检查，差别只在请求时
-    // 申请的来源集：另签的读取上下文可能装不下决策工件继承自父工件的来源授权（浏览器
-    // 为「列出记录」申请的就是窄的那一份），此时回落到调用方已复验的上下文再试一次。
-    return (
-      (await readWith(await this.#artifactReadAuthorization(command, identity, verified))) ??
-      (await readWith(verified))
-    );
+    return readWith(await this.#artifactReadAuthorization(command, identity, verified));
   }
 
-  /**
-   * 工件正文的读取身份：按 `risk-assessment.read` 单独签发，不沿用列表查询的上下文。
-   *
-   * 决策工件的访问快照由其父工件（适用规则集与评分规则）合并而来，来源授权宽于页面
-   * 为列目录申请的上下文——浏览器不为「列出记录」请求任何来源，直接沿用会把每一页都
-   * 关在 `ARTIFACT_ACCESS_DENIED`。按 design D-06「不同用途使用独立请求身份」，这里以
-   * 同一分支、同一主体与工程另签一份读取上下文；签不出来就沿用调用方上下文，由 C04 判
-   * 决，绝不在这里放宽任何访问快照检查。
-   */
+  /** 读取身份独立签发，空间与来源上限保持调用方已复验范围。 */
   async #artifactReadAuthorization(
     command: RiskAssessmentReadQueryV1,
     invocationId: string,
-    fallback: AuthorizationContextV1,
+    verified: AuthorizationContextV1,
+    branch: "risk-assessment.read" | "projection.query" = "risk-assessment.read",
   ): Promise<AuthorizationContextV1> {
-    return await this.#authorizeFor(
+    const scope = verified.spatialScopeRefs[0];
+    if (scope === undefined) throw new RiskAssessmentReadFailure(this.#readDenied(command));
+    const sources = await this.#entryContext.readAuthorizedSourceVersions({
+      kind: "read-assessment-entry-source-versions",
+      queryId: command.queryId,
+      projectId: command.projectId,
+      actorId: command.actorId,
+      requestedAt: command.requestedAt,
+      authorization: verified,
+      payload: { spatialScopeRef: scope },
+    });
+    if (sources.kind !== "succeeded")
+      throw new RiskAssessmentReadFailure(this.#readDenied(command));
+    const authorization = await this.#authorizeFor(
       {
-        branch: "risk-assessment.read",
+        branch,
         invocationId,
         projectId: command.projectId,
         actorId: command.actorId,
         requestedAt: command.requestedAt,
+        requestedSpatialScopeRefs: verified.spatialScopeRefs,
+        requestedSourceVersionRefs: sources.result.sourceVersionRefs,
       },
-      "risk-assessment.read",
-    ).catch(() => fallback);
+      branch,
+    ).catch(() => {
+      throw new RiskAssessmentReadFailure(this.#readDenied(command));
+    });
+    // 能力由独立 branch 签发/复验；这里只比较主体、策略、空间与来源上限。
+    if (
+      !isAuthorizationSubset(
+        { ...verified, grantedCapabilities: authorization.grantedCapabilities },
+        authorization,
+      )
+    )
+      throw new RiskAssessmentReadFailure(this.#readDenied(command));
+    return authorization;
   }
 
   /**
@@ -4352,21 +4465,67 @@ async function readArtifactJson(handle: ArtifactReadHandleV1): Promise<unknown |
   }
 }
 
-/** 目录游标为 base64url 严格 JSON 的偏移量；非法游标一律失败闭合，不回退到首页。 */
-const encodeC34Offset = (offset: number): string =>
-  Buffer.from(JSON.stringify({ o: offset }), "utf8").toString("base64url");
+type C34RecordCursorV1 = {
+  readonly anchor: string;
+  readonly afterOccurredAt: string;
+  readonly afterEntityId: string;
+  readonly afterVersionId: string;
+};
 
-const decodeC34Offset = (cursor: string | undefined): number | undefined => {
-  if (cursor === undefined) return 0;
+const c34RecordCursorAnchor = (
+  command: RiskAssessmentReadQueryV1,
+  verified: AuthorizationContextV1,
+): string =>
+  sha256CanonicalJson({
+    projectId: command.projectId,
+    filters: Object.fromEntries(
+      Object.entries(command.payload).filter(
+        ([key]) => key !== "cursor" && !key.endsWith("Cursor") && key !== "pageSize",
+      ),
+    ),
+    spatialScopeRefs: verified.spatialScopeRefs.map(refKey).sort(),
+    sourceAccessGrantRefs: verified.sourceAccessGrantRefs.map(refKey).sort(),
+  });
+
+const encodeC34RecordCursor = (
+  row: Selectable<RiskAssessmentRecordRow>,
+  command: RiskAssessmentReadQueryV1,
+  verified: AuthorizationContextV1,
+): string =>
+  Buffer.from(
+    JSON.stringify({
+      anchor: c34RecordCursorAnchor(command, verified),
+      afterOccurredAt: asIso(row.occurred_at),
+      afterEntityId: row.record_id,
+      afterVersionId: row.version_id,
+    }),
+    "utf8",
+  ).toString("base64url");
+
+const decodeC34RecordCursor = (
+  cursor: string | undefined,
+  command: RiskAssessmentReadQueryV1,
+  verified: AuthorizationContextV1,
+): C34RecordCursorV1 | undefined | null => {
+  if (cursor === undefined) return undefined;
   try {
-    const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as {
-      readonly o?: unknown;
-    };
-    return typeof parsed.o === "number" && Number.isInteger(parsed.o) && parsed.o >= 0
-      ? parsed.o
-      : undefined;
+    const parsed: unknown = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+    const value = parsed as Record<string, unknown>;
+    if (
+      Object.keys(value).length !== 4 ||
+      value.anchor !== c34RecordCursorAnchor(command, verified) ||
+      typeof value.afterOccurredAt !== "string" ||
+      !Number.isFinite(Date.parse(value.afterOccurredAt)) ||
+      typeof value.afterEntityId !== "string" ||
+      value.afterEntityId.length === 0 ||
+      typeof value.afterVersionId !== "string" ||
+      value.afterVersionId.length === 0
+    )
+      return null;
+    return value as C34RecordCursorV1;
   } catch {
-    return undefined;
+    return null;
   }
 };
 
@@ -4377,9 +4536,11 @@ const decodeC34Offset = (cursor: string | undefined): number | undefined => {
 const encodeC34RunCursor = (
   resultCursor: string | undefined,
   reviewTaskCursor: string | undefined,
+  anchor: string,
 ): string =>
   Buffer.from(
     JSON.stringify({
+      anchor,
       ...(resultCursor === undefined ? {} : { r: resultCursor }),
       ...(reviewTaskCursor === undefined ? {} : { t: reviewTaskCursor }),
     }),
@@ -4389,14 +4550,24 @@ const encodeC34RunCursor = (
 const decodeC34RunCursor = (
   resultCursor: string | undefined,
   reviewTaskCursor: string | undefined,
+  anchor: string,
 ): { readonly resultCursor?: string; readonly reviewTaskCursor?: string } | undefined => {
   const merge = (cursor: string | undefined) => {
     if (cursor === undefined) return {};
     try {
-      const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as {
-        readonly r?: unknown;
-        readonly t?: unknown;
-      };
+      const value: unknown = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+      if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+      const parsed = value as Record<string, unknown>;
+      if (
+        parsed.anchor !== anchor ||
+        Object.keys(parsed).some((key) => !["anchor", "r", "t"].includes(key)) ||
+        [parsed.r, parsed.t].some(
+          (offset) =>
+            offset !== undefined &&
+            (typeof offset !== "string" || !/^(0|[1-9][0-9]*)$/.test(offset)),
+        )
+      )
+        return null;
       return {
         ...(typeof parsed.r === "string" ? { resultCursor: parsed.r } : {}),
         ...(typeof parsed.t === "string" ? { reviewTaskCursor: parsed.t } : {}),

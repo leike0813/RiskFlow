@@ -32,7 +32,10 @@ export default function AssessmentRecordsPage() {
   const { selector } = useEngineering()
   const projectPath = useProjectPath()
   const [entryMode, setEntryMode] = useState('')
-  const [cursor, setCursor] = useState<string | undefined>(undefined)
+  const contextKey = JSON.stringify([selector.projectId, selector.revisionId, selector.assessmentSources, entryMode])
+  const [pageCursor, setPageCursor] = useState<{ key: string; cursor: string | undefined }>()
+  const cursor = pageCursor?.key === contextKey ? pageCursor.cursor : undefined
+  const setCursor = (next: string | undefined) => setPageCursor({ key: contextKey, cursor: next })
 
   const { state, retry } = usePageQuery<RecordCatalogView>(
     (projectId, signal) =>

@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { navItems, type NavKey } from "../content/context";
 import { searchWithSelector, useEngineering, useSession } from "../api/context";
@@ -7,6 +7,7 @@ import { EvidenceProvider } from "./EvidenceDrawer";
 import { AgentDock } from "../agent/AgentDock";
 import { toggleAgentDock, useAgentDockOpen } from "../agent/agentDockStore";
 import "./AppShell.css";
+import { readAssessmentSourceSelection } from "../api/client";
 
 const navIcons: Record<NavKey, IconName> = {
   overview: "overview",
@@ -34,7 +35,11 @@ function EngineeringSwitcher() {
     event.preventDefault();
     const project = draft.trim();
     if (project.length === 0) return;
-    setSearchParams(searchWithSelector(`?${searchParams.toString()}`, { project }));
+    const next = new URLSearchParams(
+      searchWithSelector(`?${searchParams.toString()}`, { project }),
+    );
+    next.delete("assessmentSources");
+    setSearchParams(next);
     setEditing(false);
     setDraft("");
   };
@@ -57,6 +62,81 @@ function EngineeringSwitcher() {
       <button type="submit" className="shell-switch-btn">
         确定
       </button>
+    </form>
+  );
+}
+
+function AssessmentSourceSelector() {
+  const { selector } = useEngineering();
+  const [params, setParams] = useSearchParams();
+  const selection = readAssessmentSourceSelection(`?${params.toString()}`);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [invalid, setInvalid] = useState(false);
+  useEffect(() => {
+    setEditing(false);
+    setDraft("");
+    setInvalid(false);
+  }, [selector.projectId, selector.revisionId]);
+  if (selector.projectId === null) return null;
+  if (!editing)
+    return (
+      <button
+        type="button"
+        className="shell-switch-btn"
+        onClick={() => {
+          setDraft(selection === null ? "" : JSON.stringify(selection.refs));
+          setEditing(true);
+        }}
+      >
+        资料来源{selection === null ? "：未选择" : `：${selection.refs.length} 个版本`}
+      </button>
+    );
+  return (
+    <form
+      className="shell-switch-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const next = new URLSearchParams(params);
+        if (draft.trim() === "") next.delete("assessmentSources");
+        else {
+          try {
+            next.set(
+              "assessmentSources",
+              JSON.stringify({
+                projectId: selector.projectId,
+                revisionId: selector.revisionId,
+                refs: JSON.parse(draft),
+              }),
+            );
+          } catch {
+            setInvalid(true);
+            return;
+          }
+          if (readAssessmentSourceSelection(`?${next.toString()}`) === null) {
+            setInvalid(true);
+            return;
+          }
+        }
+        setParams(next);
+        setEditing(false);
+        setInvalid(false);
+      }}
+    >
+      <input
+        aria-label="资料来源版本"
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        placeholder='[{"entityId":"资料版本标识","versionId":"版本"}]'
+        aria-invalid={invalid}
+      />
+      <button type="submit" className="shell-switch-btn">
+        应用来源
+      </button>
+      <button type="button" className="shell-switch-btn" onClick={() => setEditing(false)}>
+        取消
+      </button>
+      {invalid && <span role="alert">请填写 1～256 个完整来源版本引用</span>}
     </form>
   );
 }
@@ -138,6 +218,9 @@ export default function AppShell({
             )}
           </div>
           <div className="shell-actions">
+            {(activeNav === "overview" ||
+              activeNav === "assessment" ||
+              activeNav === "warnings") && <AssessmentSourceSelector />}
             <EngineeringSwitcher />
             {sessionState.kind === "authenticated" && (
               <>

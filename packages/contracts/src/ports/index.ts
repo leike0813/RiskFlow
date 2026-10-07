@@ -4299,7 +4299,7 @@ const entryRunPolicyV1 = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("available"),
     graphVersion: VersionReferenceSchema,
-    retryPolicyRef: ContractReferenceV1Schema,
+    retryPolicyRef: VersionReferenceSchema,
   }),
   z.strictObject({ kind: z.literal("unavailable"), reasonCode: IdentifierSchema }),
 ]);

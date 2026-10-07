@@ -31,6 +31,13 @@ export default function CalibrationDetailPage() {
   const { selector } = useEngineering()
   const version = searchParams.get('version')
   const [tick, setTick] = useState(0)
+  const [decisionId, setDecisionId] = useState('')
+  const [decisionVersion, setDecisionVersion] = useState('')
+  const contextKey = JSON.stringify([selector.projectId, selector.revisionId, selector.assessmentSources, suggestionId, version])
+  useEffect(() => {
+    setDecisionId('')
+    setDecisionVersion('')
+  }, [contextKey])
 
   const suggestionRef: KindRef | null =
     suggestionId === undefined
@@ -70,12 +77,15 @@ export default function CalibrationDetailPage() {
   const submit = async (outcome: 'reject' | 'return-for-revision' | 'approve-draft-creation') => {
     if (calibration.state.kind !== 'ready' || selector.projectId === null) return
     const value = calibration.state.value
-    if (value.reviewDecisionRef === undefined) return
+    const reviewDecisionRef = value.reviewDecisionRef ?? (decisionId.trim() !== '' && decisionVersion.trim() !== ''
+      ? { kind: 'review-decision', reference: { entityId: decisionId.trim(), versionId: decisionVersion.trim() } }
+      : undefined)
+    if (reviewDecisionRef === undefined) return
     const base = {
       calibrationSuggestionRef: value.calibrationSuggestionRef,
-      reviewDecisionRef: value.reviewDecisionRef,
+      reviewDecisionRef,
     }
-    const commandId = `demo-cal-${outcome}-${value.calibrationSuggestionRef.reference.entityId}-${value.calibrationSuggestionRef.reference.versionId}`
+    const commandId = `demo-cal-${outcome}-${value.calibrationSuggestionRef.reference.entityId}-${value.calibrationSuggestionRef.reference.versionId}-${reviewDecisionRef.reference.entityId}-${reviewDecisionRef.reference.versionId}`
     if (outcome === 'approve-draft-creation') {
       await submitCalibrationGovernanceDraft(selector.projectId, { commandId, ...base })
     } else {
@@ -87,6 +97,8 @@ export default function CalibrationDetailPage() {
   const actions = calibration.state.kind === 'ready' ? calibration.state.value.actions : []
   const outcomeAvailability = actionAvailability(actions, 'warning-response.calibration-review-outcome')
   const draftAvailability = actionAvailability(actions, 'warning-response.calibration-governance-draft')
+  const hasDecision = calibration.state.kind === 'ready' && calibration.state.value.reviewDecisionRef !== undefined
+    || decisionId.trim() !== '' && decisionVersion.trim() !== ''
 
   return (
     <AppShell activeNav="warnings" agentContext={selector.projectId === null ? [] : [selector.projectId]}>
@@ -192,6 +204,13 @@ export default function CalibrationDetailPage() {
                 </p>
               </Card>
 
+              {value.reviewDecisionRef === undefined && (outcomeAvailability === 'allowed' || draftAvailability === 'allowed') && (
+                <Card title="复核决定" style={{ marginTop: 16 }}>
+                  <p className="ar-note">请在复核队列完成决定后，填写该决定的精确引用。</p>
+                  <label className="ar-form-field">复核决定标识<input value={decisionId} onChange={(event) => setDecisionId(event.target.value)} /></label>
+                  <label className="ar-form-field">复核决定版本<input value={decisionVersion} onChange={(event) => setDecisionVersion(event.target.value)} /></label>
+                </Card>
+              )}
               <div className="ar-two-col" style={{ marginTop: 16 }}>
                 <FieldCard title="记录拒绝 / 退回">
                   <p className="ar-note">
@@ -200,9 +219,10 @@ export default function CalibrationDetailPage() {
                   </p>
                   <ConfirmButton
                     label="记录拒绝"
+                    resetKey={JSON.stringify([contextKey, decisionId, decisionVersion])}
                     tone="danger"
                     availability={
-                      outcomeAvailability === 'allowed' && value.reviewDecisionRef !== undefined
+                      outcomeAvailability === 'hidden' || outcomeAvailability === null ? 'hidden' : outcomeAvailability === 'allowed' && hasDecision
                         ? 'allowed'
                         : 'business-unavailable'
                     }
@@ -214,15 +234,16 @@ export default function CalibrationDetailPage() {
                     summary={[
                       `工程：${selector.projectId ?? '—'}`,
                       `建议：${value.calibrationSuggestionRef.reference.entityId}`,
-                      `复核决定：${value.reviewDecisionRef?.reference.entityId ?? '—'}`,
+                      `复核决定：${value.reviewDecisionRef?.reference.entityId ?? decisionId} · ${value.reviewDecisionRef?.reference.versionId ?? decisionVersion}`,
                       '预计结果：收口为 rejected 并登记偏差记录版本',
                     ]}
                     onConfirm={() => submit('reject')}
                   />
                   <ConfirmButton
                     label="记录退回"
+                    resetKey={JSON.stringify([contextKey, decisionId, decisionVersion])}
                     availability={
-                      outcomeAvailability === 'allowed' && value.reviewDecisionRef !== undefined
+                      outcomeAvailability === 'hidden' || outcomeAvailability === null ? 'hidden' : outcomeAvailability === 'allowed' && hasDecision
                         ? 'allowed'
                         : 'business-unavailable'
                     }
@@ -234,7 +255,7 @@ export default function CalibrationDetailPage() {
                     summary={[
                       `工程：${selector.projectId ?? '—'}`,
                       `建议：${value.calibrationSuggestionRef.reference.entityId}`,
-                      `复核决定：${value.reviewDecisionRef?.reference.entityId ?? '—'}`,
+                      `复核决定：${value.reviewDecisionRef?.reference.entityId ?? decisionId} · ${value.reviewDecisionRef?.reference.versionId ?? decisionVersion}`,
                       '预计结果：收口为 returned 并登记偏差记录版本；不发布任何知识',
                     ]}
                     onConfirm={() => submit('return-for-revision')}
@@ -248,8 +269,9 @@ export default function CalibrationDetailPage() {
                   </p>
                   <ConfirmButton
                     label="创建治理草案"
+                    resetKey={JSON.stringify([contextKey, decisionId, decisionVersion])}
                     availability={
-                      draftAvailability === 'allowed' && value.reviewDecisionRef !== undefined
+                      draftAvailability === 'hidden' || draftAvailability === null ? 'hidden' : draftAvailability === 'allowed' && hasDecision
                         ? 'allowed'
                         : 'business-unavailable'
                     }
@@ -261,7 +283,7 @@ export default function CalibrationDetailPage() {
                     summary={[
                       `工程：${selector.projectId ?? '—'}`,
                       `建议：${value.calibrationSuggestionRef.reference.entityId}`,
-                      `复核决定：${value.reviewDecisionRef?.reference.entityId ?? '—'}`,
+                      `复核决定：${value.reviewDecisionRef?.reference.entityId ?? decisionId} · ${value.reviewDecisionRef?.reference.versionId ?? decisionVersion}`,
                       '预计结果：创建未发布草案修订；页面不显示为已发布知识',
                     ]}
                     onConfirm={() => submit('approve-draft-creation')}

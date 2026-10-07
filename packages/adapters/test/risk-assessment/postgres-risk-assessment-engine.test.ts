@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { writeFile } from "node:fs/promises";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { sha256CanonicalJson } from "@riskflow/core/persistence";
 import { DomainEventV1Schema } from "@riskflow/contracts/events";
@@ -1884,6 +1885,258 @@ describe("C25 PostgreSQL risk assessment engine", () => {
     };
   };
 
+  /**
+   * 合成只读历史行：按源行复制全部列并仅覆盖身份/摘要与授权范围键，生成批量 INSERT。
+   * 只用于读取压力测量，不写命令回执，也不伪造任何成功写回。
+   */
+  const cloneSeedSql = async (input: {
+    readonly table: string;
+    readonly alias: string;
+    readonly where: string;
+    readonly overrides: Readonly<Record<string, string>>;
+  }): Promise<string> => {
+    const ident = (name: string) => `"${name.replaceAll('"', '""')}"`;
+    const columns = await fixture.postgres.postgres.adminPool.query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_schema = 'business' AND table_name = $1 ORDER BY ordinal_position`,
+      [input.table],
+    );
+    const names = columns.rows.map((row) => ident(row.column_name)).join(", ");
+    const projected = columns.rows
+      .map((row) => input.overrides[row.column_name] ?? `${input.alias}.${ident(row.column_name)}`)
+      .join(", ");
+    return `INSERT INTO business.${ident(input.table)} (${names})
+            SELECT ${projected} FROM business.${ident(input.table)} ${input.alias}
+            CROSS JOIN generate_series(1, 5001) n ${input.where}`;
+  };
+
+  it("记录目录按授权先过滤，50 项续页绑定筛选且摘要不截断", async () => {
+    const assessed = await evaluateThrough({ suffix: "bounded-catalog" });
+    const pool = fixture.postgres.postgres.adminPool;
+    const sqlReads = vi.spyOn(fixture.postgres.runtime.db.getExecutor(), "executeQuery");
+    const artifactReads = vi.spyOn(fixture.postgres.artifactStore, "open");
+    const initialOverview = await fixture.engine.read(
+      await entryReadQuery({
+        queryId: "c25-bound-before",
+        payload: { operation: "overview", projectRevisionRef: fixture.projectRevisionRef },
+      }),
+    );
+    if (initialOverview.kind !== "succeeded" || initialOverview.result.kind !== "overview")
+      throw new Error("expected overview");
+    const prep = await pool.query<{
+      preparation_snapshot_id: string;
+      preparation_snapshot_version_id: string;
+    }>(
+      `SELECT preparation_snapshot_id, preparation_snapshot_version_id
+       FROM business.assessment_input_snapshots WHERE input_snapshot_id = $1 AND version_id = $2`,
+      [assessed.inputSnapshotRef.reference.entityId, assessed.inputSnapshotRef.reference.versionId],
+    );
+    const preparationId = prep.rows[0]!.preparation_snapshot_id;
+    const preparationVersion = prep.rows[0]!.preparation_snapshot_version_id;
+    // 可见行共享同一份已核验决策工件，正式评估在上方真实完成；隐藏行另建准备快照并在来源证据中
+    // 追加未授权来源，只能由 SQL 授权过滤排除，且排序键靠前——授权过滤若晚于分页，首页会被隐藏行占满。
+    const visibleRecords = await cloneSeedSql({
+      table: "risk_assessment_records",
+      alias: "r",
+      where: "WHERE r.record_id = $1",
+      overrides: {
+        record_id: "'bounded-copy-' || n::text",
+        input_snapshot_id: "'bounded-input-' || n::text",
+        identity_digest: "lpad(to_hex(n), 64, '0')",
+      },
+    });
+    const visibleInputs = await cloneSeedSql({
+      table: "assessment_input_snapshots",
+      alias: "i",
+      where: "WHERE i.input_snapshot_id = $1",
+      overrides: {
+        input_snapshot_id: "'bounded-input-' || n::text",
+        reference_digest: "lpad(to_hex(n), 64, '0')",
+      },
+    });
+    const hiddenPreparations = await cloneSeedSql({
+      table: "assessment_preparation_snapshots",
+      alias: "p",
+      where: "WHERE p.snapshot_id = $1",
+      overrides: {
+        snapshot_id: "'bounded-hidden-prep-' || n::text",
+        snapshot_payload: `jsonb_set(p.snapshot_payload, '{sourceEvidenceReferences}',
+          (p.snapshot_payload -> 'sourceEvidenceReferences') || jsonb_build_array(
+            jsonb_build_object('sourceVersion', jsonb_build_object(
+              'entityId', 'bounded-hidden-source', 'versionId', '1'))))`,
+      },
+    });
+    const hiddenInputs = await cloneSeedSql({
+      table: "assessment_input_snapshots",
+      alias: "i",
+      where: "WHERE i.input_snapshot_id = $1",
+      overrides: {
+        input_snapshot_id: "'bounded-hidden-input-' || n::text",
+        reference_digest: "lpad(to_hex(n + 100000), 64, '0')",
+        preparation_snapshot_id: "'bounded-hidden-prep-' || n::text",
+        preparation_snapshot_ref: `jsonb_build_object('kind', 'assessment-preparation-snapshot',
+          'reference', jsonb_build_object('entityId', 'bounded-hidden-prep-' || n::text,
+            'versionId', '${preparationVersion}'))`,
+      },
+    });
+    const hiddenRecords = await cloneSeedSql({
+      table: "risk_assessment_records",
+      alias: "r",
+      where: "WHERE r.record_id = $1",
+      overrides: {
+        record_id: "'bounded-hidden-' || n::text",
+        input_snapshot_id: "'bounded-hidden-input-' || n::text",
+        identity_digest: "lpad(to_hex(n + 100000), 64, '0')",
+        occurred_at: "'2031-01-01T00:00:00.000Z'::timestamptz",
+      },
+    });
+    try {
+      await pool.query(visibleInputs, [assessed.inputSnapshotRef.reference.entityId]);
+      await pool.query(visibleRecords, [assessed.assessmentRecordRef.reference.entityId]);
+      await pool.query(hiddenPreparations, [preparationId]);
+      await pool.query(hiddenInputs, [assessed.inputSnapshotRef.reference.entityId]);
+      await pool.query(hiddenRecords, [assessed.assessmentRecordRef.reference.entityId]);
+      const startedAt = performance.now();
+      const first = await fixture.engine.read(
+        await entryReadQuery({
+          queryId: "c25-bound-first",
+          payload: { operation: "record-catalog", pageSize: 50 },
+        }),
+      );
+      if (first.kind !== "succeeded" || first.result.kind !== "record-catalog")
+        throw new Error("expected catalog");
+      expect(first.result.items).toHaveLength(50);
+      expect(first.result.nextCursor).toBeDefined();
+      const second = await fixture.engine.read(
+        await entryReadQuery({
+          queryId: "c25-bound-second",
+          payload: { operation: "record-catalog", pageSize: 50, cursor: first.result.nextCursor },
+        }),
+      );
+      if (second.kind !== "succeeded" || second.result.kind !== "record-catalog")
+        throw new Error("expected next page");
+      expect(second.result.items).toHaveLength(50);
+      expect(
+        new Set(
+          [...first.result.items, ...second.result.items].map(
+            (item) => item.assessmentRecordRef.reference.entityId,
+          ),
+        ).size,
+      ).toBe(100);
+      // 授权先过滤：返回页不含隐藏行；未加授权过滤时同一排序键的首页整页都是隐藏行。
+      expect(
+        first.result.items.every(
+          (item) => !item.assessmentRecordRef.reference.entityId.startsWith("bounded-hidden-"),
+        ),
+      ).toBe(true);
+      const unfilteredTop = await pool.query<{ hidden: string }>(
+        `SELECT count(*)::text AS hidden FROM (
+           SELECT record_id FROM business.risk_assessment_records
+           WHERE project_id = $1 ORDER BY occurred_at DESC, record_id ASC, version_id ASC LIMIT 51
+         ) page WHERE record_id LIKE 'bounded-hidden-%'`,
+        [fixture.projectId],
+      );
+      expect(Number(unfilteredTop.rows[0]!.hidden)).toBe(51);
+      expectClosedAuthorizationDenied(
+        await fixture.engine.read(
+          await entryReadQuery({
+            queryId: "c25-bound-filter",
+            payload: {
+              operation: "record-catalog",
+              entryMode: "reassess",
+              cursor: first.result.nextCursor,
+            },
+          }),
+        ),
+      );
+      expectClosedAuthorizationDenied(
+        await fixture.engine.read(
+          await entryReadQuery({
+            queryId: "c25-bound-source",
+            sourceVersionRefs: [],
+            payload: { operation: "record-catalog", cursor: first.result.nextCursor },
+          }),
+        ),
+      );
+      const overview = await fixture.engine.read(
+        await entryReadQuery({
+          queryId: "c25-bound-overview",
+          payload: { operation: "overview", projectRevisionRef: fixture.projectRevisionRef },
+        }),
+      );
+      expect(overview).toMatchObject({
+        kind: "succeeded",
+        result: { recordedAssessmentCount: initialOverview.result.recordedAssessmentCount + 5001 },
+      });
+      const denied = await fixture.engine.read(
+        await entryReadQuery({
+          queryId: "c25-bound-no-source",
+          sourceVersionRefs: [],
+          payload: { operation: "overview", projectRevisionRef: fixture.projectRevisionRef },
+        }),
+      );
+      expect(denied).toMatchObject({
+        kind: "succeeded",
+        result: { recordedAssessmentCount: 0, riskLevelCounts: [] },
+      });
+      const sqlMeasurements = await Promise.all(
+        sqlReads.mock.results.map(async (result, index) => {
+          const query = sqlReads.mock.calls[index]![0];
+          if (result.type !== "return" || !query.sql.includes('"risk_assessment_records" as "r"'))
+            return null;
+          return {
+            rows: (await result.value).rows.length,
+            paginated: query.sql.includes(" limit "),
+          };
+        }),
+      );
+      const recordQueries = sqlMeasurements.filter((item) => item !== null);
+      const pageQueries = recordQueries.filter((query) => query.paginated);
+      // 分页查询最多取 pageSize+1 行：多出的一行只用于判定 hasMore，不返回给调用方。
+      expect(pageQueries.length).toBeGreaterThanOrEqual(2);
+      expect(pageQueries.every((query) => query.rows <= 51)).toBe(true);
+      const measurement = {
+        records: 5001,
+        unreadableRecords: 5001,
+        pageRows: first.result.items.length,
+        nextPageRows: second.result.items.length,
+        recordQueries,
+        artifactReadCount: artifactReads.mock.calls.length,
+        elapsedMs: Math.round(performance.now() - startedAt),
+      };
+      // 解释工件按返回页有界读取：不随隐藏行或库总量增长。
+      expect(measurement.artifactReadCount).toBeLessThanOrEqual(50);
+      console.info("C34 bounded read measurement", measurement);
+      await writeFile(
+        "/tmp/riskflow-c25-bounded-read-metrics.json",
+        JSON.stringify(measurement, null, 2),
+      );
+    } finally {
+      sqlReads.mockRestore();
+      artifactReads.mockRestore();
+      await pool.query(
+        "DELETE FROM business.risk_assessment_records WHERE project_id = $1 AND record_id LIKE 'bounded-copy-%'",
+        [fixture.projectId],
+      );
+      await pool.query(
+        "DELETE FROM business.assessment_input_snapshots WHERE project_id = $1 AND input_snapshot_id LIKE 'bounded-input-%'",
+        [fixture.projectId],
+      );
+      await pool.query(
+        "DELETE FROM business.risk_assessment_records WHERE project_id = $1 AND record_id LIKE 'bounded-hidden-%'",
+        [fixture.projectId],
+      );
+      await pool.query(
+        "DELETE FROM business.assessment_input_snapshots WHERE project_id = $1 AND input_snapshot_id LIKE 'bounded-hidden-input-%'",
+        [fixture.projectId],
+      );
+      await pool.query(
+        "DELETE FROM business.assessment_preparation_snapshots WHERE project_id = $1 AND snapshot_id LIKE 'bounded-hidden-prep-%'",
+        [fixture.projectId],
+      );
+    }
+  }, 300_000);
+
   /** 记录行自有列的 P/C 与风险等级：目录摘要必须逐项对上，不从正文重算。 */
   const storedScores = async (recordRef: RiskAssessmentRecordRefV1) => {
     const rows = await fixture.postgres.postgres.adminPool.query<{
@@ -2272,7 +2525,7 @@ describe("C25 PostgreSQL risk assessment engine", () => {
     }
 
     // 精确记录不存在时同样失败闭合，且不枚举存在性。
-    expectClosedBusinessBlocked(
+    expect(
       await fixture.engine.read(
         await entryReadQuery({
           queryId: "c25-record-read-absent",
@@ -2285,8 +2538,7 @@ describe("C25 PostgreSQL risk assessment engine", () => {
           },
         }),
       ),
-      "assessment-record-not-found",
-    );
+    ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
     expect(await storedFactsText(assessed.assessmentRecordRef)).toBe(factsBefore);
 
     // 总览只统计已入库的评估记录版本，并按请求空间范围收窄统计窗口。
@@ -2349,8 +2601,8 @@ describe("C25 PostgreSQL risk assessment engine", () => {
       }),
     );
     expect(foreignScope).toMatchObject({
-      kind: "succeeded",
-      result: { recordedAssessmentCount: 0, riskLevelCounts: [] },
+      kind: "failed",
+      error: { code: "AUTHORIZATION_DENIED" },
     });
   }, 300_000);
 

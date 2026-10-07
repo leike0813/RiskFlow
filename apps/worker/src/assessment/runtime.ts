@@ -258,6 +258,7 @@ const entryIdentityConsistent = (run: AssessmentGraphRunContextV1): boolean => {
     entryMode: run.entryMode,
     projectId: run.projectId,
     frozenRefs: run.frozenRefs,
+    reassessmentEntry: run.reassessmentEntry,
   });
   return (
     expected.entityId === run.entryIdentity.entityId &&

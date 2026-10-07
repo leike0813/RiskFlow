@@ -118,6 +118,8 @@ C11 已实现 `readAssessmentEntryContext`；其候选接缝依赖修复 change 
 
 ### D-06 所有权、组合与权限
 
+浏览器以工程与修订绑定的精确来源版本选择作为 C25 读取和评估启动的请求上限。用户显式填写来源版本引用后经 C06 复验；未选择时不请求来源授权，不把空授权解释为全部来源。选择变化使旧查询、游标和待确认命令失效，工程切换清除选择，深链保留同工程同修订的选择。该入口复用已有请求信封字段，不通过 C11 全库资料目录发现或自动扩大来源范围。
+
 解释的跨域读取分两层：`warning-read` 返回精确 assessmentRecordRef，页面独立调用 C25 `record-read` 获取冻结触发阈值；`feedback-read` 返回冻结 deviationPolicyRef，页面通过既有 `readKnowledgeRelease` 获取获准偏差阈值正文。C26 不投影这两类正文，不增加对 C25/知识私表的访问；页面分别呈现各读取的失败与精确版本。所属 C27/C28/C29/C41 窄读仍由 C26 显式注入。
 
 新只读方法在各现有 adapter 内实现并复用其解析/授权/事务依赖；不创建通用只读数据库服务。C25/C26/C27/C28/C29/C41 各只读自己的表。风险评估端口在 C25 factory 组合注入的识别目录、C11 输入读与 C30 运行读；预警处置端口在 C26 factory 组合注入的 C27/C28/C29/C41 窄读方法。注入接口使用 contracts 中按 operation 提取的入出类型，不透传任意对象。
@@ -181,7 +183,7 @@ P-OV-01 保留 C31 的 `risk-overview` 运行引用区，使用现有 projection
 
 demo PageState 补齐 idle/loading/ready/empty/error/forbidden/unavailable。usePageQuery 增请求修订检查，AbortController 加上下文标识共同阻止迟到结果。活动运行每 5 秒、单一在途读取，页面不可见暂停，终态/卸载停止；不依赖跨 DOM 扫描或全量 projection 翻页。
 
-目录 keyset 游标绑定 project、operation、筛选、空间/来源授权与排序键；每次读取重新检查当前权限。采用 base64url 编码的 strict 游标对象（不是权限凭证），键为 schemaVersion/projectId/operation/filterDigest/scopeDigest/afterOccurredAt/afterEntityId/afterVersionId；排序为 occurredAt DESC、entityId ASC、versionId ASC，SQL limit=pageSize+1。同工程等效新查询可续页，作用域改变/格式篡改拒绝；游标不能决定目标所属或扩大范围。统计由拥有方 SQL 聚合，按有界等级/任务分类返回；不泄露未授权总量。复杂关系显式分页，明示当前页分布，关系读取不逐项跨域补查；C25 在单页精确记录集合上批量读取自有登记行，矩阵落点从各自保存的决策工件投影，最多读取 50 份去重决策工件、并发不超过现有 C04 上限 4，不为目录加载实际值/全部正文；单个工件关联或权限错误使该查询失败闭合。上游 C33 目录目前读取全部可见记录再截断，不能直接用于此路径：将该所属 record-catalog 读取改为 SQL 分页后保留原公开结果形状，并回归 C33；不改识别 run-list 的范围。
+目录 keyset 游标绑定 project、operation、筛选、空间/来源授权与排序键；每次读取重新检查当前权限。采用 base64url 编码的 strict 游标对象（不是权限凭证）。C11/C26 使用 schemaVersion/projectId/operation/filterDigest/scopeDigest/afterOccurredAt/afterEntityId/afterVersionId；C25 使用 anchor/afterOccurredAt/afterEntityId/afterVersionId，anchor 是工程、包含 operation 的筛选以及空间/来源授权集合的规范摘要，排除 cursor/pageSize，使同一筛选可调整页大小。游标字段不进入公共结果 Schema。排序为 occurredAt DESC、entityId ASC、versionId ASC，SQL limit=pageSize+1。同工程等效新查询可续页，作用域改变/格式篡改拒绝；游标不能决定目标所属或扩大范围。统计由拥有方 SQL 聚合，按有界等级/任务分类返回；不泄露未授权总量。复杂关系显式分页，明示当前页分布，关系读取不逐项跨域补查；C25 在单页精确记录集合上批量读取自有登记行，矩阵落点从各自保存的决策工件投影，最多读取 50 份去重决策工件、并发不超过现有 C04 上限 4，不为目录加载实际值/全部正文；单个工件关联或权限错误使该查询失败闭合。上游 C33 目录目前读取全部可见记录再截断，不能直接用于此路径：将该所属 record-catalog 读取改为 SQL 分页后保留原公开结果形状，并回归 C33；不改识别 run-list 的范围。
 
 错误沿 ModuleError/HttpError，ApiError 保留 STALE_VERSION、BUSINESS_BLOCKED 与稳定原因/关联标识；不新增错误码，不展示 SQL/堆栈/payload/模型响应。授予撤销、目标不存在与跨工程对无权用户同形。审计沿所属命令实现同步写入；读操作沿已有所属读取审计语义，HTTP 只记录原安全元数据。任何 Agent 来源只展示公开任务/模型/提示/工具/预算引用，不展示思维链。
 
@@ -192,6 +194,14 @@ demo PageState 补齐 idle/loading/ready/empty/error/forbidden/unavailable。use
 工作流复用 `apps/worker/dist/assessment/index.js` 的 `createAssessmentGraphComposition` 与 `apps/worker/dist/risk-flow/index.js` 的 `createRiskFlowGraphComposition`，真实 PostgreSQL checkpointer 与版本化重试配置按 C30 的 composition tests 装配；Worker 的改动限于 D-12 的入口保存、传递、身份与命令绑定、原因映射及恢复，不更改阶段路由、评分算法或 Agent 门。父图、评估子图及 C41 人工决定证明在 setup 阶段完成相互引用绑定，开始接收 HTTP 前核对必需端口。HTTP 直接注入父 runtime 的既有 `workflowPort`（startRun/resumeRun/cancelRun），C41 使用同一 runtime 与真实 reviewAudit 证明读，不再写一层运行映射。评估图注入 C11/C19/C25/C26/C27/C28/C29 既有公开用例；预测的确定性执行器使用版本化合成统计输入，Agent 使用真实任务契约和已收口合成候选，不以成功 stub 代替三项校验、任务预算或记录事务。
 
 `buildApi` 在上述组合根注入原有命令端口 riskAssessment、warningResponse、humanDecisionFeedback、workflow，以及新增 riskAssessmentRead、warningResponseRead、calibrationGovernance；同时保留 C32/C33 的所有端口。矩阵与措施读取沿现有 knowledgeGovernanceRead；校准提交沿 C16 真实端口。新增 runtime/checkpointer 的清理加入现有 closeables。复用各领域 test fixture 的样本形状和政策文档，在同一数据库登记真实输入与工件；不启动多套 fixture 容器再拼异库引用。
+
+独立行动的措施发布校验由 C28 内部 `ResponseLifecycleMeasureReleaseReaderV1` 透传已有核心读取输入（requestId、requestedAt、authorization、精确发布 refs），不新增 HTTP 或领域字段。组合根使用 C16 `read-definition-release` 与 C04 正文读取确认同工程精确 `measure-library` 发布。读取授权以当前 actor、父授权空间及来源上限另签；来源版本只从成功登记的来源授权身份映射取得，签后复用 `isAuthorizationSubset` 核对没有扩大。该窄读实例直接将此授权交给 C04，不使用自动补充来源的回调。缺失、错版、撤权或正文不可读均关闭失败，不查询当前发布、不硬编码已发布措施名单。
+
+无预测的反馈沿 C28 已登记的不可用原因读取，不要求不存在的预测引用，也不生成偏差或校准。运行引用续页同时保存两组位置，任一组耗尽后仍保持其末尾位置；游标绑定工程、精确运行与空间/来源授权，阶段摘要取各阶段最后登记的状态。历史矩阵验收复用原配置发布函数，同时更新风险接受与监测阈值的矩阵精确引用，再以不同监测输入形成新评估；原阈值数值和历史事实保留。
+
+C26 的所属事实窄读与动作可用性签发以 C06 复验后的入口上下文为上限，显式保留空间并将来源收窄为空；签后复用 `isAuthorizationSubset` 核对同主体、工程、策略及范围。动作按自己的分支能力检查，不能从只读能力推断写权。这些读取只消费登记事实和定位元数据，资料正文仍沿独立证据读取授权，组合根默认来源不得进入窄读上下文。
+
+验收补齐两种执行来源、单独等级和混合触发完整闭环、同一定义新矩阵发布后的历史分组、超过 50 项的运行结果与复核任务独立续页、5 秒以上慢读下的单在途轮询及可见性/终态/卸载边界；复用已有真实命令和按拥有方 Schema 登记的只读历史/失败夹具。风险态势三个来源分别验证失败隔离，授权撤销、陈旧目标、错误决定、尾事务恢复及上下文切换后的迟到写响应沿原稳定契约验收。
 
 本 change 的交付是 demo 前端、公开端口实现与上述可运行验收组合。仓库现有 API 是可注入库，C34 不新增部署服务入口；其它宿主按相同必需注入契约接线，未注入则原路由保持关闭。缺少 Docker/Chromium/策略/必需领域端口时验收非零退出，不能以现有只读 harness 或未接命令的页面通过。
 

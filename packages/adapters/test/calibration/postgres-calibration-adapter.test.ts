@@ -1114,6 +1114,66 @@ describe.sequential("PostgreSQL calibration adapter", () => {
     ).toEqual(["pending", "approved"]);
   });
 
+  it("下游撤权在读取与草案副作用前失败，恢复后原命令身份收敛到单一草案", async () => {
+    // 自足前置：本用例自己产生建议与真实批准决定；命令在撤权前已携带已签单分支上下文。
+    const seeded = await seedSuggestion({ suffix: "draft-revoked", threshold: "9" });
+    const decision = await fixture!.decideReview({
+      suffix: "draft-revoked",
+      projectId: fixture!.projectId,
+      targetRef: seeded.result.calibrationSuggestionRef,
+      reviewTaskRef: seeded.result.reviewTaskRef,
+      kind: "approve-draft-creation",
+    });
+    const command = await fixture!.reviewOutcomeCommand({
+      commandId: "c29-draft-revoked",
+      outcome: "approve-draft-creation",
+      suggestionRef: seeded.result.calibrationSuggestionRef,
+      reviewDecisionRef: decision,
+    });
+    const snapshot = async () => ({
+      drafts: JSON.stringify(await draftRows()),
+      deviations: JSON.stringify(await deviationRows()),
+      suggestions: JSON.stringify(await suggestionRows()),
+      reservations: JSON.stringify(await lineageReservations()),
+      revisions: fixture!.governance.submitRevisions.length,
+    });
+    const before = await snapshot();
+
+    // 下游复验撤权：必须在读取证明与任何草案写入之前以稳定 AUTH 收口。
+    fixture!.access.denyDownstream("review-audit.verify-calibration-suggestion-approval");
+    let revoked:
+      Awaited<ReturnType<CalibrationPostgresFixtureV1["createGovernanceDraft"]>> | undefined;
+    try {
+      revoked = await fixture!.createGovernanceDraft(command);
+    } finally {
+      fixture!.access.allow();
+    }
+    if (revoked === undefined) throw new Error("revoked governance draft did not return");
+    expect(revoked).toMatchObject({
+      kind: "failed",
+      error: { code: "AUTHORIZATION_DENIED", category: "authorization", retryable: false },
+    });
+    expect(await snapshot()).toEqual(before);
+
+    // 恢复同一授权后沿用原命令身份重试：只留一项 C16 修订与单一草案。
+    const retried = await fixture!.createGovernanceDraft(command);
+    expect(retried.kind).toBe("succeeded");
+    if (retried.kind !== "succeeded") return;
+    expect(fixture!.governance.submitRevisions.length).toBe(before.revisions + 1);
+    const drafts = (await draftRows()).filter(
+      (row) => row.suggestion_id === seeded.result.calibrationSuggestionRef.reference.entityId,
+    );
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0]!.knowledge_revision_id).toBe(
+      retried.result.knowledgeRevisionRef.reference.entityId,
+    );
+    expect(
+      (await rowsFor(seeded.prepared.result.deviationRecordRef.reference.entityId)).map(
+        (row) => row.review_status,
+      ),
+    ).toEqual(["pending", "approved"]);
+  });
+
   it("跨工程决定不可枚举：与不存在决定产生同一失败形状", async () => {
     // 自足前置：本用例自己的建议，保证追加链最新版本仍是 pending（可推进）。
     const seeded = await seedSuggestion({ suffix: "cross-project", threshold: "10" });

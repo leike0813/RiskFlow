@@ -14,6 +14,7 @@ import type {
 } from "@riskflow/core/agent-runtime";
 import {
   ASSESSMENT_CONFIGURATION_ARTIFACT_PURPOSE_CODE_V1,
+  ASSESSMENT_CONFIGURATION_MEDIA_TYPE_V1,
   AssessmentConfigurationDocumentV1Schema,
 } from "@riskflow/core/assessment-config";
 import {
@@ -33,6 +34,7 @@ import type {
 import type { AssessmentInputSnapshotReaderV1 } from "@riskflow/core/risk-assessment/engine";
 import {
   STRUCTURED_SCORING_RULE_ARTIFACT_PURPOSE_CODE_V1,
+  STRUCTURED_SCORING_RULE_MEDIA_TYPE_V1,
   StructuredScoringRuleDocumentV1Schema,
   type AssessmentBasisReleaseSetReaderV1,
 } from "@riskflow/core/scoring-rules";
@@ -77,6 +79,7 @@ import {
   type CalibrationChangeSummaryV1,
   type CalibrationOperationValidationV1,
   type CalibrationSuggestionRefV1,
+  type CalibrationGovernanceCommandV1,
   type ContentArtifactRefV1,
   type DeviationRecordRefV1,
   type KnowledgeGovernanceCommandV1,
@@ -160,9 +163,7 @@ const CALIBRATION_PURPOSE_BRANCHES_V1 = {
 } as const satisfies Record<string, ModuleBranchV1>;
 
 type CalibrationPurposeV1 = keyof typeof CALIBRATION_PURPOSE_BRANCHES_V1;
-const CALIBRATION_CANDIDATE_PURPOSE_CODE_V1 = "knowledge-modeling.calibration-candidate";
 const CALIBRATION_INPUT_MEDIA_TYPE_V1 = "application/vnd.riskflow.calibration-input+json";
-const CALIBRATION_CANDIDATE_MEDIA_TYPE_V1 = "application/vnd.riskflow.configuration-document+json";
 const SUGGESTION_CREATED_EVENT_TYPE_V1 = "warning.calibration-suggestion-created.v1";
 const MAX_ARTIFACT_BYTES_V1 = 8 * 1024 * 1024;
 const MAX_SERIALIZATION_ATTEMPTS_V1 = 3;
@@ -806,7 +807,7 @@ export class PostgresCalibrationAdapter
   /* -------------------------------------------------------- recordReviewOutcome */
 
   async recordReviewOutcome(
-    command: CalibrationReviewOutcomeCommandV1,
+    command: CalibrationReviewOutcomeCommandV1 | CalibrationGovernanceCommandV1,
   ): Promise<CalibrationReviewOutcomeResultV1> {
     const verification = await this.#verifySuggestions(command, false);
     if (verification.kind === "failed") return verification;
@@ -820,7 +821,7 @@ export class PostgresCalibrationAdapter
   /* ------------------------------------------------------ createGovernanceDraft */
 
   async createGovernanceDraft(
-    command: CalibrationReviewOutcomeCommandV1,
+    command: CalibrationReviewOutcomeCommandV1 | CalibrationGovernanceCommandV1,
   ): Promise<CalibrationGovernanceDraftResultV1> {
     const verification = await this.#verifySuggestions(command, true);
     if (verification.kind === "failed") return verification;
@@ -847,8 +848,14 @@ export class PostgresCalibrationAdapter
     requireGovernanceCapabilities: boolean,
   ): Promise<{ kind: "verified"; row: SuggestionRow; proof: CalibrationProofV1 } | FailureV1> {
     try {
-      await this.#verify(command.authorization, command.projectId, command.commandId);
-      if (requireGovernanceCapabilities) this.#assertGovernanceCapabilities(command.authorization);
+      await this.#verify(
+        command.authorization,
+        command.projectId,
+        command.commandId,
+        this.#governanceEntryBranch(command),
+      );
+      if (requireGovernanceCapabilities && !("kind" in command))
+        this.#assertGovernanceCapabilities(command.authorization);
       const downstream = await this.#purposeContexts(
         {
           invocationId: command.commandId,
@@ -979,6 +986,7 @@ export class PostgresCalibrationAdapter
       command.authorization,
       command.projectId,
       command.commandId,
+      this.#governanceEntryBranch(command),
     );
     await this.#executeWithRetry(
       atomicCommand(command, REVIEW_OUTCOME_COMMAND_KIND_V1, command.payload),
@@ -1100,6 +1108,7 @@ export class PostgresCalibrationAdapter
       command.authorization,
       command.projectId,
       command.commandId,
+      this.#governanceEntryBranch(command),
     );
     const downstream = await this.#purposeContexts(
       {
@@ -1149,9 +1158,23 @@ export class PostgresCalibrationAdapter
       issuedAt: command.issuedAt,
       authorization: downstream.governance,
       artifactId: `calibration-candidate-${row.candidate_digest.slice(0, 32)}`,
-      purposeCode: CALIBRATION_CANDIDATE_PURPOSE_CODE_V1,
-      mediaType: CALIBRATION_CANDIDATE_MEDIA_TYPE_V1,
+      purposeCode:
+        snapshot.targetDefinitionType === "structured-scoring-rule"
+          ? STRUCTURED_SCORING_RULE_ARTIFACT_PURPOSE_CODE_V1
+          : ASSESSMENT_CONFIGURATION_ARTIFACT_PURPOSE_CODE_V1,
+      mediaType:
+        snapshot.targetDefinitionType === "structured-scoring-rule"
+          ? STRUCTURED_SCORING_RULE_MEDIA_TYPE_V1
+          : ASSESSMENT_CONFIGURATION_MEDIA_TYPE_V1,
       value: outcome.document,
+    });
+    const revisionAuthorization = await this.#authorizeFor({
+      branch: GOVERNANCE_BRANCH_V1,
+      invocationId: `${command.commandId}:submit-revision`,
+      projectId: command.projectId,
+      actorId: command.actorId,
+      requestedAt: command.issuedAt,
+      spatialScopeRefs: verified.spatialScopeRefs,
     });
     const revision = await this.#governance.govern({
       kind: "submit-revision",
@@ -1160,7 +1183,7 @@ export class PostgresCalibrationAdapter
       projectId: command.projectId,
       actorId: command.actorId,
       issuedAt: command.issuedAt,
-      authorization: downstream.governance,
+      authorization: revisionAuthorization,
       payload: {
         definitionType: snapshot.targetDefinitionType,
         baseReleaseRef: snapshot.targetReleaseRef,
@@ -1301,12 +1324,22 @@ export class PostgresCalibrationAdapter
     };
   }
 
+  #governanceEntryBranch(command: CalibrationReviewOutcomeCommandV1): ModuleBranchV1 {
+    if ("kind" in command) {
+      return command.kind === "create-calibration-governance-draft"
+        ? "warning-response.calibration-governance-draft"
+        : "warning-response.calibration-review-outcome";
+    }
+    return CALIBRATION_BRANCH_V1;
+  }
+
   async #verify(
     authorization: AuthorizationContextV1,
     projectId: string,
     invocationId: string,
+    branch: ModuleBranchV1 = CALIBRATION_BRANCH_V1,
   ): Promise<AuthorizationContextV1> {
-    const capability = MODULE_BRANCH_CAPABILITY_V1[CALIBRATION_BRANCH_V1];
+    const capability = MODULE_BRANCH_CAPABILITY_V1[branch];
     if (
       authorization.projectId !== projectId ||
       !authorization.grantedCapabilities.includes(capability)
@@ -1325,7 +1358,7 @@ export class PostgresCalibrationAdapter
         authorizationContextRef: authorization.authorizationContextRef,
         invocationId,
         projectId,
-        branch: CALIBRATION_BRANCH_V1,
+        branch,
         requestedSpatialScopeRefs: [...authorization.spatialScopeRefs],
         requestedSourceVersionRefs: [],
         requestedAt: authorization.decidedAt,

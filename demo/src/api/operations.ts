@@ -4,7 +4,7 @@
  * record-read）、复核队列只读（queue-read）与 decide-review 命令的请求构造与解码白名单。
  * 解码只提取契约内页面所需字段，形状漂移统一收敛为 TERMINAL_FAILURE，由浏览器验收在真实接缝上兜底。
  */
-import { ApiError, submitCommand, submitQuery } from './client'
+import { ApiError, postCommand, submitCommand, submitQuery, unwrapQueryResult } from './client'
 
 // ------------------------------------------------------------------ 解码工具
 
@@ -3567,8 +3567,8 @@ export const submitStartAssessment = async (
   if (reassess && (input.reason === undefined || (input.changedInputRefs?.length ?? 0) === 0)) {
     throw new ApiError('CONTRACT_INVALID')
   }
-  const result = asRecord(
-    await submitCommand({
+  const response = asRecord(
+    await postCommand({
       projectId,
       branch: 'workflow.start-run',
       commandId: input.commandId,
@@ -3607,9 +3607,10 @@ export const submitStartAssessment = async (
       ...(signal === undefined ? {} : { signal }),
     }),
   )
+  const result = response.kind === 'waiting' ? response : asRecord(unwrapQueryResult(response))
   return {
     workflowRunRef: asKindRef(result.workflowRunRef),
-    entryMode: asString(result.entryMode),
+    entryMode: reassess ? 'reassess' : 'assess',
   }
 }
 
@@ -3652,7 +3653,7 @@ export const submitRecommendationDecision = async (
     readonly preActionMonitoringSnapshotRef?: KindRef
   },
   signal?: AbortSignal,
-): Promise<{ readonly routeDecisionRef: KindRef; readonly decision: string }> => {
+): Promise<{ readonly routeDecisionRef: KindRef; readonly decision: 'adopted' | 'declined' }> => {
   if (input.decision === 'adopted' && input.preActionMonitoringSnapshotRef === undefined) {
     throw new ApiError('CONTRACT_INVALID')
   }
@@ -3672,9 +3673,10 @@ export const submitRecommendationDecision = async (
       ...(signal === undefined ? {} : { signal }),
     }),
   )
+  if (result.kind !== 'adoption' && result.kind !== 'decline') throw drift()
   return {
     routeDecisionRef: asKindRef(result.routeDecisionRef),
-    decision: asString(result.decision),
+    decision: result.kind === 'adoption' ? 'adopted' : 'declined',
   }
 }
 
@@ -3758,7 +3760,7 @@ export type CalibrationReviewOutcomeV1 = 'reject' | 'return-for-revision'
 
 export interface CalibrationReviewOutcomeSubmittedView {
   readonly calibrationSuggestionRef: KindRef
-  readonly outcome: CalibrationReviewOutcomeV1
+  readonly outcome: 'rejected' | 'returned'
   readonly deviationRecordRef: KindRef
   readonly deviationRecordVersionId: string
 }
@@ -3792,7 +3794,7 @@ export const submitCalibrationReviewOutcome = async (
     }),
   )
   const outcome = asString(result.outcome)
-  if (outcome !== 'reject' && outcome !== 'return-for-revision') throw drift()
+  if (outcome !== 'rejected' && outcome !== 'returned') throw drift()
   return {
     calibrationSuggestionRef: asKindRef(result.calibrationSuggestionRef),
     outcome,
@@ -3802,7 +3804,7 @@ export const submitCalibrationReviewOutcome = async (
 }
 
 export interface CalibrationGovernanceDraftSubmittedView {
-  readonly governanceDraftRef: KindRef
+  readonly governanceDraftRef: VersionRef
   readonly knowledgeRevisionRef: KindRef
   readonly candidateArtifactRef: KindRef
   readonly deviationRecordRef: KindRef
@@ -3836,7 +3838,7 @@ export const submitCalibrationGovernanceDraft = async (
     }),
   )
   return {
-    governanceDraftRef: asKindRef(result.governanceDraftRef),
+    governanceDraftRef: asConfigRef(result.governanceDraftRef),
     knowledgeRevisionRef: asKindRef(result.knowledgeRevisionRef),
     candidateArtifactRef: asKindRef(result.candidateArtifactRef),
     deviationRecordRef: asKindRef(result.deviationRecordRef),

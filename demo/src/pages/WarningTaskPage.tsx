@@ -6,6 +6,7 @@ import { PageStateView } from '../components/PageStateView'
 import { StatusTag } from '../components/StatusTag'
 import { useEngineering, usePageQuery, useProjectPath } from '../api/context'
 import {
+  actionAvailability,
   readWarningResponseResolve,
   readWarningTask,
   type KindRef,
@@ -173,6 +174,11 @@ export default function WarningTaskPage() {
                 </Card>
 
                 <Card title="处置关系" style={{ marginTop: 16 }}>
+                  {actionAvailability(value.actions, 'warning-response.record-execution') === 'allowed' && (
+                    <Link className="btn btn-primary" to={projectPath(
+                      `response/executions/register?task=${value.taskRef.reference.entityId}&taskVersion=${value.taskRef.reference.versionId}`,
+                    )}>登记执行</Link>
+                  )}
                   <div className="wc-filter" role="group" aria-label="关系分组">
                     <span className="wc-filter-label">分组</span>
                     {RELATION_TABS.map((tab) => (

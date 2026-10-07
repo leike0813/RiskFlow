@@ -724,13 +724,11 @@ export type ResponseLifecycleDownstreamAuthorizerV1 = (
 /* 精确只读上下文（D-03）                                                       */
 /* -------------------------------------------------------------------------- */
 
-/** C19 发布事实的窄读：组合根注入；独立行动只接受该接缝确认的同工程已发布措施。 */
-export interface ResponseLifecycleMeasureReleaseReaderV1 {
-  readPublishedMeasureReleases(input: {
-    readonly projectId: string;
-    readonly measureLibraryReleaseRefs: readonly VersionReference[];
-  }): Promise<readonly VersionReference[]>;
-}
+/** 组合根以当前请求身份与授权确认同工程精确措施发布。 */
+export type ResponseLifecycleMeasureReleaseReaderV1 = Pick<
+  ResponseLifecycleContextReaderV1,
+  "readPublishedMeasureReleases"
+>;
 
 export interface PostgresResponseLifecycleContextReaderOptionsV1 {
   readonly db: Kysely<PostgresDatabase>;
@@ -765,7 +763,7 @@ export class PostgresResponseLifecycleContextReader implements ResponseLifecycle
     readonly authorization: AuthorizationContextV1;
     readonly measureLibraryReleaseRefs: readonly VersionReference[];
   }): Promise<readonly VersionReference[]> {
-    // 先复验当前主体与工程授权，再交由 C19 发布事实接缝确认精确引用。
+    // 保留当前主体与工程授权，由所属发布读取接缝确认精确引用。
     const authorization = input.authorization;
     if (authorization.projectId.length === 0 || authorization.spatialScopeRefs.length === 0) {
       failResponseLifecycle(
@@ -777,10 +775,7 @@ export class PostgresResponseLifecycleContextReader implements ResponseLifecycle
         "AUTHORIZATION_DENIED",
       );
     }
-    return this.#measureReleases.readPublishedMeasureReleases({
-      projectId: authorization.projectId,
-      measureLibraryReleaseRefs: input.measureLibraryReleaseRefs,
-    });
+    return this.#measureReleases.readPublishedMeasureReleases(input);
   }
 
   async #authorizeFor(
@@ -2988,6 +2983,13 @@ export class PostgresResponseLifecycleAdapter
     recorded: ResponseFeedbackRecordV1,
     scopeIds: readonly string[],
   ): Promise<ForecastAvailabilityV1> {
+    if (
+      feedback.effect_forecast_id === null &&
+      feedback.effect_forecast_version_id === null &&
+      recorded.forecast.kind === "unavailable"
+    ) {
+      return { kind: "unavailable", reasonCode: recorded.forecast.reasonCode };
+    }
     if (feedback.effect_forecast_id === null || feedback.effect_forecast_version_id === null) {
       failResponseLifecycle("response-lifecycle-contract-drift", {
         kind: "feedback",

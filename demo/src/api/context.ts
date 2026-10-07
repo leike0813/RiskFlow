@@ -6,6 +6,7 @@
 export interface EngineeringSelector {
   readonly projectId: string | null;
   readonly revisionId: string | null;
+  readonly assessmentSources?: string;
 }
 
 export const selectorFromSearch = (search: string): EngineeringSelector => {
@@ -13,6 +14,9 @@ export const selectorFromSearch = (search: string): EngineeringSelector => {
   const projectId = params.get("project");
   const revision = params.get("revision");
   return {
+    ...(params.has("assessmentSources")
+      ? { assessmentSources: params.get("assessmentSources")! }
+      : {}),
     projectId: projectId !== null && projectId.trim().length > 0 ? projectId : null,
     revisionId:
       revision !== null && revision.includes("@")
@@ -119,12 +123,16 @@ export const useEngineering = (): EngineeringContextValue => {
 export const useProjectPath = (): ((path: string) => string) => {
   const { selector } = useEngineering();
   return (path) => {
-    if (selector.projectId === null) return path;
+    const absolutePath = path.startsWith("/") ? path : `/${path}`;
+    if (selector.projectId === null) return absolutePath;
+    path = absolutePath;
     const queryIndex = path.indexOf("?");
     const pathname = queryIndex === -1 ? path : path.slice(0, queryIndex);
     const params = new URLSearchParams(queryIndex === -1 ? "" : path.slice(queryIndex + 1));
     params.set("project", selector.projectId);
     if (selector.revisionId !== null) params.set("revision", selector.revisionId);
+    if (selector.assessmentSources !== undefined)
+      params.set("assessmentSources", selector.assessmentSources);
     return `${pathname}?${params.toString()}`;
   };
 };
@@ -135,13 +143,23 @@ export const usePageQuery = <T>(
   deps: readonly unknown[],
 ): { readonly state: PageState<T> | { readonly kind: "idle" }; readonly retry: () => void } => {
   const { selector } = useEngineering();
-  const [state, setState] = useState<PageState<T> | { kind: "idle" }>({ kind: "idle" });
+  const queryKey = JSON.stringify([
+    selector.projectId,
+    selector.revisionId,
+    selector.assessmentSources,
+    ...deps,
+  ]);
+  const [settled, setSettled] = useState<{
+    key: string;
+    state: PageState<T> | { kind: "idle" };
+  }>({ key: queryKey, state: { kind: "idle" } });
   const [tick, setTick] = useState(0);
   const sequence = useRef(0);
 
   useEffect(() => {
     if (selector.projectId === null) {
-      setState({ kind: "idle" });
+      sequence.current += 1;
+      setSettled({ key: queryKey, state: { kind: "idle" } });
       return;
     }
     const projectId = selector.projectId;
@@ -150,9 +168,9 @@ export const usePageQuery = <T>(
     sequence.current += 1;
     const current = sequence.current;
     const settle = (next: PageState<T>) => {
-      if (current === sequence.current) setState(next);
+      if (current === sequence.current) setSettled({ key: queryKey, state: next });
     };
-    setState({ kind: "loading" });
+    settle({ kind: "loading" });
     query(projectId, controller.signal)
       .then((value) => settle({ kind: "ready", value }))
       .catch((error: unknown) => {
@@ -170,9 +188,18 @@ export const usePageQuery = <T>(
           retryable: error instanceof ApiError ? error.retryable : false,
         });
       });
-    return () => controller.abort();
+    return () => {
+      sequence.current += 1;
+      controller.abort();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selector.projectId, selector.revisionId, tick, ...deps]);
+  }, [selector.projectId, selector.revisionId, selector.assessmentSources, tick, ...deps]);
 
-  return { state, retry: () => setTick((value) => value + 1) };
+  return {
+    state:
+      settled.key === queryKey
+        ? settled.state
+        : { kind: selector.projectId === null ? "idle" : "loading" },
+    retry: () => setTick((value) => value + 1),
+  };
 };

@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 
-import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/access";
+import {
+  AccessServiceError,
+  isAuthorizationSubset,
+  type LocalIdentityAccessV1,
+} from "@riskflow/core/access";
 import {
   InAppNotificationV1Schema,
   NotificationIntentV1Schema,
@@ -456,7 +460,7 @@ const c26ResolveRef = (
 /** 每种类别只列自己的命令分支：借邻近分支代签等于给出不该有的按钮。 */
 const RESOLVE_BRANCHES_V1: Readonly<Record<string, readonly ModuleBranchV1[]>> = {
   warning: ["warning-response.acknowledge"],
-  task: ["warning-response.acknowledge"],
+  task: ["warning-response.acknowledge", "warning-response.record-execution"],
   recommendation: ["warning-response.adopt-recommendation"],
   forecast: [],
   execution: ["warning-response.record-feedback"],
@@ -2057,8 +2061,15 @@ export class PostgresWarningLifecycleAdapter
         projectId: command.projectId,
         actorId: command.actorId,
         requestedAt: command.requestedAt,
+        requestedSpatialScopeRefs: command.authorization.spatialScopeRefs,
+        requestedSourceVersionRefs: [],
       }).then(
-        (context) => context.grantedCapabilities.includes(MODULE_BRANCH_CAPABILITY_V1[branch]),
+        (context) =>
+          context.grantedCapabilities.includes(MODULE_BRANCH_CAPABILITY_V1[branch]) &&
+          isAuthorizationSubset(
+            { ...command.authorization, grantedCapabilities: context.grantedCapabilities },
+            context,
+          ),
         () => false,
       );
       actions.push(
@@ -2081,7 +2092,7 @@ export class PostgresWarningLifecycleAdapter
     const verified = await this.#verifyReadAuthorization(command);
     if (verified === undefined) return this.#readFailure(command, this.#readDenied(command));
     try {
-      return await this.#dispatchRead(command, verified);
+      return await this.#dispatchRead({ ...command, authorization: verified }, verified);
     } catch (error) {
       // 公开读契约是全函数：任何已定型的模块错误都收口为失败结果，绝不把错误对象抛给调用方。
       if (error instanceof WarningResponseReadFailure) {
@@ -2553,7 +2564,7 @@ export class PostgresWarningLifecycleAdapter
           ...c26RelationCursorField(anchor, "feedback", feedbacks),
           ...c26RelationCursorField(anchor, "calibration", calibrations),
         },
-        actions: await this.#readActions(command, ["warning-response.acknowledge"]),
+        actions: await this.#readActions(command, RESOLVE_BRANCHES_V1.task!),
       },
     });
   }
@@ -3232,13 +3243,20 @@ export class PostgresWarningLifecycleAdapter
     command: WarningResponseReadQueryV1,
     invocationId: string,
   ): Promise<AuthorizationContextV1> {
-    return this.#authorizeDownstream({
+    const authorization = await this.#authorizeDownstream({
       branch: "warning-response.read",
       invocationId,
       projectId: command.projectId,
       actorId: command.actorId,
       requestedAt: command.requestedAt,
+      requestedSpatialScopeRefs: command.authorization.spatialScopeRefs,
+      // 所属窄读只返回登记事实与定位元数据，来源授权收窄为空，不继承组合根默认来源。
+      requestedSourceVersionRefs: [],
     });
+    if (!isAuthorizationSubset(command.authorization, authorization)) {
+      throw new WarningResponseReadFailure(this.#readDenied(command));
+    }
+    return authorization;
   }
 
   async #taskLinksOf(

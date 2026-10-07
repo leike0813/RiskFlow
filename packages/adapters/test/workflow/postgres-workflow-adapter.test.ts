@@ -18,6 +18,7 @@ import type { ArtifactStoreV1 } from "@riskflow/core/artifacts";
 import {
   AuthorizationContextV1Schema,
   type AuthorizationContextV1,
+  type ContractReferenceV1,
   type ModuleBranchV1,
   type ResponseWorkflowBindingProofQueryV1,
   type WorkflowRunCompletionProofQueryV1,
@@ -775,6 +776,34 @@ describe("C30 workflow registration adapter", () => {
       kind: "succeeded",
       result: { riskAssessmentRecordRef: assessmentRef },
     });
+    const covered = authorizationFor({
+      spatialScopeRefs: [
+        SPATIAL_SCOPE_REF,
+        { kind: "spatial-scope", reference: { entityId: "scope-extra", versionId: "v1" } },
+      ],
+    });
+    fixture.access.setAuthorization(covered);
+    try {
+      expect(
+        await fixture.adapter.runCompletionProof.verifyWorkflowRunCompletion({
+          ...query,
+          authorization: covered,
+        }),
+      ).toMatchObject({ kind: "succeeded", result: { riskAssessmentRecordRef: assessmentRef } });
+      fixture.access.setAuthorization(authorizationFor({ spatialScopeRefs: [] }));
+      expect(
+        await fixture.adapter.runCompletionProof.verifyWorkflowRunCompletion(query),
+      ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    } finally {
+      fixture.access.setAuthorization(undefined);
+    }
+    expect(
+      await fixture.adapter.runCompletionProof.verifyWorkflowRunCompletion({
+        ...query,
+        projectId: OTHER_PROJECT_ID,
+        authorization: authorizationFor({ projectId: OTHER_PROJECT_ID }),
+      }),
+    ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
     expect(
       await fixture.adapter.runCompletionProof.verifyWorkflowRunCompletion({
         ...query,
@@ -839,7 +868,7 @@ describe("C30 workflow registration adapter", () => {
       readonly reassessmentEntry?: {
         readonly previousAssessmentRecordRef: typeof previousRecord;
         readonly reason: "monitoring-snapshot" | "applicability-metadata";
-        readonly changedInputRefs: readonly (typeof previousRecord)[];
+        readonly changedInputRefs: readonly ContractReferenceV1[];
       };
     }) => {
       const runVersionId = sha(`entries-run-version:${input.suffix}`);
@@ -972,7 +1001,7 @@ describe("C30 workflow registration adapter", () => {
         reassessmentEntry: {
           previousAssessmentRecordRef: previousRecord,
           reason: "monitoring-snapshot",
-          changedInputRefs: [previousRecord],
+          changedInputRefs: [SPATIAL_SCOPE_REF],
         },
       });
       const assessRecord = {
@@ -1004,7 +1033,7 @@ describe("C30 workflow registration adapter", () => {
           entryMode: "reassess",
           previousAssessmentRecordRef: previousRecord,
           reason: "monitoring-snapshot",
-          changedInputRefs: [previousRecord],
+          changedInputRefs: [SPATIAL_SCOPE_REF],
         },
         {
           assessmentRecordRef: assessRecord,
@@ -1108,7 +1137,7 @@ describe("C30 workflow registration adapter", () => {
       readonly runId: string;
       readonly stages: readonly { readonly stage: string; readonly versionId: string }[];
       readonly assessmentRunRefs?: readonly WorkflowRunRefV1[];
-      readonly parentRunId?: string;
+      readonly parentRunRef?: WorkflowRunRefV1;
       readonly omitGraphVersion?: boolean;
     }) => {
       const runVersionId = sha(`run-read-version:${input.suffix}`);
@@ -1190,7 +1219,7 @@ describe("C30 workflow registration adapter", () => {
           artifactRef,
         },
       });
-      if (input.parentRunId !== undefined) {
+      if (input.parentRunRef !== undefined) {
         const linkId = sha(`run-read-link:${input.suffix}`);
         await fixture.transactionUnit.execute(
           {
@@ -1211,11 +1240,8 @@ describe("C30 workflow registration adapter", () => {
                   schemaVersion: "1",
                   projectId: PROJECT_ID,
                   linkId,
-                  runId: input.runId,
-                  fromRef: {
-                    kind: "workflow-run",
-                    reference: { entityId: input.parentRunId!, versionId: "1" },
-                  },
+                  runId: input.parentRunRef.reference.entityId,
+                  fromRef: input.parentRunRef,
                   toRef: runRef,
                   relation: "parent-child",
                   sourceStage: "assessment" as const,
@@ -1270,13 +1296,19 @@ describe("C30 workflow registration adapter", () => {
         suffix: "child-a",
         runId: childAId,
         stages: childStages(childAId),
-        parentRunId: parentId,
+        parentRunRef: {
+          kind: "workflow-run",
+          reference: { entityId: parentId, versionId: sha("run-read-version:parent-multi") },
+        },
       });
       const childB = await registerRun({
         suffix: "child-b",
         runId: childBId,
         stages: childStages(childBId),
-        parentRunId: parentId,
+        parentRunRef: {
+          kind: "workflow-run",
+          reference: { entityId: parentId, versionId: sha("run-read-version:parent-multi") },
+        },
       });
 
       // 目标为评估子运行：直接呈现该子运行已登记的 A0/A5/A9 阶段。
@@ -1303,22 +1335,20 @@ describe("C30 workflow registration adapter", () => {
 
       // 父运行 + 唯一子运行：自动选中并呈现子运行阶段。
       const singleParentId = "risk-flow-run:run-read-parent-single";
-      await registerRun({
+      const singleChild = await registerRun({
         suffix: "child-single",
         runId: "risk-flow-run:run-read-child-single",
         stages: [],
-        parentRunId: singleParentId,
+        parentRunRef: {
+          kind: "workflow-run",
+          reference: { entityId: singleParentId, versionId: sha("run-read-version:parent-single") },
+        },
       });
       const singleParent = await registerRun({
         suffix: "parent-single",
         runId: singleParentId,
         stages: [],
-        assessmentRunRefs: [
-          {
-            kind: "workflow-run",
-            reference: { entityId: "risk-flow-run:run-read-child-single", versionId: "1" },
-          },
-        ],
+        assessmentRunRefs: [singleChild],
       });
       const singleView = await read(singleParent);
       expect(singleView).toMatchObject({ kind: "succeeded" });
@@ -1865,6 +1895,78 @@ describe("C30 workflow registration adapter", () => {
     expect(proof.kind === "succeeded" ? proof.result.frozenDigest : undefined).toBe(
       sha256CanonicalJson(frozenKeys),
     );
+  });
+
+  it("proves a binding by coverage despite a different authorization digest", async () => {
+    await seedBindingRun();
+    const covered = authorizationFor({
+      spatialScopeRefs: [
+        SPATIAL_SCOPE_REF,
+        { kind: "spatial-scope", reference: { entityId: "scope-extra", versionId: "v1" } },
+      ],
+    });
+    fixture.access.setAuthorization(covered);
+    try {
+      expect(authorizationScopeDigest(covered)).not.toBe(SCOPE_DIGEST);
+      expect(
+        await fixture.adapter.bindingProof.verifyResponseWorkflowBinding(
+          bindingQuery({ authorization: covered }),
+        ),
+      ).toMatchObject({ kind: "succeeded", result: { runStateVersion: BINDING_RUN_VERSION_ID } });
+    } finally {
+      fixture.access.setAuthorization(undefined);
+    }
+  });
+
+  it("rejects missing source grants even when the row digest equals the reader digest", async () => {
+    const grant = {
+      kind: "source-access-grant" as const,
+      reference: { entityId: "source-grant-c30", versionId: "v1" },
+    };
+    const writer = authorizationFor({ sourceAccessGrantRefs: [grant] });
+    const runId = `${BINDING_RUN_ID}:source-grants`;
+    const query = bindingQuery({
+      payload: {
+        responseRecommendationRef: BINDING_RECOMMENDATION_REF,
+        workflowRunRef: {
+          ...BINDING_RUN_REF,
+          reference: { ...BINDING_RUN_REF.reference, entityId: runId },
+        },
+      },
+    });
+    fixture.access.setAuthorization(writer);
+    try {
+      await seedBindingRun(runId);
+      fixture.access.setAuthorization(undefined);
+      expect(await fixture.adapter.bindingProof.verifyResponseWorkflowBinding(query)).toMatchObject(
+        { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } },
+      );
+      const reader = authorizationFor({
+        sourceAccessGrantRefs: [
+          grant,
+          { kind: "source-access-grant", reference: { entityId: "grant-extra", versionId: "v1" } },
+        ],
+      });
+      fixture.access.setAuthorization(reader);
+      expect(
+        await fixture.adapter.bindingProof.verifyResponseWorkflowBinding({
+          ...query,
+          authorization: reader,
+        }),
+      ).toMatchObject({ kind: "succeeded" });
+      fixture.access.setAuthorization(
+        authorizationFor({
+          sourceAccessGrantRefs: [
+            { ...grant, reference: { ...grant.reference, versionId: "wrong-version" } },
+          ],
+        }),
+      );
+      expect(await fixture.adapter.bindingProof.verifyResponseWorkflowBinding(query)).toMatchObject(
+        { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } },
+      );
+    } finally {
+      fixture.access.setAuthorization(undefined);
+    }
   });
 
   it("keeps missing, unauthorized and mismatched facts indistinguishable", async () => {

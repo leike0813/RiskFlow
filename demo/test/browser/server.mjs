@@ -138,6 +138,7 @@ import {
   createPostgresWorkflowProjection,
 } from "../../../packages/adapters/dist/workflow/index.js";
 import { ArtifactPutCommandV1Schema } from "../../../packages/core/dist/artifacts/index.js";
+import { isAuthorizationSubset } from "../../../packages/core/dist/access/index.js";
 import {
   AcceptanceRouteSetV1Schema,
   RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1,
@@ -271,7 +272,7 @@ const agentTaskRef = {
  * 启动真实服务：PostgreSQL + 生产迁移 + C04/C03/C06 组合 + C32 四条只读端口 + demo 生产构建。
  * 环境不可用时抛错，调用方必须让验收失败而不是跳过。
  */
-export const startDemoBrowserServer = async () => {
+export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => {
   if (!existsSync(DEMO_DIST)) throw new Error(`demo production build is missing: ${DEMO_DIST}`);
   if (!existsSync(MIGRATION_ROOT)) {
     throw new Error(`migration root is missing: ${MIGRATION_ROOT}`);
@@ -903,8 +904,9 @@ export const startDemoBrowserServer = async () => {
         : { entityId: row.source_access_grant_id, versionId: String(row.revision_no) };
     };
     const sourceAccessContext = await writeAuth("demo-browser-source-access-context");
-    const reviseSourceAccess = async (sourceVersionRef, suffix, visibility, allowedAccountIds) =>
-      access.administerProject({
+    const sourceVersionsByGrant = new Map();
+    const reviseSourceAccess = async (sourceVersionRef, suffix, visibility, allowedAccountIds) => {
+      const result = await access.administerProject({
         kind: "revise-source-access",
         projectId: PROJECT_ID,
         commandId: `demo-browser-source-access-${suffix}`,
@@ -917,6 +919,14 @@ export const startDemoBrowserServer = async () => {
         spatialScopeRefs: [spatialScopeRef],
         registeredByAccountId: administratorAccountId,
       });
+      const registered = await appRuntime.pool.query(
+        "SELECT current_revision_id FROM business.source_access_policies WHERE source_access_grant_id = $1",
+        [result.resultRef.entityId],
+      );
+      const grant = { entityId: result.resultRef.entityId, versionId: registered.rows[0].current_revision_id };
+      sourceVersionsByGrant.set(`${grant.entityId}\u0000${grant.versionId}`, sourceVersionRef);
+      return result;
+    };
     await reviseSourceAccess(sourceA.sourceVersionRef, "a", "project-shared", []);
     await reviseSourceAccess(sourceB.sourceVersionRef, "b", "restricted", [administratorAccountId]);
 
@@ -1468,6 +1478,15 @@ export const startDemoBrowserServer = async () => {
       parameterCode: "slurry-pressure",
       canonicalUnit: "kPa",
       sampleAt: (second) => 120 + second * 20,
+    });
+    // 合成重评输入：保持两项指标完整，以另一个真实登记快照表达沉降变化。
+    const reassessmentSettlementMonitoringSnapshotRef = await registerMonitoringSeries({
+      seriesId: "demo-c32-series-settlement-reassessment",
+      monitoringObject: "地表沉降复测点",
+      monitoringIndicator: "地表沉降",
+      parameterCode: "settlement",
+      canonicalUnit: "mm",
+      sampleAt: (second) => second * 2 + 1,
     });
 
     // ---- 治理发布播种（SQL 行 + C04 正文工件；合成样本、待甲方复核） ----
@@ -2863,7 +2882,7 @@ export const startDemoBrowserServer = async () => {
     // 播种按运行逐个进行：C31 的 risk-overview 每页只展开一个运行，翻页完全由用户驱动。
     // 只有一个运行就永远只有一页，「按页追溯」无从验收，因此这里登记两个真实运行，
     // 让下一页游标成为真实游标而不是构造出来的假游标。
-    const seedRiskOverviewRun = async (suffix, parentRunRef) => {
+    const seedRiskOverviewRun = async (suffix, parentRunRef, status = "completed", referenceCount = 0) => {
       const chainRunId = `risk-flow-run:${PROJECT_ID}:${suffix}`;
       const chainRunVersionId = sha(`c33-${suffix}-run-version`);
       const chainRunRef = kindRef("workflow-run", chainRunId, chainRunVersionId);
@@ -2873,7 +2892,8 @@ export const startDemoBrowserServer = async () => {
       };
       // 冻结引用必须与 risk-overview 登记的目标逐字一致：登记目标只有工程修订
       // （总览查询不传空间范围）。多带一个空间引用会让入口行匹配不上，整页失败闭合。
-      const chainFrozenRefs = [projectRevisionRef];
+      const chainFrozenRefs = suffix === "chain-a" || suffix === "chain-b"
+        ? [projectRevisionRef] : [spatialScopeRef];
       const chainStateArtifactId = `c33-${suffix}-run-state:${chainRunId}:${chainRunVersionId}`;
       // C30 正文写入沿真实授权接缝复验：身份由签发方给出，端口按同一身份复验，
       // 不用无签发方的端口内派生身份。
@@ -2894,9 +2914,10 @@ export const startDemoBrowserServer = async () => {
           runId: chainRunId,
           runVersionId: chainRunVersionId,
           entryMode: "identify-and-assess",
+          graphVersion: versionRef("demo-risk-flow", "1"),
           entryIdentity: chainEntryIdentity,
           stage: "result-summary",
-          status: "completed",
+          status,
           parentRunRef,
           assessmentRunRefs: [],
           acceptedRiskRecordRefs: [recordAutoRef, recordReviewRef],
@@ -2988,12 +3009,33 @@ export const startDemoBrowserServer = async () => {
         artifactRef: chainStateArtifactRef,
       }),
     );
+      for (let index = 0; index < referenceCount + (referenceCount > 0 ? 50 : 0); index += 1) {
+        if (index < referenceCount) await registerChainRow(WorkflowGraphResultRowV1Schema.parse({
+          ...chainRowBase(`result-${index}`),
+          resultKind: "stage-result",
+          stage: "assessment",
+          stageResultRef: kindRef("stage-result", `${chainRunId}:result-${index}`),
+        }));
+        await registerChainRow(WorkflowGraphResultRowV1Schema.parse({
+          ...chainRowBase(`waiting-${index}`),
+          resultKind: "waiting",
+          stage: "assessment",
+          waitingRef: { kind: "review", reviewTaskRef: {
+            ...kindRef("review-task", `${chainRunId}:review-${index}`),
+            reviewType: "response-candidate",
+            waitingRunRef: chainRunRef,
+            targetRef: kindRef("recommendation-candidate", `${chainRunId}:candidate-${index}`),
+          } },
+        }));
+      }
       return chainRunRef;
     };
     // 两个已登记运行：父子链上的兄弟运行，父运行相同、入口身份不同。
     const chainRunRef = await seedRiskOverviewRun("chain-a", completedRunRef);
     const chainRunId = chainRunRef.reference.entityId;
     const chainRunRefB = await seedRiskOverviewRun("chain-b", completedRunRef);
+    const paginatedRunRef = await seedRiskOverviewRun("paginated", undefined, "waiting", 55);
+    const terminalRunRef = await seedRiskOverviewRun("terminal", undefined, "terminal-failure");
     const freePort = await new Promise((resolved, rejected) => {
       const probe = createServer();
       probe.once("error", rejected);
@@ -3350,9 +3392,32 @@ export const startDemoBrowserServer = async () => {
 
     // C18：11 类配置逐类走同一条提交→审核→发布链。不存在独立配置发布入口。
     // `forecast-policy` 正文要带真实模型工件引用，故该类配置在工件登记后单独发布（见下）。
-    let configurationDocuments = makeDemoAssessmentConfigurationDocuments({
-      projectRevisionRef,
-    });
+    const configurationSetRef = riskLevelOnly
+      ? { ...DEMO_CONFIGURATION_SET_REF, versionId: "risk-level-only" }
+      : DEMO_CONFIGURATION_SET_REF;
+    const assessmentConfigurationDocuments = (forecastModelRef) => {
+      const documents = makeDemoAssessmentConfigurationDocuments({
+        projectRevisionRef,
+        configurationSetRef,
+        forecastModelRef,
+      });
+      if (riskLevelOnly) {
+        // 独立合成配置在真实审核发布前提高监测阈值；风险接受阈值保持原值。
+        const document = documents["monitoring-warning-threshold"];
+        documents["monitoring-warning-threshold"] = {
+          ...document,
+          content: {
+            ...document.content,
+            thresholds: document.content.thresholds.map((threshold) => ({
+              ...threshold,
+              comparison: { ...threshold.comparison, boundary: "1000000" },
+            })),
+          },
+        };
+      }
+      return documents;
+    };
+    let configurationDocuments = assessmentConfigurationDocuments();
     /**
      * 已发布配置释放引用按 `definitionType` 归档：预测模型工件必须引用 C18 真实发布的
      * 措施库释放（`consistentWithPolicy` 会逐字段比对），不能在工件里另写一个引用。
@@ -3362,15 +3427,15 @@ export const startDemoBrowserServer = async () => {
      * 单类配置的发布（提交 → 审核 → 发布）。`forecast-policy` 的正文必须带真实模型工件引用，
      * 而该工件要等 `measure-library` 发布后才拿得到措施库释放，所以它被推迟到工件登记之后再发。
      */
-    const publishConfigurationDefinition = async (definitionType, documents) => {
-      const submitCommandId = `${PROJECT_ID}:${definitionType}:submit`;
+    const publishConfigurationDefinition = async (definitionType, documents, suffix = "") => {
+      const submitCommandId = `${PROJECT_ID}:${definitionType}:submit${suffix}`;
       const submitAuthorization = await operatorAuth(
         submitCommandId,
         "knowledge-modeling.submit-revision",
       );
       // C18 按媒体类型区分配置正文：普通 JSON 工件在读取时会被判为类型不符。
       const artifactRef = await putBody(
-        `demo-c18-config-${definitionType}`,
+        `demo-c18-config-${definitionType}${suffix}`,
         "assessment-configuration",
         new TextEncoder().encode(JSON.stringify(documents[definitionType], null, 2)),
         "application/vnd.riskflow.assessment-configuration+json",
@@ -3388,6 +3453,8 @@ export const startDemoBrowserServer = async () => {
           authorization: submitAuthorization,
           payload: {
             definitionType,
+            ...(publishedConfigurationReleaseRefs.has(definitionType)
+              ? { baseReleaseRef: publishedConfigurationReleaseRefs.get(definitionType) } : {}),
             candidateArtifactRef: artifactRef,
             evidenceReferences: [
               {
@@ -3407,6 +3474,19 @@ export const startDemoBrowserServer = async () => {
         definitionType,
         await publishApprovedRelease(submitted.result.knowledgeRevisionRef),
       );
+    };
+    // 合成样本、待甲方复核：同一定义的新矩阵经真实提交、审核和发布。
+    const publishNextRiskMatrix = async () => {
+      const oldReleaseRef = publishedConfigurationReleaseRefs.get("risk-matrix");
+      const suffix = `:historical-matrix-${Date.now()}`;
+      const documents = structuredClone(configurationDocuments);
+      documents["risk-matrix"].content.matrixVersion = "2026.10";
+      const matrixRef = { entityId: documents["risk-matrix"].content.matrixId, versionId: "2026.10" };
+      for (const type of ["risk-matrix", "risk-acceptance-threshold", "monitoring-warning-threshold"]) {
+        if (type !== "risk-matrix") documents[type].content.riskMatrixRef = matrixRef;
+        await publishConfigurationDefinition(type, documents, suffix);
+      }
+      return { oldReleaseRef, newReleaseRef: publishedConfigurationReleaseRefs.get("risk-matrix") };
     };
     const configurationTypes = Object.keys(configurationDocuments).sort();
     for (const definitionType of configurationTypes) {
@@ -3470,10 +3550,7 @@ export const startDemoBrowserServer = async () => {
       await operatorAuth("demo-c28-forecast-model", "knowledge-modeling.submit-revision"),
       "knowledge-modeling.govern",
     );
-    configurationDocuments = makeDemoAssessmentConfigurationDocuments({
-      projectRevisionRef,
-      forecastModelRef: forecastModelArtifactRef.reference,
-    });
+    configurationDocuments = assessmentConfigurationDocuments(forecastModelArtifactRef.reference);
     await publishConfigurationDefinition("forecast-policy", configurationDocuments);
 
     // ---- C19 规则编制与适用规则集发布 ----
@@ -3676,7 +3753,7 @@ export const startDemoBrowserServer = async () => {
       scoringPolicyRef: scoringRulesPolicy.policyRef,
       assemblyPolicyRef: scoringRulesPolicy.assemblyPolicyRef,
       compatibilityRef: scoringRulesPolicy.compatibilityRef,
-      configurationSetRef: DEMO_CONFIGURATION_SET_REF,
+      configurationSetRef,
     });
     if (assembled.kind !== "succeeded") {
       throw new Error(`C19 组装失败: ${JSON.stringify(assembled).slice(0, 600)}`);
@@ -4262,19 +4339,62 @@ export const startDemoBrowserServer = async () => {
       assessment: assessmentEngine,
       authorizeDownstream,
     });
-    // C28 精确只读上下文：建议链、基线评估与冻结评估依据都走真实接缝。措施发布事实
-    // （C19）在本装配内没有已发布措施目录，用显式失败替身而不是返回空集合——空集合会让
-    // 上层误以为「没有措施」而不是「没有接缝」。
+    // 独立行动与建议链共用真实精确发布和正文读取，保持父请求的空间及来源上限。
+    const measureReleaseReader = createPostgresKnowledgeGovernanceReadAdapter({
+      db: appRuntime.db,
+      access,
+      artifactStore,
+    });
     const responseContext = createPostgresResponseLifecycleContextReader({
       db: appRuntime.db,
       artifactStore,
       basis: scoringRules,
       monitoring: monitoringStore,
       measureReleases: {
-        readPublishedMeasureReleases: async () => {
-          throw new TypeError(
-            "验收装配未接入 C19 已发布措施读取接缝：不得据此断言「没有措施」",
-          );
+        readPublishedMeasureReleases: async (input) => {
+          const sourceVersionRefs = input.authorization.sourceAccessGrantRefs.map((grant) => {
+            const source = sourceVersionsByGrant.get(
+              `${grant.reference.entityId}\u0000${grant.reference.versionId}`,
+            );
+            if (source === undefined) throw new Error("measure source grant unavailable");
+            return source;
+          });
+          const confirmed = [];
+          for (const [index, reference] of input.measureLibraryReleaseRefs.entries()) {
+            const queryId = `${input.requestId}:measure-release:${index}`;
+            const authorization = await authorizeDownstream({
+              branch: "knowledge-modeling.governance-read",
+              invocationId: queryId,
+              projectId: input.authorization.projectId,
+              actorId: input.authorization.actorId,
+              requestedSpatialScopeRefs: input.authorization.spatialScopeRefs,
+              requestedSourceVersionRefs: sourceVersionRefs,
+            });
+            if (!isAuthorizationSubset(
+              { ...input.authorization, grantedCapabilities: authorization.grantedCapabilities },
+              authorization,
+            )) throw new Error("measure release authorization exceeded request");
+            const result = await measureReleaseReader.read({
+              kind: "governance-read",
+              queryId,
+              projectId: authorization.projectId,
+              actorId: authorization.actorId,
+              requestedAt: input.requestedAt,
+              authorization,
+              payload: {
+                operation: "read-definition-release",
+                knowledgeReleaseRef: { kind: "knowledge-release", reference },
+              },
+            });
+            if (result.kind !== "succeeded" ||
+                result.result.definitionType !== "measure-library" ||
+                result.result.releaseRef.reference.entityId !== reference.entityId ||
+                result.result.releaseRef.reference.versionId !== reference.versionId) {
+              return [];
+            }
+            confirmed.push(reference);
+          }
+          return confirmed;
         },
       },
       authorizeDownstream,
@@ -4298,7 +4418,7 @@ export const startDemoBrowserServer = async () => {
       // `submit-revision`，不触达发布、停用或回滚。三者都是本装配已有的真实适配器。
       agentResults: recommendationAgentTasks,
       reviews: reviewAudit,
-      governance: { govern: (command) => knowledgeGovernance.submitRevision(command) },
+      governance: { govern: (command) => knowledgeGovernance.govern(command) },
       authorizeDownstream,
     });
     const humanDecisionFeedback = createPostgresHumanDecisionFeedbackAdapter({
@@ -4495,6 +4615,7 @@ export const startDemoBrowserServer = async () => {
         humanDecisionFeedback: {
           record: (command) => humanDecisionFeedback.record(command),
         },
+        calibrationGovernance: calibration,
         workflow: riskFlowComposition.runtime.workflowPort,
         engineeringData: registry,
         engineeringDataCatalog: createPostgresEngineeringDataCatalogAdapter({
@@ -4659,13 +4780,20 @@ export const startDemoBrowserServer = async () => {
        */
       settlementMonitoringSnapshotRef,
       slurryPressureMonitoringSnapshotRef,
+      reassessmentSettlementMonitoringSnapshotRef,
       /**
        * 资料 A 的真实来源版本与资料段标识：登记执行的 `evidenceReferences` 按真实来源段
        * 登记，C08/C29 的证据完整性与来源段一致性校验才会成立。
        */
       sourceA,
+      assessmentSourceVersionRefs: downstreamSourceVersionRefs.map((ref) => ref.reference),
       /** C28 读取的人工反馈文档工件引用（`warning-response.feedback-artifact` 用途码）。 */
       feedbackArtifactRef,
+      measureLibraryReleaseRef: publishedConfigurationReleaseRefs.get("measure-library").reference,
+      independentMeasureIds: DEMO_MEASURE_IDS,
+      paginatedRunRef,
+      terminalRunRef,
+      publishNextRiskMatrix,
       relationshipResult: {
         entityId: relationshipResultRef.reference.entityId,
         versionId: relationshipResultRef.reference.versionId,

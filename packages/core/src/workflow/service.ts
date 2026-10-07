@@ -10,6 +10,7 @@ import type {
   ContentArtifactRefV1,
   ContractReferenceV1,
   ModuleErrorV1,
+  ModuleBranchV1,
   MonitoringSnapshotRefV1,
   RiskAssessmentRecordRefV1,
   SpatialScopeRefV1,
@@ -233,6 +234,14 @@ export interface WorkflowGraphRunCommandV1 {
    * invocation_id，运行控制复验必须用本字段，否则必然被判绑定不符。必填，不提供可选分支。
    */
   readonly issuedInvocationId: string;
+  /**
+   * `authorization` 实际签发时的模块分支：与 `issuedInvocationId` 同源，二者缺一都不足以复验。
+   *
+   * 评估子运行沿用父运行的公开命令上下文，因此它自己启动时用的分支取决于父运行由哪条命令
+   * 推进（启动 `workflow.start-run`、恢复 `workflow.resume-run`）。把签发分支显式带下来，
+   * 子运行才不至于按自己的入口习惯硬编码分支——那会把「上下文有效」误判为「越权」。
+   */
+  readonly authorizationBranch: ModuleBranchV1;
   readonly idempotencyKey: string;
   readonly issuedAt: string;
   readonly validAt: string;
@@ -261,6 +270,11 @@ export interface WorkflowGraphRunCommandV1 {
 
 export interface WorkflowGraphRunOutcomeV1 {
   readonly runRef: WorkflowRunRefV1;
+  /**
+   * 运行状态版本：与 `runRef` 同源，都取自本次推进结束时已登记的 run-state 行，但两者语义不同
+   * ——`runRef.reference.versionId` 是运行登记摘要，`runVersionId` 是运行**状态**版本（drift
+   * design D-01）。等待分支据此把它作为等待点状态版本交出，恢复要提交的就是这个值。
+   */
   readonly runVersionId: string;
   readonly status: WorkflowGraphRunStateV1["status"];
   readonly stage: WorkflowRunStageV1;

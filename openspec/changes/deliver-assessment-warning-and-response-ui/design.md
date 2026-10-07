@@ -6,6 +6,8 @@
 
 C30 当前只把 changedInputRefs 混入去重 frozenRefs，未保存独立变化集合和显式 reason；Worker 按引用类别推导原因，无法原样解释入口。D-12 在既有 C04 运行工件中保存明确重评元数据，闭合启动、父子传递、恢复与读取；这是本 change 的范围内根因修复。
 
+C27 的 `readFrozenContext` 将预警触发项投影为字符串交给 `resolveTriggerIndicators`，后者只读取联合规则与监测阈值。C25 正确保存的风险可接受阈值身份因此成为无法映射项，三项校验阻止正式建议，真实采纳与校准验收无法继续。D-13 补齐分类型校验及冻结依据，不改变 C25 的评分与预警事实。
+
 ## Goals / Non-Goals
 
 **Goals**：既有应用中的风险态势 P-OV-01 与 C34 的 16 页形成真实可解释链路，复用 v2 视觉与既有组件；初评/重评、预警确认、采纳/拒绝、执行、反馈与校准治理均使用窄公共命令及精确引用。
@@ -120,7 +122,11 @@ C11 已实现 `readAssessmentEntryContext`；其候选接缝依赖修复 change 
 
 新只读方法在各现有 adapter 内实现并复用其解析/授权/事务依赖；不创建通用只读数据库服务。C25/C26/C27/C28/C29/C41 各只读自己的表。风险评估端口在 C25 factory 组合注入的识别目录、C11 输入读与 C30 运行读；预警处置端口在 C26 factory 组合注入的 C27/C28/C29/C41 窄读方法。注入接口使用 contracts 中按 operation 提取的入出类型，不透传任意对象。
 
-每次下游读以当前主体/工程和已有请求空间/来源上限，按所属现有 branch 与唯一 invocationId 独立签发、再复验；不把入口读授权改写成其它分支，不复用错误 branch 的上下文。C30 run-read 用单独 projection.query 授权，由 workflow adapter 读取自己的登记行及精确 state/stage 工件；既有 run-view/result-read 继续用于追溯，不扩大 ProjectionResultItemV1 为业务正文。
+每次下游读以当前主体/工程和已有请求空间/来源上限，按所属现有 branch 与唯一 invocationId 独立签发、再复验；不把入口读授权改写成其它分支，不复用错误 branch 的上下文。图内每个领域动作都按自身用途另签：评估准备三入口、评估提交、预警开立、建议候选/记录、预测、偏差与校准各自使用自己的 branch，签发身份与随后的 `commandId`/`requestId` 逐字一致；运行上下文只有 workflow 那一项能力，直传下游会在各模块的能力校验处关闭失败。C30 run-read 用单独 projection.query 授权，由 workflow adapter 读取自己的登记行及精确 state/stage 工件；既有 run-view/result-read 继续用于追溯，不扩大 ProjectionResultItemV1 为业务正文。
+
+C25 评估的授权上下文按两层取得：先按准备快照的空间与来源身份窄签一次，作为「该准备身份当前可授予」的证明；再取不收窄的评估上下文（来源上限仍是调用方按 `risk-assessment.evaluate` 签发的那份），并断言前者落在后者之内。不把准备身份当作收窄请求直接作为工作上下文：决策工件以依据成员为父工件，而 C19 规则编制来自 C15 清洗结果，其来源授权宽于准备快照的证据来源，收窄后的上下文装不下父工件的来源授权，C04 会在 `ARTIFACT_ACCESS_DENIED` 处关闭失败。包含断言与本模块读取路径的既有检查同一口径。依据成员装的是规则释放而非规则：适用规则集的 `includedMembers` 按规则版本身份唯一并排序，同一释放下的多条入选规则在依据投影时合并为一个成员，合并要求 `revisionRef`/`artifactRef`/`contentDigest` 逐字一致，冲突整体失败而不保留第一项。
+
+治理读按各定义类型**已有**的用途码常量读取正文：C04 判定读取时 `purposeCode` 必须与工件 manifest 完全相等，单一硬编码用途码会让除播种类型外的全部正文关闭失败。治理读保留 C04 的全部权限校验与既有 `knowledge-modeling.governance-read` 分支，不新增清单读取入口，也不先读 manifest 再照抄其 `purposeCode` 绕过用途约束；C18 11 类正文的完整扩展不属本轮范围。
 
 新两个 read branch 授予 reviewer、field-responder、business-viewer；经理仍由 allBranches 自动拥有，system-administrator 不获工程业务权限。field-responder 补 `projection.result-read`、`knowledge-modeling.governance-read`，使已有公开矩阵/措施与投影可读；不授予经理的启动/采纳/确认/校准治理写权。校准两个写 branch 仅经理。复核专家在 C07 作决定，经理在 C29 推进；不自动将专家读/决定权限变为配置治理权限。
 
@@ -214,6 +220,28 @@ core workflow 导出唯一 `assessmentReasonForWorkflowReassessmentV1`，输入 
 `evaluateWorkflowEntryGate` 区分监测字段缺席与显式空集合：assess/reassess/historical-backfill 两字段均缺席时按无监测输入继续；显式空集合、两字段冲突或非法引用仍拒绝。复用现有 normalizeMonitoringInputs 检查，不增加默认监测或改变其它入口的必需输入。
 
 选择既有 run-state 工件是因为它已经由拥有方读端和恢复路径解析，并能在原登记事务中关联入口；独立入口表需要迁移，新增工件类型会扩展存储策略与解析面，从冻结集合猜测则无法恢复用户事实。D-12 不回填或改写历史工件。
+
+### D-13 分类型触发一致性与风险等级冻结依据
+
+`domain/response-recommendation` 的三项约束按预警类型解释触发事实。复用 contracts 的 `TriggerIndicatorSchema`、`WarningTriggerTypeSchema`、`RiskAssessmentRecordSchema` 以及 C18 阈值、矩阵 Schema；不新增公共命令、记录字段、触发枚举或能力。`resolveTriggerIndicators` 接受完整类型化触发项：原始值只查 metric=value 的监测阈值，特征只查相应非 value 阈值，联合类型只查联合规则再展开其成员；不按字符串碰撞跨类型试探。风险等级类型走以下独立依据校验，不要求变成监测或目标指标。
+
+**冻结与数据接缝。** `PostgresRecommendationContextReader.#loadWarning` 沿现有精确 warning→record→input→preparation 关联多取 `record.record_payload`，按公共 `RiskAssessmentRecordSchema` 解析。关联查询保持工程、空间、精确版本约束，核对记录 ID、风险输入、适用性、矩阵版本及 warning 的等级/触发项与 record 一致；不新增跨域查询入口或重算 P/C。`readFrozenContext` 仅在存在风险等级预警时，沿已有 C19 成员清单与 C04 受权 `readMember` 读取 `risk-acceptance-threshold` 和 `risk-matrix` 正文。沿现有 strict Schema、内容摘要和用途授权校验，两份正文的工程修订、配置集合与其它冻结正文一致，发布引用分别与输入快照的 `riskAcceptanceThresholdRef`、`riskMatrixRef` 相等；阈值正文的 `riskMatrixRef` 与矩阵发布相等，记录的 `riskMatrixVersion` 也一致。不读 latest，不扩大来源授权。
+
+以关联评估的冻结适用性按 C18 维度/取值规则筛选阈值，必须恰好一项，且 `thresholdId` 等于风险等级触发项身份；触发项类型须与预警类型一致，`actualValue` 须等于保存的评估 `riskLevel`。在冻结矩阵的 `riskLevels` 中取得该等级和 `maximumAcceptedLevelId`，比较各自 `ordinal`，仅实际 ordinal 严格更大成立。这里只核对已保存等级与触发证据，不重新映射 P/C，不改阈值、矩阵或评估。
+
+**私有 Schema。** 在 `RecommendationFrozenWarningV1Schema` 增可选 strict `riskAcceptanceBasis`：`thresholdReleaseRef`、`riskMatrixReleaseRef` 用 `VersionReferenceSchema`；`thresholdArtifactRef`、`riskMatrixArtifactRef` 用 `ContentArtifactRefV1Schema`；`thresholdId`、`maximumAcceptedLevelId`、`riskLevelId` 用 `IdentifierSchema`；`maximumAcceptedLevelOrdinal`、`riskLevelOrdinal` 为 1..32 整数；`assessedIndicatorIds` 为规范排序、唯一、1..256 个身份，取关联记录 `indicatorResults.indicatorItem`。仅风险等级分支携带该对象，全部来源核验通过后冻结进现有候选集 payload，保留原精确 assessment/input/preparation 引用；不复制完整配置或记录正文。Schema 沿私有 v1，字段可选使旧 payload 可解析；风险等级候选缺失该字段必须校验失败，监测候选不需要它。不回填旧候选，不改 `measureCandidateInputDigest` 的既有身份算法；命中已有冻结候选集仍使用原依据，仅换请求或修订建议候选不会重新冻结。需补依据时，由合法的新任务版本或风险输入版本形成新的冻结候选集，再按新命令身份生成建议候选。
+
+缺失/歧义阈值、等级或不一致的业务触发依据记入该预警的 `unresolvedTriggerItems`，不能为避开检查直接清空；不可读工件、strict 正文损坏、跨工程和版本/来源资格失败沿现有 reader 的安全错误闭合，不伪装成可修复业务失败。成功核验的风险等级预警不将阈值 ID 放进 `resolvedTargetIndicatorIds`，监测及联合分支仍保存原解析指标。
+
+**候选校验。** `validateRecommendationCandidate` 对每条风险等级预警要求有效 `riskAcceptanceBasis`、实际等级严格越限及触发身份一致；`matchingSelections` 必须非空，至少一项已选冻结措施同时匹配候选风险类别、适用性与该预警类型。复用 `selectFrozenMeasures`/C18 `selectMeasureCandidates` 已完成的筛选及精确 warning 关联，不由 Agent 建立新对应关系。每项对应已选措施的所有 `targetIndicatorIds` 必须属于 `assessedIndicatorIds`，并在冻结 `ResponseValidationPolicyV1.targetIndicators` 中有审核值；无需覆盖全部评分指标。监测/特征/联合规则继续要求已解析指标被覆盖且有目标值；混合任务逐条执行，任一失败都不生成部分正式建议。规范与现场两项照常执行并留证，入库不承诺目标已实现或风险已可接受，预测与人工采纳保持原独立步骤。
+
+沿既有 `RecommendationValidationEvidenceV1Schema.diagnostics` 保存 `checkId=trigger-consistency`：依据缺失/不一致沿 `trigger-mapping-unavailable`，无对应选择用 `trigger-measure-uncovered`，无有效目标沿 `target-indicator-unavailable`，监测目标未覆盖沿 `trigger-indicator-uncovered`；成功依据核验记录 `risk-acceptance-basis-verified`。这些是诊断 reasonCode，不新增模块错误码。成功/失败诊断的 references 使用已有 warning、assessment/input/preparation 及可用的 content-artifact 引用，发布引用与等级/指标摘要可从冻结候选重建，不伪造 ContractReference kind。目标缺失和无措施诊断至少关联精确预警与评估。
+
+**状态、事务与历史。** `createCandidate`、`validateAndRecord` 的当前分支授权、C04 读取与 C07 复核保持不变；新增依据随既有候选工件/登记保存，校验证据、正式建议、回执、审计沿原事务与原幂等键。候选失败仍 waiting-review，正式建议必须三项均通过；禁止人工强制通过或在原 Agent 任务内循环绕过约束。已完成回执重放原结果，旧不可变工件/建议不重写，不新增表、索引、迁移、持久化协议或依赖。
+
+IP-13 的改动范围限于 recommendation service/schema/adapter 和现有 recommendation 测试/fixture；IP-12 复用既有浏览器 helper 与版本化合成配置接缝，覆盖单独等级预警与四类混合触发。单独等级场景用独立合成配置让监测不越限但风险等级严格越限；默认混合场景保留原风险接受阈值和四类真实触发，不调高该阈值绕开缺口。验收证明正式建议通过三项校验后才可人工采纳并成立真实 forecastRun，再沿执行、反馈、偏差、校准链继续，不以 SQL 代写成功或成功 stub 通过。
+
+选择按类型核验并保存最小冻结摘要，因为风险接受阈值表达风险等级，监测映射表达指标身份。让阈值 ID 冒充指标会混淆领域对象，要求措施覆盖全部评分指标会添加未批准约束，直接跳过等级预警则失去确定性校验。D-13 不增另一套评分或预测算法。
 
 ## Risks / Trade-offs
 

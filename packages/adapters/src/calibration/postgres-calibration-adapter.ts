@@ -89,6 +89,7 @@ import {
   type ReviewRequestV1,
   type ReviewTaskRefV1,
   type WarningResponseRecordResultV1,
+  DeviationRecordRefV1Schema,
 } from "@riskflow/contracts/ports";
 import type { VersionReference } from "@riskflow/contracts/common";
 import { DeviationRecordSchema, type DeviationRecord } from "@riskflow/contracts/records";
@@ -97,6 +98,7 @@ import { DomainEventV1Schema } from "@riskflow/contracts/events";
 
 import type {
   C29CalibrationViewResultV1,
+  C29DeviationRecordResultV1,
   RelationAnchorV1,
   RelationPageInputV1,
   RelationPageResultV1,
@@ -131,6 +133,19 @@ const DEVIATION_FACT_BRANCH_V1 = "warning-response.calculate-deviation" as const
 const BASIS_BRANCH_V1 = "knowledge-modeling.assessment-basis" as const;
 const AGENT_RESULT_BRANCH_V1 = "agent-task.read-failure-evidence" as const;
 const REVIEW_REQUEST_BRANCH_V1 = "review-audit.request-review" as const;
+
+/**
+ * 复核请求的命令身份：C06 只认签发时的 `invocation_id`，签发侧与调用侧必须用同一个值，
+ * 否则复核请求在复验处一律被判越权。
+ */
+const calibrationReviewRequestIdFor = (input: {
+  readonly projectId: string;
+  readonly suggestionRef: VersionReference;
+}): string =>
+  `calibration-review-${sha256CanonicalJson({
+    projectId: input.projectId,
+    suggestionRef: input.suggestionRef,
+  }).slice(0, 32)}`;
 /** C08 写入候选增量工件时使用的既有目的码；读取必须与 manifest 完全一致。 */
 const AGENT_INCREMENT_PURPOSE_CODE_V1 = "agent-increment";
 
@@ -518,7 +533,7 @@ export class PostgresCalibrationAdapter
           requestedAt: valid.issuedAt,
           spatialScopeRefs: valid.authorization.spatialScopeRefs,
         },
-        ["agentResult", "basis", "deviationFact", "reviewRequest"],
+        ["agentResult", "basis", "deviationFact"],
       );
       const result = await this.#readCompletedResult(valid, downstream.agentResult);
       const frozenInputRef = ContentArtifactRefV1Schema.parse(result.frozenInputRef);
@@ -599,9 +614,28 @@ export class PostgresCalibrationAdapter
         baseContentDigest: snapshot.baseContentDigest,
       });
       const suggestionRef = creation.suggestionRef;
+      // 复核授权按复核请求自身的命令身份另签：C06 一上下文一 `invocation_id`，
+      // 用建议命令 id 签发而按复核命令 id 复验，必然被判越权。
+      const reviewRequestId = calibrationReviewRequestIdFor({
+        projectId: valid.projectId,
+        suggestionRef: suggestionRef.reference,
+      });
+      const reviewAuthorization = (
+        await this.#purposeContexts(
+          {
+            invocationId: reviewRequestId,
+            projectId: valid.projectId,
+            actorId: valid.actorId,
+            requestedAt: valid.issuedAt,
+            spatialScopeRefs: valid.authorization.spatialScopeRefs,
+          },
+          ["reviewRequest"],
+        )
+      ).reviewRequest;
       const reviewTaskRef = await this.#requestReview({
         command: valid,
-        verified: downstream.reviewRequest,
+        verified: reviewAuthorization,
+        reviewRequestId,
         suggestionRef,
         parentRunRef: result.parentRunRef,
       });
@@ -1550,16 +1584,14 @@ export class PostgresCalibrationAdapter
   async #requestReview(input: {
     readonly command: CreateCalibrationSuggestionCommandV1;
     readonly verified: AuthorizationContextV1;
+    readonly reviewRequestId: string;
     readonly suggestionRef: {
       readonly kind: "calibration-suggestion";
       readonly reference: VersionReference;
     };
     readonly parentRunRef: { readonly kind: string; readonly reference: VersionReference };
   }): Promise<ReviewTaskRefV1> {
-    const reviewRequestId = `calibration-review-${sha256CanonicalJson({
-      projectId: input.command.projectId,
-      suggestionRef: input.suggestionRef.reference,
-    }).slice(0, 32)}`;
+    const reviewRequestId = input.reviewRequestId;
     const requested = await this.#reviews.requestReview(
       ReviewRequestV1Schema.parse({
         commandId: reviewRequestId,
@@ -2290,6 +2322,52 @@ export class PostgresCalibrationAdapter
             }),
         spatialScopeEntityId: suggestion.spatial_scope_entity_id,
       },
+    };
+  }
+
+  /**
+   * 公共偏差记录的精确读（design D-05、D-06）：本模块是它的唯一登记处，因此
+   * `feedback-read` 经此换正文。按偏差事实取该事实当前生效的版本（版本号最大），
+   * 一条事实尚未产生建议时如实缺席，不回读 C28 私有偏差解释冒充公共记录。
+   */
+  async readDeviationRecordForDeviationFact(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly invocationId: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly deviationFactRef: VersionReference;
+  }): Promise<C29DeviationRecordResultV1> {
+    const verified = await this.#verifyRead(input);
+    if (verified === undefined) return { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } };
+    const scopeIds = verified.spatialScopeRefs.map((scope) => scope.reference.entityId);
+    if (scopeIds.length === 0) {
+      return { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } };
+    }
+    const rows = await sql<{ entity_id: string; version_id: string; record_payload: unknown }>`
+      SELECT d.deviation_record_id AS entity_id, d.version_id, d.record_payload
+        FROM business.calibration_deviation_records d
+        JOIN business.calibration_suggestions s
+          ON s.project_id = d.project_id
+         AND s.suggestion_id = d.suggestion_id
+         AND s.version_id = d.suggestion_version_id
+       WHERE d.project_id = ${input.projectId}
+         AND d.deviation_fact_id = ${input.deviationFactRef.entityId}
+         AND d.deviation_fact_version_id = ${input.deviationFactRef.versionId}
+         AND s.spatial_scope_entity_id = ANY(${scopeIds})
+       ORDER BY d.version_number DESC
+       LIMIT 1
+    `.execute(this.#db);
+    const row = rows.rows[0];
+    if (row === undefined) return { kind: "absent" };
+    const record = DeviationRecordSchema.parse(row.record_payload);
+    return {
+      kind: "succeeded",
+      record,
+      deviationRecordRef: DeviationRecordRefV1Schema.parse({
+        kind: "deviation-record",
+        reference: record.version.reference,
+      }),
     };
   }
 

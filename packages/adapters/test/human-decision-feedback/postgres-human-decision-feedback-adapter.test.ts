@@ -229,6 +229,9 @@ describe("C41 人工决定与反馈命令 PostgreSQL 链", () => {
       runStatus: "waiting",
     });
 
+    // 绑定与终局决定冻结同一份等待点状态版本（drift design D-03）。
+    expect(runStateRow.resultVersionId).toBe(proof.result.runStateVersion);
+
     // C41 终局决定行：采纳 + 真实路由/运行引用 + 恢复已标记。
     expect(await decisionRowOf(prepared.recommendationRef)).toMatchObject({
       state: "adopted",
@@ -269,8 +272,13 @@ describe("C41 人工决定与反馈命令 PostgreSQL 链", () => {
     expect(state.workflow.resumeCalls).toHaveLength(resumesBefore + 1);
     expect(state.workflow.resumeCalls.at(-1)?.payload).toMatchObject({
       workflowRunRef: runRef,
+      // 恢复提交的是冻结的等待点状态版本，不是运行登记摘要（drift design D-03/D-05）。
+      expectedStateVersion: proof.result.runStateVersion,
       resumeCause: { kind: "human-decision-committed", routeDecisionRef: waiting.routeDecisionRef },
     });
+    expect(state.workflow.resumeCalls.at(-1)?.payload.expectedStateVersion).not.toBe(
+      runRef.reference.versionId,
+    );
     expect(state.workflow.segmentStartCalls).toHaveLength(segmentStartsBefore);
   });
 
@@ -488,8 +496,33 @@ describe("C41 人工决定与反馈命令 PostgreSQL 链", () => {
       state.workflow.bindingFault = "none";
     }
 
+    // 等待结果交出真实运行却不交等待点状态版本：不得以运行登记摘要顶替，决定前失败关闭。
+    const missingVersion = await prepareRecommendation("c41-binding-missing-wait-version");
+    state.workflow.bindingFault = "missing-wait-state-version";
+    try {
+      expect(
+        failureOf(
+          await state.record(
+            await state.adoptCommand({
+              commandId: "c41-binding-missing-wait-version",
+              decision: "adopted",
+              recommendationRef: missingVersion.prepared.recommendationRef,
+              preActionMonitoringSnapshotRef:
+                missingVersion.prepared.preActionMonitoringSnapshotRef,
+              spatialScopeRef: missingVersion.scope,
+            }),
+          ),
+        ),
+      ).toMatchObject({
+        code: "BUSINESS_BLOCKED",
+        blockerKind: "human-decision-feedback-binding-unavailable",
+      });
+    } finally {
+      state.workflow.bindingFault = "none";
+    }
+
     // 两种错配都只留下进行中占位：无终局采纳、无 C28 决定。
-    expect(await state.decisionRows()).toHaveLength(decisionsBefore + 2);
+    expect(await state.decisionRows()).toHaveLength(decisionsBefore + 3);
     expect((await state.decisionRows()).filter((row) => row["state"] === "adopted")).toHaveLength(
       adoptedBefore,
     );
@@ -777,11 +810,12 @@ describe("C41 人工决定与反馈命令 PostgreSQL 链", () => {
       `SELECT event_json FROM outbox.events
          WHERE project_id = $1 AND event_type = 'warning.feedback-recorded.v1'
            AND producer_command_id = $2`,
-      [state.projectId, commandId],
+      // C28 按模块派生回执身份，事件生产者与回执逐字一致。
+      [state.projectId, `${commandId}:c28-warning-response.record-feedback`],
     );
     expect(events).toHaveLength(1);
     expect(events[0]?.["event_json"]).toMatchObject({
-      producerCommandId: commandId,
+      producerCommandId: `${commandId}:c28-warning-response.record-feedback`,
       payload: { feedbackRef: retried.result.feedbackRef, executionRecordRef: executionRef },
     });
   });

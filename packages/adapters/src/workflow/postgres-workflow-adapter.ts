@@ -23,6 +23,7 @@ import type {
   ResponseWorkflowBindingProofResultV1,
   ReviewTaskRefV1,
   RiskAssessmentRecordRefV1,
+  SpatialScopeRefV1,
   WorkflowRunCompletionProofPortV1,
   WorkflowRunCompletionProofQueryV1,
   WorkflowRunCompletionProofResultV1,
@@ -52,7 +53,7 @@ import {
   type TransactionContextV1,
   type TransactionUnitV1,
 } from "@riskflow/core/persistence";
-import { authorizationScopeDigest } from "@riskflow/core/retrieval";
+import { authorizationScopeDigest, coversSpatialScopes } from "@riskflow/core/retrieval";
 import {
   WorkflowGraphArtifactBodyV1Schema,
   WorkflowGraphLinkV1Schema,
@@ -812,7 +813,14 @@ class WorkflowGraphPersistence {
     if (parsedRow.resultKind !== "run-state" || parsedRow.artifactRef === undefined) {
       return undefined;
     }
-    if (parsedRow.authorizationScopeDigest !== authorizationScopeDigest(input.verified)) {
+    if (
+      !(await this.#runRowsAdmittedTo({
+        projectId: input.projectId,
+        runId: input.runId,
+        verified: input.verified,
+        rowDigest: parsedRow.authorizationScopeDigest,
+      }))
+    ) {
       return undefined;
     }
     const body = await this.#openBody({
@@ -826,6 +834,50 @@ class WorkflowGraphPersistence {
     const state = WorkflowGraphRunStateV1Schema.safeParse(body.runState);
     if (!state.success) return undefined;
     return { row: parsedRow as typeof parsedRow & { resultKind: "run-state" }, state: state.data };
+  }
+
+  /**
+   * 单个登记行的读取准入（drift design D-01～D-04）：写入侧摘要等值即承认；不等时退到覆盖判定。
+   * 运行状态行与 `run-result` 行同属一次运行的已登记事实，用同一个判定避免两处口径分叉。
+   */
+  async #runRowsAdmittedTo(input: {
+    readonly projectId: string;
+    readonly runId: string;
+    readonly verified: AuthorizationContextV1;
+    readonly rowDigest: string;
+  }): Promise<boolean> {
+    return (
+      input.rowDigest === authorizationScopeDigest(input.verified) ||
+      (await this.#runRowsCoveredBy(input))
+    );
+  }
+
+  /**
+   * 授权覆盖判定（drift design D-01～D-04）：调用方上下文与写入上下文摘要不等时，只有「同工程
+   * 且调用方空间范围覆盖该运行已登记事实声明的空间」才承认这些行。
+   *
+   * 放宽只发生在读取准入这一个判定上：来源授权与授权策略摘要仍是写入侧审计事实，读取时不再
+   * 比对——否则任何按任务收窄签发的读取上下文都无法证明一条以更宽授权启动的运行，而这正是
+   * 人工启动 + 模块读取的正常分工。跨工程由查询本身按 `projectId` 收口，范围不足一律不覆盖。
+   *
+   * 运行声明的空间范围只从它自己已登记行的冻结引用取（drift design D-03），不从摘要反推；
+   * 没有登记任何空间的运行不走本放宽，保持原等值口径。
+   */
+  async #runRowsCoveredBy(input: {
+    readonly projectId: string;
+    readonly runId: string;
+    readonly verified: AuthorizationContextV1;
+  }): Promise<boolean> {
+    const rows = await this.listRunRows({ projectId: input.projectId, runId: input.runId });
+    const required = [
+      ...new Map(
+        rows
+          .flatMap((candidate) => candidate.frozenRefs)
+          .filter((ref): ref is SpatialScopeRefV1 => ref.kind === "spatial-scope")
+          .map((ref) => [`${ref.reference.entityId}/${ref.reference.versionId}`, ref]),
+      ).values(),
+    ];
+    return required.length > 0 && coversSpatialScopes(input.verified, required);
   }
 
   async listRunLinks(input: {
@@ -974,6 +1026,7 @@ class WorkflowGraphPersistence {
           routeDecisionRef: waiting.routeDecisionRef,
           workflowRunRef: valid.payload.workflowRunRef,
           runStatus: latest.state.status,
+          runStateVersion: latest.state.runVersionId,
           frozenDigest,
           auditTrailRef: {
             kind: "audit-trail",
@@ -1008,17 +1061,19 @@ class WorkflowGraphPersistence {
     const failed = (
       code: "AUTHORIZATION_DENIED" | "TERMINAL_FAILURE" | "UNSUPPORTED_CONTRACT",
       detailCode: string,
-    ) => ({
-      kind: "failed" as const,
-      error: bindingProofError({
-        code,
-        causalRunId: runId,
-        occurredAt,
-        requiredCapability: "workflow.start",
-        detailCode,
-        stageCode: "workflow.run-completion-proof",
-      }),
-    });
+    ) => {
+      return {
+        kind: "failed" as const,
+        error: bindingProofError({
+          code,
+          causalRunId: runId,
+          occurredAt,
+          requiredCapability: "workflow.start",
+          detailCode,
+          stageCode: "workflow.run-completion-proof",
+        }),
+      } as const;
+    };
     if (!parsed.success) return failed("UNSUPPORTED_CONTRACT", "query-invalid");
     const valid = parsed.data;
     try {
@@ -1064,12 +1119,17 @@ class WorkflowGraphPersistence {
         .execute();
       if (resultRows.length !== 1) return failed("TERMINAL_FAILURE", "run-result-inconsistent");
       const resultRow = workflowGraphResultRowFromDb(resultRows[0]!);
-      if (
-        resultRow.resultKind !== "run-result" ||
-        resultRow.artifactRef === undefined ||
-        resultRow.authorizationScopeDigest !== authorizationScopeDigest(verified)
-      )
+      if (resultRow.resultKind !== "run-result" || resultRow.artifactRef === undefined)
         return failed("TERMINAL_FAILURE", "run-result-inconsistent");
+      if (
+        !(await this.#runRowsAdmittedTo({
+          projectId: valid.projectId,
+          runId,
+          verified,
+          rowDigest: resultRow.authorizationScopeDigest,
+        }))
+      )
+        return failed("AUTHORIZATION_DENIED", "completion-not-established");
       const resultBody = await this.#openBody({
         projectId: valid.projectId,
         artifactRef: resultRow.artifactRef,

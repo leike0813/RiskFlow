@@ -170,12 +170,16 @@ export default function WarningDetailPage() {
                       {value.taskRef.reference.entityId}
                     </Link>
                   </FieldRow>
-                  <FieldRow label="矩阵落点">
-                    <span className="mono">
-                      {value.matrixPlot.possibilityBandId} × {value.matrixPlot.consequenceBandId} →{' '}
-                      {value.matrixPlot.riskLevelId}（序 {value.matrixPlot.riskLevelOrdinal}）
-                    </span>
-                  </FieldRow>
+                  {assessment.state.kind === 'ready' && (
+                    <FieldRow label="矩阵落点">
+                      <span className="mono">
+                        {assessment.state.value.matrixPlot.possibilityBandId} ×{' '}
+                        {assessment.state.value.matrixPlot.consequenceBandId} →{' '}
+                        {assessment.state.value.matrixPlot.riskLevelId}（序{' '}
+                        {assessment.state.value.matrixPlot.riskLevelOrdinal}）
+                      </span>
+                    </FieldRow>
+                  )}
                   <FieldRow label="确认记录">
                     {value.acknowledgement === undefined ? (
                       <StatusTag tone="review">待确认</StatusTag>

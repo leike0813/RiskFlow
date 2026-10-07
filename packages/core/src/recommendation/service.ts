@@ -15,7 +15,11 @@ import type {
   ContractReferenceV1,
   AgentTaskResultRefV1,
 } from "@riskflow/contracts/ports";
-import type { MeasureItem, TargetIndicator } from "@riskflow/contracts/records";
+import type {
+  MeasureItem,
+  TargetIndicator,
+  TriggerIndicator as TriggerIndicatorV1,
+} from "@riskflow/contracts/records";
 import { ResponseRecommendationSchema } from "@riskflow/contracts/records";
 import type { AuditInfo, VersionedRecordInfo, VersionReference } from "@riskflow/contracts/common";
 import type { WarningTriggerType } from "@riskflow/contracts/vocabulary";
@@ -47,6 +51,7 @@ import {
   type MeasureCandidateV1,
   type RecommendationCandidateV1,
   type RecommendationFrozenWarningV1,
+  type RecommendationRiskAcceptanceBasisV1,
   type RecommendationSiteContextV1,
   type RecommendationValidationEvidenceV1,
   type RecommendationValidationResultsV1,
@@ -60,9 +65,44 @@ import {
 /* 冻结候选：按预警逐项求交并合并（D-03）                                       */
 /* -------------------------------------------------------------------------- */
 
-/** 只按冻结 C18 配置将阈值或联合规则展开为措施库使用的评估指标身份。 */
+/**
+ * 触发类型决定去哪个冻结配置里找身份（design D-13）。
+ *
+ * 各类型只在自己的配置里查，不按字符串碰撞跨类型试探：同一个标识若同时出现在
+ * 联合规则和监测阈值里，按类型分流后只会命中该类型真正对应的那一份。
+ */
+const triggerMetricScopeV1 = (
+  triggerType: WarningTriggerType,
+):
+  | { readonly kind: "monitoring-threshold"; readonly metric: "value" | "feature" }
+  | { readonly kind: "joint-rule" }
+  | undefined => {
+  switch (triggerType) {
+    case "监测指标越限":
+      return { kind: "monitoring-threshold", metric: "value" };
+    case "趋势/加速度/异常评分越限":
+      return { kind: "monitoring-threshold", metric: "feature" };
+    case "多指标联合规则命中":
+      return { kind: "joint-rule" };
+    // 风险等级触发指向风险可接受阈值身份，由风险等级分支单独核验（`riskAcceptanceBasis`）。
+    // 它没有量测指标可映射，因此既不产生已解析指标，也不算「解析失败」。
+    case "风险等级超过风险可接受阈值":
+      return undefined;
+    default:
+      return undefined;
+  }
+};
+
+/**
+ * 按冻结 C18 配置展开为措施库使用的评估指标身份（design D-13）。
+ *
+ * 接收完整类型化触发项而不是裸字符串：监测原始值越限只查 `metric=value` 的阈值，
+ * 特征越限只查相应非 value 阈值，联合类型只查联合规则再展开其监测成员。展开出的
+ * 指标按已选措施的目标要求覆盖；展开不出来的记入 `unresolvedItems` 由候选校验失败，
+ * 不因任务同时存在风险等级预警而跳过，也不按类型直接判通过。
+ */
 export const resolveTriggerIndicators = (
-  triggerItems: readonly string[],
+  triggerItems: readonly TriggerIndicatorV1[],
   configuration: {
     readonly fieldMapping: IndicatorFieldMappingContentV1;
     readonly monitoringThresholds: MonitoringWarningThresholdContentV1;
@@ -71,32 +111,87 @@ export const resolveTriggerIndicators = (
 ): { readonly indicatorIds: readonly string[]; readonly unresolvedItems: readonly string[] } => {
   const indicators = new Set<string>();
   const unresolved = new Set<string>();
-  for (const item of triggerItems) {
-    const rule = configuration.jointTriggerPolicy.rules.find((entry) => entry.ruleId === item);
-    const thresholdIds = rule?.monitoringThresholdIds ?? [item];
-    for (const thresholdId of thresholdIds) {
-      const threshold = configuration.monitoringThresholds.thresholds.find(
-        (entry) => entry.thresholdId === thresholdId,
-      );
-      if (threshold === undefined) {
+  for (const { indicatorItem: item, triggerType } of triggerItems) {
+    const scope = triggerMetricScopeV1(triggerType);
+    if (scope === undefined) continue;
+    if (scope.kind === "joint-rule") {
+      const rule = configuration.jointTriggerPolicy.rules.find((entry) => entry.ruleId === item);
+      if (rule === undefined) {
         unresolved.add(item);
         continue;
       }
-      const matches = configuration.fieldMapping.mappings.filter(
-        (mapping) =>
-          mapping.origin.kind !== "source-field" &&
-          mapping.origin.monitoringIndicator === threshold.monitoringIndicator &&
-          mapping.origin.parameterCode === threshold.parameterCode &&
-          mapping.origin.metric === threshold.metric,
-      );
-      if (matches.length !== 1) {
-        unresolved.add(item);
-        continue;
+      for (const thresholdId of rule.monitoringThresholdIds) {
+        const threshold = configuration.monitoringThresholds.thresholds.find(
+          (entry) => entry.thresholdId === thresholdId,
+        );
+        if (threshold === undefined) {
+          unresolved.add(item);
+          continue;
+        }
+        const target = targetIndicatorOf(threshold, configuration.fieldMapping);
+        if (target === undefined) {
+          unresolved.add(item);
+          continue;
+        }
+        indicators.add(target);
       }
-      indicators.add(matches[0]!.targetIndicatorId);
+      continue;
     }
+    const candidates = configuration.monitoringThresholds.thresholds.filter(
+      (entry) =>
+        entry.thresholdId === item &&
+        (scope.metric === "value" ? entry.metric === "value" : entry.metric !== "value"),
+    );
+    if (candidates.length !== 1) {
+      unresolved.add(item);
+      continue;
+    }
+    const target = targetIndicatorOf(candidates[0]!, configuration.fieldMapping);
+    if (target === undefined) {
+      unresolved.add(item);
+      continue;
+    }
+    indicators.add(target);
   }
   return { indicatorIds: [...indicators].sort(), unresolvedItems: [...unresolved].sort() };
+};
+
+/** 阈值经同版字段映射展开为唯一评估指标身份；来源字段映射不参与，歧义即不解析。 */
+const targetIndicatorOf = (
+  threshold: MonitoringWarningThresholdContentV1["thresholds"][number],
+  fieldMapping: IndicatorFieldMappingContentV1,
+): string | undefined => {
+  const matches = fieldMapping.mappings.filter(
+    (mapping) =>
+      mapping.origin.kind !== "source-field" &&
+      mapping.origin.monitoringIndicator === threshold.monitoringIndicator &&
+      mapping.origin.parameterCode === threshold.parameterCode &&
+      mapping.origin.metric === threshold.metric,
+  );
+  return matches.length === 1 ? matches[0]!.targetIndicatorId : undefined;
+};
+
+/**
+ * 复核冻结依据摘要与预警自身事实一致（D-13）。
+ *
+ * 校验不信任 adapter 已经算好的结论：触发项类型、身份与实际值必须与摘要一致，风险等级
+ * 在矩阵序数上必须确实越过可接受等级，有效指标集合必须非空且不含重复。这样即使摘要
+ * 被构造得「看起来成立」，只要与预警事实对不上仍然失败闭合。
+ */
+const riskAcceptanceBasisConsistent = (
+  warning: RecommendationFrozenWarningV1,
+  basis: RecommendationRiskAcceptanceBasisV1,
+): boolean => {
+  if (basis.riskLevelOrdinal <= basis.maximumAcceptedLevelOrdinal) return false;
+  if (basis.assessedIndicatorIds.length === 0) return false;
+  if (new Set(basis.assessedIndicatorIds).size !== basis.assessedIndicatorIds.length) return false;
+  const riskLevelTriggers = warning.triggerIndicators.filter(
+    (item) => item.triggerType === "风险等级超过风险可接受阈值",
+  );
+  if (riskLevelTriggers.length === 0) return false;
+  return riskLevelTriggers.every(
+    (item) => item.indicatorItem === basis.thresholdId && item.actualValue === basis.riskLevelId,
+  );
 };
 
 export interface SelectFrozenMeasuresInputV1 {
@@ -351,6 +446,88 @@ export const validateRecommendationCandidate = (
         passed: false,
         references: [warning.warningRecordRef],
       });
+    }
+    // 风险等级触发分支（D-13）：不要求指标覆盖全部评分指标，也不要求存在量测指标映射，
+    // 但必须同时成立：冻结依据本身复核通过、至少一项已选措施经 C18 筛选匹配该预警、
+    // 且这些措施的目标属于关联评估的有效指标并有审核策略给出的目标值。
+    if (warning.triggerType === "风险等级超过风险可接受阈值") {
+      const basis = warning.riskAcceptanceBasis;
+      if (basis === undefined) {
+        // 依据缺失已由上面的未解析项记 `trigger-mapping-unavailable`；这里再补一条明确
+        // 诊断，避免「失败但看不出是风险等级分支」。
+        triggerIssues.push(
+          issue("risk-acceptance-basis-unavailable", warning.warningRecordRef.reference.entityId),
+        );
+        diagnostics.push({
+          checkId: "trigger-consistency",
+          reasonCode: "risk-acceptance-basis-unavailable",
+          passed: false,
+          references: [warning.warningRecordRef],
+        });
+        continue;
+      }
+      if (!riskAcceptanceBasisConsistent(warning, basis)) {
+        triggerIssues.push(
+          issue("risk-acceptance-basis-mismatch", warning.warningRecordRef.reference.entityId),
+        );
+        diagnostics.push({
+          checkId: "trigger-consistency",
+          reasonCode: "risk-acceptance-basis-mismatch",
+          passed: false,
+          references: [warning.warningRecordRef],
+        });
+        continue;
+      }
+      if (matchingSelections.length === 0) {
+        triggerIssues.push(
+          issue("risk-level-measure-uncovered", warning.warningRecordRef.reference.entityId),
+        );
+        diagnostics.push({
+          checkId: "trigger-consistency",
+          reasonCode: "risk-level-measure-uncovered",
+          passed: false,
+          references: [warning.warningRecordRef],
+        });
+        continue;
+      }
+      const assessed = new Set(basis.assessedIndicatorIds);
+      let scoped = true;
+      for (const selection of matchingSelections) {
+        for (const targetId of selection.measure.measure.targetIndicatorIds) {
+          if (!assessed.has(targetId)) {
+            scoped = false;
+            triggerIssues.push(
+              issue("risk-level-target-out-of-scope", `${selection.measureId}/${targetId}`),
+            );
+            diagnostics.push({
+              checkId: "trigger-consistency",
+              reasonCode: "risk-level-target-out-of-scope",
+              passed: false,
+              references: [warning.warningRecordRef],
+            });
+            continue;
+          }
+          if (targetValues.has(targetId)) continue;
+          scoped = false;
+          triggerIssues.push(
+            issue("target-indicator-unavailable", `${selection.measureId}/${targetId}`),
+          );
+          diagnostics.push({
+            checkId: "trigger-consistency",
+            reasonCode: "target-indicator-unavailable",
+            passed: false,
+            references: [warning.warningRecordRef],
+          });
+        }
+      }
+      if (scoped) {
+        diagnostics.push({
+          checkId: "trigger-consistency",
+          reasonCode: "risk-acceptance-basis-verified",
+          passed: true,
+          references: [warning.warningRecordRef],
+        });
+      }
     }
   }
 

@@ -247,6 +247,12 @@ export type DeviationRecordRefV1 = z.infer<typeof DeviationRecordRefV1Schema>;
 export const CalibrationSuggestionRefV1Schema = versionedRef("calibration-suggestion");
 export type CalibrationSuggestionRefV1 = z.infer<typeof CalibrationSuggestionRefV1Schema>;
 
+// 校准冻结输入是真实的领域引用：它要能作为 Agent 任务的 `frozenInputRef` 冻结进公共命令，
+// 所以 kind 常量与引用形状与其它公共引用同源定义在这里，C29 只消费不另立一份。
+export const CALIBRATION_INPUT_SNAPSHOT_KIND_V1 = "calibration-input-snapshot" as const;
+export const CalibrationInputSnapshotRefV1Schema = versionedRef(CALIBRATION_INPUT_SNAPSHOT_KIND_V1);
+export type CalibrationInputSnapshotRefV1 = z.infer<typeof CalibrationInputSnapshotRefV1Schema>;
+
 export const AssessmentRunResultRefV1Schema = versionedRef("assessment-run-result");
 export type AssessmentRunResultRefV1 = z.infer<typeof AssessmentRunResultRefV1Schema>;
 
@@ -448,6 +454,7 @@ export const ContractReferenceV1Schema = z.discriminatedUnion("kind", [
   RetrievalEvidenceBaseReleaseRefV1Schema,
   IdentificationPolicySetRefV1Schema,
   AssessmentBasisReleaseSetRefV1Schema,
+  CalibrationInputSnapshotRefV1Schema,
   MeasureLibraryReleaseRefV1Schema,
   KnowledgeQueryResultRefV1Schema,
   IdentificationPreparationSnapshotRefV1Schema,
@@ -962,10 +969,14 @@ const moduleResultSchema = <const T extends ZodType>(result: T, allowWaiting = f
       succeeded,
       // 等待结果同时携带已登记的真实运行引用：调用方据此按精确运行继续，不必自行派生身份；
       // 只有会真正进入等待态的模块使用该形态（C41 接线）。
+      // `waitStateVersion` 是运行**停在等待点时的运行状态版本**，与运行登记身份不同：调用方
+      // 发起恢复要提交的就是这个值（C30 恢复断言预期状态版本，陈旧即拒绝）。拿不到时不
+      // 编造值，调用方也不得以运行引用版本代替——缺失按既有失败闭合收口。
       z.strictObject({
         kind: z.literal("waiting"),
         waiting: WaitingRefV1Schema,
         workflowRunRef: WorkflowRunRefV1Schema.optional(),
+        waitStateVersion: IdentifierSchema.optional(),
       }),
       failed,
     ]);
@@ -2340,6 +2351,11 @@ export const ResponseWorkflowBindingProofV1Schema = z.strictObject({
   routeDecisionRef: RouteDecisionRefV1Schema,
   workflowRunRef: WorkflowRunRefV1Schema,
   runStatus: WorkflowRunStatusV1Schema,
+  /**
+   * 本运行当前已登记的运行状态版本（drift design D-04）：调用方用它核对冻结的等待点状态
+   * 版本确实属于这条运行，防止拿另一条运行的版本恢复。取不到时不编造，由调用方失败闭合。
+   */
+  runStateVersion: IdentifierSchema,
   frozenDigest: digestSchema,
   auditTrailRef: AuditTrailRefV1Schema,
 });
@@ -2635,7 +2651,13 @@ export const WarningResponseRecordSuccessV1Schema = z.discriminatedUnion("kind",
     routeDecisionRef: RouteDecisionRefV1Schema,
   }),
   z.strictObject({ kind: z.literal("execution"), executionRecordRef: ExecutionRecordRefV1Schema }),
-  z.strictObject({ kind: z.literal("feedback"), feedbackRef: FeedbackRefV1Schema }),
+  // 反馈成立时交出 C28 解析出的真实效果预测：反馈分段据此冻结预测，A2/A3 才能核对偏差。
+  // 预测不可用时缺席，调用方按既有 `effect-forecast-missing` 语义跳过支路，不补造预测。
+  z.strictObject({
+    kind: z.literal("feedback"),
+    feedbackRef: FeedbackRefV1Schema,
+    effectForecastRef: EffectForecastRefV1Schema.optional(),
+  }),
   z.strictObject({ kind: z.literal("deviation"), deviationRecordRef: DeviationRecordRefV1Schema }),
   z.strictObject({ kind: z.literal("unavailable"), reasonCode: IdentifierSchema }),
   z.strictObject({

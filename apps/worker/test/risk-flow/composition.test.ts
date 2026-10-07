@@ -689,6 +689,10 @@ describe("C30 父运行生产组合根（真实 PostgreSQL 接线）", () => {
       authorization: authorizationFor("workflow.start"),
     });
     expect(latest?.state.status).toBe("waiting");
+    // 等待结果交出的等待点状态版本就是本运行已登记的运行状态版本，且与运行登记摘要不同：
+    // 恢复断言要提交的是这个值，调用方不另读状态也不猜“最新”（drift design D-01）。
+    expect(started.waitStateVersion).toBe(latest?.state.runVersionId);
+    expect(started.waitStateVersion).not.toBe(runRef.reference.versionId);
     // 等待态游标指向下一个要执行的阶段：恢复即进入评估，不重跑准备。
     expect(latest?.state.stage).toBe("assessment");
 
@@ -729,6 +733,37 @@ describe("C30 父运行生产组合根（真实 PostgreSQL 接线）", () => {
       authorization: authorizationFor("workflow.resume"),
     });
     expect(afterDenied?.state.status).toBe("waiting");
+    // 提交陈旧等待点版本仍按并发失败拒绝，运行不推进、零补写（drift design D-05：断言未放宽）。
+    const stale = await composition.runtime.workflowPort.resumeRun({
+      kind: "resume-run",
+      commandId: "c30-composition-forecast-stale-resume",
+      idempotencyKey: "c30-composition-forecast-stale-resume",
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      issuedAt: TIMESTAMP,
+      authorization: authorizationFor("workflow.resume"),
+      payload: {
+        workflowRunRef: runRef,
+        expectedStateVersion: `${latest?.state.runVersionId ?? ""}:stale`,
+        resumeCause: {
+          kind: "human-decision-committed",
+          routeDecisionRef: waitingRow.waitingRef.routeDecisionRef,
+        },
+      },
+    });
+    expect(stale).toMatchObject({ kind: "failed" });
+    expect(
+      (
+        await composition.registrationStore.readLatestRunState({
+          projectId: PROJECT_ID,
+          runId: runRef.reference.entityId,
+          actorId: ACTOR_ID,
+          requestedAt: TIMESTAMP,
+          invocationId: "risk-flow-cursor-read",
+          authorization: authorizationFor("workflow.resume"),
+        })
+      )?.state.runVersionId,
+    ).toBe(latest?.state.runVersionId);
     expect(
       (
         await composition.registrationStore.listRunRows({

@@ -196,9 +196,11 @@ export class C30WriteStandIn implements WorkflowPortV1 {
   startDisposition: "waiting" | "already-advanced" = "waiting";
   /**
    * 测试可控的等待登记错配（决定写入前必须失败关闭）：`wrong-recommendation` 让等待行指向另一建议，
-   * `unregistered-run` 返回一个从未登记过事实的运行引用。
+   * `unregistered-run` 返回一个从未登记过事实的运行引用，`missing-wait-state-version` 交出真实运行
+   * 但不给等待点状态版本（drift design D-02：缺失即失败闭合，不以运行登记摘要顶替）。
    */
-  bindingFault: "none" | "wrong-recommendation" | "unregistered-run" = "none";
+  bindingFault:
+    "none" | "wrong-recommendation" | "unregistered-run" | "missing-wait-state-version" = "none";
   readonly #deps: C30WriteStandInDepsV1;
 
   constructor(deps: C30WriteStandInDepsV1) {
@@ -293,8 +295,16 @@ export class C30WriteStandIn implements WorkflowPortV1 {
     const existingWaiting =
       existingWaitings.length === 1 ? existingWaitings[0]?.waitingRef : undefined;
     if (existingWaiting?.kind === "human-decision") {
-      // 同业务幂等身份重放：返回同一运行引用，不重复登记事实（design D2）。
-      return { kind: "waiting", waiting: existingWaiting, workflowRunRef: runRef };
+      // 同业务幂等身份重放：返回同一运行引用，不重复登记事实（design D2）。等待点状态版本
+      // 取本运行已登记的 run-state 行版本——C30 绑定证明回读的正文版本与之逐字一致。
+      return {
+        kind: "waiting",
+        waiting: existingWaiting,
+        workflowRunRef: runRef,
+        ...(this.#waitingStateVersionOf(existing) === undefined
+          ? {}
+          : { waitStateVersion: this.#waitingStateVersionOf(existing) as string }),
+      };
     }
     const registered = await this.#registerWaitingRun({
       command: parsed,
@@ -314,7 +324,20 @@ export class C30WriteStandIn implements WorkflowPortV1 {
       runRef,
     });
     this.waitingRunRefs.push(runRef);
-    return { kind: "waiting", waiting: registered, workflowRunRef: runRef };
+    return {
+      kind: "waiting",
+      waiting: registered.waiting,
+      workflowRunRef: runRef,
+      // 交出真实等待运行却不交等待点状态版本：调用方必须失败闭合，不按运行登记摘要继续。
+      ...(this.bindingFault === "missing-wait-state-version"
+        ? {}
+        : { waitStateVersion: registered.waitStateVersion }),
+    };
+  }
+
+  /** 已登记 run-state 行的版本即运行停在等待点时的状态版本；无登记行则不编造值。 */
+  #waitingStateVersionOf(rows: readonly WorkflowGraphResultRowV1[]): string | undefined {
+    return rows.find((row) => row.resultKind === "run-state")?.resultVersionId;
   }
 
   async resumeRun(command: ResumeWorkflowRunCommandV1): Promise<ResumeWorkflowRunResultV1> {
@@ -347,7 +370,10 @@ export class C30WriteStandIn implements WorkflowPortV1 {
     readonly recommendationRef: ResponseRecommendationRefV1;
     readonly spatialScopeRef: SpatialScopeRefV1;
     readonly runRef: WorkflowRunRefV1;
-  }): Promise<Extract<WaitingRefV1, { readonly kind: "human-decision" }>> {
+  }): Promise<{
+    readonly waiting: Extract<WaitingRefV1, { readonly kind: "human-decision" }>;
+    readonly waitStateVersion: string;
+  }> {
     const deps = this.#deps;
     const runId = input.runRef.reference.entityId;
     const forecastPayload = input.command.payload as Extract<
@@ -525,7 +551,7 @@ export class C30WriteStandIn implements WorkflowPortV1 {
         };
       },
     );
-    return waiting;
+    return { waiting, waitStateVersion: runState.runVersionId };
   }
 }
 

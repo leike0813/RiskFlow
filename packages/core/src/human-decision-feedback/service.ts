@@ -21,6 +21,7 @@ import {
   WarningResponseRecordCommandV1Schema,
   type ActualAssessmentProofPortV1,
   type AuthorizationContextV1,
+  type EffectForecastRefV1,
   type HumanDecisionFeedbackCommandV1,
   type HumanDecisionFeedbackPortV1,
   type ModuleBranchV1,
@@ -85,6 +86,7 @@ export interface HumanResponseDecisionStoreV1 {
     readonly decisionRef: VersionReference;
     readonly routeDecisionRef: RouteDecisionRefV1;
     readonly forecastRunRef: WorkflowRunRefV1;
+    readonly waitStateVersion: string;
     readonly committedAt: string;
     readonly authorization: AuthorizationContextV1;
   }): Promise<HumanResponseDecisionV1>;
@@ -113,6 +115,8 @@ export interface HumanFeedbackSnapshotStoreV1 {
     readonly projectId: string;
     readonly feedbackInputSnapshotRef: { readonly reference: VersionReference };
     readonly committedAt: string;
+    /** C28 解析出的真实效果预测：随冻结行一起保存，分段重试据此仍能冻结同一预测。 */
+    readonly effectForecastRef?: EffectForecastRefV1;
     readonly authorization: AuthorizationContextV1;
   }): Promise<void>;
   /** 反馈分段启动标记：启动失败时保留原身份重试，不重复人工录入（design D4）。 */
@@ -503,13 +507,21 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
     }
     const routeDecisionRef = decision.routeDecisionRef;
     const forecastRunRef = decision.forecastRunRef;
+    const waitStateVersion = decision.waitStateVersion;
     if (routeDecisionRef === undefined || forecastRunRef === undefined) {
       failHumanDecisionFeedback("human-decision-feedback-decision-conflict", "business-blocked");
+    }
+    // 恢复只能用终局决定冻结的那份等待点状态版本。历史决定缺该值即无法证明按哪次状态
+    // 恢复，按失败闭合收口；不得改用运行登记摘要，也不在此处重新读取运行状态。
+    if (waitStateVersion === undefined) {
+      failHumanDecisionFeedback("human-decision-feedback-binding-unavailable", "business-blocked");
     }
     if (decision.resumedAt === undefined) {
       const authorization = await this.#issueAuthorization({
         branch: "workflow.resume-run",
-        invocationId: command.commandId,
+        // 必须与 C30 运行时实际使用的调用身份逐字一致：恢复命令身份是
+        // `${command.commandId}:resume`，复验按同一身份绑定，签发侧给原始命令 id 会一律拒绝。
+        invocationId: `${command.commandId}:resume`,
         projectId: command.projectId,
         actorId: command.actorId,
         requestedAt: command.issuedAt,
@@ -520,6 +532,7 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
         context,
         routeDecisionRef,
         forecastRunRef,
+        waitStateVersion,
         authorization,
       });
       if (failed !== undefined) return failed;
@@ -554,11 +567,18 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
       // 等待模式必须停留在等待态并带回已登记运行引用：否则不是可冻结的真实绑定（design D2）。
       failHumanDecisionFeedback("human-decision-feedback-binding-unavailable", "business-blocked");
     }
+    // 等待点状态版本是恢复要提交的值，运行登记摘要不是（drift design D-01/D-02）。运行时
+    // 交不出时按失败闭合，不以运行引用版本顶替，也不为取得该值再发一次状态读取。
+    const waitStateVersion = started.waitStateVersion;
+    if (waitStateVersion === undefined) {
+      failHumanDecisionFeedback("human-decision-feedback-binding-unavailable", "business-blocked");
+    }
     const runRef = started.workflowRunRef;
     const bindingProof = await this.#readBindingProof({
       command,
       context,
       runRef,
+      waitStateVersion,
       recommendationRef,
     });
     const binding = VerifiedResponseWorkflowBindingV1Schema.parse({
@@ -568,16 +588,13 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
       spatialScopeRef: context.spatialScopeRef,
       routeDecisionRef: bindingProof.routeDecisionRef,
       forecastRunRef: runRef,
+      waitStateVersion,
       boundAt: this.#nowIso(),
     });
-    const decisionAuthorization = await this.#issueAuthorization({
-      branch: ADOPTION_BRANCH_V1,
-      invocationId: command.commandId,
-      projectId: command.projectId,
-      actorId: command.actorId,
-      requestedAt: command.issuedAt,
-      requestedSpatialScopeRefs: [context.spatialScopeRef],
-    });
+    // C28 按 `command.commandId` + 采纳分支复验这份上下文，所以这里必须交出命令本身已
+    // 复验过的那一份：同一调用身份再签一次会与命令级签发构成重放冲突，而且重新签发无法
+    // 复述命令级请求的来源集。空间是否覆盖绑定由 C28 的绑定复验判定，不在签发处裁剪。
+    const decisionAuthorization = await this.#verify(command, ADOPTION_BRANCH_V1);
     const decided = await this.#ports.responseLifecycle.recordDecision({
       schemaVersion: "1",
       binding,
@@ -596,12 +613,14 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
       decisionRef: decision.decisionRef.reference,
       routeDecisionRef,
       forecastRunRef,
+      waitStateVersion,
       committedAt: this.#nowIso(),
       authorization: decisionAuthorization,
     });
     const resumeAuthorization = await this.#issueAuthorization({
       branch: "workflow.resume-run",
-      invocationId: command.commandId,
+      // 与 `#settledOrResume` 同一约定：签发身份 = C30 恢复命令身份。
+      invocationId: `${command.commandId}:resume`,
       projectId: command.projectId,
       actorId: command.actorId,
       requestedAt: command.issuedAt,
@@ -612,6 +631,7 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
       context,
       routeDecisionRef,
       forecastRunRef,
+      waitStateVersion,
       authorization: resumeAuthorization,
     });
     if (failed !== undefined) return failed;
@@ -633,7 +653,12 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
     };
     readonly recommendationRef: ResponseRecommendationRefV1;
   }): Promise<
-    | { readonly kind: "waiting"; readonly workflowRunRef?: WorkflowRunRefV1 }
+    | {
+        readonly kind: "waiting";
+        readonly workflowRunRef?: WorkflowRunRefV1;
+        /** 等待点的运行状态版本（drift design D-01）：运行自己算出的事实，调用方不另读。 */
+        readonly waitStateVersion?: string;
+      }
     | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
   > {
     const authorization = await this.#issueAuthorization({
@@ -672,6 +697,9 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
     return {
       kind: "waiting",
       ...(result.workflowRunRef === undefined ? {} : { workflowRunRef: result.workflowRunRef }),
+      ...(result.waitStateVersion === undefined
+        ? {}
+        : { waitStateVersion: result.waitStateVersion }),
     };
   }
 
@@ -680,6 +708,7 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
     readonly command: AdoptRecommendationCommandV1;
     readonly context: ResponseLifecycleFrozenContextV1;
     readonly runRef: WorkflowRunRefV1;
+    readonly waitStateVersion: string;
     readonly recommendationRef: ResponseRecommendationRefV1;
   }): Promise<{ readonly routeDecisionRef: RouteDecisionRefV1 }> {
     const authorization = await this.#issueAuthorization({
@@ -715,6 +744,11 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
     ) {
       failHumanDecisionFeedback("human-decision-feedback-binding-unavailable", "business-blocked");
     }
+    // 归属核对（drift design D-04）：冻结的等待点状态版本必须就是这条运行当前登记的版本。
+    // 对不上说明版本属于另一条运行或运行已被推进，按既有失败形态收口，不改按最新继续。
+    if (bound.runStateVersion !== input.waitStateVersion) {
+      failHumanDecisionFeedback("human-decision-feedback-binding-unavailable", "business-blocked");
+    }
     return { routeDecisionRef: bound.routeDecisionRef };
   }
 
@@ -724,6 +758,8 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
     readonly context: ResponseLifecycleFrozenContextV1;
     readonly routeDecisionRef: RouteDecisionRefV1;
     readonly forecastRunRef: WorkflowRunRefV1;
+    /** 冻结的等待点运行状态版本：恢复断言提交的就是它（drift design D-05，断言本身不变）。 */
+    readonly waitStateVersion: string;
     readonly authorization: AuthorizationContextV1;
   }): Promise<{ readonly kind: "failed"; readonly error: ModuleErrorV1 } | undefined> {
     const resumed = await this.#ports.workflow.resumeRun({
@@ -736,7 +772,7 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
       authorization: input.authorization,
       payload: {
         workflowRunRef: input.forecastRunRef,
-        expectedStateVersion: input.forecastRunRef.reference.versionId,
+        expectedStateVersion: input.waitStateVersion,
         resumeCause: {
           kind: "human-decision-committed",
           routeDecisionRef: input.routeDecisionRef,
@@ -831,12 +867,10 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
     command: RecordExecutionCommandV1,
   ): Promise<WarningResponseRecordResultV1> {
     const verified = await this.#verify(command, EXECUTION_BRANCH_V1);
-    const source = command.payload.actionSource;
-    let requestedSpatialScopeRefs = verified.spatialScopeRefs;
-    if (source.kind === "adopted-recommendation") {
+    if (command.payload.actionSource.kind === "adopted-recommendation") {
       const decision = await this.#ports.decisions.readDecision({
         projectId: command.projectId,
-        responseRecommendationRef: source.responseRecommendationRef,
+        responseRecommendationRef: command.payload.actionSource.responseRecommendationRef,
       });
       if (decision === undefined || decision.state !== "adopted") {
         failHumanDecisionFeedback(
@@ -844,18 +878,12 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
           "business-blocked",
         );
       }
-      requestedSpatialScopeRefs = [decision.spatialScopeRef];
     }
+    // 执行记录由 C28 按命令调用身份复验，交出已复验的命令上下文即可：同一调用身份再签
+    // 一次会与命令级签发构成重放冲突。采纳来源的空间是否覆盖，由 C28 的执行范围复验判定。
     return await this.#ports.responseLifecycle.recordExecution({
       ...command,
-      authorization: await this.#issueAuthorization({
-        branch: EXECUTION_BRANCH_V1,
-        invocationId: command.commandId,
-        projectId: command.projectId,
-        actorId: command.actorId,
-        requestedAt: command.issuedAt,
-        requestedSpatialScopeRefs,
-      }),
+      authorization: verified,
     });
   }
 
@@ -875,14 +903,7 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
         "business-blocked",
       );
     }
-    const authorization = await this.#issueAuthorization({
-      branch: FEEDBACK_BRANCH_V1,
-      invocationId: command.commandId,
-      projectId: command.projectId,
-      actorId: command.actorId,
-      requestedAt: command.issuedAt,
-      requestedSpatialScopeRefs: verified.spatialScopeRefs,
-    });
+    const authorization = verified;
     const assessment = await this.#readActualAssessment(command, selector, verified);
     const inputDigest = sha256CanonicalJson({
       feedback: responseFeedbackDigest({
@@ -937,6 +958,9 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
       failHumanDecisionFeedback(prepared.detailCode, "idempotency");
     }
     const frozen = prepared.row;
+    // 分段冻结的预测以冻结行为准：首次由 C28 交出并随提交落库，重放只读冻结行，
+    // 两次启动因此冻结同一预测，不会因重试改判偏差支路。
+    let effectForecastRef = frozen.effectForecastRef;
     if (frozen.state === "prepared") {
       const recorded = await this.#ports.responseLifecycle.recordFeedback({
         schemaVersion: "1",
@@ -957,15 +981,22 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
       ) {
         failHumanDecisionFeedback("human-decision-feedback-contract-drift", "terminal");
       }
+      effectForecastRef = recorded.result.effectForecastRef;
       await this.#ports.feedbackSnapshots.markSnapshotCommitted({
         projectId: command.projectId,
         feedbackInputSnapshotRef: frozen.feedbackInputSnapshotRef,
         committedAt: this.#nowIso(),
+        ...(effectForecastRef === undefined ? {} : { effectForecastRef }),
         authorization,
       });
     }
     if (frozen.segmentStartedAt === undefined) {
-      const failed = await this.#startFeedbackSegment({ command, frozen, assessment });
+      const failed = await this.#startFeedbackSegment({
+        command,
+        frozen,
+        assessment,
+        ...(effectForecastRef === undefined ? {} : { effectForecastRef }),
+      });
       if (failed !== undefined) return failed;
       await this.#ports.feedbackSnapshots.markSegmentStarted({
         projectId: command.projectId,
@@ -1083,10 +1114,14 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
         readonly reference: VersionReference;
       };
     };
+    /** C28 解析出的真实效果预测：冻结进分段入口，A2/A3 据此核对偏差并驱动校准。 */
+    readonly effectForecastRef?: EffectForecastRefV1;
   }): Promise<{ readonly kind: "failed"; readonly error: ModuleErrorV1 } | undefined> {
     const authorization = await this.#issueAuthorization({
       branch: "workflow.start-run",
-      invocationId: input.command.commandId,
+      // 必须与 C30 运行时实际使用的调用身份逐字一致：分段启动命令身份是
+      // `${command.commandId}:feedback-segment`，复验按同一身份绑定，签发侧给原始命令 id 会一律拒绝。
+      invocationId: `${input.command.commandId}:feedback-segment`,
       projectId: input.command.projectId,
       actorId: input.command.actorId,
       requestedAt: input.command.issuedAt,
@@ -1108,6 +1143,8 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
         feedbackRef: input.frozen.snapshot.feedbackRef,
         assessmentBasisReleaseSetRef: input.assessment.assessmentBasisReleaseSetRef,
         frozenAssessmentBasisRef: input.assessment.assessmentInputSnapshotRef,
+        // 预测不可用时不带该字段：分段按既有 `effect-forecast-missing` 语义跳过支路，不补造预测。
+        ...(input.effectForecastRef === undefined ? {} : { forecastRef: input.effectForecastRef }),
       },
     });
     return result.kind === "failed" ? result : undefined;

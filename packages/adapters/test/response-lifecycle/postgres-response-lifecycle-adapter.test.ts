@@ -969,7 +969,11 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
     const feedbackResult = succeeded(feedback);
     expect(feedbackResult.result.kind).toBe("feedback");
     const event = await state.lastEvent("warning.feedback-recorded.v1");
-    expect(event?.["producerCommandId"]).toBe("c28-feedback-write");
+    // 回执身份按模块派生（`business.command_receipts.command_id` 全局唯一），事件的生产者
+    // 必须与该回执逐字一致，否则事务单元会以事件契约不符关闭失败。
+    expect(event?.["producerCommandId"]).toBe(
+      "c28-feedback-write:c28-warning-response.record-feedback",
+    );
     const payload = event?.["payload"] as {
       forecast: { kind: string; effectForecastRef?: { reference: { entityId: string } } };
       feedbackRef: { reference: { entityId: string } };
@@ -978,7 +982,12 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
     expect(payload.forecast.effectForecastRef?.reference.entityId).toBe(
       forecastRef?.reference.entityId,
     );
-    expect(await state.countEvents("warning.feedback-recorded.v1", "c28-feedback-write")).toBe(1);
+    expect(
+      await state.countEvents(
+        "warning.feedback-recorded.v1",
+        "c28-feedback-write:c28-warning-response.record-feedback",
+      ),
+    ).toBe(1);
     const row = await state.recommendation.c26.c25.postgres.postgres.adminPool.query<{
       forecast_availability: string;
       effect_forecast_id: string | null;
@@ -1616,14 +1625,22 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
     expect(failed.kind).toBe("failed");
     expect(await state.countRows("response_adoption_decisions")).toBe(before);
     expect(
-      await state.countCommandRows("response_adoption_decisions", "c28-rollback-decision"),
+      await state.countCommandRows(
+        "response_adoption_decisions",
+        // 回执身份按模块派生，领域行的 `command_id` 外键指向该派生值。
+        "c28-rollback-decision:c28-warning-response.adopt-recommendation",
+      ),
     ).toBe(0);
     await state.clearAuditConflict("audit-c28-rollback-decision:response-adoption-decision");
     const succeeded = await state.recordDecision(command);
     expect(succeeded.kind).toBe("succeeded");
     expect(await state.countRows("response_adoption_decisions")).toBe(before + 1);
     expect(
-      await state.countCommandRows("response_adoption_decisions", "c28-rollback-decision"),
+      await state.countCommandRows(
+        "response_adoption_decisions",
+        // 回执身份按模块派生，领域行的 `command_id` 外键指向该派生值。
+        "c28-rollback-decision:c28-warning-response.adopt-recommendation",
+      ),
     ).toBe(1);
     // 同键异载荷：同一命令标识不得改写已成立的决定。
     const conflicting = await state.recordDecision({
@@ -1673,7 +1690,11 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
     expect(await state.countReceipts("warning-response.record-feedback")).toBe(receiptsBefore);
     expect(await state.countAudit("warning-response.record-feedback")).toBe(auditsBefore);
     expect(
-      await state.countEvents("warning.feedback-recorded.v1", "c28-outbox-rollback-feedback"),
+      await state.countEvents(
+        "warning.feedback-recorded.v1",
+        // 回执身份按模块派生，事件生产者与回执逐字一致。
+        "c28-outbox-rollback-feedback:c28-warning-response.record-feedback",
+      ),
     ).toBe(0);
 
     const retried = await state.recordFeedback(command);
@@ -1687,7 +1708,11 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
     expect(await state.countReceipts("warning-response.record-feedback")).toBe(receiptsBefore + 1);
     expect(await state.countAudit("warning-response.record-feedback")).toBe(auditsBefore + 1);
     expect(
-      await state.countEvents("warning.feedback-recorded.v1", "c28-outbox-rollback-feedback"),
+      await state.countEvents(
+        "warning.feedback-recorded.v1",
+        // 回执身份按模块派生，事件生产者与回执逐字一致。
+        "c28-outbox-rollback-feedback:c28-warning-response.record-feedback",
+      ),
     ).toBe(1);
   });
 

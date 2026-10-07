@@ -110,7 +110,9 @@ test("知识治理四页呈现真实发布事实且无写入口", async ({ page 
   await page.getByRole("link", { name: "评分规则" }).click();
   await page.waitForURL(/\/knowledge\/rules/);
   await expect(page.getByText("适用规则集", { exact: false }).first()).toBeVisible();
-  await expect(page.getByText("RULE-SETTLE-001").first()).toBeVisible();
+  // 规则来自 C19 真实编制并发布的那份，标识是 C18 指标派生出来的，不再是早期播种夹具里的
+  // `RULE-SETTLE-001`——那个标识在源码里没有任何登记来源。
+  await expect(page.getByText("RULE-demo-indicator-settlement").first()).toBeVisible();
 
   await page.getByRole("link", { name: "风险矩阵" }).click();
   await page.waitForURL(/\/knowledge\/matrix/);
@@ -119,8 +121,9 @@ test("知识治理四页呈现真实发布事实且无写入口", async ({ page 
 
   await page.getByRole("link", { name: "措施库" }).click();
   await page.waitForURL(/\/knowledge\/measures/);
-  await expect(page.getByText("MS-001").first()).toBeVisible();
-  await expect(page.getByText("加强同步注浆并复测")).toBeVisible();
+  // 措施同样取 C18 真实发布的那条；断言步骤的关键语义，不锁死整段文案。
+  await expect(page.getByText("demo-measure-settlement").first()).toBeVisible();
+  await expect(page.getByText(/降低推进速率.*同步注浆/)).toBeVisible();
 });
 
 test("工序模型页呈现已发布模型与必含五节点覆盖", async ({ page }) => {

@@ -80,7 +80,36 @@ export type AssessmentBasisReleaseSetRefV1 = z.infer<typeof AssessmentBasisRelea
 /* 冻结措施候选（D-03）                                                        */
 /* -------------------------------------------------------------------------- */
 
-/** 任务版本内的单条预警及其精确评估链：候选与校验都按该冻结引用复核。 */
+/**
+ * 风险等级触发分支的冻结依据（design D-13）。
+ *
+ * 风险可接受阈值表达的是风险等级，监测映射表达的是指标身份，两者不是同一个领域对象。
+ * 该摘要只保存重建校验所需的最小事实：两份配置发布引用与工件引用、阈值/等级身份与
+ * 矩阵序数、关联评估的有效指标集合。不复制完整配置或评估正文，也不把阈值身份放进
+ * 监测指标身份里。
+ */
+export const RecommendationRiskAcceptanceBasisV1Schema = z.strictObject({
+  thresholdReleaseRef: VersionReferenceSchema,
+  riskMatrixReleaseRef: VersionReferenceSchema,
+  thresholdArtifactRef: ContentArtifactRefV1Schema,
+  riskMatrixArtifactRef: ContentArtifactRefV1Schema,
+  thresholdId: IdentifierSchema,
+  maximumAcceptedLevelId: IdentifierSchema,
+  riskLevelId: IdentifierSchema,
+  maximumAcceptedLevelOrdinal: positiveInteger.max(32),
+  riskLevelOrdinal: positiveInteger.max(32),
+  assessedIndicatorIds: uniqueByKey(IdentifierSchema, (value) => value, 1, 256),
+});
+export type RecommendationRiskAcceptanceBasisV1 = z.infer<
+  typeof RecommendationRiskAcceptanceBasisV1Schema
+>;
+
+/**
+ * 任务版本内的单条预警及其精确评估链：候选与校验都按该冻结引用复核。
+ *
+ * `riskAcceptanceBasis` 只在风险等级触发分支携带，字段可选使旧候选 payload 仍可解析；
+ * 风险等级候选缺失该对象由候选校验显式失败，不回填、不按触发类型直接判通过。
+ */
 export const RecommendationFrozenWarningV1Schema = z.strictObject({
   warningRecordRef: WarningRecordRefV1Schema,
   triggerType: WarningTriggerTypeSchema,
@@ -91,6 +120,7 @@ export const RecommendationFrozenWarningV1Schema = z.strictObject({
   assessmentRecordRef: RiskAssessmentRecordRefV1Schema,
   assessmentInputSnapshotRef: AssessmentInputSnapshotRefV1Schema,
   preparationSnapshotRef: AssessmentPreparationSnapshotRefV1Schema,
+  riskAcceptanceBasis: RecommendationRiskAcceptanceBasisV1Schema.optional(),
 });
 export type RecommendationFrozenWarningV1 = z.infer<typeof RecommendationFrozenWarningV1Schema>;
 

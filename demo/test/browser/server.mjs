@@ -47,6 +47,7 @@ import {
 import { createPostgresRiskIdentificationReadAdapter } from "../../../packages/adapters/dist/identification/read/index.js";
 import {
   PostgresKnowledgeGovernanceAdapter,
+  governedReleaseResolutionInvocationId,
   createPostgresKnowledgeGovernanceReadAdapter,
 } from "../../../packages/adapters/dist/knowledge-governance/index.js";
 import { createPostgresAssessmentConfigurationAdapter } from "../../../packages/adapters/dist/assessment-config/index.js";
@@ -68,6 +69,7 @@ import { createPostgresStandardizedRiskInputFactsReader } from "../../../package
 import { createPostgresExternalRiskInputFactsReader } from "../../../packages/adapters/dist/engineering-data/context-source/index.js";
 import { createRiskInputFactsReader } from "../../../packages/core/dist/risk-assessment/engine/index.js";
 import {
+  CALIBRATION_VALIDATION_POLICY,
   DEMO_FORECAST_POLICIES,
   DEMO_RISK_FLOW_CONFIG,
   createRecommendationPolicies,
@@ -77,6 +79,14 @@ import {
   createRiskAssessmentRuntimePolicies,
   createWarningRuntimePolicies,
   createAssessmentPolicyCatalog,
+  makeDemoAssessmentConfigurationDocuments,
+  DEMO_CONFIGURATION_SET_REF,
+  POSSIBILITY_DEMO_INDICATOR_ID,
+  SETTLEMENT_SLOPE_DEMO_INDICATOR_ID,
+  DEMO_CONFIGURATION_INDICATOR_IDS,
+  DEMO_MEASURE_IDS,
+  DEMO_CALIBRATION_EVIDENCE,
+  DEMO_CALIBRATION_OPERATIONS,
 } from "./deploymentPolicies.mjs";
 import {
   PostgresWarningAssessmentContextReader,
@@ -88,13 +98,35 @@ import {
 } from "../../../packages/adapters/dist/recommendation/index.js";
 import { PostgresAgentTaskAdapter } from "../../../packages/adapters/dist/agent-runtime/index.js";
 import { AgentTaskDefinitionRegistry } from "../../../packages/core/dist/agent-runtime/runtime.js";
-import { createResponseRecommendationTaskDefinition } from "../../../packages/core/dist/recommendation/index.js";
+import {
+  AgentCandidateVersionV1Schema,
+  AgentValidationResultV1Schema,
+  emptyAgentBudgetUsage,
+} from "../../../packages/core/dist/agent-runtime/schema.js";
+import {
+  createResponseRecommendationTaskDefinition,
+  ResponseRecommendationIncrementV1Schema,
+} from "../../../packages/core/dist/recommendation/index.js";
+import {
+  CalibrationCandidateV1Schema,
+  createCalibrationSuggestionTaskDefinition,
+} from "../../../packages/core/dist/calibration/index.js";
+import {
+  buildCompletedAgentTaskResult,
+  makeAgentError,
+} from "../../../packages/core/dist/agent-runtime/runtime.js";
+import { createScoringRuleAuthoringTaskDefinition } from "../../../packages/core/dist/scoring-rules/index.js";
+import {
+  KnowledgeGovernanceCommandV1Schema,
+  StartAgentTaskCommandV1Schema,
+} from "../../../packages/contracts/dist/ports/index.js";
 import {
   createEffectForecastModelReaderV1,
   createPostgresResponseLifecycleAdapter,
   createPostgresResponseLifecycleContextReader,
   createProductionEffectForecastExecutorsV1,
 } from "../../../packages/adapters/dist/response-lifecycle/index.js";
+import { EFFECT_FORECAST_MODEL_PURPOSE_CODE_V1 } from "../../../packages/core/dist/response-lifecycle/index.js";
 import { createPostgresCalibrationAdapter } from "../../../packages/adapters/dist/calibration/index.js";
 import { createPostgresHumanDecisionFeedbackAdapter } from "../../../packages/adapters/dist/human-decision-feedback/index.js";
 import {
@@ -172,6 +204,14 @@ const CONTENT_TYPES = {
   ".png": "image/png",
   ".woff2": "font/woff2",
 };
+
+/**
+ * C28 读取人工反馈文档时校验的用途码。
+ *
+ * 该常量目前只定义在 `postgres-response-lifecycle-adapter.ts` 内部、未从包导出；
+ * 装配侧必须与读侧逐字一致，否则 C28 会在记录反馈时以工件用途码不符关闭失败。
+ */
+const FEEDBACK_ARTIFACT_PURPOSE_CODE_V1 = "warning-response.feedback-artifact";
 
 const kindRef = (kind, entityId, versionId = "1") => ({
   kind,
@@ -600,34 +640,61 @@ export const startDemoBrowserServer = async () => {
     const spatialScopeRef = baseAuth.spatialScopeRefs[0];
 
     /**
-     * 下游上下文默认请求的来源版本：operator 在本工程共享的资料 A。
+     * 下游上下文默认请求的来源版本：operator 在本工程共享的资料（资料 A 与 C12 转换来源）。
      *
      * 不带来源授权签发的上下文，其 `sourceAccessGrantRefs` 为空；下游按记录真实资料版本
      * 复验时（阶段二 `verifyScope`）解析出的来源授权不在该上下文之内，C06 会以
-     * `verify.narrowing` 拒绝它自己签发的上下文。资料 B 仅系统管理员可见，不在此列。
+     * `verify.narrowing` 拒绝它自己签发的上下文。C08 任务信封同属这一类：它在
+     * `recordCandidate`/`completeTask` 时按任务产出的工件访问快照复验，而那份快照继承自
+     * 配置文档的来源授权，所以启动上下文与 `taskAuthorization` 必须请求同一份来源集。
+     * 资料 B 仅系统管理员可见，不在此列。
      * 先声明、登记完成后填充：签发接缝必须晚于资料登记才有可请求的来源。
      */
     const downstreamSourceVersionRefs = [];
+    /**
+     * 演示账号会话索引：按 accountId 找到该账号自己的会话。
+     *
+     * 下游签发必须用**请求者自己的**会话。若一律用 operator 会话签发，签出的上下文里
+     * actorId 是 operator，而调用点仍以真实请求者发起读取，C04 会因为上下文主体与请求
+     * 主体不一致关闭失败——现象是 operator 什么都能读、其他角色一律读不到正文。
+     * 该索引也让「谁读」和「以什么身份读」保持同一事实，不在 harness 里洗身份。
+     */
+    const sessionsByAccountId = new Map(
+      [operatorSession, viewerSession, responderSession].map((session) => [
+        session.accountRef.entityId,
+        session.sessionToken,
+      ]),
+    );
     /**
      * C25/C26/C29 共用的真实 C06 下游签发接缝（design D-06）。
      *
      * 按调用方请求的精确 branch 逐次签发，不合并能力也不裁剪：请求什么 branch 就签什么，
      * 绑定不符时 C06 自己关闭失败。空间范围必须显式给出——human-session 路径不回填父
-     * 上下文范围，漏传会让下游上下文范围为空而不是全工程。
+     * 上下文范围，漏传会让下游上下文范围为空而不是全工程。请求者不在演示账号索引内时
+     * 关闭失败，由调用方回落到自己的上下文，不代签成 operator。
      */
-    const authorizeDownstream = async (request) =>
-      (
-        await access.authorize({
-          invocation: { kind: "human-session", sessionToken: operatorSession.sessionToken },
-          invocationId: request.invocationId,
-          projectId: request.projectId,
-          branch: request.branch,
-          requestedSpatialScopeRefs: [...(request.requestedSpatialScopeRefs ?? [spatialScopeRef])],
-          requestedSourceVersionRefs: [
-            ...(request.requestedSourceVersionRefs ?? downstreamSourceVersionRefs),
-          ],
-        })
-      ).context;
+    const authorizeDownstream = async (request) => {
+      const sessionToken = sessionsByAccountId.get(request.actorId);
+      if (sessionToken === undefined) {
+        throw new Error(`no demo session for actor ${request.actorId}`);
+      }
+      try {
+        return (
+          await access.authorize({
+            invocation: { kind: "human-session", sessionToken },
+            invocationId: request.invocationId,
+            projectId: request.projectId,
+            branch: request.branch,
+            requestedSpatialScopeRefs: [...(request.requestedSpatialScopeRefs ?? [spatialScopeRef])],
+            requestedSourceVersionRefs: [
+              ...(request.requestedSourceVersionRefs ?? downstreamSourceVersionRefs),
+            ],
+          })
+        ).context;
+      } catch (error) {
+                throw error;
+      }
+    };
     /**
      * C15 组合根：清洗任务经 C06 的 `agent-task.start-task` 分支取得唯一启动上下文，
      * 再由同一个注入 C06 verifier 的 C08 adapter 创建。这里只声明受信调用来源，
@@ -920,6 +987,10 @@ export const startDemoBrowserServer = async () => {
     }
     const convertibleSourceVersionRef = convertibleDelivery.result.sourceVersionRef;
     await reviseSourceAccess(convertibleSourceVersionRef, "c15", "project-shared", []);
+    // 下游上下文的默认来源集必须覆盖这条链真正读取的资料：C19 组装的适用规则集按准备快照
+    // 的来源登记，读取它的上下文少一个来源授权就过不了工件注册表的 `containsAll` 复验。
+    // C12 转换来源是工程内共享，operator 有权；受限的资料 B 不在其列，也不应出现在这里。
+    downstreamSourceVersionRefs.push(convertibleSourceVersionRef);
 
     const documentConversion = createStructuredDocumentConversionAdapter({
       // 不传 db 时适配器只把结果留在内存，C15 解析资料时查不到转换记录。
@@ -1147,11 +1218,47 @@ export const startDemoBrowserServer = async () => {
       resultRef: cleaningResultRef,
       now: claimStep(4),
     });
-    /** C19 编制要用的真实清洗任务引用：来自上面的 C08 任务，不是构造出来的。 */
-    const dataCleaningTaskRef = {
-      kind: "agent-task",
-      reference: cleaningTaskRef.reference,
-    };
+    /**
+     * C19 编制要用的真实清洗任务引用：C08 认领返回的信封引用本身已是完整
+     * `AgentTaskRefV1`（含 taskType、triggerMode 与四项任务策略引用），整体透传，
+     * 不裁剪成只有 kind/reference——那会让 C19 按 AgentTaskRefV1 解析时以类型不符失败。
+     */
+    const dataCleaningTaskRef = cleaningTaskRef;
+
+    /**
+     * C19 编制候选的证据定位符：取自 C15 真实清洗结果里保留的资料段。编制校验要求
+     * `evidenceLocator.sourceSegmentId` 与 `evidenceReferences[].locator.sourceSegmentId`
+     * 都命中保留段，因此这里经公开只读接缝读回结果取实际段标识，不凭来源引用猜段名。
+     */
+    const cleaningReadAuthorization = await operatorAuth(
+      "demo-c15-result-read",
+      "engineering-data.evidence-access",
+      [convertibleSourceVersionRef],
+    );
+    const cleaningResultRead = await cleaning.store.readBoundResult({
+      projectId: PROJECT_ID,
+      actorId: cleaningReadAuthorization.actorId,
+      requestId: "demo-c15-result-read",
+      requestedAt: cleaningReadAuthorization.decidedAt,
+      authorization: cleaningReadAuthorization,
+      taskRef: dataCleaningTaskRef,
+    });
+    if (cleaningResultRead.kind !== "ok") {
+      throw new Error(
+        `demo fixture C15 结果读取失败：${JSON.stringify(cleaningResultRead).slice(0, 400)}`,
+      );
+    }
+    const retainedSourceSegments = cleaningResultRead.result.inputs
+      .flatMap((input) =>
+        (input.retainedSegmentIds ?? []).map((sourceSegmentId) => ({
+          sourceVersionRef: input.sourceVersionRef,
+          sourceSegmentId,
+        })),
+      )
+      .filter((entry) => entry.sourceVersionRef !== undefined);
+    if (retainedSourceSegments.length === 0) {
+      throw new Error("demo fixture C15 未保留任何资料段，C19 编制无合法证据可引");
+    }
 
     // 任务收口后重放同一冻结命令：命令身份与幂等键不变，C08 不会再建第二条任务。
     const cleaningFreezeSettled = await cleaning.store.freezeIdentificationPreparation({
@@ -1183,152 +1290,185 @@ export const startDemoBrowserServer = async () => {
     const monitoringAuth = (invocationId, branch) =>
       operatorAuth(invocationId, branch, [sourceA.sourceVersionRef]);
     const seriesRef = kindRef("monitoring-series", "demo-c32-series-settlement");
-    const revised = await monitoringStore.reviseSeries({
-      commandId: "demo-browser-series",
-      idempotencyKey: "demo-browser-series",
-      projectId: PROJECT_ID,
-      actorId: baseAuth.actorId,
-      issuedAt: NOW,
-      authorization: await monitoringAuth(
-        "demo-browser-series",
+    /**
+     * 资料 A 首个资料段的证据定位符：监测样本与工序模型正文共用同一条已登记证据。
+     */
+    const sampleEvidence = evidenceFor(sourceA.sourceVersionRef, sourceA.segmentIds[0]);
+
+    /**
+     * 登记一条真实监测序列并冻结它的快照：C25 的指标实际取值只能来自冻结快照。
+     *
+     * 每条序列各自走一遍「序列修订 → 可用性策略 → 样本工件 → 批次登记 → 快照冻结」，
+     * 不共用正文也不共用策略：不同指标量纲不同，快照的 cutoff 网格也不同。
+     */
+    const registerMonitoringSeries = async (input) => {
+      const seriesRef = kindRef("monitoring-series", input.seriesId);
+      const policyRef = versionRef(`${input.seriesId}-availability-policy`);
+      const identity = (purpose) => `demo-browser-${input.seriesId}-${purpose}`;
+      const monitoringAuth = (invocationId, branch) =>
+        operatorAuth(invocationId, branch, [sourceA.sourceVersionRef]);
+      const revised = await monitoringStore.reviseSeries({
+        commandId: identity("series"),
+        idempotencyKey: identity("series"),
+        projectId: PROJECT_ID,
+        actorId: baseAuth.actorId,
+        issuedAt: NOW,
+        authorization: await monitoringAuth(identity("series"), "engineering-data.register-monitoring-batch"),
+        monitoringSeriesRef: seriesRef,
+        expectedVersion: "none",
+        projectRevisionRef,
+        spatialScopeRef: businessSpatialScopeRef,
+        monitoringObject: input.monitoringObject,
+        monitoringIndicator: input.monitoringIndicator,
+        parameterCode: input.parameterCode,
+        canonicalUnit: input.canonicalUnit,
+        unitConversions: [],
+        effectivePeriod: { validFrom: NOW },
+      });
+      if (revised.kind !== "succeeded") {
+        throw new Error(`demo fixture series failed ${input.seriesId}: ${JSON.stringify(revised).slice(0, 500)}`);
+      }
+      const policy = await monitoringStore.registerAvailabilityPolicy({
+        commandId: identity("policy"),
+        idempotencyKey: identity("policy"),
+        projectId: PROJECT_ID,
+        actorId: baseAuth.actorId,
+        issuedAt: NOW,
+        authorization: await monitoringAuth(identity("policy"), "engineering-data.register-monitoring-batch"),
+        policy: {
+          availabilityPolicyRef: policyRef,
+          projectId: PROJECT_ID,
+          monitoringSeriesRef: seriesRef,
+          windowDurationMs: 10_000,
+          intervalMs: 1_000,
+          maxInterpolationGapMs: 2_000,
+          slopeWindowSize: 5,
+          accelerationWindowSize: 5,
+          frequencyWindowSize: 5,
+          anomalyBaselineSize: 2,
+          anomalyScaleFloor: 0.1,
+          frequencyPowerFloor: 0,
+          minimumCoverageRatio: 0.5,
+          maxFrequencySamples: 32,
+          algorithmVersions: {
+            alignment: "a1",
+            slope: "s1",
+            acceleration: "g1",
+            frequency: "f1",
+            anomaly: "n1",
+          },
+          recordedAt: NOW,
+          audit: { actorId: baseAuth.actorId, action: "policy", recordedAt: NOW },
+        },
+      });
+      if (policy.kind !== "succeeded") throw new Error(`demo fixture availability policy failed ${input.seriesId}`);
+      const sampleLines = [
+        JSON.stringify({
+          schemaVersion: "1",
+          mediaType: "application/x-ndjson",
+          monitoringSeriesRef: seriesRef,
+          projectRevisionRef,
+          spatialScopeRef: businessSpatialScopeRef,
+          sourceVersionRef: sourceA.sourceVersionRef,
+          sourceSegmentSetRef: sourceA.sourceSegmentSetRef,
+          productionStrategyRef: versionRef("monitoring-production"),
+          sampleCount: 5,
+        }),
+        ...[6, 7, 8, 9, 10].map((second) =>
+          JSON.stringify({
+            sourceSampleKey: `s-${second}`,
+            sampledAt: `2030-01-01T00:00:${String(second).padStart(2, "0")}.000Z`,
+            value: input.sampleAt(second),
+            unit: input.canonicalUnit,
+            evidenceReferences: [sampleEvidence],
+          }),
+        ),
+      ].join("\n");
+      const sampleAuth = await monitoringAuth(
+        identity("samples"),
         "engineering-data.register-monitoring-batch",
-      ),
-      monitoringSeriesRef: seriesRef,
-      expectedVersion: "none",
-      projectRevisionRef,
-      spatialScopeRef: businessSpatialScopeRef,
+      );
+      const sampleArtifact = await artifactStore.put(
+        ArtifactPutCommandV1Schema.parse({
+          schemaVersion: "1",
+          commandId: identity("samples"),
+          idempotencyKey: identity("samples"),
+          projectId: PROJECT_ID,
+          actorId: sampleAuth.actorId,
+          issuedAt: NOW,
+          authorization: sampleAuth,
+          requiredCapability: "engineering-data.write",
+          artifactId: `demo-browser-samples-${input.seriesId}`,
+          artifactKind: "content",
+          purposeCode: "engineering-data.register-monitoring-batch",
+          mediaType: "application/x-ndjson",
+          parentArtifactRefs: [],
+          evidenceReferences: [sampleEvidence],
+          additionalSpatialScopeRefs: [],
+          additionalSourceAccessGrantRefs: [],
+        }),
+        (async function* () {
+          yield new TextEncoder().encode(sampleLines);
+        })(),
+      );
+      const batch = await registry.apply({
+        commandId: identity("batch"),
+        idempotencyKey: identity("batch"),
+        projectId: PROJECT_ID,
+        actorId: sampleAuth.actorId,
+        issuedAt: NOW,
+        authorization: await monitoringAuth(identity("batch"), "engineering-data.register-monitoring-batch"),
+        kind: "register-monitoring-batch",
+        payload: {
+          monitoringSeriesRef: seriesRef,
+          deliveryKey: identity("batch"),
+          sampleArtifactRef: sampleArtifact.artifactRef,
+          window: { from: "2030-01-01T00:00:05.000Z", to: "2030-01-01T00:00:11.000Z" },
+          relation: { kind: "original" },
+        },
+      });
+      if (batch.kind !== "succeeded") {
+        throw new Error(`demo fixture monitoring batch failed ${input.seriesId}: ${JSON.stringify(batch)}`);
+      }
+      const snapshot = await registry.freeze({
+        commandId: identity("freeze"),
+        idempotencyKey: identity("freeze"),
+        projectId: PROJECT_ID,
+        actorId: sampleAuth.actorId,
+        issuedAt: NOW,
+        authorization: await monitoringAuth(identity("freeze"), "engineering-data.monitoring-snapshot"),
+        kind: "monitoring-snapshot",
+        payload: {
+          monitoringSeriesRef: seriesRef,
+          cutoff: "2030-01-01T00:00:10.000Z",
+          availabilityPolicyRef: policyRef,
+        },
+      });
+      if (snapshot.kind !== "succeeded") {
+        throw new Error(`demo fixture monitoring snapshot failed ${input.seriesId}`);
+      }
+      return snapshot.result.monitoringSnapshotRef;
+    };
+
+    // 后果侧：地表沉降累计值（演示数据 2 mm/s 线性上升，cutoff 处 20 mm）。
+    const settlementMonitoringSnapshotRef = await registerMonitoringSeries({
+      seriesId: "demo-c32-series-settlement",
       monitoringObject: "地表沉降监测点",
       monitoringIndicator: "地表沉降",
       parameterCode: "settlement",
       canonicalUnit: "mm",
-      unitConversions: [{ fromUnit: "cm", scale: 10, offset: 0 }],
-      effectivePeriod: { validFrom: NOW },
+      sampleAt: (second) => second * 2,
     });
-    if (revised.kind !== "succeeded") throw new Error("demo fixture series failed");
-    const policy = await monitoringStore.registerAvailabilityPolicy({
-      commandId: "demo-browser-policy",
-      idempotencyKey: "demo-browser-policy",
-      projectId: PROJECT_ID,
-      actorId: baseAuth.actorId,
-      issuedAt: NOW,
-      authorization: await monitoringAuth(
-        "demo-browser-policy",
-        "engineering-data.register-monitoring-batch",
-      ),
-      policy: {
-        availabilityPolicyRef: versionRef("demo-c32-availability-policy"),
-        projectId: PROJECT_ID,
-        monitoringSeriesRef: seriesRef,
-        windowDurationMs: 10_000,
-        intervalMs: 1_000,
-        maxInterpolationGapMs: 2_000,
-        slopeWindowSize: 5,
-        accelerationWindowSize: 5,
-        frequencyWindowSize: 5,
-        anomalyBaselineSize: 2,
-        anomalyScaleFloor: 0.1,
-        frequencyPowerFloor: 0,
-        minimumCoverageRatio: 0.5,
-        maxFrequencySamples: 32,
-        algorithmVersions: {
-          alignment: "a1",
-          slope: "s1",
-          acceleration: "g1",
-          frequency: "f1",
-          anomaly: "n1",
-        },
-        recordedAt: NOW,
-        audit: { actorId: baseAuth.actorId, action: "policy", recordedAt: NOW },
-      },
+    // 可能性侧：泥水压力（演示数据 220 kPa 起，每秒 +20 kPa，cutoff 处 320 kPa）。
+    // 监测指标名取自封闭词表 `MONITORING_INDICATOR_VALUES`，不能用词表外的自造名称。
+    const slurryPressureMonitoringSnapshotRef = await registerMonitoringSeries({
+      seriesId: "demo-c32-series-slurry-pressure",
+      monitoringObject: "泥水压力监测点",
+      monitoringIndicator: "泥水压力",
+      parameterCode: "slurry-pressure",
+      canonicalUnit: "kPa",
+      sampleAt: (second) => 120 + second * 20,
     });
-    if (policy.kind !== "succeeded") throw new Error("demo fixture availability policy failed");
-    const sampleEvidence = evidenceFor(sourceA.sourceVersionRef, sourceA.segmentIds[0]);
-    const sampleLines = [
-      JSON.stringify({
-        schemaVersion: "1",
-        mediaType: "application/x-ndjson",
-        monitoringSeriesRef: seriesRef,
-        projectRevisionRef,
-        spatialScopeRef: businessSpatialScopeRef,
-        sourceVersionRef: sourceA.sourceVersionRef,
-        sourceSegmentSetRef: sourceA.sourceSegmentSetRef,
-        productionStrategyRef: versionRef("monitoring-production"),
-        sampleCount: 5,
-      }),
-      ...[6, 7, 8, 9, 10].map((second) =>
-        JSON.stringify({
-          sourceSampleKey: `s-${second}`,
-          sampledAt: `2030-01-01T00:00:${String(second).padStart(2, "0")}.000Z`,
-          value: second * 2,
-          unit: "mm",
-          evidenceReferences: [sampleEvidence],
-        }),
-      ),
-    ].join("\n");
-    const sampleAuth = await monitoringAuth(
-      "demo-browser-samples",
-      "engineering-data.register-monitoring-batch",
-    );
-    const sampleArtifact = await artifactStore.put(
-      ArtifactPutCommandV1Schema.parse({
-        schemaVersion: "1",
-        commandId: "demo-browser-samples",
-        idempotencyKey: "demo-browser-samples",
-        projectId: PROJECT_ID,
-        actorId: sampleAuth.actorId,
-        issuedAt: NOW,
-        authorization: sampleAuth,
-        requiredCapability: "engineering-data.write",
-        artifactId: "demo-browser-samples",
-        artifactKind: "content",
-        purposeCode: "engineering-data.register-monitoring-batch",
-        mediaType: "application/x-ndjson",
-        parentArtifactRefs: [],
-        evidenceReferences: [sampleEvidence],
-        additionalSpatialScopeRefs: [],
-        additionalSourceAccessGrantRefs: [],
-      }),
-      (async function* () {
-        yield new TextEncoder().encode(sampleLines);
-      })(),
-    );
-    const batch = await registry.apply({
-      commandId: "demo-browser-batch",
-      idempotencyKey: "demo-browser-batch",
-      projectId: PROJECT_ID,
-      actorId: sampleAuth.actorId,
-      issuedAt: NOW,
-      authorization: await monitoringAuth(
-        "demo-browser-batch",
-        "engineering-data.register-monitoring-batch",
-      ),
-      kind: "register-monitoring-batch",
-      payload: {
-        monitoringSeriesRef: seriesRef,
-        deliveryKey: "demo-browser-batch",
-        sampleArtifactRef: sampleArtifact.artifactRef,
-        window: { from: "2030-01-01T00:00:05.000Z", to: "2030-01-01T00:00:11.000Z" },
-        relation: { kind: "original" },
-      },
-    });
-    if (batch.kind !== "succeeded") {
-      throw new Error(`demo fixture monitoring batch failed: ${JSON.stringify(batch)}`);
-    }
-    const snapshot = await registry.freeze({
-      commandId: "demo-browser-freeze",
-      idempotencyKey: "demo-browser-freeze",
-      projectId: PROJECT_ID,
-      actorId: sampleAuth.actorId,
-      issuedAt: NOW,
-      authorization: await monitoringAuth("demo-browser-freeze", "engineering-data.monitoring-snapshot"),
-      kind: "monitoring-snapshot",
-      payload: {
-        monitoringSeriesRef: seriesRef,
-        cutoff: "2030-01-01T00:00:10.000Z",
-        availabilityPolicyRef: versionRef("demo-c32-availability-policy"),
-      },
-    });
-    if (snapshot.kind !== "succeeded") throw new Error("demo fixture monitoring snapshot failed");
 
     // ---- 治理发布播种（SQL 行 + C04 正文工件；合成样本、待甲方复核） ----
     const governanceAuth = await operatorAuth(
@@ -1370,9 +1510,13 @@ export const startDemoBrowserServer = async () => {
       .execute();
 
     const seedGovernanceRelease = async (definitionType, definitionId, body) => {
+      // 工件用途码必须与该类定义所属领域登记的值一致：C04 读取按 `purposeCode` 与写入
+      // 清单完全相等判定，治理读才读得出播种正文。识别族统一用知识包用途码。
       const artifactRef = await putJson(
         `demo-browser-governance-${definitionId}`,
-        "knowledge-modeling.governance-read",
+        // 工件用途码必须与该类定义所属领域登记的值一致：C04 读取按 `purposeCode` 与写入
+        // 清单完全相等判定，治理读才读得出播种正文。识别族统一用知识包用途码。
+        "identification-knowledge-package",
         body,
         governanceAuth,
         "knowledge-modeling.read",
@@ -1431,7 +1575,16 @@ export const startDemoBrowserServer = async () => {
           revision_id: `${definitionId}-rev-1`,
           revision_version_id: "1",
           revision_ref: JSON.stringify(kindRef("knowledge-revision", `${definitionId}-rev-1`)),
-          review_task_ref: JSON.stringify(kindRef("review-task", `${definitionId}-rt`)),
+          // 发布行会被 C16 的 release 事实读取重新解析：`review_task_ref` 必须满足
+          // `ReviewTaskRefV1` 的判别联合，不能只放一个裸引用——否则同一 definitionType
+          // 再次提交时读取既有发布事实就会按类型不符失败闭合。
+          review_task_ref: JSON.stringify({
+            kind: "review-task",
+            reference: { entityId: `${definitionId}-rt`, versionId: "1" },
+            reviewType: "knowledge-revision",
+            targetRef: kindRef("knowledge-revision", `${definitionId}-rev-1`),
+            waitingRunRef: { kind: "workflow-run", reference: { entityId: `${definitionId}-run`, versionId: "1" } },
+          }),
           review_decision_ref: JSON.stringify(kindRef("review-decision", `${definitionId}-rd`)),
           effective_from: NOW,
           restored_from_release_ref: null,
@@ -1543,148 +1696,10 @@ export const startDemoBrowserServer = async () => {
         ],
       },
     );
-    const scoringRuleReleaseRef = await seedGovernanceRelease(
-      "structured-scoring-rule",
-      "demo-c32-scoring-rule",
-      {
-        schemaVersion: "1",
-        projectRevisionRef,
-        configurationSetRef: versionRef("demo-config-set"),
-        compatibilityRef: versionRef("demo-compatibility"),
-        scoringPolicyRef: versionRef("demo-scoring-policy"),
-        cleaningResultArtifactRef: kindRef("content-artifact", "demo-cleaning-result", `sha256:${sha("cleaning")}`),
-        agentTaskRef,
-        members: [
-          {
-            rule: {
-              ruleId: "RULE-SETTLE-001",
-              applicabilityConditions: {
-                constructionMethod: ["变径盾构法"],
-                stratumCondition: ["富水软弱地层"],
-                engineeringStage: ["变径空间扩挖"],
-              },
-              indicatorItem: "地表沉降",
-              scoringThresholds: [
-                { thresholdId: "th-1", score: 3, value: 10, operator: "gte" },
-              ],
-              gradeIntervals: [{ grade: "高", lowerBound: 3 }],
-              exceptionClauses: [],
-              evidenceLocator: { sourceSegmentId: sourceA.segmentIds[0] },
-              ruleVersion: versionRef("RULE-SETTLE-001"),
-              reviewStatus: "approved",
-            },
-            binding: {
-              sourceVersionRef: sourceA.sourceVersionRef,
-              cleaningResultArtifactRef: kindRef(
-                "content-artifact",
-                "demo-cleaning-result",
-                `sha256:${sha("cleaning")}`,
-              ),
-              evidenceReferences: [sampleEvidence],
-              agentTaskRef,
-            },
-          },
-        ],
-      },
-    );
-    await seedGovernanceRelease("risk-matrix", "demo-c32-risk-matrix", {
-      schemaVersion: "1",
-      definitionType: "risk-matrix",
-      projectRevisionRef,
-      configurationSetRef: versionRef("demo-config-set"),
-      content: {
-        matrixId: "demo-c32-matrix",
-        matrixVersion: "2026.06",
-        possibilityAxis: {
-          bands: [
-            { bandId: "P1", lower: "0", upper: "0.5" },
-            { bandId: "P2", lower: "0.5", upper: "1" },
-          ],
-        },
-        consequenceAxis: {
-          bands: [
-            { bandId: "C1", lower: "0", upper: "0.5" },
-            { bandId: "C2", lower: "0.5", upper: "1" },
-          ],
-        },
-        riskLevels: [
-          { levelId: "I", ordinal: 1 },
-          { levelId: "II", ordinal: 2 },
-          { levelId: "III", ordinal: 3 },
-        ],
-        cells: [
-          { possibilityBandId: "P1", consequenceBandId: "C1", riskLevelId: "III" },
-          { possibilityBandId: "P1", consequenceBandId: "C2", riskLevelId: "II" },
-          { possibilityBandId: "P2", consequenceBandId: "C1", riskLevelId: "II" },
-          { possibilityBandId: "P2", consequenceBandId: "C2", riskLevelId: "I" },
-        ],
-      },
-    });
-    await seedGovernanceRelease("measure-library", "demo-c32-measure-library", {
-      schemaVersion: "1",
-      definitionType: "measure-library",
-      projectRevisionRef,
-      configurationSetRef: versionRef("demo-config-set"),
-      content: {
-        measures: [
-          {
-            measureId: "MS-001",
-            riskEventCategory: "地表沉降超限",
-            applicabilityConditions: [
-              { dimension: "地层条件数据", values: ["富水软弱地层"] },
-              { dimension: "工程阶段数据", values: ["变径空间扩挖"] },
-              { dimension: "施工工法数据", values: ["变径盾构法"] },
-            ],
-            triggerTypes: ["监测指标越限"],
-            steps: [{ stepOrdinal: 1, instruction: "加强同步注浆并复测" }],
-            resourceRequirements: ["注浆设备"],
-            targetIndicatorIds: ["地表沉降"],
-            evidenceRequirements: ["监测日报"],
-            contraindications: [],
-          },
-        ],
-      },
-    });
-    await seedGovernanceRelease("applicable-rule-set", "demo-c32-rule-set", {
-      schemaVersion: "1",
-      projectRevisionRef,
-      applicabilitySnapshotRef: applicabilitySnapshotRef,
-      applicability: {
-        constructionMethod: "变径盾构法",
-        stratumCondition: "富水软弱地层",
-        engineeringStage: "变径空间扩挖",
-      },
-      configurationSetRef: versionRef("demo-config-set"),
-      compatibilityRef: versionRef("demo-compatibility"),
-      assemblyPolicyRef: versionRef("demo-assembly-policy"),
-      requiredAt: NOW,
-      includedMembers: [
-        {
-          ruleId: "RULE-SETTLE-001",
-          ruleVersion: versionRef("RULE-SETTLE-001"),
-          releaseRef: scoringRuleReleaseRef,
-          revisionRef: kindRef("knowledge-revision", "demo-c32-scoring-rule-rev-1"),
-          artifactRef: kindRef(
-            "content-artifact",
-            "demo-cleaning-result",
-            `sha256:${sha("cleaning")}`,
-          ),
-          contentDigest: sha("rule-content"),
-        },
-      ],
-      decisions: [
-        {
-          ruleId: "RULE-SETTLE-001",
-          ruleVersion: versionRef("RULE-SETTLE-001"),
-          decision: "included",
-          reasonCode: "three-dimensional-match",
-          matchedDimensions: ["施工工法数据", "地层条件数据", "工程阶段数据"],
-          ruleReleaseRef: scoringRuleReleaseRef,
-          ruleRevisionRef: kindRef("knowledge-revision", "demo-c32-scoring-rule-rev-1"),
-          relationRefs: [],
-        },
-      ],
-    });
+    // structured-scoring-rule 与 applicable-rule-set 不再由 SQL 播种：C19 现在按真实
+    // 编制任务、C16 提交与发布链产出这两类定义，C11 冻结准备快照后由 C19 组装适用规则集。
+    // 播种行既过不了发布行解析的判别联合，也会与真实发布集在同一 definitionType 上撞出
+    // STALE_VERSION，还会让 C19 `resolve` 取到缺少修订元数据的发布集。
 
     // ---- 关系上下文检索结果播种（C21 登记行 + C04 正文工件） ----
     const relationshipQueryId = "demo-c32-relationship-query";
@@ -2994,36 +3009,197 @@ export const startDemoBrowserServer = async () => {
     // C16 拥有发布/修订/工件引用；C18 与 C19 都经它的 governedReleases 解析精确引用，
     // 各自只持有自己的配置集合与依据投影。C19 的 `resolve` 按冻结的评估准备快照物化
     // `assessment-basis-release-set`，本装配把它作为 C25 的依据读取端口与图组合根的
-    // basisResolver。规则「编制」路径（清洗、任务、Agent、提交修订）不在本装配内，
-    // 一旦误调用即失败，而不是返回未编制成功的空依据。
+    // basisResolver。
+    //
+    // C18 与 C19 两类定义的提交与发布都在 C16 事务内完成，所以 C16 必须持有两者的治理
+    // 策略；而两者又把 C16 当作精确引用解析器，互相成环。这里用两个转发代理打断构造期
+    // 依赖：代理的方法体在调用时才取已建好的适配器，被调用而适配器尚未就绪即抛错，
+    // 不用未定义引用或默认值顶替。
+    const governanceTargets = { assessmentConfiguration: undefined, scoringRules: undefined };
+    const forwardTo = (pick) => ({
+      prepareRevision: (input) => {
+        const target = pick();
+        if (target === undefined) throw new Error("治理策略尚未接线");
+        return target.prepareRevision(input);
+      },
+      appendPreparedRevision: (context, input) => {
+        const target = pick();
+        if (target === undefined) throw new Error("治理策略尚未接线");
+        return target.appendPreparedRevision(context, input);
+      },
+      assertRevisionMetadata: (input) => {
+        const target = pick();
+        if (target === undefined) throw new Error("治理策略尚未接线");
+        return target.assertRevisionMetadata(input);
+      },
+      appendRelease: (context, input) => {
+        const target = pick();
+        if (target === undefined) throw new Error("治理策略尚未接线");
+        return target.appendRelease(context, input);
+      },
+    });
     const knowledgeGovernance = new PostgresKnowledgeGovernanceAdapter({
       db: appRuntime.db,
       transactionUnit,
       access,
       reviewAudit,
+      // D-11：C16 派生精确调用身份后由部署签发审阅授权，C16 再亲自复验一次。
+      // 缺这个提供者时 C16 在进入 C07 前就关闭失败，不允许回退到命令自带 authorization。
+      reviewAuthorizationProvider: {
+        authorize: (request) => operatorAuth(request.invocationId, request.branch),
+      },
+      assessmentConfigurationPolicy: forwardTo(
+        () => governanceTargets.assessmentConfiguration,
+      ),
+      scoringRulesPolicy: forwardTo(() => governanceTargets.scoringRules),
     });
+    // C16 的发布解析按「定义类型集合 + requiredAt + asOfRecordedAt」派生固定 invocationId
+    // 并用它向 C06 复验，而不是沿用调用方命令身份。C18 与 C19 都会把各自的授权原样传下去，
+    // invocationId 必然对不上。统一在这里按 C16 同一派生规则签发解析身份——与 C16 自身
+    // 对审阅授权的处理同形；C18 与 C19 共用这一个解析接缝。
+    const governedReleaseResolver = {
+      resolveGovernedReleases: async (request) =>
+        knowledgeGovernance.resolveGovernedReleases({
+          ...request,
+          authorization: await operatorAuth(
+            governedReleaseResolutionInvocationId(request),
+            "knowledge-modeling.assessment-basis",
+          ),
+        }),
+    };
     const assessmentConfiguration = createPostgresAssessmentConfigurationAdapter({
       db: appRuntime.db,
       transactionUnit,
       artifactStore,
-      governedReleases: knowledgeGovernance,
+      governedReleases: governedReleaseResolver,
     });
+    governanceTargets.assessmentConfiguration = assessmentConfiguration;
+    const scoringRulesPolicy = createScoringRulesPolicy();
+    const scoringAgentTasksRef = {};
+    /**
+     * C19 修订声明的比较基线，按定义类型分别记录。
+     *
+     * 评分规则一次发布只能带一条规则（适用规则集的 `includedMembers` 按 release 唯一），
+     * 所以多个被加权指标要分多轮编制。每一轮的基线由调用方声明：首轮没有基线，之后各轮
+     * 以上一轮的正式发布为基线。C16 提交侧必须用同一个引用，否则 C19 收口时的
+     * 「检测基线 = C16 已校验的修订基线」校验必然失败。
+     */
+    const declaredBaseReleaseRefs = new Map();
     const scoringRules = createPostgresScoringRulesAdapter({
       db: appRuntime.db,
       transactionUnit,
       artifactStore,
       artifactReferenceGuard: artifactStore.referenceGuard,
       access,
-      taskStore: unwiredWritePathSeam("scoringRulesTaskStore"),
-      dataCleaning: unwiredWritePathSeam("scoringRulesDataCleaning"),
+      // C08 适配器持有 C19 编制任务定义：编制任务与清洗任务走同一 C08 契约入口。
+      taskStore: {
+        getTask: (taskRef) => scoringAgentTasksRef.current.getTask(taskRef),
+      },
+      // C15 结果与冻结输入按工程路由到本装配自己的清洗 store：清洗任务在哪个管线
+      // 收口就由同一个 store 读回，不跨管线取事实。
+      dataCleaning: {
+        readBoundResult: (request) => cleaning.store.readBoundResult(request),
+        loadFrozenInput: (task) => cleaning.store.loadFrozenInput(task),
+      },
       configuration: assessmentConfiguration,
-      governedReleases: knowledgeGovernance,
+      governedReleases: governedReleaseResolver,
       // 准备快照投影由所属的 C11 提供，不注入假投影。
       preparationSnapshot: registry,
-      submitRevision: unwiredWritePathSeam("scoringRulesSubmitRevision"),
-      startAgentTask: unwiredWritePathSeam("scoringRulesStartAgentTask"),
+      // C19 的修订提交没有独立写路径：经 C16 `submit-revision` 与 C07 审阅、C16 发布同事务
+      // 落库。授权按提交调用身份单独签发，不复用编制入口的上下文。
+      submitRevision: {
+        submitRevision: async (input) => {
+          // 候选工件的访问快照随写入方的授权而定：C19 规则类候选由编制任务信封写入，
+          // C19 规则集候选由组装入口写入，两者来源范围不同。C16 复验工件时按快照判定，
+          // 范围不一致会以 ARTIFACT_ACCESS_DENIED 关闭，因此这里按定义类型给出对应来源，
+          // 而不是固定一份来源。
+          const isConfigurationType = Object.hasOwn(configurationDocuments, input.definitionType);
+          const submitSourceRefs = isConfigurationType
+            ? [convertibleSourceVersionRef]
+            : [retainedSourceSegments[0].sourceVersionRef, sourceA.sourceVersionRef];
+          const authorization = await operatorAuth(
+            input.commandId,
+            "knowledge-modeling.submit-revision",
+            submitSourceRefs,
+          );
+          const evidenceSourceSegmentId = retainedSourceSegments[0].sourceSegmentId;
+          const evidenceSourceRef = retainedSourceSegments[0].sourceVersionRef;
+          // C18 配置类修订的证据引用指向上面发布配置正文时用的资料来源；C19 规则类修订
+          // 的证据引用必须与候选工件一致（编制时用的是 C15 保留段）。两类不能混用同一个
+          // 占位标识，否则 C16 解析工件时按来源不符失败。
+          const evidenceReferences = isConfigurationType
+            ? [
+                {
+                  locator: { sourceSegmentId: `${input.definitionType}:demo-browser-evidence` },
+                  sourceVersion: { entityId: "demo-browser-source", versionId: "1" },
+                },
+              ]
+            : [
+                {
+                  locator: { sourceSegmentId: evidenceSourceSegmentId },
+                  sourceVersion: evidenceSourceRef.reference,
+                },
+              ];
+          // C16 的修订基线：定义已存在时必须声明它基于哪一次发布，否则以
+          // `STALE_VERSION` / `base-release-required` 拒绝。基线由 C19 编制侧的声明决定
+          // （`prepareAuthoring` 的 `baseRuleReleaseRef`），提交侧必须逐字用同一个引用：
+          // C19 收口时会校验「检测基线 = C16 已校验的修订基线」，两侧各算一套必然冲突。
+          const baseReleaseRef = declaredBaseReleaseRefs.get(input.definitionType);
+          const submitted = await knowledgeGovernance.govern(
+            KnowledgeGovernanceCommandV1Schema.parse({
+              kind: "submit-revision",
+              commandId: input.commandId,
+              idempotencyKey: input.idempotencyKey,
+              projectId: input.projectId,
+              actorId: authorization.actorId,
+              issuedAt: input.issuedAt,
+              authorization,
+              payload: {
+                definitionType: input.definitionType,
+                candidateArtifactRef: input.candidateArtifactRef,
+                // 关系快照与来源绑定已在候选工件内：C19 策略据此登记关系事实，
+                // C16 只要求命令声明至少一条证据引用。
+                evidenceReferences,
+                ...(baseReleaseRef === undefined ? {} : { baseReleaseRef }),
+              },
+            }),
+          );
+          if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") {
+            throw new Error(
+              `C19 submit-revision 失败 ${input.definitionType}: ${JSON.stringify(submitted).slice(0, 900)}`,
+            );
+          }
+          return { kind: "succeeded", revisionRef: submitted.result.knowledgeRevisionRef };
+        },
+      },
+      // 编制任务经 C06 的 `agent-task.start-task` 分支取得唯一启动上下文，
+      // 再由同一个注入 C06 verifier 的 C08 adapter 创建。
+      startAgentTask: async (request) => {
+        const authorization = await operatorAuth(
+          request.command.commandId,
+          "agent-task.start-task",
+          [...downstreamSourceVersionRefs],
+        );
+        return scoringAgentTasksRef.current.startTask(
+          StartAgentTaskCommandV1Schema.parse({ ...request.command, authorization }),
+        );
+      },
       // 版本化编制策略由部署冻结：组合根不在读侧现编默认策略（合成样本、待甲方复核）。
-      policy: createScoringRulesPolicy(),
+      policy: scoringRulesPolicy,
+    });
+    governanceTargets.scoringRules = scoringRules;
+    scoringAgentTasksRef.current = new PostgresAgentTaskAdapter({
+      db: appRuntime.db,
+      registry: new AgentTaskDefinitionRegistry([
+        createScoringRuleAuthoringTaskDefinition({
+          policy: scoringRulesPolicy,
+          port: scoringRules,
+        }),
+      ]),
+      transactionUnit,
+      artifactStore,
+      referenceGuard: artifactStore.referenceGuard,
+      authorization: access,
     });
 
     // ---- C34 评估只读（design D-04）：C25 引擎 + 全部真实接缝 ----
@@ -3059,6 +3235,454 @@ export const startDemoBrowserServer = async () => {
       },
     });
 
+    // ---- C16/C07/C18/C19 依据发布链：评估能跑起来的前提 ----
+    //
+    // 评估子图 A1 必须经 C19 `resolve` 解析出正式依据集合；解析不到就以
+    // `UPSTREAM_WAITING` 收口，评估根本不会开始。因此本装配在开跑前走完真实发布链：
+    //
+    //   C18 11 类配置 → C16 提交 → C07 决定 → C16 发布
+    //   C19 规则编制 → C08 任务 → 确定性候选 → C16 提交 → C07 → C16 发布
+    //   C11 冻结评估准备快照
+    //   C19 组装适用规则集 → C16 提交 → C07 → C16 发布
+    //   C19 resolve → 正式依据集合
+    //
+    // 每一步都是真实写入：没有 SQL 播种「已发布」行冒充命令执行。
+
+    /**
+     * 这条链上释放的生效时点。
+     *
+     * C16 是双时间登记：读取按 `effective_from <= requiredAt` 过滤，而评估运行的 `validAt`
+     * 取命令的真实签发时刻。固定演示时钟 `NOW`（2030）晚于任何随后启动的运行，用它生效
+     * 等于「释放尚未生效」，A1 只能以 `required-release-unavailable` 收口。这里的释放确实
+     * 是本装配刚刚写下的，取装配时刻才与它们在库中的真实先后一致。
+     *
+     * 同一定义类型可能被连续发布多次（每个被加权指标各一条评分规则），而
+     * `knowledge_releases` 对 `(definition_id, effective_from)` 有唯一约束，所以时点必须
+     * 逐次前移，不能让两次发布落在同一毫秒上。
+     */
+    const releaseEffectiveFrom = new Date().toISOString();
+    let releaseEffectiveCount = 0;
+    const publishApprovedRelease = async (revisionRef) => {
+      const effectiveFrom = new Date(
+        Date.parse(releaseEffectiveFrom) + releaseEffectiveCount,
+      ).toISOString();
+      releaseEffectiveCount += 1;
+      const revisionKey = revisionRef.reference.entityId;
+      const reviewCommandId = `${revisionKey}:review`;
+      const reviewAuthorization = await operatorAuth(
+        reviewCommandId,
+        "knowledge-modeling.request-review",
+      );
+      const requested = await knowledgeGovernance.govern(
+        KnowledgeGovernanceCommandV1Schema.parse({
+          kind: "request-review",
+          commandId: reviewCommandId,
+          idempotencyKey: reviewCommandId,
+          projectId: PROJECT_ID,
+          actorId: reviewAuthorization.actorId,
+          issuedAt: NOW,
+          authorization: reviewAuthorization,
+          payload: {
+            revisionRef,
+            reviewPolicyRef: { entityId: "demo-policy-review", versionId: "1" },
+          },
+        }),
+      );
+      if (requested.kind !== "succeeded" || requested.result.kind !== "review-task") {
+        throw new Error(
+          `C16 request-review 失败 ${revisionKey}: ${JSON.stringify(requested).slice(0, 500)}`,
+        );
+      }
+      const reviewTaskRef = requested.result.reviewTaskRef;
+      const decisionCommandId = `${revisionKey}:decision`;
+      const decisionAuthorization = await operatorAuth(
+        decisionCommandId,
+        "review-audit.decide-review",
+      );
+      const decided = await reviewAudit.decideReview({
+        kind: "decide-review",
+        commandId: decisionCommandId,
+        idempotencyKey: decisionCommandId,
+        projectId: PROJECT_ID,
+        actorId: decisionAuthorization.actorId,
+        issuedAt: NOW,
+        authorization: decisionAuthorization,
+        payload: {
+          reviewTaskRef,
+          targetRef: reviewTaskRef.targetRef,
+          decision: { reviewType: "knowledge-revision", kind: "approve-publication" },
+          reasonCode: "demo-browser-approved",
+        },
+      });
+      if (decided.kind !== "succeeded") {
+        throw new Error(
+          `C07 decide-review 失败 ${revisionKey}: ${JSON.stringify(decided).slice(0, 500)}`,
+        );
+      }
+      const publishCommandId = `${revisionKey}:publish`;
+      const publishAuthorization = await operatorAuth(
+        publishCommandId,
+        "knowledge-modeling.publish-approved-release",
+      );
+      const published = await knowledgeGovernance.govern(
+        KnowledgeGovernanceCommandV1Schema.parse({
+          kind: "publish-approved-release",
+          commandId: publishCommandId,
+          idempotencyKey: publishCommandId,
+          projectId: PROJECT_ID,
+          actorId: publishAuthorization.actorId,
+          issuedAt: NOW,
+          authorization: publishAuthorization,
+          payload: {
+            revisionRef,
+            reviewDecisionRef: decided.result.reviewDecisionRef,
+            effectiveFrom,
+          },
+        }),
+      );
+      if (published.kind !== "succeeded" || published.result.kind !== "release") {
+        throw new Error(
+          `C16 publish 失败 ${revisionKey}: ${JSON.stringify(published).slice(0, 500)}`,
+        );
+      }
+      return published.result.knowledgeReleaseRef;
+    };
+
+    // C18：11 类配置逐类走同一条提交→审核→发布链。不存在独立配置发布入口。
+    // `forecast-policy` 正文要带真实模型工件引用，故该类配置在工件登记后单独发布（见下）。
+    let configurationDocuments = makeDemoAssessmentConfigurationDocuments({
+      projectRevisionRef,
+    });
+    /**
+     * 已发布配置释放引用按 `definitionType` 归档：预测模型工件必须引用 C18 真实发布的
+     * 措施库释放（`consistentWithPolicy` 会逐字段比对），不能在工件里另写一个引用。
+     */
+    const publishedConfigurationReleaseRefs = new Map();
+    /**
+     * 单类配置的发布（提交 → 审核 → 发布）。`forecast-policy` 的正文必须带真实模型工件引用，
+     * 而该工件要等 `measure-library` 发布后才拿得到措施库释放，所以它被推迟到工件登记之后再发。
+     */
+    const publishConfigurationDefinition = async (definitionType, documents) => {
+      const submitCommandId = `${PROJECT_ID}:${definitionType}:submit`;
+      const submitAuthorization = await operatorAuth(
+        submitCommandId,
+        "knowledge-modeling.submit-revision",
+      );
+      // C18 按媒体类型区分配置正文：普通 JSON 工件在读取时会被判为类型不符。
+      const artifactRef = await putBody(
+        `demo-c18-config-${definitionType}`,
+        "assessment-configuration",
+        new TextEncoder().encode(JSON.stringify(documents[definitionType], null, 2)),
+        "application/vnd.riskflow.assessment-configuration+json",
+        submitAuthorization,
+        "knowledge-modeling.govern",
+      );
+      const submitted = await knowledgeGovernance.govern(
+        KnowledgeGovernanceCommandV1Schema.parse({
+          kind: "submit-revision",
+          commandId: submitCommandId,
+          idempotencyKey: submitCommandId,
+          projectId: PROJECT_ID,
+          actorId: submitAuthorization.actorId,
+          issuedAt: NOW,
+          authorization: submitAuthorization,
+          payload: {
+            definitionType,
+            candidateArtifactRef: artifactRef,
+            evidenceReferences: [
+              {
+                locator: { sourceSegmentId: `${definitionType}:demo-browser-evidence` },
+                sourceVersion: { entityId: "demo-browser-source", versionId: "1" },
+              },
+            ],
+          },
+        }),
+      );
+      if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision") {
+        throw new Error(
+          `C18 submit 失败 ${definitionType}: ${JSON.stringify(submitted).slice(0, 500)}`,
+        );
+      }
+      publishedConfigurationReleaseRefs.set(
+        definitionType,
+        await publishApprovedRelease(submitted.result.knowledgeRevisionRef),
+      );
+    };
+    const configurationTypes = Object.keys(configurationDocuments).sort();
+    for (const definitionType of configurationTypes) {
+      if (definitionType === "forecast-policy") continue;
+      await publishConfigurationDefinition(definitionType, configurationDocuments);
+    }
+
+    // 预测模型工件先于 `forecast-policy` 登记，`forecast-policy` 紧随其后发布；两者都必须在
+    // C19 之前完成，因为 C19 编制规则时要按已发布释放解析成员。
+    /**
+     * C28 效果预测模型工件（合成样本、待甲方复核）。
+     *
+     * 正文引用经 C04 登记后才是内容寻址引用，`forecast-policy` 配置正文的 `requiredRef`
+     * 必须逐字等于它：预测执行器按精确 requiredRef 匹配实现，填占位字面量会让执行器永远
+     * 找不到实现（C28 记 `executor-unavailable`）。因此该工件必须先于 `forecast-policy`
+     * 发布，而措施库释放又必须先于本工件——发布顺序由此确定。
+     *
+     * 方法与策略一致（monitoring-trend，目标指标取自身序列）；`measureLibraryReleaseRef`
+     * 必须逐字段等于 C18 真实发布的措施库释放，否则 `consistentWithPolicy` 会拒绝。
+     */
+    const forecastModelArtifactRef = await putJson(
+      "demo-c28-forecast-model",
+      EFFECT_FORECAST_MODEL_PURPOSE_CODE_V1,
+      {
+        schemaVersion: "1",
+        // 模型工件按 `EffectForecastModelArtifactV1Schema` 收口：工程与算法版本是必填的固定
+        // 身份，缺任何一项都会被读侧判 `response-forecast-result-invalid` 而不是可读的模型。
+        projectId: PROJECT_ID,
+        algorithmVersion: "parameter-forecast-v1",
+        method: DEMO_FORECAST_POLICIES[0].method,
+        inputIndicators: [
+          { indicatorId: DEMO_FORECAST_POLICIES[0].targetIndicatorId, unit: "mm" },
+        ],
+        targetIndicatorId: DEMO_FORECAST_POLICIES[0].targetIndicatorId,
+        unit: "mm",
+        stepMs: 1000,
+        maxHorizonSteps: 4,
+        calculationScale: 6,
+        measureLibraryReleaseRef:
+          publishedConfigurationReleaseRefs.get("measure-library")?.reference,
+        // 措施效果按零偏移登记：预测值完全由沉降序列趋势外推，不叠加处置增益，
+        // 保证趋势口径与 2 mm/s 的演示序列一致。
+        measureEffects: DEMO_MEASURE_IDS.slice(0, 1).map((measureId) => ({
+          measureId,
+          offset: "0",
+          perStep: "0",
+        })),
+        evidenceReferences: [
+          {
+            locator: {
+              sourceSegmentId: `${sourceA.sourceVersionRef.reference.entityId}-chapter_1-segment_1`,
+            },
+            sourceVersion: sourceA.sourceVersionRef.reference,
+          },
+        ],
+        sampleOrigin: "synthetic",
+        // 合成样本只能是「待甲方复核」，取值必须落在 Schema 的两个枚举值内。
+        reviewStatus: "pending-client-review",
+        parameters: { windowPoints: 6 },
+      },
+      await operatorAuth("demo-c28-forecast-model", "knowledge-modeling.submit-revision"),
+      "knowledge-modeling.govern",
+    );
+    configurationDocuments = makeDemoAssessmentConfigurationDocuments({
+      projectRevisionRef,
+      forecastModelRef: forecastModelArtifactRef.reference,
+    });
+    await publishConfigurationDefinition("forecast-policy", configurationDocuments);
+
+    // ---- C19 规则编制与适用规则集发布 ----
+    //
+    // 编制候选经 C08 任务的确定性校验与收口后才成为正式修订；随后 C19 消费 C11
+    // 冻结的评估准备快照组装适用规则集，同样走 C16/C07 发布。最后 `resolve` 按
+    // 准备快照物化正式依据集合——评估子图 A1 消费的正是这个引用。
+    //
+    // 每个被加权指标各走一轮完整链路：适用规则集的 `includedMembers` 按 release 唯一，
+    // 同一次发布里放两条规则在组装时会被拒。C19 内部按用途派生各自的读取身份：同一
+    // requestId 读两个工件会在 C04 访问记录上撞出幂等冲突（commandId 是 requestId+outcome，
+    // 幂等键却按用途不同）。
+    for (const indicatorId of DEMO_CONFIGURATION_INDICATOR_IDS) {
+      const authoringCommandId = `${PROJECT_ID}:c19-authoring-${indicatorId}`;
+      const authoringPrepared = await scoringRules.prepareAuthoring({
+        requestId: authoringCommandId,
+        idempotencyKey: authoringCommandId,
+        projectId: PROJECT_ID,
+        actorId: (await operatorAuth(authoringCommandId, "knowledge-modeling.assessment-basis"))
+          .actorId,
+        requestedAt: NOW,
+        authorization: await operatorAuth(authoringCommandId, "knowledge-modeling.assessment-basis"),
+        // C19 按 (工程, 清洗任务) 缓存首次的 C15 读取身份，并用它自己的 requestId 向 C06
+        // 复验，因此签发标识必须与 requestId 同值。C15 的 `readBoundResult` 只按
+        // `engineering-data.evidence-access` 复验，正文能否读到由 C04 的访问快照
+        // （工程+空间+来源+策略）判定，所以这里必须带上清洗结果的来源范围。
+        dataCleaningAuthorization: await operatorAuth(
+          authoringCommandId,
+          "engineering-data.evidence-access",
+          [convertibleSourceVersionRef],
+        ),
+        projectRevisionRef: { kind: "project-revision", reference: projectRevisionRef.reference },
+        dataCleaningTaskRef,
+        requiredAt: NOW,
+        asOfRecordedAt: NOW,
+        scoringPolicyRef: scoringRulesPolicy.policyRef,
+        sourceStandardKinds: ["国家标准"],
+        ...(declaredBaseReleaseRefs.get("structured-scoring-rule") === undefined
+          ? {}
+          : { baseRuleReleaseRef: declaredBaseReleaseRefs.get("structured-scoring-rule") }),
+      });
+      if (authoringPrepared.kind !== "succeeded") {
+        throw new Error(
+          `C19 prepareAuthoring 失败: ${JSON.stringify(authoringPrepared).slice(0, 600)}`,
+        );
+      }
+      const authoringTask = await scoringAgentTasksRef.current.getTask(
+        authoringPrepared.agentTaskRef,
+      );
+      if (authoringTask === undefined) {
+        throw new Error("C19 编制任务未持久化");
+      }
+      const finalizedRule = await scoringRules.finalizeAuthoringCandidate({
+        task: authoringTask,
+        candidate: {
+          schemaVersion: "1",
+          candidateVersion: 1,
+          // 权重集里每个指标都必须有一条评分规则，否则 C25 在评分覆盖检查处以
+          // `risk-assessment-rule-coverage` 关闭失败；一次编制只带一条，因为适用规则集的
+          // `includedMembers` 按 release 唯一。`indicatorItem` 用 C18 已发布的指标标识，
+          // 编制候选按 indicatorIds 集合校验。
+          operations: [{
+            kind: "add-rule",
+            ruleId: `RULE-${indicatorId}`,
+            rule: {
+              ruleId: `RULE-${indicatorId}`,
+              applicabilityConditions: {
+                constructionMethod: ["变径盾构法"],
+                stratumCondition: ["富水软弱地层"],
+                engineeringStage: ["变径空间扩挖"],
+              },
+              indicatorItem: indicatorId,
+              // 演示阈值：按指标各自的量纲给分档线。评分规则是「命中即取值」：实际值必须落在
+              // 某条分档线上，否则按 `scoring-value-out-of-range` 拒绝。沉降短期速率的序列
+              // 实际值是 2 mm/s，因此它需要一条它能命中的 mm/s 量纲分档线（0.5 是监测预警
+              // 阈值，2 ≥ 0.5 所以速率预警照常开出），并配一条从 0 起的完整等级区间。
+              // 该指标基础分与累计沉降同为 3，后果侧 `maximum` 组合结果不变，P/C 与风险
+              // 等级不因新增该指标而移动。
+              scoringThresholds:
+                indicatorId === POSSIBILITY_DEMO_INDICATOR_ID
+                  ? [{ thresholdId: "demo-th-chamber-pressure", score: 3, value: 300, operator: "gte" }]
+                  : indicatorId === SETTLEMENT_SLOPE_DEMO_INDICATOR_ID
+                    ? [{ thresholdId: "demo-th-settlement-slope", score: 3, value: 1, operator: "gte" }]
+                    : [{ thresholdId: "demo-th-settlement", score: 3, value: 10, operator: "gte" }],
+              gradeIntervals:
+                indicatorId === SETTLEMENT_SLOPE_DEMO_INDICATOR_ID
+                  ? [
+                      // 等级区间必须首尾相接且不重叠：上界缺省会当成 +∞，两段就叠在一起了。
+                      { grade: "demo-level-1", lowerBound: 0, upperBound: 3 },
+                      { grade: "demo-level-3", lowerBound: 3 },
+                    ]
+                  : [{ grade: "demo-level-3", lowerBound: 3 }],
+              exceptionClauses: [],
+              // 证据定位符必须命中 C15 保留的资料段，否则整份候选按证据未核实拒绝。
+              evidenceLocator: { sourceSegmentId: retainedSourceSegments[0].sourceSegmentId },
+              ruleVersion: {
+                entityId: `RULE-${indicatorId}`,
+                versionId: "1",
+              },
+              // 编制候选只能是待审状态：批准由 C07 审核决定，Agent 无权自行置为已批准。
+              reviewStatus: "pending",
+            },
+            sourceVersionRef: retainedSourceSegments[0].sourceVersionRef,
+            evidenceReferences: [
+              {
+                locator: { sourceSegmentId: retainedSourceSegments[0].sourceSegmentId },
+                // 证据引用的 `sourceVersion` 是扁平版本引用；`sourceVersionRef` 才是带
+                // `reference` 包裹的来源版本。两者形状不同，不能互相套用。
+                sourceVersion: retainedSourceSegments[0].sourceVersionRef.reference,
+              },
+            ],
+          }],
+        },
+      });
+      if (finalizedRule.status !== "completed" || !("candidateRef" in finalizedRule)) {
+        throw new Error(`C19 候选收口失败: ${JSON.stringify(finalizedRule).slice(0, 1200)}`);
+      }
+      // 下一轮的检测基线就是本轮刚发布的这次释放。
+      declaredBaseReleaseRefs.set(
+        "structured-scoring-rule",
+        await publishApprovedRelease(finalizedRule.candidateRef),
+      );
+    }
+
+    // C11 冻结评估准备快照：评估子图 A0 的入口身份由它铸出，A1 再据此解析依据。
+    // C11 冻结评估准备快照：评估子图 A0 的入口身份由它铸出，A1 再据此解析依据。
+    // 授权要覆盖待评估风险记录登记的全部来源：冻结内部先按授权修订有界解析来源，
+    // 读取再按记录自身的精确空间与来源复验，两者任一不覆盖都会以 AUTHORIZATION_DENIED 关闭。
+    const preparationCommandId = `${PROJECT_ID}:c11-preparation`;
+    const preparationSourceRefs = [
+      ...new Map(
+        [...retainedSourceSegments.map((entry) => entry.sourceVersionRef), sourceA.sourceVersionRef].map(
+          (ref) => [ref.reference.entityId, ref],
+        ),
+      ).values(),
+    ];
+    const preparationAuthorization = await operatorAuth(
+      preparationCommandId,
+      "engineering-data.assessment-preparation",
+      preparationSourceRefs,
+    );
+    const preparationFrozen = await registry.freeze({
+      commandId: preparationCommandId,
+      idempotencyKey: preparationCommandId,
+      projectId: PROJECT_ID,
+      actorId: preparationAuthorization.actorId,
+      issuedAt: NOW,
+      authorization: preparationAuthorization,
+      kind: "assessment-preparation",
+      payload: {
+        riskInput: { kind: "standardized-risk-record", reference: recordAutoRef.reference },
+        projectRevisionRef: { kind: "project-revision", reference: projectRevisionRef.reference },
+        spatialScopeRef,
+        applicabilityMetadataSnapshotRef: applicabilitySnapshotRef,
+        entryMode: "assess",
+        triggerReasonCode: "demo-browser-preparation",
+        monitoringSnapshotRefs: [
+          settlementMonitoringSnapshotRef,
+          slurryPressureMonitoringSnapshotRef,
+        ],
+      },
+    });
+    if (
+      preparationFrozen.kind !== "succeeded" ||
+      preparationFrozen.result.kind !== "assessment-preparation"
+    ) {
+      throw new Error(
+        `C11 评估准备冻结失败: ${JSON.stringify(preparationFrozen).slice(0, 600)}`,
+      );
+    }
+    const preparationSnapshotRef = preparationFrozen.result.assessmentPreparationSnapshotRef;
+
+    // C19 组装适用规则集：消费准备快照投影与已发布配置，产出待发布的规则集修订。
+    const assemblyCommandId = `${PROJECT_ID}:c19-assembly`;
+    // 组装经 C11 准备快照投影读取依据成员，内部按 `knowledge-modeling.assessment-basis`
+    // 分支另签精确上下文；该分支只带 `knowledge-modeling.read`，但仍需覆盖准备快照登记的
+    // 来源范围，否则下游复验会以 AUTHORIZATION_DENIED 关闭。
+    const assemblyAuthorization = await operatorAuth(
+      assemblyCommandId,
+      "knowledge-modeling.assessment-basis",
+      preparationSourceRefs,
+    );
+    const assembled = await scoringRules.assembleApplicableRuleSetRevision({
+      requestId: assemblyCommandId,
+      idempotencyKey: assemblyCommandId,
+      projectId: PROJECT_ID,
+      actorId: assemblyAuthorization.actorId,
+      requestedAt: NOW,
+      authorization: assemblyAuthorization,
+      projectRevisionRef: { kind: "project-revision", reference: projectRevisionRef.reference },
+      preparationSnapshotRef,
+      applicabilitySnapshotRef: applicabilitySnapshotRef,
+      applicability: {
+        constructionMethod: "变径盾构法",
+        stratumCondition: "富水软弱地层",
+        engineeringStage: "变径空间扩挖",
+      },
+      requiredAt: NOW,
+      asOfRecordedAt: NOW,
+      scoringPolicyRef: scoringRulesPolicy.policyRef,
+      assemblyPolicyRef: scoringRulesPolicy.assemblyPolicyRef,
+      compatibilityRef: scoringRulesPolicy.compatibilityRef,
+      configurationSetRef: DEMO_CONFIGURATION_SET_REF,
+    });
+    if (assembled.kind !== "succeeded") {
+      throw new Error(`C19 组装失败: ${JSON.stringify(assembled).slice(0, 600)}`);
+    }
+    await publishApprovedRelease(assembled.applicableRuleSetRevisionRef);
+
     // ---- C27 处置建议：Agent 任务契约与 C08 只读接缝 ----
     //
     // C27 按部署登记的 Agent 策略派生 C08 任务信封，候选经确定性校验后成为正式建议。
@@ -3073,14 +3697,468 @@ export const startDemoBrowserServer = async () => {
         finalizeIncrement: (input) => recommendationAdapterRef.current.finalizeIncrement(input),
       },
     });
+    /**
+     * C29 校准建议的 Agent 任务定义：领域校验由 C29 自己在 `createSuggestion` 收口，
+     * 任务定义这一侧只做候选自洽校验（证据条数、操作条数、引用绑定）。
+     */
+    const calibrationAgentPolicy = {
+      definitionRef: CALIBRATION_VALIDATION_POLICY.definitionRef,
+      toolPolicyRef: CALIBRATION_VALIDATION_POLICY.toolPolicyRef,
+      incrementSchemaRef: CALIBRATION_VALIDATION_POLICY.incrementSchemaRef,
+      validationPolicyRef: CALIBRATION_VALIDATION_POLICY.validationPolicyRef,
+      budgetPolicy: CALIBRATION_VALIDATION_POLICY.budgetPolicy,
+      evidenceRequirementCount: CALIBRATION_VALIDATION_POLICY.evidenceRequirementCount,
+      maxOperations: CALIBRATION_VALIDATION_POLICY.maxOperations,
+    };
+    /**
+     * C29 校验工件的引用：版本必须等于真实登记工件的正文摘要，否则任务收口打开该引用时
+     * 会被工件守卫判为不存在。登记与引用走同一个派生函数，两处不会漂移。
+     */
+    const calibrationValidationBody = (taskRef, resultRef, bound) =>
+      JSON.stringify({ schemaVersion: "1", taskRef, resultRef, bound });
+    const calibrationValidationArtifactId = (taskRef) =>
+      `demo-c29-validation:${taskRef.reference.entityId}`;
+    const calibrationValidationArtifactRef = (taskRef, resultRef, bound) => ({
+      kind: "content-artifact",
+      reference: {
+        entityId: calibrationValidationArtifactId(taskRef),
+        versionId: `sha256:${sha(calibrationValidationBody(taskRef, resultRef, bound))}`,
+      },
+    });
+
+    const calibrationTaskDefinition = createCalibrationSuggestionTaskDefinition({
+      policy: calibrationAgentPolicy,
+      port: {
+        // 端口方法名是 `validateIncrement` / `finalizeIncrement`；这里写任务定义层的同名方法
+        // 会让工厂在调用时拿到 undefined，校验步骤直接抛 TypeError。
+        // 候选自洽：任务、结果与冻结输入三个引用必须落在本次任务上。
+        validateIncrement: ({ candidate, task }) => {
+          const bound =
+            candidate.taskRef.reference.entityId ===
+              task.envelope.agentTaskRef.reference.entityId &&
+            candidate.resultRef.agentTaskRef.reference.entityId ===
+              task.envelope.agentTaskRef.reference.entityId;
+          return {
+            schemaVersion: "1",
+            items: [
+              {
+                checkId: "candidate-bound-to-task",
+                disposition: bound ? "accepted" : "rejected",
+                // 被拒项按契约必须带拒收类别，证据取候选自带的那些引用。
+                ...(bound ? {} : { rejectionClass: "repairable" }),
+                reasonCode: bound ? "candidate-bound" : "candidate-task-mismatch",
+                evidenceReferences: candidate.evidenceReferences,
+              },
+            ],
+            disposition: bound ? "accepted" : "rejected",
+            ...(bound ? {} : { rejectionClass: "repairable" }),
+            // 工件引用版本必须按内容摘要给出（契约要求 `sha256:<64 hex>`），
+            // 不能用递增序号占位。
+            validationArtifactRef: calibrationValidationArtifactRef(
+              task.envelope.agentTaskRef,
+              candidate.resultRef,
+              bound,
+            ),
+            validatedAt: NOW,
+          };
+        },
+        finalizeIncrement: ({ candidate, task }) =>
+          buildCompletedAgentTaskResult(
+            task.envelope.agentTaskRef,
+            { kind: "calibration-suggestion", reference: candidate.inputSnapshotRef.reference },
+          ),
+      },
+    });
     const recommendationAgentTasks = new PostgresAgentTaskAdapter({
       db: appRuntime.db,
-      registry: new AgentTaskDefinitionRegistry([recommendationTaskDefinition]),
+      // 同一注册表承载 C27 与 C29 两类任务定义，C29 读的也是这一个适配器里的完成任务。
+      registry: new AgentTaskDefinitionRegistry([
+        recommendationTaskDefinition,
+        calibrationTaskDefinition,
+      ]),
       transactionUnit,
       artifactStore,
       referenceGuard: artifactStore.referenceGuard,
       authorization: access,
     });
+
+    /**
+     * C08 记账工件：任务信封、候选、增量与动作结果都按 C04 登记真实工件，引用进入
+     * C08 行与领域事实。用途码与媒体类型取任务定义族既有取值，不另造一套。
+     */
+    const agentArtifact = async (artifactId, purposeCode, mediaType, value) =>
+      await putJson(artifactId, purposeCode, value, agentArtifactAuth, "knowledge-modeling.govern");
+    // 记账工件按知识提交分支签发、写能力用 `knowledge-modeling.govern`（能力码不是分支）。
+    const agentArtifactAuth = await operatorAuth(
+      "demo-c08-bookkeeping",
+      "knowledge-modeling.submit-revision",
+    );
+    const agentIntentArtifactRef = await agentArtifact(
+      "demo-c08-action-intent",
+      "agent-action-intent",
+      "application/vnd.riskflow.agent-action-intent+json",
+      { schemaVersion: "1", role: "agent-action-intent" },
+    );
+    const agentCandidateArtifactRef = await agentArtifact(
+      "demo-c08-candidate",
+      "agent-candidate",
+      "application/vnd.riskflow.agent-candidate+json",
+      { schemaVersion: "1", role: "agent-candidate" },
+    );
+    const agentIncrementArtifactRef = await agentArtifact(
+      "demo-c08-increment",
+      "agent-increment",
+      "application/vnd.riskflow.agent-increment+json",
+      { schemaVersion: "1", role: "agent-increment" },
+    );
+    const agentActionResultArtifactRef = await agentArtifact(
+      "demo-c08-action-result",
+      "agent-action-result",
+      "application/vnd.riskflow.agent-action-result+json",
+      { schemaVersion: "1", role: "agent-action-result" },
+    );
+
+
+
+    /**
+     * C28 人工反馈文档工件（人工提交的业务输入，非「播种已写成功」）。
+     *
+     * `warning-response.record-feedback` 的 `feedbackArtifactRef` 必须指向按
+     * `warning-response.feedback-artifact` 用途码真实登记的工件：C28 在记录反馈的同一
+     * 事务里以 `knowledge-modeling.measure-candidates` 分支读取正文并校验用途码。正文是
+     * 一份人工填写的反馈说明，由 C28 解析为 JSON 后随反馈记录一起持久回读。
+     */
+    /**
+     * 反馈工件的写入口按 C28 的读取接缝对齐：同一 `knowledge-modeling.measure-candidates`
+     * 分支、同一个 `knowledge-modeling.retrieve` 能力。写读两侧分支与能力一致，工件才在
+     * 记录反馈时以用途码命中并被 C28 解析。
+     */
+    const feedbackArtifactAuth = await operatorAuth(
+      "demo-c28-feedback-artifact",
+      "knowledge-modeling.measure-candidates",
+      [sourceA.sourceVersionRef],
+    );
+    const feedbackArtifactRef = await putJson(
+      "demo-c28-feedback-document",
+      FEEDBACK_ARTIFACT_PURPOSE_CODE_V1,
+      {
+        schemaVersion: "1",
+        summary: "处置后地表沉降实测值仍高于采纳前趋势预测，反馈至本次处置闭环。",
+        observations: [
+          "执行后监测快照的地表沉降累计值与采纳前趋势外推值存在超过阈值的偏差。",
+          "已按采纳建议完成现场复核，未再新增处置动作。",
+        ],
+        recordedByRole: "field-responder",
+        // 反馈文档按证据引用回指本次评估所用的真实来源段，不写不存在的来源。
+        evidenceReferences: [
+          {
+            locator: {
+              sourceSegmentId: `${sourceA.sourceVersionRef.reference.entityId}-chapter_1-segment_1`,
+            },
+            sourceVersion: sourceA.sourceVersionRef.reference,
+          },
+        ],
+      },
+      feedbackArtifactAuth,
+      "knowledge-modeling.retrieve",
+    );
+
+    /**
+     * C08 有界任务的真实驱动（合成样本、待甲方复核）。
+     *
+     * 走完整生命周期：启动 → 领取 → 预留动作（消耗预算）→ 领域定义逐项校验候选 →
+     * 登记候选版本 → 领域定义收口增量 → 完成动作与任务。候选是冻结的合成选择，
+     * 接受与否由领域的确定性校验决定；这里不预置结论，也不返回伪造的成功引用。
+     */
+    const driveAgentTask = async (input) => {
+      const taskRef = input.taskRef ?? (await startAgentTaskFor(input.startCommand));
+      // 动作身份按任务引用派生：任务可能由调用方先启动再交回驱动（此时没有启动命令），
+      // 用 `input.startCommand.commandId` 会读到 undefined。
+      const actionPrefix = input.startCommand?.commandId ?? taskRef.reference.entityId;
+      let claim;
+      for (let attempt = 0; attempt < 32; attempt += 1) {
+        claim = await agentTasks.claim({ workerId: input.workerId, leaseDurationMs: 600_000 });
+        if (claim === undefined) break;
+        if (claim.task.envelope.agentTaskRef.reference.entityId === taskRef.reference.entityId) break;
+        await agentTasks.releaseLease({
+          taskRef: claim.task.envelope.agentTaskRef,
+          workerId: input.workerId,
+          leaseToken: claim.leaseToken,
+          status: "cancelled",
+        });
+        claim = undefined;
+      }
+      if (claim === undefined) throw new Error("C08 领取本任务失败");
+      const actionId = `${actionPrefix}:model-invocation`;
+      const reservation = await agentTasks.reserveAction({
+        taskRef,
+        workerId: input.workerId,
+        leaseToken: claim.leaseToken,
+        actionId,
+        reservationId: `${actionId}:reservation`,
+        actionType: "model-invocation",
+        sequence: 0,
+        idempotencyKey: actionId,
+        intentArtifactRef: agentIntentArtifactRef,
+        amount: { modelInvocations: 1 },
+      });
+      const increment = input.buildIncrement(reservation.task);
+      const validation = AgentValidationResultV1Schema.parse(
+        await input.definition.validateCandidate(increment, reservation.task),
+      );
+      const rejected = validation.items.some((item) => item.disposition === "rejected");
+      // 结果引用必须在登记候选时就写上：C08 读完成任务按「候选行保存的公共结果引用」
+      // 核对任务结果，候选行没有 `result_ref` 就永远读不回完成结果。
+      // 候选版本与后续动作、任务收口一律用 C08 适配器自己的时钟。运行单的 `issuedAt` 早于
+      // 本次领取，把它传给收尾调用会让尝试行的 `lease_until` 落到 `started_at` 之前，
+      // 被 `agent_task_attempts_lease_ck` 判为非法的租约时间线。
+      const finalized = input.definition.finalizeCandidate
+        ? await input.definition.finalizeCandidate(increment, reservation.task)
+        : undefined;
+      await agentTasks.recordCandidate({
+        candidate: AgentCandidateVersionV1Schema.parse({
+          schemaVersion: "1",
+          taskRef,
+          candidateVersion: 1,
+          parentCandidateVersion: 0,
+          candidateArtifactRef: agentCandidateArtifactRef,
+          incrementArtifactRef: input.incrementArtifactRef ?? agentIncrementArtifactRef,
+          validation,
+          ...(finalized === undefined ? {} : { resultRef: finalized }),
+          disposition: rejected ? "rejected" : "pending",
+          ...(rejected ? { rejectionClass: "repairable" } : {}),
+          createdAt: new Date().toISOString(),
+        }),
+        workerId: input.workerId,
+        leaseToken: claim.leaseToken,
+      });
+      if (rejected) {
+        await agentTasks.failAction({
+          taskRef,
+          workerId: input.workerId,
+          leaseToken: claim.leaseToken,
+          actionId,
+          error: makeAgentError({
+            code: "AGENT_VALIDATION_REJECTED",
+            category: "validation",
+            stage: `${input.workerId}.validation`,
+            taskRef,
+            reasonCode: "increment-outside-frozen-input",
+          }),
+          resultArtifactRef: agentActionResultArtifactRef,
+          usage: emptyAgentBudgetUsage(),
+        });
+        await agentTasks.releaseLease({
+          taskRef,
+          workerId: input.workerId,
+          leaseToken: claim.leaseToken,
+          status: "released",
+        });
+        return { kind: "rejected", taskRef, validation };
+      }
+      await agentTasks.completeAction({
+        taskRef,
+        workerId: input.workerId,
+        leaseToken: claim.leaseToken,
+        actionId,
+        resultArtifactRef: agentActionResultArtifactRef,
+        usage: emptyAgentBudgetUsage(),
+        activeWallClockMs: 1_000,
+      });
+      await agentTasks.completeTask({
+        taskRef,
+        workerId: input.workerId,
+        leaseToken: claim.leaseToken,
+        resultRef: finalized,
+      });
+      return {
+        kind: "completed",
+        taskRef,
+        ...(finalized === undefined ? {} : { resultRef: finalized }),
+        validation,
+      };
+    };
+
+    const agentTasks = recommendationAgentTasks;
+
+    /** 启动一个 C08 有界任务：授权按启动命令的 commandId 现签，不复用其它用途的上下文。 */
+    const startAgentTaskFor = async (startCommand) => {
+      const started = await agentTasks.startTask(
+        StartAgentTaskCommandV1Schema.parse({
+          ...startCommand,
+          authorization: await operatorAuth(
+            startCommand.commandId,
+            "agent-task.start-task",
+            [...downstreamSourceVersionRefs],
+          ),
+        }),
+      );
+      if (started.kind !== "succeeded") {
+        throw new Error(`C08 start-task 失败: ${JSON.stringify(started).slice(0, 500)}`);
+      }
+      return started.result.agentTaskRef;
+    };
+
+    /**
+     * C27 组合 Agent 接缝（真实 C08 任务，合成样本、待甲方复核）。
+     *
+     * 候选选择按已发布措施库冻结（按 `measureId` 升序），是否落在本次冻结候选集合内
+     * 由 C27 的确定性校验判定：被拒就按 `repairable` 收口，任务不会带着未通过校验的
+     * 增量完成。正式建议仍由 C27 随后的三项校验与人工采纳决定。
+     */
+    const RECOMMENDATION_WORKER_ID = "demo-c27-recommendation-worker";
+    /**
+     * C29 校准组合 Agent 接缝（真实 C08 任务，合成样本、待甲方复核）。
+     *
+     * 增量是 C29 领域候选的完整正文，按 `agent-increment` 用途码登记为真实工件：C29
+     * 随后的 `createSuggestion` 会按该引用回读并对冻结目标文档做确定性校验，候选是否
+     * 成立由它裁决，这里不预判。操作取自已发布的风险可接受阈值，把可接受等级上限放宽
+     * 一级——放宽而非收紧，避免把演示数据推成「全部越限」。
+     */
+    const CALIBRATION_WORKER_ID = "demo-c29-calibration-worker";
+    const calibrationAgent = {
+      ensureTask: async (input) => {
+        const commandId = `${input.actionId}:calibration-agent`;
+        const taskRef = await agentTasks
+          .startTask(
+            StartAgentTaskCommandV1Schema.parse({
+              kind: "start-task",
+              commandId,
+              idempotencyKey: commandId,
+              projectId: input.run.projectId,
+              actorId: input.run.actorId,
+              issuedAt: input.run.issuedAt,
+              authorization: await operatorAuth(commandId, "agent-task.start-task", [
+                ...downstreamSourceVersionRefs,
+              ]),
+              payload: {
+                taskType: "calibration-suggestion",
+                triggerMode: "embedded",
+                parentRunRef: input.run.runRef,
+                // 任务信封冻结的输入必须是冻结输入**工件**引用（C29 按 content-artifact 读取它
+                // 取回快照正文）；快照引用只留在候选正文里。
+                frozenInputRef: input.frozenInputRef,
+                modelDeploymentRef: calibrationAgentPolicy.budgetPolicy.modelDeploymentRef,
+                promptTemplateRef: calibrationAgentPolicy.budgetPolicy.promptTemplateRef,
+                toolPolicyRef: calibrationAgentPolicy.toolPolicyRef,
+                budgetPolicyRef: calibrationAgentPolicy.budgetPolicy.policyRef,
+                incrementSchemaRef: calibrationAgentPolicy.incrementSchemaRef,
+                validationPolicyRef: calibrationAgentPolicy.validationPolicyRef,
+              },
+            }),
+          )
+          .then((result) => (result.kind === "succeeded" ? result.result.agentTaskRef : undefined));
+        if (taskRef === undefined) {
+          return { kind: "failed", reasonCode: "calibration-agent-task-not-started" };
+        }
+        // 结果引用由任务身份派生，候选正文与任务结果引用同一个，因此先算引用再写工件。
+        const resultRef = buildCompletedAgentTaskResult(taskRef, {
+          kind: "calibration-suggestion",
+          reference: input.inputSnapshotRef.reference,
+        });
+        const candidate = CalibrationCandidateV1Schema.parse({
+          schemaVersion: "1",
+          taskRef,
+          resultRef,
+          inputSnapshotRef: input.inputSnapshotRef,
+          rationale: "偏差超出当前可接受阈值上限，放宽一档后复核是否需要收紧监测。",
+          evidenceReferences: DEMO_CALIBRATION_EVIDENCE,
+          operations: DEMO_CALIBRATION_OPERATIONS,
+        });
+        const incrementArtifactRef = await putBody(
+          `${commandId}:increment`,
+          "agent-increment",
+          new TextEncoder().encode(JSON.stringify(candidate, null, 2)),
+          "application/vnd.riskflow.agent-increment+json",
+          agentArtifactAuth,
+          "knowledge-modeling.govern",
+        );
+        // 校验工件必须真实登记：任务收口会按 `validationArtifactRef` 打开它，
+        // 只给引用不落库会被工件守卫判为引用不存在。
+        // 工件标识必须与端口给出的引用逐字一致：任务收口按引用去打开，登记用别的 id
+        // 就会在守卫处被判为引用不存在。
+        const validationBodyJson = calibrationValidationBody(taskRef, resultRef, true);
+        const registeredValidationRef = await putBody(
+          calibrationValidationArtifactId(taskRef),
+          // 任务收口按 `agent-validation` 用途打开校验工件，登记用途必须与之一致。
+          "agent-validation",
+          new TextEncoder().encode(validationBodyJson),
+          "application/vnd.riskflow.agent-validation+json",
+          agentArtifactAuth,
+          "knowledge-modeling.govern",
+        );
+
+
+        const driven = await driveAgentTask({
+          workerId: CALIBRATION_WORKER_ID,
+          issuedAt: input.run.issuedAt,
+          definition: calibrationTaskDefinition,
+          taskRef,
+          startCommand: undefined,
+          incrementArtifactRef,
+          buildIncrement: () => candidate,
+        });
+        if (driven.kind === "rejected") {
+          return { kind: "failed", reasonCode: "calibration-increment-rejected" };
+        }
+        return {
+          kind: "completed",
+          agentTaskRef: driven.taskRef,
+          agentTaskResultRef: driven.resultRef,
+        };
+      },
+    };
+
+    const recommendationAgent = {
+      resolveSiteContextRef: async (input) => ({
+        entityId: `demo-site-context:${input.run.runRef.reference.entityId}`,
+        versionId: "1",
+      }),
+      ensureTask: async (input) => {
+        const commandId = `${input.actionId}:agent`;
+        const driven = await driveAgentTask({
+          workerId: RECOMMENDATION_WORKER_ID,
+          issuedAt: input.run.issuedAt,
+          definition: recommendationTaskDefinition,
+          startCommand: {
+            kind: "start-task",
+            commandId,
+            idempotencyKey: commandId,
+            projectId: input.run.projectId,
+            actorId: input.run.actorId,
+            issuedAt: input.run.issuedAt,
+            payload: {
+              taskType: "response-recommendation",
+              triggerMode: "embedded",
+              parentRunRef: input.run.runRef,
+              frozenInputRef: input.queryResultRef,
+              modelDeploymentRef: responseAgentPolicy.budgetPolicy.modelDeploymentRef,
+              promptTemplateRef: responseAgentPolicy.budgetPolicy.promptTemplateRef,
+              toolPolicyRef: responseAgentPolicy.toolPolicyRef,
+              budgetPolicyRef: responseAgentPolicy.budgetPolicy.policyRef,
+              incrementSchemaRef: responseAgentPolicy.incrementSchemaRef,
+              validationPolicyRef: responseAgentPolicy.validationPolicyRef,
+            },
+          },
+          buildIncrement: () =>
+            ResponseRecommendationIncrementV1Schema.parse({
+              schemaVersion: "1",
+              selections: DEMO_MEASURE_IDS.map((measureId, index) => ({
+                measureId,
+                order: index + 1,
+              })),
+            }),
+        });
+        if (driven.kind === "rejected") {
+          return { kind: "failed", reasonCode: "recommendation-increment-rejected" };
+        }
+        return {
+          kind: "completed",
+          agentTaskRef: driven.taskRef,
+          agentTaskResultRef: driven.resultRef,
+        };
+      },
+    };
 
     // ---- C34 处置只读（design D-05）：C27→C28→C29→C41→C26 的组合窄读 ----
     //
@@ -3095,9 +4173,14 @@ export const startDemoBrowserServer = async () => {
         db: appRuntime.db,
         artifactStore,
         basis: scoringRules,
+        // C27 自身查询上下文只带处置域能力；依据集合与配置正文按知识读用途另签，
+        // 否则 `readAssessmentBasisReleaseSet` 恒返回 unavailable，正式建议永不成立。
+        authorizeDownstream,
       }),
       policies: createRecommendationPolicies({
         projectId: PROJECT_ID,
+        // 现场上下文必须与候选集合落在同一空间修订上，否则正式建议关闭失败。
+        spatialScopeRef,
         // 生成策略按已入库的风险记录绑定风险事件分类；演示只登记自动路线那条。
         bindings: [
           {
@@ -3108,10 +4191,58 @@ export const startDemoBrowserServer = async () => {
             riskEventCategory: "地表沉降超限",
           },
         ],
-        targetIndicators: [{ indicatorItem: "地表沉降", targetValue: 10 }],
-        reviewedStandardEvidence: [{ measureId: "MS-001", evidenceItem: "监测日报" }],
+        // 目标指标与已复核证据都取 C18 已发布集合里的标识：沿用旧夹具的 `MS-001`
+        // 或指标显示名会让三项校验在「措施不在冻结候选/指标不匹配」处关闭失败。
+        targetIndicators: DEMO_CONFIGURATION_INDICATOR_IDS.map((indicatorItem) => ({
+          indicatorItem,
+          targetValue: 10,
+        })),
+        reviewedStandardEvidence: DEMO_MEASURE_IDS.map((measureId) => ({
+          measureId,
+          evidenceItem: "监测日报",
+        })),
+        // 现场上下文取本次评估所在工序的真实事实：工序节点、状态与可用资源都来自
+        // 变径空间扩挖这条工序，证据回指资料 A 的真实来源段。
+        siteProcess: {
+          processNodeRef: { entityId: "PN-EXPAND-02", versionId: "1" },
+          processStatus: "施工中",
+          availableResources: ["注浆设备"],
+          constraints: [],
+          evidenceReferences: [
+            {
+              locator: {
+                sourceSegmentId: `${sourceA.sourceVersionRef.reference.entityId}-chapter_1-segment_1`,
+              },
+              sourceVersion: sourceA.sourceVersionRef.reference,
+            },
+          ],
+        },
       }),
       agentTasks: recommendationAgentTasks,
+      // C27 增量校验与候选建档的用途授权：按任务信封里的请求者本人签发，签发身份与
+      // `invocationId` 必须逐字等于适配器复验时用的那个，否则 C06 判身份绑定不符。
+      //
+      // 来源集必须与下游其它分支同一份：候选工件把冻结候选集合登记为父工件，而候选集合
+      // 的访问快照已并入配置文档的来源授权；少请求一个来源，C04 的父工件 `containsAll`
+      // 复验就会以 `ARTIFACT_ACCESS_DENIED` 关闭，写不出一份可追溯的正式建议。
+      taskAuthorization: {
+        authorize: async ({ task, purpose }) => {
+          const sessionToken = sessionsByAccountId.get(task.envelope.actorId);
+          if (sessionToken === undefined) {
+            throw new Error(`no demo session for actor ${task.envelope.actorId}`);
+          }
+          return (
+            await access.authorize({
+              invocation: { kind: "human-session", sessionToken },
+              invocationId: `${task.envelope.agentTaskRef.reference.entityId}:${purpose}`,
+              projectId: task.envelope.projectId,
+              branch: "warning-response.create-candidate",
+              requestedSpatialScopeRefs: [...task.envelope.authorization.spatialScopeRefs],
+              requestedSourceVersionRefs: [...downstreamSourceVersionRefs],
+            })
+          ).context;
+        },
+      },
     });
     recommendationAdapterRef.current = recommendation;
     /**
@@ -3120,7 +4251,13 @@ export const startDemoBrowserServer = async () => {
      * 不下发命令能力；两个读取分支在各自 branch 上以调用者身份另取读取能力。
      */
     const forecastExecutors = createProductionEffectForecastExecutorsV1({
-      policies: DEMO_FORECAST_POLICIES,
+      // 模型工件经 C04 登记后拿到的是内容寻址引用（versionId 是 sha256 摘要），
+      // 策略冻结的 `requiredRef` 是占位字面量 `{demo-policy-forecast, 1}`；执行器按精确
+      // requiredRef 读取，所以这里用真实登记引用替换占位值，不改策略文档本身。
+      policies: DEMO_FORECAST_POLICIES.map((policy) => ({
+        ...policy,
+        requiredRef: forecastModelArtifactRef.reference,
+      })),
       models: createEffectForecastModelReaderV1({ artifactStore }),
       assessment: assessmentEngine,
       authorizeDownstream,
@@ -3195,11 +4332,12 @@ export const startDemoBrowserServer = async () => {
       runtimePolicies: createWarningRuntimePolicies({
         projectId: PROJECT_ID,
         // 通知接收主体取已登录账号的精确账户引用；不从用户名或文案推断主体。
+        // 收件人集合要求唯一且规范升序（C25 预警策略 strict Schema）。
         recipientActorIds: [
           operatorSession.accountRef.entityId,
           responderSession.accountRef.entityId,
           viewerSession.accountRef.entityId,
-        ],
+        ].sort(),
         responseDirectionByTriggerType: {
           风险等级超过风险可接受阈值: "评估并制定处置方案",
           监测指标越限: "加密监测并复核处置范围",
@@ -3261,16 +4399,19 @@ export const startDemoBrowserServer = async () => {
       riskAssessment: assessmentEngine,
       warning: warningLifecycle,
       recommendation,
-      recommendationAgent: unwiredWritePathSeam("assessmentRecommendationAgent"),
+      recommendationAgent,
       responseLifecycle,
       calibration,
-      calibrationAgent: unwiredWritePathSeam("assessmentCalibrationAgent"),
+      calibrationAgent,
       // 分段入口的冻结策略目录由部署持有：预测与校准策略只按调用方给出的精确依据集合
       // 引用解析，引用未登记即 `unavailable`，不回退到内建默认策略。
       policies: createAssessmentPolicyCatalog({
         projectId: PROJECT_ID,
         basisReader: scoringRules,
         authorizeDownstream,
+        // 冻结引用必须是 C18 真实发布的 `forecast-policy` 释放：C28 会按依据集合读回该成员
+        // 并逐项比对，返回策略自身的内容引用会被判 `response-forecast-policy-mismatch`。
+        forecastPolicyRef: publishedConfigurationReleaseRefs.get("forecast-policy")?.reference,
       }),
       // 同一真实 C06 access：图按用途另签下游上下文（C11 冻结等），不复用运行上下文。
       authorizeDownstream,
@@ -3332,6 +4473,28 @@ export const startDemoBrowserServer = async () => {
       ports: {
         riskAssessmentRead: assessmentEngine,
         warningResponseRead: warningLifecycle,
+        /**
+         * C34 写命令接缝：HTTP 端口按公开命令联合分派到各领域适配器的真实方法。
+         * 缺这一组注入，`warning-response.acknowledge` 等分支在 C30 直接 NOT_FOUND——
+         * 页面上的确认控件永远不可用，而不是因为权限或业务前置条件。
+         */
+        warningResponse: {
+          open: (command) => warningLifecycle.open(command),
+          recommend: (command) =>
+            command.kind === "create-candidate"
+              ? recommendation.createCandidate(command)
+              : recommendation.validateAndRecord(command),
+          record: (command) => {
+            if (command.kind === "acknowledge") return warningLifecycle.acknowledge(command);
+            if (command.kind === "calculate-deviation") {
+              return responseLifecycle.calculateDeviation(command);
+            }
+            return calibration.createSuggestion(command);
+          },
+        },
+        humanDecisionFeedback: {
+          record: (command) => humanDecisionFeedback.record(command),
+        },
         workflow: riskFlowComposition.runtime.workflowPort,
         engineeringData: registry,
         engineeringDataCatalog: createPostgresEngineeringDataCatalogAdapter({
@@ -3348,6 +4511,8 @@ export const startDemoBrowserServer = async () => {
           db: appRuntime.db,
           access,
           artifactStore,
+          // 定义正文按用途另签（design D-06）：页面列表上下文不带来源授权。
+          authorizeDownstream,
         }),
         knowledgeRetrievalRead: createPostgresKnowledgeRetrievalReadAdapter({
           relationshipResults: new PostgresIdentificationContextAdapter({
@@ -3473,6 +4638,12 @@ export const startDemoBrowserServer = async () => {
       operatorLogin: OPERATOR_LOGIN,
       viewerLogin: VIEWER_LOGIN,
       responderLogin: RESPONDER_LOGIN,
+      /**
+       * 账号主体标识：命令载荷里的 `decidedByActorId`/`recordedByActorId` 等要的是主体标识，
+       * 不是登录名。两者混用会被 C28 以 `response-execution-source-invalid` 关闭失败。
+       */
+      operatorAccountId: operator.resultRef.entityId,
+      responderAccountId: responder.resultRef.entityId,
       /** 受限账号：初始密码即通用初始密码，改密后另有其密码。 */
       restrictedLogin: RESTRICTED_LOGIN,
       restrictedAccountPassword: ACCOUNT_PASSWORD,
@@ -3481,6 +4652,20 @@ export const startDemoBrowserServer = async () => {
       seriesEntityId: seriesRef.reference.entityId,
       sourceAVersionEntityId: sourceA.sourceVersionRef.reference.entityId,
       sourceBVersionEntityId: sourceB.sourceVersionRef.reference.entityId,
+      /**
+       * 本装配真实冻结的两个监测快照：采纳建议的 `preActionMonitoringSnapshotRef` 与
+       * 登记反馈的 `postActionMonitoringSnapshotRef` 都取自这里登记的真实快照引用，
+       * C28 会按快照 cutoff 与序列取值做真实偏差计算，不接受拼装的假引用。
+       */
+      settlementMonitoringSnapshotRef,
+      slurryPressureMonitoringSnapshotRef,
+      /**
+       * 资料 A 的真实来源版本与资料段标识：登记执行的 `evidenceReferences` 按真实来源段
+       * 登记，C08/C29 的证据完整性与来源段一致性校验才会成立。
+       */
+      sourceA,
+      /** C28 读取的人工反馈文档工件引用（`warning-response.feedback-artifact` 用途码）。 */
+      feedbackArtifactRef,
       relationshipResult: {
         entityId: relationshipResultRef.reference.entityId,
         versionId: relationshipResultRef.reference.versionId,
@@ -3498,6 +4683,12 @@ export const startDemoBrowserServer = async () => {
         spatialScopeRef,
         projectRevisionRef: { kind: "project-revision", reference: projectRevisionRef.reference },
         applicabilityMetadataSnapshotRef: applicabilitySnapshotRef,
+        // 评估准备按入口冻结的监测快照物化指标实际取值；不传就只剩风险记录自带字段，
+        // C25 会以 `risk-assessment-monitoring-snapshot-coverage` 关闭失败。
+        monitoringSnapshotRefs: [
+          settlementMonitoringSnapshotRef,
+          slurryPressureMonitoringSnapshotRef,
+        ],
       },
       /**
        * 链运行登记的未确认预警：`warning-response.acknowledge` 的真实写入口，用于验收

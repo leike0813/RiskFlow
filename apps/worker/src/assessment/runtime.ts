@@ -432,7 +432,9 @@ export const createAssessmentGraphRuntime = (
       authorization: command.authorization,
       projectId: command.projectId,
       actorId: command.actorId,
-      branch: "workflow.start-run",
+      // 沿用父运行交下来的签发分支：父运行由启动命令推进时是 `workflow.start-run`，由恢复
+      // 命令推进时是 `workflow.resume-run`，两者签发的上下文互不通用（design D-08）。
+      branch: command.authorizationBranch,
       requestedAt: command.validAt,
       stage: "A0",
       issuedInvocationId: command.issuedInvocationId,

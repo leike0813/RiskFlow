@@ -49,6 +49,10 @@ import {
   EffectForecastRefV1Schema,
   FeedbackRefV1Schema,
   CalibrationSuggestionRefV1Schema,
+  MonitoringSnapshotRefV1Schema,
+  ContentArtifactRefV1Schema,
+  RiskAssessmentRecordRefV1Schema,
+  DeviationViewV1Schema,
   WarningResponseRecordCommandV1Schema,
   type AuthorizationContextV1,
   type CalibrationSuggestionRefV1,
@@ -544,11 +548,11 @@ const c26CursorAnchor = (
 ): C26CursorAnchorV1 => ({
   projectId: command.projectId,
   operation: command.payload.operation,
-  // 筛选摘要排除分页参数：换页大小不改变续页位置，���筛选一定改变。
+  // 筛选摘要排除全部续页参数：换页大小或换续页游标都不改变续页位置，换筛选一定改变。
   filterDigest: sha256CanonicalJson(
     Object.fromEntries(
       Object.entries(command.payload)
-        .filter(([key]) => key !== "pageSize" && key !== "cursor")
+        .filter(([key]) => key !== "pageSize" && !key.endsWith("Cursor"))
         .sort(([left], [right]) => left.localeCompare(right)),
     ),
   ),
@@ -849,6 +853,19 @@ export type C29CalibrationViewResultV1 =
   | { readonly kind: "failed"; readonly error: { readonly code: string } };
 
 /**
+ * 公共偏差记录的所属窄读结果：正文与精确引用同源，缺席表示 C29 未就这条偏差事实
+ * 登记过公共记录（读失败与未登记是两种不同事实，不合并）。
+ */
+export type C29DeviationRecordResultV1 =
+  | {
+      readonly kind: "succeeded";
+      readonly record: unknown;
+      readonly deviationRecordRef: ContractReferenceV1;
+    }
+  | { readonly kind: "absent" }
+  | { readonly kind: "failed"; readonly error: { readonly code: string } };
+
+/**
  * 关系页有界输入（design D-05、D-10）：所属方只按精确锚点集合与 keyset 位置取一页，
  * 不知道自己被谁组合，也不决定公共游标形状。
  */
@@ -918,6 +935,18 @@ export interface WarningResponseCalibrationReaderV1 {
   }): Promise<C29CalibrationViewResultV1>;
   /** 私有偏差事实下的校准建议引用：关系页只取引用，不取正文。 */
   readCalibrationRefsForDeviationFacts(input: RelationPageInputV1): Promise<RelationPageResultV1>;
+  /**
+   * 私有偏差事实下的公共偏差记录：只有 C29 自己登记过才给出，未登记即缺席，
+   * 不用私有计算偏差冒充公共记录正文。
+   */
+  readDeviationRecordForDeviationFact(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly invocationId: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly deviationFactRef: VersionReference;
+  }): Promise<C29DeviationRecordResultV1>;
   /** 把实体标识解析为精确校准建议引用；不属于本模块时返回空集合。 */
   resolveCalibrationRefs(input: ResolveRefsInputV1): Promise<ResolveRefsResultV1>;
 }
@@ -971,7 +1000,11 @@ export type C28FeedbackViewV1 = {
   readonly occurredAt: string;
   readonly forecastAvailability: unknown;
   readonly deviation: unknown;
-  readonly deviationRecordRef?: ContractReferenceV1;
+  /**
+   * 私有偏差事实的精确版本锚点：C26 只能拿它向 C29 换公共偏差记录与校准引用，
+   * 不因此获得该事实的公共引用身份——公共偏差记录由 C29 登记后才存在。
+   */
+  readonly deviationFactRef?: VersionReference;
   readonly spatialScopeEntityId: string;
 };
 
@@ -2083,6 +2116,8 @@ export class PostgresWarningLifecycleAdapter
         return this.#readForecast(c26ReadCommand<"forecast-read">(command), verified);
       case "execution-read":
         return this.#readExecution(c26ReadCommand<"execution-read">(command), verified);
+      case "feedback-read":
+        return this.#readFeedback(c26ReadCommand<"feedback-read">(command), verified);
       case "calibration-read":
         return this.#readCalibration(c26ReadCommand<"calibration-read">(command), verified);
       default:
@@ -2639,7 +2674,11 @@ export class PostgresWarningLifecycleAdapter
           ? this.#readDenied(command)
           : page.error.code === "OWNING_READ_SEAM_NOT_INJECTED"
             ? this.#readBlocked(command, "owning-read-seam-not-injected")
-            : this.#readBlocked(command, `task-relation-${relation}-${page.error.code}`),
+            : // 原因码按发起该关系页的操作命名：同一关系组在不同操作下失败含义不同。
+              this.#readBlocked(
+                command,
+                `${command.payload.operation}-${relation}-${page.error.code}`,
+              ),
       );
     }
     return {
@@ -2984,6 +3023,140 @@ export class PostgresWarningLifecycleAdapter
   }
 
   /**
+   * `feedback-read`（design D-05、D-06）：反馈事实与私有计算偏差解释取自 C28；
+   * 公共偏差记录与校准引用取自 C29，并以 C28 交出的私有偏差事实为唯一锚点。
+   * 偏差事实不成立时公共偏差记录与校准引用一并缺席——私有解释绝不冒充公共记录，
+   * 校准引用也只在 C29 真实登记过该偏差事实时才给出。
+   */
+  async #readFeedback(
+    command: C26ReadCommandV1<"feedback-read">,
+    verified: AuthorizationContextV1,
+  ): Promise<WarningResponseReadResultV1> {
+    const scopeIds = this.#readableScopeIds(command, verified);
+    const view = await this.#lifecycle.readFeedbackView({
+      projectId: command.projectId,
+      actorId: command.actorId,
+      requestedAt: command.requestedAt,
+      invocationId: `${command.queryId}:feedback`,
+      authorization: await this.#authorizeForComposition(command, `${command.queryId}:feedback`),
+      targetRef: {
+        kind: "feedback",
+        reference: command.payload.feedbackRef.reference,
+      },
+    });
+    if (view.kind === "failed") {
+      throw new WarningResponseReadFailure(
+        view.error.code === "AUTHORIZATION_DENIED"
+          ? this.#readDenied(command)
+          : this.#readBlocked(command, `feedback-read-${view.error.code}`),
+      );
+    }
+    const exact = view.view as C28FeedbackViewV1;
+    if (!scopeIds.includes(exact.spatialScopeEntityId)) {
+      throw new WarningResponseReadFailure(this.#readBlocked(command, "feedback-record-not-found"));
+    }
+    // 私有偏差事实不成立就没有可锚定的公共侧事实：两条分支都不编造缺席内容。
+    const deviationRecord =
+      exact.deviationFactRef === undefined
+        ? { kind: "absent" as const }
+        : await this.#calibration.readDeviationRecordForDeviationFact({
+            projectId: command.projectId,
+            actorId: command.actorId,
+            requestedAt: command.requestedAt,
+            invocationId: `${command.queryId}:deviation-record`,
+            authorization: await this.#authorizeForComposition(
+              command,
+              `${command.queryId}:deviation-record`,
+            ),
+            deviationFactRef: exact.deviationFactRef,
+          });
+    if (deviationRecord.kind === "failed") {
+      throw new WarningResponseReadFailure(
+        deviationRecord.error.code === "AUTHORIZATION_DENIED"
+          ? this.#readDenied(command)
+          : this.#readBlocked(command, `feedback-read-${deviationRecord.error.code}`),
+      );
+    }
+    const cursorAnchor = c26CursorAnchor(command, verified);
+    const after = decodeC26Cursor(command.payload.calibrationCursor, cursorAnchor);
+    if (after === null) throw new WarningResponseReadFailure(this.#readDenied(command));
+    const calibrations = await this.#relation(
+      command,
+      "calibration",
+      await this.#calibration.readCalibrationRefsForDeviationFacts({
+        projectId: command.projectId,
+        actorId: command.actorId,
+        requestedAt: command.requestedAt,
+        invocationId: `${command.queryId}:calibration`,
+        authorization: await this.#authorizeForComposition(
+          command,
+          `${command.queryId}:calibration`,
+        ),
+        anchorRefs:
+          exact.deviationFactRef === undefined ? [] : [{ reference: exact.deviationFactRef }],
+        ...(after === undefined
+          ? {}
+          : {
+              after: {
+                recordedAt: after.afterOccurredAt,
+                entityId: after.afterEntityId,
+                versionId: after.afterVersionId,
+              },
+            }),
+        pageSize: C26_RELATION_PAGE_SIZE_V1,
+      }),
+    );
+    return WarningResponseReadResultV1Schema.parse({
+      kind: "succeeded",
+      result: {
+        kind: "feedback-read",
+        actorId: command.actorId,
+        feedbackRef: FeedbackRefV1Schema.parse(exact.feedbackRef),
+        executionRef: ExecutionRecordRefV1Schema.parse(exact.executionRef),
+        postActionMonitoringSnapshotRef: MonitoringSnapshotRefV1Schema.parse(
+          exact.postActionMonitoringSnapshotRef,
+        ),
+        feedbackArtifactRef: ContentArtifactRefV1Schema.parse(exact.feedbackArtifactRef),
+        actualAssessmentRecordRef: RiskAssessmentRecordRefV1Schema.parse(
+          exact.actualAssessmentRecordRef,
+        ),
+        occurredAt: exact.occurredAt,
+        forecastAvailability: exact.forecastAvailability,
+        ...(exact.deviation === undefined
+          ? {}
+          : { deviation: DeviationViewV1Schema.parse(exact.deviation) }),
+        ...(deviationRecord.kind === "absent"
+          ? {}
+          : {
+              deviationRecord: deviationRecord.record,
+              deviationRecordRef: deviationRecord.deviationRecordRef,
+            }),
+        calibrationRefs: calibrations.refs.map((ref) =>
+          CalibrationSuggestionRefV1Schema.parse({
+            kind: "calibration-suggestion",
+            reference: ref.reference,
+          }),
+        ),
+        ...(calibrations.hasMore &&
+        calibrations.lastRef !== undefined &&
+        calibrations.lastRecordedAt !== undefined
+          ? {
+              nextCursor: encodeC26Cursor(
+                afterCursorAnchor(cursorAnchor, {
+                  occurred_at: calibrations.lastRecordedAt,
+                  entityId: calibrations.lastRef.reference.entityId,
+                  versionId: calibrations.lastRef.reference.versionId,
+                }),
+              ),
+            }
+          : {}),
+        // 反馈是处置闭环的终点事实：本身没有后续可写动作，页面不据此推断校准治理权限。
+        actions: await this.#readActions(command, []),
+      },
+    });
+  }
+
+  /**
    * `calibration-read`（design D-05、D-06）：目标定义、逐项校验、偏差记录版本与草案
    * 全部取自 C29 自有事实。公共偏差记录不属于本读，未登记草案时不给草案引用。
    */
@@ -3045,13 +3218,22 @@ export class PostgresWarningLifecycleAdapter
     });
   }
 
-  /** 组合根注入的下游签发接缝按用途逐次取授权；拿不到就按拒绝收口。 */
+  /**
+   * 组合根注入的下游签发接缝按用途逐次取授权；拿不到就按拒绝收口。
+   *
+   * 分支取本模块自己的读分支 `warning-response.read`，与被组合的关系读取器保持同一
+   * 能力口径：推荐（`postgres-recommendation-adapter`）与响应生命周期
+   * （`postgres-response-lifecycle-adapter`）的关系入口都按 `warning-response.read`
+   * 复验签发身份。这里原先签 `projection.query`，签出的上下文只带该分支能力，关系
+   * 子读逐个 AUTHORIZATION_DENIED，任务关系页整体读不出来。改签本模块读分支不会放宽
+   * 权限：能走到这段的调用方已在 `#verifyReadAuthorization` 通过同一分支复验。
+   */
   async #authorizeForComposition(
     command: WarningResponseReadQueryV1,
     invocationId: string,
   ): Promise<AuthorizationContextV1> {
     return this.#authorizeDownstream({
-      branch: "projection.query",
+      branch: "warning-response.read",
       invocationId,
       projectId: command.projectId,
       actorId: command.actorId,

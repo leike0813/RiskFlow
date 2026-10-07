@@ -24,12 +24,17 @@ import {
   JointTriggerPolicyDocumentV1Schema,
   MeasureLibraryDocumentV1Schema,
   MonitoringWarningThresholdDocumentV1Schema,
+  RiskAcceptanceThresholdDocumentV1Schema,
+  RiskMatrixDocumentV1Schema,
+  type RiskAcceptanceThresholdContentV1,
+  type RiskMatrixContentV1,
 } from "@riskflow/core/assessment-config";
 import { ApplicabilityMetadataSnapshotV1Schema } from "@riskflow/core/engineering-data/context-source";
 import {
   AssessmentBasisReleaseSetReadResultV1Schema,
   type AssessmentBasisReleaseSetReaderV1,
 } from "@riskflow/core/scoring-rules";
+import type { AssessmentDownstreamAuthorizerV1 } from "@riskflow/core/risk-assessment/engine";
 import {
   AgentValidationResultV1Schema,
   buildCompletedAgentTaskResult,
@@ -59,7 +64,12 @@ import {
   type ReviewTaskRefV1,
   type RiskInputVersionRefV1,
 } from "@riskflow/contracts/ports";
-import { ResponseRecommendationSchema, WarningRecordSchema } from "@riskflow/contracts/records";
+import {
+  ResponseRecommendationSchema,
+  RiskAssessmentRecordSchema,
+  WarningRecordSchema,
+  type RiskAssessmentRecord,
+} from "@riskflow/contracts/records";
 import {
   AssessmentInputSnapshotV1Schema,
   type AssessmentInputSnapshotV1,
@@ -94,7 +104,11 @@ import {
   type ValidateAndRecordCommandV1,
 } from "@riskflow/core/recommendation";
 
-import { RecommendationValidationEvidenceV1Schema } from "@riskflow/core/recommendation";
+import {
+  RecommendationRiskAcceptanceBasisV1Schema,
+  RecommendationValidationEvidenceV1Schema,
+  type RecommendationRiskAcceptanceBasisV1,
+} from "@riskflow/core/recommendation";
 import type { WarningResponseTaskRefV1 } from "@riskflow/contracts/ports";
 
 /** 解析结果有界：实体标识的登记版本数由公共上限约束。 */
@@ -313,38 +327,146 @@ const applicabilityConditionsOf = (applicability: {
     { dimension: "工程阶段数据", values: [applicability.engineeringStage] },
   ]);
 
-/** 精确集合引用只接受显式 kind；任何其它形态都是契约漂移，不做宽松解析。 */
-const parseBasisReleaseSetRef = (
-  value: unknown,
-  targetRef: {
-    readonly kind: string;
+/** 风险等级分支读到的两份冻结配置正文与其发布引用。 */
+interface RiskAcceptanceDocumentsV1 {
+  readonly thresholdReleaseRef: { readonly entityId: string; readonly versionId: string };
+  readonly riskMatrixReleaseRef: { readonly entityId: string; readonly versionId: string };
+  readonly thresholdArtifactRef: {
+    readonly kind: "content-artifact";
     readonly reference: { readonly entityId: string; readonly versionId: string };
-  },
-): {
-  readonly kind: "assessment-basis-release-set";
-  readonly reference: { readonly entityId: string; readonly versionId: string };
-} => {
-  const candidate = value as {
-    kind?: unknown;
-    reference?: { entityId?: unknown; versionId?: unknown };
   };
+  readonly riskMatrixArtifactRef: {
+    readonly kind: "content-artifact";
+    readonly reference: { readonly entityId: string; readonly versionId: string };
+  };
+  readonly content: RiskAcceptanceThresholdContentV1;
+  readonly matrix: RiskMatrixContentV1;
+}
+
+/**
+ * 适用性筛除：与 C18 措施筛选同一判定口径（每个条件维度都能在适用性事实里取到值）。
+ * 这里不引入新的适用性语义，只把同一判定用在风险可接受阈值条目上。
+ */
+const matchesApplicability = (
+  conditions: readonly { readonly dimension: string; readonly values: readonly string[] }[],
+  applicability: readonly { readonly dimension: string; readonly values: readonly string[] }[],
+): boolean =>
+  conditions.every((condition) => {
+    const actual = applicability.find((candidate) => candidate.dimension === condition.dimension);
+    return actual !== undefined && actual.values.some((value) => condition.values.includes(value));
+  });
+
+/**
+ * 构造风险等级触发的冻结依据摘要（D-13）。
+ *
+ * 每一步都要能证明：配置发布引用就是本次输入快照引用的那两份、矩阵版本就是评估记录
+ * 声明的版本、适用性筛除后唯一命中的阈值就是触发项身份、触发项类型与实际值就是评估
+ * 记录的风险等级、且风险等级在矩阵序数上确实越过可接受等级。任一条不成立返回
+ * `undefined`，由调用方记入未解析集合并失败闭合。
+ */
+const riskAcceptanceBasisOf = (
+  entry: LoadedWarningV1,
+  documents: RiskAcceptanceDocumentsV1,
+  inputSnapshot: AssessmentInputSnapshotV1,
+): RecommendationRiskAcceptanceBasisV1 | undefined => {
   if (
-    typeof value !== "object" ||
-    value === null ||
-    candidate.kind !== "assessment-basis-release-set" ||
-    typeof candidate.reference?.entityId !== "string" ||
-    typeof candidate.reference.versionId !== "string"
+    !sameRef(documents.thresholdReleaseRef, inputSnapshot.riskAcceptanceThresholdRef) ||
+    !sameRef(documents.riskMatrixReleaseRef, inputSnapshot.riskMatrixRef) ||
+    entry.assessmentRecord.riskMatrixVersion.versionId !== documents.riskMatrixReleaseRef.versionId
   ) {
-    failRecommendation("recommendation-contract-drift", targetRef);
+    return undefined;
   }
-  return {
-    kind: "assessment-basis-release-set",
-    reference: {
-      entityId: candidate.reference.entityId,
-      versionId: candidate.reference.versionId,
-    },
-  };
+  const trigger = entry.warningRef.triggerIndicators.find(
+    (item) => item.triggerType === "风险等级超过风险可接受阈值",
+  );
+  if (trigger === undefined || trigger.actualValue !== entry.assessmentRecord.riskLevel) {
+    return undefined;
+  }
+  const applicability = applicabilityConditionsOf(entry.applicability);
+  const applicable = documents.content.thresholds.filter((threshold) =>
+    matchesApplicability(threshold.applicabilityConditions, applicability),
+  );
+  if (applicable.length !== 1) {
+    return undefined;
+  }
+  const threshold = applicable[0]!;
+  if (threshold.thresholdId !== trigger.indicatorItem) {
+    return undefined;
+  }
+  const riskLevelOrdinal = documents.matrix.riskLevels.find(
+    (level) => level.levelId === entry.assessmentRecord.riskLevel,
+  )?.ordinal;
+  const maximumAcceptedLevelOrdinal = documents.matrix.riskLevels.find(
+    (level) => level.levelId === threshold.maximumAcceptedLevelId,
+  )?.ordinal;
+  if (riskLevelOrdinal === undefined || maximumAcceptedLevelOrdinal === undefined) {
+    return undefined;
+  }
+  if (riskLevelOrdinal <= maximumAcceptedLevelOrdinal) {
+    return undefined;
+  }
+  const assessedIndicatorIds = [
+    ...new Set(entry.assessmentRecord.indicatorResults.map((result) => result.indicatorItem)),
+  ].sort();
+  if (assessedIndicatorIds.length === 0) return undefined;
+  return RecommendationRiskAcceptanceBasisV1Schema.safeParse({
+    thresholdReleaseRef: documents.thresholdReleaseRef,
+    riskMatrixReleaseRef: documents.riskMatrixReleaseRef,
+    thresholdArtifactRef: documents.thresholdArtifactRef,
+    riskMatrixArtifactRef: documents.riskMatrixArtifactRef,
+    thresholdId: threshold.thresholdId,
+    maximumAcceptedLevelId: threshold.maximumAcceptedLevelId,
+    riskLevelId: entry.assessmentRecord.riskLevel,
+    maximumAcceptedLevelOrdinal,
+    riskLevelOrdinal,
+    assessedIndicatorIds,
+  }).data;
 };
+
+/** 依据未成立时把该预警的风险等级触发项记入未解析集合，使候选校验必然失败。 */
+const unresolvedRiskAcceptanceItems = (
+  entry: LoadedWarningV1,
+  basis: RecommendationRiskAcceptanceBasisV1 | undefined,
+): string[] => {
+  if (basis !== undefined) return [];
+  return entry.warningRef.triggerIndicators
+    .filter((item) => item.triggerType === "风险等级超过风险可接受阈值")
+    .map((item) => item.indicatorItem)
+    .sort();
+};
+
+/** 精确集合引用只接受显式 kind；任何其它形态都是契约漂移，不做宽松解析。 */ const parseBasisReleaseSetRef =
+  (
+    value: unknown,
+    targetRef: {
+      readonly kind: string;
+      readonly reference: { readonly entityId: string; readonly versionId: string };
+    },
+  ): {
+    readonly kind: "assessment-basis-release-set";
+    readonly reference: { readonly entityId: string; readonly versionId: string };
+  } => {
+    const candidate = value as {
+      kind?: unknown;
+      reference?: { entityId?: unknown; versionId?: unknown };
+    };
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      candidate.kind !== "assessment-basis-release-set" ||
+      typeof candidate.reference?.entityId !== "string" ||
+      typeof candidate.reference.versionId !== "string"
+    ) {
+      failRecommendation("recommendation-contract-drift", targetRef);
+    }
+    return {
+      kind: "assessment-basis-release-set",
+      reference: {
+        entityId: candidate.reference.entityId,
+        versionId: candidate.reference.versionId,
+      },
+    };
+  };
 
 /* -------------------------------------------------------------------------- */
 /* 注入接缝                                                                    */
@@ -391,6 +513,8 @@ export interface RecommendationTaskAuthorizationProviderV1 {
 interface LoadedWarningV1 {
   readonly warningRef: RecommendationFrozenWarningV1;
   readonly inputSnapshot: AssessmentInputSnapshotV1;
+  /** 关联评估记录正文：风险等级分支核验等级与有效指标的依据（D-13）。 */
+  readonly assessmentRecord: RiskAssessmentRecord;
   readonly riskInputRef: RiskInputVersionRefV1;
   readonly applicability: {
     readonly constructionMethod: string;
@@ -408,15 +532,23 @@ export class PostgresRecommendationContextReader implements RecommendationContex
   readonly #db: Kysely<RecommendationDatabase>;
   readonly #artifactStore: ArtifactStoreV1;
   readonly #basis: AssessmentBasisReleaseSetReaderV1;
+  readonly #authorizeDownstream: AssessmentDownstreamAuthorizerV1 | undefined;
 
   constructor(options: {
     readonly db: Kysely<PostgresDatabase>;
     readonly artifactStore: ArtifactStoreV1;
     readonly basis: AssessmentBasisReleaseSetReaderV1;
+    /**
+     * 组合根注入的下游签发接缝：依据集合与配置正文读取按知识读用途另签一次。
+     * C27 自身的查询上下文只带处置域能力，直接交给依据读取器会被 C06 关闭，
+     * 读出来的依据集合恒为 unavailable。签不出时回落到调用方上下文由 C06 裁决。
+     */
+    readonly authorizeDownstream?: AssessmentDownstreamAuthorizerV1;
   }) {
     this.#db = options.db as unknown as Kysely<RecommendationDatabase>;
     this.#artifactStore = options.artifactStore;
     this.#basis = options.basis;
+    this.#authorizeDownstream = options.authorizeDownstream;
   }
 
   async readFrozenContext(input: {
@@ -535,12 +667,20 @@ export class PostgresRecommendationContextReader implements RecommendationContex
       }
     }
 
+    // 依据集合与配置正文都按知识读用途取授权：签不出时沿用调用方上下文，由 C06 裁决。
+    // 读取身份必须与签发用的 invocationId 逐字一致：C19 按 `invocationId = requestId`
+    // 复验，两处取不同字符串会被 C06 判为身份绑定不符而关闭。
+    const basisRequestId = `${input.requestId}:assessment-basis`;
+    const knowledgeAuthorization = await this.#knowledgeReadAuthorization(
+      basisRequestId,
+      authorization,
+    );
     const basisResult = AssessmentBasisReleaseSetReadResultV1Schema.safeParse(
       await this.#basis.readAssessmentBasisReleaseSet({
-        requestId: input.requestId,
-        idempotencyKey: input.requestId,
+        requestId: basisRequestId,
+        idempotencyKey: basisRequestId,
         requestedAt: input.requestedAt,
-        authorization,
+        authorization: knowledgeAuthorization,
         assessmentBasisReleaseSetRef: first.basisRef,
       }),
     );
@@ -582,9 +722,14 @@ export class PostgresRecommendationContextReader implements RecommendationContex
         reference: member.artifactRef.reference,
       };
       const document = await this.#readConfigurationDocument(
-        input.requestId,
+        `${input.requestId}:${definitionType}`,
         input.requestedAt,
-        authorization,
+        // 配置正文按「措施候选」用途另签：依据读取分支只带 read 能力，读不了正文。
+        await this.#knowledgeReadAuthorization(
+          `${input.requestId}:${definitionType}`,
+          authorization,
+          "knowledge-modeling.measure-candidates",
+        ),
         artifactRef,
         definitionType,
       );
@@ -627,15 +772,43 @@ export class PostgresRecommendationContextReader implements RecommendationContex
       monitoringThresholds: monitoringThresholds.data.content,
       jointTriggerPolicy: jointTriggerPolicy.data.content,
     };
+    // 风险等级触发按冻结的风险可接受阈值、矩阵与关联评估事实核验（D-13）。只在任务里真的
+    // 存在风险等级触发时才读这两份配置；没有就不发起读取，也不改用监测分支口径。
+    const riskAcceptanceDocuments = loaded.some(
+      (entry) => entry.warningRef.triggerType === "风险等级超过风险可接受阈值",
+    )
+      ? await this.#readRiskAcceptanceDocuments(
+          input.requestId,
+          input.requestedAt,
+          authorization,
+          configurationMembers,
+          configurationSetRef,
+          projectRevisionRef,
+          first.basisRef,
+          knowledgeAuthorization,
+        )
+      : undefined;
     const warnings = loaded.map((entry) => {
       const resolution = resolveTriggerIndicators(
-        entry.warningRef.triggerIndicators.map((trigger) => trigger.indicatorItem),
+        entry.warningRef.triggerIndicators,
         triggerConfiguration,
       );
+      const riskAcceptanceBasis =
+        entry.warningRef.triggerType === "风险等级超过风险可接受阈值" &&
+        riskAcceptanceDocuments !== undefined
+          ? riskAcceptanceBasisOf(entry, riskAcceptanceDocuments, first.inputSnapshot)
+          : undefined;
       return {
         ...entry.warningRef,
         resolvedTargetIndicatorIds: [...resolution.indicatorIds],
-        unresolvedTriggerItems: [...resolution.unresolvedItems],
+        // 风险等级触发项解析不出监测指标是设计内结果，不因此判失败；它的成败由
+        // `riskAcceptanceBasis` 是否成立决定。依据未成立时该触发项进未解析集合，使候选
+        // 校验必然失败；成立则不记未解析。
+        unresolvedTriggerItems: [
+          ...resolution.unresolvedItems,
+          ...unresolvedRiskAcceptanceItems(entry, riskAcceptanceBasis),
+        ],
+        ...(riskAcceptanceBasis === undefined ? {} : { riskAcceptanceBasis }),
       };
     });
 
@@ -657,6 +830,138 @@ export class PostgresRecommendationContextReader implements RecommendationContex
       agentPolicyRef: first.inputSnapshot.responseAgentPolicyRef,
       reviewPolicyRef: first.inputSnapshot.reviewPolicyRef,
     };
+  }
+
+  /**
+   * 读取并复验风险可接受阈值与风险矩阵两份冻结配置（D-13）。
+   *
+   * 两者必须同属本次依据集合、同一配置集与工程修订，且阈值文档声明的矩阵引用必须指向
+   * 正在读的那份矩阵。任一条不成立就不返回文档：风险等级分支据此记未解析并失败闭合，
+   * 不退回到监测分支口径，也不缓存上一份配置。
+   */
+  async #readRiskAcceptanceDocuments(
+    requestId: string,
+    requestedAt: string,
+    authorization: AuthorizationContextV1,
+    configurationMembers: readonly {
+      readonly definitionType: string;
+      readonly releaseRef: {
+        readonly kind: string;
+        readonly reference: { readonly entityId: string; readonly versionId: string };
+      };
+      readonly artifactRef: {
+        readonly kind: string;
+        readonly reference: { readonly entityId: string; readonly versionId: string };
+      };
+      readonly contentDigest: string;
+    }[],
+    configurationSetRef: { readonly entityId: string; readonly versionId: string },
+    projectRevisionRef: { readonly entityId: string; readonly versionId: string },
+    basisRef: LoadedWarningV1["basisRef"],
+    knowledgeAuthorization: AuthorizationContextV1,
+  ): Promise<RiskAcceptanceDocumentsV1 | undefined> {
+    const readMember = async (
+      definitionType: string,
+    ): Promise<
+      | {
+          readonly document: unknown;
+          readonly artifactRef: {
+            readonly kind: "content-artifact";
+            readonly reference: { readonly entityId: string; readonly versionId: string };
+          };
+          readonly releaseRef: { readonly entityId: string; readonly versionId: string };
+        }
+      | undefined
+    > => {
+      const member = configurationMembers.find((entry) => entry.definitionType === definitionType);
+      if (member === undefined) return undefined;
+      const artifactRef = {
+        kind: "content-artifact" as const,
+        reference: {
+          entityId: member.artifactRef.reference.entityId,
+          versionId: member.artifactRef.reference.versionId,
+        },
+      };
+      const document = await this.#readConfigurationDocument(
+        requestId,
+        requestedAt,
+        // 与其它配置正文同一用途：依据读取分支只带 read 能力，读不了正文。
+        await this.#knowledgeReadAuthorization(
+          requestId,
+          knowledgeAuthorization,
+          "knowledge-modeling.measure-candidates",
+        ),
+        artifactRef,
+        definitionType,
+      );
+      if (sha256CanonicalJson(document) !== member.contentDigest) return undefined;
+      return { document, artifactRef, releaseRef: member.releaseRef.reference };
+    };
+    const threshold = await readMember("risk-acceptance-threshold");
+    const matrix = await readMember("risk-matrix");
+    if (threshold === undefined || matrix === undefined) return undefined;
+    const thresholdDocument = RiskAcceptanceThresholdDocumentV1Schema.safeParse(threshold.document);
+    const matrixDocument = RiskMatrixDocumentV1Schema.safeParse(matrix.document);
+    if (!thresholdDocument.success || !matrixDocument.success) {
+      return undefined;
+    }
+    if (
+      !sameRef(thresholdDocument.data.configurationSetRef, configurationSetRef) ||
+      !sameRef(matrixDocument.data.configurationSetRef, configurationSetRef) ||
+      !sameRef(thresholdDocument.data.projectRevisionRef.reference, projectRevisionRef) ||
+      !sameRef(matrixDocument.data.projectRevisionRef.reference, projectRevisionRef)
+    ) {
+      failRecommendation("measure-candidates-unavailable", basisRef);
+    }
+    // 阈值文档里的 `riskMatrixRef` 指向矩阵**定义**（matrixId/matrixVersion），不是该成员
+    // 在依据集合里的发布引用；两者是不同身份，必须按各自口径比对。
+    if (
+      thresholdDocument.data.content.riskMatrixRef.entityId !==
+        matrixDocument.data.content.matrixId ||
+      thresholdDocument.data.content.riskMatrixRef.versionId !==
+        matrixDocument.data.content.matrixVersion
+    ) {
+      return undefined;
+    }
+    return {
+      thresholdReleaseRef: threshold.releaseRef,
+      riskMatrixReleaseRef: matrix.releaseRef,
+      thresholdArtifactRef: threshold.artifactRef,
+      riskMatrixArtifactRef: matrix.artifactRef,
+      content: thresholdDocument.data.content,
+      matrix: matrixDocument.data.content,
+    };
+  }
+
+  /**
+   * 按知识读用途为同一请求者另签一次上下文。
+   *
+   * C27 自身的查询上下文只带处置域能力，直接交给依据读取器必然被 C06 关闭。签发用独立
+   * invocationId 并与后续读取的 requestId 对齐；组合根未提供接缝或签不出时返回调用方
+   * 上下文，由 C06 按原有口径裁决，不放宽任何访问快照检查。
+   */
+  async #knowledgeReadAuthorization(
+    invocationId: string,
+    authorization: AuthorizationContextV1,
+    branch:
+      | "knowledge-modeling.assessment-basis"
+      | "knowledge-modeling.measure-candidates" = "knowledge-modeling.assessment-basis",
+  ): Promise<AuthorizationContextV1> {
+    if (this.#authorizeDownstream === undefined) {
+      return authorization;
+    }
+    try {
+      const issued = await this.#authorizeDownstream({
+        branch,
+        invocationId,
+        projectId: authorization.projectId,
+        actorId: authorization.actorId,
+        requestedAt: authorization.decidedAt,
+      });
+      return issued;
+    } catch {
+      return authorization;
+    }
   }
 
   async #loadWarning(
@@ -699,6 +1004,7 @@ export class PostgresRecommendationContextReader implements RecommendationContex
         "warning.risk_input_entity_id as risk_input_entity_id",
         "warning.risk_input_version_id as risk_input_version_id",
         "warning.warning_payload as warning_payload",
+        "record.record_payload as record_payload",
         "input.basis_release_set_ref as basis_release_set_ref",
         "input.snapshot_payload as input_snapshot_payload",
         "preparation.applicability_values as applicability_values",
@@ -718,12 +1024,17 @@ export class PostgresRecommendationContextReader implements RecommendationContex
     const warningRecord = WarningRecordSchema.safeParse(row.warning_payload);
     const inputSnapshot = AssessmentInputSnapshotV1Schema.safeParse(row.input_snapshot_payload);
     const applicability = ApplicabilityMetadataSnapshotV1Schema.safeParse(row.applicability_values);
+    // 风险等级分支要按关联评估记录核验等级与有效指标（D-13），因此这里把正文一并读出并
+    // 校验身份一致；解析失败按契约漂移关闭，不按触发类型跳过读取。
+    const assessmentRecord = RiskAssessmentRecordSchema.safeParse(row.record_payload);
     if (
       !warningRecord.success ||
       !inputSnapshot.success ||
       !applicability.success ||
+      !assessmentRecord.success ||
       warningRecord.data.warningRecordId !== row.warning_record_id ||
-      warningRecord.data.assessmentRecordId !== row.assessment_record_id
+      warningRecord.data.assessmentRecordId !== row.assessment_record_id ||
+      assessmentRecord.data.assessmentRecordId !== row.assessment_record_id
     ) {
       failRecommendation("recommendation-contract-drift", taskTarget);
     }
@@ -761,6 +1072,7 @@ export class PostgresRecommendationContextReader implements RecommendationContex
         },
       },
       inputSnapshot: inputSnapshot.data,
+      assessmentRecord: assessmentRecord.data,
       riskInputRef: RiskInputVersionRefV1Schema.parse({
         kind: row.risk_input_kind,
         reference: {

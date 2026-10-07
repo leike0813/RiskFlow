@@ -988,6 +988,11 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
       const bound = await this.#readBoundResult(
         { ...context, authorization: decision.context },
         input.taskRef,
+        // 本接缝按契约由调用方提交自身命令身份（见 `DataCleaningBoundResultReadRequestV1`），
+        // 读取身份就必须用该身份：清洗结果工件已由冻结收口路径以任务身份占位，若这里再落回
+        // 任务身份，同一工件在两个不同授权上下文下的第二次读取会被 C04 访问记录以幂等冲突
+        // 拒绝。准备快照读取已按同一约定传入自身 `requestId`。
+        input.requestId,
       );
       if (bound.kind === "error") boundResultDenied(input.requestId);
       const recordedAt = this.#now().toISOString();

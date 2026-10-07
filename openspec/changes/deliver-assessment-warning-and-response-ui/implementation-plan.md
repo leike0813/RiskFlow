@@ -3,12 +3,12 @@
 ## 1. 实施基线与权威来源
 
 - Base commit：`d1ad73a005b08cd8fb2718c597ba0ae1af2b7019`，main。首先核对当前 HEAD、dirty paths 与实际符号；不得覆盖已有改动。基线已有 IP-01/02/08 的基础实现，按当前设计补正和复验，不重写已成立接线。
-- 权威输入：本 change proposal、五份 delta specs、design D-01～D-12；主规格及归档 C10、C25～C31；实现复用已归档 C32/C33/C41。v2 仅设计输入。
+- 权威输入：本 change proposal、全部 delta specs、design D-01～D-13；主规格及归档 C10、C25～C31；实现复用已归档 C32/C33/C41。v2 仅设计输入。
 - 范围：P-OV-01 + C34 16 页；初评/重评、预警确认、采纳/拒绝、两类执行、反馈、校准收口/草案。历史回填只读；报告导出、关闭任务、质疑预警、线下通知与运维不交付。
-- 本 change 无新依赖/锁文件或自有迁移；C22/C33 登记补全已形成 `000054`，C11 候选读取依赖修复 change `fix-assessment-entry-read-seam` 的 `000055` 内部定位列与索引。不变更业务评分、预测、偏差、Agent 校验和配置发布语义。
+- 本 change 无新依赖/锁文件或自有迁移；C22/C33 登记补全已形成 `000054`，C11 候选读取依赖修复 change `fix-assessment-entry-read-seam` 的 `000055` 内部定位列与索引。D-13 补齐 C27 分类型触发一致性；不变更业务评分、预测、偏差、Agent 增量/预算和配置发布语义。
 - Planning 只闭合 applyRequires，不创建 verification。实施前完整读取 apply instructions 的 contextFiles。
 
-当前 tasks 未勾选，C34 新契约测试、拥有方读实现和 browser spec 尚未完成；基线回归通过不代替新增 Scenario 的证据。主调度审阅本次规划并形成固定 Git 检查点、按实时 resumeQueue 建立受控 Task 后才交接；未跟踪工件不复制给另一个 Agent，部分实现不以 succeeded 收口。本文件不预填 Task/Run/Dispatch 或后续角色。
+实施完成状态以 tasks 和可运行证据为准；D-13 的 IP-13 未完成，基线回归或其它 IP 的通过不代替新增 Scenario 的证据。主调度审阅补充规划并形成固定 Git 检查点后才向其它 Agent 交接；Git 权限仍按本 session 授权，未提交工件不复制给另一个 Agent。派发和收口按实时 resumeQueue 与当前阶段责任处理，部分实现不以 succeeded 收口。本文件不预填 Task/Run/Dispatch 或后续角色。
 
 ## 2. 复用与接缝
 
@@ -26,6 +26,7 @@
 | IP-10 | demo 评估/概览页；v2 assessment/overview 页面、RiskMatrixVersionChart | 布局移植、真实 operations、单轮询、版本化矩阵 | 不搬 fixture、全套图表、状态注入或镜像 |
 | IP-11 | demo WarningCenter/WarningDetail/ResponseTasks；v2 warning/response 页面 | 真实预警、正式建议、人工表单、校准治理 | 不用采纳代替执行，不在 UI 算偏差 |
 | IP-12 | demo/test/browser/server.mjs.startDemoBrowserServer、C25～C29/C41 fixtures、worker createAssessmentGraphComposition/createRiskFlowGraphComposition/runtime.workflowPort、Playwright demo-chromium | 单数据库真实领域/Worker/授权/C16/C07 组合、回归、测量与证据 | 不以 stub/Mock HTTP 命令包装完工，不 skip 关键场景，不复制运行映射 |
+| IP-13 | core recommendation resolveTriggerIndicators/selectFrozenMeasures/validateRecommendationCandidate/RecommendationFrozenWarningV1Schema/buildRecommendationValidationEvidence；PostgresRecommendationContextReader.readFrozenContext/#loadWarning/readMember；既有 recommendation tests/fixture | D-13 类型化解析、风险等级最小冻结依据、对应措施及有效目标校验；IP-12 复用 postBranch/startRealAssessmentAndReadWarnings/postResultRead/makeDemoAssessmentConfigurationDocuments | 不把阈值 ID 当指标，不跳过失败，不重算 P/C，不要求覆盖全部评分指标，不重写旧候选 |
 
 ## 3. 代码变更映射
 
@@ -42,7 +43,9 @@
 | IP-09 | 3.1 | web 页面状态/写确认/权限/重试；domain C31/C34 独立口径 | demo client/operations/context；ConfirmButton/PageStateView | 所有 D-04/05 queries 白名单解码；新增 readRiskOverviewRunPage 复用原投影单页解码；D-07/08 命令封装；冻结完整信封、精确深链、动作门控、七态、迟到响应抑制 | 既有 C32/C33 成功读取/决定操作，不泄露正文 |
 | IP-10 | 3.2/3.3 | web 前四 Requirement、风险态势 Requirement；domain C31/C34 独立口径 | demo App、7 评估页、RiskOverview/RiskMatrix 页、SVG chart | D-02 路由，v2 分区；轴贡献/触发/版本解释；矩阵分组/落点；单轮询；概览双摘要+原投影分页区的独立状态；移除假导出 | 不新增导航，不硬编码矩阵，历史回填只读，不改原历史投影 |
 | IP-11 | 3.4/3.5 | web 预警/建议/执行/预测偏差/校准 Requirement | demo 4 预警/5 处置页、shared | D-05 数据投影，D-07/08 真提交；任务事实时间线、采纳/拒绝、两类执行+反馈表单、校准决定/草案链接 | 候选不能被采纳，确认不关闭任务，发布仍在治理 |
-| IP-12 | 1.1/1.2、2.1～2.11、4.1～4.3 | 全部验收/性能/真实接缝 | contracts 新 read test；各所属现有 tests/fixtures；demo harness+新 browser spec | D-11 单库装配 C25～C29/C41/C16/C07 与 worker 两组合根/真实checkpointer/runtime.workflowPort；场景集、真实授权/命令/事务、17 页、响应丢失/迟到/版本/撤权、有限性能记录 | 不新增测试框架，不断言整段文本/CSS或模型随机结果 |
+| IP-12 | 1.1/1.2、2.1～2.13、4.1～4.4 | 全部验收/性能/真实接缝 | contracts 新 read test；各所属现有 tests/fixtures；demo harness+新 browser spec | D-11 单库装配 C25～C29/C41/C16/C07 与 worker 两组合根/真实checkpointer/runtime.workflowPort；场景集、真实授权/命令/事务、17 页、响应丢失/迟到/版本/撤权、有限性能记录；与 IP-13 共用等级预警及混合触发验收 | 不新增测试框架，不断言整段文本/CSS或模型随机结果 |
+| IP-13 | 2.12/2.13 | response-recommendation「三项处置约束由确定性模块逐项校验」的六个 Scenario | packages/core/src/recommendation/service.ts/schema.ts；packages/adapters/src/recommendation/postgres-recommendation-adapter.ts；既有 core/adapter recommendation tests 与 fixture | D-13 完整 TriggerIndicator 输入、riskAcceptanceBasis strict 私有摘要；#loadWarning 精确解析 record_payload，readMember 受权读取阈值/矩阵并核对相容/适用/等级；validateRecommendationCandidate 分类型且逐预警检查，diagnostics 留证；真实入库/待复核/原键重放回归 | 公共记录/命令/枚举、P/C、阈值配置、Agent 门、候选身份算法、权限/事务、旧工件 |
+| IP-13/IP-12 | 4.4 | response-recommendation 单独风险等级预警可形成正式建议、混合触发逐条校验且不部分通过；web 人工采纳与预测偏差校准 Scenario | demo/test/browser/assessment-warning-response.spec.ts 的现有 helper/闭环场景；server.mjs.startDemoBrowserServer；deploymentPolicies.mjs.makeDemoAssessmentConfigurationDocuments | 单独等级场景使用独立版本化配置，混合场景保存四类真实触发；HTTP→C27 三项→正式建议→人工采纳→真实 forecastRun→执行/反馈→偏差/校准；与原 4.2 证据一起收口 | 不代写正式建议，不提高默认风险接受阈值避错，不改变生产阈值与图路由，不 skip 关键路径 |
 
 ## 4. 调用与副作用顺序
 
@@ -52,6 +55,7 @@
 4. C41 采纳创建真实等待运行后再提交人工决定，只有决定成立才允许恢复；执行/反馈是独立人类操作。拒绝不启动预测。
 5. C29 治理单入口分支复验 → C07 专用证明/C16 提交用途授权 → 精确建议/决定与基准核对 → 原用例收口或未发布修订 → 尾事务。失败沿 D-08 原子或可恢复边界，C16 成功+C29 失败不重复修订。
 6. C30：公开 startRunPort 解析/入口检查与当前授权复验 → workflowEntryIdentityFor（重评含 reassessmentEntry）→ D-12 的 workflow.start-run 短绑定事务，原键/完整载荷与workflowRunRef回执 → 事务外调用原父 start → preparing run-state 工件及登记事务 → 唯一子运行/A0登记 → A2唯一原因映射。绑定失败不调用图；绑定成功但尚无运行登记时原键重试继续启动，不能仅凭绑定回执报告业务成功。resume/cancel保留其原动作键，恢复从已登记state读取元数据。
+7. IP-13 在 4.2/4.4 正式采纳与校准验收前完成：按当前 C06 授权读取精确 task/warning/record/input/preparation → C19 原集合成员与 C04 正文/来源复验 → core 分类型解析，风险等级分支核对阈值/矩阵/适用性/已保存等级并形成 riskAcceptanceBasis → 原候选集登记 → 原 Agent 组合排序与候选登记 → validate-and-record 读取已冻结候选，逐条校验对应措施及目标 → 三项全过才沿原事务入库，否则保存失败快照并走 C07。匹配旧冻结集不补写新字段；新版本依据只能通过合法新冻结集表达。技术或权限失败先按原 reader 错误关闭，不拿成功基线代替。
 
 ## 5. Schema、状态与持久化落实
 
@@ -66,6 +70,7 @@
 - core service 导出 assessmentReasonForWorkflowReassessmentV1；Worker 的 reassessmentReasonV1 删除，A2 从已保存 reason 映射。workflow/read 共享原因 Schema，C25 仅边界码转换，不改变评分算法。
 - evaluateWorkflowEntryGate 两监测字段均缺席按无监测输入通过；显式空/冲突继续拒绝。扩展现有 service.test.ts 的边界用例，不新建测试框架。
 - 日志与错误沿 API 已有安全信封；数据层额外只记录请求/操作/耗时/数量。模型正文、来源正文不进页面或错误。
+- D-13 的 riskAcceptanceBasis 只属于 RecommendationFrozenWarningV1Schema，字段/边界以 design 为准；快照摘要和 artifact refs 沿既有候选 payload 保存，不增加关系表或第二套可变配置。validate-and-record 读取该候选而不重新读取当前发布补值；旧等级候选缺依据保持可读且校验失败。诊断复用既有 evidence Schema/ContractReference 类型，失败待复核及正式建议事务/回执/审计保持原语义。
 
 ## 6. 验收证据矩阵
 
@@ -98,8 +103,16 @@
 | 所有写入必须确认并保持授权幂等 / 取消无副作用且重试幂等；权限撤销与证据脱敏 | IP-02/07/09/12 | 同 browser spec，confirmation/commit hooks、真实Cookie | cancel=0请求、重试原信封、同键异载荷冲突、撤权失败、键盘焦点、定位两态且无正文 | browser 同上 |
 | C34 必须以真实浏览器验收业务接缝 / 真实闭环与失败边界验收 | IP-12 | 同 browser spec/harness，真实PostgreSQL与生产demo build | 公共HTTP→真实领域→持久回读；缺服务非零；版本化合成样本与trace | `pnpm --dir demo build` 后 browser 同上 |
 | 风险态势必须按有界所属摘要呈现 / 摘要失败与范围切换；原投影引用按页追溯 | IP-04/06/09/10/12 | 同 browser spec，空间A/B和单摘要故障 | 统计口径/asOf与授权相符，原投影精确版本/下一页不变，单源失败独立显示，不全量翻页/假趋势/导出 | browser 同上 |
+| 三项处置约束由确定性模块逐项校验 / 三项均通过 | IP-13 | core recommendation.test.ts；adapter postgres-recommendation-adapter.test.ts/fixture.ts | 等级或监测分支均有依据；三项独立 true，正式建议非空且 pending；原命令重放只有一条建议/校验/成功审计 | `pnpm exec vitest run packages/core/test/recommendation/recommendation.test.ts packages/adapters/test/recommendation/postgres-recommendation-adapter.test.ts` |
+| 三项处置约束由确定性模块逐项校验 / 任一项失败或依据缺失 | IP-13 | 同上，复用已有规范/资源/工序失败参数化用例 | 任一 false 保留诊断、waiting-review 且正式建议为零；不能人工强制入库；已有审计写入回滚/原键重试仍成立 | 同上 |
+| 三项处置约束由确定性模块逐项校验 / 单独风险等级预警可形成正式建议 | IP-13/IP-12 | core/adapter recommendation tests/fixture；browser spec 独立配置集 | 只有等级预警，无监测映射也可通过；有效措施目标只是评分指标子集仍通过；阈值 ID 不冒充目标，三项证据与精确配置 refs 可重建；浏览器采纳成立真实 forecastRun | 上述 vitest 命令；`pnpm exec playwright test -c playwright.config.ts --project=demo-chromium demo/test/browser/assessment-warning-response.spec.ts` |
+| 三项处置约束由确定性模块逐项校验 / 混合触发逐条校验且不部分通过 | IP-13/IP-12 | 同上，四类混合触发及现有 missing-mapping/uncovered-target 变体 | 四类实际预警均存在且按类型验证；同名阈值/规则身份不跨类型解析；全部通过才入库，任一监测缺失/歧义/未覆盖仍失败；浏览器从正式建议到执行/反馈/偏差/校准保存完整精确链 | 同上 |
+| 三项处置约束由确定性模块逐项校验 / 风险等级依据或对应措施不足时失败 | IP-13 | core/adapter recommendation tests/fixture，参数化边界 | 缺失/多个适用阈值、triggerType/actualValue错配、错误矩阵/评估/配置集合、未知等级、等于或低于接受上限、无对应已选措施、目标不在评估或缺审核值；业务校验失败待复核无正式建议，权限/损坏正文沿reader失败；诊断有精确预警/评估引用 | 上述 vitest 命令；`pnpm exec vitest run packages/adapters/test/warning packages/adapters/test/response-lifecycle packages/adapters/test/human-decision-feedback` |
+| 三项处置约束由确定性模块逐项校验 / 冻结依据不随发布变化且历史缺失不补造 | IP-13 | core/adapter recommendation tests/fixture，旧冻结集及后续配置发布 | 原候选按原版本得到同一结果；旧等级候选缺 riskAcceptanceBasis 不补造、不通过、不覆盖；旧监测候选仍可校验；当前撤权不重放成功，同键异载荷拒绝 | 上述 vitest 命令 |
 
 IP-12 同时回归既有 `demo/test/browser/read-only.spec.ts` 与 `identification-review.spec.ts`，命令 `pnpm exec playwright test -c playwright.config.ts --project=demo-chromium`。harness 的写 command 必须调用真实 C25/26/28/29/30/41，读取真实工件/登记，不能只在 SQL 中播种“已写成功”来替代命令执行；只读历史/失败夹具允许按已有测试模式播种并通过所属 Schema 解析。Agent 可以使用冻结且已确定性收口的合成结果，不接真实随机模型推理作为硬期望。
+
+IP-13 测试优先扩展上述现有用例，不新建测试框架或文本静态门禁。adapter/浏览器关键路径必须实际连接真实 PostgreSQL、C06 与生产工厂；关键 skip 不算通过。单独等级场景复用 `makeDemoAssessmentConfigurationDocuments` 的类型化合成配置正文，在发布前按已有 fixture 模式选择监测不越限的独立版本，走真实提交/审核/发布；默认混合场景保留风险接受阈值及四类触发。复用 `postBranch`、`startRealAssessmentAndReadWarnings`、`postResultRead` 和现有采纳校准场景，保存 task/每类 warning/assessment/recommendation/validation/forecastRun/execution/feedback/deviation/calibration 精确引用。共享 harness 或合成配置改动需回归 read-only/identification-review，不能把源码中有场景当作通过证据。
 
 性能记录附于最终 verification：新目录 50项+额外大量不可见行、32×32矩阵/50落点，测量 SQL返回行数、解释工件读取次数、耗时、可见DOM规模；确认无全库读取和随总库大小增加的UI工作量。不新增静态工件文本测试或性能框架。
 
@@ -112,12 +125,13 @@ IP-12 同时回归既有 `demo/test/browser/read-only.spec.ts` 与 `identificati
 | IP-ID | 类型 | 文件 |
 | --- | --- | --- |
 | IP-01 | M | `packages/contracts/src/ports/index.ts`、`packages/contracts/src/vocabulary/index.ts`、`packages/core/src/warning/schema.ts`、`packages/core/src/calibration/schema.ts`、`packages/core/src/calibration/service.ts`、`packages/core/src/assessment-config/schema.ts` |
+| IP-04 | M | `packages/core/src/scoring-rules/schema.ts`（4.1 真实装配暴露：适用规则集的 `includedMembers` 唯一性被按**释放**判定，而一次评分规则发布承载的是一份累积规则集，同一释放下的多条入选规则因此被判非法；唯一键改为规则身份，释放级去重下移到依据集合投影）、`packages/core/src/scoring-rules/validation.ts`（同因：D-06 要求依据成员装的是规则释放，同一释放下的多条入选规则在依据投影时合并为一个成员，合并要求 `revisionRef`/`artifactRef`/`contentDigest` 逐字一致，冲突整体失败而不保留第一项）、`packages/core/test/scoring-rules/scoring-rules.test.ts`（补该合并规则的回归：同一释放下两条不同规则合并为一个依据成员，摘要不一致时整体失败） |
 | IP-02 | M | `packages/core/src/access/policy.ts`、`packages/core/test/access.test.ts` |
 | IP-03 | M | `packages/adapters/src/engineering-data/context-source/postgres-engineering-context-source-registry.ts`、`packages/adapters/src/engineering-data/context-source/index.ts`、`packages/adapters/src/identification/read/postgres-risk-identification-read.ts` |
 | IP-04 | M | `packages/adapters/src/risk-assessment/engine/postgres-risk-assessment-engine.ts`、`packages/adapters/src/risk-assessment/engine/index.ts` |
 | IP-05 | M | `packages/adapters/src/workflow/postgres-workflow-adapter.ts`、`packages/adapters/src/workflow/index.ts` |
 | IP-05 | M | `packages/core/src/workflow/schema.ts`、`packages/core/src/workflow/service.ts`、`apps/worker/src/risk-flow/graph.ts`、`apps/worker/src/risk-flow/runtime.ts`、`apps/worker/src/assessment/graph.ts`、`apps/worker/src/assessment/runtime.ts` |
-| IP-06 | M | `packages/adapters/src/warning/postgres-warning-lifecycle-adapter.ts`、`packages/adapters/src/warning/index.ts`、`packages/adapters/src/recommendation/postgres-recommendation-adapter.ts`、`packages/adapters/src/recommendation/index.ts`、`packages/adapters/src/response-lifecycle/postgres-response-lifecycle-adapter.ts`、`packages/adapters/src/response-lifecycle/index.ts`、`packages/adapters/src/human-decision-feedback/postgres-human-decision-feedback-adapter.ts`、`packages/adapters/src/human-decision-feedback/index.ts` |
+| IP-06 | M | `packages/adapters/src/warning/postgres-warning-lifecycle-adapter.ts`（4.1 真实装配暴露：`read()` switch 缺 `feedback-read` 分支，公共读契约已声明该操作却落到 `default` 抛 `owning-read-seam-not-injected`；按 D-05/D-06 所有权分层补齐——C28 反馈事实与私有偏差解释、C29 公共偏差记录与校准引用，以 C28 交出的私有偏差事实为唯一锚点；关系页失败原因码按发起操作命名）、`packages/adapters/src/warning/index.ts`、`packages/adapters/src/recommendation/postgres-recommendation-adapter.ts`、`packages/adapters/src/recommendation/index.ts`、`packages/adapters/src/response-lifecycle/postgres-response-lifecycle-adapter.ts`（4.1 真实装配暴露：`readFeedbackView` 只投影私有偏差正文、不交出其精确版本锚点，组合方无从向 C29 换公共偏差记录与校准引用）、`packages/adapters/src/response-lifecycle/index.ts`、`packages/adapters/src/human-decision-feedback/postgres-human-decision-feedback-adapter.ts`、`packages/adapters/src/human-decision-feedback/index.ts` |
 | IP-07 | M | `packages/adapters/src/calibration/postgres-calibration-adapter.ts`、`packages/adapters/src/calibration/index.ts` |
 | IP-08 | M | `apps/api/src/http.ts`、`apps/api/test/http-shell.test.ts` |
 | IP-09 | M | `demo/src/api/client.ts`、`demo/src/api/context.ts`、`demo/src/api/operations.ts`、`demo/src/components/ConfirmButton.tsx`、`demo/src/components/ConfirmButton.css`、`demo/src/components/PageStateView.tsx` |
@@ -128,10 +142,18 @@ IP-12 同时回归既有 `demo/test/browser/read-only.spec.ts` 与 `identificati
 | IP-12 | N | `packages/contracts/test/c34-assessment-response-read.test.ts`、`demo/test/browser/assessment-warning-response.spec.ts` |
 | IP-05/IP-12 | M | `packages/core/test/workflow/service.test.ts`、`apps/worker/test/risk-flow/runtime.test.ts`、`apps/worker/test/risk-flow/composition.test.ts`、`apps/worker/test/assessment/runtime.test.ts`、`apps/worker/test/assessment/composition.test.ts` |
 | IP-12 | M | `packages/contracts/test/module-interfaces-events-workflows.test.ts`、`packages/adapters/test/engineering-data/context-source/fixture.ts`、`packages/adapters/test/engineering-data/context-source/postgres-engineering-context-source-registry.test.ts`、`packages/adapters/test/risk-assessment/fixture.ts`、`packages/adapters/test/risk-assessment/postgres-risk-assessment-engine.test.ts`、`packages/adapters/test/identification/postgres-risk-identification-read.test.ts`、`packages/adapters/test/workflow/postgres-workflow-adapter.test.ts`、`packages/adapters/test/warning/fixture.ts`、`packages/adapters/test/warning/postgres-warning-lifecycle-adapter.test.ts`、`packages/adapters/test/recommendation/fixture.ts`、`packages/adapters/test/recommendation/postgres-recommendation-adapter.test.ts`、`packages/adapters/test/response-lifecycle/fixture.ts`、`packages/adapters/test/response-lifecycle/postgres-response-lifecycle-adapter.test.ts`、`packages/adapters/test/human-decision-feedback/fixture.ts`、`packages/adapters/test/human-decision-feedback/postgres-human-decision-feedback-adapter.test.ts`、`packages/adapters/test/calibration/fixture.ts`、`packages/adapters/test/calibration/postgres-calibration-adapter.test.ts`、`demo/test/browser/server.mjs`、`demo/test/browser/read-only.spec.ts`、`demo/test/browser/identification-review.spec.ts` |
+| IP-12 | M | `packages/core/src/human-decision-feedback/service.ts`（4.1 真实装配暴露：C41 三处 hand-off 二次签发与 C06 同调用身份幂等冲突，改交命令自身已复验的上下文；`workflow.resume-run` 签发身份必须等于 C30 运行时实际使用的 `<commandId>:resume`；反馈分段签发身份必须等于 C30 实际调用的 `<commandId>:feedback-segment`；分段入口冻结的效果预测取自 C28 记录反馈时解析出的真实预测并随冻结行落库） |
+| IP-12 | M | `packages/adapters/src/knowledge-governance/postgres-knowledge-governance-read.ts`、`packages/adapters/test/knowledge-governance/postgres-knowledge-governance-read.test.ts`、`demo/test/browser/deploymentPolicies.mjs` |
+| IP-13 | M | `packages/core/src/recommendation/service.ts`、`packages/core/src/recommendation/schema.ts`、`packages/adapters/src/recommendation/postgres-recommendation-adapter.ts`、`packages/core/test/recommendation/recommendation.test.ts`、`packages/adapters/test/recommendation/fixture.ts`、`packages/adapters/test/recommendation/postgres-recommendation-adapter.test.ts` |
+| IP-13/IP-12 | M | `demo/test/browser/server.mjs`、`demo/test/browser/deploymentPolicies.mjs`、`demo/test/browser/assessment-warning-response.spec.ts` |
 
 静态内容：不删除仍被 C35 页面使用的 `demo/src/content/assessment.ts/response.ts/risks.ts` 等共享原件；IP-10/11 清除 C34 页 import 与假按钮即可。模板中非C34页面、apps/web、研究原件、execution-graph、lockfiles、package manifests、migration目录均受保护。v2 原件只读；不用静态文本门禁检测其 import。
 
+治理读的批准范围只到本次交付必需的路径：`postgres-knowledge-governance-read.ts` 按各定义类型**已有**的用途码常量读取正文（C04 的 `purposeCode` 必须与工件 manifest 一致，单一硬编码用途码会让所有类型关闭失败），并补齐交付页面实际读取的定义类型。保留 C04 全部权限校验与既有 `knowledge-modeling.governance-read` 分支；不新增清单读取入口，不先读 manifest 再照抄其 `purposeCode` 绕过用途约束。C18 11 类正文的完整扩展不属本 change，未覆盖的类型继续按既有语义返回不可用，不在本轮扩表。
+
 升级条件：基线符号不存在或 HEAD 漂移影响计划、上游读契约无法安全表达输入、需新增公共枚举/字段超出 D-03～05/D-12、需新增表/索引/迁移/依赖、授权需扩大、需改变 D-08/D-12 之外的事务/原幂等或页面范围、验证命令不可用。D-12 已批准的入口元数据、identity摘要、原因映射和登记恢复属于IP-05范围；普通范围内失败、参数/fixture调整与已定设计的跨文件修复由当前任务自修。
+
+D-13 已批准的分类型触发语义、完整 TriggerIndicator 参数、riskAcceptanceBasis 私有 payload 字段、诊断与上述 IP-13 文件属于范围内实现，不再以这项语义缺口重复升级。权限、公共记录/命令、事务/幂等协议、评分/预测、已发布配置和旧不可变工件仍受保护；若需要改变这些边界或改动本清单外文件，先升级。不得以清空 unresolvedTriggerItems、删除等级预警、抬高默认风险接受阈值、全评分指标覆盖门禁或成功 stub 代替 D-13。
 
 ## 8. 验收 Agent 授权与限定审计
 

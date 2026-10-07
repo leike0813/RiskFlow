@@ -149,9 +149,11 @@ export const createResponseAgentPolicy = ({ projectId }) =>
 
 export const createRecommendationPolicies = ({
   projectId,
+  spatialScopeRef,
   bindings,
   targetIndicators,
   reviewedStandardEvidence,
+  siteProcess,
 }) => {
   const generationPolicyRef = ASSESSMENT_RUNTIME_POLICY_REFS.responseGenerationPolicyRef;
   const validationPolicyRef = ASSESSMENT_RUNTIME_POLICY_REFS.responseValidationPolicyRef;
@@ -183,11 +185,25 @@ export const createRecommendationPolicies = ({
           targetIndicators: [...targetIndicators],
           reviewedStandardEvidence: [...reviewedStandardEvidence],
           contraindicationRules: [],
+          // 现场上下文声明的工序状态必须落在本策略的可执行状态里，否则站点可行性
+          // 校验会以 `process-not-executable` 关闭。演示只登记一条真实工序状态。
+          executableProcessStatuses: [siteProcess.processStatus],
         },
+        // 现场上下文按 `RecommendationSiteContextV1` 的完整字段返回：只回声引用而不给
+        // 工序节点、资源与证据，站点可行性校验会在 `resource-unavailable` 处关闭失败。
         siteContext: {
           schemaVersion: "1",
-          contextRef: input.siteContextRef,
           projectId,
+          siteContextRef: input.siteContextRef,
+          // C27 要求现场上下文与候选集合落在同一空间修订上：只回声引用而不给空间，
+          // 正式建议会在 `site-context-mismatch` 处关闭失败。
+          spatialScopeRef,
+          processNodeRef: siteProcess.processNodeRef,
+          processStatus: siteProcess.processStatus,
+          availableResources: [...siteProcess.availableResources],
+          constraints: [...siteProcess.constraints],
+          evidenceReferences: [...siteProcess.evidenceReferences],
+          observedAt: input.requestedAt,
         },
       };
     },
@@ -200,12 +216,16 @@ export const createRecommendationPolicies = ({
  * 工厂按 `requiredRef` 唯一装配执行器，运行期不再选择；重复策略直接失败，
  * 不任意挑一个。每个策略的方法、输入指标与步长都是版本化配置，不是代码默认值。
  */
+const SETTLEMENT_INDICATOR_ID = "demo-indicator-settlement";
+
 export const DEMO_FORECAST_POLICIES = Object.freeze([
   Object.freeze({
     policyId: "demo-forecast-policy-settlement",
     method: "monitoring-trend",
-    inputIndicatorIds: Object.freeze(["地表沉降"]),
-    targetIndicatorId: "地表沉降",
+    // 指标用 C18 已发布的 indicatorId，不是显示名：预测执行按指标标识取实际值，
+    // 沿用旧夹具的显示名会让两个读取分支都取不到序列。
+    inputIndicatorIds: Object.freeze([SETTLEMENT_INDICATOR_ID]),
+    targetIndicatorId: SETTLEMENT_INDICATOR_ID,
     horizonSteps: 1,
     unit: "mm",
     requiredRef: Object.freeze({ entityId: "demo-policy-forecast", versionId: "1" }),
@@ -299,7 +319,36 @@ export const createScoringRulesPolicy = () =>
  * 与上面十项运行策略不是同一族（C25 的 `calibrationAgentPolicyRef` 是 Agent 策略引用，
  * 这里是被 C29 逐项核对的校验策略文档），因此单独登记，不混进运行策略集。
  */
-const CALIBRATION_VALIDATION_POLICY = Object.freeze({
+/**
+ * C29 组合 Agent 的冻结合成增量（合成样本、待甲方复核）。
+ *
+ * 证据取本次评估真实登记的来源资料段（监测数据即出自该段），操作只放宽一档可接受等级
+ * 上限：收紧会让演示数据整体越限，那是数据问题而不是校准结论。
+ */
+export const DEMO_CALIBRATION_EVIDENCE = Object.freeze([
+  Object.freeze({
+    locator: Object.freeze({
+      sourceSegmentId: "s_8c79d2bf12558fa45b039bb369a6eaf2-chapter_1-segment_1",
+    }),
+    sourceVersion: Object.freeze({ entityId: "s_8c79d2bf12558fa45b039bb369a6eaf2", versionId: "1" }),
+  }),
+]);
+
+export const DEMO_CALIBRATION_OPERATIONS = Object.freeze([
+  Object.freeze({
+    kind: "replace-risk-acceptance-threshold",
+    definitionType: "risk-acceptance-threshold",
+    threshold: Object.freeze({
+      thresholdId: "demo-acceptance-default",
+      applicabilityConditions: Object.freeze([
+        Object.freeze({ dimension: "工程阶段数据", values: Object.freeze(["变径空间扩挖"]) }),
+      ]),
+      maximumAcceptedLevelId: "demo-level-3",
+    }),
+  }),
+]);
+
+export const CALIBRATION_VALIDATION_POLICY = Object.freeze({
   policyRef: Object.freeze({ entityId: "demo-policy-calibration-validation", versionId: "1" }),
   definitionRef: Object.freeze({ entityId: "demo-definition-calibration", versionId: "1" }),
   toolPolicyRef: Object.freeze({ entityId: "demo-policy-calibration-tools", versionId: "1" }),
@@ -352,6 +401,9 @@ export const createAssessmentPolicyCatalog = ({
     const authorization = await authorizeDownstream({
       invocationId: `${input.basisReleaseSetRef.reference.entityId}:policy-catalog`,
       projectId: input.projectId,
+      // 签发身份必须是本次分段入口的请求者本人：签发出的上下文 actorId 与调用方主体
+      // 不一致时，C04 会关闭该次读取。运行上下文里就有主体，不另取默认身份。
+      actorId: input.authorization.actorId,
       branch: "knowledge-modeling.assessment-basis",
     });
     const read = await basisReader.readAssessmentBasisReleaseSet({
@@ -384,10 +436,19 @@ export const createAssessmentPolicyCatalog = ({
       if (basis === undefined) {
         return { kind: "unavailable", reasonCode: "basis-release-set-not-registered" };
       }
+      // 校准目标必须是「可受校准影响且 C16 可 submit-revision」的定义类型之一
+      // （C29 白名单）。适用规则集不在白名单内，用它当目标会在 prepareInput 直接关闭
+      // 失败；这里取同一依据集合里已发布的风险可接受阈值释放——它属于依据集合自身的
+      // 真实发布，不取「最新一条」，也不离开本次评估的冻结依据。
+      const calibrationTarget = basis.configurationMembers.find(
+        (member) => member.definitionType === "risk-acceptance-threshold",
+      );
+      if (calibrationTarget === undefined) {
+        return { kind: "unavailable", reasonCode: "calibration-target-not-in-basis-set" };
+      }
       return {
         kind: "resolved",
-        // 校准目标是本次依据集合里已发布的适用规则集释放，不是「最新一条」。
-        targetReleaseRef: basis.applicableRuleSetMember.releaseRef,
+        targetReleaseRef: calibrationTarget.releaseRef,
         calibrationValidationPolicyRef: calibrationPolicy.policyRef,
         agentPolicy: {
           schemaVersion: "1",
@@ -420,5 +481,356 @@ export const createRiskFlowRetryPolicyReader = () => ({
       ? { maxAttempts: DEMO_RISK_FLOW_CONFIG.retryBudget.maxAttempts, backoffMs: DEMO_RISK_FLOW_CONFIG.retryBudget.backoffMs }
       : undefined,
 });
+
+/**
+ * C18 评估配置集合（合成样本、待甲方复核）：11 类版本化配置正文。
+ *
+ * 这些正文是甲方审核的配置数据（design D-04），按 `definitionType` 逐类经 C16 提交、
+ * C07 审核、C16 发布，解析身份由内容摘要铸出。P/C 与风险等级的算式全部在这些正文里：
+ * 指标取值经字段映射与量纲换算后按权重集加权、落入风险矩阵分区。评估链路上任何一步
+ * 读不到这里的发布集，都应如实报不可用，而不是回落到别处的默认值。
+ */
+const DEMO_CONFIGURATION_SET_REF = Object.freeze({
+  entityId: "demo-config-set",
+  versionId: "1",
+});
+
+// 引用风险矩阵的文档按 C18 交叉引用约定携带 `{matrixId, matrixVersion}`，不是发布集引用。
+const DEMO_RISK_MATRIX_REF = Object.freeze({
+  entityId: "demo-c32-matrix",
+  versionId: "2026.06",
+});
+
+/**
+ * 地表沉降短期速率：后果侧第二个指标，毫米每秒量纲，经同一条沉降序列的短期斜率特征取值。
+ *
+ * 监测预警阈值 `demo-threshold-settlement-slope` 落在同一条沉降序列上。原先这条阈值没有任何
+ * 指标映射，它开出的预警在原理上无法被任何措施覆盖（措施目标只能是指标），C27 的触发一致性
+ * 因此必然失败闭合——是已发布配置自相矛盾，不是校验过严。补上这条映射后：该阈值经同版字段
+ * 映射解析为「沉降短期速率」指标，与措施目标、审核目标值一一对应。
+ *
+ * 后果侧按 `maximum` 组合，速率的实际值（2 mm/s）低于自身分档线（10 mm/s），因此最大值仍由
+ * 累计沉降决定，P/C 与风险等级不因新增该指标而改变。
+ */
+const SETTLEMENT_SLOPE_INDICATOR_ID = "demo-indicator-settlement-slope";
+
+const indicatorBase = Object.freeze({
+  applicabilityConditions: [],
+  quantizationIntervalRef: Object.freeze({
+    entityId: "demo-quantization-interval",
+    versionId: "1",
+  }),
+});
+
+/** 地表沉降：后果侧唯一指标，毫米量纲，经监测值映射取值。 */
+/**
+ * 泥水压力：可能性侧唯一指标，千帕量纲，经监测值映射取值。
+ *
+ * 可能性侧不能指向风险记录里不存在的资料字段：C25 的风险输入事实只投影
+ * `processNodeId`/`riskSource`/`riskFactor`/`riskEvent`/`modelConfidence` 五项，其中
+ * `modelConfidence` 是结构化置信度对象而非标量，按外部文档类型映射的指标则永远取不到实际
+ * 取值，两者都会在评分覆盖检查处以 `risk-assessment-rule-coverage` 关闭失败。所以可能性侧
+ * 同样取自真实监测序列——本装配登记的「泥水压力」序列。
+ */
+const SLURRY_PRESSURE_INDICATOR_ID = "demo-indicator-slurry-pressure";
+
+const configurationContents = Object.freeze({
+  "indicator-system": {
+    // 指标集合按 indicatorId 升序。
+    indicators: [
+      {
+        ...indicatorBase,
+        indicatorId: SETTLEMENT_INDICATOR_ID,
+        indicatorType: "后果严重性评估指标",
+        group: "监测量测与周边环境",
+        valueKind: "numeric",
+        canonicalUnit: "mm",
+      },
+      {
+        ...indicatorBase,
+        indicatorId: SETTLEMENT_SLOPE_INDICATOR_ID,
+        indicatorType: "后果严重性评估指标",
+        group: "监测量测与周边环境",
+        valueKind: "numeric",
+        canonicalUnit: "mm/s",
+      },
+      {
+        ...indicatorBase,
+        indicatorId: SLURRY_PRESSURE_INDICATOR_ID,
+        indicatorType: "发生可能性评估指标",
+        group: "开挖与支护参数",
+        valueKind: "numeric",
+        canonicalUnit: "kPa",
+      },
+    ],
+  },
+  "indicator-field-mapping": {
+    // 集合按标识严格字典序：C18 契约要求同一集合内键升序且不重复。
+    // 一个目标指标只能有一条映射：同一指标的多个来源在 C25 物化实际取值时构成歧义，
+    // 以 `risk-assessment-indicator-ambiguous` 关闭失败。累计值与短期速率是两个指标，
+    // 各取同一条沉降序列上的不同度量（原始值 / 短期斜率特征），彼此不构成歧义。
+    mappings: [
+      {
+        mappingId: "demo-mapping-settlement-slope",
+        targetIndicatorId: SETTLEMENT_SLOPE_INDICATOR_ID,
+        origin: {
+          kind: "monitoring-feature",
+          monitoringIndicator: "地表沉降",
+          parameterCode: "settlement",
+          metric: "short-term-slope",
+        },
+        sourceUnit: "mm/s",
+        targetUnit: "mm/s",
+        conversion: { kind: "identity" },
+      },
+      {
+        mappingId: "demo-mapping-settlement-value",
+        targetIndicatorId: SETTLEMENT_INDICATOR_ID,
+        origin: {
+          kind: "monitoring-value",
+          monitoringIndicator: "地表沉降",
+          parameterCode: "settlement",
+          metric: "value",
+        },
+        sourceUnit: "mm",
+        targetUnit: "mm",
+        conversion: { kind: "identity" },
+      },
+      {
+        mappingId: "demo-mapping-slurry-pressure",
+        targetIndicatorId: SLURRY_PRESSURE_INDICATOR_ID,
+        origin: {
+          kind: "monitoring-value",
+          monitoringIndicator: "泥水压力",
+          parameterCode: "slurry-pressure",
+          metric: "value",
+        },
+        sourceUnit: "kPa",
+        targetUnit: "kPa",
+        conversion: { kind: "identity" },
+      },
+    ],
+  },
+  "weight-set": {
+    weightSetId: "demo-weight-set",
+    weightSetVersion: "1",
+    sourceRef: { entityId: "demo-weight-source", versionId: "1" },
+    // 权重集合同样按指标标识升序；可能性侧基数点合计 10000。
+    possibilityWeights: [{ indicatorId: SLURRY_PRESSURE_INDICATOR_ID, basisPoints: 10000 }],
+    // 后果侧两个指标各占一半。后果按 `maximum` 组合，基数点只参与发布校验，不改变分值。
+    consequenceWeights: [
+      { indicatorId: SETTLEMENT_INDICATOR_ID, basisPoints: 5000 },
+      { indicatorId: SETTLEMENT_SLOPE_INDICATOR_ID, basisPoints: 5000 },
+    ],
+  },
+  "scoring-strategy": {
+    possibility: {
+      kind: "weighted-average",
+      weightSetRef: { entityId: "demo-weight-set", versionId: "1" },
+      rounding: { mode: "half-away-from-zero", decimalScale: 2 },
+    },
+    consequence: { kind: "maximum" },
+  },
+  "risk-matrix": {
+    matrixId: "demo-c32-matrix",
+    matrixVersion: "2026.06",
+    possibilityAxis: {
+      bands: [
+        { bandId: "demo-p1", lower: "0", upper: "1" },
+        { bandId: "demo-p2", lower: "1", upper: "3" },
+        { bandId: "demo-p3", lower: "3", upper: "5" },
+      ],
+    },
+    consequenceAxis: {
+      bands: [
+        { bandId: "demo-c1", lower: "0", upper: "10" },
+        { bandId: "demo-c2", lower: "10", upper: "100" },
+      ],
+    },
+    riskLevels: [
+      { levelId: "demo-level-1", ordinal: 1 },
+      { levelId: "demo-level-2", ordinal: 2 },
+      { levelId: "demo-level-3", ordinal: 3 },
+      { levelId: "demo-level-4", ordinal: 4 },
+    ],
+    cells: [
+      { possibilityBandId: "demo-p1", consequenceBandId: "demo-c1", riskLevelId: "demo-level-1" },
+      { possibilityBandId: "demo-p1", consequenceBandId: "demo-c2", riskLevelId: "demo-level-2" },
+      { possibilityBandId: "demo-p2", consequenceBandId: "demo-c1", riskLevelId: "demo-level-2" },
+      { possibilityBandId: "demo-p2", consequenceBandId: "demo-c2", riskLevelId: "demo-level-3" },
+      { possibilityBandId: "demo-p3", consequenceBandId: "demo-c1", riskLevelId: "demo-level-3" },
+      { possibilityBandId: "demo-p3", consequenceBandId: "demo-c2", riskLevelId: "demo-level-4" },
+    ],
+  },
+  "risk-acceptance-threshold": {
+    riskMatrixRef: DEMO_RISK_MATRIX_REF,
+    thresholds: [
+      {
+        thresholdId: "demo-acceptance-default",
+        applicabilityConditions: [
+          { dimension: "工程阶段数据", values: ["变径空间扩挖"] },
+        ],
+        maximumAcceptedLevelId: "demo-level-2",
+      },
+    ],
+  },
+  "monitoring-warning-threshold": {
+    riskMatrixRef: DEMO_RISK_MATRIX_REF,
+    thresholds: [
+      {
+        thresholdId: "demo-threshold-settlement-slope",
+        monitoringIndicator: "地表沉降",
+        parameterCode: "settlement",
+        metric: "short-term-slope",
+        unit: "mm/s",
+        comparison: { operator: "gte", boundary: "0.5" },
+        warningLevelId: "demo-level-4",
+      },
+      {
+        thresholdId: "demo-threshold-settlement-value",
+        monitoringIndicator: "地表沉降",
+        parameterCode: "settlement",
+        metric: "value",
+        unit: "mm",
+        comparison: { operator: "gte", boundary: "5" },
+        warningLevelId: "demo-level-3",
+      },
+    ],
+  },
+  "joint-trigger-policy": {
+    rules: [
+      {
+        ruleId: "demo-joint-settlement",
+        applicabilityConditions: [],
+        operator: "any-of",
+        // 阈值标识同样要求升序。
+        monitoringThresholdIds: [
+          "demo-threshold-settlement-slope",
+          "demo-threshold-settlement-value",
+        ],
+      },
+    ],
+  },
+  "measure-library": {
+    measures: [
+      {
+        measureId: "demo-measure-settlement",
+        riskEventCategory: "地表沉降超限",
+        applicabilityConditions: [
+          { dimension: "地层条件数据", values: ["富水软弱地层"] },
+          { dimension: "工程阶段数据", values: ["变径空间扩挖"] },
+          { dimension: "施工工法数据", values: ["变径盾构法"] },
+        ],
+        // 触发类型按实测覆盖登记：累计沉降越限、短期沉降速率越限、二者的联合规则命中，
+        // 以及整体风险等级越过可接受阈值，处置方向同为「降速＋同步注浆补充」。少登记一类，
+        // 该类预警就没有对应措施，触发一致性会以 `trigger-indicator-uncovered` 关闭失败。
+        // 数组按标识升序：配置 Schema 的 `sortedUnique` 按码位比较，顺序错会被 C18 判非法。
+        triggerTypes: [
+          "多指标联合规则命中",
+          "监测指标越限",
+          "趋势/加速度/异常评分越限",
+          "风险等级超过风险可接受阈值",
+        ],
+        steps: [{ stepOrdinal: 1, instruction: "降低推进速率并同步注浆补充" }],
+        resourceRequirements: ["注浆设备"],
+        // 目标指标按标识升序；累计值与短期速率都在目标内，触发一致性才能覆盖两条预警。
+        targetIndicatorIds: [SETTLEMENT_INDICATOR_ID, SETTLEMENT_SLOPE_INDICATOR_ID],
+        evidenceRequirements: ["监测日报"],
+        contraindications: [],
+      },
+    ],
+  },
+  // 发布的 `forecast-policy` 成员就是 `DEMO_FORECAST_POLICIES[0]` 本身：分段入口冻结的
+  // `forecastPolicyRef` 指向本类配置的已发布释放，成员正文的 `requiredRef` 则是预测执行器
+  // 读取模型工件的精确引用。两者语义不同，不能互相冒充；执行器按 `requiredRef` 精确匹配，
+  // 正文里留占位字面量会让执行器永远找不到实现（C28 记 `executor-unavailable`）。
+  // 调用方在模型工件经 C04 登记后把真实引用注入此处，故本类配置也推迟到那时才发布。
+  "forecast-policy": ({ forecastModelRef }) => ({
+    policies: [
+      {
+        policyId: DEMO_FORECAST_POLICIES[0].policyId,
+        method: DEMO_FORECAST_POLICIES[0].method,
+        inputIndicatorIds: [...DEMO_FORECAST_POLICIES[0].inputIndicatorIds],
+        targetIndicatorId: DEMO_FORECAST_POLICIES[0].targetIndicatorId,
+        horizonSteps: DEMO_FORECAST_POLICIES[0].horizonSteps,
+        unit: DEMO_FORECAST_POLICIES[0].unit,
+        requiredRef: forecastModelRef,
+      },
+    ],
+  }),
+  /**
+   * C28 私有偏差事实按冻结依据里的这一份唯一策略计算：`policies.length > 1` 会以
+   * `response-deviation-policy-mismatch` 关闭失败，所以这里只发布一条绝对偏差策略。
+   *
+   * 阈值取 1 mm：演示数据的地表沉降序列 2 mm/s 线性上升，趋势预测（horizonSteps=1）
+   * 给出 22 mm，而实际评估在同一 cutoff 处是 20 mm，绝对偏差 2 mm 严格大于 1 mm，
+   * 偏差记录才真实成立并驱动 A3/A4 校准。阈值不是为了让流程通过而调松的装饰参数：
+   * 它就是「多大偏差算值得校准」这条业务口径的合成取值（待甲方复核）。
+   */
+  "deviation-policy": {
+    policies: [
+      {
+        policyId: "demo-deviation-absolute",
+        basis: "absolute",
+        threshold: "1",
+        evidenceRequirements: ["monitoring-record"],
+      },
+    ],
+  },
+});
+
+/** C18 指标标识：C19 编制与 C25 取值都只认这里登记的指标，不自造指标名。 */
+/** 按 indicatorId 升序：地表沉降 < 地表沉降短期速率 < 泥水压力。 */
+export const DEMO_CONFIGURATION_INDICATOR_IDS = Object.freeze([
+  SETTLEMENT_INDICATOR_ID,
+  SETTLEMENT_SLOPE_INDICATOR_ID,
+  SLURRY_PRESSURE_INDICATOR_ID,
+]);
+
+/** 可能性侧指标标识：编制规则候选按量纲分档时需要区分它与后果侧指标。 */
+export const POSSIBILITY_DEMO_INDICATOR_ID = SLURRY_PRESSURE_INDICATOR_ID;
+
+/** 沉降短期速率指标标识：分档线量纲与累计沉降不同，编制时单独取一条。 */
+export const SETTLEMENT_SLOPE_DEMO_INDICATOR_ID = SETTLEMENT_SLOPE_INDICATOR_ID;
+
+/**
+ * 已发布措施库里的措施标识（按 `measureId` 升序）。
+ *
+ * C27 组合 Agent 的冻结候选选择只取这份已发布清单：选到未发布的措施会在 C27 的
+ * 确定性校验处被拒，而不是靠部署私藏一份候选冒充冻结集合。
+ */
+export const DEMO_MEASURE_IDS = Object.freeze(
+  configurationContents["measure-library"].measures
+    .map((measure) => measure.measureId)
+    .sort(),
+);
+
+/**
+ * 生成 11 类配置正文文档。`projectRevisionRef` 与 `configurationSetRef` 由装配注入，
+ * 决定配置集身份：同一工程修订下的同一配置集才被认为是一个可解析的集合。
+ */
+/**
+ * `forecast-policy` 的 `requiredRef` 只能取真实登记后的模型工件引用（C04 内容寻址），
+ * 因此该类配置必须晚于模型工件生成；调用方未给出引用时该类不可发布，不填占位值。
+ */
+export const makeDemoAssessmentConfigurationDocuments = ({
+  projectRevisionRef,
+  configurationSetRef = DEMO_CONFIGURATION_SET_REF,
+  forecastModelRef,
+}) =>
+  Object.fromEntries(
+    Object.entries(configurationContents).map(([definitionType, content]) => [
+      definitionType,
+      {
+        schemaVersion: "1",
+        definitionType,
+        projectRevisionRef,
+        configurationSetRef,
+        content: typeof content === "function" ? content({ forecastModelRef }) : content,
+      },
+    ]),
+  );
+
+export { DEMO_CONFIGURATION_SET_REF, DEMO_RISK_MATRIX_REF };
 
 export { refKey };

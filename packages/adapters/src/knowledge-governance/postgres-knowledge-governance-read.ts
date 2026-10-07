@@ -12,8 +12,12 @@ import {
   type KnowledgeGovernanceReadPortV1,
   type KnowledgeGovernanceReadQueryV1,
   type KnowledgeGovernanceReadResultV1,
+  type AuthorizationContextV1,
   type KnowledgeRevisionLifecycleStatusV1,
+  type ModuleBranchV1,
   type ModuleErrorV1,
+  type SourceVersionRefV1,
+  type SpatialScopeRefV1,
 } from "@riskflow/contracts/ports";
 import {
   ACCESS_POLICY_REF_V1,
@@ -22,6 +26,7 @@ import {
 } from "@riskflow/core/access";
 import { ArtifactReadRequestV1Schema, type ArtifactStoreV1 } from "@riskflow/core/artifacts";
 import {
+  ASSESSMENT_CONFIGURATION_ARTIFACT_PURPOSE_CODE_V1,
   RiskMatrixDocumentV1Schema,
   MeasureLibraryDocumentV1Schema,
 } from "@riskflow/core/assessment-config";
@@ -32,11 +37,40 @@ import {
   parseKnowledgeRevision,
 } from "@riskflow/core/knowledge-governance";
 import {
+  APPLICABLE_RULE_SET_ARTIFACT_PURPOSE_CODE_V1,
   ApplicableRuleSetDocumentV1Schema,
+  STRUCTURED_SCORING_RULE_ARTIFACT_PURPOSE_CODE_V1,
   StructuredScoringRuleDocumentV1Schema,
 } from "@riskflow/core/scoring-rules";
 import { StructuredScoringRuleSchema } from "@riskflow/contracts/records";
 import type { PostgresDatabase } from "../postgres/types.js";
+
+/** 识别知识包（工序模型、风险机理）工件的用途码，与 `identification-knowledge` 域一致。 */
+const IDENTIFICATION_KNOWLEDGE_PACKAGE_PURPOSE_CODE_V1 = "identification-knowledge-package";
+
+/**
+ * 定义类型 → 该类正文工件的用途码。
+ *
+ * C04 判定读取时 `purposeCode` 必须与工件 manifest 逐字相等，因此治理读按类型取各自
+ * 领域已登记的用途码，不使用治理读分支的统一码。未登记用途码的类型不在此读取，
+ * 继续按既有语义返回不可用。
+ */
+const governanceArtifactPurposeCodeV1 = (definitionType: string): string | undefined => {
+  switch (definitionType) {
+    case "process-model":
+    case "risk-mechanism":
+      return IDENTIFICATION_KNOWLEDGE_PACKAGE_PURPOSE_CODE_V1;
+    case "structured-scoring-rule":
+      return STRUCTURED_SCORING_RULE_ARTIFACT_PURPOSE_CODE_V1;
+    case "applicable-rule-set":
+      return APPLICABLE_RULE_SET_ARTIFACT_PURPOSE_CODE_V1;
+    case "risk-matrix":
+    case "measure-library":
+      return ASSESSMENT_CONFIGURATION_ARTIFACT_PURPOSE_CODE_V1;
+    default:
+      return undefined;
+  }
+};
 
 type TimestampColumn = Date | string;
 
@@ -206,7 +240,26 @@ export interface PostgresKnowledgeGovernanceReadAdapterOptionsV1 {
   readonly db: Kysely<PostgresDatabase>;
   readonly access: LocalIdentityAccessV1;
   readonly artifactStore: ArtifactStoreV1;
+  /**
+   * 正文读取的用途签发接缝（design D-06）：与 C17/C25 组合根同形的内部接缝。
+   *
+   * 页面为「列出定义/读一页目录」申请的上下文不带任何来源授权，而定义正文来自 C19 编制、
+   * 其访问快照带来源授权——沿用列表上下文会让每一页正文都在 C04 关闭失败。正文因此按
+   * 自身用途另签：同一主体与工程、同一个读分支、独立请求身份；签不出来就沿用调用方
+   * 上下文由 C04 裁决，绝不在这里放宽访问快照检查。
+   */
+  readonly authorizeDownstream?: KnowledgeGovernanceDownstreamAuthorizerV1;
 }
+
+export type KnowledgeGovernanceDownstreamAuthorizerV1 = (request: {
+  readonly branch: ModuleBranchV1;
+  readonly invocationId: string;
+  readonly projectId: string;
+  readonly actorId: string;
+  readonly requestedAt: string;
+  readonly requestedSpatialScopeRefs?: readonly SpatialScopeRefV1[];
+  readonly requestedSourceVersionRefs?: readonly SourceVersionRefV1[];
+}) => Promise<AuthorizationContextV1>;
 
 /**
  * C32 知识治理只读适配器（IP-04）。只读组合治理模块既有定义/修订/发布/决定行与 C04 候选
@@ -242,11 +295,13 @@ export class PostgresKnowledgeGovernanceReadAdapter implements KnowledgeGovernan
   readonly #db: Kysely<GovernanceReadDatabase>;
   readonly #access: LocalIdentityAccessV1;
   readonly #artifactStore: ArtifactStoreV1;
+  readonly #authorizeDownstream: KnowledgeGovernanceDownstreamAuthorizerV1 | undefined;
 
   constructor(options: PostgresKnowledgeGovernanceReadAdapterOptionsV1) {
     this.#db = options.db as unknown as Kysely<GovernanceReadDatabase>;
     this.#access = options.access;
     this.#artifactStore = options.artifactStore;
+    this.#authorizeDownstream = options.authorizeDownstream;
   }
 
   async read(query: KnowledgeGovernanceReadQueryV1): Promise<KnowledgeGovernanceReadResultV1> {
@@ -567,7 +622,9 @@ export class PostgresKnowledgeGovernanceReadAdapter implements KnowledgeGovernan
     definitionType: string,
     candidateArtifactRef: unknown,
   ): Promise<KnowledgeGovernanceReadBodyV1 | undefined> {
-    const artifactText = await this.#readArtifactText(query, candidateArtifactRef);
+    const purposeCode = governanceArtifactPurposeCodeV1(definitionType);
+    if (purposeCode === undefined) return undefined;
+    const artifactText = await this.#readArtifactText(query, candidateArtifactRef, purposeCode);
     if (artifactText === undefined) return undefined;
     let value: unknown;
     try {
@@ -663,9 +720,34 @@ export class PostgresKnowledgeGovernanceReadAdapter implements KnowledgeGovernan
     }
   }
 
+  /**
+   * 定义正文的读取身份：按 `knowledge-modeling.governance-read` 单独签发，签不出就沿用
+   * 调用方上下文。签发失败绝不降级成「当作有权限」——返回的上下文仍要过 C04 全部检查。
+   */
+  async #bodyReadAuthorization(
+    query: Extract<KnowledgeGovernanceReadQueryV1, { kind: "governance-read" }>,
+    artifactRefValue: unknown,
+  ): Promise<AuthorizationContextV1> {
+    const authorize = this.#authorizeDownstream;
+    if (authorize === undefined) return query.authorization;
+    const reference =
+      typeof artifactRefValue === "object" && artifactRefValue !== null
+        ? (artifactRefValue as { readonly reference?: { readonly entityId?: unknown } }).reference
+        : undefined;
+    const entityId = typeof reference?.entityId === "string" ? reference.entityId : "unknown";
+    return await authorize({
+      branch: "knowledge-modeling.governance-read",
+      invocationId: `${query.queryId}:body:${entityId}`,
+      projectId: query.projectId,
+      actorId: query.actorId,
+      requestedAt: query.requestedAt,
+    }).catch(() => query.authorization);
+  }
+
   async #readArtifactText(
     query: Extract<KnowledgeGovernanceReadQueryV1, { kind: "governance-read" }>,
     artifactRefValue: unknown,
+    purposeCode: string,
   ): Promise<string | undefined> {
     try {
       const handle = await this.#artifactStore.open(
@@ -677,9 +759,12 @@ export class PostgresKnowledgeGovernanceReadAdapter implements KnowledgeGovernan
           projectId: query.projectId,
           actorId: query.actorId,
           requestedAt: query.requestedAt,
-          purposeCode: "knowledge-modeling.governance-read",
+          // C04 判定读取的 `purposeCode` 必须与工件 manifest 完全相等，因此这里用该定义
+          // 类型自己的用途码，而不是治理读分支的统一码；后者会让除播种类型外的全部正文
+          // 关闭失败。用途码取自各类型既有常量，不读 manifest 再照抄。
+          purposeCode,
           requiredCapability: "knowledge-modeling.read",
-          authorization: query.authorization,
+          authorization: await this.#bodyReadAuthorization(query, artifactRefValue),
         }),
       );
       const chunks: Uint8Array[] = [];

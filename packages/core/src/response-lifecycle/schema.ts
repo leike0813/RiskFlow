@@ -79,6 +79,12 @@ export const VerifiedResponseWorkflowBindingV1Schema = z.strictObject({
   spatialScopeRef: SpatialScopeRefV1Schema,
   routeDecisionRef: RouteDecisionRefV1Schema,
   forecastRunRef: WorkflowRunRefV1Schema,
+  /**
+   * 运行停在等待点时的**运行状态版本**（drift design D-03），不是运行登记摘要
+   * `forecastRunRef.reference.versionId`。恢复必须提交这个值，恢复前据此核对归属；
+   * 可选仅为保持历史绑定可读，缺失按失败闭合处理，不得用运行引用版本代替。
+   */
+  waitStateVersion: IdentifierSchema.optional(),
   boundAt: IsoDateTimeSchema,
 });
 export type VerifiedResponseWorkflowBindingV1 = z.infer<

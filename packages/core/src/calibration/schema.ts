@@ -12,6 +12,7 @@ import {
   AssessmentBasisReleaseSetRefV1Schema,
   AssessmentInputSnapshotRefV1Schema,
   CalibrationReviewOutcomeCommandV1Schema as ContractsCalibrationReviewOutcomeCommandV1Schema,
+  CalibrationInputSnapshotRefV1Schema,
   ContentArtifactRefV1Schema,
   ContractReferenceV1Schema,
   DeviationRecordRefV1Schema,
@@ -40,8 +41,6 @@ import { ResponseDeviationFactRefV1Schema } from "../response-lifecycle/index.js
  * 公共偏差记录、命令、事件、复核类型和任务类型只从 `@riskflow/contracts` 消费，不复制字段。
  */
 export const CALIBRATION_SCHEMA_VERSION_V1 = "1" as const;
-export const CALIBRATION_INPUT_SNAPSHOT_KIND_V1 = "calibration-input-snapshot" as const;
-
 const digestSchema = z.string().regex(/^[0-9a-f]{64}$/u);
 const reasonTextSchema = z.string().trim().min(1).max(2000);
 
@@ -65,11 +64,12 @@ export type CalibrationTargetDefinitionTypeV1 = z.infer<
   typeof CalibrationTargetDefinitionTypeV1Schema
 >;
 
-export const CalibrationInputSnapshotRefV1Schema = z.strictObject({
-  kind: z.literal(CALIBRATION_INPUT_SNAPSHOT_KIND_V1),
-  reference: VersionReferenceSchema,
-});
-export type CalibrationInputSnapshotRefV1 = z.infer<typeof CalibrationInputSnapshotRefV1Schema>;
+// 引用形状与 kind 常量由公共契约唯一定义：C29 只消费，保证同一引用在任何公共命令里可解析。
+export {
+  CALIBRATION_INPUT_SNAPSHOT_KIND_V1,
+  CalibrationInputSnapshotRefV1Schema,
+  type CalibrationInputSnapshotRefV1,
+} from "@riskflow/contracts/ports";
 
 /**
  * 冻结输入工件正文：固定 C28 偏差事实、派生公共记录引用、C25 冻结评估输入、

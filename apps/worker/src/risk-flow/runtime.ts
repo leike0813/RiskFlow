@@ -224,6 +224,8 @@ export interface RiskFlowGraphRuntimeV1 {
     readonly actorId: string;
     readonly authorization: AuthorizationContextV1;
     readonly commandId: string;
+    /** `authorization` 实际签发时的分支：事件驱动的恢复推进同样按它复验。 */
+    readonly authorizationBranch: ModuleBranchV1;
     readonly idempotencyKey: string;
     readonly issuedAt: string;
     readonly runRef: WorkflowRunRefV1;
@@ -238,6 +240,8 @@ export interface RiskFlowGraphRuntimeV1 {
     readonly actorId: string;
     readonly authorization: AuthorizationContextV1;
     readonly commandId: string;
+    /** `authorization` 实际签发时的分支：事件驱动的恢复推进同样按它复验。 */
+    readonly authorizationBranch: ModuleBranchV1;
     readonly idempotencyKey: string;
     readonly issuedAt: string;
     readonly runRef: WorkflowRunRefV1;
@@ -675,6 +679,7 @@ export const createRiskFlowGraphRuntime = (
     readonly actorId: string;
     readonly authorization: AuthorizationContextV1;
     readonly commandId: string;
+    readonly authorizationBranch: ModuleBranchV1;
     readonly idempotencyKey: string;
     readonly issuedAt: string;
     readonly validAt: string;
@@ -684,6 +689,7 @@ export const createRiskFlowGraphRuntime = (
     actorId: input.actorId,
     authorization: input.authorization,
     commandId: input.commandId,
+    authorizationBranch: input.authorizationBranch,
     idempotencyKey: input.idempotencyKey,
     issuedAt: input.issuedAt,
     validAt: input.validAt,
@@ -832,6 +838,7 @@ export const createRiskFlowGraphRuntime = (
       actorId: command.actorId,
       authorization: authorized,
       commandId: command.commandId,
+      authorizationBranch: "workflow.start-run",
       idempotencyKey: command.idempotencyKey,
       issuedAt: command.issuedAt,
       validAt: command.validAt,
@@ -903,6 +910,7 @@ export const createRiskFlowGraphRuntime = (
       actorId: command.actorId,
       authorization: command.authorization,
       commandId: command.commandId,
+      authorizationBranch: "workflow.resume-run",
       idempotencyKey: command.idempotencyKey,
       issuedAt: command.issuedAt,
       validAt: command.validAt,
@@ -1142,6 +1150,7 @@ export const createRiskFlowGraphRuntime = (
       actorId: command.actorId,
       authorization: command.authorization,
       commandId: command.commandId,
+      authorizationBranch: "workflow.cancel-run",
       idempotencyKey: command.idempotencyKey,
       issuedAt: command.issuedAt,
       validAt: command.validAt,
@@ -1462,8 +1471,14 @@ export const createRiskFlowGraphRuntime = (
             }),
           };
         }
-        // 等待结果同时给出已登记的真实运行引用：调用方据此按精确运行继续，不自行派生身份。
-        return { kind: "waiting", waiting: outcome.lastWaitingRef, workflowRunRef: outcome.runRef };
+        // 等待结果同时给出已登记的真实运行引用与等待点状态版本：调用方据此按精确运行继续，
+        // 恢复时提交的就是这个状态版本（C30 恢复断言预期版本，陈旧即拒绝）。
+        return {
+          kind: "waiting",
+          waiting: outcome.lastWaitingRef,
+          workflowRunRef: outcome.runRef,
+          waitStateVersion: outcome.runVersionId,
+        };
       }
       const terminalFailure = terminalFailureOf({
         outcome,
@@ -1516,7 +1531,12 @@ export const createRiskFlowGraphRuntime = (
         resumeCause: resumeValueOfCause(parsed.payload.resumeCause),
       });
       if (outcome.status === "waiting" && outcome.lastWaitingRef !== undefined) {
-        return { kind: "waiting", waiting: outcome.lastWaitingRef, workflowRunRef: outcome.runRef };
+        return {
+          kind: "waiting",
+          waiting: outcome.lastWaitingRef,
+          workflowRunRef: outcome.runRef,
+          waitStateVersion: outcome.runVersionId,
+        };
       }
       const terminalFailure = terminalFailureOf({
         outcome,
@@ -1617,6 +1637,7 @@ export const createRiskFlowGraphRuntime = (
     readonly idempotencyKey: string;
     readonly issuedAt: string;
     readonly runRef: WorkflowRunRefV1;
+    readonly authorizationBranch: ModuleBranchV1;
     readonly identificationPreparationSnapshotRef: IdentificationPreparationSnapshotRefV1;
   }): Promise<RiskFlowRunOutcomeV1> => {
     const cursor = await readRiskFlowCursor({
@@ -1661,6 +1682,7 @@ export const createRiskFlowGraphRuntime = (
     readonly idempotencyKey: string;
     readonly issuedAt: string;
     readonly runRef: WorkflowRunRefV1;
+    readonly authorizationBranch: ModuleBranchV1;
     readonly identificationRunRef: WorkflowRunRefV1;
     readonly riskRecordRef: StandardizedRiskRecordRefV1;
   }): Promise<RiskFlowRunOutcomeV1> => {

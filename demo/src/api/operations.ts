@@ -2905,12 +2905,11 @@ const asNotification = (value: unknown): WarningNotificationView => {
 export interface WarningRecordView {
   readonly kind: 'warning-read'
   readonly actorId: string
+  /** C26 自有的预警记录正文；矩阵落点与触发事实属评估记录视图，不在这里编造。 */
   readonly record: unknown
   readonly warningRecordRef: KindRef
   readonly assessmentRecordRef: KindRef
   readonly taskRef: KindRef
-  readonly triggerFacts: readonly unknown[]
-  readonly matrixPlot: RiskMatrixPlotView
   readonly notifications: readonly WarningNotificationView[]
   readonly notificationsNextCursor?: string
   readonly acknowledgement?: {
@@ -2949,12 +2948,10 @@ export const readWarningRecord = async (
   return {
     kind: 'warning-read',
     actorId: asString(result.actorId),
-    record: result.record,
+    record: result.warningRecord,
     warningRecordRef: asKindRef(result.warningRecordRef),
     assessmentRecordRef: asKindRef(result.assessmentRecordRef),
     taskRef: asKindRef(result.taskRef),
-    triggerFacts: asArray(result.triggerFacts),
-    matrixPlot: asMatrixPlot(result.matrixPlot),
     notifications: asArray(result.notifications).map(asNotification),
     ...(result.notificationsNextCursor === undefined
       ? {}

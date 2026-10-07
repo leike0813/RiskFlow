@@ -371,17 +371,21 @@ export const ApplicableRuleSetDecisionV1Schema = z.strictObject({
 });
 export type ApplicableRuleSetDecisionV1 = z.infer<typeof ApplicableRuleSetDecisionV1Schema>;
 
+/**
+ * 入选成员按**规则身份**唯一：一次评分规则发布承载的是一份累积规则集，同一次发布里的
+ * 多条规则共享同一个 `releaseRef`，所以释放不能作为唯一键。依据集合投影阶段才按释放
+ * 去重（见 `projectApplicableRuleSetMembers`）。
+ */
 const includedMembers = z
   .array(ApplicableRuleSetIncludedMemberV1Schema)
   .min(1)
   .max(SCORING_RULES_MAX_RULES_V1)
   .superRefine((members, context) => {
     const keys = members.map(
-      (member) =>
-        `${member.releaseRef.reference.entityId}@${member.releaseRef.reference.versionId}`,
+      (member) => `${member.ruleId}@${member.ruleVersion.entityId}#${member.ruleVersion.versionId}`,
     );
     if (new Set(keys).size !== keys.length) {
-      context.addIssue({ code: "custom", message: "rule releases must be unique" });
+      context.addIssue({ code: "custom", message: "rule identities must be unique" });
       return;
     }
     for (let index = 1; index < keys.length; index += 1) {

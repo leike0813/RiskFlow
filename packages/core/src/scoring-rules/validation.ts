@@ -1283,23 +1283,58 @@ const releaseIdentityKey = (member: {
   };
 }): string => `${member.releaseRef.reference.entityId}@${member.releaseRef.reference.versionId}`;
 
+const includedMemberIdentityKey = (member: {
+  readonly ruleId: string;
+  readonly ruleVersion: { readonly entityId: string; readonly versionId: string };
+}): string => `${member.ruleId}@${member.ruleVersion.entityId}#${member.ruleVersion.versionId}`;
+
 /**
- * 适用规则集 `included refs` 的规范投影：逐项派生、不合并来源。
- * 成员已由 `ApplicableRuleSetDocumentV1Schema` 保证身份唯一且规范排序。
+ * 适用规则集 `included refs` 的规范投影：逐项派生、按释放引用合并。
+ *
+ * 依据集合成员装的是**规则释放**而不是规则：一次发布承载一份累积规则集，多条入选规则来自
+ * 同一次发布时合并成一个依据成员。合并必须逐字一致——同一释放下的多条规则若在
+ * `revisionRef`/`artifactRef`/`contentDigest` 上不一致，说明发布事实本身自相矛盾，直接整体
+ * 失败，不保留第一项也不取多数。规则身份唯一性由 `ApplicableRuleSetDocumentV1Schema` 在
+ * 适用规则集这一层保证。
  */
 export const projectApplicableRuleSetMembers = (
   document: ApplicableRuleSetDocumentV1,
-): readonly AssessmentBasisReleaseSetMemberV1[] =>
-  document.includedMembers
-    .map((member) => ({
+): readonly AssessmentBasisReleaseSetMemberV1[] => {
+  const byRelease = new Map<string, AssessmentBasisReleaseSetMemberV1>();
+  for (const member of document.includedMembers) {
+    const key = releaseIdentityKey(member);
+    const projected: AssessmentBasisReleaseSetMemberV1 = {
       releaseRef: member.releaseRef,
       revisionRef: member.revisionRef,
       artifactRef: member.artifactRef,
       contentDigest: member.contentDigest,
-    }))
-    .sort((left, right) => (releaseIdentityKey(left) < releaseIdentityKey(right) ? -1 : 1));
+    };
+    const existing = byRelease.get(key);
+    if (existing === undefined) {
+      byRelease.set(key, projected);
+      continue;
+    }
+    if (
+      existing.revisionRef.reference.entityId !== projected.revisionRef.reference.entityId ||
+      existing.revisionRef.reference.versionId !== projected.revisionRef.reference.versionId ||
+      existing.artifactRef.reference.entityId !== projected.artifactRef.reference.entityId ||
+      existing.artifactRef.reference.versionId !== projected.artifactRef.reference.versionId ||
+      existing.contentDigest !== projected.contentDigest
+    ) {
+      failScoringRule("scoring-rule-basis-unavailable", SCORING_RULES_BASIS_TARGET_REF_V1);
+    }
+  }
+  return [...byRelease.values()].sort((left, right) =>
+    releaseIdentityKey(left) < releaseIdentityKey(right) ? -1 : 1,
+  );
+};
 
-/** 规则成员重复即整体失败；不提供静默去重路径。 */
+/**
+ * 规则释放重复即整体失败；不提供静默去重路径。
+ *
+ * 依据成员按**释放引用**唯一是成立的：适用规则集的入选规则已在
+ * `projectApplicableRuleSetMembers` 里按释放合并，重复只可能来自装配侧的错误输入。
+ */
 const assertUniqueRuleMembers = (members: readonly AssessmentBasisReleaseSetMemberV1[]): void => {
   const seen = new Set<string>();
   for (const member of members) {
@@ -1532,11 +1567,10 @@ export const assembleApplicableRuleSet = (
     compatibilityRef: input.compatibilityRef,
     assemblyPolicyRef: input.policy.assemblyPolicyRef,
     requiredAt: input.requiredAt,
+    // 入选成员按规则身份规范排序：一次发布承载一份累积规则集，同一 release 下的多条规则
+    // 共享释放引用，只有规则身份才是总序键。
     includedMembers: [...included].sort((left, right) =>
-      `${left.releaseRef.reference.entityId}@${left.releaseRef.reference.versionId}` <
-      `${right.releaseRef.reference.entityId}@${right.releaseRef.reference.versionId}`
-        ? -1
-        : 1,
+      includedMemberIdentityKey(left) < includedMemberIdentityKey(right) ? -1 : 1,
     ),
     decisions: [...decisions].sort((left, right) => (left.ruleId < right.ruleId ? -1 : 1)),
   });

@@ -996,6 +996,86 @@ describe("C19 结构化评分规则与适用规则集", () => {
       ).toThrowError(/BUSINESS_BLOCKED/u);
     });
 
+    it("依据成员按规则释放合并：同一释放下多条入选规则合并为一个成员，冲突整体失败", () => {
+      // 依据成员装的是**释放**而不是规则：一次发布承载一份累积规则集，同一释放下的多条
+      // 入选规则在依据投影时必须合并，否则同一份发布会在依据里重复出现。
+      // 规则身份各不相同，释放/修订/工件/摘要逐字一致——两条规则来自同一次发布。
+      const sameReleaseMember: AssessmentBasisReleaseSetMemberV1 = {
+        ...member("rule-a"),
+        releaseRef: releaseFor("rule-a"),
+      };
+      const documentOf = (
+        includedMembers: readonly {
+          readonly ruleId: string;
+          readonly ruleVersion: { readonly entityId: string; readonly versionId: string };
+          readonly releaseRef: KnowledgeReleaseRefV1;
+          readonly revisionRef: KnowledgeRevisionRefV1;
+          readonly artifactRef: AssessmentBasisReleaseSetMemberV1["artifactRef"];
+          readonly contentDigest: string;
+        }[],
+      ): ApplicableRuleSetDocumentV1 => ({
+        schemaVersion: "1",
+        projectRevisionRef: SCORING_RULES_FIXTURE_PROJECT_REVISION,
+        applicabilitySnapshotRef: {
+          kind: "applicability-metadata-snapshot",
+          reference: { entityId: "applicability-snapshot", versionId: "1" },
+        },
+        applicability: {
+          constructionMethod: "盾构法",
+          stratumCondition: "软土地层",
+          engineeringStage: "盾构掘进",
+        },
+        configurationSetRef: SCORING_RULES_FIXTURE_CONFIGURATION_SET_REF,
+        compatibilityRef: { entityId: "compatibility-fixture", versionId: "1" },
+        assemblyPolicyRef: { entityId: "scoring-rule-assembly-policy", versionId: "1" },
+        requiredAt: "2030-01-01T00:00:00.000Z",
+        includedMembers: includedMembers.map((entry) => ({ ...entry })),
+        decisions: includedMembers.map((entry) => ({
+          ruleId: entry.ruleId,
+          ruleVersion: entry.ruleVersion,
+          decision: "included",
+          reasonCode: "three-dimensional-match",
+          matchedDimensions: ["施工工法数据"],
+          relationRefs: [],
+        })),
+      });
+
+      const merged = projectApplicableRuleSetMembers(
+        documentOf([
+          {
+            ruleId: "rule-a",
+            ruleVersion: { entityId: "rule-a", versionId: "sha256:1" },
+            ...sameReleaseMember,
+          },
+          {
+            ruleId: "rule-b",
+            ruleVersion: { entityId: "rule-b", versionId: "sha256:2" },
+            ...sameReleaseMember,
+          },
+        ]),
+      );
+      expect(merged).toEqual([sameReleaseMember]);
+
+      // 同一释放下的摘要不一致说明发布事实自相矛盾：整体失败，不保留第一项也不取多数。
+      expect(() =>
+        projectApplicableRuleSetMembers(
+          documentOf([
+            {
+              ruleId: "rule-a",
+              ruleVersion: { entityId: "rule-a", versionId: "sha256:1" },
+              ...sameReleaseMember,
+            },
+            {
+              ruleId: "rule-b",
+              ruleVersion: { entityId: "rule-b", versionId: "sha256:2" },
+              ...sameReleaseMember,
+              contentDigest: "f".repeat(64),
+            },
+          ]),
+        ),
+      ).toThrowError(/BUSINESS_BLOCKED/u);
+    });
+
     it("basis 无正文：strict 请求与顶层三分支结果不接受正文、包装或伪身份", () => {
       const parsed = AssessmentBasisReleaseSetMembersV1Schema.safeParse({
         applicableRuleSetMember: { ...member("applicable-rule-set"), displayName: "规则集" },

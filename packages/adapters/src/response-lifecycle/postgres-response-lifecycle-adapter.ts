@@ -1459,8 +1459,9 @@ export class PostgresResponseLifecycleAdapter
         decidedAt,
       });
       const contentDigest = sha256CanonicalJson(decision);
+      const atomic = this.#atomicCommand(publicCommand, ADOPTION_COMMAND_KIND_V1, parsed.data);
       const receipt = await this.#executeWithRetry(
-        this.#atomicCommand(publicCommand, ADOPTION_COMMAND_KIND_V1, parsed.data),
+        atomic,
         async (transactionContext): Promise<AtomicCommitV1> => {
           const transaction = asTransaction(transactionContext);
           const auditEntryId = `audit-${publicCommand.commandId}:response-adoption-decision`;
@@ -1482,7 +1483,7 @@ export class PostgresResponseLifecycleAdapter
               decided_by: verified.actorId,
               decision_payload: jsonValue(decision),
               content_digest: contentDigest,
-              command_id: publicCommand.commandId,
+              command_id: atomic.commandId,
               idempotency_key: publicCommand.idempotencyKey,
               actor_ref: verified.actorId,
               authorization_context_ref: jsonValue(
@@ -1524,7 +1525,7 @@ export class PostgresResponseLifecycleAdapter
               occurredAt: publicCommand.issuedAt,
               recordedAt: decidedAt,
               version: { entityId: auditEntryId, versionId: "1" },
-              commandId: publicCommand.commandId,
+              commandId: atomic.commandId,
               idempotencyKey: publicCommand.idempotencyKey,
             },
             events: [],
@@ -1728,9 +1729,8 @@ export class PostgresResponseLifecycleAdapter
         measureLibraryReleaseRef: context.measureLibraryReleaseRef,
         baselineAssessmentRecordRef: context.baselineAssessmentRecordRef,
       };
-      const executorOutcome = EffectForecastExecutorOutcomeV1Schema.safeParse(
-        await executor.forecast(request),
-      );
+      const rawOutcome = await executor.forecast(request);
+      const executorOutcome = EffectForecastExecutorOutcomeV1Schema.safeParse(rawOutcome);
       if (!executorOutcome.success) {
         failResponseLifecycle("response-forecast-result-invalid", {
           kind: "effect-forecast",
@@ -1886,91 +1886,87 @@ export class PostgresResponseLifecycleAdapter
     });
     const contentDigest = sha256CanonicalJson(outcome);
     const recordedAt = this.#nowIso();
-    await this.#executeWithRetry(
-      this.#atomicCommand(valid, FORECAST_COMMAND_KIND_V1, valid),
-      async (transactionContext): Promise<AtomicCommitV1> => {
-        const transaction = asTransaction(transactionContext);
-        const auditEntryId = `audit-${valid.commandId}:response-forecast`;
-        await transaction
-          .insertInto("business.response_forecast_outcomes")
-          .values({
-            forecast_id: effectForecastRef.reference.entityId,
-            version_id: effectForecastRef.reference.versionId,
-            schema_version: "1",
-            project_id: valid.projectId,
-            recommendation_id: outcome.responseRecommendationRef.reference.entityId,
-            recommendation_version_id: outcome.responseRecommendationRef.reference.versionId,
-            route_decision_id: binding.routeDecisionRef.reference.entityId,
-            route_decision_version_id: binding.routeDecisionRef.reference.versionId,
-            forecast_run_id: binding.forecastRunRef.reference.entityId,
-            forecast_run_version_id: binding.forecastRunRef.reference.versionId,
-            forecast_input_snapshot_id: outcome.forecastInputSnapshotRef.reference.entityId,
-            forecast_input_snapshot_version_id:
-              outcome.forecastInputSnapshotRef.reference.versionId,
-            frozen_basis_snapshot_id: outcome.frozenAssessmentBasisRef.reference.entityId,
-            frozen_basis_snapshot_version_id: outcome.frozenAssessmentBasisRef.reference.versionId,
-            pre_action_snapshot_id: outcome.preActionMonitoringSnapshotRef.reference.entityId,
-            pre_action_snapshot_version_id:
-              outcome.preActionMonitoringSnapshotRef.reference.versionId,
-            baseline_assessment_record_id: outcome.baselineAssessmentRecordRef.reference.entityId,
-            baseline_assessment_record_version_id:
-              outcome.baselineAssessmentRecordRef.reference.versionId,
-            forecast_policy_entity_id: outcome.forecastPolicyRef.entityId,
-            forecast_policy_version_id: outcome.forecastPolicyRef.versionId,
-            method: policy?.method ?? null,
-            required_ref_entity_id: policy?.requiredRef.entityId ?? null,
-            required_ref_version_id: policy?.requiredRef.versionId ?? null,
-            target_indicator_id: policy?.targetIndicatorId ?? null,
-            unit: policy?.unit ?? null,
-            horizon_steps: policy?.horizonSteps ?? null,
-            availability: availability.kind,
-            unavailable_reason:
-              availability.kind === "unavailable" ? availability.reasonCode : null,
-            predicted_value_canonical:
-              outcome.projected?.kind === "available" ? outcome.projected.predictedValue : null,
-            predicted_risk_state:
-              outcome.projected?.kind === "available"
-                ? jsonValue(outcome.projected.predictedRiskState)
-                : null,
-            evidence_references:
-              outcome.projected?.kind === "available"
-                ? jsonValue(outcome.projected.evidenceReferences)
-                : null,
-            summary: outcome.projected?.kind === "available" ? outcome.projected.summary : null,
-            input_digest: inputDigest,
-            content_digest: contentDigest,
-            forecast_payload: jsonValue(outcome),
-            spatial_scope_entity_id: outcome.spatialScopeRef.reference.entityId,
-            spatial_scope_version_id: outcome.spatialScopeRef.reference.versionId,
-            command_id: valid.commandId,
-            idempotency_key: valid.idempotencyKey,
-            actor_ref: verified.actorId,
-            authorization_context_ref: jsonValue(valid.authorization.authorizationContextRef),
-            audit_entry_id: auditEntryId,
-            computed_at: outcome.computedAt,
-            recorded_at: recordedAt,
-          } as never)
-          .onConflict((conflict) => conflict.doNothing())
-          .execute();
-        return {
-          resultRef: effectForecastRef,
-          audit: {
-            auditEntryId,
-            projectId: valid.projectId,
-            action: FORECAST_COMMAND_KIND_V1,
-            targetRef: effectForecastRef,
-            actorRef: verified.actorId,
-            authorizationContextRef: valid.authorization.authorizationContextRef,
-            occurredAt: valid.issuedAt,
-            recordedAt,
-            version: { entityId: auditEntryId, versionId: "1" },
-            commandId: valid.commandId,
-            idempotencyKey: valid.idempotencyKey,
-          },
-          events: [],
-        };
-      },
-    );
+    const atomic = this.#atomicCommand(valid, FORECAST_COMMAND_KIND_V1, valid);
+    await this.#executeWithRetry(atomic, async (transactionContext): Promise<AtomicCommitV1> => {
+      const transaction = asTransaction(transactionContext);
+      const auditEntryId = `audit-${valid.commandId}:response-forecast`;
+      await transaction
+        .insertInto("business.response_forecast_outcomes")
+        .values({
+          forecast_id: effectForecastRef.reference.entityId,
+          version_id: effectForecastRef.reference.versionId,
+          schema_version: "1",
+          project_id: valid.projectId,
+          recommendation_id: outcome.responseRecommendationRef.reference.entityId,
+          recommendation_version_id: outcome.responseRecommendationRef.reference.versionId,
+          route_decision_id: binding.routeDecisionRef.reference.entityId,
+          route_decision_version_id: binding.routeDecisionRef.reference.versionId,
+          forecast_run_id: binding.forecastRunRef.reference.entityId,
+          forecast_run_version_id: binding.forecastRunRef.reference.versionId,
+          forecast_input_snapshot_id: outcome.forecastInputSnapshotRef.reference.entityId,
+          forecast_input_snapshot_version_id: outcome.forecastInputSnapshotRef.reference.versionId,
+          frozen_basis_snapshot_id: outcome.frozenAssessmentBasisRef.reference.entityId,
+          frozen_basis_snapshot_version_id: outcome.frozenAssessmentBasisRef.reference.versionId,
+          pre_action_snapshot_id: outcome.preActionMonitoringSnapshotRef.reference.entityId,
+          pre_action_snapshot_version_id:
+            outcome.preActionMonitoringSnapshotRef.reference.versionId,
+          baseline_assessment_record_id: outcome.baselineAssessmentRecordRef.reference.entityId,
+          baseline_assessment_record_version_id:
+            outcome.baselineAssessmentRecordRef.reference.versionId,
+          forecast_policy_entity_id: outcome.forecastPolicyRef.entityId,
+          forecast_policy_version_id: outcome.forecastPolicyRef.versionId,
+          method: policy?.method ?? null,
+          required_ref_entity_id: policy?.requiredRef.entityId ?? null,
+          required_ref_version_id: policy?.requiredRef.versionId ?? null,
+          target_indicator_id: policy?.targetIndicatorId ?? null,
+          unit: policy?.unit ?? null,
+          horizon_steps: policy?.horizonSteps ?? null,
+          availability: availability.kind,
+          unavailable_reason: availability.kind === "unavailable" ? availability.reasonCode : null,
+          predicted_value_canonical:
+            outcome.projected?.kind === "available" ? outcome.projected.predictedValue : null,
+          predicted_risk_state:
+            outcome.projected?.kind === "available"
+              ? jsonValue(outcome.projected.predictedRiskState)
+              : null,
+          evidence_references:
+            outcome.projected?.kind === "available"
+              ? jsonValue(outcome.projected.evidenceReferences)
+              : null,
+          summary: outcome.projected?.kind === "available" ? outcome.projected.summary : null,
+          input_digest: inputDigest,
+          content_digest: contentDigest,
+          forecast_payload: jsonValue(outcome),
+          spatial_scope_entity_id: outcome.spatialScopeRef.reference.entityId,
+          spatial_scope_version_id: outcome.spatialScopeRef.reference.versionId,
+          command_id: atomic.commandId,
+          idempotency_key: valid.idempotencyKey,
+          actor_ref: verified.actorId,
+          authorization_context_ref: jsonValue(valid.authorization.authorizationContextRef),
+          audit_entry_id: auditEntryId,
+          computed_at: outcome.computedAt,
+          recorded_at: recordedAt,
+        } as never)
+        .onConflict((conflict) => conflict.doNothing())
+        .execute();
+      return {
+        resultRef: effectForecastRef,
+        audit: {
+          auditEntryId,
+          projectId: valid.projectId,
+          action: FORECAST_COMMAND_KIND_V1,
+          targetRef: effectForecastRef,
+          actorRef: verified.actorId,
+          authorizationContextRef: valid.authorization.authorizationContextRef,
+          occurredAt: valid.issuedAt,
+          recordedAt,
+          version: { entityId: auditEntryId, versionId: "1" },
+          commandId: atomic.commandId,
+          idempotencyKey: valid.idempotencyKey,
+        },
+        events: [],
+      };
+    });
     const persisted = await this.#loadForecastOutcome(valid.projectId, effectForecastRef.reference);
     const stored =
       persisted === undefined
@@ -2093,73 +2089,71 @@ export class PostgresResponseLifecycleAdapter
       });
       const contentDigest = sha256CanonicalJson(record);
       const recordedAt = this.#nowIso();
-      await this.#executeWithRetry(
-        this.#atomicCommand(valid, EXECUTION_COMMAND_KIND_V1, valid),
-        async (transactionContext): Promise<AtomicCommitV1> => {
-          const transaction = asTransaction(transactionContext);
-          const auditEntryId = `audit-${valid.commandId}:response-execution`;
-          await transaction
-            .insertInto("business.response_execution_records")
-            .values({
-              execution_id: executionRecordRef.reference.entityId,
-              version_id: executionRecordRef.reference.versionId,
-              schema_version: "1",
-              project_id: valid.projectId,
-              source_kind: source.kind,
-              recommendation_id:
-                source.kind === "adopted-recommendation"
-                  ? source.responseRecommendationRef.reference.entityId
-                  : null,
-              recommendation_version_id:
-                source.kind === "adopted-recommendation"
-                  ? source.responseRecommendationRef.reference.versionId
-                  : null,
-              route_decision_id:
-                source.kind === "adopted-recommendation"
-                  ? source.routeDecisionRef.reference.entityId
-                  : null,
-              route_decision_version_id:
-                source.kind === "adopted-recommendation"
-                  ? source.routeDecisionRef.reference.versionId
-                  : null,
-              measure_release_refs:
-                source.kind === "independent-action" ? jsonValue(source.measureReleaseRefs) : null,
-              executed_by_actor_id: payload.executedByActorId,
-              recorded_by_actor_id: payload.recordedByActorId,
-              spatial_scope_entity_id: spatialScopeRef.reference.entityId,
-              spatial_scope_version_id: spatialScopeRef.reference.versionId,
-              occurred_at: payload.occurredAt,
-              evidence_references: jsonValue(payload.evidenceReferences),
-              execution_payload: jsonValue(record),
-              content_digest: contentDigest,
-              command_id: valid.commandId,
-              idempotency_key: valid.idempotencyKey,
-              actor_ref: verified.actorId,
-              authorization_context_ref: jsonValue(valid.authorization.authorizationContextRef),
-              audit_entry_id: auditEntryId,
-              recorded_at: recordedAt,
-            } as never)
-            .onConflict((conflict) => conflict.doNothing())
-            .execute();
-          return {
-            resultRef: executionRecordRef,
-            audit: {
-              auditEntryId,
-              projectId: valid.projectId,
-              action: EXECUTION_COMMAND_KIND_V1,
-              targetRef: executionRecordRef,
-              actorRef: verified.actorId,
-              authorizationContextRef: valid.authorization.authorizationContextRef,
-              occurredAt: valid.issuedAt,
-              recordedAt,
-              version: { entityId: auditEntryId, versionId: "1" },
-              commandId: valid.commandId,
-              idempotencyKey: valid.idempotencyKey,
-            },
-            events: [],
-          };
-        },
-      );
+      const atomic = this.#atomicCommand(valid, EXECUTION_COMMAND_KIND_V1, valid);
+      await this.#executeWithRetry(atomic, async (transactionContext): Promise<AtomicCommitV1> => {
+        const transaction = asTransaction(transactionContext);
+        const auditEntryId = `audit-${valid.commandId}:response-execution`;
+        await transaction
+          .insertInto("business.response_execution_records")
+          .values({
+            execution_id: executionRecordRef.reference.entityId,
+            version_id: executionRecordRef.reference.versionId,
+            schema_version: "1",
+            project_id: valid.projectId,
+            source_kind: source.kind,
+            recommendation_id:
+              source.kind === "adopted-recommendation"
+                ? source.responseRecommendationRef.reference.entityId
+                : null,
+            recommendation_version_id:
+              source.kind === "adopted-recommendation"
+                ? source.responseRecommendationRef.reference.versionId
+                : null,
+            route_decision_id:
+              source.kind === "adopted-recommendation"
+                ? source.routeDecisionRef.reference.entityId
+                : null,
+            route_decision_version_id:
+              source.kind === "adopted-recommendation"
+                ? source.routeDecisionRef.reference.versionId
+                : null,
+            measure_release_refs:
+              source.kind === "independent-action" ? jsonValue(source.measureReleaseRefs) : null,
+            executed_by_actor_id: payload.executedByActorId,
+            recorded_by_actor_id: payload.recordedByActorId,
+            spatial_scope_entity_id: spatialScopeRef.reference.entityId,
+            spatial_scope_version_id: spatialScopeRef.reference.versionId,
+            occurred_at: payload.occurredAt,
+            evidence_references: jsonValue(payload.evidenceReferences),
+            execution_payload: jsonValue(record),
+            content_digest: contentDigest,
+            command_id: atomic.commandId,
+            idempotency_key: valid.idempotencyKey,
+            actor_ref: verified.actorId,
+            authorization_context_ref: jsonValue(valid.authorization.authorizationContextRef),
+            audit_entry_id: auditEntryId,
+            recorded_at: recordedAt,
+          } as never)
+          .onConflict((conflict) => conflict.doNothing())
+          .execute();
+        return {
+          resultRef: executionRecordRef,
+          audit: {
+            auditEntryId,
+            projectId: valid.projectId,
+            action: EXECUTION_COMMAND_KIND_V1,
+            targetRef: executionRecordRef,
+            actorRef: verified.actorId,
+            authorizationContextRef: valid.authorization.authorizationContextRef,
+            occurredAt: valid.issuedAt,
+            recordedAt,
+            version: { entityId: auditEntryId, versionId: "1" },
+            commandId: atomic.commandId,
+            idempotencyKey: valid.idempotencyKey,
+          },
+          events: [],
+        };
+      });
       return WarningResponseRecordResultV1Schema.parse({
         kind: "succeeded",
         result: { kind: "execution", executionRecordRef },
@@ -2306,6 +2300,7 @@ export class PostgresResponseLifecycleAdapter
         recordedBy: verified.actorId,
       });
       const contentDigest = sha256CanonicalJson(record);
+      const atomic = this.#atomicCommand(publicCommand, FEEDBACK_COMMAND_KIND_V1, valid);
       const event = DomainEventV1Schema.parse({
         schemaVersion: "1",
         eventId: `warning-feedback-recorded-${feedbackRef.reference.entityId}-${feedbackRef.reference.versionId}`,
@@ -2317,7 +2312,7 @@ export class PostgresResponseLifecycleAdapter
         recordedAt,
         causationId: publicCommand.commandId,
         correlationId: `warning-feedback-recorded-${publicCommand.commandId}`,
-        producerCommandId: publicCommand.commandId,
+        producerCommandId: atomic.commandId,
         idempotencyKey: publicCommand.idempotencyKey,
         authorizationContextRef: publicCommand.authorization.authorizationContextRef,
         auditTrailRef: {
@@ -2333,90 +2328,90 @@ export class PostgresResponseLifecycleAdapter
           forecast,
         },
       });
-      await this.#executeWithRetry(
-        this.#atomicCommand(publicCommand, FEEDBACK_COMMAND_KIND_V1, valid),
-        async (transactionContext): Promise<AtomicCommitV1> => {
-          const transaction = asTransaction(transactionContext);
-          const auditEntryId = `audit-${publicCommand.commandId}:response-feedback`;
-          await transaction
-            .insertInto("business.response_feedback_records")
-            .values({
-              feedback_id: feedbackRef.reference.entityId,
-              version_id: feedbackRef.reference.versionId,
-              schema_version: "1",
-              project_id: publicCommand.projectId,
-              execution_id: record.executionRecordRef.reference.entityId,
-              execution_version_id: record.executionRecordRef.reference.versionId,
-              post_action_snapshot_id: record.postActionMonitoringSnapshotRef.reference.entityId,
-              post_action_snapshot_version_id:
-                record.postActionMonitoringSnapshotRef.reference.versionId,
-              feedback_artifact_id: record.feedbackArtifactRef.reference.entityId,
-              feedback_artifact_version_id: record.feedbackArtifactRef.reference.versionId,
-              actual_assessment_record_id: record.actualAssessmentRecordRef.reference.entityId,
-              actual_assessment_record_version_id:
-                record.actualAssessmentRecordRef.reference.versionId,
-              forecast_availability: forecast.kind,
-              effect_forecast_id:
-                forecast.kind === "available"
-                  ? forecast.effectForecastRef.reference.entityId
-                  : null,
-              effect_forecast_version_id:
-                forecast.kind === "available"
-                  ? forecast.effectForecastRef.reference.versionId
-                  : null,
-              forecast_unavailable_reason:
-                forecast.kind === "unavailable" ? forecast.reasonCode : null,
-              spatial_scope_entity_id: record.spatialScopeRef.reference.entityId,
-              spatial_scope_version_id: record.spatialScopeRef.reference.versionId,
-              occurred_at: payload.occurredAt,
-              feedback_payload: jsonValue(record),
-              content_digest: contentDigest,
-              command_id: publicCommand.commandId,
-              idempotency_key: publicCommand.idempotencyKey,
-              actor_ref: verified.actorId,
-              authorization_context_ref: jsonValue(
-                publicCommand.authorization.authorizationContextRef,
-              ),
-              audit_entry_id: auditEntryId,
-              recorded_at: recordedAt,
-            } as never)
-            .onConflict((conflict) => conflict.doNothing())
-            .execute();
-          const stored = await transaction
-            .selectFrom("business.response_feedback_records")
-            .selectAll()
-            .where("project_id", "=", publicCommand.projectId)
-            .where("feedback_id", "=", feedbackRef.reference.entityId)
-            .where("version_id", "=", feedbackRef.reference.versionId)
-            .executeTakeFirst();
-          if (stored === undefined || stored.content_digest !== contentDigest) {
-            failResponseLifecycle("response-lifecycle-idempotency-conflict", {
-              kind: "feedback",
-              reference: feedbackRef.reference,
-            });
-          }
-          return {
-            resultRef: feedbackRef,
-            audit: {
-              auditEntryId,
-              projectId: publicCommand.projectId,
-              action: FEEDBACK_COMMAND_KIND_V1,
-              targetRef: feedbackRef,
-              actorRef: verified.actorId,
-              authorizationContextRef: publicCommand.authorization.authorizationContextRef,
-              occurredAt: publicCommand.issuedAt,
-              recordedAt,
-              version: { entityId: auditEntryId, versionId: "1" },
-              commandId: publicCommand.commandId,
-              idempotencyKey: publicCommand.idempotencyKey,
-            },
-            events: [event],
-          };
-        },
-      );
+      await this.#executeWithRetry(atomic, async (transactionContext): Promise<AtomicCommitV1> => {
+        const transaction = asTransaction(transactionContext);
+        const auditEntryId = `audit-${publicCommand.commandId}:response-feedback`;
+        await transaction
+          .insertInto("business.response_feedback_records")
+          .values({
+            feedback_id: feedbackRef.reference.entityId,
+            version_id: feedbackRef.reference.versionId,
+            schema_version: "1",
+            project_id: publicCommand.projectId,
+            execution_id: record.executionRecordRef.reference.entityId,
+            execution_version_id: record.executionRecordRef.reference.versionId,
+            post_action_snapshot_id: record.postActionMonitoringSnapshotRef.reference.entityId,
+            post_action_snapshot_version_id:
+              record.postActionMonitoringSnapshotRef.reference.versionId,
+            feedback_artifact_id: record.feedbackArtifactRef.reference.entityId,
+            feedback_artifact_version_id: record.feedbackArtifactRef.reference.versionId,
+            actual_assessment_record_id: record.actualAssessmentRecordRef.reference.entityId,
+            actual_assessment_record_version_id:
+              record.actualAssessmentRecordRef.reference.versionId,
+            forecast_availability: forecast.kind,
+            effect_forecast_id:
+              forecast.kind === "available" ? forecast.effectForecastRef.reference.entityId : null,
+            effect_forecast_version_id:
+              forecast.kind === "available" ? forecast.effectForecastRef.reference.versionId : null,
+            forecast_unavailable_reason:
+              forecast.kind === "unavailable" ? forecast.reasonCode : null,
+            spatial_scope_entity_id: record.spatialScopeRef.reference.entityId,
+            spatial_scope_version_id: record.spatialScopeRef.reference.versionId,
+            occurred_at: payload.occurredAt,
+            feedback_payload: jsonValue(record),
+            content_digest: contentDigest,
+            command_id: atomic.commandId,
+            idempotency_key: publicCommand.idempotencyKey,
+            actor_ref: verified.actorId,
+            authorization_context_ref: jsonValue(
+              publicCommand.authorization.authorizationContextRef,
+            ),
+            audit_entry_id: auditEntryId,
+            recorded_at: recordedAt,
+          } as never)
+          .onConflict((conflict) => conflict.doNothing())
+          .execute();
+        const stored = await transaction
+          .selectFrom("business.response_feedback_records")
+          .selectAll()
+          .where("project_id", "=", publicCommand.projectId)
+          .where("feedback_id", "=", feedbackRef.reference.entityId)
+          .where("version_id", "=", feedbackRef.reference.versionId)
+          .executeTakeFirst();
+        if (stored === undefined || stored.content_digest !== contentDigest) {
+          failResponseLifecycle("response-lifecycle-idempotency-conflict", {
+            kind: "feedback",
+            reference: feedbackRef.reference,
+          });
+        }
+        return {
+          resultRef: feedbackRef,
+          audit: {
+            auditEntryId,
+            projectId: publicCommand.projectId,
+            action: FEEDBACK_COMMAND_KIND_V1,
+            targetRef: feedbackRef,
+            actorRef: verified.actorId,
+            authorizationContextRef: publicCommand.authorization.authorizationContextRef,
+            occurredAt: publicCommand.issuedAt,
+            recordedAt,
+            version: { entityId: auditEntryId, versionId: "1" },
+            commandId: atomic.commandId,
+            idempotencyKey: publicCommand.idempotencyKey,
+          },
+          events: [event],
+        };
+      });
       return WarningResponseRecordResultV1Schema.parse({
         kind: "succeeded",
-        result: { kind: "feedback", feedbackRef },
+        result: {
+          kind: "feedback",
+          feedbackRef,
+          // 预测不可用时缺席：调用方按既有 `effect-forecast-missing` 语义跳过支路，不补造预测。
+          ...(forecast.kind === "available"
+            ? { effectForecastRef: forecast.effectForecastRef }
+            : {}),
+        },
       });
     } catch (error: unknown) {
       return { kind: "failed", error: this.#toModuleError(error, publicCommand.commandId) };
@@ -2697,79 +2692,77 @@ export class PostgresResponseLifecycleAdapter
       });
       const contentDigest = sha256CanonicalJson(fact);
       const recordedAt = this.#nowIso();
-      await this.#executeWithRetry(
-        this.#atomicCommand(valid, DEVIATION_COMMAND_KIND_V1, valid),
-        async (transactionContext): Promise<AtomicCommitV1> => {
-          const transaction = asTransaction(transactionContext);
-          const auditEntryId = `audit-${valid.commandId}:response-deviation`;
-          await transaction
-            .insertInto("business.response_deviation_facts")
-            .values({
-              deviation_id: deviationFactRef.reference.entityId,
-              version_id: deviationFactRef.reference.versionId,
-              schema_version: "1",
-              project_id: valid.projectId,
-              recommendation_id: fact.responseRecommendationRef.reference.entityId,
-              recommendation_version_id: fact.responseRecommendationRef.reference.versionId,
-              execution_id: fact.executionRecordRef.reference.entityId,
-              execution_version_id: fact.executionRecordRef.reference.versionId,
-              effect_forecast_id: fact.effectForecastRef.reference.entityId,
-              effect_forecast_version_id: fact.effectForecastRef.reference.versionId,
-              feedback_id: fact.feedbackRef.reference.entityId,
-              feedback_version_id: fact.feedbackRef.reference.versionId,
-              frozen_basis_snapshot_id: fact.frozenAssessmentBasisRef.reference.entityId,
-              frozen_basis_snapshot_version_id: fact.frozenAssessmentBasisRef.reference.versionId,
-              deviation_policy_entity_id: fact.deviationPolicyRef.entityId,
-              deviation_policy_version_id: fact.deviationPolicyRef.versionId,
-              basis: fact.basis,
-              risk_matrix_entity_id: fact.riskMatrixRef.entityId,
-              risk_matrix_version_id: fact.riskMatrixRef.versionId,
-              target_indicator_id: fact.targetIndicatorId,
-              unit: fact.unit,
-              predicted_value_canonical: fact.predictedValue,
-              actual_value_canonical: fact.actualValue,
-              deviation_value_canonical: fact.deviationValue,
-              deviation_value_number: fact.deviationValueNumber,
-              threshold_exceeded: fact.thresholdExceeded,
-              direction: fact.direction,
-              predicted_risk_state: jsonValue(fact.predictedRiskState),
-              actual_risk_state: jsonValue(fact.actualRiskState),
-              evidence_references: jsonValue(fact.evidenceReferences),
-              summary: fact.summary,
-              spatial_scope_entity_id: fact.spatialScopeRef.reference.entityId,
-              spatial_scope_version_id: fact.spatialScopeRef.reference.versionId,
-              deviation_payload: jsonValue(fact),
-              content_digest: contentDigest,
-              command_id: valid.commandId,
-              idempotency_key: valid.idempotencyKey,
-              actor_ref: verified.actorId,
-              authorization_context_ref: jsonValue(valid.authorization.authorizationContextRef),
-              audit_entry_id: auditEntryId,
-              computed_at: fact.computedAt,
-              recorded_at: recordedAt,
-            } as never)
-            .onConflict((conflict) => conflict.doNothing())
-            .execute();
-          return {
-            // C03 回执只承载公共引用：偏差事实引用是 C28 私有，公开锚点是命令的预测引用。
-            resultRef: payload.effectForecastRef,
-            audit: {
-              auditEntryId,
-              projectId: valid.projectId,
-              action: DEVIATION_COMMAND_KIND_V1,
-              targetRef: fact.feedbackRef,
-              actorRef: verified.actorId,
-              authorizationContextRef: valid.authorization.authorizationContextRef,
-              occurredAt: valid.issuedAt,
-              recordedAt,
-              version: { entityId: auditEntryId, versionId: "1" },
-              commandId: valid.commandId,
-              idempotencyKey: valid.idempotencyKey,
-            },
-            events: [],
-          };
-        },
-      );
+      const atomic = this.#atomicCommand(valid, DEVIATION_COMMAND_KIND_V1, valid);
+      await this.#executeWithRetry(atomic, async (transactionContext): Promise<AtomicCommitV1> => {
+        const transaction = asTransaction(transactionContext);
+        const auditEntryId = `audit-${valid.commandId}:response-deviation`;
+        await transaction
+          .insertInto("business.response_deviation_facts")
+          .values({
+            deviation_id: deviationFactRef.reference.entityId,
+            version_id: deviationFactRef.reference.versionId,
+            schema_version: "1",
+            project_id: valid.projectId,
+            recommendation_id: fact.responseRecommendationRef.reference.entityId,
+            recommendation_version_id: fact.responseRecommendationRef.reference.versionId,
+            execution_id: fact.executionRecordRef.reference.entityId,
+            execution_version_id: fact.executionRecordRef.reference.versionId,
+            effect_forecast_id: fact.effectForecastRef.reference.entityId,
+            effect_forecast_version_id: fact.effectForecastRef.reference.versionId,
+            feedback_id: fact.feedbackRef.reference.entityId,
+            feedback_version_id: fact.feedbackRef.reference.versionId,
+            frozen_basis_snapshot_id: fact.frozenAssessmentBasisRef.reference.entityId,
+            frozen_basis_snapshot_version_id: fact.frozenAssessmentBasisRef.reference.versionId,
+            deviation_policy_entity_id: fact.deviationPolicyRef.entityId,
+            deviation_policy_version_id: fact.deviationPolicyRef.versionId,
+            basis: fact.basis,
+            risk_matrix_entity_id: fact.riskMatrixRef.entityId,
+            risk_matrix_version_id: fact.riskMatrixRef.versionId,
+            target_indicator_id: fact.targetIndicatorId,
+            unit: fact.unit,
+            predicted_value_canonical: fact.predictedValue,
+            actual_value_canonical: fact.actualValue,
+            deviation_value_canonical: fact.deviationValue,
+            deviation_value_number: fact.deviationValueNumber,
+            threshold_exceeded: fact.thresholdExceeded,
+            direction: fact.direction,
+            predicted_risk_state: jsonValue(fact.predictedRiskState),
+            actual_risk_state: jsonValue(fact.actualRiskState),
+            evidence_references: jsonValue(fact.evidenceReferences),
+            summary: fact.summary,
+            spatial_scope_entity_id: fact.spatialScopeRef.reference.entityId,
+            spatial_scope_version_id: fact.spatialScopeRef.reference.versionId,
+            deviation_payload: jsonValue(fact),
+            content_digest: contentDigest,
+            command_id: atomic.commandId,
+            idempotency_key: valid.idempotencyKey,
+            actor_ref: verified.actorId,
+            authorization_context_ref: jsonValue(valid.authorization.authorizationContextRef),
+            audit_entry_id: auditEntryId,
+            computed_at: fact.computedAt,
+            recorded_at: recordedAt,
+          } as never)
+          .onConflict((conflict) => conflict.doNothing())
+          .execute();
+        return {
+          // C03 回执只承载公共引用：偏差事实引用是 C28 私有，公开锚点是命令的预测引用。
+          resultRef: payload.effectForecastRef,
+          audit: {
+            auditEntryId,
+            projectId: valid.projectId,
+            action: DEVIATION_COMMAND_KIND_V1,
+            targetRef: fact.feedbackRef,
+            actorRef: verified.actorId,
+            authorizationContextRef: valid.authorization.authorizationContextRef,
+            occurredAt: valid.issuedAt,
+            recordedAt,
+            version: { entityId: auditEntryId, versionId: "1" },
+            commandId: atomic.commandId,
+            idempotencyKey: valid.idempotencyKey,
+          },
+          events: [],
+        };
+      });
       const stored = await this.#loadDeviationFact(
         valid.projectId,
         deviationFactRef.reference,
@@ -3035,6 +3028,8 @@ export class PostgresResponseLifecycleAdapter
         ? undefined
         : await this.#deviationViewOf(input.projectId, row, scopeIds);
     return {
+      // 私有偏差事实引用随视图交出：组合方据此向 C29 换公共偏差记录与校准引用，
+      // 不必也不得自己回查本模块私表。该引用不是公共引用种类，只作精确版本锚点。
       kind: "succeeded",
       view: {
         feedbackRef: { kind: "feedback", reference: input.targetRef.reference },
@@ -3070,7 +3065,9 @@ export class PostgresResponseLifecycleAdapter
           record,
           scopeIds,
         ),
-        ...(deviation === undefined ? {} : { deviation }),
+        ...(deviation === undefined
+          ? {}
+          : { deviation: deviation.view, deviationFactRef: deviation.factRef }),
         spatialScopeEntityId: row.spatial_scope_entity_id,
       },
     };
@@ -3102,7 +3099,7 @@ export class PostgresResponseLifecycleAdapter
     projectId: string,
     feedback: FeedbackRow,
     scopeIds: readonly string[],
-  ): Promise<DeviationViewV1 | undefined> {
+  ): Promise<{ readonly factRef: VersionReference; readonly view: DeviationViewV1 } | undefined> {
     const row = await this.#db
       .selectFrom("business.response_deviation_facts")
       .selectAll()
@@ -3116,21 +3113,24 @@ export class PostgresResponseLifecycleAdapter
     if (row === undefined) return undefined;
     const fact = parseDeviationFact(row, { entityId: row.deviation_id, versionId: row.version_id });
     return {
-      deviationPolicyRef: fact.deviationPolicyRef,
-      basis: fact.basis,
-      targetIndicatorId: fact.targetIndicatorId,
-      unit: fact.unit,
-      // 私有事实登记的是规范十进制字符串，它本身就是合法标量：逐字投影，不另做数值转换。
-      predictedValue: fact.predictedValue,
-      actualValue: fact.actualValue,
-      deviationValue: fact.deviationValue,
-      thresholdExceeded: fact.thresholdExceeded,
-      direction: fact.direction,
-      riskMatrixRef: fact.riskMatrixRef,
-      predictedRiskState: fact.predictedRiskState,
-      actualRiskState: fact.actualRiskState,
-      evidenceReferences: fact.evidenceReferences,
-      computedAt: fact.computedAt,
+      factRef: { entityId: row.deviation_id, versionId: row.version_id },
+      view: {
+        deviationPolicyRef: fact.deviationPolicyRef,
+        basis: fact.basis,
+        targetIndicatorId: fact.targetIndicatorId,
+        unit: fact.unit,
+        // 私有事实登记的是规范十进制字符串，它本身就是合法标量：逐字投影，不另做数值转换。
+        predictedValue: fact.predictedValue,
+        actualValue: fact.actualValue,
+        deviationValue: fact.deviationValue,
+        thresholdExceeded: fact.thresholdExceeded,
+        direction: fact.direction,
+        riskMatrixRef: fact.riskMatrixRef,
+        predictedRiskState: fact.predictedRiskState,
+        actualRiskState: fact.actualRiskState,
+        evidenceReferences: fact.evidenceReferences,
+        computedAt: fact.computedAt,
+      },
     };
   }
 
@@ -3242,7 +3242,7 @@ export class PostgresResponseLifecycleAdapter
         JOIN business.response_execution_records x
           ON x.project_id = b.project_id
          AND x.execution_id = b.execution_id
-         AND x.execution_version_id = b.execution_version_id
+         AND x.version_id = b.execution_version_id
        WHERE b.project_id = ${input.projectId}
          AND b.spatial_scope_entity_id = ANY(${scopeIds})
          AND (${joinAnchorSql(
@@ -3478,7 +3478,10 @@ export class PostgresResponseLifecycleAdapter
     return {
       projectId: command.projectId,
       commandKind,
-      commandId: command.commandId,
+      // `business.command_receipts.command_id` 全局唯一，而同一个人工命令会依次经过 C41 的
+      // 决定占位、C30 的运行启动与 C28 的正式写入。按既有约定（C41 的 `:c41-reserve-adoption`）
+      // 在本模块派生回执身份：领域行的 `command_id` 外键与审计必须跟着写同一个派生值。
+      commandId: `${command.commandId}:c28-${commandKind}`,
       idempotencyKey: command.idempotencyKey,
       payload: JSON.parse(JSON.stringify(payload)) as Record<string, never>,
       actorRef: command.actorId,

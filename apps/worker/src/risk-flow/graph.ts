@@ -29,6 +29,7 @@ import {
   type ContentArtifactRefV1,
   type ContractReferenceV1,
   type IdentificationPreparationSnapshotRefV1,
+  type ModuleBranchV1,
   type ResponseRecommendationRefV1,
   type RiskFlowRunResultRefV1,
   type RouteDecisionRefV1,
@@ -170,6 +171,12 @@ export interface RiskFlowGraphRunContextV1 {
   readonly actorId: string;
   readonly authorization: AuthorizationContextV1;
   readonly commandId: string;
+  /**
+   * `authorization` 实际签发时的模块分支：父运行由启动命令推进时是 `workflow.start-run`，
+   * 由恢复命令推进时是 `workflow.resume-run`。评估子运行沿用这个上下文启动，必须连同分支
+   * 一起复验——只带签发身份而按子运行自己的入口分支复验，会把有效上下文误判为越权。
+   */
+  readonly authorizationBranch: ModuleBranchV1;
   readonly idempotencyKey: string;
   readonly issuedAt: string;
   readonly validAt: string;
@@ -755,6 +762,7 @@ export const assessmentStartCommandFor = (input: {
     commandId,
     // 子运行沿用父运行的公开命令上下文：签发身份是父命令身份，不是子运行自己的命令身份。
     issuedInvocationId: input.run.commandId,
+    authorizationBranch: input.run.authorizationBranch,
     idempotencyKey: commandId,
     issuedAt: input.run.entryRecordedAt,
     validAt: input.run.entryRecordedAt,
@@ -807,6 +815,7 @@ export const segmentedAssessmentStartCommandFor = (input: {
     commandId,
     // 子运行沿用父运行的公开命令上下文：签发身份是父命令身份，不是子运行自己的命令身份。
     issuedInvocationId: input.run.commandId,
+    authorizationBranch: input.run.authorizationBranch,
     idempotencyKey: commandId,
     issuedAt: input.run.entryRecordedAt,
     validAt: input.run.entryRecordedAt,
@@ -815,7 +824,17 @@ export const segmentedAssessmentStartCommandFor = (input: {
     runRef: identity.runRef,
     threadId: identity.threadId,
     entryMode: input.run.entryMode,
-    entryIdentity: input.run.entryIdentity,
+    // 子运行按自己携带的冻结集声明入口身份，不照抄父运行的入口身份：恢复推进后父运行的冻结
+    // 引用会合法增长（如采纳决定引用），照抄会让「身份 ↔ 冻结集」不再自洽，恢复推进时必被
+    // 子运行按契约拒绝。运行身份仍由父运行与父入口身份派生，不受此影响。
+    entryIdentity: workflowEntryIdentityFor({
+      entryMode: input.run.entryMode,
+      projectId: input.run.projectId,
+      frozenRefs: input.run.frozenRefs,
+      ...(input.run.reassessmentEntry === undefined
+        ? {}
+        : { reassessmentEntry: input.run.reassessmentEntry }),
+    }),
     frozenRefs: input.run.frozenRefs,
     parentRunRef: input.run.runRef,
     ...(input.run.primaryRiskRef === undefined

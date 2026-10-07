@@ -1628,8 +1628,11 @@ export class PostgresRiskAssessmentEngine
     readonly policySet: AssessmentRuntimePolicySetV1;
   }): Promise<void> {
     await this.#verifyCommand(input.command, input.branch, input.binding);
+    // 复核是第二次独立读取，必须有自己的命令身份：C03 的 `command_receipts.command_id`
+    // 全局唯一，沿用主命令身份会让复核撞唯一约束而永远走不通。
+    const recheckCommandId = `${input.command.commandId}:recheck`;
     const basisAgain = await this.#loadBasis({
-      commandId: input.command.commandId,
+      commandId: recheckCommandId,
       idempotencyKey: `${input.command.commandId}:recheck`,
       projectId: input.command.projectId,
       actorId: input.command.actorId,
@@ -1643,7 +1646,7 @@ export class PostgresRiskAssessmentEngine
       });
     }
     const policySetAgain = await this.#loadRuntimePolicies({
-      commandId: input.command.commandId,
+      commandId: recheckCommandId,
       projectId: input.command.projectId,
       actorId: input.command.actorId,
       businessAt: input.businessAt,
@@ -2117,9 +2120,41 @@ export class PostgresRiskAssessmentEngine
         inputSnapshot.preparationSnapshotRef,
       );
       const preparation = preparationRead.preparation;
-      // 准备快照的空间与来源身份由当前授权复验后才继续；之后只用验证后的上下文。
+      /**
+       * 准备快照的空间与来源身份由当前授权复验后才继续；之后只用验证后的上下文。
+       *
+       * 收窄的证明与评估上下文必须分开取得：评估要写出的决策工件以依据成员为父工件，
+       * 而依据成员的来源授权宽于准备快照的证据来源（C19 规则编制来自 C15 清洗结果）。
+       * 若把准备身份当作收窄请求交给 C06，得到的上下文装不下父工件的来源授权，C04
+       * 会在 `ARTIFACT_ACCESS_DENIED` 处关闭失败。因此这里按准备身份单独窄签一次作为
+       * 「可授予」证明，再取不收窄的评估上下文（上限仍是调用方按 branch 签发的那份），
+       * 并断言前者落在后者之内——与本文件读取路径的既有包含检查同一口径。
+       */
       const binding = this.#preparationBinding(valid.commandId, valid.authorization, preparation);
-      const verified = await this.#verifyCommand(valid, "risk-assessment.evaluate", binding);
+      const preparationScoped = await this.#verifyCommand(
+        valid,
+        "risk-assessment.evaluate",
+        binding,
+      );
+      const verified = await this.#verifyCommand(valid, "risk-assessment.evaluate");
+      if (
+        !preparationScoped.spatialScopeRefs.every((ref) =>
+          verified.spatialScopeRefs.some(
+            (scope) => versionKey(scope.reference) === versionKey(ref.reference),
+          ),
+        ) ||
+        !preparationScoped.sourceAccessGrantRefs.every(
+          (ref) =>
+            ref.kind === "source-access-grant" &&
+            verified.sourceAccessGrantRefs.some(
+              (grant) =>
+                grant.kind === "source-access-grant" &&
+                versionKey(grant.reference) === versionKey(ref.reference),
+            ),
+        )
+      ) {
+        throw moduleError("AUTHORIZATION_DENIED", valid.commandId, {}, "risk-assessment.evaluate");
+      }
       const runRef = this.#assessmentRunRef(verified, preparation, valid.commandId);
       const businessAt =
         inputRow.entry_kind === "historical-backfill" && inputRow.effective_at !== null
@@ -4199,24 +4234,60 @@ export class PostgresRiskAssessmentEngine
   ): Promise<unknown | undefined> {
     // 一次查询可能读多份正文，幂等键必须逐份唯一，否则第二份会被判同键异载荷。
     const identity = `${command.queryId}:read:${artifactRef.reference.entityId}:${artifactRef.reference.versionId}`;
-    const handle = await this.#artifactStore
-      .open(
-        ArtifactReadRequestV1Schema.parse({
-          schemaVersion: RISK_ASSESSMENT_ENGINE_SCHEMA_VERSION_V1,
-          requestId: identity,
-          idempotencyKey: identity,
-          artifactRef,
-          projectId: command.projectId,
-          actorId: command.actorId,
-          requestedAt: command.requestedAt,
-          purposeCode: RISK_ASSESSMENT_DECISION_ARTIFACT_PURPOSE_CODE_V1,
-          requiredCapability: "risk-assessment.read",
-          authorization: verified,
-        }),
-      )
-      .catch(() => undefined);
-    if (handle === undefined) return undefined;
-    return readArtifactJson(handle);
+    const readWith = async (
+      authorization: AuthorizationContextV1,
+    ): Promise<unknown | undefined> => {
+      const handle = await this.#artifactStore
+        .open(
+          ArtifactReadRequestV1Schema.parse({
+            schemaVersion: RISK_ASSESSMENT_ENGINE_SCHEMA_VERSION_V1,
+            requestId: identity,
+            idempotencyKey: identity,
+            artifactRef,
+            projectId: command.projectId,
+            actorId: command.actorId,
+            requestedAt: command.requestedAt,
+            purposeCode: RISK_ASSESSMENT_DECISION_ARTIFACT_PURPOSE_CODE_V1,
+            requiredCapability: "risk-assessment.read",
+            authorization,
+          }),
+        )
+        .catch(() => undefined);
+      return handle === undefined ? undefined : await readArtifactJson(handle);
+    };
+    // 两份上下文都由 C06 按同一分支签发、都过 C04 的全部访问快照检查，差别只在请求时
+    // 申请的来源集：另签的读取上下文可能装不下决策工件继承自父工件的来源授权（浏览器
+    // 为「列出记录」申请的就是窄的那一份），此时回落到调用方已复验的上下文再试一次。
+    return (
+      (await readWith(await this.#artifactReadAuthorization(command, identity, verified))) ??
+      (await readWith(verified))
+    );
+  }
+
+  /**
+   * 工件正文的读取身份：按 `risk-assessment.read` 单独签发，不沿用列表查询的上下文。
+   *
+   * 决策工件的访问快照由其父工件（适用规则集与评分规则）合并而来，来源授权宽于页面
+   * 为列目录申请的上下文——浏览器不为「列出记录」请求任何来源，直接沿用会把每一页都
+   * 关在 `ARTIFACT_ACCESS_DENIED`。按 design D-06「不同用途使用独立请求身份」，这里以
+   * 同一分支、同一主体与工程另签一份读取上下文；签不出来就沿用调用方上下文，由 C04 判
+   * 决，绝不在这里放宽任何访问快照检查。
+   */
+  async #artifactReadAuthorization(
+    command: RiskAssessmentReadQueryV1,
+    invocationId: string,
+    fallback: AuthorizationContextV1,
+  ): Promise<AuthorizationContextV1> {
+    return await this.#authorizeFor(
+      {
+        branch: "risk-assessment.read",
+        invocationId,
+        projectId: command.projectId,
+        actorId: command.actorId,
+        requestedAt: command.requestedAt,
+      },
+      "risk-assessment.read",
+    ).catch(() => fallback);
   }
 
   /**

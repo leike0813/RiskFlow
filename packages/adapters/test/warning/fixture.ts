@@ -377,6 +377,8 @@ export const startWarningLifecycleFixture = async (
     readCalibrationView: () => unwiredOwningReader("calibration.readCalibrationView"),
     readCalibrationRefsForDeviationFacts: () =>
       unwiredRelationPage("readCalibrationRefsForDeviationFacts"),
+    readDeviationRecordForDeviationFact: () =>
+      unwiredRelationPage("readDeviationRecordForDeviationFact"),
     resolveCalibrationRefs: () => unwiredRelationPage("resolveCalibrationRefs"),
   };
   const unwiredLifecycle: WarningResponseLifecycleReaderV1 = {

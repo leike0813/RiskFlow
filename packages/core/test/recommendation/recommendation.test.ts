@@ -18,6 +18,7 @@ import {
   ResponseRecommendationIncrementV1Schema,
   ResponseValidationPolicyV1Schema,
   RecommendationSiteContextV1Schema,
+  RecommendationFrozenWarningV1Schema,
   buildResponseRecommendationRecord,
   createResponseRecommendationTaskDefinition,
   failRecommendation,
@@ -29,6 +30,7 @@ import {
   selectFrozenMeasures,
   validateRecommendationCandidate,
   type MeasureCandidateSetV1,
+  type RecommendationFrozenWarningV1,
   type RecommendationValidationOutcomeV1,
 } from "../../src/recommendation/index.js";
 import { c25ConfigurationDocuments } from "../risk-assessment/fixture.js";
@@ -139,7 +141,7 @@ const WARNINGS = [
 
 const candidateSetOf = (input: {
   readonly candidates: ReturnType<typeof selectFrozenMeasures>;
-  readonly warnings?: typeof WARNINGS;
+  readonly warnings?: readonly RecommendationFrozenWarningV1[];
 }): MeasureCandidateSetV1 =>
   MeasureCandidateSetV1Schema.parse({
     schemaVersion: "1",
@@ -221,7 +223,7 @@ const siteContext = RecommendationSiteContextV1Schema.parse({
 const runValidation = (input: {
   readonly selections: readonly { readonly measureId: string; readonly order: number }[];
   readonly candidates?: ReturnType<typeof selectFrozenMeasures>;
-  readonly warnings?: typeof WARNINGS;
+  readonly warnings?: readonly RecommendationFrozenWarningV1[];
   readonly policy?: unknown;
   readonly site?: unknown;
 }): RecommendationValidationOutcomeV1 =>
@@ -258,16 +260,48 @@ describe("C27 措施候选与三项确定性校验", () => {
       monitoringThresholds: documents["monitoring-warning-threshold"].content,
       jointTriggerPolicy: documents["joint-trigger-policy"].content,
     };
-    expect(resolveTriggerIndicators(["threshold-settlement-slope"], configuration)).toEqual({
+    // 按类型分流后：特征越限只查非 value 阈值，联合类型只查联合规则；解析不出来照旧
+    // 记未解析，不因任务里另有其它类型触发而跳过。
+    expect(
+      resolveTriggerIndicators(
+        [
+          {
+            indicatorItem: "threshold-settlement-slope",
+            triggerType: "趋势/加速度/异常评分越限",
+          },
+        ],
+        configuration,
+      ),
+    ).toEqual({
       indicatorIds: ["indicator-consequence-1"],
       unresolvedItems: [],
     });
     expect(
-      resolveTriggerIndicators(["threshold-settlement-value", "joint-trend"], configuration),
+      resolveTriggerIndicators(
+        [
+          { indicatorItem: "threshold-settlement-value", triggerType: "监测指标越限" },
+          { indicatorItem: "joint-trend", triggerType: "多指标联合规则命中" },
+        ],
+        configuration,
+      ),
     ).toEqual({
       indicatorIds: ["indicator-consequence-1"],
       unresolvedItems: ["joint-trend", "threshold-settlement-value"],
     });
+  });
+  it("风险等级触发不产出监测指标映射，也不算解析失败", () => {
+    const documents = c25ConfigurationDocuments();
+    const configuration = {
+      fieldMapping: documents["indicator-field-mapping"].content,
+      monitoringThresholds: documents["monitoring-warning-threshold"].content,
+      jointTriggerPolicy: documents["joint-trigger-policy"].content,
+    };
+    expect(
+      resolveTriggerIndicators(
+        [{ indicatorItem: "threshold-risk-1", triggerType: "风险等级超过风险可接受阈值" }],
+        configuration,
+      ),
+    ).toEqual({ indicatorIds: [], unresolvedItems: [] });
   });
   it("按预警逐项筛选并按措施身份合并触发关系", () => {
     const candidates = selectFrozenMeasuresAll();
@@ -674,5 +708,257 @@ describe("C27 措施候选与三项确定性校验", () => {
       expect(failure?.targetRef).toEqual(warningRef("warning-1"));
     }
     expect(recommendationFailureFrom(new Error("other"))).toBeUndefined();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* 风险等级触发分支（design D-13）                                             */
+/* -------------------------------------------------------------------------- */
+
+const RISK_LEVEL_THRESHOLD_ID = "threshold-risk-1";
+const RISK_LEVEL_ID = "level-4";
+const RISK_LEVEL_ACCEPTED_ID = "level-3";
+
+/** 合格冻结依据：配置引用、等级序数与有效指标集合都自洽。 */
+const riskAcceptanceBasis = (overrides: Record<string, unknown> = {}) => ({
+  thresholdReleaseRef: { entityId: "threshold-release", versionId: "1" },
+  riskMatrixReleaseRef: { entityId: "matrix-release", versionId: "1" },
+  thresholdArtifactRef: {
+    kind: "content-artifact",
+    reference: { entityId: "threshold", versionId: `sha256:${digest("a")}` },
+  },
+  riskMatrixArtifactRef: {
+    kind: "content-artifact",
+    reference: { entityId: "matrix", versionId: `sha256:${digest("b")}` },
+  },
+  thresholdId: RISK_LEVEL_THRESHOLD_ID,
+  maximumAcceptedLevelId: RISK_LEVEL_ACCEPTED_ID,
+  riskLevelId: RISK_LEVEL_ID,
+  maximumAcceptedLevelOrdinal: 3,
+  riskLevelOrdinal: 4,
+  assessedIndicatorIds: ["indicator-1"],
+  ...overrides,
+});
+
+const riskLevelWarning = (input: {
+  readonly id: string;
+  readonly thresholdId?: string;
+  readonly riskLevelId?: string;
+  readonly basis?: Record<string, unknown> | null;
+  readonly indicatorItem?: string;
+}): RecommendationFrozenWarningV1 =>
+  RecommendationFrozenWarningV1Schema.parse({
+    ...warning({
+      id: input.id,
+      triggerType: "风险等级超过风险可接受阈值",
+      indicatorItem: input.indicatorItem ?? input.thresholdId ?? RISK_LEVEL_THRESHOLD_ID,
+      resolvedTargetIndicatorIds: [],
+      unresolvedTriggerItems: [],
+    }),
+    triggerIndicators: [
+      {
+        indicatorItem: input.indicatorItem ?? input.thresholdId ?? RISK_LEVEL_THRESHOLD_ID,
+        triggerType: "风险等级超过风险可接受阈值",
+        actualValue: input.riskLevelId ?? RISK_LEVEL_ID,
+      },
+    ],
+    ...(input.basis === null
+      ? {}
+      : { riskAcceptanceBasis: riskAcceptanceBasis(input.basis ?? {}) }),
+  });
+
+const riskLevelLibrary = {
+  measures: [
+    measure({
+      measureId: "measure-level",
+      riskEventCategory: "突涌",
+      triggerTypes: ["风险等级超过风险可接受阈值"],
+      targetIndicatorIds: ["indicator-1"],
+      resourceRequirements: ["resource-a"],
+      applicability: [{ dimension: "地层条件数据", values: ["地层-x"] }],
+    }),
+    measure({
+      measureId: "measure-level-monitor",
+      riskEventCategory: "突涌",
+      triggerTypes: ["监测指标越限"],
+      targetIndicatorIds: ["indicator-1"],
+      resourceRequirements: ["resource-a"],
+      applicability: [{ dimension: "地层条件数据", values: ["地层-x"] }],
+    }),
+  ],
+};
+
+const riskLevelPolicy = ResponseValidationPolicyV1Schema.parse({
+  schemaVersion: "1",
+  policyRef: { entityId: "risk-level-validation-policy", versionId: "1" },
+  projectId: "project-c27",
+  targetIndicators: [{ indicatorItem: "indicator-1", targetValue: 5 }],
+  reviewedStandardEvidence: [
+    { measureId: "measure-level", evidenceItem: "evidence-standard" },
+    { measureId: "measure-level-monitor", evidenceItem: "evidence-standard" },
+  ],
+  contraindicationRules: [],
+  executableProcessStatuses: ["掘进"],
+});
+
+const riskLevelSelections = [{ measureId: "measure-level", order: 1 }];
+const riskLevelCandidates = (warnings: readonly RecommendationFrozenWarningV1[]) =>
+  selectFrozenMeasures({
+    library: riskLevelLibrary,
+    riskEventCategory: "突涌",
+    applicability: [
+      { dimension: "地层条件数据", values: ["地层-x"] },
+      { dimension: "施工工法数据", values: ["盾构法"] },
+      { dimension: "工程阶段数据", values: ["掘进"] },
+    ],
+    warnings: warnings.map((entry) => ({
+      warningRecordRef: entry.warningRecordRef,
+      triggerType: entry.triggerType,
+    })),
+  });
+
+const runRiskLevelValidation = (input: {
+  readonly warnings: readonly RecommendationFrozenWarningV1[];
+  readonly selections?: readonly { readonly measureId: string; readonly order: number }[];
+  readonly policy?: unknown;
+}) =>
+  validateRecommendationCandidate({
+    candidateSet: candidateSetOf({
+      candidates: riskLevelCandidates(input.warnings),
+      warnings: input.warnings,
+    }),
+    selections: input.selections ?? riskLevelSelections,
+    validationPolicy: ResponseValidationPolicyV1Schema.parse(input.policy ?? riskLevelPolicy),
+    siteContext,
+  });
+
+describe("D-13 风险等级触发分支", () => {
+  it("单独风险等级预警在依据与措施自洽时通过并可正式入库", () => {
+    const outcome = runRiskLevelValidation({
+      warnings: [riskLevelWarning({ id: "warning-level" })],
+    });
+    expect(outcome.results.triggerConsistency.passed).toBe(true);
+    expect(
+      outcome.diagnostics.find((entry) => entry.reasonCode === "risk-acceptance-basis-verified"),
+    ).toMatchObject({ checkId: "trigger-consistency", passed: true });
+    // 通过即可正式建记录：三项校验齐全，人工采纳边界不变。
+    expect(recommendationValidationPassedAll(outcome.results)).toBe(true);
+    // 合格候选可正式建记录：人工采纳边界不变，记录仍是待审状态。
+    const record = buildResponseRecommendationRecord({
+      recommendationRef: {
+        kind: "response-recommendation",
+        reference: { entityId: "rec-level", versionId: "1" },
+      },
+      primaryWarningRecordRef: primaryWarningRecordRef([riskLevelWarning({ id: "warning-level" })]),
+      outcome,
+      actorId: "actor-c27",
+      recordedAt: "2033-04-05T06:07:08.000Z",
+    });
+    expect(record.reviewStatus).toBe("pending");
+    expect(record.measureItems.map((entry) => entry.measureId)).toEqual(["measure-level"]);
+  });
+
+  it("混合触发的任务按各自类型分流：等级分支不牵连监测分支判定", () => {
+    const outcome = runRiskLevelValidation({
+      warnings: [
+        warning({
+          id: "warning-monitor",
+          triggerType: "监测指标越限",
+          indicatorItem: "indicator-1",
+        }),
+        riskLevelWarning({ id: "warning-level" }),
+      ],
+      selections: [
+        { measureId: "measure-level", order: 1 },
+        { measureId: "measure-level-monitor", order: 2 },
+      ],
+    });
+    expect(outcome.results.triggerConsistency.passed).toBe(true);
+    expect(recommendationValidationPassedAll(outcome.results)).toBe(true);
+  });
+
+  it("冻结依据缺失或与预警事实错配时失败闭合", () => {
+    const missing = runRiskLevelValidation({
+      warnings: [riskLevelWarning({ id: "warning-level", basis: null })],
+    });
+    expect(missing.results.triggerConsistency.passed).toBe(false);
+    // 触发项仍未解析——不允许只清空未解析集合就放行。
+    expect(missing.diagnostics.map((entry) => entry.reasonCode)).toContain(
+      "risk-acceptance-basis-unavailable",
+    );
+
+    const mismatched = runRiskLevelValidation({
+      warnings: [
+        riskLevelWarning({ id: "warning-level", basis: { thresholdId: "threshold-other" } }),
+      ],
+    });
+    expect(mismatched.results.triggerConsistency.passed).toBe(false);
+    expect(mismatched.diagnostics.map((entry) => entry.reasonCode)).toContain(
+      "risk-acceptance-basis-mismatch",
+    );
+
+    // 等级没有越过可接受等级时，依据摘要本身自相矛盾，同样失败。
+    const notExceeded = runRiskLevelValidation({
+      warnings: [riskLevelWarning({ id: "warning-level", basis: { riskLevelOrdinal: 3 } })],
+    });
+    expect(notExceeded.results.triggerConsistency.passed).toBe(false);
+  });
+
+  it("风险等级预警没有对应措施时失败闭合", () => {
+    const outcome = runRiskLevelValidation({
+      warnings: [riskLevelWarning({ id: "warning-level" })],
+      selections: [],
+    });
+    expect(outcome.results.triggerConsistency.passed).toBe(false);
+    expect(outcome.diagnostics.map((entry) => entry.reasonCode)).toContain(
+      "risk-level-measure-uncovered",
+    );
+  });
+
+  it("措施目标不属于关联评估有效指标、或缺少审核目标值时失败闭合", () => {
+    const outOfScope = runRiskLevelValidation({
+      warnings: [
+        riskLevelWarning({ id: "warning-level", basis: { assessedIndicatorIds: ["indicator-2"] } }),
+      ],
+    });
+    expect(outOfScope.results.triggerConsistency.passed).toBe(false);
+    expect(outOfScope.diagnostics.map((entry) => entry.reasonCode)).toContain(
+      "risk-level-target-out-of-scope",
+    );
+
+    const noTargetValue = runRiskLevelValidation({
+      warnings: [riskLevelWarning({ id: "warning-level" })],
+      policy: ResponseValidationPolicyV1Schema.parse({
+        ...riskLevelPolicy,
+        targetIndicators: [{ indicatorItem: "indicator-2", targetValue: 5 }],
+      }),
+    });
+    expect(noTargetValue.results.triggerConsistency.passed).toBe(false);
+    expect(noTargetValue.diagnostics.map((entry) => entry.reasonCode)).toContain(
+      "target-indicator-unavailable",
+    );
+  });
+
+  it("监测分支解析失败仍然阻断候选，不因新增等级分支而放行", () => {
+    const outcome = runRiskLevelValidation({
+      warnings: [
+        {
+          ...riskLevelWarning({ id: "warning-level" }),
+        },
+        {
+          ...warning({
+            id: "warning-monitor",
+            triggerType: "监测指标越限",
+            indicatorItem: "indicator-1",
+            resolvedTargetIndicatorIds: [],
+            unresolvedTriggerItems: ["threshold-missing"],
+          }),
+        },
+      ],
+    });
+    expect(outcome.results.triggerConsistency.passed).toBe(false);
+    expect(outcome.diagnostics.map((entry) => entry.reasonCode)).toContain(
+      "trigger-mapping-unavailable",
+    );
   });
 });

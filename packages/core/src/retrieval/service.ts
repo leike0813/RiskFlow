@@ -12,6 +12,7 @@ import {
   type KnowledgeRetrievalQueryV1,
   type KnowledgeRetrievalResultV1,
   type ModuleErrorV1,
+  type SpatialScopeRefV1,
 } from "@riskflow/contracts/ports";
 import type { VersionReference } from "@riskflow/contracts/common";
 
@@ -86,6 +87,35 @@ export const authorizationScopeDigest = (authorization: AuthorizationContextV1):
       versionId: parsed.authorizationPolicyRef.versionId,
     },
   });
+};
+
+/**
+ * 运行登记事实的**授权覆盖判定**（drift design D-01～D-03）：读取某条运行已登记的事实时，
+ * 调用方不必与写入时那份上下文逐字相同——人工按会话完整范围启动运行、模块按任务收窄范围
+ * 读取是正常的最小权限分工。
+ *
+ * 覆盖判定只回答一件事：**调用方被允许看这条运行声明的空间吗**。因此：
+ *
+ * - 空间范围按引用逐项包含，覆盖必须是包含方向，不接受相近值或任何模糊匹配；
+ * - 来源授权与授权策略摘要仍是写入侧事实（回答「这份事实是在哪份授权下形成的」），不再作为
+ *   读取准入条件——否则任何按任务收窄签发的读取上下文都无法证明一条以更宽授权启动的运行。
+ *
+ * 授权范围摘要算法本身不变，仍由 `authorizationScopeDigest` 提供。
+ */
+
+/** 空间范围覆盖：逐项引用相同才算覆盖。空要求集不由本函数判定（调用方另行收口）。 */
+export const coversSpatialScopes = (
+  authorization: AuthorizationContextV1,
+  requiredSpatialScopeRefs: readonly SpatialScopeRefV1[],
+): boolean => {
+  const parsed = AuthorizationContextV1Schema.parse(authorization);
+  return requiredSpatialScopeRefs.every((required) =>
+    parsed.spatialScopeRefs.some(
+      (granted) =>
+        granted.reference.entityId === required.reference.entityId &&
+        granted.reference.versionId === required.reference.versionId,
+    ),
+  );
 };
 
 export const retrievalGenerationRefFor = (input: {

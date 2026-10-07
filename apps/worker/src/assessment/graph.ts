@@ -65,6 +65,7 @@ import {
   type KnowledgeReleaseRefV1,
   type KnowledgeModelingPortV1,
   type MeasureLibraryReleaseRefV1,
+  type ModuleBranchV1,
   type MonitoringSnapshotRefV1,
   type ProjectRevisionRefV1,
   type RiskAssessmentPortV1,
@@ -495,8 +496,8 @@ const graphError = (input: {
   readonly detailCode: string;
   readonly occurredAt: string;
   readonly retryable?: boolean;
-}): WorkflowGraphErrorV1 =>
-  WorkflowGraphErrorV1Schema.parse({
+}): WorkflowGraphErrorV1 => {
+  return WorkflowGraphErrorV1Schema.parse({
     schemaVersion: "1",
     code: input.code,
     retryable: input.retryable ?? false,
@@ -504,6 +505,7 @@ const graphError = (input: {
     detailCode: input.detailCode,
     occurredAt: input.occurredAt,
   });
+};
 
 /** 状态通道唯一解析点：任何失败都收口为 `CONTRACT_INVALID`。 */
 export const parseAssessmentGraphState = (
@@ -609,7 +611,7 @@ export const toAssessmentGraphError = (input: {
       : typeof reasonCode === "string"
         ? reasonCode
         : code;
-  if (code === "TRANSACTION_FAILED") {
+  if (code === "TRANSACTION_FAILED" || code === "transaction_failed") {
     return classifyWorkflowGraphFailure({
       stage,
       upstream: { code: "TRANSIENT_FAILURE", retryable: true },
@@ -634,6 +636,16 @@ const artifactIdFor = (kind: string, runId: string, suffix: string): string =>
 
 const actionIdFor = (run: AssessmentGraphRunContextV1, suffix: string): string =>
   `${run.runRef.reference.versionId}:${suffix}`;
+
+/**
+ * 校准冻结输入的动作身份：同一运行只准备一次，A3 建立、A4 直接复用。
+ *
+ * 冻结输入按偏差事实、依据集合与目标释放派生，内容与身份都是确定的；两个阶段各用各的
+ * 命令身份就会把同一份工件登记两次，第二次撞清单主键。共用一个身份后，C03 回执按既有
+ * 幂等语义返回 A3 的冻结引用，A4 读到的是同一份事实而不是另算一份。
+ */
+const calibrationInputActionIdFor = (run: AssessmentGraphRunContextV1): string =>
+  actionIdFor(run, "A3:calibration-input");
 
 const contractInvalid = (input: {
   readonly stage: AssessmentStageV1;
@@ -913,14 +925,19 @@ const resolveBasisReleaseSetRef = async (input: {
       }),
     );
   }
+  const actionId = actionIdFor(input.run, `${input.stage}:assessment-basis`);
   const resolved = await input.ports.basisResolver.resolve({
     kind: "assessment-basis",
-    commandId: actionIdFor(input.run, `${input.stage}:assessment-basis`),
-    idempotencyKey: actionIdFor(input.run, `${input.stage}:assessment-basis`),
+    commandId: actionId,
+    idempotencyKey: actionId,
     projectId: input.run.projectId,
     actorId: input.run.actorId,
     issuedAt: input.run.issuedAt,
-    authorization: input.run.authorization,
+    authorization: await knowledgeReadAuthorizationFor({
+      ports: input.ports,
+      run: input.run,
+      invocationId: actionId,
+    }),
     payload: {
       preparationSnapshotRef: entrySnapshotRef.assessmentPreparationSnapshotRef,
       requiredAt: input.run.validAt,
@@ -1701,6 +1718,36 @@ const waitFor = async (input: {
   );
 };
 
+/**
+ * 领域模块动作按用途另签下游上下文（design D-06）。
+ *
+ * 运行上下文本身只有 workflow 能力，直传会在各模块的能力校验处关闭失败——C11 冻结需要
+ * `engineering-data.freeze`，C18/C19 读取需要 `knowledge-modeling.read`，C25 写入需要
+ * `risk-assessment.prepare` / `risk-assessment.evaluate`，C27 与 C34 处置各有自己的分支。
+ * C06 一个授权上下文只对应一个 invocation_id，模块按命令身份复验，所以签发身份必须与随后的
+ * `commandId`/`requestId` 逐字一致。
+ */
+const downstreamAuthorizationFor = async (input: {
+  readonly ports: AssessmentGraphPortsV1;
+  readonly run: AssessmentGraphRunContextV1;
+  readonly branch: ModuleBranchV1;
+  readonly invocationId: string;
+}) =>
+  await input.ports.authorizeDownstream({
+    branch: input.branch,
+    invocationId: input.invocationId,
+    projectId: input.run.projectId,
+    actorId: input.run.actorId,
+    requestedAt: input.run.issuedAt,
+  });
+
+/** 依据与运行策略读取同属知识读用途。 */
+const knowledgeReadAuthorizationFor = async (input: {
+  readonly ports: AssessmentGraphPortsV1;
+  readonly run: AssessmentGraphRunContextV1;
+  readonly invocationId: string;
+}) => await downstreamAuthorizationFor({ ...input, branch: "knowledge-modeling.assessment-basis" });
+
 /** 冻结运行策略集：只按冻结准备与依据引用解析，不用调用方当前视图替换（design D-03）。 */
 export const readRuntimePolicySetForRun = async (input: {
   readonly ports: AssessmentGraphPortsV1;
@@ -1710,12 +1757,17 @@ export const readRuntimePolicySetForRun = async (input: {
   readonly basisReleaseSetRef: AssessmentBasisReleaseSetRefV1;
 }): Promise<AssessmentRuntimePolicySetV1> => {
   const occurredAt = input.ports.now().toISOString();
+  const actionId = actionIdFor(input.run, `${input.stage}:runtime-policies`);
   const resolved = await input.ports.runtimePolicies.readRuntimePolicySet({
-    requestId: actionIdFor(input.run, `${input.stage}:runtime-policies`),
-    idempotencyKey: actionIdFor(input.run, `${input.stage}:runtime-policies`),
+    requestId: actionId,
+    idempotencyKey: actionId,
     requestedAt: input.run.issuedAt,
     requiredAt: input.run.validAt,
-    authorization: input.run.authorization,
+    authorization: await knowledgeReadAuthorizationFor({
+      ports: input.ports,
+      run: input.run,
+      invocationId: actionId,
+    }),
     preparationSnapshotRef: input.preparationSnapshotRef,
     assessmentBasisReleaseSetRef: input.basisReleaseSetRef,
   });
@@ -1732,11 +1784,16 @@ const readBasisReleaseSet = async (input: {
   readonly basisReleaseSetRef: AssessmentBasisReleaseSetRefV1;
 }): Promise<Extract<AssessmentBasisReleaseSetReadResultV1, { readonly kind: "succeeded" }>> => {
   const occurredAt = input.ports.now().toISOString();
+  const actionId = actionIdFor(input.run, `${input.stage}:basis`);
   const read = await input.ports.basis.readAssessmentBasisReleaseSet({
-    requestId: actionIdFor(input.run, `${input.stage}:basis`),
-    idempotencyKey: actionIdFor(input.run, `${input.stage}:basis`),
+    requestId: actionId,
+    idempotencyKey: actionId,
     requestedAt: input.run.issuedAt,
-    authorization: input.run.authorization,
+    authorization: await knowledgeReadAuthorizationFor({
+      ports: input.ports,
+      run: input.run,
+      invocationId: actionId,
+    }),
     assessmentBasisReleaseSetRef: input.basisReleaseSetRef,
   });
   if (read.kind !== "succeeded") {
@@ -1875,7 +1932,17 @@ export const resolveAssessmentEntry = async (input: {
           occurredAt,
         }),
         forecastPolicyRef: policy.forecastPolicyRef,
-        authorizationContextRef: run.authorization.authorizationContextRef,
+        // 冻结预测命令将使用的那一份授权：入口按预测动作身份（`A2:forecast`）预签发，A2 用
+        // 同一调用身份取回同一上下文。C28 要求快照授权与预测命令授权逐字一致；照抄运行继承的
+        // 上下文做不到——C06 一个上下文只对一个 invocation_id，预测命令必须用自己的身份复验。
+        authorizationContextRef: (
+          await downstreamAuthorizationFor({
+            ports,
+            run,
+            branch: "warning-response.adopt-recommendation",
+            invocationId: actionIdFor(run, "A2:forecast"),
+          })
+        ).authorizationContextRef,
         auditTrailRef: auditTrailRefFor(run),
         createdBy: run.actorId,
         createdAt: run.issuedAt,
@@ -2210,12 +2277,17 @@ const stageA2: StageHandlerV1 = async ({ ports, run, state }) => {
       boundAt: run.issuedAt,
     });
     const forecast = await ports.responseLifecycle.forecastResponse({
-      commandId: actionIdFor(run, "A2"),
-      idempotencyKey: actionIdFor(run, "A2"),
+      commandId: actionIdFor(run, "A2:forecast"),
+      idempotencyKey: actionIdFor(run, "A2:forecast"),
       projectId: run.projectId,
       actorId: run.actorId,
       issuedAt: run.issuedAt,
-      authorization: run.authorization,
+      authorization: await downstreamAuthorizationFor({
+        ports,
+        run,
+        branch: "warning-response.adopt-recommendation",
+        invocationId: actionIdFor(run, "A2:forecast"),
+      }),
       payload: {
         binding,
         forecastInputSnapshotRef: entry.entrySnapshotRef.responseForecastInputSnapshotRef,
@@ -2331,12 +2403,17 @@ const stageA2: StageHandlerV1 = async ({ ports, run, state }) => {
     }
     const deviation = await ports.responseLifecycle.calculateDeviation({
       kind: "calculate-deviation",
-      commandId: actionIdFor(run, "A2"),
-      idempotencyKey: actionIdFor(run, "A2"),
+      commandId: actionIdFor(run, "A2:deviation"),
+      idempotencyKey: actionIdFor(run, "A2:deviation"),
       projectId: run.projectId,
       actorId: run.actorId,
       issuedAt: run.issuedAt,
-      authorization: run.authorization,
+      authorization: await downstreamAuthorizationFor({
+        ports,
+        run,
+        branch: "warning-response.calculate-deviation",
+        invocationId: actionIdFor(run, "A2:deviation"),
+      }),
       payload: {
         effectForecastRef: forecastRef,
         feedbackRef,
@@ -2467,12 +2544,17 @@ const stageA2: StageHandlerV1 = async ({ ports, run, state }) => {
           )
         : {
             kind: "reassessment",
-            commandId: actionIdFor(run, "A2"),
-            idempotencyKey: actionIdFor(run, "A2"),
+            commandId: actionIdFor(run, "A2:prepare"),
+            idempotencyKey: actionIdFor(run, "A2:prepare"),
             projectId: run.projectId,
             actorId: run.actorId,
             issuedAt: run.issuedAt,
-            authorization: run.authorization,
+            authorization: await downstreamAuthorizationFor({
+              ports,
+              run,
+              branch: "risk-assessment.reassessment",
+              invocationId: actionIdFor(run, "A2:prepare"),
+            }),
             payload: {
               preparationSnapshotRef,
               assessmentBasisReleaseSetRef: basisReleaseSetRef,
@@ -2485,12 +2567,17 @@ const stageA2: StageHandlerV1 = async ({ ports, run, state }) => {
       : run.entryMode === "historical-backfill"
         ? {
             kind: "historical-backfill",
-            commandId: actionIdFor(run, "A2"),
-            idempotencyKey: actionIdFor(run, "A2"),
+            commandId: actionIdFor(run, "A2:prepare"),
+            idempotencyKey: actionIdFor(run, "A2:prepare"),
             projectId: run.projectId,
             actorId: run.actorId,
             issuedAt: run.issuedAt,
-            authorization: run.authorization,
+            authorization: await downstreamAuthorizationFor({
+              ports,
+              run,
+              branch: "risk-assessment.historical-backfill",
+              invocationId: actionIdFor(run, "A2:prepare"),
+            }),
             payload: {
               preparationSnapshotRef,
               assessmentBasisReleaseSetRef: basisReleaseSetRef,
@@ -2499,12 +2586,17 @@ const stageA2: StageHandlerV1 = async ({ ports, run, state }) => {
           }
         : {
             kind: "initial",
-            commandId: actionIdFor(run, "A2"),
-            idempotencyKey: actionIdFor(run, "A2"),
+            commandId: actionIdFor(run, "A2:prepare"),
+            idempotencyKey: actionIdFor(run, "A2:prepare"),
             projectId: run.projectId,
             actorId: run.actorId,
             issuedAt: run.issuedAt,
-            authorization: run.authorization,
+            authorization: await downstreamAuthorizationFor({
+              ports,
+              run,
+              branch: "risk-assessment.initial",
+              invocationId: actionIdFor(run, "A2:prepare"),
+            }),
             payload: {
               preparationSnapshotRef,
               assessmentBasisReleaseSetRef: basisReleaseSetRef,
@@ -2577,12 +2669,17 @@ const stageA3: StageHandlerV1 = async ({ ports, run, state }) => {
       );
     }
     const preparedInput = await ports.calibration.prepareInput({
-      requestId: actionIdFor(run, "A3"),
-      idempotencyKey: actionIdFor(run, "A3"),
+      requestId: calibrationInputActionIdFor(run),
+      idempotencyKey: calibrationInputActionIdFor(run),
       requestedAt: run.issuedAt,
       projectId: run.projectId,
       actorId: run.actorId,
-      authorization: run.authorization,
+      authorization: await downstreamAuthorizationFor({
+        ports,
+        run,
+        branch: "warning-response.create-calibration-suggestion",
+        invocationId: calibrationInputActionIdFor(run),
+      }),
       deviationFactRef: await deviationFactRefFor({ ports, run, occurredAt }),
       basisReleaseSetRef,
       targetReleaseRef: policy.targetReleaseRef,
@@ -2686,12 +2783,17 @@ const stageA4: StageHandlerV1 = async ({ ports, run, state }) => {
       );
     }
     const preparedInput = await ports.calibration.prepareInput({
-      requestId: actionIdFor(run, "A3"),
-      idempotencyKey: actionIdFor(run, "A3"),
+      requestId: calibrationInputActionIdFor(run),
+      idempotencyKey: calibrationInputActionIdFor(run),
       requestedAt: run.issuedAt,
       projectId: run.projectId,
       actorId: run.actorId,
-      authorization: run.authorization,
+      authorization: await downstreamAuthorizationFor({
+        ports,
+        run,
+        branch: "warning-response.create-calibration-suggestion",
+        invocationId: calibrationInputActionIdFor(run),
+      }),
       deviationFactRef: await deviationFactRefFor({ ports, run, occurredAt }),
       basisReleaseSetRef,
       targetReleaseRef: policy.targetReleaseRef,
@@ -2705,7 +2807,7 @@ const stageA4: StageHandlerV1 = async ({ ports, run, state }) => {
     }
     const task = await ports.calibrationAgent.ensureTask({
       run,
-      actionId: actionIdFor(run, "A4"),
+      actionId: actionIdFor(run, "A4:calibration-agent-task"),
       frozenInputRef: preparedInput.result.frozenInputRef,
       inputSnapshotRef: preparedInput.result.inputSnapshotRef,
       deviationRecordRef: preparedInput.result.deviationRecordRef,
@@ -2737,12 +2839,17 @@ const stageA4: StageHandlerV1 = async ({ ports, run, state }) => {
     }
     const suggestion = await ports.calibration.createSuggestion({
       kind: "create-calibration-suggestion",
-      commandId: actionIdFor(run, "A4"),
-      idempotencyKey: actionIdFor(run, "A4"),
+      commandId: actionIdFor(run, "A4:calibration-suggestion"),
+      idempotencyKey: actionIdFor(run, "A4:calibration-suggestion"),
       projectId: run.projectId,
       actorId: run.actorId,
       issuedAt: run.issuedAt,
-      authorization: run.authorization,
+      authorization: await downstreamAuthorizationFor({
+        ports,
+        run,
+        branch: "warning-response.create-calibration-suggestion",
+        invocationId: actionIdFor(run, "A4:calibration-suggestion"),
+      }),
       payload: {
         deviationRecordRef: preparedInput.result.deviationRecordRef,
         agentTaskResultRef: task.agentTaskResultRef,
@@ -2872,12 +2979,17 @@ const stageA6: StageHandlerV1 = async ({ ports, run, state }) => {
   const policies = await runtimePoliciesFor({ ports, run, state, stage: "A6" });
   const opened = await ports.warning.open({
     kind: "open",
-    commandId: actionIdFor(run, "A6"),
-    idempotencyKey: actionIdFor(run, "A6"),
+    commandId: actionIdFor(run, "A6:warning-open"),
+    idempotencyKey: actionIdFor(run, "A6:warning-open"),
     projectId: run.projectId,
     actorId: run.actorId,
     issuedAt: run.issuedAt,
-    authorization: run.authorization,
+    authorization: await downstreamAuthorizationFor({
+      ports,
+      run,
+      branch: "warning-response.open",
+      invocationId: actionIdFor(run, "A6:warning-open"),
+    }),
     payload: {
       assessmentRecordRef,
       warningAggregationPolicyRef: policies.warningAggregationPolicyRef,
@@ -3006,7 +3118,12 @@ const stageA7: StageHandlerV1 = async ({ ports, run, state }) => {
     projectId: run.projectId,
     actorId: run.actorId,
     requestedAt: run.issuedAt,
-    authorization: run.authorization,
+    authorization: await downstreamAuthorizationFor({
+      ports,
+      run,
+      branch: "knowledge-modeling.measure-candidates",
+      invocationId: actionIdFor(run, "A7:measure-candidates"),
+    }),
     kind: "measure-candidates",
     payload: { assessmentRecordRef, warningResponseTaskRef, measureLibraryReleaseRef },
   });
@@ -3037,7 +3154,7 @@ const stageA7: StageHandlerV1 = async ({ ports, run, state }) => {
   const queryResultRef = query.result.knowledgeQueryResultRef;
   const task = await ports.recommendationAgent.ensureTask({
     run,
-    actionId: actionIdFor(run, "A7"),
+    actionId: actionIdFor(run, "A7:recommendation-agent-task"),
     queryResultRef,
     warningResponseTaskRef,
     responseGenerationPolicyRef: policies.responseGenerationPolicyRef,
@@ -3070,12 +3187,17 @@ const stageA7: StageHandlerV1 = async ({ ports, run, state }) => {
   }
   const created = await ports.recommendation.createCandidate({
     kind: "create-candidate",
-    commandId: actionIdFor(run, "A7"),
-    idempotencyKey: actionIdFor(run, "A7"),
+    commandId: actionIdFor(run, "A7:recommendation-candidate"),
+    idempotencyKey: actionIdFor(run, "A7:recommendation-candidate"),
     projectId: run.projectId,
     actorId: run.actorId,
     issuedAt: run.issuedAt,
-    authorization: run.authorization,
+    authorization: await downstreamAuthorizationFor({
+      ports,
+      run,
+      branch: "warning-response.create-candidate",
+      invocationId: actionIdFor(run, "A7:recommendation-candidate"),
+    }),
     payload: {
       warningResponseTaskRef,
       measureCandidateQueryResultRef: queryResultRef,
@@ -3146,12 +3268,17 @@ const stageA8: StageHandlerV1 = async ({ ports, run, state }) => {
   const policies = await runtimePoliciesFor({ ports, run, state, stage: "A8" });
   const recorded = await ports.recommendation.validateAndRecord({
     kind: "validate-and-record",
-    commandId: actionIdFor(run, "A8"),
-    idempotencyKey: actionIdFor(run, "A8"),
+    commandId: actionIdFor(run, "A8:recommendation-record"),
+    idempotencyKey: actionIdFor(run, "A8:recommendation-record"),
     projectId: run.projectId,
     actorId: run.actorId,
     issuedAt: run.issuedAt,
-    authorization: run.authorization,
+    authorization: await downstreamAuthorizationFor({
+      ports,
+      run,
+      branch: "warning-response.validate-and-record",
+      invocationId: actionIdFor(run, "A8:recommendation-record"),
+    }),
     payload: {
       recommendationCandidateRef,
       responseValidationPolicyRef: policies.responseValidationPolicyRef,
@@ -3416,14 +3543,22 @@ const evaluateForRun = async (input: {
       }),
     );
   }
+  const evaluateActionId = actionIdFor(input.run, "evaluate");
   const evaluated = await input.ports.riskAssessment.evaluate({
     kind: "evaluate",
-    commandId: actionIdFor(input.run, "evaluate"),
-    idempotencyKey: actionIdFor(input.run, "evaluate"),
+    // 评估身份按运行固定：A3 与 A4 共用它重放同一次确定性评估，重复调用应命中同一回执
+    // 而不是另起一次评估。命令身份与 A3 阶段提交分列，避免撞 `command_receipts` 唯一约束。
+    commandId: evaluateActionId,
+    idempotencyKey: evaluateActionId,
     projectId: input.run.projectId,
     actorId: input.run.actorId,
     issuedAt: input.run.issuedAt,
-    authorization: input.run.authorization,
+    authorization: await downstreamAuthorizationFor({
+      ports: input.ports,
+      run: input.run,
+      branch: "risk-assessment.evaluate",
+      invocationId: evaluateActionId,
+    }),
     payload: { assessmentInputSnapshotRef },
   });
   if (evaluated.kind === "waiting") {
@@ -3454,6 +3589,7 @@ const deviationFactRefFor = async (input: {
   readonly run: AssessmentGraphRunContextV1;
   readonly occurredAt: string;
 }): Promise<{ readonly kind: "response-deviation-fact"; readonly reference: VersionReference }> => {
+  const actionId = actionIdFor(input.run, "A3:deviation");
   const forecastRef = optionalFrozenRef({
     run: input.run,
     kind: "effect-forecast",
@@ -3473,12 +3609,19 @@ const deviationFactRefFor = async (input: {
   }
   const deviation = await input.ports.responseLifecycle.calculateDeviation({
     kind: "calculate-deviation",
-    commandId: actionIdFor(input.run, "A2"),
-    idempotencyKey: actionIdFor(input.run, "A2"),
+    commandId: actionId,
+    idempotencyKey: actionId,
     projectId: input.run.projectId,
     actorId: input.run.actorId,
     issuedAt: input.run.issuedAt,
-    authorization: input.run.authorization,
+    // 重放也是一次独立的领域动作：按偏差分支与 A3 动作身份另签，不沿用只带 `workflow.start`
+    // 的运行上下文——那是入口能力，直传下游会在 C28 的能力校验处关闭失败。
+    authorization: await downstreamAuthorizationFor({
+      ports: input.ports,
+      run: input.run,
+      branch: "warning-response.calculate-deviation",
+      invocationId: actionId,
+    }),
     payload: {
       effectForecastRef: forecastRef,
       feedbackRef: requiredFrozenRef({

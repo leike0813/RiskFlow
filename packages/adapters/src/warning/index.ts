@@ -12,6 +12,7 @@ export {
   type C28ReadResultV1,
   type C29CalibrationViewResultV1,
   type C29CalibrationViewV1,
+  type C29DeviationRecordResultV1,
   type LifecycleReadInputV1,
   type PostgresWarningLifecycleAdapterOptionsV1,
   type RecommendationReadViewInputV1,

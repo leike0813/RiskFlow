@@ -763,6 +763,7 @@ export class PostgresHumanDecisionFeedbackAdapter
         state: "adopted",
         routeDecisionRef: input.routeDecisionRef,
         forecastRunRef: input.forecastRunRef,
+        waitStateVersion: input.waitStateVersion,
       });
       const receiptCommandId = `${stored.commandId}:c41-commit-adoption`;
       const receiptIdempotencyKey = `${input.decisionRef.entityId}:${input.decisionRef.versionId}:commit-adoption`;
@@ -828,7 +829,8 @@ export class PostgresHumanDecisionFeedbackAdapter
         committed.routeDecisionRef === undefined ||
         !sameVersionRef(committed.routeDecisionRef.reference, input.routeDecisionRef.reference) ||
         committed.forecastRunRef === undefined ||
-        !sameVersionRef(committed.forecastRunRef.reference, input.forecastRunRef.reference)
+        !sameVersionRef(committed.forecastRunRef.reference, input.forecastRunRef.reference) ||
+        committed.waitStateVersion !== input.waitStateVersion
       ) {
         failHumanDecisionFeedback("human-decision-feedback-decision-conflict", "idempotency");
       }
@@ -1032,6 +1034,10 @@ export class PostgresHumanDecisionFeedbackAdapter
         ...stored,
         state: "committed",
         committedAt: input.committedAt,
+        // 预测随提交落库：分段启动失败后由同一命令身份重试，仍冻结同一条真实预测。
+        ...(input.effectForecastRef === undefined
+          ? {}
+          : { effectForecastRef: input.effectForecastRef }),
       });
       const receiptCommandId = `${stored.commandId}:c41-mark-snapshot-committed`;
       const receiptIdempotencyKey = `${stored.feedbackInputSnapshotRef.reference.entityId}:committed`;

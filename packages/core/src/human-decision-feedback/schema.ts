@@ -13,6 +13,7 @@ import {
 } from "@riskflow/contracts/common";
 import {
   AuditTrailRefV1Schema,
+  EffectForecastRefV1Schema,
   ExecutionRecordRefV1Schema,
   ModuleErrorV1Schema,
   ResponseRecommendationRefV1Schema,
@@ -68,6 +69,12 @@ export const HumanResponseDecisionV1Schema = z
     /** 采纳成立后固定的真实 C30 路由决定引用（与 C28 决定同身份）。 */
     routeDecisionRef: RouteDecisionRefV1Schema.optional(),
     forecastRunRef: WorkflowRunRefV1Schema.optional(),
+    /**
+     * 与绑定同值的等待点运行状态版本（drift design D-03）：恢复按这份冻结值提交，
+     * 不在恢复点重新读取运行状态。与 `forecastRunRef.reference.versionId` 语义不同，
+     * 可选只为历史决定可读；缺失按失败闭合处理。
+     */
+    waitStateVersion: IdentifierSchema.optional(),
     /** 恢复完成时点：中断的恢复由同一命令身份补齐，缺失即表示尚未推进等待运行（design D2）。 */
     resumedAt: IsoDateTimeSchema.optional(),
   })
@@ -135,6 +142,11 @@ export const HumanFeedbackInputSnapshotRowV1Schema = z.strictObject({
   committedAt: IsoDateTimeSchema.optional(),
   /** 反馈分段启动时点：启动失败由同一命令身份重试，缺失即表示该段尚未启动（design D4）。 */
   segmentStartedAt: IsoDateTimeSchema.optional(),
+  /**
+   * C28 记录反馈时解析出的真实效果预测：反馈分段据此冻结预测，A2/A3 才能核对偏差并驱动校准。
+   * 预测不可用时缺席，分段按既有 `effect-forecast-missing` 语义跳过支路，不得补造预测。
+   */
+  effectForecastRef: EffectForecastRefV1Schema.optional(),
   auditTrailRef: AuditTrailRefV1Schema,
 });
 export type HumanFeedbackInputSnapshotRowV1 = z.infer<typeof HumanFeedbackInputSnapshotRowV1Schema>;

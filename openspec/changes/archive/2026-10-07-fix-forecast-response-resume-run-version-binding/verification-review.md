@@ -1,5 +1,7 @@
 # 当前工作树核验：预测恢复等待点版本绑定
 
+> 历史工作树核验记录。修复现已提交为 `c54e3dc995e2500c2408cfd7450a571819b1750b`，正式结论与当前流程状态以 [verification.md](verification.md) 为准。
+
 日期：2026-10-07。输入 HEAD：`8855c23b8d6616d208d9b1b24e4b86cb3e3780e5`；对象为该 HEAD 与本轮未提交的关联修复。本文不冒充正式固定检查点 verification。
 
 ## 结论
@@ -26,10 +28,10 @@ C34 页面先前仅接受 succeeded，合法 waiting 结果被客户端错误解
 
 ## 验证
 
-- 18 文件定向核心/适配器/Worker 回归 322 通过，包含 module-interfaces waiting 契约、C30/C41/C28 与两个 Worker 组合根；完整命令见 [C34 工作树报告](../deliver-assessment-warning-and-response-ui/verification-review.md)。
+- 18 文件定向核心/适配器/Worker 回归 322 通过，包含 module-interfaces waiting 契约、C30/C41/C28 与两个 Worker 组合根；完整命令见 [C34 工作树报告](../2026-10-07-deliver-assessment-warning-and-response-ui/verification-review.md)。
 - 最终 C25/C30 回归 3 文件 74 通过，覆盖冻结等待点绑定、完成证明、授权与最新运行读面。
 - 最终真实浏览器完整回归 68 通过、0 失败（零重试，8.2m）；混合触发与单独风险等级都经三项约束、正式建议、人工采纳及原预测运行恢复，并在 UI 完成执行/反馈、偏差/校准及真实批准后的未发布草案。没有修改默认风险接受阈值规避失败。
 - heap 12GB 类型检查、前后端构建、lint、格式、依赖边界/策略、本 change strict 校验通过。
 - 本轮已进行一次权限/关键运行状态限定审计；没有改变等待门或用最新状态恢复。
 
-当前工作树没有已知未解决的本轮行为问题。归档、返回 C34 勾选及正式 verification 的固定检查点前置仍未完成；完整命令、修复清单与结果见 [C34 工作树报告](../deliver-assessment-warning-and-response-ui/verification-review.md)，不据历史 tasks 中的旧数量自动归档。
+当前工作树没有已知未解决的本轮行为问题。归档、返回 C34 勾选及正式 verification 的固定检查点前置仍未完成；完整命令、修复清单与结果见 [C34 工作树报告](../2026-10-07-deliver-assessment-warning-and-response-ui/verification-review.md)，不据历史 tasks 中的旧数量自动归档。

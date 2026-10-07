@@ -30,4 +30,4 @@
 ## 7. 收口
 
 - [x] 7.1 实施全部 IP-ID：运行 `NODE_OPTIONS=--max-old-space-size=12288 npx tsc -b packages/core packages/adapters apps/worker`、`pnpm lint`、`pnpm format:check`、`pnpm typecheck`、`pnpm deps:check`、`pnpm deps:policy`、`pnpm openspec:validate`、`openspec validate fix-forecast-response-resume-run-version-binding --strict --no-interactive`；在实现检查点后移交 Finalizer 填 `verification.md`，实现阶段不提前生成。
-- [ ] 7.2 本 change 归档后回到 C34：重新评估并勾选 4.1/4.2/4.4，并按其 4.3 汇总证据；不得在本 change 内提前勾选 C34 任务。
+- [x] 7.2 本 change 归档后回到 C34：重新评估并勾选 4.1/4.2/4.4，并按其 4.3 汇总证据；不得在本 change 内提前勾选 C34 任务。

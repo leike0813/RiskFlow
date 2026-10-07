@@ -1,5 +1,7 @@
 # 当前工作树核验：运行完成证明授权覆盖
 
+> 历史工作树核验记录。修复现已提交为 `c54e3dc995e2500c2408cfd7450a571819b1750b`，正式结论与当前流程状态以 [verification.md](verification.md) 为准。
+
 日期：2026-10-07。输入 HEAD：`8855c23b8d6616d208d9b1b24e4b86cb3e3780e5`；核验对象包含本次未提交修复。本文为工作树报告，不能作为正式固定检查点 verification。
 
 ## 结论
@@ -24,7 +26,7 @@
 
 ## 验证
 
-- 18 文件定向核心/适配器/Worker 回归 322 通过，命令见 [C34 工作树报告](../deliver-assessment-warning-and-response-ui/verification-review.md)。
+- 18 文件定向核心/适配器/Worker 回归 322 通过，命令见 [C34 工作树报告](../2026-10-07-deliver-assessment-warning-and-response-ui/verification-review.md)。
 - 最终 C25/C30 回归 3 文件 74 通过，包含本 change 的工程/空间/来源覆盖、绑定、完成证明，以及最新运行结果分页。
 - 最终真实浏览器完整回归 68 通过、0 失败（零重试，8.2m），包含混合触发与单独风险等级的真实预测→UI 执行/反馈→公共偏差→校准→C07 批准→未发布草案；独立行动则保持无预测/无偏差/无校准。
 - heap 12GB 类型检查、前后端构建、lint、格式、依赖边界/策略及本 change strict 校验通过。

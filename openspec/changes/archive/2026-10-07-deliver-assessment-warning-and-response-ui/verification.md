@@ -1,20 +1,32 @@
-# 当前工作树核验：C34
+# Verification
 
-核验日期：2026-10-07。输入 HEAD：`8855c23b8d6616d208d9b1b24e4b86cb3e3780e5`。对象为该 HEAD 加本次未提交修复；本文不是固定实现检查点的正式 `verification.md`。全部浏览器输入为合成样本，待甲方复核。
+## 验收对象
+
+- Change：`deliver-assessment-warning-and-response-ui`
+- 核验日期：2026-10-07
+- 输入实现 HEAD：`c54e3dc995e2500c2408cfd7450a571819b1750b`
+- 最终验收 HEAD：`c54e3dc995e2500c2408cfd7450a571819b1750b`（固定产品实现检查点；后续规格同步、任务勾选和归档提交不改变产品实现）
+- 验收 Agent：Codex，当前连续收尾任务的 Finalizer
+- 验收依据：本 change 的全部 proposal、delta specs、design、implementation-plan、tasks，以及固定产品实现和现有可运行证据。
 
 ## 结论
 
-**工作树行为与回归通过；正式验收/归档 BLOCKED。** 本轮已修复独立行动的真实措施发布读取及无预测反馈，补齐分页、轮询、历史矩阵、独立摘要故障和两类预警完整闭环证据。未发现尚未修复的本轮范围内行为缺陷。tasks 保持 20/24：4.1/4.2/4.4 的行为与证据已成立，但清单明确要求两个 drift 归档后再勾选；4.3 的固定实现检查点与正式 verification 尚未完成。旧任务注释的历史失败与计数不代表最终工作树结果。
+**PASS**。22 项 Requirement、62 项 Scenario 与 IP-01～IP-13 已核对；任务 24/24 完成。真实接缝、权限、事务、版本、人工确认、历史解释与完整闭环均有证据，无未修复的范围内缺陷、必需证据缺口或待执行审计。
 
-| 维度 | 当前结果 |
+两个实现期修复 change 已先完成正式验收、主规格同步和归档，本 change 按其任务 7.2 的顺序重新核对并勾选 4.1/4.2/4.4：
+
+- [运行完成证明授权覆盖](../2026-10-07-fix-workflow-run-completion-proof-authorization-coverage/verification.md)：PASS。
+- [预测恢复等待点版本绑定](../2026-10-07-fix-forecast-response-resume-run-version-binding/verification.md)：PASS。
+
+| 维度 | 验收结果 |
 | --- | --- |
-| 完整性 | 已补齐本轮行为与浏览器证据；正式检查点、verification 和归档前置未完成。 |
-| 正确性 | 下表列出的目录、授权、版本、等待恢复及真实执行/反馈边界通过。 |
-| 一致性 | 复用现有 C04/C06/C16 与拥有方窄读；无新依赖、迁移或公共领域字段。 |
+| 完整性 | 24/24 任务，22 项要求、62 项场景均有实现和证据映射；依赖修复已归档。 |
+| 正确性 | 最终完整浏览器 68/0，最新所属 adapter 回归通过；后端失败与版本边界不由页面猜测。 |
+| 一致性 | 复用所属窄读、C04/C06/C07/C16 和统一 Schema，保留 D-06 授权上限与 D-12 入口事实；无新依赖或迁移。 |
 
-`openspec instructions verification --change deliver-assessment-warning-and-response-ui --json` 要求实现任务完成且收到固定实现检查点后才创建正式工件。当前 HEAD 尚未包含这些修复，因此没有提前创建正式 verification 或勾选归档前置任务。
+## 核验与修复证据
 
-## 核验期修复
+### 核验期修复
 
 | IP-ID / 所属文件 | 问题与修复 |
 | --- | --- |
@@ -35,7 +47,7 @@
 
 来源入口采用精确版本输入而不是自动读取来源全目录；C11 现有 source-catalog 存在全库读取后切页行为，不能借它扩大授权。此处仅声明既有来源，不创建来源或改变 C06 空来源语义。design D-06、D-10 已同步记录入口与不透明游标的实际形状，没有修改领域 delta 的验收条件。
 
-## Requirement / Scenario 证据
+### Requirement / Scenario 证据
 
 下列测试组是可运行证据入口，不能将组内通过机械等同于每个浏览器边界已覆盖。
 
@@ -62,7 +74,7 @@
 | domain/calibration：单能力草案；拒绝退回/错误决定；收口不能返回草案批准；下游撤权/尾事务失败 | IP-07；calibration adapter 回归，真实 C07/C16 browser | 单分支用途签验、真实批准证明、原幂等子身份及未发布草案；仅撤销下游批准证明时零新增，恢复权限后同命令形成一个草案修订。 |
 | platform/http：注入/未注入；契约越界/无权；目录/单分支签发；分别校验治理结果 | IP-01/08；apps/api/http-shell、contracts c34 与 module-interfaces tests | 沿唯一 HTTP route catalog；未增加专用 handler。 |
 
-## 可运行检查与测量
+### 可运行检查与测量
 
 最终命令与结果（测试组存在重叠，不相加为独立总数）：
 
@@ -86,9 +98,27 @@
 
 随后隔离运行发现响应丢失用例的 HTTP 状态/异步正文观察竞态，已在既有用例中修复。该轮主动中止以装载修复，结果为 26 通过、1 失败、1 中断、40 未运行，trace 保留在 `/tmp/riskflow-plan-browser-isolated-final/`，不计为完整通过。最终以同一生产代码、修正后的用例、零重试且不并行运行数据库测试重跑全部场景，上列 final-complete 命令记录最终结果：68 通过、0 失败（8.2m），混合闭环与历史矩阵均通过，前一轮两项失败未复现。
 
+以上检查执行于同一最终产品实现，随后提交为固定检查点 `c54e3dc995e2500c2408cfd7450a571819b1750b`；`git diff --exit-code c54e3dc995e2500c2408cfd7450a571819b1750b -- apps packages demo` 通过，确认提交后没有产品变更。主规格同步保留三个 change 的所有约束及已有未修改场景；归档前运行全部 specs/change 严格校验。最终文档与任务收口不替代上述业务证据。
 
-## 正式流程边界
+## 规格同步与归档检查
 
-本轮只执行一次限定审计（Erdos），父 Agent 已完成其发现及本报告证据缺口的范围内修复与回归；没有再次派发审计。当前工作树没有已知未解决的本轮行为问题。
+8 份受影响主规格已同步；84 条 delta 场景逐项核对，310 条未修改的既有场景保留，共享生命周期同时保留授权覆盖和等待点状态版本规则。`openspec validate --specs --strict --no-interactive` 为 38 通过、0 失败。三个本轮归档 change 均通过严格校验，任务分别为 24/24、9/9、9/9，正式证据链接可解析。
 
-正式 `verification.md` 仍受 OpenSpec 指令约束：“only after implementation tasks are complete and the verification agent has received a fixed implementation checkpoint”。当前 HEAD 不包含未提交修复，用户没有授权 Git 提交或归档，因此没有编造最终 HEAD、提前生成正式工件或归档。两个 drift 的 7.2 和 C34 的收口任务保持待完成，固定检查点及正式验收/归档完成后再依其顺序勾选。
+额外执行 `openspec validate --all --archived --strict --no-interactive --json`：历史归档合计 92 项，88 通过、4 失败；失败仅为下列既有归档任务未勾选，本轮没有修改这些工件，不把该扫描宣称为全库通过。
+
+| 既有归档 change | 未完成任务 |
+| --- | --- |
+| `2026-09-14-deliver-deterministic-risk-assessment` | 2 项（15/17） |
+| `2026-09-20-fix-attempt-numbering-by-group` | 1 项（7/8） |
+| `2026-09-21-fix-dispatch-provisioning-recovery` | 1 项（19/20） |
+| `2026-09-24-deliver-assessment-and-riskflow-graphs` | 5 项（8/13） |
+
+## 限定审计
+
+本收尾轮次唯一一次 Targeted Auditor（Erdos）已经完成。范围为四个新分支的真实 C06 绑定及下游收窄、C29 证明/基准/尾事务、C41 等待采纳与互斥决定、D-12 重评入口身份/原键重试/登记恢复、精确历史读取及不可枚举失败。
+
+发现已由当前 Finalizer 在批准范围内修复，修复详情见上表；对应证据为最终 C25/C30 74、C26 18、C28 31、C29 21 项适配器回归、Worker 重评身份回归及 68 项完整浏览器。审计涉及的权限、事务和关键状态边界通过，无待解决发现或待执行审计。沿用同一收尾任务，没有再次派发审计；主规格同步由当前 Finalizer 完成。
+
+## 后续注意事项
+
+输入为版本化合成样本，待甲方复核。延迟及 DOM 测量是本机观测值，不作为无依据的性能硬门禁。旧失败与中断记录及 trace 保留，最终零重试完整回归为 68/0；没有重新宣称全库单测全部通过。

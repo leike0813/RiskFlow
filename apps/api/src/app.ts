@@ -3,7 +3,11 @@ import { createHash, randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
 
-import { AccessCommandResultV1Schema, type LocalIdentityAccessV1 } from "@riskflow/core/access";
+import {
+  AccessCommandResultV1Schema,
+  type LocalIdentityAccessV1,
+  type SystemAdministrationPortV1,
+} from "@riskflow/core/access";
 import {
   ProjectionQueryV1Schema,
   RunSubscriptionRequestV1Schema,
@@ -23,6 +27,7 @@ import {
   SessionLogoutRequestV1Schema,
   SseQueryRequestV1Schema,
   activeHttpRouteCatalog,
+  asIso,
   assembleCommandRequest,
   assembleQueryRequest,
   authenticationRequired,
@@ -46,6 +51,12 @@ import {
   requestTooLarge,
   unsupportedMediaType,
   type ApiPortsV1,
+  type HttpSystemRouteEntryV1,
+  SystemAdministrationQueryRequestV1Schema,
+  SystemAdministrationCommandRequestV1Schema,
+  toSystemAdministrationQuery,
+  toSystemAdministrationCommand,
+  activeHttpSystemRouteCatalog,
   type HttpAccessLogEntryV1,
   type HttpAccessLogResultCategoryV1,
   type HttpAccessLogV1,
@@ -56,6 +67,7 @@ import {
   type HttpRouteEntryV1,
 } from "./http.js";
 import { SsePolicyV1Schema, normalizeSsePolicy, serveSse, type SsePolicyV1 } from "./sse.js";
+import { SystemOperationsQueryRequestV1Schema } from "./operations.js";
 
 const MAX_HTTP_BODY_BYTES = 1_048_576;
 const REQUEST_ID_HEADER = "x-request-id";
@@ -488,6 +500,109 @@ const accessDeniedCode = (error: unknown): boolean => {
   );
 };
 
+/**
+ * C35 系统面处理（design D-12）：会话 token 一律来自唯一 Cookie；请求体只提供身份与调用
+ * 标识，管理授权上下文由服务端在所属适配器内注入。目录/写入/运维查询都要先拿到 D-10 的
+ * 当前管理证明，拿不到就按拒绝收口，绝不先查目标再判身份。
+ */
+/** D-10 的当前管理证明；普通有效会话只能拿到 `isSystemAdministrator: false`。 */
+const currentSystemAdministrator = async (input: {
+  readonly administration: SystemAdministrationPortV1;
+  readonly sessionToken: string;
+  readonly queryId: string;
+  readonly now: Date;
+}): Promise<boolean> => {
+  const identity = await input.administration.read({
+    kind: "identity",
+    schemaVersion: "1",
+    queryId: input.queryId,
+    requestedAt: asIso(input.now),
+    sessionToken: input.sessionToken,
+  });
+  if (identity.kind === "failed") throw identity.error;
+  // identity 是唯一可能对普通会话成功的目录读，结果族按 kind 收窄。
+  return identity.result.kind === "identity" && identity.result.isSystemAdministrator;
+};
+
+const runSystem = async (input: {
+  readonly entry: HttpSystemRouteEntryV1;
+  readonly request: FastifyRequest;
+  readonly reply: FastifyReply;
+  readonly options: BuildApiOptionsV1;
+  readonly ports: ApiPortsV1;
+  readonly requestId: string;
+  readonly now: Date;
+}): Promise<FastifyReply> => {
+  const token = cookieToken(input.request);
+  const sessionError = sessionFailure(input.reply, token, input.requestId, input.now);
+  if (sessionError !== undefined) return sessionError;
+  const administration = input.ports.systemAdministration;
+  if (administration === undefined)
+    throw new HttpTransportError(notFound(input.requestId, input.now));
+  input.reply.header("cache-control", "no-store");
+  try {
+    if (input.entry.kind === "administration-identity") {
+      // 无请求体：身份查询只需要 Cookie 会话与这次调用的标识。
+      const identity = await administration.read({
+        kind: "identity",
+        schemaVersion: "1",
+        queryId: input.requestId,
+        requestedAt: asIso(input.now),
+        sessionToken: token as string,
+      });
+      return input.reply.code(200).type(HTTP_JSON_MEDIA_TYPE_V1).send(identity);
+    }
+    if (input.entry.kind === "administration-queries") {
+      const body = SystemAdministrationQueryRequestV1Schema.parse(input.request.body);
+      const result = await administration.read(toSystemAdministrationQuery(body, token as string));
+      // 端口以 failed 信封表达拒绝/失败：沿既有安全错误映射，无权与不存在同形，
+      // 不把授权失败包装成 HTTP 200（design D-10/D-12）。
+      if (result.kind === "failed")
+        return responseFailure(
+          input.reply,
+          mapHttpError({ error: result.error, requestId: input.requestId, now: input.now }),
+        );
+      return input.reply.code(200).type(HTTP_JSON_MEDIA_TYPE_V1).send(result);
+    }
+    if (input.entry.kind === "administration-commands") {
+      const body = SystemAdministrationCommandRequestV1Schema.parse(input.request.body);
+      const result = await administration.execute(
+        toSystemAdministrationCommand(body, token as string),
+      );
+      if (result.kind === "failed")
+        return responseFailure(
+          input.reply,
+          mapHttpError({ error: result.error, requestId: input.requestId, now: input.now }),
+        );
+      return input.reply.code(200).type(HTTP_JSON_MEDIA_TYPE_V1).send(result);
+    }
+    const operations = input.ports.systemOperationsRead;
+    if (operations === undefined)
+      throw new HttpTransportError(notFound(input.requestId, input.now));
+    // 系统管理没有对应的业务能力位：与业务路由同样按 NOT_FOUND 收口，
+    // 既拒绝未授权者，也不披露系统对象是否存在（design D-10）。
+    if (
+      !(await currentSystemAdministrator({
+        administration,
+        sessionToken: token as string,
+        queryId: input.requestId,
+        now: input.now,
+      }))
+    )
+      throw new HttpTransportError(notFound(input.requestId, input.now));
+    const body = SystemOperationsQueryRequestV1Schema.parse(input.request.body);
+    return input.reply
+      .code(200)
+      .type(HTTP_JSON_MEDIA_TYPE_V1)
+      .send(await operations.read(body));
+  } catch (error) {
+    return responseFailure(
+      input.reply,
+      mapHttpError({ error, requestId: input.requestId, now: input.now }),
+    );
+  }
+};
+
 export const buildApi = (options: BuildApiOptionsV1): FastifyInstance => {
   const publicOrigin = parsePublicOrigin(options.publicOrigin);
   const ports = options.ports ?? {};
@@ -622,6 +737,24 @@ export const buildApi = (options: BuildApiOptionsV1): FastifyInstance => {
       return responseFailure(reply, mapHttpError({ error, requestId, now }));
     }
   });
+
+  // 会话、自省与 openapi 已有各自的专用处理；这里只注册 C35 新增的四条系统面路由。
+  for (const entry of activeHttpSystemRouteCatalog(ports).filter(
+    (candidate) => candidate.activationPortKeys !== undefined,
+  )) {
+    const handler = (request: FastifyRequest, reply: FastifyReply) =>
+      runSystem({
+        entry,
+        request,
+        reply,
+        options,
+        ports,
+        requestId: requestIdFor(request, generateId),
+        now: requestNow(clock),
+      });
+    if (entry.method === "GET") app.get(entry.path, handler);
+    else app.post(entry.path, handler);
+  }
 
   for (const entry of activeHttpRouteCatalog(ports)) {
     app.post(entry.path, (request, reply) =>

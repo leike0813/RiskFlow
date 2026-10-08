@@ -13,6 +13,13 @@ import {
   prepareAgentTaskStart,
   reserveAgentBudget,
   settleAgentBudget,
+  AgentActionEntryV1Schema,
+  AgentLaunchContextV1Schema,
+  AgentProposalSummaryV1Schema,
+  AgentTaskDetailV1Schema,
+  AgentTaskReadQueryV1Schema,
+  AgentValidationCheckEntryV1Schema,
+  AgentValidationPageV1Schema,
   type AgentTaskDefinitionV1,
   type AgentTaskSnapshotV1,
   type AgentTaskStoreV1,
@@ -397,5 +404,193 @@ describe("agent runtime core", () => {
     expect(result.kind).toBe("succeeded");
     if (result.kind === "succeeded")
       expect(result.result.agentTaskRef).toEqual(snapshot?.envelope.agentTaskRef);
+  });
+});
+
+describe("C35 Agent 任务只读投影契约", () => {
+  const readAuthorization = {
+    ...authorization,
+    grantedCapabilities: ["agent-task.read" as const],
+  };
+  const readQueryBase = {
+    queryId: "query-1",
+    projectId: "project-1",
+    actorId: "actor-1",
+    requestedAt: "2030-01-01T00:00:00.000Z",
+    authorization: readAuthorization,
+  };
+  const taskDefinition = definition("data-cleaning");
+  const prepared = prepareAgentTaskStart(startCommand, taskDefinition, "2030-01-01T00:00:00.000Z");
+
+  it("详情按原预算策略与台账整体引用，不合并成虚构总上限", () => {
+    const detail = {
+      kind: "detail",
+      summary: {
+        agentTaskRef: prepared.taskRef,
+        status: "pending",
+        taskVersion: 1,
+        initiatorActorId: "actor-1",
+        parentRunRef: startCommand.payload.parentRunRef,
+        frozenInputRef: startCommand.payload.frozenInputRef,
+        createdAt: "2030-01-01T00:00:00.000Z",
+        updatedAt: "2030-01-01T00:00:00.000Z",
+      },
+      budget: { policy: prepared.budgetPolicy, ledger: prepared.budgetLedger },
+      actions: [
+        { branch: "agent-task.cancel-task", availability: "allowed" },
+        { branch: "agent-task.confirm-command", availability: "business-unavailable", reasonCode: "NO_PROPOSAL" },
+      ],
+    };
+    const parsed = AgentTaskDetailV1Schema.safeParse(detail);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    // 原上限字段逐项保留；台账的 used/reserved/墙钟/并发原样呈现。
+    expect(parsed.data.budget.policy.maxContextTokens).toBe(100);
+    expect(parsed.data.budget.policy.maxInputTokens).toBeUndefined();
+    expect(parsed.data.budget.ledger.currentConcurrency).toBe(0);
+    expect(parsed.data.summary.taskVersion).toBe(1);
+  });
+
+  it("提案摘要只允许可确认字段，命令工件引用不得泄露", () => {
+    const base = {
+      commandProposalRef: { kind: "command-proposal" as const, reference: ref("proposal-1") },
+      taskRef: prepared.taskRef,
+      targetRef: { kind: "project-revision" as const, reference: ref("project-revision-1") },
+      expectedTargetVersion: ref("project-revision-2"),
+      expectedEffect: "publish-knowledge-release",
+      externalEffects: ["business-write" as const],
+      proposedAt: "2030-01-01T00:00:00.000Z",
+    };
+    expect(AgentProposalSummaryV1Schema.safeParse(base).success).toBe(true);
+    expect(
+      AgentProposalSummaryV1Schema.safeParse({
+        ...base,
+        commandArtifactRef: artifact("content-artifact", "command-1"),
+      }).success,
+    ).toBe(false);
+    expect(
+      AgentProposalSummaryV1Schema.safeParse({ ...base, commandIdempotencyKey: "idem-1" }).success,
+    ).toBe(false);
+  });
+
+  it("安全行动只暴露引用与实际用量，不返回租约、命令正文或模型输出", () => {
+    const entry = {
+      actionId: "action-1",
+      sequence: 0,
+      actionType: "domain-tool",
+      status: "completed",
+      intentArtifactRef: artifact("content-artifact", "intent-1"),
+      resultRef: contractRef("knowledge-revision", "revision-1"),
+      usage: emptyAgentBudgetUsage(),
+      recordedAt: "2030-01-01T00:00:00.000Z",
+    };
+    expect(AgentActionEntryV1Schema.safeParse(entry).success).toBe(true);
+    for (const leak of ["leaseToken", "modelOutput", "intentBody", "observationBody"]) {
+      expect(AgentActionEntryV1Schema.safeParse({ ...entry, [leak]: "secret" }).success).toBe(false);
+    }
+  });
+
+  it("逐项校验分页按原数组顺序稳定收口并受页上限约束", () => {
+    const check = (index: number) => ({
+      checkId: `check-${index}`,
+      disposition: "accepted" as const,
+      reasonCode: "REASON-1",
+      evidenceReferences: [],
+    });
+    const page = {
+      kind: "validation",
+      agentTaskRef: prepared.taskRef,
+      candidateVersion: 1,
+      items: [check(0), check(1)],
+    };
+    expect(AgentValidationPageV1Schema.safeParse(page).success).toBe(true);
+    expect(
+      AgentValidationPageV1Schema.safeParse({
+        ...page,
+        items: Array.from({ length: 51 }, (_unused, index) => check(index)),
+      }).success,
+    ).toBe(false);
+    // 逐项投影的处置取值闭合在原 C08 枚举内，不接受自由结论。
+    for (const disposition of ["accepted", "rejected"] as const) {
+      expect(
+        AgentValidationCheckEntryV1Schema.safeParse({
+          checkId: "check-x",
+          disposition,
+          reasonCode: "REASON-1",
+          evidenceReferences: [],
+        }).success,
+      ).toBe(true);
+    }
+    expect(
+      AgentValidationCheckEntryV1Schema.safeParse({
+        checkId: "check-x",
+        disposition: "maybe",
+        reasonCode: "REASON-1",
+        evidenceReferences: [],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("启动上下文只在定义支持交互且输入真实时回送完整原载荷", () => {
+    const payload = {
+      taskType: "data-cleaning",
+      triggerMode: "interactive",
+      parentRunRef: startCommand.payload.parentRunRef,
+      frozenInputRef: startCommand.payload.frozenInputRef,
+      modelDeploymentRef: startCommand.payload.modelDeploymentRef,
+      promptTemplateRef: startCommand.payload.promptTemplateRef,
+      toolPolicyRef: startCommand.payload.toolPolicyRef,
+      budgetPolicyRef: startCommand.payload.budgetPolicyRef,
+      incrementSchemaRef: startCommand.payload.incrementSchemaRef,
+      validationPolicyRef: startCommand.payload.validationPolicyRef,
+    };
+    expect(AgentLaunchContextV1Schema.safeParse({ supported: true, payload }).success).toBe(true);
+    expect(
+      AgentLaunchContextV1Schema.safeParse({ supported: false, reasonCode: "DEFINITION_EMBEDDED_ONLY" })
+        .success,
+    ).toBe(true);
+    // 不支持时不得附带半份载荷；支持时不得省略冻结输入。
+    expect(
+      AgentLaunchContextV1Schema.safeParse({ supported: false, reasonCode: "X", payload }).success,
+    ).toBe(false);
+    expect(
+      AgentLaunchContextV1Schema.safeParse({
+        supported: true,
+        payload: { ...payload, frozenInputRef: undefined },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("窄读分支只读不改写动作语义：缺 agent-task.read 的信封失败关闭", () => {
+    expect(
+      AgentTaskReadQueryV1Schema.safeParse({
+        ...readQueryBase,
+        kind: "detail",
+        payload: { agentTaskRef: prepared.taskRef },
+      }).success,
+    ).toBe(true);
+    expect(
+      AgentTaskReadQueryV1Schema.safeParse({
+        ...readQueryBase,
+        authorization: { ...readAuthorization, grantedCapabilities: ["agent-task.start"] },
+        kind: "detail",
+        payload: { agentTaskRef: prepared.taskRef },
+      }).success,
+    ).toBe(false);
+    // 跨工程与伪造身份在解析期即被拒绝。
+    expect(
+      AgentTaskReadQueryV1Schema.safeParse({
+        ...readQueryBase,
+        projectId: "project-2",
+        kind: "list",
+        payload: {},
+      }).success,
+    ).toBe(false);
+    // 只读面不提供任何写入口：启动/取消/确认不在 read 联合内。
+    for (const kind of ["start-task", "cancel-task", "confirm-command"]) {
+      expect(
+        AgentTaskReadQueryV1Schema.safeParse({ ...readQueryBase, kind, payload: {} }).success,
+      ).toBe(false);
+    }
   });
 });

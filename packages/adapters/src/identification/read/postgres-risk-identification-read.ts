@@ -20,6 +20,7 @@ import { authorizationScopeDigest } from "@riskflow/core/retrieval";
 import type { JsonValue } from "@riskflow/core/persistence";
 import {
   MODULE_BRANCH_CAPABILITY_V1,
+  IdentificationCandidateSetRefV1Schema,
   ModuleErrorV1Schema,
   ReviewDecisionRefV1Schema,
   RiskIdentificationReadQueryV1Schema,
@@ -30,6 +31,7 @@ import {
   WorkflowRunRefV1Schema,
   type AgentTaskRefV1,
   type AuthorizationContextV1,
+  type IdentificationCandidateSetRefV1,
   type IdentificationRunStageV1,
   type ModuleBranchV1,
   type ModuleErrorV1,
@@ -72,6 +74,7 @@ const RUN_READ_BOUNDS_V1 = {
   reviewTaskRefs: 64,
   acceptedRiskRecordRefs: 500,
   groupRefs: 256,
+  revisedCandidateRefs: 256,
 } as const;
 
 /** 识别工作流错误引用身份前缀（apps/worker 识别图写侧的确定性派生格式），只用于解析失败阶段事实。 */
@@ -120,13 +123,17 @@ interface IdentificationGraphResultDbRow {
   audit_entry_id: string;
 }
 
-interface AcceptanceRouteSetDbRow {
+/** C22 追加登记表的只读行形状：同一张表承载八类中间结果，本读接缝只消费其中两类。 */
+interface FinalizationResultDbRow {
   project_id: string;
   result_kind: string;
   result_id: string;
   result_version_id: string;
   artifact_ref: JsonValue;
   authorization_scope_digest: string;
+  work_item_ref: JsonValue | null;
+  candidate_set_ref: JsonValue | null;
+  persisted_at: TimestampColumn;
 }
 
 interface StandardizedRiskRecordDbRow {
@@ -151,7 +158,7 @@ interface StandardizedRiskRecordDbRow {
 /** 局部交集扩展 Kysely 类型，不改动 C03 公共 `PostgresDatabase` 定义。 */
 type RiskIdentificationReadDatabaseV1 = PostgresDatabase & {
   "business.identification_graph_results": IdentificationGraphResultDbRow;
-  "business.identification_finalization_results": AcceptanceRouteSetDbRow;
+  "business.identification_finalization_results": FinalizationResultDbRow;
   "business.standardized_risk_records": StandardizedRiskRecordDbRow;
 };
 
@@ -662,7 +669,7 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
 
     // 精确版本快照：只组合不晚于该 run-state 版本落库的登记事实，保证同一 runRef 重放同形。
     const bound = asTime(stateRowRaw.persisted_at);
-    const withinBound = (row: IdentificationGraphResultDbRow): boolean =>
+    const withinBound = (row: { readonly persisted_at: TimestampColumn }): boolean =>
       asTime(row.persisted_at) <= bound;
     const runRows = (
       await this.#db
@@ -828,6 +835,41 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
       mergeGroups.push({ groupRef: ref, status: "rejected" });
     }
 
+    // 已登记修正候选集引用：只取本运行工作计划下 C22 登记的 candidate-set 行，引用逐字取自行内
+    // candidate_set_ref（实体 + 身份版本），不从 result_id/result_version_id 反解或重算版本。
+    // 同一工作项的后续修正登记是新版本行，因此原候选集与修正候选集都在这一集合里。
+    const revisedCandidateRefs = new Map<string, IdentificationCandidateSetRefV1>();
+    if (workItems.length > 0) {
+      const candidateRows = await this.#db
+        .selectFrom(FINALIZATION_TABLE)
+        .select([
+          "result_id",
+          "result_version_id",
+          "candidate_set_ref",
+          "authorization_scope_digest",
+          "persisted_at",
+        ])
+        .where("project_id", "=", query.projectId)
+        .where("result_kind", "=", "candidate-set")
+        .where("authorization_scope_digest", "=", scopeDigest)
+        .where(
+          "work_item_ref",
+          "in",
+          workItems.map((item) => item.workItemRef as unknown as JsonValue),
+        )
+        .orderBy("persisted_at", "asc")
+        .orderBy("result_id", "asc")
+        .limit(RUN_READ_BOUNDS_V1.revisedCandidateRefs + 1)
+        .execute();
+      for (const row of candidateRows) {
+        if (!withinBound(row)) continue;
+        const stored = IdentificationCandidateSetRefV1Schema.safeParse(row.candidate_set_ref);
+        // 登记行自称候选集引用却解析不出合法形状时不披露任何引用，交给调用方按不可信来源收口。
+        if (!stored.success) return denied();
+        revisedCandidateRefs.set(refKey(stored.data.reference), stored.data);
+      }
+    }
+
     // 等待中的 Agent/复核任务引用并入关联集合（与既有 stage-result 引用去重）。
     if (runState.lastWaitingRef?.kind === "retrieval-review-agent") {
       const ref = runState.lastWaitingRef.agentTaskRef;
@@ -851,7 +893,8 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
       reviewTaskRefs.size > RUN_READ_BOUNDS_V1.reviewTaskRefs ||
       runState.acceptedRiskRecordRefs.length > RUN_READ_BOUNDS_V1.acceptedRiskRecordRefs ||
       runState.pendingGroupRefs.length > RUN_READ_BOUNDS_V1.groupRefs ||
-      runState.rejectedGroupRefs.length > RUN_READ_BOUNDS_V1.groupRefs
+      runState.rejectedGroupRefs.length > RUN_READ_BOUNDS_V1.groupRefs ||
+      revisedCandidateRefs.size > RUN_READ_BOUNDS_V1.revisedCandidateRefs
     ) {
       return failed(this.#blocked("run-read-reference-overflow", query.queryId));
     }
@@ -878,6 +921,9 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
       acceptedRiskRecordRefs: [...runState.acceptedRiskRecordRefs],
       pendingReviewGroupRefs: [...runState.pendingGroupRefs],
       rejectedGroupRefs: [...runState.rejectedGroupRefs],
+      ...(revisedCandidateRefs.size === 0
+        ? {}
+        : { revisedCandidateRefs: [...revisedCandidateRefs.values()] }),
       ...(waitingRef === undefined ? {} : { waitingRef }),
     });
   }

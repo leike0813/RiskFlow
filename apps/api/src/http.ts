@@ -169,6 +169,42 @@ import {
   IsoDateTimeSchema,
   VersionReferenceSchema,
 } from "@riskflow/contracts/common";
+import {
+  SystemAdministrationCommandPayloadV1Schema,
+  SystemAdministrationCommandV1Schema,
+  SystemAdministrationExecuteResultV1Schema,
+  SystemAdministrationReadQueryV1Schema,
+  SystemAdministrationReadResultV1Schema,
+  type SystemAdministrationCommandV1,
+  type SystemAdministrationPortV1,
+  type SystemAdministrationReadQueryV1,
+} from "@riskflow/core/access";
+import {
+  AgentTaskReadPayloadV1Schema,
+  AgentTaskReadQueryV1Schema,
+  AgentTaskReadResultV1Schema,
+  type AgentTaskReadPortV1,
+  type AgentTaskReadQueryV1,
+} from "@riskflow/core/agent-runtime";
+import {
+  ReviewAuditReadPayloadV1Schema,
+  ReviewAuditReadQueryV1Schema,
+  ReviewAuditReadResultV1Schema,
+  type ReviewAuditReadPortV1,
+  type ReviewAuditReadQueryV1,
+} from "@riskflow/core/review-audit";
+import {
+  ProjectionReportReadPayloadV1Schema,
+  ProjectionReportReadQueryV1Schema,
+  ProjectionReportReadResultV1Schema,
+  type ProjectionReportReadPortV1,
+  type ProjectionReportReadQueryV1,
+} from "@riskflow/core/workflow";
+import {
+  SystemOperationsQueryRequestV1Schema,
+  SystemOperationsQueryResultEnvelopeV1Schema,
+  type SystemOperationsReadPortV1,
+} from "./operations.js";
 
 export const HTTP_SCHEMA_VERSION_V1 = "1" as const;
 export const HTTP_COOKIE_NAME_V1 = "__Host-riskflow_session" as const;
@@ -385,6 +421,18 @@ const queryTransportSchemaFor = (schema: ZodType, kind: string): ZodType =>
     payload: payloadSchemaFor(schema, kind),
   });
 
+/** 多 kind 领域的查询信封：payload 就是该领域自己的联合，`kind` 由请求体携带。 */
+const queryTransportSchemaForPayload = (
+  schema: ZodType,
+  payload: ZodType,
+): ZodType =>
+  z.strictObject({
+    ...httpEnvelopeBase,
+    queryId: IdentifierSchema,
+    requestedAt: IsoDateTimeSchema,
+    payload,
+  });
+
 /**
  * D-11 C36 两阶段窄端口（仅服务端可调用，不进入 HTTP 契约）：先按当前授权预选候选来源版本，
  * 再按请求内 grant 映射过滤摘要定位引用；grant 与来源版本的身份映射只存在于本次请求。
@@ -430,6 +478,20 @@ export interface ApiPortsV1 {
   readonly riskAssessmentRead?: RiskAssessmentReadPortV1;
   readonly warningResponseRead?: WarningResponseReadPortV1;
   readonly calibrationGovernance?: CalibrationGovernancePortV1;
+  // C35 三条业务窄读独立注入位；未注入时对应三条查询分支不激活（design D-12）。
+  readonly agentTaskRead?: AgentTaskReadPortV1;
+  readonly reviewAuditRead?: ReviewAuditReadPortV1;
+  readonly projectionReportRead?: ProjectionReportReadPortV1;
+  /**
+   * C35 独立系统管理面注入位：HTTP 只从唯一 Cookie 取会话 token 并转交，
+   * 不构造管理授权上下文，管理身份证明全部在所属适配器内完成（design D-10）。
+   */
+  readonly systemAdministration?: SystemAdministrationPortV1;
+  /**
+   * C35 应用输出接缝：健康与模型版本读取。整体未注入时 `/api/v1/operations/queries`
+   * 不激活（design D-11），避免以内部探测冒充事实。
+   */
+  readonly systemOperationsRead?: SystemOperationsReadPortV1;
   /**
    * C36 窄投影 port：只在未提供完整 `projection` port 时把原 `projection.query` 路由绑定到它，
    * 只接受 `quality-evaluation` 查询类型；SSE 与导出仍只由完整 port 激活。
@@ -471,6 +533,12 @@ type RouteDefinitionV1 = Readonly<{
   domainKind: string;
   mode: "command" | "query";
   moduleRequestSchema: ZodType;
+  /**
+   * 传输层 payload 覆盖项：一个分支承载多个领域 kind 时（C35 的 Agent 任务读、
+   * 统一复核/活动读与报告读），payload 就是该领域联合本身，`kind` 由请求体携带。
+   * 不提供时按原规则从联合中取出单个 domainKind 的 payload。
+   */
+  transportPayloadSchema?: ZodType;
   resultSchema: ZodType;
   portKey: ApiPortKeyV1;
   activationPortKeys: readonly ApiPortKeyV1[];
@@ -485,9 +553,14 @@ const route = (definition: RouteDefinitionV1): HttpRouteEntryV1 =>
     requiredCapability: MODULE_BRANCH_CAPABILITY_V1[definition.branch],
     activationPortKeys: [definition.portKey, ...definition.activationPortKeys],
     requestSchema:
-      definition.mode === "command"
-        ? commandTransportSchemaFor(definition.moduleRequestSchema, definition.domainKind)
-        : queryTransportSchemaFor(definition.moduleRequestSchema, definition.domainKind),
+      definition.transportPayloadSchema === undefined
+        ? definition.mode === "command"
+          ? commandTransportSchemaFor(definition.moduleRequestSchema, definition.domainKind)
+          : queryTransportSchemaFor(definition.moduleRequestSchema, definition.domainKind)
+        : queryTransportSchemaForPayload(
+            definition.moduleRequestSchema,
+            definition.transportPayloadSchema,
+          ),
   });
 
 const commandRoutes = (
@@ -556,6 +629,31 @@ const queryRoutes = (
       invoke,
     }),
   );
+
+/**
+ * C35 领域查询路由：一个分支承载多个领域 kind，传输 payload 直接是该领域联合，
+ * 由请求体的 `kind` 决定具体读取；路径与能力仍取自同一份路由目录（design D-12）。
+ */
+const domainQueryRoutes = (
+  moduleRequestSchema: ZodType,
+  payloadSchema: ZodType,
+  resultSchema: ZodType,
+  portKey: ApiPortKeyV1,
+  invoke: HttpInvokerV1,
+  branch: ModuleBranchV1,
+): readonly HttpRouteEntryV1[] => [
+  route({
+    branch,
+    domainKind: "domain-query",
+    mode: "query",
+    moduleRequestSchema,
+    transportPayloadSchema: payloadSchema,
+    resultSchema,
+    portKey,
+    activationPortKeys: [],
+    invoke,
+  }),
+];
 
 const missingPort = (name: string): never => {
   throw new Error(`HTTP route port is unavailable: ${name}`);
@@ -675,6 +773,14 @@ const invokeRiskAssessmentRead: HttpInvokerV1 = (ports, request) =>
 const invokeWarningResponseRead: HttpInvokerV1 = (ports, request) =>
   ports.warningResponseRead?.read(request as WarningResponseReadQueryV1) ??
   missingPort("warningResponseRead");
+// C35 业务窄读：三条端口直接转发 `read`，与 C32–C34 只读面同形。
+const invokeAgentTaskRead: HttpInvokerV1 = (ports, request) =>
+  ports.agentTaskRead?.read(request as AgentTaskReadQueryV1) ?? missingPort("agentTaskRead");
+const invokeReviewAuditRead: HttpInvokerV1 = (ports, request) =>
+  ports.reviewAuditRead?.read(request as ReviewAuditReadQueryV1) ?? missingPort("reviewAuditRead");
+const invokeProjectionReportRead: HttpInvokerV1 = (ports, request) =>
+  ports.projectionReportRead?.read(request as ProjectionReportReadQueryV1) ??
+  missingPort("projectionReportRead");
 const invokeCalibrationGovernance: HttpInvokerV1 = (ports, request) => {
   const command = request as CalibrationGovernanceCommandV1;
   const governance = ports.calibrationGovernance;
@@ -995,6 +1101,32 @@ export const HTTP_ROUTE_CATALOG_V1: readonly HttpRouteEntryV1[] = Object.freeze(
     invokeWarningResponseRead,
     [["warning-response.read", "read"]],
   ),
+  // C35 三条业务窄读：Agent 任务、统一复核/活动与报告读取；目录、能力映射与 OpenAPI
+  // 全部由同一条目派生，未注入对应端口时不激活（design D-12）。
+  ...domainQueryRoutes(
+    AgentTaskReadQueryV1Schema,
+    AgentTaskReadPayloadV1Schema,
+    AgentTaskReadResultV1Schema,
+    "agentTaskRead",
+    invokeAgentTaskRead,
+    "agent-task.read",
+  ),
+  ...domainQueryRoutes(
+    ReviewAuditReadQueryV1Schema,
+    ReviewAuditReadPayloadV1Schema,
+    ReviewAuditReadResultV1Schema,
+    "reviewAuditRead",
+    invokeReviewAuditRead,
+    "review-audit.read",
+  ),
+  ...domainQueryRoutes(
+    ProjectionReportReadQueryV1Schema,
+    ProjectionReportReadPayloadV1Schema,
+    ProjectionReportReadResultV1Schema,
+    "projectionReportRead",
+    invokeProjectionReportRead,
+    "projection.report-read",
+  ),
   ...commandRoutesByResult(
     CalibrationGovernanceCommandV1Schema,
     "calibrationGovernance",
@@ -1066,14 +1198,30 @@ export const assembleQueryRequest = (
   authorization: AuthorizationDecisionV1,
 ) => {
   const parsed = entry.requestSchema.parse(body) as HttpQueryRequestV1;
+  // 多 kind 领域（C35 三条窄读）的 kind 由请求体携带，进入信封；领域 payload 本身不含
+  // `kind`，因此这里把载荷里的判别键提上来而不是原样透传。单 kind 分支仍取自路由条目。
+  const carriesOwnKind =
+    typeof parsed.payload === "object" &&
+    parsed.payload !== null &&
+    typeof (parsed.payload as { readonly kind?: unknown }).kind === "string";
+  const payloadKind = carriesOwnKind
+    ? (parsed.payload as { readonly kind: string }).kind
+    : entry.domainKind;
+  const payload = carriesOwnKind
+    ? Object.fromEntries(
+        Object.entries(parsed.payload as Record<string, unknown>).filter(
+          ([field]) => field !== "kind",
+        ),
+      )
+    : parsed.payload;
   return entry.moduleRequestSchema.parse({
-    kind: entry.domainKind,
+    kind: payloadKind,
     queryId: parsed.queryId,
     projectId,
     actorId: authorization.context.actorId,
     requestedAt: parsed.requestedAt,
     authorization: authorization.context,
-    payload: parsed.payload,
+    payload,
   });
 };
 
@@ -1463,16 +1611,103 @@ export const isSupportedJsonMediaType = (value: string | undefined): boolean => 
   return value.split(";", 1)[0]?.trim().toLowerCase() === HTTP_JSON_MEDIA_TYPE_V1;
 };
 
+/**
+ * C35 系统面传输信封（design D-12）：请求体只有 schemaVersion、调用标识与 strict payload；
+ * 会话 token 由 HTTP 层从唯一 Cookie 取值后补齐，客户端既不提交也不得覆盖管理授权引用。
+ * payload 直接由所属 core Schema 剥掉整个管理信封派生，不另抄一份字段定义。
+ */
+/**
+ * 每个成员都是 strictObject，去掉 sessionToken 后仍是同一组按 `kind` 辨识的载荷。
+ * 联合成员的 `omit` 泛型签名彼此独立，这里收敛成同一个调用形状再统一应用掩码。
+ */
+/** 传输层不接受的管理信封字段：版本、调用标识、签发时间与会话 token 全部由服务端补齐。 */
+const withoutSystemEnvelope = (
+  options: typeof SystemAdministrationReadQueryV1Schema.options,
+): ZodType[] =>
+  options.map((option) =>
+    (
+      option.omit as (mask: {
+        schemaVersion: true;
+        queryId: true;
+        requestedAt: true;
+        sessionToken: true;
+      }) => ZodType
+    )({
+      schemaVersion: true,
+      queryId: true,
+      requestedAt: true,
+      sessionToken: true,
+    }),
+  );
+
+export const SystemAdministrationQueryRequestV1Schema = z.strictObject({
+  schemaVersion: z.literal("1"),
+  queryId: IdentifierSchema,
+  requestedAt: IsoDateTimeSchema,
+  payload: z.union(withoutSystemEnvelope(SystemAdministrationReadQueryV1Schema.options)),
+});
+export type SystemAdministrationQueryRequestV1 = z.infer<
+  typeof SystemAdministrationQueryRequestV1Schema
+>;
+
+export const SystemAdministrationCommandRequestV1Schema = z.strictObject({
+  schemaVersion: z.literal("1"),
+  commandId: IdentifierSchema,
+  idempotencyKey: IdentifierSchema,
+  issuedAt: IsoDateTimeSchema,
+  payload: SystemAdministrationCommandPayloadV1Schema,
+});
+export type SystemAdministrationCommandRequestV1 = z.infer<
+  typeof SystemAdministrationCommandRequestV1Schema
+>;
+
+/** 把传输信封还原成所属 core 的管理请求：补上服务端取得的会话 token，不构造授权上下文。 */
+export const toSystemAdministrationQuery = (
+  body: SystemAdministrationQueryRequestV1,
+  sessionToken: string,
+): SystemAdministrationReadQueryV1 =>
+  SystemAdministrationReadQueryV1Schema.parse({
+    ...(body.payload as Record<string, unknown>),
+    schemaVersion: body.schemaVersion,
+    queryId: body.queryId,
+    requestedAt: body.requestedAt,
+    sessionToken,
+  });
+
+export const toSystemAdministrationCommand = (
+  body: SystemAdministrationCommandRequestV1,
+  sessionToken: string,
+): SystemAdministrationCommandV1 =>
+  SystemAdministrationCommandV1Schema.parse({
+    schemaVersion: body.schemaVersion,
+    commandId: body.commandId,
+    idempotencyKey: body.idempotencyKey,
+    issuedAt: body.issuedAt,
+    sessionToken,
+    payload: body.payload,
+  });
+
 export type HttpSessionRouteKindV1 =
   "login" | "change-password" | "logout" | "introspect" | "openapi";
+/**
+ * C35 系统面路由种类（design D-12）：四条固定路径，元数据仍由本目录派生 OpenAPI。
+ * 激活条件都是"对应端口已注入"，没有隐式兜底。
+ */
+export type HttpSystemRouteKindV1 =
+  | "administration-identity"
+  | "administration-queries"
+  | "administration-commands"
+  | "operations-queries";
 export type HttpSystemRouteEntryV1 = Readonly<{
   method: "POST" | "GET";
   path: string;
-  kind: HttpSessionRouteKindV1 | "sse";
+  kind: HttpSessionRouteKindV1 | HttpSystemRouteKindV1 | "sse";
   requestSchema?: ZodType;
   resultSchema?: ZodType;
   requiresSession: boolean;
   mediaType: typeof HTTP_JSON_MEDIA_TYPE_V1 | typeof HTTP_SSE_MEDIA_TYPE_V1;
+  /** C35 系统面激活所需的注入位；缺任一项该路由不注册、也不出现在 OpenAPI。 */
+  activationPortKeys?: readonly ApiPortKeyV1[];
 }>;
 
 export const HTTP_SYSTEM_ROUTE_CATALOG_V1: readonly HttpSystemRouteEntryV1[] = Object.freeze([
@@ -1518,6 +1753,47 @@ export const HTTP_SYSTEM_ROUTE_CATALOG_V1: readonly HttpSystemRouteEntryV1[] = O
     requiresSession: true,
     mediaType: HTTP_SSE_MEDIA_TYPE_V1,
   }),
+  // C35 独立系统面四条固定路径（design D-12）：请求体只有身份与调用标识，
+  // 会话 token 一律从唯一 Cookie 取得，客户端不得提交授权引用或连接凭证。
+  Object.freeze({
+    method: "GET" as const,
+    path: "/api/v1/administration",
+    kind: "administration-identity" as const,
+    resultSchema: SystemAdministrationReadResultV1Schema,
+    requiresSession: true,
+    mediaType: HTTP_JSON_MEDIA_TYPE_V1,
+    activationPortKeys: ["systemAdministration"] as const,
+  }),
+  Object.freeze({
+    method: "POST" as const,
+    path: "/api/v1/administration/queries",
+    kind: "administration-queries" as const,
+    requestSchema: SystemAdministrationQueryRequestV1Schema,
+    resultSchema: SystemAdministrationReadResultV1Schema,
+    requiresSession: true,
+    mediaType: HTTP_JSON_MEDIA_TYPE_V1,
+    activationPortKeys: ["systemAdministration"] as const,
+  }),
+  Object.freeze({
+    method: "POST" as const,
+    path: "/api/v1/administration/commands",
+    kind: "administration-commands" as const,
+    requestSchema: SystemAdministrationCommandRequestV1Schema,
+    resultSchema: SystemAdministrationExecuteResultV1Schema,
+    requiresSession: true,
+    mediaType: HTTP_JSON_MEDIA_TYPE_V1,
+    activationPortKeys: ["systemAdministration"] as const,
+  }),
+  Object.freeze({
+    method: "POST" as const,
+    path: "/api/v1/operations/queries",
+    kind: "operations-queries" as const,
+    requestSchema: SystemOperationsQueryRequestV1Schema,
+    resultSchema: SystemOperationsQueryResultEnvelopeV1Schema,
+    requiresSession: true,
+    mediaType: HTTP_JSON_MEDIA_TYPE_V1,
+    activationPortKeys: ["systemAdministration", "systemOperationsRead"] as const,
+  }),
   Object.freeze({
     method: "GET" as const,
     path: "/api/v1/openapi.json",
@@ -1527,12 +1803,26 @@ export const HTTP_SYSTEM_ROUTE_CATALOG_V1: readonly HttpSystemRouteEntryV1[] = O
   }),
 ]);
 
+/**
+ * 系统路由的激活判定（design D-12）：SSE 需要完整 projection port；C35 四条系统面路由
+ * 需要它们声明的注入位全部就位。未激活的路由既不注册也不出现在 OpenAPI——
+ * OpenAPI 与实际可调用集合必须同源。
+ */
+export const isSystemRouteActive = (entry: HttpSystemRouteEntryV1, ports: ApiPortsV1): boolean => {
+  if (entry.kind === "sse") return ports.projection !== undefined;
+  if (entry.activationPortKeys === undefined) return true;
+  return entry.activationPortKeys.every((portKey) => ports[portKey] !== undefined);
+};
+
+export const activeHttpSystemRouteCatalog = (
+  ports: ApiPortsV1,
+): readonly HttpSystemRouteEntryV1[] =>
+  HTTP_SYSTEM_ROUTE_CATALOG_V1.filter((entry) => isSystemRouteActive(entry, ports));
+
 export const httpCatalogForOpenApi = (
   ports: ApiPortsV1,
 ): readonly (HttpRouteEntryV1 | HttpSystemRouteEntryV1)[] => [
-  ...HTTP_SYSTEM_ROUTE_CATALOG_V1.filter(
-    (entry) => entry.kind !== "sse" || ports.projection !== undefined,
-  ),
+  ...activeHttpSystemRouteCatalog(ports),
   ...activeHttpRouteCatalog(ports),
 ];
 

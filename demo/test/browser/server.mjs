@@ -87,6 +87,8 @@ import {
   DEMO_MEASURE_IDS,
   DEMO_CALIBRATION_EVIDENCE,
   DEMO_CALIBRATION_OPERATIONS,
+  DEMO_MODEL_DEPLOYMENTS,
+  DEMO_REPORT_EXPORT_POLICY,
 } from "./deploymentPolicies.mjs";
 import {
   PostgresWarningAssessmentContextReader,
@@ -131,12 +133,19 @@ import { createPostgresCalibrationAdapter } from "../../../packages/adapters/dis
 import { createPostgresHumanDecisionFeedbackAdapter } from "../../../packages/adapters/dist/human-decision-feedback/index.js";
 import {
   createPostgresReviewAuditAdapter,
+  createPostgresReviewAuditRead,
   createPostgresReviewQueueReadAdapter,
 } from "../../../packages/adapters/dist/review-audit/index.js";
 import {
+  createPostgresReportExport,
   createPostgresWorkflowAdapter,
   createPostgresWorkflowProjection,
 } from "../../../packages/adapters/dist/workflow/index.js";
+import { parseLlamaCppDeploymentConfig } from "../../../packages/adapters/dist/model/index.js";
+import {
+  collectSystemOperationsHealth,
+  SYSTEM_OPERATIONS_REASON_CODES_V1,
+} from "../../../apps/api/dist/index.js";
 import { ArtifactPutCommandV1Schema } from "../../../packages/core/dist/artifacts/index.js";
 import { isAuthorizationSubset } from "../../../packages/core/dist/access/index.js";
 import {
@@ -255,18 +264,13 @@ const unwiredConfigSeam = (label) =>
     },
   );
 
-const agentTaskRef = {
-  kind: "agent-task",
-  reference: versionRef("demo-agent-task"),
-  taskType: "retrieval-review",
-  triggerMode: "embedded",
-  modelDeploymentRef: versionRef("demo-model-deployment"),
-  promptTemplateRef: versionRef("demo-prompt-template"),
-  toolPolicyRef: versionRef("demo-tool-policy"),
-  budgetPolicyRef: versionRef("demo-budget-policy"),
-  incrementSchemaRef: versionRef("demo-increment-schema"),
-  validationPolicyRef: versionRef("demo-validation-policy"),
-};
+/**
+ * 本装配真实注册进各 C08 注册表的任务定义（合成样本、待甲方复核）。
+ *
+ * 三个 C08 组合根各自持有一个注册表，运维面的模型版本读要跨表列任务类型，因此这里
+ * 收集的是同一批定义对象本身——不是另抄一份元数据。少登记的定义就少列一行，不会补。
+ */
+const registeredAgentTaskDefinitions = [];
 
 /**
  * 启动真实服务：PostgreSQL + 生产迁移 + C04/C03/C06 组合 + C32 四条只读端口 + demo 生产构建。
@@ -415,6 +419,12 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
       initialRiskManagerAccountId: operator.resultRef.entityId,
       includeAdministrator: true,
     });
+    /**
+     * 主体 → 真实会话令牌。C35 报告导出的配对结果读上下文必须由组合根按请求主体重新向 C06
+     * 申请（C06 不允许把 `projection.export` 上下文在模块内收窄），因此装配根得知道每个
+     * 已登录主体的真实会话；未在此登记的主体就没有导出能力，而不是借用别人的会话。
+     */
+    const sessionTokensByAccountId = new Map();
     const loginAs = async (loginName, attemptId) => {
       const initial = await access.login({
         kind: "login",
@@ -428,7 +438,13 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
         newPassword: ACCOUNT_PASSWORD_CHANGED,
       });
       // 通知策略需要精确账户主体；登录结果携带 accountRef，改密结果只带新令牌。
-      return { ...changed, accountRef: initial.accountRef, sessionToken: changed.sessionToken };
+      const session = {
+        ...changed,
+        accountRef: initial.accountRef,
+        sessionToken: changed.sessionToken,
+      };
+      sessionTokensByAccountId.set(session.accountRef.entityId, session.sessionToken);
+      return session;
     };
     const operatorSession = await loginAs(OPERATOR_LOGIN, "demo-browser-operator-login");
     const viewerSession = await loginAs(VIEWER_LOGIN, "demo-browser-viewer-login");
@@ -1197,6 +1213,8 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
       now: claimStep(2),
     });
     const cleaningDefinition = cleaning.store.createTaskDefinition();
+    // C15 组合根在工厂里就把清洗定义注册进了自己的注册表，这里取的就是那批已注册定义。
+    registeredAgentTaskDefinitions.push(...cleaning.registry.values());
     const cleaningValidation = await cleaningDefinition.validateCandidate(
       cleaningCandidate,
       cleaningClaim.task,
@@ -2748,6 +2766,52 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
       artifactStore,
       authorization: access,
     });
+    // ---- C35 报告导出服务（design D-09）：投影 → 报告服务 → 投影 ----
+    //
+    // 导出服务要经所属投影的 `resultRead` 读页，而投影又要注入导出服务才能实现
+    // `projection.export`：这是同属一个组合根的循环依赖。按生产适配器测试同一解法拆成两步：
+    // 先建不带导出的读投影只为取得 `resultRead`，再建注入导出服务的最终投影。
+    // 两个投影共享同一个 `db`、同一个 `registrationStore` 与同一套工件，没有第二份事实。
+    const projectionReader = createPostgresWorkflowProjection({
+      db: appRuntime.db,
+      registrationStore: workflow.registrationStore,
+      bodies: workflow.bodies,
+      authorization: access,
+      riskRecordTrace: createPostgresRiskRecordTraceReader({
+        db: appRuntime.db,
+        authorization: access,
+      }),
+    });
+    const reportExport = createPostgresReportExport({
+      db: appRuntime.db,
+      transactionUnit,
+      artifactStore,
+      registrationStore: workflow.registrationStore,
+      resultRead: projectionReader.resultRead,
+      authorization: access,
+      // `projection.export` 上下文无法在模块内收窄成 `projection.result-read`，配对签发由
+      // 组合根按请求主体的真实会话向 C06 重新申请；没有真实会话就没有导出能力。
+      resultReadAuthorization: {
+        issueResultReadAuthorization: async (request) => {
+          const sessionToken = sessionTokensByAccountId.get(request.actorId);
+          if (sessionToken === undefined) {
+            throw new Error(`无真实会话可签发配对结果读上下文：${request.actorId}`);
+          }
+          const decision = await access.authorize({
+            invocation: { kind: "human-session", sessionToken },
+            invocationId: request.invocationId,
+            projectId: request.projectId,
+            branch: "projection.result-read",
+            requestedSpatialScopeRefs: [...request.spatialScopeRefs],
+            requestedSourceVersionRefs: [],
+            requestedAt: request.requestedAt,
+          });
+          return decision.context;
+        },
+      },
+      // 导出策略由部署冻结：缺省空集合＝无导出能力，这里显式登记合成策略（待甲方复核）。
+      exportPolicies: [DEMO_REPORT_EXPORT_POLICY],
+    });
     const projection = createPostgresWorkflowProjection({
       db: appRuntime.db,
       registrationStore: workflow.registrationStore,
@@ -2758,6 +2822,7 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
         db: appRuntime.db,
         authorization: access,
       }),
+      reportExport: { exportReport: reportExport.exportReport },
     });
 
     // C33 追溯链边播种：记录 → 评估 → 预警 → 处置 → 偏差 → 校准（真实登记行；
@@ -3230,14 +3295,14 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
       policy: scoringRulesPolicy,
     });
     governanceTargets.scoringRules = scoringRules;
+    const scoringRuleAuthoringDefinition = createScoringRuleAuthoringTaskDefinition({
+      policy: scoringRulesPolicy,
+      port: scoringRules,
+    });
+    registeredAgentTaskDefinitions.push(scoringRuleAuthoringDefinition);
     scoringAgentTasksRef.current = new PostgresAgentTaskAdapter({
       db: appRuntime.db,
-      registry: new AgentTaskDefinitionRegistry([
-        createScoringRuleAuthoringTaskDefinition({
-          policy: scoringRulesPolicy,
-          port: scoringRules,
-        }),
-      ]),
+      registry: new AgentTaskDefinitionRegistry([scoringRuleAuthoringDefinition]),
       transactionUnit,
       artifactStore,
       referenceGuard: artifactStore.referenceGuard,
@@ -3846,6 +3911,7 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
           ),
       },
     });
+    registeredAgentTaskDefinitions.push(recommendationTaskDefinition, calibrationTaskDefinition);
     const recommendationAgentTasks = new PostgresAgentTaskAdapter({
       db: appRuntime.db,
       // 同一注册表承载 C27 与 C29 两类任务定义，C29 读的也是这一个适配器里的完成任务。
@@ -4588,6 +4654,196 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
     // 直接路由到评估子运行面，不经过识别子运行面，因此不需要 C24 的识别组合根。
     // 识别子运行面仍保持抛错标记——真被路由到就立即失败，而不是跑出无法追溯的父运行状态。
 
+    // ---- C35 窄读接缝：Agent 任务 / 复核与审计 / 报告导出 / 系统管理 / 运维 ----
+    //
+    // 五条接缝全部指向本装配已经持有的真实端口与同一个 PostgreSQL：
+    //   - Agent 任务窄读 = C15 组合根里那个已注入 C06 verifier 的 C08 adapter 本身，
+    //     它实现了 `AgentTaskReadPortV1`，不需要另造一个包装或测试替身；
+    //   - 复核与审计窄读 = C07 的真实窄读适配器（同一张审计表、同一套 C06 复验）；
+    //   - 报告导出窄读 = 上面那个真实报告导出服务的读面；
+    //   - 系统管理 = C06 自身的系统管理端口；
+    //   - 运维读取 = 下面显式实现的真实提供者。
+    const agentTaskRead = cleaning.agentTaskAdapter;
+    const reviewAuditRead = createPostgresReviewAuditRead({
+      db: appRuntime.db,
+      authorization: access,
+    });
+
+    /** 已登记的模型部署配置（合成样本、待甲方复核）：按任务信封的部署引用精确解析。 */
+    const modelDeploymentConfigs = new Map(
+      DEMO_MODEL_DEPLOYMENTS.map((value) => {
+        const config = parseLlamaCppDeploymentConfig(value);
+        return [`${config.deploymentRef.entityId}@${config.deploymentRef.versionId}`, config];
+      }),
+    );
+    const modelDeploymentConfigFor = (ref) =>
+      modelDeploymentConfigs.get(`${ref.entityId}@${ref.versionId}`);
+
+    /**
+     * C35 报告导出的真实播种（合成样本、待甲方复核）。
+     *
+     * 全程走生产路径：先用真实 `projection.query` 登记一次 risk-overview 查询拿到真实
+     * `queryResultRef`，再把这条登记结果交给真实报告导出服务生成一次导出——绑定事务、
+     * 有限全量分页、C04 耐久化与尾事务都由 C31/C04 自己完成。这里不拼 SQL 造「已完成」
+     * 导出行，页面上的历史与下载因此都能回到真实工件。
+     */
+    const overviewQueryAuthorization = await operatorAuth(
+      "demo-c35-overview-query",
+      "projection.query",
+    );
+    // 登记时点必须早于页面真实请求时点：投影按登记时点截断事实，用未来时钟登记会让
+    // 页面读不到这条查询结果。这里取装配时刻的真实时间，不用夹具的固定演示时钟。
+    const c35RecordedAt = new Date().toISOString();
+    const overviewQuery = await projection.queryProjection.query({
+      queryId: "demo-c35-overview-query",
+      projectId: PROJECT_ID,
+      actorId: overviewQueryAuthorization.actorId,
+      requestedAt: c35RecordedAt,
+      authorization: overviewQueryAuthorization,
+      kind: "query",
+      payload: { queryType: "risk-overview", projectRevisionRef },
+    });
+    if (overviewQuery.kind !== "succeeded" || overviewQuery.result === undefined) {
+      throw new Error(
+        `C35 risk-overview 查询登记失败：${JSON.stringify(overviewQuery).slice(0, 400)}`,
+      );
+    }
+    const reportQueryResultRef = overviewQuery.result.queryResultRef;
+    const exportAuthorization = await operatorAuth(
+      "demo-c35-report-export",
+      "projection.export",
+    );
+    const reportExportResult = await reportExport.exportReport({
+      queryId: "demo-c35-report-export",
+      projectId: PROJECT_ID,
+      actorId: exportAuthorization.actorId,
+      requestedAt: new Date(Date.parse(c35RecordedAt) + 1).toISOString(),
+      authorization: exportAuthorization,
+      kind: "export",
+      payload: {
+        sourceRef: reportQueryResultRef,
+        exportPolicyRef: DEMO_REPORT_EXPORT_POLICY.policyRef,
+      },
+    });
+    if (reportExportResult.kind !== "succeeded") {
+      throw new Error(`C35 报告导出失败：${JSON.stringify(reportExportResult).slice(0, 400)}`);
+    }
+    const reportExportArtifactRef = reportExportResult.result.exportArtifactRef;
+
+    // ---- C35 运维读取提供者：健康与模型版本两个窄读面 ----
+    //
+    // 装配根自己实现 `SystemOperationsReadPortV1`（它不是自动生成的），事实来源只有两类：
+    // 组件健康来自本装配真实持有的窄回调，模型版本来自真实 Agent 任务信封 + 已登记的
+    // 版本化部署配置。没有窄回调的组件如实缺席，不为了让页面好看而编一个「可用」。
+    const narrowProbe = (run) => async (_componentId, signal) => {
+      const aborted = new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("probe-aborted")), { once: true });
+      });
+      const value = await Promise.race([run(), aborted]);
+      if (signal.aborted) throw new Error("probe-aborted");
+      return value;
+    };
+    const healthProbe = async (componentId, signal) => {
+      switch (componentId) {
+        // 本装配没有为 API 进程自身登记窄探针：HTTP 层健康由进程存活保证，不另造探针。
+        case "api":
+          return {
+            status: "unknown",
+            reasonCode: SYSTEM_OPERATIONS_REASON_CODES_V1.probeAbsent,
+          };
+        // 同一 PostgreSQL 的窄检查：只发一条 `SELECT 1`，不做迁移或表级巡检。
+        case "postgresql":
+          return narrowProbe(async () => {
+            await appRuntime.pool.query("SELECT 1");
+            return { status: "available" };
+          })(componentId, signal);
+        // C04 工件存储的窄检查：用真实会话授权真实打开上面那次导出工件并等到校验回执。
+        // 身份固定：C06 对同一 invocationId 的同载荷重放是幂等重放，不会每次健康读取都
+        // 另造一条授权上下文；C04 的读取命令也因 requestId 固定而成为同一次读取。
+        // 导出对外给的是 `export-artifact` 引用，C04 只按 `content-artifact` 取正文；
+        // 两者共用同一 reference（报告导出服务按同一引用生成），这里只换引用种类，不换标识。
+        case "artifact-store":
+          return narrowProbe(async () => {
+            const requestedAt = new Date().toISOString();
+            const probeAuthorization = await operatorAuth(
+              "demo-c35-artifact-probe",
+              "projection.export",
+            );
+            const requestId = `demo-c35-artifact-probe:${reportExportArtifactRef.reference.versionId}`;
+            const handle = await artifactStore.open({
+              schemaVersion: "1",
+              requestId,
+              idempotencyKey: requestId,
+              artifactRef: {
+                kind: "content-artifact",
+                reference: { ...reportExportArtifactRef.reference },
+              },
+              projectId: PROJECT_ID,
+              actorId: probeAuthorization.actorId,
+              requestedAt,
+              purposeCode: "riskflow-report",
+              requiredCapability: "projection.export",
+              authorization: probeAuthorization,
+            });
+            for await (const _chunk of handle.content) void _chunk;
+            await handle.verified;
+            return { status: "available" };
+          })(componentId, signal);
+        // 本装配没有任何模型网关接线：如实呈现缺席，而不是把注册表里的引用说成可用。
+        case "model-gateway":
+          return {
+            status: "unknown",
+            reasonCode: SYSTEM_OPERATIONS_REASON_CODES_V1.modelNotConfigured,
+          };
+        default:
+          return {
+            status: "unknown",
+            reasonCode: SYSTEM_OPERATIONS_REASON_CODES_V1.probeAbsent,
+          };
+      }
+    };
+    /** 模型版本：任务类型一行，全部引用取自真实注册定义元数据 + 已登记的版本化部署配置。 */
+    const readModelVersions = () => {
+      const items = [];
+      for (const definition of registeredAgentTaskDefinitions) {
+        const { metadata, budgetPolicy } = definition;
+        // 任务信封引用的部署未登记时这一行就不出现：模型版本引用不猜、不补。
+        const config = modelDeploymentConfigFor(budgetPolicy.modelDeploymentRef);
+        if (config === undefined) continue;
+        items.push({
+          taskType: metadata.taskType,
+          deploymentRef: config.deploymentRef,
+          modelVersionRef: config.modelVersionRef,
+          serverBuildRef: config.serverBuildRef,
+          promptTemplateRef: budgetPolicy.promptTemplateRef,
+          toolPolicyRef: budgetPolicy.toolPolicyRef,
+          budgetPolicyRef: budgetPolicy.policyRef,
+          supportedTriggerModes: [...metadata.supportedTriggerModes],
+        });
+        if (items.length >= 32) break;
+      }
+      return items;
+    };
+    const systemOperationsRead = {
+      read: async (request) => {
+        const capturedAt = new Date().toISOString();
+        if (request.payload.kind === "health") {
+          return {
+            kind: "succeeded",
+            result: await collectSystemOperationsHealth({
+              probe: healthProbe,
+              capturedAt,
+              now: () => new Date(capturedAt),
+            }),
+          };
+        }
+        return {
+          kind: "succeeded",
+          result: { kind: "model-versions", capturedAt, items: readModelVersions() },
+        };
+      },
+    };
+
     const api = buildApi({
       access,
       ports: {
@@ -4658,6 +4914,18 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
           authorization: access,
         }),
         reviewAudit,
+        // ---- C35 窄读与运维端口（design D-05/D-09/D-13）：全部指向本装配真实持有的端口 ----
+        // Agent 任务窄读就是 C15 组合根那个 C08 adapter 本身：它实现同一 `AgentTaskReadPortV1`，
+        // 读的是同一个 `agent_tasks` 表，不另开一条数据通路。
+        agentTaskRead,
+        // 复核与审计窄读：C07 的真实窄读适配器，与写面同一张审计表。
+        reviewAuditRead,
+        // 报告导出窄读：上面那个真实报告导出服务的读面。
+        projectionReportRead: reportExport.reportRead,
+        // 系统管理：C06 自身的系统管理端口（六项管理动作与账号/工程目录都走它）。
+        systemAdministration: access.systemAdministration,
+        // 运维读取：本装配显式实现的真实提供者，见其定义处的事实来源说明。
+        systemOperationsRead,
       },
       publicOrigin,
       now: () => new Date(),
@@ -4739,6 +5007,12 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
       "/warnings",
       "/response",
       "/risks",
+      // C35 深链：Agent 任务详情、复核详情与审计、报告导出、运维四页都走同一 SPA 壳，
+      // 否则整页刷新会被 HTTP 层的 notFound 收成 404 JSON，而不是回落到 index.html。
+      "/agent",
+      "/review",
+      "/report",
+      "/ops",
     ]) {
       api.get(`${prefix}/*`, async (_request, reply) => sendFile(reply, indexHtml, 200));
     }
@@ -4759,6 +5033,13 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
       operatorLogin: OPERATOR_LOGIN,
       viewerLogin: VIEWER_LOGIN,
       responderLogin: RESPONDER_LOGIN,
+      /**
+       * 纯系统管理员账号：只有系统管理身份，没有任何业务角色。
+       * 它在本工程里唯一的成员身份携带 `system-administrator` 角色，而该角色的业务分支集合
+       * 为空——因此「它在业务窄读口无权」是真实的权限边界，而不是换个没有权限的账号。
+       */
+      administratorLogin: "admin001",
+      administratorPassword: ADMIN_PASSWORD_CHANGED,
       /**
        * 账号主体标识：命令载荷里的 `decidedByActorId`/`recordedByActorId` 等要的是主体标识，
        * 不是登录名。两者混用会被 C28 以 `response-execution-source-invalid` 关闭失败。
@@ -4856,6 +5137,34 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
         freshTask: freshTaskRefV2,
         batchTasks: [batchTaskRef1, batchTaskRef2],
         viewerTask: viewerTaskRef,
+      },
+      /**
+       * C35 验收句柄：全部是本装配真实写入的事实，供浏览器按精确引用核对渲染与下载。
+       */
+      agentAudit: {
+        /** C15 数据清洗任务的真实任务引用：有真实工具行动、候选与确定性校验。 */
+        agentTask: {
+          entityId: dataCleaningTaskRef.reference.entityId,
+          versionId: dataCleaningTaskRef.reference.versionId,
+          taskType: dataCleaningTaskRef.taskType,
+        },
+        /** 真实登记的识别分组复核任务（待决）。 */
+        reviewTask: {
+          entityId: pendingTaskRef.reference.entityId,
+          versionId: pendingTaskRef.reference.versionId,
+          reviewType: pendingTaskRef.reviewType,
+        },
+        /** 真实登记的 risk-overview 查询结果引用。 */
+        reportQueryResultRef: {
+          entityId: reportQueryResultRef.reference.entityId,
+          versionId: reportQueryResultRef.reference.versionId,
+        },
+        /** 真实生成的报告导出工件引用（绑定 → 分页 → C04 落盘）。 */
+        reportExportArtifactRef,
+        /** 冻结的版本化导出策略引用。 */
+        reportExportPolicyRef: DEMO_REPORT_EXPORT_POLICY.policyRef,
+        /** 运维面按真实注册定义列出的模型版本行，供页面按标识核对。 */
+        modelVersionTaskTypes: readModelVersions().map((item) => item.taskType),
       },
       close: async () => {
         tearingDown = true;

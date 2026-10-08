@@ -25,6 +25,9 @@ const RESPONDER_PASSWORD = "responder-password-v1";
 const VIEWER_PASSWORD = "viewer-password-v1";
 const CHILD_PASSWORD = "child-password-v1";
 const THROTTLE_PASSWORD = "throttle-password-v1";
+const ADMIN_CHANGED_PASSWORD = "admin-password-changed-v1";
+const OPERATIONS_PASSWORD = "operations-password-v1";
+const OPERATIONS_PASSWORD_CHANGED = "operations-password-changed-v1";
 const HMAC_KEY = new Uint8Array(32).fill(7);
 
 const mutableClock = () => {
@@ -46,6 +49,8 @@ describe.sequential("local identity and project authorization", () => {
       >
     | undefined;
   let adminSessionToken: string | undefined;
+  // 系统管理面使用的当前管理员会话；测试不缓存登录时的旧管理引用。
+  let administrationSessionToken: string | undefined;
   let userAccountId: string | undefined;
   let managerSessionToken: string | undefined;
   let managerRegistrationContext:
@@ -71,6 +76,13 @@ describe.sequential("local identity and project authorization", () => {
     keyVersion: "key-v1",
     now: clock.now,
   });
+  const currentSecurityVersion = async (accountId: string): Promise<string> => {
+    const row = await fixture!.adminPool.query<{ security_version: number }>(
+      "SELECT security_version FROM business.local_accounts WHERE account_id = $1",
+      [accountId],
+    );
+    return String(row.rows[0]!.security_version);
+  };
 
   beforeAll(async () => {
     fixture = await startAuthPostgresFixture();
@@ -1402,6 +1414,549 @@ describe.sequential("local identity and project authorization", () => {
     await keyAccess.close();
   }, 180_000);
 
+  it("system administration identity and directory come from the current session", async () => {
+    // 管理面只用服务端会话证明身份，不复用登录时签发的旧管理引用。
+    // 重新登录取得当前会话；不改动管理员密码，因此不影响其它用例持有的安全修订。
+    const adminLogin = await access!.login({
+      kind: "login",
+      loginAttemptId: "login-administration-admin",
+      loginName: "admin001",
+      password: ADMIN_CHANGED_PASSWORD,
+    });
+    expect(adminLogin.passwordChangeRequired).toBe(false);
+    administrationSessionToken = adminLogin.sessionToken;
+    const adminIdentity = await access!.systemAdministration.read({
+      kind: "identity",
+      schemaVersion: "1",
+      queryId: "query-admin-identity",
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      sessionToken: administrationSessionToken!,
+    });
+    expect(adminIdentity).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "identity", isSystemAdministrator: true },
+    });
+    expect(adminIdentity.kind === "succeeded" && adminIdentity.result.kind === "identity"
+      ? adminIdentity.result.allowedActions
+      : []).toEqual([
+      "create-account",
+      "disable-account",
+      "reset-password",
+      "open-project",
+      "suspend-project",
+      "revise-membership",
+    ]);
+
+    // 页大小是硬上界；游标是上一页最后一个账号标识，遍历整本目录必须恰好覆盖全部账号一次。
+    const seenAccountRefs: string[] = [];
+    const loginNames: string[] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    do {
+      const page = await access!.systemAdministration.read({
+        kind: "accounts",
+        schemaVersion: "1",
+        queryId: `query-accounts-page-${pages}`,
+        requestedAt: "2030-01-01T00:00:00.000Z",
+        sessionToken: administrationSessionToken!,
+        pageSize: 2,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      expect(page.kind).toBe("succeeded");
+      if (page.kind !== "succeeded" || page.result.kind !== "accounts")
+        throw new Error("expected account directory");
+      expect(page.result.items.length).toBeLessThanOrEqual(2);
+      seenAccountRefs.push(...page.result.items.map((item) => item.accountRef.entityId));
+      loginNames.push(...page.result.items.map((item) => item.loginName));
+      // 目录只投影显示身份、状态与当前版本，不含凭据派生值或会话 token。
+      expect(JSON.stringify(page.result)).not.toContain(ADMIN_PASSWORD);
+      expect(JSON.stringify(page.result)).not.toContain(administrationSessionToken!);
+      cursor = page.result.nextCursor;
+      pages += 1;
+    } while (cursor !== undefined && pages < 50);
+    expect(new Set(seenAccountRefs).size).toBe(seenAccountRefs.length);
+    const allAccounts = await fixture!.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM business.local_accounts",
+    );
+    expect(seenAccountRefs).toHaveLength(Number(allAccounts.rows[0]!.count));
+    expect(loginNames).toContain("admin001");
+    expect(loginNames).toContain("user001");
+    expect(seenAccountRefs).toContain(userAccountId!);
+    const adminItem = (
+      await access!.systemAdministration.read({
+        kind: "accounts",
+        schemaVersion: "1",
+        queryId: "query-accounts-admin-item",
+        requestedAt: "2030-01-01T00:00:00.000Z",
+        sessionToken: administrationSessionToken!,
+      })
+    );
+    if (adminItem.kind !== "succeeded" || adminItem.result.kind !== "accounts")
+      throw new Error("expected account directory");
+    expect(
+      adminItem.result.items.find((item) => item.loginName === "admin001"),
+    ).toMatchObject({
+      displayName: "Initial administrator",
+      status: "active",
+      passwordChangeRequired: false,
+    });
+
+    const projects = await access!.systemAdministration.read({
+      kind: "projects",
+      schemaVersion: "1",
+      queryId: "query-projects",
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      sessionToken: administrationSessionToken!,
+    });
+    if (projects.kind !== "succeeded" || projects.result.kind !== "projects")
+      throw new Error("expected project directory");
+    expect(projects.result.items.map((item) => item.projectId)).toContain("project-a");
+    const projectA = projects.result.items.find((item) => item.projectId === "project-a")!;
+    expect(projectA.status).toBe("active");
+    expect(projectA.rootScopeRef?.reference.entityId).toBe(rootScopeRef?.reference.entityId);
+
+    const memberships = await access!.systemAdministration.read({
+      kind: "memberships",
+      schemaVersion: "1",
+      queryId: "query-memberships",
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      sessionToken: administrationSessionToken!,
+      projectId: "project-a",
+    });
+    if (memberships.kind !== "succeeded" || memberships.result.kind !== "memberships")
+      throw new Error("expected membership directory");
+    // 管理员自己的工程成员身份不在此出现：管理面不授予工程业务角色。
+    expect(
+      memberships.result.items.map((item) => ({
+        account: item.accountRef.entityId,
+        roles: item.roles,
+      })),
+    ).toEqual(
+      expect.arrayContaining([{ account: userAccountId, roles: ["project-risk-manager"] }]),
+    );
+
+    const scopes = await access!.systemAdministration.read({
+      kind: "spatial-scopes",
+      schemaVersion: "1",
+      queryId: "query-scopes",
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      sessionToken: administrationSessionToken!,
+      projectId: "project-a",
+    });
+    if (scopes.kind !== "succeeded" || scopes.result.kind !== "spatial-scopes")
+      throw new Error("expected scope directory");
+    expect(
+      scopes.result.items.map((item) => item.scopeRef.reference.entityId),
+    ).toContain(rootScopeRef?.reference.entityId);
+  }, 180_000);
+
+  it("system administration refuses directory and writes for non-administrator sessions", async () => {
+    const userLogin = await access!.login({
+      kind: "login",
+      loginAttemptId: "login-user-administration",
+      loginName: "user001",
+      password: USER_PASSWORD_CHANGED,
+    });
+    const ordinarySessionToken = userLogin.sessionToken;
+    const identity = await access!.systemAdministration.read({
+      kind: "identity",
+      schemaVersion: "1",
+      queryId: "query-user-identity",
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      sessionToken: ordinarySessionToken,
+    });
+    // 普通有效会话唯一能成功返回的读是 identity，且不披露管理员身份。
+    expect(identity).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "identity", isSystemAdministrator: false, allowedActions: [] },
+    });
+    // 目录与写入在读取目标之前就拒绝，因此无法用差异响应探测工程是否存在。
+    for (const kind of ["accounts", "projects"] as const) {
+      const denied = await access!.systemAdministration.read({
+        kind,
+        schemaVersion: "1",
+        queryId: `query-user-${kind}`,
+        requestedAt: "2030-01-01T00:00:00.000Z",
+        sessionToken: ordinarySessionToken,
+      });
+      expect(denied).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    }
+    const unknownProject = await access!.systemAdministration.read({
+      kind: "memberships",
+      schemaVersion: "1",
+      queryId: "query-user-memberships-unknown",
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      sessionToken: ordinarySessionToken,
+      projectId: "project-does-not-exist",
+    });
+    const knownProject = await access!.systemAdministration.read({
+      kind: "memberships",
+      schemaVersion: "1",
+      queryId: "query-user-memberships-known",
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      sessionToken: ordinarySessionToken,
+      projectId: "project-a",
+    });
+    expect(unknownProject).toEqual(knownProject);
+    expect(unknownProject).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+
+    const deniedWrite = await access!.systemAdministration.execute({
+      schemaVersion: "1",
+      commandId: "command-user-disable",
+      idempotencyKey: "idem-user-disable",
+      issuedAt: "2030-01-01T00:00:00.000Z",
+      sessionToken: ordinarySessionToken,
+      payload: {
+        kind: "disable-account",
+        expectedVersion: "none",
+        accountId: userAccountId!,
+      },
+    });
+    expect(deniedWrite).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+
+    // 客户端无法提交、覆盖或重放管理授权引用：载荷联合里根本没有这个字段。
+    const forged = await access!.systemAdministration.execute({
+      schemaVersion: "1",
+      commandId: "command-user-forge-context",
+      idempotencyKey: "idem-user-forge-context",
+      issuedAt: "2030-01-01T00:00:00.000Z",
+      sessionToken: ordinarySessionToken,
+      payload: {
+        kind: "disable-account",
+        expectedVersion: "none",
+        accountId: userAccountId!,
+        authorizationContextRef: adminContext!,
+      },
+    } as never);
+    expect(forged).toMatchObject({ kind: "failed", error: { code: "ACCESS_CONTRACT_INVALID" } });
+    const stillActive = await fixture!.adminPool.query<{ status: string }>(
+      "SELECT status FROM business.local_accounts WHERE account_id = $1",
+      [userAccountId!],
+    );
+    expect(stillActive.rows[0]!.status).toBe("active");
+    await access!.logout({ kind: "logout", sessionToken: ordinarySessionToken });
+  }, 180_000);
+
+  it("system administration executes the six original commands with version and audit boundaries", async () => {
+    const envelope = (commandId: string) => ({
+      schemaVersion: "1" as const,
+      commandId,
+      idempotencyKey: `idem-${commandId}`,
+      issuedAt: "2030-01-01T00:00:00.000Z",
+      sessionToken: administrationSessionToken!,
+    });
+
+    // 1) create-account：预期版本仍被强制，密码只存在于本次请求对象中。
+    const created = await access!.systemAdministration.execute({
+      ...envelope("command-administration-create"),
+      payload: {
+        kind: "create-account",
+        expectedVersion: "none",
+        loginName: "ops001",
+        displayName: "Operations account",
+        password: OPERATIONS_PASSWORD,
+      },
+    });
+    expect(created.kind).toBe("succeeded");
+    if (created.kind !== "succeeded") throw new Error("expected account creation");
+    expect(created.result.kind).toBe("account");
+    const operationsAccountId = created.result.resultRef.entityId;
+    const replayed = await access!.systemAdministration.execute({
+      ...envelope("command-administration-create"),
+      payload: {
+        kind: "create-account",
+        expectedVersion: "none",
+        loginName: "ops001",
+        displayName: "Operations account",
+        password: OPERATIONS_PASSWORD,
+      },
+    });
+    // 幂等身份沿用原收据：重放返回同一引用，不产生第二个账号。
+    expect(replayed).toEqual(created);
+    const duplicateLogin = await fixture!.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM business.local_accounts WHERE login_name = 'ops001'",
+    );
+    expect(duplicateLogin.rows[0]!.count).toBe("1");
+
+    // 2) reset-password：预期版本仍被强制。
+    const staleReset = await access!.systemAdministration.execute({
+      ...envelope("command-administration-reset-stale"),
+      payload: {
+        kind: "reset-password",
+        expectedVersion: { entityId: operationsAccountId, versionId: "999" },
+        accountId: operationsAccountId,
+        password: OPERATIONS_PASSWORD_CHANGED,
+      },
+    });
+    expect(staleReset).toMatchObject({ kind: "failed", error: { code: "STALE_ACCESS_VERSION" } });
+    const accountDirectory = await access!.systemAdministration.read({
+      kind: "accounts",
+      schemaVersion: "1",
+      queryId: "query-accounts-operations",
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      sessionToken: administrationSessionToken!,
+    });
+    if (accountDirectory.kind !== "succeeded" || accountDirectory.result.kind !== "accounts")
+      throw new Error("expected account directory");
+    const operationsItem = accountDirectory.result.items.find(
+      (item) => item.accountRef.entityId === operationsAccountId,
+    )!;
+    expect(operationsItem.passwordChangeRequired).toBe(true);
+    const reset = await access!.systemAdministration.execute({
+      ...envelope("command-administration-reset"),
+      payload: {
+        kind: "reset-password",
+        expectedVersion: {
+          entityId: operationsAccountId,
+          versionId: operationsItem.accountRef.versionId,
+        },
+        accountId: operationsAccountId,
+        password: OPERATIONS_PASSWORD_CHANGED,
+      },
+    });
+    expect(reset).toMatchObject({ kind: "succeeded", result: { kind: "account" } });
+
+    // 3) open-project / 4) revise-membership：纯管理员无需工程身份即可完成访问登记。
+    const opened = await access!.systemAdministration.execute({
+      ...envelope("command-administration-open-project"),
+      payload: {
+        kind: "open-project",
+        projectId: "project-ops",
+        expectedVersion: "none",
+        initialRiskManagerAccountId: operationsAccountId,
+      },
+    });
+    expect(opened).toMatchObject({ kind: "succeeded", result: { kind: "project" } });
+    const projectScopes = await access!.systemAdministration.read({
+      kind: "spatial-scopes",
+      schemaVersion: "1",
+      queryId: "query-scopes-ops",
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      sessionToken: administrationSessionToken!,
+      projectId: "project-ops",
+    });
+    if (projectScopes.kind !== "succeeded" || projectScopes.result.kind !== "spatial-scopes")
+      throw new Error("expected scope directory");
+    const opsRootScopeRef = projectScopes.result.items[0]!.scopeRef;
+    const membership = await access!.systemAdministration.execute({
+      ...envelope("command-administration-membership"),
+      payload: {
+        kind: "revise-membership",
+        projectId: "project-ops",
+        expectedVersion: "none",
+        membershipId: "membership-ops",
+        // 工程经理身份已由 open-project 登记，同一账号不能有第二条成员记录。
+        accountId: roleAccountIds.reviewer!,
+        roles: ["business-viewer"],
+        spatialScopeRefs: [opsRootScopeRef],
+        status: "active",
+      },
+    });
+    expect(membership).toMatchObject({ kind: "succeeded", result: { kind: "membership" } });
+    const membershipDirectory = await access!.systemAdministration.read({
+      kind: "memberships",
+      schemaVersion: "1",
+      queryId: "query-memberships-ops",
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      sessionToken: administrationSessionToken!,
+      projectId: "project-ops",
+    });
+    if (membershipDirectory.kind !== "succeeded" || membershipDirectory.result.kind !== "memberships")
+      throw new Error("expected membership directory");
+    expect(
+      membershipDirectory.result.items.find(
+        (item) => item.membershipRef.entityId === "membership-ops",
+      ),
+    ).toMatchObject({
+      accountRef: { entityId: roleAccountIds.reviewer! },
+      roles: ["business-viewer"],
+      status: "active",
+      spatialScopeRefs: [opsRootScopeRef],
+    });
+
+    // 5) suspend-project：预期版本仍被强制。
+    const staleSuspend = await access!.systemAdministration.execute({
+      ...envelope("command-administration-suspend-stale"),
+      payload: {
+        kind: "suspend-project",
+        projectId: "project-ops",
+        expectedVersion: { entityId: "project-ops", versionId: "999" },
+      },
+    });
+    expect(staleSuspend).toMatchObject({
+      kind: "failed",
+      error: { code: "STALE_ACCESS_VERSION" },
+    });
+    const suspended = await access!.systemAdministration.execute({
+      ...envelope("command-administration-suspend"),
+      payload: {
+        kind: "suspend-project",
+        projectId: "project-ops",
+        expectedVersion: { entityId: "project-ops", versionId: "1" },
+      },
+    });
+    expect(suspended).toMatchObject({ kind: "succeeded", result: { kind: "project" } });
+
+    // 6) disable-account：预期版本仍被强制，凭据撤销沿原会话语义。
+    const staleDisable = await access!.systemAdministration.execute({
+      ...envelope("command-administration-disable-stale"),
+      payload: {
+        kind: "disable-account",
+        expectedVersion: { entityId: operationsAccountId, versionId: "1" },
+        accountId: operationsAccountId,
+      },
+    });
+    expect(staleDisable).toMatchObject({ kind: "failed", error: { code: "STALE_ACCESS_VERSION" } });
+    const disabled = await access!.systemAdministration.execute({
+      ...envelope("command-administration-disable"),
+      payload: {
+        kind: "disable-account",
+        expectedVersion: {
+          entityId: operationsAccountId,
+          versionId: await currentSecurityVersion(operationsAccountId),
+        },
+        accountId: operationsAccountId,
+      },
+    });
+    expect(disabled).toMatchObject({ kind: "succeeded", result: { kind: "account" } });
+
+    // 审计与收据都不含密码：管理面复用原命令的密码边界。
+    const auditText = await fixture!.adminPool.query<{ value: string }>(
+      "SELECT coalesce(string_agg(concat_ws('|', event_kind, outcome, reason_code, subject_ref, project_ref, request_ref, context_ref::text), E'\\n'), '') AS value FROM business.security_audit_events",
+    );
+    const receiptText = await fixture!.adminPool.query<{ value: string }>(
+      "SELECT coalesce(string_agg(payload_sha256 || ':' || coalesce(result_ref::text, ''), E'\\n'), '') AS value FROM business.command_receipts",
+    );
+    expect(auditText.rows[0]!.value).not.toContain(OPERATIONS_PASSWORD);
+    expect(auditText.rows[0]!.value).not.toContain(OPERATIONS_PASSWORD_CHANGED);
+    expect(receiptText.rows[0]!.value).not.toContain(OPERATIONS_PASSWORD);
+    // 管理动作确实落到了原安全审计上。
+    expect(auditText.rows[0]!.value).toContain("command-administration-disable");
+  }, 180_000);
+
+  it("system administration forwards audit failures with rollback and honours revocation immediately", async () => {
+    // 安全审计写入失败时管理写入整体回滚，账号不留下半条事实。
+    await fixture!.adminPool.query("REVOKE INSERT ON TABLE audit.entries FROM riskflow_app");
+    try {
+      const failed = await access!.systemAdministration.execute({
+        schemaVersion: "1",
+        commandId: "command-administration-audit-rollback",
+        idempotencyKey: "idem-administration-audit-rollback",
+        issuedAt: "2030-01-01T00:00:00.000Z",
+        sessionToken: administrationSessionToken!,
+        payload: {
+          kind: "create-account",
+          expectedVersion: "none",
+          loginName: "rollbackops",
+          displayName: "Rollback operations",
+          password: OPERATIONS_PASSWORD,
+        },
+      });
+      expect(failed).toMatchObject({ kind: "failed", error: { code: "ACCESS_TERMINAL_FAILURE" } });
+    } finally {
+      await fixture!.adminPool.query("GRANT INSERT ON TABLE audit.entries TO riskflow_app");
+    }
+    const rolledBack = await fixture!.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM business.local_accounts WHERE login_name = 'rollbackops'",
+    );
+    expect(rolledBack.rows[0]!.count).toBe("0");
+
+    // 撤权立即生效：管理身份不是缓存，每次调用都重新验证当前授予与安全修订。
+    const temporaryAdmin = await access!.systemAdministration.execute({
+      schemaVersion: "1",
+      commandId: "command-administration-create-admin",
+      idempotencyKey: "idem-administration-create-admin",
+      issuedAt: "2030-01-01T00:00:00.000Z",
+      sessionToken: administrationSessionToken!,
+      payload: {
+        kind: "create-account",
+        expectedVersion: "none",
+        loginName: "opsadmin",
+        displayName: "Operations administrator",
+        password: OPERATIONS_PASSWORD,
+      },
+    });
+    if (temporaryAdmin.kind !== "succeeded") throw new Error("expected account creation");
+    const temporaryAdminId = temporaryAdmin.result.resultRef.entityId;
+    await fixture!.adminPool.query(
+      "UPDATE business.local_accounts SET system_administrator = TRUE WHERE account_id = $1",
+      [temporaryAdminId],
+    );
+    const temporaryLogin = await access!.login({
+      kind: "login",
+      loginAttemptId: "login-operations-admin",
+      loginName: "opsadmin",
+      password: OPERATIONS_PASSWORD,
+    });
+    const temporarySession = (
+      await access!.changePassword({
+        kind: "change-password",
+        sessionToken: temporaryLogin.sessionToken,
+        newPassword: OPERATIONS_PASSWORD_CHANGED,
+      })
+    ).sessionToken;
+    const temporaryIdentity = await access!.systemAdministration.read({
+      kind: "identity",
+      schemaVersion: "1",
+      queryId: "query-operations-admin-identity",
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      sessionToken: temporarySession,
+    });
+    expect(temporaryIdentity).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "identity", isSystemAdministrator: true },
+    });
+
+    await fixture!.adminPool.query(
+      "UPDATE business.local_accounts SET system_administrator = FALSE, security_version = security_version + 1 WHERE account_id = $1",
+      [temporaryAdminId],
+    );
+    const afterRevocation = await access!.systemAdministration.read({
+      kind: "accounts",
+      schemaVersion: "1",
+      queryId: "query-operations-admin-revoked",
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      sessionToken: temporarySession,
+    });
+    expect(afterRevocation).toMatchObject({
+      kind: "failed",
+      error: { code: "SESSION_REVOKED" },
+    });
+  }, 180_000);
+
+  it("system administration never grants project business capability", async () => {
+    // 纯管理员账号没有任何工程成员身份，因此管理面成功不等于拿到业务能力。
+    const identities = [
+      administrationSessionToken!,
+      (
+        await access!.login({
+          kind: "login",
+          loginAttemptId: "login-opsadmin-business",
+          loginName: "opsadmin",
+          password: OPERATIONS_PASSWORD_CHANGED,
+        })
+      ).sessionToken,
+    ];
+    for (const sessionToken of identities) {
+      for (const branch of [
+        "projection.query",
+        "engineering-data.context-read",
+        "review-audit.decide-review",
+      ] as const) {
+        await expect(
+          access!.authorize({
+            invocation: { kind: "human-session", sessionToken },
+            invocationId: `authorize-administrator-business-${branch}`,
+            projectId: "project-a",
+            branch,
+            requestedSpatialScopeRefs: [],
+            requestedSourceVersionRefs: [],
+          }),
+        ).rejects.toMatchObject({ details: { code: "AUTHORIZATION_DENIED" } });
+      }
+    }
+  }, 180_000);
+
   it("credential revocation, key-version invalidation, and session timeouts", async () => {
     const resetAccount = await fixture!.adminPool.query<{ security_version: number }>(
       "SELECT security_version FROM business.local_accounts WHERE account_id = $1",
@@ -1487,4 +2042,5 @@ describe.sequential("local identity and project authorization", () => {
       }),
     ).rejects.toMatchObject({ details: { code: "SESSION_EXPIRED" } });
   }, 180_000);
+
 });

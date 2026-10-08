@@ -1406,4 +1406,199 @@ describe("postgres agent runtime adapter", () => {
     const after = await readSideEffectCounters();
     expect(after).toEqual(before);
   });
+
+  /**
+   * C35 只读面：授权先于存在性——跨工程、缺能力与游标错配都在命中存储前收口；
+   * 读取本身不写回执、审计或事件。
+   */
+  it("serves the bounded UI read face without leaking authority or write effects", async () => {
+    const uiReadAuthorizationFor = async (requestId: string, projectId = "project-1") => {
+      const decision = await access!.authorize({
+        invocation: { kind: "human-session", sessionToken: managerSessionToken! },
+        invocationId: requestId,
+        projectId,
+        branch: "agent-task.read",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      });
+      return decision.context;
+    };
+    const uiQuery = async (
+      requestId: string,
+      kind: string,
+      payload: object,
+      overrides: Record<string, unknown> = {},
+    ) =>
+      readerAdapter.read({
+        queryId: requestId,
+        projectId: "project-1",
+        actorId: managerAccountId!,
+        requestedAt: READ_REQUESTED_AT,
+        authorization: await uiReadAuthorizationFor(requestId),
+        kind,
+        payload,
+        ...overrides,
+      } as never);
+
+    const before = await readSideEffectCounters();
+
+    // 缺能力：一律拒绝，且不泄露目标是否存在。
+    const missingCapability = await readerAdapter.read({
+      queryId: "ui-read-missing-capability",
+      projectId: "project-1",
+      actorId: managerAccountId!,
+      requestedAt: READ_REQUESTED_AT,
+      authorization: await readAuthorizationFor("ui-read-missing-capability"),
+      kind: "list",
+      payload: {},
+    } as never);
+    expect(missingCapability.kind).toBe("failed");
+    if (missingCapability.kind !== "failed") return;
+    expect(missingCapability.error.code).toBe("AUTHORIZATION_DENIED");
+
+    // 跨工程：读面只服务当前工程内获准任务。
+    const crossProject = await readerAdapter.read({
+      queryId: "ui-read-cross-project",
+      projectId: "project-1",
+      actorId: managerAccountId!,
+      requestedAt: READ_REQUESTED_AT,
+      authorization: await uiReadAuthorizationFor("ui-read-cross-project", "project-2"),
+      kind: "detail",
+      payload: { agentTaskRef: terminalFailureTaskRef! },
+    } as never);
+    expect(crossProject.kind).toBe("failed");
+
+    // 列表：按公共状态返回摘要，公共 failed 同时覆盖可重试与终局失败两类内部状态。
+    const list = await uiQuery("ui-read-list", "list", { pageSize: 2 });
+    expect(list.kind).toBe("succeeded");
+    if (list.kind !== "succeeded" || list.result.kind !== "list") return;
+    const publicFailed = await uiQuery("ui-read-list-failed", "list", {
+      status: "failed",
+      pageSize: 25,
+    });
+    expect(publicFailed.kind).toBe("succeeded");
+    if (publicFailed.kind !== "succeeded" || publicFailed.result.kind !== "list") return;
+    const internalStatuses = new Set(
+      (
+        await fixture.postgres.adminPool.query<{ status: string }>(
+          "SELECT status FROM business.agent_tasks WHERE project_id = $1",
+          ["project-1"],
+        )
+      ).rows.map((row) => row.status),
+    );
+    // 公共 failed 必须等于内部 retryable-failure 与 terminal-failure 的合计，不能只算其一。
+    const expectedFailed = (
+      await fixture.postgres.adminPool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM business.agent_tasks WHERE project_id = $1 AND status IN ($2, $3)",
+        ["project-1", "retryable-failure", "terminal-failure"],
+      )
+    ).rows[0]?.count;
+    const expectedFailedCount = Number(expectedFailed);
+    // 至少存在终局失败任务，公共 failed 的条数必须等于两类内部失败状态的行数合计。
+    expect(internalStatuses.has("terminal-failure")).toBe(true);
+    expect(expectedFailedCount).toBeGreaterThan(0);
+    expect(publicFailed.result.items.length).toBe(expectedFailedCount);
+    expect(
+      publicFailed.result.items.every((item) => item.status === "failed"),
+    ).toBe(true);
+    expect(list.result.asOfRecordedAt).toBe(READ_REQUESTED_AT);
+    for (const item of list.result.items) {
+      expect(item.agentTaskRef.kind).toBe("agent-task");
+      // 摘要不含输入正文、预算或行动。
+      expect(Object.keys(item).sort()).toEqual(
+        [
+          "agentTaskRef",
+          "createdAt",
+          "frozenInputRef",
+          "initiatorActorId",
+          "parentRunRef",
+          "status",
+          "taskVersion",
+          "updatedAt",
+        ].sort(),
+      );
+    }
+
+    // 游标绑定：伪造或错配的游标失败关闭，而不是从头返回一页。
+    const forged = await uiQuery("ui-read-forged-cursor", "list", {
+      pageSize: 2,
+      cursor: "bm90LWEtY3Vyc29y",
+    });
+    expect(forged.kind).toBe("failed");
+    const rebound = await uiQuery("ui-read-rebound-cursor", "list", {
+      pageSize: 2,
+      cursor: list.result.nextCursor,
+    });
+    expect(rebound.kind).toBe("succeeded");
+    if (rebound.kind !== "succeeded" || rebound.result.kind !== "list") return;
+    const changedFilter = await uiQuery("ui-read-rebound-cursor", "list", {
+      pageSize: 2,
+      taskType: "data-cleaning",
+      cursor: list.result.nextCursor,
+    });
+    expect(changedFilter.kind).toBe("failed");
+
+    // 详情：原预算策略与台账整体呈现，安全错误只有结构化字段。
+    const detail = await uiQuery("ui-read-detail", "detail", {
+      agentTaskRef: terminalFailureTaskRef!,
+    });
+    expect(detail.kind).toBe("succeeded");
+    if (detail.kind !== "succeeded" || detail.result.kind !== "detail") return;
+    expect(detail.result.budget.policy).toBeDefined();
+    expect(detail.result.budget.ledger).toBeDefined();
+    expect(detail.result.safeError?.code).toBe("AGENT_VALIDATION_REJECTED");
+    expect(Object.keys(detail.result.safeError ?? {}).sort()).not.toContain("message");
+    // 终局任务无法恢复/取消，也没有待确认提案。
+    expect(
+      detail.result.actions.map((action) => action.branch).sort(),
+    ).toEqual(["agent-task.cancel-task", "agent-task.confirm-command", "agent-task.resume-task"]);
+
+    // 行动、候选与逐项校验按页返回引用与实际用量，不返回命令或模型正文。
+    const actions = await uiQuery("ui-read-actions", "actions", {
+      agentTaskRef: terminalFailureTaskRef!,
+    });
+    expect(actions.kind).toBe("succeeded");
+    if (actions.kind !== "succeeded" || actions.result.kind !== "actions") return;
+    expect(actions.result.items.length).toBe(2);
+    for (const entry of actions.result.items) {
+      expect(Object.keys(entry).sort()).not.toContain("modelOutput");
+      expect(entry.usage).toBeDefined();
+    }
+
+    const candidates = await uiQuery("ui-read-candidates", "candidates", {
+      agentTaskRef: terminalFailureTaskRef!,
+    });
+    expect(candidates.kind).toBe("succeeded");
+    if (candidates.kind !== "succeeded" || candidates.result.kind !== "candidates") return;
+    expect(candidates.result.items.map((entry) => entry.candidateVersion)).toEqual([1, 2]);
+
+    const validation = await uiQuery("ui-read-validation", "validation", {
+      agentTaskRef: terminalFailureTaskRef!,
+      candidateVersion: 1,
+    });
+    expect(validation.kind).toBe("succeeded");
+    if (validation.kind !== "succeeded" || validation.result.kind !== "validation") return;
+    expect(validation.result.candidateVersion).toBe(1);
+
+    // 未知候选版本的校验引用不可见：整页安全失败，不用替代内容填补。
+    const unknownCandidate = await uiQuery("ui-read-validation-unknown", "validation", {
+      agentTaskRef: terminalFailureTaskRef!,
+      candidateVersion: 99,
+    });
+    expect(unknownCandidate.kind).toBe("failed");
+
+    // 启动上下文：终局任务不能作为交互启动来源。
+    const launch = await uiQuery("ui-read-launch", "launch-context", {
+      sourceAgentTaskRef: terminalFailureTaskRef!,
+    });
+    expect(launch.kind).toBe("succeeded");
+    if (launch.kind !== "succeeded" || launch.result.kind !== "launch-context") return;
+    expect(launch.result.launchContext).toEqual({
+      supported: false,
+      reasonCode: "SOURCE_TASK_TERMINAL",
+    });
+
+    // 只读面不产生任何回执、审计或事件。
+    expect(await readSideEffectCounters()).toEqual(before);
+  });
 });

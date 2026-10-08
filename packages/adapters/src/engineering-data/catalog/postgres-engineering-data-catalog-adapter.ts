@@ -36,9 +36,11 @@ import {
   DataCleaningResultV1Schema,
   type DataCleaningResultV1,
 } from "@riskflow/core/engineering-data/cleaning";
-import type {
-  EngineeringDataReadResolutionResultV1,
-  ResolveEngineeringDataReadQueryV1,
+import {
+  SourceDeliveryDescriptorV1Schema,
+  type EngineeringDataReadResolutionResultV1,
+  type ResolveEngineeringDataReadQueryV1,
+  type SourceDeliveryDescriptorV1,
 } from "@riskflow/core/engineering-data/context-source";
 import type {
   MonitoringResultV1,
@@ -94,6 +96,7 @@ interface SourceDeliveryRow {
   source_delivery_id: string;
   project_id: string;
   source_metadata: unknown;
+  descriptor: unknown;
 }
 
 interface ConversionRow {
@@ -576,12 +579,19 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
     });
     const deliveries = await this.#db
       .selectFrom("business.source_deliveries")
-      .select(["source_delivery_id", "project_id", "source_metadata"])
+      .select(["source_delivery_id", "project_id", "source_metadata", "descriptor"])
       .where("project_id", "=", query.projectId)
       .execute();
     const metadataByDelivery = new Map(
       deliveries.map((row) => [row.source_delivery_id, row.source_metadata] as const),
     );
+    // 交付 descriptor 按登记 Schema 解析：只取交付方式与已登记的连接定义引用，摘要、指纹与
+    // 任何连接秘密都不转出。解析不出的登记不参与投影，也不据此推断连接状态。
+    const descriptorByDelivery = new Map<string, SourceDeliveryDescriptorV1>();
+    for (const row of deliveries) {
+      const parsed = SourceDeliveryDescriptorV1Schema.safeParse(row.descriptor);
+      if (parsed.success) descriptorByDelivery.set(row.source_delivery_id, parsed.data);
+    }
     const conversions = await this.#db
       .selectFrom("business.structured_document_conversions")
       .select(["project_id", "source_version_ref", "status", "completed_at"])
@@ -646,6 +656,12 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
       const conversion = conversionBySource.get(refKey(sourceRef));
       const segmentSetRef = segmentSetBySourceVersionId.get(row.source_version_id);
       const cleaningSummary = cleaning.get(refKey(sourceRef));
+      const descriptor = descriptorByDelivery.get(row.source_delivery_id);
+      // file-upload 的登记 descriptor 本身不持有连接定义引用，缺席即「未登记连接」。
+      const connectionDefinitionRef =
+        descriptor === undefined || descriptor.kind === "file-upload"
+          ? undefined
+          : descriptor.connectionDefinitionRef;
       items.push({
         sourceVersionRef: { kind: "source-version", reference: sourceRef.reference },
         sourceId: row.source_id,
@@ -673,6 +689,8 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
               cleaningExclusionCount: cleaningSummary.exclusionCount,
             }),
         ...(segmentSetRef === undefined ? {} : { sourceSegmentSetRef: segmentSetRef }),
+        ...(descriptor === undefined ? {} : { deliveryKind: descriptor.kind }),
+        ...(connectionDefinitionRef === undefined ? {} : { connectionDefinitionRef }),
       });
     }
     const from = cursor ?? 0;

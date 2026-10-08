@@ -21,6 +21,7 @@ import {
   RISK_CANDIDATE_FINALIZATION_SCHEMA_VERSION_V1,
   RiskCandidateFinalizationResultRowV1Schema,
   StandardizedRiskRecordWriteV1Schema,
+  candidateSetRefFor,
 } from "@riskflow/core/identification/candidate-finalization";
 import {
   IdentificationGraphArtifactBodyV1Schema,
@@ -35,6 +36,7 @@ import {
   RiskIdentificationReadQueryV1Schema,
   type AgentTaskRefV1,
   type AuthorizationContextV1,
+  type IdentificationCandidateSetRefV1,
   type IdentificationGroupRefV1,
   type ModuleBranchV1,
   type ModuleCapabilityV1,
@@ -468,6 +470,127 @@ const registerGraphRows = async (
   });
 };
 
+/** C22 中间正文经 C04 写入：目的码由调用方给出，正文不进入登记表。 */
+const putFinalizationBody = async (
+  fixture: ReadTestFixture,
+  input: {
+    readonly artifactId: string;
+    readonly purposeCode: string;
+    readonly body: unknown;
+  },
+): Promise<ArtifactRefV1> => {
+  const commandId = `c33-fixture-put-${input.artifactId}`;
+  const put = await fixture.artifactStore.put(
+    ArtifactPutCommandV1Schema.parse({
+      schemaVersion: "1",
+      commandId,
+      idempotencyKey: commandId,
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      issuedAt: TIMESTAMP,
+      authorization: AuthorizationContextV1Schema.parse({
+        schemaVersion: "1",
+        authorizationContextRef: refOf("authorization-context", "authorization-c33"),
+        actorId: ACTOR_ID,
+        projectId: PROJECT_ID,
+        grantedCapabilities: ["risk-identification.finalize"],
+        spatialScopeRefs: [...SCOPES],
+        sourceAccessGrantRefs: [...SOURCE_GRANTS],
+        authorizationPolicyRef: plainRef("authorization-policy"),
+        decidedAt: TIMESTAMP,
+        invocation: { kind: "human" },
+      }),
+      requiredCapability: "risk-identification.finalize",
+      artifactId: input.artifactId,
+      artifactKind: "content",
+      purposeCode: input.purposeCode,
+      mediaType: "application/json",
+      parentArtifactRefs: [],
+      evidenceReferences: [],
+      additionalSpatialScopeRefs: [],
+      additionalSourceAccessGrantRefs: [],
+    }),
+    (async function* () {
+      yield new TextEncoder().encode(JSON.stringify(input.body));
+    })(),
+  );
+  return put.artifactRef;
+};
+
+/**
+ * 登记 C22 候选集行：登记引用逐字取自调用方给定的候选集引用，夹具不替生产派生任何身份。
+ * 同一工作项的多个版本即该工作项下先后登记的候选集（含修正登记）。
+ */
+const registerCandidateSets = async (
+  fixture: ReadTestFixture,
+  input: {
+    readonly candidateSetRefs: readonly IdentificationCandidateSetRefV1[];
+    readonly workItemRef: ReturnType<typeof refOf>;
+    readonly inputSnapshotRef: ReturnType<typeof refOf>;
+    readonly artifactRef: ArtifactRefV1;
+    readonly occurredAt: string;
+    readonly commandSuffix: string;
+  },
+): Promise<void> => {
+  const rows = input.candidateSetRefs.map((candidateSetRef) =>
+    RiskCandidateFinalizationResultRowV1Schema.parse({
+      schemaVersion: RISK_CANDIDATE_FINALIZATION_SCHEMA_VERSION_V1,
+      commandId: `c33-fixture-candidate-${input.commandSuffix}`,
+      projectId: PROJECT_ID,
+      resultId: candidateSetRef.reference.entityId,
+      resultVersionId: candidateSetRef.reference.versionId,
+      requestDigest: sha(`candidate-request-${candidateSetRef.reference.versionId}`),
+      artifactRef: input.artifactRef,
+      inputSnapshotRef: input.inputSnapshotRef,
+      authorizationScopeDigest: registrationScopeDigest,
+      actorRef: ACTOR_ID,
+      authorizationContextRef: refOf("authorization-context", "authorization-c33"),
+      resultKind: "candidate-set",
+      workItemRef: input.workItemRef,
+      modelContextArtifactSetRef: refOf(
+        "model-context-artifact-set",
+        `model-context:${PROJECT_ID}:${input.workItemRef.reference.entityId}`,
+      ),
+      candidateSetRef,
+    }),
+  );
+  const head = rows[0] as (typeof rows)[number];
+  const command: AtomicCommandV1 = {
+    projectId: PROJECT_ID,
+    commandKind: "identification.generate-candidates",
+    commandId: `c33-fixture-candidate-${input.commandSuffix}`,
+    idempotencyKey: `c33-fixture-candidate-${input.commandSuffix}`,
+    payload: { fixture: "合成样本、待甲方复核" },
+    actorRef: ACTOR_ID,
+    authorizationContextRef: head.authorizationContextRef,
+    issuedAt: TIMESTAMP,
+  };
+  await fixture.transactionUnit.execute(command, async (context) => {
+    const outcome = await fixture.finalizationAdapter.registerResults(
+      { rows, occurredAt: input.occurredAt },
+      context,
+    );
+    if (outcome.kind !== "registered") throw new TypeError("candidate set seeding failed");
+    return {
+      resultRef: head.artifactRef,
+      audit: {
+        auditEntryId: `${command.commandId}:audit`,
+        projectId: PROJECT_ID,
+        action: command.commandKind,
+        targetRef: head.artifactRef,
+        actorRef: ACTOR_ID,
+        authorizationContextRef: command.authorizationContextRef,
+        occurredAt: input.occurredAt,
+        recordedAt: input.occurredAt,
+        version: { entityId: head.resultId, versionId: head.resultVersionId },
+        commandId: command.commandId,
+        idempotencyKey: command.idempotencyKey,
+      },
+      events: [],
+    } satisfies AtomicCommitV1;
+  });
+};
+
 const READ_BRANCH_FOR: Record<RiskIdentificationReadQueryV1["kind"], ModuleBranchV1> = {
   "run-list": "risk-identification.run-list",
   "run-read": "risk-identification.run-read",
@@ -582,12 +705,18 @@ interface SeededRunV1 {
   readonly routeDecisionRef: ReturnType<typeof refOf>;
   readonly reviewDecisionRef: ReturnType<typeof refOf>;
   readonly routeSetRef: ReturnType<typeof refOf>;
+  /** 本运行工作项下已登记的候选集引用（按登记顺序），测试据此核对读结果。 */
+  readonly candidateSetRefs: readonly IdentificationCandidateSetRefV1[];
 }
 
 /** 完整运行：工作计划 + I1/I3/I5/I7 阶段正文 + 验收路由集 + 一条标准化风险记录 + run-state。 */
 const seedCompletedRun = async (
   fixture: ReadTestFixture,
-  input: { readonly suffix: string; readonly validAt: string },
+  input: {
+    readonly suffix: string;
+    readonly validAt: string;
+    readonly candidateSetVersions?: readonly string[];
+  },
 ): Promise<SeededRunV1> => {
   const { suffix } = input;
   const runId = `workflow-run:${PROJECT_ID}:${suffix}`;
@@ -840,41 +969,11 @@ const seedCompletedRun = async (
     authorizationContextRef: refOf("authorization-context", "authorization-c33"),
     routedAt: input.validAt,
   });
-  const encoder = new TextEncoder();
-  const routeSetPut = await fixture.artifactStore.put(
-    ArtifactPutCommandV1Schema.parse({
-      schemaVersion: "1",
-      commandId: `c33-fixture-put-route-set-${suffix}`,
-      idempotencyKey: `c33-fixture-put-route-set-${suffix}`,
-      projectId: PROJECT_ID,
-      actorId: ACTOR_ID,
-      issuedAt: TIMESTAMP,
-      authorization: AuthorizationContextV1Schema.parse({
-        schemaVersion: "1",
-        authorizationContextRef: refOf("authorization-context", "authorization-c33"),
-        actorId: ACTOR_ID,
-        projectId: PROJECT_ID,
-        grantedCapabilities: ["risk-identification.finalize"],
-        spatialScopeRefs: [...SCOPES],
-        sourceAccessGrantRefs: [...SOURCE_GRANTS],
-        authorizationPolicyRef: plainRef("authorization-policy"),
-        decidedAt: TIMESTAMP,
-        invocation: { kind: "human" },
-      }),
-      requiredCapability: "risk-identification.finalize",
-      artifactId: `c33-body-route-set-${suffix}`,
-      artifactKind: "content",
-      purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.acceptanceRouteSet,
-      mediaType: "application/json",
-      parentArtifactRefs: [],
-      evidenceReferences: [],
-      additionalSpatialScopeRefs: [],
-      additionalSourceAccessGrantRefs: [],
-    }),
-    (async function* () {
-      yield encoder.encode(JSON.stringify(routeSet));
-    })(),
-  );
+  const routeSetArtifactRef = await putFinalizationBody(fixture, {
+    artifactId: `c33-body-route-set-${suffix}`,
+    purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.acceptanceRouteSet,
+    body: routeSet,
+  });
   const routeSetRow = RiskCandidateFinalizationResultRowV1Schema.parse({
     schemaVersion: RISK_CANDIDATE_FINALIZATION_SCHEMA_VERSION_V1,
     commandId: `c33-fixture-route-set-${suffix}`,
@@ -882,7 +981,7 @@ const seedCompletedRun = async (
     resultId: routeSetRef.reference.entityId,
     resultVersionId: routeSetRef.reference.versionId,
     requestDigest: sha(`route-set-request-${suffix}`),
-    artifactRef: routeSetPut.artifactRef,
+    artifactRef: routeSetArtifactRef,
     inputSnapshotRef,
     authorizationScopeDigest: registrationScopeDigest,
     actorRef: ACTOR_ID,
@@ -1029,6 +1128,31 @@ const seedCompletedRun = async (
     });
   }
 
+  // 候选集登记按生产顺序落在 run-state 之前：run-read 的精确版本快照只组合不晚于该
+  // run-state 版本落库的登记事实，晚于它的登记不进入该版本读结果。
+  const candidateSetRefs = (input.candidateSetVersions ?? []).map((requestDigest) =>
+    candidateSetRefFor({
+      projectId: PROJECT_ID,
+      workItemEntityId: workItemRef.reference.entityId,
+      requestDigest,
+    }),
+  );
+  if (candidateSetRefs.length > 0) {
+    const candidateArtifactRef = await putFinalizationBody(fixture, {
+      artifactId: `c33-body-candidate-set-${suffix}`,
+      purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.candidateSet,
+      body: { fixture: "合成样本、待甲方复核" },
+    });
+    await registerCandidateSets(fixture, {
+      candidateSetRefs,
+      workItemRef,
+      inputSnapshotRef,
+      artifactRef: candidateArtifactRef,
+      occurredAt: input.validAt,
+      commandSuffix: suffix,
+    });
+  }
+
   const runStateArtifactRef = await putGraphBody(fixture, {
     artifactId: `c33-body-run-state-${suffix}`,
     body: runStateBody({
@@ -1093,6 +1217,7 @@ const seedCompletedRun = async (
     routeDecisionRef,
     reviewDecisionRef,
     routeSetRef,
+    candidateSetRefs,
   };
 };
 
@@ -1704,5 +1829,71 @@ describe.sequential("PostgreSQL risk identification read adapter (C33)", () => {
     );
     if (emptyList.kind !== "succeeded") throw new TypeError("other project run-list failed");
     expect(emptyList.result.items).toEqual([]);
+  });
+
+  it("run-read 只转出本运行工作项下已登记的候选集引用，实体与身份版本逐字取自登记行", async () => {
+    const f = requireFixture();
+    // 同一工作项的修正登记是同一身份的新版本：原候选集与修正候选集都必须可选。
+    const seeded = await seedCompletedRun(f, {
+      suffix: "candidate",
+      validAt: "2030-01-01T00:05:00.000Z",
+      candidateSetVersions: [sha("candidate-set-original"), sha("candidate-set-revised")],
+    });
+    expect(seeded.candidateSetRefs).toHaveLength(2);
+    expect(seeded.candidateSetRefs[0]?.reference.entityId).toBe(
+      seeded.candidateSetRefs[1]?.reference.entityId,
+    );
+    // 属于另一个工作项的登记事实，不得混入本运行。
+    const otherWorkItemRef = refOf("identification-work-item", "candidate-work-item-other");
+    const foreignRef = candidateSetRefFor({
+      projectId: PROJECT_ID,
+      workItemEntityId: otherWorkItemRef.reference.entityId,
+      requestDigest: sha("candidate-set-foreign"),
+    });
+    await registerCandidateSets(f, {
+      candidateSetRefs: [foreignRef],
+      workItemRef: otherWorkItemRef,
+      inputSnapshotRef: refOf("identification-input-snapshot", "identification-input-snapshot:c33"),
+      artifactRef: await putFinalizationBody(f, {
+        artifactId: "c33-body-candidate-set-foreign",
+        purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.candidateSet,
+        body: { fixture: "合成样本、待甲方复核" },
+      }),
+      occurredAt: "2030-01-01T00:05:00.000Z",
+      commandSuffix: "foreign",
+    });
+
+    const result = await f.reader.read(readQuery(f, "run-read", { runRef: seeded.runRef }));
+    if (result.kind !== "succeeded") throw new TypeError("run-read failed");
+    // 本运行工作项下的原登记与修正登记都在集合内，实体与身份版本逐字等于登记行。
+    expect(result.result.revisedCandidateRefs).toEqual(seeded.candidateSetRefs);
+    expect(result.result.revisedCandidateRefs).not.toContainEqual(foreignRef);
+
+    // 未登记候选集事实的运行不留空集合冒充「已登记且无候选」。
+    const bare = await seedBareRun(f, {
+      suffix: "candidate-bare",
+      validAt: "2030-01-01T00:06:00.000Z",
+      stage: "I3",
+      status: "running",
+    });
+    const bareResult = await f.reader.read(readQuery(f, "run-read", { runRef: bare }));
+    if (bareResult.kind !== "succeeded") throw new TypeError("bare run-read failed");
+    expect(bareResult.result.revisedCandidateRefs).toBeUndefined();
+  });
+
+  it("run-read 候选集引用超出契约上界时整读失败，不截断冒充完整", async () => {
+    const f = requireFixture();
+    const seeded = await seedCompletedRun(f, {
+      suffix: "candidate-overflow",
+      validAt: "2030-01-01T00:07:00.000Z",
+      candidateSetVersions: Array.from({ length: 257 }, (_, index) =>
+        sha(`candidate-set-overflow-${index}`),
+      ),
+    });
+
+    const result = await f.reader.read(readQuery(f, "run-read", { runRef: seeded.runRef }));
+    if (result.kind !== "failed") throw new TypeError("overflow run-read should fail closed");
+    expect(result.error.code).toBe("BUSINESS_BLOCKED");
+    expect(result.error.blockerKind).toBe("run-read-reference-overflow");
   });
 });

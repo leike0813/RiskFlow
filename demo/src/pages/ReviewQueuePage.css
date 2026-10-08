@@ -107,6 +107,22 @@
   line-height: 20px;
 }
 
+/* 行内「详情」入口：与同排按钮同尺寸，但不表达不可用状态 */
+.rq-link-action {
+  display: inline-block;
+  padding: 4px 12px;
+  font-size: 13px;
+  line-height: 20px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.rq-link-action:hover {
+  background: var(--bluegray-soft);
+  text-decoration: none;
+}
+
 .rq-outcomes {
   list-style: none;
   font-size: 13px;

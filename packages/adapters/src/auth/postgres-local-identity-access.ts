@@ -28,6 +28,12 @@ import {
   ReadSessionCommandV1Schema,
   SessionMetadataV1Schema,
   SessionResultV1Schema,
+  SYSTEM_ACCESS_ACTIONS_V1,
+  SYSTEM_ADMINISTRATION_PAGE_SIZE_DEFAULT_V1,
+  SystemAdministrationCommandV1Schema,
+  SystemAdministrationExecuteResultV1Schema,
+  SystemAdministrationReadQueryV1Schema,
+  SystemAdministrationReadResultV1Schema,
   type AccessCommandResultV1,
   type AccessErrorCodeV1,
   type AuthorizationDecisionV1,
@@ -43,6 +49,12 @@ import {
   type SessionResultV1,
   type SpatialScopeNodeV1,
   type SourceAccessPolicyV1,
+  type SystemAdministrationCommandV1,
+  type SystemAdministrationExecuteResultV1,
+  type SystemAdministrationPortV1,
+  type SystemAdministrationReadQueryV1,
+  type SystemAdministrationReadResultPayloadV1,
+  type SystemAdministrationReadResultV1,
   type LocalIdentityAccessV1,
 } from "@riskflow/core/access";
 import {
@@ -123,8 +135,15 @@ export interface BootstrapInitialSystemAdministratorConfig {
   readonly randomBytes?: RandomBytes;
 }
 
+/**
+ * C06 适配器：原 LocalIdentityAccessV1 与独立系统管理面并列挂在同一个对象上。
+ *
+ * 系统管理面由同一个适配器实现，因此共用同一连接、同一时钟与同一 C06 事务语义；
+ * 它不改变 LocalIdentityAccessV1 的任何方法语义，上层 mock 也无需实现它。
+ */
 export interface PostgresLocalIdentityAccess extends LocalIdentityAccessV1 {
   close(): Promise<void>;
+  readonly systemAdministration: SystemAdministrationPortV1;
 }
 
 const jsonValue = (value: unknown): JsonValue => value as JsonValue;
@@ -3070,7 +3089,439 @@ export const createPostgresLocalIdentityAccess = (
     }
   };
 
+  /**
+   * 会话自省同一路径上的管理身份判定：只有账号当前持有管理员授予才返回管理员身份。
+   *
+   * 刻意不接受任何调用方传入的管理上下文，也不在此推断工程业务能力——管理面只回答
+   * 「这个账号现在是不是系统管理员」，普通有效会话因此只会得到 false。
+   */
+  const currentAdministrationIdentity = async (
+    database: AccessDb,
+    sessionToken: string,
+    stage: string,
+    requireAdministration: boolean,
+  ): Promise<{ readonly account: LocalAccountRow; readonly isSystemAdministrator: boolean }> => {
+    const authenticated = await authenticateSession(database, sessionToken, stage, true);
+    const administrator = isSystemAdministrator(authenticated.account);
+    if (!administrator && requireAdministration) {
+      throw makeAccessError("AUTHORIZATION_DENIED", stage, clock);
+    }
+    return { account: authenticated.account, isSystemAdministrator: administrator };
+  };
+
+  const directoryPageSize = (pageSize: number | undefined): number =>
+    pageSize ?? SYSTEM_ADMINISTRATION_PAGE_SIZE_DEFAULT_V1;
+
+  /**
+   * 取本次调用的服务端管理授权引用。
+   *
+   * 授权上下文由唯一约束绑定在 (invocation_id, project_id, branch) 上，因此同一 commandId
+   * 的网络重试必须复用同一个引用——幂等收据才认得这是同一次命令，而不是异载荷冲突。
+   * 只有仍然有效、属于同一 actor 且安全修订一致的那一个才可复用；已过期或已冻结的引用
+   * 不会被捡起来继续用。
+   */
+  const administrationContextRef = async (
+    database: AccessDb,
+    account: LocalAccountRow,
+    invocationId: string,
+    now: Date,
+  ): Promise<AuthorizationContextRefV1> => {
+    const existing = await database
+      .selectFrom("business.authorization_contexts")
+      .select(["context_id", "version_id", "actor_id", "revision_snapshot", "expires_at"])
+      .where("invocation_id", "=", invocationId)
+      .where("project_id", "=", SYSTEM_NAMESPACE)
+      .where("branch", "=", "access-administration")
+      .executeTakeFirst();
+    const snapshot = existing?.revision_snapshot;
+    const currentSecurityVersion =
+      typeof snapshot === "object" &&
+      snapshot !== null &&
+      !Array.isArray(snapshot) &&
+      "accountSecurityVersion" in snapshot
+        ? snapshot.accountSecurityVersion
+        : undefined;
+    if (
+      existing !== undefined &&
+      existing.actor_id === account.account_id &&
+      currentSecurityVersion === account.security_version &&
+      asDate(existing.expires_at).getTime() > now.getTime()
+    ) {
+      return contextRef(existing.context_id, existing.version_id);
+    }
+    return insertSystemAdministrationContext(database, account, invocationId, now);
+  };
+
+  /**
+   * 账号目录：有界 keyset，只按当前访问事实投影显示身份、状态与当前版本引用。
+   *
+   * 游标是上一页最后一个账号标识；`security_version` 作为账号当前修订，
+   * 密码派生值与会话 token 都不在此投影。
+   */
+  const readAccountDirectory = async (
+    database: AccessDb,
+    cursor: string | undefined,
+    pageSize: number,
+  ): Promise<SystemAdministrationReadResultPayloadV1> => {
+    const rows = await database
+      .selectFrom("business.local_accounts")
+      .select([
+        "account_id",
+        "login_name",
+        "display_name",
+        "status",
+        "password_change_required",
+        "security_version",
+      ])
+      .where("account_id", ">", cursor ?? "")
+      .orderBy("account_id")
+      .limit(pageSize + 1)
+      .execute();
+    const page = rows.slice(0, pageSize);
+    return {
+      kind: "accounts",
+      items: page.map((row) => ({
+        accountRef: accountRevisionRef(row.account_id, row.security_version),
+        loginName: row.login_name,
+        displayName: row.display_name,
+        status: row.status,
+        passwordChangeRequired: row.password_change_required,
+      })),
+      ...(rows.length > pageSize && page.length > 0
+        ? { nextCursor: page[page.length - 1]!.account_id }
+        : {}),
+    };
+  };
+
+  /** 工程目录：工程标识、状态、当前访问修订与根范围引用，不含任何业务对象。 */
+  const readProjectDirectory = async (
+    database: AccessDb,
+    cursor: string | undefined,
+    pageSize: number,
+  ): Promise<SystemAdministrationReadResultPayloadV1> => {
+    const rows = await database
+      .selectFrom("business.access_projects")
+      .select(["project_id", "status", "access_version", "root_scope_id"])
+      .where("project_id", ">", cursor ?? "")
+      .orderBy("project_id")
+      .limit(pageSize + 1)
+      .execute();
+    const page = rows.slice(0, pageSize);
+    const rootScopeIds = page.map((row) => row.root_scope_id);
+    const roots =
+      rootScopeIds.length === 0
+        ? []
+        : await database
+            .selectFrom("business.access_spatial_scopes")
+            .select(["scope_id", "current_revision_id"])
+            .where("scope_id", "in", rootScopeIds)
+            .execute();
+    const rootByScope = new Map(roots.map((root) => [root.scope_id, root.current_revision_id]));
+    return {
+      kind: "projects",
+      items: page.map((row) => {
+        const rootRevisionId = rootByScope.get(row.root_scope_id);
+        return {
+          projectId: row.project_id,
+          status: row.status,
+          accessRevisionRef: ref(row.project_id, String(row.access_version)),
+          ...(rootRevisionId === undefined
+            ? {}
+            : { rootScopeRef: scopeRef(row.root_scope_id, rootRevisionId) }),
+        };
+      }),
+      ...(rows.length > pageSize && page.length > 0
+        ? { nextCursor: page[page.length - 1]!.project_id }
+        : {}),
+    };
+  };
+
+  /**
+   * 成员目录：只暴露成员引用、所属账号、原预设角色集合、当前空间范围引用与状态。
+   * 角色集合原样取自当前修订，不做任何角色扩写或能力推断。
+   */
+  const readMembershipDirectory = async (
+    database: AccessDb,
+    projectId: string,
+    cursor: string | undefined,
+    pageSize: number,
+  ): Promise<SystemAdministrationReadResultPayloadV1> => {
+    const rows = await database
+      .selectFrom("business.project_memberships")
+      .select(["membership_id", "current_revision_id"])
+      .where("project_id", "=", projectId)
+      .where("membership_id", ">", cursor ?? "")
+      .orderBy("membership_id")
+      .limit(pageSize + 1)
+      .execute();
+    const page = rows.slice(0, pageSize);
+    const revisionIds = page.map((row) => row.current_revision_id);
+    if (revisionIds.length === 0) {
+      return { kind: "memberships", projectId, items: [] };
+    }
+    const [revisions, currentScopes] = await Promise.all([
+      database
+        .selectFrom("business.project_membership_revisions")
+        .select(["revision_id", "account_id", "revision_no", "status"])
+        .where("revision_id", "in", revisionIds)
+        .execute(),
+      queryCurrentScopeRevisions(database, projectId),
+    ]);
+    const [roles, scopeLinks] = await Promise.all([
+      database
+        .selectFrom("business.project_membership_revision_roles")
+        .select(["revision_id", "role"])
+        .where("revision_id", "in", revisionIds)
+        .execute(),
+      database
+        .selectFrom("business.project_membership_revision_scopes")
+        .select(["revision_id", "scope_id"])
+        .where("revision_id", "in", revisionIds)
+        .execute(),
+    ]);
+    const revisionById = new Map(revisions.map((revision) => [revision.revision_id, revision]));
+    const accountIds = [...new Set(revisions.map((revision) => revision.account_id))];
+    const accounts =
+      accountIds.length === 0
+        ? []
+        : await database
+            .selectFrom("business.local_accounts")
+            .select(["account_id", "security_version"])
+            .where("account_id", "in", accountIds)
+            .execute();
+    const accountById = new Map(accounts.map((account) => [account.account_id, account]));
+    const roleByRevision = new Map<string, string[]>();
+    for (const row of roles) {
+      const bucket = roleByRevision.get(row.revision_id) ?? [];
+      bucket.push(row.role);
+      roleByRevision.set(row.revision_id, bucket);
+    }
+    const scopeByRevision = new Map<string, string[]>();
+    for (const row of scopeLinks) {
+      const bucket = scopeByRevision.get(row.revision_id) ?? [];
+      bucket.push(row.scope_id);
+      scopeByRevision.set(row.revision_id, bucket);
+    }
+    const items = page.flatMap((row) => {
+      const revision = revisionById.get(row.current_revision_id);
+      if (revision === undefined) return [];
+      const membership: MembershipSnapshot = {
+        membershipId: row.membership_id,
+        revisionId: revision.revision_id,
+        accountId: revision.account_id,
+        projectId,
+        revisionNo: revision.revision_no,
+        status: revision.status,
+        roles: (roleByRevision.get(revision.revision_id) ?? []) as MembershipSnapshot["roles"],
+        scopeIds: scopeByRevision.get(revision.revision_id) ?? [],
+      };
+      return [
+        {
+          membershipRef: ref(membership.membershipId, String(membership.revisionNo)),
+          accountRef: accountRevisionRef(
+            membership.accountId,
+            accountById.get(membership.accountId)?.security_version ?? 1,
+          ),
+          roles: [...membership.roles],
+          spatialScopeRefs: currentScopeRefsForMembership(membership, currentScopes),
+          status: membership.status,
+        },
+      ];
+    });
+    return {
+      kind: "memberships",
+      projectId,
+      items,
+      ...(rows.length > pageSize && page.length > 0
+        ? { nextCursor: page[page.length - 1]!.membership_id }
+        : {}),
+    };
+  };
+
+  /** 空间范围目录：精确范围引用、可选父引用与状态，全部取自当前修订。 */
+  const readSpatialScopeDirectory = async (
+    database: AccessDb,
+    projectId: string,
+    cursor: string | undefined,
+    pageSize: number,
+  ): Promise<SystemAdministrationReadResultPayloadV1> => {
+    const rows = await database
+      .selectFrom("business.access_spatial_scopes")
+      .select(["scope_id", "current_revision_id"])
+      .where("project_id", "=", projectId)
+      .where("scope_id", ">", cursor ?? "")
+      .orderBy("scope_id")
+      .limit(pageSize + 1)
+      .execute();
+    const page = rows.slice(0, pageSize);
+    const revisionIds = page.map((row) => row.current_revision_id);
+    if (revisionIds.length === 0) {
+      return { kind: "spatial-scopes", projectId, items: [] };
+    }
+    const revisions = await database
+      .selectFrom("business.access_spatial_scope_revisions")
+      .select(["revision_id", "scope_id", "parent_scope_id", "status"])
+      .where("revision_id", "in", revisionIds)
+      .execute();
+    const revisionById = new Map(revisions.map((revision) => [revision.revision_id, revision]));
+    const parentScopeIds = [
+      ...new Set(
+        revisions.flatMap((revision) =>
+          revision.parent_scope_id === null ? [] : [revision.parent_scope_id],
+        ),
+      ),
+    ];
+    const parents =
+      parentScopeIds.length === 0
+        ? []
+        : await database
+            .selectFrom("business.access_spatial_scopes")
+            .select(["scope_id", "current_revision_id"])
+            .where("scope_id", "in", parentScopeIds)
+            .execute();
+    const parentByScope = new Map(parents.map((parent) => [parent.scope_id, parent.current_revision_id]));
+    const items = page.flatMap((row) => {
+      const revision = revisionById.get(row.current_revision_id);
+      if (revision === undefined) return [];
+      const parentScopeId = revision.parent_scope_id ?? undefined;
+      const parentRevisionId =
+        parentScopeId === undefined ? undefined : parentByScope.get(parentScopeId);
+      return [
+        {
+          scopeId: revision.scope_id,
+          scopeRef: scopeRef(revision.scope_id, revision.revision_id),
+          ...(parentScopeId === undefined || parentRevisionId === undefined
+            ? {}
+            : { parentScopeRef: scopeRef(parentScopeId, parentRevisionId) }),
+          status: revision.status,
+        },
+      ];
+    });
+    return {
+      kind: "spatial-scopes",
+      projectId,
+      items,
+      ...(rows.length > pageSize && page.length > 0
+        ? { nextCursor: page[page.length - 1]!.scope_id }
+        : {}),
+    };
+  };
+
+  /**
+   * 系统管理读：只接受服务端取得的 Cookie 会话 token。
+   *
+   * `identity` 是普通有效会话唯一能成功返回的读；其余目录在任何目标查询之前先重新验证
+   * 会话有效、账号当前持有管理员授予、首次改密不阻塞与安全修订一致，因此无资格调用方
+   * 既拿不到目录，也无法通过差异响应探测工程、成员或范围是否存在。
+   */
+  const administrationRead = async (
+    request: SystemAdministrationReadQueryV1,
+  ): Promise<SystemAdministrationReadResultV1> => {
+    const parsed = SystemAdministrationReadQueryV1Schema.safeParse(request);
+    if (!parsed.success)
+      return {
+        kind: "failed",
+        error: makeAccessError("ACCESS_CONTRACT_INVALID", "administration.read", clock).details,
+      };
+    const valid = parsed.data;
+    const stage = `administration.${valid.kind}`;
+    try {
+      return await db.transaction().execute(async (transaction) => {
+        const tx = transaction as unknown as AccessDb;
+        const identity = await currentAdministrationIdentity(
+          tx,
+          valid.sessionToken,
+          stage,
+          valid.kind !== "identity",
+        );
+        if (valid.kind === "identity") {
+          // 在端口边界按唯一 DTO 校验，管理面不会返回契约之外的形状。
+          return SystemAdministrationReadResultV1Schema.parse({
+            kind: "succeeded",
+            result: {
+              kind: "identity",
+              isSystemAdministrator: identity.isSystemAdministrator,
+              accountRef: accountRevisionRef(
+                identity.account.account_id,
+                identity.account.security_version,
+              ),
+              allowedActions: identity.isSystemAdministrator ? [...SYSTEM_ACCESS_ACTIONS_V1] : [],
+            },
+          });
+        }
+        const pageSize = directoryPageSize(valid.pageSize);
+        const result =
+          valid.kind === "accounts"
+            ? await readAccountDirectory(tx, valid.cursor, pageSize)
+            : valid.kind === "projects"
+              ? await readProjectDirectory(tx, valid.cursor, pageSize)
+              : valid.kind === "memberships"
+                ? await readMembershipDirectory(tx, valid.projectId, valid.cursor, pageSize)
+                : await readSpatialScopeDirectory(tx, valid.projectId, valid.cursor, pageSize);
+        return SystemAdministrationReadResultV1Schema.parse({ kind: "succeeded", result });
+      });
+    } catch (error) {
+      return {
+        kind: "failed",
+        error: asAccessError(error, stage, clock).details,
+      };
+    }
+  };
+
+  /**
+   * 系统管理写：把六项原 C06 管理命令的载荷包进服务端铸造的管理授权上下文后转发。
+   *
+   * 载荷原样保留 expectedVersion 与工程标识，密码只存在于本次请求对象中，
+   * 幂等收据、密码策略、凭据撤销与原子安全审计全部沿原命令实现。
+   */
+  const administrationExecute = async (
+    command: SystemAdministrationCommandV1,
+  ): Promise<SystemAdministrationExecuteResultV1> => {
+    const parsed = SystemAdministrationCommandV1Schema.safeParse(command);
+    if (!parsed.success)
+      return {
+        kind: "failed",
+        error: makeAccessError("ACCESS_CONTRACT_INVALID", "administration.execute", clock).details,
+      };
+    const valid = parsed.data;
+    const stage = `administration.${valid.payload.kind}`;
+    try {
+      const authorizationContextRef = await db.transaction().execute(async (transaction) => {
+        const tx = transaction as unknown as AccessDb;
+        const identity = await currentAdministrationIdentity(tx, valid.sessionToken, stage, true);
+        if (identity.account.password_change_required) {
+          throw makeAccessError("PASSWORD_CHANGE_REQUIRED", stage, clock);
+        }
+        return administrationContextRef(tx, identity.account, valid.commandId, nowDate(clock));
+      });
+      const forwarded = {
+        ...valid.payload,
+        commandId: valid.commandId,
+        idempotencyKey: valid.idempotencyKey,
+        authorizationContextRef,
+      };
+      const result =
+        valid.payload.kind === "open-project" ||
+        valid.payload.kind === "suspend-project" ||
+        valid.payload.kind === "revise-membership"
+          ? await projectCommand(forwarded as ProjectAccessCommandV1)
+          : await identityCommand(forwarded as IdentityAdministrationCommandV1);
+      return SystemAdministrationExecuteResultV1Schema.parse({ kind: "succeeded", result });
+    } catch (error) {
+      return {
+        kind: "failed",
+        error: asAccessError(error, stage, clock).details,
+      };
+    }
+  };
+
+  const systemAdministration: SystemAdministrationPortV1 = {
+    read: administrationRead,
+    execute: administrationExecute,
+  };
+
   return {
+    systemAdministration,
     administerIdentity: identityCommand,
     administerProject: projectCommand,
     login,

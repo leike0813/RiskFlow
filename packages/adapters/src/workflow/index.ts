@@ -16,3 +16,9 @@ export {
   type PostgresWorkflowProjectionOptionsV1,
   type PostgresWorkflowProjectionV1,
 } from "./postgres-workflow-projection.js";
+export {
+  createPostgresReportExport,
+  type PostgresReportExportOptionsV1,
+  type PostgresReportExportV1,
+  type ReportResultReadAuthorizationIssuerV1,
+} from "./postgres-report-export.js";

@@ -86,6 +86,19 @@ const STATUS_MAP: Readonly<Record<AgentInternalStatusV1, AgentTaskStatusV1>> = {
 export const mapAgentInternalStatus = (status: AgentInternalStatusV1): AgentTaskStatusV1 =>
   AgentTaskStatusV1Schema.parse(STATUS_MAP[status]);
 
+const AGENT_INTERNAL_STATUS_V1_VALUES = AgentInternalStatusV1Schema.options;
+
+/**
+ * 公共状态是内部状态的收窄视图，`failed` 同时覆盖 `retryable-failure` 与 `terminal-failure`。
+ * 目录按公共状态筛选时必须回落到这个全集，不能把其中一个内部状态当成该公共状态的同义词。
+ */
+export const agentInternalStatusesForPublicStatus = (
+  status: AgentTaskStatusV1,
+): readonly AgentInternalStatusV1[] => {
+  const publicStatus = AgentTaskStatusV1Schema.parse(status);
+  return AGENT_INTERNAL_STATUS_V1_VALUES.filter((internal) => STATUS_MAP[internal] === publicStatus);
+};
+
 const TRANSITIONS: Readonly<Record<AgentInternalStatusV1, readonly AgentInternalStatusV1[]>> = {
   pending: ["running", "cancelled"],
   running: [

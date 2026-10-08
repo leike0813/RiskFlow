@@ -19,12 +19,7 @@ import {
   type VersionRef,
 } from '../api/operations'
 import './EvidenceTracePage.css'
-
-const reviewTabs = [
-  { to: '/review', label: '复核队列' },
-  { to: '/review/trace', label: '证据追溯' },
-  { to: '/review/runs', label: '运行记录' },
-]
+import { reviewTabs } from './ReviewDetailPage'
 
 interface TracePageData {
   readonly detail: RiskRecordDetailView
@@ -274,6 +269,16 @@ export default function EvidenceTracePage() {
                   该链以 <span className="mono">{recordEntityId}</span>{' '}
                   为主体串联固定追溯链：上游节点事实来自记录读取，下游环节来自 trace-chain
                   投影的可证明链边；投影未返回的环节按缺席如实呈现。资料段节点可就地打开证据定位。
+                </div>
+                <div className="et-intro">
+                  <Link
+                    className="et-jump"
+                    to={projectPath(
+                      `/review/audit?subjectKind=${encodeURIComponent(recordRef.kind)}&subjectId=${encodeURIComponent(recordEntityId)}&subjectVersion=${encodeURIComponent(recordRef.reference.versionId)}`,
+                    )}
+                  >
+                    查看该记录的审计活动
+                  </Link>
                 </div>
                 <div className="et-chain">
                   {nodes.map((node, index) => (

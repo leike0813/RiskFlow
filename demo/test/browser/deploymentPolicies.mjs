@@ -211,6 +211,78 @@ export const createRecommendationPolicies = ({
 };
 
 /**
+ * C35 报告导出策略（合成样本、待甲方复核）。
+ *
+ * 导出策略是部署冻结的不可变配置：能导出哪些查询类型、取哪些章节、最多多少页与多少条，
+ * 全部由这份版本化文档决定，装配根不再另给一套默认值。导出策略集合缺省为空＝无导出能力，
+ * 所以这里必须显式登记一条，`/report/export` 才有真实可核对的策略引用。
+ */
+export const DEMO_REPORT_EXPORT_POLICY = Object.freeze({
+  schemaVersion: "1",
+  policyRef: Object.freeze({ entityId: "demo-policy-report-export", versionId: "1" }),
+  format: "json",
+  queryTypes: Object.freeze(["risk-overview"]),
+  sections: Object.freeze(["run-summary", "report-fact", "report-absence"]),
+  maxPages: 8,
+  maxItems: 200,
+  maxBytes: 1_048_576,
+});
+
+/**
+ * 当前部署登记的 llama.cpp 部署配置（合成样本、待甲方复核）。
+ *
+ * 模型版本运维面（`/ops/model-versions`）只做安全 pick：任务类型、部署引用、模型引用、
+ * 提示模板与策略引用都取自真实登记事实——部署引用来自 Agent 任务信封，模型与构建引用来自
+ * 这里。任何真实任务信封引用了未登记的部署，运维面就不列这一行，而不是补一个猜测的模型版本。
+ *
+ * `baseUrl` 只是部署端 origin：模型版本面按 design D-13 不发起推理，真实可达性由
+ * `/ops/health` 的模型网关探针独立判定，探针缺席即如实呈现未知，两者不会互相冒充。
+ */
+const modelDeployment = ({ deploymentId, modelId, alias, buildId }) =>
+  Object.freeze({
+    schemaVersion: "1",
+    deploymentRef: Object.freeze({ entityId: deploymentId, versionId: "1" }),
+    serverBuildRef: Object.freeze({ entityId: buildId, versionId: "1" }),
+    expectedBuildInfo: `${buildId}-demo`,
+    modelVersionRef: Object.freeze({ entityId: modelId, versionId: "1" }),
+    modelAlias: alias,
+    baseUrl: "http://127.0.0.1:8080",
+    capabilities: Object.freeze(["completeStructured"]),
+    contextWindowTokens: 8_192,
+    requestTimeoutMs: 30_000,
+    streamIdleTimeoutMs: 10_000,
+    maxResponseBytes: 262_144,
+    maxInputBytes: 262_144,
+    maxBatchItems: 8,
+    maxOutputTokens: 2_048,
+    samplingPolicy: Object.freeze({ temperature: 0.2, topP: 0.9 }),
+  });
+
+export const DEMO_MODEL_DEPLOYMENTS = Object.freeze([
+  // C15 数据清洗任务的部署：任务信封里登记的模型部署引用。
+  modelDeployment({
+    deploymentId: "demo-c15-cleaning-model",
+    modelId: "demo-model-cleaning-7b",
+    alias: "riskflow-cleaning-7b-instruct",
+    buildId: "demo-llamacpp-build",
+  }),
+  // 识别检索审阅任务的部署。
+  modelDeployment({
+    deploymentId: "demo-model-deployment",
+    modelId: "demo-model-retrieval-review-14b",
+    alias: "riskflow-review-14b-instruct",
+    buildId: "demo-llamacpp-build",
+  }),
+  // C26/C27 处置生成与校准建议 Agent 共用的部署（`ASSESSMENT_RUNTIME_POLICY_REFS`）。
+  modelDeployment({
+    deploymentId: "demo-policy-model-deployment",
+    modelId: "demo-model-response-14b",
+    alias: "riskflow-response-14b-instruct",
+    buildId: "demo-llamacpp-build",
+  }),
+]);
+
+/**
  * C18 已发布预测策略（合成样本、待甲方复核）。
  *
  * 工厂按 `requiredRef` 唯一装配执行器，运行期不再选择；重复策略直接失败，

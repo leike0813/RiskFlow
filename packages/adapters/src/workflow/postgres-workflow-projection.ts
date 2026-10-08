@@ -197,6 +197,15 @@ export interface PostgresWorkflowProjectionOptionsV1 {
   readonly authorization: Pick<LocalIdentityAccessV1, "verify" | "authorize">;
   /** C22 公开批读：旧 trace-chain 可省略；C31 风险记录图/报告缺失时显式失败。 */
   readonly riskRecordTrace?: RiskRecordTraceReadPortV1;
+  /**
+   * C35 报告导出服务（design D-09）：`projection.export` 只实现报告用途，由组合根显式注入
+   * 同一所属 projection 的报告服务；未注入即该分支不存在，按既有稳定「不支持」语义失败。
+   */
+  readonly reportExport?: {
+    readonly exportReport: (
+      request: ProjectionExportRequestV1,
+    ) => Promise<ProjectionExportResultV1>;
+  };
   readonly now?: () => Date;
 }
 
@@ -211,6 +220,13 @@ class WorkflowGraphProjection {
   readonly #bodies: WorkflowGraphBodyPortV1;
   readonly #authorization: Pick<LocalIdentityAccessV1, "verify" | "authorize">;
   readonly #trace: RiskRecordTraceReadPortV1 | undefined;
+  readonly #reportExport:
+    | {
+        readonly exportReport: (
+          request: ProjectionExportRequestV1,
+        ) => Promise<ProjectionExportResultV1>;
+      }
+    | undefined;
   readonly #now: () => Date;
 
   constructor(options: PostgresWorkflowProjectionOptionsV1) {
@@ -219,6 +235,7 @@ class WorkflowGraphProjection {
     this.#bodies = options.bodies;
     this.#authorization = options.authorization;
     this.#trace = options.riskRecordTrace;
+    this.#reportExport = options.reportExport;
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -420,11 +437,14 @@ class WorkflowGraphProjection {
   }
 
   export(request: ProjectionExportRequestV1): Promise<ProjectionExportResultV1> {
-    void request;
-    return Promise.resolve({
-      kind: "failed",
-      error: unsupportedBranch("projection-export", this.#now().toISOString()),
-    });
+    const report = this.#reportExport;
+    if (report === undefined) {
+      return Promise.resolve({
+        kind: "failed",
+        error: unsupportedBranch("projection-export", this.#now().toISOString()),
+      });
+    }
+    return report.exportReport(request);
   }
 
   /** 目标可见性判定：只统计当前授权摘要下确实成立的事实，不做全库读取。 */

@@ -111,19 +111,19 @@ const commandIdentity = {
   authorizationContextRef: authorizationRef,
 };
 
-const CreateAccountCommandV1Schema = z.strictObject({
+export const CreateAccountCommandV1Schema = z.strictObject({
   kind: z.literal("create-account"),
   ...commandIdentity,
   loginName: LoginNameInputV1Schema,
   displayName: DisplayNameV1Schema,
   password: PasswordV1Schema,
 });
-const DisableAccountCommandV1Schema = z.strictObject({
+export const DisableAccountCommandV1Schema = z.strictObject({
   kind: z.literal("disable-account"),
   ...commandIdentity,
   accountId: IdentifierSchema,
 });
-const ResetPasswordCommandV1Schema = z.strictObject({
+export const ResetPasswordCommandV1Schema = z.strictObject({
   kind: z.literal("reset-password"),
   ...commandIdentity,
   accountId: IdentifierSchema,
@@ -145,17 +145,17 @@ const projectCommandIdentity = {
   authorizationContextRef: authorizationRef,
 };
 
-const OpenProjectCommandV1Schema = z.strictObject({
+export const OpenProjectCommandV1Schema = z.strictObject({
   kind: z.literal("open-project"),
   ...projectCommandIdentity,
   initialRiskManagerAccountId: IdentifierSchema,
   includeAdministrator: z.boolean().optional(),
 });
-const SuspendProjectCommandV1Schema = z.strictObject({
+export const SuspendProjectCommandV1Schema = z.strictObject({
   kind: z.literal("suspend-project"),
   ...projectCommandIdentity,
 });
-const ReviseMembershipCommandV1Schema = z.strictObject({
+export const ReviseMembershipCommandV1Schema = z.strictObject({
   kind: z.literal("revise-membership"),
   ...projectCommandIdentity,
   membershipId: IdentifierSchema,

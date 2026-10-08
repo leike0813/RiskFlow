@@ -615,6 +615,11 @@ export const MODULE_BRANCH_CAPABILITY_V1 = {
   "risk-identification.record-catalog": "risk-identification.read",
   "risk-identification.record-read": "risk-identification.read",
   "review-audit.queue-read": "review-audit.read",
+  // C35 有界窄读分支（design D-02）：只登记读面，不新增 capability。
+  // 三条分支分别绑定 Agent 任务、复核活动与报告读取端口，并复用既有能力枚举。
+  "agent-task.read": "agent-task.read",
+  "review-audit.read": "review-audit.read",
+  "projection.report-read": "projection.export",
 } as const;
 export type ModuleBranchV1 = keyof typeof MODULE_BRANCH_CAPABILITY_V1;
 
@@ -983,6 +988,14 @@ const moduleResultSchema = <const T extends ZodType>(result: T, allowWaiting = f
   }
   return z.discriminatedUnion("kind", [succeeded, failed]);
 };
+
+/**
+ * C35 所属模块只读端口的公共构造入口（design D-02）：核心模块的 Agent 任务读、
+ * 复核活动读与报告读统一由这两个既有构造派生固定 read kind、闭合 payload 和结果联合，
+ * 不复制信封形状，也不构成任何通用 HTTP 调用入口。
+ */
+export const createModuleQuerySchemaV1 = querySchema;
+export const createModuleResultSchemaV1 = moduleResultSchema;
 
 const QueryResultShapeV1Schema = z.strictObject({ queryResultRef: QueryResultRefV1Schema });
 
@@ -1865,23 +1878,26 @@ export const CancelWorkflowRunCommandV1Schema = z.discriminatedUnion("kind", [
 ]);
 export type CancelWorkflowRunCommandV1 = z.infer<typeof CancelWorkflowRunCommandV1Schema>;
 
+/**
+ * 启动载荷单独导出：C35 交互启动上下文（launch-context）必须原样回送这份冻结输入与
+ * 六类策略引用，只能在缺失定义支持或授权不足时按原语义失败，不得另造一份等价字段。
+ */
+export const StartAgentTaskPayloadV1Schema = z.strictObject({
+  taskType: AgentTaskTypeV1Schema,
+  triggerMode: AgentTriggerModeV1Schema,
+  parentRunRef: WorkflowRunRefV1Schema,
+  frozenInputRef: ContractReferenceV1Schema,
+  modelDeploymentRef: VersionReferenceSchema,
+  promptTemplateRef: VersionReferenceSchema,
+  toolPolicyRef: VersionReferenceSchema,
+  budgetPolicyRef: VersionReferenceSchema,
+  incrementSchemaRef: VersionReferenceSchema,
+  validationPolicyRef: VersionReferenceSchema,
+});
+export type StartAgentTaskPayloadV1 = z.infer<typeof StartAgentTaskPayloadV1Schema>;
+
 export const StartAgentTaskCommandV1Schema = z.discriminatedUnion("kind", [
-  commandSchema(
-    "start-task",
-    z.strictObject({
-      taskType: AgentTaskTypeV1Schema,
-      triggerMode: AgentTriggerModeV1Schema,
-      parentRunRef: WorkflowRunRefV1Schema,
-      frozenInputRef: ContractReferenceV1Schema,
-      modelDeploymentRef: VersionReferenceSchema,
-      promptTemplateRef: VersionReferenceSchema,
-      toolPolicyRef: VersionReferenceSchema,
-      budgetPolicyRef: VersionReferenceSchema,
-      incrementSchemaRef: VersionReferenceSchema,
-      validationPolicyRef: VersionReferenceSchema,
-    }),
-    branchCapability("agent-task.start-task"),
-  ),
+  commandSchema("start-task", StartAgentTaskPayloadV1Schema, branchCapability("agent-task.start-task")),
 ]);
 export type StartAgentTaskCommandV1 = z.infer<typeof StartAgentTaskCommandV1Schema>;
 
@@ -3281,6 +3297,18 @@ export const CLEANING_AVAILABILITY_V1_VALUES = ["available", "partial", "unavail
 export const CleaningAvailabilityV1Schema = z.enum(CLEANING_AVAILABILITY_V1_VALUES);
 export type CleaningAvailabilityV1 = z.infer<typeof CleaningAvailabilityV1Schema>;
 
+/**
+ * 资料交付方式：与工程数据所属登记 descriptor 的三类取值一致。读面只转出登记事实本身，
+ * 不推断连接是否可用。
+ */
+export const SOURCE_CATALOG_DELIVERY_KIND_V1_VALUES = [
+  "file-upload",
+  "database-snapshot",
+  "api-snapshot",
+] as const;
+export const SourceCatalogDeliveryKindV1Schema = z.enum(SOURCE_CATALOG_DELIVERY_KIND_V1_VALUES);
+export type SourceCatalogDeliveryKindV1 = z.infer<typeof SourceCatalogDeliveryKindV1Schema>;
+
 export const SourceCatalogItemV1Schema = z.strictObject({
   sourceVersionRef: SourceVersionRefV1Schema,
   sourceId: IdentifierSchema,
@@ -3292,6 +3320,10 @@ export const SourceCatalogItemV1Schema = z.strictObject({
   cleaningAvailability: CleaningAvailabilityV1Schema.optional(),
   cleaningExclusionCount: c32NonNegativeInt.optional(),
   sourceSegmentSetRef: SourceSegmentSetRefV1Schema.optional(),
+  /** 登记 descriptor 的交付方式；descriptor 未登记或不可解析时缺席，不合成。 */
+  deliveryKind: SourceCatalogDeliveryKindV1Schema.optional(),
+  /** 登记 descriptor 已持有的连接定义引用（实体 + 版本）；不含任何连接秘密或凭据。 */
+  connectionDefinitionRef: VersionReferenceSchema.optional(),
 });
 export type SourceCatalogItemV1 = z.infer<typeof SourceCatalogItemV1Schema>;
 
@@ -4115,6 +4147,12 @@ export const RiskIdentificationRunReadSuccessV1Schema = z.strictObject({
   acceptedRiskRecordRefs: z.array(StandardizedRiskRecordRefV1Schema).max(500),
   pendingReviewGroupRefs: z.array(IdentificationGroupRefV1Schema).max(256),
   rejectedGroupRefs: z.array(IdentificationGroupRefV1Schema).max(256),
+  /**
+   * 本运行已登记的合法修正候选集引用（实体 + 身份版本）。
+   * 复核「修正并通过」只能从这里挑一个已登记引用：缺少身份版本就无法构造精确决定，
+   * 因此这里给完整引用，不给裸标识符降级（design D-06）。
+   */
+  revisedCandidateRefs: z.array(IdentificationCandidateSetRefV1Schema).max(256).optional(),
   waitingRef: WaitingRefV1Schema.optional(),
 });
 export type RiskIdentificationRunReadSuccessV1 = z.infer<

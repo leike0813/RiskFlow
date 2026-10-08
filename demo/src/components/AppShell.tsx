@@ -1,7 +1,14 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useContext, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { navItems, type NavKey } from "../content/context";
-import { searchWithSelector, useEngineering, useSession } from "../api/context";
+import {
+  EngineeringContext,
+  searchWithSelector,
+  selectorFromSearch,
+  useSession,
+  type EngineeringContextState,
+  type EngineeringSelector,
+} from "../api/context";
 import { Icon, type IconName } from "./icons";
 import { EvidenceProvider } from "./EvidenceDrawer";
 import { AgentDock } from "../agent/AgentDock";
@@ -24,9 +31,29 @@ const CONTEXT_STATUS_LABEL: Record<string, string> = {
   active: "上下文已生效",
 };
 
+/**
+ * 工程上下文对系统管理路由缺席：这些路由在工程门之外，本来就没有工程上下文。
+ * 有工程门时用 Provider 的真实事实；没有时按 URL 选择器如实呈现「未选择工程」，
+ * 不因为缺少上下文就补一份工程状态。
+ */
+function useOptionalEngineering(): {
+  readonly available: boolean;
+  readonly selector: EngineeringSelector;
+  readonly state: EngineeringContextState;
+} {
+  const value = useContext(EngineeringContext);
+  const [searchParams] = useSearchParams();
+  return {
+    available: value !== null,
+    selector:
+      value?.selector ??
+      selectorFromSearch(`?${searchParams.toString()}`),
+    state: value?.state ?? { kind: "idle" },
+  };
+}
+
 /** 顶栏工程切换：手输工程标识写回 URL 参数，页面停留原地按新工程重新加载。 */
-function EngineeringSwitcher() {
-  const { selector } = useEngineering();
+function EngineeringSwitcher({ selector }: { readonly selector: EngineeringSelector }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState(false);
@@ -66,8 +93,7 @@ function EngineeringSwitcher() {
   );
 }
 
-function AssessmentSourceSelector() {
-  const { selector } = useEngineering();
+function AssessmentSourceSelector({ selector }: { readonly selector: EngineeringSelector }) {
   const [params, setParams] = useSearchParams();
   const selection = readAssessmentSourceSelection(`?${params.toString()}`);
   const [editing, setEditing] = useState(false);
@@ -161,7 +187,9 @@ export default function AppShell({
   const location = useLocation();
   const agentActive = dockOpen || location.pathname === "/agent";
   const { state: sessionState, logout, logoutPending, logoutFailed } = useSession();
-  const { selector, state: engineering } = useEngineering();
+  const { available: engineeringAvailable, selector, state: engineering } =
+    useOptionalEngineering();
+  const systemActive = location.pathname.startsWith("/ops");
 
   return (
     <EvidenceProvider>
@@ -220,13 +248,23 @@ export default function AppShell({
           <div className="shell-actions">
             {(activeNav === "overview" ||
               activeNav === "assessment" ||
-              activeNav === "warnings") && <AssessmentSourceSelector />}
-            <EngineeringSwitcher />
+              activeNav === "warnings") && <AssessmentSourceSelector selector={selector} />}
+            {/* 工程切换只属于工程上下文；系统管理页不暗示存在可选工程。 */}
+            {engineeringAvailable && <EngineeringSwitcher selector={selector} />}
             {sessionState.kind === "authenticated" && (
               <>
                 <span className="shell-context-item mono">
                   {sessionState.session.accountRef.entityId}
                 </span>
+                {/* 系统管理是账号区辅助入口，不是第八项一级业务导航：七项业务导航顺序不变。 */}
+                <Link
+                  to="/ops/access"
+                  className={`shell-system-btn${systemActive ? " shell-system-btn--active" : ""}`}
+                  aria-current={systemActive ? "page" : undefined}
+                >
+                  <Icon name="project" size={16} />
+                  系统管理
+                </Link>
                 <button
                   type="button"
                   className="shell-switch-btn"
@@ -248,20 +286,23 @@ export default function AppShell({
                 ) : null}
               </>
             )}
-            <button
-              type="button"
-              className={`shell-agent-btn${agentActive ? " shell-agent-btn--active" : ""}`}
-              onClick={toggleAgentDock}
-            >
-              <Icon name="agent" size={16} />
-              智能 Agent
-            </button>
+            {/* Agent 抽屉挂在工程任务上：系统管理路由没有工程上下文，此处不呈现。 */}
+            {engineeringAvailable && (
+              <button
+                type="button"
+                className={`shell-agent-btn${agentActive ? " shell-agent-btn--active" : ""}`}
+                onClick={toggleAgentDock}
+              >
+                <Icon name="agent" size={16} />
+                智能 Agent
+              </button>
+            )}
           </div>
         </header>
 
         <main className="shell-main">{children}</main>
 
-        <AgentDock context={agentContext} />
+        {engineeringAvailable && <AgentDock context={agentContext} />}
       </div>
     </EvidenceProvider>
   );

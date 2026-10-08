@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   HTTP_COOKIE_NAME_V1,
   HTTP_ROUTE_CATALOG_V1,
-  HTTP_SYSTEM_ROUTE_CATALOG_V1,
+  activeHttpSystemRouteCatalog,
   buildApi,
   decodeWorkflowRunIdV1,
   encodeWorkflowRunIdV1,
@@ -23,6 +23,11 @@ import type {
 import { AccessErrorV1Schema, AccessServiceError } from "@riskflow/core/access";
 import type { LocalIdentityAccessV1 } from "@riskflow/core/access";
 import { HttpErrorV1Schema } from "../src/http.js";
+import {
+  SYSTEM_OPERATIONS_COMPONENT_IDS_V1,
+  SYSTEM_OPERATIONS_ITEM_MAX_V1,
+  collectSystemOperationsHealth,
+} from "../src/operations.js";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const ORIGIN = "https://ui.example";
@@ -563,9 +568,12 @@ describe("C09 HTTP shell", () => {
     const app = appFor({ engineeringData: engineeringPort(() => undefined) });
     const response = await app.inject({ method: "GET", url: "/api/v1/openapi.json" });
     const document = response.json() as { paths: Record<string, unknown> };
+    // 系统面与 SSE 路由按注入位激活：期望集合取自同一份激活目录，
+    // 这样断言仍然是"运行时可调用集合与 OpenAPI 同源"，而不是写死路径清单。
+    const ports: ApiPortsV1 = { engineeringData: engineeringPort(() => undefined) };
     const expected = new Set(
       [
-        ...HTTP_SYSTEM_ROUTE_CATALOG_V1.filter((entry) => entry.kind !== "sse"),
+        ...activeHttpSystemRouteCatalog(ports).filter((entry) => entry.kind !== "sse"),
         ...HTTP_ROUTE_CATALOG_V1.filter((entry) => entry.portKey === "engineeringData"),
       ].map((entry) => entry.path.replaceAll(/:([A-Za-z][A-Za-z0-9_]*)/g, "{$1}")),
     );
@@ -1934,5 +1942,338 @@ describe("C34 assessment and warning-response read surface", () => {
     expect(reviewResponse.json()).toMatchObject({ code: "TERMINAL_FAILURE", retryable: false });
     expect(draftResponse.json()).toMatchObject({ code: "TERMINAL_FAILURE", retryable: false });
     await app.close();
+  });
+});
+
+describe("C35 有界窄读与系统面路由", () => {
+  const jsonHeaders = { "content-type": "application/json", origin: ORIGIN };
+  const cookieHeaders = {
+    ...jsonHeaders,
+    cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token`,
+  };
+  const queryBody = (payload: Record<string, unknown>) => ({
+    schemaVersion: "1",
+    queryId: "query-1",
+    requestedAt: NOW,
+    requestedSpatialScopeRefs: [scope],
+    requestedSourceVersionRefs: [],
+    payload,
+  });
+  const postQuery = (app: ReturnType<typeof buildApi>, branch: string, payload: Record<string, unknown>) =>
+    app.inject({
+      method: "POST",
+      url: `/api/v1/projects/project/queries/${branch}`,
+      headers: cookieHeaders,
+      payload: queryBody(payload),
+    });
+  const buildWithPorts = (ports: ApiPortsV1, onAuthorize?: (branch: string) => void) =>
+    buildApi({
+      access: accessStub(onAuthorize),
+      ports,
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+
+  it("routes the three business reads to their own ports and authorizes each branch", async () => {
+    const authorizedBranches: string[] = [];
+    const seen: Record<string, unknown>[] = [];
+    const app = buildWithPorts(
+      {
+        agentTaskRead: {
+          read: async (query) => {
+            seen.push(query);
+            return {
+              kind: "succeeded",
+              result: { kind: "list", items: [], asOfRecordedAt: NOW },
+            };
+          },
+        },
+        reviewAuditRead: {
+          read: async (query) => {
+            seen.push(query);
+            return { kind: "succeeded", result: { kind: "activities", items: [], asOfRecordedAt: NOW } };
+          },
+        },
+        projectionReportRead: {
+          read: async (query) => {
+            seen.push(query);
+            return { kind: "succeeded", result: { kind: "policies", items: [] } };
+          },
+        },
+      },
+      (branch) => authorizedBranches.push(branch),
+    );
+
+    const detail = await postQuery(app, "agent-task.read", { kind: "list", pageSize: 25 });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json()).toMatchObject({ kind: "succeeded", result: { kind: "list" } });
+
+    const activities = await postQuery(app, "review-audit.read", {
+      kind: "activities",
+      pageSize: 25,
+    });
+    expect(activities.statusCode).toBe(200);
+
+    const policies = await postQuery(app, "projection.report-read", { kind: "policies" });
+    expect(policies.statusCode).toBe(200);
+
+    expect(authorizedBranches).toEqual([
+      "agent-task.read",
+      "review-audit.read",
+      "projection.report-read",
+    ]);
+    expect(seen.map((value) => value.kind)).toEqual(["list", "activities", "policies"]);
+  });
+
+  it("keeps the three business reads inactive and strict without their ports", async () => {
+    const app = buildWithPorts({});
+    for (const branch of ["agent-task.read", "review-audit.read", "projection.report-read"]) {
+      const response = await postQuery(app, branch, { kind: "policies" });
+      expect(response.statusCode).toBe(404);
+    }
+    // 目录与 OpenAPI 同源：未注入时这些路径不出现在 OpenAPI 文档里。
+    const document = await app
+      .inject({ method: "GET", url: "/api/v1/openapi.json" })
+      .then((response) => response.json() as { paths: Record<string, unknown> });
+    for (const branch of ["agent-task.read", "review-audit.read", "projection.report-read"]) {
+      expect(document.paths[`/api/v1/projects/project/queries/${branch}`]).toBeUndefined();
+    }
+  });
+
+  const administrationStub = (
+    seen: { reads: unknown[]; commands: unknown[] },
+    isAdministrator: boolean,
+  ) => ({
+    read: async (query: unknown) => {
+      seen.reads.push(query);
+      const kind = (query as { kind: string }).kind;
+      if (kind !== "identity" && !isAdministrator)
+        return {
+          kind: "failed",
+          error: {
+            stage: "system-administration",
+            occurredAt: NOW,
+            diagnosticRef: {
+              kind: "diagnostic-artifact",
+              reference: { entityId: "diag", versionId: "1" },
+            },
+            contextRefs: [],
+            code: "AUTHORIZATION_DENIED",
+            retryable: false,
+            requiredCapability: "agent-task.read",
+            authorizationPolicyRef: { entityId: "policy", versionId: "1" },
+          },
+        };
+      return {
+        kind: "succeeded",
+        result:
+          kind === "identity"
+            ? { kind: "identity", isSystemAdministrator: isAdministrator, allowedActions: [] }
+            : { kind, items: [], projectId: "project-1" },
+      };
+    },
+    execute: async (command: unknown) => {
+      seen.commands.push(command);
+      return {
+        kind: "succeeded",
+        result: {
+          kind: "account",
+          resultRef: { entityId: "account-1", versionId: "1" },
+          references: [],
+        },
+      };
+    },
+  });
+
+  it("takes the administration session from the cookie and never from the body", async () => {
+    const seen = { reads: [] as unknown[], commands: [] as unknown[] };
+    const app = buildWithPorts({ systemAdministration: administrationStub(seen, true) });
+
+    const identity = await app.inject({
+      method: "GET",
+      url: "/api/v1/administration",
+      headers: { cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+    });
+    expect(identity.statusCode).toBe(200);
+    expect(identity.json()).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "identity", isSystemAdministrator: true },
+    });
+    expect(seen.reads[0]).toMatchObject({ kind: "identity", sessionToken: "opaque-token" });
+
+    const accounts = await app.inject({
+      method: "POST",
+      url: "/api/v1/administration/queries",
+      headers: cookieHeaders,
+      payload: { schemaVersion: "1", queryId: "query-1", requestedAt: NOW, payload: { kind: "accounts" } },
+    });
+    expect(accounts.statusCode).toBe(200);
+
+    const command = await app.inject({
+      method: "POST",
+      url: "/api/v1/administration/commands",
+      headers: cookieHeaders,
+      payload: {
+        schemaVersion: "1",
+        commandId: "command-1",
+        idempotencyKey: "idem-1",
+        issuedAt: NOW,
+        payload: {
+          kind: "create-account",
+          expectedVersion: "none",
+          loginName: "manager002",
+          displayName: "Risk manager",
+          password: "Str0ng-Passphrase-1",
+        },
+      },
+    });
+    expect(command.statusCode).toBe(200);
+    expect(seen.commands[0]).toMatchObject({
+      commandId: "command-1",
+      idempotencyKey: "idem-1",
+      sessionToken: "opaque-token",
+      payload: { kind: "create-account", loginName: "manager002" },
+    });
+    // 客户端不得自带授权引用：服务端从 Cookie 会话注入。
+    expect(seen.commands[0]).not.toHaveProperty("authorizationContextRef");
+  });
+
+  it("rejects a client-supplied session token in administration payloads", async () => {
+    const seen = { reads: [] as unknown[], commands: [] as unknown[] };
+    const app = buildWithPorts({ systemAdministration: administrationStub(seen, true) });
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/administration/queries",
+      headers: cookieHeaders,
+      payload: {
+        schemaVersion: "1",
+        queryId: "query-1",
+        requestedAt: NOW,
+        payload: { kind: "identity", sessionToken: "forged" },
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(seen.reads).toHaveLength(0);
+  });
+
+  it("requires the current administrator proof before serving operations queries", async () => {
+    const operations: unknown[] = [];
+    const provider = {
+      read: async (request: unknown) => {
+        operations.push(request);
+        return {
+          kind: "succeeded",
+          result: { kind: "health", capturedAt: NOW, components: [] },
+        };
+      },
+    };
+
+    const denied = buildWithPorts({
+      systemAdministration: administrationStub({ reads: [], commands: [] }, false),
+      systemOperationsRead: provider,
+    });
+    const deniedResponse = await denied.inject({
+      method: "POST",
+      url: "/api/v1/operations/queries",
+      headers: cookieHeaders,
+      payload: { schemaVersion: "1", queryId: "query-1", requestedAt: NOW, payload: { kind: "health" } },
+    });
+    expect(deniedResponse.statusCode).toBe(404);
+    expect(operations).toHaveLength(0);
+
+    const allowed = buildWithPorts({
+      systemAdministration: administrationStub({ reads: [], commands: [] }, true),
+      systemOperationsRead: provider,
+    });
+    const allowedResponse = await allowed.inject({
+      method: "POST",
+      url: "/api/v1/operations/queries",
+      headers: cookieHeaders,
+      payload: { schemaVersion: "1", queryId: "query-1", requestedAt: NOW, payload: { kind: "health" } },
+    });
+    expect(allowedResponse.statusCode).toBe(200);
+    expect(operations).toHaveLength(1);
+  });
+
+  it("activates the four system routes only when every required port is injected", async () => {
+    const paths = [
+      "/api/v1/administration",
+      "/api/v1/administration/queries",
+      "/api/v1/administration/commands",
+      "/api/v1/operations/queries",
+    ];
+    const withoutOperations = buildWithPorts({
+      systemAdministration: administrationStub({ reads: [], commands: [] }, true),
+    });
+    const withoutOperationsDocument = await withoutOperations
+      .inject({ method: "GET", url: "/api/v1/openapi.json" })
+      .then((response) => response.json() as { paths: Record<string, unknown> });
+    for (const path of paths.slice(0, 3)) {
+      expect(withoutOperationsDocument.paths[path]).toBeDefined();
+    }
+    expect(withoutOperationsDocument.paths[paths[3]]).toBeUndefined();
+
+    const withoutAdministration = buildWithPorts({
+      systemOperationsRead: {
+        read: async () => ({
+          kind: "succeeded",
+          result: { kind: "health", capturedAt: NOW, components: [] },
+        }),
+      },
+    });
+    const withoutAdministrationResponse = await withoutAdministration.inject({
+      method: "POST",
+      url: "/api/v1/operations/queries",
+      headers: cookieHeaders,
+      payload: { schemaVersion: "1", queryId: "query-1", requestedAt: NOW, payload: { kind: "health" } },
+    });
+    expect(withoutAdministrationResponse.statusCode).toBe(404);
+  });
+
+  it("denies the administration identity read without a session cookie", async () => {
+    const seen = { reads: [] as unknown[], commands: [] as unknown[] };
+    const app = buildWithPorts({ systemAdministration: administrationStub(seen, true) });
+    const response = await app.inject({ method: "GET", url: "/api/v1/administration" });
+    expect(response.statusCode).toBe(401);
+    expect(seen.reads).toHaveLength(0);
+  });
+
+  it("reports unconfigured health components as unknown and enforces the item bound", async () => {
+    const withoutProbe = await collectSystemOperationsHealth({
+      capturedAt: NOW,
+      now: () => new Date(NOW),
+    });
+    expect(withoutProbe.components).toHaveLength(
+      SYSTEM_OPERATIONS_COMPONENT_IDS_V1.length,
+    );
+    for (const component of withoutProbe.components) {
+      expect(component.status).toBe("unknown");
+      expect(component.reasonCode).toBe("PROBE_NOT_CONFIGURED");
+    }
+
+    const withFailingProbe = await collectSystemOperationsHealth({
+      capturedAt: NOW,
+      now: () => new Date(NOW),
+      probe: async () => {
+        throw new Error("probe blew up with secret detail");
+      },
+    });
+    for (const component of withFailingProbe.components) {
+      expect(component.status).toBe("unknown");
+      // 失败原因只保留稳定码，不把异常文本当成 reasonCode 泄露。
+      expect(component.reasonCode).toBe("PROBE_FAILED");
+    }
+
+    const partiallyAvailable = await collectSystemOperationsHealth({
+      capturedAt: NOW,
+      now: () => new Date(NOW),
+      probe: async (componentId) =>
+        componentId === "api" ? { status: "available" as const } : { status: "unknown" as const },
+    });
+    expect(partiallyAvailable.components.find((component) => component.componentId === "api")?.status).toBe(
+      "available",
+    );
+    expect(partiallyAvailable.components.length).toBeLessThanOrEqual(SYSTEM_OPERATIONS_ITEM_MAX_V1);
   });
 });

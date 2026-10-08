@@ -170,6 +170,45 @@ describe("access domain", () => {
     }
   });
 
+  it("C35 三条窄读 branch 复用既有能力并按 D-02 固定角色授予", () => {
+    // 三条新 branch 只映射到既有能力位，不新增 capability（design D-02）。
+    expect(branchCapability("agent-task.read")).toBe("agent-task.read");
+    expect(branchCapability("review-audit.read")).toBe("review-audit.read");
+    expect(branchCapability("projection.report-read")).toBe("projection.export");
+
+    // 工程风险管理员按 allBranches 自动取得三条读面。
+    for (const branch of ["agent-task.read", "review-audit.read", "projection.report-read"] as const) {
+      expect(isBranchAllowed(["project-risk-manager"], branch)).toBe(true);
+    }
+
+    // reviewer 与 business-viewer 获统一复核/活动窄读。
+    for (const role of ["reviewer", "business-viewer"] as const) {
+      expect(isBranchAllowed([role], "review-audit.read")).toBe(true);
+    }
+    // 报告窄读只加入 business-viewer。
+    expect(isBranchAllowed(["business-viewer"], "projection.report-read")).toBe(true);
+    expect(isBranchAllowed(["reviewer"], "projection.report-read")).toBe(false);
+
+    // field-responder 不新增任何 branch；系统管理员仍无业务 branch。
+    expect(PRESET_ROLE_BRANCHES_V1["field-responder"]).not.toContain("review-audit.read");
+    expect(PRESET_ROLE_BRANCHES_V1["field-responder"]).not.toContain("projection.report-read");
+    for (const branch of ["agent-task.read", "review-audit.read", "projection.report-read"] as const) {
+      expect(isBranchAllowed(["system-administrator"], branch)).toBe(false);
+    }
+
+    // 读面不得隐式授予 Agent 写权：非经理角色仍无启动/恢复/取消/确认。
+    for (const role of ["reviewer", "business-viewer", "field-responder"] as const) {
+      for (const branch of [
+        "agent-task.start-task",
+        "agent-task.resume-task",
+        "agent-task.cancel-task",
+        "agent-task.confirm-command",
+      ] as const) {
+        expect(isBranchAllowed([role], branch)).toBe(false);
+      }
+    }
+  });
+
   it("authorization scope closure", () => {
     const nodes: SpatialScopeNodeV1[] = [
       { projectId: "project-a", scopeId: "root", revisionId: "1", status: "active" },

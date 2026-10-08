@@ -29,7 +29,19 @@ import {
 } from "./api/session";
 
 const RiskOverviewPage = lazy(() => import("./pages/RiskOverviewPage"));
+import { AgentTaskProvider } from "./agent/AgentTaskProvider.js";
+
 const AgentWorkbenchPage = lazy(() => import("./pages/AgentWorkbenchPage"));
+const AgentTaskDetailPage = lazy(() => import("./pages/AgentTaskDetailPage"));
+const ReviewDetailPage = lazy(() => import("./pages/ReviewDetailPage"));
+const IdentificationReviewPage = lazy(() => import("./pages/IdentificationReviewPage"));
+const AuditLogPage = lazy(() => import("./pages/AuditLogPage"));
+const ReportExportPage = lazy(() => import("./pages/ReportExportPage"));
+const AccessPage = lazy(() => import("./pages/ops/AccessPage"));
+const DataSourcesPage = lazy(() => import("./pages/ops/DataSourcesPage"));
+const HealthPage = lazy(() => import("./pages/ops/HealthPage"));
+const ModelVersionsPage = lazy(() => import("./pages/ops/ModelVersionsPage"));
+const BackupPage = lazy(() => import("./pages/ops/BackupPage"));
 const IdentificationRunsPage = lazy(() => import("./pages/IdentificationRunsPage"));
 const IdentificationRunPage = lazy(() => import("./pages/IdentificationRunPage"));
 const RiskRecordListPage = lazy(() => import("./pages/RiskRecordListPage"));
@@ -173,7 +185,11 @@ function EngineeringGate() {
   );
   return (
     <EngineeringProvider value={value}>
-      <Outlet />
+      {/* 全应用唯一的 Agent 任务 Provider：停靠栏、工作台与任务详情共用同一份任务事实与
+          5 秒单在途节拍，不允许各页再发一套轮询或各自缓存一份列表。 */}
+      <AgentTaskProvider projectId={state.kind === "ready" ? (selector.projectId ?? undefined) : undefined}>
+        <Outlet />
+      </AgentTaskProvider>
     </EngineeringProvider>
   );
 }
@@ -300,6 +316,8 @@ export default function App() {
             <Route path="/" element={<RiskOverviewPage />} />
             <Route path="/overview" element={<RiskOverviewPage />} />
             <Route path="/agent" element={<AgentWorkbenchPage />} />
+            {/* 精确深链：路径给实体标识，身份版本走 query，避免"最新一个任务"式跳转 */}
+            <Route path="/agent/tasks/:taskId" element={<AgentTaskDetailPage />} />
 
             <Route path="/identification" element={<IdentificationRunsPage />} />
             <Route path="/identification/runs/:runId" element={<IdentificationRunPage />} />
@@ -348,8 +366,21 @@ export default function App() {
             <Route path="/knowledge/retrieval-result" element={<RetrievalResultPage />} />
 
             <Route path="/review" element={<ReviewQueuePage />} />
+            <Route path="/review/tasks/:taskId" element={<ReviewDetailPage />} />
+            <Route path="/review/identification/:taskId" element={<IdentificationReviewPage />} />
+            <Route path="/review/audit" element={<AuditLogPage />} />
+            <Route path="/report/export" element={<ReportExportPage />} />
             <Route path="/review/trace" element={<EvidenceTracePage />} />
             <Route path="/review/runs" element={<RunRecordsPage />} />
+          </Route>
+          {/* 系统管理独立面：在 RequireSession 之内、EngineeringGate 之外——
+              无工程上下文的系统管理员也要能进入，管理身份不等于业务工程权限。 */}
+          <Route element={<RequireSession />}>
+            <Route path="/ops/access" element={<AccessPage />} />
+            <Route path="/ops/data-sources" element={<DataSourcesPage />} />
+            <Route path="/ops/health" element={<HealthPage />} />
+            <Route path="/ops/model-versions" element={<ModelVersionsPage />} />
+            <Route path="/ops/backup" element={<BackupPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

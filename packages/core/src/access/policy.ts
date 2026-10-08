@@ -39,6 +39,9 @@ const roleBranches: Readonly<Record<PresetRoleV1, readonly ModuleBranchV1[]>> = 
     "review-audit.queue-read",
     "risk-assessment.read",
     "warning-response.read",
+    // C35：复核人加入统一复核/活动窄读（design D-02），沿原 review-audit.read 能力
+    // 读取获准主题；不因此获得 Agent 读面或任何写权。
+    "review-audit.read",
   ),
   "field-responder": branchSet(
     "warning-response.record-execution",
@@ -79,6 +82,10 @@ const roleBranches: Readonly<Record<PresetRoleV1, readonly ModuleBranchV1[]>> = 
     "knowledge-modeling.retrieval-result",
     "risk-assessment.read",
     "warning-response.read",
+    // C35：业务观察者加入统一复核/活动窄读与报告窄读（design D-02），
+    // 分别沿原 review-audit.read 与 projection.export 能力；不新增任何写权。
+    "review-audit.read",
+    "projection.report-read",
   ),
 });
 

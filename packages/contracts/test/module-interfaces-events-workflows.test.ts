@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import {
   AgentTaskResultRefV1Schema,
@@ -81,7 +82,11 @@ import {
   RiskInputVersionRefV1Schema,
   RuleConflictRefV1Schema,
   RunSubscriptionRequestV1Schema,
+  ModuleBranchV1Schema,
   StartAgentTaskCommandV1Schema,
+  StartAgentTaskPayloadV1Schema,
+  createModuleQuerySchemaV1,
+  createModuleResultSchemaV1,
   StartWorkflowRunCommandV1Schema,
   StructuredDocumentConversionCommandV1Schema,
   StructuredDocumentConversionInputV1Schema,
@@ -275,8 +280,10 @@ describe("module interface contracts", () => {
     expect(ModuleCapabilityV1Schema.safeParse("database.query").success).toBe(false);
     const failureEvidenceBranches = Object.entries(MODULE_BRANCH_CAPABILITY_V1)
       .filter(([, capability]) => capability === "agent-task.read")
-      .map(([branch]) => branch);
-    expect(failureEvidenceBranches).toEqual(["agent-task.read-failure-evidence"]);
+      .map(([branch]) => branch)
+      .sort();
+    // C35 起另有 `agent-task.read` 窄读分支；能力位仍只有既有的 agent-task.read。
+    expect(failureEvidenceBranches).toEqual(["agent-task.read", "agent-task.read-failure-evidence"]);
     expect(MODULE_BRANCH_CAPABILITY_V1["agent-task.read-failure-evidence"]).toBe("agent-task.read");
     expect(AgentTaskTypeV1Schema.safeParse("retrieval-review").success).toBe(true);
     expect(AgentTaskTypeV1Schema.safeParse("free-form").success).toBe(false);
@@ -3486,5 +3493,119 @@ describe("C41 additive human decision and feedback command wiring", () => {
     expect(requiresBindingProof).toBeTypeOf("function");
     expect(requiresAssessmentProof).toBeTypeOf("function");
     expect(requiresDecisionProof).toBeTypeOf("function");
+  });
+});
+
+const transientFailure = {
+  code: "TRANSIENT_FAILURE",
+  category: "technical",
+  retryable: true,
+  attempt: 1,
+  retryPolicyRef: { entityId: "retry-policy-1", versionId: "v1" },
+  diagnosticRef: version("diagnostic-artifact", "diagnostic-1"),
+};
+
+describe("C35 有界窄读分支与共享构造", () => {
+  it("三条窄读分支复用既有能力位且不新增 capability", () => {
+    expect(MODULE_BRANCH_CAPABILITY_V1["agent-task.read"]).toBe("agent-task.read");
+    expect(MODULE_BRANCH_CAPABILITY_V1["review-audit.read"]).toBe("review-audit.read");
+    expect(MODULE_BRANCH_CAPABILITY_V1["projection.report-read"]).toBe("projection.export");
+    // 分支名进入唯一事实源，模块 branch 枚举随之闭合。
+    expect(ModuleBranchV1Schema.safeParse("agent-task.read").success).toBe(true);
+    expect(ModuleBranchV1Schema.safeParse("review-audit.read").success).toBe(true);
+    expect(ModuleBranchV1Schema.safeParse("projection.report-read").success).toBe(true);
+    expect(ModuleBranchV1Schema.safeParse("sql.query").success).toBe(false);
+  });
+
+  it("共享构造派生的查询信封强制主体、工程、能力三者与授权一致", () => {
+    const querySchema = createModuleQuerySchemaV1(
+      "probe",
+      z.strictObject({ cursor: z.string().optional() }),
+      "review-audit.read",
+    );
+    const base = {
+      queryId: "query-1",
+      projectId: "project-1",
+      actorId: "actor-1",
+      requestedAt: "2026-09-25T00:00:00.000Z",
+      kind: "probe" as const,
+      payload: {},
+      authorization: {
+        schemaVersion: "1" as const,
+        authorizationContextRef: version("authorization-context", "auth-1"),
+        projectId: "project-1",
+        actorId: "actor-1",
+        grantedCapabilities: ["review-audit.read"],
+        spatialScopeRefs: [],
+        sourceAccessGrantRefs: [],
+        authorizationPolicyRef: { entityId: "policy-1", versionId: "v1" },
+        decidedAt: "2026-09-25T00:00:00.000Z",
+        invocation: { kind: "human" as const },
+      },
+    };
+    expect(querySchema.safeParse(base).success).toBe(true);
+    // 缺少所需能力、跨工程或跨主体的信封一律失败关闭。
+    expect(
+      querySchema.safeParse({
+        ...base,
+        authorization: { ...base.authorization, grantedCapabilities: ["projection.query"] },
+      }).success,
+    ).toBe(false);
+    expect(querySchema.safeParse({ ...base, projectId: "project-2" }).success).toBe(false);
+    expect(querySchema.safeParse({ ...base, actorId: "actor-2" }).success).toBe(false);
+    // 未知字段与未知操作在解析期即被拒绝。
+    expect(querySchema.safeParse({ ...base, extra: true }).success).toBe(false);
+    expect(querySchema.safeParse({ ...base, payload: { unknown: 1 } }).success).toBe(false);
+  });
+
+  it("共享结果构造只接受 succeeded/failed 两族且失败体不截断", () => {
+    const resultSchema = createModuleResultSchemaV1(
+      z.strictObject({ kind: z.literal("probe"), value: z.string() }),
+    );
+    expect(
+      resultSchema.safeParse({ kind: "succeeded", result: { kind: "probe", value: "ok" } }).success,
+    ).toBe(true);
+    expect(resultSchema.safeParse({ kind: "succeeded" }).success).toBe(false);
+    expect(
+      resultSchema.safeParse({
+        kind: "failed",
+        error: {
+          ...transientFailure,
+          stageCode: "report.read",
+          causalRunId: "run-1",
+          occurredAt: "2026-09-25T00:00:00.000Z",
+        },
+      }).success,
+    ).toBe(true);
+    // 没有第三个结果族：用自由字符串伪造状态不被接受。
+    expect(resultSchema.safeParse({ kind: "partial", result: {} }).success).toBe(false);
+    // 失败体必须是数值化的既有失败族，自由文案不被接受为 moduleError。
+    expect(
+      resultSchema.safeParse({
+        kind: "failed",
+        error: { code: "TRANSIENT_FAILURE", message: "boom" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("启动载荷由原 Schema 单独导出，供交互启动上下文原样回送", () => {
+    const payload = {
+      taskType: "retrieval-review",
+      triggerMode: "interactive",
+      parentRunRef: version("workflow-run", "run-1"),
+      frozenInputRef: identificationInputRef,
+      modelDeploymentRef: { entityId: "deployment-1", versionId: "v1" },
+      promptTemplateRef: { entityId: "prompt-1", versionId: "v1" },
+      toolPolicyRef: { entityId: "tool-policy-1", versionId: "v1" },
+      budgetPolicyRef: { entityId: "budget-1", versionId: "v1" },
+      incrementSchemaRef: { entityId: "increment-1", versionId: "v1" },
+      validationPolicyRef: { entityId: "validation-1", versionId: "v1" },
+    };
+    expect(StartAgentTaskPayloadV1Schema.safeParse(payload).success).toBe(true);
+    expect(StartAgentTaskPayloadV1Schema.safeParse({ ...payload, extra: 1 }).success).toBe(false);
+    // 同一载荷并入原命令联合后仍按原 commandKind 与分支能力校验。
+    expect(StartAgentTaskCommandV1Schema.safeParse(command("start-task", payload)).success).toBe(
+      true,
+    );
   });
 });

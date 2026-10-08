@@ -1,3 +1,304 @@
+/* Agent 域共享分区样式（v2 pages/agent/agent.css 移植到 demo 令牌）。
+   停靠栏、全屏工作台与任务详情共用这一份分区样式：字段卡、版本引用行、状态徽章、
+   预算对照表、动作可用性列表、游标分页与诚实空态。 */
+
+.ag-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
+  padding: 14px 16px;
+}
+
+.ag-card-title {
+  margin: 0 0 10px;
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ag-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px 20px;
+  margin: 0;
+}
+
+.ag-field dt {
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.ag-field dd {
+  margin: 2px 0 0;
+  font-size: 14px;
+  line-height: 22px;
+  word-break: break-all;
+}
+
+.ag-refs {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ag-version-ref {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+
+.ag-version-ref .mono {
+  color: var(--text);
+}
+
+.ag-ref-kind {
+  display: inline-block;
+  min-width: 96px;
+  margin-right: 8px;
+  color: var(--text-2);
+}
+
+.ag-table-wrap {
+  overflow-x: auto;
+}
+
+.ag-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.ag-table th,
+.ag-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.ag-table thead th {
+  color: var(--text-2);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ag-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.ag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.ag-chip--status {
+  color: var(--text-2);
+  background: var(--bluegray-soft);
+}
+
+.ag-chip--pass {
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.ag-chip--fail {
+  color: var(--risk-1);
+  background: var(--risk-1-soft);
+}
+
+.ag-chip--waiting {
+  color: var(--blue);
+  background: var(--blue-soft);
+}
+
+.ag-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.ag-btn--primary {
+  border-color: var(--blue);
+  background: var(--blue);
+  color: #fff;
+}
+
+.ag-btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.ag-muted {
+  color: var(--text-2);
+}
+
+.ag-empty {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.ag-note {
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-2);
+}
+
+.ag-note-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+}
+
+/* 动作可用性：只呈现服务端返回的真实状态与原因码 */
+.ag-availability {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ag-availability-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.ag-availability-name {
+  min-width: 148px;
+}
+
+.ag-availability-reason {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+/* 游标分页：只回传服务端给出的 nextCursor */
+.ag-paging {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12px;
+}
+
+.ag-page-btn {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.ag-page-btn:disabled {
+  color: var(--text-2);
+  background: var(--bluegray-soft);
+  cursor: not-allowed;
+}
+
+.ag-subsection {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+
+.ag-subsection-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.ag-subsection-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ag-launch {
+  margin-top: 12px;
+}
+
+/* 任务摘要头部 */
+.ag-task-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.ag-task-summary-main {
+  min-width: 16rem;
+  flex: 1;
+}
+
+.ag-task-summary-id {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  line-height: 22px;
+  word-break: break-all;
+}
+
+.ag-task-summary-meta {
+  margin: 2px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+
+.ag-task-summary-text {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-2);
+}
+
+/* 交互控件的可见焦点：键盘可达性 */
+.ag-page-btn:focus-visible,
+.ag-btn:focus-visible,
+.agd-refresh:focus-visible,
+.agent-dock-close:focus-visible,
+.agent-expand-link:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+/* ---- 停靠栏 ---- */
 .agent-dock {
   position: fixed;
   top: 0;
@@ -8,7 +309,9 @@
   border-left: 1px solid var(--border);
   box-shadow: -6px 0 24px rgba(14, 34, 56, 0.12);
   transform: translateX(100%);
-  transition: transform 0.2s ease;
+  /* 收起时整体移出可聚焦序列：关闭后内容不可被 Tab 命中。 */
+  visibility: hidden;
+  transition: transform 0.2s ease, visibility 0.2s ease;
   z-index: 50;
   display: flex;
   flex-direction: column;
@@ -16,6 +319,7 @@
 
 .agent-dock--open {
   transform: translateX(0);
+  visibility: visible;
 }
 
 .agent-dock-header {
@@ -58,7 +362,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  padding: 12px 20px;
+  padding: 10px 20px;
   border-bottom: 1px solid var(--border);
   background: var(--page-bg);
 }
@@ -75,108 +379,19 @@
 .agent-dock-body {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 20px;
+  padding: 14px 16px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-}
-
-.agent-bubble {
-  border-radius: 8px;
-  padding: 12px 14px;
-  font-size: 14px;
-  line-height: 22px;
-}
-
-.agent-bubble--user {
-  align-self: flex-end;
-  max-width: 78%;
-  background: var(--blue-soft);
-  color: var(--text);
-}
-
-.agent-bubble--agent {
-  align-self: stretch;
-  background: var(--page-bg);
-  border: 1px solid var(--border);
-}
-
-.agent-bubble--agent p + p {
-  margin-top: 4px;
-}
-
-.agent-result-card {
-  margin-top: 10px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 12px 14px;
-}
-
-.agent-result-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-weight: 600;
-}
-
-.agent-result-event {
-  margin-top: 6px;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.agent-result-meta {
-  margin-top: 4px;
-  font-size: 12px;
-  color: var(--text-2);
-}
-
-.agent-result-section {
-  margin-top: 10px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-2);
-}
-
-.agent-result-list {
-  margin-top: 4px;
-  padding-left: 18px;
-  font-size: 13px;
-  line-height: 20px;
-}
-
-.agent-result-evidence {
-  margin-top: 4px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.agent-steps {
-  margin-top: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.agent-step {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--text-2);
-}
-
-.agent-step svg {
-  color: var(--success);
-  flex: none;
+  gap: 12px;
 }
 
 .agent-dock-footer {
   flex: none;
   border-top: 1px solid var(--border);
   padding: 12px 20px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .agent-expand-link {
@@ -184,37 +399,4 @@
   align-items: center;
   gap: 4px;
   font-size: 13px;
-  margin-bottom: 10px;
-}
-
-.agent-input-row {
-  display: flex;
-  gap: 8px;
-}
-
-.agent-input {
-  flex: 1;
-  height: 36px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0 12px;
-  font-size: 14px;
-  font-family: var(--font);
-  color: var(--text);
-  background: var(--card);
-}
-
-.agent-input::placeholder {
-  color: var(--text-2);
-}
-
-.agent-send {
-  width: 36px;
-  height: 36px;
-  border-radius: 6px;
-  background: var(--blue);
-  color: #fff;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
 }

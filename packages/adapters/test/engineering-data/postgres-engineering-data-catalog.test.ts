@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { ArtifactPutCommandV1Schema } from "@riskflow/core/artifacts";
 import type {
+  ApplicabilityMetadataSnapshotRefV1,
   AuthorizationContextV1,
   EngineeringDataCommandV1,
   ModuleBranchV1,
@@ -41,6 +42,7 @@ describe("C32 PostgreSQL engineering data catalog adapter", () => {
   let monitoringSnapshotRef: MonitoringSnapshotRefV1;
   let segmentQueryResultRef: QueryResultRefV1;
   let monitoringQueryResultRef: QueryResultRefV1;
+  let applicabilitySnapshotRef: ApplicabilityMetadataSnapshotRefV1;
   let authorization: (
     id: string,
     branch: ModuleBranchV1,
@@ -189,6 +191,7 @@ describe("C32 PostgreSQL engineering data catalog adapter", () => {
       formedAt: now,
     });
     if (applicability.kind !== "succeeded") throw new Error("C32 applicability snapshot failed");
+    applicabilitySnapshotRef = applicability.result.snapshot.snapshotRef;
     const put = async (id: string, content: string, mediaType: string) => {
       const putAuth = await authorization(
         `c32-put-${id}`,
@@ -235,7 +238,7 @@ describe("C32 PostgreSQL engineering data catalog adapter", () => {
           sourceOrganization: "甲方",
         },
         descriptor: { kind: "file-upload", contentFingerprint: "source body" },
-        applicabilityMetadataSnapshotRef: applicability.result.snapshot.snapshotRef,
+        applicabilityMetadataSnapshotRef: applicabilitySnapshotRef,
       }),
       "application/json",
     );
@@ -691,5 +694,113 @@ describe("C32 PostgreSQL engineering data catalog adapter", () => {
     if (bogus.kind === "failed") {
       expect(bogus.error.code).toBe("AUTHORIZATION_DENIED");
     }
+  });
+
+  it("source-catalog 只转出登记 descriptor 已持有的交付方式与连接定义引用，不带连接秘密", async () => {
+    const connectionDefinitionRef = { entityId: "c32-connection", versionId: "3" };
+    const put = async (id: string, content: string, mediaType: string) =>
+      fixture.artifactStore.put(
+        ArtifactPutCommandV1Schema.parse({
+          schemaVersion: "1",
+          commandId: `c32-put-${id}`,
+          idempotencyKey: `c32-put-${id}`,
+          projectId,
+          actorId: managerId,
+          issuedAt: now,
+          authorization: await authorization(
+            `c32-put-${id}`,
+            "engineering-data.register-source-delivery",
+          ),
+          requiredCapability: "engineering-data.write",
+          artifactId: `c32-${id}`,
+          artifactKind: "content",
+          purposeCode: "engineering-data.register-source-delivery",
+          mediaType,
+          parentArtifactRefs: [],
+          evidenceReferences: [],
+          additionalSpatialScopeRefs: [],
+          additionalSourceAccessGrantRefs: [],
+        }),
+        (async function* () {
+          yield new TextEncoder().encode(content);
+        })(),
+      );
+    const delivery = await fixture.registry.apply({
+      commandId: "c32-snapshot-delivery",
+      idempotencyKey: "c32-snapshot-delivery",
+      projectId,
+      actorId: managerId,
+      issuedAt: now,
+      authorization: await authorization(
+        "c32-snapshot-delivery",
+        "engineering-data.register-source-delivery",
+      ),
+      kind: "register-source-delivery",
+      payload: {
+        sourceConnectionRef: connectionDefinitionRef,
+        deliveryKey: "c32-snapshot-delivery",
+        sourceArtifactRef: (
+          await put("snapshot-source", "snapshot source body", "text/plain")
+        ).artifactRef,
+        metadataArtifactRef: (
+          await put(
+            "snapshot-metadata",
+            JSON.stringify({
+              schemaVersion: "1",
+              projectRevisionRef,
+              spatialScopeRefs: [spatialScopeRef],
+              registeredByAccountId: managerId,
+              sourceItemId: "c32-source-item-snapshot",
+              sourceItemName: "监测快照",
+              sourceCategory: "monitoring-snapshot",
+              sourceMetadata: { documentType: "监测快照" },
+              descriptor: {
+                kind: "database-snapshot",
+                connectionDefinitionRef,
+                queryFingerprint: "monitoring-query-fingerprint",
+                cursorFingerprint: "monitoring-cursor-fingerprint",
+              },
+              applicabilityMetadataSnapshotRef: applicabilitySnapshotRef,
+            }),
+            "application/json",
+          )
+        ).artifactRef,
+        occurredAt: now,
+      },
+    } satisfies Extract<EngineeringDataCommandV1, { kind: "register-source-delivery" }>);
+    if (delivery.kind !== "succeeded") throw new Error("C32 snapshot delivery failed");
+    const snapshotSourceVersionRef = delivery.result.sourceVersionRef;
+
+    const result = await catalog.read({
+      queryId: "c32-source-catalog-connection",
+      projectId,
+      actorId: managerId,
+      requestedAt: now,
+      authorization: await authorization(
+        "c32-source-catalog-connection",
+        "engineering-data.source-catalog",
+      ),
+      kind: "source-catalog",
+      payload: { pageSize: 10 },
+    });
+    if (result.kind !== "succeeded" || result.result.kind !== "source-catalog") {
+      throw new Error("C32 source catalog with connection failed");
+    }
+    const byRef = (entityId: string) =>
+      result.result.items.find((item) => item.sourceVersionRef.reference.entityId === entityId);
+
+    // database-snapshot 登记：交付方式与连接定义引用逐字取自 descriptor。
+    const snapshot = byRef(snapshotSourceVersionRef.reference.entityId);
+    expect(snapshot?.deliveryKind).toBe("database-snapshot");
+    expect(snapshot?.connectionDefinitionRef).toEqual(connectionDefinitionRef);
+
+    // file-upload 登记本身不持有连接定义引用：缺席即未登记，不用空值冒充。
+    const uploaded = byRef(sourceVersionRef.reference.entityId);
+    expect(uploaded?.deliveryKind).toBe("file-upload");
+    expect(uploaded?.connectionDefinitionRef).toBeUndefined();
+
+    // 摘要条目只承载引用，不泄露 descriptor 里的查询/游标指纹。
+    expect(JSON.stringify(snapshot)).not.toContain("monitoring-query-fingerprint");
+    expect(JSON.stringify(snapshot)).not.toContain("monitoring-cursor-fingerprint");
   });
 });

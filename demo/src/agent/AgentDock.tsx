@@ -1,24 +1,35 @@
 import { Link } from 'react-router-dom'
-import {
-  agentAnswerLines,
-  agentInputPlaceholder,
-  agentQuestion,
-  agentResultCard,
-  agentTaskSteps,
-} from '../content/agent'
+
 import { Icon } from '../components/icons'
-import { RiskBadge } from '../components/RiskBadge'
-import { EvidenceLink } from '../components/EvidenceLink'
+import { useProjectPath } from '../api/context'
+import { useAgentTask } from './AgentTaskProvider'
+import {
+  AGENT_TASK_TYPE_LABELS,
+  AGENT_TRIGGER_MODE_LABELS,
+  AgentActionAvailabilityList,
+  AgentBudgetCompare,
+  AgentEmpty,
+  AgentField,
+  AgentFields,
+  AgentProposalPanel,
+  TaskStatusChip,
+  agentTaskDetailPath,
+} from './agentShared'
 import { useAgentDockOpen, setAgentDock } from './agentDockStore'
 import './AgentDock.css'
 
+const label = (labels: Readonly<Record<string, string>>, value: string): string => labels[value] ?? value
+
 /**
- * 全局 Agent 停靠栏：右侧固定 480px 面板，可展开/收起。
- * 挂在 AppShell 内；开关状态由 agentDockStore 持有，跨导航保持。
- * 数据全部来自 src/content/agent.ts。
+ * 全局 Agent 停靠栏：右侧固定面板，可展开/收起，挂在 AppShell 内。
+ * 与全屏工作台、任务详情读同一份 `useAgentTask()` 任务事实：
+ * 呈现当前精确任务的真实上下文、预算台账、动作可用性与提案，不含自由聊天输入，
+ * 也不在浏览器里执行任何工具。
  */
 export function AgentDock({ context }: { context?: string[] }) {
   const open = useAgentDockOpen()
+  const projectPath = useProjectPath()
+  const { taskRef, detail, error, loading } = useAgentTask()
 
   return (
     <aside className={`agent-dock${open ? ' agent-dock--open' : ''}`} aria-hidden={!open}>
@@ -37,7 +48,7 @@ export function AgentDock({ context }: { context?: string[] }) {
         </button>
       </header>
 
-      {context && context.length > 0 && (
+      {context !== undefined && context.length > 0 && (
         <div className="agent-dock-context">
           {context.map((c) => (
             <span key={c} className="agent-dock-context-tag">
@@ -48,65 +59,83 @@ export function AgentDock({ context }: { context?: string[] }) {
       )}
 
       <div className="agent-dock-body">
-        <div className="agent-bubble agent-bubble--user">{agentQuestion}</div>
-
-        <div className="agent-bubble agent-bubble--agent">
-          {agentAnswerLines.map((line, i) => (
-            <p key={i}>{line}</p>
-          ))}
-
-          <div className="agent-result-card">
-            <div className="agent-result-head">
-              <span className="mono">{agentResultCard.riskRecordId}</span>
-              <RiskBadge level="I" />
-            </div>
-            <div className="agent-result-event">{agentResultCard.riskEvent}</div>
-            <div className="agent-result-meta">
-              P={agentResultCard.p} · C={agentResultCard.c} · 综合置信度{' '}
-              {agentResultCard.compositeConfidence}
-            </div>
-            <div className="agent-result-section">主要触发指标</div>
-            <ul className="agent-result-list">
-              {agentResultCard.triggerIndicators.map((t) => (
-                <li key={t}>{t}</li>
-              ))}
-            </ul>
-            <div className="agent-result-section">处置建议（前两项）</div>
-            <ul className="agent-result-list">
-              {agentResultCard.measureSummaries.map((m) => (
-                <li key={m}>{m}</li>
-              ))}
-            </ul>
-            <div className="agent-result-section">证据引用</div>
-            <div className="agent-result-evidence">
-              <EvidenceLink segmentId="SRC-GEO-001-CH04-SEG018" />
-              <EvidenceLink segmentId="SRC-PLAN-002-CH06-SEG011" />
-              <EvidenceLink segmentId="SRC-MON-003-20260827-SEG036" />
-            </div>
-          </div>
-
-          <div className="agent-steps">
-            {agentTaskSteps.map((s, i) => (
-              <div key={i} className="agent-step">
-                <Icon name="check" size={13} />
-                {s}
+        {taskRef === undefined || detail === undefined ? (
+          <AgentEmpty>
+            {error !== undefined ? `读取任务详情失败（${error}）。` : loading ? '正在读取任务…' : '尚未选择 Agent 任务。'}
+          </AgentEmpty>
+        ) : (
+          <>
+            <section className="ag-card ag-task-summary" aria-label="当前任务摘要">
+              <div className="ag-task-summary-main">
+                <p className="ag-task-summary-id">
+                  <span className="mono">{taskRef.reference.entityId}</span>
+                  <TaskStatusChip status={detail.summary.status} />
+                </p>
+                <p className="ag-task-summary-meta">
+                  {label(AGENT_TASK_TYPE_LABELS, taskRef.taskType)} ·{' '}
+                  {label(AGENT_TRIGGER_MODE_LABELS, taskRef.triggerMode)}
+                </p>
+                <p className="ag-task-summary-text mono">
+                  {taskRef.reference.entityId} · {taskRef.reference.versionId}
+                </p>
               </div>
-            ))}
-          </div>
-        </div>
+            </section>
+
+            <section className="ag-card" aria-label="任务上下文">
+              <h3 className="ag-card-title">任务上下文</h3>
+              <AgentFields>
+                <AgentField label="发起者">
+                  <span className="mono">{detail.summary.initiatorActorId}</span>
+                </AgentField>
+                <AgentField label="上游工作流运行">
+                  <span className="mono">
+                    {detail.summary.parentRunRef.reference.entityId} ·{' '}
+                    {detail.summary.parentRunRef.reference.versionId}
+                  </span>
+                </AgentField>
+                <AgentField label="冻结输入">
+                  <span className="mono">
+                    {detail.summary.frozenInputRef.reference.entityId} ·{' '}
+                    {detail.summary.frozenInputRef.reference.versionId}
+                  </span>
+                </AgentField>
+              </AgentFields>
+            </section>
+
+            <section className="ag-card" aria-label="资源消耗">
+              <h3 className="ag-card-title">资源消耗</h3>
+              <AgentBudgetCompare budget={detail.budget} />
+            </section>
+
+            <section className="ag-card" aria-label="当前提案">
+              <h3 className="ag-card-title">当前提案</h3>
+              <AgentProposalPanel proposal={detail.currentProposal} />
+            </section>
+
+            <section className="ag-card" aria-label="任务动作可用性">
+              <h3 className="ag-card-title">任务动作可用性</h3>
+              <AgentActionAvailabilityList actions={detail.actions} />
+              <p className="ag-note">只读授权不等于写权；界面不提供放宽预算或绕过确认的入口。</p>
+            </section>
+          </>
+        )}
       </div>
 
       <footer className="agent-dock-footer">
-        <Link to="/agent" className="agent-expand-link" onClick={() => setAgentDock(false)}>
+        <Link to={projectPath('/agent')} className="agent-expand-link" onClick={() => setAgentDock(false)}>
           展开为全屏工作台
           <Icon name="arrowRight" size={14} />
         </Link>
-        <div className="agent-input-row">
-          <input className="agent-input" placeholder={agentInputPlaceholder} readOnly />
-          <button type="button" className="agent-send" aria-label="发送">
-            <Icon name="arrowRight" size={16} />
-          </button>
-        </div>
+        {taskRef !== undefined && (
+          <Link
+            to={projectPath(agentTaskDetailPath(taskRef))}
+            className="agent-expand-link"
+            onClick={() => setAgentDock(false)}
+          >
+            查看任务详情
+            <Icon name="arrowRight" size={14} />
+          </Link>
+        )}
       </footer>
     </aside>
   )

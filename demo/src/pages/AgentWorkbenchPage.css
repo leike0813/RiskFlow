@@ -1,69 +1,32 @@
-/* 智能 Agent 全屏工作台（/agent）：1920×1080 静态取景，无滚动条。
-   布局事实源：prototypes/report-screenshot-design.md §5（288 / 800 / 528 三列）。 */
+/* 智能 Agent 全屏工作台（/agent）与任务详情（/agent/tasks/:taskId）。
+   布局沿 v2 P-AG-02/P-AG-03 的分区与视觉层级，改为按真实数据长度滚动，不再固定取景高度。 */
 
 .awb-page {
-  height: calc(100vh - var(--topbar-height));
   display: flex;
   flex-direction: column;
-  overflow: hidden;
 }
 
 .awb-grid {
-  flex: 1;
-  min-height: 0;
   display: grid;
-  grid-template-columns: 288px 800px 528px;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   gap: 16px;
+  align-items: start;
 }
 
 .awb-col {
-  min-height: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
+  gap: 16px;
 }
 
-.awb-col > .card {
-  height: 100%;
+.awb-col--side {
+  grid-column: 2;
 }
 
-/* ---- 会话与任务列 ---- */
-.awb-new-task {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  width: 100%;
-  height: 36px;
-  border-radius: 6px;
-  background: var(--blue);
-  color: #fff;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.awb-new-task-plus {
-  font-size: 16px;
-  line-height: 1;
-  font-weight: 400;
-}
-
-.awb-task-list {
-  margin-top: 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.awb-task {
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-
-.awb-task--current {
-  border-color: var(--blue);
-  border-left-width: 3px;
-  background: var(--blue-soft);
+.awb-col--wide {
+  grid-column: 1;
+  grid-row: 1 / span 2;
 }
 
 .awb-task-head {
@@ -71,447 +34,70 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-}
-
-.awb-task-title {
+  margin-bottom: 10px;
   font-size: 14px;
-  line-height: 22px;
   font-weight: 600;
-  color: var(--text);
+  word-break: break-all;
 }
 
-.awb-task-meta {
-  margin-top: 2px;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--text-2);
+.awb-launch {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
 }
 
-/* ---- 对话列：工程上下文条 ---- */
-.awb-chat {
-  gap: 16px;
-}
-
-.awb-context-bar {
-  flex: none;
-  height: 52px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 16px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--card-radius);
-  box-shadow: var(--card-shadow);
-}
-
-.awb-context-tags {
-  display: flex;
-  gap: 8px;
-}
-
-.awb-context-tag {
-  font-size: 12px;
-  line-height: 18px;
-  padding: 2px 10px;
-  border-radius: 4px;
-  color: var(--blue);
-  background: var(--blue-soft);
-}
-
-.awb-context-source {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text-2);
-}
-
-/* ---- 对话区 ---- */
-.awb-conv {
-  flex: 1;
-  min-height: 0;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--card-radius);
-  box-shadow: var(--card-shadow);
-  padding: 24px;
+/* ---- 任务详情页 ---- */
+.agd-page {
   display: flex;
   flex-direction: column;
-  gap: 22px;
-  overflow: hidden;
 }
 
-.awb-bubble-user {
-  align-self: flex-end;
-  max-width: 78%;
-  background: var(--blue-soft);
-  color: var(--text);
-  border-radius: 8px;
-  padding: 10px 14px;
-  font-size: 14px;
-  line-height: 22px;
-}
-
-.awb-answer {
-  display: flex;
-  gap: 12px;
-  min-height: 0;
-}
-
-.awb-avatar {
-  flex: none;
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  background: var(--blue-soft);
-  color: var(--blue);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.awb-answer-body {
-  flex: 1;
-  min-width: 0;
-}
-
-.awb-answer-line {
-  font-size: 15px;
-  line-height: 24px;
-  color: var(--text);
-}
-
-/* ---- 结构化结果卡 ---- */
-.awb-result {
-  margin-top: 16px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: #fbfcfe;
-  padding: 20px 22px;
-}
-
-.awb-result-head {
+.agd-header-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-}
-
-.awb-result-id {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.awb-result-event {
-  margin-top: 6px;
-  font-size: 15px;
-  line-height: 24px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.awb-result-stats {
-  margin-top: 14px;
-  display: flex;
   gap: 12px;
 }
 
-.awb-stat {
-  flex: 1;
+.agd-refresh {
+  padding: 5px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--card);
-  padding: 10px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 20px;
 }
 
-.awb-stat-label {
-  font-size: 12px;
-  line-height: 18px;
+.agd-refresh:disabled {
   color: var(--text-2);
+  background: var(--bluegray-soft);
+  cursor: not-allowed;
 }
 
-.awb-stat-value {
-  font-size: 20px;
-  line-height: 28px;
-  font-weight: 700;
-  color: var(--text);
-}
-
-.awb-stat-value--blue {
-  color: var(--blue);
-}
-
-.awb-result-section {
-  margin-top: 16px;
-  font-size: 12px;
-  line-height: 18px;
-  font-weight: 600;
-  color: var(--text-2);
-}
-
-.awb-trigger-list {
-  margin-top: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  list-style: none;
-}
-
-.awb-trigger-list li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-  line-height: 22px;
-  color: var(--text);
-}
-
-.awb-trigger-list li svg {
-  flex: none;
-  color: var(--risk-1);
-}
-
-.awb-measure-list {
-  margin-top: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  list-style: none;
-}
-
-.awb-measure-list li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-  line-height: 22px;
-  color: var(--text);
-}
-
-.awb-measure-index {
-  flex: none;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--blue-soft);
-  color: var(--blue);
-  font-size: 11px;
-  line-height: 18px;
-  text-align: center;
-  font-weight: 600;
-}
-
-.awb-result-links {
-  margin-top: 16px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
-  display: flex;
-  gap: 24px;
-}
-
-.awb-result-link {
+.agd-back {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   font-size: 13px;
-  color: var(--blue);
 }
 
-/* ---- 输入区 ---- */
-.awb-input-bar {
-  flex: none;
-  height: 84px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--card-radius);
-  box-shadow: var(--card-shadow);
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 0 20px;
-}
-
-.awb-input {
-  flex: 1;
-  height: 40px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0 14px;
-  font-size: 14px;
-  font-family: var(--font);
-  color: var(--text);
-  background: var(--card);
-}
-
-.awb-input::placeholder {
-  color: var(--text-2);
-}
-
-.awb-send {
-  flex: none;
-  width: 40px;
-  height: 40px;
-  border-radius: 6px;
-  background: var(--blue);
-  color: #fff;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-/* ---- 运行与证据列 ---- */
-.awb-side {
+.agd-sections {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
   gap: 16px;
+  align-items: start;
 }
 
-.awb-side > .card {
-  flex: none;
-  height: auto;
+.agd-refs {
+  margin-top: 12px;
 }
 
-.awb-side-grow {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
+.agd-launch {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
 }
 
-.awb-side-grow > .card {
-  height: 100%;
-}
-
-.awb-run-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.awb-run-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-size: 13px;
-  line-height: 20px;
-  color: var(--text);
-}
-
-.awb-field-label {
-  flex: none;
-  width: 56px;
-  font-size: 12px;
-  color: var(--text-2);
-}
-
-.awb-run-id {
-  font-weight: 600;
-}
-
-.awb-run-graph {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-/* 任务步骤：五步可审计动作，绿色对勾 + 连接线 */
-.awb-steps {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-
-.awb-step {
-  position: relative;
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.awb-step-check {
-  flex: none;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: var(--success-soft);
-  color: var(--success);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.awb-step-text {
-  font-size: 13px;
-  line-height: 20px;
-  color: var(--text);
-}
-
-.awb-step-line {
-  position: absolute;
-  left: 9px;
-  top: calc(50% + 12px);
-  bottom: calc(-50% + 12px);
-  width: 2px;
-  background: var(--border);
-}
-
-/* 证据引用 */
-.awb-evi-list {
-  display: flex;
-  flex-direction: column;
-}
-
-.awb-evi-row {
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.awb-evi-row:last-child {
-  border-bottom: none;
-  padding-bottom: 0;
-}
-
-.awb-evi-row:first-child {
-  padding-top: 0;
-}
-
-.awb-evi-name {
-  font-size: 13px;
-  line-height: 20px;
-  font-weight: 600;
-  color: var(--text);
-  margin-bottom: 2px;
-}
-
-/* 记录引用 */
-.awb-rec-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.awb-rec-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 13px;
-  line-height: 20px;
-  color: var(--text);
-}
-
-.awb-rec-id {
-  font-weight: 600;
-  color: var(--blue);
-}
-
-.awb-rec-label {
-  color: var(--text-2);
-}
-
-.awb-rec-row svg {
-  margin-left: auto;
-  color: var(--text-2);
+.agd-nav {
+  grid-column: 1 / -1;
 }

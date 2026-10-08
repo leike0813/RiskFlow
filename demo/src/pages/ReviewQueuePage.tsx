@@ -6,63 +6,43 @@ import { ConfirmButton } from '../components/ConfirmButton'
 import { DataTable, type DataTableColumn } from '../components/DataTable'
 import { PageStateView } from '../components/PageStateView'
 import { SectionTabs } from '../components/SectionTabs'
-import { StatusTag, type StatusTone } from '../components/StatusTag'
+import { StatusTag } from '../components/StatusTag'
 import { VersionTag } from '../components/VersionTag'
 import { useEngineering, usePageQuery, useProjectPath } from '../api/context'
 import {
   readReviewQueue,
-  submitReviewDecision,
   type ReviewQueueItemView,
   type ReviewQueuePageView,
 } from '../api/operations'
+import {
+  REVIEW_STATUS_LABEL,
+  REVIEW_STATUS_TONE,
+  REVIEW_TYPE_LABEL,
+  reviewDecisionOptions,
+  reviewTabs,
+  submitReviewTaskDecision,
+  type ReviewDecisionOption,
+} from './ReviewDetailPage'
 import './ReviewQueuePage.css'
 
-const reviewTabs = [
-  { to: '/review', label: '复核队列' },
-  { to: '/review/trace', label: '证据追溯' },
-  { to: '/review/runs', label: '运行记录' },
-]
-
-/** 复核类型中文呈现（契约 ReviewTypeV1 五值，UI 不扩张取值）。 */
-const REVIEW_TYPE_LABEL: Record<string, string> = {
-  'identification-group': '识别候选复核',
-  'knowledge-revision': '知识草案复核',
-  'rule-conflict': '规则冲突复核',
-  'response-candidate': '处置建议复核',
-  'calibration-suggestion': '校准建议复核',
-}
-
-const REVIEW_STATUS_LABEL: Record<string, string> = {
-  pending: '待决定',
-  decided: '已决定',
-  superseded: '已取代',
-}
-
-const REVIEW_STATUS_TONE: Record<string, StatusTone> = {
-  pending: 'review',
-  decided: 'success',
-  superseded: 'neutral',
-}
-
 /**
- * 「原样通过」决定谓词：逐复核类型取契约判别联合中的原样通过形态；
- * response-candidate 无原样通过形态（修正候选属后续页面范围），不呈现通过入口。
+ * 逐项「通过」选项：取该复核类型在契约联合中的原样通过分支。
+ * 需要候选集引用的修正分支不进入批量原样通过（响应-candidate 也没有原样通过形态）。
  */
-const APPROVE_DECISION_KIND: Record<string, string> = {
-  'identification-group': 'approve-unchanged',
-  'knowledge-revision': 'approve-publication',
-  'rule-conflict': 'approve-publication',
-  'calibration-suggestion': 'approve-draft-creation',
-}
+const approveOptionOf = (reviewType: string): ReviewDecisionOption | undefined =>
+  reviewDecisionOptions(reviewType).find(
+    (option) => !option.requiresCandidateRef && option.kind.startsWith('approve'),
+  )
+
+const rejectOptionOf = (reviewType: string): ReviewDecisionOption | undefined =>
+  reviewDecisionOptions(reviewType).find((option) => option.kind === 'reject')
 
 const taskEntityId = (item: ReviewQueueItemView) => item.reviewTaskRef.reviewTaskRef.reference.entityId
 
+const taskVersionId = (item: ReviewQueueItemView) => item.reviewTaskRef.reviewTaskRef.reference.versionId
+
 const targetLabel = (item: ReviewQueueItemView) =>
   `${item.reviewTaskRef.targetRef.kind} · ${item.reviewTaskRef.targetRef.reference.entityId}`
-
-/** 决定命令幂等键：同一任务同一决定形态重放不重复生效。 */
-const decisionCommandId = (item: ReviewQueueItemView, decisionKind: string) =>
-  `decide-${taskEntityId(item)}-${decisionKind}`
 
 interface DecisionOutcome {
   readonly entityId: string
@@ -94,26 +74,22 @@ export default function ReviewQueuePage() {
     [typeFilter, statusFilter],
   )
 
-  const submitDecision = async (
-    item: ReviewQueueItemView,
-    decisionKind: string,
-    decisionLabel: string,
-  ) => {
+  const submitDecision = async (item: ReviewQueueItemView, option: ReviewDecisionOption) => {
     const projectId = selector.projectId
     if (projectId === null) return
     try {
-      const submitted = await submitReviewDecision(projectId, {
+      const decisionRefId = await submitReviewTaskDecision({
+        projectId,
         reviewTaskRef: item.reviewTaskRef,
-        decision: { reviewType: item.reviewTaskRef.reviewType, kind: decisionKind },
-        reasonCode: decisionKind === 'reject' ? 'review-reject' : 'review-approve',
-        commandId: decisionCommandId(item, decisionKind),
+        reviewType: item.reviewTaskRef.reviewType,
+        option,
       })
       setOutcomes((prev) => [
         {
           entityId: taskEntityId(item),
-          decisionLabel,
+          decisionLabel: option.label,
           ok: true,
-          decisionRefId: submitted.reviewDecisionRef.reference.entityId,
+          decisionRefId,
           waitingRunId: item.reviewTaskRef.waitingRunRef.reference.entityId,
         },
         ...prev,
@@ -123,7 +99,7 @@ export default function ReviewQueuePage() {
       setOutcomes((prev) => [
         {
           entityId: taskEntityId(item),
-          decisionLabel,
+          decisionLabel: option.label,
           ok: false,
           code: error instanceof Error ? error.message : 'TERMINAL_FAILURE',
         },
@@ -176,8 +152,15 @@ export default function ReviewQueuePage() {
         const item = row as unknown as ReviewQueueItemView
         return (
           <span className="rq-target">
-            <span className="mono">{taskEntityId(item)}</span>
-            <VersionTag>{item.reviewTaskRef.reviewTaskRef.reference.versionId}</VersionTag>
+            <Link
+              className="mono"
+              to={projectPath(
+                `/review/tasks/${encodeURIComponent(taskEntityId(item))}?version=${encodeURIComponent(taskVersionId(item))}`,
+              )}
+            >
+              {taskEntityId(item)}
+            </Link>
+            <VersionTag>{taskVersionId(item)}</VersionTag>
           </span>
         )
       },
@@ -256,24 +239,43 @@ export default function ReviewQueuePage() {
                 拒绝
               </button>
               <span className="rq-target-id">目标版本已被取代，请重新领取</span>
+              <Link
+                className="rq-link-action"
+                to={projectPath(
+                  `/review/tasks/${encodeURIComponent(taskEntityId(item))}?version=${encodeURIComponent(taskVersionId(item))}`,
+                )}
+              >
+                详情
+              </Link>
             </div>
           )
         }
-        const approveKind = APPROVE_DECISION_KIND[item.reviewTaskRef.reviewType]
+        const approveOption = approveOptionOf(item.reviewTaskRef.reviewType)
+        const rejectOption = rejectOptionOf(item.reviewTaskRef.reviewType)
         return (
           <div className="rq-row-actions">
-            {approveKind !== undefined && (
+            {approveOption !== undefined && (
               <ConfirmButton
                 label="通过"
                 summary={confirmSummary(item, '按原样通过', '等待中的运行据此恢复后续流程')}
-                onConfirm={() => submitDecision(item, approveKind, '通过')}
+                onConfirm={() => submitDecision(item, approveOption)}
               />
             )}
-            <ConfirmButton
-              label="拒绝"
-              summary={confirmSummary(item, '拒绝该任务', '目标对象保持待处理状态并记录决定')}
-              onConfirm={() => submitDecision(item, 'reject', '拒绝')}
-            />
+            {rejectOption !== undefined && (
+              <ConfirmButton
+                label="拒绝"
+                summary={confirmSummary(item, '拒绝该任务', '目标对象保持待处理状态并记录决定')}
+                onConfirm={() => submitDecision(item, rejectOption)}
+              />
+            )}
+            <Link
+              className="rq-link-action"
+              to={projectPath(
+                `/review/tasks/${encodeURIComponent(taskEntityId(item))}?version=${encodeURIComponent(taskVersionId(item))}`,
+              )}
+            >
+              详情
+            </Link>
           </div>
         )
       },
@@ -342,9 +344,7 @@ export default function ReviewQueuePage() {
             )
             const batchApprovable =
               selectedItems.length > 0 &&
-              selectedItems.every(
-                (item) => APPROVE_DECISION_KIND[item.reviewTaskRef.reviewType] !== undefined,
-              )
+              selectedItems.every((item) => approveOptionOf(item.reviewTaskRef.reviewType) !== undefined)
             const batchSummary = [
               `工程：${selector.projectId ?? ''}`,
               `对象：${selectedItems.length} 项（${selectedItems
@@ -359,10 +359,10 @@ export default function ReviewQueuePage() {
             const submitBatch = async () => {
               let firstError: unknown = null
               for (const item of selectedItems) {
-                const kind = APPROVE_DECISION_KIND[item.reviewTaskRef.reviewType]
-                if (kind === undefined) continue
+                const option = approveOptionOf(item.reviewTaskRef.reviewType)
+                if (option === undefined) continue
                 try {
-                  await submitDecision(item, kind, '通过')
+                  await submitDecision(item, option)
                 } catch (error) {
                   if (firstError === null) firstError = error
                 }

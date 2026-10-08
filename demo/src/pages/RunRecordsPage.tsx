@@ -14,13 +14,8 @@ import {
   type RunSummaryItemView,
 } from '../api/operations'
 import { RunStatusTag, STAGE_LABEL } from './identificationShared'
+import { reviewTabs } from './ReviewDetailPage'
 import './RunRecordsPage.css'
-
-const reviewTabs = [
-  { to: '/review', label: '复核队列' },
-  { to: '/review/trace', label: '证据追溯' },
-  { to: '/review/runs', label: '运行记录' },
-]
 
 /** 识别运行表：行可跳识别运行详情；触发原因仅在服务端返回登记事实时呈现。 */
 function IdentificationRunsSection() {

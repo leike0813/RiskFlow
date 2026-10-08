@@ -3,6 +3,12 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/access";
 import {
+  ReviewAuditReadQueryV1Schema,
+  type ReviewActivityPageV1,
+  type ReviewAuditReadQueryV1,
+  type ReviewTaskDetailV1,
+} from "@riskflow/core/review-audit";
+import {
   AuthorizationContextV1Schema,
   CalibrationSuggestionApprovalProofQueryV1Schema,
   KnowledgeRevisionApprovalProofQueryV1Schema,
@@ -23,7 +29,10 @@ import {
   bootstrapInitialSystemAdministrator,
   createPostgresLocalIdentityAccess,
 } from "../../src/auth/index.js";
-import { PostgresReviewAuditAdapter } from "../../src/review-audit/index.js";
+import {
+  PostgresReviewAuditAdapter,
+  PostgresReviewAuditRead,
+} from "../../src/review-audit/index.js";
 import { createPostgresRuntime } from "../../src/postgres/pool.js";
 import * as reviewAuditMigration from "../../src/postgres/migrations/platform/deliver-review-and-audit-runtime/000004_review_and_audit_runtime.js";
 import {
@@ -2046,4 +2055,466 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
     );
     expect(JSON.stringify(read)).not.toContain(created.result.reviewTaskRef.reference.entityId);
   }, 120_000);
+});
+
+/**
+ * C35 统一复核详情与活动只读面（IP-03）：真实 PostgreSQL、真实 C07 写入路径产物。
+ * 只断言稳定可观察契约——精确定位、五类决定原样返回、动作可用性只反映业务状态、
+ * 多源归并顺序、固定记录时点下的续页稳定与游标绑定失败关闭，以及读取不写任何事实。
+ */
+describe.sequential("PostgreSQL review audit read adapter (C35)", () => {
+  let fixture: ReviewAuditPostgresFixture | undefined;
+
+  beforeAll(async () => {
+    fixture = await startReviewAuditFixture();
+  }, 180_000);
+
+  afterAll(async () => {
+    await fixture?.close().catch(() => undefined);
+  });
+
+  const requireFixture = (): ReviewAuditPostgresFixture => {
+    if (fixture === undefined) throw new TypeError("fixture not started");
+    return fixture;
+  };
+
+  const writerFor = (authorization: AuthorizationContextV1): PostgresReviewAuditAdapter =>
+    new PostgresReviewAuditAdapter({
+      db: requireFixture().runtime.db,
+      transactionUnit: requireFixture().transactionUnit,
+      access: makeAccess(authorization).access,
+      now: () => new Date("2030-01-01T00:00:01.000Z"),
+    });
+
+  const readAdapterFor = (
+    authorization: AuthorizationContextV1,
+    verify?: ReturnType<typeof vi.fn>,
+  ): PostgresReviewAuditRead =>
+    new PostgresReviewAuditRead({
+      db: requireFixture().runtime.db,
+      authorization: { verify: verify ?? makeAccess(authorization).verify },
+      now: () => new Date(REVIEW_TEST_TIMESTAMP),
+    });
+
+  const taskDetailQuery = (
+    projectId: string,
+    authorization: AuthorizationContextV1,
+    reviewTaskRef: ReviewTaskRefV1,
+  ): ReviewAuditReadQueryV1 =>
+    ReviewAuditReadQueryV1Schema.parse({
+      queryId: nextId("ui-task-detail"),
+      projectId,
+      actorId: authorization.actorId,
+      requestedAt: REVIEW_TEST_TIMESTAMP,
+      authorization,
+      kind: "task-detail",
+      payload: { reviewTaskRef },
+    });
+
+  const activityQuery = (
+    projectId: string,
+    authorization: AuthorizationContextV1,
+    payload: Record<string, unknown> = {},
+  ): ReviewAuditReadQueryV1 =>
+    ReviewAuditReadQueryV1Schema.parse({
+      queryId: nextId("ui-activities"),
+      projectId,
+      actorId: authorization.actorId,
+      requestedAt: REVIEW_TEST_TIMESTAMP,
+      authorization,
+      kind: "activities",
+      payload,
+    });
+
+  const succeededDetail = async (
+    reader: PostgresReviewAuditRead,
+    query: ReviewAuditReadQueryV1,
+  ): Promise<ReviewTaskDetailV1> => {
+    const result = await reader.read(query);
+    if (result.kind !== "succeeded") throw new TypeError(`task detail read failed: ${query.kind}`);
+    if (result.result.kind !== "task-detail") throw new TypeError("expected a task detail result");
+    return result.result;
+  };
+
+  const succeededPage = async (
+    reader: PostgresReviewAuditRead,
+    query: ReviewAuditReadQueryV1,
+  ): Promise<ReviewActivityPageV1> => {
+    const result = await reader.read(query);
+    if (result.kind !== "succeeded") throw new TypeError(`activities read failed: ${query.kind}`);
+    if (result.result.kind !== "activities") throw new TypeError("expected an activities page");
+    return result.result;
+  };
+
+  it("按实体加身份版本精确定位待复核任务，返回提交决定所需的引用且不复制上游正文", async () => {
+    const authorization = authorizationFor("project-ui-detail");
+    const request = requestFor({ suffix: "ui-pending", projectId: authorization.projectId });
+    const writer = writerFor(authorization);
+    const created = await writer.requestReview(request);
+    expect(created.kind).toBe("succeeded");
+    if (created.kind !== "succeeded") return;
+    const before = await reviewAuditCounts(requireFixture(), request.projectId);
+
+    const detail = await succeededDetail(
+      readAdapterFor(authorization),
+      taskDetailQuery(request.projectId, authorization, created.result.reviewTaskRef),
+    );
+
+    expect(detail).toMatchObject({
+      kind: "task-detail",
+      reviewTaskRef: created.result.reviewTaskRef,
+      projectId: request.projectId,
+      reviewType: "identification-group",
+      status: "pending",
+      targetRef: request.payload.targetRef,
+      validationSnapshotRef: request.payload.validationSnapshotRef,
+      evidenceSnapshotRef: request.payload.evidenceSnapshotRef,
+      reviewPolicyRef: request.payload.reviewPolicyRef,
+      waitingRunRef: request.payload.waitingRunRef,
+      requestedBy: request.actorId,
+      requestedAt: request.issuedAt,
+    });
+    // 决定正文、登记行与请求授权上下文都不在读面；详情只回送提交决定所需的引用。
+    expect(detail.decision).toBeUndefined();
+    expect("requestedAuthorizationContextRef" in detail).toBe(false);
+    expect(await reviewAuditCounts(requireFixture(), request.projectId)).toEqual(before);
+  }, 120_000);
+
+  it("待复核任务不推断写能力，已决定与被替代任务只读并报告业务不可用", async () => {
+    const authorization = authorizationFor("project-ui-status");
+    const writer = writerFor(authorization);
+    const pending = requestFor({ suffix: "ui-status-pending", projectId: authorization.projectId });
+    const created = await writer.requestReview(pending);
+    expect(created.kind).toBe("succeeded");
+    if (created.kind !== "succeeded") return;
+    const reader = readAdapterFor(authorization);
+
+    // 待复核：只有读能力时不得输出"全部允许"的写动作清单。
+    const pendingDetail = await succeededDetail(
+      reader,
+      taskDetailQuery(pending.projectId, authorization, created.result.reviewTaskRef),
+    );
+    expect(pendingDetail.actions).toEqual([]);
+
+    // 五类决定按原联合返回，不归并为通用通过。
+    const decided = await writer.decideReview(
+      decisionFor(pending, created.result.reviewTaskRef, "ui-status-decided"),
+    );
+    expect(decided.kind).toBe("succeeded");
+    const decidedDetail = await succeededDetail(
+      reader,
+      taskDetailQuery(pending.projectId, authorization, created.result.reviewTaskRef),
+    );
+    expect(decidedDetail.status).toBe("decided");
+    expect(decidedDetail.decision).toMatchObject({
+      decision: { reviewType: "identification-group", kind: "approve-unchanged" },
+      reasonCode: "reviewed",
+      actorRef: pending.actorId,
+    });
+    expect(decidedDetail.actions).toEqual([
+      {
+        branch: "review-audit.decide-review",
+        availability: "business-unavailable",
+        reasonCode: "TASK_ALREADY_DECIDED",
+      },
+    ]);
+
+    // 被替代任务仍可读，但业务上不可再决定。
+    // 同一等待运行与目标实体的新版本请求会取代旧任务（C07 原语义）。
+    const supersededV1 = requestFor({
+      suffix: "ui-status-stale",
+      projectId: authorization.projectId,
+      targetVersionId: "1",
+    });
+    const staleCreated = await writer.requestReview(supersededV1);
+    expect(staleCreated.kind).toBe("succeeded");
+    if (staleCreated.kind !== "succeeded") return;
+    await writer.requestReview(
+      requestFor({
+        suffix: "ui-status-stale",
+        projectId: authorization.projectId,
+        targetVersionId: "2",
+      }),
+    );
+    const staleDetail = await succeededDetail(
+      reader,
+      taskDetailQuery(supersededV1.projectId, authorization, staleCreated.result.reviewTaskRef),
+    );
+    expect(staleDetail.status).toBe("superseded");
+    expect(staleDetail.actions).toEqual([
+      {
+        branch: "review-audit.decide-review",
+        availability: "business-unavailable",
+        reasonCode: "TASK_SUPERSEDED",
+      },
+    ]);
+  }, 180_000);
+
+  it("未知任务、错配身份版本与跨工程读取同形失败，且授权先行不触达任务事实", async () => {
+    const authorization = authorizationFor("project-ui-denied");
+    const request = requestFor({ suffix: "ui-denied", projectId: authorization.projectId });
+    const created = await writerFor(authorization).requestReview(request);
+    expect(created.kind).toBe("succeeded");
+    if (created.kind !== "succeeded") return;
+    const taskRef = created.result.reviewTaskRef;
+
+    const expectClosed = (result: Awaited<ReturnType<PostgresReviewAuditRead["read"]>>): void => {
+      expect(result).toMatchObject({
+        kind: "failed",
+        error: {
+          code: "AUTHORIZATION_DENIED",
+          category: "authorization",
+          stageCode: "review-audit.ui-read",
+          requiredCapability: "review-audit.read",
+        },
+      });
+    };
+
+    const reader = readAdapterFor(authorization);
+    // 身份版本错配：不回落到最新版本，也不返回队列索引形态。
+    expectClosed(
+      await reader.read(
+        taskDetailQuery(request.projectId, authorization, {
+          ...taskRef,
+          reference: { ...taskRef.reference, versionId: "99" },
+        } as ReviewTaskRefV1),
+      ),
+    );
+    // 跨工程：与不存在同形，不提供存在性 oracle。
+    const otherProject = authorizationFor("project-ui-denied-other");
+    expectClosed(
+      await reader.read(
+        taskDetailQuery("project-ui-denied-other", otherProject, taskRef),
+      ),
+    );
+
+    // 当前授权复验拒绝 → 关闭，且 verify 先于任何任务事实读取。
+    const deniedVerify = vi.fn(async () => {
+      throw new AccessServiceError({
+        code: "AUTHORIZATION_DENIED",
+        stage: "verify",
+        occurredAt: REVIEW_TEST_TIMESTAMP,
+        diagnosticRef: {
+          kind: "diagnostic-artifact",
+          reference: { entityId: "diagnostic-ui-read-denied", versionId: "1" },
+        },
+        contextRefs: [],
+        retryable: false,
+        requiredCapability: "review-audit.read",
+        authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+      });
+    });
+    const revokedReader = readAdapterFor(authorization, deniedVerify);
+    expectClosed(await revokedReader.read(taskDetailQuery(request.projectId, authorization, taskRef)));
+    expect(deniedVerify).toHaveBeenCalledWith(
+      expect.objectContaining({ branch: "review-audit.read", invocationId: expect.any(String) }),
+    );
+
+    // 冻结上下文不持复核读能力 → 同形关闭。
+    const noReadCapability = {
+      ...authorization,
+      grantedCapabilities: ["review-audit.request", "review-audit.decide"],
+    };
+    expectClosed(
+      await reader.read({
+        queryId: nextId("ui-task-detail"),
+        projectId: request.projectId,
+        actorId: noReadCapability.actorId,
+        requestedAt: REVIEW_TEST_TIMESTAMP,
+        authorization: noReadCapability,
+        kind: "task-detail",
+        payload: { reviewTaskRef: taskRef },
+      } as unknown as ReviewAuditReadQueryV1),
+    );
+  }, 180_000);
+
+  it("多源活动按固定排序归并，只回送类型化安全参数而不导出审计 payload", async () => {
+    const authorization = authorizationFor("project-ui-activities");
+    const writer = writerFor(authorization);
+    const request = requestFor({ suffix: "ui-activities", projectId: authorization.projectId });
+    const created = await writer.requestReview(request);
+    expect(created.kind).toBe("succeeded");
+    if (created.kind !== "succeeded") return;
+    await writer.decideReview(decisionFor(request, created.result.reviewTaskRef, "ui-activities"));
+    // 同任务的新决定按原 C07 语义记为陈旧拒绝，产生带结果码的复核拒绝活动。
+    await writer.decideReview(decisionFor(request, created.result.reviewTaskRef, "ui-activities-stale"));
+    const before = await reviewAuditCounts(requireFixture(), request.projectId);
+
+    const page = await succeededPage(
+      readAdapterFor(authorization),
+      activityQuery(request.projectId, authorization, {
+        asOfRecordedAt: "2030-01-01T00:00:01.000Z",
+      }),
+    );
+
+    const codes = page.items.map((item) => item.activityCode);
+    expect(codes).toContain("review.requested");
+    expect(codes).toContain("review.decided");
+    // 复核请求与决定各只出现一次：view 与 C03 审计不会重复呈现同一条事实。
+    expect(codes.filter((code) => code === "review.requested")).toHaveLength(1);
+    expect(codes.filter((code) => code === "review.decided")).toHaveLength(1);
+
+    // 固定排序：记录时点降序，相同记录时点内全序稳定。
+    const ordered = [...page.items].sort((left, right) => {
+      if (left.recordedAt !== right.recordedAt) return left.recordedAt < right.recordedAt ? 1 : -1;
+      if (left.sourceType !== right.sourceType) return left.sourceType < right.sourceType ? 1 : -1;
+      return left.activityId < right.activityId ? 1 : -1;
+    });
+    expect(page.items).toEqual(ordered);
+
+    const decidedEntry = page.items.find((item) => item.activityCode === "review.decided");
+    expect(decidedEntry).toMatchObject({
+      sourceType: "business-audit",
+      reasonCode: "reviewed",
+      reviewTaskRef: created.result.reviewTaskRef,
+      targetRef: request.payload.targetRef,
+      waitingRunRef: request.payload.waitingRunRef,
+    });
+
+    // 登记行只暴露允许的字段：授权上下文与审计 payload 不外泄。
+    expect(JSON.stringify(page)).not.toContain(request.authorization.authorizationContextRef.reference.entityId);
+    expect(await reviewAuditCounts(requireFixture(), request.projectId)).toEqual(before);
+
+    // 结果码筛选：只有带该结果码的来源进入本次读取。
+    const rejected = await succeededPage(
+      readAdapterFor(authorization),
+      activityQuery(request.projectId, authorization, {
+        asOfRecordedAt: "2030-01-01T00:00:01.000Z",
+        resultCode: "STALE_VERSION",
+      }),
+    );
+    expect(rejected.items.map((item) => item.sourceType)).toEqual(["review-rejection"]);
+    expect(rejected.items.map((item) => item.activityCode)).toEqual(["review.decision-rejected"]);
+
+    // 来源类型筛选：安全审计来源在本工程没有登记事实时返回空页而非失败。
+    const security = await succeededPage(
+      readAdapterFor(authorization),
+      activityQuery(request.projectId, authorization, {
+        asOfRecordedAt: "2030-01-01T00:00:01.000Z",
+        sourceType: "security-audit",
+      }),
+    );
+    expect(security.items).toEqual([]);
+  }, 180_000);
+
+  it("活动按来源与主题筛选，续页沿固定记录时点且新增活动不污染历史分页", async () => {
+    const authorization = authorizationFor("project-ui-paging");
+    const writer = writerFor(authorization);
+    const first = requestFor({ suffix: "ui-paging-a", projectId: authorization.projectId });
+    const firstCreated = await writer.requestReview(first);
+    expect(firstCreated.kind).toBe("succeeded");
+    if (firstCreated.kind !== "succeeded") return;
+    const second = requestFor({ suffix: "ui-paging-b", projectId: authorization.projectId });
+    const secondCreated = await writer.requestReview(second);
+    expect(secondCreated.kind).toBe("succeeded");
+    if (secondCreated.kind !== "succeeded") return;
+
+    const reader = readAdapterFor(authorization);
+    const asOfRecordedAt = "2030-01-01T00:00:01.000Z";
+    const subjectFilter = { subjectRef: firstCreated.result.reviewTaskRef };
+    const unfiltered = await succeededPage(
+      reader,
+      activityQuery(first.projectId, authorization, { asOfRecordedAt }),
+    );
+    const filtered = await succeededPage(
+      reader,
+      activityQuery(first.projectId, authorization, { ...subjectFilter, asOfRecordedAt }),
+    );
+    expect(filtered.items.map((item) => item.reviewTaskRef)).toEqual([
+      firstCreated.result.reviewTaskRef,
+    ]);
+    expect(unfiltered.items.length).toBeGreaterThan(filtered.items.length);
+
+    // 逐页取完两页，再补一个新任务；固定记录时点保证第二页内容不因新活动而改变。
+    const secondPageBefore = await succeededPage(
+      reader,
+      activityQuery(first.projectId, authorization, {
+        ...subjectFilter,
+        asOfRecordedAt,
+        pageSize: 1,
+      }),
+    );
+    await writer.requestReview(requestFor({ suffix: "ui-paging-c", projectId: authorization.projectId }));
+    const secondPageAfter = await succeededPage(
+      reader,
+      activityQuery(first.projectId, authorization, {
+        ...subjectFilter,
+        asOfRecordedAt,
+        pageSize: 1,
+      }),
+    );
+    expect(secondPageAfter).toEqual(secondPageBefore);
+    expect(secondPageAfter.asOfRecordedAt).toBe(asOfRecordedAt);
+
+    // 多页有界：同一过滤下每页不超过页大小，且单来源读取行数有界。
+    const paged = await succeededPage(
+      reader,
+      activityQuery(first.projectId, authorization, { asOfRecordedAt, pageSize: 1 }),
+    );
+    expect(paged.items).toHaveLength(1);
+    expect(paged.nextCursor).toBeDefined();
+    const continued = await succeededPage(
+      reader,
+      activityQuery(first.projectId, authorization, {
+        asOfRecordedAt,
+        pageSize: 1,
+        cursor: paged.nextCursor,
+      }),
+    );
+    expect(continued.items).toHaveLength(1);
+    expect(continued.items[0]!.activityId).not.toBe(paged.items[0]!.activityId);
+    expect(continued.items[0]!.recordedAt <= asOfRecordedAt).toBe(true);
+  }, 240_000);
+
+  it("伪造、错绑与跨筛选游标一律失败关闭，不静默从第一页重启", async () => {
+    const authorization = authorizationFor("project-ui-cursor");
+    const writer = writerFor(authorization);
+    const request = requestFor({ suffix: "ui-cursor", projectId: authorization.projectId });
+    const created = await writer.requestReview(request);
+    expect(created.kind).toBe("succeeded");
+    if (created.kind !== "succeeded") return;
+    await writer.decideReview(decisionFor(request, created.result.reviewTaskRef, "ui-cursor"));
+    const reader = readAdapterFor(authorization);
+    const asOfRecordedAt = "2030-01-01T00:00:01.000Z";
+    const page = await succeededPage(
+      reader,
+      activityQuery(request.projectId, authorization, { asOfRecordedAt, pageSize: 1 }),
+    );
+    expect(page.nextCursor).toBeDefined();
+    const cursor = page.nextCursor!;
+
+    const expectClosed = async (payload: Record<string, unknown>): Promise<void> => {
+      const result = await reader.read(activityQuery(request.projectId, authorization, payload));
+      expect(result).toMatchObject({
+        kind: "failed",
+        error: { code: "AUTHORIZATION_DENIED", category: "authorization" },
+      });
+    };
+
+    // 伪造游标。
+    await expectClosed({ asOfRecordedAt, pageSize: 1, cursor: "not-a-cursor" });
+    // 篡改排序键：绑定摘要不匹配。
+    const forged = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as Record<
+      string,
+      string
+    >;
+    await expectClosed({
+      asOfRecordedAt,
+      pageSize: 1,
+      cursor: Buffer.from(JSON.stringify({ ...forged, keyA: "1999-01-01T00:00:00.000Z" })).toString(
+        "base64url",
+      ),
+    });
+    // 同一游标换筛选条件：不得跨筛选复用。
+    await expectClosed({
+      asOfRecordedAt,
+      pageSize: 1,
+      cursor,
+      sourceType: "security-audit",
+    });
+    // 同一游标换页大小：切分改变即失效。
+    await expectClosed({ asOfRecordedAt, pageSize: 2, cursor });
+    // 换记录时点：历史边界不可改写。
+    await expectClosed({ asOfRecordedAt: "2030-01-01T00:00:02.000Z", pageSize: 1, cursor });
+  }, 180_000);
 });

@@ -138,6 +138,11 @@ export const ReviewRejectionAuditV1Schema = z.strictObject({
 });
 export type ReviewRejectionAuditV1 = z.infer<typeof ReviewRejectionAuditV1Schema>;
 
+/**
+ * `business.recorded` 是 C35 起的闭合业务活动码（design D-07）：C03 审计里的其它动作
+ * 以这一个码呈现，具体动作由 `actionCode` 承载——只作为已登记标识符使用，
+ * 不把其自由文本当展示内容。
+ */
 export const REVIEW_ACTIVITY_CODE_V1_VALUES = [
   "review.requested",
   "review.superseded",
@@ -145,6 +150,7 @@ export const REVIEW_ACTIVITY_CODE_V1_VALUES = [
   "review.decision-rejected",
   "security.authorization-allowed",
   "security.authorization-rejected",
+  "business.recorded",
 ] as const;
 export const ReviewActivityCodeV1Schema = z.enum(REVIEW_ACTIVITY_CODE_V1_VALUES);
 export type ReviewActivityCodeV1 = z.infer<typeof ReviewActivityCodeV1Schema>;
@@ -161,6 +167,8 @@ export const ReviewActivityProjectionV1Schema = z.strictObject({
   activityId: IdentifierSchema,
   sourceType: ReviewActivitySourceTypeV1Schema,
   activityCode: ReviewActivityCodeV1Schema,
+  /** 仅 `business.recorded` 使用：原已登记动作标识符，不承载自由文本。 */
+  actionCode: IdentifierSchema.optional(),
   projectId: IdentifierSchema,
   subjectRef: ContractReferenceV1Schema.optional(),
   actorRef: IdentifierSchema.optional(),

@@ -15,12 +15,42 @@ import {
   AgentStructuredErrorV1Schema,
   AgentCandidateVersionV1Schema,
   AgentValidationResultV1Schema,
+  AgentActionEntryV1Schema,
+  AgentActionPageV1Schema,
+  AgentCandidateEntryV1Schema,
+  AgentCandidatePageV1Schema,
+  AgentInternalStatusV1Schema,
+  type AgentInternalStatusV1,
+  AgentProposalSummaryV1Schema,
+  AgentTaskBudgetViewV1Schema,
+  AgentTaskDetailV1Schema,
+  AgentTaskListPageV1Schema,
+  AgentTaskReadQueryV1Schema,
+  AgentTaskSummaryV1Schema,
+  AgentValidationCheckEntryV1Schema,
+  AgentValidationPageV1Schema,
+  AGENT_UI_READ_PAGE_SIZE_DEFAULT_V1,
+  agentInternalStatusesForPublicStatus,
+  type AgentActionEntryV1,
+  type AgentActionPageV1,
+  type AgentCandidatePageV1,
+  type AgentLaunchContextResultV1,
+  type AgentProposalSummaryV1,
+  type AgentTaskDetailV1,
+  type AgentTaskListPageV1,
+  type AgentTaskReadPortV1,
+  type AgentTaskReadQueryV1,
+  type AgentTaskReadResultV1,
+  type AgentTaskSafeErrorV1,
+  type AgentTaskSummaryV1,
+  type AgentValidationPageV1,
   agentTaskRefEquals,
   buildCompletedAgentTaskResult,
   canResumeAgentTask,
   emptyAgentBudgetUsage,
   makeAgentError,
   mapAgentError,
+  mapAgentInternalStatus,
   normalizeAgentActionUsage,
   prepareAgentTaskStart,
   requestAgentTaskCancellation,
@@ -78,6 +108,8 @@ import {
   ModuleErrorV1Schema,
   ResumeAgentTaskCommandV1Schema,
   ContractReferenceV1Schema,
+  StartAgentTaskPayloadV1Schema,
+  WorkflowRunRefV1Schema,
   StartAgentTaskCommandV1Schema,
   AuthorizationContextRefV1Schema,
   type AgentTaskPortV1,
@@ -89,6 +121,7 @@ import {
   type ConfirmAgentCommandV1,
   type ContractReferenceV1,
   type ModuleBranchV1,
+  type ReadActionV1,
   type ModuleErrorV1,
   type ResumeAgentTaskCommandV1,
   type StartAgentTaskCommandV1,
@@ -216,6 +249,76 @@ const READ_FAILURE_EVIDENCE_CAPABILITY = "agent-task.read";
 const READ_FAILURE_EVIDENCE_COMMAND_KIND = "agent-task.read-failure-evidence";
 /** 私有完成结果窄读复用同一 `agent-task.read` 分支与只读语义，只区分 causal 阶段码。 */
 const READ_COMPLETED_RESULT_COMMAND_KIND = "agent-task.read-completed-result";
+
+/** C35 只读面固定分支：只有这一条 branch 承载 UI 的有界窄读。 */
+const UI_READ_BRANCH = "agent-task.read" satisfies ModuleBranchV1;
+const UI_READ_CAPABILITY = "agent-task.read";
+const UI_READ_STAGE_CODE = "agent-task.ui-read";
+
+/**
+ * C35 分页游标是不透明绑定令牌（design D-03）：它记录工程、actor、筛选条件、固定记录
+ * 时点与精确目标/候选，并附原 C08 授权摘要。下一跳必须原样带上同一个授权摘要；摘要不匹配、
+ * 字段未知或被改写一律失败关闭，游标不能被跨工程或跨筛选复用。
+ */
+interface UiReadCursorBinding {
+  /** 版本标记：只接受本读面的游标形状。 */
+  readonly v: "1";
+  /**
+   * 请求绑定摘要：工程、actor、原 C08 授权摘要、精确任务身份与筛选条件的联合摘要。
+   * 下一跳必须能在同一请求上复算出同一个摘要；任何漂移或改写都无法通过比对，
+   * 因此游标不能被跨工程、跨筛选或跨任务复用。
+   */
+  readonly binding: string;
+  readonly asOfRecordedAt: string;
+  /** keyset 排序键元组：目录用 `(keyA=createdAt, keyB=taskId)`，其余只用 `keyA`。 */
+  readonly keyA: string;
+  readonly keyB: string;
+}
+
+const UI_READ_CURSOR_FIELDS_V1 = ["v", "binding", "asOfRecordedAt", "keyA", "keyB"] as const;
+
+const encodeUiReadCursor = (binding: UiReadCursorBinding): string =>
+  Buffer.from(JSON.stringify(binding), "utf8").toString("base64url");
+
+const invalidCursor = (stage: string): AgentRuntimeError =>
+  new AgentRuntimeError(
+    makeAgentError({ code: "AGENT_INPUT_INVALID", category: "input", stage }),
+  );
+
+/** 严格字段与类型校验：未知字段、缺字段或被改写的游标一律失败关闭。 */
+const decodeUiReadCursor = (cursor: string): UiReadCursorBinding => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  } catch {
+    throw invalidCursor("ui-read.cursor-decode");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+    throw invalidCursor("ui-read.cursor-shape");
+  const record = parsed as Record<string, unknown>;
+  if (
+    !Object.keys(record).every((field) =>
+      (UI_READ_CURSOR_FIELDS_V1 as readonly string[]).includes(field),
+    ) ||
+    !UI_READ_CURSOR_FIELDS_V1.every((field) => typeof record[field] === "string")
+  )
+    throw invalidCursor("ui-read.cursor-shape");
+  return {
+    v: "1",
+    binding: record.binding as string,
+    asOfRecordedAt: record.asOfRecordedAt as string,
+    keyA: record.keyA as string,
+    keyB: record.keyB as string,
+  };
+};
+
+/** 下一跳必须复算出同一个绑定摘要；漂移就关闭而不是继续翻页。 */
+const requireCursorBinding = (
+  cursor: UiReadCursorBinding,
+  expectedBindingDigest: string,
+): void => {
+  if (cursor.binding !== expectedBindingDigest) throw invalidCursor("ui-read.cursor-binding");
+};
 
 const resultRefEquals = (left: AgentTaskResultRefV1, right: AgentTaskResultRefV1): boolean =>
   left.status === right.status &&
@@ -492,7 +595,8 @@ export class PostgresAgentTaskAdapter
     AgentTaskPortV1,
     AgentTaskExecutionStoreV1,
     AgentTaskFailureEvidenceReaderV1,
-    AgentTaskCompletedResultReaderV1
+    AgentTaskCompletedResultReaderV1,
+    AgentTaskReadPortV1
 {
   readonly #db: Kysely<AgentRuntimeDatabase>;
   readonly #transactionUnit: TransactionUnitV1;
@@ -630,6 +734,606 @@ export class PostgresAgentTaskAdapter
         }),
       );
     }
+  }
+
+  /**
+   * C35 有界窄读入口（design D-03）：授权先于存在性——解析失败、缺能力、跨工程或跨 actor
+   * 都在命中存储前收口，不支持的操作给出稳定失败。读取路径不写回执、审计或事件，
+   * 也不改写任何任务状态；写入口（start/resume/cancel/confirm）语义保持原样。
+   */
+  async read(query: AgentTaskReadQueryV1): Promise<AgentTaskReadResultV1> {
+    const parsed = AgentTaskReadQueryV1Schema.safeParse(query);
+    if (!parsed.success) {
+      const queryId =
+        typeof (query as { queryId?: unknown } | null)?.queryId === "string"
+          ? (query as { queryId: string }).queryId
+          : UI_READ_STAGE_CODE;
+      if (this.#uiReadRequestDenied(query)) return this.#uiReadDenied(queryId);
+      return this.#uiReadUnsupported(queryId);
+    }
+    const valid = parsed.data;
+    try {
+      await this.#verifyUiRead(valid);
+      return await this.#uiRead(valid);
+    } catch (error) {
+      // 读面是全函数：客户端可观测的失败（游标伪造/错配、授权拒绝、目标不可见）
+      // 一律收敛为结构化失败结果，不把异常抛给传输层；其余未知异常折叠为同一种拒绝形状。
+      if (error instanceof AgentRuntimeError) {
+        return {
+          kind: "failed",
+          error: mapAgentError(error, { causalRunId: valid.queryId }),
+        };
+      }
+      return this.#uiReadDenied(valid.queryId);
+    }
+  }
+
+  /** 拒绝先于读取：缺能力、跨工程、跨 actor 的请求无法探出目标是否存在。 */
+  async #verifyUiRead(query: AgentTaskReadQueryV1): Promise<void> {
+    if (this.#authorization === undefined)
+      throw new AgentRuntimeError(
+        makeAgentError({
+          code: "AGENT_AUTHORIZATION_DENIED",
+          category: "authorization",
+          stage: "ui-read.authorization",
+        }),
+      );
+    if (
+      query.projectId !== query.authorization.projectId ||
+      query.actorId !== query.authorization.actorId ||
+      !query.authorization.grantedCapabilities.includes(UI_READ_CAPABILITY)
+    )
+      throw new AgentRuntimeError(
+        makeAgentError({
+          code: "AGENT_AUTHORIZATION_DENIED",
+          category: "authorization",
+          stage: "ui-read.authorization",
+        }),
+      );
+    const decision = await this.#authorization.verify({
+      authorizationContextRef: query.authorization.authorizationContextRef,
+      invocationId: query.queryId,
+      projectId: query.projectId,
+      branch: UI_READ_BRANCH,
+      requestedSpatialScopeRefs: query.authorization.spatialScopeRefs,
+      requestedSourceVersionRefs: [],
+    });
+    if (
+      decision.context.actorId !== query.actorId ||
+      decision.context.projectId !== query.projectId
+    )
+      throw new AgentRuntimeError(
+        makeAgentError({
+          code: "AGENT_AUTHORIZATION_DENIED",
+          category: "authorization",
+          stage: "ui-read.authorization",
+        }),
+      );
+  }
+
+  #uiReadRequestDenied(value: unknown): boolean {
+    if (typeof value !== "object" || value === null) return false;
+    const request = value as Record<string, unknown>;
+    const context = request.authorization;
+    if (typeof context !== "object" || context === null) return false;
+    const authorization = context as Record<string, unknown>;
+    const mismatched =
+      (typeof request.projectId === "string" &&
+        typeof authorization.projectId === "string" &&
+        request.projectId !== authorization.projectId) ||
+      (typeof request.actorId === "string" &&
+        typeof authorization.actorId === "string" &&
+        request.actorId !== authorization.actorId);
+    if (mismatched) return true;
+    return (
+      Array.isArray(authorization.grantedCapabilities) &&
+      !authorization.grantedCapabilities.includes(UI_READ_CAPABILITY)
+    );
+  }
+
+  #uiReadDenied(queryId: string): AgentTaskReadResultV1 {
+    return {
+      kind: "failed",
+      error: ModuleErrorV1Schema.parse({
+        stageCode: UI_READ_STAGE_CODE,
+        occurredAt: this.#now(),
+        causalRunId: queryId,
+        code: "AUTHORIZATION_DENIED",
+        category: "authorization",
+        retryable: false,
+        requiredCapability: UI_READ_CAPABILITY,
+        authorizationPolicyRef: ACCESS_POLICY_REF_V1,
+      }),
+    };
+  }
+
+  #uiReadUnsupported(queryId: string): AgentTaskReadResultV1 {
+    return {
+      kind: "failed",
+      error: ModuleErrorV1Schema.parse({
+        stageCode: UI_READ_STAGE_CODE,
+        occurredAt: this.#now(),
+        causalRunId: queryId,
+        code: "UNSUPPORTED_CONTRACT",
+        category: "technical",
+        retryable: false,
+        schemaVersion: "1",
+      }),
+    };
+  }
+
+  /**
+   * 请求绑定摘要：工程、actor、原 C08 授权摘要、精确任务身份与筛选条件合并为一个摘要。
+   * 摘要只在同一请求上可复算，游标因此无法被挪用到别的工程、身份、筛选或目标上。
+   */
+  #uiCursorBinding(
+    query: AgentTaskReadQueryV1,
+    agentTaskId: string | null,
+    filter: unknown,
+  ): string {
+    const authorization = query.authorization;
+    return sha256CanonicalJson({
+      projectId: query.projectId,
+      actorId: query.actorId,
+      // 只摘要"授权判定"本身：能力、空间范围、来源授权与策略版本。
+      // 刻意不含 invocation 与 authorizationContextRef——它们按每次调用重新签发，
+      // 纳入摘要会让同一读者在同一轮翻页里必然错配。
+      grantedCapabilities: authorization.grantedCapabilities,
+      spatialScopeRefs: authorization.spatialScopeRefs,
+      sourceAccessGrantRefs: authorization.sourceAccessGrantRefs,
+      authorizationPolicyRef: authorization.authorizationPolicyRef,
+      agentTaskId,
+      filter,
+    });
+  }
+
+  /** 只读当前工程内的任务行；跨工程与错配身份在读取前已被授权关卡挡住。 */
+  async #selectOwnedTask(
+    query: AgentTaskReadQueryV1,
+    taskRef: AgentTaskRefV1,
+  ): Promise<AgentTaskRow> {
+    const row = await this.#selectTaskById(taskRef.reference.entityId);
+    if (row === undefined || row.project_id !== query.projectId)
+      throw new AgentRuntimeError(
+        makeAgentError({
+          code: "AGENT_TASK_NOT_FOUND",
+          category: "not-found",
+          stage: "ui-read.task-scope",
+          taskRef,
+        }),
+      );
+    return row;
+  }
+
+  #uiSummary(query: AgentTaskReadQueryV1, row: AgentTaskRow): AgentTaskSummaryV1 {
+    const envelope = AgentTaskEnvelopeV1Schema.parse(row.envelope);
+    const internalStatus = AgentInternalStatusV1Schema.parse(row.status);
+    return AgentTaskSummaryV1Schema.parse({
+      agentTaskRef: AgentTaskRefV1Schema.parse(row.agent_task_ref),
+      status: mapAgentInternalStatus(internalStatus),
+      taskVersion: row.task_version,
+      initiatorActorId: envelope.actorId,
+      parentRunRef: WorkflowRunRefV1Schema.parse(row.parent_run_ref),
+      frozenInputRef: ContractReferenceV1Schema.parse(row.frozen_input_ref),
+      createdAt: asIso(row.created_at),
+      updatedAt: asIso(row.updated_at),
+    });
+  }
+
+  async #uiRead(query: AgentTaskReadQueryV1): Promise<AgentTaskReadResultV1> {
+    switch (query.kind) {
+      case "list":
+        return { kind: "succeeded", result: await this.#uiReadList(query) };
+      case "detail":
+        return { kind: "succeeded", result: await this.#uiReadDetail(query) };
+      case "actions":
+        return { kind: "succeeded", result: await this.#uiReadActions(query) };
+      case "candidates":
+        return { kind: "succeeded", result: await this.#uiReadCandidates(query) };
+      case "validation":
+        return { kind: "succeeded", result: await this.#uiReadValidation(query) };
+      case "launch-context":
+        return { kind: "succeeded", result: await this.#uiReadLaunchContext(query) };
+    }
+  }
+
+  async #uiReadList(
+    query: Extract<AgentTaskReadQueryV1, { readonly kind: "list" }>,
+  ): Promise<AgentTaskListPageV1> {
+    const pageSize = query.payload.pageSize ?? AGENT_UI_READ_PAGE_SIZE_DEFAULT_V1;
+    // 绑定摘要只含真正的筛选条件：游标是位置而非筛选，页大小变化会改变切分因此必须一致。
+    const binding = this.#uiCursorBinding(query, null, {
+      taskType: query.payload.taskType ?? null,
+      status: query.payload.status ?? null,
+      parentRunRef: query.payload.parentRunRef ?? null,
+      pageSize,
+    });
+    const cursor =
+      query.payload.cursor === undefined ? undefined : decodeUiReadCursor(query.payload.cursor);
+    if (cursor !== undefined) requireCursorBinding(cursor, binding);
+    const asOfRecordedAt = cursor?.asOfRecordedAt ?? query.requestedAt;
+
+    let builder = this.#db
+      .selectFrom("business.agent_tasks")
+      .selectAll()
+      .where("project_id", "=", query.projectId)
+      .where("created_at", "<=", asOfRecordedAt);
+    if (query.payload.taskType !== undefined)
+      builder = builder.where("task_type", "=", query.payload.taskType);
+    if (query.payload.status !== undefined)
+      builder = builder.where(
+        "status",
+        "in",
+        agentInternalStatusesForPublicStatus(query.payload.status) as readonly string[],
+      );
+    if (query.payload.parentRunRef !== undefined)
+      builder = builder.where(
+        "parent_run_ref",
+        "=",
+        jsonValue(WorkflowRunRefV1Schema.parse(query.payload.parentRunRef)),
+      );
+    if (cursor !== undefined)
+      builder = builder.where((expression) =>
+        expression.or([
+          expression("created_at", ">", cursor.keyA),
+          expression.and([
+            expression("created_at", "=", cursor.keyA),
+            expression("agent_task_id", ">", cursor.keyB),
+          ]),
+        ]),
+      );
+    const rows = await builder
+      .orderBy("created_at", "asc")
+      .orderBy("agent_task_id", "asc")
+      .limit(pageSize + 1)
+      .execute();
+    const page = rows.slice(0, pageSize);
+    const last = page.at(-1);
+    return AgentTaskListPageV1Schema.parse({
+      kind: "list",
+      items: page.map((row) => this.#uiSummary(query, row)),
+      asOfRecordedAt,
+      ...(rows.length > pageSize && last !== undefined
+        ? {
+            nextCursor: encodeUiReadCursor({
+              v: "1",
+              binding,
+              asOfRecordedAt,
+              keyA: asIso(last.created_at),
+              keyB: last.agent_task_id,
+            }),
+          }
+        : {}),
+    });
+  }
+
+  /**
+   * 详情：按精确任务身份定位后给出摘要、原预算策略/台账、当前提案安全摘要、结果引用与
+   * 结构化安全错误。启动/恢复/取消/确认的可用性只反映任务自身业务状态——读能力不等于
+   * 写能力，真实授权判定仍由既有授权路由给出（design D-03/D-04/D-06）。
+   */
+  async #uiReadDetail(
+    query: Extract<AgentTaskReadQueryV1, { readonly kind: "detail" }>,
+  ): Promise<AgentTaskDetailV1> {
+    const taskRef = query.payload.agentTaskRef;
+    const row = await this.#selectOwnedTask(query, taskRef);
+    const internalStatus = AgentInternalStatusV1Schema.parse(row.status);
+    const currentProposal =
+      row.current_proposal_artifact_ref === null
+        ? undefined
+        : AgentProposalSummaryV1Schema.parse(
+            this.#proposalSummary(
+              query,
+              row,
+              ArtifactRefV1Schema.parse(row.current_proposal_artifact_ref),
+            ),
+          );
+    return AgentTaskDetailV1Schema.parse({
+      kind: "detail",
+      summary: this.#uiSummary(query, row),
+      budget: AgentTaskBudgetViewV1Schema.parse({
+        policy: AgentTaskBudgetPolicyV1Schema.parse(row.budget_policy),
+        ledger: AgentBudgetLedgerV1Schema.parse(row.budget_ledger),
+      }),
+      actions: this.#uiActionAvailability(internalStatus),
+      ...(currentProposal === undefined ? {} : { currentProposal }),
+      ...(row.result_ref === null
+        ? {}
+        : { resultRef: AgentTaskResultRefV1Schema.parse(row.result_ref) }),
+      ...(row.error === null ? {} : { safeError: this.#uiSafeError(row.error) }),
+    });
+  }
+
+  /**
+   * 只报告业务状态决定的可用性：终局或已取消的任务无法再恢复/取消，也没有待确认提案。
+   * 授权层面的允许/拒绝不在此推断——读面不得代替写能力的判定。
+   */
+  #uiActionAvailability(status: AgentInternalStatusV1): ReadActionV1[] {
+    const active = status === "pending" || status === "running" || status === "retryable-failure";
+    const blocked: { branch: ModuleBranchV1; reasonCode: string }[] = [];
+    if (!active) {
+      blocked.push({ branch: "agent-task.resume-task", reasonCode: "TASK_NOT_RESUMABLE" });
+      blocked.push({ branch: "agent-task.cancel-task", reasonCode: "TASK_NOT_CANCELLABLE" });
+    }
+    if (status !== "waiting-user-confirmation")
+      blocked.push({
+        branch: "agent-task.confirm-command",
+        reasonCode: "TASK_HAS_NO_PENDING_PROPOSAL",
+      });
+    return blocked.map((entry) => ({
+      branch: entry.branch,
+      availability: "business-unavailable",
+      reasonCode: entry.reasonCode,
+    }));
+  }
+
+  /** 安全错误只保留码、类别、可重试标记与阶段；失败正文与诊断正文留在受保护的工件里。 */
+  #uiSafeError(value: JsonColumn): AgentTaskSafeErrorV1 {
+    const error = AgentStructuredErrorV1Schema.parse(value);
+    return {
+      code: error.code,
+      category: error.category,
+      retryable: error.retryable,
+      stage: error.stage,
+      occurredAt: error.occurredAt,
+      ...(error.reasonCode === undefined ? {} : { reasonCode: error.reasonCode }),
+    };
+  }
+
+  async #proposalSummary(
+    query: AgentTaskReadQueryV1,
+    row: AgentTaskRow,
+    proposalArtifactRef: ArtifactRefV1,
+  ): Promise<AgentProposalSummaryV1> {
+    const proposal = AgentCommandProposalV1Schema.parse(
+      await this.#readJsonArtifact(
+        rowSnapshot(row),
+        proposalArtifactRef,
+        query.authorization,
+        "agent-command-proposal",
+        UI_READ_CAPABILITY,
+      ),
+    );
+    return {
+      commandProposalRef: proposal.commandProposalRef,
+      taskRef: proposal.taskRef,
+      targetRef: proposal.targetRef,
+      expectedTargetVersion: proposal.expectedTargetVersion,
+      expectedEffect: proposal.expectedEffect,
+      externalEffects: proposal.externalEffects,
+      proposedAt: proposal.proposedAt,
+    };
+  }
+
+  async #uiReadActions(
+    query: Extract<AgentTaskReadQueryV1, { readonly kind: "actions" }>,
+  ): Promise<AgentActionPageV1> {
+    const taskRef = query.payload.agentTaskRef;
+    await this.#selectOwnedTask(query, taskRef);
+    const pageSize = query.payload.pageSize ?? AGENT_UI_READ_PAGE_SIZE_DEFAULT_V1;
+    const binding = this.#uiCursorBinding(query, taskRef.reference.entityId, {
+      kind: "actions",
+    });
+    const cursor =
+      query.payload.cursor === undefined ? undefined : decodeUiReadCursor(query.payload.cursor);
+    if (cursor !== undefined) requireCursorBinding(cursor, binding);
+
+    let builder = this.#db
+      .selectFrom("business.agent_task_actions")
+      .selectAll()
+      .where("agent_task_id", "=", taskRef.reference.entityId);
+    if (cursor !== undefined) builder = builder.where("sequence", ">", Number(cursor.keyA));
+    const rows = await builder.orderBy("sequence", "asc").limit(pageSize + 1).execute();
+    const page = rows.slice(0, pageSize);
+    const last = page.at(-1);
+    return AgentActionPageV1Schema.parse({
+      kind: "actions",
+      agentTaskRef: taskRef,
+      items: page.map((row) => this.#uiActionEntry(taskRef, row)),
+      ...(rows.length > pageSize && last !== undefined
+        ? {
+            nextCursor: encodeUiReadCursor({
+              v: "1",
+              binding,
+              asOfRecordedAt: query.requestedAt,
+              keyA: String(last.sequence),
+              keyB: "",
+            }),
+          }
+        : {}),
+    });
+  }
+
+  /** 行动条目沿用既有 `actionFromRow` 的原映射，只挑出读面允许的引用、实际用量与时间。 */
+  #uiActionEntry(taskRef: AgentTaskRefV1, row: AgentTaskActionRow): AgentActionEntryV1 {
+    const action = actionFromRow(taskRef, row);
+    return AgentActionEntryV1Schema.parse({
+      actionId: action.actionId,
+      sequence: action.sequence,
+      actionType: action.actionType,
+      status: action.status,
+      intentArtifactRef: action.intentArtifactRef,
+      ...(action.resultRef === undefined ? {} : { resultRef: action.resultRef }),
+      ...(action.resultArtifactRef === undefined
+        ? {}
+        : { resultArtifactRef: action.resultArtifactRef }),
+      ...(action.errorCode === undefined ? {} : { errorCode: action.errorCode }),
+      usage: action.usage,
+      recordedAt: action.recordedAt,
+      ...(action.completedAt === undefined ? {} : { completedAt: action.completedAt }),
+    });
+  }
+
+  async #uiReadCandidates(
+    query: Extract<AgentTaskReadQueryV1, { readonly kind: "candidates" }>,
+  ): Promise<AgentCandidatePageV1> {
+    const taskRef = query.payload.agentTaskRef;
+    await this.#selectOwnedTask(query, taskRef);
+    const pageSize = query.payload.pageSize ?? AGENT_UI_READ_PAGE_SIZE_DEFAULT_V1;
+    const binding = this.#uiCursorBinding(query, taskRef.reference.entityId, {
+      kind: "candidates",
+    });
+    const cursor =
+      query.payload.cursor === undefined ? undefined : decodeUiReadCursor(query.payload.cursor);
+    if (cursor !== undefined) requireCursorBinding(cursor, binding);
+
+    let builder = this.#db
+      .selectFrom("business.agent_task_candidates")
+      .selectAll()
+      .where("agent_task_id", "=", taskRef.reference.entityId);
+    if (cursor !== undefined)
+      builder = builder.where("candidate_version", ">", Number(cursor.keyA));
+    const rows = await builder
+      .orderBy("candidate_version", "asc")
+      .limit(pageSize + 1)
+      .execute();
+    const page = rows.slice(0, pageSize);
+    const last = page.at(-1);
+    return AgentCandidatePageV1Schema.parse({
+      kind: "candidates",
+      agentTaskRef: taskRef,
+      items: page.map((row) =>
+        AgentCandidateEntryV1Schema.parse({
+          candidateVersion: row.candidate_version,
+          parentCandidateVersion: row.parent_candidate_version ?? 0,
+          candidateArtifactRef: row.candidate_artifact_ref,
+          incrementArtifactRef: row.increment_artifact_ref,
+          ...(row.validation === null ? {} : { validationArtifactRef: row.result_ref ?? undefined }),
+          disposition: row.disposition,
+          ...(row.rejection_class === null ? {} : { rejectionClass: row.rejection_class }),
+          createdAt: asIso(row.created_at),
+        }),
+      ),
+      ...(rows.length > pageSize && last !== undefined
+        ? {
+            nextCursor: encodeUiReadCursor({
+              v: "1",
+              binding,
+              asOfRecordedAt: query.requestedAt,
+              keyA: String(last.candidate_version),
+              keyB: "",
+            }),
+          }
+        : {}),
+    });
+  }
+
+  /**
+   * 逐项校验按原验证结构的数组位置稳定分页；引用不可见或结构不可解析时整页安全失败，
+   * 不用任何替代内容填补缺失的校验值。
+   */
+  async #uiReadValidation(
+    query: Extract<AgentTaskReadQueryV1, { readonly kind: "validation" }>,
+  ): Promise<AgentValidationPageV1> {
+    const taskRef = query.payload.agentTaskRef;
+    await this.#selectOwnedTask(query, taskRef);
+    const pageSize = query.payload.pageSize ?? AGENT_UI_READ_PAGE_SIZE_DEFAULT_V1;
+    const binding = this.#uiCursorBinding(query, taskRef.reference.entityId, {
+      kind: "validation",
+      candidateVersion: query.payload.candidateVersion,
+    });
+    const cursor =
+      query.payload.cursor === undefined ? undefined : decodeUiReadCursor(query.payload.cursor);
+    if (cursor !== undefined) requireCursorBinding(cursor, binding);
+
+    const row = await this.#db
+      .selectFrom("business.agent_task_candidates")
+      .selectAll()
+      .where("agent_task_id", "=", taskRef.reference.entityId)
+      .where("candidate_version", "=", query.payload.candidateVersion)
+      .executeTakeFirst();
+    if (row === undefined || row.validation === null)
+      throw new AgentRuntimeError(
+        makeAgentError({
+          code: "AGENT_TASK_NOT_FOUND",
+          category: "not-found",
+          stage: "ui-read.validation-reference",
+          taskRef,
+        }),
+      );
+    const validation = AgentValidationResultV1Schema.parse(row.validation);
+    const offset = cursor === undefined ? 0 : Number(cursor.keyA);
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > validation.items.length)
+      throw invalidCursor("ui-read.validation-cursor");
+    const items = validation.items.slice(offset, offset + pageSize);
+    return AgentValidationPageV1Schema.parse({
+      kind: "validation",
+      agentTaskRef: taskRef,
+      candidateVersion: query.payload.candidateVersion,
+      items: items.map((check) =>
+        AgentValidationCheckEntryV1Schema.parse({
+          checkId: check.checkId,
+          disposition: check.disposition,
+          ...(check.rejectionClass === undefined ? {} : { rejectionClass: check.rejectionClass }),
+          reasonCode: check.reasonCode,
+          evidenceReferences: check.evidenceReferences,
+        }),
+      ),
+      ...(offset + pageSize < validation.items.length
+        ? {
+            nextCursor: encodeUiReadCursor({
+              v: "1",
+              binding,
+              asOfRecordedAt: query.requestedAt,
+              keyA: String(offset + pageSize),
+              keyB: "",
+            }),
+          }
+        : {}),
+    });
+  }
+
+  /**
+   * 启动上下文：只有来源任务仍是可启动状态、其任务类型定义仍在注册且支持 interactive、
+   * 六类策略引用仍可解析时才回送完整原启动载荷；否则按稳定 reasonCode 给出不支持，
+   * 不推测缺失策略，也不扩模型、工具或预算。
+   */
+  async #uiReadLaunchContext(
+    query: Extract<AgentTaskReadQueryV1, { readonly kind: "launch-context" }>,
+  ): Promise<AgentLaunchContextResultV1> {
+    const sourceRef = query.payload.sourceAgentTaskRef;
+    const row = await this.#selectOwnedTask(query, sourceRef);
+    const unsupported = (reasonCode: string): AgentLaunchContextResultV1 => ({
+      kind: "launch-context",
+      sourceAgentTaskRef: sourceRef,
+      launchContext: { supported: false, reasonCode },
+    });
+    const internalStatus = AgentInternalStatusV1Schema.parse(row.status);
+    if (internalStatus === "terminal-failure" || internalStatus === "cancelled")
+      return unsupported("SOURCE_TASK_TERMINAL");
+    const envelope = AgentTaskEnvelopeV1Schema.parse(row.envelope);
+    if (!this.#registry.has(envelope.taskType)) return unsupported("TASK_DEFINITION_UNREGISTERED");
+    const definition = this.#registry.get(envelope.taskType);
+    if (!definition.metadata.supportedTriggerModes.includes("interactive"))
+      return unsupported("TRIGGER_MODE_UNSUPPORTED");
+    if (
+      !refEqual(definition.budgetPolicy.modelDeploymentRef, envelope.modelDeploymentRef) ||
+      !refEqual(definition.budgetPolicy.promptTemplateRef, envelope.promptTemplateRef) ||
+      !refEqual(definition.metadata.toolPolicyRef, envelope.toolPolicyRef) ||
+      !refEqual(definition.budgetPolicy.policyRef, envelope.budgetPolicyRef) ||
+      !refEqual(definition.metadata.incrementSchemaRef, envelope.incrementSchemaRef) ||
+      !refEqual(definition.metadata.validationPolicyRef, envelope.validationPolicyRef)
+    )
+      return unsupported("STRATEGY_REFERENCE_UNAVAILABLE");
+    return {
+      kind: "launch-context",
+      sourceAgentTaskRef: sourceRef,
+      launchContext: {
+        supported: true,
+        payload: StartAgentTaskPayloadV1Schema.parse({
+          taskType: envelope.taskType,
+          triggerMode: "interactive",
+          parentRunRef: envelope.parentRunRef,
+          frozenInputRef: envelope.frozenInputRef,
+          modelDeploymentRef: envelope.modelDeploymentRef,
+          promptTemplateRef: envelope.promptTemplateRef,
+          toolPolicyRef: envelope.toolPolicyRef,
+          budgetPolicyRef: envelope.budgetPolicyRef,
+          incrementSchemaRef: envelope.incrementSchemaRef,
+          validationPolicyRef: envelope.validationPolicyRef,
+        }),
+      },
+    };
   }
 
   async #selectTaskById(

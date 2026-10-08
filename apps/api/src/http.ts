@@ -422,10 +422,7 @@ const queryTransportSchemaFor = (schema: ZodType, kind: string): ZodType =>
   });
 
 /** 多 kind 领域的查询信封：payload 就是该领域自己的联合，`kind` 由请求体携带。 */
-const queryTransportSchemaForPayload = (
-  schema: ZodType,
-  payload: ZodType,
-): ZodType =>
+const queryTransportSchemaForPayload = (schema: ZodType, payload: ZodType): ZodType =>
   z.strictObject({
     ...httpEnvelopeBase,
     queryId: IdentifierSchema,

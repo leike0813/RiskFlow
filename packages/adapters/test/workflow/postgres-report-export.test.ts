@@ -540,9 +540,7 @@ const completedReceiptCount = async (queryId: string): Promise<number> => {
   return rows.length;
 };
 
-const expectSucceededArtifactRef = (
-  result: ProjectionExportResultV1,
-): ExportArtifactRefV1 => {
+const expectSucceededArtifactRef = (result: ProjectionExportResultV1): ExportArtifactRefV1 => {
   expect(
     result.kind,
     result.kind === "failed"
@@ -595,10 +593,9 @@ describe("C35 报告导出适配器", () => {
       readQuery("artifact", "artifact-basic", { exportArtifactRef }),
     );
     expect(ProjectionReportReadResultV1Schema.safeParse(artifact).success).toBe(true);
-    expect(
-      artifact.kind,
-      artifact.kind === "failed" ? `${artifact.error.stageCode}` : "",
-    ).toBe("succeeded");
+    expect(artifact.kind, artifact.kind === "failed" ? `${artifact.error.stageCode}` : "").toBe(
+      "succeeded",
+    );
     if (artifact.kind !== "succeeded" || artifact.result.kind !== "artifact") {
       throw new Error("工件读取未成功");
     }
@@ -608,9 +605,7 @@ describe("C35 报告导出适配器", () => {
     expect(artifact.result.body.queryResultRef).toEqual(sourceRef);
     expect(artifact.result.body.exportPolicyRef).toEqual(POLICY_REF);
     // 缺席项必须原样保留，不能只交付已成立事实。
-    expect(
-      artifact.result.body.items.some((item) => item.kind === "report-absence"),
-    ).toBe(true);
+    expect(artifact.result.body.items.some((item) => item.kind === "report-absence")).toBe(true);
 
     const history = await report.reportRead.read(
       readQuery("history", "history-basic", { pageSize: 50 }),
@@ -842,9 +837,7 @@ describe("C35 报告导出适配器", () => {
     fixture.access.restore();
     const healthy = compose({ policies: [basePolicy()] });
     const exportArtifactRef = expectSucceededArtifactRef(
-      await healthy.projection.queryProjection.export(
-        exportRequest("export-revoked", sourceRef),
-      ),
+      await healthy.projection.queryProjection.export(exportRequest("export-revoked", sourceRef)),
     );
     expect(await generatedAuditCount("export-revoked")).toBe(1);
 

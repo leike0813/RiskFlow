@@ -283,7 +283,10 @@ describe("module interface contracts", () => {
       .map(([branch]) => branch)
       .sort();
     // C35 起另有 `agent-task.read` 窄读分支；能力位仍只有既有的 agent-task.read。
-    expect(failureEvidenceBranches).toEqual(["agent-task.read", "agent-task.read-failure-evidence"]);
+    expect(failureEvidenceBranches).toEqual([
+      "agent-task.read",
+      "agent-task.read-failure-evidence",
+    ]);
     expect(MODULE_BRANCH_CAPABILITY_V1["agent-task.read-failure-evidence"]).toBe("agent-task.read");
     expect(AgentTaskTypeV1Schema.safeParse("retrieval-review").success).toBe(true);
     expect(AgentTaskTypeV1Schema.safeParse("free-form").success).toBe(false);

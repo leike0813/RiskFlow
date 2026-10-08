@@ -96,7 +96,9 @@ export const agentInternalStatusesForPublicStatus = (
   status: AgentTaskStatusV1,
 ): readonly AgentInternalStatusV1[] => {
   const publicStatus = AgentTaskStatusV1Schema.parse(status);
-  return AGENT_INTERNAL_STATUS_V1_VALUES.filter((internal) => STATUS_MAP[internal] === publicStatus);
+  return AGENT_INTERNAL_STATUS_V1_VALUES.filter(
+    (internal) => STATUS_MAP[internal] === publicStatus,
+  );
 };
 
 const TRANSITIONS: Readonly<Record<AgentInternalStatusV1, readonly AgentInternalStatusV1[]>> = {

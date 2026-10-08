@@ -1959,7 +1959,11 @@ describe("C35 有界窄读与系统面路由", () => {
     requestedSourceVersionRefs: [],
     payload,
   });
-  const postQuery = (app: ReturnType<typeof buildApi>, branch: string, payload: Record<string, unknown>) =>
+  const postQuery = (
+    app: ReturnType<typeof buildApi>,
+    branch: string,
+    payload: Record<string, unknown>,
+  ) =>
     app.inject({
       method: "POST",
       url: `/api/v1/projects/project/queries/${branch}`,
@@ -1992,7 +1996,10 @@ describe("C35 有界窄读与系统面路由", () => {
         reviewAuditRead: {
           read: async (query) => {
             seen.push(query);
-            return { kind: "succeeded", result: { kind: "activities", items: [], asOfRecordedAt: NOW } };
+            return {
+              kind: "succeeded",
+              result: { kind: "activities", items: [], asOfRecordedAt: NOW },
+            };
           },
         },
         projectionReportRead: {
@@ -2106,7 +2113,12 @@ describe("C35 有界窄读与系统面路由", () => {
       method: "POST",
       url: "/api/v1/administration/queries",
       headers: cookieHeaders,
-      payload: { schemaVersion: "1", queryId: "query-1", requestedAt: NOW, payload: { kind: "accounts" } },
+      payload: {
+        schemaVersion: "1",
+        queryId: "query-1",
+        requestedAt: NOW,
+        payload: { kind: "accounts" },
+      },
     });
     expect(accounts.statusCode).toBe(200);
 
@@ -2177,7 +2189,12 @@ describe("C35 有界窄读与系统面路由", () => {
       method: "POST",
       url: "/api/v1/operations/queries",
       headers: cookieHeaders,
-      payload: { schemaVersion: "1", queryId: "query-1", requestedAt: NOW, payload: { kind: "health" } },
+      payload: {
+        schemaVersion: "1",
+        queryId: "query-1",
+        requestedAt: NOW,
+        payload: { kind: "health" },
+      },
     });
     expect(deniedResponse.statusCode).toBe(404);
     expect(operations).toHaveLength(0);
@@ -2190,7 +2207,12 @@ describe("C35 有界窄读与系统面路由", () => {
       method: "POST",
       url: "/api/v1/operations/queries",
       headers: cookieHeaders,
-      payload: { schemaVersion: "1", queryId: "query-1", requestedAt: NOW, payload: { kind: "health" } },
+      payload: {
+        schemaVersion: "1",
+        queryId: "query-1",
+        requestedAt: NOW,
+        payload: { kind: "health" },
+      },
     });
     expect(allowedResponse.statusCode).toBe(200);
     expect(operations).toHaveLength(1);
@@ -2226,7 +2248,12 @@ describe("C35 有界窄读与系统面路由", () => {
       method: "POST",
       url: "/api/v1/operations/queries",
       headers: cookieHeaders,
-      payload: { schemaVersion: "1", queryId: "query-1", requestedAt: NOW, payload: { kind: "health" } },
+      payload: {
+        schemaVersion: "1",
+        queryId: "query-1",
+        requestedAt: NOW,
+        payload: { kind: "health" },
+      },
     });
     expect(withoutAdministrationResponse.statusCode).toBe(404);
   });
@@ -2244,9 +2271,7 @@ describe("C35 有界窄读与系统面路由", () => {
       capturedAt: NOW,
       now: () => new Date(NOW),
     });
-    expect(withoutProbe.components).toHaveLength(
-      SYSTEM_OPERATIONS_COMPONENT_IDS_V1.length,
-    );
+    expect(withoutProbe.components).toHaveLength(SYSTEM_OPERATIONS_COMPONENT_IDS_V1.length);
     for (const component of withoutProbe.components) {
       expect(component.status).toBe("unknown");
       expect(component.reasonCode).toBe("PROBE_NOT_CONFIGURED");
@@ -2271,9 +2296,9 @@ describe("C35 有界窄读与系统面路由", () => {
       probe: async (componentId) =>
         componentId === "api" ? { status: "available" as const } : { status: "unknown" as const },
     });
-    expect(partiallyAvailable.components.find((component) => component.componentId === "api")?.status).toBe(
-      "available",
-    );
+    expect(
+      partiallyAvailable.components.find((component) => component.componentId === "api")?.status,
+    ).toBe("available");
     expect(partiallyAvailable.components.length).toBeLessThanOrEqual(SYSTEM_OPERATIONS_ITEM_MAX_V1);
   });
 });

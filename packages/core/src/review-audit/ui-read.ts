@@ -112,7 +112,9 @@ export type ReviewActivityPageV1 = z.infer<typeof ReviewActivityPageV1Schema>;
 const taskDetailPayload = z.strictObject({ reviewTaskRef: ReviewTaskRefV1Schema });
 const activitiesPayload = z.strictObject({
   subjectRef: ContractReferenceV1Schema.optional(),
-  sourceType: z.enum(["business-audit", "review-task", "review-rejection", "security-audit"]).optional(),
+  sourceType: z
+    .enum(["business-audit", "review-task", "review-rejection", "security-audit"])
+    .optional(),
   resultCode: IdentifierSchema.optional(),
   asOfRecordedAt: IsoDateTimeSchema.optional(),
   cursor: readCursor.optional(),

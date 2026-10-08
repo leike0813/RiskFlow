@@ -1498,9 +1498,7 @@ describe("postgres agent runtime adapter", () => {
     expect(internalStatuses.has("terminal-failure")).toBe(true);
     expect(expectedFailedCount).toBeGreaterThan(0);
     expect(publicFailed.result.items.length).toBe(expectedFailedCount);
-    expect(
-      publicFailed.result.items.every((item) => item.status === "failed"),
-    ).toBe(true);
+    expect(publicFailed.result.items.every((item) => item.status === "failed")).toBe(true);
     expect(list.result.asOfRecordedAt).toBe(READ_REQUESTED_AT);
     for (const item of list.result.items) {
       expect(item.agentTaskRef.kind).toBe("agent-task");
@@ -1549,9 +1547,11 @@ describe("postgres agent runtime adapter", () => {
     expect(detail.result.safeError?.code).toBe("AGENT_VALIDATION_REJECTED");
     expect(Object.keys(detail.result.safeError ?? {}).sort()).not.toContain("message");
     // 终局任务无法恢复/取消，也没有待确认提案。
-    expect(
-      detail.result.actions.map((action) => action.branch).sort(),
-    ).toEqual(["agent-task.cancel-task", "agent-task.confirm-command", "agent-task.resume-task"]);
+    expect(detail.result.actions.map((action) => action.branch).sort()).toEqual([
+      "agent-task.cancel-task",
+      "agent-task.confirm-command",
+      "agent-task.resume-task",
+    ]);
 
     // 行动、候选与逐项校验按页返回引用与实际用量，不返回命令或模型正文。
     const actions = await uiQuery("ui-read-actions", "actions", {

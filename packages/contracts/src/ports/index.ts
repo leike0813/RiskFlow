@@ -1897,7 +1897,11 @@ export const StartAgentTaskPayloadV1Schema = z.strictObject({
 export type StartAgentTaskPayloadV1 = z.infer<typeof StartAgentTaskPayloadV1Schema>;
 
 export const StartAgentTaskCommandV1Schema = z.discriminatedUnion("kind", [
-  commandSchema("start-task", StartAgentTaskPayloadV1Schema, branchCapability("agent-task.start-task")),
+  commandSchema(
+    "start-task",
+    StartAgentTaskPayloadV1Schema,
+    branchCapability("agent-task.start-task"),
+  ),
 ]);
 export type StartAgentTaskCommandV1 = z.infer<typeof StartAgentTaskCommandV1Schema>;
 

@@ -1436,9 +1436,11 @@ describe.sequential("local identity and project authorization", () => {
       kind: "succeeded",
       result: { kind: "identity", isSystemAdministrator: true },
     });
-    expect(adminIdentity.kind === "succeeded" && adminIdentity.result.kind === "identity"
-      ? adminIdentity.result.allowedActions
-      : []).toEqual([
+    expect(
+      adminIdentity.kind === "succeeded" && adminIdentity.result.kind === "identity"
+        ? adminIdentity.result.allowedActions
+        : [],
+    ).toEqual([
       "create-account",
       "disable-account",
       "reset-password",
@@ -1482,20 +1484,16 @@ describe.sequential("local identity and project authorization", () => {
     expect(loginNames).toContain("admin001");
     expect(loginNames).toContain("user001");
     expect(seenAccountRefs).toContain(userAccountId!);
-    const adminItem = (
-      await access!.systemAdministration.read({
-        kind: "accounts",
-        schemaVersion: "1",
-        queryId: "query-accounts-admin-item",
-        requestedAt: "2030-01-01T00:00:00.000Z",
-        sessionToken: administrationSessionToken!,
-      })
-    );
+    const adminItem = await access!.systemAdministration.read({
+      kind: "accounts",
+      schemaVersion: "1",
+      queryId: "query-accounts-admin-item",
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      sessionToken: administrationSessionToken!,
+    });
     if (adminItem.kind !== "succeeded" || adminItem.result.kind !== "accounts")
       throw new Error("expected account directory");
-    expect(
-      adminItem.result.items.find((item) => item.loginName === "admin001"),
-    ).toMatchObject({
+    expect(adminItem.result.items.find((item) => item.loginName === "admin001")).toMatchObject({
       displayName: "Initial administrator",
       status: "active",
       passwordChangeRequired: false,
@@ -1545,9 +1543,9 @@ describe.sequential("local identity and project authorization", () => {
     });
     if (scopes.kind !== "succeeded" || scopes.result.kind !== "spatial-scopes")
       throw new Error("expected scope directory");
-    expect(
-      scopes.result.items.map((item) => item.scopeRef.reference.entityId),
-    ).toContain(rootScopeRef?.reference.entityId);
+    expect(scopes.result.items.map((item) => item.scopeRef.reference.entityId)).toContain(
+      rootScopeRef?.reference.entityId,
+    );
   }, 180_000);
 
   it("system administration refuses directory and writes for non-administrator sessions", async () => {
@@ -1598,7 +1596,10 @@ describe.sequential("local identity and project authorization", () => {
       projectId: "project-a",
     });
     expect(unknownProject).toEqual(knownProject);
-    expect(unknownProject).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    expect(unknownProject).toMatchObject({
+      kind: "failed",
+      error: { code: "AUTHORIZATION_DENIED" },
+    });
 
     const deniedWrite = await access!.systemAdministration.execute({
       schemaVersion: "1",
@@ -1761,7 +1762,10 @@ describe.sequential("local identity and project authorization", () => {
       sessionToken: administrationSessionToken!,
       projectId: "project-ops",
     });
-    if (membershipDirectory.kind !== "succeeded" || membershipDirectory.result.kind !== "memberships")
+    if (
+      membershipDirectory.kind !== "succeeded" ||
+      membershipDirectory.result.kind !== "memberships"
+    )
       throw new Error("expected membership directory");
     expect(
       membershipDirectory.result.items.find(
@@ -2042,5 +2046,4 @@ describe.sequential("local identity and project authorization", () => {
       }),
     ).rejects.toMatchObject({ details: { code: "SESSION_EXPIRED" } });
   }, 180_000);
-
 });

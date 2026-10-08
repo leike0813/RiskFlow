@@ -438,7 +438,11 @@ describe("C35 Agent 任务只读投影契约", () => {
       budget: { policy: prepared.budgetPolicy, ledger: prepared.budgetLedger },
       actions: [
         { branch: "agent-task.cancel-task", availability: "allowed" },
-        { branch: "agent-task.confirm-command", availability: "business-unavailable", reasonCode: "NO_PROPOSAL" },
+        {
+          branch: "agent-task.confirm-command",
+          availability: "business-unavailable",
+          reasonCode: "NO_PROPOSAL",
+        },
       ],
     };
     const parsed = AgentTaskDetailV1Schema.safeParse(detail);
@@ -486,7 +490,9 @@ describe("C35 Agent 任务只读投影契约", () => {
     };
     expect(AgentActionEntryV1Schema.safeParse(entry).success).toBe(true);
     for (const leak of ["leaseToken", "modelOutput", "intentBody", "observationBody"]) {
-      expect(AgentActionEntryV1Schema.safeParse({ ...entry, [leak]: "secret" }).success).toBe(false);
+      expect(AgentActionEntryV1Schema.safeParse({ ...entry, [leak]: "secret" }).success).toBe(
+        false,
+      );
     }
   });
 
@@ -546,8 +552,10 @@ describe("C35 Agent 任务只读投影契约", () => {
     };
     expect(AgentLaunchContextV1Schema.safeParse({ supported: true, payload }).success).toBe(true);
     expect(
-      AgentLaunchContextV1Schema.safeParse({ supported: false, reasonCode: "DEFINITION_EMBEDDED_ONLY" })
-        .success,
+      AgentLaunchContextV1Schema.safeParse({
+        supported: false,
+        reasonCode: "DEFINITION_EMBEDDED_ONLY",
+      }).success,
     ).toBe(true);
     // 不支持时不得附带半份载荷；支持时不得省略冻结输入。
     expect(

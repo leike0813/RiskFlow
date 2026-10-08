@@ -329,7 +329,9 @@ export class PostgresReviewAuditRead implements ReviewAuditReadPortV1 {
           : STAGE_CODE_V1;
       const occurredAt = this.#now().toISOString();
       if (readRequestDenied(query)) {
-        return failed(readError({ code: "AUTHORIZATION_DENIED", causalRunId: queryId, occurredAt }));
+        return failed(
+          readError({ code: "AUTHORIZATION_DENIED", causalRunId: queryId, occurredAt }),
+        );
       }
       return failed(readError({ code: "UNSUPPORTED_CONTRACT", causalRunId: queryId, occurredAt }));
     }
@@ -429,9 +431,7 @@ export class PostgresReviewAuditRead implements ReviewAuditReadPortV1 {
       ...(row.superseded_by_command_id === null
         ? {}
         : { supersededByCommandId: row.superseded_by_command_id }),
-      ...(row.superseded_by_actor === null
-        ? {}
-        : { supersededByActor: row.superseded_by_actor }),
+      ...(row.superseded_by_actor === null ? {} : { supersededByActor: row.superseded_by_actor }),
     });
     if (state.projectId !== query.projectId) throw closed("task-detail-scope");
 
@@ -496,7 +496,9 @@ export class PostgresReviewAuditRead implements ReviewAuditReadPortV1 {
    * 授权层面的允许/拒绝不在读面推断——`review-audit.read` 不等于写权，
    * 未被业务状态阻断的分支不进入清单，因此不存在"全部允许"的列表。
    */
-  #taskActions(status: string): { branch: DecideBranch; availability: "business-unavailable"; reasonCode: string }[] {
+  #taskActions(
+    status: string,
+  ): { branch: DecideBranch; availability: "business-unavailable"; reasonCode: string }[] {
     if (status === "decided")
       return [
         {
@@ -694,7 +696,10 @@ const compareActivityOrder = (
   return 0;
 };
 
-const optionalRef = <T>(schema: { safeParse: (value: unknown) => { success: boolean; data?: T } }, value: unknown): T | undefined => {
+const optionalRef = <T>(
+  schema: { safeParse: (value: unknown) => { success: boolean; data?: T } },
+  value: unknown,
+): T | undefined => {
   const parsed = schema.safeParse(value);
   return parsed.success ? parsed.data : undefined;
 };

@@ -3379,7 +3379,9 @@ export const createPostgresLocalIdentityAccess = (
             .select(["scope_id", "current_revision_id"])
             .where("scope_id", "in", parentScopeIds)
             .execute();
-    const parentByScope = new Map(parents.map((parent) => [parent.scope_id, parent.current_revision_id]));
+    const parentByScope = new Map(
+      parents.map((parent) => [parent.scope_id, parent.current_revision_id]),
+    );
     const items = page.flatMap((row) => {
       const revision = revisionById.get(row.current_revision_id);
       if (revision === undefined) return [];

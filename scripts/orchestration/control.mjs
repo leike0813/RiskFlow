@@ -609,11 +609,7 @@ async function orcaJson(exec, invocation, args, cwd) {
     await readJsonCommand(
       exec,
       invocation.command,
-      [
-        ...invocation.prefix,
-        ...withOrcaSender(invocation, args),
-        "--json",
-      ],
+      [...invocation.prefix, ...withOrcaSender(invocation, args), "--json"],
       {
         cwd,
         timeoutMs: 120_000,
@@ -1373,14 +1369,7 @@ export async function riskflowDispatch(input, options = {}) {
       task.terminalHandle = terminalHandle;
     }
     await recordAttempt(ctx.runtimeDir, attemptEnvelope(node, task, "queued"));
-    const worker = await startWorker(
-      ctx.exec,
-      invocation,
-      ctx.rootDir,
-      ctx.runtimeDir,
-      node,
-      task,
-    );
+    const worker = await startWorker(ctx.exec, invocation, ctx.rootDir, ctx.runtimeDir, node, task);
     return {
       ok: true,
       action: "dispatch",

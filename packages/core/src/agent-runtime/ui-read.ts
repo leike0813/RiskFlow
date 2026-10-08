@@ -279,9 +279,7 @@ export const AgentTaskReadSuccessV1Schema = z.discriminatedUnion("kind", [
 ]);
 export type AgentTaskReadSuccessV1 = z.infer<typeof AgentTaskReadSuccessV1Schema>;
 
-export const AgentTaskReadResultV1Schema = createModuleResultSchemaV1(
-  AgentTaskReadSuccessV1Schema,
-);
+export const AgentTaskReadResultV1Schema = createModuleResultSchemaV1(AgentTaskReadSuccessV1Schema);
 export type AgentTaskReadResultV1 = z.infer<typeof AgentTaskReadResultV1Schema>;
 
 /**

@@ -261,7 +261,10 @@ describe("C35 统一复核详情与活动读取契约", () => {
         ...readQueryBase,
         kind: "task-detail",
         payload: {
-          reviewTaskRef: { ...identificationTaskRef, reference: { entityId: "task-id", versionId: "2" } },
+          reviewTaskRef: {
+            ...identificationTaskRef,
+            reference: { entityId: "task-id", versionId: "2" },
+          },
         },
       }).success,
     ).toBe(true);
@@ -288,8 +291,10 @@ describe("C35 统一复核详情与活动读取契约", () => {
     }
     // 归并式"原样通过"不是合法决定：识别任务不能直接用知识发布决定。
     expect(
-      ReviewDecisionV1Schema.safeParse({ reviewType: "identification-group", kind: "approve-publication" })
-        .success,
+      ReviewDecisionV1Schema.safeParse({
+        reviewType: "identification-group",
+        kind: "approve-publication",
+      }).success,
     ).toBe(false);
   });
 
@@ -314,11 +319,16 @@ describe("C35 统一复核详情与活动读取契约", () => {
       asOfRecordedAt: timestamp,
     };
     expect(ReviewActivityPageV1Schema.safeParse(page).success).toBe(true);
-    expect(ReviewActivityPageV1Schema.safeParse({ ...page, nextCursor: "cursor-1" }).success).toBe(true);
+    expect(ReviewActivityPageV1Schema.safeParse({ ...page, nextCursor: "cursor-1" }).success).toBe(
+      true,
+    );
     expect(
       ReviewActivityPageV1Schema.safeParse({
         ...page,
-        items: Array.from({ length: 51 }, (_unused, index) => ({ ...entry, activityId: `a-${index}` })),
+        items: Array.from({ length: 51 }, (_unused, index) => ({
+          ...entry,
+          activityId: `a-${index}`,
+        })),
       }).success,
     ).toBe(false);
 

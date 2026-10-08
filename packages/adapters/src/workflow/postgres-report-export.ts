@@ -81,9 +81,14 @@ const referenceKey = (value: {
 }): string => `${value.reference.entityId}/${value.reference.versionId}`;
 
 const containsReferences = (
-  parent: readonly { readonly reference: { readonly entityId: string; readonly versionId: string } }[],
-  child: readonly { readonly reference: { readonly entityId: string; readonly versionId: string } }[],
-): boolean => child.every((item) => parent.some((scope) => referenceKey(scope) === referenceKey(item)));
+  parent: readonly {
+    readonly reference: { readonly entityId: string; readonly versionId: string };
+  }[],
+  child: readonly {
+    readonly reference: { readonly entityId: string; readonly versionId: string };
+  }[],
+): boolean =>
+  child.every((item) => parent.some((scope) => referenceKey(scope) === referenceKey(item)));
 
 /** 条目族即策略可选章节；链边项不属于报告章节，任何策略都不会导出它。 */
 const sectionOfItem = (item: ProjectionResultItemV1): ReportExportSectionV1 | undefined =>
@@ -148,9 +153,7 @@ export interface PostgresReportExportOptionsV1 {
 export interface PostgresReportExportV1 {
   readonly reportRead: ProjectionReportReadPortV1;
   /** `projection.export` 的报告用途实现；由所属 projection 的 `export` 显式委托。 */
-  readonly exportReport: (
-    request: ProjectionExportRequestV1,
-  ) => Promise<ProjectionExportResultV1>;
+  readonly exportReport: (request: ProjectionExportRequestV1) => Promise<ProjectionExportResultV1>;
 }
 
 type ReportExecutorV1 = Kysely<PostgresDatabase>;
@@ -365,7 +368,11 @@ class ReportExportService {
       readonly spatialScopeRef?: SpatialScopeRefV1 | undefined;
     };
   }): Promise<
-    | { readonly ok: true; readonly items: readonly ProjectionResultItemV1[]; readonly nextCursor?: string }
+    | {
+        readonly ok: true;
+        readonly items: readonly ProjectionResultItemV1[];
+        readonly nextCursor?: string;
+      }
     | { readonly ok: false }
   > {
     const pageAuthorization = await this.#pageContext({
@@ -482,9 +489,7 @@ class ReportExportService {
       .where("project_id", "=", input.projectId)
       .where("command_kind", "=", EXPORT_COMPLETE_COMMAND_KIND_V1)
       .where("actor_ref", "=", input.actorId)
-      .where(
-        sql<SqlBool>`result_ref @> ${JSON.stringify(input.exportArtifactRef)}::jsonb`,
-      )
+      .where(sql<SqlBool>`result_ref @> ${JSON.stringify(input.exportArtifactRef)}::jsonb`)
       .where("completed_at", "is not", null)
       .limit(1)
       .executeTakeFirst();
@@ -627,7 +632,10 @@ class ReportExportService {
     }
     const registration = found.registration;
     if (!policy.queryTypes.includes(registration.queryType as ReportExportQueryTypeV1)) {
-      return { kind: "failed", error: this.#blocked("report-export", "export-query-type-unsupported") };
+      return {
+        kind: "failed",
+        error: this.#blocked("report-export", "export-query-type-unsupported"),
+      };
     }
     const scope = this.#scopeOf(registration, verified);
     if (scope === undefined) {
@@ -825,7 +833,9 @@ class ReportExportService {
   };
 
   /** 报告窄读端口：策略、预览、工件与历史（design D-08/D-09）。 */
-  readonly read = async (query: ProjectionReportReadQueryV1): Promise<ProjectionReportReadResultV1> => {
+  readonly read = async (
+    query: ProjectionReportReadQueryV1,
+  ): Promise<ProjectionReportReadResultV1> => {
     const parsed = ProjectionReportReadQueryV1Schema.safeParse(query);
     if (!parsed.success) {
       return { kind: "failed", error: this.#blocked("report-read", "report-read-invalid") };
@@ -872,18 +882,17 @@ class ReportExportService {
     const { queryResultRef: sourceRef, exportPolicyRef } = query.payload;
     const policy = this.#policyFor(exportPolicyRef);
     if (policy === undefined) {
-      return { kind: "failed", error: this.#blocked("report-preview", "export-policy-unavailable") };
+      return {
+        kind: "failed",
+        error: this.#blocked("report-preview", "export-policy-unavailable"),
+      };
     }
     const found = await this.#registrationFor(envelope.projectId, sourceRef);
     if (!found.ok) {
       return { kind: "failed", error: this.#notFound("report-preview") };
     }
     const registration = found.registration;
-    if (
-      !policy.queryTypes.includes(
-        registration.queryType as ReportExportQueryTypeV1,
-      )
-    ) {
+    if (!policy.queryTypes.includes(registration.queryType as ReportExportQueryTypeV1)) {
       return {
         kind: "failed",
         error: this.#blocked("report-preview", "export-query-type-unsupported"),
@@ -975,7 +984,10 @@ class ReportExportService {
     }
     const policy = this.#policyFor(body.body.exportPolicyRef);
     if (policy === undefined) {
-      return { kind: "failed", error: this.#blocked("report-artifact", "export-policy-unavailable") };
+      return {
+        kind: "failed",
+        error: this.#blocked("report-artifact", "export-policy-unavailable"),
+      };
     }
     if (body.byteLength > policy.maxBytes) {
       return { kind: "failed", error: this.#blocked("report-artifact", "export-bytes-exceeded") };
@@ -1149,7 +1161,7 @@ class ReportExportService {
         ...(nextCursor === undefined ? {} : { nextCursor }),
       },
     };
-  };
+  }
 }
 
 const encodeHistoryCursorV1 = (input: {

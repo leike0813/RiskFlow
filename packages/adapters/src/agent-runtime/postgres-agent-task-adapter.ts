@@ -281,9 +281,7 @@ const encodeUiReadCursor = (binding: UiReadCursorBinding): string =>
   Buffer.from(JSON.stringify(binding), "utf8").toString("base64url");
 
 const invalidCursor = (stage: string): AgentRuntimeError =>
-  new AgentRuntimeError(
-    makeAgentError({ code: "AGENT_INPUT_INVALID", category: "input", stage }),
-  );
+  new AgentRuntimeError(makeAgentError({ code: "AGENT_INPUT_INVALID", category: "input", stage }));
 
 /** 严格字段与类型校验：未知字段、缺字段或被改写的游标一律失败关闭。 */
 const decodeUiReadCursor = (cursor: string): UiReadCursorBinding => {
@@ -313,10 +311,7 @@ const decodeUiReadCursor = (cursor: string): UiReadCursorBinding => {
 };
 
 /** 下一跳必须复算出同一个绑定摘要；漂移就关闭而不是继续翻页。 */
-const requireCursorBinding = (
-  cursor: UiReadCursorBinding,
-  expectedBindingDigest: string,
-): void => {
+const requireCursorBinding = (cursor: UiReadCursorBinding, expectedBindingDigest: string): void => {
   if (cursor.binding !== expectedBindingDigest) throw invalidCursor("ui-read.cursor-binding");
 };
 
@@ -1123,7 +1118,10 @@ export class PostgresAgentTaskAdapter
       .selectAll()
       .where("agent_task_id", "=", taskRef.reference.entityId);
     if (cursor !== undefined) builder = builder.where("sequence", ">", Number(cursor.keyA));
-    const rows = await builder.orderBy("sequence", "asc").limit(pageSize + 1).execute();
+    const rows = await builder
+      .orderBy("sequence", "asc")
+      .limit(pageSize + 1)
+      .execute();
     const page = rows.slice(0, pageSize);
     const last = page.at(-1);
     return AgentActionPageV1Schema.parse({
@@ -1198,7 +1196,9 @@ export class PostgresAgentTaskAdapter
           parentCandidateVersion: row.parent_candidate_version ?? 0,
           candidateArtifactRef: row.candidate_artifact_ref,
           incrementArtifactRef: row.increment_artifact_ref,
-          ...(row.validation === null ? {} : { validationArtifactRef: row.result_ref ?? undefined }),
+          ...(row.validation === null
+            ? {}
+            : { validationArtifactRef: row.result_ref ?? undefined }),
           disposition: row.disposition,
           ...(row.rejection_class === null ? {} : { rejectionClass: row.rejection_class }),
           createdAt: asIso(row.created_at),

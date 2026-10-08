@@ -136,7 +136,11 @@ export const collectSystemOperationsHealth = async (input: {
   const components: SystemOperationsComponentV1[] = [];
   for (const componentId of SYSTEM_OPERATIONS_COMPONENT_IDS_V1) {
     if (input.probe === undefined) {
-      components.push({ componentId, status: "unknown", reasonCode: SYSTEM_OPERATIONS_REASON_CODES_V1.probeAbsent });
+      components.push({
+        componentId,
+        status: "unknown",
+        reasonCode: SYSTEM_OPERATIONS_REASON_CODES_V1.probeAbsent,
+      });
       continue;
     }
     const controller = new AbortController();

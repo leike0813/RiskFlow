@@ -36,11 +36,7 @@ export const REPORT_EXPORT_QUERY_TYPES_V1 = ["risk-overview"] as const;
 export const ReportExportQueryTypeV1Schema = z.enum(REPORT_EXPORT_QUERY_TYPES_V1);
 
 /** 三个既有条目族：运行摘要、报告事实与缺席项；策略只能取其非空子集。 */
-export const REPORT_EXPORT_SECTIONS_V1 = [
-  "run-summary",
-  "report-fact",
-  "report-absence",
-] as const;
+export const REPORT_EXPORT_SECTIONS_V1 = ["run-summary", "report-fact", "report-absence"] as const;
 export const ReportExportSectionV1Schema = z.enum(REPORT_EXPORT_SECTIONS_V1);
 
 /**
@@ -58,7 +54,11 @@ export const ReportExportPolicyV1Schema = z.strictObject({
     .refine((sections) => new Set(sections).size === sections.length),
   maxPages: z.number().int().min(1).max(20),
   maxItems: z.number().int().min(1).max(1000),
-  maxBytes: z.number().int().min(1).max(8 * 1024 * 1024),
+  maxBytes: z
+    .number()
+    .int()
+    .min(1)
+    .max(8 * 1024 * 1024),
 });
 export type ReportExportPolicyV1 = z.infer<typeof ReportExportPolicyV1Schema>;
 

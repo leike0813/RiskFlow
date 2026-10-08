@@ -177,7 +177,11 @@ describe("access domain", () => {
     expect(branchCapability("projection.report-read")).toBe("projection.export");
 
     // 工程风险管理员按 allBranches 自动取得三条读面。
-    for (const branch of ["agent-task.read", "review-audit.read", "projection.report-read"] as const) {
+    for (const branch of [
+      "agent-task.read",
+      "review-audit.read",
+      "projection.report-read",
+    ] as const) {
       expect(isBranchAllowed(["project-risk-manager"], branch)).toBe(true);
     }
 
@@ -192,7 +196,11 @@ describe("access domain", () => {
     // field-responder 不新增任何 branch；系统管理员仍无业务 branch。
     expect(PRESET_ROLE_BRANCHES_V1["field-responder"]).not.toContain("review-audit.read");
     expect(PRESET_ROLE_BRANCHES_V1["field-responder"]).not.toContain("projection.report-read");
-    for (const branch of ["agent-task.read", "review-audit.read", "projection.report-read"] as const) {
+    for (const branch of [
+      "agent-task.read",
+      "review-audit.read",
+      "projection.report-read",
+    ] as const) {
       expect(isBranchAllowed(["system-administrator"], branch)).toBe(false);
     }
 

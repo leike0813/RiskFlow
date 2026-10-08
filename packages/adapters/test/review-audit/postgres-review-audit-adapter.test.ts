@@ -2283,9 +2283,7 @@ describe.sequential("PostgreSQL review audit read adapter (C35)", () => {
     // 跨工程：与不存在同形，不提供存在性 oracle。
     const otherProject = authorizationFor("project-ui-denied-other");
     expectClosed(
-      await reader.read(
-        taskDetailQuery("project-ui-denied-other", otherProject, taskRef),
-      ),
+      await reader.read(taskDetailQuery("project-ui-denied-other", otherProject, taskRef)),
     );
 
     // 当前授权复验拒绝 → 关闭，且 verify 先于任何任务事实读取。
@@ -2305,7 +2303,9 @@ describe.sequential("PostgreSQL review audit read adapter (C35)", () => {
       });
     });
     const revokedReader = readAdapterFor(authorization, deniedVerify);
-    expectClosed(await revokedReader.read(taskDetailQuery(request.projectId, authorization, taskRef)));
+    expectClosed(
+      await revokedReader.read(taskDetailQuery(request.projectId, authorization, taskRef)),
+    );
     expect(deniedVerify).toHaveBeenCalledWith(
       expect.objectContaining({ branch: "review-audit.read", invocationId: expect.any(String) }),
     );
@@ -2337,7 +2337,9 @@ describe.sequential("PostgreSQL review audit read adapter (C35)", () => {
     if (created.kind !== "succeeded") return;
     await writer.decideReview(decisionFor(request, created.result.reviewTaskRef, "ui-activities"));
     // 同任务的新决定按原 C07 语义记为陈旧拒绝，产生带结果码的复核拒绝活动。
-    await writer.decideReview(decisionFor(request, created.result.reviewTaskRef, "ui-activities-stale"));
+    await writer.decideReview(
+      decisionFor(request, created.result.reviewTaskRef, "ui-activities-stale"),
+    );
     const before = await reviewAuditCounts(requireFixture(), request.projectId);
 
     const page = await succeededPage(
@@ -2372,7 +2374,9 @@ describe.sequential("PostgreSQL review audit read adapter (C35)", () => {
     });
 
     // 登记行只暴露允许的字段：授权上下文与审计 payload 不外泄。
-    expect(JSON.stringify(page)).not.toContain(request.authorization.authorizationContextRef.reference.entityId);
+    expect(JSON.stringify(page)).not.toContain(
+      request.authorization.authorizationContextRef.reference.entityId,
+    );
     expect(await reviewAuditCounts(requireFixture(), request.projectId)).toEqual(before);
 
     // 结果码筛选：只有带该结果码的来源进入本次读取。
@@ -2434,7 +2438,9 @@ describe.sequential("PostgreSQL review audit read adapter (C35)", () => {
         pageSize: 1,
       }),
     );
-    await writer.requestReview(requestFor({ suffix: "ui-paging-c", projectId: authorization.projectId }));
+    await writer.requestReview(
+      requestFor({ suffix: "ui-paging-c", projectId: authorization.projectId }),
+    );
     const secondPageAfter = await succeededPage(
       reader,
       activityQuery(first.projectId, authorization, {

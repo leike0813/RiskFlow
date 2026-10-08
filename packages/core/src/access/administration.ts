@@ -36,11 +36,7 @@ import { SYSTEM_ACCESS_ACTIONS_V1 } from "./policy.js";
 export const SYSTEM_ADMINISTRATION_PAGE_SIZE_MAX_V1 = 50;
 export const SYSTEM_ADMINISTRATION_PAGE_SIZE_DEFAULT_V1 = 25;
 
-const readPageSize = z
-  .number()
-  .int()
-  .min(1)
-  .max(SYSTEM_ADMINISTRATION_PAGE_SIZE_MAX_V1);
+const readPageSize = z.number().int().min(1).max(SYSTEM_ADMINISTRATION_PAGE_SIZE_MAX_V1);
 const readCursor = z.string().min(1).max(512);
 const sessionToken = z.string().min(1).max(512);
 
@@ -116,9 +112,7 @@ export const SystemMembershipDirectoryItemV1Schema = z.strictObject({
   spatialScopeRefs: z.array(SpatialScopeRefV1Schema).max(128),
   status: z.enum(["active", "removed"]),
 });
-export type SystemMembershipDirectoryItemV1 = z.infer<
-  typeof SystemMembershipDirectoryItemV1Schema
->;
+export type SystemMembershipDirectoryItemV1 = z.infer<typeof SystemMembershipDirectoryItemV1Schema>;
 
 export const SystemSpatialScopeDirectoryItemV1Schema = z.strictObject({
   scopeId: IdentifierSchema,
@@ -174,10 +168,15 @@ export type SystemAdministrationReadResultPayloadV1 = z.infer<
 >;
 
 export const SystemAdministrationReadResultV1Schema = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("succeeded"), result: SystemAdministrationReadResultPayloadV1Schema }),
+  z.strictObject({
+    kind: z.literal("succeeded"),
+    result: SystemAdministrationReadResultPayloadV1Schema,
+  }),
   z.strictObject({ kind: z.literal("failed"), error: AccessErrorV1Schema }),
 ]);
-export type SystemAdministrationReadResultV1 = z.infer<typeof SystemAdministrationReadResultV1Schema>;
+export type SystemAdministrationReadResultV1 = z.infer<
+  typeof SystemAdministrationReadResultV1Schema
+>;
 
 /**
  * 管理命令载荷：原 C06 六项管理命令剔除 commandId / idempotencyKey / authorizationContextRef

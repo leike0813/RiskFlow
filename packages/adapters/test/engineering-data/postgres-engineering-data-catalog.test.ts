@@ -739,9 +739,8 @@ describe("C32 PostgreSQL engineering data catalog adapter", () => {
       payload: {
         sourceConnectionRef: connectionDefinitionRef,
         deliveryKey: "c32-snapshot-delivery",
-        sourceArtifactRef: (
-          await put("snapshot-source", "snapshot source body", "text/plain")
-        ).artifactRef,
+        sourceArtifactRef: (await put("snapshot-source", "snapshot source body", "text/plain"))
+          .artifactRef,
         metadataArtifactRef: (
           await put(
             "snapshot-metadata",

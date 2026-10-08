@@ -5,7 +5,7 @@
 **PASS**。
 
 - 输入基线：`cfb87bf`（main，含编排控制器 `--retry-request` 兼容性修复 `cfb87bf`，与施工图 base `08a3fed` 的差异仅限编排脚本）。
-- 最终 HEAD：`105445d`（feat(web) C35 交付提交）。
+- 最终 HEAD：`6d45fad`（`105445d` feat 交付 + 归档 + prettier 格式化；格式化无产品语义变化）。
 - 验收执行：主协调会话直接承担 Finalizer 职责。用户在本轮明确指示不走 Orca/OMP 编排委派框架，施工图 §8 的独立 Finalizer/Targeted Auditor 派发未执行；限定审计范围（权限、事务、尾事务）由本验收直接核验，证据如下。
 - 边界：备份/恢复执行、PDF/时间窗导出、自由聊天等 Non-Goals 未实现且按设计呈现 unavailable/404；浏览器验收使用的策略、账号、任务定义为版本化合成输入，已标明待甲方复核。
 
@@ -41,6 +41,7 @@
 - B2 `playwright test --project=demo-chromium read-only / identification-review / assessment-warning-response`：66 通过 + 1 flaky。
 - S1 `pnpm lint`：通过；`pnpm deps:check`：490 模块无违规。
 - P1 `openspec validate deliver-agent-audit-and-operations-ui --strict --no-interactive`：valid。
+- 主线门禁 `NODE_OPTIONS=--max-old-space-size=8192 pnpm verify`（最终 HEAD `6d45fad`）：build/typecheck/lint/format:check/test（1853 通过）/deps:check/deps:policy 全部通过；末步 `openspec validate --all --strict` 失败于 11 个**既有**规格的"需求文本过长"警告（基线 `08a3fed` 同样 11 项失败，C35 未新增任何警告，本 change 规格自身 ✓）。
 
 ## 验收期间修复（均已回归）
 
@@ -65,6 +66,8 @@
 ## 后续注意（不影响 PASS）
 
 - B2 的 `assessment-warning-response.spec.ts`「独立行动…」用例首次运行因 datetime-local 填充值含秒报 malformed，重试通过；该文件与页面（ExecutionRegisterPage）不属于 C35 改动范围，属既有间歇问题，建议后续单独处理。
+- 全量 `pnpm test` 在高并行负载下对并发敏感用例存在既有抖动：第一次运行失败于 C35 报告导出并发用例、第二次失败于 C20 检索代际竞态用例（非 C35 文件），两者单独运行均稳定通过（各 3/3、10/10），第三次全量全绿。属测试环境并行度问题，建议后续为全量套件限制并发工作者数。
+- 冷 `tsc -b`（`tsc -b --force` 或 tsbuildinfo 失效）在默认 4GB 堆下 OOM，基线提交同样如此，属既有现象；本轮以 `NODE_OPTIONS=--max-old-space-size=8192` 通过主线门禁。
 - `demo/test/browser/server.mjs` 存在 5 个基线遗留的 eslint 错误（demo/** 被仓库 lint 忽略；基线版本为 6 个，本轮未新增并顺带消除 1 个）。demo 门禁为 `tsc + vite build`，均绿。
 - 浏览器验收的策略、账号、合成任务定义均为版本化合成输入，待甲方复核；备份/恢复执行归 C37，本轮按设计整项 unavailable 且零恢复请求（B1 已验证）。
 - 会话侧残留：编排台账中 C35 有一个失败的规划尝试信封与 `c35`、`c35-2` 两个受管 worktree（均为本轮接管过程中的空残留，无产出）；如恢复使用编排框架，需先清理这些残留。

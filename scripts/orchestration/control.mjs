@@ -585,13 +585,6 @@ export function withOrcaSender(invocation, args) {
   return args;
 }
 
-// `--retry-request` 只在 orchestration 写命令上实现（与 sender 身份同一族）；terminal/worktree
-// 命令会以 invalid_argument 拒绝它，附加即让调用必定失败（实测 terminal close）。
-function withRetryRequest(args, retryRequest) {
-  if (!retryRequest || args[0] !== "orchestration") return [];
-  return ["--retry-request", retryRequest];
-}
-
 // 一个协调端 terminal 只能绑定一个 Run，而 orchestration 调用（含 `check --wait` 这类读取）
 // 按发送方终端的绑定校验。控制器同时服务多条 lane，因此每次带 `--run` 的调用之前都要确认
 // 绑定：否则跨 lane 的 task-create / worker-start / check --wait 会以 consumer_fenced 失败。
@@ -610,7 +603,7 @@ async function bindRunForWrite(exec, invocation, rootDir, args) {
   await orcaJson(exec, invocation, ["orchestration", "run-use", "--id", runId], rootDir);
 }
 
-async function orcaJson(exec, invocation, args, cwd, retryRequest) {
+async function orcaJson(exec, invocation, args, cwd) {
   await bindRunForWrite(exec, invocation, cwd, args);
   return unwrapResult(
     await readJsonCommand(
@@ -619,7 +612,6 @@ async function orcaJson(exec, invocation, args, cwd, retryRequest) {
       [
         ...invocation.prefix,
         ...withOrcaSender(invocation, args),
-        ...withRetryRequest(args, retryRequest),
         "--json",
       ],
       {
@@ -628,10 +620,6 @@ async function orcaJson(exec, invocation, args, cwd, retryRequest) {
       },
     ),
   );
-}
-
-function retryRequest(idempotencyKey, step) {
-  return hash([idempotencyKey, step]);
 }
 
 function idFrom(value, kind) {
@@ -645,7 +633,6 @@ async function ensureRun(exec, invocation, rootDir, node, idempotencyKey, reuseE
     invocation,
     ["orchestration", "run-create", "--objective", `推进 RiskFlow ${node.id}：${node.change}`],
     rootDir,
-    retryRequest(idempotencyKey, "run-create"),
   );
   const runId = idFrom(created, "run");
   if (!runId) throw new ControlError("orca_result_invalid", "Orca 未返回 run id");
@@ -979,7 +966,6 @@ async function createTask(
       taskSpec(node, taskKind, envelopeOptions),
     ],
     rootDir,
-    retryRequest(idempotencyKey, "task-create"),
   );
   const taskId = idFrom(created, "task");
   if (!taskId) throw new ControlError("orca_result_invalid", "Orca 未返回 task id");
@@ -1000,7 +986,6 @@ async function createTask(
       JSON.stringify(envelope),
     ],
     rootDir,
-    retryRequest(idempotencyKey, "task-envelope"),
   );
   return { taskId, runId, envelope, role };
 }
@@ -1075,7 +1060,7 @@ function managedWorktreePath(worktree) {
   return path;
 }
 
-async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, idempotencyKey) {
+async function startWorker(exec, invocation, rootDir, runtimeDir, node, task) {
   const worktree = `id:${node.worktree.id}`;
   if (["planning", "finalization", "audit"].includes(task.envelope.taskKind)) {
     const path = managedWorktreePath(node.worktree);
@@ -1144,12 +1129,11 @@ async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, id
       "--terminal",
       terminalHandle,
     ];
-    const workerStartRetry = retryRequest(idempotencyKey, "worker-start");
     try {
-      worker = await orcaJson(exec, invocation, workerStartArgs, rootDir, workerStartRetry);
+      worker = await orcaJson(exec, invocation, workerStartArgs, rootDir);
     } catch (error) {
       const details = await inspectWorkerStartFailure(error, () =>
-        orcaJson(exec, invocation, workerStartArgs, rootDir, workerStartRetry),
+        orcaJson(exec, invocation, workerStartArgs, rootDir),
       );
       if (
         !isWorkspaceTrustFailure(details, error, true) &&
@@ -1223,7 +1207,6 @@ async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, id
       "--inject",
     ],
     rootDir,
-    retryRequest(idempotencyKey, "dispatch"),
   );
   // 注入式派发不会回写 Orca 侧 Task 的 result，而状态视图优先采用 Orca 的信封：不同步
   // 会把仍在运行的实现尝试一直显示成 queued，并给出「再派发一次」这种会制造第二个写者的下一动作。
@@ -1244,7 +1227,6 @@ async function startWorker(exec, invocation, rootDir, runtimeDir, node, task, id
       JSON.stringify(running),
     ],
     rootDir,
-    retryRequest(idempotencyKey, "implementation-running"),
   );
   // 实现分支同样要把台账推进到 running：否则状态视图在整段实现期间仍报告
   // runState=queued，并给出"派发当前信封指定的受控任务"这种会导致重复派发的下一动作。
@@ -1398,7 +1380,6 @@ export async function riskflowDispatch(input, options = {}) {
       ctx.runtimeDir,
       node,
       task,
-      ctx.idempotencyKey,
     );
     return {
       ok: true,
@@ -1461,7 +1442,6 @@ export async function riskflowReply(input, options = {}) {
         ctx.node.checkpoints.runId,
       ],
       ctx.rootDir,
-      retryRequest(ctx.idempotencyKey, "reply"),
     );
     return { ok: true, action: "reply", workItemId: ctx.node.id, result };
   });
@@ -1582,7 +1562,6 @@ export async function riskflowSettle(input, options = {}) {
           JSON.stringify(envelope),
         ],
         ctx.rootDir,
-        retryRequest(ctx.idempotencyKey, "settle"),
       );
     }
     await recordAttempt(ctx.runtimeDir, envelope);
@@ -1590,7 +1569,7 @@ export async function riskflowSettle(input, options = {}) {
   });
 }
 
-async function updateMainSummary(ctx, main, orcaCommand, step) {
+async function updateMainSummary(ctx, main, orcaCommand) {
   const checkpoint = ctx.node.checkpoints;
   const envelope = {
     schemaVersion: 2,
@@ -1630,7 +1609,6 @@ async function updateMainSummary(ctx, main, orcaCommand, step) {
         JSON.stringify(envelope),
       ],
       ctx.rootDir,
-      retryRequest(ctx.idempotencyKey, step),
     );
   }
   await recordAttempt(ctx.runtimeDir, envelope);
@@ -1730,7 +1708,6 @@ export async function riskflowIntegrate(input, options = {}) {
           verification: "pending",
         },
         options.orcaCommand,
-        "main-merge-summary",
       );
       return { ok: true, action: "merge", workItemId: ctx.node.id, mainHead, envelope };
     }
@@ -1754,7 +1731,6 @@ export async function riskflowIntegrate(input, options = {}) {
           verification: "passed",
         },
         options.orcaCommand,
-        "main-verify-summary",
       );
       return { ok: true, action: "main-verify", workItemId: ctx.node.id, mainHead, envelope };
     }
@@ -1780,7 +1756,6 @@ export async function riskflowIntegrate(input, options = {}) {
           verification: "passed",
         },
         options.orcaCommand,
-        "archive-summary",
       );
       return { ok: true, action: "archive", workItemId: ctx.node.id, archiveCommit, envelope };
     }
@@ -1860,7 +1835,6 @@ export async function riskflowReconcile(input, options = {}) {
         taskSpec(ctx.node, taskKind),
       ],
       ctx.rootDir,
-      retryRequest(ctx.idempotencyKey, "reconcile-task-create"),
     );
     const taskId = idFrom(created, "task");
     if (!taskId) throw new ControlError("orca_result_invalid", "Orca 未返回 task id");
@@ -1888,7 +1862,6 @@ export async function riskflowReconcile(input, options = {}) {
         JSON.stringify(envelope),
       ],
       ctx.rootDir,
-      retryRequest(ctx.idempotencyKey, "reconcile-task-envelope"),
     );
     await recordAttempt(ctx.runtimeDir, envelope);
     return { ok: true, action: "reconcile", workItemId: ctx.node.id, runId, taskId, envelope };

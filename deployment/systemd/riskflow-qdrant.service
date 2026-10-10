@@ -1,0 +1,24 @@
+# 数据 VM：Qdrant 向量投影。索引可重建，但不得替代正式业务事实。
+[Unit]
+Description=RiskFlow Qdrant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=riskflow
+Group=riskflow
+EnvironmentFile=/etc/riskflow/secrets/qdrant.env
+ExecStart=/usr/bin/docker run --rm --pull=never --name riskflow-qdrant -p 6333:6333 qdrant/qdrant:v1.19.0
+Restart=on-failure
+RestartSec=10
+# 镜像只由离线介质导入，启动不联网拉取。
+NoNewPrivileges=false
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/riskflow/qdrant
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

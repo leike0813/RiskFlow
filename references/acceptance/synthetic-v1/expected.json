@@ -1,0 +1,1426 @@
+{
+  "schemaVersion": "1",
+  "packId": "riskflow-synthetic-v1",
+  "packVersion": "1",
+  "label": "合成样本，待甲方复核",
+  "labelStatus": "candidate",
+  "cases": [
+    {
+      "caseId": "SYN-DEV-001",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "掌子面稳定性失效",
+      "candidateProcessNode": "变径空间扩挖",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 1.0,
+        "groundSettlement": 2.0
+      },
+      "candidateRiskEvent": "掌子面失稳与塌方",
+      "candidateLikelihoodScore": 1.0,
+      "candidateConsequenceScore": 2.0,
+      "candidateRiskLevel": "level-2",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-DEV-002",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "掌子面稳定性失效",
+      "candidateProcessNode": "刀盘扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.0,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-DEV-003",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "支护结构失效",
+      "candidateProcessNode": "盾体扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 2.0,
+        "groundSettlement": 2.0
+      },
+      "candidateRiskEvent": "初支侵限与支护失效",
+      "candidateLikelihoodScore": 2.0,
+      "candidateConsequenceScore": 2.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value",
+        "threshold-lining-deformation-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-DEV-004",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "支护结构失效",
+      "candidateProcessNode": "缩径转换",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.4,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-DEV-005",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "渗流突涌",
+      "candidateProcessNode": "扩径准备",
+      "candidateIndicatorScores": {
+        "stratumGrade": 3.0,
+        "facePressure": 4.0,
+        "groundSettlement": 2.0
+      },
+      "candidateRiskEvent": "渗流涌砂涌泥",
+      "candidateLikelihoodScore": 3.6,
+      "candidateConsequenceScore": 2.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value",
+        "threshold-groundwater-level-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-DEV-006",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "渗流突涌",
+      "candidateProcessNode": "刀盘扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.0,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-DEV-007",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "过挖与地表沉降",
+      "candidateProcessNode": "刀盘扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 3.5,
+        "facePressure": 4.0,
+        "groundSettlement": 2.0
+      },
+      "candidateRiskEvent": "过挖与地表沉降超标",
+      "candidateLikelihoodScore": 3.8,
+      "candidateConsequenceScore": 2.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value",
+        "threshold-slurry-pressure-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-DEV-008",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "过挖与地表沉降",
+      "candidateProcessNode": "盾体扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.4,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-DEV-009",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "施工装备故障",
+      "candidateProcessNode": "盾体扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 4.0,
+        "facePressure": 5.0,
+        "groundSettlement": 2.0
+      },
+      "candidateRiskEvent": "施工装备故障",
+      "candidateLikelihoodScore": 4.6,
+      "candidateConsequenceScore": 2.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value",
+        "threshold-grouting-pressure-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-DEV-010",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "施工装备故障",
+      "candidateProcessNode": "缩径转换",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.0,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-DEV-011",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "装配连接失效",
+      "candidateProcessNode": "扩径准备",
+      "candidateIndicatorScores": {
+        "stratumGrade": 4.5,
+        "facePressure": 5.0,
+        "groundSettlement": 2.0
+      },
+      "candidateRiskEvent": "装配连接失效",
+      "candidateLikelihoodScore": 4.8,
+      "candidateConsequenceScore": 2.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-DEV-012",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "装配连接失效",
+      "candidateProcessNode": "盾体扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.4,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-013",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "掌子面稳定性失效",
+      "candidateProcessNode": "变径空间扩挖",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 2.0,
+        "groundSettlement": 1.0
+      },
+      "candidateRiskEvent": "掌子面失稳与塌方",
+      "candidateLikelihoodScore": 2.0,
+      "candidateConsequenceScore": 1.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-014",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "掌子面稳定性失效",
+      "candidateProcessNode": "缩径转换",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.0,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-015",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "掌子面稳定性失效",
+      "candidateProcessNode": "刀盘扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 3.0,
+        "facePressure": 2.0,
+        "groundSettlement": 4.0
+      },
+      "candidateRiskEvent": "掌子面失稳与塌方",
+      "candidateLikelihoodScore": 2.4,
+      "candidateConsequenceScore": 4.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value",
+        "threshold-lining-deformation-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-016",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "掌子面稳定性失效",
+      "candidateProcessNode": "变径空间扩挖",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.4,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-017",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "掌子面稳定性失效",
+      "candidateProcessNode": "缩径转换",
+      "candidateIndicatorScores": {
+        "stratumGrade": 3.5,
+        "facePressure": 4.0,
+        "groundSettlement": 4.0
+      },
+      "candidateRiskEvent": "掌子面失稳与塌方",
+      "candidateLikelihoodScore": 3.8,
+      "candidateConsequenceScore": 4.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value",
+        "threshold-groundwater-level-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-018",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "掌子面稳定性失效",
+      "candidateProcessNode": "刀盘扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.0,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-019",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "掌子面稳定性失效",
+      "candidateProcessNode": "变径空间扩挖",
+      "candidateIndicatorScores": {
+        "stratumGrade": 4.0,
+        "facePressure": 5.0,
+        "groundSettlement": 6.0
+      },
+      "candidateRiskEvent": "掌子面失稳与塌方",
+      "candidateLikelihoodScore": 4.6,
+      "candidateConsequenceScore": 6.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value",
+        "threshold-slurry-pressure-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-020",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "掌子面稳定性失效",
+      "candidateProcessNode": "缩径转换",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.4,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-021",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "掌子面稳定性失效",
+      "candidateProcessNode": "刀盘扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 4.5,
+        "facePressure": 5.0,
+        "groundSettlement": 8.0
+      },
+      "candidateRiskEvent": "掌子面失稳与塌方",
+      "candidateLikelihoodScore": 4.8,
+      "candidateConsequenceScore": 8.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value",
+        "threshold-grouting-pressure-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-022",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "掌子面稳定性失效",
+      "candidateProcessNode": "变径空间扩挖",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.0,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-023",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "支护结构失效",
+      "candidateProcessNode": "盾体扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 3.0,
+        "facePressure": 2.0,
+        "groundSettlement": 1.0
+      },
+      "candidateRiskEvent": "初支侵限与支护失效",
+      "candidateLikelihoodScore": 2.4,
+      "candidateConsequenceScore": 1.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-024",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "支护结构失效",
+      "candidateProcessNode": "变径空间扩挖",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.4,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-025",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "支护结构失效",
+      "candidateProcessNode": "缩径转换",
+      "candidateIndicatorScores": {
+        "stratumGrade": 3.5,
+        "facePressure": 2.0,
+        "groundSettlement": 4.0
+      },
+      "candidateRiskEvent": "初支侵限与支护失效",
+      "candidateLikelihoodScore": 2.6,
+      "candidateConsequenceScore": 4.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value",
+        "threshold-groundwater-level-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-026",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "支护结构失效",
+      "candidateProcessNode": "盾体扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.0,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-027",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "支护结构失效",
+      "candidateProcessNode": "变径空间扩挖",
+      "candidateIndicatorScores": {
+        "stratumGrade": 4.0,
+        "facePressure": 4.0,
+        "groundSettlement": 4.0
+      },
+      "candidateRiskEvent": "初支侵限与支护失效",
+      "candidateLikelihoodScore": 4.0,
+      "candidateConsequenceScore": 4.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value",
+        "threshold-slurry-pressure-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-028",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "支护结构失效",
+      "candidateProcessNode": "缩径转换",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.4,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-029",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "支护结构失效",
+      "candidateProcessNode": "盾体扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 4.5,
+        "facePressure": 5.0,
+        "groundSettlement": 6.0
+      },
+      "candidateRiskEvent": "初支侵限与支护失效",
+      "candidateLikelihoodScore": 4.8,
+      "candidateConsequenceScore": 6.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value",
+        "threshold-grouting-pressure-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-030",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "支护结构失效",
+      "candidateProcessNode": "变径空间扩挖",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.0,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-031",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "支护结构失效",
+      "candidateProcessNode": "缩径转换",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 5.0,
+        "groundSettlement": 8.0
+      },
+      "candidateRiskEvent": "初支侵限与支护失效",
+      "candidateLikelihoodScore": 3.4,
+      "candidateConsequenceScore": 8.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value",
+        "threshold-shield-attitude-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-032",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "支护结构失效",
+      "candidateProcessNode": "盾体扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.4,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-033",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "渗流突涌",
+      "candidateProcessNode": "扩径准备",
+      "candidateIndicatorScores": {
+        "stratumGrade": 3.5,
+        "facePressure": 2.0,
+        "groundSettlement": 1.0
+      },
+      "candidateRiskEvent": "渗流涌砂涌泥",
+      "candidateLikelihoodScore": 2.6,
+      "candidateConsequenceScore": 1.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-groundwater-level-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-034",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "渗流突涌",
+      "candidateProcessNode": "盾体扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.0,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-035",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "渗流突涌",
+      "candidateProcessNode": "刀盘扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 4.0,
+        "facePressure": 2.0,
+        "groundSettlement": 4.0
+      },
+      "candidateRiskEvent": "渗流涌砂涌泥",
+      "candidateLikelihoodScore": 2.8,
+      "candidateConsequenceScore": 4.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value",
+        "threshold-slurry-pressure-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-036",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "渗流突涌",
+      "candidateProcessNode": "扩径准备",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.4,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-037",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "渗流突涌",
+      "candidateProcessNode": "盾体扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 4.5,
+        "facePressure": 4.0,
+        "groundSettlement": 4.0
+      },
+      "candidateRiskEvent": "渗流涌砂涌泥",
+      "candidateLikelihoodScore": 4.2,
+      "candidateConsequenceScore": 4.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value",
+        "threshold-grouting-pressure-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-038",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "渗流突涌",
+      "candidateProcessNode": "刀盘扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.0,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-039",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "渗流突涌",
+      "candidateProcessNode": "扩径准备",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 5.0,
+        "groundSettlement": 6.0
+      },
+      "candidateRiskEvent": "渗流涌砂涌泥",
+      "candidateLikelihoodScore": 3.4,
+      "candidateConsequenceScore": 6.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value",
+        "threshold-shield-attitude-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-040",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "渗流突涌",
+      "candidateProcessNode": "盾体扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.4,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-041",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "渗流突涌",
+      "candidateProcessNode": "刀盘扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 5.0,
+        "groundSettlement": 8.0
+      },
+      "candidateRiskEvent": "渗流涌砂涌泥",
+      "candidateLikelihoodScore": 3.8,
+      "candidateConsequenceScore": 8.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-042",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "渗流突涌",
+      "candidateProcessNode": "扩径准备",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.0,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-043",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "过挖与地表沉降",
+      "candidateProcessNode": "刀盘扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 4.0,
+        "facePressure": 2.0,
+        "groundSettlement": 1.0
+      },
+      "candidateRiskEvent": "过挖与地表沉降超标",
+      "candidateLikelihoodScore": 2.8,
+      "candidateConsequenceScore": 1.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-044",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "过挖与地表沉降",
+      "candidateProcessNode": "缩径转换",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.4,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-045",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "过挖与地表沉降",
+      "candidateProcessNode": "盾体扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 4.5,
+        "facePressure": 2.0,
+        "groundSettlement": 4.0
+      },
+      "candidateRiskEvent": "过挖与地表沉降超标",
+      "candidateLikelihoodScore": 3.0,
+      "candidateConsequenceScore": 4.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value",
+        "threshold-grouting-pressure-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-046",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "过挖与地表沉降",
+      "candidateProcessNode": "刀盘扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.0,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-047",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "过挖与地表沉降",
+      "candidateProcessNode": "缩径转换",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 4.0,
+        "groundSettlement": 4.0
+      },
+      "candidateRiskEvent": "过挖与地表沉降超标",
+      "candidateLikelihoodScore": 2.8,
+      "candidateConsequenceScore": 4.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value",
+        "threshold-shield-attitude-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-048",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "过挖与地表沉降",
+      "candidateProcessNode": "盾体扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.4,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-049",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "过挖与地表沉降",
+      "candidateProcessNode": "刀盘扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 5.0,
+        "groundSettlement": 6.0
+      },
+      "candidateRiskEvent": "过挖与地表沉降超标",
+      "candidateLikelihoodScore": 3.8,
+      "candidateConsequenceScore": 6.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-050",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "过挖与地表沉降",
+      "candidateProcessNode": "缩径转换",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.0,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-051",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "过挖与地表沉降",
+      "candidateProcessNode": "盾体扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 3.0,
+        "facePressure": 5.0,
+        "groundSettlement": 8.0
+      },
+      "candidateRiskEvent": "过挖与地表沉降超标",
+      "candidateLikelihoodScore": 4.2,
+      "candidateConsequenceScore": 8.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value",
+        "threshold-lining-deformation-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-052",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "过挖与地表沉降",
+      "candidateProcessNode": "刀盘扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.4,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-053",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "施工装备故障",
+      "candidateProcessNode": "盾体扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 4.5,
+        "facePressure": 2.0,
+        "groundSettlement": 1.0
+      },
+      "candidateRiskEvent": "施工装备故障",
+      "candidateLikelihoodScore": 3.0,
+      "candidateConsequenceScore": 1.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-054",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "施工装备故障",
+      "candidateProcessNode": "扩径准备",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.0,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-055",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "施工装备故障",
+      "candidateProcessNode": "缩径转换",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 2.0,
+        "groundSettlement": 4.0
+      },
+      "candidateRiskEvent": "施工装备故障",
+      "candidateLikelihoodScore": 1.6,
+      "candidateConsequenceScore": 4.0,
+      "candidateRiskLevel": "level-2",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-056",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "施工装备故障",
+      "candidateProcessNode": "盾体扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.4,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-057",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "施工装备故障",
+      "candidateProcessNode": "扩径准备",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 4.0,
+        "groundSettlement": 4.0
+      },
+      "candidateRiskEvent": "施工装备故障",
+      "candidateLikelihoodScore": 3.2,
+      "candidateConsequenceScore": 4.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-058",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "施工装备故障",
+      "candidateProcessNode": "缩径转换",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.0,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-059",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "施工装备故障",
+      "candidateProcessNode": "盾体扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 3.0,
+        "facePressure": 5.0,
+        "groundSettlement": 6.0
+      },
+      "candidateRiskEvent": "施工装备故障",
+      "candidateLikelihoodScore": 4.2,
+      "candidateConsequenceScore": 6.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value",
+        "threshold-lining-deformation-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-060",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "施工装备故障",
+      "candidateProcessNode": "扩径准备",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.4,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-061",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "施工装备故障",
+      "candidateProcessNode": "缩径转换",
+      "candidateIndicatorScores": {
+        "stratumGrade": 3.5,
+        "facePressure": 5.0,
+        "groundSettlement": 8.0
+      },
+      "candidateRiskEvent": "施工装备故障",
+      "candidateLikelihoodScore": 4.4,
+      "candidateConsequenceScore": 8.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value",
+        "threshold-groundwater-level-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-062",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "施工装备故障",
+      "candidateProcessNode": "盾体扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.0,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-063",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "装配连接失效",
+      "candidateProcessNode": "扩径准备",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 2.0,
+        "groundSettlement": 1.0
+      },
+      "candidateRiskEvent": "装配连接失效",
+      "candidateLikelihoodScore": 1.6,
+      "candidateConsequenceScore": 1.0,
+      "candidateRiskLevel": "level-2",
+      "candidateWarningThresholdIds": [],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-064",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "装配连接失效",
+      "candidateProcessNode": "缩径转换",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.4,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-065",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "装配连接失效",
+      "candidateProcessNode": "盾体扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 2.0,
+        "groundSettlement": 4.0
+      },
+      "candidateRiskEvent": "装配连接失效",
+      "candidateLikelihoodScore": 2.0,
+      "candidateConsequenceScore": 4.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-066",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "装配连接失效",
+      "candidateProcessNode": "扩径准备",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.0,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-067",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "装配连接失效",
+      "candidateProcessNode": "缩径转换",
+      "candidateIndicatorScores": {
+        "stratumGrade": 3.0,
+        "facePressure": 4.0,
+        "groundSettlement": 4.0
+      },
+      "candidateRiskEvent": "装配连接失效",
+      "candidateLikelihoodScore": 3.6,
+      "candidateConsequenceScore": 4.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value",
+        "threshold-lining-deformation-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-068",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "装配连接失效",
+      "candidateProcessNode": "盾体扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.4,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-069",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "装配连接失效",
+      "candidateProcessNode": "扩径准备",
+      "candidateIndicatorScores": {
+        "stratumGrade": 3.5,
+        "facePressure": 5.0,
+        "groundSettlement": 6.0
+      },
+      "candidateRiskEvent": "装配连接失效",
+      "candidateLikelihoodScore": 4.4,
+      "candidateConsequenceScore": 6.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value",
+        "threshold-groundwater-level-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-070",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "装配连接失效",
+      "candidateProcessNode": "缩径转换",
+      "candidateIndicatorScores": {
+        "stratumGrade": 1.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.0,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    },
+    {
+      "caseId": "SYN-TRIAL-071",
+      "candidateLabel": "positive",
+      "candidateExpectation": "risk-record-present",
+      "candidateMechanismType": "装配连接失效",
+      "candidateProcessNode": "盾体扩径",
+      "candidateIndicatorScores": {
+        "stratumGrade": 4.0,
+        "facePressure": 5.0,
+        "groundSettlement": 8.0
+      },
+      "candidateRiskEvent": "装配连接失效",
+      "candidateLikelihoodScore": 4.6,
+      "candidateConsequenceScore": 8.0,
+      "candidateRiskLevel": "level-3",
+      "candidateWarningThresholdIds": [
+        "threshold-ground-settlement-value",
+        "threshold-slurry-pressure-value"
+      ],
+      "note": "候选标签，未经甲方或专家复核；分值来自本包显式合成区间，非规范取值。"
+    },
+    {
+      "caseId": "SYN-TRIAL-072",
+      "candidateLabel": "negative",
+      "candidateExpectation": "no-risk-record-for-target-mechanism",
+      "candidateMechanismType": "装配连接失效",
+      "candidateProcessNode": "扩径准备",
+      "candidateIndicatorScores": {
+        "stratumGrade": 2.0,
+        "facePressure": 1.0,
+        "groundSettlement": 1.0
+      },
+      "candidateExternalRiskComparison": {
+        "likelihoodScore": 1.4,
+        "consequenceScore": 1.0,
+        "riskLevel": "level-2"
+      },
+      "candidateWarningThresholdIds": [],
+      "note": "负例只排除本类机理在该工序形成风险记录，不代表其它风险为零；外部风险评估对照分值不是识别产出。"
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+# 应用 VM：唯一的业务 HTTPS 入口。显式证书，不启用 ACME 自动签发。
+[Unit]
+Description=RiskFlow HTTPS entry (Caddy)
+After=network-online.target riskflow-api.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=riskflow
+Group=riskflow
+EnvironmentFile=/etc/riskflow/secrets/caddy.env
+ExecStart=/usr/local/bin/caddy run --config /opt/riskflow/app/Caddyfile --adapter caddyfile
+ExecReload=/usr/local/bin/caddy reload --config /opt/riskflow/app/Caddyfile --adapter caddyfile
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# 只可读证书与配置；不写业务数据。
+ReadOnlyPaths=/etc/riskflow/tls
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,21 @@
+.rt-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.rt-id-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rt-title {
+  font-weight: 600;
+}
+
+.rt-sub {
+  font-size: 12px;
+  color: var(--text-2);
+}

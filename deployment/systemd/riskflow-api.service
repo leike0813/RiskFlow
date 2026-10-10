@@ -1,0 +1,26 @@
+# 应用 VM：HTTP API。只监听本机回环，由 Caddy 终止 TLS 后转发。
+[Unit]
+Description=RiskFlow HTTP API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=riskflow
+Group=riskflow
+WorkingDirectory=/opt/riskflow/app
+EnvironmentFile=/etc/riskflow/secrets/api.env
+ExecStart=/usr/bin/node /opt/riskflow/app/dist/api/index.js
+Restart=on-failure
+RestartSec=5
+# 运行主体不做迁移、不监听数据库管理端口。
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/riskflow
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

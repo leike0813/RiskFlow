@@ -1,0 +1,121 @@
+{
+  "schemaVersion": "1",
+  "definitionType": "monitoring-warning-threshold",
+  "projectRevisionRef": {
+    "kind": "project-revision",
+    "reference": {
+      "entityId": "project-revision-synthetic-v1",
+      "versionId": "1"
+    }
+  },
+  "configurationSetRef": {
+    "entityId": "configuration-set-synthetic-v1",
+    "versionId": "1"
+  },
+  "content": {
+    "riskMatrixRef": {
+      "entityId": "risk-matrix-synthetic-v1",
+      "versionId": "1"
+    },
+    "thresholds": [
+      {
+        "thresholdId": "threshold-ground-settlement-value",
+        "monitoringIndicator": "地表沉降",
+        "parameterCode": "ground-settlement",
+        "metric": "value",
+        "unit": "mm",
+        "comparison": {
+          "operator": "gte",
+          "boundary": "5"
+        },
+        "warningLevelId": "level-3"
+      },
+      {
+        "thresholdId": "threshold-groundwater-level-value",
+        "monitoringIndicator": "地下水位",
+        "parameterCode": "groundwater-level",
+        "metric": "value",
+        "unit": "m",
+        "comparison": {
+          "operator": "lt",
+          "boundary": "0"
+        },
+        "warningLevelId": "level-3"
+      },
+      {
+        "thresholdId": "threshold-grouting-pressure-value",
+        "monitoringIndicator": "注浆压力",
+        "parameterCode": "grouting-pressure",
+        "metric": "value",
+        "unit": "kPa",
+        "comparison": {
+          "operator": "gt",
+          "boundary": "450"
+        },
+        "warningLevelId": "level-3"
+      },
+      {
+        "thresholdId": "threshold-lining-deformation-value",
+        "monitoringIndicator": "支护结构变形",
+        "parameterCode": "lining-deformation",
+        "metric": "value",
+        "unit": "mm",
+        "comparison": {
+          "operator": "gte",
+          "boundary": "8"
+        },
+        "warningLevelId": "level-3"
+      },
+      {
+        "thresholdId": "threshold-settlement-slope",
+        "monitoringIndicator": "地表沉降",
+        "parameterCode": "ground-settlement",
+        "metric": "short-term-slope",
+        "unit": "mm/s",
+        "comparison": {
+          "operator": "gte",
+          "boundary": "0.5"
+        },
+        "warningLevelId": "level-4"
+      },
+      {
+        "thresholdId": "threshold-shield-attitude-frequency",
+        "monitoringIndicator": "盾构姿态参数",
+        "parameterCode": "shield-attitude-frequency",
+        "metric": "dominant-frequency",
+        "unit": "Hz",
+        "comparison": {
+          "operator": "outside",
+          "lower": "1",
+          "upper": "80"
+        },
+        "warningLevelId": "level-2"
+      },
+      {
+        "thresholdId": "threshold-shield-attitude-value",
+        "monitoringIndicator": "盾构姿态参数",
+        "parameterCode": "shield-attitude-frequency",
+        "metric": "value",
+        "unit": "deg",
+        "comparison": {
+          "operator": "outside",
+          "lower": "0.02",
+          "upper": "0.08"
+        },
+        "warningLevelId": "level-3"
+      },
+      {
+        "thresholdId": "threshold-slurry-pressure-value",
+        "monitoringIndicator": "泥水压力",
+        "parameterCode": "slurry-chamber-pressure",
+        "metric": "value",
+        "unit": "kPa",
+        "comparison": {
+          "operator": "gt",
+          "boundary": "380"
+        },
+        "warningLevelId": "level-3"
+      }
+    ]
+  }
+}

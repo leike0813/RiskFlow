@@ -1,0 +1,27 @@
+# 推理 VM：llama.cpp 与模型。模型权重只读，服务不下载任何权重。
+[Unit]
+Description=RiskFlow model gateway (llama.cpp)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=riskflow-model
+Group=riskflow-model
+EnvironmentFile=/etc/riskflow/secrets/model.env
+ExecStart=/opt/riskflow/inference/llama-server --config /opt/riskflow/inference/server.json
+Restart=on-failure
+RestartSec=10
+# GPU 设备透交给推理 VM 独占：业务 VM 不共享显存。
+DeviceAllow=/dev/dri/renderD128
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/riskflow/inference/models
+MemoryMax=32G
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

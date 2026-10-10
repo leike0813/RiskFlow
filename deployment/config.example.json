@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "configRef": "config-primary-2030-01",
+  "releaseId": "release-2030-01",
+  "instanceId": "app-vm-01",
+  "hosts": [
+    {
+      "role": "inference",
+      "host": "10.0.0.11",
+      "ports": [8081]
+    },
+    {
+      "role": "application",
+      "host": "10.0.0.12",
+      "ports": [8443, 8080]
+    },
+    {
+      "role": "data",
+      "host": "10.0.0.13",
+      "ports": [5432, 6333, 9443]
+    }
+  ],
+  "publicOrigin": "https://riskflow.internal.example",
+  "localRoots": {
+    "applicationRoot": "/opt/riskflow/app",
+    "dataRoot": "/var/lib/riskflow/data",
+    "artifactRoot": "/var/lib/riskflow/artifacts",
+    "logRoot": "/var/log/riskflow"
+  },
+  "database": {
+    "secretFileRefs": [
+      {
+        "secretId": "db-migrator-password",
+        "filePath": "/etc/riskflow/secrets/db-migrator"
+      },
+      {
+        "secretId": "db-app-password",
+        "filePath": "/etc/riskflow/secrets/db-app"
+      },
+      {
+        "secretId": "db-worker-password",
+        "filePath": "/etc/riskflow/secrets/db-worker"
+      },
+      {
+        "secretId": "db-checkpointer-password",
+        "filePath": "/etc/riskflow/secrets/db-checkpointer"
+      },
+      {
+        "secretId": "db-operator-password",
+        "filePath": "/etc/riskflow/secrets/db-operator"
+      }
+    ],
+    "migratorRoleName": "riskflow_migrator_login",
+    "appRoleName": "riskflow_app_login",
+    "workerRoleName": "riskflow_outbox_worker_login",
+    "checkpointerRoleName": "riskflow_checkpointer_login",
+    "deploymentOperatorRoleName": "riskflow_deployment_operator_login"
+  },
+  "transport": {
+    "artifactEndpointRef": "data-vm-artifacts",
+    "connectTimeoutMs": 2000,
+    "idleTimeoutMs": 5000,
+    "totalTimeoutMs": 30000,
+    "metadataMaxBytes": 65536,
+    "maxConcurrentRequests": 8,
+    "shutdownTimeoutMs": 10000
+  },
+  "worker": {
+    "pollMs": 1000,
+    "maxConcurrency": 4,
+    "claimBatchSize": 10,
+    "drainTimeoutMs": 30000,
+    "leaseTimeoutMs": 60000
+  },
+  "health": {
+    "probeTimeoutMs": 2000,
+    "livenessIntervalMs": 10000,
+    "readinessIntervalMs": 5000
+  },
+  "log": {
+    "level": "info",
+    "retentionDays": 30,
+    "maxFileMb": 64
+  },
+  "projectBindings": [
+    {
+      "projectId": "project-rail-01",
+      "policyCatalogRef": "catalog-2030-01"
+    }
+  ]
+}

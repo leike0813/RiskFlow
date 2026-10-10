@@ -1,0 +1,41 @@
+/* 监测序列详情页布局 */
+.pjmon-chart-row {
+  margin-bottom: 16px;
+}
+
+.pjmon-chart-row .card-extra {
+  gap: 12px;
+}
+
+.pjmon-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.pjmon-empty {
+  padding: 24px 0;
+  color: var(--text-2);
+  font-size: 13px;
+  text-align: center;
+}
+
+.pjmon-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.pjmon-title {
+  margin: 0;
+  font-size: 16px;
+  color: var(--text);
+}
+
+.pjmon-evidence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

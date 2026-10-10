@@ -8,9 +8,10 @@ module.exports = {
       to: { path: "^apps/" },
     },
     ...[
-      ["api", "web|worker"],
-      ["web", "api|worker"],
-      ["worker", "api|web"],
+      ["api", "web|worker|desktop"],
+      ["web", "api|worker|desktop"],
+      ["worker", "api|web|desktop"],
+      ["desktop", "api|web|worker"],
     ].map(([from, to]) => ({
       name: `no-${from}-to-app`,
       comment: "应用之间不得互相依赖",

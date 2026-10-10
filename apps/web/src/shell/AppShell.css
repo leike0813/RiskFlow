@@ -154,6 +154,22 @@ button[disabled] {
   min-width: 10rem;
 }
 
+.context-status {
+  align-self: end;
+  color: #8a2b2b;
+  font-size: 0.875rem;
+}
+
+.context-source-form {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.context-source-form input {
+  min-width: 16rem;
+}
+
 .right-dock {
   padding: 1rem;
   border-left: 1px solid #d9e1e8;

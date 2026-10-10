@@ -1,0 +1,13 @@
+.warning-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 4px;
+  color: var(--risk-1);
+  background: var(--risk-1-soft);
+  white-space: nowrap;
+}

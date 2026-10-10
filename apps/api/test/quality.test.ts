@@ -170,7 +170,7 @@ const headers = {
 };
 
 describe("C36 质量查询接线", () => {
-  it("仅在未提供完整 projection port 时由窄端口激活原 projection.query 路由", async () => {
+  it("仅提供窄端口时由它激活原 projection.query 路由", async () => {
     const received: unknown[] = [];
     const app = appFor({
       qualityProjectionQuery: {
@@ -248,7 +248,7 @@ describe("C36 质量查询接线", () => {
     await app.close();
   });
 
-  it("完整 projection port 存在时窄端口不被使用", async () => {
+  it("两个 provider 并存时按 queryType 选择：质量查询走窄口并保留两阶段授权", async () => {
     const narrowCalls: unknown[] = [];
     const fullCalls: unknown[] = [];
     const app = appFor({
@@ -269,6 +269,11 @@ describe("C36 质量查询接线", () => {
           narrowCalls.push(request);
           return { kind: "succeeded", result: qualitySuccess };
         },
+        candidateSourceVersionRefs: async () => ({ kind: "accepted", versions: [] }),
+        queryWithSourceGrants: async (request) => {
+          narrowCalls.push(request);
+          return { kind: "succeeded", result: qualitySuccess };
+        },
       },
     });
     const response = await app.inject({
@@ -276,6 +281,53 @@ describe("C36 质量查询接线", () => {
       url: `/api/v1/projects/${PROJECT_ID}/queries/projection.query`,
       headers,
       payload: queryBody(qualityPayload),
+    });
+    expect(response.statusCode).toBe(200);
+    // D-21：质量查询不再因为完整 projection 存在而被跳过，否则两阶段授权会丢失。
+    expect(narrowCalls.length).toBeGreaterThan(0);
+    expect(fullCalls).toHaveLength(0);
+    await app.close();
+  });
+
+  it("非质量 queryType 仍委派完整 projection port", async () => {
+    const narrowCalls: unknown[] = [];
+    const fullCalls: unknown[] = [];
+    const app = appFor({
+      projection: {
+        query: async (request) => {
+          fullCalls.push(request);
+          return { kind: "succeeded", result: { queryResultRef: qualitySuccess.queryResultRef } };
+        },
+        subscribe: async () => {
+          throw new Error("unused");
+        },
+        export: async () => {
+          throw new Error("unused");
+        },
+      },
+      qualityProjectionQuery: {
+        query: async (request) => {
+          narrowCalls.push(request);
+          return { kind: "succeeded", result: qualitySuccess };
+        },
+        candidateSourceVersionRefs: async () => ({ kind: "accepted", versions: [] }),
+        queryWithSourceGrants: async (request) => {
+          narrowCalls.push(request);
+          return { kind: "succeeded", result: qualitySuccess };
+        },
+      },
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/v1/projects/${PROJECT_ID}/queries/projection.query`,
+      headers,
+      payload: queryBody({
+        queryType: "risk-overview",
+        projectRevisionRef: {
+          kind: "project-revision",
+          reference: { entityId: PROJECT_ID, versionId: "1" },
+        },
+      }),
     });
     expect(response.statusCode).toBe(200);
     expect(fullCalls).toHaveLength(1);

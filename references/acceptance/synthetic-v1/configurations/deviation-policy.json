@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "1",
+  "definitionType": "deviation-policy",
+  "projectRevisionRef": {
+    "kind": "project-revision",
+    "reference": {
+      "entityId": "project-revision-synthetic-v1",
+      "versionId": "1"
+    }
+  },
+  "configurationSetRef": {
+    "entityId": "configuration-set-synthetic-v1",
+    "versionId": "1"
+  },
+  "content": {
+    "policies": [
+      {
+        "policyId": "deviation-absolute",
+        "basis": "absolute",
+        "threshold": "2",
+        "evidenceRequirements": [
+          "monitoring-record"
+        ]
+      },
+      {
+        "policyId": "deviation-level-step",
+        "basis": "risk-level-step",
+        "levelStep": 1,
+        "riskMatrixRef": {
+          "entityId": "risk-matrix-synthetic-v1",
+          "versionId": "1"
+        },
+        "evidenceRequirements": [
+          "assessment-record"
+        ]
+      },
+      {
+        "policyId": "deviation-relative",
+        "basis": "relative",
+        "threshold": "0.1",
+        "minimumBaseline": "0.01",
+        "evidenceRequirements": [
+          "monitoring-record"
+        ]
+      }
+    ]
+  }
+}

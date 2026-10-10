@@ -1,0 +1,503 @@
+{
+  "schemaVersion": "1",
+  "acceptanceCases": [
+    {
+      "acceptanceCaseId": "SYN-ACC-001",
+      "title": "资料文件缺失",
+      "category": "pack-contract",
+      "precondition": "manifest.documents 中存在指向不存在文件的条目。",
+      "mutation": {
+        "target": "manifest.json",
+        "operation": "set-document-file-missing",
+        "value": "SYN-DEV-DOC-LEDGER"
+      },
+      "expectedOutcome": "rejected",
+      "detailCode": "pack-document-missing",
+      "note": "缺文件必须非零退出，不能以文件数量代替材料合格。",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-ACC-002",
+      "title": "评估配置非法",
+      "category": "pack-contract",
+      "precondition": "risk-matrix 的可能性轴分段边界不连续。",
+      "mutation": {
+        "target": "configurations/risk-matrix.json",
+        "operation": "break-band-adjacency",
+        "value": "p-band-3"
+      },
+      "expectedOutcome": "rejected",
+      "detailCode": "configuration-schema-invalid",
+      "note": "11 类配置须逐个通过 AssessmentConfigurationDocumentV1Schema。",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-ACC-003",
+      "title": "同一资料家族跨集合",
+      "category": "split-isolation",
+      "precondition": "试运行集合引用开发集合的 documentId 或 sourceFamily。",
+      "mutation": {
+        "target": "scenarios.json",
+        "operation": "share-document-across-splits",
+        "value": "SYN-DEV-DOC-LEDGER"
+      },
+      "expectedOutcome": "rejected",
+      "detailCode": "split-source-family-leaked",
+      "note": "开发与试运行必须使用互不相交的资料家族与模板家族。",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-ACC-004",
+      "title": "来源定位缺失",
+      "category": "provenance",
+      "precondition": "sources 中某条缺少 locator 或 explicitFact。",
+      "mutation": {
+        "target": "sources.json",
+        "operation": "remove-locator",
+        "value": "STD-002"
+      },
+      "expectedOutcome": "rejected",
+      "detailCode": "source-locator-missing",
+      "note": "来源只登记标识与短摘录，缺定位即不合格。",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-ACC-005",
+      "title": "关键覆盖不足",
+      "category": "coverage",
+      "precondition": "试运行集合中某类机理正例少于五个。",
+      "mutation": {
+        "target": "expected.json",
+        "operation": "remove-positive-cases",
+        "value": "掌子面稳定性失效"
+      },
+      "expectedOutcome": "rejected",
+      "detailCode": "coverage-insufficient",
+      "note": "每类机理试运行至少五正五负，未知项不得充作负例。",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-ACC-006",
+      "title": "输入文件混入候选答案",
+      "category": "label-isolation",
+      "precondition": "scenarios.json 出现 candidateLabel、riskEvent 或 mechanismType 字段。",
+      "mutation": {
+        "target": "scenarios.json",
+        "operation": "inject-expected-field",
+        "value": "candidateLabel"
+      },
+      "expectedOutcome": "rejected",
+      "detailCode": "label-leaked-into-inputs",
+      "note": "被测模型消费的文件不得包含候选预期。",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-ACC-007",
+      "title": "同指标双映射或单位不一致",
+      "category": "configuration-consistency",
+      "precondition": "indicator-field-mapping 中同一 targetIndicatorId 出现两条映射。",
+      "mutation": {
+        "target": "configurations/indicator-field-mapping.json",
+        "operation": "duplicate-target-indicator",
+        "value": "indicator-consequence-settlement"
+      },
+      "expectedOutcome": "rejected",
+      "detailCode": "configuration-mapping-conflict",
+      "note": "单一有效字段映射，且单位保持物理语义。",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-ACC-008",
+      "title": "资料段标识冲突",
+      "category": "evidence",
+      "precondition": "两个用例声明同一 sourceSegmentId。",
+      "mutation": {
+        "target": "scenarios.json",
+        "operation": "duplicate-source-segment",
+        "value": "SEG"
+      },
+      "expectedOutcome": "rejected",
+      "detailCode": "source-segment-duplicated",
+      "note": "资料段标识按用例唯一生成，冲突会破坏证据定位。",
+      "executionStatus": "not-executed"
+    }
+  ],
+  "businessAcceptanceCases": [
+    {
+      "acceptanceCaseId": "SYN-BIZ-MATRIX-01",
+      "title": "风险矩阵映射 0.8/4.0",
+      "category": "risk-matrix",
+      "input": {
+        "likelihoodScore": 0.8,
+        "consequenceScore": 4.0
+      },
+      "deterministicExpectation": {
+        "possibilityBandId": "p-band-1",
+        "consequenceBandId": "c-band-1",
+        "riskLevelId": "level-1"
+      },
+      "evidence": "configurations/risk-matrix.json",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-BIZ-MATRIX-02",
+      "title": "风险矩阵映射 0.8/12.0",
+      "category": "risk-matrix",
+      "input": {
+        "likelihoodScore": 0.8,
+        "consequenceScore": 12.0
+      },
+      "deterministicExpectation": {
+        "possibilityBandId": "p-band-1",
+        "consequenceBandId": "c-band-2",
+        "riskLevelId": "level-2"
+      },
+      "evidence": "configurations/risk-matrix.json",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-BIZ-MATRIX-03",
+      "title": "风险矩阵映射 1.6/4.0",
+      "category": "risk-matrix",
+      "input": {
+        "likelihoodScore": 1.6,
+        "consequenceScore": 4.0
+      },
+      "deterministicExpectation": {
+        "possibilityBandId": "p-band-2",
+        "consequenceBandId": "c-band-1",
+        "riskLevelId": "level-2"
+      },
+      "evidence": "configurations/risk-matrix.json",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-BIZ-MATRIX-04",
+      "title": "风险矩阵映射 1.6/12.0",
+      "category": "risk-matrix",
+      "input": {
+        "likelihoodScore": 1.6,
+        "consequenceScore": 12.0
+      },
+      "deterministicExpectation": {
+        "possibilityBandId": "p-band-2",
+        "consequenceBandId": "c-band-2",
+        "riskLevelId": "level-3"
+      },
+      "evidence": "configurations/risk-matrix.json",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-BIZ-MATRIX-05",
+      "title": "风险矩阵映射 3.2/4.0",
+      "category": "risk-matrix",
+      "input": {
+        "likelihoodScore": 3.2,
+        "consequenceScore": 4.0
+      },
+      "deterministicExpectation": {
+        "possibilityBandId": "p-band-3",
+        "consequenceBandId": "c-band-1",
+        "riskLevelId": "level-3"
+      },
+      "evidence": "configurations/risk-matrix.json",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-BIZ-MATRIX-06",
+      "title": "风险矩阵映射 4.8/100.0",
+      "category": "risk-matrix",
+      "input": {
+        "likelihoodScore": 4.8,
+        "consequenceScore": 100.0
+      },
+      "deterministicExpectation": {
+        "possibilityBandId": "p-band-3",
+        "consequenceBandId": "c-band-2",
+        "riskLevelId": "level-4"
+      },
+      "evidence": "configurations/risk-matrix.json",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-BIZ-MATRIX-07",
+      "title": "风险矩阵映射 1.0/10.0",
+      "category": "risk-matrix",
+      "input": {
+        "likelihoodScore": 1.0,
+        "consequenceScore": 10.0
+      },
+      "deterministicExpectation": {
+        "possibilityBandId": "p-band-2",
+        "consequenceBandId": "c-band-2",
+        "riskLevelId": "level-3"
+      },
+      "evidence": "configurations/risk-matrix.json",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-BIZ-MATRIX-08",
+      "title": "风险矩阵映射 0.999/9.999",
+      "category": "risk-matrix",
+      "input": {
+        "likelihoodScore": 0.999,
+        "consequenceScore": 9.999
+      },
+      "deterministicExpectation": {
+        "possibilityBandId": "p-band-1",
+        "consequenceBandId": "c-band-1",
+        "riskLevelId": "level-1"
+      },
+      "evidence": "configurations/risk-matrix.json",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-BIZ-MATRIX-09",
+      "title": "风险矩阵映射 2.0/9.99",
+      "category": "risk-matrix",
+      "input": {
+        "likelihoodScore": 2.0,
+        "consequenceScore": 9.99
+      },
+      "deterministicExpectation": {
+        "possibilityBandId": "p-band-3",
+        "consequenceBandId": "c-band-1",
+        "riskLevelId": "level-3"
+      },
+      "evidence": "configurations/risk-matrix.json",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-BIZ-MATRIX-10",
+      "title": "风险矩阵映射 5.0/4.0",
+      "category": "risk-matrix",
+      "input": {
+        "likelihoodScore": 5.0,
+        "consequenceScore": 4.0
+      },
+      "deterministicExpectation": {
+        "possibilityBandId": "p-band-3",
+        "consequenceBandId": "c-band-1",
+        "riskLevelId": "level-3"
+      },
+      "evidence": "configurations/risk-matrix.json",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-BIZ-MATRIX-11",
+      "title": "可能性分值高于末带上界",
+      "category": "risk-matrix",
+      "input": {
+        "likelihoodScore": 5.001,
+        "consequenceScore": 4.0
+      },
+      "deterministicExpectation": {
+        "outcome": "rejected",
+        "reasonCode": "matrix-axis-out-of-range"
+      },
+      "evidence": "configurations/risk-matrix.json",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-BIZ-PC-01",
+      "title": "P/C 手算对照",
+      "category": "scoring",
+      "input": {
+        "stratumGrade": "上软下硬复合地层",
+        "stratumScore": 3.5,
+        "facePressureKpa": 72.0,
+        "facePressureScore": 1.0,
+        "groundSettlementMm": 24.0,
+        "groundSettlementScore": 6.0
+      },
+      "deterministicExpectation": {
+        "likelihoodScore": 2.0,
+        "likelihoodFormula": "3.5*4000/10000 + 1.0*6000/10000 = 2.00",
+        "consequenceScore": 6.0,
+        "riskLevelId": "level-3"
+      },
+      "evidence": "rules/structured-scoring-rules.json; configurations/weight-set.json",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-BIZ-UNIT-CONVERSION-IDENTITY",
+      "title": "单位换算保持物理语义",
+      "category": "field-mapping",
+      "input": {
+        "sourceUnit": "mm",
+        "targetUnit": "mm",
+        "conversion": "identity",
+        "actualValue": 24.0
+      },
+      "deterministicExpectation": {
+        "outcome": "accepted",
+        "indicatorValue": 24.0,
+        "reasonCode": null
+      },
+      "evidence": "configurations/indicator-field-mapping.json",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-BIZ-MISSING-INDICATOR-VALUE",
+      "title": "指标实际值缺失",
+      "category": "scoring",
+      "input": {
+        "indicatorId": "indicator-possibility-stratum",
+        "actualValue": null
+      },
+      "deterministicExpectation": {
+        "outcome": "rejected",
+        "reasonCode": "scoring-value-type-mismatch"
+      },
+      "evidence": "rules/structured-scoring-rules.json",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-BIZ-APPLICABILITY-FILTER-CONFLICT",
+      "title": "适用性筛除",
+      "category": "rule-set",
+      "input": {
+        "ruleStratumCondition": "富水中砂层",
+        "metadataStratumCondition": "完整岩体"
+      },
+      "deterministicExpectation": {
+        "outcome": "excluded",
+        "reasonCode": "stratum-condition-mismatch"
+      },
+      "evidence": "configurations/risk-acceptance-threshold.json",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-BIZ-MONITORING-METRIC-COVERAGE",
+      "title": "value/slope/frequency 三特征与联合规则",
+      "category": "monitoring",
+      "input": {
+        "metrics": [
+          "value",
+          "short-term-slope",
+          "dominant-frequency"
+        ],
+        "breached": [
+          "value",
+          "short-term-slope"
+        ]
+      },
+      "deterministicExpectation": {
+        "triggerIndicators": [
+          "threshold-ground-settlement-value",
+          "threshold-settlement-slope"
+        ],
+        "jointRuleOutcome": "hit"
+      },
+      "evidence": "configurations/monitoring-warning-threshold.json; configurations/joint-trigger-policy.json",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-BIZ-MONITORING-SAMPLE-DEDUP",
+      "title": "重复样本去重",
+      "category": "monitoring",
+      "input": {
+        "sourceSampleKey": "SYN-DEV-001-GS",
+        "deliveries": 2
+      },
+      "deterministicExpectation": {
+        "outcome": "deduplicated",
+        "effectiveSampleCount": 1
+      },
+      "evidence": "monitoring.json",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-BIZ-MONITORING-CORRECTION-BATCH",
+      "title": "修正批次",
+      "category": "monitoring",
+      "input": {
+        "relation": "correction",
+        "priorBatchRef": "monitoring-batch"
+      },
+      "deterministicExpectation": {
+        "outcome": "corrected",
+        "priorStatus": "superseded",
+        "historyPreserved": true
+      },
+      "evidence": "monitoring.json",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-BIZ-AGENT-TASK-FAILURE-HUMAN-REVIEW",
+      "title": "必经 Agent 失败转人工",
+      "category": "agent",
+      "input": {
+        "budgetExhausted": true,
+        "fallbackAllowed": false
+      },
+      "deterministicExpectation": {
+        "outcome": "waiting-human-review",
+        "silentlySkipped": false
+      },
+      "evidence": "references/acceptance/synthetic-v1/reports",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-BIZ-PERMISSION-DENIED",
+      "title": "授权不足",
+      "category": "access",
+      "input": {
+        "spatialScopeRef": "unauthorized-scope"
+      },
+      "deterministicExpectation": {
+        "outcome": "rejected",
+        "reasonCode": "AUTHORIZATION_DENIED"
+      },
+      "evidence": "references/acceptance/synthetic-v1/reports",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-BIZ-HISTORICAL-REPLAY",
+      "title": "历史重放",
+      "category": "traceability",
+      "input": {
+        "likelihoodScore": 2.0,
+        "consequenceScore": 6.0,
+        "riskMatrixVersion": "1"
+      },
+      "deterministicExpectation": {
+        "outcome": "level-3",
+        "replayStable": true
+      },
+      "evidence": "configurations/risk-matrix.json",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-BIZ-CALIBRATION-ROLLBACK",
+      "title": "校准版本回滚",
+      "category": "calibration",
+      "input": {
+        "publishedVersion": "2",
+        "rollbackToVersion": "1"
+      },
+      "deterministicExpectation": {
+        "outcome": "rolled-back",
+        "historyPreserved": true,
+        "autoOverwrite": false
+      },
+      "evidence": "configurations/deviation-policy.json",
+      "executionStatus": "not-executed"
+    },
+    {
+      "acceptanceCaseId": "SYN-BIZ-RISK-RECORD-DEDUP",
+      "title": "识别结果合并",
+      "category": "identification",
+      "input": {
+        "sameRiskAcrossProcesses": 2,
+        "sameEvidenceLocator": 1
+      },
+      "deterministicExpectation": {
+        "outcome": "merged",
+        "duplicateSkipped": true
+      },
+      "evidence": "knowledge/risk-mechanism.json",
+      "executionStatus": "not-executed"
+    }
+  ]
+}

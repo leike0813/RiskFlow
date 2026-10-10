@@ -128,6 +128,11 @@ export interface PostgresIdentificationKnowledgeCompositionOptionsV1 {
     PostgresAgentTaskAdapterOptions,
     "db" | "registry" | "transactionUnit" | "referenceGuard" | "authorization" | "artifactStore"
   >;
+  /**
+   * C37 D-20：可选的共享任务定义注册表。缺省时维持原工厂行为（自建 registry）；
+   * 生产组合必须注入同一个实例，使五类 Agent 任务共用同一持久任务集合。
+   */
+  readonly registry?: AgentTaskDefinitionRegistry;
   readonly now?: () => Date;
 }
 
@@ -190,7 +195,7 @@ export const createPostgresIdentificationKnowledgeComposition = (
   }
   const policy = IdentificationKnowledgeValidationPolicyV1Schema.parse(options.validationPolicy);
   const now = options.now ?? (() => new Date());
-  const registry = new AgentTaskDefinitionRegistry();
+  const registry = options.registry ?? new AgentTaskDefinitionRegistry();
   const holders: {
     governance?: PostgresKnowledgeGovernanceAdapter;
     taskAdapter?: PostgresAgentTaskAdapter;

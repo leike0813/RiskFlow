@@ -1,0 +1,95 @@
+/* 风险记录详情（/identification/records/:recordId）：七字段正文 + 记录信封 */
+
+.rdp-header-tags {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.rdp-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.rdp-record-id {
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.rdp-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rdp-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.rdp-field dt {
+  flex: none;
+  width: 96px;
+  font-size: 13px;
+  line-height: 22px;
+  color: var(--text-2);
+}
+
+.rdp-field dd {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.rdp-relations {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+
+.rdp-field-ev {
+  flex-direction: column;
+  align-items: flex-start !important;
+  gap: 4px;
+}
+
+.rdp-confidence {
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.rdp-ref-chip {
+  font-size: 12px;
+  padding: 1px 8px;
+  border-radius: 4px;
+  background: var(--bluegray-soft);
+  color: var(--text);
+}
+
+.rdp-dim {
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.rdp-chain-entry {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}

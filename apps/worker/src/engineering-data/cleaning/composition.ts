@@ -57,6 +57,11 @@ export interface PostgresDataCleaningCompositionOptionsV1 {
   readonly resolveStartAuthorizationInvocation: (
     request: DataCleaningAgentTaskStartRequestV1,
   ) => DataCleaningStartAuthorizationSourceV1 | Promise<DataCleaningStartAuthorizationSourceV1>;
+  /**
+   * C37 D-20：可选的共享任务定义注册表。缺省时维持原工厂行为（自建 registry）；
+   * 生产组合必须注入同一个实例，使 C15/C17/C21/C27/C29 共享同一持久任务集合。
+   */
+  readonly registry?: AgentTaskDefinitionRegistry;
 }
 
 export interface PostgresDataCleaningCompositionV1 {
@@ -96,7 +101,7 @@ export const createPostgresDataCleaningComposition = (
 ): PostgresDataCleaningCompositionV1 => {
   const storeOptions = options.store;
   const access = storeOptions.access;
-  const registry = new AgentTaskDefinitionRegistry();
+  const registry = options.registry ?? new AgentTaskDefinitionRegistry();
   const agentTaskAdapter = new PostgresAgentTaskAdapter({
     ...options.agentTask,
     db: storeOptions.db,

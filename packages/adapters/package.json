@@ -7,13 +7,14 @@
     "@langchain/langgraph-checkpoint-postgres": "1.0.5",
     "@riskflow/contracts": "workspace:*",
     "@riskflow/core": "workspace:*",
-    "kysely": "0.29.5",
-    "pg": "8.23.0",
     "csv-parse": "7.0.2",
     "exceljs": "4.4.0",
     "fast-xml-parser": "5.11.1",
     "fflate": "0.8.3",
-    "pdfjs-dist": "6.3.289"
+    "kysely": "0.29.5",
+    "pdfjs-dist": "6.3.289",
+    "pg": "8.23.0",
+    "zod": "4.5.4"
   },
   "devDependencies": {
     "@types/pg": "8.23.1"
@@ -126,6 +127,10 @@
     "./quality": {
       "types": "./dist/quality/index.d.ts",
       "import": "./dist/quality/index.js"
+    },
+    "./deployment": {
+      "types": "./dist/deployment/index.d.ts",
+      "import": "./dist/deployment/index.js"
     }
   }
 }

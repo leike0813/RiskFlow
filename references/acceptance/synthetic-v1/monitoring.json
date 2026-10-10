@@ -1,0 +1,4079 @@
+{
+  "schemaVersion": "1",
+  "seriesRevisions": [
+    {
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-DEV-MS-ground-settlement",
+          "versionId": "1"
+        }
+      },
+      "seriesId": "SYN-DEV-MS-ground-settlement",
+      "projectId": "synthetic-station-tunnel-project",
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "monitoringObject": "DK12+300 工点 地表沉降测点",
+      "monitoringIndicator": "地表沉降",
+      "parameterCode": "ground-settlement",
+      "canonicalUnit": "mm",
+      "unitConversions": [],
+      "effectivePeriod": {
+        "validFrom": "2026-03-02T00:00:00+08:00"
+      },
+      "recordedAt": "2026-03-02T23:00:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-series-revision-created",
+        "recordedAt": "2026-03-02T23:00:00+08:00"
+      }
+    },
+    {
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-DEV-MS-lining-deformation",
+          "versionId": "1"
+        }
+      },
+      "seriesId": "SYN-DEV-MS-lining-deformation",
+      "projectId": "synthetic-station-tunnel-project",
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "monitoringObject": "DK12+300 工点 支护结构变形测点",
+      "monitoringIndicator": "支护结构变形",
+      "parameterCode": "lining-deformation",
+      "canonicalUnit": "mm",
+      "unitConversions": [],
+      "effectivePeriod": {
+        "validFrom": "2026-03-02T00:00:00+08:00"
+      },
+      "recordedAt": "2026-03-02T23:00:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-series-revision-created",
+        "recordedAt": "2026-03-02T23:00:00+08:00"
+      }
+    },
+    {
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-DEV-MS-groundwater-level",
+          "versionId": "1"
+        }
+      },
+      "seriesId": "SYN-DEV-MS-groundwater-level",
+      "projectId": "synthetic-station-tunnel-project",
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "monitoringObject": "DK12+300 工点 地下水位测点",
+      "monitoringIndicator": "地下水位",
+      "parameterCode": "groundwater-level",
+      "canonicalUnit": "m",
+      "unitConversions": [],
+      "effectivePeriod": {
+        "validFrom": "2026-03-02T00:00:00+08:00"
+      },
+      "recordedAt": "2026-03-02T23:00:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-series-revision-created",
+        "recordedAt": "2026-03-02T23:00:00+08:00"
+      }
+    },
+    {
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-DEV-MS-slurry-chamber-pressure",
+          "versionId": "1"
+        }
+      },
+      "seriesId": "SYN-DEV-MS-slurry-chamber-pressure",
+      "projectId": "synthetic-station-tunnel-project",
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "monitoringObject": "DK12+300 工点 泥水压力测点",
+      "monitoringIndicator": "泥水压力",
+      "parameterCode": "slurry-chamber-pressure",
+      "canonicalUnit": "kPa",
+      "unitConversions": [],
+      "effectivePeriod": {
+        "validFrom": "2026-03-02T00:00:00+08:00"
+      },
+      "recordedAt": "2026-03-02T23:00:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-series-revision-created",
+        "recordedAt": "2026-03-02T23:00:00+08:00"
+      }
+    },
+    {
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-DEV-MS-grouting-pressure",
+          "versionId": "1"
+        }
+      },
+      "seriesId": "SYN-DEV-MS-grouting-pressure",
+      "projectId": "synthetic-station-tunnel-project",
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "monitoringObject": "DK12+300 工点 注浆压力测点",
+      "monitoringIndicator": "注浆压力",
+      "parameterCode": "grouting-pressure",
+      "canonicalUnit": "kPa",
+      "unitConversions": [],
+      "effectivePeriod": {
+        "validFrom": "2026-03-02T00:00:00+08:00"
+      },
+      "recordedAt": "2026-03-02T23:00:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-series-revision-created",
+        "recordedAt": "2026-03-02T23:00:00+08:00"
+      }
+    },
+    {
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-DEV-MS-shield-attitude-frequency",
+          "versionId": "1"
+        }
+      },
+      "seriesId": "SYN-DEV-MS-shield-attitude-frequency",
+      "projectId": "synthetic-station-tunnel-project",
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "monitoringObject": "DK12+300 工点 盾构姿态参数测点",
+      "monitoringIndicator": "盾构姿态参数",
+      "parameterCode": "shield-attitude-frequency",
+      "canonicalUnit": "deg",
+      "unitConversions": [],
+      "effectivePeriod": {
+        "validFrom": "2026-03-02T00:00:00+08:00"
+      },
+      "recordedAt": "2026-03-02T23:00:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-series-revision-created",
+        "recordedAt": "2026-03-02T23:00:00+08:00"
+      }
+    },
+    {
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-ground-settlement",
+          "versionId": "1"
+        }
+      },
+      "seriesId": "SYN-TRIAL-MS-ground-settlement",
+      "projectId": "synthetic-station-tunnel-project",
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "monitoringObject": "DK12+480 工点 地表沉降测点",
+      "monitoringIndicator": "地表沉降",
+      "parameterCode": "ground-settlement",
+      "canonicalUnit": "mm",
+      "unitConversions": [],
+      "effectivePeriod": {
+        "validFrom": "2026-04-18T00:00:00+08:00"
+      },
+      "recordedAt": "2026-04-18T23:00:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-series-revision-created",
+        "recordedAt": "2026-04-18T23:00:00+08:00"
+      }
+    },
+    {
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-lining-deformation",
+          "versionId": "1"
+        }
+      },
+      "seriesId": "SYN-TRIAL-MS-lining-deformation",
+      "projectId": "synthetic-station-tunnel-project",
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "monitoringObject": "DK12+480 工点 支护结构变形测点",
+      "monitoringIndicator": "支护结构变形",
+      "parameterCode": "lining-deformation",
+      "canonicalUnit": "mm",
+      "unitConversions": [],
+      "effectivePeriod": {
+        "validFrom": "2026-04-18T00:00:00+08:00"
+      },
+      "recordedAt": "2026-04-18T23:00:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-series-revision-created",
+        "recordedAt": "2026-04-18T23:00:00+08:00"
+      }
+    },
+    {
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-groundwater-level",
+          "versionId": "1"
+        }
+      },
+      "seriesId": "SYN-TRIAL-MS-groundwater-level",
+      "projectId": "synthetic-station-tunnel-project",
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "monitoringObject": "DK12+480 工点 地下水位测点",
+      "monitoringIndicator": "地下水位",
+      "parameterCode": "groundwater-level",
+      "canonicalUnit": "m",
+      "unitConversions": [],
+      "effectivePeriod": {
+        "validFrom": "2026-04-18T00:00:00+08:00"
+      },
+      "recordedAt": "2026-04-18T23:00:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-series-revision-created",
+        "recordedAt": "2026-04-18T23:00:00+08:00"
+      }
+    },
+    {
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-slurry-chamber-pressure",
+          "versionId": "1"
+        }
+      },
+      "seriesId": "SYN-TRIAL-MS-slurry-chamber-pressure",
+      "projectId": "synthetic-station-tunnel-project",
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "monitoringObject": "DK12+480 工点 泥水压力测点",
+      "monitoringIndicator": "泥水压力",
+      "parameterCode": "slurry-chamber-pressure",
+      "canonicalUnit": "kPa",
+      "unitConversions": [],
+      "effectivePeriod": {
+        "validFrom": "2026-04-18T00:00:00+08:00"
+      },
+      "recordedAt": "2026-04-18T23:00:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-series-revision-created",
+        "recordedAt": "2026-04-18T23:00:00+08:00"
+      }
+    },
+    {
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-grouting-pressure",
+          "versionId": "1"
+        }
+      },
+      "seriesId": "SYN-TRIAL-MS-grouting-pressure",
+      "projectId": "synthetic-station-tunnel-project",
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "monitoringObject": "DK12+480 工点 注浆压力测点",
+      "monitoringIndicator": "注浆压力",
+      "parameterCode": "grouting-pressure",
+      "canonicalUnit": "kPa",
+      "unitConversions": [],
+      "effectivePeriod": {
+        "validFrom": "2026-04-18T00:00:00+08:00"
+      },
+      "recordedAt": "2026-04-18T23:00:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-series-revision-created",
+        "recordedAt": "2026-04-18T23:00:00+08:00"
+      }
+    },
+    {
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-shield-attitude-frequency",
+          "versionId": "1"
+        }
+      },
+      "seriesId": "SYN-TRIAL-MS-shield-attitude-frequency",
+      "projectId": "synthetic-station-tunnel-project",
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "monitoringObject": "DK12+480 工点 盾构姿态参数测点",
+      "monitoringIndicator": "盾构姿态参数",
+      "parameterCode": "shield-attitude-frequency",
+      "canonicalUnit": "deg",
+      "unitConversions": [],
+      "effectivePeriod": {
+        "validFrom": "2026-04-18T00:00:00+08:00"
+      },
+      "recordedAt": "2026-04-18T23:00:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-series-revision-created",
+        "recordedAt": "2026-04-18T23:00:00+08:00"
+      }
+    }
+  ],
+  "sampleArtifacts": [
+    {
+      "schemaVersion": "1",
+      "mediaType": "application/x-ndjson",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-DEV-MS-ground-settlement",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-development-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-DEV-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "productionStrategyRef": {
+        "entityId": "monitoring-production-strategy-v1",
+        "versionId": "1"
+      },
+      "sampleCount": 12
+    },
+    {
+      "schemaVersion": "1",
+      "mediaType": "application/x-ndjson",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-DEV-MS-lining-deformation",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-development-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-DEV-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "productionStrategyRef": {
+        "entityId": "monitoring-production-strategy-v1",
+        "versionId": "1"
+      },
+      "sampleCount": 2
+    },
+    {
+      "schemaVersion": "1",
+      "mediaType": "application/x-ndjson",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-DEV-MS-groundwater-level",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-development-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-DEV-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "productionStrategyRef": {
+        "entityId": "monitoring-production-strategy-v1",
+        "versionId": "1"
+      },
+      "sampleCount": 2
+    },
+    {
+      "schemaVersion": "1",
+      "mediaType": "application/x-ndjson",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-DEV-MS-slurry-chamber-pressure",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-development-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-DEV-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "productionStrategyRef": {
+        "entityId": "monitoring-production-strategy-v1",
+        "versionId": "1"
+      },
+      "sampleCount": 2
+    },
+    {
+      "schemaVersion": "1",
+      "mediaType": "application/x-ndjson",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-DEV-MS-grouting-pressure",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-development-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-DEV-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "productionStrategyRef": {
+        "entityId": "monitoring-production-strategy-v1",
+        "versionId": "1"
+      },
+      "sampleCount": 2
+    },
+    {
+      "schemaVersion": "1",
+      "mediaType": "application/x-ndjson",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-DEV-MS-shield-attitude-frequency",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-development-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-DEV-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "productionStrategyRef": {
+        "entityId": "monitoring-production-strategy-v1",
+        "versionId": "1"
+      },
+      "sampleCount": 2
+    },
+    {
+      "schemaVersion": "1",
+      "mediaType": "application/x-ndjson",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-ground-settlement",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-trial-run-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-TRIAL-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "productionStrategyRef": {
+        "entityId": "monitoring-production-strategy-v1",
+        "versionId": "1"
+      },
+      "sampleCount": 60
+    },
+    {
+      "schemaVersion": "1",
+      "mediaType": "application/x-ndjson",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-lining-deformation",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-trial-run-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-TRIAL-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "productionStrategyRef": {
+        "entityId": "monitoring-production-strategy-v1",
+        "versionId": "1"
+      },
+      "sampleCount": 10
+    },
+    {
+      "schemaVersion": "1",
+      "mediaType": "application/x-ndjson",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-groundwater-level",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-trial-run-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-TRIAL-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "productionStrategyRef": {
+        "entityId": "monitoring-production-strategy-v1",
+        "versionId": "1"
+      },
+      "sampleCount": 10
+    },
+    {
+      "schemaVersion": "1",
+      "mediaType": "application/x-ndjson",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-slurry-chamber-pressure",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-trial-run-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-TRIAL-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "productionStrategyRef": {
+        "entityId": "monitoring-production-strategy-v1",
+        "versionId": "1"
+      },
+      "sampleCount": 10
+    },
+    {
+      "schemaVersion": "1",
+      "mediaType": "application/x-ndjson",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-grouting-pressure",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-trial-run-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-TRIAL-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "productionStrategyRef": {
+        "entityId": "monitoring-production-strategy-v1",
+        "versionId": "1"
+      },
+      "sampleCount": 10
+    },
+    {
+      "schemaVersion": "1",
+      "mediaType": "application/x-ndjson",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-shield-attitude-frequency",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-trial-run-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-TRIAL-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "productionStrategyRef": {
+        "entityId": "monitoring-production-strategy-v1",
+        "versionId": "1"
+      },
+      "sampleCount": 10
+    }
+  ],
+  "batches": [
+    {
+      "monitoringBatchRef": {
+        "kind": "monitoring-batch",
+        "reference": {
+          "entityId": "SYN-DEV-MS-ground-settlement-B01",
+          "versionId": "1"
+        }
+      },
+      "projectId": "synthetic-station-tunnel-project",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-DEV-MS-ground-settlement",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "deliveryKey": "SYN-DEV-MS-ground-settlement-2026-01",
+      "deliveryFingerprint": "423611943bf0270dce52a2afe2b3271874a18c7ba5cb1c26c0968409b33cbafd",
+      "sampleArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "SYN-DEV-MS-ground-settlement-A01",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-development-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-DEV-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "window": {
+        "from": "2026-03-02T00:00:00+08:00",
+        "to": "2026-03-02T23:59:00+08:00"
+      },
+      "relation": {
+        "kind": "original"
+      },
+      "sampleCount": 12,
+      "occurredAt": "2026-03-02T23:00:00+08:00",
+      "recordedAt": "2026-03-02T23:30:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-batch-recorded",
+        "recordedAt": "2026-03-02T23:30:00+08:00"
+      }
+    },
+    {
+      "monitoringBatchRef": {
+        "kind": "monitoring-batch",
+        "reference": {
+          "entityId": "SYN-DEV-MS-lining-deformation-B01",
+          "versionId": "1"
+        }
+      },
+      "projectId": "synthetic-station-tunnel-project",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-DEV-MS-lining-deformation",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "deliveryKey": "SYN-DEV-MS-lining-deformation-2026-01",
+      "deliveryFingerprint": "9a76e53292b2a71ee9f5430e63523a679f4fd6088c86d6d21ed77b631f3e25d2",
+      "sampleArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "SYN-DEV-MS-lining-deformation-A01",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-development-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-DEV-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "window": {
+        "from": "2026-03-02T00:00:00+08:00",
+        "to": "2026-03-02T23:59:00+08:00"
+      },
+      "relation": {
+        "kind": "original"
+      },
+      "sampleCount": 2,
+      "occurredAt": "2026-03-02T23:00:00+08:00",
+      "recordedAt": "2026-03-02T23:30:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-batch-recorded",
+        "recordedAt": "2026-03-02T23:30:00+08:00"
+      }
+    },
+    {
+      "monitoringBatchRef": {
+        "kind": "monitoring-batch",
+        "reference": {
+          "entityId": "SYN-DEV-MS-groundwater-level-B01",
+          "versionId": "1"
+        }
+      },
+      "projectId": "synthetic-station-tunnel-project",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-DEV-MS-groundwater-level",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "deliveryKey": "SYN-DEV-MS-groundwater-level-2026-01",
+      "deliveryFingerprint": "1f5832b5150234a4849e4e443aed041fe04339c382fda9d35b19a887283edd49",
+      "sampleArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "SYN-DEV-MS-groundwater-level-A01",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-development-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-DEV-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "window": {
+        "from": "2026-03-02T00:00:00+08:00",
+        "to": "2026-03-02T23:59:00+08:00"
+      },
+      "relation": {
+        "kind": "original"
+      },
+      "sampleCount": 2,
+      "occurredAt": "2026-03-02T23:00:00+08:00",
+      "recordedAt": "2026-03-02T23:30:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-batch-recorded",
+        "recordedAt": "2026-03-02T23:30:00+08:00"
+      }
+    },
+    {
+      "monitoringBatchRef": {
+        "kind": "monitoring-batch",
+        "reference": {
+          "entityId": "SYN-DEV-MS-slurry-chamber-pressure-B01",
+          "versionId": "1"
+        }
+      },
+      "projectId": "synthetic-station-tunnel-project",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-DEV-MS-slurry-chamber-pressure",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "deliveryKey": "SYN-DEV-MS-slurry-chamber-pressure-2026-01",
+      "deliveryFingerprint": "20d29cec85af0fb525ffdcf0eff86fdb7fefc1b7d4002098cb690fb31ac686b1",
+      "sampleArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "SYN-DEV-MS-slurry-chamber-pressure-A01",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-development-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-DEV-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "window": {
+        "from": "2026-03-02T00:00:00+08:00",
+        "to": "2026-03-02T23:59:00+08:00"
+      },
+      "relation": {
+        "kind": "original"
+      },
+      "sampleCount": 2,
+      "occurredAt": "2026-03-02T23:00:00+08:00",
+      "recordedAt": "2026-03-02T23:30:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-batch-recorded",
+        "recordedAt": "2026-03-02T23:30:00+08:00"
+      }
+    },
+    {
+      "monitoringBatchRef": {
+        "kind": "monitoring-batch",
+        "reference": {
+          "entityId": "SYN-DEV-MS-grouting-pressure-B01",
+          "versionId": "1"
+        }
+      },
+      "projectId": "synthetic-station-tunnel-project",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-DEV-MS-grouting-pressure",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "deliveryKey": "SYN-DEV-MS-grouting-pressure-2026-01",
+      "deliveryFingerprint": "d241130a7b38f96c375bf28f728e364d60b4774cf624528ccc547e07066e833d",
+      "sampleArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "SYN-DEV-MS-grouting-pressure-A01",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-development-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-DEV-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "window": {
+        "from": "2026-03-02T00:00:00+08:00",
+        "to": "2026-03-02T23:59:00+08:00"
+      },
+      "relation": {
+        "kind": "original"
+      },
+      "sampleCount": 2,
+      "occurredAt": "2026-03-02T23:00:00+08:00",
+      "recordedAt": "2026-03-02T23:30:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-batch-recorded",
+        "recordedAt": "2026-03-02T23:30:00+08:00"
+      }
+    },
+    {
+      "monitoringBatchRef": {
+        "kind": "monitoring-batch",
+        "reference": {
+          "entityId": "SYN-DEV-MS-shield-attitude-frequency-B01",
+          "versionId": "1"
+        }
+      },
+      "projectId": "synthetic-station-tunnel-project",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-DEV-MS-shield-attitude-frequency",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "deliveryKey": "SYN-DEV-MS-shield-attitude-frequency-2026-01",
+      "deliveryFingerprint": "c52a79af12e76c1407826806352fb7e8537765a8ac2e9f914c2f0670d1dedac5",
+      "sampleArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "SYN-DEV-MS-shield-attitude-frequency-A01",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-development-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-DEV-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "window": {
+        "from": "2026-03-02T00:00:00+08:00",
+        "to": "2026-03-02T23:59:00+08:00"
+      },
+      "relation": {
+        "kind": "original"
+      },
+      "sampleCount": 2,
+      "occurredAt": "2026-03-02T23:00:00+08:00",
+      "recordedAt": "2026-03-02T23:30:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-batch-recorded",
+        "recordedAt": "2026-03-02T23:30:00+08:00"
+      }
+    },
+    {
+      "monitoringBatchRef": {
+        "kind": "monitoring-batch",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-ground-settlement-B01",
+          "versionId": "1"
+        }
+      },
+      "projectId": "synthetic-station-tunnel-project",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-ground-settlement",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "deliveryKey": "SYN-TRIAL-MS-ground-settlement-2026-01",
+      "deliveryFingerprint": "3c96d1121a697e6818926b3a32300eaba7bbc3981bbe60bbb2ca25284ec0e55d",
+      "sampleArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-ground-settlement-A01",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-trial-run-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-TRIAL-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "window": {
+        "from": "2026-04-18T00:00:00+08:00",
+        "to": "2026-04-18T23:59:00+08:00"
+      },
+      "relation": {
+        "kind": "original"
+      },
+      "sampleCount": 60,
+      "occurredAt": "2026-04-18T23:00:00+08:00",
+      "recordedAt": "2026-04-18T23:30:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-batch-recorded",
+        "recordedAt": "2026-04-18T23:30:00+08:00"
+      }
+    },
+    {
+      "monitoringBatchRef": {
+        "kind": "monitoring-batch",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-lining-deformation-B01",
+          "versionId": "1"
+        }
+      },
+      "projectId": "synthetic-station-tunnel-project",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-lining-deformation",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "deliveryKey": "SYN-TRIAL-MS-lining-deformation-2026-01",
+      "deliveryFingerprint": "037de834598dba7da921b33ad550699526ea99eb249bb6429e893cc1db66c599",
+      "sampleArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-lining-deformation-A01",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-trial-run-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-TRIAL-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "window": {
+        "from": "2026-04-18T00:00:00+08:00",
+        "to": "2026-04-18T23:59:00+08:00"
+      },
+      "relation": {
+        "kind": "original"
+      },
+      "sampleCount": 10,
+      "occurredAt": "2026-04-18T23:00:00+08:00",
+      "recordedAt": "2026-04-18T23:30:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-batch-recorded",
+        "recordedAt": "2026-04-18T23:30:00+08:00"
+      }
+    },
+    {
+      "monitoringBatchRef": {
+        "kind": "monitoring-batch",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-groundwater-level-B01",
+          "versionId": "1"
+        }
+      },
+      "projectId": "synthetic-station-tunnel-project",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-groundwater-level",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "deliveryKey": "SYN-TRIAL-MS-groundwater-level-2026-01",
+      "deliveryFingerprint": "dde6f4a3c859f5ae7bc3742d28830dd3bd1e24d26dbe06a93a56aa5eb5f7b86e",
+      "sampleArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-groundwater-level-A01",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-trial-run-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-TRIAL-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "window": {
+        "from": "2026-04-18T00:00:00+08:00",
+        "to": "2026-04-18T23:59:00+08:00"
+      },
+      "relation": {
+        "kind": "original"
+      },
+      "sampleCount": 10,
+      "occurredAt": "2026-04-18T23:00:00+08:00",
+      "recordedAt": "2026-04-18T23:30:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-batch-recorded",
+        "recordedAt": "2026-04-18T23:30:00+08:00"
+      }
+    },
+    {
+      "monitoringBatchRef": {
+        "kind": "monitoring-batch",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-slurry-chamber-pressure-B01",
+          "versionId": "1"
+        }
+      },
+      "projectId": "synthetic-station-tunnel-project",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-slurry-chamber-pressure",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "deliveryKey": "SYN-TRIAL-MS-slurry-chamber-pressure-2026-01",
+      "deliveryFingerprint": "7f3bc4d9aa13e57da57771ec32e11878f729a995c5289424504aa08b50ea1353",
+      "sampleArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-slurry-chamber-pressure-A01",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-trial-run-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-TRIAL-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "window": {
+        "from": "2026-04-18T00:00:00+08:00",
+        "to": "2026-04-18T23:59:00+08:00"
+      },
+      "relation": {
+        "kind": "original"
+      },
+      "sampleCount": 10,
+      "occurredAt": "2026-04-18T23:00:00+08:00",
+      "recordedAt": "2026-04-18T23:30:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-batch-recorded",
+        "recordedAt": "2026-04-18T23:30:00+08:00"
+      }
+    },
+    {
+      "monitoringBatchRef": {
+        "kind": "monitoring-batch",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-grouting-pressure-B01",
+          "versionId": "1"
+        }
+      },
+      "projectId": "synthetic-station-tunnel-project",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-grouting-pressure",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "deliveryKey": "SYN-TRIAL-MS-grouting-pressure-2026-01",
+      "deliveryFingerprint": "d8eb57f6a2ccb640706b9a7c4b5e7cd8020a2727e814424e56613f3391babaee",
+      "sampleArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-grouting-pressure-A01",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-trial-run-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-TRIAL-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "window": {
+        "from": "2026-04-18T00:00:00+08:00",
+        "to": "2026-04-18T23:59:00+08:00"
+      },
+      "relation": {
+        "kind": "original"
+      },
+      "sampleCount": 10,
+      "occurredAt": "2026-04-18T23:00:00+08:00",
+      "recordedAt": "2026-04-18T23:30:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-batch-recorded",
+        "recordedAt": "2026-04-18T23:30:00+08:00"
+      }
+    },
+    {
+      "monitoringBatchRef": {
+        "kind": "monitoring-batch",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-shield-attitude-frequency-B01",
+          "versionId": "1"
+        }
+      },
+      "projectId": "synthetic-station-tunnel-project",
+      "monitoringSeriesRef": {
+        "kind": "monitoring-series",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-shield-attitude-frequency",
+          "versionId": "1"
+        }
+      },
+      "projectRevisionRef": {
+        "kind": "project-revision",
+        "reference": {
+          "entityId": "project-revision-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "deliveryKey": "SYN-TRIAL-MS-shield-attitude-frequency-2026-01",
+      "deliveryFingerprint": "ca191e29076f85f4dfd21656bf6d4665aa96948e04c4007337948752aeae2a11",
+      "sampleArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "SYN-TRIAL-MS-shield-attitude-frequency-A01",
+          "versionId": "1"
+        }
+      },
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-source-trial-run-v1",
+          "versionId": "1"
+        }
+      },
+      "sourceSegmentSetRef": {
+        "kind": "source-segment-set",
+        "reference": {
+          "entityId": "SYN-TRIAL-SEGMENT-SET-01",
+          "versionId": "1"
+        }
+      },
+      "window": {
+        "from": "2026-04-18T00:00:00+08:00",
+        "to": "2026-04-18T23:59:00+08:00"
+      },
+      "relation": {
+        "kind": "original"
+      },
+      "sampleCount": 10,
+      "occurredAt": "2026-04-18T23:00:00+08:00",
+      "recordedAt": "2026-04-18T23:30:00+08:00",
+      "audit": {
+        "actorId": "synthetic-materials-builder",
+        "action": "monitoring-batch-recorded",
+        "recordedAt": "2026-04-18T23:30:00+08:00"
+      }
+    }
+  ],
+  "samples": [
+    {
+      "sourceSampleKey": "SYN-DEV-001-GS",
+      "sampledAt": "2026-03-02T08:30:00+08:00",
+      "value": 6.4,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-DEV-SEG-001-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-development-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-DEV-002-GS",
+      "sampledAt": "2026-03-02T08:30:00+08:00",
+      "value": 1.8,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-DEV-SEG-002-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-development-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-DEV-003-GS",
+      "sampledAt": "2026-03-02T08:30:00+08:00",
+      "value": 6.4,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-DEV-SEG-003-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-development-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-DEV-004-GS",
+      "sampledAt": "2026-03-02T08:30:00+08:00",
+      "value": 1.8,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-DEV-SEG-004-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-development-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-DEV-005-GS",
+      "sampledAt": "2026-03-02T08:30:00+08:00",
+      "value": 6.4,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-DEV-SEG-005-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-development-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-DEV-006-GS",
+      "sampledAt": "2026-03-02T08:30:00+08:00",
+      "value": 1.8,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-DEV-SEG-006-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-development-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-DEV-007-GS",
+      "sampledAt": "2026-03-02T08:30:00+08:00",
+      "value": 6.4,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-DEV-SEG-007-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-development-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-DEV-008-GS",
+      "sampledAt": "2026-03-02T08:30:00+08:00",
+      "value": 1.8,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-DEV-SEG-008-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-development-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-DEV-009-GS",
+      "sampledAt": "2026-03-02T08:30:00+08:00",
+      "value": 6.4,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-DEV-SEG-009-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-development-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-DEV-010-GS",
+      "sampledAt": "2026-03-02T08:30:00+08:00",
+      "value": 1.8,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-DEV-SEG-010-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-development-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-DEV-011-GS",
+      "sampledAt": "2026-03-02T08:30:00+08:00",
+      "value": 6.4,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-DEV-SEG-011-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-development-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-DEV-012-GS",
+      "sampledAt": "2026-03-02T08:30:00+08:00",
+      "value": 1.8,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-DEV-SEG-012-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-development-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-DEV-002-SCENARIO",
+      "sampledAt": "2026-03-02T08:45:00+08:00",
+      "value": 2.2,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-DEV-SEG-002-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-development-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-DEV-003-SCENARIO",
+      "sampledAt": "2026-03-02T08:45:00+08:00",
+      "value": 9.2,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-DEV-SEG-003-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-development-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-DEV-004-SCENARIO",
+      "sampledAt": "2026-03-02T08:45:00+08:00",
+      "value": 0.03,
+      "unit": "m",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-DEV-SEG-004-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-development-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-DEV-005-SCENARIO",
+      "sampledAt": "2026-03-02T08:45:00+08:00",
+      "value": -0.42,
+      "unit": "m",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-DEV-SEG-005-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-development-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-DEV-006-SCENARIO",
+      "sampledAt": "2026-03-02T08:45:00+08:00",
+      "value": 214.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-DEV-SEG-006-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-development-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-DEV-007-SCENARIO",
+      "sampledAt": "2026-03-02T08:45:00+08:00",
+      "value": 392.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-DEV-SEG-007-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-development-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-DEV-008-SCENARIO",
+      "sampledAt": "2026-03-02T08:45:00+08:00",
+      "value": 196.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-DEV-SEG-008-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-development-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-DEV-009-SCENARIO",
+      "sampledAt": "2026-03-02T08:45:00+08:00",
+      "value": 486.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-DEV-SEG-009-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-development-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-DEV-010-SCENARIO",
+      "sampledAt": "2026-03-02T08:45:00+08:00",
+      "value": 0.035,
+      "unit": "deg",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-DEV-SEG-010-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-development-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-DEV-011-SCENARIO",
+      "sampledAt": "2026-03-02T08:45:00+08:00",
+      "value": 0.062,
+      "unit": "deg",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-DEV-SEG-011-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-development-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-013-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 4.6,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-013-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-014-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 0.8,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-014-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-015-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 12.7,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-015-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-016-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 1.6,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-016-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-017-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 18.3,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-017-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-018-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 2.4,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-018-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-019-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 26.4,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-019-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-020-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 3.1,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-020-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-021-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 34.2,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-021-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-022-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 3.9,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-022-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-023-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 4.6,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-023-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-024-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 0.8,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-024-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-025-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 12.7,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-025-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-026-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 1.6,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-026-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-027-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 18.3,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-027-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-028-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 2.4,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-028-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-029-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 26.4,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-029-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-030-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 3.1,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-030-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-031-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 34.2,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-031-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-032-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 3.9,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-032-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-033-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 4.6,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-033-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-034-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 0.8,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-034-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-035-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 12.7,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-035-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-036-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 1.6,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-036-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-037-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 18.3,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-037-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-038-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 2.4,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-038-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-039-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 26.4,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-039-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-040-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 3.1,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-040-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-041-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 34.2,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-041-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-042-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 3.9,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-042-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-043-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 4.6,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-043-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-044-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 0.8,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-044-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-045-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 12.7,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-045-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-046-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 1.6,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-046-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-047-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 18.3,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-047-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-048-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 2.4,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-048-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-049-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 26.4,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-049-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-050-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 3.1,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-050-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-051-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 34.2,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-051-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-052-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 3.9,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-052-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-053-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 4.6,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-053-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-054-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 0.8,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-054-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-055-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 12.7,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-055-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-056-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 1.6,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-056-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-057-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 18.3,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-057-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-058-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 2.4,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-058-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-059-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 26.4,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-059-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-060-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 3.1,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-060-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-061-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 34.2,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-061-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-062-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 3.9,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-062-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-063-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 4.6,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-063-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-064-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 0.8,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-064-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-065-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 12.7,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-065-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-066-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 1.6,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-066-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-067-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 18.3,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-067-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-068-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 2.4,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-068-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-069-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 26.4,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-069-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-070-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 3.1,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-070-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-071-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 34.2,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-071-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-072-GS",
+      "sampledAt": "2026-04-18T08:52:00+08:00",
+      "value": 3.9,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-072-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-015-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 10.8,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-015-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-018-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 3.6,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-018-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-023-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 5.4,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-023-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-026-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 2.4,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-026-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-034-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 1.1,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-034-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-051-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 23.8,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-051-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-059-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 19.6,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-059-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-062-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 6.2,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-062-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-067-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 14.1,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-067-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-070-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 4.9,
+      "unit": "mm",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-070-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-017-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": -1.05,
+      "unit": "m",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-017-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-020-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 0.05,
+      "unit": "m",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-020-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-025-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": -0.66,
+      "unit": "m",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-025-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-028-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 0.02,
+      "unit": "m",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-028-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-033-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": -0.28,
+      "unit": "m",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-033-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-036-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 0.04,
+      "unit": "m",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-036-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-044-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 0.06,
+      "unit": "m",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-044-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-061-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": -2.15,
+      "unit": "m",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-061-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-069-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": -1.62,
+      "unit": "m",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-069-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-072-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 0.01,
+      "unit": "m",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-072-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-019-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 418.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-019-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-022-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 252.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-022-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-027-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 401.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-027-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-030-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 236.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-030-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-035-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 386.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-035-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-038-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 219.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-038-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-043-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 352.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-043-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-046-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 203.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-046-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-054-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 188.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-054-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-071-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 436.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-071-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-021-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 522.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-021-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-029-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 505.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-029-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-032-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 238.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-032-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-037-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 478.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-037-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-040-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 224.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-040-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-045-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 463.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-045-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-048-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 207.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-048-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-053-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 441.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-053-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-056-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 189.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-056-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-064-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 172.0,
+      "unit": "kPa",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-064-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-014-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 0.035,
+      "unit": "deg",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-014-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-031-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 0.112,
+      "unit": "deg",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-031-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-039-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 0.096,
+      "unit": "deg",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-039-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-042-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 0.066,
+      "unit": "deg",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-042-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-047-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 0.083,
+      "unit": "deg",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-047-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-050-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 0.058,
+      "unit": "deg",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-050-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-055-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 0.071,
+      "unit": "deg",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-055-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-058-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 0.051,
+      "unit": "deg",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-058-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-063-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 0.048,
+      "unit": "deg",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-063-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceSampleKey": "SYN-TRIAL-066-SCENARIO",
+      "sampledAt": "2026-04-18T09:07:00+08:00",
+      "value": 0.042,
+      "unit": "deg",
+      "evidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-TRIAL-SEG-066-LEDGER"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-source-trial-run-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    }
+  ]
+}

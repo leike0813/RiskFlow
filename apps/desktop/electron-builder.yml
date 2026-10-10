@@ -1,0 +1,65 @@
+# C37 D-16：桌面安装包配置。
+#
+# 交付矩阵固定为 Windows 11 x64 / NSIS、Ubuntu 24.04 x64 / AppImage、macOS 14+ arm64 / DMG。
+# 打包走离线介质：electronDist 指向本地 Electron 分发包，构建阶段不联网。
+# 签名材料属于部署输入；缺失时对应平台的正式包视为未完成，不得降级为未签名发布。
+
+appId: cn.riskflow.desktop
+productName: RiskFlow
+copyright: RiskFlow
+
+directories:
+  output: dist
+  buildResources: resources
+
+# 只打进 Electron 主进程产物与连接状态页；不打包 Web 界面源码。
+files:
+  - dist/main.js
+  - dist/config.js
+  - dist/security.js
+  - resources/connection.html
+
+extraMetadata:
+  main: dist/main.js
+
+electronDownload:
+  # 离线构建：Electron 分发包由制备阶段从批准介质放入，不在打包时下载。
+  cache: .electron-cache
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: ${productName}-${version}-win-x64-setup.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  # 内网部署：不引导用户跳转公网下载页。
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  deleteAppDataOnUninstall: false
+
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  category: Office
+  synopsis: RiskFlow 桌面客户端
+  artifactName: ${productName}-${version}-linux-x86_64.AppImage
+
+mac:
+  target:
+    - target: dmg
+      arch:
+        - arm64
+  category: public.app-category.business
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  artifactName: ${productName}-${version}-mac-arm64.${ext}
+
+# 正式包必须签名/公证；缺失材料时由制备程序显式失败，不产出可分发的包。
+afterSign: scripts/verify-signature.mjs

@@ -1,0 +1,102 @@
+{
+  "schemaVersion": "1",
+  "definitionType": "risk-matrix",
+  "projectRevisionRef": {
+    "kind": "project-revision",
+    "reference": {
+      "entityId": "project-revision-synthetic-v1",
+      "versionId": "1"
+    }
+  },
+  "configurationSetRef": {
+    "entityId": "configuration-set-synthetic-v1",
+    "versionId": "1"
+  },
+  "content": {
+    "matrixId": "risk-matrix-synthetic-v1",
+    "matrixVersion": "1",
+    "possibilityAxis": {
+      "bands": [
+        {
+          "bandId": "p-band-1",
+          "lower": "0",
+          "upper": "1"
+        },
+        {
+          "bandId": "p-band-2",
+          "lower": "1",
+          "upper": "2"
+        },
+        {
+          "bandId": "p-band-3",
+          "lower": "2",
+          "upper": "5"
+        }
+      ]
+    },
+    "consequenceAxis": {
+      "bands": [
+        {
+          "bandId": "c-band-1",
+          "lower": "0",
+          "upper": "10"
+        },
+        {
+          "bandId": "c-band-2",
+          "lower": "10",
+          "upper": "100"
+        }
+      ]
+    },
+    "riskLevels": [
+      {
+        "levelId": "level-1",
+        "ordinal": 1
+      },
+      {
+        "levelId": "level-2",
+        "ordinal": 2
+      },
+      {
+        "levelId": "level-3",
+        "ordinal": 3
+      },
+      {
+        "levelId": "level-4",
+        "ordinal": 4
+      }
+    ],
+    "cells": [
+      {
+        "possibilityBandId": "p-band-1",
+        "consequenceBandId": "c-band-1",
+        "riskLevelId": "level-1"
+      },
+      {
+        "possibilityBandId": "p-band-1",
+        "consequenceBandId": "c-band-2",
+        "riskLevelId": "level-2"
+      },
+      {
+        "possibilityBandId": "p-band-2",
+        "consequenceBandId": "c-band-1",
+        "riskLevelId": "level-2"
+      },
+      {
+        "possibilityBandId": "p-band-2",
+        "consequenceBandId": "c-band-2",
+        "riskLevelId": "level-3"
+      },
+      {
+        "possibilityBandId": "p-band-3",
+        "consequenceBandId": "c-band-1",
+        "riskLevelId": "level-3"
+      },
+      {
+        "possibilityBandId": "p-band-3",
+        "consequenceBandId": "c-band-2",
+        "riskLevelId": "level-4"
+      }
+    ]
+  }
+}

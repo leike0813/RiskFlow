@@ -13,6 +13,8 @@ export const POSTGRES_FOUNDATION_ROLES = [
   "riskflow_app",
   "riskflow_outbox_worker",
   "riskflow_checkpointer",
+  // C37 D-19：宿主部署运维主体；只继承运维表权限，不获得业务或迁移能力。
+  "riskflow_deployment_operator",
 ] as const;
 
 const createRole = (role: string) => `

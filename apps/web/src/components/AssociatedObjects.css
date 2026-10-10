@@ -1,0 +1,29 @@
+.ao-empty {
+  padding: 16px 0;
+  color: var(--text-2);
+  font-size: 13px;
+  text-align: center;
+}
+
+.ao-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ao-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.ao-relation {
+  flex: none;
+  color: var(--text-2);
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+}

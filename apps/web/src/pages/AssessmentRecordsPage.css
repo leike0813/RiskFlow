@@ -1,0 +1,45 @@
+.assessment-risk-id {
+  color: var(--text-2);
+  margin-right: 8px;
+  font-size: 12px;
+}
+
+.assessment-versions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.assessment-bottom {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.assessment-history {
+  list-style: none;
+}
+
+.assessment-history-item {
+  display: flex;
+  gap: 12px;
+  padding: 6px 0;
+  font-size: 13px;
+}
+
+.assessment-history-item + .assessment-history-item {
+  border-top: 1px dashed var(--border);
+}
+
+.assessment-history-label {
+  flex: none;
+  width: 130px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.assessment-version-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}

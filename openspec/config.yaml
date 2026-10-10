@@ -1,7 +1,7 @@
 schema: orchestrated-delivery
 
 context: |
-  RiskFlow 当前以中文交付，生产栈为 Node.js 24、pnpm、TypeScript；生产 workspace 仅包含 apps/web、apps/api、apps/worker 与 packages/contracts、packages/core、packages/adapters。
+  RiskFlow 当前以中文交付，生产栈为 Node.js 24、pnpm、TypeScript；生产 workspace 包含 apps/web、apps/desktop、apps/api、apps/worker 与 packages/contracts、packages/core、packages/adapters。
   四层边界固定为数据接入层、知识建模层、智能推理层、应用输出层，跨层通过显式接口契约沟通。
   识别与评估分别沿 RI-S1–RI-S6、RA-S1–RA-S7 追踪；共享 Schema 是唯一事实源，版本、证据定位与审计信息贯穿可重放链路。
   Agent-native 任务仅处理受限语义工作；Schema 校验、P/C 计算、风险矩阵、阈值判断、持久化与版本发布由确定性领域逻辑负责。测试验证稳定可观察行为，不锁定提示词或内部实现。

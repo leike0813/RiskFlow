@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { AgentTaskDefinitionRegistry } from "@riskflow/core/agent-runtime";
+
 import {
   ACCESS_POLICY_REF_V1,
   AccessErrorV1Schema,
@@ -487,6 +489,19 @@ describe("C17 worker identification knowledge composition root", () => {
       ).toThrowError(TypeError);
     }
     expect(() => createPostgresIdentificationKnowledgeComposition(requiredOptions())).not.toThrow();
+  });
+
+  it("C37 D-20: optional shared registry keeps the default and adopts the injected one", () => {
+    const defaultA = createPostgresIdentificationKnowledgeComposition(requiredOptions());
+    const defaultB = createPostgresIdentificationKnowledgeComposition(requiredOptions());
+    // 未注入时各自持有 registry，不应意外共享。
+    expect(defaultA.registry).not.toBe(defaultB.registry);
+
+    const shared = new AgentTaskDefinitionRegistry();
+    const composed = createPostgresIdentificationKnowledgeComposition(
+      requiredOptions({ registry: shared }),
+    );
+    expect(composed.registry).toBe(shared);
   });
 
   it("refuses to construct when the C08 failure evidence reader is not injected", () => {

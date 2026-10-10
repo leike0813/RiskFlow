@@ -1,0 +1,39 @@
+{
+  "schemaVersion": "1",
+  "definitionType": "weight-set",
+  "projectRevisionRef": {
+    "kind": "project-revision",
+    "reference": {
+      "entityId": "project-revision-synthetic-v1",
+      "versionId": "1"
+    }
+  },
+  "configurationSetRef": {
+    "entityId": "configuration-set-synthetic-v1",
+    "versionId": "1"
+  },
+  "content": {
+    "weightSetId": "weight-set-synthetic-v1",
+    "weightSetVersion": "1",
+    "sourceRef": {
+      "entityId": "weight-source-synthetic-v1",
+      "versionId": "1"
+    },
+    "possibilityWeights": [
+      {
+        "indicatorId": "indicator-possibility-excavation",
+        "basisPoints": 6000
+      },
+      {
+        "indicatorId": "indicator-possibility-stratum",
+        "basisPoints": 4000
+      }
+    ],
+    "consequenceWeights": [
+      {
+        "indicatorId": "indicator-consequence-settlement",
+        "basisPoints": 10000
+      }
+    ]
+  }
+}

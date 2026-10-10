@@ -130,7 +130,11 @@ export const PageFrame = <T,>({
       data-page-state={state.kind}
     >
       <header className="page-frame-header">
-        <h2 id={headingId}>{title}</h2>
+        {/*
+          C37 D-17：页面标题是本页唯一的一级标题。应用外壳只保留跳转目标文本，
+          由这里承担 h1，避免同页出现两个 level-1 标题。
+        */}
+        <h1 id={headingId}>{title}</h1>
         <div className="page-actions">{visibleActions.map(renderAction)}</div>
       </header>
       <div id={stateId} className="page-frame-body">

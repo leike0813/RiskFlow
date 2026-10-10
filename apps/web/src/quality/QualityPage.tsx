@@ -255,13 +255,19 @@ export const QualityPage = ({
  * 由服务端按 `projection.query` 判定，页面把拒绝映射为 forbidden。
  * 这里的 render 是不经上下文注入时的独立入口；`App` 的 `routeContent` 会传入实时上下文。
  */
+/**
+ * C37 D-17：C36 质量页改为 `/assessment/quality` 子路径。
+ *
+ * `/assessment` 仍是待评估页的 section 根；质量入口不从七项导航直达，
+ * 只作为评估区的二级入口，因此这里只改 path，不新增导航项。
+ */
 export const createQualityAssessmentRouteContribution = (input: {
   readonly client: C09ClientV1;
   readonly projectRevisionRef: ProjectRevisionRefV1 | null;
 }): WebRouteContributionV1 =>
   Object.freeze({
-    routeId: "assessment.root",
-    path: "/assessment",
+    routeId: "assessment.quality",
+    path: "/assessment/quality",
     title: "质量评估",
     section: "assessment",
     shellKind: "list",

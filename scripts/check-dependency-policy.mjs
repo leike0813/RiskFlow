@@ -12,6 +12,7 @@ export const DEPENDENCY_FIELDS = Object.freeze([
 export const PACKAGE_MANIFESTS = Object.freeze([
   "package.json",
   "apps/web/package.json",
+  "apps/desktop/package.json",
   "apps/api/package.json",
   "apps/worker/package.json",
   "packages/contracts/package.json",

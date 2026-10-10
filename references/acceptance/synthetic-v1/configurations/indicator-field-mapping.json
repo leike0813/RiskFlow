@@ -1,0 +1,69 @@
+{
+  "schemaVersion": "1",
+  "definitionType": "indicator-field-mapping",
+  "projectRevisionRef": {
+    "kind": "project-revision",
+    "reference": {
+      "entityId": "project-revision-synthetic-v1",
+      "versionId": "1"
+    }
+  },
+  "configurationSetRef": {
+    "entityId": "configuration-set-synthetic-v1",
+    "versionId": "1"
+  },
+  "content": {
+    "mappings": [
+      {
+        "mappingId": "mapping-face-pressure",
+        "targetIndicatorId": "indicator-possibility-excavation",
+        "origin": {
+          "kind": "source-field",
+          "documentType": "construction-log",
+          "fieldPath": [
+            "support",
+            "facePressureKpa"
+          ]
+        },
+        "sourceUnit": "kPa",
+        "targetUnit": "kPa",
+        "conversion": {
+          "kind": "identity"
+        }
+      },
+      {
+        "mappingId": "mapping-settlement-value",
+        "targetIndicatorId": "indicator-consequence-settlement",
+        "origin": {
+          "kind": "monitoring-value",
+          "monitoringIndicator": "地表沉降",
+          "parameterCode": "ground-settlement",
+          "metric": "value"
+        },
+        "sourceUnit": "mm",
+        "targetUnit": "mm",
+        "conversion": {
+          "kind": "identity"
+        }
+      },
+      {
+        "mappingId": "mapping-stratum-grade",
+        "targetIndicatorId": "indicator-possibility-stratum",
+        "origin": {
+          "kind": "source-field",
+          "documentType": "geology-report",
+          "fieldPath": [
+            "strata",
+            "layer",
+            "grade"
+          ]
+        },
+        "sourceUnit": "1",
+        "targetUnit": "1",
+        "conversion": {
+          "kind": "identity"
+        }
+      }
+    ]
+  }
+}

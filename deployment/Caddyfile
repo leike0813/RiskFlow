@@ -1,0 +1,53 @@
+# C37 D-16：应用 VM 的唯一业务 HTTPS 入口。
+#
+# 约束（design D-16）：
+# - 显式证书与私钥，关闭 automatic HTTPS / ACME，不在部署期联网签发；
+# - 页面、API 与 SSE 同源，SSE 不缓冲；
+# - `/api/*` 永不回落 SPA：API 404 必须仍是 404 JSON，不能被 index.html 吞掉；
+# - 其余合法业务路由走静态资源 + SPA fallback，生产深链刷新可用；
+# - 私有 CA 通过系统信任链部署，客户端不接受证书豁免。
+
+{
+	# 不自动签发：证书由宿主流程预置在 /etc/riskflow/tls。
+	auto_https off
+	admin off
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+{
+	order riskflow_first
+}
+
+(common) {
+	encode zstd gzip
+
+	# 生产 CSP：禁止任意外域与 eval；ECharts 走 Canvas，不依赖内联脚本。
+	header {
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'"
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+}
+
+riskflow.internal.example {
+	tls /etc/riskflow/tls/fullchain.pem /etc/riskflow/tls/privkey.pem
+
+	# API 与 SSE：同源转发；SSE 必须关闭缓冲，否则事件会被攒批。
+	@api path /api/*
+	handle @api {
+		reverse_proxy 127.0.0.1:8080 {
+			flush_interval -1
+		}
+	}
+
+	# 业务路由与静态资源：深链刷新回落到同一 index.html。
+	handle {
+		root * /opt/riskflow/app/web
+		try_files {path} /index.html
+		file_server
+	}
+}

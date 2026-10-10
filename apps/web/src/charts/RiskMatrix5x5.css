@@ -1,0 +1,116 @@
+.mx-wrap {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.mx-y-title {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-2);
+  align-self: center;
+}
+
+.mx-body {
+  flex: 1;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.mx-y-labels {
+  display: grid;
+  grid-template-rows: repeat(5, 1fr);
+  font-size: 12px;
+  color: var(--text-2);
+  align-items: center;
+}
+
+.mx-y-labels span {
+  display: flex;
+  align-items: center;
+}
+
+.mx-grid-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.mx-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  grid-template-rows: repeat(5, 1fr);
+  gap: 4px;
+}
+
+.mx-cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  min-height: 32px;
+}
+
+.mx-cell--1 {
+  background: var(--risk-1);
+  color: #fff;
+}
+
+.mx-cell--2 {
+  background: var(--risk-2);
+  color: #fff;
+}
+
+.mx-cell--3 {
+  background: var(--risk-3-soft);
+  color: #8a6604;
+  border: 1px solid var(--risk-3);
+}
+
+.mx-cell--4 {
+  background: var(--risk-4);
+  color: #fff;
+}
+
+.mx-cell--hl {
+  outline: 3px solid var(--risk-1-dark);
+  outline-offset: -1px;
+  z-index: 1;
+}
+
+.mx-current {
+  position: absolute;
+  top: -9px;
+  right: -4px;
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--risk-1-dark);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+.mx-x-labels {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+  text-align: center;
+}
+
+.mx-x-title {
+  margin-top: 4px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-2);
+}

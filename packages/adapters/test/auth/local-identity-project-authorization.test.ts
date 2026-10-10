@@ -1,6 +1,6 @@
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { SpatialScopeRefV1 } from "@riskflow/contracts/ports";
+import type { AuthorizationContextV1, SpatialScopeRefV1 } from "@riskflow/contracts/ports";
 
 import {
   activePasswordDerivations,
@@ -16,6 +16,11 @@ import {
 } from "../../src/auth/index.js";
 import type { PostgresLocalIdentityAccess } from "../../src/auth/index.js";
 import { startAuthPostgresFixture, type AuthPostgresFixture } from "./fixture.js";
+import {
+  createDeploymentAuthorizationAdapterV1,
+  DEPLOYMENT_AUTHORIZATION_ERROR_V1,
+} from "../../src/auth/deployment-authorization.js";
+import { createPostgresRuntime } from "../../src/postgres/pool.js";
 
 const ADMIN_PASSWORD = "admin-password-v1";
 const USER_PASSWORD = "user-password-v1";
@@ -2045,5 +2050,94 @@ describe.sequential("local identity and project authorization", () => {
         requestedSourceVersionRefs: [],
       }),
     ).rejects.toMatchObject({ details: { code: "SESSION_EXPIRED" } });
+  }, 180_000);
+
+  it("C37 因果授权：受理签发下游分支并耐久关联，后台按原身份复验", async () => {
+    const runtime = createPostgresRuntime(fixture!.app, "riskflow_app");
+    const issued = new Map<string, AuthorizationContextV1>();
+    const adapter = createDeploymentAuthorizationAdapterV1({
+      db: runtime.db,
+      access: access!,
+      issuedContextReader: {
+        read: ({ invocationId, branch }) => issued.get(`${invocationId}/${branch}`),
+      },
+      now: clock.now,
+    });
+    try {
+      // 会话超时用例会推进共享时钟，这里必须重新登录取得有效会话。
+      const login = await access!.login({
+        kind: "login",
+        loginAttemptId: "login-c37-issue",
+        loginName: "user001",
+        password: USER_PASSWORD_CHANGED,
+      });
+      const sessionToken = login.restricted
+        ? (
+            await access!.changePassword({
+              kind: "change-password",
+              sessionToken: login.sessionToken,
+              newPassword: `${USER_PASSWORD_CHANGED}-c37`,
+            })
+          ).sessionToken
+        : login.sessionToken;
+      const root = await access!.authorize({
+        invocation: { kind: "human-session", sessionToken },
+        invocationId: "invocation-c37-root",
+        projectId: "project-a",
+        branch: "engineering-data.register-source-delivery",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      });
+
+      // 受理阶段：用真实会话为固定下游分支签发，并记录到关联表。
+      const contexts = await adapter.issueDownstreamContexts({
+        root: root.context,
+        sessionToken,
+        invocationId: "invocation-c37-issue",
+        branches: ["projection.query"],
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      });
+      expect(contexts).toHaveLength(1);
+      issued.set("invocation-c37-issue/projection.query", contexts[0]!);
+
+      const row = await fixture!.adminPool.query<{ count: string }>(
+        "SELECT COUNT(*)::text AS count FROM business.deployment_causal_authorizations WHERE project_id = $1 AND invocation_id = $2",
+        ["project-a", "invocation-c37-issue"],
+      );
+      expect(row.rows[0]!.count).toBe("1");
+
+      // 后台阶段：按目标分支取已关联上下文并复验当前权限。
+      const resolved = await adapter.resolveDownstreamContext({
+        root: root.context,
+        branch: "projection.query",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+        causalRunRef: {
+          kind: "workflow-run",
+          reference: { entityId: "run-c37", versionId: "v1" },
+        },
+      });
+      expect(resolved.actorId).toBe(root.context.actorId);
+      expect(resolved.projectId).toBe(root.context.projectId);
+
+      // 没有关联的分支必须失败：不得重构令牌或借用其它分支。
+      await expect(
+        adapter.resolveDownstreamContext({
+          root: root.context,
+          branch: "risk-identification.read",
+          requestedSpatialScopeRefs: [],
+          requestedSourceVersionRefs: [],
+          causalRunRef: {
+            kind: "workflow-run",
+            reference: { entityId: "run-c37", versionId: "v1" },
+          },
+        }),
+      ).rejects.toMatchObject({
+        code: DEPLOYMENT_AUTHORIZATION_ERROR_V1.notAssociated,
+      });
+    } finally {
+      await runtime.close();
+    }
   }, 180_000);
 });

@@ -6,6 +6,7 @@
     { "path": "./packages/adapters" },
     { "path": "./apps/api" },
     { "path": "./apps/worker" },
-    { "path": "./apps/web" }
+    { "path": "./apps/web" },
+    { "path": "./apps/desktop" }
   ]
 }

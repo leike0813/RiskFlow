@@ -42,7 +42,7 @@
 | 把 v2 或其 harness 接入生产路径、或声明已实现 C32–C35 的任何能力 | `openspec-delivery-roadmap.md:592`、`:198` |
 | 用 Mock 后端冒充交付、把 v2 作为验收依据 | `AGENTS.md:125`；roadmap:186 |
 | 修改 v1（`demo/` 顶层）的任何文件 | 决策 2：v1 冻结为零件目录 |
-| 做 Electron 工程（主进程、preload、IPC、打包） | 决策 4 只要求设计层面预留 Electron 约束 |
+| 在本原型中做 Electron 工程（主进程、preload、IPC、打包） | 正式客户端由 C37 在 apps/desktop 交付 |
 | 让审阅设施依赖泄漏进 `src/` | 见 §5.7 依赖边界 |
 
 交付说明中必须显式标注这是阶段性设计原型。
@@ -98,7 +98,7 @@ v1 同时保留为审阅对照物：其预览服务（`capture.sh` 用 5319 端�
 
 ### 4.3 路由必须可换实现
 
-生产 `WebHistoryAdapterV1`（`routes.ts:296-351`）已把历史适配抽象出来。v2 沿用该形状，并同时提供 **memory / hash / history** 三种模式可切换。这不是为 Electron 单独加戏——它同时解决了原型在 `file://` 下无法用 history 路由的问题，也是审阅 Harness 深链寻址的基础。
+生产 `WebHistoryAdapterV1`（`routes.ts:296-351`）已把历史适配抽象出来。v2 沿用该形状，并提供 **memory / hash / history** 三种模式，支持原型 `file://` 浏览和审阅 Harness 深链。正式 Electron 加载 HTTPS，沿 Web 路由运行；原型的多模式适配不成为生产迁移要求。
 
 ### 4.4 图表的处理
 
@@ -160,7 +160,7 @@ v2 用 React 19 与生产对齐。特别注意 v1 的 `icons.tsx:23` 用了 `Rec
 
 ### 5.5 视口与 Electron 安全区
 
-控制台提供宽度预设（1920 / 1440 / 1280 / 64rem 响应式下限 / 声明的最小窗口尺寸），以及 Electron 可拖拽安全区的叠加显示开关，用于审阅 §6 的窗口约束是否成立。
+控制台提供宽度预设（1920 / 1440 / 1280 / 64rem 响应式下限 / 声明的最小窗口尺寸），用于审阅 §6 的窗口约束。原型可保留自绘标题栏安全区叠加工具，C37 首期使用系统标题栏，不依赖该审阅设施。
 
 ### 5.6 截图与 v1 对照
 
@@ -191,21 +191,21 @@ harness 必须把依赖分成两层，否则「生产可移植子集」立刻破
 
 ## 6. Electron 前瞻约束
 
-Electron 前端目前不在实现图内，但决策 4 要求兼顾。下列约束**现在做几乎零成本，事后补代价很高**，因此写进 v2 的设计要求。
+Electron 客户端已纳入 C37，采用加载内网 HTTPS 的薄客户端方案，完整 UI 归 `apps/web`。原型本身不实现 Electron；正式交付遵循[桌面客户端与多终端架构](desktop-client-architecture.md)，下列约束用于界面迁移。
 
 | 约束 | 设计要求 |
 |---|---|
 | 窗口可缩放 | 放弃 v1 的 `viewport width=1920` 硬钉做法；以 64rem 为响应式下限（对齐生产 `AppShell.css:270`），并声明最小窗口尺寸 |
-| 自绘标题栏 | 顶部预留可拖拽安全区，交互控件不得放入该区域；品牌与上下文信息放在可拖拽区的左右两端 |
+| 标题栏 | 首期使用系统原生标题栏；若以后选择自绘，另行验证拖拽安全区和平台可访问性 |
 | 无浏览器外框 | 页面内必须自带前进/后退/面包屑等导航可视线索，不依赖浏览器按钮 |
-| 路由模式 | 见 §4.3，必须支持 hash / memory |
-| 资源路径 | 全部相对路径，不得假设站点根 `/`；构建 base 设为相对 |
+| 路由模式 | 复用 Web 的 HTTPS 路由和深链刷新，不因 Electron 引入本地 file 页面或强制 hash / memory |
+| 资源路径 | 页面、静态资源、API 与 SSE 使用部署的同一 origin，不加载公网 CDN；无需为本地安装包修改 Web base |
 | 不依赖弹窗 | 禁止 `window.open` 与 `target="_blank"`；外部跳转走显式处理位 |
 | 导出即一等公民 | P-AU-01 报告导出设计成独立界面，不依赖浏览器打印对话框 |
-| 分辨率无关 | 图表用 SVG；位图仅用于图标且需多倍图 |
-| 离线 | 原型本身即离线，天然满足 |
+| 分辨率无关 | 图表适应窗口与缩放，沿已批准图表实现验证，不因桌面交付强制更换渲染器 |
+| 离线 | 服务端与安装包可在无公网环境交付；客户端仍须连接内网服务，原型可离线不证明正式业务可脱离服务器 |
 
-这些约束同时写入设计规格文档，作为将来 Electron change 的输入。
+这些约束进入 C37 的 Web 迁移和桌面验收；移动端仍需单独适配与验收。
 
 ---
 
@@ -310,7 +310,7 @@ C10 的五类骨架（`WebShellKindV1 = list | detail | run | governance | revie
 | G2 契约字段 | v1 fixture 与 `packages/contracts` 的字段级偏差：关系三元组、`compositeConfidence{value,basis}`、P/C 与等级归属、`externalRiskEventId` 二选一、评估记录缺 `weightVersion`/`indicatorResults`/`kind`、预警 `triggerType` 单值 vs 数组、缺 `evidenceReferences`/`audit` |
 | G3 未建能力 | 部分可用 `available\|partial\|unavailable`、证据脱敏 `full\|redacted`、Agent 任务信封（taskType / 工具策略 / 预算策略 / 类型化增量 / 确定性校验）、治理生命周期五分支与版本 diff、`I0–I9`/`A0–A9` 运行阶段、双时间查询、报告与审计证据包导出 |
 | G4 归属待定 | P-OV-01、P-RV-01、P-RV-02、P-AU-01 的 change 双写 |
-| G5 依赖决策 | 图表库（属 C34 dependency checkpoint）、路由库是否需要、Electron 路由模式 |
+| G5 依赖决策 | C37 迁移所需图表/路由依赖，以及 Electron 精确版本、打包工具和平台验收；HTTPS 路由形态已明确 |
 | G6 规格空白 | 可访问性无规格依据，只能对齐生产 C10 实现 |
 
 **契约字段的处理原则**：v2 的 fixture **以 `packages/contracts` 为准重写**，不沿用 v1 的字段形状。这是 v2 相对 v1 最实质的改进之一，也是「生产可移植」的前提。

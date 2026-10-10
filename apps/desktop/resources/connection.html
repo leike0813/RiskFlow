@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'"
+    />
+    <title>RiskFlow 连接状态</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 3rem auto;
+        max-width: 34rem;
+        line-height: 1.6;
+      }
+      button {
+        padding: 0.5rem 1rem;
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      无特权的本地连接状态页：只说明连接状态并提供显式重试。
+      它不携带凭据、不调用宿主能力、不展示任何业务数据。
+    -->
+    <h1>暂时无法连接 RiskFlow</h1>
+    <p id="message">请确认已接入甲方内网，且应用服务器证书已被本机信任。</p>
+    <button id="retry" type="button">重试连接</button>
+    <script>
+      // 说明文本与重试目标都由主进程通过查询串注入；页面本身不含任何凭据。
+      const params = new URLSearchParams(window.location.search);
+      const message = document.getElementById("message");
+      if (params.get("message")) message.textContent = params.get("message");
+      document.getElementById("retry").addEventListener("click", () => {
+        const target = params.get("retry");
+        if (target) window.location.href = target;
+      });
+    </script>
+  </body>
+</html>

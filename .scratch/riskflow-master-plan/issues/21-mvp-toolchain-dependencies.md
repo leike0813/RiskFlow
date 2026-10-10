@@ -22,11 +22,15 @@ Blocked by: 20, 26
 - 已确认可观测性基线：Pino 输出结构化 JSON 并统一携带请求标识、流程运行标识和 Agent 任务标识；`prom-client` 暴露 API、Worker、Outbox、检索与模型调用的基础指标；OpenTelemetry Node SDK + OTLP exporter 串联 API、Worker、LangGraph 和外部服务调用。遥测数据只发送到私有部署组件，未配置 Collector 时可关闭链路导出且不得影响业务流程；PostgreSQL 中的业务审计记录不由普通日志或链路追踪替代。
 - 面向用户的“日志”采用结构化事件的派生活动视图：底层保存稳定事件代码、结构化参数、级别、状态、业务对象引用、发生时间和消息模板版本，前端或查询适配器将其渲染为易懂的中文人类语言。派生视图不得直接展示 Pino 原始日志，不得暴露堆栈、提示词、密钥、模型内部过程或内部异常细节；模板文案调整不改变底层事实与审计链。
 
+## 当前客户端设计
+
+2026-10-08 用户确认采用 Electron 加载内网 HTTPS 页面。目标工作区增加 `apps/desktop`，形成四个应用与三个共享包；当前六成员实现由 C37 更新，仍使用根 pnpm 单一锁文件与依赖治理，不保留独立 Electron npm 工程。完整 UI 归 `apps/web`，Desktop 不导入 Web 源码或复制业务逻辑。客户端与服务器工具链、运行时及发布身份分别核验；C37 冻结 Electron 44.7.0、electron-builder 26.15.3，目标为 Windows 11 x64、Ubuntu 24.04 x64 与 macOS 14+ arm64，分别验证真实安装、信任与运行。本记录 Comments 保留原确认过程，当前客户端边界以[桌面客户端与多终端架构](../prototypes/desktop-client-architecture.md)为准。
+
 ## Answer
 
-MVP 采用一个 TypeScript monorepo：pnpm workspace、TypeScript project references、单一精确锁文件；目录固定为三个可部署应用 `apps/web`、`apps/api`、`apps/worker`，以及三个深层共享模块 `packages/contracts`、`packages/core`、`packages/adapters`。Fastify API 只承担传输与权限入口，LangGraph、Outbox 投影和异步任务由 Worker 执行；API 与 Worker 直接复用领域模块和契约，不经内部 REST 或 MCP 互调。六个领域模块保留在 `core` 内，通过公开接口隔离。
+MVP 采用一个 TypeScript monorepo：pnpm workspace、TypeScript project references、单一精确锁文件；目标目录包含 `apps/web`、`apps/desktop`、`apps/api`、`apps/worker` 四个应用，以及 `packages/contracts`、`packages/core`、`packages/adapters` 三个深层共享模块。Desktop 只加载内网 HTTPS，业务 UI 统一由 Web 提供。Fastify API 只承担传输与权限入口，LangGraph、Outbox 投影和异步任务由 Worker 执行；API 与 Worker 直接复用领域模块和契约，不经内部 REST 或 MCP 互调。六个领域模块保留在 `core` 内，通过公开接口隔离。
 
-前端统一采用 React 19、Vite SPA、React Router Data Mode、TanStack Query、Ant Design、React Hook Form + Zod resolver 和 Apache ECharts。Ant Design Table 与 ECharts graph 覆盖 MVP 表格和只读关系图；ECharts 经项目自有适配模块调用。现有 `demo` 只迁移可复用页面与视觉语言，不保留第二套包管理、构建或运行基线。专用数据网格、Cytoscape.js、额外状态库、MUI、Next.js、WebSocket 等只有在出现已量化且现有基线无法满足的需求时才重新评估。
+前端沿已归档规格与现有实现复用 React 19、Vite SPA、页面壳、统一 HTTP/SSE 客户端和确认交互；原规划列出的 Router、表单、组件和图表候选不等于已经安装的生产依赖。C37 迁移复用 React Router 6.30.6 与 ECharts 5.6.0，逐项冻结版本、用途和退出条件，不为迁移补装整套候选框架。现有 `demo` 只迁移真实业务接线与可复用视觉语言，不保留第二套生产包管理、构建或运行基线。专用数据网格、额外状态库或服务端渲染框架只在出现已量化且现有基线无法满足的需求时评估。
 
 服务端统一采用 Node.js 24 LTS、Fastify 5、Zod 4 与 Pino。`packages/contracts` 的 Zod Schema 是 Web、API、Worker 之间的运行时契约 SSOT，TypeScript 类型通过 `z.infer` 派生；OpenAPI 与 JSON Schema 只作为派生产物。持久化记录、领域事件和 LangGraph DTO 携带显式 `schemaVersion`，不兼容变更通过新增版本和边界迁移适配器处理，不改写历史记录。
 

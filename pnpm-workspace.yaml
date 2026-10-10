@@ -1,5 +1,6 @@
 packages:
   - apps/web
+  - apps/desktop
   - apps/api
   - apps/worker
   - packages/contracts
@@ -8,8 +9,11 @@ packages:
 
 allowBuilds:
   cpu-features: false
+  electron-winstaller: false
+  electron: true
   protobufjs: false
   ssh2: false
 
 minimumReleaseAgeExclude:
   - "@langchain/langgraph@1.4.17"
+  - electron@44.7.0

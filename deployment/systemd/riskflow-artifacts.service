@@ -1,0 +1,28 @@
+# 数据 VM：C04 工件流服务。仅接受应用 VM 的 mTLS 调用。
+[Unit]
+Description=RiskFlow artifact stream service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=riskflow
+Group=riskflow
+WorkingDirectory=/opt/riskflow/app
+EnvironmentFile=/etc/riskflow/secrets/artifacts.env
+ExecStart=/usr/bin/node /opt/riskflow/app/scripts/serve-artifacts.mjs
+Restart=on-failure
+RestartSec=5
+# 有限关闭期限：到期即终止，运维必须据此报告未完成而非声称停写。
+TimeoutStopSec=30
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/riskflow/artifacts /var/log/riskflow
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

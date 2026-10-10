@@ -1,0 +1,24 @@
+# 数据 VM：PostgreSQL。只由数据 VM 内的应用主体连接，不对管理网暴露。
+[Unit]
+Description=RiskFlow PostgreSQL
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=postgres
+Group=postgres
+EnvironmentFile=/etc/riskflow/secrets/postgres.env
+ExecStart=/usr/lib/postgresql/18/bin/postgres -D /var/lib/riskflow/postgres -c config_file=/etc/riskflow/postgres.conf
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/riskflow/postgres
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

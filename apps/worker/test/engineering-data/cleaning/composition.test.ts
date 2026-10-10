@@ -14,7 +14,10 @@ import {
   type AuthorizationVerificationRequestV1,
   type LocalIdentityAccessV1,
 } from "@riskflow/core/access";
-import { AgentTaskEnvelopeV1Schema } from "@riskflow/core/agent-runtime";
+import {
+  AgentTaskDefinitionRegistry,
+  AgentTaskEnvelopeV1Schema,
+} from "@riskflow/core/agent-runtime";
 import {
   DataCleaningPolicyV1Schema,
   type DataCleaningPolicyV1,
@@ -197,12 +200,15 @@ interface StartHarnessV1 {
  * 用最小替身组合 C15 生产工厂：C06 会话授权由本地 fake 扮演，C03 事务边界记录 C08 命令后
  * 以真实失败收口，因此断言只落在授权请求、C08 任务信封和 adapter 的 verifier 调用上。
  */
-const startHarness = (behavior: {
-  readonly resolve: (
-    request: DataCleaningAgentTaskStartRequestV1,
-  ) => DataCleaningStartAuthorizationSourceV1 | Promise<DataCleaningStartAuthorizationSourceV1>;
-  readonly authorize: (request: AuthorizationRequestV1) => AuthorizationContextV1;
-}): StartHarnessV1 => {
+const startHarness = (
+  behavior: {
+    readonly resolve: (
+      request: DataCleaningAgentTaskStartRequestV1,
+    ) => DataCleaningStartAuthorizationSourceV1 | Promise<DataCleaningStartAuthorizationSourceV1>;
+    readonly authorize: (request: AuthorizationRequestV1) => AuthorizationContextV1;
+  },
+  registry?: AgentTaskDefinitionRegistry,
+): StartHarnessV1 => {
   const authorizeRequests: AuthorizationRequestV1[] = [];
   const verifyRequests: AuthorizationVerificationRequestV1[] = [];
   const transactionCommands: AtomicCommandV1[] = [];
@@ -253,9 +259,33 @@ const startHarness = (behavior: {
     },
     agentTask: { now: () => NOW },
     resolveStartAuthorizationInvocation: behavior.resolve,
+    ...(registry === undefined ? {} : { registry }),
   });
   return { composition, authorizeRequests, verifyRequests, transactionCommands };
 };
+
+describe("C15 共享任务定义注册表（C37 D-20）", () => {
+  it("缺省注入时保持原工厂行为：自建 registry 且不共享", () => {
+    const harness = startHarness({
+      resolve: () => ({ kind: "human-session", sessionToken: START_SESSION_TOKEN }),
+    });
+    expect(harness.composition.registry).toBeDefined();
+    const other = startHarness({
+      resolve: () => ({ kind: "human-session", sessionToken: START_SESSION_TOKEN }),
+    });
+    // 未注入时两个工厂各持一个 registry，不应意外共享。
+    expect(other.composition.registry).not.toBe(harness.composition.registry);
+  });
+
+  it("注入共享 registry 时两处组合指向同一实例", () => {
+    const shared = new AgentTaskDefinitionRegistry();
+    const harness = startHarness(
+      { resolve: () => ({ kind: "human-session", sessionToken: START_SESSION_TOKEN }) },
+      shared,
+    );
+    expect(harness.composition.registry).toBe(shared);
+  });
+});
 
 describe("C15 worker cleaning composition root", () => {
   it("issues the C06 exact branch and hands C08 only the C06 agent-task.start context", async () => {

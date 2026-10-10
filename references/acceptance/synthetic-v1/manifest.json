@@ -1,0 +1,909 @@
+{
+  "schemaVersion": "1",
+  "packId": "riskflow-synthetic-v1",
+  "packVersion": "1",
+  "label": "合成样本，待甲方复核",
+  "labelStatus": "candidate",
+  "project": {
+    "projectId": "synthetic-station-tunnel-project",
+    "projectName": "合成·岚江站站隧一体化工程",
+    "projectRevisionRef": {
+      "kind": "project-revision",
+      "reference": {
+        "entityId": "project-revision-synthetic-v1",
+        "versionId": "1"
+      }
+    },
+    "spatialScopeRef": {
+      "kind": "spatial-scope",
+      "reference": {
+        "entityId": "spatial-scope-synthetic-v1",
+        "versionId": "1"
+      }
+    },
+    "sourceFamilies": [
+      "development-family-v1",
+      "trial-run-family-v1"
+    ],
+    "templateFamilies": [
+      "dev-templates-v1",
+      "trial-templates-v1"
+    ],
+    "synthetic": true
+  },
+  "sources": "sources.json",
+  "cases": "scenarios.json",
+  "expected": "expected.json",
+  "acceptanceCases": "acceptance-cases.json",
+  "monitoring": "monitoring.json",
+  "feedback": "feedback.json",
+  "documents": [
+    {
+      "documentId": "SYN-DEV-DOC-LOG-扩径准备",
+      "file": "documents/SYN-DEV/construction-log-01.docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "format": "docx",
+      "sourceFamily": "development-family-v1",
+      "split": "development",
+      "documentType": "construction-log",
+      "caseIds": [
+        "SYN-DEV-005",
+        "SYN-DEV-011"
+      ]
+    },
+    {
+      "documentId": "SYN-DEV-DOC-LOG-变径空间扩挖",
+      "file": "documents/SYN-DEV/construction-log-02.docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "format": "docx",
+      "sourceFamily": "development-family-v1",
+      "split": "development",
+      "documentType": "construction-log",
+      "caseIds": [
+        "SYN-DEV-001"
+      ]
+    },
+    {
+      "documentId": "SYN-DEV-DOC-LOG-刀盘扩径",
+      "file": "documents/SYN-DEV/construction-log-03.docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "format": "docx",
+      "sourceFamily": "development-family-v1",
+      "split": "development",
+      "documentType": "construction-log",
+      "caseIds": [
+        "SYN-DEV-002",
+        "SYN-DEV-006",
+        "SYN-DEV-007"
+      ]
+    },
+    {
+      "documentId": "SYN-DEV-DOC-LOG-盾体扩径",
+      "file": "documents/SYN-DEV/construction-log-04.docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "format": "docx",
+      "sourceFamily": "development-family-v1",
+      "split": "development",
+      "documentType": "construction-log",
+      "caseIds": [
+        "SYN-DEV-003",
+        "SYN-DEV-008",
+        "SYN-DEV-009",
+        "SYN-DEV-012"
+      ]
+    },
+    {
+      "documentId": "SYN-DEV-DOC-LOG-缩径转换",
+      "file": "documents/SYN-DEV/construction-log-05.docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "format": "docx",
+      "sourceFamily": "development-family-v1",
+      "split": "development",
+      "documentType": "construction-log",
+      "caseIds": [
+        "SYN-DEV-004",
+        "SYN-DEV-010"
+      ]
+    },
+    {
+      "documentId": "SYN-DEV-DOC-GEOLOGY",
+      "file": "documents/SYN-DEV/geology-report-scan.pdf",
+      "mediaType": "application/pdf",
+      "format": "pdf",
+      "sourceFamily": "development-family-v1",
+      "split": "development",
+      "documentType": "geology-report",
+      "caseIds": [
+        "SYN-DEV-001",
+        "SYN-DEV-002",
+        "SYN-DEV-003",
+        "SYN-DEV-004",
+        "SYN-DEV-005",
+        "SYN-DEV-006",
+        "SYN-DEV-007",
+        "SYN-DEV-008",
+        "SYN-DEV-009",
+        "SYN-DEV-010",
+        "SYN-DEV-011",
+        "SYN-DEV-012"
+      ]
+    },
+    {
+      "documentId": "SYN-DEV-DOC-METHOD",
+      "file": "documents/SYN-DEV/method-statement.pdf",
+      "mediaType": "application/pdf",
+      "format": "pdf",
+      "sourceFamily": "development-family-v1",
+      "split": "development",
+      "documentType": "method-statement",
+      "caseIds": [
+        "SYN-DEV-001",
+        "SYN-DEV-002",
+        "SYN-DEV-003",
+        "SYN-DEV-004",
+        "SYN-DEV-005",
+        "SYN-DEV-006",
+        "SYN-DEV-007",
+        "SYN-DEV-008",
+        "SYN-DEV-009",
+        "SYN-DEV-010",
+        "SYN-DEV-011",
+        "SYN-DEV-012"
+      ]
+    },
+    {
+      "documentId": "SYN-DEV-DOC-LEDGER",
+      "file": "documents/SYN-DEV/monitoring-ledger.xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "format": "xlsx",
+      "sourceFamily": "development-family-v1",
+      "split": "development",
+      "documentType": "monitoring-ledger",
+      "caseIds": [
+        "SYN-DEV-001",
+        "SYN-DEV-002",
+        "SYN-DEV-003",
+        "SYN-DEV-004",
+        "SYN-DEV-005",
+        "SYN-DEV-006",
+        "SYN-DEV-007",
+        "SYN-DEV-008",
+        "SYN-DEV-009",
+        "SYN-DEV-010",
+        "SYN-DEV-011",
+        "SYN-DEV-012"
+      ]
+    },
+    {
+      "documentId": "SYN-DEV-DOC-CSV-ground-settlement",
+      "file": "documents/SYN-DEV/monitoring-ground-settlement.csv",
+      "mediaType": "text/csv",
+      "format": "csv",
+      "sourceFamily": "development-family-v1",
+      "split": "development",
+      "documentType": "monitoring-series-export",
+      "caseIds": [
+        "SYN-DEV-001",
+        "SYN-DEV-012"
+      ]
+    },
+    {
+      "documentId": "SYN-DEV-DOC-CSV-lining-deformation",
+      "file": "documents/SYN-DEV/monitoring-lining-deformation.csv",
+      "mediaType": "text/csv",
+      "format": "csv",
+      "sourceFamily": "development-family-v1",
+      "split": "development",
+      "documentType": "monitoring-series-export",
+      "caseIds": [
+        "SYN-DEV-002",
+        "SYN-DEV-003"
+      ]
+    },
+    {
+      "documentId": "SYN-DEV-DOC-CSV-groundwater-level",
+      "file": "documents/SYN-DEV/monitoring-groundwater-level.csv",
+      "mediaType": "text/csv",
+      "format": "csv",
+      "sourceFamily": "development-family-v1",
+      "split": "development",
+      "documentType": "monitoring-series-export",
+      "caseIds": [
+        "SYN-DEV-004",
+        "SYN-DEV-005"
+      ]
+    },
+    {
+      "documentId": "SYN-DEV-DOC-CSV-slurry-chamber-pressure",
+      "file": "documents/SYN-DEV/monitoring-slurry-chamber-pressure.csv",
+      "mediaType": "text/csv",
+      "format": "csv",
+      "sourceFamily": "development-family-v1",
+      "split": "development",
+      "documentType": "monitoring-series-export",
+      "caseIds": [
+        "SYN-DEV-006",
+        "SYN-DEV-007"
+      ]
+    },
+    {
+      "documentId": "SYN-DEV-DOC-CSV-grouting-pressure",
+      "file": "documents/SYN-DEV/monitoring-grouting-pressure.csv",
+      "mediaType": "text/csv",
+      "format": "csv",
+      "sourceFamily": "development-family-v1",
+      "split": "development",
+      "documentType": "monitoring-series-export",
+      "caseIds": [
+        "SYN-DEV-008",
+        "SYN-DEV-009"
+      ]
+    },
+    {
+      "documentId": "SYN-DEV-DOC-CSV-shield-attitude-frequency",
+      "file": "documents/SYN-DEV/monitoring-shield-attitude-frequency.csv",
+      "mediaType": "text/csv",
+      "format": "csv",
+      "sourceFamily": "development-family-v1",
+      "split": "development",
+      "documentType": "monitoring-series-export",
+      "caseIds": [
+        "SYN-DEV-010",
+        "SYN-DEV-011"
+      ]
+    },
+    {
+      "documentId": "SYN-DEV-DOC-FIGURE",
+      "file": "documents/SYN-DEV/monitoring-section.png",
+      "mediaType": "image/png",
+      "format": "png",
+      "sourceFamily": "development-family-v1",
+      "split": "development",
+      "documentType": "figure",
+      "caseIds": []
+    },
+    {
+      "documentId": "SYN-DEV-DOC-PHOTO",
+      "file": "documents/SYN-DEV/site-photo.jpeg",
+      "mediaType": "image/jpeg",
+      "format": "jpeg",
+      "sourceFamily": "development-family-v1",
+      "split": "development",
+      "documentType": "photo",
+      "caseIds": []
+    },
+    {
+      "documentId": "SYN-DEV-DOC-SUMMARY",
+      "file": "documents/SYN-DEV/engineering-summary.md",
+      "mediaType": "text/markdown",
+      "format": "md",
+      "sourceFamily": "development-family-v1",
+      "split": "development",
+      "documentType": "engineering-summary",
+      "caseIds": [
+        "SYN-DEV-001",
+        "SYN-DEV-002",
+        "SYN-DEV-003",
+        "SYN-DEV-004",
+        "SYN-DEV-005",
+        "SYN-DEV-006",
+        "SYN-DEV-007",
+        "SYN-DEV-008",
+        "SYN-DEV-009",
+        "SYN-DEV-010",
+        "SYN-DEV-011",
+        "SYN-DEV-012"
+      ]
+    },
+    {
+      "documentId": "SYN-TRIAL-DOC-LOG-扩径准备",
+      "file": "documents/SYN-TRIAL/construction-log-01.docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "format": "docx",
+      "sourceFamily": "trial-run-family-v1",
+      "split": "trial-run",
+      "documentType": "construction-log",
+      "caseIds": [
+        "SYN-TRIAL-033",
+        "SYN-TRIAL-036",
+        "SYN-TRIAL-039",
+        "SYN-TRIAL-042",
+        "SYN-TRIAL-054",
+        "SYN-TRIAL-057",
+        "SYN-TRIAL-060",
+        "SYN-TRIAL-063",
+        "SYN-TRIAL-066",
+        "SYN-TRIAL-069",
+        "SYN-TRIAL-072"
+      ]
+    },
+    {
+      "documentId": "SYN-TRIAL-DOC-LOG-变径空间扩挖",
+      "file": "documents/SYN-TRIAL/construction-log-02.docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "format": "docx",
+      "sourceFamily": "trial-run-family-v1",
+      "split": "trial-run",
+      "documentType": "construction-log",
+      "caseIds": [
+        "SYN-TRIAL-013",
+        "SYN-TRIAL-016",
+        "SYN-TRIAL-019",
+        "SYN-TRIAL-022",
+        "SYN-TRIAL-024",
+        "SYN-TRIAL-027",
+        "SYN-TRIAL-030"
+      ]
+    },
+    {
+      "documentId": "SYN-TRIAL-DOC-LOG-刀盘扩径",
+      "file": "documents/SYN-TRIAL/construction-log-03.docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "format": "docx",
+      "sourceFamily": "trial-run-family-v1",
+      "split": "trial-run",
+      "documentType": "construction-log",
+      "caseIds": [
+        "SYN-TRIAL-015",
+        "SYN-TRIAL-018",
+        "SYN-TRIAL-021",
+        "SYN-TRIAL-035",
+        "SYN-TRIAL-038",
+        "SYN-TRIAL-041",
+        "SYN-TRIAL-043",
+        "SYN-TRIAL-046",
+        "SYN-TRIAL-049",
+        "SYN-TRIAL-052"
+      ]
+    },
+    {
+      "documentId": "SYN-TRIAL-DOC-LOG-盾体扩径",
+      "file": "documents/SYN-TRIAL/construction-log-04.docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "format": "docx",
+      "sourceFamily": "trial-run-family-v1",
+      "split": "trial-run",
+      "documentType": "construction-log",
+      "caseIds": [
+        "SYN-TRIAL-023",
+        "SYN-TRIAL-026",
+        "SYN-TRIAL-029",
+        "SYN-TRIAL-032",
+        "SYN-TRIAL-034",
+        "SYN-TRIAL-037",
+        "SYN-TRIAL-040",
+        "SYN-TRIAL-045",
+        "SYN-TRIAL-048",
+        "SYN-TRIAL-051",
+        "SYN-TRIAL-053",
+        "SYN-TRIAL-056",
+        "SYN-TRIAL-059",
+        "SYN-TRIAL-062",
+        "SYN-TRIAL-065",
+        "SYN-TRIAL-068",
+        "SYN-TRIAL-071"
+      ]
+    },
+    {
+      "documentId": "SYN-TRIAL-DOC-LOG-缩径转换",
+      "file": "documents/SYN-TRIAL/construction-log-05.docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "format": "docx",
+      "sourceFamily": "trial-run-family-v1",
+      "split": "trial-run",
+      "documentType": "construction-log",
+      "caseIds": [
+        "SYN-TRIAL-014",
+        "SYN-TRIAL-017",
+        "SYN-TRIAL-020",
+        "SYN-TRIAL-025",
+        "SYN-TRIAL-028",
+        "SYN-TRIAL-031",
+        "SYN-TRIAL-044",
+        "SYN-TRIAL-047",
+        "SYN-TRIAL-050",
+        "SYN-TRIAL-055",
+        "SYN-TRIAL-058",
+        "SYN-TRIAL-061",
+        "SYN-TRIAL-064",
+        "SYN-TRIAL-067",
+        "SYN-TRIAL-070"
+      ]
+    },
+    {
+      "documentId": "SYN-TRIAL-DOC-GEOLOGY",
+      "file": "documents/SYN-TRIAL/geology-report-scan.pdf",
+      "mediaType": "application/pdf",
+      "format": "pdf",
+      "sourceFamily": "trial-run-family-v1",
+      "split": "trial-run",
+      "documentType": "geology-report",
+      "caseIds": [
+        "SYN-TRIAL-013",
+        "SYN-TRIAL-014",
+        "SYN-TRIAL-015",
+        "SYN-TRIAL-016",
+        "SYN-TRIAL-017",
+        "SYN-TRIAL-018",
+        "SYN-TRIAL-019",
+        "SYN-TRIAL-020",
+        "SYN-TRIAL-021",
+        "SYN-TRIAL-022",
+        "SYN-TRIAL-023",
+        "SYN-TRIAL-024",
+        "SYN-TRIAL-025",
+        "SYN-TRIAL-026",
+        "SYN-TRIAL-027",
+        "SYN-TRIAL-028",
+        "SYN-TRIAL-029",
+        "SYN-TRIAL-030",
+        "SYN-TRIAL-031",
+        "SYN-TRIAL-032",
+        "SYN-TRIAL-033",
+        "SYN-TRIAL-034",
+        "SYN-TRIAL-035",
+        "SYN-TRIAL-036",
+        "SYN-TRIAL-037",
+        "SYN-TRIAL-038",
+        "SYN-TRIAL-039",
+        "SYN-TRIAL-040",
+        "SYN-TRIAL-041",
+        "SYN-TRIAL-042",
+        "SYN-TRIAL-043",
+        "SYN-TRIAL-044",
+        "SYN-TRIAL-045",
+        "SYN-TRIAL-046",
+        "SYN-TRIAL-047",
+        "SYN-TRIAL-048",
+        "SYN-TRIAL-049",
+        "SYN-TRIAL-050",
+        "SYN-TRIAL-051",
+        "SYN-TRIAL-052",
+        "SYN-TRIAL-053",
+        "SYN-TRIAL-054",
+        "SYN-TRIAL-055",
+        "SYN-TRIAL-056",
+        "SYN-TRIAL-057",
+        "SYN-TRIAL-058",
+        "SYN-TRIAL-059",
+        "SYN-TRIAL-060",
+        "SYN-TRIAL-061",
+        "SYN-TRIAL-062",
+        "SYN-TRIAL-063",
+        "SYN-TRIAL-064",
+        "SYN-TRIAL-065",
+        "SYN-TRIAL-066",
+        "SYN-TRIAL-067",
+        "SYN-TRIAL-068",
+        "SYN-TRIAL-069",
+        "SYN-TRIAL-070",
+        "SYN-TRIAL-071",
+        "SYN-TRIAL-072"
+      ]
+    },
+    {
+      "documentId": "SYN-TRIAL-DOC-METHOD",
+      "file": "documents/SYN-TRIAL/method-statement.pdf",
+      "mediaType": "application/pdf",
+      "format": "pdf",
+      "sourceFamily": "trial-run-family-v1",
+      "split": "trial-run",
+      "documentType": "method-statement",
+      "caseIds": [
+        "SYN-TRIAL-013",
+        "SYN-TRIAL-014",
+        "SYN-TRIAL-015",
+        "SYN-TRIAL-016",
+        "SYN-TRIAL-017",
+        "SYN-TRIAL-018",
+        "SYN-TRIAL-019",
+        "SYN-TRIAL-020",
+        "SYN-TRIAL-021",
+        "SYN-TRIAL-022",
+        "SYN-TRIAL-023",
+        "SYN-TRIAL-024",
+        "SYN-TRIAL-025",
+        "SYN-TRIAL-026",
+        "SYN-TRIAL-027",
+        "SYN-TRIAL-028",
+        "SYN-TRIAL-029",
+        "SYN-TRIAL-030",
+        "SYN-TRIAL-031",
+        "SYN-TRIAL-032",
+        "SYN-TRIAL-033",
+        "SYN-TRIAL-034",
+        "SYN-TRIAL-035",
+        "SYN-TRIAL-036",
+        "SYN-TRIAL-037",
+        "SYN-TRIAL-038",
+        "SYN-TRIAL-039",
+        "SYN-TRIAL-040",
+        "SYN-TRIAL-041",
+        "SYN-TRIAL-042",
+        "SYN-TRIAL-043",
+        "SYN-TRIAL-044",
+        "SYN-TRIAL-045",
+        "SYN-TRIAL-046",
+        "SYN-TRIAL-047",
+        "SYN-TRIAL-048",
+        "SYN-TRIAL-049",
+        "SYN-TRIAL-050",
+        "SYN-TRIAL-051",
+        "SYN-TRIAL-052",
+        "SYN-TRIAL-053",
+        "SYN-TRIAL-054",
+        "SYN-TRIAL-055",
+        "SYN-TRIAL-056",
+        "SYN-TRIAL-057",
+        "SYN-TRIAL-058",
+        "SYN-TRIAL-059",
+        "SYN-TRIAL-060",
+        "SYN-TRIAL-061",
+        "SYN-TRIAL-062",
+        "SYN-TRIAL-063",
+        "SYN-TRIAL-064",
+        "SYN-TRIAL-065",
+        "SYN-TRIAL-066",
+        "SYN-TRIAL-067",
+        "SYN-TRIAL-068",
+        "SYN-TRIAL-069",
+        "SYN-TRIAL-070",
+        "SYN-TRIAL-071",
+        "SYN-TRIAL-072"
+      ]
+    },
+    {
+      "documentId": "SYN-TRIAL-DOC-LEDGER",
+      "file": "documents/SYN-TRIAL/monitoring-ledger.xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "format": "xlsx",
+      "sourceFamily": "trial-run-family-v1",
+      "split": "trial-run",
+      "documentType": "monitoring-ledger",
+      "caseIds": [
+        "SYN-TRIAL-013",
+        "SYN-TRIAL-014",
+        "SYN-TRIAL-015",
+        "SYN-TRIAL-016",
+        "SYN-TRIAL-017",
+        "SYN-TRIAL-018",
+        "SYN-TRIAL-019",
+        "SYN-TRIAL-020",
+        "SYN-TRIAL-021",
+        "SYN-TRIAL-022",
+        "SYN-TRIAL-023",
+        "SYN-TRIAL-024",
+        "SYN-TRIAL-025",
+        "SYN-TRIAL-026",
+        "SYN-TRIAL-027",
+        "SYN-TRIAL-028",
+        "SYN-TRIAL-029",
+        "SYN-TRIAL-030",
+        "SYN-TRIAL-031",
+        "SYN-TRIAL-032",
+        "SYN-TRIAL-033",
+        "SYN-TRIAL-034",
+        "SYN-TRIAL-035",
+        "SYN-TRIAL-036",
+        "SYN-TRIAL-037",
+        "SYN-TRIAL-038",
+        "SYN-TRIAL-039",
+        "SYN-TRIAL-040",
+        "SYN-TRIAL-041",
+        "SYN-TRIAL-042",
+        "SYN-TRIAL-043",
+        "SYN-TRIAL-044",
+        "SYN-TRIAL-045",
+        "SYN-TRIAL-046",
+        "SYN-TRIAL-047",
+        "SYN-TRIAL-048",
+        "SYN-TRIAL-049",
+        "SYN-TRIAL-050",
+        "SYN-TRIAL-051",
+        "SYN-TRIAL-052",
+        "SYN-TRIAL-053",
+        "SYN-TRIAL-054",
+        "SYN-TRIAL-055",
+        "SYN-TRIAL-056",
+        "SYN-TRIAL-057",
+        "SYN-TRIAL-058",
+        "SYN-TRIAL-059",
+        "SYN-TRIAL-060",
+        "SYN-TRIAL-061",
+        "SYN-TRIAL-062",
+        "SYN-TRIAL-063",
+        "SYN-TRIAL-064",
+        "SYN-TRIAL-065",
+        "SYN-TRIAL-066",
+        "SYN-TRIAL-067",
+        "SYN-TRIAL-068",
+        "SYN-TRIAL-069",
+        "SYN-TRIAL-070",
+        "SYN-TRIAL-071",
+        "SYN-TRIAL-072"
+      ]
+    },
+    {
+      "documentId": "SYN-TRIAL-DOC-CSV-ground-settlement",
+      "file": "documents/SYN-TRIAL/monitoring-ground-settlement.csv",
+      "mediaType": "text/csv",
+      "format": "csv",
+      "sourceFamily": "trial-run-family-v1",
+      "split": "trial-run",
+      "documentType": "monitoring-series-export",
+      "caseIds": [
+        "SYN-TRIAL-013",
+        "SYN-TRIAL-016",
+        "SYN-TRIAL-024",
+        "SYN-TRIAL-041",
+        "SYN-TRIAL-049",
+        "SYN-TRIAL-052",
+        "SYN-TRIAL-057",
+        "SYN-TRIAL-060",
+        "SYN-TRIAL-065",
+        "SYN-TRIAL-068"
+      ]
+    },
+    {
+      "documentId": "SYN-TRIAL-DOC-CSV-lining-deformation",
+      "file": "documents/SYN-TRIAL/monitoring-lining-deformation.csv",
+      "mediaType": "text/csv",
+      "format": "csv",
+      "sourceFamily": "trial-run-family-v1",
+      "split": "trial-run",
+      "documentType": "monitoring-series-export",
+      "caseIds": [
+        "SYN-TRIAL-015",
+        "SYN-TRIAL-018",
+        "SYN-TRIAL-023",
+        "SYN-TRIAL-026",
+        "SYN-TRIAL-034",
+        "SYN-TRIAL-051",
+        "SYN-TRIAL-059",
+        "SYN-TRIAL-062",
+        "SYN-TRIAL-067",
+        "SYN-TRIAL-070"
+      ]
+    },
+    {
+      "documentId": "SYN-TRIAL-DOC-CSV-groundwater-level",
+      "file": "documents/SYN-TRIAL/monitoring-groundwater-level.csv",
+      "mediaType": "text/csv",
+      "format": "csv",
+      "sourceFamily": "trial-run-family-v1",
+      "split": "trial-run",
+      "documentType": "monitoring-series-export",
+      "caseIds": [
+        "SYN-TRIAL-017",
+        "SYN-TRIAL-020",
+        "SYN-TRIAL-025",
+        "SYN-TRIAL-028",
+        "SYN-TRIAL-033",
+        "SYN-TRIAL-036",
+        "SYN-TRIAL-044",
+        "SYN-TRIAL-061",
+        "SYN-TRIAL-069",
+        "SYN-TRIAL-072"
+      ]
+    },
+    {
+      "documentId": "SYN-TRIAL-DOC-CSV-slurry-chamber-pressure",
+      "file": "documents/SYN-TRIAL/monitoring-slurry-chamber-pressure.csv",
+      "mediaType": "text/csv",
+      "format": "csv",
+      "sourceFamily": "trial-run-family-v1",
+      "split": "trial-run",
+      "documentType": "monitoring-series-export",
+      "caseIds": [
+        "SYN-TRIAL-019",
+        "SYN-TRIAL-022",
+        "SYN-TRIAL-027",
+        "SYN-TRIAL-030",
+        "SYN-TRIAL-035",
+        "SYN-TRIAL-038",
+        "SYN-TRIAL-043",
+        "SYN-TRIAL-046",
+        "SYN-TRIAL-054",
+        "SYN-TRIAL-071"
+      ]
+    },
+    {
+      "documentId": "SYN-TRIAL-DOC-CSV-grouting-pressure",
+      "file": "documents/SYN-TRIAL/monitoring-grouting-pressure.csv",
+      "mediaType": "text/csv",
+      "format": "csv",
+      "sourceFamily": "trial-run-family-v1",
+      "split": "trial-run",
+      "documentType": "monitoring-series-export",
+      "caseIds": [
+        "SYN-TRIAL-021",
+        "SYN-TRIAL-029",
+        "SYN-TRIAL-032",
+        "SYN-TRIAL-037",
+        "SYN-TRIAL-040",
+        "SYN-TRIAL-045",
+        "SYN-TRIAL-048",
+        "SYN-TRIAL-053",
+        "SYN-TRIAL-056",
+        "SYN-TRIAL-064"
+      ]
+    },
+    {
+      "documentId": "SYN-TRIAL-DOC-CSV-shield-attitude-frequency",
+      "file": "documents/SYN-TRIAL/monitoring-shield-attitude-frequency.csv",
+      "mediaType": "text/csv",
+      "format": "csv",
+      "sourceFamily": "trial-run-family-v1",
+      "split": "trial-run",
+      "documentType": "monitoring-series-export",
+      "caseIds": [
+        "SYN-TRIAL-014",
+        "SYN-TRIAL-031",
+        "SYN-TRIAL-039",
+        "SYN-TRIAL-042",
+        "SYN-TRIAL-047",
+        "SYN-TRIAL-050",
+        "SYN-TRIAL-055",
+        "SYN-TRIAL-058",
+        "SYN-TRIAL-063",
+        "SYN-TRIAL-066"
+      ]
+    },
+    {
+      "documentId": "SYN-TRIAL-DOC-FIGURE",
+      "file": "documents/SYN-TRIAL/monitoring-section.png",
+      "mediaType": "image/png",
+      "format": "png",
+      "sourceFamily": "trial-run-family-v1",
+      "split": "trial-run",
+      "documentType": "figure",
+      "caseIds": []
+    },
+    {
+      "documentId": "SYN-TRIAL-DOC-PHOTO",
+      "file": "documents/SYN-TRIAL/site-photo.jpeg",
+      "mediaType": "image/jpeg",
+      "format": "jpeg",
+      "sourceFamily": "trial-run-family-v1",
+      "split": "trial-run",
+      "documentType": "photo",
+      "caseIds": []
+    },
+    {
+      "documentId": "SYN-TRIAL-DOC-SUMMARY",
+      "file": "documents/SYN-TRIAL/engineering-summary.md",
+      "mediaType": "text/markdown",
+      "format": "md",
+      "sourceFamily": "trial-run-family-v1",
+      "split": "trial-run",
+      "documentType": "engineering-summary",
+      "caseIds": [
+        "SYN-TRIAL-013",
+        "SYN-TRIAL-014",
+        "SYN-TRIAL-015",
+        "SYN-TRIAL-016",
+        "SYN-TRIAL-017",
+        "SYN-TRIAL-018",
+        "SYN-TRIAL-019",
+        "SYN-TRIAL-020",
+        "SYN-TRIAL-021",
+        "SYN-TRIAL-022",
+        "SYN-TRIAL-023",
+        "SYN-TRIAL-024",
+        "SYN-TRIAL-025",
+        "SYN-TRIAL-026",
+        "SYN-TRIAL-027",
+        "SYN-TRIAL-028",
+        "SYN-TRIAL-029",
+        "SYN-TRIAL-030",
+        "SYN-TRIAL-031",
+        "SYN-TRIAL-032",
+        "SYN-TRIAL-033",
+        "SYN-TRIAL-034",
+        "SYN-TRIAL-035",
+        "SYN-TRIAL-036",
+        "SYN-TRIAL-037",
+        "SYN-TRIAL-038",
+        "SYN-TRIAL-039",
+        "SYN-TRIAL-040",
+        "SYN-TRIAL-041",
+        "SYN-TRIAL-042",
+        "SYN-TRIAL-043",
+        "SYN-TRIAL-044",
+        "SYN-TRIAL-045",
+        "SYN-TRIAL-046",
+        "SYN-TRIAL-047",
+        "SYN-TRIAL-048",
+        "SYN-TRIAL-049",
+        "SYN-TRIAL-050",
+        "SYN-TRIAL-051",
+        "SYN-TRIAL-052",
+        "SYN-TRIAL-053",
+        "SYN-TRIAL-054",
+        "SYN-TRIAL-055",
+        "SYN-TRIAL-056",
+        "SYN-TRIAL-057",
+        "SYN-TRIAL-058",
+        "SYN-TRIAL-059",
+        "SYN-TRIAL-060",
+        "SYN-TRIAL-061",
+        "SYN-TRIAL-062",
+        "SYN-TRIAL-063",
+        "SYN-TRIAL-064",
+        "SYN-TRIAL-065",
+        "SYN-TRIAL-066",
+        "SYN-TRIAL-067",
+        "SYN-TRIAL-068",
+        "SYN-TRIAL-069",
+        "SYN-TRIAL-070",
+        "SYN-TRIAL-071",
+        "SYN-TRIAL-072"
+      ]
+    }
+  ],
+  "configurations": [
+    {
+      "definitionType": "indicator-system",
+      "file": "configurations/indicator-system.json"
+    },
+    {
+      "definitionType": "indicator-field-mapping",
+      "file": "configurations/indicator-field-mapping.json"
+    },
+    {
+      "definitionType": "weight-set",
+      "file": "configurations/weight-set.json"
+    },
+    {
+      "definitionType": "scoring-strategy",
+      "file": "configurations/scoring-strategy.json"
+    },
+    {
+      "definitionType": "risk-matrix",
+      "file": "configurations/risk-matrix.json"
+    },
+    {
+      "definitionType": "risk-acceptance-threshold",
+      "file": "configurations/risk-acceptance-threshold.json"
+    },
+    {
+      "definitionType": "monitoring-warning-threshold",
+      "file": "configurations/monitoring-warning-threshold.json"
+    },
+    {
+      "definitionType": "joint-trigger-policy",
+      "file": "configurations/joint-trigger-policy.json"
+    },
+    {
+      "definitionType": "measure-library",
+      "file": "configurations/measure-library.json"
+    },
+    {
+      "definitionType": "forecast-policy",
+      "file": "configurations/forecast-policy.json"
+    },
+    {
+      "definitionType": "deviation-policy",
+      "file": "configurations/deviation-policy.json"
+    }
+  ],
+  "rules": [
+    {
+      "file": "rules/structured-scoring-rules.json"
+    }
+  ],
+  "knowledge": [
+    {
+      "file": "knowledge/process-model.json"
+    },
+    {
+      "file": "knowledge/risk-mechanism.json"
+    },
+    {
+      "file": "knowledge/standard-library.json"
+    },
+    {
+      "file": "knowledge/case-library.json"
+    }
+  ]
+}

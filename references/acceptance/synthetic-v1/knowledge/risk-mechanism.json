@@ -1,0 +1,404 @@
+{
+  "schemaVersion": "1",
+  "projectId": "synthetic-station-tunnel-project",
+  "validationPolicyRef": {
+    "entityId": "validation-policy-synthetic-v1",
+    "versionId": "1"
+  },
+  "preparationSnapshotRef": {
+    "kind": "identification-preparation-snapshot",
+    "reference": {
+      "entityId": "identification-preparation-snapshot-synthetic-v1",
+      "versionId": "1"
+    }
+  },
+  "generatedAt": "2026-03-01T00:00:00+08:00",
+  "definitionType": "risk-mechanism",
+  "processModelReleaseRef": {
+    "kind": "process-model-release",
+    "reference": {
+      "entityId": "process-model-release-synthetic-v1",
+      "versionId": "1"
+    }
+  },
+  "mechanisms": [
+    {
+      "mechanismId": "mechanism-01",
+      "mechanismType": "掌子面稳定性失效",
+      "nodeIds": [
+        "node-02-变径空间扩挖",
+        "node-03-刀盘扩径",
+        "node-05-缩径转换"
+      ],
+      "stateParameters": [
+        "土仓/泥水压力",
+        "支护状态"
+      ],
+      "monitoringIndicators": [
+        "地下水位",
+        "泥水压力"
+      ],
+      "applicability": {
+        "constructionMethod": [
+          "原位变径盾构"
+        ],
+        "stratumCondition": [
+          "上软下硬复合地层",
+          "中硬岩",
+          "完整岩体",
+          "富水中砂层",
+          "岩溶发育灰岩",
+          "粉质黏土"
+        ],
+        "engineeringStage": [
+          "刀盘扩径",
+          "变径空间扩挖",
+          "扩径准备",
+          "盾体扩径",
+          "缩径转换"
+        ]
+      },
+      "preconditions": [
+        "变径段支护与开挖参数已确认"
+      ],
+      "triggeringFactors": [
+        "开挖面控制压力低于自稳能力时土体抗剪不足，局部塌方并伴随地表塌陷"
+      ],
+      "evolutionPath": [
+        "征兆出现",
+        "工况偏离",
+        "量测值越限"
+      ],
+      "consequences": [
+        "结构损伤或功能受损",
+        "工期与成本影响"
+      ],
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-MECHANISM-01"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "mechanismId": "mechanism-02",
+      "mechanismType": "支护结构失效",
+      "nodeIds": [
+        "node-02-变径空间扩挖",
+        "node-04-盾体扩径",
+        "node-05-缩径转换"
+      ],
+      "stateParameters": [
+        "土仓/泥水压力",
+        "支护状态"
+      ],
+      "monitoringIndicators": [
+        "支护结构变形",
+        "地表沉降"
+      ],
+      "applicability": {
+        "constructionMethod": [
+          "原位变径盾构"
+        ],
+        "stratumCondition": [
+          "上软下硬复合地层",
+          "中硬岩",
+          "完整岩体",
+          "富水中砂层",
+          "岩溶发育灰岩",
+          "粉质黏土"
+        ],
+        "engineeringStage": [
+          "刀盘扩径",
+          "变径空间扩挖",
+          "扩径准备",
+          "盾体扩径",
+          "缩径转换"
+        ]
+      },
+      "preconditions": [
+        "变径段支护与开挖参数已确认"
+      ],
+      "triggeringFactors": [
+        "扩挖段支护时机与刚度不匹配，管片拼装偏差累积后侵限"
+      ],
+      "evolutionPath": [
+        "征兆出现",
+        "工况偏离",
+        "量测值越限"
+      ],
+      "consequences": [
+        "结构损伤或功能受损",
+        "工期与成本影响"
+      ],
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-MECHANISM-02"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "mechanismId": "mechanism-03",
+      "mechanismType": "渗流突涌",
+      "nodeIds": [
+        "node-03-刀盘扩径",
+        "node-04-盾体扩径",
+        "node-01-扩径准备"
+      ],
+      "stateParameters": [
+        "土仓/泥水压力",
+        "支护状态"
+      ],
+      "monitoringIndicators": [
+        "地下水位",
+        "泥水压力"
+      ],
+      "applicability": {
+        "constructionMethod": [
+          "原位变径盾构"
+        ],
+        "stratumCondition": [
+          "上软下硬复合地层",
+          "中硬岩",
+          "完整岩体",
+          "富水中砂层",
+          "岩溶发育灰岩",
+          "粉质黏土"
+        ],
+        "engineeringStage": [
+          "刀盘扩径",
+          "变径空间扩挖",
+          "扩径准备",
+          "盾体扩径",
+          "缩径转换"
+        ]
+      },
+      "preconditions": [
+        "变径段支护与开挖参数已确认"
+      ],
+      "triggeringFactors": [
+        "承压水沿盾尾密封或开挖面薄弱带突破，携砂涌入舱内"
+      ],
+      "evolutionPath": [
+        "征兆出现",
+        "工况偏离",
+        "量测值越限"
+      ],
+      "consequences": [
+        "结构损伤或功能受损",
+        "工期与成本影响"
+      ],
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-MECHANISM-03"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "mechanismId": "mechanism-04",
+      "mechanismType": "过挖与地表沉降",
+      "nodeIds": [
+        "node-03-刀盘扩径",
+        "node-04-盾体扩径",
+        "node-05-缩径转换"
+      ],
+      "stateParameters": [
+        "土仓/泥水压力",
+        "支护状态"
+      ],
+      "monitoringIndicators": [
+        "地表沉降",
+        "注浆压力"
+      ],
+      "applicability": {
+        "constructionMethod": [
+          "原位变径盾构"
+        ],
+        "stratumCondition": [
+          "上软下硬复合地层",
+          "中硬岩",
+          "完整岩体",
+          "富水中砂层",
+          "岩溶发育灰岩",
+          "粉质黏土"
+        ],
+        "engineeringStage": [
+          "刀盘扩径",
+          "变径空间扩挖",
+          "扩径准备",
+          "盾体扩径",
+          "缩径转换"
+        ]
+      },
+      "preconditions": [
+        "变径段支护与开挖参数已确认"
+      ],
+      "triggeringFactors": [
+        "扩挖量超出设计控制值，地表累计沉降与变化速率同步增大"
+      ],
+      "evolutionPath": [
+        "征兆出现",
+        "工况偏离",
+        "量测值越限"
+      ],
+      "consequences": [
+        "结构损伤或功能受损",
+        "工期与成本影响"
+      ],
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-MECHANISM-04"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "mechanismId": "mechanism-05",
+      "mechanismType": "施工装备故障",
+      "nodeIds": [
+        "node-01-扩径准备",
+        "node-04-盾体扩径",
+        "node-05-缩径转换"
+      ],
+      "stateParameters": [
+        "土仓/泥水压力",
+        "支护状态"
+      ],
+      "monitoringIndicators": [
+        "盾构姿态参数",
+        "注浆压力"
+      ],
+      "applicability": {
+        "constructionMethod": [
+          "原位变径盾构"
+        ],
+        "stratumCondition": [
+          "上软下硬复合地层",
+          "中硬岩",
+          "完整岩体",
+          "富水中砂层",
+          "岩溶发育灰岩",
+          "粉质黏土"
+        ],
+        "engineeringStage": [
+          "刀盘扩径",
+          "变径空间扩挖",
+          "扩径准备",
+          "盾体扩径",
+          "缩径转换"
+        ]
+      },
+      "preconditions": [
+        "变径段支护与开挖参数已确认"
+      ],
+      "triggeringFactors": [
+        "变径驱动或制动回路异常，装备在坡道段失去动力或制停能力"
+      ],
+      "evolutionPath": [
+        "征兆出现",
+        "工况偏离",
+        "量测值越限"
+      ],
+      "consequences": [
+        "结构损伤或功能受损",
+        "工期与成本影响"
+      ],
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-MECHANISM-05"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "mechanismId": "mechanism-06",
+      "mechanismType": "装配连接失效",
+      "nodeIds": [
+        "node-04-盾体扩径",
+        "node-05-缩径转换",
+        "node-01-扩径准备"
+      ],
+      "stateParameters": [
+        "土仓/泥水压力",
+        "支护状态"
+      ],
+      "monitoringIndicators": [
+        "盾构姿态参数",
+        "支护结构变形"
+      ],
+      "applicability": {
+        "constructionMethod": [
+          "原位变径盾构"
+        ],
+        "stratumCondition": [
+          "上软下硬复合地层",
+          "中硬岩",
+          "完整岩体",
+          "富水中砂层",
+          "岩溶发育灰岩",
+          "粉质黏土"
+        ],
+        "engineeringStage": [
+          "刀盘扩径",
+          "变径空间扩挖",
+          "扩径准备",
+          "盾体扩径",
+          "缩径转换"
+        ]
+      },
+      "preconditions": [
+        "变径段支护与开挖参数已确认"
+      ],
+      "triggeringFactors": [
+        "狭小空间内拼装构件错位、连接件未紧固，接缝承载能力不足"
+      ],
+      "evolutionPath": [
+        "征兆出现",
+        "工况偏离",
+        "量测值越限"
+      ],
+      "consequences": [
+        "结构损伤或功能受损",
+        "工期与成本影响"
+      ],
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-MECHANISM-06"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    }
+  ]
+}

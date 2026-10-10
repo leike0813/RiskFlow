@@ -1,0 +1,190 @@
+/* 复核与审计域页面样式（复核详情 / 识别候选复核 / 审计日志共用）。颜色与间距走全局令牌。 */
+
+.rv-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.rv-muted {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+  margin: 0 0 6px;
+}
+
+.rv-chip-note {
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+/* 字段网格：只放服务端返回的事实，缺席项按原样显示 */
+.rv-field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px 20px;
+  margin: 0;
+}
+
+.rv-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rv-field dt {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-2);
+}
+
+.rv-field dd {
+  margin: 0;
+  font-size: 14px;
+  line-height: 22px;
+  word-break: break-all;
+}
+
+/* 筛选与操作条 */
+.rv-batch-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  background: var(--bluegray-soft);
+  border-radius: 6px;
+}
+
+.rv-chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rv-chip {
+  font-size: 13px;
+  line-height: 20px;
+  padding: 3px 12px;
+  border-radius: 13px;
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  background: var(--card);
+}
+
+.rv-chip--active,
+.rv-chip-active {
+  color: var(--blue);
+  border-color: var(--blue);
+  background: var(--blue-soft);
+  font-weight: 600;
+}
+
+/* 决定按钮组 */
+.rv-decision-list {
+  list-style: none;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+}
+
+.rv-decision-item {
+  display: flex;
+  align-items: center;
+}
+
+.rv-decision-item .confirm-btn {
+  padding: 6px 16px;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+/* 修正候选：只列所属模块返回的候选引用 */
+.rv-candidates {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px 12px;
+  margin: 0;
+}
+
+.rv-candidates legend {
+  font-size: 12px;
+  color: var(--text-2);
+  padding: 0 4px;
+}
+
+.rv-candidate {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 13px;
+}
+
+.rv-candidate input {
+  accent-color: var(--blue);
+}
+
+.rv-outcomes {
+  list-style: none;
+  font-size: 13px;
+  line-height: 22px;
+  color: var(--text-2);
+}
+
+.rv-ok {
+  color: var(--success);
+}
+
+.rv-fail {
+  color: var(--risk-1);
+}
+
+.rv-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.rv-btn {
+  font-size: 13px;
+  line-height: 20px;
+  padding: 5px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+}
+
+.rv-btn:hover:not(:disabled) {
+  background: var(--bluegray-soft);
+}
+
+.rv-btn:disabled {
+  color: var(--text-2);
+  cursor: not-allowed;
+}
+
+.rv-btn--primary {
+  color: var(--blue);
+  border-color: var(--blue);
+  background: var(--blue-soft);
+  font-weight: 600;
+}
+
+/* 表格单元格内的纵向堆叠（引用 + 版本） */
+.rv-cell-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rv-back,
+.rv-jump {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 13px;
+}

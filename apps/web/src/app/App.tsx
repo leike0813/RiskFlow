@@ -1,4 +1,6 @@
 import { Fragment, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { Route, Routes } from "react-router-dom";
+import { useInRouterContext, useLocation, useNavigate } from "react-router-dom";
 
 import type { ModuleCapabilityV1 } from "@riskflow/contracts/ports";
 
@@ -33,6 +35,8 @@ export type AppPropsV1 = Readonly<{
   onChangePassword?: (input: SessionChangePasswordInputV1) => void;
   /** 恢复失败后的重试入口：重发同一条自省，不绕过既有工程门禁。 */
   onRetrySessionRestore?: () => void;
+  /** 登出：宿主把真实会话终止动作交给外壳；失败由外壳呈现可重试。 */
+  onLogout?: () => Promise<void>;
   routeContent?: (
     resolution: Extract<WebRouteResolutionV1, { kind: "matched" }>,
     context: WebContextV1,
@@ -44,6 +48,8 @@ export type AppPropsV1 = Readonly<{
   versionAuditSummary?: ReactNode;
   relatedObjects?: ReactNode;
   agentContribution?: AppShellPropsV1["agentContribution"];
+  /** 把真实工程上下文同步给宿主，供 EngineeringProvider 等上层门禁使用。 */
+  onContextChange?: (context: WebContextV1) => void;
 }>;
 
 const initialPathname = (pathname: string | undefined): string => {
@@ -63,6 +69,19 @@ const nextTargetOf = (): string | null => {
 };
 
 const pathOfTarget = (target: string): string => target.split("?")[0] ?? target;
+
+/** 只有真正的会话路由才可接管匿名/受限门禁；业务页面一律不参与。 */
+const isSessionRouteV1 = (
+  resolution: WebRouteResolutionV1 | undefined,
+): resolution is Extract<WebRouteResolutionV1, { kind: "matched" }> =>
+  resolution !== undefined &&
+  resolution.kind === "matched" &&
+  (resolution.route.routeId === "session.login" ||
+    resolution.route.routeId === "session.change-password");
+
+/** 已建立正式或受限会话：此时才提供登出入口。 */
+const isAuthenticatedSessionV1 = (session: SessionStateV1): boolean =>
+  session.kind === "authenticated" || session.kind === "restricted";
 
 const sessionPage = (title: string, content: ReactNode): ReactNode => (
   <div className="session-page">
@@ -150,15 +169,35 @@ const RestrictedPage = ({
 
 const sessionContent = (input: {
   session: SessionStateV1;
+  sessionRoute?: Extract<WebRouteResolutionV1, { kind: "matched" }> | undefined;
   onLogin?: ((value: SessionLoginInputV1) => void) | undefined;
   onChangePassword?: ((value: SessionChangePasswordInputV1) => void) | undefined;
   onRetrySessionRestore?: (() => void) | undefined;
 }): ReactNode => {
   if (input.session.kind === "checking")
     return sessionPage("正在检查会话", <p data-session-state="checking">正在检查会话</p>);
-  if (input.session.kind === "anonymous") return <LoginPage onLogin={input.onLogin} />;
+  // C37 D-17：登录只保留一份实现。注册表提供了 `session.login` renderer 时用迁移后的
+  // 表单（它会 await 真实登录并按 `next` 回跳）；否则退回内联最小表单，
+  // 供不注册路由的独立宿主（如 SSR 外壳测试）继续使用。
+  if (input.session.kind === "anonymous")
+    return isSessionRouteV1(input.sessionRoute) ? (
+      // 委派给迁移后的表单，但仍由外壳标注会话状态：
+      // `data-session-state` 是既有可观察契约，不能因换实现而消失。
+      <div data-session-state="anonymous">
+        {input.sessionRoute!.route.render!(input.sessionRoute!)}
+      </div>
+    ) : (
+      <LoginPage onLogin={input.onLogin} />
+    );
   if (input.session.kind === "restricted")
-    return <RestrictedPage session={input.session} onChangePassword={input.onChangePassword} />;
+    // C37 D-17：受限会话同样委派给已注册的改密路由，避免内联与迁入页两套表单。
+    return isSessionRouteV1(input.sessionRoute) &&
+      input.sessionRoute.route.routeId === "session.change-password" &&
+      input.sessionRoute.route.render !== null ? (
+      input.sessionRoute.route.render(input.sessionRoute)
+    ) : (
+      <RestrictedPage session={input.session} onChangePassword={input.onChangePassword} />
+    );
   if (input.session.kind === "failed")
     return sessionPage(
       "会话不可用",
@@ -223,19 +262,72 @@ const routeContentFor = (input: {
       />
     );
   if (route.render === null) return <UnavailableRoute title={route.title} code="route-missing" />;
-  return input.routeContent?.(input.resolution, input.context) ?? route.render(input.resolution);
+  const node =
+    input.routeContent?.(input.resolution, input.context) ?? route.render(input.resolution);
+  // C37 D-17：注册表拥有路由元数据，React Router 负责匹配与参数。
+  // 迁入页面用 `useParams()` 取 :id 之类的段参数，必须有对应的 <Route> 匹配，
+  // 否则参数恒为空，页面会在发请求前就拒绝。
+  return (
+    <Routes>
+      <Route path={route.path} element={node} />
+    </Routes>
+  );
 };
 
-export const App = (props: AppPropsV1 = {}): ReactNode => {
+/**
+ * Router 内的应用外壳。
+ *
+ * C37 D-17：React Router 6 BrowserRouter 统一拥有 history。页面内 `navigate()`
+ * 走 pushState，不会触发 popstate，因此 pathname 必须来自 Router 的 location，
+ * 否则登录后回跳深链会因本地 pathname 过期而丢失。
+ */
+const RoutedApp = (props: AppPropsV1): ReactNode => {
+  const routerLocation = useLocation();
+  const routerNavigate = useNavigate();
+  // 解析必须带上 search：旧前缀别名要保留 `?project=…`，否则深链回跳会丢工程上下文。
+  return (
+    <AppShellBody
+      {...props}
+      routerPathname={routerLocation.pathname}
+      routerSearch={routerLocation.search}
+      routerNavigate={routerNavigate}
+    />
+  );
+};
+
+/** 不在 Router 内的宿主（如 SSR 外壳测试）：保留自持 history 行为。 */
+const SelfHostedApp = (props: AppPropsV1): ReactNode => <AppShellBody {...props} />;
+
+export const App = (props: AppPropsV1 = {}): ReactNode =>
+  useInRouterContext() ? <RoutedApp {...props} /> : <SelfHostedApp {...props} />;
+
+const AppShellBody = ({
+  routerPathname,
+  routerSearch,
+  routerNavigate,
+  ...props
+}: AppPropsV1 & {
+  readonly routerPathname?: string;
+  readonly routerSearch?: string;
+  readonly routerNavigate?: (to: string, options?: { replace?: boolean }) => void;
+}): ReactNode => {
   const registry = props.registry ?? WEB_ROUTE_REGISTRY_V1;
-  const [pathname, setPathname] = useState(() => initialPathname(props.pathname));
+  // C37 D-17：React Router 6 BrowserRouter 统一拥有 history。
+  // 页面内 `navigate()` 走 pushState，不会触发 popstate；因此在 Router 内必须以
+  // Router 的 location 为准，否则登录后回跳深链会因本地 pathname 过期而丢失。
+  // 不在 Router 内（如 SSR 外壳测试）时回退到既有自持 history。
+  const inRouter = routerPathname !== undefined;
+  const [selfPathname, setSelfPathname] = useState(() => initialPathname(props.pathname));
+  const pathname = inRouter ? routerPathname : selfPathname;
   const session: SessionStateV1 = props.session ?? { kind: "anonymous" };
   const [context, setContext] = useState<WebContextV1>(
     () => props.context ?? INITIAL_WEB_CONTEXT_V1,
   );
-  const resolution = useMemo(() => resolveWebRoute(pathname, registry), [pathname, registry]);
-  const sessionRoute =
-    resolution.kind === "matched" && resolution.route.section === null ? resolution : undefined;
+  const routeTarget = routerSearch === undefined ? pathname : `${pathname}${routerSearch}`;
+  const resolution = useMemo(() => resolveWebRoute(routeTarget, registry), [routeTarget, registry]);
+  // 只有会话门禁路由才算 sessionRoute；Agent 与系统管理虽是辅助入口（section 为 null），
+  // 却是合法业务深链，登录成功后必须原样返回，不能被重定向到概览。
+  const sessionRoute = isSessionRouteV1(resolution) ? resolution : undefined;
   // 匿名与受限都带原深链回跳：登录或改密完成后回到进入会话门之前的那一页。
   // 已经带着 `next` 时直接沿用，不把会话页自身再套一层。
   const currentUrl = (): string =>
@@ -254,9 +346,13 @@ export const App = (props: AppPropsV1 = {}): ReactNode => {
           : `/change-password?next=${encodeURIComponent(returnTarget())}`
         : session.kind === "authenticated"
           ? (nextTargetOf() ??
-            (resolution.kind === "redirect" || sessionRoute !== undefined
-              ? "/overview"
-              : undefined))
+            (resolution.kind === "redirect"
+              ? // 旧前缀别名等重定向要跳到它自己的目标；
+                // 否则深链会被"统一回概览"吞掉。
+                resolution.to
+              : sessionRoute !== undefined
+                ? "/overview"
+                : undefined))
           : undefined;
   const effectiveResolution =
     session.kind === "authenticated" &&
@@ -264,8 +360,8 @@ export const App = (props: AppPropsV1 = {}): ReactNode => {
       ? resolveWebRoute("/overview", registry)
       : resolution;
   useEffect(() => {
-    if (props.pathname !== undefined || typeof window === "undefined") return undefined;
-    const onPopState = (): void => setPathname(window.location.pathname);
+    if (props.pathname !== undefined || typeof window === "undefined" || inRouter) return undefined;
+    const onPopState = (): void => setSelfPathname(window.location.pathname);
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, [props.pathname]);
@@ -277,21 +373,65 @@ export const App = (props: AppPropsV1 = {}): ReactNode => {
     )
       return;
     if (pathname === pathOfTarget(browserTarget)) return;
-    window.history.replaceState({}, "", browserTarget);
-    setPathname(pathOfTarget(browserTarget));
+    // Router 内交由 Router 推进历史，保证 location 与页面看到的 pathname 一致。
+    if (inRouter) routerNavigate?.(browserTarget, { replace: true });
+    else {
+      window.history.replaceState({}, "", browserTarget);
+      setSelfPathname(pathOfTarget(browserTarget));
+    }
   }, [browserTarget, pathname, props.pathname]);
+  // 登录/改密后由 `next` 回到带 `?project=` 的深链时，URL 才是工程上下文的真实来源。
+  // 宿主只在挂载时读过一次 URL，之后不再同步——这会让回跳后的页面永远停在空工程。
+  // 依赖整条路由目标而不只是 pathname：同一路径上换 `?project=`（浏览器前进后退、
+  // 页面内 pushState）同样是真实的工程切换，漏掉它会让旧工程的在途读取与节拍继续跑。
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const projectFromUrl = new URLSearchParams(window.location.search).get("project");
+    if (projectFromUrl !== null && projectFromUrl !== context.projectId) {
+      contextChange({ type: "project-selected", projectId: projectFromUrl });
+    }
+  }, [routeTarget]);
+
   const navigate = (routeId: string): void => {
     const target = registry.byId(routeId);
     if (target === undefined || target.path.includes(":")) return;
-    if (typeof window !== "undefined") window.history.pushState({}, "", target.path);
-    setPathname(target.path);
+    if (inRouter) routerNavigate?.(target.path);
+    else {
+      if (typeof window !== "undefined") window.history.pushState({}, "", target.path);
+      setSelfPathname(target.path);
+    }
+  };
+  /**
+   * 上下文栏是工程选择的真实来源，选完必须写回地址栏。
+   * 不写回有两个后果：URL→上下文的同步（依赖整条路由目标）会在同一页上任何 search
+   * 变化时把工程拽回旧值，刷新页面也退回旧工程。资料来源声明属于旧工程，一并丢掉。
+   */
+  const writeProjectToUrl = (projectId: string | null): void => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("project") === projectId) return;
+    if (projectId === null) params.delete("project");
+    else params.set("project", projectId);
+    params.delete("assessmentSources");
+    const query = params.toString();
+    const target = `${window.location.pathname}${query === "" ? "" : `?${query}`}`;
+    if (inRouter) routerNavigate?.(target, { replace: true });
+    else window.history.replaceState({}, "", target);
   };
   const contextChange = (action: WebContextActionV1): void => {
-    setContext((current) => reduceWebContext(current, action));
+    setContext((current) => {
+      const next = reduceWebContext(current, action);
+      // 宿主（main.tsx）需要在同一棵树上提供工程上下文，必须看到真实状态，
+      // 否则它持有的只是一份初始快照。
+      props.onContextChange?.(next);
+      return next;
+    });
+    if (action.type === "project-selected") writeProjectToUrl(action.projectId ?? null);
   };
   if (session.kind !== "authenticated")
     return sessionContent({
       session,
+      ...(sessionRoute === undefined ? {} : { sessionRoute }),
       onLogin: props.onLogin,
       onChangePassword: props.onChangePassword,
       onRetrySessionRestore: props.onRetrySessionRestore,
@@ -318,6 +458,8 @@ export const App = (props: AppPropsV1 = {}): ReactNode => {
       processNodeOptions={props.processNodeOptions}
       onNavigate={navigate}
       onContextChange={contextChange}
+      onLogout={props.onLogout}
+      sessionAuthenticated={isAuthenticatedSessionV1(session)}
       initialDockPanel={props.initialDockPanel}
       evidence={props.evidence}
       evidenceContextRevision={props.evidenceContextRevision}

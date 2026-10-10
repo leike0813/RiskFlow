@@ -37,6 +37,7 @@ import * as qualityEvaluationReportIndexMigration from "../../src/postgres/migra
 import * as humanDecisionFeedbackMigration from "../../src/postgres/migrations/warning-response/wire-human-decision-and-feedback-commands/000053_human_decision_feedback.js";
 import * as riskRecordAssessmentScopeMigration from "../../src/postgres/migrations/risk-identification/deliver-assessment-warning-and-response-ui/000054_risk_record_assessment_scope.js";
 import * as assessmentEntryCatalogCursorKeysMigration from "../../src/postgres/migrations/engineering-data/fix-assessment-entry-read-seam/000055_assessment_entry_catalog_cursor_keys.js";
+import * as deploymentOperationsMigration from "../../src/postgres/migrations/platform/deliver-offline-private-deployment-and-operations/000056_deployment_operations.js";
 
 export interface AuthPostgresFixture extends PostgresTestFixture {
   runMigrations(): Promise<void>;
@@ -212,6 +213,13 @@ export const startAuthPostgresFixture = async (): Promise<AuthPostgresFixture> =
         "engineering-data/fix-assessment-entry-read-seam/000055_assessment_entry_catalog_cursor_keys.ts",
       ),
       assessmentEntryCatalogCursorKeysMigration,
+    ],
+    [
+      resolve(
+        base.productionMigrationRoot,
+        "platform/deliver-offline-private-deployment-and-operations/000056_deployment_operations.ts",
+      ),
+      deploymentOperationsMigration,
     ],
     [
       resolve(

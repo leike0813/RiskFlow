@@ -1,0 +1,53 @@
+.wc-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.wc-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.wc-filter-label {
+  font-size: 13px;
+  color: var(--text-2);
+  margin-right: 4px;
+}
+
+.wc-chip {
+  font-size: 13px;
+  line-height: 20px;
+  padding: 3px 12px;
+  border-radius: 13px;
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  background: var(--card);
+}
+
+.wc-chip:hover {
+  color: var(--text);
+}
+
+.wc-chip--active,
+.wc-chip--active:hover {
+  color: var(--blue);
+  border-color: var(--blue);
+  background: var(--blue-soft);
+  font-weight: 600;
+}
+
+.wc-id-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.wc-empty {
+  padding: 24px 12px;
+  color: var(--text-2);
+  font-size: 13px;
+}

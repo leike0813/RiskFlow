@@ -4,7 +4,9 @@
 
 ## 1. 架构结论
 
-RiskFlow 首期采用 TypeScript 模块化单体。React 前端、Node.js API 和 Node.js LangGraph Worker 可以独立运行，但共享同一套领域模块与 Zod 契约。`llama.cpp` 以独立推理进程部署，通过模型网关接入；识别、评估、预警等业务能力不拆成微服务。
+RiskFlow 首期采用 TypeScript 模块化单体。完整 React 业务界面统一由 `apps/web` 提供，Electron 桌面客户端加载其内网 HTTPS 入口，电脑浏览器访问同一界面。Node.js API 与 LangGraph Worker 在服务器独立运行并共享领域模块与 Zod 契约；`llama.cpp` 以独立推理进程部署，通过模型网关接入。识别、评估、预警等业务能力不拆成微服务。
+
+桌面与后续多终端的具体边界见[桌面客户端与多终端架构](desktop-client-architecture.md)。该目标由 C37 实施；当前代码仍为三个应用、三个共享包，尚无 Electron 客户端。
 
 四层架构负责约束依赖方向和保持双专利步骤可追踪，六个领域模块负责业务事实的所有权。`@langchain/langgraph` 是唯一主流程编排核心，负责运行、暂停、恢复和路由，不拥有风险事实，也不代替业务数据库。
 
@@ -76,13 +78,19 @@ Agent 任务、Agent 交互和 LangGraph 工作流是应用模块。统一 Agent
 
 ```mermaid
 flowchart TB
-    Browser[内网浏览器]
-    Web[React 静态前端]
-    API[Node.js API 进程]
-    Worker[Node.js LangGraph Worker]
-    ModelGateway[模型网关适配器]
-    Llama[llama.cpp 推理进程]
-    Data[(业务与检索基础设施)]
+    Browser[内网浏览器 / Electron 客户端]
+    subgraph AppVM[应用虚拟机]
+        Web[HTTPS / React 静态前端]
+        API[Node.js API 进程]
+        Worker[Node.js LangGraph Worker]
+        ModelGateway[模型网关适配器]
+    end
+    subgraph InferenceVM[推理虚拟机 / GPU 直通]
+        Llama[llama.cpp 推理进程]
+    end
+    subgraph DataVM[数据虚拟机]
+        Data[(PostgreSQL / Qdrant / 不可变工件)]
+    end
     Source[文件、数据库、监测接口]
 
     Browser --> Web
@@ -101,7 +109,10 @@ flowchart TB
 2. `api`：鉴权、项目上下文、命令提交、查询、Agent 会话和 SSE/流式运行事件出口。
 3. `worker`：执行 `riskFlowGraph` 及子图。它与 API 使用相同的 TypeScript 领域包，但耗时推理、解析和重评估不占用 API 进程。
 4. `llama-server`：`llama.cpp` 推理进程。最低硬件验收候选为 Qwen3.8-27B `Q4_K_M`、单槽、32K 总上下文、F16 KV、关闭 MTP；模型名称和量化文件不进入业务代码。
-5. 数据基础设施：承载业务记录、LangGraph 检查点、事务事件、原始资料、全文/向量索引和关联图查询。具体产品与物理拆分由后续存储票据决定。
+5. 数据基础设施：PostgreSQL 保存业务记录、LangGraph 检查点和事务事件，C04 工件目录保存不可变文件，Qdrant 与 BM25 是可重建检索投影，不另设图库。
+6. `desktop`：Electron 主进程与必要本机能力，仅加载应用 VM 的 HTTPS 页面，不运行领域服务或持有服务器凭据。
+
+三台 VM 位于同一台物理服务器，只提供资源与进程隔离。部署不依赖公网；同机副本用于逻辑回退，不承诺高可用、独立备份或生产级 RPO/RTO。C37 使用 systemd 管理进程与固定数据服务容器，Caddy 2.11.7 提供同源 HTTPS。C04 工件留在数据 VM 本地存储，应用 VM 使用有界、双向 TLS 的 put/open 流接缝；维护核对在数据 VM 本地执行，引用检查仍在原 PostgreSQL 事务内。Docker Compose 不是既定部署前提。
 
 开发环境可以合并 API 与 Worker 进程；生产部署保留分进程能力。两者属于同一个业务系统，不通过内部 REST 互相包装领域调用。
 
@@ -264,30 +275,17 @@ LLM 输出始终是候选结果，必须经过 Zod Schema、证据引用、业�
 
 ```text
 apps/
-  web/                         React 界面
+  web/                         唯一 React 业务界面
+  desktop/                     Electron HTTPS 客户端，待 C37 创建
   api/                         HTTP、SSE、Agent 会话与应用命令
   worker/                      LangGraph 运行入口
 packages/
-  domain-vocabulary/           专利固定枚举与共同标识
-  data-access/
-    engineering-data/          工程数据模块
-  knowledge-modeling/
-    knowledge-base/            知识建模模块
-  intelligent-reasoning/
-    risk-identification/       风险识别模块
-    risk-assessment/           风险评估模块
-  application-output/
-    result-projections/         组合已入库事实的查询与交付投影
-    warning-response/          预警处置模块
-    review-audit/              复核审计模块
-  workflows/
-    risk-flow-graph/            riskFlowGraph 与两个子图
-    agent-runtime/              统一 Agent 任务、工具、预算、增量与审计
-  api-contracts/               组合模块公开 Schema 的传输契约
-  adapters/                    llama.cpp、存储、检索、MCP 等适配器
+  contracts/                   统一词汇、Zod Schema、端口、事件与工作流 DTO
+  core/                        六个领域模块及确定性应用能力
+  adapters/                    PostgreSQL、工件、模型、检索与资料转换适配器
 ```
 
-`api-contracts` 只组合或重导出领域模块已有 Schema，不重新声明领域字段。`adapters` 依赖领域端口，领域模块不依赖具体数据库、向量库或 `llama.cpp` 客户端。
+`contracts` 是跨应用 Schema 的单一事实源，`core` 只依赖 `contracts`，`adapters` 依赖这两个包的公开入口。应用不互相导入源码，领域模块不依赖具体数据库、向量库或 `llama.cpp` 客户端。Desktop 通过 HTTPS 使用 Web，保持一套根 pnpm 工具链。
 
 ## 10. 架构守则与验证点
 

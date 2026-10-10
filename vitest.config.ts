@@ -10,7 +10,12 @@ export default defineConfig({
   test: {
     maxWorkers: 2,
     minWorkers: 1,
-    exclude: [...configDefaults.exclude, "apps/web/test/browser/**", "demo/test/browser/**"],
+    exclude: [
+      ...configDefaults.exclude,
+      "apps/web/test/browser/**",
+      "demo/test/browser/**",
+      "apps/desktop/test/e2e/**",
+    ],
     testTimeout: 30_000,
   },
 });

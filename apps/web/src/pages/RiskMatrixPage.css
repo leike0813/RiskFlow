@@ -1,0 +1,107 @@
+.kmx-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 460px;
+  gap: 16px;
+  align-items: start;
+}
+
+.kmx-caption {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--text-2);
+  text-align: center;
+}
+
+.kmx-side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.kmx-version-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.kmx-version-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.kmx-version-name {
+  color: var(--text-2);
+}
+
+.kmx-version-tags {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.kmx-note {
+  margin-top: 12px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+
+.kmx-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.kmx-empty {
+  padding: 24px 0;
+  color: var(--text-2);
+  font-size: 13px;
+  text-align: center;
+}
+
+.kmx-grid-wrap {
+  overflow-x: auto;
+}
+
+.kmx-grid {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+
+.kmx-grid th,
+.kmx-grid td {
+  border: 1px solid var(--border);
+  padding: 8px 10px;
+  text-align: center;
+}
+
+.kmx-grid thead th {
+  background: var(--page-bg);
+  color: var(--text-2);
+  font-weight: 600;
+}
+
+.kmx-band-range {
+  display: block;
+  font-size: 11px;
+  color: var(--text-2);
+  font-weight: 400;
+}
+
+.kmx-cell {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.kmx-level {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 10px;
+  font-size: 13px;
+}

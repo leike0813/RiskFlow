@@ -1,0 +1,103 @@
+/* 智能 Agent 全屏工作台（/agent）与任务详情（/agent/tasks/:taskId）。
+   布局沿 v2 P-AG-02/P-AG-03 的分区与视觉层级，改为按真实数据长度滚动，不再固定取景高度。 */
+
+.awb-page {
+  display: flex;
+  flex-direction: column;
+}
+
+.awb-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.awb-col {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.awb-col--side {
+  grid-column: 2;
+}
+
+.awb-col--wide {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+}
+
+.awb-task-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.awb-launch {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+
+/* ---- 任务详情页 ---- */
+.agd-page {
+  display: flex;
+  flex-direction: column;
+}
+
+.agd-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.agd-refresh {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.agd-refresh:disabled {
+  color: var(--text-2);
+  background: var(--bluegray-soft);
+  cursor: not-allowed;
+}
+
+.agd-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.agd-sections {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.agd-refs {
+  margin-top: 12px;
+}
+
+.agd-launch {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+
+.agd-nav {
+  grid-column: 1 / -1;
+}

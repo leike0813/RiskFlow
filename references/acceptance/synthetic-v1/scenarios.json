@@ -1,0 +1,2589 @@
+{
+  "schemaVersion": "1",
+  "packId": "riskflow-synthetic-v1",
+  "packVersion": "1",
+  "label": "合成样本，待甲方复核",
+  "labelStatus": "candidate",
+  "cases": [
+    {
+      "caseId": "SYN-DEV-001",
+      "split": "development",
+      "sourceFamily": "development-family-v1",
+      "templateFamily": "dev-templates-v1",
+      "processNode": "变径空间扩挖",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "变径空间扩挖"
+      },
+      "monitoringIndicator": "地表沉降",
+      "inputs": {
+        "documentRefs": [
+          "SYN-DEV-DOC-LOG-变径空间扩挖",
+          "SYN-DEV-DOC-GEOLOGY",
+          "SYN-DEV-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-DEV-MS-ground-settlement"
+        ],
+        "sourceSegmentIds": [
+          "SYN-DEV-SEG-001-LOG",
+          "SYN-DEV-SEG-001-GEO",
+          "SYN-DEV-SEG-001-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 78.0,
+          "groundSettlementMm": 6.4,
+          "scenarioMonitoringValue": 6.4
+        },
+        "inputDescription": "施工日志 01（2026-03-02 白班）：DK12+300 工点 变径空间扩挖 段现场开挖面顶部掉块，出土含水率升高，出土量与推进量偏差扩大；当班记录地层完整岩体、开挖面控制压力 78.0 kPa、地表沉降累计 6.4 mm、地表沉降读数 6.4mm。"
+      }
+    },
+    {
+      "caseId": "SYN-DEV-002",
+      "split": "development",
+      "sourceFamily": "development-family-v1",
+      "templateFamily": "dev-templates-v1",
+      "processNode": "刀盘扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "刀盘扩径"
+      },
+      "monitoringIndicator": "支护结构变形",
+      "inputs": {
+        "documentRefs": [
+          "SYN-DEV-DOC-LOG-刀盘扩径",
+          "SYN-DEV-DOC-GEOLOGY",
+          "SYN-DEV-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-DEV-MS-ground-settlement",
+          "SYN-DEV-MS-lining-deformation"
+        ],
+        "sourceSegmentIds": [
+          "SYN-DEV-SEG-002-LOG",
+          "SYN-DEV-SEG-002-GEO",
+          "SYN-DEV-SEG-002-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 58.0,
+          "groundSettlementMm": 1.8,
+          "scenarioMonitoringValue": 2.2
+        },
+        "inputDescription": "施工日志 02（2026-03-02 白班）：DK12+300 工点 刀盘扩径 段现场开挖面无掉块，出土含水率与出土量平稳；当班记录地层完整岩体、开挖面控制压力 58.0 kPa、地表沉降累计 1.8 mm、支护结构变形读数 2.2mm。"
+      }
+    },
+    {
+      "caseId": "SYN-DEV-003",
+      "split": "development",
+      "sourceFamily": "development-family-v1",
+      "templateFamily": "dev-templates-v1",
+      "processNode": "盾体扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "盾体扩径"
+      },
+      "monitoringIndicator": "支护结构变形",
+      "inputs": {
+        "documentRefs": [
+          "SYN-DEV-DOC-LOG-盾体扩径",
+          "SYN-DEV-DOC-GEOLOGY",
+          "SYN-DEV-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-DEV-MS-ground-settlement",
+          "SYN-DEV-MS-lining-deformation"
+        ],
+        "sourceSegmentIds": [
+          "SYN-DEV-SEG-003-LOG",
+          "SYN-DEV-SEG-003-GEO",
+          "SYN-DEV-SEG-003-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 92.0,
+          "groundSettlementMm": 6.4,
+          "scenarioMonitoringValue": 9.2
+        },
+        "inputDescription": "施工日志 01（2026-03-02 白班）：DK12+300 工点 盾体扩径 段现场管片拼装错台增大，扩挖段喷层出现纵向裂缝；当班记录地层中硬岩、开挖面控制压力 92.0 kPa、地表沉降累计 6.4 mm、支护结构变形读数 9.2mm。"
+      }
+    },
+    {
+      "caseId": "SYN-DEV-004",
+      "split": "development",
+      "sourceFamily": "development-family-v1",
+      "templateFamily": "dev-templates-v1",
+      "processNode": "缩径转换",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "缩径转换"
+      },
+      "monitoringIndicator": "地下水位",
+      "inputs": {
+        "documentRefs": [
+          "SYN-DEV-DOC-LOG-缩径转换",
+          "SYN-DEV-DOC-GEOLOGY",
+          "SYN-DEV-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-DEV-MS-ground-settlement",
+          "SYN-DEV-MS-groundwater-level"
+        ],
+        "sourceSegmentIds": [
+          "SYN-DEV-SEG-004-LOG",
+          "SYN-DEV-SEG-004-GEO",
+          "SYN-DEV-SEG-004-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 66.0,
+          "groundSettlementMm": 1.8,
+          "scenarioMonitoringValue": 0.03
+        },
+        "inputDescription": "施工日志 02（2026-03-02 白班）：DK12+300 工点 缩径转换 段现场管片拼装错台在允许范围内，喷层未见裂缝；当班记录地层中硬岩、开挖面控制压力 66.0 kPa、地表沉降累计 1.8 mm、地下水位读数 0.03m。"
+      }
+    },
+    {
+      "caseId": "SYN-DEV-005",
+      "split": "development",
+      "sourceFamily": "development-family-v1",
+      "templateFamily": "dev-templates-v1",
+      "processNode": "扩径准备",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "粉质黏土",
+        "engineeringStage": "扩径准备"
+      },
+      "monitoringIndicator": "地下水位",
+      "inputs": {
+        "documentRefs": [
+          "SYN-DEV-DOC-LOG-扩径准备",
+          "SYN-DEV-DOC-GEOLOGY",
+          "SYN-DEV-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-DEV-MS-ground-settlement",
+          "SYN-DEV-MS-groundwater-level"
+        ],
+        "sourceSegmentIds": [
+          "SYN-DEV-SEG-005-LOG",
+          "SYN-DEV-SEG-005-GEO",
+          "SYN-DEV-SEG-005-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "粉质黏土",
+          "facePressureKpa": 126.0,
+          "groundSettlementMm": 6.4,
+          "scenarioMonitoringValue": -0.42
+        },
+        "inputDescription": "施工日志 01（2026-03-02 白班）：DK12+300 工点 扩径准备 段现场刀盘前方涌水量增大，出渣泥浆比重升高，舱内水位上升；当班记录地层粉质黏土、开挖面控制压力 126.0 kPa、地表沉降累计 6.4 mm、地下水位读数 -0.42m。"
+      }
+    },
+    {
+      "caseId": "SYN-DEV-006",
+      "split": "development",
+      "sourceFamily": "development-family-v1",
+      "templateFamily": "dev-templates-v1",
+      "processNode": "刀盘扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "刀盘扩径"
+      },
+      "monitoringIndicator": "泥水压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-DEV-DOC-LOG-刀盘扩径",
+          "SYN-DEV-DOC-GEOLOGY",
+          "SYN-DEV-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-DEV-MS-ground-settlement",
+          "SYN-DEV-MS-slurry-chamber-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-DEV-SEG-006-LOG",
+          "SYN-DEV-SEG-006-GEO",
+          "SYN-DEV-SEG-006-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 71.0,
+          "groundSettlementMm": 1.8,
+          "scenarioMonitoringValue": 214.0
+        },
+        "inputDescription": "施工日志 02（2026-03-02 白班）：DK12+300 工点 刀盘扩径 段现场涌水量与出渣泥浆比重平稳，舱内水位无上升；当班记录地层完整岩体、开挖面控制压力 71.0 kPa、地表沉降累计 1.8 mm、泥水压力读数 214.0kPa。"
+      }
+    },
+    {
+      "caseId": "SYN-DEV-007",
+      "split": "development",
+      "sourceFamily": "development-family-v1",
+      "templateFamily": "dev-templates-v1",
+      "processNode": "刀盘扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "上软下硬复合地层",
+        "engineeringStage": "刀盘扩径"
+      },
+      "monitoringIndicator": "泥水压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-DEV-DOC-LOG-刀盘扩径",
+          "SYN-DEV-DOC-GEOLOGY",
+          "SYN-DEV-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-DEV-MS-ground-settlement",
+          "SYN-DEV-MS-slurry-chamber-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-DEV-SEG-007-LOG",
+          "SYN-DEV-SEG-007-GEO",
+          "SYN-DEV-SEG-007-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "上软下硬复合地层",
+          "facePressureKpa": 158.0,
+          "groundSettlementMm": 6.4,
+          "scenarioMonitoringValue": 392.0
+        },
+        "inputDescription": "施工日志 01（2026-03-02 白班）：DK12+300 工点 刀盘扩径 段现场地表监测点持续下沉，测量棱线断裂后重新布设；当班记录地层上软下硬复合地层、开挖面控制压力 158.0 kPa、地表沉降累计 6.4 mm、泥水压力读数 392.0kPa。"
+      }
+    },
+    {
+      "caseId": "SYN-DEV-008",
+      "split": "development",
+      "sourceFamily": "development-family-v1",
+      "templateFamily": "dev-templates-v1",
+      "processNode": "盾体扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "盾体扩径"
+      },
+      "monitoringIndicator": "注浆压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-DEV-DOC-LOG-盾体扩径",
+          "SYN-DEV-DOC-GEOLOGY",
+          "SYN-DEV-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-DEV-MS-ground-settlement",
+          "SYN-DEV-MS-grouting-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-DEV-SEG-008-LOG",
+          "SYN-DEV-SEG-008-GEO",
+          "SYN-DEV-SEG-008-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 76.0,
+          "groundSettlementMm": 1.8,
+          "scenarioMonitoringValue": 196.0
+        },
+        "inputDescription": "施工日志 02（2026-03-02 白班）：DK12+300 工点 盾体扩径 段现场地表沉降点在连续三个观测周期内无累积下沉；当班记录地层中硬岩、开挖面控制压力 76.0 kPa、地表沉降累计 1.8 mm、注浆压力读数 196.0kPa。"
+      }
+    },
+    {
+      "caseId": "SYN-DEV-009",
+      "split": "development",
+      "sourceFamily": "development-family-v1",
+      "templateFamily": "dev-templates-v1",
+      "processNode": "盾体扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "富水中砂层",
+        "engineeringStage": "盾体扩径"
+      },
+      "monitoringIndicator": "注浆压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-DEV-DOC-LOG-盾体扩径",
+          "SYN-DEV-DOC-GEOLOGY",
+          "SYN-DEV-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-DEV-MS-ground-settlement",
+          "SYN-DEV-MS-grouting-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-DEV-SEG-009-LOG",
+          "SYN-DEV-SEG-009-GEO",
+          "SYN-DEV-SEG-009-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "富水中砂层",
+          "facePressureKpa": 172.0,
+          "groundSettlementMm": 6.4,
+          "scenarioMonitoringValue": 486.0
+        },
+        "inputDescription": "施工日志 01（2026-03-02 白班）：DK12+300 工点 盾体扩径 段现场变径推进中驱动电流波动，坡道段设备溜车后重新定位；当班记录地层富水中砂层、开挖面控制压力 172.0 kPa、地表沉降累计 6.4 mm、注浆压力读数 486.0kPa。"
+      }
+    },
+    {
+      "caseId": "SYN-DEV-010",
+      "split": "development",
+      "sourceFamily": "development-family-v1",
+      "templateFamily": "dev-templates-v1",
+      "processNode": "缩径转换",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "缩径转换"
+      },
+      "monitoringIndicator": "盾构姿态参数",
+      "inputs": {
+        "documentRefs": [
+          "SYN-DEV-DOC-LOG-缩径转换",
+          "SYN-DEV-DOC-GEOLOGY",
+          "SYN-DEV-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-DEV-MS-ground-settlement",
+          "SYN-DEV-MS-shield-attitude-frequency"
+        ],
+        "sourceSegmentIds": [
+          "SYN-DEV-SEG-010-LOG",
+          "SYN-DEV-SEG-010-GEO",
+          "SYN-DEV-SEG-010-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 63.0,
+          "groundSettlementMm": 1.8,
+          "scenarioMonitoringValue": 0.035
+        },
+        "inputDescription": "施工日志 02（2026-03-02 白班）：DK12+300 工点 缩径转换 段现场驱动电流平稳，坡道段设备未出现失动力；当班记录地层完整岩体、开挖面控制压力 63.0 kPa、地表沉降累计 1.8 mm、盾构姿态参数读数 0.035deg。"
+      }
+    },
+    {
+      "caseId": "SYN-DEV-011",
+      "split": "development",
+      "sourceFamily": "development-family-v1",
+      "templateFamily": "dev-templates-v1",
+      "processNode": "扩径准备",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "岩溶发育灰岩",
+        "engineeringStage": "扩径准备"
+      },
+      "monitoringIndicator": "盾构姿态参数",
+      "inputs": {
+        "documentRefs": [
+          "SYN-DEV-DOC-LOG-扩径准备",
+          "SYN-DEV-DOC-GEOLOGY",
+          "SYN-DEV-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-DEV-MS-ground-settlement",
+          "SYN-DEV-MS-shield-attitude-frequency"
+        ],
+        "sourceSegmentIds": [
+          "SYN-DEV-SEG-011-LOG",
+          "SYN-DEV-SEG-011-GEO",
+          "SYN-DEV-SEG-011-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "岩溶发育灰岩",
+          "facePressureKpa": 186.0,
+          "groundSettlementMm": 6.4,
+          "scenarioMonitoringValue": 0.062
+        },
+        "inputDescription": "施工日志 01（2026-03-02 白班）：DK12+300 工点 扩径准备 段现场狭小空间内拼装构件错位，连接螺栓复紧扭矩低于记录值；当班记录地层岩溶发育灰岩、开挖面控制压力 186.0 kPa、地表沉降累计 6.4 mm、盾构姿态参数读数 0.062deg。"
+      }
+    },
+    {
+      "caseId": "SYN-DEV-012",
+      "split": "development",
+      "sourceFamily": "development-family-v1",
+      "templateFamily": "dev-templates-v1",
+      "processNode": "盾体扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "盾体扩径"
+      },
+      "monitoringIndicator": "地表沉降",
+      "inputs": {
+        "documentRefs": [
+          "SYN-DEV-DOC-LOG-盾体扩径",
+          "SYN-DEV-DOC-GEOLOGY",
+          "SYN-DEV-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-DEV-MS-ground-settlement"
+        ],
+        "sourceSegmentIds": [
+          "SYN-DEV-SEG-012-LOG",
+          "SYN-DEV-SEG-012-GEO",
+          "SYN-DEV-SEG-012-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 69.0,
+          "groundSettlementMm": 1.8,
+          "scenarioMonitoringValue": 1.8
+        },
+        "inputDescription": "施工日志 02（2026-03-02 白班）：DK12+300 工点 盾体扩径 段现场拼装构件对位偏差未扩大，连接螺栓复紧扭矩达标；当班记录地层中硬岩、开挖面控制压力 69.0 kPa、地表沉降累计 1.8 mm、地表沉降读数 1.8mm。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-013",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "变径空间扩挖",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "变径空间扩挖"
+      },
+      "monitoringIndicator": "地表沉降",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-变径空间扩挖",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-013-LOG",
+          "SYN-TRIAL-SEG-013-GEO",
+          "SYN-TRIAL-SEG-013-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 84.0,
+          "groundSettlementMm": 4.6,
+          "scenarioMonitoringValue": 4.6
+        },
+        "inputDescription": "巡检单 01：DK12+480 工点 变径空间扩挖 巡检发现开挖面顶部掉块，出土含水率升高，出土量与推进量偏差扩大；当班量测 地表沉降 4.6mm。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-014",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "缩径转换",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "缩径转换"
+      },
+      "monitoringIndicator": "盾构姿态参数",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-缩径转换",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-shield-attitude-frequency"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-014-LOG",
+          "SYN-TRIAL-SEG-014-GEO",
+          "SYN-TRIAL-SEG-014-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 54.0,
+          "groundSettlementMm": 0.8,
+          "scenarioMonitoringValue": 0.035
+        },
+        "inputDescription": "巡检单 06：DK12+480 工点 缩径转换 巡检发现开挖面无掉块，出土含水率与出土量平稳；当班量测 盾构姿态参数 0.035deg。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-015",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "刀盘扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "粉质黏土",
+        "engineeringStage": "刀盘扩径"
+      },
+      "monitoringIndicator": "支护结构变形",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-刀盘扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-lining-deformation"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-015-LOG",
+          "SYN-TRIAL-SEG-015-GEO",
+          "SYN-TRIAL-SEG-015-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "粉质黏土",
+          "facePressureKpa": 104.0,
+          "groundSettlementMm": 12.7,
+          "scenarioMonitoringValue": 10.8
+        },
+        "inputDescription": "交班记录 02：DK12+480 工点 刀盘扩径 交接时复核开挖面顶部掉块，出土含水率升高，出土量与推进量偏差扩大；地表沉降累计 12.7 mm，支护结构变形 读数 10.8mm。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-016",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "变径空间扩挖",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "变径空间扩挖"
+      },
+      "monitoringIndicator": "地表沉降",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-变径空间扩挖",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-016-LOG",
+          "SYN-TRIAL-SEG-016-GEO",
+          "SYN-TRIAL-SEG-016-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 62.0,
+          "groundSettlementMm": 1.6,
+          "scenarioMonitoringValue": 1.6
+        },
+        "inputDescription": "交班记录 07：DK12+480 工点 变径空间扩挖 交接时复核开挖面无掉块，出土含水率与出土量平稳；地表沉降累计 1.6 mm，地表沉降 读数 1.6mm。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-017",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "缩径转换",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "上软下硬复合地层",
+        "engineeringStage": "缩径转换"
+      },
+      "monitoringIndicator": "地下水位",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-缩径转换",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-groundwater-level"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-017-LOG",
+          "SYN-TRIAL-SEG-017-GEO",
+          "SYN-TRIAL-SEG-017-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "上软下硬复合地层",
+          "facePressureKpa": 132.0,
+          "groundSettlementMm": 18.3,
+          "scenarioMonitoringValue": -1.05
+        },
+        "inputDescription": "异常调查初判 03：DK12+480 工点 缩径转换 现场开挖面顶部掉块，出土含水率升高，出土量与推进量偏差扩大；地下水位 实测 -1.05m，地层 上软下硬复合地层。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-018",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "刀盘扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "刀盘扩径"
+      },
+      "monitoringIndicator": "支护结构变形",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-刀盘扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-lining-deformation"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-018-LOG",
+          "SYN-TRIAL-SEG-018-GEO",
+          "SYN-TRIAL-SEG-018-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 70.0,
+          "groundSettlementMm": 2.4,
+          "scenarioMonitoringValue": 3.6
+        },
+        "inputDescription": "异常调查初判 08：DK12+480 工点 刀盘扩径 现场开挖面无掉块，出土含水率与出土量平稳；支护结构变形 实测 3.6mm，地层 完整岩体。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-019",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "变径空间扩挖",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "富水中砂层",
+        "engineeringStage": "变径空间扩挖"
+      },
+      "monitoringIndicator": "泥水压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-变径空间扩挖",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-slurry-chamber-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-019-LOG",
+          "SYN-TRIAL-SEG-019-GEO",
+          "SYN-TRIAL-SEG-019-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "富水中砂层",
+          "facePressureKpa": 171.0,
+          "groundSettlementMm": 26.4,
+          "scenarioMonitoringValue": 418.0
+        },
+        "inputDescription": "巡检单 04：DK12+480 工点 变径空间扩挖 巡检发现开挖面顶部掉块，出土含水率升高，出土量与推进量偏差扩大；当班量测 泥水压力 418.0kPa。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-020",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "缩径转换",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "缩径转换"
+      },
+      "monitoringIndicator": "地下水位",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-缩径转换",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-groundwater-level"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-020-LOG",
+          "SYN-TRIAL-SEG-020-GEO",
+          "SYN-TRIAL-SEG-020-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 73.0,
+          "groundSettlementMm": 3.1,
+          "scenarioMonitoringValue": 0.05
+        },
+        "inputDescription": "巡检单 09：DK12+480 工点 缩径转换 巡检发现开挖面无掉块，出土含水率与出土量平稳；当班量测 地下水位 0.05m。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-021",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "刀盘扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "岩溶发育灰岩",
+        "engineeringStage": "刀盘扩径"
+      },
+      "monitoringIndicator": "注浆压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-刀盘扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-grouting-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-021-LOG",
+          "SYN-TRIAL-SEG-021-GEO",
+          "SYN-TRIAL-SEG-021-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "岩溶发育灰岩",
+          "facePressureKpa": 194.0,
+          "groundSettlementMm": 34.2,
+          "scenarioMonitoringValue": 522.0
+        },
+        "inputDescription": "交班记录 05：DK12+480 工点 刀盘扩径 交接时复核开挖面顶部掉块，出土含水率升高，出土量与推进量偏差扩大；地表沉降累计 34.2 mm，注浆压力 读数 522.0kPa。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-022",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "变径空间扩挖",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "变径空间扩挖"
+      },
+      "monitoringIndicator": "泥水压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-变径空间扩挖",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-slurry-chamber-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-022-LOG",
+          "SYN-TRIAL-SEG-022-GEO",
+          "SYN-TRIAL-SEG-022-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 79.0,
+          "groundSettlementMm": 3.9,
+          "scenarioMonitoringValue": 252.0
+        },
+        "inputDescription": "交班记录 10：DK12+480 工点 变径空间扩挖 交接时复核开挖面无掉块，出土含水率与出土量平稳；地表沉降累计 3.9 mm，泥水压力 读数 252.0kPa。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-023",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "盾体扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "粉质黏土",
+        "engineeringStage": "盾体扩径"
+      },
+      "monitoringIndicator": "支护结构变形",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-盾体扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-lining-deformation"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-023-LOG",
+          "SYN-TRIAL-SEG-023-GEO",
+          "SYN-TRIAL-SEG-023-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "粉质黏土",
+          "facePressureKpa": 84.0,
+          "groundSettlementMm": 4.6,
+          "scenarioMonitoringValue": 5.4
+        },
+        "inputDescription": "交班记录 01：DK12+480 工点 盾体扩径 交接时复核管片拼装错台增大，扩挖段喷层出现纵向裂缝；地表沉降累计 4.6 mm，支护结构变形 读数 5.4mm。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-024",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "变径空间扩挖",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "变径空间扩挖"
+      },
+      "monitoringIndicator": "地表沉降",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-变径空间扩挖",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-024-LOG",
+          "SYN-TRIAL-SEG-024-GEO",
+          "SYN-TRIAL-SEG-024-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 54.0,
+          "groundSettlementMm": 0.8,
+          "scenarioMonitoringValue": 0.8
+        },
+        "inputDescription": "交班记录 06：DK12+480 工点 变径空间扩挖 交接时复核管片拼装错台在允许范围内，喷层未见裂缝；地表沉降累计 0.8 mm，地表沉降 读数 0.8mm。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-025",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "缩径转换",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "上软下硬复合地层",
+        "engineeringStage": "缩径转换"
+      },
+      "monitoringIndicator": "地下水位",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-缩径转换",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-groundwater-level"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-025-LOG",
+          "SYN-TRIAL-SEG-025-GEO",
+          "SYN-TRIAL-SEG-025-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "上软下硬复合地层",
+          "facePressureKpa": 104.0,
+          "groundSettlementMm": 12.7,
+          "scenarioMonitoringValue": -0.66
+        },
+        "inputDescription": "异常调查初判 02：DK12+480 工点 缩径转换 现场管片拼装错台增大，扩挖段喷层出现纵向裂缝；地下水位 实测 -0.66m，地层 上软下硬复合地层。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-026",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "盾体扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "盾体扩径"
+      },
+      "monitoringIndicator": "支护结构变形",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-盾体扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-lining-deformation"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-026-LOG",
+          "SYN-TRIAL-SEG-026-GEO",
+          "SYN-TRIAL-SEG-026-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 62.0,
+          "groundSettlementMm": 1.6,
+          "scenarioMonitoringValue": 2.4
+        },
+        "inputDescription": "异常调查初判 07：DK12+480 工点 盾体扩径 现场管片拼装错台在允许范围内，喷层未见裂缝；支护结构变形 实测 2.4mm，地层 完整岩体。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-027",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "变径空间扩挖",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "富水中砂层",
+        "engineeringStage": "变径空间扩挖"
+      },
+      "monitoringIndicator": "泥水压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-变径空间扩挖",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-slurry-chamber-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-027-LOG",
+          "SYN-TRIAL-SEG-027-GEO",
+          "SYN-TRIAL-SEG-027-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "富水中砂层",
+          "facePressureKpa": 132.0,
+          "groundSettlementMm": 18.3,
+          "scenarioMonitoringValue": 401.0
+        },
+        "inputDescription": "巡检单 03：DK12+480 工点 变径空间扩挖 巡检发现管片拼装错台增大，扩挖段喷层出现纵向裂缝；当班量测 泥水压力 401.0kPa。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-028",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "缩径转换",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "缩径转换"
+      },
+      "monitoringIndicator": "地下水位",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-缩径转换",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-groundwater-level"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-028-LOG",
+          "SYN-TRIAL-SEG-028-GEO",
+          "SYN-TRIAL-SEG-028-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 70.0,
+          "groundSettlementMm": 2.4,
+          "scenarioMonitoringValue": 0.02
+        },
+        "inputDescription": "巡检单 08：DK12+480 工点 缩径转换 巡检发现管片拼装错台在允许范围内，喷层未见裂缝；当班量测 地下水位 0.02m。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-029",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "盾体扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "岩溶发育灰岩",
+        "engineeringStage": "盾体扩径"
+      },
+      "monitoringIndicator": "注浆压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-盾体扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-grouting-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-029-LOG",
+          "SYN-TRIAL-SEG-029-GEO",
+          "SYN-TRIAL-SEG-029-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "岩溶发育灰岩",
+          "facePressureKpa": 171.0,
+          "groundSettlementMm": 26.4,
+          "scenarioMonitoringValue": 505.0
+        },
+        "inputDescription": "交班记录 04：DK12+480 工点 盾体扩径 交接时复核管片拼装错台增大，扩挖段喷层出现纵向裂缝；地表沉降累计 26.4 mm，注浆压力 读数 505.0kPa。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-030",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "变径空间扩挖",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "变径空间扩挖"
+      },
+      "monitoringIndicator": "泥水压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-变径空间扩挖",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-slurry-chamber-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-030-LOG",
+          "SYN-TRIAL-SEG-030-GEO",
+          "SYN-TRIAL-SEG-030-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 73.0,
+          "groundSettlementMm": 3.1,
+          "scenarioMonitoringValue": 236.0
+        },
+        "inputDescription": "交班记录 09：DK12+480 工点 变径空间扩挖 交接时复核管片拼装错台在允许范围内，喷层未见裂缝；地表沉降累计 3.1 mm，泥水压力 读数 236.0kPa。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-031",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "缩径转换",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "缩径转换"
+      },
+      "monitoringIndicator": "盾构姿态参数",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-缩径转换",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-shield-attitude-frequency"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-031-LOG",
+          "SYN-TRIAL-SEG-031-GEO",
+          "SYN-TRIAL-SEG-031-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 194.0,
+          "groundSettlementMm": 34.2,
+          "scenarioMonitoringValue": 0.112
+        },
+        "inputDescription": "异常调查初判 05：DK12+480 工点 缩径转换 现场管片拼装错台增大，扩挖段喷层出现纵向裂缝；盾构姿态参数 实测 0.112deg，地层 完整岩体。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-032",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "盾体扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "盾体扩径"
+      },
+      "monitoringIndicator": "注浆压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-盾体扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-grouting-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-032-LOG",
+          "SYN-TRIAL-SEG-032-GEO",
+          "SYN-TRIAL-SEG-032-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 79.0,
+          "groundSettlementMm": 3.9,
+          "scenarioMonitoringValue": 238.0
+        },
+        "inputDescription": "异常调查初判 10：DK12+480 工点 盾体扩径 现场管片拼装错台在允许范围内，喷层未见裂缝；注浆压力 实测 238.0kPa，地层 中硬岩。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-033",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "扩径准备",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "上软下硬复合地层",
+        "engineeringStage": "扩径准备"
+      },
+      "monitoringIndicator": "地下水位",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-扩径准备",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-groundwater-level"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-033-LOG",
+          "SYN-TRIAL-SEG-033-GEO",
+          "SYN-TRIAL-SEG-033-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "上软下硬复合地层",
+          "facePressureKpa": 84.0,
+          "groundSettlementMm": 4.6,
+          "scenarioMonitoringValue": -0.28
+        },
+        "inputDescription": "异常调查初判 01：DK12+480 工点 扩径准备 现场刀盘前方涌水量增大，出渣泥浆比重升高，舱内水位上升；地下水位 实测 -0.28m，地层 上软下硬复合地层。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-034",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "盾体扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "盾体扩径"
+      },
+      "monitoringIndicator": "支护结构变形",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-盾体扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-lining-deformation"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-034-LOG",
+          "SYN-TRIAL-SEG-034-GEO",
+          "SYN-TRIAL-SEG-034-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 54.0,
+          "groundSettlementMm": 0.8,
+          "scenarioMonitoringValue": 1.1
+        },
+        "inputDescription": "异常调查初判 06：DK12+480 工点 盾体扩径 现场涌水量与出渣泥浆比重平稳，舱内水位无上升；支护结构变形 实测 1.1mm，地层 完整岩体。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-035",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "刀盘扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "富水中砂层",
+        "engineeringStage": "刀盘扩径"
+      },
+      "monitoringIndicator": "泥水压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-刀盘扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-slurry-chamber-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-035-LOG",
+          "SYN-TRIAL-SEG-035-GEO",
+          "SYN-TRIAL-SEG-035-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "富水中砂层",
+          "facePressureKpa": 104.0,
+          "groundSettlementMm": 12.7,
+          "scenarioMonitoringValue": 386.0
+        },
+        "inputDescription": "巡检单 02：DK12+480 工点 刀盘扩径 巡检发现刀盘前方涌水量增大，出渣泥浆比重升高，舱内水位上升；当班量测 泥水压力 386.0kPa。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-036",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "扩径准备",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "扩径准备"
+      },
+      "monitoringIndicator": "地下水位",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-扩径准备",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-groundwater-level"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-036-LOG",
+          "SYN-TRIAL-SEG-036-GEO",
+          "SYN-TRIAL-SEG-036-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 62.0,
+          "groundSettlementMm": 1.6,
+          "scenarioMonitoringValue": 0.04
+        },
+        "inputDescription": "巡检单 07：DK12+480 工点 扩径准备 巡检发现涌水量与出渣泥浆比重平稳，舱内水位无上升；当班量测 地下水位 0.04m。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-037",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "盾体扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "岩溶发育灰岩",
+        "engineeringStage": "盾体扩径"
+      },
+      "monitoringIndicator": "注浆压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-盾体扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-grouting-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-037-LOG",
+          "SYN-TRIAL-SEG-037-GEO",
+          "SYN-TRIAL-SEG-037-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "岩溶发育灰岩",
+          "facePressureKpa": 132.0,
+          "groundSettlementMm": 18.3,
+          "scenarioMonitoringValue": 478.0
+        },
+        "inputDescription": "交班记录 03：DK12+480 工点 盾体扩径 交接时复核刀盘前方涌水量增大，出渣泥浆比重升高，舱内水位上升；地表沉降累计 18.3 mm，注浆压力 读数 478.0kPa。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-038",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "刀盘扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "刀盘扩径"
+      },
+      "monitoringIndicator": "泥水压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-刀盘扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-slurry-chamber-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-038-LOG",
+          "SYN-TRIAL-SEG-038-GEO",
+          "SYN-TRIAL-SEG-038-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 70.0,
+          "groundSettlementMm": 2.4,
+          "scenarioMonitoringValue": 219.0
+        },
+        "inputDescription": "交班记录 08：DK12+480 工点 刀盘扩径 交接时复核涌水量与出渣泥浆比重平稳，舱内水位无上升；地表沉降累计 2.4 mm，泥水压力 读数 219.0kPa。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-039",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "扩径准备",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "扩径准备"
+      },
+      "monitoringIndicator": "盾构姿态参数",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-扩径准备",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-shield-attitude-frequency"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-039-LOG",
+          "SYN-TRIAL-SEG-039-GEO",
+          "SYN-TRIAL-SEG-039-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 171.0,
+          "groundSettlementMm": 26.4,
+          "scenarioMonitoringValue": 0.096
+        },
+        "inputDescription": "异常调查初判 04：DK12+480 工点 扩径准备 现场刀盘前方涌水量增大，出渣泥浆比重升高，舱内水位上升；盾构姿态参数 实测 0.096deg，地层 完整岩体。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-040",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "盾体扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "盾体扩径"
+      },
+      "monitoringIndicator": "注浆压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-盾体扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-grouting-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-040-LOG",
+          "SYN-TRIAL-SEG-040-GEO",
+          "SYN-TRIAL-SEG-040-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 73.0,
+          "groundSettlementMm": 3.1,
+          "scenarioMonitoringValue": 224.0
+        },
+        "inputDescription": "异常调查初判 09：DK12+480 工点 盾体扩径 现场涌水量与出渣泥浆比重平稳，舱内水位无上升；注浆压力 实测 224.0kPa，地层 中硬岩。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-041",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "刀盘扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "刀盘扩径"
+      },
+      "monitoringIndicator": "地表沉降",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-刀盘扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-041-LOG",
+          "SYN-TRIAL-SEG-041-GEO",
+          "SYN-TRIAL-SEG-041-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 194.0,
+          "groundSettlementMm": 34.2,
+          "scenarioMonitoringValue": 34.2
+        },
+        "inputDescription": "巡检单 05：DK12+480 工点 刀盘扩径 巡检发现刀盘前方涌水量增大，出渣泥浆比重升高，舱内水位上升；当班量测 地表沉降 34.2mm。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-042",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "扩径准备",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "扩径准备"
+      },
+      "monitoringIndicator": "盾构姿态参数",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-扩径准备",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-shield-attitude-frequency"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-042-LOG",
+          "SYN-TRIAL-SEG-042-GEO",
+          "SYN-TRIAL-SEG-042-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 79.0,
+          "groundSettlementMm": 3.9,
+          "scenarioMonitoringValue": 0.066
+        },
+        "inputDescription": "巡检单 10：DK12+480 工点 扩径准备 巡检发现涌水量与出渣泥浆比重平稳，舱内水位无上升；当班量测 盾构姿态参数 0.066deg。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-043",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "刀盘扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "富水中砂层",
+        "engineeringStage": "刀盘扩径"
+      },
+      "monitoringIndicator": "泥水压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-刀盘扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-slurry-chamber-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-043-LOG",
+          "SYN-TRIAL-SEG-043-GEO",
+          "SYN-TRIAL-SEG-043-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "富水中砂层",
+          "facePressureKpa": 84.0,
+          "groundSettlementMm": 4.6,
+          "scenarioMonitoringValue": 352.0
+        },
+        "inputDescription": "巡检单 01：DK12+480 工点 刀盘扩径 巡检发现地表监测点持续下沉，测量棱线断裂后重新布设；当班量测 泥水压力 352.0kPa。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-044",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "缩径转换",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "缩径转换"
+      },
+      "monitoringIndicator": "地下水位",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-缩径转换",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-groundwater-level"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-044-LOG",
+          "SYN-TRIAL-SEG-044-GEO",
+          "SYN-TRIAL-SEG-044-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 54.0,
+          "groundSettlementMm": 0.8,
+          "scenarioMonitoringValue": 0.06
+        },
+        "inputDescription": "巡检单 06：DK12+480 工点 缩径转换 巡检发现地表沉降点在连续三个观测周期内无累积下沉；当班量测 地下水位 0.06m。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-045",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "盾体扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "岩溶发育灰岩",
+        "engineeringStage": "盾体扩径"
+      },
+      "monitoringIndicator": "注浆压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-盾体扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-grouting-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-045-LOG",
+          "SYN-TRIAL-SEG-045-GEO",
+          "SYN-TRIAL-SEG-045-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "岩溶发育灰岩",
+          "facePressureKpa": 104.0,
+          "groundSettlementMm": 12.7,
+          "scenarioMonitoringValue": 463.0
+        },
+        "inputDescription": "交班记录 02：DK12+480 工点 盾体扩径 交接时复核地表监测点持续下沉，测量棱线断裂后重新布设；地表沉降累计 12.7 mm，注浆压力 读数 463.0kPa。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-046",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "刀盘扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "刀盘扩径"
+      },
+      "monitoringIndicator": "泥水压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-刀盘扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-slurry-chamber-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-046-LOG",
+          "SYN-TRIAL-SEG-046-GEO",
+          "SYN-TRIAL-SEG-046-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 62.0,
+          "groundSettlementMm": 1.6,
+          "scenarioMonitoringValue": 203.0
+        },
+        "inputDescription": "交班记录 07：DK12+480 工点 刀盘扩径 交接时复核地表沉降点在连续三个观测周期内无累积下沉；地表沉降累计 1.6 mm，泥水压力 读数 203.0kPa。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-047",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "缩径转换",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "缩径转换"
+      },
+      "monitoringIndicator": "盾构姿态参数",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-缩径转换",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-shield-attitude-frequency"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-047-LOG",
+          "SYN-TRIAL-SEG-047-GEO",
+          "SYN-TRIAL-SEG-047-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 132.0,
+          "groundSettlementMm": 18.3,
+          "scenarioMonitoringValue": 0.083
+        },
+        "inputDescription": "异常调查初判 03：DK12+480 工点 缩径转换 现场地表监测点持续下沉，测量棱线断裂后重新布设；盾构姿态参数 实测 0.083deg，地层 完整岩体。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-048",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "盾体扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "盾体扩径"
+      },
+      "monitoringIndicator": "注浆压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-盾体扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-grouting-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-048-LOG",
+          "SYN-TRIAL-SEG-048-GEO",
+          "SYN-TRIAL-SEG-048-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 70.0,
+          "groundSettlementMm": 2.4,
+          "scenarioMonitoringValue": 207.0
+        },
+        "inputDescription": "异常调查初判 08：DK12+480 工点 盾体扩径 现场地表沉降点在连续三个观测周期内无累积下沉；注浆压力 实测 207.0kPa，地层 中硬岩。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-049",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "刀盘扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "刀盘扩径"
+      },
+      "monitoringIndicator": "地表沉降",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-刀盘扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-049-LOG",
+          "SYN-TRIAL-SEG-049-GEO",
+          "SYN-TRIAL-SEG-049-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 171.0,
+          "groundSettlementMm": 26.4,
+          "scenarioMonitoringValue": 26.4
+        },
+        "inputDescription": "巡检单 04：DK12+480 工点 刀盘扩径 巡检发现地表监测点持续下沉，测量棱线断裂后重新布设；当班量测 地表沉降 26.4mm。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-050",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "缩径转换",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "缩径转换"
+      },
+      "monitoringIndicator": "盾构姿态参数",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-缩径转换",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-shield-attitude-frequency"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-050-LOG",
+          "SYN-TRIAL-SEG-050-GEO",
+          "SYN-TRIAL-SEG-050-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 73.0,
+          "groundSettlementMm": 3.1,
+          "scenarioMonitoringValue": 0.058
+        },
+        "inputDescription": "巡检单 09：DK12+480 工点 缩径转换 巡检发现地表沉降点在连续三个观测周期内无累积下沉；当班量测 盾构姿态参数 0.058deg。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-051",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "盾体扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "粉质黏土",
+        "engineeringStage": "盾体扩径"
+      },
+      "monitoringIndicator": "支护结构变形",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-盾体扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-lining-deformation"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-051-LOG",
+          "SYN-TRIAL-SEG-051-GEO",
+          "SYN-TRIAL-SEG-051-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "粉质黏土",
+          "facePressureKpa": 194.0,
+          "groundSettlementMm": 34.2,
+          "scenarioMonitoringValue": 23.8
+        },
+        "inputDescription": "交班记录 05：DK12+480 工点 盾体扩径 交接时复核地表监测点持续下沉，测量棱线断裂后重新布设；地表沉降累计 34.2 mm，支护结构变形 读数 23.8mm。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-052",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "刀盘扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "刀盘扩径"
+      },
+      "monitoringIndicator": "地表沉降",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-刀盘扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-052-LOG",
+          "SYN-TRIAL-SEG-052-GEO",
+          "SYN-TRIAL-SEG-052-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 79.0,
+          "groundSettlementMm": 3.9,
+          "scenarioMonitoringValue": 3.9
+        },
+        "inputDescription": "交班记录 10：DK12+480 工点 刀盘扩径 交接时复核地表沉降点在连续三个观测周期内无累积下沉；地表沉降累计 3.9 mm，地表沉降 读数 3.9mm。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-053",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "盾体扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "岩溶发育灰岩",
+        "engineeringStage": "盾体扩径"
+      },
+      "monitoringIndicator": "注浆压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-盾体扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-grouting-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-053-LOG",
+          "SYN-TRIAL-SEG-053-GEO",
+          "SYN-TRIAL-SEG-053-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "岩溶发育灰岩",
+          "facePressureKpa": 84.0,
+          "groundSettlementMm": 4.6,
+          "scenarioMonitoringValue": 441.0
+        },
+        "inputDescription": "交班记录 01：DK12+480 工点 盾体扩径 交接时复核变径推进中驱动电流波动，坡道段设备溜车后重新定位；地表沉降累计 4.6 mm，注浆压力 读数 441.0kPa。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-054",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "扩径准备",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "扩径准备"
+      },
+      "monitoringIndicator": "泥水压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-扩径准备",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-slurry-chamber-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-054-LOG",
+          "SYN-TRIAL-SEG-054-GEO",
+          "SYN-TRIAL-SEG-054-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 54.0,
+          "groundSettlementMm": 0.8,
+          "scenarioMonitoringValue": 188.0
+        },
+        "inputDescription": "交班记录 06：DK12+480 工点 扩径准备 交接时复核驱动电流平稳，坡道段设备未出现失动力；地表沉降累计 0.8 mm，泥水压力 读数 188.0kPa。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-055",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "缩径转换",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "缩径转换"
+      },
+      "monitoringIndicator": "盾构姿态参数",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-缩径转换",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-shield-attitude-frequency"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-055-LOG",
+          "SYN-TRIAL-SEG-055-GEO",
+          "SYN-TRIAL-SEG-055-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 104.0,
+          "groundSettlementMm": 12.7,
+          "scenarioMonitoringValue": 0.071
+        },
+        "inputDescription": "异常调查初判 02：DK12+480 工点 缩径转换 现场变径推进中驱动电流波动，坡道段设备溜车后重新定位；盾构姿态参数 实测 0.071deg，地层 完整岩体。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-056",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "盾体扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "盾体扩径"
+      },
+      "monitoringIndicator": "注浆压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-盾体扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-grouting-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-056-LOG",
+          "SYN-TRIAL-SEG-056-GEO",
+          "SYN-TRIAL-SEG-056-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 62.0,
+          "groundSettlementMm": 1.6,
+          "scenarioMonitoringValue": 189.0
+        },
+        "inputDescription": "异常调查初判 07：DK12+480 工点 盾体扩径 现场驱动电流平稳，坡道段设备未出现失动力；注浆压力 实测 189.0kPa，地层 中硬岩。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-057",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "扩径准备",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "扩径准备"
+      },
+      "monitoringIndicator": "地表沉降",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-扩径准备",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-057-LOG",
+          "SYN-TRIAL-SEG-057-GEO",
+          "SYN-TRIAL-SEG-057-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 132.0,
+          "groundSettlementMm": 18.3,
+          "scenarioMonitoringValue": 18.3
+        },
+        "inputDescription": "巡检单 03：DK12+480 工点 扩径准备 巡检发现变径推进中驱动电流波动，坡道段设备溜车后重新定位；当班量测 地表沉降 18.3mm。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-058",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "缩径转换",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "缩径转换"
+      },
+      "monitoringIndicator": "盾构姿态参数",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-缩径转换",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-shield-attitude-frequency"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-058-LOG",
+          "SYN-TRIAL-SEG-058-GEO",
+          "SYN-TRIAL-SEG-058-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 70.0,
+          "groundSettlementMm": 2.4,
+          "scenarioMonitoringValue": 0.051
+        },
+        "inputDescription": "巡检单 08：DK12+480 工点 缩径转换 巡检发现驱动电流平稳，坡道段设备未出现失动力；当班量测 盾构姿态参数 0.051deg。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-059",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "盾体扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "粉质黏土",
+        "engineeringStage": "盾体扩径"
+      },
+      "monitoringIndicator": "支护结构变形",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-盾体扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-lining-deformation"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-059-LOG",
+          "SYN-TRIAL-SEG-059-GEO",
+          "SYN-TRIAL-SEG-059-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "粉质黏土",
+          "facePressureKpa": 171.0,
+          "groundSettlementMm": 26.4,
+          "scenarioMonitoringValue": 19.6
+        },
+        "inputDescription": "交班记录 04：DK12+480 工点 盾体扩径 交接时复核变径推进中驱动电流波动，坡道段设备溜车后重新定位；地表沉降累计 26.4 mm，支护结构变形 读数 19.6mm。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-060",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "扩径准备",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "扩径准备"
+      },
+      "monitoringIndicator": "地表沉降",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-扩径准备",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-060-LOG",
+          "SYN-TRIAL-SEG-060-GEO",
+          "SYN-TRIAL-SEG-060-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 73.0,
+          "groundSettlementMm": 3.1,
+          "scenarioMonitoringValue": 3.1
+        },
+        "inputDescription": "交班记录 09：DK12+480 工点 扩径准备 交接时复核驱动电流平稳，坡道段设备未出现失动力；地表沉降累计 3.1 mm，地表沉降 读数 3.1mm。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-061",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "缩径转换",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "上软下硬复合地层",
+        "engineeringStage": "缩径转换"
+      },
+      "monitoringIndicator": "地下水位",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-缩径转换",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-groundwater-level"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-061-LOG",
+          "SYN-TRIAL-SEG-061-GEO",
+          "SYN-TRIAL-SEG-061-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "上软下硬复合地层",
+          "facePressureKpa": 194.0,
+          "groundSettlementMm": 34.2,
+          "scenarioMonitoringValue": -2.15
+        },
+        "inputDescription": "异常调查初判 05：DK12+480 工点 缩径转换 现场变径推进中驱动电流波动，坡道段设备溜车后重新定位；地下水位 实测 -2.15m，地层 上软下硬复合地层。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-062",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "盾体扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "盾体扩径"
+      },
+      "monitoringIndicator": "支护结构变形",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-盾体扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-lining-deformation"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-062-LOG",
+          "SYN-TRIAL-SEG-062-GEO",
+          "SYN-TRIAL-SEG-062-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 79.0,
+          "groundSettlementMm": 3.9,
+          "scenarioMonitoringValue": 6.2
+        },
+        "inputDescription": "异常调查初判 10：DK12+480 工点 盾体扩径 现场驱动电流平稳，坡道段设备未出现失动力；支护结构变形 实测 6.2mm，地层 完整岩体。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-063",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "扩径准备",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "扩径准备"
+      },
+      "monitoringIndicator": "盾构姿态参数",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-扩径准备",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-shield-attitude-frequency"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-063-LOG",
+          "SYN-TRIAL-SEG-063-GEO",
+          "SYN-TRIAL-SEG-063-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 84.0,
+          "groundSettlementMm": 4.6,
+          "scenarioMonitoringValue": 0.048
+        },
+        "inputDescription": "异常调查初判 01：DK12+480 工点 扩径准备 现场狭小空间内拼装构件错位，连接螺栓复紧扭矩低于记录值；盾构姿态参数 实测 0.048deg，地层 完整岩体。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-064",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "缩径转换",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "缩径转换"
+      },
+      "monitoringIndicator": "注浆压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-缩径转换",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-grouting-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-064-LOG",
+          "SYN-TRIAL-SEG-064-GEO",
+          "SYN-TRIAL-SEG-064-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 54.0,
+          "groundSettlementMm": 0.8,
+          "scenarioMonitoringValue": 172.0
+        },
+        "inputDescription": "异常调查初判 06：DK12+480 工点 缩径转换 现场拼装构件对位偏差未扩大，连接螺栓复紧扭矩达标；注浆压力 实测 172.0kPa，地层 中硬岩。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-065",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "盾体扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "盾体扩径"
+      },
+      "monitoringIndicator": "地表沉降",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-盾体扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-065-LOG",
+          "SYN-TRIAL-SEG-065-GEO",
+          "SYN-TRIAL-SEG-065-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 104.0,
+          "groundSettlementMm": 12.7,
+          "scenarioMonitoringValue": 12.7
+        },
+        "inputDescription": "巡检单 02：DK12+480 工点 盾体扩径 巡检发现狭小空间内拼装构件错位，连接螺栓复紧扭矩低于记录值；当班量测 地表沉降 12.7mm。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-066",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "扩径准备",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "扩径准备"
+      },
+      "monitoringIndicator": "盾构姿态参数",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-扩径准备",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-shield-attitude-frequency"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-066-LOG",
+          "SYN-TRIAL-SEG-066-GEO",
+          "SYN-TRIAL-SEG-066-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 62.0,
+          "groundSettlementMm": 1.6,
+          "scenarioMonitoringValue": 0.042
+        },
+        "inputDescription": "巡检单 07：DK12+480 工点 扩径准备 巡检发现拼装构件对位偏差未扩大，连接螺栓复紧扭矩达标；当班量测 盾构姿态参数 0.042deg。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-067",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "缩径转换",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "粉质黏土",
+        "engineeringStage": "缩径转换"
+      },
+      "monitoringIndicator": "支护结构变形",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-缩径转换",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-lining-deformation"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-067-LOG",
+          "SYN-TRIAL-SEG-067-GEO",
+          "SYN-TRIAL-SEG-067-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "粉质黏土",
+          "facePressureKpa": 132.0,
+          "groundSettlementMm": 18.3,
+          "scenarioMonitoringValue": 14.1
+        },
+        "inputDescription": "交班记录 03：DK12+480 工点 缩径转换 交接时复核狭小空间内拼装构件错位，连接螺栓复紧扭矩低于记录值；地表沉降累计 18.3 mm，支护结构变形 读数 14.1mm。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-068",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "盾体扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "盾体扩径"
+      },
+      "monitoringIndicator": "地表沉降",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-盾体扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-068-LOG",
+          "SYN-TRIAL-SEG-068-GEO",
+          "SYN-TRIAL-SEG-068-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 70.0,
+          "groundSettlementMm": 2.4,
+          "scenarioMonitoringValue": 2.4
+        },
+        "inputDescription": "交班记录 08：DK12+480 工点 盾体扩径 交接时复核拼装构件对位偏差未扩大，连接螺栓复紧扭矩达标；地表沉降累计 2.4 mm，地表沉降 读数 2.4mm。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-069",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "扩径准备",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "上软下硬复合地层",
+        "engineeringStage": "扩径准备"
+      },
+      "monitoringIndicator": "地下水位",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-扩径准备",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-groundwater-level"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-069-LOG",
+          "SYN-TRIAL-SEG-069-GEO",
+          "SYN-TRIAL-SEG-069-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "上软下硬复合地层",
+          "facePressureKpa": 171.0,
+          "groundSettlementMm": 26.4,
+          "scenarioMonitoringValue": -1.62
+        },
+        "inputDescription": "异常调查初判 04：DK12+480 工点 扩径准备 现场狭小空间内拼装构件错位，连接螺栓复紧扭矩低于记录值；地下水位 实测 -1.62m，地层 上软下硬复合地层。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-070",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "缩径转换",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "完整岩体",
+        "engineeringStage": "缩径转换"
+      },
+      "monitoringIndicator": "支护结构变形",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-缩径转换",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-lining-deformation"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-070-LOG",
+          "SYN-TRIAL-SEG-070-GEO",
+          "SYN-TRIAL-SEG-070-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "完整岩体",
+          "facePressureKpa": 73.0,
+          "groundSettlementMm": 3.1,
+          "scenarioMonitoringValue": 4.9
+        },
+        "inputDescription": "异常调查初判 09：DK12+480 工点 缩径转换 现场拼装构件对位偏差未扩大，连接螺栓复紧扭矩达标；支护结构变形 实测 4.9mm，地层 完整岩体。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-071",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "盾体扩径",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "富水中砂层",
+        "engineeringStage": "盾体扩径"
+      },
+      "monitoringIndicator": "泥水压力",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-盾体扩径",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-slurry-chamber-pressure"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-071-LOG",
+          "SYN-TRIAL-SEG-071-GEO",
+          "SYN-TRIAL-SEG-071-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "富水中砂层",
+          "facePressureKpa": 194.0,
+          "groundSettlementMm": 34.2,
+          "scenarioMonitoringValue": 436.0
+        },
+        "inputDescription": "巡检单 05：DK12+480 工点 盾体扩径 巡检发现狭小空间内拼装构件错位，连接螺栓复紧扭矩低于记录值；当班量测 泥水压力 436.0kPa。"
+      }
+    },
+    {
+      "caseId": "SYN-TRIAL-072",
+      "split": "trial-run",
+      "sourceFamily": "trial-run-family-v1",
+      "templateFamily": "trial-templates-v1",
+      "processNode": "扩径准备",
+      "applicability": {
+        "constructionMethod": "原位变径盾构",
+        "stratumCondition": "中硬岩",
+        "engineeringStage": "扩径准备"
+      },
+      "monitoringIndicator": "地下水位",
+      "inputs": {
+        "documentRefs": [
+          "SYN-TRIAL-DOC-LOG-扩径准备",
+          "SYN-TRIAL-DOC-GEOLOGY",
+          "SYN-TRIAL-DOC-LEDGER"
+        ],
+        "monitoringSeriesIds": [
+          "SYN-TRIAL-MS-ground-settlement",
+          "SYN-TRIAL-MS-groundwater-level"
+        ],
+        "sourceSegmentIds": [
+          "SYN-TRIAL-SEG-072-LOG",
+          "SYN-TRIAL-SEG-072-GEO",
+          "SYN-TRIAL-SEG-072-LEDGER"
+        ],
+        "observedValues": {
+          "stratumGrade": "中硬岩",
+          "facePressureKpa": 79.0,
+          "groundSettlementMm": 3.9,
+          "scenarioMonitoringValue": 0.01
+        },
+        "inputDescription": "巡检单 10：DK12+480 工点 扩径准备 巡检发现拼装构件对位偏差未扩大，连接螺栓复紧扭矩达标；当班量测 地下水位 0.01m。"
+      }
+    }
+  ]
+}

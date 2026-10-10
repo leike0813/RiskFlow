@@ -1,0 +1,307 @@
+{
+  "schemaVersion": "1",
+  "definitionType": "measure-library",
+  "projectRevisionRef": {
+    "kind": "project-revision",
+    "reference": {
+      "entityId": "project-revision-synthetic-v1",
+      "versionId": "1"
+    }
+  },
+  "configurationSetRef": {
+    "entityId": "configuration-set-synthetic-v1",
+    "versionId": "1"
+  },
+  "content": {
+    "measures": [
+      {
+        "measureId": "measure-01",
+        "riskEventCategory": "掌子面稳定性失效",
+        "applicabilityConditions": [
+          {
+            "dimension": "工程阶段数据",
+            "values": [
+              "扩径准备"
+            ]
+          },
+          {
+            "dimension": "施工工法数据",
+            "values": [
+              "原位变径盾构"
+            ]
+          }
+        ],
+        "triggerTypes": [
+          "多指标联合规则命中",
+          "监测指标越限"
+        ],
+        "steps": [
+          {
+            "stepOrdinal": 1,
+            "instruction": "按合成处置流程第一步复核触发指标并暂停变径作业"
+          },
+          {
+            "stepOrdinal": 2,
+            "instruction": "按合成处置流程第二步实施措施并保留处置前后量测记录"
+          }
+        ],
+        "resourceRequirements": [
+          "inspection-crew",
+          "synthetic-material-kit"
+        ],
+        "targetIndicatorIds": [
+          "indicator-consequence-settlement",
+          "indicator-possibility-excavation",
+          "indicator-possibility-stratum"
+        ],
+        "evidenceRequirements": [
+          "monitoring-record",
+          "shift-log"
+        ],
+        "contraindications": [
+          "unverified-trigger-indicator"
+        ]
+      },
+      {
+        "measureId": "measure-02",
+        "riskEventCategory": "支护结构失效",
+        "applicabilityConditions": [
+          {
+            "dimension": "工程阶段数据",
+            "values": [
+              "变径空间扩挖"
+            ]
+          },
+          {
+            "dimension": "施工工法数据",
+            "values": [
+              "原位变径盾构"
+            ]
+          }
+        ],
+        "triggerTypes": [
+          "多指标联合规则命中",
+          "监测指标越限"
+        ],
+        "steps": [
+          {
+            "stepOrdinal": 1,
+            "instruction": "按合成处置流程第一步复核触发指标并暂停变径作业"
+          },
+          {
+            "stepOrdinal": 2,
+            "instruction": "按合成处置流程第二步实施措施并保留处置前后量测记录"
+          }
+        ],
+        "resourceRequirements": [
+          "inspection-crew",
+          "synthetic-material-kit"
+        ],
+        "targetIndicatorIds": [
+          "indicator-consequence-settlement",
+          "indicator-possibility-excavation",
+          "indicator-possibility-stratum"
+        ],
+        "evidenceRequirements": [
+          "monitoring-record",
+          "shift-log"
+        ],
+        "contraindications": [
+          "unverified-trigger-indicator"
+        ]
+      },
+      {
+        "measureId": "measure-03",
+        "riskEventCategory": "渗流突涌",
+        "applicabilityConditions": [
+          {
+            "dimension": "工程阶段数据",
+            "values": [
+              "刀盘扩径"
+            ]
+          },
+          {
+            "dimension": "施工工法数据",
+            "values": [
+              "原位变径盾构"
+            ]
+          }
+        ],
+        "triggerTypes": [
+          "多指标联合规则命中",
+          "监测指标越限"
+        ],
+        "steps": [
+          {
+            "stepOrdinal": 1,
+            "instruction": "按合成处置流程第一步复核触发指标并暂停变径作业"
+          },
+          {
+            "stepOrdinal": 2,
+            "instruction": "按合成处置流程第二步实施措施并保留处置前后量测记录"
+          }
+        ],
+        "resourceRequirements": [
+          "inspection-crew",
+          "synthetic-material-kit"
+        ],
+        "targetIndicatorIds": [
+          "indicator-consequence-settlement",
+          "indicator-possibility-excavation",
+          "indicator-possibility-stratum"
+        ],
+        "evidenceRequirements": [
+          "monitoring-record",
+          "shift-log"
+        ],
+        "contraindications": [
+          "unverified-trigger-indicator"
+        ]
+      },
+      {
+        "measureId": "measure-04",
+        "riskEventCategory": "过挖与地表沉降",
+        "applicabilityConditions": [
+          {
+            "dimension": "工程阶段数据",
+            "values": [
+              "盾体扩径"
+            ]
+          },
+          {
+            "dimension": "施工工法数据",
+            "values": [
+              "原位变径盾构"
+            ]
+          }
+        ],
+        "triggerTypes": [
+          "多指标联合规则命中",
+          "监测指标越限"
+        ],
+        "steps": [
+          {
+            "stepOrdinal": 1,
+            "instruction": "按合成处置流程第一步复核触发指标并暂停变径作业"
+          },
+          {
+            "stepOrdinal": 2,
+            "instruction": "按合成处置流程第二步实施措施并保留处置前后量测记录"
+          }
+        ],
+        "resourceRequirements": [
+          "inspection-crew",
+          "synthetic-material-kit"
+        ],
+        "targetIndicatorIds": [
+          "indicator-consequence-settlement",
+          "indicator-possibility-excavation",
+          "indicator-possibility-stratum"
+        ],
+        "evidenceRequirements": [
+          "monitoring-record",
+          "shift-log"
+        ],
+        "contraindications": [
+          "unverified-trigger-indicator"
+        ]
+      },
+      {
+        "measureId": "measure-05",
+        "riskEventCategory": "施工装备故障",
+        "applicabilityConditions": [
+          {
+            "dimension": "工程阶段数据",
+            "values": [
+              "缩径转换"
+            ]
+          },
+          {
+            "dimension": "施工工法数据",
+            "values": [
+              "原位变径盾构"
+            ]
+          }
+        ],
+        "triggerTypes": [
+          "多指标联合规则命中",
+          "监测指标越限"
+        ],
+        "steps": [
+          {
+            "stepOrdinal": 1,
+            "instruction": "按合成处置流程第一步复核触发指标并暂停变径作业"
+          },
+          {
+            "stepOrdinal": 2,
+            "instruction": "按合成处置流程第二步实施措施并保留处置前后量测记录"
+          }
+        ],
+        "resourceRequirements": [
+          "inspection-crew",
+          "synthetic-material-kit"
+        ],
+        "targetIndicatorIds": [
+          "indicator-consequence-settlement",
+          "indicator-possibility-excavation",
+          "indicator-possibility-stratum"
+        ],
+        "evidenceRequirements": [
+          "monitoring-record",
+          "shift-log"
+        ],
+        "contraindications": [
+          "unverified-trigger-indicator"
+        ]
+      },
+      {
+        "measureId": "measure-06",
+        "riskEventCategory": "装配连接失效",
+        "applicabilityConditions": [
+          {
+            "dimension": "工程阶段数据",
+            "values": [
+              "扩径准备"
+            ]
+          },
+          {
+            "dimension": "施工工法数据",
+            "values": [
+              "原位变径盾构"
+            ]
+          }
+        ],
+        "triggerTypes": [
+          "多指标联合规则命中",
+          "监测指标越限"
+        ],
+        "steps": [
+          {
+            "stepOrdinal": 1,
+            "instruction": "按合成处置流程第一步复核触发指标并暂停变径作业"
+          },
+          {
+            "stepOrdinal": 2,
+            "instruction": "按合成处置流程第二步实施措施并保留处置前后量测记录"
+          }
+        ],
+        "resourceRequirements": [
+          "inspection-crew",
+          "synthetic-material-kit"
+        ],
+        "targetIndicatorIds": [
+          "indicator-consequence-settlement",
+          "indicator-possibility-excavation",
+          "indicator-possibility-stratum"
+        ],
+        "evidenceRequirements": [
+          "monitoring-record",
+          "shift-log"
+        ],
+        "contraindications": [
+          "unverified-trigger-indicator"
+        ]
+      }
+    ]
+  }
+}

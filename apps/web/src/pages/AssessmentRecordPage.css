@@ -1,0 +1,401 @@
+/* 风险评估与预警中心（汇报截图四）：1920×1080 静态取景，布局坐标见设计规格 §7 */
+
+/* ── 页面标题区（h=40） ── */
+.arp-header {
+  align-items: center;
+}
+
+.arp-header-left {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+
+.arp-header .page-subtitle {
+  margin-top: 0;
+  white-space: nowrap;
+}
+
+.arp-meta-tags {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.arp-meta-tag {
+  font-size: 12px;
+  line-height: 18px;
+  padding: 2px 10px;
+  border-radius: 4px;
+  color: var(--text-2);
+  background: var(--bluegray-soft);
+  white-space: nowrap;
+}
+
+/* ── 四张摘要卡（h=104） ── */
+.arp-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  height: 104px;
+  margin-bottom: 16px;
+}
+
+.arp-kpi {
+  min-width: 0;
+}
+
+.arp-kpi .kpi-card {
+  height: 100%;
+}
+
+/* P/C 卡使用工程蓝 */
+.arp-kpi--pc .kpi-value {
+  color: var(--blue);
+}
+
+.arp-kpi--pc .kpi-tag {
+  color: var(--blue);
+  background: var(--blue-soft);
+}
+
+/* ── 主区：矩阵 500 / 指标 700 / 预警 416（h=580） ── */
+.arp-main {
+  display: grid;
+  grid-template-columns: 500px 700px 416px;
+  gap: 16px;
+  height: 580px;
+  margin-bottom: 16px;
+}
+
+/* 5×5 矩阵 */
+.arp-matrix {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.arp-matrix .mx-wrap {
+  flex: 1;
+  min-height: 0;
+}
+
+.arp-matrix-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.arp-matrix-note {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+/* 指标评分明细 */
+.arp .data-table td {
+  padding: 8px 10px;
+  white-space: nowrap;
+}
+
+.arp .data-table .evidence-link {
+  white-space: nowrap;
+}
+
+.arp-cur {
+  font-weight: 600;
+}
+
+.arp-over {
+  display: inline-flex;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 4px;
+  color: var(--risk-1);
+  background: var(--risk-1-soft);
+  white-space: nowrap;
+}
+
+.arp-weights {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.arp-weight-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.arp-weight-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.arp-weight-result {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.arp-weight-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 22px;
+}
+
+.arp-weight-name {
+  width: 118px;
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.arp-weight-track {
+  flex: 1;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--bluegray-soft);
+  overflow: hidden;
+}
+
+.arp-weight-bar {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+}
+
+.arp-weight-bar--p {
+  background: var(--blue);
+}
+
+.arp-weight-bar--c {
+  background: var(--bluegray);
+}
+
+.arp-weight-val {
+  width: 36px;
+  flex-shrink: 0;
+  text-align: right;
+  font-size: 12px;
+  color: var(--text);
+}
+
+/* 预警触发 */
+.arp-warn {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.arp-warn-id {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.arp-warn-link {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.arp-warn-state {
+  font-size: 12px;
+  color: var(--risk-1);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.arp-triggers {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.arp-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  line-height: 24px;
+}
+
+.arp-thresholds {
+  margin-top: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.arp-threshold {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.arp-threshold-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.arp-threshold-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.arp-threshold-desc {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-2);
+}
+
+.arp-threshold-items {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.arp-threshold-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-2);
+}
+
+.arp-warn-foot {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.arp-warn-detail {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+}
+
+/* ── 底行：规则与版本 1060 / 重新评估 572（h=192） ── */
+.arp-bottom {
+  display: grid;
+  grid-template-columns: 1060px 572px;
+  gap: 16px;
+  height: 192px;
+}
+
+.arp-versions {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  height: 100%;
+}
+
+.arp-ver-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding-left: 16px;
+}
+
+.arp-ver-item:first-child {
+  padding-left: 0;
+}
+
+.arp-ver-item + .arp-ver-item {
+  border-left: 1px solid var(--border);
+}
+
+.arp-ver-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.arp-ver-name {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.arp-ver-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.arp-ver-sub {
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.arp-ver-snapshot {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-2);
+}
+
+.arp-ver-item .evidence-link {
+  margin-top: auto;
+}
+
+/* 重新评估 */
+.arp-re {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+}
+
+.arp-re-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.arp-re-label {
+  width: 64px;
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.arp-re-note {
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-2);
+}

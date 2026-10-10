@@ -1,0 +1,19 @@
+{
+  "releaseId": "release-2030-01",
+  "targetHost": "10.0.0.12",
+  "syntheticSample": true,
+  "hardware": {
+    "gpuModel": "NVIDIA GeForce RTX 4090",
+    "gpuVramMb": 24576,
+    "hostMemoryMb": 131072,
+    "cpuModel": "amd-epyc-9354",
+    "os": "ubuntu-24.04-x64"
+  },
+  "thresholds": {
+    "startupLatencyMs": 8000,
+    "projectionQueryP95Ms": 400,
+    "modelFirstTokenMs": 1500,
+    "ocrPageLatencyMs": 12000,
+    "backupQuiesceMs": 60000
+  }
+}

@@ -1,0 +1,33 @@
+.psv {
+  padding: 32px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.psv-loading {
+  color: var(--text-2);
+}
+
+.psv-forbidden {
+  color: var(--bluegray);
+}
+
+.psv-retry {
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.psv-retry:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+}

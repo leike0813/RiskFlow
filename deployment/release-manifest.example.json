@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "releaseId": "release-2030-01",
+  "codeCommit": "0000000000000000000000000000000000000000",
+  "createdAt": "2030-01-01T00:00:00.000Z",
+  "serverCompatibility": {
+    "releaseId": "release-2030-01",
+    "minDesktopReleaseId": "desktop-2030-01"
+  },
+  "desktopCompatibility": {
+    "desktopReleaseId": "desktop-2030-01",
+    "supportedServerReleaseIds": ["release-2030-01"],
+    "supportedElectronVersions": ["44.7.0"],
+    "supportedChromiumVersions": ["152.0.7977.130"],
+    "supportedBundledNodeVersions": ["24.21.0"]
+  },
+  "artifacts": [
+    {
+      "artifactId": "server-bundle",
+      "kind": "server-bundle",
+      "version": "2030.01",
+      "os": "linux-x64",
+      "arch": "x64",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "byteLength": 0,
+      "relativePath": "artifacts/server-bundle.tgz",
+      "officialSource": "internal://riskflow/build/release-2030-01",
+      "licenseRef": "license-riskflow",
+      "sbomRef": "sbom-server-2030-01"
+    },
+    {
+      "artifactId": "web-bundle",
+      "kind": "web-bundle",
+      "version": "2030.01",
+      "os": "linux-x64",
+      "arch": "x64",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "byteLength": 0,
+      "relativePath": "artifacts/web-bundle.tgz",
+      "officialSource": "internal://riskflow/build/release-2030-01",
+      "licenseRef": "license-riskflow",
+      "sbomRef": "sbom-web-2030-01"
+    },
+    {
+      "artifactId": "postgres-image",
+      "kind": "container-image",
+      "version": "18.6-bookworm",
+      "os": "linux-x64",
+      "arch": "x64",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "byteLength": 0,
+      "relativePath": "artifacts/postgres-18.6-bookworm.tar",
+      "digest": "sha256:1c59e2c3c818eaa0f0628f695b36e7c9e362d6b219b36a54a32df645cbd7e1af",
+      "officialSource": "https://registry.internal/postgres",
+      "licenseRef": "license-postgresql",
+      "sbomRef": "sbom-postgres-18.6"
+    },
+    {
+      "artifactId": "qdrant-image",
+      "kind": "container-image",
+      "version": "v1.19.0",
+      "os": "linux-x64",
+      "arch": "x64",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "byteLength": 0,
+      "relativePath": "artifacts/qdrant-v1.19.0.tar",
+      "digest": "sha256:057ee3a8da769fe7310dd3537b4dc7583bf87a95ce8ac43c0af5a46bc580d1fc",
+      "officialSource": "https://registry.internal/qdrant",
+      "licenseRef": "license-qdrant",
+      "sbomRef": "sbom-qdrant-v1.19.0"
+    },
+    {
+      "artifactId": "model-weights",
+      "kind": "model-weights",
+      "version": "q4-km-2030-01",
+      "os": "linux-x64",
+      "arch": "x64",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "byteLength": 0,
+      "relativePath": "models/chat-q4-km.gguf",
+      "officialSource": "internal://riskflow/models/2030-01",
+      "licenseRef": "license-model-chat",
+      "sbomRef": "sbom-model-chat-2030-01"
+    },
+    {
+      "artifactId": "embedding-weights",
+      "kind": "embedding-weights",
+      "version": "embed-2030-01",
+      "os": "linux-x64",
+      "arch": "x64",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "byteLength": 0,
+      "relativePath": "models/embedding.gguf",
+      "officialSource": "internal://riskflow/models/2030-01",
+      "licenseRef": "license-model-embedding",
+      "sbomRef": "sbom-model-embedding-2030-01"
+    },
+    {
+      "artifactId": "ocr-build",
+      "kind": "ocr-build",
+      "version": "pp-structure-v3-2030-01",
+      "os": "linux-x64",
+      "arch": "x64",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "byteLength": 0,
+      "relativePath": "ocr/pp-structure-v3.tgz",
+      "officialSource": "internal://riskflow/ocr/2030-01",
+      "licenseRef": "license-ocr",
+      "sbomRef": "sbom-ocr-2030-01"
+    },
+    {
+      "artifactId": "https-proxy",
+      "kind": "https-proxy",
+      "version": "2.11.7",
+      "os": "linux-x64",
+      "arch": "x64",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "byteLength": 0,
+      "relativePath": "bin/caddy-2.11.7-linux-amd64",
+      "officialSource": "https://github.com/caddyserver/caddy/releases/tag/v2.11.7",
+      "licenseRef": "license-caddy",
+      "sbomRef": "sbom-caddy-2.11.7"
+    }
+  ],
+  "configTemplateRefs": ["config-primary-2030-01"],
+  "finalMigrationVersion": "000056",
+  "operationsManualRef": "manual-operations-2030-01"
+}

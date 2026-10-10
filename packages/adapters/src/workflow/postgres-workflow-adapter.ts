@@ -704,6 +704,19 @@ class WorkflowGraphPersistence {
       if (mapped.code === "IDEMPOTENCY_CONFLICT") {
         return { kind: "idempotency-conflict", priorCommandId: registration.queryResultId };
       }
+      // 同一身份的并发登记，输的那一方不一定走到 `doNothing` 分支：事务可能在
+      // 插入之前就被数据库按序列化/死锁失败拒绝，此时抛出去的是 TRANSACTION_FAILED，
+      // 而不是契约要求的幂等冲突。判定权在最终落库的那一行上，所以回读一次再定性：
+      // 别人的载荷已经占住身份就是幂等冲突，自己那份已经落库就是已登记，
+      // 两种都不是才继续上抛。
+      if (mapped.code === "TRANSACTION_FAILED") {
+        const settled = await this.#selectQuery(registration.projectId, registration.queryResultId);
+        if (settled !== undefined) {
+          return settled.query_result_version_id === registration.queryResultVersionId
+            ? { kind: "registered", replayed: true }
+            : { kind: "idempotency-conflict", priorCommandId: registration.queryResultId };
+        }
+      }
       throw mapped;
     }
   }

@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import type { ContractReferenceV1 } from "@riskflow/contracts/ports";
 
 import {
+  C37_SYSTEM_OPERATION_IDS_V1,
+  createC09SystemOperation,
+  isC37SystemOperationIdV1,
   C09HttpError,
   createC09Client,
   createCommandOperation,
@@ -250,5 +253,52 @@ describe("C10 C09 HTTP 与 OpenAPI 边界", () => {
     expect(error?.error).not.toHaveProperty("message");
     expect(error?.error).not.toHaveProperty("stack");
     expect(error?.message).toBe("TRANSIENT_FAILURE");
+  });
+});
+
+describe("C37 闭合 system operation", () => {
+  it("四条系统操作固定路径，不经过工程模板", () => {
+    expect([...C37_SYSTEM_OPERATION_IDS_V1]).toEqual([
+      "administration.read",
+      "administration.query",
+      "administration.command",
+      "operations.query",
+    ]);
+    expect(
+      createC09SystemOperation({
+        operationId: "administration.read",
+        mode: "query",
+        method: "GET",
+        encode: (input) => input,
+        decode: (response) => response,
+      }).path,
+    ).toBe("/api/v1/administration");
+    expect(
+      createC09SystemOperation({
+        operationId: "operations.query",
+        mode: "query",
+        method: "POST",
+        encode: (input) => input,
+        decode: (response) => response,
+      }).path,
+    ).toBe("/api/v1/operations/queries");
+  });
+
+  it("目录外的 id 一律拒绝，不提供任意 URL 方法", () => {
+    expect(isC37SystemOperationIdV1("administration.read")).toBe(true);
+    expect(isC37SystemOperationIdV1("administration.delete")).toBe(false);
+    expect(isC37SystemOperationIdV1("https://evil.example/steal")).toBe(false);
+  });
+
+  it("系统操作一律要求会话", () => {
+    expect(
+      createC09SystemOperation({
+        operationId: "administration.command",
+        mode: "command",
+        method: "POST",
+        encode: (input) => input,
+        decode: (response) => response,
+      }).requiresSession,
+    ).toBe(true);
   });
 });

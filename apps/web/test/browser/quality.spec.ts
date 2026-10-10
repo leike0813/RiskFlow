@@ -48,7 +48,8 @@ const selectionFor = (projectIds: readonly string[]): string =>
 const pathWithSelection = (pathname: string, projectId: string): string =>
   `${origin()}${pathname}?${selectionFor([projectId, server.forbiddenProjectId])}`;
 
-const deepLinkUrl = (): string => `${pathWithSelection("/assessment", server.projectId)}#evidence`;
+const deepLinkUrl = (): string =>
+  `${pathWithSelection("/assessment/quality", server.projectId)}#evidence`;
 
 /**
  * 启动先自省：有效会话直接进入原页，401 才落到带 `next` 的登录页。
@@ -113,7 +114,7 @@ test("真实 Chromium 完成登录、导航、质量查询、刷新与工程切�
   });
 
   await test.step("登录并读取当前工程的质量摘要", async () => {
-    await page.goto(pathWithSelection("/assessment", server.projectId));
+    await page.goto(pathWithSelection("/assessment/quality", server.projectId));
     await ensureSession(page);
     await expect(page.locator('[data-quality-page="1"]')).toHaveAttribute(
       "data-page-state",
@@ -126,7 +127,7 @@ test("真实 Chromium 完成登录、导航、质量查询、刷新与工程切�
     await page.goto(pathWithSelection("/overview", server.projectId));
     await ensureSession(page);
     await expect(page.locator('[data-quality-page="1"]')).toHaveCount(0);
-    await page.goto(pathWithSelection("/assessment", server.projectId));
+    await page.goto(pathWithSelection("/assessment/quality", server.projectId));
     await ensureSession(page);
     await expect(page.locator('[data-quality-page="1"]')).toHaveAttribute(
       "data-page-state",
@@ -421,7 +422,7 @@ test("被取代的认证请求不会把新代次会话打回失败态", async ({
 });
 
 test("键盘可达与安全失败", async ({ page }) => {
-  await page.goto(pathWithSelection("/assessment", server.projectId));
+  await page.goto(pathWithSelection("/assessment/quality", server.projectId));
   await ensureSession(page);
   await expect(page.locator('[data-quality-page="1"]')).toHaveAttribute("data-page-state", "ready");
 

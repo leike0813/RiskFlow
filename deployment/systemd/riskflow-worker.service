@@ -1,0 +1,28 @@
+# 应用 VM：LangGraph Worker。停止时先停止 claim，再在有限期限内收口。
+[Unit]
+Description=RiskFlow Worker
+After=network-online.target riskflow-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=riskflow
+Group=riskflow
+WorkingDirectory=/opt/riskflow/app
+EnvironmentFile=/etc/riskflow/secrets/worker.env
+ExecStart=/usr/bin/node /opt/riskflow/app/dist/worker/index.js
+# 关闭期限必须大于 drain 预算，否则收口会被强杀并留下未确认租约。
+TimeoutStopSec=45
+KillSignal=SIGTERM
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/riskflow
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

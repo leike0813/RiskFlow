@@ -1,0 +1,145 @@
+{
+  "schemaVersion": "1",
+  "projectId": "synthetic-station-tunnel-project",
+  "validationPolicyRef": {
+    "entityId": "validation-policy-synthetic-v1",
+    "versionId": "1"
+  },
+  "preparationSnapshotRef": {
+    "kind": "identification-preparation-snapshot",
+    "reference": {
+      "entityId": "identification-preparation-snapshot-synthetic-v1",
+      "versionId": "1"
+    }
+  },
+  "generatedAt": "2026-03-01T00:00:00+08:00",
+  "definitionType": "standard-library",
+  "entries": [
+    {
+      "entryId": "standard-01-risk-management",
+      "level": "national",
+      "standardIdentity": "GB 50652-2011 城市轨道交通地下工程建设风险管理规范",
+      "standardVersion": "GB50652-2011",
+      "clauseRefs": [
+        "3.2.4 风险等级标准划分依据",
+        "4.3.1 风险等级四级划分",
+        "表4.3.2 风险接受准则"
+      ],
+      "applicability": {
+        "constructionMethod": [
+          "原位变径盾构",
+          "常规盾构"
+        ],
+        "stratumCondition": [
+          "上软下硬复合地层",
+          "中硬岩",
+          "完整岩体",
+          "富水中砂层",
+          "岩溶发育灰岩",
+          "粉质黏土"
+        ],
+        "engineeringStage": [
+          "刀盘扩径",
+          "变径空间扩挖",
+          "扩径准备",
+          "盾体扩径",
+          "缩径转换"
+        ]
+      },
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-STANDARD-01"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "entryId": "standard-02-monitoring",
+      "level": "national",
+      "standardIdentity": "GB 50911-2013 城市轨道交通工程监测技术规范",
+      "standardVersion": "GB50911-2013",
+      "clauseRefs": [
+        "4.2.2 盾构法隧道管片结构和周围岩土体监测项目",
+        "9.2.2 管片结构竖向位移、净空收敛和地表沉降控制值"
+      ],
+      "applicability": {
+        "constructionMethod": [
+          "常规盾构"
+        ],
+        "stratumCondition": [
+          "上软下硬复合地层",
+          "中硬岩",
+          "完整岩体",
+          "富水中砂层",
+          "岩溶发育灰岩",
+          "粉质黏土"
+        ],
+        "engineeringStage": [
+          "刀盘扩径",
+          "变径空间扩挖",
+          "扩径准备",
+          "盾体扩径",
+          "缩径转换"
+        ]
+      },
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-STANDARD-02"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "entryId": "standard-03-shield-construction",
+      "level": "national",
+      "standardIdentity": "GB 50446-2017 盾构法隧道施工及验收规范",
+      "standardVersion": "GB50446-2017",
+      "clauseRefs": [
+        "7.8.6 气压作业前开挖仓内气压须经计算和试验确定（该条自2023-03-01起废止，仅作历史参考）",
+        "15.5.3 达到预警标准或实测变形值大于允许变形的2/3时警情报送"
+      ],
+      "applicability": {
+        "constructionMethod": [
+          "原位变径盾构",
+          "常规盾构"
+        ],
+        "stratumCondition": [
+          "上软下硬复合地层",
+          "中硬岩",
+          "完整岩体",
+          "富水中砂层",
+          "岩溶发育灰岩",
+          "粉质黏土"
+        ],
+        "engineeringStage": [
+          "刀盘扩径",
+          "变径空间扩挖",
+          "扩径准备",
+          "盾体扩径",
+          "缩径转换"
+        ]
+      },
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-STANDARD-03"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    }
+  ]
+}

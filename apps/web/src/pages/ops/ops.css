@@ -1,0 +1,326 @@
+/* 系统管理域样式（IP-10 五页共用，移植自 v2 ops.css 的分区与层级）。
+   demo 令牌集没有 v2 的 --space-* / --text-* 变量，这里按 demo 既有像素值对齐。 */
+
+.op-context {
+  margin: 0 0 12px;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.op-note {
+  margin: 0 0 12px;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.op-muted {
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.op-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 16px;
+}
+
+.op-action {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.op-action-code {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-2);
+}
+
+.op-btn {
+  border: 1px solid var(--blue);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--blue);
+  padding: 4px 12px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.op-btn:hover:not(:disabled) {
+  background: var(--blue-soft);
+}
+
+.op-btn-primary {
+  background: var(--blue);
+  color: var(--card);
+}
+
+.op-btn-primary:hover:not(:disabled) {
+  background: var(--blue);
+  color: var(--card);
+}
+
+.op-btn-danger {
+  border-color: var(--risk-1);
+  background: var(--risk-1);
+  color: var(--card);
+}
+
+.op-btn-danger:hover:not(:disabled) {
+  background: var(--risk-1);
+  color: var(--card);
+}
+
+.op-btn:disabled {
+  border-color: var(--border);
+  background: var(--bluegray-soft);
+  color: var(--text-2);
+  cursor: not-allowed;
+}
+
+/* 表单：管理动作的输入区。口令输入框只用于单次提交，不做任何缓存。 */
+.op-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.op-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.op-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.op-form-field label {
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.op-form-field input,
+.op-form-field select {
+  height: 30px;
+  min-width: 180px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+}
+
+.op-form-error {
+  margin: 0;
+  color: var(--risk-1-dark);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.op-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.op-chip {
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--card);
+  color: var(--text-2);
+  padding: 3px 12px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.op-chip:hover {
+  color: var(--text);
+}
+
+.op-chip-active,
+.op-chip-active:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+  background: var(--blue-soft);
+  font-weight: 600;
+}
+
+/* 字段分组（详情区）：标签在上、取值在下，按可用宽度自适应列数。 */
+.op-field-grid {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  gap: 12px;
+}
+
+.op-field dt {
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.op-field dd {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  word-break: break-word;
+}
+
+.op-vref {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+
+/* 命令结果回执：只登记已生效引用，不回显任何请求正文。 */
+.op-outcome-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* 左列表 + 右详情的两栏骨架。 */
+.op-master-detail {
+  display: grid;
+  grid-template-columns: 20rem minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.op-object-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.op-object {
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  background: var(--card);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.op-object:hover {
+  border-color: var(--bluegray);
+}
+
+.op-object.is-active {
+  border-color: var(--blue);
+}
+
+.op-object-name {
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text);
+}
+
+.op-object-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-2);
+}
+
+/* 表格式分区（v2 A 骨架表格）：窄屏可横向滚动，不压缩列内容。 */
+.op-table-wrap {
+  overflow-x: auto;
+}
+
+.op-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.op-table th,
+.op-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.op-table th {
+  color: var(--text-2);
+  font-weight: 500;
+  background: var(--bluegray-soft);
+  white-space: nowrap;
+}
+
+/* 勾选确认（管理动作）：高影响动作才用风险色加强，其余保持中性蓝。 */
+.op-confirm {
+  border: 1px solid var(--blue);
+  border-radius: 6px;
+  background: var(--blue-soft);
+  padding: 12px;
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.op-confirm--danger {
+  border-color: var(--risk-1);
+  background: var(--risk-1-soft);
+}
+
+.op-confirm-lead {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.op-confirm-summary {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.op-confirm-ack {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.op-confirm-actions {
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 64rem) {
+  .op-master-detail {
+    grid-template-columns: 1fr;
+  }
+}

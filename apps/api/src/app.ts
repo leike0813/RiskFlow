@@ -393,9 +393,11 @@ const runBusiness = async (input: {
 };
 
 /**
- * D-11：C36 质量查询的请求侧两阶段签发。只有完整 `projection` port 缺席、且窄端口实现
- * 两阶段方法时才接管；先按当前授权预选候选来源版本，再逐版本用同一会话、工程与空间向 C06
- * 精确签发，最后按请求内映射过滤定位引用。返回 `undefined` 表示不接管该请求。
+ * D-21：C36 质量查询的请求侧两阶段签发。
+ *
+ * D-11 原文「完整 projection port 缺席才接管」在 D-21 修正为**只按 queryType 选择**：
+ * 质量查询无论是否同时存在完整 projection 都由 C36 窄口接管，否则 D-21 要求的两阶段
+ * 来源授权会被静默跳过；其它 queryType 一律委派原 projection。返回 `undefined` 表示不接管。
  */
 const qualityProjectionWithGrants = async (input: {
   readonly entry: HttpRouteEntryV1;
@@ -407,9 +409,7 @@ const qualityProjectionWithGrants = async (input: {
   readonly decision: { readonly context: AuthorizationContextV1 };
   readonly domainRequest: unknown;
 }): Promise<unknown | undefined> => {
-  if (input.entry.branch !== "projection.query" || input.ports.projection !== undefined) {
-    return undefined;
-  }
+  if (input.entry.branch !== "projection.query") return undefined;
   const narrow = input.ports.qualityProjectionQuery;
   if (
     narrow?.candidateSourceVersionRefs === undefined ||

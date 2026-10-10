@@ -11,7 +11,7 @@
 - 当前 OpenSpec CLI 为 `1.13.0`；大型交付 change 默认使用项目级 `riskflow-delivery` schema，工件顺序为 `proposal → specs → design → implementation-plan → tasks`。
 - `openspec/specs/`、归档 changes 与 `openspec/config.yaml` 已形成工程事实；后续规划以当前代码、主 specs、直接依赖归档 change 与本路线共同为输入。
 - 生产代码已按本路线滚动交付；现有 `demo/` 仍是汇报原型，不是生产模块，正式基线为 React 19 + pnpm workspace。
-- 正式目录采用三个应用 `apps/web`、`apps/api`、`apps/worker`，以及三个深层共享包 `packages/contracts`、`packages/core`、`packages/adapters`。早期宏观架构原型中更细的多包示意已被后续工具链决策修订。
+- 当前工程基线为三个应用与三个共享包；C37 按已确认的[桌面客户端设计](desktop-client-architecture.md)增加 `apps/desktop`，目标目录为 `apps/web`、`apps/desktop`、`apps/api`、`apps/worker` 与 `packages/contracts`、`packages/core`、`packages/adapters`。完整 UI 归 Web，Desktop 加载同一内网 HTTPS，不复制业务页面。
 - PostgreSQL 是业务事实源，Qdrant 是可重建的双索引投影，本地内容寻址目录保存不可变工件；LangGraph checkpointer 与业务事实分离。
 - 模型统一经 `llama.cpp` 网关调用；MVP 硬件候选为 Qwen3.8-27B `Q4_K_M`、单槽、32K、F16 KV、关闭 MTP。
 - MVP 不包含 CAD 深度解析、实时 MCP、甲方外部系统联调、多渠道通知、LoRA、高可用、多项目规模化或生产级灾备。
@@ -499,7 +499,7 @@
 | ID / Change | 直接依赖 | 主要能力与 interface | 独立验收出口 / 所有权 |
 |---|---|---|---|
 | C36 `deliver-quality-evaluation-module` | C15,C17,C20,C21,C22,C25,C27,C29 | 开发/冻结/甲方三层包、来源家族隔离、总体/切片/逐例报告、三次语义运行、硬门槛、LoRA 准入 | 已确认质量策略全部门槛；确定性 100%；安全硬失败不能被总分掩盖；拥有 quality-evaluation 与报告 adapter |
-| C37 `deliver-offline-private-deployment-and-operations` | C03～C10,C13,C20,C24,C30,C32,C33,C34,C35,C36 | 三 VM、HTTPS/端口、系统秘密文件、离线制品/SBOM/许可证、日志/指标/链路、升级回退、同机逻辑恢复、目标硬件基准 | 断网干净环境安装；三 VM 隔离；4090/128GB 基准；投影重建；秘密不泄露；不宣称 HA/灾备；拥有 deploy/ops |
+| C37 `deliver-offline-private-deployment-and-operations` | C03～C10,C13,C20,C24,C30,C32,C33,C34,C35,C36 | 完整 UI 迁入 apps/web；薄 Electron HTTPS 客户端与四应用工程基线；三 VM、HTTPS/端口、系统秘密文件、离线制品/SBOM/许可证、日志/指标/链路、升级回退、同机逻辑恢复、目标硬件基准 | 真实 HTTPS 页面及桌面入口；冻结平台安装与安全验收；断网干净环境安装；三 VM 隔离；4090/128GB 基准；投影重建；秘密不泄露；不宣称 HA/灾备或移动端已交付；拥有 deploy/ops、Web 迁移与 desktop |
 | C38 `deliver-mvp-acceptance-and-delivery-evidence` | C24,C30,C31,C32,C33,C34,C35,C36,C37 | 冻结验收基线、双向追踪、主线+高风险失败、权限/安全/恢复/部署、缺陷分级、六类交付物和哈希清单 | 全部硬门槛；干净输入完整重跑；阻断缺陷为零；区分技术就绪与甲方验收；拥有 acceptance/evidence |
 
 **G5 技术就绪闸门**：C38 可以基于同形合成或甲方认可样例形成技术就绪。只有甲方认可的脱敏工程资料、风险依据和核查要点到位并现场完整重跑、书面确认后，才形成 MVP 验收通过；该条件工作到位后再创建，不提前 scaffold 空 change。

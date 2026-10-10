@@ -1,0 +1,7 @@
+/* 资料目录页布局 */
+.pjdl-kpis {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}

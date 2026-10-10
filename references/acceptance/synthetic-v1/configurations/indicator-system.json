@@ -1,0 +1,80 @@
+{
+  "schemaVersion": "1",
+  "definitionType": "indicator-system",
+  "projectRevisionRef": {
+    "kind": "project-revision",
+    "reference": {
+      "entityId": "project-revision-synthetic-v1",
+      "versionId": "1"
+    }
+  },
+  "configurationSetRef": {
+    "entityId": "configuration-set-synthetic-v1",
+    "versionId": "1"
+  },
+  "content": {
+    "indicators": [
+      {
+        "indicatorId": "indicator-consequence-settlement",
+        "indicatorType": "后果严重性评估指标",
+        "group": "监测量测与周边环境",
+        "valueKind": "numeric",
+        "applicabilityConditions": [
+          {
+            "dimension": "施工工法数据",
+            "values": [
+              "原位变径盾构"
+            ]
+          }
+        ],
+        "quantizationIntervalRef": {
+          "entityId": "quantization-interval-synthetic-v1",
+          "versionId": "1"
+        },
+        "canonicalUnit": "mm"
+      },
+      {
+        "indicatorId": "indicator-possibility-excavation",
+        "indicatorType": "发生可能性评估指标",
+        "group": "开挖与支护参数",
+        "valueKind": "numeric",
+        "applicabilityConditions": [
+          {
+            "dimension": "施工工法数据",
+            "values": [
+              "原位变径盾构"
+            ]
+          }
+        ],
+        "quantizationIntervalRef": {
+          "entityId": "quantization-interval-synthetic-v1",
+          "versionId": "1"
+        },
+        "canonicalUnit": "kPa"
+      },
+      {
+        "indicatorId": "indicator-possibility-stratum",
+        "indicatorType": "发生可能性评估指标",
+        "group": "地质与围岩条件",
+        "valueKind": "ordinal",
+        "applicabilityConditions": [
+          {
+            "dimension": "地层条件数据",
+            "values": [
+              "上软下硬复合地层",
+              "中硬岩",
+              "完整岩体",
+              "富水中砂层",
+              "岩溶发育灰岩",
+              "粉质黏土"
+            ]
+          }
+        ],
+        "quantizationIntervalRef": {
+          "entityId": "quantization-interval-synthetic-v1",
+          "versionId": "1"
+        }
+      }
+    ]
+  }
+}

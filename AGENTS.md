@@ -85,6 +85,11 @@
 - OpenSpec 主规格定义的领域枚举与分类必须由**领域层单一常量模块**导出，所有调用点通过该模块引用。
 - 工序节点的“必含 5 项”和适用性元数据的“必含 3 个维度”均为**最小覆盖集**：可扩展，不可删减；变更最小覆盖集须先开 OpenSpec change 并同步专利追踪说明。
 
+### 4.6 客户端与业务界面
+
+- 完整业务界面统一归 `apps/web`；C37 的 `apps/desktop` 使用 Electron 加载应用服务器同一内网 HTTPS，业务调用继续走既有 HTTP/SSE 与服务端权限、审计和人工确认契约。
+- Desktop 仅承担桌面入口与受限本机能力，Web 保持浏览器独立；API、Worker、数据库与模型仍在服务器。涉及 UI 迁移、桌面能力或客户端发布时，先读 `.scratch/riskflow-master-plan/prototypes/desktop-client-architecture.md`，再按当前 change 闭合依赖与施工图。移动端能力须另行明确适配与验收范围。
+
 ## 5. 第三方依赖与外部能力
 
 - **LangGraph**：作为识别 + 评估主流程的唯一编排核心；具体语言版本、持久化检查点实现和部署形态在首个宏观架构 OpenSpec change 中确定。禁止并行维护另一套自研流程状态机。

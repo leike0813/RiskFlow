@@ -1,0 +1,375 @@
+{
+  "schemaVersion": "1",
+  "projectId": "synthetic-station-tunnel-project",
+  "validationPolicyRef": {
+    "entityId": "validation-policy-synthetic-v1",
+    "versionId": "1"
+  },
+  "preparationSnapshotRef": {
+    "kind": "identification-preparation-snapshot",
+    "reference": {
+      "entityId": "identification-preparation-snapshot-synthetic-v1",
+      "versionId": "1"
+    }
+  },
+  "generatedAt": "2026-03-01T00:00:00+08:00",
+  "definitionType": "process-model",
+  "nodes": [
+    {
+      "nodeId": "node-01-扩径准备",
+      "processKind": "扩径准备",
+      "inputs": [
+        "盾构机组装验收记录",
+        "始发井结构验收记录"
+      ],
+      "outputs": [
+        "设备具备始发条件结论"
+      ],
+      "equipmentRefs": [
+        "小盾构",
+        "扩径模块"
+      ],
+      "structuralComponentRefs": [
+        "钢管片"
+      ],
+      "stateParameters": [
+        "盾体直径",
+        "刀盘直径",
+        "反力体系状态"
+      ],
+      "monitoringIndicators": [
+        "地下水位",
+        "盾构姿态参数"
+      ],
+      "applicability": {
+        "constructionMethod": [
+          "原位变径盾构"
+        ],
+        "stratumCondition": [
+          "上软下硬复合地层",
+          "中硬岩",
+          "完整岩体",
+          "富水中砂层",
+          "岩溶发育灰岩",
+          "粉质黏土"
+        ],
+        "engineeringStage": [
+          "扩径准备"
+        ]
+      },
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-PROCESS-01"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "nodeId": "node-02-变径空间扩挖",
+      "processKind": "变径空间扩挖",
+      "inputs": [
+        "扩挖范围设计参数",
+        "地层条件勘察成果"
+      ],
+      "outputs": [
+        "扩挖段初始支护状态"
+      ],
+      "equipmentRefs": [
+        "小盾构",
+        "扩径模块"
+      ],
+      "structuralComponentRefs": [
+        "钢管片"
+      ],
+      "stateParameters": [
+        "支护状态",
+        "土仓/泥水压力"
+      ],
+      "monitoringIndicators": [
+        "地表沉降",
+        "地下水位"
+      ],
+      "applicability": {
+        "constructionMethod": [
+          "原位变径盾构"
+        ],
+        "stratumCondition": [
+          "上软下硬复合地层",
+          "中硬岩",
+          "完整岩体",
+          "富水中砂层",
+          "岩溶发育灰岩",
+          "粉质黏土"
+        ],
+        "engineeringStage": [
+          "变径空间扩挖"
+        ]
+      },
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-PROCESS-02"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "nodeId": "node-03-刀盘扩径",
+      "processKind": "刀盘扩径",
+      "inputs": [
+        "刀盘扩径作业参数",
+        "开挖面控制压力记录"
+      ],
+      "outputs": [
+        "刀盘直径变径结果"
+      ],
+      "equipmentRefs": [
+        "小盾构",
+        "扩径模块"
+      ],
+      "structuralComponentRefs": [
+        "钢管片"
+      ],
+      "stateParameters": [
+        "刀盘直径",
+        "土仓/泥水压力",
+        "主驱动伸出量"
+      ],
+      "monitoringIndicators": [
+        "泥水压力",
+        "地表沉降"
+      ],
+      "applicability": {
+        "constructionMethod": [
+          "原位变径盾构"
+        ],
+        "stratumCondition": [
+          "上软下硬复合地层",
+          "中硬岩",
+          "完整岩体",
+          "富水中砂层",
+          "岩溶发育灰岩",
+          "粉质黏土"
+        ],
+        "engineeringStage": [
+          "刀盘扩径"
+        ]
+      },
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-PROCESS-03"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "nodeId": "node-04-盾体扩径",
+      "processKind": "盾体扩径",
+      "inputs": [
+        "盾体拼装作业记录",
+        "管片拼装质量记录"
+      ],
+      "outputs": [
+        "盾体直径变径结果"
+      ],
+      "equipmentRefs": [
+        "小盾构",
+        "扩径模块"
+      ],
+      "structuralComponentRefs": [
+        "钢管片"
+      ],
+      "stateParameters": [
+        "盾体直径",
+        "焊接/拼装状态",
+        "支护状态"
+      ],
+      "monitoringIndicators": [
+        "支护结构变形",
+        "盾构姿态参数"
+      ],
+      "applicability": {
+        "constructionMethod": [
+          "原位变径盾构"
+        ],
+        "stratumCondition": [
+          "上软下硬复合地层",
+          "中硬岩",
+          "完整岩体",
+          "富水中砂层",
+          "岩溶发育灰岩",
+          "粉质黏土"
+        ],
+        "engineeringStage": [
+          "盾体扩径"
+        ]
+      },
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-PROCESS-04"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "nodeId": "node-05-缩径转换",
+      "processKind": "缩径转换",
+      "inputs": [
+        "缩径作业参数",
+        "后续区间掘进计划"
+      ],
+      "outputs": [
+        "缩径段连续掘进条件"
+      ],
+      "equipmentRefs": [
+        "小盾构",
+        "扩径模块"
+      ],
+      "structuralComponentRefs": [
+        "钢管片"
+      ],
+      "stateParameters": [
+        "盾体直径",
+        "注浆参数",
+        "主驱动伸出量"
+      ],
+      "monitoringIndicators": [
+        "注浆压力",
+        "地表沉降"
+      ],
+      "applicability": {
+        "constructionMethod": [
+          "原位变径盾构"
+        ],
+        "stratumCondition": [
+          "上软下硬复合地层",
+          "中硬岩",
+          "完整岩体",
+          "富水中砂层",
+          "岩溶发育灰岩",
+          "粉质黏土"
+        ],
+        "engineeringStage": [
+          "缩径转换"
+        ]
+      },
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-PROCESS-05"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    }
+  ],
+  "dependencyEdges": [
+    {
+      "edgeId": "edge-sequence-01",
+      "fromNodeId": "node-01-扩径准备",
+      "toNodeId": "node-02-变径空间扩挖",
+      "relationType": "时间先后关系",
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-PROCESS-EDGE-01"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "edgeId": "edge-sequence-02",
+      "fromNodeId": "node-02-变径空间扩挖",
+      "toNodeId": "node-03-刀盘扩径",
+      "relationType": "时间先后关系",
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-PROCESS-EDGE-02"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "edgeId": "edge-sequence-03",
+      "fromNodeId": "node-03-刀盘扩径",
+      "toNodeId": "node-04-盾体扩径",
+      "relationType": "时间先后关系",
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-PROCESS-EDGE-03"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "edgeId": "edge-sequence-04",
+      "fromNodeId": "node-04-盾体扩径",
+      "toNodeId": "node-05-缩径转换",
+      "relationType": "时间先后关系",
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-PROCESS-EDGE-04"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "edgeId": "edge-force-shield-to-cutter",
+      "fromNodeId": "node-03-刀盘扩径",
+      "toNodeId": "node-04-盾体扩径",
+      "relationType": "受力依赖关系",
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-PROCESS-EDGE-FORCE"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,3 +1,7 @@
+export * from "./artifact-stream-service.js";
+export * from "./artifact-stream-service-handler.js";
+export * from "./remote-artifact-store.js";
+
 import type {
   ArtifactMaintenanceV1,
   ArtifactReferenceGuardV1,

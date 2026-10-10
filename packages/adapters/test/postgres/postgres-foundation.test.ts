@@ -71,6 +71,7 @@ import * as qualityEvaluationReportIndexMigration from "../../src/postgres/migra
 import * as humanDecisionFeedbackMigration from "../../src/postgres/migrations/warning-response/wire-human-decision-and-feedback-commands/000053_human_decision_feedback.js";
 import * as riskRecordAssessmentScopeMigration from "../../src/postgres/migrations/risk-identification/deliver-assessment-warning-and-response-ui/000054_risk_record_assessment_scope.js";
 import * as assessmentEntryCatalogCursorKeysMigration from "../../src/postgres/migrations/engineering-data/fix-assessment-entry-read-seam/000055_assessment_entry_catalog_cursor_keys.js";
+import * as deploymentOperationsMigration from "../../src/postgres/migrations/platform/deliver-offline-private-deployment-and-operations/000056_deployment_operations.js";
 
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
 import * as agentTaskFixtureMigration from "./fixtures/migrations/agent-task/deliver-unified-bounded-agent-runtime/900002_agent_task_fixture.js";
@@ -539,6 +540,15 @@ const testMigrationManifest = [
       "000055_engineering-data_fix-assessment-entry-read-seam_assessment_entry_catalog_cursor_keys",
     sequence: 55,
     module: assessmentEntryCatalogCursorKeysMigration,
+  },
+  {
+    root: "production",
+    relativePath:
+      "platform/deliver-offline-private-deployment-and-operations/000056_deployment_operations.ts",
+    migrationName:
+      "000056_platform_deliver-offline-private-deployment-and-operations_deployment_operations",
+    sequence: 56,
+    module: deploymentOperationsMigration,
   },
   {
     root: "fixture",

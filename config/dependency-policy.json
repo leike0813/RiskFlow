@@ -254,6 +254,42 @@
       "exitCondition": "安全问题、Node 24 不兼容或 CSV 结构验收失败"
     },
     {
+      "name": "react-router-dom",
+      "version": "6.30.6",
+      "purpose": "apps/web 迁入业务页面的参数路由与深链",
+      "license": "MIT",
+      "source": "https://registry.npmjs.org/react-router-dom/6.30.6",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "迁移到其它路由实现或参数深链验收失败"
+    },
+    {
+      "name": "echarts",
+      "version": "5.6.0",
+      "purpose": "apps/web 迁入页面的知识图、矩阵与趋势图表",
+      "license": "Apache-2.0",
+      "source": "https://registry.npmjs.org/echarts/5.6.0",
+      "offline": "内网 npm 镜像或 pnpm fetch store",
+      "exitCondition": "图表实现替换或浏览器验收失败"
+    },
+    {
+      "name": "electron",
+      "version": "44.7.0",
+      "purpose": "apps/desktop 加载内网 HTTPS 的桌面壳运行时",
+      "license": "MIT",
+      "source": "https://github.com/electron/electron/releases/tag/v44.7.0",
+      "offline": "内网 npm 镜像或 pnpm fetch store，并预置固定 Electron 发行包",
+      "exitCondition": "取消桌面交付形态、安全维护停滞或平台验收失败"
+    },
+    {
+      "name": "electron-builder",
+      "version": "26.15.3",
+      "purpose": "NSIS/AppImage/DMG 离线安装包制备与签名",
+      "license": "MIT",
+      "source": "https://registry.npmjs.org/electron-builder/26.15.3",
+      "offline": "内网 npm 镜像或 pnpm fetch store，并预置 NSIS/app-builder 缓存",
+      "exitCondition": "更换打包工具或平台安装包验收失败"
+    },
+    {
       "name": "@playwright/test",
       "version": "1.63.0",
       "purpose": "跨页面/跨能力真实浏览器验收（C36 质量评估的可复核证据）",

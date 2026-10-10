@@ -1,0 +1,631 @@
+{
+  "schemaVersion": "1",
+  "feedbackInputs": [
+    {
+      "schemaVersion": "1",
+      "projectId": "synthetic-station-tunnel-project",
+      "feedbackInputSnapshotRef": {
+        "kind": "response-feedback-input-snapshot",
+        "reference": {
+          "entityId": "feedback-input-snapshot-synthetic-01",
+          "versionId": "1"
+        }
+      },
+      "commandKind": "warning-response.record-feedback",
+      "commandId": "feedback-command-synthetic-01",
+      "idempotencyKey": "feedback-idempotency-synthetic-01",
+      "inputDigest": "5a3cae4fe9501093737119d38c7f11c8b645cec8bcacab54dcb3a414fd548ad1",
+      "snapshot": {
+        "schemaVersion": "1",
+        "executionRecordRef": {
+          "kind": "execution-record",
+          "reference": {
+            "entityId": "execution-record-synthetic-01",
+            "versionId": "1"
+          }
+        },
+        "feedbackRef": {
+          "kind": "feedback",
+          "reference": {
+            "entityId": "feedback-synthetic-01",
+            "versionId": "1"
+          }
+        },
+        "effectForecastRef": {
+          "kind": "effect-forecast",
+          "reference": {
+            "entityId": "effect-forecast-synthetic-01",
+            "versionId": "1"
+          }
+        },
+        "deviationPolicyRef": {
+          "entityId": "deviation-policy-synthetic-v1",
+          "versionId": "1"
+        },
+        "calibrationAgentPolicyRef": {
+          "entityId": "calibration-agent-policy-synthetic-v1",
+          "versionId": "1"
+        },
+        "authorizationContextRef": {
+          "kind": "authorization-context",
+          "reference": {
+            "entityId": "authorization-context-synthetic-01",
+            "versionId": "1"
+          }
+        },
+        "auditTrailRef": {
+          "kind": "audit-trail",
+          "reference": {
+            "entityId": "audit-trail-synthetic-01",
+            "versionId": "1"
+          }
+        },
+        "createdBy": "synthetic-materials-builder",
+        "createdAt": "2026-05-06T10:00:00+08:00"
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "actualAssessmentRecordRef": {
+        "kind": "risk-assessment-record",
+        "reference": {
+          "entityId": "assessment-record-synthetic-01",
+          "versionId": "1"
+        }
+      },
+      "executionRecordRef": {
+        "kind": "execution-record",
+        "reference": {
+          "entityId": "execution-record-synthetic-01",
+          "versionId": "1"
+        }
+      },
+      "state": "prepared",
+      "preparedAt": "2026-05-06T10:00:00+08:00",
+      "effectForecastRef": {
+        "kind": "effect-forecast",
+        "reference": {
+          "entityId": "effect-forecast-synthetic-01",
+          "versionId": "1"
+        }
+      },
+      "auditTrailRef": {
+        "kind": "audit-trail",
+        "reference": {
+          "entityId": "audit-trail-synthetic-01",
+          "versionId": "1"
+        }
+      }
+    },
+    {
+      "schemaVersion": "1",
+      "projectId": "synthetic-station-tunnel-project",
+      "feedbackInputSnapshotRef": {
+        "kind": "response-feedback-input-snapshot",
+        "reference": {
+          "entityId": "feedback-input-snapshot-synthetic-02",
+          "versionId": "1"
+        }
+      },
+      "commandKind": "warning-response.record-feedback",
+      "commandId": "feedback-command-synthetic-02",
+      "idempotencyKey": "feedback-idempotency-synthetic-02",
+      "inputDigest": "b801bfc8add5d2e70063c1a4ebb6b614f8084f143bc4f120b7fffd5859e27bbb",
+      "snapshot": {
+        "schemaVersion": "1",
+        "executionRecordRef": {
+          "kind": "execution-record",
+          "reference": {
+            "entityId": "execution-record-synthetic-02",
+            "versionId": "1"
+          }
+        },
+        "feedbackRef": {
+          "kind": "feedback",
+          "reference": {
+            "entityId": "feedback-synthetic-02",
+            "versionId": "1"
+          }
+        },
+        "effectForecastRef": {
+          "kind": "effect-forecast",
+          "reference": {
+            "entityId": "effect-forecast-synthetic-02",
+            "versionId": "1"
+          }
+        },
+        "deviationPolicyRef": {
+          "entityId": "deviation-policy-synthetic-v1",
+          "versionId": "1"
+        },
+        "calibrationAgentPolicyRef": {
+          "entityId": "calibration-agent-policy-synthetic-v1",
+          "versionId": "1"
+        },
+        "authorizationContextRef": {
+          "kind": "authorization-context",
+          "reference": {
+            "entityId": "authorization-context-synthetic-02",
+            "versionId": "1"
+          }
+        },
+        "auditTrailRef": {
+          "kind": "audit-trail",
+          "reference": {
+            "entityId": "audit-trail-synthetic-02",
+            "versionId": "1"
+          }
+        },
+        "createdBy": "synthetic-materials-builder",
+        "createdAt": "2026-05-06T10:00:00+08:00"
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "actualAssessmentRecordRef": {
+        "kind": "risk-assessment-record",
+        "reference": {
+          "entityId": "assessment-record-synthetic-02",
+          "versionId": "1"
+        }
+      },
+      "executionRecordRef": {
+        "kind": "execution-record",
+        "reference": {
+          "entityId": "execution-record-synthetic-02",
+          "versionId": "1"
+        }
+      },
+      "state": "prepared",
+      "preparedAt": "2026-05-06T10:00:00+08:00",
+      "effectForecastRef": {
+        "kind": "effect-forecast",
+        "reference": {
+          "entityId": "effect-forecast-synthetic-02",
+          "versionId": "1"
+        }
+      },
+      "auditTrailRef": {
+        "kind": "audit-trail",
+        "reference": {
+          "entityId": "audit-trail-synthetic-02",
+          "versionId": "1"
+        }
+      }
+    },
+    {
+      "schemaVersion": "1",
+      "projectId": "synthetic-station-tunnel-project",
+      "feedbackInputSnapshotRef": {
+        "kind": "response-feedback-input-snapshot",
+        "reference": {
+          "entityId": "feedback-input-snapshot-synthetic-03",
+          "versionId": "1"
+        }
+      },
+      "commandKind": "warning-response.record-feedback",
+      "commandId": "feedback-command-synthetic-03",
+      "idempotencyKey": "feedback-idempotency-synthetic-03",
+      "inputDigest": "eb7d436edb0b20640778251f4109e5a3cca075c7f4da4511ccd2f23f452f6e76",
+      "snapshot": {
+        "schemaVersion": "1",
+        "executionRecordRef": {
+          "kind": "execution-record",
+          "reference": {
+            "entityId": "execution-record-synthetic-03",
+            "versionId": "1"
+          }
+        },
+        "feedbackRef": {
+          "kind": "feedback",
+          "reference": {
+            "entityId": "feedback-synthetic-03",
+            "versionId": "1"
+          }
+        },
+        "effectForecastRef": {
+          "kind": "effect-forecast",
+          "reference": {
+            "entityId": "effect-forecast-synthetic-03",
+            "versionId": "1"
+          }
+        },
+        "deviationPolicyRef": {
+          "entityId": "deviation-policy-synthetic-v1",
+          "versionId": "1"
+        },
+        "calibrationAgentPolicyRef": {
+          "entityId": "calibration-agent-policy-synthetic-v1",
+          "versionId": "1"
+        },
+        "authorizationContextRef": {
+          "kind": "authorization-context",
+          "reference": {
+            "entityId": "authorization-context-synthetic-03",
+            "versionId": "1"
+          }
+        },
+        "auditTrailRef": {
+          "kind": "audit-trail",
+          "reference": {
+            "entityId": "audit-trail-synthetic-03",
+            "versionId": "1"
+          }
+        },
+        "createdBy": "synthetic-materials-builder",
+        "createdAt": "2026-05-06T10:00:00+08:00"
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "actualAssessmentRecordRef": {
+        "kind": "risk-assessment-record",
+        "reference": {
+          "entityId": "assessment-record-synthetic-03",
+          "versionId": "1"
+        }
+      },
+      "executionRecordRef": {
+        "kind": "execution-record",
+        "reference": {
+          "entityId": "execution-record-synthetic-03",
+          "versionId": "1"
+        }
+      },
+      "state": "prepared",
+      "preparedAt": "2026-05-06T10:00:00+08:00",
+      "effectForecastRef": {
+        "kind": "effect-forecast",
+        "reference": {
+          "entityId": "effect-forecast-synthetic-03",
+          "versionId": "1"
+        }
+      },
+      "auditTrailRef": {
+        "kind": "audit-trail",
+        "reference": {
+          "entityId": "audit-trail-synthetic-03",
+          "versionId": "1"
+        }
+      }
+    },
+    {
+      "schemaVersion": "1",
+      "projectId": "synthetic-station-tunnel-project",
+      "feedbackInputSnapshotRef": {
+        "kind": "response-feedback-input-snapshot",
+        "reference": {
+          "entityId": "feedback-input-snapshot-synthetic-04",
+          "versionId": "1"
+        }
+      },
+      "commandKind": "warning-response.record-feedback",
+      "commandId": "feedback-command-synthetic-04",
+      "idempotencyKey": "feedback-idempotency-synthetic-04",
+      "inputDigest": "90fc99fcc1b67207cc1aaa4df31c6af985e07bc2633c975b5a81607a6ab6af9f",
+      "snapshot": {
+        "schemaVersion": "1",
+        "executionRecordRef": {
+          "kind": "execution-record",
+          "reference": {
+            "entityId": "execution-record-synthetic-04",
+            "versionId": "1"
+          }
+        },
+        "feedbackRef": {
+          "kind": "feedback",
+          "reference": {
+            "entityId": "feedback-synthetic-04",
+            "versionId": "1"
+          }
+        },
+        "effectForecastRef": {
+          "kind": "effect-forecast",
+          "reference": {
+            "entityId": "effect-forecast-synthetic-04",
+            "versionId": "1"
+          }
+        },
+        "deviationPolicyRef": {
+          "entityId": "deviation-policy-synthetic-v1",
+          "versionId": "1"
+        },
+        "calibrationAgentPolicyRef": {
+          "entityId": "calibration-agent-policy-synthetic-v1",
+          "versionId": "1"
+        },
+        "authorizationContextRef": {
+          "kind": "authorization-context",
+          "reference": {
+            "entityId": "authorization-context-synthetic-04",
+            "versionId": "1"
+          }
+        },
+        "auditTrailRef": {
+          "kind": "audit-trail",
+          "reference": {
+            "entityId": "audit-trail-synthetic-04",
+            "versionId": "1"
+          }
+        },
+        "createdBy": "synthetic-materials-builder",
+        "createdAt": "2026-05-06T10:00:00+08:00"
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "actualAssessmentRecordRef": {
+        "kind": "risk-assessment-record",
+        "reference": {
+          "entityId": "assessment-record-synthetic-04",
+          "versionId": "1"
+        }
+      },
+      "executionRecordRef": {
+        "kind": "execution-record",
+        "reference": {
+          "entityId": "execution-record-synthetic-04",
+          "versionId": "1"
+        }
+      },
+      "state": "prepared",
+      "preparedAt": "2026-05-06T10:00:00+08:00",
+      "effectForecastRef": {
+        "kind": "effect-forecast",
+        "reference": {
+          "entityId": "effect-forecast-synthetic-04",
+          "versionId": "1"
+        }
+      },
+      "auditTrailRef": {
+        "kind": "audit-trail",
+        "reference": {
+          "entityId": "audit-trail-synthetic-04",
+          "versionId": "1"
+        }
+      }
+    },
+    {
+      "schemaVersion": "1",
+      "projectId": "synthetic-station-tunnel-project",
+      "feedbackInputSnapshotRef": {
+        "kind": "response-feedback-input-snapshot",
+        "reference": {
+          "entityId": "feedback-input-snapshot-synthetic-05",
+          "versionId": "1"
+        }
+      },
+      "commandKind": "warning-response.record-feedback",
+      "commandId": "feedback-command-synthetic-05",
+      "idempotencyKey": "feedback-idempotency-synthetic-05",
+      "inputDigest": "4351ffb92ca4e862c0a8179dc3f78811b87e31f46391b2a3688547b7b761b7ac",
+      "snapshot": {
+        "schemaVersion": "1",
+        "executionRecordRef": {
+          "kind": "execution-record",
+          "reference": {
+            "entityId": "execution-record-synthetic-05",
+            "versionId": "1"
+          }
+        },
+        "feedbackRef": {
+          "kind": "feedback",
+          "reference": {
+            "entityId": "feedback-synthetic-05",
+            "versionId": "1"
+          }
+        },
+        "effectForecastRef": {
+          "kind": "effect-forecast",
+          "reference": {
+            "entityId": "effect-forecast-synthetic-05",
+            "versionId": "1"
+          }
+        },
+        "deviationPolicyRef": {
+          "entityId": "deviation-policy-synthetic-v1",
+          "versionId": "1"
+        },
+        "calibrationAgentPolicyRef": {
+          "entityId": "calibration-agent-policy-synthetic-v1",
+          "versionId": "1"
+        },
+        "authorizationContextRef": {
+          "kind": "authorization-context",
+          "reference": {
+            "entityId": "authorization-context-synthetic-05",
+            "versionId": "1"
+          }
+        },
+        "auditTrailRef": {
+          "kind": "audit-trail",
+          "reference": {
+            "entityId": "audit-trail-synthetic-05",
+            "versionId": "1"
+          }
+        },
+        "createdBy": "synthetic-materials-builder",
+        "createdAt": "2026-05-06T10:00:00+08:00"
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "actualAssessmentRecordRef": {
+        "kind": "risk-assessment-record",
+        "reference": {
+          "entityId": "assessment-record-synthetic-05",
+          "versionId": "1"
+        }
+      },
+      "executionRecordRef": {
+        "kind": "execution-record",
+        "reference": {
+          "entityId": "execution-record-synthetic-05",
+          "versionId": "1"
+        }
+      },
+      "state": "prepared",
+      "preparedAt": "2026-05-06T10:00:00+08:00",
+      "effectForecastRef": {
+        "kind": "effect-forecast",
+        "reference": {
+          "entityId": "effect-forecast-synthetic-05",
+          "versionId": "1"
+        }
+      },
+      "auditTrailRef": {
+        "kind": "audit-trail",
+        "reference": {
+          "entityId": "audit-trail-synthetic-05",
+          "versionId": "1"
+        }
+      }
+    },
+    {
+      "schemaVersion": "1",
+      "projectId": "synthetic-station-tunnel-project",
+      "feedbackInputSnapshotRef": {
+        "kind": "response-feedback-input-snapshot",
+        "reference": {
+          "entityId": "feedback-input-snapshot-synthetic-06",
+          "versionId": "1"
+        }
+      },
+      "commandKind": "warning-response.record-feedback",
+      "commandId": "feedback-command-synthetic-06",
+      "idempotencyKey": "feedback-idempotency-synthetic-06",
+      "inputDigest": "f4fdc2761eed8c47a9b800002848dbcfaa1fbb4b9e950ab65b65a2f5b405730a",
+      "snapshot": {
+        "schemaVersion": "1",
+        "executionRecordRef": {
+          "kind": "execution-record",
+          "reference": {
+            "entityId": "execution-record-synthetic-06",
+            "versionId": "1"
+          }
+        },
+        "feedbackRef": {
+          "kind": "feedback",
+          "reference": {
+            "entityId": "feedback-synthetic-06",
+            "versionId": "1"
+          }
+        },
+        "effectForecastRef": {
+          "kind": "effect-forecast",
+          "reference": {
+            "entityId": "effect-forecast-synthetic-06",
+            "versionId": "1"
+          }
+        },
+        "deviationPolicyRef": {
+          "entityId": "deviation-policy-synthetic-v1",
+          "versionId": "1"
+        },
+        "calibrationAgentPolicyRef": {
+          "entityId": "calibration-agent-policy-synthetic-v1",
+          "versionId": "1"
+        },
+        "authorizationContextRef": {
+          "kind": "authorization-context",
+          "reference": {
+            "entityId": "authorization-context-synthetic-06",
+            "versionId": "1"
+          }
+        },
+        "auditTrailRef": {
+          "kind": "audit-trail",
+          "reference": {
+            "entityId": "audit-trail-synthetic-06",
+            "versionId": "1"
+          }
+        },
+        "createdBy": "synthetic-materials-builder",
+        "createdAt": "2026-05-06T10:00:00+08:00"
+      },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "spatial-scope-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      "actualAssessmentRecordRef": {
+        "kind": "risk-assessment-record",
+        "reference": {
+          "entityId": "assessment-record-synthetic-06",
+          "versionId": "1"
+        }
+      },
+      "executionRecordRef": {
+        "kind": "execution-record",
+        "reference": {
+          "entityId": "execution-record-synthetic-06",
+          "versionId": "1"
+        }
+      },
+      "state": "prepared",
+      "preparedAt": "2026-05-06T10:00:00+08:00",
+      "effectForecastRef": {
+        "kind": "effect-forecast",
+        "reference": {
+          "entityId": "effect-forecast-synthetic-06",
+          "versionId": "1"
+        }
+      },
+      "auditTrailRef": {
+        "kind": "audit-trail",
+        "reference": {
+          "entityId": "audit-trail-synthetic-06",
+          "versionId": "1"
+        }
+      }
+    }
+  ],
+  "mechanismCoverage": [
+    {
+      "feedbackInputSnapshotId": "feedback-input-snapshot-synthetic-01",
+      "mechanismType": "掌子面稳定性失效"
+    },
+    {
+      "feedbackInputSnapshotId": "feedback-input-snapshot-synthetic-02",
+      "mechanismType": "支护结构失效"
+    },
+    {
+      "feedbackInputSnapshotId": "feedback-input-snapshot-synthetic-03",
+      "mechanismType": "渗流突涌"
+    },
+    {
+      "feedbackInputSnapshotId": "feedback-input-snapshot-synthetic-04",
+      "mechanismType": "过挖与地表沉降"
+    },
+    {
+      "feedbackInputSnapshotId": "feedback-input-snapshot-synthetic-05",
+      "mechanismType": "施工装备故障"
+    },
+    {
+      "feedbackInputSnapshotId": "feedback-input-snapshot-synthetic-06",
+      "mechanismType": "装配连接失效"
+    }
+  ]
+}

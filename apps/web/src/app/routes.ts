@@ -60,7 +60,7 @@ export type WebRouteMatchV1 = Readonly<{
 
 export type WebRouteResolutionV1 =
   | WebRouteMatchV1
-  | Readonly<{ kind: "redirect"; from: "/"; to: "/overview" }>
+  | Readonly<{ kind: "redirect"; from: string; to: string }>
   | Readonly<{ kind: "not-found"; pathname: string }>;
 
 const route = (value: WebRouteContributionV1): WebRouteContributionV1 => Object.freeze(value);
@@ -233,13 +233,55 @@ export const createWebRouteRegistry = (
   });
 };
 
+/**
+ * C37 D-17：旧前缀别名。`/project` → `/projects`、`/review` → `/review-audit`，
+ * 重定向时保留 params 与 search；别名不进入导航，只做深链兼容。
+ * 安全原因：不得让旧前缀绕过既有能力门禁，因此别名只指向同 section 的目标根。
+ */
+export const WEB_LEGACY_PATH_ALIASES_V1: Readonly<Record<string, string>> = Object.freeze({
+  "/project": "/projects",
+  "/review": "/review-audit",
+  "/assessment/quality-evaluation": "/assessment/quality",
+});
+
+/** 应用别名：保留 path 末尾的 params 与整个 search；未知路径不产生重定向。 */
+export const applyWebPathAliasV1 = (pathname: string, search = ""): string | undefined => {
+  for (const [from, to] of Object.entries(WEB_LEGACY_PATH_ALIASES_V1)) {
+    if (pathname === from) return `${to}${search}`;
+    // 前缀别名必须落在段边界上：`/project/x` 不能误匹配 `/projects`。
+    if (pathname.startsWith(`${from}/`)) return `${to}${pathname.slice(from.length)}${search}`;
+  }
+  return undefined;
+};
+
 export const WEB_ROUTE_REGISTRY_V1 = createWebRouteRegistry();
+
+/**
+ * 具体 URL 路径的安全判定。
+ *
+ * 路由**模板**用 `isSafeWebPathTemplate`；具体请求路径还需允许百分号编码
+ * （业务标识常含 `:` 等保留字符，编码后才是合法路径段）。
+ * 这里只放行结构良好的 `%XX`，解码后仍不得出现 `/`、`\` 或 `..`，
+ * 以免编码绕过段边界与目录穿越。
+ */
+const isSafeConcretePathV1 = (value: string): boolean => {
+  if (value.includes("\\") || value.includes("://") || value.includes("..")) return false;
+  if (/%(?![0-9A-Fa-f]{2})/.test(value)) return false;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(value);
+  } catch {
+    return false;
+  }
+  if (decoded.includes("..") || decoded.includes("\\") || decoded.includes("://")) return false;
+  return decoded.split("/").every((segment) => segment === "" || !/[?#]/.test(segment));
+};
 
 const pathnameFor = (value: unknown): string | undefined => {
   if (typeof value !== "string" || value.includes("://")) return undefined;
   const path = value.split(/[?#]/, 1)[0];
   if (path === undefined || path === "") return "/";
-  return isSafeWebPathTemplate(path) || path === "/" ? path : undefined;
+  return isSafeConcretePathV1(path) ? path : undefined;
 };
 
 const matchTemplate = (
@@ -268,8 +310,15 @@ export const resolveWebRoute = (
   value: unknown,
   registry: WebRouteRegistryV1 = WEB_ROUTE_REGISTRY_V1,
 ): WebRouteResolutionV1 => {
-  const pathname = pathnameFor(value);
-  if (pathname === undefined) return { kind: "not-found", pathname: "[invalid]" };
+  const raw = pathnameFor(value);
+  if (raw === undefined) return { kind: "not-found", pathname: "[invalid]" };
+  // 旧前缀先做别名重定向，保留 params 与 search；未命中别名再走正常匹配。
+  const search = typeof value === "string" ? (value.split("?")[1] ?? "") : "";
+  const aliased = applyWebPathAliasV1(raw, search === "" ? "" : `?${search}`);
+  const pathname = aliased === undefined ? raw : aliased.split("?")[0]!;
+  if (aliased !== undefined) {
+    return Object.freeze({ kind: "redirect", from: raw, to: aliased });
+  }
   if (pathname === "/") return { kind: "redirect", from: "/", to: "/overview" };
   const routes = [...registry.routes].sort((left, right) => {
     const leftParams = (left.path.match(/:/g) ?? []).length;

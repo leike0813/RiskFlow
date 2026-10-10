@@ -1,0 +1,84 @@
+/* 识别运行详情（/identification/runs/:runId）：阶段条 / 覆盖核对 / 合并组 / 关联任务 / 结果汇总 */
+
+.idrun-header-tags {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.idrun-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.idrun-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.idrun-field dt {
+  flex: none;
+  width: 88px;
+  font-size: 13px;
+  line-height: 22px;
+  color: var(--text-2);
+}
+
+.idrun-field dd {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text);
+}
+
+.idrun-meta {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.idrun-dim {
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.idrun-waiting {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.idrun-failure {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--risk-1);
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.idrun-refs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.idrun-ref-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.idrun-ref-more {
+  margin-top: 10px;
+  font-size: 13px;
+}

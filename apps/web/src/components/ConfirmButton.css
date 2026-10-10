@@ -1,0 +1,133 @@
+.confirm-btn {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 22px;
+  padding: 6px 16px;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+
+.confirm-btn--primary {
+  color: #fff;
+  background: var(--blue);
+}
+
+.confirm-btn--primary:hover {
+  background: #1a53ab;
+}
+
+.confirm-btn--danger {
+  color: #fff;
+  background: var(--risk-1);
+}
+
+.confirm-btn--danger:hover {
+  background: var(--risk-1-dark);
+}
+
+.confirm-btn--ghost {
+  color: var(--text);
+  background: var(--card);
+  border: 1px solid var(--border);
+}
+
+.confirm-btn--ghost:hover {
+  background: var(--bluegray-soft);
+}
+
+.confirm-btn[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.confirm-btn-reason {
+  display: block;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-2);
+  margin-top: 2px;
+}
+
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(14, 34, 56, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+}
+
+.confirm-dialog {
+  width: 460px;
+  background: var(--card);
+  border-radius: var(--card-radius);
+  box-shadow: 0 12px 40px rgba(14, 34, 56, 0.2);
+}
+
+.confirm-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.confirm-dialog-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.confirm-dialog-close {
+  color: var(--text-2);
+  display: inline-flex;
+  padding: 4px;
+  border-radius: 4px;
+}
+
+.confirm-dialog-close:hover {
+  background: var(--bluegray-soft);
+}
+
+.confirm-dialog-body {
+  padding: 16px 20px;
+}
+
+.confirm-dialog-lead {
+  font-size: 14px;
+  color: var(--text-2);
+  margin-bottom: 10px;
+}
+
+.confirm-summary {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.confirm-summary li {
+  font-size: 14px;
+  line-height: 22px;
+  padding-left: 16px;
+  position: relative;
+}
+
+.confirm-summary li::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 9px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--blue);
+}
+
+.confirm-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+}

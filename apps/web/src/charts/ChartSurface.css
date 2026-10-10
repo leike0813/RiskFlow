@@ -1,0 +1,85 @@
+/** 图表外观接缝：标题、图例、empty 骨架与 unavailable 说明。 */
+
+.chart-surface {
+  margin: 0;
+}
+
+.chart-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-bottom: 8px;
+}
+
+.chart-frame {
+  overflow-x: auto;
+}
+
+.chart-frame-empty {
+  padding: 20px 16px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+
+.chart-empty-message {
+  font-size: 13px;
+  color: var(--text-2);
+  text-align: center;
+}
+
+.chart-unavailable {
+  padding: 12px 14px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: var(--bluegray-soft);
+}
+
+.chart-unavailable p {
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.chart-unavailable ul {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.chart-unavailable code {
+  font-size: 12px;
+  color: var(--risk-1-dark);
+}
+
+.chart-legend {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.chart-legend-toggle {
+  font-size: 12px;
+  color: var(--blue);
+}
+
+.chart-tick {
+  font-size: 11px;
+  fill: var(--text-2);
+}
+
+.chart-plot-count {
+  font-size: 9px;
+  fill: #fff;
+}

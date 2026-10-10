@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "1",
+  "definitionType": "risk-acceptance-threshold",
+  "projectRevisionRef": {
+    "kind": "project-revision",
+    "reference": {
+      "entityId": "project-revision-synthetic-v1",
+      "versionId": "1"
+    }
+  },
+  "configurationSetRef": {
+    "entityId": "configuration-set-synthetic-v1",
+    "versionId": "1"
+  },
+  "content": {
+    "riskMatrixRef": {
+      "entityId": "risk-matrix-synthetic-v1",
+      "versionId": "1"
+    },
+    "thresholds": [
+      {
+        "thresholdId": "acceptance-default",
+        "applicabilityConditions": [
+          {
+            "dimension": "施工工法数据",
+            "values": [
+              "原位变径盾构"
+            ]
+          }
+        ],
+        "maximumAcceptedLevelId": "level-2"
+      },
+      {
+        "thresholdId": "acceptance-expansion-stage",
+        "applicabilityConditions": [
+          {
+            "dimension": "工程阶段数据",
+            "values": [
+              "刀盘扩径",
+              "盾体扩径",
+              "缩径转换"
+            ]
+          }
+        ],
+        "maximumAcceptedLevelId": "level-3"
+      }
+    ]
+  }
+}

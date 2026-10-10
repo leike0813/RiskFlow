@@ -1,13 +1,54 @@
 import type { ContractReferenceV1 } from "@riskflow/contracts/ports";
+import type { VersionReference as VersionReferenceV1 } from "@riskflow/contracts/common";
+import type { C37SystemOperationIdV1 } from "../api/http.js";
 
 import type { C09OperationIdV1 } from "../api/http.js";
 import type { SafeHttpErrorV1 } from "../api/errors.js";
 import type { WebContextV1 } from "../app/state.js";
 import type { WebActionAvailabilityV1 } from "./actions.js";
 
+/**
+ * C37 D-17：确认作用域判别。
+ *
+ * - `project`：工程业务命令，携带 projectId 与 context revision；
+ * - `system`：系统管理/运维命令，没有工程上下文，改用管理 context ref 与会话修订。
+ *
+ * 判别让「上下文切换使确认失效」只作用于工程命令，系统命令不会因为换工程而被误清。
+ */
+export type CommandConfirmationScopeV1 =
+  | Readonly<{
+      kind: "project";
+      projectId: string;
+      contextRevision: number;
+    }>
+  | Readonly<{
+      kind: "system";
+      /** 管理上下文的版本引用；系统命令没有工程上下文可借。 */
+      administrationContextRef: VersionReferenceV1;
+      sessionRevision: number;
+    }>;
+
+/**
+ * 成功结果既可能是领域引用，也可能是管理命令回执；不伪造领域 resultRef。
+ *
+ * 管理回执按其公开结构（成功类别 + 安全引用）判断，不在此复制 C06 的完整 Schema：
+ * 页面只据 kind 决定刷新方式，具体校验仍由服务端与原契约负责。
+ */
+export type CommandConfirmationResultV1 =
+  | Readonly<{ kind: "reference"; resultRef: ContractReferenceV1 }>
+  | Readonly<{
+      kind: "command-result";
+      result: Readonly<{
+        kind: string;
+        resultRef?: ContractReferenceV1;
+        previousVersionId?: string;
+      }>;
+    }>;
+
 export type CommandConfirmationPlanV1<TRequest> = Readonly<{
   confirmationId: string;
-  operationId: C09OperationIdV1;
+  operationId: C09OperationIdV1 | C37SystemOperationIdV1;
+  scope: CommandConfirmationScopeV1;
   projectId: string;
   targets: readonly ContractReferenceV1[];
   inputVersions: readonly { entityId: string; versionId: string }[];
@@ -33,7 +74,7 @@ export type ConfirmationStateV1<TRequest> =
       error: SafeHttpErrorV1;
     }>
   | Readonly<{ kind: "terminal-failure"; error: SafeHttpErrorV1 }>
-  | Readonly<{ kind: "succeeded"; resultRef: ContractReferenceV1 }>;
+  | Readonly<{ kind: "succeeded"; result: CommandConfirmationResultV1 }>;
 
 export const CLOSED_CONFIRMATION_STATE_V1: ConfirmationStateV1<never> = Object.freeze({
   kind: "closed",
@@ -42,6 +83,9 @@ export const CLOSED_CONFIRMATION_STATE_V1: ConfirmationStateV1<never> = Object.f
 const freezePlan = <TRequest>(
   plan: CommandConfirmationPlanV1<TRequest>,
 ): CommandConfirmationPlanV1<TRequest> => {
+  // 深冻结请求：确认打开后载荷不可被调用方改写，重试复用同一份。
+  Object.freeze(plan.scope);
+  Object.freeze(plan.request);
   Object.freeze(plan.targets);
   Object.freeze(plan.inputVersions);
   Object.freeze(plan.expectedFacts);
@@ -121,7 +165,7 @@ export const isConfirmationInvalidationError = (error: SafeHttpErrorV1): boolean
 export const finishConfirmation = <TRequest>(
   state: ConfirmationStateV1<TRequest>,
   result:
-    | { readonly kind: "succeeded"; readonly resultRef: ContractReferenceV1 }
+    | { readonly kind: "succeeded"; readonly result: CommandConfirmationResultV1 }
     | {
         readonly kind: "failed";
         readonly error: SafeHttpErrorV1;
@@ -136,15 +180,41 @@ export const finishConfirmation = <TRequest>(
     : Object.freeze({ kind: "terminal-failure", error: result.error });
 };
 
+/**
+ * 上下文切换、撤权或版本过期时清除计划。
+ *
+ * 工程命令按 projectId + context revision 判定；系统命令没有工程上下文，
+ * 只能按管理 context ref 与会话修订判定，不能借用工程上下文做判断。
+ */
 export const invalidateConfirmation = <TRequest>(
   state: ConfirmationStateV1<TRequest>,
   context: WebContextV1,
-  planContext: Pick<WebContextV1, "revision" | "projectId"> | undefined,
+  currentScope: {
+    readonly project: Pick<WebContextV1, "revision" | "projectId"> | undefined;
+    readonly system:
+      | {
+          readonly administrationContextRef: VersionReferenceV1;
+          readonly sessionRevision: number;
+        }
+      | undefined;
+  },
 ): ConfirmationStateV1<TRequest> => {
-  if (planContext === undefined) return state;
-  if (context.revision !== planContext.revision || context.projectId !== planContext.projectId)
-    return { kind: "closed" };
-  return state;
+  if (state.kind !== "reviewing" && state.kind !== "submitting") return state;
+  const scope = state.plan.scope;
+  if (scope.kind === "project") {
+    if (currentScope.project === undefined) return { kind: "closed" };
+    return context.revision === scope.contextRevision &&
+      currentScope.project.projectId === scope.projectId
+      ? state
+      : { kind: "closed" };
+  }
+  if (currentScope.system === undefined) return { kind: "closed" };
+  const ref = currentScope.system.administrationContextRef;
+  return ref.entityId === scope.administrationContextRef.entityId &&
+    ref.versionId === scope.administrationContextRef.versionId &&
+    currentScope.system.sessionRevision === scope.sessionRevision
+    ? state
+    : { kind: "closed" };
 };
 
 export type ConfirmationControllerV1<TRequest> = Readonly<{
@@ -155,13 +225,24 @@ export type ConfirmationControllerV1<TRequest> = Readonly<{
   ) => boolean;
   acknowledge: () => boolean;
   confirm: (
-    submit: (plan: CommandConfirmationPlanV1<TRequest>) => Promise<ContractReferenceV1>,
+    submit: (plan: CommandConfirmationPlanV1<TRequest>) => Promise<CommandConfirmationResultV1>,
   ) => Promise<boolean>;
   retry: (
-    submit: (plan: CommandConfirmationPlanV1<TRequest>) => Promise<ContractReferenceV1>,
+    submit: (plan: CommandConfirmationPlanV1<TRequest>) => Promise<CommandConfirmationResultV1>,
   ) => Promise<boolean>;
   cancel: () => void;
-  invalidate: () => void;
+  invalidate: (
+    context: WebContextV1,
+    currentScope: {
+      readonly project: Pick<WebContextV1, "revision" | "projectId"> | undefined;
+      readonly system:
+        | {
+            readonly administrationContextRef: VersionReferenceV1;
+            readonly sessionRevision: number;
+          }
+        | undefined;
+    },
+  ) => void;
 }>;
 
 export const createConfirmationController = <TRequest>(): ConfirmationControllerV1<TRequest> => {
@@ -181,7 +262,7 @@ export const createConfirmationController = <TRequest>(): ConfirmationController
       return true;
     },
     confirm: async (
-      submit: (plan: CommandConfirmationPlanV1<TRequest>) => Promise<ContractReferenceV1>,
+      submit: (plan: CommandConfirmationPlanV1<TRequest>) => Promise<CommandConfirmationResultV1>,
     ) => {
       if (submitting) return false;
       const next = beginConfirmationSubmit(state);
@@ -191,7 +272,7 @@ export const createConfirmationController = <TRequest>(): ConfirmationController
       try {
         state = finishConfirmation(state, {
           kind: "succeeded",
-          resultRef: await submit(next.plan),
+          result: await submit(next.plan),
         });
         return state.kind === "succeeded";
       } catch (error) {
@@ -205,7 +286,7 @@ export const createConfirmationController = <TRequest>(): ConfirmationController
       }
     },
     retry: async (
-      submit: (plan: CommandConfirmationPlanV1<TRequest>) => Promise<ContractReferenceV1>,
+      submit: (plan: CommandConfirmationPlanV1<TRequest>) => Promise<CommandConfirmationResultV1>,
     ) => {
       if (state.kind !== "retryable-failure") return false;
       if (submitting) return false;
@@ -221,7 +302,7 @@ export const createConfirmationController = <TRequest>(): ConfirmationController
         submitting = true;
         state = next;
         try {
-          state = finishConfirmation(state, { kind: "succeeded", resultRef: await submit(plan) });
+          state = finishConfirmation(state, { kind: "succeeded", result: await submit(plan) });
           return state.kind === "succeeded";
         } catch (error) {
           state = finishConfirmation(state, { kind: "failed", error: fallbackError(error) });
@@ -234,8 +315,8 @@ export const createConfirmationController = <TRequest>(): ConfirmationController
     cancel: () => {
       if (state.kind !== "submitting") state = { kind: "closed" };
     },
-    invalidate: () => {
-      if (state.kind !== "closed") state = { kind: "closed" };
+    invalidate: (context, currentScope) => {
+      state = invalidateConfirmation(state, context, currentScope);
     },
   });
 };

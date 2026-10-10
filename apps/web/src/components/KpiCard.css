@@ -1,0 +1,50 @@
+.kpi-card {
+  position: relative;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
+  padding: 16px 20px;
+}
+
+.kpi-label {
+  font-size: 14px;
+  color: var(--text-2);
+}
+
+.kpi-main {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.kpi-value {
+  font-size: 34px;
+  line-height: 40px;
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.kpi-unit {
+  font-size: 14px;
+  color: var(--text-2);
+}
+
+.kpi-tag {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  font-size: 12px;
+  line-height: 18px;
+  padding: 1px 8px;
+  border-radius: 4px;
+  color: var(--text-2);
+  background: var(--bluegray-soft);
+}
+
+.kpi-tag--risk {
+  color: var(--risk-1);
+  background: var(--risk-1-soft);
+}

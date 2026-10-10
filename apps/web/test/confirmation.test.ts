@@ -3,7 +3,12 @@ import { describe, expect, it } from "vitest";
 import type { ContractReferenceV1 } from "@riskflow/contracts/ports";
 
 import { makeSafeHttpError } from "../src/api/http.js";
-import { createConfirmationController, openConfirmation } from "../src/shared/confirmation.js";
+import {
+  createConfirmationController,
+  invalidateConfirmation,
+  openConfirmation,
+} from "../src/shared/confirmation.js";
+import { INITIAL_WEB_CONTEXT_V1, type WebContextV1 } from "../src/app/state.js";
 
 const target: ContractReferenceV1 = {
   kind: "project-revision",
@@ -13,6 +18,7 @@ const target: ContractReferenceV1 = {
 const plan = (impact: "standard" | "high" = "standard") => ({
   confirmationId: "confirmation-1",
   operationId: "engineering-data.register-source-delivery",
+  scope: { kind: "project", projectId: "project-1", contextRevision: 3 } as const,
   projectId: "project-1",
   targets: [target],
   inputVersions: [{ entityId: "source-1", versionId: "v1" }],
@@ -24,10 +30,14 @@ const plan = (impact: "standard" | "high" = "standard") => ({
   request: { projectId: "project-1" },
 });
 
-const success = (entityId = "result-1"): ContractReferenceV1 => ({
-  kind: "source-delivery",
-  reference: { entityId, versionId: "v1" },
-});
+const success = (entityId = "result-1") =>
+  ({
+    kind: "reference",
+    resultRef: {
+      kind: "source-delivery",
+      reference: { entityId, versionId: "v1" },
+    },
+  }) as const;
 
 describe("C10 命令确认原语", () => {
   it("does not open for a non-allowed action and requires high-impact acknowledgement", () => {
@@ -116,5 +126,97 @@ describe("C10 命令确认原语", () => {
         return success("high-retry");
       }),
     ).toBe(true);
+  });
+});
+
+describe("C37 project/system 确认作用域", () => {
+  const systemPlan = () => ({
+    ...plan(),
+    confirmationId: "confirmation-system",
+    operationId: "administration.command" as const,
+    scope: {
+      kind: "system" as const,
+      administrationContextRef: { entityId: "admin-context-1", versionId: "v4" },
+      sessionRevision: 7,
+    },
+    projectId: "",
+    request: { targetAccountId: "account-2" },
+  });
+
+  const context = (revision: number, projectId: string) =>
+    ({
+      ...INITIAL_WEB_CONTEXT_V1,
+      revision,
+      projectId,
+    }) as WebContextV1;
+
+  it("系统作用域不因工程切换而失效，管理修订变化才失效", () => {
+    const opened = openConfirmation(systemPlan(), { kind: "allowed" });
+    expect(opened.kind).toBe("reviewing");
+
+    // 换工程不影响系统命令确认。
+    const afterProjectSwitch = invalidateConfirmation(opened, context(3, "project-2"), {
+      project: { revision: 3, projectId: "project-2" },
+      system: {
+        administrationContextRef: { entityId: "admin-context-1", versionId: "v4" },
+        sessionRevision: 7,
+      },
+    });
+    expect(afterProjectSwitch.kind).toBe("reviewing");
+
+    // 管理上下文修订变化必须失效。
+    const afterAdminChange = invalidateConfirmation(opened, context(3, "project-1"), {
+      project: { revision: 3, projectId: "project-1" },
+      system: {
+        administrationContextRef: { entityId: "admin-context-1", versionId: "v5" },
+        sessionRevision: 7,
+      },
+    });
+    expect(afterAdminChange.kind).toBe("closed");
+  });
+
+  it("工程作用域在工程或修订变化时失效", () => {
+    const opened = openConfirmation(plan(), { kind: "allowed" });
+    expect(
+      invalidateConfirmation(opened, context(3, "project-1"), {
+        project: { revision: 3, projectId: "project-1" },
+        system: undefined,
+      }).kind,
+    ).toBe("reviewing");
+    expect(
+      invalidateConfirmation(opened, context(4, "project-1"), {
+        project: { revision: 4, projectId: "project-1" },
+        system: undefined,
+      }).kind,
+    ).toBe("closed");
+    expect(
+      invalidateConfirmation(opened, context(3, "project-2"), {
+        project: { revision: 3, projectId: "project-2" },
+        system: undefined,
+      }).kind,
+    ).toBe("closed");
+  });
+
+  it("打开确认时深冻结请求，重试复用同一份载荷", () => {
+    const mutable = systemPlan();
+    const opened = openConfirmation(mutable, { kind: "allowed" });
+    if (opened.kind !== "reviewing") throw new Error("expected reviewing");
+    expect(Object.isFrozen(opened.plan.request)).toBe(true);
+    expect(Object.isFrozen(opened.plan.scope)).toBe(true);
+  });
+
+  it("管理命令回执按 command-result 收口，不伪造领域 resultRef", async () => {
+    const planValue = systemPlan();
+    const controller = createConfirmationController<typeof planValue>();
+    expect(controller.open(planValue, { kind: "allowed" })).toBe(true);
+    expect(
+      await controller.confirm(async () => ({
+        kind: "command-result",
+        result: { kind: "account", previousVersionId: "3" },
+      })),
+    ).toBe(true);
+    const state = controller.getState();
+    expect(state.kind).toBe("succeeded");
+    if (state.kind === "succeeded") expect(state.result.kind).toBe("command-result");
   });
 });

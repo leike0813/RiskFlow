@@ -1,0 +1,265 @@
+{
+  "schemaVersion": "1",
+  "label": "合成样本，待甲方复核",
+  "commands": [
+    {
+      "stepId": "environment-preparation",
+      "type": "manual",
+      "instruction": "由正式环境准备方完成测试工程/空间版本、原始资料/元信息工件及连接导入；记录真实引用。当前HTTP没有上传入口。不得导入expected/scenarios/report作为模型输入。",
+      "requiredBindings": [
+        "projectRevisionRef",
+        "spatialScopeRef",
+        "sourceConnectionRef",
+        "sourceArtifactRef",
+        "metadataArtifactRef"
+      ]
+    },
+    {
+      "stepId": "register-source",
+      "type": "http",
+      "operationId": "riskflow_command_engineering-data_register-source-delivery",
+      "requestedSpatialScopeRefs": [
+        {
+          "$binding": "spatialScopeRef"
+        }
+      ],
+      "requestedSourceVersionRefs": [],
+      "payload": {
+        "sourceConnectionRef": {
+          "$binding": "sourceConnectionRef"
+        },
+        "deliveryKey": "riskflow-synthetic-v1-trial-material-01",
+        "sourceArtifactRef": {
+          "$binding": "sourceArtifactRef"
+        },
+        "metadataArtifactRef": {
+          "$binding": "metadataArtifactRef"
+        },
+        "occurredAt": "2026-10-09T00:00:00Z"
+      },
+      "captures": {
+        "sourceVersionRef": [
+          "result",
+          "sourceVersionRef"
+        ],
+        "sourceDeliveryRef": [
+          "result",
+          "sourceDeliveryRef"
+        ]
+      },
+      "completion": "completed"
+    },
+    {
+      "stepId": "knowledge-preparation",
+      "type": "manual",
+      "instruction": "逐个导入并审核knowledge、11类配置与评分规则。下面演示一次process-model候选提交；其余按同一正式入口分别提交。模拟ref需重绑定，审计/Agent证据不能伪造。",
+      "requiredBindings": [
+        "processModelArtifactRef",
+        "knowledgeEvidenceReferences",
+        "reviewPolicyRef"
+      ]
+    },
+    {
+      "stepId": "submit-process-model",
+      "type": "http",
+      "operationId": "riskflow_command_knowledge-modeling_submit-revision",
+      "payload": {
+        "definitionType": "process-model",
+        "candidateArtifactRef": {
+          "$binding": "processModelArtifactRef"
+        },
+        "evidenceReferences": {
+          "$binding": "knowledgeEvidenceReferences"
+        }
+      },
+      "requestedSpatialScopeRefs": [
+        {
+          "$binding": "spatialScopeRef"
+        }
+      ],
+      "requestedSourceVersionRefs": [
+        {
+          "$result": "register-source",
+          "path": [
+            "sourceVersionRef"
+          ]
+        }
+      ],
+      "captures": {
+        "knowledgeRevisionRef": [
+          "result",
+          "knowledgeRevisionRef"
+        ]
+      },
+      "completion": "completed"
+    },
+    {
+      "stepId": "request-review",
+      "type": "http",
+      "operationId": "riskflow_command_knowledge-modeling_request-review",
+      "payload": {
+        "revisionRef": {
+          "$result": "submit-process-model",
+          "path": [
+            "knowledgeRevisionRef"
+          ]
+        },
+        "reviewPolicyRef": {
+          "$binding": "reviewPolicyRef"
+        }
+      },
+      "requestedSpatialScopeRefs": [
+        {
+          "$binding": "spatialScopeRef"
+        }
+      ],
+      "requestedSourceVersionRefs": [
+        {
+          "$result": "register-source",
+          "path": [
+            "sourceVersionRef"
+          ]
+        }
+      ],
+      "captures": {
+        "reviewTaskRef": [
+          "result",
+          "reviewTaskRef"
+        ]
+      },
+      "completion": "submitted"
+    },
+    {
+      "stepId": "human-approval",
+      "type": "manual",
+      "instruction": "在正式工作台核查候选、全部配置和规则，完成人工批准发布。工具不自动批准/发布。填入实际决策和发布回执，确认真实双索引/模型/Agent/Worker已装配。",
+      "requiredBindings": [
+        "reviewDecisionRef",
+        "approvedKnowledgeReleaseRef",
+        "graphVersion",
+        "retryPolicyRef"
+      ]
+    },
+    {
+      "stepId": "start-identify-assess",
+      "type": "http",
+      "operationId": "riskflow_command_workflow_start-run",
+      "requestedSpatialScopeRefs": [
+        {
+          "$binding": "spatialScopeRef"
+        }
+      ],
+      "requestedSourceVersionRefs": [
+        {
+          "$result": "register-source",
+          "path": [
+            "sourceVersionRef"
+          ]
+        }
+      ],
+      "payload": {
+        "graphVersion": {
+          "$binding": "graphVersion"
+        },
+        "retryPolicyRef": {
+          "$binding": "retryPolicyRef"
+        },
+        "entryMode": "identify-and-assess",
+        "projectRevisionRef": {
+          "$binding": "projectRevisionRef"
+        },
+        "spatialScopeRefs": [
+          {
+            "$binding": "spatialScopeRef"
+          }
+        ],
+        "sourceVersionRefs": [
+          {
+            "$result": "register-source",
+            "path": [
+              "sourceVersionRef"
+            ]
+          }
+        ]
+      },
+      "captures": {
+        "workflowRunRef": [
+          "result",
+          "workflowRunRef"
+        ]
+      },
+      "completion": "submitted"
+    },
+    {
+      "stepId": "query-run-view",
+      "type": "http",
+      "operationId": "riskflow_query_projection_query",
+      "requestedSpatialScopeRefs": [
+        {
+          "$binding": "spatialScopeRef"
+        }
+      ],
+      "requestedSourceVersionRefs": [
+        {
+          "$result": "register-source",
+          "path": [
+            "sourceVersionRef"
+          ]
+        }
+      ],
+      "payload": {
+        "queryType": "run-view",
+        "workflowRunRef": {
+          "$result": "start-identify-assess",
+          "path": [
+            "workflowRunRef"
+          ]
+        }
+      },
+      "captures": {
+        "queryResultRef": [
+          "result",
+          "queryResultRef"
+        ]
+      },
+      "completion": "completed"
+    },
+    {
+      "stepId": "read-run-view",
+      "type": "http",
+      "operationId": "riskflow_query_projection_result-read",
+      "requestedSpatialScopeRefs": [
+        {
+          "$binding": "spatialScopeRef"
+        }
+      ],
+      "requestedSourceVersionRefs": [
+        {
+          "$result": "register-source",
+          "path": [
+            "sourceVersionRef"
+          ]
+        }
+      ],
+      "payload": {
+        "queryResultRef": {
+          "$result": "query-run-view",
+          "path": [
+            "queryResultRef"
+          ]
+        },
+        "limit": 100
+      },
+      "captures": {},
+      "completion": "completed"
+    },
+    {
+      "stepId": "business-evidence",
+      "type": "manual",
+      "instruction": "逐例保存授权业务结果和完整零结果终态，并补评估、预警、处置反馈、重放/审计证据。查询成功不等于业务通过。当前没有生产快照证据时保持阻塞；候选标签仅作内部比较。",
+      "requiredBindings": [
+        "verifiedBusinessEvidenceArtifactRef"
+      ]
+    }
+  ]
+}

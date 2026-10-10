@@ -1,0 +1,156 @@
+.pm-header-tags {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.pm-empty {
+  padding: 24px 0;
+  color: var(--text-2);
+  font-size: 13px;
+  text-align: center;
+}
+
+.pm-flow {
+  display: flex;
+  align-items: stretch;
+}
+
+.pm-flow-item {
+  display: flex;
+  align-items: stretch;
+  flex: 1;
+  min-width: 0;
+}
+
+.pm-arrow {
+  display: flex;
+  align-items: center;
+  color: var(--bluegray);
+  padding: 0 6px;
+}
+
+.pm-node {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  padding: 12px 14px;
+  background: #fbfdff;
+}
+
+.pm-node-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.pm-node-order {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--blue);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pm-node-name {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.pm-node-io {
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 20px;
+}
+
+.pm-node-params {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.pm-node-evidence {
+  margin-top: 10px;
+}
+
+.pm-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  line-height: 18px;
+  padding: 1px 8px;
+  border-radius: 4px;
+  color: var(--blue);
+  background: var(--blue-soft);
+  white-space: nowrap;
+}
+
+.pm-chip--equip {
+  color: var(--text);
+  background: var(--bluegray-soft);
+}
+
+.pm-chip--part {
+  color: var(--review);
+  background: var(--review-soft);
+}
+
+.pm-bottom {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.pm-group-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-bottom: 8px;
+}
+
+.pm-group-label + .pm-chips {
+  margin-bottom: 14px;
+}
+
+.pm-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pm-deps {
+  list-style: none;
+}
+
+.pm-dep {
+  display: flex;
+  gap: 12px;
+  padding: 6px 0;
+}
+
+.pm-dep + .pm-dep {
+  border-top: 1px dashed var(--border);
+}
+
+.pm-dep-name {
+  flex: none;
+  width: 96px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pm-dep-desc {
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 20px;
+}

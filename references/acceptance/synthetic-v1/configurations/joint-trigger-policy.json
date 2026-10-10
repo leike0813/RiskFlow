@@ -1,0 +1,91 @@
+{
+  "schemaVersion": "1",
+  "definitionType": "joint-trigger-policy",
+  "projectRevisionRef": {
+    "kind": "project-revision",
+    "reference": {
+      "entityId": "project-revision-synthetic-v1",
+      "versionId": "1"
+    }
+  },
+  "configurationSetRef": {
+    "entityId": "configuration-set-synthetic-v1",
+    "versionId": "1"
+  },
+  "content": {
+    "rules": [
+      {
+        "ruleId": "joint-face-emergency",
+        "applicabilityConditions": [
+          {
+            "dimension": "工程阶段数据",
+            "values": [
+              "刀盘扩径",
+              "变径空间扩挖"
+            ]
+          }
+        ],
+        "operator": "all-of",
+        "monitoringThresholdIds": [
+          "threshold-groundwater-level-value",
+          "threshold-slurry-pressure-value"
+        ]
+      },
+      {
+        "ruleId": "joint-groundwater-settlement",
+        "applicabilityConditions": [
+          {
+            "dimension": "工程阶段数据",
+            "values": [
+              "刀盘扩径",
+              "变径空间扩挖",
+              "扩径准备",
+              "盾体扩径",
+              "缩径转换"
+            ]
+          }
+        ],
+        "operator": "any-of",
+        "monitoringThresholdIds": [
+          "threshold-ground-settlement-value",
+          "threshold-groundwater-level-value"
+        ]
+      },
+      {
+        "ruleId": "joint-pressure-pair",
+        "applicabilityConditions": [
+          {
+            "dimension": "工程阶段数据",
+            "values": [
+              "刀盘扩径",
+              "盾体扩径"
+            ]
+          }
+        ],
+        "operator": "at-least",
+        "count": 2,
+        "monitoringThresholdIds": [
+          "threshold-grouting-pressure-value",
+          "threshold-slurry-pressure-value"
+        ]
+      },
+      {
+        "ruleId": "joint-support-attitude",
+        "applicabilityConditions": [
+          {
+            "dimension": "工程阶段数据",
+            "values": [
+              "盾体扩径",
+              "缩径转换"
+            ]
+          }
+        ],
+        "operator": "all-of",
+        "monitoringThresholdIds": [
+          "threshold-lining-deformation-value",
+          "threshold-shield-attitude-value"
+        ]
+      }
+    ]
+  }
+}

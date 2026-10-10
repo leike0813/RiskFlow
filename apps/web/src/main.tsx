@@ -1,17 +1,31 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
+import { BrowserRouter } from "react-router-dom";
 
 import type { ProjectRevisionRefV1 } from "@riskflow/contracts/ports";
 
 import {
   C09HttpError,
   createC09Client,
+  makeSafeHttpError,
   type SessionChangePasswordInputV1,
   type SessionLoginInputV1,
   type SessionMetadataViewV1,
 } from "./api/http.js";
+import {
+  EngineeringProvider,
+  engineeringContextValueFrom,
+  type EngineeringContextReadViewV1,
+  type EngineeringPageState,
+} from "./api/engineering.js";
+import { readEngineeringContext } from "./api/operations.js";
+import { selectorFromSearch } from "./api/context.js";
+import { SessionProvider } from "./api/session.js";
+import { AgentTaskProvider } from "./agent/AgentTaskProvider.js";
+import { EvidenceProvider } from "./components/EvidenceDrawer.js";
 import { App } from "./app/App.js";
-import { createWebRouteRegistry, type WebRouteResolutionV1 } from "./app/routes.js";
+import type { WebRouteResolutionV1 } from "./app/routes.js";
+import { createBusinessRouteRegistryV1 } from "./app/business-routes.js";
 import {
   createRequestRevisionGuard,
   INITIAL_WEB_CONTEXT_V1,
@@ -103,13 +117,17 @@ const AppRoot = (): ReactNode => {
   const [authGuard] = useState(createRequestRevisionGuard);
   const [selection] = useState(() => readProjectSelection(window.location.search));
   const initialProjectId = selection.projectIds[0] ?? null;
-  const context = useMemo<WebContextV1>(
-    () => ({ ...INITIAL_WEB_CONTEXT_V1, projectId: initialProjectId }),
-    [initialProjectId],
-  );
+  // 宿主持有的工程上下文镜像：初值来自 URL，之后由 App 的真实 reducer 驱动。
+  // 它不是第二套状态——每次变更都由 App 算出后回传，二者始终一致。
+  const [webContext, setWebContext] = useState<WebContextV1>(() => ({
+    ...INITIAL_WEB_CONTEXT_V1,
+    projectId: initialProjectId,
+  }));
+  // C37：完整业务界面注册表 = 全部 C32–C36 页面路由 + 质量页二级入口。
+  // 页面按需加载；会话、工程上下文与确认仍由既有 Web 宿主唯一拥有。
   const registry = useMemo(
     () =>
-      createWebRouteRegistry([
+      createBusinessRouteRegistryV1([
         createQualityAssessmentRouteContribution({
           client,
           projectRevisionRef: projectRevisionRefFor(selection, initialProjectId),
@@ -181,7 +199,7 @@ const AppRoot = (): ReactNode => {
     resolution: Extract<WebRouteResolutionV1, { kind: "matched" }>,
     current: WebContextV1,
   ): ReactNode =>
-    resolution.route.routeId === "assessment.root" ? (
+    resolution.route.routeId === "assessment.quality" ? (
       <QualityPage
         client={client}
         projectId={current.projectId}
@@ -194,17 +212,156 @@ const AppRoot = (): ReactNode => {
    * 登录页、受限 → 带 `next` 的改密页），把 pathname 钉死会让这些跳转永不生效，
    * 原深链也就无法在登录或改密完成后被送回。
    */
+  // 会话上下文是 AppRoot 状态的派生视图，不持有第二份会话状态。
+  const sessionContextValue = useMemo(
+    () => ({
+      state: session,
+      // 登录必须等到会话真正建立才返回：页面随后才可能跳回原深链。
+      // 这里直接走唯一 C09 客户端，成功后再触发一次会话自省。
+      login: async (loginName: string, password: string) => {
+        await client.login(
+          { loginAttemptId: `web-login-${Date.now().toString(36)}`, loginName, password },
+          new AbortController().signal,
+        );
+        restoreSession();
+        return true;
+      },
+      changePassword: async (newPassword: string) => {
+        await client.changePassword({ newPassword }, new AbortController().signal);
+        restoreSession();
+        return true;
+      },
+      logout: async () => {
+        await client.logout(new AbortController().signal);
+        return true;
+      },
+      retryRestore: restoreSession,
+      metadata:
+        session.kind === "authenticated" || session.kind === "restricted" ? session.metadata : null,
+    }),
+    [session, onLogin, onChangePassword, restoreSession],
+  );
+
   return (
-    <App
-      session={session}
-      context={context}
-      registry={registry}
-      projectOptions={selection.projectIds.map((projectId) => ({ projectId, label: projectId }))}
-      onLogin={onLogin}
-      onChangePassword={onChangePassword}
-      onRetrySessionRestore={restoreSession}
-      routeContent={routeContent}
-    />
+    <SessionProvider value={sessionContextValue}>
+      {/*
+        Router 必须包住整棵业务树：证据抽屉（`EvidenceProvider` 的兄弟层）里的资料详情
+        深链是真实 `<Link>`，放在 Router 外会解构到 null 的路由上下文并整页崩掉。
+      */}
+      <BrowserRouter>
+        <EngineeringGate context={webContext} canReadBusiness={session.kind === "authenticated"}>
+          <App
+            session={session}
+            context={webContext}
+            registry={registry}
+            projectOptions={selection.projectIds.map((projectId) => ({
+              projectId,
+              label: projectId,
+            }))}
+            onLogin={onLogin}
+            onChangePassword={onChangePassword}
+            onRetrySessionRestore={restoreSession}
+            onContextChange={setWebContext}
+            onLogout={async () => {
+              // 注销失败必须抛出：外壳据此保留会话并提供重试。
+              await client.logout(new AbortController().signal);
+              restoreSession();
+            }}
+            routeContent={routeContent}
+          />
+        </EngineeringGate>
+      </BrowserRouter>
+    </SessionProvider>
+  );
+};
+
+/**
+ * 工程上下文门禁。
+ *
+ * 工程 context-read 必须在 Provider 内部发起：页面与本页共用同一读取与取消语义，
+ * 因此把「查询 + 提供」收进一个组件，而不是在 AppRoot 里先查询再包 Provider。
+ */
+const EngineeringGate = ({
+  context,
+  canReadBusiness,
+  children,
+}: {
+  readonly context: WebContextV1;
+  /** 只有正式会话才允许发起业务读；受限/改密前不得有任何业务查询。 */
+  readonly canReadBusiness: boolean;
+  readonly children: ReactNode;
+}): ReactNode => {
+  // 工程 context-read 直接由 URL 选择器驱动：它自己就是 Provider 的生产者，
+  // 不能再经 usePageQuery（那会反过来要求已存在的 Provider）。
+  // 工程来源有两条：URL 自带的 `?project=`，以及用户在上下文栏按标识直接进入。
+  // 两条都要驱动同一次 context-read；只看 URL 会让「按标识进入」后页面永远停在引导态。
+  // 选择器只看 `?project=`：资料来源声明改了工程也没变，不订阅 popstate 就永远停在旧声明上。
+  const [search, setSearch] = useState(() =>
+    typeof window === "undefined" ? "" : window.location.search,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const onPopState = (): void => setSearch(window.location.search);
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+  const selector = useMemo(() => {
+    const fromUrl = selectorFromSearch(search);
+    const projectId = context.projectId ?? fromUrl.projectId;
+    return {
+      ...fromUrl,
+      projectId,
+      revisionId: context.projectId === null ? fromUrl.revisionId : null,
+    };
+  }, [context.projectId, search]);
+  const [state, setState] = useState<EngineeringPageState<EngineeringContextReadViewV1>>({
+    kind: "idle",
+  });
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    if (selector.projectId === null || !canReadBusiness) {
+      setState({ kind: "idle" });
+      return;
+    }
+    const controller = new AbortController();
+    setState({ kind: "loading", previous: null });
+    void readEngineeringContext(selector.projectId, controller.signal).then(
+      (value) => {
+        if (!controller.signal.aborted) setState({ kind: "ready", value });
+      },
+      (error: unknown) => {
+        if (controller.signal.aborted) return;
+        const code = error instanceof C09HttpError ? error.error.code : "TERMINAL_FAILURE";
+        setState(
+          code === "NOT_FOUND" || code === "AUTHENTICATION_REQUIRED"
+            ? { kind: "forbidden", requiredCapability: "engineering-data.read" }
+            : { kind: "error", error: makeSafeHttpError({ code, retryable: false }) },
+        );
+      },
+    );
+    return () => controller.abort();
+  }, [selector.projectId, selector.revisionId, canReadBusiness, tick]);
+
+  const value = useMemo(
+    () =>
+      engineeringContextValueFrom(context, () => setTick((current) => current + 1), state, search),
+    [context, state, search],
+  );
+  // Agent 任务上下文：切工程即中止在途并停止刷新，服务器继续拥有任务事实。
+  // 工程标识只有在 context-read 确认该工程可读时才交给 Provider：工程读失败（无权或
+  // 不存在）后继续按标识轮询，等于对一份服务端从未确认的工程反复发读。
+  return (
+    <EngineeringProvider value={value}>
+      <AgentTaskProvider
+        {...(state.kind === "ready" && selector.projectId !== null
+          ? { projectId: selector.projectId }
+          : {})}
+      >
+        {/* 证据抽屉是迁入页面的共享入口：由 Provider 统一持有当前定位目标。 */}
+        <EvidenceProvider>{children}</EvidenceProvider>
+      </AgentTaskProvider>
+    </EngineeringProvider>
   );
 };
 

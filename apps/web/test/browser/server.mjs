@@ -805,6 +805,8 @@ export const startQualityBrowserServer = async () => {
       "/projects",
       "/identification",
       "/assessment",
+      // C37 D-17：C36 质量页已迁到评估区子路径；深链刷新必须同样回落 SPA。
+      "/assessment/quality",
       "/warnings",
       "/knowledge",
       "/review-audit",

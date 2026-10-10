@@ -1,0 +1,343 @@
+{
+  "schemaVersion": "1",
+  "projectId": "synthetic-station-tunnel-project",
+  "validationPolicyRef": {
+    "entityId": "validation-policy-synthetic-v1",
+    "versionId": "1"
+  },
+  "preparationSnapshotRef": {
+    "kind": "identification-preparation-snapshot",
+    "reference": {
+      "entityId": "identification-preparation-snapshot-synthetic-v1",
+      "versionId": "1"
+    }
+  },
+  "generatedAt": "2026-03-01T00:00:00+08:00",
+  "definitionType": "case-library",
+  "entries": [
+    {
+      "entryId": "case-entry-01",
+      "constructionMethod": "原位变径盾构",
+      "engineeringConditions": [
+        "地下水位",
+        "中硬岩"
+      ],
+      "process": [
+        "node-02-变径空间扩挖",
+        "node-03-刀盘扩径",
+        "node-05-缩径转换"
+      ],
+      "events": [
+        "掌子面失稳与塌方"
+      ],
+      "outcomes": [
+        "开挖面控制压力低于自稳能力时土体抗剪不足，局部塌方并伴随地表塌陷后的处置结果为合成记录"
+      ],
+      "treatments": [
+        "暂停变径作业并复核触发指标",
+        "实施合成处置措施并留存量测证据"
+      ],
+      "applicability": {
+        "constructionMethod": [
+          "原位变径盾构"
+        ],
+        "stratumCondition": [
+          "上软下硬复合地层",
+          "中硬岩",
+          "完整岩体",
+          "富水中砂层",
+          "岩溶发育灰岩",
+          "粉质黏土"
+        ],
+        "engineeringStage": [
+          "刀盘扩径",
+          "变径空间扩挖",
+          "扩径准备",
+          "盾体扩径",
+          "缩径转换"
+        ]
+      },
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-CASE-01"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "entryId": "case-entry-02",
+      "constructionMethod": "原位变径盾构",
+      "engineeringConditions": [
+        "支护结构变形",
+        "粉质黏土"
+      ],
+      "process": [
+        "node-02-变径空间扩挖",
+        "node-04-盾体扩径",
+        "node-05-缩径转换"
+      ],
+      "events": [
+        "初支侵限与支护失效"
+      ],
+      "outcomes": [
+        "扩挖段支护时机与刚度不匹配，管片拼装偏差累积后侵限后的处置结果为合成记录"
+      ],
+      "treatments": [
+        "暂停变径作业并复核触发指标",
+        "实施合成处置措施并留存量测证据"
+      ],
+      "applicability": {
+        "constructionMethod": [
+          "原位变径盾构"
+        ],
+        "stratumCondition": [
+          "上软下硬复合地层",
+          "中硬岩",
+          "完整岩体",
+          "富水中砂层",
+          "岩溶发育灰岩",
+          "粉质黏土"
+        ],
+        "engineeringStage": [
+          "刀盘扩径",
+          "变径空间扩挖",
+          "扩径准备",
+          "盾体扩径",
+          "缩径转换"
+        ]
+      },
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-CASE-02"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "entryId": "case-entry-03",
+      "constructionMethod": "原位变径盾构",
+      "engineeringConditions": [
+        "地下水位",
+        "上软下硬复合地层"
+      ],
+      "process": [
+        "node-01-扩径准备",
+        "node-03-刀盘扩径",
+        "node-04-盾体扩径"
+      ],
+      "events": [
+        "渗流涌砂涌泥"
+      ],
+      "outcomes": [
+        "承压水沿盾尾密封或开挖面薄弱带突破，携砂涌入舱内后的处置结果为合成记录"
+      ],
+      "treatments": [
+        "暂停变径作业并复核触发指标",
+        "实施合成处置措施并留存量测证据"
+      ],
+      "applicability": {
+        "constructionMethod": [
+          "原位变径盾构"
+        ],
+        "stratumCondition": [
+          "上软下硬复合地层",
+          "中硬岩",
+          "完整岩体",
+          "富水中砂层",
+          "岩溶发育灰岩",
+          "粉质黏土"
+        ],
+        "engineeringStage": [
+          "刀盘扩径",
+          "变径空间扩挖",
+          "扩径准备",
+          "盾体扩径",
+          "缩径转换"
+        ]
+      },
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-CASE-03"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "entryId": "case-entry-04",
+      "constructionMethod": "原位变径盾构",
+      "engineeringConditions": [
+        "地表沉降",
+        "富水中砂层"
+      ],
+      "process": [
+        "node-03-刀盘扩径",
+        "node-04-盾体扩径",
+        "node-05-缩径转换"
+      ],
+      "events": [
+        "过挖与地表沉降超标"
+      ],
+      "outcomes": [
+        "扩挖量超出设计控制值，地表累计沉降与变化速率同步增大后的处置结果为合成记录"
+      ],
+      "treatments": [
+        "暂停变径作业并复核触发指标",
+        "实施合成处置措施并留存量测证据"
+      ],
+      "applicability": {
+        "constructionMethod": [
+          "原位变径盾构"
+        ],
+        "stratumCondition": [
+          "上软下硬复合地层",
+          "中硬岩",
+          "完整岩体",
+          "富水中砂层",
+          "岩溶发育灰岩",
+          "粉质黏土"
+        ],
+        "engineeringStage": [
+          "刀盘扩径",
+          "变径空间扩挖",
+          "扩径准备",
+          "盾体扩径",
+          "缩径转换"
+        ]
+      },
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-CASE-04"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "entryId": "case-entry-05",
+      "constructionMethod": "原位变径盾构",
+      "engineeringConditions": [
+        "盾构姿态参数",
+        "岩溶发育灰岩"
+      ],
+      "process": [
+        "node-01-扩径准备",
+        "node-04-盾体扩径",
+        "node-05-缩径转换"
+      ],
+      "events": [
+        "施工装备故障"
+      ],
+      "outcomes": [
+        "变径驱动或制动回路异常，装备在坡道段失去动力或制停能力后的处置结果为合成记录"
+      ],
+      "treatments": [
+        "暂停变径作业并复核触发指标",
+        "实施合成处置措施并留存量测证据"
+      ],
+      "applicability": {
+        "constructionMethod": [
+          "原位变径盾构"
+        ],
+        "stratumCondition": [
+          "上软下硬复合地层",
+          "中硬岩",
+          "完整岩体",
+          "富水中砂层",
+          "岩溶发育灰岩",
+          "粉质黏土"
+        ],
+        "engineeringStage": [
+          "刀盘扩径",
+          "变径空间扩挖",
+          "扩径准备",
+          "盾体扩径",
+          "缩径转换"
+        ]
+      },
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-CASE-05"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "entryId": "case-entry-06",
+      "constructionMethod": "原位变径盾构",
+      "engineeringConditions": [
+        "盾构姿态参数",
+        "完整岩体"
+      ],
+      "process": [
+        "node-01-扩径准备",
+        "node-04-盾体扩径",
+        "node-05-缩径转换"
+      ],
+      "events": [
+        "装配连接失效"
+      ],
+      "outcomes": [
+        "狭小空间内拼装构件错位、连接件未紧固，接缝承载能力不足后的处置结果为合成记录"
+      ],
+      "treatments": [
+        "暂停变径作业并复核触发指标",
+        "实施合成处置措施并留存量测证据"
+      ],
+      "applicability": {
+        "constructionMethod": [
+          "原位变径盾构"
+        ],
+        "stratumCondition": [
+          "上软下硬复合地层",
+          "中硬岩",
+          "完整岩体",
+          "富水中砂层",
+          "岩溶发育灰岩",
+          "粉质黏土"
+        ],
+        "engineeringStage": [
+          "刀盘扩径",
+          "变径空间扩挖",
+          "扩径准备",
+          "盾体扩径",
+          "缩径转换"
+        ]
+      },
+      "evidence": [
+        {
+          "locator": {
+            "sourceSegmentId": "SYN-KB-CASE-06"
+          },
+          "sourceVersion": {
+            "entityId": "synthetic-knowledge-evidence-v1",
+            "versionId": "1"
+          }
+        }
+      ]
+    }
+  ]
+}

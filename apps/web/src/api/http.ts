@@ -463,6 +463,59 @@ export const createQueryOperation = <TRequest, TResult>(input: {
   readonly decode: (response: unknown) => TResult;
 }): C09OperationV1<TRequest, TResult> => createC09Operation({ ...input, mode: "query" });
 
+/**
+ * C37 D-17：闭合 system operation。
+ *
+ * 系统管理面与运维查询走固定路径，不套用 `/projects/:projectId` 业务模板，
+ * 但仍使用同一 session/Cookie、错误映射与取消语义；这里只登记四条，
+ * 不提供任意 URL 方法，避免把客户端变成通用 HTTP 代理。
+ */
+export const C37_SYSTEM_OPERATION_IDS_V1 = Object.freeze([
+  "administration.read",
+  "administration.query",
+  "administration.command",
+  "operations.query",
+] as const);
+export type C37SystemOperationIdV1 = (typeof C37_SYSTEM_OPERATION_IDS_V1)[number];
+
+const SYSTEM_OPERATION_PATHS_V1: Readonly<Record<C37SystemOperationIdV1, string>> = Object.freeze({
+  "administration.read": "/api/v1/administration",
+  "administration.query": "/api/v1/administration/queries",
+  "administration.command": "/api/v1/administration/commands",
+  "operations.query": "/api/v1/operations/queries",
+});
+
+export type C37SystemOperationV1<TRequest, TResult> = Readonly<{
+  operationId: C37SystemOperationIdV1;
+  mode: "command" | "query";
+  method: "POST" | "GET";
+  path: string;
+  requiresSession: true;
+  encode: (request: TRequest) => unknown;
+  decode: (response: unknown) => TResult;
+}>;
+
+export const createC09SystemOperation = <TRequest, TResult>(input: {
+  readonly operationId: C37SystemOperationIdV1;
+  readonly mode: "command" | "query";
+  readonly method: "POST" | "GET";
+  readonly encode: (request: TRequest) => unknown;
+  readonly decode: (response: unknown) => TResult;
+}): C37SystemOperationV1<TRequest, TResult> =>
+  Object.freeze({
+    operationId: input.operationId,
+    mode: input.mode,
+    method: input.method,
+    path: SYSTEM_OPERATION_PATHS_V1[input.operationId],
+    requiresSession: true as const,
+    encode: input.encode,
+    decode: input.decode,
+  });
+
+/** 客户端只接受已登记的 system operation；不在目录内的 id 直接拒绝。 */
+export const isC37SystemOperationIdV1 = (value: unknown): value is C37SystemOperationIdV1 =>
+  typeof value === "string" && (C37_SYSTEM_OPERATION_IDS_V1 as readonly string[]).includes(value);
+
 export type C09OperationRegistryV1 = Readonly<{
   operations: readonly AnyC09OperationV1[];
   has: (operation: AnyC09OperationV1) => boolean;
@@ -673,7 +726,14 @@ export const createC09Client = (input?: {
     changePassword: async (request, signal) =>
       (await submit(passwordOperation, request, signal)).value,
     logout: async (signal) => {
-      await submit(logoutOperation, {}, signal);
+      try {
+        await submit(logoutOperation, {}, signal);
+      } catch (error) {
+        // 401 表示服务端已确认当前会话失效——那正是注销要达成的终态，按成功收口。
+        // 只吞这一种码：技术失败仍须上抛，外壳据此保留会话并给出重试入口。
+        if (error instanceof C09HttpError && error.error.code === "AUTHENTICATION_REQUIRED") return;
+        throw error;
+      }
     },
     introspectSession: async (signal) => (await submit(introspectOperation, {}, signal)).value,
     submit,

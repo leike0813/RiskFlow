@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "1",
+  "definitionType": "forecast-policy",
+  "projectRevisionRef": {
+    "kind": "project-revision",
+    "reference": {
+      "entityId": "project-revision-synthetic-v1",
+      "versionId": "1"
+    }
+  },
+  "configurationSetRef": {
+    "entityId": "configuration-set-synthetic-v1",
+    "versionId": "1"
+  },
+  "content": {
+    "policies": [
+      {
+        "policyId": "forecast-monitoring-trend",
+        "method": "monitoring-trend",
+        "inputIndicatorIds": [
+          "indicator-consequence-settlement",
+          "indicator-possibility-excavation"
+        ],
+        "targetIndicatorId": "indicator-consequence-settlement",
+        "horizonSteps": 3,
+        "unit": "mm",
+        "requiredRef": {
+          "entityId": "forecast-trend-model-synthetic-v1",
+          "versionId": "1"
+        }
+      },
+      {
+        "policyId": "forecast-statistics",
+        "method": "historical-statistics",
+        "inputIndicatorIds": [
+          "indicator-consequence-settlement",
+          "indicator-possibility-stratum"
+        ],
+        "targetIndicatorId": "indicator-consequence-settlement",
+        "horizonSteps": 5,
+        "unit": "mm",
+        "requiredRef": {
+          "entityId": "forecast-statistics-model-synthetic-v1",
+          "versionId": "1"
+        }
+      }
+    ]
+  }
+}

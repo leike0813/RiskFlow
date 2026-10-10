@@ -1,0 +1,48 @@
+/* RiskFlow 视觉设计令牌（事实源：prototypes/report-screenshot-design.md §3） */
+:root {
+  /* 框架底色 */
+  --nav-bg: #0e2238;
+  --topbar-bg: #15324d;
+  --page-bg: #f3f6fa;
+  --card: #ffffff;
+  --border: #dce4ee;
+
+  /* 文本 */
+  --text: #172b4d;
+  --text-2: #63758a;
+
+  /* 工程蓝：当前导航、主按钮、运行中状态、主图表 */
+  --blue: #2166d1;
+  --blue-soft: #e8f0fc;
+
+  /* 风险等级色：仅用于风险等级 / 越限 / 预警 */
+  --risk-1: #d9363e;
+  --risk-2: #f97316;
+  --risk-3: #e7ac08;
+  --risk-4: #20a464;
+  --risk-1-dark: #a61e24;
+  --risk-1-soft: #fdebec;
+  --risk-2-soft: #fef1e7;
+  --risk-3-soft: #fdf6e0;
+  --risk-4-soft: #e6f5ee;
+
+  /* 状态色 */
+  --success: #1b9a6c;
+  --success-soft: #e6f5f0;
+  --review: #7e7390;
+  --review-soft: #efecf3;
+  --bluegray: #8fa6c0;
+  --bluegray-soft: #eef2f7;
+
+  /* 字体 */
+  --font: Inter, "Noto Sans SC", "Microsoft YaHei", sans-serif;
+
+  /* 卡片 */
+  --card-radius: 8px;
+  --card-shadow: 0 2px 8px rgba(18, 45, 72, 0.06);
+
+  /* 框架尺寸 */
+  --nav-width: 224px;
+  --topbar-height: 68px;
+  --agent-dock-width: 480px;
+}

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { SpatialScopeRefV1 } from "@riskflow/contracts/ports";
 
 import {
+  applyWebPathAliasV1,
   BASE_WEB_ROUTE_CONTRIBUTIONS_V1,
   createWebHistoryAdapter,
   createWebRouteRegistry,
@@ -208,5 +209,56 @@ describe("C10 路由、上下文与动作原语", () => {
     expect(invokeWebAction(action({ kind: "blocked", reasons: [] }))).toBe(false);
     expect(invokeWebAction(action({ kind: "allowed" }))).toBe(true);
     expect(calls).toBe(1);
+  });
+});
+
+describe("C37 旧前缀别名与质量子路径", () => {
+  it("旧前缀重定向到新 section 根，并保留 search", () => {
+    expect(resolveWebRoute("/project")).toEqual({
+      kind: "redirect",
+      from: "/project",
+      to: "/projects",
+    });
+    expect(resolveWebRoute("/review")).toEqual({
+      kind: "redirect",
+      from: "/review",
+      to: "/review-audit",
+    });
+    expect(resolveWebRoute("/project?revision=7").to).toBe("/projects?revision=7");
+    expect(resolveWebRoute("/project/risk-1?tab=evidence")).toMatchObject({
+      kind: "redirect",
+      to: "/projects/risk-1?tab=evidence",
+    });
+  });
+
+  it("别名只落在段边界上，不误伤既有路径", () => {
+    expect(applyWebPathAliasV1("/projects")).toBeUndefined();
+    expect(applyWebPathAliasV1("/review-audit")).toBeUndefined();
+    expect(applyWebPathAliasV1("/projection")).toBeUndefined();
+    expect(resolveWebRoute("/projects").kind).toBe("matched");
+  });
+
+  it("质量入口在 /assessment/quality，七项导航数量不变", () => {
+    const registry = createWebRouteRegistry([
+      {
+        routeId: "assessment.quality",
+        path: "/assessment/quality",
+        title: "质量评估",
+        section: "assessment",
+        shellKind: "list",
+        contextRequirement: "project",
+        requiredViewCapability: null,
+        render: null,
+      },
+    ]);
+    const resolution = resolveWebRoute("/assessment/quality", registry);
+    expect(resolution.kind).toBe("matched");
+    if (resolution.kind === "matched") {
+      expect(resolution.route.routeId).toBe("assessment.quality");
+    }
+    // /assessment 仍是 section 根，质量页不占用它。
+    expect(resolveWebRoute("/assessment", registry).kind).toBe("matched");
+    expect(WEB_NAVIGATION_V1).toHaveLength(7);
+    expect(hasExactlySevenBusinessNavigation(WEB_NAVIGATION_V1)).toBe(true);
   });
 });

@@ -1,0 +1,531 @@
+{
+  "schemaVersion": "1",
+  "projectRevisionRef": {
+    "kind": "project-revision",
+    "reference": {
+      "entityId": "project-revision-synthetic-v1",
+      "versionId": "1"
+    }
+  },
+  "configurationSetRef": {
+    "entityId": "configuration-set-synthetic-v1",
+    "versionId": "1"
+  },
+  "compatibilityRef": {
+    "entityId": "scoring-rule-compatibility-synthetic-v1",
+    "versionId": "1"
+  },
+  "scoringPolicyRef": {
+    "entityId": "scoring-policy-synthetic-v1",
+    "versionId": "1"
+  },
+  "cleaningResultArtifactRef": {
+    "kind": "content-artifact",
+    "reference": {
+      "entityId": "cleaning-result-synthetic-v1",
+      "versionId": "1"
+    }
+  },
+  "agentTaskRef": {
+    "kind": "agent-task",
+    "reference": {
+      "entityId": "agent-task-synthetic-knowledge-authoring",
+      "versionId": "1"
+    },
+    "taskType": "knowledge-authoring",
+    "triggerMode": "embedded",
+    "modelDeploymentRef": {
+      "entityId": "model-deployment-synthetic-v1",
+      "versionId": "1"
+    },
+    "promptTemplateRef": {
+      "entityId": "prompt-template-synthetic-v1",
+      "versionId": "1"
+    },
+    "toolPolicyRef": {
+      "entityId": "tool-policy-synthetic-v1",
+      "versionId": "1"
+    },
+    "budgetPolicyRef": {
+      "entityId": "budget-policy-synthetic-v1",
+      "versionId": "1"
+    },
+    "incrementSchemaRef": {
+      "entityId": "increment-schema-synthetic-v1",
+      "versionId": "1"
+    },
+    "validationPolicyRef": {
+      "entityId": "validation-policy-synthetic-v1",
+      "versionId": "1"
+    }
+  },
+  "members": [
+    {
+      "rule": {
+        "ruleId": "rule-face-pressure-score",
+        "applicabilityConditions": {
+          "constructionMethod": [
+            "原位变径盾构"
+          ],
+          "stratumCondition": [
+            "上软下硬复合地层",
+            "中硬岩",
+            "完整岩体",
+            "富水中砂层",
+            "岩溶发育灰岩",
+            "粉质黏土"
+          ],
+          "engineeringStage": [
+            "刀盘扩径",
+            "变径空间扩挖",
+            "扩径准备",
+            "盾体扩径",
+            "缩径转换"
+          ]
+        },
+        "indicatorItem": "indicator-possibility-excavation",
+        "scoringThresholds": [
+          {
+            "thresholdId": "rule-face-pressure-score-t01",
+            "score": 1.0,
+            "operator": "lt",
+            "value": 80.0
+          },
+          {
+            "thresholdId": "rule-face-pressure-score-t02",
+            "score": 2.0,
+            "operator": "between",
+            "value": 80.0,
+            "upperValue": 120.0
+          },
+          {
+            "thresholdId": "rule-face-pressure-score-t03",
+            "score": 4.0,
+            "operator": "between",
+            "value": 120.0,
+            "upperValue": 160.0
+          },
+          {
+            "thresholdId": "rule-face-pressure-score-t04",
+            "score": 5.0,
+            "operator": "gte",
+            "value": 160.0
+          }
+        ],
+        "gradeIntervals": [
+          {
+            "grade": "grade-a",
+            "lowerBound": 0,
+            "upperBound": 2
+          },
+          {
+            "grade": "grade-b",
+            "lowerBound": 2,
+            "upperBound": 4
+          },
+          {
+            "grade": "grade-c",
+            "lowerBound": 4,
+            "upperBound": 6
+          },
+          {
+            "grade": "grade-d",
+            "lowerBound": 6,
+            "upperBound": 8
+          },
+          {
+            "grade": "grade-e",
+            "lowerBound": 8,
+            "upperBound": 12
+          }
+        ],
+        "exceptionClauses": [],
+        "evidenceLocator": {
+          "sourceSegmentId": "SYN-KB-RULE-FACE-PRESSURE-01"
+        },
+        "ruleVersion": {
+          "entityId": "rule-face-pressure-score-synthetic-v1",
+          "versionId": "1"
+        },
+        "reviewStatus": "pending"
+      },
+      "binding": {
+        "sourceVersionRef": {
+          "kind": "source-version",
+          "reference": {
+            "entityId": "synthetic-quantization-safety-v1",
+            "versionId": "1"
+          }
+        },
+        "cleaningResultArtifactRef": {
+          "kind": "content-artifact",
+          "reference": {
+            "entityId": "cleaning-result-rule-face-pressure-score",
+            "versionId": "1"
+          }
+        },
+        "evidenceReferences": [
+          {
+            "locator": {
+              "sourceSegmentId": "SYN-KB-RULE-FACE-PRESSURE-01"
+            },
+            "sourceVersion": {
+              "entityId": "synthetic-quantization-safety-v1",
+              "versionId": "1"
+            }
+          }
+        ],
+        "agentTaskRef": {
+          "kind": "agent-task",
+          "reference": {
+            "entityId": "agent-task-synthetic-knowledge-authoring",
+            "versionId": "1"
+          },
+          "taskType": "knowledge-authoring",
+          "triggerMode": "embedded",
+          "modelDeploymentRef": {
+            "entityId": "model-deployment-synthetic-v1",
+            "versionId": "1"
+          },
+          "promptTemplateRef": {
+            "entityId": "prompt-template-synthetic-v1",
+            "versionId": "1"
+          },
+          "toolPolicyRef": {
+            "entityId": "tool-policy-synthetic-v1",
+            "versionId": "1"
+          },
+          "budgetPolicyRef": {
+            "entityId": "budget-policy-synthetic-v1",
+            "versionId": "1"
+          },
+          "incrementSchemaRef": {
+            "entityId": "increment-schema-synthetic-v1",
+            "versionId": "1"
+          },
+          "validationPolicyRef": {
+            "entityId": "validation-policy-synthetic-v1",
+            "versionId": "1"
+          }
+        }
+      }
+    },
+    {
+      "rule": {
+        "ruleId": "rule-settlement-score",
+        "applicabilityConditions": {
+          "constructionMethod": [
+            "原位变径盾构"
+          ],
+          "stratumCondition": [
+            "上软下硬复合地层",
+            "中硬岩",
+            "完整岩体",
+            "富水中砂层",
+            "岩溶发育灰岩",
+            "粉质黏土"
+          ],
+          "engineeringStage": [
+            "刀盘扩径",
+            "变径空间扩挖",
+            "扩径准备",
+            "盾体扩径",
+            "缩径转换"
+          ]
+        },
+        "indicatorItem": "indicator-consequence-settlement",
+        "scoringThresholds": [
+          {
+            "thresholdId": "rule-settlement-score-t01",
+            "score": 1.0,
+            "operator": "lt",
+            "value": 5.0
+          },
+          {
+            "thresholdId": "rule-settlement-score-t02",
+            "score": 2.0,
+            "operator": "between",
+            "value": 5.0,
+            "upperValue": 10.0
+          },
+          {
+            "thresholdId": "rule-settlement-score-t03",
+            "score": 4.0,
+            "operator": "between",
+            "value": 10.0,
+            "upperValue": 20.0
+          },
+          {
+            "thresholdId": "rule-settlement-score-t04",
+            "score": 6.0,
+            "operator": "between",
+            "value": 20.0,
+            "upperValue": 30.0
+          },
+          {
+            "thresholdId": "rule-settlement-score-t05",
+            "score": 8.0,
+            "operator": "gte",
+            "value": 30.0
+          }
+        ],
+        "gradeIntervals": [
+          {
+            "grade": "grade-a",
+            "lowerBound": 0,
+            "upperBound": 2
+          },
+          {
+            "grade": "grade-b",
+            "lowerBound": 2,
+            "upperBound": 4
+          },
+          {
+            "grade": "grade-c",
+            "lowerBound": 4,
+            "upperBound": 6
+          },
+          {
+            "grade": "grade-d",
+            "lowerBound": 6,
+            "upperBound": 8
+          },
+          {
+            "grade": "grade-e",
+            "lowerBound": 8,
+            "upperBound": 12
+          }
+        ],
+        "exceptionClauses": [],
+        "evidenceLocator": {
+          "sourceSegmentId": "SYN-KB-RULE-SETTLEMENT-01"
+        },
+        "ruleVersion": {
+          "entityId": "rule-settlement-score-synthetic-v1",
+          "versionId": "1"
+        },
+        "reviewStatus": "pending"
+      },
+      "binding": {
+        "sourceVersionRef": {
+          "kind": "source-version",
+          "reference": {
+            "entityId": "synthetic-quantization-settlement-v1",
+            "versionId": "1"
+          }
+        },
+        "cleaningResultArtifactRef": {
+          "kind": "content-artifact",
+          "reference": {
+            "entityId": "cleaning-result-rule-settlement-score",
+            "versionId": "1"
+          }
+        },
+        "evidenceReferences": [
+          {
+            "locator": {
+              "sourceSegmentId": "SYN-KB-RULE-SETTLEMENT-01"
+            },
+            "sourceVersion": {
+              "entityId": "synthetic-quantization-settlement-v1",
+              "versionId": "1"
+            }
+          }
+        ],
+        "agentTaskRef": {
+          "kind": "agent-task",
+          "reference": {
+            "entityId": "agent-task-synthetic-knowledge-authoring",
+            "versionId": "1"
+          },
+          "taskType": "knowledge-authoring",
+          "triggerMode": "embedded",
+          "modelDeploymentRef": {
+            "entityId": "model-deployment-synthetic-v1",
+            "versionId": "1"
+          },
+          "promptTemplateRef": {
+            "entityId": "prompt-template-synthetic-v1",
+            "versionId": "1"
+          },
+          "toolPolicyRef": {
+            "entityId": "tool-policy-synthetic-v1",
+            "versionId": "1"
+          },
+          "budgetPolicyRef": {
+            "entityId": "budget-policy-synthetic-v1",
+            "versionId": "1"
+          },
+          "incrementSchemaRef": {
+            "entityId": "increment-schema-synthetic-v1",
+            "versionId": "1"
+          },
+          "validationPolicyRef": {
+            "entityId": "validation-policy-synthetic-v1",
+            "versionId": "1"
+          }
+        }
+      }
+    },
+    {
+      "rule": {
+        "ruleId": "rule-stratum-grade-score",
+        "applicabilityConditions": {
+          "constructionMethod": [
+            "原位变径盾构"
+          ],
+          "stratumCondition": [
+            "上软下硬复合地层",
+            "中硬岩",
+            "完整岩体",
+            "富水中砂层",
+            "岩溶发育灰岩",
+            "粉质黏土"
+          ],
+          "engineeringStage": [
+            "刀盘扩径",
+            "变径空间扩挖",
+            "扩径准备",
+            "盾体扩径",
+            "缩径转换"
+          ]
+        },
+        "indicatorItem": "indicator-possibility-stratum",
+        "scoringThresholds": [
+          {
+            "thresholdId": "rule-stratum-grade-score-t01",
+            "score": 1.0,
+            "operator": "eq",
+            "value": "完整岩体"
+          },
+          {
+            "thresholdId": "rule-stratum-grade-score-t02",
+            "score": 2.0,
+            "operator": "eq",
+            "value": "中硬岩"
+          },
+          {
+            "thresholdId": "rule-stratum-grade-score-t03",
+            "score": 3.0,
+            "operator": "eq",
+            "value": "粉质黏土"
+          },
+          {
+            "thresholdId": "rule-stratum-grade-score-t04",
+            "score": 3.5,
+            "operator": "eq",
+            "value": "上软下硬复合地层"
+          },
+          {
+            "thresholdId": "rule-stratum-grade-score-t05",
+            "score": 4.0,
+            "operator": "eq",
+            "value": "富水中砂层"
+          },
+          {
+            "thresholdId": "rule-stratum-grade-score-t06",
+            "score": 4.5,
+            "operator": "eq",
+            "value": "岩溶发育灰岩"
+          }
+        ],
+        "gradeIntervals": [
+          {
+            "grade": "grade-a",
+            "lowerBound": 0,
+            "upperBound": 2
+          },
+          {
+            "grade": "grade-b",
+            "lowerBound": 2,
+            "upperBound": 4
+          },
+          {
+            "grade": "grade-c",
+            "lowerBound": 4,
+            "upperBound": 6
+          },
+          {
+            "grade": "grade-d",
+            "lowerBound": 6,
+            "upperBound": 8
+          },
+          {
+            "grade": "grade-e",
+            "lowerBound": 8,
+            "upperBound": 12
+          }
+        ],
+        "exceptionClauses": [],
+        "evidenceLocator": {
+          "sourceSegmentId": "SYN-KB-RULE-STRATUM-01"
+        },
+        "ruleVersion": {
+          "entityId": "rule-stratum-grade-score-synthetic-v1",
+          "versionId": "1"
+        },
+        "reviewStatus": "pending"
+      },
+      "binding": {
+        "sourceVersionRef": {
+          "kind": "source-version",
+          "reference": {
+            "entityId": "synthetic-quantization-stratum-v1",
+            "versionId": "1"
+          }
+        },
+        "cleaningResultArtifactRef": {
+          "kind": "content-artifact",
+          "reference": {
+            "entityId": "cleaning-result-rule-stratum-grade-score",
+            "versionId": "1"
+          }
+        },
+        "evidenceReferences": [
+          {
+            "locator": {
+              "sourceSegmentId": "SYN-KB-RULE-STRATUM-01"
+            },
+            "sourceVersion": {
+              "entityId": "synthetic-quantization-stratum-v1",
+              "versionId": "1"
+            }
+          }
+        ],
+        "agentTaskRef": {
+          "kind": "agent-task",
+          "reference": {
+            "entityId": "agent-task-synthetic-knowledge-authoring",
+            "versionId": "1"
+          },
+          "taskType": "knowledge-authoring",
+          "triggerMode": "embedded",
+          "modelDeploymentRef": {
+            "entityId": "model-deployment-synthetic-v1",
+            "versionId": "1"
+          },
+          "promptTemplateRef": {
+            "entityId": "prompt-template-synthetic-v1",
+            "versionId": "1"
+          },
+          "toolPolicyRef": {
+            "entityId": "tool-policy-synthetic-v1",
+            "versionId": "1"
+          },
+          "budgetPolicyRef": {
+            "entityId": "budget-policy-synthetic-v1",
+            "versionId": "1"
+          },
+          "incrementSchemaRef": {
+            "entityId": "increment-schema-synthetic-v1",
+            "versionId": "1"
+          },
+          "validationPolicyRef": {
+            "entityId": "validation-policy-synthetic-v1",
+            "versionId": "1"
+          }
+        }
+      }
+    }
+  ]
+}

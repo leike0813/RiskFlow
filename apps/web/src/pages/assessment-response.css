@@ -1,0 +1,157 @@
+/** 评估与处置域共享样式（design D-02）。 */
+
+.ar-ref {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.ar-ref-kind {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.ar-gated {
+  display: inline-block;
+  font-size: 12px;
+  color: var(--text-2);
+  padding: 6px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+
+.ar-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  padding: 14px 16px;
+}
+
+.ar-card + .ar-card {
+  margin-top: 14px;
+}
+
+.ar-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-bottom: 10px;
+}
+
+.ar-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ar-field-row {
+  display: grid;
+  grid-template-columns: 148px 1fr;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.ar-field-row dt {
+  color: var(--text-2);
+}
+
+.ar-field-row dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ar-ref-list {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ar-ref-list li {
+  font-size: 12px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.ar-next-page {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.ar-chip {
+  font-size: 12px;
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--blue);
+  background: var(--card);
+}
+
+.ar-note {
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 18px;
+}
+
+.ar-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.ar-form-field input,
+.ar-form-field select {
+  font-size: 13px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.ar-two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .ar-two-col {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ar-stage-bar {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ar-stage-bar li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  min-width: 96px;
+}
+
+.ar-stage-bar .ar-stage-id {
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.ar-stage-bar .ar-stage-name {
+  font-size: 12px;
+}
+
+.ar-stage-bar .ar-stage-state {
+  font-size: 11px;
+  color: var(--text-2);
+}

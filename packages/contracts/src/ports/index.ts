@@ -669,6 +669,13 @@ const authorizationContextBase = {
   decidedAt: IsoDateTimeSchema,
 };
 
+export const CommandCausalRefV1Schema = z.strictObject({
+  kind: z.literal("command"),
+  commandId: IdentifierSchema,
+  authorizationContextRef: AuthorizationContextRefV1Schema,
+});
+export type CommandCausalRefV1 = z.infer<typeof CommandCausalRefV1Schema>;
+
 export const AuthorizationContextV1Schema = z.union([
   z.strictObject({
     ...authorizationContextBase,
@@ -678,6 +685,12 @@ export const AuthorizationContextV1Schema = z.union([
   z.strictObject({
     ...authorizationContextBase,
     causalRunRef: WorkflowRunRefV1Schema,
+    invocation: SystemAuthorizationInvocationV1Schema,
+  }),
+  z.strictObject({
+    ...authorizationContextBase,
+    causalRunRef: z.never().optional(),
+    causalCommandRef: CommandCausalRefV1Schema,
     invocation: SystemAuthorizationInvocationV1Schema,
   }),
   z.strictObject({

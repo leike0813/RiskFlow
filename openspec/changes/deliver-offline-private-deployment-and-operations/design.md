@@ -1,8 +1,8 @@
 ## Context
 
-**状态：规划已闭合，实施进度以 tasks 为准。** D-16–D-22 冻结部署、桌面、策略与生产接线；implementation-plan/tasks 覆盖 apply 前置。实现和工程检查完成后交接 Finalizer；verification 区分工程检查结果与实机交付证据。
+**状态：按当前功能验收范围重新闭合规划，新增实现尚未完成。** D-01–D-22 保留已有服务/UI/运维设计，D-23/D-24 固定网络 API 后端、功能验收与 C38 移交。verification 只在新增任务实现并形成检查点后由 Finalizer 创建。
 
-固定代码基线：`6fd462e9fc61e92b39903a3087e2e2a8a21c1b5a`。change 自身使用 `orchestrated-delivery`。现有代码仍为三应用三共享包，`openspec/config.yaml` 当前描述与代码一致；四应用目标在本 change 的工程基线 delta 中声明，实施时同步实际工程配置。
+原 IP-01–IP-14 基线为 `6fd462e9fc61e92b39903a3087e2e2a8a21c1b5a`；增量 IP-15/IP-16 基线为 `0a25b6a469ade4bcc6a21c4514195d1f7c19ff31`。change 使用 `orchestrated-delivery`。当前代码已包含四应用三共享包、Web 迁移和 Electron；网络 API adapter 与真实功能验收仍需按新增任务完成。
 
 产品设计入口：`.scratch/riskflow-master-plan/prototypes/desktop-client-architecture.md`。三 VM 与恢复责任来源于 `issues/08-private-deployment-governance.md`；迁移范围由本轮用户确认，模块行为以主规格与当前代码为准。
 
@@ -12,22 +12,24 @@
 | Worker | `apps/worker/src/index.ts` 和 C20/C24/C30 等组合根 | 耐久消费循环、全部必需 options 与既有 handler 映射 |
 | PostgreSQL | bootstrap、migrations、pool、checkpointer；四个 NOLOGIN 组 | 部署 LOGIN、独立初始化、受限运行连接 |
 | 工件 | C04 `createContentAddressedArtifactStore`、`createHashManifest`、`reconcile` | 同机逻辑副本、全工程核对、人工恢复切换 |
-| 模型/OCR | 既有 strict 配置与真实服务 smoke | 制品冻结、三 VM 接线、预算与资源实测 |
+| 模型/OCR | 既有 llama.cpp strict 配置/adapter 与 OCR 接口 | 网络 API 接入及当前真实协议/业务证据；最终制品和资源实测归 C38 |
 | 运维读 | C35 四组件健康/模型查询与当前管理员授权 | 注入真实且可取消、有截止时间的 provider |
-| UI | `demo/src` 真实业务接线，`demo/v2` 设计参考；`apps/web` 壳与 C36 | C32–C35 全部页面归 Web，唯一会话/HTTP/导航/确认 |
-| Desktop | 当前不存在 | 薄 Electron HTTPS 入口、离线安装包与真实平台验收 |
+| UI | C32–C36 已归 `apps/web`，统一会话/路由/确认 | 当前真实功能证据与既有行为回归 |
+| Desktop | 已有 HTTPS 主进程、安全组件和两条基础 e2e | 当前可用平台补完整功能场景；正式多平台安装归 C38 |
 
 浏览器 harness 只作接线参考，其中固定口令、合成结果、模型替身、直接 SQL 夹具和固定 HMAC 不能进入生产。将静态站点放进 Electron 安装包会增加跨来源会话和版本协调，本次选择服务器提供 Web。
 
 ## Goals / Non-Goals
 
-**Goals**：一套完整 Web UI 同时服务桌面与浏览器；三 VM 可真实启动、停止并离线交付；权限、版本与审计贯穿；同机逻辑恢复可核验；真实平台和硬件证据可供 C38 引用。
+**Goals**：在现有功能环境中使完整 Web、API、Worker、真实数据服务和网络推理后端贯通；保持权限、预算、人工确认、版本与审计；取得功能终态和可重放证据后完成 C37。已有三 VM、打包和恢复程序保留，正式签名、离线介质、实机与 4090 取证移交 C38 最终交付。
 
 **Non-Goals**：本机独立后端/模型、移动端或 PWA 交付、离线业务同步、独立冷备、HA/PITR/灾备、持续备份、周期演练、生产级 RPO/RTO、长期代运维、自动换模型/扩预算、通用运维 Shell/SQL/文件 API、LoRA 训练与 C38 合同总验收。
 
 ## Decisions
 
 ### D-01. 服务器沿既定三 VM 拓扑
+
+C37 当前功能环境只要求三种职责及其接口边界，不要求三台实际 VM；各逻辑角色可以登记同一宿主，使用真实 PostgreSQL/Qdrant/工件及网络 API 模型服务。只有应用 HTTPS 面向用户。以下三 VM/GPU 布局是 C38 最终部署目标，不是当前功能验收前置。
 
 同一物理服务器内：推理 VM 直通 GPU 并运行 llama.cpp/模型；应用 VM 承载 Web、API、Worker、HTTPS 入口与必要解析；数据 VM 承载 PostgreSQL、Qdrant 与不可变工件。普通客户端只访问应用 HTTPS，内部服务和管理网络分别受限。API 与 Worker 分进程，继续直接复用领域模块，不通过内部 REST/MCP 互调。
 
@@ -37,17 +39,17 @@ systemd、Caddy 与数据 VM 本地 C04 流服务分别按 D-16/D-18 装配，�
 
 `ReleaseManifestV1` 固定 release/codeHead、平台、工具链、服务端与桌面制品、精确版本、相对介质位置、字节数、摘要、官方来源、许可证与 SBOM；OCI 项另含 digest，不使用 latest。
 
-`DeploymentConfigV1` 固定三 VM 的网络、数据与秘密定位、精确业务策略和生命周期预算，组合既有模型/OCR/工件等 Schema，不复制阈值。部署配置位于 adapter/宿主边界，不进入领域 DTO 或图状态。桌面配置只含批准 HTTPS origin 和桌面所需公开发布信息，不持有服务器秘密。
+`DeploymentConfigV1` 固定推理/应用/数据三个逻辑角色、数据与秘密定位、精确策略及生命周期预算；功能环境允许角色共用宿主，不把 hosts 数量当作三台实际 VM 的证据。模型按 D-23 显式选择后端，MinerU 按 `adopt-mineru-document-ingestion` 显式选择官网精准 API 或自托管 V1，工件继续原 Schema。配置归宿主边界，不进入业务 DTO 或图状态；桌面配置只含批准 HTTPS origin 和公开身份。
 
 独立秘密文件按各 VM 运行主体最小权限加载，密码/TLS 私钥/HMAC 不进入源码、镜像、日志、argv、发布 JSON 或恢复描述。部署 strict Schema 的完整字段和公开导出按 D-19 冻结。
 
 ### D-03. 制品与新增依赖在施工图前冻结
 
-复用 Node `>=24.12.0 <25`、`pnpm@11.10.0` 与 React 19.2.8。已有真实基础设施参考为 PostgreSQL 18.6-bookworm、Qdrant v1.19.0 的仓库固定 digest，以及 C13 PaddleOCR/PaddleX 3.7.0 和 PP-StructureV3；实际发布清单必须核验真实制品，不能复制测试标签冒充发布。
+复用 Node `>=24.12.0 <25`、`pnpm@11.10.0` 与 React 19.2.8。已有真实基础设施参考为 PostgreSQL 18.6-bookworm、Qdrant v1.19.0 的仓库固定 digest，以及 独立 change `adopt-mineru-document-ingestion` 固定的 MinerU 4.0.12 与专用模型；实际发布清单必须核验真实制品，不能复制测试标签冒充发布。
 
-llama.cpp 构建、模型/Embedding 权重、窗口、维度、OCR 全部模型和许可证由真实介质提供。RTX 4090 24GB/128GB 为最低实测基线；原聊天候选包络为 Qwen3.8-27B Q4_K_M、单槽、32K 总上下文、F16 KV、MTP 关闭，不据此承诺更大窗口或吞吐。
+C37 网络 API 的模型/协议身份、上下文、维度、能力与预算按 D-23 冻结，不要求本地权重或推理 GPU；OCR 仍须有真实解析能力。llama.cpp 权重、完整离线 OCR/驱动介质与许可核验、RTX 4090 24GB/128GB 基准归 C38。原聊天候选包络不作为当前 API 型号，也不构成未测吞吐承诺。
 
-Electron、打包工具和迁移需要的 Router/图表依赖逐项记录精确版本、用途、官方来源、许可证、离线方式和退出条件。Router 6.30.6/ECharts 5.6.0 作为 D-16 的精确迁移依赖，当前根锁文件尚无这些依赖，安装属于后续实施。Electron 内置 Node/Chromium 与服务端 Node 分别记录；各平台二进制和第三方许可纳入 SBOM/许可全集。
+已有 Electron、打包工具、Router 6.30.6/ECharts 5.6.0 沿 D-16 的精确锁定与许可治理；本次增量使用 Node fetch 和已有 Zod，不新增依赖。Electron 内置 Node/Chromium 与服务端 Node 身份分别记录；正式平台介质与 SBOM 由 C38 核验。
 
 ### D-04. 宿主组合消费公开模块
 
@@ -73,7 +75,7 @@ Web 静态资源、API、SSE 共用同一 origin，生产深链刷新可用，`/
 
 存活与就绪区分，维护或必需依赖/接线缺失使就绪失败。C35 仍使用当前管理员、四组件、32 项及既有时间边界。探针响应 AbortSignal 并有整体截止时间，不能只依赖当前 collector 的定时器。结构化日志/指标/链路仅含安全引用、原因码、计数和耗时，配置容量与保留，不代替 PostgreSQL 审计或自由读取业务正文。
 
-GPU 归推理 VM；OCR 优先在应用 VM 以 CPU 和独立并发/内存/时间预算运行。实际资源影响由目标环境测量，不用容器内存限制声称显存隔离。
+最终 GPU 归推理 VM；MinerU 使用辅助 NVIDIA GPU 与独立并发/显存/内存/时间预算，主 4090 运行 Qwen3.8-27B，embedding 保持独立 Ollama 主机。C37 如实报告网络 API 与 OCR 实际可观测状态，不伪造远端 GPU 指标；目标环境资源隔离效果由 C38 测量。
 
 ### D-08. 逻辑恢复经受控运维 CLI
 
@@ -105,17 +107,17 @@ C04 快照引用是业务追踪，不能当 PostgreSQL 导出快照令牌。清�
 
 软件、模型、Embedding 与业务定义发布分别管理。兼容旧发布可在维护窗口人工切换并复验；不兼容数据库/工件版本需先构造匹配副本的隔离实例，不能只换旧镜像。此流程服务于升级和逻辑故障恢复，不提供宿主故障下的数据保护承诺。
 
-### D-12. 验收使用真实发布与目标环境
+### D-12. 当前功能收口与最终交付取证分开
 
 迁移 C32–C35 浏览器行为验收到 `apps/web` 并保留 C36；真实 HTTP/会话/数据库/投影与正式命令仍是测试面。合成样本明确待甲方复核，不把随机模型响应设为期望。重复覆盖按稳定可观察行为合并，不测试 CSS、完整文案或内部调用顺序。
 
-C37 实际发布验收覆盖无公网安装、三 VM 端口隔离、完整页面与桌面、真实模型/OCR、重启幂等、权限拒绝、逻辑副本破坏检测、双索引重建、升级回退和目标资源基准。局部 harness 不替代实际部署；启用的 smoke 缺环境或关键 skip 不能通过。
+C37 当前覆盖完整 Web、真实 HTTP/会话/数据库/索引/工件、网络模型 API、后台终态、权限拒绝、人工确认、幂等和审计追溯；适用的服务重启、逻辑副本、损坏检测和索引重建沿既有测试核验。单元测试和模型替身只作工程证据，不能证明真实推理及业务闭环。
 
-报告记录代码/配置/模型/平台、数据规模、并发、延迟/吞吐、峰值资源、磁盘、停写与恢复分阶段耗时；不要求生产级 RPO/RTO 或 SLA。真实硬件/模型/平台缺失则阻塞对应验收。
+报告记录实际代码、配置、模型/服务协议、样本身份、命令、终态、业务/审计/工件引用及失败证据。C37 功能报告不承诺离线运行、最终平台可安装性、4090 性能、RPO/RTO 或 SLA。未来签名、硬件、介质缺项只出现在 C38 移交清单。
 
-实施分为代码与工程检查、Finalizer 审查、目标环境交付验收。代码阶段包括部署/打包/验收程序、配置与手册，并使用真实本地 PostgreSQL、Qdrant、HTTP 和 Chromium 验证适用接缝；模型协议与配置校验可使用明确标注的测试输入，不将其当作真实模型或生产策略。生产证书、签名材料、真实模型/OCR 介质、三平台和目标硬件不是代码开发及工程审查的前置条件。相关程序须在输入缺失时正确拒绝，剩余独立实现继续推进。
+先完成 IP-15/IP-16 的网络接入、宿主运行和真实功能证据，再做 14.2 工程交接，Finalizer 按当前范围核验、修复、回归及必要审计，填写一个 C37 功能 PASS/FAIL/BLOCKED。当前真实服务、受信任功能 HTTPS、批准策略或终态证据缺项须 BLOCKED，普通缺陷须 FAIL。全部当前任务与审计通过才可按项目流程集成、归档。
 
-实现任务与交付取证任务分别勾选；全部实现任务及工程检查完成并形成固定检查点后即可交接 Finalizer，未完成的交付取证任务保持未勾选。Finalizer 先核验、修复并回归代码，verification 保持一个 C37 总体 PASS/FAIL/BLOCKED 结论，同时逐项记录工程检查结果和目标环境证据。实现缺陷记 FAIL；仅缺交付输入时对应验收及总体结论记 BLOCKED，不阻止已批准范围内的工程审查。环境齐备后补跑交付验收并更新同一工件；总体 PASS、成功集成和归档仍要求全部交付证据及必要审计通过。
+C38 在自己的规划与 verification 中承接正式包制备、三平台安装、禁网三 VM、本地模型/OCR/系统介质、恢复和硬件资源基准；tasks 的移交表不是 C37 未完成 checkbox，也不是已通过证据。C38 必须按最终制品和代码身份重新取证；不复用 C37 功能 PASS 宣告合同或实机交付完成。
 
 ### D-13. 文件所有权与当前修改边界
 
@@ -124,7 +126,8 @@ C37 实际发布验收覆盖无公网安装、三 VM 端口隔离、完整页面
 | `apps/web/` | 完整页面、真实客户端接线、导航/主题/图表复用、C36 合并与浏览器验收 |
 | `apps/desktop/` | Electron 主进程、受控 HTTPS 入口、本地连接状态、平台打包及真实验收 |
 | `deployment/`、`scripts/deployment/` | 三 VM 配置/服务说明、离线发布、生产组合、生命周期、逻辑副本/核对/切换/基准 |
-| `packages/adapters/src/deployment/` 与公开 exports | 已闭合的部署 Schema；所需 PostgreSQL runtime/事务公开导出 |
+| `packages/adapters/src/deployment/`、`packages/adapters/src/model/` 与公开 exports | 部署/后端配置、模型 adapter 与共用调用校验，保持原 core model port |
+| `scripts/acceptance/` | 复用合成材料 check/run，增加真实异步终态和功能证据核验 |
 | 根 workspace、package、tsconfig、依赖政策与检查器、dependency-cruiser | 七成员、Desktop 构建/依赖/边界与独立平台打包命令 |
 | `openspec/config.yaml` | 实施时同步四应用三共享包的当前工程描述 |
 | Playwright/相关 Vitest 配置和测试 | Web 生产验收归属迁移；桌面与部署真实行为验证 |
@@ -142,13 +145,13 @@ C37 实际发布验收覆盖无公网安装、三 VM 端口隔离、完整页面
 
 ### D-15. 服务端、桌面与后续移动发布独立
 
-服务端发布提供完整 Web UI；桌面安装包固定 Electron/Chromium/内置 Node 和批准平台的身份，两者分别记录兼容范围。桌面升级通过已核验离线安装包人工进行，不引入公网自动更新。每个声明的平台必须有真实安装与安全验收，不以一平台构建证明全平台。
+服务端提供完整 Web UI，C37 以独立浏览器为功能主入口并检查现有 Electron 安全边界。C38 正式桌面包固定 Electron/Chromium/内置 Node 和批准平台身份，与服务端分别记录兼容范围；人工升级不引入公网自动更新。每个最终声明平台须有真实安装与安全验收。
 
 Web 保持浏览器独立，后续手机/平板可复用页面与 API，但触摸、小屏、宽表格和复核操作需要单独适配。Electron 不提供移动运行时；当前不扩入 PWA、移动原生封装、本地业务缓存或同步冲突协议。
 
 ### D-16. 部署工具、平台与依赖冻结
 
-服务端 VM 基线为 Ubuntu 24.04 LTS x64；systemd 管理 Node API/Worker、工件服务、Caddy、llama.cpp 与 OCR 进程。PostgreSQL、Qdrant 使用离线导入 OCI 镜像，由 systemd 调用 Docker Engine 的固定容器启动/停止，不使用 Compose 或容器内业务编排。Docker Engine、GPU 驱动、llama.cpp/Paddle 的实际二进制与系统包须由 ReleaseManifest 精确记录版本、架构、摘要和许可；这是发布介质输入，服务布局及启动方式不再交给实现阶段选择。
+服务端 VM 基线为 Ubuntu 24.04 LTS x64；systemd 管理 Node API/Worker、工件服务、Caddy、llama.cpp 与 MinerU 进程。PostgreSQL、Qdrant 使用离线导入 OCI 镜像，由 systemd 调用 Docker Engine 的固定容器启动/停止，不使用 Compose 或容器内业务编排。Docker Engine、GPU 驱动、llama.cpp/MinerU 的实际二进制与系统包须由 ReleaseManifest 精确记录版本、架构、摘要和许可；这是发布介质输入。
 
 | 依赖 | 冻结身份 | 用途 / 退出条件 |
 | --- | --- | --- |
@@ -165,9 +168,9 @@ Web 保持浏览器独立，后续手机/平板可复用页面与 API，但触�
 
 Caddy 显式配置证书/私钥并关闭 automatic HTTPS/ACME；`/api/*` 反代本机 API、SSE 不缓冲，保留原 Origin；其它合法 Web 路由走静态资源/SPA fallback，API 404 不能返回 HTML。生产 CSP 禁止任意外域、unsafe-eval 和 Node 能力，ECharts 用 Canvas/SVG、不依赖内联执行脚本。证书维护通过宿主流程完成，客户端不接受证书豁免。
 
-桌面交付矩阵固定为 Windows 11 x64 / NSIS、Ubuntu 24.04 x64 / AppImage、macOS 14+ arm64 / DMG；各自原生构建机与真实目标机验收。Windows 使用组织代码签名；macOS 使用 Developer ID 签名及公证票据预附；Ubuntu 验证批准介质签名与摘要。签名材料属于秘密输入，缺失阻止对应正式包。打包准备阶段允许联网制备；离线构建与安装阶段禁网，electronDist 指向本地 Electron 包，并预置 NSIS/app-builder 等完整缓存，缺项直接失败。显式携带 Electron、Chromium、Node 和打包依赖的 LICENSE/NOTICE，不假设工具自动收齐。外部二进制的第三方许可报告独立于生产 npm 的 MIT/Apache 白名单，不扩大业务依赖政策。
+C38 最终桌面交付矩阵为 Windows 11 x64 / NSIS、Ubuntu 24.04 x64 / AppImage、macOS 14+ arm64 / DMG，各自在原生环境制包/验收。Windows 组织签名、macOS Developer ID 与预附公证、Ubuntu 介质签名/摘要继续为正式包要求；缺项拒绝正式制包。准备可联网，正式离线构建与安装须有本地 electronDist 和完整缓存，携带 LICENSE/NOTICE/SBOM。本轮不增加未签名分发模式，不把正式包材料作为 C37 功能验收前置。
 
-打包程序、平台配置、签名接线、缓存预检和许可证/SBOM 收集的工程完成以本地行为检查为证据；正式签名包的生成与安装取证归交付验收。测试输入仅用于验证程序契约和缺项拒绝，不生成可冒充正式包的回退产物。
+已有打包程序的本地测试仅证明输入与拒绝契约。正式签名、许可/SBOM 收齐和平台安装效果由 C38 验证或补实现，不由已勾选的工程任务推定完成。
 
 来源：Electron [44.7.0 发布](https://github.com/electron/electron/releases/tag/v44.7.0)、[DEPS](https://github.com/electron/electron/blob/v44.7.0/DEPS)、[安全说明](https://github.com/electron/electron/blob/v44.7.0/docs/tutorial/security.md)；[electron-builder 26.15.3](https://registry.npmjs.org/electron-builder/26.15.3)；[Router 6.30.6](https://registry.npmjs.org/react-router-dom/6.30.6)、[ECharts 5.6.0](https://registry.npmjs.org/echarts/5.6.0)；[Caddy 2.11.7](https://github.com/caddyserver/caddy/releases/tag/v2.11.7)。版本证据截至 2026-10-08，实际构建与离线缓存仍由测试证明。
 
@@ -200,13 +203,19 @@ TransportPolicyV1（部署 Schema）固定 ref、connectTimeoutMs、idleTimeoutM
 | Schema | 固定字段与约束 |
 | --- | --- |
 | ReleaseManifestV1 | schemaVersion=1、releaseId、codeCommit、createdAt、server/desktop 兼容身份、artifacts（id/kind/version/os/arch/sha256/byteLength/relativePath/officialSource/licenseRef/sbomRef，OCI 另含 digest）、配置模板引用、迁移最终版本、手册引用；相对路径无越界/链接，唯一身份，所有必需依赖可解析 |
-| DeploymentConfigV1 | schemaVersion/ref/releaseId/instanceId、三 VM host 与端口、publicOrigin、local roots、database secretFileRefs/LOGIN roleNames、modelGateway/OCR/artifact/outbox/Agent 原 Schema、policyCatalogRef、projectBindings、workerPollMs/并发/停止期限、health/log/资源预算；strict、无隐式默认 |
+| DeploymentConfigV1 | schemaVersion/ref/releaseId/instanceId、三个逻辑角色 host 与端口（功能环境可同宿主）、publicOrigin、local roots、database secretFileRefs/LOGIN roleNames、OCR/artifact/outbox/Agent 原 Schema、policyCatalogRef、projectBindings、workerPollMs/并发/停止期限、health/log/资源预算；模型另按 D-23 后端 registry 解析，strict、无隐式默认 |
 | DesktopConfigV1 | schemaVersion=1、deploymentId、publicOrigin（纯 HTTPS origin、无用户信息/query/hash）、serverCompatibilityRange；配置由安装者受控写入，不让网页或自由 CLI URL 覆盖 |
 | DeploymentOperationV1 | schemaVersion=1、operationId、idempotencyKey、action（verify/init/status/maintenance/backup/restore-verify/activate/rollback/benchmark）、releaseId/configRef/instanceId、actorId、currentAuthorizationRefs、issuedAt、expectedRevision、backupId/targetInstanceId（按 action 必需）、confirmation（精确目标/版本/修订；仅 activate/rollback）、payloadDigest |
 | LogicalBackupDescriptorV1 | backupId、operationId、sourceInstanceId、release/config/model/OCR/policy refs、projectIds 与逐工程授权/manifestRef、dbSnapshotRef/fileSnapshotRef、dump/file 清单/摘要、迁移版本、停写证据、创建阶段与核验审计引用；秘密与连接串不进入描述 |
 | DeploymentOperationResultV1 | operationId、revision、stage、status、safeReasonCode、release/instance/backup refs、perProjectAuditRefs、operationAuditIds、阶段计数/耗时；不返回正文、秘密或原始宿主路径 |
 
 预算数值是经资源测量/批准配置，不在宿主里创造业务阈值。配置只引用 secrets 逻辑 ID，由每 VM 私有文件映射；校验运行用户/owner/权限及绝对路径无 symlink，秘密不进入参数、清单或日志。首次 admin 密码只经独立秘密文件传给 C06 bootstrap。配置拒绝任意程序、SQL、远程 URL 或命令片段。
+
+DeploymentConfigV1 补齐必填 purpose（production / synthetic-acceptance）；database 的 host/port/name/maxConnections/connectionTimeoutMs/idleTimeoutMs 与 rolePasswordSecretIds（五个职责角色逐一对应秘密逻辑 ID），auth 的 hmacSecretId/keyVersion，api 的 host/port，models 的原 ModelGatewayDeploymentConfigV1 非空数组，artifacts 的原 ArtifactStorePolicyV1，outbox 的原 OutboxDeliveryPolicyV1，qdrant 的固定 baseUrl/requestTimeoutMs，policyCatalog 的绝对 filePath 与精确 catalogRef，documentConversion 的 resourcePolicy（原 DocumentConversionResourcePolicyV1）、qualityPolicyRef/converterDeploymentRef 及 mineru（独立 change adopt-mineru-document-ingestion 固定的 MineruConfigV1 或显式 null）。Agent 预算来自上述领域 catalog 的原策略，不重复定义。逻辑角色必须各出现一次；catalog purpose 与实例 purpose 必须一致，模型部署/ref 与策略引用须可解析。SSE policy 使用 API 公开原 Schema 在宿主加载时核验，adapters 不反向依赖 apps。配置不接受自由程序、SQL或业务请求修改服务地址。
+
+初始化输入补齐 loginPasswords（按五个角色键逐项解析，值仅来自受限秘密加载器）和 checkpointerConnection（独立职责连接）。仅新建 LOGIN 时设置密码；重放不重置现有密码。迁移完成后用公开 setupPostgresCheckpointer 完成 checkpoint DDL 并关闭初始化连接；初始化不写 checkpoint，引用校验关闭失败。迁移兼容性使用当前发布清单声明的精确序号；更新数据库版本须先更新批准清单，不能将更高版本推断为兼容。运行进程只核验，不调用 setup 或持 migrator/operator 密码。
+
+每项 projectBindings 补充 policyRefs（D-20 十四类的逐项 VersionReference）及 graphVersions（riskFlow、identification、assessment 三个 VersionReference）、retrievalBudgetPolicyRef。部署 policyCatalog.catalogRef 与绑定 policyCatalogRef 均使用完整 VersionReference；加载时同时核对 entityId/versionId、purpose 与条目的批准 releaseId，全部 policyRefs 精确可解析。projectId 不得重复。基础预置仅解析配置；API/Worker 装配前须完成引用及策略成员一致性校验，不按条目顺序或“最近版本”选择。
 
 新增迁移 000056_deployment_operations.ts：business.deployment_operations（instanceId/operationId 主键、instanceId/idempotencyKey 唯一、payloadDigest、revision、action、stage/status、安全 inputRefs/resultRefs、leaseOwner/until）；business.deployment_causal_authorizations（rootContextRef/projectId/actorId/branch 主键、真实 childContextRef、invocationId、policyRef、recordedAt；只追加，由 C06 adapter 读取/复验）；business.deployment_operation_audit（eventId 主键、operationId/revision/action/stage/outcome/actor/contextRefs/releaseRefs/backupRef/reasonCode/timestamps，追加写，禁止 UPDATE/DELETE）。单实例活动写运维动作通过 PostgreSQL advisory lock + 操作行租约串行；expectedRevision CAS，每次阶段转换与其审计在同一事务。阶段为 validated→quiescing→quiesced→copying/restoring→verifying→awaiting-confirmation→activating→completed，失败落 failed 或 audit-pending；各 action 只使用相关阶段。租约过期只允许同身份复验外部效果后接续，不推断上次副作用未执行。
 
@@ -218,7 +227,11 @@ TransportPolicyV1（部署 Schema）固定 ref、connectTimeoutMs、idleTimeoutM
 
 ### D-20. 策略、窄读与授权真实来源
 
-缺失的 provider 统一来自只读、不可变 DeploymentPolicyCatalogV1。catalog 的每项以 projectId/type/ref 为键，正文由原 core Schema 验证；发布元数据绑定批准者、批准时间与介质身份，缺项/冲突/错版本失败，不引用 demo/test 常量。catalog 不替代 C16/C18/C19 的已发布业务定义：指标、权重、矩阵、阈值、预测/偏差等按正式依据集合成员经其所属 adapter 读取原 C04 正文。新增窄公开 reader 只做精确版本解析和原 Schema 校验，无第二套规则表或默认值。
+独立知识发布后的检索构建使用受限命令因果授权。contracts 唯一导出 CommandCausalRefV1Schema={kind:"command",commandId,authorizationContextRef}；system 请求和上下文严格二选一 causalRunRef 或 causalCommandRef，Agent 任务仍必须携带真实 workflow-run。命令分支只接受原 knowledge-modeling.publish-approved-release 的 human 签发，commandId 必须等于该登记 invocationId，工程/主体必须相同，目标 branch 必须为 knowledge-modeling.identification-basis。C06 在同一签发事务内核对 deployment_causal_authorizations 中该原根与目标 parent 的唯一精确关联，随后继续当前权限及原 isAuthorizationSubset 校验。部署 resolver 另按冻结 catalog 核对批准 branch；请求不能新增能力。后台子上下文保留同一 causalCommandRef，正文和 revision_snapshot 同时登记与复验，原 causal_run_ref 保持 null；不新增迁移、不将命令包装成工作流。签发重放比较完整因果引用；错命令、错根、错父、错分支、权限撤销或原期限到期均失败。宿主只在正式 identification-basis-published 事件使用 producerCommandId 和 metadata.authorizationContextRef 恢复这个引用，且 causationId 必须一致；其它无运行的事件拒绝。该命令引用不提供新 HTTP 操作或通用系统授权能力。
+
+缺失的 provider 统一来自只读、不可变 DeploymentPolicyCatalogV1。catalog 的每项以 projectId/type/ref 为键，正文由原 core Schema 验证；发布元数据绑定批准者、批准时间与介质身份，缺项/冲突/错版本失败，不引用 demo/test 常量。catalog 增加必填 purpose=production 或 synthetic-acceptance；合成验收目录只用于隔离验收实例，标明合成样本、待甲方复核，不能用于正式工程。catalog 不替代 C16/C18/C19 的已发布业务定义：指标、权重、矩阵、阈值、预测/偏差等按正式依据集合成员经其所属 adapter 读取原 C04 正文。新增窄公开 reader 只做精确版本解析和原 Schema 校验，无第二套规则表或默认值。
+
+目录闭合类型为 cleaning、knowledge-validation、hybrid-retrieval、retrieval-acceptance、retrieval-review、risk-candidate、identification-graph、retry、assessment-runtime、warning-runtime、response-generation、response-validation、response-agent、calibration、scoring-rules、report-export。分别复用 DataCleaningPolicyV1、IdentificationKnowledgeValidationPolicyV1、HybridRetrievalPolicyV1、HybridRetrievalAcceptancePolicyV1、RetrievalReviewPolicyV1、RiskCandidatePolicyBundleV1、IdentificationGraphPolicySetV1、IdentificationGraphRetryPolicyV1、AssessmentRuntimePolicySetV1、WarningRuntimePolicySetV1、ResponseGenerationPolicyV1、ResponseValidationPolicyV1、ResponseAgentPolicyV1、CalibrationValidationPolicyV1、ScoringRulesPolicyV1、ReportExportPolicyV1 的原 Schema。正文有自身 ref 的类型逐项匹配；assessment-runtime、warning-runtime、risk-candidate 没有组合 ref，其 policyRef 是批准目录分配的不可变组合身份，正文全部成员引用保持原 Schema，禁止挑一个成员冒充组合身份。正文自带 projectId 时也须与登记工程一致。reader 的返回类型由 policyType 推导，不允许调用方指定任意 T 伪造类型。同工程同类型可以保留多个不同版本，精确重复键拒绝；解析后深冻结，读取不能修改批准正文。五类 Agent 定义由各领域已有工厂和策略组装，不在 JSON 中序列化函数或 Zod 实例。
 
 | 缺口 | 来源与固定处理 |
 | --- | --- |
@@ -231,14 +244,66 @@ TransportPolicyV1（部署 Schema）固定 ref、connectTimeoutMs、idleTimeoutM
 | C24 acceptanceRoutes | PostgresRiskCandidateAdapter.readResult 精确 acceptance-route-set 登记→C04.open→完整消费 verified→原 AcceptanceRouteSet Schema；返回 routes，缺失/漂移 undefined |
 | C25 riskAssessment/warning runtimePolicies、response policies、C29 calibration policy | catalog 返回原运行策略；正式依据配置仍来自 C19 releaseSet members，经所属 adapter 的精确 reader 解析并校验，禁止只取第一成员 |
 | C25 forecast/calibration catalog | C19 依据集合成员中指定的原配置 ref→C04 artifact；通过 EffectForecastModelReader/现有 deterministic executor，适用性与兼容性仍由 core 判断 |
-| C30 riskSpatialPairing | PostgresStandardizedRiskInputFactsReader→该精确 riskRecord 的空间→请求 pairings 精确匹配；无/多匹配/无权 undefined，不借其它空间 |
+| C30 riskSpatialPairing | PostgresStandardizedRiskInputFactsReader.readDeploymentRiskScopes→该精确已验收 riskRecord 的空间→请求 pairings 精确匹配；无/多匹配/无权 undefined，不借其它空间 |
 | C30 retryPolicy | catalog 按原 retryPolicyRef 精确读 maxAttempts/backoffMs，保持父任务冻结预算 |
 | C15/C17 start authorization，C24/C25/C30 runtimeAuthorization，C20 build/recovery/downstream | 同一 C06 invocation 适配；HTTP 受理阶段用真实会话分别签发固定下游 branch 上下文并耐久关联原 root；后台按目标 branch 查该已签发 context，再经原 system invocation 收窄/复验；禁止从仅有 workflow 能力的 parent 增加能力，原会话/权限失效不得扩权 |
 | C35 systemOperationsRead | C05 真实 model observation、API/Worker/模型/数据库四组件探针与原 collector；传递 AbortSignal 与总截止时间，不用 unknown/test 常量假成功 |
 
 C15/C17 现有工厂各自创建 registry；为两者增加可选 registry 注入（缺省维持原工厂行为），C37 始终注入同一个 registry，再注册 C21/C27/C29。各原任务 adapter 可复用同一数据库/事务/registry，统一 runner 和 API 读写指向同一持久任务集合，不新增第二任务表。
 
+C37 评分规则采用已审核配置包原样导入路径，正式治理、发布和 C19 依据解析照常校验；C19 Agent 编制不在本轮验收范围。共享 knowledge-authoring 只注册 C17 的原定义；C19 编制启动在宿主明确拒绝，不复用 C17 定义解释评分候选。后续统一任务定义须单独闭合，不以该范围外能力缺项阻塞当前验收，也不将其记为通过。
+
+配置包路径以 C19 的 ScoringRuleConfigurationPackageV1Schema 为唯一输入：schemaVersion、projectId、projectRevisionRef、configurationSetRef、compatibilityRef、scoringPolicyRef、可选 baseRuleReleaseRef、sources 与 members。sources 最多 256 条，每条固定 sourceVersionRef、standardKind 和 1–256 个 sourceSegmentId/text 证据段（每段 UTF-8 最多 16 KiB）；来源版本与同来源段身份唯一。members 使用原规则字段和 sourceVersionRef/evidenceReferences，最多 512 条、按 ruleId 唯一排序。包正文登记为真实 C04 content 工件，purpose 为 knowledge-modeling.scoring-rule-configuration-package，整包最多 1 MiB。
+
+StructuredScoringRuleDocumentV1 和来源 binding 使用严格互斥分支：Agent 分支保留原真实 agentTaskRef/cleaningResultArtifactRef；配置包分支使用 configurationPackageArtifactRef，顶层固定同一包，成员绑定只保留 sourceVersionRef/evidenceReferences。包分支不接受 Agent/清洗字段，不混用两种来源。C19 提交完整消费 verified 的包工件，核对包与候选所有公共字段、成员及命令 baseReleaseRef；同工程当前 C06 来源授权覆盖全部包来源。C19 通过可选 authorizeConfigurationRead 窄口取得原 assessment-basis 分支上下文，解析真实 C18 发布集合并核对工程修订、配置集合、策略和兼容版本、指标正文摘要。包内证据段限定引用资格，复用原规则适用性、阈值、区间、例外校验和冲突检测；声明了比较基线就按真实 C16/C19 读回精确基线，缺项拒绝。authorizeConfigurationRead 缺失时包导入明确失败，不使用治理 capability 冒充读取权限。
+
+配置包内容中的审核状态固定 pending，甲方审核标记不能替代本实例的 C07 决定；候选仍进入原 C16/C19 原子修订/关系事务，冲突审核和知识发布门禁保持原路径。配置包不创建 Agent 任务，不增加迁移或任务类型；旧 Agent 编制可以读取包来源的已发布规则作为基线。合成输入标记“合成样本、待甲方复核”，实际预置以正式回执绑定源版本和工件，静态样例引用不当作登记事实。
+
+C17 组合接受可选 assessmentConfigurationPolicy、scoringRulesPolicy，类型直接引用 C16 现有 options；二者与 identificationKnowledgePolicy 注入同一 C16 实例。组合返回 governedReleases 窄口，只暴露该实例的 resolveGovernedReleases，供 C18/C19 解析正式版本，不暴露裸治理 adapter。宿主先用一次绑定窄委派注入 C18/C19 策略和 C19 resolver，创建 C17 后用 governedReleases 构造真实 C18/C19，再一次绑定；就绪前禁止调用。C19 按工程精确评分策略装配和分派，不能挑第一个工程策略。
+
+projectBindings 每工程必填 forecastPolicyReleaseRef、calibrationTargetReleaseRef，均为原 KnowledgeReleaseRefV1；siteContextBindings 为 1–256 个严格 siteContextRef/artifactRef 版本对，工程来自外层 binding，精确现场键重复拒绝。预测正文只从指定 forecast-policy 正式成员经 C19 精确 reader 读取，复用原 ForecastPolicyDocumentV1Schema；全部 policies 交原执行器，图返回该发布引用作为 forecastPolicyRef。每次图解析继续核对冻结依据集合确实包含指定预测发布和校准目标，缺项或版本漂移不可用，不选择最近发布。现场工件沿原 reader 完整核验；报告策略从 report-export 精确 catalog 成员注入。构造时缺策略/部署绑定拒绝，运行时缺正式发布仍按原领域端口返回不可用；宿主不伪造发布事实。
+
+C27 PostgresRecommendationContextReader 的公开工厂补齐类已支持的可选 authorizeDownstream 参数，由宿主传入同一受控授权口，不另写知识读取路径。C33 识别读取 adapter 通过 packages/adapters 的 `./identification/read` 公开出口供宿主复用。
+
+宿主 createDeploymentRuntimeAuthorizationV1 复用 C24/C25/C30 与 C21/C22 的原 verifyCurrent 接缝。先按精确 authorizationContextRef 读回签发来源、核对完整正文和工程/主体，再用登记 invocationId/branch 复验当前空间与来源权限。请求身份与登记一致时返回原 C06 context；派生身份仅经当前调用作用域的批准下游关联签发，不能把派生 invocationId 用来复验原签名。没有登记、错主体、正文漂移、已撤销或过期返回 undefined；数据库、契约或幂等冲突继续抛出。未传入来源版本集合时使用该签发来源登记的集合，不用空集合略过来源复验。
+
+C29 的 CalibrationSuggestionTaskPortV1 由 composition/calibration-task.mjs 实现，消费真实受权 ArtifactStoreV1 和 C06 窄口，不查询领域私表。validateIncrement/finalizeIncrement 都从任务冻结的 frozenInputRef 完整读取原校准快照及其中的精确基准工件，限制每份正文 1 MiB、等待 verified、校验原 Schema、工程、任务、模型/提示/工具/预算/校验策略、派生 inputSnapshotRef 与原基准摘要，再调用原 validateCalibrationCandidate。校验结果通过真实 C04 put 保存 agent-validation 工件，不能用未登记的摘要引用；原 AgentValidationResultV1 承载接受/拒绝及可修复类别。finalize 再校验同一冻结候选，只有接受时按原 deriveCalibrationSuggestionRef 与 buildCompletedAgentTaskResult 返回稳定结果身份，不写正式建议。C29 createSuggestion 继续读取完成任务并复算，正式登记与复核仍归原 adapter。校验与最终收口的工件身份分别绑定任务、候选摘要及阶段；不保存模型思维内容。
+
+C18 精确成员窄读只取两条不同成员投影以判断冲突；重复引用同一发布的依据集合不增加结果规模。C19 需复算完整成员快照摘要，其精确发布成员查找最多检查 200 个已登记依据集合，超过则拒绝解析，不能读取全库或截断后宣称一致。
+
+C33 所属 standardized risk input facts reader 增加 readDeploymentRiskScopes，接受原 RiskInputFactsReadRequestV1，复用原精确行、验收证明、历史作用域、证据与两阶段授权校验，成功只返回该行的 spatialScopeRefs/sourceVersionRefs。与 readRiskInputFacts 共用一次读取和校验实现，任一失败返回 undefined，数据库故障继续抛错；不分页读取目录，不扩展评估事实 Schema。C30 宿主先签发原 riskInputFacts 分支上下文，再按返回的精确空间选择唯一 pairings；版本与 identificationRun 来源须由原记录登记核对，不能只靠 caller 指定。
+
+C20 构建门禁由 scripts/deployment/composition/quality-gate.mjs 适配原 evaluate 输入。宿主注入精确数据集/验收策略目录、原 generationStore、真实 Qdrant projection、ModelGateway 和 C06 access；门禁按 generationRef 取正式代际，核对 manifest/policy/dataset/evidenceBase 身份与授权摘要。每次 Embedding 以代际登记的授权引用、创建者和 knowledge-modeling.read 能力复验，原预算引用及任务截止时间固定；不需要父工件时也不略过当前权限。读取和查询传递总截止时间，测量超时失败，不后台继续发新请求。query/relevance 原样分离，成员只映射本 manifest 的 pointId。报告环境来自 Node/os 及实际 Qdrant serviceVersion，容器标识由运行时配置提供，不内置 test/unknown。结果交原 evaluateRetrievalAcceptance；门禁返回该 report.overall 与安全 detailCode，并由宿主保存实际报告。
+
+工程注册表提供 listDeploymentProjects({afterProjectId,limit}) 的宿主维护窄读，不是业务 HTTP 读面。limit 为 1–200，按工程 ID keyset 返回已登记工程当前 revision、现有空间引用与 sourceDelivery 引用；每工程空间最多 128、来源最多 256，超限明确失败，由维护者缩小批次或另行闭合更大工程枚举，不截断后宣称覆盖完整。查询归 registry 所属 adapter，宿主不跨模块直接查表；列表不返回资料正文或账号，后续逐工程正文操作仍须原 C06 权限。
+
+功能验收补充两类不可变输入，均标记“合成样本、待甲方复核”，并沿用 synthetic-acceptance 实例隔离。现场材料包使用 DeploymentSyntheticSiteContextPackV1：schemaVersion="1"、projectId、packRef、固定 sampleNotice、contexts（1–256 条原 RecommendationSiteContextV1）。每条正文按原 siteContextRef 固定版本，覆盖五工序，以及资源齐备、资源不足、禁忌约束三种现场条件；不含建议结果或预填校验结论。预置通过原 C04 put 登记实际正文，运行配置只绑定 siteContextRef→正式 C04 artifactRef。可信 provider 每次按命令指定的精确 ref 读取受权 C04，限制正文 1 MiB、完整消费 verified、复用原 Schema，并核对工程/版本/空间/时间；候选与现场空间匹配仍由 C27 确定性校验。未经正式预置的本地键不能用于运行。
+
+检索材料使用 DeploymentRetrievalDatasetV1：schemaVersion="1"、projectId、datasetRef、evidenceBaseReleaseRef、syntheticSample、sampleNotice（合成时必填）、queries（1–256 条）。每条为 queryId、queryText（UTF-8 最多 16 KiB）、relevance（1–256 条 sourceKind/sourceReleaseRef/sourceEntryId/grade，其中 grade 为 1–3）；三种来源分类和知识发布引用直接复用 core/contracts Schema。queryId、单条 relevance 身份不可重复。正式测量前将本地发布键绑定真实 C17 回执，并核对本代 evidenceBaseReleaseRef 和 manifest 中的精确成员身份；缺成员拒绝，不用最近版本补齐。仅 queryText 送 Embedding，relevance 留在确定性验收计算。使用真实 Qdrant queryHybrid 的 denseRoute、bm25Route、fused 和 fusedQueryDurationMs 分别计算 Recall@5、NDCG@5、p95，复用本次 reconciliation 并检查命中工程/代际/授权摘要；报告适用范围为该小型合成数据集，不代表真实工程准确率。全部查询与次数受固定数据集、原 measuredRuns/warmupRuns 及宿主总截止时间约束，不得用已给定分数替代测量。
+
+现有 registry 按 taskType 唯一注册，任务定义冻结策略而非按工程动态选择。C37 同实例内固定注入的 cleaning、knowledge-validation、retrieval-review、response-agent、calibration 必须在全部工程具有相同策略定义正文（包括策略引用、定义、预算和工具身份）；宿主只排除按原 Schema 绑定本工程的 projectId，再逐项比较其余全部字段，不同则在监听前拒绝。其余策略仍按工程与精确 ref 解析。需要同实例容纳不同 Agent 定义时再闭合 registry 的工程维度契约；当前不挑第一工程绕过冲突。
+
 跨能力调用在 HTTP 受理、任何业务副作用之前，由 C06 所属适配读取版本化的 rootBranch→下游 branch 闭合清单，用本次真实 sessionToken 分别调用原 authorize，并把 rootContextRef 与各目标 contextRef 写入 deployment_causal_authorizations。只签发固定流程所需分支，actor/project/空间/来源不扩大；一次拒绝阻止受理，已签发但未关联的上下文不能用于执行。令牌仅存本次调用内存、不持久化。后台 resolver 以原 root、目标 branch 与原因果运行身份读取关联、逐项 verify 当前权限，再用该目标分支 parentContext 调原 system authorize；保留原 isAuthorizationSubset。没有关联时失败，不能重构令牌或借别的用户/context。清单归批准 catalog 的 strict ModuleBranch 集合，不接受业务请求新增 branch。运维操作仍按独立宿主权限及逐工程原 freeze/read 授权执行，不增加通用系统管理业务能力。
+
+该清单为 catalog 必填 downstreamAuthorization={policyRef,bindings}；bindings 每项为 rootBranch 与 downstreamBranches，原 ModuleBranch Schema 校验，根和单项下游不得重复，各集合最多 128。与 catalog 本身的不可变身份及批准发布一同冻结，装配将其传给受控授权口，不使用请求提供的清单。
+
+授权适配装配必须传入该清单。签发前从 C06 精确窄口确认 root 正文与原 branch，复验原授权，并要求请求分支集合与批准绑定完整相同；少项、多项或重复都拒绝。关联 policyRef 保存该清单的版本身份，后台读取同时核对当前冻结清单及目标 branch，版本漂移失败。
+
+内部调用携带后代上下文时，resolveDownstreamContext 沿 C06 窄口读取的真实 parentContextRef 寻找该目标分支的原关联根；无父的预签 child 通过关联表按精确 childContextRef/工程/主体查找唯一根（至多两行以检测冲突）。最多 32 层，重复引用或越界立即失败。逐层保持主体、工程及精确正文绑定；找到关联后仍核对该根的批准清单及精确 child。不会选择其它运行、最近上下文或同用户的任意授权。宿主使用 AsyncLocalStorage 传递当前调用的根来源及原因果身份，入口从正式 HTTP 命令、持久事件 metadata 或冻结 Agent task 重建；这个内存范围只承载调用上下文，不替代持久关联。并发调用不共享可变全局授权。C15 原任务清单的 parentRunRef 由其所属模块派生，宿主按原冻结任务身份使用，不另造 C30 登记或变更其因果身份。
+
+C06 adapter 公开 readIssuedContext({invocationId,branch,projectId,actorId})，只返回唯一已持久化、通过原 AuthorizationContextV1Schema 且身份逐项相同的上下文；缺失返回 undefined，管理授权空正文不能转换为业务上下文。部署适配默认消费同一 access 的此窄口；显式 reader 用于测试注入。所有下游签发与范围校验完成后，在单一事务内追加整组关联，冲突须与原 child/ref/主体/策略一致；不得在循环中提交部分关联。resolveDownstreamContext 必须提供本次实际 invocationId，system authorize 使用该身份；上下文引用必须与关联的精确 childContextRef 一致，复验沿原签发身份完成。不同后台动作不得共用固定 `:resolve` 身份。
+
+C06 另提供 readDeploymentAuthorizationSource({authorizationContextRef,projectId,actorId?})，按精确引用读取唯一 C02 业务上下文、原 invocationId/branch、parentContextRef、causalRunRef 与签发快照的 sourceVersionRefs；逐项核对持久身份及原 Schema。actorId 在命令/任务入口必填核对，事件入口因原 metadata 只有授权引用而可省略，从精确登记正文恢复原主体；不开放业务 HTTP 读取。来源读取不签发或续期，也不替代当前 verify；不存在、管理上下文或绑定不符返回 undefined，数据库故障保持错误。父引用从同工程同主体的实际父行取得 versionId，不补默认版本。上下文正文与关联因果引用不一致时拒绝。宿主以该窄口重建原来源，不读私表、不按动作字符串反推原因果身份。
+
+后台继续沿原 C06 五分钟上下文期限及账号、安全版本、工程成员、空间和资料权限复验；到期必须拒绝，不能自动延长或借当前其它会话续期。原签发未持久化会话令牌或会话引用，原 verify 不证明该浏览器会话仍存活，功能报告须区分会话验证与后台授权验证。长时间人工等待后的恢复须通过重新认证的正式恢复命令受理，新的下游授权仍绑定此次命令，已有任务/运行版本与幂等事实保持。
+
+合置环境的本地 C04 不承担 C06 当前权限复验。C06 adapter 增加 verifyDeploymentContext({authorizationContextRef,projectId,actorId,requiredCapability,requestedSpatialScopeRefs,requestedSourceVersionRefs,requestedAt}) 窄口：按精确上下文引用读取唯一业务签发登记，严格解析原 branch 与上下文，核对主体、工程和 branch capability 后，使用登记的原 invocationId 调用既有 verify。管理上下文、假引用、错能力、已失效或撤权均拒绝，不猜 branch、不按能力选任意授权。该窄口不签发新权限、不增加 HTTP 操作或持久字段。基础宿主给同实例业务模块注入的 ArtifactStoreV1 在每次 put/open 前调用此窄口，并使用复验返回的真实上下文；原工件动作身份与流式 verified 契约保持。C18 成员窄读的权限依赖这个受权 C04 组合，不把原本地 store 的结构校验当作当前权限证明。
+
+宿主模型组合也在三能力的每次网络副作用前调用同一 verifyDeploymentContext；空 parentArtifactRefs 仍复验，不能只靠 C05 上下文 Schema。模型调用保留原 invocationId 与幂等键，复验沿上下文原签发身份。DeploymentConfigV1.models 的完整部署引用决定唯一 adapter，未知/重复部署与缺凭据在启动边界拒绝。父工件预检经同一受权 C04 完整消费并等待 verified，流式读取保持背压；会话流用延迟建立的原 handle 转发 deltas/completed，拒权时不调用 adapter、不产生空成功收据。
+
+start.mjs 的 createDeploymentAuthorizationScopeV1({access,deploymentAuthorization,policy}) 为宿主提供 run({authorization,causalRunRef},operation)、runEvent(event,operation)、runTask(task,operation) 与 authorizeDownstream(request)。runEvent 按精确 metadata.authorizationContextRef 恢复原主体并使用已登记 aggregate/workflow 引用或原上下文因果引用；runTask 使用冻结 parentRunRef。缺原因果身份必须失败，不能把 eventId 或调用字符串包装成运行引用。run 内先核对持久来源，authorizeDownstream 核对当前作用域工程/主体，复用部署 adapter 的有界关联解析与原权限复验。HTTP 用包装 access.authorize 在 human-session 成功后先按清单签发下游；缺 rootBranch 绑定表示该入口无跨能力动作，不自动扩清单。已有领域 adapter 发起的同能力 system/agent authorize 继续复用原 C06 收窄规则。
+
+合成资料预置的空间与来源授权复用原 ProjectAccessCommandV1，不扩大系统管理 HTTP 操作目录。C06 adapter 增加 executeDeploymentProjectAccess({sessionToken,command})；command 为原命令去掉 authorizationContextRef 的判别联合。每次调用先验证当前会话、账号管理员资格与首次改密状态，再按该 commandId 签发或复用原服务端管理引用，严格解析原命令并转发既有 projectCommand。调用者不能传入管理引用，业务 context 不能代替管理授权；原版本冲突、幂等、权限复验和同步审计保持。provision 的此类步骤同样要求显式 --bootstrap，并使用这个窄口；不依赖登录首次回执是否含管理引用。
 
 C20↔C21 和 C17↔C20 是构造引用环、不是业务流程环。宿主建立只绑定一次的窄委派（C17 retrieve、C20 inputReader），先建立 C15/共享 registry/C17，再 C20、C21、C22/C23/C24，最后一次绑定真实委派。绑定前任何调用均抛未就绪错误；全部绑定核验后才监听/claim。不得导入 core/adapters 私文件，只有宿主可组合 apps/api 与 apps/worker 的公开入口。
 
@@ -282,14 +347,51 @@ Worker 用同一 policy/registry/runtime 装配 C15、C17、C20–C25、C27/C29�
 
 ### D-22. 测试与运行命令契约
 
-施工图的命令分为现有与本 change 必须新增的命令；新增入口及其参数是固定交付内容，不允许实现者临时换成未登记脚本。
+命令按当前实际作用与待实现作用登记，配置校验成功不表示真实场景已执行。
 
 - 现有：pnpm build/typecheck/lint/test/deps:check/deps:policy/openspec:validate；pnpm test:browser 是迁移后 apps/web 的真实浏览器项目。
-- 新增：pnpm test:deployment（宿主/流协议/权限/恢复集成）、pnpm test:desktop（独立 Playwright Electron 配置）、pnpm desktop:package（原生宿主打包）、pnpm deployment:verify、pnpm deployment:smoke、pnpm deployment:benchmark。
+- 已有：pnpm test:deployment 是工程测试；pnpm test:desktop 目前只跑 desktop security/packaging 单元测试。pnpm desktop:package / deployment:verify 是正式介质入口；deployment:smoke 与 deployment:benchmark 目前同指 acceptance.mjs 的配置校验，不计真实取证。
+- IP-15 新增网络 API 协议测试和显式真实 smoke。IP-16 新增 node scripts/deployment/start.mjs（功能宿主启动）及 node scripts/acceptance/functional.mjs --pack <packDir> --config <runConfig.json> --output <dir> [--resume]（真实功能验收）；无需增加 pnpm 别名。
 - 环境文件通过 RISKFLOW_DEPLOYMENT_CONFIG、RISKFLOW_DEPLOYMENT_SECRETS、RISKFLOW_RELEASE_MANIFEST 和 RISKFLOW_ACCEPTANCE_CONFIG 读取路径；文件内容按 D-19 校验，命令行不带秘密。桌面 package/test 从 RISKFLOW_DESKTOP_BUILD_CONFIG/ACCEPTANCE_CONFIG 读取受控路径。
-- test:deployment 使用真实 PostgreSQL、C04 与 Qdrant，合成 fixture 只在 test/fixtures，必要模型 protocol 测试与真实部署 smoke 分开。smoke 启用项缺输入/服务/目标硬件/平台就非零失败，不能 skip。
-- pnpm verify、test:browser 与 test:deployment 用于工程检查；desktop:package、test:desktop、deployment:verify、deployment:smoke 与 deployment:benchmark 的正式运行取证归交付验收。工程阶段以既有 Vitest 测试验证这些程序的输入、结构化调用、结果汇总和缺项拒绝，不要求生产输入齐备，也不把测试替身结果记为实机通过。
+- 当前网络 smoke 通过 RISKFLOW_NETWORK_API_SMOKE=1、RISKFLOW_MODEL_GATEWAY_CONFIG、RISKFLOW_MODEL_GATEWAY_SECRETS 显式启用；node 功能验收与浏览器命令连接真实服务。当前必需输入/能力缺失或关键 skip 非零失败；未来平台/GPU 材料不在其预检范围。
+- pnpm verify、test:browser、test:deployment 和 network API 协议测试提供工程证据，真实 network smoke 与 functional.mjs 提供当前功能证据。C38 先补齐正式 Electron Playwright、部署 smoke/benchmark 的真实执行和报告链，再运行签名制包、平台和实机取证；不从现有命令名称推定实现完成。
 - benchmark 记录真实介质/配置与 4090 24GB/128GB 主机、GPU/OCR 分配、并发/延迟/吞吐/CPU/RAM/显存/磁盘及分阶段停写恢复耗时；阈值来自批准输入，不预设吞吐、RPO/RTO 或 SLA。
+
+### D-23. 网络 API 后端复用唯一模型调用契约
+
+选择原生 fetch 实现协议 adapter，不加入供应商 SDK、多供应商路由或自动回退。core ModelGatewayPortV1、请求/结果 Schema 与调用方不变。ModelGatewayDeploymentConfigV1Schema 仍为 strict 判别联合：backend="llamacpp" / "network-api"，config 分别使用原 LlamaCppDeploymentConfigV1Schema 或 NetworkApiDeploymentConfigV1Schema；网络配置自身以 protocol="openai-chat" / "ollama-embed" 判别。保留原部署身份、能力、上下文、尺寸和硬预算字段及唯一部署 registry；每项任务固定精确部署，不运行中切换。协议专属字段只存在于对应分支。
+
+`@riskflow/adapters/model` 继续唯一导出同名 NetworkApiDeploymentConfigV1Schema。两种协议共用 schemaVersion="1"、deploymentRef、serviceContractRef、modelVersionRef、baseUrl、modelId、capabilities、contextWindowTokens、requestTimeoutMs、streamIdleTimeoutMs、maxResponseBytes、maxInputBytes、maxBatchItems 与 inputTokenUpperBoundPolicy（maxTokensPerInputByte、requestOverheadTokens）；原 C05 请求/结果预算与身份语义保持。embeddingDimensions 仅在 embedding 部署中必填；maxOutputTokens 及 credentialRef 仅适用于聊天协议，后者由受限秘密文件解析为 Bearer token。所有预算显式有限；空闲时限不超过总时限，输出上限不超过窗口。禁止凭据、query、fragment 和重定向。
+
+`openai-chat` 使用 HTTPS 与固定 OpenAI Chat Completions 路径，只声明 completeStructured、streamConversation；其 credentialRef 必填，业务不能覆盖端点、模型或参数。结构化配置新增必填 structuredOutputMode（server-json-schema 或 schema-prompt）和 reasoningEffort（low、medium、high、xhigh、max）。server-json-schema 只有在真实证据证明目标服务执行所声明 JSON Schema 约束时才可配置。schema-prompt 从调用方同一 Zod Schema 生成 JSON Schema，并放入固定 system 消息；正常终止后只解析一个 JSON 值，再由原 Zod Schema 严格复验，拒绝额外字段、非法或截断输出，不修补、不重试、不静默切换模式。确定性业务校验仍在网关之后执行。
+
+MiniMax 当前冻结项为 `https://api.minimax.cn/v1`、`MiniMax-M3.1-Flash-Preview`、1,000,000 token 上下文、供应商 `max_tokens` 上限 524288（包含 reasoning token）、schema-prompt 与 reasoningEffort=low。实际请求使用远小于供应商上限的显式任务预算，并以真实 usage 核对硬预算；不以 524288 作为 RiskFlow 的预算。MiniMax 的 server-json-schema 支持未证实，不得声明该模式。reasoning_content 不得持久化或展示；C04 可保留剔除 reasoning_content 后的协议证据，原始响应正文仍按 C04 既有受保护权限范围管理，日志、界面和普通验收报告不显示思维内容。
+
+`ollama-embed` 只声明 embed，使用原生 `/api/embed`，显式设置 `truncate=false`，不配置 credentialRef。明文 HTTP 仅允许用户指定的固定 origin `http://192.168.13.11:11434`，模型与 origin 均由受控配置冻结，业务不可覆盖。当前预期身份为 `qwen3-embedding:4b`、Ollama 0.40.0、model digest `df5bd2e3c74cd8d069d21dc038f1b359fcdc9458fce1c99bd43c9eb1518ff907`、context 40960、embeddingDimensions 2560；expectedModelDigest 与 expectedServerVersion 必填，并由 `/api/version`、`/api/tags`、`/api/show` 启动/就绪复验。任一不匹配均拒绝就绪，不请求业务 embedding。
+
+serviceContractRef 绑定经批准的 adapter 协议/能力证明并映射原结果 serverBuildRef，不伪造供应商内部构建。modelVersionRef 绑定批准服务/模型身份；无法证明精确权重时明确其可观测边界。聊天输入 token 按批准协议的保守上界 ceil(序列化请求 UTF-8 字节数 × maxTokensPerInputByte) + requestOverheadTokens 计算，加输出预算后不得超窗口或上层 token 预算；证明不足时不就绪，不伪称精确 tokenizer 计数。MiniMax 的 max_tokens 与响应 usage 均纳入原硬预算；缺少必需 usage 时失败，不把 unknown 当零。
+
+网络副作用前复用 C06/父工件校验。HTTP/JSON/SSE、取消、C04 先耐久后返回、幂等与遥测复用 C05 调用逻辑；必要公共逻辑从 llama.cpp 文件抽到同目录 model-gateway-runtime.ts，由两个 adapter 消费，禁止复制整套网关。C04 证据须剔除模型内部思考字段并保留受保护正文的访问边界。401/403 映射不可重试 MODEL_HTTP_ERROR，429/5xx 沿原 HTTP 可重试标记，断流/尺寸/结构错误沿原闭合代码；adapter 不自行重发生成。无新业务表、迁移、领域字段或依赖。Embedding 身份改变须走 C20 新代际构建及质量门，不能混用旧空间。
+
+### D-24. 功能证据必须从正式结果收口
+
+资料预置采用受控 `scripts/deployment/provision.mjs` CLI，复用同一部署加载及公开 access、ArtifactStoreV1、EngineeringContextSourceRegistryV1、StructuredDocumentConverterV1。预置配置为 strict schemaVersion="1"、runId、loginName、passwordSecretId、projectId、steps（有界、固定 stepId 与操作判别联合）。操作闭合为原 context revision、artifact put（绝对输入路径与原有界 ArtifactPutCommandV1 草案）、source delivery、document conversion、source segments 与原 systemAdministration command；载荷复用原公共 Schema，authorization/actorId 从真实 session 按固定 branch 签发，配置不能传假上下文。后续 step 仅能引用前序成功结果，副作用固定 commandId/idempotencyKey/issuedAt；同身份续接复用回执，异载荷由原幂等契约拒绝。首次工程、成员与来源授权通过原 systemAdministration 正式命令预置，不直接 SQL 插行。输出安全引用与终态，无秘密或资料正文；不将 reports/expected/scenarios 送入模型。CLI 不新增通用上传 API 或第二数据库，扫描件在 OCR 配置为 null 时明确 BLOCKED，文本和已支持结构化格式继续验证；报告列出未验扫描链路。
+
+共同基础宿主由 `scripts/deployment/start.mjs` 公开 createDeploymentFoundationV1({config,secrets,role,finalMigrationVersion})，返回 access、artifactStore/referenceGuard、runtime.db、transactionUnit、contextSource、documentConverter、close；role 仅 api/worker/provision，finalMigrationVersion 来自已批准发布清单。provision 不创建模型/业务工作线程，所有读取与副作用仍由真实模块及权限执行。API/Worker 在基础上装配 D-20/D-21 全部能力；provision 基础可用于验收准备，不能作为生产就绪或业务 PASS 证据。Postgres 公开 index 补导出已有 createPostgresRuntime 与类型、允许 transactionUnit 复用显式 runtime（原连接入口继续可用）；artifacts 公开本地 referenceGuard factory，不暴露 getPostgresTransaction。共享宿主不能导入这些包的私有源码或测试文件。
+
+基础加载器读取 RISKFLOW_RELEASE_MANIFEST 指定的 strict 发布清单，核对 releaseId 后传递 finalMigrationVersion 给基础工厂。工厂必须在模块创建与资料副作用前核验迁移账本；缺清单、错发布、错迁移序号均拒绝。资源按创建的逆序串行关闭，单项失败继续关闭其余资源后报告失败。
+
+synthetic-acceptance 合置环境使用既有本地 C04 公开工厂与同库 referenceGuard，不启用跨 VM 挂载；production 的跨 VM 模式沿 D-18 mTLS 流服务。OCR=null 仅允许合成预验收配置，并且 REQUIRED_PRODUCTION_DEPENDENCIES 的 OCR 要求保持；当前文本链路可以建立转换器，完整就绪与扫描功能 PASS 仍须真实 OCR。
+
+复用 scripts/acceptance/synthetic.mjs 的材料检查、正式 HTTP 操作目录、真实登录、固定命令身份和安全 checkpoint。新增 functional.mjs 组合 check/run 与显式终态核验，不放宽原 run 的 submitted 语义。FunctionalAcceptanceConfigV1 为独立 strict 宿主配置：schemaVersion="1"、runConfigFile（原 synthetic 配置文件路径）、observations（非空有界数组，最多 128 项）、pollIntervalMs、timeoutMs、maxQueries。每项 observation 固定 stepId、operationId（正式 query 操作目录成员）、payload（原查询 Schema 和模板）、expectedTerminalStatus、requiredReferences（非空字段路径选择器）；引用只取同次 run 回执，预算为显式正整数并受总截止限制。人工决定仍须用户执行正式确认，等待时输出 awaiting-human，不自动代为采纳。
+
+功能宿主 start.mjs 读取部署及 D-23 模型配置/秘密，核验已完成的显式初始化和迁移兼容性后，按 D-20/D-21 装配全部真实 provider、API listener 和独立 Worker；启动不自动迁移或引导管理员，不复制测试 harness、固定口令、空仓储或假策略。只有完整真实依赖和原来源就绪才开放服务。IP-16.1 实施宿主启动，IP-16.3 在真实服务与批准输入上完成功能验收；缺少服务或证据时记录 BLOCKED。
+
+必需链路为资料/知识与检索 → RI-S57 网络模型候选 → 确定性收口/人工复核 → 标准化风险 → 确定性评估/预警 → 处置建议与人工决定 → 执行/反馈，及会话流、权限拒绝、原身份重试。样本来自现有合成材料包或有资格的脱敏包；版本和规则由正式导入引用，不反填预期答案。最终报告保存各正式终态、精确对象/模型/配置/审计/C04 引用和命令，密码/Cookie/正文不落普通报告。submitted、awaiting-human、超时、缺引用、缺链路或关键 skip 不能计 PASS；配置静态校验仅是前置。
+
+16.3 的业务请求与后台处理 MUST 由完整生产宿主、真实持久化和已装配 provider 执行；浏览器验收 MUST 在用户可见的外部 Chrome 窗口完成，可用 CDP 驱动该可见窗口，但 headless 浏览器不能替代可见验收。浏览器须访问生产宿主提供的真实 HTTPS Web/API/SSE。当前 `DISPLAY=:0` 上的 Chrome/CDP 9337 窗口为空白页，生产服务未启动，尚无业务 PASS 证据；启动窗口只证明验收入口已准备。
+
+功能环境不运行正式 desktop:package 或 GPU/三 VM 预检。恢复/重启工程证据沿现有真实集成测试；最终禁网安装、完整现场恢复和硬件性能归 C38，见 tasks 移交表。C37 PASS 的范围明示为功能，C38 用自己的最终 checkpoint 与制品身份取证。
 
 ## Risks / Trade-offs
 
@@ -299,15 +401,17 @@ Worker 用同一 policy/registry/runtime 装配 C15、C17、C20–C25、C27/C29�
 - 真实生产接线远超过容器文件，harness 通过不能证明必需 ports/handler 已装配。
 - 跨 VM 工件访问、停写边界与全工程授权直接影响恢复安全，不能以共享目录假设略过。
 - 桌面打包与真实三 VM 装配仍需实施验证；规划完整不代表运行已通过。
+- 网络 API 可用性、模型版本可观测性与计费属于外部依赖；当前证据仅适用于批准后端与样本，不能证明最终本地模型质量或吞吐。
 
 ## Migration Plan
 
-1. 项目设计与 C37 proposal/specs/design 已同步，implementation-plan/tasks 按固定基线实施。
-2. 先核对固定基线及 IP-ID 文件边界，再执行施工图；真实输入缺失阻止相应发布验收。
-3. 经授权实施时串行处理根配置/依赖锁定、完整 Web 迁移和 Desktop、三 VM 装配与维护恢复；不改写历史领域事实。
-4. 全部实现任务及工程检查完成并形成检查点后，由 Finalizer 审查、修复、回归并生成 verification；目标环境缺项单列 BLOCKED，限定审计按项目契约执行。
-5. 交付输入齐备后执行正式包制备、三平台安装、真实三 VM 部署/恢复和资源基准，按最终代码与制品身份更新同一 verification；全部必需证据及审计通过后方可成功集成和归档。
+1. 按 D-23 的协议分支与已批准身份实现网络配置、adapter 和 C04 证据收口，保留原 port 与部署包装。
+2. apply 按新增增量基线完成网络配置/adapter、宿主接线与功能验收；原已完成 IP 保持，仅证据不足项重新打开。
+3. 当前全部任务通过后形成固定检查点，Finalizer 按功能范围核验、修复、回归并完成必要审计；C37 功能 PASS 后按项目流程集成、归档。
+4. C38 规划必须消费最终交付移交表，先修正或补齐真实正式验收程序，再做签名制包、平台安装、禁网三 VM/本地模型及硬件取证，生成自己的最终交付结论。
 
 ## Open Questions
 
-仅可延期到目标交付的真实输入：甲方脱敏样本、实际 OS/驱动/磁盘与内网证书、冻结硬件分配和性能阈值、llama.cpp/模型与 OCR 全部真实介质及许可、平台签名材料。缺项阻止对应正式发布/交付验收，独立实现和工程审查继续；不能靠代码默认值伪造。页面归属、Electron HTTPS 形态与三 VM 产品边界已确认，不再列为待用户确认项。
+当前运行输入为 MiniMax M Plan OpenAI Chat Completions 部署及受限 Bearer 凭据、指定 Ollama 内网 Embedding 部署、C04 存储、批准的合成或脱敏材料、正式业务配置及功能 HTTPS。MiniMax 为 `MiniMax-M3.1-Flash-Preview`、schema-prompt、reasoningEffort=low；Ollama 为 `qwen3-embedding:4b`，以固定摘要和版本复验。预算及其它服务身份按 D-23 固定；缺项阻塞对应能力验收，不得填入假值或改用其它模型。浏览器验收须使用可见外部 Chrome 与生产宿主，headless 不构成观看验收。协议与验收范围已闭合，不另选 SDK 或协议。
+
+C38 才需要最终平台签名、原生构建机、三 VM、4090/128GB、硬件分配/阈值、系统/驱动/模型/OCR 离线介质与正式内网证书等输入。甲方真实样本未齐时仍可功能预验收，报告保留合成标记和质量适用边界；不宣称真实工程准确率。

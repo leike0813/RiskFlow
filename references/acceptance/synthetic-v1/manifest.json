@@ -34,6 +34,14 @@
   "sources": "sources.json",
   "cases": "scenarios.json",
   "expected": "expected.json",
+  "scoringConfigurationPackage": "rules/scoring-configuration-package.json",
+  "scoringConfigurationPackageArtifactRef": {
+    "kind": "content-artifact",
+    "reference": {
+      "entityId": "synthetic-scoring-configuration-package-placeholder-v1",
+      "versionId": "1"
+    }
+  },
   "acceptanceCases": "acceptance-cases.json",
   "monitoring": "monitoring.json",
   "feedback": "feedback.json",

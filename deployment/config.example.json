@@ -1,5 +1,6 @@
 {
   "schemaVersion": 1,
+  "purpose": "synthetic-acceptance",
   "configRef": "config-primary-2030-01",
   "releaseId": "release-2030-01",
   "instanceId": "app-vm-01",
@@ -48,13 +49,116 @@
       {
         "secretId": "db-operator-password",
         "filePath": "/etc/riskflow/secrets/db-operator"
+      },
+      {
+        "secretId": "auth-hmac-key",
+        "filePath": "/etc/riskflow/secrets/auth-hmac"
+      },
+      {
+        "secretId": "minimax-api-key",
+        "filePath": "/etc/riskflow/secrets/minimax-api-key"
       }
     ],
+    "host": "10.0.0.13",
+    "port": 5432,
+    "name": "riskflow",
+    "maxConnections": 40,
+    "connectionTimeoutMs": 10000,
+    "idleTimeoutMs": 30000,
+    "rolePasswordSecretIds": {
+      "migratorRoleName": "db-migrator-password",
+      "appRoleName": "db-app-password",
+      "workerRoleName": "db-worker-password",
+      "checkpointerRoleName": "db-checkpointer-password",
+      "deploymentOperatorRoleName": "db-operator-password"
+    },
     "migratorRoleName": "riskflow_migrator_login",
     "appRoleName": "riskflow_app_login",
     "workerRoleName": "riskflow_outbox_worker_login",
     "checkpointerRoleName": "riskflow_checkpointer_login",
     "deploymentOperatorRoleName": "riskflow_deployment_operator_login"
+  },
+  "auth": {
+    "hmacSecretId": "auth-hmac-key",
+    "keyVersion": "auth-key-2030-01"
+  },
+  "api": {
+    "host": "10.0.0.12",
+    "port": 8080
+  },
+  "models": [
+    {
+      "backend": "network-api",
+      "config": {
+        "schemaVersion": "1",
+        "protocol": "openai-chat",
+        "deploymentRef": { "entityId": "minimax-chat", "versionId": "2030-01" },
+        "serviceContractRef": { "entityId": "minimax-chat-contract", "versionId": "1" },
+        "modelVersionRef": { "entityId": "minimax-model", "versionId": "2030-01" },
+        "baseUrl": "https://model.internal.example/v1",
+        "modelId": "MiniMax-M3.1-Flash-Preview",
+        "capabilities": ["completeStructured", "streamConversation"],
+        "contextWindowTokens": 1000000,
+        "maxOutputTokens": 4096,
+        "structuredOutputMode": "schema-prompt",
+        "reasoningEffort": "low",
+        "credentialRef": "minimax-api-key",
+        "requestTimeoutMs": 120000,
+        "streamIdleTimeoutMs": 30000,
+        "maxResponseBytes": 1048576,
+        "maxInputBytes": 65536,
+        "maxBatchItems": 1,
+        "inputTokenUpperBoundPolicy": { "maxTokensPerInputByte": 1, "requestOverheadTokens": 4096 }
+      }
+    }
+  ],
+  "artifacts": {
+    "schemaVersion": "1",
+    "policyRef": { "entityId": "artifact-store-policy", "versionId": "2030-01" },
+    "maxArtifactBytes": 104857600,
+    "maxConcurrentWrites": 8,
+    "maxConcurrentReads": 16,
+    "stagingMaxBytes": 536870912,
+    "orphanGracePeriodMs": 86400000,
+    "registrationTimeoutMs": 30000,
+    "maintenanceBatchSize": 1000
+  },
+  "outbox": {
+    "policyRef": { "entityId": "outbox-policy", "versionId": "2030-01" },
+    "batchSize": 100,
+    "leaseDurationMs": 30000,
+    "baseDelayMs": 1000,
+    "maxDelayMs": 60000,
+    "maxAttempts": 10
+  },
+  "qdrant": {
+    "baseUrl": "http://10.0.0.13:6333",
+    "requestTimeoutMs": 30000
+  },
+  "policyCatalog": {
+    "filePath": "/etc/riskflow/policies/catalog.json",
+    "catalogRef": { "entityId": "catalog-2030-01", "versionId": "1" }
+  },
+  "documentConversion": {
+    "resourcePolicy": {
+      "schemaVersion": "1",
+      "policyRef": { "entityId": "document-conversion-policy", "versionId": "2030-01" },
+      "maxInputBytes": 104857600,
+      "maxZipEntries": 4096,
+      "maxZipUncompressedBytes": 419430400,
+      "maxZipCompressionRatio": 200,
+      "maxXmlBytes": 52428800,
+      "maxPdfPages": 10000,
+      "maxPdfTextItems": 1000000,
+      "maxSheets": 256,
+      "maxCells": 1000000,
+      "maxCsvRecords": 1000000,
+      "maxCsvFields": 10000,
+      "maxOutputBlocks": 10000
+    },
+    "qualityPolicyRef": { "entityId": "ocr-quality-policy", "versionId": "2030-01" },
+    "converterDeploymentRef": { "entityId": "document-converter", "versionId": "2030-01" },
+    "mineru": null
   },
   "transport": {
     "artifactEndpointRef": "data-vm-artifacts",
@@ -85,7 +189,45 @@
   "projectBindings": [
     {
       "projectId": "project-rail-01",
-      "policyCatalogRef": "catalog-2030-01"
+      "policyCatalogRef": { "entityId": "catalog-2030-01", "versionId": "1" },
+      "policyRefs": {
+        "cleaning": { "entityId": "cleaning-policy", "versionId": "v1" },
+        "knowledge-validation": { "entityId": "knowledge-validation-policy", "versionId": "v1" },
+        "hybrid-retrieval": { "entityId": "hybrid-retrieval-policy", "versionId": "v1" },
+        "retrieval-acceptance": { "entityId": "retrieval-acceptance-policy", "versionId": "v1" },
+        "retrieval-review": { "entityId": "retrieval-review-policy", "versionId": "v1" },
+        "risk-candidate": { "entityId": "risk-candidate-policy", "versionId": "v1" },
+        "identification-graph": { "entityId": "identification-graph-policy", "versionId": "v1" },
+        "retry": { "entityId": "retry-policy", "versionId": "v1" },
+        "assessment-runtime": { "entityId": "assessment-runtime-policy", "versionId": "v1" },
+        "warning-runtime": { "entityId": "warning-runtime-policy", "versionId": "v1" },
+        "response-generation": { "entityId": "response-generation-policy", "versionId": "v1" },
+        "response-validation": { "entityId": "response-validation-policy", "versionId": "v1" },
+        "response-agent": { "entityId": "response-agent-policy", "versionId": "v1" },
+        "calibration": { "entityId": "calibration-policy", "versionId": "v1" },
+        "scoring-rules": { "entityId": "scoring-rules-policy", "versionId": "v1" },
+        "report-export": { "entityId": "report-export-policy", "versionId": "v1" }
+      },
+      "graphVersions": {
+        "riskFlow": { "entityId": "risk-flow-graph", "versionId": "v1" },
+        "identification": { "entityId": "identification-graph", "versionId": "v1" },
+        "assessment": { "entityId": "assessment-graph", "versionId": "v1" }
+      },
+      "retrievalBudgetPolicyRef": { "entityId": "retrieval-budget", "versionId": "v1" },
+      "forecastPolicyReleaseRef": {
+        "kind": "knowledge-release",
+        "reference": { "entityId": "forecast-policy-release", "versionId": "v1" }
+      },
+      "calibrationTargetReleaseRef": {
+        "kind": "knowledge-release",
+        "reference": { "entityId": "calibration-target-release", "versionId": "v1" }
+      },
+      "siteContextBindings": [
+        {
+          "siteContextRef": { "entityId": "site-context", "versionId": "v1" },
+          "artifactRef": { "entityId": "site-context-artifact", "versionId": "v1" }
+        }
+      ]
     }
   ]
 }

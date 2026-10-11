@@ -1444,6 +1444,22 @@ describe("module interface contracts", () => {
       }).success,
     ).toBe(false);
     expect(AuthorizationContextRefV1Schema.safeParse(authorizationContextRef).success).toBe(true);
+    const commandContext = {
+      ...authorization,
+      invocation: { kind: "system", systemActorId: "system-1", reasonCode: "event-trigger" },
+      causalCommandRef: { kind: "command", commandId: "publish-1", authorizationContextRef },
+    };
+    expect(AuthorizationContextV1Schema.safeParse(commandContext).success).toBe(true);
+    expect(
+      AuthorizationContextV1Schema.safeParse({ ...commandContext, causalRunRef: workflowRunRef })
+        .success,
+    ).toBe(false);
+    expect(
+      AuthorizationContextV1Schema.safeParse({
+        ...commandContext,
+        invocation: { kind: "agent-task", agentTaskRef },
+      }).success,
+    ).toBe(false);
 
     const common = {
       stageCode: "I5",

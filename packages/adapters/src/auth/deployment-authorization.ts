@@ -1,13 +1,17 @@
 import { sql, type Kysely } from "kysely";
+import { isDeepStrictEqual } from "node:util";
 
-import type { AuthorizationContextV1 } from "@riskflow/contracts/ports";
+import type { AuthorizationContextV1, CommandCausalRefV1 } from "@riskflow/contracts/ports";
 import type {
-  AccessErrorV1,
   AuthorizationDecisionV1,
   AuthorizationRequestV1,
   AuthorizationVerificationRequestV1,
-  LocalIdentityAccessV1,
 } from "@riskflow/core/access";
+import type { PostgresLocalIdentityAccess } from "./postgres-local-identity-access.js";
+import {
+  DeploymentDownstreamAuthorizationPolicyV1Schema,
+  type DeploymentDownstreamAuthorizationPolicyV1,
+} from "../deployment/policies.js";
 
 /**
  * C37 D-20：受控的服务端跨能力授权适配。
@@ -29,6 +33,7 @@ export const DEPLOYMENT_AUTHORIZATION_ERROR_V1 = {
   notAssociated: "DEPLOYMENT_AUTHORIZATION_NOT_ASSOCIATED",
   currentVerificationFailed: "DEPLOYMENT_AUTHORIZATION_CURRENT_VERIFICATION_FAILED",
   notSubset: "DEPLOYMENT_AUTHORIZATION_NOT_SUBSET",
+  policyRejected: "DEPLOYMENT_AUTHORIZATION_POLICY_REJECTED",
 } as const;
 export type DeploymentAuthorizationErrorCodeV1 =
   (typeof DEPLOYMENT_AUTHORIZATION_ERROR_V1)[keyof typeof DEPLOYMENT_AUTHORIZATION_ERROR_V1];
@@ -57,7 +62,7 @@ export interface DeploymentCausalAuthorizationRowV1 {
 }
 
 export interface DeploymentCausalAuthorizationStoreV1 {
-  record(row: DeploymentCausalAuthorizationRowV1): Promise<void>;
+  recordMany(rows: readonly DeploymentCausalAuthorizationRowV1[]): Promise<void>;
   find(input: {
     readonly rootContextRef: { readonly entityId: string; readonly versionId: string };
     readonly projectId: string;
@@ -91,20 +96,23 @@ export interface DeploymentAuthorizationAdapterV1 {
   resolveDownstreamContext(input: {
     readonly root: AuthorizationContextV1;
     readonly branch: string;
+    readonly invocationId: string;
     readonly requestedSpatialScopeRefs: AuthorizationContextV1["spatialScopeRefs"];
     readonly requestedSourceVersionRefs: AuthorizationRequestV1["requestedSourceVersionRefs"];
-    readonly causalRunRef: {
+    readonly causalRunRef?: {
       readonly kind: "workflow-run";
       readonly reference: { entityId: string; versionId: string };
     };
+    readonly causalCommandRef?: CommandCausalRefV1;
   }): Promise<AuthorizationContextV1>;
 }
 
 export interface DeploymentAuthorizationAdapterOptionsV1 {
   readonly db: Kysely<unknown>;
-  readonly access: LocalIdentityAccessV1;
+  readonly access: PostgresLocalIdentityAccess;
+  readonly policy: DeploymentDownstreamAuthorizationPolicyV1;
   /** 读取已签发上下文正文的读面；只允许按 invocationId + branch 取回本次签发的结果。 */
-  readonly issuedContextReader: {
+  readonly issuedContextReader?: {
     read(input: {
       readonly invocationId: string;
       readonly branch: string;
@@ -142,18 +150,49 @@ export const createDeploymentAuthorizationAdapterV1 = (
   options: DeploymentAuthorizationAdapterOptionsV1,
 ): DeploymentAuthorizationAdapterV1 => {
   const now = options.now ?? (() => new Date());
+  const policy = DeploymentDownstreamAuthorizationPolicyV1Schema.parse(options.policy);
+  const bindings = new Map<string, readonly string[]>(
+    policy.bindings.map((binding) => [binding.rootBranch, binding.downstreamBranches]),
+  );
+  const issuedContextReader = options.issuedContextReader ?? {
+    read: (input: Parameters<PostgresLocalIdentityAccess["readIssuedContext"]>[0]) =>
+      options.access.readIssuedContext(input),
+  };
 
   const store: DeploymentCausalAuthorizationStoreV1 = {
-    async record(row) {
-      await sql`INSERT INTO business.deployment_causal_authorizations
-        (root_context_ref, project_id, actor_id, branch, child_context_ref, invocation_id,
-         policy_ref, recorded_at)
-        VALUES (${JSON.stringify(row.rootContextRef)}::jsonb, ${row.projectId}, ${row.actorId},
-                ${row.branch}, ${JSON.stringify(row.childContextRef)}::jsonb, ${row.invocationId},
-                ${row.policyRef}, ${now().toISOString()})
-        ON CONFLICT (root_context_ref, project_id, actor_id, branch) DO NOTHING`.execute(
-        options.db,
-      );
+    async recordMany(rows) {
+      await options.db.transaction().execute(async (transaction) => {
+        for (const row of rows) {
+          await sql`INSERT INTO business.deployment_causal_authorizations
+            (root_context_ref, project_id, actor_id, branch, child_context_ref, invocation_id,
+             policy_ref, recorded_at)
+            VALUES (${JSON.stringify(row.rootContextRef)}::jsonb, ${row.projectId}, ${row.actorId},
+                    ${row.branch}, ${JSON.stringify(row.childContextRef)}::jsonb, ${row.invocationId},
+                    ${row.policyRef}, ${now().toISOString()})
+            ON CONFLICT (root_context_ref, project_id, actor_id, branch) DO NOTHING`.execute(
+            transaction,
+          );
+          const existing = await sql<Record<string, unknown>>`
+            SELECT * FROM business.deployment_causal_authorizations
+            WHERE root_context_ref = ${JSON.stringify(row.rootContextRef)}::jsonb
+              AND project_id = ${row.projectId} AND actor_id = ${row.actorId}
+              AND branch = ${row.branch}`.execute(transaction);
+          const persisted =
+            existing.rows[0] === undefined ? undefined : rowFromDb(existing.rows[0]);
+          if (
+            persisted === undefined ||
+            !samePlainRef(persisted.rootContextRef, row.rootContextRef) ||
+            persisted.projectId !== row.projectId ||
+            persisted.actorId !== row.actorId ||
+            persisted.branch !== row.branch ||
+            !samePlainRef(persisted.childContextRef, row.childContextRef) ||
+            persisted.invocationId !== row.invocationId ||
+            persisted.policyRef !== row.policyRef
+          ) {
+            throw new Error("deployment causal authorization conflict");
+          }
+        }
+      });
     },
     async find(input) {
       const result = await sql<
@@ -193,9 +232,52 @@ export const createDeploymentAuthorizationAdapterV1 = (
     }
   };
 
+  const rootSource = async (root: AuthorizationContextV1) => {
+    const source = await options.access.readDeploymentAuthorizationSource({
+      authorizationContextRef: root.authorizationContextRef,
+      projectId: root.projectId,
+      actorId: root.actorId,
+    });
+    if (source === undefined || !isDeepStrictEqual(source.context, root)) {
+      throw new DeploymentAuthorizationError(
+        DEPLOYMENT_AUTHORIZATION_ERROR_V1.rootNotGranted,
+        "root",
+      );
+    }
+    return source;
+  };
+
+  const requireAllowed = (rootBranch: string, branches: readonly string[], exact: boolean) => {
+    const allowed = bindings.get(rootBranch);
+    if (
+      allowed === undefined ||
+      new Set(branches).size !== branches.length ||
+      (exact && branches.length !== allowed.length) ||
+      !branches.every((branch) => allowed.includes(branch))
+    ) {
+      throw new DeploymentAuthorizationError(
+        DEPLOYMENT_AUTHORIZATION_ERROR_V1.policyRejected,
+        rootBranch,
+      );
+    }
+  };
+
   return {
     async issueDownstreamContexts(input) {
+      const source = await rootSource(input.root);
+      requireAllowed(source.branch, input.branches, true);
+      await granting(source.branch, DEPLOYMENT_AUTHORIZATION_ERROR_V1.rootNotGranted, () =>
+        options.access.verify({
+          authorizationContextRef: source.context.authorizationContextRef,
+          invocationId: source.invocationId,
+          projectId: source.context.projectId,
+          branch: source.branch,
+          requestedSpatialScopeRefs: input.requestedSpatialScopeRefs,
+          requestedSourceVersionRefs: input.requestedSourceVersionRefs,
+        }),
+      );
       const issued: AuthorizationContextV1[] = [];
+      const associations: DeploymentCausalAuthorizationRowV1[] = [];
       for (const branch of input.branches) {
         const decision = await granting(
           branch,
@@ -217,35 +299,87 @@ export const createDeploymentAuthorizationAdapterV1 = (
             branch,
           );
         }
-        await store.record({
+        issued.push(decision.context);
+        associations.push({
           rootContextRef: input.root.authorizationContextRef.reference,
           projectId: input.root.projectId,
           actorId: input.root.actorId,
           branch,
           childContextRef: decision.context.authorizationContextRef.reference,
           invocationId: input.invocationId,
-          policyRef: refOf(input.root.authorizationPolicyRef),
+          policyRef: refOf(policy.policyRef),
         });
-        issued.push(decision.context);
       }
+      await store.recordMany(associations);
       return Object.freeze(issued);
     },
 
     async resolveDownstreamContext(input) {
-      const association = await store.find({
-        rootContextRef: input.root.authorizationContextRef.reference,
-        projectId: input.root.projectId,
-        actorId: input.root.actorId,
-        branch: input.branch,
-      });
-      // 没有关联即失败：不得重构令牌，也不得借用其它用户或分支。
-      if (association === undefined) {
+      if ((input.causalRunRef === undefined) === (input.causalCommandRef === undefined)) {
         throw new DeploymentAuthorizationError(
           DEPLOYMENT_AUTHORIZATION_ERROR_V1.notAssociated,
           input.branch,
         );
       }
-      const issuedContext = await options.issuedContextReader.read({
+      let source = await rootSource(input.root);
+      const visited = new Set<string>();
+      let association: DeploymentCausalAuthorizationRowV1 | undefined;
+      for (let depth = 0; depth < 32; depth += 1) {
+        const reference = source.context.authorizationContextRef.reference;
+        const key = refOf(reference);
+        if (visited.has(key)) break;
+        visited.add(key);
+        association = await store.find({
+          rootContextRef: reference,
+          projectId: input.root.projectId,
+          actorId: input.root.actorId,
+          branch: input.branch,
+        });
+        if (association !== undefined) break;
+        let parentContextRef = source.parentContextRef;
+        if (parentContextRef === undefined) {
+          const links = await sql<Record<string, unknown>>`
+            SELECT root_context_ref FROM business.deployment_causal_authorizations
+            WHERE child_context_ref::jsonb = ${JSON.stringify(reference)}::jsonb
+              AND project_id = ${input.root.projectId} AND actor_id = ${input.root.actorId}
+              AND policy_ref = ${refOf(policy.policyRef)}
+            LIMIT 2`.execute(options.db);
+          if (links.rows.length !== 1) break;
+          parentContextRef = {
+            kind: "authorization-context",
+            reference: readJsonbRef(links.rows[0]!.root_context_ref),
+          };
+        }
+        const parent = await options.access.readDeploymentAuthorizationSource({
+          authorizationContextRef: parentContextRef,
+          projectId: input.root.projectId,
+          actorId: input.root.actorId,
+        });
+        if (parent === undefined) break;
+        source = parent;
+      }
+      // 没有关联即失败：不得重构令牌，也不得借用其它用户或分支。
+      if (association === undefined || association.policyRef !== refOf(policy.policyRef)) {
+        throw new DeploymentAuthorizationError(
+          DEPLOYMENT_AUTHORIZATION_ERROR_V1.notAssociated,
+          input.branch,
+        );
+      }
+      requireAllowed(source.branch, [input.branch], false);
+      if (
+        input.causalCommandRef !== undefined &&
+        (source.branch !== "knowledge-modeling.publish-approved-release" ||
+          source.invocationId !== input.causalCommandRef.commandId ||
+          !samePlainRef(
+            source.context.authorizationContextRef.reference,
+            input.causalCommandRef.authorizationContextRef.reference,
+          ))
+      )
+        throw new DeploymentAuthorizationError(
+          DEPLOYMENT_AUTHORIZATION_ERROR_V1.notAssociated,
+          input.branch,
+        );
+      const issuedContext = await issuedContextReader.read({
         invocationId: association.invocationId,
         branch: input.branch,
         projectId: input.root.projectId,
@@ -257,11 +391,21 @@ export const createDeploymentAuthorizationAdapterV1 = (
           input.branch,
         );
       }
+      if (
+        !samePlainRef(
+          issuedContext.authorizationContextRef.reference,
+          association.childContextRef,
+        ) ||
+        issuedContext.projectId !== association.projectId ||
+        issuedContext.actorId !== association.actorId
+      ) {
+        throw new DeploymentAuthorizationError(
+          DEPLOYMENT_AUTHORIZATION_ERROR_V1.notAssociated,
+          input.branch,
+        );
+      }
 
-      // 受理签发与后台复验是两个独立授权事件：C06 的幂等键是
-      // (invocationId, projectId, branch)，复用同一 invocationId 会与签发冲突。
-      const resolutionInvocationId = `${association.invocationId}:resolve`;
-
+      // 后台 action 使用自己的 invocationId；verify 仍绑定原签发 invocation。
       // 先按目标分支复验该分支已签发上下文的当前权限：原 C06 verify 要求
       // 被验上下文必须正是该 branch 的已登记上下文，因此不能拿 root 上下文代替。
       // 会话或权限失效时直接失败，不得据此扩大或重构任何上下文。
@@ -285,7 +429,7 @@ export const createDeploymentAuthorizationAdapterV1 = (
         DEPLOYMENT_AUTHORIZATION_ERROR_V1.downstreamRejected,
         () =>
           options.access.authorize({
-            invocationId: resolutionInvocationId,
+            invocationId: input.invocationId,
             projectId: input.root.projectId,
             branch: input.branch,
             requestedSpatialScopeRefs: input.requestedSpatialScopeRefs,
@@ -296,10 +440,15 @@ export const createDeploymentAuthorizationAdapterV1 = (
               reasonCode: "deployment-causal-branch-resolution",
             },
             parentContext: issuedContext,
-            causalRunRef: input.causalRunRef,
+            ...(input.causalRunRef === undefined
+              ? { causalCommandRef: input.causalCommandRef }
+              : { causalRunRef: input.causalRunRef }),
           } as AuthorizationRequestV1),
       );
-      if (!isBranchNarrowing(issuedContext, decision.context)) {
+      if (
+        !isBranchNarrowing(issuedContext, decision.context) ||
+        !isBranchNarrowing(input.root, decision.context)
+      ) {
         throw new DeploymentAuthorizationError(
           DEPLOYMENT_AUTHORIZATION_ERROR_V1.notSubset,
           input.branch,
@@ -313,12 +462,15 @@ export const createDeploymentAuthorizationAdapterV1 = (
 /**
  * C06 以抛错表示拒绝；据此判定是否为授权失败而非宿主/技术故障。
  */
-const isAccessError = (error: unknown): error is AccessErrorV1 =>
-  typeof error === "object" &&
-  error !== null &&
-  "code" in error &&
-  typeof error.code === "string" &&
-  error.code.startsWith("AUTH");
+const isAccessError = (error: unknown): boolean => {
+  if (typeof error !== "object" || error === null) return false;
+  const candidate = error as {
+    readonly code?: unknown;
+    readonly details?: { readonly code?: unknown };
+  };
+  const code = candidate.code ?? candidate.details?.code;
+  return typeof code === "string" && code.startsWith("AUTH");
+};
 
 const samePlainRef = (
   left: { entityId: string; versionId: string },

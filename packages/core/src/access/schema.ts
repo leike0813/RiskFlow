@@ -4,6 +4,7 @@ import {
   AgentTaskRefV1Schema,
   AuthorizationContextRefV1Schema,
   AuthorizationContextV1Schema,
+  CommandCausalRefV1Schema,
   ContractReferenceV1Schema,
   ModuleBranchV1Schema,
   ModuleCapabilityV1Schema,
@@ -283,6 +284,10 @@ const AgentAuthorizationRequestV1Schema = z.strictObject({
 export const AuthorizationInvocationRequestV1Schema = z.union([
   HumanAuthorizationRequestV1Schema,
   SystemAuthorizationRequestV1Schema,
+  SystemAuthorizationRequestV1Schema.omit({ causalRunRef: true }).extend({
+    causalRunRef: z.never().optional(),
+    causalCommandRef: CommandCausalRefV1Schema,
+  }),
   AgentAuthorizationRequestV1Schema,
 ]);
 export const AuthorizationRequestV1Schema = AuthorizationInvocationRequestV1Schema;

@@ -13,8 +13,19 @@ export {
   llamaCppDeploymentKey,
   parseLlamaCppDeploymentConfig,
   LlamaCppDeploymentConfigV1Schema,
+  ModelGatewayDeploymentConfigV1Schema,
+  NetworkApiDeploymentConfigV1Schema,
   LlamaCppSamplingPolicyV1Schema,
   type FrozenLlamaCppDeploymentConfigV1,
   type LlamaCppDeploymentConfigV1,
+  type ModelGatewayDeploymentConfigV1,
+  type NetworkApiDeploymentConfigV1,
   type LlamaCppSamplingPolicyV1,
 } from "./config.js";
+export {
+  createNetworkApiModelGateway,
+  NetworkApiModelGateway,
+  type NetworkApiModelGatewayOptionsV1,
+  type NetworkApiModelGatewayObservationV1,
+  type NetworkApiModelGatewayObserverV1,
+} from "./network-api-model-gateway.js";

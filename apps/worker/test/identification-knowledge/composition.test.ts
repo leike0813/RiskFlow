@@ -190,9 +190,11 @@ const accessDenial = (): AccessServiceError =>
 interface CompositionHarnessV1 {
   readonly composition: PostgresIdentificationKnowledgeCompositionV1;
   readonly authorizeRequests: readonly AuthorizationRequestV1[];
+  readonly verifyRequests: readonly Parameters<LocalIdentityAccessV1["verify"]>[0][];
   readonly narrowReadCalls: readonly string[];
   readonly engineeringDataCalls: readonly string[];
   readonly artifactReads: readonly string[];
+  readonly governedReleaseReads: readonly string[];
 }
 
 const startHarness = (behavior: {
@@ -208,11 +210,20 @@ const startHarness = (behavior: {
   readonly manifest?: typeof manifest;
   /** IP-11：C19 assessment-basis delegate 替身；省略时注入不会被调用的哨兵。 */
   readonly assessmentBasisResolver?: PostgresIdentificationKnowledgeCompositionOptionsV1["assessmentBasisResolver"];
+  readonly governancePolicies?: Pick<
+    PostgresIdentificationKnowledgeCompositionOptionsV1,
+    "assessmentConfigurationPolicy" | "scoringRulesPolicy"
+  >;
+  readonly verify?: (
+    request: Parameters<LocalIdentityAccessV1["verify"]>[0],
+  ) => AuthorizationContextV1;
 }): CompositionHarnessV1 => {
   const authorizeRequests: AuthorizationRequestV1[] = [];
+  const verifyRequests: Parameters<LocalIdentityAccessV1["verify"]>[0][] = [];
   const narrowReadCalls: string[] = [];
   const engineeringDataCalls: string[] = [];
   const artifactReads: string[] = [];
+  const governedReleaseReads: string[] = [];
   let issued: AuthorizationContextV1 | undefined;
   const access = {
     ...(Object.fromEntries(
@@ -227,11 +238,13 @@ const startHarness = (behavior: {
       return { context, contextRef: context.authorizationContextRef, redacted: false };
     },
     async verify(request: Parameters<LocalIdentityAccessV1["verify"]>[0]) {
-      const context = issued ?? {
-        ...commandAuthorization(request.invocationId),
-        authorizationContextRef: request.authorizationContextRef,
-        projectId: request.projectId,
-      };
+      verifyRequests.push(request);
+      const context = behavior.verify?.(request) ??
+        issued ?? {
+          ...commandAuthorization(request.invocationId),
+          authorizationContextRef: request.authorizationContextRef,
+          projectId: request.projectId,
+        };
       return { context, contextRef: context.authorizationContextRef, redacted: false };
     },
   } as unknown as LocalIdentityAccessV1;
@@ -253,8 +266,21 @@ const startHarness = (behavior: {
     },
     put: unusedEntryPoint,
   } as unknown as PostgresIdentificationKnowledgeCompositionOptionsV1["artifactStore"];
+  const db = {
+    selectFrom(table: string) {
+      const query = {
+        selectAll: () => query,
+        where: () => query,
+        async execute() {
+          governedReleaseReads.push(table);
+          return [];
+        },
+      };
+      return query;
+    },
+  } as unknown as PostgresIdentificationKnowledgeCompositionOptionsV1["db"];
   const composition = createPostgresIdentificationKnowledgeComposition({
-    db: {} as PostgresIdentificationKnowledgeCompositionOptionsV1["db"],
+    db,
     transactionUnit,
     access,
     artifactStore,
@@ -307,6 +333,7 @@ const startHarness = (behavior: {
       trace: unusedEntryPoint,
     },
     validationPolicy: policy,
+    ...behavior.governancePolicies,
     // D-13 必需 C19 delegate：未脚本化时使用哨兵，任何触达都会让测试失败。
     assessmentBasisResolver: behavior.assessmentBasisResolver ?? { resolve: unusedEntryPoint },
     // D-09 公共失败证据窄读：组合根只接受注入的 reader，不再用调用期转发。
@@ -318,7 +345,15 @@ const startHarness = (behavior: {
     resolveAuthorizationSource: behavior.resolve,
     now: () => new Date(NOW),
   });
-  return { composition, authorizeRequests, narrowReadCalls, engineeringDataCalls, artifactReads };
+  return {
+    composition,
+    authorizeRequests,
+    verifyRequests,
+    narrowReadCalls,
+    engineeringDataCalls,
+    artifactReads,
+    governedReleaseReads,
+  };
 };
 
 const humanSource = (): IdentificationKnowledgeAuthorizationSourceV1 => ({
@@ -520,6 +555,83 @@ describe("C17 worker identification knowledge composition root", () => {
     expect(() => createPostgresIdentificationKnowledgeComposition(options)).toThrowError(
       "identification knowledge composition requires every C03–C17 dependency",
     );
+  });
+
+  it("passes C16 policies and exposes only its authorized governed-release reader", async () => {
+    let assessmentPolicyRead = 0;
+    let scoringPolicyRead = 0;
+    const assessmentConfigurationPolicy = {} as NonNullable<
+      PostgresIdentificationKnowledgeCompositionOptionsV1["assessmentConfigurationPolicy"]
+    >;
+    const scoringRulesPolicy = {} as NonNullable<
+      PostgresIdentificationKnowledgeCompositionOptionsV1["scoringRulesPolicy"]
+    >;
+    const harness = startHarness({
+      resolve: humanSource,
+      authorize: (request) => issuedContext(request),
+      governancePolicies: {
+        get assessmentConfigurationPolicy() {
+          assessmentPolicyRead += 1;
+          return assessmentConfigurationPolicy;
+        },
+        get scoringRulesPolicy() {
+          scoringPolicyRead += 1;
+          return scoringRulesPolicy;
+        },
+      },
+      verify: (request) => ({
+        ...commandAuthorization(request.invocationId),
+        authorizationContextRef: request.authorizationContextRef,
+        grantedCapabilities: [MODULE_BRANCH_CAPABILITY_V1[request.branch]],
+      }),
+    });
+    const authorization = {
+      ...commandAuthorization("c17-governed-releases"),
+      grantedCapabilities: [MODULE_BRANCH_CAPABILITY_V1["knowledge-modeling.assessment-basis"]],
+    };
+
+    expect(Object.keys(harness.composition.governedReleases)).toEqual(["resolveGovernedReleases"]);
+    const result = await harness.composition.governedReleases.resolveGovernedReleases({
+      projectId: PROJECT_ID,
+      requiredDefinitionTypes: ["indicator-system"],
+      requiredAt: NOW,
+      asOfRecordedAt: NOW,
+      authorization,
+    });
+    // 空数据库没有已发布配置，结果按领域规则失败；授权通过后确实进入 C16 精确版本读取。
+    expect(result).toMatchObject({ kind: "failed" });
+    expect(assessmentPolicyRead).toBe(1);
+    expect(scoringPolicyRead).toBe(1);
+    expect(harness.verifyRequests).toHaveLength(1);
+    expect(harness.verifyRequests[0]).toMatchObject({
+      projectId: PROJECT_ID,
+      branch: "knowledge-modeling.assessment-basis",
+    });
+    expect(harness.governedReleaseReads).toEqual(["business.knowledge_releases"]);
+  });
+
+  it("denies governed-release reads before database access when current authorization is too broad", async () => {
+    const harness = startHarness({
+      resolve: humanSource,
+      authorize: (request) => issuedContext(request),
+      verify: () => {
+        throw accessDenial();
+      },
+    });
+    const authorization = {
+      ...commandAuthorization("c17-governed-releases-denied"),
+      grantedCapabilities: [MODULE_BRANCH_CAPABILITY_V1["knowledge-modeling.assessment-basis"]],
+    };
+
+    const result = await harness.composition.governedReleases.resolveGovernedReleases({
+      projectId: PROJECT_ID,
+      requiredDefinitionTypes: ["indicator-system"],
+      requiredAt: NOW,
+      asOfRecordedAt: NOW,
+      authorization,
+    });
+    expect(result).toMatchObject({ kind: "failed" });
+    expect(harness.governedReleaseReads).toEqual([]);
   });
 
   it("routes the assessment basis to the injected C19 resolver without C17-side authorization", async () => {

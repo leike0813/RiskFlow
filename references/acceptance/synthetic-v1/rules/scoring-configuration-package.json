@@ -1,0 +1,174 @@
+{
+  "schemaVersion": "1",
+  "projectId": "synthetic-station-tunnel-project",
+  "projectRevisionRef": {
+    "kind": "project-revision",
+    "reference": {
+      "entityId": "project-revision-synthetic-v1",
+      "versionId": "1"
+    }
+  },
+  "configurationSetRef": {
+    "entityId": "configuration-set-synthetic-v1",
+    "versionId": "1"
+  },
+  "compatibilityRef": {
+    "entityId": "scoring-rule-compatibility-synthetic-v1",
+    "versionId": "1"
+  },
+  "scoringPolicyRef": {
+    "entityId": "scoring-policy-synthetic-v1",
+    "versionId": "1"
+  },
+  "sources": [
+    {
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-quantization-safety-v1",
+          "versionId": "1"
+        }
+      },
+      "standardKind": "synthetic-scoring-rule-values",
+      "segments": [
+        {
+          "sourceSegmentId": "SYN-KB-RULE-FACE-PRESSURE-01",
+          "text": "合成掌子面压力评分区间（kPa）：小于80分值1；80至120分值2；120至160分值4；大于等于160分值5。合成样本，待甲方复核。"
+        }
+      ]
+    },
+    {
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-quantization-settlement-v1",
+          "versionId": "1"
+        }
+      },
+      "standardKind": "synthetic-scoring-rule-values",
+      "segments": [
+        {
+          "sourceSegmentId": "SYN-KB-RULE-SETTLEMENT-01",
+          "text": "合成地表沉降评分区间（mm）：小于5分值1；5至10分值2；10至20分值4；20至30分值6；大于等于30分值8。合成样本，待甲方复核。"
+        }
+      ]
+    },
+    {
+      "sourceVersionRef": {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "synthetic-quantization-stratum-v1",
+          "versionId": "1"
+        }
+      },
+      "standardKind": "synthetic-scoring-rule-values",
+      "segments": [
+        {
+          "sourceSegmentId": "SYN-KB-RULE-STRATUM-01",
+          "text": "合成地层评分：完整岩体1.0，中硬岩2.0，粉质黏土3.0，上软下硬复合地层3.5，富水中砂层4.0，岩溶发育灰岩4.5。合成样本，待甲方复核。"
+        }
+      ]
+    }
+  ],
+  "members": [
+    {
+      "rule": {
+        "ruleId": "rule-face-pressure-score",
+        "applicabilityConditions": {
+          "constructionMethod": ["原位变径盾构"],
+          "stratumCondition": ["完整岩体", "中硬岩", "粉质黏土", "上软下硬复合地层", "富水中砂层", "岩溶发育灰岩"],
+          "engineeringStage": ["扩径准备", "变径空间扩挖", "刀盘扩径", "盾体扩径", "缩径转换"]
+        },
+        "indicatorItem": "indicator-possibility-excavation",
+        "scoringThresholds": [
+          {"thresholdId": "rule-face-pressure-score-t01", "score": 1, "operator": "lt", "value": 80},
+          {"thresholdId": "rule-face-pressure-score-t02", "score": 2, "operator": "between", "value": 80, "upperValue": 120},
+          {"thresholdId": "rule-face-pressure-score-t03", "score": 4, "operator": "between", "value": 120, "upperValue": 160},
+          {"thresholdId": "rule-face-pressure-score-t04", "score": 5, "operator": "gte", "value": 160}
+        ],
+        "gradeIntervals": [
+          {"grade": "grade-a", "lowerBound": 0, "upperBound": 2},
+          {"grade": "grade-b", "lowerBound": 2, "upperBound": 4},
+          {"grade": "grade-c", "lowerBound": 4, "upperBound": 6},
+          {"grade": "grade-d", "lowerBound": 6, "upperBound": 8},
+          {"grade": "grade-e", "lowerBound": 8, "upperBound": 12}
+        ],
+        "exceptionClauses": [],
+        "evidenceLocator": {"sourceSegmentId": "SYN-KB-RULE-FACE-PRESSURE-01"},
+        "ruleVersion": {"entityId": "rule-face-pressure-score", "versionId": "1"},
+        "reviewStatus": "pending"
+      },
+      "binding": {
+        "sourceVersionRef": {"kind": "source-version", "reference": {"entityId": "synthetic-quantization-safety-v1", "versionId": "1"}},
+        "evidenceReferences": [{"locator": {"sourceSegmentId": "SYN-KB-RULE-FACE-PRESSURE-01"}, "sourceVersion": {"entityId": "synthetic-quantization-safety-v1", "versionId": "1"}}]
+      }
+    },
+    {
+      "rule": {
+        "ruleId": "rule-settlement-score",
+        "applicabilityConditions": {
+          "constructionMethod": ["原位变径盾构"],
+          "stratumCondition": ["完整岩体", "中硬岩", "粉质黏土", "上软下硬复合地层", "富水中砂层", "岩溶发育灰岩"],
+          "engineeringStage": ["扩径准备", "变径空间扩挖", "刀盘扩径", "盾体扩径", "缩径转换"]
+        },
+        "indicatorItem": "indicator-consequence-settlement",
+        "scoringThresholds": [
+          {"thresholdId": "rule-settlement-score-t01", "score": 1, "operator": "lt", "value": 5},
+          {"thresholdId": "rule-settlement-score-t02", "score": 2, "operator": "between", "value": 5, "upperValue": 10},
+          {"thresholdId": "rule-settlement-score-t03", "score": 4, "operator": "between", "value": 10, "upperValue": 20},
+          {"thresholdId": "rule-settlement-score-t04", "score": 6, "operator": "between", "value": 20, "upperValue": 30},
+          {"thresholdId": "rule-settlement-score-t05", "score": 8, "operator": "gte", "value": 30}
+        ],
+        "gradeIntervals": [
+          {"grade": "grade-a", "lowerBound": 0, "upperBound": 2},
+          {"grade": "grade-b", "lowerBound": 2, "upperBound": 4},
+          {"grade": "grade-c", "lowerBound": 4, "upperBound": 6},
+          {"grade": "grade-d", "lowerBound": 6, "upperBound": 8},
+          {"grade": "grade-e", "lowerBound": 8, "upperBound": 12}
+        ],
+        "exceptionClauses": [],
+        "evidenceLocator": {"sourceSegmentId": "SYN-KB-RULE-SETTLEMENT-01"},
+        "ruleVersion": {"entityId": "rule-settlement-score", "versionId": "1"},
+        "reviewStatus": "pending"
+      },
+      "binding": {
+        "sourceVersionRef": {"kind": "source-version", "reference": {"entityId": "synthetic-quantization-settlement-v1", "versionId": "1"}},
+        "evidenceReferences": [{"locator": {"sourceSegmentId": "SYN-KB-RULE-SETTLEMENT-01"}, "sourceVersion": {"entityId": "synthetic-quantization-settlement-v1", "versionId": "1"}}]
+      }
+    },
+    {
+      "rule": {
+        "ruleId": "rule-stratum-grade-score",
+        "applicabilityConditions": {
+          "constructionMethod": ["原位变径盾构"],
+          "stratumCondition": ["完整岩体", "中硬岩", "粉质黏土", "上软下硬复合地层", "富水中砂层", "岩溶发育灰岩"],
+          "engineeringStage": ["扩径准备", "变径空间扩挖", "刀盘扩径", "盾体扩径", "缩径转换"]
+        },
+        "indicatorItem": "indicator-possibility-stratum",
+        "scoringThresholds": [
+          {"thresholdId": "rule-stratum-grade-score-t01", "score": 1, "operator": "eq", "value": "完整岩体"},
+          {"thresholdId": "rule-stratum-grade-score-t02", "score": 2, "operator": "eq", "value": "中硬岩"},
+          {"thresholdId": "rule-stratum-grade-score-t03", "score": 3, "operator": "eq", "value": "粉质黏土"},
+          {"thresholdId": "rule-stratum-grade-score-t04", "score": 3.5, "operator": "eq", "value": "上软下硬复合地层"},
+          {"thresholdId": "rule-stratum-grade-score-t05", "score": 4, "operator": "eq", "value": "富水中砂层"},
+          {"thresholdId": "rule-stratum-grade-score-t06", "score": 4.5, "operator": "eq", "value": "岩溶发育灰岩"}
+        ],
+        "gradeIntervals": [
+          {"grade": "grade-a", "lowerBound": 0, "upperBound": 2},
+          {"grade": "grade-b", "lowerBound": 2, "upperBound": 4},
+          {"grade": "grade-c", "lowerBound": 4, "upperBound": 6},
+          {"grade": "grade-d", "lowerBound": 6, "upperBound": 8},
+          {"grade": "grade-e", "lowerBound": 8, "upperBound": 12}
+        ],
+        "exceptionClauses": [],
+        "evidenceLocator": {"sourceSegmentId": "SYN-KB-RULE-STRATUM-01"},
+        "ruleVersion": {"entityId": "rule-stratum-grade-score", "versionId": "1"},
+        "reviewStatus": "pending"
+      },
+      "binding": {
+        "sourceVersionRef": {"kind": "source-version", "reference": {"entityId": "synthetic-quantization-stratum-v1", "versionId": "1"}},
+        "evidenceReferences": [{"locator": {"sourceSegmentId": "SYN-KB-RULE-STRATUM-01"}, "sourceVersion": {"entityId": "synthetic-quantization-stratum-v1", "versionId": "1"}}]
+      }
+    }
+  ]
+}

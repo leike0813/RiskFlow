@@ -1,6 +1,7 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 
 import { sql, type Kysely, type Transaction } from "kysely";
+import { z } from "zod";
 
 import {
   ACCESS_POLICY_REF_V1,
@@ -28,6 +29,7 @@ import {
   ReadSessionCommandV1Schema,
   SessionMetadataV1Schema,
   SessionResultV1Schema,
+  SourceVersionRefSetV1Schema,
   SYSTEM_ACCESS_ACTIONS_V1,
   SYSTEM_ADMINISTRATION_PAGE_SIZE_DEFAULT_V1,
   SystemAdministrationCommandV1Schema,
@@ -65,16 +67,26 @@ import {
 } from "@riskflow/core/persistence";
 import {
   AuthorizationContextV1Schema,
+  ModuleCapabilityV1Schema,
   type AuthorizationContextV1,
   type AuthorizationContextRefV1,
   type ContractReferenceV1,
   type ModuleBranchV1,
+  type ModuleCapabilityV1,
   type SourceAccessGrantRefV1,
   type SourceVersionRefV1,
   SourceVersionRefV1Schema,
   type SpatialScopeRefV1,
+  type WorkflowRunRefV1,
+  WorkflowRunRefV1Schema,
+  CommandCausalRefV1Schema,
+  type CommandCausalRefV1,
 } from "@riskflow/contracts/ports";
-import { VersionReferenceSchema, type VersionReference } from "@riskflow/contracts/common";
+import {
+  IdentifierSchema,
+  VersionReferenceSchema,
+  type VersionReference,
+} from "@riskflow/contracts/common";
 
 import {
   createPostgresRuntime,
@@ -112,6 +124,8 @@ const SYSTEM_NAMESPACE = "riskflow-system";
 const SESSION_IDLE_MS = 30 * 60 * 1000;
 const SESSION_ABSOLUTE_MS = 12 * 60 * 60 * 1000;
 const CONTEXT_TTL_MS = 5 * 60 * 1000;
+// D-20 来源读取的有界上限：签发快照里的来源版本引用逐项校验，不截断后宣称覆盖完整。
+const DEPLOYMENT_SOURCE_VERSION_REF_LIMIT = 256;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_LOCK_MS = 15 * 60 * 1000;
 const LOGIN_FAILURE_LIMIT = 5;
@@ -135,6 +149,30 @@ export interface BootstrapInitialSystemAdministratorConfig {
   readonly randomBytes?: RandomBytes;
 }
 
+type WithoutAuthorizationContextRef<T> = T extends unknown
+  ? Omit<T, "authorizationContextRef">
+  : never;
+
+export type DeploymentProjectAccessCommandV1 =
+  WithoutAuthorizationContextRef<ProjectAccessCommandV1>;
+
+const [
+  openProjectCommandSchema,
+  suspendProjectCommandSchema,
+  reviseMembershipCommandSchema,
+  createSpatialScopeCommandSchema,
+  reviseSpatialScopeCommandSchema,
+  reviseSourceAccessCommandSchema,
+] = ProjectAccessCommandV1Schema.options;
+const deploymentProjectAccessCommandSchema = z.discriminatedUnion("kind", [
+  openProjectCommandSchema.omit({ authorizationContextRef: true }),
+  suspendProjectCommandSchema.omit({ authorizationContextRef: true }),
+  reviseMembershipCommandSchema.omit({ authorizationContextRef: true }),
+  createSpatialScopeCommandSchema.omit({ authorizationContextRef: true }),
+  reviseSpatialScopeCommandSchema.omit({ authorizationContextRef: true }),
+  reviseSourceAccessCommandSchema.omit({ authorizationContextRef: true }),
+]);
+
 /**
  * C06 适配器：原 LocalIdentityAccessV1 与独立系统管理面并列挂在同一个对象上。
  *
@@ -143,7 +181,49 @@ export interface BootstrapInitialSystemAdministratorConfig {
  */
 export interface PostgresLocalIdentityAccess extends LocalIdentityAccessV1 {
   close(): Promise<void>;
+  executeDeploymentProjectAccess(input: {
+    readonly sessionToken: string;
+    readonly command: DeploymentProjectAccessCommandV1;
+  }): Promise<AccessCommandResultV1>;
+  readIssuedContext(input: {
+    readonly invocationId: string;
+    readonly branch: string;
+    readonly projectId: string;
+    readonly actorId: string;
+  }): Promise<AuthorizationContextV1 | undefined>;
+  readDeploymentAuthorizationSource(input: {
+    readonly authorizationContextRef: AuthorizationContextRefV1;
+    readonly projectId: string;
+    readonly actorId?: string;
+  }): Promise<DeploymentAuthorizationSourceV1 | undefined>;
+  verifyDeploymentContext(input: {
+    readonly authorizationContextRef: AuthorizationContextRefV1;
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requiredCapability: ModuleCapabilityV1;
+    readonly requestedSpatialScopeRefs: readonly SpatialScopeRefV1[];
+    readonly requestedSourceVersionRefs: readonly SourceVersionRefV1[];
+    readonly requestedAt: string;
+  }): Promise<AuthorizationDecisionV1>;
   readonly systemAdministration: SystemAdministrationPortV1;
+}
+
+/**
+ * C37 D-20：已签发业务上下文的真实来源快照。
+ *
+ * 只按精确引用读回原签发事实——原 invocationId、branch、父上下文引用、原因果运行引用
+ * 与签发时的来源版本引用集合。读取不签发、不续期，也不替代当前 verify：当前权限由
+ * 调用方单独用 verifyDeploymentContext 复验。不存在、管理上下文或绑定不符一律 undefined，
+ * 数据库故障原样抛出。
+ */
+export interface DeploymentAuthorizationSourceV1 {
+  readonly context: AuthorizationContextV1;
+  readonly invocationId: string;
+  readonly branch: ModuleBranchV1;
+  readonly parentContextRef: AuthorizationContextRefV1 | undefined;
+  readonly causalRunRef: WorkflowRunRefV1 | undefined;
+  readonly causalCommandRef: CommandCausalRefV1 | undefined;
+  readonly sourceVersionRefs: readonly SourceVersionRefV1[];
 }
 
 const jsonValue = (value: unknown): JsonValue => value as JsonValue;
@@ -2261,6 +2341,60 @@ export const createPostgresLocalIdentityAccess = (
     return parsed.data;
   };
 
+  const assertCommandCause = async (
+    database: AccessDb,
+    cause: CommandCausalRefV1,
+    parent: AuthorizationContextV1,
+    projectId: string,
+    branch: ModuleBranchV1,
+  ): Promise<Date> => {
+    const root = await loadStoredContext(database, cause.authorizationContextRef);
+    if (
+      branch !== "knowledge-modeling.identification-basis" ||
+      root?.context?.invocation.kind !== "human" ||
+      root.row.context_kind !== "c02" ||
+      root.row.branch !== "knowledge-modeling.publish-approved-release" ||
+      root.row.invocation_id !== cause.commandId ||
+      root.row.project_id !== projectId ||
+      root.row.actor_id !== parent.actorId
+    )
+      throw authorizationDenied("authorize.command-cause", branch);
+    await loadParentContext(database, root.context, projectId, "authorize.command-root");
+    const snapshot = root.row.revision_snapshot;
+    const sources = SourceVersionRefSetV1Schema.safeParse(
+      typeof snapshot === "object" &&
+        snapshot !== null &&
+        !Array.isArray(snapshot) &&
+        "sourceVersionRefs" in snapshot
+        ? snapshot.sourceVersionRefs
+        : undefined,
+    );
+    if (!sources.success) throw authorizationDenied("authorize.command-sources", branch);
+    await evaluateCurrentAccess(
+      database,
+      parent.actorId,
+      projectId,
+      "knowledge-modeling.publish-approved-release",
+      root.context.spatialScopeRefs,
+      sources.data,
+      "authorize.command-current",
+    );
+    const links = await sql<{ child_context_ref: string }>`
+      SELECT child_context_ref FROM business.deployment_causal_authorizations
+      WHERE root_context_ref = ${JSON.stringify(cause.authorizationContextRef.reference)}::jsonb
+        AND project_id = ${projectId} AND actor_id = ${parent.actorId}
+        AND branch = ${branch}
+      LIMIT 2`.execute(database);
+    if (links.rows.length !== 1) throw authorizationDenied("authorize.command-link", branch);
+    const linkedRef = JSON.parse(links.rows[0]!.child_context_ref) as unknown;
+    if (
+      sha256CanonicalJson(linkedRef) !==
+      sha256CanonicalJson(parent.authorizationContextRef.reference)
+    )
+      throw authorizationDenied("authorize.command-link", branch);
+    return asDate(root.row.expires_at);
+  };
+
   const persistAuthorizationContext = async (
     database: AccessDb,
     context: AuthorizationContextV1,
@@ -2790,11 +2924,13 @@ export const createPostgresLocalIdentityAccess = (
     const valid = parsed.data;
     const parentContext = "parentContext" in valid ? valid.parentContext : undefined;
     const causalRunRef = "causalRunRef" in valid ? valid.causalRunRef : undefined;
+    const causalCommandRef = "causalCommandRef" in valid ? valid.causalCommandRef : undefined;
     try {
       return await db.transaction().execute(async (transaction) => {
         const tx = transaction as unknown as AccessDb;
         let actorId: string;
         let parent: AuthorizationContextV1 | undefined;
+        let commandExpiresAt: Date | undefined;
         let effectiveScopes = valid.requestedSpatialScopeRefs;
         if (valid.invocation.kind === "human-session") {
           const authenticated = await authenticateSession(
@@ -2805,11 +2941,23 @@ export const createPostgresLocalIdentityAccess = (
           const touched = await touchSession(tx, authenticated);
           actorId = touched.account.account_id;
         } else {
-          if (parentContext === undefined || causalRunRef === undefined) {
+          if (
+            parentContext === undefined ||
+            (causalRunRef === undefined && causalCommandRef === undefined)
+          ) {
             throw makeAccessError("ACCESS_CONTRACT_INVALID", "authorize.parent", clock);
           }
           parent = await loadParentContext(tx, parentContext, valid.projectId, "authorize.parent");
           actorId = parent.actorId;
+          if (causalCommandRef !== undefined) {
+            commandExpiresAt = await assertCommandCause(
+              tx,
+              causalCommandRef,
+              parent,
+              valid.projectId,
+              valid.branch,
+            );
+          }
           if (valid.invocation.kind === "system" && valid.invocation.systemActorId !== actorId) {
             throw authorizationDenied("authorize.parent", valid.branch);
           }
@@ -2847,6 +2995,7 @@ export const createPostgresLocalIdentityAccess = (
           decidedAt: iso(nowDate(clock)),
           invocation,
           ...(causalRunRef === undefined ? {} : { causalRunRef }),
+          ...(causalCommandRef === undefined ? {} : { causalCommandRef }),
         });
         if (
           parent !== undefined &&
@@ -2888,6 +3037,11 @@ export const createPostgresLocalIdentityAccess = (
               (parent?.authorizationContextRef.reference.entityId ?? null) ||
             sha256CanonicalJson(existing.causal_run_ref) !==
               sha256CanonicalJson(causalRunRef ?? null) ||
+            sha256CanonicalJson(
+              "causalCommandRef" in existingContext.context
+                ? existingContext.context.causalCommandRef
+                : null,
+            ) !== sha256CanonicalJson(causalCommandRef ?? null) ||
             sha256CanonicalJson(existingSourceVersionRefs) !==
               sha256CanonicalJson(valid.requestedSourceVersionRefs) ||
             JSON.stringify(existingContext.context.grantedCapabilities) !==
@@ -2926,6 +3080,7 @@ export const createPostgresLocalIdentityAccess = (
           scopeRevisionIds: current.scopeNodes.map((node) => node.revisionId),
           sourceAccessGrantRefs: sourceRefs,
           sourceVersionRefs: valid.requestedSourceVersionRefs,
+          ...(causalCommandRef === undefined ? {} : { causalCommandRef }),
         };
         await persistAuthorizationContext(
           tx,
@@ -2936,7 +3091,12 @@ export const createPostgresLocalIdentityAccess = (
           revisionSnapshot,
           parent?.authorizationContextRef.reference.entityId ?? null,
           causalRunRef === undefined ? null : jsonValue(causalRunRef),
-          new Date(new Date(context.decidedAt).getTime() + CONTEXT_TTL_MS),
+          new Date(
+            Math.min(
+              new Date(context.decidedAt).getTime() + CONTEXT_TTL_MS,
+              commandExpiresAt?.getTime() ?? Infinity,
+            ),
+          ),
           new Date(context.decidedAt),
         );
         await appendSecurityAudit(
@@ -2986,6 +3146,41 @@ export const createPostgresLocalIdentityAccess = (
           throw authorizationDenied("verify.context", valid.branch);
         }
         const context = stored.context;
+        if ("causalCommandRef" in context) {
+          const parentRows = await tx
+            .selectFrom("business.authorization_contexts")
+            .selectAll()
+            .where("context_id", "=", stored.row.parent_context_id ?? "")
+            .limit(2)
+            .execute();
+          if (parentRows.length !== 1)
+            throw authorizationDenied("verify.command-parent", valid.branch);
+          const parent = await loadStoredContext(
+            tx,
+            contextRef(parentRows[0]!.context_id, parentRows[0]!.version_id),
+          );
+          if (parent?.context === undefined)
+            throw authorizationDenied("verify.command-parent", valid.branch);
+          await loadParentContext(tx, parent.context, valid.projectId, "verify.command-parent");
+          await assertCommandCause(
+            tx,
+            context.causalCommandRef,
+            parent.context,
+            valid.projectId,
+            valid.branch,
+          );
+          const snapshot = stored.row.revision_snapshot;
+          if (
+            stored.row.causal_run_ref !== null ||
+            typeof snapshot !== "object" ||
+            snapshot === null ||
+            Array.isArray(snapshot) ||
+            !("causalCommandRef" in snapshot) ||
+            sha256CanonicalJson(snapshot.causalCommandRef) !==
+              sha256CanonicalJson(context.causalCommandRef)
+          )
+            throw authorizationDenied("verify.command-cause", valid.branch);
+        }
         if (
           stored.row.invocation_id !== valid.invocationId ||
           stored.row.project_id !== valid.projectId ||
@@ -3087,6 +3282,183 @@ export const createPostgresLocalIdentityAccess = (
       });
       throw mapped;
     }
+  };
+
+  const readIssuedContext: PostgresLocalIdentityAccess["readIssuedContext"] = async (input) => {
+    const branch = ModuleBranchV1Schema.safeParse(input.branch);
+    if (!branch.success) return undefined;
+    const rows = await db
+      .selectFrom("business.authorization_contexts")
+      .selectAll()
+      .where("invocation_id", "=", input.invocationId)
+      .where("branch", "=", input.branch)
+      .where("project_id", "=", input.projectId)
+      .where("actor_id", "=", input.actorId)
+      .execute();
+    if (rows.length !== 1) return undefined;
+    const row = rows[0]!;
+    if (row.context_kind !== "c02" || row.context_json === null) return undefined;
+    const parsed = AuthorizationContextV1Schema.safeParse(row.context_json);
+    if (
+      !parsed.success ||
+      parsed.data.actorId !== row.actor_id ||
+      parsed.data.projectId !== row.project_id ||
+      parsed.data.authorizationContextRef.reference.entityId !== row.context_id ||
+      parsed.data.authorizationContextRef.reference.versionId !== row.version_id ||
+      parsed.data.grantedCapabilities.length !== 1 ||
+      !parsed.data.grantedCapabilities.includes(branchCapability(branch.data))
+    ) {
+      return undefined;
+    }
+    return parsed.data;
+  };
+
+  const readDeploymentAuthorizationSource: PostgresLocalIdentityAccess["readDeploymentAuthorizationSource"] =
+    async (input) => {
+      const stored = await loadStoredContext(db, input.authorizationContextRef);
+      if (stored?.context === undefined || stored.row.context_kind !== "c02") return undefined;
+      const row = stored.row;
+      const context = stored.context;
+      const branch = ModuleBranchV1Schema.safeParse(row.branch);
+      if (
+        (input.actorId !== undefined && row.actor_id !== input.actorId) ||
+        context.actorId !== row.actor_id ||
+        row.project_id !== input.projectId ||
+        context.projectId !== input.projectId ||
+        context.authorizationContextRef.reference.entityId !== row.context_id ||
+        context.authorizationContextRef.reference.versionId !== row.version_id ||
+        !branch.success ||
+        context.grantedCapabilities.length !== 1 ||
+        !context.grantedCapabilities.includes(branchCapability(branch.data)) ||
+        context.authorizationPolicyRef.entityId !== ACCESS_POLICY_REF_V1.entityId ||
+        context.authorizationPolicyRef.versionId !== ACCESS_POLICY_REF_V1.versionId
+      ) {
+        return undefined;
+      }
+
+      // 原因果引用：行与正文必须一致；human 会话两边都没有是合法来源。
+      let causalRunRef: WorkflowRunRefV1 | undefined;
+      if (row.causal_run_ref !== null) {
+        const parsedRowCausal = WorkflowRunRefV1Schema.safeParse(row.causal_run_ref);
+        if (!parsedRowCausal.success) return undefined;
+        causalRunRef = parsedRowCausal.data;
+      }
+      const contextCausal = "causalRunRef" in context ? context.causalRunRef : undefined;
+      if (causalRunRef === undefined) {
+        if (contextCausal !== undefined) return undefined;
+      } else if (
+        contextCausal === undefined ||
+        contextCausal.kind !== causalRunRef.kind ||
+        contextCausal.reference.entityId !== causalRunRef.reference.entityId ||
+        contextCausal.reference.versionId !== causalRunRef.reference.versionId
+      ) {
+        return undefined;
+      }
+
+      // 父引用：从实际父行取 versionId，不补默认版本；父必须同工程同主体且存在。
+      let parentContextRef: AuthorizationContextRefV1 | undefined;
+      if (row.parent_context_id !== null) {
+        const parentRows = await db
+          .selectFrom("business.authorization_contexts")
+          .select(["context_id", "version_id", "project_id", "actor_id"])
+          .where("context_id", "=", row.parent_context_id)
+          .limit(2)
+          .execute();
+        const parentRow = parentRows.find(
+          (candidate) =>
+            candidate.project_id === input.projectId && candidate.actor_id === context.actorId,
+        );
+        if (parentRows.length !== 1 || parentRow === undefined) return undefined;
+        parentContextRef = contextRef(parentRow.context_id, parentRow.version_id);
+      }
+
+      // 来源版本引用：签发快照里逐项用原 Schema 严格解析，坏项不忽略；有界不截断。
+      const snapshot = row.revision_snapshot;
+      if (typeof snapshot !== "object" || snapshot === null || Array.isArray(snapshot))
+        return undefined;
+      const rawCommand = "causalCommandRef" in snapshot ? snapshot.causalCommandRef : undefined;
+      const contextCommand = "causalCommandRef" in context ? context.causalCommandRef : undefined;
+      let causalCommandRef: CommandCausalRefV1 | undefined;
+      if (rawCommand !== undefined || contextCommand !== undefined) {
+        const parsedCommand = CommandCausalRefV1Schema.safeParse(rawCommand);
+        if (
+          !parsedCommand.success ||
+          contextCommand === undefined ||
+          causalRunRef !== undefined ||
+          sha256CanonicalJson(parsedCommand.data) !== sha256CanonicalJson(contextCommand)
+        )
+          return undefined;
+        causalCommandRef = parsedCommand.data;
+      }
+      const rawSources = "sourceVersionRefs" in snapshot ? snapshot.sourceVersionRefs : undefined;
+      if (!Array.isArray(rawSources)) return undefined;
+      if (rawSources.length > DEPLOYMENT_SOURCE_VERSION_REF_LIMIT) return undefined;
+      const sourceVersionRefs = rawSources.map((value) => {
+        const parsedSource = SourceVersionRefV1Schema.safeParse(value);
+        if (!parsedSource.success) return undefined;
+        return parsedSource.data;
+      });
+      if (sourceVersionRefs.some((item) => item === undefined)) return undefined;
+
+      return {
+        context,
+        invocationId: row.invocation_id,
+        branch: branch.data,
+        parentContextRef,
+        causalRunRef,
+        causalCommandRef,
+        sourceVersionRefs: sourceVersionRefs as readonly SourceVersionRefV1[],
+      };
+    };
+
+  const deploymentVerificationSchema = AuthorizationVerificationRequestV1Schema.omit({
+    invocationId: true,
+    branch: true,
+  }).extend({ actorId: IdentifierSchema, requiredCapability: ModuleCapabilityV1Schema });
+  const verifyDeploymentContext: PostgresLocalIdentityAccess["verifyDeploymentContext"] = async (
+    input,
+  ) => {
+    const parsed = deploymentVerificationSchema.safeParse(input);
+    if (!parsed.success)
+      throw makeAccessError("ACCESS_CONTRACT_INVALID", "verify.deployment-command", clock);
+    const valid = parsed.data;
+    let invocationId: string;
+    let branch: ModuleBranchV1;
+    try {
+      const stored = await loadStoredContext(db, valid.authorizationContextRef);
+      const storedBranch = ModuleBranchV1Schema.safeParse(stored?.row.branch);
+      if (
+        stored?.context === undefined ||
+        stored.row.context_kind !== "c02" ||
+        !storedBranch.success ||
+        stored.row.actor_id !== valid.actorId ||
+        stored.context.actorId !== valid.actorId ||
+        stored.row.project_id !== valid.projectId ||
+        stored.context.projectId !== valid.projectId ||
+        branchCapability(storedBranch.data) !== valid.requiredCapability
+      )
+        throw makeAccessError("AUTHORIZATION_DENIED", "verify.deployment-binding", clock);
+      invocationId = stored.row.invocation_id;
+      branch = storedBranch.data;
+    } catch (error) {
+      const mapped = asAccessError(error, "verify.deployment-context", clock);
+      await appendSecurityOutcomeOrThrow("verify", "rejected", mapped.details.code, {
+        subject_ref: valid.actorId,
+        project_ref: valid.projectId,
+        context_ref: jsonValue(valid.authorizationContextRef),
+        diagnostic_ref: jsonValue(mapped.details.diagnosticRef),
+      });
+      throw mapped;
+    }
+    return verify({
+      authorizationContextRef: valid.authorizationContextRef,
+      invocationId,
+      branch,
+      projectId: valid.projectId,
+      requestedSpatialScopeRefs: valid.requestedSpatialScopeRefs,
+      requestedSourceVersionRefs: valid.requestedSourceVersionRefs,
+      requestedAt: valid.requestedAt,
+    });
   };
 
   /**
@@ -3517,6 +3889,43 @@ export const createPostgresLocalIdentityAccess = (
     }
   };
 
+  const executeDeploymentProjectAccess: PostgresLocalIdentityAccess["executeDeploymentProjectAccess"] =
+    async ({ sessionToken, command }) => {
+      const stage = "deployment.project-access";
+      try {
+        const { authorizationContextRef, projectCommandInput } = await db
+          .transaction()
+          .execute(async (transaction) => {
+            const tx = transaction as unknown as AccessDb;
+            const identity = await currentAdministrationIdentity(tx, sessionToken, stage, true);
+            if (identity.account.password_change_required) {
+              throw makeAccessError("PASSWORD_CHANGE_REQUIRED", stage, clock);
+            }
+            const parsedCommand = deploymentProjectAccessCommandSchema.safeParse(command);
+            if (!parsedCommand.success) {
+              throw makeAccessError("ACCESS_CONTRACT_INVALID", stage, clock);
+            }
+            return {
+              projectCommandInput: parsedCommand.data,
+              authorizationContextRef: await administrationContextRef(
+                tx,
+                identity.account,
+                parsedCommand.data.commandId,
+                nowDate(clock),
+              ),
+            };
+          });
+        return await projectCommand(
+          ProjectAccessCommandV1Schema.parse({
+            ...projectCommandInput,
+            authorizationContextRef,
+          }),
+        );
+      } catch (error) {
+        throw asAccessError(error, stage, clock);
+      }
+    };
+
   const systemAdministration: SystemAdministrationPortV1 = {
     read: administrationRead,
     execute: administrationExecute,
@@ -3524,6 +3933,7 @@ export const createPostgresLocalIdentityAccess = (
 
   return {
     systemAdministration,
+    executeDeploymentProjectAccess,
     administerIdentity: identityCommand,
     administerProject: projectCommand,
     login,
@@ -3532,6 +3942,9 @@ export const createPostgresLocalIdentityAccess = (
     readSession,
     authorize,
     verify,
+    readIssuedContext,
+    readDeploymentAuthorizationSource,
+    verifyDeploymentContext,
     close: runtime.close,
   };
 };

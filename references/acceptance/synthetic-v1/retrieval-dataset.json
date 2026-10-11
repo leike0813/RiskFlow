@@ -1,0 +1,244 @@
+{
+  "schemaVersion": "1",
+  "projectId": "synthetic-station-tunnel-project",
+  "datasetRef": {
+    "entityId": "retrieval-dataset-synthetic-v1",
+    "versionId": "1"
+  },
+  "evidenceBaseReleaseRef": {
+    "kind": "retrieval-evidence-base-release",
+    "reference": {
+      "entityId": "retrieval-evidence-base-synthetic-v1",
+      "versionId": "1"
+    }
+  },
+  "syntheticSample": true,
+  "sampleNotice": "合成样本、待甲方复核",
+  "queries": [
+    {
+      "queryId": "query-mechanism-01-face-stability",
+      "queryText": "变径扩挖过程中开挖面控制压力低于地层自稳能力，土体抗剪不足导致局部塌方并伴随地表塌陷，应识别哪类风险机理？",
+      "relevance": [
+        {
+          "sourceKind": "risk-mechanism",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": { "entityId": "risk-mechanism-synthetic-v1", "versionId": "1" }
+          },
+          "sourceEntryId": "mechanism-01",
+          "grade": 3
+        },
+        {
+          "sourceKind": "case-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": { "entityId": "case-library-synthetic-v1", "versionId": "1" }
+          },
+          "sourceEntryId": "case-entry-01",
+          "grade": 3
+        },
+        {
+          "sourceKind": "standard-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": { "entityId": "standard-library-synthetic-v1", "versionId": "1" }
+          },
+          "sourceEntryId": "standard-03-shield-construction",
+          "grade": 2
+        },
+        {
+          "sourceKind": "standard-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": { "entityId": "standard-library-synthetic-v1", "versionId": "1" }
+          },
+          "sourceEntryId": "standard-01-risk-management",
+          "grade": 1
+        }
+      ]
+    },
+    {
+      "queryId": "query-mechanism-02-support-failure",
+      "queryText": "扩挖段支护时机与刚度不匹配，管片拼装偏差累积后侵限，如何判断支护结构失效风险？",
+      "relevance": [
+        {
+          "sourceKind": "risk-mechanism",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": { "entityId": "risk-mechanism-synthetic-v1", "versionId": "1" }
+          },
+          "sourceEntryId": "mechanism-02",
+          "grade": 3
+        },
+        {
+          "sourceKind": "case-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": { "entityId": "case-library-synthetic-v1", "versionId": "1" }
+          },
+          "sourceEntryId": "case-entry-02",
+          "grade": 3
+        },
+        {
+          "sourceKind": "standard-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": { "entityId": "standard-library-synthetic-v1", "versionId": "1" }
+          },
+          "sourceEntryId": "standard-02-monitoring",
+          "grade": 2
+        },
+        {
+          "sourceKind": "standard-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": { "entityId": "standard-library-synthetic-v1", "versionId": "1" }
+          },
+          "sourceEntryId": "standard-01-risk-management",
+          "grade": 1
+        }
+      ]
+    },
+    {
+      "queryId": "query-mechanism-03-water-inrush",
+      "queryText": "承压水沿盾尾密封或开挖面薄弱带突破并携砂涌入舱内，识别渗流突涌机理及其适用工序。",
+      "relevance": [
+        {
+          "sourceKind": "risk-mechanism",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": { "entityId": "risk-mechanism-synthetic-v1", "versionId": "1" }
+          },
+          "sourceEntryId": "mechanism-03",
+          "grade": 3
+        },
+        {
+          "sourceKind": "case-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": { "entityId": "case-library-synthetic-v1", "versionId": "1" }
+          },
+          "sourceEntryId": "case-entry-03",
+          "grade": 3
+        },
+        {
+          "sourceKind": "standard-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": { "entityId": "standard-library-synthetic-v1", "versionId": "1" }
+          },
+          "sourceEntryId": "standard-02-monitoring",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "queryId": "query-mechanism-04-over-excavation-settlement",
+      "queryText": "扩挖量超出设计控制值，地表累计沉降与变化速率同步增大，对应哪条过挖与地表沉降机理？",
+      "relevance": [
+        {
+          "sourceKind": "risk-mechanism",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": { "entityId": "risk-mechanism-synthetic-v1", "versionId": "1" }
+          },
+          "sourceEntryId": "mechanism-04",
+          "grade": 3
+        },
+        {
+          "sourceKind": "case-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": { "entityId": "case-library-synthetic-v1", "versionId": "1" }
+          },
+          "sourceEntryId": "case-entry-04",
+          "grade": 3
+        },
+        {
+          "sourceKind": "standard-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": { "entityId": "standard-library-synthetic-v1", "versionId": "1" }
+          },
+          "sourceEntryId": "standard-02-monitoring",
+          "grade": 2
+        },
+        {
+          "sourceKind": "standard-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": { "entityId": "standard-library-synthetic-v1", "versionId": "1" }
+          },
+          "sourceEntryId": "standard-03-shield-construction",
+          "grade": 1
+        }
+      ]
+    },
+    {
+      "queryId": "query-mechanism-05-equipment-failure",
+      "queryText": "变径驱动或制动回路异常，装备在坡道段失去动力或制停能力，应识别何种施工装备故障机理？",
+      "relevance": [
+        {
+          "sourceKind": "risk-mechanism",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": { "entityId": "risk-mechanism-synthetic-v1", "versionId": "1" }
+          },
+          "sourceEntryId": "mechanism-05",
+          "grade": 3
+        },
+        {
+          "sourceKind": "case-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": { "entityId": "case-library-synthetic-v1", "versionId": "1" }
+          },
+          "sourceEntryId": "case-entry-05",
+          "grade": 3
+        },
+        {
+          "sourceKind": "standard-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": { "entityId": "standard-library-synthetic-v1", "versionId": "1" }
+          },
+          "sourceEntryId": "standard-03-shield-construction",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "queryId": "query-mechanism-06-assembly-connection",
+      "queryText": "狭小空间内拼装构件错位、连接件未紧固导致接缝承载能力不足，识别装配连接失效机理。",
+      "relevance": [
+        {
+          "sourceKind": "risk-mechanism",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": { "entityId": "risk-mechanism-synthetic-v1", "versionId": "1" }
+          },
+          "sourceEntryId": "mechanism-06",
+          "grade": 3
+        },
+        {
+          "sourceKind": "case-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": { "entityId": "case-library-synthetic-v1", "versionId": "1" }
+          },
+          "sourceEntryId": "case-entry-06",
+          "grade": 3
+        },
+        {
+          "sourceKind": "standard-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": { "entityId": "standard-library-synthetic-v1", "versionId": "1" }
+          },
+          "sourceEntryId": "standard-02-monitoring",
+          "grade": 2
+        }
+      ]
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-实现任务按 IP 依赖推进。完成 1–13 和 14.1 的代码与工程检查后执行 14.2，交接 Finalizer；第 15 组是后续交付取证与总体收口。交付输入缺项只使对应取证任务保持未勾选并记录 BLOCKED，独立实现与工程审查继续；总体通过及归档仍要求全部任务和必要审计完成。
+当前剩余实施顺序为 15（网络模型）→16.1/16.2（真实宿主与验收程序）→13.1（当前平台桌面行为）→14.1（验收文档/证据口径）→16.3（真实功能取证）→14.2（工程交接）。Finalizer 随后完成当前范围 verification 与必要审计。最终签名、三平台、禁网三 VM 和 4090 取证移交 C38，不计入 C37 checkbox 或收口门禁。
 
 ## 1. 工程成员与冻结工具链
 
@@ -7,9 +7,9 @@
 
 ## 2. 部署契约、初始化与耐久审计
 
-- [x] 2.1（IP-02）实现 D-19 strict Schema/秘密加载及失败闭合，完成安全配置示例；验证：`pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts`。
+- [ ] 2.1（IP-02）补齐 D-19 strict 部署配置契约、秘密加载及失败闭合的生产覆盖，完成安全配置示例；验证：`pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts`。已有秘密加载/失败闭合工程能力与测试通过记录保留；因 D-19 部署代码缺少配置契约覆盖而重开，不能将原测试记录当作该义务完成证据。
 - [x] 2.2（IP-02）完成 000056 运维状态/审计/租约/权限迁移与公开 PostgreSQL 接缝；验证：`pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts`，断言业务主体不能写运维表或改审计。
-- [x] 2.3（IP-02）实现显式初始化/LOGIN/checkpointer/首次管理员与 CLI 骨架；验证：`pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts`，空库与重放均保留正确账号事实。
+- [x] 2.3（IP-02）补齐显式初始化的受限秘密 LOGIN 密码与真实 checkpointer setup；首次管理员重放保留正确账号事实，业务启动不执行 DDL。验证：`pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts`（14 项通过）；隔离实例初始化/重放与四运行角色登录报告见 `deployment/ACCEPTANCE.md`。运行组仅读迁移版本表，不可写迁移表或访问迁移锁。
 
 ## 3. 工件跨 VM 流访问
 
@@ -18,15 +18,15 @@
 
 ## 4. 真实策略、授权与窄读
 
-- [x] 4.1（IP-04）实现原 Schema 的不可变策略 catalog 与真实检索 dataset/门禁，禁止合成策略进入生产；验证：`pnpm exec vitest run packages/adapters/test/deployment/policies-readers.test.ts`。
+- [ ] 4.1（IP-04）按 D-20 补齐全类型不可变策略目录，修正 hybrid runtime 原 Schema，按类型推导读取结果并校验精确正文引用；合成验收目录只用于隔离实例。验证：`pnpm exec vitest run packages/adapters/test/deployment/policies-readers.test.ts`，覆盖版本漂移、多个精确版本、正文不可修改；已有检索 dataset/门禁工程证据保留。
 - [x] 4.2（IP-04）实现 C06 原调用来源/当前授权适配和工程枚举窄读，保持宿主授权与正文权限独立；验证：`pnpm exec vitest run packages/adapters/test/deployment/policies-readers.test.ts packages/adapters/test/auth/local-identity-project-authorization.test.ts`。
-- [x] 4.3（IP-04）完成 C19 正式配置成员、C24 路线集与 C30 精确空间配对 reader；验证：`pnpm exec vitest run packages/adapters/test/deployment/policies-readers.test.ts`，错版本/异空间/无权均拒绝。
+- [ ] 4.3（IP-04）补齐 C19 正式配置成员、C24 路线集与 C30 精确空间配对的 catalog/reader 生产证据；验证：`pnpm exec vitest run packages/adapters/test/deployment/policies-readers.test.ts`，错版本/异空间/无权均拒绝。已有精确 reader 工程能力及测试通过记录保留；因 catalog 来源覆盖及必要生产证据不足而重开。
 
 ## 5. 全能力生产组合
 
-- [x] 5.1（IP-05）完成 C15/C17/C20–C24 真实装配、五类共享 Agent registry 与一次绑定环；验证：`pnpm exec vitest run scripts/deployment/composition.test.mjs`。
-- [x] 5.2（IP-05）完成 C25/C27–C30 真实装配及冻结现场/偏差上下文，禁止 unwired seam；验证：`pnpm exec vitest run scripts/deployment/composition.test.mjs`。
-- [x] 5.3（IP-05）接齐 API 全 ports/公开 adapter 子路径，修正完整 projection 与 C36 两阶段授权并存；验证：`pnpm exec vitest run scripts/deployment/composition.test.mjs apps/api/test/quality.test.ts`。
+- [ ] 5.1（IP-05）完成 C15/C17/C20–C24 的真实生产组合接线、五类共享 Agent registry 与一次绑定环；验证：`pnpm exec vitest run scripts/deployment/composition.test.mjs`。保留已验证基础 adapter/registry 能力与既有测试记录；IP-05 composition 当前只有骨架，生产接线义务重开。
+- [ ] 5.2（IP-05）完成 C25/C27–C30 的真实生产组合接线及冻结现场/偏差上下文，禁止 unwired seam；验证：`pnpm exec vitest run scripts/deployment/composition.test.mjs`。保留已验证领域 adapter 能力与既有测试记录；IP-05 composition 当前只有骨架，生产接线义务重开。
+- [ ] 5.3（IP-05）完成真实 API 全 ports/公开 adapter 接线，并保持完整 projection 与 C36 两阶段授权；验证：`pnpm exec vitest run scripts/deployment/composition.test.mjs apps/api/test/quality.test.ts`。保留已验证 API projection/授权能力与既有测试记录；IP-05 composition 当前只有骨架，生产接线义务重开。
 
 ## 6. API/Worker 生命周期与观测
 
@@ -61,13 +61,13 @@
 
 - [x] 9.1（IP-09）实现受控 HTTPS origin、独立会话、原生窗口与无特权本地连接状态，显式重试仅加载批准入口；验证：`pnpm build && pnpm exec vitest run apps/desktop/test/security.test.ts`。
 - [x] 9.2（IP-09）完成 permissions/check、frame navigation/new window、证书与授权下载边界；验证：`pnpm exec vitest run apps/desktop/test/security.test.ts`。
-- [x] 9.3（IP-09）实现三平台 electron-builder 离线打包程序、签名接线、缓存/介质预检、Chromium/Node 许可与 SBOM 收集，保持服务端发布独立；验证：`pnpm exec vitest run scripts/deployment/release.test.mjs`，检查平台配置、结构化调用和缺项拒绝。正式签名包制备归 15.1。
+- [x] 9.3（IP-09）实现三平台 electron-builder 离线打包程序、签名接线、缓存/介质预检、Chromium/Node 许可与 SBOM 收集，保持服务端发布独立；验证：`pnpm exec vitest run scripts/deployment/release.test.mjs`，检查平台配置、结构化调用和缺项拒绝。正式签名包制备归 C38 移交 F-01。
 
 ## 10. 三 VM HTTPS 与离线发布
 
-- [x] 10.1（IP-10）实现发布制备/核验/离线导入与固定 systemd/data OCI 服务，固定网络和运行用户；验证：`pnpm exec vitest run scripts/deployment/release.test.mjs`。正式介质的 `pnpm deployment:verify` 归 15.3。
-- [x] 10.2（IP-10）配置 Caddy 手工证书/无 ACME、同源 Web/API/SSE 与深链，API 无 SPA fallback；验证：`pnpm exec vitest run scripts/deployment/release.test.mjs`，核对配置生成、网络/路由边界与缺项拒绝；真实 HTTPS/端口隔离/深链取证归 15.3。
-- [x] 10.3（IP-10）实现模型/OCR/驱动/系统介质身份、独立预算与资源分配的配置/清单核验，补齐发布说明；验证：`pnpm exec vitest run scripts/deployment/release.test.mjs`。实际介质身份冻结、真实协议和资源证据在 15.3/15.4 收口。
+- [x] 10.1（IP-10）实现发布制备/核验/离线导入与固定 systemd/data OCI 服务，固定网络和运行用户；验证：`pnpm exec vitest run scripts/deployment/release.test.mjs`。正式介质的 `pnpm deployment:verify` 归 C38 移交 F-03。
+- [x] 10.2（IP-10）配置 Caddy 手工证书/无 ACME、同源 Web/API/SSE 与深链，API 无 SPA fallback；验证：`pnpm exec vitest run scripts/deployment/release.test.mjs`，核对配置生成、网络/路由边界与缺项拒绝；真实 HTTPS/端口隔离/深链取证归 C38 移交 F-03。
+- [x] 10.3（IP-10）实现模型/OCR/驱动/系统介质身份、独立预算与资源分配的配置/清单核验，补齐发布说明；验证：`pnpm exec vitest run scripts/deployment/release.test.mjs`。实际介质身份冻结、真实协议和资源证据由 C38 移交 F-03/F-04 收口。
 
 ## 11. 维护窗口与同机逻辑副本
 
@@ -83,91 +83,44 @@
 
 ## 13. 桌面验收程序
 
-- [x] 13.1（IP-13）完成独立 Electron Playwright 配置、真实安装包环境校验和完整场景程序，移除 Vitest 混收；验证：`pnpm typecheck && pnpm exec vitest run scripts/deployment/acceptance.test.mjs`，检查平台/包/配置预检及缺项非零，不要求已具备三平台环境。
+- [ ] 13.1（IP-13 / IP-16）补齐当前可用平台上真实 Electron 的共享对象、登录/上传下载、撤权、证书拒绝、导航、SSE 重连及窗口关闭后服务端任务继续场景；使用已构建主进程和功能 HTTPS，不要求正式安装包/签名/三平台。验证：`pnpm build && pnpm exec playwright test -c playwright.desktop.config.ts`。已有预检和无 Node 权限启动测试保留，当前仅两条用例不足以证明完整行为，故重新打开；多平台正式安装归 C38 F-02。
 
-## 14. 部署验收程序与工程交接
+## 14. 当前验收文档与工程交接
 
-- [x] 14.1（IP-14）完成 smoke/benchmark 与证据汇总程序、受控 acceptance 配置示例、操作/验收手册，复用既有模型/OCR smoke 入口；验证：`pnpm exec vitest run scripts/deployment/acceptance.test.mjs`，检查输入校验、关键场景缺失/skip 拒绝、身份与结果汇总，不要求目标硬件和真实模型介质齐备。
-- [ ] 14.2（IP-14 / IP-01–13，工程交接；依赖全部实现任务）核对八份 delta 的实现/逐场景工程证据、完整迁移与同步设计，单列未完成的交付取证任务，完成工程验证并交接固定实现检查点给 Finalizer；验证：`pnpm verify && pnpm test:browser && pnpm test:deployment`。第 15 组的实机证据不作为本项前置；verification 由 Finalizer 工程审查后生成，总体缺交付证据时保持 BLOCKED。
+- [ ] 14.1（IP-14 / IP-16）同步当前功能验收手册、配置示例及证据索引，明确配置校验、单元测试、真实网络/业务终态和 C38 最终取证各自用途；验证：`pnpm exec vitest run scripts/deployment/acceptance.test.mjs scripts/acceptance/functional.test.mjs`，并核对实际报告引用。本项重新打开：旧 smoke/benchmark 入口只校验配置，不能记为实际验收程序已完成。
+- [ ] 14.2（IP-01–IP-16；依赖全部当前任务）核对九份 delta 的逐场景当前证据、网络后端及真实业务终态，完成工程验证并形成经主调度审阅的固定实现检查点交给 Finalizer；验证：`pnpm verify && pnpm test:browser && pnpm test:deployment`，以及 13.1/15.3/16.3 的真实报告。Finalizer 按当前功能范围生成 verification、完成必要审计；当前任务与审计通过后可集成/归档，不以未来 F-01–F-05 材料缺项阻塞。
 
-  工程证据（本 change 范围内全部通过）：
-  - `pnpm test`：2035 passed / 0 failed（129 文件）。
-  - `pnpm test:deployment`：136 passed（13 文件）。
-  - `pnpm test:browser`：**88 passed / 0 failed**（88 条真实用例，无 skip）。
-  - `pnpm build`、`pnpm typecheck`、`pnpm lint`、`pnpm format:check`、`pnpm deps:check`、`pnpm deps:policy` 全部通过。
-  - `openspec validate deliver-offline-private-deployment-and-operations --strict`：valid。
+已有工程记录保留作为增量实施的参考，不代表本轮已重跑或新增功能已通过：
 
-  **未勾选原因**：`pnpm verify` 内的 `openspec validate --all --strict --no-interactive` 在本仓库有 11 份**已归档**规格因「Requirement 正文超过 500 字」告警被判失败：`spec/data/agent-cleaning-and-partial-availability`、`spec/domain/module-interfaces-events-workflows`、`spec/domain/monitoring-batches-snapshots-features`、`spec/domain/response-recommendation`、`spec/knowledge/structured-scoring-rules-and-applicable-rule-sets`、`spec/operations/orchestration-controlled-actions`、`spec/platform/content-addressed-artifact-store`、`spec/platform/http-command-query-sse-shell`、`spec/platform/unified-bounded-agent-runtime`、`spec/quality/evaluation-and-browser-acceptance`、`spec/risk-assessment/engine`。
+- 旧记录：`pnpm test` 2035 passed（129 文件），`pnpm test:deployment` 136 passed（13 文件），`pnpm test:browser` 88 passed / 0 failed、无 skip。
+- 旧记录：build/typecheck/lint/format/deps 与本 change strict 校验通过。
+- 原 14.2 未完成还涉及仓库级 `openspec validate --all --strict --no-interactive` 的 11 份已归档规格超长正文告警。详见 `.scratch/strict-validate-remediation.md`；这是独立工程门禁问题，不能因延后硬件验收而忽略，也不能在本 change 中放宽门禁或顺手改写他人规格。
+- 旧“HEAD 之上未提交实现即检查点”描述不构成交接依据；未来交接必须由主调度按实时 Git 和项目授权形成固定检查点。本轮只修改规划，不提交。
 
-  已核对该失败与本 change 无关：在干净 HEAD（`6fd462e`）上同样失败（28 passed / 11 failed）。这些是更早归档 change 的规格正文形态问题，改写已归档规格属于规划漂移，按项目契约要另开 drift change，不能在本 change 内顺手改。本 change 自身的八份 delta 以 `--strict` 校验通过。
+## 15. 网络 API 模型后端
 
+- [x] 15.1（IP-15）按 D-23 完成同名 strict NetworkApiDeploymentConfigV1Schema 的 `openai-chat` / `ollama-embed` 判别配置、受限凭据、精确 registry 与服务/模型身份复验；保留 `ModelGatewayDeploymentConfigV1` 的 `llamacpp` / `network-api` 包装、原 llama.cpp 配置及 core port；验证：`pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.test.ts packages/adapters/test/deployment/config-operations.test.ts`。
+- [x] 15.2（IP-15）复用 C05 调用校验/持久化/预算逻辑：MiniMax OpenAI Chat Completions 仅提供结构化生成/会话流，Ollama 原生 `/api/embed` 仅提供 Embedding；实现显式结构化模式与 reasoningEffort、严格 Zod 收口、usage/预算、C04 去除 reasoning_content、闭合错误、取消/断流及不自动重试；验证：`pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.test.ts packages/adapters/test/model/llamacpp-model-gateway.test.ts`。
+- [x] 15.3（IP-15；依赖 15.1/15.2）以批准的真实 MiniMax 聊天与 Ollama Embedding 服务完成三能力 smoke，记录协议/模型身份、C04 响应引用和预算证据；验证：`RISKFLOW_NETWORK_API_SMOKE=1 pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.smoke.test.ts`，配置/秘密路径见 D-22；缺真实服务、关键 skip 或协议替身不能计通过。
 
-  **本 change 各任务验证命令的逐条核对**：已把 tasks.md 中全部 `验证：` 命令抽出（34 条去重），逐条确认它引用的测试文件存在，且每条都被已执行的聚合运行覆盖——`pnpm exec vitest run …` 类由 `pnpm test`（2035 passed）覆盖，部署类由 `pnpm test:deployment`（136 passed，覆盖 `scripts/deployment`、`packages/adapters/test/deployment` 三个文件、`remote-artifact-store`、desktop security/packaging）覆盖，四份浏览器 spec 由 `pnpm test:browser`（88/88）覆盖，工程门禁由 `pnpm verify`（build/typecheck/lint/format/deps 全过）覆盖。唯一未通过项是 `pnpm verify` 末段的仓库级 spec strict 校验，见下。
+## 16. 真实宿主接线与功能验收（当前新增，尚未实现）
 
-  **八份 delta 逐场景工程证据索引**（81 个 Scenario 全部归入下列证据来源；标注 BLOCKED 的 Scenario 属第 15 组实机取证，本机无输入）。浏览器侧逐文件条数不在此断言——spec 内含参数化循环，静态计数会少算；以整轮实测总量 **88 passed / 0 failed** 为准：
+本轮评分规则验收补齐配置包来源互斥 Schema、正式 C04 来源与 C06/C18 校验，并使用原提交、复核、发布和依据解析；C19 Agent 编制另行闭合共享任务定义，不计本轮通过。C17 保持知识编制，生产装配使用同一 C16 的 C18/C19 策略与精确预测、校准、现场和报告绑定（D-20）。配置包验证纳入 16.1：`pnpm exec vitest run packages/core/test/scoring-rules/scoring-rules.test.ts packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts`，真实导入/发布另以 16.3 证明。
 
-| delta | Requirement / Scenario | 工程证据 |
+- [ ] 16.1（IP-16 / IP-05 / IP-06；依赖 15.1/15.2）完成 start.mjs 的真实 provider 装配、显式 API/Worker 生命周期、网络部署选取及就绪观测，以及 provision.mjs 的受控资料预置与原身份续接；工程策略/图版本按 projectBindings 精确核验。三个逻辑角色可合置，禁止测试 harness/假策略补位。验证：`pnpm exec vitest run scripts/deployment/entrypoints.test.mjs scripts/deployment/composition.test.mjs scripts/deployment/lifecycle.test.mjs scripts/deployment/provision.test.mjs`。
+- [ ] 16.2（IP-16）复用合成材料 check/run，增加正式只读终态观察与安全证据报告；submitted、awaiting-human、超时、缺引用或关键 skip 不能 PASS，人工决定经正式确认。验证：`pnpm exec vitest run scripts/acceptance/synthetic.test.mjs scripts/acceptance/functional.test.mjs`。
+- [ ] 16.3（IP-16；依赖 16.1/16.2、13.1、14.1、15.3）由完整生产宿主与真实服务/批准版本及样本执行识别→复核→评估→预警→处置/人工决定→执行反馈，核对审计、工件、权限拒绝和原身份重试；同时在用户可见的外部 Chrome 窗口访问生产宿主完成浏览器验收，可由 CDP 驱动该可见窗口，headless 运行不能替代观看验收。当前 DISPLAY=:0 的 Chrome/CDP 9337 窗口为空白，未启动生产服务且没有业务 PASS。验证：`node scripts/acceptance/functional.mjs --pack <packDir> --config <runConfig.json> --output <dir>`、`pnpm test:browser` 及可见外部 Chrome 的真实业务证据。等待人审时只记录未完成并按原身份续接；报告明确合成样本适用边界及联网后端，不要求 4090 或签名包。
+
+## 最终交付移交 C38（范围登记，不计 C37 checkbox）
+
+C38 `deliver-mvp-acceptance-and-delivery-evidence` 规划必须消费下表，先闭合自己的规格/施工图/任务，再按最终代码、配置和制品身份取证。当前不新建活跃 change，不修改执行图；C37 归档后移交表仍随归档工件保留。全部项目均为未来未完成事项，C37 功能 PASS 不证明它们通过。
+
+| 移交 ID | 原任务 / IP | C38 必须完成的工作与证据 |
 | --- | --- | --- |
-| `platform/engineering-baseline` | 10 Scenario（成员发现、依赖图、Node 主版本、构建、公开入口、深层导入、锁文件一致性） | `scripts/check-dependency-policy.test.ts` + `pnpm deps:check` / `deps:policy` / `install --frozen-lockfile`，均在 `pnpm verify` 中通过。 |
-| `platform/electron-https-client` | 工程可判部分：受控 origin 与会话、导航与本机调用限制、证书校验与显式重试、命令与订阅契约（`apps/desktop/test/security.test.ts`、`packaging.test.ts`，13 passed，纳入 `pnpm test:deployment`）。真实启动链路（双入口一致性、上传下载、证书失败与撤权、断线重连、窗口关闭后任务继续）由 `apps/desktop/test/e2e/client.spec.ts` 承担，它是 `test:desktop` 的证据，按设计在目标环境缺失时非零失败，本机无 Windows/macOS 平台故未执行、记 BLOCKED（15.2）。 |
-| `platform/web-shell-interaction-primitives` | 5 Scenario（确认后单次提交、高影响二次确认、无权限不可提交、陈旧版本失败、无工程系统管理确认） | `apps/web/src/shared/confirmation.ts` 与六份浏览器 spec 中的确认对话框/零写用例，`pnpm test:browser` 88/88。 |
-| `web/engineering-and-knowledge-ui` | 4 Scenario | `apps/web/test/browser/read-only.spec.ts`。 |
-| `web/identification-and-review-ui` | 4 Scenario | `apps/web/test/browser/identification-review.spec.ts`。 |
-| `web/assessment-warning-and-response-ui` | 3 Scenario | `apps/web/test/browser/assessment-warning-response.spec.ts`+ `risk-level-response-verification.spec.ts`。 |
-| `web/agent-audit-and-operations-ui` | 4 Scenario | `apps/web/test/browser/agent-audit-operations.spec.ts`+ `quality.spec.ts`（C36 质量面）。 |
-| `platform/offline-private-deployment-and-operations` | 33 个工程可判 Scenario（部署配置、秘密轮换、初始化、运行主体越权、进程重启与事件重投、有界停止、SSE 恢复与重连、慢探针、备份、恢复、回退、索引重建等） | `scripts/deployment/*.test.mjs`（7 份，含新增 `entrypoints.test.mjs`）、`packages/adapters/test/deployment/*`、`packages/adapters/test/artifacts/remote-artifact-store.test.ts`，`pnpm test:deployment` 136 passed。另有 6 个 Scenario（三 VM 禁网、模型/OCR 制品、4090 基准等）依赖实机与真实介质，记 BLOCKED。 |
+| F-01 | 原 15.1 / IP-09、IP-13 | 原生构建机、正式离线缓存与批准签名；Windows NSIS、Linux AppImage、macOS DMG，核验真实 Electron/Chromium/Node、签名/公证、许可/SBOM；`pnpm desktop:package -- <target>` 的实际调用及产物须先独立核验。 |
+| F-02 | 原 15.2 / IP-13 | 三平台真实安装与全部桌面行为取证。先把正式安装包身份校验及完整 Electron Playwright 场景接到交付命令；当前 `test:desktop` 单测不构成平台验收。 |
+| F-03 | 原 15.3 / IP-10–IP-12、IP-14 | 正式证书、真实禁网三 VM、系统/驱动/llama.cpp/模型/OCR 全部介质；完整安装、后台任务、重启、损坏检测、索引重建、恢复与回退。先补齐真正执行场景的部署 smoke，核验既有发布/导入程序，不能用配置校验或环境标签通过。 |
+| F-04 | 原 15.4 / IP-14 | 主 RTX 4090 24GB/128GB RAM 运行 Qwen3.8-27B，辅助 NVIDIA GPU 运行 MinerU 专用模型；按服务冻结设备 UUID、backend、量化/上下文与并发，embedding 默认保持独立 Ollama 主机。以相同标注样例核验云端/本地转换与模型质量，实测并行峰值显存/RAM、延迟/吞吐/排队、取消、容量和恢复耗时；先实现真实 benchmark，不虚报 RPO/RTO 或 SLA。辅助卡采购与制品许可依实测冻结；官网功能 PASS 不代替此项。 |
+| F-05 | 原 15.5 / IP-14 | C38 Finalizer 按最终版本核对 F-01–F-04、合同交付材料及必要审计，生成 C38 最终 verification；任一正式证据缺失不得声明最终交付 PASS。 |
 
-  **unblock 清单**：共 27 条超长 Requirement，分布在 11 份已归档规格。
-
-  校验口径已核清：同一批 41 项规格在**非 strict 下 41 passed / 0 failed**，加 `--strict` 才变成 30 passed / 11 failed。也就是说 11 份规格**语义全部有效**，`--strict` 只是把「Requirement 正文超 500 字」这条**样式告警**提升成了失败。因此这件事有两个互斥的处置口径，都需要项目决定，不由本 change 代选：
-
-  1. 改写 27 条已归档 Requirement 的正文分组（把 MUST 条款链拆成「一条 Requirement 只陈述一个行为」）。这会动到 8 个以上其他 change 的已归档契约，需要原责任方判定拆分边界。
-  2. 调整仓库的 spec 校验口径（`package.json` 的 `openspec:validate` 当前带 `--strict`），接受样式告警不阻断 CI，语义校验（41/41）保持不变。
-
-  两条路都会改动本 change 之外、且不由本 change 拥有的东西，因此本 change 不代选、不代做。
-
-  **完整清单已备好**：`.scratch/strict-validate-remediation.md` 逐条列出 27 条 Requirement 的规格路径、标题、正文字数与配套 Scenario 数，并已按校验器输出核对（27 条、无遗漏）。无论选 A' 还是 B，那份清单都能直接作为执行输入。
-
-  已实际读取违规正文确认性质：这些 Requirement 正文**不是可搬移的示例与边界，而是连续的规范条款链**——例如 `content-addressed-artifact-store` 的「哈希清单和恢复核对以数据库引用完整为硬门槛」，正文是一串 MUST 事务/引用/字段要求，且该 Requirement 已有 7 个配套 Scenario 覆盖了它列出的各种边界。校验器建议的「移进 Scenario / 拆成多条 Requirement」在这里需要判断一条 MUST 链在哪里结束、另一条从哪里开始，属于**改写他人已归档契约的语义**，不是机械搬移。
-
-  因此这 27 条不能在本 change 内顺手处理：需要原 change 的责任方（或另开的 drift change）逐条判定拆分边界。按契约，这类公共契约改写必须升级，不能由实现 Agent 自行决定。
-
-  | 归档规格 | 超长条数 | 最长正文 |
-  | --- | --- | --- |
-  | `openspec/specs/data/agent-cleaning-and-partial-availability/spec.md` | 2 | 688 字 |
-  | `openspec/specs/domain/module-interfaces-events-workflows/spec.md` | 8 | 871 字 |
-  | `openspec/specs/domain/monitoring-batches-snapshots-features/spec.md` | 1 | 612 字 |
-  | `openspec/specs/domain/response-recommendation/spec.md` | 1 | 881 字 |
-  | `openspec/specs/knowledge/structured-scoring-rules-and-applicable-rule-sets/spec.md` | 7 | 2371 字 |
-  | `openspec/specs/operations/orchestration-controlled-actions/spec.md` | 1 | 658 字 |
-  | `openspec/specs/platform/content-addressed-artifact-store/spec.md` | 1 | 564 字 |
-  | `openspec/specs/platform/http-command-query-sse-shell/spec.md` | 3 | 669 字 |
-  | `openspec/specs/platform/unified-bounded-agent-runtime/spec.md` | 1 | 954 字 |
-  | `openspec/specs/quality/evaluation-and-browser-acceptance/spec.md` | 1 | 562 字 |
-  | `openspec/specs/risk-assessment/engine/spec.md` | 1 | 598 字 |
-
-  交接给 Finalizer 的固定实现检查点：当前工作区（HEAD `6fd462e` 之上的未提交实现）。Finalizer 需在其上做工程审查并在限定的收尾轮次内修复范围内普通缺陷、回归，然后生成 verification；总体仍缺第 15 组实机证据，保持 BLOCKED。
-
-## 15. 目标环境交付取证与总体收口
-
-本组五项在本工程环境全部 BLOCKED：缺件均为交付输入，不是可由代码补齐的实现缺口。按 design 的 Open Questions，仅可延期到目标交付的真实输入是甲方脱敏样本、实际 OS/驱动/磁盘与内网证书、冻结硬件分配与性能阈值、llama.cpp/模型与 OCR 全部真实介质及许可、平台签名材料。
-
-本机实测缺件（取证时读取，不靠推断）：
-
-| 交付输入 | 实测 | 影响 |
-| --- | --- | --- |
-| 原生构建平台 | `Linux 6.8.0-142-generic x86_64`，只有 Linux | 15.1/15.2 缺 Windows 11 x64 与 macOS 14 arm64 |
-| 签名材料 | 无 `electron-builder` 签名配置，签名环境变量 0 个 | 15.1 无法产出带真实签名的安装包 |
-| 目标 GPU | `Tesla P4, 8192 MiB` | 15.4 要求 RTX 4090 24GB，硬件不符，且不得以本机数字冒充 |
-| 主机内存 | 125 GB | 接近 128GB 基线，但 GPU 一项已足以阻塞 15.4 |
-| 三台虚拟机 | `virsh`/libvirt 不可用 | 15.3 无禁网三 VM 环境 |
-| 离线介质 | 无模型/OCR/离线介质目录 | 15.3 无冻结介质身份可核验 |
-
-缺件不授权用默认值、合成数字或假证据补位，因此这五项保持未勾选。逐项缺件：
-
-
-- [ ] 15.1（IP-09 / IP-13，交付取证）在各原生构建机使用真实离线介质、缓存、批准签名材料制备正式安装包，记录精确平台/运行时/签名/许可/SBOM 身份；验证：各平台 `pnpm desktop:package -- <win-x64|linux-x64|mac-arm64>`。缺材料仅阻塞对应正式包，9.3 的程序实现可先完成。**BLOCKED（缺件）**：本机无 Windows/macOS 原生构建机、无批准签名材料与真实离线介质/缓存，`pnpm desktop:package` 无法产出带真实签名的安装包。程序实现（IP-09）已由 9.3 完成并通过工程验证。
-- [ ] 15.2（IP-13，交付取证；依赖 15.1）分别在 Windows 11 x64、Ubuntu 24.04 x64、macOS 14+ arm64 验证登录/上传下载/撤权/证书/越界/断线/任务继续，并记录平台与发布证据；验证：各平台 `pnpm test:desktop`。缺平台仅阻塞该平台取证，不阻塞 14.2 工程审查。**BLOCKED（缺件）**：只有 Linux x64 本机，Windows 11 与 macOS 14 arm64 平台不存在，无法产生平台发布证据。
-- [ ] 15.3（IP-14 / IP-10–12，交付取证）冻结实际模型/OCR/驱动/系统介质身份，在真实禁网三 VM 运行完整发布、模型/OCR、业务后台链路、重启幂等、损坏检测/恢复/回退；验证：`pnpm deployment:verify -- <release-manifest.json> <release-root>` 与 `RISKFLOW_ACCEPTANCE_CONFIG=<验收配置> pnpm deployment:smoke`。缺介质/证书/目标环境只阻塞对应取证。**BLOCKED（缺件）**：无三台虚拟机的真实禁网内网、无甲方内网证书、无冻结的模型/OCR/驱动/系统介质身份，`pnpm deployment:verify` 与 `pnpm deployment:smoke` 无目标可跑。部署契约、Schema 与 CLI 的实现（IP-10–12）已由第 10–12 组完成并通过工程验证。
-- [ ] 15.4（IP-14，交付取证）在 RTX 4090 24GB/128GB 最低目标按批准配置测量延迟/吞吐/资源和分阶段恢复耗时，将真实测量补入操作/验收手册；验证：`RISKFLOW_ACCEPTANCE_CONFIG=<验收配置> pnpm deployment:benchmark`，不虚报 RPO/RTO 或 SLA。**BLOCKED（缺件）**：本机无 RTX 4090 24GB/128GB 目标硬件，冻结硬件分配与性能阈值也未由甲方给出，无真实测量值可记录。
-- [ ] 15.5（IP-14，交付收口；依赖 15.1–15.4 及 Finalizer 工程审查）按最终代码/配置/制品身份核对全部实机证据，交由 Finalizer 更新同一 verification；验证：`pnpm verify`、全部交付命令的真实报告及必要限定审计。全部必需证据通过后方可形成总体 PASS、成功集成和归档。**BLOCKED（依赖 15.1–15.4）**：上游取证全部缺件，收口无从核对，总体不得判 PASS、不得归档。
+签名秘密、正式制包及 C38 现场验收不属于当前授权范围；C37 网络服务、生产宿主与可见浏览器功能验收由对应任务实施。未来取证以当时真实输入为准，不沿用旧开发机硬件/环境缺件快照。

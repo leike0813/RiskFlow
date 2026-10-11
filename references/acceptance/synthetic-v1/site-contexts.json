@@ -1,0 +1,356 @@
+{
+  "schemaVersion": "1",
+  "projectId": "synthetic-station-tunnel-project",
+  "packRef": {
+    "entityId": "site-context-pack-synthetic-v1",
+    "versionId": "1"
+  },
+  "sampleNotice": "合成样本、待甲方复核",
+  "contexts": [
+    {
+      "schemaVersion": "1",
+      "projectId": "synthetic-station-tunnel-project",
+      "siteContextRef": { "entityId": "site-context-node-01-resourced", "versionId": "1" },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": { "entityId": "spatial-scope-synthetic-v1", "versionId": "1" }
+      },
+      "processNodeRef": {
+        "entityId": "process-model-release-synthetic-v1",
+        "versionId": "1"
+      },
+      "processStatus": "扩径准备-资源齐备",
+      "availableResources": ["小盾构", "扩径模块", "钢管片", "盾构机组装验收记录"],
+      "constraints": [],
+      "evidenceReferences": [
+        {
+          "locator": { "sourceSegmentId": "SYN-KB-PROCESS-01" },
+          "sourceVersion": { "entityId": "synthetic-knowledge-evidence-v1", "versionId": "1" }
+        }
+      ],
+      "observedAt": "2026-03-02T08:00:00.000Z"
+    },
+    {
+      "schemaVersion": "1",
+      "projectId": "synthetic-station-tunnel-project",
+      "siteContextRef": { "entityId": "site-context-node-01-understaffed", "versionId": "1" },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": { "entityId": "spatial-scope-synthetic-v1", "versionId": "1" }
+      },
+      "processNodeRef": {
+        "entityId": "process-model-release-synthetic-v1",
+        "versionId": "1"
+      },
+      "processStatus": "扩径准备-资源不足",
+      "availableResources": ["小盾构"],
+      "constraints": ["扩径模块未完成入场验收", "盾构机组装验收记录未归档"],
+      "evidenceReferences": [
+        {
+          "locator": { "sourceSegmentId": "SYN-KB-PROCESS-01" },
+          "sourceVersion": { "entityId": "synthetic-knowledge-evidence-v1", "versionId": "1" }
+        }
+      ],
+      "observedAt": "2026-03-02T09:00:00.000Z"
+    },
+    {
+      "schemaVersion": "1",
+      "projectId": "synthetic-station-tunnel-project",
+      "siteContextRef": { "entityId": "site-context-node-01-taboo", "versionId": "1" },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": { "entityId": "spatial-scope-synthetic-v1", "versionId": "1" }
+      },
+      "processNodeRef": {
+        "entityId": "process-model-release-synthetic-v1",
+        "versionId": "1"
+      },
+      "processStatus": "扩径准备-禁忌约束",
+      "availableResources": ["小盾构", "扩径模块"],
+      "constraints": ["始发井结构未验收前禁止始发", "反力体系状态未确认"],
+      "evidenceReferences": [
+        {
+          "locator": { "sourceSegmentId": "SYN-KB-PROCESS-01" },
+          "sourceVersion": { "entityId": "synthetic-knowledge-evidence-v1", "versionId": "1" }
+        }
+      ],
+      "observedAt": "2026-03-02T10:00:00.000Z"
+    },
+    {
+      "schemaVersion": "1",
+      "projectId": "synthetic-station-tunnel-project",
+      "siteContextRef": { "entityId": "site-context-node-02-resourced", "versionId": "1" },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": { "entityId": "spatial-scope-synthetic-v1", "versionId": "1" }
+      },
+      "processNodeRef": {
+        "entityId": "process-model-release-synthetic-v1",
+        "versionId": "1"
+      },
+      "processStatus": "变径空间扩挖-资源齐备",
+      "availableResources": ["小盾构", "扩径模块", "钢管片", "扩挖范围设计参数", "地层条件勘察成果"],
+      "constraints": [],
+      "evidenceReferences": [
+        {
+          "locator": { "sourceSegmentId": "SYN-KB-PROCESS-02" },
+          "sourceVersion": { "entityId": "synthetic-knowledge-evidence-v1", "versionId": "1" }
+        }
+      ],
+      "observedAt": "2026-03-03T08:00:00.000Z"
+    },
+    {
+      "schemaVersion": "1",
+      "projectId": "synthetic-station-tunnel-project",
+      "siteContextRef": { "entityId": "site-context-node-02-understaffed", "versionId": "1" },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": { "entityId": "spatial-scope-synthetic-v1", "versionId": "1" }
+      },
+      "processNodeRef": {
+        "entityId": "process-model-release-synthetic-v1",
+        "versionId": "1"
+      },
+      "processStatus": "变径空间扩挖-资源不足",
+      "availableResources": ["小盾构", "扩径模块"],
+      "constraints": ["地层条件勘察成果未复核", "支护时机与刚度确认资料缺失"],
+      "evidenceReferences": [
+        {
+          "locator": { "sourceSegmentId": "SYN-KB-PROCESS-02" },
+          "sourceVersion": { "entityId": "synthetic-knowledge-evidence-v1", "versionId": "1" }
+        }
+      ],
+      "observedAt": "2026-03-03T09:00:00.000Z"
+    },
+    {
+      "schemaVersion": "1",
+      "projectId": "synthetic-station-tunnel-project",
+      "siteContextRef": { "entityId": "site-context-node-02-taboo", "versionId": "1" },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": { "entityId": "spatial-scope-synthetic-v1", "versionId": "1" }
+      },
+      "processNodeRef": {
+        "entityId": "process-model-release-synthetic-v1",
+        "versionId": "1"
+      },
+      "processStatus": "变径空间扩挖-禁忌约束",
+      "availableResources": ["小盾构", "扩径模块", "钢管片"],
+      "constraints": ["土仓/泥水压力未确认前禁止开挖", "上软下硬复合地层扩挖须先完成试挖验证"],
+      "evidenceReferences": [
+        {
+          "locator": { "sourceSegmentId": "SYN-KB-PROCESS-02" },
+          "sourceVersion": { "entityId": "synthetic-knowledge-evidence-v1", "versionId": "1" }
+        }
+      ],
+      "observedAt": "2026-03-03T10:00:00.000Z"
+    },
+    {
+      "schemaVersion": "1",
+      "projectId": "synthetic-station-tunnel-project",
+      "siteContextRef": { "entityId": "site-context-node-03-resourced", "versionId": "1" },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": { "entityId": "spatial-scope-synthetic-v1", "versionId": "1" }
+      },
+      "processNodeRef": {
+        "entityId": "process-model-release-synthetic-v1",
+        "versionId": "1"
+      },
+      "processStatus": "刀盘扩径-资源齐备",
+      "availableResources": ["小盾构", "扩径模块", "钢管片", "刀盘扩径作业参数", "开挖面控制压力记录"],
+      "constraints": [],
+      "evidenceReferences": [
+        {
+          "locator": { "sourceSegmentId": "SYN-KB-PROCESS-03" },
+          "sourceVersion": { "entityId": "synthetic-knowledge-evidence-v1", "versionId": "1" }
+        }
+      ],
+      "observedAt": "2026-03-04T08:00:00.000Z"
+    },
+    {
+      "schemaVersion": "1",
+      "projectId": "synthetic-station-tunnel-project",
+      "siteContextRef": { "entityId": "site-context-node-03-understaffed", "versionId": "1" },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": { "entityId": "spatial-scope-synthetic-v1", "versionId": "1" }
+      },
+      "processNodeRef": {
+        "entityId": "process-model-release-synthetic-v1",
+        "versionId": "1"
+      },
+      "processStatus": "刀盘扩径-资源不足",
+      "availableResources": ["小盾构"],
+      "constraints": ["刀盘扩径作业参数未标定", "主驱动伸出量量测未接入"],
+      "evidenceReferences": [
+        {
+          "locator": { "sourceSegmentId": "SYN-KB-PROCESS-03" },
+          "sourceVersion": { "entityId": "synthetic-knowledge-evidence-v1", "versionId": "1" }
+        }
+      ],
+      "observedAt": "2026-03-04T09:00:00.000Z"
+    },
+    {
+      "schemaVersion": "1",
+      "projectId": "synthetic-station-tunnel-project",
+      "siteContextRef": { "entityId": "site-context-node-03-taboo", "versionId": "1" },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": { "entityId": "spatial-scope-synthetic-v1", "versionId": "1" }
+      },
+      "processNodeRef": {
+        "entityId": "process-model-release-synthetic-v1",
+        "versionId": "1"
+      },
+      "processStatus": "刀盘扩径-禁忌约束",
+      "availableResources": ["小盾构", "扩径模块", "钢管片"],
+      "constraints": ["承压水未确认时禁止推进刀盘", "岩溶发育灰岩段须先完成超前探测"],
+      "evidenceReferences": [
+        {
+          "locator": { "sourceSegmentId": "SYN-KB-PROCESS-03" },
+          "sourceVersion": { "entityId": "synthetic-knowledge-evidence-v1", "versionId": "1" }
+        }
+      ],
+      "observedAt": "2026-03-04T10:00:00.000Z"
+    },
+    {
+      "schemaVersion": "1",
+      "projectId": "synthetic-station-tunnel-project",
+      "siteContextRef": { "entityId": "site-context-node-04-resourced", "versionId": "1" },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": { "entityId": "spatial-scope-synthetic-v1", "versionId": "1" }
+      },
+      "processNodeRef": {
+        "entityId": "process-model-release-synthetic-v1",
+        "versionId": "1"
+      },
+      "processStatus": "盾体扩径-资源齐备",
+      "availableResources": ["小盾构", "扩径模块", "钢管片", "盾体拼装作业记录", "管片拼装质量记录"],
+      "constraints": [],
+      "evidenceReferences": [
+        {
+          "locator": { "sourceSegmentId": "SYN-KB-PROCESS-04" },
+          "sourceVersion": { "entityId": "synthetic-knowledge-evidence-v1", "versionId": "1" }
+        }
+      ],
+      "observedAt": "2026-03-05T08:00:00.000Z"
+    },
+    {
+      "schemaVersion": "1",
+      "projectId": "synthetic-station-tunnel-project",
+      "siteContextRef": { "entityId": "site-context-node-04-understaffed", "versionId": "1" },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": { "entityId": "spatial-scope-synthetic-v1", "versionId": "1" }
+      },
+      "processNodeRef": {
+        "entityId": "process-model-release-synthetic-v1",
+        "versionId": "1"
+      },
+      "processStatus": "盾体扩径-资源不足",
+      "availableResources": ["小盾构", "扩径模块"],
+      "constraints": ["管片拼装质量记录缺失", "焊接/拼装状态未复验"],
+      "evidenceReferences": [
+        {
+          "locator": { "sourceSegmentId": "SYN-KB-PROCESS-04" },
+          "sourceVersion": { "entityId": "synthetic-knowledge-evidence-v1", "versionId": "1" }
+        }
+      ],
+      "observedAt": "2026-03-05T09:00:00.000Z"
+    },
+    {
+      "schemaVersion": "1",
+      "projectId": "synthetic-station-tunnel-project",
+      "siteContextRef": { "entityId": "site-context-node-04-taboo", "versionId": "1" },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": { "entityId": "spatial-scope-synthetic-v1", "versionId": "1" }
+      },
+      "processNodeRef": {
+        "entityId": "process-model-release-synthetic-v1",
+        "versionId": "1"
+      },
+      "processStatus": "盾体扩径-禁忌约束",
+      "availableResources": ["小盾构", "扩径模块", "钢管片", "盾体拼装作业记录"],
+      "constraints": ["狭小空间未确认时禁止装配作业", "连接件紧固扭矩未达标禁止继续拼装"],
+      "evidenceReferences": [
+        {
+          "locator": { "sourceSegmentId": "SYN-KB-PROCESS-04" },
+          "sourceVersion": { "entityId": "synthetic-knowledge-evidence-v1", "versionId": "1" }
+        }
+      ],
+      "observedAt": "2026-03-05T10:00:00.000Z"
+    },
+    {
+      "schemaVersion": "1",
+      "projectId": "synthetic-station-tunnel-project",
+      "siteContextRef": { "entityId": "site-context-node-05-resourced", "versionId": "1" },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": { "entityId": "spatial-scope-synthetic-v1", "versionId": "1" }
+      },
+      "processNodeRef": {
+        "entityId": "process-model-release-synthetic-v1",
+        "versionId": "1"
+      },
+      "processStatus": "缩径转换-资源齐备",
+      "availableResources": ["小盾构", "扩径模块", "钢管片", "缩径作业参数", "后续区间掘进计划"],
+      "constraints": [],
+      "evidenceReferences": [
+        {
+          "locator": { "sourceSegmentId": "SYN-KB-PROCESS-05" },
+          "sourceVersion": { "entityId": "synthetic-knowledge-evidence-v1", "versionId": "1" }
+        }
+      ],
+      "observedAt": "2026-03-06T08:00:00.000Z"
+    },
+    {
+      "schemaVersion": "1",
+      "projectId": "synthetic-station-tunnel-project",
+      "siteContextRef": { "entityId": "site-context-node-05-understaffed", "versionId": "1" },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": { "entityId": "spatial-scope-synthetic-v1", "versionId": "1" }
+      },
+      "processNodeRef": {
+        "entityId": "process-model-release-synthetic-v1",
+        "versionId": "1"
+      },
+      "processStatus": "缩径转换-资源不足",
+      "availableResources": ["小盾构"],
+      "constraints": ["注浆参数未标定", "后续区间掘进计划未审批"],
+      "evidenceReferences": [
+        {
+          "locator": { "sourceSegmentId": "SYN-KB-PROCESS-05" },
+          "sourceVersion": { "entityId": "synthetic-knowledge-evidence-v1", "versionId": "1" }
+        }
+      ],
+      "observedAt": "2026-03-06T09:00:00.000Z"
+    },
+    {
+      "schemaVersion": "1",
+      "projectId": "synthetic-station-tunnel-project",
+      "siteContextRef": { "entityId": "site-context-node-05-taboo", "versionId": "1" },
+      "spatialScopeRef": {
+        "kind": "spatial-scope",
+        "reference": { "entityId": "spatial-scope-synthetic-v1", "versionId": "1" }
+      },
+      "processNodeRef": {
+        "entityId": "process-model-release-synthetic-v1",
+        "versionId": "1"
+      },
+      "processStatus": "缩径转换-禁忌约束",
+      "availableResources": ["小盾构", "扩径模块", "钢管片", "缩径作业参数"],
+      "constraints": ["注浆压力未确认时禁止缩径", "缩径段连续掘进条件未复核禁止移交"],
+      "evidenceReferences": [
+        {
+          "locator": { "sourceSegmentId": "SYN-KB-PROCESS-05" },
+          "sourceVersion": { "entityId": "synthetic-knowledge-evidence-v1", "versionId": "1" }
+        }
+      ],
+      "observedAt": "2026-03-06T10:00:00.000Z"
+    }
+  ]
+}

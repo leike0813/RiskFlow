@@ -43,6 +43,9 @@
 - **冲突处理**：当代码与已归档 specs 不一致时，**以代码为准**，并在对应 specs 下开一个 drift 修正 change；不要静默忽略。
 - **`openspec/config.yaml`** 已由工程基线 change 固定当前技术栈、领域上下文与工件规则；后续仅在对应 OpenSpec change 中更新，禁止绕过规格直接改写。
 
+- **C37 当前收口范围是功能验收**：可使用批准的网络 API 推理后端，真实业务终态、权限、预算、审计和追溯仍须成立；正式签名、多平台安装、禁网三 VM、本地模型介质与 4090 取证由 C38 最终交付承接。C37/C38 规划和验收时读取 C37 工件的 D-23/D-24 与 tasks 最终交付移交表（归档后读取对应 archive），按阶段判断必需证据。
+- **文档转换与本地交付**：PDF、扫描图片及 DOCX 通过 MinerU，XLSX/CSV 使用确定性原生解析；保存真实提供的定位与置信度。官网功能验收与自托管验收分别记录证据。C38 的主 4090 运行 Qwen3.8-27B，辅助 NVIDIA GPU 运行 MinerU 专用模型，embedding 保持独立服务；部署和验收时读取 `adopt-mineru-document-ingestion` 的 D-03–D-08（归档后读取对应 archive），按真实设备、模型和协议取证。
+
 ### 3.1 大型实现编排
 
 - 执行 39-change 路线前必须先读根目录 `IMPLEMENTATION-ORCHESTRATION-HANDBOOK.md` 和 `IMPLEMENTATION-ORCHESTRATION-RUNBOOK.md`；前者规定稳定责任与状态转换，后者规定 worktree 信任、Agent 启动、等待、同步、故障恢复和回收操作。当前起点只读取 `pnpm orchestration:status --json` 的 `resumeQueue`。

@@ -92,6 +92,10 @@
       "types": "./dist/identification/graph/index.d.ts",
       "import": "./dist/identification/graph/index.js"
     },
+    "./identification/read": {
+      "types": "./dist/identification/read/index.d.ts",
+      "import": "./dist/identification/read/index.js"
+    },
     "./workflow": {
       "types": "./dist/workflow/index.d.ts",
       "import": "./dist/workflow/index.js"

@@ -38,7 +38,10 @@ import {
   SessionMetadataV1Schema,
 } from "../../apps/api/dist/index.js";
 import { AssessmentConfigurationDocumentV1Schema } from "../../packages/core/dist/assessment-config/index.js";
-import { StructuredScoringRuleDocumentV1Schema } from "../../packages/core/dist/scoring-rules/index.js";
+import {
+  ScoringRuleConfigurationPackageV1Schema,
+  StructuredScoringRuleDocumentV1Schema,
+} from "../../packages/core/dist/scoring-rules/index.js";
 import {
   CaseLibraryPackageV1Schema,
   ProcessModelPackageV1Schema,
@@ -325,6 +328,70 @@ const checkSchemasV1 = (packDir, manifest) => {
     );
     if (!result.success)
       problems.push(`${entry.file} 不符合结构化评分规则 Schema：${schemaIssue(result)}`);
+  }
+
+  const configurationPackagePath = manifest.scoringConfigurationPackage;
+  if (typeof configurationPackagePath !== "string") {
+    problems.push("manifest.scoringConfigurationPackage 缺少配置包路径");
+  } else {
+    const configurationPackage = readPackJson(packDir, configurationPackagePath);
+    const result = ScoringRuleConfigurationPackageV1Schema.safeParse(configurationPackage);
+    if (!result.success) {
+      problems.push(`${configurationPackagePath} 不符合评分配置包 Schema：${schemaIssue(result)}`);
+    } else {
+      const sources = new Map(
+        result.data.sources.map((source) => [
+          `${source.sourceVersionRef.kind}:${source.sourceVersionRef.reference.entityId}@${source.sourceVersionRef.reference.versionId}`,
+          source,
+        ]),
+      );
+      const usedSegments = new Set();
+      for (const member of result.data.members) {
+        const { rule } = member;
+        const binding = member.binding;
+        if (rule.ruleVersion.entityId !== rule.ruleId) {
+          problems.push(
+            `${configurationPackagePath} 规则 ${rule.ruleId} 的 ruleVersion.entityId 必须等于 ruleId`,
+          );
+        }
+        const key = `${binding.sourceVersionRef.kind}:${binding.sourceVersionRef.reference.entityId}@${binding.sourceVersionRef.reference.versionId}`;
+        const source = sources.get(key);
+        if (source === undefined) {
+          problems.push(`${configurationPackagePath} 规则 ${rule.ruleId} 未绑定包内来源`);
+          continue;
+        }
+        const segmentIds = new Set(source.segments.map((segment) => segment.sourceSegmentId));
+        for (const evidence of binding.evidenceReferences) {
+          const segmentId = evidence.locator.sourceSegmentId;
+          if (
+            evidence.sourceVersion.entityId !== binding.sourceVersionRef.reference.entityId ||
+            evidence.sourceVersion.versionId !== binding.sourceVersionRef.reference.versionId ||
+            !segmentIds.has(segmentId)
+          ) {
+            problems.push(`${configurationPackagePath} 规则 ${rule.ruleId} 的来源证据未闭合`);
+          }
+          usedSegments.add(`${key}:${segmentId}`);
+        }
+        if (
+          !binding.evidenceReferences.some(
+            (evidence) => evidence.locator.sourceSegmentId === rule.evidenceLocator.sourceSegmentId,
+          )
+        ) {
+          problems.push(
+            `${configurationPackagePath} 规则 ${rule.ruleId} 的规则定位未被来源证据覆盖`,
+          );
+        }
+      }
+      for (const [key, source] of sources) {
+        for (const segment of source.segments) {
+          if (!usedSegments.has(`${key}:${segment.sourceSegmentId}`)) {
+            problems.push(
+              `${configurationPackagePath} 来源段 ${segment.sourceSegmentId} 未被规则证据引用`,
+            );
+          }
+        }
+      }
+    }
   }
 
   const mechanismTypes = new Set();
@@ -690,6 +757,14 @@ const routeForOperation = (operationId) => {
   return route;
 };
 
+export const isQueryOperationV1 = (operationId) => {
+  try {
+    return routeForOperation(operationId).mode === "query";
+  } catch {
+    return false;
+  }
+};
+
 /** 异步命令：回执只代表提交，配置不能把它改写成完成。 */
 const ASYNC_BRANCH_PREFIXES_V1 = Object.freeze([
   "workflow.",
@@ -910,14 +985,17 @@ const collectCaptures = (captures, resultRef) => {
  * 有界 JSON 读取：有限超时、禁止重定向、按字节上界读取并及时取消。
  * 超限或网络异常都不把结果当成成功；正文只在本进程内使用，不落盘。
  */
-const requestJson = async (fetchImpl, url, init, timeoutMs) => {
+const requestJson = async (fetchImpl, url, init, timeoutMs, parentSignal) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetchImpl(url, {
       ...init,
       redirect: "manual",
-      signal: controller.signal,
+      signal:
+        parentSignal === undefined
+          ? controller.signal
+          : AbortSignal.any([controller.signal, parentSignal]),
     });
     const declared = Number(response.headers.get("content-length") ?? "0");
     if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES_V1) {
@@ -985,6 +1063,94 @@ const buildEnvelope = (route, request, identity, issuedAt) => ({
     : { queryId: identity, requestedAt: issuedAt }),
   payload: request?.payload ?? {},
 });
+
+/** 独立的只读会话：cookie 留在闭包内，且只能调用正式 query 路由。 */
+export const createReadOnlyQuerySession = async ({
+  config,
+  runId,
+  fetchImpl = globalThis.fetch,
+  signal,
+}) => {
+  const timeoutMs = requestTimeoutMsOf(config);
+  const login = await requestJson(
+    fetchImpl,
+    new URL(LOGIN_PATH_V1, config.baseUrl).toString(),
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(
+        SessionLoginRequestV1Schema.parse({
+          schemaVersion: "1",
+          loginAttemptId: `${runId}-observation-login`.slice(0, 200),
+          loginName: config.loginName,
+          password: config.password,
+        }),
+      ),
+    },
+    timeoutMs,
+    signal,
+  );
+  if (login.status !== "ok") throw new SyntheticAcceptanceError("QUERY_LOGIN_FAILED");
+  const session = SessionMetadataV1Schema.safeParse(login.body);
+  if (!session.success || session.data.passwordChangeRequired || session.data.restricted) {
+    throw new SyntheticAcceptanceError("QUERY_SESSION_UNAUTHORIZED");
+  }
+  const cookie = login.cookie?.split(";")[0];
+  if (cookie === undefined || cookie === "") {
+    throw new SyntheticAcceptanceError("QUERY_SESSION_COOKIE_MISSING");
+  }
+
+  return Object.freeze({
+    async query({
+      packDir,
+      steps,
+      bindings,
+      operationId,
+      payload,
+      queryId,
+      requestedSpatialScopeRefs = [],
+      requestedSourceVersionRefs = [],
+      issuedAt = new Date().toISOString(),
+    }) {
+      const route = routeForOperation(operationId);
+      if (route.mode !== "query") throw new SyntheticAcceptanceError("QUERY_OPERATION_REQUIRED");
+      const request = resolveTemplates(
+        { payload, requestedSpatialScopeRefs, requestedSourceVersionRefs },
+        { packDir, bindings, steps },
+      );
+      const envelope = buildEnvelope(route, request, queryId, issuedAt);
+      route.requestSchema.parse(envelope);
+      const path = route.path.replace(":projectId", encodeURIComponent(config.projectId));
+      const response = await requestJson(
+        fetchImpl,
+        new URL(path, config.baseUrl).toString(),
+        {
+          method: route.method,
+          headers: { "content-type": "application/json", cookie },
+          body: JSON.stringify(envelope),
+        },
+        timeoutMs,
+        signal,
+      );
+      if (response.status !== "ok") {
+        throw new SyntheticAcceptanceError(
+          response.status === "http-error" && response.statusCode === 403
+            ? "QUERY_FORBIDDEN"
+            : "QUERY_FAILED",
+          `${response.statusCode ?? response.status}:${errorCodeOf(response.body)}`,
+        );
+      }
+      const parsed = route.resultSchema.safeParse(response.body);
+      if (!parsed.success) throw new SyntheticAcceptanceError("QUERY_RESULT_INVALID");
+      if (parsed.data.kind !== "succeeded") {
+        throw new SyntheticAcceptanceError(
+          parsed.data.kind === "waiting" ? "QUERY_AWAITING_HUMAN" : "QUERY_NOT_SUCCEEDED",
+        );
+      }
+      return parsed.data.result;
+    },
+  });
+};
 
 const codeHeadOf = () => {
   try {
@@ -1099,6 +1265,7 @@ export const runPack = async ({
   outputDir,
   resume = false,
   fetchImpl = globalThis.fetch,
+  signal,
 }) => {
   const packDir = resolve(packDirInput);
   const output = resolve(outputDir);
@@ -1226,6 +1393,12 @@ export const runPack = async ({
       note: step.note ?? null,
       ...(step.commandId === undefined ? {} : { commandId: step.commandId }),
       ...(step.issuedAt === undefined ? {} : { issuedAt: step.issuedAt }),
+      ...(step.requestedSpatialScopeRefs === undefined
+        ? {}
+        : { requestedSpatialScopeRefs: step.requestedSpatialScopeRefs }),
+      ...(step.requestedSourceVersionRefs === undefined
+        ? {}
+        : { requestedSourceVersionRefs: step.requestedSourceVersionRefs }),
       ...(step.resultRef === undefined ? {} : { resultRef: step.resultRef }),
     }));
     state.writtenAt = nowIso();
@@ -1271,6 +1444,7 @@ export const runPack = async ({
       ),
     },
     timeoutMs,
+    signal,
   );
   if (login.status !== "ok") {
     return persist("BLOCKED", [
@@ -1295,6 +1469,9 @@ export const runPack = async ({
   const blocked = [];
   let waitingOnExternal = false;
   for (const step of steps) {
+    if (signal?.aborted) {
+      return persist("BLOCKED", [...blocked, "总运行期限已到，尚未执行的步骤保持未发送。"]);
+    }
     if (step.status === "submitted" || step.status === "completed") continue;
     step.status = "pending";
 
@@ -1339,6 +1516,9 @@ export const runPack = async ({
       ]);
     }
 
+    step.requestedSpatialScopeRefs = envelope.requestedSpatialScopeRefs;
+    step.requestedSourceVersionRefs = envelope.requestedSourceVersionRefs;
+
     step.status = "sending";
     step.note = "请求已发出，等待正式回执。";
     persist("RUNNING", [...blocked]);
@@ -1353,6 +1533,7 @@ export const runPack = async ({
         body: JSON.stringify(envelope),
       },
       timeoutMs,
+      signal,
     );
 
     if (response.status === "ambiguous") {

@@ -23,8 +23,10 @@ export {
 } from "./postgres-local-identity-access.js";
 export type {
   BootstrapInitialSystemAdministratorConfig,
+  DeploymentAuthorizationSourceV1,
   LocalIdentityAccessConfig,
   PostgresLocalIdentityAccess,
+  DeploymentProjectAccessCommandV1,
 } from "./postgres-local-identity-access.js";
 // 系统管理面挂在同一个 C06 适配器对象上，导出类型以便组合根按接口注入。
 export type { SystemAdministrationPortV1 } from "@riskflow/core/access";

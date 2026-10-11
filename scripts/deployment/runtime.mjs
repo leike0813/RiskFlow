@@ -80,13 +80,9 @@ export class SingleBindingV1 {
 }
 
 /** C37 五类共享 Agent 任务；registry 必须按同一顺序注册这五类。 */
-export const SHARED_AGENT_TASK_KINDS_V1 = Object.freeze([
-  "cleaning",
-  "knowledge",
-  "retrieval-review",
-  "response-recommendation",
-  "calibration",
-]);
+import { AgentTaskTypeV1Schema } from "../../packages/contracts/dist/ports/index.js";
+
+export const SHARED_AGENT_TASK_KINDS_V1 = Object.freeze([...AgentTaskTypeV1Schema.options]);
 
 /**
  * 组装期必需依赖清单。
@@ -134,9 +130,15 @@ export class CompositionResourcesV1 {
 
   async releaseAll() {
     const closers = this.#closers.splice(0, this.#closers.length).reverse();
+    const failures = [];
     for (const close of closers) {
-      await close();
+      try {
+        await close();
+      } catch (error) {
+        failures.push(error);
+      }
     }
+    if (failures.length > 0) throw new AggregateError(failures, "DEPLOYMENT_RESOURCE_CLOSE_FAILED");
   }
 
   get size() {

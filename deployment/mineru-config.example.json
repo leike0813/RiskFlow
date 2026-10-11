@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "1",
+  "deploymentRef": { "entityId": "mineru-official-functional", "versionId": "2026-10-11" },
+  "qualityPolicyRef": { "entityId": "mineru-synthetic-quality", "versionId": "2026-10-11" },
+  "resourceAllocationRef": { "entityId": "mineru-cloud-budget", "versionId": "2026-10-11" },
+  "protocol": "official-v4",
+  "endpoint": "https://mineru.net",
+  "credentialRef": "mineru-token",
+  "allowedTransferOrigins": [
+    "https://mineru.net",
+    "https://mineru.oss-cn-shanghai.aliyuncs.com",
+    "https://cdn-mineru.openxlab.org.cn"
+  ],
+  "requestTimeoutMs": 30000,
+  "pollIntervalMs": 2000,
+  "maxPolls": 120,
+  "maxConcurrentRequests": 2,
+  "maxResponseBytes": 52428800,
+  "qualityPolicy": {
+    "minNonEmptyPageRatio": 1,
+    "minKeyFieldCoverage": 0,
+    "keyFields": []
+  }
+}

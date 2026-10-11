@@ -1,6 +1,10 @@
 import type { VersionReference } from "@riskflow/contracts/common";
 import type { AuthorizationContextV1 } from "@riskflow/contracts/ports";
 import type { ArtifactStoreV1 } from "@riskflow/core/artifacts";
+import {
+  RecommendationSiteContextV1Schema,
+  type RecommendationSiteContextV1,
+} from "@riskflow/core/recommendation";
 
 /**
  * C37 D-20：生产装配所需的窄公开读面。
@@ -51,10 +55,15 @@ export const createDeploymentProjectListerV1 = (
     });
     const projects = rows.slice(0, limit);
     const last = projects.at(-1);
+    const hasNext =
+      rows.length > limit ||
+      (limit === DEPLOYMENT_PROJECT_PAGE_MAX_V1 &&
+        projects.length === limit &&
+        last !== undefined &&
+        (await source.listProjects({ afterProjectId: last.projectId, limit: 1 })).length > 0);
     return {
       projects,
-      nextCursor:
-        rows.length > limit && last !== undefined ? { projectId: last.projectId } : undefined,
+      nextCursor: hasNext && last !== undefined ? { projectId: last.projectId } : undefined,
     };
   },
 });
@@ -109,6 +118,89 @@ export interface DeploymentAcceptanceRouteReaderV1 {
   }): Promise<unknown | undefined>;
 }
 
+const readBoundedArtifactJson = async (
+  handle: Awaited<ReturnType<ArtifactStoreV1["open"]>>,
+): Promise<unknown> => {
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  try {
+    for await (const chunk of handle.content) {
+      byteLength += chunk.byteLength;
+      if (byteLength > 1_048_576) throw new RangeError("DEPLOYMENT_ARTIFACT_TOO_LARGE");
+      chunks.push(chunk);
+    }
+    await handle.verified;
+    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+  } finally {
+    // 拒绝超限时流关闭可能使 verified 拒绝；保留主错误，不产生未处理事件。
+    void handle.verified.catch(() => undefined);
+  }
+};
+
+export interface DeploymentSiteContextBindingV1 {
+  readonly projectId: string;
+  readonly siteContextRef: VersionReference;
+  readonly artifactRef: { readonly entityId: string; readonly versionId: string };
+}
+
+export const createDeploymentSiteContextReaderV1 = (input: {
+  readonly artifactStore: ArtifactStoreV1;
+  readonly bindings: readonly DeploymentSiteContextBindingV1[];
+}): {
+  read(input: {
+    readonly requestId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly siteContextRef: VersionReference;
+  }): Promise<RecommendationSiteContextV1 | undefined>;
+} => {
+  const key = (projectId: string, ref: VersionReference): string =>
+    JSON.stringify([projectId, ref.entityId, ref.versionId]);
+  const bindings = new Map<string, DeploymentSiteContextBindingV1>();
+  if (input.bindings.length > 256) throw new RangeError("DEPLOYMENT_SITE_BINDINGS_TOO_LARGE");
+  for (const binding of input.bindings) {
+    const identity = key(binding.projectId, binding.siteContextRef);
+    if (bindings.has(identity)) throw new TypeError("DEPLOYMENT_SITE_BINDING_DUPLICATE");
+    bindings.set(identity, structuredClone(binding));
+  }
+  return {
+    async read(request) {
+      const binding = bindings.get(key(request.authorization.projectId, request.siteContextRef));
+      if (binding === undefined) return undefined;
+      const handle = await input.artifactStore.open({
+        schemaVersion: "1",
+        requestId: request.requestId,
+        idempotencyKey: request.requestId,
+        artifactRef: { kind: "content-artifact", reference: binding.artifactRef },
+        projectId: binding.projectId,
+        actorId: request.authorization.actorId,
+        requestedAt: request.requestedAt,
+        purposeCode: "recommendation-site-context",
+        requiredCapability: "warning-response.recommend",
+        authorization: request.authorization,
+      });
+      const parsed = RecommendationSiteContextV1Schema.safeParse(
+        await readBoundedArtifactJson(handle),
+      );
+      if (!parsed.success) return undefined;
+      const context = parsed.data;
+      if (
+        context.projectId !== binding.projectId ||
+        context.siteContextRef.entityId !== request.siteContextRef.entityId ||
+        context.siteContextRef.versionId !== request.siteContextRef.versionId ||
+        Date.parse(context.observedAt) > Date.parse(request.requestedAt) ||
+        !request.authorization.spatialScopeRefs.some(
+          (scope) =>
+            scope.reference.entityId === context.spatialScopeRef.reference.entityId &&
+            scope.reference.versionId === context.spatialScopeRef.reference.versionId,
+        )
+      )
+        return undefined;
+      return context;
+    },
+  };
+};
+
 export const createDeploymentAcceptanceRouteReaderV1 = (input: {
   readonly artifactStore: ArtifactStoreV1;
   readonly parseRoutes: (raw: unknown) => unknown;
@@ -126,11 +218,7 @@ export const createDeploymentAcceptanceRouteReaderV1 = (input: {
       requiredCapability: "risk-identification.read",
       authorization: request.authorization,
     });
-    const chunks: Uint8Array[] = [];
-    for await (const chunk of handle.content) chunks.push(chunk);
-    // 只有完整消费且 verified 成立才算读到正文。
-    await handle.verified;
-    return input.parseRoutes(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    return input.parseRoutes(await readBoundedArtifactJson(handle));
   },
 });
 

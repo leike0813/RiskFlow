@@ -27,10 +27,12 @@ import {
   SourceVersionRefV1Schema,
   SpatialScopeRefV1Schema,
   StandardizedRiskRecordRefV1Schema,
+  WorkflowRunRefV1Schema,
   type ModuleBranchV1,
   type ModuleErrorV1,
   type SpatialScopeRefV1,
   type SourceVersionRefV1,
+  type WorkflowRunRefV1,
 } from "@riskflow/contracts/ports";
 import { StandardizedRiskRecordEnvelopeSchema } from "@riskflow/contracts/records";
 
@@ -56,6 +58,7 @@ interface StandardizedRiskRecordScopeRow {
   version_id: string;
   risk_record_ref: JsonValue;
   payload: JsonValue;
+  identification_run_ref: JsonValue;
   route_decision_ref: JsonValue | null;
   review_decision_ref: JsonValue | null;
   spatial_scope_refs: JsonValue | null;
@@ -129,7 +132,16 @@ export interface PostgresStandardizedRiskInputFactsReaderOptionsV1 {
 
 export const createPostgresStandardizedRiskInputFactsReader = (
   options: PostgresStandardizedRiskInputFactsReaderOptionsV1,
-): RiskInputFactsReaderV1 => {
+): RiskInputFactsReaderV1 & {
+  readDeploymentRiskScopes(input: RiskInputFactsReadRequestV1): Promise<
+    | {
+        readonly spatialScopeRefs: readonly SpatialScopeRefV1[];
+        readonly sourceVersionRefs: readonly SourceVersionRefV1[];
+        readonly identificationRunRef: WorkflowRunRefV1;
+      }
+    | undefined
+  >;
+} => {
   const db = options.db as unknown as Kysely<StandardizedRiskInputFactsDatabaseV1>;
   const now = options.now ?? (() => new Date());
 
@@ -193,8 +205,21 @@ export const createPostgresStandardizedRiskInputFactsReader = (
     }
   };
 
-  return {
-    async readRiskInputFacts(input) {
+  const shared = {
+    async read(input: RiskInputFactsReadRequestV1): Promise<
+      | {
+          readonly kind: "succeeded";
+          readonly facts: RiskInputFactsV1;
+          readonly deploymentRiskScopes:
+            | {
+                readonly spatialScopeRefs: readonly SpatialScopeRefV1[];
+                readonly sourceVersionRefs: readonly SourceVersionRefV1[];
+                readonly identificationRunRef: WorkflowRunRefV1;
+              }
+            | undefined;
+        }
+      | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
+    > {
       const occurredAt = now().toISOString();
       const rawRequestId =
         typeof input === "object" && input !== null
@@ -371,7 +396,25 @@ export const createPostgresStandardizedRiskInputFactsReader = (
         ],
         evidenceReferences: fieldEvidence,
       });
-      return { kind: "succeeded", facts };
+      const identificationRunRef = WorkflowRunRefV1Schema.safeParse(row.identification_run_ref);
+      return {
+        kind: "succeeded" as const,
+        facts,
+        deploymentRiskScopes: identificationRunRef.success
+          ? { spatialScopeRefs, sourceVersionRefs, identificationRunRef: identificationRunRef.data }
+          : undefined,
+      };
+    },
+  };
+
+  return {
+    async readRiskInputFacts(input) {
+      const result = await shared.read(input);
+      return result.kind === "succeeded" ? { kind: "succeeded", facts: result.facts } : result;
+    },
+    async readDeploymentRiskScopes(input) {
+      const result = await shared.read(input);
+      return result.kind === "succeeded" ? result.deploymentRiskScopes : undefined;
     },
   };
 };

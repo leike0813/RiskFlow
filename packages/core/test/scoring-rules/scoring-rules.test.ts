@@ -14,6 +14,8 @@ import {
   AssessmentBasisReleaseSetReadResultV1Schema,
   ReadAssessmentBasisReleaseSetV1Schema,
   ScoringRuleAuthoringCandidateV1Schema,
+  ScoringRuleConfigurationPackageV1Schema,
+  StructuredScoringRuleDocumentV1Schema,
   applicableRuleSetDocumentDigest,
   assembleApplicableRuleSet,
   assertScoringRuleMembersMatchApplicableRuleSet,
@@ -27,6 +29,7 @@ import {
   projectApplicableRuleSetMembers,
   structuredScoringRuleDocumentDigest,
   validateScoringRuleOperations,
+  validateScoringRuleConfigurationPackage,
   type ApplicableRuleSetDocumentV1,
   type AssessmentBasisReleaseSetMemberV1,
   type ScoringRuleRelationCandidateV1,
@@ -41,6 +44,7 @@ import {
   makeApplicabilityConditions,
   makeScoringRule,
   makeScoringRuleCandidate,
+  makeScoringRuleDocument,
   makeScoringRuleSourceBinding,
   makeScoringRulesFixtureManifest,
   makeScoringRulesFixturePolicy,
@@ -79,6 +83,205 @@ const revisionFor = (ruleId: string): KnowledgeRevisionRefV1 => ({
 });
 
 describe("C19 结构化评分规则与适用规则集", () => {
+  describe("评分规则配置包", () => {
+    const artifactRef = {
+      kind: "content-artifact" as const,
+      reference: {
+        entityId: "configuration-package-fixture",
+        versionId: `sha256:${"d".repeat(64)}`,
+      },
+    };
+    const sourceVersionRef = REAL_STANDARD_SOURCE_VERSION;
+    const rule = makeScoringRule();
+    const evidenceReferences = [
+      {
+        locator: { sourceSegmentId: rule.evidenceLocator.sourceSegmentId },
+        sourceVersion: sourceVersionRef.reference,
+      },
+    ];
+    const packageValue = () =>
+      ScoringRuleConfigurationPackageV1Schema.parse({
+        schemaVersion: "1",
+        projectId: "scoring-rules-project",
+        projectRevisionRef: SCORING_RULES_FIXTURE_PROJECT_REVISION,
+        configurationSetRef: SCORING_RULES_FIXTURE_CONFIGURATION_SET_REF,
+        compatibilityRef: { entityId: "compatibility-fixture", versionId: "1" },
+        scoringPolicyRef: makeScoringRulesFixturePolicy().policyRef,
+        sources: [
+          {
+            sourceVersionRef,
+            standardKind: "国家规范",
+            segments: [{ sourceSegmentId: rule.evidenceLocator.sourceSegmentId, text: "受控证据" }],
+          },
+        ],
+        members: [{ rule, binding: { sourceVersionRef, evidenceReferences } }],
+      });
+
+    it("接受旧 Agent 与新配置包正文，拒绝字段混用和包引用漂移", () => {
+      expect(
+        StructuredScoringRuleDocumentV1Schema.safeParse(makeScoringRuleDocument()).success,
+      ).toBe(true);
+      const pkg = packageValue();
+      const document = {
+        schemaVersion: "1",
+        projectRevisionRef: pkg.projectRevisionRef,
+        configurationSetRef: pkg.configurationSetRef,
+        compatibilityRef: pkg.compatibilityRef,
+        scoringPolicyRef: pkg.scoringPolicyRef,
+        configurationPackageArtifactRef: artifactRef,
+        members: [
+          {
+            rule,
+            binding: {
+              sourceVersionRef,
+              evidenceReferences,
+              configurationPackageArtifactRef: artifactRef,
+            },
+          },
+        ],
+      };
+      expect(StructuredScoringRuleDocumentV1Schema.safeParse(document).success).toBe(true);
+      const agentDocument = makeScoringRuleDocument();
+      expect(
+        StructuredScoringRuleDocumentV1Schema.safeParse({
+          ...agentDocument,
+          members: [
+            {
+              rule,
+              binding: {
+                sourceVersionRef,
+                evidenceReferences,
+                configurationPackageArtifactRef: artifactRef,
+              },
+            },
+          ],
+        }).success,
+      ).toBe(false);
+      expect(
+        StructuredScoringRuleDocumentV1Schema.safeParse({
+          ...document,
+          agentTaskRef: scoringRulesFixtureAgentTaskRef,
+        }).success,
+      ).toBe(false);
+      expect(
+        StructuredScoringRuleDocumentV1Schema.safeParse({
+          ...document,
+          members: [{ ...document.members[0]!, binding: makeScoringRuleSourceBinding() }],
+        }).success,
+      ).toBe(false);
+      expect(
+        StructuredScoringRuleDocumentV1Schema.safeParse({
+          ...document,
+          members: [
+            {
+              ...document.members[0]!,
+              binding: {
+                ...document.members[0]!.binding,
+                configurationPackageArtifactRef: {
+                  ...artifactRef,
+                  reference: { ...artifactRef.reference, entityId: "other-package" },
+                },
+              },
+            },
+          ],
+        }).success,
+      ).toBe(false);
+    });
+
+    it("按策略和包内来源段校验规则，拒绝悬空证据、指标和无效阈值", () => {
+      const input = {
+        package: packageValue(),
+        policy: makeScoringRulesFixturePolicy(),
+        indicatorIds: SCORING_RULES_FIXTURE_INDICATOR_IDS,
+      };
+      expect(() => validateScoringRuleConfigurationPackage(input)).not.toThrow();
+      expect(() =>
+        validateScoringRuleConfigurationPackage({
+          ...input,
+          policy: makeScoringRulesFixturePolicy({
+            policyRef: { entityId: "drifted-policy", versionId: "1" },
+          }),
+        }),
+      ).toThrowError(
+        expect.objectContaining({
+          failure: expect.objectContaining({ reasonCode: "scoring-rule-policy-mismatch" }),
+        }),
+      );
+      expect(() =>
+        validateScoringRuleConfigurationPackage({
+          ...input,
+          package: ScoringRuleConfigurationPackageV1Schema.parse({
+            ...packageValue(),
+            members: [
+              {
+                rule,
+                binding: {
+                  sourceVersionRef,
+                  evidenceReferences: [
+                    {
+                      locator: { sourceSegmentId: "missing-segment" },
+                      sourceVersion: sourceVersionRef.reference,
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+        }),
+      ).toThrowError(
+        expect.objectContaining({
+          failure: expect.objectContaining({ reasonCode: "scoring-rule-evidence-unverified" }),
+        }),
+      );
+      expect(() =>
+        validateScoringRuleConfigurationPackage({
+          ...input,
+          indicatorIds: [],
+        }),
+      ).toThrowError(
+        expect.objectContaining({
+          failure: expect.objectContaining({ reasonCode: "scoring-rule-indicator-unknown" }),
+        }),
+      );
+      expect(() =>
+        validateScoringRuleConfigurationPackage({
+          ...input,
+          package: {
+            ...packageValue(),
+            members: [
+              {
+                rule: {
+                  ...rule,
+                  scoringThresholds: [...rule.scoringThresholds, rule.scoringThresholds[0]!],
+                },
+                binding: { sourceVersionRef, evidenceReferences },
+              },
+            ],
+          },
+        }),
+      ).toThrow(
+        expect.objectContaining({
+          failure: expect.objectContaining({ reasonCode: "scoring-rule-threshold-invalid" }),
+        }),
+      );
+    });
+
+    it("按 UTF-8 字节限制证据段文本", () => {
+      const pkg = packageValue();
+      expect(
+        ScoringRuleConfigurationPackageV1Schema.safeParse({
+          ...pkg,
+          sources: [
+            {
+              ...pkg.sources[0]!,
+              segments: [{ sourceSegmentId: "utf8-boundary", text: "界".repeat(5462) }],
+            },
+          ],
+        }).success,
+      ).toBe(false);
+    });
+  });
+
   describe("真实规范夹具（GB 50911-2013）", () => {
     it("夹具锚定仓库内公开来源原件，章节号与页映射逐条一致", () => {
       const artifact = readFileSync(

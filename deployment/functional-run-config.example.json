@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "1",
+  "runConfigFile": "/absolute/path/to/accepted-synthetic-run-config.json",
+  "observations": [
+    {
+      "stepId": "start-identify-assess",
+      "operationId": "riskflow_query_projection_result-read",
+      "payload": {
+        "queryResultRef": {
+          "$result": "query-run-view",
+          "path": ["queryResultRef"]
+        }
+      },
+      "expectedTerminalStatus": "completed",
+      "requiredReferences": [["items", 0, "latestResultRef"]]
+    }
+  ],
+  "pollIntervalMs": 1000,
+  "timeoutMs": 600000,
+  "maxQueries": 600
+}

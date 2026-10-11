@@ -53,7 +53,7 @@ import {
 } from "../../../src/engineering-data/cleaning/postgres-data-cleaning-store.js";
 import {
   StructuredDocumentConversionAdapter,
-  type OcrLayoutParserV1,
+  type DocumentServiceParserV1,
 } from "../../../src/engineering-data/document-conversion/structured-document-converter.js";
 import type { PostgresEngineeringContextSourceRegistryOptions } from "../../../src/engineering-data/context-source/index.js";
 import {
@@ -252,12 +252,25 @@ export const cleaningPolicy = (overrides: CleaningPolicyOverridesV1 = {}): DataC
 // -------------------------------------------------------------- conversion seam
 
 /**
- * Public C12 parser seam for `ocr-layout`: this environment has no PaddleX deployment wired,
- * so the fixture returns a parsed document expressed purely in the published C12 schema and
- * lets the real adapter normalize, register segments and persist the conversion record.
+ * 测试转换接缝按公开 ParsedDocument 提供合成输入，验证 C15 清洗、资料段与工件行为。
  */
-const ocrLayoutParser = (): OcrLayoutParserV1 => ({
-  async parse({ command, source, bytes }) {
+const documentServiceParser = (): DocumentServiceParserV1 => ({
+  async parse(request) {
+    const { command, source, bytes } = request;
+    if (command.input.kind !== "ocr-layout") {
+      const { parseStructuredDocument } =
+        await import("../../../src/engineering-data/document-conversion/parsers.js");
+      return {
+        parsedDocument: await parseStructuredDocument(
+          bytes,
+          { source, inputKind: command.input.kind, mediaType: command.mediaType },
+          request.resourcePolicy,
+        ),
+        additionalParentArtifactRefs: [],
+        additionalEvidenceReferences: [],
+        diagnostic: { parser: "synthetic-c15-document-input" },
+      };
+    }
     const parsedDocument = ParsedDocumentV1Schema.parse({
       schemaVersion: "1",
       inputKind: "ocr-layout",
@@ -851,7 +864,7 @@ export const startDataCleaningFixture = async (
       artifactStore: base.artifactStore,
       qualityPolicyRef: CLEANING_QUALITY_POLICY_REF,
       converterDeploymentRef: CLEANING_CONVERTER_DEPLOYMENT_REF,
-      ocrLayoutParser: ocrLayoutParser(),
+      documentServiceParser: documentServiceParser(),
       now: () => new Date(CLEANING_TEST_TIMESTAMP),
     });
 

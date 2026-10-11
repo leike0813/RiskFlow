@@ -1,0 +1,360 @@
+{
+  "schemaVersion": "1",
+  "versionId": "2",
+  "label": "合成样本，待甲方复核",
+  "sourcePack": "references/acceptance/synthetic-v1",
+  "cases": "references/acceptance/synthetic-v1/scenarios.json",
+  "revisions": [
+    {
+      "inputPath": "references/acceptance/mineru-v2/dev-text-pdf.pdf",
+      "sourceDocumentId": "SYN-DEV-DOC-METHOD",
+      "previousPath": "references/acceptance/synthetic-v1/documents/SYN-DEV/method-statement.pdf",
+      "split": "development",
+      "inputKind": "text-pdf",
+      "mediaType": "application/pdf",
+      "expectedPageCount": 1
+    },
+    {
+      "inputPath": "references/acceptance/mineru-v2/dev-scan-pdf.pdf",
+      "sourceDocumentId": "SYN-DEV-DOC-GEOLOGY",
+      "previousPath": "references/acceptance/synthetic-v1/documents/SYN-DEV/geology-report-scan.pdf",
+      "split": "development",
+      "inputKind": "ocr-layout",
+      "mediaType": "application/pdf",
+      "expectedPageCount": 1
+    },
+    {
+      "inputPath": "references/acceptance/mineru-v2/trial-text-pdf.pdf",
+      "sourceDocumentId": "SYN-TRIAL-DOC-METHOD",
+      "previousPath": "references/acceptance/synthetic-v1/documents/SYN-TRIAL/method-statement.pdf",
+      "split": "trial-run",
+      "inputKind": "text-pdf",
+      "mediaType": "application/pdf",
+      "expectedPageCount": 1
+    },
+    {
+      "inputPath": "references/acceptance/mineru-v2/trial-scan-pdf.pdf",
+      "sourceDocumentId": "SYN-TRIAL-DOC-GEOLOGY",
+      "previousPath": "references/acceptance/synthetic-v1/documents/SYN-TRIAL/geology-report-scan.pdf",
+      "split": "trial-run",
+      "inputKind": "ocr-layout",
+      "mediaType": "application/pdf",
+      "expectedPageCount": 5
+    }
+  ],
+  "samples": [
+    {
+      "id": "DEV-text-pdf",
+      "inputPath": "references/acceptance/mineru-v2/dev-text-pdf.pdf",
+      "inputKind": "text-pdf",
+      "mediaType": "application/pdf",
+      "expectedPageCount": 1,
+      "keyFields": [
+        "1.1",
+        "适用工法",
+        "1.2",
+        "监测项目",
+        "1.3",
+        "控制值适用边界",
+        "1.4",
+        "预警口径",
+        "2.1",
+        "工点与班次",
+        "2.2",
+        "资料段规则"
+      ],
+      "recordChecks": [
+        {
+          "fields": [
+            "1.1",
+            "适用工法"
+          ],
+          "expectedPageNumber": 1
+        },
+        {
+          "fields": [
+            "1.2",
+            "监测项目"
+          ],
+          "expectedPageNumber": 1
+        },
+        {
+          "fields": [
+            "1.3",
+            "控制值适用边界"
+          ],
+          "expectedPageNumber": 1
+        },
+        {
+          "fields": [
+            "1.4",
+            "预警口径"
+          ],
+          "expectedPageNumber": 1
+        },
+        {
+          "fields": [
+            "2.1",
+            "工点与班次"
+          ],
+          "expectedPageNumber": 1
+        },
+        {
+          "fields": [
+            "2.2",
+            "资料段规则"
+          ],
+          "expectedPageNumber": 1
+        }
+      ]
+    },
+    {
+      "id": "DEV-scan-pdf",
+      "inputPath": "references/acceptance/mineru-v2/dev-scan-pdf.pdf",
+      "inputKind": "ocr-layout",
+      "mediaType": "application/pdf",
+      "expectedPageCount": 1,
+      "keyFields": [
+        "SYN-DEV-SEG-001-GEO",
+        "完整岩体",
+        "DK12+300",
+        "无",
+        "SYN-DEV-SEG-002-GEO",
+        "DK12+320",
+        "SYN-DEV-SEG-003-GEO",
+        "中硬岩",
+        "DK12+340",
+        "SYN-DEV-SEG-004-GEO",
+        "DK12+360",
+        "SYN-DEV-SEG-005-GEO",
+        "粉质黏土",
+        "DK12+380",
+        "SYN-DEV-SEG-006-GEO",
+        "DK12+400",
+        "SYN-DEV-SEG-007-GEO",
+        "上软下硬复合地层",
+        "DK12+420",
+        "SYN-DEV-SEG-008-GEO",
+        "DK12+440",
+        "SYN-DEV-SEG-009-GEO",
+        "富水中砂层",
+        "DK12+460",
+        "SYN-DEV-SEG-010-GEO",
+        "DK12+480",
+        "SYN-DEV-SEG-011-GEO",
+        "岩溶发育灰岩",
+        "DK12+500",
+        "SYN-DEV-SEG-012-GEO",
+        "DK12+520"
+      ],
+      "recordChecks": [
+        {
+          "fields": [
+            "SYN-DEV-SEG-001-GEO",
+            "完整岩体",
+            "DK12+300",
+            "无"
+          ],
+          "expectedPageNumber": 1
+        },
+        {
+          "fields": [
+            "SYN-DEV-SEG-002-GEO",
+            "完整岩体",
+            "DK12+320",
+            "无"
+          ],
+          "expectedPageNumber": 1
+        },
+        {
+          "fields": [
+            "SYN-DEV-SEG-003-GEO",
+            "中硬岩",
+            "DK12+340",
+            "无"
+          ],
+          "expectedPageNumber": 1
+        },
+        {
+          "fields": [
+            "SYN-DEV-SEG-004-GEO",
+            "中硬岩",
+            "DK12+360",
+            "无"
+          ],
+          "expectedPageNumber": 1
+        },
+        {
+          "fields": [
+            "SYN-DEV-SEG-005-GEO",
+            "粉质黏土",
+            "DK12+380",
+            "无"
+          ],
+          "expectedPageNumber": 1
+        },
+        {
+          "fields": [
+            "SYN-DEV-SEG-006-GEO",
+            "完整岩体",
+            "DK12+400",
+            "无"
+          ],
+          "expectedPageNumber": 1
+        },
+        {
+          "fields": [
+            "SYN-DEV-SEG-007-GEO",
+            "上软下硬复合地层",
+            "DK12+420",
+            "无"
+          ],
+          "expectedPageNumber": 1
+        },
+        {
+          "fields": [
+            "SYN-DEV-SEG-008-GEO",
+            "中硬岩",
+            "DK12+440",
+            "无"
+          ],
+          "expectedPageNumber": 1
+        },
+        {
+          "fields": [
+            "SYN-DEV-SEG-009-GEO",
+            "富水中砂层",
+            "DK12+460",
+            "无"
+          ],
+          "expectedPageNumber": 1
+        },
+        {
+          "fields": [
+            "SYN-DEV-SEG-010-GEO",
+            "完整岩体",
+            "DK12+480",
+            "无"
+          ],
+          "expectedPageNumber": 1
+        },
+        {
+          "fields": [
+            "SYN-DEV-SEG-011-GEO",
+            "岩溶发育灰岩",
+            "DK12+500",
+            "无"
+          ],
+          "expectedPageNumber": 1
+        },
+        {
+          "fields": [
+            "SYN-DEV-SEG-012-GEO",
+            "中硬岩",
+            "DK12+520",
+            "无"
+          ],
+          "expectedPageNumber": 1
+        }
+      ]
+    },
+    {
+      "id": "DEV-png",
+      "inputPath": "references/acceptance/synthetic-v1/documents/SYN-DEV/monitoring-section.png",
+      "inputKind": "ocr-layout",
+      "mediaType": "image/png",
+      "expectedPageCount": 1,
+      "keyFields": [
+        "development-family-v1",
+        "DK12+300 工点",
+        "合成·岚江站站隧一体化工程 变径段监测断面布置图（合成示意）"
+      ],
+      "recordChecks": [
+        {
+          "fields": [
+            "development-family-v1",
+            "DK12+300 工点"
+          ],
+          "expectedPageNumber": 1
+        },
+        {
+          "fields": [
+            "合成·岚江站站隧一体化工程 变径段监测断面布置图（合成示意）"
+          ],
+          "expectedPageNumber": 1
+        }
+      ]
+    },
+    {
+      "id": "DEV-jpeg",
+      "inputPath": "references/acceptance/synthetic-v1/documents/SYN-DEV/site-photo.jpeg",
+      "inputKind": "ocr-layout",
+      "mediaType": "image/jpeg",
+      "expectedPageCount": 1,
+      "keyFields": [
+        "拍摄日期 2026-03-02",
+        "工点 DK12+300 工点",
+        "班次 白班"
+      ],
+      "recordChecks": [
+        {
+          "fields": [
+            "拍摄日期 2026-03-02"
+          ],
+          "expectedPageNumber": 1
+        },
+        {
+          "fields": [
+            "工点 DK12+300 工点"
+          ],
+          "expectedPageNumber": 1
+        },
+        {
+          "fields": [
+            "班次 白班"
+          ],
+          "expectedPageNumber": 1
+        }
+      ]
+    },
+    {
+      "id": "DEV-docx",
+      "inputPath": "references/acceptance/synthetic-v1/documents/SYN-DEV/construction-log-01.docx",
+      "inputKind": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "expectedPageCount": null,
+      "keyFields": [
+        "SYN-DEV-SEG-005-LOG",
+        "扩径准备",
+        "粉质黏土",
+        "126.0",
+        "6.4",
+        "SYN-DEV-SEG-011-LOG",
+        "岩溶发育灰岩",
+        "186.0"
+      ],
+      "recordChecks": [
+        {
+          "fields": [
+            "SYN-DEV-SEG-005-LOG",
+            "扩径准备",
+            "粉质黏土",
+            "126.0",
+            "6.4"
+          ],
+          "expectedPageNumber": null
+        },
+        {
+          "fields": [
+            "SYN-DEV-SEG-011-LOG",
+            "扩径准备",
+            "岩溶发育灰岩",
+            "186.0",
+            "6.4"
+          ],
+          "expectedPageNumber": null
+        }
+      ]
+    }
+  ]
+}

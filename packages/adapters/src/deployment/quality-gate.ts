@@ -53,7 +53,7 @@ export interface DeploymentRetrievalMeasurementsV1 {
 }
 
 export interface DeploymentRetrievalQualityGateV1 {
-  /** 返回原始报告；是否通过由调用方读取 report.ready，不得由本方法代答。 */
+  /** 返回原始报告；是否通过由调用方读取 report.overall。 */
   evaluate(input: {
     readonly policy: HybridRetrievalAcceptancePolicyV1;
     readonly signal: AbortSignal;

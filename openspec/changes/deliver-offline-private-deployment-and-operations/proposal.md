@@ -1,42 +1,38 @@
 ## Why
 
-C03–C36 已提供领域运行时与业务页面，但完整 UI 仍未归入生产 Web，仓库也缺少真实服务启动和离线交付入口。C37 将完整 UI 统一迁入 `apps/web`，交付加载内网 HTTPS 的薄 Electron 客户端，并把既有能力接到三 VM 私有部署与同机逻辑恢复流程，为 C38 提供真实交付依据。
+C37 先闭合完整业务界面、服务运行接线与功能验收，使识别、评估、预警、处置和审计链能够在现有环境中实际运行。签名、多平台正式包、禁网三 VM 部署与 RTX 4090 实测属于最终交付，移交 C38；当前可使用网络 API 推理后端。
 
 ## What Changes
 
-- 沿已确认产品决议交付一台物理服务器内的推理、应用、数据三台虚拟机部署，推理 VM 使用 GPU 直通；只有应用 VM 的 HTTPS 入口向业务用户开放。制备带精确版本、容器镜像 digest、模型/OCR 制品、许可证和 SBOM 的离线包，安装和运行不得隐式联网下载。Docker Compose 并非已确认决议，不将其写成部署前提。
-- 增加部署配置与秘密文件入口，复用现有 strict Schema 冻结模型、OCR、工件、检索、Agent 和运行策略；建立 C03 LOGIN 主体、迁移和 C06 首次管理员初始化流程。
-- 增加真实 API、Worker 和已归档事件消费者的启动/停止接线。API 工厂继续不监听、不迁移；业务代码不复制领域规则，后台任务不替代 LangGraph。
-- 注入既有 C35 安全健康与模型版本查询，提供宿主就绪检查、脱敏日志、容量和资源监测；明确 OCR 与 llama.cpp 的独立资源分配。
-- 提供维护窗口内的同机逻辑副本、隔离完整性核验和人工升级回退流程。复用 C04 `createHashManifest` / `reconcile`，保持数据库、审计、Outbox、checkpoint、工件和部署版本一致；同机副本只用于逻辑回退，不宣称独立备份、灾备或生产级 RPO/RTO，不增加持续备份或定期演练。独立冷备仅为后续单独采购选项。
-- 在最低目标 RTX 4090（24GB）与 128GB 主机内存环境实测离线安装、真实模型/OCR、双索引重建、重启、同机逻辑恢复与资源隔离，记录耗时、资源和质量边界。模型部署包络沿已确认候选，但实际构建、权重身份与许可仍由发布介质核验；不承诺未经测量的吞吐和更高配置能力。
-- 按用户本轮确认，将 C32–C35 完整业务界面迁入 `apps/web` 并合并 C36 质量页面，统一 React 19、根 pnpm 锁文件、生产构建和浏览器验收。迁移真实页面与可复用视觉，原型 fixture、状态注入和审阅设施保留在生产依赖之外。
-- 增加 `apps/desktop` 薄 Electron 客户端，加载应用 VM 的同一 HTTPS 页面，复用 Web 的 Cookie、HTTP 与 SSE，不复制 UI、业务命令或本机后端。冻结桌面平台与安装包身份，验证证书、导航限制、连接失败、重连及关闭窗口后服务端任务继续。
-- 先完成代码、部署与打包配置、验收程序及工程检查，再交接 Finalizer 审查；正式包制备、三平台安装、三 VM 与目标硬件取证作为后续交付验收。缺少真实介质、生产证书、签名材料或目标环境只阻塞对应交付验收，不阻塞无关实现和工程审查；全部必需证据齐全前不宣告 C37 交付通过或归档。
-- 将生产 workspace 目标调整为四应用三共享包；保持单向依赖、精确根锁文件与统一治理。Web 保持独立于 Electron，后续移动浏览器可复用；本次不交付移动适配、PWA 或脱离服务器的离线业务。
+- 将 C32–C35 完整界面及 C36 质量页统一归入 `apps/web`，复用唯一会话、HTTP/SSE、路由和确认机制；保留七成员生产 workspace 与薄 Electron HTTPS 客户端。
+- 以真实 PostgreSQL、Qdrant、工件、API、Worker 和版本化业务配置完成当前功能验收，覆盖正式命令、后台终态、人工复核、权限拒绝、幂等重试、审计和端到端追溯。合成样本须标明“合成样本，待甲方复核”，不能用测试模型候选冒充真实推理结果。
+- 本轮评分规则新增真实 C04 配置包来源分支，通过正式提交、复核、发布及依据解析入口验收；包工件及逐条证据替代该分支的 Agent/清洗引用。C17 知识编制继续使用现有 `knowledge-authoring` 定义。C19 Agent 评分规则编制的共享任务定义另行闭合，不注册第二个同类型定义，不计本轮 PASS。
+- 扩展既有协议无关模型 port，在服务端以 `openai-chat` 与 `ollama-embed` 两种受控协议分别承载 MiniMax 结构化生成/会话流和指定 Ollama Embedding；保留 llama.cpp adapter。端点、模型身份、能力、尺寸、预算与适用的 API 凭据由受控配置冻结，业务及客户端不能指定或读取这些输入。当前验收不要求本地 GPU、权重文件或 llama.cpp 专用探针。
+- 保留已实现的部署初始化、最小权限、耐久事件、维护窗口、逻辑副本、隔离恢复与人工回退能力，按现有环境验证适用契约；实际拓扑可在功能环境中合置服务，最终三 VM 隔离与硬件基准另行取证。
+- C37 的 PASS 只表示已批准功能范围通过。全部当前任务、真实功能证据和必要审计完成后，可按项目流程集成及归档；缺少未来正式签名、原生构建机、4090 或离线介质不阻塞 C37。
+- 将 Windows 11 x64、Ubuntu 24.04 x64、macOS 14+ arm64 正式安装包及签名/公证，三 VM 禁网安装，本地模型/OCR/系统介质和许可核验，RTX 4090 24GB/128GB 性能与资源隔离实测移交 `deliver-mvp-acceptance-and-delivery-evidence`（C38）规划。最终交付仍须真实证据，C37 功能报告不能替代。
+- 纠正验收命令与实现的漂移：当前 `deployment:smoke` / `deployment:benchmark` 仅执行配置校验，`test:desktop` 仅执行单元测试；施工图分别标出当前功能证据与 C38 待实现的正式交付入口。
 
 ## Capabilities
 
 ### New Capabilities
 
-- `platform/offline-private-deployment-and-operations`：离线发布包、部署初始化、真实服务生命周期、受控运维、维护窗口备份、隔离恢复核验、版本切换和目标环境验收。
-- `platform/electron-https-client`：内网 HTTPS 桌面入口、Web 复用、受限本机能力、连接与会话恢复、离线安装包和桌面真实验收。
+- `platform/offline-private-deployment-and-operations`：服务初始化、生命周期与受控恢复；区分当前联网功能验收和最终离线部署交付。
+- `platform/electron-https-client`：共享 Web 的安全桌面入口；多平台正式包与安装取证适用于最终交付阶段。
 
 ### Modified Capabilities
 
-- `platform/engineering-baseline`：六成员调整为七成员，构建、冻结依赖和应用边界检查覆盖 Desktop；不允许跨应用源码依赖。
-- `web/engineering-and-knowledge-ui`、`web/identification-and-review-ui`：API 接入与生产浏览器验收归属从 demo 改为 `apps/web`，保留原业务与权限语义。
-- `web/assessment-warning-and-response-ui`、`web/agent-audit-and-operations-ui`：明确页面和真实浏览器验收归 `apps/web`，保留原版本、命令与确认契约。
-- `platform/web-shell-interaction-primitives`：统一确认原语覆盖工程与系统管理作用域，保留原命令冻结与权限语义。
+- `platform/llamacpp-model-gateway`：在同一三能力 port 下由 OpenAI 兼容聊天与 Ollama 原生 Embedding 协议合并提供网络能力，分开验证 llama.cpp 构建身份和网络服务协议/模型身份，保持确定性复验与审计。
+- `platform/engineering-baseline`：四应用三共享包的 workspace、构建与依赖边界。
+- `web/engineering-and-knowledge-ui`、`web/identification-and-review-ui`、`web/assessment-warning-and-response-ui`、`web/agent-audit-and-operations-ui`：生产界面和真实浏览器验收归 `apps/web`，保留既有业务权限与版本契约。
+- `platform/web-shell-interaction-primitives`：统一工程与系统管理确认，冻结命令身份及输入。
 
 ## Impact
 
-- **路线与基线**：C37 `deliver-offline-private-deployment-and-operations`；base commit 为 `6fd462e9fc61e92b39903a3087e2e2a8a21c1b5a`。直接依赖 C03、C04、C05、C06、C07、C08、C09、C10、C13、C20、C24、C30、C32、C33、C34、C35、C36 均已归档；实时 `resumeQueue` 以 C37 为队首，`violations` 为空。
-- **实现所有权**：部署配置、宿主组合与 CLI、三 VM 服务/端口清单、操作手册、部署行为测试、`apps/web` 的完整页面迁移及 `apps/desktop` 的主进程、安装包和真实验收。根 workspace、TypeScript references、依赖政策、跨应用检查与 `openspec/config.yaml` 的成员描述在 C37 实施时同步。业务事实仍由原模块拥有，恢复不得按工件文件补造事实。
-- **复用**：C03 bootstrap/migrations/Outbox/checkpointer，C04 内容寻址存储及维护接口，C05 llama.cpp 网关，C06 身份与授权，C08 runner，C13 OCR parser，C20 投影与检索，以及 C24/C30 现有组合根。浏览器验收 harness 仅供了解真实接线，账号、固定口令、模型替身和合成结果不得进入生产。
-- **依赖治理**：复用 React 19、Vite 和测试基线，Router 6.30.6、ECharts 5.6.0、Electron 44.7.0、electron-builder 26.15.3 与 Caddy 2.11.7 按 design 冻结精确版本、官方来源、许可证、离线介质和退出条件。服务端 Node 与 Electron 内置运行时分别记录。外部 PostgreSQL/Qdrant/llama.cpp/Paddle 制品由清单锁定身份，缺项阻止打包；不补装原始规划提及但现有实现未使用的整套框架。本轮不安装依赖或更新锁文件。
-- **追踪**：横切 RI-S1–RI-S6、RA-S1–RA-S7；重点保持资料/知识/风险/评估/预警/处置/偏差链、版本、审计与 checkpoint 的共同恢复，不增加领域判断或业务阈值。
-- **产品决议依据**：`.scratch/riskflow-master-plan/issues/08-private-deployment-governance.md`（三 VM 与冷备/恢复责任），`issues/21-mvp-toolchain-dependencies.md`（正式前端与单一工具链），`prototypes/openspec-delivery-roadmap.md` Wave F 与 §11（三 VM、4090/128GB、同机逻辑恢复和早期 RPO/RTO 规划修正）。这些是已确认产品范围记录；具体模块行为仍以已归档主规格和当前代码为准。
-- **范围外**：高可用集群、热备/PITR、跨站灾备、独立冷备、持续备份、周期演练、生产级 RPO/RTO、长期代运维、自动扩容、自动换模型、LoRA 微调、业务规则默认值、通用 Shell/SQL/文件管理 API，以及 C38 的合同总验收。逻辑恢复先作为受控运维 CLI 交付，浏览器不新增破坏性恢复按钮。
-- **设计依据**：`.scratch/riskflow-master-plan/prototypes/desktop-client-architecture.md` 及同步后的宏观架构、界面规格、工具链与 C37 路线。客户端入口已获用户确认，原型的本地资源/hash 路由假设不约束 HTTPS 方案。
-- **规划与实施状态**：proposal、delta specs、design、固定基线 implementation-plan 与 tasks 已齐备；实施进度以 tasks 勾选及可运行证据为准。工件校验不代表实现完成，工程检查通过也不代表实机交付验收通过。
+- **基线与依赖**：保留 IP-01–IP-14 原施工基线 `6fd462e9fc61e92b39903a3087e2e2a8a21c1b5a`；本次增量 IP-15/IP-16 固定于当前 HEAD 的完整 commit 身份（见施工图）。既有 C03–C36 直接依赖不变，C38 仍依赖 C37；不改执行图或活动调度状态。
+- **所有权**：本次根据已批准的兼容性结论同步 proposal、delta specs、design、implementation-plan 与 tasks。模型 adapter、宿主配置/组合、测试及功能验收仍由 IP-15/IP-16 按施工图实施；相关任务保持未完成，verification 由 Finalizer 在固定实现检查点后创建。
+- **复用与依赖治理**：继续复用 C03 持久化、C04 工件、C05 core model port、C06 授权、C08 Agent、C13 OCR、C20 检索及 C24/C30 图；网络 HTTP 使用 Node 原生 fetch 与现有 Zod，不新增 SDK 或依赖。C19 唯一正文 Schema 增加已批准的配置包来源互斥分支，公共模块命令及事件不变。已有 Electron/Router/ECharts/Caddy 精确版本及许可治理继续有效。
+- **功能输入**：批准的网络模型服务、受限秘密文件、模型/协议版本与尺寸、业务策略和样本。外部服务只接收有资格的验收资料；服务不可用或缺少必需能力时对应功能验收 BLOCKED，不自动换模型或跳过 Agent。
+- **追踪**：横切 RI-S1–RI-S6、RA-S1–RA-S7；模型候选仍进入确定性校验，P/C、矩阵、阈值及人工决定不因后端变化而改变。
+- **最终交付移交**：移交清单在本 change 的 tasks 与施工图中供 C38 规划消费，当前不创建第二个活跃 change。C38 必须先闭合对应规格和任务，再执行正式制包、离线部署、恢复与硬件取证；原命令校验配置成功不构成交付通过。
+- **范围外**：当前正式应用分发及硬件交付；HA/PITR、独立冷备、灾备、生产级 RPO/RTO、长期代运维、自动换模型/扩预算、LoRA、移动/PWA、本机业务后端和离线业务同步。

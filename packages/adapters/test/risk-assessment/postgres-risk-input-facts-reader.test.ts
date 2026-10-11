@@ -122,6 +122,70 @@ describe("统一风险事实生产读取接缝", () => {
     }
   });
 
+  it("部署空间读取只返回精确登记的范围与识别运行引用", async () => {
+    const reader = createPostgresStandardizedRiskInputFactsReader({
+      db: fixture.postgres.runtime.db,
+      authorization: fixture.postgres.access,
+    });
+    const request = await recordRequest("seam-deployment-scopes");
+    const result = await reader.readDeploymentRiskScopes(request);
+    const registered = await fixture.postgres.postgres.adminPool.query<{
+      identification_run_ref: unknown;
+    }>(
+      "SELECT identification_run_ref FROM business.standardized_risk_records WHERE project_id = $1 AND risk_record_id = $2",
+      [fixture.projectId, recordRef.reference.entityId],
+    );
+    expect(result).toEqual({
+      spatialScopeRefs: [fixture.businessSpatialScopeRef],
+      sourceVersionRefs: [fixture.sourceVersionRef],
+      identificationRunRef: registered.rows[0]?.identification_run_ref,
+    });
+
+    const wrongVersion = await readRequest({
+      requestId: "seam-deployment-scopes-wrong-version",
+      riskInput: { ...recordRef, reference: { ...recordRef.reference, versionId: "7" } },
+      spatialScopeRefs: [fixture.businessSpatialScopeRef],
+      sourceVersionRefs: [fixture.sourceVersionRef],
+    });
+    const denied = await reader.readDeploymentRiskScopes({
+      ...request,
+      authorization: { ...request.authorization, actorId: "seam-other-actor" },
+    });
+    expect(await reader.readDeploymentRiskScopes(wrongVersion)).toBeUndefined();
+    expect(denied).toBeUndefined();
+
+    const missingRunRegistration = await insertIncompleteRecord("no-identification-run", {
+      identification_run_ref: JSON.stringify({ kind: "unregistered-run" }),
+    });
+    expect(
+      await reader.readDeploymentRiskScopes(
+        await readRequest({
+          requestId: "seam-deployment-scopes-no-run",
+          riskInput: missingRunRegistration,
+          spatialScopeRefs: [fixture.businessSpatialScopeRef],
+          sourceVersionRefs: [fixture.sourceVersionRef],
+        }),
+      ),
+    ).toBeUndefined();
+
+    const wrongStoredRef = await insertIncompleteRecord("wrong-stored-ref", {
+      risk_record_ref: JSON.stringify({
+        kind: "standardized-risk-record",
+        reference: { entityId: "different-risk-record", versionId: "1" },
+      }),
+    });
+    expect(
+      await reader.readDeploymentRiskScopes(
+        await readRequest({
+          requestId: "seam-deployment-scopes-wrong-ref",
+          riskInput: wrongStoredRef,
+          spatialScopeRefs: [fixture.businessSpatialScopeRef],
+          sourceVersionRefs: [fixture.sourceVersionRef],
+        }),
+      ),
+    ).toBeUndefined();
+  }, 240_000);
+
   it("外部风险事件分支投影登记时已定型的结构化字段", async () => {
     const result = await fixture.riskInputFacts.readRiskInputFacts(
       await eventRequest("seam-event-ok"),

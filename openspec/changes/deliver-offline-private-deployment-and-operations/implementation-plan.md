@@ -2,15 +2,13 @@
 
 ## 1. 实施基线与权威来源
 
-固定 base commit：`6fd462e9fc61e92b39903a3087e2e2a8a21c1b5a`。HEAD 和 base 在初始规划时一致；当前实施进度以 tasks 与可运行证据为准。继续实施前核对已完成改动与计划，不把规划文件的存在当作功能实现。
+保留 IP-01–IP-14 初始基线 `6fd462e9fc61e92b39903a3087e2e2a8a21c1b5a` 及已完成实现。IP-15/IP-16 增量基线为 `0a25b6a469ade4bcc6a21c4514195d1f7c19ff31`；该 HEAD 已有四应用三共享包、Web 页面迁移、Electron 薄壳与部署程序，但仅有 llama.cpp model adapter，runtime.mjs 仅提供 provider 容器/绑定与就绪检查，尚无完整启动 CLI。desktop e2e 仅两条基础用例，smoke/benchmark CLI 仅校验配置。
 
-权威输入：本 change 的 proposal、八份 delta specs 与 design D-01–D-22；既有 C03–C36 主规格；当前代码用于确定可复用事实与缺口。产品文档路径见 proposal。orchestrated-delivery 的 applyRequires 是 proposal/specs/design/implementation-plan/tasks，verification 由后续 Finalizer 生成。
+权威输入为本 change 九份 delta、proposal、design D-01–D-24 与既有主规格。applyRequires 保持 proposal/specs/design/implementation-plan/tasks；新增 IP-15/IP-16 按本施工图实施，Finalizer 在固定实现检查点之后创建 verification。
 
-直接依赖沿 proposal 已归档清单，生产运行沿 C03 persistence、C04 artifacts、C05 model、C06 access、C07 review、C08 Agent、C09 HTTP、C10 shell、C11–C31 adapters/graphs。既有六 workspace 成员保持，在 IP-01 增加 Desktop；版本、三平台、服务管理和流协议按 design 冻结，不再交给实现者选方案。
+直接依赖与执行图不变。当前 C37 功能环境可合置三个逻辑角色，使用真实数据库、索引、工件、OCR 与批准网络 API；正式签名、多平台安装、禁网三 VM、模型介质和 4090 取证移交 C38 的 F-01–F-05，不是 C37 收口条件。
 
-**没有新的阻塞架构决策。** 真实模型、批准策略/数据集、甲方样本、内网证书、签名材料、目标机与资源阈值是正式部署/交付验收输入；缺项只使对应交付取证 task 未完成，独立代码实现和工程审查继续，不以默认值/合成介质闭合正式验收。依赖安装、服务启动与提交均遵守项目授权边界。
-
-实施顺序按 D-12 分为：完成 1–13、14.1 的实现及工程检查 → 14.2 固定检查点交接 Finalizer → 15.1 正式包制备、15.2 三平台安装、15.3 三 VM、15.4 硬件取证 → 15.5 总体交付收口。交付取证任务不属于交接前必须完成的实现任务；它们在原 change 中持续跟踪，全部通过前不能成功集成或归档。生产 Schema、权限、证书校验与缺项拒绝仍按原契约实现。
+剩余依赖顺序见 tasks 首段。运行前批准服务/模型/协议、上下文/维度与预算证明、受限秘密、业务配置和样本；缺输入阻塞当前功能验收，不能填默认值。正式平台/硬件输入只在 C38 要求。当前程序缺口必须真实补齐，不将旧 checkbox 或配置检查当作完整功能证据。
 
 ## 2. 复用与接缝
 
@@ -30,12 +28,15 @@
 | IP-10 | 既有固定 PostgreSQL/Qdrant 镜像；C05 gateway/C13 parser smoke；build dist | 三 VM HTTPS 与完整离线介质；D-01/D-02/D-07/D-16 | 领域 Schema、权限、规则、幂等和版本事实仍归原模块 |
 | IP-11 | C04 maintenance.createHashManifest；C03 audit/checkpoint/outbox；PostgreSQL pg_dump | 全工程停写与同机逻辑副本；D-08/D-09/D-19 | 领域 Schema、权限、规则、幂等和版本事实仍归原模块 |
 | IP-12 | C04 maintenance.reconcile（完整消费+await summary）；C20 rebuild；C06 session key rotation；LangGraph 原 checkpoint | 隔离核对、激活与回退；D-10/D-11/D-19 | 领域 Schema、权限、规则、幂等和版本事实仍归原模块 |
-| IP-13 | Playwright _electron.launch；真实 HTTPS、C06、apps/web 浏览器验收；平台安装包 | 真实桌面验收；D-12/D-15/D-22 | 领域 Schema、权限、规则、幂等和版本事实仍归原模块 |
-| IP-14 | model/llamacpp-model-gateway.smoke.test.ts；OCR smoke；已归档端到端行为；更新后的项目设计 | 真实部署、基准与交付收口；D-12/D-22 | 领域 Schema、权限、规则、幂等和版本事实仍归原模块 |
+| IP-13 | Playwright _electron.launch；apps/desktop/test/e2e/client.spec.ts；Web HTTPS/C06 | 当前可用平台构建运行的桌面功能证据，C38 再验正式安装包；D-12/D-15/D-24 | TLS、权限、幂等、任务事实沿服务端原契约 |
+| IP-14 | scripts/deployment/acceptance.mjs 配置校验/汇总；现有工程测试 | 当前证据口径、手册与交接；正式 smoke/benchmark 移交 C38；D-12/D-22/D-24 | 不能将配置校验当作真实验收 |
+
+| IP-15 | core/model/gateway.ts#ModelGatewayPortV1；core/model/schema.ts；adapters/model/config.ts 与 llamacpp-model-gateway.ts；C04/C06 | OpenAI Chat Completions 结构化/流式与 Ollama 原生 Embedding 配置/adapter/真实三能力 smoke；D-23 | 复用原请求/结果、授权、预算、持久化和闭合错误 |
+| IP-16 | scripts/deployment/runtime.mjs#ProductionCompositionRootV1、lifecycle.mjs、events.mjs；scripts/acceptance/synthetic.mjs#checkPack/runPack；正式 HTTP 操作目录；可见外部 Chrome/CDP | 实际宿主启动、精确后端装配、正式终态与证据收口；D-24 | 不复制测试 harness 或答案，不自动代替人工决定；观看验收须在可见外部浏览器 |
 
 ### 生产组合 options 映射（IP-04 / IP-05）
 
-共同基础：db=createPostgresRuntime.db；transactionUnit=createPostgresTransactionUnit；checkpointer=createPostgresCheckpointer；access=createPostgresLocalIdentityAccess；artifactStore=IP-03 remote store；referenceGuard=本地 PG guard；modelGateway=createLlamaCppModelGateway；OCR=createPaddleOcrLayoutParser（原公开入口）；review=createPostgresReviewAuditAdapter；idempotentConsumer=createPostgresIdempotentConsumer。所有模型/OCR/工件/预算入参使用原 strict Schema，不从 demo 私有 fixture 获取。IP-01 先建立 Desktop manifest/tsconfig，完整主进程在 IP-09 完成后根 build 才作为通过证据；宿主测试加载 dist 前由测试 setup 使用现有 tsc -b apps/api apps/worker 构建服务侧，不依赖未完成的桌面或开发服务器。
+共同基础：db=createPostgresRuntime.db；transactionUnit=createPostgresTransactionUnit；checkpointer=createPostgresCheckpointer；access=createPostgresLocalIdentityAccess；artifactStore=IP-03 remote store；referenceGuard=本地 PG guard；modelGateway=按 D-23 精确部署 registry 选择 createLlamaCppModelGateway 或 createNetworkApiModelGateway；文档转换=createMineruDocumentParser（接口及实施归独立 change adopt-mineru-document-ingestion）；review=createPostgresReviewAuditAdapter；idempotentConsumer=createPostgresIdempotentConsumer。所有模型/文档/工件/预算入参使用所属 strict Schema，不从 demo 私有 fixture 获取。IP-01 先建立 Desktop manifest/tsconfig，完整主进程在 IP-09 完成后根 build 才作为通过证据；宿主测试加载 dist 前由测试 setup 使用现有 tsc -b apps/api apps/worker 构建服务侧，不依赖未完成的桌面或开发服务器。
 
 | 组合根 | options → 固定 provider |
 | --- | --- |
@@ -56,6 +57,12 @@ C27 recommendationAgent 的现场上下文从 C28 contextReader 与当前精确 
 
 IP-04 新窄读契约：工程 registry.listDeploymentProjects 使用固定分页上限和 cursor 返回真实 projectId/revision/空间/来源登记引用；auth resolver 在 HTTP 受理时按固定下游清单分别用真实会话签发、耐久关联；后台按目标 branch 读原关联 context，复验 actor/当前授权再以同能力 parent 收窄，不扩展原 parent 能力；scoring/config reader 按同工程 member releaseRef/versionId 返回原已发布正文与 digest，缺失返回 undefined。这些函数在所属 adapter 内实现；部署 provider 只消费公开导出，不读取私表。保护 C06 sessionToken 不进入 catalog、日志或 checkpoint。
 
+IP-04/IP-16 同实例工件授权：auth/postgres-local-identity-access.ts 的 verifyDeploymentContext 按精确 ref 定位原业务签发，并复用原 verify、主体/能力及当前权限；start.mjs 为 put/open 注入该复验边界，保持原 DTO、工件身份和完整流消费。既有 auth test 验证假引用、错工程/主体/能力、权限撤销与合法签发；entrypoints.test 验证复验失败前无工件副作用、成功使用持久上下文。executeDeploymentProjectAccess 的管理员预置接缝及其 bootstrap/原身份重放保持 D-20。
+
+IP-04 在同一 C06 adapter 增加 D-20 readDeploymentAuthorizationSource 精确窄口及公开类型；现有 local-identity-project-authorization.test.ts 扩展业务来源、管理/错主体拒绝与实际父因果关联用例。来源与当前权限分开，保持原五分钟期限，不新增会话持久字段或自动续期。
+
+IP-16 start.mjs 组装精确模型 registry 与三能力 C06 复验，包括无父工件请求；原 adapter 的协议/预算/错误及 C04 持久语义保持。entrypoints.test 验证拒权前无模型调用、合法请求转发原身份、会话流的增量和终态沿原 handle；模型父工件预检完整消费同实例受权 C04。
+
 ## 3. 代码变更映射
 
 | IP-ID | Task | Requirement/Scenario | 文件与符号 | 精确变化 | 不得改变 |
@@ -68,14 +75,17 @@ IP-04 新窄读契约：工程 registry.listDeploymentProjects 使用固定分�
 | IP-06 | 6.1–6.2 | 服务生命周期必须使用真实公共接缝；内网访问与观测必须有界且最小披露 | §2 与 §7 文件表 | API 显式 listen；Worker 单独轮询/claim/ack/失败；全 12 事件清单闭合；真实四组件与模型 observation、AbortSignal/总时限；关闭超时报告失败并保留原租约恢复。 | D-06/D-07/D-21 的保护边界 |
 | IP-07 | 7.1–7.3 | 写命令必须经过统一确认原语 | §2 与 §7 文件表 | BrowserRouter 取代自有 history；registry 元数据及七导航保持；旧路由别名保留 query/params；闭合 system operations；project/system 判别确认作用域和 AccessCommandResult 成功类型，深冻结信封、身份及上下文取消。 | D-17 的保护边界 |
 | IP-08 | 8.1–8.5 | 桌面与浏览器必须共用完整 Web 业务界面；C35 页面必须复用 v2 设计并保持既有应用接线；C35 验收必须覆盖真实接缝和可访问性；C34 页面必须复用 v2 设计并只展示真实事实；C34 必须以真实浏览器验收业务接缝；页面必须只经既有 HTTP 只读面取得业务事实；浏览器验收必须使用真实浏览器与正式接缝；识别与复核页面必须只经既有 HTTP 面取得业务事实；浏览器验收必须使用真实浏览器与正式接缝 | §2 与 §7 文件表 | 按迁移附表合并全部真实页面及需要的视觉组件；原 HTTP/session/fixture 依赖改唯一来源，EvidenceDrawer 无静态回退；统一真实 harness 和五份浏览器 spec，保留 C36。 | D-12/D-17 的保护边界 |
-| IP-09 | 9.1–9.3；15.1 正式包取证 | 桌面运行必须限制导航与本机能力；桌面发布必须按冻结平台离线验收 | §2 与 §7 文件表 | 三个平台薄壳：受控 origin、无 preload、禁 Node、sandbox/context isolation、权限默认拒绝、导航/窗口/下载限制、CA 信任；本地无权状态页仅显式重试；离线包/签名/许可证配置及程序工程检查，正式签名包由 15.1 取证。 | D-14/D-15/D-16 的保护边界 |
+| IP-09 | 9.1–9.3；C38 F-01 | 桌面运行必须限制导航与本机能力；桌面功能验收与正式离线发布分阶段 | §2 与 §7 文件表 | 保留已有安全 HTTPS 壳与程序检查；正式签名包取证移交 C38，不新增未签名分发模式。 | D-14/D-15/D-16 |
 | IP-10 | 10.1–10.3 | 部署必须遵循三台虚拟机的集中式边界；离线发布包必须完整且版本可核验 | §2 与 §7 文件表 | 安装工具只读/导入精确介质，固定 systemd units/网络规则；手工证书 Caddy、同源 API/SSE 与深链；GPU/OCR 配置/预算与本地镜像，install/run 不隐式下载。 | D-01/D-02/D-07/D-16 的保护边界 |
 | IP-11 | 11.1–11.3 | 同机逻辑副本必须绑定同一停写边界及全部耐久事实 | §2 与 §7 文件表 | 独立宿主权限 + 全工程资料/空间授权；三 VM 本地停写回执与无在途证明；先 manifests 再 dump 再工件复制/描述耐久发布；状态、互斥与失败采用 IP-02，不自动清理/成功。 | D-08/D-09/D-19 的保护边界 |
 | IP-12 | 12.1–12.3 | 恢复必须先隔离核验再人工切换 | §2 与 §7 文件表 | 新 DB/本地工件根隔离恢复；先原集合核对后诊断；索引真实重建并过原门禁；精确 revision/副本/目标确认、会话失效和受控切换，失败保留双根；不兼容回退须匹配副本。 | D-10/D-11/D-19 的保护边界 |
-| IP-13 | 13.1 程序实现；15.1 制包、15.2 安装取证 | 证书与会话必须沿用安全 HTTPS 边界；连接恢复不得重启任务或自动提交写命令；桌面发布必须按冻结平台离线验收 | §2 与 §7 文件表 | 先完成独立 Playwright、平台/包/输入预检及场景程序，以 acceptance.test.mjs 验证缺项拒绝；随后取证三个真实平台安装/登录/上传下载/撤权/证书拒绝/导航/重连/任务继续。缺环境只阻塞对应平台取证，截图不能代替事实/回执。 | D-12/D-15/D-22 的保护边界 |
-| IP-14 | 14.1 程序实现、14.2 工程交接；15.3–15.4 实机取证、15.5 总体收口 | 模型与 OCR 必须离线预置并隔离资源；发布回退与目标环境验收必须有真实证据 | §2 与 §7 文件表 | 先完成 smoke/benchmark/报告程序、配置与手册及本地行为检查，交接 Finalizer；随后运行真实禁网三 VM 完整安装/后台/恢复/回退和最低目标基准。报告分别记录工程结果与交付证据，Finalizer 在工程审查后生成 verification，全部取证完成再更新为总体结论。 | D-12/D-22 的保护边界 |
+| IP-13 | 13.1；C38 F-02 | 证书与会话必须沿用安全 HTTPS 边界；连接恢复不得重启任务或自动提交写命令；桌面功能验收与正式离线发布分阶段 | apps/desktop/test/e2e/client.spec.ts、acceptance.mjs；playwright.desktop.config.ts | 当前只在可用平台运行已构建主进程，补齐实际安全/会话/重连/任务继续场景；预检不要求签名/正式包。最终三平台安装另交 C38。 | D-12/D-15/D-24 |
+| IP-14 | 14.1–14.2；C38 F-03–F-05 | 当前功能验收与最终部署交付必须分开收口；发布回退与目标环境验收必须有真实证据 | deployment/ACCEPTANCE.md、OPERATIONS.md；acceptance.test.mjs；§6 | 纠正证据口径并交接固定当前检查点；C37 按真实功能和必要审计收口，最终介质/平台/硬件另由 C38 取证。 | D-12/D-22/D-24 |
 
-§6 是逐场景主映射。IP-05 为生命周期/策略/质量场景的共同依赖；IP-09/13 为完整 UI 桌面场景共同证据；IP-10/14 为所有真实部署验收的共同证据，不能因主映射已测单元测试而漏掉集成义务。
+| IP-15 | 15.1–15.3 | 模型部署能力和尺寸由配置冻结；结构化生成必须按冻结 Schema 提交并经本地 Zod 复验；网络 API 必须保持原网关的授权预算与证据契约；测试替身和真实 llama.cpp smoke 分层验收 | §7 增量文件表；原 C05 port 与 adapter | strict 协议判别配置/受限秘密；提取 C05 公共调用运行逻辑；OpenAI Chat Completions 结构化/流式与 Ollama 原生 Embedding；预算、协议和模型身份复验；C04 安全证据；真实三能力 smoke。 | D-23、原 C05/C04/C06 契约 |
+| IP-16 | 16.1–16.3、13.1、14.1 | 当前功能验收与最终部署交付必须分开收口；联网推理完成业务链路；服务生命周期必须使用真实公共接缝；合成验收资料预置必须使用正式权限与模块入口 | §7 增量文件表；ProductionCompositionRootV1、checkPack/runPack、provision、可见外部 Chrome/CDP | 真实 provider 装配及启动；受控预置和原身份续接；原合成工具只读终态观察与安全证据报告；真实生产宿主上的正式业务链路，并在用户可见外部 Chrome 中验收。 | D-20/D-21/D-24、原 HTTP/人工决定/幂等 |
+
+§6 是逐场景主映射。IP-05 为生命周期/策略/质量场景的共同依赖；IP-09/13 为完整 UI 桌面场景共同证据；IP-15/16 为当前真实网络推理与功能闭环证据；C38 最终场景按 F-ID 移交，不能用当前单元测试冒称最终交付。
 
 9.3 的打包程序工程检查复用 scripts/deployment/release.test.mjs（IP-09/IP-10）；13.1 的桌面环境预检复用 scripts/deployment/acceptance.test.mjs（IP-13/IP-14）。相关测试按稳定输入、结构化工具调用、缺项非零和结果状态断言，合成输入与工具替身仅用于程序契约测试，不进入正式发布介质或充当实机证据。
 
@@ -88,7 +98,9 @@ IP-04 新窄读契约：工程 registry.listDeploymentProjects 使用固定分�
 - IP-07/08：真实会话/URL selector→当前工程权限与路由能力→有界读取→原七态；写动作冻结信封→唯一确认→服务端复验→原回执→刷新同上下文。取消无请求；未知响应只允许用户在原计划显式重试，迟到响应用 context revision 隔离。
 - IP-11：授权/全工程枚举/容量/锁→三 VM 本地维护回执及全写者停止→逐工程 hash manifests→完整数据库逻辑 dump（含业务/audit/Outbox/checkpoint/迁移）→全部耐久工件（含清单）→descriptor 耐久发布→IP-12 隔离核对→可用回执。中断保留未完成阶段与旧根，不默默删除。
 - IP-12：受控目标映射→新的隔离 DB/工件根→原副本所有工程 reconcile（findings 全消费+summary）→正式登记/审计/任务/checkpoint 验证→真实双索引重建与门禁→精确目标确认→授权/revision 再核验→停写/切换→旧会话失效→就绪。失败保留双根，回退按原记录显式确认。
-- IP-13/14：真实制品与环境身份→禁网安装→HTTP/Electron/后台/权限/恢复→原始证据→安全报告。启用项缺介质、平台或硬件非零，不将 fixture/protocol 局部通过记成真实部署通过。
+- IP-15：strict 配置与受限凭据→精确后端/能力→C06 与父工件授权→保守 token/字节/截止预算→固定协议请求→C04 持久化及完整读取→结构/向量/流/usage 复验→原类型化结果；生成不自动重试。构建/协议身份保持 D-23 含义。
+- IP-16：受控功能配置与原初始化/兼容检查→D-20/D-21 完整 provider/委派→真实 listener/Worker→原合成材料 check/run→同次回执引用的有限正式只读查询→人工等待或正式终态→精确证据解析→报告。查询不补造写事实，UNKNOWN/submitted/缺引用不通过。
+- IP-13/14：当前平台构建与功能 HTTPS→实际 Electron/浏览器行为→当前证据报告与工程交接；正式制包、禁网安装与实机基准归 C38。
 
 ## 5. Schema、状态与持久化落实
 
@@ -100,122 +112,187 @@ IP-04 新窄读契约：工程 registry.listDeploymentProjects 使用固定分�
 
 确认控制器使用 project/system 判别及原管理回执；实现同时更新全部本仓库调用方与测试。C36 queryWithSourceGrants 无论完整 projection 是否存在都按质量 queryType 接管，并保留现有逐来源 C06 签发。
 
+增量配置/秘密按 D-23 归 adapters/model；core model 请求、结果和错误 Schema 保持不变。serviceContractRef 映射原 serverBuildRef 的协议身份，不伪造供应商构建。部署角色允许合置；后端 registry 在监听前冻结，不要求网络条目提供权重或 llama.cpp 专用元数据。IP-15 复用 C04/C06/预算逻辑，不新增业务表或迁移。IP-16 保留 synthetic 的命令身份及 submitted 状态，正式结果只读证明归现有拥有方；新 checkpoint/report 是验收证据，不替代领域事实。
+
 ## 6. 验收证据矩阵
 
-下表每行引用准确 Requirement/Scenario，不复制规范正文。新测试/命令均是 IP 文件清单的实现内容，完成对应 task 后才存在。fixture 采用原 contracts/core Schema，明确合成样本待甲方复核；随机 LLM 回复不作期望。稳定断言验证身份、状态、版本、权限、耐久回执、资源边界，禁止全文文案/CSS snapshot。
+下面逐项映射当前九份 delta 的 Requirement/Scenario。工程协议测试与真实功能报告分别保存；当前必需场景不能 skip。条件适用于最终制包/禁网/本地模型/硬件的行明确归 C38，F-ID 指 tasks 的移交表；它们仍保留最终契约，不能用当前结果冒称已验收。
 
-矩阵中的目标平台、正式介质与硬件命令用于交付取证，不作为对应程序编写完成或 14.2 工程交接的前置。程序工程检查按 tasks 的本地命令执行；真实 PG/Qdrant/HTTP/Chromium 接缝要求保留。未运行的交付场景保持 BLOCKED，不能用本地测试替代最终通过证据。
+| Requirement / Scenario | 阶段 / IP-ID | 测试文件与前置 | 可观察断言 | 可运行命令或最终移交 |
+| --- | --- | --- | --- | --- |
+| platform/engineering-baseline / 单一生产 workspace / 发现全部生产成员 | C37：工程/适用功能；IP-01 | scripts/check-dependency-policy.test.ts | 恰好四 apps 三 packages，demo 不在生产图 | `pnpm build && pnpm deps:check && pnpm deps:policy` |
+| platform/engineering-baseline / 单一生产 workspace / Demo 不进入生产依赖图 | C37：工程/适用功能；IP-01 | scripts/check-dependency-policy.test.ts | 恰好四 apps 三 packages，demo 不在生产图 | `pnpm build && pnpm deps:check && pnpm deps:policy` |
+| platform/engineering-baseline / 冻结且可重放的工具链 / 冻结安装成功 | C37：工程/适用功能；IP-01 | scripts/check-dependency-policy.test.ts | 精确锁/离线安装、Node 主版本和清单拒绝 | `pnpm build && pnpm deps:check && pnpm deps:policy` |
+| platform/engineering-baseline / 冻结且可重放的工具链 / 清单与锁文件不一致 | C37：工程/适用功能；IP-01 | scripts/check-dependency-policy.test.ts | 精确锁/离线安装、Node 主版本和清单拒绝 | `pnpm build && pnpm deps:check && pnpm deps:policy` |
+| platform/engineering-baseline / 冻结且可重放的工具链 / 不受支持的 Node 主版本 | C37：工程/适用功能；IP-01 | scripts/check-dependency-policy.test.ts | 精确锁/离线安装、Node 主版本和清单拒绝 | `pnpm build && pnpm deps:check && pnpm deps:policy` |
+| platform/engineering-baseline / 可构建的应用与深层共享包 / 全 workspace 构建 | C37：工程/适用功能；IP-01 | scripts/check-dependency-policy.test.ts | 根构建/公开 export 可解析；深导入拒绝 | `pnpm build && pnpm deps:check && pnpm deps:policy` |
+| platform/engineering-baseline / 可构建的应用与深层共享包 / 公开入口可解析 | C37：工程/适用功能；IP-01 | scripts/check-dependency-policy.test.ts | 根构建/公开 export 可解析；深导入拒绝 | `pnpm build && pnpm deps:check && pnpm deps:policy` |
+| platform/engineering-baseline / 可构建的应用与深层共享包 / 深层导入被拒绝 | C37：工程/适用功能；IP-01 | scripts/check-dependency-policy.test.ts | 根构建/公开 export 可解析；深导入拒绝 | `pnpm build && pnpm deps:check && pnpm deps:policy` |
+| platform/engineering-baseline / 强制单向依赖边界 / 合法依赖图 | C37：工程/适用功能；IP-01 | scripts/check-dependency-policy.test.ts | 合法图通过；Desktop→其它 app 与反向依赖拒绝 | `pnpm build && pnpm deps:check && pnpm deps:policy` |
+| platform/engineering-baseline / 强制单向依赖边界 / 反向或跨应用依赖 | C37：工程/适用功能；IP-01 | scripts/check-dependency-policy.test.ts | 合法图通过；Desktop→其它 app 与反向依赖拒绝 | `pnpm build && pnpm deps:check && pnpm deps:policy` |
+| platform/electron-https-client / 桌面与浏览器必须共用完整 Web 业务界面 / 两种入口访问同一业务对象 | C37：工程/适用功能；IP-09 / IP-13 / IP-16 | apps/desktop/test/security.test.ts、e2e/client.spec.ts；真实功能 HTTPS 与当前平台构建 | 真实客户端/权限/TLS/共享对象/原任务与命令身份；不要求正式包 | `pnpm build && pnpm exec playwright test -c playwright.desktop.config.ts`；`pnpm test:browser` |
+| platform/electron-https-client / 桌面与浏览器必须共用完整 Web 业务界面 / 原型数据或页面遗漏 | C37：工程/适用功能；IP-09 / IP-13 / IP-16 | apps/desktop/test/security.test.ts、e2e/client.spec.ts；真实功能 HTTPS 与当前平台构建 | 真实客户端/权限/TLS/共享对象/原任务与命令身份；不要求正式包 | `pnpm build && pnpm exec playwright test -c playwright.desktop.config.ts`；`pnpm test:browser` |
+| platform/electron-https-client / 桌面运行必须限制导航与本机能力 / 越界导航或本机调用 | C37：工程/适用功能；IP-09 / IP-13 / IP-16 | apps/desktop/test/security.test.ts、e2e/client.spec.ts；真实功能 HTTPS 与当前平台构建 | 真实客户端/权限/TLS/共享对象/原任务与命令身份；不要求正式包 | `pnpm build && pnpm exec playwright test -c playwright.desktop.config.ts`；`pnpm test:browser` |
+| platform/electron-https-client / 桌面运行必须限制导航与本机能力 / 基础上传与下载 | C37：工程/适用功能；IP-09 / IP-13 / IP-16 | apps/desktop/test/security.test.ts、e2e/client.spec.ts；真实功能 HTTPS 与当前平台构建 | 真实客户端/权限/TLS/共享对象/原任务与命令身份；不要求正式包 | `pnpm build && pnpm exec playwright test -c playwright.desktop.config.ts`；`pnpm test:browser` |
+| platform/electron-https-client / 证书与会话必须沿用安全 HTTPS 边界 / 有效证书与真实登录 | C37：工程/适用功能；IP-09 / IP-13 / IP-16 | apps/desktop/test/security.test.ts、e2e/client.spec.ts；真实功能 HTTPS 与当前平台构建 | 真实客户端/权限/TLS/共享对象/原任务与命令身份；不要求正式包 | `pnpm build && pnpm exec playwright test -c playwright.desktop.config.ts`；`pnpm test:browser` |
+| platform/electron-https-client / 证书与会话必须沿用安全 HTTPS 边界 / 证书失败或权限撤销 | C37：工程/适用功能；IP-09 / IP-13 / IP-16 | apps/desktop/test/security.test.ts、e2e/client.spec.ts；真实功能 HTTPS 与当前平台构建 | 真实客户端/权限/TLS/共享对象/原任务与命令身份；不要求正式包 | `pnpm build && pnpm exec playwright test -c playwright.desktop.config.ts`；`pnpm test:browser` |
+| platform/electron-https-client / 连接恢复不得重启任务或自动提交写命令 / 首次连接失败与恢复 | C37：工程/适用功能；IP-09 / IP-13 / IP-16 | apps/desktop/test/security.test.ts、e2e/client.spec.ts；真实功能 HTTPS 与当前平台构建 | 真实客户端/权限/TLS/共享对象/原任务与命令身份；不要求正式包 | `pnpm build && pnpm exec playwright test -c playwright.desktop.config.ts`；`pnpm test:browser` |
+| platform/electron-https-client / 连接恢复不得重启任务或自动提交写命令 / 窗口关闭后任务继续 | C37：工程/适用功能；IP-09 / IP-13 / IP-16 | apps/desktop/test/security.test.ts、e2e/client.spec.ts；真实功能 HTTPS 与当前平台构建 | 真实客户端/权限/TLS/共享对象/原任务与命令身份；不要求正式包 | `pnpm build && pnpm exec playwright test -c playwright.desktop.config.ts`；`pnpm test:browser` |
+| platform/electron-https-client / 连接恢复不得重启任务或自动提交写命令 / 命令响应丢失与订阅重连 | C37：工程/适用功能；IP-09 / IP-13 / IP-16 | apps/desktop/test/security.test.ts、e2e/client.spec.ts；真实功能 HTTPS 与当前平台构建 | 真实客户端/权限/TLS/共享对象/原任务与命令身份；不要求正式包 | `pnpm build && pnpm exec playwright test -c playwright.desktop.config.ts`；`pnpm test:browser` |
+| platform/electron-https-client / 桌面功能验收与正式离线发布分阶段 / C38 无公网环境安装正式客户端 | C38 最终 F-01/F-02；IP-09 / IP-13 / IP-16 | 正式安装包、原生目标平台及 C38 验收程序 | 签名/平台/离线安装的最终真实身份和场景 | C38 补齐正式平台命令后制包/安装取证 |
+| platform/electron-https-client / 桌面功能验收与正式离线发布分阶段 / C37 功能验收与 C38 平台证据缺失 | C37：阶段范围；C38：正式平台；IP-09 / IP-13 / IP-16 | apps/desktop/test/security.test.ts、e2e/client.spec.ts；真实功能 HTTPS 与当前平台构建 | 当前真实功能 PASS 不冒称最终平台完成；缺未来材料不阻塞当前 | `node scripts/acceptance/functional.mjs --pack <packDir> --config <runConfig.json> --output <dir>`；Finalizer 核对范围 |
+| platform/electron-https-client / 桌面功能验收与正式离线发布分阶段 / 兼容界面更新与正式平台证据 | C37：阶段范围；C38：正式平台；IP-09 / IP-13 / IP-16 | apps/desktop/test/security.test.ts、e2e/client.spec.ts；真实功能 HTTPS 与当前平台构建 | 当前真实功能 PASS 不冒称最终平台完成；缺未来材料不阻塞当前 | `node scripts/acceptance/functional.mjs --pack <packDir> --config <runConfig.json> --output <dir>`；Finalizer 核对范围 |
+| platform/offline-private-deployment-and-operations / 当前功能验收与最终部署交付必须分开收口 / 无目标硬件完成当前功能验收 | C37：功能范围；C38 最终证据另取；IP-15 / IP-16 | scripts/acceptance/functional.test.mjs；原 restore.test.mjs；真实服务/网络模型及正式业务引用 | 当前正式终态/审计/追溯、失败不冒称通过；未来硬件/介质不阻塞当前 | `pnpm exec vitest run scripts/acceptance/functional.test.mjs scripts/deployment/restore.test.mjs`；`node scripts/acceptance/functional.mjs --pack <packDir> --config <runConfig.json> --output <dir>` |
+| platform/offline-private-deployment-and-operations / 当前功能验收与最终部署交付必须分开收口 / 网络 API 或真实业务证据缺失 | C37：功能范围；C38 最终证据另取；IP-15 / IP-16 | scripts/acceptance/functional.test.mjs；原 restore.test.mjs；真实服务/网络模型及正式业务引用 | 当前正式终态/审计/追溯、失败不冒称通过；未来硬件/介质不阻塞当前 | `pnpm exec vitest run scripts/acceptance/functional.test.mjs scripts/deployment/restore.test.mjs`；`node scripts/acceptance/functional.mjs --pack <packDir> --config <runConfig.json> --output <dir>` |
+| platform/offline-private-deployment-and-operations / 跨虚拟机工件访问必须保持 C04 原契约 / 真实跨 VM 写入与读取 | C37：工程/适用功能；IP-03 | packages/adapters/test/artifacts/remote-artifact-store.test.ts | 原 C04 回执/引用/流校验；截断与越权拒绝 | `pnpm exec vitest run packages/adapters/test/artifacts/remote-artifact-store.test.ts packages/adapters/test/artifacts/content-addressed-artifact-store.test.ts` |
+| platform/offline-private-deployment-and-operations / 跨虚拟机工件访问必须保持 C04 原契约 / 断流或传输身份越权 | C37：工程/适用功能；IP-03 | packages/adapters/test/artifacts/remote-artifact-store.test.ts | 原 C04 回执/引用/流校验；截断与越权拒绝 | `pnpm exec vitest run packages/adapters/test/artifacts/remote-artifact-store.test.ts packages/adapters/test/artifacts/content-addressed-artifact-store.test.ts` |
+| platform/offline-private-deployment-and-operations / 生产策略与窄读必须解析精确真实来源 / 完整来源装配并保留质量查询授权 | C37：工程/适用功能；IP-04 | packages/adapters/test/deployment/policies-readers.test.ts | 精确来源与版本；真实门禁拒绝；C36 资料过滤 | `pnpm exec vitest run packages/adapters/test/deployment/policies-readers.test.ts` |
+| platform/offline-private-deployment-and-operations / 生产策略与窄读必须解析精确真实来源 / 策略漂移或质量门禁失败 | C37：工程/适用功能；IP-04 | packages/adapters/test/deployment/policies-readers.test.ts | 精确来源与版本；真实门禁拒绝；C36 资料过滤 | `pnpm exec vitest run packages/adapters/test/deployment/policies-readers.test.ts` |
+| platform/offline-private-deployment-and-operations / 部署运维状态与审计必须耐久且独立授权 / 阶段重放与权限隔离 | C37：工程/适用功能；IP-02 | packages/adapters/test/deployment/config-operations.test.ts | CAS/唯一键/互斥与 append-only；审计失败无 completed | `pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts` |
+| platform/offline-private-deployment-and-operations / 部署运维状态与审计必须耐久且独立授权 / 审计失败与授权缺项 | C37：工程/适用功能；IP-02 | packages/adapters/test/deployment/config-operations.test.ts | CAS/唯一键/互斥与 append-only；审计失败无 completed | `pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts` |
+| platform/offline-private-deployment-and-operations / 部署必须遵循三台虚拟机的集中式边界 / 客户端只访问应用入口 | C37：工程/适用功能；IP-10 | scripts/deployment/release.test.mjs | 客户端仅 HTTPS；三 VM 内部端口受限；同机恢复边界 | `pnpm exec vitest run scripts/deployment/release.test.mjs && pnpm deployment:verify` |
+| platform/offline-private-deployment-and-operations / 部署必须遵循三台虚拟机的集中式边界 / 同机副本与宿主故障边界 | C37：工程/适用功能；IP-10 | scripts/deployment/release.test.mjs | 客户端仅 HTTPS；三 VM 内部端口受限；同机恢复边界 | `pnpm exec vitest run scripts/deployment/release.test.mjs && pnpm deployment:verify` |
+| platform/offline-private-deployment-and-operations / 离线发布包必须完整且版本可核验 / 断网环境完成安装 | C38 最终 F-03；IP-10 / IP-14 | 最终真实环境/批准介质与阈值；C38 完整执行程序 | 实测身份、命令/报告和真实效果；配置校验不能通过 | C38 补齐真实执行入口后运行 `deployment:verify / smoke / benchmark` |
+| platform/offline-private-deployment-and-operations / 离线发布包必须完整且版本可核验 / 制品不完整或不匹配 | C38 最终 F-03；IP-10 / IP-14 | 最终真实环境/批准介质与阈值；C38 完整执行程序 | 实测身份、命令/报告和真实效果；配置校验不能通过 | C38 补齐真实执行入口后运行 `deployment:verify / smoke / benchmark` |
+| platform/offline-private-deployment-and-operations / 离线发布包必须完整且版本可核验 / 已验收界面尚未进入生产构建 | C37：工程/适用功能；IP-10 | scripts/deployment/release.test.mjs | 禁网安装、精确制品校验；缺项非零且不启动 | `pnpm exec vitest run scripts/deployment/release.test.mjs && pnpm deployment:verify` |
+| platform/offline-private-deployment-and-operations / 部署配置与秘密必须分离并保持原契约 / 同一配置可重放 | C37：工程/适用功能；IP-02 | packages/adapters/test/deployment/config-operations.test.ts | strict 配置/秘密权限/同版本重放；轮换会话失效 | `pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts` |
+| platform/offline-private-deployment-and-operations / 部署配置与秘密必须分离并保持原契约 / 配置非法或秘密不可用 | C37：工程/适用功能；IP-02 | packages/adapters/test/deployment/config-operations.test.ts | strict 配置/秘密权限/同版本重放；轮换会话失效 | `pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts` |
+| platform/offline-private-deployment-and-operations / 部署配置与秘密必须分离并保持原契约 / 秘密轮换保持历史可追溯 | C37：工程/适用功能；IP-02 | packages/adapters/test/deployment/config-operations.test.ts | strict 配置/秘密权限/同版本重放；轮换会话失效 | `pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts` |
+| platform/offline-private-deployment-and-operations / 初始化必须幂等且运行主体使用最小权限 / 空实例初始化成功 | C37：工程/适用功能；IP-02 | packages/adapters/test/deployment/config-operations.test.ts | 空库/重复初始化；原账号与审计保持；DDL 越权拒绝 | `pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts` |
+| platform/offline-private-deployment-and-operations / 初始化必须幂等且运行主体使用最小权限 / 初始化重放或部分失败 | C37：工程/适用功能；IP-02 | packages/adapters/test/deployment/config-operations.test.ts | 空库/重复初始化；原账号与审计保持；DDL 越权拒绝 | `pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts` |
+| platform/offline-private-deployment-and-operations / 初始化必须幂等且运行主体使用最小权限 / 运行主体试图越权 | C37：工程/适用功能；IP-02 | packages/adapters/test/deployment/config-operations.test.ts | 空库/重复初始化；原账号与审计保持；DDL 越权拒绝 | `pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts` |
+| platform/offline-private-deployment-and-operations / 服务生命周期必须使用真实公共接缝 / 真实实例完成请求和后台消费 | C37：工程/适用功能；IP-06 | scripts/deployment/lifecycle.test.mjs；packages/adapters/test/deployment/observability.test.ts | 真实 ports/消费回执/幂等重投；缺线及 drain 超时不就绪 | `pnpm exec vitest run scripts/deployment/lifecycle.test.mjs packages/adapters/test/deployment/observability.test.ts` |
+| platform/offline-private-deployment-and-operations / 服务生命周期必须使用真实公共接缝 / 缺少必需接线 | C37：工程/适用功能；IP-06 | scripts/deployment/lifecycle.test.mjs；packages/adapters/test/deployment/observability.test.ts | 真实 ports/消费回执/幂等重投；缺线及 drain 超时不就绪 | `pnpm exec vitest run scripts/deployment/lifecycle.test.mjs packages/adapters/test/deployment/observability.test.ts` |
+| platform/offline-private-deployment-and-operations / 服务生命周期必须使用真实公共接缝 / 进程重启与事件重投 | C37：工程/适用功能；IP-06 | scripts/deployment/lifecycle.test.mjs；packages/adapters/test/deployment/observability.test.ts | 真实 ports/消费回执/幂等重投；缺线及 drain 超时不就绪 | `pnpm exec vitest run scripts/deployment/lifecycle.test.mjs packages/adapters/test/deployment/observability.test.ts` |
+| platform/offline-private-deployment-and-operations / 服务生命周期必须使用真实公共接缝 / 有界停止未能完成 | C37：工程/适用功能；IP-06 | scripts/deployment/lifecycle.test.mjs；packages/adapters/test/deployment/observability.test.ts | 真实 ports/消费回执/幂等重投；缺线及 drain 超时不就绪 | `pnpm exec vitest run scripts/deployment/lifecycle.test.mjs packages/adapters/test/deployment/observability.test.ts` |
+| platform/offline-private-deployment-and-operations / 内网访问与观测必须有界且最小披露 / 安全同源访问和重连 | C37：工程/适用功能；IP-06 | scripts/deployment/lifecycle.test.mjs；packages/adapters/test/deployment/observability.test.ts | 同源 Cookie/SSE、安全四组件；总截止与当前授权拒绝 | `pnpm exec vitest run scripts/deployment/lifecycle.test.mjs packages/adapters/test/deployment/observability.test.ts` |
+| platform/offline-private-deployment-and-operations / 内网访问与观测必须有界且最小披露 / 依赖失败或正在维护 | C37：工程/适用功能；IP-06 | scripts/deployment/lifecycle.test.mjs；packages/adapters/test/deployment/observability.test.ts | 同源 Cookie/SSE、安全四组件；总截止与当前授权拒绝 | `pnpm exec vitest run scripts/deployment/lifecycle.test.mjs packages/adapters/test/deployment/observability.test.ts` |
+| platform/offline-private-deployment-and-operations / 内网访问与观测必须有界且最小披露 / 慢探针或无权查询 | C37：工程/适用功能；IP-06 | scripts/deployment/lifecycle.test.mjs；packages/adapters/test/deployment/observability.test.ts | 同源 Cookie/SSE、安全四组件；总截止与当前授权拒绝 | `pnpm exec vitest run scripts/deployment/lifecycle.test.mjs packages/adapters/test/deployment/observability.test.ts` |
+| platform/offline-private-deployment-and-operations / 模型与 OCR 必须离线预置并隔离资源 / 联网推理完成业务链路 | C37：功能范围；C38 最终证据另取；IP-15 / IP-16 | scripts/acceptance/functional.test.mjs；原 restore.test.mjs；真实服务/网络模型及正式业务引用 | 当前正式终态/审计/追溯、失败不冒称通过；未来硬件/介质不阻塞当前 | `pnpm exec vitest run scripts/acceptance/functional.test.mjs scripts/deployment/restore.test.mjs`；`node scripts/acceptance/functional.mjs --pack <packDir> --config <runConfig.json> --output <dir>` |
+| platform/offline-private-deployment-and-operations / 模型与 OCR 必须离线预置并隔离资源 / 预置服务身份与真实协议匹配 | C38 最终 F-03；IP-10 / IP-14 | 最终真实环境/批准介质与阈值；C38 完整执行程序 | 实测身份、命令/报告和真实效果；配置校验不能通过 | C38 补齐真实执行入口后运行 `deployment:verify / smoke / benchmark` |
+| platform/offline-private-deployment-and-operations / 模型与 OCR 必须离线预置并隔离资源 / OCR 饱和或崩溃 | C37：工程/适用功能；IP-14 | scripts/deployment/acceptance.test.mjs；deployment/ACCEPTANCE.md | 真实模型/OCR 身份、独立预算；缺环境失败 | `pnpm verify && pnpm deployment:smoke && pnpm deployment:benchmark` |
+| platform/offline-private-deployment-and-operations / 模型与 OCR 必须离线预置并隔离资源 / 模型制品或资源证明缺失 | C38 最终 F-03；IP-10 / IP-14 | 最终真实环境/批准介质与阈值；C38 完整执行程序 | 实测身份、命令/报告和真实效果；配置校验不能通过 | C38 补齐真实执行入口后运行 `deployment:verify / smoke / benchmark` |
+| platform/offline-private-deployment-and-operations / 同机逻辑副本必须绑定同一停写边界及全部耐久事实 / 完整停写备份成立 | C37：工程/适用功能；IP-11 | scripts/deployment/backup.test.mjs | 全工程授权/停写证明；manifest→dump→复制；失败无可用副本 | `pnpm exec vitest run scripts/deployment/backup.test.mjs` |
+| platform/offline-private-deployment-and-operations / 同机逻辑副本必须绑定同一停写边界及全部耐久事实 / 停写失败或工程授权不完整 | C37：工程/适用功能；IP-11 | scripts/deployment/backup.test.mjs | 全工程授权/停写证明；manifest→dump→复制；失败无可用副本 | `pnpm exec vitest run scripts/deployment/backup.test.mjs` |
+| platform/offline-private-deployment-and-operations / 同机逻辑副本必须绑定同一停写边界及全部耐久事实 / 复制、空间或耐久记录失败 | C37：工程/适用功能；IP-11 | scripts/deployment/backup.test.mjs | 全工程授权/停写证明；manifest→dump→复制；失败无可用副本 | `pnpm exec vitest run scripts/deployment/backup.test.mjs` |
+| platform/offline-private-deployment-and-operations / 同机逻辑副本必须绑定同一停写边界及全部耐久事实 / 同键重试与异载荷冲突 | C37：工程/适用功能；IP-11 | scripts/deployment/backup.test.mjs | 全工程授权/停写证明；manifest→dump→复制；失败无可用副本 | `pnpm exec vitest run scripts/deployment/backup.test.mjs` |
+| platform/offline-private-deployment-and-operations / 恢复必须先隔离核验再人工切换 / 隔离恢复与原实例并存 | C37：工程/适用功能；IP-12 | scripts/deployment/restore.test.mjs | 损坏拒绝；完整 findings/summary；真索引；精确目标确认 | `pnpm exec vitest run scripts/deployment/restore.test.mjs` |
+| platform/offline-private-deployment-and-operations / 恢复必须先隔离核验再人工切换 / 缺失、损坏或快照不匹配 | C37：工程/适用功能；IP-12 | scripts/deployment/restore.test.mjs | 损坏拒绝；完整 findings/summary；真索引；精确目标确认 | `pnpm exec vitest run scripts/deployment/restore.test.mjs` |
+| platform/offline-private-deployment-and-operations / 恢复必须先隔离核验再人工切换 / 索引重建与正式空结果 | C37：工程/适用功能；IP-12 | scripts/deployment/restore.test.mjs | 损坏拒绝；完整 findings/summary；真索引；精确目标确认 | `pnpm exec vitest run scripts/deployment/restore.test.mjs` |
+| platform/offline-private-deployment-and-operations / 恢复必须先隔离核验再人工切换 / 人工切换、拒绝与重复操作 | C37：工程/适用功能；IP-12 | scripts/deployment/restore.test.mjs | 损坏拒绝；完整 findings/summary；真索引；精确目标确认 | `pnpm exec vitest run scripts/deployment/restore.test.mjs` |
+| platform/offline-private-deployment-and-operations / 发布回退与目标环境验收必须有真实证据 / 兼容版本回退 | C37：功能范围；C38 最终证据另取；IP-12 / IP-16 | scripts/acceptance/functional.test.mjs；原 restore.test.mjs；生产宿主、真实服务/网络模型及正式业务引用；可见外部 Chrome | 当前正式终态/审计/追溯；用户可见浏览器完成业务操作；headless 不能替代观看验收；失败不冒称通过 | `pnpm exec vitest run scripts/acceptance/functional.test.mjs scripts/deployment/restore.test.mjs`；生产宿主上 `node scripts/acceptance/functional.mjs --pack <packDir> --config <runConfig.json> --output <dir>` 并在可见外部 Chrome 验收 |
+| platform/offline-private-deployment-and-operations / 发布回退与目标环境验收必须有真实证据 / 不兼容回退或缺少真实证据 | C37：功能范围；C38 最终证据另取；IP-15 / IP-16 | scripts/acceptance/functional.test.mjs；原 restore.test.mjs；生产宿主、真实服务/网络模型及正式业务引用；可见外部 Chrome | 当前正式终态/审计/追溯，失败不冒称通过；用户可见浏览器完成业务操作；headless 不能替代观看验收 | `pnpm exec vitest run scripts/acceptance/functional.test.mjs scripts/deployment/restore.test.mjs`；生产宿主上 `node scripts/acceptance/functional.mjs --pack <packDir> --config <runConfig.json> --output <dir>` 并在可见外部 Chrome 验收 |
+| platform/offline-private-deployment-and-operations / 发布回退与目标环境验收必须有真实证据 / 在批准目标硬件形成基准 | C38 最终 F-04；IP-14 | 最终真实环境/批准介质与阈值；C38 完整执行程序 | 实测身份、命令/报告和真实效果；配置校验不能通过 | C38 补齐真实执行入口后运行 `deployment:verify / smoke / benchmark` |
+| platform/offline-private-deployment-and-operations / 发布回退与目标环境验收必须有真实证据 / 目标环境未齐时完成工程检查 | C37：功能范围；C38 最终证据另取；IP-15 / IP-16 | scripts/acceptance/functional.test.mjs；原 restore.test.mjs；生产宿主、真实服务/网络模型及正式业务引用；可见外部 Chrome | 当前正式终态/审计/追溯；用户可见浏览器完成业务操作；headless 不能替代观看验收；失败不冒称通过 | `pnpm exec vitest run scripts/acceptance/functional.test.mjs scripts/deployment/restore.test.mjs`；生产宿主上 `node scripts/acceptance/functional.mjs --pack <packDir> --config <runConfig.json> --output <dir>` 并在可见外部 Chrome 验收 |
+| platform/llamacpp-model-gateway / 模型部署能力和尺寸由配置冻结 / 配置化部署调用成功 | C37：网络 API / 通用契约；llama.cpp 实机：C38；IP-15 | network-api-model-gateway.test.ts / .smoke.test.ts；原 llamacpp-model-gateway.test.ts（均在 packages/adapters/test/model） | 精确协议/模型、严格输出、原权限/预算/C04 引用；不换模型或假回退 | `pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.test.ts`；实际三能力另按下表 network smoke 命令取证 |
+| platform/llamacpp-model-gateway / 模型部署能力和尺寸由配置冻结 / 业务不能选择模型名 | C37：网络 API / 通用契约；llama.cpp 实机：C38；IP-15 | network-api-model-gateway.test.ts / .smoke.test.ts；原 llamacpp-model-gateway.test.ts（均在 packages/adapters/test/model） | 精确协议/模型、严格输出、原权限/预算/C04 引用；不换模型或假回退 | `pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.test.ts`；实际三能力另按下表 network smoke 命令取证 |
+| platform/llamacpp-model-gateway / 模型部署能力和尺寸由配置冻结 / 部署能力或版本不匹配 | C37：网络 API / 通用契约；llama.cpp 实机：C38；IP-15 | network-api-model-gateway.test.ts / .smoke.test.ts；原 llamacpp-model-gateway.test.ts（均在 packages/adapters/test/model） | 精确协议/模型、严格输出、原权限/预算/C04 引用；不换模型或假回退 | `pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.test.ts`；实际三能力另按下表 network smoke 命令取证 |
+| platform/llamacpp-model-gateway / 结构化生成必须按冻结 Schema 提交并经本地 Zod 复验 / 双重约束后的结构化结果成功 | C37：网络 API / 通用契约；llama.cpp 实机：C38；IP-15 | network-api-model-gateway.test.ts / .smoke.test.ts；原 llamacpp-model-gateway.test.ts（均在 packages/adapters/test/model） | 冻结模式、精确协议/模型、Zod 严格收口、原权限/预算/C04 引用；不换模型或假回退 | `pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.test.ts`；实际三能力另按下表 network smoke 命令取证 |
+| platform/llamacpp-model-gateway / 结构化生成必须按冻结 Schema 提交并经本地 Zod 复验 / Schema 提示与本地严格复验 | C37：网络 API / 通用契约；llama.cpp 实机：C38；IP-15 | network-api-model-gateway.test.ts / .smoke.test.ts；原 llamacpp-model-gateway.test.ts（均在 packages/adapters/test/model） | 同一 Zod Schema 转换并进入固定 system 消息；本地严格复验最终生效 | `pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.test.ts` |
+| platform/llamacpp-model-gateway / 结构化生成必须按冻结 Schema 提交并经本地 Zod 复验 / 非法 JSON 结构失败 | C37：网络 API / 通用契约；llama.cpp 实机：C38；IP-15 | network-api-model-gateway.test.ts / .smoke.test.ts；原 llamacpp-model-gateway.test.ts（均在 packages/adapters/test/model） | 非法、额外字段、截断均失败，不修补、不重试、不回退 | `pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.test.ts` |
+| platform/llamacpp-model-gateway / 结构化生成必须按冻结 Schema 提交并经本地 Zod 复验 / Zod 复验失败 | C37：网络 API / 通用契约；llama.cpp 实机：C38；IP-15 | network-api-model-gateway.test.ts | Zod 失败返回闭合错误与受保护诊断，服务约束不替代业务校验 | `pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.test.ts` |
+| platform/llamacpp-model-gateway / 结构化生成必须按冻结 Schema 提交并经本地 Zod 复验 / 服务端 Schema 约束缺少证据 | C37：网络 API / 通用契约；llama.cpp 实机：C38；IP-15 | network-api-model-gateway.test.ts | 无服务端执行证据时拒绝 server-json-schema 配置/就绪 | `pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.test.ts` |
+| platform/llamacpp-model-gateway / 结构化生成必须按冻结 Schema 提交并经本地 Zod 复验 / 输出 Schema 无法安全转换 | C37：网络 API / 通用契约；llama.cpp 实机：C38；IP-15 | network-api-model-gateway.test.ts | 转换失败前置拒绝，不退化纯文本 | `pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.test.ts` |
+| platform/llamacpp-model-gateway / 结构化生成必须按冻结 Schema 提交并经本地 Zod 复验 / reasoning 内容不进入持久化或展示 | C37：网络 API / 通用契约；llama.cpp 实机：C38；IP-15 | network-api-model-gateway.test.ts / .smoke.test.ts | C04 与外部输出剔除 reasoning_content，正文走既有受保护访问边界 | `pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.test.ts` |
+| platform/llamacpp-model-gateway / 测试替身和真实 llama.cpp smoke 分层验收 / 测试替身不进入生产导出 | C37：网络 API / 通用契约；llama.cpp 实机：C38；IP-15 | network-api-model-gateway.test.ts / .smoke.test.ts；原 llamacpp-model-gateway.test.ts（均在 packages/adapters/test/model） | 精确协议/模型、严格输出、原权限/预算/C04 引用；不换模型或假回退 | `pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.test.ts`；实际三能力另按下表 network smoke 命令取证 |
+| platform/llamacpp-model-gateway / 测试替身和真实 llama.cpp smoke 分层验收 / 真实服务走通三项能力 | C37：网络 API / 通用契约；llama.cpp 实机：C38；IP-15 | network-api-model-gateway.test.ts / .smoke.test.ts；原 llamacpp-model-gateway.test.ts（均在 packages/adapters/test/model） | 精确协议/模型、严格输出、原权限/预算/C04 引用；不换模型或假回退 | `pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.test.ts`；实际三能力另按下表 network smoke 命令取证 |
+| platform/llamacpp-model-gateway / 测试替身和真实 llama.cpp smoke 分层验收 / 真实服务不可用不会被跳过为成功 | C37：网络 API / 通用契约；llama.cpp 实机：C38；IP-15 | network-api-model-gateway.test.ts / .smoke.test.ts；原 llamacpp-model-gateway.test.ts（均在 packages/adapters/test/model） | 精确协议/模型、严格输出、原权限/预算/C04 引用；不换模型或假回退 | `pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.test.ts`；实际三能力另按下表 network smoke 命令取证 |
+| platform/llamacpp-model-gateway / 测试替身和真实 llama.cpp smoke 分层验收 / 当前网络 API 形成三能力证据 | C37：网络 API / 通用契约；llama.cpp 实机：C38；IP-15 | network-api-model-gateway.test.ts / .smoke.test.ts；原 llamacpp-model-gateway.test.ts（均在 packages/adapters/test/model） | 精确协议/模型、严格输出、原权限/预算/C04 引用；不换模型或假回退 | `pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.test.ts`；实际三能力另按下表 network smoke 命令取证 |
+| platform/llamacpp-model-gateway / 网络 API 必须保持原网关的授权预算与证据契约 / 合法联网后端被业务复用 | C37：网络 API / 通用契约；llama.cpp 实机：C38；IP-15 | network-api-model-gateway.test.ts / .smoke.test.ts；原 llamacpp-model-gateway.test.ts（均在 packages/adapters/test/model） | 精确协议/模型、严格输出、原权限/预算/C04 引用；不换模型或假回退 | `pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.test.ts`；实际三能力另按下表 network smoke 命令取证 |
+| platform/llamacpp-model-gateway / 网络 API 必须保持原网关的授权预算与证据契约 / 无权资料或秘密进入客户端 | C37：网络 API / 通用契约；llama.cpp 实机：C38；IP-15 | network-api-model-gateway.test.ts / .smoke.test.ts；原 llamacpp-model-gateway.test.ts（均在 packages/adapters/test/model） | 精确协议/模型、严格输出、原权限/预算/C04 引用；不换模型或假回退 | `pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.test.ts`；实际三能力另按下表 network smoke 命令取证 |
+| platform/llamacpp-model-gateway / 网络 API 必须保持原网关的授权预算与证据契约 / 网络协议失败保持原错误边界 | C37：网络 API / 通用契约；llama.cpp 实机：C38；IP-15 | network-api-model-gateway.test.ts / .smoke.test.ts；原 llamacpp-model-gateway.test.ts（均在 packages/adapters/test/model） | 精确协议/模型、严格输出、原权限/预算/C04 引用；不换模型或假回退 | `pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.test.ts`；实际三能力另按下表 network smoke 命令取证 |
+| platform/llamacpp-model-gateway / 网络 API 必须保持原网关的授权预算与证据契约 / 后端切换不得复用旧向量空间 | C37：网络 API / 通用契约；llama.cpp 实机：C38；IP-15 | network-api-model-gateway.test.ts / .smoke.test.ts；原 llamacpp-model-gateway.test.ts（均在 packages/adapters/test/model） | 精确协议/模型、严格输出、原权限/预算/C04 引用；不换模型或假回退 | `pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.test.ts`；实际三能力另按下表 network smoke 命令取证 |
+| platform/web-shell-interaction-primitives / 写命令必须经过统一确认原语 / 普通命令确认后提交一次 | C37：工程/适用功能；IP-07 | apps/web/test/{api-client-openapi,routing-context-actions,confirmation,focus}.test.ts | 冻结完整信封/一次提交；额外确认与焦点；陈旧/无权拒绝 | `pnpm exec vitest run apps/web/test && pnpm test:browser` |
+| platform/web-shell-interaction-primitives / 写命令必须经过统一确认原语 / 高影响命令要求显式二次确认 | C37：工程/适用功能；IP-07 | apps/web/test/{api-client-openapi,routing-context-actions,confirmation,focus}.test.ts | 冻结完整信封/一次提交；额外确认与焦点；陈旧/无权拒绝 | `pnpm exec vitest run apps/web/test && pnpm test:browser` |
+| platform/web-shell-interaction-primitives / 写命令必须经过统一确认原语 / 无权限确认卡不可提交 | C37：工程/适用功能；IP-07 | apps/web/test/{api-client-openapi,routing-context-actions,confirmation,focus}.test.ts | 冻结完整信封/一次提交；额外确认与焦点；陈旧/无权拒绝 | `pnpm exec vitest run apps/web/test && pnpm test:browser` |
+| platform/web-shell-interaction-primitives / 写命令必须经过统一确认原语 / 陈旧版本确认失败 | C37：工程/适用功能；IP-07 | apps/web/test/{api-client-openapi,routing-context-actions,confirmation,focus}.test.ts | 冻结完整信封/一次提交；额外确认与焦点；陈旧/无权拒绝 | `pnpm exec vitest run apps/web/test && pnpm test:browser` |
+| platform/web-shell-interaction-primitives / 写命令必须经过统一确认原语 / 无工程的系统管理确认 | C37：工程/适用功能；IP-07 | apps/web/test/{api-client-openapi,routing-context-actions,confirmation,focus}.test.ts | 冻结完整信封/一次提交；额外确认与焦点；陈旧/无权拒绝 | `pnpm exec vitest run apps/web/test && pnpm test:browser` |
+| web/engineering-and-knowledge-ui / 页面必须只经既有 HTTP 只读面取得业务事实 / 页面渲染当前工程的真实事实 | C37：工程/适用功能；IP-08 | apps/web/test/browser/read-only.spec.ts | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
+| web/engineering-and-knowledge-ui / 页面必须只经既有 HTTP 只读面取得业务事实 / 写操作入口不存在 | C37：工程/适用功能；IP-08 | apps/web/test/browser/read-only.spec.ts | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
+| web/engineering-and-knowledge-ui / 浏览器验收必须使用真实浏览器与正式接缝 / 真实浏览器完成只读链路 | C37：工程/适用功能；IP-08 | apps/web/test/browser/read-only.spec.ts | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
+| web/engineering-and-knowledge-ui / 浏览器验收必须使用真实浏览器与正式接缝 / 环境不可用明确失败 | C37：工程/适用功能；IP-08 | apps/web/test/browser/read-only.spec.ts | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
+| web/identification-and-review-ui / 识别与复核页面必须只经既有 HTTP 面取得业务事实 / 页面渲染当前工程的真实事实 | C37：工程/适用功能；IP-08 | apps/web/test/browser/identification-review.spec.ts | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
+| web/identification-and-review-ui / 识别与复核页面必须只经既有 HTTP 面取得业务事实 / 假写入口不存在 | C37：工程/适用功能；IP-08 | apps/web/test/browser/identification-review.spec.ts | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
+| web/identification-and-review-ui / 浏览器验收必须使用真实浏览器与正式接缝 / 真实浏览器完成识别与复核链路 | C37：工程/适用功能；IP-08 | apps/web/test/browser/identification-review.spec.ts | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
+| web/identification-and-review-ui / 浏览器验收必须使用真实浏览器与正式接缝 / 环境不可用明确失败 | C37：工程/适用功能；IP-08 | apps/web/test/browser/identification-review.spec.ts | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
+| web/assessment-warning-and-response-ui / C34 页面必须复用 v2 设计并只展示真实事实 / 真实数据与页面可达 | C37：工程/适用功能；IP-08 | apps/web/test/browser/assessment-warning-response.spec.ts；risk-level-response-verification.spec.ts | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
+| web/assessment-warning-and-response-ui / C34 页面必须复用 v2 设计并只展示真实事实 / 工程切换与失败 | C37：工程/适用功能；IP-08 | apps/web/test/browser/assessment-warning-response.spec.ts；risk-level-response-verification.spec.ts | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
+| web/assessment-warning-and-response-ui / C34 必须以真实浏览器验收业务接缝 / 真实闭环与失败边界验收 | C37：工程/适用功能；IP-08 | apps/web/test/browser/assessment-warning-response.spec.ts；risk-level-response-verification.spec.ts | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
+| web/agent-audit-and-operations-ui / C35 页面必须复用 v2 设计并保持既有应用接线 / 已接通页面与 v2 分区一致 | C37：工程/适用功能；IP-08 | apps/web/test/browser/agent-audit-operations.spec.ts | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
+| web/agent-audit-and-operations-ui / C35 页面必须复用 v2 设计并保持既有应用接线 / 刷新切换与服务异常 | C37：工程/适用功能；IP-08 | apps/web/test/browser/agent-audit-operations.spec.ts | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
+| web/agent-audit-and-operations-ui / C35 验收必须覆盖真实接缝和可访问性 / 真实浏览器完成 C35 链路 | C37：工程/适用功能；IP-08 | apps/web/test/browser/agent-audit-operations.spec.ts | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
+| web/agent-audit-and-operations-ui / C35 验收必须覆盖真实接缝和可访问性 / 慢读和环境缺失 | C37：工程/适用功能；IP-08 | apps/web/test/browser/agent-audit-operations.spec.ts | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
 
-| Requirement/Scenario | IP-ID | 测试文件 | Fixture/前置条件 | 关键断言 | 可运行命令 |
-| --- | --- | --- | --- | --- | --- |
-| platform/electron-https-client / 桌面与浏览器必须共用完整 Web 业务界面 / 两种入口访问同一业务对象 | IP-08 | apps/web/test/browser/*.spec.ts；apps/desktop/test/e2e/client.spec.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 所有真实路由、精确对象和版本相同；无 fixture 回退 | `pnpm test:browser` |
-| platform/electron-https-client / 桌面与浏览器必须共用完整 Web 业务界面 / 原型数据或页面遗漏 | IP-08 | apps/web/test/browser/*.spec.ts；apps/desktop/test/e2e/client.spec.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 所有真实路由、精确对象和版本相同；无 fixture 回退 | `pnpm test:browser` |
-| platform/electron-https-client / 桌面运行必须限制导航与本机能力 / 越界导航或本机调用 | IP-09 / IP-13 | apps/desktop/test/security.test.ts；apps/desktop/test/e2e/client.spec.ts | 工程检查用原 Schema；平台取证用真实安装包/服务 | origin/协议/权限拒绝；平台包中实际拒绝越界 | 工程：`pnpm exec vitest run apps/desktop/test/security.test.ts`；交付：`pnpm desktop:package && pnpm test:desktop` |
-| platform/electron-https-client / 桌面运行必须限制导航与本机能力 / 基础上传与下载 | IP-09 / IP-13 | apps/desktop/test/security.test.ts；apps/desktop/test/e2e/client.spec.ts | 工程检查用原 Schema；平台取证用真实安装包/服务 | 授权上传下载有用户操作；平台安装后可完成正式文件操作 | 工程：`pnpm exec vitest run apps/desktop/test/security.test.ts`；交付：`pnpm desktop:package && pnpm test:desktop` |
-| platform/electron-https-client / 证书与会话必须沿用安全 HTTPS 边界 / 有效证书与真实登录 | IP-13 | apps/desktop/test/e2e/client.spec.ts | 真实平台/三 VM/批准发布与输入 | 三平台真证书/真实登录；撤权拒绝，Cookie 不外露 | `pnpm test:desktop` |
-| platform/electron-https-client / 证书与会话必须沿用安全 HTTPS 边界 / 证书失败或权限撤销 | IP-13 | apps/desktop/test/e2e/client.spec.ts | 真实平台/三 VM/批准发布与输入 | 三平台真证书/真实登录；撤权拒绝，Cookie 不外露 | `pnpm test:desktop` |
-| platform/electron-https-client / 连接恢复不得重启任务或自动提交写命令 / 首次连接失败与恢复 | IP-13 | apps/desktop/test/e2e/client.spec.ts | 真实平台/三 VM/批准发布与输入 | 显式重连/原任务继续/原 SSE 游标；未知命令不自动提交 | `pnpm test:desktop` |
-| platform/electron-https-client / 连接恢复不得重启任务或自动提交写命令 / 窗口关闭后任务继续 | IP-13 | apps/desktop/test/e2e/client.spec.ts | 真实平台/三 VM/批准发布与输入 | 显式重连/原任务继续/原 SSE 游标；未知命令不自动提交 | `pnpm test:desktop` |
-| platform/electron-https-client / 连接恢复不得重启任务或自动提交写命令 / 命令响应丢失与订阅重连 | IP-13 | apps/desktop/test/e2e/client.spec.ts | 真实平台/三 VM/批准发布与输入 | 显式重连/原任务继续/原 SSE 游标；未知命令不自动提交 | `pnpm test:desktop` |
-| platform/electron-https-client / 桌面发布必须按冻结平台离线验收 / 无公网环境安装已冻结客户端 | IP-13 | apps/desktop/test/e2e/client.spec.ts | 真实平台/三 VM/批准发布与输入 | 三平台禁网安装/签名/版本；无对应机器明确失败 | `pnpm test:desktop` |
-| platform/electron-https-client / 桌面发布必须按冻结平台离线验收 / 服务端界面升级与平台证据缺失 | IP-13 | apps/desktop/test/e2e/client.spec.ts | 真实平台/三 VM/批准发布与输入 | 三平台禁网安装/签名/版本；无对应机器明确失败 | `pnpm test:desktop` |
-| platform/electron-https-client / 桌面发布必须按冻结平台离线验收 / 平台输入未齐时完成工程检查 | IP-09 / IP-13 / IP-14 | scripts/deployment/release.test.mjs；scripts/deployment/acceptance.test.mjs；deployment/ACCEPTANCE.md | 原 Schema 与标注测试输入；缺正式平台/介质/签名 | 缺项拒绝；工程结果与平台 BLOCKED 分列；14.2 可交接；正式包不回退 | `pnpm exec vitest run scripts/deployment/release.test.mjs scripts/deployment/acceptance.test.mjs`；Finalizer 核对 tasks 与 verification |
-| platform/engineering-baseline / 单一生产 workspace / 发现全部生产成员 | IP-01 | scripts/check-dependency-policy.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 恰好四 apps 三 packages，demo 不在生产图 | `pnpm build && pnpm deps:check && pnpm deps:policy` |
-| platform/engineering-baseline / 单一生产 workspace / Demo 不进入生产依赖图 | IP-01 | scripts/check-dependency-policy.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 恰好四 apps 三 packages，demo 不在生产图 | `pnpm build && pnpm deps:check && pnpm deps:policy` |
-| platform/engineering-baseline / 冻结且可重放的工具链 / 冻结安装成功 | IP-01 | scripts/check-dependency-policy.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 精确锁/离线安装、Node 主版本和清单拒绝 | `pnpm build && pnpm deps:check && pnpm deps:policy` |
-| platform/engineering-baseline / 冻结且可重放的工具链 / 清单与锁文件不一致 | IP-01 | scripts/check-dependency-policy.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 精确锁/离线安装、Node 主版本和清单拒绝 | `pnpm build && pnpm deps:check && pnpm deps:policy` |
-| platform/engineering-baseline / 冻结且可重放的工具链 / 不受支持的 Node 主版本 | IP-01 | scripts/check-dependency-policy.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 精确锁/离线安装、Node 主版本和清单拒绝 | `pnpm build && pnpm deps:check && pnpm deps:policy` |
-| platform/engineering-baseline / 可构建的应用与深层共享包 / 全 workspace 构建 | IP-01 | scripts/check-dependency-policy.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 根构建/公开 export 可解析；深导入拒绝 | `pnpm build && pnpm deps:check && pnpm deps:policy` |
-| platform/engineering-baseline / 可构建的应用与深层共享包 / 公开入口可解析 | IP-01 | scripts/check-dependency-policy.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 根构建/公开 export 可解析；深导入拒绝 | `pnpm build && pnpm deps:check && pnpm deps:policy` |
-| platform/engineering-baseline / 可构建的应用与深层共享包 / 深层导入被拒绝 | IP-01 | scripts/check-dependency-policy.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 根构建/公开 export 可解析；深导入拒绝 | `pnpm build && pnpm deps:check && pnpm deps:policy` |
-| platform/engineering-baseline / 强制单向依赖边界 / 合法依赖图 | IP-01 | scripts/check-dependency-policy.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 合法图通过；Desktop→其它 app 与反向依赖拒绝 | `pnpm build && pnpm deps:check && pnpm deps:policy` |
-| platform/engineering-baseline / 强制单向依赖边界 / 反向或跨应用依赖 | IP-01 | scripts/check-dependency-policy.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 合法图通过；Desktop→其它 app 与反向依赖拒绝 | `pnpm build && pnpm deps:check && pnpm deps:policy` |
-| platform/offline-private-deployment-and-operations / 跨虚拟机工件访问必须保持 C04 原契约 / 真实跨 VM 写入与读取 | IP-03 | packages/adapters/test/artifacts/remote-artifact-store.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 原 C04 回执/引用/流校验；截断与越权拒绝 | `pnpm exec vitest run packages/adapters/test/artifacts/remote-artifact-store.test.ts packages/adapters/test/artifacts/content-addressed-artifact-store.test.ts` |
-| platform/offline-private-deployment-and-operations / 跨虚拟机工件访问必须保持 C04 原契约 / 断流或传输身份越权 | IP-03 | packages/adapters/test/artifacts/remote-artifact-store.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 原 C04 回执/引用/流校验；截断与越权拒绝 | `pnpm exec vitest run packages/adapters/test/artifacts/remote-artifact-store.test.ts packages/adapters/test/artifacts/content-addressed-artifact-store.test.ts` |
-| platform/offline-private-deployment-and-operations / 生产策略与窄读必须解析精确真实来源 / 完整来源装配并保留质量查询授权 | IP-04 | packages/adapters/test/deployment/policies-readers.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 精确来源与版本；真实门禁拒绝；C36 资料过滤 | `pnpm exec vitest run packages/adapters/test/deployment/policies-readers.test.ts` |
-| platform/offline-private-deployment-and-operations / 生产策略与窄读必须解析精确真实来源 / 策略漂移或质量门禁失败 | IP-04 | packages/adapters/test/deployment/policies-readers.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 精确来源与版本；真实门禁拒绝；C36 资料过滤 | `pnpm exec vitest run packages/adapters/test/deployment/policies-readers.test.ts` |
-| platform/offline-private-deployment-and-operations / 部署运维状态与审计必须耐久且独立授权 / 阶段重放与权限隔离 | IP-02 | packages/adapters/test/deployment/config-operations.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | CAS/唯一键/互斥与 append-only；审计失败无 completed | `pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts` |
-| platform/offline-private-deployment-and-operations / 部署运维状态与审计必须耐久且独立授权 / 审计失败与授权缺项 | IP-02 | packages/adapters/test/deployment/config-operations.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | CAS/唯一键/互斥与 append-only；审计失败无 completed | `pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts` |
-| platform/offline-private-deployment-and-operations / 部署必须遵循三台虚拟机的集中式边界 / 客户端只访问应用入口 | IP-10 | scripts/deployment/release.test.mjs | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 客户端仅 HTTPS；三 VM 内部端口受限；同机恢复边界 | `pnpm exec vitest run scripts/deployment/release.test.mjs && pnpm deployment:verify` |
-| platform/offline-private-deployment-and-operations / 部署必须遵循三台虚拟机的集中式边界 / 同机副本与宿主故障边界 | IP-10 | scripts/deployment/release.test.mjs | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 客户端仅 HTTPS；三 VM 内部端口受限；同机恢复边界 | `pnpm exec vitest run scripts/deployment/release.test.mjs && pnpm deployment:verify` |
-| platform/offline-private-deployment-and-operations / 离线发布包必须完整且版本可核验 / 断网环境完成安装 | IP-10 | scripts/deployment/release.test.mjs | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 禁网安装、精确制品校验；缺项非零且不启动 | `pnpm exec vitest run scripts/deployment/release.test.mjs && pnpm deployment:verify` |
-| platform/offline-private-deployment-and-operations / 离线发布包必须完整且版本可核验 / 制品不完整或不匹配 | IP-10 | scripts/deployment/release.test.mjs | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 禁网安装、精确制品校验；缺项非零且不启动 | `pnpm exec vitest run scripts/deployment/release.test.mjs && pnpm deployment:verify` |
-| platform/offline-private-deployment-and-operations / 离线发布包必须完整且版本可核验 / 已验收界面尚未进入生产构建 | IP-10 | scripts/deployment/release.test.mjs | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 禁网安装、精确制品校验；缺项非零且不启动 | `pnpm exec vitest run scripts/deployment/release.test.mjs && pnpm deployment:verify` |
-| platform/offline-private-deployment-and-operations / 部署配置与秘密必须分离并保持原契约 / 同一配置可重放 | IP-02 | packages/adapters/test/deployment/config-operations.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | strict 配置/秘密权限/同版本重放；轮换会话失效 | `pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts` |
-| platform/offline-private-deployment-and-operations / 部署配置与秘密必须分离并保持原契约 / 配置非法或秘密不可用 | IP-02 | packages/adapters/test/deployment/config-operations.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | strict 配置/秘密权限/同版本重放；轮换会话失效 | `pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts` |
-| platform/offline-private-deployment-and-operations / 部署配置与秘密必须分离并保持原契约 / 秘密轮换保持历史可追溯 | IP-02 | packages/adapters/test/deployment/config-operations.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | strict 配置/秘密权限/同版本重放；轮换会话失效 | `pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts` |
-| platform/offline-private-deployment-and-operations / 初始化必须幂等且运行主体使用最小权限 / 空实例初始化成功 | IP-02 | packages/adapters/test/deployment/config-operations.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 空库/重复初始化；原账号与审计保持；DDL 越权拒绝 | `pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts` |
-| platform/offline-private-deployment-and-operations / 初始化必须幂等且运行主体使用最小权限 / 初始化重放或部分失败 | IP-02 | packages/adapters/test/deployment/config-operations.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 空库/重复初始化；原账号与审计保持；DDL 越权拒绝 | `pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts` |
-| platform/offline-private-deployment-and-operations / 初始化必须幂等且运行主体使用最小权限 / 运行主体试图越权 | IP-02 | packages/adapters/test/deployment/config-operations.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 空库/重复初始化；原账号与审计保持；DDL 越权拒绝 | `pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts` |
-| platform/offline-private-deployment-and-operations / 服务生命周期必须使用真实公共接缝 / 真实实例完成请求和后台消费 | IP-06 | scripts/deployment/lifecycle.test.mjs；packages/adapters/test/deployment/observability.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 真实 ports/消费回执/幂等重投；缺线及 drain 超时不就绪 | `pnpm exec vitest run scripts/deployment/lifecycle.test.mjs packages/adapters/test/deployment/observability.test.ts` |
-| platform/offline-private-deployment-and-operations / 服务生命周期必须使用真实公共接缝 / 缺少必需接线 | IP-06 | scripts/deployment/lifecycle.test.mjs；packages/adapters/test/deployment/observability.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 真实 ports/消费回执/幂等重投；缺线及 drain 超时不就绪 | `pnpm exec vitest run scripts/deployment/lifecycle.test.mjs packages/adapters/test/deployment/observability.test.ts` |
-| platform/offline-private-deployment-and-operations / 服务生命周期必须使用真实公共接缝 / 进程重启与事件重投 | IP-06 | scripts/deployment/lifecycle.test.mjs；packages/adapters/test/deployment/observability.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 真实 ports/消费回执/幂等重投；缺线及 drain 超时不就绪 | `pnpm exec vitest run scripts/deployment/lifecycle.test.mjs packages/adapters/test/deployment/observability.test.ts` |
-| platform/offline-private-deployment-and-operations / 服务生命周期必须使用真实公共接缝 / 有界停止未能完成 | IP-06 | scripts/deployment/lifecycle.test.mjs；packages/adapters/test/deployment/observability.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 真实 ports/消费回执/幂等重投；缺线及 drain 超时不就绪 | `pnpm exec vitest run scripts/deployment/lifecycle.test.mjs packages/adapters/test/deployment/observability.test.ts` |
-| platform/offline-private-deployment-and-operations / 内网访问与观测必须有界且最小披露 / 安全同源访问和重连 | IP-06 | scripts/deployment/lifecycle.test.mjs；packages/adapters/test/deployment/observability.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 同源 Cookie/SSE、安全四组件；总截止与当前授权拒绝 | `pnpm exec vitest run scripts/deployment/lifecycle.test.mjs packages/adapters/test/deployment/observability.test.ts` |
-| platform/offline-private-deployment-and-operations / 内网访问与观测必须有界且最小披露 / 依赖失败或正在维护 | IP-06 | scripts/deployment/lifecycle.test.mjs；packages/adapters/test/deployment/observability.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 同源 Cookie/SSE、安全四组件；总截止与当前授权拒绝 | `pnpm exec vitest run scripts/deployment/lifecycle.test.mjs packages/adapters/test/deployment/observability.test.ts` |
-| platform/offline-private-deployment-and-operations / 内网访问与观测必须有界且最小披露 / 慢探针或无权查询 | IP-06 | scripts/deployment/lifecycle.test.mjs；packages/adapters/test/deployment/observability.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 同源 Cookie/SSE、安全四组件；总截止与当前授权拒绝 | `pnpm exec vitest run scripts/deployment/lifecycle.test.mjs packages/adapters/test/deployment/observability.test.ts` |
-| platform/offline-private-deployment-and-operations / 模型与 OCR 必须离线预置并隔离资源 / 预置服务身份与真实协议匹配 | IP-14 | scripts/deployment/acceptance.test.mjs；deployment/ACCEPTANCE.md | 真实平台/三 VM/批准发布与输入 | 真实模型/OCR 身份、独立预算；缺环境失败 | `pnpm verify && pnpm deployment:smoke && pnpm deployment:benchmark` |
-| platform/offline-private-deployment-and-operations / 模型与 OCR 必须离线预置并隔离资源 / OCR 饱和或崩溃 | IP-14 | scripts/deployment/acceptance.test.mjs；deployment/ACCEPTANCE.md | 真实平台/三 VM/批准发布与输入 | 真实模型/OCR 身份、独立预算；缺环境失败 | `pnpm verify && pnpm deployment:smoke && pnpm deployment:benchmark` |
-| platform/offline-private-deployment-and-operations / 模型与 OCR 必须离线预置并隔离资源 / 模型制品或资源证明缺失 | IP-14 | scripts/deployment/acceptance.test.mjs；deployment/ACCEPTANCE.md | 真实平台/三 VM/批准发布与输入 | 真实模型/OCR 身份、独立预算；缺环境失败 | `pnpm verify && pnpm deployment:smoke && pnpm deployment:benchmark` |
-| platform/offline-private-deployment-and-operations / 同机逻辑副本必须绑定同一停写边界及全部耐久事实 / 完整停写备份成立 | IP-11 | scripts/deployment/backup.test.mjs | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 全工程授权/停写证明；manifest→dump→复制；失败无可用副本 | `pnpm exec vitest run scripts/deployment/backup.test.mjs` |
-| platform/offline-private-deployment-and-operations / 同机逻辑副本必须绑定同一停写边界及全部耐久事实 / 停写失败或工程授权不完整 | IP-11 | scripts/deployment/backup.test.mjs | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 全工程授权/停写证明；manifest→dump→复制；失败无可用副本 | `pnpm exec vitest run scripts/deployment/backup.test.mjs` |
-| platform/offline-private-deployment-and-operations / 同机逻辑副本必须绑定同一停写边界及全部耐久事实 / 复制、空间或耐久记录失败 | IP-11 | scripts/deployment/backup.test.mjs | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 全工程授权/停写证明；manifest→dump→复制；失败无可用副本 | `pnpm exec vitest run scripts/deployment/backup.test.mjs` |
-| platform/offline-private-deployment-and-operations / 同机逻辑副本必须绑定同一停写边界及全部耐久事实 / 同键重试与异载荷冲突 | IP-11 | scripts/deployment/backup.test.mjs | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 全工程授权/停写证明；manifest→dump→复制；失败无可用副本 | `pnpm exec vitest run scripts/deployment/backup.test.mjs` |
-| platform/offline-private-deployment-and-operations / 恢复必须先隔离核验再人工切换 / 隔离恢复与原实例并存 | IP-12 | scripts/deployment/restore.test.mjs | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 损坏拒绝；完整 findings/summary；真索引；精确目标确认 | `pnpm exec vitest run scripts/deployment/restore.test.mjs` |
-| platform/offline-private-deployment-and-operations / 恢复必须先隔离核验再人工切换 / 缺失、损坏或快照不匹配 | IP-12 | scripts/deployment/restore.test.mjs | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 损坏拒绝；完整 findings/summary；真索引；精确目标确认 | `pnpm exec vitest run scripts/deployment/restore.test.mjs` |
-| platform/offline-private-deployment-and-operations / 恢复必须先隔离核验再人工切换 / 索引重建与正式空结果 | IP-12 | scripts/deployment/restore.test.mjs | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 损坏拒绝；完整 findings/summary；真索引；精确目标确认 | `pnpm exec vitest run scripts/deployment/restore.test.mjs` |
-| platform/offline-private-deployment-and-operations / 恢复必须先隔离核验再人工切换 / 人工切换、拒绝与重复操作 | IP-12 | scripts/deployment/restore.test.mjs | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 损坏拒绝；完整 findings/summary；真索引；精确目标确认 | `pnpm exec vitest run scripts/deployment/restore.test.mjs` |
-| platform/offline-private-deployment-and-operations / 发布回退与目标环境验收必须有真实证据 / 兼容版本回退 | IP-14 | scripts/deployment/acceptance.test.mjs；deployment/ACCEPTANCE.md | 真实平台/三 VM/批准发布与输入 | 兼容性检查/隔离回退；真实 4090/128GB 证据，无 skip | `pnpm verify && pnpm deployment:smoke && pnpm deployment:benchmark` |
-| platform/offline-private-deployment-and-operations / 发布回退与目标环境验收必须有真实证据 / 不兼容回退或缺少真实证据 | IP-14 | scripts/deployment/acceptance.test.mjs；deployment/ACCEPTANCE.md | 真实平台/三 VM/批准发布与输入 | 兼容性检查/隔离回退；真实 4090/128GB 证据，无 skip | `pnpm verify && pnpm deployment:smoke && pnpm deployment:benchmark` |
-| platform/offline-private-deployment-and-operations / 发布回退与目标环境验收必须有真实证据 / 在批准目标硬件形成基准 | IP-14 | scripts/deployment/acceptance.test.mjs；deployment/ACCEPTANCE.md | 真实平台/三 VM/批准发布与输入 | 兼容性检查/隔离回退；真实 4090/128GB 证据，无 skip | `pnpm verify && pnpm deployment:smoke && pnpm deployment:benchmark` |
-| platform/offline-private-deployment-and-operations / 发布回退与目标环境验收必须有真实证据 / 目标环境未齐时完成工程检查 | IP-10 / IP-14 | scripts/deployment/release.test.mjs；scripts/deployment/acceptance.test.mjs；deployment/ACCEPTANCE.md | 本地真实接缝/标注测试输入；缺目标硬件/正式介质 | 实现及工程检查可交接；交付缺项逐项 BLOCKED；总体不宣告 PASS；补证绑定最终身份 | `pnpm verify && pnpm test:browser && pnpm test:deployment`；Finalizer 核对 tasks 与 verification |
-| platform/web-shell-interaction-primitives / 写命令必须经过统一确认原语 / 普通命令确认后提交一次 | IP-07 | apps/web/test/{api-client-openapi,routing-context-actions,confirmation,focus}.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 冻结完整信封/一次提交；额外确认与焦点；陈旧/无权拒绝 | `pnpm exec vitest run apps/web/test && pnpm test:browser` |
-| platform/web-shell-interaction-primitives / 写命令必须经过统一确认原语 / 高影响命令要求显式二次确认 | IP-07 | apps/web/test/{api-client-openapi,routing-context-actions,confirmation,focus}.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 冻结完整信封/一次提交；额外确认与焦点；陈旧/无权拒绝 | `pnpm exec vitest run apps/web/test && pnpm test:browser` |
-| platform/web-shell-interaction-primitives / 写命令必须经过统一确认原语 / 无权限确认卡不可提交 | IP-07 | apps/web/test/{api-client-openapi,routing-context-actions,confirmation,focus}.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 冻结完整信封/一次提交；额外确认与焦点；陈旧/无权拒绝 | `pnpm exec vitest run apps/web/test && pnpm test:browser` |
-| platform/web-shell-interaction-primitives / 写命令必须经过统一确认原语 / 陈旧版本确认失败 | IP-07 | apps/web/test/{api-client-openapi,routing-context-actions,confirmation,focus}.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 冻结完整信封/一次提交；额外确认与焦点；陈旧/无权拒绝 | `pnpm exec vitest run apps/web/test && pnpm test:browser` |
-| platform/web-shell-interaction-primitives / 写命令必须经过统一确认原语 / 无工程的系统管理确认 | IP-07 | apps/web/test/{api-client-openapi,routing-context-actions,confirmation,focus}.test.ts | 原 Schema、真实 PG/C04；涉及索引用真实 Qdrant | 冻结完整信封/一次提交；额外确认与焦点；陈旧/无权拒绝 | `pnpm exec vitest run apps/web/test && pnpm test:browser` |
-| web/agent-audit-and-operations-ui / C35 页面必须复用 v2 设计并保持既有应用接线 / 已接通页面与 v2 分区一致 | IP-08 | apps/web/test/browser/agent-audit-operations.spec.ts | 真实 PG、Cookie、迁移与合成已标注 fixture | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
-| web/agent-audit-and-operations-ui / C35 页面必须复用 v2 设计并保持既有应用接线 / 刷新切换与服务异常 | IP-08 | apps/web/test/browser/agent-audit-operations.spec.ts | 真实 PG、Cookie、迁移与合成已标注 fixture | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
-| web/agent-audit-and-operations-ui / C35 验收必须覆盖真实接缝和可访问性 / 真实浏览器完成 C35 链路 | IP-08 | apps/web/test/browser/agent-audit-operations.spec.ts | 真实 PG、Cookie、迁移与合成已标注 fixture | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
-| web/agent-audit-and-operations-ui / C35 验收必须覆盖真实接缝和可访问性 / 慢读和环境缺失 | IP-08 | apps/web/test/browser/agent-audit-operations.spec.ts | 真实 PG、Cookie、迁移与合成已标注 fixture | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
-| web/assessment-warning-and-response-ui / C34 页面必须复用 v2 设计并只展示真实事实 / 真实数据与页面可达 | IP-08 | apps/web/test/browser/assessment-warning-response.spec.ts；risk-level-response-verification.spec.ts | 真实 PG、Cookie、迁移与合成已标注 fixture | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
-| web/assessment-warning-and-response-ui / C34 页面必须复用 v2 设计并只展示真实事实 / 工程切换与失败 | IP-08 | apps/web/test/browser/assessment-warning-response.spec.ts；risk-level-response-verification.spec.ts | 真实 PG、Cookie、迁移与合成已标注 fixture | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
-| web/assessment-warning-and-response-ui / C34 必须以真实浏览器验收业务接缝 / 真实闭环与失败边界验收 | IP-08 | apps/web/test/browser/assessment-warning-response.spec.ts；risk-level-response-verification.spec.ts | 真实 PG、Cookie、迁移与合成已标注 fixture | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
-| web/engineering-and-knowledge-ui / 页面必须只经既有 HTTP 只读面取得业务事实 / 页面渲染当前工程的真实事实 | IP-08 | apps/web/test/browser/read-only.spec.ts | 真实 PG、Cookie、迁移与合成已标注 fixture | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
-| web/engineering-and-knowledge-ui / 页面必须只经既有 HTTP 只读面取得业务事实 / 写操作入口不存在 | IP-08 | apps/web/test/browser/read-only.spec.ts | 真实 PG、Cookie、迁移与合成已标注 fixture | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
-| web/engineering-and-knowledge-ui / 浏览器验收必须使用真实浏览器与正式接缝 / 真实浏览器完成只读链路 | IP-08 | apps/web/test/browser/read-only.spec.ts | 真实 PG、Cookie、迁移与合成已标注 fixture | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
-| web/engineering-and-knowledge-ui / 浏览器验收必须使用真实浏览器与正式接缝 / 环境不可用明确失败 | IP-08 | apps/web/test/browser/read-only.spec.ts | 真实 PG、Cookie、迁移与合成已标注 fixture | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
-| web/identification-and-review-ui / 识别与复核页面必须只经既有 HTTP 面取得业务事实 / 页面渲染当前工程的真实事实 | IP-08 | apps/web/test/browser/identification-review.spec.ts | 真实 PG、Cookie、迁移与合成已标注 fixture | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
-| web/identification-and-review-ui / 识别与复核页面必须只经既有 HTTP 面取得业务事实 / 假写入口不存在 | IP-08 | apps/web/test/browser/identification-review.spec.ts | 真实 PG、Cookie、迁移与合成已标注 fixture | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
-| web/identification-and-review-ui / 浏览器验收必须使用真实浏览器与正式接缝 / 真实浏览器完成识别与复核链路 | IP-08 | apps/web/test/browser/identification-review.spec.ts | 真实 PG、Cookie、迁移与合成已标注 fixture | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
-| web/identification-and-review-ui / 浏览器验收必须使用真实浏览器与正式接缝 / 环境不可用明确失败 | IP-08 | apps/web/test/browser/identification-review.spec.ts | 真实 PG、Cookie、迁移与合成已标注 fixture | 真实浏览器/正式事实/权限/工程切换/键盘；环境缺失非零 | `pnpm test:browser` |
+当前共同验证：`pnpm verify && pnpm test:browser && pnpm test:deployment`，另取 IP-13 当前平台 Electron、IP-15 真实 network smoke、IP-16 正式业务终态报告。仓库级门禁失败仍须按项目边界处理，延后现场验收不授权跳过门禁。
 
-共同验证义务：
-
-| IP-ID | 必须补足的可观察证据 | 命令 |
+| 命令/入口 | 当前作用与后续落实 | 所有权 |
 | --- | --- | --- |
-| IP-04 / IP-05 | 所有必需 options 有真实 provider；每种缺失逐项拒绝；构造环绑定前不能执行；质量与普通 projection 同时接入后撤权仍过滤 | `pnpm exec vitest run scripts/deployment/composition.test.mjs packages/adapters/test/deployment/policies-readers.test.ts apps/api/test/quality.test.ts` |
-| IP-08 | 五份迁移浏览器 spec 与 C36 全过、真会话/SQL 回执、焦点/高频单请求、工程切换；深链完整枚举 | `pnpm test:browser` |
-| IP-09 / IP-13 | 本地检查权限/导航边界及打包程序；各平台再取证 handler 拒绝、未知写不重投、上传/用户选保存、证书不绕过 | 工程：`pnpm exec vitest run apps/desktop/test/security.test.ts scripts/deployment/release.test.mjs scripts/deployment/acceptance.test.mjs`；交付：`pnpm desktop:package && pnpm test:desktop` |
-| IP-11 / IP-12 | 全工程 manifest 登记先于 dump；坏字节/缺文件/异 snapshot/未消费 summary/审计失败均拒绝；重投无重复业务事实 | `pnpm test:deployment` |
-| IP-10 / IP-14 | 工程阶段验证发布/验收程序及缺项拒绝；交付阶段验证真实禁网三 VM、正式介质、4090/128GB 模型/OCR、恢复/回退及报告 | 工程：`pnpm exec vitest run scripts/deployment/release.test.mjs scripts/deployment/acceptance.test.mjs`；交付：`pnpm deployment:verify && pnpm deployment:smoke && pnpm deployment:benchmark` |
+| pnpm test:deployment | 已有工程测试；保持真实必要依赖与失败边界 | IP-02–IP-14 |
+| pnpm test:desktop | 当前仅 Vitest security/packaging；不是 Electron 实跑证据 | IP-13；正式安装归 C38 F-02 |
+| pnpm exec playwright test -c playwright.desktop.config.ts | 当前平台构建运行；13.1 补齐完整客户端功能场景，预检不要求签名/正式包 | IP-13 / IP-16 |
+| pnpm desktop:package / deployment:verify | 已有正式介质程序；C38 须独立核验调用/实际产物，不能由当前测试推定完整 | C38 F-01/F-03 |
+| pnpm deployment:smoke / deployment:benchmark | 当前只执行 acceptance.mjs 配置校验；真实场景执行/资源采集未完成，不作真实证据 | C38 F-03/F-04 |
+| node scripts/deployment/start.mjs | 本次计划新增；真实初始化检查、完整公开 provider 装配、API/Worker 生命周期；配置路径按 D-22/D-23 | IP-16 |
+| RISKFLOW_NETWORK_API_SMOKE=1 pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.smoke.test.ts | 本次计划新增；真实网络三能力与 C04 证据，无服务/关键 skip 非零 | IP-15 |
+| node scripts/acceptance/functional.mjs --pack <packDir> --config <runConfig.json> --output <dir> [--resume] | 本次计划新增；复用 synthetic，证明正式异步终态/证据，不将 submitted 当完成 | IP-16 |
 
-命令实现登记（IP-01 添加 package scripts；代码所有权如下）：
-
-| 新命令 | 固定入口与含义 | 所有权 |
-| --- | --- | --- |
-| test:deployment | vitest run packages/adapters/test/deployment packages/adapters/test/artifacts/remote-artifact-store.test.ts scripts/deployment；需要真实 PG/Qdrant，缺环境非零 | IP-02–06 / IP-10–12 |
-| test:desktop | playwright test -c playwright.desktop.config.ts；目标平台受控配置与真实 installed app 必需 | IP-13 |
-| desktop:package | node scripts/deployment/package-desktop.mjs；原生构建+本地 electronDist/cache+签名+许可核验 | IP-09 |
-| deployment:verify | node scripts/deployment/release.mjs verify；manifest/config/许可/身份与副作用前 preflight | IP-02 / IP-10 |
-| deployment:smoke | node scripts/deployment/smoke.mjs；真实服务/禁网/恢复完整验收，输出非零阻塞 | IP-14 |
-| deployment:benchmark | node scripts/deployment/benchmark.mjs；按批准 acceptance config 实测并输出报告 | IP-14 |
-
-配置路径环境名见 D-22；示例只给字段/占位身份与注释说明，不给能启动生产的假业务策略或固定秘密。pnpm verify、test:browser 与 test:deployment 保持工程验证，不需要真实三平台/目标硬件；真实 deployment/desktop 命令在交付取证任务中单独必跑。IP-10/14 的程序工程检查分别复用 release.test.mjs/acceptance.test.mjs；真实模型/OCR smoke 在 15.3 取证时显式设置 RISKFLOW_LLAMACPP_SMOKE=1/RISKFLOW_OCR_SMOKE=1 及其真实 config，不能利用原默认 skip 宣告全套通过。
+计划新增的源码/测试尚不存在；只有对应 apply 任务实施后才运行它们。真实 network smoke 的配置/秘密环境路径见 D-22，functional 配置示例由 IP-16 新增；当前正式模型/协议资格与受限秘密须在运行前提供。llama.cpp/OCR 本地介质 smoke 由 C38 显式运行，不以默认 skip 记最终通过。
 
 ## 7. 文件清单与升级条件
 
-以下是完整 allowlist；基线已存在者为修改，不存在者为新增。同一路径多阶段由后阶段接续，禁止并行 writer。IP-01 拥有共享根配置/锁文件；IP-02 拥有 adapters manifest，IP-05 通过它补 catalog/read 两个 exports；IP-08 的新页面文件另按附表展开。不删除 demo 或归档历史，移除的只是生产引用/废弃重复逻辑。
+原 IP-01–IP-14 文件表保留供既有实现及必要范围内修复追溯；当前无需为未来正式交付补造未创建的 install/smoke/benchmark 或平台介质文件。正式介质、完整现场执行和资源采集的新增内容归 C38 F-01–F-05，其 allowlist 由 C38 自身规划闭合。IP-15/IP-16 的增量 allowlist 如下；同一文件串行改动，不覆盖他人改动。core 领域 DTO、历史迁移、执行图与锁文件保持保护边界。
+
+**已批准补齐的基线缺口**：D-19 部署配置、D-20 全类型 catalog/真实 reader、IP-05 生产组合及受控资料预置纳入 C37。任务 2.1、2.3、4.1、4.3、5.1–5.3 按实际义务重新打开，保留已有工程证据；对应契约先由主 Agent 闭合，再实施。IP-04 的策略目录按 D-20 逐类型复用原 Schema、精确版本键与类型推导，修正 hybrid runtime 使用 acceptance Schema 的错误，新增隔离合成验收 purpose；扩展现有 policies-readers 行为测试覆盖实际正文/ref、缺项/漂移、深冻结及多版本解析。
+
+IP-02/IP-16 的 projectBindings 必填十六类 policyRefs、三图 graphVersions、retrievalBudgetPolicyRef、forecastPolicyReleaseRef、calibrationTargetReleaseRef 与有界 siteContextBindings，配置测试核对缺项、重复工程与重复现场版本拒绝；新增 scoring-rules/report-export 直接复用原 Schema。IP-05 在装配前逐项精确解析并核验成员身份。IP-16 基础宿主加载发布清单 finalMigrationVersion，副作用前核验兼容，初始化与运行保持分离。
+
+| 新增 Scenario | IP-ID / 文件 | 行为与证据 |
+| --- | --- | --- |
+| 合成验收资料预置必须使用正式权限与模块入口 / 文本资料通过受控预置并按原身份重试 | IP-16；provision.mjs / provision.test.mjs / start.mjs | 真实登录、原模块写入、正式结果引用、安全 checkpoint；失败续接保留原命令身份。单测及真实预置报告共同证明。 |
+| 合成验收资料预置必须使用正式权限与模块入口 / 无权、版本不符或缺 OCR 时明确阻塞 | IP-16；provision.mjs / provision.test.mjs | 无权不写入，错版本拒绝；扫描件无 OCR 记录 BLOCKED，文本样例沿原转换入口。 |
+
+| 文件 | IP-ID | 增量动作 |
+| --- | --- | --- |
+| `packages/adapters/src/model/config.ts` | IP-15 | 新增 D-23 strict 网络配置/精确后端条目；保留原 llama.cpp Schema |
+| `packages/adapters/src/model/network-api-model-gateway.ts` | IP-15 | 新增网络协议 adapter，复用公共调用运行逻辑 |
+| `packages/adapters/src/model/model-gateway-runtime.ts` | IP-15 | 从原 llama.cpp 实现提取公共授权、预算、原始响应/诊断与有界解析逻辑；两个 adapter 共用 |
+| `packages/adapters/src/model/llamacpp-model-gateway.ts`、`index.ts` | IP-15 | 消费共用逻辑、导出新 adapter/config；本地部署探针保持原行为 |
+| `packages/adapters/test/model/network-api-model-gateway.test.ts`、`network-api-model-gateway.smoke.test.ts` | IP-15 | 新增稳定三能力/失败/预算/秘密边界及显式真实 smoke |
+| `packages/adapters/test/model/llamacpp-model-gateway.test.ts` | IP-15 | 复用既有行为回归，只有公共接缝变化才调整 |
+| `packages/adapters/src/deployment/secrets.ts`、`schema.ts`、`observability.ts` | IP-15 / IP-16 | 受限凭据定位、三个逻辑角色可合置、模型健康记录实际所选后端；不伪造 GPU/构建 |
+| `packages/adapters/test/deployment/config-operations.test.ts`、`observability.test.ts` | IP-15 / IP-16 | 扩展后端选择/受限秘密/合置角色/健康失败的现有行为测试 |
+| `scripts/deployment/start.mjs` | IP-16 | 新增真实组合及显式启动 CLI，导出可测试组合入口；API/Worker 仍分别运行 |
+| `scripts/deployment/provision.mjs`、`provision.test.mjs` | IP-16 | D-24 受控资料预置、原公共 Schema/真实权限与安全结果；复用宿主，不复制测试 SQL |
+| `packages/adapters/src/postgres/index.ts`、`artifacts/index.ts` | IP-02 / IP-03 / IP-16 | 公开既有运行连接与同事务 transactionUnit、referenceGuard factory；保护内部事务接缝 |
+| `packages/adapters/src/deployment/initialization.ts` | IP-02 / IP-16 | 受限 LOGIN 密码、精确迁移兼容及真实 checkpoint setup；重放保留原密码 |
+| `deployment/config.example.json` | IP-02 / IP-16 | 同步 D-19 完整 strict 部署输入，只有结构示例无秘密 |
+| `scripts/deployment/release.test.mjs` | IP-02 / IP-16 | 复用既有配置示例 Schema 校验，原发布介质行为保持 |
+| `scripts/deployment/runtime.mjs`、`lifecycle.mjs`、`events.mjs` | IP-16 | 复用原资源释放、一次绑定、事件闭包与耐久消费；补实际 provider 接线 |
+| `scripts/deployment/entrypoints.test.mjs`、`composition.test.mjs`、`lifecycle.test.mjs` | IP-16 | 扩展当前公开启动/接线行为测试，缺 provider 不就绪 |
+| `scripts/acceptance/functional.mjs`、`functional.test.mjs` | IP-16 | 新增原 check/run 组合、有限终态观察与安全结果报告及代表性行为测试 |
+| `scripts/acceptance/synthetic.mjs`、`synthetic.test.mjs` | IP-16 | 复用既有导出与登录/捕获/checkpoint；必要公开只读 helper，保留 submitted 语义 |
+| `apps/desktop/test/e2e/client.spec.ts`、`acceptance.mjs`、`playwright.desktop.config.ts` | IP-13 / IP-16 | 当前平台 Electron 行为；IP-16.3 在生产宿主上的功能验收须使用用户可见外部 Chrome，headless 不能替代观看；正式安装包验收归 C38 |
+| `deployment/model-gateway-config.example.json`、`functional-run-config.example.json`、`ACCEPTANCE.md`、`OPERATIONS.md` | IP-15 / IP-16 / IP-14 | 新增网络/功能配置结构示例与当前运行手册，示例不含秘密或可冒充批准值的假版本 |
+| `AGENTS.md`、桌面架构说明与本 change 工件 | IP-14 / IP-16 | 本轮同步阶段边界；后续 apply 消费批准输入，不擅自改规划 |
+| `packages/adapters/src/deployment/schema.ts`、`readers.ts`、`quality-gate.ts` | IP-04 / IP-16 | D-20 补充现场材料包及有界检索数据集 Schema；现场原正文精确 C04 读取，实际三路检索测量复用原验收计算 |
+| `packages/adapters/test/deployment/policies-readers.test.ts` | IP-04 / IP-16 | 扩展现有测试覆盖重复键、合成标记、实际发布成员绑定、有界读取与实际测量身份，不断言提示文案 |
+| `references/acceptance/synthetic-v1/site-contexts.json`、`retrieval-dataset.json`、`README.md` | IP-16 | 新增经用户批准的五工序现场资源/约束与六类机理检索材料；本地版本键须通过真实回执替换，候选相关性不进入模型输入 |
+| `packages/adapters/src/recommendation/postgres-recommendation-adapter.ts`、`packages/adapters/package.json` | IP-04 / IP-05 | 公开工厂透传既有 authorizeDownstream 可选参数，补 C33 已有 adapter 公开出口；无新依赖 |
+| `packages/adapters/test/engineering-data/context-source/postgres-engineering-context-source-registry.test.ts` | IP-04 | 复用真实 registry fixture 验证 listDeploymentProjects 的工程 keyset、当前版本和已登记范围，不直接补 SQL 业务事实 |
+| `scripts/deployment/composition/quality-gate.mjs`、`scripts/deployment/quality-gate.test.mjs` | IP-04 / IP-05 / IP-16 | 适配原 C20 构建门禁，真实 Embedding/Qdrant 三路测量；小型行为用例验证指标计算、错成员/代际、拒权/截止时间；替身仅用于计算契约测试 |
+| `scripts/deployment/api-ports.test.mjs` | IP-05 / IP-16 | 生产 API 全端口装配、缺项拒绝及原处置命令分派的代表性行为检查 |
+| `scripts/deployment/composition/calibration-task.mjs`、`scripts/deployment/calibration-task.test.mjs` | IP-05 / IP-16 | 原校准任务的冻结快照/基准精确读取、真实校验工件保存及确定性结果收口；复用 C29/C08 原 Schema 与算法 |
+| `scripts/deployment/risk-flow-composition.test.mjs` | IP-05 / IP-16 | C30 按工程精确图版本与重试策略装配、缺输入拒绝及公开父运行端口分派 |
+| `packages/adapters/src/identification/read/postgres-standardized-risk-input-facts-reader.ts`、`packages/adapters/test/risk-assessment/postgres-risk-input-facts-reader.test.ts` | IP-04 | 复用精确已验收记录及两阶段授权读取空间/来源和识别运行登记，不改变 RiskInputFactsV1 |
+| `scripts/deployment/assessment-composition.test.mjs` | IP-05 / IP-16 | 评估、预警、处置、预测及校准生产工厂的真实接线和精确策略解析检查 |
+| `packages/contracts/src/ports/index.ts`、`packages/core/src/access/schema.ts`、`packages/adapters/src/auth/postgres-local-identity-access.ts`、`deployment-authorization.ts`、`scripts/deployment/start.mjs` | IP-04 / IP-16 | D-20 受限发布命令因果引用及 system 二选一授权；C06 核对原签发、精确关联、固定构建分支、当前权限和期限，保留 workflow/Agent 原契约，不新增持久列 |
+| `packages/contracts/test/module-interfaces-events-workflows.test.ts`、`packages/adapters/test/auth/local-identity-project-authorization.test.ts`、`scripts/deployment/entrypoints.test.mjs` | IP-04 / IP-16 | 命令因果 Schema、合法发布构建及错命令/根/父/分支拒绝、事件来源恢复；createDeploymentRuntimeAuthorizationV1 原签发身份复验、派生分支签发、撤权/过期与技术故障区分 |
+| `apps/worker/src/identification-knowledge/composition.ts`、`apps/worker/test/identification-knowledge/composition.test.ts` | IP-04 / IP-05 | C17 受信 system 来源透传原命令因果，与 workflow-run 严格二选一；可选注入 C18/C19 原治理策略，返回同一 C16 的 governedReleases 窄口，不增加第二治理实例或同类型 Agent 定义 |
+| `scripts/deployment/composition/identification.mjs`、`scripts/deployment/composition.test.mjs` | IP-05 / IP-16 | 生产组合透传已绑定 C18/C19 治理策略；范围外 C19 Agent 编制明确拒绝，配置包仍使用正式治理/发布/解析 |
+| `packages/core/src/scoring-rules/schema.ts`、`validation.ts`、`packages/core/test/scoring-rules/scoring-rules.test.ts` | IP-04 / IP-16 | D-20 配置包与正文来源互斥 Schema，原规则校验复用，证明混用来源/悬空证据/版本漂移拒绝 |
+| `packages/adapters/src/scoring-rules/postgres-scoring-rules-adapter.ts`、`packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts`、`fixture.ts` | IP-04 / IP-16 | 正式包 C04 读取、C06 来源核验、C18 精确集合及摘要核验、原比较基线读取与 C16/C07 发布门禁；新增可选 authorizeConfigurationRead 原分支窄授权口 |
+| `references/acceptance/synthetic-v1/rules/scoring-configuration-package.json`、`manifest.json`、`README.md`、`scripts/acceptance/synthetic.mjs`、`synthetic.test.mjs` | IP-16 | 从批准样例形成配置包输入，按真实预置回执绑定来源/工程/配置版本与包工件，单独记录待复核；不构造 Agent 任务 |
+
 
 | 文件 | IP-ID | 操作 |
 | --- | --- | --- |
@@ -562,12 +639,12 @@ test/browser 五份 spec 逐同名迁入 apps/web/test/browser；deploymentPolic
 
 保护：原执行图/Orca 状态、Git 历史、未授权用户改动、主规格（待官方 sync/archive）、历史迁移、研究原件、业务规则/正式结果与原预算。规划文件 proposal/design/specs/implementation-plan/tasks 是本次输入，不作为实现者自由增减范围的区域；verification 留给后续验收。
 
-升级条件：base 代码漂移改变符号/语义；新增未列文件/依赖/公共 branch/Schema/业务字段/业务表；需要改历史事实/权限；目录闭包出现额外运行时 import；正式 provider 接缝无法按批准契约实现；既有工程命令不存在或本地必要测试环境阻止工程检查。普通范围内缺陷由原任务修复。真实平台、生产证书、签名材料、发布介质/批准输入缺项单列对应交付取证 BLOCKED，继续独立实现和工程审查；不能静默改方案或用 Mock/skip 兜底正式运行，不再询问已确认的 HTTPS/三 VM/UI 归属。
+升级条件：base 代码漂移改变符号/语义；新增未列文件/依赖/公共 branch/Schema/业务字段/业务表；需要改历史事实/权限；目录闭包出现额外运行时 import；正式 provider 接缝无法按批准契约实现；既有工程命令不存在或本地必要测试环境阻止工程检查。普通范围内缺陷由原任务修复。当前网络服务、批准模型/预算、功能证书、样本和业务输入缺项单列功能 BLOCKED；未来签名/介质/三平台/硬件输入归 C38。新公共契约/依赖/迁移或范围外文件仍升级，普通范围内缺陷在原 Task 修复，不用 Mock/skip 兜底。
 
 ## 8. 验收 Agent 授权与限定审计
 
-14.2 的交接条件是全部实现任务（1–13、14.1）及工程检查完成并形成固定实现检查点；第 15 组的交付取证不作为本项前置，未完成项持续留在同一 change 中。
+14.2 前置是全部当前 tasks 完成，包括新增 IP-15/IP-16 的真实 network/业务证据与重新打开的桌面场景/验收口径；F-01–F-05 不计前置。主调度按授权形成固定实现检查点后，Finalizer 完整读取 apply contextFiles 与 IP-01–IP-16，对最终代码、当前 Requirement/Scenario 及实际证据核验、范围内修复与回归，随后创建 verification。
 
-Finalizer 完整读取 apply contextFiles 与 IP-01–IP-14，先核对实现和每场景的工程证据，可修复本 allowlist 内已批准范围的普通缺陷、完成回归后生成 verification。工件逐项记录工程结果与待交付证据；实现缺陷记 FAIL，仅缺交付输入时对应验收及 C37 总体结论记 BLOCKED。工程审查结果不单独成为 C37 总体 PASS。目标输入齐备后完成交付取证，按最终 HEAD/制品身份核验受影响范围并更新同一 verification。新公共契约/依赖/迁移/字段/业务判断与范围外文件仍需升级；不得重新解释研究原文或以模型回答替代确定性断言。
+C37 总体结论限定为当前功能 PASS/FAIL/BLOCKED。缺当前服务/实际终态/必需引用记 BLOCKED，普通实现缺陷记 FAIL；待审计或当前缺陷未闭合不能 PASS。未来平台/硬件/离线材料缺席只记 C38 移交未完成，不阻塞已通过功能范围的集成、归档。C38 最终平台、介质、资源场景使用其自己的检查点、验收程序与 verification，不继承功能报告作最终交付证明。
 
-限定审计标签：security（Electron/mTLS/秘密/授权/许可）、persistence（操作状态/审计/租约/停写/恢复）、integration（完整 ports/事件/质量来源授权/UI 迁移）、performance（流背压/Agent 单请求/真实资源边界）。按项目手册同一收尾最多一次限定审计，Auditor 在自身活动任务内闭合范围内缺陷；无三平台/硬件/模型证据不能归档为交付完成。
+限定审计按项目手册设置 security（模型秘密/联网资料资格/Electron/mTLS）、persistence（原始响应/操作审计/恢复）、integration（精确后端/完整 providers/终态与人工确认）及必要 performance（流/轮询边界）。同一收尾轮次最多一次限定审计，Auditor 在自身活动 Task 内闭合范围内缺陷；本轮不派发收尾、不生成 verification、不提交或归档。

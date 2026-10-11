@@ -15,6 +15,11 @@ import { PostgresTransactionUnit } from "../postgres/transaction-unit.js";
 import { ArtifactMaintenance } from "./maintenance.js";
 import { createFilesystemArtifactStore } from "./filesystem-artifact-store.js";
 import { PostgresArtifactRegistry } from "./postgres-artifact-registry.js";
+import type { ArtifactRegistryOptionsV1 } from "./postgres-artifact-registry.js";
+
+export const createPostgresArtifactReferenceGuard = (
+  options: ArtifactRegistryOptionsV1,
+): ArtifactReferenceGuardV1 => new PostgresArtifactRegistry(options);
 
 export interface ContentAddressedArtifactStoreConfigV1 extends PostgresConnectionConfig {
   readonly rootDirectory: string;

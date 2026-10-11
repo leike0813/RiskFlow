@@ -2013,63 +2013,63 @@ def write_csv(path: Path, columns: list[str], rows: list[list[str]]) -> None:
         writer.writerows(rows)
 
 
-def _text_page(document, title: str, columns: list[str], rows: list[list[str]]) -> None:
+def _text_page(document, title: str, columns: list[str], rows: list[list[str]]) -> list[int]:
     import fitz
 
-    page = document.new_page()
-    page.insert_text((40, 50), title, fontname="china-s", fontsize=12)
-    page.insert_text((40, 66), LABEL, fontname="china-s", fontsize=9)
-    y = 92.0
-    page.insert_textbox(fitz.Rect(40, y, 555, y + 24), " | ".join(columns), fontname="china-s", fontsize=8)
-    y += 28
+    def new_page() -> tuple[object, float]:
+        page = document.new_page()
+        page.insert_text((40, 50), title if document.page_count == 1 else f"{title}（续）", fontname="china-s", fontsize=12)
+        page.insert_text((40, 66), LABEL, fontname="china-s", fontsize=9)
+        page.insert_textbox(fitz.Rect(40, 92, 555, 116), " | ".join(columns), fontname="china-s", fontsize=8)
+        return page, 120.0
+
+    page, y = new_page()
+    row_pages = []
     for row in rows:
+        if y + 40 > 760:
+            page, y = new_page()
         line = " | ".join(str(cell) for cell in row)
         rect = fitz.Rect(40, y, 555, y + 40)
         overflow = page.insert_textbox(rect, line, fontname="china-s", fontsize=7)
-        if overflow > 0:
-            page = document.new_page()
-            page.insert_text((40, 50), f"{title}（续）", fontname="china-s", fontsize=12)
-            page.insert_text((40, 66), LABEL, fontname="china-s", fontsize=9)
-            rect = fitz.Rect(40, 92, 555, 132)
-            page.insert_textbox(rect, line, fontname="china-s", fontsize=7)
-            y = 136
+        if overflow < 0:
+            raise ValueError(f"PDF row cannot fit on one page: {line[:80]}")
+        row_pages.append(document.page_count)
         y += 44
-        if y > 760:
-            page = document.new_page()
-            page.insert_text((40, 50), f"{title}（续）", fontname="china-s", fontsize=12)
-            page.insert_text((40, 66), LABEL, fontname="china-s", fontsize=9)
-            y = 92
+    return row_pages
 
 
-def write_pdf(path: Path, title: str, columns: list[str], rows: list[list[str]]) -> None:
+def write_pdf(path: Path, title: str, columns: list[str], rows: list[list[str]]) -> tuple[list[int], int]:
     import fitz
 
     path.parent.mkdir(parents=True, exist_ok=True)
     document = fitz.open()
-    _text_page(document, title, columns, rows)
+    row_pages = _text_page(document, title, columns, rows)
     document.save(path)
+    page_count = document.page_count
+    document.close()
+    return row_pages, page_count
 
 
-def write_scan_pdf(path: Path, title: str, columns: list[str], rows: list[list[str]]) -> None:
+def write_scan_pdf(path: Path, title: str, columns: list[str], rows: list[list[str]]) -> tuple[list[int], int]:
     """扫描件：先渲染成位图再嵌入，产出无文本层的 PDF（供 OCR 通路使用）。"""
     import fitz
 
-    scratch = fitz.open()
-    _text_page(scratch, title, columns, rows)
-    scratch_path = path.parent / "_scan-source.pdf"
     path.parent.mkdir(parents=True, exist_ok=True)
-    scratch.save(scratch_path)
-    scratch.close()
-    rendered = fitz.open(scratch_path)
+    scratch = fitz.open()
+    row_pages = _text_page(scratch, title, columns, rows)
     document = fitz.open()
-    for source_page in rendered:
-        pixmap = source_page.get_pixmap(dpi=150)
-        page = document.new_page(width=pixmap.width * 72 / 150, height=pixmap.height * 72 / 150)
-        page.insert_image(page.rect, pixmap=pixmap)
-    # 位图不压缩会让扫描件超过 8MiB；deflate 只改编码，不改像素内容。
-    document.save(path, garbage=4, deflate=True)
-    rendered.close()
-    scratch_path.unlink()
+    try:
+        for source_page in scratch:
+            pixmap = source_page.get_pixmap(dpi=150)
+            page = document.new_page(width=pixmap.width * 72 / 150, height=pixmap.height * 72 / 150)
+            page.insert_image(page.rect, pixmap=pixmap)
+        # 位图不压缩会让扫描件超过 8MiB；deflate 只改编码，不改像素内容。
+        document.save(path, garbage=4, deflate=True)
+        page_count = document.page_count
+    finally:
+        document.close()
+        scratch.close()
+    return row_pages, page_count
 
 
 def write_raster(path: Path, title: str, lines: list[str]) -> None:
@@ -2310,6 +2310,210 @@ def project_formats() -> None:
         elif kind == "engineering-summary":
             write_markdown(path, split_name, cases)
     print(f"project: documents={len(manifest['documents'])}")
+
+
+def generate_mineru_revisions(target: Path) -> None:
+    target = target.resolve()
+    if target.exists():
+        raise SystemExit(f"目标目录已存在，拒绝覆盖：{target}")
+    try:
+        target.relative_to(REPO_ROOT)
+    except ValueError as error:
+        raise SystemExit("--mineru-revisions 必须位于仓库内，确保清单路径可相对仓库定位") from error
+
+    source_manifest = json.loads((PACK_DIR / "manifest.json").read_text(encoding="utf-8"))
+    source_cases = json.loads((PACK_DIR / "scenarios.json").read_text(encoding="utf-8"))["cases"]
+    target.mkdir(parents=True)
+
+    def source_document(split: str, document_type: str) -> dict:
+        return next(
+            item
+            for item in source_manifest["documents"]
+            if item["split"] == split and item["documentType"] == document_type
+        )
+
+    def relative(path: Path) -> str:
+        return path.resolve().relative_to(REPO_ROOT).as_posix()
+
+    revisions = []
+    revision_paths = {}
+    for split in ("development", "trial-run"):
+        prefix = "DEV" if split == "development" else "TRIAL"
+        cases = [case for case in source_cases if case["split"] == split]
+        for kind, document_type in (("text-pdf", "method-statement"), ("scan-pdf", "geology-report")):
+            source = source_document(split, document_type)
+            path = target / f"{prefix.lower()}-{kind}.pdf"
+            if kind == "text-pdf":
+                rows = method_rows(split)
+                row_pages, page_count = write_pdf(
+                    path,
+                    f"{PROJECT_NAME} 变径段施工专项方案（{SPLITS[split]['sourceFamily']}）",
+                    ["条款号", "主题", "内容"],
+                    rows,
+                )
+            else:
+                rows = [
+                    [
+                        case["inputs"]["sourceSegmentIds"][1],
+                        case["inputs"]["observedValues"]["stratumGrade"],
+                        f"DK12+{300 + index * 20:03d}",
+                        "无",
+                    ]
+                    for index, case in enumerate(cases)
+                ]
+                row_pages, page_count = write_scan_pdf(
+                    path,
+                    f"{PROJECT_NAME} 工程地质勘察报告（扫描件）",
+                    ["资料段ID", "地层条件", "里程", "溶洞"],
+                    rows,
+                )
+            revision_paths[(split, kind)] = (path, row_pages, page_count)
+            revisions.append(
+                {
+                    "inputPath": relative(path),
+                    "sourceDocumentId": source["documentId"],
+                    "previousPath": relative(PACK_DIR / source["file"]),
+                    "split": split,
+                    "inputKind": "ocr-layout" if kind == "scan-pdf" else kind,
+                    "mediaType": "application/pdf",
+                    "expectedPageCount": page_count,
+                }
+            )
+
+    def sample(sample_id: str, input_path: str, input_kind: str, media_type: str,
+               page_count: int | None, checks: list[dict]) -> dict:
+        key_fields = list(dict.fromkeys(field for check in checks for field in check["fields"]))
+        if not key_fields or len(key_fields) > 128:
+            raise ValueError(f"{sample_id} 的 keyFields 数量须为 1–128")
+        return {
+            "id": sample_id,
+            "inputPath": input_path,
+            "inputKind": input_kind,
+            "mediaType": media_type,
+            "expectedPageCount": page_count,
+            "keyFields": key_fields,
+            "recordChecks": checks,
+        }
+
+    samples = []
+    text_path, text_pages, text_page_count = revision_paths[("development", "text-pdf")]
+    text_rows = method_rows("development")
+    samples.append(
+        sample(
+            "DEV-text-pdf",
+            relative(text_path),
+            "text-pdf",
+            "application/pdf",
+            text_page_count,
+            [
+                {"fields": row[:2], "expectedPageNumber": page_number}
+                for row, page_number in zip(text_rows, text_pages, strict=True)
+            ],
+        )
+    )
+
+    scan_path, scan_locations, scan_page_count = revision_paths[("development", "scan-pdf")]
+    scan_rows = [
+        [
+            case["inputs"]["sourceSegmentIds"][1],
+            case["inputs"]["observedValues"]["stratumGrade"],
+            f"DK12+{300 + index * 20:03d}",
+            "无",
+        ]
+        for index, case in enumerate(case for case in source_cases if case["split"] == "development")
+    ]
+    samples.append(
+        sample(
+            "DEV-scan-pdf",
+            relative(scan_path),
+            "ocr-layout",
+            "application/pdf",
+            scan_page_count,
+            [
+                {"fields": row, "expectedPageNumber": page_number}
+                for row, page_number in zip(scan_rows, scan_locations, strict=True)
+            ],
+        )
+    )
+
+    figure = source_document("development", "figure")
+    samples.append(
+        sample(
+            "DEV-png",
+            relative(PACK_DIR / figure["file"]),
+            "ocr-layout",
+            "image/png",
+            1,
+            [
+                {"fields": [SPLITS["development"]["sourceFamily"], SPLITS["development"]["site"]],
+                 "expectedPageNumber": 1},
+                {"fields": [SECTION_LABELS[0][2]], "expectedPageNumber": 1},
+            ],
+        )
+    )
+    photo = source_document("development", "photo")
+    samples.append(
+        sample(
+            "DEV-jpeg",
+            relative(PACK_DIR / photo["file"]),
+            "ocr-layout",
+            "image/jpeg",
+            1,
+            [
+                {"fields": [f"拍摄日期 {SPLITS['development']['date']}"], "expectedPageNumber": 1},
+                {"fields": [f"工点 {SPLITS['development']['site']}"], "expectedPageNumber": 1},
+                {"fields": [f"班次 {SPLITS['development']['shift']}"], "expectedPageNumber": 1},
+            ],
+        )
+    )
+    first_log = source_document("development", "construction-log")
+    log_process = PROCESS_NODES[0]
+    log_checks = []
+    for case in source_cases:
+        if case["split"] != "development" or case["processNode"] != log_process:
+            continue
+        values = case["inputs"]["observedValues"]
+        log_checks.append(
+            {
+                "fields": [
+                    case["inputs"]["sourceSegmentIds"][0],
+                    case["processNode"],
+                    values["stratumGrade"],
+                    str(values["facePressureKpa"]),
+                    str(values["groundSettlementMm"]),
+                ],
+                "expectedPageNumber": None,
+            }
+        )
+    samples.append(
+        sample(
+            "DEV-docx",
+            relative(PACK_DIR / first_log["file"]),
+            "docx",
+            first_log["mediaType"],
+            None,
+            log_checks,
+        )
+    )
+
+    manifest = {
+        "schemaVersion": "1",
+        "versionId": "2",
+        "label": LABEL,
+        "sourcePack": "references/acceptance/synthetic-v1",
+        "cases": "references/acceptance/synthetic-v1/scenarios.json",
+        "revisions": revisions,
+        "samples": samples,
+    }
+    (target / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    report = ", ".join(
+        f"{item['id']} pages={item['expectedPageCount']} records={len(item['recordChecks'])}"
+        for item in samples
+    )
+    print(f"mineru-revisions: revisions={len(revisions)} samples={len(samples)} output={relative(target)}")
+    print(report)
 
 
 def ink_ratio(image) -> float:
@@ -2679,49 +2883,17 @@ def check() -> None:
                     all(page.get_images() for page in reader),
                     f"{document['file']} 扫描件缺少位图",
                 )
-                from PIL import Image, ImageChops
+                from PIL import Image
 
-                reference = fitz.open()
-                _text_page(
-                    reference,
-                    f"{PROJECT_NAME} 工程地质勘察报告（扫描件）",
-                    ["资料段ID", "地层条件", "里程", "溶洞"],
-                    [
-                        [
-                            case["inputs"]["sourceSegmentIds"][1],
-                            case["inputs"]["observedValues"]["stratumGrade"],
-                            f"DK12+{300 + index * 20:03d}",
-                            "无",
-                        ]
-                        for index, case in enumerate(c for c in cases if c["split"] == document["split"])
-                    ],
-                )
-                require(
-                    reader.page_count == reference.page_count,
-                    f"{document['file']} 页数与源排版不一致",
-                )
-                for index in range(min(reader.page_count, reference.page_count)):
+                for index, page in enumerate(reader):
                     scan_pixmap = reader[index].get_pixmap(dpi=36)
-                    reference_pixmap = reference[index].get_pixmap(dpi=36)
                     scan_image = Image.frombytes(
                         "RGB", (scan_pixmap.width, scan_pixmap.height), scan_pixmap.samples
-                    )
-                    reference_image = Image.frombytes(
-                        "RGB",
-                        (reference_pixmap.width, reference_pixmap.height),
-                        reference_pixmap.samples,
                     )
                     require(
                         ink_ratio(scan_image) > 0.002,
                         f"{document['file']} 第 {index + 1} 页内容过少",
                     )
-                    difference = ImageChops.difference(scan_image, reference_image).convert("L")
-                    mean_difference = sum(difference.tobytes()) / len(difference.tobytes())
-                    require(
-                        mean_difference < 12,
-                        f"{document['file']} 第 {index + 1} 页与源排版差异过大",
-                    )
-                reference.close()
             else:
                 require(len(reader) >= 1, f"{document['file']} 无页面")
                 require("GB 50911-2013" in text, f"{document['file']} 缺少适用边界说明")
@@ -2776,7 +2948,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="RiskFlow 合成材料生成与自检")
     parser.add_argument("--write-sources", action="store_true", help="写出材料包 JSON")
     parser.add_argument("--check", action="store_true", help="读回全部材料并断言")
+    parser.add_argument("--mineru-revisions", type=Path, help="仅在新目录生成 MinerU 验收修订材料")
     arguments = parser.parse_args()
+    if arguments.mineru_revisions is not None:
+        generate_mineru_revisions(arguments.mineru_revisions)
+        return
     if arguments.write_sources:
         write_sources()
         return

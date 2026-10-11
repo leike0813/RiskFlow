@@ -190,6 +190,7 @@ export interface ScoringRulesPostgresFixtureV1 {
     readonly actorId: string;
     readonly branch: ModuleBranchV1;
     readonly entityId: string;
+    readonly requestedAt?: string;
   }): AuthorizationContextV1;
   /** 绑定当前测试工程：后续 C16 提交按真实 C06 会话签发治理上下文。 */
   setActiveWorld(world: DataCleaningWorldLikeV1): void;
@@ -430,7 +431,7 @@ export const startScoringRulesFixture = async (): Promise<ScoringRulesPostgresFi
         kind: "authorization-context",
         reference: { entityId: input.entityId, versionId: "1" },
       },
-      SCORING_RULES_TEST_ISSUED_AT,
+      input.requestedAt ?? SCORING_RULES_TEST_ISSUED_AT,
     );
     verifiedContexts.set(contextKey(context.authorizationContextRef), context);
     return context;
@@ -485,6 +486,20 @@ export const startScoringRulesFixture = async (): Promise<ScoringRulesPostgresFi
     artifactStore,
     artifactReferenceGuard: cleaning.artifactRegistry,
     access,
+    authorizeConfigurationRead: async (input) => {
+      const authorization = stubContext(
+        input.projectId,
+        input.actorId,
+        input.branch,
+        {
+          kind: "authorization-context",
+          reference: { entityId: input.invocationId, versionId: "1" },
+        },
+        input.requestedAt,
+      );
+      verifiedContexts.set(contextKey(authorization.authorizationContextRef), authorization);
+      return authorization;
+    },
     taskStore: cleaning.agentTaskAdapter,
     dataCleaning: cleaning.store,
     configuration: {

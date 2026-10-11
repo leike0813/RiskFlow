@@ -1,4 +1,4 @@
-import type { ColumnType, Kysely, Selectable, Transaction } from "kysely";
+import { sql, type ColumnType, type Kysely, type Selectable, type Transaction } from "kysely";
 
 import type {
   AgentTaskResultRefV1,
@@ -29,6 +29,7 @@ import {
   type ModuleBranchV1,
   type ModuleErrorV1,
   type StartAgentTaskCommandV1,
+  type SourceVersionRefV1,
 } from "@riskflow/contracts/ports";
 import type { VersionReference } from "@riskflow/contracts/common";
 import { IdentifierSchema, IsoDateTimeSchema } from "@riskflow/contracts/common";
@@ -53,6 +54,7 @@ import {
   ArtifactPutCommandV1Schema,
   ArtifactReadRequestV1Schema,
   ArtifactRefV1Schema,
+  ArtifactStoreError,
   type ArtifactReadHandleV1,
   type ArtifactReferenceGuardV1,
   type ArtifactRefV1,
@@ -68,6 +70,7 @@ import {
 import {
   ASSESSMENT_CONFIGURATION_ARTIFACT_PURPOSE_CODE_V1,
   AssessmentConfigurationDocumentV1Schema,
+  assessmentConfigurationDocumentDigest,
   type AssessmentConfigurationSetResultV1,
   type ResolveAssessmentConfigurationSetV1,
 } from "@riskflow/core/assessment-config";
@@ -98,6 +101,8 @@ import {
   STRUCTURED_SCORING_RULE_MEDIA_TYPE_V1,
   ApplicableRuleSetDocumentV1Schema,
   StructuredScoringRuleDocumentV1Schema,
+  ScoringRuleConfigurationPackageV1Schema,
+  SCORING_RULE_CONFIGURATION_PACKAGE_PURPOSE_CODE_V1,
   applicableRuleSetDocumentDigest,
   assembleApplicableRuleSet,
   assertScoringRuleMembersMatchApplicableRuleSet,
@@ -113,6 +118,7 @@ import {
   scoringRuleRelationSnapshotDigest,
   structuredScoringRuleDocumentDigest,
   validateScoringRuleOperations,
+  validateScoringRuleConfigurationPackage,
   type AssessmentBasisConfigurationMemberV1,
   type AssessmentBasisReleaseSetMemberV1,
   type AssessmentBasisReleaseSetReadResultV1,
@@ -501,6 +507,14 @@ export interface PostgresScoringRulesAdapterOptionsV1 {
     request: ScoringRulesAgentTaskStartRequestV1,
   ) => Promise<StartAgentTaskResultV1>;
   readonly policy: ScoringRulesPolicyV1;
+  readonly authorizeConfigurationRead?: (input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly invocationId: string;
+    readonly branch: "knowledge-modeling.assessment-basis";
+    readonly requestedAt: string;
+    readonly requestedSourceVersionRefs: readonly SourceVersionRefV1[];
+  }) => Promise<AuthorizationContextV1>;
   readonly now?: () => Date;
 }
 
@@ -553,6 +567,7 @@ export class PostgresScoringRulesAdapter
   readonly #conflictDecisions: ScoringRulesConflictDecisionReaderV1 | undefined;
   readonly #startAgentTask: PostgresScoringRulesAdapterOptionsV1["startAgentTask"];
   readonly #policy: ScoringRulesPolicyV1;
+  readonly #authorizeConfigurationRead: PostgresScoringRulesAdapterOptionsV1["authorizeConfigurationRead"];
   readonly #now: () => Date;
   /**
    * 任务级证据访问上下文缓存：同一 taskRef 固定复用首次解析出的 C06 上下文与查询身份，
@@ -582,6 +597,7 @@ export class PostgresScoringRulesAdapter
     this.#conflictDecisions = options.conflictDecisions;
     this.#startAgentTask = options.startAgentTask;
     this.#policy = options.policy;
+    this.#authorizeConfigurationRead = options.authorizeConfigurationRead;
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -1114,6 +1130,151 @@ export class PostgresScoringRulesAdapter
 
   // ------------------------------------------------------- C16 policy seam
 
+  async #prepareConfigurationPackage(
+    command: SubmitScoringRuleRevisionV1,
+    document: Extract<
+      StructuredScoringRuleDocumentV1,
+      { configurationPackageArtifactRef: ContentArtifactRefV1 }
+    >,
+    authorization: AuthorizationContextV1,
+  ) {
+    const target = document.configurationPackageArtifactRef;
+    const configurationPackage = ScoringRuleConfigurationPackageV1Schema.parse(
+      await this.#readJson(target, {
+        projectId: command.projectId,
+        actorId: authorization.actorId,
+        requestId: `${target.reference.entityId}:${target.reference.versionId}:package`,
+        requestedAt: authorization.decidedAt,
+        authorization,
+        purposeCode: SCORING_RULE_CONFIGURATION_PACKAGE_PURPOSE_CODE_V1,
+      }),
+    );
+    const { configurationPackageArtifactRef: _packageRef, members, ...identity } = document;
+    void _packageRef;
+    const {
+      projectId,
+      sources,
+      baseRuleReleaseRef,
+      members: packageMembers,
+      ...packageIdentity
+    } = configurationPackage;
+    const memberContent = members.map(({ rule, binding }) => ({
+      rule,
+      binding: {
+        sourceVersionRef: binding.sourceVersionRef,
+        evidenceReferences: binding.evidenceReferences,
+      },
+    }));
+    if (
+      projectId !== command.projectId ||
+      canonicalJson(identity) !== canonicalJson(packageIdentity) ||
+      canonicalJson(memberContent) !== canonicalJson(packageMembers) ||
+      canonicalJson(baseRuleReleaseRef ?? null) !== canonicalJson(command.baseReleaseRef ?? null)
+    )
+      failScoringRule("scoring-rule-artifact-mismatch", asContractReference(target));
+    if (this.#authorizeConfigurationRead === undefined) {
+      failScoringRule(
+        "scoring-rule-capability-required",
+        asContractReference(target),
+        "AUTHORIZATION_DENIED",
+      );
+    }
+    const requestId = `${target.reference.entityId}:${target.reference.versionId}:configuration`;
+    const readAuthorization = await this.#authorizeConfigurationRead({
+      projectId,
+      actorId: authorization.actorId,
+      invocationId: requestId,
+      branch: "knowledge-modeling.assessment-basis",
+      requestedAt: authorization.decidedAt,
+      requestedSourceVersionRefs: sources.map((source) => source.sourceVersionRef),
+    });
+    const decision = await this.#access.verify({
+      authorizationContextRef: readAuthorization.authorizationContextRef,
+      invocationId: requestId,
+      projectId,
+      branch: "knowledge-modeling.assessment-basis",
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: sources.map((source) => source.sourceVersionRef),
+      requestedAt: authorization.decidedAt,
+    });
+    if (
+      decision.redacted ||
+      decision.context.actorId !== authorization.actorId ||
+      decision.context.projectId !== projectId ||
+      canonicalJson(decision.context) !== canonicalJson(readAuthorization)
+    )
+      failScoringRule(
+        "scoring-rule-project-mismatch",
+        asContractReference(target),
+        "AUTHORIZATION_DENIED",
+      );
+    const configuration = await this.#configuration.resolveConfigurationSet({
+      requestId,
+      idempotencyKey: requestId,
+      projectId,
+      actorId: authorization.actorId,
+      requestedAt: authorization.decidedAt,
+      authorization: readAuthorization,
+      requiredAt: authorization.decidedAt,
+      asOfRecordedAt: authorization.decidedAt,
+    });
+    if (configuration.kind === "failed")
+      failScoringRule(
+        "scoring-rule-configuration-incompatible",
+        asContractReference(target),
+        configuration.error.code,
+      );
+    if (
+      !sameVersion(
+        configuration.configurationSet.configurationSetRef,
+        document.configurationSetRef,
+      ) ||
+      !sameVersion(
+        configuration.configurationSet.projectRevisionRef.reference,
+        document.projectRevisionRef.reference,
+      ) ||
+      configuration.configurationSet.projectId !== projectId
+    )
+      failScoringRule("scoring-rule-configuration-incompatible", asContractReference(target));
+    const indicator = configuration.configurationSet.members.find(
+      (member) => member.definitionType === "indicator-system",
+    );
+    if (indicator === undefined)
+      failScoringRule("scoring-rule-configuration-incomplete", asContractReference(target));
+    const indicatorDocument = AssessmentConfigurationDocumentV1Schema.parse(
+      await this.#readJson(indicator.artifactRef, {
+        projectId,
+        actorId: authorization.actorId,
+        requestId: `${requestId}:indicators`,
+        requestedAt: authorization.decidedAt,
+        authorization: readAuthorization,
+        purposeCode: ASSESSMENT_CONFIGURATION_ARTIFACT_PURPOSE_CODE_V1,
+      }),
+    );
+    if (
+      indicatorDocument.definitionType !== "indicator-system" ||
+      assessmentConfigurationDocumentDigest(indicatorDocument) !== indicator.contentDigest
+    )
+      failScoringRule("scoring-rule-artifact-mismatch", asContractReference(indicator.artifactRef));
+    const baseline = await this.#readDeclaredBaselineRules({
+      ...(baseRuleReleaseRef === undefined ? {} : { declaredReleaseRef: baseRuleReleaseRef }),
+      projectId,
+      actorId: authorization.actorId,
+      requestId,
+      requestedAt: authorization.decidedAt,
+      authorization: readAuthorization,
+    });
+    validateScoringRuleConfigurationPackage({
+      package: configurationPackage,
+      policy: this.#policy,
+      indicatorIds: indicatorDocument.content.indicators.map((indicator) => indicator.indicatorId),
+      ...(baseline === undefined
+        ? {}
+        : { baseRules: baseline.document.members.map((member) => member.rule) }),
+    });
+    return baseline;
+  }
+
   async prepareRevision(command: SubmitScoringRuleRevisionV1): Promise<PreparedScoringRuleV1> {
     const authorization = await this.#verifyGovernanceAuthorization(command);
     const artifactRef = ContentArtifactRefV1Schema.parse(command.candidateArtifactRef);
@@ -1129,29 +1290,34 @@ export class PostgresScoringRulesAdapter
         }),
       );
       const contentDigest = structuredScoringRuleDocumentDigest(document);
-      const task = await this.#taskStore.getTask(document.agentTaskRef);
-      if (task === undefined) {
-        failScoringRule(
-          "scoring-rule-source-unavailable",
-          asContractReference(document.agentTaskRef),
-          "TERMINAL_FAILURE",
-        );
+      let baseline;
+      if ("configurationPackageArtifactRef" in document) {
+        baseline = await this.#prepareConfigurationPackage(command, document, authorization);
+      } else {
+        const task = await this.#taskStore.getTask(document.agentTaskRef);
+        if (task === undefined) {
+          failScoringRule(
+            "scoring-rule-source-unavailable",
+            asContractReference(document.agentTaskRef),
+            "TERMINAL_FAILURE",
+          );
+        }
+        const { manifest } = await this.loadAuthoringManifest(task);
+        const declaredBase = manifest.baseRuleReleaseRef;
+        if (
+          (command.baseReleaseRef === undefined) !== (declaredBase === undefined) ||
+          (command.baseReleaseRef !== undefined &&
+            declaredBase !== undefined &&
+            !sameVersion(command.baseReleaseRef.reference, declaredBase.reference))
+        ) {
+          failScoringRule(
+            "scoring-rule-base-version-conflict",
+            asContractReference(command.baseReleaseRef ?? command.candidateArtifactRef),
+            "STALE_VERSION",
+          );
+        }
+        baseline = await this.#readBaselineRules({ manifest, task });
       }
-      const { manifest } = await this.loadAuthoringManifest(task);
-      const declaredBase = manifest.baseRuleReleaseRef;
-      if (
-        (command.baseReleaseRef === undefined) !== (declaredBase === undefined) ||
-        (command.baseReleaseRef !== undefined &&
-          declaredBase !== undefined &&
-          !sameVersion(command.baseReleaseRef.reference, declaredBase.reference))
-      ) {
-        failScoringRule(
-          "scoring-rule-base-version-conflict",
-          asContractReference(command.baseReleaseRef ?? command.candidateArtifactRef),
-          "STALE_VERSION",
-        );
-      }
-      const baseline = await this.#readBaselineRules({ manifest, task });
       const relationSnapshot = detectRuleRelations({
         policyRef: this.#policy.conflictPriorityPolicyRef,
         candidateContentDigest: contentDigest,
@@ -2060,6 +2226,101 @@ export class PostgresScoringRulesAdapter
     }
   }
 
+  /** D-20: exact configuration member from a persisted C19 basis, read through C04. */
+  async readPublishedConfigurationMember(input: {
+    readonly projectId: string;
+    readonly requestId: string;
+    readonly releaseRef: VersionReference;
+    readonly authorization: AuthorizationContextV1;
+  }): Promise<{ readonly body: unknown; readonly sha256: string } | undefined> {
+    if (input.authorization === undefined || input.authorization.projectId !== input.projectId) {
+      return undefined;
+    }
+    let verified;
+    try {
+      const decision = await this.#access.verify({
+        authorizationContextRef: input.authorization.authorizationContextRef,
+        invocationId: input.requestId,
+        projectId: input.projectId,
+        branch: "knowledge-modeling.assessment-basis",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+        requestedAt: this.#now().toISOString(),
+      });
+      if (decision.redacted || decision.context.actorId !== input.authorization.actorId)
+        return undefined;
+      verified = decision.context;
+    } catch (error) {
+      const failure = resolveAccessFailure(error);
+      if (failure !== undefined && failure.details.code !== "ACCESS_TRANSIENT_FAILURE")
+        return undefined;
+      throw error;
+    }
+    const rows = await this.#db
+      .selectFrom("business.assessment_basis_release_sets")
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where(
+        sql<boolean>`member_snapshot -> 'configurationMembers' @> ${JSON.stringify([
+          { releaseRef: { kind: "knowledge-release", reference: input.releaseRef } },
+        ])}::jsonb`,
+      )
+      .limit(201)
+      .execute();
+    if (rows.length > 200) return undefined;
+    const members = rows.flatMap((row) => {
+      const projection = basisMemberProjection(row, {
+        kind: "assessment-basis-release-set",
+        reference: { entityId: row.set_id, versionId: row.version_id },
+      });
+      if (projection?.kind !== "succeeded") return [];
+      return projection.configurationMembers.filter(
+        (member) =>
+          member.releaseRef.reference.entityId === input.releaseRef.entityId &&
+          member.releaseRef.reference.versionId === input.releaseRef.versionId,
+      );
+    });
+    const member = members[0];
+    if (
+      member === undefined ||
+      members.some(
+        (candidate) =>
+          candidate.definitionType !== member.definitionType ||
+          candidate.artifactRef.reference.entityId !== member.artifactRef.reference.entityId ||
+          candidate.artifactRef.reference.versionId !== member.artifactRef.reference.versionId ||
+          candidate.contentDigest !== member.contentDigest,
+      )
+    ) {
+      return undefined;
+    }
+    try {
+      const parsedDocument = AssessmentConfigurationDocumentV1Schema.safeParse(
+        await this.#readJson(member.artifactRef, {
+          projectId: input.projectId,
+          actorId: verified.actorId,
+          requestId: input.requestId,
+          requestedAt: input.authorization.decidedAt,
+          authorization: verified,
+          purposeCode: ASSESSMENT_CONFIGURATION_ARTIFACT_PURPOSE_CODE_V1,
+        }),
+      );
+      if (!parsedDocument.success) return undefined;
+      const document = parsedDocument.data;
+      const sha256 = assessmentConfigurationDocumentDigest(document);
+      if (document.definitionType !== member.definitionType || sha256 !== member.contentDigest) {
+        return undefined;
+      }
+      return { body: document, sha256 };
+    } catch (error) {
+      if (
+        error instanceof ArtifactStoreError &&
+        (error.code === "ARTIFACT_ACCESS_DENIED" || error.code === "ARTIFACT_REFERENCE_NOT_FOUND")
+      )
+        return undefined;
+      throw error;
+    }
+  }
+
   /** 首次执行或重放都由同一事务形成结果；回放时 C03 直接返回既有回执。 */
   async #basisReadCommit(
     context: TransactionContextV1,
@@ -2490,6 +2751,26 @@ export class PostgresScoringRulesAdapter
   async #readBaselineRules(input: {
     readonly manifest: ScoringRuleAuthoringManifestV1;
     readonly task: AgentTaskSnapshotV1;
+  }) {
+    return this.#readDeclaredBaselineRules({
+      ...(input.manifest.baseRuleReleaseRef === undefined
+        ? {}
+        : { declaredReleaseRef: input.manifest.baseRuleReleaseRef }),
+      projectId: input.task.envelope.projectId,
+      actorId: input.task.envelope.actorId,
+      requestId: input.task.envelope.commandId,
+      requestedAt: input.task.envelope.createdAt,
+      authorization: input.task.envelope.authorization,
+    });
+  }
+
+  async #readDeclaredBaselineRules(input: {
+    readonly declaredReleaseRef?: KnowledgeReleaseRefV1;
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
   }): Promise<
     | {
         readonly releaseRef: KnowledgeReleaseRefV1;
@@ -2498,16 +2779,23 @@ export class PostgresScoringRulesAdapter
       }
     | undefined
   > {
-    const declaredReleaseRef = input.manifest.baseRuleReleaseRef;
+    const declaredReleaseRef = input.declaredReleaseRef;
     if (declaredReleaseRef === undefined) return undefined;
-    const projectId = input.task.envelope.projectId;
+    const projectId = input.projectId;
     const releases = await this.#governedReleases.resolveGovernedReleases({
       projectId,
       requiredDefinitionTypes: ["structured-scoring-rule"],
-      requiredAt: input.task.envelope.createdAt,
-      asOfRecordedAt: input.task.envelope.createdAt,
-      authorization: input.task.envelope.authorization,
+      requiredAt: input.requestedAt,
+      asOfRecordedAt: input.requestedAt,
+      authorization: input.authorization,
     });
+    if (releases.kind === "failed") {
+      failScoringRule(
+        "scoring-rule-base-version-conflict",
+        asContractReference(declaredReleaseRef),
+        releases.error.code,
+      );
+    }
     const base =
       releases.kind === "succeeded"
         ? releases.result.members.find((member) =>
@@ -2532,10 +2820,10 @@ export class PostgresScoringRulesAdapter
     const document = StructuredScoringRuleDocumentV1Schema.parse(
       await this.#readJson(metadata.artifactRef, {
         projectId,
-        actorId: input.task.envelope.actorId,
-        requestId: `${input.task.envelope.commandId}:base-document`,
-        requestedAt: input.task.envelope.createdAt,
-        authorization: input.task.envelope.authorization,
+        actorId: input.actorId,
+        requestId: `${input.requestId}:base-document`,
+        requestedAt: input.requestedAt,
+        authorization: input.authorization,
         purposeCode: STRUCTURED_SCORING_RULE_ARTIFACT_PURPOSE_CODE_V1,
       }),
     );

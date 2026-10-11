@@ -173,6 +173,7 @@ export class WorkerLifecycleV1 {
   #timer = null;
   #inFlight = 0;
   #claimed = 0;
+  #backgroundFailure = null;
   #signal = new AbortController();
   constructor({ dispatch, poll, pollMs, drainTimeoutMs, leaseTimeoutMs }) {
     this.#dispatch = dispatch;
@@ -186,6 +187,9 @@ export class WorkerLifecycleV1 {
   }
   get inFlight() {
     return this.#inFlight;
+  }
+  get backgroundFailure() {
+    return this.#backgroundFailure;
   }
   /**
    * 有界轮询：runOnce 的每一轮都由宿主驱动，不修改任务预算本身。
@@ -214,8 +218,20 @@ export class WorkerLifecycleV1 {
         await delay(this.#pollMs);
       }
     };
-    this.#timer = setTimeout(loop, 0);
-    void loop;
+    this.#timer = setTimeout(() => {
+      this.#timer = null;
+      void loop().catch((error) => {
+        if (
+          this.#signal.signal.aborted &&
+          (error?.name === "AbortError" || error?.code === "ABORT_ERR")
+        ) {
+          return;
+        }
+        this.#backgroundFailure = error;
+        if (this.#state === LifecycleStateV1.RUNNING) this.#state = LifecycleStateV1.DRAINING;
+        this.#signal.abort();
+      });
+    }, 0);
     return this;
   }
   /**

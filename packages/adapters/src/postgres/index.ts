@@ -17,12 +17,18 @@ import {
 } from "./pool.js";
 import { PostgresTransactionUnit } from "./transaction-unit.js";
 
-export type { PostgresConnectionConfig, PostgresMigrationRunConfig, PostgresCheckpointerConfig };
+export type {
+  PostgresConnectionConfig,
+  PostgresMigrationRunConfig,
+  PostgresCheckpointerConfig,
+  PostgresRuntime,
+};
 export {
   bootstrapPostgresFoundation,
   createPostgresCheckpointer,
   runPostgresMigrations,
   setupPostgresCheckpointer,
+  createPostgresRuntime,
 };
 export type { PostgresCheckpointer };
 
@@ -43,12 +49,17 @@ const managed = <T extends object>(
   runtime: PostgresRuntime,
 ): T & { close(): Promise<void> } => Object.assign(value, { close: runtime.close });
 
-export const createPostgresTransactionUnit = (
+export function createPostgresTransactionUnit(
   config: PostgresConnectionConfig,
-): PostgresTransactionUnitHandle => {
+): PostgresTransactionUnitHandle;
+export function createPostgresTransactionUnit(config: PostgresRuntime): TransactionUnitV1;
+export function createPostgresTransactionUnit(
+  config: PostgresConnectionConfig | PostgresRuntime,
+): TransactionUnitV1 | PostgresTransactionUnitHandle {
+  if ("db" in config) return new PostgresTransactionUnit(config.db);
   const runtime = createPostgresRuntime(config, "riskflow_app");
   return managed(new PostgresTransactionUnit(runtime.db), runtime);
-};
+}
 
 export const createPostgresOutbox = (config: PostgresConnectionConfig): PostgresOutboxHandle => {
   const runtime = createPostgresRuntime(config, "riskflow_outbox_worker");

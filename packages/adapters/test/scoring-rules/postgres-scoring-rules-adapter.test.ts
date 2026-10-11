@@ -20,6 +20,9 @@ import type { AgentTaskSnapshotV1 } from "@riskflow/core/agent-runtime";
 import { AccessServiceError } from "@riskflow/core/access";
 import {
   evaluateScoringRule,
+  SCORING_RULE_CONFIGURATION_PACKAGE_PURPOSE_CODE_V1,
+  STRUCTURED_SCORING_RULE_ARTIFACT_PURPOSE_CODE_V1,
+  STRUCTURED_SCORING_RULE_MEDIA_TYPE_V1,
   type AssembleApplicableRuleSetV1,
 } from "@riskflow/core/scoring-rules";
 import {
@@ -442,6 +445,127 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
       branch: "knowledge-modeling.assessment-basis",
       entityId,
     });
+
+  it("配置包通过正式修订和人工发布且不读取评分 Agent 任务", async () => {
+    const project = await startProjectWorld("configuration-package");
+    const sourceVersionRef = project.world.sourceVersionRefs()[0]!;
+    const sourceSegmentId = "configuration-package-segment";
+    const ruleId = "configuration-package-rule";
+    const configurationPackage = {
+      schemaVersion: "1",
+      projectId: project.projectId,
+      projectRevisionRef: project.world.projectRevisionRef,
+      configurationSetRef: project.configurationSetRef,
+      compatibilityRef: requireFixture().policy.compatibilityRef,
+      scoringPolicyRef: requireFixture().policy.policyRef,
+      sources: [
+        {
+          sourceVersionRef,
+          standardKind: "国家规范",
+          segments: [{ sourceSegmentId, text: "合成样本、待甲方复核：控制值分段评分。" }],
+        },
+      ],
+      members: [
+        {
+          rule: {
+            ruleId,
+            applicabilityConditions: {
+              constructionMethod: [CHAIN_APPLICABILITY.constructionMethod],
+              stratumCondition: [CHAIN_APPLICABILITY.stratumCondition],
+              engineeringStage: [CHAIN_APPLICABILITY.engineeringStage],
+            },
+            indicatorItem: project.indicatorIds[0],
+            scoringThresholds: [
+              { thresholdId: `${ruleId}-threshold`, operator: "gte", value: 0, score: 1 },
+            ],
+            gradeIntervals: [{ grade: "grade-a", lowerBound: 0 }],
+            exceptionClauses: [],
+            evidenceLocator: { sourceSegmentId },
+            ruleVersion: { entityId: ruleId, versionId: "1" },
+            reviewStatus: "pending",
+          },
+          binding: {
+            sourceVersionRef,
+            evidenceReferences: [
+              { locator: { sourceSegmentId }, sourceVersion: sourceVersionRef.reference },
+            ],
+          },
+        },
+      ],
+    };
+    const packageRef = await requireFixture().putJson({
+      projectId: project.projectId,
+      artifactId: "configuration-package-input",
+      purposeCode: SCORING_RULE_CONFIGURATION_PACKAGE_PURPOSE_CODE_V1,
+      mediaType: "application/json",
+      value: configurationPackage,
+    });
+    const { projectId: _projectId, sources: _sources, ...identity } = configurationPackage;
+    void _projectId;
+    void _sources;
+    const artifactRef = await requireFixture().putJson({
+      projectId: project.projectId,
+      artifactId: "configuration-package-candidate",
+      purposeCode: STRUCTURED_SCORING_RULE_ARTIFACT_PURPOSE_CODE_V1,
+      mediaType: STRUCTURED_SCORING_RULE_MEDIA_TYPE_V1,
+      value: {
+        ...identity,
+        configurationPackageArtifactRef: packageRef,
+        members: identity.members.map((member) => ({
+          ...member,
+          binding: { ...member.binding, configurationPackageArtifactRef: packageRef },
+        })),
+      },
+    });
+    const taskRead = vi.spyOn(requireFixture().cleaning.agentTaskAdapter, "getTask");
+    const packageAuthorization = requireFixture().authorize({
+      projectId: project.projectId,
+      actorId: authoringActor,
+      branch: "knowledge-modeling.submit-revision",
+      entityId: "configuration-package-submit",
+      requestedAt: RULE_AUTHORING_AT,
+    });
+    const submitted = await requireFixture().governance.govern(
+      KnowledgeGovernanceCommandV1Schema.parse({
+        kind: "submit-revision",
+        commandId: "configuration-package-submit",
+        idempotencyKey: "configuration-package-submit",
+        projectId: project.projectId,
+        actorId: authoringActor,
+        issuedAt: RULE_AUTHORING_AT,
+        authorization: packageAuthorization,
+        payload: {
+          definitionType: "structured-scoring-rule",
+          candidateArtifactRef: artifactRef,
+          evidenceReferences: configurationPackage.members[0]!.binding.evidenceReferences,
+        },
+      }),
+    );
+    expect(taskRead).not.toHaveBeenCalled();
+    taskRead.mockRestore();
+    expect(
+      submitted.kind,
+      submitted.kind === "failed" ? JSON.stringify(submitted.error) : undefined,
+    ).toBe("succeeded");
+    if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision")
+      throw new Error("package revision unavailable");
+    const reviewDecisionRef = await approveRuleRevision({
+      projectId: project.projectId,
+      revisionRef: submitted.result.knowledgeRevisionRef,
+    });
+    const published = await publishRuleRevision({
+      projectId: project.projectId,
+      revisionRef: submitted.result.knowledgeRevisionRef,
+      reviewDecisionRef,
+    });
+    expect(published.kind).toBe("succeeded");
+    expect(
+      await countRows(
+        "SELECT count(*) FROM business.scoring_rule_revision_metadata WHERE project_id=$1",
+        [project.projectId],
+      ),
+    ).toBe(1);
+  });
 
   /** 真实条文段定位：按标题段找到紧随其后的正文段。 */
   const clauseSegmentOf = (
@@ -1607,6 +1731,7 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
       authorization: basisAuthorization(chain!.projectId, `c19-basis-replay-${chain!.projectId}`),
       assessmentBasisReleaseSetRef: chain!.basisReleaseSetRef,
     });
+
     const first = await requireFixture().scoringRules.readAssessmentBasisReleaseSet(request);
     const auditBefore = await countRows(
       `SELECT count(*)::text AS count FROM audit.entries
@@ -1638,6 +1763,67 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
     expect(conflicted.kind).toBe("failed");
     if (conflicted.kind === "failed") {
       expect(conflicted.error.code).toBe("IDEMPOTENCY_CONFLICT");
+    }
+  }, 180_000);
+
+  it("reads an exact published configuration member from the verified C19 basis snapshot", async () => {
+    expect(chain).toBeDefined();
+    const readRequestId = `c19-deployment-config-${chain!.projectId}`;
+    const authorization = basisAuthorization(chain!.projectId, readRequestId);
+    const basis = await requireFixture().scoringRules.readAssessmentBasisReleaseSet(
+      basisReadInput({
+        requestId: `c19-deployment-basis-${chain!.projectId}`,
+        authorization: basisAuthorization(
+          chain!.projectId,
+          `c19-deployment-basis-${chain!.projectId}`,
+        ),
+        assessmentBasisReleaseSetRef: chain!.basisReleaseSetRef,
+      }),
+    );
+    expect(basis.kind).toBe("succeeded");
+    if (basis.kind !== "succeeded") return;
+    const member = basis.configurationMembers.find(
+      (candidate) => candidate.definitionType === "weight-set",
+    )!;
+    const read = await requireFixture().scoringRules.readPublishedConfigurationMember({
+      projectId: chain!.projectId,
+      requestId: readRequestId,
+      releaseRef: member.releaseRef.reference,
+      authorization,
+    });
+    expect(read).toMatchObject({ sha256: member.contentDigest });
+    expect(read?.body).toMatchObject({ definitionType: "weight-set" });
+    expect(
+      await requireFixture().scoringRules.readPublishedConfigurationMember({
+        projectId: `${chain!.projectId}-other`,
+        requestId: `${readRequestId}-cross-project`,
+        releaseRef: member.releaseRef.reference,
+        authorization,
+      }),
+    ).toBeUndefined();
+    expect(
+      await requireFixture().scoringRules.readPublishedConfigurationMember({
+        projectId: chain!.projectId,
+        requestId: `${readRequestId}-wrong-version`,
+        releaseRef: { ...member.releaseRef.reference, versionId: "wrong-version" },
+        authorization: basisAuthorization(chain!.projectId, `${readRequestId}-wrong-version`),
+      }),
+    ).toBeUndefined();
+    const storageFailure = new Error("artifact-storage-unavailable");
+    const open = vi
+      .spyOn(requireFixture().cleaning.artifactStore, "open")
+      .mockRejectedValueOnce(storageFailure);
+    try {
+      await expect(
+        requireFixture().scoringRules.readPublishedConfigurationMember({
+          projectId: chain!.projectId,
+          requestId: readRequestId,
+          releaseRef: member.releaseRef.reference,
+          authorization,
+        }),
+      ).rejects.toBe(storageFailure);
+    } finally {
+      open.mockRestore();
     }
   }, 180_000);
 

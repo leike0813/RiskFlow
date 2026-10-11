@@ -1,4 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { setTimeout } from "node:timers";
 
 import { describe, expect, it } from "vitest";
 
@@ -54,6 +55,28 @@ describe("Outbox 事件闭合清单", () => {
     expect(() => registry.register("review.review-resolved.v1", "identification-recovery")).toThrow(
       TypeError,
     );
+  });
+
+  it("重复登记拒绝覆盖原消费者", async () => {
+    const registry = new OutboxDispatchRegistryV1();
+    let originalCalls = 0;
+    let replacementCalls = 0;
+    registry.register("knowledge.identification-basis-published.v1", "projection", async () => {
+      originalCalls += 1;
+      return { receipt: "original" };
+    });
+
+    expect(() =>
+      registry.register("knowledge.identification-basis-published.v1", "projection", async () => {
+        replacementCalls += 1;
+        return { receipt: "replacement" };
+      }),
+    ).toThrow(TypeError);
+
+    const result = await registry.dispatch(event("knowledge.identification-basis-published.v1"));
+    expect(result.durableReceipt.receipt).toBe("original");
+    expect(originalCalls).toBe(1);
+    expect(replacementCalls).toBe(0);
   });
 
   it("未绑定消费者时保持非就绪，assertReady 失败关闭", async () => {
@@ -269,6 +292,32 @@ describe("进程生命周期", () => {
     const stopped = await worker.stop();
     expect(stopped.settled).toBe(true);
     expect(stopped.unacknowledgedLeases).toBe(0);
+    expect(worker.state).toBe(LifecycleStateV1.STOPPED);
+  });
+
+  it("Worker 后台轮询失败时记录原异常并进入安全关闭态", async () => {
+    const failure = new Error("poll failed");
+    let pollSignal;
+    const worker = new WorkerLifecycleV1({
+      dispatch: async () => ({ status: "acknowledged" }),
+      poll: async ({ signal }) => {
+        pollSignal = signal;
+        throw failure;
+      },
+      pollMs: 5,
+      drainTimeoutMs: 200,
+      leaseTimeoutMs: 60_000,
+    });
+
+    await expect(worker.runOnce()).rejects.toBe(failure);
+    worker.start();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(worker.backgroundFailure).toBe(failure);
+    expect(worker.state).toBe(LifecycleStateV1.DRAINING);
+    expect(pollSignal.aborted).toBe(true);
+    expect((await worker.stop()).settled).toBe(true);
+    expect(worker.backgroundFailure).toBe(failure);
     expect(worker.state).toBe(LifecycleStateV1.STOPPED);
   });
 

@@ -1,12 +1,14 @@
 import { sql, type Kysely } from "kysely";
+import { AccessServiceError } from "@riskflow/core/access";
 
 import { bootstrapInitialSystemAdministrator } from "../auth/postgres-local-identity-access.js";
 import { bootstrapPostgresFoundation } from "../postgres/bootstrap.js";
 import type { PostgresConnectionConfig } from "../postgres/pool.js";
 import { createPostgresRuntime } from "../postgres/pool.js";
 import { runPostgresMigrations } from "../postgres/migrations/run.js";
+import { setupPostgresCheckpointer } from "../postgres/checkpointer.js";
 
-import type { DeploymentConfigV1 } from "./schema.js";
+import { DeploymentConfigV1Schema, type DeploymentConfigV1 } from "./schema.js";
 
 /**
  * C37 D-05：初始化与运行连接分开。
@@ -35,6 +37,8 @@ export interface DeploymentInitializationInputV1 {
   readonly migrationConnection: PostgresConnectionConfig;
   readonly migrationRoot: string;
   readonly finalMigrationVersion: string;
+  readonly loginPasswords: Readonly<Record<DeploymentLoginRoleKeyV1, string>>;
+  readonly checkpointerConnection: PostgresConnectionConfig;
   readonly initialAdministrator?: {
     readonly loginName: string;
     readonly displayName: string;
@@ -79,7 +83,8 @@ const loginRoleName = (config: DeploymentConfigV1, key: DeploymentLoginRoleKeyV1
  * 迁移版本必须达到清单声明的最终版本；低版本不允许启动业务。
  * 迁移记录名形如 `000056_platform_<change>_<subject>`，比较用其序号前缀。
  */
-const migrationSequenceOf = (migrationName: string): string => migrationName.slice(0, 6);
+const migrationSequenceOf = (migrationName: string): string | undefined =>
+  /^(\d{6})_[a-z0-9]+(?:[-_][a-z0-9]+)*$/.exec(migrationName)?.[1];
 
 export const assertCompatibleMigrationVersion = async (
   db: Kysely<unknown>,
@@ -95,10 +100,10 @@ export const assertCompatibleMigrationVersion = async (
     } satisfies DeploymentInitializationErrorV1;
   }
   const current = migrationSequenceOf(currentName);
-  if (current < finalMigrationVersion) {
+  if (current === undefined || current !== finalMigrationVersion) {
     throw {
       code: DEPLOYMENT_INITIALIZATION_ERROR_V1.compatibleCheckFailed,
-      safeReason: `current migration ${current} is older than the required ${finalMigrationVersion}`,
+      safeReason: `current migration ${current ?? "is invalid"} does not match required ${finalMigrationVersion}`,
     } satisfies DeploymentInitializationErrorV1;
   }
   return current;
@@ -107,6 +112,23 @@ export const assertCompatibleMigrationVersion = async (
 export const initializeDeploymentV1 = async (
   input: DeploymentInitializationInputV1,
 ): Promise<DeploymentInitializationResultV1> => {
+  const config = DeploymentConfigV1Schema.parse(input.config);
+  const passwordKeys = input.loginPasswords === undefined ? [] : Object.keys(input.loginPasswords);
+  if (
+    !/^\d{6}$/.test(input.finalMigrationVersion) ||
+    passwordKeys.length !== LOGIN_ROLE_KEYS_V1.length ||
+    LOGIN_ROLE_KEYS_V1.some(
+      (key) =>
+        typeof input.loginPasswords[key] !== "string" || input.loginPasswords[key].length === 0,
+    ) ||
+    input.checkpointerConnection === undefined ||
+    input.checkpointerConnection.user !== config.database.checkpointerRoleName
+  ) {
+    throw {
+      code: DEPLOYMENT_INITIALIZATION_ERROR_V1.loginRoleFailed,
+      safeReason: "required deployment login passwords are missing",
+    } satisfies DeploymentInitializationErrorV1;
+  }
   await bootstrapPostgresFoundation(input.migrationConnection);
 
   // 集群级 LOGIN 创建需要 CREATEROLE；这里用管理连接自身身份，不切换到迁移组角色。
@@ -114,27 +136,26 @@ export const initializeDeploymentV1 = async (
   const createdLoginRoles: string[] = [];
   try {
     for (const key of LOGIN_ROLE_KEYS_V1) {
-      const role = loginRoleName(input.config, key);
-      // 职责化 LOGIN 只继承对应 NOLOGIN 组；运行主体不持迁移或宿主控制权限。
-      // 角色名已由 DeploymentConfigV1 的标识符正则约束；DO 块不接受绑定参数。
-      await sql
-        .raw(
-          `DO $$
-      BEGIN
-        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${role}') THEN
-          CREATE ROLE ${role} LOGIN;
-        ELSE
-          ALTER ROLE ${role} LOGIN;
-        END IF;
-      END
-      $$`,
-        )
-        .execute(operatorRuntime.db);
+      const role = loginRoleName(config, key);
+      const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
+      const existing = await sql<{ rolcanlogin: boolean }>`SELECT rolcanlogin FROM pg_roles
+        WHERE rolname = ${role}`.execute(operatorRuntime.db);
+      if (existing.rows[0] === undefined) {
+        const identifier = `"${role.replaceAll('"', '""')}"`;
+        // Passwords are only interpolated as SQL literals and never included in diagnostics.
+        await sql
+          .raw(`CREATE ROLE ${identifier} LOGIN PASSWORD ${literal(input.loginPasswords[key])}`)
+          .execute(operatorRuntime.db);
+        createdLoginRoles.push(role);
+      } else if (!existing.rows[0].rolcanlogin) {
+        throw new TypeError("configured deployment role cannot log in");
+      }
       for (const group of LOGIN_ROLE_GROUP_MEMBERSHIP_V1[key]) {
         // 角色名来自受控部署配置，不是自由文本；GRANT 只接受标识符。
-        await sql`GRANT ${sql.raw(group)} TO ${sql.raw(role)}`.execute(operatorRuntime.db);
+        await sql`GRANT ${sql.raw(`"${group}"`)} TO ${sql.raw(`"${role}"`)}`.execute(
+          operatorRuntime.db,
+        );
       }
-      createdLoginRoles.push(role);
     }
   } catch {
     throw {
@@ -163,12 +184,29 @@ export const initializeDeploymentV1 = async (
   const verifyRuntime = createPostgresRuntime(input.migrationConnection, "riskflow_migrator");
   let currentMigrationVersion: string;
   try {
+    // 迁移器创建的版本表只允许运行组读取，锁表仍由迁移组独占。
+    await sql`GRANT SELECT ON business._riskflow_migration TO riskflow_app`.execute(
+      verifyRuntime.db,
+    );
     currentMigrationVersion = await assertCompatibleMigrationVersion(
       verifyRuntime.db as unknown as Kysely<unknown>,
       input.finalMigrationVersion,
     );
   } finally {
     await verifyRuntime.close();
+  }
+
+  try {
+    const checkpointer = await setupPostgresCheckpointer({
+      ...input.checkpointerConnection,
+      validateReference: () => false,
+    });
+    await checkpointer.end();
+  } catch {
+    throw {
+      code: DEPLOYMENT_INITIALIZATION_ERROR_V1.migrationFailed,
+      safeReason: "the checkpointer schema could not be initialized",
+    } satisfies DeploymentInitializationErrorV1;
   }
 
   // 首次管理员只在账号库为空时创建；重放保留已有账号与密码。
@@ -186,10 +224,9 @@ export const initializeDeploymentV1 = async (
     } catch (error) {
       // 账号库非空时 C06 拒绝再次引导，这属于重放而非失败。
       if (
-        typeof error === "object" &&
-        error !== null &&
-        "code" in error &&
-        error.code === "ACCESS_TERMINAL_FAILURE"
+        error instanceof AccessServiceError &&
+        error.details.code === "ACCESS_TERMINAL_FAILURE" &&
+        error.details.stage === "bootstrap.exists"
       ) {
         initialAdministratorCreated = false;
       } else {

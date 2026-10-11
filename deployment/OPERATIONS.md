@@ -1,5 +1,7 @@
 # RiskFlow 运维手册（C37 D-01/D-08/D-09/D-10）
 
+当前 C37 按 [功能验收手册](ACCEPTANCE.md) 使用合置服务及批准网络模型；实际三 VM、正式客户端和本地 GPU 取证归 C38。下文保留最终拓扑及已实现运维契约，配置检查和工程测试不等于现场部署已通过。
+
 本手册覆盖三 VM 私有部署的日常运维。**系统不提供独立备份、高可用、
 生产级 RPO/RTO 或长期代运维**；同机副本只用于逻辑回退。
 
@@ -7,11 +9,19 @@
 
 | VM | 运行内容 | 业务用户可达 |
 | --- | --- | --- |
-| 推理 VM | llama.cpp 与模型（GPU 直通） | 否 |
+| 推理 VM | 主 4090 上的 Qwen3.8-27B；辅助 NVIDIA GPU 上的 MinerU 专用模型（GPU 直通、按服务隔离） | 否 |
 | 应用 VM | Web、API、Worker、Caddy HTTPS | **是（唯一入口）** |
 | 数据 VM | PostgreSQL、Qdrant、不可变工件 | 否 |
 
 ## 2. 日常启停
+
+MinerU 使用自托管 4.0.12 V1 tasks；PDF/图片为 Standard，DOCX 为 Flash。通用 Qwen 不能替代专用布局 VLM。设备 UUID、推理 backend、模型制品、显存/内存配额和并发必须在 C38 实测冻结；CUDA 的设备变量不能证明 Vulkan 的隔离。Embedding 当前由独立 Ollama 主机提供，移到辅助卡前须另核验资源预算。
+
+文档配置见 [MinerU 配置示例](mineru-config.example.json)。将明确选定的配置放入 `documentConversion.mineru`，替换示例引用并通过部署 Schema 校验；`null` 仅表示未配置，PDF/图片/DOCX 转换会阻塞。服务 token 仅经受限秘密文件注入，XLSX/CSV 不依赖 MinerU。
+
+更换转换部署或策略时，先通过正式 C11 入口登记资料新版本，再转换并完成本代清洗、知识审核/发布和检索构建。已登记资料段的旧版本不原地重跑；只更换 conversionId 不能建立新代际。保留全部历史工件、段集合和评估引用。
+
+官网 hybrid 的原页定位使用 `preproc_blocks`，段落合并后的 `para_blocks` 不作为第二份正文。没有原页块却带跨页标记时明确拒绝；公式原始 LaTeX 保留于规范化正文，不执行或计算。合成验收使用 `references/acceptance/mineru-v2/manifest.json` 的新投影及源字段清单，历史 V1 文件保留；新投影路径不表示已登记生产资料版本。
 
 按顺序启停，不要颠倒：
 
@@ -62,3 +72,7 @@
 
 日志只含稳定状态、原因码、引用与计数；不记录正文、秘密、URL、宿主路径或思维链。
 业务审计以 PostgreSQL 只追加记录为准，普通日志不能替代。
+
+# 本机 MinerU 固定服务
+
+本机可复用服务已部署，见 [MinerU 服务操作说明](mineru/README.md)。独立Docker镜像和持久化目录保留模型及结果，GPU实例健康运行于回环18000，CPU对照实例18001已停止；小模型固定ONNX/CPU，专用VLM显式使用Vulkan或CPU。五格式与五页扫描件的CPU/P4 Vulkan质量和性能实测、重启及重启后转换已通过，证据见[本机报告](../references/acceptance/mineru-v2/local-benchmark-report.md)。启停通过Compose，镜像/模型准备与真实smoke分开执行；停止或重建服务不删除模型和历史结果。

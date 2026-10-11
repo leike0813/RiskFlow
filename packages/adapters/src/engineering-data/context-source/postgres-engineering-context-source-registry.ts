@@ -108,6 +108,7 @@ import {
   AssessmentEntrySourceVersionsReadQueryV1Schema,
   ASSESSMENT_ENTRY_SOURCE_VERSION_MAX_V1,
   SourceAccessGrantRefV1Schema,
+  SourceDeliveryRefV1Schema,
   SourceVersionRefV1Schema,
   SpatialScopeRefV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
@@ -166,6 +167,10 @@ import type {
 } from "@riskflow/core/engineering-data/monitoring";
 
 import { getPostgresTransaction } from "../../postgres/transaction-unit.js";
+import {
+  DEPLOYMENT_PROJECT_PAGE_MAX_V1,
+  type DeploymentProjectSummaryV1,
+} from "../../deployment/readers.js";
 import {
   makePersistenceError,
   mapPostgresError,
@@ -423,6 +428,10 @@ type ContextSourceDatabase = PostgresDatabase & {
 
 type ContextTransaction = Transaction<ContextSourceDatabase>;
 type ContextSourceError = ModuleErrorV1;
+
+/** C37 D-20：工程枚举窄读的固定上限；超限明确失败，不截断后宣称覆盖完整。 */
+const DEPLOYMENT_PROJECT_SPATIAL_MAX_V1 = 128;
+const DEPLOYMENT_PROJECT_SOURCE_MAX_V1 = 256;
 
 const asTransaction = (context: TransactionContextV1): ContextTransaction =>
   getPostgresTransaction(context) as unknown as ContextTransaction;
@@ -900,6 +909,77 @@ const preserveDomainError = (error: ContextSourceError): PostgresPersistenceErro
   const wrapped = makePersistenceError("TRANSACTION_FAILED", "context-source.domain");
   Object.defineProperty(wrapped, "contextSourceError", { value: error });
   return wrapped;
+};
+
+const LISTING_CAUSAL_RUN_ID = "engineering-data.deployment-project-listing";
+
+const listingContractFailure = (): PostgresPersistenceError =>
+  preserveDomainError(
+    moduleError("UNSUPPORTED_CONTRACT", LISTING_CAUSAL_RUN_ID, { schemaVersion: "1" }),
+  );
+
+const assertDeploymentListingInput = (limit: number): void => {
+  if (!Number.isInteger(limit) || limit < 1 || limit > DEPLOYMENT_PROJECT_PAGE_MAX_V1)
+    throw listingContractFailure();
+};
+
+// 第 max+1 条登记即判定超限：必须明确失败，不截断后宣称覆盖完整。
+const assertListingBound = (
+  size: number,
+  max: number,
+  blockerKind: string,
+  blockerRef: ContractReferenceV1,
+): void => {
+  if (size >= max)
+    throw preserveDomainError(
+      moduleError("BUSINESS_BLOCKED", LISTING_CAUSAL_RUN_ID, { blockerKind, blockerRef }),
+    );
+};
+
+const deploymentProjectScopeRefs = (
+  rows: readonly { project_id: string; scope_id: string; spatial_scope_ref: JsonValue }[],
+): Map<string, { entityId: string; versionId: string }[]> => {
+  const grouped = new Map<string, { entityId: string; versionId: string }[]>();
+  for (const row of rows) {
+    const parsed = SpatialScopeRefV1Schema.safeParse(row.spatial_scope_ref);
+    if (!parsed.success || parsed.data.reference.entityId !== row.scope_id)
+      throw listingContractFailure();
+    const refs = grouped.get(row.project_id) ?? [];
+    assertListingBound(
+      refs.length,
+      DEPLOYMENT_PROJECT_SPATIAL_MAX_V1,
+      "spatial-scope-registration",
+      parsed.data,
+    );
+    refs.push(parsed.data.reference);
+    grouped.set(row.project_id, refs);
+  }
+  return grouped;
+};
+
+const deploymentProjectSourceRefs = (
+  rows: readonly {
+    project_id: string;
+    source_delivery_id: string;
+    source_delivery_ref: JsonValue;
+  }[],
+): Map<string, { entityId: string; versionId: string }[]> => {
+  const grouped = new Map<string, { entityId: string; versionId: string }[]>();
+  for (const row of rows) {
+    const parsed = SourceDeliveryRefV1Schema.safeParse(row.source_delivery_ref);
+    if (!parsed.success || parsed.data.reference.entityId !== row.source_delivery_id)
+      throw listingContractFailure();
+    const refs = grouped.get(row.project_id) ?? [];
+    assertListingBound(
+      refs.length,
+      DEPLOYMENT_PROJECT_SOURCE_MAX_V1,
+      "source-delivery-registration",
+      parsed.data,
+    );
+    refs.push(parsed.data.reference);
+    grouped.set(row.project_id, refs);
+  }
+  return grouped;
 };
 
 const atomicCommand = (
@@ -1861,6 +1941,55 @@ export class PostgresEngineeringContextSourceRegistry
         ),
       };
     }
+  }
+
+  /**
+   * C37 D-20：宿主维护用的工程枚举窄读，不是业务 HTTP 读面。按工程 ID keyset 只取本页工程
+   * 的当前 revision、现有空间引用与 sourceDelivery 引用；不返回资料正文或账号，逐工程正文
+   * 操作仍须原 C06 权限。查询只落本页工程，不扫全库。
+   */
+  async listDeploymentProjects(input: {
+    readonly afterProjectId: string | undefined;
+    readonly limit: number;
+  }): Promise<readonly DeploymentProjectSummaryV1[]> {
+    assertDeploymentListingInput(input.limit);
+    const page = await this.#db
+      .selectFrom("business.engineering_projects as project")
+      .innerJoin("business.engineering_project_revisions as revision", (join) =>
+        join.onRef("revision.revision_id", "=", "project.current_revision_id"),
+      )
+      .select(["project.project_id", "revision.revision_no"])
+      .$if(input.afterProjectId !== undefined, (query) =>
+        query.where("project.project_id", ">", input.afterProjectId!),
+      )
+      .orderBy("project.project_id")
+      .limit(input.limit)
+      .execute();
+    if (page.length === 0) return [];
+    const projectIds = page.map((row) => row.project_id);
+    const scopeRows = await this.#db
+      .selectFrom("business.engineering_spatial_segments as segment")
+      .innerJoin("business.engineering_spatial_segment_revisions as revision", (join) =>
+        join.onRef("revision.revision_id", "=", "segment.current_revision_id"),
+      )
+      .select(["segment.project_id", "segment.scope_id", "revision.spatial_scope_ref"])
+      .where("segment.project_id", "in", projectIds)
+      .orderBy("segment.scope_id")
+      .execute();
+    const deliveryRows = await this.#db
+      .selectFrom("business.source_deliveries")
+      .select(["project_id", "source_delivery_id", "source_delivery_ref"])
+      .where("project_id", "in", projectIds)
+      .orderBy("source_delivery_id")
+      .execute();
+    const spatialScopeRefs = deploymentProjectScopeRefs(scopeRows);
+    const sourceRegistrationRefs = deploymentProjectSourceRefs(deliveryRows);
+    return page.map((row) => ({
+      projectId: row.project_id,
+      revision: row.revision_no,
+      spatialScopeRefs: spatialScopeRefs.get(row.project_id) ?? [],
+      sourceRegistrationRefs: sourceRegistrationRefs.get(row.project_id) ?? [],
+    }));
   }
 
   async #projectReadQuery(

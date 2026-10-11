@@ -23,6 +23,7 @@ const { Workbook } = exceljs;
 const XML_OPTIONS = {
   preserveOrder: true,
   ignoreAttributes: false,
+  parseTagValue: false,
   processEntities: false,
   htmlEntities: false,
   allowBooleanAttributes: false,
@@ -224,7 +225,7 @@ const validateXmlSecurity = (text: string): void => {
 const isUnsafePackagePart = (name: string): boolean =>
   /(?:^|\/)(?:embeddings|activeX)(?:\/|$)/iu.test(name) || /(?:^|\/)vbaProject\.bin$/iu.test(name);
 
-const validateZip = (
+export const readDocumentPackage = (
   bytes: Uint8Array,
   policy: DocumentConversionResourcePolicyV1,
   requiredEntry: string,
@@ -260,6 +261,14 @@ const validateZip = (
             "EMBEDDED_OBJECT_UNSUPPORTED",
             "embedded document objects and code are unsupported",
           );
+        }
+        if (
+          file.name.startsWith("/") ||
+          file.name.includes("\\") ||
+          file.name.split("/").some((part) => part === "..") ||
+          file.name.includes("\0")
+        ) {
+          throw new DocumentParserError("ZIP_PATH_INVALID", "unsafe document package member");
         }
         return true;
       },
@@ -355,6 +364,20 @@ const validateDocxStructure = (
   }
 };
 
+const resolvePackageRelationshipTarget = (basePath: string, target: string): string => {
+  const parts = target.startsWith("/") ? [] : basePath.split("/").filter((part) => part !== ".");
+  for (const part of target.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      if (parts.length === 0) {
+        throw new DocumentParserError("RELATIONSHIP_INVALID", "relationship escapes package root");
+      }
+      parts.pop();
+    } else parts.push(part);
+  }
+  return parts.join("/");
+};
+
 const validateRelationships = (
   entries: Record<string, Uint8Array>,
   policy: DocumentConversionResourcePolicyV1,
@@ -376,7 +399,6 @@ const validateRelationships = (
         targetMode === "External" ||
         target === undefined ||
         /^(?:[a-z][a-z\d+.-]*:|\/\/)/iu.test(target) ||
-        target.startsWith("/") ||
         target.includes("\\")
       ) {
         throw new DocumentParserError(
@@ -384,7 +406,10 @@ const validateRelationships = (
           "external document relationships are unsupported",
         );
       }
-      const targetPath = posix.normalize(posix.join(posix.dirname(posix.dirname(name)), target));
+      const targetPath = resolvePackageRelationshipTarget(
+        posix.dirname(posix.dirname(name)),
+        target,
+      );
       if (targetPath.startsWith("../") || entries[targetPath] === undefined) {
         throw new DocumentParserError(
           "RELATIONSHIP_INVALID",
@@ -419,7 +444,7 @@ export const parseDocx = (
   if (bytes.byteLength < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
     throw new DocumentParserError("FORMAT_INVALID", "DOCX package is not a ZIP archive");
   }
-  const entries = validateZip(bytes, policy, "word/document.xml");
+  const entries = readDocumentPackage(bytes, policy, "word/document.xml");
   validateRelationships(entries, policy);
   validateDocxStructure(entries, policy);
   const styles = docxStyleMap(entries, policy);
@@ -519,10 +544,29 @@ export const parseDocx = (
       const tableId = `table_${tableNumber}`;
       const rows = findXmlChildren(entry.value, "tr");
       const rowCount = rows.length;
-      const colCount = rows.reduce(
-        (max: number, row: unknown) => Math.max(max, findXmlChildren(row, "tc").length),
+      const cellsByRow = rows.map((row) => findXmlChildren(row, "tc"));
+      const cellSpan = (cell: unknown): number => {
+        const value = findXmlEntries(cell, "gridSpan")[0]?.attributes["@_w:val"] ?? "1";
+        if (!/^[1-9][0-9]*$/u.test(value)) {
+          throw new DocumentParserError("DOCX_TABLE_INVALID", "invalid source cell span");
+        }
+        const span = Number(value);
+        if (!Number.isSafeInteger(span) || span > policy.maxCells) {
+          throw new DocumentParserError("DOCX_TABLE_INVALID", "source cell span exceeds budget");
+        }
+        return span;
+      };
+      const colCount = cellsByRow.reduce(
+        (max, cells) =>
+          Math.max(
+            max,
+            cells.reduce<number>((count, cell) => count + cellSpan(cell), 0),
+          ),
         0,
       );
+      if (rowCount * colCount > policy.maxCells) {
+        throw new DocumentParserError("DOCX_TABLE_INVALID", "source table exceeds cell budget");
+      }
       const chapterId = tableId;
       const segmentId = tableId;
       const tableLocator = {
@@ -547,42 +591,81 @@ export const parseDocx = (
         },
         policy,
       );
-      rows.forEach((row, rowIndex) => {
-        const cells = findXmlChildren(row, "tc");
-        cells.forEach((cell, columnIndex) => {
-          const cellBlockId = blockId("docx-cell", tableNumber, rowIndex + 1, columnIndex + 1);
-          pushBlock(
-            blocks,
-            {
-              blockId: cellBlockId,
+      let activeMerges = new Map<number, NormalizedBlockV1>();
+      cellsByRow.forEach((cells, rowIndex) => {
+        let column = 1;
+        const nextMerges = new Map<number, NormalizedBlockV1>();
+        for (const cell of cells) {
+          const columnSpan = cellSpan(cell);
+          const merge = findXmlEntries(cell, "vMerge")[0];
+          if (merge !== undefined && merge.attributes["@_w:val"] !== "restart") {
+            const parent = activeMerges.get(column);
+            if (
+              parent === undefined ||
+              parent.columnSpan !== columnSpan ||
+              Array.from({ length: columnSpan }, (_, offset) =>
+                activeMerges.get(column + offset),
+              ).some((item) => item !== parent) ||
+              collectXmlText(cell).trim().length > 0
+            ) {
+              throw new DocumentParserError(
+                "DOCX_TABLE_INVALID",
+                "invalid vertical merge continuation",
+              );
+            }
+            parent.rowSpan = (parent.rowSpan ?? 1) + 1;
+            parent.locator = {
+              ...tableLocator,
+              rowRange: { start: parent.row!, end: rowIndex + 1 },
+              columnRange: { start: column, end: column + columnSpan - 1 },
+            };
+            parent.coordinate = {
+              kind: "cell",
+              sheet: "docx",
+              row: parent.row!,
+              column,
+              rowSpan: parent.rowSpan,
+              columnSpan,
+            };
+            for (let offset = 0; offset < columnSpan; offset++)
+              nextMerges.set(column + offset, parent);
+          } else {
+            const normalizedCell: NormalizedBlockV1 = {
+              blockId: blockId("docx-cell", tableNumber, rowIndex + 1, column),
               kind: "cell",
               text: collectXmlText(cell),
               headingPath: [tableId],
               locator: {
                 ...tableLocator,
                 rowRange: { start: rowIndex + 1, end: rowIndex + 1 },
-                columnRange: { start: columnIndex + 1, end: columnIndex + 1 },
+                columnRange: { start: column, end: column + columnSpan - 1 },
               },
               coordinate: {
                 kind: "cell",
                 sheet: "docx",
                 row: rowIndex + 1,
-                column: columnIndex + 1,
+                column,
                 rowSpan: 1,
-                columnSpan: 1,
+                columnSpan,
               },
               chapterId,
               segmentId,
               tableId,
               sheet: "docx",
               row: rowIndex + 1,
-              column: columnIndex + 1,
+              column,
               rowSpan: 1,
-              columnSpan: 1,
-            },
-            policy,
-          );
-        });
+              columnSpan,
+            };
+            pushBlock(blocks, normalizedCell, policy);
+            if (merge !== undefined) {
+              for (let offset = 0; offset < columnSpan; offset++)
+                nextMerges.set(column + offset, normalizedCell);
+            }
+          }
+          column += columnSpan;
+        }
+        activeMerges = nextMerges;
       });
     }
   }
@@ -784,7 +867,7 @@ const preflightXlsx = (
     const id = relationship.attributes["@_Id"];
     const target = relationship.attributes["@_Target"];
     if (id === undefined || target === undefined) continue;
-    const targetPath = posix.normalize(posix.join("xl", target));
+    const targetPath = resolvePackageRelationshipTarget("xl", target);
     if (targetPath.startsWith("../") || entries[targetPath] === undefined) {
       throw new DocumentParserError(
         "XLSX_INVALID",
@@ -888,7 +971,7 @@ export const parseXlsx = async (
   if (bytes.byteLength < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
     throw new DocumentParserError("FORMAT_INVALID", "XLSX package is not a ZIP archive");
   }
-  const entries = validateZip(bytes, policy, "xl/workbook.xml");
+  const entries = readDocumentPackage(bytes, policy, "xl/workbook.xml");
   validateRelationships(entries, policy);
   preflightXlsx(entries, policy);
   const workbook = new Workbook();

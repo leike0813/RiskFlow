@@ -1,7 +1,6 @@
 import {
   ArtifactPutCommandV1Schema,
   ArtifactPutResultV1Schema,
-  ArtifactReadRequestV1Schema,
   ArtifactStoreError,
   type ArtifactStoreV1,
 } from "@riskflow/core/artifacts";
@@ -24,12 +23,10 @@ import {
   type EmbeddingResultV1,
   type ModelGatewayErrorCodeV1,
   type ModelGatewayErrorV1,
-  type ModelMessageV1,
   type ModelUsageV1,
   type StructuredCompletionRequestV1,
   type StructuredCompletionResultV1,
   type ModelGatewayPortV1,
-  type ModelInvocationBaseV1,
   modelGatewayError,
   z,
   type ZodType,
@@ -42,18 +39,31 @@ import {
   type FrozenLlamaCppDeploymentConfigV1,
   type LlamaCppDeploymentConfigV1,
 } from "./config.js";
+import {
+  assertModelGatewayRequestBudget,
+  ConsumerStoppedError,
+  decodeJson,
+  hasAuthorizationMismatch,
+  inputBytesForMessages,
+  inputBytesForTexts,
+  OneSlotQueue,
+  PersistedResponseLimitError,
+  persistRawModelResponse,
+  preflightParentArtifacts,
+  readBoundedBytes,
+  ResponseBodyLimitError,
+  usageFromWire,
+  type ParentArtifactPreflightV1,
+} from "./model-gateway-runtime.js";
+export type {
+  ParentArtifactPreflightRequestV1,
+  ParentArtifactPreflightV1,
+} from "./model-gateway-runtime.js";
 
 const encoder = new TextEncoder();
 const nonNegativeInteger = z.number().int().refine(Number.isSafeInteger).nonnegative();
 const positiveInteger = nonNegativeInteger.positive();
 
-const UsageWireSchema = z
-  .object({
-    prompt_tokens: nonNegativeInteger.optional(),
-    completion_tokens: nonNegativeInteger.optional(),
-    total_tokens: nonNegativeInteger.optional(),
-  })
-  .passthrough();
 const ChatMessageSchema = z
   .object({
     role: z.literal("assistant").optional(),
@@ -183,18 +193,6 @@ export interface ModelGatewayObservationV1 {
 
 export type ModelGatewayObserverV1 = (observation: ModelGatewayObservationV1) => void;
 
-export interface ParentArtifactPreflightRequestV1 {
-  readonly projectId: ModelInvocationBaseV1["projectId"];
-  readonly authorization: ModelInvocationBaseV1["authorization"];
-  readonly requiredCapability: ModelInvocationBaseV1["requiredCapability"];
-  readonly parentArtifactRefs: ModelInvocationBaseV1["parentArtifactRefs"];
-  readonly purposeCode: "model-raw-response";
-}
-
-export type ParentArtifactPreflightV1 = (
-  request: ParentArtifactPreflightRequestV1,
-) => Promise<void>;
-
 export interface LlamaCppModelGatewayOptionsV1 {
   readonly deployments: readonly LlamaCppDeploymentConfigV1[];
   readonly artifactStore: ArtifactStoreV1;
@@ -202,100 +200,6 @@ export interface LlamaCppModelGatewayOptionsV1 {
   readonly fetchImpl?: typeof fetch;
   readonly now?: () => Date;
   readonly observe?: ModelGatewayObserverV1;
-}
-
-class ResponseBodyLimitError extends Error {
-  readonly partial: Uint8Array;
-
-  constructor(partial: Uint8Array) {
-    super("response body limit");
-    this.name = "ResponseBodyLimitError";
-    this.partial = partial;
-  }
-}
-
-class ConsumerStoppedError extends Error {
-  constructor() {
-    super("stream consumer stopped");
-    this.name = "ConsumerStoppedError";
-  }
-}
-
-class OneSlotQueue<T> implements AsyncIterable<T> {
-  #value: T | undefined;
-  #hasValue = false;
-  #closed = false;
-  #closeError: unknown;
-  readonly #consumers: Array<{
-    readonly resolve: (result: IteratorResult<T>) => void;
-    readonly reject: (error: unknown) => void;
-  }> = [];
-  readonly #producers: Array<() => void> = [];
-
-  constructor(readonly onConsumerStop?: () => void) {}
-
-  async push(value: T): Promise<void> {
-    if (this.#closed) throw this.#closeError ?? new Error("queue closed");
-    const consumer = this.#consumers.shift();
-    if (consumer !== undefined) {
-      consumer.resolve({ done: false, value });
-      return;
-    }
-    while (this.#hasValue && !this.#closed) {
-      await new Promise<void>((resolve) => this.#producers.push(resolve));
-    }
-    if (this.#closed) throw this.#closeError ?? new Error("queue closed");
-    this.#value = value;
-    this.#hasValue = true;
-  }
-
-  close(error?: unknown): void {
-    if (this.#closed) return;
-    this.#closed = true;
-    this.#closeError = error;
-    const consumers = this.#consumers.splice(0);
-    for (const consumer of consumers) {
-      if (error === undefined) consumer.resolve({ done: true, value: undefined });
-      else consumer.reject(error);
-    }
-    for (const producer of this.#producers.splice(0)) producer();
-  }
-
-  next(): Promise<IteratorResult<T>> {
-    if (this.#hasValue) {
-      const value = this.#value as T;
-      this.#value = undefined;
-      this.#hasValue = false;
-      this.#producers.shift()?.();
-      return Promise.resolve({ done: false, value });
-    }
-    if (this.#closed) {
-      if (this.#closeError !== undefined) return Promise.reject(this.#closeError);
-      return Promise.resolve({ done: true, value: undefined });
-    }
-    return new Promise<IteratorResult<T>>((resolve, reject) => {
-      this.#consumers.push({ resolve, reject });
-    });
-  }
-
-  [Symbol.asyncIterator](): AsyncIterableIterator<T> {
-    return {
-      next: () => this.next(),
-      return: async () => {
-        this.onConsumerStop?.();
-        this.close(new ConsumerStoppedError());
-        return { done: true, value: undefined };
-      },
-      throw: async (error?: unknown) => {
-        this.onConsumerStop?.();
-        this.close(error ?? new ConsumerStoppedError());
-        throw error;
-      },
-      [Symbol.asyncIterator]() {
-        return this;
-      },
-    };
-  }
 }
 
 interface CallControl {
@@ -339,88 +243,24 @@ const chunksOf = async function* (bytes: Uint8Array): AsyncGenerator<Uint8Array>
 
 const readStream = async function* (body: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> {
   const reader = body.getReader();
+  let completed = false;
   try {
     for (;;) {
       const result = await reader.read();
-      if (result.done) return;
+      if (result.done) {
+        completed = true;
+        return;
+      }
       if (result.value !== undefined) yield new Uint8Array(result.value);
     }
   } finally {
+    if (!completed) await reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
 };
 
-const readBoundedBytes = async (response: Response, maxBytes: number): Promise<Uint8Array> => {
-  if (response.body === null) return new Uint8Array();
-  const parts: Uint8Array[] = [];
-  let total = 0;
-  for await (const chunk of readStream(response.body)) {
-    total += chunk.byteLength;
-    if (!Number.isSafeInteger(total) || total > maxBytes) {
-      const remaining = Math.max(0, maxBytes - (total - chunk.byteLength));
-      if (remaining > 0) parts.push(chunk.slice(0, remaining));
-      throw new ResponseBodyLimitError(concatBytes(parts, Math.min(total, maxBytes)));
-    }
-    parts.push(chunk);
-  }
-  return concatBytes(parts, total);
-};
-
-const concatBytes = (
-  parts: readonly Uint8Array[],
-  total = parts.reduce((sum, part) => sum + part.byteLength, 0),
-): Uint8Array => {
-  const result = new Uint8Array(total);
-  let offset = 0;
-  for (const part of parts) {
-    result.set(part, offset);
-    offset += part.byteLength;
-  }
-  return result;
-};
-
-const decodeUtf8 = (bytes: Uint8Array): string =>
-  new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-const decodeJson = (bytes: Uint8Array): unknown => JSON.parse(decodeUtf8(bytes));
-
 const statusRetryable = (status: number): boolean =>
   status === 408 || status === 429 || status === 502 || status === 503 || status === 504;
-
-const usageFromWire = (value: unknown): ModelUsageV1 => {
-  const parsed = UsageWireSchema.safeParse(value);
-  if (!parsed.success) return { available: false };
-  const {
-    prompt_tokens: inputTokens,
-    completion_tokens: outputTokens,
-    total_tokens: totalTokens,
-  } = parsed.data;
-  if (inputTokens === undefined && outputTokens === undefined && totalTokens === undefined)
-    return { available: false };
-  return {
-    available: true,
-    ...(inputTokens === undefined ? {} : { inputTokens }),
-    ...(outputTokens === undefined ? {} : { outputTokens }),
-    ...(totalTokens === undefined ? {} : { totalTokens }),
-  };
-};
-
-const inputBytesForMessages = (messages: readonly ModelMessageV1[]): number =>
-  messages.reduce((total, message) => total + encoder.encode(message.content).byteLength, 0);
-
-const inputBytesForTexts = (texts: readonly string[]): number =>
-  texts.reduce((total, text) => total + encoder.encode(text).byteLength, 0);
-
-const hasAuthorizationMismatch = (request: unknown): boolean => {
-  if (!isRecord(request) || !isRecord(request.authorization)) return false;
-  const authorization = request.authorization;
-  return (
-    (typeof request.projectId === "string" && request.projectId !== authorization.projectId) ||
-    (typeof request.actorId === "string" && request.actorId !== authorization.actorId) ||
-    (typeof request.requiredCapability === "string" &&
-      Array.isArray(authorization.grantedCapabilities) &&
-      !authorization.grantedCapabilities.includes(request.requiredCapability))
-  );
-};
 
 const makeSseDelta = (sequence: number, text: string): ConversationTextDeltaV1 =>
   ConversationTextDeltaV1Schema.parse({ schemaVersion: "1", sequence, text });
@@ -1189,61 +1029,30 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
     config: FrozenLlamaCppDeploymentConfigV1,
     inputBytes: number,
   ): void {
-    if (Date.parse(request.deadlineAt) <= this.#now().getTime())
-      throw this.#error(request, "MODEL_REQUEST_TIMEOUT", "request.deadline", true);
-    if (inputBytes > config.maxInputBytes) {
-      throw this.#error(request, "MODEL_CONTEXT_EXCEEDED", "request.input-bytes", false, {
-        counts: { inputBytes },
-      });
-    }
-    if (request instanceof Object && "maxOutputTokens" in request) {
-      if (request.maxOutputTokens > config.maxOutputTokens) {
-        throw this.#error(request, "MODEL_INPUT_INVALID", "request.output-budget", false);
-      }
-      if (request.maxOutputTokens > config.contextWindowTokens) {
-        throw this.#error(request, "MODEL_CONTEXT_EXCEEDED", "request.context", false);
-      }
-    }
-    if ("maxInputBytes" in request) {
-      if (
-        request.maxInputBytes > config.maxInputBytes ||
-        request.maxBatchItems > config.maxBatchItems
-      )
-        throw this.#error(request, "MODEL_INPUT_INVALID", "request.input-budget", false);
-      if (request.texts.length > request.maxBatchItems) {
-        throw this.#error(request, "MODEL_CONTEXT_EXCEEDED", "request.batch", false, {
-          counts: { batchItems: request.texts.length },
-        });
-      }
-      if (inputBytes > request.maxInputBytes) {
-        throw this.#error(request, "MODEL_CONTEXT_EXCEEDED", "request.input-budget", false, {
-          counts: { inputBytes },
-        });
-      }
-    }
+    assertModelGatewayRequestBudget(
+      request,
+      config,
+      inputBytes,
+      (code, stage, counts) => {
+        throw this.#error(
+          request,
+          code,
+          stage,
+          code === "MODEL_REQUEST_TIMEOUT",
+          counts ? { counts } : {},
+        );
+      },
+      this.#now,
+    );
   }
 
   async #preflightParentArtifacts(request: RequestValue): Promise<void> {
-    if (request.parentArtifactRefs.length === 0) return;
-    if (this.#parentArtifactPreflight === undefined)
-      throw this.#error(request, "MODEL_AUTHORIZATION_DENIED", "parent-artifact.preflight", false);
     try {
-      await this.#parentArtifactPreflight({
-        projectId: request.projectId,
-        authorization: request.authorization,
-        requiredCapability: request.requiredCapability,
-        parentArtifactRefs: request.parentArtifactRefs,
-        purposeCode: "model-raw-response",
-      });
+      await preflightParentArtifacts(request, this.#parentArtifactPreflight);
     } catch (error) {
       if (error instanceof ModelGatewayError) throw error;
       if (error instanceof ArtifactStoreError) throw this.#artifactError(request, error);
-      throw this.#error(
-        request,
-        "MODEL_ARTIFACT_PERSISTENCE_FAILED",
-        "parent-artifact.preflight",
-        false,
-      );
+      throw this.#error(request, "MODEL_AUTHORIZATION_DENIED", "parent-artifact.preflight", false);
     }
   }
 
@@ -1776,43 +1585,29 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
     operation: string,
     maxResponseBytes: number,
   ): Promise<{ readonly ref: DiagnosticArtifactRefV1; readonly bytes: Uint8Array }> {
-    let result: ReturnType<typeof ArtifactPutResultV1Schema.parse>;
     try {
-      result = await this.#putArtifact(
-        request,
-        bytes,
-        mediaType,
-        "model-raw-response",
-        "model-raw-response",
-      );
+      return await persistRawModelResponse(request, bytes, operation, maxResponseBytes, {
+        artifactStore: this.#artifactStore,
+        now: this.#now,
+        putRaw: async (rawBytes) => {
+          const result = await this.#putArtifact(
+            request,
+            rawBytes,
+            mediaType,
+            "model-raw-response",
+            "model-raw-response",
+          );
+          if (result.artifactRef.kind !== "diagnostic-artifact")
+            throw this.#error(request, "MODEL_ARTIFACT_PERSISTENCE_FAILED", "artifact.kind", false);
+          return result.artifactRef;
+        },
+      });
     } catch (error) {
+      if (error instanceof PersistedResponseLimitError)
+        throw this.#error(request, "MODEL_ARTIFACT_PERSISTENCE_FAILED", "artifact.open", false, {
+          rawResponseRef: error.rawResponseRef,
+        });
       throw this.#mapError(error, request, undefined);
-    }
-    if (result.artifactRef.kind !== "diagnostic-artifact")
-      throw this.#error(request, "MODEL_ARTIFACT_PERSISTENCE_FAILED", "artifact.kind", false);
-    try {
-      const readRequest = ArtifactReadRequestV1Schema.parse({
-        schemaVersion: "1",
-        requestId: `model-read-${request.invocationId}-${operation}`,
-        idempotencyKey: `${request.idempotencyKey}:raw-read:${operation}`,
-        artifactRef: result.artifactRef,
-        projectId: request.projectId,
-        actorId: request.actorId,
-        requestedAt: this.#now().toISOString(),
-        purposeCode: "model-raw-response",
-        requiredCapability: request.requiredCapability,
-        authorization: request.authorization,
-      });
-      const handle = await this.#artifactStore.open(readRequest);
-      const readBytes = await collectIterable(handle.content, maxResponseBytes);
-      await handle.verified;
-      return { ref: result.artifactRef, bytes: readBytes };
-    } catch (error) {
-      if (error instanceof ModelGatewayError) throw error;
-      if (error instanceof ArtifactStoreError) throw this.#artifactError(request, error);
-      throw this.#error(request, "MODEL_ARTIFACT_PERSISTENCE_FAILED", "artifact.open", false, {
-        rawResponseRef: result.artifactRef,
-      });
     }
   }
 
@@ -1860,21 +1655,6 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
     }
   }
 }
-
-const collectIterable = async (
-  content: AsyncIterable<Uint8Array>,
-  maxBytes: number,
-): Promise<Uint8Array> => {
-  const parts: Uint8Array[] = [];
-  let total = 0;
-  for await (const chunk of content) {
-    total += chunk.byteLength;
-    if (!Number.isSafeInteger(total) || total > maxBytes)
-      throw new ResponseBodyLimitError(new Uint8Array());
-    parts.push(chunk);
-  }
-  return concatBytes(parts, total);
-};
 
 export const createLlamaCppModelGateway = (
   options: LlamaCppModelGatewayOptionsV1,

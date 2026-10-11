@@ -715,6 +715,45 @@ describe.sequential("PostgreSQL assessment-configuration adapter", () => {
     expect(setRowsAfter.rows.map((row) => row.identity_digest)).toContain(frozenIdentity);
   });
 
+  it("reads a published member by exact release through C04 and rejects mismatched scope or version", async () => {
+    const projectId = "assessment-configuration-member-read";
+    const set = makeAssessmentConfigurationFixtureSet();
+    const published = await publishWholeSet(projectId, set);
+    const target = published.get("weight-set")!;
+    const authorization = readFor(projectId);
+    const resolved = await fixture!.configuration.resolveConfigurationSet(
+      resolveRequest(projectId, "published-member-read"),
+    );
+    expect(resolved).toMatchObject({ kind: "succeeded" });
+
+    const result = await fixture!.configuration.readPublishedConfigurationMember({
+      projectId,
+      requestId: nextId("deployment-config-read"),
+      releaseRef: target.releaseRef.reference,
+      authorization,
+    });
+    expect(result).toEqual({
+      body: set.documents["weight-set"],
+      sha256: assessmentConfigurationDocumentDigest(set.documents["weight-set"]),
+    });
+    expect(
+      await fixture!.configuration.readPublishedConfigurationMember({
+        projectId: `${projectId}-other`,
+        requestId: nextId("deployment-config-cross-project"),
+        releaseRef: target.releaseRef.reference,
+        authorization,
+      }),
+    ).toBeUndefined();
+    expect(
+      await fixture!.configuration.readPublishedConfigurationMember({
+        projectId,
+        requestId: nextId("deployment-config-wrong-version"),
+        releaseRef: { ...target.releaseRef.reference, versionId: "wrong-version" },
+        authorization,
+      }),
+    ).toBeUndefined();
+  });
+
   it("keeps the frozen set stable across rollback and reports missing members", async () => {
     const projectId = "assessment-configuration-rollback";
     const set = makeAssessmentConfigurationFixtureSet();

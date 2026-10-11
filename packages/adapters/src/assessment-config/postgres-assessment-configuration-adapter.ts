@@ -26,6 +26,16 @@ import {
 } from "@riskflow/core/assessment-config";
 import type { ArtifactStoreV1 } from "@riskflow/core/artifacts";
 import {
+  ArtifactReadRequestV1Schema,
+  type ArtifactReadHandleV1,
+} from "@riskflow/core/artifacts";
+import {
+  ASSESSMENT_CONFIGURATION_ARTIFACT_PURPOSE_CODE_V1,
+  ASSESSMENT_CONFIGURATION_MAX_ARTIFACT_BYTES_V1,
+  AssessmentConfigurationDocumentV1Schema,
+  assessmentConfigurationDocumentDigest,
+} from "@riskflow/core/assessment-config";
+import {
   sha256CanonicalJson,
   type AtomicCommandV1,
   type TransactionContextV1,
@@ -34,6 +44,7 @@ import {
 import { DomainEventV1Schema, type DomainEventV1 } from "@riskflow/contracts/events";
 import {
   ContractReferenceV1Schema,
+  ContentArtifactRefV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
   ModuleErrorV1Schema,
   type AuthorizationContextV1,
@@ -113,6 +124,26 @@ type AssessmentConfigurationDatabase = PostgresDatabase & {
 };
 
 type AssessmentConfigurationTransaction = Transaction<AssessmentConfigurationDatabase>;
+
+const readConfigurationBody = async (handle: ArtifactReadHandleV1): Promise<unknown> => {
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of handle.content) {
+    size += chunk.byteLength;
+    if (size > ASSESSMENT_CONFIGURATION_MAX_ARTIFACT_BYTES_V1) {
+      throw new RangeError("assessment configuration artifact exceeds its size limit");
+    }
+    chunks.push(chunk);
+  }
+  await handle.verified;
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+};
 
 const jsonbValue = (value: unknown): unknown => JSON.stringify(value) as unknown;
 
@@ -314,6 +345,77 @@ export class PostgresAssessmentConfigurationAdapter implements AssessmentConfigu
       requiredCapability: "knowledge-modeling.govern",
       authorization: command.authorization,
     });
+  }
+
+  /** 按精确已发布成员读取原配置正文；宿主须注入经 C06 复验的 C04 组合。 */
+  async readPublishedConfigurationMember(input: {
+    readonly projectId: string;
+    readonly requestId: string;
+    readonly releaseRef: KnowledgeReleaseRefV1["reference"];
+    readonly authorization: AuthorizationContextV1;
+  }): Promise<{ readonly body: unknown; readonly sha256: string } | undefined> {
+    if (input.authorization === undefined || input.authorization.projectId !== input.projectId) {
+      return undefined;
+    }
+    const members = await this.#db
+      .selectFrom("business.assessment_configuration_release_set_members as member")
+      .innerJoin("business.assessment_configuration_release_sets as release_set", (join) =>
+        join
+          .onRef("release_set.set_id", "=", "member.set_id")
+          .onRef("release_set.version_id", "=", "member.version_id"),
+      )
+      .select([
+        "member.definition_type as definition_type",
+        "member.artifact_ref as artifact_ref",
+        "member.content_digest as content_digest",
+      ])
+      .distinct()
+      .where("release_set.project_id", "=", input.projectId)
+      .where("member.release_id", "=", input.releaseRef.entityId)
+      .where("member.release_version_id", "=", input.releaseRef.versionId)
+      .limit(2)
+      .execute();
+    const member = members[0];
+    if (member === undefined || !isAssessmentConfigurationDefinitionTypeV1(member.definition_type)) {
+      return undefined;
+    }
+    if (
+      members.some(
+        (candidate) =>
+          candidate.definition_type !== member.definition_type ||
+          JSON.stringify(candidate.artifact_ref) !== JSON.stringify(member.artifact_ref) ||
+          candidate.content_digest !== member.content_digest,
+      )
+    ) {
+      return undefined;
+    }
+    try {
+      const artifactRef = ContentArtifactRefV1Schema.parse(member.artifact_ref);
+      const handle = await this.#artifactStore.open(
+        ArtifactReadRequestV1Schema.parse({
+          schemaVersion: "1",
+          requestId: input.requestId,
+          idempotencyKey: `${input.requestId}:configuration-member`,
+          artifactRef,
+          projectId: input.projectId,
+          actorId: input.authorization.actorId,
+          requestedAt: input.authorization.decidedAt,
+          purposeCode: ASSESSMENT_CONFIGURATION_ARTIFACT_PURPOSE_CODE_V1,
+          requiredCapability: "knowledge-modeling.read",
+          authorization: input.authorization,
+        }),
+      );
+      const document = AssessmentConfigurationDocumentV1Schema.parse(
+        await readConfigurationBody(handle),
+      );
+      const sha256 = assessmentConfigurationDocumentDigest(document);
+      if (document.definitionType !== member.definition_type || sha256 !== member.content_digest) {
+        return undefined;
+      }
+      return { body: document, sha256 };
+    } catch {
+      return undefined;
+    }
   }
 
   async appendPreparedRevision(

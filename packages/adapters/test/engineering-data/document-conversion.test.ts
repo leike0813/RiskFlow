@@ -111,6 +111,74 @@ const fixture = async (name: string): Promise<Uint8Array> =>
   );
 
 describe("structured document format adapters", () => {
+  it("preserves horizontal and vertical DOCX cell spans and rejects orphan continuations", async () => {
+    const entries = unzipSync(await fixture("sample.docx"));
+    const makeTable = (merge: string) =>
+      zipSync({
+        ...entries,
+        "word/document.xml": strToU8(`
+      <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:tbl>
+      <w:tr><w:tc><w:tcPr><w:gridSpan w:val="2"/><w:vMerge w:val="${merge}"/></w:tcPr><w:p><w:r><w:t>合并值</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>一</w:t></w:r></w:p></w:tc></w:tr>
+      <w:tr><w:tc><w:tcPr><w:gridSpan w:val="2"/><w:vMerge/></w:tcPr><w:p/></w:tc><w:tc><w:p><w:r><w:t>1.20</w:t></w:r></w:p></w:tc></w:tr>
+      </w:tbl></w:body></w:document>`),
+      });
+    const input = context(
+      "docx",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+    const parsed = parseDocx(makeTable("restart"), input);
+    expect(parsed.blocks.filter(({ kind }) => kind === "cell")).toHaveLength(3);
+    expect(parsed.blocks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          text: "合并值",
+          row: 1,
+          column: 1,
+          rowSpan: 2,
+          columnSpan: 2,
+          coordinate: { kind: "cell", sheet: "docx", row: 1, column: 1, rowSpan: 2, columnSpan: 2 },
+        }),
+        expect.objectContaining({ text: "1.20", row: 2, column: 3 }),
+      ]),
+    );
+    expect(codeOf(() => parseDocx(makeTable("continue"), input))).toBe("DOCX_TABLE_INVALID");
+  });
+
+  it("accepts package-root XLSX relationships and preserves formula cache", async () => {
+    const entries = unzipSync(await fixture("sample.xlsx"));
+    const name = "xl/_rels/workbook.xml.rels";
+    entries[name] = strToU8(
+      new TextDecoder()
+        .decode(entries[name])
+        .replace(/Target="worksheets\//gu, 'Target="/xl/worksheets/'),
+    );
+    const parsed = await parseXlsx(
+      zipSync(entries),
+      context("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    );
+    expect(parsed.blocks).toEqual(
+      expect.arrayContaining([expect.objectContaining({ formula: "1+1", cachedValue: 2 })]),
+    );
+  });
+
+  it.each([
+    "https://external.example/sheet.xml",
+    "../../../outside.xml",
+    "/../xl/worksheets/sheet1.xml",
+  ])("rejects unsafe package relationships: %s", async (target) => {
+    const entries = unzipSync(await fixture("sample.xlsx"));
+    const name = "xl/_rels/workbook.xml.rels";
+    entries[name] = strToU8(
+      new TextDecoder().decode(entries[name]).replace(/Target="[^"]+"/u, `Target="${target}"`),
+    );
+    await expect(
+      parseXlsx(
+        zipSync(entries),
+        context("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+      ),
+    ).rejects.toBeInstanceOf(DocumentParserError);
+  });
+
   it("parses the on-disk DOCX, PDF, XLSX and CSV fixtures", async () => {
     const [docx, pdf, xlsx, csv] = await Promise.all([
       fixture("sample.docx"),
@@ -431,7 +499,7 @@ describe("structured document format adapters", () => {
     );
     expect(failedConversion).toMatchObject({ kind: "failed", error: { code: "TERMINAL_FAILURE" } });
     expect(diagnostic).toMatchObject({
-      reasonCode: "MEDIA_TYPE_UNSUPPORTED",
+      reasonCode: "MINERU_DEPLOYMENT_NOT_FOUND",
       retryable: false,
       inputBytes: bytes.byteLength,
     });

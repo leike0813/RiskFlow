@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Kysely, PostgresDialect } from "kysely";
 
 import { ArtifactPutCommandV1Schema } from "@riskflow/core/artifacts";
+import { sha256CanonicalJson } from "@riskflow/core/persistence";
 import type {
   ApplicabilityMetadataSnapshotRefV1,
   AssessmentEntryContextReadQueryV1,
@@ -35,6 +36,7 @@ import * as externalRiskEventRegistrationMigration from "../../../src/postgres/m
 import * as readQueryResultsMigration from "../../../src/postgres/migrations/engineering-data/implement-engineering-data-read-branches/000024_engineering_data_read_query_results.js";
 import * as assessmentEntryCatalogCursorKeysMigration from "../../../src/postgres/migrations/engineering-data/fix-assessment-entry-read-seam/000055_assessment_entry_catalog_cursor_keys.js";
 import {
+  CONTEXT_SOURCE_TEST_TIMESTAMP,
   startEngineeringContextSourceFixture,
   type EngineeringContextSourcePostgresFixture,
 } from "./fixture.js";
@@ -5119,5 +5121,168 @@ describe("C11 PostgreSQL context/source registry", () => {
         expect(read).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
       }, 120_000);
     });
+  });
+
+  describe("C37 工程枚举窄读", () => {
+    const openProject = async (project: string) => {
+      const state = requireE2eState();
+      const commandId = `c11-listing-open-${project}`;
+      await fixture.access.administerProject({
+        kind: "open-project",
+        projectId: project,
+        commandId,
+        idempotencyKey: commandId,
+        expectedVersion: "none",
+        authorizationContextRef: state.systemAdministrationContextRef,
+        initialRiskManagerAccountId: state.managerId,
+      });
+      const root = await fixture.postgres.adminPool.query<{
+        scope_id: string;
+        revision_id: string;
+      }>(
+        "SELECT scope_id, current_revision_id AS revision_id FROM business.access_spatial_scopes WHERE project_id = $1",
+        [project],
+      );
+      const authorize = (invocationId: string) =>
+        fixture.access.authorize({
+          invocation: { kind: "human-session", sessionToken: state.managerSessionToken },
+          invocationId,
+          projectId: project,
+          branch: "engineering-data.register-source-delivery",
+          requestedSpatialScopeRefs: [
+            {
+              kind: "spatial-scope",
+              reference: {
+                entityId: root.rows[0]!.scope_id,
+                versionId: root.rows[0]!.revision_id,
+              },
+            },
+          ],
+          requestedSourceVersionRefs: [],
+        });
+      return { authorize, managerId: state.managerId };
+    };
+
+    // 真实 reviseContext 入口建工程事实，不补 SQL 夹具。
+    const reviseProject = async (
+      project: string,
+      input: {
+        readonly suffix: string;
+        readonly expectedVersion: string;
+        readonly lifecycle: "preparing" | "active";
+      },
+      opened: Awaited<ReturnType<typeof openProject>>,
+    ) => {
+      const commandId = `c11-listing-${input.suffix}`;
+      const result = await fixture.registry.reviseContext({
+        commandId,
+        idempotencyKey: commandId,
+        projectId: project,
+        actorId: opened.managerId,
+        issuedAt: CONTEXT_SOURCE_TEST_TIMESTAMP,
+        authorization: (await opened.authorize(commandId)).context,
+        kind: "project",
+        expectedVersion:
+          input.expectedVersion === "none"
+            ? "none"
+            : { entityId: project, versionId: input.expectedVersion },
+        name: `枚举工程 ${input.suffix}`,
+        lifecycle: input.lifecycle,
+        applicabilityMetadata: {
+          constructionMethod: "variable-diameter-shield",
+          stratumCondition: "soft-soil",
+          engineeringStage: "expansion-preparation",
+        },
+        effectivePeriod: { validFrom: CONTEXT_SOURCE_TEST_TIMESTAMP },
+      });
+      expect(result).toMatchObject({ kind: "succeeded", result: { kind: "project-revision" } });
+      if (result.kind !== "succeeded" || result.result.kind !== "project-revision")
+        throw new Error("project revision failed");
+      return result.result.revision.projectRevisionRef;
+    };
+
+    it("按工程 ID keyset 返回当前 revision 与已登记空间、来源引用", async () => {
+      const state = requireE2eState();
+      const empty = "project-c11-listing-a";
+      const opened = await openProject(empty);
+      const first = await reviseProject(
+        empty,
+        {
+          suffix: "a-1",
+          expectedVersion: "none",
+          lifecycle: "preparing",
+        },
+        opened,
+      );
+      const second = await reviseProject(
+        empty,
+        {
+          suffix: "a-2",
+          expectedVersion: first.reference.versionId,
+          lifecycle: "active",
+        },
+        opened,
+      );
+
+      const page = await fixture.registry.listDeploymentProjects({
+        afterProjectId: undefined,
+        limit: 200,
+      });
+      const ids = page.map((row) => row.projectId);
+      expect(ids).toEqual([...ids].sort());
+      expect(ids).toContain(empty);
+      expect(ids).toContain(state.projectId);
+      // 只返回已登记工程的当前 revision；空工程没有空间或来源登记。
+      expect(page.find((row) => row.projectId === empty)).toEqual({
+        projectId: empty,
+        revision: Number(second.reference.versionId),
+        spatialScopeRefs: [],
+        sourceRegistrationRefs: [],
+      });
+
+      const deliveryRef = {
+        entityId: `d_${sha256CanonicalJson({
+          projectId: state.projectId,
+          commandId: state.deliveryCommand.commandId,
+        }).slice(0, 32)}`,
+        versionId: "1",
+      };
+      const registered = page.find((row) => row.projectId === state.projectId);
+      expect(registered?.spatialScopeRefs).toContainEqual(state.businessSpatialScopeRef.reference);
+      expect(registered?.sourceRegistrationRefs).toContainEqual(deliveryRef);
+      // 来源登记取 sourceDelivery 引用，不返回 source version 引用。
+      expect(registered?.sourceRegistrationRefs).not.toContainEqual(
+        state.sourceVersionRef.reference,
+      );
+      expect(JSON.stringify(registered)).not.toContain(state.managerSessionToken);
+    }, 120_000);
+
+    it("本页只查本页工程，越界 limit 明确拒绝", async () => {
+      const state = requireE2eState();
+      const before = await fixture.registry.listDeploymentProjects({
+        afterProjectId: undefined,
+        limit: 200,
+      });
+      const single = await fixture.registry.listDeploymentProjects({
+        afterProjectId: undefined,
+        limit: 1,
+      });
+      expect(single).toHaveLength(1);
+      expect(single[0]?.projectId).toBe(before[0]?.projectId);
+      // keyset 从上一页最后一页继续，不重复也不跳页。
+      const next = await fixture.registry.listDeploymentProjects({
+        afterProjectId: single[0]!.projectId,
+        limit: 200,
+      });
+      expect(next.map((row) => row.projectId)).toEqual(before.slice(1).map((row) => row.projectId));
+      expect(next.some((row) => row.projectId === state.projectId)).toBe(
+        before.slice(1).some((row) => row.projectId === state.projectId),
+      );
+      for (const limit of [0, 201, 1.5]) {
+        await expect(
+          fixture.registry.listDeploymentProjects({ afterProjectId: undefined, limit }),
+        ).rejects.toMatchObject({ contextSourceError: { code: "UNSUPPORTED_CONTRACT" } });
+      }
+    }, 120_000);
   });
 });

@@ -1,6 +1,6 @@
 # RiskFlow 桌面客户端与多终端架构
 
-> 状态：2026-10-08 用户确认的目标设计，待 C37 实施。正式行为契约由 C37 delta specs 承担，当前代码尚未包含 Electron 客户端。
+> 状态：2026-10-08 用户确认的目标设计；当前代码已包含 `apps/desktop` Electron HTTPS 薄壳及 `apps/web` 完整业务界面。C37 进行功能验收，C38 完成正式离线发布与部署证据。正式行为契约由对应 OpenSpec specs 承担。
 
 ## 产品形态
 
@@ -13,7 +13,7 @@ flowchart LR
     Desktop[Electron 桌面客户端]
     Browser[内网电脑浏览器]
     Mobile[后续手机或平板浏览器]
-    subgraph Server[一台物理服务器]
+    subgraph Server[C38 最终目标：一台物理服务器上的三台 VM]
         App[应用 VM：HTTPS / apps/web / API / Worker / 解析]
         Model[推理 VM：GPU 直通 / llama.cpp / 模型]
         Data[数据 VM：PostgreSQL / Qdrant / 不可变工件]
@@ -35,9 +35,9 @@ flowchart LR
 | `apps/worker` | LangGraph、Agent、Outbox 与已归档后台任务 |
 | `packages/contracts`、`core`、`adapters` | 既有契约、领域事实与基础设施适配，保持单向依赖 |
 
-目标 workspace 是四个应用与三个共享包，继续使用根 pnpm 锁文件与统一构建。Desktop 通过 HTTPS 加载 Web；应用之间不导入彼此源码，不将 Web 加入 Desktop 的 npm 依赖。`demo/` 保持在生产依赖图之外。
+当前 workspace 包含 `apps/web`、`apps/desktop`、`apps/api`、`apps/worker` 与三个共享包，共七个 workspace，继续使用根 pnpm 锁文件与统一构建。Desktop 通过 HTTPS 加载 Web；应用之间不导入彼此源码，不将 Web 加入 Desktop 的 npm 依赖。`demo/` 保持在生产依赖图之外。
 
-三 VM 以 systemd 管理服务，应用 VM 使用 Caddy 2.11.7 提供同源 HTTPS；数据 VM 的 PostgreSQL 18.6 与 Qdrant 1.19.0 使用固定 OCI 制品。C04 存储留在数据 VM 本地磁盘，应用 VM 通过仅提供 put/open 的内部 HTTPS 流接口访问；事务引用检查仍共享原 PostgreSQL 事务，维护核对在数据 VM 本地进行。
+最终目标为三 VM 以 systemd 管理服务，应用 VM 使用 Caddy 2.11.7 提供同源 HTTPS；数据 VM 的 PostgreSQL 18.6 与 Qdrant 1.19.0 使用固定 OCI 制品。C04 存储留在数据 VM 本地磁盘，应用 VM 通过仅提供 put/open 的内部 HTTPS 流接口访问；事务引用检查仍共享原 PostgreSQL 事务，维护核对在数据 VM 本地进行。C37 当前阶段允许使用网络 API 模型后端；本地 llama.cpp/GPU 推理、真实三 VM 禁网部署及 4090 性能和资源证据属于 C38 最终交付。
 
 `demo/src` 的已实现业务接线与 `demo/v2` 的视觉参考用于迁移，最终页面接入 `apps/web` 的现有会话、HTTP/SSE、导航与确认机制。原型静态业务数据、审阅注入和冻结契约镜像不作为生产数据来源。保留 C32–C35 的全部业务行为，并合并 C36 质量页面；不因桌面交付遗漏页面。路由复用 React Router 6.30.6，图表复用 ECharts 5.6.0；使用已有 Web 壳、唯一 HTTP 客户端和确认控制器，质量页位于 `/assessment/quality`。
 
@@ -53,20 +53,20 @@ flowchart LR
 
 ## 多平台与发布
 
-C37 冻结 Windows 11 x64（NSIS）、Ubuntu 24.04 x64（AppImage）与 macOS 14+ arm64（DMG），使用 Electron 44.7.0 与 electron-builder 26.15.3；内置 Chromium 152.0.7977.130 / Node 24.21.0。Windows 组织签名、macOS Developer ID 与预附公证票据、Linux 介质核验分别在真实目标环境验收；一个平台的构建或浏览器测试不能证明其它平台可安装运行。Electron 的 Chromium 与内置 Node 身份随安装包记录，服务端 Node 24 约束不替代 Electron 运行时身份。
+C38 最终交付沿用冻结矩阵：Windows 11 x64（NSIS）、Ubuntu 24.04 x64（AppImage）与 macOS 14+ arm64（DMG），使用 Electron 44.7.0 与 electron-builder 26.15.3；内置 Chromium 152.0.7977.130 / Node 24.21.0。Windows 组织签名、macOS Developer ID 与预附公证票据、Linux 介质核验须按真实目标环境取证；不提供未签名分发模式。一个平台的构建或浏览器测试不能证明其它平台可安装运行。Electron 的 Chromium 与内置 Node 身份随安装包记录，服务端 Node 24 约束不替代 Electron 运行时身份。
 
-安装包、配置说明、哈希、许可证与 SBOM 纳入离线介质，不依赖公网更新源。客户端升级采用人工安装已核验版本；服务端发布与客户端发布各自记录兼容性，普通页面更新由服务端完成。敏感工程信息不进入桌面诊断。
+C38 的正式签名安装包、配置说明、哈希、许可证与 SBOM 纳入离线介质，不依赖公网更新源，并保留真实三 VM 禁网部署证据。客户端升级采用人工安装已核验版本；服务端发布与客户端发布各自记录兼容性，普通页面更新由服务端完成。敏感工程信息不进入桌面诊断。
 
 手机和平板优先复用 `apps/web` 与同一 API，通过浏览器访问；Electron 不提供移动端运行时。后续移动交付单独明确小屏导航、宽表格、触摸图谱、复核表单与可访问性验收，PWA 或原生封装按实际需求决定。C37 不承诺移动端、PWA 或断开内网后的业务运行。
 
 ## 私有部署与恢复责任
 
-服务器沿用推理、应用、数据三台 VM 的已确认拓扑，只有应用 HTTPS 入口面向业务用户。Docker Compose 未被原产品决议选定，Electron 方案也不要求它；服务管理和代理工具仍由 C37 部署设计闭合。
+C38 最终服务器沿用推理、应用、数据三台 VM 拓扑，只有应用 HTTPS 入口面向业务用户。C37 功能环境可合置三个逻辑角色并接批准网络 API，保持相同接口与授权边界。Docker Compose 未被原产品决议选定，Electron 方案也不要求它；现有服务管理和代理配置保留，真实三 VM 效果在最终部署核验。
 
 同机快照与副本仅用于逻辑回退，不提供物理故障隔离。MVP 不承诺高可用、独立备份、持续备份、周期演练、生产级 RPO/RTO 或长期代运维；独立冷备仅为后续单独采购选项。恢复动作与业务审计仍可靠写入 PostgreSQL，普通日志不能替代。
 
 ## 验收边界
 
-C37 验证完整业务界面在真实 HTTPS 部署中的路由、权限、人工确认、证据读取与 SSE，并在冻结的桌面目标验证启动、登录、文件上传下载、窗口关闭后任务继续、断线重连、证书拒绝和导航限制。测试使用真实发布产物；实际硬件、模型与授权证据缺失时报告阻塞，不能以原型或 skip 结果代替。
+C37 功能验收以实际证据核验完整 Web 独立运行和现有 Electron HTTPS 薄壳的安全及共享服务行为，包括 TLS/证书拒绝、导航、权限、登录、命令确认与幂等、文件传输、SSE 重连和窗口关闭后任务继续。无需正式签名/公证安装包、三平台真实安装或真实三 VM 禁网部署；这些材料缺失不能阻塞有功能证据支持的 C37 PASS、集成或归档。C37 报告不得声称 C38 正式材料已通过。C38 再验收三平台签名离线安装、真实三 VM 禁网部署以及 4090 性能和资源证据；缺项只表示最终交付材料未完成，不能伪造通过。测试证据不得由代码存在、静态检查、原型或 skip 代替。
 
 相关基线：[宏观架构](macro-architecture.md)、[界面规格](full-product-ui-spec.md)、[工具链](../issues/21-mvp-toolchain-dependencies.md)、[私有部署责任](../issues/08-private-deployment-governance.md)、[C37 路线](openspec-delivery-roadmap.md)。

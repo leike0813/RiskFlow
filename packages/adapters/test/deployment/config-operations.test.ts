@@ -17,7 +17,10 @@ import {
   DEPLOYMENT_OPERATION_STAGE_V1,
   createPostgresDeploymentOperationStoreV1,
 } from "../../src/deployment/operations.js";
-import { initializeDeploymentV1 } from "../../src/deployment/initialization.js";
+import {
+  assertCompatibleMigrationVersion,
+  initializeDeploymentV1,
+} from "../../src/deployment/initialization.js";
 import {
   DeploymentConfigV1Schema,
   DeploymentOperationV1Schema,
@@ -25,6 +28,8 @@ import {
   type DeploymentConfigV1,
 } from "../../src/deployment/schema.js";
 import { startPostgresFixture, type PostgresTestFixture } from "../postgres/fixture.js";
+import { DEPLOYMENT_POLICY_TYPE_V1_VALUES } from "../../src/deployment/policies.js";
+import { makeConfig } from "../engineering-data/document-conversion/mineru/fixture.js";
 
 /** 不同输入必须得到不同摘要，否则“异载荷冲突”用例无法真正触发。 */
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -44,6 +49,7 @@ const issueMessagesOf = (error: unknown): readonly string[] => {
 const baseConfig = (): DeploymentConfigV1 =>
   DeploymentConfigV1Schema.parse({
     schemaVersion: 1,
+    purpose: "synthetic-acceptance",
     configRef: "config-primary",
     releaseId: "release-2030-01",
     instanceId: "app-vm-01",
@@ -63,12 +69,103 @@ const baseConfig = (): DeploymentConfigV1 =>
       secretFileRefs: [
         { secretId: "db-migrator-password", filePath: "/etc/riskflow/secrets/db-migrator" },
         { secretId: "db-app-password", filePath: "/etc/riskflow/secrets/db-app" },
+        { secretId: "db-worker-password", filePath: "/etc/riskflow/secrets/db-worker" },
+        { secretId: "db-checkpointer-password", filePath: "/etc/riskflow/secrets/db-checkpointer" },
+        { secretId: "db-operator-password", filePath: "/etc/riskflow/secrets/db-operator" },
+        { secretId: "auth-hmac-key", filePath: "/etc/riskflow/secrets/auth-hmac" },
+        { secretId: "model-api-key", filePath: "/etc/riskflow/secrets/model-api" },
       ],
+      host: "127.0.0.1",
+      port: 5432,
+      name: "riskflow",
+      maxConnections: 20,
+      connectionTimeoutMs: 10_000,
+      idleTimeoutMs: 30_000,
+      rolePasswordSecretIds: {
+        migratorRoleName: "db-migrator-password",
+        appRoleName: "db-app-password",
+        workerRoleName: "db-worker-password",
+        checkpointerRoleName: "db-checkpointer-password",
+        deploymentOperatorRoleName: "db-operator-password",
+      },
       migratorRoleName: "riskflow_migrator_login",
       appRoleName: "riskflow_app_login",
       workerRoleName: "riskflow_outbox_worker_login",
       checkpointerRoleName: "riskflow_checkpointer_login",
       deploymentOperatorRoleName: "riskflow_deployment_operator_login",
+    },
+    auth: { hmacSecretId: "auth-hmac-key", keyVersion: "key-v1" },
+    api: { host: "127.0.0.1", port: 8080 },
+    models: [
+      {
+        backend: "network-api",
+        config: {
+          schemaVersion: "1",
+          protocol: "openai-chat",
+          deploymentRef: { entityId: "chat", versionId: "v1" },
+          serviceContractRef: { entityId: "chat-contract", versionId: "v1" },
+          modelVersionRef: { entityId: "model", versionId: "v1" },
+          baseUrl: "https://model.internal/v1",
+          modelId: "model-v1",
+          capabilities: ["completeStructured"],
+          contextWindowTokens: 4096,
+          maxOutputTokens: 1024,
+          structuredOutputMode: "schema-prompt",
+          reasoningEffort: "low",
+          credentialRef: "model-api-key",
+          requestTimeoutMs: 30_000,
+          streamIdleTimeoutMs: 10_000,
+          maxResponseBytes: 1_048_576,
+          maxInputBytes: 65_536,
+          maxBatchItems: 1,
+          inputTokenUpperBoundPolicy: { maxTokensPerInputByte: 1, requestOverheadTokens: 64 },
+        },
+      },
+    ],
+    artifacts: {
+      schemaVersion: "1",
+      policyRef: { entityId: "artifact-policy", versionId: "v1" },
+      maxArtifactBytes: 10_000_000,
+      maxConcurrentWrites: 4,
+      maxConcurrentReads: 8,
+      stagingMaxBytes: 20_000_000,
+      orphanGracePeriodMs: 60_000,
+      registrationTimeoutMs: 10_000,
+      maintenanceBatchSize: 100,
+    },
+    outbox: {
+      policyRef: { entityId: "outbox-policy", versionId: "v1" },
+      batchSize: 10,
+      leaseDurationMs: 30_000,
+      baseDelayMs: 100,
+      maxDelayMs: 10_000,
+      maxAttempts: 5,
+    },
+    qdrant: { baseUrl: "http://127.0.0.1:6333", requestTimeoutMs: 5_000 },
+    policyCatalog: {
+      filePath: "/etc/riskflow/policy-catalog.json",
+      catalogRef: { entityId: "catalog-2030-01", versionId: "1" },
+    },
+    documentConversion: {
+      resourcePolicy: {
+        schemaVersion: "1",
+        policyRef: { entityId: "conversion-policy", versionId: "v1" },
+        maxInputBytes: 10_000_000,
+        maxZipEntries: 100,
+        maxZipUncompressedBytes: 20_000_000,
+        maxZipCompressionRatio: 100,
+        maxXmlBytes: 5_000_000,
+        maxPdfPages: 100,
+        maxPdfTextItems: 10_000,
+        maxSheets: 10,
+        maxCells: 100_000,
+        maxCsvRecords: 10_000,
+        maxCsvFields: 100,
+        maxOutputBlocks: 10_000,
+      },
+      qualityPolicyRef: { entityId: "ocr-quality", versionId: "v1" },
+      converterDeploymentRef: { entityId: "converter", versionId: "v1" },
+      mineru: null,
     },
     transport: {
       artifactEndpointRef: "data-vm-artifacts",
@@ -92,7 +189,41 @@ const baseConfig = (): DeploymentConfigV1 =>
       readinessIntervalMs: 5_000,
     },
     log: { level: "info", retentionDays: 30, maxFileMb: 64 },
-    projectBindings: [{ projectId: "project-rail-01", policyCatalogRef: "catalog-2030-01" }],
+    projectBindings: [
+      {
+        projectId: "project-rail-01",
+        policyCatalogRef: { entityId: "catalog-2030-01", versionId: "1" },
+        policyRefs: Object.fromEntries(
+          DEPLOYMENT_POLICY_TYPE_V1_VALUES.map((type) => [
+            type,
+            {
+              entityId: `${type}-policy`,
+              versionId: "v1",
+            },
+          ]),
+        ),
+        graphVersions: {
+          riskFlow: { entityId: "risk-flow-graph", versionId: "v1" },
+          identification: { entityId: "identification-graph", versionId: "v1" },
+          assessment: { entityId: "assessment-graph", versionId: "v1" },
+        },
+        retrievalBudgetPolicyRef: { entityId: "retrieval-budget", versionId: "v1" },
+        forecastPolicyReleaseRef: {
+          kind: "knowledge-release",
+          reference: { entityId: "forecast-policy-release", versionId: "v1" },
+        },
+        calibrationTargetReleaseRef: {
+          kind: "knowledge-release",
+          reference: { entityId: "calibration-target-release", versionId: "v1" },
+        },
+        siteContextBindings: [
+          {
+            siteContextRef: { entityId: "site-context", versionId: "v1" },
+            artifactRef: { entityId: "site-context-artifact", versionId: "v1" },
+          },
+        ],
+      },
+    ],
   });
 
 afterEach(() => {
@@ -127,6 +258,65 @@ const withRelativeDataRoot = (): unknown => ({
 });
 
 describe("部署 strict Schema", () => {
+  it("requires matching MinerU references and its credential before assembly", () => {
+    const config = baseConfig();
+    const mineru = makeConfig("official-v4", {
+      deploymentRef: config.documentConversion.converterDeploymentRef,
+      qualityPolicyRef: config.documentConversion.qualityPolicyRef,
+    });
+    const configured = { ...config, documentConversion: { ...config.documentConversion, mineru } };
+    expect(DeploymentConfigV1Schema.safeParse(configured).success).toBe(false);
+    const ready = {
+      ...configured,
+      database: {
+        ...config.database,
+        secretFileRefs: [
+          ...config.database.secretFileRefs,
+          { secretId: "mineru-token", filePath: "/etc/riskflow/secrets/mineru" },
+        ],
+      },
+    };
+    expect(DeploymentConfigV1Schema.safeParse(ready).success).toBe(true);
+    expect(
+      DeploymentConfigV1Schema.safeParse({
+        ...ready,
+        documentConversion: {
+          ...ready.documentConversion,
+          mineru: { ...mineru, deploymentRef: { entityId: "other", versionId: "v1" } },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it.each(["forecastPolicyReleaseRef", "calibrationTargetReleaseRef", "siteContextBindings"])(
+    "工程部署绑定缺少 %s 时拒绝就绪配置",
+    (key) => {
+      const config = baseConfig();
+      expect(
+        DeploymentConfigV1Schema.safeParse({
+          ...config,
+          projectBindings: [withoutKey(config.projectBindings[0]!, key)],
+        }).success,
+      ).toBe(false);
+    },
+  );
+
+  it("同工程现场版本不能重复，不同版本可精确绑定", () => {
+    const config = baseConfig();
+    const binding = config.projectBindings[0]!;
+    const site = binding.siteContextBindings[0]!;
+    const withSites = (siteContextBindings: unknown[]) => ({
+      ...config,
+      projectBindings: [{ ...binding, siteContextBindings }],
+    });
+    expect(DeploymentConfigV1Schema.safeParse(withSites([site, site])).success).toBe(false);
+    expect(
+      DeploymentConfigV1Schema.safeParse(
+        withSites([site, { ...site, siteContextRef: { ...site.siteContextRef, versionId: "v2" } }]),
+      ).success,
+    ).toBe(true);
+  });
+
   it("拒绝 http 公共入口、相对路径与隐式默认", () => {
     expect(() =>
       DeploymentConfigV1Schema.parse(withPublicOrigin("http://riskflow.internal")),
@@ -134,6 +324,14 @@ describe("部署 strict Schema", () => {
     expect(() => DeploymentConfigV1Schema.parse(withRelativeDataRoot())).toThrow();
     // 缺 worker 生命周期预算必须失败，不能由宿主创造默认值。
     expect(() => DeploymentConfigV1Schema.parse(withoutWorkerBudget())).toThrow();
+    expect(() => DeploymentConfigV1Schema.parse(withoutKey(baseConfig(), "models"))).toThrow();
+    expect(() =>
+      DeploymentConfigV1Schema.parse({
+        ...baseConfig(),
+        documentConversion: { ...baseConfig().documentConversion, mineru: undefined },
+      }),
+    ).toThrow();
+    expect(DeploymentConfigV1Schema.parse(baseConfig()).documentConversion.mineru).toBeNull();
   });
 
   it("只允许 activate/rollback 携带确认，并要求精确目标", () => {
@@ -417,43 +615,162 @@ describe("运维状态、追加审计与最小权限", () => {
 });
 
 describe("显式初始化", () => {
-  it("空库建立权限与迁移，重放保留已成立事实", async () => {
+  it("仅新建时设置 LOGIN 密码，完成 checkpointer setup 且重放保留密码", async () => {
     const postgres = await startPostgresFixture();
     const operatorPool = new Pool(postgres.migrator);
     pools.push(operatorPool);
+    const config = DeploymentConfigV1Schema.parse({
+      ...baseConfig(),
+      database: {
+        ...baseConfig().database,
+        migratorRoleName: "ip02_migrator_login",
+        appRoleName: "ip02_app_login",
+        workerRoleName: "ip02_worker_login",
+        checkpointerRoleName: "ip02_checkpointer_login",
+        deploymentOperatorRoleName: "ip02_operator_login",
+      },
+    });
+    const loginPasswords = {
+      migratorRoleName: "ip02-migrator-secret",
+      appRoleName: "ip02-app-secret",
+      workerRoleName: "ip02-worker-secret",
+      checkpointerRoleName: "ip02-checkpointer's-secret",
+      deploymentOperatorRoleName: "ip02-operator-secret",
+    };
+    const checkpointerConnection = {
+      ...postgres.admin,
+      user: config.database.checkpointerRoleName,
+      password: loginPasswords.checkpointerRoleName,
+    };
+    const initialAdministrator = {
+      loginName: "deployment-admin",
+      displayName: "部署管理员",
+      password: "DeploymentAdminPassword-2026!",
+    };
+    const adminRuntime = createPostgresRuntime(postgres.admin);
     try {
+      await expect(
+        initializeDeploymentV1({
+          config: withoutKey(baseConfig(), "purpose"),
+          migrationConnection: postgres.admin,
+          migrationRoot: postgres.productionMigrationRoot,
+          finalMigrationVersion: "000056",
+          loginPasswords,
+          checkpointerConnection,
+        } as never),
+      ).rejects.toThrow();
+
       const first = await initializeDeploymentV1({
-        config: baseConfig(),
+        config,
         // 初始化是显式部署动作，使用高权限连接；运行主体不得复用。
         migrationConnection: postgres.admin,
         migrationRoot: postgres.productionMigrationRoot,
         finalMigrationVersion: "000056",
+        loginPasswords,
+        checkpointerConnection,
+        initialAdministrator,
       });
       expect(first.currentMigrationVersion).toBe("000056");
+      expect(first.initialAdministratorCreated).toBe(true);
       expect(first.createdLoginRoles).toEqual([
-        "riskflow_migrator_login",
-        "riskflow_app_login",
-        "riskflow_outbox_worker_login",
-        "riskflow_checkpointer_login",
-        "riskflow_deployment_operator_login",
+        "ip02_migrator_login",
+        "ip02_app_login",
+        "ip02_worker_login",
+        "ip02_checkpointer_login",
+        "ip02_operator_login",
       ]);
+
+      for (const roleKey of ["appRoleName", "workerRoleName"] as const) {
+        const runtime = createPostgresRuntime(
+          {
+            ...postgres.admin,
+            user: config.database[roleKey],
+            password: loginPasswords[roleKey],
+          },
+          "riskflow_app",
+        );
+        try {
+          await expect(
+            assertCompatibleMigrationVersion(runtime.db as unknown as Kysely<unknown>, "000056"),
+          ).resolves.toBe("000056");
+          const privileges = await sql<{ canWrite: boolean; canReadLock: boolean }>`SELECT
+            has_table_privilege(current_user, 'business._riskflow_migration', 'INSERT,UPDATE,DELETE') AS "canWrite",
+            has_table_privilege(current_user, 'business._riskflow_migration_lock', 'SELECT') AS "canReadLock"`.execute(
+            runtime.db,
+          );
+          expect(privileges.rows[0]).toEqual({ canWrite: false, canReadLock: false });
+        } finally {
+          await runtime.close();
+        }
+      }
+
+      const passwordHash = await postgres.adminPool.query<{ rolpassword: string }>(
+        "SELECT rolpassword FROM pg_authid WHERE rolname = $1",
+        [config.database.checkpointerRoleName],
+      );
+      const checkpointerPool = new Pool(checkpointerConnection);
+      try {
+        expect((await checkpointerPool.query("SELECT current_user")).rows[0]?.current_user).toBe(
+          config.database.checkpointerRoleName,
+        );
+        const checkpointTables = await checkpointerPool.query<{ count: string }>(
+          "SELECT count(*)::text AS count FROM information_schema.tables WHERE table_schema = 'langgraph_checkpoint'",
+        );
+        expect(Number(checkpointTables.rows[0]?.count)).toBeGreaterThan(0);
+        const checkpointCount = await checkpointerPool.query<{ count: string }>(
+          "SELECT count(*)::text AS count FROM langgraph_checkpoint.checkpoints",
+        );
+        expect(Number(checkpointCount.rows[0]?.count)).toBe(0);
+      } finally {
+        await checkpointerPool.end();
+      }
+      await expect(
+        assertCompatibleMigrationVersion(adminRuntime.db as unknown as Kysely<unknown>, "000055"),
+      ).rejects.toMatchObject({ code: "DEPLOYMENT_INITIALIZATION_COMPATIBILITY_FAILED" });
 
       // 重放不得重置凭据或迁移事实。
       const replay = await initializeDeploymentV1({
-        config: baseConfig(),
+        config,
         migrationConnection: postgres.admin,
         migrationRoot: postgres.productionMigrationRoot,
         finalMigrationVersion: "000056",
+        loginPasswords: { ...loginPasswords, checkpointerRoleName: "changed-secret" },
+        checkpointerConnection,
+        initialAdministrator: {
+          ...initialAdministrator,
+          password: "DifferentAdminPassword-2026!",
+        },
       });
       expect(replay.appliedMigrations).toEqual([]);
       expect(replay.currentMigrationVersion).toBe("000056");
+      expect(replay.initialAdministratorCreated).toBe(false);
+      const accounts = await postgres.adminPool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM business.local_accounts",
+      );
+      expect(Number(accounts.rows[0]?.count)).toBe(1);
 
       const roleMembers = await sql<{ rolname: string }>`SELECT rolname FROM pg_roles
-        WHERE rolname = 'riskflow_deployment_operator_login'`.execute(
-        createPostgresRuntime(postgres.admin, "riskflow_migrator").db as unknown as Kysely<unknown>,
+        WHERE rolname = 'ip02_operator_login'`.execute(
+        adminRuntime.db as unknown as Kysely<unknown>,
       );
       expect(roleMembers.rows).toHaveLength(1);
+      const passwordHashAfterReplay = await postgres.adminPool.query<{ rolpassword: string }>(
+        "SELECT rolpassword FROM pg_authid WHERE rolname = $1",
+        [config.database.checkpointerRoleName],
+      );
+      expect(passwordHashAfterReplay.rows[0]?.rolpassword).toBe(passwordHash.rows[0]?.rolpassword);
+      const originalPasswordPool = new Pool(checkpointerConnection);
+      await expect(originalPasswordPool.query("SELECT 1")).resolves.toBeDefined();
+      await originalPasswordPool.end();
+      const changedPasswordPool = new Pool({
+        ...checkpointerConnection,
+        password: "changed-secret",
+        connectionTimeoutMillis: 500,
+      });
+      await expect(changedPasswordPool.query("SELECT 1")).rejects.toThrow();
+      await changedPasswordPool.end();
     } finally {
+      await adminRuntime.close();
       await operatorPool.end().catch(() => undefined);
       await postgres.close();
     }

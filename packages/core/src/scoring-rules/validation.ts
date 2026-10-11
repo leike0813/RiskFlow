@@ -32,6 +32,7 @@ import {
   NormalizedScoringThresholdV1Schema,
   SCORING_RULES_MAX_RELATION_EVIDENCE_V1,
   SCORING_RULES_MAX_RULES_V1,
+  ScoringRuleConfigurationPackageV1Schema,
   scoringRuleIdentityKey,
   ScoringRuleRelationSnapshotV1Schema,
   type ApplicableRuleSetDecisionV1,
@@ -51,6 +52,7 @@ import {
   type ScoringRuleRelationKindV1,
   type ScoringRuleRelationSnapshotV1,
   type ScoringRuleRelationV1,
+  type ScoringRuleConfigurationPackageV1,
   type ScoringRuleSourceBindingV1,
   type ScoringRuleValidationItemV1,
   type ScoringRuleValidationViewV1,
@@ -520,6 +522,95 @@ export const scoringRuleRejectionClassFor = (
 
 export const isRetryableScoringRuleReason = (reasonCode: ScoringRulesReasonCodeV1): boolean =>
   retryableReasonCodes[reasonCode] === true;
+
+const sameVersion = (left: VersionReference, right: VersionReference): boolean =>
+  left.entityId === right.entityId && left.versionId === right.versionId;
+
+/** 复用 Agent 规则的确定性内容检查；包段正文仅作为受控来源证据，不参与模型产出判断。 */
+export const validateScoringRuleConfigurationPackage = (input: {
+  readonly package: ScoringRuleConfigurationPackageV1;
+  readonly policy: ScoringRulesPolicyV1;
+  readonly indicatorIds: readonly string[];
+  readonly baseRules?: readonly StructuredScoringRule[];
+}): void => {
+  const parsed = ScoringRuleConfigurationPackageV1Schema.safeParse(input.package);
+  if (!parsed.success) {
+    failScoringRule("scoring-rule-content-invalid", SCORING_RULES_AUTHORING_TARGET_REF_V1);
+  }
+  const configurationPackage = parsed.data as ScoringRuleConfigurationPackageV1;
+  if (configurationPackage.members.length === 0) {
+    failScoringRule("scoring-rule-set-incomplete", SCORING_RULES_AUTHORING_TARGET_REF_V1);
+  }
+  if (!sameVersion(configurationPackage.scoringPolicyRef, input.policy.policyRef)) {
+    failScoringRule("scoring-rule-policy-mismatch", SCORING_RULES_AUTHORING_TARGET_REF_V1);
+  }
+  if (!sameVersion(configurationPackage.compatibilityRef, input.policy.compatibilityRef)) {
+    failScoringRule("scoring-rule-compatibility-mismatch", SCORING_RULES_AUTHORING_TARGET_REF_V1);
+  }
+
+  const sourceByVersion = new Map(
+    configurationPackage.sources.map(
+      (source) =>
+        [
+          `${source.sourceVersionRef.reference.entityId}@${source.sourceVersionRef.reference.versionId}`,
+          source,
+        ] as const,
+    ),
+  );
+  const indicatorIds = new Set(input.indicatorIds);
+  const existingIds = new Set([
+    ...configurationPackage.members.map((member) => member.rule.ruleId),
+    ...(input.baseRules ?? []).map((rule) => rule.ruleId),
+  ]);
+
+  for (const member of configurationPackage.members) {
+    const { rule, binding } = member;
+    const targetRef = scoringRuleTargetRef(rule.ruleId);
+    if (rule.reviewStatus !== "pending") {
+      failScoringRule("scoring-rule-review-status-not-pending", targetRef);
+    }
+    if (rule.ruleVersion.entityId !== rule.ruleId) {
+      failScoringRule("scoring-rule-content-invalid", targetRef);
+    }
+    if (!applicabilityIsCanonical(rule)) {
+      failScoringRule("scoring-rule-applicability-incomplete", targetRef);
+    }
+    if (!indicatorIds.has(rule.indicatorItem)) {
+      failScoringRule("scoring-rule-indicator-unknown", targetRef);
+    }
+    if (rule.exceptionClauses.some((clause) => !existingIds.has(clause))) {
+      failScoringRule("scoring-rule-exception-unknown", targetRef);
+    }
+
+    const source = sourceByVersion.get(
+      `${binding.sourceVersionRef.reference.entityId}@${binding.sourceVersionRef.reference.versionId}`,
+    );
+    if (source === undefined) {
+      failScoringRule("scoring-rule-source-unavailable", targetRef);
+    }
+    if (!input.policy.allowedSourceStandardKinds.includes(source.standardKind)) {
+      failScoringRule("scoring-rule-source-kind-invalid", targetRef);
+    }
+    const segmentIds = new Set(source.segments.map((segment) => segment.sourceSegmentId));
+    if (
+      !segmentIds.has(rule.evidenceLocator.sourceSegmentId) ||
+      binding.evidenceReferences.some(
+        (reference) =>
+          reference.sourceVersion.entityId !== binding.sourceVersionRef.reference.entityId ||
+          reference.sourceVersion.versionId !== binding.sourceVersionRef.reference.versionId ||
+          !segmentIds.has(reference.locator.sourceSegmentId),
+      ) ||
+      !binding.evidenceReferences.some(
+        (reference) => reference.locator.sourceSegmentId === rule.evidenceLocator.sourceSegmentId,
+      )
+    ) {
+      failScoringRule("scoring-rule-evidence-unverified", targetRef);
+    }
+
+    normalizeScoringThresholds(rule.scoringThresholds, targetRef);
+    normalizeGradeIntervals(rule.gradeIntervals, targetRef);
+  }
+};
 
 const memberContent = (rule: StructuredScoringRule) => ({
   ruleId: rule.ruleId,

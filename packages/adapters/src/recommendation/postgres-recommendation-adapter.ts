@@ -2999,4 +2999,5 @@ export const createPostgresRecommendationContextReader = (options: {
   readonly db: Kysely<PostgresDatabase>;
   readonly artifactStore: ArtifactStoreV1;
   readonly basis: AssessmentBasisReleaseSetReaderV1;
+  readonly authorizeDownstream?: AssessmentDownstreamAuthorizerV1;
 }): PostgresRecommendationContextReader => new PostgresRecommendationContextReader(options);

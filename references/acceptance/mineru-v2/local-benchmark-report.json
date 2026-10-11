@@ -1,0 +1,3353 @@
+{
+  "schemaVersion": "1",
+  "recordedAt": "2026-10-11T12:34:43.667Z",
+  "label": "合成样本，待甲方复核",
+  "scope": "MinerU parser、定位、JSON-LD与本机固定服务；不含生产资料登记、完整浏览器业务或4090/Qwen共驻",
+  "hardware": {
+    "cpu": "2 × Xeon E5-2697A v4 (32 cores / 64 threads)",
+    "ram": "125 GiB visible",
+    "gpu": "Tesla P4 8 GiB",
+    "driver": "580.178.04"
+  },
+  "versions": {
+    "mineru": "4.0.12",
+    "docvortex": "0.5.16",
+    "mineruLlamaCpp": "0.1.3",
+    "onnxruntime": "1.20.1"
+  },
+  "model": {
+    "source": "huggingface; official mineru-kit models download",
+    "revisions": {
+      "MinerU-4_models_onnx": [
+        "358310b4f64b95f9fefc372ad899356e4111f376"
+      ],
+      "MinerU2.5-Pro-2605-1.2B-GGUF": [
+        "9185688a0495e1577d521a757c7c0b62dd38ca48"
+      ]
+    },
+    "files": [
+      {
+        "path": "MinerU-4_models_onnx/Table/PP-LCNet_x1_0_table_cls.onnx",
+        "size": 6776877,
+        "sha256": "c84bf1d79c1c74d534b5b12adb14dd12151c42f7ae3e4be4f1042b830f80b949"
+      },
+      {
+        "path": "MinerU-4_models_onnx/Table/slanet-plus.onnx",
+        "size": 7758305,
+        "sha256": "d57a942af6a2f57d6a4a0372573c696a2379bf5857c45e2ac69993f3b334514b"
+      },
+      {
+        "path": "MinerU-4_models_onnx/Table/unet.onnx",
+        "size": 8335007,
+        "sha256": "0ea48d3a17e35ef5c2e498a5e799566073234d39b1079ca21d9f4fafe73c6d20"
+      },
+      {
+        "path": "MinerU-4_models_onnx/Layout/PP-DocLayoutV2/inference.yml",
+        "size": 1482,
+        "sha256": "93100e0fb2cd76b9d246a853deea85e191d8333b2cfca7be76e82e4c4ebfa819"
+      },
+      {
+        "path": "MinerU-4_models_onnx/Layout/PP-DocLayoutV2/inference.onnx",
+        "size": 213963712,
+        "sha256": "cd540dc296ff3115fe78efa65b68501e6a8dc74b198acc9834a725ffaa095aac"
+      },
+      {
+        "path": "MinerU-4_models_onnx/OCR/paddleocr/ch_PP-OCRv6_tiny_det_inference.yml",
+        "size": 1068,
+        "sha256": "a1fa68ab31e29252936328e728633180908f997023d9eacb81f175e326676554"
+      },
+      {
+        "path": "MinerU-4_models_onnx/OCR/paddleocr/seal_PP-OCRv4_det_inference.yml",
+        "size": 711,
+        "sha256": "e5b8dd5a727602bdd526d9db152cc767bc761198c453460df7c8f7ae59d2ea3c"
+      },
+      {
+        "path": "MinerU-4_models_onnx/OCR/paddleocr/ch_PP-OCRv6_small_rec_inference.yml",
+        "size": 150752,
+        "sha256": "c0541b06832948d7d3052e9ac6b572c6063d79ecd800493f4ec14d1b901c16d7"
+      },
+      {
+        "path": "MinerU-4_models_onnx/OCR/paddleocr/ch_PP-OCRv6_tiny_det_infer.onnx",
+        "size": 1780590,
+        "sha256": "193bab7a04fca699a6c82e6abb5b81bdb28177f0abd4062552b04908dafb19f8"
+      },
+      {
+        "path": "MinerU-4_models_onnx/OCR/paddleocr/seal_PP-OCRv4_det_infer.onnx",
+        "size": 4769171,
+        "sha256": "3e190df84542c2756975febe8f73603b587a23c7f7badfdd3fc8a986540d5bc0"
+      },
+      {
+        "path": "MinerU-4_models_onnx/OCR/paddleocr/ch_PP-OCRv6_small_rec_infer.onnx",
+        "size": 21159378,
+        "sha256": "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634"
+      },
+      {
+        "path": "MinerU-4_models_onnx/MFR/pp_formulanet_plus_m/PP-FormulaNet_plus-M_inference.yml",
+        "size": 2244564,
+        "sha256": "87b5f3d7f2b2fe553627d77b37f496608ca150ebd0ef62d362591edca47b5538"
+      },
+      {
+        "path": "MinerU-4_models_onnx/MFR/pp_formulanet_plus_m/PP-FormulaNet_plus-M.onnx",
+        "size": 591263297,
+        "sha256": "20a32595c2b30282dcd069e6295e9fad96115697beb66acb9b681b814006d193"
+      },
+      {
+        "path": "MinerU2.5-Pro-2605-1.2B-GGUF/.gitattributes",
+        "size": 2075,
+        "sha256": "247a3cfc672484dd40bdf07af0f83ee7a4457e9a995dadb47eedc36c630103b6"
+      },
+      {
+        "path": "MinerU2.5-Pro-2605-1.2B-GGUF/MinerU2.5-Pro-2605-1.2B-Q8_0.gguf",
+        "size": 531066496,
+        "sha256": "3f3523429c880d675c0330cb3de78240452bc40a961d037e24f91ab8488f03e7"
+      },
+      {
+        "path": "MinerU2.5-Pro-2605-1.2B-GGUF/mmproj-MinerU2.5-Pro-2605-1.2B-Q8_0.gguf",
+        "size": 709409600,
+        "sha256": "b6c08ab50352677f7396af45ee60682f353f55488e26911d8154bfc37514d3f8"
+      },
+      {
+        "path": "MinerU2.5-Pro-2605-1.2B-GGUF/.mineru_complete",
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ]
+  },
+  "licenses": {
+    "mineru": {
+      "version": "4.0.12",
+      "license": null,
+      "license_expression": "LicenseRef-MinerU-Open-Source-License"
+    },
+    "docvortex": {
+      "version": "0.5.16",
+      "license": null,
+      "license_expression": "MIT AND Apache-2.0 AND BSD-3-Clause"
+    },
+    "mineru-llama-cpp": {
+      "version": "0.1.3",
+      "license": null,
+      "license_expression": null
+    },
+    "onnxruntime": {
+      "version": "1.20.1",
+      "license": "MIT License",
+      "license_expression": null
+    }
+  },
+  "evidenceRoot": "/home/joshua/.local/share/riskflow-mineru/evidence",
+  "cpu": {
+    "startup": {
+      "startedAt": "2026-10-11T12:05:32.075Z",
+      "startupMs": 7118.355758000001,
+      "health": {
+        "status": "ok",
+        "version": "4.0.12",
+        "features": {
+          "webhook": false,
+          "output_formats": [
+            "markdown",
+            "middle_json",
+            "structured_content",
+            "zip"
+          ],
+          "sources": [
+            "file_id",
+            "url",
+            "inline"
+          ]
+        }
+      },
+      "containerId": "6c9b23fef948409974a02bc802198fc97eb3a380da92523f31f0c13b9bf7edae",
+      "imageId": "sha256:75b37762034fa50e6dafee8f3ad3c383dcc760e7f58e4c2f52e429a8d556daf8",
+      "cgroup": "/sys/fs/cgroup/system.slice/docker-6c9b23fef948409974a02bc802198fc97eb3a380da92523f31f0c13b9bf7edae.scope",
+      "resources": {
+        "cpuset": "0-15",
+        "nanoCpus": 16000000000,
+        "memory": 25769803776
+      },
+      "processes": "PID                 COMMAND\n1977319             docker-init\n1977494             mineru-kit\n"
+    },
+    "resources": {
+      "exitCode": 0,
+      "samples": 227,
+      "peakSampledRamBytes": 2415947776,
+      "cgroupPeakMemoryBytes": 2416361472,
+      "peakWholeGpuMemoryMiB": 5,
+      "peakWholeGpuUtilization": 0,
+      "gpuMeasurementScope": "whole GPU; use raw process PIDs and container process list for attribution",
+      "peakContainerGpuProcessMiB": 0,
+      "containerGpuProcessPids": []
+    },
+    "benchmark": {
+      "schemaVersion": "1",
+      "status": "PASS",
+      "suite": "references/acceptance/mineru-v2/manifest.json",
+      "suiteVersionId": "2",
+      "configPath": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-config.json",
+      "repeats": 3,
+      "protocol": "self-hosted-v1",
+      "endpoint": "http://127.0.0.1:18001",
+      "deploymentRef": "mineru-local-cpu@4.0.12-llama0.1.3",
+      "resourceAllocationRef": "mineru-onnx-vlm-cpu@1",
+      "qualityPolicyRef": "mineru-local-source-checklist@2",
+      "warmup": {
+        "runId": "warmup",
+        "exitCode": 0,
+        "samples": [
+          {
+            "evidenceDir": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/warmup/riskflow-mineru-smoke-Pmd2i8",
+            "status": "completed",
+            "sampleId": "DEV-docx",
+            "protocol": "self-hosted-v1",
+            "elapsedMs": 2252.9708119999996,
+            "pages": null,
+            "compliance": true,
+            "checksPassed": null,
+            "inputSha256": "ec29fa45f0a74ca562bd46cff88ab2451d5c6ec13990b136b18e854e27df75eb",
+            "deploymentRef": "mineru-local-cpu@4.0.12-llama0.1.3",
+            "qualityPolicyRef": "mineru-source-checklist-DEV-docx@2",
+            "resourceAllocationRef": "mineru-onnx-vlm-cpu@1"
+          },
+          {
+            "evidenceDir": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/warmup/riskflow-mineru-smoke-jdU6WK",
+            "status": "completed",
+            "sampleId": "DEV-jpeg",
+            "protocol": "self-hosted-v1",
+            "elapsedMs": 6053.066563,
+            "pages": 1,
+            "compliance": true,
+            "checksPassed": null,
+            "inputSha256": "5e87b4c14fce648fadd9cc901259be87a8d958b8565c689cee2c8220bdfa61b5",
+            "deploymentRef": "mineru-local-cpu@4.0.12-llama0.1.3",
+            "qualityPolicyRef": "mineru-source-checklist-DEV-jpeg@2",
+            "resourceAllocationRef": "mineru-onnx-vlm-cpu@1"
+          },
+          {
+            "evidenceDir": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/warmup/riskflow-mineru-smoke-zi9B9o",
+            "status": "completed",
+            "sampleId": "DEV-png",
+            "protocol": "self-hosted-v1",
+            "elapsedMs": 8074.376940999995,
+            "pages": 1,
+            "compliance": true,
+            "checksPassed": null,
+            "inputSha256": "88eeb9a2d5407d0680138fda910170fa1a7a37ce1d6b0258ddfdd162f906493d",
+            "deploymentRef": "mineru-local-cpu@4.0.12-llama0.1.3",
+            "qualityPolicyRef": "mineru-source-checklist-DEV-png@2",
+            "resourceAllocationRef": "mineru-onnx-vlm-cpu@1"
+          },
+          {
+            "evidenceDir": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/warmup/riskflow-mineru-smoke-SLahbX",
+            "status": "completed",
+            "sampleId": "DEV-scan-pdf",
+            "protocol": "self-hosted-v1",
+            "elapsedMs": 38167.74065,
+            "pages": 1,
+            "compliance": true,
+            "checksPassed": null,
+            "inputSha256": "8bd3088123fffcb3bf3eb1713af46f1cf739ba409db4d646e07bf3086173130f",
+            "deploymentRef": "mineru-local-cpu@4.0.12-llama0.1.3",
+            "qualityPolicyRef": "mineru-source-checklist-DEV-scan-pdf@2",
+            "resourceAllocationRef": "mineru-onnx-vlm-cpu@1"
+          },
+          {
+            "evidenceDir": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/warmup/riskflow-mineru-smoke-k3KshK",
+            "status": "completed",
+            "sampleId": "DEV-text-pdf",
+            "protocol": "self-hosted-v1",
+            "elapsedMs": 6575.302046,
+            "pages": 1,
+            "compliance": true,
+            "checksPassed": null,
+            "inputSha256": "e5a8021754f5bc1e036954725401d41c13f96df54af6847851ada27fa1a59974",
+            "deploymentRef": "mineru-local-cpu@4.0.12-llama0.1.3",
+            "qualityPolicyRef": "mineru-source-checklist-DEV-text-pdf@2",
+            "resourceAllocationRef": "mineru-onnx-vlm-cpu@1"
+          }
+        ]
+      },
+      "runs": [
+        {
+          "runId": "run-01",
+          "exitCode": 0
+        },
+        {
+          "runId": "run-02",
+          "exitCode": 0
+        },
+        {
+          "runId": "run-03",
+          "exitCode": 0
+        }
+      ],
+      "samples": [
+        {
+          "sampleId": "DEV-docx",
+          "successfulRuns": 3,
+          "failedRuns": 0,
+          "failureCodes": [],
+          "elapsedMs": [
+            2250.7543210000003,
+            2238.8677549999993,
+            2234.5907910000024
+          ],
+          "medianElapsedMs": 2238.8677549999993,
+          "pages": null,
+          "checks": {
+            "keyFields": 8,
+            "records": 2,
+            "pages": null
+          },
+          "pagesPerMinute": null,
+          "evidenceDirectories": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "sampleId": "DEV-png",
+          "successfulRuns": 3,
+          "failedRuns": 0,
+          "failureCodes": [],
+          "elapsedMs": [
+            8078.857106999996,
+            8069.826922,
+            8072.8636320000005
+          ],
+          "medianElapsedMs": 8072.8636320000005,
+          "pages": 1,
+          "checks": {
+            "keyFields": 3,
+            "records": 2,
+            "pages": 1
+          },
+          "pagesPerMinute": 7.4,
+          "evidenceDirectories": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "sampleId": "DEV-jpeg",
+          "successfulRuns": 3,
+          "failedRuns": 0,
+          "failureCodes": [],
+          "elapsedMs": [
+            6057.2598540000035,
+            6050.630390999999,
+            6052.393242999999
+          ],
+          "medianElapsedMs": 6052.393242999999,
+          "pages": 1,
+          "checks": {
+            "keyFields": 3,
+            "records": 3,
+            "pages": 1
+          },
+          "pagesPerMinute": 9.9,
+          "evidenceDirectories": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "sampleId": "DEV-scan-pdf",
+          "successfulRuns": 3,
+          "failedRuns": 0,
+          "failureCodes": [],
+          "elapsedMs": [
+            36247.200497000005,
+            36160.939068,
+            34170.755791999996
+          ],
+          "medianElapsedMs": 36160.939068,
+          "pages": 1,
+          "checks": {
+            "keyFields": 31,
+            "records": 12,
+            "pages": 1
+          },
+          "pagesPerMinute": 1.7,
+          "evidenceDirectories": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "sampleId": "DEV-text-pdf",
+          "successfulRuns": 3,
+          "failedRuns": 0,
+          "failureCodes": [],
+          "elapsedMs": [
+            2522.748829,
+            2521.1796299999996,
+            2529.360888
+          ],
+          "medianElapsedMs": 2522.748829,
+          "pages": 1,
+          "checks": {
+            "keyFields": 12,
+            "records": 6,
+            "pages": 1
+          },
+          "pagesPerMinute": 23.8,
+          "evidenceDirectories": [
+            null,
+            null,
+            null
+          ]
+        }
+      ],
+      "issues": [],
+      "notes": {
+        "measurements": "warm-only",
+        "coldStartAndModelLoad": "not measured by this runner; record separately",
+        "taskCache": "self-hosted task cache reuse is unknown; elapsedMs may be cache-assisted",
+        "resources": "container RAM/VRAM and CPU/GPU participation come from separate docker/nvidia records",
+        "gpuClaim": "this runner does not assert that a GPU backend actually ran",
+        "docx": "DOCX native flash tier is excluded from VLM throughput claims"
+      }
+    },
+    "observations": [
+      {
+        "run": "run-01",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 2250.7543210000003,
+        "sampleId": "DEV-docx",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/run-01/riskflow-mineru-smoke-5hkMBx",
+        "inputBytes": 37446,
+        "inputSha256": "ec29fa45f0a74ca562bd46cff88ab2451d5c6ec13990b136b18e854e27df75eb",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-docx",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 8,
+          "records": 2,
+          "pages": null
+        },
+        "pages": null,
+        "blocks": 24,
+        "segments": 3,
+        "compliance": true,
+        "taskIdentity": "job_7565a03bea1e3af101783e0f",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "flash"
+      },
+      {
+        "run": "run-01",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 8078.857106999996,
+        "sampleId": "DEV-png",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/run-01/riskflow-mineru-smoke-Cmosic",
+        "inputBytes": 78360,
+        "inputSha256": "88eeb9a2d5407d0680138fda910170fa1a7a37ce1d6b0258ddfdd162f906493d",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-png",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 3,
+          "records": 2,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 5,
+        "segments": 5,
+        "compliance": true,
+        "taskIdentity": "job_a3fa1b30e35814e96e218b9e",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-01",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 6057.2598540000035,
+        "sampleId": "DEV-jpeg",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/run-01/riskflow-mineru-smoke-QaQFZL",
+        "inputBytes": 43022,
+        "inputSha256": "5e87b4c14fce648fadd9cc901259be87a8d958b8565c689cee2c8220bdfa61b5",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-jpeg",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 3,
+          "records": 3,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 5,
+        "segments": 5,
+        "compliance": true,
+        "taskIdentity": "job_ba1bd93c5791eb6b515446b4",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-01",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 36247.200497000005,
+        "sampleId": "DEV-scan-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/run-01/riskflow-mineru-smoke-ei6YX5",
+        "inputBytes": 85528,
+        "inputSha256": "8bd3088123fffcb3bf3eb1713af46f1cf739ba409db4d646e07bf3086173130f",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-scan-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 31,
+          "records": 12,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 15,
+        "segments": 15,
+        "compliance": true,
+        "taskIdentity": "job_253a3e05ffb47b3115fbc2e6",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-01",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 2522.748829,
+        "sampleId": "DEV-text-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/run-01/riskflow-mineru-smoke-xxlw15",
+        "inputBytes": 3423,
+        "inputSha256": "e5a8021754f5bc1e036954725401d41c13f96df54af6847851ada27fa1a59974",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-text-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 12,
+          "records": 6,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 9,
+        "segments": 9,
+        "compliance": true,
+        "taskIdentity": "job_342cced7134a1cfcea1e6c06",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-02",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 6050.630390999999,
+        "sampleId": "DEV-jpeg",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/run-02/riskflow-mineru-smoke-2aPYsq",
+        "inputBytes": 43022,
+        "inputSha256": "5e87b4c14fce648fadd9cc901259be87a8d958b8565c689cee2c8220bdfa61b5",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-jpeg",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 3,
+          "records": 3,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 5,
+        "segments": 5,
+        "compliance": true,
+        "taskIdentity": "job_abe60cd9b476a379dcaafbe1",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-02",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 2521.1796299999996,
+        "sampleId": "DEV-text-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/run-02/riskflow-mineru-smoke-9l87jS",
+        "inputBytes": 3423,
+        "inputSha256": "e5a8021754f5bc1e036954725401d41c13f96df54af6847851ada27fa1a59974",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-text-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 12,
+          "records": 6,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 9,
+        "segments": 9,
+        "compliance": true,
+        "taskIdentity": "job_0951288850af90926eda0dd4",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-02",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 2238.8677549999993,
+        "sampleId": "DEV-docx",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/run-02/riskflow-mineru-smoke-hJEsoZ",
+        "inputBytes": 37446,
+        "inputSha256": "ec29fa45f0a74ca562bd46cff88ab2451d5c6ec13990b136b18e854e27df75eb",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-docx",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 8,
+          "records": 2,
+          "pages": null
+        },
+        "pages": null,
+        "blocks": 24,
+        "segments": 3,
+        "compliance": true,
+        "taskIdentity": "job_9e8809b233ae559d03ef3a53",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "flash"
+      },
+      {
+        "run": "run-02",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 8069.826922,
+        "sampleId": "DEV-png",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/run-02/riskflow-mineru-smoke-jwKcxb",
+        "inputBytes": 78360,
+        "inputSha256": "88eeb9a2d5407d0680138fda910170fa1a7a37ce1d6b0258ddfdd162f906493d",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-png",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 3,
+          "records": 2,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 5,
+        "segments": 5,
+        "compliance": true,
+        "taskIdentity": "job_5e0052b0312305a63c6fd344",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-02",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 36160.939068,
+        "sampleId": "DEV-scan-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/run-02/riskflow-mineru-smoke-wbUeRn",
+        "inputBytes": 85528,
+        "inputSha256": "8bd3088123fffcb3bf3eb1713af46f1cf739ba409db4d646e07bf3086173130f",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-scan-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 31,
+          "records": 12,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 15,
+        "segments": 15,
+        "compliance": true,
+        "taskIdentity": "job_dddf29eef2b44a28e43ae412",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-03",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 34170.755791999996,
+        "sampleId": "DEV-scan-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/run-03/riskflow-mineru-smoke-9lI9wd",
+        "inputBytes": 85528,
+        "inputSha256": "8bd3088123fffcb3bf3eb1713af46f1cf739ba409db4d646e07bf3086173130f",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-scan-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 31,
+          "records": 12,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 15,
+        "segments": 15,
+        "compliance": true,
+        "taskIdentity": "job_dfd965e7197e25c1f8df74f1",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-03",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 6052.393242999999,
+        "sampleId": "DEV-jpeg",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/run-03/riskflow-mineru-smoke-QeKDIE",
+        "inputBytes": 43022,
+        "inputSha256": "5e87b4c14fce648fadd9cc901259be87a8d958b8565c689cee2c8220bdfa61b5",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-jpeg",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 3,
+          "records": 3,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 5,
+        "segments": 5,
+        "compliance": true,
+        "taskIdentity": "job_ec6cec66d08677da600e3f3f",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-03",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 2529.360888,
+        "sampleId": "DEV-text-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/run-03/riskflow-mineru-smoke-mSeB8W",
+        "inputBytes": 3423,
+        "inputSha256": "e5a8021754f5bc1e036954725401d41c13f96df54af6847851ada27fa1a59974",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-text-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 12,
+          "records": 6,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 9,
+        "segments": 9,
+        "compliance": true,
+        "taskIdentity": "job_2f7ed1a1e320bba3fae20449",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-03",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 2234.5907910000024,
+        "sampleId": "DEV-docx",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/run-03/riskflow-mineru-smoke-nYVawa",
+        "inputBytes": 37446,
+        "inputSha256": "ec29fa45f0a74ca562bd46cff88ab2451d5c6ec13990b136b18e854e27df75eb",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-docx",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 8,
+          "records": 2,
+          "pages": null
+        },
+        "pages": null,
+        "blocks": 24,
+        "segments": 3,
+        "compliance": true,
+        "taskIdentity": "job_7d1f731b442061818d82ff5a",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "flash"
+      },
+      {
+        "run": "run-03",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 8072.8636320000005,
+        "sampleId": "DEV-png",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/run-03/riskflow-mineru-smoke-z4NUP9",
+        "inputBytes": 78360,
+        "inputSha256": "88eeb9a2d5407d0680138fda910170fa1a7a37ce1d6b0258ddfdd162f906493d",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-png",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 3,
+          "records": 2,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 5,
+        "segments": 5,
+        "compliance": true,
+        "taskIdentity": "job_db72019ea5c5aa7f8e722f2a",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "warmup",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 2252.9708119999996,
+        "sampleId": "DEV-docx",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/warmup/riskflow-mineru-smoke-Pmd2i8",
+        "inputBytes": 37446,
+        "inputSha256": "ec29fa45f0a74ca562bd46cff88ab2451d5c6ec13990b136b18e854e27df75eb",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-docx",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 8,
+          "records": 2,
+          "pages": null
+        },
+        "pages": null,
+        "blocks": 24,
+        "segments": 3,
+        "compliance": true,
+        "taskIdentity": "job_c701f1e615ecbf2ec59adb87",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "flash"
+      },
+      {
+        "run": "warmup",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 38167.74065,
+        "sampleId": "DEV-scan-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/warmup/riskflow-mineru-smoke-SLahbX",
+        "inputBytes": 85528,
+        "inputSha256": "8bd3088123fffcb3bf3eb1713af46f1cf739ba409db4d646e07bf3086173130f",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-scan-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 31,
+          "records": 12,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 15,
+        "segments": 15,
+        "compliance": true,
+        "taskIdentity": "job_84de0b6caaada6429fba9999",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "warmup",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 6053.066563,
+        "sampleId": "DEV-jpeg",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/warmup/riskflow-mineru-smoke-jdU6WK",
+        "inputBytes": 43022,
+        "inputSha256": "5e87b4c14fce648fadd9cc901259be87a8d958b8565c689cee2c8220bdfa61b5",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-jpeg",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 3,
+          "records": 3,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 5,
+        "segments": 5,
+        "compliance": true,
+        "taskIdentity": "job_4f1d6bf3d9427b8db06d4b85",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "warmup",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 6575.302046,
+        "sampleId": "DEV-text-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/warmup/riskflow-mineru-smoke-k3KshK",
+        "inputBytes": 3423,
+        "inputSha256": "e5a8021754f5bc1e036954725401d41c13f96df54af6847851ada27fa1a59974",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-text-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 12,
+          "records": 6,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 9,
+        "segments": 9,
+        "compliance": true,
+        "taskIdentity": "job_66624066a4e6136ffb23daeb",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "warmup",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 8074.376940999995,
+        "sampleId": "DEV-png",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-measured-v1/benchmark/warmup/riskflow-mineru-smoke-zi9B9o",
+        "inputBytes": 78360,
+        "inputSha256": "88eeb9a2d5407d0680138fda910170fa1a7a37ce1d6b0258ddfdd162f906493d",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-png",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 3,
+          "records": 2,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 5,
+        "segments": 5,
+        "compliance": true,
+        "taskIdentity": "job_c5b15a9b37ae7930a50f8c47",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      }
+    ],
+    "uniqueTaskCount": 20,
+    "requestCount": 20
+  },
+  "gpu": {
+    "startup": {
+      "startedAt": "2026-10-11T12:20:16.137Z",
+      "startupMs": 7676.464386,
+      "health": {
+        "status": "ok",
+        "version": "4.0.12",
+        "features": {
+          "webhook": false,
+          "output_formats": [
+            "markdown",
+            "middle_json",
+            "structured_content",
+            "zip"
+          ],
+          "sources": [
+            "file_id",
+            "url",
+            "inline"
+          ]
+        }
+      },
+      "containerId": "7d303854be3b83555707e7b5e41f417338c9983d092a7e8815cc7ea91c2b1cd3",
+      "imageId": "sha256:75b37762034fa50e6dafee8f3ad3c383dcc760e7f58e4c2f52e429a8d556daf8",
+      "cgroup": "/sys/fs/cgroup/system.slice/docker-7d303854be3b83555707e7b5e41f417338c9983d092a7e8815cc7ea91c2b1cd3.scope",
+      "resources": {
+        "cpuset": "0-15",
+        "nanoCpus": 16000000000,
+        "memory": 25769803776
+      },
+      "processes": "PID                 COMMAND\n2018436             docker-init\n2018718             mineru-kit\n"
+    },
+    "resources": {
+      "exitCode": 0,
+      "samples": 132,
+      "peakSampledRamBytes": 1385451520,
+      "cgroupPeakMemoryBytes": 1393094656,
+      "peakWholeGpuMemoryMiB": 1897,
+      "peakWholeGpuUtilization": 100,
+      "gpuMeasurementScope": "whole GPU; use raw process PIDs and container process list for attribution",
+      "peakContainerGpuProcessMiB": 1886,
+      "containerGpuProcessPids": [
+        "2018718"
+      ]
+    },
+    "benchmark": {
+      "schemaVersion": "1",
+      "status": "PASS",
+      "suite": "references/acceptance/mineru-v2/manifest.json",
+      "suiteVersionId": "2",
+      "configPath": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-config.json",
+      "repeats": 3,
+      "protocol": "self-hosted-v1",
+      "endpoint": "http://127.0.0.1:18000",
+      "deploymentRef": "mineru-local-p4-vulkan@4.0.12-llama0.1.3",
+      "resourceAllocationRef": "mineru-p4-onnx-cpu-vlm-vulkan@1",
+      "qualityPolicyRef": "mineru-local-source-checklist@2",
+      "warmup": {
+        "runId": "warmup",
+        "exitCode": 0,
+        "samples": [
+          {
+            "evidenceDir": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/warmup/riskflow-mineru-smoke-Up3Ijx",
+            "status": "completed",
+            "sampleId": "DEV-docx",
+            "protocol": "self-hosted-v1",
+            "elapsedMs": 2243.4356229999976,
+            "pages": null,
+            "compliance": true,
+            "checks": {
+              "keyFields": 8,
+              "records": 2,
+              "pages": null
+            },
+            "inputSha256": "ec29fa45f0a74ca562bd46cff88ab2451d5c6ec13990b136b18e854e27df75eb",
+            "deploymentRef": "mineru-local-p4-vulkan@4.0.12-llama0.1.3",
+            "qualityPolicyRef": "mineru-source-checklist-DEV-docx@2",
+            "resourceAllocationRef": "mineru-p4-onnx-cpu-vlm-vulkan@1"
+          },
+          {
+            "evidenceDir": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/warmup/riskflow-mineru-smoke-1IOLJ1",
+            "status": "completed",
+            "sampleId": "DEV-jpeg",
+            "protocol": "self-hosted-v1",
+            "elapsedMs": 4058.8641229999994,
+            "pages": 1,
+            "compliance": true,
+            "checks": {
+              "keyFields": 3,
+              "records": 3,
+              "pages": 1
+            },
+            "inputSha256": "5e87b4c14fce648fadd9cc901259be87a8d958b8565c689cee2c8220bdfa61b5",
+            "deploymentRef": "mineru-local-p4-vulkan@4.0.12-llama0.1.3",
+            "qualityPolicyRef": "mineru-source-checklist-DEV-jpeg@2",
+            "resourceAllocationRef": "mineru-p4-onnx-cpu-vlm-vulkan@1"
+          },
+          {
+            "evidenceDir": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/warmup/riskflow-mineru-smoke-zGvxui",
+            "status": "completed",
+            "sampleId": "DEV-png",
+            "protocol": "self-hosted-v1",
+            "elapsedMs": 4063.2217859999982,
+            "pages": 1,
+            "compliance": true,
+            "checks": {
+              "keyFields": 3,
+              "records": 2,
+              "pages": 1
+            },
+            "inputSha256": "88eeb9a2d5407d0680138fda910170fa1a7a37ce1d6b0258ddfdd162f906493d",
+            "deploymentRef": "mineru-local-p4-vulkan@4.0.12-llama0.1.3",
+            "qualityPolicyRef": "mineru-source-checklist-DEV-png@2",
+            "resourceAllocationRef": "mineru-p4-onnx-cpu-vlm-vulkan@1"
+          },
+          {
+            "evidenceDir": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/warmup/riskflow-mineru-smoke-EPbpTo",
+            "status": "completed",
+            "sampleId": "DEV-scan-pdf",
+            "protocol": "self-hosted-v1",
+            "elapsedMs": 18145.089361,
+            "pages": 1,
+            "compliance": true,
+            "checks": {
+              "keyFields": 31,
+              "records": 12,
+              "pages": 1
+            },
+            "inputSha256": "8bd3088123fffcb3bf3eb1713af46f1cf739ba409db4d646e07bf3086173130f",
+            "deploymentRef": "mineru-local-p4-vulkan@4.0.12-llama0.1.3",
+            "qualityPolicyRef": "mineru-source-checklist-DEV-scan-pdf@2",
+            "resourceAllocationRef": "mineru-p4-onnx-cpu-vlm-vulkan@1"
+          },
+          {
+            "evidenceDir": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/warmup/riskflow-mineru-smoke-Xn2q6l",
+            "status": "completed",
+            "sampleId": "DEV-text-pdf",
+            "protocol": "self-hosted-v1",
+            "elapsedMs": 6575.537487000001,
+            "pages": 1,
+            "compliance": true,
+            "checks": {
+              "keyFields": 12,
+              "records": 6,
+              "pages": 1
+            },
+            "inputSha256": "e5a8021754f5bc1e036954725401d41c13f96df54af6847851ada27fa1a59974",
+            "deploymentRef": "mineru-local-p4-vulkan@4.0.12-llama0.1.3",
+            "qualityPolicyRef": "mineru-source-checklist-DEV-text-pdf@2",
+            "resourceAllocationRef": "mineru-p4-onnx-cpu-vlm-vulkan@1"
+          }
+        ]
+      },
+      "runs": [
+        {
+          "runId": "run-01",
+          "exitCode": 0
+        },
+        {
+          "runId": "run-02",
+          "exitCode": 0
+        },
+        {
+          "runId": "run-03",
+          "exitCode": 0
+        }
+      ],
+      "samples": [
+        {
+          "sampleId": "DEV-jpeg",
+          "successfulRuns": 3,
+          "failedRuns": 0,
+          "failureCodes": [],
+          "elapsedMs": [
+            4054.9558080000024,
+            4068.4202540000006,
+            4073.198354
+          ],
+          "medianElapsedMs": 4068.4202540000006,
+          "pages": 1,
+          "checks": {
+            "keyFields": 3,
+            "records": 3,
+            "pages": 1
+          },
+          "pagesPerMinute": 14.7,
+          "evidenceDirectories": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "sampleId": "DEV-docx",
+          "successfulRuns": 3,
+          "failedRuns": 0,
+          "failureCodes": [],
+          "elapsedMs": [
+            2282.0372610000013,
+            2262.1643489999988,
+            2263.5184580000023
+          ],
+          "medianElapsedMs": 2263.5184580000023,
+          "pages": null,
+          "checks": {
+            "keyFields": 8,
+            "records": 2,
+            "pages": null
+          },
+          "pagesPerMinute": null,
+          "evidenceDirectories": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "sampleId": "DEV-scan-pdf",
+          "successfulRuns": 3,
+          "failedRuns": 0,
+          "failureCodes": [],
+          "elapsedMs": [
+            16143.848563,
+            16151.501409,
+            16137.842732
+          ],
+          "medianElapsedMs": 16143.848563,
+          "pages": 1,
+          "checks": {
+            "keyFields": 31,
+            "records": 12,
+            "pages": 1
+          },
+          "pagesPerMinute": 3.7,
+          "evidenceDirectories": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "sampleId": "DEV-png",
+          "successfulRuns": 3,
+          "failedRuns": 0,
+          "failureCodes": [],
+          "elapsedMs": [
+            6067.619336000003,
+            4069.0513089999986,
+            4068.949698999997
+          ],
+          "medianElapsedMs": 4069.0513089999986,
+          "pages": 1,
+          "checks": {
+            "keyFields": 3,
+            "records": 2,
+            "pages": 1
+          },
+          "pagesPerMinute": 14.7,
+          "evidenceDirectories": [
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "sampleId": "DEV-text-pdf",
+          "successfulRuns": 3,
+          "failedRuns": 0,
+          "failureCodes": [],
+          "elapsedMs": [
+            2525.258027,
+            2540.1755279999998,
+            2521.4053860000004
+          ],
+          "medianElapsedMs": 2525.258027,
+          "pages": 1,
+          "checks": {
+            "keyFields": 12,
+            "records": 6,
+            "pages": 1
+          },
+          "pagesPerMinute": 23.8,
+          "evidenceDirectories": [
+            null,
+            null,
+            null
+          ]
+        }
+      ],
+      "issues": [],
+      "notes": {
+        "measurements": "warm-only",
+        "coldStartAndModelLoad": "not measured by this runner; record separately",
+        "taskCache": "self-hosted task cache reuse is unknown; elapsedMs may be cache-assisted",
+        "resources": "container RAM/VRAM and CPU/GPU participation come from separate docker/nvidia records",
+        "gpuClaim": "this runner does not assert that a GPU backend actually ran",
+        "docx": "DOCX native flash tier is excluded from VLM throughput claims"
+      }
+    },
+    "observations": [
+      {
+        "run": "run-01",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 4054.9558080000024,
+        "sampleId": "DEV-jpeg",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/run-01/riskflow-mineru-smoke-Az4L6l",
+        "inputBytes": 43022,
+        "inputSha256": "5e87b4c14fce648fadd9cc901259be87a8d958b8565c689cee2c8220bdfa61b5",
+        "deploymentRef": {
+          "entityId": "mineru-local-p4-vulkan",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-jpeg",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 3,
+          "records": 3,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 5,
+        "segments": 5,
+        "compliance": true,
+        "taskIdentity": "job_d0340d5a7c22c3c91c2d6ad8",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-01",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 2282.0372610000013,
+        "sampleId": "DEV-docx",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/run-01/riskflow-mineru-smoke-EwOoMZ",
+        "inputBytes": 37446,
+        "inputSha256": "ec29fa45f0a74ca562bd46cff88ab2451d5c6ec13990b136b18e854e27df75eb",
+        "deploymentRef": {
+          "entityId": "mineru-local-p4-vulkan",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-docx",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 8,
+          "records": 2,
+          "pages": null
+        },
+        "pages": null,
+        "blocks": 24,
+        "segments": 3,
+        "compliance": true,
+        "taskIdentity": "job_c67557af9a468d86bd6b473a",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "flash"
+      },
+      {
+        "run": "run-01",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 16143.848563,
+        "sampleId": "DEV-scan-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/run-01/riskflow-mineru-smoke-Lnh2q9",
+        "inputBytes": 85528,
+        "inputSha256": "8bd3088123fffcb3bf3eb1713af46f1cf739ba409db4d646e07bf3086173130f",
+        "deploymentRef": {
+          "entityId": "mineru-local-p4-vulkan",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-scan-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 31,
+          "records": 12,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 15,
+        "segments": 15,
+        "compliance": true,
+        "taskIdentity": "job_af547d0276fa0a9927a1bd33",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-01",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 6067.619336000003,
+        "sampleId": "DEV-png",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/run-01/riskflow-mineru-smoke-XFGZpG",
+        "inputBytes": 78360,
+        "inputSha256": "88eeb9a2d5407d0680138fda910170fa1a7a37ce1d6b0258ddfdd162f906493d",
+        "deploymentRef": {
+          "entityId": "mineru-local-p4-vulkan",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-png",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 3,
+          "records": 2,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 5,
+        "segments": 5,
+        "compliance": true,
+        "taskIdentity": "job_1f44e7a817db6659568884e8",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-01",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 2525.258027,
+        "sampleId": "DEV-text-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/run-01/riskflow-mineru-smoke-yoAV7w",
+        "inputBytes": 3423,
+        "inputSha256": "e5a8021754f5bc1e036954725401d41c13f96df54af6847851ada27fa1a59974",
+        "deploymentRef": {
+          "entityId": "mineru-local-p4-vulkan",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-text-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 12,
+          "records": 6,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 9,
+        "segments": 9,
+        "compliance": true,
+        "taskIdentity": "job_c762108cd528b42cd411c304",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-02",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 4069.0513089999986,
+        "sampleId": "DEV-png",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/run-02/riskflow-mineru-smoke-74MLlJ",
+        "inputBytes": 78360,
+        "inputSha256": "88eeb9a2d5407d0680138fda910170fa1a7a37ce1d6b0258ddfdd162f906493d",
+        "deploymentRef": {
+          "entityId": "mineru-local-p4-vulkan",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-png",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 3,
+          "records": 2,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 5,
+        "segments": 5,
+        "compliance": true,
+        "taskIdentity": "job_f49d8e2ee6f1b7de03266eeb",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-02",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 2540.1755279999998,
+        "sampleId": "DEV-text-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/run-02/riskflow-mineru-smoke-Hrj3Uy",
+        "inputBytes": 3423,
+        "inputSha256": "e5a8021754f5bc1e036954725401d41c13f96df54af6847851ada27fa1a59974",
+        "deploymentRef": {
+          "entityId": "mineru-local-p4-vulkan",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-text-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 12,
+          "records": 6,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 9,
+        "segments": 9,
+        "compliance": true,
+        "taskIdentity": "job_eb0ad1f0912b1bc94fa58cdb",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-02",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 16151.501409,
+        "sampleId": "DEV-scan-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/run-02/riskflow-mineru-smoke-KkayX7",
+        "inputBytes": 85528,
+        "inputSha256": "8bd3088123fffcb3bf3eb1713af46f1cf739ba409db4d646e07bf3086173130f",
+        "deploymentRef": {
+          "entityId": "mineru-local-p4-vulkan",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-scan-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 31,
+          "records": 12,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 15,
+        "segments": 15,
+        "compliance": true,
+        "taskIdentity": "job_427c268a6b0877b7537cf29f",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-02",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 2262.1643489999988,
+        "sampleId": "DEV-docx",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/run-02/riskflow-mineru-smoke-LXbAyH",
+        "inputBytes": 37446,
+        "inputSha256": "ec29fa45f0a74ca562bd46cff88ab2451d5c6ec13990b136b18e854e27df75eb",
+        "deploymentRef": {
+          "entityId": "mineru-local-p4-vulkan",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-docx",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 8,
+          "records": 2,
+          "pages": null
+        },
+        "pages": null,
+        "blocks": 24,
+        "segments": 3,
+        "compliance": true,
+        "taskIdentity": "job_0d0854a8d20af2dd4960caae",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "flash"
+      },
+      {
+        "run": "run-02",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 4068.4202540000006,
+        "sampleId": "DEV-jpeg",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/run-02/riskflow-mineru-smoke-SF11t9",
+        "inputBytes": 43022,
+        "inputSha256": "5e87b4c14fce648fadd9cc901259be87a8d958b8565c689cee2c8220bdfa61b5",
+        "deploymentRef": {
+          "entityId": "mineru-local-p4-vulkan",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-jpeg",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 3,
+          "records": 3,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 5,
+        "segments": 5,
+        "compliance": true,
+        "taskIdentity": "job_71ca8f03b3ce80cac7e7110f",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-03",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 4068.949698999997,
+        "sampleId": "DEV-png",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/run-03/riskflow-mineru-smoke-R36Sdc",
+        "inputBytes": 78360,
+        "inputSha256": "88eeb9a2d5407d0680138fda910170fa1a7a37ce1d6b0258ddfdd162f906493d",
+        "deploymentRef": {
+          "entityId": "mineru-local-p4-vulkan",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-png",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 3,
+          "records": 2,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 5,
+        "segments": 5,
+        "compliance": true,
+        "taskIdentity": "job_db41387c16e72704b541658a",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-03",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 4073.198354,
+        "sampleId": "DEV-jpeg",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/run-03/riskflow-mineru-smoke-UgsJ3U",
+        "inputBytes": 43022,
+        "inputSha256": "5e87b4c14fce648fadd9cc901259be87a8d958b8565c689cee2c8220bdfa61b5",
+        "deploymentRef": {
+          "entityId": "mineru-local-p4-vulkan",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-jpeg",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 3,
+          "records": 3,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 5,
+        "segments": 5,
+        "compliance": true,
+        "taskIdentity": "job_27e8b1678e82a1daac599aa5",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-03",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 16137.842732,
+        "sampleId": "DEV-scan-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/run-03/riskflow-mineru-smoke-UiqXBK",
+        "inputBytes": 85528,
+        "inputSha256": "8bd3088123fffcb3bf3eb1713af46f1cf739ba409db4d646e07bf3086173130f",
+        "deploymentRef": {
+          "entityId": "mineru-local-p4-vulkan",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-scan-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 31,
+          "records": 12,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 15,
+        "segments": 15,
+        "compliance": true,
+        "taskIdentity": "job_ffce34e72b08c073ef7b1cce",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-03",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 2521.4053860000004,
+        "sampleId": "DEV-text-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/run-03/riskflow-mineru-smoke-VcHmVd",
+        "inputBytes": 3423,
+        "inputSha256": "e5a8021754f5bc1e036954725401d41c13f96df54af6847851ada27fa1a59974",
+        "deploymentRef": {
+          "entityId": "mineru-local-p4-vulkan",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-text-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 12,
+          "records": 6,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 9,
+        "segments": 9,
+        "compliance": true,
+        "taskIdentity": "job_4099758b47b36f4f8bc3c1d9",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-03",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 2263.5184580000023,
+        "sampleId": "DEV-docx",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/run-03/riskflow-mineru-smoke-cLWc6o",
+        "inputBytes": 37446,
+        "inputSha256": "ec29fa45f0a74ca562bd46cff88ab2451d5c6ec13990b136b18e854e27df75eb",
+        "deploymentRef": {
+          "entityId": "mineru-local-p4-vulkan",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-docx",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 8,
+          "records": 2,
+          "pages": null
+        },
+        "pages": null,
+        "blocks": 24,
+        "segments": 3,
+        "compliance": true,
+        "taskIdentity": "job_ee583109a6d5c3ebdff29576",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "flash"
+      },
+      {
+        "run": "warmup",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 4058.8641229999994,
+        "sampleId": "DEV-jpeg",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/warmup/riskflow-mineru-smoke-1IOLJ1",
+        "inputBytes": 43022,
+        "inputSha256": "5e87b4c14fce648fadd9cc901259be87a8d958b8565c689cee2c8220bdfa61b5",
+        "deploymentRef": {
+          "entityId": "mineru-local-p4-vulkan",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-jpeg",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 3,
+          "records": 3,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 5,
+        "segments": 5,
+        "compliance": true,
+        "taskIdentity": "job_b0ec5dd4a28de3a4076b670e",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "warmup",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 18145.089361,
+        "sampleId": "DEV-scan-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/warmup/riskflow-mineru-smoke-EPbpTo",
+        "inputBytes": 85528,
+        "inputSha256": "8bd3088123fffcb3bf3eb1713af46f1cf739ba409db4d646e07bf3086173130f",
+        "deploymentRef": {
+          "entityId": "mineru-local-p4-vulkan",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-scan-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 31,
+          "records": 12,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 15,
+        "segments": 15,
+        "compliance": true,
+        "taskIdentity": "job_732cdf2d059e2fa4abc9504f",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "warmup",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 2243.4356229999976,
+        "sampleId": "DEV-docx",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/warmup/riskflow-mineru-smoke-Up3Ijx",
+        "inputBytes": 37446,
+        "inputSha256": "ec29fa45f0a74ca562bd46cff88ab2451d5c6ec13990b136b18e854e27df75eb",
+        "deploymentRef": {
+          "entityId": "mineru-local-p4-vulkan",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-docx",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 8,
+          "records": 2,
+          "pages": null
+        },
+        "pages": null,
+        "blocks": 24,
+        "segments": 3,
+        "compliance": true,
+        "taskIdentity": "job_5aa20225edce78e144fa0e7e",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "flash"
+      },
+      {
+        "run": "warmup",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 6575.537487000001,
+        "sampleId": "DEV-text-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/warmup/riskflow-mineru-smoke-Xn2q6l",
+        "inputBytes": 3423,
+        "inputSha256": "e5a8021754f5bc1e036954725401d41c13f96df54af6847851ada27fa1a59974",
+        "deploymentRef": {
+          "entityId": "mineru-local-p4-vulkan",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-text-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 12,
+          "records": 6,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 9,
+        "segments": 9,
+        "compliance": true,
+        "taskIdentity": "job_ea2b566f5735655feb296e76",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "warmup",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 4063.2217859999982,
+        "sampleId": "DEV-png",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-measured-v1/benchmark/warmup/riskflow-mineru-smoke-zGvxui",
+        "inputBytes": 78360,
+        "inputSha256": "88eeb9a2d5407d0680138fda910170fa1a7a37ce1d6b0258ddfdd162f906493d",
+        "deploymentRef": {
+          "entityId": "mineru-local-p4-vulkan",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-png",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 3,
+          "records": 2,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 5,
+        "segments": 5,
+        "compliance": true,
+        "taskIdentity": "job_3e1064641284b6b08432a89f",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      }
+    ],
+    "uniqueTaskCount": 20,
+    "requestCount": 20
+  },
+  "cpuLong": {
+    "startup": {
+      "startedAt": "2026-10-11T12:10:17.624Z",
+      "startupMs": 7007.017771,
+      "health": {
+        "status": "ok",
+        "version": "4.0.12",
+        "features": {
+          "webhook": false,
+          "output_formats": [
+            "markdown",
+            "middle_json",
+            "structured_content",
+            "zip"
+          ],
+          "sources": [
+            "file_id",
+            "url",
+            "inline"
+          ]
+        }
+      },
+      "containerId": "b7f1a00a4db0f58b108f0beaf6fa97453c4b8c19f67e30cebe0f5732389acaf4",
+      "imageId": "sha256:75b37762034fa50e6dafee8f3ad3c383dcc760e7f58e4c2f52e429a8d556daf8",
+      "cgroup": "/sys/fs/cgroup/system.slice/docker-b7f1a00a4db0f58b108f0beaf6fa97453c4b8c19f67e30cebe0f5732389acaf4.scope",
+      "resources": {
+        "cpuset": "0-15",
+        "nanoCpus": 16000000000,
+        "memory": 25769803776
+      },
+      "processes": "PID                 COMMAND\n1989803             docker-init\n1990012             mineru-kit\n"
+    },
+    "resources": {
+      "exitCode": 0,
+      "samples": 526,
+      "peakSampledRamBytes": 2862096384,
+      "cgroupPeakMemoryBytes": 2862358528,
+      "peakWholeGpuMemoryMiB": 5,
+      "peakWholeGpuUtilization": 0,
+      "gpuMeasurementScope": "whole GPU; use raw process PIDs and container process list for attribution",
+      "peakContainerGpuProcessMiB": 0,
+      "containerGpuProcessPids": []
+    },
+    "benchmark": {
+      "status": "PASS",
+      "results": [
+        {
+          "exitCode": 0,
+          "evidenceDir": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-long-v1/benchmark/run-1/riskflow-mineru-smoke-KK5h8i",
+          "status": "completed",
+          "sampleId": "TRIAL-scan-pdf",
+          "protocol": "self-hosted-v1",
+          "elapsedMs": 185058.84106399998,
+          "pages": 5,
+          "compliance": true,
+          "checksPassed": null,
+          "inputSha256": "dcf35090e170428fb5b42a91043852b8cfa87e6ccaaf082751362c651acfedc2",
+          "deploymentRef": "mineru-local-cpu@4.0.12-llama0.1.3",
+          "qualityPolicyRef": "mineru-source-checklist-TRIAL-scan-pdf@2",
+          "resourceAllocationRef": "mineru-onnx-vlm-cpu@1"
+        },
+        {
+          "exitCode": 0,
+          "evidenceDir": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-long-v1/benchmark/run-2/riskflow-mineru-smoke-0vMxMZ",
+          "status": "completed",
+          "sampleId": "TRIAL-scan-pdf",
+          "protocol": "self-hosted-v1",
+          "elapsedMs": 180994.981261,
+          "pages": 5,
+          "compliance": true,
+          "checksPassed": null,
+          "inputSha256": "dcf35090e170428fb5b42a91043852b8cfa87e6ccaaf082751362c651acfedc2",
+          "deploymentRef": "mineru-local-cpu@4.0.12-llama0.1.3",
+          "qualityPolicyRef": "mineru-source-checklist-TRIAL-scan-pdf@2",
+          "resourceAllocationRef": "mineru-onnx-vlm-cpu@1"
+        },
+        {
+          "exitCode": 0,
+          "evidenceDir": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-long-v1/benchmark/run-3/riskflow-mineru-smoke-ZmsDQz",
+          "status": "completed",
+          "sampleId": "TRIAL-scan-pdf",
+          "protocol": "self-hosted-v1",
+          "elapsedMs": 177045.848317,
+          "pages": 5,
+          "compliance": true,
+          "checksPassed": null,
+          "inputSha256": "dcf35090e170428fb5b42a91043852b8cfa87e6ccaaf082751362c651acfedc2",
+          "deploymentRef": "mineru-local-cpu@4.0.12-llama0.1.3",
+          "qualityPolicyRef": "mineru-source-checklist-TRIAL-scan-pdf@2",
+          "resourceAllocationRef": "mineru-onnx-vlm-cpu@1"
+        }
+      ],
+      "medianElapsedMs": 180994.981261
+    },
+    "observations": [
+      {
+        "run": "run-1",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 185058.84106399998,
+        "sampleId": "TRIAL-scan-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-long-v1/benchmark/run-1/riskflow-mineru-smoke-KK5h8i",
+        "inputBytes": 421559,
+        "inputSha256": "dcf35090e170428fb5b42a91043852b8cfa87e6ccaaf082751362c651acfedc2",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-TRIAL-scan-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 127,
+          "records": 60,
+          "pages": 5
+        },
+        "pages": 5,
+        "blocks": 72,
+        "segments": 72,
+        "compliance": true,
+        "taskIdentity": "job_69d69054ccad80817a39c2a3",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-2",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 180994.981261,
+        "sampleId": "TRIAL-scan-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-long-v1/benchmark/run-2/riskflow-mineru-smoke-0vMxMZ",
+        "inputBytes": 421559,
+        "inputSha256": "dcf35090e170428fb5b42a91043852b8cfa87e6ccaaf082751362c651acfedc2",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-TRIAL-scan-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 127,
+          "records": 60,
+          "pages": 5
+        },
+        "pages": 5,
+        "blocks": 72,
+        "segments": 72,
+        "compliance": true,
+        "taskIdentity": "job_c6cc360b687b31bb7cd8a051",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-3",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 177045.848317,
+        "sampleId": "TRIAL-scan-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-long-v1/benchmark/run-3/riskflow-mineru-smoke-ZmsDQz",
+        "inputBytes": 421559,
+        "inputSha256": "dcf35090e170428fb5b42a91043852b8cfa87e6ccaaf082751362c651acfedc2",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-TRIAL-scan-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 127,
+          "records": 60,
+          "pages": 5
+        },
+        "pages": 5,
+        "blocks": 72,
+        "segments": 72,
+        "compliance": true,
+        "taskIdentity": "job_29d7272f121937572d469ffe",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      }
+    ],
+    "uniqueTaskCount": 3,
+    "requestCount": 3,
+    "firstRequest": {
+      "run": "run-1",
+      "status": "completed",
+      "protocol": "self-hosted-v1",
+      "elapsedMs": 185058.84106399998,
+      "sampleId": "TRIAL-scan-pdf",
+      "sourceChecklistVersion": "2",
+      "scope": "isolated-parser-and-jsonld-acceptance",
+      "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-long-v1/benchmark/run-1/riskflow-mineru-smoke-KK5h8i",
+      "inputBytes": 421559,
+      "inputSha256": "dcf35090e170428fb5b42a91043852b8cfa87e6ccaaf082751362c651acfedc2",
+      "deploymentRef": {
+        "entityId": "mineru-local-cpu",
+        "versionId": "4.0.12-llama0.1.3"
+      },
+      "resourceAllocationRef": {
+        "entityId": "mineru-onnx-vlm-cpu",
+        "versionId": "1"
+      },
+      "qualityPolicyRef": {
+        "entityId": "mineru-source-checklist-TRIAL-scan-pdf",
+        "versionId": "2"
+      },
+      "checks": {
+        "keyFields": 127,
+        "records": 60,
+        "pages": 5
+      },
+      "pages": 5,
+      "blocks": 72,
+      "segments": 72,
+      "compliance": true,
+      "taskIdentity": "job_69d69054ccad80817a39c2a3",
+      "serviceIdentity": {
+        "name": "mineru",
+        "version": "4.0.12"
+      },
+      "tier": "standard"
+    },
+    "warm": {
+      "samples": [
+        {
+          "run": "run-2",
+          "status": "completed",
+          "protocol": "self-hosted-v1",
+          "elapsedMs": 180994.981261,
+          "sampleId": "TRIAL-scan-pdf",
+          "sourceChecklistVersion": "2",
+          "scope": "isolated-parser-and-jsonld-acceptance",
+          "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-long-v1/benchmark/run-2/riskflow-mineru-smoke-0vMxMZ",
+          "inputBytes": 421559,
+          "inputSha256": "dcf35090e170428fb5b42a91043852b8cfa87e6ccaaf082751362c651acfedc2",
+          "deploymentRef": {
+            "entityId": "mineru-local-cpu",
+            "versionId": "4.0.12-llama0.1.3"
+          },
+          "resourceAllocationRef": {
+            "entityId": "mineru-onnx-vlm-cpu",
+            "versionId": "1"
+          },
+          "qualityPolicyRef": {
+            "entityId": "mineru-source-checklist-TRIAL-scan-pdf",
+            "versionId": "2"
+          },
+          "checks": {
+            "keyFields": 127,
+            "records": 60,
+            "pages": 5
+          },
+          "pages": 5,
+          "blocks": 72,
+          "segments": 72,
+          "compliance": true,
+          "taskIdentity": "job_c6cc360b687b31bb7cd8a051",
+          "serviceIdentity": {
+            "name": "mineru",
+            "version": "4.0.12"
+          },
+          "tier": "standard"
+        },
+        {
+          "run": "run-3",
+          "status": "completed",
+          "protocol": "self-hosted-v1",
+          "elapsedMs": 177045.848317,
+          "sampleId": "TRIAL-scan-pdf",
+          "sourceChecklistVersion": "2",
+          "scope": "isolated-parser-and-jsonld-acceptance",
+          "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-long-v1/benchmark/run-3/riskflow-mineru-smoke-ZmsDQz",
+          "inputBytes": 421559,
+          "inputSha256": "dcf35090e170428fb5b42a91043852b8cfa87e6ccaaf082751362c651acfedc2",
+          "deploymentRef": {
+            "entityId": "mineru-local-cpu",
+            "versionId": "4.0.12-llama0.1.3"
+          },
+          "resourceAllocationRef": {
+            "entityId": "mineru-onnx-vlm-cpu",
+            "versionId": "1"
+          },
+          "qualityPolicyRef": {
+            "entityId": "mineru-source-checklist-TRIAL-scan-pdf",
+            "versionId": "2"
+          },
+          "checks": {
+            "keyFields": 127,
+            "records": 60,
+            "pages": 5
+          },
+          "pages": 5,
+          "blocks": 72,
+          "segments": 72,
+          "compliance": true,
+          "taskIdentity": "job_29d7272f121937572d469ffe",
+          "serviceIdentity": {
+            "name": "mineru",
+            "version": "4.0.12"
+          },
+          "tier": "standard"
+        },
+        {
+          "run": "run-04",
+          "status": "completed",
+          "protocol": "self-hosted-v1",
+          "elapsedMs": 185014.066667,
+          "sampleId": "TRIAL-scan-pdf",
+          "sourceChecklistVersion": "2",
+          "scope": "isolated-parser-and-jsonld-acceptance",
+          "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-long-extra-v1/benchmark/run-04/riskflow-mineru-smoke-89kWqH",
+          "inputBytes": 421559,
+          "inputSha256": "dcf35090e170428fb5b42a91043852b8cfa87e6ccaaf082751362c651acfedc2",
+          "deploymentRef": {
+            "entityId": "mineru-local-cpu",
+            "versionId": "4.0.12-llama0.1.3"
+          },
+          "resourceAllocationRef": {
+            "entityId": "mineru-onnx-vlm-cpu",
+            "versionId": "1"
+          },
+          "qualityPolicyRef": {
+            "entityId": "mineru-source-checklist-TRIAL-scan-pdf",
+            "versionId": "2"
+          },
+          "checks": {
+            "keyFields": 127,
+            "records": 60,
+            "pages": 5
+          },
+          "pages": 5,
+          "blocks": 72,
+          "segments": 72,
+          "compliance": true,
+          "taskIdentity": "job_8ccb8e81cf632271ce3a4758",
+          "serviceIdentity": {
+            "name": "mineru",
+            "version": "4.0.12"
+          },
+          "tier": "standard"
+        }
+      ],
+      "medianElapsedMs": 180994.981261
+    }
+  },
+  "gpuLong": {
+    "startup": {
+      "startedAt": "2026-10-11T12:23:23.143Z",
+      "startupMs": 264.923405,
+      "startupKind": "reuse-running-service",
+      "health": {
+        "status": "ok",
+        "version": "4.0.12",
+        "features": {
+          "webhook": false,
+          "output_formats": [
+            "markdown",
+            "middle_json",
+            "structured_content",
+            "zip"
+          ],
+          "sources": [
+            "file_id",
+            "url",
+            "inline"
+          ]
+        }
+      },
+      "containerId": "7d303854be3b83555707e7b5e41f417338c9983d092a7e8815cc7ea91c2b1cd3",
+      "imageId": "sha256:75b37762034fa50e6dafee8f3ad3c383dcc760e7f58e4c2f52e429a8d556daf8",
+      "cgroup": "/sys/fs/cgroup/system.slice/docker-7d303854be3b83555707e7b5e41f417338c9983d092a7e8815cc7ea91c2b1cd3.scope",
+      "resources": {
+        "cpuset": "0-15",
+        "nanoCpus": 16000000000,
+        "memory": 25769803776
+      },
+      "processes": "PID                 COMMAND\n2018436             docker-init\n2018718             mineru-kit\n2019721             python3.12\n2019722             python3.12\n"
+    },
+    "resources": {
+      "exitCode": 0,
+      "samples": 217,
+      "peakSampledRamBytes": 1958551552,
+      "cgroupPeakMemoryBytes": 1958813696,
+      "peakWholeGpuMemoryMiB": 1894,
+      "peakWholeGpuUtilization": 100,
+      "gpuMeasurementScope": "whole GPU; use raw process PIDs and container process list for attribution",
+      "peakContainerGpuProcessMiB": 1887,
+      "containerGpuProcessPids": [
+        "2018718"
+      ]
+    },
+    "benchmark": {
+      "status": "PASS",
+      "results": [
+        {
+          "exitCode": 0,
+          "evidenceDir": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-long-v1/benchmark/run-1/riskflow-mineru-smoke-LknXpK",
+          "status": "completed",
+          "sampleId": "TRIAL-scan-pdf",
+          "protocol": "self-hosted-v1",
+          "elapsedMs": 72848.930404,
+          "pages": 5,
+          "compliance": true,
+          "checks": {
+            "keyFields": 127,
+            "records": 60,
+            "pages": 5
+          },
+          "inputSha256": "dcf35090e170428fb5b42a91043852b8cfa87e6ccaaf082751362c651acfedc2",
+          "deploymentRef": "mineru-local-p4-vulkan@4.0.12-llama0.1.3",
+          "qualityPolicyRef": "mineru-source-checklist-TRIAL-scan-pdf@2",
+          "resourceAllocationRef": "mineru-p4-onnx-cpu-vlm-vulkan@1"
+        },
+        {
+          "exitCode": 0,
+          "evidenceDir": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-long-v1/benchmark/run-2/riskflow-mineru-smoke-vxD4SA",
+          "status": "completed",
+          "sampleId": "TRIAL-scan-pdf",
+          "protocol": "self-hosted-v1",
+          "elapsedMs": 72853.993018,
+          "pages": 5,
+          "compliance": true,
+          "checks": {
+            "keyFields": 127,
+            "records": 60,
+            "pages": 5
+          },
+          "inputSha256": "dcf35090e170428fb5b42a91043852b8cfa87e6ccaaf082751362c651acfedc2",
+          "deploymentRef": "mineru-local-p4-vulkan@4.0.12-llama0.1.3",
+          "qualityPolicyRef": "mineru-source-checklist-TRIAL-scan-pdf@2",
+          "resourceAllocationRef": "mineru-p4-onnx-cpu-vlm-vulkan@1"
+        },
+        {
+          "exitCode": 0,
+          "evidenceDir": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-long-v1/benchmark/run-3/riskflow-mineru-smoke-wO9iPT",
+          "status": "completed",
+          "sampleId": "TRIAL-scan-pdf",
+          "protocol": "self-hosted-v1",
+          "elapsedMs": 72770.825863,
+          "pages": 5,
+          "compliance": true,
+          "checks": {
+            "keyFields": 127,
+            "records": 60,
+            "pages": 5
+          },
+          "inputSha256": "dcf35090e170428fb5b42a91043852b8cfa87e6ccaaf082751362c651acfedc2",
+          "deploymentRef": "mineru-local-p4-vulkan@4.0.12-llama0.1.3",
+          "qualityPolicyRef": "mineru-source-checklist-TRIAL-scan-pdf@2",
+          "resourceAllocationRef": "mineru-p4-onnx-cpu-vlm-vulkan@1"
+        }
+      ],
+      "medianElapsedMs": 72848.930404
+    },
+    "observations": [
+      {
+        "run": "run-1",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 72848.930404,
+        "sampleId": "TRIAL-scan-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-long-v1/benchmark/run-1/riskflow-mineru-smoke-LknXpK",
+        "inputBytes": 421559,
+        "inputSha256": "dcf35090e170428fb5b42a91043852b8cfa87e6ccaaf082751362c651acfedc2",
+        "deploymentRef": {
+          "entityId": "mineru-local-p4-vulkan",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-TRIAL-scan-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 127,
+          "records": 60,
+          "pages": 5
+        },
+        "pages": 5,
+        "blocks": 72,
+        "segments": 72,
+        "compliance": true,
+        "taskIdentity": "job_803f8e14c6a8b359ac7fa426",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-2",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 72853.993018,
+        "sampleId": "TRIAL-scan-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-long-v1/benchmark/run-2/riskflow-mineru-smoke-vxD4SA",
+        "inputBytes": 421559,
+        "inputSha256": "dcf35090e170428fb5b42a91043852b8cfa87e6ccaaf082751362c651acfedc2",
+        "deploymentRef": {
+          "entityId": "mineru-local-p4-vulkan",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-TRIAL-scan-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 127,
+          "records": 60,
+          "pages": 5
+        },
+        "pages": 5,
+        "blocks": 72,
+        "segments": 72,
+        "compliance": true,
+        "taskIdentity": "job_c4eb88512b67d23365ac479d",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "run-3",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 72770.825863,
+        "sampleId": "TRIAL-scan-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-long-v1/benchmark/run-3/riskflow-mineru-smoke-wO9iPT",
+        "inputBytes": 421559,
+        "inputSha256": "dcf35090e170428fb5b42a91043852b8cfa87e6ccaaf082751362c651acfedc2",
+        "deploymentRef": {
+          "entityId": "mineru-local-p4-vulkan",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-TRIAL-scan-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 127,
+          "records": 60,
+          "pages": 5
+        },
+        "pages": 5,
+        "blocks": 72,
+        "segments": 72,
+        "compliance": true,
+        "taskIdentity": "job_6ee57a19f7e69e20e8b581a8",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      }
+    ],
+    "uniqueTaskCount": 3,
+    "requestCount": 3,
+    "warm": {
+      "samples": [
+        {
+          "run": "run-1",
+          "status": "completed",
+          "protocol": "self-hosted-v1",
+          "elapsedMs": 72848.930404,
+          "sampleId": "TRIAL-scan-pdf",
+          "sourceChecklistVersion": "2",
+          "scope": "isolated-parser-and-jsonld-acceptance",
+          "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-long-v1/benchmark/run-1/riskflow-mineru-smoke-LknXpK",
+          "inputBytes": 421559,
+          "inputSha256": "dcf35090e170428fb5b42a91043852b8cfa87e6ccaaf082751362c651acfedc2",
+          "deploymentRef": {
+            "entityId": "mineru-local-p4-vulkan",
+            "versionId": "4.0.12-llama0.1.3"
+          },
+          "resourceAllocationRef": {
+            "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+            "versionId": "1"
+          },
+          "qualityPolicyRef": {
+            "entityId": "mineru-source-checklist-TRIAL-scan-pdf",
+            "versionId": "2"
+          },
+          "checks": {
+            "keyFields": 127,
+            "records": 60,
+            "pages": 5
+          },
+          "pages": 5,
+          "blocks": 72,
+          "segments": 72,
+          "compliance": true,
+          "taskIdentity": "job_803f8e14c6a8b359ac7fa426",
+          "serviceIdentity": {
+            "name": "mineru",
+            "version": "4.0.12"
+          },
+          "tier": "standard"
+        },
+        {
+          "run": "run-2",
+          "status": "completed",
+          "protocol": "self-hosted-v1",
+          "elapsedMs": 72853.993018,
+          "sampleId": "TRIAL-scan-pdf",
+          "sourceChecklistVersion": "2",
+          "scope": "isolated-parser-and-jsonld-acceptance",
+          "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-long-v1/benchmark/run-2/riskflow-mineru-smoke-vxD4SA",
+          "inputBytes": 421559,
+          "inputSha256": "dcf35090e170428fb5b42a91043852b8cfa87e6ccaaf082751362c651acfedc2",
+          "deploymentRef": {
+            "entityId": "mineru-local-p4-vulkan",
+            "versionId": "4.0.12-llama0.1.3"
+          },
+          "resourceAllocationRef": {
+            "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+            "versionId": "1"
+          },
+          "qualityPolicyRef": {
+            "entityId": "mineru-source-checklist-TRIAL-scan-pdf",
+            "versionId": "2"
+          },
+          "checks": {
+            "keyFields": 127,
+            "records": 60,
+            "pages": 5
+          },
+          "pages": 5,
+          "blocks": 72,
+          "segments": 72,
+          "compliance": true,
+          "taskIdentity": "job_c4eb88512b67d23365ac479d",
+          "serviceIdentity": {
+            "name": "mineru",
+            "version": "4.0.12"
+          },
+          "tier": "standard"
+        },
+        {
+          "run": "run-3",
+          "status": "completed",
+          "protocol": "self-hosted-v1",
+          "elapsedMs": 72770.825863,
+          "sampleId": "TRIAL-scan-pdf",
+          "sourceChecklistVersion": "2",
+          "scope": "isolated-parser-and-jsonld-acceptance",
+          "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/gpu-long-v1/benchmark/run-3/riskflow-mineru-smoke-wO9iPT",
+          "inputBytes": 421559,
+          "inputSha256": "dcf35090e170428fb5b42a91043852b8cfa87e6ccaaf082751362c651acfedc2",
+          "deploymentRef": {
+            "entityId": "mineru-local-p4-vulkan",
+            "versionId": "4.0.12-llama0.1.3"
+          },
+          "resourceAllocationRef": {
+            "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+            "versionId": "1"
+          },
+          "qualityPolicyRef": {
+            "entityId": "mineru-source-checklist-TRIAL-scan-pdf",
+            "versionId": "2"
+          },
+          "checks": {
+            "keyFields": 127,
+            "records": 60,
+            "pages": 5
+          },
+          "pages": 5,
+          "blocks": 72,
+          "segments": 72,
+          "compliance": true,
+          "taskIdentity": "job_6ee57a19f7e69e20e8b581a8",
+          "serviceIdentity": {
+            "name": "mineru",
+            "version": "4.0.12"
+          },
+          "tier": "standard"
+        }
+      ],
+      "medianElapsedMs": 72848.930404
+    }
+  },
+  "measurementNotes": {
+    "cpuQuota": "16 CPUs, cpuset 0-15, memory 24 GiB, one job and one VLM request",
+    "backend": "ONNX small models on CPU for both; same Q8_0 VLM on CPU vs Vulkan",
+    "latency": "includes preflight, upload, 2-second polling, persistence, normalization, source checks and JSON-LD; not kernel-only timing",
+    "processStart": "model already local and OS cache warm; includes container recreation and preload, not disk-cold boot",
+    "warm": "Five-format suites have one warmup and three repeats. CPU long warm statistic excludes its first request and combines run-2/run-3 with a supplemental request after DEV-scan-pdf warmup; GPU long reuses its already-warmed service. All process transitions are retained.",
+    "taskCache": "unique uploaded filenames and job IDs, no sha256sum reuse option; every request executes hybrid analysis; model/engine caches remain warm",
+    "resources": "container cgroup memory includes file cache; GPU board totals and attributed process samples are distinguished; sampling about once per second",
+    "limits": "small synthetic sample set, quantized model and shared host; no p95 or general hardware claims",
+    "nativeThreads": "Binding uses automatic n_threads; isolated Vulkan diagnostic reported 32 threads. CPU quota/cpuset remain 16 CPUs. Native thread tuning was not performed."
+  },
+  "deployment": {
+    "endpoint": "http://127.0.0.1:18000",
+    "health": "http://127.0.0.1:18000/v1/health",
+    "restart": "unless-stopped",
+    "dataDirectory": "/home/joshua/.local/share/riskflow-mineru",
+    "cpuServiceFinalState": "stopped",
+    "gpuServiceFinalState": "running and healthy; restart and real PNG conversion passed"
+  },
+  "cpuLongAdditional": {
+    "startup": {
+      "startedAt": "2026-10-11T12:28:03.051Z",
+      "startupMs": 6709.427003,
+      "health": {
+        "status": "ok",
+        "version": "4.0.12",
+        "features": {
+          "webhook": false,
+          "output_formats": [
+            "markdown",
+            "middle_json",
+            "structured_content",
+            "zip"
+          ],
+          "sources": [
+            "file_id",
+            "url",
+            "inline"
+          ]
+        }
+      },
+      "containerId": "90fb8b32b3001509d944b1067956864aaae528c8c5b1b70535ef209204051901",
+      "imageId": "sha256:75b37762034fa50e6dafee8f3ad3c383dcc760e7f58e4c2f52e429a8d556daf8",
+      "cgroup": "/sys/fs/cgroup/system.slice/docker-90fb8b32b3001509d944b1067956864aaae528c8c5b1b70535ef209204051901.scope",
+      "resources": {
+        "cpuset": "0-15",
+        "nanoCpus": 16000000000,
+        "memory": 25769803776
+      },
+      "processes": "PID                 COMMAND\n2053041             docker-init\n2053243             mineru-kit\n"
+    },
+    "resources": {
+      "exitCode": 0,
+      "samples": 221,
+      "peakSampledRamBytes": 2603003904,
+      "cgroupPeakMemoryBytes": 2603003904,
+      "peakWholeGpuMemoryMiB": 6,
+      "peakWholeGpuUtilization": 0,
+      "gpuMeasurementScope": "whole GPU; use raw process PIDs and container process list for attribution"
+    },
+    "benchmark": {
+      "status": "PASS",
+      "results": [
+        {
+          "name": "warmup",
+          "exitCode": 0
+        },
+        {
+          "name": "run-04",
+          "exitCode": 0
+        }
+      ]
+    },
+    "observations": [
+      {
+        "run": "run-04",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 185014.066667,
+        "sampleId": "TRIAL-scan-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-long-extra-v1/benchmark/run-04/riskflow-mineru-smoke-89kWqH",
+        "inputBytes": 421559,
+        "inputSha256": "dcf35090e170428fb5b42a91043852b8cfa87e6ccaaf082751362c651acfedc2",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-TRIAL-scan-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 127,
+          "records": 60,
+          "pages": 5
+        },
+        "pages": 5,
+        "blocks": 72,
+        "segments": 72,
+        "compliance": true,
+        "taskIdentity": "job_8ccb8e81cf632271ce3a4758",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      },
+      {
+        "run": "warmup",
+        "status": "completed",
+        "protocol": "self-hosted-v1",
+        "elapsedMs": 40595.914904,
+        "sampleId": "DEV-scan-pdf",
+        "sourceChecklistVersion": "2",
+        "scope": "isolated-parser-and-jsonld-acceptance",
+        "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/cpu-long-extra-v1/benchmark/warmup/riskflow-mineru-smoke-ycW6il",
+        "inputBytes": 85528,
+        "inputSha256": "8bd3088123fffcb3bf3eb1713af46f1cf739ba409db4d646e07bf3086173130f",
+        "deploymentRef": {
+          "entityId": "mineru-local-cpu",
+          "versionId": "4.0.12-llama0.1.3"
+        },
+        "resourceAllocationRef": {
+          "entityId": "mineru-onnx-vlm-cpu",
+          "versionId": "1"
+        },
+        "qualityPolicyRef": {
+          "entityId": "mineru-source-checklist-DEV-scan-pdf",
+          "versionId": "2"
+        },
+        "checks": {
+          "keyFields": 31,
+          "records": 12,
+          "pages": 1
+        },
+        "pages": 1,
+        "blocks": 15,
+        "segments": 15,
+        "compliance": true,
+        "taskIdentity": "job_4aac48aabcc2189bb9410350",
+        "serviceIdentity": {
+          "name": "mineru",
+          "version": "4.0.12"
+        },
+        "tier": "standard"
+      }
+    ]
+  },
+  "nativeBackendEvidence": "/home/joshua/.local/share/riskflow-mineru/evidence/native-vulkan-offload.log",
+  "comparison": [
+    {
+      "sampleId": "DEV-docx",
+      "cpuMedianMs": 2238.8677549999993,
+      "gpuMedianMs": 2263.5184580000023,
+      "speedup": 0.9891095639565565
+    },
+    {
+      "sampleId": "DEV-png",
+      "cpuMedianMs": 8072.8636320000005,
+      "gpuMedianMs": 4069.0513089999986,
+      "speedup": 1.9839670279271977
+    },
+    {
+      "sampleId": "DEV-jpeg",
+      "cpuMedianMs": 6052.393242999999,
+      "gpuMedianMs": 4068.4202540000006,
+      "speedup": 1.487651930021091
+    },
+    {
+      "sampleId": "DEV-scan-pdf",
+      "cpuMedianMs": 36160.939068,
+      "gpuMedianMs": 16143.848563,
+      "speedup": 2.2399206067180946
+    },
+    {
+      "sampleId": "DEV-text-pdf",
+      "cpuMedianMs": 2522.748829,
+      "gpuMedianMs": 2525.258027,
+      "speedup": 0.9990063597568362
+    },
+    {
+      "sampleId": "TRIAL-scan-pdf",
+      "cpuMedianMs": 180994.981261,
+      "gpuMedianMs": 72848.930404,
+      "speedup": 2.4845248963471662
+    }
+  ],
+  "totalRequestCount": 48,
+  "totalUniqueTasks": 48,
+  "status": "PASS",
+  "finalService": {
+    "at": "2026-10-11T12:34:58.229Z",
+    "resumed": {
+      "elapsedMs": 5825.1272770000005,
+      "health": {
+        "status": "ok",
+        "version": "4.0.12",
+        "features": {
+          "webhook": false,
+          "output_formats": [
+            "markdown",
+            "middle_json",
+            "structured_content",
+            "zip"
+          ],
+          "sources": [
+            "file_id",
+            "url",
+            "inline"
+          ]
+        }
+      }
+    },
+    "restarted": {
+      "elapsedMs": 5944.680753000001,
+      "health": {
+        "status": "ok",
+        "version": "4.0.12",
+        "features": {
+          "webhook": false,
+          "output_formats": [
+            "markdown",
+            "middle_json",
+            "structured_content",
+            "zip"
+          ],
+          "sources": [
+            "file_id",
+            "url",
+            "inline"
+          ]
+        }
+      }
+    },
+    "restartMs": 7003.646116,
+    "containerId": "7d303854be3b83555707e7b5e41f417338c9983d092a7e8815cc7ea91c2b1cd3",
+    "imageId": "sha256:75b37762034fa50e6dafee8f3ad3c383dcc760e7f58e4c2f52e429a8d556daf8",
+    "restartPolicy": {
+      "Name": "unless-stopped",
+      "MaximumRetryCount": 0
+    },
+    "mounts": [
+      {
+        "Type": "bind",
+        "Source": "/usr/share/vulkan/icd.d/nvidia_icd.json",
+        "Destination": "/usr/share/vulkan/icd.d/nvidia_icd.json",
+        "Mode": "ro",
+        "RW": false,
+        "Propagation": "rprivate"
+      },
+      {
+        "Type": "bind",
+        "Source": "/home/joshua/Workspace/Code/JavaScript/RiskFlow/deployment/mineru/config.yaml",
+        "Destination": "/etc/mineru/config.yaml",
+        "Mode": "ro",
+        "RW": false,
+        "Propagation": "rprivate"
+      },
+      {
+        "Type": "bind",
+        "Source": "/home/joshua/.local/share/riskflow-mineru/models",
+        "Destination": "/models",
+        "Mode": "ro",
+        "RW": false,
+        "Propagation": "rprivate"
+      },
+      {
+        "Type": "bind",
+        "Source": "/home/joshua/.local/share/riskflow-mineru/models/.locks",
+        "Destination": "/models/.locks",
+        "Mode": "rw",
+        "RW": true,
+        "Propagation": "rprivate"
+      },
+      {
+        "Type": "bind",
+        "Source": "/home/joshua/.local/share/riskflow-mineru/gpu",
+        "Destination": "/var/lib/mineru",
+        "Mode": "rw",
+        "RW": true,
+        "Propagation": "rprivate"
+      }
+    ],
+    "modelVerify": "MinerU-4_models_onnx: ok\nMinerU2.5-Pro-2605-1.2B-GGUF: ok\n",
+    "processes": "PID                 COMMAND\n2090009             docker-init\n2090234             mineru-kit\n",
+    "gpu": "2090234, /usr/local/bin/python3.12, 1881\n"
+  },
+  "postRestartConversion": {
+    "status": "completed",
+    "protocol": "self-hosted-v1",
+    "elapsedMs": 8219.039553999999,
+    "sampleId": "DEV-png",
+    "sourceChecklistVersion": "2",
+    "scope": "isolated-parser-and-jsonld-acceptance",
+    "evidenceDirectory": "/home/joshua/.local/share/riskflow-mineru/evidence/post-restart/riskflow-mineru-smoke-PvmgQR",
+    "inputBytes": 78360,
+    "inputSha256": "88eeb9a2d5407d0680138fda910170fa1a7a37ce1d6b0258ddfdd162f906493d",
+    "deploymentRef": {
+      "entityId": "mineru-local-p4-vulkan",
+      "versionId": "4.0.12-llama0.1.3"
+    },
+    "resourceAllocationRef": {
+      "entityId": "mineru-p4-onnx-cpu-vlm-vulkan",
+      "versionId": "1"
+    },
+    "qualityPolicyRef": {
+      "entityId": "mineru-source-checklist-DEV-png",
+      "versionId": "2"
+    },
+    "checks": {
+      "keyFields": 3,
+      "records": 2,
+      "pages": 1
+    },
+    "pages": 1,
+    "blocks": 5,
+    "segments": 5,
+    "compliance": true
+  },
+  "validation": {
+    "converterAndBenchmarkTests": 71,
+    "deploymentTests": 258,
+    "modelAndCompositionRegressionTests": 47,
+    "syntheticPackCheck": "PASS",
+    "build": "PASS",
+    "typecheck": "PASS",
+    "lint": "PASS",
+    "affectedFileFormatting": "PASS",
+    "dependencyBoundariesAndPolicy": "PASS",
+    "openspecChangeStrict": "PASS",
+    "independentVerification": "not run; no final Git checkpoint authorized"
+  }
+}

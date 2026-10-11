@@ -1,0 +1,52 @@
+[
+  {
+    "backend": "network-api",
+    "config": {
+      "schemaVersion": "1",
+      "protocol": "openai-chat",
+      "deploymentRef": { "entityId": "minimax-chat-acceptance", "versionId": "v1" },
+      "serviceContractRef": { "entityId": "minimax-mplan-schema-prompt", "versionId": "v1" },
+      "modelVersionRef": { "entityId": "MiniMax-M3.1-Flash-Preview", "versionId": "2026-10-11" },
+      "baseUrl": "https://api.minimax.cn/v1",
+      "modelId": "MiniMax-M3.1-Flash-Preview",
+      "capabilities": ["completeStructured", "streamConversation"],
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 4096,
+      "structuredOutputMode": "schema-prompt",
+      "reasoningEffort": "low",
+      "credentialRef": "minimax-api-key",
+      "requestTimeoutMs": 120000,
+      "streamIdleTimeoutMs": 30000,
+      "maxResponseBytes": 1048576,
+      "maxInputBytes": 65536,
+      "maxBatchItems": 1,
+      "inputTokenUpperBoundPolicy": { "maxTokensPerInputByte": 1, "requestOverheadTokens": 4096 }
+    }
+  },
+  {
+    "backend": "network-api",
+    "config": {
+      "schemaVersion": "1",
+      "protocol": "ollama-embed",
+      "deploymentRef": { "entityId": "ollama-embedding-acceptance", "versionId": "v1" },
+      "serviceContractRef": { "entityId": "ollama-native-embed", "versionId": "0.40.0" },
+      "modelVersionRef": {
+        "entityId": "qwen3-embedding-4b",
+        "versionId": "df5bd2e3c74cd8d069d21dc038f1b359fcdc9458fce1c99bd43c9eb1518ff907"
+      },
+      "baseUrl": "http://192.168.13.11:11434",
+      "modelId": "qwen3-embedding:4b",
+      "capabilities": ["embed"],
+      "contextWindowTokens": 40960,
+      "embeddingDimensions": 2560,
+      "expectedServerVersion": "0.40.0",
+      "expectedModelDigest": "df5bd2e3c74cd8d069d21dc038f1b359fcdc9458fce1c99bd43c9eb1518ff907",
+      "requestTimeoutMs": 120000,
+      "streamIdleTimeoutMs": 30000,
+      "maxResponseBytes": 1048576,
+      "maxInputBytes": 16384,
+      "maxBatchItems": 2,
+      "inputTokenUpperBoundPolicy": { "maxTokensPerInputByte": 1, "requestOverheadTokens": 256 }
+    }
+  }
+]

@@ -49,6 +49,8 @@ export const APPLICABLE_RULE_SET_ARTIFACT_PURPOSE_CODE_V1 =
   "knowledge-modeling.applicable-rule-set" as const;
 export const SCORING_RULE_AUTHORING_MANIFEST_PURPOSE_CODE_V1 =
   "knowledge-modeling.scoring-rule-authoring-manifest" as const;
+export const SCORING_RULE_CONFIGURATION_PACKAGE_PURPOSE_CODE_V1 =
+  "knowledge-modeling.scoring-rule-configuration-package" as const;
 export const ASSESSMENT_BASIS_RELEASE_SET_SCHEMA_VERSION_V1 = "1" as const;
 export const ASSESSMENT_BASIS_RELEASE_SET_REF_KIND_V1 = "assessment-basis-release-set" as const;
 
@@ -301,7 +303,7 @@ export const ScoringRuleRelationSnapshotV1Schema = z.strictObject({
 export type ScoringRuleRelationSnapshotV1 = z.infer<typeof ScoringRuleRelationSnapshotV1Schema>;
 
 /** 来源绑定：只增加追溯关系，不复制条文正文。 */
-export const ScoringRuleSourceBindingV1Schema = z.strictObject({
+const ScoringRuleAgentSourceBindingV1Schema = z.strictObject({
   sourceVersionRef: SourceVersionRefV1Schema,
   cleaningResultArtifactRef: ContentArtifactRefV1Schema,
   evidenceReferences: z
@@ -311,6 +313,20 @@ export const ScoringRuleSourceBindingV1Schema = z.strictObject({
   agentTaskRef: AgentTaskRefV1Schema,
   validationArtifactRef: ContentArtifactRefV1Schema.optional(),
 });
+
+export const ScoringRuleConfigurationPackageSourceBindingV1Schema = z.strictObject({
+  sourceVersionRef: SourceVersionRefV1Schema,
+  evidenceReferences: z
+    .array(EvidenceReferenceSchema)
+    .min(1)
+    .max(SCORING_RULES_MAX_EVIDENCE_REFERENCES_V1),
+  configurationPackageArtifactRef: ContentArtifactRefV1Schema,
+});
+
+export const ScoringRuleSourceBindingV1Schema = z.union([
+  ScoringRuleAgentSourceBindingV1Schema,
+  ScoringRuleConfigurationPackageSourceBindingV1Schema,
+]);
 export type ScoringRuleSourceBindingV1 = z.infer<typeof ScoringRuleSourceBindingV1Schema>;
 
 export const StructuredScoringRuleMemberV1Schema = z.strictObject({
@@ -319,43 +335,187 @@ export const StructuredScoringRuleMemberV1Schema = z.strictObject({
 });
 export type StructuredScoringRuleMemberV1 = z.infer<typeof StructuredScoringRuleMemberV1Schema>;
 
-const sortedRuleMembers = z
-  .array(StructuredScoringRuleMemberV1Schema)
-  .min(1)
-  .max(SCORING_RULES_MAX_RULES_V1)
-  .superRefine((members, context) => {
-    const ids = new Set<string>();
-    for (const [index, member] of members.entries()) {
-      if (ids.has(member.rule.ruleId)) {
+const sortedMembers = <T extends z.ZodType<{ rule: { ruleId: string } }>>(
+  memberSchema: T,
+  minimum = 1,
+) =>
+  z
+    .array(memberSchema)
+    .min(minimum)
+    .max(SCORING_RULES_MAX_RULES_V1)
+    .superRefine((members, context) => {
+      const ids = new Set<string>();
+      for (const [index, member] of members.entries()) {
+        if (ids.has(member.rule.ruleId)) {
+          context.addIssue({
+            code: "custom",
+            path: [index, "rule", "ruleId"],
+            message: "rule id must be unique",
+          });
+          return;
+        }
+        ids.add(member.rule.ruleId);
+      }
+      const keys = members.map((member) => member.rule.ruleId);
+      for (let index = 1; index < keys.length; index += 1) {
+        if (keys[index - 1]! >= keys[index]!) {
+          context.addIssue({ code: "custom", path: [index], message: "rules must be sorted" });
+          return;
+        }
+      }
+    });
+
+/** `structured-scoring-rule` 内容工件：正文 SSOT，按 ruleId 规范排序。 */
+export const ScoringRuleConfigurationPackageMemberV1Schema = z.strictObject({
+  rule: StructuredScoringRuleSchema,
+  binding: z.strictObject({
+    sourceVersionRef: SourceVersionRefV1Schema,
+    evidenceReferences: z
+      .array(EvidenceReferenceSchema)
+      .min(1)
+      .max(SCORING_RULES_MAX_EVIDENCE_REFERENCES_V1),
+  }),
+});
+export type ScoringRuleConfigurationPackageMemberV1 = z.infer<
+  typeof ScoringRuleConfigurationPackageMemberV1Schema
+>;
+
+const sameSourceKey = (reference: { kind: string; reference: VersionReference }): string =>
+  `${reference.kind}:${reference.reference.entityId}@${reference.reference.versionId}`;
+
+const uniqueSortedConfigurationPackageMembers = sortedMembers(
+  ScoringRuleConfigurationPackageMemberV1Schema,
+);
+export const StructuredScoringRuleConfigurationPackageMemberV1Schema = z.strictObject({
+  rule: StructuredScoringRuleSchema,
+  binding: ScoringRuleConfigurationPackageSourceBindingV1Schema,
+});
+const uniqueSortedDocumentMembers = sortedMembers(StructuredScoringRuleMemberV1Schema);
+
+const ScoringRuleConfigurationPackageSourceV1Schema = z.strictObject({
+  sourceVersionRef: SourceVersionRefV1Schema,
+  standardKind: IdentifierSchema,
+  segments: z
+    .array(
+      z.strictObject({
+        sourceSegmentId: IdentifierSchema,
+        text: z.string().refine((value) => new TextEncoder().encode(value).byteLength <= 16 * 1024),
+      }),
+    )
+    .min(1)
+    .max(SCORING_RULES_MAX_SOURCE_SEGMENTS_V1)
+    .superRefine((segments, context) => {
+      if (new Set(segments.map((segment) => segment.sourceSegmentId)).size !== segments.length) {
         context.addIssue({
           code: "custom",
-          path: [index, "rule", "ruleId"],
-          message: "rule id must be unique",
+          path: [],
+          message: "source segment ids must be unique",
+        });
+      }
+    }),
+});
+
+export const ScoringRuleConfigurationPackageV1Schema = z
+  .strictObject({
+    schemaVersion: z.literal(SCORING_RULES_SCHEMA_VERSION_V1),
+    projectId: IdentifierSchema,
+    projectRevisionRef: ProjectRevisionRefV1Schema,
+    configurationSetRef: VersionReferenceSchema,
+    compatibilityRef: VersionReferenceSchema,
+    scoringPolicyRef: VersionReferenceSchema,
+    baseRuleReleaseRef: KnowledgeReleaseRefV1Schema.optional(),
+    sources: z.array(ScoringRuleConfigurationPackageSourceV1Schema).min(1).max(256),
+    members: uniqueSortedConfigurationPackageMembers,
+  })
+  .superRefine((configurationPackage, context) => {
+    const sourceKeys = new Set<string>();
+    for (const [index, source] of configurationPackage.sources.entries()) {
+      const key = sameSourceKey(source.sourceVersionRef);
+      if (sourceKeys.has(key)) {
+        context.addIssue({
+          code: "custom",
+          path: ["sources", index],
+          message: "source versions must be unique",
+        });
+      }
+      sourceKeys.add(key);
+    }
+    if (
+      new TextEncoder().encode(JSON.stringify(configurationPackage)).byteLength >
+      SCORING_RULES_MAX_ARTIFACT_BYTES_V1
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: [],
+        message: "configuration package exceeds size limit",
+      });
+    }
+  });
+export type ScoringRuleConfigurationPackageV1 = z.infer<
+  typeof ScoringRuleConfigurationPackageV1Schema
+>;
+
+const AgentStructuredScoringRuleDocumentV1Schema = z
+  .strictObject({
+    schemaVersion: z.literal(SCORING_RULES_SCHEMA_VERSION_V1),
+    projectRevisionRef: ProjectRevisionRefV1Schema,
+    configurationSetRef: VersionReferenceSchema,
+    compatibilityRef: VersionReferenceSchema,
+    scoringPolicyRef: VersionReferenceSchema,
+    cleaningResultArtifactRef: ContentArtifactRefV1Schema,
+    agentTaskRef: AgentTaskRefV1Schema,
+    members: uniqueSortedDocumentMembers,
+  })
+  .superRefine((document, context) => {
+    document.members.forEach((member, index) => {
+      if ("configurationPackageArtifactRef" in member.binding) {
+        context.addIssue({
+          code: "custom",
+          path: ["members", index, "binding"],
+          message: "Agent documents cannot contain configuration package members",
+        });
+      }
+    });
+  });
+
+const ConfigurationPackageStructuredScoringRuleDocumentV1Schema = z
+  .strictObject({
+    schemaVersion: z.literal(SCORING_RULES_SCHEMA_VERSION_V1),
+    projectRevisionRef: ProjectRevisionRefV1Schema,
+    configurationSetRef: VersionReferenceSchema,
+    compatibilityRef: VersionReferenceSchema,
+    scoringPolicyRef: VersionReferenceSchema,
+    configurationPackageArtifactRef: ContentArtifactRefV1Schema,
+    members: uniqueSortedDocumentMembers,
+  })
+  .superRefine((document, context) => {
+    document.members.forEach((member, index) => {
+      if (!("configurationPackageArtifactRef" in member.binding)) {
+        context.addIssue({
+          code: "custom",
+          path: ["members", index, "binding"],
+          message: "Configuration package documents require package members",
         });
         return;
       }
-      ids.add(member.rule.ruleId);
-    }
-    const keys = members.map((member) => member.rule.ruleId);
-    for (let index = 1; index < keys.length; index += 1) {
-      if (keys[index - 1]! >= keys[index]!) {
-        context.addIssue({ code: "custom", path: [index], message: "rules must be sorted" });
-        return;
+      const reference = member.binding.configurationPackageArtifactRef.reference;
+      if (
+        reference.entityId !== document.configurationPackageArtifactRef.reference.entityId ||
+        reference.versionId !== document.configurationPackageArtifactRef.reference.versionId
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["members", index, "binding", "configurationPackageArtifactRef"],
+          message: "member package reference must match the document",
+        });
       }
-    }
+    });
   });
 
-/** `structured-scoring-rule` 内容工件：正文 SSOT，按 ruleId 规范排序。 */
-export const StructuredScoringRuleDocumentV1Schema = z.strictObject({
-  schemaVersion: z.literal(SCORING_RULES_SCHEMA_VERSION_V1),
-  projectRevisionRef: ProjectRevisionRefV1Schema,
-  configurationSetRef: VersionReferenceSchema,
-  compatibilityRef: VersionReferenceSchema,
-  scoringPolicyRef: VersionReferenceSchema,
-  cleaningResultArtifactRef: ContentArtifactRefV1Schema,
-  agentTaskRef: AgentTaskRefV1Schema,
-  members: sortedRuleMembers,
-});
+export const StructuredScoringRuleDocumentV1Schema = z.union([
+  AgentStructuredScoringRuleDocumentV1Schema,
+  ConfigurationPackageStructuredScoringRuleDocumentV1Schema,
+]);
 export type StructuredScoringRuleDocumentV1 = z.infer<typeof StructuredScoringRuleDocumentV1Schema>;
 
 export const ApplicableRuleSetDecisionV1Schema = z.strictObject({

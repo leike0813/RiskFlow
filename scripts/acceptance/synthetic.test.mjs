@@ -9,6 +9,8 @@ import {
   SyntheticAcceptanceError,
   assertFileInputPathV1,
   checkPack,
+  createReadOnlyQuerySession,
+  isQueryOperationV1,
   operationIdFor,
   resolveTemplates,
   runPack,
@@ -153,6 +155,51 @@ describe("输入引用边界", () => {
     ]) {
       expect(() => assertFileInputPathV1(path)).toThrow(SyntheticAcceptanceError);
     }
+  });
+});
+
+describe("只读查询会话", () => {
+  it("只接受正式 query 操作并从正式会话调用", async () => {
+    expect(isQueryOperationV1(operationIdFor("query", "agent-task.read"))).toBe(true);
+    expect(isQueryOperationV1(operationIdFor("command", "agent-task.start-task"))).toBe(false);
+    const { fetchImpl, seen } = stubFetch({
+      routes: {
+        "/api/v1/projects/project-1/queries/agent-task.read": {
+          status: 200,
+          body: {
+            kind: "succeeded",
+            result: { kind: "list", items: [], asOfRecordedAt: "2026-03-02T00:00:00Z" },
+          },
+        },
+      },
+    });
+    const session = await createReadOnlyQuerySession({
+      config: {
+        baseUrl: "https://synthetic.invalid",
+        projectId: "project-1",
+        loginName: "acceptance",
+        password: "not-persisted",
+        timeoutMs: 5000,
+      },
+      runId: "run-1",
+      fetchImpl,
+    });
+    const result = await session.query({
+      packDir: PACK_DIR,
+      steps: new Map(),
+      bindings: {},
+      operationId: operationIdFor("query", "agent-task.read"),
+      payload: { kind: "list" },
+      queryId: "query-1",
+    });
+    expect(result).toMatchObject({ kind: "list", items: [] });
+    expect(seen.map((item) => item.path)).toEqual([
+      "/api/v1/session/login",
+      "/api/v1/projects/project-1/queries/agent-task.read",
+    ]);
+    await expect(
+      session.query({ operationId: operationIdFor("command", "agent-task.start-task") }),
+    ).rejects.toThrow(SyntheticAcceptanceError);
   });
 });
 
@@ -411,6 +458,24 @@ describe("跨文件一致性拒绝", () => {
       }),
     );
     expectProblem(pack, "用例标识重复");
+  });
+
+  it("评分配置包要求规则身份与包内来源证据闭合", () => {
+    const wrongIdentity = mutatedPack((target) =>
+      editJson(target, "rules/scoring-configuration-package.json", (value) => {
+        value.members[0].rule.ruleVersion.entityId = "unrelated-rule";
+        return value;
+      }),
+    );
+    expectProblem(wrongIdentity, "ruleVersion.entityId 必须等于 ruleId");
+
+    const danglingEvidence = mutatedPack((target) =>
+      editJson(target, "rules/scoring-configuration-package.json", (value) => {
+        value.members[0].binding.evidenceReferences[0].locator.sourceSegmentId = "missing-segment";
+        return value;
+      }),
+    );
+    expectProblem(danglingEvidence, "来源证据未闭合");
   });
 
   it("重复资料段标识被拒绝", () => {

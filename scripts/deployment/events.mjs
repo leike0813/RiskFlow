@@ -104,6 +104,9 @@ export class OutboxDispatchRegistryV1 {
     if (typeof handler !== "function") {
       throw new TypeError(`consumer ${consumerName} requires a handler function`);
     }
+    if (this.#consumers.has(eventType)) {
+      throw new TypeError(`consumer for ${eventType} is already registered`);
+    }
     this.#consumers.set(eventType, { consumerName, handler });
     return this;
   }

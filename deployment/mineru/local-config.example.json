@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "1",
+  "deploymentRef": { "entityId": "mineru-local-p4-vulkan", "versionId": "4.0.12-llama0.1.3" },
+  "qualityPolicyRef": { "entityId": "mineru-local-source-checklist", "versionId": "2" },
+  "resourceAllocationRef": { "entityId": "mineru-p4-onnx-cpu-vlm-vulkan", "versionId": "1" },
+  "protocol": "self-hosted-v1",
+  "endpoint": "http://127.0.0.1:18000",
+  "credentialRef": null,
+  "allowedTransferOrigins": ["http://127.0.0.1:18000"],
+  "requestTimeoutMs": 30000,
+  "pollIntervalMs": 2000,
+  "maxPolls": 300,
+  "maxConcurrentRequests": 1,
+  "maxResponseBytes": 52428800,
+  "qualityPolicy": {
+    "minNonEmptyPageRatio": 1,
+    "minKeyFieldCoverage": 0,
+    "keyFields": []
+  }
+}

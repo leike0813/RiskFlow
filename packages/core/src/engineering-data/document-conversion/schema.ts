@@ -62,7 +62,7 @@ export const DocumentPageExtentV1Schema = z.strictObject({
   pageNumber: positiveInteger,
   width: finiteNumber.positive(),
   height: finiteNumber.positive(),
-  coordinateSystem: z.literal("pixel-top-left"),
+  coordinateSystem: z.enum(["pixel-top-left", "point-top-left"]),
 });
 export type DocumentPageExtentV1 = z.infer<typeof DocumentPageExtentV1Schema>;
 

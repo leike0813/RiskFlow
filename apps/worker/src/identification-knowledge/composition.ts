@@ -44,6 +44,7 @@ import {
   ContentArtifactRefV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
   type AuthorizationContextV1,
+  type CommandCausalRefV1,
   type EngineeringDataQueryV1,
   type EngineeringDataReadResultV1,
   type KnowledgeModelingPortV1,
@@ -64,7 +65,7 @@ import {
 
 /**
  * C06 认可的受信调用来源：请求作用域的 `human-session`，或携带 C06 已签发父上下文与同一
- * causal run 的 `system` 调用。组合根不接受自造的 `AuthorizationContextV1`。
+ * 真实运行或受限发布命令因果的 `system` 调用。组合根不接受自造的 `AuthorizationContextV1`。
  */
 export type IdentificationKnowledgeAuthorizationSourceV1 =
   | { readonly kind: "human-session"; readonly sessionToken: string }
@@ -77,6 +78,15 @@ export type IdentificationKnowledgeAuthorizationSourceV1 =
         readonly kind: "workflow-run";
         readonly reference: VersionReference;
       };
+      readonly causalCommandRef?: never;
+    }
+  | {
+      readonly kind: "system";
+      readonly systemActorId: string;
+      readonly reasonCode: string;
+      readonly parentContext: AuthorizationContextV1;
+      readonly causalRunRef?: never;
+      readonly causalCommandRef: CommandCausalRefV1;
     };
 
 export interface PostgresIdentificationKnowledgeCompositionOptionsV1 {
@@ -85,6 +95,8 @@ export interface PostgresIdentificationKnowledgeCompositionOptionsV1 {
   readonly access: LocalIdentityAccessV1;
   readonly artifactStore: ArtifactStoreV1;
   readonly artifactReferenceGuard: ArtifactReferenceGuardV1;
+  readonly assessmentConfigurationPolicy?: PostgresKnowledgeGovernanceAdapterOptionsV1["assessmentConfigurationPolicy"];
+  readonly scoringRulesPolicy?: PostgresKnowledgeGovernanceAdapterOptionsV1["scoringRulesPolicy"];
   /** C15 公开精确准备窄读：生产组合必须复用该入口，不读上游私有表。 */
   readonly preparationRead: Pick<PostgresDataCleaningStore, "readExactPreparation">;
   /** C02 公共读取端口。 */
@@ -139,6 +151,8 @@ export interface PostgresIdentificationKnowledgeCompositionOptionsV1 {
 export interface PostgresIdentificationKnowledgeCompositionV1 {
   /** 生产组合只暴露 C17 façade，不暴露裸 C16 adapter。 */
   readonly adapter: PostgresIdentificationKnowledgeAdapter;
+  /** D-20：供 C18/C19 使用的 C16 精确发布解析窄口。 */
+  readonly governedReleases: Pick<PostgresKnowledgeGovernanceAdapter, "resolveGovernedReleases">;
   readonly agentTaskAdapter: PostgresAgentTaskAdapter;
   readonly registry: AgentTaskDefinitionRegistry;
   /** 共享 runner 的 C17 模型步回调：其它任务类型必须由调用方注入 `inner`。 */
@@ -225,7 +239,9 @@ export const createPostgresIdentificationKnowledgeComposition = (
               reasonCode: source.reasonCode,
             },
             parentContext: source.parentContext,
-            causalRunRef: source.causalRunRef,
+            ...(source.causalRunRef === undefined
+              ? { causalCommandRef: source.causalCommandRef }
+              : { causalRunRef: source.causalRunRef }),
           };
     const capability = MODULE_BRANCH_CAPABILITY_V1[request.branch];
     const decision = await options.access.authorize(authorizationRequest);
@@ -267,7 +283,13 @@ export const createPostgresIdentificationKnowledgeComposition = (
     transactionUnit: options.transactionUnit,
     access: options.access,
     reviewAudit: options.reviewAudit,
+    ...(options.assessmentConfigurationPolicy === undefined
+      ? {}
+      : { assessmentConfigurationPolicy: options.assessmentConfigurationPolicy }),
     identificationKnowledgePolicy: releasePolicy,
+    ...(options.scoringRulesPolicy === undefined
+      ? {}
+      : { scoringRulesPolicy: options.scoringRulesPolicy }),
     // D-11：C16→C07 的评审请求与批准证明各自使用组合根按 C16 派生的精确调用身份签发的独立上下文。
     reviewAuthorizationProvider: {
       authorize: (input) =>
@@ -282,6 +304,9 @@ export const createPostgresIdentificationKnowledgeComposition = (
     now,
   });
   holders.governance = governance;
+  const governedReleases = {
+    resolveGovernedReleases: governance.resolveGovernedReleases.bind(governance),
+  };
 
   const narrowRead: IdentificationPreparationNarrowReadV1 = {
     preparationRead: options.preparationRead,
@@ -375,6 +400,7 @@ export const createPostgresIdentificationKnowledgeComposition = (
 
   return {
     adapter,
+    governedReleases,
     agentTaskAdapter,
     registry,
     modelStep,

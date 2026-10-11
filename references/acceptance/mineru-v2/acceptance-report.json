@@ -1,0 +1,183 @@
+{
+  "schemaVersion": "1",
+  "createdOn": "2026-10-11",
+  "label": "合成样本，待甲方复核",
+  "scope": "isolated-parser-and-jsonld-acceptance",
+  "checklistPath": "references/acceptance/mineru-v2/manifest.json",
+  "thresholds": {
+    "minNonEmptyPageRatio": 1,
+    "minKeyFieldCoverage": 1
+  },
+  "samples": [
+    {
+      "status": "completed",
+      "sampleId": "DEV-text-pdf",
+      "sourceChecklistVersion": "2",
+      "scope": "isolated-parser-and-jsonld-acceptance",
+      "evidenceDirectory": "/tmp/riskflow-mineru-smoke-HmvQKU",
+      "inputBytes": 3423,
+      "inputSha256": "e5a8021754f5bc1e036954725401d41c13f96df54af6847851ada27fa1a59974",
+      "deploymentRef": {
+        "entityId": "mineru-official-functional",
+        "versionId": "2026-10-11"
+      },
+      "qualityPolicyRef": {
+        "entityId": "mineru-source-checklist-DEV-text-pdf",
+        "versionId": "2"
+      },
+      "checks": {
+        "keyFields": 12,
+        "records": 6,
+        "pages": 1
+      },
+      "pages": 1,
+      "blocks": 8,
+      "segments": 8,
+      "compliance": true
+    },
+    {
+      "status": "completed",
+      "sampleId": "DEV-scan-pdf",
+      "sourceChecklistVersion": "2",
+      "scope": "isolated-parser-and-jsonld-acceptance",
+      "evidenceDirectory": "/tmp/riskflow-mineru-smoke-4QuFtx",
+      "inputBytes": 85528,
+      "inputSha256": "8bd3088123fffcb3bf3eb1713af46f1cf739ba409db4d646e07bf3086173130f",
+      "deploymentRef": {
+        "entityId": "mineru-official-functional",
+        "versionId": "2026-10-11"
+      },
+      "qualityPolicyRef": {
+        "entityId": "mineru-source-checklist-DEV-scan-pdf",
+        "versionId": "2"
+      },
+      "checks": {
+        "keyFields": 31,
+        "records": 12,
+        "pages": 1
+      },
+      "pages": 1,
+      "blocks": 15,
+      "segments": 15,
+      "compliance": true
+    },
+    {
+      "status": "completed",
+      "sampleId": "DEV-png",
+      "sourceChecklistVersion": "2",
+      "scope": "isolated-parser-and-jsonld-acceptance",
+      "evidenceDirectory": "/tmp/riskflow-mineru-smoke-bgI6NW",
+      "inputBytes": 78360,
+      "inputSha256": "88eeb9a2d5407d0680138fda910170fa1a7a37ce1d6b0258ddfdd162f906493d",
+      "deploymentRef": {
+        "entityId": "mineru-official-functional",
+        "versionId": "2026-10-11"
+      },
+      "qualityPolicyRef": {
+        "entityId": "mineru-source-checklist-DEV-png",
+        "versionId": "2"
+      },
+      "checks": {
+        "keyFields": 3,
+        "records": 2,
+        "pages": 1
+      },
+      "pages": 1,
+      "blocks": 4,
+      "segments": 4,
+      "compliance": true
+    },
+    {
+      "status": "completed",
+      "sampleId": "DEV-jpeg",
+      "sourceChecklistVersion": "2",
+      "scope": "isolated-parser-and-jsonld-acceptance",
+      "evidenceDirectory": "/tmp/riskflow-mineru-smoke-L4qHQS",
+      "inputBytes": 43022,
+      "inputSha256": "5e87b4c14fce648fadd9cc901259be87a8d958b8565c689cee2c8220bdfa61b5",
+      "deploymentRef": {
+        "entityId": "mineru-official-functional",
+        "versionId": "2026-10-11"
+      },
+      "qualityPolicyRef": {
+        "entityId": "mineru-source-checklist-DEV-jpeg",
+        "versionId": "2"
+      },
+      "checks": {
+        "keyFields": 3,
+        "records": 3,
+        "pages": 1
+      },
+      "pages": 1,
+      "blocks": 5,
+      "segments": 5,
+      "compliance": true
+    },
+    {
+      "status": "completed",
+      "sampleId": "DEV-docx",
+      "sourceChecklistVersion": "2",
+      "scope": "isolated-parser-and-jsonld-acceptance",
+      "evidenceDirectory": "/tmp/riskflow-mineru-smoke-UVS8ng",
+      "inputBytes": 37446,
+      "inputSha256": "ec29fa45f0a74ca562bd46cff88ab2451d5c6ec13990b136b18e854e27df75eb",
+      "deploymentRef": {
+        "entityId": "mineru-official-functional",
+        "versionId": "2026-10-11"
+      },
+      "qualityPolicyRef": {
+        "entityId": "mineru-source-checklist-DEV-docx",
+        "versionId": "2"
+      },
+      "checks": {
+        "keyFields": 8,
+        "records": 2,
+        "pages": null
+      },
+      "pages": null,
+      "blocks": 24,
+      "segments": 3,
+      "compliance": true
+    },
+    {
+      "status": "completed",
+      "sampleId": "TRIAL-scan-pdf",
+      "sourceChecklistVersion": "2",
+      "scope": "isolated-parser-and-jsonld-acceptance",
+      "evidenceDirectory": "/tmp/riskflow-mineru-smoke-Lp9925",
+      "inputBytes": 421559,
+      "inputSha256": "dcf35090e170428fb5b42a91043852b8cfa87e6ccaaf082751362c651acfedc2",
+      "deploymentRef": {
+        "entityId": "mineru-official-functional",
+        "versionId": "2026-10-11"
+      },
+      "qualityPolicyRef": {
+        "entityId": "mineru-source-checklist-TRIAL-scan-pdf",
+        "versionId": "2"
+      },
+      "checks": {
+        "keyFields": 127,
+        "records": 60,
+        "pages": 5
+      },
+      "pages": 5,
+      "blocks": 72,
+      "segments": 72,
+      "compliance": true
+    }
+  ],
+  "oldSampleReplay": {
+    "inputPath": "references/acceptance/synthetic-v1/documents/SYN-DEV/geology-report-scan.pdf",
+    "responseEvidenceDirectory": "/tmp/riskflow-mineru-smoke-VNnk0C",
+    "status": "rejected",
+    "code": "MINERU_QUALITY_REJECTED",
+    "nonEmptyPages": 12,
+    "totalPages": 13,
+    "missingKeyFields": [
+      "SYN-DEV-SEG-002-GEO"
+    ]
+  },
+  "productionRegistrationVerified": false,
+  "browserAcceptanceVerified": false,
+  "localHardwareVerified": false
+}

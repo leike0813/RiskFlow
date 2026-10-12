@@ -467,4 +467,109 @@ describe("MinerU transport protocols", () => {
     expect(harness.puts).toHaveLength(putsAfterFirst);
     expect(harness.registered).toHaveLength(1);
   });
+
+  // V-01：parser 返回后的收尾必须继续受调用取消与截止时间约束，且不得登记 C11 段集合。
+  const interruptions = [
+    ["cancel", "MINERU_ABORTED", false],
+    ["deadline", "MINERU_TIMEOUT", true],
+  ] as const;
+  const durableArtifactJson = (
+    harness: ReturnType<typeof makeServiceHarness>,
+    artifactId: string,
+  ): Record<string, unknown> | undefined => {
+    const stored = [...harness.artifacts.values()].find(
+      (entry) => entry.manifest.artifactRef.reference.entityId === artifactId,
+    );
+    return stored === undefined
+      ? undefined
+      : (JSON.parse(new TextDecoder().decode(stored.bytes)) as Record<string, unknown>);
+  };
+
+  it.each(
+    (
+      [
+        [
+          "normalization-diagnostic",
+          "document-service-normalization-diagnostic-conversion_1",
+          false,
+        ],
+        ["json-ld", "conversion-conversion_1", true],
+      ] as const
+    ).flatMap(([boundary, artifactId, jsonLdDurable]) =>
+      interruptions.map(([mode, code, retryable]) => [
+        mode,
+        boundary,
+        artifactId,
+        jsonLdDurable,
+        code,
+        retryable,
+      ]),
+    ),
+  )(
+    "refuses C11 segment registration when %s interrupts finalization after the %s artifact",
+    async (mode, _boundary, triggerArtifactId, jsonLdDurable, code, retryable) => {
+      const controller = new AbortController();
+      const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+        const url = String(input);
+        if (url.includes("/v1/tasks?"))
+          return jsonResponse({ task_id: "finalization", status: "queued" }, 202);
+        if (url.endsWith("/v1/tasks/finalization"))
+          return jsonResponse({ task_id: "finalization", status: "completed" });
+        return jsonResponse({
+          task_id: "finalization",
+          status: "completed",
+          files: [{ status: "completed", content: { middle_json: middle } }],
+        });
+      });
+      const harness = makeServiceHarness({ fetch });
+      const put = harness.artifactStore.put.bind(harness.artifactStore);
+      harness.artifactStore.put = async (putCommand, stream) => {
+        const result = await put(putCommand, stream);
+        if (putCommand.artifactId === triggerArtifactId) {
+          if (mode === "cancel") controller.abort();
+          else vi.spyOn(Date, "now").mockReturnValue(Date.parse(harness.command.deadlineAt) + 1);
+        }
+        return result;
+      };
+      try {
+        const result = await harness.adapter.convert(harness.command, {
+          signal: controller.signal,
+        });
+
+        expect(result.kind).toBe("failed");
+        expect(harness.registered).toHaveLength(0);
+        // 已经耐久的工件保留，未到达的收尾步骤不得补写。
+        expect(harness.puts.some((putCommand) => putCommand.artifactId === triggerArtifactId)).toBe(
+          true,
+        );
+        expect(
+          harness.puts.some((putCommand) => putCommand.artifactId === "conversion-conversion_1"),
+        ).toBe(jsonLdDurable);
+        expect(durableArtifactJson(harness, "conversion-diagnostic-conversion_1")).toMatchObject({
+          reasonCode: code,
+          retryable,
+        });
+        const diagnosticPut = harness.puts.find(
+          (putCommand) => putCommand.artifactId === "conversion-diagnostic-conversion_1",
+        );
+        expect(
+          diagnosticPut?.parentArtifactRefs.some((parent) =>
+            parent.reference.entityId.startsWith("document-service-raw-response-conversion_1"),
+          ),
+        ).toBe(true);
+
+        const callsAfterFailure = fetch.mock.calls.length;
+        const putsAfterFailure = harness.puts.length;
+        const replay = await harness.adapter.convert(harness.command, {
+          signal: controller.signal,
+        });
+        expect(replay.kind).toBe("failed");
+        expect(fetch).toHaveBeenCalledTimes(callsAfterFailure);
+        expect(harness.puts).toHaveLength(putsAfterFailure);
+        expect(harness.registered).toHaveLength(0);
+      } finally {
+        vi.restoreAllMocks();
+      }
+    },
+  );
 });

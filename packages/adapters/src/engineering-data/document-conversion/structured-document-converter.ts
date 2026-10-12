@@ -69,6 +69,7 @@ import {
   type DocumentParserContextV1,
 } from "./schema.js";
 import { parseStructuredDocument } from "./parsers.js";
+import { MINERU_ERROR_CODES_V1 } from "./mineru/schema.js";
 
 type JsonColumn = JsonValue;
 type Timestamp = Date | string;
@@ -599,6 +600,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
       startedAt,
       bytes.byteLength,
       parsedDocument,
+      control,
     );
   }
 
@@ -662,9 +664,27 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
     startedAt: string,
     inputBytes: number,
     parsed: DocumentServiceParserOutcomeV1,
+    control: StructuredDocumentConversionControlV1,
   ): Promise<StructuredDocumentConversionResultV1> {
+    const assertControl = (): void => {
+      if (!usesDocumentService(command.input.kind)) return;
+      const failure = control.signal?.aborted
+        ? MINERU_ERROR_CODES_V1.aborted
+        : Date.now() >= Date.parse(command.deadlineAt)
+          ? MINERU_ERROR_CODES_V1.timeout
+          : undefined;
+      if (failure !== undefined) {
+        throw new DocumentServiceParserError({
+          ...failure,
+          parents: parsed.additionalParentArtifactRefs,
+          evidence: parsed.additionalEvidenceReferences,
+          diagnostic: parsed.diagnostic,
+        });
+      }
+    };
     let converted: NormalizedDocumentResultV1;
     try {
+      assertControl();
       const strategy: DocumentConversionStrategyV1 = {
         strategyVersion: [
           command.conversionPolicyRef,
@@ -730,6 +750,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
     ]);
     let jsonLdArtifact: ArtifactPutResultV1;
     try {
+      assertControl();
       const bytesOut = new TextEncoder().encode(JSON.stringify(converted.jsonLd));
       const putCommand = artifactCommand(
         command,
@@ -766,6 +787,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
     };
     let segmentResult: ContextSourceResultV1;
     try {
+      assertControl();
       segmentResult = await this.#contextSource.registerSegments(segmentCommand);
     } catch (error) {
       return this.#finishFailure(

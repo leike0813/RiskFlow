@@ -22,7 +22,7 @@
 
 - [x] 4.1（IP-07）删除无调用Paddle实现/导出/协议测试，保留有用扫描样本与权限证据测试；验证：`rg -n 'Paddle|createPaddle|PaddleOcr' packages/adapters/src scripts/deployment`应无生产调用，目标vitest通过。
 - [x] 4.2（IP-01–IP-09）转换器目标与受影响部署回归、合成包检查、build/typecheck/lint、受影响文件格式和本change strict；验证：转换器/基准71项、部署258项、模型及接线47项通过，合成包、build/typecheck（8GiB堆）、全仓lint、受影响文件prettier、依赖边界/策略、diff检查及本change strict均通过。默认真实smoke跳过不计外部验收；外部通过来自5.2/5.3的显式实测。全仓其它change的格式/规格漂移分开报告，不冒充全仓verify通过。
-- [ ] 4.3（IP-07）固定最终implementation checkpoint后完成转换器范围的独立verify/必要限定审计与verification；验证：`openspec instructions verification --change adopt-mineru-document-ingestion --json`并核对真实checkpoint。当前不提交、不提前创建verification；C37完整业务和C38目标双卡交付不是本change产品验收条件。
+- [ ] 4.3（IP-07）固定最终implementation checkpoint后完成转换器范围的独立verify/必要限定审计与verification；验证：检查点 `1d29de9c6c6a8302f790cab252147d602b812809` 的首次限定审计发现 V-01，2026-10-12 已按批准方案在工作区修复（IP-01/IP-03/IP-07），收尾取消/deadline 阻止 C11 登记的四项回归通过。verification 已补充修复证据，当前 BLOCKED 仅因尚未形成修复后的固定 Git 检查点；该条件闭合前保持未勾选。C37完整业务和C38目标双卡交付不是本change产品验收条件。
 
 ## 5. 本机可复用服务与补充基准
 

@@ -5,24 +5,24 @@
 - Change：`adopt-mineru-document-ingestion`（`orchestrated-delivery`）。
 - 规划 base：`0a25b6a469ade4bcc6a21c4514195d1f7c19ff31`。
 - 输入实现 HEAD：`1d29de9c6c6a8302f790cab252147d602b812809`。
-- 当前 HEAD：`1d29de9c6c6a8302f790cab252147d602b812809`；V-01 修复位于其后的未提交工作区，最终验收 HEAD 尚未固定。
+- 最终验收实现 HEAD：`c457940bf025bb54bf9604b8464c427c342d9beb`；本报告与 tasks 的收口提交仅更新文档，源码和测试与该实现检查点一致。
 - 验收 Agent：Codex 当前会话；限定审计由独立 Agent Boyle（`gpt-6-luna`，任务 `01a12b0e-b0b8-70d3-b95f-f906ade621cb`）执行，主验收 Agent 核对发现并完成复现。
-- 日期：首次验收 2026-10-11；工作区修复与复验 2026-10-12。首次验收起点工作区干净；修复前保留已有 tasks 和本报告的未提交内容。
+- 日期：首次验收 2026-10-11；修复、提交与检查点复验 2026-10-12。首次验收起点工作区干净；修复前保留已有 tasks 和本报告的未提交内容，固定修复检查点后工作区干净。
 
 读取了 OpenSpec CLI 返回的全部 contextFiles、相关主规格、最终转换实现、受影响装配与测试，以及官网和本机实测报告。该提交同时包含 C37 增量，本结论只覆盖本 change 的 D-01–D-12、IP-01–IP-11 及受影响回归。
 
 ## 结论
 
-**BLOCKED**
+**PASS**
 
-MinerU 五格式真实转换功能、源字段与定位、共享 JSON-LD、质量阻断、本机固定服务和 CPU/P4 Vulkan 基准均有先前通过证据。首次限定审计发现 V-01：parser 成功返回后，取消或超时仍可登记资料段并返回成功，导致原检查点验收失败。2026-10-12 已在工作区修复并通过受影响回归；当前阻塞仅为尚未形成修复后的固定 Git 检查点，task 4.3 仍未闭合，不能将旧 HEAD 的结论替换为最终 PASS。
+MinerU 五格式真实转换功能、源字段与定位、共享 JSON-LD、质量阻断、本机固定服务和 CPU/P4 Vulkan 基准均有先前通过证据。首次限定审计发现 V-01：parser 成功返回后，取消或超时仍可登记资料段并返回成功，导致原检查点验收失败。2026-10-12 已修复、通过受影响回归并固定实现检查点 `c457940bf025bb54bf9604b8464c427c342d9beb`；新检查点上 22 项协议测试全部通过，已核对提交范围、源码/测试及既有证据，task 4.3 闭合。报告和任务状态随后以仅文档提交保存，不改变已验证实现。
 
-V-01 对应 `platform/mineru-service-integration / 远端任务在原预算内耐久收口 / 取消与预算耗尽` 和 `data/scanned-document-ocr / OCR 与 llama.cpp 的运行资源相互隔离 / 单个 OCR 取消保持故障域`。收尾回归现已覆盖 parser 返回后的取消与 deadline，修复及命令结果见下方工作区复验记录；首次审计与失败复现保留为证据。
+V-01 对应 `platform/mineru-service-integration / 远端任务在原预算内耐久收口 / 取消与预算耗尽` 和 `data/scanned-document-ocr / OCR 与 llama.cpp 的运行资源相互隔离 / 单个 OCR 取消保持故障域`。收尾回归现已覆盖 parser 返回后的取消与 deadline，修复及命令结果见下方复验记录；首次审计与失败复现保留为证据。
 
 | 维度 | 核验结果 |
 | --- | --- |
-| 完整性 | 15 个 Requirement、41 个 Scenario 和 IP-01–IP-11 已在首次验收核对；tasks 保持 15/16，4.3 待新固定检查点 |
-| 正确性 | 先前真实内容/定位/JSON-LD 证据保留；V-01 四项工作区回归与受影响测试通过 |
+| 完整性 | 15 个 Requirement、41 个 Scenario 和 IP-01–IP-11 已核对；tasks 16/16，4.3 在新实现检查点闭合 |
+| 正确性 | 先前真实内容/定位/JSON-LD 证据保留；V-01 四项回归、受影响测试及新实现检查点协议测试通过 |
 | 一致性 | D-04 收尾取消/截止时间约束已补齐，公共 Schema、权限、原事务和分层验收边界保持一致 |
 
 本 change 的产品验收边界为 MinerU 转换器功能及受影响回归，本机 CPU/GPU 为补充硬件基准。C37 完整业务与可见浏览器流程、C38 4090/Qwen 共驻、离线介质与商业许可交付均按已批准设计留给对应 change，不构成本次失败原因。
@@ -42,7 +42,7 @@ V-01 对应 `platform/mineru-service-integration / 远端任务在原预算内�
 - E1：[官网真实转换报告](../../../references/acceptance/mineru-v2/acceptance-report.json)、[源真值清单](../../../references/acceptance/mineru-v2/manifest.json)、[验收记录](../../../deployment/ACCEPTANCE.md)。
 - E2：[本机基准报告](../../../references/acceptance/mineru-v2/local-benchmark-report.md)及[完整 JSON 计量](../../../references/acceptance/mineru-v2/local-benchmark-report.json)；受限原始目录 `/home/joshua/.local/share/riskflow-mineru/evidence`。
 
-以下按 delta spec 全部 Requirement 列出其全部 Scenario；未受修复影响的行沿用首次验收证据，V-01 相关行补充工作区复验。最终判定仍受新固定检查点缺口约束。
+以下按 delta spec 全部 Requirement 列出其全部 Scenario；未受修复影响的行沿用首次验收证据，V-01 相关行补充修复与新检查点复验。
 
 | Requirement / Scenario / IP-ID | 证据或命令 | 结果 |
 | --- | --- | --- |
@@ -130,7 +130,14 @@ IP-07 的 `protocol.test.ts` 复用生产 parser 与现有 `makeServiceHarness`�
 | `pnpm exec prettier --check`（转换器、协议回归、tasks、本报告） | 通过 |
 | `openspec validate adopt-mineru-document-ingestion --strict --no-interactive`；`git diff --check` | 通过 |
 
-本轮修改仅含转换器、协议回归、tasks 和本报告，没有新增依赖或公共字段，未修改历史输入、部署服务、主规格或 Git 历史。本修复未提交，task 4.3 在新固定检查点形成并核对前保持未完成。
+本轮修改仅含转换器、协议回归、tasks 和本报告，没有新增依赖或公共字段，未修改历史输入、部署服务或主规格。修复已按用户授权提交，新检查点核对如下。
+
+### 固定实现检查点核对（2026-10-12）
+
+- 用户授权提交后形成 `c457940bf025bb54bf9604b8464c427c342d9beb`（`fix: 修复 MinerU 转换收尾取消与超时约束`），仅包含上述四个路径；核对时工作区干净，无其它暂存改动。
+- 提交中的转换器和协议测试与受影响回归、构建、类型、lint 及依赖检查通过的产物一致。该检查点重跑 `pnpm exec vitest run packages/adapters/test/engineering-data/document-conversion/mineru/protocol.test.ts`：22 项全部通过。
+- 收口提交只更新 tasks 和本报告（含修正末尾多余空行），核对 `git diff c457940bf025bb54bf9604b8464c427c342d9beb HEAD -- apps packages scripts config deployment references openspec/specs` 无差异，保证最终提交的实现与已验检查点一致。
+- 完成 task 4.3 与 PASS 落稿后复验本 change strict、两份文档 Prettier、暂存内容和变更空白检查，并确认 OpenSpec apply 返回 16/16、remaining=0。未重复限定审计或昂贵真实服务/GPU基准；本次未同步主规格、归档或推送。
 
 ## 限定审计
 
@@ -193,7 +200,7 @@ it.each(["cancel", "deadline"])("refuses segment registration after %s during fi
 
 ## 后续注意事项
 
-以下均为已批准边界或后续交付事项；新固定检查点缺口仍属于当前收口条件，不归入此处。
+以下均为已批准边界或后续交付事项。
 
 - 样例为“合成样本，待甲方复核”。云端/本地在源字段与定位上通过，但资料段划分有少量差异，未证明下游识别/评估输出完全一致。
 - 本机结论只适用于双 Xeon、125 GiB 可见内存、P4 8 GiB、该量化专用 VLM 与 Vulkan组合。耗时含预检、上传、轮询、耐久/规范化与合规检查；DOCX Flash不计VLM收益。三次重复只支持中位数，不报告p95，不外推4090/Qwen共驻。
@@ -201,5 +208,4 @@ it.each(["cancel", "deadline"])("refuses segment registration after %s during fi
 - 原始实测证据在本机受限目录，官网部分仍在报告指向的 /tmp 目录；交接时应连同源清单保存，不能只移交汇总JSON。
 - C37继续验收生产资料登记、下游重建及可见浏览器完整流程；C38核验目标双GPU并发、离线制品和全部依赖/模型商业许可。当前许可证metadata不能作为商业许可承诺。
 - 未运行或宣称全仓 `pnpm verify` 通过。先前其它change格式漂移及11项主规格超长Requirement警告与本change strict结果分开记录。
-- 本轮未提交、同步主规格或归档；V-01 已通过工作区复验，新固定检查点闭合前仍不应以本工件归档该 change。
-
+- V-01 修复与验收收口已提交；本轮未同步主规格、归档或推送。PASS 覆盖本 change 转换器功能与受影响回归，不代表 C37/C38 全部交付完成。

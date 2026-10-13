@@ -5,6 +5,7 @@ import { makeArtifactError, type ArtifactStoreV1 } from "@riskflow/core/artifact
 import { EFFECT_FORECAST_MODEL_ALGORITHM_VERSION_V1 } from "@riskflow/core/response-lifecycle";
 import {
   createEffectForecastModelReaderV1,
+  createProductionEffectForecastExecutorResolverV1,
   createProductionEffectForecastExecutorsV1,
 } from "../../src/response-lifecycle/index.js";
 
@@ -445,5 +446,43 @@ describe("C28 生产预测执行器工厂", () => {
       forecast.before.valueSets,
     );
     expect(await countAssessmentRows(state, "warning_records")).toBe(forecast.before.warnings);
+  });
+});
+
+/**
+ * 运行时窄口：宿主启动期没有预测策略集合，每次按 C28 本次已核验策略现装执行器。
+ * 端口在这里是桩——解析本身不读取模型，也不调用 C25 投影。
+ */
+describe("C28 运行时预测执行器窄口", () => {
+  const policy: ForecastPolicyV1 = {
+    policyId: "c28-resolver-policy",
+    method: "historical-statistics",
+    inputIndicatorIds: ["indicator-possibility-1"],
+    targetIndicatorId: C28_TARGET_INDICATOR,
+    horizonSteps: 5,
+    unit: C28_TARGET_UNIT,
+    requiredRef: C28_FORECAST_REQUIRED_REF,
+  };
+  const resolver = () =>
+    createProductionEffectForecastExecutorResolverV1({
+      models: { readModelArtifact: async () => ({ kind: "unavailable" }) },
+      assessment: {} as never,
+      authorizeDownstream: async () => ({}) as never,
+    });
+
+  it("按本次策略返回同身份执行器，不缓存上一次解析结果", () => {
+    const source = resolver();
+    const resolved = source.resolve(policy);
+    expect(resolved?.method).toBe(policy.method);
+    expect(resolved?.requiredRef).toEqual(policy.requiredRef);
+    // 同 method/requiredRef 的另一条策略必须现装，不能复用上一次的执行器。
+    const next = source.resolve({ ...policy, policyId: "c28-resolver-policy-2", horizonSteps: 7 });
+    expect(next).not.toBe(resolved);
+    expect(next?.method).toBe(policy.method);
+    expect(next?.requiredRef).toEqual(policy.requiredRef);
+  });
+
+  it("策略不满足正式 Schema 时不返回执行器", () => {
+    expect(resolver().resolve({ ...policy, horizonSteps: 0 })).toBeUndefined();
   });
 });

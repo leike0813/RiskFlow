@@ -1,5 +1,7 @@
 import { sql, type Kysely, type Transaction } from "kysely";
 
+import type { AuthorizationContextRefV1, WorkflowRunRefV1 } from "@riskflow/contracts/ports";
+
 import {
   AtomicCommitV1Schema,
   AtomicCommandV1Schema,
@@ -106,6 +108,68 @@ export class PostgresTransactionUnit implements TransactionUnitV1 {
 
   constructor(db: Kysely<PostgresDatabase>) {
     this.#db = db;
+  }
+
+  async readWorkflowRunBinding(input: {
+    readonly projectId: string;
+    readonly runRef: WorkflowRunRefV1;
+    readonly threadId?: string;
+    readonly parentRunRef?: WorkflowRunRefV1;
+    readonly actorId?: string;
+    readonly authorizationContextRef?: AuthorizationContextRefV1;
+  }): Promise<boolean> {
+    if (input.threadId === undefined && input.parentRunRef === undefined) return false;
+    let query = this.#db
+      .selectFrom("business.command_receipts")
+      .innerJoin(
+        "audit.entries",
+        "audit.entries.audit_entry_id",
+        "business.command_receipts.audit_entry_id",
+      )
+      .select("business.command_receipts.command_id")
+      .where("business.command_receipts.project_id", "=", input.projectId)
+      .where("audit.entries.project_id", "=", input.projectId)
+      .whereRef("audit.entries.action", "=", "business.command_receipts.command_kind")
+      .whereRef("audit.entries.run_id", "=", "business.command_receipts.run_id")
+      .whereRef("audit.entries.thread_id", "=", "business.command_receipts.thread_id")
+      .whereRef("audit.entries.actor_ref", "=", "business.command_receipts.actor_ref")
+      .whereRef(
+        "audit.entries.authorization_context_ref",
+        "=",
+        "business.command_receipts.authorization_context_ref",
+      )
+      .where("business.command_receipts.command_kind", "in", [
+        "workflow.start-run",
+        "identification-graph.start",
+        "assessment-graph.start",
+      ])
+      .where("business.command_receipts.run_id", "=", input.runRef.reference.entityId)
+      .where("business.command_receipts.result_ref", "=", jsonValue(input.runRef))
+      .where("audit.entries.target_ref", "=", jsonValue(input.runRef))
+      .where("business.command_receipts.completed_at", "is not", null);
+    if (input.threadId !== undefined) {
+      query = query.where("business.command_receipts.thread_id", "=", input.threadId);
+    }
+    if (input.actorId !== undefined) {
+      query = query.where("business.command_receipts.actor_ref", "=", input.actorId);
+    }
+    if (input.authorizationContextRef !== undefined) {
+      query = query.where(
+        "business.command_receipts.authorization_context_ref",
+        "=",
+        jsonValue(input.authorizationContextRef),
+      );
+    }
+    if (input.parentRunRef !== undefined) {
+      query = query
+        .where("business.command_receipts.command_kind", "in", [
+          "identification-graph.start",
+          "assessment-graph.start",
+        ])
+        .where("audit.entries.reason_ref", "=", jsonValue(input.parentRunRef));
+    }
+    const row = await query.limit(1).executeTakeFirst();
+    return row !== undefined;
   }
 
   async execute(

@@ -30,6 +30,40 @@ Embedding 使用 `http://192.168.13.11:11434` 的 `qwen3-embedding:4b`，原生 
 | 正式业务终态 | `node scripts/acceptance/functional.mjs --pack references/acceptance/synthetic-v1 --config <functional-config.json> --output <新证据目录> [--resume]` | 同次运行的正式只读终态和必需引用；等待人审、超时或缺引用不能 PASS |
 | 可见浏览器 | 当前桌面 Chrome，连接上述生产 HTTPS | 登录、业务页面、正式人工确认、权限、重试与跨页追溯的实际行为 |
 
+2026-10-12 的定向工程回归通过 4 个测试文件、95 项测试：
+
+```sh
+pnpm exec vitest run scripts/deployment/lifecycle.test.mjs scripts/acceptance/functional.test.mjs scripts/acceptance/synthetic.test.mjs packages/adapters/test/deployment/observability.test.ts
+```
+
+本次验证覆盖五类 Agent 的合法完成产出及同次任务身份、投影报告事实的运行归属，以及探针、API 关闭和在途 Worker claim 的截止行为。忽略取消信号的探针不能阻塞观察；API 关闭或 claim 未完成时返回未收口，不能作为停写证明。停止后晚到的租约不再 dispatch，按原租约恢复语义处理。修改过的脚本通过 ESLint、Prettier 检查。
+
+质量门禁的 retrievalQuality 配置已在当前 design/spec/施工图闭合并实现：API/Worker 连接前加载精确数据集，拒绝错工程/版本、路径越界、符号链接及正式实例的合成数据；实际容器身份和总截止来自受控配置。报告在 logRoot/retrieval-quality 经文件及目录同步保存，不能以保存失败的报告通过。部署配置、入口、组合、预置和发布回归 5 个文件、103 项测试通过；新增报告目录符号链接用例后的入口回归为 43 项通过。
+
+C28 已补齐按运行时已验证策略创建预测执行器的窄口，既有数组调用方保留。入口、assessment 组合与两份预测 adapter 测试的定向回归 4 个文件、106 项通过；执行器身份不符与核验前禁止解析另经真实 PostgreSQL 与工厂路径 42 项测试通过。
+
+SSE 运行事件读取已按 D-21 接线：迁移 000057 只登记引用关联并以同事务触发器与工程顺序锁写入，reader 固定 64 条批量、按精确工程/run/version 游标推进，由当前 human-session 为每条事件重新签发授权并复验主体。相关回归覆盖 workflow 侧 4 个文件、62 项，HTTP/API 侧 3 个文件、51 项，基础/配置/入口/预置/API 组合 5 个文件、98 项，以及真实 C06 auth 24 项（同事务登记、并发序号、历史回填与 redacted 拒绝）。这些仍是工程回归。
+
+评分治理工厂已提供措施发布读取器，逐精确引用派生下游授权并复用 C19 正文读取。入口与 assessment 组合的 68 项定向测试、API/Worker TypeScript 构建、相关 ESLint/Prettier 及 OpenSpec strict 校验通过。
+
+检查点上下文已贯通三图的调用与恢复入口，读取使用本次授权；评估 A0 已删除未登记 seed，由真实入口登记及受权窄读恢复快照。迁移 000058 允许既有 A0 登记保存入口引用，启动身份复用带精确 run/thread 的正式命令收据。这些改动已通过 PostgreSQL、契约和 Worker 定向工程回归。
+
+2026-10-13 部署配置任务 2.1 已闭合：配置/发布测试 33 项、入口测试 51 项通过，覆盖真实文件加载、职责秘密集合及非法配置/错误发布/缺失或权限过宽秘密的失败闭合。C27 候选精确父运行证明回归 14 项、C03 与两个子图回归 66 项通过；C06 只读下游授权回归 24 项通过，验证连续读取不增加上下文和审计。子运行启动审计保存精确父引用，不依赖子图收口后才登记的链边。以上均属工程证据。
+
+2026-10-13 策略任务 4.1 已闭合，当前任务为 34/44：`pnpm exec vitest run packages/adapters/test/deployment/policies-readers.test.ts scripts/deployment/entrypoints.test.mjs` 当次 81 项通过。十六类策略使用原 Schema、精确版本及不可变正文；目录与数据集共用受控根内文件读取，读取前与流式读取均限制大小，拒绝链接、越界和非法 UTF-8。示例目录改为 dataRoot/policies/catalog.json。
+
+检查点只读证明已补齐本地 C04 verifyContent、C15 准备、C24 识别登记和 C30 阶段/路线/错误/结果接缝。普通 C04 open 保留访问审计；证明共用权限、路径、长度及摘要核验而不写访问记录、诊断、回执或审计。`pnpm exec vitest run packages/adapters/test/artifacts/content-addressed-artifact-store.test.ts packages/adapters/test/identification/graph/postgres-identification-graph-adapter.test.ts` 42 项通过；C03/C24 的后续定向回归 36 项通过，加入全库审计/回执/访问/工件/事件计数不增断言。C15/C30 定向回归 56 项通过。生产 validator 已组合本次 C06 来源及当前权限、工程图版本、原启动主体/授权和精确父子收据，并复用识别入口身份派生；宿主入口回归 72 项通过，覆盖四种 checkpoint 操作、身份漂移、撤权、技术错误及未支持引用。尚未装配完整宿主或闭合所有领域引用，以上不作为生产就绪、业务终态或浏览器验收证据；远程 store 缺正文证明能力时拒绝。
+
+C27/C29 宿主模型步已读取所属模块的真实冻结输入，并接入评估组合返回的共享 runner callbacks；当前持久授权、来源版本、精确空间、原任务绑定和无工具边界保留。候选及增量交真实 C04 persistArtifact，确定性校验与最终收口进入原任务作用域。`pnpm exec vitest run scripts/deployment/calibration-task.test.mjs scripts/deployment/response-model-step.test.mjs scripts/deployment/assessment-composition.test.mjs` 58 项通过。C19 成员、C24 路线、C30 空间配对相关组合与真实风险输入 reader 回归 73 项通过。以上模型步测试使用合成端口，尚未证明共享 runner 在完整宿主中完成真实推理和业务终态。
+
+C24 检查点工作项已复用本运行冻结工作计划登记与 C04 verifyContent，缺计划、错版本、异运行、脱敏或范围收窄拒绝；真实 PostgreSQL/C04 套件 14 项通过，加入脱敏后同一纵向证明单项重跑通过。成功和损坏正文失败后审计、回执、访问、工件、Outbox 计数均不增加。宿主入口更新至 76 项通过，包含三图 Agent 任务引用与已登记子入口的父子证明；C08 真库套件 11 项通过，覆盖等待/终态任务、精确版本/父运行/主体、撤权/脱敏/范围收窄与零写、不读正文。`NODE_OPTIONS=--max-old-space-size=8192 pnpm exec tsc -b apps/api apps/worker --pretty false` 通过，默认 4 GiB 堆的同命令曾内存耗尽；格式、lint 及 OpenSpec strict 校验通过。
+
+C24/C30 完整等待登记证明已接到三图，按完整等待对象及工程/运行/主体/范围有界窄读，不枚举历史或新增事实；两份真实 PostgreSQL 套件 42 项通过。C07 复核任务证明共用任务状态解析，核对原主体和完整父运行，不读决定正文；真实复核套件 25 项通过。标准化风险记录复用纯 SELECT record-read，并额外复验未脱敏当前授权与精确识别运行；入口及真实识别读面回归合计 94 项通过（入口 86 项）。C22 候选/合并计划/组证明已组合原严格正文 Schema 与 C04 verifyContent，先证明冻结输入/计划；组合与入口回归 124 项通过（组合 38 项、入口 86 项），原 C22 核心与当时入口回归 143 项通过。最新 API/Worker TypeScript 构建、相关格式/lint、当前 change strict 校验及 diff 检查通过。
+
+上述结果仅是工程回归。生产 checkpointer 的全部所属模块引用验证、完整 host 及真实 Web/Desktop 业务验收仍未完成。当前没有新增真实生产业务、可见浏览器或 Desktop PASS 证据，不据此完成 5.2/16.1–16.3；tasks 仍为 34/44。
+
+API/Worker foundation 已按独立 checkpointer 角色构造原 saver，并将 end 纳入资源关闭；缺引用校验函数或独立密码在数据库连接前拒绝，provision 保持原职责。入口、预置和组合回归共 138 项通过（入口 89 项、预置 11 项、组合 38 项），相关格式/lint、当前 change strict 与 diff 检查通过。此处只证明装配与前置拒绝，完整宿主运行和真实 saver/领域证明闭包仍须后续取证。
+
 网络 smoke 的公开配置路径使用 `RISKFLOW_MODEL_GATEWAY_CONFIG`，受限秘密定位文件使用 `RISKFLOW_MODEL_GATEWAY_SECRETS`。报告保存部署、模型、配置、正式对象、审计及 C04 引用和命令，不记录密码、Cookie、密钥、正文或模型内部思考。模型 smoke 使用隔离测试存储时必须明确这一边界。
 
 可用 `RISKFLOW_NETWORK_API_SMOKE_REPORT=<新报告路径>` 将真实 smoke 报告写入新文件，已有文件不会覆盖。2026-10-11 的三能力检查已通过：结构化生成 303 token、Embedding 29 输入 token／2560 维、会话流 26 个增量／288 token。该次使用隔离 PostgreSQL/C04 测试存储，未验证生产授权；报告中的测试工件引用不作为生产业务追溯证据。

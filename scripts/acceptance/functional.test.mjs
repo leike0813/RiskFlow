@@ -88,9 +88,10 @@ describe("正式查询目标终态定位", () => {
         { kind: "detail" },
         {
           kind: "detail",
-          summary: { status: "completed" },
+          summary: { status: "completed", agentTaskRef: agentTaskRef("data-cleaning") },
           history: { status: "running" },
         },
+        { agentTaskRef: agentTaskRef("data-cleaning") },
       ),
     ).toBe("completed");
     expect(
@@ -224,10 +225,15 @@ describe("正式查询目标终态定位", () => {
       reference: { entityId: "artifact-1", versionId: "1" },
     };
     const formalResultRef = ref("response-recommendation", "recommendation-1");
-    const result = { kind: "detail", resultRef: { formalResultRef } };
-    expect(requiredReferencesOfV1(result, [["resultRef", "formalResultRef"]], detailQuery)).toEqual(
-      { "resultRef.formalResultRef": formalResultRef },
-    );
+    const result = {
+      kind: "detail",
+      resultRef: agentTaskCompletedResult("response-recommendation", { formalResultRef }),
+    };
+    expect(
+      requiredReferencesOfV1(result, [["resultRef", "formalResultRef"]], detailQuery, {
+        agentTaskRef: result.resultRef.agentTaskRef,
+      }),
+    ).toEqual({ "resultRef.formalResultRef": formalResultRef });
     expect(
       requiredReferencesOfV1(
         { kind: "detail", summary: { frozenInputRef } },
@@ -236,9 +242,203 @@ describe("正式查询目标终态定位", () => {
       ),
     ).toBeNull();
   });
+
+  it.each([
+    ["data-cleaning", "incrementRef", "content-artifact", "cleaning-1"],
+    ["knowledge-authoring", "incrementRef", "content-artifact", "authoring-1"],
+    ["knowledge-authoring", "candidateRef", "knowledge-revision", "revision-1"],
+    ["retrieval-review", "incrementRef", "retrieval-artifact-set", "retrieval-1"],
+    ["response-recommendation", "candidateRef", "recommendation-candidate", "candidate-1"],
+    ["response-recommendation", "formalResultRef", "response-recommendation", "recommendation-1"],
+    ["calibration-suggestion", "candidateRef", "calibration-suggestion", "suggestion-candidate-1"],
+    ["calibration-suggestion", "formalResultRef", "calibration-suggestion", "suggestion-1"],
+  ])("接受 %s 任务已完成的 %s 正式产出引用", (taskType, field, refKind, entityId) => {
+    const outputRef = ref(refKind, entityId);
+    const result = {
+      kind: "detail",
+      resultRef: agentTaskCompletedResult(taskType, { [field]: outputRef }),
+    };
+    expect(
+      requiredReferencesOfV1(result, [["resultRef", field]], detailQuery, {
+        agentTaskRef: result.resultRef.agentTaskRef,
+      }),
+    ).toEqual({ [`resultRef.${field}`]: outputRef });
+  });
+
+  it("Agent 任务引用类型错配、主产出并存或只有辅助引用都不算完成证明", () => {
+    const cases = [
+      // retrieval-review 的 incrementRef 必须是检索工件集，内容工件 kind 与任务类型错配。
+      agentTaskCompletedResult("retrieval-review", {
+        incrementRef: ref("content-artifact", "artifact-1"),
+      }),
+      // 主产出互斥：同时候选与正式结果不符合契约。
+      agentTaskCompletedResult("response-recommendation", {
+        candidateRef: ref("recommendation-candidate", "candidate-1"),
+        formalResultRef: ref("response-recommendation", "recommendation-1"),
+      }),
+      // 只有校验引用，不构成完成证明。
+      agentTaskCompletedResult("data-cleaning", {
+        validationRef: ref("validation-snapshot", "validation-1"),
+      }),
+    ];
+    for (const resultRef of cases) {
+      const result = { kind: "detail", resultRef };
+      for (const field of ["incrementRef", "candidateRef", "formalResultRef", "validationRef"]) {
+        expect(
+          requiredReferencesOfV1(result, [["resultRef", field]], detailQuery, {
+            agentTaskRef: resultRef.agentTaskRef,
+          }),
+        ).toBeNull();
+      }
+    }
+  });
+
+  it("Agent 任务未完成时不接受任何主产出引用", () => {
+    const result = {
+      kind: "detail",
+      resultRef: {
+        kind: "agent-task-result",
+        reference: ref("agent-task-result", "result-1").reference,
+        status: "failed",
+        agentTaskRef: agentTaskRef("data-cleaning"),
+        errorRef: ref("workflow-error", "error-1"),
+      },
+    };
+    expect(
+      requiredReferencesOfV1(result, [["resultRef", "formalResultRef"]], detailQuery),
+    ).toBeNull();
+  });
+
+  it("缺少目标身份或混入其它 Agent 任务的结果时不能证明本次完成", () => {
+    const expected = agentTaskRef("data-cleaning");
+    const other = { ...expected, reference: { entityId: "other-task", versionId: "1" } };
+    const result = {
+      kind: "detail",
+      summary: { status: "completed", agentTaskRef: expected },
+      resultRef: {
+        ...agentTaskCompletedResult("data-cleaning", {
+          incrementRef: ref("content-artifact", "cleaning-1"),
+        }),
+        agentTaskRef: other,
+      },
+    };
+    expect(terminalStatusOfV1(detailQuery, { kind: "detail" }, result)).toBeUndefined();
+    expect(
+      terminalStatusOfV1(
+        detailQuery,
+        { kind: "detail" },
+        {
+          kind: "detail",
+          summary: {
+            status: "completed",
+          },
+        },
+      ),
+    ).toBeUndefined();
+    expect(
+      requiredReferencesOfV1(result, [["resultRef", "incrementRef"]], detailQuery, {
+        agentTaskRef: expected,
+      }),
+    ).toBeNull();
+  });
+
+  it("projection run-view 只接受归属本次 run 的 report-fact 引用", () => {
+    const otherRunRef = {
+      kind: "workflow-run",
+      reference: { entityId: "child-1", versionId: "1" },
+    };
+    const factRef = ref("risk-assessment-record", "assessment-1");
+    const page = {
+      kind: "page",
+      queryType: "run-view",
+      items: [
+        {
+          kind: "run-summary",
+          workflowRunRef,
+          status: "completed",
+          latestResultRef: ref("risk-assessment-record", "assessment-1"),
+        },
+        { kind: "report-fact", workflowRunRef, factRef },
+        {
+          kind: "report-absence",
+          workflowRunRef,
+          tailKind: "response",
+          reasonCode: "no-response-candidate",
+          lastEstablishedRef: ref("risk-assessment-record", "assessment-1"),
+        },
+        {
+          kind: "report-fact",
+          workflowRunRef: otherRunRef,
+          factRef: ref("warning-record", "warning-1"),
+        },
+      ],
+    };
+    expect(
+      requiredReferencesOfV1(page, [["items", 1, "factRef"]], resultReadQuery, { workflowRunRef }),
+    ).toEqual({ "items.1.factRef": factRef });
+    // report-absence 的 lastEstablishedRef 不冒充正式业务事实。
+    expect(
+      requiredReferencesOfV1(page, [["items", 2, "lastEstablishedRef"]], resultReadQuery, {
+        workflowRunRef,
+      }),
+    ).toBeNull();
+    // 其它 run 的 report-fact 不能作为本次 run 的证据。
+    expect(
+      requiredReferencesOfV1(page, [["items", 3, "factRef"]], resultReadQuery, { workflowRunRef }),
+    ).toBeNull();
+    // 混入其它 run 的行时整组拒绝。
+    expect(
+      requiredReferencesOfV1(
+        page,
+        [
+          ["items", 0, "latestResultRef"],
+          ["items", 3, "factRef"],
+        ],
+        resultReadQuery,
+        { workflowRunRef },
+      ),
+    ).toBeNull();
+  });
+
+  it("projection report-fact 必须落在已成立的业务事实引用上", () => {
+    const page = {
+      kind: "page",
+      queryType: "run-view",
+      items: [
+        { kind: "run-summary", workflowRunRef, status: "completed" },
+        {
+          kind: "report-fact",
+          workflowRunRef,
+          factRef: ref("audit-trail", "audit-1"),
+        },
+      ],
+    };
+    expect(
+      requiredReferencesOfV1(page, [["items", 1, "factRef"]], resultReadQuery, { workflowRunRef }),
+    ).toBeNull();
+  });
 });
 
 const ref = (kind, entityId) => ({ kind, reference: { entityId, versionId: "1" } });
+const agentTaskRef = (taskType) => ({
+  kind: "agent-task",
+  reference: { entityId: "task-1", versionId: "1" },
+  taskType,
+  triggerMode: "embedded",
+  modelDeploymentRef: ref("model-deployment", "deployment-1").reference,
+  promptTemplateRef: ref("prompt-template", "template-1").reference,
+  toolPolicyRef: ref("tool-policy", "tools-1").reference,
+  budgetPolicyRef: ref("budget-policy", "budget-1").reference,
+  incrementSchemaRef: ref("increment-schema", "schema-1").reference,
+  validationPolicyRef: ref("validation-policy", "validation-1").reference,
+});
+const agentTaskCompletedResult = (taskType, outputs) => ({
+  kind: "agent-task-result",
+  reference: { entityId: "result-1", versionId: "1" },
+  status: "completed",
+  agentTaskRef: agentTaskRef(taskType),
+  ...outputs,
+});
 const workflowRef = workflowRunRef;
 const session = () => ({
   schemaVersion: "1",

@@ -842,7 +842,29 @@ export const buildApi = (options: BuildApiOptionsV1): FastifyInstance => {
                     : { afterEventId: context.afterEventId }),
                 },
               });
-              return projection.subscribe(queryRequest);
+              const subscription = ports.runEventSubscription;
+              if (subscription === undefined) return projection.subscribe(queryRequest);
+              return subscription.subscribeWithSourceAuthorization(queryRequest, async (scope) => {
+                const currentToken = cookieToken(request);
+                if (currentToken === null)
+                  throw new HttpTransportError(invalidRequest(requestId, requestNow(clock)));
+                if (currentToken === undefined)
+                  throw new HttpTransportError(
+                    authenticationRequired(requestId, requestNow(clock)),
+                  );
+                const queryId = randomUUID();
+                const decision = await authorize({
+                  access: options.access,
+                  invocationId: queryId,
+                  projectId,
+                  branch: "projection.subscribe",
+                  sessionToken: currentToken,
+                  requestedSpatialScopeRefs: [...scope.spatialScopeRefs],
+                  requestedSourceVersionRefs: [...scope.sourceVersionRefs],
+                  requestedAt: requestNow(clock).toISOString(),
+                });
+                return { queryId, authorization: decision.context };
+              });
             },
             toError: (error) => {
               const failure = mapHttpError({ error, requestId, now: requestNow(clock) });

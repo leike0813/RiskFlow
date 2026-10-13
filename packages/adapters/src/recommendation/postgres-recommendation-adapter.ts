@@ -63,6 +63,7 @@ import {
   type RecommendationResultV1,
   type ReviewTaskRefV1,
   type RiskInputVersionRefV1,
+  type WorkflowRunRefV1,
 } from "@riskflow/contracts/ports";
 import {
   ResponseRecommendationSchema,
@@ -2762,6 +2763,31 @@ export class PostgresRecommendationAdapter
         },
       },
     };
+  }
+
+  /** 检查点只证明候选归属，不向调用方暴露候选正文。 */
+  async verifyRecommendationCandidateReference(
+    input: Omit<MeasureCandidateSetReadInputV1, "knowledgeQueryResultRef"> & {
+      readonly recommendationCandidateRef: RecommendationCandidateRefV1;
+      readonly parentRunRef: WorkflowRunRefV1;
+    },
+  ): Promise<boolean> {
+    const verified = await this.#verifyRead(input, "warning-response.read");
+    if (verified === undefined) return false;
+    const row = await this.#readCandidateRow(
+      input.projectId,
+      input.recommendationCandidateRef,
+      verified.spatialScopeRefs.map((scope) => scope.reference.entityId),
+    );
+    if (row === undefined) return false;
+    const candidate = this.#readCandidatePayload(row);
+    return (
+      candidate.projectId === input.projectId &&
+      sameRef(candidate.parentRunRef.reference, input.parentRunRef.reference) &&
+      verified.spatialScopeRefs.some((scope) =>
+        sameRef(scope.reference, candidate.spatialScopeRef.reference),
+      )
+    );
   }
 
   /**

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createDeploymentResponseModelStepV1 } from "./response-model-step.mjs";
 
 import { createAssessmentGraphComposition } from "../../../apps/worker/dist/index.js";
 import { createPostgresRiskAssessmentEngine } from "../../../packages/adapters/dist/risk-assessment/engine/index.js";
@@ -16,7 +17,7 @@ import {
   createEffectForecastModelReaderV1,
   createPostgresResponseLifecycleAdapter,
   createPostgresResponseLifecycleContextReader,
-  createProductionEffectForecastExecutorsV1,
+  createProductionEffectForecastExecutorResolverV1,
 } from "../../../packages/adapters/dist/response-lifecycle/index.js";
 import { createPostgresCalibrationAdapter } from "../../../packages/adapters/dist/calibration/index.js";
 import { PostgresAgentTaskAdapter } from "../../../packages/adapters/dist/agent-runtime/index.js";
@@ -215,6 +216,62 @@ export const createDeploymentAssessmentGraphPoliciesV1 = ({
           };
     },
   };
+};
+
+/**
+ * C28 措施发布读取：按请求给出的精确引用逐项经 C19 已发布配置成员 reader 确认。
+ * 下游身份按 `knowledge-modeling.assessment-basis` 逐引用派生，重放同一请求得到同一签发。
+ * 任一引用不可读、类型非 measure-library 或版本不匹配即整批拒绝，不返回部分结果。
+ */
+export const createDeploymentMeasureReleaseReaderV1 = ({ basis, authorizeDownstream }) => {
+  requiredMethod(basis, "basis", "readPublishedConfigurationMember");
+  requiredMethod({ authorizeDownstream }, "authorizeDownstream", "authorizeDownstream");
+
+  return Object.freeze({
+    async readPublishedMeasureReleases(input) {
+      const { authorization, measureLibraryReleaseRefs } = input;
+      const projectId = authorization?.projectId;
+      if (
+        typeof projectId !== "string" ||
+        projectId.length === 0 ||
+        typeof authorization.actorId !== "string" ||
+        !Array.isArray(measureLibraryReleaseRefs) ||
+        measureLibraryReleaseRefs.length === 0
+      ) {
+        return [];
+      }
+
+      const published = [];
+      for (const releaseRef of measureLibraryReleaseRefs) {
+        const requestId = `${input.requestId}:measure-release:${releaseRef.entityId}:${releaseRef.versionId}`;
+        const context = await authorizeDownstream({
+          projectId,
+          actorId: authorization.actorId,
+          branch: "knowledge-modeling.assessment-basis",
+          invocationId: requestId,
+        });
+        if (
+          context?.projectId !== projectId ||
+          context.actorId !== authorization.actorId ||
+          !context.grantedCapabilities?.includes("knowledge-modeling.read")
+        ) {
+          return [];
+        }
+        // 正文已由 C19 reader 解析为 AssessmentConfigurationDocumentV1；此处只认措施库判别式。
+        const member = await basis.readPublishedConfigurationMember({
+          projectId,
+          requestId,
+          releaseRef,
+          authorization: context,
+        });
+        if (member?.body?.definitionType !== "measure-library") {
+          return [];
+        }
+        published.push(releaseRef);
+      }
+      return published;
+    },
+  });
 };
 
 /**
@@ -564,6 +621,12 @@ export const createDeploymentAssessmentV1 = (options) => {
   const db = required(foundation.runtime?.db, "foundation.runtime.db");
   const transactionUnit = required(foundation.transactionUnit, "foundation.transactionUnit");
   const access = requiredMethod(foundation.access, "foundation.access", "verify");
+  const authorizationScope = requiredMethod(
+    foundation.authorizationScope,
+    "foundation.authorizationScope",
+    "runTask",
+  );
+  const persistArtifact = required(options.persistArtifact, "persistArtifact");
   const artifactStore = required(foundation.artifactStore, "foundation.artifactStore");
   requiredMethod(artifactStore, "foundation.artifactStore", "put");
   requiredMethod(artifactStore, "foundation.artifactStore", "open");
@@ -636,10 +699,6 @@ export const createDeploymentAssessmentV1 = (options) => {
   const calibrationTaskPort = required(options.calibrationTaskPort, "calibrationTaskPort");
   requiredMethod(calibrationTaskPort, "calibrationTaskPort", "validateIncrement");
   requiredMethod(calibrationTaskPort, "calibrationTaskPort", "finalizeIncrement");
-  const forecastPolicies = required(options.forecastPolicies, "forecastPolicies");
-  if (!Array.isArray(forecastPolicies) || forecastPolicies.length === 0) {
-    throw new TypeError("DEPLOYMENT_FORECAST_POLICIES_REQUIRED");
-  }
   const policies = required(options.policies, "policies");
   requiredMethod(policies, "policies", "resolveForecastPolicy");
   requiredMethod(policies, "policies", "resolveCalibrationPolicy");
@@ -689,15 +748,30 @@ export const createDeploymentAssessmentV1 = (options) => {
     createResponseRecommendationTaskDefinition({
       policy: commonPolicies["response-agent"],
       port: {
-        validateIncrement: (input) => recommendationAdapterRef.current.validateIncrement(input),
-        finalizeIncrement: (input) => recommendationAdapterRef.current.finalizeIncrement(input),
+        validateIncrement: (input) =>
+          authorizationScope.runTask(input.task, () =>
+            recommendationAdapterRef.current.validateIncrement(input),
+          ),
+        finalizeIncrement: (input) =>
+          authorizationScope.runTask(input.task, () =>
+            recommendationAdapterRef.current.finalizeIncrement(input),
+          ),
       },
     }),
   );
   registry.register(
     createCalibrationSuggestionTaskDefinition({
       policy: commonPolicies.calibration,
-      port: calibrationTaskPort,
+      port: {
+        validateIncrement: (input) =>
+          authorizationScope.runTask(input.task, () =>
+            calibrationTaskPort.validateIncrement(input),
+          ),
+        finalizeIncrement: (input) =>
+          authorizationScope.runTask(input.task, () =>
+            calibrationTaskPort.finalizeIncrement(input),
+          ),
+      },
     }),
   );
 
@@ -748,8 +822,8 @@ export const createDeploymentAssessmentV1 = (options) => {
       measureReleases: measureReleaseReader,
       authorizeDownstream,
     }),
-    forecastExecutors: createProductionEffectForecastExecutorsV1({
-      policies: forecastPolicies,
+    // C28 预测策略正文只在运行期受权读取；宿主不预装第二份策略集合。
+    forecastExecutors: createProductionEffectForecastExecutorResolverV1({
       models: createEffectForecastModelReaderV1({ artifactStore }),
       assessment: riskAssessment,
       authorizeDownstream,
@@ -806,6 +880,15 @@ export const createDeploymentAssessmentV1 = (options) => {
   });
 
   const result = {
+    modelStep: createDeploymentResponseModelStepV1({
+      authorizationScope,
+      access,
+      recommendation,
+      responseLifecycle,
+      calibrationTaskPort,
+      persistArtifact,
+      inner: options.innerModelStep,
+    }),
     compositions: {
       riskAssessment,
       warning,

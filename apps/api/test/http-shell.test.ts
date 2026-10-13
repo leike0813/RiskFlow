@@ -661,6 +661,68 @@ describe("C09 HTTP shell", () => {
     await app.close();
   });
 
+  it("SSE 逐事件授权保留当前会话、精确来源和独立调用身份", async () => {
+    const access = accessStub();
+    const requests: Parameters<LocalIdentityAccessV1["authorize"]>[0][] = [];
+    const scopeInput = {
+      spatialScopeRefs: [scope],
+      sourceVersionRefs: [
+        { kind: "source-version" as const, reference: { entityId: "source", versionId: "2" } },
+      ],
+    };
+    const eventQueryIds: string[] = [];
+    const app = buildApi({
+      access: {
+        ...access,
+        authorize: async (request) => {
+          requests.push(request);
+          return access.authorize(request);
+        },
+      },
+      ports: {
+        projection: projectionPort(() => {
+          throw new Error("unexpected legacy subscription");
+        }),
+        runEventSubscription: {
+          async subscribeWithSourceAuthorization(request, authorizeEvent) {
+            for (let index = 0; index < 2; index += 1) {
+              const signed = await authorizeEvent(scopeInput);
+              eventQueryIds.push(signed.queryId);
+              expect(signed.authorization.actorId).toBe(request.actorId);
+            }
+            return { kind: "succeeded", result: { eventRefs: [] } };
+          },
+        },
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+      ssePolicy: { pollIntervalMs: 1, maxConnectionMs: 20 },
+    });
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/v1/projects/project/runs/${encodeWorkflowRunIdV1({ kind: "workflow-run", reference: { entityId: "run", versionId: "1" } })}/events`,
+        headers: { cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(eventQueryIds.length).toBeGreaterThanOrEqual(2);
+      expect(new Set(eventQueryIds).size).toBe(eventQueryIds.length);
+      for (const queryId of eventQueryIds) {
+        expect(queryId).not.toBe("request-id");
+        expect(requests.find((request) => request.invocationId === queryId)).toMatchObject({
+          branch: "projection.subscribe",
+          projectId: "project",
+          invocation: { kind: "human-session", sessionToken: "opaque-token" },
+          requestedSpatialScopeRefs: scopeInput.spatialScopeRefs,
+          requestedSourceVersionRefs: scopeInput.sourceVersionRefs,
+        });
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
   it("rejects an invalid SSE resume header before authorization or subscription", async () => {
     let authorizeCalls = 0;
     let subscribeCalls = 0;

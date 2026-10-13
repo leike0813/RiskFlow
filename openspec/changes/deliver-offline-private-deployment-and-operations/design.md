@@ -215,7 +215,11 @@ DeploymentConfigV1 补齐必填 purpose（production / synthetic-acceptance）�
 
 初始化输入补齐 loginPasswords（按五个角色键逐项解析，值仅来自受限秘密加载器）和 checkpointerConnection（独立职责连接）。仅新建 LOGIN 时设置密码；重放不重置现有密码。迁移完成后用公开 setupPostgresCheckpointer 完成 checkpoint DDL 并关闭初始化连接；初始化不写 checkpoint，引用校验关闭失败。迁移兼容性使用当前发布清单声明的精确序号；更新数据库版本须先更新批准清单，不能将更高版本推断为兼容。运行进程只核验，不调用 setup 或持 migrator/operator 密码。
 
-每项 projectBindings 补充 policyRefs（D-20 十四类的逐项 VersionReference）及 graphVersions（riskFlow、identification、assessment 三个 VersionReference）、retrievalBudgetPolicyRef。部署 policyCatalog.catalogRef 与绑定 policyCatalogRef 均使用完整 VersionReference；加载时同时核对 entityId/versionId、purpose 与条目的批准 releaseId，全部 policyRefs 精确可解析。projectId 不得重复。基础预置仅解析配置；API/Worker 装配前须完成引用及策略成员一致性校验，不按条目顺序或“最近版本”选择。
+每项 projectBindings 补充 policyRefs（D-20 十六类的逐项 VersionReference）及 graphVersions（riskFlow、identification、assessment 三个 VersionReference）、retrievalBudgetPolicyRef。部署 policyCatalog.catalogRef 与绑定 policyCatalogRef 均使用完整 VersionReference；加载时同时核对 entityId/versionId、purpose 与条目的批准 releaseId，全部 policyRefs 精确可解析。projectId 不得重复。基础预置仅解析配置；API/Worker 装配前须完成引用及策略成员一致性校验，不按条目顺序或“最近版本”选择。
+
+策略目录 filePath 必须位于既有 localRoots.dataRoot 内，复用数据集的受控文件读取：拒绝路径越界、任一父目录或文件符号链接及非普通文件，以 O_NOFOLLOW 打开，读取前和流式读取时均限制 1 MiB，并严格解码 UTF-8。目录的批准 releaseId 绑定同一发布清单，不新增介质 hash 或另一个批准字段。
+
+DeploymentConfigV1 必填 retrievalQuality={datasets,containerRuntime,timeoutMs}。datasets 为 1–256 个 strict {projectId,datasetRef,filePath}，projectId 必须存在于 projectBindings，datasetRef 使用原 VersionReference，工程/数据集精确版本键唯一；filePath 为 localRoots.dataRoot 内无符号链接的绝对普通文件路径。每份 JSON 最多 64 MiB，正文使用原 DeploymentRetrievalDatasetV1Schema；加载时核对登记工程/数据集身份，production 不接受 syntheticSample。每工程 retrieval-acceptance 策略指定的数据集必须精确存在，不取首个或最近版本。containerRuntime 是安装者提供的实际容器运行时及版本身份（1–256 字符），timeoutMs 是批准的正整数总截止；不内置环境默认值。API/Worker 在连接、监听和 claim 前完成加载核验，provision 只解析配置，不要求资料预置之前数据集文件已存在。报告保存到既有 logRoot/retrieval-quality，每份报告使用新身份、临时文件 fsync 后原子 rename，内容绑定实例/发布/配置及原验收报告；保存失败不能通过门禁，不保存资料正文或秘密。
 
 新增迁移 000056_deployment_operations.ts：business.deployment_operations（instanceId/operationId 主键、instanceId/idempotencyKey 唯一、payloadDigest、revision、action、stage/status、安全 inputRefs/resultRefs、leaseOwner/until）；business.deployment_causal_authorizations（rootContextRef/projectId/actorId/branch 主键、真实 childContextRef、invocationId、policyRef、recordedAt；只追加，由 C06 adapter 读取/复验）；business.deployment_operation_audit（eventId 主键、operationId/revision/action/stage/outcome/actor/contextRefs/releaseRefs/backupRef/reasonCode/timestamps，追加写，禁止 UPDATE/DELETE）。单实例活动写运维动作通过 PostgreSQL advisory lock + 操作行租约串行；expectedRevision CAS，每次阶段转换与其审计在同一事务。阶段为 validated→quiescing→quiesced→copying/restoring→verifying→awaiting-confirmation→activating→completed，失败落 failed 或 audit-pending；各 action 只使用相关阶段。租约过期只允许同身份复验外部效果后接续，不推断上次副作用未执行。
 
@@ -263,11 +267,15 @@ C17 组合接受可选 assessmentConfigurationPolicy、scoringRulesPolicy，类�
 
 projectBindings 每工程必填 forecastPolicyReleaseRef、calibrationTargetReleaseRef，均为原 KnowledgeReleaseRefV1；siteContextBindings 为 1–256 个严格 siteContextRef/artifactRef 版本对，工程来自外层 binding，精确现场键重复拒绝。预测正文只从指定 forecast-policy 正式成员经 C19 精确 reader 读取，复用原 ForecastPolicyDocumentV1Schema；全部 policies 交原执行器，图返回该发布引用作为 forecastPolicyRef。每次图解析继续核对冻结依据集合确实包含指定预测发布和校准目标，缺项或版本漂移不可用，不选择最近发布。现场工件沿原 reader 完整核验；报告策略从 report-export 精确 catalog 成员注入。构造时缺策略/部署绑定拒绝，运行时缺正式发布仍按原领域端口返回不可用；宿主不伪造发布事实。
 
+C28 预测执行器增加运行时窄 resolver：PostgresResponseLifecycleAdapterOptionsV1.forecastExecutors 接受原 readonly EffectForecastExecutorV1[] 或 {resolve(policy): EffectForecastExecutorV1 | undefined}。只能在原受权依据正文、冻结发布引用及唯一指标策略核验完成后调用 resolver，返回的 method/requiredRef 必须与该策略完全一致，否则沿原 executor-unavailable 结果收口。新增 createProductionEffectForecastExecutorResolverV1 复用原 createExecutor、模型读取、下游授权和计算预算；每次以原 ForecastPolicyV1Schema 校验已读正文，不在启动时读取业务正文、保存第二份预测策略或缓存最近版本。原数组调用行为及重复键检查保持。C37 assessment 组合使用 resolver，不再要求启动期 forecastPolicies；发布文档中同 method/requiredRef 的策略仍按原目标指标唯一选择，计算以本次完整策略为准。
+
 C27 PostgresRecommendationContextReader 的公开工厂补齐类已支持的可选 authorizeDownstream 参数，由宿主传入同一受控授权口，不另写知识读取路径。C33 识别读取 adapter 通过 packages/adapters 的 `./identification/read` 公开出口供宿主复用。
 
 宿主 createDeploymentRuntimeAuthorizationV1 复用 C24/C25/C30 与 C21/C22 的原 verifyCurrent 接缝。先按精确 authorizationContextRef 读回签发来源、核对完整正文和工程/主体，再用登记 invocationId/branch 复验当前空间与来源权限。请求身份与登记一致时返回原 C06 context；派生身份仅经当前调用作用域的批准下游关联签发，不能把派生 invocationId 用来复验原签名。没有登记、错主体、正文漂移、已撤销或过期返回 undefined；数据库、契约或幂等冲突继续抛出。未传入来源版本集合时使用该签发来源登记的集合，不用空集合略过来源复验。
 
 C29 的 CalibrationSuggestionTaskPortV1 由 composition/calibration-task.mjs 实现，消费真实受权 ArtifactStoreV1 和 C06 窄口，不查询领域私表。validateIncrement/finalizeIncrement 都从任务冻结的 frozenInputRef 完整读取原校准快照及其中的精确基准工件，限制每份正文 1 MiB、等待 verified、校验原 Schema、工程、任务、模型/提示/工具/预算/校验策略、派生 inputSnapshotRef 与原基准摘要，再调用原 validateCalibrationCandidate。校验结果通过真实 C04 put 保存 agent-validation 工件，不能用未登记的摘要引用；原 AgentValidationResultV1 承载接受/拒绝及可修复类别。finalize 再校验同一冻结候选，只有接受时按原 deriveCalibrationSuggestionRef 与 buildCompletedAgentTaskResult 返回稳定结果身份，不写正式建议。C29 createSuggestion 继续读取完成任务并复算，正式登记与复核仍归原 adapter。校验与最终收口的工件身份分别绑定任务、候选摘要及阶段；不保存模型思维内容。
+
+宿主 composition/response-model-step.mjs 提供 C27/C29 的共享 runner 模型步。assessment 组合要求同一 foundation.authorizationScope 和 C04 persistArtifact，返回绑定实际领域实例的 modelStep；render/interpret 及任务定义 validate/finalize 均在原 runTask 授权作用域中执行。模型步精确读取持久签发来源并核对完整授权正文，以原完整来源版本集合复验当前权限；C27 通过所属 readMeasureCandidateSet 读取冻结查询正文，校验工程、精确空间版本和冻结主体；C29 通过 calibration-task 的宿主只读 readModelInput 复用全部冻结快照、当前授权和基准摘要校验，再通过 C28 readDeviationFact 读取同一偏差、冻结依据和精确空间，阈值未超限时拒绝。当前签发或复验脱敏均拒绝。领域正文以不可信数据消息传入，模型无新增工具，输出仍为原 ResponseRecommendationIncrementV1 / CalibrationCandidateV1，原确定性校验与正式入库负责收口。候选和增量各保存真实 C04 工件，绑定原模型 invocationId 和递增候选版本；其它任务类型只交给显式 inner，缺失则失败。输入消息受原 maxInputBytes 限制，模型输出使用原冻结 token 预算，不保存思维内容。C29 的 readModelInput 只返回真实 snapshot、派生 inputSnapshotRef 和基准 document，不生成候选或完成结果。
 
 C18 精确成员窄读只取两条不同成员投影以判断冲突；重复引用同一发布的依据集合不增加结果规模。C19 需复算完整成员快照摘要，其精确发布成员查找最多检查 200 个已登记依据集合，超过则拒绝解析，不能读取全库或截断后宣称一致。
 
@@ -308,6 +316,52 @@ start.mjs 的 createDeploymentAuthorizationScopeV1({access,deploymentAuthorizati
 C20↔C21 和 C17↔C20 是构造引用环、不是业务流程环。宿主建立只绑定一次的窄委派（C17 retrieve、C20 inputReader），先建立 C15/共享 registry/C17，再 C20、C21、C22/C23/C24，最后一次绑定真实委派。绑定前任何调用均抛未就绪错误；全部绑定核验后才监听/claim。不得导入 core/adapters 私文件，只有宿主可组合 apps/api 与 apps/worker 的公开入口。
 
 ### D-21. 生产端口与事件闭包
+
+生产检查点使用 core/persistence 唯一导出的 `CheckpointRuntimeContextV1Schema` 与 configurable 键 `riskflowCheckpointContextV1`：strict 字段为 schemaVersion、projectId、actorId、threadId、runRef、authorization、invocationId。三图的调用与 getState 均传本次受权运行上下文；读取旧检查点使用本次权限而非历史授权替代当前身份。C03 的 ContractReferenceValidator 保留引用首参数，第二参数包含 operation（put/put-writes/get/list）、解析后的 state 及可选 runtimeContext；既有只接收引用的调用方保持可用。上下文存在时须逐项核对工程/主体与授权、thread/run 精确引用和当前图状态，生产 validator 缺上下文即拒绝。putWrites 仍按原 tuple 状态验证待写引用，不能把 pending writes 当已提交业务事实。
+
+宿主引用校验由引用所属模块的公开窄读组合：当前 C06 来源/授权复验先于存在性读取；仅核对精确工程与版本、运行归属、已提交登记和必要完整性，不返回正文、不写审计或业务事实、不维护第二引用登记表。C03 checkpoint 连接不获得业务表权限，窄读使用原应用连接。未支持引用、缺失、已回滚、版本不符、跨工程/运行或技术错误均按 CHECKPOINT_INCONSISTENT 失败；初始运行身份须由已受理原命令或父运行已登记的子入口证明，不接受裸 caller 引用。已有精确公开证明优先复用，缺口仅在所属 adapter 增加存在性窄口。
+
+C27 的 PostgresRecommendationAdapter.verifyRecommendationCandidateReference 接受精确候选引用、parentRunRef 与原受权读取身份（工程、主体、invocationId、requestedAt、authorization），复用 warning-response.read 的当前授权及原候选行/正文校验；核对工程、精确空间版本和冻结父运行版本后仅返回 boolean，不写事实。技术错误交由 checkpoint 边界失败闭合。宿主验证器在 start.mjs 组合当前 C06 来源复验与各模块精确证明；引用证明不能把当前运行或同工程其它运行的存在性作为父子关系证明。
+
+C06 部署授权 adapter 的 readDownstreamContext 使用与 resolveDownstreamContext 相同的有界关联查找、批准分支和精确正文核验，只返回已签发上下文及原 invocationId/branch。先复验本次 root 的当前权限，再复验关联目标；授权范围不得超过本次 root。只读路径不签发、补登记或写审计，关联缺失、撤权、redacted、越界或冲突都拒绝。所属模块使用原目标调用身份复验，不把新检查点操作字符串当签发身份。
+
+C24 verifyCheckpointReference 为原图所属引用提供 boolean 证明：接受已签发的调用身份、当前授权、精确 runRef 和图引用，复用当前权限、作用域摘要与私有登记/C04 读取；输入快照、工作计划、阶段结果、错误及运行结果均按精确引用定位，核对 runId 与必要正文引用。宿主另以启动收据证明 runRef 身份版本和父子关系；此窄口不把 run-state 的内容版本当运行身份，也不自行签发固定读操作身份。未支持类型、缺失、其它运行或正文不兼容拒绝。
+
+C15 verifyPreparationReference 接受原 IdentificationPreparationReadRequestV1，复用 readExactPreparation 的当前 evidence-access 授权、精确准备登记、快照范围与任务—清洗结果/C04 核验，只返回 boolean，不执行原读取回执和审计事务。两入口共用私有准备解析；正文、任务或版本缺失均失败，技术故障上抛。该证明只证明准备事实，宿主须另核对它与本次识别入口的绑定，不能据此推断运行归属。
+
+C30 adapter 的 verifyCheckpointReference 接受工程、主体、原 invocationId、requestedAt、authorization、精确 runRef 与 reference，复用原当前授权和精确登记窄读，只返回 boolean。支持 stage-result、route-decision、workflow-error、assessment-run-result、risk-flow-run-result；逐项核对登记引用及精确授权范围，结果正文通过 C04 verifyContent 按原 run-result 用途和原 16 MiB 上限核对工程/runRef。缺正文证明能力失败，不触发普通读取审计。三类 A0 入口继续通过 readAssessmentEntrySnapshot 的唯一登记与原引用证明；运行身份均另由 C03 启动收据证明，不能以可变 runVersionId 代替。
+
+C24 verifyCheckpointReference 的可选 workPlanRef 仅供 identification-work-item 证明：宿主必须传图状态已冻结的工作计划引用；按同工程、本运行的精确 work-plan 登记及当前授权范围定位原正文，经 C04 verifyContent 完整核验后检查精确工作项属于该计划。缺计划、错版本、其它运行的计划或正文不含该工作项均拒绝，不用工作项标识前缀或普通 readExact/open 推断归属。
+
+C08 PostgresAgentTaskAdapter.verifyCheckpointReference 只读证明原完整 AgentTaskRefV1，接受工程、主体、原 invocationId、requestedAt、authorization 和精确 parentRunRef。先复验 agent-task.read 当前能力和完整授权范围，脱敏拒绝，再按同工程/精确任务版本读取唯一任务行；任务信封、状态和已登记完整任务引用须一致，原主体、父运行及冻结空间/来源许可都须匹配，仅返回 boolean。允许等待或终态任务，不把状态更新当任务引用版本。宿主对三个图直接传当前运行；父图转发的任务按已登记精确子运行逐项证明 C03 父子关系后才能使用该子运行作为 parentRunRef，不能以裸候选父运行替代。该证明不读取模型正文，不写事实或复验回执。
+
+C24/C30 的 verifyCheckpointWaitingReference 接受工程、主体、原 invocationId、requestedAt、authorization、精确 runRef 与完整 WaitingRefV1，只返回 boolean。当前权限完整复验且拒绝脱敏后，按所属表的工程、运行、waiting 种类、原主体、授权范围摘要及完整 waiting_ref 等值查询，最多读取一行，证明已登记的等待事实；不猜等待 resultId，不枚举运行历史，不读正文或产生访问审计。运行身份版本另由 C03 原启动收据证明。knowledge-preparation-task 与 user-confirmation 没有独立领域任务读口，宿主仅在严格图状态的完整 waitingRef/waitingRefs 含该精确引用时调用所属图证明；其它等待类型继续使用自己的所属模块身份证明，不以等待登记替代领域事实。
+
+C07 PostgresReviewAuditRead.verifyCheckpointReference 接受工程、主体、原 invocationId、requestedAt、authorization、完整 ReviewTaskRefV1 与精确 parentRunRef。仅 review-audit.read 能力可用，复验当前完整授权且拒绝脱敏；复用原 task-detail 的精确单行任务状态解析，核对原 requestedBy、完整任务及 target/等待运行的 JSON 与身份列。仅返回 boolean，不读取复核决定或快照正文，不写事实。等待、已决定及被替代状态均可证明历史身份。三图直接使用自身运行；父图只在 C03 已证明精确子运行归属后转发其任务。普通 UI task-detail 继续共用状态解析和原决定读取。
+
+C22 识别中间结果证明由宿主 createDeploymentCandidateCheckpointProofV1 组合既有 resultStore.readResult、当前 risk-identification.run-read 权限及 C04 verifyContent，仅支持 identification-candidate-set、merge-plan、identification-group。宿主先以 C24 证明严格状态冻结的输入快照；合并计划和组还须证明冻结工作计划。精确结果登记须匹配工程、原主体、完整引用、输入/计划及授权范围；正文复用 RiskCandidateSetV1Schema、MergePlanV1Schema、IdentificationGroupV1Schema 与原用途码，使用 C22 原 8 MiB 上限。正文与登记的输入、计划、范围和原授权引用一致，候选的工作项/模型上下文及候选身份、组的身份版本、合并计划的精确运行/身份均须相符。无普通 open、事实写入、标识前缀猜测或跨运行回退。原正文上限作为单一公开常量复用，不新增配置或领域 Schema。
+
+标准化风险记录继续复用 C33 的纯 SELECT record-read，不新增领域读接口：宿主仅在识别图内使用已登记下游 risk-identification.record-read，先按本次完整空间/来源版本复验且拒绝脱敏或上下文漂移，再提交原精确查询。结果须 succeeded/record-read，完整风险记录引用及 identificationRunRef 与当前已证明运行一致；返回内容不进入 checkpoint 或普通日志。不存在、错版本、其它运行及受限正文均拒绝。
+
+API/Worker 基础装配必须接收 validateCheckpointReference 函数，再以配置的独立 checkpointer 角色及其密码创建原 PostgreSQL saver；缺函数或独立密码在任何数据库连接前拒绝。checkpointer.end 进入基础资源的统一逆序关闭流程，业务启动不运行 setup/DDL。引用校验函数可以通过既有一次绑定槽连接后续领域组合，但监听/claim 前必须已完成绑定；provision 不建立 saver。
+
+C04 ArtifactStoreV1 增加可选 verifyContent(request,maxBytes,validate) 服务端窄口，普通 put/open 行为不变。request 沿原 ArtifactReadRequestV1；maxBytes 为调用所属 Schema 的正整数上界且不得超过原工件预算，validate 为所属模块的同步正文校验，完整摘要/长度核验后执行，仅返回 boolean。复用原登记、用途、权限、路径、并发、关闭与流式摘要检查；该路径不产生访问记录、诊断工件或审计。部署包装在调用前复验当前 C06。缺窄口的 store 不可用于生产 checkpoint 正文证明，不以普通 open 替代；本轮合置本地实现，跨 VM 校验缺能力失败闭合，未经设计不扩展远程协议。
+
+初始运行证明复用 C03 已完成 command_receipts：PostgresTransactionUnit.readWorkflowRunBinding 只读指定工程、精确 runRef 与 threadId 的正式启动收据，命令种类固定为 workflow.start-run、identification-graph.start、assessment-graph.start；未完成或缺审计的收据拒绝。父图启动绑定补存既有 thread_id，评估子运行在当前授权/入口检查后、首个 checkpoint 前追加同形启动收据与审计，授权正文不进入载荷摘要。该窄口只返回 boolean，宿主先完成当前授权再调用；恢复不把新命令身份当原运行版本。既有未绑定线程的历史运行不能猜测身份，须从已登记运行事实核验。
+
+子图启动先于父图收口链边，两个子图在原启动审计的 reasonRef 记录精确 parentRiskFlowRunRef。readWorkflowRunBinding 可同时核对 parentRunRef，或在核验父图所引用子运行时以 parentRunRef 代替未知线程；threadId 与 parentRunRef 至少提供一项。该证明连接同工程原 audit_entry_id、启动 action、targetRef 和 run/thread，父引用必须完整 JSON 精确相等；其它命令或任意审计不能替代。历史缺因果绑定收据不被推测成有效父子证明。
+
+readWorkflowRunBinding 的可选 actorId 与 authorizationContextRef 进一步核对原启动收据及其审计的主体和授权引用，生产校验必须提供图状态的原授权引用及本次主体；新的恢复授权只承担当前权限复验，不覆盖原启动身份。识别入口的准备引用与图版本通过既有 identificationRunIdentityFor 重新派生后核对精确启动 runRef/threadId，不维护另一份身份算法。宿主按工程绑定核对三图的 graphVersion，再组合各所属模块证明；历史授权正文按 C06 精确持久来源读取，主体和工程必须与本次运行一致。
+
+AssessmentGraphStateV1 的 entrySnapshotRef 在 A0 可缺省；仅 A0 的启动、失败或取消状态允许无入口快照，A1 及后续阶段必须具备原三种精确入口快照之一。删除未登记的 assessment-preparation seed，A0 通过原所属模块冻结/读取真实入口，业务登记提交后才把该引用写入图状态。恢复不从 seed、前缀或 checkpoint 内容补造快照。已有真实快照状态继续可解析。
+
+A0 entry-snapshot 登记行使用既有 inputSnapshotRef 保存上述三种入口的原精确引用。WorkflowGraphRegistrationStoreV1 增加 readAssessmentEntrySnapshot：按工程/runId 与 resultKind=entry-snapshot 读取最多两行检测冲突，当前 C06 验证后返回唯一有效的 AssessmentEntrySnapshotRefV1；无登记、缺引用、多个登记或不兼容类型失败闭合。评估运行时 stateOfCursor 通过该窄口恢复入口引用，不重算或重新冻结。forecast/feedback 分段入口的派生引用由 C30 A0 正式登记，C28 后续再按原协议保存正文；其生命周期证明首先核对 C30 精确入口登记，不要求尚未执行的 C28 提前写事实。
+
+增量迁移 000058 仅调整 workflow_graph_results_kind_ck，允许 entry-snapshot 携带可选 input_snapshot_ref；其它六类引用配对、审计和追加权限保持原约束。历史空引用行保留，窄读不会为其补造引用；回退若已有新入口引用则由原 CHECK 拒绝，不删除或改写历史事实。发布清单最终迁移为 000058。checkpointer.put 返回配置保留本次 runtimeContext，后续调用继续使用该身份；新请求仍须显式提供当前上下文。
+
+SSE 的 runEvents provider 使用 workflow 公开 createPostgresRunEventReaderV1，保持原 RunSubscriptionRequestV1/ProjectionSubscriptionResultV1。新增 000057_workflow_run_events 迁移及只追加 business.workflow_run_events：projectId、runId、runVersionId、eventId/eventVersion、eventOrder、原 authorizationContextRef。每个事件只按原事件显式 identificationRunRef/assessmentRunRef/waitingRunRef/resumeRunRef、aggregateRef 的 workflow-run 或原 C06 持久签发的 causalRunRef 登记；不同精确引用可各自关联，去重，不从 correlationId、裸 runId、时间或字符串猜版本，也不自动扩展运行家族。登记由原 outbox.events INSERT 的数据库触发器完成，与原命令/审计/事件同事务，失败回滚原事务；没有可证明运行归属的事件保留原 Outbox，不创造关联。既有事件只按相同归属规则一次性回填，次序为 persistedAt/eventId；新事件按工程内事务锁串行分配 eventOrder，锁持有至提交，避免较小游标迟提交造成漏读。序号空洞合法；一个事件多个运行关联共用序号。重放不新增事件，Outbox ack/失败不修改关联。API/Worker 对关联表仅 SELECT，触发器经受限固定 search_path 的 definer 写入，运行主体不得直接 INSERT/UPDATE/DELETE/TRUNCATE；不授 API 读取原 Outbox 正文/租约的权限。
+
+读取先按原 queryId/branch=projection.subscribe 复验当前工程、主体及单能力，核对返回上下文；单批固定最多 64 条，按 eventOrder 升序 keyset。afterEventId 必须精确定位同工程、同 runId/runVersionId 的已登记事件，且当前调用方可读取；未知、跨运行/工程/版本或当前不可读游标失败，不重置。每条返回前以原 authorizationContextRef 经 C06 readDeploymentAuthorizationSource 取真实来源范围，来源工程或引用不一致失败。原 subscribe 用原 queryId 复验该事件范围，继续支持已持有足够授权的调用方。真实 HTTP SSE 使用新增窄接缝 subscribeWithSourceAuthorization：API 保持基础订阅授权，以当前 Cookie 的 human-session 为每条事件及游标签发 projection.subscribe 的精确空间与来源范围，每次采用新的调用身份；reader 核对返回主体、工程、单能力和授权引用，并按该签发身份通过 C06 再次复验。来源读取不替代订阅者权限，reader 不自行签发或扩大原授权。ApiPortsV1 增加可选 runEventSubscription 注入位，生产组合必须提供该方法；原 HTTP 与 core DTO 不变。任一批内事件不可读时整批拒绝，不返回部分或越权引用，也不在内存推进游标；技术失败保留原失败类别。只返回 DomainEventRefV1，不返回事件正文、内部序号或原授权记录；事件读取不写业务事实，授权签发与复验保留 C06 安全审计。无事件且无游标返回空批等待，不能用空批证明业务完成。宿主注入真实 reader；SSE 时间/背压继续使用 API 原有有界策略及 Schema，不新增部署默认预算。
 
 API 必须显式装配全部 ApiPortsV1，路由可用性由实际接线决定：
 
@@ -352,7 +406,7 @@ Worker 用同一 policy/registry/runtime 装配 C15、C17、C20–C25、C27/C29�
 - 现有：pnpm build/typecheck/lint/test/deps:check/deps:policy/openspec:validate；pnpm test:browser 是迁移后 apps/web 的真实浏览器项目。
 - 已有：pnpm test:deployment 是工程测试；pnpm test:desktop 目前只跑 desktop security/packaging 单元测试。pnpm desktop:package / deployment:verify 是正式介质入口；deployment:smoke 与 deployment:benchmark 目前同指 acceptance.mjs 的配置校验，不计真实取证。
 - IP-15 新增网络 API 协议测试和显式真实 smoke。IP-16 新增 node scripts/deployment/start.mjs（功能宿主启动）及 node scripts/acceptance/functional.mjs --pack <packDir> --config <runConfig.json> --output <dir> [--resume]（真实功能验收）；无需增加 pnpm 别名。
-- 环境文件通过 RISKFLOW_DEPLOYMENT_CONFIG、RISKFLOW_DEPLOYMENT_SECRETS、RISKFLOW_RELEASE_MANIFEST 和 RISKFLOW_ACCEPTANCE_CONFIG 读取路径；文件内容按 D-19 校验，命令行不带秘密。桌面 package/test 从 RISKFLOW_DESKTOP_BUILD_CONFIG/ACCEPTANCE_CONFIG 读取受控路径。
+- 环境文件通过 RISKFLOW_DEPLOYMENT_CONFIG、RISKFLOW_RELEASE_MANIFEST 和 RISKFLOW_ACCEPTANCE_CONFIG 读取路径；文件内容按 D-19 校验，秘密路径仅由部署配置的 database.secretFileRefs 逐职责绑定，命令行不带秘密。桌面 package/test 从 RISKFLOW_DESKTOP_BUILD_CONFIG/ACCEPTANCE_CONFIG 读取受控路径。
 - 当前网络 smoke 通过 RISKFLOW_NETWORK_API_SMOKE=1、RISKFLOW_MODEL_GATEWAY_CONFIG、RISKFLOW_MODEL_GATEWAY_SECRETS 显式启用；node 功能验收与浏览器命令连接真实服务。当前必需输入/能力缺失或关键 skip 非零失败；未来平台/GPU 材料不在其预检范围。
 - pnpm verify、test:browser、test:deployment 和 network API 协议测试提供工程证据，真实 network smoke 与 functional.mjs 提供当前功能证据。C38 先补齐正式 Electron Playwright、部署 smoke/benchmark 的真实执行和报告链，再运行签名制包、平台和实机取证；不从现有命令名称推定实现完成。
 - benchmark 记录真实介质/配置与 4090 24GB/128GB 主机、GPU/OCR 分配、并发/延迟/吞吐/CPU/RAM/显存/磁盘及分阶段停写恢复耗时；阈值来自批准输入，不预设吞吐、RPO/RTO 或 SLA。

@@ -224,6 +224,17 @@ const baseConfig = (): DeploymentConfigV1 =>
         ],
       },
     ],
+    retrievalQuality: {
+      datasets: [
+        {
+          projectId: "project-rail-01",
+          datasetRef: { entityId: "retrieval-dataset", versionId: "v1" },
+          filePath: "/var/lib/riskflow/data/retrieval-datasets/project-rail-01/v1.json",
+        },
+      ],
+      containerRuntime: "docker-27.3.1",
+      timeoutMs: 900_000,
+    },
   });
 
 afterEach(() => {
@@ -334,6 +345,68 @@ describe("部署 strict Schema", () => {
     expect(DeploymentConfigV1Schema.parse(baseConfig()).documentConversion.mineru).toBeNull();
   });
 
+  it("检索质量配置缺项时拒绝，宿主不得补默认", () => {
+    const config = baseConfig();
+    expect(DeploymentConfigV1Schema.safeParse(withoutKey(config, "retrievalQuality")).success).toBe(
+      false,
+    );
+    for (const key of ["datasets", "containerRuntime", "timeoutMs"]) {
+      expect(
+        DeploymentConfigV1Schema.safeParse({
+          ...config,
+          retrievalQuality: withoutKey(config.retrievalQuality, key),
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      DeploymentConfigV1Schema.safeParse({
+        ...config,
+        retrievalQuality: { ...config.retrievalQuality, datasets: [] },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("检索数据集按工程与精确版本唯一，同工程不同精确版本可共存", () => {
+    const config = baseConfig();
+    const dataset = config.retrievalQuality.datasets[0]!;
+    const withDatasets = (datasets: unknown[]) => ({
+      ...config,
+      retrievalQuality: { ...config.retrievalQuality, datasets },
+    });
+    expect(DeploymentConfigV1Schema.safeParse(withDatasets([dataset, dataset])).success).toBe(
+      false,
+    );
+    expect(
+      DeploymentConfigV1Schema.safeParse(
+        withDatasets([
+          dataset,
+          { ...dataset, datasetRef: { ...dataset.datasetRef, versionId: "v2" } },
+        ]),
+      ).success,
+    ).toBe(true);
+  });
+
+  it("检索数据集必须绑定已登记工程且文件位于 dataRoot 内", () => {
+    const config = baseConfig();
+    const dataset = config.retrievalQuality.datasets[0]!;
+    const withDatasets = (datasets: unknown[]) => ({
+      ...config,
+      retrievalQuality: { ...config.retrievalQuality, datasets },
+    });
+    expect(
+      DeploymentConfigV1Schema.safeParse(withDatasets([{ ...dataset, projectId: "project-other" }]))
+        .success,
+    ).toBe(false);
+    expect(
+      DeploymentConfigV1Schema.safeParse(
+        withDatasets([{ ...dataset, filePath: "/opt/riskflow/retrieval-datasets/v1.json" }]),
+      ).success,
+    ).toBe(false);
+    expect(
+      DeploymentConfigV1Schema.safeParse(withDatasets([withoutKey(dataset, "filePath")])).success,
+    ).toBe(false);
+  });
+
   it("只允许 activate/rollback 携带确认，并要求精确目标", () => {
     const operation = {
       schemaVersion: 1,
@@ -406,7 +479,7 @@ describe("部署 strict Schema", () => {
       },
       artifacts: [artifact],
       configTemplateRefs: ["config-template-primary"],
-      finalMigrationVersion: "000056",
+      finalMigrationVersion: "000058",
       operationsManualRef: "manual-operations",
     };
     expect(() => ReleaseManifestV1Schema.parse(manifest)).toThrow();
@@ -654,7 +727,7 @@ describe("显式初始化", () => {
           config: withoutKey(baseConfig(), "purpose"),
           migrationConnection: postgres.admin,
           migrationRoot: postgres.productionMigrationRoot,
-          finalMigrationVersion: "000056",
+          finalMigrationVersion: "000058",
           loginPasswords,
           checkpointerConnection,
         } as never),
@@ -665,12 +738,12 @@ describe("显式初始化", () => {
         // 初始化是显式部署动作，使用高权限连接；运行主体不得复用。
         migrationConnection: postgres.admin,
         migrationRoot: postgres.productionMigrationRoot,
-        finalMigrationVersion: "000056",
+        finalMigrationVersion: "000058",
         loginPasswords,
         checkpointerConnection,
         initialAdministrator,
       });
-      expect(first.currentMigrationVersion).toBe("000056");
+      expect(first.currentMigrationVersion).toBe("000058");
       expect(first.initialAdministratorCreated).toBe(true);
       expect(first.createdLoginRoles).toEqual([
         "ip02_migrator_login",
@@ -691,8 +764,8 @@ describe("显式初始化", () => {
         );
         try {
           await expect(
-            assertCompatibleMigrationVersion(runtime.db as unknown as Kysely<unknown>, "000056"),
-          ).resolves.toBe("000056");
+            assertCompatibleMigrationVersion(runtime.db as unknown as Kysely<unknown>, "000058"),
+          ).resolves.toBe("000058");
           const privileges = await sql<{ canWrite: boolean; canReadLock: boolean }>`SELECT
             has_table_privilege(current_user, 'business._riskflow_migration', 'INSERT,UPDATE,DELETE') AS "canWrite",
             has_table_privilege(current_user, 'business._riskflow_migration_lock', 'SELECT') AS "canReadLock"`.execute(
@@ -733,7 +806,7 @@ describe("显式初始化", () => {
         config,
         migrationConnection: postgres.admin,
         migrationRoot: postgres.productionMigrationRoot,
-        finalMigrationVersion: "000056",
+        finalMigrationVersion: "000058",
         loginPasswords: { ...loginPasswords, checkpointerRoleName: "changed-secret" },
         checkpointerConnection,
         initialAdministrator: {
@@ -742,7 +815,7 @@ describe("显式初始化", () => {
         },
       });
       expect(replay.appliedMigrations).toEqual([]);
-      expect(replay.currentMigrationVersion).toBe("000056");
+      expect(replay.currentMigrationVersion).toBe("000058");
       expect(replay.initialAdministratorCreated).toBe(false);
       const accounts = await postgres.adminPool.query<{ count: string }>(
         "SELECT count(*)::text AS count FROM business.local_accounts",

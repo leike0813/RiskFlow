@@ -17,6 +17,11 @@ import type {
   OutboxDeliveryPolicyV1,
   TransactionContextV1,
 } from "@riskflow/core/persistence";
+import {
+  CHECKPOINT_RUNTIME_CONTEXT_KEY_V1,
+  sha256CanonicalJson,
+  type CheckpointRuntimeContextV1,
+} from "@riskflow/core/persistence";
 
 import {
   createPostgresCheckpointer,
@@ -24,6 +29,7 @@ import {
   createPostgresOutbox,
   createPostgresTransactionUnit,
   setupPostgresCheckpointer,
+  type CheckpointReferenceValidationContextV1,
   type PostgresCheckpointer,
 } from "../../src/postgres/index.js";
 import { getPostgresTransaction } from "../../src/postgres/transaction-unit.js";
@@ -72,6 +78,8 @@ import * as humanDecisionFeedbackMigration from "../../src/postgres/migrations/w
 import * as riskRecordAssessmentScopeMigration from "../../src/postgres/migrations/risk-identification/deliver-assessment-warning-and-response-ui/000054_risk_record_assessment_scope.js";
 import * as assessmentEntryCatalogCursorKeysMigration from "../../src/postgres/migrations/engineering-data/fix-assessment-entry-read-seam/000055_assessment_entry_catalog_cursor_keys.js";
 import * as deploymentOperationsMigration from "../../src/postgres/migrations/platform/deliver-offline-private-deployment-and-operations/000056_deployment_operations.js";
+import * as workflowRunEventsMigration from "../../src/postgres/migrations/workflow/deliver-offline-private-deployment-and-operations/000057_workflow_run_events.js";
+import * as assessmentEntrySnapshotMigration from "../../src/postgres/migrations/workflow/deliver-offline-private-deployment-and-operations/000058_assessment_entry_snapshot_reference.js";
 
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
 import * as agentTaskFixtureMigration from "./fixtures/migrations/agent-task/deliver-unified-bounded-agent-runtime/900002_agent_task_fixture.js";
@@ -551,6 +559,24 @@ const testMigrationManifest = [
     module: deploymentOperationsMigration,
   },
   {
+    root: "production",
+    relativePath:
+      "workflow/deliver-offline-private-deployment-and-operations/000057_workflow_run_events.ts",
+    migrationName:
+      "000057_workflow_deliver-offline-private-deployment-and-operations_workflow_run_events",
+    sequence: 57,
+    module: workflowRunEventsMigration,
+  },
+  {
+    root: "production",
+    relativePath:
+      "workflow/deliver-offline-private-deployment-and-operations/000058_assessment_entry_snapshot_reference.ts",
+    migrationName:
+      "000058_workflow_deliver-offline-private-deployment-and-operations_assessment_entry_snapshot_reference",
+    sequence: 58,
+    module: assessmentEntrySnapshotMigration,
+  },
+  {
     root: "fixture",
     relativePath:
       "platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.ts",
@@ -980,6 +1006,257 @@ describe("PostgreSQL foundation", () => {
     expect(events.rows[0]?.recorded_at.toISOString()).toBe(laterTimestamp);
   });
 
+  it("proves only committed startup bindings for the exact project, run version and thread", async () => {
+    for (const commandKind of [
+      "workflow.start-run",
+      "identification-graph.start",
+      "assessment-graph.start",
+    ]) {
+      const suffix = nextId("startup-binding");
+      const runRef = {
+        kind: "workflow-run" as const,
+        reference: { entityId: `run-${suffix}`, versionId: "v1" },
+      };
+      const command = {
+        ...makeCommand(suffix),
+        commandKind,
+        runId: runRef.reference.entityId,
+        threadId: `thread-${suffix}`,
+      };
+      const query = { projectId: command.projectId, runRef, threadId: command.threadId };
+      const parentRunRef = {
+        kind: "workflow-run" as const,
+        reference: { entityId: `parent-${suffix}`, versionId: "parent-v1" },
+      };
+      expect(await transactionUnit!.readWorkflowRunBinding(query)).toBe(false);
+      await transactionUnit!.execute(command, async () => {
+        expect(await transactionUnit!.readWorkflowRunBinding(query)).toBe(false);
+        const commit = makeCommit(command, suffix, 0);
+        return {
+          ...commit,
+          resultRef: runRef,
+          audit: {
+            ...commit.audit,
+            action: commandKind,
+            targetRef: runRef,
+            reasonRef: parentRunRef,
+          },
+        };
+      });
+      expect(await transactionUnit!.readWorkflowRunBinding(query)).toBe(true);
+      expect(
+        await transactionUnit!.readWorkflowRunBinding({
+          ...query,
+          actorId: command.actorRef,
+          authorizationContextRef: command.authorizationContextRef,
+        }),
+      ).toBe(true);
+      expect(
+        await transactionUnit!.readWorkflowRunBinding({
+          ...query,
+          parentRunRef,
+        }),
+      ).toBe(commandKind !== "workflow.start-run");
+      expect(
+        await transactionUnit!.readWorkflowRunBinding({
+          projectId: command.projectId,
+          runRef,
+          parentRunRef,
+        }),
+      ).toBe(commandKind !== "workflow.start-run");
+      for (const rejected of [
+        { ...query, actorId: "another-actor" },
+        {
+          ...query,
+          authorizationContextRef: {
+            ...command.authorizationContextRef,
+            reference: { ...command.authorizationContextRef.reference, versionId: "absent" },
+          },
+        },
+        { ...query, projectId: `other-${command.projectId}` },
+        { ...query, threadId: `other-${command.threadId}` },
+        { ...query, runRef: { ...runRef, reference: { ...runRef.reference, versionId: "v2" } } },
+        {
+          ...query,
+          parentRunRef: {
+            ...parentRunRef,
+            reference: { ...parentRunRef.reference, versionId: "parent-v2" },
+          },
+        },
+        {
+          ...query,
+          parentRunRef: {
+            ...parentRunRef,
+            reference: { ...parentRunRef.reference, entityId: "another-parent" },
+          },
+        },
+        { projectId: command.projectId, runRef },
+      ])
+        expect(await transactionUnit!.readWorkflowRunBinding(rejected)).toBe(false);
+    }
+    for (const rollback of [false, true]) {
+      const suffix = nextId("unaccepted-binding");
+      const runRef = {
+        kind: "workflow-run" as const,
+        reference: { entityId: `run-${suffix}`, versionId: "v1" },
+      };
+      const command = {
+        ...makeCommand(suffix),
+        commandKind: rollback ? "assessment-graph.start" : "fixture-command",
+        runId: runRef.reference.entityId,
+        threadId: `thread-${suffix}`,
+      };
+      const execution = transactionUnit!.execute(command, async () => {
+        if (rollback) throw new Error("rollback");
+        return { ...makeCommit(command, suffix, 0), resultRef: runRef };
+      });
+      if (rollback) await expect(execution).rejects.toMatchObject({ code: "TRANSACTION_FAILED" });
+      else await execution;
+      expect(
+        await transactionUnit!.readWorkflowRunBinding({
+          projectId: command.projectId,
+          runRef,
+          threadId: command.threadId,
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it("运行事件与原提交同事务登记，回滚或重放不产生额外游标", async () => {
+    const command = makeCommand(nextId("run-event"));
+    const commit = makeCommit(command, command.commandId);
+    const run = workflowRunRef("run-event");
+    commit.events[0] = { ...commit.events[0]!, aggregateRef: run };
+    await transactionUnit!.execute(command, async () => commit);
+    await transactionUnit!.execute(command, async () => {
+      throw new Error("replay must not execute");
+    });
+    const registered = await fixture!.adminPool.query(
+      "SELECT run_id, run_version_id, event_id FROM business.workflow_run_events WHERE event_id = $1",
+      [commit.events[0].eventId],
+    );
+    expect(registered.rows).toEqual([
+      {
+        run_id: run.reference.entityId,
+        run_version_id: run.reference.versionId,
+        event_id: commit.events[0].eventId,
+      },
+    ]);
+    const rollback = makeCommand(nextId("run-event-rollback"));
+    const failed = makeCommit(rollback, rollback.commandId, 2);
+    failed.events = failed.events.map((event) => ({ ...event, aggregateRef: run }));
+    failed.events[1] = { ...failed.events[1]!, eventId: commit.events[0].eventId };
+    await expect(transactionUnit!.execute(rollback, async () => failed)).rejects.toMatchObject({
+      code: "TRANSACTION_FAILED",
+    });
+    const missing = await fixture!.adminPool.query(
+      "SELECT event_id FROM business.workflow_run_events WHERE event_id = $1",
+      [failed.events[0]!.eventId],
+    );
+    expect(missing.rows).toEqual([]);
+    const app = createPostgresRuntime(fixture!.app, "riskflow_app");
+    try {
+      const privileges = await sql<{ read: boolean; write: boolean }>`SELECT
+        has_table_privilege(current_user, 'business.workflow_run_events', 'SELECT') AS read,
+        has_table_privilege(current_user, 'business.workflow_run_events', 'INSERT,UPDATE,DELETE,TRUNCATE') AS write`.execute(
+        app.db,
+      );
+      expect(privileges.rows[0]).toEqual({ read: true, write: false });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("同工程并发事务按提交顺序登记运行游标", async () => {
+    const first = makeCommand(nextId("run-order"));
+    const second = { ...makeCommand(nextId("run-order")), projectId: first.projectId };
+    const firstCommit = makeCommit(first, first.commandId);
+    const secondCommit = makeCommit(second, second.commandId);
+    const run = workflowRunRef("run-order");
+    firstCommit.events[0] = { ...firstCommit.events[0]!, aggregateRef: run };
+    secondCommit.events[0] = { ...secondCommit.events[0]!, aggregateRef: run };
+    let release!: () => void;
+    let inserted!: () => void;
+    const holding = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      inserted = resolve;
+    });
+    const firstRuntime = createPostgresRuntime(fixture!.app, "riskflow_app");
+    const secondRuntime = createPostgresRuntime(fixture!.app, "riskflow_app");
+    const insertEvent = async (db: typeof firstRuntime.db, event: DomainEventV1) => {
+      await db
+        .insertInto("outbox.events")
+        .values({
+          event_id: event.eventId,
+          event_type: event.eventType,
+          schema_version: event.schemaVersion,
+          event_version: event.eventVersion,
+          project_id: event.projectId,
+          aggregate_ref: event.aggregateRef as never,
+          occurred_at: event.occurredAt,
+          recorded_at: event.recordedAt,
+          persisted_at: timestamp,
+          causation_id: event.causationId,
+          correlation_id: event.correlationId,
+          producer_command_id: event.producerCommandId,
+          idempotency_key: event.idempotencyKey,
+          authorization_context_ref: event.authorizationContextRef as never,
+          audit_trail_ref: event.auditTrailRef as never,
+          event_json: event as never,
+          payload_sha256: sha256CanonicalJson(event),
+          status: "pending",
+          lease_owner: null,
+          lease_token: null,
+          lease_until: null,
+          attempt_count: 0,
+          delivery_policy_ref: null,
+          delivery_policy_snapshot: null,
+          delivery_policy_sha256: null,
+          next_attempt_at: timestamp,
+          published_at: null,
+          last_error_code: null,
+          last_diagnostic_ref: null,
+          updated_at: timestamp,
+        })
+        .execute();
+    };
+    let blocked: Promise<void> | undefined;
+    const earlier = firstRuntime.db.transaction().execute(async (tx) => {
+      await insertEvent(tx, firstCommit.events[0]!);
+      inserted();
+      await holding;
+    });
+    try {
+      await Promise.race([ready, earlier]);
+      blocked = secondRuntime.db.transaction().execute(async (tx) => {
+        await sql`SET LOCAL lock_timeout = '150ms'`.execute(tx);
+        await insertEvent(tx, secondCommit.events[0]!);
+      });
+      await expect(blocked).rejects.toMatchObject({ code: "55P03" });
+      release();
+      await earlier;
+      await secondRuntime.db.transaction().execute(async (tx) => {
+        await insertEvent(tx, secondCommit.events[0]!);
+      });
+      const rows = await fixture!.adminPool.query(
+        "SELECT event_id FROM business.workflow_run_events WHERE project_id = $1 ORDER BY event_order",
+        [first.projectId],
+      );
+      expect(rows.rows.map((row) => row.event_id)).toEqual([
+        firstCommit.events[0]!.eventId,
+        secondCommit.events[0]!.eventId,
+      ]);
+    } finally {
+      release();
+      await earlier.catch(() => undefined);
+      await blocked?.catch(() => undefined);
+      await firstRuntime.close();
+      await secondRuntime.close();
+    }
+  });
+
   it("narrows a multi-role login to the application role for atomic commands", async () => {
     const narrowedUnit = createPostgresTransactionUnit(fixture!.worker);
     const command = makeCommand(nextId("narrowed-role"));
@@ -1143,6 +1420,7 @@ describe("PostgreSQL foundation", () => {
   });
 
   it("claims, retries, confirms, reclaims and exhausts Outbox leases", async () => {
+    await fixture!.adminPool.query("DELETE FROM business.workflow_run_events");
     await fixture!.adminPool.query("DELETE FROM outbox.events");
     const firstSeed = await seedCommand(nextId("outbox"), 1);
     const firstPolicy = policy("first", { batchSize: 1 });
@@ -1272,6 +1550,7 @@ describe("PostgreSQL foundation", () => {
   });
 
   it("freezes Outbox policy and exhausts leases after worker crashes", async () => {
+    await fixture!.adminPool.query("DELETE FROM business.workflow_run_events");
     await fixture!.adminPool.query("DELETE FROM outbox.events");
     const driftSeed = await seedCommand(nextId("outbox-policy-drift"), 7);
     const frozenPolicy = policy("frozen", {
@@ -1310,6 +1589,7 @@ describe("PostgreSQL foundation", () => {
       }),
     ).rejects.toMatchObject({ code: "TRANSACTION_FAILED", stage: "outbox.policy" });
 
+    await fixture!.adminPool.query("DELETE FROM business.workflow_run_events");
     await fixture!.adminPool.query("DELETE FROM outbox.events");
     const crashSeed = await seedCommand(nextId("outbox-crash"), 8);
     const crashPolicy = policy("crash", {
@@ -1609,6 +1889,135 @@ describe("PostgreSQL foundation", () => {
       "SELECT count(*)::int AS count FROM business.fixture_facts",
     );
     expect(businessRows.rows[0]?.count).toBeGreaterThan(0);
+  });
+
+  it("validates every checkpoint operation against the current runtime context", async () => {
+    const observed: CheckpointReferenceValidationContextV1[] = [];
+    const contextSaver = await setupPostgresCheckpointer({
+      ...fixture!.checkpointer,
+      validateReference: (_reference, context) => {
+        observed.push(context);
+        return true;
+      },
+    });
+    const legacySaver = createPostgresCheckpointer({
+      ...fixture!.checkpointer,
+      validateReference: () => true,
+    });
+    const threadId = nextId("checkpoint-context-thread");
+    const stateSuffix = nextId("checkpoint-context-state");
+    const graphState = riskFlowGraphState(threadId, stateSuffix);
+    const projectId = nextId("checkpoint-context-project");
+    const actorId = nextId("checkpoint-context-actor");
+    const runtimeContext: CheckpointRuntimeContextV1 = {
+      schemaVersion: "1",
+      projectId,
+      actorId,
+      threadId,
+      runRef: graphState.runRef,
+      authorization: {
+        schemaVersion: "1",
+        authorizationContextRef: authorizationContextRef(stateSuffix),
+        actorId,
+        projectId,
+        grantedCapabilities: ["risk-assessment.read"],
+        spatialScopeRefs: [],
+        sourceAccessGrantRefs: [],
+        authorizationPolicyRef: { entityId: "riskflow-policy", versionId: "v1" },
+        decidedAt: timestamp,
+        invocation: { kind: "human" },
+      },
+      invocationId: nextId("checkpoint-context-invocation"),
+    };
+    const withContext = (context: unknown) => ({
+      configurable: {
+        thread_id: threadId,
+        checkpoint_ns: "",
+        [CHECKPOINT_RUNTIME_CONTEXT_KEY_V1]: context,
+      },
+    });
+    const channelVersions = {
+      ...Object.fromEntries(Object.keys(graphState).map((channel) => [channel, 1])),
+      __pregel_tasks: 1,
+    };
+    const checkpoint = {
+      v: 4,
+      id: `2f000000-0000-6000-8000-${String(sequence).padStart(12, "0")}`,
+      ts: timestamp,
+      channel_values: { ...graphState, __pregel_tasks: [] },
+      channel_versions: channelVersions,
+      versions_seen: { input: channelVersions },
+    } as Parameters<PostgresCheckpointer["put"]>[1];
+    const metadata = {
+      source: "loop",
+      step: 1,
+      parents: {},
+      schemaVersion: "1",
+      runId: nextId("checkpoint-context-run"),
+      threadId,
+      commandId: nextId("checkpoint-context-command"),
+      eventId: nextId("checkpoint-context-event"),
+      graphVersion: { entityId: "risk-flow-graph", versionId: "v1" },
+      resultRef: resultRef(stateSuffix),
+    } as Parameters<PostgresCheckpointer["put"]>[2];
+    const savedConfig = await contextSaver.put(
+      withContext(runtimeContext),
+      checkpoint,
+      metadata,
+      channelVersions,
+    );
+    expect(savedConfig.configurable?.[CHECKPOINT_RUNTIME_CONTEXT_KEY_V1]).toEqual(runtimeContext);
+    const readConfig = savedConfig;
+    await contextSaver.putWrites(readConfig, [["stage", "result-summary"]], "context-task");
+    await expect(contextSaver.getTuple(readConfig)).resolves.toMatchObject({
+      checkpoint: { id: checkpoint.id },
+    });
+    const listed = [];
+    for await (const item of contextSaver.list(withContext(runtimeContext))) listed.push(item);
+    expect(listed).toHaveLength(1);
+
+    expect(new Set(observed.map((context) => context.operation))).toEqual(
+      new Set(["put", "put-writes", "get", "list"]),
+    );
+    for (const context of observed) {
+      expect(context.runtimeContext).toEqual(runtimeContext);
+      expect(context.state).toMatchObject({ threadId, runRef: graphState.runRef });
+    }
+    await expect(
+      legacySaver.getTuple({ configurable: { thread_id: threadId, checkpoint_ns: "" } }),
+    ).resolves.toMatchObject({ checkpoint: { id: checkpoint.id } });
+
+    const otherThread = nextId("checkpoint-context-other-thread");
+    const otherRunRef = {
+      kind: graphState.runRef.kind,
+      reference: { entityId: graphState.runRef.reference.entityId, versionId: "v2" },
+    };
+    for (const rejectedContext of [
+      { ...runtimeContext, threadId: otherThread },
+      { ...runtimeContext, runRef: otherRunRef },
+      { ...runtimeContext, schemaVersion: "2" },
+      {
+        ...runtimeContext,
+        authorization: { ...runtimeContext.authorization, projectId: nextId("other-project") },
+      },
+    ]) {
+      await expect(
+        contextSaver.put(withContext(rejectedContext), checkpoint, metadata, channelVersions),
+      ).rejects.toMatchObject({
+        code: "CHECKPOINT_INCONSISTENT",
+        stage: "checkpointer.runtime-context",
+      });
+    }
+    await expect(
+      contextSaver.getTuple(withContext({ ...runtimeContext, runRef: otherRunRef })),
+    ).rejects.toMatchObject({
+      code: "CHECKPOINT_INCONSISTENT",
+      stage: "checkpointer.runtime-context",
+    });
+
+    await contextSaver.deleteThread(threadId);
+    await contextSaver.end();
+    await legacySaver.end();
   });
 
   it("adds durable catalog cursor keys with backfill, fresh defaults, uniqueness and stable grants", async () => {

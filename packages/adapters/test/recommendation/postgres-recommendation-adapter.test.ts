@@ -171,6 +171,73 @@ describe("C27 处置建议 PostgreSQL 链", () => {
     ).toBe(1);
   });
 
+  pgIt("检查点候选证明只接受当前权限与精确工程、版本、父运行归属且不写事实", async () => {
+    const state = fixture!;
+    const { agent } = await freezeAndBind({ prefix: "c27-checkpoint-proof", assessments: 1 });
+    const candidateRef = agent.candidateRef!;
+    const candidate = await state.candidatePayload(candidateRef);
+    const invocationId = "c27-checkpoint-proof-read";
+    const authorization = await state.c26.readAuthorization(invocationId);
+    const input = {
+      projectId: state.projectId,
+      actorId: state.managerId,
+      requestedAt: authorization.decidedAt,
+      invocationId,
+      authorization,
+      recommendationCandidateRef: candidateRef,
+      parentRunRef: candidate.parentRunRef,
+    };
+    const receiptsBefore = await state.openReceiptCount();
+    const candidatesBefore = await state.countRows("recommendation_candidates");
+    const auditBefore = await state.countAudit("warning-response.create-candidate");
+    expect(await state.adapter.verifyRecommendationCandidateReference(input)).toBe(true);
+    for (const invalid of [
+      { projectId: "other-project" },
+      { actorId: "other-actor" },
+      { invocationId: "unsigned-invocation" },
+      { authorization: { ...authorization, grantedCapabilities: [] } },
+      {
+        recommendationCandidateRef: {
+          ...candidateRef,
+          reference: { ...candidateRef.reference, versionId: "other-version" },
+        },
+      },
+      {
+        recommendationCandidateRef: {
+          ...candidateRef,
+          reference: { ...candidateRef.reference, entityId: "missing-candidate" },
+        },
+      },
+      {
+        parentRunRef: {
+          ...candidate.parentRunRef,
+          reference: { ...candidate.parentRunRef.reference, versionId: "other-version" },
+        },
+      },
+    ]) {
+      expect(
+        await state.adapter.verifyRecommendationCandidateReference({ ...input, ...invalid }),
+      ).toBe(false);
+    }
+    const restrictedId = "c27-checkpoint-proof-restricted";
+    const restrictedAuthorization = await state.c26.restrictedReadAuthorization(restrictedId, [
+      {
+        kind: "spatial-scope",
+        reference: { entityId: "scope-c27-restricted", versionId: "scope-c27-restricted-r1" },
+      },
+    ]);
+    expect(
+      await state.adapter.verifyRecommendationCandidateReference({
+        ...input,
+        invocationId: restrictedId,
+        authorization: restrictedAuthorization,
+      }),
+    ).toBe(false);
+    expect(await state.openReceiptCount()).toBe(receiptsBefore);
+    expect(await state.countRows("recommendation_candidates")).toBe(candidatesBefore);
+    expect(await state.countAudit("warning-response.create-candidate")).toBe(auditBefore);
+  });
+
   pgIt("不合格来源不能进入候选，无合格措施时结构化阻塞", async () => {
     const state = fixture!;
     const baseline = await state.countRows("measure_candidate_queries");

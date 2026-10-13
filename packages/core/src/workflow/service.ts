@@ -4,6 +4,7 @@
  */
 import { sha256CanonicalJson } from "@riskflow/core/persistence";
 import type { VersionReference } from "@riskflow/contracts/common";
+import type { AssessmentEntrySnapshotRefV1 } from "@riskflow/contracts/workflows";
 import type {
   ApplicabilityMetadataSnapshotRefV1,
   AuthorizationContextV1,
@@ -57,6 +58,14 @@ export type WorkflowRegisterOutcomeV1 =
  * 传入 `context` 时复用调用方事务，缺省时自行开启。只 INSERT，新状态追加版本。
  */
 export interface WorkflowGraphRegistrationStoreV1 {
+  readAssessmentEntrySnapshot(input: {
+    readonly projectId: string;
+    readonly runId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly invocationId: string;
+    readonly authorization: AuthorizationContextV1;
+  }): Promise<AssessmentEntrySnapshotRefV1 | undefined>;
   assertCurrentRunVersion(
     input: {
       readonly projectId: string;

@@ -136,6 +136,8 @@ import {
   type WarningResponseReadPortV1,
   type WarningResponseReadQueryV1,
   type RunSubscriptionRequestV1,
+  type AuthorizationContextV1,
+  type ProjectionSubscriptionResultV1,
   type SpatialScopeRefV1,
   type SourceAccessGrantRefV1,
   type SourceVersionRefV1,
@@ -463,6 +465,16 @@ export interface ApiPortsV1 {
   readonly agentTask?: AgentTaskPortV1;
   readonly workflow?: WorkflowPortV1;
   readonly projection?: ProjectionPortV1;
+  /** SSE 逐事件签发后复验；HTTP 负责当前会话，reader 负责精确运行与事件范围。 */
+  readonly runEventSubscription?: {
+    subscribeWithSourceAuthorization(
+      request: RunSubscriptionRequestV1,
+      authorizeEvent: (scope: {
+        readonly spatialScopeRefs: readonly SpatialScopeRefV1[];
+        readonly sourceVersionRefs: readonly SourceVersionRefV1[];
+      }) => Promise<{ readonly queryId: string; readonly authorization: AuthorizationContextV1 }>,
+    ): Promise<ProjectionSubscriptionResultV1>;
+  };
   // C32 只读面四条独立注入位；未注入时对应七条查询分支不激活（C32 接线 D 案）。
   readonly engineeringDataCatalog?: EngineeringDataCatalogPortV1;
   readonly knowledgeGovernanceRead?: KnowledgeGovernanceReadPortV1;

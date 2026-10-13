@@ -892,6 +892,42 @@ describe("C15 PostgreSQL data cleaning store", () => {
     expect(audits.rows[0]?.target_ref).toEqual(snapshotRef);
   }, 240_000);
 
+  it("检查点准备证明核验精确引用且不产生读取回执、审计或工件访问记录", async () => {
+    const { world, snapshotRef } = await prepareExactReadWorld();
+    const requestId = "c15-checkpoint-preparation-proof";
+    const authorization = await world.authorizeEvidenceAccess(requestId, world.sourceVersionRefs());
+    const input = {
+      projectId: world.projectId,
+      actorId: world.uploaderId,
+      requestId,
+      requestedAt: authorization.decidedAt,
+      authorization,
+      preparationSnapshotRef: snapshotRef,
+    };
+    const before = await exactReadCounts(world.projectId, requestId);
+    expect(await world.pipeline.store.verifyPreparationReference(input)).toBe(true);
+    expect(await world.pipeline.store.verifyPreparationReference(input)).toBe(true);
+    for (const overrides of [
+      { projectId: main.projectId },
+      { actorId: world.freezerId },
+      { requestId: "unissued-checkpoint-proof" },
+      {
+        preparationSnapshotRef: {
+          ...snapshotRef,
+          reference: {
+            ...snapshotRef.reference,
+            versionId: "absent-version",
+          },
+        },
+      },
+    ]) {
+      expect(
+        await world.pipeline.store.verifyPreparationReference({ ...input, ...overrides }),
+      ).toBe(false);
+    }
+    expect(await exactReadCounts(world.projectId, requestId)).toEqual(before);
+  }, 240_000);
+
   it("识别准备精确读取不可枚举：缺失、跨工程、actor 不符、旧 payload 与绑定失配同形", async () => {
     const { world, snapshotRef } = await prepareExactReadWorld();
     const authorization = await world.authorizeEvidenceAccess(

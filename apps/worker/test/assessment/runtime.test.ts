@@ -656,6 +656,8 @@ const startHarness = async (): Promise<AssessmentGraphHarnessV1> => {
           actorId: ACTOR_ID,
           authorization: AUTHORIZATION,
           commandId,
+          issuedInvocationId: commandId,
+          authorizationBranch: "workflow.start-run",
           idempotencyKey: commandId,
           issuedAt: now().toISOString(),
           validAt: now().toISOString(),
@@ -952,6 +954,17 @@ describe("C30 评估子图运行时（真实 PostgreSQL + 真实 LangGraph）", 
     expect(outcome.disposition).toBe("created");
     expect(outcome.status).toBe("completed");
     expect(outcome.stage).toBe("A9");
+    expect(
+      await createPostgresTransactionUnit(harness.app).readWorkflowRunBinding({
+        projectId: PROJECT_ID,
+        runRef: outcome.runRef,
+        parentRunRef: harness.scope({
+          entryMode: "historical-backfill",
+          frozenRefs: inputs.frozenRefs,
+          riskRecordRef: inputs.riskInput,
+        }).parentRunRef,
+      }),
+    ).toBe(true);
     expect(outcome.assessmentRunRefs).toEqual([]);
 
     // C11 冻结命令只携带历史入口的显式引用：历史修订、历史依据与显式监控集合。

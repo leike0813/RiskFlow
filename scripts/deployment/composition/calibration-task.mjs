@@ -127,7 +127,7 @@ export const createDeploymentCalibrationTaskPortV1 = ({ artifactStore, access })
     throw new TypeError("CALIBRATION_TASK_ACCESS_INVALID");
   }
 
-  const resolve = async ({ task: inputTask, candidate: inputCandidate, stage }) => {
+  const readModelInput = async (inputTask) => {
     const task = {
       ...inputTask,
       envelope: AgentTaskEnvelopeV1Schema.parse(inputTask.envelope),
@@ -136,7 +136,6 @@ export const createDeploymentCalibrationTaskPortV1 = ({ artifactStore, access })
       budgetLedger: AgentBudgetLedgerV1Schema.parse(inputTask.budgetLedger),
     };
     const envelope = task.envelope;
-    const candidate = CalibrationCandidateV1Schema.parse(inputCandidate);
     if (
       envelope.taskType !== CALIBRATION_AGENT_TASK_TYPE_V1 ||
       envelope.triggerMode !== "embedded" ||
@@ -148,15 +147,7 @@ export const createDeploymentCalibrationTaskPortV1 = ({ artifactStore, access })
       !sameRef(task.budgetPolicy.policyRef, envelope.budgetPolicyRef) ||
       !sameRef(task.budgetPolicy.modelDeploymentRef, envelope.modelDeploymentRef) ||
       !sameRef(task.budgetPolicy.promptTemplateRef, envelope.promptTemplateRef) ||
-      !sameRef(task.budgetPolicy.toolPolicyRef, envelope.toolPolicyRef) ||
-      !sameTypedRef(candidate.taskRef, envelope.agentTaskRef) ||
-      candidate.resultRef.status !== "completed" ||
-      !sameTypedRef(candidate.resultRef.agentTaskRef, envelope.agentTaskRef) ||
-      candidate.resultRef.candidateRef?.kind !== "calibration-suggestion" ||
-      canonicalJson(candidate.resultRef) !==
-        canonicalJson(
-          buildCompletedAgentTaskResult(envelope.agentTaskRef, candidate.resultRef.candidateRef),
-        )
+      !sameRef(task.budgetPolicy.toolPolicyRef, envelope.toolPolicyRef)
     )
       throw new TypeError("CALIBRATION_TASK_BINDING_INVALID");
 
@@ -172,6 +163,7 @@ export const createDeploymentCalibrationTaskPortV1 = ({ artifactStore, access })
     });
     const authorization = authorizationDecision.context;
     if (
+      authorizationDecision.redacted === true ||
       authorization.projectId !== envelope.projectId ||
       authorization.actorId !== envelope.actorId ||
       authorization.grantedCapabilities.length !== 1 ||
@@ -206,8 +198,7 @@ export const createDeploymentCalibrationTaskPortV1 = ({ artifactStore, access })
       !sameRef(snapshot.promptTemplateRef, envelope.promptTemplateRef) ||
       !sameRef(snapshot.toolPolicyRef, envelope.toolPolicyRef) ||
       !sameRef(snapshot.budgetPolicyRef, envelope.budgetPolicyRef) ||
-      !sameRef(snapshot.calibrationValidationPolicyRef, envelope.validationPolicyRef) ||
-      !sameRef(candidate.inputSnapshotRef.reference, derived.reference)
+      !sameRef(snapshot.calibrationValidationPolicyRef, envelope.validationPolicyRef)
     )
       throw new TypeError("CALIBRATION_TASK_SNAPSHOT_BINDING_INVALID");
 
@@ -230,6 +221,26 @@ export const createDeploymentCalibrationTaskPortV1 = ({ artifactStore, access })
     if (digestDocument(snapshot.targetDefinitionType, document) !== snapshot.baseContentDigest) {
       throw new TypeError("CALIBRATION_TASK_BASE_DIGEST_MISMATCH");
     }
+    return { task, snapshot, inputSnapshotRef: derived, document, authorization };
+  };
+
+  const resolve = async ({ task: inputTask, candidate: inputCandidate, stage }) => {
+    const candidate = CalibrationCandidateV1Schema.parse(inputCandidate);
+    const envelope = AgentTaskEnvelopeV1Schema.parse(inputTask.envelope);
+    if (
+      !sameTypedRef(candidate.taskRef, envelope.agentTaskRef) ||
+      candidate.resultRef.status !== "completed" ||
+      !sameTypedRef(candidate.resultRef.agentTaskRef, envelope.agentTaskRef) ||
+      candidate.resultRef.candidateRef?.kind !== "calibration-suggestion" ||
+      canonicalJson(candidate.resultRef) !==
+        canonicalJson(
+          buildCompletedAgentTaskResult(envelope.agentTaskRef, candidate.resultRef.candidateRef),
+        )
+    )
+      throw new TypeError("CALIBRATION_TASK_BINDING_INVALID");
+    const { snapshot, inputSnapshotRef, document, authorization } = await readModelInput(inputTask);
+    if (!sameTypedRef(candidate.inputSnapshotRef, inputSnapshotRef))
+      throw new TypeError("CALIBRATION_TASK_SNAPSHOT_BINDING_INVALID");
     const outcome = validateCalibrationCandidate({
       definitionType: snapshot.targetDefinitionType,
       document,
@@ -300,6 +311,7 @@ export const createDeploymentCalibrationTaskPortV1 = ({ artifactStore, access })
   };
 
   return Object.freeze({
+    readModelInput,
     async validateIncrement(input) {
       return (await resolve({ ...input, stage: "validate" })).validation;
     },

@@ -123,6 +123,6 @@
     }
   ],
   "configTemplateRefs": ["config-primary-2030-01"],
-  "finalMigrationVersion": "000056",
+  "finalMigrationVersion": "000058",
   "operationsManualRef": "manual-operations-2030-01"
 }

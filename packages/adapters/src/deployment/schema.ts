@@ -223,6 +223,13 @@ const businessPolicyBinding = z.strictObject({
     }),
 });
 
+/** D-19 检索质量输入：只登记受控数据集身份与 dataRoot 内文件路径，正文与符号链接检查由加载器完成。 */
+const retrievalQualityDataset = z.strictObject({
+  projectId: IdentifierSchema,
+  datasetRef: VersionReferenceSchema,
+  filePath: absolutePath,
+});
+
 export const DeploymentConfigV1Schema = z
   .strictObject({
     schemaVersion: z.literal(1),
@@ -283,6 +290,11 @@ export const DeploymentConfigV1Schema = z
     health: healthBudget,
     log: logBudget,
     projectBindings: z.array(businessPolicyBinding).min(1),
+    retrievalQuality: z.strictObject({
+      datasets: z.array(retrievalQualityDataset).min(1).max(256),
+      containerRuntime: z.string().min(1).max(256),
+      timeoutMs: positiveSafeInteger,
+    }),
   })
   .superRefine((config, context) => {
     if (
@@ -362,6 +374,38 @@ export const DeploymentConfigV1Schema = z
         path: ["database", "rolePasswordSecretIds"],
         message: "each login role and HMAC key requires a distinct secret id",
       });
+    }
+    const boundProjectIds = new Set(config.projectBindings.map(({ projectId }) => projectId));
+    const dataRoot = config.localRoots.dataRoot.replace(/\/$/, "");
+    const datasetKeys = new Set<string>();
+    for (const [index, dataset] of config.retrievalQuality.datasets.entries()) {
+      if (!boundProjectIds.has(dataset.projectId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["retrievalQuality", "datasets", index, "projectId"],
+          message: "retrieval dataset must reference a bound project",
+        });
+      }
+      const key = JSON.stringify([
+        dataset.projectId,
+        dataset.datasetRef.entityId,
+        dataset.datasetRef.versionId,
+      ]);
+      if (datasetKeys.has(key)) {
+        context.addIssue({
+          code: "custom",
+          path: ["retrievalQuality", "datasets", index, "datasetRef"],
+          message: "retrieval dataset project and exact version must be unique",
+        });
+      }
+      datasetKeys.add(key);
+      if (!dataset.filePath.startsWith(`${dataRoot}/`)) {
+        context.addIssue({
+          code: "custom",
+          path: ["retrievalQuality", "datasets", index, "filePath"],
+          message: "retrieval dataset file must be located inside the data root",
+        });
+      }
     }
   });
 export type DeploymentConfigV1 = z.infer<typeof DeploymentConfigV1Schema>;

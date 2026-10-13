@@ -67,6 +67,7 @@ export const REQUIRED_API_PORT_METHODS_V1 = Object.freeze({
   agentTaskRead: ["read"],
   workflow: ["startRun", "resumeRun", "cancelRun"],
   projection: ["query", "subscribe", "export"],
+  runEventSubscription: ["subscribeWithSourceAuthorization"],
   projectionResultRead: ["readPage"],
   projectionReportRead: ["read"],
   qualityProjectionQuery: ["query", "candidateSourceVersionRefs", "queryWithSourceGrants"],
@@ -114,7 +115,7 @@ export const REQUIRED_API_PROVIDERS_V1 = Object.freeze({
   workflowBodies: ["readBody"],
   riskRecordTrace: ["readBatch"],
   resultReadAuthorization: ["issueResultReadAuthorization"],
-  runEvents: ["subscribe"],
+  runEvents: ["subscribe", "subscribeWithSourceAuthorization"],
   projectPolicies: ["resolveProject"],
   systemOperations: ["probe", "readModelVersions"],
   // C32 检索结果再读取的两条既有窄读：关系上下文结果与正式混合结果读取。
@@ -382,6 +383,7 @@ export const createDeploymentApiPortsV1 = (options) => {
     agentTask: options.agentTask,
     agentTaskRead: options.agentTaskRead,
     workflow: options.workflow,
+    runEventSubscription: options.runEvents,
     ...createDeploymentApiReadProvidersV1(options),
     systemAdministration: options.access.systemAdministration,
   };

@@ -331,6 +331,23 @@ const setup = ({
 };
 
 describe("deployment calibration task port", () => {
+  it("模型读取复用真实冻结快照与基准核验，不生成候选或写入结果", async () => {
+    const fixture = setup();
+    const result = await fixture.port.readModelInput(fixture.task);
+    expect(result.snapshot).toEqual(inputSnapshot());
+    expect(result.inputSnapshotRef).toEqual(snapshotRef);
+    expect(result.document).toEqual(baseDocument());
+    expect(fixture.putCalls).toHaveLength(0);
+    for (const invalid of [
+      setup({ input: inputSnapshot({ modelDeploymentRef: ref("other-model") }) }),
+      setup({ input: inputSnapshot({ baseContentDigest: "0".repeat(64) }) }),
+      setup({ verified: false }),
+    ]) {
+      await expect(invalid.port.readModelInput(invalid.task)).rejects.toThrow();
+      expect(invalid.putCalls).toHaveLength(0);
+    }
+  });
+
   it("校验接受的候选并将 AgentValidationResult 写入 C04", async () => {
     const fixture = setup();
     const result = await fixture.port.validateIncrement({

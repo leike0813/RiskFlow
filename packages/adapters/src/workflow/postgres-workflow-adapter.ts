@@ -42,6 +42,11 @@ import {
   WorkflowRunCompletionProofResultV1Schema,
 } from "@riskflow/contracts/ports";
 import { ACCESS_POLICY_REF_V1, type LocalIdentityAccessV1 } from "@riskflow/core/access";
+import { authorizationScopeDigest } from "@riskflow/core/retrieval";
+import {
+  AssessmentEntrySnapshotRefV1Schema,
+  type AssessmentEntrySnapshotRefV1,
+} from "@riskflow/contracts/workflows";
 import {
   ArtifactPutCommandV1Schema,
   ArtifactReadRequestV1Schema,
@@ -403,6 +408,24 @@ export interface PostgresWorkflowAdapterOptionsV1 {
 }
 
 export interface PostgresWorkflowAdapterV1 {
+  verifyCheckpointWaitingReference(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly invocationId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly runRef: WorkflowRunRefV1;
+    readonly waitingRef: WaitingRefV1;
+  }): Promise<boolean>;
+  verifyCheckpointReference(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly invocationId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly runRef: WorkflowRunRefV1;
+    readonly reference: ContractReferenceV1;
+  }): Promise<boolean>;
   readonly registrationStore: WorkflowGraphRegistrationStoreV1;
   readonly bodies: WorkflowGraphBodyPortV1;
   /** C30 只读绑定证明（design D5）：按精确建议与运行返回已登记路由/运行/冻结事实，不写任何事实。 */
@@ -504,13 +527,16 @@ class WorkflowGraphPersistence {
    * 当前授权复验（design D-07）：`authorization` 提供复验身份，`verify` 返回当前收窄上下文；
    * 冻结引用不能替代它。任何形状不符或异常都按拒绝收口。
    */
-  async verifyAuthorization(input: {
-    readonly authorization: AuthorizationContextV1;
-    readonly projectId: string;
-    readonly actorId: string;
-    readonly invocationId: string;
-    readonly requestedAt?: string;
-  }): Promise<AuthorizationContextV1 | undefined> {
+  async verifyAuthorization(
+    input: {
+      readonly authorization: AuthorizationContextV1;
+      readonly projectId: string;
+      readonly actorId: string;
+      readonly invocationId: string;
+      readonly requestedAt?: string;
+    },
+    rejectRedacted = false,
+  ): Promise<AuthorizationContextV1 | undefined> {
     if (input.authorization.projectId !== input.projectId) return undefined;
     if (input.authorization.actorId !== input.actorId) return undefined;
     if (input.authorization.grantedCapabilities.length !== 1) return undefined;
@@ -529,7 +555,7 @@ class WorkflowGraphPersistence {
         requestedAt: input.requestedAt ?? this.#now().toISOString(),
       });
       const verified = AuthorizationContextV1Schema.safeParse(decision.context);
-      if (!verified.success) return undefined;
+      if (!verified.success || (rejectRedacted && decision.redacted)) return undefined;
       if (
         verified.data.projectId !== input.projectId ||
         verified.data.actorId !== input.actorId ||
@@ -740,6 +766,92 @@ class WorkflowGraphPersistence {
     return row === undefined ? undefined : workflowGraphResultRowFromDb(row);
   }
 
+  async verifyCheckpointWaitingReference(
+    input: Parameters<PostgresWorkflowAdapterV1["verifyCheckpointWaitingReference"]>[0],
+  ): Promise<boolean> {
+    const verified = await this.verifyAuthorization(input, true);
+    if (verified === undefined) return false;
+    const waitingRef = WaitingRefV1Schema.parse(input.waitingRef);
+    const row = await this.#db
+      .selectFrom(RESULTS_TABLE)
+      .select("waiting_ref")
+      .where("project_id", "=", input.projectId)
+      .where("run_id", "=", input.runRef.reference.entityId)
+      .where("result_kind", "=", "waiting")
+      .where("actor_ref", "=", input.actorId)
+      .where("authorization_scope_digest", "=", authorizationScopeDigest(verified))
+      .where("waiting_ref", "=", sql<JsonValue>`${JSON.stringify(waitingRef)}::jsonb`)
+      .limit(1)
+      .executeTakeFirst();
+    return row !== undefined;
+  }
+
+  async verifyCheckpointReference(
+    input: Parameters<PostgresWorkflowAdapterV1["verifyCheckpointReference"]>[0],
+  ): Promise<boolean> {
+    const verified = await this.verifyAuthorization(input, true);
+    if (verified === undefined) return false;
+    const reference = input.reference;
+    if (
+      reference.kind !== "stage-result" &&
+      reference.kind !== "route-decision" &&
+      reference.kind !== "workflow-error" &&
+      reference.kind !== "assessment-run-result" &&
+      reference.kind !== "risk-flow-run-result"
+    )
+      return false;
+    const resultKind =
+      reference.kind === "assessment-run-result" || reference.kind === "risk-flow-run-result"
+        ? "run-result"
+        : reference.kind;
+    const row = await this.readRow({
+      projectId: input.projectId,
+      runId: input.runRef.reference.entityId,
+      resultKind,
+      resultId: reference.reference.entityId,
+      resultVersionId: reference.reference.versionId,
+    });
+    if (row === undefined || row.authorizationScopeDigest !== authorizationScopeDigest(verified))
+      return false;
+    const rowRef =
+      resultKind === "stage-result"
+        ? row.stageResultRef
+        : resultKind === "route-decision"
+          ? row.routeDecisionRef
+          : resultKind === "workflow-error"
+            ? row.workflowErrorRef
+            : row.runResultRef;
+    if (rowRef === undefined || !sameRef(rowRef, reference)) return false;
+    if (resultKind !== "run-result") return true;
+    if (row.artifactRef === undefined || this.#artifactStore.verifyContent === undefined)
+      return false;
+    return this.#artifactStore.verifyContent(
+      ArtifactReadRequestV1Schema.parse({
+        schemaVersion: "1",
+        projectId: input.projectId,
+        actorId: input.actorId,
+        requestId: input.invocationId,
+        idempotencyKey: input.invocationId,
+        requestedAt: input.requestedAt,
+        artifactRef: row.artifactRef,
+        purposeCode: WORKFLOW_GRAPH_BODY_PURPOSE_CODE_V1["run-result"],
+        requiredCapability: verified.grantedCapabilities[0],
+        authorization: verified,
+      }),
+      MAX_BODY_BYTES_V1,
+      (bytes) => {
+        const body = WorkflowGraphArtifactBodyV1Schema.parse(
+          JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
+        );
+        return (
+          body.bodyKind === "run-result" &&
+          body.runResult.projectId === input.projectId &&
+          sameRef(body.runResult.runRef, input.runRef)
+        );
+      },
+    );
+  }
+
   /** 已登记事实按持久化时间与稳定键排序，分页读取不改变顺序。 */
   async listRunRows(input: {
     readonly projectId: string;
@@ -792,6 +904,35 @@ class WorkflowGraphPersistence {
       requestedAt: input.requestedAt,
       verified,
     });
+  }
+
+  async readAssessmentEntrySnapshot(
+    input: Parameters<WorkflowGraphRegistrationStoreV1["readAssessmentEntrySnapshot"]>[0],
+  ): Promise<AssessmentEntrySnapshotRefV1 | undefined> {
+    const verified = await this.verifyAuthorization(input);
+    if (verified === undefined) return undefined;
+    const rows = await this.#db
+      .selectFrom(RESULTS_TABLE)
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("run_id", "=", input.runId)
+      .where("result_kind", "=", "entry-snapshot")
+      .limit(2)
+      .execute();
+    if (rows.length !== 1) return undefined;
+    const row = workflowGraphResultRowFromDb(rows[0]!);
+    if (row.authorizationScopeDigest !== authorizationScopeDigest(verified)) return undefined;
+    const ref = row.inputSnapshotRef;
+    const entry =
+      ref?.kind === "assessment-preparation-snapshot"
+        ? { kind: "assessment-preparation", assessmentPreparationSnapshotRef: ref }
+        : ref?.kind === "response-forecast-input-snapshot"
+          ? { kind: "forecast-input", responseForecastInputSnapshotRef: ref }
+          : ref?.kind === "response-feedback-input-snapshot"
+            ? { kind: "feedback-input", responseFeedbackInputSnapshotRef: ref }
+            : undefined;
+    const parsed = AssessmentEntrySnapshotRefV1Schema.safeParse(entry);
+    return row.stage === "A0" && parsed.success ? parsed.data : undefined;
   }
 
   /**
@@ -1892,6 +2033,7 @@ export const createPostgresWorkflowAdapter = (
 ): PostgresWorkflowAdapterV1 => {
   const persistence = new WorkflowGraphPersistence(options);
   const registrationStore: WorkflowGraphRegistrationStoreV1 = {
+    readAssessmentEntrySnapshot: (input) => persistence.readAssessmentEntrySnapshot(input),
     assertCurrentRunVersion: (input, context) =>
       persistence.assertCurrentRunVersion(input, context),
     registerRow: (input, context) => persistence.registerRow(input, context),
@@ -1904,6 +2046,9 @@ export const createPostgresWorkflowAdapter = (
     readQuery: (input) => persistence.readQuery(input),
   };
   return {
+    verifyCheckpointWaitingReference: (input) =>
+      persistence.verifyCheckpointWaitingReference(input),
+    verifyCheckpointReference: (input) => persistence.verifyCheckpointReference(input),
     registrationStore,
     bodies: {
       putBody: (input) => persistence.putBody(input),

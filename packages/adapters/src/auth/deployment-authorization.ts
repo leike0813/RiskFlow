@@ -76,7 +76,20 @@ export interface DeploymentCausalAuthorizationStoreV1 {
   }): Promise<readonly DeploymentCausalAuthorizationRowV1[]>;
 }
 
+export interface DeploymentDownstreamReadInputV1 {
+  readonly root: AuthorizationContextV1;
+  readonly branch: string;
+  readonly requestedSpatialScopeRefs: AuthorizationContextV1["spatialScopeRefs"];
+  readonly requestedSourceVersionRefs: AuthorizationRequestV1["requestedSourceVersionRefs"];
+}
+
 export interface DeploymentAuthorizationAdapterV1 {
+  /** 只复验并返回已有目标上下文及其原调用身份，零签发、零写入。 */
+  readDownstreamContext(input: DeploymentDownstreamReadInputV1): Promise<{
+    readonly context: AuthorizationContextV1;
+    readonly invocationId: string;
+    readonly branch: string;
+  }>;
   /**
    * 受理阶段：用真实会话为固定下游分支签发并耐久关联。
    * 任一分支拒绝即整体失败，不留下可执行的半成品关联。
@@ -262,6 +275,147 @@ export const createDeploymentAuthorizationAdapterV1 = (
     }
   };
 
+  const readAssociatedContext = async (
+    input: DeploymentDownstreamReadInputV1 & { readonly causalCommandRef?: CommandCausalRefV1 },
+  ) => {
+    let source = await rootSource(input.root);
+    const rootDecision = await granting(
+      source.branch,
+      DEPLOYMENT_AUTHORIZATION_ERROR_V1.currentVerificationFailed,
+      () =>
+        options.access.verify({
+          authorizationContextRef: source.context.authorizationContextRef,
+          invocationId: source.invocationId,
+          projectId: input.root.projectId,
+          branch: source.branch,
+          requestedSpatialScopeRefs: input.requestedSpatialScopeRefs,
+          requestedSourceVersionRefs: input.requestedSourceVersionRefs,
+        }),
+    );
+    if (rootDecision.redacted || !isBranchNarrowing(input.root, rootDecision.context)) {
+      throw new DeploymentAuthorizationError(
+        DEPLOYMENT_AUTHORIZATION_ERROR_V1.currentVerificationFailed,
+        input.branch,
+      );
+    }
+    const visited = new Set<string>();
+    let association: DeploymentCausalAuthorizationRowV1 | undefined;
+    for (let depth = 0; depth < 32; depth += 1) {
+      const reference = source.context.authorizationContextRef.reference;
+      const key = refOf(reference);
+      if (visited.has(key)) break;
+      visited.add(key);
+      association = await store.find({
+        rootContextRef: reference,
+        projectId: input.root.projectId,
+        actorId: input.root.actorId,
+        branch: input.branch,
+      });
+      if (association !== undefined) break;
+      let parentContextRef = source.parentContextRef;
+      if (parentContextRef === undefined) {
+        const links = await sql<Record<string, unknown>>`
+          SELECT root_context_ref FROM business.deployment_causal_authorizations
+          WHERE child_context_ref::jsonb = ${JSON.stringify(reference)}::jsonb
+            AND project_id = ${input.root.projectId} AND actor_id = ${input.root.actorId}
+            AND policy_ref = ${refOf(policy.policyRef)}
+          LIMIT 2`.execute(options.db);
+        if (links.rows.length !== 1) break;
+        parentContextRef = {
+          kind: "authorization-context",
+          reference: readJsonbRef(links.rows[0]!.root_context_ref),
+        };
+      }
+      const parent = await options.access.readDeploymentAuthorizationSource({
+        authorizationContextRef: parentContextRef,
+        projectId: input.root.projectId,
+        actorId: input.root.actorId,
+      });
+      if (parent === undefined) break;
+      source = parent;
+    }
+    // 没有关联即失败：不得重构令牌，也不得借用其它用户或分支。
+    if (association === undefined || association.policyRef !== refOf(policy.policyRef)) {
+      throw new DeploymentAuthorizationError(
+        DEPLOYMENT_AUTHORIZATION_ERROR_V1.notAssociated,
+        input.branch,
+      );
+    }
+    requireAllowed(source.branch, [input.branch], false);
+    if (
+      input.causalCommandRef !== undefined &&
+      (source.branch !== "knowledge-modeling.publish-approved-release" ||
+        source.invocationId !== input.causalCommandRef.commandId ||
+        !samePlainRef(
+          source.context.authorizationContextRef.reference,
+          input.causalCommandRef.authorizationContextRef.reference,
+        ))
+    )
+      throw new DeploymentAuthorizationError(
+        DEPLOYMENT_AUTHORIZATION_ERROR_V1.notAssociated,
+        input.branch,
+      );
+    const issuedContext = await issuedContextReader.read({
+      invocationId: association.invocationId,
+      branch: input.branch,
+      projectId: input.root.projectId,
+      actorId: input.root.actorId,
+    });
+    if (issuedContext === undefined) {
+      throw new DeploymentAuthorizationError(
+        DEPLOYMENT_AUTHORIZATION_ERROR_V1.notAssociated,
+        input.branch,
+      );
+    }
+    if (
+      !samePlainRef(issuedContext.authorizationContextRef.reference, association.childContextRef) ||
+      issuedContext.projectId !== association.projectId ||
+      issuedContext.actorId !== association.actorId
+    ) {
+      throw new DeploymentAuthorizationError(
+        DEPLOYMENT_AUTHORIZATION_ERROR_V1.notAssociated,
+        input.branch,
+      );
+    }
+
+    // 后台 action 使用自己的 invocationId；verify 仍绑定原签发 invocation。
+    // 先按目标分支复验该分支已签发上下文的当前权限：原 C06 verify 要求
+    // 被验上下文必须正是该 branch 的已登记上下文，因此不能拿 root 上下文代替。
+    // 会话或权限失效时直接失败，不得据此扩大或重构任何上下文。
+    const verified = await granting(
+      input.branch,
+      DEPLOYMENT_AUTHORIZATION_ERROR_V1.currentVerificationFailed,
+      () =>
+        options.access.verify({
+          authorizationContextRef: issuedContext.authorizationContextRef,
+          invocationId: association.invocationId,
+          projectId: input.root.projectId,
+          branch: input.branch,
+          requestedSpatialScopeRefs: input.requestedSpatialScopeRefs,
+          requestedSourceVersionRefs: input.requestedSourceVersionRefs,
+        } as AuthorizationVerificationRequestV1),
+    );
+
+    if (
+      verified.redacted ||
+      !samePlainRef(
+        verified.context.authorizationContextRef.reference,
+        association.childContextRef,
+      ) ||
+      !isBranchNarrowing(rootDecision.context, verified.context)
+    ) {
+      throw new DeploymentAuthorizationError(
+        DEPLOYMENT_AUTHORIZATION_ERROR_V1.notSubset,
+        input.branch,
+      );
+    }
+    return {
+      context: verified.context,
+      invocationId: association.invocationId,
+      branch: input.branch,
+    };
+  };
+
   return {
     async issueDownstreamContexts(input) {
       const source = await rootSource(input.root);
@@ -314,6 +468,7 @@ export const createDeploymentAuthorizationAdapterV1 = (
       return Object.freeze(issued);
     },
 
+    readDownstreamContext: (input) => readAssociatedContext(input),
     async resolveDownstreamContext(input) {
       if ((input.causalRunRef === undefined) === (input.causalCommandRef === undefined)) {
         throw new DeploymentAuthorizationError(
@@ -321,108 +476,7 @@ export const createDeploymentAuthorizationAdapterV1 = (
           input.branch,
         );
       }
-      let source = await rootSource(input.root);
-      const visited = new Set<string>();
-      let association: DeploymentCausalAuthorizationRowV1 | undefined;
-      for (let depth = 0; depth < 32; depth += 1) {
-        const reference = source.context.authorizationContextRef.reference;
-        const key = refOf(reference);
-        if (visited.has(key)) break;
-        visited.add(key);
-        association = await store.find({
-          rootContextRef: reference,
-          projectId: input.root.projectId,
-          actorId: input.root.actorId,
-          branch: input.branch,
-        });
-        if (association !== undefined) break;
-        let parentContextRef = source.parentContextRef;
-        if (parentContextRef === undefined) {
-          const links = await sql<Record<string, unknown>>`
-            SELECT root_context_ref FROM business.deployment_causal_authorizations
-            WHERE child_context_ref::jsonb = ${JSON.stringify(reference)}::jsonb
-              AND project_id = ${input.root.projectId} AND actor_id = ${input.root.actorId}
-              AND policy_ref = ${refOf(policy.policyRef)}
-            LIMIT 2`.execute(options.db);
-          if (links.rows.length !== 1) break;
-          parentContextRef = {
-            kind: "authorization-context",
-            reference: readJsonbRef(links.rows[0]!.root_context_ref),
-          };
-        }
-        const parent = await options.access.readDeploymentAuthorizationSource({
-          authorizationContextRef: parentContextRef,
-          projectId: input.root.projectId,
-          actorId: input.root.actorId,
-        });
-        if (parent === undefined) break;
-        source = parent;
-      }
-      // 没有关联即失败：不得重构令牌，也不得借用其它用户或分支。
-      if (association === undefined || association.policyRef !== refOf(policy.policyRef)) {
-        throw new DeploymentAuthorizationError(
-          DEPLOYMENT_AUTHORIZATION_ERROR_V1.notAssociated,
-          input.branch,
-        );
-      }
-      requireAllowed(source.branch, [input.branch], false);
-      if (
-        input.causalCommandRef !== undefined &&
-        (source.branch !== "knowledge-modeling.publish-approved-release" ||
-          source.invocationId !== input.causalCommandRef.commandId ||
-          !samePlainRef(
-            source.context.authorizationContextRef.reference,
-            input.causalCommandRef.authorizationContextRef.reference,
-          ))
-      )
-        throw new DeploymentAuthorizationError(
-          DEPLOYMENT_AUTHORIZATION_ERROR_V1.notAssociated,
-          input.branch,
-        );
-      const issuedContext = await issuedContextReader.read({
-        invocationId: association.invocationId,
-        branch: input.branch,
-        projectId: input.root.projectId,
-        actorId: input.root.actorId,
-      });
-      if (issuedContext === undefined) {
-        throw new DeploymentAuthorizationError(
-          DEPLOYMENT_AUTHORIZATION_ERROR_V1.notAssociated,
-          input.branch,
-        );
-      }
-      if (
-        !samePlainRef(
-          issuedContext.authorizationContextRef.reference,
-          association.childContextRef,
-        ) ||
-        issuedContext.projectId !== association.projectId ||
-        issuedContext.actorId !== association.actorId
-      ) {
-        throw new DeploymentAuthorizationError(
-          DEPLOYMENT_AUTHORIZATION_ERROR_V1.notAssociated,
-          input.branch,
-        );
-      }
-
-      // 后台 action 使用自己的 invocationId；verify 仍绑定原签发 invocation。
-      // 先按目标分支复验该分支已签发上下文的当前权限：原 C06 verify 要求
-      // 被验上下文必须正是该 branch 的已登记上下文，因此不能拿 root 上下文代替。
-      // 会话或权限失效时直接失败，不得据此扩大或重构任何上下文。
-      await granting(
-        input.branch,
-        DEPLOYMENT_AUTHORIZATION_ERROR_V1.currentVerificationFailed,
-        () =>
-          options.access.verify({
-            authorizationContextRef: issuedContext.authorizationContextRef,
-            invocationId: association.invocationId,
-            projectId: input.root.projectId,
-            branch: input.branch,
-            requestedSpatialScopeRefs: input.requestedSpatialScopeRefs,
-            requestedSourceVersionRefs: input.requestedSourceVersionRefs,
-          } as AuthorizationVerificationRequestV1),
-      );
-
+      const { context: issuedContext } = await readAssociatedContext(input);
       // 再用该目标分支的 parentContext 调原 system authorize 并复验收窄关系。
       const decision = await granting(
         input.branch,

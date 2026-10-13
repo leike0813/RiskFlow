@@ -1,14 +1,24 @@
 #!/usr/bin/env node
-import { readFile } from "node:fs/promises";
+import { readFile, lstat, realpath, open, mkdir, rename, unlink } from "node:fs/promises";
+import { constants } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
-import { isDeepStrictEqual } from "node:util";
+import { isDeepStrictEqual, TextDecoder } from "node:util";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { DomainEventV1Schema } from "../../packages/contracts/dist/events/index.js";
 import {
   AuthorizationContextV1Schema,
   WorkflowRunRefV1Schema,
   CommandCausalRefV1Schema,
+  ContractReferenceV1Schema,
 } from "../../packages/contracts/dist/ports/index.js";
+import {
+  IdentificationGraphStateV1Schema,
+  AssessmentGraphStateV1Schema,
+  RiskFlowGraphStateV1Schema,
+} from "../../packages/contracts/dist/workflows/index.js";
+import { CheckpointRuntimeContextV1Schema } from "../../packages/core/dist/persistence/index.js";
+import { identificationRunIdentityFor } from "../../apps/worker/dist/index.js";
 import {
   ArtifactPutCommandV1Schema,
   ArtifactReadRequestV1Schema,
@@ -29,6 +39,7 @@ import {
 import {
   createPostgresRuntime,
   createPostgresTransactionUnit,
+  createPostgresCheckpointer,
 } from "../../packages/adapters/dist/postgres/index.js";
 import { AccessServiceError } from "../../packages/core/dist/access/index.js";
 import {
@@ -49,13 +60,22 @@ import {
   DeploymentPolicyCatalogV1Schema,
   createDeploymentPolicyCatalogReaderV1,
   DEPLOYMENT_POLICY_TYPE_V1_VALUES,
+  DeploymentRetrievalDatasetV1Schema,
 } from "../../packages/adapters/dist/deployment/index.js";
+import { HybridRetrievalAcceptanceReportV1Schema } from "../../packages/core/dist/retrieval/index.js";
+import {
+  PostgresRetrievalAdapter,
+  QdrantRetrievalProjection,
+} from "../../packages/adapters/dist/retrieval/index.js";
+import { createDeploymentBuildQualityGateV1 } from "./composition/quality-gate.mjs";
+import { createDeploymentMeasureReleaseReaderV1 } from "./composition/assessment.mjs";
 import {
   createPostgresEngineeringContextSourceRegistry,
   createPostgresExternalRiskInputFactsReader,
 } from "../../packages/adapters/dist/engineering-data/context-source/index.js";
 import { createPostgresStandardizedRiskInputFactsReader } from "../../packages/adapters/dist/identification/read/index.js";
 import { createPostgresMonitoringStore } from "../../packages/adapters/dist/engineering-data/monitoring/index.js";
+import { createPostgresRunEventReaderV1 } from "../../packages/adapters/dist/workflow/index.js";
 import {
   createStructuredDocumentConversionAdapter,
   createMineruDocumentParser,
@@ -205,11 +225,168 @@ export const resolveDeploymentPoliciesV1 = ({ config: input, catalog: rawCatalog
 };
 
 export const loadDeploymentPoliciesV1 = async (config) => {
-  const bytes = await readFile(config.policyCatalog.filePath);
-  if (bytes.byteLength > 1_048_576) throw new RangeError("DEPLOYMENT_POLICY_CATALOG_TOO_LARGE");
+  const bytes = await readControlledFileV1(
+    config.localRoots.dataRoot,
+    config.policyCatalog.filePath,
+    1_048_576,
+    "DEPLOYMENT_POLICY_CATALOG_FILE_INVALID",
+  );
   return resolveDeploymentPoliciesV1({
     config,
-    catalog: JSON.parse(bytes.toString("utf8")),
+    catalog: JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
+  });
+};
+
+const assertControlledPathV1 = async (root, path) => {
+  const inside = relative(resolve(root), resolve(path));
+  if (inside === "" || inside === ".." || inside.startsWith(`..${sep}`))
+    throw new TypeError("DEPLOYMENT_CONTROLLED_PATH_INVALID");
+  for (let current = resolve(path); ; current = dirname(current)) {
+    const stat = await lstat(current);
+    if (stat.isSymbolicLink()) throw new TypeError("DEPLOYMENT_CONTROLLED_PATH_SYMLINK");
+    if (current === dirname(current)) break;
+  }
+  if ((await realpath(path)) !== resolve(path))
+    throw new TypeError("DEPLOYMENT_CONTROLLED_PATH_SYMLINK");
+};
+
+const readControlledFileV1 = async (root, path, maxBytes, errorCode) => {
+  await assertControlledPathV1(root, path);
+  if (!(await lstat(path)).isFile()) throw new TypeError(errorCode);
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.size > maxBytes) throw new TypeError(errorCode);
+    const chunks = [];
+    let total = 0;
+    for await (const chunk of file.createReadStream({ autoClose: false })) {
+      total += chunk.byteLength;
+      if (total > maxBytes) throw new TypeError(errorCode);
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks, total);
+  } finally {
+    await file.close();
+  }
+};
+
+/** 只加载批准的精确数据集；正文和评分标注不进入模型宿主配置。 */
+export const loadDeploymentRetrievalDatasetsV1 = async (input, policies) => {
+  const config = DeploymentConfigV1Schema.parse(input);
+  const datasets = [];
+  for (const binding of config.retrievalQuality.datasets) {
+    const bytes = await readControlledFileV1(
+      config.localRoots.dataRoot,
+      binding.filePath,
+      64 * 1024 * 1024,
+      "DEPLOYMENT_RETRIEVAL_DATASET_FILE_INVALID",
+    );
+    const dataset = DeploymentRetrievalDatasetV1Schema.parse(
+      JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
+    );
+    if (
+      dataset.projectId !== binding.projectId ||
+      !sameRef(dataset.datasetRef, binding.datasetRef) ||
+      (config.purpose === "production" && dataset.syntheticSample)
+    ) {
+      throw new TypeError("DEPLOYMENT_RETRIEVAL_DATASET_IDENTITY_INVALID");
+    }
+    datasets.push(dataset);
+  }
+  for (const binding of config.projectBindings) {
+    const policy = policies.resolveProject(binding.projectId).policies["retrieval-acceptance"];
+    if (
+      !datasets.some(
+        (dataset) =>
+          dataset.projectId === binding.projectId && sameRef(dataset.datasetRef, policy.datasetRef),
+      )
+    )
+      throw new TypeError("DEPLOYMENT_RETRIEVAL_DATASET_BINDING_MISSING");
+  }
+  return datasets;
+};
+
+/** 报告保存成功才可返回门禁结果；正文只使用原报告 Schema。 */
+export const createDeploymentRetrievalReportWriterV1 = (config) => async (input) => {
+  const report = HybridRetrievalAcceptanceReportV1Schema.parse(input);
+  const directory = join(config.localRoots.logRoot, "retrieval-quality");
+  await assertControlledPathV1(dirname(config.localRoots.logRoot), config.localRoots.logRoot);
+  try {
+    await mkdir(directory, { mode: 0o700 });
+    const root = await open(config.localRoots.logRoot, constants.O_RDONLY | constants.O_DIRECTORY);
+    try {
+      await root.sync();
+    } finally {
+      await root.close();
+    }
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+  }
+  await assertControlledPathV1(config.localRoots.logRoot, directory);
+  const id = randomUUID();
+  const temporary = join(directory, `.${id}.tmp`);
+  const target = join(directory, `${id}.json`);
+  try {
+    const file = await open(temporary, "wx", 0o600);
+    try {
+      await file.writeFile(
+        `${JSON.stringify({
+          schemaVersion: 1,
+          instanceId: config.instanceId,
+          releaseId: config.releaseId,
+          configRef: config.configRef,
+          report,
+        })}\n`,
+        "utf8",
+      );
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await rename(temporary, target);
+    const parent = await open(directory, constants.O_RDONLY | constants.O_DIRECTORY);
+    try {
+      await parent.sync();
+    } finally {
+      await parent.close();
+    }
+  } catch (error) {
+    await unlink(temporary).catch(() => undefined);
+    throw error;
+  }
+};
+
+export const createDeploymentRetrievalQualityGateV1 = ({
+  foundation,
+  policies,
+  datasets,
+  modelGateway,
+}) => {
+  const { config } = foundation;
+  const budgetPolicyRef = config.projectBindings[0].retrievalBudgetPolicyRef;
+  if (
+    config.projectBindings.some(
+      (binding) => !sameRef(binding.retrievalBudgetPolicyRef, budgetPolicyRef),
+    )
+  )
+    throw new TypeError("DEPLOYMENT_IDENTIFICATION_RETRIEVAL_BUDGET_POLICY_MISMATCH");
+  return createDeploymentBuildQualityGateV1({
+    datasets,
+    acceptancePolicies: config.projectBindings.map(({ projectId }) => ({
+      projectId,
+      policy: policies.resolveProject(projectId).policies["retrieval-acceptance"],
+    })),
+    generationStore: new PostgresRetrievalAdapter({
+      db: foundation.runtime.db,
+      transactionUnit: foundation.transactionUnit,
+    }),
+    projection: new QdrantRetrievalProjection(config.qdrant),
+    modelGateway,
+    access: foundation.access,
+    budgetPolicyRef,
+    timeoutMs: config.retrievalQuality.timeoutMs,
+    containerRuntime: config.retrievalQuality.containerRuntime,
+    onReport: createDeploymentRetrievalReportWriterV1(config),
   });
 };
 
@@ -298,6 +475,7 @@ export const createDeploymentScoringGovernanceV1 = ({
     configuration,
     policy,
     basis,
+    measureReleaseReader: createDeploymentMeasureReleaseReaderV1({ basis, authorizeDownstream }),
     bind(composition) {
       const knowledge = composition.compositions.knowledge;
       const cleaning = composition.compositions.cleaning;
@@ -371,6 +549,334 @@ export const createDeploymentRuntimeAuthorizationV1 = ({ access, authorizationSc
     }
   },
 });
+
+/** 只消费原授权、启动收据和所属模块证明；任何缺口均由 C03 按不一致收口。 */
+export const createDeploymentCheckpointValidatorV1 =
+  ({
+    access,
+    deploymentAuthorization,
+    transactionUnit,
+    policies,
+    identificationGraph,
+    dataCleaningStore,
+    workflow,
+    recommendation,
+    agentTasks,
+    reviewTasks,
+    candidateProof,
+    riskIdentificationRead,
+    now = () => new Date(),
+  }) =>
+  async (rawReference, validation) => {
+    try {
+      const reference = ContractReferenceV1Schema.parse(rawReference);
+      const runtime = CheckpointRuntimeContextV1Schema.parse(validation?.runtimeContext);
+      if (!["put", "put-writes", "get", "list"].includes(validation.operation)) return false;
+      const stateSchemas = [
+        ["identification", IdentificationGraphStateV1Schema],
+        ["assessment", AssessmentGraphStateV1Schema],
+        ["riskFlow", RiskFlowGraphStateV1Schema],
+      ];
+      const parsed = stateSchemas
+        .map(([kind, schema]) => ({ kind, parsed: schema.safeParse(validation.state) }))
+        .find(({ parsed }) => parsed.success);
+      if (parsed === undefined) return false;
+      const state = parsed.parsed.data;
+      const binding = policies.resolveProject(runtime.projectId).binding;
+      if (
+        state.threadId !== runtime.threadId ||
+        !isDeepStrictEqual(state.runRef, runtime.runRef) ||
+        !sameRef(state.graphVersion, binding.graphVersions[parsed.kind])
+      )
+        return false;
+
+      const source = await access.readDeploymentAuthorizationSource({
+        authorizationContextRef: runtime.authorization.authorizationContextRef,
+        projectId: runtime.projectId,
+        actorId: runtime.actorId,
+      });
+      if (
+        source === undefined ||
+        source.invocationId !== runtime.invocationId ||
+        !isDeepStrictEqual(source.context, runtime.authorization)
+      )
+        return false;
+      const requestedAt = now().toISOString();
+      const decision = await access.verify({
+        authorizationContextRef: source.context.authorizationContextRef,
+        projectId: runtime.projectId,
+        invocationId: source.invocationId,
+        branch: source.branch,
+        requestedSpatialScopeRefs: source.context.spatialScopeRefs,
+        requestedSourceVersionRefs: source.sourceVersionRefs,
+        requestedAt,
+      });
+      const authorization = AuthorizationContextV1Schema.parse(decision.context);
+      if (decision.redacted || !isDeepStrictEqual(authorization, source.context)) return false;
+      const original = await access.readDeploymentAuthorizationSource({
+        authorizationContextRef: state.authorizationContextRef,
+        projectId: runtime.projectId,
+        actorId: runtime.actorId,
+      });
+      if (
+        original === undefined ||
+        !isDeepStrictEqual(original.context.authorizationContextRef, state.authorizationContextRef)
+      )
+        return false;
+      if (
+        !(await transactionUnit.readWorkflowRunBinding({
+          projectId: runtime.projectId,
+          actorId: runtime.actorId,
+          authorizationContextRef: state.authorizationContextRef,
+          runRef: runtime.runRef,
+          threadId: runtime.threadId,
+          ...(parsed.kind === "riskFlow" ? {} : { parentRunRef: state.parentRiskFlowRunRef }),
+        }))
+      )
+        return false;
+      if (parsed.kind === "identification") {
+        const identity = identificationRunIdentityFor({
+          projectId: runtime.projectId,
+          parentRiskFlowRunRef: state.parentRiskFlowRunRef,
+          preparationSnapshotRef: state.preparationSnapshotRef,
+          graphVersion: state.graphVersion,
+        });
+        if (
+          identity.threadId !== runtime.threadId ||
+          !isDeepStrictEqual(identity.runRef, runtime.runRef)
+        )
+          return false;
+      }
+      const input = {
+        projectId: runtime.projectId,
+        actorId: runtime.actorId,
+        invocationId: source.invocationId,
+        requestedAt,
+        authorization,
+        runRef: runtime.runRef,
+        reference,
+      };
+      const downstream = (branch) =>
+        deploymentAuthorization.readDownstreamContext({
+          root: authorization,
+          branch,
+          requestedSpatialScopeRefs: authorization.spatialScopeRefs,
+          requestedSourceVersionRefs: source.sourceVersionRefs,
+        });
+      switch (reference.kind) {
+        case "workflow-run":
+          if (isDeepStrictEqual(reference, runtime.runRef)) return true;
+          if (parsed.kind !== "riskFlow")
+            return isDeepStrictEqual(reference, state.parentRiskFlowRunRef);
+          return await transactionUnit.readWorkflowRunBinding({
+            projectId: runtime.projectId,
+            actorId: runtime.actorId,
+            runRef: reference,
+            parentRunRef: runtime.runRef,
+          });
+        case "authorization-context":
+          return (
+            isDeepStrictEqual(reference, state.authorizationContextRef) ||
+            isDeepStrictEqual(reference, authorization.authorizationContextRef)
+          );
+        case "spatial-scope":
+          return authorization.spatialScopeRefs.some((scope) =>
+            isDeepStrictEqual(scope, reference),
+          );
+        case "identification-preparation-snapshot": {
+          if (
+            parsed.kind !== "identification" ||
+            !isDeepStrictEqual(reference, state.preparationSnapshotRef)
+          )
+            return false;
+          const issued = await downstream("engineering-data.evidence-access");
+          return await dataCleaningStore.verifyPreparationReference({
+            projectId: runtime.projectId,
+            actorId: runtime.actorId,
+            requestedAt,
+            requestId: issued.invocationId,
+            authorization: issued.context,
+            preparationSnapshotRef: reference,
+          });
+        }
+        case "identification-input-snapshot":
+        case "identification-work-plan":
+        case "identification-run-result":
+          return (
+            parsed.kind === "identification" &&
+            (await identificationGraph.verifyCheckpointReference(input))
+          );
+        case "identification-work-item":
+          return (
+            parsed.kind === "identification" &&
+            state.workPlanRef !== undefined &&
+            (await identificationGraph.verifyCheckpointReference({
+              ...input,
+              workPlanRef: state.workPlanRef,
+            }))
+          );
+        case "stage-result":
+        case "workflow-error":
+        case "route-decision":
+        case "assessment-run-result":
+        case "risk-flow-run-result":
+          return parsed.kind === "identification"
+            ? await identificationGraph.verifyCheckpointReference(input)
+            : await workflow.verifyCheckpointReference(input);
+        case "assessment-preparation-snapshot":
+        case "response-forecast-input-snapshot":
+        case "response-feedback-input-snapshot": {
+          if (parsed.kind !== "assessment") return false;
+          const entry = await workflow.registrationStore.readAssessmentEntrySnapshot({
+            ...input,
+            runId: runtime.runRef.reference.entityId,
+          });
+          const entryRef =
+            entry?.kind === "assessment-preparation"
+              ? entry.assessmentPreparationSnapshotRef
+              : entry?.kind === "forecast-input"
+                ? entry.responseForecastInputSnapshotRef
+                : entry?.kind === "feedback-input"
+                  ? entry.responseFeedbackInputSnapshotRef
+                  : undefined;
+          return isDeepStrictEqual(reference, entryRef);
+        }
+        case "recommendation-candidate": {
+          if (parsed.kind !== "assessment") return false;
+          const issued = await downstream("warning-response.read");
+          return await recommendation.verifyRecommendationCandidateReference({
+            ...input,
+            invocationId: issued.invocationId,
+            authorization: issued.context,
+            parentRunRef: runtime.runRef,
+            recommendationCandidateRef: reference,
+          });
+        }
+        case "standardized-risk-record": {
+          if (parsed.kind !== "identification") return false;
+          const issued = await downstream("risk-identification.record-read");
+          const current = await access.verify({
+            authorizationContextRef: issued.context.authorizationContextRef,
+            projectId: runtime.projectId,
+            invocationId: issued.invocationId,
+            branch: issued.branch,
+            requestedSpatialScopeRefs: issued.context.spatialScopeRefs,
+            requestedSourceVersionRefs: source.sourceVersionRefs,
+            requestedAt,
+          });
+          if (current.redacted || !isDeepStrictEqual(current.context, issued.context)) return false;
+          const outcome = await riskIdentificationRead.read({
+            queryId: issued.invocationId,
+            projectId: runtime.projectId,
+            actorId: runtime.actorId,
+            requestedAt,
+            authorization: issued.context,
+            kind: "record-read",
+            payload: { riskRecordRef: reference },
+          });
+          return (
+            outcome.kind === "succeeded" &&
+            outcome.result.kind === "record-read" &&
+            isDeepStrictEqual(outcome.result.riskRecordRef, reference) &&
+            isDeepStrictEqual(outcome.result.identificationRunRef, runtime.runRef)
+          );
+        }
+        case "identification-candidate-set":
+        case "merge-plan":
+        case "identification-group": {
+          if (parsed.kind !== "identification" || state.inputSnapshotRef === undefined)
+            return false;
+          if (
+            !(await identificationGraph.verifyCheckpointReference({
+              ...input,
+              reference: state.inputSnapshotRef,
+            }))
+          )
+            return false;
+          if (
+            reference.kind !== "identification-candidate-set" &&
+            (state.workPlanRef === undefined ||
+              !(await identificationGraph.verifyCheckpointReference({
+                ...input,
+                reference: state.workPlanRef,
+              })))
+          )
+            return false;
+          const issued = await downstream("risk-identification.run-read");
+          return await candidateProof.verifyCheckpointReference({
+            ...input,
+            authorization: issued.context,
+            invocationId: issued.invocationId,
+            inputSnapshotRef: state.inputSnapshotRef,
+            workPlanRef: state.workPlanRef,
+          });
+        }
+        case "knowledge-preparation-task":
+        case "user-confirmation": {
+          const waitingRefs =
+            parsed.kind === "riskFlow"
+              ? state.waitingRefs
+              : state.waitingRef === undefined
+                ? []
+                : [state.waitingRef];
+          const waitingRef = waitingRefs.find((waiting) =>
+            isDeepStrictEqual(
+              reference.kind === "knowledge-preparation-task"
+                ? waiting.knowledgePreparationTaskRef
+                : waiting.userConfirmationRef,
+              reference,
+            ),
+          );
+          if (waitingRef === undefined) return false;
+          const owner = parsed.kind === "identification" ? identificationGraph : workflow;
+          return await owner.verifyCheckpointWaitingReference({ ...input, waitingRef });
+        }
+        case "review-task":
+        case "agent-task": {
+          const issued = await downstream(
+            reference.kind === "agent-task" ? "agent-task.read" : "review-audit.read",
+          );
+          const owner = reference.kind === "agent-task" ? agentTasks : reviewTasks;
+          const parents = [
+            runtime.runRef,
+            ...(parsed.kind === "riskFlow"
+              ? [
+                  ...(state.identificationRunRef === undefined ? [] : [state.identificationRunRef]),
+                  ...state.assessmentRunRefs,
+                ]
+              : []),
+          ];
+          for (const parentRunRef of parents) {
+            if (
+              !isDeepStrictEqual(parentRunRef, runtime.runRef) &&
+              !(await transactionUnit.readWorkflowRunBinding({
+                projectId: runtime.projectId,
+                actorId: runtime.actorId,
+                runRef: parentRunRef,
+                parentRunRef: runtime.runRef,
+              }))
+            )
+              continue;
+            if (
+              await owner.verifyCheckpointReference({
+                ...input,
+                invocationId: issued.invocationId,
+                authorization: issued.context,
+                taskRef: reference,
+                parentRunRef,
+              })
+            )
+              return true;
+          }
+          return false;
+        }
+        default:
+          return false;
+      }
+    } catch {
+      return false;
+    }
+  };
 
 /** 各识别接缝只适配原 C06 签名，所有派生签发仍走同一作用域。 */
 export const createDeploymentIdentificationAuthorizationV1 = ({ access, authorizationScope }) => {
@@ -636,6 +1142,17 @@ export const createDeploymentAuthorizedArtifactStoreV1 = ({ store, access }) => 
     async open(request) {
       return store.open(await verify(ArtifactReadRequestV1Schema.parse(request)));
     },
+    ...(typeof store.verifyContent !== "function"
+      ? {}
+      : {
+          async verifyContent(request, maxBytes, validate) {
+            return store.verifyContent(
+              await verify(ArtifactReadRequestV1Schema.parse(request)),
+              maxBytes,
+              validate,
+            );
+          },
+        }),
   });
 };
 
@@ -791,6 +1308,7 @@ export const createDeploymentModelGatewayV1 = ({
 };
 
 const databaseRoleKey = (role) => {
+  if (role === "checkpointer") return "checkpointerRoleName";
   if (role === "worker") return "workerRoleName";
   if (role === "api" || role === "provision") return "appRoleName";
   throw new TypeError("DEPLOYMENT_ROLE_INVALID");
@@ -828,6 +1346,9 @@ export const loadDeploymentFoundationInputV1 = async ({
   if (manifestBytes.byteLength > 1_048_576) throw new RangeError("DEPLOYMENT_MANIFEST_TOO_LARGE");
   const manifest = ReleaseManifestV1Schema.parse(JSON.parse(manifestBytes.toString("utf8")));
   if (manifest.releaseId !== config.releaseId) throw new TypeError("DEPLOYMENT_RELEASE_MISMATCH");
+  const policies = role === "provision" ? undefined : await loadDeploymentPoliciesV1(config);
+  const retrievalDatasets =
+    policies === undefined ? undefined : await loadDeploymentRetrievalDatasetsV1(config, policies);
   const ids = new Set([
     config.database.rolePasswordSecretIds[databaseRoleKey(role)],
     config.auth.hmacSecretId,
@@ -851,6 +1372,8 @@ export const loadDeploymentFoundationInputV1 = async ({
     config,
     secrets,
     role,
+    policies,
+    retrievalDatasets,
     finalMigrationVersion: manifest.finalMigrationVersion,
   };
 };
@@ -862,12 +1385,20 @@ export const createDeploymentFoundationV1 = async ({
   finalMigrationVersion,
   downstreamAuthorizationPolicy,
   dataCleaningStore,
+  validateCheckpointReference,
 }) => {
   const config = DeploymentConfigV1Schema.parse(input);
   // shortcut: 合置验收只使用本地 C04；跨 VM 生产启动在完整 mTLS 装配后开放。
   if (config.purpose !== "synthetic-acceptance") {
     throw new TypeError("DEPLOYMENT_REMOTE_ARTIFACT_CONFIGURATION_REQUIRED");
   }
+  const needsCheckpointer = role === "api" || role === "worker";
+  if (needsCheckpointer && typeof validateCheckpointReference !== "function") {
+    throw new TypeError("DEPLOYMENT_CHECKPOINT_VALIDATOR_REQUIRED");
+  }
+  const checkpointConnection = needsCheckpointer
+    ? deploymentConnectionV1(config, secrets, "checkpointer")
+    : undefined;
   const connection = deploymentConnectionV1(config, secrets, role);
   if (!/^\d{6}$/.test(finalMigrationVersion ?? "")) {
     throw new TypeError("DEPLOYMENT_MIGRATION_VERSION_REQUIRED");
@@ -885,6 +1416,14 @@ export const createDeploymentFoundationV1 = async ({
     if (failures.length > 0) throw new Error("DEPLOYMENT_RESOURCE_CLOSE_FAILED");
   };
   try {
+    const checkpointer =
+      checkpointConnection === undefined
+        ? undefined
+        : createPostgresCheckpointer({
+            ...checkpointConnection,
+            validateReference: validateCheckpointReference,
+          });
+    if (checkpointer !== undefined) closers.push(() => checkpointer.end());
     const runtime = createPostgresRuntime(connection, "riskflow_app");
     closers.push(() => runtime.close());
     await assertCompatibleMigrationVersion(runtime.db, finalMigrationVersion);
@@ -978,10 +1517,12 @@ export const createDeploymentFoundationV1 = async ({
     return {
       config,
       runtime,
+      checkpointer,
       transactionUnit,
       access,
       deploymentAuthorization,
       authorizationScope,
+      runEvents: createPostgresRunEventReaderV1({ db: runtime.db, access }),
       riskInputFacts,
       artifactStore,
       referenceGuard: localArtifactStore.referenceGuard,

@@ -63,7 +63,7 @@ const providers = (overrides = {}) => {
     workflowBodies: stub(["readBody"]),
     riskRecordTrace: stub(["readBatch"]),
     resultReadAuthorization: stub(["issueResultReadAuthorization"]),
-    runEvents: stub(["subscribe"]),
+    runEvents: stub(["subscribe", "subscribeWithSourceAuthorization"]),
     projectPolicies: {
       reader: { listProjectIds: () => ["project-a"] },
       resolveProject: () => ({
@@ -193,7 +193,10 @@ describe("生产 API 全端口装配契约", () => {
 
   it("组装真实公开投影工厂与完整质量两阶段端口，并保留 API 运维结果 Schema", async () => {
     const subscription = { kind: "succeeded", result: { eventRefs: [] } };
-    const runEvents = { subscribe: vi.fn(async () => subscription) };
+    const runEvents = {
+      subscribe: vi.fn(async () => subscription),
+      subscribeWithSourceAuthorization: vi.fn(async () => subscription),
+    };
     const options = providers({ runEvents });
     const ports = createDeploymentApiPortsV1(options);
 
@@ -206,6 +209,14 @@ describe("生产 API 全端口装配契约", () => {
     const request = { kind: "subscribe" };
     await expect(ports.projection.subscribe(request)).resolves.toBe(subscription);
     expect(runEvents.subscribe).toHaveBeenCalledWith(request);
+    const authorizeEvent = async () => undefined;
+    await expect(
+      ports.runEventSubscription.subscribeWithSourceAuthorization(request, authorizeEvent),
+    ).resolves.toBe(subscription);
+    expect(runEvents.subscribeWithSourceAuthorization).toHaveBeenCalledWith(
+      request,
+      authorizeEvent,
+    );
 
     const result = await ports.systemOperationsRead.read({
       schemaVersion: "1",

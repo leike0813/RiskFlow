@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import { sql, type Kysely, type Transaction } from "kysely";
 
@@ -130,6 +131,7 @@ import {
   IdentifierSchema,
   IsoDateTimeSchema,
   type VersionReference,
+  VersionReferenceSchema,
 } from "@riskflow/contracts/common";
 
 import { PostgresPersistenceError, mapPostgresError } from "../postgres/pool.js";
@@ -1387,6 +1389,76 @@ export class PostgresAgentTaskAdapter
     if (row === undefined) return undefined;
     const snapshot = rowSnapshot(row);
     return agentTaskRefEquals(snapshot.envelope.agentTaskRef, parsed) ? snapshot : undefined;
+  }
+
+  /** 检查点任务身份与父运行证明，不要求任务完成，不返回任务正文。 */
+  async verifyCheckpointReference(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly invocationId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly taskRef: AgentTaskRefV1;
+    readonly parentRunRef: { readonly kind: "workflow-run"; readonly reference: VersionReference };
+  }): Promise<boolean> {
+    const authorization = AuthorizationContextV1Schema.parse(input.authorization);
+    const taskRef = AgentTaskRefV1Schema.parse(input.taskRef);
+    const parentRunRef = WorkflowRunRefV1Schema.parse(input.parentRunRef);
+    if (
+      this.#authorization === undefined ||
+      authorization.projectId !== input.projectId ||
+      authorization.actorId !== input.actorId ||
+      authorization.grantedCapabilities.length !== 1 ||
+      authorization.grantedCapabilities[0] !== "agent-task.read"
+    )
+      return false;
+    const decision = await this.#authorization.verify({
+      authorizationContextRef: authorization.authorizationContextRef,
+      projectId: input.projectId,
+      invocationId: IdentifierSchema.parse(input.invocationId),
+      branch: UI_READ_BRANCH,
+      requestedSpatialScopeRefs: authorization.spatialScopeRefs,
+      requestedSourceVersionRefs: [],
+      requestedAt: IsoDateTimeSchema.parse(input.requestedAt),
+    });
+    if (decision.redacted || !isDeepStrictEqual(decision.context, authorization)) return false;
+    const row = await this.#db
+      .selectFrom("business.agent_tasks")
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("agent_task_id", "=", taskRef.reference.entityId)
+      .where("version_id", "=", taskRef.reference.versionId)
+      .executeTakeFirst();
+    if (row === undefined) return false;
+    const task = rowSnapshot(row);
+    const scopeContained = (
+      child: VersionReference,
+      parents: readonly { reference: VersionReference }[],
+    ) => parents.some((parent) => refEqual(child, parent.reference));
+    return (
+      task.envelope.projectId === input.projectId &&
+      task.envelope.actorId === input.actorId &&
+      row.task_type === taskRef.taskType &&
+      row.trigger_mode === taskRef.triggerMode &&
+      agentTaskRefEquals(task.envelope.agentTaskRef, taskRef) &&
+      agentTaskRefEquals(task.state.agentTaskRef, taskRef) &&
+      refEqual(task.envelope.parentRunRef.reference, parentRunRef.reference) &&
+      refEqual(
+        WorkflowRunRefV1Schema.parse(row.parent_run_ref).reference,
+        parentRunRef.reference,
+      ) &&
+      refEqual(VersionReferenceSchema.parse(row.budget_policy_ref), task.budgetPolicy.policyRef) &&
+      refEqual(task.budgetPolicy.policyRef, taskRef.budgetPolicyRef) &&
+      refEqual(task.budgetPolicy.modelDeploymentRef, taskRef.modelDeploymentRef) &&
+      refEqual(task.budgetPolicy.promptTemplateRef, taskRef.promptTemplateRef) &&
+      refEqual(task.budgetPolicy.toolPolicyRef, taskRef.toolPolicyRef) &&
+      task.envelope.frozenAuthorization.spatialScopeRefs.every((scope) =>
+        scopeContained(scope.reference, decision.context.spatialScopeRefs),
+      ) &&
+      task.envelope.frozenAuthorization.sourceAccessGrantRefs.every((grant) =>
+        scopeContained(grant.reference, decision.context.sourceAccessGrantRefs),
+      )
+    );
   }
 
   async createTask(input: {

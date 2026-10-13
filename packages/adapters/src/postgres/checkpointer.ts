@@ -1,6 +1,11 @@
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 
-import { isJsonValue } from "@riskflow/core/persistence";
+import {
+  CHECKPOINT_RUNTIME_CONTEXT_KEY_V1,
+  CheckpointRuntimeContextV1Schema,
+  isJsonValue,
+  type CheckpointRuntimeContextV1,
+} from "@riskflow/core/persistence";
 import { ContractReferenceV1Schema, type ContractReferenceV1 } from "@riskflow/contracts/ports";
 import {
   IdentifierSchema,
@@ -26,7 +31,14 @@ const schemaSetupStatement = `CREATE SCHEMA IF NOT EXISTS "${CHECKPOINTER_SCHEMA
 
 export type ContractReferenceValidator = (
   reference: ContractReferenceV1,
+  context: CheckpointReferenceValidationContextV1,
 ) => boolean | Promise<boolean>;
+
+export interface CheckpointReferenceValidationContextV1 {
+  readonly operation: "put" | "put-writes" | "get" | "list";
+  readonly state: ReturnType<typeof parseGraphState>["state"];
+  readonly runtimeContext?: CheckpointRuntimeContextV1;
+}
 
 export interface PostgresCheckpointerConfig extends PostgresConnectionConfig {
   schema?: typeof CHECKPOINTER_SCHEMA;
@@ -164,11 +176,12 @@ const collectContractReferences = (
 
 const validateReferences = async (
   validator: ContractReferenceValidator,
+  context: CheckpointReferenceValidationContextV1,
   ...values: readonly unknown[]
 ): Promise<void> => {
   try {
     for (const reference of values.flatMap((value) => collectContractReferences(value))) {
-      if (!(await validator(reference))) {
+      if (!(await validator(reference, context))) {
         throw makePersistenceError("CHECKPOINT_INCONSISTENT", "checkpointer.reference");
       }
     }
@@ -176,6 +189,26 @@ const validateReferences = async (
     if (error instanceof PostgresPersistenceError) throw error;
     throw makePersistenceError("CHECKPOINT_INCONSISTENT", "checkpointer.reference");
   }
+};
+
+const referenceValidationContext = (
+  config: SaverGetTupleArgument,
+  state: ReturnType<typeof parseGraphState>["state"],
+  operation: CheckpointReferenceValidationContextV1["operation"],
+): CheckpointReferenceValidationContextV1 => {
+  const raw = config.configurable?.[CHECKPOINT_RUNTIME_CONTEXT_KEY_V1];
+  if (raw === undefined) return { operation, state };
+  const parsed = CheckpointRuntimeContextV1Schema.safeParse(raw);
+  if (
+    !parsed.success ||
+    parsed.data.threadId !== config.configurable?.thread_id ||
+    parsed.data.threadId !== state.threadId ||
+    parsed.data.runRef.reference.entityId !== state.runRef.reference.entityId ||
+    parsed.data.runRef.reference.versionId !== state.runRef.reference.versionId
+  ) {
+    throw makePersistenceError("CHECKPOINT_INCONSISTENT", "checkpointer.runtime-context");
+  }
+  return { operation, state, runtimeContext: parsed.data };
 };
 
 const validateMetadata = (metadata: unknown): metadata is Record<string, unknown> => {
@@ -330,8 +363,23 @@ export class PostgresCheckpointer extends PostgresSaver {
     const graphState = validateCheckpointWrite(args[0], args[1], args[2]);
     const key = checkpointKey(args[0], args[1].id);
     const pending = (async () => {
-      await validateReferences(this.#validateReference, graphState.state, args[2]);
-      return await super.put(...args);
+      await validateReferences(
+        this.#validateReference,
+        referenceValidationContext(args[0], graphState.state, "put"),
+        graphState.state,
+        args[2],
+      );
+      const saved = await super.put(...args);
+      const runtimeContext = args[0].configurable?.[CHECKPOINT_RUNTIME_CONTEXT_KEY_V1];
+      return runtimeContext === undefined
+        ? saved
+        : {
+            ...saved,
+            configurable: {
+              ...saved.configurable,
+              [CHECKPOINT_RUNTIME_CONTEXT_KEY_V1]: runtimeContext,
+            },
+          };
     })();
     if (key !== undefined) this.#pendingPuts.set(key, pending);
     try {
@@ -356,7 +404,13 @@ export class PostgresCheckpointer extends PostgresSaver {
       }
       const graphState = validateCheckpointWrite(tuple.config, tuple.checkpoint, tuple.metadata);
       validateGraphStateWrites(args[1], graphState.schema);
-      await validateReferences(this.#validateReference, graphState.state, tuple.metadata, args[1]);
+      await validateReferences(
+        this.#validateReference,
+        referenceValidationContext(args[0], graphState.state, "put-writes"),
+        graphState.state,
+        tuple.metadata,
+        args[1],
+      );
       await super.putWrites(...args);
     } catch (error) {
       throw this.#mapCheckpointerError(error, "checkpointer.put-writes");
@@ -375,6 +429,7 @@ export class PostgresCheckpointer extends PostgresSaver {
         if (pendingWrites !== undefined) validateGraphStateWrites(pendingWrites, graphState.schema);
         await validateReferences(
           this.#validateReference,
+          referenceValidationContext(config, graphState.state, "get"),
           graphState.state,
           tuple.metadata,
           pendingWrites,
@@ -395,6 +450,7 @@ export class PostgresCheckpointer extends PostgresSaver {
         if (pendingWrites !== undefined) validateGraphStateWrites(pendingWrites, graphState.schema);
         await validateReferences(
           this.#validateReference,
+          referenceValidationContext(args[0], graphState.state, "list"),
           graphState.state,
           tuple.metadata,
           pendingWrites,

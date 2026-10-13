@@ -543,7 +543,7 @@ export const AssessmentGraphStateV1Schema = z
     threadId: IdentifierSchema,
     entryMode: WorkflowEntryModeV1Schema,
     authorizationContextRef: AuthorizationContextRefV1Schema,
-    entrySnapshotRef: AssessmentEntrySnapshotRefV1Schema,
+    entrySnapshotRef: AssessmentEntrySnapshotRefV1Schema.optional(),
     status: WorkflowRunStatusV1Schema,
     stage: AssessmentStageV1Schema,
     assessmentInputSnapshotRef: AssessmentInputSnapshotRefV1Schema.optional(),
@@ -565,7 +565,16 @@ export const AssessmentGraphStateV1Schema = z
     lastErrorRef: WorkflowErrorRefV1Schema.optional(),
     resultRef: AssessmentRunResultRefV1Schema.optional(),
   })
-  .superRefine(lifecycleStateRefine);
+  .superRefine((state, context) => {
+    lifecycleStateRefine(state, context);
+    if (state.stage !== "A0" && state.entrySnapshotRef === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["entrySnapshotRef"],
+        message: "entry snapshot required after A0",
+      });
+    }
+  });
 export type AssessmentGraphStateV1 = z.infer<typeof AssessmentGraphStateV1Schema>;
 
 export const RiskFlowStageV1Schema = z.enum([

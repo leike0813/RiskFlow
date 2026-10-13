@@ -31,6 +31,7 @@ import { authorizationScopeDigest } from "@riskflow/core/retrieval";
 import {
   AuthorizationContextV1Schema,
   type AuthorizationContextV1,
+  type ContractReferenceV1,
   type ModuleBranchV1,
   type ModuleCapabilityV1,
 } from "@riskflow/contracts/ports";
@@ -296,6 +297,7 @@ interface GraphAccessControllerV1 {
   readonly calls: readonly { readonly invocationId: string; readonly branch: ModuleBranchV1 }[];
   revoke(): void;
   narrowScope(): void;
+  redact(): void;
   restore(): void;
   issue(input: {
     readonly invocationId: string;
@@ -311,6 +313,7 @@ const createGraphAccess = (): GraphAccessControllerV1 => {
   const calls: { readonly invocationId: string; readonly branch: ModuleBranchV1 }[] = [];
   let revoked = false;
   let scopeNarrowed = false;
+  let redacted = false;
   // 显式变量类型注解使 `denied(...)` 调用参与控制流收窄（TS 只在被调方有类型注解时认定 never 返回）。
   const denied: (stage: string, code: string) => never = (stage, code) => {
     throw new AccessServiceError({
@@ -332,9 +335,13 @@ const createGraphAccess = (): GraphAccessControllerV1 => {
     narrowScope: () => {
       scopeNarrowed = true;
     },
+    redact: () => {
+      redacted = true;
+    },
     restore: () => {
       revoked = false;
       scopeNarrowed = false;
+      redacted = false;
     },
     issue: (input) => {
       const entityId = `authorization-c24:${input.branch}:${input.invocationId}`;
@@ -379,7 +386,7 @@ const createGraphAccess = (): GraphAccessControllerV1 => {
             sourceAccessGrantRefs: [...SOURCE_GRANTS],
           }),
           contextRef: stored.authorization.authorizationContextRef,
-          redacted: false,
+          redacted,
         };
       },
     },
@@ -797,6 +804,21 @@ const countRows = async (
       AND (${query.resultId ?? null}::text IS NULL OR result_id = ${query.resultId ?? null}::text)
   `.execute(fixture.runtime.db);
   return Number(result.rows[0]?.count ?? "0");
+};
+
+/** 证明类调用的零写断言：审计、收据、正文访问、清单与出站事件计数。 */
+const countWriteFacts = async (
+  fixture: IdentificationGraphTestFixture,
+): Promise<Record<string, string>> => {
+  const result = await fixture.postgres.adminPool.query(
+    `SELECT
+      (SELECT count(*) FROM audit.entries) AS audits,
+      (SELECT count(*) FROM business.command_receipts) AS receipts,
+      (SELECT count(*) FROM business.artifact_access_records) AS accesses,
+      (SELECT count(*) FROM business.artifact_manifests) AS manifests,
+      (SELECT count(*) FROM outbox.events) AS events`,
+  );
+  return result.rows[0] as Record<string, string>;
 };
 
 const tableExists = async (
@@ -1391,6 +1413,216 @@ describe("PostgreSQL identification graph persistence", () => {
     } finally {
       fixture!.access.restore();
     }
+  }, 120_000);
+
+  it("proves exact checkpoint references using issued authorization without adding facts", async () => {
+    const plan = await registerPlanFixture(fixture!, "checkpoint-proof");
+    const stageArtifactRef = await putBodyAs(fixture!, {
+      artifactId: "c24-body-stage-checkpoint-proof",
+      body: stageResultI5Body(plan),
+    });
+    const resultArtifactRef = await putBodyAs(fixture!, {
+      artifactId: "c24-body-result-checkpoint-proof",
+      body: runResultBody(plan),
+    });
+    const errorRef = refOf("workflow-error", "checkpoint-error", sha("checkpoint-error"));
+    await registerThroughTransaction(
+      fixture!,
+      [
+        stageRowFor(plan, stageArtifactRef),
+        runResultRowFor(plan, resultArtifactRef),
+        IdentificationGraphResultRowV1Schema.parse({
+          ...resultRowFor("workflow-error", "checkpoint-proof"),
+          ...identityOf(errorRef),
+          workflowErrorRef: errorRef,
+        }),
+      ],
+      "first",
+    );
+    const invocationId = "c24-checkpoint-issued-invocation";
+    const authorization = fixture!.access.issue({
+      invocationId,
+      branch: "risk-identification.plan",
+      capability: "risk-identification.run",
+    }).authorization;
+    const input = {
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      requestedAt: TIMESTAMP,
+      invocationId,
+      authorization,
+      runRef: RUN_REF,
+      workPlanRef: plan.workPlanRef,
+    };
+    const references = [
+      plan.inputSnapshotRef,
+      plan.workPlanRef,
+      plan.workItemRef,
+      plan.stageResultRef,
+      plan.runResultRef,
+      errorRef,
+    ];
+    const writesBefore = await countWriteFacts(fixture!);
+    const before = await countRows(fixture!, { projectId: PROJECT_ID });
+    for (const reference of references) {
+      expect(await fixture!.adapter.verifyCheckpointReference({ ...input, reference })).toBe(true);
+      expect(
+        await fixture!.adapter.verifyCheckpointReference({
+          ...input,
+          reference: {
+            ...reference,
+            reference: { ...reference.reference, versionId: sha("absent-version") },
+          },
+        }),
+      ).toBe(false);
+    }
+    const { workPlanRef: frozenPlan, ...inputWithoutPlan } = input;
+    for (const workPlanRef of [
+      undefined,
+      {
+        ...frozenPlan,
+        reference: { ...frozenPlan.reference, versionId: sha("absent-plan") },
+      },
+    ]) {
+      const proofInput = {
+        ...inputWithoutPlan,
+        ...(workPlanRef === undefined ? {} : { workPlanRef }),
+        reference: plan.workItemRef,
+      };
+      expect(await fixture!.adapter.verifyCheckpointReference(proofInput)).toBe(false);
+    }
+    for (const overrides of [
+      { projectId: OTHER_PROJECT_ID },
+      { actorId: "another-actor" },
+      { invocationId: "unissued-invocation" },
+      { runRef: refOf("workflow-run", OTHER_RUN_ID, RUN_VERSION_ID) },
+    ]) {
+      expect(
+        await fixture!.adapter.verifyCheckpointReference({
+          ...input,
+          ...overrides,
+          reference: plan.workPlanRef,
+        }),
+      ).toBe(false);
+    }
+    for (const reference of [
+      plan.absentWorkItemRef,
+      refOf("workflow-run", RUN_ID, RUN_VERSION_ID),
+    ]) {
+      expect(
+        await fixture!.adapter.verifyCheckpointReference({
+          ...input,
+          reference: reference as ContractReferenceV1,
+        }),
+      ).toBe(false);
+    }
+    try {
+      fixture!.access.redact();
+      expect(
+        await fixture!.adapter.verifyCheckpointReference({ ...input, reference: plan.workItemRef }),
+      ).toBe(false);
+      fixture!.access.restore();
+      fixture!.access.narrowScope();
+      expect(
+        await fixture!.adapter.verifyCheckpointReference({ ...input, reference: plan.workPlanRef }),
+      ).toBe(false);
+      fixture!.access.revoke();
+      expect(
+        await fixture!.adapter.verifyCheckpointReference({ ...input, reference: plan.workPlanRef }),
+      ).toBe(false);
+    } finally {
+      fixture!.access.restore();
+    }
+    expect(await countRows(fixture!, { projectId: PROJECT_ID })).toBe(before);
+    expect(await countWriteFacts(fixture!)).toEqual(writesBefore);
+
+    const objectPath = objectPathFor(fixture!, plan.planArtifactRef);
+    await chmod(objectPath, 0o600);
+    await writeFile(objectPath, encoder.encode(JSON.stringify({ bodyKind: "work-plan" })));
+    await expect(
+      fixture!.adapter.verifyCheckpointReference({ ...input, reference: plan.workPlanRef }),
+    ).rejects.toBeDefined();
+    expect(await countWriteFacts(fixture!)).toEqual(writesBefore);
+  }, 120_000);
+
+  it("proves a registered knowledge preparation waiting reference without pinning the state version", async () => {
+    const knowledgePreparationTaskRef = refOf(
+      "knowledge-preparation-task",
+      `knowledge-preparation-task:${PROJECT_ID}:checkpoint-waiting`,
+    );
+    const waitingRef = { kind: "knowledge-preparation", knowledgePreparationTaskRef } as const;
+    // 同一等待引用被两次合法登记：等待引用本身不唯一绑定登记行身份。
+    for (const suffix of ["checkpoint-waiting-a", "checkpoint-waiting-b"])
+      await registerThroughTransaction(
+        fixture!,
+        [
+          IdentificationGraphResultRowV1Schema.parse({
+            ...resultRowFor("waiting", suffix),
+            waitingRef,
+          }),
+        ],
+        `waiting-${suffix}`,
+      );
+    const invocationId = "c24-waiting-issued-invocation";
+    const authorization = fixture!.access.issue({
+      invocationId,
+      branch: "risk-identification.plan",
+      capability: "risk-identification.run",
+    }).authorization;
+    const input = {
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      requestedAt: TIMESTAMP,
+      invocationId,
+      authorization,
+      runRef: RUN_REF,
+      waitingRef,
+    };
+    const writesBefore = await countWriteFacts(fixture!);
+    const rowsBefore = await countRows(fixture!, { projectId: PROJECT_ID });
+    expect(await fixture!.adapter.verifyCheckpointWaitingReference(input)).toBe(true);
+    // 窄口按 runId 定位：runVersionId 是状态版本，不是身份版本，改动运行引用版本仍然成立。
+    expect(
+      await fixture!.adapter.verifyCheckpointWaitingReference({
+        ...input,
+        runRef: refOf("workflow-run", RUN_ID, sha("another-run-identity")),
+      }),
+    ).toBe(true);
+    const absentTaskRef = (overrides: {
+      readonly entityId?: string;
+      readonly versionId?: string;
+    }) => ({
+      kind: "knowledge-preparation" as const,
+      knowledgePreparationTaskRef: {
+        ...knowledgePreparationTaskRef,
+        reference: { ...knowledgePreparationTaskRef.reference, ...overrides },
+      },
+    });
+    for (const overrides of [
+      { projectId: OTHER_PROJECT_ID },
+      { actorId: "another-actor" },
+      { invocationId: "c24-unissued-waiting-invocation" },
+      { runRef: refOf("workflow-run", OTHER_RUN_ID, RUN_VERSION_ID) },
+      { waitingRef: absentTaskRef({ versionId: "absent" }) },
+      { waitingRef: absentTaskRef({ entityId: "knowledge-preparation-task-absent" }) },
+    ])
+      expect(
+        await fixture!.adapter.verifyCheckpointWaitingReference({ ...input, ...overrides }),
+      ).toBe(false);
+    try {
+      fixture!.access.redact();
+      expect(await fixture!.adapter.verifyCheckpointWaitingReference(input)).toBe(false);
+      fixture!.access.restore();
+      fixture!.access.narrowScope();
+      expect(await fixture!.adapter.verifyCheckpointWaitingReference(input)).toBe(false);
+      fixture!.access.restore();
+      fixture!.access.revoke();
+      expect(await fixture!.adapter.verifyCheckpointWaitingReference(input)).toBe(false);
+    } finally {
+      fixture!.access.restore();
+    }
+    expect(await countRows(fixture!, { projectId: PROJECT_ID })).toBe(rowsBefore);
+    expect(await countWriteFacts(fixture!)).toEqual(writesBefore);
   }, 120_000);
 
   it("verifies the current authorization before every protected read", async () => {

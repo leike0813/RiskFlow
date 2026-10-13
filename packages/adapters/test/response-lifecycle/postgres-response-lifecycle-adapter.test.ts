@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import type { ForecastPolicyV1 } from "@riskflow/core/assessment-config";
+import type { EffectForecastExecutorV1 } from "@riskflow/core/response-lifecycle";
 import * as responseLifecycleMigration from "../../src/postgres/migrations/warning-response/deliver-execution-forecast-feedback-and-deviation/000046_execution_forecast_feedback_deviation.js";
 import { createPostgresRuntime } from "../../src/postgres/pool.js";
 import type {
@@ -84,6 +86,82 @@ const executor = (input: {
   },
 });
 
+/** 断言成功并保留失败正文：预测与执行失败必须带类型化错误码，不接收静默失败。 */
+const succeeded = <T extends { readonly kind: string }>(
+  result: T,
+): Extract<T, { readonly kind: "succeeded" }> => {
+  if (result.kind !== "succeeded") {
+    throw new Error(`expected succeeded, received: ${JSON.stringify(result).slice(0, 600)}`);
+  }
+  return result as Extract<T, { readonly kind: "succeeded" }>;
+};
+
+/** 冻结建议链 → 采纳 → 预测 → 执行：多场景共用的正式前置。 */
+const adoptedChain = async (prefix: string, state = fixture!) => {
+  const prepared = await state.prepareRecommendation({ prefix });
+  const scope = await state.recommendationScope(prepared.recommendationRef);
+  const binding = state.binding({
+    suffix: prefix,
+    recommendationRef: prepared.recommendationRef,
+    spatialScopeRef: scope,
+  });
+  const decision = await state.recordDecision(
+    await state.decisionCommand({
+      commandId: `${prefix}-decision`,
+      decision: "adopted",
+      binding,
+    }),
+  );
+  succeeded(decision);
+  const forecastCommand = await state.forecastCommand({
+    commandId: `${prefix}-forecast`,
+    binding,
+    ...(() => {
+      const snapshot = state.forecastSnapshot({
+        recommendationRef: prepared.recommendationRef,
+        routeDecisionRef: binding.routeDecisionRef,
+        preActionMonitoringSnapshotRef: prepared.preActionMonitoringSnapshotRef,
+        basisRef: prepared.baselineAssessmentInputSnapshotRef,
+        forecastPolicyRef: state.forecastPolicyReleaseRef,
+        authorizationContextRef: {
+          kind: "authorization-context",
+          reference: { entityId: "placeholder", versionId: "1" },
+        },
+      });
+      return { snapshotRef: snapshot.ref, snapshot: snapshot.body };
+    })(),
+    ...{ spatialScope: "root" as const },
+  });
+  // 快照必须由同一次已验证授权形成：用命令实际授权引用回填快照。
+  const snapshotWithAuthorization = {
+    ...forecastCommand.payload.forecastInputSnapshot,
+    authorizationContextRef: forecastCommand.authorization.authorizationContextRef,
+  };
+  const forecast = await state.forecastResponse({
+    ...forecastCommand,
+    payload: {
+      ...forecastCommand.payload,
+      forecastInputSnapshot: snapshotWithAuthorization,
+    },
+  });
+  if (forecast.kind !== "succeeded") {
+    throw new Error(`C28 chain forecast failed: ${JSON.stringify(forecast).slice(0, 600)}`);
+  }
+  const execution = await state.recordExecution(
+    await state.executionCommand({
+      commandId: `${prefix}-execution`,
+      actionSource: {
+        kind: "adopted-recommendation",
+        responseRecommendationRef: prepared.recommendationRef,
+      },
+    }),
+  );
+  if (execution.kind !== "succeeded") {
+    throw new Error(`C28 chain execution failed: ${JSON.stringify(execution).slice(0, 600)}`);
+  }
+  return { prepared, binding, decision, forecastCommand, forecast, execution };
+};
+
 describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
   beforeAll(async () => {
     fixture = await startResponseLifecycleFixture();
@@ -115,83 +193,6 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
         },
       },
     });
-  };
-
-  /** 冻结建议链 → 采纳 → 预测 → 执行：多场景共用的正式前置。 */
-  const adoptedChain = async (prefix: string) => {
-    const state = fixture!;
-    const prepared = await state.prepareRecommendation({ prefix });
-    const scope = await state.recommendationScope(prepared.recommendationRef);
-    const binding = state.binding({
-      suffix: prefix,
-      recommendationRef: prepared.recommendationRef,
-      spatialScopeRef: scope,
-    });
-    const decision = await state.recordDecision(
-      await state.decisionCommand({
-        commandId: `${prefix}-decision`,
-        decision: "adopted",
-        binding,
-      }),
-    );
-    succeeded(decision);
-    const forecastCommand = await state.forecastCommand({
-      commandId: `${prefix}-forecast`,
-      binding,
-      ...(() => {
-        const snapshot = state.forecastSnapshot({
-          recommendationRef: prepared.recommendationRef,
-          routeDecisionRef: binding.routeDecisionRef,
-          preActionMonitoringSnapshotRef: prepared.preActionMonitoringSnapshotRef,
-          basisRef: prepared.baselineAssessmentInputSnapshotRef,
-          forecastPolicyRef: state.forecastPolicyReleaseRef,
-          authorizationContextRef: {
-            kind: "authorization-context",
-            reference: { entityId: "placeholder", versionId: "1" },
-          },
-        });
-        return { snapshotRef: snapshot.ref, snapshot: snapshot.body };
-      })(),
-      ...{ spatialScope: "root" as const },
-    });
-    // 快照必须由同一次已验证授权形成：用命令实际授权引用回填快照。
-    const snapshotWithAuthorization = {
-      ...forecastCommand.payload.forecastInputSnapshot,
-      authorizationContextRef: forecastCommand.authorization.authorizationContextRef,
-    };
-    const forecast = await state.forecastResponse({
-      ...forecastCommand,
-      payload: {
-        ...forecastCommand.payload,
-        forecastInputSnapshot: snapshotWithAuthorization,
-      },
-    });
-    if (forecast.kind !== "succeeded") {
-      throw new Error(`C28 chain forecast failed: ${JSON.stringify(forecast).slice(0, 600)}`);
-    }
-    const execution = await state.recordExecution(
-      await state.executionCommand({
-        commandId: `${prefix}-execution`,
-        actionSource: {
-          kind: "adopted-recommendation",
-          responseRecommendationRef: prepared.recommendationRef,
-        },
-      }),
-    );
-    if (execution.kind !== "succeeded") {
-      throw new Error(`C28 chain execution failed: ${JSON.stringify(execution).slice(0, 600)}`);
-    }
-    return { prepared, binding, decision, forecastCommand, forecast, execution };
-  };
-
-  /** 断言成功并保留失败正文：预测与执行失败必须带类型化错误码，不接收静默失败。 */
-  const succeeded = <T extends { readonly kind: string }>(
-    result: T,
-  ): Extract<T, { readonly kind: "succeeded" }> => {
-    if (result.kind !== "succeeded") {
-      throw new Error(`expected succeeded, received: ${JSON.stringify(result).slice(0, 600)}`);
-    }
-    return result as Extract<T, { readonly kind: "succeeded" }>;
   };
 
   const executionRef = (result: { kind: string; result?: { kind: string } }) =>
@@ -2086,5 +2087,88 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
       expect(missing).toEqual({ kind: "failed", error: { code: entry.code } });
       expect(outOfScope).toEqual({ kind: "failed", error: { code: entry.code } });
     }
+  });
+});
+
+/** C28 运行时窄口：执行器来源换成同步 resolver；身份不符即沿原 executor-unavailable 收口。 */
+describe("C28 运行时预测执行器窄口", () => {
+  const policy: ForecastPolicyV1 = {
+    policyId: "c28-forecast-policy",
+    method: C28_FORECAST_METHOD,
+    inputIndicatorIds: ["indicator-possibility-1"],
+    targetIndicatorId: C28_TARGET_INDICATOR,
+    horizonSteps: 5,
+    unit: C28_TARGET_UNIT,
+    requiredRef: C28_FORECAST_REQUIRED_REF,
+  };
+  let resolverFixture: ResponseLifecyclePostgresFixtureV1 | undefined;
+  let respond: (policy: ForecastPolicyV1) => EffectForecastExecutorV1 | undefined = () => undefined;
+  /** 窄口每次被调用都记下策略正文：身份断言兼「核验前不得调用」的计数点。 */
+  const requested: ForecastPolicyV1[] = [];
+
+  beforeAll(async () => {
+    resolverFixture = await startResponseLifecycleFixture({
+      forecastExecutors: {
+        resolve: (candidate: ForecastPolicyV1) => {
+          requested.push(candidate);
+          return respond(candidate);
+        },
+      },
+    });
+    respond = () => executor({ predictedValue: "12" });
+    await resolverFixture.setForecastPolicies([policy]);
+  }, 900_000);
+
+  afterAll(async () => {
+    await resolverFixture?.close();
+  });
+
+  pgIt("窄口拿到本次已核验策略，执行器身份不符即不可用", async () => {
+    const state = resolverFixture!;
+    for (const [suffix, respondWith, available] of [
+      ["same-identity", () => executor({ predictedValue: "12" }), true],
+      ["other-method", () => executor({ method: "monitoring-trend" }), false],
+      [
+        "other-required-ref",
+        () => executor({ requiredRef: { entityId: "other-forecast-model", versionId: "1" } }),
+        false,
+      ],
+      ["no-executor", () => undefined, false],
+    ] as const) {
+      respond = respondWith;
+      const before = {
+        calls: requested.length,
+        rows: await state.countRows("response_forecast_outcomes"),
+      };
+      const outcome = (await adoptedChain(`c28-resolver-${suffix}`, state)).forecast.result.outcome;
+      expect(requested.length, suffix).toBe(before.calls + 1);
+      expect(requested.at(-1), suffix).toEqual(policy);
+      if (available) {
+        expect(outcome.availability.kind, suffix).toBe("available");
+        expect(outcome.projected?.kind, suffix).toBe("available");
+        expect(await state.countRows("response_forecast_outcomes"), suffix).toBe(before.rows + 1);
+      } else {
+        // 不可用同样落一条预测事实，差别在于没有投影出预测值与风险状态。
+        expect(outcome.availability, suffix).toEqual({
+          kind: "unavailable",
+          reasonCode: "executor-unavailable",
+        });
+        expect(outcome.projected?.kind, suffix).toBe("unavailable");
+      }
+    }
+  });
+
+  pgIt("策略未通过唯一指标核验时窄口不被调用", async () => {
+    const state = resolverFixture!;
+    respond = () => executor({ predictedValue: "12" });
+    await state.setUnmatchedForecastPolicy();
+    const calls = requested.length;
+    const outcome = (await adoptedChain("c28-resolver-unverified", state)).forecast.result.outcome;
+    expect(outcome.availability).toEqual({
+      kind: "unavailable",
+      reasonCode: "policy-unavailable",
+    });
+    expect(requested.length).toBe(calls);
+    await state.setForecastPolicies([policy]);
   });
 });

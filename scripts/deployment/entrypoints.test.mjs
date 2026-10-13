@@ -6,6 +6,8 @@
  * 「命令坏了」与「交付输入缺件」。这里锁住「package.json 里每个交付 CLI 都解析到真实文件」。
  */
 import { existsSync, readFileSync } from "node:fs";
+import { chmod, mkdtemp, mkdir, rm, writeFile, symlink, readdir, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,13 +18,601 @@ import {
   createDeploymentAuthorizedModelGatewayV1,
   createDeploymentAuthorizationScopeV1,
   createDeploymentRuntimeAuthorizationV1,
+  createDeploymentCheckpointValidatorV1,
   createDeploymentScoringGovernanceV1,
   resolveDeploymentPoliciesV1,
+  loadDeploymentRetrievalDatasetsV1,
+  createDeploymentRetrievalReportWriterV1,
+  loadDeploymentFoundationInputV1,
+  createDeploymentFoundationV1,
+  deploymentConnectionV1,
 } from "./start.mjs";
+import { HybridRetrievalAcceptanceReportV1Schema } from "../../packages/core/dist/retrieval/index.js";
 import { AccessServiceError } from "../../packages/core/dist/access/index.js";
+import { identificationRunIdentityFor } from "../../apps/worker/dist/index.js";
 import { structuredRequest, testRequestBase } from "../../packages/adapters/test/model/fixture.ts";
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), "..", "..", "..");
+
+describe("生产 checkpointer 基础连接", () => {
+  it.each(["api", "worker"])("%s 缺引用校验或独立密码时在连接前拒绝", async (role) => {
+    const input = {
+      config: deploymentConfig,
+      secrets: {},
+      role,
+      finalMigrationVersion: "000058",
+    };
+    await expect(createDeploymentFoundationV1(input)).rejects.toThrow(
+      "DEPLOYMENT_CHECKPOINT_VALIDATOR_REQUIRED",
+    );
+    await expect(
+      createDeploymentFoundationV1({ ...input, validateCheckpointReference: async () => false }),
+    ).rejects.toThrow("DEPLOYMENT_DATABASE_SECRET_MISSING");
+  });
+
+  it("业务与检查点角色各自读取自己的密码", () => {
+    const config = deploymentConfig;
+    const secrets = Object.fromEntries(
+      ["appRoleName", "workerRoleName", "checkpointerRoleName"].map((key) => [
+        config.database.rolePasswordSecretIds[key],
+        `synthetic-${key}`,
+      ]),
+    );
+    for (const [role, key] of [
+      ["api", "appRoleName"],
+      ["worker", "workerRoleName"],
+      ["checkpointer", "checkpointerRoleName"],
+    ]) {
+      expect(deploymentConnectionV1(config, secrets, role)).toMatchObject({
+        user: config.database[key],
+        password: secrets[config.database.rolePasswordSecretIds[key]],
+        database: config.database.name,
+      });
+    }
+    delete secrets[config.database.rolePasswordSecretIds.checkpointerRoleName];
+    expect(() => deploymentConnectionV1(config, secrets, "checkpointer")).toThrow(
+      "DEPLOYMENT_DATABASE_SECRET_MISSING",
+    );
+  });
+});
+
+describe("生产检查点引用校验", () => {
+  const setup = (kind = "identification") => {
+    const authorization = structuredClone(testRequestBase.authorization);
+    authorization.grantedCapabilities = [
+      kind === "identification" ? "risk-identification.run" : "workflow.start",
+    ];
+    const version = (kind, entityId) => ({ kind, reference: { entityId, versionId: "v1" } });
+    const graphVersion = { entityId: "graph", versionId: "v1" };
+    const parentRiskFlowRunRef = version("workflow-run", "parent");
+    const preparationSnapshotRef = version("identification-preparation-snapshot", "preparation");
+    const identity =
+      kind === "identification"
+        ? identificationRunIdentityFor({
+            projectId: authorization.projectId,
+            parentRiskFlowRunRef,
+            preparationSnapshotRef,
+            graphVersion,
+          })
+        : { runRef: version("workflow-run", "assessment"), threadId: "assessment-thread" };
+    const state = {
+      schemaVersion: "1",
+      graphVersion,
+      ...identity,
+      ...(kind === "riskFlow" ? {} : { parentRiskFlowRunRef }),
+      authorizationContextRef: authorization.authorizationContextRef,
+      status: "running",
+      stage: kind === "riskFlow" ? "assessment" : kind === "identification" ? "I0" : "A0",
+      ...(kind === "riskFlow" ? {} : { agentTaskRefs: [], reviewTaskRefs: [] }),
+      ...(kind === "identification"
+        ? {
+            triggerType: "manual",
+            triggerReasonCode: "manual",
+            preparationSnapshotRef,
+            acceptedRiskRecordRefs: [],
+            rejectedGroupRefs: [],
+            failedWorkItemRefs: [],
+          }
+        : kind === "riskFlow"
+          ? { entryMode: "assess", assessmentRunRefs: [], waitingRefs: [] }
+          : { entryMode: "assess", warningRecordRefs: [], warningResponseTaskRefs: [] }),
+    };
+    const runtimeContext = {
+      schemaVersion: "1",
+      projectId: authorization.projectId,
+      actorId: authorization.actorId,
+      ...identity,
+      authorization,
+      invocationId: "issued-invocation",
+    };
+    const world = {
+      state,
+      runtimeContext,
+      version,
+      now: new Date("2030-01-01T00:00:00.000Z"),
+      authorized: true,
+      accepted: true,
+      moduleAccepted: true,
+      moduleReads: 0,
+      source: {
+        context: authorization,
+        invocationId: runtimeContext.invocationId,
+        branch: kind === "identification" ? "risk-identification.plan" : "workflow.start-run",
+        sourceVersionRefs: [],
+      },
+      entry: {
+        kind: "assessment-preparation",
+        assessmentPreparationSnapshotRef: version("assessment-preparation-snapshot", "entry"),
+      },
+    };
+    const moduleProof = async () => {
+      world.moduleReads += 1;
+      return world.moduleAccepted;
+    };
+    const providers = {
+      access: {
+        readDeploymentAuthorizationSource: async ({
+          authorizationContextRef,
+          projectId,
+          actorId,
+        }) =>
+          projectId === authorization.projectId &&
+          actorId === authorization.actorId &&
+          JSON.stringify(authorizationContextRef) ===
+            JSON.stringify(authorization.authorizationContextRef)
+            ? world.source
+            : undefined,
+        verify: async () => {
+          if (!world.authorized) throw new Error("revoked");
+          return { context: authorization };
+        },
+      },
+      transactionUnit: { readWorkflowRunBinding: async () => world.accepted },
+      policies: {
+        resolveProject: () => ({
+          binding: {
+            graphVersions: {
+              identification: graphVersion,
+              assessment: graphVersion,
+              riskFlow: graphVersion,
+            },
+          },
+        }),
+      },
+      deploymentAuthorization: {
+        readDownstreamContext: async ({ branch }) => ({
+          context: authorization,
+          invocationId: "original-downstream",
+          branch,
+        }),
+      },
+      identificationGraph: {
+        verifyCheckpointReference: moduleProof,
+        verifyCheckpointWaitingReference: moduleProof,
+      },
+      dataCleaningStore: { verifyPreparationReference: moduleProof },
+      recommendation: { verifyRecommendationCandidateReference: moduleProof },
+      agentTasks: { verifyCheckpointReference: moduleProof },
+      reviewTasks: { verifyCheckpointReference: moduleProof },
+      candidateProof: { verifyCheckpointReference: moduleProof },
+      workflow: {
+        verifyCheckpointWaitingReference: moduleProof,
+        verifyCheckpointReference: moduleProof,
+        registrationStore: { readAssessmentEntrySnapshot: async () => world.entry },
+      },
+      now: () => world.now,
+    };
+    world.validate = createDeploymentCheckpointValidatorV1(providers);
+    world.context = (operation = "put") => ({ operation, state, runtimeContext });
+    world.providers = providers;
+    return world;
+  };
+
+  it.each(["put", "put-writes", "get", "list"])(
+    "%s 核对原运行、授权和领域证明",
+    async (operation) => {
+      const world = setup();
+      const context = world.context(operation);
+      for (const reference of [
+        world.state.runRef,
+        world.state.parentRiskFlowRunRef,
+        world.state.authorizationContextRef,
+        world.state.preparationSnapshotRef,
+        world.version("identification-work-plan", "plan"),
+      ]) {
+        expect(await world.validate(reference, context)).toBe(true);
+      }
+      world.moduleAccepted = false;
+      expect(await world.validate(world.version("identification-work-plan", "plan"), context)).toBe(
+        false,
+      );
+    },
+  );
+
+  it.each([
+    "missing",
+    "actor",
+    "project",
+    "thread",
+    "run",
+    "graph",
+    "invocation",
+    "source",
+    "receipt",
+    "revoked",
+    "preparation",
+  ])("%s 不一致时不能进行领域读取", async (cause) => {
+    const world = setup();
+    const context = world.context();
+    if (cause === "missing") delete context.runtimeContext;
+    if (cause === "actor") world.runtimeContext.actorId = "another-actor";
+    if (cause === "project") world.runtimeContext.projectId = "another-project";
+    if (cause === "thread") world.runtimeContext.threadId = "another-thread";
+    if (cause === "run") world.runtimeContext.runRef = world.version("workflow-run", "another-run");
+    if (cause === "graph") world.state.graphVersion = { entityId: "graph", versionId: "another" };
+    if (cause === "invocation") world.runtimeContext.invocationId = "unissued";
+    if (cause === "source")
+      world.source = {
+        ...world.source,
+        context: {
+          ...world.source.context,
+          decidedAt: "2030-01-02T00:00:00.000Z",
+        },
+      };
+    if (cause === "receipt") world.accepted = false;
+    if (cause === "revoked") world.authorized = false;
+    if (cause === "preparation")
+      world.state.preparationSnapshotRef = world.version(
+        "identification-preparation-snapshot",
+        "another-preparation",
+      );
+    expect(await world.validate(world.version("identification-work-plan", "plan"), context)).toBe(
+      false,
+    );
+    expect(world.moduleReads).toBe(0);
+  });
+
+  it("工作项须由图状态冻结计划交所属 adapter 证明", async () => {
+    const world = setup();
+    const reference = world.version("identification-work-item", "item");
+    expect(await world.validate(reference, world.context())).toBe(false);
+    expect(world.moduleReads).toBe(0);
+    world.state.workPlanRef = world.version("identification-work-plan", "plan");
+    let proofInput;
+    world.providers.identificationGraph.verifyCheckpointReference = async (input) => {
+      proofInput = input;
+      return true;
+    };
+    expect(await world.validate(reference, world.context())).toBe(true);
+    expect(proofInput).toMatchObject({ reference, workPlanRef: world.state.workPlanRef });
+    delete world.providers.identificationGraph.verifyCheckpointReference;
+    expect(await world.validate(reference, world.context())).toBe(false);
+  });
+
+  it.each(
+    ["identification", "assessment", "riskFlow"].flatMap((kind) =>
+      ["agent-task", "review-task"].map((taskKind) => [kind, taskKind]),
+    ),
+  )("%s %s 须证明精确父运行，转发子任务须先证明子入口", async (kind, taskKind) => {
+    const world = setup(kind);
+    const agentTaskRef = {
+      ...world.version("agent-task", "task"),
+      taskType: "response-recommendation",
+      triggerMode: "embedded",
+      modelDeploymentRef: { entityId: "model", versionId: "1" },
+      promptTemplateRef: { entityId: "prompt", versionId: "1" },
+      toolPolicyRef: { entityId: "tools", versionId: "1" },
+      budgetPolicyRef: { entityId: "budget", versionId: "1" },
+      incrementSchemaRef: { entityId: "increment", versionId: "1" },
+      validationPolicyRef: { entityId: "validation", versionId: "1" },
+    };
+    const child = world.version("workflow-run", "child");
+    const targetParent = kind === "riskFlow" ? child : world.state.runRef;
+    const taskRef =
+      taskKind === "agent-task"
+        ? agentTaskRef
+        : {
+            ...world.version("review-task", "review"),
+            reviewType: "calibration-suggestion",
+            waitingRunRef: targetParent,
+            targetRef: world.version("calibration-suggestion", "suggestion"),
+          };
+    const owner =
+      taskKind === "agent-task" ? world.providers.agentTasks : world.providers.reviewTasks;
+    if (kind === "riskFlow") world.state.assessmentRunRefs = [child];
+    const reads = [];
+    owner.verifyCheckpointReference = async (input) => {
+      reads.push(input);
+      return JSON.stringify(input.parentRunRef) === JSON.stringify(targetParent);
+    };
+    expect(await world.validate(taskRef, world.context())).toBe(true);
+    expect(reads.at(-1)).toMatchObject({ taskRef, parentRunRef: targetParent });
+    if (kind === "riskFlow") {
+      world.providers.transactionUnit.readWorkflowRunBinding = async (input) =>
+        input.runRef.reference.entityId !== "child";
+      reads.length = 0;
+      expect(await world.validate(taskRef, world.context())).toBe(false);
+      expect(reads).toHaveLength(1);
+      expect(reads[0].parentRunRef).toEqual(world.state.runRef);
+    }
+    delete owner.verifyCheckpointReference;
+    expect(await world.validate(taskRef, world.context())).toBe(false);
+  });
+
+  it("标准化风险记录必须来自当前精确识别运行及未脱敏授权", async () => {
+    const world = setup();
+    const reference = world.version("standardized-risk-record", "risk");
+    const result = {
+      kind: "record-read",
+      riskRecordRef: reference,
+      identificationRunRef: world.state.runRef,
+    };
+    world.providers.riskIdentificationRead = {
+      read: async (input) => {
+        expect(input).toMatchObject({
+          queryId: "original-downstream",
+          kind: "record-read",
+          payload: { riskRecordRef: reference },
+        });
+        return { kind: "succeeded", result };
+      },
+    };
+    // validator 持有的是构造时端口，重建以注入真实形状的窄读。
+    world.validate = createDeploymentCheckpointValidatorV1(world.providers);
+    expect(await world.validate(reference, world.context())).toBe(true);
+    result.identificationRunRef = world.version("workflow-run", "another-run");
+    expect(await world.validate(reference, world.context())).toBe(false);
+    result.identificationRunRef = world.state.runRef;
+    result.riskRecordRef = world.version("standardized-risk-record", "another-record");
+    expect(await world.validate(reference, world.context())).toBe(false);
+    result.riskRecordRef = reference;
+    world.providers.access.verify = async (input) => ({
+      context: world.source.context,
+      redacted: input.invocationId === "original-downstream",
+    });
+    expect(await world.validate(reference, world.context())).toBe(false);
+  });
+
+  it.each(["identification-candidate-set", "merge-plan", "identification-group"])(
+    "%s 须先证明本运行冻结输入及必要工作计划",
+    async (kind) => {
+      const world = setup();
+      const reference = world.version(kind, "candidate-result");
+      expect(await world.validate(reference, world.context())).toBe(false);
+      world.state.inputSnapshotRef = world.version("identification-input-snapshot", "input");
+      if (kind !== "identification-candidate-set") {
+        expect(await world.validate(reference, world.context())).toBe(false);
+        world.state.workPlanRef = world.version("identification-work-plan", "plan");
+      }
+      const verified = [];
+      world.providers.identificationGraph.verifyCheckpointReference = async (input) => {
+        verified.push(input.reference);
+        return world.moduleAccepted;
+      };
+      let proof;
+      world.providers.candidateProof.verifyCheckpointReference = async (input) => {
+        proof = input;
+        return true;
+      };
+      expect(await world.validate(reference, world.context())).toBe(true);
+      expect(verified).toEqual([
+        world.state.inputSnapshotRef,
+        ...(kind === "identification-candidate-set" ? [] : [world.state.workPlanRef]),
+      ]);
+      expect(proof).toMatchObject({
+        reference,
+        inputSnapshotRef: world.state.inputSnapshotRef,
+        runRef: world.state.runRef,
+        invocationId: "original-downstream",
+      });
+      proof = undefined;
+      world.moduleAccepted = false;
+      expect(await world.validate(reference, world.context())).toBe(false);
+      expect(proof).toBeUndefined();
+    },
+  );
+
+  it.each(["identification", "assessment", "riskFlow"])(
+    "%s 只以完整已登记等待证明知识准备及用户确认",
+    async (kind) => {
+      for (const [waitingKind, field, refKind] of [
+        ["knowledge-preparation", "knowledgePreparationTaskRef", "knowledge-preparation-task"],
+        ["user-confirmation", "userConfirmationRef", "user-confirmation"],
+      ]) {
+        const world = setup(kind);
+        const reference = world.version(refKind, "waiting-target");
+        const waitingRef = { kind: waitingKind, [field]: reference };
+        const owner =
+          kind === "identification"
+            ? world.providers.identificationGraph
+            : world.providers.workflow;
+        expect(await world.validate(reference, world.context())).toBe(false);
+        expect(world.moduleReads).toBe(0);
+        if (kind === "riskFlow") world.state.waitingRefs = [waitingRef];
+        else world.state.waitingRef = waitingRef;
+        world.state.status = "waiting";
+        owner.verifyCheckpointWaitingReference = async (input) => {
+          expect(input.waitingRef).toEqual(waitingRef);
+          expect(input.runRef).toEqual(world.runtimeContext.runRef);
+          expect(input.invocationId).toBe(world.runtimeContext.invocationId);
+          return world.moduleAccepted;
+        };
+        expect(await world.validate(reference, world.context())).toBe(true);
+        world.moduleAccepted = false;
+        expect(await world.validate(reference, world.context())).toBe(false);
+        delete owner.verifyCheckpointWaitingReference;
+        expect(await world.validate(reference, world.context())).toBe(false);
+      }
+    },
+  );
+
+  it("拒绝未支持引用和未登记准备，不以其它运行存在性补位", async () => {
+    const world = setup();
+    for (const reference of [
+      world.version("content-artifact", "unsupported-artifact"),
+      world.version("workflow-run", "unrelated"),
+      world.version("identification-preparation-snapshot", "unrelated"),
+    ])
+      expect(await world.validate(reference, world.context())).toBe(false);
+  });
+
+  it("评估阶段、候选与三种 A0 入口按精确登记证明", async () => {
+    const world = setup("assessment");
+    for (const kind of [
+      "stage-result",
+      "workflow-error",
+      "route-decision",
+      "assessment-run-result",
+      "recommendation-candidate",
+    ])
+      expect(await world.validate(world.version(kind, kind), world.context())).toBe(true);
+    for (const [kind, field, referenceKind] of [
+      [
+        "assessment-preparation",
+        "assessmentPreparationSnapshotRef",
+        "assessment-preparation-snapshot",
+      ],
+      ["forecast-input", "responseForecastInputSnapshotRef", "response-forecast-input-snapshot"],
+      ["feedback-input", "responseFeedbackInputSnapshotRef", "response-feedback-input-snapshot"],
+    ]) {
+      const reference = world.version(referenceKind, "entry");
+      world.entry = { kind, [field]: reference };
+      expect(await world.validate(reference, world.context())).toBe(true);
+      expect(
+        await world.validate(world.version(referenceKind, "other-entry"), world.context()),
+      ).toBe(false);
+    }
+  });
+
+  it("所属模块技术异常和缺少证明能力均拒绝", async () => {
+    const world = setup();
+    world.providers.identificationGraph.verifyCheckpointReference = async () => {
+      throw new Error("database failure");
+    };
+    const reference = world.version("identification-work-plan", "plan");
+    expect(await world.validate(reference, world.context())).toBe(false);
+    delete world.providers.identificationGraph.verifyCheckpointReference;
+    expect(await world.validate(reference, world.context())).toBe(false);
+  });
+});
+
+describe("检索数据集加载与耐久报告", () => {
+  const setup = async () => {
+    const root = await mkdtemp(join(tmpdir(), "riskflow-retrieval-input-"));
+    const config = structuredClone(deploymentConfig);
+    config.purpose = "synthetic-acceptance";
+    config.localRoots.dataRoot = join(root, "data");
+    config.localRoots.logRoot = join(root, "logs");
+    await mkdir(config.localRoots.dataRoot);
+    await mkdir(config.localRoots.logRoot);
+    const dataset = JSON.parse(
+      readFileSync(
+        join(REPO_ROOT, "references/acceptance/synthetic-v1/retrieval-dataset.json"),
+        "utf8",
+      ),
+    );
+    dataset.projectId = config.projectBindings[0].projectId;
+    const filePath = join(config.localRoots.dataRoot, "dataset.json");
+    await writeFile(filePath, JSON.stringify(dataset));
+    config.retrievalQuality = {
+      datasets: [{ projectId: dataset.projectId, datasetRef: dataset.datasetRef, filePath }],
+      containerRuntime: "docker-27.1.1",
+      timeoutMs: 30_000,
+    };
+    const policies = {
+      resolveProject: () => ({
+        policies: {
+          "retrieval-acceptance": { datasetRef: dataset.datasetRef },
+        },
+      }),
+    };
+    return { config, dataset, filePath, policies };
+  };
+
+  it("精确加载原 Schema 数据集，不使用其它版本", async () => {
+    const { config, dataset, policies } = await setup();
+    expect(await loadDeploymentRetrievalDatasetsV1(config, policies)).toEqual([dataset]);
+    policies.resolveProject = () => ({
+      policies: {
+        "retrieval-acceptance": { datasetRef: { ...dataset.datasetRef, versionId: "other" } },
+      },
+    });
+    await expect(loadDeploymentRetrievalDatasetsV1(config, policies)).rejects.toThrow(TypeError);
+  });
+
+  it.each(["project", "version", "production", "missing", "symlink"])(
+    "数据集 %s 不合格时拒绝装配",
+    async (cause) => {
+      const { config, dataset, filePath, policies } = await setup();
+      if (cause === "project") dataset.projectId = "other-project";
+      if (cause === "version") dataset.datasetRef = { ...dataset.datasetRef, versionId: "other" };
+      if (cause === "production") config.purpose = "production";
+      if (cause === "project" || cause === "version")
+        await writeFile(filePath, JSON.stringify(dataset));
+      if (cause === "missing") config.retrievalQuality.datasets[0].filePath += ".missing";
+      if (cause === "symlink") {
+        const linked = join(config.localRoots.dataRoot, "linked.json");
+        await symlink(filePath, linked);
+        config.retrievalQuality.datasets[0].filePath = linked;
+      }
+      await expect(loadDeploymentRetrievalDatasetsV1(config, policies)).rejects.toThrow();
+    },
+  );
+
+  const report = {
+    schemaVersion: "1",
+    acceptancePolicyRef: { entityId: "acceptance-policy", versionId: "1" },
+    datasetRef: { entityId: "dataset", versionId: "1" },
+    syntheticSample: false,
+    environment: {
+      nodeVersion: "v24.12.0",
+      containerRuntime: "docker-27.1.1",
+      qdrantServiceRef: "qdrant-v1",
+      cpuModel: "test-cpu",
+      platform: "linux-x64",
+    },
+    gates: [
+      {
+        gateId: "authorization-leakage",
+        threshold: 0,
+        observed: 0,
+        passed: true,
+        sampleCount: 1,
+        boundaryNote: "synthetic-test",
+      },
+    ],
+    overall: "passed",
+    measuredAt: "2030-01-01T00:00:00.000Z",
+  };
+
+  it("报告保留原 Schema 和部署身份，多次保存不覆盖", async () => {
+    const { config } = await setup();
+    const save = createDeploymentRetrievalReportWriterV1(config);
+    await save(report);
+    await save(report);
+    const directory = join(config.localRoots.logRoot, "retrieval-quality");
+    const files = await readdir(directory);
+    expect(files).toHaveLength(2);
+    for (const filename of files) {
+      const stored = JSON.parse(await readFile(join(directory, filename), "utf8"));
+      expect(stored).toMatchObject({
+        instanceId: config.instanceId,
+        releaseId: config.releaseId,
+        configRef: config.configRef,
+      });
+      expect(HybridRetrievalAcceptanceReportV1Schema.parse(stored.report)).toEqual(report);
+    }
+  });
+
+  it.each(["file", "symlink"])("报告目录为 %s 时拒绝写入", async (kind) => {
+    const { config } = await setup();
+    const directory = join(config.localRoots.logRoot, "retrieval-quality");
+    if (kind === "file") await writeFile(directory, "occupied");
+    else await symlink(config.localRoots.dataRoot, directory);
+    await expect(createDeploymentRetrievalReportWriterV1(config)(report)).rejects.toThrow();
+    expect(await readdir(config.localRoots.dataRoot)).toEqual(["dataset.json"]);
+  });
+});
 
 describe("评分治理生产装配", () => {
   it("共享治理尚未绑定和重复绑定均拒绝启动", () => {
@@ -702,7 +1292,7 @@ const expectPolicyCode = (run, code) => {
 };
 
 describe("部署策略绑定解析", () => {
-  it("解析完整的 14 类目录，并允许不同工程仅在 Agent 正文 projectId 上不同", () => {
+  it("解析完整的 16 类目录，并允许不同工程仅在 Agent 正文 projectId 上不同", () => {
     const { config, catalog } = deploymentPolicies();
     const resolved = resolveDeploymentPoliciesV1({ config, catalog });
 
@@ -1126,5 +1716,182 @@ describe("交付取证 CLI 入口", () => {
     // `release.mjs verify` 会让 verify 变成清单文件路径；子命令必须走脚本自己的契约。
     const afterScript = command.split(/\.mjs/)[1]?.trim() ?? "";
     expect(afterScript).toBe("");
+  });
+});
+
+describe("部署基础输入装配", () => {
+  const SECRET_MARKER = "secret-material-";
+
+  /** 全量真实文件：严格配置、发布清单、策略目录、数据集与逐角色秘密文件。 */
+  const foundationFixture = async () => {
+    const root = await mkdtemp(join(tmpdir(), "riskflow-foundation-input-"));
+    await chmod(root, 0o700);
+    const { config, catalog } = deploymentPolicies();
+    config.localRoots.dataRoot = join(root, "data");
+    config.policyCatalog.filePath = join(config.localRoots.dataRoot, "catalog.json");
+    await mkdir(config.localRoots.dataRoot, { mode: 0o700 });
+    const template = JSON.parse(
+      readFileSync(
+        join(REPO_ROOT, "references/acceptance/synthetic-v1/retrieval-dataset.json"),
+        "utf8",
+      ),
+    );
+    config.retrievalQuality.datasets = [];
+    for (const binding of config.projectBindings) {
+      const dataset = structuredClone(template);
+      dataset.projectId = binding.projectId;
+      dataset.datasetRef = ref("retrieval-dataset");
+      const filePath = join(config.localRoots.dataRoot, `${binding.projectId}.json`);
+      await writeFile(filePath, JSON.stringify(dataset));
+      config.retrievalQuality.datasets.push({
+        projectId: dataset.projectId,
+        datasetRef: dataset.datasetRef,
+        filePath,
+      });
+    }
+    const secretFiles = {};
+    for (const ref of config.database.secretFileRefs) {
+      const filePath = join(root, `${ref.secretId}.secret`);
+      await writeFile(filePath, `${SECRET_MARKER}${ref.secretId}\n`, { mode: 0o600 });
+      ref.filePath = filePath;
+      secretFiles[ref.secretId] = filePath;
+    }
+    const configFile = join(root, "config.json");
+    const manifestFile = join(root, "manifest.json");
+    const manifest = JSON.parse(
+      readFileSync(join(REPO_ROOT, "deployment/release-manifest.example.json"), "utf8"),
+    );
+    await writeFile(config.policyCatalog.filePath, JSON.stringify(catalog));
+    await writeFile(configFile, JSON.stringify(config));
+    await writeFile(manifestFile, JSON.stringify(manifest));
+    return {
+      root,
+      config,
+      manifest,
+      configFile,
+      manifestFile,
+      secretFiles,
+      rewriteConfig: async () => writeFile(configFile, JSON.stringify(config)),
+      rewriteManifest: async () => writeFile(manifestFile, JSON.stringify(manifest)),
+    };
+  };
+
+  const failureCodes = (error) =>
+    Array.isArray(error?.issues) && error.issues.length > 0
+      ? error.issues.flatMap((issue) => [issue.message, issue.path.join(".")])
+      : [error?.code ?? error?.message];
+
+  it("api 角色在严格配置与发布一致后只加载职责秘密", async () => {
+    const { configFile, manifestFile, config } = await foundationFixture();
+    const input = await loadDeploymentFoundationInputV1({ configFile, manifestFile, role: "api" });
+    expect(input.role).toBe("api");
+    expect(input.finalMigrationVersion).toBe("000058");
+    // api 职责 = 应用库 + checkpointer + 模型凭据 + 鉴权；worker/迁移/运维密码不进入本机。
+    expect(Object.keys(input.secrets).sort()).toEqual([
+      "auth-hmac-key",
+      "db-app-password",
+      "db-checkpointer-password",
+      "minimax-api-key",
+    ]);
+    expect(input.secrets["auth-hmac-key"]).toContain(SECRET_MARKER);
+    expect(
+      input.policies.resolveProject("project-rail-01").policies["hybrid-retrieval"].policyRef,
+    ).toEqual(policyRefs["hybrid-retrieval"]);
+    expect(input.retrievalDatasets.map((dataset) => dataset.projectId).sort()).toEqual(
+      config.projectBindings.map((binding) => binding.projectId).sort(),
+    );
+  });
+
+  it("provision 角色不加载策略与数据集，只加载管理员库与鉴权秘密", async () => {
+    const { configFile, manifestFile, config } = await foundationFixture();
+    await rm(config.policyCatalog.filePath);
+    const input = await loadDeploymentFoundationInputV1({
+      configFile,
+      manifestFile,
+      role: "provision",
+    });
+    expect(input.policies).toBeUndefined();
+    expect(input.retrievalDatasets).toBeUndefined();
+    expect(Object.keys(input.secrets).sort()).toEqual(["auth-hmac-key", "db-app-password"]);
+  });
+
+  it.each([
+    ["运行角色不在职责集合内", () => ({ role: "migrator" }), "DEPLOYMENT_ROLE_INVALID"],
+    [
+      "配置违反严格契约",
+      async (fixture) => {
+        delete fixture.config.auth.hmacSecretId;
+        await fixture.rewriteConfig();
+      },
+      "auth.hmacSecretId",
+    ],
+    [
+      "发布清单与配置不属于同一 release",
+      async (fixture) => {
+        fixture.manifest.releaseId = "release-other";
+        await fixture.rewriteManifest();
+      },
+      "DEPLOYMENT_RELEASE_MISMATCH",
+    ],
+    [
+      "策略目录超出受控根",
+      async (fixture) => {
+        fixture.config.policyCatalog.filePath = join(fixture.root, "catalog.json");
+        await fixture.rewriteConfig();
+      },
+      "DEPLOYMENT_CONTROLLED_PATH_INVALID",
+    ],
+    [
+      "策略目录是符号链接",
+      async (fixture) => {
+        const linked = join(fixture.config.localRoots.dataRoot, "catalog-link.json");
+        await symlink(fixture.config.policyCatalog.filePath, linked);
+        fixture.config.policyCatalog.filePath = linked;
+        await fixture.rewriteConfig();
+      },
+      "DEPLOYMENT_CONTROLLED_PATH_SYMLINK",
+    ],
+    [
+      "策略目录超过读取上限",
+      async (fixture) => writeFile(fixture.config.policyCatalog.filePath, Buffer.alloc(1_048_577)),
+      "DEPLOYMENT_POLICY_CATALOG_FILE_INVALID",
+    ],
+    [
+      "配置未绑定本角色必需秘密",
+      async (fixture) => {
+        fixture.config.database.secretFileRefs = fixture.config.database.secretFileRefs.filter(
+          (ref) => ref.secretId !== "auth-hmac-key",
+        );
+        await fixture.rewriteConfig();
+      },
+      "database.secretFileRefs",
+    ],
+    [
+      "秘密文件缺失",
+      async (fixture) => rm(fixture.secretFiles["auth-hmac-key"]),
+      "SECRET_FILE_MISSING",
+    ],
+    [
+      "秘密文件权限过宽",
+      async (fixture) => chmod(fixture.secretFiles["auth-hmac-key"], 0o644),
+      "SECRET_FILE_TOO_PERMISSIVE",
+    ],
+  ])("%s 时失败闭合，且错误不含秘密", async (_name, mutate, code) => {
+    const fixture = await foundationFixture();
+    const overrides = (await mutate(fixture)) ?? {};
+    let error;
+    await loadDeploymentFoundationInputV1({
+      configFile: fixture.configFile,
+      manifestFile: fixture.manifestFile,
+      role: "api",
+      ...overrides,
+    }).catch((caught) => {
+      error = caught;
+    });
+    expect(failureCodes(error)).toContain(code);
+    const rendered = `${error.message} ${JSON.stringify(error.issues ?? [])}`;
+    expect(rendered).not.toContain(SECRET_MARKER);
+    for (const filePath of Object.values(fixture.secretFiles))
+      expect(rendered).not.toContain(filePath);
   });
 });

@@ -44,7 +44,11 @@ import {
   RiskFlowGraphStateV1Schema,
   type RiskFlowGraphStateV1,
 } from "@riskflow/contracts/workflows";
-import { sha256CanonicalJson, type JsonValue } from "@riskflow/core/persistence";
+import {
+  CHECKPOINT_RUNTIME_CONTEXT_KEY_V1,
+  sha256CanonicalJson,
+  type JsonValue,
+} from "@riskflow/core/persistence";
 import {
   WorkflowGraphErrorV1Schema,
   classifyWorkflowGraphFailure,
@@ -263,6 +267,15 @@ const graphConfig = (run: RiskFlowGraphRunContextV1): LangGraphRunnableConfig =>
   configurable: {
     thread_id: run.threadId,
     [RISK_FLOW_GRAPH_RUN_CONFIG_KEY_V1]: run,
+    [CHECKPOINT_RUNTIME_CONTEXT_KEY_V1]: {
+      schemaVersion: "1",
+      projectId: run.projectId,
+      actorId: run.actorId,
+      threadId: run.threadId,
+      runRef: run.runRef,
+      authorization: run.authorization,
+      invocationId: run.commandId,
+    },
   },
 });
 
@@ -277,7 +290,7 @@ const readCheckpointState = async (input: {
   readonly graph: RiskFlowGraphRunnerV1;
   readonly run: RiskFlowGraphRunContextV1;
 }): Promise<RiskFlowGraphStateV1 | undefined> => {
-  const snapshot = await input.graph.getState({ configurable: { thread_id: input.run.threadId } });
+  const snapshot = await input.graph.getState(graphConfig(input.run));
   if (typeof snapshot !== "object" || snapshot === null || !("values" in snapshot))
     return undefined;
   const values = (snapshot as { readonly values?: unknown }).values;
@@ -1308,6 +1321,7 @@ export const createRiskFlowGraphRuntime = (
     readonly ports: RiskFlowGraphPortsV1;
     readonly command: StartWorkflowRunCommandV1;
     readonly runRef: WorkflowRunRefV1;
+    readonly threadId: string;
     readonly occurredAt: string;
   }): Promise<WorkflowRunRefV1 | undefined> => {
     const command = input.command;
@@ -1335,6 +1349,7 @@ export const createRiskFlowGraphRuntime = (
           authorizationContextRef: command.authorization.authorizationContextRef,
           issuedAt: command.issuedAt,
           runId: input.runRef.reference.entityId,
+          threadId: input.threadId,
         },
         async () => ({
           resultRef: input.runRef,
@@ -1404,6 +1419,7 @@ export const createRiskFlowGraphRuntime = (
         ports,
         command: parsed,
         runRef,
+        threadId,
         occurredAt: options.now().toISOString(),
       });
       if (boundRunRef === undefined) {

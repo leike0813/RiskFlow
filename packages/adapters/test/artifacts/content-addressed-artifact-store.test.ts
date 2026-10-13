@@ -157,6 +157,45 @@ const readRequest = (
 
 const digest = (value: Uint8Array): string => createHash("sha256").update(value).digest("hex");
 
+describe("checkpoint content proof", () => {
+  it("checks bounded bytes and permissions without adding access, audit, receipt or artifact rows", async () => {
+    const fixture = await startArtifactFixture();
+    try {
+      const result = await fixture.store.put(putCommand("checkpoint-proof"), textChunks("proof"));
+      const counts = async () => (await fixture.postgres.adminPool.query(`SELECT
+        (SELECT count(*) FROM audit.entries) AS audits,
+        (SELECT count(*) FROM business.command_receipts) AS receipts,
+        (SELECT count(*) FROM business.artifact_manifests) AS manifests,
+        (SELECT count(*) FROM business.artifact_access_records) AS accesses`)).rows[0];
+      const before = await counts();
+      const request = readRequest("checkpoint-proof", result.artifactRef);
+      expect(await fixture.store.verifyContent(request, 16, (bytes) =>
+        new TextDecoder().decode(bytes) === "proof")).toBe(true);
+      expect(await fixture.store.verifyContent(request, 16, () => false)).toBe(false);
+      await expect(fixture.store.verifyContent(request, 1, () => true)).rejects.toMatchObject({
+        code: "ARTIFACT_INTEGRITY_FAILURE",
+      });
+      await expect(fixture.store.verifyContent({ ...request, purposeCode: "other-purpose" },
+        16, () => true)).rejects.toMatchObject({ code: "ARTIFACT_ACCESS_DENIED" });
+      const narrowed = readRequest("checkpoint-narrowed", result.artifactRef, {
+        authorization: authorization("actor-artifacts", { scopes: [], grants: [] }),
+      });
+      await expect(fixture.store.verifyContent(narrowed, 16, () => true)).rejects.toMatchObject({
+        code: "ARTIFACT_ACCESS_DENIED",
+      });
+      const path = fixture.store.objectPathForTesting(result.manifest.content.hash);
+      await chmod(path, 0o600);
+      await writeFile(path, "wrong");
+      await expect(fixture.store.verifyContent(request, 16, () => true)).rejects.toMatchObject({
+        code: "ARTIFACT_INTEGRITY_FAILURE",
+      });
+      expect(await counts()).toEqual(before);
+    } finally {
+      await fixture.close();
+    }
+  }, 120_000);
+});
+
 const seedSyntheticManifests = async (
   fixture: ArtifactTestFixture,
   syntheticProjectId: string,

@@ -38,6 +38,8 @@ import * as humanDecisionFeedbackMigration from "../../src/postgres/migrations/w
 import * as riskRecordAssessmentScopeMigration from "../../src/postgres/migrations/risk-identification/deliver-assessment-warning-and-response-ui/000054_risk_record_assessment_scope.js";
 import * as assessmentEntryCatalogCursorKeysMigration from "../../src/postgres/migrations/engineering-data/fix-assessment-entry-read-seam/000055_assessment_entry_catalog_cursor_keys.js";
 import * as deploymentOperationsMigration from "../../src/postgres/migrations/platform/deliver-offline-private-deployment-and-operations/000056_deployment_operations.js";
+import * as workflowRunEventsMigration from "../../src/postgres/migrations/workflow/deliver-offline-private-deployment-and-operations/000057_workflow_run_events.js";
+import * as assessmentEntrySnapshotMigration from "../../src/postgres/migrations/workflow/deliver-offline-private-deployment-and-operations/000058_assessment_entry_snapshot_reference.js";
 
 export interface AuthPostgresFixture extends PostgresTestFixture {
   runMigrations(): Promise<void>;
@@ -220,6 +222,20 @@ export const startAuthPostgresFixture = async (): Promise<AuthPostgresFixture> =
         "platform/deliver-offline-private-deployment-and-operations/000056_deployment_operations.ts",
       ),
       deploymentOperationsMigration,
+    ],
+    [
+      resolve(
+        base.productionMigrationRoot,
+        "workflow/deliver-offline-private-deployment-and-operations/000057_workflow_run_events.ts",
+      ),
+      workflowRunEventsMigration,
+    ],
+    [
+      resolve(
+        base.productionMigrationRoot,
+        "workflow/deliver-offline-private-deployment-and-operations/000058_assessment_entry_snapshot_reference.ts",
+      ),
+      assessmentEntrySnapshotMigration,
     ],
     [
       resolve(

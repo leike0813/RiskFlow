@@ -14,11 +14,14 @@ import {
   type WorkflowRunRefV1,
 } from "@riskflow/contracts/ports";
 import {
-  AssessmentEntrySnapshotRefV1Schema,
   AssessmentGraphStateV1Schema,
   type AssessmentGraphStateV1,
 } from "@riskflow/contracts/workflows";
-import { sha256CanonicalJson } from "@riskflow/core/persistence";
+import {
+  CHECKPOINT_RUNTIME_CONTEXT_KEY_V1,
+  sha256CanonicalJson,
+  type JsonValue,
+} from "@riskflow/core/persistence";
 import {
   WorkflowGraphErrorV1Schema,
   classifyWorkflowGraphFailure,
@@ -142,6 +145,15 @@ const graphConfig = (run: AssessmentGraphRunContextV1): LangGraphRunnableConfig 
   configurable: {
     thread_id: run.threadId,
     [ASSESSMENT_GRAPH_RUN_CONFIG_KEY_V1]: run,
+    [CHECKPOINT_RUNTIME_CONTEXT_KEY_V1]: {
+      schemaVersion: "1",
+      projectId: run.projectId,
+      actorId: run.actorId,
+      threadId: run.threadId,
+      runRef: run.runRef,
+      authorization: run.authorization,
+      invocationId: run.issuedInvocationId,
+    },
   },
 });
 
@@ -172,27 +184,6 @@ const runContextOf = (input: {
   threadId: input.command.threadId,
 });
 
-/**
- * 起始入口快照：公共状态 Schema 要求该通道自首版起有值，而真实入口快照由 A0 冻结后写入同一
- * 通道（design D-03）。起始值只由运行身份与冻结入口确定、不携带任何业务事实，也不进入登记行
- * 或审计；A0 推进时被真实快照覆盖。
- */
-const entrySnapshotSeed = (run: AssessmentGraphRunContextV1) =>
-  AssessmentEntrySnapshotRefV1Schema.parse({
-    kind: "assessment-preparation",
-    assessmentPreparationSnapshotRef: {
-      kind: "assessment-preparation-snapshot",
-      reference: {
-        entityId: `assessment-preparation-seed:${run.projectId}:${run.runRef.reference.versionId}`,
-        versionId: sha256CanonicalJson({
-          entryMode: run.entryMode,
-          entryIdentity: run.entryIdentity,
-          frozenRefs: run.frozenRefs,
-        }),
-      },
-    },
-  });
-
 /** 首版公共状态：全部值来自冻结命令，缺失父运行引用即拒绝（design D-02）。 */
 const initialStateOf = (run: AssessmentGraphRunContextV1): AssessmentGraphStateV1 => {
   const parentRiskFlowRunRef = run.parentRunRef;
@@ -207,7 +198,6 @@ const initialStateOf = (run: AssessmentGraphRunContextV1): AssessmentGraphStateV
     threadId: run.threadId,
     entryMode: run.entryMode,
     authorizationContextRef: run.authorization.authorizationContextRef,
-    entrySnapshotRef: entrySnapshotSeed(run),
     status: "running",
     stage: "A0",
     warningRecordRefs: [],
@@ -218,12 +208,22 @@ const initialStateOf = (run: AssessmentGraphRunContextV1): AssessmentGraphStateV
 };
 
 /** 已登记事实 → 公共状态：只重放状态、阶段与终态引用，不在恢复路径上猜测其它字段。 */
-const stateOfCursor = (
+const stateOfCursor = async (
+  ports: AssessmentGraphPortsV1,
   run: AssessmentGraphRunContextV1,
   cursor: WorkflowGraphRunStateV1,
-): AssessmentGraphStateV1 =>
-  AssessmentGraphStateV1Schema.parse({
+): Promise<AssessmentGraphStateV1> => {
+  const entrySnapshotRef = await ports.registrationStore.readAssessmentEntrySnapshot({
+    projectId: run.projectId,
+    runId: run.runRef.reference.entityId,
+    actorId: run.actorId,
+    requestedAt: ports.now().toISOString(),
+    invocationId: run.issuedInvocationId,
+    authorization: run.authorization,
+  });
+  return AssessmentGraphStateV1Schema.parse({
     ...initialStateOf(run),
+    ...(entrySnapshotRef === undefined ? {} : { entrySnapshotRef }),
     status: cursor.status,
     stage: cursor.stage,
     ...(cursor.lastStageResultRef === undefined
@@ -236,6 +236,7 @@ const stateOfCursor = (
       ? {}
       : { waitingRef: cursor.lastWaitingRef }),
   });
+};
 
 /**
  * 同一运行身份（design D-02）：`runId` 分区按父运行共享，同一父运行下的兄弟子运行只由入口身份区分；
@@ -375,7 +376,7 @@ export const createAssessmentGraphRuntime = (
             occurredAt: options.now().toISOString(),
           });
         }
-        return stateOfCursor(input.run, cursor);
+        return await stateOfCursor(ports, input.run, cursor);
       }
       if (error instanceof Error && error.name === "AssessmentGraphNodeFailureV1") {
         const typed = (error as { readonly error?: unknown }).error;
@@ -399,9 +400,7 @@ export const createAssessmentGraphRuntime = (
   const readCheckpointState = async (input: {
     readonly run: AssessmentGraphRunContextV1;
   }): Promise<AssessmentGraphStateV1 | undefined> => {
-    const snapshot = await options.graph.getState({
-      configurable: { thread_id: input.run.threadId },
-    });
+    const snapshot = await options.graph.getState(graphConfig(input.run));
     if (typeof snapshot !== "object" || snapshot === null || !("values" in snapshot)) {
       return undefined;
     }
@@ -452,11 +451,65 @@ export const createAssessmentGraphRuntime = (
     }
     const existing = await readAssessmentCursor({ ports, run });
     if (existing !== undefined && sameRunIdentity(existing, run)) {
-      // 同一运行身份已存在：返回既有事实，不重复任何业务动作（design D-08）。
       return outcomeOf({
         cursor: existing,
-        state: stateOfCursor(run, existing),
+        state: await stateOfCursor(ports, run, existing),
         disposition: "existing",
+      });
+    }
+    const payload = Object.fromEntries(
+      Object.entries(command).filter(
+        ([key]) => !["authorization", "issuedInvocationId", "authorizationBranch"].includes(key),
+      ),
+    );
+    const auditEntryId = `assessment-start:${sha256CanonicalJson({ projectId: command.projectId, commandId: command.commandId })}`;
+    try {
+      await ports.transactionUnit.execute(
+        {
+          projectId: command.projectId,
+          commandKind: "assessment-graph.start",
+          commandId: command.commandId,
+          idempotencyKey: command.idempotencyKey,
+          payload: JSON.parse(JSON.stringify(payload)) as Record<string, JsonValue>,
+          actorRef: command.actorId,
+          authorizationContextRef: authorized.authorizationContextRef,
+          issuedAt: command.issuedAt,
+          runId: command.runRef.reference.entityId,
+          threadId: command.threadId,
+        },
+        async () => ({
+          resultRef: command.runRef,
+          audit: {
+            auditEntryId,
+            projectId: command.projectId,
+            action: "assessment-graph.start",
+            targetRef: command.runRef,
+            actorRef: command.actorId,
+            authorizationContextRef: authorized.authorizationContextRef,
+            occurredAt: command.issuedAt,
+            recordedAt: command.issuedAt,
+            version: command.runRef.reference,
+            commandId: command.commandId,
+            idempotencyKey: command.idempotencyKey,
+            runId: command.runRef.reference.entityId,
+            threadId: command.threadId,
+            reasonRef: run.parentRunRef,
+          },
+          events: [],
+        }),
+      );
+    } catch (error) {
+      const conflict =
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "IDEMPOTENCY_CONFLICT";
+      throw runFailure({
+        stage: "A0",
+        code: conflict ? "CONTRACT_INVALID" : "RETRYABLE_INFRASTRUCTURE_FAILURE",
+        retryable: !conflict,
+        detailCode: "start-run-binding-failed",
+        occurredAt: options.now().toISOString(),
       });
     }
     const state = await runGraph({
@@ -505,7 +558,7 @@ export const createAssessmentGraphRuntime = (
     if (cursorBefore.status === "cancelled") {
       return outcomeOf({
         cursor: cursorBefore,
-        state: stateOfCursor(run, cursorBefore),
+        state: await stateOfCursor(ports, run, cursorBefore),
         disposition: "already-cancelled",
       });
     }
@@ -613,7 +666,7 @@ export const createAssessmentGraphRuntime = (
     if (cursor.status === "cancelled") {
       return outcomeOf({
         cursor,
-        state: stateOfCursor(run, cursor),
+        state: await stateOfCursor(ports, run, cursor),
         disposition: "already-cancelled",
       });
     }
@@ -641,7 +694,7 @@ export const createAssessmentGraphRuntime = (
     const cancelledState = await recordAssessmentCancellation({
       ports,
       run,
-      state: stateOfCursor(run, cursor),
+      state: await stateOfCursor(ports, run, cursor),
       cursor,
       reasonCode: command.reasonCode,
     });

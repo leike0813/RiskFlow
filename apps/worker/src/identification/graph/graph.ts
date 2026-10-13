@@ -154,6 +154,7 @@ export interface IdentificationGraphRunContextV1 {
   readonly actorId: string;
   readonly authorization: AuthorizationContextV1;
   readonly commandId: string;
+  readonly issuedInvocationId: string;
   readonly idempotencyKey: string;
   /** 记录时刻：登记行的 `recorded_at`。 */
   readonly issuedAt: string;

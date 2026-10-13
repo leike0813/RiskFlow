@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import { sql, type Kysely } from "kysely";
 
 import { ACCESS_POLICY_REF_V1, type LocalIdentityAccessV1 } from "@riskflow/core/access";
@@ -13,9 +15,11 @@ import {
   type ReviewAuditReadQueryV1,
   type ReviewAuditReadResultV1,
   type ReviewTaskDetailV1,
+  type ReviewTaskStateV1,
 } from "@riskflow/core/review-audit";
 import {
   ContractReferenceV1Schema,
+  AuthorizationContextV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
   ModuleErrorV1Schema,
   ReviewDecisionRefV1Schema,
@@ -27,6 +31,7 @@ import {
   type ContractReferenceV1,
   type ModuleErrorV1,
   type ReviewTaskRefV1,
+  type WorkflowRunRefV1,
 } from "@riskflow/contracts/ports";
 import type { VersionReference } from "@riskflow/contracts/common";
 
@@ -57,6 +62,8 @@ interface ReviewTaskDetailRow {
   target_version_id: string;
   target_ref: JsonColumn;
   waiting_run_ref: JsonColumn;
+  waiting_run_entity_id: string;
+  waiting_run_version_id: string;
   review_task_ref: JsonColumn;
   validation_snapshot_ref: JsonColumn;
   evidence_snapshot_ref: JsonColumn;
@@ -320,6 +327,40 @@ export class PostgresReviewAuditRead implements ReviewAuditReadPortV1 {
     this.#now = options.now ?? (() => new Date());
   }
 
+  async verifyCheckpointReference(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly invocationId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly taskRef: ReviewTaskRefV1;
+    readonly parentRunRef: WorkflowRunRefV1;
+  }): Promise<boolean> {
+    const authorization = AuthorizationContextV1Schema.parse(input.authorization);
+    const taskRef = ReviewTaskRefV1Schema.parse(input.taskRef);
+    const parentRunRef = WorkflowRunRefV1Schema.parse(input.parentRunRef);
+    if (
+      authorization.projectId !== input.projectId ||
+      authorization.actorId !== input.actorId ||
+      authorization.grantedCapabilities.length !== 1 ||
+      authorization.grantedCapabilities[0] !== CAPABILITY_V1 ||
+      !refEquals(taskRef.waitingRunRef, parentRunRef)
+    )
+      return false;
+    const decision = await this.#authorization.verify({
+      authorizationContextRef: authorization.authorizationContextRef,
+      invocationId: input.invocationId,
+      projectId: input.projectId,
+      branch: BRANCH_V1,
+      requestedSpatialScopeRefs: authorization.spatialScopeRefs,
+      requestedSourceVersionRefs: [],
+      requestedAt: input.requestedAt,
+    });
+    if (decision.redacted || !isDeepStrictEqual(decision.context, authorization)) return false;
+    const { state } = await this.#taskState(input.projectId, taskRef);
+    return state.requestedBy === input.actorId;
+  }
+
   async read(query: ReviewAuditReadQueryV1): Promise<ReviewAuditReadResultV1> {
     const parsed = ReviewAuditReadQueryV1Schema.safeParse(query);
     if (!parsed.success) {
@@ -386,11 +427,38 @@ export class PostgresReviewAuditRead implements ReviewAuditReadPortV1 {
   async #taskDetail(
     query: Extract<ReviewAuditReadQueryV1, { readonly kind: "task-detail" }>,
   ): Promise<ReviewTaskDetailV1> {
-    const requested = query.payload.reviewTaskRef;
+    const { state, row } = await this.#taskState(query.projectId, query.payload.reviewTaskRef);
+    const decision =
+      state.status === "decided" ? await this.#taskDecision(query.projectId, row) : undefined;
+
+    return ReviewTaskDetailV1Schema.parse({
+      kind: "task-detail",
+      reviewTaskRef: state.reviewTaskRef,
+      projectId: state.projectId,
+      reviewType: state.reviewTaskRef.reviewType,
+      status: state.status,
+      targetRef: state.reviewTaskRef.targetRef,
+      validationSnapshotRef: state.validationSnapshotRef,
+      evidenceSnapshotRef: state.evidenceSnapshotRef,
+      reviewPolicyRef: state.reviewPolicyRef,
+      waitingRunRef: state.reviewTaskRef.waitingRunRef,
+      requestedBy: state.requestedBy,
+      requestedAt: state.requestedAt,
+      ...(state.decidedAt === undefined ? {} : { decidedAt: state.decidedAt }),
+      ...(state.supersededAt === undefined ? {} : { supersededAt: state.supersededAt }),
+      ...(decision === undefined ? {} : { decision }),
+      actions: this.#taskActions(state.status),
+    });
+  }
+
+  async #taskState(
+    projectId: string,
+    requested: ReviewTaskRefV1,
+  ): Promise<{ readonly row: ReviewTaskDetailRow; readonly state: ReviewTaskStateV1 }> {
     const row = await this.#db
       .selectFrom(REVIEW_TASKS_TABLE)
       .selectAll()
-      .where("project_id", "=", query.projectId)
+      .where("project_id", "=", projectId)
       .where("review_task_id", "=", requested.reference.entityId)
       .where("version_id", "=", requested.reference.versionId)
       .executeTakeFirst();
@@ -404,10 +472,16 @@ export class PostgresReviewAuditRead implements ReviewAuditReadPortV1 {
     }
     if (
       !taskRefEquals(storedRef.data, requested) ||
+      storedRef.data.reference.entityId !== row.review_task_id ||
+      storedRef.data.reference.versionId !== row.version_id ||
+      storedRef.data.reviewType !== row.review_type ||
       storedRef.data.targetRef.kind !== row.target_kind ||
+      !isDeepStrictEqual(storedRef.data.targetRef, storedTarget.data) ||
       storedTarget.data.reference.entityId !== row.target_entity_id ||
       storedTarget.data.reference.versionId !== row.target_version_id ||
-      !refEquals(storedRef.data.waitingRunRef, storedWaitingRun.data)
+      !refEquals(storedRef.data.waitingRunRef, storedWaitingRun.data) ||
+      storedWaitingRun.data.reference.entityId !== row.waiting_run_entity_id ||
+      storedWaitingRun.data.reference.versionId !== row.waiting_run_version_id
     ) {
       throw closed("task-detail-fact-mismatch");
     }
@@ -433,29 +507,8 @@ export class PostgresReviewAuditRead implements ReviewAuditReadPortV1 {
         : { supersededByCommandId: row.superseded_by_command_id }),
       ...(row.superseded_by_actor === null ? {} : { supersededByActor: row.superseded_by_actor }),
     });
-    if (state.projectId !== query.projectId) throw closed("task-detail-scope");
-
-    const decision =
-      state.status === "decided" ? await this.#taskDecision(query.projectId, row) : undefined;
-
-    return ReviewTaskDetailV1Schema.parse({
-      kind: "task-detail",
-      reviewTaskRef: state.reviewTaskRef,
-      projectId: state.projectId,
-      reviewType: state.reviewTaskRef.reviewType,
-      status: state.status,
-      targetRef: state.reviewTaskRef.targetRef,
-      validationSnapshotRef: state.validationSnapshotRef,
-      evidenceSnapshotRef: state.evidenceSnapshotRef,
-      reviewPolicyRef: state.reviewPolicyRef,
-      waitingRunRef: storedWaitingRun.data,
-      requestedBy: state.requestedBy,
-      requestedAt: state.requestedAt,
-      ...(state.decidedAt === undefined ? {} : { decidedAt: state.decidedAt }),
-      ...(state.supersededAt === undefined ? {} : { supersededAt: state.supersededAt }),
-      ...(decision === undefined ? {} : { decision }),
-      actions: this.#taskActions(state.status),
-    });
+    if (state.projectId !== projectId) throw closed("task-detail-scope");
+    return { row, state };
   }
 
   /** 原决定原样返回：五类联合不归并、不新增第六类，判定权仍在 C07 事务。 */

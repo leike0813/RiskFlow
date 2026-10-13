@@ -33,6 +33,11 @@ export interface ArtifactStoreV1 {
     content: AsyncIterable<Uint8Array>,
   ): Promise<ArtifactPutResultV1>;
   open(request: ArtifactReadRequestV1): Promise<ArtifactReadHandleV1>;
+  verifyContent?(
+    request: ArtifactReadRequestV1,
+    maxBytes: number,
+    validate: (bytes: Uint8Array) => boolean,
+  ): Promise<boolean>;
 }
 
 export interface ArtifactReferenceGuardV1 {

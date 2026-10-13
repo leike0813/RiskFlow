@@ -5,6 +5,7 @@ import {
   createDeploymentCalibrationAgentV1,
   createDeploymentAssessmentV1,
   createDeploymentAssessmentGraphPoliciesV1,
+  createDeploymentMeasureReleaseReaderV1,
   createDeploymentRecommendationAgentV1,
   createRecommendationPolicyProviderV1,
   createWarningRuntimePolicyProviderV1,
@@ -118,7 +119,15 @@ const options = (overrides = {}) => {
       config: { projectBindings: [{ projectId: "project-a" }] },
       runtime: { db: {} },
       transactionUnit: { execute: () => undefined },
-      access: { verify: () => undefined },
+      access: {
+        verify: () => undefined,
+        verifyDeploymentContext: () => undefined,
+        readDeploymentAuthorizationSource: () => undefined,
+      },
+      authorizationScope: {
+        runTask: (_task, operation) => operation(),
+        authorizeDownstream: () => undefined,
+      },
       artifactStore: { put: () => undefined, open: () => undefined },
       referenceGuard: { assertUsable: () => undefined },
       monitoringStore: { readSnapshot: () => undefined },
@@ -158,15 +167,16 @@ const options = (overrides = {}) => {
     },
     calibrationAgent: { ensureTask: () => undefined },
     calibrationTaskPort: {
+      readModelInput: () => undefined,
       validateIncrement: () => undefined,
       finalizeIncrement: () => undefined,
     },
-    forecastPolicies: [{ method: "deterministic", requiredRef: reference("forecast-model") }],
     policies: {
       resolveForecastPolicy: () => undefined,
       resolveCalibrationPolicy: () => undefined,
     },
     authorizeDownstream: async () => undefined,
+    persistArtifact: async () => undefined,
     runtimeAuthorization: { verifyCurrent: () => undefined },
     siteBindings: [],
     ...overrides,
@@ -363,6 +373,8 @@ describe("评估生产组合的装配契约", () => {
     ]);
     expect(result.api.riskAssessment).toBe(result.compositions.riskAssessment);
     expect(result.readers.agentTasks).toBeDefined();
+    expect(typeof result.modelStep.renderModelStep).toBe("function");
+    expect(typeof result.modelStep.interpretModelStep).toBe("function");
     expect(result.assertReady()).toBe(result);
   });
 
@@ -370,6 +382,11 @@ describe("评估生产组合的装配契约", () => {
     const providers = options();
     createDeploymentAssessmentV1(providers);
     expect(providers.registered).toEqual(["response-recommendation", "calibration-suggestion"]);
+  });
+
+  it("预测执行器按运行期已核验策略解析，装配不再要求启动期预测策略", () => {
+    // 旧调用方残留的空策略集合不再阻断装配：预测策略正文只在运行期受权读取。
+    expect(() => createDeploymentAssessmentV1(options({ forecastPolicies: [] }))).not.toThrow();
   });
 
   it("缺任一必需依赖即构造失败，不以占位实现补位", () => {
@@ -389,10 +406,10 @@ describe("评估生产组合的装配契约", () => {
       "recommendationAgent",
       "calibrationAgent",
       "calibrationTaskPort",
-      "forecastPolicies",
       "policies",
       "runtimeAuthorization",
       "siteBindings",
+      "persistArtifact",
     ]) {
       expect(
         () => createDeploymentAssessmentV1(options({ [name]: undefined })),
@@ -405,9 +422,6 @@ describe("评估生产组合的装配契约", () => {
     expect(() =>
       createDeploymentAssessmentV1(options({ review: { requestReview: () => undefined } })),
     ).toThrow("DEPLOYMENT_ASSESSMENT_PORT_INVALID:review.verifyCalibrationSuggestionApproval");
-    expect(() => createDeploymentAssessmentV1(options({ forecastPolicies: [] }))).toThrow(
-      "DEPLOYMENT_FORECAST_POLICIES_REQUIRED",
-    );
   });
 
   it("工程重复、策略工程不符与无绑定工程都拒绝装配", () => {
@@ -951,5 +965,108 @@ describe("C27/C29 生产 Agent provider", () => {
     await expect(provider.resolveSiteContextRef({ run, requiredAt: run.validAt })).resolves.toBe(
       undefined,
     );
+  });
+});
+
+describe("C28 措施发布读取经 C19 正式成员确认", () => {
+  const readerInput = (refs) => ({
+    requestId: "command-a:measure-releases",
+    requestedAt: "2026-10-11T00:00:00.000Z",
+    authorization: {
+      schemaVersion: "1",
+      projectId: "project-a",
+      actorId: "actor-1",
+      grantedCapabilities: ["warning-response.execute"],
+      spatialScopeRefs: [],
+      decidedAt: "2026-10-11T00:00:00.000Z",
+    },
+    measureLibraryReleaseRefs: refs,
+  });
+
+  const downstreamAuthorization = (request) => ({
+    schemaVersion: "1",
+    authorizationContextRef: {
+      kind: "authorization-context",
+      reference: reference(`auth:${request.invocationId}`),
+    },
+    projectId: request.projectId,
+    actorId: request.actorId,
+    grantedCapabilities: ["knowledge-modeling.read"],
+    spatialScopeRefs: [],
+    sourceAccessGrantRefs: [],
+    authorizationPolicyRef: reference("auth-policy"),
+    decidedAt: "2026-10-11T00:00:00.000Z",
+    invocation: { kind: "human" },
+  });
+
+  const providerFor = ({ read, authorize = async (request) => downstreamAuthorization(request) }) =>
+    createDeploymentMeasureReleaseReaderV1({
+      basis: { readPublishedConfigurationMember: read },
+      authorizeDownstream: authorize,
+    });
+
+  it("逐引用签发 assessment-basis 下游身份并原样返回已确认发布", async () => {
+    const signed = [];
+    const reads = [];
+    const first = reference("measure-a");
+    const second = reference("measure-b");
+    const provider = providerFor({
+      authorize: async (request) => {
+        signed.push(request);
+        return downstreamAuthorization(request);
+      },
+      read: async (request) => {
+        reads.push(request);
+        return {
+          body: { schemaVersion: "1", definitionType: "measure-library" },
+          sha256: "a".repeat(64),
+        };
+      },
+    });
+
+    await expect(
+      provider.readPublishedMeasureReleases(readerInput([first, second])),
+    ).resolves.toEqual([first, second]);
+    expect(signed.map((request) => request.invocationId)).toEqual([
+      `command-a:measure-releases:measure-release:measure-a:${first.versionId}`,
+      `command-a:measure-releases:measure-release:measure-b:${second.versionId}`,
+    ]);
+    expect(
+      signed.every(
+        (request) =>
+          request.branch === "knowledge-modeling.assessment-basis" &&
+          request.projectId === "project-a" &&
+          request.actorId === "actor-1",
+      ),
+    ).toBe(true);
+    expect(reads.map((request) => request.releaseRef)).toEqual([first, second]);
+    expect(reads.every((request) => request.projectId === "project-a")).toBe(true);
+  });
+
+  it("下游签发缺工程读取能力时整批拒绝", async () => {
+    const provider = providerFor({
+      authorize: async (request) => ({
+        ...downstreamAuthorization(request),
+        grantedCapabilities: ["knowledge-modeling.govern"],
+      }),
+      read: async () => ({ body: { definitionType: "measure-library" } }),
+    });
+    await expect(
+      provider.readPublishedMeasureReleases(readerInput([reference("measure-a")])),
+    ).resolves.toEqual([]);
+  });
+
+  it("非措施库正文与读不到的版本都整批拒绝，不返回部分发布", async () => {
+    const first = reference("measure-a");
+    const wrongType = providerFor({
+      read: async () => ({ body: { schemaVersion: "1", definitionType: "forecast-policy" } }),
+    });
+    const wrongVersion = providerFor({ read: async () => undefined });
+
+    for (const provider of [wrongType, wrongVersion]) {
+      await expect(
+        provider.readPublishedMeasureReleases(readerInput([first, reference("measure-b")])),
+      ).resolves.toEqual([]);
+    }
   });
 });

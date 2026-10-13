@@ -1,4 +1,4 @@
-import { isDeepStrictEqual } from "node:util";
+import { isDeepStrictEqual, TextDecoder } from "node:util";
 
 import {
   createHybridRetrievalProjectionComposition,
@@ -17,7 +17,20 @@ import { ArtifactStoreError } from "../../../packages/core/dist/artifacts/index.
 import {
   acceptanceRouteSetRefFor,
   AcceptanceRouteSetV1Schema,
+  candidateSetRefFor,
+  IdentificationGroupV1Schema,
+  identificationGroupRefFor,
+  MergePlanV1Schema,
+  mergePlanRefFor,
+  RiskCandidateSetV1Schema,
+  RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1,
+  RISK_CANDIDATE_ARTIFACT_MAX_BYTES_V1,
 } from "../../../packages/core/dist/identification/candidate-finalization/index.js";
+import { authorizationScopeDigest } from "../../../packages/core/dist/retrieval/index.js";
+import {
+  AuthorizationContextV1Schema,
+  ContractReferenceV1Schema,
+} from "../../../packages/contracts/dist/ports/index.js";
 import { SingleBindingV1 } from "../runtime.mjs";
 
 const required = (value, name) => {
@@ -284,6 +297,148 @@ export const createDeploymentAcceptanceRoutesV1 = ({
         routeSet.mergePlanRef.reference.versionId === row.mergePlanRef.reference.versionId
         ? routeSet.routes
         : undefined;
+    },
+  };
+};
+
+/** 输入与工作计划的运行归属由调用方先经 C24 证明，C22 只读自己的精确结果与正文。 */
+export const createDeploymentCandidateCheckpointProofV1 = ({
+  resultStore,
+  artifactStore,
+  access,
+}) => {
+  requiredMethod(resultStore, "resultStore", "readResult");
+  requiredMethod(access, "access", "verify");
+  const kinds = {
+    "identification-candidate-set": {
+      resultKind: "candidate-set",
+      refField: "candidateSetRef",
+      schema: RiskCandidateSetV1Schema,
+      purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.candidateSet,
+    },
+    "merge-plan": {
+      resultKind: "merge-plan",
+      refField: "mergePlanRef",
+      schema: MergePlanV1Schema,
+      purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.mergePlan,
+    },
+    "identification-group": {
+      resultKind: "identification-group",
+      refField: "groupRef",
+      schema: IdentificationGroupV1Schema,
+      purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.group,
+    },
+  };
+  return {
+    async verifyCheckpointReference(input) {
+      const reference = ContractReferenceV1Schema.parse(input.reference);
+      const authorization = AuthorizationContextV1Schema.parse(input.authorization);
+      const kind = kinds[reference.kind];
+      if (
+        kind === undefined ||
+        input.inputSnapshotRef === undefined ||
+        (reference.kind !== "identification-candidate-set" && input.workPlanRef === undefined) ||
+        authorization.projectId !== input.projectId ||
+        authorization.actorId !== input.actorId ||
+        authorization.grantedCapabilities.length !== 1 ||
+        authorization.grantedCapabilities[0] !== "risk-identification.read" ||
+        typeof artifactStore.verifyContent !== "function"
+      )
+        return false;
+      const decision = await access.verify({
+        authorizationContextRef: authorization.authorizationContextRef,
+        projectId: input.projectId,
+        invocationId: input.invocationId,
+        branch: "risk-identification.run-read",
+        requestedSpatialScopeRefs: authorization.spatialScopeRefs,
+        requestedSourceVersionRefs: [],
+        requestedAt: input.requestedAt,
+      });
+      if (decision.redacted || !isDeepStrictEqual(decision.context, authorization)) return false;
+      const scopeDigest = authorizationScopeDigest(authorization);
+      const row = await resultStore.readResult({
+        projectId: input.projectId,
+        resultKind: kind.resultKind,
+        resultId: reference.reference.entityId,
+        resultVersionId: reference.reference.versionId,
+      });
+      if (
+        row?.resultKind !== kind.resultKind ||
+        row.projectId !== input.projectId ||
+        row.actorRef !== input.actorId ||
+        row.resultId !== reference.reference.entityId ||
+        row.resultVersionId !== reference.reference.versionId ||
+        !isDeepStrictEqual(row[kind.refField], reference) ||
+        !isDeepStrictEqual(row.inputSnapshotRef, input.inputSnapshotRef) ||
+        row.authorizationScopeDigest !== scopeDigest ||
+        (row.workPlanRef !== undefined && !isDeepStrictEqual(row.workPlanRef, input.workPlanRef))
+      )
+        return false;
+      return artifactStore.verifyContent(
+        {
+          schemaVersion: "1",
+          projectId: input.projectId,
+          actorId: input.actorId,
+          requestId: input.invocationId,
+          idempotencyKey: input.invocationId,
+          requestedAt: input.requestedAt,
+          artifactRef: row.artifactRef,
+          authorization,
+          purposeCode: kind.purposeCode,
+          requiredCapability: "risk-identification.read",
+        },
+        RISK_CANDIDATE_ARTIFACT_MAX_BYTES_V1,
+        (bytes) => {
+          const body = kind.schema.parse(
+            JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
+          );
+          if (
+            body.projectId !== input.projectId ||
+            !isDeepStrictEqual(body.inputSnapshotRef, row.inputSnapshotRef) ||
+            body.authorizationScopeDigest !== scopeDigest ||
+            !isDeepStrictEqual(body.authorizationContextRef, row.authorizationContextRef) ||
+            (row.workPlanRef !== undefined && !isDeepStrictEqual(body.workPlanRef, row.workPlanRef))
+          )
+            return false;
+          if (reference.kind === "identification-candidate-set")
+            return (
+              isDeepStrictEqual(body.workItemRef, row.workItemRef) &&
+              isDeepStrictEqual(body.modelContextArtifactSetRef, row.modelContextArtifactSetRef) &&
+              isDeepStrictEqual(
+                candidateSetRefFor({
+                  projectId: row.projectId,
+                  workItemEntityId: row.workItemRef.reference.entityId,
+                  requestDigest: row.requestDigest,
+                }),
+                reference,
+              )
+            );
+          if (reference.kind === "merge-plan")
+            return (
+              isDeepStrictEqual(body.identificationRunRef, input.runRef) &&
+              isDeepStrictEqual(
+                mergePlanRefFor({
+                  projectId: row.projectId,
+                  workPlanEntityId: row.workPlanRef.reference.entityId,
+                  requestDigest: row.requestDigest,
+                }),
+                reference,
+              )
+            );
+          return (
+            body.groupVersionId === row.requestDigest &&
+            isDeepStrictEqual(
+              identificationGroupRefFor({
+                projectId: row.projectId,
+                workPlanEntityId: row.workPlanRef.reference.entityId,
+                groupId: body.groupId,
+                requestDigest: row.requestDigest,
+              }),
+              reference,
+            )
+          );
+        },
+      );
     },
   };
 };

@@ -8,7 +8,11 @@ import { pathToFileURL, URL } from "node:url";
 const { z } = createRequire(new URL("../../packages/contracts/dist/index.js", import.meta.url))(
   "zod",
 );
-import { ContractReferenceV1Schema } from "../../packages/contracts/dist/ports/index.js";
+import {
+  AgentTaskResultRefV1Schema,
+  ContractReferenceV1Schema,
+  ProjectionReportFactRefV1Schema,
+} from "../../packages/contracts/dist/ports/index.js";
 import {
   checkPack,
   createReadOnlyQuerySession,
@@ -85,45 +89,6 @@ const valueAtPath = (value, path) => {
   return current;
 };
 
-export const requiredReferencesOfV1 = (result, paths, operationId, targetResultRef = {}) => {
-  const projectionIndex =
-    operationId === operationIdFor("query", "projection.result-read")
-      ? projectionTargetIndexV1(result, targetResultRef.workflowRunRef)
-      : -1;
-  const formalResultPathPresent = paths.some((path) => {
-    if (operationId === operationIdFor("query", "agent-task.read")) {
-      return path.length === 2 && path[0] === "resultRef" && path[1] === "formalResultRef";
-    }
-    if (operationId === operationIdFor("query", "projection.result-read")) {
-      return (
-        path.length === 3 &&
-        path[0] === "items" &&
-        path[1] === projectionIndex &&
-        path[2] === "latestResultRef"
-      );
-    }
-    if (operationId === operationIdFor("query", "risk-identification.run-read")) {
-      return path.length === 2 && path[0] === "acceptedRiskRecordRefs" && Number.isInteger(path[1]);
-    }
-    return false;
-  });
-  if (!formalResultPathPresent) return null;
-  const references = {};
-  for (const path of paths) {
-    if (
-      operationId === operationIdFor("query", "projection.result-read") &&
-      (projectionIndex < 0 ||
-        (path[0] === "items" && (typeof path[1] !== "number" || path[1] !== projectionIndex)))
-    ) {
-      return null;
-    }
-    const value = valueAtPath(result, path);
-    if (!ContractReferenceV1Schema.safeParse(value).success) return null;
-    references[path.join(".")] = value;
-  }
-  return references;
-};
-
 const HUMAN_WAIT_STATUSES = new Set([
   "awaiting-human",
   "waiting",
@@ -141,18 +106,108 @@ const hasTerminalStatusPathV1 = (operationId, payload) =>
     payload?.queryResultRef !== undefined);
 
 const sameReferenceV1 = (left, right) =>
+  left?.kind !== undefined &&
+  left?.reference?.entityId !== undefined &&
+  left?.reference?.versionId !== undefined &&
   left?.kind === right?.kind &&
   left?.reference?.entityId === right?.reference?.entityId &&
   left?.reference?.versionId === right?.reference?.versionId;
 
+const isRunViewPageV1 = (result) => result?.kind === "page" && result.queryType === "run-view";
+
 const projectionTargetIndexV1 = (result, expectedTargetRef) => {
-  if (result?.kind !== "page" || result.queryType !== "run-view") return -1;
+  if (!isRunViewPageV1(result)) return -1;
   const matches = result.items.flatMap((item, index) =>
     item.kind === "run-summary" && sameReferenceV1(item.workflowRunRef, expectedTargetRef)
       ? [index]
       : [],
   );
   return matches.length === 1 ? matches[0] : -1;
+};
+
+/**
+ * Agent 完成的正式产出只有契约主引用三族；`validationRef` 等辅助引用不构成完成证明。
+ * 引用 kind 与三族互斥由 AgentTaskResultRefV1Schema 整体校验，此处不再另判。
+ */
+const AGENT_TASK_PRIMARY_OUTPUT_FIELDS_V1 = new Set([
+  "incrementRef",
+  "candidateRef",
+  "formalResultRef",
+]);
+
+const completedAgentTaskResultV1 = (result, expectedTaskRef) => {
+  if (result?.kind !== "detail") return null;
+  const parsed = AgentTaskResultRefV1Schema.safeParse(result.resultRef);
+  return parsed.success &&
+    parsed.data.status === "completed" &&
+    sameReferenceV1(parsed.data.agentTaskRef, expectedTaskRef)
+    ? parsed.data
+    : null;
+};
+
+const isAgentTaskFormalPathV1 = (path) =>
+  path.length === 2 && path[0] === "resultRef" && AGENT_TASK_PRIMARY_OUTPUT_FIELDS_V1.has(path[1]);
+
+/**
+ * run-view 页内能证明属于本次 run 的正式结果路径：目标 run-summary 的 `latestResultRef`，
+ * 或归属同一 run 的 `report-fact.factRef`——同一运行可披露多条事实，按项内 `workflowRunRef`
+ * 判定归属而不是要求唯一。report-absence 与其它 run 的行都不是正式业务事实。
+ */
+const projectionFormalSchemaV1 = (result, path, expectedRunRef) => {
+  if (!isRunViewPageV1(result)) return null;
+  if (path.length !== 3 || path[0] !== "items" || typeof path[1] !== "number") return null;
+  const item = result.items[path[1]];
+  if (path[2] === "latestResultRef" && item?.kind === "run-summary") {
+    return path[1] === projectionTargetIndexV1(result, expectedRunRef)
+      ? ContractReferenceV1Schema
+      : null;
+  }
+  if (path[2] === "factRef" && item?.kind === "report-fact") {
+    return sameReferenceV1(item.workflowRunRef, expectedRunRef)
+      ? ProjectionReportFactRefV1Schema
+      : null;
+  }
+  return null;
+};
+
+/** 路径能证明正式结果时返回该路径的引用 Schema，否则返回 null。 */
+const formalResultSchemaV1 = (result, path, operationId, targetResultRef) => {
+  if (operationId === operationIdFor("query", "agent-task.read")) {
+    return completedAgentTaskResultV1(result, targetResultRef.agentTaskRef) !== null &&
+      isAgentTaskFormalPathV1(path)
+      ? ContractReferenceV1Schema
+      : null;
+  }
+  if (operationId === operationIdFor("query", "projection.result-read")) {
+    return projectionFormalSchemaV1(result, path, targetResultRef.workflowRunRef);
+  }
+  if (operationId === operationIdFor("query", "risk-identification.run-read")) {
+    return path.length === 2 && path[0] === "acceptedRiskRecordRefs" && Number.isInteger(path[1])
+      ? ContractReferenceV1Schema
+      : null;
+  }
+  return null;
+};
+
+export const requiredReferencesOfV1 = (result, paths, operationId, targetResultRef = {}) => {
+  const schemas = paths.map((path) =>
+    formalResultSchemaV1(result, path, operationId, targetResultRef),
+  );
+  if (!schemas.some((schema) => schema !== null)) return null;
+  const references = {};
+  for (const [index, path] of paths.entries()) {
+    // projection 只承认本次 run 的正式结果路径：其它 run、非归属行与 report-absence 一律拒绝。
+    if (
+      operationId === operationIdFor("query", "projection.result-read") &&
+      schemas[index] === null
+    ) {
+      return null;
+    }
+    const value = valueAtPath(result, path);
+    if (!(schemas[index] ?? ContractReferenceV1Schema).safeParse(value).success) return null;
+    references[path.join(".")] = value;
+  }
+  return references;
 };
 
 /** Only paths verified against the formal query result DTO are eligible to determine PASS. */
@@ -176,8 +231,7 @@ export const terminalStatusOfV1 = (operationId, payload, result, targetResultRef
   if (
     operationId === operationIdFor("query", "projection.result-read") &&
     payload?.queryResultRef !== undefined &&
-    result?.kind === "page" &&
-    result.queryType === "run-view"
+    isRunViewPageV1(result)
   ) {
     const index = projectionTargetIndexV1(result, targetResultRef.workflowRunRef);
     return index < 0 ? undefined : result.items[index].status;

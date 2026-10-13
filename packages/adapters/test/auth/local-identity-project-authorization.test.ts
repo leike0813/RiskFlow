@@ -21,6 +21,8 @@ import {
   DEPLOYMENT_AUTHORIZATION_ERROR_V1,
 } from "../../src/auth/deployment-authorization.js";
 import { createPostgresRuntime } from "../../src/postgres/pool.js";
+import { createPostgresRunEventReaderV1 } from "../../src/workflow/index.js";
+import * as workflowRunEventsMigration from "../../src/postgres/migrations/workflow/deliver-offline-private-deployment-and-operations/000057_workflow_run_events.js";
 
 const ADMIN_PASSWORD = "admin-password-v1";
 const USER_PASSWORD = "user-password-v1";
@@ -81,6 +83,35 @@ describe.sequential("local identity and project authorization", () => {
     keyVersion: "key-v1",
     now: clock.now,
   });
+  const persistRunEvent = async (event: {
+    readonly eventId: string;
+    readonly eventVersion: 1;
+    readonly projectId: string;
+    readonly aggregateRef: unknown;
+    readonly authorizationContextRef: unknown;
+    readonly payload?: unknown;
+  }) => {
+    await fixture!.adminPool.query(
+      `INSERT INTO outbox.events
+        (event_id, event_version, event_type, schema_version, occurred_at, recorded_at,
+         causation_id, project_id, correlation_id, producer_command_id, idempotency_key,
+         aggregate_ref, audit_trail_ref, event_json, payload_sha256, authorization_context_ref)
+       VALUES ($1, 1, 'review.review-resolved.v1', '1', $2, $2,
+         $1, $3, $1, $1, $1, $4::jsonb, $5::jsonb, $6::jsonb, repeat('a', 64), $7::jsonb)`,
+      [
+        event.eventId,
+        clock.now().toISOString(),
+        event.projectId,
+        JSON.stringify(event.aggregateRef),
+        JSON.stringify({
+          kind: "audit-trail",
+          reference: { entityId: event.eventId, versionId: "1" },
+        }),
+        JSON.stringify(event),
+        JSON.stringify(event.authorizationContextRef),
+      ],
+    );
+  };
   const currentSecurityVersion = async (accountId: string): Promise<string> => {
     const row = await fixture!.adminPool.query<{ security_version: number }>(
       "SELECT security_version FROM business.local_accounts WHERE account_id = $1",
@@ -892,6 +923,71 @@ describe.sequential("local identity and project authorization", () => {
     });
     expect(responderProjection.redacted).toBe(true);
     expect(responderProjection.context.sourceAccessGrantRefs).toHaveLength(0);
+    // 合成事件经真实触发器登记；用真实 C06 验证空授权不能扩大、逐事件签发可读及脱敏拒绝。
+    const workflowRunRef = {
+      kind: "workflow-run" as const,
+      reference: { entityId: "run-sse-source-access", versionId: "1" },
+    };
+    const event = {
+      eventId: "event-sse-source-access",
+      eventVersion: 1 as const,
+      projectId: "project-a",
+      aggregateRef: workflowRunRef,
+      authorizationContextRef: viewerEvidence.context.authorizationContextRef,
+    };
+    await persistRunEvent(event);
+    const sseRuntime = createPostgresRuntime(fixture!.app, "riskflow_app");
+    try {
+      const reader = createPostgresRunEventReaderV1({ db: sseRuntime.db, access: access! });
+      let signed = 0;
+      const subscribe = async (sessionToken: string, perEvent: boolean) => {
+        const queryId = `sse-base-${++signed}`;
+        const base = await access!.authorize({
+          invocation: { kind: "human-session", sessionToken },
+          invocationId: queryId,
+          projectId: "project-a",
+          branch: "projection.subscribe",
+          requestedSpatialScopeRefs: [],
+          requestedSourceVersionRefs: [],
+        });
+        const request = {
+          queryId,
+          projectId: "project-a",
+          actorId: base.context.actorId,
+          requestedAt: clock.now().toISOString(),
+          authorization: base.context,
+          kind: "subscribe" as const,
+          payload: { workflowRunRef },
+        };
+        if (!perEvent) return reader.subscribe(request);
+        return reader.subscribeWithSourceAuthorization(request, async (scope) => {
+          const queryId = `sse-event-${++signed}`;
+          const authorized = await access!.authorize({
+            invocation: { kind: "human-session", sessionToken },
+            invocationId: queryId,
+            projectId: "project-a",
+            branch: "projection.subscribe",
+            requestedSpatialScopeRefs: [...scope.spatialScopeRefs],
+            requestedSourceVersionRefs: [...scope.sourceVersionRefs],
+          });
+          return { queryId, authorization: authorized.context };
+        });
+      };
+      await expect(subscribe(roleSessionTokens["business-viewer"]!, false)).resolves.toMatchObject({
+        kind: "failed",
+        error: { code: "AUTHORIZATION_DENIED" },
+      });
+      await expect(subscribe(roleSessionTokens["business-viewer"]!, true)).resolves.toEqual({
+        kind: "succeeded",
+        result: { eventRefs: [{ kind: "domain-event", eventId: event.eventId, eventVersion: 1 }] },
+      });
+      await expect(subscribe(roleSessionTokens["field-responder"]!, true)).resolves.toMatchObject({
+        kind: "failed",
+        error: { code: "AUTHORIZATION_DENIED" },
+      });
+    } finally {
+      await sseRuntime.close();
+    }
     await expect(
       access!.authorize({
         invocation: { kind: "human-session", sessionToken: roleSessionTokens["field-responder"]! },
@@ -2370,6 +2466,38 @@ describe.sequential("local identity and project authorization", () => {
       });
       expect(resolved.actorId).toBe(root.context.actorId);
       expect(resolved.projectId).toBe(root.context.projectId);
+      const readOnlyRequest = {
+        root: resolved,
+        branch: "projection.query",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      };
+      const countsBefore = await fixture!.adminPool.query(
+        "SELECT (SELECT COUNT(*) FROM business.authorization_contexts) AS contexts, (SELECT COUNT(*) FROM audit.entries) AS audits",
+      );
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        expect(await adapter.readDownstreamContext(readOnlyRequest)).toEqual({
+          context: contexts[0],
+          invocationId: "invocation-c37-issue",
+          branch: "projection.query",
+        });
+      }
+      const countsAfter = await fixture!.adminPool.query(
+        "SELECT (SELECT COUNT(*) FROM business.authorization_contexts) AS contexts, (SELECT COUNT(*) FROM audit.entries) AS audits",
+      );
+      expect(countsAfter.rows).toEqual(countsBefore.rows);
+      await expect(
+        adapter.readDownstreamContext({
+          ...readOnlyRequest,
+          branch: "risk-identification.read",
+        }),
+      ).rejects.toMatchObject({ code: DEPLOYMENT_AUTHORIZATION_ERROR_V1.notAssociated });
+      await expect(
+        adapter.readDownstreamContext({
+          ...readOnlyRequest,
+          root: { ...resolved, actorId: "other-actor" },
+        }),
+      ).rejects.toMatchObject({ code: DEPLOYMENT_AUTHORIZATION_ERROR_V1.rootNotGranted });
       await expect(
         adapter.resolveDownstreamContext({
           root: resolved,
@@ -2480,6 +2608,7 @@ describe.sequential("local identity and project authorization", () => {
       );
       expect(rejectedGroup.rows[0]!.count).toBe("0");
       clock.advance(5 * 60 * 1000 + 1);
+      await expect(adapter.readDownstreamContext(readOnlyRequest)).rejects.toThrow();
       await expect(
         access!.verify({
           authorizationContextRef: build.contextRef,
@@ -2576,6 +2705,47 @@ describe.sequential("local identity and project authorization", () => {
         projectId: systemChild.context.projectId,
       }),
     ).resolves.toEqual(systemSource);
+
+    const waitingRunRef = {
+      kind: "workflow-run" as const,
+      reference: { entityId: "run-d20-review", versionId: "2" },
+    };
+    await persistRunEvent({
+      eventId: "event-d20-causal-and-explicit",
+      eventVersion: 1,
+      projectId: "project-a",
+      aggregateRef: {
+        kind: "review-decision",
+        reference: { entityId: "review-d20", versionId: "1" },
+      },
+      authorizationContextRef: systemChild.contextRef,
+      payload: { waitingRunRef, resumeRunRef: waitingRunRef },
+    });
+    const associations = async () =>
+      (
+        await fixture!.adminPool.query(
+          "SELECT run_id, run_version_id, event_order FROM business.workflow_run_events WHERE event_id = $1 ORDER BY run_id",
+          ["event-d20-causal-and-explicit"],
+        )
+      ).rows;
+    const rows = await associations();
+    expect(rows.map(({ run_id, run_version_id }) => ({ run_id, run_version_id }))).toEqual([
+      { run_id: causalRunRef.reference.entityId, run_version_id: "1" },
+      { run_id: waitingRunRef.reference.entityId, run_version_id: "2" },
+    ]);
+    expect(new Set(rows.map((row) => row.event_order)).size).toBe(1);
+    const migrationRuntime = createPostgresRuntime(fixture!.migrator, "riskflow_migrator");
+    try {
+      await migrationRuntime.db.transaction().execute(async (tx) => {
+        await workflowRunEventsMigration.down(tx);
+        await workflowRunEventsMigration.up(tx);
+      });
+      expect(
+        (await associations()).map(({ run_id, run_version_id }) => ({ run_id, run_version_id })),
+      ).toEqual(rows.map(({ run_id, run_version_id }) => ({ run_id, run_version_id })));
+    } finally {
+      await migrationRuntime.close();
+    }
 
     // 错主体、错工程、假引用与系统管理上下文一律拒绝（undefined）。
     const rejected = [

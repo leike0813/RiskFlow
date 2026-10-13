@@ -42,7 +42,11 @@ import {
   type IdentificationGraphResumeCauseV1,
   type IdentificationGraphRuntimeV1,
 } from "@riskflow/core/identification/graph";
-import { sha256CanonicalJson, type JsonValue } from "@riskflow/core/persistence";
+import {
+  CHECKPOINT_RUNTIME_CONTEXT_KEY_V1,
+  sha256CanonicalJson,
+  type JsonValue,
+} from "@riskflow/core/persistence";
 import { authorizationScopeDigest } from "@riskflow/core/retrieval";
 
 import {
@@ -158,6 +162,15 @@ const graphConfig = (run: IdentificationGraphRunContextV1): LangGraphRunnableCon
   configurable: {
     thread_id: run.threadId,
     [IDENTIFICATION_GRAPH_RUN_CONFIG_KEY_V1]: run,
+    [CHECKPOINT_RUNTIME_CONTEXT_KEY_V1]: {
+      schemaVersion: "1",
+      projectId: run.projectId,
+      actorId: run.actorId,
+      threadId: run.threadId,
+      runRef: run.runRef,
+      authorization: run.authorization,
+      invocationId: run.issuedInvocationId,
+    },
   },
 });
 
@@ -166,7 +179,7 @@ const readCheckpointState = async (input: {
   readonly graph: IdentificationGraphRunnerV1;
   readonly run: IdentificationGraphRunContextV1;
 }): Promise<IdentificationGraphStateV1 | undefined> => {
-  const snapshot = await input.graph.getState({ configurable: { thread_id: input.run.threadId } });
+  const snapshot = await input.graph.getState(graphConfig(input.run));
   if (typeof snapshot !== "object" || snapshot === null || !("values" in snapshot)) {
     return undefined;
   }
@@ -199,6 +212,7 @@ const recordCommandReceipt = async (input: {
   readonly resultRef: { readonly kind: "workflow-run"; readonly reference: VersionReference };
   readonly runId: string | undefined;
   readonly threadId: string | undefined;
+  readonly parentRunRef?: WorkflowRunRefV1;
   readonly stage: IdentificationGraphStateV1["stage"];
 }): Promise<boolean> => {
   try {
@@ -234,6 +248,7 @@ const recordCommandReceipt = async (input: {
           idempotencyKey: input.idempotencyKey,
           ...(input.runId === undefined ? {} : { runId: input.runId }),
           ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+          ...(input.parentRunRef === undefined ? {} : { reasonRef: input.parentRunRef }),
         },
         events: [],
       }),
@@ -707,6 +722,11 @@ export const createIdentificationGraphRuntime = (
         actorId: command.actorId,
         authorization: command.authorization,
         commandId: command.commandId,
+        issuedInvocationId: invocationIdFor({
+          operation: "workflow-start",
+          projectId: command.projectId,
+          targetId: command.commandId,
+        }),
         idempotencyKey: command.idempotencyKey,
         issuedAt: command.issuedAt,
         validAt: command.validAt,
@@ -758,6 +778,7 @@ export const createIdentificationGraphRuntime = (
         resultRef: runIdentity.runRef,
         runId: runIdentity.runRef.reference.entityId,
         threadId: runIdentity.threadId,
+        parentRunRef: run.parentRiskFlowRunRef,
         stage: "I0",
       });
       const existing = await readCursor({ ports, run: frozenRun });
@@ -858,6 +879,11 @@ export const createIdentificationGraphRuntime = (
           actorId: command.actorId,
           authorization: command.authorization,
           commandId: command.commandId,
+          issuedInvocationId: invocationIdFor({
+            operation: "workflow-resume",
+            projectId: command.projectId,
+            targetId: command.commandId,
+          }),
           idempotencyKey: command.idempotencyKey,
           issuedAt: command.issuedAt,
           validAt: command.issuedAt,
@@ -932,6 +958,11 @@ export const createIdentificationGraphRuntime = (
         actorId: command.actorId,
         authorization: authorized,
         commandId: command.commandId,
+        issuedInvocationId: invocationIdFor({
+          operation: "workflow-resume",
+          projectId: command.projectId,
+          targetId: command.commandId,
+        }),
         idempotencyKey: command.idempotencyKey,
         issuedAt: command.issuedAt,
         validAt: command.issuedAt,
@@ -1159,6 +1190,11 @@ export const createIdentificationGraphRuntime = (
         actorId: command.actorId,
         authorization: authorized,
         commandId: command.commandId,
+        issuedInvocationId: invocationIdFor({
+          operation: "workflow-cancel",
+          projectId: command.projectId,
+          targetId: command.commandId,
+        }),
         idempotencyKey: command.idempotencyKey,
         issuedAt: command.issuedAt,
         validAt: command.issuedAt,

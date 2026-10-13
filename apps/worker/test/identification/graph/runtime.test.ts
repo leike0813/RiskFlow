@@ -8,6 +8,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { IDENTIFICATION_GRAPH_BODY_PURPOSE_CODE_V1 } from "@riskflow/adapters/identification/graph";
+import { createPostgresTransactionUnit } from "@riskflow/adapters/postgres";
 import {
   IdentificationStageResultV1Schema,
   type IdentificationStageResultV1,
@@ -132,6 +133,14 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
     expect(outcome.disposition).toBe("created");
     expect(outcome.state.status).toBe("completed");
     expect(outcome.state.stage).toBe("I9");
+    expect(
+      await createPostgresTransactionUnit(harness.app).readWorkflowRunBinding({
+        projectId: PROJECT_ID,
+        runRef: outcome.state.runRef,
+        threadId: outcome.state.threadId,
+        parentRunRef: outcome.state.parentRiskFlowRunRef,
+      }),
+    ).toBe(true);
     // I1 冻结的单一输入快照与 I2 完整计划的稳定身份。
     expect(outcome.state.inputSnapshotRef?.reference.entityId).toBe(INPUT_SNAPSHOT_ENTITY_ID);
     expect(outcome.state.workPlanRef?.reference.entityId).toBe(WORK_PLAN_ENTITY_ID);

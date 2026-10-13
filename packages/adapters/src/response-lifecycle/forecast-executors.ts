@@ -1,6 +1,7 @@
 import type { AuthorizationContextV1, SpatialScopeRefV1 } from "@riskflow/contracts/ports";
 import {
   canonicalDecimalToString,
+  ForecastPolicyV1Schema,
   isCanonicalDecimal,
   parseCanonicalDecimal,
   type ForecastPolicyV1,
@@ -309,4 +310,34 @@ export const createProductionEffectForecastExecutorsV1 = (
   return options.policies.map((policy) =>
     createExecutor(policy, options.models, options.assessment, options.authorizeDownstream, budget),
   );
+};
+
+/** 运行时窄口：按 C28 本次已核验的完整策略现装执行器，启动期不持有第二份预测策略正文。 */
+export interface EffectForecastExecutorResolverV1 {
+  readonly resolve: (policy: ForecastPolicyV1) => EffectForecastExecutorV1 | undefined;
+}
+
+export type ProductionEffectForecastExecutorResolverOptionsV1 = Omit<
+  ProductionEffectForecastExecutorsOptionsV1,
+  "policies"
+>;
+
+export const createProductionEffectForecastExecutorResolverV1 = (
+  options: ProductionEffectForecastExecutorResolverOptionsV1,
+): EffectForecastExecutorResolverV1 => {
+  const budget = options.budget ?? DEFAULT_EFFECT_FORECAST_EXECUTOR_BUDGET_V1;
+  return {
+    resolve: (policy) => {
+      const parsed = ForecastPolicyV1Schema.safeParse(policy);
+      return parsed.success
+        ? createExecutor(
+            parsed.data,
+            options.models,
+            options.assessment,
+            options.authorizeDownstream,
+            budget,
+          )
+        : undefined;
+    },
+  };
 };

@@ -7,7 +7,7 @@
 
 ## 2. 部署契约、初始化与耐久审计
 
-- [ ] 2.1（IP-02）补齐 D-19 strict 部署配置契约、秘密加载及失败闭合的生产覆盖，完成安全配置示例；验证：`pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts`。已有秘密加载/失败闭合工程能力与测试通过记录保留；因 D-19 部署代码缺少配置契约覆盖而重开，不能将原测试记录当作该义务完成证据。
+- [x] 2.1（IP-02）补齐 D-19 strict 部署配置契约、秘密加载及失败闭合的生产覆盖，完成安全配置示例；验证：`pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts scripts/deployment/release.test.mjs`（33 项通过）；`pnpm exec vitest run scripts/deployment/entrypoints.test.mjs`（51 项通过，含真实文件配置/清单/策略/数据集及按职责加载秘密的组合覆盖）。此项只证明配置入口，不代表完整宿主或业务验收。
 - [x] 2.2（IP-02）完成 000056 运维状态/审计/租约/权限迁移与公开 PostgreSQL 接缝；验证：`pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts`，断言业务主体不能写运维表或改审计。
 - [x] 2.3（IP-02）补齐显式初始化的受限秘密 LOGIN 密码与真实 checkpointer setup；首次管理员重放保留正确账号事实，业务启动不执行 DDL。验证：`pnpm exec vitest run packages/adapters/test/deployment/config-operations.test.ts`（14 项通过）；隔离实例初始化/重放与四运行角色登录报告见 `deployment/ACCEPTANCE.md`。运行组仅读迁移版本表，不可写迁移表或访问迁移锁。
 
@@ -18,7 +18,7 @@
 
 ## 4. 真实策略、授权与窄读
 
-- [ ] 4.1（IP-04）按 D-20 补齐全类型不可变策略目录，修正 hybrid runtime 原 Schema，按类型推导读取结果并校验精确正文引用；合成验收目录只用于隔离实例。验证：`pnpm exec vitest run packages/adapters/test/deployment/policies-readers.test.ts`，覆盖版本漂移、多个精确版本、正文不可修改；已有检索 dataset/门禁工程证据保留。
+- [x] 4.1（IP-04）按 D-20 补齐十六类不可变策略目录，修正 hybrid runtime 原 Schema，按类型推导读取结果并校验精确正文引用；受控根内目录复用有界文件读取，拒绝越界、链接及超额；合成验收目录只用于隔离实例。验证：`pnpm exec vitest run packages/adapters/test/deployment/policies-readers.test.ts scripts/deployment/entrypoints.test.mjs`（81 项通过），覆盖版本漂移、多个精确版本、正文不可修改及真实文件入口；已有检索 dataset/门禁工程证据保留。
 - [x] 4.2（IP-04）实现 C06 原调用来源/当前授权适配和工程枚举窄读，保持宿主授权与正文权限独立；验证：`pnpm exec vitest run packages/adapters/test/deployment/policies-readers.test.ts packages/adapters/test/auth/local-identity-project-authorization.test.ts`。
 - [ ] 4.3（IP-04）补齐 C19 正式配置成员、C24 路线集与 C30 精确空间配对的 catalog/reader 生产证据；验证：`pnpm exec vitest run packages/adapters/test/deployment/policies-readers.test.ts`，错版本/异空间/无权均拒绝。已有精确 reader 工程能力及测试通过记录保留；因 catalog 来源覆盖及必要生产证据不足而重开。
 

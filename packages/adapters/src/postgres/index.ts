@@ -31,8 +31,13 @@ export {
   createPostgresRuntime,
 };
 export type { PostgresCheckpointer };
+export type {
+  ContractReferenceValidator,
+  CheckpointReferenceValidationContextV1,
+} from "./checkpointer.js";
 
 export interface PostgresTransactionUnitHandle extends TransactionUnitV1 {
+  readWorkflowRunBinding: PostgresTransactionUnit["readWorkflowRunBinding"];
   close(): Promise<void>;
 }
 
@@ -52,10 +57,10 @@ const managed = <T extends object>(
 export function createPostgresTransactionUnit(
   config: PostgresConnectionConfig,
 ): PostgresTransactionUnitHandle;
-export function createPostgresTransactionUnit(config: PostgresRuntime): TransactionUnitV1;
+export function createPostgresTransactionUnit(config: PostgresRuntime): PostgresTransactionUnit;
 export function createPostgresTransactionUnit(
   config: PostgresConnectionConfig | PostgresRuntime,
-): TransactionUnitV1 | PostgresTransactionUnitHandle {
+): PostgresTransactionUnit | PostgresTransactionUnitHandle {
   if ("db" in config) return new PostgresTransactionUnit(config.db);
   const runtime = createPostgresRuntime(config, "riskflow_app");
   return managed(new PostgresTransactionUnit(runtime.db), runtime);

@@ -837,62 +837,10 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
       authorization: input.authorization,
     };
     try {
-      if (
-        input.projectId !== input.authorization.projectId ||
-        input.actorId !== input.authorization.actorId
-      ) {
-        boundResultDenied(input.requestId);
-      }
-      // 授权复验先于目标定位：撤销或范围不符时不产生任何可观察的存在性差异。
-      await this.#access.verify({
-        authorizationContextRef: input.authorization.authorizationContextRef,
-        invocationId: input.requestId,
-        projectId: input.projectId,
-        branch: EVIDENCE_ACCESS_BRANCH,
-        requestedSpatialScopeRefs: [],
-        requestedSourceVersionRefs: [],
-        requestedAt: input.requestedAt,
-      });
-      const row = await this.#db
-        .selectFrom("business.identification_preparation_snapshots")
-        .selectAll()
-        .where("project_id", "=", input.projectId)
-        .where("snapshot_id", "=", input.preparationSnapshotRef.reference.entityId)
-        .where("version_id", "=", input.preparationSnapshotRef.reference.versionId)
-        .executeTakeFirst();
-      if (row === undefined) boundResultDenied(input.requestId);
-      const snapshotRef = IdentificationPreparationSnapshotRefV1Schema.safeParse(row.snapshot_ref);
-      const snapshotParsed = IdentificationPreparationSnapshotV1Schema.safeParse(
-        row.snapshot_payload,
-      );
-      const taskRefParsed = AgentTaskRefV1Schema.safeParse(row.agent_task_ref);
-      const resultRefParsed = ContentArtifactRefV1Schema.safeParse(
-        row.cleaning_result_artifact_ref,
-      );
-      if (
-        !snapshotRef.success ||
-        !sameVersion(snapshotRef.data.reference, input.preparationSnapshotRef.reference) ||
-        !snapshotParsed.success ||
-        !taskRefParsed.success ||
-        !resultRefParsed.success
-      ) {
-        boundResultDenied(input.requestId);
-      }
-      const snapshot = snapshotParsed.data;
-      const agentTaskRef = taskRefParsed.data;
-      const preparationResultRef = resultRefParsed.data;
-      // 以快照自身的精确空间/资料范围复验当前授权，拒绝请求范围大于当前授权的读取。
-      const exact = await this.#access.verify({
-        authorizationContextRef: input.authorization.authorizationContextRef,
-        invocationId: input.requestId,
-        projectId: input.projectId,
-        branch: EVIDENCE_ACCESS_BRANCH,
-        requestedSpatialScopeRefs: [...snapshot.spatialScopeRefs],
-        requestedSourceVersionRefs: [...snapshot.sourceVersionRefs],
-        requestedAt: input.requestedAt,
-      });
+      const { snapshot, agentTaskRef, preparationResultRef, authorization } =
+        await this.#readPreparation(input);
       const bound = await this.#readBoundResult(
-        { ...context, authorization: exact.context },
+        { ...context, authorization },
         agentTaskRef,
         input.requestId,
       );
@@ -949,6 +897,123 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
   }
 
   // ----------------------------------------------------------- preparation tail
+
+  async verifyPreparationReference(
+    input: IdentificationPreparationReadRequestV1,
+  ): Promise<boolean> {
+    if (this.#artifactStore.verifyContent === undefined) return false;
+    try {
+      const { agentTaskRef, preparationResultRef, authorization } = await this.#readPreparation(
+        input,
+        true,
+      );
+      const row = await this.#db
+        .selectFrom("business.data_cleaning_results")
+        .selectAll()
+        .where("project_id", "=", input.projectId)
+        .where(sql<boolean>`agent_task_ref = ${JSON.stringify(agentTaskRef)}::jsonb`)
+        .executeTakeFirst();
+      if (row === undefined) return false;
+      const resultRef = ContentArtifactRefV1Schema.parse(row.result_artifact_ref);
+      if (!sameVersion(resultRef.reference, preparationResultRef.reference)) return false;
+      return await this.#artifactStore.verifyContent(
+        ArtifactReadRequestV1Schema.parse({
+          schemaVersion: SCHEMA_VERSION,
+          requestId: input.requestId,
+          idempotencyKey: input.requestId,
+          artifactRef: resultRef,
+          projectId: input.projectId,
+          actorId: input.actorId,
+          requestedAt: input.requestedAt,
+          purposeCode: RESULT_PURPOSE,
+          requiredCapability: authorizedCapability(authorization),
+          authorization,
+        }),
+        MAX_MANIFEST_BYTES,
+        (bytes) => {
+          const result = DataCleaningResultV1Schema.parse(
+            JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
+          );
+          return sameVersion(result.agentTaskRef.reference, agentTaskRef.reference);
+        },
+      );
+    } catch (error) {
+      if (
+        (error as { dataCleaningError?: { code?: string } }).dataCleaningError?.code ===
+        "AUTHORIZATION_DENIED"
+      )
+        return false;
+      if (error instanceof AccessServiceError && error.details.code !== "ACCESS_TRANSIENT_FAILURE")
+        return false;
+      throw error;
+    }
+  }
+
+  async #readPreparation(input: IdentificationPreparationReadRequestV1, rejectRedacted = false) {
+    if (
+      input.projectId !== input.authorization.projectId ||
+      input.actorId !== input.authorization.actorId
+    ) {
+      boundResultDenied(input.requestId);
+    }
+    // 授权复验先于目标定位：撤销或范围不符时不产生任何可观察的存在性差异。
+    await this.#access.verify({
+      authorizationContextRef: input.authorization.authorizationContextRef,
+      invocationId: input.requestId,
+      projectId: input.projectId,
+      branch: EVIDENCE_ACCESS_BRANCH,
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [],
+      requestedAt: input.requestedAt,
+    });
+    const row = await this.#db
+      .selectFrom("business.identification_preparation_snapshots")
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("snapshot_id", "=", input.preparationSnapshotRef.reference.entityId)
+      .where("version_id", "=", input.preparationSnapshotRef.reference.versionId)
+      .executeTakeFirst();
+    if (row === undefined) boundResultDenied(input.requestId);
+    const snapshotRef = IdentificationPreparationSnapshotRefV1Schema.safeParse(row.snapshot_ref);
+    const snapshotParsed = IdentificationPreparationSnapshotV1Schema.safeParse(
+      row.snapshot_payload,
+    );
+    const taskRefParsed = AgentTaskRefV1Schema.safeParse(row.agent_task_ref);
+    const resultRefParsed = ContentArtifactRefV1Schema.safeParse(row.cleaning_result_artifact_ref);
+    if (
+      !snapshotRef.success ||
+      !sameVersion(snapshotRef.data.reference, input.preparationSnapshotRef.reference) ||
+      !snapshotParsed.success ||
+      !taskRefParsed.success ||
+      !resultRefParsed.success
+    ) {
+      boundResultDenied(input.requestId);
+    }
+    const snapshot = snapshotParsed.data;
+    const agentTaskRef = taskRefParsed.data;
+    const preparationResultRef = resultRefParsed.data;
+    // 以快照自身的精确空间/资料范围复验当前授权，拒绝请求范围大于当前授权的读取。
+    const exact = await this.#access.verify({
+      authorizationContextRef: input.authorization.authorizationContextRef,
+      invocationId: input.requestId,
+      projectId: input.projectId,
+      branch: EVIDENCE_ACCESS_BRANCH,
+      requestedSpatialScopeRefs: [...snapshot.spatialScopeRefs],
+      requestedSourceVersionRefs: [...snapshot.sourceVersionRefs],
+      requestedAt: input.requestedAt,
+    });
+    if (
+      (rejectRedacted && exact.redacted) ||
+      exact.context.projectId !== input.projectId ||
+      exact.context.actorId !== input.actorId ||
+      !sameVersion(
+        exact.context.authorizationContextRef.reference,
+        input.authorization.authorizationContextRef.reference,
+      )
+    )
+      boundResultDenied(input.requestId);
+    return { snapshot, agentTaskRef, preparationResultRef, authorization: exact.context };
+  }
 
   // ------------------------------------------------------ bound result read
 

@@ -1,7 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { setTimeout } from "node:timers";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   CLOSED_OUTBOX_EVENT_TYPES_V1,
@@ -192,6 +192,30 @@ describe("有界 drain 与探针", () => {
     expect(result.reasonCode).toBe("PROBE_ABORTED");
   });
 
+  it.each(["timeout", "cancel"])("探针忽略取消信号时仍按 %s 收口", async (cause) => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      let probeSignal;
+      const pending = runProbeV1(
+        ({ signal }) => {
+          probeSignal = signal;
+          return new Promise(() => undefined);
+        },
+        { timeoutMs: 100, signal: controller.signal },
+      );
+      await Promise.resolve();
+      if (cause === "cancel") controller.abort();
+      else await vi.advanceTimersByTimeAsync(100);
+      const result = await pending;
+      expect(result.status).toBe("unavailable");
+      expect(result.reasonCode).toBe("PROBE_TIMEOUT_OR_CANCELLED");
+      expect(probeSignal.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("日志只保留安全字段，正文与秘密不被复制", () => {
     const record = safeLogRecordV1({
       stage: "backup",
@@ -257,6 +281,37 @@ describe("进程生命周期", () => {
     ).toThrow("required port missing");
     expect(app.state.listening).toBe(false);
     expect(lifecycle.state).toBe(LifecycleStateV1.STOPPED);
+  });
+
+  it.each([false, true])("监听失败时恢复停止态（异步=%s）", async (asynchronous) => {
+    const failure = new Error("listen failed");
+    const app = stubApp();
+    app.listen = () => {
+      if (asynchronous) return Promise.reject(failure);
+      throw failure;
+    };
+    const lifecycle = new ApiLifecycleV1({ app, listenOptions: { port: 8080 } });
+    await expect(lifecycle.listen()).rejects.toBe(failure);
+    expect(lifecycle.state).toBe(LifecycleStateV1.STOPPED);
+    expect(lifecycle.address).toBeNull();
+  });
+
+  it("关闭监听挂起时在原期限返回未收口，不允许再次启动", async () => {
+    const app = stubApp();
+    let release;
+    app.close = () =>
+      new Promise((resolve) => {
+        release = resolve;
+      });
+    const lifecycle = new ApiLifecycleV1({ app, listenOptions: { port: 8080 } });
+    await lifecycle.listen();
+    expect((await lifecycle.close(30)).settled).toBe(false);
+    expect(lifecycle.state).toBe(LifecycleStateV1.DRAINING);
+    expect(() => lifecycle.listen()).toThrow(TypeError);
+    release();
+    expect((await lifecycle.close(100)).settled).toBe(true);
+    expect(lifecycle.state).toBe(LifecycleStateV1.STOPPED);
+    expect(lifecycle.address).toBeNull();
   });
 
   it("关闭时限内未收口时如实报告 unsettled", async () => {
@@ -335,5 +390,34 @@ describe("进程生命周期", () => {
     expect(outcome.settled).toBe(false);
     expect(outcome.unacknowledgedLeases).toBeGreaterThan(0);
     expect(outcome.leaseTimeoutMs).toBe(60_000);
+  });
+
+  it("未完成 claim 不算停写成功，停止后晚到的租约不再 dispatch", async () => {
+    let releasePoll;
+    const dispatch = vi.fn(async () => ({ status: "acknowledged" }));
+    const worker = new WorkerLifecycleV1({
+      dispatch,
+      poll: () =>
+        new Promise((resolve) => {
+          releasePoll = resolve;
+        }),
+      pollMs: 5,
+      drainTimeoutMs: 30,
+      leaseTimeoutMs: 60_000,
+    });
+    worker.start();
+    await delay(10);
+    expect(worker.inFlight).toBe(1);
+    const stopped = await worker.stop();
+    expect(stopped.settled).toBe(false);
+    expect(stopped.unacknowledgedLeases).toBe(1);
+    expect(() => worker.start()).toThrow(TypeError);
+    expect((await worker.stop()).settled).toBe(false);
+    releasePoll({ eventId: "evt-late", eventType: "review.review-resolved.v1" });
+    await delay(10);
+    expect(dispatch).not.toHaveBeenCalled();
+    expect((await worker.stop()).settled).toBe(true);
+    await worker.runOnce();
+    expect(worker.inFlight).toBe(0);
   });
 });

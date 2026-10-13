@@ -109,7 +109,7 @@ import type {
   RiskCandidateZeroResultReaderV1,
 } from "./ports.js";
 
-const MAX_ARTIFACT_BYTES_V1 = 8 * 1024 * 1024;
+export const RISK_CANDIDATE_ARTIFACT_MAX_BYTES_V1 = 8 * 1024 * 1024;
 const STAGE_PREFIX = "identification-candidate-finalization";
 const CONTENT_REF_KIND = "content-artifact";
 
@@ -1024,7 +1024,8 @@ const readCandidateArtifactJson = async (
   let size = 0;
   for await (const chunk of handle.content) {
     size += chunk.byteLength;
-    if (size > MAX_ARTIFACT_BYTES_V1) throw new RangeError("artifact exceeds the bounded read");
+    if (size > RISK_CANDIDATE_ARTIFACT_MAX_BYTES_V1)
+      throw new RangeError("artifact exceeds the bounded read");
     chunks.push(chunk);
   }
   await handle.verified;

@@ -64,6 +64,7 @@ export const createContentAddressedArtifactStore = async (
     return {
       put: store.put.bind(store),
       open: store.open.bind(store),
+      verifyContent: store.verifyContent.bind(store),
       referenceGuard: registry,
       maintenance,
       async close() {

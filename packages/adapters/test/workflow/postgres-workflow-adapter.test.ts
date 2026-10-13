@@ -133,6 +133,7 @@ const SCOPE_DIGEST = authorizationScopeDigest(AUTHORIZATION);
 const createAccess = () => {
   const calls: { readonly invocationId: string; readonly branch: ModuleBranchV1 }[] = [];
   let revoked = false;
+  let redacted = false;
   /** 不同窄读按各自用途分支签发；替身按当前绑定的上下文原样回放。 */
   let contextOverride: AuthorizationContextV1 | undefined;
   /**
@@ -164,6 +165,7 @@ const createAccess = () => {
       const result = AuthorizationContextV1Schema.safeParse(contextOverride ?? AUTHORIZATION);
       if (!result.success) throw new TypeError("invalid test authorization");
       return {
+        redacted,
         context: { ...result.data, authorizationContextRef: input.authorizationContextRef },
       } as Awaited<ReturnType<LocalIdentityAccessV1["verify"]>>;
     },
@@ -176,6 +178,9 @@ const createAccess = () => {
     },
     restore: () => {
       revoked = false;
+    },
+    setRedacted: (value: boolean) => {
+      redacted = value;
     },
     bindInvocationId: (invocationId: string | undefined) => {
       boundInvocationId = invocationId;
@@ -434,7 +439,211 @@ const registerWithinTransaction = async (input: {
   );
 };
 
+/** 证明类调用的零写断言：审计、收据、正文访问、清单与出站事件计数。 */
+const countWriteFacts = async (): Promise<Record<string, string>> =>
+  (
+    await fixture.postgres.adminPool.query(`SELECT
+      (SELECT count(*) FROM audit.entries) AS audits,
+      (SELECT count(*) FROM business.command_receipts) AS receipts,
+      (SELECT count(*) FROM business.artifact_manifests) AS manifests,
+      (SELECT count(*) FROM business.artifact_access_records) AS accesses,
+      (SELECT count(*) FROM outbox.events) AS events`)
+  ).rows[0] as Record<string, string>;
+
 describe("C30 workflow registration adapter", () => {
+  it("proves exact graph references and result bodies without writing read facts", async () => {
+    const resultRef = {
+      kind: "assessment-run-result" as const,
+      reference: { entityId: "checkpoint-result", versionId: "v1" },
+    };
+    const artifactRef = await fixture.adapter.bodies.putBody({
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      commandId: "checkpoint-result-body",
+      invocationId: "checkpoint-result-body",
+      issuedAt: TIMESTAMP,
+      artifactId: "checkpoint-result-body",
+      authorization: AUTHORIZATION,
+      body: {
+        bodyKind: "run-result",
+        runResult: {
+          schemaVersion: "1",
+          projectId: PROJECT_ID,
+          runRef: RUN_REF,
+          entryMode: "assess",
+          stage: "A9",
+          assessmentRunRefs: [],
+          assessmentRecordRefs: [],
+          warningRecordRefs: [],
+          responseRecommendationRefs: [],
+          deviationRecordRefs: [],
+          calibrationSuggestionRefs: [],
+          skippedTails: [],
+          auditTrailRef: {
+            kind: "audit-trail",
+            reference: { entityId: "checkpoint-audit", versionId: "v1" },
+          },
+          recordedAt: TIMESTAMP,
+        },
+      },
+    });
+    const references: ContractReferenceV1[] = [];
+    for (const resultKind of [
+      "stage-result",
+      "route-decision",
+      "workflow-error",
+      "run-result",
+    ] as const) {
+      const row = resultRowFor(resultKind, "checkpoint");
+      const reference =
+        resultKind === "stage-result"
+          ? row.stageResultRef
+          : resultKind === "route-decision"
+            ? row.routeDecisionRef
+            : resultKind === "workflow-error"
+              ? row.workflowErrorRef
+              : resultRef;
+      if (reference === undefined || !("reference" in reference))
+        throw new Error("invalid fixture");
+      references.push(reference);
+      await registerWithinTransaction({
+        row: {
+          ...row,
+          resultId: reference.reference.entityId,
+          resultVersionId: reference.reference.versionId,
+          ...(resultKind === "run-result" ? { runResultRef: resultRef, artifactRef } : {}),
+        },
+      });
+    }
+    const before = await countWriteFacts();
+    const input = {
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      invocationId: "checkpoint-original-invocation",
+      requestedAt: TIMESTAMP,
+      authorization: AUTHORIZATION,
+      runRef: RUN_REF,
+    };
+    fixture.access.bindInvocationId(input.invocationId);
+    for (const reference of references) {
+      expect(await fixture.adapter.verifyCheckpointReference({ ...input, reference })).toBe(true);
+      if (!("reference" in reference)) throw new Error("invalid fixture");
+      expect(
+        await fixture.adapter.verifyCheckpointReference({
+          ...input,
+          reference: {
+            ...reference,
+            reference: { ...reference.reference, versionId: "absent" },
+          },
+        }),
+      ).toBe(false);
+    }
+    for (const overrides of [
+      { projectId: OTHER_PROJECT_ID },
+      { actorId: "another-actor" },
+      { invocationId: "unissued" },
+      { runRef: { ...RUN_REF, reference: { ...RUN_REF.reference, entityId: OTHER_RUN_ID } } },
+      { runRef: { ...RUN_REF, reference: { ...RUN_REF.reference, versionId: "another-version" } } },
+    ])
+      expect(
+        await fixture.adapter.verifyCheckpointReference({
+          ...input,
+          ...overrides,
+          reference: resultRef,
+        }),
+      ).toBe(false);
+    fixture.access.revoke();
+    expect(
+      await fixture.adapter.verifyCheckpointReference({ ...input, reference: resultRef }),
+    ).toBe(false);
+    fixture.access.restore();
+    fixture.access.setRedacted(true);
+    expect(
+      await fixture.adapter.verifyCheckpointReference({ ...input, reference: resultRef }),
+    ).toBe(false);
+    fixture.access.setRedacted(false);
+    fixture.access.setAuthorization({ ...AUTHORIZATION, spatialScopeRefs: [] });
+    expect(
+      await fixture.adapter.verifyCheckpointReference({ ...input, reference: resultRef }),
+    ).toBe(false);
+    fixture.access.setAuthorization(undefined);
+    expect(await countWriteFacts()).toEqual(before);
+    fixture.access.bindInvocationId(undefined);
+  }, 120_000);
+
+  it("proves a registered waiting reference by run and actor without pinning the state version", async () => {
+    // 同一等待引用被两次合法登记：等待引用本身不唯一绑定登记行身份。
+    const rows = ["checkpoint-waiting-a", "checkpoint-waiting-b"].map((suffix) =>
+      resultRowFor("waiting", suffix),
+    );
+    for (const row of rows) await registerWithinTransaction({ row });
+    const head = rows[0];
+    if (head === undefined || head.resultKind !== "waiting" || head.waitingRef?.kind !== "review")
+      throw new Error("invalid fixture");
+    const waitingRef = head.waitingRef;
+    const reviewTaskRef = waitingRef.reviewTaskRef;
+    const before = await countWriteFacts();
+    const input = {
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      invocationId: "checkpoint-waiting-invocation",
+      requestedAt: TIMESTAMP,
+      authorization: AUTHORIZATION,
+      runRef: RUN_REF,
+      waitingRef,
+    };
+    fixture.access.bindInvocationId(input.invocationId);
+    expect(await fixture.adapter.verifyCheckpointWaitingReference(input)).toBe(true);
+    // 窄口按 runId 定位：runVersionId 是状态版本，不是身份版本，改动运行引用版本仍然成立。
+    expect(
+      await fixture.adapter.verifyCheckpointWaitingReference({
+        ...input,
+        runRef: {
+          ...RUN_REF,
+          reference: { ...RUN_REF.reference, versionId: sha("another-run-identity") },
+        },
+      }),
+    ).toBe(true);
+    for (const overrides of [
+      { projectId: OTHER_PROJECT_ID },
+      { actorId: "another-actor" },
+      { invocationId: "unissued-waiting-invocation" },
+      { runRef: { ...RUN_REF, reference: { ...RUN_REF.reference, entityId: OTHER_RUN_ID } } },
+      {
+        waitingRef: {
+          kind: "review" as const,
+          reviewTaskRef: {
+            ...reviewTaskRef,
+            reference: { ...reviewTaskRef.reference, versionId: "absent" },
+          },
+        },
+      },
+      {
+        waitingRef: {
+          kind: "review" as const,
+          reviewTaskRef: {
+            ...reviewTaskRef,
+            reference: { ...reviewTaskRef.reference, entityId: "review-absent" },
+          },
+        },
+      },
+    ])
+      expect(
+        await fixture.adapter.verifyCheckpointWaitingReference({ ...input, ...overrides }),
+      ).toBe(false);
+    fixture.access.revoke();
+    expect(await fixture.adapter.verifyCheckpointWaitingReference(input)).toBe(false);
+    fixture.access.restore();
+    fixture.access.setRedacted(true);
+    expect(await fixture.adapter.verifyCheckpointWaitingReference(input)).toBe(false);
+    fixture.access.setRedacted(false);
+    fixture.access.setAuthorization({ ...AUTHORIZATION, spatialScopeRefs: [] });
+    expect(await fixture.adapter.verifyCheckpointWaitingReference(input)).toBe(false);
+    fixture.access.setAuthorization(undefined);
+    expect(await countWriteFacts()).toEqual(before);
+    fixture.access.bindInvocationId(undefined);
+  }, 120_000);
+
   it("registers appended facts inside the C03 transaction and replays the same identity", async () => {
     const row = resultRowFor("entry-snapshot", "entry-1");
     const receipt = await registerWithinTransaction({ row });
@@ -1433,6 +1642,201 @@ describe("C30 workflow registration adapter", () => {
         kind: "failed",
         error: { code: "AUTHORIZATION_DENIED" },
       });
+      fixture.access.restore();
+    });
+  });
+
+  describe("D-21 A0 入口快照窄读", () => {
+    const ENTRY_AUTHORIZATION = authorizationFor({ grantedCapabilities: ["projection.query"] });
+    type EntryInputKind =
+      | "assessment-preparation-snapshot"
+      | "response-forecast-input-snapshot"
+      | "response-feedback-input-snapshot";
+    const entryInputRef = (kind: EntryInputKind, seed: string) => ({
+      kind,
+      reference: { entityId: `entry-input:${seed}`, versionId: sha(`entry-input:${seed}`) },
+    });
+    /** 三种真实入口引用各对应一个判别出口；登记行的 `inputSnapshotRef` 就是恢复依据。 */
+    const ENTRY_CASES = [
+      {
+        seed: "preparation",
+        inputSnapshotRef: entryInputRef("assessment-preparation-snapshot", "preparation"),
+        expected: {
+          kind: "assessment-preparation",
+          assessmentPreparationSnapshotRef: entryInputRef(
+            "assessment-preparation-snapshot",
+            "preparation",
+          ),
+        },
+      },
+      {
+        seed: "forecast",
+        inputSnapshotRef: entryInputRef("response-forecast-input-snapshot", "forecast"),
+        expected: {
+          kind: "forecast-input",
+          responseForecastInputSnapshotRef: entryInputRef(
+            "response-forecast-input-snapshot",
+            "forecast",
+          ),
+        },
+      },
+      {
+        seed: "feedback",
+        inputSnapshotRef: entryInputRef("response-feedback-input-snapshot", "feedback"),
+        expected: {
+          kind: "feedback-input",
+          responseFeedbackInputSnapshotRef: entryInputRef(
+            "response-feedback-input-snapshot",
+            "feedback",
+          ),
+        },
+      },
+    ] as const;
+
+    const readInput = (runId: string, overrides: Record<string, unknown> = {}) => ({
+      projectId: PROJECT_ID,
+      runId,
+      actorId: ACTOR_ID,
+      requestedAt: TIMESTAMP,
+      invocationId: "c30-entry-snapshot-read",
+      authorization: ENTRY_AUTHORIZATION,
+      ...overrides,
+    });
+
+    /** 登记一个入口行：`stage` 非 A0、缺 `inputSnapshotRef` 或引用判别不兼容都是待覆盖的拒绝形态。 */
+    const registerEntryRow = async (input: {
+      readonly suffix: string;
+      readonly runId: string;
+      readonly stage?: WorkflowGraphResultRowV1["stage"];
+      readonly inputSnapshotRef?: WorkflowGraphResultRowV1["inputSnapshotRef"];
+    }) =>
+      await registerWithinTransaction({
+        row: {
+          ...resultRowFor("entry-snapshot", input.suffix),
+          runId: input.runId,
+          resultId: `entry-snapshot:${input.runId}:${input.suffix}`,
+          stage: input.stage ?? "A0",
+          entryIdentity: {
+            entityId: `workflow-entry:${PROJECT_ID}:${input.suffix}`,
+            versionId: sha(`entry-identity:${input.suffix}`),
+          },
+          ...(input.inputSnapshotRef === undefined
+            ? {}
+            : { inputSnapshotRef: input.inputSnapshotRef }),
+        },
+      });
+
+    afterEach(() => {
+      fixture.access.setAuthorization(undefined);
+    });
+
+    it("未登记入口行、入口行未登记引用与跨工程请求一律拒绝", async () => {
+      fixture.access.setAuthorization(ENTRY_AUTHORIZATION);
+
+      // 运行从未登记入口行：与不存在不可区分。
+      expect(
+        await fixture.adapter.registrationStore.readAssessmentEntrySnapshot(
+          readInput("risk-flow-run:entry-snapshot:absent"),
+        ),
+      ).toBeUndefined();
+
+      // 入口行已登记但未登记入口引用：不得据运行状态或前缀补造快照。
+      const bareRunId = "risk-flow-run:entry-snapshot:no-ref";
+      await registerEntryRow({ suffix: "no-ref", runId: bareRunId });
+      expect(
+        await fixture.adapter.registrationStore.readAssessmentEntrySnapshot(readInput(bareRunId)),
+      ).toBeUndefined();
+
+      // 授权只覆盖另一个工程：入口行按工程隔离，不得跨工程命中。
+      expect(
+        await fixture.adapter.registrationStore.readAssessmentEntrySnapshot(
+          readInput(bareRunId, {
+            projectId: OTHER_PROJECT_ID,
+            authorization: authorizationFor({ projectId: OTHER_PROJECT_ID }),
+          }),
+        ),
+      ).toBeUndefined();
+    });
+
+    it("A0 入口行按登记的 inputSnapshotRef 映射为对应入口快照引用", async () => {
+      fixture.access.setAuthorization(ENTRY_AUTHORIZATION);
+      for (const entryCase of ENTRY_CASES) {
+        const runId = `risk-flow-run:entry-snapshot:${entryCase.seed}`;
+        await registerEntryRow({
+          suffix: entryCase.seed,
+          runId,
+          inputSnapshotRef: entryCase.inputSnapshotRef,
+        });
+        expect(
+          await fixture.adapter.registrationStore.readAssessmentEntrySnapshot(readInput(runId)),
+        ).toEqual(entryCase.expected);
+      }
+    });
+
+    it("多个登记、判别不兼容、非 A0 与授权撤销同样不得返回入口快照", async () => {
+      fixture.access.setAuthorization(ENTRY_AUTHORIZATION);
+
+      // 同一运行两条入口登记：不猜“最新”或“首个”。
+      const conflictRunId = "risk-flow-run:entry-snapshot:conflict";
+      await registerEntryRow({
+        suffix: "conflict-a",
+        runId: conflictRunId,
+        inputSnapshotRef: ENTRY_CASES[0].inputSnapshotRef,
+      });
+      await registerEntryRow({
+        suffix: "conflict-b",
+        runId: conflictRunId,
+        inputSnapshotRef: ENTRY_CASES[1].inputSnapshotRef,
+      });
+      expect(
+        await fixture.adapter.registrationStore.readAssessmentEntrySnapshot(
+          readInput(conflictRunId),
+        ),
+      ).toBeUndefined();
+
+      // 判别不兼容的引用与 A0 以外的阶段都不是入口快照。
+      const foreignRefRunId = "risk-flow-run:entry-snapshot:foreign-ref";
+      await registerEntryRow({
+        suffix: "foreign-ref",
+        runId: foreignRefRunId,
+        inputSnapshotRef: SPATIAL_SCOPE_REF,
+      });
+      expect(
+        await fixture.adapter.registrationStore.readAssessmentEntrySnapshot(
+          readInput(foreignRefRunId),
+        ),
+      ).toBeUndefined();
+      const lateStageRunId = "risk-flow-run:entry-snapshot:late-stage";
+      await registerEntryRow({
+        suffix: "late-stage",
+        runId: lateStageRunId,
+        stage: "A5",
+        inputSnapshotRef: ENTRY_CASES[0].inputSnapshotRef,
+      });
+      expect(
+        await fixture.adapter.registrationStore.readAssessmentEntrySnapshot(
+          readInput(lateStageRunId),
+        ),
+      ).toBeUndefined();
+
+      // 授权撤销后即使入口引用真实存在也不得读出。
+      const authorizedRunId = "risk-flow-run:entry-snapshot:authorized";
+      await registerEntryRow({
+        suffix: "authorized",
+        runId: authorizedRunId,
+        inputSnapshotRef: ENTRY_CASES[0].inputSnapshotRef,
+      });
+      expect(
+        await fixture.adapter.registrationStore.readAssessmentEntrySnapshot(
+          readInput(authorizedRunId),
+        ),
+      ).toEqual(ENTRY_CASES[0].expected);
+      fixture.access.revoke();
+      expect(
+        await fixture.adapter.registrationStore.readAssessmentEntrySnapshot(
+          readInput(authorizedRunId),
+        ),
+      ).toBeUndefined();
       fixture.access.restore();
     });
   });

@@ -30,7 +30,7 @@ export const drainUntilV1 = async ({ isBusy, timeoutMs, pollMs = 25, clock = Dat
     if (clock() >= deadline) {
       return Object.freeze({ settled: false, remaining: isBusy() ? 1 : 0 });
     }
-    await delay(pollMs);
+    await delay(Math.min(pollMs, Math.max(0, deadline - clock())));
   }
 };
 /**
@@ -45,9 +45,20 @@ export const runProbeV1 = async (probe, { timeoutMs, signal, now = () => new Dat
   const controller = new AbortController();
   const onAbort = () => controller.abort();
   signal?.addEventListener?.("abort", onAbort, { once: true });
+  let onCancelled;
+  const cancelled = new Promise((_, reject) => {
+    onCancelled = () => reject(new Error("PROBE_TIMEOUT_OR_CANCELLED"));
+    controller.signal.addEventListener("abort", onCancelled, { once: true });
+  });
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const result = await probe({ signal: controller.signal, deadlineMs: timeoutMs });
+    const result = await Promise.race([
+      Promise.resolve().then(() => {
+        controller.signal.throwIfAborted();
+        return probe({ signal: controller.signal, deadlineMs: timeoutMs });
+      }),
+      cancelled,
+    ]);
     // 探针在 abort 后才 resolve 也算超时：不得把取消后的返回当成成功。
     if (controller.signal.aborted) {
       return Object.freeze({
@@ -75,6 +86,7 @@ export const runProbeV1 = async (probe, { timeoutMs, signal, now = () => new Dat
     });
   } finally {
     clearTimeout(timer);
+    controller.signal.removeEventListener("abort", onCancelled);
     signal?.removeEventListener?.("abort", onAbort);
   }
 };
@@ -115,6 +127,9 @@ export class ApiLifecycleV1 {
   #state = LifecycleStateV1.STOPPED;
   #inFlight = 0;
   #address = null;
+  #closing = null;
+  #closePending = false;
+  #closeError = null;
   constructor({ app, listenOptions }) {
     this.#app = app;
     this.#listenOptions = listenOptions;
@@ -137,10 +152,18 @@ export class ApiLifecycleV1 {
     }
     assertReady?.();
     this.#state = LifecycleStateV1.RUNNING;
-    return this.#app.listen(this.#listenOptions).then(() => {
-      this.#address = this.#app.server.address();
-      return this.#address;
-    });
+    this.#closing = null;
+    this.#closeError = null;
+    return Promise.resolve()
+      .then(() => this.#app.listen(this.#listenOptions))
+      .then(() => {
+        this.#address = this.#app.server.address();
+        return this.#address;
+      })
+      .catch((error) => {
+        this.#state = LifecycleStateV1.STOPPED;
+        throw error;
+      });
   }
   trackRequest() {
     this.#inFlight += 1;
@@ -153,10 +176,27 @@ export class ApiLifecycleV1 {
       return Object.freeze({ settled: true, remaining: 0 });
     }
     this.#state = LifecycleStateV1.DRAINING;
-    const outcome = await drainUntilV1({ isBusy: () => this.#inFlight > 0, timeoutMs });
-    // 无论是否在期限内收口，都关闭监听；未收口由调用方报告，不得当作停写证明。
-    await this.#app.close();
-    this.#state = LifecycleStateV1.STOPPED;
+    if (this.#closing === null) {
+      this.#closePending = true;
+      this.#closing = Promise.resolve()
+        .then(() => this.#app.close())
+        .then(
+          () => {
+            this.#address = null;
+            this.#closePending = false;
+          },
+          (error) => {
+            this.#closeError = error;
+            this.#closePending = false;
+          },
+        );
+    }
+    const outcome = await drainUntilV1({
+      isBusy: () => this.#inFlight > 0 || this.#closePending,
+      timeoutMs,
+    });
+    if (this.#closeError !== null) throw this.#closeError;
+    if (outcome.settled) this.#state = LifecycleStateV1.STOPPED;
     return outcome;
   }
 }
@@ -172,7 +212,6 @@ export class WorkerLifecycleV1 {
   #state = LifecycleStateV1.STOPPED;
   #timer = null;
   #inFlight = 0;
-  #claimed = 0;
   #backgroundFailure = null;
   #signal = new AbortController();
   constructor({ dispatch, poll, pollMs, drainTimeoutMs, leaseTimeoutMs }) {
@@ -196,18 +235,18 @@ export class WorkerLifecycleV1 {
    * 停止后不再 claim 新事件；已在途的按原身份收口。
    */
   async runOnce() {
-    const event = await this.#poll({ signal: this.#signal.signal });
-    if (event === undefined || event === null) return undefined;
+    if (this.#signal.signal.aborted) return undefined;
     this.#inFlight += 1;
-    this.#claimed += 1;
     try {
+      const event = await this.#poll({ signal: this.#signal.signal });
+      if (event === undefined || event === null || this.#signal.signal.aborted) return undefined;
       return await this.#dispatch(event, { signal: this.#signal.signal });
     } finally {
       this.#inFlight -= 1;
     }
   }
   start() {
-    if (this.#state !== LifecycleStateV1.STOPPED) {
+    if (this.#state !== LifecycleStateV1.STOPPED || this.#inFlight > 0) {
       throw new TypeError("worker lifecycle can only start from the stopped state");
     }
     this.#state = LifecycleStateV1.RUNNING;
@@ -239,7 +278,7 @@ export class WorkerLifecycleV1 {
    * 返回 settled=false 时，未确认的租约必须交还原恢复语义。
    */
   async stop() {
-    if (this.#state === LifecycleStateV1.STOPPED) {
+    if (this.#state === LifecycleStateV1.STOPPED && this.#inFlight === 0) {
       return Object.freeze({ settled: true, remaining: 0, unacknowledgedLeases: 0 });
     }
     this.#state = LifecycleStateV1.DRAINING;
@@ -257,7 +296,7 @@ export class WorkerLifecycleV1 {
       settled: outcome.settled,
       remaining: outcome.remaining,
       // 超时未收口时，租约按原契约过期并由原恢复语义接管。
-      unacknowledgedLeases: outcome.settled ? 0 : this.#claimed,
+      unacknowledgedLeases: outcome.settled ? 0 : this.#inFlight,
       leaseTimeoutMs: this.#leaseTimeoutMs,
     });
   }

@@ -1601,4 +1601,215 @@ describe("postgres agent runtime adapter", () => {
     // 只读面不产生任何回执、审计或事件。
     expect(await readSideEffectCounters()).toEqual(before);
   });
+
+  /**
+   * IP-05/IP-16 C08 检查点引用证明（D-21）：等待中与已终态任务都按原 invocationId、
+   * 当前授权与精确 parentRunRef 证明；错版本、元数据、工程、主体、父运行、撤权、脱敏与
+   * 冻结空间/来源许可收窄一律不证明。复验先于任务查询，证明只读一次任务行，
+   * 全程零回执、审计、事件与工件事实写入。
+   */
+  it("proves the exact agent task checkpoint reference without bodies or writes", async () => {
+    type CheckpointInput = Parameters<PostgresAgentTaskAdapter["verifyCheckpointReference"]>[0];
+    const checkpointAuthorizationFor = async (invocationId: string) => {
+      const decision = await access!.authorize({
+        invocation: { kind: "human-session", sessionToken: managerSessionToken! },
+        invocationId,
+        projectId: "project-1",
+        branch: "agent-task.read",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      });
+      return decision.context;
+    };
+    // 本块新建的任务以受权主体启动，令“原主体”约束与真实 C06 上下文一致；
+    // 既有 actor-1 终态任务改用受控复验上下文证明，不改写任务历史。
+    const checkpointStartCommand = {
+      ...startCommand,
+      actorId: managerAccountId!,
+      authorization: { ...authorization, actorId: managerAccountId! },
+    };
+    // 冻结空间与来源许可非空的任务：证明必须随本次授权范围收窄而失效。
+    const scopedAuthorization = {
+      ...checkpointStartCommand.authorization,
+      spatialScopeRefs: [{ kind: "spatial-scope" as const, reference: ref("scope-1") }],
+      sourceAccessGrantRefs: [{ kind: "source-access-grant" as const, reference: ref("grant-1") }],
+    };
+    const scopedStart = await adapter.startTask({
+      ...checkpointStartCommand,
+      commandId: "command-checkpoint-scoped",
+      idempotencyKey: "idempotency-checkpoint-scoped",
+      authorization: scopedAuthorization,
+    });
+    expect(scopedStart.kind).toBe("succeeded");
+    if (scopedStart.kind !== "succeeded") return;
+    const scopedRef = scopedStart.result.agentTaskRef;
+    const pendingStart = await adapter.startTask({
+      ...checkpointStartCommand,
+      commandId: "command-checkpoint-pending",
+      idempotencyKey: "idempotency-checkpoint-pending",
+    });
+    expect(pendingStart.kind).toBe("succeeded");
+    if (pendingStart.kind !== "succeeded") return;
+    const pendingRef = pendingStart.result.agentTaskRef;
+    expect((await adapter.getTask(pendingRef))?.state.status).toBe("pending");
+    expect(completedTaskRef).toBeDefined();
+
+    const before = await readSideEffectCounters();
+    const artifactFacts = async () =>
+      (
+        await fixture.postgres.adminPool.query<{ manifests: string; accesses: string }>(
+          `SELECT (SELECT count(*) FROM business.artifact_manifests)::text AS manifests,
+                  (SELECT count(*) FROM business.artifact_access_records)::text AS accesses`,
+        )
+      ).rows[0];
+    const artifactsBefore = await artifactFacts();
+    const checkpointRequest = async (
+      invocationId: string,
+      overrides: Partial<CheckpointInput> = {},
+    ): Promise<CheckpointInput> => ({
+      projectId: "project-1",
+      actorId: managerAccountId!,
+      invocationId,
+      requestedAt: READ_REQUESTED_AT,
+      taskRef: pendingRef,
+      parentRunRef: startCommand.payload.parentRunRef,
+      ...overrides,
+      authorization: overrides.authorization ?? (await checkpointAuthorizationFor(invocationId)),
+    });
+
+    const controlledVerify =
+      (context: AuthorizationContextV1, redacted = false): LocalIdentityAccessV1["verify"] =>
+      async () =>
+        ({ context, redacted }) as Awaited<ReturnType<LocalIdentityAccessV1["verify"]>>;
+    const controlledReader = (verify: LocalIdentityAccessV1["verify"], db = fixture.runtime.db) =>
+      new PostgresAgentTaskAdapter({
+        db,
+        registry: definition,
+        transactionUnit: fixture.transactionUnit,
+        artifactStore: fixture.store,
+        referenceGuard: fixture.registry,
+        authorization: { verify } as unknown as LocalIdentityAccessV1,
+      });
+
+    // 等待中任务可按原 invocationId 与精确父运行证明，不要求完成，也不返回任务正文。
+    expect(
+      await readerAdapter.verifyCheckpointReference(await checkpointRequest("checkpoint-pending")),
+    ).toBe(true);
+    // 既有终态任务按其原主体 actor-1 证明：完成状态同样可证。
+    const actorOneContext: AuthorizationContextV1 = {
+      ...(await checkpointAuthorizationFor("checkpoint-completed")),
+      actorId: "actor-1",
+    };
+    expect(
+      await controlledReader(controlledVerify(actorOneContext)).verifyCheckpointReference(
+        await checkpointRequest("checkpoint-completed", {
+          actorId: "actor-1",
+          taskRef: completedTaskRef!,
+          authorization: actorOneContext,
+        }),
+      ),
+    ).toBe(true);
+
+    const denials: ReadonlyArray<readonly [string, Partial<CheckpointInput>]> = [
+      [
+        "错任务版本",
+        { taskRef: { ...pendingRef, reference: { ...pendingRef.reference, versionId: "2" } } },
+      ],
+      ["错任务元数据", { taskRef: { ...pendingRef, promptTemplateRef: ref("other-prompt") } }],
+      [
+        "错父运行精确版本",
+        { parentRunRef: { kind: "workflow-run", reference: ref("run-1", "2") } },
+      ],
+      ["错工程", { projectId: "project-2" }],
+      // 终态任务的原主体是 actor-1：真实 manager 上下文证明不了它，主体约束不得降级。
+      ["错主体", { taskRef: completedTaskRef! }],
+    ];
+    for (const [index, [name, overrides]] of denials.entries()) {
+      expect(
+        await readerAdapter.verifyCheckpointReference(
+          await checkpointRequest(`checkpoint-deny-${index}`, overrides),
+        ),
+        name,
+      ).toBe(false);
+    }
+
+    // 受控 C06 复验：脱敏与撤权收口在证明之前或证明阶段，冻结范围收窄无法再证明同一引用。
+    const scopedContext: AuthorizationContextV1 = {
+      ...(await checkpointAuthorizationFor("checkpoint-scoped")),
+      spatialScopeRefs: scopedAuthorization.spatialScopeRefs,
+      sourceAccessGrantRefs: scopedAuthorization.sourceAccessGrantRefs,
+    };
+    const scopedCalls = { count: 0 };
+    const scopedReader = controlledReader(
+      controlledVerify(scopedContext),
+      countingStorage(scopedCalls),
+    );
+    expect(
+      await scopedReader.verifyCheckpointReference(
+        await checkpointRequest("checkpoint-scoped-ok", {
+          taskRef: scopedRef,
+          authorization: scopedContext,
+        }),
+      ),
+    ).toBe(true);
+    // 成功证明只发生一次任务行读取：没有正文、动作、候选或工件读取。
+    expect(scopedCalls.count).toBe(1);
+
+    const narrowings: ReadonlyArray<readonly [string, AuthorizationContextV1]> = [
+      ["脱敏复验", scopedContext],
+      ["空间范围收窄", { ...scopedContext, spatialScopeRefs: [] }],
+      ["来源许可收窄", { ...scopedContext, sourceAccessGrantRefs: [] }],
+    ];
+    for (const [index, [name, context]] of narrowings.entries()) {
+      expect(
+        await controlledReader(
+          controlledVerify(context, name === "脱敏复验"),
+        ).verifyCheckpointReference(
+          await checkpointRequest(`checkpoint-scope-${index}`, {
+            taskRef: scopedRef,
+            authorization: context,
+          }),
+        ),
+        name,
+      ).toBe(false);
+    }
+
+    // 撤权：复验拒绝既不证明通过，也不回到 C08 存储查询任务行。
+    const revokedCalls = { count: 0 };
+    const revoke = vi.fn(async () => {
+      throw new AccessServiceError({
+        code: "AUTHORIZATION_DENIED",
+        stage: "verify",
+        occurredAt: READ_CLOCK,
+        diagnosticRef: {
+          kind: "diagnostic-artifact",
+          reference: ref("checkpoint-access-revoked"),
+        },
+        contextRefs: [],
+        retryable: false,
+        requiredCapability: "agent-task.read",
+        authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+      });
+    });
+    const revoked = await controlledReader(
+      revoke as unknown as LocalIdentityAccessV1["verify"],
+      countingStorage(revokedCalls),
+    )
+      .verifyCheckpointReference(
+        await checkpointRequest("checkpoint-revoked", {
+          taskRef: scopedRef,
+          authorization: scopedContext,
+        }),
+      )
+      .then(
+        () => true,
+        () => false,
+      );
+    expect(revoked).toBe(false);
+    expect(revoke).toHaveBeenCalledTimes(1);
+    expect(revokedCalls.count).toBe(0);
+
+    expect(await readSideEffectCounters()).toEqual(before);
+    expect(await artifactFacts()).toEqual(artifactsBefore);
+  });
 });

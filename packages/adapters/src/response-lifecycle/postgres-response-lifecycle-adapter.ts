@@ -112,6 +112,7 @@ import {
 import { mapPostgresError } from "../postgres/pool.js";
 import { getPostgresTransaction } from "../postgres/transaction-unit.js";
 import type { PostgresDatabase } from "../postgres/types.js";
+import type { EffectForecastExecutorResolverV1 } from "./forecast-executors.js";
 
 type JsonColumn = JsonValue;
 
@@ -1307,13 +1308,36 @@ export class PostgresResponseLifecycleContextReader implements ResponseLifecycle
 /* 命令 adapter：决定、预测、执行、反馈与私有偏差事实                             */
 /* -------------------------------------------------------------------------- */
 
+/** 预测执行器来源：启动期集合，或按本次已核验策略现装的同步窄口。 */
+export type EffectForecastExecutorSourceV1 =
+  readonly EffectForecastExecutorV1[] | EffectForecastExecutorResolverV1;
+
+/** 两条来源按同一身份规则收口：执行器必须逐字对应本次策略，否则等同没有执行器。 */
+const selectForecastExecutorV1 = (
+  source: EffectForecastExecutorSourceV1,
+  policy: ForecastPolicyV1,
+): EffectForecastExecutorV1 | undefined => {
+  const candidate =
+    "resolve" in source
+      ? source.resolve(policy)
+      : source.find(
+          (entry) =>
+            entry.method === policy.method && sameRef(entry.requiredRef, policy.requiredRef),
+        );
+  return candidate !== undefined &&
+    candidate.method === policy.method &&
+    sameRef(candidate.requiredRef, policy.requiredRef)
+    ? candidate
+    : undefined;
+};
+
 export interface PostgresResponseLifecycleAdapterOptionsV1 {
   readonly db: Kysely<PostgresDatabase>;
   readonly transactionUnit: TransactionUnitV1;
   readonly access: LocalIdentityAccessV1;
   readonly reader: ResponseLifecycleContextReaderV1;
-  /** 部署按 `requiredRef` 注入的正式预测执行器；测试夹具不得作为生产实现。 */
-  readonly forecastExecutors: readonly EffectForecastExecutorV1[];
+  /** 部署注入的正式预测执行器：启动期集合，或按本次已核验策略现装的运行时窄口。 */
+  readonly forecastExecutors: EffectForecastExecutorSourceV1;
   readonly now?: () => Date;
 }
 
@@ -1327,7 +1351,7 @@ export class PostgresResponseLifecycleAdapter
   readonly #transactionUnit: TransactionUnitV1;
   readonly #access: LocalIdentityAccessV1;
   readonly #reader: ResponseLifecycleContextReaderV1;
-  readonly #forecastExecutors: readonly EffectForecastExecutorV1[];
+  readonly #forecastExecutors: EffectForecastExecutorSourceV1;
   readonly #now: () => Date;
 
   constructor(options: PostgresResponseLifecycleAdapterOptionsV1) {
@@ -1686,10 +1710,8 @@ export class PostgresResponseLifecycleAdapter
           resolution: `input-indicator-missing:${policy.policyId}`,
         });
       }
-      const executor = this.#forecastExecutors.find(
-        (candidate) =>
-          candidate.method === policy.method && sameRef(candidate.requiredRef, policy.requiredRef),
-      );
+      // 解析排在受权正文、冻结发布与唯一指标策略核验之后：窄口拿到的就是本次已核验策略。
+      const executor = selectForecastExecutorV1(this.#forecastExecutors, policy);
       if (executor === undefined) {
         return await this.#persistForecast({
           valid,

@@ -41,6 +41,7 @@ import { authorizationScopeDigest } from "@riskflow/core/retrieval";
 import type {
   AuthorizationContextRefV1,
   AuthorizationContextV1,
+  ContractReferenceV1,
   IdentificationInputSnapshotRefV1,
   IdentificationRunResultRefV1,
   IdentificationWorkPlanRefV1,
@@ -48,7 +49,10 @@ import type {
   ModuleCapabilityV1,
   StageResultRefV1,
   ValidatedCandidateSetRefV1,
+  WorkflowRunRefV1,
+  WaitingRefV1,
 } from "@riskflow/contracts/ports";
+import { WaitingRefV1Schema } from "@riskflow/contracts/ports";
 import type {
   IdentificationGraphStateV1,
   IdentificationInputSnapshotV1,
@@ -383,6 +387,25 @@ export interface PostgresIdentificationGraphRegistrationEntryV1 {
  * 拒绝收口（fail closed，不泄露对象是否存在）。
  */
 export interface PostgresIdentificationGraphAdapterV1 {
+  verifyCheckpointWaitingReference(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly invocationId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly runRef: WorkflowRunRefV1;
+    readonly waitingRef: WaitingRefV1;
+  }): Promise<boolean>;
+  verifyCheckpointReference(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly invocationId: string;
+    readonly runRef: WorkflowRunRefV1;
+    readonly reference: ContractReferenceV1;
+    readonly workPlanRef?: IdentificationWorkPlanRefV1;
+  }): Promise<boolean>;
   readonly registrationStore: IdentificationGraphRegistrationStoreV1;
   readonly contextInputReader: IdentificationContextInputReaderV1;
   readonly workPlanReader: IdentificationWorkPlanReaderV1;
@@ -440,13 +463,16 @@ class IdentificationGraphPersistence {
    * 当前授权复验（design D-09）：`authorization` 提供复验身份，`verify` 返回的是当前收窄上下文，
    * 冻结引用不能替代它。任何形状不符或异常都按拒绝收口。
    */
-  async verifyAuthorization(input: {
-    readonly authorization: AuthorizationContextV1;
-    readonly projectId: string;
-    readonly actorId: string;
-    readonly invocationId: string;
-    readonly requestedAt?: string;
-  }): Promise<AuthorizationContextV1 | undefined> {
+  async verifyAuthorization(
+    input: {
+      readonly authorization: AuthorizationContextV1;
+      readonly projectId: string;
+      readonly actorId: string;
+      readonly invocationId: string;
+      readonly requestedAt?: string;
+    },
+    rejectRedacted = false,
+  ): Promise<AuthorizationContextV1 | undefined> {
     if (input.authorization.projectId !== input.projectId) return undefined;
     if (input.authorization.actorId !== input.actorId) return undefined;
     if (input.authorization.grantedCapabilities.length !== 1) return undefined;
@@ -462,6 +488,7 @@ class IdentificationGraphPersistence {
       actorId: input.actorId,
       invocationId: input.invocationId,
       requestedAt: input.requestedAt ?? this.#now().toISOString(),
+      rejectRedacted,
     });
   }
 
@@ -474,6 +501,7 @@ class IdentificationGraphPersistence {
     readonly actorId: string;
     readonly invocationId: string;
     readonly requestedAt: string;
+    readonly rejectRedacted?: boolean;
   }): Promise<AuthorizationContextV1 | undefined> {
     try {
       const decision = await this.#authorization.verify({
@@ -487,6 +515,7 @@ class IdentificationGraphPersistence {
       });
       const verified = decision.context;
       if (
+        (input.rejectRedacted === true && decision.redacted === true) ||
         verified.projectId !== input.projectId ||
         verified.actorId !== input.actorId ||
         verified.grantedCapabilities.length !== 1 ||
@@ -570,6 +599,26 @@ class IdentificationGraphPersistence {
     } catch (error) {
       throw mapPostgresError(error, "identification-graph.result-register");
     }
+  }
+
+  async verifyCheckpointWaitingReference(
+    input: Parameters<PostgresIdentificationGraphAdapterV1["verifyCheckpointWaitingReference"]>[0],
+  ): Promise<boolean> {
+    const verified = await this.verifyAuthorization(input, true);
+    if (verified === undefined) return false;
+    const waitingRef = WaitingRefV1Schema.parse(input.waitingRef);
+    const row = await this.#db
+      .selectFrom(RESULTS_TABLE)
+      .select("waiting_ref")
+      .where("project_id", "=", input.projectId)
+      .where("run_id", "=", input.runRef.reference.entityId)
+      .where("result_kind", "=", "waiting")
+      .where("actor_ref", "=", input.actorId)
+      .where("authorization_scope_digest", "=", authorizationScopeDigest(verified))
+      .where("waiting_ref", "=", sql<JsonValue>`${JSON.stringify(waitingRef)}::jsonb`)
+      .limit(1)
+      .executeTakeFirst();
+    return row !== undefined;
   }
 
   async readRow(input: {
@@ -727,6 +776,34 @@ class IdentificationGraphPersistence {
       throw makePersistenceError("TRANSACTION_FAILED", "identification-graph.body-kind");
     }
     return parsed.data;
+  }
+
+  async verifyBody(
+    input: Parameters<IdentificationGraphPersistence["readBody"]>[0],
+    validate: (body: IdentificationGraphArtifactBodyV1) => boolean,
+  ): Promise<boolean> {
+    if (this.#artifactStore.verifyContent === undefined) return false;
+    return this.#artifactStore.verifyContent(
+      ArtifactReadRequestV1Schema.parse({
+        schemaVersion: "1",
+        requestId: randomId("c24-checkpoint-proof"),
+        idempotencyKey: randomId("c24-checkpoint-proof"),
+        artifactRef: input.row.artifactRef,
+        projectId: input.projectId,
+        actorId: input.actorId,
+        requestedAt: input.requestedAt,
+        purposeCode: IDENTIFICATION_GRAPH_BODY_PURPOSE_CODE_V1[input.bodyKind],
+        requiredCapability: input.authorization.grantedCapabilities[0],
+        authorization: input.authorization,
+      }),
+      MAX_BODY_BYTES_V1,
+      (bytes) => {
+        const body = IdentificationGraphArtifactBodyV1Schema.parse(
+          JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
+        );
+        return body.bodyKind === input.bodyKind && validate(body);
+      },
+    );
   }
 
   /** 本次运行已登记的 I5 结果汇总（稳定排序、去重）；正文不符返回 `undefined`。 */
@@ -1333,6 +1410,110 @@ class PostgresIdentificationGraphAdapter implements PostgresIdentificationGraphA
     this.registrationStore = new IdentificationGraphRegistrationStore(this.#persistence);
     this.contextInputReader = new IdentificationGraphContextInputReader(this.#persistence);
     this.workPlanReader = new IdentificationGraphWorkPlanReader(this.#persistence);
+  }
+
+  async verifyCheckpointWaitingReference(
+    input: Parameters<PostgresIdentificationGraphAdapterV1["verifyCheckpointWaitingReference"]>[0],
+  ): Promise<boolean> {
+    return this.#persistence.verifyCheckpointWaitingReference(input);
+  }
+
+  async verifyCheckpointReference(
+    input: Parameters<PostgresIdentificationGraphAdapterV1["verifyCheckpointReference"]>[0],
+  ): Promise<boolean> {
+    const verified = await this.#persistence.verifyAuthorization(input, true);
+    if (verified === undefined) return false;
+    if (
+      input.reference.kind !== "identification-input-snapshot" &&
+      input.reference.kind !== "identification-work-plan" &&
+      input.reference.kind !== "identification-work-item" &&
+      input.reference.kind !== "stage-result" &&
+      input.reference.kind !== "workflow-error" &&
+      input.reference.kind !== "identification-run-result"
+    )
+      return false;
+    const resultKinds = {
+      "identification-input-snapshot": "input-snapshot",
+      "identification-work-plan": "work-plan",
+      "identification-work-item": "work-plan",
+      "stage-result": "stage-result",
+      "workflow-error": "workflow-error",
+      "identification-run-result": "run-result",
+    } as const;
+    const resultKind = resultKinds[input.reference.kind];
+    const targetRef =
+      input.reference.kind === "identification-work-item" ? input.workPlanRef : input.reference;
+    if (targetRef === undefined) return false;
+    const row = await this.#persistence.readRow({
+      projectId: input.projectId,
+      resultKind,
+      resultId: targetRef.reference.entityId,
+      resultVersionId: targetRef.reference.versionId,
+    });
+    if (
+      row === undefined ||
+      row.runId !== input.runRef.reference.entityId ||
+      row.authorizationScopeDigest !== authorizationScopeDigest(verified)
+    )
+      return false;
+    const rowRef =
+      row.resultKind === "input-snapshot"
+        ? row.inputSnapshotRef
+        : row.resultKind === "work-plan"
+          ? row.workPlanRef
+          : row.resultKind === "stage-result"
+            ? row.stageResultRef
+            : row.resultKind === "workflow-error"
+              ? row.workflowErrorRef
+              : row.resultKind === "run-result"
+                ? row.runResultRef
+                : undefined;
+    if (!sameJson(rowRef, targetRef)) return false;
+    if (row.resultKind === "workflow-error") return true;
+    if (
+      row.resultKind !== "input-snapshot" &&
+      row.resultKind !== "work-plan" &&
+      row.resultKind !== "stage-result" &&
+      row.resultKind !== "run-result"
+    )
+      return false;
+    return this.#persistence.verifyBody(
+      {
+        row,
+        bodyKind: row.resultKind,
+        projectId: input.projectId,
+        actorId: input.actorId,
+        requestedAt: input.requestedAt,
+        authorization: verified,
+      },
+      (body) => {
+        switch (body.bodyKind) {
+          case "input-snapshot":
+            return (
+              row.resultKind === "input-snapshot" &&
+              sameJson(body.inputSnapshot.preparationSnapshotRef, row.preparationSnapshotRef)
+            );
+          case "work-plan":
+            return (
+              row.resultKind === "work-plan" &&
+              body.workPlan.projectId === input.projectId &&
+              sameJson(body.workPlan.workPlanRef, row.workPlanRef) &&
+              sameJson(body.workPlan.inputSnapshotRef, row.inputSnapshotRef) &&
+              (input.reference.kind !== "identification-work-item" ||
+                body.workPlan.workItems.some((item) => sameJson(item.workItemRef, input.reference)))
+            );
+          case "stage-result":
+            return sameJson(body.stageResult.runRef, input.runRef);
+          case "run-result":
+            return (
+              body.runResult.projectId === input.projectId &&
+              sameJson(body.runResult.runRef, input.runRef)
+            );
+          default:
+            return false;
+        }
+      },
+    );
   }
 
   async registerResults(

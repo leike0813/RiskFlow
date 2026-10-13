@@ -4,9 +4,16 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   createDeploymentAcceptanceRoutesV1,
+  createDeploymentCandidateCheckpointProofV1,
   createRiskCandidatePolicyProviderV1,
 } from "./composition/identification.mjs";
 import { DeploymentAuthorizationError } from "../../packages/adapters/dist/auth/index.js";
+import {
+  candidateSetRefFor,
+  identificationGroupRefFor,
+  mergePlanRefFor,
+} from "../../packages/core/dist/identification/candidate-finalization/index.js";
+import { authorizationScopeDigest } from "../../packages/core/dist/retrieval/index.js";
 import {
   CompositionResourcesV1,
   DeploymentCompositionIncompleteError,
@@ -433,5 +440,515 @@ describe("生产组合根装配契约", () => {
     await expect(resources.releaseAll()).rejects.toBeInstanceOf(AggregateError);
     expect(closed).toEqual(["database"]);
     expect(resources.size).toBe(0);
+  });
+});
+
+// -------------------------------- C37 候选检查点引用证明（合成样本、待甲方复核）
+
+const PROOF_PROJECT = "project-c37";
+const PROOF_ACTOR = "actor-c37";
+const PROOF_TIME = "2026-02-01T00:00:00.000Z";
+const PROOF_MAX_BYTES = 8 * 1024 * 1024;
+const proofReference = (entityId, versionId = "v1") => ({
+  entityId,
+  versionId,
+});
+
+const proofAuthorization = (overrides = {}) => ({
+  schemaVersion: "1",
+  authorizationContextRef: {
+    kind: "authorization-context",
+    reference: proofReference("auth-context-c37"),
+  },
+  actorId: PROOF_ACTOR,
+  projectId: PROOF_PROJECT,
+  grantedCapabilities: ["risk-identification.read"],
+  spatialScopeRefs: [{ kind: "spatial-scope", reference: proofReference("scope-c37") }],
+  sourceAccessGrantRefs: [{ kind: "source-access-grant", reference: proofReference("grant-c37") }],
+  authorizationPolicyRef: proofReference("access-policy"),
+  decidedAt: PROOF_TIME,
+  invocation: { kind: "human" },
+  causalRunRef: { kind: "workflow-run", reference: proofReference("run-c37") },
+  ...overrides,
+});
+
+const proofContentRef = (entityId) => ({
+  kind: "content-artifact",
+  reference: proofReference(entityId),
+});
+
+/**
+ * 三类检查点的合成登记行与正文。字段形状沿用 C22 严格 Schema 的公开结构，
+ * 其中的工程、版本、摘要与业务取值都是手工构造的合成值，不代表任何真实工程资料。
+ */
+const checkpointFixture = (kind) => {
+  const authorization = proofAuthorization();
+  const scopeDigest = authorizationScopeDigest(authorization);
+  const requestDigest = "b".repeat(64);
+  const inputSnapshotRef = {
+    kind: "identification-input-snapshot",
+    reference: proofReference("input-snapshot-c37"),
+  };
+  const workPlanRef = {
+    kind: "identification-work-plan",
+    reference: proofReference("work-plan-c37"),
+  };
+  const workItemRef = {
+    kind: "identification-work-item",
+    reference: proofReference("work-item-c37"),
+  };
+  const modelContextArtifactSetRef = {
+    kind: "model-context-artifact-set",
+    reference: proofReference("model-context-c37"),
+  };
+  const policySetRef = {
+    kind: "identification-policy-set",
+    reference: proofReference("policy-set-c37"),
+  };
+  const runRef = { kind: "workflow-run", reference: proofReference("identification-run-c37") };
+  const common = {
+    projectId: PROOF_PROJECT,
+    inputSnapshotRef,
+    authorizationScopeDigest: scopeDigest,
+    authorizationContextRef: authorization.authorizationContextRef,
+  };
+  const commonRow = {
+    ...common,
+    resultId: "",
+    resultVersionId: requestDigest,
+    actorRef: PROOF_ACTOR,
+    requestDigest,
+  };
+  const commonInput = {
+    projectId: PROOF_PROJECT,
+    actorId: PROOF_ACTOR,
+    invocationId: "invocation-c37",
+    requestedAt: PROOF_TIME,
+    authorization,
+    inputSnapshotRef,
+  };
+
+  if (kind === "candidate-set") {
+    const checkpointRef = candidateSetRefFor({
+      projectId: PROOF_PROJECT,
+      workItemEntityId: workItemRef.reference.entityId,
+      requestDigest,
+    });
+    return {
+      checkpointRef,
+      input: { ...commonInput, reference: checkpointRef },
+      row: {
+        ...commonRow,
+        resultKind: "candidate-set",
+        resultId: checkpointRef.reference.entityId,
+        candidateSetRef: checkpointRef,
+        workItemRef,
+        modelContextArtifactSetRef,
+        artifactRef: proofContentRef("candidate-set-artifact"),
+      },
+      body: {
+        schemaVersion: "1",
+        ...common,
+        workItemRef,
+        nodeId: "node-变径空间扩挖",
+        modelContextArtifactSetRef,
+        retrievalArtifactSetRef: {
+          kind: "retrieval-artifact-set",
+          reference: proofReference("retrieval-review-c37"),
+        },
+        modelContextPayloadDigest: "c".repeat(64),
+        policySetRef,
+        generationPolicyRef: proofReference("generation-policy"),
+        modelDeploymentRef: proofReference("model-deployment"),
+        promptTemplateRef: proofReference("prompt-template"),
+        outputSchemaRef: proofReference("output-schema"),
+        budgetPolicyRef: proofReference("budget-policy"),
+        candidateSetVersion: 1,
+        candidates: [
+          {
+            candidateId: "candidate-c37",
+            candidateVersion: 1,
+            projectId: PROOF_PROJECT,
+            inputSnapshotRef,
+            workItemRef,
+            modelContextArtifactSetRef,
+            nodeId: "node-变径空间扩挖",
+            output: {
+              riskSource: "扩径切削扰动",
+              riskFactor: "掌子面支护不足",
+              riskEvent: "掌子面失稳涌水",
+              riskElementRelations: [
+                { sourceElement: "扩挖机构", relation: "作用关系", targetElement: "掌子面" },
+              ],
+              evidenceLocator: { sourceSegmentId: "segment-mechanism" },
+              modelConfidence: 0.31,
+            },
+            modelDeploymentRef: proofReference("model-deployment"),
+            promptTemplateRef: proofReference("prompt-template"),
+            outputSchemaRef: proofReference("output-schema"),
+            budgetPolicyRef: proofReference("budget-policy"),
+            rawResponseRef: {
+              kind: "diagnostic-artifact",
+              reference: proofReference("raw-response-c37"),
+            },
+            invocationId: "invocation-candidate",
+            generatedAt: PROOF_TIME,
+          },
+        ],
+        rawResponseRefs: [
+          { kind: "diagnostic-artifact", reference: proofReference("raw-response-c37") },
+        ],
+        usage: {
+          modelInvocations: 1,
+          inputTokens: 10,
+          outputTokens: 20,
+          totalTokens: 30,
+          outputBytes: 100,
+          elapsedMs: 5,
+          repairRounds: 0,
+        },
+        generatedAt: PROOF_TIME,
+      },
+    };
+  }
+
+  if (kind === "merge-plan") {
+    const checkpointRef = mergePlanRefFor({
+      projectId: PROOF_PROJECT,
+      workPlanEntityId: workPlanRef.reference.entityId,
+      requestDigest,
+    });
+    return {
+      checkpointRef,
+      input: { ...commonInput, reference: checkpointRef, workPlanRef, runRef },
+      row: {
+        ...commonRow,
+        resultKind: "merge-plan",
+        resultId: checkpointRef.reference.entityId,
+        mergePlanRef: checkpointRef,
+        workPlanRef,
+        artifactRef: proofContentRef("merge-plan-artifact"),
+      },
+      body: {
+        schemaVersion: "1",
+        ...common,
+        workPlanRef,
+        identificationRunRef: runRef,
+        policySetRef,
+        validatedCandidateSetRefs: [
+          { kind: "validated-candidate-set", reference: proofReference("validated-set-a") },
+        ],
+        mergePolicyRef: proofReference("merge-policy"),
+        embeddingDeploymentRef: proofReference("embedding-deployment"),
+        embeddingArtifactRef: proofContentRef("embedding-artifact"),
+        groups: [
+          {
+            groupId: "group-c37",
+            groupVersionId: requestDigest,
+            groupRef: {
+              kind: "identification-group",
+              reference: proofReference(
+                `identification-group:${PROOF_PROJECT}:work-plan-c37:group-c37`,
+                requestDigest,
+              ),
+            },
+            disposition: "no-duplicate",
+            memberCount: 1,
+          },
+        ],
+        evaluatedCandidateRefs: [proofContentRef("candidate-artifact-candidate-c37")],
+        plannedAt: PROOF_TIME,
+      },
+    };
+  }
+
+  const checkpointRef = identificationGroupRefFor({
+    projectId: PROOF_PROJECT,
+    workPlanEntityId: workPlanRef.reference.entityId,
+    groupId: "group-c37",
+    requestDigest,
+  });
+  return {
+    checkpointRef,
+    input: { ...commonInput, reference: checkpointRef, workPlanRef },
+    row: {
+      ...commonRow,
+      resultKind: "identification-group",
+      resultId: checkpointRef.reference.entityId,
+      groupRef: checkpointRef,
+      workPlanRef,
+      artifactRef: proofContentRef("group-artifact"),
+    },
+    body: {
+      schemaVersion: "1",
+      ...common,
+      workPlanRef,
+      policySetRef,
+      groupId: "group-c37",
+      groupVersionId: requestDigest,
+      nodeIds: ["node-变径空间扩挖"],
+      members: [
+        {
+          candidateId: "candidate-c37",
+          candidateVersion: 1,
+          candidateRef: proofContentRef("candidate-artifact-candidate-c37"),
+          workItemRef,
+          nodeId: "node-变径空间扩挖",
+          sourceSegmentIds: ["segment-mechanism"],
+          mechanismEntryIds: ["mechanism-c37"],
+          evidenceReferences: [
+            {
+              locator: { sourceSegmentId: "segment-mechanism" },
+              sourceVersion: proofReference("source-c37"),
+            },
+          ],
+          modelConfidence: 0.8,
+        },
+      ],
+      mergeEvidence: {
+        processNode: {
+          signal: "process-node",
+          satisfied: true,
+          nodeIds: ["node-变径空间扩挖"],
+          allowedNodeIds: ["node-变径空间扩挖"],
+        },
+        riskEvent: { signal: "risk-event", value: 1, threshold: 0.9, satisfied: true },
+        evidence: { signal: "evidence-locator", value: 1, threshold: 0.8, satisfied: true },
+        aggregate: { value: 1, threshold: 0.8, satisfied: true },
+      },
+      disposition: "no-duplicate",
+      skipReasonCode: "c37-synthetic-no-duplicate",
+      mergePolicyRef: proofReference("merge-policy"),
+      embeddingDeploymentRef: proofReference("embedding-deployment"),
+      embeddingArtifactRef: proofContentRef("embedding-artifact"),
+      groupedAt: PROOF_TIME,
+    },
+  };
+};
+
+const CHECKPOINT_KINDS = ["candidate-set", "merge-plan", "group"];
+
+/** 组合根只提供 verifyContent：这里记录调用，并把正文交给生产侧传入的 validate。 */
+const proveCheckpoint = async (kind, overrides = {}) => {
+  const base = checkpointFixture(kind);
+  const fixture = {
+    ...base,
+    ...overrides,
+    input: { ...base.input, ...overrides.input },
+    row: { ...base.row, ...overrides.row },
+    body: { ...base.body, ...overrides.body },
+  };
+  const calls = [];
+  const authorization = fixture.input.authorization;
+  const proof = createDeploymentCandidateCheckpointProofV1({
+    resultStore: {
+      readResult: async (query) => (calls.push(["result", query]), fixture.row),
+    },
+    access: {
+      verify: async (query) => (
+        calls.push(["access", query]),
+        overrides.decision ?? { redacted: false, context: authorization }
+      ),
+    },
+    artifactStore: overrides.artifactStore ?? {
+      verifyContent: async (request, maxBytes, validate) => {
+        calls.push(["content", { request, maxBytes }]);
+        return validate(new TextEncoder().encode(JSON.stringify(fixture.body)));
+      },
+    },
+  });
+  const outcome = await proof.verifyCheckpointReference(fixture.input).then(
+    (value) => value,
+    (error) => error,
+  );
+  return { outcome, calls };
+};
+
+describe("C37 候选检查点引用证明", () => {
+  it.each(CHECKPOINT_KINDS)(
+    "%s：精确登记行与合法正文给出证明，并按原权限与原用途读取正文",
+    async (kind) => {
+      const { outcome, calls } = await proveCheckpoint(kind);
+      const base = checkpointFixture(kind);
+
+      expect(outcome).toBe(true);
+      expect(calls.find(([kind]) => kind === "access")?.[1]).toMatchObject({
+        projectId: PROOF_PROJECT,
+        branch: "risk-identification.run-read",
+        authorizationContextRef: base.input.authorization.authorizationContextRef,
+        requestedSpatialScopeRefs: base.input.authorization.spatialScopeRefs,
+      });
+      expect(calls.find(([kind]) => kind === "result")?.[1]).toEqual({
+        projectId: PROOF_PROJECT,
+        resultKind: base.row.resultKind,
+        resultId: base.checkpointRef.reference.entityId,
+        resultVersionId: base.checkpointRef.reference.versionId,
+      });
+      const contentRead = calls.find(([kind]) => kind === "content")?.[1];
+      expect(contentRead.maxBytes).toBe(PROOF_MAX_BYTES);
+      expect(contentRead.request).toMatchObject({
+        projectId: PROOF_PROJECT,
+        actorId: PROOF_ACTOR,
+        artifactRef: base.row.artifactRef,
+        authorization: base.input.authorization,
+        requiredCapability: "risk-identification.read",
+      });
+      expect(typeof contentRead.request.purposeCode).toBe("string");
+      expect(contentRead.request.purposeCode).not.toBe("");
+    },
+  );
+
+  /** 每行一个风险根因；contentRead 表示拒绝前是否已读取正文。 */
+  const rejected = [
+    [
+      "原权限已撤回",
+      "candidate-set",
+      {
+        decision: {
+          redacted: false,
+          context: proofAuthorization({
+            grantedCapabilities: [],
+            decidedAt: "2026-01-01T00:00:00.000Z",
+          }),
+        },
+      },
+      false,
+    ],
+    ["授权已脱敏", "merge-plan", { decision: { redacted: true } }, false],
+    [
+      "当前上下文被收窄",
+      "group",
+      { decision: { redacted: false, context: proofAuthorization({ spatialScopeRefs: [] }) } },
+      false,
+    ],
+    ["跨工程请求", "candidate-set", { input: { projectId: "project-other" } }, false],
+    ["登记行属于其它 actor", "candidate-set", { row: { actorRef: "actor-other" } }, false],
+    [
+      "登记行引用不是请求引用",
+      "merge-plan",
+      { row: { resultId: "merge-plan:project-other" } },
+      false,
+    ],
+    [
+      "登记行输入快照不是原输入",
+      "candidate-set",
+      {
+        row: {
+          inputSnapshotRef: {
+            kind: "identification-input-snapshot",
+            reference: proofReference("input-snapshot-other"),
+          },
+        },
+      },
+      false,
+    ],
+    [
+      "登记行工作计划不是原工作计划",
+      "merge-plan",
+      {
+        row: {
+          workPlanRef: {
+            kind: "identification-work-plan",
+            reference: proofReference("work-plan-other"),
+          },
+        },
+      },
+      false,
+    ],
+    [
+      "登记行授权范围摘要不同",
+      "group",
+      { row: { authorizationScopeDigest: "c".repeat(64) } },
+      false,
+    ],
+    [
+      "正文授权上下文不是原授权",
+      "group",
+      {
+        body: {
+          authorizationContextRef: {
+            kind: "authorization-context",
+            reference: proofReference("auth-context-other"),
+          },
+        },
+      },
+      true,
+    ],
+    [
+      "正文输入快照不是原输入",
+      "candidate-set",
+      {
+        body: {
+          inputSnapshotRef: {
+            kind: "identification-input-snapshot",
+            reference: proofReference("input-snapshot-other"),
+          },
+        },
+      },
+      true,
+    ],
+    [
+      "正文工作计划不是原工作计划",
+      "merge-plan",
+      {
+        body: {
+          workPlanRef: {
+            kind: "identification-work-plan",
+            reference: proofReference("work-plan-other"),
+          },
+        },
+      },
+      true,
+    ],
+    [
+      "正文候选工作项不是原工作项",
+      "candidate-set",
+      {
+        body: {
+          workItemRef: {
+            kind: "identification-work-item",
+            reference: proofReference("work-item-other"),
+          },
+        },
+      },
+      true,
+    ],
+    [
+      "正文模型上下文集不是原上下文",
+      "candidate-set",
+      {
+        body: {
+          modelContextArtifactSetRef: {
+            kind: "model-context-artifact-set",
+            reference: proofReference("model-context-other"),
+          },
+        },
+      },
+      true,
+    ],
+    ["正文组身份不是登记行组", "group", { body: { groupId: "group-other" } }, true],
+    [
+      "正文 merge 运行不是原运行",
+      "merge-plan",
+      {
+        body: {
+          identificationRunRef: {
+            kind: "workflow-run",
+            reference: proofReference("identification-run-other"),
+          },
+        },
+      },
+      true,
+    ],
+    // 严格 Schema 解析失败时 validate 抛错，同样不给证明。
+    ["正文含契约外字段", "candidate-set", { body: { contractOutsideField: "x" } }, true],
+    ["工件存储不提供 verifyContent", "group", { artifactStore: {} }, false],
+  ];
+
+  it.each(rejected)("%s（%s）不给出证明", async (_label, kind, overrides, contentRead) => {
+    const { outcome, calls } = await proveCheckpoint(kind, overrides);
+
+    expect(outcome).not.toBe(true);
+    expect(calls.some(([name]) => name === "content")).toBe(contentRead);
   });
 });

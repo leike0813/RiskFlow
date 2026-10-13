@@ -2523,4 +2523,201 @@ describe.sequential("PostgreSQL review audit read adapter (C35)", () => {
     // 换记录时点：历史边界不可改写。
     await expectClosed({ asOfRecordedAt: "2030-01-01T00:00:02.000Z", pageSize: 1, cursor });
   }, 180_000);
+
+  /**
+   * IP-05/IP-16 C07 检查点引用证明（D-21）：等待中与已决定任务都按原 invocationId、当前
+   * 单能力 `review-audit.read` 完整授权与精确 parentRunRef 证明，且只读任务行不读决定正文。
+   * 错版本、任务元数据、等待运行、父运行、工程、原主体与能力都证明不了；脱敏、上下文收窄
+   * 与撤权同理。宿主把技术/权限异常收为 false，因此证明本身零审计、回执、工件、访问与事件。
+   */
+  it("proves the exact review task checkpoint reference without decisions or writes", async () => {
+    type CheckpointInput = Parameters<PostgresReviewAuditRead["verifyCheckpointReference"]>[0];
+    const authorization = authorizationFor("project-ui-checkpoint");
+    const writer = writerFor(authorization);
+    const request = requestFor({ suffix: "ui-checkpoint", projectId: authorization.projectId });
+    const created = await writer.requestReview(request);
+    expect(created.kind).toBe("succeeded");
+    if (created.kind !== "succeeded") return;
+    const taskRef = created.result.reviewTaskRef;
+
+    // 读者只持单能力复核读上下文；写侧授权不变，读权不等于写权。
+    const readerAuthorization = AuthorizationContextV1Schema.parse({
+      ...authorization,
+      authorizationContextRef: {
+        kind: "authorization-context",
+        reference: { entityId: `authorization-${authorization.projectId}-read`, versionId: "1" },
+      },
+      grantedCapabilities: ["review-audit.read"],
+      spatialScopeRefs: [
+        { kind: "spatial-scope", reference: { entityId: "scope-ui", versionId: "1" } },
+      ],
+      sourceAccessGrantRefs: [
+        { kind: "source-access-grant", reference: { entityId: "grant-ui", versionId: "1" } },
+      ],
+    });
+    const checkpointInput = (
+      invocationId: string,
+      overrides: Partial<CheckpointInput> = {},
+    ): CheckpointInput => ({
+      projectId: authorization.projectId,
+      actorId: authorization.actorId,
+      invocationId,
+      requestedAt: REVIEW_TEST_TIMESTAMP,
+      authorization: readerAuthorization,
+      taskRef,
+      parentRunRef: taskRef.waitingRunRef,
+      ...overrides,
+    });
+    /** 宿主收口：证明抛出的技术/权限异常一律不算通过，其余按返回的 boolean 判定。 */
+    const proves = async (
+      reader: PostgresReviewAuditRead,
+      input: CheckpointInput,
+    ): Promise<boolean> => reader.verifyCheckpointReference(input).catch(() => false);
+
+    const beforePending = await reviewAuditCounts(requireFixture(), request.projectId);
+    const artifactFacts = async () =>
+      (
+        await requireFixture().postgres.adminPool.query<{ manifests: string; accesses: string }>(
+          `SELECT (SELECT count(*) FROM business.artifact_manifests)::text AS manifests,
+                  (SELECT count(*) FROM business.artifact_access_records)::text AS accesses`,
+        )
+      ).rows[0];
+    const artifactsBefore = await artifactFacts();
+    const reader = readAdapterFor(readerAuthorization);
+
+    // 等待中任务可证明；决定后同一任务引用仍可证明历史身份，状态更新不改身份版本。
+    expect(await reader.verifyCheckpointReference(checkpointInput("ui-checkpoint-pending"))).toBe(
+      true,
+    );
+    expect(await reviewAuditCounts(requireFixture(), request.projectId)).toEqual(beforePending);
+    const decided = await writer.decideReview(decisionFor(request, taskRef, "ui-checkpoint"));
+    expect(decided.kind).toBe("succeeded");
+    expect(await reader.verifyCheckpointReference(checkpointInput("ui-checkpoint-decided"))).toBe(
+      true,
+    );
+    const before = await reviewAuditCounts(requireFixture(), request.projectId);
+
+    const otherSubject = AuthorizationContextV1Schema.parse({
+      ...readerAuthorization,
+      actorId: "actor-2",
+      authorizationContextRef: {
+        kind: "authorization-context",
+        reference: { entityId: "authorization-ui-checkpoint-actor-2", versionId: "1" },
+      },
+    });
+    const writeOnly = AuthorizationContextV1Schema.parse({
+      ...readerAuthorization,
+      grantedCapabilities: ["review-audit.decide"],
+    });
+    const extraCapability = AuthorizationContextV1Schema.parse({
+      ...readerAuthorization,
+      grantedCapabilities: ["review-audit.read", "review-audit.decide"],
+    });
+    const denials: ReadonlyArray<
+      readonly [string, Partial<CheckpointInput>, AuthorizationContextV1]
+    > = [
+      [
+        "错身份版本",
+        { taskRef: { ...taskRef, reference: { ...taskRef.reference, versionId: "2" } } },
+        readerAuthorization,
+      ],
+      [
+        "错目标元数据",
+        {
+          taskRef: {
+            ...taskRef,
+            targetRef: {
+              ...taskRef.targetRef,
+              reference: { ...taskRef.targetRef.reference, entityId: "group-other" },
+            },
+          } as ReviewTaskRefV1,
+        },
+        readerAuthorization,
+      ],
+      [
+        "任务等待运行漂移",
+        {
+          taskRef: {
+            ...taskRef,
+            waitingRunRef: {
+              ...taskRef.waitingRunRef,
+              reference: { ...taskRef.waitingRunRef.reference, versionId: "2" },
+            },
+          } as ReviewTaskRefV1,
+        },
+        readerAuthorization,
+      ],
+      [
+        "错父运行精确版本",
+        {
+          parentRunRef: {
+            ...taskRef.waitingRunRef,
+            reference: { ...taskRef.waitingRunRef.reference, versionId: "2" },
+          },
+        },
+        readerAuthorization,
+      ],
+      ["错工程", { projectId: "project-ui-checkpoint-other" }, readerAuthorization],
+      // 任务原 requestedBy 是 actor-1：上下文自身一致的其它主体也证明不了它。
+      ["错原请求主体", { actorId: "actor-2" }, otherSubject],
+      ["冻结上下文无读能力", {}, writeOnly],
+      ["能力集不唯一", {}, extraCapability],
+    ];
+    for (const [index, [name, overrides, context]] of denials.entries()) {
+      expect(
+        await proves(
+          readAdapterFor(context),
+          checkpointInput(`ui-checkpoint-deny-${index}`, { ...overrides, authorization: context }),
+        ),
+        name,
+      ).toBe(false);
+    }
+
+    // 受控复验：冻结上下文是已签发的完整授权，当前脱敏或收窄后的复验结果都不替代它。
+    const controlledVerify =
+      (context: AuthorizationContextV1, redacted = false): LocalIdentityAccessV1["verify"] =>
+      async () =>
+        ({ context, redacted }) as Awaited<ReturnType<LocalIdentityAccessV1["verify"]>>;
+    const narrowings: ReadonlyArray<readonly [string, AuthorizationContextV1, boolean]> = [
+      ["脱敏复验", readerAuthorization, true],
+      ["空间范围收窄", { ...readerAuthorization, spatialScopeRefs: [] }, false],
+      ["来源许可收窄", { ...readerAuthorization, sourceAccessGrantRefs: [] }, false],
+    ];
+    for (const [index, [name, context, redacted]] of narrowings.entries()) {
+      expect(
+        await readAdapterFor(
+          readerAuthorization,
+          controlledVerify(context, redacted),
+        ).verifyCheckpointReference(checkpointInput(`ui-checkpoint-scope-${index}`)),
+        name,
+      ).toBe(false);
+    }
+
+    // 撤权：复验异常抛出，宿主收口为不证明，且证明从未因此改写任何事实。
+    const revokedVerify = vi.fn(async () => {
+      throw new AccessServiceError({
+        code: "AUTHORIZATION_DENIED",
+        stage: "verify",
+        occurredAt: REVIEW_TEST_TIMESTAMP,
+        diagnosticRef: {
+          kind: "diagnostic-artifact",
+          reference: { entityId: "diagnostic-ui-checkpoint-revoked", versionId: "1" },
+        },
+        contextRefs: [],
+        retryable: false,
+        requiredCapability: "review-audit.read",
+        authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+      });
+    });
+    expect(
+      await proves(
+        readAdapterFor(readerAuthorization, revokedVerify),
+        checkpointInput("ui-checkpoint-revoked"),
+      ),
+    ).toBe(false);
+    expect(revokedVerify).toHaveBeenCalledTimes(1);
+
+    expect(await reviewAuditCounts(requireFixture(), request.projectId)).toEqual(before);
+    expect(await artifactFacts()).toEqual(artifactsBefore);
+  }, 180_000);
 });

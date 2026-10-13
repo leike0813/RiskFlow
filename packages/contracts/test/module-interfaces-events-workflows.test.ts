@@ -2466,6 +2466,33 @@ describe("module interface contracts", () => {
         retrievalSnippet: "forbidden",
       }).success,
     ).toBe(false);
+    // entrySnapshotRef 只在 A0 之前可以缺省：启动与 A0 失败都还没有入口快照，
+    // 一旦越过 A0 就必须已经有快照，否则后续阶段无法回溯评估输入基线。
+    const withoutEntrySnapshotRef = { ...assessmentState, entrySnapshotRef: undefined };
+    for (const { accepted, ...lifecycle } of [
+      { stage: "A0", status: "running", accepted: true },
+      {
+        stage: "A0",
+        status: "terminal-failure",
+        lastErrorRef: version("workflow-error"),
+        accepted: true,
+      },
+      { stage: "A1", status: "running", accepted: false },
+      {
+        stage: "A9",
+        status: "completed",
+        resultRef: version("assessment-run-result"),
+        accepted: false,
+      },
+    ]) {
+      expect(
+        AssessmentGraphStateV1Schema.safeParse({
+          ...withoutEntrySnapshotRef,
+          resultRef: undefined,
+          ...lifecycle,
+        }).success,
+      ).toBe(accepted);
+    }
 
     const topState = {
       schemaVersion: "1",

@@ -915,7 +915,7 @@ const resolveBasisReleaseSetRef = async (input: {
   });
   if (frozen !== undefined) return frozen;
   const entrySnapshotRef = input.state.entrySnapshotRef;
-  if (entrySnapshotRef.kind !== "assessment-preparation") {
+  if (entrySnapshotRef?.kind !== "assessment-preparation") {
     // 分段入口的冻结输入没有评估准备快照可解析：缺失即按入口不完整安全失败（design D-03）。
     fail(
       entryIncomplete({
@@ -1819,7 +1819,7 @@ const runtimePoliciesFor = async (input: {
 }): Promise<AssessmentRuntimePolicySetV1> => {
   const occurredAt = input.ports.now().toISOString();
   const entrySnapshotRef = input.state.entrySnapshotRef;
-  if (entrySnapshotRef.kind !== "assessment-preparation") {
+  if (entrySnapshotRef?.kind !== "assessment-preparation") {
     fail(
       contractInvalid({
         stage: input.stage,
@@ -1866,7 +1866,7 @@ const measureLibraryReleaseRefOf = (input: {
 
 /** 入口冻结（design D-03/D-04）：每个入口用自己的冻结事实，不复制识别正文。 */
 export interface AssessmentEntryResolutionV1 {
-  readonly entrySnapshotRef: AssessmentGraphStateV1["entrySnapshotRef"];
+  readonly entrySnapshotRef: NonNullable<AssessmentGraphStateV1["entrySnapshotRef"]>;
   readonly entryIdentity: VersionReference;
   /** 评估准备入口的 A0 阶段结果；分段入口不产生 A0 阶段结果（无对应公共变体）。 */
   readonly stageResult: unknown;
@@ -2198,6 +2198,12 @@ const stageA0: StageHandlerV1 = async ({ ports, run, state }) => {
         }),
         resultKind: "entry-snapshot",
         stage: "A0",
+        inputSnapshotRef:
+          entry.entrySnapshotRef.kind === "assessment-preparation"
+            ? entry.entrySnapshotRef.assessmentPreparationSnapshotRef
+            : entry.entrySnapshotRef.kind === "forecast-input"
+              ? entry.entrySnapshotRef.responseForecastInputSnapshotRef
+              : entry.entrySnapshotRef.responseFeedbackInputSnapshotRef,
         entryIdentity: entry.entryIdentity,
         frozenRefs: [...run.frozenRefs],
       }),
@@ -2219,7 +2225,7 @@ const stageA1: StageHandlerV1 = async ({ ports, run, state }) => {
     occurredAt,
   });
   const read = await readBasisReleaseSet({ ports, run, stage: "A1", basisReleaseSetRef });
-  if (state.entrySnapshotRef.kind === "assessment-preparation") {
+  if (state.entrySnapshotRef?.kind === "assessment-preparation") {
     await readRuntimePolicySetForRun({
       ports,
       run,
@@ -2505,7 +2511,7 @@ const stageA2: StageHandlerV1 = async ({ ports, run, state }) => {
     });
   }
   const entrySnapshotRef = state.entrySnapshotRef;
-  if (entrySnapshotRef.kind !== "assessment-preparation") {
+  if (entrySnapshotRef?.kind !== "assessment-preparation") {
     fail(
       contractInvalid({
         stage: "A2",

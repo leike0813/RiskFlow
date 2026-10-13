@@ -136,7 +136,7 @@
     "requestTimeoutMs": 30000
   },
   "policyCatalog": {
-    "filePath": "/etc/riskflow/policies/catalog.json",
+    "filePath": "/var/lib/riskflow/data/policies/catalog.json",
     "catalogRef": { "entityId": "catalog-2030-01", "versionId": "1" }
   },
   "documentConversion": {
@@ -229,5 +229,16 @@
         }
       ]
     }
-  ]
+  ],
+  "retrievalQuality": {
+    "datasets": [
+      {
+        "projectId": "project-rail-01",
+        "datasetRef": { "entityId": "retrieval-dataset-project-rail-01", "versionId": "v1" },
+        "filePath": "/var/lib/riskflow/data/retrieval-datasets/project-rail-01/v1.json"
+      }
+    ],
+    "containerRuntime": "docker-27.3.1",
+    "timeoutMs": 900000
+  }
 }

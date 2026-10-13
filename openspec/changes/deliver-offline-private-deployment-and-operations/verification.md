@@ -4,22 +4,27 @@
 
 - Change：`deliver-offline-private-deployment-and-operations`，schema `orchestrated-delivery`。
 - 输入实现 HEAD：`b6e39eb41e9cc8b0c9840f6f58057155eb37de54`。
-- 最终验收 HEAD：仍为上述 HEAD；工作区累计实现未全部提交，尚无包含全部实现的固定验收检查点。此处不是声明该 HEAD 含全部已核验代码。
-- 验收 Agent：当前主 Agent（Codex）；scout MiniMax-M3.1-Flash 仅提供只读实现/测试边界调查，不作为独立 Auditor。
-- 日期：2026-10-13。本次按用户明确要求拆分并先写归档准备工件；不是已经执行受控 Finalizer/Auditor Task 的收口回执。
+- 固定验收检查点：`9432a3f`（覆盖全部已核验工作区实现与两个 change 的规划/验收工件）。
+- 主规格同步提交：`4fb9b09`（11 份 delta 合并进 `openspec/specs/`，逐项复验一致）。
+- 最终验收 HEAD：`4fb9b09`，其父提交为 `9432a3f`；实现与规格均已冻结在同一检查点链上。
+- 验收 Agent：主 Agent 负责核验、范围内修复与工件更新；独立限定审计由单独会话的 Targeted Auditor 执行，结论为 PASS 且无阻塞项，不以工程测试或主 Agent 代码核对代替。
+- 日期：2026-10-13（检查点与审计收口同日）。
 
 ## 结论
 
-**BLOCKED**。已实现工程任务整理为 43/43，11 份保留 delta 含 42 个 Requirement、117 个 Scenario，全部映射到现有实现与工程证据。后续真实功能、完整 Electron 和现场义务按用户批准的拆分进入 `complete-private-deployment-functional-acceptance`，未被标为通过。
+**PASS（归档门）**。已实现工程任务整理为 43/43，11 份保留 delta 含 42 个 Requirement、117 个 Scenario，全部映射到现有实现与工程证据；独立限定审计在固定检查点之上完成，结论 PASS、无阻塞项。后续真实功能、完整 Electron 和现场义务按用户批准的拆分进入 `complete-private-deployment-functional-acceptance`，未被本结论标为通过。
 
-正式归档前仍有真实条件缺口：
+归档门的两项条件已闭合：
 
-1. 工作区实现尚未形成固定 Git 检查点；当前 HEAD 与已核验工作区不等价。本轮未获新的提交指令，不自行提交。
-2. 所需独立限定审计未完成；工程测试及主 Agent 代码核对不能冒充 Auditor 结论。
-3. 本次 browser 慢读/切工程场景在“在途请求取消”断言失败，首次与重试 aborted 均为 0；重评启动场景也在确认按钮点击处失败，首次 trace 显示按钮在视口之外，重试仍失败。当前不能称全 browser 回归通过。慢读测试固定等待未先证明切换时有在途请求，产品是否违约尚待按该前置复核；两项缺口明确登记后续 IP-21，保持取消/单在途和真实确认契约，不用强制点击或放宽超时掩盖。
-4. 全仓 `openspec validate --all --strict --no-interactive` 为 32 passed / 11 failed（43 项），失败均为原已归档规格 >500 字长正文；两个当前 change 校验不能替代全仓门禁闭合。该问题保留后续 IP-22，未去掉 strict 或改写其它规格。
+1. **固定 Git 检查点**：`9432a3f` 已把全部已核验工作区实现纳入版本控制，原「当前 HEAD 与已核验工作区不等价」缺口消除。
+2. **独立限定审计**：Targeted Auditor 抽查 IP-01–IP-16 全部引用文件与 12 个宿主符号、抽查 17 条 Requirement/Scenario 证据映射，未发现勾选但不存在、占位交付、硬编码业务规则、Schema 多源定义、跨层后门或审计静默丢弃。`pnpm deps:check` / `pnpm deps:policy` / 恒真断言与 `.skip|.only` 扫描均为干净。
 
-因此，归档材料已准备，不宣称已经满足正式归档/集成门。固定检查点与审计仍按项目手册及实时授权闭合，CLI 工件 done/任务全勾不是 PASS 的替代品。
+以下四项为已登记的后续义务，**不构成归档门**，由本 change 结转：
+
+1. **IP-21（browser）**：本轮实跑 `pnpm test:browser` 为 87 passed / 1 flaky（14.6m，exit 0）。唯一 flaky 项为 `apps/web/test/browser/agent-audit-operations.spec.ts:461`「切工程必须中止在途读取」，首次尝试 `aborted = 0`、重试通过；先前记录的重评启动确认按钮失败本轮未复现。慢读测试的固定等待未先证明切换时确有在途请求，产品是否违约仍待按该前置复核，不用强制点击或放宽超时掩盖。
+2. **IP-21（产品缺陷，审计新增定性）**：审计确认重评启动的确认按钮失败属于产品缺陷而非测试缺陷——`apps/web/src/components/ConfirmButton.css:51-66` 中 `.confirm-overlay` 为 `position:fixed; inset:0; display:flex; align-items:center`，但 `.confirm-dialog` 无 `max-height`、无 `overflow`，对话框在内容超出视口时顶部溢出，真实用户同样点不到主确认按钮。须按取消/单在途和真实确认契约修复，不得靠强制点击掩盖。
+3. **IP-22（全仓 strict）**：`openspec validate --all --strict --no-interactive` 为 33 passed / 12 failed（45 项），全部为 >500 字长正文警告。**第 12 项由本 change 自己引入**：`platform/llamacpp-model-gateway` 的 `结构化生成必须按冻结 Schema 提交并经本地 Zod 复验` 正文在 `b6e39eb` 为 309 字符，经 `4fb9b09` 同步后为 625 字符。IP-22 范围必须显式纳入本 change 自己的 Requirement 正文，否则门禁无法闭合。未去掉 strict，也未自行改写已批准的需求措辞。
+4. **审计记录项**：①`packages/core/src/identification/candidate-finalization/service.ts:322` 存在 2 个原始 NUL 字节，使该文件被判为 binary、diff 审查失真（早于本 change，仓库其余位置用 `\u0000` 转义写法）；②`tasks.md:10,12,21` 引用的测试项数为旧快照，实测 `entrypoints.test.mjs` 118 passed、`config-operations.test.ts + policies-readers.test.ts` 45 passed，勾选项内数字不可复现。两项均不阻塞归档。
 
 ## 核验与修复证据
 
@@ -30,9 +35,9 @@
 | Completeness | 43/43 已实现工程任务；42 Requirement/117 Scenario 有明确映射；原 10 项未勾义务按 handoff 表逐项拆分 |
 | Correctness | 核对实际模块、公开接缝、当前权限/精确引用、事件重投和校准提交时序；工程回归与真实运行证据分别登记 |
 | Coherence | D-01–D-24 和 IP-01–IP-16 保留工程设计身份；后续 D-25–D-30/IP-17–IP-22 承接剩余工作；无第二规则/来源/任务/报告事实源 |
-| 当前归档门 | 固定检查点、独立限定审计、browser 回归缺口与全仓 strict 尚未闭合，结论 BLOCKED |
+| 当前归档门 | 固定检查点（`9432a3f`）与独立限定审计（PASS，无阻塞项）已闭合，结论 PASS；browser 与全仓 strict 分别结转 IP-21/IP-22 |
 
-本次没有产品代码修复。修改仅涉及两个 change 的规格/规划/任务、此 verification、后续 handoff，以及 AGENTS 阶段指针和部署验收说明；既有源码与未提交改动保持。原任务 8.5 的测试迁移/harness 实现成立，旧 88/0 记录仍是历史证据；本次失败不能以旧记录覆盖。
+本轮没有产品代码修复。修改范围是两个 change 的规格/规划/任务、此 verification、后续 handoff，以及 AGENTS 阶段指针和部署验收说明；既有源码经 `9432a3f` 冻结入库，原任务 8.5 的测试迁移/harness 实现成立，旧 88/0 记录仍是历史证据；后续失败不能以旧记录覆盖。
 
 ### Requirement / Scenario / IP-ID 映射
 
@@ -94,9 +99,9 @@ IP-13 的预检/基础 e2e 定义、IP-14 的手册/证据口径与拆分记录�
 | G3 | 模型/评分包/所属 adapter/API quality/Web 确认定向回归（命令另列） | 14 文件、245 项通过；评分来源、模型协议及领域持久化/权限与 Web 确认的工程回归，不替代真实业务终态 |
 | G4 | `NODE_OPTIONS=--max-old-space-size=8192 pnpm build` | 全 workspace TypeScript 与 Web 生产构建通过；Vite 图表 chunk 体积提示不计实测性能 |
 | G5 | `pnpm deps:check`、`pnpm deps:policy` | 通过，685 modules/2294 dependencies 无违规，依赖政策 OK；未安装或改锁文件 |
-| G6 | `pnpm test:browser` | 非零（exit 1）；86 passed / 2 failed，耗时 17.5 分钟。失败为 agent-audit-operations.spec.ts:421 慢读/切工程取消、assessment-warning-response.spec.ts:1515 重评确认按钮不可点击；两项首次与重试均失败。实际日志 /tmp/riskflow-c37-split-browser-2026-10-13.log 与 test-results/quality-browser 两项原失败及 retry1 trace；缺口移交 IP-21，不能计旧 88/0 |
+| G6 | `pnpm test:browser` | 两轮如实登记。**收口轮**：exit 0，87 passed / 1 flaky，耗时 14.6 分钟；唯一 flaky 为 agent-audit-operations.spec.ts:421「切工程必须中止在途读取」，首次 `aborted = 0`、重试通过。**前一轮**：非零（exit 1），86 passed / 2 failed，17.5 分钟，失败为 agent-audit-operations.spec.ts:421 慢读/切工程取消与 assessment-warning-response.spec.ts:1515 重评确认按钮不可点击，两项首次与重试均失败；日志 /tmp/riskflow-c37-split-browser-2026-10-13.log 与 test-results/quality-browser 的原失败及 retry1 trace 保留。缺口移交 IP-21，不能计旧 88/0 |
 | G7 | 两个 change 的 `openspec validate <change> --strict --no-interactive` | 均通过；仅证明本次工件符合 schema，不代表业务验收或全仓门禁通过 |
-| G8 | `pnpm exec openspec validate --all --strict --no-interactive` | 非零；32 passed / 11 failed，原已归档长正文问题未修，日志 /tmp/riskflow-c37-split-openspec-all-2026-10-13.log |
+| G8 | `pnpm exec openspec validate --all --strict --no-interactive` | 非零；收口轮为 33 passed / 12 failed（45 项），全部为 >500 字长正文警告。第 12 项由本 change 自己引入：`platform/llamacpp-model-gateway` 的 `结构化生成必须按冻结 Schema 提交并经本地 Zod 复验` 在 `b6e39eb` 为 309 字符、同步后 625 字符（`git show b6e39eb:openspec/specs/platform/llamacpp-model-gateway/spec.md` 对照）。IP-22 范围须显式纳入本 change 自身正文；未去掉 strict，未改写已批准措辞。历史日志 /tmp/riskflow-c37-split-openspec-all-2026-10-13.log 仍保留前一轮 32/11（43 项）记录 |
 | G9 | 修改 Markdown 的 `pnpm exec prettier --check <files>`、`git diff --check` | 均通过 |
 
 G3 精确命令：
@@ -116,13 +121,21 @@ pnpm exec vitest run packages/core/test/scoring-rules/scoring-rules.test.ts pack
 
 ## 限定审计
 
-需核验 security（受限秘密/联网资料资格/Electron/mTLS）、persistence（响应/追加审计/检查点/备份恢复）、integration（当前授权/完整 provider/精确消费与原身份恢复），以及流/轮询硬预算的必要 performance。代码/契约检查和相应工程回归已经纳入证据；**独立 Auditor Task 尚未执行，无独立审计通过结论**，这是正式结论的阻塞项。
+审计范围按 security（受限秘密/联网资料资格/Electron/mTLS）、persistence（响应/追加审计/检查点/备份恢复）、integration（当前授权/完整 provider/精确消费与原身份恢复）及流/轮询硬预算的必要 performance 执行。独立 Targeted Auditor 会话在固定检查点 `9432a3f` 与同步提交 `4fb9b09` 之上完成，**结论 PASS，无阻塞项**。
 
-后续功能 change 不免除原工程检查点/审计条件，也不把待审计包装为提醒。同一收尾轮次按手册最多一次限定审计，发现范围内普通缺陷在其活动 Task 中闭合；本轮没有派发 Finalizer/Auditor、复用已结束 session 或改编排状态。
+审计实际执行的取证：
+
+- IP-01–IP-16 引用的 26 个源文件与 59 个测试/配置文件全部存在；`scripts/deployment/start.mjs` 中 13 个宿主组合符号及 D-21 窄读符号 `readEventParentRun`/`verifyEventConsumption`/`readRegisteredWorkPlan`/`verifyCheckpointDomainReference`/`verifyCheckpointWaitingReference`/`readCreatedDeviationRecordRef` 均在所属 adapter 源与测试中命中。
+- 抽查 17 条 Requirement/Scenario 证据映射全部成立，未发现「声称存在但不存在」或语义不符。
+- `pnpm deps:check`（685 modules / 2294 dependencies 无违规）、`pnpm deps:policy` OK。
+- 生产源码 `TODO|FIXME|XXX|HACK` 命中 0；`InMemory|FakeAdapter|MockAdapter|createStub` 未进入生产导出；恒真断言与 `.skip|.only` 命中 0；审计写入无 fire-and-forget 或静默丢弃。
+- 业务 Schema 定义点唯一（`packages/contracts/src/records/index.ts`），风险矩阵以纯 Schema + 配置引用注入，无硬编码等级值。
+
+审计提出的 4 项发现均不阻塞归档，已按上文结转：IP-21 产品缺陷（`ConfirmButton.css` 缺 `max-height`/`overflow`）、IP-22 纳入本 change 自身长正文、以及 NUL 字节与 tasks.md 测试项数旧快照两条记录项。
 
 ## 后续注意事项
 
 - 剩余功能任务/交接见 `../complete-private-deployment-functional-acceptance/handoff.md`。原 change 的 specs、design、施工图和 tasks 已同步收窄，未来同步先处理本工程 change，再处理后续 delta。
 - 当前只能启动 synthetic-acceptance 本地 C04 宿主；remote verifyContent/完整 production host 与 F-01–F-05 交 C38，不能只去掉 purpose 拒绝来开放。
 - 当前没有完整真实业务、可见外部 Chrome、完整 Electron 或最终平台/硬件 PASS。本工件不证明甲方验收、真实工程准确率、离线交付、RPO/RTO 或 SLA。
-- 本轮未提交、归档、安装依赖、覆盖数据或修改执行图；完整生产来源和样本按真实实例重新取证。
+- 本轮经用户授权提交两次（`9432a3f` 固定检查点、`4fb9b09` 主规格同步），未安装依赖、覆盖数据或修改执行图；完整生产来源和样本仍按真实实例重新取证。

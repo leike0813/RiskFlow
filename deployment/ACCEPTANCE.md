@@ -1,6 +1,6 @@
 # RiskFlow 当前功能验收
 
-已实现工程成果由 [deliver-offline-private-deployment-and-operations](../openspec/changes/deliver-offline-private-deployment-and-operations/proposal.md) 保留；剩余真实功能与完整桌面取证归 [complete-private-deployment-functional-acceptance](../openspec/changes/complete-private-deployment-functional-acceptance/proposal.md)，接续入口为该 change 的 [handoff.md](../openspec/changes/complete-private-deployment-functional-acceptance/handoff.md)。工程任务与功能任务分开，后续使用真实 API/Worker、数据库/索引/工件及批准模型核验业务终态、权限、预算、审计和追溯。
+已实现工程成果由 [deliver-offline-private-deployment-and-operations](../openspec/changes/archive/2026-10-13-deliver-offline-private-deployment-and-operations/proposal.md) 保留；剩余真实功能与完整桌面取证归 [complete-private-deployment-functional-acceptance](../openspec/changes/complete-private-deployment-functional-acceptance/proposal.md)，接续入口为该 change 的 [handoff.md](../openspec/changes/complete-private-deployment-functional-acceptance/handoff.md)。工程任务与功能任务分开，后续使用真实 API/Worker、数据库/索引/工件及批准模型核验业务终态、权限、预算、审计和追溯。
 
 合成材料 V1 保留历史来源，MinerU 新转换使用 V2 合格投影及其真实资料版本，见下文。样本均标明“合成样本，待甲方复核”；实际报告只能证明其适用范围，不证明真实工程准确率。
 
@@ -28,7 +28,9 @@ Embedding 使用 `http://192.168.13.11:11434` 的 `qwen3-embedding:4b`，原生 
 
 本次工程复验：14 个部署/图/终态观察定向套件 383 项通过；`pnpm test:deployment` 20 个套件 408 项通过；模型/评分包/所属 adapter/API quality/Web 确认另 14 个定向套件 245 项通过。三批存在重叠，不累加为全仓覆盖。`NODE_OPTIONS=--max-old-space-size=8192 pnpm build`、依赖边界/政策、两个 change strict、本轮 Markdown 格式及 diff 检查均通过。
 
-本次 `pnpm test:browser` 为 86 passed / 2 failed，慢读/切工程取消与重评确认按钮点击均首次、重试失败，已移交新 change IP-21；全仓 strict 为 32 passed / 11 failed，原已归档规格长正文问题仍未闭合。原 [verification.md](../openspec/changes/deliver-offline-private-deployment-and-operations/verification.md) 已备齐归档材料，结论保持 BLOCKED：固定实现检查点、必要独立审计及上述门禁尚未成立，旧 88/0 不能替代本次结果。
+归档收口轮 `pnpm test:browser` 为 87 passed / 1 flaky（exit 0，14.6 分钟），唯一 flaky 为慢读/切工程取消断言首次 `aborted = 0`、重试通过；前一轮的 86 passed / 2 failed 与重评确认按钮首次、重试均失败已如实保留在归档 verification 中，两项同归 IP-21。全仓 strict 收口轮为 33 passed / 12 failed（45 项），全部为 >500 字长正文警告，其中第 12 项由 C37 自身 delta 引入，IP-22 范围须显式纳入。
+
+C37 工程 change 已归档，结论 PASS：固定检查点 `9432a3f` 与独立限定审计（独立会话 Targeted Auditor，VERDICT PASS、无阻塞项）均已闭合归档门；主规格同步提交 `4fb9b09`，结论更新提交 `07c9184`。审计另确认重评确认按钮属产品缺陷——`ConfirmButton.css` 的 `.confirm-dialog` 缺 `max-height`/`overflow`，对话框溢出视口时真实用户同样点不到主确认按钮，按产品缺陷归 IP-21。旧 88/0 仍不能替代上述结果。
 
 ## 证据与命令
 

@@ -18,6 +18,7 @@ import {
   IdentificationGraphRunResultV1Schema,
   IdentificationGraphRunStateV1Schema,
   IdentificationGraphWorkPlanBodyV1Schema,
+  identificationWorkPlanRefFor,
   type IdentificationGraphResultKindV1,
   type IdentificationGraphResultRowV1,
   type IdentificationGraphWorkPlanBodyV1,
@@ -30,6 +31,7 @@ import type {
 import { authorizationScopeDigest } from "@riskflow/core/retrieval";
 import {
   AuthorizationContextV1Schema,
+  IdentificationPlanCommandV1Schema,
   type AuthorizationContextV1,
   type ContractReferenceV1,
   type ModuleBranchV1,
@@ -297,6 +299,7 @@ interface GraphAccessControllerV1 {
   readonly calls: readonly { readonly invocationId: string; readonly branch: ModuleBranchV1 }[];
   revoke(): void;
   narrowScope(): void;
+  narrowSource(): void;
   redact(): void;
   restore(): void;
   issue(input: {
@@ -313,6 +316,7 @@ const createGraphAccess = (): GraphAccessControllerV1 => {
   const calls: { readonly invocationId: string; readonly branch: ModuleBranchV1 }[] = [];
   let revoked = false;
   let scopeNarrowed = false;
+  let sourceNarrowed = false;
   let redacted = false;
   // 显式变量类型注解使 `denied(...)` 调用参与控制流收窄（TS 只在被调方有类型注解时认定 never 返回）。
   const denied: (stage: string, code: string) => never = (stage, code) => {
@@ -335,12 +339,16 @@ const createGraphAccess = (): GraphAccessControllerV1 => {
     narrowScope: () => {
       scopeNarrowed = true;
     },
+    narrowSource: () => {
+      sourceNarrowed = true;
+    },
     redact: () => {
       redacted = true;
     },
     restore: () => {
       revoked = false;
       scopeNarrowed = false;
+      sourceNarrowed = false;
       redacted = false;
     },
     issue: (input) => {
@@ -383,7 +391,7 @@ const createGraphAccess = (): GraphAccessControllerV1 => {
             ...stored.authorization,
             grantedCapabilities: [stored.capability],
             spatialScopeRefs: scopeNarrowed ? [] : [...SCOPES],
-            sourceAccessGrantRefs: [...SOURCE_GRANTS],
+            sourceAccessGrantRefs: sourceNarrowed ? [] : [...SOURCE_GRANTS],
           }),
           contextRef: stored.authorization.authorizationContextRef,
           redacted,
@@ -925,6 +933,117 @@ afterAll(async () => {
 });
 
 describe("PostgreSQL identification graph persistence", () => {
+  it("plan 只读取精确已登记计划，重复调用不创建计划；缺失、漂移和当前拒权失败", async () => {
+    const fx = fixture!;
+    const kit = referenceKitFor("registered-api-plan");
+    kit.workPlanRef = identificationWorkPlanRefFor({
+      projectId: PROJECT_ID,
+      inputSnapshotRef: kit.inputSnapshotRef,
+    });
+    const body = workPlanBody(kit);
+    const planArtifactRef = await putBodyAs(fx, {
+      artifactId: "registered-api-plan-body",
+      body: { bodyKind: "work-plan", workPlan: body },
+    });
+    const snapshotArtifactRef = await putBodyAs(fx, {
+      artifactId: "registered-api-plan-snapshot",
+      body: { bodyKind: "input-snapshot", inputSnapshot: body.inputSnapshot },
+    });
+    await registerThroughTransaction(
+      fx,
+      [planRowFor(kit, planArtifactRef), snapshotRowFor(kit, snapshotArtifactRef)],
+      "first",
+    );
+    const commandId = "api-plan-command";
+    const authorization = fx.access.issue({
+      invocationId: commandId,
+      branch: "risk-identification.plan",
+      capability: "risk-identification.run",
+    }).authorization;
+    const command = IdentificationPlanCommandV1Schema.parse({
+      kind: "plan",
+      commandId,
+      idempotencyKey: commandId,
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      issuedAt: TIMESTAMP,
+      authorization,
+      payload: { inputSnapshotRef: kit.inputSnapshotRef },
+    });
+    const count = async () =>
+      (
+        await sql<{
+          count: string;
+        }>`SELECT count(*) FROM business.identification_graph_results`.execute(fx.runtime.db)
+      ).rows[0]!.count;
+    const before = await count();
+    for (let index = 0; index < 2; index++) {
+      expect(await fx.adapter.readRegisteredWorkPlan(command)).toEqual({
+        kind: "succeeded",
+        result: { workPlanRef: kit.workPlanRef },
+      });
+    }
+    expect(await count()).toBe(before);
+    for (const changed of [
+      {
+        ...command,
+        projectId: OTHER_PROJECT_ID,
+        authorization: { ...authorization, projectId: OTHER_PROJECT_ID },
+      },
+      {
+        ...command,
+        actorId: "other-actor",
+        authorization: { ...authorization, actorId: "other-actor" },
+      },
+      { ...command, commandId: "other-command" },
+    ]) {
+      expect(await fx.adapter.readRegisteredWorkPlan(changed)).toMatchObject({
+        kind: "failed",
+        error: { code: "AUTHORIZATION_DENIED" },
+      });
+    }
+    expect(
+      await fx.adapter.readRegisteredWorkPlan({
+        ...command,
+        payload: {
+          inputSnapshotRef: {
+            ...kit.inputSnapshotRef,
+            reference: { ...kit.inputSnapshotRef.reference, versionId: "missing" },
+          },
+        },
+      }),
+    ).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+    for (const refuse of [
+      () => fx.access.narrowScope(),
+      () => fx.access.narrowSource(),
+      () => fx.access.redact(),
+      () => fx.access.revoke(),
+    ]) {
+      refuse();
+      expect(await fx.adapter.readRegisteredWorkPlan(command)).toMatchObject({
+        kind: "failed",
+        error: { code: "AUTHORIZATION_DENIED" },
+      });
+      fx.access.restore();
+    }
+    await fx.postgres.adminPool.query(
+      "UPDATE business.identification_graph_results SET input_snapshot_ref = $1::jsonb WHERE result_id = $2 AND result_version_id = $3",
+      [
+        JSON.stringify({
+          ...kit.inputSnapshotRef,
+          reference: { ...kit.inputSnapshotRef.reference, versionId: "drift" },
+        }),
+        kit.workPlanRef.reference.entityId,
+        kit.workPlanRef.reference.versionId,
+      ],
+    );
+    expect(await fx.adapter.readRegisteredWorkPlan(command)).toMatchObject({
+      kind: "failed",
+      error: { code: "BUSINESS_BLOCKED" },
+    });
+    expect(await count()).toBe(before);
+  });
+
   it("applies migration 000043 with append-only app grants and no checkpointer access", async () => {
     expect(await tableExists(fixture!, "business.identification_graph_results")).toBe(true);
 

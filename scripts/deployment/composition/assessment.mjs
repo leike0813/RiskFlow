@@ -810,18 +810,19 @@ export const createDeploymentAssessmentV1 = (options) => {
   });
   recommendationAdapterRef.current = recommendation;
 
+  const responseContext = createPostgresResponseLifecycleContextReader({
+    db,
+    artifactStore,
+    basis,
+    monitoring: monitoringStore,
+    measureReleases: measureReleaseReader,
+    authorizeDownstream,
+  });
   const responseLifecycle = createPostgresResponseLifecycleAdapter({
     db,
     transactionUnit,
     access,
-    reader: createPostgresResponseLifecycleContextReader({
-      db,
-      artifactStore,
-      basis,
-      monitoring: monitoringStore,
-      measureReleases: measureReleaseReader,
-      authorizeDownstream,
-    }),
+    reader: responseContext,
     // C28 预测策略正文只在运行期受权读取；宿主不预装第二份策略集合。
     forecastExecutors: createProductionEffectForecastExecutorResolverV1({
       models: createEffectForecastModelReaderV1({ artifactStore }),
@@ -907,6 +908,7 @@ export const createDeploymentAssessmentV1 = (options) => {
       riskAssessment,
       agentTasks,
       siteContext: siteContextReader,
+      responseContext,
       warning: warning,
       calibration,
     },

@@ -1814,6 +1814,70 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
     targetRef: { kind: input.kind, reference: input.reference },
   });
 
+  pgIt("检查点精确证明预测、执行和反馈且不写事实", async () => {
+    const state = fixture!;
+    const chain = await readChain("c28-checkpoint");
+    const inputs = await Promise.all(
+      [chain.outcome.effectForecastRef, chain.execution, chain.feedbackRef].map(
+        async (reference) => ({
+          ...(await narrowReadInput({
+            invocationId: `c28-checkpoint-${reference.kind}`,
+            kind: reference.kind,
+            reference: reference.reference,
+          })),
+          reference,
+        }),
+      ),
+    );
+    const counts = async () =>
+      (
+        await state.recommendation.c26.c25.postgres.postgres.adminPool.query(
+          `SELECT (SELECT count(*) FROM audit.entries) AS audit,
+              (SELECT count(*) FROM business.command_receipts) AS receipts,
+              (SELECT count(*) FROM business.artifact_access_records) AS accesses,
+              (SELECT count(*) FROM business.artifact_manifests) AS artifacts,
+              (SELECT count(*) FROM outbox.events) AS events`,
+        )
+      ).rows;
+    const before = await counts();
+    for (const input of inputs) {
+      expect(await state.adapter.verifyCheckpointReference(input)).toBe(true);
+      for (const invalid of [
+        { projectId: "other-project" },
+        { actorId: "other-actor" },
+        { invocationId: "unsigned-read" },
+        {
+          reference: {
+            ...input.reference,
+            reference: { ...input.reference.reference, versionId: "missing" },
+          },
+        },
+        { authorization: { ...input.authorization, spatialScopeRefs: [] } },
+      ])
+        expect(await state.adapter.verifyCheckpointReference({ ...input, ...invalid })).toBe(false);
+    }
+    const forecastInput = inputs[0]!;
+    const admin = state.recommendation.c26.c25.postgres.postgres.adminPool;
+    const forecastRef = chain.outcome.effectForecastRef.reference;
+    const stored = await admin.query<{ forecast_run_version_id: string }>(
+      "SELECT forecast_run_version_id FROM business.response_forecast_outcomes WHERE forecast_id = $1 AND version_id = $2",
+      [forecastRef.entityId, forecastRef.versionId],
+    );
+    await admin.query(
+      "UPDATE business.response_forecast_outcomes SET forecast_run_version_id = $3 WHERE forecast_id = $1 AND version_id = $2",
+      [forecastRef.entityId, forecastRef.versionId, "other-run-version"],
+    );
+    try {
+      await expect(state.adapter.verifyCheckpointReference(forecastInput)).rejects.toThrow();
+    } finally {
+      await admin.query(
+        "UPDATE business.response_forecast_outcomes SET forecast_run_version_id = $3 WHERE forecast_id = $1 AND version_id = $2",
+        [forecastRef.entityId, forecastRef.versionId, stored.rows[0]!.forecast_run_version_id],
+      );
+    }
+    expect(await counts()).toEqual(before);
+  });
+
   pgIt("预测窄读按登记事实投影全部引用与参数，重复读取不新建事实", async () => {
     const state = fixture!;
     const chain = await readChain("c28-narrow-forecast");

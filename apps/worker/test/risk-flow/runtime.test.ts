@@ -1964,3 +1964,237 @@ describe("C30 人工决定等待门（唯一已授权空间）", () => {
     expect(harness.assessment.commands).toHaveLength(1);
   }, 120_000);
 });
+
+describe("C30 风险验收入口（写路由前的精确子运行与取消态核对）", () => {
+  let postgres: PostgresTestFixture;
+  let harness: RiskFlowHarnessV1;
+
+  beforeAll(async () => {
+    postgres = await startPostgresFixture();
+    await runPostgresMigrations({
+      connection: postgres.migrator,
+      migrationRoot: postgres.productionMigrationRoot,
+      additionalMigrationRoots: [postgres.fixtureMigrationRoot],
+    });
+    harness = await startHarness(postgres);
+  }, 300_000);
+
+  afterAll(async () => {
+    await harness?.close().catch(() => undefined);
+    await postgres?.close().catch(() => undefined);
+  }, 120_000);
+
+  const rowsOf = (runRef: WorkflowRunRefV1): Promise<readonly WorkflowGraphResultRowV1[]> =>
+    harness.adapter.registrationStore.listRunRows({
+      projectId: PROJECT_ID,
+      runId: runRef.reference.entityId,
+    });
+  const rowKeys = (rows: readonly WorkflowGraphResultRowV1[]): readonly string[] =>
+    rows.map((row) => `${row.resultKind}/${row.resultId}/${row.resultVersionId}`);
+  const auditCount = async (): Promise<number> => {
+    const result = await postgres.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM audit.entries WHERE project_id = $1 AND action LIKE 'risk-flow-%'",
+      [PROJECT_ID],
+    );
+    return Number(result.rows[0]?.count ?? "0");
+  };
+  /** 验收路由登记面：拒绝用例断言它为零，正常/重投用例断言它恰好一条。 */
+  const acceptedRouteRows = async (
+    runRef: WorkflowRunRefV1,
+  ): Promise<readonly WorkflowGraphResultRowV1[]> =>
+    (await rowsOf(runRef)).filter(
+      (row) => row.resultKind === "route-decision" && row.routeKind === "risk-record-accepted",
+    );
+
+  const reviewWaitingFor = (runKey: string, runRef: WorkflowRunRefV1): WaitingRefV1 => ({
+    kind: "review",
+    reviewTaskRef: {
+      kind: "review-task",
+      reference: { entityId: `review-task-${runKey}`, versionId: "v1" },
+      reviewType: "identification-group",
+      targetRef: {
+        kind: "identification-group",
+        reference: { entityId: `identification-group-${runKey}`, versionId: "v1" },
+      },
+      waitingRunRef: runRef,
+    },
+  });
+
+  /** 起点：识别子运行已建立并停在待复核等待，父运行本身仍处等待态。 */
+  const startWaitingAtIdentification = async (input: {
+    readonly runKey: string;
+    readonly riskRecordRef: StandardizedRiskRecordRefV1;
+  }) => {
+    harness.assessment.commands.length = 0;
+    harness.identification.commands.length = 0;
+    harness.pairingSpaces.set(refKey(input.riskRecordRef), SPACE_A);
+    const run = startCommandFor({
+      runKey: input.runKey,
+      frozenRefs: IDENTIFY_FROZEN_REFS,
+      pairing: [
+        pairingOf({ space: SPACE_A, applicability: APPLICABILITY_A, monitoring: MONITORING_A }),
+      ],
+    });
+    harness.identification.setAcceptedRiskRecordRefs([]);
+    harness.identification.setReviewWaiting(reviewWaitingFor(input.runKey, run.runRef));
+    await harness.riskFlowRuntime.start(run);
+    const applied = await harness.riskFlowRuntime.applyIdentificationPreparation({
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      authorization: authorizationFor("workflow.resume", [SPACE_A, SPACE_B]),
+      commandId: `c30-inputs-ready:${input.runKey}`,
+      authorizationBranch: "workflow.resume-run",
+      idempotencyKey: `c30-inputs-ready:${input.runKey}`,
+      issuedAt: TIMESTAMP,
+      runRef: run.runRef,
+      identificationPreparationSnapshotRef: PREPARATION_REF,
+    });
+    expect(applied.status).toBe("waiting");
+    const state = await readLatestState(harness, run.runRef, "workflow.resume");
+    expect(state?.identificationRunRef).toBeDefined();
+    return { run, identificationRunRef: state?.identificationRunRef as WorkflowRunRefV1 };
+  };
+
+  const applyAccepted = async (input: {
+    readonly run: RiskFlowStartCommandV1;
+    readonly identificationRunRef: WorkflowRunRefV1;
+    readonly riskRecordRef: StandardizedRiskRecordRefV1;
+    readonly commandKey: string;
+  }) =>
+    await harness.riskFlowRuntime.applyAcceptedRisk({
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      authorization: authorizationFor("workflow.resume", [SPACE_A, SPACE_B]),
+      commandId: `c30-accepted:${input.commandKey}`,
+      authorizationBranch: "workflow.resume-run",
+      idempotencyKey: `c30-accepted:${input.commandKey}`,
+      issuedAt: TIMESTAMP,
+      runRef: input.run.runRef,
+      identificationRunRef: input.identificationRunRef,
+      riskRecordRef: input.riskRecordRef,
+    });
+
+  it("D21/S1 验收事件的子运行版本不符时拒绝事件且零路由事实", async () => {
+    const riskA = riskRecordRef("accepted-version");
+    const { run, identificationRunRef } = await startWaitingAtIdentification({
+      runKey: "accepted-version",
+      riskRecordRef: riskA,
+    });
+    harness.identification.setAcceptedRiskRecordRefs([riskA]);
+    const rowsBefore = await rowsOf(run.runRef);
+    const auditBefore = await auditCount();
+    const assessmentBefore = harness.assessment.commands.length;
+
+    // 同一子运行实体、错版本：只比对实体标识的旧实现会先写路由事实再失败。
+    await expect(
+      applyAccepted({
+        run,
+        identificationRunRef: {
+          ...identificationRunRef,
+          reference: { ...identificationRunRef.reference, versionId: sha("other-child-version") },
+        },
+        riskRecordRef: riskA,
+        commandKey: "accepted-version-wrong",
+      }),
+    ).rejects.toMatchObject({
+      error: { code: "UPSTREAM_WAITING", retryable: false, detailCode: "run-reference-mismatch" },
+    });
+
+    expect(await acceptedRouteRows(run.runRef)).toHaveLength(0);
+    expect(rowKeys(await rowsOf(run.runRef))).toEqual(rowKeys(rowsBefore));
+    expect(await auditCount()).toBe(auditBefore);
+    expect(harness.assessment.commands).toHaveLength(assessmentBefore);
+  }, 120_000);
+
+  it("D21/S1 正常验收重投不重复登记，评估子运行沿用同一 child 身份", async () => {
+    const riskA = riskRecordRef("accepted-replay");
+    const { run, identificationRunRef } = await startWaitingAtIdentification({
+      runKey: "accepted-replay",
+      riskRecordRef: riskA,
+    });
+    harness.identification.setAcceptedRiskRecordRefs([riskA]);
+
+    const applied = await applyAccepted({
+      run,
+      identificationRunRef,
+      riskRecordRef: riskA,
+      commandKey: "accepted-replay",
+    });
+    expect(applied.status).toBe("waiting");
+    expect(await acceptedRouteRows(run.runRef)).toHaveLength(1);
+    expect(harness.assessment.commands).toHaveLength(1);
+    const rowsAfterFirst = await rowsOf(run.runRef);
+    const linksAfterFirst = await harness.adapter.registrationStore.listRunLinks({
+      projectId: PROJECT_ID,
+      runId: run.runRef.reference.entityId,
+    });
+    const childRunIds = new Set(
+      harness.assessment.commands.map((command) => command.runRef.reference.entityId),
+    );
+
+    // 同一验收事件重投：路由面不增长，评估子运行身份不变。重投只重驱运行，审计条目按
+    // 追加语义记录这次重驱，因此“是否重复登记”只断言业务登记行与链边。
+    const replayed = await applyAccepted({
+      run,
+      identificationRunRef,
+      riskRecordRef: riskA,
+      commandKey: "accepted-replay",
+    });
+    expect(replayed.status).toBe("waiting");
+    expect(await acceptedRouteRows(run.runRef)).toHaveLength(1);
+    expect(rowKeys(await rowsOf(run.runRef))).toEqual(rowKeys(rowsAfterFirst));
+    expect(
+      (
+        await harness.adapter.registrationStore.listRunLinks({
+          projectId: PROJECT_ID,
+          runId: run.runRef.reference.entityId,
+        })
+      ).map((link) => link.linkId),
+    ).toEqual(linksAfterFirst.map((link) => link.linkId));
+    expect(
+      new Set(harness.assessment.commands.map((command) => command.runRef.reference.entityId)),
+    ).toEqual(childRunIds);
+    expect(
+      (await readLatestState(harness, run.runRef, "workflow.resume"))?.acceptedRiskRecordRefs,
+    ).toEqual([riskA]);
+  }, 120_000);
+
+  it("D21/S1 已取消运行的验收返回 already-cancelled 且零写", async () => {
+    const riskA = riskRecordRef("accepted-cancelled");
+    const { run, identificationRunRef } = await startWaitingAtIdentification({
+      runKey: "accepted-cancelled",
+      riskRecordRef: riskA,
+    });
+    harness.identification.setAcceptedRiskRecordRefs([riskA]);
+    const cursor = await readLatestState(harness, run.runRef, "workflow.cancel");
+    const cancelled = await harness.riskFlowRuntime.cancel({
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      authorization: authorizationFor("workflow.cancel", [SPACE_A, SPACE_B]),
+      commandId: "c30-cancel:accepted",
+      idempotencyKey: "c30-cancel:accepted",
+      issuedAt: TIMESTAMP,
+      validAt: TIMESTAMP,
+      runRef: run.runRef,
+      expectedRunVersionId: cursor?.runVersionId ?? "",
+      reasonCode: "operator-cancelled",
+    });
+    expect(cancelled.status).toBe("cancelled");
+    const rowsAtCancel = await rowsOf(run.runRef);
+    const auditAtCancel = await auditCount();
+    const assessmentAtCancel = harness.assessment.commands.length;
+
+    const outcome = await applyAccepted({
+      run,
+      identificationRunRef,
+      riskRecordRef: riskA,
+      commandKey: "accepted-cancelled",
+    });
+    expect(outcome.disposition).toBe("already-cancelled");
+    expect(outcome.status).toBe("cancelled");
+    expect(await acceptedRouteRows(run.runRef)).toHaveLength(0);
+    expect(rowKeys(await rowsOf(run.runRef))).toEqual(rowKeys(rowsAtCancel));
+    expect(await auditCount()).toBe(auditAtCancel);
+    expect(harness.assessment.commands).toHaveLength(assessmentAtCancel);
+  }, 120_000);
+});

@@ -103,6 +103,8 @@ export interface AgentRuntimeRunnerOptionsV1 {
     readonly value: unknown;
     readonly signal: AbortSignal;
   }) => Promise<ArtifactRefV1>;
+  /** 宿主可选注入的任务作用域：单任务执行（模型、工具、候选收口、租约处理）整体在其中运行；未注入时行为不变。 */
+  readonly runTask?: (task: AgentTaskSnapshotV1, operation: () => Promise<void>) => Promise<void>;
 }
 
 const nowIso = (): string => new Date().toISOString();
@@ -344,7 +346,9 @@ export class AgentRuntimeRunner {
       });
       if (claim === undefined) break;
       processed += 1;
-      await this.#runClaim(claim, signal);
+      // 作用域构造失败时直接上抛：租约未确认，等原过期恢复，不在本处伪造终态。
+      if (this.#options.runTask === undefined) await this.#runClaim(claim, signal);
+      else await this.#options.runTask(claim.task, () => this.#runClaim(claim, signal));
     }
     return processed;
   }

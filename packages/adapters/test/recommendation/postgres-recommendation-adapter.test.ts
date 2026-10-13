@@ -834,6 +834,106 @@ describe("C27 处置建议 PostgreSQL 链", () => {
     );
   });
 
+  pgIt("检查点精确证明正式建议正文与校验登记，错配全部拒绝且全库零写", async () => {
+    const state = fixture!;
+    const { opened, agent } = await freezeAndBind({
+      prefix: "c27-checkpoint-reco",
+      assessments: 2,
+    });
+    const recorded = await state.validateAndRecord({
+      commandId: "c27-checkpoint-reco-command",
+      recommendationCandidateRef: agent.candidateRef!,
+      responseValidationPolicyRef: state.validationPolicyRef,
+      siteContextRef: state.siteContextRef,
+    });
+    expect(recorded.kind === "succeeded" && recorded.result.kind).toBe("recorded");
+    if (recorded.kind !== "succeeded" || recorded.result.kind !== "recorded") return;
+    const reference = recorded.result.responseRecommendationRef;
+    const invocationId = "c27-checkpoint-reco-read";
+    const authorization = await state.c26.readAuthorization(invocationId);
+    const input = {
+      projectId: state.projectId,
+      actorId: state.managerId,
+      requestedAt: authorization.decidedAt,
+      invocationId,
+      authorization,
+      reference,
+    };
+    // 业务主体对这两张表只有 INSERT 权限，漂移只经管理员连接构造，且逐项各自漂移。
+    const adminPool = state.c26.c25.postgres.postgres.adminPool;
+    const counts = async () =>
+      (
+        await adminPool.query(
+          `SELECT (SELECT count(*) FROM audit.entries) AS audit,
+                  (SELECT count(*) FROM business.command_receipts) AS receipts,
+                  (SELECT count(*) FROM business.artifact_access_records) AS accesses,
+                  (SELECT count(*) FROM business.artifact_manifests) AS artifacts,
+                  (SELECT count(*) FROM outbox.events) AS events`,
+        )
+      ).rows;
+    const before = await counts();
+    expect(await state.adapter.verifyCheckpointReference(input)).toBe(true);
+    for (const invalid of [
+      { projectId: "other-project" },
+      { actorId: "other-actor" },
+      { invocationId: "unsigned-read" },
+      { reference: { ...reference, reference: { ...reference.reference, versionId: "missing" } } },
+      {
+        authorization: {
+          ...authorization,
+          spatialScopeRefs: authorization.spatialScopeRefs.map((scope) => ({
+            ...scope,
+            reference: { ...scope.reference, versionId: "scope-version-drift" },
+          })),
+        },
+      },
+    ]) {
+      expect(await state.adapter.verifyCheckpointReference({ ...input, ...invalid })).toBe(false);
+    }
+    expect(
+      await state.adapter.verifyCheckpointReference({
+        ...input,
+        reference: { kind: "recommendation-candidate", reference: reference.reference },
+      }),
+    ).toBe(false);
+    const validation = await state.db
+      .selectFrom("business.recommendation_validations")
+      .selectAll()
+      .where("project_id", "=", state.projectId)
+      .where("candidate_id", "=", agent.candidateRef!.reference.entityId)
+      .executeTakeFirst();
+    const primaryWarning = (await state.candidatePayload(agent.candidateRef!))
+      .primaryWarningRecordRef;
+    const otherWarning = opened.warningRefs.find((id) => id !== primaryWarning.reference.entityId)!;
+    for (const drift of [
+      {
+        sql: `UPDATE business.response_recommendations SET content_digest = '${"0".repeat(64)}'
+                WHERE project_id = $1 AND recommendation_id = $2`,
+        params: [state.projectId, reference.reference.entityId],
+      },
+      {
+        sql: `UPDATE business.response_recommendations
+                SET warning_record_id = $3, warning_record_version_id = '1'
+               WHERE project_id = $1 AND recommendation_id = $2`,
+        params: [state.projectId, reference.reference.entityId, otherWarning],
+      },
+      {
+        sql: `UPDATE business.recommendation_validations SET validation_policy_entity_id = 'policy-drift'
+                WHERE project_id = $1 AND validation_id = $2`,
+        params: [state.projectId, validation!.validation_id],
+      },
+      {
+        sql: `UPDATE business.recommendation_validations SET trigger_consistency_passed = false
+                WHERE project_id = $1 AND validation_id = $2`,
+        params: [state.projectId, validation!.validation_id],
+      },
+    ]) {
+      await adminPool.query(drift.sql, drift.params);
+      expect(await state.adapter.verifyCheckpointReference(input)).toBe(false);
+    }
+    expect(await counts()).toEqual(before);
+  });
+
   it("000045 迁移可重复 up 且逆序 down 后能重新建立四表", async () => {
     const state = fixture!;
     const runtime = createPostgresRuntime(

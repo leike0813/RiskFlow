@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import {
   sql,
   type ColumnType,
@@ -2890,6 +2892,127 @@ export class PostgresRiskAssessmentEngine
   // ==================================================================
   // C34 风险评估只读（design D-04）
   // ==================================================================
+
+  async verifyCheckpointReference(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly invocationId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly reference: ContractReferenceV1;
+    readonly preparationSnapshotRef?: AssessmentInputSnapshotV1["preparationSnapshotRef"];
+  }): Promise<boolean> {
+    const reference = ContractReferenceV1Schema.safeParse(input.reference);
+    if (
+      !reference.success ||
+      (reference.data.kind !== "assessment-input-snapshot" &&
+        reference.data.kind !== "risk-assessment-record")
+    )
+      return false;
+    if (
+      input.authorization.projectId !== input.projectId ||
+      input.authorization.actorId !== input.actorId ||
+      input.authorization.grantedCapabilities.length !== 1 ||
+      input.authorization.grantedCapabilities[0] !== "risk-assessment.read"
+    )
+      return false;
+    const verify = async (sourceVersionRefs: readonly SourceVersionRefV1[]) => {
+      const decision = await this.#access
+        .verify({
+          authorizationContextRef: input.authorization.authorizationContextRef,
+          invocationId: input.invocationId,
+          projectId: input.projectId,
+          branch: "risk-assessment.read",
+          requestedSpatialScopeRefs: [...input.authorization.spatialScopeRefs],
+          requestedSourceVersionRefs: [...sourceVersionRefs],
+          requestedAt: input.requestedAt,
+        })
+        .catch((error: unknown) => {
+          if (error instanceof AccessServiceError) return undefined;
+          throw error;
+        });
+      return (
+        decision !== undefined &&
+        !decision.redacted &&
+        isDeepStrictEqual(decision.context, input.authorization)
+      );
+    };
+    if (!(await verify([]))) return false;
+    const target = reference.data;
+    const recordRow =
+      target.kind === "risk-assessment-record"
+        ? await this.#readRecordRow(input.projectId, target)
+        : undefined;
+    if (target.kind === "risk-assessment-record") {
+      if (recordRow === undefined) return false;
+      const record = RiskAssessmentRecordSchema.safeParse(recordRow.record_payload);
+      if (
+        !record.success ||
+        record.data.assessmentRecordId !== target.reference.entityId ||
+        sha256CanonicalJson(record.data) !== recordRow.content_digest ||
+        (record.data.kind === "standardized-risk-record"
+          ? record.data.riskRecordId !== recordRow.risk_record_id
+          : record.data.externalRiskEventId !== recordRow.external_risk_event_id)
+      )
+        return false;
+    }
+    const snapshotRef =
+      target.kind === "assessment-input-snapshot"
+        ? target.reference
+        : {
+            entityId: recordRow!.input_snapshot_id,
+            versionId: recordRow!.input_snapshot_version_id,
+          };
+    const row = await this.#db
+      .selectFrom("business.assessment_input_snapshots")
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("input_snapshot_id", "=", snapshotRef.entityId)
+      .where("version_id", "=", snapshotRef.versionId)
+      .executeTakeFirst();
+    if (row === undefined) return false;
+    const parsed = AssessmentInputSnapshotV1Schema.safeParse(row.snapshot_payload);
+    if (!parsed.success) return false;
+    const snapshot = parsed.data;
+    if (
+      snapshot.createdBy !== row.actor_ref ||
+      !isDeepStrictEqual(snapshot.authorizationContextRef, row.authorization_context_ref) ||
+      !isDeepStrictEqual(snapshot.preparationSnapshotRef, row.preparation_snapshot_ref) ||
+      snapshot.preparationSnapshotRef.reference.entityId !== row.preparation_snapshot_id ||
+      snapshot.preparationSnapshotRef.reference.versionId !== row.preparation_snapshot_version_id ||
+      sha256CanonicalJson({
+        projectId: input.projectId,
+        ...withoutClock(snapshot as unknown as Record<string, unknown>),
+      }) !== row.reference_digest ||
+      (recordRow !== undefined &&
+        !isDeepStrictEqual(recordRow.input_snapshot_ref, {
+          kind: "assessment-input-snapshot",
+          reference: snapshotRef,
+        })) ||
+      (target.kind === "assessment-input-snapshot" && input.preparationSnapshotRef === undefined) ||
+      (input.preparationSnapshotRef !== undefined &&
+        !isDeepStrictEqual(snapshot.preparationSnapshotRef, input.preparationSnapshotRef))
+    )
+      return false;
+    const preparationRow = await this.#db
+      .selectFrom("business.assessment_preparation_snapshots")
+      .select("snapshot_payload")
+      .where("project_id", "=", input.projectId)
+      .where("snapshot_id", "=", row.preparation_snapshot_id)
+      .where("version_id", "=", row.preparation_snapshot_version_id)
+      .executeTakeFirst();
+    const preparation = AssessmentPreparationSnapshotV1Schema.safeParse(
+      preparationRow?.snapshot_payload,
+    );
+    if (
+      !preparation.success ||
+      !input.authorization.spatialScopeRefs.some((scope) =>
+        isDeepStrictEqual(scope, preparation.data.spatialScopeRef),
+      )
+    )
+      return false;
+    return verify(declaredPreparationRefs(preparation.data).sourceVersionRefs);
+  }
 
   /**
    * 八个读操作共享同一入口：先按公共读契约解析命令并复验授权，再按 `operation` 分派。

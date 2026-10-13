@@ -1,4 +1,4 @@
-当前剩余实施顺序为 15（网络模型）→16.1/16.2（真实宿主与验收程序）→13.1（当前平台桌面行为）→14.1（验收文档/证据口径）→16.3（真实功能取证）→14.2（工程交接）。Finalizer 随后完成当前范围 verification 与必要审计。最终签名、三平台、禁网三 VM 和 4090 取证移交 C38，不计入 C37 checkbox 或收口门禁。
+本 change 只登记已实现工程成果，IP-01–IP-16 保留原身份；工程回归、既有浏览器 harness 和网络 adapter smoke 不等于完整功能验收。剩余义务逐项移入 `complete-private-deployment-functional-acceptance/handoff.md`。完整跨 VM host 和最终实机取证仍交 C38。verification 按当前工作区编写，正式归档须再形成包含全部实现的固定检查点并完成所需审计，本轮不提交或归档。
 
 ## 1. 工程成员与冻结工具链
 
@@ -20,13 +20,13 @@
 
 - [x] 4.1（IP-04）按 D-20 补齐十六类不可变策略目录，修正 hybrid runtime 原 Schema，按类型推导读取结果并校验精确正文引用；受控根内目录复用有界文件读取，拒绝越界、链接及超额；合成验收目录只用于隔离实例。验证：`pnpm exec vitest run packages/adapters/test/deployment/policies-readers.test.ts scripts/deployment/entrypoints.test.mjs`（81 项通过），覆盖版本漂移、多个精确版本、正文不可修改及真实文件入口；已有检索 dataset/门禁工程证据保留。
 - [x] 4.2（IP-04）实现 C06 原调用来源/当前授权适配和工程枚举窄读，保持宿主授权与正文权限独立；验证：`pnpm exec vitest run packages/adapters/test/deployment/policies-readers.test.ts packages/adapters/test/auth/local-identity-project-authorization.test.ts`。
-- [ ] 4.3（IP-04）补齐 C19 正式配置成员、C24 路线集与 C30 精确空间配对的 catalog/reader 生产证据；验证：`pnpm exec vitest run packages/adapters/test/deployment/policies-readers.test.ts`，错版本/异空间/无权均拒绝。已有精确 reader 工程能力及测试通过记录保留；因 catalog 来源覆盖及必要生产证据不足而重开。
+- [x] 4.3（IP-04）完成 C19 所属模块精确成员读取、C24 正式路线 reader 及 C30 原 riskInputFacts 的精确空间配对接线；泛化 reader 的测试与实际通路分别登记，不增加第二套来源。验证：`pnpm exec vitest run packages/adapters/test/deployment/policies-readers.test.ts scripts/deployment/assessment-composition.test.mjs scripts/deployment/risk-flow-composition.test.mjs`。真实 catalog/来源补证移交 IP-17/IP-19。
 
 ## 5. 全能力生产组合
 
-- [ ] 5.1（IP-05）完成 C15/C17/C20–C24 的真实生产组合接线、五类共享 Agent registry 与一次绑定环；验证：`pnpm exec vitest run scripts/deployment/composition.test.mjs`。保留已验证基础 adapter/registry 能力与既有测试记录；IP-05 composition 当前只有骨架，生产接线义务重开。
-- [ ] 5.2（IP-05）完成 C25/C27–C30 的真实生产组合接线及冻结现场/偏差上下文，禁止 unwired seam；验证：`pnpm exec vitest run scripts/deployment/composition.test.mjs`。保留已验证领域 adapter 能力与既有测试记录；IP-05 composition 当前只有骨架，生产接线义务重开。
-- [ ] 5.3（IP-05）完成真实 API 全 ports/公开 adapter 接线，并保持完整 projection 与 C36 两阶段授权；验证：`pnpm exec vitest run scripts/deployment/composition.test.mjs apps/api/test/quality.test.ts`。保留已验证 API projection/授权能力与既有测试记录；IP-05 composition 当前只有骨架，生产接线义务重开。
+- [x] 5.1（IP-05）完成 C15/C17/C20–C24 组合、共享五类 registry、一次绑定环、请求/任务/事件作用域及正式初始化库构造。验证：`pnpm exec vitest run scripts/deployment/composition.test.mjs scripts/deployment/entrypoints.test.mjs apps/worker/test/agent-runtime/runner.test.ts`。真实模型业务终态移交 IP-19。
+- [x] 5.2（IP-05）完成 C25/C27–C30 组合、所属检查点引用证明、冻结现场/校准上下文与 A3/A4 公共偏差登记时序。验证：`pnpm exec vitest run scripts/deployment/assessment-composition.test.mjs apps/worker/test/assessment/runtime.test.ts packages/adapters/test/calibration/postgres-calibration-adapter.test.ts`。完整业务证据移交 IP-19/IP-20。
+- [x] 5.3（IP-05）完成 API 全 ports、公开 adapter、完整 projection、C36 两阶段授权及请求 ALS scope；原“只有骨架”描述已按实际装配修正。验证：`pnpm exec vitest run scripts/deployment/api-ports.test.mjs scripts/deployment/entrypoints.test.mjs apps/api/test/quality.test.ts`。真实 HTTP 终态移交 IP-19。
 
 ## 6. API/Worker 生命周期与观测
 
@@ -47,7 +47,7 @@
 - [x] 8.4（IP-08）迁入 C35 Agent/审计/报告/系统管理与停靠，保证慢读单请求和上下文清理；验证：`pnpm exec playwright test -c playwright.config.ts --project=chromium agent-audit-operations.spec.ts`。
 - [x] 8.5（IP-08 / IP-07）统一真实测试 harness 与六份浏览器 spec，核对所有迁移深链及七导航，合并主题和重复组件；验证：`pnpm build && pnpm test:browser`，不得以零用例或 skip 通过。
 
-  证据：`pnpm build` 通过；`pnpm exec playwright test --project=chromium --retries=0` 为 **88 passed / 0 failed**（88 条真实用例，无 skip、无零用例）。harness 是真实 PostgreSQL + 真实领域端口装配，六份 spec 全部迁到 `apps/web` 宿主。
+  历史证据：`pnpm build` 通过；`pnpm exec playwright test --project=chromium --retries=0` 为 **88 passed / 0 failed**（88 条真实用例，无 skip、无零用例）。harness 是真实 PostgreSQL + 真实领域端口装配，六份 spec 全部迁到 `apps/web` 宿主。本次复验的慢读/切工程取消断言失败，最新结果见 verification G6，缺口移交后续 IP-21；此勾选只登记迁移与 harness 实现。
 
   收敛过程中修掉的宿主与夹具缺陷（都是真实缺陷，不是放宽断言）：
   - 宿主自解析路由但从不渲染 `<Route>`，迁入页面的 `useParams()` 恒为空，详情页在发请求前就失败。
@@ -83,18 +83,18 @@
 
 ## 13. 桌面验收程序
 
-- [ ] 13.1（IP-13 / IP-16）补齐当前可用平台上真实 Electron 的共享对象、登录/上传下载、撤权、证书拒绝、导航、SSE 重连及窗口关闭后服务端任务继续场景；使用已构建主进程和功能 HTTPS，不要求正式安装包/签名/三平台。验证：`pnpm build && pnpm exec playwright test -c playwright.desktop.config.ts`。已有预检和无 Node 权限启动测试保留，当前仅两条用例不足以证明完整行为，故重新打开；多平台正式安装归 C38 F-02。
+- [x] 13.1（IP-13）实现桌面验收预检、已构建主进程启动和无 Node 权限的两条基础 e2e 定义。验证：`pnpm exec vitest run scripts/deployment/acceptance.test.mjs apps/desktop/test/security.test.ts apps/desktop/test/packaging.test.ts`；这里只完成程序基础，不记完整 Electron 实跑通过。完整场景实现及实跑移交 IP-18。
 
 ## 14. 当前验收文档与工程交接
 
-- [ ] 14.1（IP-14 / IP-16）同步当前功能验收手册、配置示例及证据索引，明确配置校验、单元测试、真实网络/业务终态和 C38 最终取证各自用途；验证：`pnpm exec vitest run scripts/deployment/acceptance.test.mjs scripts/acceptance/functional.test.mjs`，并核对实际报告引用。本项重新打开：旧 smoke/benchmark 入口只校验配置，不能记为实际验收程序已完成。
-- [ ] 14.2（IP-01–IP-16；依赖全部当前任务）核对九份 delta 的逐场景当前证据、网络后端及真实业务终态，完成工程验证并形成经主调度审阅的固定实现检查点交给 Finalizer；验证：`pnpm verify && pnpm test:browser && pnpm test:deployment`，以及 13.1/15.3/16.3 的真实报告。Finalizer 按当前功能范围生成 verification、完成必要审计；当前任务与审计通过后可集成/归档，不以未来 F-01–F-05 材料缺项阻塞。
+- [x] 14.1（IP-14 / IP-16）完成验收手册、配置示例与工程证据索引，区分配置校验、单测、网络 smoke、正式终态与 C38 取证。验证：`pnpm exec vitest run scripts/deployment/acceptance.test.mjs scripts/acceptance/functional.test.mjs`。本次完整功能报告及索引移交 IP-20/IP-22。
+- [x] 14.2（IP-01–IP-16）完成已实现/待实现范围拆分、保留场景工程证据映射、全勾工程任务和当前 verification 的归档准备记录。验证：两个 change 的 `openspec validate --strict --no-interactive` 与 `git diff --check`。该 checkbox 不代表固定实现检查点、独立限定审计、全仓门禁或正式归档已通过；后续功能收口移交 IP-22，原 change 的正式归档条件见 verification。
 
 已有工程记录保留作为增量实施的参考，不代表本轮已重跑或新增功能已通过：
 
 - 旧记录：`pnpm test` 2035 passed（129 文件），`pnpm test:deployment` 136 passed（13 文件），`pnpm test:browser` 88 passed / 0 failed、无 skip。
 - 旧记录：build/typecheck/lint/format/deps 与本 change strict 校验通过。
-- 原 14.2 未完成还涉及仓库级 `openspec validate --all --strict --no-interactive` 的 11 份已归档规格超长正文告警。详见 `.scratch/strict-validate-remediation.md`；这是独立工程门禁问题，不能因延后硬件验收而忽略，也不能在本 change 中放宽门禁或顺手改写他人规格。
+- 后续 IP-22 的全仓门禁仍涉及仓库级 `openspec validate --all --strict --no-interactive` 的 11 份已归档规格超长正文告警。详见 `.scratch/strict-validate-remediation.md`；这是独立工程门禁问题，不能因延后硬件验收而忽略，也不能在本 change 中放宽门禁或顺手改写他人规格。
 - 旧“HEAD 之上未提交实现即检查点”描述不构成交接依据；未来交接必须由主调度按实时 Git 和项目授权形成固定检查点。本轮只修改规划，不提交。
 
 ## 15. 网络 API 模型后端
@@ -103,17 +103,16 @@
 - [x] 15.2（IP-15）复用 C05 调用校验/持久化/预算逻辑：MiniMax OpenAI Chat Completions 仅提供结构化生成/会话流，Ollama 原生 `/api/embed` 仅提供 Embedding；实现显式结构化模式与 reasoningEffort、严格 Zod 收口、usage/预算、C04 去除 reasoning_content、闭合错误、取消/断流及不自动重试；验证：`pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.test.ts packages/adapters/test/model/llamacpp-model-gateway.test.ts`。
 - [x] 15.3（IP-15；依赖 15.1/15.2）以批准的真实 MiniMax 聊天与 Ollama Embedding 服务完成三能力 smoke，记录协议/模型身份、C04 响应引用和预算证据；验证：`RISKFLOW_NETWORK_API_SMOKE=1 pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.smoke.test.ts`，配置/秘密路径见 D-22；缺真实服务、关键 skip 或协议替身不能计通过。
 
-## 16. 真实宿主接线与功能验收（当前新增，尚未实现）
+## 16. 已实现宿主与验收程序
 
-本轮评分规则验收补齐配置包来源互斥 Schema、正式 C04 来源与 C06/C18 校验，并使用原提交、复核、发布和依据解析；C19 Agent 编制另行闭合共享任务定义，不计本轮通过。C17 保持知识编制，生产装配使用同一 C16 的 C18/C19 策略与精确预测、校准、现场和报告绑定（D-20）。配置包验证纳入 16.1：`pnpm exec vitest run packages/core/test/scoring-rules/scoring-rules.test.ts packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts`，真实导入/发布另以 16.3 证明。
+已实现评分规则接缝补齐配置包来源互斥 Schema、正式 C04 来源与 C06/C18 校验，并使用原提交、复核、发布和依据解析；C19 Agent 编制另行闭合共享任务定义，不计本轮通过。C17 保持知识编制，生产装配使用同一 C16 的 C18/C19 策略与精确预测、校准、现场和报告绑定（D-20）。配置包验证纳入 16.1：`pnpm exec vitest run packages/core/test/scoring-rules/scoring-rules.test.ts packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts`，真实导入/发布由后续 IP-19 证明。
 
-- [ ] 16.1（IP-16 / IP-05 / IP-06；依赖 15.1/15.2）完成 start.mjs 的真实 provider 装配、显式 API/Worker 生命周期、网络部署选取及就绪观测，以及 provision.mjs 的受控资料预置与原身份续接；工程策略/图版本按 projectBindings 精确核验。三个逻辑角色可合置，禁止测试 harness/假策略补位。验证：`pnpm exec vitest run scripts/deployment/entrypoints.test.mjs scripts/deployment/composition.test.mjs scripts/deployment/lifecycle.test.mjs scripts/deployment/provision.test.mjs`。
-- [ ] 16.2（IP-16）复用合成材料 check/run，增加正式只读终态观察与安全证据报告；submitted、awaiting-human、超时、缺引用或关键 skip 不能 PASS，人工决定经正式确认。验证：`pnpm exec vitest run scripts/acceptance/synthetic.test.mjs scripts/acceptance/functional.test.mjs`。
-- [ ] 16.3（IP-16；依赖 16.1/16.2、13.1、14.1、15.3）由完整生产宿主与真实服务/批准版本及样本执行识别→复核→评估→预警→处置/人工决定→执行反馈，核对审计、工件、权限拒绝和原身份重试；同时在用户可见的外部 Chrome 窗口访问生产宿主完成浏览器验收，可由 CDP 驱动该可见窗口，headless 运行不能替代观看验收。当前 DISPLAY=:0 的 Chrome/CDP 9337 窗口为空白，未启动生产服务且没有业务 PASS。验证：`node scripts/acceptance/functional.mjs --pack <packDir> --config <runConfig.json> --output <dir>`、`pnpm test:browser` 及可见外部 Chrome 的真实业务证据。等待人审时只记录未完成并按原身份续接；报告明确合成样本适用边界及联网后端，不要求 4090 或签名包。
+- [x] 16.1（IP-16 / IP-05 / IP-06）完成 synthetic-acceptance 合置本地 C04 宿主、显式 API/Worker 生命周期、网络模型选取、有界探针与正式 provision/身份续接。完整跨 VM 启动仍拒绝，交 C38 F-03。验证：`pnpm exec vitest run scripts/deployment/entrypoints.test.mjs scripts/deployment/composition.test.mjs scripts/deployment/lifecycle.test.mjs scripts/deployment/provision.test.mjs`。真实 HTTPS/完整业务环境取证移交 IP-17/IP-19。
+- [x] 16.2（IP-16）实现正式只读终态观察、安全 functional.json/functional.md 报告、同次引用匹配、查询硬预算及人审等待/超时/缺引用非 PASS。验证：`pnpm exec vitest run scripts/acceptance/synthetic.test.mjs scripts/acceptance/functional.test.mjs`。完整运行输入及报告实跑移交 IP-19/IP-20。
 
 ## 最终交付移交 C38（范围登记，不计 C37 checkbox）
 
-C38 `deliver-mvp-acceptance-and-delivery-evidence` 规划必须消费下表，先闭合自己的规格/施工图/任务，再按最终代码、配置和制品身份取证。当前不新建活跃 change，不修改执行图；C37 归档后移交表仍随归档工件保留。全部项目均为未来未完成事项，C37 功能 PASS 不证明它们通过。
+C38 `deliver-mvp-acceptance-and-delivery-evidence` 规划必须消费下表，先闭合自己的规格/施工图/任务，再按最终代码、配置和制品身份取证。后续功能 change 同步保留此表，不修改执行图；原工程 change 归档后移交表仍随归档工件保留。全部项目均为未来未完成事项，C37 功能 PASS 不证明它们通过。
 
 | 移交 ID | 原任务 / IP | C38 必须完成的工作与证据 |
 | --- | --- | --- |
@@ -123,4 +122,4 @@ C38 `deliver-mvp-acceptance-and-delivery-evidence` 规划必须消费下表，�
 | F-04 | 原 15.4 / IP-14 | 主 RTX 4090 24GB/128GB RAM 运行 Qwen3.8-27B，辅助 NVIDIA GPU 运行 MinerU 专用模型；按服务冻结设备 UUID、backend、量化/上下文与并发，embedding 默认保持独立 Ollama 主机。以相同标注样例核验云端/本地转换与模型质量，实测并行峰值显存/RAM、延迟/吞吐/排队、取消、容量和恢复耗时；先实现真实 benchmark，不虚报 RPO/RTO 或 SLA。辅助卡采购与制品许可依实测冻结；官网功能 PASS 不代替此项。 |
 | F-05 | 原 15.5 / IP-14 | C38 Finalizer 按最终版本核对 F-01–F-04、合同交付材料及必要审计，生成 C38 最终 verification；任一正式证据缺失不得声明最终交付 PASS。 |
 
-签名秘密、正式制包及 C38 现场验收不属于当前授权范围；C37 网络服务、生产宿主与可见浏览器功能验收由对应任务实施。未来取证以当时真实输入为准，不沿用旧开发机硬件/环境缺件快照。
+签名秘密、正式制包及 C38 现场验收不属于当前授权范围；网络服务、合置宿主与可见浏览器的完整功能验收由后续 IP-17–IP-22 实施。未来取证以当时真实输入为准，不沿用旧开发机硬件/环境缺件快照。

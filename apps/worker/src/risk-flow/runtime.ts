@@ -454,8 +454,12 @@ const assertResumeReferences = (input: {
       if (input.cursor.status !== "retryable-failure") blocked("not-a-retryable-failure");
       return;
     case "risk-record-accepted": {
-      const related = input.cause.identificationRunRef;
-      if (input.cursor.identificationRunRef?.reference.entityId !== related.reference.entityId) {
+      // 风险验收只认同一条精确 parent-child 链边：子运行的种类、实体与版本都必须一致，
+      // 只比对实体标识会让错版本的子运行事件推进父运行（design D-21）。
+      if (
+        input.cursor.identificationRunRef === undefined ||
+        !sameReference(input.cursor.identificationRunRef, input.cause.identificationRunRef)
+      ) {
         blocked("run-reference-mismatch");
       }
       return;
@@ -1746,6 +1750,28 @@ export const createRiskFlowGraphRuntime = (
       frozenRefs: frozenRefsFromRowsV1(rows, [input.riskRecordRef]),
       pairing: pairingsFromRowsV1(rows),
     };
+    if (cursor.status === "cancelled") {
+      // 已取消的运行不再推进，也不新增任何路由事实（design D-08/D-21）：保持原
+      // `already-cancelled` 结果语义，但本入口零写。
+      return outcomeOf({
+        cursor,
+        state: graphStateOf(run, cursor),
+        disposition: "already-cancelled",
+      });
+    }
+    // 写路由事实之前先核对精确子运行与恢复引用：错子运行版本一律拒绝，零路由事实
+    // （design D-21）。此处复用恢复前的同一核对，`resume` 再次核对仍成立。
+    assertResumeReferences({
+      rows,
+      cursor,
+      runRef: input.runRef,
+      cause: {
+        kind: "risk-record-accepted",
+        identificationRunRef: input.identificationRunRef,
+        riskRecordRef: input.riskRecordRef,
+      },
+      occurredAt: options.now().toISOString(),
+    });
     const acceptedRouteRef: RouteDecisionRefV1 = {
       kind: "route-decision",
       reference: {
@@ -1756,15 +1782,28 @@ export const createRiskFlowGraphRuntime = (
         }),
       },
     };
-    await appendEntryFacts({
-      ports,
-      run,
-      cursor,
-      stage,
-      actionSuffix: `risk-record-accepted:${sha256CanonicalJson(input.riskRecordRef).slice(0, 32)}`,
-      commandKind: "risk-flow-graph.risk-record-accepted",
-      routeDecisions: [{ ref: acceptedRouteRef, routeKind: RISK_FLOW_ROUTE_KIND_RISK_ACCEPTED_V1 }],
-    });
+    // 同一验收事件重投时该精确路由事实已登记：再追加入口事实只会以同一动作身份写入一份
+    // 内容已变化的运行状态（design D-02/D-08）。直接沿既有事实推进，不产生第二条路由行。
+    const alreadyRegistered = rows.some(
+      (row) =>
+        row.resultKind === "route-decision" &&
+        row.routeKind === RISK_FLOW_ROUTE_KIND_RISK_ACCEPTED_V1 &&
+        row.routeDecisionRef !== undefined &&
+        sameReference(row.routeDecisionRef, acceptedRouteRef),
+    );
+    if (!alreadyRegistered) {
+      await appendEntryFacts({
+        ports,
+        run,
+        cursor,
+        stage,
+        actionSuffix: `risk-record-accepted:${sha256CanonicalJson(input.riskRecordRef).slice(0, 32)}`,
+        commandKind: "risk-flow-graph.risk-record-accepted",
+        routeDecisions: [
+          { ref: acceptedRouteRef, routeKind: RISK_FLOW_ROUTE_KIND_RISK_ACCEPTED_V1 },
+        ],
+      });
+    }
     const afterFacts = await readRiskFlowCursor({ ports, run });
     if (afterFacts === undefined) {
       throw runFailure({

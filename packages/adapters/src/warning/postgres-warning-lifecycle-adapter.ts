@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 
@@ -11,6 +12,7 @@ import {
   InAppNotificationV1Schema,
   NotificationIntentV1Schema,
   WarningAssessmentContextV1Schema,
+  WarningAggregationKeyV1Schema,
   failWarningLifecycle,
   planWarningOpening,
   WARNING_LIFECYCLE_SCHEMA_VERSION_V1,
@@ -1951,6 +1953,140 @@ export class PostgresWarningLifecycleAdapter
   }
 
   // ------------------------------------------------------------------------- util
+
+  async verifyCheckpointReference(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly invocationId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly reference: ContractReferenceV1;
+    readonly assessmentRecordRef?: RiskAssessmentRecordRefV1;
+  }): Promise<boolean> {
+    if (
+      input.reference.kind !== "warning-record" &&
+      input.reference.kind !== "warning-response-task"
+    )
+      return false;
+    if (
+      input.authorization.projectId !== input.projectId ||
+      input.authorization.actorId !== input.actorId ||
+      !input.authorization.grantedCapabilities.includes("warning-response.read")
+    )
+      return false;
+    const decision = await this.#access
+      .verify({
+        authorizationContextRef: input.authorization.authorizationContextRef,
+        projectId: input.projectId,
+        invocationId: input.invocationId,
+        branch: "warning-response.read",
+        requestedAt: input.requestedAt,
+        requestedSpatialScopeRefs: input.authorization.spatialScopeRefs,
+        requestedSourceVersionRefs: [],
+      })
+      .catch((error: unknown) => {
+        if (error instanceof AccessServiceError) return undefined;
+        throw error;
+      });
+    if (
+      decision === undefined ||
+      decision.redacted ||
+      !isDeepStrictEqual(decision.context, input.authorization)
+    )
+      return false;
+    const ref = input.reference.reference;
+    if (input.reference.kind === "warning-record") {
+      const row = await this.#db
+        .selectFrom("business.warning_records")
+        .selectAll()
+        .where("project_id", "=", input.projectId)
+        .where("warning_record_id", "=", ref.entityId)
+        .where("version_id", "=", ref.versionId)
+        .executeTakeFirst();
+      if (row === undefined || row.schema_version !== WARNING_LIFECYCLE_SCHEMA_VERSION_V1)
+        return false;
+      const parsed = WarningRecordSchema.safeParse(row.warning_payload);
+      return (
+        parsed.success &&
+        sha256CanonicalJson(parsed.data) === row.content_digest &&
+        parsed.data.warningRecordId === row.warning_record_id &&
+        parsed.data.assessmentRecordId === row.assessment_record_id &&
+        parsed.data.warningLevel === row.risk_level_id &&
+        parsed.data.triggerType === row.trigger_type &&
+        decision.context.spatialScopeRefs.some((scope) =>
+          sameVersionReference(scope.reference, {
+            entityId: row.spatial_scope_entity_id,
+            versionId: row.spatial_scope_version_id,
+          }),
+        )
+      );
+    }
+    const row = await this.#db
+      .selectFrom("business.warning_response_task_versions as v")
+      .innerJoin("business.warning_response_tasks as t", "t.task_id", "v.task_id")
+      .selectAll("v")
+      .select([
+        "t.project_id as task_project_id",
+        "t.schema_version as task_schema_version",
+        "t.aggregation_key as task_aggregation_key",
+        "t.spatial_scope_entity_id",
+        "t.risk_input_kind",
+        "t.risk_input_entity_id",
+      ])
+      .where("v.project_id", "=", input.projectId)
+      .where("v.task_id", "=", ref.entityId)
+      .where("v.version_id", "=", ref.versionId)
+      .executeTakeFirst();
+    if (
+      row === undefined ||
+      row.task_project_id !== input.projectId ||
+      row.schema_version !== WARNING_LIFECYCLE_SCHEMA_VERSION_V1 ||
+      row.task_schema_version !== WARNING_LIFECYCLE_SCHEMA_VERSION_V1 ||
+      !isDeepStrictEqual(row.aggregation_key, row.task_aggregation_key)
+    )
+      return false;
+    const scope = SpatialScopeRefV1Schema.safeParse(row.spatial_scope_ref);
+    const key = WarningAggregationKeyV1Schema.safeParse(row.aggregation_key);
+    if (!(
+      key.success &&
+      key.data.projectId === input.projectId &&
+      key.data.riskInputKind === row.risk_input_kind &&
+      key.data.riskInputEntityId === row.risk_input_entity_id &&
+      key.data.spatialScopeEntityId === row.spatial_scope_entity_id &&
+      scope.success &&
+      scope.data.reference.entityId === row.spatial_scope_entity_id &&
+      decision.context.spatialScopeRefs.some((allowed) => isDeepStrictEqual(allowed, scope.data))
+    ))
+      return false;
+    if (input.assessmentRecordRef === undefined) return true;
+    const assessment = input.assessmentRecordRef.reference;
+    const link = await this.#db
+      .selectFrom("business.warning_response_task_warnings as l")
+      .innerJoin("business.warning_records as w", (join) =>
+        join
+          .onRef("w.warning_record_id", "=", "l.warning_record_id")
+          .onRef("w.version_id", "=", "l.warning_record_version_id")
+          .onRef("w.project_id", "=", "l.project_id"),
+      )
+      .selectAll("w")
+      .where("l.project_id", "=", input.projectId)
+      .where("l.task_id", "=", ref.entityId)
+      .where(sql<boolean>`l.first_included_version_id::numeric <= ${ref.versionId}::numeric`)
+      .where("w.assessment_record_id", "=", assessment.entityId)
+      .where("w.assessment_record_version_id", "=", assessment.versionId)
+      .where("w.spatial_scope_entity_id", "=", scope.data.reference.entityId)
+      .where("w.spatial_scope_version_id", "=", scope.data.reference.versionId)
+      .limit(1)
+      .executeTakeFirst();
+    if (link === undefined) return false;
+    const warning = WarningRecordSchema.safeParse(link.warning_payload);
+    return (
+      warning.success &&
+      sha256CanonicalJson(warning.data) === link.content_digest &&
+      warning.data.warningRecordId === link.warning_record_id &&
+      warning.data.assessmentRecordId === assessment.entityId
+    );
+  }
 
   #nowIso(): string {
     return this.#now().toISOString();

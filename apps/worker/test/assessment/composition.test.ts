@@ -321,6 +321,7 @@ const createPortDoubles = (calls: CallLogV1): InjectedPortsV1 => ({
   calibration: {
     prepareInput: forbidden("C29 prepareInput"),
     createSuggestion: forbidden("C29 createSuggestion"),
+    readCreatedDeviationRecordRef: forbidden("C29 readCreatedDeviationRecordRef"),
   },
   calibrationAgent: {
     ensureTask: forbidden("C29 agent ensureTask"),
@@ -571,6 +572,8 @@ describe("C30 评估子图组合根（真实 PostgreSQL 接线）", () => {
       actorId: ACTOR_ID,
       authorization: AUTHORIZATION,
       commandId,
+      issuedInvocationId: commandId,
+      authorizationBranch: "workflow.start-run",
       idempotencyKey: commandId,
       issuedAt: TIMESTAMP,
       validAt: TIMESTAMP,

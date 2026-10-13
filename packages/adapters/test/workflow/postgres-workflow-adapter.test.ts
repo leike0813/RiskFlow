@@ -353,6 +353,7 @@ const startFixture = async (): Promise<WorkflowAdapterTestFixture> => {
     const adapter = createPostgresWorkflowAdapter({
       db: runtime.db,
       transactionUnit,
+      runBindingProof: transactionUnit,
       artifactStore,
       authorization: access.port,
       now: () => new Date(TIMESTAMP),
@@ -451,6 +452,452 @@ const countWriteFacts = async (): Promise<Record<string, string>> =>
   ).rows[0] as Record<string, string>;
 
 describe("C30 workflow registration adapter", () => {
+  it("locates an event parent by exact child lineage and proves consumed inputs without writes", async () => {
+    const parent = { ...RUN_REF, reference: { ...RUN_REF.reference, entityId: "event-parent" } };
+    const child = { ...RUN_REF, reference: { ...RUN_REF.reference, entityId: "event-child" } };
+    const preparation = {
+      kind: "identification-preparation-snapshot" as const,
+      reference: { entityId: "event-preparation", versionId: "v1" },
+    };
+    const input = {
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      authorization: AUTHORIZATION,
+      invocationId: "event-proof",
+      requestedAt: TIMESTAMP,
+    };
+    const threadId = "event-parent-thread";
+    await fixture.transactionUnit.execute(
+      {
+        projectId: PROJECT_ID,
+        commandKind: "workflow.start-run",
+        commandId: "event-start",
+        idempotencyKey: "event-start",
+        payload: {},
+        actorRef: ACTOR_ID,
+        authorizationContextRef: AUTHORIZATION.authorizationContextRef,
+        issuedAt: TIMESTAMP,
+        runId: parent.reference.entityId,
+        threadId,
+      },
+      async () => ({
+        resultRef: parent,
+        audit: {
+          auditEntryId: "event-start:audit",
+          projectId: PROJECT_ID,
+          action: "workflow.start-run",
+          targetRef: parent,
+          actorRef: ACTOR_ID,
+          authorizationContextRef: AUTHORIZATION.authorizationContextRef,
+          occurredAt: TIMESTAMP,
+          recordedAt: TIMESTAMP,
+          version: parent.reference,
+          commandId: "event-start",
+          idempotencyKey: "event-start",
+          runId: parent.reference.entityId,
+          threadId,
+        },
+        events: [],
+      }),
+    );
+    const makeRow = (kind: WorkflowGraphResultRowV1["resultKind"], suffix: string) => ({
+      ...resultRowFor(kind, suffix),
+      runId: parent.reference.entityId,
+      threadId,
+      entryMode: "identify-and-assess" as const,
+      ...(kind === "route-decision" ? {} : { stage: "identification" as const }),
+    });
+    await registerWithinTransaction({
+      row: { ...makeRow("entry-snapshot", "event-prep"), frozenRefs: [preparation] },
+    });
+    const route = {
+      ...makeRow("route-decision", "event-accepted"),
+      resultId: `risk-flow-risk-accepted:${parent.reference.entityId}:${sha256CanonicalJson(RISK_RECORD_REF).slice(0, 32)}`,
+      resultVersionId: sha256CanonicalJson({
+        riskRecordRef: RISK_RECORD_REF,
+        identificationRunRef: child,
+      }),
+      routeKind: "risk-record-accepted",
+    };
+    route.routeDecisionRef = {
+      kind: "route-decision",
+      reference: {
+        entityId: route.resultId,
+        versionId: route.resultVersionId,
+      },
+    };
+    await registerWithinTransaction({ row: route });
+    const eventStageRef = {
+      kind: "stage-result" as const,
+      reference: { entityId: "event-progress", versionId: "v1" },
+    };
+    const stage = {
+      ...makeRow("stage-result", "event-progress"),
+      stageResultRef: eventStageRef,
+      resultId: eventStageRef.reference.entityId,
+      resultVersionId: eventStageRef.reference.versionId,
+    };
+    await registerWithinTransaction({ row: stage });
+    const artifactRef = await fixture.adapter.bodies.putBody({
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      commandId: "event-state-body",
+      invocationId: "event-state-body",
+      issuedAt: TIMESTAMP,
+      artifactId: "event-state-body",
+      authorization: AUTHORIZATION,
+      body: {
+        bodyKind: "run-state",
+        runState: {
+          ...runState({
+            runVersionId: BODY_RUN_VERSION_ID,
+            runId: parent.reference.entityId,
+            status: "waiting",
+          }),
+          entryMode: "identify-and-assess",
+          stage: "identification",
+          identificationRunRef: child,
+          lastStageResultRef: stage.stageResultRef,
+        },
+      },
+    });
+    await registerWithinTransaction({
+      row: {
+        ...makeRow("run-state", "event-state"),
+        runVersionId: BODY_RUN_VERSION_ID,
+        resultVersionId: BODY_RUN_VERSION_ID,
+        artifactRef,
+      },
+    });
+    const link = {
+      schemaVersion: "1" as const,
+      projectId: PROJECT_ID,
+      linkId: "event-parent-child",
+      runId: parent.reference.entityId,
+      fromRef: parent,
+      toRef: child,
+      relation: "parent-child" as const,
+      sourceStage: "identification" as const,
+      authorizationContextRef: AUTHORIZATION.authorizationContextRef,
+      authorizationScopeDigest: SCOPE_DIGEST,
+      actorRef: ACTOR_ID,
+      recordedAt: TIMESTAMP,
+      auditEntryId: "event-parent-child:audit",
+    };
+    const registerLink = async (value: typeof link) =>
+      fixture.transactionUnit.execute(
+        {
+          projectId: PROJECT_ID,
+          commandKind: "workflow.register-link",
+          commandId: value.linkId,
+          idempotencyKey: value.linkId,
+          payload: {},
+          actorRef: ACTOR_ID,
+          authorizationContextRef: AUTHORIZATION.authorizationContextRef,
+          issuedAt: TIMESTAMP,
+        },
+        async (context) => {
+          await fixture.adapter.registrationStore.registerLink({ link: value }, context);
+          return {
+            resultRef: parent,
+            audit: {
+              auditEntryId: value.auditEntryId,
+              projectId: PROJECT_ID,
+              action: "workflow.register-link",
+              targetRef: parent,
+              actorRef: ACTOR_ID,
+              authorizationContextRef: AUTHORIZATION.authorizationContextRef,
+              occurredAt: TIMESTAMP,
+              recordedAt: TIMESTAMP,
+              version: parent.reference,
+              commandId: value.linkId,
+              idempotencyKey: value.linkId,
+            },
+            events: [],
+          };
+        },
+      );
+    fixture.access.bindInvocationId(input.invocationId);
+    const beforeMissing = await countWriteFacts();
+    expect(
+      await fixture.adapter.readEventParentRun({ ...input, identificationRunRef: child }),
+    ).toBeUndefined();
+    expect(await countWriteFacts()).toEqual(beforeMissing);
+    await registerLink(link);
+    const before = await countWriteFacts();
+    expect(await fixture.adapter.readEventParentRun({ ...input, runRef: parent })).toEqual(parent);
+    expect(
+      await fixture.adapter.readEventParentRun({ ...input, identificationRunRef: child }),
+    ).toEqual(parent);
+    const accepted = {
+      ...input,
+      runRef: parent,
+      cause: {
+        kind: "risk-record-accepted" as const,
+        identificationRunRef: child,
+        riskRecordRef: RISK_RECORD_REF,
+      },
+    };
+    const prepared = {
+      ...input,
+      runRef: parent,
+      cause: { kind: "inputs-ready" as const, identificationPreparationSnapshotRef: preparation },
+    };
+    expect(await fixture.adapter.verifyEventConsumption(prepared)).toBe(true);
+    expect(await fixture.adapter.verifyEventConsumption(accepted)).toBe(true);
+    expect(
+      await fixture.adapter.verifyEventConsumption({
+        ...accepted,
+        cause: {
+          ...accepted.cause,
+          riskRecordRef: {
+            ...RISK_RECORD_REF,
+            reference: { ...RISK_RECORD_REF.reference, versionId: "missing" },
+          },
+        },
+      }),
+    ).toBe(false);
+    expect(
+      await fixture.adapter.readEventParentRun({
+        ...input,
+        identificationRunRef: { ...child, reference: { ...child.reference, versionId: "missing" } },
+      }),
+    ).toBeUndefined();
+    await expect(
+      fixture.adapter.readEventParentRun({
+        ...input,
+        runRef: { ...parent, reference: { ...parent.reference, versionId: "missing" } },
+      }),
+    ).rejects.toThrow();
+    for (const overrides of [{ actorId: "other-actor" }, { invocationId: "unissued" }])
+      await expect(
+        fixture.adapter.verifyEventConsumption({ ...prepared, ...overrides }),
+      ).rejects.toThrow();
+    fixture.access.setRedacted(true);
+    await expect(fixture.adapter.verifyEventConsumption(prepared)).rejects.toThrow();
+    fixture.access.setRedacted(false);
+    fixture.access.setAuthorization({ ...AUTHORIZATION, spatialScopeRefs: [] });
+    await expect(fixture.adapter.verifyEventConsumption(prepared)).rejects.toThrow();
+    fixture.access.setAuthorization(undefined);
+    fixture.access.revoke();
+    await expect(fixture.adapter.verifyEventConsumption(prepared)).rejects.toThrow();
+    fixture.access.restore();
+    fixture.access.bindInvocationId(undefined);
+    expect(await countWriteFacts()).toEqual(before);
+    for (const [status, consumed] of [
+      ["running", true],
+      ["cancelled", true],
+      ["waiting", false],
+    ] as const) {
+      const suffix = `event-incomplete-${status}`;
+      const version = sha(suffix);
+      const bodyRef = await fixture.adapter.bodies.putBody({
+        projectId: PROJECT_ID,
+        actorId: ACTOR_ID,
+        commandId: suffix,
+        invocationId: suffix,
+        issuedAt: TIMESTAMP,
+        artifactId: suffix,
+        authorization: AUTHORIZATION,
+        body: {
+          bodyKind: "run-state",
+          runState: {
+            ...runState({ runId: parent.reference.entityId, runVersionId: version, status }),
+            entryMode: "identify-and-assess",
+            stage: "identification",
+            identificationRunRef: child,
+            lastStageResultRef: eventStageRef,
+            acceptedRiskRecordRefs: consumed ? [RISK_RECORD_REF] : [],
+          },
+        },
+      });
+      await registerWithinTransaction({
+        row: {
+          ...makeRow("run-state", suffix),
+          runVersionId: version,
+          resultVersionId: version,
+          artifactRef: bodyRef,
+        },
+      });
+      const beforeProof = await countWriteFacts();
+      expect(await fixture.adapter.verifyEventConsumption(accepted)).toBe(false);
+      if (status !== "waiting")
+        expect(await fixture.adapter.verifyEventConsumption(prepared)).toBe(false);
+      expect(await countWriteFacts()).toEqual(beforeProof);
+    }
+    await registerLink({
+      ...link,
+      linkId: "event-conflicting-parent",
+      auditEntryId: "event-conflicting-parent:audit",
+    });
+    await expect(
+      fixture.adapter.readEventParentRun({ ...input, identificationRunRef: child }),
+    ).rejects.toThrow();
+  });
+
+  it("proves domain lineage and frozen inputs by exact run, actor and scope without writes", async () => {
+    const runId = "domain-proof-run";
+    const runRef = { ...RUN_REF, reference: { ...RUN_REF.reference, entityId: runId } };
+    const input = {
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      invocationId: "domain-checkpoint-read",
+      requestedAt: TIMESTAMP,
+      authorization: AUTHORIZATION,
+      runRef,
+    };
+    const cases = [
+      ["risk-assessment", "risk-assessment-record"],
+      ["assessment-warning", "warning-record"],
+      ["warning-recommendation", "response-recommendation"],
+      ["recommendation-forecast", "effect-forecast"],
+      ["feedback-deviation", "deviation-record"],
+      ["deviation-calibration", "calibration-suggestion"],
+    ] as const;
+    const references: ContractReferenceV1[] = [];
+    for (const [relation, kind] of cases) {
+      const reference = { kind, reference: { entityId: `domain-${kind}`, versionId: "v1" } };
+      references.push(reference);
+      const fromRef: ContractReferenceV1 =
+        relation === "warning-recommendation"
+          ? {
+              kind: "warning-response-task",
+              reference: { entityId: "domain-task", versionId: "v1" },
+            }
+          : relation === "feedback-deviation"
+            ? { kind: "feedback", reference: { entityId: "domain-feedback", versionId: "v1" } }
+            : RISK_RECORD_REF;
+      if (fromRef !== RISK_RECORD_REF) references.push(fromRef);
+      const commandId = `domain-${relation}`;
+      await fixture.transactionUnit.execute(
+        {
+          projectId: PROJECT_ID,
+          commandId,
+          idempotencyKey: commandId,
+          commandKind: "workflow.register-link",
+          payload: { relation },
+          actorRef: ACTOR_ID,
+          authorizationContextRef: AUTHORIZATION.authorizationContextRef,
+          issuedAt: TIMESTAMP,
+          runId,
+        },
+        async (context) => {
+          await fixture.adapter.registrationStore.registerLink(
+            {
+              link: {
+                schemaVersion: "1",
+                projectId: PROJECT_ID,
+                linkId: commandId,
+                runId,
+                fromRef,
+                toRef: reference,
+                relation,
+                sourceStage: "A5",
+                authorizationContextRef: AUTHORIZATION.authorizationContextRef,
+                authorizationScopeDigest: SCOPE_DIGEST,
+                actorRef: ACTOR_ID,
+                recordedAt: TIMESTAMP,
+                auditEntryId: `${commandId}:audit`,
+              },
+            },
+            context,
+          );
+          return {
+            resultRef: RUN_REF,
+            audit: {
+              auditEntryId: `${commandId}:audit`,
+              projectId: PROJECT_ID,
+              action: "workflow.register-link",
+              targetRef: RUN_REF,
+              actorRef: ACTOR_ID,
+              authorizationContextRef: AUTHORIZATION.authorizationContextRef,
+              occurredAt: TIMESTAMP,
+              recordedAt: TIMESTAMP,
+              version: RUN_REF.reference,
+              commandId,
+              idempotencyKey: commandId,
+            },
+            events: [],
+          };
+        },
+      );
+    }
+    const frozenRef = {
+      kind: "execution-record" as const,
+      reference: { entityId: "domain-execution", versionId: "v1" },
+    };
+    references.push(frozenRef);
+    await registerWithinTransaction({
+      row: {
+        ...resultRowFor("entry-snapshot", "domain-entry"),
+        runId,
+        stage: "A0",
+        frozenRefs: [frozenRef],
+      },
+    });
+    const before = await countWriteFacts();
+    fixture.access.bindInvocationId(input.invocationId);
+    for (const reference of references) {
+      expect(await fixture.adapter.verifyCheckpointDomainReference({ ...input, reference })).toBe(
+        true,
+      );
+      if (!("reference" in reference)) throw new Error("invalid fixture");
+      expect(
+        await fixture.adapter.verifyCheckpointDomainReference({
+          ...input,
+          reference: {
+            ...reference,
+            reference: { ...reference.reference, versionId: "missing" },
+          },
+        }),
+      ).toBe(false);
+    }
+    for (const overrides of [
+      { projectId: OTHER_PROJECT_ID },
+      { actorId: "other-actor" },
+      { invocationId: "unissued" },
+      { runRef: { ...RUN_REF, reference: { ...RUN_REF.reference, entityId: OTHER_RUN_ID } } },
+    ])
+      expect(
+        await fixture.adapter.verifyCheckpointDomainReference({
+          ...input,
+          ...overrides,
+          reference: frozenRef,
+        }),
+      ).toBe(false);
+    fixture.access.setRedacted(true);
+    expect(
+      await fixture.adapter.verifyCheckpointDomainReference({ ...input, reference: frozenRef }),
+    ).toBe(false);
+    fixture.access.setRedacted(false);
+    fixture.access.setAuthorization({ ...AUTHORIZATION, spatialScopeRefs: [] });
+    expect(
+      await fixture.adapter.verifyCheckpointDomainReference({
+        ...input,
+        reference: references[0]!,
+      }),
+    ).toBe(false);
+    fixture.access.setAuthorization(undefined);
+    fixture.access.revoke();
+    expect(
+      await fixture.adapter.verifyCheckpointDomainReference({ ...input, reference: frozenRef }),
+    ).toBe(false);
+    fixture.access.restore();
+    fixture.access.bindInvocationId(undefined);
+    expect(await countWriteFacts()).toEqual(before);
+    await registerWithinTransaction({
+      row: {
+        ...resultRowFor("entry-snapshot", "domain-conflict"),
+        runId,
+        stage: "A0",
+        frozenRefs: [frozenRef],
+      },
+    });
+    expect(
+      await fixture.adapter.verifyCheckpointDomainReference({ ...input, reference: frozenRef }),
+    ).toBe(false);
+  }, 120_000);
+
   it("proves exact graph references and result bodies without writing read facts", async () => {
     const resultRef = {
       kind: "assessment-run-result" as const,

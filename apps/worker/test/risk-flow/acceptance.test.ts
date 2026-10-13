@@ -423,7 +423,10 @@ interface AssessmentPortDoublesV1 {
     ResponseLifecycleServiceV1,
     "forecastResponse" | "calculateDeviation"
   >;
-  readonly calibration: Pick<CalibrationServiceV1, "prepareInput" | "createSuggestion">;
+  readonly calibration: Pick<
+    CalibrationServiceV1,
+    "prepareInput" | "createSuggestion" | "readCreatedDeviationRecordRef"
+  >;
   readonly calibrationAgent: AssessmentGraphCalibrationAgentPortV1;
   readonly policies: AssessmentGraphPolicyCatalogV1;
   readonly authorizeDownstream: AssessmentGraphPortsV1["authorizeDownstream"];
@@ -710,6 +713,10 @@ const createPortDoubles = (world: AcceptanceWorldV1): AssessmentPortDoublesV1 =>
     },
   },
   calibration: {
+    readCreatedDeviationRecordRef: async () =>
+      DeviationRecordRefV1Schema.parse(
+        refOf("deviation-record", `deviation-record:${PROJECT_ID}`, digest("deviation-record-v1")),
+      ),
     prepareInput: async () => ({
       kind: "succeeded",
       result: {
@@ -1755,7 +1762,7 @@ describe("C30 全链验收（真实 PostgreSQL + 真实 C03/C04/checkpointer + �
     expect(relations).not.toContain("deviation-calibration");
   }, 300_000);
 
-  it("R6/S2 校准 Agent 失败：越限偏差只保留偏差记录与类型化原因，不生成校准建议", async () => {
+  it("R6/S2 校准 Agent 失败：保留偏差事实与类型化原因，不生成公共偏差与校准建议", async () => {
     resetWorld({ deviation: "exceeded", calibrationAgent: "failed" });
     const frozenRefs: ContractReferenceV1[] = [
       parseRef(
@@ -1795,7 +1802,7 @@ describe("C30 全链验收（真实 PostgreSQL + 真实 C03/C04/checkpointer + �
 
     expect(outcome.status).toBe("completed");
     const latest = await harness.latestState(outcome.runRef);
-    expect(latest?.state.deviationRecordRefs).toHaveLength(1);
+    expect(latest?.state.deviationRecordRefs).toEqual([]);
     expect(latest?.state.calibrationSuggestionRefs).toEqual([]);
     const rows = await harness.rows(outcome.runRef);
     expect(
@@ -1808,7 +1815,7 @@ describe("C30 全链验收（真实 PostgreSQL + 真实 C03/C04/checkpointer + �
       )?.workflowErrorRef?.reference.entityId,
     ).toBe("assessment-graph-skip:calibration:calibration-agent-terminal-failure");
     const relations = (await harness.links(outcome.runRef)).map((link) => link.relation);
-    expect(relations).toContain("feedback-deviation");
+    expect(relations).not.toContain("feedback-deviation");
     expect(relations).not.toContain("deviation-calibration");
   }, 300_000);
 
@@ -1862,6 +1869,8 @@ function segmentedAssessmentCommand(input: {
     actorId: ACTOR_ID,
     authorization: AUTHORIZATION,
     commandId,
+    issuedInvocationId: commandId,
+    authorizationBranch: "workflow.start-run",
     idempotencyKey: commandId,
     issuedAt: TIMESTAMP,
     validAt: TIMESTAMP,

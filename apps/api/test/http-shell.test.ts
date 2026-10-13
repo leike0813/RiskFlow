@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -2362,5 +2364,67 @@ describe("C35 有界窄读与系统面路由", () => {
       partiallyAvailable.components.find((component) => component.componentId === "api")?.status,
     ).toBe("available");
     expect(partiallyAvailable.components.length).toBeLessThanOrEqual(SYSTEM_OPERATIONS_ITEM_MAX_V1);
+  });
+
+  it("runs each concurrent request inside its own host request scope", async () => {
+    // 宿主注入的 runRequest 承载授权捕获的来源；两个请求都完成授权后才放行领域调用，
+    // 因此领域调用读到的来源只能来自各自请求的作用域。
+    const scopeStore = new AsyncLocalStorage<{ source?: string }>();
+    const base = accessStub();
+    let waiting = 2;
+    let release: (() => void) | undefined;
+    const bothAuthorized = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const seen: Array<{ readonly actorId: string; readonly source: string | undefined }> = [];
+    const app = buildApi({
+      access: {
+        ...base,
+        authorize: async (request) => {
+          const sessionToken =
+            request.invocation.kind === "human-session" ? request.invocation.sessionToken : "none";
+          const current = scopeStore.getStore();
+          if (current !== undefined) current.source = sessionToken;
+          if (--waiting === 0) release?.();
+          await bothAuthorized;
+          const decision = await base.authorize(request);
+          return { ...decision, context: { ...decision.context, actorId: sessionToken } };
+        },
+      },
+      ports: {
+        engineeringData: engineeringPort((command) => {
+          const applied = command as { readonly authorization: { readonly actorId: string } };
+          seen.push({
+            actorId: applied.authorization.actorId,
+            source: scopeStore.getStore()?.source,
+          });
+        }),
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+      runRequest: <T>(operation: () => T): T => scopeStore.run({}, operation),
+    });
+
+    const responses = await Promise.all(
+      ["session-a", "session-b"].map((sessionToken, index) =>
+        app.inject({
+          method: "POST",
+          url: "/api/v1/projects/project/commands/engineering-data.register-source-delivery",
+          headers: { ...jsonHeaders, cookie: `${HTTP_COOKIE_NAME_V1}=${sessionToken}` },
+          payload: {
+            ...sourceBody(),
+            commandId: `command-${index}`,
+            idempotencyKey: `idempotency-${index}`,
+          },
+        }),
+      ),
+    );
+
+    for (const response of responses) expect(response.statusCode).toBe(200);
+    expect(seen).toHaveLength(2);
+    expect(seen.map((entry) => entry.actorId).sort()).toEqual(["session-a", "session-b"]);
+    for (const entry of seen) expect(entry.source).toBe(entry.actorId);
+    await app.close();
   });
 });

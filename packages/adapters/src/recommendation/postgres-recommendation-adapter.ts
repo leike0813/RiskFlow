@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 
 import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/access";
@@ -59,6 +61,7 @@ import {
   ModuleErrorV1Schema,
   type ModuleErrorV1,
   type ModuleBranchV1,
+  type ContractReferenceV1,
   type RecommendationCandidateRefV1,
   type RecommendationResultV1,
   type ReviewTaskRefV1,
@@ -257,6 +260,8 @@ interface RecommendationValidationRow {
   project_id: string;
   candidate_id: string;
   candidate_version_id: string;
+  validation_policy_entity_id: string;
+  validation_policy_version_id: string;
   review_task_id: string | null;
   trigger_consistency_passed: boolean;
   standards_compliance_passed: boolean;
@@ -274,6 +279,8 @@ interface ResponseRecommendationRow {
   validation_version_id: string;
   warning_response_task_id: string;
   warning_response_task_version_id: string;
+  warning_record_id: string;
+  warning_record_version_id: string;
   spatial_scope_entity_id: string;
   spatial_scope_version_id: string;
   measure_library_release_id: string;
@@ -2787,6 +2794,93 @@ export class PostgresRecommendationAdapter
       verified.spatialScopeRefs.some((scope) =>
         sameRef(scope.reference, candidate.spatialScopeRef.reference),
       )
+    );
+  }
+
+  /**
+   * C27 正式建议的检查点证明（design D-21）：当前 `warning-response.read` 完整权限成立且
+   * 空间版本精确命中后，按唯一建议行与它精确登记的 validation 行核对身份、主预警、候选、
+   * 校验策略与三项通过结果。只返回 boolean，不签发下游、不返回正文、不写事实或访问记录；
+   * 运行归属由宿主 C30 链边证明，本窄口不复核运行。技术失败上抛由 checkpoint 边界收口。
+   */
+  async verifyCheckpointReference(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly invocationId: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly reference: ContractReferenceV1;
+  }): Promise<boolean> {
+    if (input.reference.kind !== "response-recommendation") return false;
+    const verified = await this.#verifyRead(input, "warning-response.read");
+    if (verified === undefined || !isDeepStrictEqual(verified, input.authorization)) return false;
+    const ref = input.reference.reference;
+    const row = await this.#db
+      .selectFrom("business.response_recommendations")
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("recommendation_id", "=", ref.entityId)
+      .where("version_id", "=", ref.versionId)
+      .executeTakeFirst();
+    if (row === undefined) return false;
+    // 空间必须按 entity+version 精确命中当前授权，只比 entity 的旧读面在此处不够。
+    if (
+      !verified.spatialScopeRefs.some((scope) =>
+        sameRef(scope.reference, {
+          entityId: row.spatial_scope_entity_id,
+          versionId: row.spatial_scope_version_id,
+        }),
+      )
+    ) {
+      return false;
+    }
+    const validation = await this.#db
+      .selectFrom("business.recommendation_validations")
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("validation_id", "=", row.validation_id)
+      .where("version_id", "=", row.validation_version_id)
+      .executeTakeFirst();
+    if (validation === undefined) return false;
+    const record = ResponseRecommendationSchema.safeParse(row.record_payload);
+    if (!record.success || sha256CanonicalJson(record.data) !== row.content_digest) return false;
+    const evidence = RecommendationValidationEvidenceV1Schema.safeParse(
+      validation.validation_payload,
+    );
+    if (!evidence.success) return false;
+    const passed = {
+      triggerConsistency: record.data.triggerConsistencyValidation.passed,
+      standardsCompliance: record.data.standardsComplianceValidation.passed,
+      siteFeasibility: record.data.siteFeasibilityValidation.passed,
+    };
+    return (
+      evidence.data.projectId === input.projectId &&
+      record.data.responseRecommendationId === ref.entityId &&
+      sameRef(record.data.version.reference, ref) &&
+      record.data.warningRecordId === row.warning_record_id &&
+      sameRef(evidence.data.candidateRef.reference, {
+        entityId: row.candidate_id,
+        versionId: row.candidate_version_id,
+      }) &&
+      validation.candidate_id === row.candidate_id &&
+      validation.candidate_version_id === row.candidate_version_id &&
+      validation.validation_policy_entity_id === row.validation_policy_entity_id &&
+      validation.validation_policy_version_id === row.validation_policy_version_id &&
+      sameRef(evidence.data.validationPolicyRef, {
+        entityId: row.validation_policy_entity_id,
+        versionId: row.validation_policy_version_id,
+      }) &&
+      recommendationValidationPassed(evidence.data.results) &&
+      isDeepStrictEqual(passed, {
+        triggerConsistency: evidence.data.results.triggerConsistency.passed,
+        standardsCompliance: evidence.data.results.standardsCompliance.passed,
+        siteFeasibility: evidence.data.results.siteFeasibility.passed,
+      }) &&
+      isDeepStrictEqual(passed, {
+        triggerConsistency: validation.trigger_consistency_passed,
+        standardsCompliance: validation.standards_compliance_passed,
+        siteFeasibility: validation.site_feasibility_passed,
+      })
     );
   }
 

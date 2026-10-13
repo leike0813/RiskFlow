@@ -1,9 +1,20 @@
 #!/usr/bin/env node
-import { readFile, lstat, realpath, open, mkdir, rename, unlink } from "node:fs/promises";
+import {
+  readFile,
+  lstat,
+  realpath,
+  open,
+  mkdir,
+  rename,
+  unlink,
+  access as accessFile,
+} from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
-import { isDeepStrictEqual, TextDecoder } from "node:util";
+import { isDeepStrictEqual, TextDecoder, TextEncoder, parseArgs } from "node:util";
+import { pathToFileURL } from "node:url";
+import { setInterval, clearInterval } from "node:timers";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { DomainEventV1Schema } from "../../packages/contracts/dist/events/index.js";
 import {
@@ -17,8 +28,42 @@ import {
   AssessmentGraphStateV1Schema,
   RiskFlowGraphStateV1Schema,
 } from "../../packages/contracts/dist/workflows/index.js";
-import { CheckpointRuntimeContextV1Schema } from "../../packages/core/dist/persistence/index.js";
+import {
+  CheckpointRuntimeContextV1Schema,
+  ConsumerResultV1Schema,
+} from "../../packages/core/dist/persistence/index.js";
 import { identificationRunIdentityFor } from "../../apps/worker/dist/index.js";
+import { withDataCleaningModelStep } from "../../apps/worker/dist/index.js";
+import {
+  createAgentRuntimeRunner,
+  KnowledgeAuthoringRunner,
+  consumeWarningRecordedForInAppNotification,
+} from "../../apps/worker/dist/index.js";
+import { AgentTaskDefinitionRegistry } from "../../packages/core/dist/agent-runtime/index.js";
+import { PostgresAgentTaskAdapter } from "../../packages/adapters/dist/agent-runtime/index.js";
+import {
+  createPostgresReviewAuditAdapter,
+  createPostgresReviewAuditRead,
+} from "../../packages/adapters/dist/review-audit/index.js";
+import { createPostgresWorkflowAdapter } from "../../packages/adapters/dist/workflow/index.js";
+import {
+  createDeploymentIdentificationV1,
+  createDeploymentAcceptanceRoutesV1,
+  createDeploymentCandidateCheckpointProofV1,
+} from "./composition/identification.mjs";
+import {
+  createDeploymentAssessmentV1,
+  createDeploymentAssessmentGraphPoliciesV1,
+  createDeploymentRecommendationAgentV1,
+  createDeploymentCalibrationAgentV1,
+} from "./composition/assessment.mjs";
+import { createDeploymentCalibrationTaskPortV1 } from "./composition/calibration-task.mjs";
+import {
+  createDeploymentRiskFlowV1,
+  createDeploymentHumanDecisionFeedbackV1,
+  createDeploymentRiskSpatialPairingV1,
+  createDeploymentRiskFlowEventConsumerV1,
+} from "./composition/risk-flow.mjs";
 import {
   ArtifactPutCommandV1Schema,
   ArtifactReadRequestV1Schema,
@@ -40,6 +85,8 @@ import {
   createPostgresRuntime,
   createPostgresTransactionUnit,
   createPostgresCheckpointer,
+  createPostgresIdempotentConsumer,
+  createPostgresOutbox,
 } from "../../packages/adapters/dist/postgres/index.js";
 import { AccessServiceError } from "../../packages/core/dist/access/index.js";
 import {
@@ -52,6 +99,17 @@ import { createPostgresAssessmentConfigurationAdapter } from "../../packages/ada
 import { createPostgresScoringRulesAdapter } from "../../packages/adapters/dist/scoring-rules/index.js";
 import { governedReleaseResolutionInvocationId } from "../../packages/adapters/dist/knowledge-governance/index.js";
 import { SingleBindingV1 } from "./runtime.mjs";
+import { buildApi } from "../../apps/api/dist/index.js";
+import { createDeploymentApiPortsV1 } from "./composition/api-ports.mjs";
+import {
+  ApiLifecycleV1,
+  WorkerLifecycleV1,
+  LifecycleStateV1,
+  safeLogRecordV1,
+} from "./lifecycle.mjs";
+import { OutboxDispatchRegistryV1, UnknownOutboxEventError } from "./events.mjs";
+import { createPostgresRiskRecordTraceReader } from "../../packages/adapters/dist/identification/candidate-finalization/index.js";
+import { createPostgresOfficialHybridResultReader } from "../../packages/adapters/dist/identification/context/index.js";
 import {
   DeploymentConfigV1Schema,
   ReleaseManifestV1Schema,
@@ -561,6 +619,10 @@ export const createDeploymentCheckpointValidatorV1 =
     dataCleaningStore,
     workflow,
     recommendation,
+    riskAssessment,
+    warning,
+    responseLifecycle,
+    calibration,
     agentTasks,
     reviewTasks,
     candidateProof,
@@ -752,6 +814,120 @@ export const createDeploymentCheckpointValidatorV1 =
             recommendationCandidateRef: reference,
           });
         }
+        case "assessment-input-snapshot": {
+          if (
+            parsed.kind !== "assessment" ||
+            (state.assessmentInputSnapshotRef === undefined
+              ? validation.operation !== "put-writes"
+              : !isDeepStrictEqual(reference, state.assessmentInputSnapshotRef))
+          )
+            return false;
+          const entry = await workflow.registrationStore.readAssessmentEntrySnapshot({
+            ...input,
+            runId: runtime.runRef.reference.entityId,
+          });
+          if (
+            entry?.kind !== "assessment-preparation" ||
+            !isDeepStrictEqual(entry, state.entrySnapshotRef)
+          )
+            return false;
+          const issued = await downstream("risk-assessment.read");
+          return await riskAssessment.verifyCheckpointReference({
+            ...input,
+            authorization: issued.context,
+            invocationId: issued.invocationId,
+            preparationSnapshotRef: entry.assessmentPreparationSnapshotRef,
+          });
+        }
+        case "risk-assessment-record":
+        case "warning-record":
+        case "warning-response-task":
+        case "response-recommendation":
+        case "effect-forecast":
+        case "execution-record":
+        case "feedback":
+        case "deviation-record":
+        case "calibration-suggestion": {
+          if (parsed.kind === "identification") return false;
+          const parents = [
+            runtime.runRef,
+            ...(parsed.kind === "riskFlow" ? state.assessmentRunRefs : []),
+          ];
+          let associated = false;
+          let associatedRunRef;
+          for (const runRef of parents) {
+            if (
+              !isDeepStrictEqual(runRef, runtime.runRef) &&
+              !(await transactionUnit.readWorkflowRunBinding({
+                projectId: runtime.projectId,
+                actorId: runtime.actorId,
+                runRef,
+                parentRunRef: runtime.runRef,
+              }))
+            )
+              continue;
+            if (await workflow.verifyCheckpointDomainReference({ ...input, runRef })) {
+              associated = true;
+              associatedRunRef = runRef;
+              break;
+            }
+          }
+          if (
+            !associated &&
+            reference.kind === "warning-response-task" &&
+            parsed.kind === "assessment" &&
+            state.assessmentRecordRef !== undefined
+          ) {
+            const assessmentRecordRef = state.assessmentRecordRef;
+            if (
+              !(await workflow.verifyCheckpointDomainReference({
+                ...input,
+                reference: assessmentRecordRef,
+              }))
+            )
+              return false;
+            const assessmentAuthorization = await downstream("risk-assessment.read");
+            if (
+              !(await riskAssessment.verifyCheckpointReference({
+                ...input,
+                reference: assessmentRecordRef,
+                authorization: assessmentAuthorization.context,
+                invocationId: assessmentAuthorization.invocationId,
+              }))
+            )
+              return false;
+            const issued = await downstream("warning-response.read");
+            return await warning.verifyCheckpointReference({
+              ...input,
+              assessmentRecordRef,
+              authorization: issued.context,
+              invocationId: issued.invocationId,
+            });
+          }
+          if (!associated) return false;
+          const owner =
+            reference.kind === "risk-assessment-record"
+              ? riskAssessment
+              : reference.kind === "warning-record" || reference.kind === "warning-response-task"
+                ? warning
+                : reference.kind === "response-recommendation"
+                  ? recommendation
+                  : reference.kind === "deviation-record" ||
+                      reference.kind === "calibration-suggestion"
+                    ? calibration
+                    : responseLifecycle;
+          const issued = await downstream(
+            reference.kind === "risk-assessment-record"
+              ? "risk-assessment.read"
+              : "warning-response.read",
+          );
+          return await owner.verifyCheckpointReference({
+            ...input,
+            authorization: issued.context,
+            invocationId: issued.invocationId,
+            parentRunRef: associatedRunRef,
+          });
+        }
         case "standardized-risk-record": {
           if (parsed.kind !== "identification") return false;
           const issued = await downstream("risk-identification.record-read");
@@ -819,7 +995,7 @@ export const createDeploymentCheckpointValidatorV1 =
               : state.waitingRef === undefined
                 ? []
                 : [state.waitingRef];
-          const waitingRef = waitingRefs.find((waiting) =>
+          const registeredWaiting = waitingRefs.find((waiting) =>
             isDeepStrictEqual(
               reference.kind === "knowledge-preparation-task"
                 ? waiting.knowledgePreparationTaskRef
@@ -827,6 +1003,13 @@ export const createDeploymentCheckpointValidatorV1 =
               reference,
             ),
           );
+          const waitingRef =
+            registeredWaiting ??
+            (validation.operation === "put-writes"
+              ? reference.kind === "knowledge-preparation-task"
+                ? { kind: "knowledge-preparation", knowledgePreparationTaskRef: reference }
+                : { kind: "user-confirmation", userConfirmationRef: reference }
+              : undefined);
           if (waitingRef === undefined) return false;
           const owner = parsed.kind === "identification" ? identificationGraph : workflow;
           return await owner.verifyCheckpointWaitingReference({ ...input, waitingRef });
@@ -1051,6 +1234,16 @@ export const createDeploymentAuthorizationScopeV1 = ({
       });
       if (source === undefined)
         throw new TypeError("DEPLOYMENT_EVENT_AUTHORIZATION_SOURCE_MISSING");
+      const decision = await access.verify({
+        authorizationContextRef: source.context.authorizationContextRef,
+        projectId: source.context.projectId,
+        invocationId: source.invocationId,
+        branch: source.branch,
+        requestedSpatialScopeRefs: source.context.spatialScopeRefs,
+        requestedSourceVersionRefs: source.sourceVersionRefs,
+      });
+      if (decision.redacted || !isDeepStrictEqual(decision.context, source.context))
+        throw new TypeError("DEPLOYMENT_EVENT_AUTHORIZATION_DENIED");
       const causalRunRef =
         source.causalRunRef ??
         (event.aggregateRef.kind === "workflow-run" ? event.aggregateRef : undefined) ??
@@ -1081,7 +1274,25 @@ export const createDeploymentAuthorizationScopeV1 = ({
           authorizationContextRef: source.context.authorizationContextRef,
         };
       }
-      return run({ authorization: source.context, causalRunRef, causalCommandRef }, operation);
+      if (event.eventType === "engineering.inputs-ready.v1") {
+        const independent =
+          source.context.invocation.kind === "human" &&
+          source.parentContextRef === undefined &&
+          source.causalRunRef === undefined &&
+          source.causalCommandRef === undefined &&
+          source.branch ===
+            (event.payload.preparation.kind === "assessment"
+              ? "engineering-data.assessment-preparation"
+              : "engineering-data.identification-preparation") &&
+          event.producerCommandId === source.invocationId &&
+          event.causationId === source.invocationId;
+        if (event.payload.preparation.kind === "assessment" || independent) {
+          return scope.run({ source }, () => operation({ source, independent }));
+        }
+      }
+      return run({ authorization: source.context, causalRunRef, causalCommandRef }, () =>
+        operation({ source, independent: false }),
+      );
     },
     access: Object.freeze({
       ...access,
@@ -1537,3 +1748,712 @@ export const createDeploymentFoundationV1 = async ({
     throw error;
   }
 };
+
+/** 真实三图共享同一基础、任务注册表和检查点证明；监听由完整宿主负责。 */
+export const createDeploymentGraphsV1 = async (input) => {
+  if (!["api", "worker"].includes(input.role)) throw new TypeError("DEPLOYMENT_GRAPH_ROLE_INVALID");
+  const policies = input.policies ?? (await loadDeploymentPoliciesV1(input.config));
+  const checkpoint = new SingleBindingV1("checkpoint.reference");
+  const cleaning = new SingleBindingV1("C11→C15 cleaning");
+  const acceptance = new SingleBindingV1("C24→C22 acceptance");
+  const routeDecisions = new SingleBindingV1("C26→C41 decisions");
+  const foundation = await createDeploymentFoundationV1({
+    ...input,
+    downstreamAuthorizationPolicy: policies.downstreamAuthorization,
+    validateCheckpointReference: (...args) => checkpoint.use(...args),
+    dataCleaningStore: {
+      freezeIdentificationPreparation: (...args) =>
+        cleaning.useMethod("freezeIdentificationPreparation", ...args),
+    },
+  });
+  let consumer;
+  try {
+    const { config, access, artifactStore, transactionUnit, authorizationScope } = foundation;
+    const db = foundation.runtime.db;
+    const registry = new AgentTaskDefinitionRegistry();
+    consumer = createPostgresIdempotentConsumer(
+      deploymentConnectionV1(config, input.secrets, input.role),
+    );
+    const tasks = new PostgresAgentTaskAdapter({
+      db,
+      registry,
+      transactionUnit,
+      authorization: access,
+      artifactStore,
+      referenceGuard: foundation.referenceGuard,
+    });
+    const review = createPostgresReviewAuditAdapter({ db, transactionUnit, access });
+    const workflowAdapter = createPostgresWorkflowAdapter({
+      db,
+      transactionUnit,
+      runBindingProof: transactionUnit,
+      artifactStore,
+      authorization: access,
+    });
+    const authorizeDownstream = authorizationScope.authorizeDownstream;
+    const runtimeAuthorization = createDeploymentRuntimeAuthorizationV1({
+      access,
+      authorizationScope,
+    });
+    const modelGateway = createDeploymentModelGatewayV1({
+      config,
+      secrets: input.secrets,
+      access,
+      artifactStore,
+      observe: input.observe,
+    });
+    const datasets =
+      input.retrievalDatasets ?? (await loadDeploymentRetrievalDatasetsV1(config, policies));
+    const qualityGate = createDeploymentRetrievalQualityGateV1({
+      foundation,
+      policies,
+      datasets,
+      modelGateway,
+    });
+    const scoring = createDeploymentScoringGovernanceV1({
+      foundation,
+      resolveDeploymentPolicies: policies,
+      authorizeDownstream,
+      review,
+    });
+    const identification = createDeploymentIdentificationV1({
+      foundation,
+      registry,
+      modelGateway,
+      checkpointer: foundation.checkpointer,
+      idempotentConsumer: consumer,
+      resolveDeploymentPolicies: policies,
+      deploymentAuthorization: foundation.deploymentAuthorization,
+      authorization: createDeploymentIdentificationAuthorizationV1({ access, authorizationScope }),
+      review: { port: review, pendingReviewReader: review, decisionReader: review },
+      scoringBasisResolver: scoring.basis,
+      assessmentConfigurationPolicy: scoring.configuration,
+      scoringRulesPolicy: scoring.policy,
+      agentTaskFailureEvidenceReader: tasks,
+      qualityGate,
+      acceptanceRoutes: { readRoutes: (...args) => acceptance.useMethod("readRoutes", ...args) },
+    });
+    cleaning.bind(identification.compositions.cleaning.store);
+    scoring.bind(identification);
+    acceptance.bind(
+      createDeploymentAcceptanceRoutesV1({
+        resultStore: identification.compositions.candidate.adapter,
+        artifactStore,
+        authorizeDownstream,
+      }),
+    );
+    const persistArtifact = ({ task, actionId, purposeCode, value, signal }) =>
+      authorizationScope.runTask(task, async () => {
+        signal?.throwIfAborted();
+        const result = await artifactStore.put(
+          ArtifactPutCommandV1Schema.parse({
+            schemaVersion: "1",
+            commandId: `${actionId}:${purposeCode}`,
+            idempotencyKey: `${actionId}:${purposeCode}`,
+            projectId: task.envelope.projectId,
+            actorId: task.envelope.actorId,
+            issuedAt: task.envelope.createdAt,
+            authorization: task.envelope.authorization,
+            requiredCapability: "agent-task.start",
+            artifactId: `${actionId}:${purposeCode}`,
+            artifactKind: "content",
+            purposeCode,
+            mediaType: "application/json",
+            parentArtifactRefs: [],
+            evidenceReferences: [],
+            additionalSpatialScopeRefs: [],
+            additionalSourceAccessGrantRefs: [],
+          }),
+          (async function* () {
+            yield new TextEncoder().encode(JSON.stringify(value));
+          })(),
+        );
+        signal?.throwIfAborted();
+        return result.artifactRef;
+      });
+    const projects = new Map(
+      config.projectBindings.map(({ projectId }) => [
+        projectId,
+        policies.resolveProject(projectId),
+      ]),
+    );
+    const siteBindings = config.projectBindings.flatMap(({ projectId, siteContextBindings }) =>
+      siteContextBindings.map((binding) => ({ projectId, ...binding })),
+    );
+    const siteReader = new SingleBindingV1("recommendation.site-context");
+    const commonAgent = { tasks, resolveProject: policies.resolveProject, authorizeDownstream };
+    const cleaningModelStep = withDataCleaningModelStep({
+      policy: projects.values().next().value.policies.cleaning,
+      persistArtifact,
+    });
+    const innerSteps = {
+      "data-cleaning": cleaningModelStep,
+      "knowledge-authoring": identification.compositions.knowledge.modelStep,
+      "retrieval-review": identification.compositions.context.modelStep,
+    };
+    const innerModelStep = Object.fromEntries(
+      ["renderModelStep", "interpretModelStep"].map((method) => [
+        method,
+        (...args) => {
+          const task = method === "renderModelStep" ? args[0] : args[1];
+          const step = innerSteps[task.envelope.agentTaskRef.taskType];
+          if (step === undefined) throw new TypeError("DEPLOYMENT_MODEL_STEP_TASK_UNSUPPORTED");
+          return authorizationScope.runTask(task, () => step[method](...args));
+        },
+      ]),
+    );
+    const assessment = createDeploymentAssessmentV1({
+      foundation,
+      registry,
+      checkpointer: foundation.checkpointer,
+      resolveDeploymentPolicies: policies,
+      basis: scoring.basis,
+      review,
+      workflowAdapter,
+      riskInputFacts: foundation.riskInputFacts,
+      identificationRead: identification.api.riskIdentificationRead,
+      governance: identification.api.knowledgeModeling,
+      routeDecisions: {
+        readRouteDecision: (...args) => routeDecisions.useMethod("readRouteDecision", ...args),
+      },
+      taskAuthorization: { authorize: authorizeDownstream },
+      reviewAuthorization: { authorize: authorizeDownstream },
+      measureReleaseReader: scoring.measureReleaseReader,
+      recommendationAgent: createDeploymentRecommendationAgentV1({
+        ...commonAgent,
+        siteBindings,
+        siteContextReader: { read: (...args) => siteReader.useMethod("read", ...args) },
+      }),
+      calibrationAgent: createDeploymentCalibrationAgentV1(commonAgent),
+      calibrationTaskPort: createDeploymentCalibrationTaskPortV1({ artifactStore, access }),
+      policies: createDeploymentAssessmentGraphPoliciesV1({
+        projects,
+        basis: scoring.basis,
+        authorizeDownstream,
+      }),
+      authorizeDownstream,
+      runtimeAuthorization,
+      siteBindings,
+      persistArtifact,
+      innerModelStep,
+    });
+    siteReader.bind(assessment.readers.siteContext);
+    const humans = new Map();
+    for (const binding of config.projectBindings) {
+      const projectRoute = new SingleBindingV1(`C41:${binding.projectId}`);
+      humans.set(
+        binding.projectId,
+        createDeploymentHumanDecisionFeedbackV1({
+          foundation,
+          authorizeDownstream,
+          routeDecisionsBinding: projectRoute,
+          assessmentProof: assessment.compositions.riskAssessment,
+          responseLifecycle: assessment.compositions.responseLifecycle,
+          responseContext: assessment.readers.responseContext,
+          workflowStartControl: {
+            graphVersion: binding.graphVersions.riskFlow,
+            retryPolicyRef: binding.policyRefs.retry,
+          },
+        }),
+      );
+    }
+    const humanFor = (projectId) => {
+      const value = humans.get(projectId);
+      if (value === undefined) throw new TypeError("DEPLOYMENT_HUMAN_PROJECT_BINDING_MISSING");
+      return value;
+    };
+    const humanDecisionFeedback = {
+      record: (command) => humanFor(command.projectId).humanDecisionFeedback.record(command),
+      verifyHumanDecisionCommitted: (query) =>
+        humanFor(query.projectId).humanDecisionProof.verifyHumanDecisionCommitted(query),
+      readRouteDecision: (query) =>
+        humanFor(query.projectId).routeDecisions.readRouteDecision(query),
+    };
+    routeDecisions.bind(humanDecisionFeedback);
+    const riskFlow = createDeploymentRiskFlowV1({
+      foundation,
+      checkpointer: foundation.checkpointer,
+      resolveDeploymentPolicies: policies,
+      identificationRuntime: identification.compositions.graph.runtime,
+      assessmentRuntime: assessment.compositions.graph.runtime,
+      riskSpatialPairing: createDeploymentRiskSpatialPairingV1({
+        riskInputFacts: foundation.riskInputFacts,
+        authorizeDownstream,
+      }),
+      runtimeAuthorization,
+      humanDecisionProof: humanDecisionFeedback,
+    });
+    for (const human of humans.values())
+      human.bindC30({
+        workflow: riskFlow.api.workflow,
+        bindingProof: workflowAdapter.bindingProof,
+        runCompletionProof: workflowAdapter.runCompletionProof,
+      });
+    checkpoint.bind(
+      createDeploymentCheckpointValidatorV1({
+        access,
+        deploymentAuthorization: foundation.deploymentAuthorization,
+        transactionUnit,
+        policies,
+        identificationGraph: identification.compositions.graph.adapter,
+        dataCleaningStore: identification.compositions.cleaning.store,
+        workflow: workflowAdapter,
+        ...assessment.compositions,
+        agentTasks: tasks,
+        reviewTasks: createPostgresReviewAuditRead({ db, authorization: access }),
+        candidateProof: createDeploymentCandidateCheckpointProofV1({
+          resultStore: identification.compositions.candidate.adapter,
+          artifactStore,
+          access,
+        }),
+        riskIdentificationRead: identification.api.riskIdentificationRead,
+      }),
+    );
+    identification.assertReady();
+    scoring.assertReady();
+    assessment.assertReady();
+    return {
+      foundation,
+      policies,
+      registry,
+      tasks,
+      review,
+      workflowAdapter,
+      consumer,
+      modelGateway,
+      identification,
+      assessment,
+      riskFlow,
+      humanDecisionFeedback,
+      persistArtifact,
+      async close() {
+        try {
+          await consumer.close();
+        } finally {
+          await foundation.close();
+        }
+      },
+    };
+  } catch (error) {
+    await consumer?.close().catch(() => undefined);
+    await foundation.close().catch(() => undefined);
+    throw error;
+  }
+};
+
+/** 五类任务共用原 runner，完整执行作用域及知识编制失败收口由所属模块承接。 */
+export const createDeploymentAgentRunnerV1 = (host) => {
+  const { foundation, registry, tasks, modelGateway, assessment, identification, persistArtifact } =
+    host;
+  const runner = createAgentRuntimeRunner({
+    store: tasks,
+    registry,
+    workerId: foundation.config.instanceId,
+    leaseDurationMs: foundation.config.worker.leaseTimeoutMs,
+    maxConcurrentTasks: foundation.config.worker.maxConcurrency,
+    modelGateway,
+    artifactStore: foundation.artifactStore,
+    ...assessment.modelStep,
+    persistArtifact,
+    runTask: foundation.authorizationScope.runTask,
+  });
+  return new KnowledgeAuthoringRunner({
+    runner,
+    settleAuthoringFailures: async (signal) => {
+      signal?.throwIfAborted();
+      const result = await identification.compositions.knowledge.adapter.settleAuthoringFailures();
+      signal?.throwIfAborted();
+      return result;
+    },
+  });
+};
+
+export const createDeploymentOutboxDispatchV1 = (host) => {
+  const { foundation, identification, assessment, riskFlow, workflowAdapter, consumer } = host;
+  const riskFlowConsumer = createDeploymentRiskFlowEventConsumerV1({
+    consumer,
+    adapter: workflowAdapter,
+    eventRuntime: riskFlow.eventRuntime,
+    authorizationScope: foundation.authorizationScope,
+    access: foundation.access,
+  });
+  const registry = new OutboxDispatchRegistryV1();
+  const bind = (eventType, name, operation) =>
+    registry.register(eventType, name, (event, context) =>
+      foundation.authorizationScope.runEvent(event, async (source) => {
+        context.signal?.throwIfAborted();
+        return ConsumerResultV1Schema.parse(await operation(event, source, context));
+      }),
+    );
+  bind("knowledge.identification-basis-published.v1", "projection", async (event) => {
+    const outcome = await identification.worker.handlers[event.eventType](event);
+    if (outcome.kind !== "projected") throw new TypeError("DEPLOYMENT_PROJECTION_NOT_CONSUMED");
+    return outcome.consumer;
+  });
+  bind("review.review-resolved.v1", "identification-recovery", (event) =>
+    identification.worker.handlers[event.eventType](event),
+  );
+  bind("warning.warning-recorded.v1", "warning-notification", (event) =>
+    consumeWarningRecordedForInAppNotification(
+      { consumer, writer: assessment.compositions.warning },
+      event,
+    ),
+  );
+  for (const eventType of ["engineering.inputs-ready.v1", "identification.risk-record-accepted.v1"])
+    bind(eventType, "risk-flow", riskFlowConsumer);
+  return registry.assertReady();
+};
+
+/** Agent 与事件独立有限轮询；长模型调用不占用待投递事件租约。 */
+export const createDeploymentWorkerV1 = async (input) => {
+  const host = await createDeploymentGraphsV1({ ...input, role: "worker" });
+  let outbox;
+  try {
+    const { config } = host.foundation;
+    const registry = createDeploymentOutboxDispatchV1(host);
+    outbox = createPostgresOutbox(deploymentConnectionV1(config, input.secrets, "worker"));
+    const runner = createDeploymentAgentRunnerV1(host);
+    return createDeploymentWorkerRuntimeV1({ host, outbox, runner, registry });
+  } catch (error) {
+    await outbox?.close().catch(() => undefined);
+    await host.close().catch(() => undefined);
+    throw error;
+  }
+};
+
+export const createDeploymentWorkerRuntimeV1 = ({ host, outbox, runner, registry }) => {
+  const { config } = host.foundation;
+  registry.assertReady();
+  const lifecycleOptions = {
+    pollMs: config.worker.pollMs,
+    drainTimeoutMs: config.worker.drainTimeoutMs,
+    leaseTimeoutMs: config.worker.leaseTimeoutMs,
+  };
+  const agents = new WorkerLifecycleV1({
+    ...lifecycleOptions,
+    poll: async () => true,
+    dispatch: (_, { signal }) => runner.runOnce(signal),
+  });
+  const events = new WorkerLifecycleV1({
+    ...lifecycleOptions,
+    poll: async ({ signal }) => {
+      signal.throwIfAborted();
+      return (await outbox.claimBatch({ policy: config.outbox, leaseOwner: config.instanceId }))
+        .events;
+    },
+    dispatch: async (batch, { signal }) => {
+      let next = 0;
+      let processed = 0;
+      const worker = async () => {
+        while (next < batch.length && !signal.aborted) {
+          const claimed = batch[next++];
+          const lease = {
+            eventId: claimed.eventId,
+            leaseOwner: claimed.leaseOwner,
+            leaseToken: claimed.leaseToken,
+          };
+          if (Date.parse(claimed.leaseUntil) <= Date.now()) continue;
+          try {
+            const result = await registry.dispatch(claimed.event, { signal });
+            signal.throwIfAborted();
+            if (result.status !== "acknowledged")
+              throw new TypeError("DEPLOYMENT_CONSUMER_RECEIPT_MISSING");
+            await outbox.acknowledge(lease);
+            processed += 1;
+          } catch (error) {
+            if (signal.aborted || error?.code === "OUTBOX_LEASE_LOST") continue;
+            const errorCode =
+              error instanceof UnknownOutboxEventError
+                ? "UNKNOWN_OUTBOX_EVENT"
+                : (error?.code ?? "DEPLOYMENT_EVENT_FAILED");
+            try {
+              await outbox.recordFailure({
+                ...lease,
+                policy: config.outbox,
+                errorCode,
+                diagnosticRef: error?.diagnosticRef ?? {
+                  kind: "diagnostic-artifact",
+                  reference: {
+                    entityId: `deployment-event:${claimed.eventId}`,
+                    versionId: claimed.leaseToken,
+                  },
+                },
+              });
+            } catch (failure) {
+              if (failure?.code !== "OUTBOX_LEASE_LOST") throw failure;
+            }
+            if (error instanceof UnknownOutboxEventError) throw error;
+          }
+        }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(config.worker.maxConcurrency, batch.length) }, worker),
+      );
+      return processed;
+    },
+  });
+  let closed = false;
+  return {
+    host,
+    registry,
+    runner,
+    agents,
+    events,
+    start() {
+      if (closed) throw new TypeError("DEPLOYMENT_WORKER_CLOSED");
+      registry.assertReady();
+      agents.start();
+      events.start();
+    },
+    async runOnce() {
+      if (closed) throw new TypeError("DEPLOYMENT_WORKER_CLOSED");
+      return Promise.all([agents.runOnce(), events.runOnce()]);
+    },
+    async close() {
+      if (closed) return { settled: true, remaining: 0 };
+      const outcomes = await Promise.all([agents.stop(), events.stop()]);
+      if (outcomes.some(({ settled }) => !settled))
+        return {
+          settled: false,
+          remaining: outcomes.reduce((count, result) => count + result.remaining, 0),
+        };
+      await outbox.close();
+      await host.close();
+      closed = true;
+      return { settled: true, remaining: 0 };
+    },
+  };
+};
+
+/** 系统查询只观察实际服务及登记版本；端点探针不执行推理。 */
+export const createDeploymentSystemOperationsV1 = (options) => {
+  const { foundation, registry, secrets } = options;
+  return {
+    async probe(componentId, signal) {
+      signal.throwIfAborted();
+      if (componentId === "api")
+        return { status: options.app.server.listening ? "available" : "unavailable" };
+      if (componentId === "postgresql") {
+        await foundation.runtime.pool.query({ text: "SELECT 1", query_timeout: 1_500 });
+      } else if (componentId === "artifact-store") {
+        const root = foundation.config.localRoots.artifactRoot;
+        await assertControlledPathV1(dirname(root), root);
+        if (!(await lstat(root)).isDirectory()) return { status: "unavailable" };
+        await accessFile(root, constants.R_OK | constants.W_OK);
+      } else if (componentId === "model-gateway") {
+        for (const { backend, config } of foundation.config.models) {
+          const path =
+            backend === "llamacpp"
+              ? "/health"
+              : config.protocol === "ollama-embed"
+                ? "/api/version"
+                : "/models";
+          const endpoint =
+            backend === "network-api" && config.protocol === "openai-chat"
+              ? `${config.baseUrl.replace(/\/$/, "")}${path}`
+              : new globalThis.URL(path, config.baseUrl);
+          const response = await globalThis.fetch(endpoint, {
+            signal,
+            redirect: "error",
+            ...(config.protocol === "openai-chat"
+              ? { headers: { Authorization: `Bearer ${secrets[config.credentialRef]}` } }
+              : {}),
+          });
+          await response.body?.cancel();
+          if (!response.ok)
+            return { status: "unavailable", reasonCode: "MODEL_ENDPOINT_UNAVAILABLE" };
+        }
+      } else {
+        throw new TypeError("DEPLOYMENT_HEALTH_COMPONENT_UNSUPPORTED");
+      }
+      signal.throwIfAborted();
+      return { status: "available" };
+    },
+    async readModelVersions({ signal }) {
+      signal.throwIfAborted();
+      return registry.values().map(({ metadata, budgetPolicy }) => {
+        const model = foundation.config.models.find(({ config }) =>
+          sameRef(config.deploymentRef, budgetPolicy.modelDeploymentRef),
+        )?.config;
+        if (model === undefined) throw new TypeError("DEPLOYMENT_MODEL_VERSION_BINDING_MISSING");
+        return {
+          taskType: metadata.taskType,
+          deploymentRef: model.deploymentRef,
+          modelVersionRef: model.modelVersionRef,
+          ...(model.serverBuildRef === undefined ? {} : { serverBuildRef: model.serverBuildRef }),
+          promptTemplateRef: budgetPolicy.promptTemplateRef,
+          toolPolicyRef: budgetPolicy.toolPolicyRef,
+          budgetPolicyRef: budgetPolicy.policyRef,
+          supportedTriggerModes: [...metadata.supportedTriggerModes],
+        };
+      });
+    },
+  };
+};
+
+/** 构造与监听分开；完整真实端口及请求来源作用域就绪后才能显式 listen。 */
+export const createDeploymentApiV1 = async (input) => {
+  const host = await createDeploymentGraphsV1({ ...input, role: "api" });
+  const { foundation, identification, assessment, workflowAdapter } = host;
+  const { access, artifactStore, authorizationScope, transactionUnit, config } = foundation;
+  let app;
+  try {
+    const ports = createDeploymentApiPortsV1({
+      db: foundation.runtime.db,
+      access,
+      artifactStore,
+      contextSource: foundation.contextSource,
+      monitoringStore: foundation.monitoringStore,
+      ...identification.api,
+      riskAssessment: assessment.api.riskAssessment,
+      riskAssessmentRead: assessment.readers.riskAssessment,
+      workflow: host.riskFlow.api.workflow,
+      humanDecisionFeedback: host.humanDecisionFeedback,
+      reviewAudit: host.review,
+      agentTask: host.tasks,
+      agentTaskRead: host.tasks,
+      warningLifecycle: assessment.compositions.warning,
+      recommendation: assessment.compositions.recommendation,
+      responseLifecycle: assessment.compositions.responseLifecycle,
+      calibration: assessment.compositions.calibration,
+      transactionUnit,
+      workflowRegistrationStore: workflowAdapter.registrationStore,
+      workflowBodies: workflowAdapter.bodies,
+      riskRecordTrace: createPostgresRiskRecordTraceReader({
+        db: foundation.runtime.db,
+        authorization: access,
+      }),
+      resultReadAuthorization: {
+        issueResultReadAuthorization: (query) =>
+          authorizationScope.authorizeDownstream({
+            projectId: query.projectId,
+            actorId: query.actorId,
+            branch: "projection.result-read",
+            invocationId: query.invocationId,
+            requestedSpatialScopeRefs: query.spatialScopeRefs,
+          }),
+      },
+      runEvents: foundation.runEvents,
+      projectPolicies: host.policies,
+      retrievalRelationshipResults: identification.compositions.context.adapter,
+      hybridResultReader: createPostgresOfficialHybridResultReader({
+        retrievalStore: new PostgresRetrievalAdapter({
+          db: foundation.runtime.db,
+          transactionUnit,
+        }),
+        artifactStore,
+      }),
+      knowledgeGovernanceReadAuthorizer: authorizationScope.authorizeDownstream,
+      systemOperations: createDeploymentSystemOperationsV1({
+        foundation,
+        registry: host.registry,
+        secrets: input.secrets,
+        get app() {
+          return app;
+        },
+      }),
+    });
+    app = buildApi({
+      access,
+      ports,
+      publicOrigin: config.publicOrigin,
+      runRequest: authorizationScope.runRequest,
+    });
+    await app.ready();
+    let lifecycle;
+    let closed = false;
+    return {
+      ...host,
+      app,
+      ports,
+      listen(listenOptions = config.api) {
+        if (closed || lifecycle !== undefined)
+          throw new TypeError("DEPLOYMENT_API_LISTEN_STATE_INVALID");
+        lifecycle = new ApiLifecycleV1({ app, listenOptions });
+        return lifecycle.listen(() => {
+          identification.assertReady();
+          assessment.assertReady();
+        });
+      },
+      async close() {
+        if (closed) return { settled: true, remaining: 0 };
+        if (lifecycle !== undefined && lifecycle.state !== LifecycleStateV1.STOPPED) {
+          const outcome = await lifecycle.close(config.transport.shutdownTimeoutMs);
+          if (!outcome.settled) return outcome;
+        } else {
+          await app.close();
+        }
+        await host.close();
+        closed = true;
+        return { settled: true, remaining: 0 };
+      },
+    };
+  } catch (error) {
+    await app?.close().catch(() => undefined);
+    await host.close().catch(() => undefined);
+    throw error;
+  }
+};
+
+export const mainDeploymentV1 = async (args = process.argv.slice(2)) => {
+  const { values } = parseArgs({
+    args,
+    options: {
+      role: { type: "string" },
+      config: { type: "string" },
+      manifest: { type: "string" },
+    },
+  });
+  if (!["api", "worker"].includes(values.role) || !values.config)
+    throw new TypeError("DEPLOYMENT_START_ARGUMENTS_INVALID");
+  const input = await loadDeploymentFoundationInputV1({
+    role: values.role,
+    configFile: values.config,
+    manifestFile: values.manifest,
+  });
+  const runtime = await (values.role === "api"
+    ? createDeploymentApiV1(input)
+    : createDeploymentWorkerV1(input));
+  let stop;
+  const stopped = new Promise((resolve) => {
+    stop = resolve;
+  });
+  process.once("SIGTERM", stop);
+  process.once("SIGINT", stop);
+  let monitor;
+  try {
+    if (values.role === "api") await runtime.listen();
+    else {
+      runtime.start();
+      monitor = setInterval(() => {
+        if (
+          runtime.agents.backgroundFailure !== null ||
+          runtime.events.backgroundFailure !== null
+        ) {
+          process.exitCode = 1;
+          stop();
+        }
+      }, input.config.worker.pollMs);
+    }
+    process.stdout.write(
+      `${JSON.stringify(safeLogRecordV1({ stage: values.role, status: "running", instanceId: input.config.instanceId }))}\n`,
+    );
+    await stopped;
+  } finally {
+    clearInterval(monitor);
+    process.removeListener("SIGTERM", stop);
+    process.removeListener("SIGINT", stop);
+    const outcome = await runtime.close();
+    process.stdout.write(
+      `${JSON.stringify(safeLogRecordV1({ stage: values.role, status: outcome.settled ? "stopped" : "draining", count: outcome.remaining }))}\n`,
+    );
+    if (!outcome.settled) process.exitCode = 1;
+  }
+};
+
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+  mainDeploymentV1().catch(() => {
+    process.stderr.write("DEPLOYMENT_START_FAILED\n");
+    process.exitCode = 1;
+  });
+}

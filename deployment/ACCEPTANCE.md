@@ -1,6 +1,8 @@
 # RiskFlow 当前功能验收
 
-C37 使用真实 API、Worker、PostgreSQL、Qdrant、工件存储和获批准的推理服务，验收识别、复核、评估、预警、处置、执行反馈及审计追溯。当前样本为 `references/acceptance/synthetic-v1`，标记为“合成样本，待甲方复核”。报告只证明功能，不证明真实工程准确率。
+已实现工程成果由 [deliver-offline-private-deployment-and-operations](../openspec/changes/deliver-offline-private-deployment-and-operations/proposal.md) 保留；剩余真实功能与完整桌面取证归 [complete-private-deployment-functional-acceptance](../openspec/changes/complete-private-deployment-functional-acceptance/proposal.md)，接续入口为该 change 的 [handoff.md](../openspec/changes/complete-private-deployment-functional-acceptance/handoff.md)。工程任务与功能任务分开，后续使用真实 API/Worker、数据库/索引/工件及批准模型核验业务终态、权限、预算、审计和追溯。
+
+合成材料 V1 保留历史来源，MinerU 新转换使用 V2 合格投影及其真实资料版本，见下文。样本均标明“合成样本，待甲方复核”；实际报告只能证明其适用范围，不证明真实工程准确率。
 
 ## 当前接入
 
@@ -18,7 +20,15 @@ Embedding 使用 `http://192.168.13.11:11434` 的 `qwen3-embedding:4b`，原生 
 4. 为 PDF、扫描 PDF、PNG/JPEG 与 DOCX 提供 MinerU 官网精准 v4 配置和专用 token；MiniMax key 不能用于 MinerU。XLSX/CSV 使用原生解析。官网实际 ZIP 必须核验后冻结消费字段，未知结构严格拒绝。
 5. 装配完整生产 provider 后启动 API、独立 Worker 与同源 HTTPS Web。依赖缺失或策略漂移时不得声明就绪。
 
-`scripts/deployment/start.mjs` 已包含资料预置所需的基础宿主与迁移检查，API/Worker 的完整业务装配仍在补齐。基础宿主使用 `RISKFLOW_RELEASE_MANIFEST` 指定的发布清单核对发布及迁移身份，不能作为生产就绪证据。这些前置完成后才进入完整浏览器验收。
+`scripts/deployment/start.mjs` 已提供完整 API/Worker 工厂与显式启动 CLI：`node scripts/deployment/start.mjs --role api|worker --config <真实部署配置> --manifest <同发布清单>`。启动核对已完成的初始化与迁移，不自动引导或迁移；发布清单亦可通过 `RISKFLOW_RELEASE_MANIFEST` 指定。正式初始化库的装配回归通过，真实业务、HTTPS Web 及可见浏览器验收仍须使用本次实际部署及批准输入取证。
+
+## 本次拆分核验（2026-10-13）
+
+原 change 的已实现工程任务整理为 43/43，新 change 的 14 项剩余任务尚未执行。两个 change 的规格、设计、施工图和任务同步划分范围；当前宿主仍只开放 synthetic-acceptance 合置本地 C04，完整 remote host 交 C38 F-03，不能因 adapter 已存在而宣称可启动。
+
+本次工程复验：14 个部署/图/终态观察定向套件 383 项通过；`pnpm test:deployment` 20 个套件 408 项通过；模型/评分包/所属 adapter/API quality/Web 确认另 14 个定向套件 245 项通过。三批存在重叠，不累加为全仓覆盖。`NODE_OPTIONS=--max-old-space-size=8192 pnpm build`、依赖边界/政策、两个 change strict、本轮 Markdown 格式及 diff 检查均通过。
+
+本次 `pnpm test:browser` 为 86 passed / 2 failed，慢读/切工程取消与重评确认按钮点击均首次、重试失败，已移交新 change IP-21；全仓 strict 为 32 passed / 11 failed，原已归档规格长正文问题仍未闭合。原 [verification.md](../openspec/changes/deliver-offline-private-deployment-and-operations/verification.md) 已备齐归档材料，结论保持 BLOCKED：固定实现检查点、必要独立审计及上述门禁尚未成立，旧 88/0 不能替代本次结果。
 
 ## 证据与命令
 
@@ -50,7 +60,7 @@ SSE 运行事件读取已按 D-21 接线：迁移 000057 只登记引用关联�
 
 2026-10-13 部署配置任务 2.1 已闭合：配置/发布测试 33 项、入口测试 51 项通过，覆盖真实文件加载、职责秘密集合及非法配置/错误发布/缺失或权限过宽秘密的失败闭合。C27 候选精确父运行证明回归 14 项、C03 与两个子图回归 66 项通过；C06 只读下游授权回归 24 项通过，验证连续读取不增加上下文和审计。子运行启动审计保存精确父引用，不依赖子图收口后才登记的链边。以上均属工程证据。
 
-2026-10-13 策略任务 4.1 已闭合，当前任务为 34/44：`pnpm exec vitest run packages/adapters/test/deployment/policies-readers.test.ts scripts/deployment/entrypoints.test.mjs` 当次 81 项通过。十六类策略使用原 Schema、精确版本及不可变正文；目录与数据集共用受控根内文件读取，读取前与流式读取均限制大小，拒绝链接、越界和非法 UTF-8。示例目录改为 dataRoot/policies/catalog.json。
+2026-10-13 拆分前策略任务 4.1 的历史记录（当时 34/44）：`pnpm exec vitest run packages/adapters/test/deployment/policies-readers.test.ts scripts/deployment/entrypoints.test.mjs` 当次 81 项通过。十六类策略使用原 Schema、精确版本及不可变正文；目录与数据集共用受控根内文件读取，读取前与流式读取均限制大小，拒绝链接、越界和非法 UTF-8。示例目录改为 dataRoot/policies/catalog.json。
 
 检查点只读证明已补齐本地 C04 verifyContent、C15 准备、C24 识别登记和 C30 阶段/路线/错误/结果接缝。普通 C04 open 保留访问审计；证明共用权限、路径、长度及摘要核验而不写访问记录、诊断、回执或审计。`pnpm exec vitest run packages/adapters/test/artifacts/content-addressed-artifact-store.test.ts packages/adapters/test/identification/graph/postgres-identification-graph-adapter.test.ts` 42 项通过；C03/C24 的后续定向回归 36 项通过，加入全库审计/回执/访问/工件/事件计数不增断言。C15/C30 定向回归 56 项通过。生产 validator 已组合本次 C06 来源及当前权限、工程图版本、原启动主体/授权和精确父子收据，并复用识别入口身份派生；宿主入口回归 72 项通过，覆盖四种 checkpoint 操作、身份漂移、撤权、技术错误及未支持引用。尚未装配完整宿主或闭合所有领域引用，以上不作为生产就绪、业务终态或浏览器验收证据；远程 store 缺正文证明能力时拒绝。
 
@@ -60,15 +70,35 @@ C24 检查点工作项已复用本运行冻结工作计划登记与 C04 verifyCo
 
 C24/C30 完整等待登记证明已接到三图，按完整等待对象及工程/运行/主体/范围有界窄读，不枚举历史或新增事实；两份真实 PostgreSQL 套件 42 项通过。C07 复核任务证明共用任务状态解析，核对原主体和完整父运行，不读决定正文；真实复核套件 25 项通过。标准化风险记录复用纯 SELECT record-read，并额外复验未脱敏当前授权与精确识别运行；入口及真实识别读面回归合计 94 项通过（入口 86 项）。C22 候选/合并计划/组证明已组合原严格正文 Schema 与 C04 verifyContent，先证明冻结输入/计划；组合与入口回归 124 项通过（组合 38 项、入口 86 项），原 C22 核心与当时入口回归 143 项通过。最新 API/Worker TypeScript 构建、相关格式/lint、当前 change strict 校验及 diff 检查通过。
 
-上述结果仅是工程回归。生产 checkpointer 的全部所属模块引用验证、完整 host 及真实 Web/Desktop 业务验收仍未完成。当前没有新增真实生产业务、可见浏览器或 Desktop PASS 证据，不据此完成 5.2/16.1–16.3；tasks 仍为 34/44。
+上述结果仅是工程回归。生产 checkpointer 的全部所属模块引用验证、完整 host 及真实 Web/Desktop 业务验收仍未完成。当前没有新增真实生产业务、可见浏览器或 Desktop PASS 证据，不据此完成 5.2/16.1–16.3；当时 tasks 为 34/44；当前拆分状态见上文。
 
 API/Worker foundation 已按独立 checkpointer 角色构造原 saver，并将 end 纳入资源关闭；缺引用校验函数或独立密码在数据库连接前拒绝，provision 保持原职责。入口、预置和组合回归共 138 项通过（入口 89 项、预置 11 项、组合 38 项），相关格式/lint、当前 change strict 与 diff 检查通过。此处只证明装配与前置拒绝，完整宿主运行和真实 saver/领域证明闭包仍须后续取证。
+
+2026-10-13 评估侧十类引用已提供所属模块只读证明并接入宿主 validator：C25 输入/评估记录、C26 预警/历史任务、C27 正式建议、C28 预测/执行/反馈、C29 已落库偏差/校准建议。C30 只证明本运行精确链边或 A0 冻结输入；领域正文、原 Schema/摘要及完整当前授权/空间版本由各所属模块证明。A6 任务在建议链边产生前，经已证明的评估记录及 C26 原任务—预警关系核对历史任务版本。父图转发先核验 C03 精确子入口；预测独立运行不当作评估运行。首次输入及知识准备/用户确认的 put-writes 使用旧 tuple 与已提交模块登记，不能要求新引用已出现于旧状态，也不能用待写数据代替正式事实。
+
+相关完整工程套件分别通过：C30 28 项、C25 38 项、C26 19 项、C27 15 项、C28 34 项、C29 22 项、宿主入口 109 项，共 265 项。六文件首次合跑中的 C29 两项初始计数受新增夹具影响；新增用例移到初始计数用例后，C29 全套 22 项重跑通过。新增历史任务/偏差版本及预测独立运行身份列漂移的三项定向检查通过；各证明用例核对审计、回执、工件、访问与 Outbox 计数不增加。命令为各 `packages/adapters/test/{workflow,risk-assessment,warning,recommendation,response-lifecycle,calibration}/postgres-*.test.ts` 的真实测试路径及 `scripts/deployment/entrypoints.test.mjs`，具体命令按当前施工图 IP-05/IP-16 记录。API/Worker 的 8 GiB TypeScript 构建及相关源码/测试格式、lint、当前 change strict 校验通过。
+
+校准引用时序已按批准方案修正：A3 只冻结输入，A4 正式建议提交后经 C29 受权窄读取得该建议创建时的 pending 偏差版本，再一次登记精确引用、游标及 feedback-deviation/deviation-calibration。Agent 等待、失败、正式建议失败和缺创建记录均不登记未成立引用；后续复核不改变创建版本。评估运行套件 17 项通过，含实际检查点状态断言。
+
+三图 createDeploymentGraphsV1 已在真实 PostgreSQL 初始化库完成构造、五类共享任务注册、所属检查点证明绑定及关闭。测试走正式 initializeDeploymentV1，运行角色仅读迁移账本；修正 C20→C21 查询输入的方法映射为现有 readExact。该构造测试不调用模型、不监听 API、不运行 Worker，也不证明正式业务终态。当时 当时仅完成三图构造；后续完整宿主工程装配已完成，真实业务与可见 Web/Desktop 验收尚未完成，以上均不构成生产 PASS。
+
+2026-10-13 完整 API 宿主 createDeploymentApiV1 已复用同一三图与全部必需 provider，C34 使用同一 C25 engine，C30/C33/C20/C36 均经原公开读口接线。正式初始化库用例完成管理员引导、登录改密、工程授权、真实 HTTP 缺计划业务阻断与注销后拒绝，以及测试端口显式监听和关闭；实际 PostgreSQL/工件目录探针通过，模型探针在受控 HTTP 夹具验证状态、重定向拒绝及取消。模型版本只取五类任务定义与批准配置；服务可达不代表已验证加载版本或推理。riskIdentification.plan 使用本次身份读取已登记计划，缺失/漂移/错主体/撤权及空间、来源缩减均拒绝；重复读取不新增计划。
+
+共享任务运行组合 createDeploymentAgentRunnerV1 注入完整 runTask 作用域，工具执行、候选校验和收口沿同一原任务来源；作用域失败保留原未确认租约恢复，知识编制失败继续经所属 settleAuthoringFailures 收口。正式初始化库空轮询只证明装配与有限调用，不是 Agent 业务完成证据。命令 `pnpm exec vitest run scripts/deployment/entrypoints.test.mjs scripts/deployment/api-ports.test.mjs scripts/deployment/lifecycle.test.mjs apps/api/test/http-shell.test.ts packages/adapters/test/identification/graph/postgres-identification-graph-adapter.test.ts apps/worker/test/agent-runtime/runner.test.ts` 六套件 214 项通过；8 GiB API/Worker 构建通过，相关格式/lint 通过。完整 Outbox Worker 尚缺事件→父运行精确定位与短事务耐久消费回执；inputs-ready 同时含识别和评估准备，独立无父运行事件的投递语义待闭合。tasks 仍为 34/44。
+
+2026-10-13 Worker 事件语义及宿主已补齐：C30 受权窄口只沿正式因果/精确链边和 C03 启动收据定位，暂缺与冲突保持失败重投；消费只认已提交输入、阶段与运行状态，取消态及单独路由不能确认。长图在原 consumer 事务外推进，回执事务内复验；图提交而回执失败后重投补回执。验收入口先核对精确子版本/取消态，重复路由不再追加。assessment 准备与精确 C06 人工独立来源保存无匹配后台运行回执。真实宿主绑定 C20/C24/C26/C30 五消费者，七类原显式无消费者事件保持登记；投影未完成和未知事件不伪造回执。Agent/Outbox 独立轮询，原投递策略与并发预算保持；租约失效不确认，drain 超时不释放仍在用的资源，关闭后拒绝再 claim。
+
+本轮八套件 261 项通过：`pnpm exec vitest run packages/adapters/test/workflow/postgres-workflow-adapter.test.ts scripts/deployment/entrypoints.test.mjs scripts/deployment/risk-flow-composition.test.mjs apps/worker/test/risk-flow/runtime.test.ts scripts/deployment/lifecycle.test.mjs scripts/deployment/composition.test.mjs apps/worker/test/agent-runtime/runner.test.ts scripts/deployment/api-ports.test.mjs`。正式初始化库包含完整 API/Worker 工厂、真实 C06 登录/权限和原 Outbox 空轮询关闭；该用例不调用模型、不执行完整业务。8 GiB API/Worker 构建、相关 ESLint/Prettier、当前 change strict 和 diff 检查通过。这是拆分前 34/44 的历史工程记录，不作为真实业务或 Web/Desktop PASS。
+
+当前运行前置核对：旧功能实例临时目录已消失，原 PostgreSQL/Qdrant 容器已停止，无实际 API/Worker/HTTPS 业务入口；本机未找到可用的完整部署配置、同发布清单与业务运行配置。Ollama 批准版本/模型的只读探针可达，不能替代完整部署。环境中的模型/转换 token 不输出，也不自动替代受限文件加载契约。下一步须选择实际环境并生成/提供这三份配置后重新取证。
+
+本轮定向命令 `pnpm exec vitest run scripts/deployment/entrypoints.test.mjs scripts/deployment/composition.test.mjs scripts/deployment/assessment-composition.test.mjs packages/adapters/test/calibration/postgres-calibration-adapter.test.ts apps/worker/test/assessment/runtime.test.ts apps/worker/test/assessment/composition.test.ts apps/worker/test/risk-flow/acceptance.test.ts` 共 7 个套件、245 项通过，包含真实初始化库、C29 创建/后继/复核版本与越权零写，以及反馈分支等待/成功/失败。`NODE_OPTIONS=--max-old-space-size=8192 pnpm exec tsc -b apps/api apps/worker --pretty false`、相关 prettier/eslint、当前 change strict 和 diff 检查通过。
 
 网络 smoke 的公开配置路径使用 `RISKFLOW_MODEL_GATEWAY_CONFIG`，受限秘密定位文件使用 `RISKFLOW_MODEL_GATEWAY_SECRETS`。报告保存部署、模型、配置、正式对象、审计及 C04 引用和命令，不记录密码、Cookie、密钥、正文或模型内部思考。模型 smoke 使用隔离测试存储时必须明确这一边界。
 
 可用 `RISKFLOW_NETWORK_API_SMOKE_REPORT=<新报告路径>` 将真实 smoke 报告写入新文件，已有文件不会覆盖。2026-10-11 的三能力检查已通过：结构化生成 303 token、Embedding 29 输入 token／2560 维、会话流 26 个增量／288 token。该次使用隔离 PostgreSQL/C04 测试存储，未验证生产授权；报告中的测试工件引用不作为生产业务追溯证据。
 
-2026-10-11 的隔离功能实例已完成 000056 初始化、checkpointer setup、职责角色登录及初始化重放；通过正式 C06/C11/C04 入口登记工程、空间、适用性快照，并完成 10 份 DOCX 与 12 份 CSV 的来源登记和转换。第一份 DOCX 的 JSON-LD 已完整读取、核验 `verified` 并通过原 Schema，共 3 个资料段。证据暂存于 `/tmp/riskflow-functional-runtime-OuUmoX/`：`initialization-report.json`、`initialization-replay-report.json`、`role-login-report.json`、`context-exact-receipts.json`、`non-ocr-material-preparation.json`、`docx-preparation-evidence.json`。这些临时证据需在正式收口时保存到交付证据目录。
+2026-10-11 的隔离功能实例曾完成 000056 初始化、checkpointer setup、职责角色登录及初始化重放；通过正式 C06/C11/C04 入口登记工程、空间、适用性快照，并完成 10 份 DOCX 与 12 份 CSV 的来源登记和转换。第一份 DOCX 的 JSON-LD 曾完整读取、核验 `verified` 并通过原 Schema，共 3 个资料段。原临时证据目录 `/tmp/riskflow-functional-runtime-OuUmoX/` 当前已不存在；上述仅为历史执行记录。正式收口须在当前宿主重新执行并将报告保存到交付证据目录。
 
 上述旧 DOCX/PDF 准备证据来自原转换器，不能改标签作为 MinerU PASS。采用 MinerU 的资料通过正式新资料版本重新准备，并重建清洗、知识和检索输入。已用环境中的 MinerU token 取得五类官网探针结果包：官网布局为 3.4.4，独立于自托管 4.0.12 的 Middle 2.0；探针仅证明协议和字段，尚不能代替生产 C04/资料段/质量与完整业务验收。完整策略及 API/Worker 装配的完成情况由 C37 独立核验，资料准备不能计为浏览器业务验收通过。
 
@@ -98,8 +128,8 @@ MINERU_REAL_SMOKE=1 MINERU_SMOKE_SUITE=references/acceptance/mineru-v2/manifest.
 
 ## 最终交付
 
-签名、多平台正式安装包、禁网三 VM、本地模型/MinerU 介质与许可、4090/128GB 加辅助 NVIDIA GPU 的实测由 C38 独立取证。主卡运行 Qwen3.8-27B，辅助卡运行 MinerU 专用模型；embedding 默认保持独立 Ollama 主机。C38 必须比较同一标注样例的云端/本地转换质量、关键字段和后续结果，并测量双服务同时运行时的峰值显存/RAM、吞吐、延迟、排队和取消；官网功能 PASS 不证明本地质量、资源隔离或离线交付通过。C37 只有全部当前功能义务和必要审计完成后才可 PASS；当前业务缺项仍保留 BLOCKED。
+签名、多平台正式安装包、禁网三 VM、本地模型/MinerU 介质与许可、4090/128GB 加辅助 NVIDIA GPU 的实测由 C38 独立取证。主卡运行 Qwen3.8-27B，辅助卡运行 MinerU 专用模型；embedding 默认保持独立 Ollama 主机。C38 必须比较同一标注样例的云端/本地转换质量、关键字段和后续结果，并测量双服务同时运行时的峰值显存/RAM、吞吐、延迟、排队和取消；官网功能 PASS 不证明本地质量、资源隔离或离线交付通过。后续功能 change 只有全部功能义务和必要审计完成后才可 PASS；原工程任务全勾不表示这些业务缺项通过。
 # MinerU change 的验收范围
 
-`adopt-mineru-document-ingestion`以转换器真实功能与受影响回归验收：五格式源字段/记录关联/页码、JSON-LD、质量阻断、权限/幂等/取消及耐久证据。本机CPU/Vulkan GPU基准为补充报告；完整浏览器业务和目标4090/Qwen双卡交付分别归C37/C38，不作为本change产品验收前置。全仓16项lint错误已修复。2026-10-11已部署MinerU 4.0.12固定服务并完成CPU/P4 Vulkan实测：两轮五格式的预热及各3次重复全部通过，五页扫描件亦完成各3次暖请求，127字段/60记录/原页/JSON-LD均正确。扫描件GPU加速约2.24–2.48倍，服务进程峰值显存1886 MiB；重启后真实PNG转换通过。GPU服务健康运行于127.0.0.1:18000，CPU实例已停止，模型与证据保留。操作见[服务说明](mineru/README.md)，计量与边界见[本机报告](../references/acceptance/mineru-v2/local-benchmark-report.md)。本change正式独立verification仍待最终Git检查点，未提交或归档。
+`adopt-mineru-document-ingestion`以转换器真实功能与受影响回归验收：五格式源字段/记录关联/页码、JSON-LD、质量阻断、权限/幂等/取消及耐久证据。本机CPU/Vulkan GPU基准为补充报告；完整浏览器业务归 complete-private-deployment-functional-acceptance，目标4090/Qwen双卡交付归 C38，不作为本change产品验收前置。全仓16项lint错误已修复。2026-10-11已部署MinerU 4.0.12固定服务并完成CPU/P4 Vulkan实测：两轮五格式的预热及各3次重复全部通过，五页扫描件亦完成各3次暖请求，127字段/60记录/原页/JSON-LD均正确。扫描件GPU加速约2.24–2.48倍，服务进程峰值显存1886 MiB；重启后真实PNG转换通过。GPU服务健康运行于127.0.0.1:18000，CPU实例已停止，模型与证据保留。操作见[服务说明](mineru/README.md)，计量与边界见[本机报告](../references/acceptance/mineru-v2/local-benchmark-report.md)。本change正式独立verification仍待最终Git检查点，未提交或归档。
 

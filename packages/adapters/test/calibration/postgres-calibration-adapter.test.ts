@@ -795,6 +795,31 @@ describe.sequential("PostgreSQL calibration adapter", () => {
       deviationRecordRef: returned.prepared.result.deviationRecordRef,
       agentTaskResultRef: successorTask.resultRef,
     });
+    const createdReadInvocation = "c29-return-v2-created-read";
+    const createdReadInput = {
+      projectId: fixture!.projectId,
+      actorId: fixture!.managerId,
+      requestedAt: C29_FIXTURE_TIME,
+      invocationId: createdReadInvocation,
+      authorization: await fixture!.readAuthorization({
+        invocationId: createdReadInvocation,
+        spatialScopeRefs: [fixture!.rootScopeRef],
+      }),
+      calibrationSuggestionRef: {
+        kind: "calibration-suggestion" as const,
+        reference: {
+          entityId: reservation.successor_suggestion_id,
+          versionId: reservation.successor_suggestion_version_id,
+        },
+      },
+      parentRunRef: {
+        kind: "workflow-run" as const,
+        reference: { entityId: "c29-run-return-v2", versionId: "1" },
+      },
+    };
+    expect(
+      await fixture!.calibration.readCreatedDeviationRecordRef(createdReadInput),
+    ).toBeUndefined();
     const successor = await fixture!.createSuggestion(successorCommand);
     expect(successor).toMatchObject({
       kind: "succeeded",
@@ -820,6 +845,16 @@ describe.sequential("PostgreSQL calibration adapter", () => {
       await rowsFor(returned.prepared.result.deviationRecordRef.reference.entityId),
     ).toHaveLength(2);
     expect(await fixture!.createSuggestion(successorCommand)).toEqual(successor);
+    const createdRef = {
+      kind: "deviation-record" as const,
+      reference: {
+        ...returned.prepared.result.deviationRecordRef.reference,
+        versionId: "2",
+      },
+    };
+    expect(await fixture!.calibration.readCreatedDeviationRecordRef(createdReadInput)).toEqual(
+      createdRef,
+    );
     expect(
       await fixture!.recordReviewOutcome(
         await fixture!.reviewOutcomeCommand({
@@ -862,6 +897,9 @@ describe.sequential("PostgreSQL calibration adapter", () => {
       [2, "pending", reservation.successor_suggestion_id],
       [3, "rejected", reservation.successor_suggestion_id],
     ]);
+    expect(await fixture!.calibration.readCreatedDeviationRecordRef(createdReadInput)).toEqual(
+      createdRef,
+    );
     expect(fixture!.governance.submitRevisions.length).toBe(revisionsBefore);
     expect(
       JSON.stringify(
@@ -1381,6 +1419,123 @@ describe.sequential("PostgreSQL calibration adapter", () => {
     // 拒绝不创建草案。
     expect(Object.keys(read.view)).not.toContain("candidateArtifactRef");
   });
+
+  it("检查点证明已成立偏差与建议的精确版本、父运行且零写", async () => {
+    const state = fixture!;
+    const seeded = await seedSuggestion({ suffix: "checkpoint", threshold: "3" });
+    const decision = await state.decideReview({
+      suffix: "checkpoint",
+      projectId: state.projectId,
+      targetRef: seeded.result.calibrationSuggestionRef,
+      reviewTaskRef: seeded.result.reviewTaskRef,
+      kind: "reject",
+    });
+    expect(
+      (
+        await state.recordReviewOutcome(
+          await state.reviewOutcomeCommand({
+            commandId: "c29-checkpoint-reject",
+            outcome: "reject",
+            suggestionRef: seeded.result.calibrationSuggestionRef,
+            reviewDecisionRef: decision,
+          }),
+        )
+      ).kind,
+    ).toBe("succeeded");
+    const history = await rowsFor(seeded.prepared.result.deviationRecordRef.reference.entityId);
+    expect(history.length).toBeGreaterThan(1);
+    const invocationId = "c29-checkpoint-read";
+    const input = {
+      projectId: state.projectId,
+      actorId: state.managerId,
+      invocationId,
+      requestedAt: seeded.command.issuedAt,
+      authorization: await state.readAuthorization({
+        invocationId,
+        spatialScopeRefs: [state.rootScopeRef],
+      }),
+      parentRunRef: {
+        kind: "workflow-run" as const,
+        reference: { entityId: "c29-run-checkpoint", versionId: "1" },
+      },
+    };
+    const counts = () =>
+      state.rows(`SELECT
+      (SELECT count(*) FROM audit.entries) AS audits,
+      (SELECT count(*) FROM business.command_receipts) AS receipts,
+      (SELECT count(*) FROM business.artifact_manifests) AS artifacts,
+      (SELECT count(*) FROM business.artifact_access_records) AS accesses,
+      (SELECT count(*) FROM outbox.events) AS events`);
+    const before = await counts();
+    const createdInput = {
+      ...input,
+      calibrationSuggestionRef: seeded.result.calibrationSuggestionRef,
+    };
+    expect(await state.calibration.readCreatedDeviationRecordRef(createdInput)).toEqual(
+      seeded.prepared.result.deviationRecordRef,
+    );
+    for (const invalid of [
+      { actorId: "other" },
+      { projectId: "other" },
+      { invocationId: "unsigned" },
+      { authorization: { ...input.authorization, spatialScopeRefs: [] } },
+      {
+        parentRunRef: {
+          ...input.parentRunRef,
+          reference: { ...input.parentRunRef.reference, versionId: "other" },
+        },
+      },
+      {
+        calibrationSuggestionRef: {
+          ...seeded.result.calibrationSuggestionRef,
+          reference: { ...seeded.result.calibrationSuggestionRef.reference, versionId: "other" },
+        },
+      },
+    ]) {
+      expect(
+        await state.calibration.readCreatedDeviationRecordRef({ ...createdInput, ...invalid }),
+      ).toBeUndefined();
+    }
+    for (const reference of [
+      seeded.prepared.result.deviationRecordRef,
+      seeded.result.calibrationSuggestionRef,
+      ...history.map((row) => ({
+        kind: "deviation-record" as const,
+        reference: { entityId: row.deviation_record_id, versionId: row.version_id },
+      })),
+    ]) {
+      expect(await state.calibration.verifyCheckpointReference({ ...input, reference })).toBe(true);
+      for (const invalid of [
+        { actorId: "other" },
+        { projectId: "other" },
+        { invocationId: "unsigned" },
+        { authorization: { ...input.authorization, spatialScopeRefs: [] } },
+        {
+          parentRunRef: {
+            ...input.parentRunRef,
+            reference: { ...input.parentRunRef.reference, versionId: "other" },
+          },
+        },
+        { reference: { ...reference, reference: { ...reference.reference, versionId: "other" } } },
+      ])
+        expect(
+          await state.calibration.verifyCheckpointReference({ ...input, reference, ...invalid }),
+        ).toBe(false);
+    }
+    state.access.deny();
+    try {
+      expect(await state.calibration.readCreatedDeviationRecordRef(createdInput)).toBeUndefined();
+      expect(
+        await state.calibration.verifyCheckpointReference({
+          ...input,
+          reference: seeded.result.calibrationSuggestionRef,
+        }),
+      ).toBe(false);
+    } finally {
+      state.access.allow();
+    }
+    expect(await counts()).toEqual(before);
+  }, 120_000);
 
   it("校准窄读的目标缺失、版本错配与主体错配都失败闭合", async () => {
     const seeded = await seedSuggestion({ suffix: "narrow-denied", threshold: "6" });

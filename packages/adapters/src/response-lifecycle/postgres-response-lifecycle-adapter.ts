@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { sql, type Kysely, type Transaction } from "kysely";
 
 import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/access";
@@ -230,6 +231,8 @@ interface ForecastOutcomeRow {
   recommendation_version_id: string;
   route_decision_id: string;
   route_decision_version_id: string;
+  forecast_run_id: string;
+  forecast_run_version_id: string;
   forecast_input_snapshot_id: string;
   forecast_input_snapshot_version_id: string;
   frozen_basis_snapshot_id: string;
@@ -454,6 +457,10 @@ const parseForecastOutcome = (
     sha256CanonicalJson(parsed.data) !== row.content_digest ||
     parsed.data.projectId !== row.project_id ||
     !sameRef(parsed.data.effectForecastRef.reference, forecastRef) ||
+    !sameRef(parsed.data.forecastRunRef.reference, {
+      entityId: row.forecast_run_id,
+      versionId: row.forecast_run_version_id,
+    }) ||
     !sameRef(parsed.data.responseRecommendationRef.reference, {
       entityId: row.recommendation_id,
       versionId: row.recommendation_version_id,
@@ -2882,6 +2889,47 @@ export class PostgresResponseLifecycleAdapter
     if (decision === undefined || decision.redacted) return undefined;
     if (decision.context.actorId !== input.actorId) return undefined;
     return decision.context;
+  }
+
+  /** 运行归属由 C30 证明，此处仅按精确版本证明领域正文。 */
+  async verifyCheckpointReference(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly invocationId: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly reference: ContractReferenceV1;
+  }): Promise<boolean> {
+    if (
+      input.reference.kind !== "effect-forecast" &&
+      input.reference.kind !== "execution-record" &&
+      input.reference.kind !== "feedback"
+    )
+      return false;
+    const verified = await this.#verifyRead(input, "warning-response.read");
+    if (verified === undefined || !isDeepStrictEqual(verified, input.authorization)) return false;
+    const scopes = verified.spatialScopeRefs.map((scope) => scope.reference.entityId);
+    if (scopes.length === 0) return false;
+    const ref = input.reference.reference;
+    const row =
+      input.reference.kind === "effect-forecast"
+        ? await this.#loadForecastOutcome(input.projectId, ref, scopes)
+        : input.reference.kind === "execution-record"
+          ? await this.#loadExecution(input.projectId, ref, scopes)
+          : await this.#loadFeedback(input.projectId, ref, scopes);
+    if (
+      row === undefined ||
+      !verified.spatialScopeRefs.some((scope) =>
+        sameRef(scope.reference, {
+          entityId: row.spatial_scope_entity_id,
+          versionId: row.spatial_scope_version_id,
+        }),
+      )
+    )
+      return false;
+    if (input.reference.kind === "effect-forecast")
+      parseForecastOutcome(row as ForecastOutcomeRow, ref);
+    return true;
   }
 
   /**

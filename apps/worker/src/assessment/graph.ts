@@ -336,7 +336,10 @@ export interface AssessmentGraphPortsV1 {
     "forecastResponse" | "calculateDeviation"
   >;
   /** C29 校准：越限偏差只形成待人工审核建议，发布不经本图。 */
-  readonly calibration: Pick<CalibrationServiceV1, "prepareInput" | "createSuggestion">;
+  readonly calibration: Pick<
+    CalibrationServiceV1,
+    "prepareInput" | "createSuggestion" | "readCreatedDeviationRecordRef"
+  >;
   readonly calibrationAgent: AssessmentGraphCalibrationAgentPortV1;
   readonly policies: AssessmentGraphPolicyCatalogV1;
   /**
@@ -2717,26 +2720,7 @@ const stageA3: StageHandlerV1 = async ({ ports, run, state }) => {
       actionSuffix: "A3",
       cursor,
       commandKind: "assessment-graph.a3",
-      cursorPatch: { deviationRecordRefs: [preparedInput.result.deviationRecordRef] },
-      statePatch: { deviationRecordRef: preparedInput.result.deviationRecordRef },
-      links: () => [
-        assessmentGraphLink({
-          run,
-          fromRef: requiredFrozenRef({
-            run,
-            kind: "feedback",
-            schema: FeedbackRefV1Schema,
-            stage: "A3",
-            detailCode: "feedback-missing",
-            occurredAt,
-          }),
-          toRef: preparedInput.result.deviationRecordRef,
-          relation: "feedback-deviation",
-          stage: "A3",
-          recordedAt: occurredAt,
-          auditEntryId: `${actionIdFor(run, "A3")}:audit`,
-        }),
-      ],
+      links: () => [],
     });
   }
   const evaluated = await evaluateForRun({ ports, run, state, stage: "A3", occurredAt });
@@ -2881,6 +2865,30 @@ const stageA4: StageHandlerV1 = async ({ ports, run, state }) => {
       fail(contractInvalid({ stage: "A4", detailCode: "calibration-result-mismatch", occurredAt }));
     }
     const calibrationSuggestionRef = suggestion.result.calibrationSuggestionRef;
+    const readInvocationId = actionIdFor(run, "A4:calibration-created-record");
+    const deviationRecordRef = await ports.calibration.readCreatedDeviationRecordRef({
+      projectId: run.projectId,
+      actorId: run.actorId,
+      requestedAt: occurredAt,
+      invocationId: readInvocationId,
+      authorization: await downstreamAuthorizationFor({
+        ports,
+        run,
+        branch: "warning-response.read",
+        invocationId: readInvocationId,
+      }),
+      calibrationSuggestionRef,
+      parentRunRef: run.runRef,
+    });
+    if (deviationRecordRef === undefined) {
+      fail(
+        contractInvalid({
+          stage: "A4",
+          detailCode: "calibration-created-record-missing",
+          occurredAt,
+        }),
+      );
+    }
     return await advance({
       ports,
       run,
@@ -2890,8 +2898,12 @@ const stageA4: StageHandlerV1 = async ({ ports, run, state }) => {
       actionSuffix: "A4",
       cursor,
       commandKind: "assessment-graph.a4",
-      cursorPatch: { calibrationSuggestionRefs: [calibrationSuggestionRef] },
+      cursorPatch: {
+        deviationRecordRefs: [deviationRecordRef],
+        calibrationSuggestionRefs: [calibrationSuggestionRef],
+      },
       statePatch: {
+        deviationRecordRef,
         calibrationSuggestionRef,
         agentTaskRefs: appendRef(state.agentTaskRefs, task.agentTaskRef),
         reviewTaskRefs: appendRef(state.reviewTaskRefs, suggestion.result.reviewTaskRef),
@@ -2899,7 +2911,23 @@ const stageA4: StageHandlerV1 = async ({ ports, run, state }) => {
       links: () => [
         assessmentGraphLink({
           run,
-          fromRef: preparedInput.result.deviationRecordRef,
+          fromRef: requiredFrozenRef({
+            run,
+            kind: "feedback",
+            schema: FeedbackRefV1Schema,
+            stage: "A4",
+            detailCode: "feedback-missing",
+            occurredAt,
+          }),
+          toRef: deviationRecordRef,
+          relation: "feedback-deviation",
+          stage: "A4",
+          recordedAt: occurredAt,
+          auditEntryId: `${actionIdFor(run, "A4")}:audit`,
+        }),
+        assessmentGraphLink({
+          run,
+          fromRef: deviationRecordRef,
           toRef: calibrationSuggestionRef,
           relation: "deviation-calibration",
           stage: "A4",

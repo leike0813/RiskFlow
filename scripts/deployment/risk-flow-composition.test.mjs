@@ -15,6 +15,7 @@ import {
   createDeploymentHumanDecisionFeedbackV1,
   createDeploymentRiskFlowV1,
   createDeploymentRiskSpatialPairingV1,
+  createDeploymentRiskFlowEventConsumerV1,
 } from "./composition/risk-flow.mjs";
 import { SingleBindingV1 } from "./runtime.mjs";
 
@@ -38,6 +39,144 @@ const authorization = {
   decidedAt: "2026-10-11T00:00:00.000Z",
   invocation: { kind: "human" },
 };
+
+describe("父图事件消费", () => {
+  const source = {
+    context: authorization,
+    invocationId: "issued",
+    branch: "workflow.start-run",
+    sourceVersionRefs: [],
+    causalRunRef: typedRef("workflow-run", "parent"),
+  };
+  const event = {
+    eventType: "engineering.inputs-ready.v1",
+    projectId: "project-a",
+    eventId: "prepared",
+    occurredAt: "2026-10-11T00:00:00.000Z",
+    aggregateRef: typedRef("identification-preparation-snapshot", "preparation"),
+    payload: {
+      preparation: {
+        kind: "identification",
+        identificationPreparationSnapshotRef: typedRef(
+          "identification-preparation-snapshot",
+          "preparation",
+        ),
+      },
+    },
+  };
+  const setup = () => {
+    let completed = false;
+    let inTransaction = false;
+    let receiptFails = false;
+    const adapter = {
+      readEventParentRun: vi.fn(async () => source.causalRunRef),
+      verifyEventConsumption: vi.fn(async () => completed),
+    };
+    const apply = vi.fn(async () => {
+      expect(inTransaction).toBe(false);
+      completed = true;
+    });
+    const consumer = {
+      consume: vi.fn(async (_name, _event, handler) => {
+        inTransaction = true;
+        try {
+          const result = await handler();
+          if (receiptFails) throw new Error("receipt-failed");
+          return { ...result, replayed: false };
+        } finally {
+          inTransaction = false;
+        }
+      }),
+    };
+    const access = {
+      verify: vi.fn(async () => ({ context: authorization, redacted: false })),
+      readDeploymentAuthorizationSource: async () => source,
+    };
+    const consume = createDeploymentRiskFlowEventConsumerV1({
+      adapter,
+      consumer,
+      access,
+      authorizationScope: { authorizeCurrent: async () => authorization },
+      eventRuntime: { applyIdentificationPreparation: apply, applyAcceptedRisk: apply },
+    });
+    return {
+      consume,
+      adapter,
+      consumer,
+      apply,
+      access,
+      failReceipt: (value) => {
+        receiptFails = value;
+      },
+      setCompleted: (value) => {
+        completed = value;
+      },
+    };
+  };
+  it("图推进在回执事务外，回执失败重投只补回执", async () => {
+    const test = setup();
+    test.failReceipt(true);
+    await expect(test.consume(event, { source })).rejects.toThrow();
+    test.failReceipt(false);
+    expect(await test.consume(event, { source })).toMatchObject({ resultRef: source.causalRunRef });
+    expect(test.apply).toHaveBeenCalledTimes(1);
+    expect(test.consumer.consume).toHaveBeenCalledTimes(2);
+  });
+  it("关联暂缺或图仅返回非空结果不能登记回执", async () => {
+    const test = setup();
+    test.adapter.readEventParentRun.mockResolvedValueOnce(undefined);
+    await expect(test.consume(event, { source })).rejects.toThrow();
+    expect(test.apply).not.toHaveBeenCalled();
+    test.apply.mockImplementationOnce(async () => ({ status: "cancelled" }));
+    await expect(test.consume(event, { source })).rejects.toThrow();
+    expect(test.consumer.consume).not.toHaveBeenCalled();
+  });
+  it("assessment 准备和正式独立来源保存回执，当前撤权仍拒绝", async () => {
+    const test = setup();
+    const assessment = {
+      ...event,
+      aggregateRef: typedRef("assessment-preparation-snapshot", "assessment"),
+      payload: {
+        preparation: {
+          kind: "assessment",
+          assessmentPreparationSnapshotRef: typedRef(
+            "assessment-preparation-snapshot",
+            "assessment",
+          ),
+        },
+      },
+    };
+    expect(await test.consume(assessment, { source })).toMatchObject({
+      resultRef: assessment.aggregateRef,
+    });
+    expect(await test.consume(event, { source, independent: true })).toMatchObject({
+      resultRef: event.aggregateRef,
+    });
+    expect(test.apply).not.toHaveBeenCalled();
+    expect(test.adapter.readEventParentRun).not.toHaveBeenCalled();
+    test.access.verify.mockResolvedValueOnce({ context: authorization, redacted: true });
+    await expect(test.consume(assessment, { source })).rejects.toThrow();
+    expect(test.consumer.consume).toHaveBeenCalledTimes(2);
+  });
+  it("验收按精确子引用定位，事务内消费证明失败则不确认", async () => {
+    const test = setup();
+    test.setCompleted(true);
+    test.adapter.verifyEventConsumption
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+    const accepted = {
+      ...event,
+      eventType: "identification.risk-record-accepted.v1",
+      payload: { identificationRunRef, standardizedRiskRecordRef: riskRecordRef },
+    };
+    await expect(test.consume(accepted, { source })).rejects.toThrow();
+    expect(test.adapter.readEventParentRun).toHaveBeenCalledWith(
+      expect.objectContaining({ identificationRunRef }),
+    );
+    expect(test.apply).not.toHaveBeenCalled();
+  });
+});
 
 const binding = (projectId, suffix = projectId) => ({
   projectId,
@@ -185,7 +324,9 @@ describe("C41 部署人工决定与反馈组合", () => {
     );
     const result = createDeploymentHumanDecisionFeedbackV1(feedbackProviders().options);
 
-    expect(result.humanDecisionFeedback).toBeInstanceOf(actual.PostgresHumanDecisionFeedbackAdapter);
+    expect(result.humanDecisionFeedback).toBeInstanceOf(
+      actual.PostgresHumanDecisionFeedbackAdapter,
+    );
     expect(result.humanDecisionProof).toBe(result.humanDecisionFeedback);
     expect(result.routeDecisions).toBe(result.humanDecisionFeedback);
   });
@@ -210,13 +351,13 @@ describe("C41 部署人工决定与反馈组合", () => {
       undefined,
     );
     expect(bindingProof.verifyResponseWorkflowBinding).toHaveBeenCalledWith(command);
-    await expect(adapterOptions.runCompletionProof.verifyWorkflowRunCompletion(command)).resolves.toBe(
-      undefined,
-    );
+    await expect(
+      adapterOptions.runCompletionProof.verifyWorkflowRunCompletion(command),
+    ).resolves.toBe(undefined);
     expect(runCompletionProof.verifyWorkflowRunCompletion).toHaveBeenCalledWith(command);
-    expect(() => result.bindC30({ workflow: input.workflow, bindingProof, runCompletionProof })).toThrow(
-      "already closed",
-    );
+    expect(() =>
+      result.bindC30({ workflow: input.workflow, bindingProof, runCompletionProof }),
+    ).toThrow("already closed");
   });
 
   it("fails construction when an owning-module proof or C26 binding is absent", () => {

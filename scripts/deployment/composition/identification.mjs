@@ -578,7 +578,7 @@ export const createDeploymentIdentificationV1 = (options) => {
 
   const commonPolicies = [...projects.values()][0].policies;
   const cleaningRetrieval = deferredPort("C15→C20 retrieve", ["retrieve"]);
-  const retrievalInput = deferredPort("C20→C21 queryInputReader", ["readQueryInput"]);
+  const retrievalInput = deferredPort("C20→C21 queryInputReader", ["readExact"]);
   const contextInput = deferredPort("C21←C24 contextInputReader", ["readExact"]);
   const workPlan = deferredPort("C22←C24 workPlanReader", ["readExact"]);
 
@@ -723,7 +723,11 @@ export const createDeploymentIdentificationV1 = (options) => {
   const result = {
     compositions: { cleaning, knowledge, retrieval, context, candidate, humanReview, graph },
     api: {
-      riskIdentification: graph.runtime,
+      riskIdentification: {
+        plan: (command) => graph.adapter.readRegisteredWorkPlan(command),
+        analyze: (command) => candidate.service.analyze(command),
+        finalize: (command) => candidate.service.finalize(command),
+      },
       riskIdentificationRead,
       knowledgeModeling: knowledge.adapter,
     },

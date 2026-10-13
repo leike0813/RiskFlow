@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 import {
   AgentTaskDefinitionRegistry,
@@ -693,5 +694,109 @@ describe("agent runtime worker", () => {
     expect(await runner.runOnce()).toBe(1);
     expect(store.calls).toContain("fail-task");
     expect(store.calls).not.toContain("reserve");
+  });
+
+  it("runs the whole claimed execution inside the host task scope", async () => {
+    const scope = new AsyncLocalStorage<string>();
+    const observed: string[] = [];
+    const observe = () => {
+      observed.push(scope.getStore() ?? "none");
+    };
+    const base = definition(async () => {
+      observe();
+      return { observationArtifactRef: artifact, effect: "none" as const };
+    });
+    const scopedDefinition: AgentTaskDefinitionV1 = {
+      ...base,
+      validateCandidate: (...input) => {
+        observe();
+        return base.validateCandidate(...input);
+      },
+      finalizeCandidate: (candidate, context) => {
+        observe();
+        return buildCompletedAgentTaskResult(context.envelope.agentTaskRef, artifact);
+      },
+    };
+    const gateway = {
+      completeStructured: vi.fn(async (request) => ({
+        schemaVersion: "1" as const,
+        invocationId: request.invocationId,
+        modelDeploymentRef: request.modelDeploymentRef,
+        serverBuildRef: { entityId: "server", versionId: "1" },
+        modelVersionRef: { entityId: "model-version", versionId: "1" },
+        usage: { available: true, inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        rawResponseRef: artifact,
+        promptTemplateRef: request.promptTemplateRef,
+        outputSchemaRef: request.outputSchemaRef,
+        value: { operation: "candidate" },
+        finishReason: "stop" as const,
+      })),
+    } as unknown as ModelGatewayPortV1;
+    const interpretModelStep = vi
+      .fn()
+      .mockReturnValueOnce({ kind: "tool-request", toolRef, toolInput: { operation: "candidate" } })
+      .mockReturnValueOnce({
+        kind: "completed",
+        candidate: {
+          schemaVersion: "1",
+          taskRef,
+          candidateVersion: 1,
+          parentCandidateVersion: 0,
+          candidateArtifactRef: artifact,
+          incrementArtifactRef: artifact,
+          disposition: "pending",
+          createdAt: "2030-01-01T00:00:02.000Z",
+        },
+        candidatePayload: { operation: "candidate" },
+        increment: { operation: "candidate" },
+      });
+    const scopedTasks: string[] = [];
+    const store = makeStore();
+    const runner = new AgentRuntimeRunner({
+      store,
+      registry: new AgentTaskDefinitionRegistry([scopedDefinition]),
+      workerId: "worker-1",
+      leaseDurationMs: 30_000,
+      maxConcurrentTasks: 1,
+      modelGateway: gateway,
+      renderModelStep: () => ({ messages: [], maxOutputTokens: 1 }),
+      interpretModelStep,
+      persistArtifact: async () => artifact,
+      runTask: async (claimed, operation) => {
+        scopedTasks.push(claimed.envelope.agentTaskRef.reference.entityId);
+        await scope.run(claimed.envelope.agentTaskRef.reference.entityId, operation);
+      },
+      now: () => "2030-01-01T00:00:01.000Z",
+    });
+
+    expect(await runner.runOnce()).toBe(1);
+    expect(scopedTasks).toEqual(["agent-task:project-1:task-1"]);
+    // 工具执行与候选校验/收口都在同一作用域内，证明包裹的是完整执行而非仅模型步。
+    expect(observed).toEqual(Array<string>(3).fill("agent-task:project-1:task-1"));
+    expect(store.calls).toContain("complete-task");
+  });
+
+  it("leaves the claim to expire when the host scope cannot be established", async () => {
+    const store = makeStore();
+    const executeStep = vi.fn(async () => ({
+      observationArtifactRef: artifact,
+      effect: "none" as const,
+    }));
+    const runner = new AgentRuntimeRunner({
+      store,
+      registry: new AgentTaskDefinitionRegistry([definition(executeStep)]),
+      workerId: "worker-1",
+      leaseDurationMs: 30_000,
+      maxConcurrentTasks: 1,
+      persistArtifact: async () => artifact,
+      runTask: async () => {
+        throw new Error("scope unavailable");
+      },
+      now: () => "2030-01-01T00:00:01.000Z",
+    });
+
+    await expect(runner.runOnce()).rejects.toThrow("scope unavailable");
+    expect(executeStep).not.toHaveBeenCalled();
+    expect(store.calls).toEqual([]);
   });
 });

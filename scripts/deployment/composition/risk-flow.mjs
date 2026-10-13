@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import {
   RISK_ASSESSMENT_DOWNSTREAM_BRANCH_V1,
@@ -29,6 +30,121 @@ const sameRef = (left, right) =>
 
 const sameTypedRef = (left, right) =>
   left?.kind === right?.kind && sameRef(left?.reference, right?.reference);
+
+/** 长图先在回执事务外推进；回执提交失败后按已提交事实补回执。 */
+export const createDeploymentRiskFlowEventConsumerV1 = ({
+  consumer,
+  adapter,
+  eventRuntime,
+  authorizationScope,
+  access,
+}) => {
+  requiredMethod(consumer, "consumer", "consume");
+  requiredMethod(adapter, "adapter", "readEventParentRun");
+  requiredMethod(adapter, "adapter", "verifyEventConsumption");
+  return async (event, { source, independent = false }, { signal } = {}) => {
+    signal?.throwIfAborted();
+    const prepared = event.eventType === "engineering.inputs-ready.v1";
+    if (!prepared && event.eventType !== "identification.risk-record-accepted.v1")
+      throw new TypeError("DEPLOYMENT_RISK_FLOW_EVENT_INVALID");
+    const verifySource = async () => {
+      const decision = await access.verify({
+        authorizationContextRef: source.context.authorizationContextRef,
+        invocationId: source.invocationId,
+        projectId: event.projectId,
+        branch: source.branch,
+        requestedSpatialScopeRefs: source.context.spatialScopeRefs,
+        requestedSourceVersionRefs: source.sourceVersionRefs,
+      });
+      if (
+        decision.redacted ||
+        !sameTypedRef(
+          decision.context.authorizationContextRef,
+          source.context.authorizationContextRef,
+        ) ||
+        !isDeepStrictEqual(decision.context, source.context)
+      )
+        throw new TypeError("DEPLOYMENT_EVENT_AUTHORIZATION_DENIED");
+    };
+    await verifySource();
+    if ((prepared && event.payload.preparation.kind === "assessment") || independent) {
+      return consumer.consume("risk-flow", event, async () => {
+        await verifySource();
+        return { resultRef: event.aggregateRef };
+      });
+    }
+    const commandId = `risk-flow-event:${event.eventId}`;
+    const authorization = await authorizationScope.authorizeCurrent({
+      projectId: event.projectId,
+      actorId: source.context.actorId,
+      invocationId: commandId,
+      branch: "workflow.resume-run",
+    });
+    const issued = await access.readDeploymentAuthorizationSource({
+      authorizationContextRef: authorization.authorizationContextRef,
+      projectId: event.projectId,
+      actorId: source.context.actorId,
+    });
+    if (issued === undefined) throw new TypeError("DEPLOYMENT_EVENT_RESUME_SOURCE_MISSING");
+    const input = {
+      projectId: event.projectId,
+      actorId: source.context.actorId,
+      invocationId: issued.invocationId,
+      requestedAt: new Date().toISOString(),
+      authorization,
+    };
+    const runRef = await adapter.readEventParentRun({
+      ...input,
+      ...(prepared
+        ? { runRef: required(source.causalRunRef, "event causalRunRef") }
+        : { identificationRunRef: event.payload.identificationRunRef }),
+    });
+    if (runRef === undefined) throw new TypeError("DEPLOYMENT_EVENT_PARENT_PENDING");
+    const cause = prepared
+      ? {
+          kind: "inputs-ready",
+          identificationPreparationSnapshotRef:
+            event.payload.preparation.identificationPreparationSnapshotRef,
+        }
+      : {
+          kind: "risk-record-accepted",
+          identificationRunRef: event.payload.identificationRunRef,
+          riskRecordRef: event.payload.standardizedRiskRecordRef,
+        };
+    const proof = { ...input, runRef, cause };
+    if (!(await adapter.verifyEventConsumption(proof))) {
+      signal?.throwIfAborted();
+      const command = {
+        ...input,
+        commandId,
+        idempotencyKey: commandId,
+        issuedAt: event.occurredAt,
+        runRef,
+        authorizationBranch: "workflow.resume-run",
+      };
+      await (prepared
+        ? eventRuntime.applyIdentificationPreparation({
+            ...command,
+            identificationPreparationSnapshotRef: cause.identificationPreparationSnapshotRef,
+          })
+        : eventRuntime.applyAcceptedRisk({
+            ...command,
+            identificationRunRef: cause.identificationRunRef,
+            riskRecordRef: cause.riskRecordRef,
+          }));
+    }
+    signal?.throwIfAborted();
+    // 即使原 consumer 已有回执，也先复验当前权限和消费事实。
+    if (!(await adapter.verifyEventConsumption(proof)))
+      throw new TypeError("DEPLOYMENT_EVENT_CONSUMPTION_UNPROVEN");
+    return consumer.consume("risk-flow", event, async () => {
+      await verifySource();
+      if (!(await adapter.verifyEventConsumption(proof)))
+        throw new TypeError("DEPLOYMENT_EVENT_CONSUMPTION_UNPROVEN");
+      return { resultRef: runRef };
+    });
+  };
+};
 
 /** C41 与 C30/C26 共用一个 PostgreSQL adapter；C30 workflow 在图创建后单次绑定。 */
 export const createDeploymentHumanDecisionFeedbackV1 = (options) => {
@@ -117,11 +233,7 @@ export const createDeploymentHumanDecisionFeedbackV1 = (options) => {
       requiredMethod(workflow, "workflow", "resumeRun");
       requiredMethod(workflow, "workflow", "cancelRun");
       requiredMethod(bindingProof, "bindingProof", "verifyResponseWorkflowBinding");
-      requiredMethod(
-        runCompletionProof,
-        "runCompletionProof",
-        "verifyWorkflowRunCompletion",
-      );
+      requiredMethod(runCompletionProof, "runCompletionProof", "verifyWorkflowRunCompletion");
       workflowBinding.bind(workflow);
       bindingProofBinding.bind(bindingProof);
       return runCompletionProofBinding.bind(runCompletionProof);

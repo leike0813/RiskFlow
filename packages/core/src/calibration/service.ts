@@ -39,6 +39,7 @@ import {
   type ValidationSnapshotRefV1,
   type WarningResponseRecordCommandV1,
   type WarningResponseRecordResultV1,
+  type WorkflowRunRefV1,
 } from "@riskflow/contracts/ports";
 import type { ResponseDeviationFactRefV1 } from "../response-lifecycle/index.js";
 import { sha256CanonicalJson } from "../persistence/index.js";
@@ -644,6 +645,15 @@ export interface CalibrationServiceV1 {
   createSuggestion(
     command: CreateCalibrationSuggestionCommandV1,
   ): Promise<WarningResponseRecordResultV1>;
+  readCreatedDeviationRecordRef(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly invocationId: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly calibrationSuggestionRef: CalibrationSuggestionRefV1;
+    readonly parentRunRef: WorkflowRunRefV1;
+  }): Promise<DeviationRecordRefV1 | undefined>;
   recordReviewOutcome(
     command: CalibrationReviewOutcomeCommandV1,
   ): Promise<CalibrationReviewOutcomeResultV1>;

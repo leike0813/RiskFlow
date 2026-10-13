@@ -758,6 +758,92 @@ describe("C26 预警与处置任务 PostgreSQL 链", () => {
     }
   }, 240_000);
 
+  it("检查点证明预警和历史任务精确版本且不写事实", async () => {
+    const state = fixture!;
+    const assessment = await state.assess({ suffix: "checkpoint-warning" });
+    const opened = await state.adapter.open(
+      await state.openCommand({
+        commandId: "checkpoint-warning-open",
+        assessmentRecordRef: assessment.assessmentRecordRef,
+      }),
+    );
+    expect(opened.kind).toBe("succeeded");
+    if (opened.kind !== "succeeded") return;
+    const next = await state.assess({ suffix: "checkpoint-warning-next" });
+    expect(
+      (
+        await state.adapter.open(
+          await state.openCommand({
+            commandId: "checkpoint-warning-next-open",
+            assessmentRecordRef: next.assessmentRecordRef,
+          }),
+        )
+      ).kind,
+    ).toBe("succeeded");
+    const invocationId = "checkpoint-warning-read";
+    const historicalTask = opened.result.warningResponseTaskRefs[0]!;
+    const currentTask = (await state.taskRows()).find(
+      (task) => task.taskId === historicalTask.reference.entityId,
+    );
+    expect(currentTask?.currentVersionId).not.toBe(historicalTask.reference.versionId);
+    const input = {
+      projectId: state.projectId,
+      actorId: state.managerId,
+      invocationId,
+      requestedAt: C26_FIXTURE_TIME,
+      authorization: await state.readAuthorization(invocationId),
+    };
+    const counts = async () =>
+      (
+        await state.c25.postgres.postgres.adminPool.query(`SELECT
+      (SELECT count(*) FROM audit.entries) AS audit,
+      (SELECT count(*) FROM business.command_receipts) AS receipts,
+      (SELECT count(*) FROM business.artifact_manifests) AS artifacts,
+      (SELECT count(*) FROM business.artifact_access_records) AS accesses,
+      (SELECT count(*) FROM outbox.events) AS events`)
+      ).rows;
+    const before = await counts();
+    for (const reference of [
+      ...opened.result.warningRecordRefs,
+      ...opened.result.warningResponseTaskRefs,
+    ]) {
+      expect(await state.adapter.verifyCheckpointReference({ ...input, reference })).toBe(true);
+      if (reference.kind === "warning-response-task") {
+        expect(
+          await state.adapter.verifyCheckpointReference({
+            ...input,
+            reference,
+            assessmentRecordRef: assessment.assessmentRecordRef,
+          }),
+        ).toBe(true);
+        expect(
+          await state.adapter.verifyCheckpointReference({
+            ...input,
+            reference,
+            assessmentRecordRef: {
+              ...assessment.assessmentRecordRef,
+              reference: {
+                ...assessment.assessmentRecordRef.reference,
+                versionId: "missing",
+              },
+            },
+          }),
+        ).toBe(false);
+      }
+      for (const invalid of [
+        { projectId: "another-project" },
+        { actorId: "another-actor" },
+        { invocationId: "unsigned" },
+        { authorization: { ...input.authorization, spatialScopeRefs: [] } },
+        { reference: { ...reference, reference: { ...reference.reference, versionId: "9999" } } },
+      ])
+        expect(
+          await state.adapter.verifyCheckpointReference({ ...input, reference, ...invalid }),
+        ).toBe(false);
+    }
+    expect(await counts()).toEqual(before);
+  }, 120_000);
+
   // ================================================================== C34 只读
 
   /** 读查询的公共信封：身份即 queryId，授权由夹具按同一身份签发。 */

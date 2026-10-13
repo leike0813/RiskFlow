@@ -21,18 +21,29 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { VersionReference } from "@riskflow/contracts/common";
 import {
+  AgentTaskRefV1Schema,
+  AgentTaskResultRefV1Schema,
   ApplicabilityMetadataSnapshotRefV1Schema,
   AssessmentBasisReleaseSetRefV1Schema,
   AssessmentEvaluationSuccessV1Schema,
   AssessmentInputSnapshotRefV1Schema,
   AssessmentPreparationSnapshotRefV1Schema,
   AuthorizationContextV1Schema,
+  CalibrationInputSnapshotRefV1Schema,
+  CalibrationSuggestionRefV1Schema,
+  ContentArtifactRefV1Schema,
+  DeviationRecordRefV1Schema,
+  EffectForecastRefV1Schema,
+  ExecutionRecordRefV1Schema,
+  FeedbackRefV1Schema,
   ModuleErrorV1Schema,
   MonitoringSnapshotRefV1Schema,
   ProjectRevisionRefV1Schema,
+  ReviewTaskRefV1Schema,
   RiskAssessmentRecordRefV1Schema,
   SpatialScopeRefV1Schema,
   StandardizedRiskRecordRefV1Schema,
+  WarningResponseRecordResultV1Schema,
   WorkflowRunRefV1Schema,
   type AssessmentBasisReleaseSetRefV1,
   type AssessmentEvaluationCommandV1,
@@ -40,6 +51,7 @@ import {
   type ApplicabilityMetadataSnapshotRefV1,
   type AuthorizationContextV1,
   type ContractReferenceV1,
+  type DeviationRecordRefV1,
   type EngineeringDataPortV1,
   type EngineeringFreezeCommandV1,
   type KnowledgeModelingPortV1,
@@ -60,10 +72,19 @@ import {
 import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/access";
 import type { ArtifactStorePolicyV1 } from "@riskflow/core/artifacts";
 import { ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1 } from "@riskflow/core/assessment-config";
-import type { CalibrationServiceV1 } from "@riskflow/core/calibration";
+import {
+  CALIBRATION_AGENT_TASK_TYPE_V1,
+  CalibrationValidationPolicyV1Schema,
+  type CalibrationServiceV1,
+  type CalibrationValidationPolicyV1,
+} from "@riskflow/core/calibration";
 import { sha256CanonicalJson } from "@riskflow/core/persistence";
 import type { RecommendationServiceV1 } from "@riskflow/core/recommendation";
-import type { ResponseLifecycleServiceV1 } from "@riskflow/core/response-lifecycle";
+import {
+  ResponseDeviationFactRefV1Schema,
+  ResponseDeviationFactV1Schema,
+  type ResponseLifecycleServiceV1,
+} from "@riskflow/core/response-lifecycle";
 import type { AssessmentRuntimePolicySetProviderV1 } from "@riskflow/core/risk-assessment/engine";
 import {
   AssessmentBasisReleaseSetReadResultV1Schema,
@@ -77,6 +98,7 @@ import {
   segmentedAssessmentSubRunIdentityFor,
   workflowEntryIdentityFor,
   type WorkflowGraphResultRowV1,
+  type WorkflowGraphLinkV1,
   type WorkflowGraphRunCommandV1,
   type WorkflowGraphRunResultV1,
   type WorkflowGraphRunStateV1,
@@ -268,6 +290,12 @@ interface AssessmentWorldV1 {
   prepareOutcome: "succeeded" | "waiting" | "business-blocked";
   evaluateOutcome: "succeeded" | "transient";
   basisResolution: "succeeded" | "unavailable";
+  /** 反馈入口校准支路：越限偏差才进入 A3/A4。 */
+  feedbackDeviation: "exceeded" | "within-threshold";
+  calibrationAgent: "completed" | "waiting" | "failed";
+  suggestionOutcome: "succeeded" | "failed";
+  /** A4 窄读返回的公共偏差记录引用；`undefined` 表示窄读缺失。 */
+  createdDeviationRecordRef: DeviationRecordRefV1 | undefined;
   readonly calls: {
     readonly freeze: EngineeringFreezeCommandV1[];
     readonly basisResolve: KnowledgeResolutionCommandV1[];
@@ -276,6 +304,14 @@ interface AssessmentWorldV1 {
     readonly prepare: AssessmentPreparationCommandV1[];
     readonly evaluate: AssessmentEvaluationCommandV1[];
     readonly warningOpen: OpenWarningCommandV1[];
+    readonly calculateDeviation: Parameters<ResponseLifecycleServiceV1["calculateDeviation"]>[0][];
+    readonly prepareInput: Parameters<CalibrationServiceV1["prepareInput"]>[0][];
+    readonly createSuggestion: Parameters<CalibrationServiceV1["createSuggestion"]>[0][];
+    readonly preparedDeviationRecordRefs: DeviationRecordRefV1[];
+    readonly createdDeviationRecordRead: Parameters<
+      CalibrationServiceV1["readCreatedDeviationRecordRef"]
+    >[0][];
+    readonly calibrationAgent: Parameters<AssessmentGraphCalibrationAgentPortV1["ensureTask"]>[0][];
   };
 }
 
@@ -284,6 +320,10 @@ const createWorld = (): AssessmentWorldV1 => ({
   prepareOutcome: "succeeded",
   evaluateOutcome: "succeeded",
   basisResolution: "succeeded",
+  feedbackDeviation: "exceeded",
+  calibrationAgent: "completed",
+  suggestionOutcome: "succeeded",
+  createdDeviationRecordRef: undefined,
   calls: {
     freeze: [],
     basisResolve: [],
@@ -292,12 +332,218 @@ const createWorld = (): AssessmentWorldV1 => ({
     prepare: [],
     evaluate: [],
     warningOpen: [],
+    calculateDeviation: [],
+    prepareInput: [],
+    createSuggestion: [],
+    preparedDeviationRecordRefs: [],
+    createdDeviationRecordRead: [],
+    calibrationAgent: [],
   },
 });
 
 /** 本轮不应发生的动作：一旦被调用，用例立即失败（缺席链尾不得靠调用下游端口伪造成立）。 */
 const forbidden = (name: string) => async (): Promise<never> => {
   throw new TypeError(`${name} must not be called by this run`);
+};
+
+/* ------------------ 反馈入口校准替身（record-response-feedback） ------------------ */
+
+type CalculateDeviationPayload = Extract<
+  Parameters<ResponseLifecycleServiceV1["calculateDeviation"]>[0],
+  { readonly kind: "calculate-deviation" }
+>["payload"];
+
+const CALIBRATION_TOOL_POLICY_REF = versionRef("calibration-tool-policy");
+
+/** 公共偏差记录实体由偏差事实身份派生：prepareInput 得 `1`，窄读得正式创建的 `2`。 */
+const deviationRecordEntityFor = (feedbackEntityId: string): string =>
+  `deviation-record:response-deviation-fact:${feedbackEntityId}`;
+
+const deviationFactRefOf = (payload: CalculateDeviationPayload) =>
+  ResponseDeviationFactRefV1Schema.parse({
+    kind: "response-deviation-fact",
+    reference: versionRef(
+      `response-deviation-fact:${payload.feedbackRef.reference.entityId}`,
+      digest(sha256CanonicalJson(payload)),
+    ),
+  });
+
+/** C28 偏差事实替身：图只读取 `thresholdExceeded`，这里给出完整合法事实外形。 */
+const deviationFactOf = (
+  payload: CalculateDeviationPayload,
+  deviationFactRef: ReturnType<typeof deviationFactRefOf>,
+  thresholdExceeded: boolean,
+) =>
+  ResponseDeviationFactV1Schema.parse({
+    schemaVersion: "1",
+    projectId: PROJECT_ID,
+    deviationFactRef,
+    responseRecommendationRef: {
+      kind: "response-recommendation",
+      reference: versionRef(
+        `response-recommendation:${PROJECT_ID}`,
+        digest("response-recommendation-v1"),
+      ),
+    },
+    executionRecordRef: parseRef(
+      ExecutionRecordRefV1Schema,
+      "execution-record",
+      `execution-record:${PROJECT_ID}`,
+      digest("execution-record-v1"),
+    ),
+    effectForecastRef: payload.effectForecastRef,
+    feedbackRef: payload.feedbackRef,
+    frozenAssessmentBasisRef: payload.frozenAssessmentBasisRef,
+    deviationPolicyRef: versionRef("deviation-policy"),
+    basis: "absolute",
+    riskMatrixRef: versionRef("risk-matrix"),
+    targetIndicatorId: "deviation-indicator",
+    unit: "mm",
+    predictedValue: "10",
+    actualValue: thresholdExceeded ? "12" : "10",
+    deviationValue: thresholdExceeded ? "2" : "0",
+    deviationValueNumber: thresholdExceeded ? 2 : 0,
+    thresholdExceeded,
+    direction: thresholdExceeded ? "actual-above" : "equal",
+    predictedRiskState: { likelihoodScore: 1, consequenceScore: 1, riskLevel: "low" },
+    actualRiskState: thresholdExceeded
+      ? { likelihoodScore: 4, consequenceScore: 4, riskLevel: "high" }
+      : { likelihoodScore: 1, consequenceScore: 1, riskLevel: "low" },
+    evidenceReferences: [
+      {
+        locator: { sourceSegmentId: "feedback-segment" },
+        sourceVersion: versionRef("execution-record"),
+      },
+    ],
+    summary: "response-deviation",
+    spatialScopeRef: SPATIAL_SCOPE_REF,
+    computedAt: TIMESTAMP,
+  });
+
+const calibrationAgentPolicy = (): CalibrationValidationPolicyV1 =>
+  CalibrationValidationPolicyV1Schema.parse({
+    schemaVersion: "1",
+    policyRef: versionRef("calibration-validation-policy"),
+    projectId: PROJECT_ID,
+    definitionRef: versionRef("calibration-definition"),
+    toolPolicyRef: CALIBRATION_TOOL_POLICY_REF,
+    incrementSchemaRef: versionRef("calibration-increment-schema"),
+    validationPolicyRef: versionRef("calibration-validation-policy-ref"),
+    budgetPolicy: {
+      schemaVersion: "1",
+      policyRef: versionRef("calibration-budget-policy"),
+      modelDeploymentRef: versionRef("model-deployment"),
+      promptTemplateRef: versionRef("prompt-template"),
+      toolPolicyRef: CALIBRATION_TOOL_POLICY_REF,
+      maxModelInvocations: 1,
+      maxToolInvocations: 1,
+      maxContextTokens: 4096,
+      maxInputBytes: 4096,
+      maxOutputBytes: 4096,
+      maxCandidates: 1,
+      maxObjects: 2,
+      maxSupplementarySearches: 0,
+      maxCorrections: 0,
+      maxTransientRetries: 0,
+      maxConcurrentActions: 1,
+      maxWallClockMs: 1000,
+    },
+    evidenceRequirementCount: 1,
+    maxOperations: 2,
+  });
+
+const calibrationAgentTaskRefOf = (actionId: string) =>
+  AgentTaskRefV1Schema.parse({
+    kind: "agent-task",
+    reference: versionRef(
+      `agent-task:${CALIBRATION_AGENT_TASK_TYPE_V1}:${actionId}`,
+      digest(`agent-task:${actionId}`),
+    ),
+    taskType: CALIBRATION_AGENT_TASK_TYPE_V1,
+    triggerMode: "embedded",
+    modelDeploymentRef: versionRef("model-deployment"),
+    promptTemplateRef: versionRef("prompt-template"),
+    toolPolicyRef: versionRef("tool-policy"),
+    budgetPolicyRef: versionRef("budget-policy"),
+    incrementSchemaRef: versionRef("increment-schema"),
+    validationPolicyRef: versionRef("validation-policy"),
+  });
+
+const calibrationAgentTaskResultRefOf = (input: {
+  readonly agentTaskRef: ReturnType<typeof calibrationAgentTaskRefOf>;
+  readonly actionId: string;
+  readonly candidateRef: ReturnType<typeof CalibrationSuggestionRefV1Schema.parse>;
+}) =>
+  AgentTaskResultRefV1Schema.parse({
+    kind: "agent-task-result",
+    reference: versionRef(
+      `agent-task-result:${input.actionId}`,
+      digest(`agent-task-result:${input.actionId}`),
+    ),
+    status: "completed",
+    agentTaskRef: input.agentTaskRef,
+    candidateRef: input.candidateRef,
+  });
+
+/** 反馈入口冻结输入：依据集合、评估输入快照、效果预测、执行记录与反馈。 */
+const feedbackEntryInputsFor = (seed: string) => {
+  const basisReleaseSetRef = parseRef(
+    AssessmentBasisReleaseSetRefV1Schema,
+    "assessment-basis-release-set",
+    `assessment-basis:${PROJECT_ID}:${seed}`,
+    seed,
+  );
+  const assessmentInputSnapshotRef = parseRef(
+    AssessmentInputSnapshotRefV1Schema,
+    "assessment-input-snapshot",
+    `assessment-input:${PROJECT_ID}:${seed}`,
+    seed,
+  );
+  const effectForecastRef = parseRef(
+    EffectForecastRefV1Schema,
+    "effect-forecast",
+    `effect-forecast:${PROJECT_ID}:${seed}`,
+    seed,
+  );
+  const feedbackRef = parseRef(
+    FeedbackRefV1Schema,
+    "feedback",
+    `feedback:${PROJECT_ID}:${seed}`,
+    seed,
+  );
+  const executionRecordRef = parseRef(
+    ExecutionRecordRefV1Schema,
+    "execution-record",
+    `execution-record:${PROJECT_ID}:${seed}`,
+    seed,
+  );
+  return {
+    basisReleaseSetRef,
+    assessmentInputSnapshotRef,
+    effectForecastRef,
+    feedbackRef,
+    executionRecordRef,
+    frozenRefs: [
+      basisReleaseSetRef,
+      assessmentInputSnapshotRef,
+      effectForecastRef,
+      feedbackRef,
+      executionRecordRef,
+    ] as readonly ContractReferenceV1[],
+  };
+};
+
+/** 反馈分段入口启动：A0 只钉住冻结输入，不经评估准备冻结。 */
+const startFeedbackEntry = async (
+  inputs: ReturnType<typeof feedbackEntryInputsFor>,
+): Promise<AssessmentRunOutcomeV1> => {
+  const scope = harness.scope({
+    entryMode: "record-response-feedback",
+    frozenRefs: inputs.frozenRefs,
+  });
+  return await harness.runtime.start(
+    harness.startCommand({ scope, entryMode: "record-response-feedback" }),
+  );
 };
 
 interface AssessmentPortDoublesV1 {
@@ -316,7 +562,10 @@ interface AssessmentPortDoublesV1 {
     ResponseLifecycleServiceV1,
     "forecastResponse" | "calculateDeviation"
   >;
-  readonly calibration: Pick<CalibrationServiceV1, "prepareInput" | "createSuggestion">;
+  readonly calibration: Pick<
+    CalibrationServiceV1,
+    "prepareInput" | "createSuggestion" | "readCreatedDeviationRecordRef"
+  >;
   readonly calibrationAgent: AssessmentGraphCalibrationAgentPortV1;
   readonly policies: AssessmentGraphPolicyCatalogV1;
 }
@@ -486,18 +735,134 @@ const createPortDoubles = (world: AssessmentWorldV1): AssessmentPortDoublesV1 =>
   },
   responseLifecycle: {
     forecastResponse: forbidden("C28 forecastResponse"),
-    calculateDeviation: forbidden("C28 calculateDeviation"),
+    calculateDeviation: async (command) => {
+      world.calls.calculateDeviation.push(command);
+      if (command.kind !== "calculate-deviation") {
+        throw new TypeError("the assessment graph only calculates deviation");
+      }
+      const thresholdExceeded = world.feedbackDeviation === "exceeded";
+      const deviationFactRef = deviationFactRefOf(command.payload);
+      return {
+        kind: "succeeded",
+        result: {
+          deviationFactRef,
+          fact: deviationFactOf(command.payload, deviationFactRef, thresholdExceeded),
+        },
+      };
+    },
   },
   calibration: {
-    prepareInput: forbidden("C29 prepareInput"),
-    createSuggestion: forbidden("C29 createSuggestion"),
+    prepareInput: async (command) => {
+      world.calls.prepareInput.push(command);
+      const deviationRecordRef = parseRef(
+        DeviationRecordRefV1Schema,
+        "deviation-record",
+        `deviation-record:${command.deviationFactRef.reference.entityId}`,
+        "1",
+      );
+      world.calls.preparedDeviationRecordRefs.push(deviationRecordRef);
+      return {
+        kind: "succeeded",
+        result: {
+          frozenInputRef: parseRef(
+            ContentArtifactRefV1Schema,
+            "content-artifact",
+            `calibration-frozen-input:${PROJECT_ID}`,
+            digest("calibration-frozen-input-v1"),
+          ),
+          inputSnapshotRef: parseRef(
+            CalibrationInputSnapshotRefV1Schema,
+            "calibration-input-snapshot",
+            `calibration-input:${PROJECT_ID}`,
+            digest("calibration-input-v1"),
+          ),
+          deviationRecordRef,
+          targetDefinitionType: "scoring-rule",
+        },
+      };
+    },
+    createSuggestion: async (command) => {
+      world.calls.createSuggestion.push(command);
+      if (command.kind !== "create-calibration-suggestion") {
+        throw new TypeError("the assessment graph only creates a calibration suggestion");
+      }
+      if (world.suggestionOutcome === "failed") {
+        return {
+          kind: "failed",
+          error: businessBlockedFailure("c29-create-suggestion", SPATIAL_SCOPE_REF),
+        };
+      }
+      const calibrationSuggestionRef = parseRef(
+        CalibrationSuggestionRefV1Schema,
+        "calibration-suggestion",
+        `calibration-suggestion:${command.payload.agentTaskResultRef.reference.entityId}`,
+        digest(sha256CanonicalJson(command.payload)),
+      );
+      return WarningResponseRecordResultV1Schema.parse({
+        kind: "succeeded",
+        result: {
+          kind: "calibration",
+          calibrationSuggestionRef,
+          reviewTaskRef: ReviewTaskRefV1Schema.parse({
+            kind: "review-task",
+            reference: versionRef(
+              `calibration-review-task:${calibrationSuggestionRef.reference.entityId}`,
+              digest("calibration-review-task-v1"),
+            ),
+            reviewType: "calibration-suggestion",
+            targetRef: calibrationSuggestionRef,
+            waitingRunRef: parseRef(
+              WorkflowRunRefV1Schema,
+              "workflow-run",
+              `calibration-review-run:${PROJECT_ID}`,
+              digest("calibration-review-run-v1"),
+            ),
+          }),
+        },
+      });
+    },
+    readCreatedDeviationRecordRef: async (input) => {
+      world.calls.createdDeviationRecordRead.push(input);
+      return world.createdDeviationRecordRef;
+    },
   },
   calibrationAgent: {
-    ensureTask: forbidden("C29 agent ensureTask"),
+    ensureTask: async (input) => {
+      world.calls.calibrationAgent.push(input);
+      if (world.calibrationAgent === "failed") {
+        return { kind: "failed", reasonCode: "calibration-agent-terminal-failure" };
+      }
+      const agentTaskRef = calibrationAgentTaskRefOf(input.actionId);
+      if (world.calibrationAgent === "waiting") {
+        return { kind: "waiting", agentTaskRef };
+      }
+      return {
+        kind: "completed",
+        agentTaskRef,
+        agentTaskResultRef: calibrationAgentTaskResultRefOf({
+          agentTaskRef,
+          actionId: input.actionId,
+          candidateRef: parseRef(
+            CalibrationSuggestionRefV1Schema,
+            "calibration-suggestion",
+            `calibration-suggestion:${agentTaskRef.reference.entityId}`,
+            digest(`calibration-suggestion:${input.actionId}`),
+          ),
+        }),
+      };
+    },
   },
   policies: {
     resolveForecastPolicy: forbidden("forecast policy resolution"),
-    resolveCalibrationPolicy: forbidden("calibration policy resolution"),
+    resolveCalibrationPolicy: async () => ({
+      kind: "resolved",
+      targetReleaseRef: {
+        kind: "knowledge-release",
+        reference: versionRef("release-scoring-rule"),
+      },
+      calibrationValidationPolicyRef: versionRef("calibration-validation-policy"),
+      agentPolicy: calibrationAgentPolicy(),
+    }),
   },
   // 下游写动作按 branch 另签上下文：复验时能力来自本上下文，不复用运行上下文。
   authorizeDownstream: async (request) =>
@@ -554,7 +919,7 @@ interface AssessmentGraphHarnessV1 {
     readonly overrides?: Partial<WorkflowGraphRunCommandV1>;
   }): WorkflowGraphRunCommandV1;
   rows(runRef: WorkflowRunRefV1): Promise<readonly WorkflowGraphResultRowV1[]>;
-  links(runRef: WorkflowRunRefV1): Promise<readonly { readonly relation: string }[]>;
+  links(runRef: WorkflowRunRefV1): Promise<readonly WorkflowGraphLinkV1[]>;
   latestState(
     runRef: WorkflowRunRefV1,
   ): Promise<
@@ -773,12 +1138,25 @@ afterAll(async () => {
 /** 每轮用例重置端口行为开关与调用记录：本轮替身返回哪种闭合结果由用例自己声明。 */
 const resetWorld = (
   input: Partial<
-    Pick<AssessmentWorldV1, "prepareOutcome" | "evaluateOutcome" | "basisResolution">
+    Pick<
+      AssessmentWorldV1,
+      | "prepareOutcome"
+      | "evaluateOutcome"
+      | "basisResolution"
+      | "feedbackDeviation"
+      | "calibrationAgent"
+      | "suggestionOutcome"
+      | "createdDeviationRecordRef"
+    >
   > = {},
 ) => {
   harness.world.prepareOutcome = input.prepareOutcome ?? "succeeded";
   harness.world.evaluateOutcome = input.evaluateOutcome ?? "succeeded";
   harness.world.basisResolution = input.basisResolution ?? "succeeded";
+  harness.world.feedbackDeviation = input.feedbackDeviation ?? "exceeded";
+  harness.world.calibrationAgent = input.calibrationAgent ?? "completed";
+  harness.world.suggestionOutcome = input.suggestionOutcome ?? "succeeded";
+  harness.world.createdDeviationRecordRef = input.createdDeviationRecordRef ?? undefined;
   for (const calls of Object.values(harness.world.calls)) calls.length = 0;
 };
 
@@ -1704,4 +2082,106 @@ describe("C30 评估子图运行时（真实 PostgreSQL + 真实 LangGraph）", 
     expect(await harness.rows(scope.runRef)).toEqual(rowsBefore);
     expect(await harness.links(scope.runRef)).toEqual(linksBefore);
   });
+
+  /* ------ record-response-feedback：A3 冻结 / A4 校准建议与公共偏差记录引用时序 ------ */
+
+  it("A3 冻结后 A4 Agent 等待：公共偏差引用与两条链边在正式建议前均不成立", async () => {
+    resetWorld({ calibrationAgent: "waiting" });
+    const inputs = feedbackEntryInputsFor("feedback-waiting");
+    const outcome = await startFeedbackEntry(inputs);
+
+    expect({ status: outcome.status, stage: outcome.stage }).toEqual({
+      status: "waiting",
+      stage: "A4",
+    });
+    expect(outcome.lastWaitingRef?.kind).toBe("agent-task");
+
+    // A3 只冻结校准输入，不登记公共偏差引用；A4 等待 Agent 时两条链边都还没有落点。
+    const latest = await harness.latestState(outcome.runRef);
+    expect(latest?.state.deviationRecordRefs).toEqual([]);
+    expect(latest?.state.calibrationSuggestionRefs).toEqual([]);
+    const checkpoint = await harness.checkpointState(
+      harness.scope({ entryMode: "record-response-feedback", frozenRefs: inputs.frozenRefs })
+        .threadId,
+    );
+    expect(checkpoint.deviationRecordRef).toBeUndefined();
+    expect(checkpoint.calibrationSuggestionRef).toBeUndefined();
+    const relations = (await harness.links(outcome.runRef)).map((link) => link.relation);
+    expect(relations).not.toContain("feedback-deviation");
+    expect(relations).not.toContain("deviation-calibration");
+
+    // 窄读只在正式建议成功后发生：等待期既不读也不登记。
+    expect(harness.world.calls.createdDeviationRecordRead).toEqual([]);
+  }, 300_000);
+
+  it("正式成功：状态、游标与两条链边统一指向窄读返回的准确偏差版本", async () => {
+    resetWorld();
+    const inputs = feedbackEntryInputsFor("feedback-accurate-version");
+    // prepareInput 派生版本 1；正式建议创建记录后窄读返回同一记录的版本 2。
+    const createdRef = parseRef(
+      DeviationRecordRefV1Schema,
+      "deviation-record",
+      deviationRecordEntityFor(inputs.feedbackRef.reference.entityId),
+      "2",
+    );
+    harness.world.createdDeviationRecordRef = createdRef;
+    const outcome = await startFeedbackEntry(inputs);
+
+    expect(outcome.status).toBe("completed");
+    const preparedRef = harness.world.calls.preparedDeviationRecordRefs[0];
+    expect(preparedRef?.reference.entityId).toBe(createdRef.reference.entityId);
+    expect(preparedRef?.reference.versionId).toBe("1");
+    expect(createdRef.reference.versionId).toBe("2");
+
+    // 公共偏差引用只登记窄读返回的准确版本，不沿用 prepareInput 派生的版本。
+    const latest = await harness.latestState(outcome.runRef);
+    expect(latest?.state.deviationRecordRefs).toEqual([createdRef]);
+    expect(
+      (
+        await harness.checkpointState(
+          harness.scope({ entryMode: "record-response-feedback", frozenRefs: inputs.frozenRefs })
+            .threadId,
+        )
+      ).deviationRecordRef,
+    ).toEqual(createdRef);
+    expect(latest?.state.calibrationSuggestionRefs).toHaveLength(1);
+    expect(latest?.state.deviationRecordRefs).not.toContainEqual(preparedRef);
+
+    // A4 窄读按精确建议与父运行身份读取已创建记录。
+    const readInput = harness.world.calls.createdDeviationRecordRead[0];
+    expect(readInput?.calibrationSuggestionRef).toEqual(latest?.state.calibrationSuggestionRefs[0]);
+    expect(readInput?.parentRunRef).toEqual(outcome.runRef);
+
+    // 两条链边都锚定准确版本：反馈 → 偏差 → 校准建议。
+    const links = await harness.links(outcome.runRef);
+    expect(links.find((link) => link.relation === "feedback-deviation")?.toRef).toEqual(createdRef);
+    expect(links.find((link) => link.relation === "deviation-calibration")?.fromRef).toEqual(
+      createdRef,
+    );
+    expect(links.find((link) => link.relation === "deviation-calibration")?.toRef).toEqual(
+      latest?.state.calibrationSuggestionRefs[0],
+    );
+  }, 300_000);
+
+  it.each([
+    ["校准 Agent 失败", "agent-failed", { calibrationAgent: "failed" as const }, false],
+    ["正式建议失败", "suggestion-failed", { suggestionOutcome: "failed" as const }, false],
+    ["窄读缺失", "narrow-read-missing", {}, true],
+  ])(
+    "失败闭合（%s）：均不新增公共偏差引用与两条链边",
+    async (_label: string, seed: string, world, narrowReadCalled: boolean) => {
+      resetWorld(world);
+      const inputs = feedbackEntryInputsFor(seed);
+      const outcome = await startFeedbackEntry(inputs);
+
+      const latest = await harness.latestState(outcome.runRef);
+      expect(latest?.state.deviationRecordRefs).toEqual([]);
+      expect(latest?.state.calibrationSuggestionRefs).toEqual([]);
+      const relations = (await harness.links(outcome.runRef)).map((link) => link.relation);
+      expect(relations).not.toContain("feedback-deviation");
+      expect(relations).not.toContain("deviation-calibration");
+      expect(harness.world.calls.createdDeviationRecordRead.length > 0).toBe(narrowReadCalled);
+    },
+    300_000,
+  );
 });

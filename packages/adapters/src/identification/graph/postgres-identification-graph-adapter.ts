@@ -21,6 +21,7 @@ import type {
 import {
   IDENTIFICATION_GRAPH_SCHEMA_VERSION_V1,
   IdentificationGraphArtifactBodyV1Schema,
+  identificationWorkPlanRefFor,
   IdentificationGraphResultRowV1Schema,
   type IdentificationGraphArtifactBodyV1,
   type IdentificationGraphRegistrationStoreV1,
@@ -45,6 +46,8 @@ import type {
   IdentificationInputSnapshotRefV1,
   IdentificationRunResultRefV1,
   IdentificationWorkPlanRefV1,
+  IdentificationPlanCommandV1,
+  IdentificationPlanResultV1,
   ModuleBranchV1,
   ModuleCapabilityV1,
   StageResultRefV1,
@@ -52,7 +55,7 @@ import type {
   WorkflowRunRefV1,
   WaitingRefV1,
 } from "@riskflow/contracts/ports";
-import { WaitingRefV1Schema } from "@riskflow/contracts/ports";
+import { IdentificationPlanCommandV1Schema, WaitingRefV1Schema } from "@riskflow/contracts/ports";
 import type {
   IdentificationGraphStateV1,
   IdentificationInputSnapshotV1,
@@ -417,6 +420,7 @@ export interface PostgresIdentificationGraphAdapterV1 {
   readWorkPlanBody(
     input: PostgresIdentificationGraphWorkPlanBodyReadV1,
   ): Promise<IdentificationGraphWorkPlanBodyV1 | undefined>;
+  readRegisteredWorkPlan(command: IdentificationPlanCommandV1): Promise<IdentificationPlanResultV1>;
   readInputSnapshotBody(
     input: PostgresIdentificationGraphInputSnapshotBodyReadV1,
   ): Promise<IdentificationInputSnapshotV1 | undefined>;
@@ -1541,6 +1545,107 @@ class PostgresIdentificationGraphAdapter implements PostgresIdentificationGraphA
       }),
     });
     if (verified === undefined) return undefined;
+    return this.#readWorkPlanBody(input, verified);
+  }
+
+  async readRegisteredWorkPlan(
+    rawCommand: IdentificationPlanCommandV1,
+  ): Promise<IdentificationPlanResultV1> {
+    const command = IdentificationPlanCommandV1Schema.parse(rawCommand);
+    const common = {
+      stageCode: "risk-identification.plan",
+      causalRunId: command.commandId,
+      occurredAt: this.#persistence.now().toISOString(),
+      retryable: false as const,
+    };
+    const verified = await this.#persistence.verifyAuthorization(
+      {
+        authorization: command.authorization,
+        projectId: command.projectId,
+        actorId: command.actorId,
+        invocationId: command.commandId,
+        requestedAt: command.issuedAt,
+      },
+      true,
+    );
+    if (
+      verified === undefined ||
+      command.authorization.spatialScopeRefs.some(
+        (ref) => !verified.spatialScopeRefs.some((current) => sameJson(ref, current)),
+      ) ||
+      command.authorization.sourceAccessGrantRefs.some(
+        (ref) => !verified.sourceAccessGrantRefs.some((current) => sameJson(ref, current)),
+      )
+    ) {
+      return {
+        kind: "failed",
+        error: {
+          ...common,
+          code: "AUTHORIZATION_DENIED",
+          category: "authorization",
+          requiredCapability: "risk-identification.run",
+          authorizationPolicyRef: command.authorization.authorizationPolicyRef,
+        },
+      };
+    }
+    const inputSnapshotRef = command.payload.inputSnapshotRef;
+    const workPlanRef = identificationWorkPlanRefFor({
+      projectId: command.projectId,
+      inputSnapshotRef,
+    });
+    const plan = await this.#readWorkPlanBody(
+      {
+        projectId: command.projectId,
+        actorId: command.actorId,
+        requestedAt: command.issuedAt,
+        authorization: verified,
+        workPlanRef,
+      },
+      verified,
+    );
+    if (plan !== undefined && sameJson(plan.inputSnapshotRef, inputSnapshotRef)) {
+      const snapshotRow = await this.#persistence.readRow({
+        projectId: command.projectId,
+        resultKind: "input-snapshot",
+        resultId: inputSnapshotRef.reference.entityId,
+        resultVersionId: inputSnapshotRef.reference.versionId,
+      });
+      if (snapshotRow?.resultKind === "input-snapshot") {
+        try {
+          const snapshot = await this.#persistence.readBody({
+            row: snapshotRow,
+            bodyKind: "input-snapshot",
+            projectId: command.projectId,
+            actorId: command.actorId,
+            requestedAt: command.issuedAt,
+            authorization: verified,
+          });
+          if (
+            snapshot.bodyKind === "input-snapshot" &&
+            sameJson(snapshot.inputSnapshot, plan.inputSnapshot)
+          )
+            return { kind: "succeeded", result: { workPlanRef } };
+        } catch {
+          // 已登记引用缺完整正文时不能返回计划成功。
+        }
+      }
+    }
+    return {
+      kind: "failed",
+      error: {
+        ...common,
+        code: "BUSINESS_BLOCKED",
+        category: "business-blocked",
+        blockerKind: "identification-work-plan-unavailable",
+        blockerRef: inputSnapshotRef,
+      },
+    };
+  }
+
+  async #readWorkPlanBody(
+    input: PostgresIdentificationGraphWorkPlanBodyReadV1,
+    verified: AuthorizationContextV1,
+  ): Promise<IdentificationGraphWorkPlanBodyV1 | undefined> {
     try {
       const row = await this.#persistence.readRow({
         projectId: input.projectId,
@@ -1560,7 +1665,14 @@ class PostgresIdentificationGraphAdapter implements PostgresIdentificationGraphA
       if (
         body.bodyKind !== "work-plan" ||
         body.workPlan.projectId !== input.projectId ||
-        !sameJson(body.workPlan.workPlanRef, input.workPlanRef)
+        !sameJson(body.workPlan.workPlanRef, input.workPlanRef) ||
+        !sameJson(row.workPlanRef, input.workPlanRef) ||
+        !sameJson(row.inputSnapshotRef, body.workPlan.inputSnapshotRef) ||
+        body.workPlan.workItems.some((item) =>
+          item.spatialScopeRefs.some(
+            (scope) => !verified.spatialScopeRefs.some((allowed) => sameJson(scope, allowed)),
+          ),
+        )
       ) {
         return undefined;
       }

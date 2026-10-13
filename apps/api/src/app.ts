@@ -80,6 +80,8 @@ export interface BuildApiOptionsV1 {
   readonly idGenerator?: () => string;
   readonly ssePolicy?: Partial<SsePolicyV1>;
   readonly accessLog?: HttpAccessLogV1;
+  /** 宿主可选注入的请求作用域：整条 handler 在其中运行，并发请求相互隔离；未注入时行为不变。 */
+  readonly runRequest?: <T>(operation: () => T) => T;
 }
 
 const singleHeader = (request: FastifyRequest, name: string): string | undefined => {
@@ -614,6 +616,17 @@ export const buildApi = (options: BuildApiOptionsV1): FastifyInstance => {
   const activeSseControllers = new Set<AbortController>();
   const accessLogStartedAt = new WeakMap<object, number>();
   const accessLog = options.accessLog;
+  const runRequest = options.runRequest;
+
+  // 宿主作用域包裹每条路由 handler（含自动 HEAD 路由），授权捕获的真实来源与下游签发因此留在同一请求内。
+  if (runRequest !== undefined) {
+    app.addHook("onRoute", (routeOptions) => {
+      const handler = routeOptions.handler;
+      routeOptions.handler = function (this: FastifyInstance, request, reply) {
+        return runRequest(() => handler.call(this, request, reply));
+      };
+    });
+  }
 
   app.addHook("onRequest", async (request, reply) => {
     const requestId = requestIdFor(request, generateId);

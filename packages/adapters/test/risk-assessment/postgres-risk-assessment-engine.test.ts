@@ -82,6 +82,102 @@ describe("C25 PostgreSQL risk assessment engine", () => {
       monitoringSnapshotRefs: fixture.monitoringSnapshotRefs,
     });
 
+  it("checkpoint 证明精确输入/记录与准备绑定且不产生读取事实", async () => {
+    const preparation = await freshPreparation("checkpoint");
+    const prepared = await fixture.engine.prepare(
+      (await fixture.prepareCommand({
+        commandId: "c25-checkpoint-prepare",
+        preparation,
+      })) as never,
+    );
+    expect(prepared.kind).toBe("succeeded");
+    if (prepared.kind !== "succeeded") return;
+    const evaluated = await fixture.engine.evaluate(
+      (await fixture.evaluateCommand({
+        commandId: "c25-checkpoint-evaluate",
+        inputSnapshotRef: prepared.result.assessmentInputSnapshotRef,
+      })) as never,
+    );
+    expect(evaluated.kind).toBe("succeeded");
+    if (evaluated.kind !== "succeeded") return;
+    const invocationId = "c25-checkpoint-read";
+    const input = {
+      projectId: fixture.projectId,
+      actorId: fixture.managerId,
+      invocationId,
+      requestedAt: "2030-01-01T00:00:00.000Z",
+      authorization: await fixture.entryReadAuthorization(invocationId, {
+        sourceVersionRefs: [fixture.sourceVersionRef],
+      }),
+      preparationSnapshotRef: preparation,
+    };
+    const counts = async () =>
+      (
+        await fixture.postgres.postgres.adminPool.query(`SELECT
+      (SELECT count(*) FROM audit.entries) AS audits,
+      (SELECT count(*) FROM business.command_receipts) AS receipts,
+      (SELECT count(*) FROM business.artifact_manifests) AS artifacts,
+      (SELECT count(*) FROM business.artifact_access_records) AS accesses,
+      (SELECT count(*) FROM outbox.events) AS events`)
+      ).rows[0];
+    const before = await counts();
+    for (const reference of [
+      prepared.result.assessmentInputSnapshotRef,
+      evaluated.result.assessmentRecordRef,
+    ]) {
+      expect(await fixture.engine.verifyCheckpointReference({ ...input, reference })).toBe(true);
+      for (const overrides of [
+        {
+          reference: { ...reference, reference: { ...reference.reference, versionId: "missing" } },
+        },
+        { projectId: fixture.foreignProjectId() },
+        { actorId: "another-actor" },
+        { invocationId: "unissued" },
+        {
+          preparationSnapshotRef: {
+            ...preparation,
+            reference: { ...preparation.reference, versionId: "missing" },
+          },
+        },
+      ])
+        expect(
+          await fixture.engine.verifyCheckpointReference({ ...input, reference, ...overrides }),
+        ).toBe(false);
+    }
+    expect(
+      await fixture.engine.verifyCheckpointReference({
+        ...input,
+        preparationSnapshotRef: undefined,
+        reference: prepared.result.assessmentInputSnapshotRef,
+      }),
+    ).toBe(false);
+    const recordRef = evaluated.result.assessmentRecordRef;
+    const admin = fixture.postgres.postgres.adminPool;
+    const stored = await admin.query<{ content_digest: string }>(
+      "SELECT content_digest FROM business.risk_assessment_records WHERE record_id = $1 AND version_id = $2",
+      [recordRef.reference.entityId, recordRef.reference.versionId],
+    );
+    await admin.query(
+      "UPDATE business.risk_assessment_records SET content_digest = $3 WHERE record_id = $1 AND version_id = $2",
+      [recordRef.reference.entityId, recordRef.reference.versionId, "f".repeat(64)],
+    );
+    try {
+      expect(
+        await fixture.engine.verifyCheckpointReference({ ...input, reference: recordRef }),
+      ).toBe(false);
+    } finally {
+      await admin.query(
+        "UPDATE business.risk_assessment_records SET content_digest = $3 WHERE record_id = $1 AND version_id = $2",
+        [
+          recordRef.reference.entityId,
+          recordRef.reference.versionId,
+          stored.rows[0]!.content_digest,
+        ],
+      );
+    }
+    expect(await counts()).toEqual(before);
+  }, 120_000);
+
   it("prepare 物化 22 引用输入快照并逐项对上拥有方版本", async () => {
     const result = await fixture.engine.prepare(
       (await fixture.prepareCommand({ commandId: "c25-prepare" })) as never,

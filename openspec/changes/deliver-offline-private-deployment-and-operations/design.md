@@ -1,29 +1,16 @@
 ## Context
 
-**状态：按当前功能验收范围重新闭合规划，新增实现尚未完成。** D-01–D-22 保留已有服务/UI/运维设计，D-23/D-24 固定网络 API 后端、功能验收与 C38 移交。verification 只在新增任务实现并形成检查点后由 Finalizer 创建。
+本 change 保留已实现工程成果，完整功能和剩余实现移交 `complete-private-deployment-functional-acceptance`。IP-01–IP-14 原基线为 `6fd462e9fc61e92b39903a3087e2e2a8a21c1b5a`，IP-15/IP-16 增量基线为 `0a25b6a469ade4bcc6a21c4514195d1f7c19ff31`；当前 HEAD 为 `b6e39eb41e9cc8b0c9840f6f58057155eb37de54`，工作区还有累计实现，不能视为固定检查点。
 
-原 IP-01–IP-14 基线为 `6fd462e9fc61e92b39903a3087e2e2a8a21c1b5a`；增量 IP-15/IP-16 基线为 `0a25b6a469ade4bcc6a21c4514195d1f7c19ff31`。change 使用 `orchestrated-delivery`。当前代码已包含四应用三共享包、Web 迁移和 Electron；网络 API adapter 与真实功能验收仍需按新增任务完成。
+已实现 Web 迁移、Electron 薄壳、网络 adapter、真实 API/Worker 工厂、三图/共享任务/Outbox、初始化和运维程序、provision 与终态观察。可启动宿主仅为 synthetic-acceptance 合置本地 C04；remote verifyContent 与完整跨 VM host 尚未开放，交 C38 F-03。完整 Electron e2e 与正式业务证据归后续 change，不把代码存在或空轮询作为业务 PASS。
 
-产品设计入口：`.scratch/riskflow-master-plan/prototypes/desktop-client-architecture.md`。三 VM 与恢复责任来源于 `issues/08-private-deployment-governance.md`；迁移范围由本轮用户确认，模块行为以主规格与当前代码为准。
-
-| 接缝 | 当前实现 | 本 change 需完成的部分 |
-| --- | --- | --- |
-| API | `apps/api/src/app.ts#buildApi` 与 `BuildApiOptionsV1`，工厂不监听 | 真实 ports 装配、进程入口、应用 VM HTTPS 接入 |
-| Worker | `apps/worker/src/index.ts` 和 C20/C24/C30 等组合根 | 耐久消费循环、全部必需 options 与既有 handler 映射 |
-| PostgreSQL | bootstrap、migrations、pool、checkpointer；四个 NOLOGIN 组 | 部署 LOGIN、独立初始化、受限运行连接 |
-| 工件 | C04 `createContentAddressedArtifactStore`、`createHashManifest`、`reconcile` | 同机逻辑副本、全工程核对、人工恢复切换 |
-| 模型/OCR | 既有 llama.cpp strict 配置/adapter 与 OCR 接口 | 网络 API 接入及当前真实协议/业务证据；最终制品和资源实测归 C38 |
-| 运维读 | C35 四组件健康/模型查询与当前管理员授权 | 注入真实且可取消、有截止时间的 provider |
-| UI | C32–C36 已归 `apps/web`，统一会话/路由/确认 | 当前真实功能证据与既有行为回归 |
-| Desktop | 已有 HTTPS 主进程、安全组件和两条基础 e2e | 当前可用平台补完整功能场景；正式多平台安装归 C38 |
-
-浏览器 harness 只作接线参考，其中固定口令、合成结果、模型替身、直接 SQL 夹具和固定 HMAC 不能进入生产。将静态站点放进 Electron 安装包会增加跨来源会话和版本协调，本次选择服务器提供 Web。
+产品设计入口为 `.scratch/riskflow-master-plan/prototypes/desktop-client-architecture.md`，恢复责任来源为 `issues/08-private-deployment-governance.md`。D-01–D-24 保留工程设计身份；其中 C38 平台/介质/实机条款仅说明阶段边界与移交，不属于本次 checkbox。
 
 ## Goals / Non-Goals
 
-**Goals**：在现有功能环境中使完整 Web、API、Worker、真实数据服务和网络推理后端贯通；保持权限、预算、人工确认、版本与审计；取得功能终态和可重放证据后完成 C37。已有三 VM、打包和恢复程序保留，正式签名、离线介质、实机与 4090 取证移交 C38 最终交付。
+**Goals**：核验并保留完整 UI、共享 HTTPS 壳、部署/运维程序、模型 adapter、真实组合和有界验收工具的已实现成果，保持权限、预算、版本、人工确认与审计边界。
 
-**Non-Goals**：本机独立后端/模型、移动端或 PWA 交付、离线业务同步、独立冷备、HA/PITR/灾备、持续备份、周期演练、生产级 RPO/RTO、长期代运维、自动换模型/扩预算、通用运维 Shell/SQL/文件 API、LoRA 训练与 C38 合同总验收。
+**Non-Goals**：后续完整业务/Electron 功能取证、跨 VM 完整 host、最终签名/安装/离线介质/硬件交付，以及 HA/PITR、灾备、RPO/RTO/SLA、长期运维、自动换模型/扩预算、LoRA、移动端和本机业务后端。
 
 ## Decisions
 
@@ -107,31 +94,25 @@ C04 快照引用是业务追踪，不能当 PostgreSQL 导出快照令牌。清�
 
 软件、模型、Embedding 与业务定义发布分别管理。兼容旧发布可在维护窗口人工切换并复验；不兼容数据库/工件版本需先构造匹配副本的隔离实例，不能只换旧镜像。此流程服务于升级和逻辑故障恢复，不提供宿主故障下的数据保护承诺。
 
-### D-12. 当前功能收口与最终交付取证分开
+### D-12. 工程成果与后续功能取证分别收口
 
-迁移 C32–C35 浏览器行为验收到 `apps/web` 并保留 C36；真实 HTTP/会话/数据库/投影与正式命令仍是测试面。合成样本明确待甲方复核，不把随机模型响应设为期望。重复覆盖按稳定可观察行为合并，不测试 CSS、完整文案或内部调用顺序。
+Web 迁移及既有真实 Chromium/HTTP/PostgreSQL harness 属已实现工程证据；模型 adapter 三能力 smoke 只证明模型接缝。当前 change 的 verification 记录工程范围、实际命令和固定检查点/审计条件，不将完整业务、Electron 场景或未来平台证据记为通过。
 
-C37 当前覆盖完整 Web、真实 HTTP/会话/数据库/索引/工件、网络模型 API、后台终态、权限拒绝、人工确认、幂等和审计追溯；适用的服务重启、逻辑副本、损坏检测和索引重建沿既有测试核验。单元测试和模型替身只作工程证据，不能证明真实推理及业务闭环。
-
-报告记录实际代码、配置、模型/服务协议、样本身份、命令、终态、业务/审计/工件引用及失败证据。C37 功能报告不承诺离线运行、最终平台可安装性、4090 性能、RPO/RTO 或 SLA。未来签名、硬件、介质缺项只出现在 C38 移交清单。
-
-先完成 IP-15/IP-16 的网络接入、宿主运行和真实功能证据，再做 14.2 工程交接，Finalizer 按当前范围核验、修复、回归及必要审计，填写一个 C37 功能 PASS/FAIL/BLOCKED。当前真实服务、受信任功能 HTTPS、批准策略或终态证据缺项须 BLOCKED，普通缺陷须 FAIL。全部当前任务与审计通过才可按项目流程集成、归档。
-
-C38 在自己的规划与 verification 中承接正式包制备、三平台安装、禁网三 VM、本地模型/OCR/系统介质、恢复和硬件资源基准；tasks 的移交表不是 C37 未完成 checkbox，也不是已通过证据。C38 必须按最终制品和代码身份重新取证；不复用 C37 功能 PASS 宣告合同或实机交付完成。
+完整业务、可见 Chrome、当前平台 Electron、正式来源补证与对应报告移交后续 IP-17–IP-22，逐项范围映射见其 handoff.md。缺证据仍 FAIL/BLOCKED，不因拆分消除义务。后续 functional PASS 不等于离线/合同交付；C38 F-01–F-05 仍独立取证。
 
 ### D-13. 文件所有权与当前修改边界
 
 | 区域 | C37 目标变化 |
 | --- | --- |
 | `apps/web/` | 完整页面、真实客户端接线、导航/主题/图表复用、C36 合并与浏览器验收 |
-| `apps/desktop/` | Electron 主进程、受控 HTTPS 入口、本地连接状态、平台打包及真实验收 |
-| `deployment/`、`scripts/deployment/` | 三 VM 配置/服务说明、离线发布、生产组合、生命周期、逻辑副本/核对/切换/基准 |
+| `apps/desktop/` | Electron 主进程、受控 HTTPS 入口、本地连接状态与平台打包程序；完整真实验收移交后续 |
+| `deployment/`、`scripts/deployment/` | 三 VM 服务模板、发布/导入程序、合置组合与生命周期、逻辑副本/核对/切换；真实基准交 C38 |
 | `packages/adapters/src/deployment/`、`packages/adapters/src/model/` 与公开 exports | 部署/后端配置、模型 adapter 与共用调用校验，保持原 core model port |
 | `scripts/acceptance/` | 复用合成材料 check/run，增加真实异步终态和功能证据核验 |
 | 根 workspace、package、tsconfig、依赖政策与检查器、dependency-cruiser | 七成员、Desktop 构建/依赖/边界与独立平台打包命令 |
 | `openspec/config.yaml` | 实施时同步四应用三共享包的当前工程描述 |
 | Playwright/相关 Vitest 配置和测试 | Web 生产验收归属迁移；桌面与部署真实行为验证 |
-| 项目设计文档与 C37 artifacts | 本轮已经授权的设计同步，不修改生产代码、锁文件或运行配置 |
+| 项目设计文档与 C37 artifacts | 本轮拆分范围与验收材料；保留已有全部实现 |
 
 主规格通过当前完整 delta 在归档时同步，保持 Requirement 名与原场景；C32/C33 Purpose 中的 demo 归属也须在正式同步核查中修正，不能留旧目录描述。归档历史不重写。原执行图、Orca 状态、历史迁移、业务规则与用户改动属于保护边界。
 
@@ -317,9 +298,33 @@ C20↔C21 和 C17↔C20 是构造引用环、不是业务流程环。宿主建�
 
 ### D-21. 生产端口与事件闭包
 
+Worker 事件语义已批准：识别准备仅沿 C06 持久因果运行及 C30 精确启动登记定位，风险验收仅沿精确 parent-child 链边定位；assessment 准备及 C06 正式来源证明的独立事件写 risk-flow 消费回执。关联暂缺、不唯一、权限不足、版本冲突或技术失败保持失败与原重投，不以查无关联证明独立。C30 adapter 增加 readEventParentRun（当前受权身份、runRef 或 identificationRunRef，返回精确父引用或 undefined）与 verifyEventConsumption（同一身份、父引用、准备引用或子运行/风险引用，返回 boolean）；定位最多两条候选，核对主体、完整范围摘要及原启动收据。消费证明只 SELECT 与 C04 verifyContent，核对精确输入登记及已提交运行正文；running、cancelled 或只有输入/路由登记未推进的状态不成立。长图在 consumer 短事务外推进，短事务内重新证明已提交消费事实再写原回执；重投先证明，避免业务完成而回执失败导致重复推进。applyAcceptedRisk 在写路由前核对精确子运行版本、恢复引用与取消态，拒绝事件不新增路由事实。无新 DTO、表、迁移或依赖。
+
+C30 新窄口使用可选 runBindingProof（复用 C03 PostgresTransactionUnit.readWorkflowRunBinding）；宿主必须注入，缺失即无法证明事件运行，不影响原读取接口。准备消费须有精确单一识别入口、对应子链边及后续已提交阶段结果；验收消费须有精确子链边、正式状态中的风险版本及已提交阶段结果，已有派生验收路由另核对其原主体、范围和类型。子图返回时父图已经纳入的正式风险同样属于已消费，不要求额外生成验收路由。每次回执前重新检查父定位唯一性、当前权限及状态，不能沿第一次定位缓存忽略新增冲突。
+
+独立识别准备只在 C06 精确 human 来源无父上下文、无运行/命令因果，且原 branch、producerCommandId、causationId 和 invocationId 逐项一致时成立；assessment 准备明确不进入识别 apply。两者都先复验原来源的完整空间及资料权限，再以事件 aggregateRef 保存 risk-flow 回执。其它后台事件同样在 runEvent 中按原签发身份复验，撤权、脱敏或来源漂移失败。start.mjs 的 createDeploymentOutboxDispatchV1 绑定五个原消费者并验证 ConsumerResultV1；投影 ignored/rejected 不确认。createDeploymentWorkerV1 组合真实三图、原 Outbox 与共享 Agent runner；createDeploymentWorkerRuntimeV1 接收同一 host/outbox/runner/registry 驱动两个独立 WorkerLifecycleV1，事件按原冻结 batchSize claim、以 worker.maxConcurrency 并行，过期/失效租约保持原恢复，未知事件记录失败并进入非就绪。限时 drain 未收口保留基础资源，关闭后的 runOnce 拒绝。CLI 为 node scripts/deployment/start.mjs --role api|worker --config <file> [--manifest <file>]；只加载已初始化库，不自动迁移或引导。SIGTERM/SIGINT 按原截止关闭，日志只含原安全状态字段，Worker 后台故障触发同一关闭路径。
+
+API 的 riskIdentification.plan 只返回 C24 I2 已登记的精确工作计划引用。C24 adapter 的 readRegisteredWorkPlan(command: IdentificationPlanCommandV1): Promise<IdentificationPlanResultV1> 使用本次 commandId、risk-identification.plan 和当前完整授权复验；按原 identificationWorkPlanRefFor 派生查询目标，核对工程、输入快照、登记及 C04 正文，缺失或正文不成立返回 BUSINESS_BLOCKED，拒权返回 AUTHORIZATION_DENIED。不得启动整图、创建第二计划或返回未登记引用。analyze/finalize 委派同一 C22 service，公共 DTO 保持原形状。
+
+buildApi 增加可选 runRequest<T>(operation: () => T): T 宿主作用域回调，在每条路由 handler 外运行一次；宿主注入现有 authorizationScope.runRequest，使 access.authorize 捕获的真实来源和下游签发留在同一请求内，并发请求相互隔离。该回调不改变 HTTP DTO、授权或错误处理；未注入的原调用方保持原行为。
+
+start.mjs 的 createDeploymentApiV1 以 api 角色创建三图，复用 createDeploymentApiPortsV1；C34 read 绑定同一实现 RiskAssessmentReadPortV1 的 C25 engine，C30 bodies/registrationStore、C33 trace、C20 正式结果 reader 和 C36 原适配器均使用公开工厂。工厂只装配并 ready，显式 listen(listenOptions) 才由 ApiLifecycleV1 开放监听；关闭限时 drain，未 settled 不释放仍在用的基础资源。未监听实例仍关闭 Fastify 和基础资源。系统面探针读取实际 app/server 状态、有限 SELECT 1、受控工件目录权限以及已配置模型端点（llama.cpp /health、Ollama /api/version、OpenAI /models；凭据仅用于原批准端点且禁止重定向），取消响应正文，不推理；端点可达仅说明服务可达，模型版本固定取 registry 定义与 config，不伪造已加载模型证明。单次系统查询沿原 2 秒预算收口，不显示地址、路径或秘密。
+
+assessment 宿主组合在 readers.responseContext 返回传入同一 C28 实例的原 PostgresResponseLifecycleContextReader，C41 复用该公开 reader，不从 C27 或 C28 私字段取上下文、不重复构造知识读路径。
+
+宿主 createDeploymentGraphsV1 在 start.mjs 内组合原公开工厂：先建共享 registry 与检查点校验一次绑定槽，再创建基础宿主；C11 的 dataCleaningStore 只延迟绑定 freezeIdentificationPreparation，C24 acceptanceRoutes 延迟绑定 C22 精确读，C18/C19 经现有 scoring governance 与 C17 一次绑定，C26 routeDecisions 经 C41 一次绑定。所有槽绑定及五类任务注册完成才返回可用组合。C41 按工程创建，workflowStartControl 使用本工程的图/重试版本，公开 facade 仅按命令工程委派。校准、知识、清洗和检索审阅模型步按原 taskType 分派并在同一 runTask 作用域执行；候选工件用真实 C04 put。构造失败逆序释放 consumer 和 foundation，尚无完整 API/listener 时不声称宿主 ready。
+
+反馈校准引用登记时序：A3 的 C29 prepareInput 只保存冻结输入，不写公共 deviationRecordRef、游标或 feedback-deviation。A4 在 createSuggestion 原子成功后调用 CalibrationServiceV1.readCreatedDeviationRecordRef({projectId,actorId,requestedAt,invocationId,authorization,calibrationSuggestionRef,parentRunRef})，返回 DeviationRecordRefV1 或 undefined。该受保护窄读复用 warning-response.read 与 C29 检查点证明，按精确建议查询创建时 pending 偏差行（version_number 升序、limit 1），再核验原 Schema、摘要、身份、精确父运行和完整当前空间授权；不读最新版本，不签发下游，不写事实。后继预留只有在对应建议正式提交后才可返回。A4 同时写精确偏差/建议状态与游标、feedback-deviation 和 deviation-calibration；等待或失败不登记未成立引用。公共 HTTP 建议结果形状保持原契约。
+
 生产检查点使用 core/persistence 唯一导出的 `CheckpointRuntimeContextV1Schema` 与 configurable 键 `riskflowCheckpointContextV1`：strict 字段为 schemaVersion、projectId、actorId、threadId、runRef、authorization、invocationId。三图的调用与 getState 均传本次受权运行上下文；读取旧检查点使用本次权限而非历史授权替代当前身份。C03 的 ContractReferenceValidator 保留引用首参数，第二参数包含 operation（put/put-writes/get/list）、解析后的 state 及可选 runtimeContext；既有只接收引用的调用方保持可用。上下文存在时须逐项核对工程/主体与授权、thread/run 精确引用和当前图状态，生产 validator 缺上下文即拒绝。putWrites 仍按原 tuple 状态验证待写引用，不能把 pending writes 当已提交业务事实。
 
 宿主引用校验由引用所属模块的公开窄读组合：当前 C06 来源/授权复验先于存在性读取；仅核对精确工程与版本、运行归属、已提交登记和必要完整性，不返回正文、不写审计或业务事实、不维护第二引用登记表。C03 checkpoint 连接不获得业务表权限，窄读使用原应用连接。未支持引用、缺失、已回滚、版本不符、跨工程/运行或技术错误均按 CHECKPOINT_INCONSISTENT 失败；初始运行身份须由已受理原命令或父运行已登记的子入口证明，不接受裸 caller 引用。已有精确公开证明优先复用，缺口仅在所属 adapter 增加存在性窄口。
+
+put-writes 使用旧 tuple 状态，不要求新产出引用已出现在旧状态中：首次 assessment-input-snapshot 仍由本运行 A0 准备与 C25 已提交正文证明；知识准备/用户确认从待写的完整目标引用重建其唯一 strict WaitingRefV1，并由 C24/C30 精确等待登记证明。其它操作继续要求状态中的相同引用。待写数据只提供查询目标，不能替代所属模块已提交事实或改变授权/运行上下文。
+
+C30 verifyCheckpointDomainReference 只证明评估领域引用与运行的关联，不替代所属模块的正文证明。当前完整权限复验且拒绝脱敏后，冻结输入按同工程/运行/原主体/范围的唯一 A0 entry-snapshot 行中 frozenRefs 的完整对象等值定位；产出按既有 risk-assessment、assessment-warning、warning-recommendation、recommendation-forecast、feedback-deviation、deviation-calibration 的精确 toRef 定位。warning-response-task 可按 warning-recommendation 的精确 fromRef 定位；反馈可按 feedback-deviation 的 fromRef 定位。链边查询最多一行；冻结入口最多两行检测冲突。运行身份版本由 C03 启动收据另证。执行/反馈在分段入口中以已登记 frozenRefs 证明输入归属，不新增 forecast-execution/execution-feedback 写入，也不把预测独立运行当作评估运行。
+
+C25 verifyCheckpointReference 只支持 assessment-input-snapshot 与 risk-assessment-record，先复验 risk-assessment.read 的完整当前空间/来源且拒绝脱敏，再复用本模块精确登记与原 Schema。输入快照正文、准备引用身份列与 reference_digest 必须一致；宿主传入 C30 已证明的准备引用，正文必须与之精确相等。A2 产生的输入快照以所属 C25 正式事实和本运行 A0 准备证明，不用 A0 input_snapshot_ref 冒充输入快照。评估记录核对正文身份、工程、精确空间和 content_digest；运行归属由 C30 原链边另证。窄口不加载发布正文、不签发下游、不写读回执；技术失败上抛至 checkpoint 边界。
 
 C27 的 PostgresRecommendationAdapter.verifyRecommendationCandidateReference 接受精确候选引用、parentRunRef 与原受权读取身份（工程、主体、invocationId、requestedAt、authorization），复用 warning-response.read 的当前授权及原候选行/正文校验；核对工程、精确空间版本和冻结父运行版本后仅返回 boolean，不写事实。技术错误交由 checkpoint 边界失败闭合。宿主验证器在 start.mjs 组合当前 C06 来源复验与各模块精确证明；引用证明不能把当前运行或同工程其它运行的存在性作为父子关系证明。
 
@@ -330,6 +335,14 @@ C24 verifyCheckpointReference 为原图所属引用提供 boolean 证明：接�
 C15 verifyPreparationReference 接受原 IdentificationPreparationReadRequestV1，复用 readExactPreparation 的当前 evidence-access 授权、精确准备登记、快照范围与任务—清洗结果/C04 核验，只返回 boolean，不执行原读取回执和审计事务。两入口共用私有准备解析；正文、任务或版本缺失均失败，技术故障上抛。该证明只证明准备事实，宿主须另核对它与本次识别入口的绑定，不能据此推断运行归属。
 
 C30 adapter 的 verifyCheckpointReference 接受工程、主体、原 invocationId、requestedAt、authorization、精确 runRef 与 reference，复用原当前授权和精确登记窄读，只返回 boolean。支持 stage-result、route-decision、workflow-error、assessment-run-result、risk-flow-run-result；逐项核对登记引用及精确授权范围，结果正文通过 C04 verifyContent 按原 run-result 用途和原 16 MiB 上限核对工程/runRef。缺正文证明能力失败，不触发普通读取审计。三类 A0 入口继续通过 readAssessmentEntrySnapshot 的唯一登记与原引用证明；运行身份均另由 C03 启动收据证明，不能以可变 runVersionId 代替。
+
+C28 verifyCheckpointReference 接受工程、主体、原 invocationId、requestedAt、authorization 与 reference，仅支持 effect-forecast、execution-record、feedback。复用 warning-response.read 当前授权、精确单行 loader 与原正文 Schema/摘要/身份列核验，完整授权及空间版本必须一致；只返回 boolean，不读关联列表、不触发访问事实。预测正文的独立 forecastRunRef 同原身份列核对，但本评估运行归属仍由 C30 链边或 A0 frozenRefs 证明。宿主只对 assessment 或 C03 已证明的 riskFlow 子运行组合两种证明，无新表、迁移或权限。
+
+C27 verifyCheckpointReference 同形接受领域 reference，只支持 response-recommendation。复验 warning-response.read 完整当前权限与精确空间版本；读取唯一建议及其精确 validation 行，使用原记录/校验 Schema 与已有摘要算法，核对建议身份、主预警、候选与校验策略及三项校验登记一致且通过。不得签发下游、读取措施正文或创建回执；运行归属由宿主 C30 证明。已有公开读面可共用精确解析，保留其结果契约。
+
+C26 verifyCheckpointReference 同形支持 warning-record 与 warning-response-task。预警精确单行按原 Schema、摘要、身份、评估标识及等级复验；任务按不可变 task_versions 的精确工程/任务/版本与原任务身份配对，允许历史版本，核对 strict 空间引用与原 aggregationKey，不读取任务最新版本的关联列表。完整当前 warning-response.read 权限复验且脱敏拒绝。任务可接受可选 assessmentRecordRef：按原 task_warnings 与 warning_records 的精确工程/任务/评估版本及 firstIncludedVersion 不晚于任务版本查询一行，核对预警正文及摘要。宿主在 A6 尚无 warning-recommendation 链边时，先由 C30/C25 证明状态中的评估记录属于本运行且正文成立，再由 C26 证明任务版本关系；不以 caller 状态本身或最新任务版本推断归属。
+
+C29 verifyCheckpointReference 同形支持已落库 deviation-record 与 calibration-suggestion，并接受精确 parentRunRef。偏差按精确版本正文、原摘要、身份与复核状态证明，空间和父运行通过其原 suggestion 关系证明；不读取最新偏差版本。建议按精确工程/版本/空间和原父运行列读取，复验原候选/校验 Schema、Agent 任务及结果、校验策略与候选目标文档摘要一致、accepted 校验及真实复核引用。candidateDigest 仍是完整候选目标文档的摘要，不把它当增量 JSON 摘要重新计算，不读基准正文或签发下游。无公共偏差行时返回 false，不以派生身份冒充正文。
 
 C24 verifyCheckpointReference 的可选 workPlanRef 仅供 identification-work-item 证明：宿主必须传图状态已冻结的工作计划引用；按同工程、本运行的精确 work-plan 登记及当前授权范围定位原正文，经 C04 verifyContent 完整核验后检查精确工作项属于该计划。缺计划、错版本、其它运行的计划或正文不含该工作项均拒绝，不用工作项标识前缀或普通 readExact/open 推断归属。
 
@@ -388,6 +401,8 @@ API 必须显式装配全部 ApiPortsV1，路由可用性由实际接线决定�
 
 Worker 用同一 policy/registry/runtime 装配 C15、C17、C20–C25、C27/C29、C30，runner.runOnce 的有限轮询由宿主驱动，不修改任务预算。Outbox 的 12 个已知事件逐项登记：
 
+AgentRuntimeRunnerOptionsV1 增加可选 runTask(task, operation) 回调：claim 后原 #runClaim 的完整执行（模型、工具 execute/recover、候选校验/收口和原租约预算处理）都在宿主 authorizationScope.runTask 中运行，默认直接执行保持原调用方。作用域构造失败保留未确认租约的原过期恢复语义，不伪造完成或另开任务。宿主共享 runner 复用同一 store/registry/modelStep，知识编制终态失败继续经原 settleAuthoringFailures 收口。
+
 | eventType | handler / 投递处理 |
 | --- | --- |
 | knowledge.identification-basis-published.v1 | C20 projectionHandler.handle |
@@ -435,17 +450,13 @@ serviceContractRef 绑定经批准的 adapter 协议/能力证明并映射原结
 
 基础加载器读取 RISKFLOW_RELEASE_MANIFEST 指定的 strict 发布清单，核对 releaseId 后传递 finalMigrationVersion 给基础工厂。工厂必须在模块创建与资料副作用前核验迁移账本；缺清单、错发布、错迁移序号均拒绝。资源按创建的逆序串行关闭，单项失败继续关闭其余资源后报告失败。
 
-synthetic-acceptance 合置环境使用既有本地 C04 公开工厂与同库 referenceGuard，不启用跨 VM 挂载；production 的跨 VM 模式沿 D-18 mTLS 流服务。OCR=null 仅允许合成预验收配置，并且 REQUIRED_PRODUCTION_DEPENDENCIES 的 OCR 要求保持；当前文本链路可以建立转换器，完整就绪与扫描功能 PASS 仍须真实 OCR。
+synthetic-acceptance 合置环境使用既有本地 C04 公开工厂与同库 referenceGuard；createDeploymentFoundationV1 对 production 当前明确拒绝。D-18 mTLS put/open adapter 不提供生产 checkpoint 所需 verifyContent；完整远程宿主交 C38 F-03 先闭合协议和装配设计再开放。OCR=null 仅允许合成预验收配置，并且 REQUIRED_PRODUCTION_DEPENDENCIES 的 OCR 要求保持；当前文本链路可以建立转换器，完整就绪与扫描功能 PASS 仍须真实 OCR。
 
 复用 scripts/acceptance/synthetic.mjs 的材料检查、正式 HTTP 操作目录、真实登录、固定命令身份和安全 checkpoint。新增 functional.mjs 组合 check/run 与显式终态核验，不放宽原 run 的 submitted 语义。FunctionalAcceptanceConfigV1 为独立 strict 宿主配置：schemaVersion="1"、runConfigFile（原 synthetic 配置文件路径）、observations（非空有界数组，最多 128 项）、pollIntervalMs、timeoutMs、maxQueries。每项 observation 固定 stepId、operationId（正式 query 操作目录成员）、payload（原查询 Schema 和模板）、expectedTerminalStatus、requiredReferences（非空字段路径选择器）；引用只取同次 run 回执，预算为显式正整数并受总截止限制。人工决定仍须用户执行正式确认，等待时输出 awaiting-human，不自动代为采纳。
 
-功能宿主 start.mjs 读取部署及 D-23 模型配置/秘密，核验已完成的显式初始化和迁移兼容性后，按 D-20/D-21 装配全部真实 provider、API listener 和独立 Worker；启动不自动迁移或引导管理员，不复制测试 harness、固定口令、空仓储或假策略。只有完整真实依赖和原来源就绪才开放服务。IP-16.1 实施宿主启动，IP-16.3 在真实服务与批准输入上完成功能验收；缺少服务或证据时记录 BLOCKED。
+功能宿主 start.mjs 读取部署及 D-23 模型配置/秘密，核验已完成的显式初始化和迁移兼容性后，按 D-20/D-21 装配全部真实 provider、API listener 和独立 Worker；启动不自动迁移或引导管理员，不复制测试 harness、固定口令、空仓储或假策略。必需依赖缺失时明确拒绝启动/就绪。IP-16 保留已实现启动与工具程序，后续 IP-17–IP-22 在实际服务和批准输入上取证；工程装配不证明业务终态。
 
-必需链路为资料/知识与检索 → RI-S57 网络模型候选 → 确定性收口/人工复核 → 标准化风险 → 确定性评估/预警 → 处置建议与人工决定 → 执行/反馈，及会话流、权限拒绝、原身份重试。样本来自现有合成材料包或有资格的脱敏包；版本和规则由正式导入引用，不反填预期答案。最终报告保存各正式终态、精确对象/模型/配置/审计/C04 引用和命令，密码/Cookie/正文不落普通报告。submitted、awaiting-human、超时、缺引用、缺链路或关键 skip 不能计 PASS；配置静态校验仅是前置。
-
-16.3 的业务请求与后台处理 MUST 由完整生产宿主、真实持久化和已装配 provider 执行；浏览器验收 MUST 在用户可见的外部 Chrome 窗口完成，可用 CDP 驱动该可见窗口，但 headless 浏览器不能替代可见验收。浏览器须访问生产宿主提供的真实 HTTPS Web/API/SSE。当前 `DISPLAY=:0` 上的 Chrome/CDP 9337 窗口为空白页，生产服务未启动，尚无业务 PASS 证据；启动窗口只证明验收入口已准备。
-
-功能环境不运行正式 desktop:package 或 GPU/三 VM 预检。恢复/重启工程证据沿现有真实集成测试；最终禁网安装、完整现场恢复和硬件性能归 C38，见 tasks 移交表。C37 PASS 的范围明示为功能，C38 用自己的最终 checkpoint 与制品身份取证。
+终态观察程序保持正式 query 模式、同次运行引用、硬查询预算、等待人审/超时/缺引用非 PASS 及安全报告边界。完整资料→识别→评估→预警→处置/人工决定→执行反馈、会话流/拒权/重试与可见浏览器证据交后续 D-29/IP-19–IP-21；本 change 不声称该链已实跑通过。
 
 ## Risks / Trade-offs
 
@@ -459,13 +470,11 @@ synthetic-acceptance 合置环境使用既有本地 C04 公开工厂与同库 re
 
 ## Migration Plan
 
-1. 按 D-23 的协议分支与已批准身份实现网络配置、adapter 和 C04 证据收口，保留原 port 与部署包装。
-2. apply 按新增增量基线完成网络配置/adapter、宿主接线与功能验收；原已完成 IP 保持，仅证据不足项重新打开。
-3. 当前全部任务通过后形成固定检查点，Finalizer 按功能范围核验、修复、回归并完成必要审计；C37 功能 PASS 后按项目流程集成、归档。
-4. C38 规划必须消费最终交付移交表，先修正或补齐真实正式验收程序，再做签名制包、平台安装、禁网三 VM/本地模型及硬件取证，生成自己的最终交付结论。
+1. 已实现成果按本 change 的保留任务和逐场景工程证据核验，编写 verification。
+2. 经授权审阅 dirty 实现并形成固定 Git 检查点、必要审计与集成门禁后，按正式流程同步/归档本 change。本轮仅准备，不提交或归档。
+3. 后续 change 完成 IP-17–IP-22 的剩余实现与真实功能取证，形成自己的 verification。
+4. C38 消费 F-01–F-05、前置 D-23/D-24 和后续交接，按最终版本完成正式交付，不继承工程或功能报告为实机 PASS。
 
 ## Open Questions
 
-当前运行输入为 MiniMax M Plan OpenAI Chat Completions 部署及受限 Bearer 凭据、指定 Ollama 内网 Embedding 部署、C04 存储、批准的合成或脱敏材料、正式业务配置及功能 HTTPS。MiniMax 为 `MiniMax-M3.1-Flash-Preview`、schema-prompt、reasoningEffort=low；Ollama 为 `qwen3-embedding:4b`，以固定摘要和版本复验。预算及其它服务身份按 D-23 固定；缺项阻塞对应能力验收，不得填入假值或改用其它模型。浏览器验收须使用可见外部 Chrome 与生产宿主，headless 不构成观看验收。协议与验收范围已闭合，不另选 SDK 或协议。
-
-C38 才需要最终平台签名、原生构建机、三 VM、4090/128GB、硬件分配/阈值、系统/驱动/模型/OCR 离线介质与正式内网证书等输入。甲方真实样本未齐时仍可功能预验收，报告保留合成标记和质量适用边界；不宣称真实工程准确率。
+工程范围无开放技术决策。真实功能输入和现场缺口由后续 handoff.md 登记；C38 才要求签名、原生平台、禁网三 VM、4090/128GB 和模型/OCR 介质。合成样本适用边界保留，不能宣称真实工程准确率。

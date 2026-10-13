@@ -6,6 +6,7 @@
  * 查询登记与正文读写自行完成当前授权复验并留下审计/收据。
  */
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import type { Kysely, Transaction, SqlBool } from "kysely";
 import { sql } from "kysely";
@@ -27,6 +28,8 @@ import type {
   WorkflowRunCompletionProofQueryV1,
   WorkflowRunCompletionProofResultV1,
   WorkflowRunRefV1,
+  IdentificationPreparationSnapshotRefV1,
+  StandardizedRiskRecordRefV1,
   WaitingRefV1,
 } from "@riskflow/contracts/ports";
 import {
@@ -40,6 +43,7 @@ import {
   ResponseWorkflowBindingProofResultV1Schema,
   WorkflowRunCompletionProofQueryV1Schema,
   WorkflowRunCompletionProofResultV1Schema,
+  WorkflowRunRefV1Schema,
 } from "@riskflow/contracts/ports";
 import { ACCESS_POLICY_REF_V1, type LocalIdentityAccessV1 } from "@riskflow/core/access";
 import { authorizationScopeDigest } from "@riskflow/core/retrieval";
@@ -85,6 +89,7 @@ import {
 import { makePersistenceError, mapPostgresError } from "../postgres/pool.js";
 import { getPostgresTransaction } from "../postgres/transaction-unit.js";
 import type { PostgresDatabase } from "../postgres/types.js";
+import type { PostgresTransactionUnit } from "../postgres/transaction-unit.js";
 
 const RESULTS_TABLE = "business.workflow_graph_results";
 const LINKS_TABLE = "business.workflow_graph_links";
@@ -404,10 +409,41 @@ export interface PostgresWorkflowAdapterOptionsV1 {
   readonly artifactStore: ArtifactStoreV1;
   /** C05 当前授权复验端口：每次受保护读写前按当前 actor/工程/空间/资料范围复验。 */
   readonly authorization: Pick<LocalIdentityAccessV1, "verify">;
+  readonly runBindingProof?: Pick<PostgresTransactionUnit, "readWorkflowRunBinding">;
   readonly now?: () => Date;
 }
 
+interface WorkflowEventReadV1 {
+  readonly projectId: string;
+  readonly actorId: string;
+  readonly invocationId: string;
+  readonly requestedAt: string;
+  readonly authorization: AuthorizationContextV1;
+}
+
 export interface PostgresWorkflowAdapterV1 {
+  readEventParentRun(
+    input: WorkflowEventReadV1 &
+      ({ readonly runRef: WorkflowRunRefV1 } | { readonly identificationRunRef: WorkflowRunRefV1 }),
+  ): Promise<WorkflowRunRefV1 | undefined>;
+  verifyEventConsumption(
+    input: WorkflowEventReadV1 & {
+      readonly runRef: WorkflowRunRefV1;
+      readonly cause:
+        | {
+            readonly kind: "inputs-ready";
+            readonly identificationPreparationSnapshotRef: IdentificationPreparationSnapshotRefV1;
+          }
+        | {
+            readonly kind: "risk-record-accepted";
+            readonly identificationRunRef: WorkflowRunRefV1;
+            readonly riskRecordRef: StandardizedRiskRecordRefV1;
+          };
+    },
+  ): Promise<boolean>;
+  verifyCheckpointDomainReference(
+    input: Parameters<PostgresWorkflowAdapterV1["verifyCheckpointReference"]>[0],
+  ): Promise<boolean>;
   verifyCheckpointWaitingReference(input: {
     readonly projectId: string;
     readonly actorId: string;
@@ -513,6 +549,7 @@ class WorkflowGraphPersistence {
   readonly #transactionUnit: TransactionUnitV1;
   readonly #artifactStore: ArtifactStoreV1;
   readonly #authorization: Pick<LocalIdentityAccessV1, "verify">;
+  readonly #runBindingProof: PostgresWorkflowAdapterOptionsV1["runBindingProof"];
   readonly #now: () => Date;
 
   constructor(options: PostgresWorkflowAdapterOptionsV1) {
@@ -520,6 +557,7 @@ class WorkflowGraphPersistence {
     this.#transactionUnit = options.transactionUnit;
     this.#artifactStore = options.artifactStore;
     this.#authorization = options.authorization;
+    this.#runBindingProof = options.runBindingProof;
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -781,6 +819,281 @@ class WorkflowGraphPersistence {
       .where("actor_ref", "=", input.actorId)
       .where("authorization_scope_digest", "=", authorizationScopeDigest(verified))
       .where("waiting_ref", "=", sql<JsonValue>`${JSON.stringify(waitingRef)}::jsonb`)
+      .limit(1)
+      .executeTakeFirst();
+    return row !== undefined;
+  }
+
+  async #eventAuthorization(input: WorkflowEventReadV1): Promise<AuthorizationContextV1> {
+    const verified = await this.verifyAuthorization(input, true);
+    if (
+      verified === undefined ||
+      authorizationScopeDigest(verified) !== authorizationScopeDigest(input.authorization)
+    )
+      throw new TypeError("WORKFLOW_EVENT_AUTHORIZATION_DENIED");
+    return verified;
+  }
+
+  async #eventState(
+    input: WorkflowEventReadV1,
+    runRef: WorkflowRunRefV1,
+    verified: AuthorizationContextV1,
+  ): Promise<WorkflowGraphRunStateV1 | undefined> {
+    const row = await this.#db
+      .selectFrom(RESULTS_TABLE)
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("run_id", "=", runRef.reference.entityId)
+      .where("result_kind", "=", "run-state")
+      .orderBy("persisted_at", "desc")
+      .orderBy("run_version_id", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    if (row === undefined) return undefined;
+    const parsed = workflowGraphResultRowFromDb(row);
+    if (
+      parsed.actorRef !== input.actorId ||
+      parsed.authorizationScopeDigest !== authorizationScopeDigest(verified) ||
+      parsed.artifactRef === undefined ||
+      parsed.threadId === undefined ||
+      this.#runBindingProof === undefined ||
+      this.#artifactStore.verifyContent === undefined ||
+      !(await this.#runBindingProof.readWorkflowRunBinding({
+        projectId: input.projectId,
+        actorId: input.actorId,
+        runRef,
+        threadId: parsed.threadId,
+      }))
+    )
+      throw new TypeError("WORKFLOW_EVENT_RUN_UNPROVEN");
+    let state: WorkflowGraphRunStateV1 | undefined;
+    const valid = await this.#artifactStore.verifyContent(
+      ArtifactReadRequestV1Schema.parse({
+        schemaVersion: "1",
+        projectId: input.projectId,
+        actorId: input.actorId,
+        requestId: input.invocationId,
+        idempotencyKey: input.invocationId,
+        requestedAt: input.requestedAt,
+        artifactRef: parsed.artifactRef,
+        purposeCode: WORKFLOW_GRAPH_BODY_PURPOSE_CODE_V1["run-state"],
+        requiredCapability: verified.grantedCapabilities[0],
+        authorization: verified,
+      }),
+      MAX_BODY_BYTES_V1,
+      (bytes) => {
+        const body = WorkflowGraphArtifactBodyV1Schema.parse(
+          JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
+        );
+        if (
+          body.bodyKind !== "run-state" ||
+          body.runState.projectId !== input.projectId ||
+          body.runState.runId !== runRef.reference.entityId ||
+          body.runState.runVersionId !== parsed.runVersionId ||
+          body.runState.stage !== parsed.stage ||
+          body.runState.entryMode !== "identify-and-assess" ||
+          body.runState.entryMode !== parsed.entryMode
+        )
+          return false;
+        state = body.runState;
+        return true;
+      },
+    );
+    if (!valid) throw new TypeError("WORKFLOW_EVENT_STATE_UNPROVEN");
+    return state;
+  }
+
+  async readEventParentRun(
+    input: Parameters<PostgresWorkflowAdapterV1["readEventParentRun"]>[0],
+  ): Promise<WorkflowRunRefV1 | undefined> {
+    const verified = await this.#eventAuthorization(input);
+    let runRef: WorkflowRunRefV1;
+    if ("runRef" in input) runRef = WorkflowRunRefV1Schema.parse(input.runRef);
+    else {
+      const child = WorkflowRunRefV1Schema.parse(input.identificationRunRef);
+      const rows = await this.#db
+        .selectFrom(LINKS_TABLE)
+        .selectAll()
+        .where("project_id", "=", input.projectId)
+        .where("relation", "=", "parent-child")
+        .where(sql<SqlBool>`to_ref = ${JSON.stringify(child)}::jsonb`)
+        .limit(2)
+        .execute();
+      if (rows.length === 0) return undefined;
+      if (rows.length !== 1) throw new TypeError("WORKFLOW_EVENT_PARENT_AMBIGUOUS");
+      const link = workflowGraphLinkFromDb(rows[0]!);
+      runRef = WorkflowRunRefV1Schema.parse(link.fromRef);
+      if (
+        link.runId !== runRef.reference.entityId ||
+        link.actorRef !== input.actorId ||
+        link.sourceStage !== "identification" ||
+        link.authorizationScopeDigest !== authorizationScopeDigest(verified)
+      )
+        throw new TypeError("WORKFLOW_EVENT_PARENT_UNPROVEN");
+    }
+    const state = await this.#eventState(input, runRef, verified);
+    if (state === undefined) return undefined;
+    if (
+      "identificationRunRef" in input &&
+      !isDeepStrictEqual(state.identificationRunRef, input.identificationRunRef)
+    )
+      throw new TypeError("WORKFLOW_EVENT_CHILD_UNPROVEN");
+    return runRef;
+  }
+
+  async verifyEventConsumption(
+    input: Parameters<PostgresWorkflowAdapterV1["verifyEventConsumption"]>[0],
+  ): Promise<boolean> {
+    const verified = await this.#eventAuthorization(input);
+    const state = await this.#eventState(input, input.runRef, verified);
+    if (
+      state === undefined ||
+      state.status === "running" ||
+      state.status === "cancelled" ||
+      state.identificationRunRef === undefined ||
+      state.lastStageResultRef === undefined
+    )
+      return false;
+    const parent = await this.readEventParentRun({
+      projectId: input.projectId,
+      actorId: input.actorId,
+      invocationId: input.invocationId,
+      requestedAt: input.requestedAt,
+      authorization: input.authorization,
+      identificationRunRef: state.identificationRunRef,
+    });
+    if (parent === undefined || !sameRef(parent, input.runRef)) return false;
+    const stageResult = await this.readRow({
+      projectId: input.projectId,
+      runId: state.runId,
+      resultKind: "stage-result",
+      resultId: state.lastStageResultRef.reference.entityId,
+      resultVersionId: state.lastStageResultRef.reference.versionId,
+    });
+    if (
+      stageResult?.actorRef !== input.actorId ||
+      stageResult.authorizationScopeDigest !== authorizationScopeDigest(verified) ||
+      !isDeepStrictEqual(stageResult.stageResultRef, state.lastStageResultRef)
+    )
+      return false;
+    const progressedAfter = async (fact: WorkflowGraphResultRowV1) =>
+      (await this.#db
+        .selectFrom(`${RESULTS_TABLE} as progress`)
+        .innerJoin(`${RESULTS_TABLE} as fact`, (join) =>
+          join
+            .onRef("progress.project_id", "=", "fact.project_id")
+            .onRef("progress.run_id", "=", "fact.run_id"),
+        )
+        .select("progress.result_id")
+        .where("progress.project_id", "=", input.projectId)
+        .where("progress.run_id", "=", state.runId)
+        .where("progress.result_kind", "=", "stage-result")
+        .where("progress.result_id", "=", stageResult.resultId)
+        .where("progress.result_version_id", "=", stageResult.resultVersionId)
+        .where("fact.result_kind", "=", fact.resultKind)
+        .where("fact.result_id", "=", fact.resultId)
+        .where("fact.result_version_id", "=", fact.resultVersionId)
+        .whereRef("progress.persisted_at", ">", "fact.persisted_at")
+        .limit(1)
+        .executeTakeFirst()) !== undefined;
+    if (input.cause.kind === "inputs-ready") {
+      const rows = await this.#db
+        .selectFrom(RESULTS_TABLE)
+        .selectAll()
+        .where("project_id", "=", input.projectId)
+        .where("run_id", "=", state.runId)
+        .where("result_kind", "=", "entry-snapshot")
+        .where("stage", "=", "identification")
+        .where(
+          sql<SqlBool>`frozen_refs @> ${JSON.stringify([input.cause.identificationPreparationSnapshotRef])}::jsonb`,
+        )
+        .limit(2)
+        .execute();
+      if (rows.length !== 1) return false;
+      const entry = workflowGraphResultRowFromDb(rows[0]!);
+      return (
+        entry.actorRef === input.actorId &&
+        entry.authorizationScopeDigest === authorizationScopeDigest(verified) &&
+        (await progressedAfter(entry)) &&
+        isDeepStrictEqual(entry.frozenRefs, [input.cause.identificationPreparationSnapshotRef])
+      );
+    }
+    const cause = input.cause;
+    if (
+      !isDeepStrictEqual(state.identificationRunRef, cause.identificationRunRef) ||
+      !state.acceptedRiskRecordRefs.some((ref) => isDeepStrictEqual(ref, cause.riskRecordRef))
+    )
+      return false;
+    const route = await this.readRow({
+      projectId: input.projectId,
+      runId: state.runId,
+      resultKind: "route-decision",
+      resultId: `risk-flow-risk-accepted:${state.runId}:${sha256CanonicalJson(input.cause.riskRecordRef).slice(0, 32)}`,
+      resultVersionId: sha256CanonicalJson({
+        riskRecordRef: input.cause.riskRecordRef,
+        identificationRunRef: input.cause.identificationRunRef,
+      }),
+    });
+    // 子图返回时父图可能已纳入该风险；正式状态与精确链边同样证明输入已消费。
+    if (route === undefined) return true;
+    return (
+      route.actorRef === input.actorId &&
+      route.authorizationScopeDigest === authorizationScopeDigest(verified) &&
+      route.routeKind === "risk-record-accepted"
+    );
+  }
+
+  async verifyCheckpointDomainReference(
+    input: Parameters<PostgresWorkflowAdapterV1["verifyCheckpointDomainReference"]>[0],
+  ): Promise<boolean> {
+    const verified = await this.verifyAuthorization(input, true);
+    if (verified === undefined || !isDeepStrictEqual(verified, input.authorization)) return false;
+    const relations = {
+      "risk-assessment-record": ["risk-assessment", "to_ref"],
+      "warning-record": ["assessment-warning", "to_ref"],
+      "warning-response-task": ["warning-recommendation", "from_ref"],
+      "response-recommendation": ["warning-recommendation", "to_ref"],
+      "effect-forecast": ["recommendation-forecast", "to_ref"],
+      feedback: ["feedback-deviation", "from_ref"],
+      "deviation-record": ["feedback-deviation", "to_ref"],
+      "calibration-suggestion": ["deviation-calibration", "to_ref"],
+    } as const;
+    if (
+      !(input.reference.kind in relations) &&
+      input.reference.kind !== "execution-record" &&
+      input.reference.kind !== "assessment-input-snapshot"
+    )
+      return false;
+    const digest = authorizationScopeDigest(verified);
+    const entries = await this.#db
+      .selectFrom(RESULTS_TABLE)
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("run_id", "=", input.runRef.reference.entityId)
+      .where("result_kind", "=", "entry-snapshot")
+      .limit(2)
+      .execute();
+    if (entries.length === 1) {
+      const entry = workflowGraphResultRowFromDb(entries[0]!);
+      if (
+        entry.stage === "A0" &&
+        entry.actorRef === input.actorId &&
+        entry.authorizationScopeDigest === digest &&
+        entry.frozenRefs.some((ref) => isDeepStrictEqual(ref, input.reference))
+      )
+        return true;
+    }
+    if (!(input.reference.kind in relations)) return false;
+    const [relation, column] = relations[input.reference.kind as keyof typeof relations];
+    const row = await this.#db
+      .selectFrom(LINKS_TABLE)
+      .select("link_id")
+      .where("project_id", "=", input.projectId)
+      .where("run_id", "=", input.runRef.reference.entityId)
+      .where("actor_ref", "=", input.actorId)
+      .where("authorization_scope_digest", "=", digest)
+      .where("relation", "=", relation)
+      .where(sql<SqlBool>`${sql.ref(column)} = ${JSON.stringify(input.reference)}::jsonb`)
       .limit(1)
       .executeTakeFirst();
     return row !== undefined;
@@ -2046,6 +2359,9 @@ export const createPostgresWorkflowAdapter = (
     readQuery: (input) => persistence.readQuery(input),
   };
   return {
+    readEventParentRun: (input) => persistence.readEventParentRun(input),
+    verifyEventConsumption: (input) => persistence.verifyEventConsumption(input),
+    verifyCheckpointDomainReference: (input) => persistence.verifyCheckpointDomainReference(input),
     verifyCheckpointWaitingReference: (input) =>
       persistence.verifyCheckpointWaitingReference(input),
     verifyCheckpointReference: (input) => persistence.verifyCheckpointReference(input),

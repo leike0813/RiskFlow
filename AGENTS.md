@@ -43,7 +43,7 @@
 - **冲突处理**：当代码与已归档 specs 不一致时，**以代码为准**，并在对应 specs 下开一个 drift 修正 change；不要静默忽略。
 - **`openspec/config.yaml`** 已由工程基线 change 固定当前技术栈、领域上下文与工件规则；后续仅在对应 OpenSpec change 中更新，禁止绕过规格直接改写。
 
-- **C37 当前收口范围是功能验收**：可使用批准的网络 API 推理后端，真实业务终态、权限、预算、审计和追溯仍须成立；正式签名、多平台安装、禁网三 VM、本地模型介质与 4090 取证由 C38 最终交付承接。C37/C38 规划和验收时读取 C37 工件的 D-23/D-24 与 tasks 最终交付移交表（归档后读取对应 archive），按阶段判断必需证据。
+- **C37 工程与功能分阶段收口**：`deliver-offline-private-deployment-and-operations` 保留已实现工程成果；剩余实现和真实功能取证归 `complete-private-deployment-functional-acceptance`。接续实施或 C38 规划时读取后者 handoff.md、D-25–D-30，以及前者 D-23/D-24 和 F-01–F-05（归档后读取对应 archive）。当前可启动宿主限定 synthetic-acceptance 合置本地 C04；正式跨 VM host、签名/多平台安装、禁网、本地介质和 4090 取证归 C38。工程测试不替代真实业务终态、权限、预算、审计与追溯证据。
 - **文档转换与本地交付**：PDF、扫描图片及 DOCX 通过 MinerU，XLSX/CSV 使用确定性原生解析；保存真实提供的定位与置信度。官网功能验收与自托管验收分别记录证据。C38 的主 4090 运行 Qwen3.8-27B，辅助 NVIDIA GPU 运行 MinerU 专用模型，embedding 保持独立服务；部署和验收时读取 `adopt-mineru-document-ingestion` 的 D-03–D-08（归档后读取对应 archive），按真实设备、模型和协议取证。
 
 ### 3.1 大型实现编排

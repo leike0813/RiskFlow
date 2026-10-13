@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { sql, type ColumnType, type Kysely, type Transaction } from "kysely";
 
 import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/access";
@@ -72,6 +73,8 @@ import {
   WarningResponseRecordCommandV1Schema,
   WarningResponseRecordResultV1Schema,
   type AuthorizationContextV1,
+  type ContractReferenceV1,
+  type WorkflowRunRefV1,
   ContentArtifactRefV1Schema,
   type CalibrationSuggestionApprovalProofQueryV1,
   type CalibrationSuggestionApprovalProofResultV1,
@@ -169,6 +172,9 @@ const MAX_ARTIFACT_BYTES_V1 = 8 * 1024 * 1024;
 const MAX_SERIALIZATION_ATTEMPTS_V1 = 3;
 
 interface SuggestionRow {
+  schema_version: string;
+  parent_run_id: string;
+  parent_run_version_id: string;
   suggestion_id: string;
   version_id: string;
   project_id: string;
@@ -203,6 +209,7 @@ interface SuggestionRow {
 }
 
 interface DeviationRecordRow {
+  schema_version: string;
   project_id: string;
   deviation_record_id: string;
   version_id: string;
@@ -2256,6 +2263,137 @@ export class PostgresCalibrationAdapter
   }
 
   /* --------------------------------------------------------------- C34 校准窄读 */
+
+  async readCreatedDeviationRecordRef(
+    input: Parameters<CalibrationServiceV1["readCreatedDeviationRecordRef"]>[0],
+  ): Promise<DeviationRecordRefV1 | undefined> {
+    if (
+      !(await this.verifyCheckpointReference({
+        ...input,
+        reference: input.calibrationSuggestionRef,
+      }))
+    )
+      return undefined;
+    const row = await this.#db
+      .selectFrom("business.calibration_deviation_records")
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("suggestion_id", "=", input.calibrationSuggestionRef.reference.entityId)
+      .where("suggestion_version_id", "=", input.calibrationSuggestionRef.reference.versionId)
+      .where("review_status", "=", "pending")
+      .orderBy("version_number", "asc")
+      .limit(1)
+      .executeTakeFirst();
+    if (row === undefined) return undefined;
+    const reference = DeviationRecordRefV1Schema.parse({
+      kind: "deviation-record",
+      reference: { entityId: row.deviation_record_id, versionId: row.version_id },
+    });
+    return (await this.verifyCheckpointReference({ ...input, reference })) ? reference : undefined;
+  }
+
+  async verifyCheckpointReference(input: {
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly invocationId: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly reference: ContractReferenceV1;
+    readonly parentRunRef: WorkflowRunRefV1;
+  }): Promise<boolean> {
+    if (
+      input.reference.kind !== "deviation-record" &&
+      input.reference.kind !== "calibration-suggestion"
+    )
+      return false;
+    const verified = await this.#verifyRead(input);
+    if (verified === undefined || !isDeepStrictEqual(verified, input.authorization)) return false;
+    const ref = input.reference.reference;
+    let suggestionRef = ref;
+    if (input.reference.kind === "deviation-record") {
+      const row = await this.#db
+        .selectFrom("business.calibration_deviation_records")
+        .selectAll()
+        .where("project_id", "=", input.projectId)
+        .where("deviation_record_id", "=", ref.entityId)
+        .where("version_id", "=", ref.versionId)
+        .executeTakeFirst();
+      if (row === undefined || row.schema_version !== "1") return false;
+      const record = DeviationRecordSchema.safeParse(row.record_payload);
+      if (
+        !record.success ||
+        sha256CanonicalJson(record.data) !== row.content_digest ||
+        record.data.deviationRecordId !== row.deviation_record_id ||
+        !refEquals(record.data.version.reference, ref) ||
+        record.data.reviewStatus !== row.review_status ||
+        record.data.calibrationRecommendation !== row.suggestion_id
+      )
+        return false;
+      suggestionRef = { entityId: row.suggestion_id, versionId: row.suggestion_version_id };
+    }
+    const suggestion = await this.#db
+      .selectFrom("business.calibration_suggestions")
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("suggestion_id", "=", suggestionRef.entityId)
+      .where("version_id", "=", suggestionRef.versionId)
+      .where("parent_run_id", "=", input.parentRunRef.reference.entityId)
+      .where("parent_run_version_id", "=", input.parentRunRef.reference.versionId)
+      .executeTakeFirst();
+    if (
+      suggestion === undefined ||
+      suggestion.schema_version !== "1" ||
+      !verified.spatialScopeRefs.some((scope) =>
+        refEquals(scope.reference, {
+          entityId: suggestion.spatial_scope_entity_id,
+          versionId: suggestion.spatial_scope_version_id,
+        }),
+      )
+    )
+      return false;
+    const candidate = CalibrationCandidateV1Schema.safeParse(suggestion.candidate_payload);
+    const validation = CalibrationCandidateValidationV1Schema.safeParse(
+      suggestion.validation_payload,
+    );
+    const review = ReviewTaskRefV1Schema.safeParse(suggestion.review_task_ref);
+    return (
+      candidate.success &&
+      validation.success &&
+      review.success &&
+      validation.data.disposition === "accepted" &&
+      validation.data.candidateDigest === suggestion.candidate_digest &&
+      isDeepStrictEqual(
+        candidate.data.inputSnapshotRef,
+        deriveCalibrationInputSnapshotRef({
+          projectId: input.projectId,
+          deviationFactRef: {
+            entityId: suggestion.deviation_fact_id,
+            versionId: suggestion.deviation_fact_version_id,
+          },
+          targetReleaseRef: {
+            entityId: suggestion.target_release_entity_id,
+            versionId: suggestion.target_release_version_id,
+          },
+          calibrationValidationPolicyRef: {
+            entityId: suggestion.validation_policy_entity_id,
+            versionId: suggestion.validation_policy_version_id,
+          },
+        }),
+      ) &&
+      refEquals(candidate.data.taskRef.reference, {
+        entityId: suggestion.agent_task_id,
+        versionId: suggestion.agent_task_version_id,
+      }) &&
+      isDeepStrictEqual(candidate.data.resultRef, suggestion.agent_task_result_ref) &&
+      refEquals(review.data.reference, {
+        entityId: suggestion.review_task_id,
+        versionId: suggestion.review_task_version_id,
+      }) &&
+      review.data.reviewType === "calibration-suggestion" &&
+      refEquals(review.data.targetRef.reference, suggestionRef) &&
+      isDeepStrictEqual(review.data.waitingRunRef, input.parentRunRef)
+    );
+  }
 
   /**
    * 校准建议精确读（design D-06）：C26 不访问 C29 私表。

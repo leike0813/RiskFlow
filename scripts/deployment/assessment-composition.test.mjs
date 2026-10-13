@@ -373,6 +373,7 @@ describe("评估生产组合的装配契约", () => {
     ]);
     expect(result.api.riskAssessment).toBe(result.compositions.riskAssessment);
     expect(result.readers.agentTasks).toBeDefined();
+    expect(typeof result.readers.responseContext.readRecommendationContext).toBe("function");
     expect(typeof result.modelStep.renderModelStep).toBe("function");
     expect(typeof result.modelStep.interpretModelStep).toBe("function");
     expect(result.assertReady()).toBe(result);
